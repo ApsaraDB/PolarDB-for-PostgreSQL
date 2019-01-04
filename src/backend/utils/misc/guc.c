@@ -91,6 +91,9 @@
 #include "utils/varlena.h"
 #include "utils/xml.h"
 
+/* POLAR */
+#include "storage/polar_fd.h"
+
 #ifndef PG_KRB_SRVTAB
 #define PG_KRB_SRVTAB ""
 #endif
@@ -522,6 +525,20 @@ static bool assert_enabled;
 /* should be static, but commands/variable.c needs to get at this */
 char	   *role_string;
 
+/* POLAR */
+#define POLAR_MAX_PDB_HOSTID			512
+int		polar_hostid = 0;
+int		polar_clog_slot_size = 0;
+char	*polar_datadir = NULL;
+char	*polar_disk_name = NULL;
+char	*polar_storage_cluster_name = NULL;
+bool	polar_enable_shared_storage_mode = false;
+bool	polar_enable_ddl_sync_mode = true;
+bool	polar_enable_transaction_sync_mode = false;
+bool    polar_enable_debug = false;
+bool    polar_enable_pwrite = false;
+bool    polar_enable_pread = false;
+bool	polar_dropdb_write_wal_before_rmdir = true;
 
 /*
  * Displayable names for context types (enum GucContext)
@@ -817,6 +834,92 @@ static const unit_conversion time_unit_conversion_table[] =
 
 static struct config_bool ConfigureNamesBool[] =
 {
+	{
+		{"polar_openfile_with_readonly_in_replica", PGC_POSTMASTER, UNGROUPED,
+			gettext_noop("open datafile with readonly mode in replica"),
+			NULL,
+		},
+		&polar_openfile_with_readonly_in_replica,
+		false,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_dropdb_write_wal_before_rm_file", PGC_POSTMASTER, UNGROUPED,
+			gettext_noop("polar_dropdb_write_wal_before_modify_file"),
+			NULL,
+			GUC_NO_RESET_ALL | GUC_NO_SHOW_ALL
+		},
+		&polar_dropdb_write_wal_before_rmdir,
+		true,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_enable_pread", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("polar_enable_pread."),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_enable_pread,
+		true,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_enable_pwrite", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("polar_enable_pwrite."),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_enable_pwrite,
+		true,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_enable_debug", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("polar_enable_debug."),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_enable_debug,
+		false,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_enable_transaction_sync_mode", PGC_SIGHUP, REPLICATION_STANDBY,
+			gettext_noop("polar_enable_transaction_sync_mode."),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_enable_transaction_sync_mode,
+		false,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_enable_ddl_sync_mode", PGC_SIGHUP, REPLICATION_STANDBY,
+			gettext_noop("polar_enable_ddl_sync_mode."),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_enable_ddl_sync_mode,
+		true,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_enable_shared_storage_mode", PGC_POSTMASTER, UNGROUPED,
+			gettext_noop("polar_enable_shared_storage_mode."),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_enable_shared_storage_mode,
+		false,
+		NULL, NULL, NULL
+	},
 	{
 		{"enable_seqscan", PGC_USERSET, QUERY_TUNING_METHOD,
 			gettext_noop("Enables the planner's use of sequential-scan plans."),
@@ -1832,6 +1935,26 @@ static struct config_bool ConfigureNamesBool[] =
 
 static struct config_int ConfigureNamesInt[] =
 {
+	{
+		{"polar_clog_slot_size", PGC_POSTMASTER, UNGROUPED,
+				gettext_noop("polar_clog_slot_size."),
+				NULL
+		},
+		&polar_clog_slot_size,
+		128, 128, 8192,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_hostid", PGC_POSTMASTER, UNGROUPED,
+			gettext_noop("polardb hostid."),
+			NULL
+		},
+		&polar_hostid,
+		/* -1 means this variable is disabled */
+		1, 1, POLAR_MAX_PDB_HOSTID,
+		NULL, NULL, NULL
+	},
 	{
 		{"archive_timeout", PGC_SIGHUP, WAL_ARCHIVING,
 			gettext_noop("Forces a switch to the next WAL file if a "
@@ -3266,6 +3389,36 @@ static struct config_real ConfigureNamesReal[] =
 
 static struct config_string ConfigureNamesString[] =
 {
+	{
+		{"polar_storage_cluster_name", PGC_POSTMASTER, UNGROUPED,
+			gettext_noop("polar storage cluster name"),
+			NULL
+		},
+		&polar_storage_cluster_name,
+		NULL,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_datadir", PGC_POSTMASTER, UNGROUPED,
+			gettext_noop("polardb datadir."),
+			NULL
+		},
+		&polar_datadir,
+		"",
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_disk_name", PGC_POSTMASTER, UNGROUPED,
+			gettext_noop("The virtual disk name privided by polarFS."),
+			NULL
+		},
+		&polar_disk_name,
+		"",
+		NULL, NULL, NULL
+	},
+
 	{
 		{"archive_command", PGC_SIGHUP, WAL_ARCHIVING,
 			gettext_noop("Sets the shell command that will be called to archive a WAL file."),
@@ -7500,7 +7653,7 @@ AlterSystemSetConfigFile(AlterSystemStmt *altersysstmt)
 	 * If there is a temp file left over due to a previous crash, it's okay to
 	 * truncate and reuse it.
 	 */
-	Tmpfd = BasicOpenFile(AutoConfTmpFileName,
+	Tmpfd = BasicOpenFileForConfigFile(AutoConfTmpFileName,
 						  O_CREAT | O_RDWR | O_TRUNC);
 	if (Tmpfd < 0)
 		ereport(ERROR,
@@ -7526,7 +7679,7 @@ AlterSystemSetConfigFile(AlterSystemStmt *altersysstmt)
 		 * at worst it can lose the parameters set by last ALTER SYSTEM
 		 * command.
 		 */
-		durable_rename(AutoConfTmpFileName, AutoConfFileName, ERROR);
+		durable_rename(AutoConfTmpFileName, AutoConfFileName, ERROR, false);
 	}
 	PG_CATCH();
 	{

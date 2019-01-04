@@ -20,6 +20,10 @@
 #include <unistd.h>
 #include <sys/stat.h>
 
+/* POLAR */
+#ifndef FRONTEND
+#include "storage/polar_fd.h"
+#endif
 
 /*
  *	rmtree
@@ -31,6 +35,8 @@
  *	Returns true if successful, false if there was any problem.
  *	(The details of the problem are reported already, so caller
  *	doesn't really have to say anything more, but most do.)
+ *
+ *  POLAR: for BACKEND support local or shared storage
  */
 bool
 rmtree(const char *path, bool rmtopdir)
@@ -66,7 +72,11 @@ rmtree(const char *path, bool rmtopdir)
 		 * requests, but because that's asynchronous, it's not guaranteed that
 		 * the bgwriter receives the message in time.
 		 */
+#ifndef FRONTEND
+		if (polar_lstat(pathbuf, &statbuf) != 0)
+#else
 		if (lstat(pathbuf, &statbuf) != 0)
+#endif
 		{
 			if (errno != ENOENT)
 			{
@@ -93,7 +103,11 @@ rmtree(const char *path, bool rmtopdir)
 		}
 		else
 		{
+#ifndef FRONTEND
+			if (polar_unlink(pathbuf) != 0)
+#else
 			if (unlink(pathbuf) != 0)
+#endif
 			{
 				if (errno != ENOENT)
 				{
@@ -112,7 +126,11 @@ rmtree(const char *path, bool rmtopdir)
 
 	if (rmtopdir)
 	{
+#ifndef FRONTEND
+		if (polar_rmdir(path) != 0)
+#else
 		if (rmdir(path) != 0)
+#endif
 		{
 #ifndef FRONTEND
 			elog(WARNING, "could not remove file or directory \"%s\": %m",

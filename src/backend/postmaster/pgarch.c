@@ -49,6 +49,8 @@
 #include "utils/guc.h"
 #include "utils/ps_status.h"
 
+/* POLAR */
+#include "storage/polar_fd.h"
 
 /* ----------
  * Timer definitions.
@@ -670,11 +672,14 @@ pgarch_readyXlog(char *xlog)
 	DIR		   *rldir;
 	struct dirent *rlde;
 	bool		found = false;
+	char		polar_path[MAXPGPATH];
 
 	snprintf(XLogArchiveStatusDir, MAXPGPATH, XLOGDIR "/archive_status");
-	rldir = AllocateDir(XLogArchiveStatusDir);
 
-	while ((rlde = ReadDir(rldir, XLogArchiveStatusDir)) != NULL)
+	polar_make_file_path_level2(polar_path, XLogArchiveStatusDir);
+	rldir = polar_allocate_dir(polar_path);
+
+	while ((rlde = ReadDir(rldir, polar_path)) != NULL)
 	{
 		int			basenamelen = (int) strlen(rlde->d_name) - 6;
 
@@ -722,5 +727,5 @@ pgarch_archiveDone(char *xlog)
 
 	StatusFilePath(rlogready, xlog, ".ready");
 	StatusFilePath(rlogdone, xlog, ".done");
-	(void) durable_rename(rlogready, rlogdone, WARNING);
+	(void) polar_durable_rename(rlogready, rlogdone, WARNING);
 }

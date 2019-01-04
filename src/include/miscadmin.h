@@ -300,6 +300,9 @@ extern int	trace_recovery(int trace_level);
 
 extern char *DatabasePath;
 
+/* POLAR */
+extern char *polar_database_path;
+
 /* now in utils/init/miscinit.c */
 extern void InitPostmasterChild(void);
 extern void InitStandaloneProcess(const char *argv0);
@@ -335,6 +338,9 @@ extern void SwitchBackToLocalLatch(void);
 extern bool superuser(void);	/* current user is superuser */
 extern bool superuser_arg(Oid roleid);	/* given user is superuser */
 
+
+/* POLAR */
+extern void polar_set_database_path(const char *path);
 
 /*****************************************************************************
  *	  pmod.h --																 *

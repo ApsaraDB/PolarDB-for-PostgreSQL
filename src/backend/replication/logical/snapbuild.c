@@ -1535,8 +1535,8 @@ SnapBuildSerialize(SnapBuild *builder, XLogRecPtr lsn)
 		 * That ought to be cheap because in most scenarios it should already
 		 * be safely on disk.
 		 */
-		fsync_fname(path, false);
-		fsync_fname("pg_logical/snapshots", true);
+		fsync_fname(path, false, false);
+		fsync_fname("pg_logical/snapshots", true, false);
 
 		builder->last_serialized_snapshot = lsn;
 		goto out;
@@ -1604,7 +1604,7 @@ SnapBuildSerialize(SnapBuild *builder, XLogRecPtr lsn)
 
 	/* we have valid data now, open tempfile and write it there */
 	fd = OpenTransientFile(tmppath,
-						   O_CREAT | O_EXCL | O_WRONLY | PG_BINARY);
+						   O_CREAT | O_EXCL | O_WRONLY | PG_BINARY, false);
 	if (fd < 0)
 		ereport(ERROR,
 				(errmsg("could not open file \"%s\": %m", path)));
@@ -1646,7 +1646,7 @@ SnapBuildSerialize(SnapBuild *builder, XLogRecPtr lsn)
 	pgstat_report_wait_end();
 	CloseTransientFile(fd);
 
-	fsync_fname("pg_logical/snapshots", true);
+	fsync_fname("pg_logical/snapshots", true, false);
 
 	/*
 	 * We may overwrite the work from some other backend, but that's ok, our
@@ -1661,8 +1661,8 @@ SnapBuildSerialize(SnapBuild *builder, XLogRecPtr lsn)
 	}
 
 	/* make sure we persist */
-	fsync_fname(path, false);
-	fsync_fname("pg_logical/snapshots", true);
+	fsync_fname(path, false, false);
+	fsync_fname("pg_logical/snapshots", true, false);
 
 	/*
 	 * Now there's no way we can loose the dumped state anymore, remember this
@@ -1696,7 +1696,7 @@ SnapBuildRestore(SnapBuild *builder, XLogRecPtr lsn)
 	sprintf(path, "pg_logical/snapshots/%X-%X.snap",
 			(uint32) (lsn >> 32), (uint32) lsn);
 
-	fd = OpenTransientFile(path, O_RDONLY | PG_BINARY);
+	fd = OpenTransientFile(path, O_RDONLY | PG_BINARY, false);
 
 	if (fd < 0 && errno == ENOENT)
 		return false;
@@ -1713,8 +1713,8 @@ SnapBuildRestore(SnapBuild *builder, XLogRecPtr lsn)
 	 * either...
 	 * ----
 	 */
-	fsync_fname(path, false);
-	fsync_fname("pg_logical/snapshots", true);
+	fsync_fname(path, false, false);
+	fsync_fname("pg_logical/snapshots", true, false);
 
 
 	/* read statically sized portion of snapshot */
@@ -1907,7 +1907,7 @@ CheckPointSnapBuild(void)
 	if (redo < cutoff)
 		cutoff = redo;
 
-	snap_dir = AllocateDir("pg_logical/snapshots");
+	snap_dir = AllocateDir("pg_logical/snapshots", false);
 	while ((snap_de = ReadDir(snap_dir, "pg_logical/snapshots")) != NULL)
 	{
 		uint32		hi;

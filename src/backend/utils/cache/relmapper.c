@@ -56,6 +56,9 @@
 #include "utils/inval.h"
 #include "utils/relmapper.h"
 
+/* POLAR */
+#include "storage/polar_fd.h"
+#include "utils/guc.h"
 
 /*
  * The map file is critical data: we have no automatic method for recovering
@@ -629,22 +632,24 @@ load_relmap_file(bool shared)
 	char		mapfilename[MAXPGPATH];
 	pg_crc32c	crc;
 	int			fd;
+	char		polar_mapfilename[MAXPGPATH];
 
 	if (shared)
 	{
-		snprintf(mapfilename, sizeof(mapfilename), "global/%s",
+		snprintf(polar_mapfilename, sizeof(mapfilename), "global/%s",
 				 RELMAPPER_FILENAME);
 		map = &shared_map;
 	}
 	else
 	{
-		snprintf(mapfilename, sizeof(mapfilename), "%s/%s",
+		snprintf(polar_mapfilename, sizeof(mapfilename), "%s/%s",
 				 DatabasePath, RELMAPPER_FILENAME);
 		map = &local_map;
 	}
 
-	/* Read data ... */
-	fd = OpenTransientFile(mapfilename, O_RDONLY | PG_BINARY);
+	polar_make_file_path_level2(mapfilename, polar_mapfilename);
+
+	fd = polar_open_transient_file(mapfilename, O_RDONLY | PG_BINARY);
 	if (fd < 0)
 		ereport(FATAL,
 				(errcode_for_file_access(),
@@ -659,7 +664,7 @@ load_relmap_file(bool shared)
 	 * are able to access any relation that's affected by the change.
 	 */
 	pgstat_report_wait_start(WAIT_EVENT_RELATION_MAP_READ);
-	if (read(fd, map, sizeof(RelMapFile)) != sizeof(RelMapFile))
+	if (polar_read(fd, map, sizeof(RelMapFile)) != sizeof(RelMapFile))
 		ereport(FATAL,
 				(errcode_for_file_access(),
 				 errmsg("could not read relation mapping file \"%s\": %m",
@@ -715,6 +720,7 @@ write_relmap_file(bool shared, RelMapFile *newmap,
 	int			fd;
 	RelMapFile *realmap;
 	char		mapfilename[MAXPGPATH];
+	char		polar_mapfilename[MAXPGPATH];
 
 	/*
 	 * Fill in the overhead fields and update CRC.
@@ -733,18 +739,19 @@ write_relmap_file(bool shared, RelMapFile *newmap,
 	 */
 	if (shared)
 	{
-		snprintf(mapfilename, sizeof(mapfilename), "global/%s",
+		snprintf(polar_mapfilename, sizeof(mapfilename), "global/%s",
 				 RELMAPPER_FILENAME);
 		realmap = &shared_map;
 	}
 	else
 	{
-		snprintf(mapfilename, sizeof(mapfilename), "%s/%s",
+		snprintf(polar_mapfilename, sizeof(mapfilename), "%s/%s",
 				 dbpath, RELMAPPER_FILENAME);
 		realmap = &local_map;
 	}
 
-	fd = OpenTransientFile(mapfilename, O_WRONLY | O_CREAT | PG_BINARY);
+	polar_make_file_path_level2(mapfilename, polar_mapfilename);
+	fd = polar_open_transient_file(mapfilename, O_WRONLY | O_CREAT | PG_BINARY);
 	if (fd < 0)
 		ereport(ERROR,
 				(errcode_for_file_access(),
@@ -775,7 +782,7 @@ write_relmap_file(bool shared, RelMapFile *newmap,
 
 	errno = 0;
 	pgstat_report_wait_start(WAIT_EVENT_RELATION_MAP_WRITE);
-	if (write(fd, newmap, sizeof(RelMapFile)) != sizeof(RelMapFile))
+	if (polar_write(fd, newmap, sizeof(RelMapFile)) != sizeof(RelMapFile))
 	{
 		/* if write didn't set errno, assume problem is no disk space */
 		if (errno == 0)
@@ -794,7 +801,7 @@ write_relmap_file(bool shared, RelMapFile *newmap,
 	 * CheckPointRelationMap.
 	 */
 	pgstat_report_wait_start(WAIT_EVENT_RELATION_MAP_SYNC);
-	if (pg_fsync(fd) != 0)
+	if (polar_fsync(fd) != 0)
 		ereport(ERROR,
 				(errcode_for_file_access(),
 				 errmsg("could not fsync relation mapping file \"%s\": %m",
@@ -924,20 +931,36 @@ relmap_redo(XLogReaderState *record)
 		memcpy(&newmap, xlrec->data, sizeof(newmap));
 
 		/* We need to construct the pathname for this database */
-		dbpath = GetDatabasePath(xlrec->dbid, xlrec->tsid);
+		dbpath = GetDatabasePath(xlrec->dbid, xlrec->tsid, false);
 
-		/*
-		 * Write out the new map and send sinval, but of course don't write a
-		 * new WAL entry.  There's no surrounding transaction to tell to
-		 * preserve files, either.
-		 *
-		 * There shouldn't be anyone else updating relmaps during WAL replay,
-		 * so we don't bother to take the RelationMappingLock.  We would need
-		 * to do so if load_relmap_file needed to interlock against writers.
-		 */
-		write_relmap_file((xlrec->dbid == InvalidOid), &newmap,
-						  false, true, false,
-						  xlrec->dbid, xlrec->tsid, dbpath);
+		/* POLAR: replica not need write data shared storage */
+		if (polar_in_replica_mode())
+		{
+			/*
+			 * Now that the file is safely on disk, send sinval message to let other
+			 * backends know to re-read it.  We must do this inside the critical
+			 * section: if for some reason we fail to send the message, we have to
+			 * force a database-wide PANIC.  Otherwise other backends might continue
+			 * execution with stale mapping information, which would be catastrophic
+			 * as soon as others began to use the now-committed data.
+			 */
+			CacheInvalidateRelmap(xlrec->dbid);
+		}
+		else
+		{
+			/*
+			 * Write out the new map and send sinval, but of course don't write a
+			 * new WAL entry.  There's no surrounding transaction to tell to
+			 * preserve files, either.
+			 *
+			 * There shouldn't be anyone else updating relmaps during WAL replay,
+			 * so we don't bother to take the RelationMappingLock.  We would need
+			 * to do so if load_relmap_file needed to interlock against writers.
+			 */
+			write_relmap_file((xlrec->dbid == InvalidOid), &newmap,
+							  false, true, false,
+							  xlrec->dbid, xlrec->tsid, dbpath);
+		}
 
 		pfree(dbpath);
 	}

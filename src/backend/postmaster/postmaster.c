@@ -135,6 +135,19 @@
 #include "storage/spin.h"
 #endif
 
+/* POLAR */
+#include "storage/polar_fd.h"
+
+/* POLAR */
+typedef enum
+{
+	PM_RECEIVE_SIGINT = 0,
+	PM_RECEIVE_SIGTERM,
+	PM_RECEIVE_SIGQUIT,
+	PM_ADVANCE_STATE_MACHINE,
+	PM_SUBPROCESS_DIE,
+	MAX_PM_SIGNALS
+} polar_pmstate_change_reason;
 
 /*
  * Possible types of a backend. Beyond being the possible bkend_type values in
@@ -407,7 +420,7 @@ static bool CleanupBackgroundWorker(int pid, int exitstatus);
 static void HandleChildCrash(int pid, int exitstatus, const char *procname);
 static void LogChildExit(int lev, const char *procname,
 			 int pid, int exitstatus);
-static void PostmasterStateMachine(void);
+static void PostmasterStateMachine(polar_pmstate_change_reason reason, pid_t pid);
 static void BackendInitialize(Port *port);
 static void BackendRun(Port *port) pg_attribute_noreturn();
 static void ExitPostmaster(int status) pg_attribute_noreturn();
@@ -434,6 +447,7 @@ static pid_t StartChildProcess(AuxProcType type);
 static void StartAutovacuumWorker(void);
 static void MaybeStartWalReceiver(void);
 static void InitPostmasterDeathWatchHandle(void);
+static void polar_state_machine_change_check(polar_pmstate_change_reason reason, pid_t pid);
 
 /*
  * Archiver is allowed to start up at the current postmaster state?
@@ -1365,6 +1379,22 @@ PostmasterMain(int argc, char *argv[])
 	 */
 	AddToDataDirLockFile(LOCK_FILE_LINE_PM_STATUS, PM_STATUS_STARTING);
 
+	if (POLAR_FILE_IN_SHARED_STORAGE())
+	{
+		if (polar_vfs_switch == POLAR_VFS_SWITCH_LOCAL)
+			elog(PANIC, "polar vfs not ready, please set \'polar_vfs\' to shared_preload_libraries");
+
+		polar_load_and_check_controlfile();
+#if 0
+
+		/*
+		 * POLAR: Initialize the local directories for replica, copy some directories
+		 * from shared storage to local.
+		 */
+		polar_init_local_dir_for_replica();
+#endif
+	}
+
 	/*
 	 * We're ready to rock and roll...
 	 */
@@ -1469,7 +1499,7 @@ getInstallationPaths(const char *argv0)
 	 * some directory that's not a sibling of the installation lib/
 	 * directory.)
 	 */
-	pdir = AllocateDir(pkglib_path);
+	pdir = AllocateDir(pkglib_path, false);
 	if (pdir == NULL)
 		ereport(ERROR,
 				(errcode_for_file_access(),
@@ -1498,6 +1528,13 @@ checkControlFile(void)
 	FILE	   *fp;
 
 	snprintf(path, sizeof(path), "%s/global/pg_control", DataDir);
+
+	/*
+	 * POLAR: At this moment the shared storage is not mounted.
+	 * check it later.
+	 */
+	if (POLAR_FILE_IN_SHARED_STORAGE())
+		return;
 
 	fp = AllocateFile(path, PG_BINARY_R);
 	if (fp == NULL)
@@ -2656,7 +2693,7 @@ pmdie(SIGNAL_ARGS)
 			 * that is already the case, PostmasterStateMachine will take the
 			 * next step.
 			 */
-			PostmasterStateMachine();
+			PostmasterStateMachine(PM_RECEIVE_SIGTERM, 0);
 			break;
 
 		case SIGINT:
@@ -2722,7 +2759,7 @@ pmdie(SIGNAL_ARGS)
 			 * Now wait for backends to exit.  If there are none,
 			 * PostmasterStateMachine will take the next step.
 			 */
-			PostmasterStateMachine();
+			PostmasterStateMachine(PM_RECEIVE_SIGINT, 0);
 			break;
 
 		case SIGQUIT:
@@ -2756,7 +2793,7 @@ pmdie(SIGNAL_ARGS)
 			 * Now wait for backends to exit.  If there are none,
 			 * PostmasterStateMachine will take the next step.
 			 */
-			PostmasterStateMachine();
+			PostmasterStateMachine(PM_RECEIVE_SIGQUIT, 0);
 			break;
 	}
 
@@ -2774,6 +2811,7 @@ reaper(SIGNAL_ARGS)
 	int			save_errno = errno;
 	int			pid;			/* process id of dead child process */
 	int			exitstatus;		/* its exit status */
+	int			polar_pid_copy = 0;
 
 	PG_SETMASK(&BlockSig);
 
@@ -2782,6 +2820,8 @@ reaper(SIGNAL_ARGS)
 
 	while ((pid = waitpid(-1, &exitstatus, WNOHANG)) > 0)
 	{
+		polar_pid_copy = pid;
+
 		/*
 		 * Check if this child was a startup process.
 		 */
@@ -3074,7 +3114,7 @@ reaper(SIGNAL_ARGS)
 	 * After cleaning out the SIGCHLD queue, see if we have any state changes
 	 * or actions to make.
 	 */
-	PostmasterStateMachine();
+	PostmasterStateMachine(PM_SUBPROCESS_DIE, polar_pid_copy);
 
 	/* Done with signal handler */
 	PG_SETMASK(&UnBlockSig);
@@ -3605,7 +3645,7 @@ LogChildExit(int lev, const char *procname, int pid, int exitstatus)
  * receive the signals that might mean we need to change state.
  */
 static void
-PostmasterStateMachine(void)
+PostmasterStateMachine(polar_pmstate_change_reason reason, pid_t pid)
 {
 	if (pmState == PM_WAIT_BACKUP)
 	{
@@ -3822,16 +3862,27 @@ PostmasterStateMachine(void)
 		ereport(LOG,
 				(errmsg("all server processes terminated; reinitializing")));
 
+		polar_state_machine_change_check(reason, pid);
+
 		/* allow background workers to immediately restart */
 		ResetBackgroundWorkerCrashTimes();
 
 		shmem_exit(1);
+
+		/* POLAR: reset vfs */
+		polar_reset_vfs_switch();
 
 		/* re-read control file into local memory */
 		LocalProcessControlFile(true);
 
 		reset_shared(PostPortNumber);
 
+		if (POLAR_FILE_IN_SHARED_STORAGE())
+			polar_load_and_check_controlfile();
+#if 0
+		/* POLAR: for replica, copy latest file from shared storage. */
+		polar_init_local_dir_for_replica();
+#endif
 		StartupPID = StartupDataBase();
 		Assert(StartupPID != 0);
 		StartupStatus = STARTUP_RUNNING;
@@ -4444,7 +4495,7 @@ internal_forkexec(int argc, char *argv[], Port *port)
 		 * As in OpenTemporaryFileInTablespace, try to make the temp-file
 		 * directory, ignoring errors.
 		 */
-		(void) MakePGDirectory(PG_TEMP_FILES_DIR);
+		(void) MakePGDirectory(PG_TEMP_FILES_DIR, false);
 
 		fp = AllocateFile(tmpfilename, PG_BINARY_W);
 		if (!fp)
@@ -5141,7 +5192,7 @@ sigusr1_handler(SIGNAL_ARGS)
 		(pmState == PM_WAIT_BACKUP || pmState == PM_WAIT_BACKENDS))
 	{
 		/* Advance postmaster's state machine */
-		PostmasterStateMachine();
+		PostmasterStateMachine(PM_ADVANCE_STATE_MACHINE, 0);
 	}
 
 	if (CheckPromoteSignal() && StartupPID != 0 &&
@@ -6443,3 +6494,38 @@ InitPostmasterDeathWatchHandle(void)
 								 GetLastError())));
 #endif							/* WIN32 */
 }
+
+/* POLAR: do some check, leave log for debug */
+static void
+polar_state_machine_change_check(polar_pmstate_change_reason reason, pid_t pid)
+{
+	switch (reason)
+	{
+		case PM_RECEIVE_SIGINT:
+			elog(LOG, "polardb prepare reinitializing after receive SIGINT");
+			break;
+
+		case PM_RECEIVE_SIGTERM:
+			elog(LOG, "polardb prepare reinitializing after receive SIGTERM");
+			break;
+
+		case PM_RECEIVE_SIGQUIT:
+			elog(LOG, "polardb prepare reinitializing after receive SIGQUIT");
+			break;
+
+		case PM_ADVANCE_STATE_MACHINE:
+			elog(LOG, "polardb prepare reinitializing after sigusr1_handler advance");
+			break;
+
+		case PM_SUBPROCESS_DIE:
+			elog(LOG, "polardb prepare reinitializing after subprocess %d die", pid);
+			break;
+
+		default:
+			elog(ERROR,"polardb unknown state machine change reason %d", reason);
+			break;
+	}
+
+	return;
+}
+

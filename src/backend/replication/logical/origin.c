@@ -568,7 +568,7 @@ CheckPointReplicationOrigin(void)
 	 * CheckpointLock.
 	 */
 	tmpfd = OpenTransientFile(tmppath,
-							  O_CREAT | O_EXCL | O_WRONLY | PG_BINARY);
+							  O_CREAT | O_EXCL | O_WRONLY | PG_BINARY, false);
 	if (tmpfd < 0)
 		ereport(PANIC,
 				(errcode_for_file_access(),
@@ -658,7 +658,7 @@ CheckPointReplicationOrigin(void)
 	CloseTransientFile(tmpfd);
 
 	/* fsync, rename to permanent file, fsync file and directory */
-	durable_rename(tmppath, path, PANIC);
+	durable_rename(tmppath, path, PANIC, false);
 }
 
 /*
@@ -695,7 +695,7 @@ StartupReplicationOrigin(void)
 
 	elog(DEBUG2, "starting up replication origin progress state");
 
-	fd = OpenTransientFile(path, O_RDONLY | PG_BINARY);
+	fd = OpenTransientFile(path, O_RDONLY | PG_BINARY, false);
 
 	/*
 	 * might have had max_replication_slots == 0 last run, or we just brought

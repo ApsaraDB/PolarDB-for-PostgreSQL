@@ -62,6 +62,8 @@
 #include "utils/timeout.h"
 #include "utils/tqual.h"
 
+/* POLAR */
+#include "storage/polar_fd.h"
 
 static HeapTuple GetDatabaseTuple(const char *dbname);
 static HeapTuple GetDatabaseTupleByOid(Oid dboid);
@@ -963,7 +965,7 @@ InitPostgres(const char *in_dbname, Oid dboid, const char *username,
 	 * Now we should be able to access the database directory safely. Verify
 	 * it's there and looks reasonable.
 	 */
-	fullpath = GetDatabasePath(MyDatabaseId, MyDatabaseTableSpace);
+	fullpath = GetDatabasePath(MyDatabaseId, MyDatabaseTableSpace, false);
 
 	if (!bootstrap)
 	{
@@ -987,6 +989,32 @@ InitPostgres(const char *in_dbname, Oid dboid, const char *username,
 	}
 
 	SetDatabasePath(fullpath);
+
+	if (POLAR_FILE_IN_SHARED_STORAGE())
+	{
+		char	   *polar_fullpath = NULL;
+
+		polar_fullpath = polar_get_database_path(MyDatabaseId, MyDatabaseTableSpace);
+		if (!bootstrap)
+		{
+			if (polar_access(polar_fullpath, F_OK) == -1)
+			{
+				if (errno == ENOENT)
+					ereport(FATAL,
+							(errcode(ERRCODE_UNDEFINED_DATABASE),
+							 errmsg("database \"%s\" does not exist",
+									dbname),
+							 errdetail("The database subdirectory \"%s\" is missing.",
+									   fullpath)));
+				else
+					ereport(FATAL,
+							(errcode_for_file_access(),
+							 errmsg("could not access directory \"%s\": %m",
+									fullpath)));
+			}
+		}
+		polar_set_database_path(polar_fullpath);
+	}
 
 	/*
 	 * It's now possible to do real access to the system catalogs.

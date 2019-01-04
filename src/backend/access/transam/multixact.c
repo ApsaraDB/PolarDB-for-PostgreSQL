@@ -1825,15 +1825,15 @@ MultiXactShmemInit(void)
 
 	MultiXactOffsetCtl->PagePrecedes = MultiXactOffsetPagePrecedes;
 	MultiXactMemberCtl->PagePrecedes = MultiXactMemberPagePrecedes;
-
+	/* POLAR: pg_multixact file in shared storage */
 	SimpleLruInit(MultiXactOffsetCtl,
 				  "multixact_offset", NUM_MXACTOFFSET_BUFFERS, 0,
 				  MultiXactOffsetControlLock, "pg_multixact/offsets",
-				  LWTRANCHE_MXACTOFFSET_BUFFERS);
+				  LWTRANCHE_MXACTOFFSET_BUFFERS, true);
 	SimpleLruInit(MultiXactMemberCtl,
 				  "multixact_member", NUM_MXACTMEMBER_BUFFERS, 0,
 				  MultiXactMemberControlLock, "pg_multixact/members",
-				  LWTRANCHE_MXACTMEMBER_BUFFERS);
+				  LWTRANCHE_MXACTMEMBER_BUFFERS, true);
 
 	/* Initialize our shared state struct */
 	MultiXactState = ShmemInitStruct("Shared MultiXact State",

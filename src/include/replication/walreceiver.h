@@ -150,6 +150,7 @@ typedef struct
 {
 	bool		logical;		/* True if this is logical replication stream,
 								 * false if physical stream.  */
+	bool		polar_replica; 	 /* POLAR: True if i am on polardb replica */
 	char	   *slotname;		/* Name of the replication slot or NULL. */
 	XLogRecPtr	startpoint;		/* LSN of starting point. */
 

@@ -688,7 +688,7 @@ apw_dump_now(bool is_bgworker, bool dump_unlogged)
 						transient_dump_file_path)));
 	}
 
-	(void) durable_rename(transient_dump_file_path, AUTOPREWARM_FILE, ERROR);
+	(void) durable_rename(transient_dump_file_path, AUTOPREWARM_FILE, ERROR, false);
 	apw_state->pid_using_dumpfile = InvalidPid;
 
 	ereport(DEBUG1,

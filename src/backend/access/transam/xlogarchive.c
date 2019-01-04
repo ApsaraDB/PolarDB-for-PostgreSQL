@@ -29,6 +29,12 @@
 #include "storage/lwlock.h"
 #include "storage/pmsignal.h"
 
+/* POLAR */
+#include "utils/guc.h"
+#include "storage/polar_fd.h"
+
+static int polar_touch_file(char *filename);
+
 /*
  * Attempt to retrieve the specified file from off-line archival storage.
  * If successful, fill "path" with its complete path (note that this will be
@@ -92,12 +98,12 @@ RestoreArchivedFile(char *path, const char *xlogfname,
 	 * copy-from-archive filename is always the same, ensuring that we don't
 	 * run out of disk space on long recoveries.
 	 */
-	snprintf(xlogpath, MAXPGPATH, XLOGDIR "/%s", recovername);
+	polar_make_file_path_level3(xlogpath, XLOGDIR, (char *)recovername);
 
 	/*
 	 * Make sure there is no existing file named recovername.
 	 */
-	if (stat(xlogpath, &stat_buf) != 0)
+	if (polar_stat(xlogpath, &stat_buf) != 0)
 	{
 		if (errno != ENOENT)
 			ereport(FATAL,
@@ -107,7 +113,7 @@ RestoreArchivedFile(char *path, const char *xlogfname,
 	}
 	else
 	{
-		if (unlink(xlogpath) != 0)
+		if (polar_unlink(xlogpath) != 0)
 			ereport(FATAL,
 					(errcode_for_file_access(),
 					 errmsg("could not remove file \"%s\": %m",
@@ -218,7 +224,7 @@ RestoreArchivedFile(char *path, const char *xlogfname,
 		 * command apparently succeeded, but let's make sure the file is
 		 * really there now and has the correct size.
 		 */
-		if (stat(xlogpath, &stat_buf) == 0)
+		if (polar_stat(xlogpath, &stat_buf) == 0)
 		{
 			if (expectedSize > 0 && stat_buf.st_size != expectedSize)
 			{
@@ -431,9 +437,9 @@ KeepFileRestoredFromArchive(const char *path, const char *xlogfname)
 	bool		reload = false;
 	struct stat statbuf;
 
-	snprintf(xlogfpath, MAXPGPATH, XLOGDIR "/%s", xlogfname);
+	polar_make_file_path_level3(xlogfpath, XLOGDIR, (char *)xlogfname);
 
-	if (stat(xlogfpath, &statbuf) == 0)
+	if (polar_stat(xlogfpath, &statbuf) == 0)
 	{
 		char		oldpath[MAXPGPATH];
 
@@ -452,7 +458,7 @@ KeepFileRestoredFromArchive(const char *path, const char *xlogfname)
 		 */
 		snprintf(oldpath, MAXPGPATH, "%s.deleted%u",
 				 xlogfpath, deletedcounter++);
-		if (rename(xlogfpath, oldpath) != 0)
+		if (polar_rename(xlogfpath, oldpath) != 0)
 		{
 			ereport(ERROR,
 					(errcode_for_file_access(),
@@ -463,7 +469,7 @@ KeepFileRestoredFromArchive(const char *path, const char *xlogfname)
 		/* same-size buffers, so this never truncates */
 		strlcpy(oldpath, xlogfpath, MAXPGPATH);
 #endif
-		if (unlink(oldpath) != 0)
+		if (polar_unlink(oldpath) != 0)
 			ereport(FATAL,
 					(errcode_for_file_access(),
 					 errmsg("could not remove file \"%s\": %m",
@@ -471,7 +477,7 @@ KeepFileRestoredFromArchive(const char *path, const char *xlogfname)
 		reload = true;
 	}
 
-	durable_rename(path, xlogfpath, ERROR);
+	polar_durable_rename(path, xlogfpath, ERROR);
 
 	/*
 	 * Create .done file forcibly to prevent the restored segment from being
@@ -518,22 +524,32 @@ XLogArchiveNotify(const char *xlog)
 
 	/* insert an otherwise empty file called <XLOG>.ready */
 	StatusFilePath(archiveStatusPath, xlog, ".ready");
-	fd = AllocateFile(archiveStatusPath, "w");
-	if (fd == NULL)
+
+	/* POLAR: libpfs does not support fopen fclose, use pfs_creat */
+	if (POLAR_FILE_IN_SHARED_STORAGE())
 	{
-		ereport(LOG,
-				(errcode_for_file_access(),
-				 errmsg("could not create archive status file \"%s\": %m",
-						archiveStatusPath)));
-		return;
+		if (polar_touch_file(archiveStatusPath) != 0)
+			return;
 	}
-	if (FreeFile(fd))
+	else
 	{
-		ereport(LOG,
-				(errcode_for_file_access(),
-				 errmsg("could not write archive status file \"%s\": %m",
-						archiveStatusPath)));
-		return;
+		fd = AllocateFile(archiveStatusPath, "w");
+		if (fd == NULL)
+		{
+			ereport(LOG,
+					(errcode_for_file_access(),
+					 errmsg("could not create archive status file \"%s\": %m",
+							archiveStatusPath)));
+			return;
+		}
+		if (FreeFile(fd))
+		{
+			ereport(LOG,
+					(errcode_for_file_access(),
+					 errmsg("could not write archive status file \"%s\": %m",
+							archiveStatusPath)));
+			return;
+		}
 	}
 
 	/* Notify archiver that it's got something to do */
@@ -570,34 +586,43 @@ XLogArchiveForceDone(const char *xlog)
 
 	/* Exit if already known done */
 	StatusFilePath(archiveDone, xlog, ".done");
-	if (stat(archiveDone, &stat_buf) == 0)
+	if (polar_stat(archiveDone, &stat_buf) == 0)
 		return;
 
 	/* If .ready exists, rename it to .done */
 	StatusFilePath(archiveReady, xlog, ".ready");
-	if (stat(archiveReady, &stat_buf) == 0)
+	if (polar_stat(archiveReady, &stat_buf) == 0)
 	{
-		(void) durable_rename(archiveReady, archiveDone, WARNING);
+		(void) polar_durable_rename(archiveReady, archiveDone, WARNING);
 		return;
 	}
 
-	/* insert an otherwise empty file called <XLOG>.done */
-	fd = AllocateFile(archiveDone, "w");
-	if (fd == NULL)
+	/* POLAR: libpfs does not support fopen fclose, use creat */
+	if (POLAR_FILE_IN_SHARED_STORAGE())
 	{
-		ereport(LOG,
-				(errcode_for_file_access(),
-				 errmsg("could not create archive status file \"%s\": %m",
-						archiveDone)));
-		return;
+		if (polar_touch_file(archiveDone) != 0)
+			return;
 	}
-	if (FreeFile(fd))
+	else
 	{
-		ereport(LOG,
-				(errcode_for_file_access(),
-				 errmsg("could not write archive status file \"%s\": %m",
-						archiveDone)));
-		return;
+		/* insert an otherwise empty file called <XLOG>.done */
+		fd = AllocateFile(archiveDone, "w");
+		if (fd == NULL)
+		{
+			ereport(LOG,
+					(errcode_for_file_access(),
+					 errmsg("could not create archive status file \"%s\": %m",
+							archiveDone)));
+			return;
+		}
+		if (FreeFile(fd))
+		{
+			ereport(LOG,
+					(errcode_for_file_access(),
+					 errmsg("could not write archive status file \"%s\": %m",
+							archiveDone)));
+			return;
+		}
 	}
 }
 
@@ -627,17 +652,17 @@ XLogArchiveCheckDone(const char *xlog)
 
 	/* First check for .done --- this means archiver is done with it */
 	StatusFilePath(archiveStatusPath, xlog, ".done");
-	if (stat(archiveStatusPath, &stat_buf) == 0)
+	if (polar_stat(archiveStatusPath, &stat_buf) == 0)
 		return true;
 
 	/* check for .ready --- this means archiver is still busy with it */
 	StatusFilePath(archiveStatusPath, xlog, ".ready");
-	if (stat(archiveStatusPath, &stat_buf) == 0)
+	if (polar_stat(archiveStatusPath, &stat_buf) == 0)
 		return false;
 
 	/* Race condition --- maybe archiver just finished, so recheck */
 	StatusFilePath(archiveStatusPath, xlog, ".done");
-	if (stat(archiveStatusPath, &stat_buf) == 0)
+	if (polar_stat(archiveStatusPath, &stat_buf) == 0)
 		return true;
 
 	/* Retry creation of the .ready file */
@@ -663,17 +688,17 @@ XLogArchiveIsBusy(const char *xlog)
 
 	/* First check for .done --- this means archiver is done with it */
 	StatusFilePath(archiveStatusPath, xlog, ".done");
-	if (stat(archiveStatusPath, &stat_buf) == 0)
+	if (polar_stat(archiveStatusPath, &stat_buf) == 0)
 		return false;
 
 	/* check for .ready --- this means archiver is still busy with it */
 	StatusFilePath(archiveStatusPath, xlog, ".ready");
-	if (stat(archiveStatusPath, &stat_buf) == 0)
+	if (polar_stat(archiveStatusPath, &stat_buf) == 0)
 		return true;
 
 	/* Race condition --- maybe archiver just finished, so recheck */
 	StatusFilePath(archiveStatusPath, xlog, ".done");
-	if (stat(archiveStatusPath, &stat_buf) == 0)
+	if (polar_stat(archiveStatusPath, &stat_buf) == 0)
 		return false;
 
 	/*
@@ -682,7 +707,7 @@ XLogArchiveIsBusy(const char *xlog)
 	 * status file for it.
 	 */
 	snprintf(archiveStatusPath, MAXPGPATH, XLOGDIR "/%s", xlog);
-	if (stat(archiveStatusPath, &stat_buf) != 0 &&
+	if (polar_stat(archiveStatusPath, &stat_buf) != 0 &&
 		errno == ENOENT)
 		return false;
 
@@ -708,17 +733,17 @@ XLogArchiveIsReadyOrDone(const char *xlog)
 
 	/* First check for .done --- this means archiver is done with it */
 	StatusFilePath(archiveStatusPath, xlog, ".done");
-	if (stat(archiveStatusPath, &stat_buf) == 0)
+	if (polar_stat(archiveStatusPath, &stat_buf) == 0)
 		return true;
 
 	/* check for .ready --- this means archiver is still busy with it */
 	StatusFilePath(archiveStatusPath, xlog, ".ready");
-	if (stat(archiveStatusPath, &stat_buf) == 0)
+	if (polar_stat(archiveStatusPath, &stat_buf) == 0)
 		return true;
 
 	/* Race condition --- maybe archiver just finished, so recheck */
 	StatusFilePath(archiveStatusPath, xlog, ".done");
-	if (stat(archiveStatusPath, &stat_buf) == 0)
+	if (polar_stat(archiveStatusPath, &stat_buf) == 0)
 		return true;
 
 	return false;
@@ -737,7 +762,7 @@ XLogArchiveIsReady(const char *xlog)
 	struct stat stat_buf;
 
 	StatusFilePath(archiveStatusPath, xlog, ".ready");
-	if (stat(archiveStatusPath, &stat_buf) == 0)
+	if (polar_stat(archiveStatusPath, &stat_buf) == 0)
 		return true;
 
 	return false;
@@ -755,11 +780,43 @@ XLogArchiveCleanup(const char *xlog)
 
 	/* Remove the .done file */
 	StatusFilePath(archiveStatusPath, xlog, ".done");
-	unlink(archiveStatusPath);
+	polar_unlink(archiveStatusPath);
 	/* should we complain about failure? */
 
 	/* Remove the .ready file if present --- normally it shouldn't be */
 	StatusFilePath(archiveStatusPath, xlog, ".ready");
-	unlink(archiveStatusPath);
+	polar_unlink(archiveStatusPath);
 	/* should we complain about failure? */
 }
+
+/*
+ * POLAR: touch empty file
+ * polarfs does NOT support fopen/fclose£¬we have to use polar_creat
+ */
+static int
+polar_touch_file(char *filename)
+{
+	int polar_file;
+
+	polar_file = polar_creat(filename, 0);
+	if (polar_file < 0)
+	{
+		ereport(LOG,
+				(errcode_for_file_access(),
+				 errmsg("could not create archive status file \"%s\": %m",
+						filename)));
+		return 1;
+	}
+
+	if (polar_close(polar_file))
+	{
+		ereport(LOG,
+				(errcode_for_file_access(),
+				 errmsg("could not write archive status file \"%s\": %m",
+						filename)));
+		return 1;
+	}
+
+	return 0;
+}
+

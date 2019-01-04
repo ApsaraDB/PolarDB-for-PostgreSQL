@@ -6123,7 +6123,7 @@ RelationCacheInitFileRemove(void)
 	RelationCacheInitFileRemoveInDir("base");
 
 	/* Scan the tablespace link directory to find non-default tablespaces */
-	dir = AllocateDir(tblspcdir);
+	dir = AllocateDir(tblspcdir, false);
 
 	while ((de = ReadDirExtended(dir, tblspcdir, LOG)) != NULL)
 	{
@@ -6148,7 +6148,7 @@ RelationCacheInitFileRemoveInDir(const char *tblspcpath)
 	char		initfilename[MAXPGPATH * 2];
 
 	/* Scan the tablespace directory to find per-database directories */
-	dir = AllocateDir(tblspcpath);
+	dir = AllocateDir(tblspcpath, false);
 
 	while ((de = ReadDirExtended(dir, tblspcpath, LOG)) != NULL)
 	{

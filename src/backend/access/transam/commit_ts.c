@@ -37,6 +37,10 @@
 #include "utils/snapmgr.h"
 #include "utils/timestamp.h"
 
+/* POLAR */
+#include "utils/guc.h"
+#include "storage/polar_fd.h"
+
 /*
  * Defines for CommitTs page sizes.  A page is the same BLCKSZ as is used
  * everywhere else in Postgres.
@@ -492,9 +496,10 @@ CommitTsShmemInit(void)
 	bool		found;
 
 	CommitTsCtl->PagePrecedes = CommitTsPagePrecedes;
+	/* POLAR: pg_commit_ts file in shared storage */
 	SimpleLruInit(CommitTsCtl, "commit_timestamp", CommitTsShmemBuffers(), 0,
 				  CommitTsControlLock, "pg_commit_ts",
-				  LWTRANCHE_COMMITTS_BUFFERS);
+				  LWTRANCHE_COMMITTS_BUFFERS, true);
 
 	commitTsShared = ShmemInitStruct("CommitTs shared",
 									 sizeof(CommitTimestampShared),
@@ -744,6 +749,8 @@ DeactivateCommitTs(void)
 void
 ShutdownCommitTs(void)
 {
+	char		polar_path[MAXPGPATH];
+
 	/* Flush dirty CommitTs pages to disk */
 	SimpleLruFlush(CommitTsCtl, false);
 
@@ -751,7 +758,8 @@ ShutdownCommitTs(void)
 	 * fsync pg_commit_ts to ensure that any files flushed previously are
 	 * durably on disk.
 	 */
-	fsync_fname("pg_commit_ts", true);
+	polar_make_file_path_level2(polar_path, "pg_commit_ts");
+	polar_fsync_fname(polar_path, true);
 }
 
 /*
@@ -760,6 +768,8 @@ ShutdownCommitTs(void)
 void
 CheckPointCommitTs(void)
 {
+	char		polar_path[MAXPGPATH];
+
 	/* Flush dirty CommitTs pages to disk */
 	SimpleLruFlush(CommitTsCtl, true);
 
@@ -767,7 +777,8 @@ CheckPointCommitTs(void)
 	 * fsync pg_commit_ts to ensure that any files flushed previously are
 	 * durably on disk.
 	 */
-	fsync_fname("pg_commit_ts", true);
+	polar_make_file_path_level2(polar_path, "pg_commit_ts");
+	polar_fsync_fname(polar_path, true);
 }
 
 /*

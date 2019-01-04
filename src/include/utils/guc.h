@@ -273,6 +273,21 @@ extern int	tcp_keepalives_count;
 extern bool trace_sort;
 #endif
 
+/* POLAR */
+extern int		polar_hostid;
+extern int		polar_clog_slot_size;
+extern char		*polar_datadir;
+extern char		*polar_disk_name;
+extern char		*polar_storage_cluster_name;
+extern bool		polar_enable_shared_storage_mode;
+extern bool		polar_enable_ddl_sync_mode;
+extern bool		polar_enable_transaction_sync_mode;
+extern bool		polar_enable_debug;
+extern bool		polar_enable_pwrite;
+extern bool		polar_enable_pread;
+extern bool		polar_dropdb_write_wal_before_rmdir;
+/* POLAR end */
+
 /*
  * Functions exported by guc.c
  */

@@ -41,6 +41,8 @@
 #include "utils/memutils.h"
 #include "utils/rel.h"
 
+/* POLAR */
+#include "access/xlog.h"
 
 static TupleTableSlot *IndexOnlyNext(IndexOnlyScanState *node);
 static void StoreIndexTuple(TupleTableSlot *slot, IndexTuple itup,
@@ -155,7 +157,12 @@ IndexOnlyNext(IndexOnlyScanState *node)
 		 * It's worth going through this complexity to avoid needing to lock
 		 * the VM buffer, which could cause significant contention.
 		 */
-		if (!VM_ALL_VISIBLE(scandesc->heapRelation,
+		/*
+		 * POLAR: rw not control vmpage flush
+		 * ro node disable index only scan
+		 */
+		if (polar_in_replica_mode() || 
+			!VM_ALL_VISIBLE(scandesc->heapRelation,
 							ItemPointerGetBlockNumber(tid),
 							&node->ioss_VMBuffer))
 		{

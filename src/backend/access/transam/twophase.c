@@ -107,6 +107,9 @@
 #include "utils/memutils.h"
 #include "utils/timestamp.h"
 
+/* POLAR */
+#include "storage/polar_fd.h"
+
 
 /*
  * Directory where Two-phase commit files reside within PGDATA
@@ -115,6 +118,10 @@
 
 /* GUC variable, can't be changed after startup */
 int			max_prepared_xacts = 0;
+
+/* POLAR */
+#define IS_TWOPHASE_ON_POLARSTORE() (POLAR_FILE_IN_SHARED_STORAGE() && !polar_in_replica_mode())
+
 
 /*
  * This struct describes one global transaction that is in prepared state
@@ -874,8 +881,18 @@ TwoPhaseGetDummyProc(TransactionId xid)
 /* State file support													*/
 /************************************************************************/
 
-#define TwoPhaseFilePath(path, xid) \
-	snprintf(path, MAXPGPATH, TWOPHASE_DIR "/%08X", xid)
+/* POLAR */
+#define POLAR_TWOPHASE_DIR(path)  													\
+	(IS_TWOPHASE_ON_POLARSTORE() ? 													\
+		snprintf(path, MAXPGPATH, "%s/" TWOPHASE_DIR, polar_datadir) : 				\
+		snprintf(path, MAXPGPATH, "%s", TWOPHASE_DIR))
+
+#define POLAR_TWO_PHASE_FILE_PATH(path, xid) 										\
+	(IS_TWOPHASE_ON_POLARSTORE() ? 													\
+		snprintf(path, MAXPGPATH, "%s/" TWOPHASE_DIR "/%08X", polar_datadir, xid) : \
+		snprintf(path, MAXPGPATH, TWOPHASE_DIR "/%08X", xid))
+/* POLAR end */
+
 
 /*
  * 2PC state file format:
@@ -1178,7 +1195,8 @@ EndPrepare(GlobalTransaction gxact)
 	 * Note that at this stage we have marked the prepare, but still show as
 	 * running in the procarray (twice!) and continue to hold locks.
 	 */
-	SyncRepWaitForLSN(gxact->prepare_end_lsn, false);
+	/* POLAR: Not ddl, disable standby lock */
+	SyncRepWaitForLSN(gxact->prepare_end_lsn, false, false);
 
 	records.tail = records.head = NULL;
 	records.num_chunks = 0;
@@ -1220,9 +1238,9 @@ ReadTwoPhaseFile(TransactionId xid, bool give_warnings)
 	pg_crc32c	calc_crc,
 				file_crc;
 
-	TwoPhaseFilePath(path, xid);
+	POLAR_TWO_PHASE_FILE_PATH(path, xid);
 
-	fd = OpenTransientFile(path, O_RDONLY | PG_BINARY);
+	fd = polar_open_transient_file(path, O_RDONLY | PG_BINARY);
 	if (fd < 0)
 	{
 		if (give_warnings)
@@ -1239,7 +1257,7 @@ ReadTwoPhaseFile(TransactionId xid, bool give_warnings)
 	 * we can't guarantee that we won't get an out of memory error anyway,
 	 * even on a valid file.
 	 */
-	if (fstat(fd, &stat))
+	if (polar_fstat(fd, &stat))
 	{
 		int			save_errno = errno;
 
@@ -1277,7 +1295,7 @@ ReadTwoPhaseFile(TransactionId xid, bool give_warnings)
 	buf = (char *) palloc(stat.st_size);
 
 	pgstat_report_wait_start(WAIT_EVENT_TWOPHASE_FILE_READ);
-	if (read(fd, buf, stat.st_size) != stat.st_size)
+	if (polar_read(fd, buf, stat.st_size) != stat.st_size)
 	{
 		int			save_errno = errno;
 
@@ -1632,8 +1650,8 @@ RemoveTwoPhaseFile(TransactionId xid, bool giveWarning)
 {
 	char		path[MAXPGPATH];
 
-	TwoPhaseFilePath(path, xid);
-	if (unlink(path))
+	POLAR_TWO_PHASE_FILE_PATH(path, xid);
+	if (polar_unlink(path))
 		if (errno != ENOENT || giveWarning)
 			ereport(WARNING,
 					(errcode_for_file_access(),
@@ -1659,10 +1677,9 @@ RecreateTwoPhaseFile(TransactionId xid, void *content, int len)
 	COMP_CRC32C(statefile_crc, content, len);
 	FIN_CRC32C(statefile_crc);
 
-	TwoPhaseFilePath(path, xid);
+	POLAR_TWO_PHASE_FILE_PATH(path, xid);
 
-	fd = OpenTransientFile(path,
-						   O_CREAT | O_TRUNC | O_WRONLY | PG_BINARY);
+	fd = polar_open_transient_file(path, O_CREAT | O_TRUNC | O_WRONLY | PG_BINARY);
 	if (fd < 0)
 		ereport(ERROR,
 				(errcode_for_file_access(),
@@ -1671,7 +1688,7 @@ RecreateTwoPhaseFile(TransactionId xid, void *content, int len)
 
 	/* Write content and CRC */
 	pgstat_report_wait_start(WAIT_EVENT_TWOPHASE_FILE_WRITE);
-	if (write(fd, content, len) != len)
+	if (polar_write(fd, content, len) != len)
 	{
 		int			save_errno = errno;
 
@@ -1684,7 +1701,7 @@ RecreateTwoPhaseFile(TransactionId xid, void *content, int len)
 				(errcode_for_file_access(),
 				 errmsg("could not write two-phase state file: %m")));
 	}
-	if (write(fd, &statefile_crc, sizeof(pg_crc32c)) != sizeof(pg_crc32c))
+	if (polar_write(fd, &statefile_crc, sizeof(pg_crc32c)) != sizeof(pg_crc32c))
 	{
 		int			save_errno = errno;
 
@@ -1704,7 +1721,7 @@ RecreateTwoPhaseFile(TransactionId xid, void *content, int len)
 	 * so, there being no GXACT in shared memory yet to tell it to.
 	 */
 	pgstat_report_wait_start(WAIT_EVENT_TWOPHASE_FILE_SYNC);
-	if (pg_fsync(fd) != 0)
+	if (polar_fsync(fd) != 0)
 	{
 		int			save_errno = errno;
 
@@ -1746,6 +1763,7 @@ CheckPointTwoPhase(XLogRecPtr redo_horizon)
 {
 	int			i;
 	int			serialized_xacts = 0;
+	char 		polar_path[MAXPGPATH];
 
 	if (max_prepared_xacts <= 0)
 		return;					/* nothing to do */
@@ -1801,7 +1819,8 @@ CheckPointTwoPhase(XLogRecPtr redo_horizon)
 	 * removals need to be made persistent as well as any files newly created
 	 * previously since the last checkpoint.
 	 */
-	fsync_fname(TWOPHASE_DIR, true);
+	POLAR_TWOPHASE_DIR(polar_path);
+	polar_fsync_fname(polar_path, true);
 
 	TRACE_POSTGRESQL_TWOPHASE_CHECKPOINT_DONE();
 
@@ -1828,10 +1847,13 @@ restoreTwoPhaseData(void)
 {
 	DIR		   *cldir;
 	struct dirent *clde;
+	char 	   twophase_path[MAXPGPATH];
+
+	POLAR_TWOPHASE_DIR(twophase_path);
 
 	LWLockAcquire(TwoPhaseStateLock, LW_EXCLUSIVE);
-	cldir = AllocateDir(TWOPHASE_DIR);
-	while ((clde = ReadDir(cldir, TWOPHASE_DIR)) != NULL)
+	cldir = polar_allocate_dir(twophase_path);
+	while ((clde = ReadDir(cldir, twophase_path)) != NULL)
 	{
 		if (strlen(clde->d_name) == 8 &&
 			strspn(clde->d_name, "0123456789ABCDEF") == 8)
@@ -2335,7 +2357,8 @@ RecordTransactionCommitPrepared(TransactionId xid,
 	 * Note that at this stage we have marked clog, but still show as running
 	 * in the procarray and continue to hold locks.
 	 */
-	SyncRepWaitForLSN(recptr, true);
+	/* POLAR: Not ddl, disable standby lock */
+	SyncRepWaitForLSN(recptr, true, false);
 }
 
 /*
@@ -2394,7 +2417,8 @@ RecordTransactionAbortPrepared(TransactionId xid,
 	 * Note that at this stage we have marked clog, but still show as running
 	 * in the procarray and continue to hold locks.
 	 */
-	SyncRepWaitForLSN(recptr, false);
+	/* POLAR: Not ddl, disable standby lock */
+	SyncRepWaitForLSN(recptr, false, false);
 }
 
 /*

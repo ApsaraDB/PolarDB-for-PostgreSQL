@@ -102,6 +102,9 @@ typedef struct SlruSharedData
 	int			lwlock_tranche_id;
 	char		lwlock_tranche_name[SLRU_MAX_NAME_LENGTH];
 	LWLockPadded *buffer_locks;
+
+	/* POLAR: the slru file put into shared storage */
+	bool		polar_file_in_shared_storage;
 } SlruSharedData;
 
 typedef SlruSharedData *SlruShared;
@@ -139,7 +142,7 @@ typedef SlruCtlData *SlruCtl;
 
 extern Size SimpleLruShmemSize(int nslots, int nlsns);
 extern void SimpleLruInit(SlruCtl ctl, const char *name, int nslots, int nlsns,
-			  LWLock *ctllock, const char *subdir, int tranche_id);
+			  LWLock *ctllock, const char *subdir, int tranche_id, bool polar_shared_file);
 extern int	SimpleLruZeroPage(SlruCtl ctl, int pageno);
 extern int SimpleLruReadPage(SlruCtl ctl, int pageno, bool write_ok,
 				  TransactionId xid);

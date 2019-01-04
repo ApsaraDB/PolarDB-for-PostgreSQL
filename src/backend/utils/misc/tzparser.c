@@ -333,7 +333,7 @@ ParseTzFile(const char *filename, int depth,
 
 		snprintf(file_path, sizeof(file_path), "%s/timezonesets",
 				 share_path);
-		tzdir = AllocateDir(file_path);
+		tzdir = AllocateDir(file_path, false);
 		if (tzdir == NULL)
 		{
 			GUC_check_errmsg("could not open directory \"%s\": %m",

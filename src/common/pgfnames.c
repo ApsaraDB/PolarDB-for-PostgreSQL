@@ -20,6 +20,12 @@
 
 #include <dirent.h>
 
+/* POLAR */
+#ifndef FRONTEND
+#include <sys/stat.h>
+#include "storage/polar_fd.h"
+#endif
+
 /*
  * pgfnames
  *
@@ -36,7 +42,11 @@ pgfnames(const char *path)
 	int			numnames = 0;
 	int			fnsize = 200;	/* enough for many small dbs */
 
+#ifndef FRONTEND
+	dir = polar_opendir(path);
+#else
 	dir = opendir(path);
+#endif
 	if (dir == NULL)
 	{
 #ifndef FRONTEND
@@ -50,7 +60,11 @@ pgfnames(const char *path)
 
 	filenames = (char **) palloc(fnsize * sizeof(char *));
 
+#ifndef FRONTEND
+	while (errno = 0, (file = polar_readdir(dir)) != NULL)
+#else
 	while (errno = 0, (file = readdir(dir)) != NULL)
+#endif
 	{
 		if (strcmp(file->d_name, ".") != 0 && strcmp(file->d_name, "..") != 0)
 		{
@@ -76,7 +90,11 @@ pgfnames(const char *path)
 
 	filenames[numnames] = NULL;
 
+#ifndef FRONTEND
+	if (polar_closedir(dir))
+#else
 	if (closedir(dir))
+#endif
 	{
 #ifndef FRONTEND
 		elog(WARNING, "could not close directory \"%s\": %m", path);

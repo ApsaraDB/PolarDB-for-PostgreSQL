@@ -22,6 +22,12 @@
 #include "common/relpath.h"
 #include "storage/backendid.h"
 
+/* POLAR */
+#include "storage/polar_fd.h"
+
+/* POLAR */
+extern bool		polar_enable_shared_storage_mode;
+extern char		*polar_datadir;
 
 /*
  * Lookup table of fork name by fork number.
@@ -104,7 +110,7 @@ forkname_chars(const char *str, ForkNumber *fork)
  * XXX this must agree with GetRelationPath()!
  */
 char *
-GetDatabasePath(Oid dbNode, Oid spcNode)
+GetDatabasePath(Oid dbNode, Oid spcNode, bool polar_vfs)
 {
 	if (spcNode == GLOBALTABLESPACE_OID)
 	{
@@ -203,5 +209,38 @@ GetRelationPath(Oid dbNode, Oid spcNode, Oid relNode,
 								dbNode, backendId, relNode);
 		}
 	}
+
+#ifndef FRONTEND
+	if(POLAR_FILE_IN_SHARED_STORAGE())
+	{
+		char *polar_path = psprintf("%s/%s", polar_datadir, path);
+		pfree(path);
+		return polar_path;
+	}
+#endif
+
+	return path;
+}
+
+/*
+ * POLAR: construct path to a database directory
+ * include shared storage dir
+ */
+char *
+polar_get_database_path(Oid dbNode, Oid spcNode)
+{
+	char *path = NULL;
+
+	path = GetDatabasePath(dbNode, spcNode, false);
+
+#ifndef FRONTEND
+	if(POLAR_FILE_IN_SHARED_STORAGE())
+	{
+		char *polar_path = psprintf("%s/%s", polar_datadir, path);
+		pfree(path);
+		return polar_path;
+	}
+#endif
+
 	return path;
 }

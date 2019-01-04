@@ -94,6 +94,9 @@
 #include "utils/timeout.h"
 #include "utils/timestamp.h"
 
+/* POLAR */
+#include "storage/polar_fd.h"
+
 /*
  * Maximum data payload in a WAL data message.  Must be >= XLOG_BLCKSZ.
  *
@@ -254,6 +257,10 @@ static bool TransactionIdInRecentPast(TransactionId xid, uint32 epoch);
 
 static void XLogRead(char *buf, XLogRecPtr startptr, Size count);
 
+/* POLAR */
+static void polar_xlog_send(void);
+static void XLogSendPhysicalExt(bool polar_send_to_replica);
+
 
 /* Initialize walsender process before entering the main command loop */
 void
@@ -297,7 +304,7 @@ WalSndErrorCleanup(void)
 
 	if (sendFile >= 0)
 	{
-		close(sendFile);
+		polar_close(sendFile);
 		sendFile = -1;
 	}
 
@@ -473,19 +480,19 @@ SendTimeLineHistory(TimeLineHistoryCmd *cmd)
 	pq_sendint32(&buf, len);	/* col1 len */
 	pq_sendbytes(&buf, histfname, len);
 
-	fd = OpenTransientFile(path, O_RDONLY | PG_BINARY);
+	fd = OpenTransientFile(path, O_RDONLY | PG_BINARY, true);
 	if (fd < 0)
 		ereport(ERROR,
 				(errcode_for_file_access(),
 				 errmsg("could not open file \"%s\": %m", path)));
 
 	/* Determine file length and send it to client */
-	histfilelen = lseek(fd, 0, SEEK_END);
+	histfilelen = polar_lseek(fd, 0, SEEK_END);
 	if (histfilelen < 0)
 		ereport(ERROR,
 				(errcode_for_file_access(),
 				 errmsg("could not seek to end of file \"%s\": %m", path)));
-	if (lseek(fd, 0, SEEK_SET) != 0)
+	if (polar_lseek(fd, 0, SEEK_SET) != 0)
 		ereport(ERROR,
 				(errcode_for_file_access(),
 				 errmsg("could not seek to beginning of file \"%s\": %m", path)));
@@ -499,7 +506,7 @@ SendTimeLineHistory(TimeLineHistoryCmd *cmd)
 		int			nread;
 
 		pgstat_report_wait_start(WAIT_EVENT_WALSENDER_TIMELINE_HISTORY_READ);
-		nread = read(fd, rbuf, sizeof(rbuf));
+		nread = polar_read(fd, rbuf, sizeof(rbuf));
 		pgstat_report_wait_end();
 		if (nread <= 0)
 			ereport(ERROR,
@@ -678,7 +685,11 @@ StartReplication(StartReplicationCmd *cmd)
 		/* Main loop of walsender */
 		replication_active = true;
 
-		WalSndLoop(XLogSendPhysical);
+		/* POLAR: extend protocol to support polar replca mode */
+		if (cmd->polar_replica)
+			WalSndLoop(polar_xlog_send);
+		else
+			WalSndLoop(XLogSendPhysical);
 
 		replication_active = false;
 		if (got_STOPPING)
@@ -2340,7 +2351,7 @@ retry:
 
 			/* Switch to another logfile segment */
 			if (sendFile >= 0)
-				close(sendFile);
+				polar_close(sendFile);
 
 			XLByteToSeg(recptr, sendSegNo, wal_segment_size);
 
@@ -2382,7 +2393,7 @@ retry:
 
 			XLogFilePath(path, curFileTimeLine, sendSegNo, wal_segment_size);
 
-			sendFile = BasicOpenFile(path, O_RDONLY | PG_BINARY);
+			sendFile = BasicOpenFile(path, O_RDONLY | PG_BINARY, true);
 			if (sendFile < 0)
 			{
 				/*
@@ -2407,7 +2418,7 @@ retry:
 		/* Need to seek in the file? */
 		if (sendOff != startoff)
 		{
-			if (lseek(sendFile, (off_t) startoff, SEEK_SET) < 0)
+			if (polar_lseek(sendFile, (off_t) startoff, SEEK_SET) < 0)
 				ereport(ERROR,
 						(errcode_for_file_access(),
 						 errmsg("could not seek in log segment %s to offset %u: %m",
@@ -2423,7 +2434,7 @@ retry:
 			segbytes = nbytes;
 
 		pgstat_report_wait_start(WAIT_EVENT_WAL_READ);
-		readbytes = read(sendFile, p, segbytes);
+		readbytes = polar_read(sendFile, p, segbytes);
 		pgstat_report_wait_end();
 		if (readbytes <= 0)
 		{
@@ -2470,12 +2481,19 @@ retry:
 
 		if (reload && sendFile >= 0)
 		{
-			close(sendFile);
+			polar_close(sendFile);
 			sendFile = -1;
 
 			goto retry;
 		}
 	}
+}
+
+/* POLAR: old way */
+static void
+XLogSendPhysical(void)
+{
+	XLogSendPhysicalExt(false);
 }
 
 /*
@@ -2487,9 +2505,11 @@ retry:
  *
  * If there is no unsent WAL remaining, WalSndCaughtUp is set to true,
  * otherwise WalSndCaughtUp is set to false.
+ *
+ * POLAR: Eextend function for support polar replica mode
  */
 static void
-XLogSendPhysical(void)
+XLogSendPhysicalExt(bool polar_send_to_replica)
 {
 	XLogRecPtr	SendRqstPtr;
 	XLogRecPtr	startptr;
@@ -2638,7 +2658,7 @@ XLogSendPhysical(void)
 	{
 		/* close the current file. */
 		if (sendFile >= 0)
-			close(sendFile);
+			polar_close(sendFile);
 		sendFile = -1;
 
 		/* Send CopyDone */
@@ -2699,28 +2719,41 @@ XLogSendPhysical(void)
 	 * OK to read and send the slice.
 	 */
 	resetStringInfo(&output_message);
-	pq_sendbyte(&output_message, 'w');
+
+	/* POLAR: p message does include wal data */
+	if (polar_send_to_replica)
+		pq_sendbyte(&output_message, 'p');
+	else
+		pq_sendbyte(&output_message, 'w');
 
 	pq_sendint64(&output_message, startptr);	/* dataStart */
 	pq_sendint64(&output_message, SendRqstPtr); /* walEnd */
-	pq_sendint64(&output_message, 0);	/* sendtime, filled in last */
 
-	/*
-	 * Read the log directly into the output buffer to avoid extra memcpy
-	 * calls.
-	 */
-	enlargeStringInfo(&output_message, nbytes);
-	XLogRead(&output_message.data[output_message.len], startptr, nbytes);
-	output_message.len += nbytes;
-	output_message.data[output_message.len] = '\0';
+	if (polar_send_to_replica)
+	{
+		pq_sendint64(&output_message, GetCurrentTimestamp());	/* sendtime, filled in last */
+	}
+	else
+	{
+		pq_sendint64(&output_message, 0);	/* sendtime, filled in last */
 
-	/*
-	 * Fill the send timestamp last, so that it is taken as late as possible.
-	 */
-	resetStringInfo(&tmpbuf);
-	pq_sendint64(&tmpbuf, GetCurrentTimestamp());
-	memcpy(&output_message.data[1 + sizeof(int64) + sizeof(int64)],
-		   tmpbuf.data, sizeof(int64));
+		/*
+		 * Read the log directly into the output buffer to avoid extra memcpy
+		 * calls.
+		 */
+		enlargeStringInfo(&output_message, nbytes);
+		XLogRead(&output_message.data[output_message.len], startptr, nbytes);
+		output_message.len += nbytes;
+		output_message.data[output_message.len] = '\0';
+
+		/*
+		 * Fill the send timestamp last, so that it is taken as late as possible.
+		 */
+		resetStringInfo(&tmpbuf);
+		pq_sendint64(&tmpbuf, GetCurrentTimestamp());
+		memcpy(&output_message.data[1 + sizeof(int64) + sizeof(int64)],
+			   tmpbuf.data, sizeof(int64));
+	}
 
 	pq_putmessage_noblock('d', output_message.data, output_message.len);
 
@@ -3551,3 +3584,10 @@ LagTrackerRead(int head, XLogRecPtr lsn, TimestampTz now)
 	Assert(time != 0);
 	return now - time;
 }
+
+static void
+polar_xlog_send(void)
+{
+	XLogSendPhysicalExt(true);
+}
+

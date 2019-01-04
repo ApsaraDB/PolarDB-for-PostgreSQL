@@ -76,6 +76,9 @@
 #include "utils/timestamp.h"
 #include "pg_trace.h"
 
+/* POLAR */
+#include "storage/polar_fd.h"
+
 extern uint32 bootstrap_data_checksum_version;
 
 /* File path names (all relative to $PGDATA) */
@@ -929,6 +932,8 @@ static void WALInsertLockAcquire(void);
 static void WALInsertLockAcquireExclusive(void);
 static void WALInsertLockRelease(void);
 static void WALInsertLockUpdateInsertingAt(XLogRecPtr insertingAt);
+
+static void polar_postmaster_reset_local_variables(void);
 
 /*
  * Insert an XLOG record represented by an already-constructed chain of data
@@ -2364,6 +2369,7 @@ XLogWrite(XLogwrtRqst WriteRqst, bool flexible)
 	int			npages;
 	int			startidx;
 	uint32		startoffset;
+	bool		polar_use_pwrite = POLAR_ENABLE_PWRITE();
 
 	/* We should always be inside a critical section here */
 	Assert(CritSectionCount > 0);
@@ -2473,12 +2479,16 @@ XLogWrite(XLogwrtRqst WriteRqst, bool flexible)
 			/* Need to seek in the file? */
 			if (openLogOff != startoffset)
 			{
-				if (lseek(openLogFile, (off_t) startoffset, SEEK_SET) < 0)
-					ereport(PANIC,
-							(errcode_for_file_access(),
-							 errmsg("could not seek in log file %s to offset %u: %m",
-									XLogFileNameP(ThisTimeLineID, openLogSegNo),
-									startoffset)));
+				/* POLAR: use pwrite to replace lseek + write */
+				if (polar_use_pwrite == false)
+				{
+					if (polar_lseek(openLogFile, (off_t) startoffset, SEEK_SET) < 0)
+						ereport(PANIC,
+								(errcode_for_file_access(),
+								 errmsg("could not seek in log file %s to offset %u: %m",
+										XLogFileNameP(ThisTimeLineID, openLogSegNo),
+										startoffset)));
+				}
 				openLogOff = startoffset;
 			}
 
@@ -2489,8 +2499,17 @@ XLogWrite(XLogwrtRqst WriteRqst, bool flexible)
 			do
 			{
 				errno = 0;
-				pgstat_report_wait_start(WAIT_EVENT_WAL_WRITE);
-				written = write(openLogFile, from, nleft);
+				/* POLAR: use pwrite to replace lseek + write */
+				if (polar_use_pwrite)
+				{
+					pgstat_report_wait_start(WAIT_EVENT_WAL_PWRITE);
+					written = polar_pwrite(openLogFile, from, nleft, startoffset);
+				}
+				else
+				{
+					pgstat_report_wait_start(WAIT_EVENT_WAL_WRITE);
+					written = polar_write(openLogFile, from, nleft);
+				}
 				pgstat_report_wait_end();
 				if (written <= 0)
 				{
@@ -2505,6 +2524,7 @@ XLogWrite(XLogwrtRqst WriteRqst, bool flexible)
 				}
 				nleft -= written;
 				from += written;
+				startoffset += written;
 			} while (nleft > 0);
 
 			/* Update state for write */
@@ -3187,6 +3207,7 @@ XLogFileInit(XLogSegNo logsegno, bool *use_existent, bool use_lock)
 	XLogSegNo	max_segno;
 	int			fd;
 	int			nbytes;
+	char		polar_tmppath[MAXPGPATH];
 
 	XLogFilePath(path, ThisTimeLineID, logsegno, wal_segment_size);
 
@@ -3195,7 +3216,7 @@ XLogFileInit(XLogSegNo logsegno, bool *use_existent, bool use_lock)
 	 */
 	if (*use_existent)
 	{
-		fd = BasicOpenFile(path, O_RDWR | PG_BINARY | get_sync_bit(sync_method));
+		fd = BasicOpenFile(path, O_RDWR | PG_BINARY | get_sync_bit(sync_method), true);
 		if (fd < 0)
 		{
 			if (errno != ENOENT)
@@ -3215,12 +3236,12 @@ XLogFileInit(XLogSegNo logsegno, bool *use_existent, bool use_lock)
 	 */
 	elog(DEBUG2, "creating and filling new WAL file");
 
-	snprintf(tmppath, MAXPGPATH, XLOGDIR "/xlogtemp.%d", (int) getpid());
-
-	unlink(tmppath);
+	snprintf(polar_tmppath, MAXPGPATH, XLOGDIR "/xlogtemp.%d", (int) getpid());
+	polar_make_file_path_level2(tmppath, polar_tmppath);
+	polar_unlink(tmppath);
 
 	/* do not use get_sync_bit() here --- want to fsync only at end of fill */
-	fd = BasicOpenFile(tmppath, O_RDWR | O_CREAT | O_EXCL | PG_BINARY);
+	fd = BasicOpenFile(tmppath, O_RDWR | O_CREAT | O_EXCL | PG_BINARY, true);
 	if (fd < 0)
 		ereport(ERROR,
 				(errcode_for_file_access(),
@@ -3244,16 +3265,16 @@ XLogFileInit(XLogSegNo logsegno, bool *use_existent, bool use_lock)
 	{
 		errno = 0;
 		pgstat_report_wait_start(WAIT_EVENT_WAL_INIT_WRITE);
-		if ((int) write(fd, zbuffer, XLOG_BLCKSZ) != (int) XLOG_BLCKSZ)
+		if ((int) polar_write(fd, zbuffer, XLOG_BLCKSZ) != (int) XLOG_BLCKSZ)
 		{
 			int			save_errno = errno;
 
 			/*
 			 * If we fail to make the file, delete it to release disk space
 			 */
-			unlink(tmppath);
+			polar_unlink(tmppath);
 
-			close(fd);
+			polar_close(fd);
 
 			/* if write didn't set errno, assume problem is no disk space */
 			errno = save_errno ? save_errno : ENOSPC;
@@ -3266,11 +3287,11 @@ XLogFileInit(XLogSegNo logsegno, bool *use_existent, bool use_lock)
 	}
 
 	pgstat_report_wait_start(WAIT_EVENT_WAL_INIT_SYNC);
-	if (pg_fsync(fd) != 0)
+	if (polar_fsync(fd) != 0)
 	{
 		int			save_errno = errno;
 
-		close(fd);
+		polar_close(fd);
 		errno = save_errno;
 		ereport(ERROR,
 				(errcode_for_file_access(),
@@ -3278,7 +3299,7 @@ XLogFileInit(XLogSegNo logsegno, bool *use_existent, bool use_lock)
 	}
 	pgstat_report_wait_end();
 
-	if (close(fd))
+	if (polar_close(fd))
 		ereport(ERROR,
 				(errcode_for_file_access(),
 				 errmsg("could not close file \"%s\": %m", tmppath)));
@@ -3312,20 +3333,20 @@ XLogFileInit(XLogSegNo logsegno, bool *use_existent, bool use_lock)
 		 * failed to rename the file into place. If the rename failed, opening
 		 * the file below will fail.
 		 */
-		unlink(tmppath);
+		polar_unlink(tmppath);
 	}
 
 	/* Set flag to tell caller there was no existent file */
 	*use_existent = false;
 
 	/* Now open original target segment (might not be file I just made) */
-	fd = BasicOpenFile(path, O_RDWR | PG_BINARY | get_sync_bit(sync_method));
+	fd = BasicOpenFile(path, O_RDWR | PG_BINARY | get_sync_bit(sync_method), true);
 	if (fd < 0)
 		ereport(ERROR,
 				(errcode_for_file_access(),
 				 errmsg("could not open file \"%s\": %m", path)));
 
-	elog(DEBUG2, "done creating and filling new WAL file");
+	elog(DEBUG2, "done creating and filling new WAL file %s", path);
 
 	return fd;
 }
@@ -3355,12 +3376,13 @@ XLogFileCopy(XLogSegNo destsegno, TimeLineID srcTLI, XLogSegNo srcsegno,
 	int			srcfd;
 	int			fd;
 	int			nbytes;
+	char		polar_tmppath[MAXPGPATH];
 
 	/*
 	 * Open the source file
 	 */
 	XLogFilePath(path, srcTLI, srcsegno, wal_segment_size);
-	srcfd = OpenTransientFile(path, O_RDONLY | PG_BINARY);
+	srcfd = polar_open_transient_file(path, O_RDONLY | PG_BINARY);
 	if (srcfd < 0)
 		ereport(ERROR,
 				(errcode_for_file_access(),
@@ -3369,12 +3391,12 @@ XLogFileCopy(XLogSegNo destsegno, TimeLineID srcTLI, XLogSegNo srcsegno,
 	/*
 	 * Copy into a temp file name.
 	 */
-	snprintf(tmppath, MAXPGPATH, XLOGDIR "/xlogtemp.%d", (int) getpid());
-
-	unlink(tmppath);
+	snprintf(polar_tmppath, MAXPGPATH, XLOGDIR "/xlogtemp.%d", (int) getpid());
+	polar_make_file_path_level2(tmppath, polar_tmppath);
+	polar_unlink(tmppath);
 
 	/* do not use get_sync_bit() here --- want to fsync only at end of fill */
-	fd = OpenTransientFile(tmppath, O_RDWR | O_CREAT | O_EXCL | PG_BINARY);
+	fd = polar_open_transient_file(tmppath, O_RDWR | O_CREAT | O_EXCL | PG_BINARY);
 	if (fd < 0)
 		ereport(ERROR,
 				(errcode_for_file_access(),
@@ -3402,7 +3424,7 @@ XLogFileCopy(XLogSegNo destsegno, TimeLineID srcTLI, XLogSegNo srcsegno,
 				nread = sizeof(buffer);
 			errno = 0;
 			pgstat_report_wait_start(WAIT_EVENT_WAL_COPY_READ);
-			if (read(srcfd, buffer, nread) != nread)
+			if (polar_read(srcfd, buffer, nread) != nread)
 			{
 				if (errno != 0)
 					ereport(ERROR,
@@ -3418,14 +3440,14 @@ XLogFileCopy(XLogSegNo destsegno, TimeLineID srcTLI, XLogSegNo srcsegno,
 		}
 		errno = 0;
 		pgstat_report_wait_start(WAIT_EVENT_WAL_COPY_WRITE);
-		if ((int) write(fd, buffer, sizeof(buffer)) != (int) sizeof(buffer))
+		if ((int) polar_write(fd, buffer, sizeof(buffer)) != (int) sizeof(buffer))
 		{
 			int			save_errno = errno;
 
 			/*
 			 * If we fail to make the file, delete it to release disk space
 			 */
-			unlink(tmppath);
+			polar_unlink(tmppath);
 			/* if write didn't set errno, assume problem is no disk space */
 			errno = save_errno ? save_errno : ENOSPC;
 
@@ -3437,7 +3459,8 @@ XLogFileCopy(XLogSegNo destsegno, TimeLineID srcTLI, XLogSegNo srcsegno,
 	}
 
 	pgstat_report_wait_start(WAIT_EVENT_WAL_COPY_SYNC);
-	if (pg_fsync(fd) != 0)
+
+	if (polar_fsync(fd) != 0)
 		ereport(ERROR,
 				(errcode_for_file_access(),
 				 errmsg("could not fsync file \"%s\": %m", tmppath)));
@@ -3509,7 +3532,7 @@ InstallXLogFileSegment(XLogSegNo *segno, char *tmppath,
 	else
 	{
 		/* Find a free slot to put it in */
-		while (stat(path, &stat_buf) == 0)
+		while (polar_stat(path, &stat_buf) == 0)
 		{
 			if ((*segno) >= max_segno)
 			{
@@ -3552,7 +3575,7 @@ XLogFileOpen(XLogSegNo segno)
 
 	XLogFilePath(path, ThisTimeLineID, segno, wal_segment_size);
 
-	fd = BasicOpenFile(path, O_RDWR | PG_BINARY | get_sync_bit(sync_method));
+	fd = BasicOpenFile(path, O_RDWR | PG_BINARY | get_sync_bit(sync_method), true);
 	if (fd < 0)
 		ereport(PANIC,
 				(errcode_for_file_access(),
@@ -3618,7 +3641,7 @@ XLogFileRead(XLogSegNo segno, int emode, TimeLineID tli,
 		snprintf(path, MAXPGPATH, XLOGDIR "/%s", xlogfname);
 	}
 
-	fd = BasicOpenFile(path, O_RDONLY | PG_BINARY);
+	fd = BasicOpenFile(path, O_RDONLY | PG_BINARY, true);
 	if (fd >= 0)
 	{
 		/* Success! */
@@ -3738,11 +3761,12 @@ XLogFileClose(void)
 	 * use the cache to read the WAL segment.
 	 */
 #if defined(USE_POSIX_FADVISE) && defined(POSIX_FADV_DONTNEED)
-	if (!XLogIsNeeded())
+	/* POLAR: libpfs not support posix_fadvise */
+	if (!XLogIsNeeded() && !POLAR_FILE_IN_SHARED_STORAGE())
 		(void) posix_fadvise(openLogFile, 0, 0, POSIX_FADV_DONTNEED);
 #endif
 
-	if (close(openLogFile))
+	if (polar_close(openLogFile))
 		ereport(PANIC,
 				(errcode_for_file_access(),
 				 errmsg("could not close log file %s: %m",
@@ -3768,6 +3792,9 @@ PreallocXlogFiles(XLogRecPtr endptr)
 	bool		use_existent;
 	uint64		offset;
 
+	if (polar_in_replica_mode())
+		return;
+
 	XLByteToPrevSeg(endptr, _logSegNo, wal_segment_size);
 	offset = XLogSegmentOffset(endptr - 1, wal_segment_size);
 	if (offset >= (uint32) (0.75 * wal_segment_size))
@@ -3775,7 +3802,7 @@ PreallocXlogFiles(XLogRecPtr endptr)
 		_logSegNo++;
 		use_existent = true;
 		lf = XLogFileInit(_logSegNo, &use_existent, true);
-		close(lf);
+		polar_close(lf);
 		if (!use_existent)
 			CheckpointStats.ckpt_segs_added++;
 	}
@@ -3867,6 +3894,12 @@ RemoveOldXlogFiles(XLogSegNo segno, XLogRecPtr PriorRedoPtr, XLogRecPtr endptr)
 	DIR		   *xldir;
 	struct dirent *xlde;
 	char		lastoff[MAXFNAMELEN];
+	char		polar_path[MAXPGPATH];
+
+	if (polar_in_replica_mode())
+		return;
+
+	polar_make_file_path_level2(polar_path, XLOGDIR);
 
 	/*
 	 * Construct a filename of the last segment to be kept. The timeline ID
@@ -3875,12 +3908,11 @@ RemoveOldXlogFiles(XLogSegNo segno, XLogRecPtr PriorRedoPtr, XLogRecPtr endptr)
 	 */
 	XLogFileName(lastoff, 0, segno, wal_segment_size);
 
-	elog(DEBUG2, "attempting to remove WAL segments older than log file %s",
+	elog(LOG, "attempting to remove WAL segments older than log file %s",
 		 lastoff);
 
-	xldir = AllocateDir(XLOGDIR);
-
-	while ((xlde = ReadDir(xldir, XLOGDIR)) != NULL)
+	xldir = polar_allocate_dir(polar_path);
+	while ((xlde = ReadDir(xldir, polar_path)) != NULL)
 	{
 		/* Ignore files that are not XLOG segments */
 		if (!IsXLogFileName(xlde->d_name) &&
@@ -3935,6 +3967,9 @@ RemoveNonParentXlogFiles(XLogRecPtr switchpoint, TimeLineID newTLI)
 	struct dirent *xlde;
 	char		switchseg[MAXFNAMELEN];
 	XLogSegNo	endLogSegNo;
+	char		polar_path[MAXPGPATH];
+
+	polar_make_file_path_level2(polar_path, XLOGDIR);
 
 	XLByteToPrevSeg(switchpoint, endLogSegNo, wal_segment_size);
 
@@ -3943,12 +3978,12 @@ RemoveNonParentXlogFiles(XLogRecPtr switchpoint, TimeLineID newTLI)
 	 */
 	XLogFileName(switchseg, newTLI, endLogSegNo, wal_segment_size);
 
-	elog(DEBUG2, "attempting to remove WAL segments newer than log file %s",
+	/* POLAR: force record wal log */
+	elog(LOG, "attempting to remove WAL segments newer than log file %s",
 		 switchseg);
 
-	xldir = AllocateDir(XLOGDIR);
-
-	while ((xlde = ReadDir(xldir, XLOGDIR)) != NULL)
+	xldir = polar_allocate_dir(polar_path);
+	while ((xlde = ReadDir(xldir, polar_path)) != NULL)
 	{
 		/* Ignore files that are not XLOG segments */
 		if (!IsXLogFileName(xlde->d_name))
@@ -4005,7 +4040,7 @@ RemoveXlogFile(const char *segname, XLogRecPtr PriorRedoPtr, XLogRecPtr endptr)
 	else
 		recycleSegNo = XLOGfileslop(PriorRedoPtr);
 
-	snprintf(path, MAXPGPATH, XLOGDIR "/%s", segname);
+	polar_make_file_path_level3(path, XLOGDIR, (char *)segname);
 
 	/*
 	 * Before deleting the file, see if it can be recycled as a future log
@@ -4013,11 +4048,12 @@ RemoveXlogFile(const char *segname, XLogRecPtr PriorRedoPtr, XLogRecPtr endptr)
 	 * symbolic links pointing to a separate archive directory.
 	 */
 	if (endlogSegNo <= recycleSegNo &&
-		lstat(path, &statbuf) == 0 && S_ISREG(statbuf.st_mode) &&
+		polar_lstat(path, &statbuf) == 0 && S_ISREG(statbuf.st_mode) &&
 		InstallXLogFileSegment(&endlogSegNo, path,
 							   true, recycleSegNo, true))
 	{
-		ereport(DEBUG2,
+		/* POLAR: force log */
+		ereport(LOG,
 				(errmsg("recycled write-ahead log file \"%s\"",
 						segname)));
 		CheckpointStats.ckpt_segs_recycled++;
@@ -4029,7 +4065,8 @@ RemoveXlogFile(const char *segname, XLogRecPtr PriorRedoPtr, XLogRecPtr endptr)
 		/* No need for any more future segments... */
 		int			rc;
 
-		ereport(DEBUG2,
+		/* POLAR: force log */
+		ereport(LOG,
 				(errmsg("removing write-ahead log file \"%s\"",
 						segname)));
 
@@ -4088,16 +4125,18 @@ ValidateXLOGDirectoryStructure(void)
 	char		path[MAXPGPATH];
 	struct stat stat_buf;
 
+	polar_make_file_path_level2(path, XLOGDIR);
+
 	/* Check for pg_wal; if it doesn't exist, error out */
-	if (stat(XLOGDIR, &stat_buf) != 0 ||
+	if (polar_stat(path, &stat_buf) != 0 ||
 		!S_ISDIR(stat_buf.st_mode))
 		ereport(FATAL,
 				(errmsg("required WAL directory \"%s\" does not exist",
 						XLOGDIR)));
 
 	/* Check for archive_status */
-	snprintf(path, MAXPGPATH, XLOGDIR "/archive_status");
-	if (stat(path, &stat_buf) == 0)
+	polar_make_file_path_level3(path, XLOGDIR, "archive_status");
+	if (polar_stat(path, &stat_buf) == 0)
 	{
 		/* Check for weird cases where it exists but isn't a directory */
 		if (!S_ISDIR(stat_buf.st_mode))
@@ -4109,7 +4148,7 @@ ValidateXLOGDirectoryStructure(void)
 	{
 		ereport(LOG,
 				(errmsg("creating missing WAL directory \"%s\"", path)));
-		if (MakePGDirectory(path) < 0)
+		if (polar_make_pg_directory(path) < 0)
 			ereport(FATAL,
 					(errmsg("could not create missing directory \"%s\": %m",
 							path)));
@@ -4128,7 +4167,7 @@ CleanupBackupHistory(void)
 	struct dirent *xlde;
 	char		path[MAXPGPATH + sizeof(XLOGDIR)];
 
-	xldir = AllocateDir(XLOGDIR);
+	xldir = AllocateDir(XLOGDIR, false);
 
 	while ((xlde = ReadDir(xldir, XLOGDIR)) != NULL)
 	{
@@ -4187,7 +4226,7 @@ ReadRecord(XLogReaderState *xlogreader, XLogRecPtr RecPtr, int emode,
 		{
 			if (readFile >= 0)
 			{
-				close(readFile);
+				polar_close(readFile);
 				readFile = -1;
 			}
 
@@ -4399,6 +4438,7 @@ WriteControlFile(void)
 {
 	int			fd;
 	char		buffer[PG_CONTROL_FILE_SIZE];	/* need not be aligned */
+	char		polar_ctl_file[MAXPGPATH];
 
 	/*
 	 * Ensure that the size of the pg_control data structure is sane.  See the
@@ -4449,8 +4489,10 @@ WriteControlFile(void)
 	memset(buffer, 0, PG_CONTROL_FILE_SIZE);
 	memcpy(buffer, ControlFile, sizeof(ControlFileData));
 
-	fd = BasicOpenFile(XLOG_CONTROL_FILE,
-					   O_RDWR | O_CREAT | O_EXCL | PG_BINARY);
+	polar_make_file_path_level2(polar_ctl_file, XLOG_CONTROL_FILE);
+
+	fd = BasicOpenFile(polar_ctl_file,
+						   O_RDWR | O_CREAT | O_EXCL | PG_BINARY, true);
 	if (fd < 0)
 		ereport(PANIC,
 				(errcode_for_file_access(),
@@ -4459,7 +4501,7 @@ WriteControlFile(void)
 
 	errno = 0;
 	pgstat_report_wait_start(WAIT_EVENT_CONTROL_FILE_WRITE);
-	if (write(fd, buffer, PG_CONTROL_FILE_SIZE) != PG_CONTROL_FILE_SIZE)
+	if (polar_write(fd, buffer, PG_CONTROL_FILE_SIZE) != PG_CONTROL_FILE_SIZE)
 	{
 		/* if write didn't set errno, assume problem is no disk space */
 		if (errno == 0)
@@ -4471,13 +4513,13 @@ WriteControlFile(void)
 	pgstat_report_wait_end();
 
 	pgstat_report_wait_start(WAIT_EVENT_CONTROL_FILE_SYNC);
-	if (pg_fsync(fd) != 0)
+	if (polar_fsync(fd) != 0)
 		ereport(PANIC,
 				(errcode_for_file_access(),
 				 errmsg("could not fsync control file: %m")));
 	pgstat_report_wait_end();
 
-	if (close(fd))
+	if (polar_close(fd))
 		ereport(PANIC,
 				(errcode_for_file_access(),
 				 errmsg("could not close control file: %m")));
@@ -4490,12 +4532,27 @@ ReadControlFile(void)
 	int			fd;
 	static char wal_segsz_str[20];
 	int			r;
+	char		polar_ctl_file[MAXPGPATH];
+	int			readflag = PG_BINARY;
+
+	/* POLAR: read controlfile only need O_RDONLY */
+	readflag |= O_RDONLY;
 
 	/*
-	 * Read data...
+	 * POLAR: When pg start, in the postmaster,
+	 * shared storage has not been mounted in the plugin.
+	 * skip to load controlfile, read it later.
 	 */
-	fd = BasicOpenFile(XLOG_CONTROL_FILE,
-					   O_RDWR | PG_BINARY);
+	if (polar_enable_shared_storage_mode &&
+		polar_vfs_switch == POLAR_VFS_SWITCH_LOCAL)
+	{
+		elog(WARNING, "skip read controlfile when polar vfs not ready.");
+		return;
+	}
+
+	polar_make_file_path_level2(polar_ctl_file, XLOG_CONTROL_FILE);
+
+	fd = BasicOpenFile(polar_ctl_file, readflag, true);
 	if (fd < 0)
 		ereport(PANIC,
 				(errcode_for_file_access(),
@@ -4503,7 +4560,7 @@ ReadControlFile(void)
 						XLOG_CONTROL_FILE)));
 
 	pgstat_report_wait_start(WAIT_EVENT_CONTROL_FILE_READ);
-	r = read(fd, ControlFile, sizeof(ControlFileData));
+	r = polar_read(fd, ControlFile, sizeof(ControlFileData));
 	if (r != sizeof(ControlFileData))
 	{
 		if (r < 0)
@@ -4516,7 +4573,10 @@ ReadControlFile(void)
 	}
 	pgstat_report_wait_end();
 
-	close(fd);
+	polar_close(fd);
+
+	if (polar_enable_shared_storage_mode)
+		elog(LOG, "polardb load controlfile success");
 
 	/*
 	 * Check for expected pg_control format version.  If this is wrong, the
@@ -4696,6 +4756,16 @@ void
 UpdateControlFile(void)
 {
 	int			fd;
+	char		polar_file_path[MAXPGPATH];
+
+	/* POLAR: replica mode not allow any data to shared storage */
+	if (polar_in_replica_mode())
+	{
+		elog(LOG, "polardb replica mode, skip update controlfile");
+		return;
+	}
+	else if (polar_enable_shared_storage_mode)
+		elog(LOG, "polardb update controlfile");
 
 	INIT_CRC32C(ControlFile->crc);
 	COMP_CRC32C(ControlFile->crc,
@@ -4703,8 +4773,9 @@ UpdateControlFile(void)
 				offsetof(ControlFileData, crc));
 	FIN_CRC32C(ControlFile->crc);
 
-	fd = BasicOpenFile(XLOG_CONTROL_FILE,
-					   O_RDWR | PG_BINARY);
+	polar_make_file_path_level2(polar_file_path, XLOG_CONTROL_FILE);
+	fd = BasicOpenFile(polar_file_path,
+						   O_RDWR | PG_BINARY, true);
 	if (fd < 0)
 		ereport(PANIC,
 				(errcode_for_file_access(),
@@ -4713,7 +4784,7 @@ UpdateControlFile(void)
 
 	errno = 0;
 	pgstat_report_wait_start(WAIT_EVENT_CONTROL_FILE_WRITE_UPDATE);
-	if (write(fd, ControlFile, sizeof(ControlFileData)) != sizeof(ControlFileData))
+	if (polar_write(fd, ControlFile, sizeof(ControlFileData)) != sizeof(ControlFileData))
 	{
 		/* if write didn't set errno, assume problem is no disk space */
 		if (errno == 0)
@@ -4725,13 +4796,13 @@ UpdateControlFile(void)
 	pgstat_report_wait_end();
 
 	pgstat_report_wait_start(WAIT_EVENT_CONTROL_FILE_SYNC_UPDATE);
-	if (pg_fsync(fd) != 0)
+	if (polar_fsync(fd) != 0)
 		ereport(PANIC,
 				(errcode_for_file_access(),
 				 errmsg("could not fsync control file: %m")));
 	pgstat_report_wait_end();
 
-	if (close(fd))
+	if (polar_close(fd))
 		ereport(PANIC,
 				(errcode_for_file_access(),
 				 errmsg("could not close control file: %m")));
@@ -4864,7 +4935,8 @@ void
 LocalProcessControlFile(bool reset)
 {
 	Assert(reset || ControlFile == NULL);
-	ControlFile = palloc(sizeof(ControlFileData));
+	/* POLAR: keep memory clean */
+	ControlFile = palloc0(sizeof(ControlFileData));
 	ReadControlFile();
 }
 
@@ -4962,12 +5034,24 @@ XLOGShmemInit(void)
 	memset(XLogCtl, 0, sizeof(XLogCtlData));
 
 	/*
+	 * POLAR: Before mount shared storage controlfile is not loaded.
+	 * At this point shared storage has been mounted.
+	 * So, we check and load it.
+	 */
+	if (POLAR_FILE_IN_SHARED_STORAGE())
+		elog(LOG, "PolarDB delay load controlfile");
+
+	/*
 	 * Already have read control file locally, unless in bootstrap mode. Move
 	 * contents into shared memory.
 	 */
 	if (localControlFile)
 	{
-		memcpy(ControlFile, localControlFile, sizeof(ControlFileData));
+		if (POLAR_FILE_IN_SHARED_STORAGE())
+			memset(ControlFile, 0, sizeof(ControlFileData));
+		else
+			memcpy(ControlFile, localControlFile, sizeof(ControlFileData));
+
 		pfree(localControlFile);
 	}
 
@@ -5014,6 +5098,13 @@ XLOGShmemInit(void)
 	XLogCtl->SharedRecoveryInProgress = true;
 	XLogCtl->SharedHotStandbyActive = false;
 	XLogCtl->WalWriterSleeping = false;
+
+	/*
+	 * POLAR: When some processes die, forced entry recovery mode and start the startup process
+	 * before start startupXLOG, need reset LocalRecoveryInProgress first
+	 * Some processes will set the StartupXLOG flag, reset it in polardb and no-polardb.
+	 */
+	polar_postmaster_reset_local_variables();
 
 	SpinLockInit(&XLogCtl->Insert.insertpos_lck);
 	SpinLockInit(&XLogCtl->info_lck);
@@ -5149,7 +5240,7 @@ BootStrapXLOG(void)
 	/* Write the first page with the initial record */
 	errno = 0;
 	pgstat_report_wait_start(WAIT_EVENT_WAL_BOOTSTRAP_WRITE);
-	if (write(openLogFile, page, XLOG_BLCKSZ) != XLOG_BLCKSZ)
+	if (polar_write(openLogFile, page, XLOG_BLCKSZ) != XLOG_BLCKSZ)
 	{
 		/* if write didn't set errno, assume problem is no disk space */
 		if (errno == 0)
@@ -5161,13 +5252,13 @@ BootStrapXLOG(void)
 	pgstat_report_wait_end();
 
 	pgstat_report_wait_start(WAIT_EVENT_WAL_BOOTSTRAP_SYNC);
-	if (pg_fsync(openLogFile) != 0)
+	if (polar_fsync(openLogFile) != 0)
 		ereport(PANIC,
 				(errcode_for_file_access(),
 				 errmsg("could not fsync bootstrap write-ahead log file: %m")));
 	pgstat_report_wait_end();
 
-	if (close(openLogFile))
+	if (polar_close(openLogFile))
 		ereport(PANIC,
 				(errcode_for_file_access(),
 				 errmsg("could not close bootstrap write-ahead log file: %m")));
@@ -5444,6 +5535,22 @@ readRecoveryCommandFile(void)
 			ereport(DEBUG2,
 					(errmsg_internal("standby_mode = '%s'", item->value)));
 		}
+		else if (strcmp(item->name, "polar_replica") == 0)
+		{
+			bool	polar_replica = false;
+
+			if (!parse_bool(item->value, &polar_replica))
+				ereport(ERROR,
+						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						 errmsg("parameter \"%s\" requires a Boolean value",
+								"polar_replica")));
+			ereport(LOG,
+					(errmsg_internal("replica_mode = '%s'", item->value)));
+
+			/* POLAR: replica mode base on standby mode, just can not write shared storage */
+			if (polar_replica)
+				StandbyModeRequested = true;
+		}
 		else if (strcmp(item->name, "primary_conninfo") == 0)
 		{
 			PrimaryConnInfo = pstrdup(item->value);
@@ -5589,7 +5696,7 @@ exitArchiveRecovery(TimeLineID endTLI, XLogRecPtr endOfLog)
 	 */
 	if (readFile >= 0)
 	{
-		close(readFile);
+		polar_close(readFile);
 		readFile = -1;
 	}
 
@@ -5661,7 +5768,7 @@ exitArchiveRecovery(TimeLineID endTLI, XLogRecPtr endOfLog)
 	 * re-enter archive recovery mode in a subsequent crash.
 	 */
 	unlink(RECOVERY_COMMAND_DONE);
-	durable_rename(RECOVERY_COMMAND_FILE, RECOVERY_COMMAND_DONE, FATAL);
+	durable_rename(RECOVERY_COMMAND_FILE, RECOVERY_COMMAND_DONE, FATAL, false);
 
 	ereport(LOG,
 			(errmsg("archive recovery complete")));
@@ -6555,7 +6662,7 @@ StartupXLOG(void)
 		if (stat(TABLESPACE_MAP, &st) == 0)
 		{
 			unlink(TABLESPACE_MAP_OLD);
-			if (durable_rename(TABLESPACE_MAP, TABLESPACE_MAP_OLD, DEBUG1) == 0)
+			if (durable_rename(TABLESPACE_MAP, TABLESPACE_MAP_OLD, DEBUG1, false) == 0)
 				ereport(LOG,
 						(errmsg("ignoring file \"%s\" because no file \"%s\" exists",
 								TABLESPACE_MAP, BACKUP_LABEL_FILE),
@@ -6912,7 +7019,7 @@ StartupXLOG(void)
 		if (haveBackupLabel)
 		{
 			unlink(BACKUP_LABEL_OLD);
-			durable_rename(BACKUP_LABEL_FILE, BACKUP_LABEL_OLD, FATAL);
+			durable_rename(BACKUP_LABEL_FILE, BACKUP_LABEL_OLD, FATAL, false);
 		}
 
 		/*
@@ -6925,7 +7032,7 @@ StartupXLOG(void)
 		if (haveTblspcMap)
 		{
 			unlink(TABLESPACE_MAP_OLD);
-			durable_rename(TABLESPACE_MAP, TABLESPACE_MAP_OLD, FATAL);
+			durable_rename(TABLESPACE_MAP, TABLESPACE_MAP_OLD, FATAL, false);
 		}
 
 		/* Check that the GUCs used to generate the WAL allow recovery */
@@ -7728,7 +7835,7 @@ StartupXLOG(void)
 				 */
 				XLogArchiveCleanup(partialfname);
 
-				durable_rename(origpath, partialpath, ERROR);
+				polar_durable_rename(origpath, partialpath, ERROR);
 				XLogArchiveNotify(partialfname);
 			}
 		}
@@ -7783,7 +7890,7 @@ StartupXLOG(void)
 	/* Shut down xlogreader */
 	if (readFile >= 0)
 	{
-		close(readFile);
+		polar_close(readFile);
 		readFile = -1;
 	}
 	XLogReaderFree(xlogreader);
@@ -9065,16 +9172,21 @@ CreateEndOfRecoveryRecord(void)
 static void
 CheckPointGuts(XLogRecPtr checkPointRedo, int flags)
 {
+	/* in shared storage */
 	CheckPointCLOG();
 	CheckPointCommitTs();
-	CheckPointSUBTRANS();
 	CheckPointMultiXact();
+
+	/* in local disk */
+	CheckPointSUBTRANS();
 	CheckPointPredicate();
 	CheckPointRelationMap();
 	CheckPointReplicationSlots();
 	CheckPointSnapBuild();
 	CheckPointLogicalRewriteHeap();
-	CheckPointBuffers(flags);	/* performs all required fsyncs */
+
+	CheckPointBuffers(flags);
+
 	CheckPointReplicationOrigin();
 	/* We deliberately delay 2PC checkpointing as long as possible */
 	CheckPointTwoPhase(checkPointRedo);
@@ -10134,7 +10246,7 @@ assign_xlog_sync_method(int new_sync_method, void *extra)
 		if (openLogFile >= 0)
 		{
 			pgstat_report_wait_start(WAIT_EVENT_WAL_SYNC_METHOD_ASSIGN);
-			if (pg_fsync(openLogFile) != 0)
+			if (polar_fsync(openLogFile) != 0)
 				ereport(PANIC,
 						(errcode_for_file_access(),
 						 errmsg("could not fsync log segment %s: %m",
@@ -10156,6 +10268,13 @@ assign_xlog_sync_method(int new_sync_method, void *extra)
 void
 issue_xlog_fsync(int fd, XLogSegNo segno)
 {
+	/* POLAR: use fsync to make sure data flush to disk */
+	if (POLAR_FILE_IN_SHARED_STORAGE())
+	{
+		polar_fsync(fd);
+		return;
+	}
+
 	switch (sync_method)
 	{
 		case SYNC_METHOD_FSYNC:
@@ -10340,6 +10459,7 @@ do_pg_start_backup(const char *backupidstr, bool fast, TimeLineID *starttli_p,
 		struct dirent *de;
 		tablespaceinfo *ti;
 		int			datadirpathlen;
+		char		polar_path[MAXPGPATH];
 
 		/*
 		 * Force an XLOG file switch before the checkpoint, to ensure that the
@@ -10468,8 +10588,9 @@ do_pg_start_backup(const char *backupidstr, bool fast, TimeLineID *starttli_p,
 		datadirpathlen = strlen(DataDir);
 
 		/* Collect information about all tablespaces */
-		tblspcdir = AllocateDir("pg_tblspc");
-		while ((de = ReadDir(tblspcdir, "pg_tblspc")) != NULL)
+		polar_make_file_path_level2(polar_path, "pg_tblspc");
+		tblspcdir = polar_allocate_dir(polar_path);
+		while ((de = ReadDir(tblspcdir, polar_path)) != NULL)
 		{
 			char		fullpath[MAXPGPATH + 10];
 			char		linkpath[MAXPGPATH];
@@ -11521,7 +11642,7 @@ CancelBackup(void)
 	/* remove leftover file from previously canceled backup if it exists */
 	unlink(BACKUP_LABEL_OLD);
 
-	if (durable_rename(BACKUP_LABEL_FILE, BACKUP_LABEL_OLD, DEBUG1) != 0)
+	if (durable_rename(BACKUP_LABEL_FILE, BACKUP_LABEL_OLD, DEBUG1, false) != 0)
 	{
 		ereport(WARNING,
 				(errcode_for_file_access(),
@@ -11544,7 +11665,7 @@ CancelBackup(void)
 	/* remove leftover file from previously canceled backup if it exists */
 	unlink(TABLESPACE_MAP_OLD);
 
-	if (durable_rename(TABLESPACE_MAP, TABLESPACE_MAP_OLD, DEBUG1) == 0)
+	if (durable_rename(TABLESPACE_MAP, TABLESPACE_MAP_OLD, DEBUG1, false) == 0)
 	{
 		ereport(LOG,
 				(errmsg("online backup mode canceled"),
@@ -11597,6 +11718,7 @@ XLogPageRead(XLogReaderState *xlogreader, XLogRecPtr targetPagePtr, int reqLen,
 	int			emode = private->emode;
 	uint32		targetPageOff;
 	XLogSegNo	targetSegNo PG_USED_FOR_ASSERTS_ONLY;
+	int			polar_read_rc = -1;
 
 	XLByteToSeg(targetPagePtr, targetSegNo, wal_segment_size);
 	targetPageOff = XLogSegmentOffset(targetPagePtr, wal_segment_size);
@@ -11622,7 +11744,7 @@ XLogPageRead(XLogReaderState *xlogreader, XLogRecPtr targetPagePtr, int reqLen,
 			}
 		}
 
-		close(readFile);
+		polar_close(readFile);
 		readFile = -1;
 		readSource = 0;
 	}
@@ -11641,7 +11763,7 @@ retry:
 										 targetRecPtr))
 		{
 			if (readFile >= 0)
-				close(readFile);
+				polar_close(readFile);
 			readFile = -1;
 			readLen = 0;
 			readSource = 0;
@@ -11675,22 +11797,34 @@ retry:
 
 	/* Read the requested page */
 	readOff = targetPageOff;
-	if (lseek(readFile, (off_t) readOff, SEEK_SET) < 0)
-	{
-		char		fname[MAXFNAMELEN];
-		int			save_errno = errno;
 
-		XLogFileName(fname, curFileTLI, readSegNo, wal_segment_size);
-		errno = save_errno;
-		ereport(emode_for_corrupt_record(emode, targetPagePtr + reqLen),
-				(errcode_for_file_access(),
-				 errmsg("could not seek in log segment %s to offset %u: %m",
-						fname, readOff)));
-		goto next_record_is_invalid;
+	/* POLAR: use pread replace lseek + read */
+	if (POLAR_ENABLE_PREAD())
+	{
+		pgstat_report_wait_start(WAIT_EVENT_WAL_PREAD);
+		polar_read_rc = polar_pread(readFile, readBuf, XLOG_BLCKSZ, (off_t) readOff);
+	}
+	else
+	{
+		if (polar_lseek(readFile, (off_t) readOff, SEEK_SET) < 0)
+		{
+			char		fname[MAXFNAMELEN];
+			int			save_errno = errno;
+
+			XLogFileName(fname, curFileTLI, readSegNo, wal_segment_size);
+			errno = save_errno;
+			ereport(emode_for_corrupt_record(emode, targetPagePtr + reqLen),
+					(errcode_for_file_access(),
+					 errmsg("could not seek in log segment %s to offset %u: %m",
+							fname, readOff)));
+			goto next_record_is_invalid;
+		}
+
+		pgstat_report_wait_start(WAIT_EVENT_WAL_READ);
+		polar_read_rc = polar_read(readFile, readBuf, XLOG_BLCKSZ);
 	}
 
-	pgstat_report_wait_start(WAIT_EVENT_WAL_READ);
-	if (read(readFile, readBuf, XLOG_BLCKSZ) != XLOG_BLCKSZ)
+	if (polar_read_rc != XLOG_BLCKSZ)
 	{
 		char		fname[MAXFNAMELEN];
 		int			save_errno = errno;
@@ -11751,7 +11885,7 @@ next_record_is_invalid:
 	lastSourceFailed = true;
 
 	if (readFile >= 0)
-		close(readFile);
+		polar_close(readFile);
 	readFile = -1;
 	readLen = 0;
 	readSource = 0;
@@ -12008,7 +12142,7 @@ WaitForWALToBecomeAvailable(XLogRecPtr RecPtr, bool randAccess,
 				/* Close any old file we might have open. */
 				if (readFile >= 0)
 				{
-					close(readFile);
+					polar_close(readFile);
 					readFile = -1;
 				}
 				/* Reset curFileTLI if random fetch. */
@@ -12312,3 +12446,40 @@ XLogRequestWalReceiverReply(void)
 {
 	doRequestWalReceiverReply = true;
 }
+
+/* 
+ * POLAR: polardb ro mode 
+ * include
+ * 1 mount remote filesystem with readonly mode
+ * 2 only allow read data and wal, not allow write any data to remote file system
+ * 3 use polardb stream replication protocol, only get wal write position from rw, not inlucde wal data
+ */
+bool
+polar_in_replica_mode(void)
+{
+	bool	polar_replica_mode = false;
+
+	if (RecoveryInProgress() && polar_enable_shared_storage_mode && polar_mount_pfs_readonly_mode)
+		polar_replica_mode = true;
+
+	return polar_replica_mode;
+}
+
+/* POLAR: reset postmaster local variable before start startup process */
+static void
+polar_postmaster_reset_local_variables(void)
+{
+	if (!LocalRecoveryInProgress)
+	{
+		elog(DEBUG1, "LocalRecoveryInProgress is false, reset it");
+		LocalRecoveryInProgress = true;
+	}
+}
+
+void
+polar_load_and_check_controlfile(void)
+{
+	elog(LOG, "load controlfile in postmaster");
+	ReadControlFile();
+}
+

@@ -31,6 +31,9 @@
 #include "utils/relmapper.h"
 #include "utils/syscache.h"
 
+/* POLAR */
+#include "storage/polar_fd.h"
+
 /* Divide by two and round towards positive infinity. */
 #define half_rounded(x)   (((x) + ((x) < 0 ? 0 : 1)) / 2)
 
@@ -42,13 +45,15 @@ db_dir_size(const char *path)
 	struct dirent *direntry;
 	DIR		   *dirdesc;
 	char		filename[MAXPGPATH * 2];
+	char		polar_fullpath[MAXPGPATH * 2];
 
-	dirdesc = AllocateDir(path);
+	polar_make_file_path_level2(polar_fullpath, (char *)path);
+	dirdesc = polar_allocate_dir(polar_fullpath);
 
 	if (!dirdesc)
 		return 0;
 
-	while ((direntry = ReadDir(dirdesc, path)) != NULL)
+	while ((direntry = ReadDir(dirdesc, polar_fullpath)) != NULL)
 	{
 		struct stat fst;
 
@@ -58,9 +63,9 @@ db_dir_size(const char *path)
 			strcmp(direntry->d_name, "..") == 0)
 			continue;
 
-		snprintf(filename, sizeof(filename), "%s/%s", path, direntry->d_name);
+		snprintf(filename, sizeof(filename), "%s/%s", polar_fullpath, direntry->d_name);
 
-		if (stat(filename, &fst) < 0)
+		if (polar_stat(filename, &fst) < 0)
 		{
 			if (errno == ENOENT)
 				continue;
@@ -108,8 +113,8 @@ calculate_database_size(Oid dbOid)
 	totalsize = db_dir_size(pathname);
 
 	/* Scan the non-default tablespaces */
-	snprintf(dirpath, MAXPGPATH, "pg_tblspc");
-	dirdesc = AllocateDir(dirpath);
+	polar_make_file_path_level2(dirpath, "pg_tblspc");
+	dirdesc = polar_allocate_dir(dirpath);
 
 	while ((direntry = ReadDir(dirdesc, dirpath)) != NULL)
 	{
@@ -172,6 +177,7 @@ calculate_tablespace_size(Oid tblspcOid)
 	DIR		   *dirdesc;
 	struct dirent *direntry;
 	AclResult	aclresult;
+	char		polar_full_path[MAXPGPATH * 2];
 
 	/*
 	 * User must be a member of pg_read_all_stats or have CREATE privilege for
@@ -195,14 +201,16 @@ calculate_tablespace_size(Oid tblspcOid)
 		snprintf(tblspcPath, MAXPGPATH, "pg_tblspc/%u/%s", tblspcOid,
 				 TABLESPACE_VERSION_DIRECTORY);
 
-	dirdesc = AllocateDir(tblspcPath);
+	polar_make_file_path_level2(polar_full_path, tblspcPath);
+	dirdesc = polar_allocate_dir(polar_full_path);
 
 	if (!dirdesc)
 		return -1;
 
-	while ((direntry = ReadDir(dirdesc, tblspcPath)) != NULL)
+	while ((direntry = ReadDir(dirdesc, polar_full_path)) != NULL)
 	{
 		struct stat fst;
+		char		polar_tmp_path[MAXPGPATH];
 
 		CHECK_FOR_INTERRUPTS();
 
@@ -210,9 +218,9 @@ calculate_tablespace_size(Oid tblspcOid)
 			strcmp(direntry->d_name, "..") == 0)
 			continue;
 
-		snprintf(pathname, sizeof(pathname), "%s/%s", tblspcPath, direntry->d_name);
-
-		if (stat(pathname, &fst) < 0)
+		snprintf(polar_tmp_path, sizeof(pathname), "%s/%s", tblspcPath, direntry->d_name);
+		snprintf(pathname, sizeof(pathname), "%s/%s", polar_full_path, direntry->d_name);
+		if (polar_stat(pathname, &fst) < 0)
 		{
 			if (errno == ENOENT)
 				continue;
@@ -223,7 +231,7 @@ calculate_tablespace_size(Oid tblspcOid)
 		}
 
 		if (S_ISDIR(fst.st_mode))
-			totalsize += db_dir_size(pathname);
+			totalsize += db_dir_size(polar_tmp_path);
 
 		totalsize += fst.st_size;
 	}
@@ -292,7 +300,7 @@ calculate_relation_size(RelFileNode *rfn, BackendId backend, ForkNumber forknum)
 			snprintf(pathname, MAXPGPATH, "%s.%u",
 					 relationpath, segcount);
 
-		if (stat(pathname, &fst) < 0)
+		if (polar_stat(pathname, &fst) < 0)
 		{
 			if (errno == ENOENT)
 				break;

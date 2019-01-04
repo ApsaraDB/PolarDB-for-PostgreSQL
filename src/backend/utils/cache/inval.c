@@ -892,7 +892,7 @@ ProcessCommittedInvalidationMessages(SharedInvalidationMessage *msgs,
 		 * hack: set DatabasePath directly then unset after use.
 		 */
 		if (OidIsValid(dbid))
-			DatabasePath = GetDatabasePath(dbid, tsid);
+			DatabasePath = GetDatabasePath(dbid, tsid, false);
 
 		RelationCacheInitFilePreInvalidate();
 

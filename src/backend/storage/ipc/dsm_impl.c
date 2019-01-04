@@ -883,7 +883,7 @@ dsm_impl_mmap(dsm_op op, dsm_handle handle, Size request_size,
 
 	/* Create new segment or open an existing one for attach or resize. */
 	flags = O_RDWR | (op == DSM_OP_CREATE ? O_CREAT | O_EXCL : 0);
-	if ((fd = OpenTransientFile(name, flags)) == -1)
+	if ((fd = OpenTransientFile(name, flags, false)) == -1)
 	{
 		if (errno != EEXIST)
 			ereport(elevel,

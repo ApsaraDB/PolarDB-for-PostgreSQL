@@ -395,6 +395,13 @@ StartAutoVacLauncher(void)
 {
 	pid_t		AutoVacPID;
 
+	/* POLAR: replica mode disable start autovacuum */
+	if (polar_in_replica_mode())
+	{
+		elog(DEBUG1, "polardb replica try to start AutoVacLauncher");
+		return 0;
+	}
+
 #ifdef EXEC_BACKEND
 	switch ((AutoVacPID = avlauncher_forkexec()))
 #else

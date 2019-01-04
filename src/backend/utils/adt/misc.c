@@ -425,7 +425,7 @@ pg_tablespace_databases(PG_FUNCTION_ARGS)
 				fctx->location = psprintf("pg_tblspc/%u/%s", tablespaceOid,
 										  TABLESPACE_VERSION_DIRECTORY);
 
-			fctx->dirdesc = AllocateDir(fctx->location);
+			fctx->dirdesc = AllocateDir(fctx->location, false);
 
 			if (!fctx->dirdesc)
 			{

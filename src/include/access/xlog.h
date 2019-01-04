@@ -288,6 +288,10 @@ extern void XLogRequestWalReceiverReply(void);
 extern void assign_max_wal_size(int newval, void *extra);
 extern void assign_checkpoint_completion_target(double newval, void *extra);
 
+/* POLAR */
+extern bool polar_in_replica_mode(void);
+extern void polar_load_and_check_controlfile(void);
+
 /*
  * Routines to start, stop, and get status of a base backup.
  */

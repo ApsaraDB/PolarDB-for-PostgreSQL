@@ -2247,7 +2247,7 @@ ReorderBufferSerializeTXN(ReorderBuffer *rb, ReorderBufferTXN *txn)
 
 			/* open segment, create it if necessary */
 			fd = OpenTransientFile(path,
-								   O_CREAT | O_WRONLY | O_APPEND | PG_BINARY);
+								   O_CREAT | O_WRONLY | O_APPEND | PG_BINARY, false);
 
 			if (fd < 0)
 				ereport(ERROR,
@@ -2488,7 +2488,7 @@ ReorderBufferRestoreChanges(ReorderBuffer *rb, ReorderBufferTXN *txn,
 			ReorderBufferSerializedPath(path, MyReplicationSlot, txn->xid,
 										*segno);
 
-			*fd = OpenTransientFile(path, O_RDONLY | PG_BINARY);
+			*fd = OpenTransientFile(path, O_RDONLY | PG_BINARY, false);
 			if (*fd < 0 && errno == ENOENT)
 			{
 				*fd = -1;
@@ -2749,7 +2749,7 @@ ReorderBufferCleanupSerializedTXNs(const char *slotname)
 	if (lstat(path, &statbuf) == 0 && !S_ISDIR(statbuf.st_mode))
 		return;
 
-	spill_dir = AllocateDir(path);
+	spill_dir = AllocateDir(path, false);
 	while ((spill_de = ReadDirExtended(spill_dir, path, INFO)) != NULL)
 	{
 		/* only look at names that can be ours */
@@ -2798,7 +2798,7 @@ StartupReorderBuffer(void)
 	DIR		   *logical_dir;
 	struct dirent *logical_de;
 
-	logical_dir = AllocateDir("pg_replslot");
+	logical_dir = AllocateDir("pg_replslot", false);
 	while ((logical_de = ReadDir(logical_dir, "pg_replslot")) != NULL)
 	{
 		if (strcmp(logical_de->d_name, ".") == 0 ||
@@ -3197,7 +3197,7 @@ ApplyLogicalMappingFile(HTAB *tuplecid_data, Oid relid, const char *fname)
 	LogicalRewriteMappingData map;
 
 	sprintf(path, "pg_logical/mappings/%s", fname);
-	fd = OpenTransientFile(path, O_RDONLY | PG_BINARY);
+	fd = OpenTransientFile(path, O_RDONLY | PG_BINARY, false);
 	if (fd < 0)
 		ereport(ERROR,
 				(errcode_for_file_access(),
@@ -3319,7 +3319,7 @@ UpdateLogicalMappings(HTAB *tuplecid_data, Oid relid, Snapshot snapshot)
 	size_t		off;
 	Oid			dboid = IsSharedRelation(relid) ? InvalidOid : MyDatabaseId;
 
-	mapping_dir = AllocateDir("pg_logical/mappings");
+	mapping_dir = AllocateDir("pg_logical/mappings", false);
 	while ((mapping_de = ReadDir(mapping_dir, "pg_logical/mappings")) != NULL)
 	{
 		Oid			f_dboid;

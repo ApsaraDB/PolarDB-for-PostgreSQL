@@ -80,6 +80,7 @@ static SQLCmd *make_sqlcmd(void);
 %token K_NOVERIFY_CHECKSUMS
 %token K_TIMELINE
 %token K_PHYSICAL
+%token K_ONPOLARDB
 %token K_LOGICAL
 %token K_SLOT
 %token K_RESERVE_WAL
@@ -100,6 +101,7 @@ static SQLCmd *make_sqlcmd(void);
 %type <node>	plugin_opt_arg
 %type <str>		opt_slot var_name
 %type <boolval>	opt_temporary
+%type <boolval>	opt_onpolardb
 %type <list>	create_slot_opt_list
 %type <defelt>	create_slot_opt
 
@@ -293,10 +295,10 @@ drop_replication_slot:
 			;
 
 /*
- * START_REPLICATION [SLOT slot] [PHYSICAL] %X/%X [TIMELINE %d]
+ * START_REPLICATION [SLOT slot] [PHYSICAL] %X/%X [TIMELINE %d] [opt_onpolardb]
  */
 start_replication:
-			K_START_REPLICATION opt_slot opt_physical RECPTR opt_timeline
+			K_START_REPLICATION opt_slot opt_physical RECPTR opt_timeline opt_onpolardb
 				{
 					StartReplicationCmd *cmd;
 
@@ -305,6 +307,7 @@ start_replication:
 					cmd->slotname = $2;
 					cmd->startpoint = $4;
 					cmd->timeline = $5;
+					cmd->polar_replica = $6;
 					$$ = (Node *) cmd;
 				}
 			;
@@ -346,6 +349,11 @@ opt_physical:
 			K_PHYSICAL
 			| /* EMPTY */
 			;
+
+opt_onpolardb:
+            K_ONPOLARDB					   { $$ = true; }
+            | /* EMPTY */                   { $$ = false; }
+            ;                               
 
 opt_temporary:
 			K_TEMPORARY						{ $$ = true; }

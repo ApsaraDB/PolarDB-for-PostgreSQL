@@ -79,6 +79,10 @@
 #include "nodes/execnodes.h"
 #include "executor/executor.h"
 
+/* POLAR */
+#include "utils/guc.h"
+
+
 /* GUC variable */
 bool		synchronize_seqscans = true;
 
@@ -8335,7 +8339,12 @@ heap_xlog_visible(XLogReaderState *record)
 	 * the visibility map bit does so before checking the page LSN, so any
 	 * bits that need to be cleared will still be cleared.
 	 */
-	if (XLogReadBufferForRedoExtended(record, 0, RBM_ZERO_ON_ERROR, false,
+	if (polar_in_replica_mode())
+	{
+		if (polar_enable_debug)
+			elog(LOG, "polardb replica£ºskip setting of visibilitymap");
+	}
+	else if(XLogReadBufferForRedoExtended(record, 0, RBM_ZERO_ON_ERROR, false,
 									  &vmbuffer) == BLK_NEEDS_REDO)
 	{
 		Page		vmpage = BufferGetPage(vmbuffer);
@@ -8479,7 +8488,12 @@ heap_xlog_delete(XLogReaderState *record)
 	 * The visibility map may need to be fixed even if the heap page is
 	 * already up-to-date.
 	 */
-	if (xlrec->flags & XLH_DELETE_ALL_VISIBLE_CLEARED)
+	if (polar_in_replica_mode())
+	{
+		if (polar_enable_debug)
+			elog(LOG, "polardb replica skip visibilitymap opt");
+	}
+	else if(xlrec->flags & XLH_DELETE_ALL_VISIBLE_CLEARED)
 	{
 		Relation	reln = CreateFakeRelcacheEntry(target_node);
 		Buffer		vmbuffer = InvalidBuffer;
@@ -8560,7 +8574,12 @@ heap_xlog_insert(XLogReaderState *record)
 	 * The visibility map may need to be fixed even if the heap page is
 	 * already up-to-date.
 	 */
-	if (xlrec->flags & XLH_INSERT_ALL_VISIBLE_CLEARED)
+	if (polar_in_replica_mode())
+	{
+		if (polar_enable_debug)
+			elog(LOG, "polardb replica skip visibilitymap opt");
+	}
+	else if(xlrec->flags & XLH_INSERT_ALL_VISIBLE_CLEARED)
 	{
 		Relation	reln = CreateFakeRelcacheEntry(target_node);
 		Buffer		vmbuffer = InvalidBuffer;
@@ -8680,7 +8699,12 @@ heap_xlog_multi_insert(XLogReaderState *record)
 	 * The visibility map may need to be fixed even if the heap page is
 	 * already up-to-date.
 	 */
-	if (xlrec->flags & XLH_INSERT_ALL_VISIBLE_CLEARED)
+	if (polar_in_replica_mode())
+	{
+		if (polar_enable_debug)
+			elog(LOG, "polardb replica skip visibilitymap opt");
+	}
+	else if(xlrec->flags & XLH_INSERT_ALL_VISIBLE_CLEARED)
 	{
 		Relation	reln = CreateFakeRelcacheEntry(rnode);
 		Buffer		vmbuffer = InvalidBuffer;
@@ -8835,7 +8859,12 @@ heap_xlog_update(XLogReaderState *record, bool hot_update)
 	 * The visibility map may need to be fixed even if the heap page is
 	 * already up-to-date.
 	 */
-	if (xlrec->flags & XLH_UPDATE_OLD_ALL_VISIBLE_CLEARED)
+	if (polar_in_replica_mode())
+	{
+		if (polar_enable_debug)
+			elog(LOG, "polardb replica skip visibilitymap opt");
+	}
+	else if(xlrec->flags & XLH_UPDATE_OLD_ALL_VISIBLE_CLEARED)
 	{
 		Relation	reln = CreateFakeRelcacheEntry(rnode);
 		Buffer		vmbuffer = InvalidBuffer;
@@ -8919,7 +8948,12 @@ heap_xlog_update(XLogReaderState *record, bool hot_update)
 	 * The visibility map may need to be fixed even if the heap page is
 	 * already up-to-date.
 	 */
-	if (xlrec->flags & XLH_UPDATE_NEW_ALL_VISIBLE_CLEARED)
+	if (polar_in_replica_mode())
+	{
+		if (polar_enable_debug)
+			elog(LOG, "polardb replica skip visibilitymap opt");
+	}
+	else if(xlrec->flags & XLH_UPDATE_NEW_ALL_VISIBLE_CLEARED)
 	{
 		Relation	reln = CreateFakeRelcacheEntry(rnode);
 		Buffer		vmbuffer = InvalidBuffer;
@@ -9109,7 +9143,12 @@ heap_xlog_lock(XLogReaderState *record)
 	 * The visibility map may need to be fixed even if the heap page is
 	 * already up-to-date.
 	 */
-	if (xlrec->flags & XLH_LOCK_ALL_FROZEN_CLEARED)
+	if (polar_in_replica_mode())
+	{
+		if (polar_enable_debug)
+			elog(LOG, "polardb replica skip visibilitymap opt");
+	}
+	else if(xlrec->flags & XLH_LOCK_ALL_FROZEN_CLEARED)
 	{
 		RelFileNode rnode;
 		Buffer		vmbuffer = InvalidBuffer;
@@ -9182,7 +9221,12 @@ heap_xlog_lock_updated(XLogReaderState *record)
 	 * The visibility map may need to be fixed even if the heap page is
 	 * already up-to-date.
 	 */
-	if (xlrec->flags & XLH_LOCK_ALL_FROZEN_CLEARED)
+	if (polar_in_replica_mode())
+	{
+		if (polar_enable_debug)
+			elog(LOG, "polardb replica skip visibilitymap opt");
+	}
+	else if(xlrec->flags & XLH_LOCK_ALL_FROZEN_CLEARED)
 	{
 		RelFileNode rnode;
 		Buffer		vmbuffer = InvalidBuffer;

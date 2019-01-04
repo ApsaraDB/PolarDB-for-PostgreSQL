@@ -295,7 +295,7 @@ dsm_cleanup_for_mmap(void)
 	struct dirent *dent;
 
 	/* Scan the directory for something with a name of the correct format. */
-	dir = AllocateDir(PG_DYNSHMEM_DIR);
+	dir = AllocateDir(PG_DYNSHMEM_DIR, false);
 
 	while ((dent = ReadDir(dir, PG_DYNSHMEM_DIR)) != NULL)
 	{

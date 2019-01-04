@@ -1019,7 +1019,7 @@ get_ext_ver_list(ExtensionControlFile *control)
 	struct dirent *de;
 
 	location = get_extension_script_directory(control);
-	dir = AllocateDir(location);
+	dir = AllocateDir(location, false);
 	while ((de = ReadDir(dir, location)) != NULL)
 	{
 		char	   *vername;
@@ -1915,7 +1915,7 @@ pg_available_extensions(PG_FUNCTION_ARGS)
 	MemoryContextSwitchTo(oldcontext);
 
 	location = get_extension_control_directory();
-	dir = AllocateDir(location);
+	dir = AllocateDir(location, false);
 
 	/*
 	 * If the control directory doesn't exist, we want to silently return an
@@ -2024,7 +2024,7 @@ pg_available_extension_versions(PG_FUNCTION_ARGS)
 	MemoryContextSwitchTo(oldcontext);
 
 	location = get_extension_control_directory();
-	dir = AllocateDir(location);
+	dir = AllocateDir(location, false);
 
 	/*
 	 * If the control directory doesn't exist, we want to silently return an

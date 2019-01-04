@@ -47,6 +47,8 @@ localtime.c: % : $(top_srcdir)/src/timezone/%
 
 install: all installdirs
 	$(INSTALL_PROGRAM) initdb$(X) '$(DESTDIR)$(bindir)/initdb$(X)'
+	$(INSTALL_PROGRAM) polar-initdb.sh '$(DESTDIR)$(bindir)/'
+	$(INSTALL_PROGRAM) polar-replica-initdb.sh '$(DESTDIR)$(bindir)/'
 
 installdirs:
 	$(MKDIR_P) '$(DESTDIR)$(bindir)'

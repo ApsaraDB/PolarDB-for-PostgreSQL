@@ -61,6 +61,8 @@
 #include "utils/memutils.h"
 #include "utils/resowner.h"
 
+/* POLAR: */
+#include "storage/polar_fd.h"
 
 /*----------
  * Shared memory area for communication between checkpointer and backends
@@ -1131,6 +1133,13 @@ ForwardFsyncRequest(RelFileNode rnode, ForkNumber forknum, BlockNumber segno)
 	if (AmCheckpointerProcess())
 		elog(ERROR, "ForwardFsyncRequest must not be called in checkpointer");
 
+	/* POLAR: replica mode not write anything */
+	if (AmStartupProcess() && polar_in_replica_mode())
+	{
+		elog(LOG, "polardb replica startup skip ForwardFsyncRequest");
+		return true;
+	}
+
 	LWLockAcquire(CheckpointerCommLock, LW_EXCLUSIVE);
 
 	/* Count all backend writes regardless of if they fit in the queue */
@@ -1306,17 +1315,22 @@ AbsorbFsyncRequests(void)
 	CheckpointerRequest *request;
 	int			n;
 
-	if (!AmCheckpointerProcess())
+	/* POLAR: polardb bgwriter like checkpointer do async write */
+	if (!(AmCheckpointerProcess() ||
+		(AmPolarBackgroundWriterProcess())))
 		return;
 
 	LWLockAcquire(CheckpointerCommLock, LW_EXCLUSIVE);
 
-	/* Transfer stats counts into pending pgstats message */
-	BgWriterStats.m_buf_written_backend += CheckpointerShmem->num_backend_writes;
-	BgWriterStats.m_buf_fsync_backend += CheckpointerShmem->num_backend_fsync;
+	if (AmCheckpointerProcess())
+	{
+		/* Transfer stats counts into pending pgstats message */
+		BgWriterStats.m_buf_written_backend += CheckpointerShmem->num_backend_writes;
+		BgWriterStats.m_buf_fsync_backend += CheckpointerShmem->num_backend_fsync;
 
-	CheckpointerShmem->num_backend_writes = 0;
-	CheckpointerShmem->num_backend_fsync = 0;
+		CheckpointerShmem->num_backend_writes = 0;
+		CheckpointerShmem->num_backend_fsync = 0;
+	}
 
 	/*
 	 * We try to avoid holding the lock for a long time by copying the request
@@ -1337,12 +1351,18 @@ AbsorbFsyncRequests(void)
 
 	START_CRIT_SECTION();
 
-	CheckpointerShmem->num_requests = 0;
+	if (AmCheckpointerProcess())
+		CheckpointerShmem->num_requests = 0;
 
 	LWLockRelease(CheckpointerCommLock);
 
 	for (request = requests; n > 0; request++, n--)
-		RememberFsyncRequest(request->rnode, request->forknum, request->segno);
+	{
+		bool	polar_need_skip = polar_need_skip_request(request->segno);
+
+		if (polar_need_skip == false)
+			RememberFsyncRequest(request->rnode, request->forknum, request->segno);
+	}
 
 	END_CRIT_SECTION();
 

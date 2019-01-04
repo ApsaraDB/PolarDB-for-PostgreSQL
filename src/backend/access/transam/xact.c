@@ -1333,8 +1333,9 @@ RecordTransactionCommit(void)
 	 * Note that at this stage we have marked clog, but still show as running
 	 * in the procarray and continue to hold locks.
 	 */
+	/* POLAR: Transaction commit case, not ddl, disable standby lock */
 	if (wrote_xlog && markXidCommitted)
-		SyncRepWaitForLSN(XactLastRecEnd, true);
+		SyncRepWaitForLSN(XactLastRecEnd, true, false);
 
 	/* remember end of last commit record */
 	XactLastCommitEnd = XactLastRecEnd;

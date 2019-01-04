@@ -934,7 +934,7 @@ ParseConfigDirectory(const char *includedir,
 	bool		status;
 
 	directory = AbsoluteConfigLocation(includedir, calling_file);
-	d = AllocateDir(directory);
+	d = AllocateDir(directory, false);
 	if (d == NULL)
 	{
 		ereport(elevel,

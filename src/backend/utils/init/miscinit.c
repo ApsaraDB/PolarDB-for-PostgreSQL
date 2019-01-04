@@ -52,6 +52,8 @@
 #include "utils/syscache.h"
 #include "utils/varlena.h"
 
+/* POLAR */
+#include "storage/polar_fd.h"
 
 #define DIRECTORY_LOCK_FILE		"postmaster.pid"
 
@@ -1458,6 +1460,10 @@ ValidatePgVersion(const char *path)
 	char		file_version_string[64];
 	const char *my_version_string = PG_VERSION;
 
+	/* POLAR: FIXME not support fopen */
+	if (POLAR_FILE_IN_SHARED_STORAGE())
+		return;
+
 	my_major = strtol(my_version_string, &endptr, 10);
 
 	snprintf(full_path, sizeof(full_path), "%s/PG_VERSION", path);
@@ -1613,3 +1619,13 @@ pg_bindtextdomain(const char *domain)
 	}
 #endif
 }
+
+/* POLAR: set base dir in shared storage */
+void
+polar_set_database_path(const char *path)
+{
+	/* This should happen only once per process */
+	Assert(!polar_database_path);
+	polar_database_path = MemoryContextStrdup(TopMemoryContext, path);
+}
+

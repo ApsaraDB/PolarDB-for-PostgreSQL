@@ -323,7 +323,7 @@ SysLoggerMain(int argc, char *argv[])
 				/*
 				 * Also, create new directory if not present; ignore errors
 				 */
-				(void) MakePGDirectory(Log_directory);
+				(void) MakePGDirectory(Log_directory, false);
 			}
 			if (strcmp(Log_filename, currentLogFilename) != 0)
 			{
@@ -565,7 +565,7 @@ SysLogger_Start(void)
 	/*
 	 * Create log directory if not present; ignore errors
 	 */
-	(void) MakePGDirectory(Log_directory);
+	(void) MakePGDirectory(Log_directory, false);
 
 	/*
 	 * The initial logfile is created right in the postmaster, to verify that

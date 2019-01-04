@@ -70,6 +70,8 @@
 #include "utils/resowner.h"
 #include "utils/timestamp.h"
 
+/* POLAR */
+#include "storage/polar_fd.h"
 
 /* GUC variables */
 int			wal_receiver_status_interval;
@@ -342,6 +344,15 @@ WalReceiverMain(void)
 		char		standby_sysid[32];
 		int			server_version;
 		WalRcvStreamOptions options;
+		bool		polar_replica = false;
+
+		/* POLAR: enable replica stream replication */
+		if (polar_in_replica_mode())
+			polar_replica = true;
+
+		/* POLAR: force log */
+		if (polar_replica)
+			ereport(LOG, (errmsg("Start wal receiver on polardb")));
 
 		/*
 		 * Check that we're connected to a valid server using the
@@ -399,6 +410,11 @@ WalReceiverMain(void)
 		options.startpoint = startpoint;
 		options.slotname = slotname[0] != '\0' ? slotname : NULL;
 		options.proto.physical.startpointTLI = startpointTLI;
+		/*
+		 * POLAR: TODO polar_in_replica_mode() just tell us it can support polardb replica,
+		 * but no a replica on polardb
+		 */
+		options.polar_replica = polar_replica;
 		ThisTimeLineID = startpointTLI;
 		if (walrcv_startstreaming(wrconn, &options))
 		{
@@ -623,7 +639,7 @@ WalReceiverMain(void)
 			char		xlogfname[MAXFNAMELEN];
 
 			XLogWalRcvFlush(false);
-			if (close(recvFile) != 0)
+			if (polar_close(recvFile) != 0)
 				ereport(PANIC,
 						(errcode_for_file_access(),
 						 errmsg("could not close log segment %s: %m",
@@ -942,6 +958,41 @@ XLogWalRcvProcessMsg(unsigned char type, char *buf, Size len)
 					XLogWalRcvSendReply(true, false);
 				break;
 			}
+		case 'p':				/* polardb lsn */
+			{
+				/*
+				 * POLAR: replaca mode
+				 * Does not contain any wal data
+				 * copy message to StringInfo
+				 */
+				hdrlen = sizeof(int64) + sizeof(int64) + sizeof(int64);
+				if (len < hdrlen)
+					ereport(ERROR,
+							(errcode(ERRCODE_PROTOCOL_VIOLATION),
+							 errmsg_internal("invalid consist lsn message received from primary")));
+				appendBinaryStringInfo(&incoming_message, buf, hdrlen);
+
+				dataStart = pq_getmsgint64(&incoming_message);
+				walEnd = pq_getmsgint64(&incoming_message);
+				sendTime = pq_getmsgint64(&incoming_message);
+				ProcessWalSndrMessage(walEnd, sendTime);
+
+				/* 
+				 * POLAR: As a polardb replica, we do not write the xlog,
+				 * we just update the LogstreamResult.write and call XLogWalRcvFlush
+				 * to update shared-memory status as the case 'w'.
+				 */
+				LogstreamResult.Write = walEnd;
+				XLogWalRcvFlush(false);
+				if (polar_enable_debug)
+				{
+					elog(LOG, "Receive primary on polardb flush xlog from %X/%X to %X/%X, ",
+									(uint32) (dataStart >> 32), (uint32) dataStart,
+									(uint32) (walEnd >> 32), (uint32) walEnd);
+				}
+
+				break;
+			}
 		default:
 			ereport(ERROR,
 					(errcode(ERRCODE_PROTOCOL_VIOLATION),
@@ -982,7 +1033,7 @@ XLogWalRcvWrite(char *buf, Size nbytes, XLogRecPtr recptr)
 				 * process soon, so we don't advise the OS to release cache
 				 * pages associated with the file like XLogFileClose() does.
 				 */
-				if (close(recvFile) != 0)
+				if (polar_close(recvFile) != 0)
 					ereport(PANIC,
 							(errcode_for_file_access(),
 							 errmsg("could not close log segment %s: %m",
@@ -1019,7 +1070,7 @@ XLogWalRcvWrite(char *buf, Size nbytes, XLogRecPtr recptr)
 		/* Need to seek in the file? */
 		if (recvOff != startoff)
 		{
-			if (lseek(recvFile, (off_t) startoff, SEEK_SET) < 0)
+			if (polar_lseek(recvFile, (off_t) startoff, SEEK_SET) < 0)
 				ereport(PANIC,
 						(errcode_for_file_access(),
 						 errmsg("could not seek in log segment %s to offset %u: %m",
@@ -1031,7 +1082,7 @@ XLogWalRcvWrite(char *buf, Size nbytes, XLogRecPtr recptr)
 		/* OK to write the logs */
 		errno = 0;
 
-		byteswritten = write(recvFile, buf, segbytes);
+		byteswritten = polar_write(recvFile, buf, segbytes);
 		if (byteswritten <= 0)
 		{
 			/* if write didn't set errno, assume no disk space */
@@ -1069,7 +1120,9 @@ XLogWalRcvFlush(bool dying)
 	{
 		WalRcvData *walrcv = WalRcv;
 
-		issue_xlog_fsync(recvFile, recvSegNo);
+		/* POLAR: only replica mode not write data */
+		if (polar_in_replica_mode() == false)
+			issue_xlog_fsync(recvFile, recvSegNo);
 
 		LogstreamResult.Flush = LogstreamResult.Write;
 

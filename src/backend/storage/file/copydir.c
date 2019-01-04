@@ -41,12 +41,12 @@ copydir(char *fromdir, char *todir, bool recurse)
 	char		fromfile[MAXPGPATH * 2];
 	char		tofile[MAXPGPATH * 2];
 
-	if (MakePGDirectory(todir) != 0)
+	if (MakePGDirectory(todir, false) != 0)
 		ereport(ERROR,
 				(errcode_for_file_access(),
 				 errmsg("could not create directory \"%s\": %m", todir)));
 
-	xldir = AllocateDir(fromdir);
+	xldir = AllocateDir(fromdir, false);
 
 	while ((xlde = ReadDir(xldir, fromdir)) != NULL)
 	{
@@ -85,7 +85,7 @@ copydir(char *fromdir, char *todir, bool recurse)
 	if (!enableFsync)
 		return;
 
-	xldir = AllocateDir(todir);
+	xldir = AllocateDir(todir, false);
 
 	while ((xlde = ReadDir(xldir, todir)) != NULL)
 	{
@@ -107,7 +107,7 @@ copydir(char *fromdir, char *todir, bool recurse)
 					 errmsg("could not stat file \"%s\": %m", tofile)));
 
 		if (S_ISREG(fst.st_mode))
-			fsync_fname(tofile, false);
+			fsync_fname(tofile, false, false);
 	}
 	FreeDir(xldir);
 
@@ -117,7 +117,7 @@ copydir(char *fromdir, char *todir, bool recurse)
 	 * synced. Recent versions of ext4 have made the window much wider but
 	 * it's been true for ext3 and other filesystems in the past.
 	 */
-	fsync_fname(todir, true);
+	fsync_fname(todir, true, false);
 }
 
 /*
@@ -154,13 +154,13 @@ copy_file(char *fromfile, char *tofile)
 	/*
 	 * Open the files
 	 */
-	srcfd = OpenTransientFile(fromfile, O_RDONLY | PG_BINARY);
+	srcfd = OpenTransientFile(fromfile, O_RDONLY | PG_BINARY, false);
 	if (srcfd < 0)
 		ereport(ERROR,
 				(errcode_for_file_access(),
 				 errmsg("could not open file \"%s\": %m", fromfile)));
 
-	dstfd = OpenTransientFile(tofile, O_RDWR | O_CREAT | O_EXCL | PG_BINARY);
+	dstfd = OpenTransientFile(tofile, O_RDWR | O_CREAT | O_EXCL | PG_BINARY, false);
 	if (dstfd < 0)
 		ereport(ERROR,
 				(errcode_for_file_access(),

@@ -640,7 +640,7 @@ pgstat_reset_remove_files(const char *directory)
 	struct dirent *entry;
 	char		fname[MAXPGPATH * 2];
 
-	dir = AllocateDir(directory);
+	dir = AllocateDir(directory, false);
 	while ((entry = ReadDir(dir, directory)) != NULL)
 	{
 		int			nchars;
@@ -3931,7 +3931,30 @@ pgstat_get_wait_io(WaitEventIO w)
 		case WAIT_EVENT_WAL_WRITE:
 			event_name = "WALWrite";
 			break;
-
+		case WAIT_EVENT_WAL_PREAD:
+			event_name = "WALPread";
+			break;
+		case WAIT_EVENT_WAL_PWRITE:
+			event_name = "WALPwrite";
+			break;
+		case WAIT_EVENT_DATA_FILE_PWRITE_EXTEND:
+			event_name = "DataFilePwriteExtend";
+			break;
+		case WAIT_EVENT_DATA_FILE_PWRITE:
+			event_name = "DataFilePwrite";
+			break;
+		case WAIT_EVENT_DATA_FILE_PREAD:
+			event_name = "DataFilePread";
+			break;
+		case WAIT_EVENT_DATA_FILE_BATCH_PWRITE_EXTEND:
+			event_name = "DataFileBatchPwriteExtend";
+			break;
+		case WAIT_EVENT_DATA_VFS_FILE_OPEN:
+			event_name = "VFSFileOpen";
+			break;
+		case WAIT_EVENT_DATA_VFS_FILE_LSEEK:
+			event_name = "VFSFileLseek";
+			break;
 			/* no default case, so that compiler will warn */
 	}
 

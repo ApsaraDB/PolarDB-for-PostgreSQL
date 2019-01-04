@@ -141,9 +141,11 @@ static bool SyncRepQueueIsOrderedByLSN(int mode);
  * represents a commit record.  If it doesn't, then we wait only for the WAL
  * to be flushed if synchronous_commit is set to the higher level of
  * remote_apply, because only commit records provide apply feedback.
+ *
+ * POLAR: polar_standby_lock for sync DDL
  */
 void
-SyncRepWaitForLSN(XLogRecPtr lsn, bool commit)
+SyncRepWaitForLSN(XLogRecPtr lsn, bool commit, bool polar_force_wait_apply)
 {
 	char	   *new_status = NULL;
 	const char *old_status;
@@ -154,6 +156,18 @@ SyncRepWaitForLSN(XLogRecPtr lsn, bool commit)
 		mode = SyncRepWaitMode;
 	else
 		mode = Min(SyncRepWaitMode, SYNC_REP_WAIT_FLUSH);
+
+	/*
+	 * POLAR: when enable polardb(rw+ro node on shared disk), ddl must be sync mode
+	 * We use stream replication stanby lock for ddl sync.
+	 */
+	if (polar_enable_shared_storage_mode)
+	{
+		if (polar_force_wait_apply)
+			mode = SYNC_REP_WAIT_APPLY;
+		else if (polar_enable_transaction_sync_mode == false)
+			return;
+	}
 
 	/*
 	 * Fast exit if user has not requested sync replication.

@@ -801,9 +801,10 @@ OldSerXidInit(void)
 	 * Set up SLRU management of the pg_serial data.
 	 */
 	OldSerXidSlruCtl->PagePrecedes = OldSerXidPagePrecedesLogically;
+	/* POLAR: pg_serial file not in shared storage */
 	SimpleLruInit(OldSerXidSlruCtl, "oldserxid",
 				  NUM_OLDSERXID_BUFFERS, 0, OldSerXidLock, "pg_serial",
-				  LWTRANCHE_OLDSERXID_BUFFERS);
+				  LWTRANCHE_OLDSERXID_BUFFERS, false);
 	/* Override default assumption that writes should be fsync'd */
 	OldSerXidSlruCtl->do_fsync = false;
 

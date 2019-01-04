@@ -64,7 +64,8 @@ extern char *syncrep_parse_error_msg;
 extern char *SyncRepStandbyNames;
 
 /* called by user backend */
-extern void SyncRepWaitForLSN(XLogRecPtr lsn, bool commit);
+/* POLAR: polar_standby_lock */
+extern void SyncRepWaitForLSN(XLogRecPtr lsn, bool commit, bool polar_force_wait_apply);
 
 /* called at backend exit */
 extern void SyncRepCleanupAtProcExit(void);

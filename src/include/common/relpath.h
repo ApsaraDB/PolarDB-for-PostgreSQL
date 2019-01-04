@@ -64,7 +64,7 @@ extern int	forkname_chars(const char *str, ForkNumber *fork);
 /*
  * Stuff for computing filesystem pathnames for relations.
  */
-extern char *GetDatabasePath(Oid dbNode, Oid spcNode);
+extern char *GetDatabasePath(Oid dbNode, Oid spcNode, bool polar_vfs);
 
 extern char *GetRelationPath(Oid dbNode, Oid spcNode, Oid relNode,
 				int backendId, ForkNumber forkNumber);
@@ -86,5 +86,8 @@ extern char *GetRelationPath(Oid dbNode, Oid spcNode, Oid relNode,
 /* First argument is a RelFileNodeBackend */
 #define relpath(rnode, forknum) \
 	relpathbackend((rnode).node, (rnode).backend, forknum)
+
+/* POLAR */
+extern char *polar_get_database_path(Oid dbNode, Oid spcNode);
 
 #endif							/* RELPATH_H */

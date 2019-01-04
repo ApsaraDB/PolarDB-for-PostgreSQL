@@ -91,6 +91,8 @@
 #include "utils/guc.h"
 #include "utils/resowner_private.h"
 
+/* POLAR */
+#include "storage/polar_fd.h"
 
 /* Define PG_FLUSH_DATA_WORKS if we have an implementation for pg_flush_data */
 #if defined(HAVE_SYNC_FILE_RANGE)
@@ -195,6 +197,8 @@ typedef struct vfd
 	/* NB: fileName is malloc'd, and must be free'd when closing the VFD */
 	int			fileFlags;		/* open(2) flags for (re)opening the file */
 	mode_t		fileMode;		/* mode to pass to open(2) */
+
+	bool		polar_vfs;			/* POLAR: Whether to call the vfs interface */
 } Vfd;
 
 /*
@@ -227,13 +231,17 @@ static uint64 temporary_files_size = 0;
 /*
  * List of OS handles opened with AllocateFile, AllocateDir and
  * OpenTransientFile.
+ *
+ * POLAR: add vfs flag
  */
 typedef enum
 {
 	AllocateDescFile,
 	AllocateDescPipe,
 	AllocateDescDir,
-	AllocateDescRawFD
+	AllocateDescRawFD,
+	AllocateVfsDescDir,
+	AllocateVfsDescRawFD
 } AllocateDescKind;
 
 typedef struct
@@ -330,9 +338,10 @@ static void pre_sync_fname(const char *fname, bool isdir, int elevel);
 static void datadir_fsync_fname(const char *fname, bool isdir, int elevel);
 static void unlink_if_exists_fname(const char *fname, bool isdir, int elevel);
 
-static int	fsync_fname_ext(const char *fname, bool isdir, bool ignore_perm, int elevel);
-static int	fsync_parent_path(const char *fname, int elevel);
-
+/* POLAR: add polar_vfs parameter */
+static int	fsync_fname_ext(const char *fname, bool isdir, bool ignore_perm, int elevel, bool polar_vfs);
+static int	fsync_parent_path(const char *fname, int elevel, bool polar_vfs);
+static DIR *AllocateDirPerm(const char *dirname, bool polar_vfs);
 
 /*
  * pg_fsync --- do fsync with or without writethrough
@@ -572,9 +581,9 @@ pg_flush_data(int fd, off_t offset, off_t nbytes)
  * indicate the OS just doesn't allow/require fsyncing directories.
  */
 void
-fsync_fname(const char *fname, bool isdir)
+fsync_fname(const char *fname, bool isdir, bool polar_vfs)
 {
-	fsync_fname_ext(fname, isdir, false, ERROR);
+	fsync_fname_ext(fname, isdir, false, ERROR, polar_vfs);
 }
 
 /*
@@ -594,13 +603,16 @@ fsync_fname(const char *fname, bool isdir)
  *
  * Log errors with the caller specified severity.
  *
+ * POLAR: polar_vfs Whether to call vfs interface
+ *
  * Returns 0 if the operation succeeded, -1 otherwise. Note that errno is not
  * valid upon return.
  */
 int
-durable_rename(const char *oldfile, const char *newfile, int elevel)
+durable_rename(const char *oldfile, const char *newfile, int elevel, bool polar_vfs)
 {
 	int			fd;
+	int			rc;
 
 	/*
 	 * First fsync the old and target path (if it exists), to ensure that they
@@ -609,10 +621,10 @@ durable_rename(const char *oldfile, const char *newfile, int elevel)
 	 * because it's then guaranteed that either source or target file exists
 	 * after a crash.
 	 */
-	if (fsync_fname_ext(oldfile, false, false, elevel) != 0)
+	if (fsync_fname_ext(oldfile, false, false, elevel, polar_vfs) != 0)
 		return -1;
 
-	fd = OpenTransientFile(newfile, PG_BINARY | O_RDWR);
+	fd = OpenTransientFilePerm(newfile, PG_BINARY, pg_file_create_mode, polar_vfs);
 	if (fd < 0)
 	{
 		if (errno != ENOENT)
@@ -625,7 +637,12 @@ durable_rename(const char *oldfile, const char *newfile, int elevel)
 	}
 	else
 	{
-		if (pg_fsync(fd) != 0)
+		if (polar_vfs)
+			rc = polar_fsync(fd);
+		else
+			rc = pg_fsync(fd);
+
+		if (rc != 0)
 		{
 			int			save_errno;
 
@@ -642,8 +659,13 @@ durable_rename(const char *oldfile, const char *newfile, int elevel)
 		CloseTransientFile(fd);
 	}
 
+	if (polar_vfs)
+		rc = polar_rename(oldfile, newfile);
+	else
+		rc = rename(oldfile, newfile);
+
 	/* Time to do the real deal... */
-	if (rename(oldfile, newfile) < 0)
+	if (rc < 0)
 	{
 		ereport(elevel,
 				(errcode_for_file_access(),
@@ -656,17 +678,17 @@ durable_rename(const char *oldfile, const char *newfile, int elevel)
 	 * To guarantee renaming the file is persistent, fsync the file with its
 	 * new name, and its containing directory.
 	 */
-	if (fsync_fname_ext(newfile, false, false, elevel) != 0)
+	if (fsync_fname_ext(newfile, false, false, elevel, polar_vfs) != 0)
 		return -1;
 
-	if (fsync_parent_path(newfile, elevel) != 0)
+	if (fsync_parent_path(newfile, elevel, polar_vfs) != 0)
 		return -1;
 
 	return 0;
 }
 
 /*
- * durable_unlink -- remove a file in a durable manner
+ * durable_unlink_ext -- remove a file in a durable manner
  *
  * This routine ensures that, after returning, the effect of removing file
  * persists in case of a crash. A crash while this routine is running will
@@ -683,7 +705,21 @@ durable_rename(const char *oldfile, const char *newfile, int elevel)
 int
 durable_unlink(const char *fname, int elevel)
 {
-	if (unlink(fname) < 0)
+	int		rc;
+	bool	polar_vfs = false;
+
+	/*
+	 * POLAR: call vfs interface
+	 */
+	if (POLAR_FILE_IN_SHARED_STORAGE())
+		polar_vfs = true;
+
+	if (polar_vfs)
+		rc = polar_unlink(fname);
+	else
+		rc = unlink(fname);
+
+	if (rc < 0)
 	{
 		ereport(elevel,
 				(errcode_for_file_access(),
@@ -696,7 +732,7 @@ durable_unlink(const char *fname, int elevel)
 	 * To guarantee that the removal of the file is persistent, fsync its
 	 * parent directory.
 	 */
-	if (fsync_parent_path(fname, elevel) != 0)
+	if (fsync_parent_path(fname, elevel, polar_vfs) != 0)
 		return -1;
 
 	return 0;
@@ -713,50 +749,82 @@ durable_unlink(const char *fname, int elevel)
  *
  * Log errors with the caller specified severity.
  *
+ * POLAR: polar_vfs Whether to call vfs interface
+ *
  * Returns 0 if the operation succeeded, -1 otherwise. Note that errno is not
  * valid upon return.
  */
 int
 durable_link_or_rename(const char *oldfile, const char *newfile, int elevel)
 {
+#if HAVE_WORKING_LINK
+	bool	have_link_fun = true;
+#else
+	bool	have_link_fun = false;
+#endif
+	int		rc = 0;
+	bool	polar_vfs = false;
+
+	/*
+	 * POLAR: force vfs interface
+	 */
+	if (POLAR_FILE_IN_SHARED_STORAGE())
+		polar_vfs = true;
+
 	/*
 	 * Ensure that, if we crash directly after the rename/link, a file with
 	 * valid contents is moved into place.
 	 */
-	if (fsync_fname_ext(oldfile, false, false, elevel) != 0)
+	if (fsync_fname_ext(oldfile, false, false, elevel, polar_vfs) != 0)
 		return -1;
 
+	/* POLAR: libpfs not support pfs_link, use pfs_rename */
+	if (have_link_fun && polar_vfs == false)
+	{
 #if HAVE_WORKING_LINK
-	if (link(oldfile, newfile) < 0)
-	{
-		ereport(elevel,
-				(errcode_for_file_access(),
-				 errmsg("could not link file \"%s\" to \"%s\": %m",
-						oldfile, newfile)));
-		return -1;
-	}
-	unlink(oldfile);
-#else
-	/* XXX: Add racy file existence check? */
-	if (rename(oldfile, newfile) < 0)
-	{
-		ereport(elevel,
-				(errcode_for_file_access(),
-				 errmsg("could not rename file \"%s\" to \"%s\": %m",
-						oldfile, newfile)));
-		return -1;
+		if (link(oldfile, newfile) < 0)
+		{
+			ereport(elevel,
+					(errcode_for_file_access(),
+					 errmsg("could not link file \"%s\" to \"%s\": %m",
+							oldfile, newfile)));
+			return -1;
+		}
+		if (unlink(oldfile) < 0)
+		{
+			ereport(WARNING,
+					(errcode_for_file_access(),
+					 errmsg("could not unlink file \"%s\" to \"%s\": %m",
+							oldfile, newfile)));
+		}
 	}
 #endif
+	else
+	{
+		if (polar_vfs)
+			rc = polar_rename(oldfile, newfile);
+		else
+			rc = rename(oldfile, newfile);
+		/* XXX: Add racy file existence check? */
+		if (rc < 0)
+		{
+			ereport(elevel,
+					(errcode_for_file_access(),
+					 errmsg("could not rename file \"%s\" to \"%s\": %m",
+							oldfile, newfile)));
+			return -1;
+		}
+	}
 
 	/*
 	 * Make change persistent in case of an OS crash, both the new entry and
 	 * its parent directory need to be flushed.
 	 */
-	if (fsync_fname_ext(newfile, false, false, elevel) != 0)
+	if (fsync_fname_ext(newfile, false, false, elevel, polar_vfs) != 0)
 		return -1;
 
 	/* Same for parent directory */
-	if (fsync_parent_path(newfile, elevel) != 0)
+	if (fsync_parent_path(newfile, elevel, polar_vfs) != 0)
 		return -1;
 
 	return 0;
@@ -924,14 +992,21 @@ set_max_safe_fds(void)
 		 max_safe_fds, usable_fds, already_open);
 }
 
+/* POLAR:For open configfile in local disk */
+int
+BasicOpenFileForConfigFile(const char *fileName, int fileFlags)
+{
+	return BasicOpenFilePerm(fileName, fileFlags, pg_file_create_mode, false);
+}
+
 /*
  * Open a file with BasicOpenFilePerm() and pass default file mode for the
  * fileMode parameter.
  */
 int
-BasicOpenFile(const char *fileName, int fileFlags)
+BasicOpenFile(const char *fileName, int fileFlags, bool polar_vfs)
 {
-	return BasicOpenFilePerm(fileName, fileFlags, pg_file_create_mode);
+	return BasicOpenFilePerm(fileName, fileFlags, pg_file_create_mode, polar_vfs);
 }
 
 /*
@@ -949,14 +1024,20 @@ BasicOpenFile(const char *fileName, int fileFlags)
  * In practice, the postmaster calls open() directly, and there are some
  * direct open() calls done early in backend startup.  Those are OK since
  * this module wouldn't have any open files to close at that point anyway.
+ *
+ * POLAR: polar_vfs Whether to call vfs interface
  */
 int
-BasicOpenFilePerm(const char *fileName, int fileFlags, mode_t fileMode)
+BasicOpenFilePerm(const char *fileName, int fileFlags, mode_t fileMode, bool polar_vfs)
 {
 	int			fd;
 
 tryAgain:
-	fd = open(fileName, fileFlags, fileMode);
+
+	if (polar_vfs)
+		fd = polar_open(fileName, fileFlags, fileMode);
+	else
+		fd = open(fileName, fileFlags, fileMode);
 
 	if (fd >= 0)
 		return fd;				/* success! */
@@ -1021,6 +1102,7 @@ static void
 LruDelete(File file)
 {
 	Vfd		   *vfdP;
+	int			rc = 0;
 
 	Assert(file != 0);
 
@@ -1039,7 +1121,10 @@ LruDelete(File file)
 	 */
 	if (FilePosIsUnknown(vfdP->seekPos))
 	{
-		vfdP->seekPos = lseek(vfdP->fd, (off_t) 0, SEEK_CUR);
+		if (vfdP->polar_vfs)
+			vfdP->seekPos = polar_lseek(vfdP->fd, (off_t) 0, SEEK_CUR);
+		else
+			vfdP->seekPos = lseek(vfdP->fd, (off_t) 0, SEEK_CUR);
 		if (FilePosIsUnknown(vfdP->seekPos))
 			elog(LOG, "could not seek file \"%s\" before closing: %m",
 				 vfdP->fileName);
@@ -1049,8 +1134,16 @@ LruDelete(File file)
 	 * Close the file.  We aren't expecting this to fail; if it does, better
 	 * to leak the FD than to mess up our internal state.
 	 */
-	if (close(vfdP->fd))
+	if (vfdP->polar_vfs)
+		rc = polar_close(vfdP->fd);
+	else
+		rc = close(vfdP->fd);
+
+	if (rc)
+	{
 		elog(LOG, "could not close file \"%s\": %m", vfdP->fileName);
+	}
+
 	vfdP->fd = VFD_CLOSED;
 	--nfile;
 
@@ -1103,7 +1196,7 @@ LruInsert(File file)
 		 * another FD if necessary...
 		 */
 		vfdP->fd = BasicOpenFilePerm(vfdP->fileName, vfdP->fileFlags,
-									 vfdP->fileMode);
+									 vfdP->fileMode, vfdP->polar_vfs);
 		if (vfdP->fd < 0)
 		{
 			DO_DB(elog(LOG, "re-open failed: %m"));
@@ -1123,7 +1216,14 @@ LruInsert(File file)
 		 */
 		if (vfdP->seekPos != (off_t) 0)
 		{
-			if (lseek(vfdP->fd, vfdP->seekPos, SEEK_SET) < 0)
+			off_t rc;
+
+			if (vfdP->polar_vfs)
+				rc = polar_lseek(vfdP->fd, vfdP->seekPos, SEEK_SET);
+			else
+				rc = lseek(vfdP->fd, vfdP->seekPos, SEEK_SET);
+
+			if (rc < 0)
 			{
 				/*
 				 * If we fail to restore the seek position, treat it like an
@@ -1133,7 +1233,12 @@ LruInsert(File file)
 
 				elog(LOG, "could not seek file \"%s\" after re-opening: %m",
 					 vfdP->fileName);
-				(void) close(vfdP->fd);
+
+				if (vfdP->polar_vfs)
+					polar_close(vfdP->fd);
+				else
+					close(vfdP->fd);
+
 				vfdP->fd = VFD_CLOSED;
 				--nfile;
 				errno = save_errno;
@@ -1258,6 +1363,7 @@ FreeVfd(File file)
 		vfdP->fileName = NULL;
 	}
 	vfdP->fdstate = 0x0;
+	vfdP->polar_vfs = false;
 
 	vfdP->nextFree = VfdCache[0].nextFree;
 	VfdCache[0].nextFree = file;
@@ -1348,9 +1454,9 @@ FileInvalidate(File file)
  * fileMode parameter.
  */
 File
-PathNameOpenFile(const char *fileName, int fileFlags)
+PathNameOpenFile(const char *fileName, int fileFlags, bool polar_vfs)
 {
-	return PathNameOpenFilePerm(fileName, fileFlags, pg_file_create_mode);
+	return PathNameOpenFilePerm(fileName, fileFlags, pg_file_create_mode, polar_vfs);
 }
 
 /*
@@ -1359,9 +1465,11 @@ PathNameOpenFile(const char *fileName, int fileFlags)
  * NB: if the passed pathname is relative (which it usually is),
  * it will be interpreted relative to the process' working directory
  * (which should always be $PGDATA when this code is running).
+ *
+ * POLAR: polar_vfs Whether to call vfs interface
  */
 File
-PathNameOpenFilePerm(const char *fileName, int fileFlags, mode_t fileMode)
+PathNameOpenFilePerm(const char *fileName, int fileFlags, mode_t fileMode, bool polar_vfs)
 {
 	char	   *fnamecopy;
 	File		file;
@@ -1385,7 +1493,7 @@ PathNameOpenFilePerm(const char *fileName, int fileFlags, mode_t fileMode)
 	/* Close excess kernel FDs. */
 	ReleaseLruFiles();
 
-	vfdP->fd = BasicOpenFilePerm(fileName, fileFlags, fileMode);
+	vfdP->fd = BasicOpenFilePerm(fileName, fileFlags, fileMode, polar_vfs);
 
 	if (vfdP->fd < 0)
 	{
@@ -1410,6 +1518,8 @@ PathNameOpenFilePerm(const char *fileName, int fileFlags, mode_t fileMode)
 	vfdP->fileSize = 0;
 	vfdP->fdstate = 0x0;
 	vfdP->resowner = NULL;
+	/* POLAR: Whether the record is a vfs handle*/
+	vfdP->polar_vfs = polar_vfs;
 
 	return file;
 }
@@ -1428,7 +1538,7 @@ PathNameOpenFilePerm(const char *fileName, int fileFlags, mode_t fileMode)
 void
 PathNameCreateTemporaryDir(const char *basedir, const char *directory)
 {
-	if (MakePGDirectory(directory) < 0)
+	if (MakePGDirectory(directory, false) < 0)
 	{
 		if (errno == EEXIST)
 			return;
@@ -1438,14 +1548,14 @@ PathNameCreateTemporaryDir(const char *basedir, const char *directory)
 		 * EEXIST to close a race against another process following the same
 		 * algorithm.
 		 */
-		if (MakePGDirectory(basedir) < 0 && errno != EEXIST)
+		if (MakePGDirectory(basedir, false) < 0 && errno != EEXIST)
 			ereport(ERROR,
 					(errcode_for_file_access(),
 					 errmsg("cannot create temporary directory \"%s\": %m",
 							basedir)));
 
 		/* Try again. */
-		if (MakePGDirectory(directory) < 0 && errno != EEXIST)
+		if (MakePGDirectory(directory, false) < 0 && errno != EEXIST)
 			ereport(ERROR,
 					(errcode_for_file_access(),
 					 errmsg("cannot create temporary subdirectory \"%s\": %m",
@@ -1588,7 +1698,7 @@ OpenTemporaryFileInTablespace(Oid tblspcOid, bool rejectError)
 	 * temp file that can be reused.
 	 */
 	file = PathNameOpenFile(tempfilepath,
-							O_RDWR | O_CREAT | O_TRUNC | PG_BINARY);
+							O_RDWR | O_CREAT | O_TRUNC | PG_BINARY, false);
 	if (file <= 0)
 	{
 		/*
@@ -1599,10 +1709,10 @@ OpenTemporaryFileInTablespace(Oid tblspcOid, bool rejectError)
 		 * someone else just did the same thing.  If it doesn't work then
 		 * we'll bomb out on the second create attempt, instead.
 		 */
-		(void) MakePGDirectory(tempdirpath);
+		(void) MakePGDirectory(tempdirpath, false);
 
 		file = PathNameOpenFile(tempfilepath,
-								O_RDWR | O_CREAT | O_TRUNC | PG_BINARY);
+								O_RDWR | O_CREAT | O_TRUNC | PG_BINARY, false);
 		if (file <= 0 && rejectError)
 			elog(ERROR, "could not create temporary file \"%s\": %m",
 				 tempfilepath);
@@ -1635,7 +1745,7 @@ PathNameCreateTemporaryFile(const char *path, bool error_on_failure)
 	 * Open the file.  Note: we don't use O_EXCL, in case there is an orphaned
 	 * temp file that can be reused.
 	 */
-	file = PathNameOpenFile(path, O_RDWR | O_CREAT | O_TRUNC | PG_BINARY);
+	file = PathNameOpenFile(path, O_RDWR | O_CREAT | O_TRUNC | PG_BINARY, false);
 	if (file <= 0)
 	{
 		if (error_on_failure)
@@ -1670,7 +1780,7 @@ PathNameOpenTemporaryFile(const char *path)
 	ResourceOwnerEnlargeFiles(CurrentResourceOwner);
 
 	/* We open the file read-only. */
-	file = PathNameOpenFile(path, O_RDONLY | PG_BINARY);
+	file = PathNameOpenFile(path, O_RDONLY | PG_BINARY, false);
 
 	/* If no such file, then we don't raise an error. */
 	if (file <= 0 && errno != ENOENT)
@@ -1742,6 +1852,7 @@ void
 FileClose(File file)
 {
 	Vfd		   *vfdP;
+	int			rc;
 
 	Assert(FileIsValid(file));
 
@@ -1753,8 +1864,19 @@ FileClose(File file)
 	if (!FileIsNotOpen(file))
 	{
 		/* close the file */
-		if (close(vfdP->fd))
+		if (vfdP->polar_vfs)
+                        rc = polar_close(vfdP->fd);
+                else
+                        rc = close(vfdP->fd);
+
+		if (rc)
+		{
+			/*
+			 * We may need to panic on failure to close non-temporary files;
+			 * see LruDelete.
+			 */
 			elog(LOG, "could not close file \"%s\": %m", vfdP->fileName);
+		}
 
 		--nfile;
 		vfdP->fd = VFD_CLOSED;
@@ -1787,15 +1909,24 @@ FileClose(File file)
 		 */
 		vfdP->fdstate &= ~FD_DELETE_AT_CLOSE;
 
-
 		/* first try the stat() */
-		if (stat(vfdP->fileName, &filestats))
+		if (vfdP->polar_vfs)
+			rc = polar_stat(vfdP->fileName, &filestats);
+		else
+			rc = stat(vfdP->fileName, &filestats);
+
+		if (rc)
 			stat_errno = errno;
 		else
 			stat_errno = 0;
 
 		/* in any case do the unlink */
-		if (unlink(vfdP->fileName))
+		if (vfdP->polar_vfs)
+			rc = polar_unlink(vfdP->fileName);
+		else
+			rc = unlink(vfdP->fileName);
+
+		if (rc)
 			elog(LOG, "could not unlink file \"%s\": %m", vfdP->fileName);
 
 		/* and last report the stat results */
@@ -1833,6 +1964,10 @@ FilePrefetch(File file, off_t offset, int amount, uint32 wait_event_info)
 {
 #if defined(USE_POSIX_FADVISE) && defined(POSIX_FADV_WILLNEED)
 	int			returnCode;
+
+	/* POLAR: libpfs not support posix_fadvise */
+	if (POLAR_FILE_IN_SHARED_STORAGE())
+		return 0;
 
 	Assert(FileIsValid(file));
 
@@ -1879,7 +2014,10 @@ FileWriteback(File file, off_t offset, off_t nbytes, uint32 wait_event_info)
 		return;
 
 	pgstat_report_wait_start(wait_event_info);
-	pg_flush_data(VfdCache[file].fd, offset, nbytes);
+	if (polar_enable_shared_storage_mode)
+		polar_fsync(VfdCache[file].fd);
+	else
+		pg_flush_data(VfdCache[file].fd, offset, nbytes);
 	pgstat_report_wait_end();
 }
 
@@ -1904,7 +2042,10 @@ FileRead(File file, char *buffer, int amount, uint32 wait_event_info)
 
 retry:
 	pgstat_report_wait_start(wait_event_info);
-	returnCode = read(vfdP->fd, buffer, amount);
+	if (vfdP->polar_vfs)
+		returnCode = polar_read(vfdP->fd, buffer, amount);
+	else
+		returnCode = read(vfdP->fd, buffer, amount);
 	pgstat_report_wait_end();
 
 	if (returnCode >= 0)
@@ -1985,7 +2126,11 @@ FileWrite(File file, char *buffer, int amount, uint32 wait_event_info)
 		 */
 		if (FilePosIsUnknown(vfdP->seekPos))
 		{
-			vfdP->seekPos = lseek(vfdP->fd, (off_t) 0, SEEK_CUR);
+			if (vfdP->polar_vfs)
+				vfdP->seekPos = polar_lseek(vfdP->fd, (off_t) 0, SEEK_CUR);
+			else
+				vfdP->seekPos = lseek(vfdP->fd, (off_t) 0, SEEK_CUR);
+
 			if (FilePosIsUnknown(vfdP->seekPos))
 				elog(ERROR, "could not seek file \"%s\": %m", vfdP->fileName);
 		}
@@ -2007,7 +2152,10 @@ FileWrite(File file, char *buffer, int amount, uint32 wait_event_info)
 retry:
 	errno = 0;
 	pgstat_report_wait_start(wait_event_info);
-	returnCode = write(vfdP->fd, buffer, amount);
+	if (vfdP->polar_vfs)
+		returnCode = polar_write(vfdP->fd, buffer, amount);
+	else
+		returnCode = write(vfdP->fd, buffer, amount);
 	pgstat_report_wait_end();
 
 	/* if write didn't set errno, assume problem is no disk space */
@@ -2083,7 +2231,10 @@ FileSync(File file, uint32 wait_event_info)
 		return returnCode;
 
 	pgstat_report_wait_start(wait_event_info);
-	returnCode = pg_fsync(VfdCache[file].fd);
+	if (VfdCache[file].polar_vfs)
+		returnCode = polar_fsync(VfdCache[file].fd);
+	else
+		returnCode = pg_fsync(VfdCache[file].fd);
 	pgstat_report_wait_end();
 
 	return returnCode;
@@ -2127,7 +2278,10 @@ FileSeek(File file, off_t offset, int whence)
 			case SEEK_END:
 				if (FileAccess(file) < 0)
 					return (off_t) -1;
-				vfdP->seekPos = lseek(vfdP->fd, offset, whence);
+				if (vfdP->polar_vfs)
+					vfdP->seekPos = polar_lseek(vfdP->fd, offset, whence);
+				else
+					vfdP->seekPos = lseek(vfdP->fd, offset, whence);
 				break;
 			default:
 				elog(ERROR, "invalid whence: %d", whence);
@@ -2145,14 +2299,27 @@ FileSeek(File file, off_t offset, int whence)
 					return (off_t) -1;
 				}
 				if (vfdP->seekPos != offset)
-					vfdP->seekPos = lseek(vfdP->fd, offset, whence);
+				{
+					if (vfdP->polar_vfs)
+						vfdP->seekPos = polar_lseek(vfdP->fd, offset, whence);
+					else
+						vfdP->seekPos = lseek(vfdP->fd, offset, whence);
+				}
 				break;
 			case SEEK_CUR:
 				if (offset != 0 || FilePosIsUnknown(vfdP->seekPos))
-					vfdP->seekPos = lseek(vfdP->fd, offset, whence);
+				{
+					if (vfdP->polar_vfs)
+						vfdP->seekPos = polar_lseek(vfdP->fd, offset, whence);
+					else
+						vfdP->seekPos = lseek(vfdP->fd, offset, whence);
+				}
 				break;
 			case SEEK_END:
-				vfdP->seekPos = lseek(vfdP->fd, offset, whence);
+				if (vfdP->polar_vfs)
+					vfdP->seekPos = polar_lseek(vfdP->fd, offset, whence);
+				else
+					vfdP->seekPos = lseek(vfdP->fd, offset, whence);
 				break;
 			default:
 				elog(ERROR, "invalid whence: %d", whence);
@@ -2192,7 +2359,7 @@ FileTruncate(File file, off_t offset, uint32 wait_event_info)
 		return returnCode;
 
 	pgstat_report_wait_start(wait_event_info);
-	returnCode = ftruncate(VfdCache[file].fd, offset);
+	returnCode = polar_ftruncate(VfdCache[file].fd, offset);
 	pgstat_report_wait_end();
 
 	if (returnCode == 0 && VfdCache[file].fileSize > offset)
@@ -2383,16 +2550,18 @@ TryAgain:
  * the fileMode parameter.
  */
 int
-OpenTransientFile(const char *fileName, int fileFlags)
+OpenTransientFile(const char *fileName, int fileFlags, bool polar_vfs)
 {
-	return OpenTransientFilePerm(fileName, fileFlags, pg_file_create_mode);
+	return OpenTransientFilePerm(fileName, fileFlags, pg_file_create_mode, polar_vfs);
 }
 
 /*
  * Like AllocateFile, but returns an unbuffered fd like open(2)
+ *
+ * POLAR: polar_vfs Whether to call vfs interface
  */
 int
-OpenTransientFilePerm(const char *fileName, int fileFlags, mode_t fileMode)
+OpenTransientFilePerm(const char *fileName, int fileFlags, mode_t fileMode, bool polar_vfs)
 {
 	int			fd;
 
@@ -2409,13 +2578,16 @@ OpenTransientFilePerm(const char *fileName, int fileFlags, mode_t fileMode)
 	/* Close excess kernel FDs. */
 	ReleaseLruFiles();
 
-	fd = BasicOpenFilePerm(fileName, fileFlags, fileMode);
+	fd = BasicOpenFilePerm(fileName, fileFlags, fileMode, polar_vfs);
 
 	if (fd >= 0)
 	{
 		AllocateDesc *desc = &allocatedDescs[numAllocatedDescs];
 
-		desc->kind = AllocateDescRawFD;
+		if (polar_vfs)
+			desc->kind = AllocateVfsDescRawFD;
+		else
+			desc->kind = AllocateDescRawFD;
 		desc->desc.fd = fd;
 		desc->create_subid = GetCurrentSubTransactionId();
 		numAllocatedDescs++;
@@ -2502,8 +2674,14 @@ FreeDesc(AllocateDesc *desc)
 		case AllocateDescDir:
 			result = closedir(desc->desc.dir);
 			break;
+		case AllocateVfsDescDir:
+			result = polar_closedir(desc->desc.dir);
+			break;
 		case AllocateDescRawFD:
 			result = close(desc->desc.fd);
+			break;
+		case AllocateVfsDescRawFD:
+			result = polar_close(desc->desc.fd);
 			break;
 		default:
 			elog(ERROR, "AllocateDesc kind not recognized");
@@ -2564,7 +2742,8 @@ CloseTransientFile(int fd)
 	{
 		AllocateDesc *desc = &allocatedDescs[i];
 
-		if (desc->kind == AllocateDescRawFD && desc->desc.fd == fd)
+		if ((desc->kind == AllocateDescRawFD || desc->kind == AllocateVfsDescRawFD) &&
+			desc->desc.fd == fd)
 			return FreeDesc(desc);
 	}
 
@@ -2572,6 +2751,12 @@ CloseTransientFile(int fd)
 	elog(WARNING, "fd passed to CloseTransientFile was not obtained from OpenTransientFile");
 
 	return close(fd);
+}
+
+DIR *
+AllocateDir(const char *dirname, bool polar_vfs)
+{
+	return AllocateDirPerm(dirname, polar_vfs);
 }
 
 /*
@@ -2585,9 +2770,11 @@ CloseTransientFile(int fd)
  * see the comments for ReadDir.
  *
  * Ideally this should be the *only* direct call of opendir() in the backend.
+ *
+ * POLAR: polar_vfs Whether to call vfs interface
  */
-DIR *
-AllocateDir(const char *dirname)
+static DIR *
+AllocateDirPerm(const char *dirname, bool polar_vfs)
 {
 	DIR		   *dir;
 
@@ -2605,11 +2792,18 @@ AllocateDir(const char *dirname)
 	ReleaseLruFiles();
 
 TryAgain:
-	if ((dir = opendir(dirname)) != NULL)
+	if (polar_vfs)
+		dir = polar_opendir(dirname);
+	else
+		dir = opendir(dirname);
+	if (dir != NULL)
 	{
 		AllocateDesc *desc = &allocatedDescs[numAllocatedDescs];
 
-		desc->kind = AllocateDescDir;
+		if (polar_vfs)
+			desc->kind = AllocateVfsDescDir;
+		else
+			desc->kind = AllocateDescDir;
 		desc->desc.dir = dir;
 		desc->create_subid = GetCurrentSubTransactionId();
 		numAllocatedDescs++;
@@ -2671,6 +2865,9 @@ struct dirent *
 ReadDirExtended(DIR *dir, const char *dirname, int elevel)
 {
 	struct dirent *dent;
+	int		i;
+	AllocateDesc *desc = NULL;
+	bool		vfs_open = false;
 
 	/* Give a generic message for AllocateDir failure, if caller didn't */
 	if (dir == NULL)
@@ -2682,8 +2879,19 @@ ReadDirExtended(DIR *dir, const char *dirname, int elevel)
 		return NULL;
 	}
 
+	for (i = numAllocatedDescs; --i >= 0;)
+	{
+		desc = &allocatedDescs[i];
+		if (desc->desc.dir == dir && desc->kind == AllocateVfsDescDir)
+			vfs_open = true;
+	}
+
 	errno = 0;
-	if ((dent = readdir(dir)) != NULL)
+	if (vfs_open)
+		dent = polar_readdir(dir);
+	else
+		dent = readdir(dir);
+	if (dent != NULL)
 		return dent;
 
 	if (errno)
@@ -2720,7 +2928,8 @@ FreeDir(DIR *dir)
 	{
 		AllocateDesc *desc = &allocatedDescs[i];
 
-		if (desc->kind == AllocateDescDir && desc->desc.dir == dir)
+		if ((desc->kind == AllocateDescDir || desc->kind == AllocateVfsDescDir) &&
+			desc->desc.dir == dir)
 			return FreeDesc(desc);
 	}
 
@@ -3020,7 +3229,7 @@ RemovePgTempFiles(void)
 	/*
 	 * Cycle through temp directories for all non-default tablespaces.
 	 */
-	spc_dir = AllocateDir("pg_tblspc");
+	spc_dir = AllocateDir("pg_tblspc", false);
 
 	while ((spc_de = ReadDirExtended(spc_dir, "pg_tblspc", LOG)) != NULL)
 	{
@@ -3070,7 +3279,7 @@ RemovePgTempFilesInDir(const char *tmpdirname, bool missing_ok, bool unlink_all)
 	struct dirent *temp_de;
 	char		rm_path[MAXPGPATH * 2];
 
-	temp_dir = AllocateDir(tmpdirname);
+	temp_dir = AllocateDir(tmpdirname, false);
 
 	if (temp_dir == NULL && errno == ENOENT && missing_ok)
 		return;
@@ -3136,7 +3345,7 @@ RemovePgTempRelationFiles(const char *tsdirname)
 	struct dirent *de;
 	char		dbspace_path[MAXPGPATH * 2];
 
-	ts_dir = AllocateDir(tsdirname);
+	ts_dir = AllocateDir(tsdirname, false);
 
 	while ((de = ReadDirExtended(ts_dir, tsdirname, LOG)) != NULL)
 	{
@@ -3164,7 +3373,7 @@ RemovePgTempRelationFilesInDbspace(const char *dbspacedirname)
 	struct dirent *de;
 	char		rm_path[MAXPGPATH * 2];
 
-	dbspace_dir = AllocateDir(dbspacedirname);
+	dbspace_dir = AllocateDir(dbspacedirname, false);
 
 	while ((de = ReadDirExtended(dbspace_dir, dbspacedirname, LOG)) != NULL)
 	{
@@ -3334,7 +3543,7 @@ walkdir(const char *path,
 	DIR		   *dir;
 	struct dirent *de;
 
-	dir = AllocateDir(path);
+	dir = AllocateDir(path, false);
 
 	while ((de = ReadDirExtended(dir, path, elevel)) != NULL)
 	{
@@ -3399,7 +3608,7 @@ pre_sync_fname(const char *fname, bool isdir, int elevel)
 	if (isdir)
 		return;
 
-	fd = OpenTransientFile(fname, O_RDONLY | PG_BINARY);
+	fd = OpenTransientFile(fname, O_RDONLY | PG_BINARY, false);
 
 	if (fd < 0)
 	{
@@ -3429,7 +3638,7 @@ datadir_fsync_fname(const char *fname, bool isdir, int elevel)
 	 * We want to silently ignoring errors about unreadable files.  Pass that
 	 * desire on to fsync_fname_ext().
 	 */
-	fsync_fname_ext(fname, isdir, true, elevel);
+	fsync_fname_ext(fname, isdir, true, elevel, false);
 }
 
 static void
@@ -3455,10 +3664,12 @@ unlink_if_exists_fname(const char *fname, bool isdir, int elevel)
  * If ignore_perm is true, ignore errors upon trying to open unreadable
  * files. Logs other errors at a caller-specified level.
  *
+ * POLAR: polar_vfs Whether to call vfs interface
+ *
  * Returns 0 if the operation succeeded, -1 otherwise.
  */
 static int
-fsync_fname_ext(const char *fname, bool isdir, bool ignore_perm, int elevel)
+fsync_fname_ext(const char *fname, bool isdir, bool ignore_perm, int elevel, bool polar_vfs)
 {
 	int			fd;
 	int			flags;
@@ -3476,7 +3687,8 @@ fsync_fname_ext(const char *fname, bool isdir, bool ignore_perm, int elevel)
 	else
 		flags |= O_RDONLY;
 
-	fd = OpenTransientFile(fname, flags);
+	/* POLAR polar_vfs interface */
+	fd = OpenTransientFilePerm(fname, flags, pg_file_create_mode, polar_vfs);
 
 	/*
 	 * Some OSs don't allow us to open directories at all (Windows returns
@@ -3495,7 +3707,10 @@ fsync_fname_ext(const char *fname, bool isdir, bool ignore_perm, int elevel)
 		return -1;
 	}
 
-	returncode = pg_fsync(fd);
+	if (polar_vfs)
+		returncode = polar_fsync(fd);
+	else
+		returncode = pg_fsync(fd);
 
 	/*
 	 * Some OSes don't allow us to fsync directories at all, so we can ignore
@@ -3526,9 +3741,11 @@ fsync_fname_ext(const char *fname, bool isdir, bool ignore_perm, int elevel)
  *
  * This is aimed at making file operations persistent on disk in case of
  * an OS crash or power failure.
+ *
+ * POLAR: polar_vfs Whether to call vfs interface
  */
 static int
-fsync_parent_path(const char *fname, int elevel)
+fsync_parent_path(const char *fname, int elevel, bool polar_vfs)
 {
 	char		parentpath[MAXPGPATH];
 
@@ -3543,7 +3760,7 @@ fsync_parent_path(const char *fname, int elevel)
 	if (strlen(parentpath) == 0)
 		strlcpy(parentpath, ".", MAXPGPATH);
 
-	if (fsync_fname_ext(parentpath, true, false, elevel) != 0)
+	if (fsync_fname_ext(parentpath, true, false, elevel, polar_vfs) != 0)
 		return -1;
 
 	return 0;
@@ -3568,7 +3785,177 @@ fsync_parent_path(const char *fname, int elevel)
  * processes to fail.
  */
 int
-MakePGDirectory(const char *directoryName)
+MakePGDirectory(const char *directoryName, bool polar_vfs)
 {
 	return mkdir(directoryName, pg_dir_create_mode);
 }
+
+/* POLAR */
+int
+polar_file_pwrite(File file, char *buffer, int amount, off_t offset, uint32 wait_event_info)
+{
+	int			returnCode;
+	Vfd		   *vfdP;
+
+	Assert(FileIsValid(file));
+
+	DO_DB(elog(LOG, "FileWrite: %d (%s) " INT64_FORMAT " %d %p",
+			   file, VfdCache[file].fileName,
+			   (int64) VfdCache[file].seekPos,
+			   amount, buffer));
+
+	returnCode = FileAccess(file);
+	if (returnCode < 0)
+		return returnCode;
+
+	vfdP = &VfdCache[file];
+
+	if (offset < 0)
+	{
+		errno = EINVAL;
+		return (off_t) -1;
+	}
+	if (vfdP->seekPos != offset)
+	{
+		vfdP->seekPos = offset;
+	}
+
+retry:
+	errno = 0;
+	pgstat_report_wait_start(wait_event_info);
+	returnCode = polar_pwrite(vfdP->fd, buffer, amount, offset);
+	pgstat_report_wait_end();
+
+	/* if write didn't set errno, assume problem is no disk space */
+	if (returnCode != amount && errno == 0)
+		errno = ENOSPC;
+
+	if (returnCode >= 0)
+	{
+		/* if seekPos is unknown, leave it that way */
+		if (!FilePosIsUnknown(vfdP->seekPos))
+			vfdP->seekPos += returnCode;
+	}
+	else
+	{
+		/* OK to retry if interrupted */
+		if (errno == EINTR)
+			goto retry;
+
+		/* Trouble, so assume we don't know the file position anymore */
+		vfdP->seekPos = FileUnknownPos;
+	}
+
+	return returnCode;
+}
+
+int
+polar_file_pread(File file, char *buffer, int amount, off_t offset, uint32 wait_event_info)
+{
+	int			returnCode;
+	Vfd		   *vfdP;
+
+	Assert(FileIsValid(file));
+
+	DO_DB(elog(LOG, "FileRead: %d (%s) " INT64_FORMAT " %d %p",
+			   file, VfdCache[file].fileName,
+			   (int64) VfdCache[file].seekPos,
+			   amount, buffer));
+
+	returnCode = FileAccess(file);
+	if (returnCode < 0)
+		return returnCode;
+
+	vfdP = &VfdCache[file];
+
+	if (offset < 0)
+	{
+		errno = EINVAL;
+		return (off_t) -1;
+	}
+	if (vfdP->seekPos != offset)
+	{
+		vfdP->seekPos = offset;
+	}
+
+retry:
+	pgstat_report_wait_start(wait_event_info);
+	returnCode = polar_pread(vfdP->fd, buffer, amount, offset);
+	pgstat_report_wait_end();
+
+	if (returnCode >= 0)
+	{
+		/* if seekPos is unknown, leave it that way */
+		if (!FilePosIsUnknown(vfdP->seekPos))
+			vfdP->seekPos += returnCode;
+	}
+	else
+	{
+		/*
+		 * Windows may run out of kernel buffers and return "Insufficient
+		 * system resources" error.  Wait a bit and retry to solve it.
+		 *
+		 * It is rumored that EINTR is also possible on some Unix filesystems,
+		 * in which case immediate retry is indicated.
+		 */
+		/* OK to retry if interrupted */
+		if (errno == EINTR)
+			goto retry;
+
+		/* Trouble, so assume we don't know the file position anymore */
+		vfdP->seekPos = FileUnknownPos;
+	}
+
+	return returnCode;
+}
+
+/*
+ * polar_path_name_open_file
+ * POLAR: Forced to call vfs interface
+ */
+File
+polar_path_name_open_file(const char *fileName, int fileFlags)
+{
+	return PathNameOpenFilePerm(fileName, fileFlags, pg_file_create_mode, true);
+}
+
+/*
+ * polar_open_transient_file
+ * POLAR: Forced to call vfs interface
+ */
+int
+polar_open_transient_file(const char *fileName, int fileFlags)
+{
+	return OpenTransientFilePerm(fileName, fileFlags, pg_file_create_mode, true);
+}
+
+/*
+ * polar_allocate_dir
+ * POLAR: Forced to call vfs interface
+ */
+DIR *
+polar_allocate_dir(const char *dirname)
+{
+	return AllocateDirPerm(dirname, true);
+}
+
+/*
+ * polar_fsync_fname
+ * POLAR: Forced to call vfs interface
+ */
+void
+polar_fsync_fname(const char *fname, bool isdir)
+{
+	fsync_fname_ext(fname, isdir, false, ERROR, true);
+}
+
+/*
+ * polar_durable_rename
+ * POLAR: Forced to call vfs interface
+ */
+int
+polar_durable_rename(const char *oldfile, const char *newfile, int elevel)
+{
+	return durable_rename(oldfile, newfile, elevel, true);
+}
+

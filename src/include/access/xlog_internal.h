@@ -182,11 +182,6 @@ typedef XLogLongPageHeaderData *XLogLongPageHeader;
 		*logSegNo = (uint64) log * XLogSegmentsPerXLogId(wal_segsz_bytes) + seg; \
 	} while (0)
 
-#define XLogFilePath(path, tli, logSegNo, wal_segsz_bytes)	\
-	snprintf(path, MAXPGPATH, XLOGDIR "/%08X%08X%08X", tli,	\
-			 (uint32) ((logSegNo) / XLogSegmentsPerXLogId(wal_segsz_bytes)), \
-			 (uint32) ((logSegNo) % XLogSegmentsPerXLogId(wal_segsz_bytes)))
-
 #define TLHistoryFileName(fname, tli)	\
 	snprintf(fname, MAXFNAMELEN, "%08X.history", tli)
 
@@ -194,12 +189,6 @@ typedef XLogLongPageHeaderData *XLogLongPageHeader;
 	(strlen(fname) == 8 + strlen(".history") &&		\
 	 strspn(fname, "0123456789ABCDEF") == 8 &&		\
 	 strcmp((fname) + 8, ".history") == 0)
-
-#define TLHistoryFilePath(path, tli)	\
-	snprintf(path, MAXPGPATH, XLOGDIR "/%08X.history", tli)
-
-#define StatusFilePath(path, xlog, suffix)	\
-	snprintf(path, MAXPGPATH, XLOGDIR "/archive_status/%s%s", xlog, suffix)
 
 #define BackupHistoryFileName(fname, tli, logSegNo, startpoint, wal_segsz_bytes) \
 	snprintf(fname, MAXFNAMELEN, "%08X%08X%08X.%08X.backup", tli, \
@@ -211,12 +200,6 @@ typedef XLogLongPageHeaderData *XLogLongPageHeader;
 	(strlen(fname) > XLOG_FNAME_LEN && \
 	 strspn(fname, "0123456789ABCDEF") == XLOG_FNAME_LEN && \
 	 strcmp((fname) + strlen(fname) - strlen(".backup"), ".backup") == 0)
-
-#define BackupHistoryFilePath(path, tli, logSegNo, startpoint, wal_segsz_bytes)	\
-	snprintf(path, MAXPGPATH, XLOGDIR "/%08X%08X%08X.%08X.backup", tli, \
-			 (uint32) ((logSegNo) / XLogSegmentsPerXLogId(wal_segsz_bytes)), \
-			 (uint32) ((logSegNo) % XLogSegmentsPerXLogId(wal_segsz_bytes)), \
-			 (uint32) (XLogSegmentOffset((startpoint), wal_segsz_bytes)))
 
 /*
  * Information logged when we detect a change in one of the parameters
@@ -332,5 +315,35 @@ extern bool XLogArchiveIsBusy(const char *xlog);
 extern bool XLogArchiveIsReady(const char *xlog);
 extern bool XLogArchiveIsReadyOrDone(const char *xlog);
 extern void XLogArchiveCleanup(const char *xlog);
+
+/* POLAR: FRONTEND use macro definition (old way), BACKEND(normal mode or polardb mode) use function define */
+#ifndef FRONTEND
+extern void polar_backup_history_file_path(char *path, TimeLineID tli, XLogSegNo logSegNo, XLogRecPtr startpoint, int wal_segsz_bytes);
+extern void polar_status_file_path(char *path, const char *xlog, char *suffix);
+extern void polar_tl_history_file_path(char *path, TimeLineID tli);
+extern void polar_xLog_file_path(char *path, TimeLineID tli, XLogSegNo logSegNo, int wal_segsz_bytes);
+
+#define XLogFilePath(a,b,c,d)				polar_xLog_file_path(a,b,c,d)
+#define TLHistoryFilePath(a,b)				polar_tl_history_file_path(a,b)
+#define StatusFilePath(a,b,c)				polar_status_file_path(a,b,c)
+#define BackupHistoryFilePath(a,b,c,d,e)	polar_backup_history_file_path(a,b,c,d,e)
+#else
+#define XLogFilePath(path, tli, logSegNo, wal_segsz_bytes)	\
+	snprintf(path, MAXPGPATH, XLOGDIR "/%08X%08X%08X", tli,	\
+			 (uint32) ((logSegNo) / XLogSegmentsPerXLogId(wal_segsz_bytes)), \
+			 (uint32) ((logSegNo) % XLogSegmentsPerXLogId(wal_segsz_bytes)))
+
+#define TLHistoryFilePath(path, tli)	\
+	snprintf(path, MAXPGPATH, XLOGDIR "/%08X.history", tli)
+
+#define StatusFilePath(path, xlog, suffix)	\
+	snprintf(path, MAXPGPATH, XLOGDIR "/archive_status/%s%s", xlog, suffix)
+
+#define BackupHistoryFilePath(path, tli, logSegNo, startpoint, wal_segsz_bytes)	\
+		snprintf(path, MAXPGPATH, XLOGDIR "/%08X%08X%08X.%08X.backup", tli, \
+				 (uint32) ((logSegNo) / XLogSegmentsPerXLogId(wal_segsz_bytes)), \
+				 (uint32) ((logSegNo) % XLogSegmentsPerXLogId(wal_segsz_bytes)), \
+				 (uint32) (XLogSegmentOffset((startpoint), wal_segsz_bytes)))
+#endif
 
 #endif							/* XLOG_INTERNAL_H */

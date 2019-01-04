@@ -23,6 +23,9 @@
 #include "utils/hsearch.h"
 #include "utils/memutils.h"
 
+/* POLAR */
+#include "storage/polar_fd.h"
+
 static void ResetUnloggedRelationsInTablespaceDir(const char *tsdirname,
 									  int op);
 static void ResetUnloggedRelationsInDbspaceDir(const char *dbspacedirname,
@@ -50,6 +53,7 @@ ResetUnloggedRelations(int op)
 	struct dirent *spc_de;
 	MemoryContext tmpctx,
 				oldctx;
+	char		polar_path[MAXPGPATH];
 
 	/* Log it. */
 	elog(DEBUG1, "resetting unlogged relations: cleanup %d init %d",
@@ -73,9 +77,9 @@ ResetUnloggedRelations(int op)
 	/*
 	 * Cycle through directories for all non-default tablespaces.
 	 */
-	spc_dir = AllocateDir("pg_tblspc");
-
-	while ((spc_de = ReadDir(spc_dir, "pg_tblspc")) != NULL)
+	polar_make_file_path_level2(polar_path, "pg_tblspc");
+	spc_dir = polar_allocate_dir(polar_path);
+	while ((spc_de = ReadDir(spc_dir, polar_path)) != NULL)
 	{
 		if (strcmp(spc_de->d_name, ".") == 0 ||
 			strcmp(spc_de->d_name, "..") == 0)
@@ -105,7 +109,7 @@ ResetUnloggedRelationsInTablespaceDir(const char *tsdirname, int op)
 	struct dirent *de;
 	char		dbspace_path[MAXPGPATH * 2];
 
-	ts_dir = AllocateDir(tsdirname);
+	ts_dir = AllocateDir(tsdirname, false);
 
 	/*
 	 * If we get ENOENT on a tablespace directory, log it and return.  This
@@ -178,7 +182,7 @@ ResetUnloggedRelationsInDbspaceDir(const char *dbspacedirname, int op)
 		hash = hash_create("unlogged hash", 32, &ctl, HASH_ELEM);
 
 		/* Scan the directory. */
-		dbspace_dir = AllocateDir(dbspacedirname);
+		dbspace_dir = AllocateDir(dbspacedirname, false);
 		while ((de = ReadDir(dbspace_dir, dbspacedirname)) != NULL)
 		{
 			ForkNumber	forkNum;
@@ -219,7 +223,7 @@ ResetUnloggedRelationsInDbspaceDir(const char *dbspacedirname, int op)
 		/*
 		 * Now, make a second pass and remove anything that matches.
 		 */
-		dbspace_dir = AllocateDir(dbspacedirname);
+		dbspace_dir = AllocateDir(dbspacedirname, false);
 		while ((de = ReadDir(dbspace_dir, dbspacedirname)) != NULL)
 		{
 			ForkNumber	forkNum;
@@ -274,7 +278,7 @@ ResetUnloggedRelationsInDbspaceDir(const char *dbspacedirname, int op)
 	if ((op & UNLOGGED_RELATION_INIT) != 0)
 	{
 		/* Scan the directory. */
-		dbspace_dir = AllocateDir(dbspacedirname);
+		dbspace_dir = AllocateDir(dbspacedirname, false);
 		while ((de = ReadDir(dbspace_dir, dbspacedirname)) != NULL)
 		{
 			ForkNumber	forkNum;
@@ -317,7 +321,7 @@ ResetUnloggedRelationsInDbspaceDir(const char *dbspacedirname, int op)
 		 * separate pass to allow the kernel to perform all the flushes
 		 * (especially the metadata ones) at once.
 		 */
-		dbspace_dir = AllocateDir(dbspacedirname);
+		dbspace_dir = AllocateDir(dbspacedirname, false);
 		while ((de = ReadDir(dbspace_dir, dbspacedirname)) != NULL)
 		{
 			ForkNumber	forkNum;
@@ -341,7 +345,7 @@ ResetUnloggedRelationsInDbspaceDir(const char *dbspacedirname, int op)
 					 dbspacedirname, oidbuf, de->d_name + oidchars + 1 +
 					 strlen(forkNames[INIT_FORKNUM]));
 
-			fsync_fname(mainpath, false);
+			fsync_fname(mainpath, false, false);
 		}
 
 		FreeDir(dbspace_dir);
@@ -354,7 +358,7 @@ ResetUnloggedRelationsInDbspaceDir(const char *dbspacedirname, int op)
 		 * get to doing UNLOGGED_RELATION_INIT, we'll redo the cleanup step
 		 * too at the next startup attempt.
 		 */
-		fsync_fname(dbspacedirname, true);
+		fsync_fname(dbspacedirname, true, false);
 	}
 }
 

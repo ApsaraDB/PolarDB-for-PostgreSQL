@@ -33,6 +33,10 @@
 #include "utils/memutils.h"
 #include "utils/timestamp.h"
 
+/* POLAR */
+#include "storage/fd.h"
+#include "storage/polar_fd.h"
+
 typedef struct
 {
 	char	   *location;
@@ -121,7 +125,7 @@ read_binary_file(const char *filename, int64 seek_offset, int64 bytes_to_read,
 		{
 			struct stat fst;
 
-			if (stat(filename, &fst) < 0)
+			if (polar_stat(filename, &fst) < 0)
 			{
 				if (missing_ok && errno == ENOENT)
 					return NULL;
@@ -372,7 +376,7 @@ pg_stat_file(PG_FUNCTION_ARGS)
 
 	filename = convert_and_check_filename(filename_t);
 
-	if (stat(filename, &fst) < 0)
+	if (polar_stat(filename, &fst) < 0)
 	{
 		if (missing_ok && errno == ENOENT)
 			PG_RETURN_NULL();
@@ -468,7 +472,7 @@ pg_ls_dir(PG_FUNCTION_ARGS)
 		fctx->location = convert_and_check_filename(PG_GETARG_TEXT_PP(0));
 
 		fctx->include_dot_dirs = include_dot_dirs;
-		fctx->dirdesc = AllocateDir(fctx->location);
+		fctx->dirdesc = polar_allocate_dir(fctx->location);
 
 		if (!fctx->dirdesc)
 		{
@@ -546,7 +550,7 @@ pg_ls_dir_files(FunctionCallInfo fcinfo, const char *dir)
 		funcctx->tuple_desc = BlessTupleDesc(tupdesc);
 
 		fctx->location = pstrdup(dir);
-		fctx->dirdesc = AllocateDir(fctx->location);
+		fctx->dirdesc = polar_allocate_dir(fctx->location);
 
 		if (!fctx->dirdesc)
 			ereport(ERROR,
@@ -575,7 +579,7 @@ pg_ls_dir_files(FunctionCallInfo fcinfo, const char *dir)
 
 		/* Get the file info */
 		snprintf(path, sizeof(path), "%s/%s", fctx->location, de->d_name);
-		if (stat(path, &attrib) < 0)
+		if (polar_stat(path, &attrib) < 0)
 			ereport(ERROR,
 					(errcode_for_file_access(),
 					 errmsg("could not stat directory \"%s\": %m", dir)));

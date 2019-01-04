@@ -46,6 +46,8 @@
 #include "utils/rel.h"
 #include "utils/tqual.h"
 
+/* POLAR */
+#include "storage/polar_fd.h"
 
 /*
  * IsSystemRelation
@@ -445,12 +447,12 @@ GetNewRelFileNode(Oid reltablespace, Relation pg_class, char relpersistence)
 
 		/* Check for existing file of same name */
 		rpath = relpath(rnode, MAIN_FORKNUM);
-		fd = BasicOpenFile(rpath, O_RDONLY | PG_BINARY);
+		fd = BasicOpenFile(rpath, O_RDONLY | PG_BINARY, true);
 
 		if (fd >= 0)
 		{
 			/* definite collision */
-			close(fd);
+			polar_close(fd);
 			collides = true;
 		}
 		else

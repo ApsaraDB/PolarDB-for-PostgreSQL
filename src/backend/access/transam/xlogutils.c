@@ -30,6 +30,9 @@
 #include "utils/hsearch.h"
 #include "utils/rel.h"
 
+/* POLAR */
+#include "storage/bufpage.h"
+#include "storage/polar_fd.h"
 
 /*
  * During XLOG replay, we may see XLOG records for incremental updates of
@@ -437,7 +440,7 @@ Buffer
 XLogReadBufferExtended(RelFileNode rnode, ForkNumber forknum,
 					   BlockNumber blkno, ReadBufferMode mode)
 {
-	BlockNumber lastblock;
+	BlockNumber lastblock = InvalidBlockNumber;
 	Buffer		buffer;
 	SMgrRelation smgr;
 
@@ -454,11 +457,15 @@ XLogReadBufferExtended(RelFileNode rnode, ForkNumber forknum,
 	 * filesystem loses an inode during a crash.  Better to write the data
 	 * until we are actually told to delete the file.)
 	 */
-	smgrcreate(smgr, forknum, true);
+	/* POLAR: replica mode can not write data to shared storage */
+	if (!polar_in_replica_mode())
+	{
+		smgrcreate(smgr, forknum, true);
+		lastblock = smgrnblocks(smgr, forknum);
+	}
 
-	lastblock = smgrnblocks(smgr, forknum);
-
-	if (blkno < lastblock)
+	/* POLAR: replica mode data file in reomte storage has been expanded */
+	if (polar_in_replica_mode() || blkno < lastblock)
 	{
 		/* page exists in file */
 		buffer = ReadBufferWithoutRelcache(rnode, forknum, blkno,
@@ -687,13 +694,13 @@ XLogRead(char *buf, int segsize, TimeLineID tli, XLogRecPtr startptr,
 			char		path[MAXPGPATH];
 
 			if (sendFile >= 0)
-				close(sendFile);
+				polar_close(sendFile);
 
 			XLByteToSeg(recptr, sendSegNo, segsize);
 
 			XLogFilePath(path, tli, sendSegNo, segsize);
 
-			sendFile = BasicOpenFile(path, O_RDONLY | PG_BINARY);
+			sendFile = BasicOpenFile(path, O_RDONLY | PG_BINARY, true);
 
 			if (sendFile < 0)
 			{
@@ -715,7 +722,7 @@ XLogRead(char *buf, int segsize, TimeLineID tli, XLogRecPtr startptr,
 		/* Need to seek in the file? */
 		if (sendOff != startoff)
 		{
-			if (lseek(sendFile, (off_t) startoff, SEEK_SET) < 0)
+			if (polar_lseek(sendFile, (off_t) startoff, SEEK_SET) < 0)
 			{
 				char		path[MAXPGPATH];
 				int			save_errno = errno;
@@ -737,7 +744,7 @@ XLogRead(char *buf, int segsize, TimeLineID tli, XLogRecPtr startptr,
 			segbytes = nbytes;
 
 		pgstat_report_wait_start(WAIT_EVENT_WAL_READ);
-		readbytes = read(sendFile, p, segbytes);
+		readbytes = polar_read(sendFile, p, segbytes);
 		pgstat_report_wait_end();
 		if (readbytes <= 0)
 		{

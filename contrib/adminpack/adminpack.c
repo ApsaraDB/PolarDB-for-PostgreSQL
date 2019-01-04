@@ -511,7 +511,7 @@ pg_logdir_ls_internal(FunctionCallInfo fcinfo)
 		funcctx->attinmeta = TupleDescGetAttInMetadata(tupdesc);
 
 		fctx->location = pstrdup(Log_directory);
-		fctx->dirdesc = AllocateDir(fctx->location);
+		fctx->dirdesc = AllocateDir(fctx->location, false);
 
 		if (!fctx->dirdesc)
 			ereport(ERROR,

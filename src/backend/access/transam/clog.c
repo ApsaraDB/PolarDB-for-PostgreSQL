@@ -43,6 +43,10 @@
 #include "pg_trace.h"
 #include "storage/proc.h"
 
+/* POLAR */
+#include "utils/guc.h"
+#include "storage/polar_fd.h"
+
 /*
  * Defines for CLOG page sizes.  A page is the same BLCKSZ as is used
  * everywhere else in Postgres.
@@ -682,7 +686,15 @@ TransactionIdGetStatus(TransactionId xid, XLogRecPtr *lsn)
 Size
 CLOGShmemBuffers(void)
 {
-	return Min(128, Max(4, NBuffers / 512));
+	if (polar_enable_shared_storage_mode)
+	{
+		int clog_slot_size = Min(polar_clog_slot_size, Max(4, NBuffers / 512));
+
+		elog (LOG, "clog slot size set to %d", clog_slot_size);
+		return clog_slot_size;
+	}
+	else
+		return Min(128, Max(4, NBuffers / 512));
 }
 
 /*
@@ -698,8 +710,9 @@ void
 CLOGShmemInit(void)
 {
 	ClogCtl->PagePrecedes = CLOGPagePrecedes;
+	/* POLAR: pg_xact file in shared storage */
 	SimpleLruInit(ClogCtl, "clog", CLOGShmemBuffers(), CLOG_LSNS_PER_PAGE,
-				  CLogControlLock, "pg_xact", LWTRANCHE_CLOG_BUFFERS);
+				  CLogControlLock, "pg_xact", LWTRANCHE_CLOG_BUFFERS, true);
 }
 
 /*
@@ -822,6 +835,8 @@ TrimCLOG(void)
 void
 ShutdownCLOG(void)
 {
+	char		polar_path[MAXPGPATH];
+
 	/* Flush dirty CLOG pages to disk */
 	TRACE_POSTGRESQL_CLOG_CHECKPOINT_START(false);
 	SimpleLruFlush(ClogCtl, false);
@@ -830,7 +845,8 @@ ShutdownCLOG(void)
 	 * fsync pg_xact to ensure that any files flushed previously are durably
 	 * on disk.
 	 */
-	fsync_fname("pg_xact", true);
+	polar_make_file_path_level2(polar_path, "pg_xact");
+	polar_fsync_fname(polar_path, true);
 
 	TRACE_POSTGRESQL_CLOG_CHECKPOINT_DONE(false);
 }
@@ -841,6 +857,8 @@ ShutdownCLOG(void)
 void
 CheckPointCLOG(void)
 {
+	char		polar_path[MAXPGPATH];
+
 	/* Flush dirty CLOG pages to disk */
 	TRACE_POSTGRESQL_CLOG_CHECKPOINT_START(true);
 	SimpleLruFlush(ClogCtl, true);
@@ -849,7 +867,8 @@ CheckPointCLOG(void)
 	 * fsync pg_xact to ensure that any files flushed previously are durably
 	 * on disk.
 	 */
-	fsync_fname("pg_xact", true);
+	polar_make_file_path_level2(polar_path, "pg_xact");
+	polar_fsync_fname(polar_path, true);
 
 	TRACE_POSTGRESQL_CLOG_CHECKPOINT_DONE(true);
 }

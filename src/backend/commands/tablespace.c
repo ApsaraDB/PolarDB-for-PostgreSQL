@@ -84,6 +84,8 @@
 #include "utils/tqual.h"
 #include "utils/varlena.h"
 
+/* POLAR */
+#include "storage/polar_fd.h"
 
 /* GUC variables */
 char	   *default_tablespace = NULL;
@@ -128,9 +130,9 @@ TablespaceCreateDbspace(Oid spcNode, Oid dbNode, bool isRedo)
 	Assert(OidIsValid(spcNode));
 	Assert(OidIsValid(dbNode));
 
-	dir = GetDatabasePath(dbNode, spcNode);
+	dir = polar_get_database_path(dbNode, spcNode);
 
-	if (stat(dir, &st) < 0)
+	if (polar_stat(dir, &st) < 0)
 	{
 		/* Directory does not exist? */
 		if (errno == ENOENT)
@@ -145,14 +147,14 @@ TablespaceCreateDbspace(Oid spcNode, Oid dbNode, bool isRedo)
 			 * Recheck to see if someone created the directory while we were
 			 * waiting for lock.
 			 */
-			if (stat(dir, &st) == 0 && S_ISDIR(st.st_mode))
+			if (polar_stat(dir, &st) == 0 && S_ISDIR(st.st_mode))
 			{
 				/* Directory was created */
 			}
 			else
 			{
 				/* Directory creation failed? */
-				if (MakePGDirectory(dir) < 0)
+				if (polar_make_pg_directory(dir) < 0)
 				{
 					char	   *parentdir;
 
@@ -174,7 +176,7 @@ TablespaceCreateDbspace(Oid spcNode, Oid dbNode, bool isRedo)
 					get_parent_directory(parentdir);
 					get_parent_directory(parentdir);
 					/* Can't create parent and it doesn't already exist? */
-					if (MakePGDirectory(parentdir) < 0 && errno != EEXIST)
+					if (polar_make_pg_directory(parentdir) < 0 && errno != EEXIST)
 						ereport(ERROR,
 								(errcode_for_file_access(),
 								 errmsg("could not create directory \"%s\": %m",
@@ -185,7 +187,7 @@ TablespaceCreateDbspace(Oid spcNode, Oid dbNode, bool isRedo)
 					parentdir = pstrdup(dir);
 					get_parent_directory(parentdir);
 					/* Can't create parent and it doesn't already exist? */
-					if (MakePGDirectory(parentdir) < 0 && errno != EEXIST)
+					if (polar_make_pg_directory(parentdir) < 0 && errno != EEXIST)
 						ereport(ERROR,
 								(errcode_for_file_access(),
 								 errmsg("could not create directory \"%s\": %m",
@@ -193,7 +195,7 @@ TablespaceCreateDbspace(Oid spcNode, Oid dbNode, bool isRedo)
 					pfree(parentdir);
 
 					/* Create database directory */
-					if (MakePGDirectory(dir) < 0)
+					if (polar_make_pg_directory(dir) < 0)
 						ereport(ERROR,
 								(errcode_for_file_access(),
 								 errmsg("could not create directory \"%s\": %m",
@@ -242,6 +244,10 @@ CreateTableSpace(CreateTableSpaceStmt *stmt)
 	char	   *location;
 	Oid			ownerId;
 	Datum		newOptions;
+
+	/* POLAR: disable tablespace ddl for now */
+	if (POLAR_FILE_IN_SHARED_STORAGE())
+		elog(ERROR, "polardb is not support user define tablespace yet");
 
 	/* Must be super user */
 	if (!superuser())
@@ -612,7 +618,7 @@ create_tablespace_directories(const char *location, const Oid tablespaceoid)
 	 * The creation of the version directory prevents more than one tablespace
 	 * in a single location.
 	 */
-	if (MakePGDirectory(location_with_version_dir) < 0)
+	if (MakePGDirectory(location_with_version_dir, false) < 0)
 	{
 		if (errno == EEXIST)
 			ereport(ERROR,
@@ -694,7 +700,7 @@ destroy_tablespace_directories(Oid tablespaceoid, bool redo)
 	 * removing the catalog entries (and symlink if still present), so we
 	 * should not give a hard error here.
 	 */
-	dirdesc = AllocateDir(linkloc_with_version_dir);
+	dirdesc = AllocateDir(linkloc_with_version_dir, false);
 	if (dirdesc == NULL)
 	{
 		if (errno == ENOENT)
@@ -835,7 +841,7 @@ directory_is_empty(const char *path)
 	DIR		   *dirdesc;
 	struct dirent *de;
 
-	dirdesc = AllocateDir(path);
+	dirdesc = polar_allocate_dir(path);
 
 	while ((de = ReadDir(dirdesc, path)) != NULL)
 	{
@@ -1470,6 +1476,10 @@ tblspc_redo(XLogReaderState *record)
 
 	/* Backup blocks are not used in tblspc records */
 	Assert(!XLogRecHasAnyBlockRefs(record));
+
+	/* POLAR: disable tablespace ddl */
+	if (POLAR_FILE_IN_SHARED_STORAGE())
+		elog(ERROR, "user defined tablespace is not supported yet");
 
 	if (info == XLOG_TBLSPC_CREATE)
 	{

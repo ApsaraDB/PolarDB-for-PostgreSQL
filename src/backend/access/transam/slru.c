@@ -59,9 +59,9 @@
 #include "storage/shmem.h"
 #include "miscadmin.h"
 
-
-#define SlruFileName(ctl, path, seg) \
-	snprintf(path, MAXPGPATH, "%s/%04X", (ctl)->Dir, seg)
+/* POLAR */
+#include "utils/guc.h"
+#include "storage/polar_fd.h"
 
 /*
  * During SimpleLruFlush(), we will usually not need to write/fsync more
@@ -120,6 +120,9 @@ typedef enum
 	SLRU_CLOSE_FAILED
 } SlruErrorCause;
 
+/* POLAR */
+#define	POLAR_SLRU_FILE_IN_SHARED_STORAGE()	(polar_enable_shared_storage_mode && ctl->shared->polar_file_in_shared_storage)
+
 static SlruErrorCause slru_errcause;
 static int	slru_errno;
 
@@ -136,6 +139,12 @@ static int	SlruSelectLRUPage(SlruCtl ctl, int pageno);
 static bool SlruScanDirCbDeleteCutoff(SlruCtl ctl, char *filename,
 						  int segpage, void *data);
 static void SlruInternalDeleteSegment(SlruCtl ctl, char *filename);
+
+/* POLAR */
+static void polar_slru_file_name_by_seg(SlruCtl ctl, char *path, int seg);
+static void polar_slru_file_name_by_name(SlruCtl ctl, char *path, char *filename);
+static void polar_slru_file_dir(SlruCtl ctl, char *path);
+#define SlruFileName(a,b,c)			polar_slru_file_name_by_seg(a,b,c)
 
 /*
  * Initialization of shared memory
@@ -161,9 +170,12 @@ SimpleLruShmemSize(int nslots, int nlsns)
 	return BUFFERALIGN(sz) + BLCKSZ * nslots;
 }
 
+/*
+ * POLAR: polar_remote_file slru file can put into remote file system 
+ */
 void
 SimpleLruInit(SlruCtl ctl, const char *name, int nslots, int nlsns,
-			  LWLock *ctllock, const char *subdir, int tranche_id)
+			  LWLock *ctllock, const char *subdir, int tranche_id, bool polar_shared_file)
 {
 	SlruShared	shared;
 	bool		found;
@@ -182,6 +194,8 @@ SimpleLruInit(SlruCtl ctl, const char *name, int nslots, int nlsns,
 		Assert(!found);
 
 		memset(shared, 0, sizeof(SlruSharedData));
+
+		shared->polar_file_in_shared_storage = polar_shared_file;
 
 		shared->ControlLock = ctllock;
 
@@ -599,7 +613,7 @@ SimpleLruDoesPhysicalPageExist(SlruCtl ctl, int pageno)
 
 	SlruFileName(ctl, path, segno);
 
-	fd = OpenTransientFile(path, O_RDWR | PG_BINARY);
+	fd = polar_open_transient_file(path, O_RDWR | PG_BINARY);
 	if (fd < 0)
 	{
 		/* expected: file doesn't exist */
@@ -612,7 +626,7 @@ SimpleLruDoesPhysicalPageExist(SlruCtl ctl, int pageno)
 		SlruReportIOError(ctl, pageno, 0);
 	}
 
-	if ((endpos = lseek(fd, 0, SEEK_END)) < 0)
+	if ((endpos = polar_lseek(fd, 0, SEEK_END)) < 0)
 	{
 		slru_errcause = SLRU_SEEK_FAILED;
 		slru_errno = errno;
@@ -654,7 +668,7 @@ SlruPhysicalReadPage(SlruCtl ctl, int pageno, int slotno)
 	 * SlruPhysicalWritePage).  Hence, if we are InRecovery, allow the case
 	 * where the file doesn't exist, and return zeroes instead.
 	 */
-	fd = OpenTransientFile(path, O_RDWR | PG_BINARY);
+	fd = polar_open_transient_file(path, O_RDWR | PG_BINARY);
 	if (fd < 0)
 	{
 		if (errno != ENOENT || !InRecovery)
@@ -671,7 +685,7 @@ SlruPhysicalReadPage(SlruCtl ctl, int pageno, int slotno)
 		return true;
 	}
 
-	if (lseek(fd, (off_t) offset, SEEK_SET) < 0)
+	if (polar_lseek(fd, (off_t) offset, SEEK_SET) < 0)
 	{
 		slru_errcause = SLRU_SEEK_FAILED;
 		slru_errno = errno;
@@ -681,7 +695,7 @@ SlruPhysicalReadPage(SlruCtl ctl, int pageno, int slotno)
 
 	errno = 0;
 	pgstat_report_wait_start(WAIT_EVENT_SLRU_READ);
-	if (read(fd, shared->page_buffer[slotno], BLCKSZ) != BLCKSZ)
+	if (polar_read(fd, shared->page_buffer[slotno], BLCKSZ) != BLCKSZ)
 	{
 		pgstat_report_wait_end();
 		slru_errcause = SLRU_READ_FAILED;
@@ -724,6 +738,13 @@ SlruPhysicalWritePage(SlruCtl ctl, int pageno, int slotno, SlruFlush fdata)
 	int			offset = rpageno * BLCKSZ;
 	char		path[MAXPGPATH];
 	int			fd = -1;
+
+	if (polar_in_replica_mode())
+	{
+		SlruFileName(ctl, path, segno);
+		elog(DEBUG1, "polardb replica skip write file %s", path);
+		return true;
+	}
 
 	/*
 	 * Honor the write-WAL-before-data rule, if appropriate, so that we do not
@@ -804,7 +825,7 @@ SlruPhysicalWritePage(SlruCtl ctl, int pageno, int slotno, SlruFlush fdata)
 		 * don't use O_EXCL or O_TRUNC or anything like that.
 		 */
 		SlruFileName(ctl, path, segno);
-		fd = OpenTransientFile(path, O_RDWR | O_CREAT | PG_BINARY);
+		fd = polar_open_transient_file(path, O_RDWR | O_CREAT | PG_BINARY);
 		if (fd < 0)
 		{
 			slru_errcause = SLRU_OPEN_FAILED;
@@ -831,7 +852,7 @@ SlruPhysicalWritePage(SlruCtl ctl, int pageno, int slotno, SlruFlush fdata)
 		}
 	}
 
-	if (lseek(fd, (off_t) offset, SEEK_SET) < 0)
+	if (polar_lseek(fd, (off_t) offset, SEEK_SET) < 0)
 	{
 		slru_errcause = SLRU_SEEK_FAILED;
 		slru_errno = errno;
@@ -842,7 +863,7 @@ SlruPhysicalWritePage(SlruCtl ctl, int pageno, int slotno, SlruFlush fdata)
 
 	errno = 0;
 	pgstat_report_wait_start(WAIT_EVENT_SLRU_WRITE);
-	if (write(fd, shared->page_buffer[slotno], BLCKSZ) != BLCKSZ)
+	if (polar_write(fd, shared->page_buffer[slotno], BLCKSZ) != BLCKSZ)
 	{
 		pgstat_report_wait_end();
 		/* if write didn't set errno, assume problem is no disk space */
@@ -863,7 +884,7 @@ SlruPhysicalWritePage(SlruCtl ctl, int pageno, int slotno, SlruFlush fdata)
 	if (!fdata)
 	{
 		pgstat_report_wait_start(WAIT_EVENT_SLRU_SYNC);
-		if (ctl->do_fsync && pg_fsync(fd))
+		if (ctl->do_fsync && polar_fsync(fd))
 		{
 			pgstat_report_wait_end();
 			slru_errcause = SLRU_FSYNC_FAILED;
@@ -1140,7 +1161,11 @@ SimpleLruFlush(SlruCtl ctl, bool allow_redirtied)
 	for (i = 0; i < fdata.num_files; i++)
 	{
 		pgstat_report_wait_start(WAIT_EVENT_SLRU_FLUSH_SYNC);
-		if (ctl->do_fsync && pg_fsync(fdata.fd[i]))
+		if (polar_in_replica_mode())
+		{
+			elog(LOG, "polardb replica skip fsync file fd %d", fdata.fd[i]);
+		}
+		else if (ctl->do_fsync && polar_fsync(fdata.fd[i]))
 		{
 			slru_errcause = SLRU_FSYNC_FAILED;
 			slru_errno = errno;
@@ -1248,10 +1273,15 @@ SlruInternalDeleteSegment(SlruCtl ctl, char *filename)
 {
 	char		path[MAXPGPATH];
 
-	snprintf(path, MAXPGPATH, "%s/%s", ctl->Dir, filename);
-	ereport(DEBUG2,
-			(errmsg("removing file \"%s\"", path)));
-	unlink(path);
+	if (polar_in_replica_mode())
+		elog(LOG, "polardb replica skip unlink file %s", path);
+	else
+	{
+		polar_slru_file_name_by_name(ctl, path, filename);
+		ereport(LOG,
+				(errmsg("removing file \"%s\"", path)));
+		polar_unlink(path);
+	}
 }
 
 /*
@@ -1304,10 +1334,16 @@ restart:
 	if (did_write)
 		goto restart;
 
-	snprintf(path, MAXPGPATH, "%s/%04X", ctl->Dir, segno);
-	ereport(DEBUG2,
+	if (polar_in_replica_mode())
+		elog(LOG, "polardb replica skip unlink file %s", path);
+	else
+	{
+		SlruFileName(ctl, path, segno);
+
+		ereport(LOG,
 			(errmsg("removing file \"%s\"", path)));
-	unlink(path);
+		polar_unlink(path);
+	}
 
 	LWLockRelease(shared->ControlLock);
 }
@@ -1380,9 +1416,11 @@ SlruScanDirectory(SlruCtl ctl, SlruScanCallback callback, void *data)
 	struct dirent *clde;
 	int			segno;
 	int			segpage;
+	char		path[MAXPGPATH];
 
-	cldir = AllocateDir(ctl->Dir);
-	while ((clde = ReadDir(cldir, ctl->Dir)) != NULL)
+	polar_slru_file_dir(ctl, path);
+	cldir = polar_allocate_dir(path);
+	while ((clde = ReadDir(cldir, path)) != NULL)
 	{
 		size_t		len;
 
@@ -1405,3 +1443,40 @@ SlruScanDirectory(SlruCtl ctl, SlruScanCallback callback, void *data)
 
 	return retval;
 }
+
+/*
+ * POLAR: Extend from SlruFileName
+ */
+static void
+polar_slru_file_name_by_seg(SlruCtl ctl, char *path, int seg)
+{
+	if (POLAR_SLRU_FILE_IN_SHARED_STORAGE())
+		snprintf(path, MAXPGPATH, "%s/%s/%04X", polar_datadir, (ctl)->Dir, seg);
+	else
+		snprintf(path, MAXPGPATH, "%s/%04X", (ctl)->Dir, seg);
+
+	return;
+}
+
+static void
+polar_slru_file_dir(SlruCtl ctl, char *path)
+{
+	if (POLAR_SLRU_FILE_IN_SHARED_STORAGE())
+		snprintf(path, MAXPGPATH, "%s/%s", polar_datadir, (ctl)->Dir);
+	else
+		snprintf(path, MAXPGPATH, "%s", (ctl)->Dir);
+
+	return;
+}
+
+static void
+polar_slru_file_name_by_name(SlruCtl ctl, char *path, char *filename)
+{
+	if (POLAR_SLRU_FILE_IN_SHARED_STORAGE())
+		snprintf(path, MAXPGPATH, "%s/%s/%s", polar_datadir, ctl->Dir, filename);
+	else
+		snprintf(path, MAXPGPATH, "%s/%s", ctl->Dir, filename);
+
+	return;
+}
+

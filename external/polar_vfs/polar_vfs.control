@@ -1,0 +1,4 @@
+comment = 'polar_vfs'
+default_version = '1.0'
+module_pathname = '$libdir/polar_vfs'
+relocatable = true

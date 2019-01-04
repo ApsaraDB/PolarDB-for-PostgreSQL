@@ -396,7 +396,7 @@ perform_base_backup(basebackup_options *opt)
 		XLByteToPrevSeg(endptr, endsegno, wal_segment_size);
 		XLogFileName(lastoff, ThisTimeLineID, endsegno, wal_segment_size);
 
-		dir = AllocateDir("pg_wal");
+		dir = AllocateDir("pg_wal", false);
 		while ((de = ReadDir(dir, "pg_wal")) != NULL)
 		{
 			/* Does it look like a WAL segment, and is it in the range? */
@@ -1049,7 +1049,7 @@ sendDir(const char *path, int basepathlen, bool sizeonly, List *tablespaces,
 			isDbDir = true;
 	}
 
-	dir = AllocateDir(path);
+	dir = AllocateDir(path, false);
 	while ((de = ReadDir(dir, path)) != NULL)
 	{
 		int			excludeIdx;

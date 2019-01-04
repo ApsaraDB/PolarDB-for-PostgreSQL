@@ -63,6 +63,10 @@
 #include "utils/syscache.h"
 #include "utils/tqual.h"
 
+/* POLAR */
+#include "replication/syncrep.h"
+#include "storage/polar_fd.h"
+#include "utils/guc.h"
 
 typedef struct
 {
@@ -90,6 +94,9 @@ static bool have_createdb_privilege(void);
 static void remove_dbtablespaces(Oid db_id);
 static bool check_db_file_conflict(Oid db_id);
 static int	errdetail_busy_db(int notherbackends, int npreparedxacts);
+
+/* POLAR */
+static void polar_remove_dbfile(Oid db_id);
 
 
 /*
@@ -448,7 +455,7 @@ createdb(ParseState *pstate, const CreatedbStmt *stmt)
 			char	   *srcpath;
 			struct stat st;
 
-			srcpath = GetDatabasePath(src_dboid, dst_deftablespace);
+			srcpath = polar_get_database_path(src_dboid, dst_deftablespace);
 
 			if (stat(srcpath, &st) == 0 &&
 				S_ISDIR(st.st_mode) &&
@@ -603,9 +610,8 @@ createdb(ParseState *pstate, const CreatedbStmt *stmt)
 			if (srctablespace == GLOBALTABLESPACE_OID)
 				continue;
 
-			srcpath = GetDatabasePath(src_dboid, srctablespace);
-
-			if (stat(srcpath, &st) < 0 || !S_ISDIR(st.st_mode) ||
+			srcpath = polar_get_database_path(src_dboid, srctablespace);
+			if (polar_stat(srcpath, &st) < 0 || !S_ISDIR(st.st_mode) ||
 				directory_is_empty(srcpath))
 			{
 				/* Assume we can ignore it */
@@ -618,14 +624,29 @@ createdb(ParseState *pstate, const CreatedbStmt *stmt)
 			else
 				dsttablespace = srctablespace;
 
-			dstpath = GetDatabasePath(dboid, dsttablespace);
+			dstpath = GetDatabasePath(dboid, dsttablespace, false);
 
 			/*
 			 * Copy this subdirectory to the new location
 			 *
 			 * We don't need to copy subdirectories
 			 */
-			copydir(srcpath, dstpath, false);
+			/* POLAR: copy data in shared storage*/ 
+			if (POLAR_FILE_IN_SHARED_STORAGE())
+			{
+				char	   *polar_dstpath = NULL;
+
+				polar_dstpath = polar_get_database_path(dboid, dsttablespace);
+				polar_copydir(srcpath, polar_dstpath, false);
+
+				/* POLAR: Also need create local dir for cache file */ 
+				if (mkdir(dstpath, S_IRWXU) != 0)
+					ereport(ERROR,
+					(errcode_for_file_access(),
+				 	errmsg("could not create directory \"%s\": %m", dstpath)));
+			}
+			else
+				copydir(srcpath, dstpath, false);
 
 			/* Record the filesystem change in XLOG */
 			{
@@ -950,10 +971,23 @@ dropdb(const char *dbname, bool missing_ok)
 	 */
 	RequestCheckpoint(CHECKPOINT_IMMEDIATE | CHECKPOINT_FORCE | CHECKPOINT_WAIT);
 
-	/*
-	 * Remove all tablespace subdirs belonging to the database.
-	 */
-	remove_dbtablespaces(db_id);
+	if (POLAR_FILE_IN_SHARED_STORAGE() &&
+		polar_dropdb_write_wal_before_rmdir)
+	{
+		/*
+		 * POLAR: write wal then do unlink file
+		 * because before rmdir file in shared storage,
+		 * need all ro node disconnect on this db.
+		 */
+		polar_remove_dbfile(db_id);
+	}
+	else
+	{
+		/*
+		 * Remove all tablespace subdirs belonging to the database.
+		 */
+		remove_dbtablespaces(db_id);
+	}
 
 	/*
 	 * Close pg_database, but keep lock till commit.
@@ -1084,6 +1118,7 @@ movedb(const char *dbname, const char *tblspcname)
 	DIR		   *dstdir;
 	struct dirent *xlde;
 	movedb_failure_params fparms;
+	char		*polar_dst_dbpath = NULL;
 
 	/*
 	 * Look up the target database's OID, and get exclusive lock on it. We
@@ -1172,8 +1207,12 @@ movedb(const char *dbname, const char *tblspcname)
 	/*
 	 * Get old and new database paths
 	 */
-	src_dbpath = GetDatabasePath(db_id, src_tblspcoid);
-	dst_dbpath = GetDatabasePath(db_id, dst_tblspcoid);
+	/* POLAR: shared storage dir */
+	src_dbpath = polar_get_database_path(db_id, src_tblspcoid);
+	polar_dst_dbpath = polar_get_database_path(db_id, dst_tblspcoid);
+
+	/* POLAR: local dir */
+	dst_dbpath = GetDatabasePath(db_id, dst_tblspcoid, false);
 
 	/*
 	 * Force a checkpoint before proceeding. This will force all dirty
@@ -1213,10 +1252,10 @@ movedb(const char *dbname, const char *tblspcname)
 	 * relations' pg_class.reltablespace entries to zero, and we don't have
 	 * access to the DB's pg_class to do so.
 	 */
-	dstdir = AllocateDir(dst_dbpath);
+	dstdir = polar_allocate_dir(polar_dst_dbpath);
 	if (dstdir != NULL)
 	{
-		while ((xlde = ReadDir(dstdir, dst_dbpath)) != NULL)
+		while ((xlde = ReadDir(dstdir, polar_dst_dbpath)) != NULL)
 		{
 			if (strcmp(xlde->d_name, ".") == 0 ||
 				strcmp(xlde->d_name, "..") == 0)
@@ -1235,7 +1274,7 @@ movedb(const char *dbname, const char *tblspcname)
 		 * The directory exists but is empty. We must remove it before using
 		 * the copydir function.
 		 */
-		if (rmdir(dst_dbpath) != 0)
+		if (polar_rmdir(polar_dst_dbpath) != 0)
 			elog(ERROR, "could not remove directory \"%s\": %m",
 				 dst_dbpath);
 	}
@@ -1254,7 +1293,18 @@ movedb(const char *dbname, const char *tblspcname)
 		/*
 		 * Copy files from the old tablespace to the new one
 		 */
-		copydir(src_dbpath, dst_dbpath, false);
+		if (POLAR_FILE_IN_SHARED_STORAGE())
+		{
+			polar_copydir(src_dbpath, polar_dst_dbpath, false);
+
+			/* POLAR: create local dir for cache file */
+			if (mkdir(dst_dbpath, S_IRWXU) != 0)
+					ereport(ERROR,
+					(errcode_for_file_access(),
+					errmsg("could not create directory \"%s\": %m", dst_dbpath)));
+		}
+		else
+			copydir(src_dbpath, dst_dbpath, false);
 
 		/*
 		 * Record the filesystem change in XLOG
@@ -1384,9 +1434,16 @@ movedb_failure_callback(int code, Datum arg)
 	char	   *dstpath;
 
 	/* Get rid of anything we managed to copy to the target directory */
-	dstpath = GetDatabasePath(fparms->dest_dboid, fparms->dest_tsoid);
-
+	dstpath = GetDatabasePath(fparms->dest_dboid, fparms->dest_tsoid, false);
 	(void) rmtree(dstpath, true);
+
+	if(POLAR_FILE_IN_SHARED_STORAGE())
+	{
+		char	   *pdb_dstpath;
+
+		pdb_dstpath = polar_get_database_path(fparms->dest_dboid, fparms->dest_tsoid);
+		(void) rmtree(pdb_dstpath, true);
+	}
 }
 
 
@@ -1879,28 +1936,56 @@ remove_dbtablespaces(Oid db_id)
 	while ((tuple = heap_getnext(scan, ForwardScanDirection)) != NULL)
 	{
 		Oid			dsttablespace = HeapTupleGetOid(tuple);
-		char	   *dstpath;
+		char	   *dstpath = NULL;
 		struct stat st;
+		bool		polar_have_data = false;
+		char	   *polar_dstpath = NULL;
 
 		/* Don't mess with the global tablespace */
 		if (dsttablespace == GLOBALTABLESPACE_OID)
 			continue;
 
-		dstpath = GetDatabasePath(db_id, dsttablespace);
-
+		/* POLAR: Do local storage data */
+		dstpath = GetDatabasePath(db_id, dsttablespace, false);
 		if (lstat(dstpath, &st) < 0 || !S_ISDIR(st.st_mode))
 		{
 			/* Assume we can ignore it */
 			pfree(dstpath);
-			continue;
+			dstpath = NULL;
+			/* POLAR: Need check the file from shared storage */
+		}
+		else
+		{
+			polar_have_data = true;
+			if (!rmtree(dstpath, true))
+				ereport(WARNING,
+						(errmsg("some useless files may be left behind in old database directory \"%s\"",
+								dstpath)));
 		}
 
-		if (!rmtree(dstpath, true))
-			ereport(WARNING,
-					(errmsg("some useless files may be left behind in old database directory \"%s\"",
-							dstpath)));
+		/* POLAR: Do shared storage data */
+		if (POLAR_FILE_IN_SHARED_STORAGE())
+		{
+			polar_dstpath = polar_get_database_path(db_id, dsttablespace);
+			if (polar_stat(polar_dstpath, &st) < 0 || !S_ISDIR(st.st_mode))
+			{
+				/* Assume we can ignore it */
+				pfree(polar_dstpath);
+				polar_dstpath = NULL;
+			}
+			else
+			{
+				polar_have_data = true;
+				if (!rmtree(polar_dstpath, true))
+					ereport(WARNING,
+							(errmsg("some useless files may be left behind in old database directory \"%s\"",
+									polar_dstpath)));
+			}
+		}
 
 		/* Record the filesystem change in XLOG */
+		/* POLAR: If have any change, record wal */
+		if (polar_have_data)
 		{
 			xl_dbase_drop_rec xlrec;
 
@@ -1914,7 +1999,11 @@ remove_dbtablespaces(Oid db_id)
 							  XLOG_DBASE_DROP | XLR_SPECIAL_REL_UPDATE);
 		}
 
-		pfree(dstpath);
+		if (dstpath)
+			pfree(dstpath);
+
+		if (polar_dstpath)
+			pfree(polar_dstpath);
 	}
 
 	heap_endscan(scan);
@@ -1953,9 +2042,8 @@ check_db_file_conflict(Oid db_id)
 		if (dsttablespace == GLOBALTABLESPACE_OID)
 			continue;
 
-		dstpath = GetDatabasePath(db_id, dsttablespace);
-
-		if (lstat(dstpath, &st) == 0)
+		dstpath = polar_get_database_path(db_id, dsttablespace);
+		if (polar_lstat(dstpath, &st) == 0)
 		{
 			/* Found a conflicting file (or directory, whatever) */
 			pfree(dstpath);
@@ -2088,15 +2176,24 @@ dbase_redo(XLogReaderState *record)
 		char	   *dst_path;
 		struct stat st;
 
-		src_path = GetDatabasePath(xlrec->src_db_id, xlrec->src_tablespace_id);
-		dst_path = GetDatabasePath(xlrec->db_id, xlrec->tablespace_id);
+		/* POLAR: replica mode only edit local dir */
+		if (polar_in_replica_mode())
+		{
+			src_path = GetDatabasePath(xlrec->src_db_id, xlrec->src_tablespace_id, false);
+			dst_path = GetDatabasePath(xlrec->db_id, xlrec->tablespace_id, false);
+		}
+		else
+		{
+			src_path = polar_get_database_path(xlrec->src_db_id, xlrec->src_tablespace_id);
+			dst_path = polar_get_database_path(xlrec->db_id, xlrec->tablespace_id);
+		}
 
 		/*
 		 * Our theory for replaying a CREATE is to forcibly drop the target
 		 * subdirectory if present, then re-copy the source data. This may be
 		 * more work than needed, but it is simple to implement.
 		 */
-		if (stat(dst_path, &st) == 0 && S_ISDIR(st.st_mode))
+		if (polar_stat(dst_path, &st) == 0 && S_ISDIR(st.st_mode))
 		{
 			if (!rmtree(dst_path, true))
 				/* If this failed, copydir() below is going to error. */
@@ -2116,14 +2213,17 @@ dbase_redo(XLogReaderState *record)
 		 *
 		 * We don't need to copy subdirectories
 		 */
-		copydir(src_path, dst_path, false);
+		polar_copydir(src_path, dst_path, false);
 	}
 	else if (info == XLOG_DBASE_DROP)
 	{
 		xl_dbase_drop_rec *xlrec = (xl_dbase_drop_rec *) XLogRecGetData(record);
 		char	   *dst_path;
 
-		dst_path = GetDatabasePath(xlrec->db_id, xlrec->tablespace_id);
+		if (polar_in_replica_mode())
+			dst_path = GetDatabasePath(xlrec->db_id, xlrec->tablespace_id, false);
+		else
+			dst_path = polar_get_database_path(xlrec->db_id, xlrec->tablespace_id);
 
 		if (InHotStandby)
 		{
@@ -2174,3 +2274,85 @@ dbase_redo(XLogReaderState *record)
 	else
 		elog(PANIC, "dbase_redo: unknown op code %u", info);
 }
+
+/*
+ * POLAR drop db
+ * write wal first then do rmdir.
+ * because we need let ro node disconnect on this db first.
+ */
+static void
+polar_remove_dbfile(Oid db_id)
+{
+	struct stat st;
+	char	   *polar_shared_path = NULL;
+	char	   *polar_local_path = NULL;
+	bool		shared_path_exist = false;
+	bool		local_path_exist = false;
+
+	if (POLAR_FILE_IN_SHARED_STORAGE() == false)
+		return;
+
+	if (polar_dropdb_write_wal_before_rmdir == false)
+		return;
+
+	/* POLAR: check local storage data */
+	polar_local_path = GetDatabasePath(db_id, DEFAULTTABLESPACE_OID, false);
+	if (lstat(polar_local_path, &st) == 0 &&
+		S_ISDIR(st.st_mode))
+	{
+		local_path_exist = true;
+	}
+
+	/* POLAR: check shared storage data */
+	if (POLAR_FILE_IN_SHARED_STORAGE())
+	{
+		polar_shared_path = polar_get_database_path(db_id, DEFAULTTABLESPACE_OID);
+		if (polar_stat(polar_shared_path, &st) == 0 &&
+			S_ISDIR(st.st_mode))
+		{
+			shared_path_exist = true;
+		}
+	}
+
+	/* POLAR: If have any change, record wal */
+	if (local_path_exist || shared_path_exist)
+	{
+		xl_dbase_drop_rec xlrec;
+		XLogRecPtr	polar_recptr;
+
+		xlrec.db_id = db_id;
+		xlrec.tablespace_id = DEFAULTTABLESPACE_OID;
+
+		XLogBeginInsert();
+		XLogRegisterData((char *) &xlrec, sizeof(xl_dbase_drop_rec));
+
+		polar_recptr = XLogInsert(RM_DBASE_ID,
+						  XLOG_DBASE_DROP | XLR_SPECIAL_REL_UPDATE);
+
+		/* POLAR: sync ddl, enable standby lock, wait all ro node reply this log */
+		if (polar_enable_ddl_sync_mode)
+		{
+			XLogFlush(polar_recptr);
+			SyncRepWaitForLSN(polar_recptr, false, true);
+		}
+	}
+
+	if (!rmtree(polar_local_path, true))
+		ereport(WARNING,
+			(errmsg("some useless files may be left behind in old database directory \"%s\"",
+			polar_local_path)));
+
+	if (!rmtree(polar_shared_path, true))
+		ereport(WARNING,
+			(errmsg("some useless files may be left behind in old database directory \"%s\"",
+			polar_shared_path)));
+
+	if (polar_local_path)
+		pfree(polar_local_path);
+
+	if (polar_shared_path)
+		pfree(polar_shared_path);
+
+	return;
+}
+

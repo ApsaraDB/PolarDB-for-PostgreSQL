@@ -63,8 +63,8 @@ extern int	max_safe_fds;
  */
 
 /* Operations on virtual Files --- equivalent to Unix kernel file ops */
-extern File PathNameOpenFile(const char *fileName, int fileFlags);
-extern File PathNameOpenFilePerm(const char *fileName, int fileFlags, mode_t fileMode);
+extern File PathNameOpenFile(const char *fileName, int fileFlags, bool polar_vfs);
+extern File PathNameOpenFilePerm(const char *fileName, int fileFlags, mode_t fileMode, bool polar_vfs);
 extern File OpenTemporaryFile(bool interXact);
 extern void FileClose(File file);
 extern int	FilePrefetch(File file, off_t offset, int amount, uint32 wait_event_info);
@@ -96,23 +96,25 @@ extern FILE *OpenPipeStream(const char *command, const char *mode);
 extern int	ClosePipeStream(FILE *file);
 
 /* Operations to allow use of the <dirent.h> library routines */
-extern DIR *AllocateDir(const char *dirname);
+extern DIR *AllocateDir(const char *dirname, bool polar_vfs);
 extern struct dirent *ReadDir(DIR *dir, const char *dirname);
 extern struct dirent *ReadDirExtended(DIR *dir, const char *dirname,
 				int elevel);
 extern int	FreeDir(DIR *dir);
 
 /* Operations to allow use of a plain kernel FD, with automatic cleanup */
-extern int	OpenTransientFile(const char *fileName, int fileFlags);
-extern int	OpenTransientFilePerm(const char *fileName, int fileFlags, mode_t fileMode);
+extern int	OpenTransientFile(const char *fileName, int fileFlags, bool polar_vfs);
+/* POLAR: add polar_vfs parameter */
+extern int	OpenTransientFilePerm(const char *fileName, int fileFlags, mode_t fileMode, bool polar_vfs);
 extern int	CloseTransientFile(int fd);
 
 /* If you've really really gotta have a plain kernel FD, use this */
-extern int	BasicOpenFile(const char *fileName, int fileFlags);
-extern int	BasicOpenFilePerm(const char *fileName, int fileFlags, mode_t fileMode);
+extern int	BasicOpenFile(const char *fileName, int fileFlags, bool polar_vfs);
+/* POLAR: add polar_vfs parameter */
+extern int	BasicOpenFilePerm(const char *fileName, int fileFlags, mode_t fileMode, bool polar_vfs);
 
  /* Make a directory with default permissions */
-extern int	MakePGDirectory(const char *directoryName);
+extern int	MakePGDirectory(const char *directoryName, bool polar_vfs);
 
 /* Miscellaneous support routines */
 extern void InitFileAccess(void);
@@ -133,8 +135,8 @@ extern int	pg_fsync_no_writethrough(int fd);
 extern int	pg_fsync_writethrough(int fd);
 extern int	pg_fdatasync(int fd);
 extern void pg_flush_data(int fd, off_t offset, off_t amount);
-extern void fsync_fname(const char *fname, bool isdir);
-extern int	durable_rename(const char *oldfile, const char *newfile, int loglevel);
+extern void fsync_fname(const char *fname, bool isdir, bool polar_vfs);
+extern int	durable_rename(const char *oldfile, const char *newfile, int loglevel, bool polar_vfs);
 extern int	durable_unlink(const char *fname, int loglevel);
 extern int	durable_link_or_rename(const char *oldfile, const char *newfile, int loglevel);
 extern void SyncDataDirectory(void);
@@ -142,5 +144,16 @@ extern void SyncDataDirectory(void);
 /* Filename components */
 #define PG_TEMP_FILES_DIR "pgsql_tmp"
 #define PG_TEMP_FILE_PREFIX "pgsql_tmp"
+
+/* POLAR */
+extern int polar_file_pwrite(File file, char *buffer, int amount, off_t offset, uint32 wait_event_info);
+extern int polar_file_pread(File file, char *buffer, int amount, off_t offset, uint32 wait_event_info);
+extern int BasicOpenFileForConfigFile(const char *fileName, int fileFlags);
+
+extern File polar_path_name_open_file(const char *fileName, int fileFlags);
+extern int polar_open_transient_file(const char *fileName, int fileFlags);
+extern DIR *polar_allocate_dir(const char *dirname);
+extern void polar_fsync_fname(const char *fname, bool isdir);
+extern int polar_durable_rename(const char *oldfile, const char *newfile, int loglevel);
 
 #endif							/* FD_H */

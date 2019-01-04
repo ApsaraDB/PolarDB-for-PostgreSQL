@@ -143,5 +143,6 @@ extern void RememberFsyncRequest(RelFileNode rnode, ForkNumber forknum,
 					 BlockNumber segno);
 extern void ForgetRelationFsyncRequests(RelFileNode rnode, ForkNumber forknum);
 extern void ForgetDatabaseFsyncRequests(Oid dbid);
+extern bool polar_need_skip_request(BlockNumber segno);
 
 #endif							/* SMGR_H */

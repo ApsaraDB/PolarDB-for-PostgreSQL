@@ -52,6 +52,10 @@
 #include "utils/resowner_private.h"
 #include "utils/timestamp.h"
 
+/* POLAR */
+#include "storage/polar_fd.h"
+#include "storage/checksum.h"
+#include "utils/guc.h"
 
 /* Note: these two macros only work on shared buffers, not local ones! */
 #define BufHdrGetBlock(bufHdr)	((Block) (BufferBlocks + ((Size) (bufHdr)->buf_id) * BLCKSZ))
@@ -861,8 +865,12 @@ ReadBuffer_common(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 	{
 		/* new buffers are zero-filled */
 		MemSet((char *) bufBlock, 0, BLCKSZ);
-		/* don't set checksum for all-zero page */
-		smgrextend(smgr, forkNum, blockNum, (char *) bufBlock, false);
+
+		/* POLAR: extend multiple block */
+		if (!polar_in_replica_mode() || isLocalBuf)
+		{
+			smgrextend(smgr, forkNum, blockNum, (char *) bufBlock, false);
+		}
 
 		/*
 		 * NB: we're *not* doing a ScheduleBufferTagForWriteback here;
@@ -2660,6 +2668,8 @@ BufferGetTag(Buffer buffer, RelFileNode *rnode, ForkNumber *forknum,
  *
  * If the caller has an smgr reference for the buffer's relation, pass it
  * as the second parameter.  If not, pass NULL.
+ *
+ * POLAR: polar_async_write do async write buffer. see SyncOneBuffer
  */
 static void
 FlushBuffer(BufferDesc *buf, SMgrRelation reln)
@@ -2671,6 +2681,7 @@ FlushBuffer(BufferDesc *buf, SMgrRelation reln)
 	Block		bufBlock;
 	char	   *bufToWrite;
 	uint32		buf_state;
+	bool		polar_replica = polar_in_replica_mode();
 
 	/*
 	 * Acquire the buffer's io_in_progress lock.  If StartBufferIO returns
@@ -2687,7 +2698,8 @@ FlushBuffer(BufferDesc *buf, SMgrRelation reln)
 	error_context_stack = &errcallback;
 
 	/* Find smgr relation for buffer */
-	if (reln == NULL)
+	/* POLAR: replica can not flush data */
+	if (!polar_replica && reln == NULL)
 		reln = smgropen(buf->tag.rnode, InvalidBackendId);
 
 	TRACE_POSTGRESQL_BUFFER_FLUSH_START(buf->tag.forkNum,
@@ -2745,14 +2757,18 @@ FlushBuffer(BufferDesc *buf, SMgrRelation reln)
 	if (track_io_timing)
 		INSTR_TIME_SET_CURRENT(io_start);
 
-	/*
-	 * bufToWrite is either the shared buffer or a copy, as appropriate.
-	 */
-	smgrwrite(reln,
-			  buf->tag.forkNum,
-			  buf->tag.blockNum,
-			  bufToWrite,
-			  false);
+	if (!polar_replica)
+	{
+		/*
+		 * bufToWrite is either the shared buffer or a copy, as appropriate.
+		 */
+		/* POLAR: only bgwriter or checkpointer can open async write mode */
+		smgrwrite(reln,
+				  buf->tag.forkNum,
+				  buf->tag.blockNum,
+				  bufToWrite,
+				  false);
+	}
 
 	if (track_io_timing)
 	{
@@ -3177,6 +3193,7 @@ FlushRelationBuffers(Relation rel)
 
 				PageSetChecksumInplace(localpage, bufHdr->tag.blockNum);
 
+				/* POLAR: only bgwriter or checkpointer can open async write mode */
 				smgrwrite(rel->rd_smgr,
 						  bufHdr->tag.forkNum,
 						  bufHdr->tag.blockNum,

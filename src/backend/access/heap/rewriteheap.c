@@ -1017,7 +1017,7 @@ logical_rewrite_log_mapping(RewriteState state, TransactionId xid,
 		src->off = 0;
 		memcpy(src->path, path, sizeof(path));
 		src->vfd = PathNameOpenFile(path,
-									O_CREAT | O_EXCL | O_WRONLY | PG_BINARY);
+									O_CREAT | O_EXCL | O_WRONLY | PG_BINARY, false);
 		if (src->vfd < 0)
 			ereport(ERROR,
 					(errcode_for_file_access(),
@@ -1136,7 +1136,7 @@ heap_xlog_logical_rewrite(XLogReaderState *r)
 			 xlrec->mapped_xid, XLogRecGetXid(r));
 
 	fd = OpenTransientFile(path,
-						   O_CREAT | O_WRONLY | PG_BINARY);
+						   O_CREAT | O_WRONLY | PG_BINARY, false);
 	if (fd < 0)
 		ereport(ERROR,
 				(errcode_for_file_access(),
@@ -1225,7 +1225,7 @@ CheckPointLogicalRewriteHeap(void)
 	if (cutoff != InvalidXLogRecPtr && redo < cutoff)
 		cutoff = redo;
 
-	mappings_dir = AllocateDir("pg_logical/mappings");
+	mappings_dir = AllocateDir("pg_logical/mappings", false);
 	while ((mapping_de = ReadDir(mappings_dir, "pg_logical/mappings")) != NULL)
 	{
 		struct stat statbuf;
@@ -1265,7 +1265,7 @@ CheckPointLogicalRewriteHeap(void)
 		}
 		else
 		{
-			int			fd = OpenTransientFile(path, O_RDONLY | PG_BINARY);
+			int			fd = OpenTransientFile(path, O_RDONLY | PG_BINARY, false);
 
 			/*
 			 * The file cannot vanish due to concurrency since this function

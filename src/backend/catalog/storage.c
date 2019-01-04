@@ -481,6 +481,10 @@ smgr_redo(XLogReaderState *record)
 	/* Backup blocks are not used in smgr records */
 	Assert(!XLogRecHasAnyBlockRefs(record));
 
+	/* POLAR: replica mode cannot create/truncate file */
+	if (polar_in_replica_mode())
+		return;
+
 	if (info == XLOG_SMGR_CREATE)
 	{
 		xl_smgr_create *xlrec = (xl_smgr_create *) XLogRecGetData(record);

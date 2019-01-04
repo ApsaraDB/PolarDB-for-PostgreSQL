@@ -38,6 +38,9 @@
 #include "utils/memutils.h"
 #include "pg_trace.h"
 
+/* POLAR */
+#include "storage/polar_fd.h"
+#include "utils/guc.h"
 
 /* intervals for calling AbsorbFsyncRequests in mdsync and mdpostckpt */
 #define FSYNCS_PER_ABSORB		10
@@ -213,7 +216,8 @@ mdinit(void)
 	 * it if we are standalone (not under a postmaster) or if we are a startup
 	 * or checkpointer auxiliary process.
 	 */
-	if (!IsUnderPostmaster || AmStartupProcess() || AmCheckpointerProcess())
+	if (!IsUnderPostmaster || AmStartupProcess() || AmCheckpointerProcess() ||
+		AmPolarBackgroundWriterProcess())
 	{
 		HASHCTL		hash_ctl;
 
@@ -303,7 +307,7 @@ mdcreate(SMgrRelation reln, ForkNumber forkNum, bool isRedo)
 
 	path = relpath(reln->smgr_rnode, forkNum);
 
-	fd = PathNameOpenFile(path, O_RDWR | O_CREAT | O_EXCL | PG_BINARY);
+	fd = polar_path_name_open_file(path, O_RDWR | O_CREAT | O_EXCL | PG_BINARY);
 
 	if (fd < 0)
 	{
@@ -316,7 +320,7 @@ mdcreate(SMgrRelation reln, ForkNumber forkNum, bool isRedo)
 		 * already, even if isRedo is not set.  (See also mdopen)
 		 */
 		if (isRedo || IsBootstrapProcessingMode())
-			fd = PathNameOpenFile(path, O_RDWR | PG_BINARY);
+			fd = polar_path_name_open_file(path, O_RDWR | PG_BINARY);
 		if (fd < 0)
 		{
 			/* be sure to report the error reported by create, not open */
@@ -418,7 +422,7 @@ mdunlinkfork(RelFileNodeBackend rnode, ForkNumber forkNum, bool isRedo)
 	 */
 	if (isRedo || forkNum != MAIN_FORKNUM || RelFileNodeBackendIsTemp(rnode))
 	{
-		ret = unlink(path);
+		ret = polar_unlink(path);
 		if (ret < 0 && errno != ENOENT)
 			ereport(WARNING,
 					(errcode_for_file_access(),
@@ -429,12 +433,12 @@ mdunlinkfork(RelFileNodeBackend rnode, ForkNumber forkNum, bool isRedo)
 		/* truncate(2) would be easier here, but Windows hasn't got it */
 		int			fd;
 
-		fd = OpenTransientFile(path, O_RDWR | PG_BINARY);
+		fd = polar_open_transient_file(path, O_RDWR | PG_BINARY);
 		if (fd >= 0)
 		{
 			int			save_errno;
 
-			ret = ftruncate(fd, 0);
+			ret = polar_ftruncate(fd, 0);
 			save_errno = errno;
 			CloseTransientFile(fd);
 			errno = save_errno;
@@ -465,7 +469,7 @@ mdunlinkfork(RelFileNodeBackend rnode, ForkNumber forkNum, bool isRedo)
 		for (segno = 1;; segno++)
 		{
 			sprintf(segpath, "%s.%u", path, segno);
-			if (unlink(segpath) < 0)
+			if (polar_unlink(segpath) < 0)
 			{
 				/* ENOENT is expected after the last segment... */
 				if (errno != ENOENT)
@@ -495,7 +499,7 @@ mdextend(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
 		 char *buffer, bool skipFsync)
 {
 	off_t		seekpos;
-	int			nbytes;
+	int			nbytes = 0;
 	MdfdVec    *v;
 
 	/* This assert is too expensive to have on normally ... */
@@ -521,22 +525,33 @@ mdextend(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
 
 	Assert(seekpos < (off_t) BLCKSZ * RELSEG_SIZE);
 
-	/*
-	 * Note: because caller usually obtained blocknum by calling mdnblocks,
-	 * which did a seek(SEEK_END), this seek is often redundant and will be
-	 * optimized away by fd.c.  It's not redundant, however, if there is a
-	 * partial page at the end of the file. In that case we want to try to
-	 * overwrite the partial page with a full page.  It's also not redundant
-	 * if bufmgr.c had to dump another buffer of the same file to make room
-	 * for the new page's buffer.
-	 */
-	if (FileSeek(v->mdfd_vfd, seekpos, SEEK_SET) != seekpos)
-		ereport(ERROR,
-				(errcode_for_file_access(),
-				 errmsg("could not seek to block %u in file \"%s\": %m",
-						blocknum, FilePathName(v->mdfd_vfd))));
+	/* POLAR: use pwrite to replace lseek + write */
+	if (POLAR_ENABLE_PWRITE())
+	{
+		nbytes = polar_file_pwrite(v->mdfd_vfd, buffer, BLCKSZ, seekpos,
+				WAIT_EVENT_DATA_FILE_PWRITE_EXTEND);
+	}
+	else
+	{
+		/*
+		 * Note: because caller usually obtained blocknum by calling mdnblocks,
+		 * which did a seek(SEEK_END), this seek is often redundant and will be
+		 * optimized away by fd.c.  It's not redundant, however, if there is a
+		 * partial page at the end of the file. In that case we want to try to
+		 * overwrite the partial page with a full page.  It's also not redundant
+		 * if bufmgr.c had to dump another buffer of the same file to make room
+		 * for the new page's buffer.
+		 */
+		if (FileSeek(v->mdfd_vfd, seekpos, SEEK_SET) != seekpos)
+			ereport(ERROR,
+					(errcode_for_file_access(),
+					 errmsg("could not seek to block %u in file \"%s\": %m",
+							blocknum, FilePathName(v->mdfd_vfd))));
 
-	if ((nbytes = FileWrite(v->mdfd_vfd, buffer, BLCKSZ, WAIT_EVENT_DATA_FILE_EXTEND)) != BLCKSZ)
+		nbytes = FileWrite(v->mdfd_vfd, buffer, BLCKSZ, WAIT_EVENT_DATA_FILE_EXTEND);
+	}
+
+	if (nbytes != BLCKSZ)
 	{
 		if (nbytes < 0)
 			ereport(ERROR,
@@ -544,8 +559,8 @@ mdextend(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
 					 errmsg("could not extend file \"%s\": %m",
 							FilePathName(v->mdfd_vfd)),
 					 errhint("Check free disk space.")));
-		/* short write: complain appropriately */
-		ereport(ERROR,
+			/* short write: complain appropriately */
+			ereport(ERROR,
 				(errcode(ERRCODE_DISK_FULL),
 				 errmsg("could not extend file \"%s\": wrote only %d of %d bytes at block %u",
 						FilePathName(v->mdfd_vfd),
@@ -575,6 +590,14 @@ mdopen(SMgrRelation reln, ForkNumber forknum, int behavior)
 	MdfdVec    *mdfd;
 	char	   *path;
 	File		fd;
+	int			flags = PG_BINARY;
+
+	/* POLAR: read datafile only need O_RDONLY flag in replica */
+	if (polar_openfile_with_readonly_in_replica &&
+		polar_in_replica_mode())
+		flags |= O_RDONLY;
+	else
+		flags |= O_RDWR;
 
 	/* No work if already open */
 	if (reln->md_num_open_segs[forknum] > 0)
@@ -582,7 +605,7 @@ mdopen(SMgrRelation reln, ForkNumber forknum, int behavior)
 
 	path = relpath(reln->smgr_rnode, forknum);
 
-	fd = PathNameOpenFile(path, O_RDWR | PG_BINARY);
+	fd = polar_path_name_open_file(path, flags);
 
 	if (fd < 0)
 	{
@@ -593,7 +616,10 @@ mdopen(SMgrRelation reln, ForkNumber forknum, int behavior)
 		 * substitute for mdcreate() in bootstrap mode only. (See mdcreate)
 		 */
 		if (IsBootstrapProcessingMode())
-			fd = PathNameOpenFile(path, O_RDWR | O_CREAT | O_EXCL | PG_BINARY);
+		{
+			Assert(!polar_in_replica_mode());
+			fd = polar_path_name_open_file(path, O_RDWR | O_CREAT | O_EXCL | PG_BINARY);
+		}
 		if (fd < 0)
 		{
 			if ((behavior & EXTENSION_RETURN_NULL) &&
@@ -747,13 +773,18 @@ mdread(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
 
 	Assert(seekpos < (off_t) BLCKSZ * RELSEG_SIZE);
 
-	if (FileSeek(v->mdfd_vfd, seekpos, SEEK_SET) != seekpos)
-		ereport(ERROR,
-				(errcode_for_file_access(),
-				 errmsg("could not seek to block %u in file \"%s\": %m",
-						blocknum, FilePathName(v->mdfd_vfd))));
+	if (POLAR_ENABLE_PREAD())
+		nbytes = polar_file_pread(v->mdfd_vfd, buffer, BLCKSZ, seekpos, WAIT_EVENT_DATA_FILE_PREAD);
+	else
+	{
+		if (FileSeek(v->mdfd_vfd, seekpos, SEEK_SET) != seekpos)
+			ereport(ERROR,
+					(errcode_for_file_access(),
+					 errmsg("could not seek to block %u in file \"%s\": %m",
+							blocknum, FilePathName(v->mdfd_vfd))));
 
-	nbytes = FileRead(v->mdfd_vfd, buffer, BLCKSZ, WAIT_EVENT_DATA_FILE_READ);
+		nbytes = FileRead(v->mdfd_vfd, buffer, BLCKSZ, WAIT_EVENT_DATA_FILE_READ);
+	}
 
 	TRACE_POSTGRESQL_SMGR_MD_READ_DONE(forknum, blocknum,
 									   reln->smgr_rnode.node.spcNode,
@@ -823,13 +854,22 @@ mdwrite(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
 
 	Assert(seekpos < (off_t) BLCKSZ * RELSEG_SIZE);
 
-	if (FileSeek(v->mdfd_vfd, seekpos, SEEK_SET) != seekpos)
-		ereport(ERROR,
-				(errcode_for_file_access(),
-				 errmsg("could not seek to block %u in file \"%s\": %m",
-						blocknum, FilePathName(v->mdfd_vfd))));
+	/* POLAR: use pwrite to replace lseek + write */
+	if (POLAR_ENABLE_PWRITE())
+	{
+		nbytes = polar_file_pwrite(v->mdfd_vfd, buffer, BLCKSZ, seekpos, 
+			WAIT_EVENT_DATA_FILE_PWRITE);
+	}
+	else
+	{
+		if (FileSeek(v->mdfd_vfd, seekpos, SEEK_SET) != seekpos)
+			ereport(ERROR,
+					(errcode_for_file_access(),
+					 errmsg("could not seek to block %u in file \"%s\": %m",
+							blocknum, FilePathName(v->mdfd_vfd))));
 
-	nbytes = FileWrite(v->mdfd_vfd, buffer, BLCKSZ, WAIT_EVENT_DATA_FILE_WRITE);
+		nbytes = FileWrite(v->mdfd_vfd, buffer, BLCKSZ, WAIT_EVENT_DATA_FILE_WRITE);
+	}
 
 	TRACE_POSTGRESQL_SMGR_MD_WRITE_DONE(forknum, blocknum,
 										reln->smgr_rnode.node.spcNode,
@@ -1276,10 +1316,14 @@ mdsync(void)
 								 errmsg("could not fsync file \"%s\": %m",
 										path)));
 					else
-						ereport(DEBUG1,
+					{
+						/* POLAR: force log */
+						ereport(WARNING,
 								(errcode_for_file_access(),
 								 errmsg("could not fsync file \"%s\" but retrying: %m",
 										path)));
+					}
+
 					pfree(path);
 
 					/*
@@ -1381,7 +1425,7 @@ mdpostckpt(void)
 
 		/* Unlink the file */
 		path = relpathperm(entry->rnode, MAIN_FORKNUM);
-		if (unlink(path) < 0)
+		if (polar_unlink(path) < 0)
 		{
 			/*
 			 * There's a race condition, when the database is dropped at the
@@ -1594,7 +1638,6 @@ RememberFsyncRequest(RelFileNode rnode, ForkNumber forknum, BlockNumber segno)
 	}
 	else if (segno == UNLINK_RELATION_REQUEST)
 	{
-		/* Unlink request: put it in the linked list */
 		MemoryContext oldcxt = MemoryContextSwitchTo(pendingOpsCxt);
 		PendingUnlinkEntry *entry;
 
@@ -1703,7 +1746,6 @@ ForgetDatabaseFsyncRequests(Oid dbid)
 	}
 }
 
-
 /*
  *	_fdvec_resize() -- Resize the fork's open segments array
  */
@@ -1775,11 +1817,19 @@ _mdfd_openseg(SMgrRelation reln, ForkNumber forknum, BlockNumber segno,
 	MdfdVec    *v;
 	int			fd;
 	char	   *fullpath;
+	int			flags = PG_BINARY | oflags;
+
+	/* POLAR: read datafile only need O_RDONLY flag in replica */
+	if (polar_openfile_with_readonly_in_replica &&
+		polar_in_replica_mode())
+		flags |= O_RDONLY;
+	else
+		flags |= O_RDWR;
 
 	fullpath = _mdfd_segpath(reln, forknum, segno);
 
 	/* open the file */
-	fd = PathNameOpenFile(fullpath, O_RDWR | PG_BINARY | oflags);
+	fd = polar_path_name_open_file(fullpath, flags);
 
 	pfree(fullpath);
 
@@ -1950,3 +2000,23 @@ _mdnblocks(SMgrRelation reln, ForkNumber forknum, MdfdVec *seg)
 	/* note that this calculation will ignore any partial block at EOF */
 	return (BlockNumber) (len / BLCKSZ);
 }
+
+bool
+polar_need_skip_request(BlockNumber segno)
+{
+	bool polar_need_skip = true;
+
+	/* POLAR: bgwriter not unlink file and sync file from other process */
+	if (AmCheckpointerProcess())
+		polar_need_skip = false;
+	else if (AmPolarBackgroundWriterProcess())
+	{
+		if (segno == FORGET_DATABASE_FSYNC)
+			polar_need_skip = false;
+		else if(segno == FORGET_RELATION_FSYNC)
+			polar_need_skip = false;
+	}
+
+	return polar_need_skip;
+}
+

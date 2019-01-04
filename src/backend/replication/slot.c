@@ -570,8 +570,8 @@ ReplicationSlotDropPtr(ReplicationSlot *slot)
 		 * restart.
 		 */
 		START_CRIT_SECTION();
-		fsync_fname(tmppath, true);
-		fsync_fname("pg_replslot", true);
+		fsync_fname(tmppath, true, false);
+		fsync_fname("pg_replslot", true, false);
 		END_CRIT_SECTION();
 	}
 	else
@@ -1102,7 +1102,7 @@ StartupReplicationSlots(void)
 	elog(DEBUG1, "starting up replication slots");
 
 	/* restore all slots by iterating over all on-disk entries */
-	replication_dir = AllocateDir("pg_replslot");
+	replication_dir = AllocateDir("pg_replslot", false);
 	while ((replication_de = ReadDir(replication_dir, "pg_replslot")) != NULL)
 	{
 		struct stat statbuf;
@@ -1128,7 +1128,7 @@ StartupReplicationSlots(void)
 						 errmsg("could not remove directory \"%s\"", path)));
 				continue;
 			}
-			fsync_fname("pg_replslot", true);
+			fsync_fname("pg_replslot", true, false);
 			continue;
 		}
 
@@ -1180,12 +1180,12 @@ CreateSlotOnDisk(ReplicationSlot *slot)
 		rmtree(tmppath, true);
 
 	/* Create and fsync the temporary slot directory. */
-	if (MakePGDirectory(tmppath) < 0)
+	if (MakePGDirectory(tmppath, false) < 0)
 		ereport(ERROR,
 				(errcode_for_file_access(),
 				 errmsg("could not create directory \"%s\": %m",
 						tmppath)));
-	fsync_fname(tmppath, true);
+	fsync_fname(tmppath, true, false);
 
 	/* Write the actual state file. */
 	slot->dirty = true;			/* signal that we really need to write */
@@ -1205,8 +1205,8 @@ CreateSlotOnDisk(ReplicationSlot *slot)
 	 */
 	START_CRIT_SECTION();
 
-	fsync_fname(path, true);
-	fsync_fname("pg_replslot", true);
+	fsync_fname(path, true, false);
+	fsync_fname("pg_replslot", true, false);
 
 	END_CRIT_SECTION();
 }
@@ -1241,7 +1241,7 @@ SaveSlotToPath(ReplicationSlot *slot, const char *dir, int elevel)
 	sprintf(tmppath, "%s/state.tmp", dir);
 	sprintf(path, "%s/state", dir);
 
-	fd = OpenTransientFile(tmppath, O_CREAT | O_EXCL | O_WRONLY | PG_BINARY);
+	fd = OpenTransientFile(tmppath, O_CREAT | O_EXCL | O_WRONLY | PG_BINARY, false);
 	if (fd < 0)
 	{
 		ereport(elevel,
@@ -1317,9 +1317,9 @@ SaveSlotToPath(ReplicationSlot *slot, const char *dir, int elevel)
 	/* Check CreateSlot() for the reasoning of using a crit. section. */
 	START_CRIT_SECTION();
 
-	fsync_fname(path, false);
-	fsync_fname(dir, true);
-	fsync_fname("pg_replslot", true);
+	fsync_fname(path, false, false);
+	fsync_fname(dir, true, false);
+	fsync_fname("pg_replslot", true, false);
 
 	END_CRIT_SECTION();
 
@@ -1362,7 +1362,7 @@ RestoreSlotFromDisk(const char *name)
 
 	elog(DEBUG1, "restoring replication slot from \"%s\"", path);
 
-	fd = OpenTransientFile(path, O_RDWR | PG_BINARY);
+	fd = OpenTransientFile(path, O_RDWR | PG_BINARY, false);
 
 	/*
 	 * We do not need to handle this as we are rename()ing the directory into
@@ -1393,7 +1393,7 @@ RestoreSlotFromDisk(const char *name)
 
 	/* Also sync the parent directory */
 	START_CRIT_SECTION();
-	fsync_fname(path, true);
+	fsync_fname(path, true, false);
 	END_CRIT_SECTION();
 
 	/* read part of statefile that's guaranteed to be version independent */
@@ -1480,7 +1480,7 @@ RestoreSlotFromDisk(const char *name)
 					(errcode_for_file_access(),
 					 errmsg("could not remove directory \"%s\"", path)));
 		}
-		fsync_fname("pg_replslot", true);
+		fsync_fname("pg_replslot", true, false);
 		return;
 	}
 

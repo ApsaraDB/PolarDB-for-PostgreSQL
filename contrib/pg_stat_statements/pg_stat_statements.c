@@ -751,7 +751,7 @@ pgss_shmem_shutdown(int code, Datum arg)
 	/*
 	 * Rename file into place, so we atomically replace any old one.
 	 */
-	(void) durable_rename(PGSS_DUMP_FILE ".tmp", PGSS_DUMP_FILE, LOG);
+	(void) durable_rename(PGSS_DUMP_FILE ".tmp", PGSS_DUMP_FILE, LOG, false);
 
 	/* Unlink query-texts file; it's not needed while shutdown */
 	unlink(PGSS_TEXT_FILE);
@@ -1843,7 +1843,7 @@ qtext_store(const char *query, int query_len,
 	*query_offset = off;
 
 	/* Now write the data into the successfully-reserved part of the file */
-	fd = OpenTransientFile(PGSS_TEXT_FILE, O_RDWR | O_CREAT | PG_BINARY);
+	fd = OpenTransientFile(PGSS_TEXT_FILE, O_RDWR | O_CREAT | PG_BINARY, false);
 	if (fd < 0)
 		goto error;
 
@@ -1907,7 +1907,7 @@ qtext_load_file(Size *buffer_size)
 	int			fd;
 	struct stat stat;
 
-	fd = OpenTransientFile(PGSS_TEXT_FILE, O_RDONLY | PG_BINARY);
+	fd = OpenTransientFile(PGSS_TEXT_FILE, O_RDONLY | PG_BINARY, false);
 	if (fd < 0)
 	{
 		if (errno != ENOENT)

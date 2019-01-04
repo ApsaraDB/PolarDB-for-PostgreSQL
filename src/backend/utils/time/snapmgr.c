@@ -1624,7 +1624,7 @@ DeleteAllExportedSnapshotFiles(void)
 	 * LOG level.  Since we're running in the startup process, ERROR level
 	 * would prevent database start, and it's not important enough for that.
 	 */
-	s_dir = AllocateDir(SNAPSHOT_EXPORT_DIR);
+	s_dir = AllocateDir(SNAPSHOT_EXPORT_DIR, false);
 
 	while ((s_de = ReadDirExtended(s_dir, SNAPSHOT_EXPORT_DIR, LOG)) != NULL)
 	{

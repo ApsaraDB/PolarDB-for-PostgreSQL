@@ -35,6 +35,10 @@
 #include "utils/timeout.h"
 #include "utils/timestamp.h"
 
+/* POLAR */
+#include "utils/guc.h"
+#include "replication/syncrep.h"
+
 /* User-settable GUC parameters */
 int			vacuum_defer_cleanup_age;
 int			max_standby_archive_delay = 30 * 1000;
@@ -46,7 +50,7 @@ static void ResolveRecoveryConflictWithVirtualXIDs(VirtualTransactionId *waitlis
 									   ProcSignalReason reason);
 static void SendRecoveryConflictWithBufferPin(ProcSignalReason reason);
 static XLogRecPtr LogCurrentRunningXacts(RunningTransactions CurrRunningXacts);
-static void LogAccessExclusiveLocks(int nlocks, xl_standby_lock *locks);
+static void LogAccessExclusiveLocks(int nlocks, xl_standby_lock *locks, bool polar_ddl_lock);
 
 /*
  * Keep track of all the locks owned by a given transaction.
@@ -912,7 +916,7 @@ LogStandbySnapshot(void)
 	 */
 	locks = GetRunningTransactionLocks(&nlocks);
 	if (nlocks > 0)
-		LogAccessExclusiveLocks(nlocks, locks);
+		LogAccessExclusiveLocks(nlocks, locks, false);
 	pfree(locks);
 
 	/*
@@ -1018,9 +1022,10 @@ LogCurrentRunningXacts(RunningTransactions CurrRunningXacts)
  * logged, as described in backend/storage/lmgr/README.
  */
 static void
-LogAccessExclusiveLocks(int nlocks, xl_standby_lock *locks)
+LogAccessExclusiveLocks(int nlocks, xl_standby_lock *locks, bool polar_ddl_lock)
 {
 	xl_standby_locks xlrec;
+	XLogRecPtr	polar_recptr;
 
 	xlrec.nlocks = nlocks;
 
@@ -1029,7 +1034,16 @@ LogAccessExclusiveLocks(int nlocks, xl_standby_lock *locks)
 	XLogRegisterData((char *) locks, nlocks * sizeof(xl_standby_lock));
 	XLogSetRecordFlags(XLOG_MARK_UNIMPORTANT);
 
-	(void) XLogInsert(RM_STANDBY_ID, XLOG_STANDBY_LOCK);
+	polar_recptr = XLogInsert(RM_STANDBY_ID, XLOG_STANDBY_LOCK);
+
+	/* POLAR: sync ddl, enable standby lock, wait all ro node reply this log */
+	if (polar_enable_shared_storage_mode &&
+		polar_enable_ddl_sync_mode &&
+		polar_ddl_lock)
+	{
+		XLogFlush(polar_recptr);
+		SyncRepWaitForLSN(polar_recptr, false, true);
+	}
 }
 
 /*
@@ -1045,7 +1059,7 @@ LogAccessExclusiveLock(Oid dbOid, Oid relOid)
 	xlrec.dbOid = dbOid;
 	xlrec.relOid = relOid;
 
-	LogAccessExclusiveLocks(1, &xlrec);
+	LogAccessExclusiveLocks(1, &xlrec, true);
 	MyXactFlags |= XACT_FLAGS_ACQUIREDACCESSEXCLUSIVELOCK;
 }
 
