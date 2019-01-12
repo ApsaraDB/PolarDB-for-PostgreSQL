@@ -382,14 +382,13 @@ static int
 vfs_mount(void)
 {
 	bool	do_force_mount = false;
-	bool	replica_mode = is_db_in_replica_mode(&do_force_mount);
 	char	*mode;
 	int		flag;
 
-	if (polar_enable_shared_storage_mode == false)
+	if (!polar_enable_shared_storage_mode)
 		return 1;
 
-	if (replica_mode)
+	if (is_db_in_replica_mode(&do_force_mount))
 	{
 		polar_mount_pfs_readonly_mode = true;
 		mode = "readonly";
@@ -447,88 +446,14 @@ vfs_mount(void)
 static bool
 is_db_in_replica_mode(bool *force_mount)
 {
-	FILE	   *fd;
-	ConfigVariable *item,
-			   *head = NULL,
-			   *tail = NULL;
-	bool		polar_replica_requested = false;
-	bool		polar_standby_requested = false;
-
-#define RECOVERY_COMMAND_FILE	"recovery.conf"
 #define RECOVERY_COMMAND_DONE	"recovery.done"
 
-	fd = AllocateFile(RECOVERY_COMMAND_FILE, "r");
-	if (fd == NULL)
-	{
-		if (errno == ENOENT)
-		{
-			polardb_start_state = readwrite;
-			elog(LOG, "recovery.conf not exist, polardb in readwrite mode, use readwrite mode mount pfs");
+	/* POLAR: ro switch to rw found recovery.done, means we need do force mount */
+	if ((polar_local_node_type == POLAR_MASTER) && pfs_force_mount &&
+		force_mount && file_exists(RECOVERY_COMMAND_DONE))
+		*force_mount = true;
 
-			/* POALR: ro switch to rw found recovery.done, means we need do force mount */
-			if (pfs_force_mount && force_mount &&
-				file_exists(RECOVERY_COMMAND_DONE))
-				*force_mount = true;
-
-			return false;				/* not there, so no archive recovery */
-		}
-		ereport(FATAL,
-				(errcode_for_file_access(),
-				 errmsg("could not open recovery command file \"%s\": %m",
-						RECOVERY_COMMAND_FILE)));
-	}
-
-	/*
-	 * Since we're asking ParseConfigFp() to report errors as FATAL, there's
-	 * no need to check the return value.
-	 */
-	(void) ParseConfigFp(fd, RECOVERY_COMMAND_FILE, 0, FATAL, &head, &tail);
-
-	FreeFile(fd);
-
-	for (item = head; item; item = item->next)
-	{
-		if (strcmp(item->name, "polar_replica") == 0)
-		{
-			if (!parse_bool(item->value, &polar_replica_requested))
-				ereport(ERROR,
-						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-						 errmsg("parameter \"%s\" requires a Boolean value",
-								"polar_replica")));
-			ereport(LOG,
-					(errmsg_internal("polar_replica = '%s'", item->value)));
-		}
-
-		if (strcmp(item->name, "standby_mode") == 0)
-		{
-			if (!parse_bool(item->value, &polar_standby_requested))
-				ereport(ERROR,
-						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-						 errmsg("parameter \"%s\" requires a Boolean value",
-								"standby_mode")));
-			ereport(LOG,
-					(errmsg_internal("standby_mode = '%s'", item->value)));
-		}
-	}
-
-	if (polar_replica_requested)
-	{
-		polardb_start_state = readonly;
-		elog(LOG, "read polar_replica = on, polardb in replica mode, use ro mode mount pfs");
-	}
-
-	if (polar_standby_requested)
-	{
-		if (polar_replica_requested)
-			elog(ERROR, "wrong configuration file, polar_replica standby_mode is set to on at the same time");
-
-		polardb_start_state = standby;
-		elog(LOG, "read standby_mode = on, polardb in standby mode, use readwrite mode mount pfs");
-	}
-
-	FreeConfigVariables(head);
-
-	return polar_replica_requested;
+	return polar_local_node_type == POLAR_REPLICA;
 }
 
 /* Init local variable for file handle or dir pointer */

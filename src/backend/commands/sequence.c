@@ -1910,6 +1910,7 @@ seq_redo(XLogReaderState *record)
 		elog(PANIC, "seq_redo: failed to add item to page");
 
 	PageSetLSN(localpage, lsn);
+	polar_redo_set_buffer_oldest_lsn(buffer, lsn);
 
 	memcpy(page, localpage, BufferGetPageSize(buffer));
 	MarkBufferDirty(buffer);

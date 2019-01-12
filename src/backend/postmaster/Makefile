@@ -15,4 +15,7 @@ include $(top_builddir)/src/Makefile.global
 OBJS = autovacuum.o bgworker.o bgwriter.o checkpointer.o fork_process.o \
 	pgarch.o pgstat.o postmaster.o startup.o syslogger.o walwriter.o
 
+# POLAR objects
+OBJS += polar_parallel_bgwriter.o
+
 include $(top_srcdir)/src/backend/common.mk

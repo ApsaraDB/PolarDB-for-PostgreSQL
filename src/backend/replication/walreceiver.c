@@ -911,6 +911,9 @@ XLogWalRcvProcessMsg(unsigned char type, char *buf, Size len)
 	TimestampTz sendTime;
 	bool		replyRequested;
 
+	/* POLAR */
+	XLogRecPtr	curr_primary_consist_lsn_new;
+
 	resetStringInfo(&incoming_message);
 
 	switch (type)
@@ -974,6 +977,7 @@ XLogWalRcvProcessMsg(unsigned char type, char *buf, Size len)
 
 				dataStart = pq_getmsgint64(&incoming_message);
 				walEnd = pq_getmsgint64(&incoming_message);
+				curr_primary_consist_lsn_new = pq_getmsgint64(&incoming_message);
 				sendTime = pq_getmsgint64(&incoming_message);
 				ProcessWalSndrMessage(walEnd, sendTime);
 
@@ -984,6 +988,10 @@ XLogWalRcvProcessMsg(unsigned char type, char *buf, Size len)
 				 */
 				LogstreamResult.Write = walEnd;
 				XLogWalRcvFlush(false);
+
+				/* POLAR: Update consistent lsn */
+				polar_set_primary_consistent_lsn(curr_primary_consist_lsn_new);
+
 				if (polar_enable_debug)
 				{
 					elog(LOG, "Receive primary on polardb flush xlog from %X/%X to %X/%X, ",
@@ -1120,6 +1128,9 @@ XLogWalRcvFlush(bool dying)
 	{
 		WalRcvData *walrcv = WalRcv;
 
+		/* POLAR */
+		XLogRecPtr curr_primary_consistent_lsn = InvalidXLogRecPtr;
+
 		/* POLAR: only replica mode not write data */
 		if (polar_in_replica_mode() == false)
 			issue_xlog_fsync(recvFile, recvSegNo);
@@ -1133,6 +1144,9 @@ XLogWalRcvFlush(bool dying)
 			walrcv->latestChunkStart = walrcv->receivedUpto;
 			walrcv->receivedUpto = LogstreamResult.Flush;
 			walrcv->receivedTLI = ThisTimeLineID;
+
+			/* POLAR: set consistent lsn */
+			curr_primary_consistent_lsn = walrcv->curr_primary_consistent_lsn;
 		}
 		SpinLockRelease(&walrcv->mutex);
 
@@ -1146,9 +1160,25 @@ XLogWalRcvFlush(bool dying)
 		{
 			char		activitymsg[50];
 
-			snprintf(activitymsg, sizeof(activitymsg), "streaming %X/%X",
-					 (uint32) (LogstreamResult.Write >> 32),
-					 (uint32) LogstreamResult.Write);
+			/* POLAR */
+			if (polar_in_replica_mode())
+			{
+				snprintf(activitymsg,
+						 sizeof(activitymsg),
+						 "streaming %X/%X, consistent lsn %X/%X",
+						 (uint32) (LogstreamResult.Write >> 32),
+						 (uint32) LogstreamResult.Write,
+						 (uint32) (curr_primary_consistent_lsn >> 32),
+						 (uint32) curr_primary_consistent_lsn);
+			}
+			else
+			{
+				snprintf(activitymsg,
+						 sizeof(activitymsg),
+						 "streaming %X/%X",
+						 (uint32) (LogstreamResult.Write >> 32),
+						 (uint32) LogstreamResult.Write);
+			}
 			set_ps_display(activitymsg, false);
 		}
 
@@ -1569,4 +1599,34 @@ pg_stat_get_wal_receiver(PG_FUNCTION_ARGS)
 
 	/* Returns the record as Datum */
 	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(tupdesc, values, nulls)));
+}
+
+/* POLAR */
+
+/* Set new consistent lsn received from primary node */
+void
+polar_set_primary_consistent_lsn(XLogRecPtr new_consistent_lsn)
+{
+	if (WalRcv->curr_primary_consistent_lsn < new_consistent_lsn)
+	{
+		SpinLockAcquire(&WalRcv->mutex);
+		WalRcv->curr_primary_consistent_lsn = new_consistent_lsn;
+		SpinLockRelease(&WalRcv->mutex);
+	}
+}
+
+/*
+ * Primay instance send the consistant lsn by walsender process,
+ * replica walreceiver process receives consistant lsn, and saves
+ * it in WalRcv->curr_primary_consistent_lsn
+ */
+XLogRecPtr
+polar_get_primary_consist_ptr(void)
+{
+	XLogRecPtr curr_primary_consist_lsn = InvalidXLogRecPtr;
+	SpinLockAcquire(&WalRcv->mutex);
+	curr_primary_consist_lsn = WalRcv->curr_primary_consistent_lsn;
+	SpinLockRelease(&WalRcv->mutex);
+
+	return curr_primary_consist_lsn;
 }

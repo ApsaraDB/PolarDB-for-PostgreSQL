@@ -20,6 +20,8 @@
 #include "nodes/pg_list.h"
 #include "storage/fd.h"
 
+/* POLAR */
+#include "storage/polar_fd.h"
 
 /* Sync methods */
 #define SYNC_METHOD_FSYNC		0
@@ -186,6 +188,9 @@ extern bool XLOG_DEBUG;
 #define CHECKPOINT_CAUSE_XLOG	0x0040	/* XLOG consumption */
 #define CHECKPOINT_CAUSE_TIME	0x0080	/* Elapsed time */
 
+/* POLAR: lazy checkpoint */
+#define CHECKPOINT_LAZY         0x0100
+
 /*
  * Flag bits for the record being inserted, set using XLogSetRecordFlags().
  */
@@ -289,8 +294,28 @@ extern void assign_max_wal_size(int newval, void *extra);
 extern void assign_checkpoint_completion_target(double newval, void *extra);
 
 /* POLAR */
+#define polar_is_standby() \
+	(polar_enable_shared_storage_mode && polar_node_type() == POLAR_STANDBY)
+/* POLAR: judge standby node type no matter whether polar_enable_shared_storage_mode is true */
+#define polar_in_standby_mode() (polar_node_type() == POLAR_STANDBY)
+#define polar_is_master_in_recovery() \
+	(RecoveryInProgress() && polar_is_master())
+#define polar_max_valid_lsn() \
+	((polar_is_master() && !RecoveryInProgress()) ? GetXLogInsertRecPtr() : GetXLogReplayRecPtr(NULL))
+
 extern bool polar_in_replica_mode(void);
 extern void polar_load_and_check_controlfile(void);
+extern void polar_set_node_type(PolarNodeType node_type);
+extern PolarNodeType polar_node_type(void);
+extern bool polar_in_master_mode(void);
+extern bool polar_is_master(void);
+extern XLogRecPtr polar_get_faked_latest_lsn(void);
+extern void polar_set_oldest_applied_lsn(XLogRecPtr oldest_apply_lsn);
+extern XLogRecPtr polar_get_oldest_applied_lsn(void);
+extern XLogRecPtr polar_get_consistent_lsn(void);
+extern void polar_set_consistent_lsn(XLogRecPtr consistent_lsn);
+extern void polar_checkpointer_do_reload(void);
+extern bool polar_checkpointer_recv_shutdown_requested(void);
 
 /*
  * Routines to start, stop, and get status of a base backup.

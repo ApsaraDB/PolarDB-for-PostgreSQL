@@ -77,6 +77,12 @@
 #define BM_MAX_USAGE_COUNT	5
 
 /*
+ * POLAR: polar_flags
+ */
+#define POLAR_BUF_OLDEST_LSN_IS_FAKE		1
+#define POLAR_BUF_FIRST_TOUCHED_AFTER_COPY	(1U << 1)
+
+/*
  * Buffer tag identifies which disk block the buffer contains.
  *
  * Note: the BufferTag data must be sufficient to determine where to write the
@@ -131,6 +137,9 @@ typedef struct buftag
 		BufTableHashPartition(hashcode)].lock)
 #define BufMappingPartitionLockByIndex(i) \
 	(&MainLWLockArray[BUFFER_MAPPING_LWLOCK_OFFSET + (i)].lock)
+
+/* POLAR */
+typedef struct CopyBufferDesc CopyBufferDesc;
 
 /*
  *	BufferDesc -- shared descriptor/state data for a single shared buffer.
@@ -187,6 +196,20 @@ typedef struct BufferDesc
 	int			freeNext;		/* link in freelist chain */
 
 	LWLock		content_lock;	/* to lock access to buffer contents */
+
+	/* POLAR */
+	int  		flush_next;      /* link to next dirty buffer */
+	int  		flush_prev;      /* link to prev dirty buffer */
+	XLogRecPtr	oldest_lsn;      /* the first lsn which marked this buffer dirty */
+	/*
+	 * If a buffer can not be flushed on primary because its latest modification
+	 * lsn > oldest apply lsn, in order to advance the consistent lsn, a copy
+	 * is made. So copy_buffer is used to point to its copied buffer of the
+	 * buffer.
+	 */
+	CopyBufferDesc	*copy_buffer;
+	uint8		polar_flags;
+	uint16		recently_modified_count;
 } BufferDesc;
 
 /*

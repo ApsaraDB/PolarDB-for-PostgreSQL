@@ -1,0 +1,45 @@
+-- Test parallel background writer.
+--
+-- alter parallel bgwriter workers to a big value.
+alter system set polar_parallel_bgwriter_workers = 20;
+ERROR:  20 is outside the valid range for parameter "polar_parallel_bgwriter_workers" (0 .. 8)
+alter system set polar_parallel_bgwriter_workers = 8;
+select pg_reload_conf();
+ pg_reload_conf 
+----------------
+ t
+(1 row)
+
+select pg_sleep(1);
+ pg_sleep 
+----------
+ 
+(1 row)
+
+-- alter parallel bgwriter workers to a small values.
+alter system set polar_parallel_bgwriter_workers = 0;
+select pg_reload_conf();
+ pg_reload_conf 
+----------------
+ t
+(1 row)
+
+select pg_sleep(1);
+ pg_sleep 
+----------
+ 
+(1 row)
+
+alter system set polar_parallel_bgwriter_workers = 3;
+select pg_reload_conf();
+ pg_reload_conf 
+----------------
+ t
+(1 row)
+
+select pg_sleep(1);
+ pg_sleep 
+----------
+ 
+(1 row)
+

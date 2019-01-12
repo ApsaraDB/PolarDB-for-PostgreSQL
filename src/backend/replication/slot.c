@@ -529,6 +529,9 @@ ReplicationSlotDropAcquired(void)
 	MyReplicationSlot = NULL;
 
 	ReplicationSlotDropPtr(slot);
+
+	/* POLAR: compute the oldest apply lsn among all replication slots and set it. */
+	polar_compute_and_set_oldest_apply_lsn();
 }
 
 /*
@@ -1518,4 +1521,34 @@ RestoreSlotFromDisk(const char *name)
 		ereport(PANIC,
 				(errmsg("too many replication slots active before shutdown"),
 				 errhint("Increase max_replication_slots and try again.")));
+}
+
+/* Compute the oldest apply lsn among all replicas. */
+void
+polar_compute_and_set_oldest_apply_lsn(void)
+{
+	uint32 		slotno = 0;
+	XLogRecPtr	oldest_apply_lsn = InvalidXLogRecPtr;
+
+	LWLockAcquire(ReplicationSlotControlLock, LW_SHARED);
+	for (slotno = 0; slotno < max_replication_slots; slotno++)
+	{
+		ReplicationSlot *s = &ReplicationSlotCtl->replication_slots[slotno];
+		XLogRecPtr	apply_lsn;
+
+		if (!s->in_use)
+			continue;
+
+		SpinLockAcquire(&s->mutex);
+		apply_lsn = s->data.polar_replica_apply_lsn;
+		SpinLockRelease(&s->mutex);
+
+		if (!XLogRecPtrIsInvalid(apply_lsn) &&
+			(XLogRecPtrIsInvalid(oldest_apply_lsn)
+				|| oldest_apply_lsn > apply_lsn))
+			oldest_apply_lsn = apply_lsn;
+	}
+	LWLockRelease(ReplicationSlotControlLock);
+
+	polar_set_oldest_applied_lsn(oldest_apply_lsn);
 }

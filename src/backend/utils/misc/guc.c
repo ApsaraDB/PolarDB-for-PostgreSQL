@@ -527,6 +527,10 @@ char	   *role_string;
 
 /* POLAR */
 #define POLAR_MAX_PDB_HOSTID			512
+
+/* POLAR GUCs */
+static char *polar_version;         /* format:1.1.0 */
+
 int		polar_hostid = 0;
 int		polar_clog_slot_size = 0;
 char	*polar_datadir = NULL;
@@ -539,6 +543,30 @@ bool    polar_enable_debug = false;
 bool    polar_enable_pwrite = false;
 bool    polar_enable_pread = false;
 bool	polar_dropdb_write_wal_before_rmdir = true;
+
+int  	polar_copy_buffers;
+int  	polar_bgwriter_max_batch_size;
+int  	polar_check_checkpoint_legal_interval;
+int  	polar_bgwriter_batch_size_flushlist;
+int  	polar_buffer_copy_min_modified_count;
+int  	polar_buffer_copy_lsn_lag_with_cons_lsn;
+int  	polar_bgwriter_sleep_lsn_lag;
+int  	polar_parallel_bgwriter_workers;
+int  	polar_parallel_bgwriter_delay;
+int		polar_parallel_bgwriter_check_interval;
+int		polar_parallel_new_bgwriter_threshold_lag;
+int		polar_parallel_new_bgwriter_threshold_time;
+bool	polar_enable_flushlist = true;
+bool	polar_enable_copy_buffer = true;
+bool 	polar_force_flush_buffer = false;
+bool 	polar_enable_normal_bgwriter = false;
+bool 	polar_enable_control_vm_flush = false;
+bool 	polar_enable_lazy_checkpoint = false;
+bool 	polar_startup_from_local_data_file = false;
+bool 	polar_enable_parallel_bgwriter = true;
+bool 	polar_enable_dynamic_parallel_bgwriter = true;
+
+/* POLAR GUC End */
 
 /*
  * Displayable names for context types (enum GucContext)
@@ -834,6 +862,101 @@ static const unit_conversion time_unit_conversion_table[] =
 
 static struct config_bool ConfigureNamesBool[] =
 {
+	/* POLAR BOOL GUCs Start */
+	{
+		{"polar_parallel_bgwriter_enable_dynamic", PGC_POSTMASTER, RESOURCES_BGWRITER,
+			gettext_noop("Start or stop extra parallel background writer dynamically."),
+			NULL,
+			GUC_NO_RESET_ALL
+		},
+		&polar_enable_dynamic_parallel_bgwriter,
+		true,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_enable_parallel_bgwriter", PGC_POSTMASTER, RESOURCES_BGWRITER,
+			gettext_noop("Enable parallel background writer."),
+			NULL,
+			GUC_NO_RESET_ALL
+		},
+		&polar_enable_parallel_bgwriter,
+		true,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_enable_lazy_checkpoint", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("Enable lazy checkpoint."),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_enable_lazy_checkpoint,
+		/* default true, we need lazy checkpoint to advance checkpoint ptr regularly */
+		true,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_enable_control_vm_flush", PGC_POSTMASTER, UNGROUPED,
+			gettext_noop("Enable control visibility map to flush buffer."),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_enable_control_vm_flush,
+		false,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_enable_normal_bgwriter", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("Enable normal background writer."),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_enable_normal_bgwriter,
+		false,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_force_flush_buffer", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("Enable force flush buffer, this parameter is only helpful when there are not replicas."),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_force_flush_buffer,
+		false,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_enable_copy_buffer", PGC_POSTMASTER, UNGROUPED,
+			gettext_noop("Enable copy buffer."),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_enable_copy_buffer,
+		true,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_enable_flushlist", PGC_POSTMASTER, UNGROUPED,
+			gettext_noop("Enable flush list."),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_enable_flushlist,
+		true,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_startup_from_local_data_file", PGC_POSTMASTER, UNGROUPED,
+			gettext_noop("When replica start up, whether we copy some files from shared "
+						 "storage to local storage. If it is false, we do not copy any files,"
+						 "start up from local files, such as pg_xact, pg_commit_ts, pg_control and so on."),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_startup_from_local_data_file,
+		false,
+		NULL, NULL, NULL
+	},
+
 	{
 		{"polar_openfile_with_readonly_in_replica", PGC_POSTMASTER, UNGROUPED,
 			gettext_noop("open datafile with readonly mode in replica"),
@@ -920,6 +1043,8 @@ static struct config_bool ConfigureNamesBool[] =
 		false,
 		NULL, NULL, NULL
 	},
+	/* POLAR BOOL GUCs end */
+
 	{
 		{"enable_seqscan", PGC_USERSET, QUERY_TUNING_METHOD,
 			gettext_noop("Enables the planner's use of sequential-scan plans."),
@@ -1935,10 +2060,132 @@ static struct config_bool ConfigureNamesBool[] =
 
 static struct config_int ConfigureNamesInt[] =
 {
+	/* POLAR INT GUCs Start */
+	{
+		{"polar_parallel_new_bgwriter_threshold_lag", PGC_SIGHUP, RESOURCES_BGWRITER,
+			gettext_noop(
+				"Set the threshold to add a new bgwriter, if the consistent lag greater than "
+				 "this lag, we will add a new parallel background writer."),
+			NULL,
+			GUC_UNIT_MB
+		},
+		&polar_parallel_new_bgwriter_threshold_lag,
+		1024, 256, INT_MAX / 2,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_parallel_new_bgwriter_threshold_time", PGC_SIGHUP, RESOURCES_BGWRITER,
+			gettext_noop(
+				"Set the threshold to add a new bgwriter, if the delay time greater than "
+				 "this threshold, we will add a new parallel background writer."),
+			NULL,
+			GUC_UNIT_S
+		},
+		&polar_parallel_new_bgwriter_threshold_time,
+		10, 1, 3600,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_parallel_bgwriter_check_interval", PGC_SIGHUP, RESOURCES_BGWRITER,
+			gettext_noop("The interval to check whether the server has enough parallel background writers."),
+			NULL,
+			GUC_UNIT_S
+		},
+		&polar_parallel_bgwriter_check_interval,
+		10, 1, 600,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_parallel_bgwriter_delay", PGC_SIGHUP, RESOURCES_BGWRITER,
+			gettext_noop("Parallel background writer sleep time between rounds."),
+			NULL,
+			GUC_UNIT_MS
+		},
+		&polar_parallel_bgwriter_delay,
+		10, 1, 10000,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_parallel_bgwriter_workers", PGC_SIGHUP, RESOURCES_BGWRITER,
+			gettext_noop("Set the max number of the parallel background workers."),
+			NULL
+		},
+		&polar_parallel_bgwriter_workers,
+		5, 0, MAX_NUM_OF_PARALLEL_BGWRITER/2,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_copy_buffers", PGC_POSTMASTER, UNGROUPED,
+			gettext_noop("Set the size of copy buffer."),
+			NULL,
+			GUC_UNIT_BLOCKS
+		},
+		&polar_copy_buffers,
+		16384, 10, INT_MAX / 2,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_bgwriter_sleep_lsn_lag", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("Delay lag less than this threshold, bgwriter maybe sleep."),
+			NULL,
+			GUC_UNIT_MB
+		},
+		&polar_bgwriter_sleep_lsn_lag,
+		100, 0, 1000,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_buffer_copy_lsn_lag_with_cons_lsn", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("Sets the max lag between consistent lsn and oldest "
+						 "lsn when a buffer should be copied"),
+			NULL,
+			GUC_UNIT_MB
+		},
+		&polar_buffer_copy_lsn_lag_with_cons_lsn,
+		100, 1, 1000,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_buffer_copy_min_modified_count", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("Sets the minimum modified count when a buffer should be copied"),
+			NULL
+		},
+		&polar_buffer_copy_min_modified_count,
+		5, 0, 1000,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_bgwriter_batch_size_flushlist", PGC_POSTMASTER, UNGROUPED,
+			gettext_noop("Sets the batch size when bgwriter get buffer from flush list"),
+			NULL
+		},
+		&polar_bgwriter_batch_size_flushlist,
+		100, 1, 10000,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_bgwriter_max_batch_size", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("Sets the maximum batch size when bgwriter flush buffer from flush list"),
+			NULL
+		},
+		&polar_bgwriter_max_batch_size,
+		5000, 0, INT_MAX / 2,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_check_checkpoint_legal_interval", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("Sets the maximum interval between check the checkpoint legal or not."),
+			NULL,
+			GUC_UNIT_S
+		},
+		&polar_check_checkpoint_legal_interval,
+		10, 1, 3600,
+		NULL, NULL, NULL
+	},
 	{
 		{"polar_clog_slot_size", PGC_POSTMASTER, UNGROUPED,
-				gettext_noop("polar_clog_slot_size."),
-				NULL
+			gettext_noop("polar_clog_slot_size."),
+			NULL
 		},
 		&polar_clog_slot_size,
 		128, 128, 8192,
@@ -1955,6 +2202,8 @@ static struct config_int ConfigureNamesInt[] =
 		1, 1, POLAR_MAX_PDB_HOSTID,
 		NULL, NULL, NULL
 	},
+	/* POLAR INT GUCs end */
+
 	{
 		{"archive_timeout", PGC_SIGHUP, WAL_ARCHIVING,
 			gettext_noop("Forces a switch to the next WAL file if a "
@@ -2569,7 +2818,7 @@ static struct config_int ConfigureNamesInt[] =
 			GUC_UNIT_S
 		},
 		&CheckPointTimeout,
-		300, 30, 86400,
+		300, 1, 86400,
 		NULL, NULL, NULL
 	},
 
@@ -2730,7 +2979,7 @@ static struct config_int ConfigureNamesInt[] =
 			GUC_UNIT_MS
 		},
 		&BgWriterDelay,
-		200, 10, 10000,
+		200, 1, 10000,
 		NULL, NULL, NULL
 	},
 
@@ -3389,10 +3638,21 @@ static struct config_real ConfigureNamesReal[] =
 
 static struct config_string ConfigureNamesString[] =
 {
+	/* POLAR String GUCs Start */
+	{
+		{"polar_version", PGC_INTERNAL, UNGROUPED,
+		    gettext_noop("Show the PolarDB server version."),
+		    NULL,
+		    GUC_NOT_IN_SAMPLE | GUC_DISALLOW_IN_FILE
+		},
+		&polar_version,
+		"1.1.15",
+		NULL, NULL, NULL
+	},
 	{
 		{"polar_storage_cluster_name", PGC_POSTMASTER, UNGROUPED,
-			gettext_noop("polar storage cluster name"),
-			NULL
+		 	gettext_noop("polar storage cluster name"),
+		 	NULL
 		},
 		&polar_storage_cluster_name,
 		NULL,
@@ -3401,8 +3661,8 @@ static struct config_string ConfigureNamesString[] =
 
 	{
 		{"polar_datadir", PGC_POSTMASTER, UNGROUPED,
-			gettext_noop("polardb datadir."),
-			NULL
+		 	gettext_noop("polardb datadir."),
+		 	NULL
 		},
 		&polar_datadir,
 		"",
@@ -3411,13 +3671,14 @@ static struct config_string ConfigureNamesString[] =
 
 	{
 		{"polar_disk_name", PGC_POSTMASTER, UNGROUPED,
-			gettext_noop("The virtual disk name privided by polarFS."),
-			NULL
+		 	gettext_noop("The virtual disk name privided by polarFS."),
+		 	NULL
 		},
 		&polar_disk_name,
 		"",
 		NULL, NULL, NULL
 	},
+	/* POLAR String GUCs end */
 
 	{
 		{"archive_command", PGC_SIGHUP, WAL_ARCHIVING,

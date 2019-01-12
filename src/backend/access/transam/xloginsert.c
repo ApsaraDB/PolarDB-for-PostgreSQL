@@ -32,6 +32,9 @@
 #include "utils/memutils.h"
 #include "pg_trace.h"
 
+/* POLAR */
+#include "storage/polar_bufmgr.h"
+
 /* Buffer size required to store a compressed version of backup block image */
 #define PGLZ_MAX_BLCKSZ PGLZ_MAX_OUTPUT(BLCKSZ)
 
@@ -58,6 +61,9 @@ typedef struct
 
 	/* buffer to store a compressed version of backup block image */
 	char		compressed_page[PGLZ_MAX_BLCKSZ];
+
+	/* POLAR */
+	Buffer 		buffer;			/* used to set buffer oldest lsn */
 } registered_buffer;
 
 static registered_buffer *registered_buffers;
@@ -256,6 +262,9 @@ XLogRegisterBuffer(uint8 block_id, Buffer buffer, uint8 flags)
 #endif
 
 	regbuf->in_use = true;
+
+	/* POLAR */
+	regbuf->buffer = buffer;
 }
 
 /*
@@ -311,6 +320,9 @@ XLogRegisterBlock(uint8 block_id, RelFileNode *rnode, ForkNumber forknum,
 #endif
 
 	regbuf->in_use = true;
+
+	/* POLAR */
+	regbuf->buffer = InvalidBuffer;
 }
 
 /*
@@ -535,6 +547,12 @@ XLogRecordAssemble(RmgrId rmid, uint8 info,
 
 		if (!regbuf->in_use)
 			continue;
+
+		/*
+		 * POLAR: if we do not call MarkBufferDirty first, we will set the
+		 * oldest lsn now.
+		 */
+		polar_set_reg_buffer_oldest_lsn(regbuf->buffer);
 
 		/* Determine if this block needs to be backed up */
 		if (regbuf->flags & REGBUF_FORCE_IMAGE)

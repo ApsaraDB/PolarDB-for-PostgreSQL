@@ -46,15 +46,27 @@
 #include "portability/mem.h"
 #include "storage/fd.h"
 #include "storage/ipc.h"
+#include "utils/builtins.h"
 #include "utils/guc.h"
 #include "utils/resowner_private.h"
 #include "storage/polar_fd.h"
+
+/* set mode by parsing recovery.conf */
+#define		POLAR_REPLICA_MODE 	0x01
+#define		POLAR_STANDBY_MODE	0x02
+#define		POLAR_DATAMAX_MODE	0x04
 
 bool	polar_mount_pfs_readonly_mode = true;
 bool	polar_openfile_with_readonly_in_replica = false;
 int		polar_vfs_switch = POLAR_VFS_SWITCH_LOCAL;
 
 static inline const vfs_mgr* polar_get_local_vfs_mgr(const char *path);
+
+/*
+ * Record the initial node type, it is initialized by postmaster, inherited by
+ * other backends. We record this value in shared memory later.
+ */
+PolarNodeType	polar_local_node_type = POLAR_UNKNOWN;
 
 /*
  * POLAR: The virtual file interface
@@ -539,3 +551,109 @@ polar_reset_vfs_switch(void)
 	polar_vfs_switch = POLAR_VFS_SWITCH_LOCAL;
 }
 
+void
+polar_init_node_type(void)
+{
+	polar_local_node_type = polar_node_type_by_file();
+}
+
+PolarNodeType
+polar_node_type_by_file(void)
+{
+	FILE	   *fd;
+	ConfigVariable *item,
+	               *head = NULL,
+	               *tail = NULL;
+	/* use flag to show whether replica/standby/datamax is requested */
+	uint8_t 	flag = 0;
+	PolarNodeType polar_node_type = POLAR_UNKNOWN;
+
+#define RECOVERY_COMMAND_FILE	"recovery.conf"
+
+	fd = AllocateFile(RECOVERY_COMMAND_FILE, "r");
+	if (fd == NULL)
+	{
+		if (errno == ENOENT)
+		{
+			polar_node_type = POLAR_MASTER;
+			elog(LOG, "recovery.conf not exist, polardb in readwrite mode");
+			return polar_node_type;
+		}
+		ereport(FATAL,
+		        (errcode_for_file_access(),
+			        errmsg("could not open recovery command file \"%s\": %m",
+			               RECOVERY_COMMAND_FILE)));
+	}
+
+	/*
+	 * Since we're asking ParseConfigFp() to report errors as FATAL, there's
+	 * no need to check the return value.
+	 */
+	(void) ParseConfigFp(fd, RECOVERY_COMMAND_FILE, 0, FATAL, &head, &tail);
+
+	FreeFile(fd);
+
+	for (item = head; item; item = item->next)
+	{
+		/* set true when replica or standby mode is set */
+		bool polar_is_set = false;
+		if (strcmp(item->name, "polar_replica") == 0)
+		{
+			if (!parse_bool(item->value, &polar_is_set))
+				ereport(ERROR,
+				        (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+					        errmsg("parameter \"%s\" requires a Boolean value",
+					               "polar_replica")));
+			ereport(LOG,
+			        (errmsg_internal("polar_replica = '%s'", item->value)));
+			if (polar_is_set)
+				flag |= POLAR_REPLICA_MODE;
+		}
+		else if (strcmp(item->name, "standby_mode") == 0)
+		{
+			if (!parse_bool(item->value, &polar_is_set))
+				ereport(ERROR,
+				        (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+					        errmsg("parameter \"%s\" requires a Boolean value",
+					               "standby_mode")));
+			ereport(LOG,
+			        (errmsg_internal("standby_mode = '%s'", item->value)));
+			if (polar_is_set)
+				flag |= POLAR_STANDBY_MODE;
+		}
+	}
+
+	if (flag & POLAR_REPLICA_MODE)
+	{
+		polar_node_type = POLAR_REPLICA;
+		elog(LOG,
+		     "read polar_replica = on, polardb in replica mode, use ro mode mount pfs");
+	}
+
+	if (flag & POLAR_STANDBY_MODE)
+	{
+		polar_node_type = POLAR_STANDBY;
+		elog(LOG,
+		     "read standby_mode = on, polardb in standby mode, use readwrite mode mount pfs");
+	}
+
+	if ((flag & (flag - 1)) != 0)
+	{
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+			errmsg("replica, standby and datamax mode is mutually exclusive.")));
+	}
+
+	/*
+	 * Exists one recovery.conf, but it is not replica or standby, it may be
+	 * a PITR recovery.conf.
+	 */
+	if (!flag)
+	{
+		elog(LOG, "Exists recovery.conf, but it's not replica or standby, may be in archive recovery(PITR).");
+		polar_node_type = POLAR_MASTER;
+	}
+
+	FreeConfigVariables(head);
+
+	return polar_node_type;
+}

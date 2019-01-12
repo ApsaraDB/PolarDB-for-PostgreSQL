@@ -15,6 +15,9 @@
 #include "storage/bufmgr.h"
 
 
+/* POLAR */
+#include "storage/polar_bufmgr.h"
+
 extern bool XLogHaveInvalidPages(void);
 extern void XLogCheckInvalidPages(void);
 

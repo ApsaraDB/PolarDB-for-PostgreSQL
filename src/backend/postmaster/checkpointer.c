@@ -61,8 +61,9 @@
 #include "utils/memutils.h"
 #include "utils/resowner.h"
 
-/* POLAR: */
+/* POLAR */
 #include "storage/polar_fd.h"
+#include "storage/polar_bufmgr.h"
 
 /*----------
  * Shared memory area for communication between checkpointer and backends
@@ -1315,7 +1316,6 @@ AbsorbFsyncRequests(void)
 	CheckpointerRequest *request;
 	int			n;
 
-	/* POLAR: polardb bgwriter like checkpointer do async write */
 	if (!(AmCheckpointerProcess() ||
 		(AmPolarBackgroundWriterProcess())))
 		return;
@@ -1410,3 +1410,34 @@ FirstCallSinceLastCheckpoint(void)
 
 	return FirstCall;
 }
+
+/* POLAR: some polar related implementations */
+void
+polar_checkpointer_do_reload(void)
+{
+	if (got_SIGHUP)
+	{
+		got_SIGHUP = false;
+		ProcessConfigFile(PGC_SIGHUP);
+
+		/*
+		 * Checkpointer is the last process to shut down, so we ask it to
+		 * hold the keys for a range of other tasks required most of which
+		 * have nothing to do with checkpointing at all.
+		 *
+		 * For various reasons, some config values can change dynamically
+		 * so the primary copy of them is held in shared memory to make
+		 * sure all backends see the same value.  We make Checkpointer
+		 * responsible for updating the shared memory copy if the
+		 * parameter setting changes because of SIGHUP.
+		 */
+		UpdateSharedMemoryConfig();
+	}
+}
+
+bool
+polar_checkpointer_recv_shutdown_requested(void)
+{
+	return shutdown_requested;
+}
+/* POLAR end */

@@ -60,6 +60,12 @@
 #include "utils/resowner.h"
 #include "utils/timestamp.h"
 
+/* POLAR */
+#include "storage/polar_fd.h"
+
+/* POLAR */
+#include "postmaster/polar_parallel_bgwriter.h"
+#include "storage/polar_bufmgr.h"
 
 /*
  * GUC parameters
@@ -243,6 +249,9 @@ BackgroundWriterMain(void)
 	 */
 	PG_SETMASK(&UnBlockSig);
 
+	/* POLAR: start parallel background writer workers. */
+	polar_launch_parallel_bgwriter_workers();
+
 	/*
 	 * Reset hibernation state after any error.
 	 */
@@ -278,7 +287,7 @@ BackgroundWriterMain(void)
 		/*
 		 * Do one cycle of dirty-buffer writing.
 		 */
-		can_hibernate = BgBufferSync(&wb_context);
+		can_hibernate = polar_bg_buffer_sync(&wb_context);
 
 		/*
 		 * Send off activity statistics to the stats collector
@@ -337,6 +346,12 @@ BackgroundWriterMain(void)
 				last_snapshot_ts = now;
 			}
 		}
+
+		/*
+		 * POLAR: Check the parallel background writers, if some writers are
+		 * stopped, start some.
+		 */
+		polar_check_parallel_bgwriter_worker();
 
 		/*
 		 * Sleep until we are signaled or BgWriterDelay has elapsed.

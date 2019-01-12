@@ -702,3 +702,23 @@ StrategyRejectBuffer(BufferAccessStrategy strategy, BufferDesc *buf)
 
 	return true;
 }
+
+/* POLAR: some polar related implementations */
+void
+polar_try_to_wake_bgwriter(void)
+{
+	int bgwprocno = INT_ACCESS_ONCE(StrategyControl->bgwprocno);
+	if (bgwprocno != -1)
+	{
+		/* reset bgwprocno first, before setting the latch */
+		StrategyControl->bgwprocno = -1;
+
+		/*
+		 * Not acquiring ProcArrayLock here which is slightly icky. It's
+		 * actually fine because procLatch isn't ever freed, so we just can
+		 * potentially set the wrong process' (or no process') latch.
+		 */
+		SetLatch(&ProcGlobal->allProcs[bgwprocno].procLatch);
+	}
+}
+/* POLAR end */

@@ -35,6 +35,7 @@ brin_xlog_createidx(XLogReaderState *record)
 	brin_metapage_init(page, xlrec->pagesPerRange, xlrec->version);
 	PageSetLSN(page, lsn);
 	MarkBufferDirty(buf);
+	polar_redo_set_buffer_oldest_lsn(buf, record->ReadRecPtr);
 	UnlockReleaseBuffer(buf);
 }
 
@@ -93,6 +94,7 @@ brin_xlog_insert_update(XLogReaderState *record,
 
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(buffer);
+		polar_redo_set_buffer_oldest_lsn(buffer, record->ReadRecPtr);
 	}
 	if (BufferIsValid(buffer))
 		UnlockReleaseBuffer(buffer);
@@ -110,6 +112,7 @@ brin_xlog_insert_update(XLogReaderState *record,
 								tid);
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(buffer);
+		polar_redo_set_buffer_oldest_lsn(buffer, record->ReadRecPtr);
 	}
 	if (BufferIsValid(buffer))
 		UnlockReleaseBuffer(buffer);
@@ -154,6 +157,7 @@ brin_xlog_update(XLogReaderState *record)
 
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(buffer);
+		polar_redo_set_buffer_oldest_lsn(buffer, record->ReadRecPtr);
 	}
 
 	/* Then insert the new tuple and update revmap, like in an insertion. */
@@ -194,6 +198,7 @@ brin_xlog_samepage_update(XLogReaderState *record)
 
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(buffer);
+		polar_redo_set_buffer_oldest_lsn(buffer, record->ReadRecPtr);
 	}
 	if (BufferIsValid(buffer))
 		UnlockReleaseBuffer(buffer);
@@ -246,6 +251,7 @@ brin_xlog_revmap_extend(XLogReaderState *record)
 			((char *) metadata + sizeof(BrinMetaPageData)) - (char *) metapg;
 
 		MarkBufferDirty(metabuf);
+		polar_redo_set_buffer_oldest_lsn(metabuf, record->ReadRecPtr);
 	}
 
 	/*
@@ -259,6 +265,7 @@ brin_xlog_revmap_extend(XLogReaderState *record)
 
 	PageSetLSN(page, lsn);
 	MarkBufferDirty(buf);
+	polar_redo_set_buffer_oldest_lsn(buf, record->ReadRecPtr);
 
 	UnlockReleaseBuffer(buf);
 	if (BufferIsValid(metabuf))
@@ -286,6 +293,7 @@ brin_xlog_desummarize_page(XLogReaderState *record)
 
 		PageSetLSN(BufferGetPage(buffer), lsn);
 		MarkBufferDirty(buffer);
+		polar_redo_set_buffer_oldest_lsn(buffer, record->ReadRecPtr);
 	}
 	if (BufferIsValid(buffer))
 		UnlockReleaseBuffer(buffer);
@@ -300,6 +308,7 @@ brin_xlog_desummarize_page(XLogReaderState *record)
 
 		PageSetLSN(regPg, lsn);
 		MarkBufferDirty(buffer);
+		polar_redo_set_buffer_oldest_lsn(buffer, record->ReadRecPtr);
 	}
 	if (BufferIsValid(buffer))
 		UnlockReleaseBuffer(buffer);

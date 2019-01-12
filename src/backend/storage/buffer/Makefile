@@ -14,4 +14,7 @@ include $(top_builddir)/src/Makefile.global
 
 OBJS = buf_table.o buf_init.o bufmgr.o freelist.o localbuf.o
 
+# POLAR objects
+OBJS += polar_copybuf.o polar_flushlist.o
+
 include $(top_srcdir)/src/backend/common.mk

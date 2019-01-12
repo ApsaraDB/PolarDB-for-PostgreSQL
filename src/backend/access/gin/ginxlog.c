@@ -35,6 +35,7 @@ ginRedoClearIncompleteSplit(XLogReaderState *record, uint8 block_id)
 
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(buffer);
+		polar_redo_set_buffer_oldest_lsn(buffer, record->ReadRecPtr);
 	}
 	if (BufferIsValid(buffer))
 		UnlockReleaseBuffer(buffer);
@@ -56,6 +57,7 @@ ginRedoCreateIndex(XLogReaderState *record)
 
 	PageSetLSN(page, lsn);
 	MarkBufferDirty(MetaBuffer);
+	polar_redo_set_buffer_oldest_lsn(MetaBuffer, record->ReadRecPtr);
 
 	RootBuffer = XLogInitBufferForRedo(record, 1);
 	Assert(BufferGetBlockNumber(RootBuffer) == GIN_ROOT_BLKNO);
@@ -65,6 +67,7 @@ ginRedoCreateIndex(XLogReaderState *record)
 
 	PageSetLSN(page, lsn);
 	MarkBufferDirty(RootBuffer);
+	polar_redo_set_buffer_oldest_lsn(RootBuffer, record->ReadRecPtr);
 
 	UnlockReleaseBuffer(RootBuffer);
 	UnlockReleaseBuffer(MetaBuffer);
@@ -94,6 +97,7 @@ ginRedoCreatePTree(XLogReaderState *record)
 	PageSetLSN(page, lsn);
 
 	MarkBufferDirty(buffer);
+	polar_redo_set_buffer_oldest_lsn(buffer, record->ReadRecPtr);
 	UnlockReleaseBuffer(buffer);
 }
 
@@ -370,6 +374,7 @@ ginRedoInsert(XLogReaderState *record)
 
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(buffer);
+		polar_redo_set_buffer_oldest_lsn(buffer, record->ReadRecPtr);
 	}
 	if (BufferIsValid(buffer))
 		UnlockReleaseBuffer(buffer);
@@ -445,6 +450,7 @@ ginRedoVacuumDataLeafPage(XLogReaderState *record)
 		ginRedoRecompress(page, &xlrec->data);
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(buffer);
+		polar_redo_set_buffer_oldest_lsn(buffer, record->ReadRecPtr);
 	}
 	if (BufferIsValid(buffer))
 		UnlockReleaseBuffer(buffer);
@@ -467,6 +473,7 @@ ginRedoDeletePage(XLogReaderState *record)
 		GinPageGetOpaque(page)->flags = GIN_DELETED;
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(dbuffer);
+		polar_redo_set_buffer_oldest_lsn(dbuffer, record->ReadRecPtr);
 	}
 
 	if (XLogReadBufferForRedo(record, 1, &pbuffer) == BLK_NEEDS_REDO)
@@ -477,6 +484,7 @@ ginRedoDeletePage(XLogReaderState *record)
 		GinPageDeletePostingItem(page, data->parentOffset);
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(pbuffer);
+		polar_redo_set_buffer_oldest_lsn(pbuffer, record->ReadRecPtr);
 	}
 
 	if (XLogReadBufferForRedo(record, 2, &lbuffer) == BLK_NEEDS_REDO)
@@ -486,6 +494,7 @@ ginRedoDeletePage(XLogReaderState *record)
 		GinPageGetOpaque(page)->rightlink = data->rightLink;
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(lbuffer);
+        polar_redo_set_buffer_oldest_lsn(lbuffer, record->ReadRecPtr);          
 	}
 
 	if (BufferIsValid(lbuffer))
@@ -518,6 +527,7 @@ ginRedoUpdateMetapage(XLogReaderState *record)
 	memcpy(GinPageGetMeta(metapage), &data->metadata, sizeof(GinMetaPageData));
 	PageSetLSN(metapage, lsn);
 	MarkBufferDirty(metabuffer);
+	polar_redo_set_buffer_oldest_lsn(metabuffer, record->ReadRecPtr);
 
 	if (data->ntuples > 0)
 	{
@@ -563,6 +573,7 @@ ginRedoUpdateMetapage(XLogReaderState *record)
 
 			PageSetLSN(page, lsn);
 			MarkBufferDirty(buffer);
+			polar_redo_set_buffer_oldest_lsn(buffer, record->ReadRecPtr);
 		}
 		if (BufferIsValid(buffer))
 			UnlockReleaseBuffer(buffer);
@@ -580,6 +591,7 @@ ginRedoUpdateMetapage(XLogReaderState *record)
 
 			PageSetLSN(page, lsn);
 			MarkBufferDirty(buffer);
+			polar_redo_set_buffer_oldest_lsn(buffer, record->ReadRecPtr);
 		}
 		if (BufferIsValid(buffer))
 			UnlockReleaseBuffer(buffer);
@@ -639,6 +651,7 @@ ginRedoInsertListPage(XLogReaderState *record)
 
 	PageSetLSN(page, lsn);
 	MarkBufferDirty(buffer);
+	polar_redo_set_buffer_oldest_lsn(buffer, record->ReadRecPtr);
 
 	UnlockReleaseBuffer(buffer);
 }
@@ -661,6 +674,7 @@ ginRedoDeleteListPages(XLogReaderState *record)
 	memcpy(GinPageGetMeta(metapage), &data->metadata, sizeof(GinMetaPageData));
 	PageSetLSN(metapage, lsn);
 	MarkBufferDirty(metabuffer);
+	polar_redo_set_buffer_oldest_lsn(metabuffer, record->ReadRecPtr);
 
 	/*
 	 * In normal operation, shiftList() takes exclusive lock on all the
@@ -688,6 +702,7 @@ ginRedoDeleteListPages(XLogReaderState *record)
 
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(buffer);
+		polar_redo_set_buffer_oldest_lsn(buffer, record->ReadRecPtr);
 
 		UnlockReleaseBuffer(buffer);
 	}

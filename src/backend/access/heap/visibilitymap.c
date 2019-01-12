@@ -95,6 +95,9 @@
 #include "utils/inval.h"
 
 
+/* POLAR */
+#include "storage/polar_bufmgr.h"
+
 /*#define TRACE_VISIBILITYMAP */
 
 /*
@@ -166,7 +169,8 @@ static void vm_extend(Relation rel, BlockNumber nvmblocks);
  * any I/O.  Returns true if any bits have been cleared and false otherwise.
  */
 bool
-visibilitymap_clear(Relation rel, BlockNumber heapBlk, Buffer buf, uint8 flags)
+visibilitymap_clear(Relation rel, BlockNumber heapBlk, Buffer buf, uint8 flags,
+					XLogReaderState *polar_record)
 {
 	BlockNumber mapBlock = HEAPBLK_TO_MAPBLOCK(heapBlk);
 	int			mapByte = HEAPBLK_TO_MAPBYTE(heapBlk);
@@ -191,7 +195,36 @@ visibilitymap_clear(Relation rel, BlockNumber heapBlk, Buffer buf, uint8 flags)
 	{
 		map[mapByte] &= ~mask;
 
+		/*
+		 * POLAR: if system is not in recovery, MarkBufferDirty will set a fake
+		 * oldest lsn for vm buffer.
+		 */
 		MarkBufferDirty(buf);
+
+		/*
+		 * POLAR: set a latest lsn for VM buffer, if the system is in recovery,
+		 * the lsn will be valid, we can use it. Otherwise, we can not get
+		 * a valid lsn, so use current insert position as a fake lsn, that
+		 * is less than or equal to the real lsn generated later.
+		 */
+		if (polar_enable_shared_storage_mode)
+		{
+			/* Set a fake latest lsn */
+			if (polar_record == NULL)
+			{
+				Assert(!RecoveryInProgress());
+				PageSetLSN(BufferGetPage(buf), polar_get_faked_latest_lsn());
+			}
+			/* System is in recovery, set the oldest lsn and latest lsn */
+			else
+			{
+				Assert(RecoveryInProgress());
+				PageSetLSN(BufferGetPage(buf), polar_record->EndRecPtr);
+				polar_redo_set_buffer_oldest_lsn(buf, polar_record->ReadRecPtr);
+			}
+		}
+		/* POLAR end */
+
 		cleared = true;
 	}
 
@@ -272,7 +305,7 @@ visibilitymap_pin_ok(BlockNumber heapBlk, Buffer buf)
 void
 visibilitymap_set(Relation rel, BlockNumber heapBlk, Buffer heapBuf,
 				  XLogRecPtr recptr, Buffer vmBuf, TransactionId cutoff_xid,
-				  uint8 flags)
+				  uint8 flags, XLogRecPtr polar_read_rec_ptr)
 {
 	BlockNumber mapBlock = HEAPBLK_TO_MAPBLOCK(heapBlk);
 	uint32		mapByte = HEAPBLK_TO_MAPBYTE(heapBlk);
@@ -329,6 +362,16 @@ visibilitymap_set(Relation rel, BlockNumber heapBlk, Buffer heapBuf,
 				}
 			}
 			PageSetLSN(page, recptr);
+
+			/*
+			 * POLAR: for master crash recovery or standby redo, we should put
+			 * the buffer to flush list.
+			 */
+			if (InRecovery)
+			{
+				Assert(!XLogRecPtrIsInvalid(recptr));
+				polar_redo_set_buffer_oldest_lsn(vmBuf, polar_read_rec_ptr);
+			}
 		}
 
 		END_CRIT_SECTION();
@@ -385,6 +428,11 @@ visibilitymap_get_status(Relation rel, BlockNumber heapBlk, Buffer *buf)
 		if (!BufferIsValid(*buf))
 			return false;
 	}
+
+	/* POLAR: replica only use vm buffer which lsn is less than replay lsn */
+	if (polar_in_replica_mode() &&
+		PageGetLSN(BufferGetPage(*buf)) > GetXLogReplayRecPtr(NULL))
+		return false;
 
 	map = PageGetContents(BufferGetPage(*buf));
 

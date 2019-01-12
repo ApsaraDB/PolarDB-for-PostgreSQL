@@ -17,6 +17,8 @@
 #include "storage/bufmgr.h"
 #include "storage/buf_internals.h"
 
+/* POLAR */
+#include "storage/polar_flushlist.h"
 
 BufferDescPadded *BufferDescriptors;
 char	   *BufferBlocks;
@@ -137,6 +139,14 @@ InitBufferPool(void)
 
 			LWLockInitialize(BufferDescriptorGetIOLock(buf),
 							 LWTRANCHE_BUFFER_IO_IN_PROGRESS);
+
+			/* POLAR */
+			buf->oldest_lsn = InvalidXLogRecPtr;
+			buf->flush_next = POLAR_FLUSHNEXT_NOT_IN_LIST;
+			buf->flush_prev = POLAR_FLUSHNEXT_NOT_IN_LIST;
+			buf->copy_buffer = NULL;
+			buf->recently_modified_count = 0;
+			buf->polar_flags = 0;
 		}
 
 		/* Correct last entry of linked list */
@@ -145,6 +155,9 @@ InitBufferPool(void)
 
 	/* Init other shared buffer-management stuff */
 	StrategyInitialize(!foundDescs);
+
+	/* POLAR: init flush list */
+	polar_init_flush_list_ctl(!foundDescs);
 
 	/* Initialize per-backend file flush context */
 	WritebackContextInit(&BackendWritebackContext,
@@ -188,6 +201,9 @@ BufferShmemSize(void)
 
 	/* size of checkpoint sort array in bufmgr.c */
 	size = add_size(size, mul_size(NBuffers, sizeof(CkptSortItem)));
+
+	/* POLAR: size of flush list */
+	size = add_size(size, polar_flush_list_ctl_shmem_size());
 
 	return size;
 }

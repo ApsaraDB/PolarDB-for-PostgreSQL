@@ -45,6 +45,7 @@ hash_xlog_init_meta_page(XLogReaderState *record)
 	page = (Page) BufferGetPage(metabuf);
 	PageSetLSN(page, lsn);
 	MarkBufferDirty(metabuf);
+	polar_redo_set_buffer_oldest_lsn(metabuf, record->ReadRecPtr);
 
 	/*
 	 * Force the on-disk state of init forks to always be in sync with the
@@ -83,6 +84,7 @@ hash_xlog_init_bitmap_page(XLogReaderState *record)
 	_hash_initbitmapbuffer(bitmapbuf, xlrec->bmsize, true);
 	PageSetLSN(BufferGetPage(bitmapbuf), lsn);
 	MarkBufferDirty(bitmapbuf);
+	polar_redo_set_buffer_oldest_lsn(bitmapbuf, record->ReadRecPtr);
 
 	/*
 	 * Force the on-disk state of init forks to always be in sync with the
@@ -113,6 +115,7 @@ hash_xlog_init_bitmap_page(XLogReaderState *record)
 
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(metabuf);
+		polar_redo_set_buffer_oldest_lsn(metabuf, record->ReadRecPtr);
 
 		XLogRecGetBlockTag(record, 1, NULL, &forknum, NULL);
 		if (forknum == INIT_FORKNUM)
@@ -147,6 +150,7 @@ hash_xlog_insert(XLogReaderState *record)
 
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(buffer);
+		polar_redo_set_buffer_oldest_lsn(buffer, record->ReadRecPtr);
 	}
 	if (BufferIsValid(buffer))
 		UnlockReleaseBuffer(buffer);
@@ -165,6 +169,7 @@ hash_xlog_insert(XLogReaderState *record)
 
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(buffer);
+		polar_redo_set_buffer_oldest_lsn(buffer, record->ReadRecPtr);
 	}
 	if (BufferIsValid(buffer))
 		UnlockReleaseBuffer(buffer);
@@ -209,6 +214,7 @@ hash_xlog_add_ovfl_page(XLogReaderState *record)
 
 	PageSetLSN(ovflpage, lsn);
 	MarkBufferDirty(ovflbuf);
+	polar_redo_set_buffer_oldest_lsn(ovflbuf, record->ReadRecPtr);
 
 	if (XLogReadBufferForRedo(record, 1, &leftbuf) == BLK_NEEDS_REDO)
 	{
@@ -221,6 +227,7 @@ hash_xlog_add_ovfl_page(XLogReaderState *record)
 
 		PageSetLSN(leftpage, lsn);
 		MarkBufferDirty(leftbuf);
+		polar_redo_set_buffer_oldest_lsn(leftbuf, record->ReadRecPtr);
 	}
 
 	if (BufferIsValid(leftbuf))
@@ -253,6 +260,7 @@ hash_xlog_add_ovfl_page(XLogReaderState *record)
 
 			PageSetLSN(mappage, lsn);
 			MarkBufferDirty(mapbuffer);
+			polar_redo_set_buffer_oldest_lsn(mapbuffer, record->ReadRecPtr);
 		}
 		if (BufferIsValid(mapbuffer))
 			UnlockReleaseBuffer(mapbuffer);
@@ -271,6 +279,7 @@ hash_xlog_add_ovfl_page(XLogReaderState *record)
 
 		MarkBufferDirty(newmapbuf);
 		PageSetLSN(BufferGetPage(newmapbuf), lsn);
+		polar_redo_set_buffer_oldest_lsn(newmapbuf, record->ReadRecPtr);
 
 		UnlockReleaseBuffer(newmapbuf);
 	}
@@ -304,6 +313,7 @@ hash_xlog_add_ovfl_page(XLogReaderState *record)
 
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(metabuf);
+		polar_redo_set_buffer_oldest_lsn(metabuf, record->ReadRecPtr);
 	}
 	if (BufferIsValid(metabuf))
 		UnlockReleaseBuffer(metabuf);
@@ -350,6 +360,7 @@ hash_xlog_split_allocate_page(XLogReaderState *record)
 
 		PageSetLSN(oldpage, lsn);
 		MarkBufferDirty(oldbuf);
+		polar_redo_set_buffer_oldest_lsn(oldbuf, record->ReadRecPtr);
 	}
 
 	/* replay the record for new bucket */
@@ -360,6 +371,7 @@ hash_xlog_split_allocate_page(XLogReaderState *record)
 		elog(PANIC, "hash_xlog_split_allocate_page: failed to acquire cleanup lock");
 	MarkBufferDirty(newbuf);
 	PageSetLSN(BufferGetPage(newbuf), lsn);
+	polar_redo_set_buffer_oldest_lsn(newbuf, record->ReadRecPtr);
 
 	/*
 	 * We can release the lock on old bucket early as well but doing here to
@@ -421,6 +433,7 @@ hash_xlog_split_allocate_page(XLogReaderState *record)
 
 		MarkBufferDirty(metabuf);
 		PageSetLSN(BufferGetPage(metabuf), lsn);
+		polar_redo_set_buffer_oldest_lsn(metabuf, record->ReadRecPtr);
 	}
 
 	if (BufferIsValid(metabuf))
@@ -472,6 +485,7 @@ hash_xlog_split_complete(XLogReaderState *record)
 
 		PageSetLSN(oldpage, lsn);
 		MarkBufferDirty(oldbuf);
+		polar_redo_set_buffer_oldest_lsn(oldbuf, record->ReadRecPtr);
 	}
 	if (BufferIsValid(oldbuf))
 		UnlockReleaseBuffer(oldbuf);
@@ -495,6 +509,7 @@ hash_xlog_split_complete(XLogReaderState *record)
 
 		PageSetLSN(newpage, lsn);
 		MarkBufferDirty(newbuf);
+		polar_redo_set_buffer_oldest_lsn(newbuf, record->ReadRecPtr);
 	}
 	if (BufferIsValid(newbuf))
 		UnlockReleaseBuffer(newbuf);
@@ -579,6 +594,7 @@ hash_xlog_move_page_contents(XLogReaderState *record)
 
 		PageSetLSN(writepage, lsn);
 		MarkBufferDirty(writebuf);
+		polar_redo_set_buffer_oldest_lsn(writebuf, record->ReadRecPtr);
 	}
 
 	/* replay the record for deleting entries from overflow buffer */
@@ -606,6 +622,7 @@ hash_xlog_move_page_contents(XLogReaderState *record)
 
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(deletebuf);
+		polar_redo_set_buffer_oldest_lsn(deletebuf, record->ReadRecPtr);
 	}
 
 	/*
@@ -718,6 +735,7 @@ hash_xlog_squeeze_page(XLogReaderState *record)
 
 		PageSetLSN(writepage, lsn);
 		MarkBufferDirty(writebuf);
+		polar_redo_set_buffer_oldest_lsn(writebuf, record->ReadRecPtr);
 	}
 
 	/* replay the record for initializing overflow buffer */
@@ -740,6 +758,7 @@ hash_xlog_squeeze_page(XLogReaderState *record)
 
 		PageSetLSN(ovflpage, lsn);
 		MarkBufferDirty(ovflbuf);
+		polar_redo_set_buffer_oldest_lsn(ovflbuf, record->ReadRecPtr);
 	}
 	if (BufferIsValid(ovflbuf))
 		UnlockReleaseBuffer(ovflbuf);
@@ -755,6 +774,7 @@ hash_xlog_squeeze_page(XLogReaderState *record)
 
 		PageSetLSN(prevpage, lsn);
 		MarkBufferDirty(prevbuf);
+		polar_redo_set_buffer_oldest_lsn(prevbuf, record->ReadRecPtr);
 	}
 	if (BufferIsValid(prevbuf))
 		UnlockReleaseBuffer(prevbuf);
@@ -773,6 +793,7 @@ hash_xlog_squeeze_page(XLogReaderState *record)
 
 			PageSetLSN(nextpage, lsn);
 			MarkBufferDirty(nextbuf);
+			polar_redo_set_buffer_oldest_lsn(nextbuf, record->ReadRecPtr);
 		}
 		if (BufferIsValid(nextbuf))
 			UnlockReleaseBuffer(nextbuf);
@@ -808,6 +829,7 @@ hash_xlog_squeeze_page(XLogReaderState *record)
 
 		PageSetLSN(mappage, lsn);
 		MarkBufferDirty(mapbuf);
+		polar_redo_set_buffer_oldest_lsn(mapbuf, record->ReadRecPtr);
 	}
 	if (BufferIsValid(mapbuf))
 		UnlockReleaseBuffer(mapbuf);
@@ -834,6 +856,7 @@ hash_xlog_squeeze_page(XLogReaderState *record)
 
 			PageSetLSN(page, lsn);
 			MarkBufferDirty(metabuf);
+			polar_redo_set_buffer_oldest_lsn(metabuf, record->ReadRecPtr);
 		}
 		if (BufferIsValid(metabuf))
 			UnlockReleaseBuffer(metabuf);
@@ -910,6 +933,7 @@ hash_xlog_delete(XLogReaderState *record)
 
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(deletebuf);
+		polar_redo_set_buffer_oldest_lsn(deletebuf, record->ReadRecPtr);
 	}
 	if (BufferIsValid(deletebuf))
 		UnlockReleaseBuffer(deletebuf);
@@ -938,6 +962,7 @@ hash_xlog_split_cleanup(XLogReaderState *record)
 		bucket_opaque->hasho_flag &= ~LH_BUCKET_NEEDS_SPLIT_CLEANUP;
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(buffer);
+		polar_redo_set_buffer_oldest_lsn(buffer, record->ReadRecPtr);
 	}
 	if (BufferIsValid(buffer))
 		UnlockReleaseBuffer(buffer);
@@ -964,6 +989,7 @@ hash_xlog_update_meta_page(XLogReaderState *record)
 
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(metabuf);
+		polar_redo_set_buffer_oldest_lsn(metabuf, record->ReadRecPtr);
 	}
 	if (BufferIsValid(metabuf))
 		UnlockReleaseBuffer(metabuf);
@@ -1181,6 +1207,7 @@ hash_xlog_vacuum_one_page(XLogReaderState *record)
 
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(buffer);
+		polar_redo_set_buffer_oldest_lsn(buffer, record->ReadRecPtr);
 	}
 	if (BufferIsValid(buffer))
 		UnlockReleaseBuffer(buffer);
@@ -1197,6 +1224,7 @@ hash_xlog_vacuum_one_page(XLogReaderState *record)
 
 		PageSetLSN(metapage, lsn);
 		MarkBufferDirty(metabuf);
+		polar_redo_set_buffer_oldest_lsn(metabuf, record->ReadRecPtr);
 	}
 	if (BufferIsValid(metabuf))
 		UnlockReleaseBuffer(metabuf);

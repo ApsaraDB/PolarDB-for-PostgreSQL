@@ -1187,6 +1187,9 @@ PostmasterMain(int argc, char *argv[])
 	if (!listen_addr_saved)
 		AddToDataDirLockFile(LOCK_FILE_LINE_LISTEN_ADDR, "");
 
+	/* POLAR: init node type. */
+	polar_init_node_type();
+
 	/*
 	 * Set up shared memory and semaphores.
 	 */

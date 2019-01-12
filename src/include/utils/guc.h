@@ -274,6 +274,9 @@ extern bool trace_sort;
 #endif
 
 /* POLAR */
+#define MAX_NUM_OF_PARALLEL_BGWRITER	16
+
+/* POLAR GUCs */
 extern int		polar_hostid;
 extern int		polar_clog_slot_size;
 extern char		*polar_datadir;
@@ -286,6 +289,29 @@ extern bool		polar_enable_debug;
 extern bool		polar_enable_pwrite;
 extern bool		polar_enable_pread;
 extern bool		polar_dropdb_write_wal_before_rmdir;
+
+extern int  	polar_copy_buffers;
+extern int  	polar_bgwriter_max_batch_size;
+extern int  	polar_check_checkpoint_legal_interval;
+extern int  	polar_bgwriter_batch_size_flushlist;
+extern int  	polar_buffer_copy_min_modified_count;
+extern int  	polar_buffer_copy_lsn_lag_with_cons_lsn;
+extern int  	polar_bgwriter_sleep_lsn_lag;
+extern int  	polar_parallel_bgwriter_workers;
+extern int  	polar_parallel_bgwriter_delay;
+extern int		polar_parallel_bgwriter_check_interval;
+extern int		polar_parallel_new_bgwriter_threshold_lag;
+extern int		polar_parallel_new_bgwriter_threshold_time;
+extern bool		polar_enable_flushlist;
+extern bool		polar_enable_copy_buffer;
+extern bool 	polar_force_flush_buffer;
+extern bool 	polar_enable_normal_bgwriter;
+extern bool 	polar_enable_control_vm_flush;
+extern bool 	polar_enable_lazy_checkpoint;
+extern bool 	polar_startup_from_local_data_file;
+extern bool 	polar_enable_parallel_bgwriter;
+extern bool 	polar_enable_dynamic_parallel_bgwriter;
+
 /* POLAR end */
 
 /*

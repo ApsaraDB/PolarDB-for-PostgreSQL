@@ -85,6 +85,7 @@ spgRedoCreateIndex(XLogReaderState *record)
 	SpGistInitMetapage(page);
 	PageSetLSN(page, lsn);
 	MarkBufferDirty(buffer);
+	polar_redo_set_buffer_oldest_lsn(buffer, record->ReadRecPtr);
 	UnlockReleaseBuffer(buffer);
 
 	buffer = XLogInitBufferForRedo(record, 1);
@@ -93,6 +94,7 @@ spgRedoCreateIndex(XLogReaderState *record)
 	page = (Page) BufferGetPage(buffer);
 	PageSetLSN(page, lsn);
 	MarkBufferDirty(buffer);
+	polar_redo_set_buffer_oldest_lsn(buffer, record->ReadRecPtr);
 	UnlockReleaseBuffer(buffer);
 
 	buffer = XLogInitBufferForRedo(record, 2);
@@ -101,6 +103,7 @@ spgRedoCreateIndex(XLogReaderState *record)
 	page = (Page) BufferGetPage(buffer);
 	PageSetLSN(page, lsn);
 	MarkBufferDirty(buffer);
+	polar_redo_set_buffer_oldest_lsn(buffer, record->ReadRecPtr);
 	UnlockReleaseBuffer(buffer);
 }
 
@@ -171,6 +174,7 @@ spgRedoAddLeaf(XLogReaderState *record)
 
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(buffer);
+		polar_redo_set_buffer_oldest_lsn(buffer, record->ReadRecPtr);
 	}
 	if (BufferIsValid(buffer))
 		UnlockReleaseBuffer(buffer);
@@ -195,6 +199,7 @@ spgRedoAddLeaf(XLogReaderState *record)
 
 			PageSetLSN(page, lsn);
 			MarkBufferDirty(buffer);
+			polar_redo_set_buffer_oldest_lsn(buffer, record->ReadRecPtr);
 		}
 		if (BufferIsValid(buffer))
 			UnlockReleaseBuffer(buffer);
@@ -273,6 +278,7 @@ spgRedoMoveLeafs(XLogReaderState *record)
 
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(buffer);
+		polar_redo_set_buffer_oldest_lsn(buffer, record->ReadRecPtr);
 	}
 	if (BufferIsValid(buffer))
 		UnlockReleaseBuffer(buffer);
@@ -290,6 +296,7 @@ spgRedoMoveLeafs(XLogReaderState *record)
 
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(buffer);
+		polar_redo_set_buffer_oldest_lsn(buffer, record->ReadRecPtr);
 	}
 	if (BufferIsValid(buffer))
 		UnlockReleaseBuffer(buffer);
@@ -309,6 +316,7 @@ spgRedoMoveLeafs(XLogReaderState *record)
 
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(buffer);
+		polar_redo_set_buffer_oldest_lsn(buffer, record->ReadRecPtr);
 	}
 	if (BufferIsValid(buffer))
 		UnlockReleaseBuffer(buffer);
@@ -351,6 +359,7 @@ spgRedoAddNode(XLogReaderState *record)
 
 			PageSetLSN(page, lsn);
 			MarkBufferDirty(buffer);
+			polar_redo_set_buffer_oldest_lsn(buffer, record->ReadRecPtr);
 		}
 		if (BufferIsValid(buffer))
 			UnlockReleaseBuffer(buffer);
@@ -403,6 +412,7 @@ spgRedoAddNode(XLogReaderState *record)
 			}
 			PageSetLSN(page, lsn);
 			MarkBufferDirty(buffer);
+			polar_redo_set_buffer_oldest_lsn(buffer, record->ReadRecPtr);
 		}
 		if (BufferIsValid(buffer))
 			UnlockReleaseBuffer(buffer);
@@ -450,6 +460,7 @@ spgRedoAddNode(XLogReaderState *record)
 			}
 			PageSetLSN(page, lsn);
 			MarkBufferDirty(buffer);
+			polar_redo_set_buffer_oldest_lsn(buffer, record->ReadRecPtr);
 		}
 		if (BufferIsValid(buffer))
 			UnlockReleaseBuffer(buffer);
@@ -474,6 +485,7 @@ spgRedoAddNode(XLogReaderState *record)
 
 				PageSetLSN(page, lsn);
 				MarkBufferDirty(buffer);
+				polar_redo_set_buffer_oldest_lsn(buffer, record->ReadRecPtr);
 			}
 			if (BufferIsValid(buffer))
 				UnlockReleaseBuffer(buffer);
@@ -531,6 +543,7 @@ spgRedoSplitTuple(XLogReaderState *record)
 
 			PageSetLSN(page, lsn);
 			MarkBufferDirty(buffer);
+			polar_redo_set_buffer_oldest_lsn(buffer, record->ReadRecPtr);
 		}
 		if (BufferIsValid(buffer))
 			UnlockReleaseBuffer(buffer);
@@ -554,6 +567,7 @@ spgRedoSplitTuple(XLogReaderState *record)
 
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(buffer);
+		polar_redo_set_buffer_oldest_lsn(buffer, record->ReadRecPtr);
 	}
 	if (BufferIsValid(buffer))
 		UnlockReleaseBuffer(buffer);
@@ -705,11 +719,13 @@ spgRedoPickSplit(XLogReaderState *record)
 	{
 		PageSetLSN(srcPage, lsn);
 		MarkBufferDirty(srcBuffer);
+		polar_redo_set_buffer_oldest_lsn(srcBuffer, record->ReadRecPtr);
 	}
 	if (destPage != NULL)
 	{
 		PageSetLSN(destPage, lsn);
 		MarkBufferDirty(destBuffer);
+		polar_redo_set_buffer_oldest_lsn(destBuffer, record->ReadRecPtr);
 	}
 
 	/* restore new inner tuple */
@@ -742,6 +758,7 @@ spgRedoPickSplit(XLogReaderState *record)
 
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(innerBuffer);
+		polar_redo_set_buffer_oldest_lsn(innerBuffer, record->ReadRecPtr);
 	}
 	if (BufferIsValid(innerBuffer))
 		UnlockReleaseBuffer(innerBuffer);
@@ -773,6 +790,7 @@ spgRedoPickSplit(XLogReaderState *record)
 
 			PageSetLSN(page, lsn);
 			MarkBufferDirty(parentBuffer);
+			polar_redo_set_buffer_oldest_lsn(parentBuffer, record->ReadRecPtr);
 		}
 		if (BufferIsValid(parentBuffer))
 			UnlockReleaseBuffer(parentBuffer);
@@ -859,6 +877,7 @@ spgRedoVacuumLeaf(XLogReaderState *record)
 
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(buffer);
+		polar_redo_set_buffer_oldest_lsn(buffer, record->ReadRecPtr);
 	}
 	if (BufferIsValid(buffer))
 		UnlockReleaseBuffer(buffer);
@@ -885,6 +904,7 @@ spgRedoVacuumRoot(XLogReaderState *record)
 
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(buffer);
+		polar_redo_set_buffer_oldest_lsn(buffer, record->ReadRecPtr);
 	}
 	if (BufferIsValid(buffer))
 		UnlockReleaseBuffer(buffer);
@@ -962,6 +982,7 @@ spgRedoVacuumRedirect(XLogReaderState *record)
 
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(buffer);
+		polar_redo_set_buffer_oldest_lsn(buffer, record->ReadRecPtr);
 	}
 	if (BufferIsValid(buffer))
 		UnlockReleaseBuffer(buffer);

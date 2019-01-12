@@ -587,8 +587,10 @@ _hash_freeovflpage(Relation rel, Buffer bucketbuf, Buffer ovflbuf,
 	if (nitups > 0)
 	{
 		_hash_pgaddmultitup(rel, wbuf, itups, itup_offsets, nitups);
-		MarkBufferDirty(wbuf);
 	}
+
+	/* POLAR: we should call MarkBufferDirty to set its oldest lsn. */
+	MarkBufferDirty(wbuf);
 
 	/*
 	 * Reinitialize the freed overflow page.  Just zeroing the page won't

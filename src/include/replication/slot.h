@@ -82,6 +82,9 @@ typedef struct ReplicationSlotPersistentData
 
 	/* plugin name */
 	NameData	plugin;
+
+	/* POLAR: replica apply lsn */
+	XLogRecPtr	polar_replica_apply_lsn;
 } ReplicationSlotPersistentData;
 
 /*
@@ -204,5 +207,8 @@ extern void StartupReplicationSlots(void);
 extern void CheckPointReplicationSlots(void);
 
 extern void CheckSlotRequirements(void);
+
+/* POLAR */
+extern void polar_compute_and_set_oldest_apply_lsn(void);
 
 #endif							/* SLOT_H */

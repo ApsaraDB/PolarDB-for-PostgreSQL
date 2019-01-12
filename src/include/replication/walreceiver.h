@@ -142,6 +142,9 @@ typedef struct
 	 * store semantics, so use sig_atomic_t.
 	 */
 	sig_atomic_t force_reply;	/* used as a bool */
+
+	/* POLAR: current consistent lsn of primary */
+	XLogRecPtr  curr_primary_consistent_lsn;
 } WalRcvData;
 
 extern WalRcvData *WalRcv;
@@ -313,5 +316,9 @@ extern XLogRecPtr GetWalRcvWriteRecPtr(XLogRecPtr *latestChunkStart, TimeLineID 
 extern int	GetReplicationApplyDelay(void);
 extern int	GetReplicationTransferLatency(void);
 extern void WalRcvForceReply(void);
+
+/* POLAR */
+extern void polar_set_primary_consistent_lsn(XLogRecPtr new_consistent_lsn);
+extern XLogRecPtr polar_get_primary_consist_ptr(void);
 
 #endif							/* _WALRECEIVER_H */

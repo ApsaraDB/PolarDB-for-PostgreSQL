@@ -37,6 +37,9 @@
 #include "utils/ps_status.h"
 #include "utils/timeout.h"
 
+/* POLAR */
+#include "postmaster/polar_parallel_bgwriter.h"
+
 /*
  * The postmaster's list of registered background workers, in private memory.
  */
@@ -129,6 +132,11 @@ static const struct
 	},
 	{
 		"ApplyWorkerMain", ApplyWorkerMain
+	},
+
+	/* POLAR */
+	{
+		"polar_parallel_bgwriter_worker_main", polar_parallel_bgwriter_worker_main
 	}
 };
 
@@ -1282,4 +1290,12 @@ GetBackgroundWorkerTypeByPid(pid_t pid)
 		return NULL;
 
 	return result;
+}
+
+void
+polar_set_parallel_bgwriter_handle(BackgroundWorkerHandle *worker_handle,
+								   ParallelBgwriterHandle *handle)
+{
+	handle->slot = worker_handle->slot;
+	handle->generation = worker_handle->generation;
 }

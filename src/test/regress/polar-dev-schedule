@@ -1,0 +1,7 @@
+# ----------
+# src/test/regress/polar_schedule
+#
+# Polar cases should be added in this file
+# ----------
+
+test: polar-dev/polar_parallel_bgwriter

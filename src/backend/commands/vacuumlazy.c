@@ -62,6 +62,9 @@
 #include "utils/tqual.h"
 
 
+/* POLAR */
+#include "storage/polar_bufmgr.h"
+
 /*
  * Space/time tradeoff parameters: do these need to be user-tunable?
  *
@@ -921,7 +924,7 @@ lazy_scan_heap(Relation onerel, int options, LVRelStats *vacrelstats,
 				PageSetAllVisible(page);
 				visibilitymap_set(onerel, blkno, buf, InvalidXLogRecPtr,
 								  vmbuffer, InvalidTransactionId,
-								  VISIBILITYMAP_ALL_VISIBLE | VISIBILITYMAP_ALL_FROZEN);
+								  VISIBILITYMAP_ALL_VISIBLE | VISIBILITYMAP_ALL_FROZEN, InvalidXLogRecPtr);
 				END_CRIT_SECTION();
 			}
 
@@ -1255,7 +1258,7 @@ lazy_scan_heap(Relation onerel, int options, LVRelStats *vacrelstats,
 			PageSetAllVisible(page);
 			MarkBufferDirty(buf);
 			visibilitymap_set(onerel, blkno, buf, InvalidXLogRecPtr,
-							  vmbuffer, visibility_cutoff_xid, flags);
+							  vmbuffer, visibility_cutoff_xid, flags, InvalidXLogRecPtr);
 		}
 
 		/*
@@ -1271,7 +1274,7 @@ lazy_scan_heap(Relation onerel, int options, LVRelStats *vacrelstats,
 			elog(WARNING, "page is not marked all-visible but visibility map bit is set in relation \"%s\" page %u",
 				 relname, blkno);
 			visibilitymap_clear(onerel, blkno, vmbuffer,
-								VISIBILITYMAP_VALID_BITS);
+								VISIBILITYMAP_VALID_BITS, NULL);
 		}
 
 		/*
@@ -1294,7 +1297,7 @@ lazy_scan_heap(Relation onerel, int options, LVRelStats *vacrelstats,
 			PageClearAllVisible(page);
 			MarkBufferDirty(buf);
 			visibilitymap_clear(onerel, blkno, vmbuffer,
-								VISIBILITYMAP_VALID_BITS);
+								VISIBILITYMAP_VALID_BITS, NULL);
 		}
 
 		/*
@@ -1310,9 +1313,11 @@ lazy_scan_heap(Relation onerel, int options, LVRelStats *vacrelstats,
 			 * because setting the all-frozen bit doesn't cause recovery
 			 * conflicts.
 			 */
+			/* POLAR: we should call MarkBufferDirty to set its oldest lsn. */
+			MarkBufferDirty(buf);
 			visibilitymap_set(onerel, blkno, buf, InvalidXLogRecPtr,
 							  vmbuffer, InvalidTransactionId,
-							  VISIBILITYMAP_ALL_FROZEN);
+							  VISIBILITYMAP_ALL_FROZEN, InvalidXLogRecPtr);
 		}
 
 		UnlockReleaseBuffer(buf);
@@ -1613,7 +1618,7 @@ lazy_vacuum_page(Relation onerel, BlockNumber blkno, Buffer buffer,
 		Assert(BufferIsValid(*vmbuffer));
 		if (flags != 0)
 			visibilitymap_set(onerel, blkno, buffer, InvalidXLogRecPtr,
-							  *vmbuffer, visibility_cutoff_xid, flags);
+							  *vmbuffer, visibility_cutoff_xid, flags, InvalidXLogRecPtr);
 	}
 
 	return tupindex;

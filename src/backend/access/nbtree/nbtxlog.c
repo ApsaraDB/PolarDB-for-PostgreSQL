@@ -124,6 +124,7 @@ _bt_restore_meta(XLogReaderState *record, uint8 block_id)
 
 	PageSetLSN(metapg, lsn);
 	MarkBufferDirty(metabuf);
+	polar_redo_set_buffer_oldest_lsn(metabuf, record->ReadRecPtr);
 	UnlockReleaseBuffer(metabuf);
 }
 
@@ -149,6 +150,7 @@ _bt_clear_incomplete_split(XLogReaderState *record, uint8 block_id)
 
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(buf);
+		polar_redo_set_buffer_oldest_lsn(buf, record->ReadRecPtr);
 	}
 	if (BufferIsValid(buf))
 		UnlockReleaseBuffer(buf);
@@ -186,6 +188,7 @@ btree_xlog_insert(bool isleaf, bool ismeta, XLogReaderState *record)
 
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(buffer);
+		polar_redo_set_buffer_oldest_lsn(buffer, record->ReadRecPtr);
 	}
 	if (BufferIsValid(buffer))
 		UnlockReleaseBuffer(buffer);
@@ -264,6 +267,7 @@ btree_xlog_split(bool onleft, bool lhighkey, XLogReaderState *record)
 
 	PageSetLSN(rpage, lsn);
 	MarkBufferDirty(rbuf);
+	polar_redo_set_buffer_oldest_lsn(rbuf, record->ReadRecPtr);
 
 	/* don't release the buffer yet; we touch right page's first item below */
 
@@ -361,6 +365,7 @@ btree_xlog_split(bool onleft, bool lhighkey, XLogReaderState *record)
 
 		PageSetLSN(lpage, lsn);
 		MarkBufferDirty(lbuf);
+		polar_redo_set_buffer_oldest_lsn(lbuf, record->ReadRecPtr);
 	}
 
 	/* We no longer need the buffers */
@@ -389,6 +394,7 @@ btree_xlog_split(bool onleft, bool lhighkey, XLogReaderState *record)
 
 			PageSetLSN(page, lsn);
 			MarkBufferDirty(buffer);
+			polar_redo_set_buffer_oldest_lsn(buffer, record->ReadRecPtr);
 		}
 		if (BufferIsValid(buffer))
 			UnlockReleaseBuffer(buffer);
@@ -513,6 +519,7 @@ btree_xlog_vacuum(XLogReaderState *record)
 
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(buffer);
+		polar_redo_set_buffer_oldest_lsn(buffer, record->ReadRecPtr);
 	}
 	if (BufferIsValid(buffer))
 		UnlockReleaseBuffer(buffer);
@@ -727,6 +734,7 @@ btree_xlog_delete(XLogReaderState *record)
 
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(buffer);
+		polar_redo_set_buffer_oldest_lsn(buffer, record->ReadRecPtr);
 	}
 	if (BufferIsValid(buffer))
 		UnlockReleaseBuffer(buffer);
@@ -777,6 +785,7 @@ btree_xlog_mark_page_halfdead(uint8 info, XLogReaderState *record)
 
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(buffer);
+		polar_redo_set_buffer_oldest_lsn(buffer, record->ReadRecPtr);
 	}
 	if (BufferIsValid(buffer))
 		UnlockReleaseBuffer(buffer);
@@ -808,6 +817,7 @@ btree_xlog_mark_page_halfdead(uint8 info, XLogReaderState *record)
 
 	PageSetLSN(page, lsn);
 	MarkBufferDirty(buffer);
+	polar_redo_set_buffer_oldest_lsn(buffer, record->ReadRecPtr);
 	UnlockReleaseBuffer(buffer);
 }
 
@@ -843,6 +853,7 @@ btree_xlog_unlink_page(uint8 info, XLogReaderState *record)
 
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(buffer);
+		polar_redo_set_buffer_oldest_lsn(buffer, record->ReadRecPtr);
 	}
 	if (BufferIsValid(buffer))
 		UnlockReleaseBuffer(buffer);
@@ -858,6 +869,7 @@ btree_xlog_unlink_page(uint8 info, XLogReaderState *record)
 
 			PageSetLSN(page, lsn);
 			MarkBufferDirty(buffer);
+			polar_redo_set_buffer_oldest_lsn(buffer, record->ReadRecPtr);
 		}
 		if (BufferIsValid(buffer))
 			UnlockReleaseBuffer(buffer);
@@ -878,6 +890,7 @@ btree_xlog_unlink_page(uint8 info, XLogReaderState *record)
 
 	PageSetLSN(page, lsn);
 	MarkBufferDirty(buffer);
+	polar_redo_set_buffer_oldest_lsn(buffer, record->ReadRecPtr);
 	UnlockReleaseBuffer(buffer);
 
 	/*
@@ -916,6 +929,7 @@ btree_xlog_unlink_page(uint8 info, XLogReaderState *record)
 
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(buffer);
+		polar_redo_set_buffer_oldest_lsn(buffer, record->ReadRecPtr);
 		UnlockReleaseBuffer(buffer);
 	}
 
@@ -959,6 +973,7 @@ btree_xlog_newroot(XLogReaderState *record)
 
 	PageSetLSN(page, lsn);
 	MarkBufferDirty(buffer);
+	polar_redo_set_buffer_oldest_lsn(buffer, record->ReadRecPtr);
 	UnlockReleaseBuffer(buffer);
 
 	_bt_restore_meta(record, 2);

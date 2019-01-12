@@ -375,7 +375,13 @@ XLogReadBufferForRedoExtended(XLogReaderState *record,
 			PageSetLSN(page, lsn);
 		}
 
-		MarkBufferDirty(*buf);
+		/* POLAR */
+		if (mode != RBM_NORMAL_VALID)
+		{
+			MarkBufferDirty(*buf);
+			polar_redo_set_buffer_oldest_lsn(*buf, record->ReadRecPtr);
+		}
+		/* POLAR end */
 
 		/*
 		 * At the end of crash recovery the init forks of unlogged relations

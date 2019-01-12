@@ -110,6 +110,9 @@ typedef enum BgwHandleStatus
 struct BackgroundWorkerHandle;
 typedef struct BackgroundWorkerHandle BackgroundWorkerHandle;
 
+/* POLAR */
+typedef struct ParallelBgwriterHandle ParallelBgwriterHandle;
+
 /* Register a new bgworker during shared_preload_libraries */
 extern void RegisterBackgroundWorker(BackgroundWorker *worker);
 
@@ -157,5 +160,9 @@ extern void BackgroundWorkerInitializeConnectionByOid(Oid dboid, Oid useroid, ui
 /* Block/unblock signals in a background worker process */
 extern void BackgroundWorkerBlockSignals(void);
 extern void BackgroundWorkerUnblockSignals(void);
+
+/* POLAR */
+extern void polar_set_parallel_bgwriter_handle(BackgroundWorkerHandle *worker_handle,
+											   ParallelBgwriterHandle *handle);
 
 #endif							/* BGWORKER_H */

@@ -41,6 +41,15 @@
 #define	POLAR_VFS_SWITCH_LOCAL		0
 #define	POLAR_VFS_SWITCH_PLUGIN		1
 
+typedef enum PolarNodeType
+{
+	POLAR_UNKNOWN = 0,
+	POLAR_MASTER = 1,
+	POLAR_REPLICA,
+	POLAR_STANDBY
+} PolarNodeType;
+
+extern PolarNodeType	polar_local_node_type;
 extern bool 	polar_mount_pfs_readonly_mode;
 extern int	 	polar_vfs_switch;
 extern bool		polar_openfile_with_readonly_in_replica;
@@ -119,4 +128,6 @@ extern void polar_make_file_path_level3(char *path, char *base, char *file_path)
 extern void polar_make_file_path_level2(char *path, char *file_path);
 
 extern void polar_reset_vfs_switch(void);
+extern void polar_init_node_type(void);
+extern PolarNodeType polar_node_type_by_file(void);
 #endif

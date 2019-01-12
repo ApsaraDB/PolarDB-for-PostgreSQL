@@ -19,6 +19,9 @@
 #include "storage/buf.h"
 #include "utils/relcache.h"
 
+/* POLAR */
+#include "access/xlogreader.h"
+
 /* Number of bits for one heap page */
 #define BITS_PER_HEAPBLOCK 2
 
@@ -35,13 +38,13 @@
 	((visibilitymap_get_status((r), (b), (v)) & VISIBILITYMAP_ALL_FROZEN) != 0)
 
 extern bool visibilitymap_clear(Relation rel, BlockNumber heapBlk,
-					Buffer vmbuf, uint8 flags);
+					Buffer vmbuf, uint8 flags, XLogReaderState *polar_record);
 extern void visibilitymap_pin(Relation rel, BlockNumber heapBlk,
 				  Buffer *vmbuf);
 extern bool visibilitymap_pin_ok(BlockNumber heapBlk, Buffer vmbuf);
 extern void visibilitymap_set(Relation rel, BlockNumber heapBlk, Buffer heapBuf,
 				  XLogRecPtr recptr, Buffer vmBuf, TransactionId cutoff_xid,
-				  uint8 flags);
+				  uint8 flags, XLogRecPtr polar_read_rec_ptr);
 extern uint8 visibilitymap_get_status(Relation rel, BlockNumber heapBlk, Buffer *vmbuf);
 extern void visibilitymap_count(Relation rel, BlockNumber *all_visible, BlockNumber *all_frozen);
 extern void visibilitymap_truncate(Relation rel, BlockNumber nheapblocks);

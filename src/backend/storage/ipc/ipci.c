@@ -48,6 +48,10 @@
 #include "utils/snapmgr.h"
 
 
+/* POLAR */
+#include "postmaster/polar_parallel_bgwriter.h"
+#include "storage/polar_copybuf.h"
+
 shmem_startup_hook_type shmem_startup_hook = NULL;
 
 static Size total_addin_request = 0;
@@ -154,6 +158,12 @@ CreateSharedMemoryAndSemaphores(bool makePrivate, int port)
 		size = add_size(size, ShmemBackendArraySize());
 #endif
 
+		/* POLAR: add copy buffer shared memory size */
+		size = add_size(size, polar_copy_buffer_shmem_size());
+
+		/* POLAR: add parallel background writer shared memory size */
+		size = add_size(size, polar_parallel_bgwriter_shmem_size());
+
 		/* freeze the addin request size and include it */
 		addin_request_allowed = false;
 		size = add_size(size, total_addin_request);
@@ -223,6 +233,12 @@ CreateSharedMemoryAndSemaphores(bool makePrivate, int port)
 	SUBTRANSShmemInit();
 	MultiXactShmemInit();
 	InitBufferPool();
+
+	/* POLAR: init copy buffer pool */
+	polar_init_copy_buffer_pool();
+
+	/* POLAR: init parallel background writer */
+	polar_init_parallel_bgwriter();
 
 	/*
 	 * Set up lock manager

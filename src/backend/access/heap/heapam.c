@@ -2497,7 +2497,7 @@ heap_insert(Relation relation, HeapTuple tup, CommandId cid,
 		PageClearAllVisible(BufferGetPage(buffer));
 		visibilitymap_clear(relation,
 							ItemPointerGetBlockNumber(&(heaptup->t_self)),
-							vmbuffer, VISIBILITYMAP_VALID_BITS);
+							vmbuffer, VISIBILITYMAP_VALID_BITS, NULL);
 	}
 
 	/*
@@ -2813,7 +2813,7 @@ heap_multi_insert(Relation relation, HeapTuple *tuples, int ntuples,
 			PageClearAllVisible(page);
 			visibilitymap_clear(relation,
 								BufferGetBlockNumber(buffer),
-								vmbuffer, VISIBILITYMAP_VALID_BITS);
+								vmbuffer, VISIBILITYMAP_VALID_BITS, NULL);
 		}
 
 		/*
@@ -3317,7 +3317,7 @@ l1:
 		all_visible_cleared = true;
 		PageClearAllVisible(page);
 		visibilitymap_clear(relation, BufferGetBlockNumber(buffer),
-							vmbuffer, VISIBILITYMAP_VALID_BITS);
+							vmbuffer, VISIBILITYMAP_VALID_BITS, NULL);
 	}
 
 	/* store transaction information of xact deleting the tuple */
@@ -4095,7 +4095,7 @@ l2:
 		 */
 		if (PageIsAllVisible(BufferGetPage(buffer)) &&
 			visibilitymap_clear(relation, block, vmbuffer,
-								VISIBILITYMAP_ALL_FROZEN))
+								VISIBILITYMAP_ALL_FROZEN, NULL))
 			cleared_all_frozen = true;
 
 		MarkBufferDirty(buffer);
@@ -4307,14 +4307,14 @@ l2:
 		all_visible_cleared = true;
 		PageClearAllVisible(BufferGetPage(buffer));
 		visibilitymap_clear(relation, BufferGetBlockNumber(buffer),
-							vmbuffer, VISIBILITYMAP_VALID_BITS);
+							vmbuffer, VISIBILITYMAP_VALID_BITS, NULL);
 	}
 	if (newbuf != buffer && PageIsAllVisible(BufferGetPage(newbuf)))
 	{
 		all_visible_cleared_new = true;
 		PageClearAllVisible(BufferGetPage(newbuf));
 		visibilitymap_clear(relation, BufferGetBlockNumber(newbuf),
-							vmbuffer_new, VISIBILITYMAP_VALID_BITS);
+							vmbuffer_new, VISIBILITYMAP_VALID_BITS, NULL);
 	}
 
 	if (newbuf != buffer)
@@ -5276,7 +5276,7 @@ failed:
 	/* Clear only the all-frozen bit on visibility map if needed */
 	if (PageIsAllVisible(page) &&
 		visibilitymap_clear(relation, block, vmbuffer,
-							VISIBILITYMAP_ALL_FROZEN))
+							VISIBILITYMAP_ALL_FROZEN, NULL))
 		cleared_all_frozen = true;
 
 
@@ -6023,7 +6023,7 @@ l4:
 
 		if (PageIsAllVisible(BufferGetPage(buf)) &&
 			visibilitymap_clear(rel, block, vmbuffer,
-								VISIBILITYMAP_ALL_FROZEN))
+								VISIBILITYMAP_ALL_FROZEN, NULL))
 			cleared_all_frozen = true;
 
 		START_CRIT_SECTION();
@@ -8245,6 +8245,7 @@ heap_xlog_clean(XLogReaderState *record)
 
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(buffer);
+		polar_redo_set_buffer_oldest_lsn(buffer, record->ReadRecPtr);
 	}
 	if (BufferIsValid(buffer))
 		UnlockReleaseBuffer(buffer);
@@ -8341,8 +8342,8 @@ heap_xlog_visible(XLogReaderState *record)
 	 */
 	if (polar_in_replica_mode())
 	{
-		if (polar_enable_debug)
-			elog(LOG, "polardb replica£ºskip setting of visibilitymap");
+		if (unlikely(polar_enable_debug))
+			elog(LOG, "polardb replica skip setting of visibilitymap");
 	}
 	else if(XLogReadBufferForRedoExtended(record, 0, RBM_ZERO_ON_ERROR, false,
 									  &vmbuffer) == BLK_NEEDS_REDO)
@@ -8376,7 +8377,7 @@ heap_xlog_visible(XLogReaderState *record)
 		 */
 		if (lsn > PageGetLSN(vmpage))
 			visibilitymap_set(reln, blkno, InvalidBuffer, lsn, vmbuffer,
-							  xlrec->cutoff_xid, xlrec->flags);
+							  xlrec->cutoff_xid, xlrec->flags, record->ReadRecPtr);
 
 		ReleaseBuffer(vmbuffer);
 		FreeFakeRelcacheEntry(reln);
@@ -8435,6 +8436,7 @@ heap_xlog_freeze_page(XLogReaderState *record)
 
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(buffer);
+		polar_redo_set_buffer_oldest_lsn(buffer, record->ReadRecPtr);
 	}
 	if (BufferIsValid(buffer))
 		UnlockReleaseBuffer(buffer);
@@ -8499,7 +8501,7 @@ heap_xlog_delete(XLogReaderState *record)
 		Buffer		vmbuffer = InvalidBuffer;
 
 		visibilitymap_pin(reln, blkno, &vmbuffer);
-		visibilitymap_clear(reln, blkno, vmbuffer, VISIBILITYMAP_VALID_BITS);
+		visibilitymap_clear(reln, blkno, vmbuffer, VISIBILITYMAP_VALID_BITS, record);
 		ReleaseBuffer(vmbuffer);
 		FreeFakeRelcacheEntry(reln);
 	}
@@ -8540,6 +8542,7 @@ heap_xlog_delete(XLogReaderState *record)
 			htup->t_ctid = target_tid;
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(buffer);
+		polar_redo_set_buffer_oldest_lsn(buffer, record->ReadRecPtr);
 	}
 	if (BufferIsValid(buffer))
 		UnlockReleaseBuffer(buffer);
@@ -8585,7 +8588,7 @@ heap_xlog_insert(XLogReaderState *record)
 		Buffer		vmbuffer = InvalidBuffer;
 
 		visibilitymap_pin(reln, blkno, &vmbuffer);
-		visibilitymap_clear(reln, blkno, vmbuffer, VISIBILITYMAP_VALID_BITS);
+		visibilitymap_clear(reln, blkno, vmbuffer, VISIBILITYMAP_VALID_BITS, record);
 		ReleaseBuffer(vmbuffer);
 		FreeFakeRelcacheEntry(reln);
 	}
@@ -8646,6 +8649,7 @@ heap_xlog_insert(XLogReaderState *record)
 			PageClearAllVisible(page);
 
 		MarkBufferDirty(buffer);
+		polar_redo_set_buffer_oldest_lsn(buffer, record->ReadRecPtr);
 	}
 	if (BufferIsValid(buffer))
 		UnlockReleaseBuffer(buffer);
@@ -8710,7 +8714,7 @@ heap_xlog_multi_insert(XLogReaderState *record)
 		Buffer		vmbuffer = InvalidBuffer;
 
 		visibilitymap_pin(reln, blkno, &vmbuffer);
-		visibilitymap_clear(reln, blkno, vmbuffer, VISIBILITYMAP_VALID_BITS);
+		visibilitymap_clear(reln, blkno, vmbuffer, VISIBILITYMAP_VALID_BITS, record);
 		ReleaseBuffer(vmbuffer);
 		FreeFakeRelcacheEntry(reln);
 	}
@@ -8790,6 +8794,7 @@ heap_xlog_multi_insert(XLogReaderState *record)
 			PageClearAllVisible(page);
 
 		MarkBufferDirty(buffer);
+		polar_redo_set_buffer_oldest_lsn(buffer, record->ReadRecPtr);
 	}
 	if (BufferIsValid(buffer))
 		UnlockReleaseBuffer(buffer);
@@ -8870,7 +8875,7 @@ heap_xlog_update(XLogReaderState *record, bool hot_update)
 		Buffer		vmbuffer = InvalidBuffer;
 
 		visibilitymap_pin(reln, oldblk, &vmbuffer);
-		visibilitymap_clear(reln, oldblk, vmbuffer, VISIBILITYMAP_VALID_BITS);
+		visibilitymap_clear(reln, oldblk, vmbuffer, VISIBILITYMAP_VALID_BITS, record);
 		ReleaseBuffer(vmbuffer);
 		FreeFakeRelcacheEntry(reln);
 	}
@@ -8924,6 +8929,7 @@ heap_xlog_update(XLogReaderState *record, bool hot_update)
 
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(obuffer);
+		polar_redo_set_buffer_oldest_lsn(obuffer, record->ReadRecPtr);
 	}
 
 	/*
@@ -8959,7 +8965,7 @@ heap_xlog_update(XLogReaderState *record, bool hot_update)
 		Buffer		vmbuffer = InvalidBuffer;
 
 		visibilitymap_pin(reln, newblk, &vmbuffer);
-		visibilitymap_clear(reln, newblk, vmbuffer, VISIBILITYMAP_VALID_BITS);
+		visibilitymap_clear(reln, newblk, vmbuffer, VISIBILITYMAP_VALID_BITS, record);
 		ReleaseBuffer(vmbuffer);
 		FreeFakeRelcacheEntry(reln);
 	}
@@ -9066,6 +9072,7 @@ heap_xlog_update(XLogReaderState *record, bool hot_update)
 
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(nbuffer);
+		polar_redo_set_buffer_oldest_lsn(nbuffer, record->ReadRecPtr);
 	}
 
 	if (BufferIsValid(nbuffer) && nbuffer != obuffer)
@@ -9123,6 +9130,7 @@ heap_xlog_confirm(XLogReaderState *record)
 
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(buffer);
+		polar_redo_set_buffer_oldest_lsn(buffer, record->ReadRecPtr);
 	}
 	if (BufferIsValid(buffer))
 		UnlockReleaseBuffer(buffer);
@@ -9159,7 +9167,7 @@ heap_xlog_lock(XLogReaderState *record)
 		reln = CreateFakeRelcacheEntry(rnode);
 
 		visibilitymap_pin(reln, block, &vmbuffer);
-		visibilitymap_clear(reln, block, vmbuffer, VISIBILITYMAP_ALL_FROZEN);
+		visibilitymap_clear(reln, block, vmbuffer, VISIBILITYMAP_ALL_FROZEN, record);
 
 		ReleaseBuffer(vmbuffer);
 		FreeFakeRelcacheEntry(reln);
@@ -9199,6 +9207,7 @@ heap_xlog_lock(XLogReaderState *record)
 		HeapTupleHeaderSetCmax(htup, FirstCommandId, false);
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(buffer);
+		polar_redo_set_buffer_oldest_lsn(buffer, record->ReadRecPtr);
 	}
 	if (BufferIsValid(buffer))
 		UnlockReleaseBuffer(buffer);
@@ -9237,7 +9246,7 @@ heap_xlog_lock_updated(XLogReaderState *record)
 		reln = CreateFakeRelcacheEntry(rnode);
 
 		visibilitymap_pin(reln, block, &vmbuffer);
-		visibilitymap_clear(reln, block, vmbuffer, VISIBILITYMAP_ALL_FROZEN);
+		visibilitymap_clear(reln, block, vmbuffer, VISIBILITYMAP_ALL_FROZEN, record);
 
 		ReleaseBuffer(vmbuffer);
 		FreeFakeRelcacheEntry(reln);
@@ -9264,6 +9273,7 @@ heap_xlog_lock_updated(XLogReaderState *record)
 
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(buffer);
+		polar_redo_set_buffer_oldest_lsn(buffer, record->ReadRecPtr);
 	}
 	if (BufferIsValid(buffer))
 		UnlockReleaseBuffer(buffer);
@@ -9305,6 +9315,7 @@ heap_xlog_inplace(XLogReaderState *record)
 
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(buffer);
+		polar_redo_set_buffer_oldest_lsn(buffer, record->ReadRecPtr);
 	}
 	if (BufferIsValid(buffer))
 		UnlockReleaseBuffer(buffer);

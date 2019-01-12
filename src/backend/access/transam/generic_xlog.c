@@ -397,10 +397,24 @@ GenericXLogFinish(GenericXLogState *state)
 			}
 		}
 
+		/*
+		 * POLAR: we call MarkBufferDirty to set buffer fake oldest lsn that
+		 * should less then the real lsn. So we must call MarkBufferDirty first,
+		 * then call XLogInsert and set its lsn.
+		 */
+		for (i = 0; i < MAX_GENERIC_XLOG_PAGES; i++)
+		{
+			PageData   *pageData = &state->pages[i];
+
+			if (BufferIsInvalid(pageData->buffer))
+				continue;
+			MarkBufferDirty(pageData->buffer);
+		}
+
 		/* Insert xlog record */
 		lsn = XLogInsert(RM_GENERIC_ID, 0);
 
-		/* Set LSN and mark buffers dirty */
+		/* POLAR: Set LSN */
 		for (i = 0; i < MAX_GENERIC_XLOG_PAGES; i++)
 		{
 			PageData   *pageData = &state->pages[i];
@@ -408,7 +422,6 @@ GenericXLogFinish(GenericXLogState *state)
 			if (BufferIsInvalid(pageData->buffer))
 				continue;
 			PageSetLSN(BufferGetPage(pageData->buffer), lsn);
-			MarkBufferDirty(pageData->buffer);
 		}
 		END_CRIT_SECTION();
 	}
@@ -524,6 +537,8 @@ generic_redo(XLogReaderState *record)
 
 			PageSetLSN(page, lsn);
 			MarkBufferDirty(buffers[block_id]);
+			polar_redo_set_buffer_oldest_lsn(buffers[block_id],
+											 record->ReadRecPtr);
 		}
 	}
 

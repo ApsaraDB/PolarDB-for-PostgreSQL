@@ -260,7 +260,8 @@ static void XLogRead(char *buf, XLogRecPtr startptr, Size count);
 /* POLAR */
 static void polar_xlog_send(void);
 static void XLogSendPhysicalExt(bool polar_send_to_replica);
-
+static void polar_wal_snd_keepalive(bool requestReply);
+static void polar_record_replica_apply_lsn(XLogRecPtr apply_lsn);
 
 /* Initialize walsender process before entering the main command loop */
 void
@@ -687,7 +688,13 @@ StartReplication(StartReplicationCmd *cmd)
 
 		/* POLAR: extend protocol to support polar replca mode */
 		if (cmd->polar_replica)
+		{
+			SpinLockAcquire(&MyWalSnd->mutex);
+			MyWalSnd->to_replica = true;
+			SpinLockRelease(&MyWalSnd->mutex);
+
 			WalSndLoop(polar_xlog_send);
+		}
 		else
 			WalSndLoop(XLogSendPhysical);
 
@@ -1840,6 +1847,9 @@ ProcessStandbyReplyMessage(void)
 		SpinLockRelease(&walsnd->mutex);
 	}
 
+	/* POLAR: record the oldest lsn */
+	polar_record_replica_apply_lsn(applyPtr);
+
 	if (!am_cascading_walsender)
 		SyncRepReleaseWaiters();
 
@@ -2277,6 +2287,10 @@ InitWalSenderSlot(void)
 			walsnd->applyLag = -1;
 			walsnd->state = WALSNDSTATE_STARTUP;
 			walsnd->latch = &MyProc->procLatch;
+
+			/* POLAR */
+			walsnd->to_replica = false;
+
 			SpinLockRelease(&walsnd->mutex);
 			/* don't need the lock anymore */
 			MyWalSnd = (WalSnd *) walsnd;
@@ -2506,7 +2520,7 @@ XLogSendPhysical(void)
  * If there is no unsent WAL remaining, WalSndCaughtUp is set to true,
  * otherwise WalSndCaughtUp is set to false.
  *
- * POLAR: Eextend function for support polar replica mode
+ * POLAR: Extend function for support polar replica mode
  */
 static void
 XLogSendPhysicalExt(bool polar_send_to_replica)
@@ -2515,6 +2529,9 @@ XLogSendPhysicalExt(bool polar_send_to_replica)
 	XLogRecPtr	startptr;
 	XLogRecPtr	endptr;
 	Size		nbytes;
+
+	/* POLAR */
+	XLogRecPtr	consistent_lsn = InvalidXLogRecPtr;
 
 	/* If requested switch the WAL sender to the stopping state. */
 	if (got_STOPPING)
@@ -2731,6 +2748,8 @@ XLogSendPhysicalExt(bool polar_send_to_replica)
 
 	if (polar_send_to_replica)
 	{
+		consistent_lsn = polar_get_consistent_lsn();
+		pq_sendint64(&output_message, consistent_lsn); /* current consist lsn */
 		pq_sendint64(&output_message, GetCurrentTimestamp());	/* sendtime, filled in last */
 	}
 	else
@@ -2773,8 +2792,20 @@ XLogSendPhysicalExt(bool polar_send_to_replica)
 	{
 		char		activitymsg[50];
 
-		snprintf(activitymsg, sizeof(activitymsg), "streaming %X/%X",
-				 (uint32) (sentPtr >> 32), (uint32) sentPtr);
+		/* POLAR */
+		if (polar_send_to_replica)
+		{
+			snprintf(activitymsg, sizeof(activitymsg),
+					 "streaming %X/%X, consistent lsn %X/%X",
+					 (uint32) (sentPtr >> 32), (uint32) sentPtr,
+					 (uint32) (consistent_lsn >> 32), (uint32) consistent_lsn);
+		}
+		else
+		{
+			snprintf(activitymsg, sizeof(activitymsg), "streaming %X/%X",
+					 (uint32) (sentPtr >> 32), (uint32) sentPtr);
+		}
+
 		set_ps_display(activitymsg, false);
 	}
 
@@ -3367,6 +3398,13 @@ pg_stat_get_wal_senders(PG_FUNCTION_ARGS)
 static void
 WalSndKeepalive(bool requestReply)
 {
+	/* POLAR: send polar keepalive with consistent lsn to replica */
+	if (polar_enable_shared_storage_mode && MyWalSnd->to_replica)
+	{
+		polar_wal_snd_keepalive(requestReply);
+		return;
+	}
+
 	elog(DEBUG2, "sending replication keepalive");
 
 	/* construct the message... */
@@ -3591,3 +3629,45 @@ polar_xlog_send(void)
 	XLogSendPhysicalExt(true);
 }
 
+static void
+polar_record_replica_apply_lsn(XLogRecPtr apply_lsn)
+{
+	bool		changed = false;
+	ReplicationSlot *slot = MyReplicationSlot;
+
+	/* Only replica apply lsn should be recorded */
+	if (!MyWalSnd->to_replica)
+		return;
+
+	Assert(apply_lsn != InvalidXLogRecPtr);
+	SpinLockAcquire(&slot->mutex);
+	if (slot->data.polar_replica_apply_lsn != apply_lsn)
+	{
+		changed = true;
+		slot->data.polar_replica_apply_lsn = apply_lsn;
+	}
+	SpinLockRelease(&slot->mutex);
+
+	if (changed)
+	{
+		ReplicationSlotMarkDirty();
+		polar_compute_and_set_oldest_apply_lsn();
+	}
+}
+
+static void
+polar_wal_snd_keepalive(bool requestReply)
+{
+	elog(DEBUG2, "sending replication keepalive");
+
+	/* construct the message... */
+	resetStringInfo(&output_message);
+	pq_sendbyte(&output_message, 'K');
+	pq_sendint64(&output_message, sentPtr);
+	pq_sendint64(&output_message, polar_get_consistent_lsn());
+	pq_sendint64(&output_message, GetCurrentTimestamp());
+	pq_sendbyte(&output_message, requestReply ? 1 : 0);
+
+	/* ... and send it wrapped in CopyData */
+	pq_putmessage_noblock('d', output_message.data, output_message.len);
+}

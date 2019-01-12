@@ -55,6 +55,7 @@ gistRedoClearFollowRight(XLogReaderState *record, uint8 block_id)
 
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(buffer);
+		polar_redo_set_buffer_oldest_lsn(buffer, record->ReadRecPtr);
 	}
 	if (BufferIsValid(buffer))
 		UnlockReleaseBuffer(buffer);
@@ -144,6 +145,7 @@ gistRedoPageUpdateRecord(XLogReaderState *record)
 
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(buffer);
+		polar_redo_set_buffer_oldest_lsn(buffer, record->ReadRecPtr);
 	}
 
 	/*
@@ -266,6 +268,7 @@ gistRedoPageSplitRecord(XLogReaderState *record)
 
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(buffer);
+		polar_redo_set_buffer_oldest_lsn(buffer, record->ReadRecPtr);
 
 		if (i == 0)
 			firstbuffer = buffer;
@@ -297,6 +300,7 @@ gistRedoCreateIndex(XLogReaderState *record)
 	PageSetLSN(page, lsn);
 
 	MarkBufferDirty(buffer);
+	polar_redo_set_buffer_oldest_lsn(buffer, record->ReadRecPtr);
 	UnlockReleaseBuffer(buffer);
 }
 

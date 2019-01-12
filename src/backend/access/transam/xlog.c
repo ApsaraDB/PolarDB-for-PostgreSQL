@@ -77,9 +77,14 @@
 #include "pg_trace.h"
 
 /* POLAR */
+#include "storage/polar_bufmgr.h"
 #include "storage/polar_fd.h"
+#include "storage/polar_flushlist.h"
 
 extern uint32 bootstrap_data_checksum_version;
+
+/* POLAR */
+extern int BgWriterDelay;
 
 /* File path names (all relative to $PGDATA) */
 #define RECOVERY_COMMAND_FILE	"recovery.conf"
@@ -705,6 +710,16 @@ typedef struct XLogCtlData
 	XLogRecPtr	lastFpwDisableRecPtr;
 
 	slock_t		info_lck;		/* locks shared variables shown above */
+
+	/* POLAR */
+	/* Oldest lsn applied by any slot */
+	XLogRecPtr	replication_slot_oldest_applied_lsn;
+	
+	/* All pages which latest_lsn <= consistent_lsn have been flushed to storage. */
+	XLogRecPtr	consistent_lsn;
+	/* Record polar node type */
+	PolarNodeType polar_node_type;
+	/* POLAR end */
 } XLogCtlData;
 
 static XLogCtlData *XLogCtl = NULL;
@@ -933,7 +948,13 @@ static void WALInsertLockAcquireExclusive(void);
 static void WALInsertLockRelease(void);
 static void WALInsertLockUpdateInsertingAt(XLogRecPtr insertingAt);
 
+/* POLAR */
 static void polar_postmaster_reset_local_variables(void);
+static bool polar_should_check_checkpoint(void);
+static bool polar_is_checkpoint_legal(XLogRecPtr check_point_lsn);
+static void polar_wait_consistent_lsn(XLogRecPtr redo, int flags);
+static void polar_flush_buffer_for_shutdown(XLogRecPtr redo, int flags);
+static void polar_accept_signal_for_checkpoint(int flags);
 
 /*
  * Insert an XLOG record represented by an already-constructed chain of data
@@ -5106,6 +5127,9 @@ XLOGShmemInit(void)
 	 */
 	polar_postmaster_reset_local_variables();
 
+	/* POLAR: Init node type. */
+	polar_set_node_type(polar_local_node_type);
+
 	SpinLockInit(&XLogCtl->Insert.insertpos_lck);
 	SpinLockInit(&XLogCtl->info_lck);
 	SpinLockInit(&XLogCtl->ulsn_lck);
@@ -6824,6 +6848,9 @@ StartupXLOG(void)
 	XLogCtl->ckptXidEpoch = checkPoint.nextXidEpoch;
 	XLogCtl->ckptXid = checkPoint.nextXid;
 
+	/* POLAR */
+	XLogCtl->replication_slot_oldest_applied_lsn = InvalidXLogRecPtr;
+
 	/*
 	 * Initialize replication slots, before there's a chance to remove
 	 * required resources.
@@ -8531,7 +8558,7 @@ ShutdownXLOG(int code, Datum arg)
 static void
 LogCheckpointStart(int flags, bool restartpoint)
 {
-	elog(LOG, "%s starting:%s%s%s%s%s%s%s%s",
+	elog(LOG, "%s starting:%s%s%s%s%s%s%s%s%s",
 		 restartpoint ? "restartpoint" : "checkpoint",
 		 (flags & CHECKPOINT_IS_SHUTDOWN) ? " shutdown" : "",
 		 (flags & CHECKPOINT_END_OF_RECOVERY) ? " end-of-recovery" : "",
@@ -8540,7 +8567,8 @@ LogCheckpointStart(int flags, bool restartpoint)
 		 (flags & CHECKPOINT_WAIT) ? " wait" : "",
 		 (flags & CHECKPOINT_CAUSE_XLOG) ? " xlog" : "",
 		 (flags & CHECKPOINT_CAUSE_TIME) ? " time" : "",
-		 (flags & CHECKPOINT_FLUSH_ALL) ? " flush-all" : "");
+		 (flags & CHECKPOINT_FLUSH_ALL) ? " flush-all" : "",
+		 (flags & CHECKPOINT_LAZY) ? " lazy" : "");
 }
 
 /*
@@ -8707,6 +8735,11 @@ CreateCheckPoint(int flags)
 	VirtualTransactionId *vxids;
 	int			nvxids;
 
+	/* POLAR */
+	XLogRecPtr	polar_last_lsn;
+	bool		polar_is_lazy;
+	XLogRecPtr 	polar_lazy_redo = InvalidXLogRecPtr;
+
 	/*
 	 * An end-of-recovery checkpoint is really a shutdown checkpoint, just
 	 * issued at a different time.
@@ -8753,6 +8786,9 @@ CreateCheckPoint(int flags)
 	 */
 	START_CRIT_SECTION();
 
+	/* POLAR: check whether we can use lazy checkpoint. */
+	polar_is_lazy = polar_check_lazy_checkpoint(shutdown, &flags, &polar_lazy_redo);
+
 	if (shutdown)
 	{
 		LWLockAcquire(ControlFileLock, LW_EXCLUSIVE);
@@ -8795,6 +8831,26 @@ CreateCheckPoint(int flags)
 	 */
 	WALInsertLockAcquireExclusive();
 	curInsert = XLogBytePosToRecPtr(Insert->CurrBytePos);
+
+	/*
+	 * POLAR: we store the end of last record for shutdown checkpoint. When
+	 * call polar_flush_buffer_for_shutdown, we will flush wal that is small
+	 * than polar_last_lsn. We do not use XLogBytePosToRecPtr, because it will
+	 * contain the page header if the position is at a page boundary. We do
+	 * not use checkPoint.redo, because it may be added some * extra ***PHD
+	 * info, that will cause the XLogFlush raise a FATAL, like 'xlog flush
+	 * request ... is not satisfied --- flushed only to ...'.
+	 */
+	polar_last_lsn = XLogBytePosToEndRecPtr(Insert->CurrBytePos);
+
+	/* POLAR: use lazy redo lsn as the checkpoint redo. */
+	if (polar_is_lazy)
+	{
+		Assert(!shutdown);
+		Assert(flags & CHECKPOINT_LAZY);
+		Assert(!XLogRecPtrIsInvalid(polar_lazy_redo));
+		curInsert = polar_lazy_redo;
+	}
 
 	/*
 	 * If this isn't a shutdown or forced checkpoint, and if there has been no
@@ -8969,6 +9025,15 @@ CreateCheckPoint(int flags)
 	pfree(vxids);
 
 	CheckPointGuts(checkPoint.redo, flags);
+
+	/* POLAR: check whether we can create a checkpoint */
+	if (polar_should_check_checkpoint())
+	{
+		if (flags & CHECKPOINT_IS_SHUTDOWN)
+			polar_flush_buffer_for_shutdown(polar_last_lsn, flags);
+		else
+			polar_wait_consistent_lsn(checkPoint.redo, flags);
+	}
 
 	/*
 	 * Take a snapshot of running transactions and write this to WAL. This
@@ -9345,6 +9410,10 @@ CreateRestartPoint(int flags)
 		LogCheckpointStart(flags, true);
 
 	CheckPointGuts(lastCheckPoint.redo, flags);
+
+	/* POLAR: wait consistent lsn for standby. */
+	if (polar_should_check_checkpoint())
+		polar_wait_consistent_lsn(lastCheckPoint.redo, flags);
 
 	/*
 	 * Remember the prior checkpoint's redo ptr for
@@ -12457,12 +12526,7 @@ XLogRequestWalReceiverReply(void)
 bool
 polar_in_replica_mode(void)
 {
-	bool	polar_replica_mode = false;
-
-	if (RecoveryInProgress() && polar_enable_shared_storage_mode && polar_mount_pfs_readonly_mode)
-		polar_replica_mode = true;
-
-	return polar_replica_mode;
+	return (polar_enable_shared_storage_mode && polar_node_type() == POLAR_REPLICA);
 }
 
 /* POLAR: reset postmaster local variable before start startup process */
@@ -12483,3 +12547,293 @@ polar_load_and_check_controlfile(void)
 	ReadControlFile();
 }
 
+XLogRecPtr
+polar_get_oldest_applied_lsn(void)
+{
+	return pg_atomic_read_u64(
+		(pg_atomic_uint64 *) &XLogCtl->replication_slot_oldest_applied_lsn);
+}
+
+void
+polar_set_oldest_applied_lsn(XLogRecPtr oldest_apply_lsn)
+{
+	if (!polar_enable_shared_storage_mode)
+		return;
+
+	elog(DEBUG1, "Set oldest apply lsn %X/%X ",
+		 (uint32) (oldest_apply_lsn >> 32), (uint32) oldest_apply_lsn);
+
+	SpinLockAcquire(&XLogCtl->info_lck);
+	if (oldest_apply_lsn > XLogCtl->replication_slot_oldest_applied_lsn ||
+		XLogRecPtrIsInvalid(oldest_apply_lsn))
+		pg_atomic_write_u64(
+			(pg_atomic_uint64 *) &XLogCtl->replication_slot_oldest_applied_lsn,
+			oldest_apply_lsn);
+	SpinLockRelease(&XLogCtl->info_lck);
+}
+
+XLogRecPtr
+polar_get_consistent_lsn(void)
+{
+	return pg_atomic_read_u64((pg_atomic_uint64 *)&XLogCtl->consistent_lsn);
+}
+
+/*
+ * polar_set_consistent_lsn - Set the global value of consistent LSN.
+ *
+ * Firstly, get the oldest LSN among all pages in buffer, which updates the pages.
+ * But the oldest LSN could be InvalidXLogRecPtr if no page in the buffer has been changed.
+ * In that case, we choose the latest LSN among pages as the consistent LSN because it means
+ * all changes in buffer has been flushed to disk. So that we can move much further.
+ */
+void
+polar_set_consistent_lsn(XLogRecPtr consistent_lsn)
+{
+	bool		updated = false;
+	XLogRecPtr  cur_consistent_lsn;
+
+	/* For replica or master in recovery, we don't set the consistent lsn. */
+	if (polar_in_replica_mode() || polar_is_master_in_recovery())
+	{
+		elog(DEBUG1,
+			 "replica or master in recovery do not set consistent lsn.");
+		return;
+	}
+
+	SpinLockAcquire(&XLogCtl->info_lck);
+	cur_consistent_lsn = XLogCtl->consistent_lsn;
+
+	if (consistent_lsn > cur_consistent_lsn)
+	{
+		pg_atomic_write_u64((pg_atomic_uint64 *)&XLogCtl->consistent_lsn,
+							consistent_lsn);
+		updated = true;
+	}
+	else if (consistent_lsn < cur_consistent_lsn)
+	{
+		elog(WARNING, "Setting a consistent lsn %X/%X less than current consistent lsn %X/%X",
+			 (uint32) (consistent_lsn >> 32), (uint32) consistent_lsn,
+			 (uint32) (cur_consistent_lsn >> 32), (uint32) cur_consistent_lsn);
+	}
+
+	SpinLockRelease(&XLogCtl->info_lck);
+
+	if (!updated)
+	{
+		elog(DEBUG1, "Consistent lsn %X/%X not updated, setting to %X/%X.",
+			 (uint32) (cur_consistent_lsn >> 32), (uint32) cur_consistent_lsn,
+			 (uint32) (consistent_lsn >> 32), (uint32) consistent_lsn);
+	}
+	else
+	{
+		elog(DEBUG1, "Set consistent lsn %X/%X ",
+			 (uint32) (consistent_lsn >> 32),
+			 (uint32) consistent_lsn);
+	}
+}
+
+/*
+ * Whether to check the legality of the checkpoint. Only polardb master
+ * that is not in recovery or standby should check it.
+ */
+static bool
+polar_should_check_checkpoint(void)
+{
+	return ((polar_enable_shared_storage_mode && !RecoveryInProgress() &&
+			polar_is_master()) || polar_is_standby()) &&
+			polar_flush_list_enabled();
+}
+
+/* Check whether current checkpoint is allowed. */
+static bool
+polar_is_checkpoint_legal(XLogRecPtr redo)
+{
+	XLogRecPtr consistent_lsn = polar_get_consistent_lsn();
+	XLogRecPtr oldest_applied_lsn = polar_get_oldest_applied_lsn();
+
+	if (redo <= consistent_lsn)
+	{
+		if (log_checkpoints)
+			elog(LOG,
+				 "Checkpoint approved. Checkpoint redo lsn %X/%X, consistent lsn %X/%X, oldest apply lsn %X/%X",
+				 (uint32) (redo >> 32),
+				 (uint32) redo,
+				 (uint32) (consistent_lsn >> 32),
+				 (uint32) consistent_lsn,
+				 (uint32) (oldest_applied_lsn >> 32),
+				 (uint32) oldest_applied_lsn);
+		return true;
+	}
+
+	if ((consistent_lsn > oldest_applied_lsn))
+		elog(WARNING,
+			 "Checkpoint blocked. Checkpoint redo lsn %X/%X, consistent lsn %X/%X, oldest apply lsn %X/%X",
+			 (uint32) (redo >> 32),
+			 (uint32) redo,
+			 (uint32) (consistent_lsn >> 32),
+			 (uint32) consistent_lsn,
+			 (uint32) (oldest_applied_lsn >> 32),
+			 (uint32) oldest_applied_lsn);
+
+	return false;
+}
+
+/*
+ * POLAR: Tell bgwriter to flush buffer, and wait the consistent lsn greater than the
+ * consistent lsn. If we accept a force flush signal, just force flush.
+ */
+static void
+polar_wait_consistent_lsn(XLogRecPtr redo, int flags)
+{
+	bool receive_shut_down = false;
+
+	while (!polar_is_checkpoint_legal(redo))
+	{
+		polar_try_to_wake_bgwriter();
+
+		polar_accept_signal_for_checkpoint(flags);
+
+		/*
+		 * When a shutdown is received, the bgwriter will be terminated, we
+		 * should help myself, do not wait bgwriter to update the consistent lsn.
+		 */
+		if (polar_checkpointer_recv_shutdown_requested())
+		{
+			receive_shut_down = true;
+			break;
+		}
+
+
+		pg_usleep(polar_check_checkpoint_legal_interval * 1000000L);
+	}
+
+	if (receive_shut_down)
+		polar_flush_buffer_for_shutdown(redo, flags);
+}
+
+/*
+ * When server shut down, the bgwriter already exit, checkpoint progress flush
+ * all dirty buffer at flushlist.
+ */
+static void
+polar_flush_buffer_for_shutdown(XLogRecPtr redo, int flags)
+{
+	WritebackContext wb_context;
+	WritebackContextInit(&wb_context, &backend_flush_after);
+
+	/*
+	 * The wal writer process has been terminated, we should flush wal records
+	 * before redo lsn that still in the wal buffer.
+	 *
+	 * Otherwise, there may be some buffers can not be flushed because their
+	 * latest lsn greater than oldest apply lsn. The replica can not get more
+	 * wal records to replay, so the oldest apply lsn will never be updated.
+	 * Server will wait forever.
+	 */
+	XLogFlush(redo);
+
+	while (!polar_is_checkpoint_legal(redo))
+	{
+		polar_bg_buffer_sync(&wb_context);
+		polar_accept_signal_for_checkpoint(flags);
+		pg_usleep(BgWriterDelay * 1000L);
+	}
+}
+
+/*
+ * We can accept signal to force flush all buffers, do not control it.
+ * If there is replica, the replica will read ahead data, it is unsafe,
+ * do not recommend.
+ */
+static void
+polar_accept_signal_for_checkpoint(int flags)
+{
+	polar_checkpointer_do_reload();
+	if (polar_force_flush_buffer)
+	{
+		polar_set_oldest_applied_lsn(InvalidXLogRecPtr);
+		CheckPointBuffers(flags);
+	}
+}
+
+/*
+ * Faked latest lsn is used to set pd_lsn at PageHeader for visibility map buffer.
+ * Like XLogInsertRecord, return XLOG pointer to end of record, if the position
+ * is at a page boundary, returns a pointer to the beginning of the page.
+ */
+XLogRecPtr
+polar_get_faked_latest_lsn(void)
+{
+	uint64	bytepos;
+	XLogCtlInsert *insert = &XLogCtl->Insert;
+
+	/* Read the current insert position */
+	SpinLockAcquire(&insert->insertpos_lck);
+	bytepos = insert->CurrBytePos;
+	SpinLockRelease(&insert->insertpos_lck);
+
+	return XLogBytePosToEndRecPtr(bytepos);
+}
+
+void
+polar_set_node_type(PolarNodeType node_type)
+{
+	pg_atomic_write_u32((pg_atomic_uint32 *)&XLogCtl->polar_node_type, node_type);
+}
+
+PolarNodeType
+polar_node_type(void)
+{
+	return XLogCtl
+	       ? pg_atomic_read_u32((pg_atomic_uint32 *) &XLogCtl->polar_node_type)
+	       : polar_node_type_by_file();
+}
+
+/*
+ * POLAR: judge node type is master or not, no matter whether polar_enable_shared_storage_mode
+ * is true.
+ *
+ * Note that if current node is not a master, this function will call the
+ * polar_node_type that will access the XLogCtl. So if the XLogCtl has not been
+ * initialed, for example the process is in reaper, please DO NOT call this
+ * function. It might be a good idea to use the polar_local_node_type.
+ */
+bool
+polar_in_master_mode(void)
+{
+	/*
+	 * If call this method, we must be a polardb node and the node type must
+	 * NOT be unknown.
+	 */
+	Assert(polar_enable_shared_storage_mode);
+	Assert(polar_local_node_type != POLAR_UNKNOWN);
+
+	/*
+	 * For master, we can use local polar node type, because it would not be
+	 * changed after start.
+	 */
+	if (polar_local_node_type == POLAR_MASTER)
+		return true;
+
+	/*
+	 * If replica promote to master, we should update the type to master in
+	 * shared memory. So if local node type is not master, we should check its
+	 * value in shared memory, if it is promoted recently, it's time to record
+	 * the latest node type to local.
+	 */
+	if (polar_node_type() == POLAR_MASTER)
+	{
+		polar_local_node_type = POLAR_MASTER;
+		return true;
+	}
+
+	return false;
+}
+
+bool
+polar_is_master(void)
+{
+	/* If call this method, we must be a polardb node */
+	Assert(polar_enable_shared_storage_mode);
+	return polar_in_master_mode();
+}

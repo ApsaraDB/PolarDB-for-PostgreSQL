@@ -75,6 +75,9 @@ typedef struct WalSnd
 	 * SyncRepLock.
 	 */
 	int			sync_standby_priority;
+
+	/* POLAR: mark whether send to replica or not */
+	bool			to_replica;
 } WalSnd;
 
 extern WalSnd *MyWalSnd;

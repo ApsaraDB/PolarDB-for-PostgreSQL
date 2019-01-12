@@ -22,6 +22,9 @@
 #include "utils/snapmgr.h"
 #include "utils/tqual.h"
 
+/* POLAR: for code compile */
+typedef struct BufferDesc BufferDesc;
+
 typedef void *Block;
 
 /* Possible arguments for GetAccessStrategy() */
@@ -43,8 +46,9 @@ typedef enum
 	RBM_ZERO_AND_CLEANUP_LOCK,	/* Like RBM_ZERO_AND_LOCK, but locks the page
 								 * in "cleanup" mode */
 	RBM_ZERO_ON_ERROR,			/* Read, but return an all-zeros page on error */
-	RBM_NORMAL_NO_LOG			/* Don't log page as invalid during WAL
+	RBM_NORMAL_NO_LOG,			/* Don't log page as invalid during WAL
 								 * replay; otherwise same as RBM_NORMAL */
+	RBM_NORMAL_VALID			/* Polar: Don't read from disk, buffer is valid */							
 } ReadBufferMode;
 
 /* forward declared, to avoid having to expose buf_internals.h here */
@@ -69,6 +73,8 @@ extern PGDLLIMPORT char *BufferBlocks;
 
 /* in guc.c */
 extern int	effective_io_concurrency;
+/* POLAR */
+extern bool	polar_enable_shared_storage_mode;
 
 /* in localbuf.c */
 extern PGDLLIMPORT int NLocBuffer;
@@ -87,6 +93,14 @@ extern PGDLLIMPORT int32 *LocalRefCount;
 #define BUFFER_LOCK_UNLOCK		0
 #define BUFFER_LOCK_SHARE		1
 #define BUFFER_LOCK_EXCLUSIVE	2
+
+/*
+ * Note: these two macros only work on shared buffers, not local ones!
+ *
+ * POLAR: these two macros are moved from bufmgr.c.
+ */
+#define BufHdrGetBlock(bufHdr)	((Block) (BufferBlocks + ((Size) (bufHdr)->buf_id) * BLCKSZ))
+#define BufferGetLSN(bufHdr)	(PageGetLSN(BufHdrGetBlock(bufHdr)))
 
 /*
  * These routines are beaten on quite heavily, hence the macroization.
@@ -232,6 +246,14 @@ extern void TestForOldSnapshot_impl(Snapshot snapshot, Relation relation);
 extern BufferAccessStrategy GetAccessStrategy(BufferAccessStrategyType btype);
 extern void FreeAccessStrategy(BufferAccessStrategy strategy);
 
+/* POLAR */
+extern void polar_try_to_wake_bgwriter(void);
+extern bool polar_start_buffer_io_extend(BufferDesc *buf,
+										 bool forInput,
+										 bool polar_copy_buf);
+
+/* POLAR: change static to extern */
+extern void TerminateBufferIO(BufferDesc *buf, bool clear_dirty, uint32 set_flag_bits);
 
 /* inline functions */
 
