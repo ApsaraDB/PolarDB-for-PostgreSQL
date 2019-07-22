@@ -310,8 +310,9 @@ extern PolarNodeType polar_node_type(void);
 extern bool polar_in_master_mode(void);
 extern bool polar_is_master(void);
 extern XLogRecPtr polar_get_faked_latest_lsn(void);
-extern void polar_set_oldest_applied_lsn(XLogRecPtr oldest_apply_lsn);
+extern void polar_set_oldest_applied_lsn(XLogRecPtr oldest_apply_lsn, XLogRecPtr oldest_lock_lsn);
 extern XLogRecPtr polar_get_oldest_applied_lsn(void);
+extern XLogRecPtr polar_get_oldest_lock_lsn(void);
 extern XLogRecPtr polar_get_consistent_lsn(void);
 extern void polar_set_consistent_lsn(XLogRecPtr consistent_lsn);
 extern void polar_checkpointer_do_reload(void);
@@ -328,6 +329,9 @@ extern void polar_bgworker_fullpage_snapshot_replay_main(void);
 extern XLogRecPtr polar_get_replay_end_rec_ptr(TimeLineID *replyTLI);
 extern void polar_bg_redo_set_replayed_lsn(XLogRecPtr lsn);
 extern XLogRecPtr polar_get_last_checkpoint_redo_ptr(void);
+extern XLogRecPtr polar_get_async_lock_replay_rec_ptr(void);
+extern void polar_async_update_last_ptr(void);
+extern void polar_set_receipt_time(TimestampTz rtime);
 
 /*
  * Routines to start, stop, and get status of a base backup.

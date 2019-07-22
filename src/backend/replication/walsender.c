@@ -272,6 +272,7 @@ static void polar_xlog_send(void);
 static void XLogSendPhysicalExt(bool polar_send_to_replica);
 static void polar_wal_snd_keepalive(bool requestReply);
 static void polar_record_replica_apply_lsn(XLogRecPtr apply_lsn);
+static void polar_record_replica_lock_lsn(XLogRecPtr lock_lsn);
 
 /* Initialize walsender process before entering the main command loop */
 void
@@ -1797,6 +1798,7 @@ ProcessStandbyReplyMessage(void)
 	static bool fullyAppliedLastTime = false;
 	/* POLAR */
 	XLogRecPtr	polar_bg_replay_lsn = InvalidXLogRecPtr;
+	XLogRecPtr	polar_lock_replay_lsn = InvalidXLogRecPtr;
 	/* POLAR end */
 
 	/* the caller already consumed the msgtype byte */
@@ -1806,14 +1808,21 @@ ProcessStandbyReplyMessage(void)
 	(void) pq_getmsgint64(&reply_message);	/* sendTime; not used ATM */
 	replyRequested = pq_getmsgbyte(&reply_message);
 
+	polar_lock_replay_lsn = applyPtr;
+
 	if (MyWalSnd->to_replica)
+	{
+		polar_lock_replay_lsn = pq_getmsgint64(&reply_message);
 		polar_bg_replay_lsn = pq_getmsgint64(&reply_message);
+	}
 
 	elog(DEBUG2, "write %X/%X flush %X/%X apply %X/%X%s",
 		 (uint32) (writePtr >> 32), (uint32) writePtr,
 		 (uint32) (flushPtr >> 32), (uint32) flushPtr,
 		 (uint32) (applyPtr >> 32), (uint32) applyPtr,
 		 replyRequested ? " (reply requested)" : "");
+
+	elog(DEBUG3, "polar_lock_replay_lsn: %X/%X", (uint32) (polar_lock_replay_lsn >> 32), (uint32) polar_lock_replay_lsn);
 
 	/* See if we can compute the round-trip lag for these positions. */
 	now = GetCurrentTimestamp();
@@ -1863,11 +1872,15 @@ ProcessStandbyReplyMessage(void)
 		SpinLockRelease(&walsnd->mutex);
 	}
 
-	/* POLAR: record the oldest lsn */
+	/* POLAR: record the oldest lsn, and oldest lock lsn */
 	polar_record_replica_apply_lsn(applyPtr);
+	polar_record_replica_lock_lsn(polar_lock_replay_lsn);
 
 	if (!am_cascading_walsender)
+	{
+		polar_release_ddl_waiters();
 		SyncRepReleaseWaiters();
+	}
 
 	/*
 	 * Advance our local xmin horizon when the client confirmed a flush.
@@ -3686,6 +3699,34 @@ polar_record_replica_apply_lsn(XLogRecPtr apply_lsn)
 	{
 		changed = true;
 		slot->data.polar_replica_apply_lsn = apply_lsn;
+	}
+	SpinLockRelease(&slot->mutex);
+
+	if (changed)
+	{
+		ReplicationSlotMarkDirty();
+		polar_compute_and_set_oldest_apply_lsn();
+	}
+}
+
+static void
+polar_record_replica_lock_lsn(XLogRecPtr lock_lsn)
+{
+	bool		changed = false;
+	ReplicationSlot *slot = MyReplicationSlot;
+
+	/* Only replica apply lsn should be recorded */
+	if (!MyWalSnd->to_replica)
+		return;
+
+	Assert(lock_lsn != InvalidXLogRecPtr);
+	SpinLockAcquire(&slot->mutex);
+	Assert(lock_lsn >= slot->polar_replica_lock_lsn);
+
+	if (slot->polar_replica_lock_lsn != lock_lsn)
+	{
+		changed = true;
+		slot->polar_replica_lock_lsn = lock_lsn;
 	}
 	SpinLockRelease(&slot->mutex);
 

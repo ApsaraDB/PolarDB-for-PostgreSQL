@@ -46,7 +46,7 @@ extern void StandbyLockTimeoutHandler(void);
  * to make hot standby work. That includes logging AccessExclusiveLocks taken
  * by transactions and running-xacts snapshots.
  */
-extern void StandbyAcquireAccessExclusiveLock(TransactionId xid, Oid dbOid, Oid relOid);
+extern LockAcquireResult StandbyAcquireAccessExclusiveLock(TransactionId xid, Oid dbOid, Oid relOid, bool dontWait);
 extern void StandbyReleaseLockTree(TransactionId xid,
 					   int nsubxids, TransactionId *subxids);
 extern void StandbyReleaseAllLocks(void);

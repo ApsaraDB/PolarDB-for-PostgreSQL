@@ -71,6 +71,7 @@
 #include "utils/timestamp.h"
 
 /* POLAR */
+#include "access/polar_async_ddl_lock_replay.h"
 #include "access/polar_logindex.h"
 #include "access/polar_logindex_internal.h"
 #include "access/polar_queue_manager.h"
@@ -1329,6 +1330,10 @@ XLogWalRcvSendReply(bool force, bool requestReply)
 	static TimestampTz sendTime = 0;
 	TimestampTz now;
 
+	/* POLAR: */
+	XLogRecPtr polar_lock_replay_lsn = 0;
+	/* POLAR end */
+
 	/*
 	 * If the user doesn't want status to be reported to the master, be sure
 	 * to exit before doing anything at all.
@@ -1373,6 +1378,15 @@ XLogWalRcvSendReply(bool force, bool requestReply)
 	{
 		static int polar_num_ro_invalid_message = 0;
 		static XLogRecPtr bg_replayed_lsn = InvalidXLogRecPtr;
+
+		/* POLAR: return the oldest ddl lock lsn if enable async ddl lock */
+		if (polar_allow_async_ddl_lock_replay())
+			polar_lock_replay_lsn = polar_get_async_lock_replay_rec_ptr();
+		else
+			polar_lock_replay_lsn = applyPtr;
+
+		pq_sendint64(&reply_message, polar_lock_replay_lsn);
+		elog(DEBUG3, "polar_lock_replay_lsn: %X/%X", (uint32) (polar_lock_replay_lsn >> 32), (uint32) polar_lock_replay_lsn);
 
 		if (polar_enable_redo_logindex && !polar_streaming_xlog_meta)
 		{

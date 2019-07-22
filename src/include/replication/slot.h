@@ -152,6 +152,9 @@ typedef struct ReplicationSlot
 	XLogRecPtr	candidate_xmin_lsn;
 	XLogRecPtr	candidate_restart_valid;
 	XLogRecPtr	candidate_restart_lsn;
+
+	/* POLAR: lsn to record replica lock redo state */
+	XLogRecPtr	polar_replica_lock_lsn;
 } ReplicationSlot;
 
 #define SlotIsPhysical(slot) (slot->data.database == InvalidOid)

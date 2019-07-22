@@ -58,6 +58,19 @@ polar_oldest_apply_lsn(PG_FUNCTION_ARGS)
 	PG_RETURN_LSN(polar_get_oldest_applied_lsn());
 }
 
+PG_FUNCTION_INFO_V1(polar_oldest_lock_lsn);
+Datum
+polar_oldest_lock_lsn(PG_FUNCTION_ARGS)
+{
+	if (RecoveryInProgress())
+		ereport(ERROR,
+				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE), errmsg(
+					 "recovery is in progress"), errhint(
+					 "WAL control functions cannot be executed during recovery.")));
+
+	PG_RETURN_LSN(polar_get_oldest_lock_lsn());
+}
+
 PG_FUNCTION_INFO_V1(polar_get_node_type);
 Datum
 polar_get_node_type(PG_FUNCTION_ARGS)

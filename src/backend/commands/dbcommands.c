@@ -97,8 +97,10 @@ static bool check_db_file_conflict(Oid db_id);
 static int	errdetail_busy_db(int notherbackends, int npreparedxacts);
 
 /* POLAR */
-static void polar_remove_dbfile(Oid db_id);
+static void polar_sync_dropdb_wal(Oid db_id);
 
+/* POLAR */
+static bool local_dropdb_write_wal_beforehand = true;
 
 /*
  * CREATE DATABASE
@@ -945,6 +947,13 @@ dropdb(const char *dbname, bool missing_ok)
 	ReplicationSlotsDropDBSlots(db_id);
 
 	/*
+	 * POLAR: Before drop pages for this database that are in the shared buffer
+	 * cache and remove database files, we should synchronize a wal to ensure
+	 * that all replicas have no backends to use these pages and files.
+	 */
+	polar_sync_dropdb_wal(db_id);
+
+	/*
 	 * Drop pages for this database that are in the shared buffer cache. This
 	 * is important to ensure that no remaining backend tries to write out a
 	 * dirty buffer to the dead database later...
@@ -972,23 +981,10 @@ dropdb(const char *dbname, bool missing_ok)
 	 */
 	RequestCheckpoint(CHECKPOINT_IMMEDIATE | CHECKPOINT_FORCE | CHECKPOINT_WAIT);
 
-	if (POLAR_FILE_IN_SHARED_STORAGE() &&
-		polar_dropdb_write_wal_before_rmdir)
-	{
-		/*
-		 * POLAR: write wal then do unlink file
-		 * because before rmdir file in shared storage,
-		 * need all ro node disconnect on this db.
-		 */
-		polar_remove_dbfile(db_id);
-	}
-	else
-	{
-		/*
-		 * Remove all tablespace subdirs belonging to the database.
-		 */
-		remove_dbtablespaces(db_id);
-	}
+	/*
+	 * Remove all tablespace subdirs belonging to the database.
+	 */
+	remove_dbtablespaces(db_id);
 
 	/*
 	 * Close pg_database, but keep lock till commit.
@@ -1986,7 +1982,7 @@ remove_dbtablespaces(Oid db_id)
 
 		/* Record the filesystem change in XLOG */
 		/* POLAR: If have any change, record wal */
-		if (polar_have_data)
+		if (polar_have_data && !local_dropdb_write_wal_beforehand)
 		{
 			xl_dbase_drop_rec xlrec;
 
@@ -2299,84 +2295,31 @@ dbase_redo(XLogReaderState *record)
 		elog(PANIC, "dbase_redo: unknown op code %u", info);
 }
 
-/*
- * POLAR drop db
- * write wal first then do rmdir.
- * because we need let ro node disconnect on this db first.
- */
 static void
-polar_remove_dbfile(Oid db_id)
+polar_sync_dropdb_wal(Oid db_id)
 {
-	struct stat st;
-	char	   *polar_shared_path = NULL;
-	char	   *polar_local_path = NULL;
-	bool		shared_path_exist = false;
-	bool		local_path_exist = false;
+	xl_dbase_drop_rec	xlrec;
+	XLogRecPtr			polar_recptr;
 
-	if (POLAR_FILE_IN_SHARED_STORAGE() == false)
+	/* Read the guc to a local copy, in case it gets changed by conf reload */
+	local_dropdb_write_wal_beforehand = polar_dropdb_write_wal_beforehand;
+
+	if (!POLAR_FILE_IN_SHARED_STORAGE() || !local_dropdb_write_wal_beforehand)
 		return;
 
-	if (polar_dropdb_write_wal_before_rmdir == false)
-		return;
+	xlrec.db_id = db_id;
+	xlrec.tablespace_id = DEFAULTTABLESPACE_OID;
 
-	/* POLAR: check local storage data */
-	polar_local_path = GetDatabasePath(db_id, DEFAULTTABLESPACE_OID, false);
-	if (lstat(polar_local_path, &st) == 0 &&
-		S_ISDIR(st.st_mode))
+	XLogBeginInsert();
+	XLogRegisterData((char *) &xlrec, sizeof(xl_dbase_drop_rec));
+
+	polar_recptr = XLogInsert(RM_DBASE_ID,
+							  XLOG_DBASE_DROP | XLR_SPECIAL_REL_UPDATE);
+
+	/* POLAR: sync ddl, enable standby lock, wait all ro node reply this log */
+	if (polar_enable_ddl_sync_mode)
 	{
-		local_path_exist = true;
+		XLogFlush(polar_recptr);
+		SyncRepWaitForLSN(polar_recptr, false, true);
 	}
-
-	/* POLAR: check shared storage data */
-	if (POLAR_FILE_IN_SHARED_STORAGE())
-	{
-		polar_shared_path = polar_get_database_path(db_id, DEFAULTTABLESPACE_OID);
-		if (polar_stat(polar_shared_path, &st) == 0 &&
-			S_ISDIR(st.st_mode))
-		{
-			shared_path_exist = true;
-		}
-	}
-
-	/* POLAR: If have any change, record wal */
-	if (local_path_exist || shared_path_exist)
-	{
-		xl_dbase_drop_rec xlrec;
-		XLogRecPtr	polar_recptr;
-
-		xlrec.db_id = db_id;
-		xlrec.tablespace_id = DEFAULTTABLESPACE_OID;
-
-		XLogBeginInsert();
-		XLogRegisterData((char *) &xlrec, sizeof(xl_dbase_drop_rec));
-
-		polar_recptr = XLogInsert(RM_DBASE_ID,
-						  XLOG_DBASE_DROP | XLR_SPECIAL_REL_UPDATE);
-
-		/* POLAR: sync ddl, enable standby lock, wait all ro node reply this log */
-		if (polar_enable_ddl_sync_mode)
-		{
-			XLogFlush(polar_recptr);
-			SyncRepWaitForLSN(polar_recptr, false, true);
-		}
-	}
-
-	if (!rmtree(polar_local_path, true))
-		ereport(WARNING,
-			(errmsg("some useless files may be left behind in old database directory \"%s\"",
-			polar_local_path)));
-
-	if (!rmtree(polar_shared_path, true))
-		ereport(WARNING,
-			(errmsg("some useless files may be left behind in old database directory \"%s\"",
-			polar_shared_path)));
-
-	if (polar_local_path)
-		pfree(polar_local_path);
-
-	if (polar_shared_path)
-		pfree(polar_shared_path);
-
-	return;
 }
-

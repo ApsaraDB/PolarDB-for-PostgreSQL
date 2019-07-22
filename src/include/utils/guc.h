@@ -269,6 +269,10 @@ extern int	tcp_keepalives_idle;
 extern int	tcp_keepalives_interval;
 extern int	tcp_keepalives_count;
 
+extern bool polar_enable_ddl_sync_mode;
+extern bool polar_enable_transaction_sync_mode;
+extern bool polar_enable_shared_storage_mode;
+
 #ifdef TRACE_SORT
 extern bool trace_sort;
 #endif
@@ -296,7 +300,6 @@ extern bool		polar_enable_transaction_sync_mode;
 extern bool		polar_enable_debug;
 extern bool		polar_enable_pwrite;
 extern bool		polar_enable_pread;
-extern bool		polar_dropdb_write_wal_before_rmdir;
 
 extern int  	polar_copy_buffers;
 extern int  	polar_bgwriter_max_batch_size;
@@ -319,6 +322,9 @@ extern bool 	polar_enable_lazy_checkpoint;
 extern bool 	polar_startup_from_local_data_file;
 extern bool 	polar_enable_parallel_bgwriter;
 extern bool 	polar_enable_dynamic_parallel_bgwriter;
+extern bool		polar_dropdb_write_wal_beforehand;
+extern bool		polar_enable_async_ddl_lock_replay;
+extern bool		polar_enable_greedy_async_ddl_lock_replay;
 
 extern int		polar_logindex_unit_test;
 extern int 		polar_logindex_table_batch_size;

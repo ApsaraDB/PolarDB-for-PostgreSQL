@@ -77,6 +77,7 @@
 #include "pg_trace.h"
 
 /* POLAR */
+#include "access/polar_async_ddl_lock_replay.h"
 #include "storage/polar_bufmgr.h"
 #include "storage/polar_fd.h"
 #include "storage/polar_flushlist.h"
@@ -704,6 +705,9 @@ typedef struct XLogCtlData
 	TimeLineID	lastReplayedTLI;
 	XLogRecPtr	replayEndRecPtr;
 	TimeLineID	replayEndTLI;
+
+	XLogRecPtr	lockLastReplayedEndRecPtr;
+
 	/* timestamp of last COMMIT/ABORT record replayed (or being replayed) */
 	TimestampTz recoveryLastXTime;
 
@@ -726,7 +730,10 @@ typedef struct XLogCtlData
 	/* POLAR */
 	/* Oldest lsn applied by any slot */
 	XLogRecPtr	replication_slot_oldest_applied_lsn;
-	
+
+	/* Oldest lock LSN applied by any slot */
+	XLogRecPtr	replication_slot_oldest_lock_lsn;
+
 	/* All pages which latest_lsn <= consistent_lsn have been flushed to storage. */
 	XLogRecPtr	consistent_lsn;
 	/* Record polar node type */
@@ -7293,6 +7300,7 @@ StartupXLOG(void)
 			XLogCtl->replayEndRecPtr = EndRecPtr;
 		XLogCtl->replayEndTLI = ThisTimeLineID;
 		XLogCtl->lastReplayedEndRecPtr = XLogCtl->replayEndRecPtr;
+		XLogCtl->lockLastReplayedEndRecPtr = XLogCtl->replayEndRecPtr;
 		XLogCtl->lastReplayedTLI = XLogCtl->replayEndTLI;
 		XLogCtl->recoveryLastXTime = 0;
 		XLogCtl->currentChunkStartTime = 0;
@@ -7413,6 +7421,10 @@ StartupXLOG(void)
 		{
 			ErrorContextCallback errcallback;
 			TimestampTz xtime;
+
+			/* POLAR: Launch async ddl lock replay worker if enabled */
+			polar_launch_async_ddl_lock_replay_workers();
+			/* POLAR end */
 
 			InRedo = true;
 
@@ -7590,6 +7602,23 @@ StartupXLOG(void)
 				 */
 				polar_logindex_mini_trans_lsn = InvalidXLogRecPtr;
 
+				/*
+				 * POLAR: if this record related to a lock in getting, means it
+				 * is an async ddl, we should wait until get the lock
+				 */
+				if (polar_allow_async_ddl_lock_replay() &&
+					polar_async_ddl_lock_replay_tx_is_replaying(record->xl_xid))
+				{
+					elog(LOG, "polar async ddl lock replay: startup: record "
+							  "protect by lock, but not get, wait for it, xid: %d", record->xl_xid);
+					while (polar_async_ddl_lock_replay_tx_is_replaying(record->xl_xid))
+					{
+						pg_usleep(10000L); /* 10ms */
+						/* Handle interrupt signals of startup process */
+						HandleStartupProcInterrupts();
+					}
+				}
+
 				/* Now apply the WAL record itself */
 				if (!polar_log_index_parse_xlog(record->xl_rmid, xlogreader, polar_redo_start_lsn, &polar_logindex_mini_trans_lsn))
 					RmgrTable[record->xl_rmid].rm_redo(xlogreader);
@@ -7626,6 +7655,10 @@ StartupXLOG(void)
 				XLogCtl->lastReplayedEndRecPtr = EndRecPtr;
 				XLogCtl->lastReplayedTLI = ThisTimeLineID;
 				SpinLockRelease(&XLogCtl->info_lck);
+
+				/* POLAR: update async ddl replay ptr */
+				if (polar_allow_async_ddl_lock_replay())
+					polar_async_update_last_ptr();
 
 				/*
 				 * POLAR: If polar_logindex_mini_trans_lsn is valid which means we parse xlog during a mini transaction.
@@ -7696,6 +7729,10 @@ StartupXLOG(void)
 			/*
 			 * end of main redo apply loop
 			 */
+
+			/* POLAR: stop wal prefetch worker */
+			polar_stop_async_ddl_lock_replay_workers();
+			/* POLAR end */
 
 			if (reachedStopPoint)
 			{
@@ -11701,6 +11738,23 @@ GetXLogReplayRecPtr(TimeLineID *replayTLI)
 }
 
 /*
+ * Get latest async lock record apply position.
+ *
+ * Exported to allow WALReceiver to read the pointer directly.
+ */
+XLogRecPtr
+polar_get_async_lock_replay_rec_ptr(void)
+{
+	XLogRecPtr	recptr;
+
+	SpinLockAcquire(&XLogCtl->info_lck);
+	recptr = XLogCtl->lockLastReplayedEndRecPtr;
+	SpinLockRelease(&XLogCtl->info_lck);
+
+	return recptr;
+}
+
+/*
  * Get latest WAL insert pointer
  */
 XLogRecPtr
@@ -12943,8 +12997,15 @@ polar_get_oldest_applied_lsn(void)
 		(pg_atomic_uint64 *) &XLogCtl->replication_slot_oldest_applied_lsn);
 }
 
+XLogRecPtr
+polar_get_oldest_lock_lsn(void)
+{
+	return pg_atomic_read_u64(
+		(pg_atomic_uint64 *) &XLogCtl->replication_slot_oldest_lock_lsn);
+}
+
 void
-polar_set_oldest_applied_lsn(XLogRecPtr oldest_apply_lsn)
+polar_set_oldest_applied_lsn(XLogRecPtr oldest_apply_lsn, XLogRecPtr oldest_lock_lsn)
 {
 	if (!polar_enable_shared_storage_mode)
 		return;
@@ -12952,12 +13013,21 @@ polar_set_oldest_applied_lsn(XLogRecPtr oldest_apply_lsn)
 	elog(DEBUG1, "Set oldest apply lsn %X/%X ",
 		 (uint32) (oldest_apply_lsn >> 32), (uint32) oldest_apply_lsn);
 
+	elog(DEBUG1, "Set oldest lock lsn %X/%X ",
+		 (uint32) (oldest_lock_lsn >> 32), (uint32) oldest_lock_lsn);
+
 	SpinLockAcquire(&XLogCtl->info_lck);
 	if (oldest_apply_lsn > XLogCtl->replication_slot_oldest_applied_lsn ||
 		XLogRecPtrIsInvalid(oldest_apply_lsn))
 		pg_atomic_write_u64(
 			(pg_atomic_uint64 *) &XLogCtl->replication_slot_oldest_applied_lsn,
 			oldest_apply_lsn);
+
+	if (oldest_lock_lsn > XLogCtl->replication_slot_oldest_lock_lsn ||
+		XLogRecPtrIsInvalid(oldest_lock_lsn))
+		pg_atomic_write_u64(
+			(pg_atomic_uint64 *) &XLogCtl->replication_slot_oldest_lock_lsn,
+			oldest_lock_lsn);
 	SpinLockRelease(&XLogCtl->info_lck);
 }
 
@@ -13140,7 +13210,7 @@ polar_accept_signal_for_checkpoint(int flags)
 	polar_checkpointer_do_reload();
 	if (polar_force_flush_buffer)
 	{
-		polar_set_oldest_applied_lsn(InvalidXLogRecPtr);
+		polar_set_oldest_applied_lsn(InvalidXLogRecPtr, InvalidXLogRecPtr);
 		CheckPointBuffers(flags);
 	}
 }
@@ -13728,4 +13798,32 @@ polar_handle_walreceiver_die(XLogRecPtr pagePtr, XLogRecPtr recPtr)
 							 (uint32)(recPtr >> 32), (uint32)(recPtr), (uint32)(pagePtr >> 32), (uint32)(pagePtr))));
 
 	polar_try_to_wake_walreceiver(pagePtr, false, recPtr);
+}
+
+/*
+ * POLAR: update lockLastReplayedEndRecPtr, which will be sent to RW
+ */
+void
+polar_async_update_last_ptr(void)
+{
+	XLogRecPtr recPtr = polar_get_async_ddl_lock_replay_oldest_ptr();
+	if (recPtr != InvalidXLogRecPtr)
+	{
+		SpinLockAcquire(&XLogCtl->info_lck);
+		XLogCtl->lockLastReplayedEndRecPtr = recPtr;
+		SpinLockRelease(&XLogCtl->info_lck);
+	}
+	else
+	{
+		/* no async lock in replaying, now it's lastReplayedEndRecPtr */
+		SpinLockAcquire(&XLogCtl->info_lck);
+		XLogCtl->lockLastReplayedEndRecPtr = XLogCtl->lastReplayedEndRecPtr;
+		SpinLockRelease(&XLogCtl->info_lck);
+	}
+}
+
+void
+polar_set_receipt_time(TimestampTz rtime)
+{
+	XLogReceiptTime = rtime;
 }

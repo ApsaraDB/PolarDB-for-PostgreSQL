@@ -49,6 +49,7 @@
 
 
 /* POLAR */
+#include "access/polar_async_ddl_lock_replay.h"
 #include "access/polar_fullpage.h"
 #include "access/polar_logindex.h"
 #include "access/polar_queue_manager.h"
@@ -182,6 +183,9 @@ CreateSharedMemoryAndSemaphores(bool makePrivate, int port)
 		size = add_size(size, polar_fullpage_shmem_size());
 		/* POLAR end */
 
+		/* POLAR: add async ddl lock replay related share memory size */
+		size = add_size(size, polar_async_ddl_lock_replay_shmem_size());
+
 		/* freeze the addin request size and include it */
 		addin_request_allowed = false;
 		size = add_size(size, total_addin_request);
@@ -273,6 +277,9 @@ CreateSharedMemoryAndSemaphores(bool makePrivate, int port)
 	/* POLAR: init fullpage shared memory */
 	polar_fullpage_shmem_init();
 	/* POLAR end */
+
+	/* POLAR: init async ddl lock replay share memory struct */
+	polar_init_async_ddl_lock_replay();
 
 	/*
 	 * Set up lock manager

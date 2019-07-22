@@ -29,13 +29,16 @@
 #include "storage/procarray.h"
 #include "storage/sinvaladt.h"
 #include "storage/standby.h"
+#include "replication/syncrep.h"
 #include "utils/hsearch.h"
 #include "utils/memutils.h"
+#include "utils/guc.h"
 #include "utils/ps_status.h"
 #include "utils/timeout.h"
 #include "utils/timestamp.h"
 
 /* POLAR */
+#include "access/polar_async_ddl_lock_replay.h"
 #include "utils/guc.h"
 #include "replication/syncrep.h"
 
@@ -50,7 +53,7 @@ static void ResolveRecoveryConflictWithVirtualXIDs(VirtualTransactionId *waitlis
 									   ProcSignalReason reason);
 static void SendRecoveryConflictWithBufferPin(ProcSignalReason reason);
 static XLogRecPtr LogCurrentRunningXacts(RunningTransactions CurrRunningXacts);
-static void LogAccessExclusiveLocks(int nlocks, xl_standby_lock *locks, bool polar_ddl_lock);
+static XLogRecPtr LogAccessExclusiveLocks(int nlocks, xl_standby_lock *locks);
 
 /*
  * Keep track of all the locks owned by a given transaction.
@@ -629,19 +632,20 @@ StandbyLockTimeoutHandler(void)
  */
 
 
-void
-StandbyAcquireAccessExclusiveLock(TransactionId xid, Oid dbOid, Oid relOid)
+LockAcquireResult
+StandbyAcquireAccessExclusiveLock(TransactionId xid, Oid dbOid, Oid relOid, bool dontWait)
 {
 	RecoveryLockListsEntry *entry;
 	xl_standby_lock *newlock;
 	LOCKTAG		locktag;
 	bool		found;
+	LockAcquireResult result;
 
 	/* Already processed? */
 	if (!TransactionIdIsValid(xid) ||
 		TransactionIdDidCommit(xid) ||
 		TransactionIdDidAbort(xid))
-		return;
+		return LOCKACQUIRE_OK;
 
 	elog(trace_recovery(DEBUG4),
 		 "adding recovery lock: db %u rel %u", dbOid, relOid);
@@ -661,11 +665,16 @@ StandbyAcquireAccessExclusiveLock(TransactionId xid, Oid dbOid, Oid relOid)
 	newlock->xid = xid;
 	newlock->dbOid = dbOid;
 	newlock->relOid = relOid;
-	entry->locks = lappend(entry->locks, newlock);
 
 	SET_LOCKTAG_RELATION(locktag, newlock->dbOid, newlock->relOid);
 
-	LockAcquireExtended(&locktag, AccessExclusiveLock, true, false, false);
+	result = LockAcquire(&locktag, AccessExclusiveLock, true, dontWait);
+
+	if (result == LOCKACQUIRE_NOT_AVAIL)
+		pfree(newlock);
+	else
+		entry->locks = lappend(entry->locks, newlock);
+	return result;
 }
 
 static void
@@ -704,9 +713,15 @@ StandbyReleaseLocks(TransactionId xid)
 			StandbyReleaseLockList(entry->locks);
 			hash_search(RecoveryLockLists, entry, HASH_REMOVE, NULL);
 		}
+		if (polar_allow_async_ddl_lock_replay())
+			polar_async_ddl_lock_replay_release_one_tx(xid);
 	}
 	else
+	{
 		StandbyReleaseAllLocks();
+		if (polar_allow_async_ddl_lock_replay())
+			polar_async_ddl_lock_replay_release_all_tx();
+	}
 }
 
 /*
@@ -800,11 +815,41 @@ standby_redo(XLogReaderState *record)
 	{
 		xl_standby_locks *xlrec = (xl_standby_locks *) XLogRecGetData(record);
 		int			i;
+		LockAcquireResult result;
+
 
 		for (i = 0; i < xlrec->nlocks; i++)
-			StandbyAcquireAccessExclusiveLock(xlrec->locks[i].xid,
-											  xlrec->locks[i].dbOid,
-											  xlrec->locks[i].relOid);
+		{
+			TimestampTz rtime;
+			bool		fromStream;
+
+			GetXLogReceiptTime(&rtime, &fromStream);
+
+			/* POLAR:
+			 * If enable async ddl lock replay, try to get the lock without block waiting first.
+			 * 	if got, go to the origin codepath.
+			 * 	else, add the lock into pending list, and a worker will try to get the lock.
+			 */
+			if (polar_allow_async_ddl_lock_replay())
+			{
+				/* check if this lock is already requested in async worker, if so, ignore it */
+				if (polar_async_ddl_lock_replay_lock_is_replaying(&xlrec->locks[i]))
+					continue;
+				result = StandbyAcquireAccessExclusiveLock(xlrec->locks[i].xid,
+															xlrec->locks[i].dbOid,
+															xlrec->locks[i].relOid,
+															true);
+				if (result == LOCKACQUIRE_NOT_AVAIL)
+					polar_add_lock_to_pending_tbl(&xlrec->locks[i], GetXLogReplayRecPtr(NULL), rtime);
+			}
+			else
+			{
+				StandbyAcquireAccessExclusiveLock(xlrec->locks[i].xid,
+													xlrec->locks[i].dbOid,
+													xlrec->locks[i].relOid,
+													false);
+			}
+		}
 	}
 	else if (info == XLOG_RUNNING_XACTS)
 	{
@@ -916,7 +961,7 @@ LogStandbySnapshot(void)
 	 */
 	locks = GetRunningTransactionLocks(&nlocks);
 	if (nlocks > 0)
-		LogAccessExclusiveLocks(nlocks, locks, false);
+		LogAccessExclusiveLocks(nlocks, locks);
 	pfree(locks);
 
 	/*
@@ -1020,12 +1065,14 @@ LogCurrentRunningXacts(RunningTransactions CurrRunningXacts)
 /*
  * Wholesale logging of AccessExclusiveLocks. Other lock types need not be
  * logged, as described in backend/storage/lmgr/README.
+ *
+ * POLAR: return the lsn that master need to wait for replicas to reply when
+ * we enable the synchronous ddl.
  */
-static void
-LogAccessExclusiveLocks(int nlocks, xl_standby_lock *locks, bool polar_ddl_lock)
+static XLogRecPtr
+LogAccessExclusiveLocks(int nlocks, xl_standby_lock *locks)
 {
 	xl_standby_locks xlrec;
-	XLogRecPtr	polar_recptr;
 
 	xlrec.nlocks = nlocks;
 
@@ -1034,16 +1081,11 @@ LogAccessExclusiveLocks(int nlocks, xl_standby_lock *locks, bool polar_ddl_lock)
 	XLogRegisterData((char *) locks, nlocks * sizeof(xl_standby_lock));
 	XLogSetRecordFlags(XLOG_MARK_UNIMPORTANT);
 
-	polar_recptr = XLogInsert(RM_STANDBY_ID, XLOG_STANDBY_LOCK);
-
-	/* POLAR: sync ddl, enable standby lock, wait all ro node reply this log */
-	if (polar_enable_shared_storage_mode &&
-		polar_enable_ddl_sync_mode &&
-		polar_ddl_lock)
-	{
-		XLogFlush(polar_recptr);
-		SyncRepWaitForLSN(polar_recptr, false, true);
-	}
+	/*
+	 * POLAR: synchronous ddl need wait this lsn to reply by replica.
+	 * So we return it.
+	 */
+	return XLogInsert(RM_STANDBY_ID, XLOG_STANDBY_LOCK);
 }
 
 /*
@@ -1054,13 +1096,24 @@ LogAccessExclusiveLock(Oid dbOid, Oid relOid)
 {
 	xl_standby_lock xlrec;
 
+	/* POLAR */
+	XLogRecPtr polar_sync_recptr;
+
 	xlrec.xid = GetCurrentTransactionId();
 
 	xlrec.dbOid = dbOid;
 	xlrec.relOid = relOid;
 
-	LogAccessExclusiveLocks(1, &xlrec, true);
+	polar_sync_recptr = LogAccessExclusiveLocks(1, &xlrec);
 	MyXactFlags |= XACT_FLAGS_ACQUIREDACCESSEXCLUSIVELOCK;
+
+	/* POLAR: sync ddl, wait all ro node reply this log */
+	if (polar_enable_shared_storage_mode && polar_enable_ddl_sync_mode)
+	{
+		Assert(!XLogRecPtrIsInvalid(polar_sync_recptr));
+		XLogFlush(polar_sync_recptr);
+		SyncRepWaitForLSN(polar_sync_recptr, false, true);
+	}
 }
 
 /*

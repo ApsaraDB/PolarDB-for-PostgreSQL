@@ -28,6 +28,7 @@ It can be called with following options:
   --debug=[on|off], specifies whether to compile PG with debug mode (affecting gcc flags)
   -c,--coverage, specifies whether to build PG with coverage option
   --nc,--nocompile, prevents re-compilation, re-installation, and re-initialization
+  --noinit, prevents creating primary, replica and standby instances
   -t,-r,--regress, runs regression test after compilation and installation
   --withrep init the database with a hot standby replica
   --withstandby init the database with a hot standby replica
@@ -487,6 +488,7 @@ withstandby=no
 need_initdb=no
 noclean=no
 normbasedir=no
+noinit=no
 repnum=1
 su_str=
 
@@ -562,6 +564,7 @@ for arg; do
     ;;
   --noclean) noclean=yes ;;         #do not make distclean
   --normbasedir) normbasedir=yes ;; #do not remove data and base dirs
+  --noinit) noinit=yes ;;         #do not build instances
   -e | --extension)
     extension_test=on
     ;;
@@ -618,8 +621,10 @@ polar_compile_and_install
 polar_test_non_polar
 
 ###################### PHASE 5: init and start ######################
-polar_init
-polar_start
+if [[ $noinit == "no" ]]; then
+  polar_init
+  polar_start
+fi
 
 #################### PHASE 6 Test: test for polar ###################
 polar_test

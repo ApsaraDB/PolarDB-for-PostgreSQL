@@ -95,4 +95,9 @@ extern void syncrep_yyerror(const char *str);
 extern void syncrep_scanner_init(const char *query_string);
 extern void syncrep_scanner_finish(void);
 
+/*
+ * POLAR: called by wal sender & drop replication slot
+ */
+extern bool polar_release_ddl_waiters(void);
+
 #endif							/* _SYNCREP_H */

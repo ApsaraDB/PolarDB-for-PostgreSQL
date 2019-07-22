@@ -4157,7 +4157,8 @@ lock_twophase_standby_recover(TransactionId xid, uint16 info,
 	{
 		StandbyAcquireAccessExclusiveLock(xid,
 										  locktag->locktag_field1 /* dboid */ ,
-										  locktag->locktag_field2 /* reloid */ );
+										  locktag->locktag_field2 /* reloid */ ,
+										  false);
 	}
 }
 

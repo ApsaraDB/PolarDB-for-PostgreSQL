@@ -50,6 +50,9 @@
 #include "storage/procarray.h"
 #include "utils/builtins.h"
 
+/* POLAR */
+#include "replication/syncrep.h"
+
 /*
  * Replication slot on-disk data structure.
  */
@@ -631,6 +634,19 @@ ReplicationSlotDropPtr(ReplicationSlot *slot)
 	 * a slot while we're still cleaning up the detritus of the old one.
 	 */
 	LWLockRelease(ReplicationSlotAllocationLock);
+
+	/*
+	 * POLAR: After dropping slot, call polar_release_ddl_waiters to
+	 * wake apply queue. In case of no WalSender process active, no process will
+	 * call polar_release_ddl_waiters. So backend will wait permanently. Here we
+	 * solve this problem by calling polar_release_ddl_waiters after each
+	 * dropping slot. When none of slots is defined, polar_release_ddl_waiters
+	 * will wake the whole apply queue.
+	 */
+	if (!polar_release_ddl_waiters())
+	{
+		ereport(LOG, (errmsg("No replica replication slot exists, so we wake all backend.")));
+	}
 }
 
 /*
@@ -1529,26 +1545,34 @@ polar_compute_and_set_oldest_apply_lsn(void)
 {
 	uint32 		slotno = 0;
 	XLogRecPtr	oldest_apply_lsn = InvalidXLogRecPtr;
+	XLogRecPtr	oldest_lock_lsn = InvalidXLogRecPtr;
 
 	LWLockAcquire(ReplicationSlotControlLock, LW_SHARED);
 	for (slotno = 0; slotno < max_replication_slots; slotno++)
 	{
 		ReplicationSlot *s = &ReplicationSlotCtl->replication_slots[slotno];
 		XLogRecPtr	apply_lsn;
+		XLogRecPtr	lock_lsn;
 
 		if (!s->in_use)
 			continue;
 
 		SpinLockAcquire(&s->mutex);
 		apply_lsn = s->data.polar_replica_apply_lsn;
+		lock_lsn = s->polar_replica_lock_lsn;
 		SpinLockRelease(&s->mutex);
 
 		if (!XLogRecPtrIsInvalid(apply_lsn) &&
 			(XLogRecPtrIsInvalid(oldest_apply_lsn)
 				|| oldest_apply_lsn > apply_lsn))
 			oldest_apply_lsn = apply_lsn;
+
+		if (!XLogRecPtrIsInvalid(lock_lsn) &&
+			(XLogRecPtrIsInvalid(oldest_lock_lsn)
+				|| oldest_lock_lsn > lock_lsn))
+			oldest_lock_lsn = lock_lsn;
 	}
 	LWLockRelease(ReplicationSlotControlLock);
 
-	polar_set_oldest_applied_lsn(oldest_apply_lsn);
+	polar_set_oldest_applied_lsn(oldest_apply_lsn, oldest_lock_lsn);
 }

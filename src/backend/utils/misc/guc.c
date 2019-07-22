@@ -92,6 +92,7 @@
 #include "utils/xml.h"
 
 /* POLAR */
+#include "access/polar_async_ddl_lock_replay.h"
 #include "storage/polar_fd.h"
 
 #ifndef PG_KRB_SRVTAB
@@ -554,7 +555,6 @@ bool	polar_enable_transaction_sync_mode = false;
 bool    polar_enable_debug = false;
 bool    polar_enable_pwrite = false;
 bool    polar_enable_pread = false;
-bool	polar_dropdb_write_wal_before_rmdir = true;
 
 int  	polar_copy_buffers;
 int  	polar_bgwriter_max_batch_size;
@@ -577,6 +577,7 @@ bool 	polar_enable_lazy_checkpoint = false;
 bool 	polar_startup_from_local_data_file = false;
 bool 	polar_enable_parallel_bgwriter = true;
 bool 	polar_enable_dynamic_parallel_bgwriter = true;
+bool	polar_dropdb_write_wal_beforehand = true;
 
 int 	polar_logindex_unit_test = 0;
 int 	polar_logindex_table_batch_size = 1;
@@ -1118,17 +1119,6 @@ static struct config_bool ConfigureNamesBool[] =
 	},
 
 	{
-		{"polar_dropdb_write_wal_before_rm_file", PGC_POSTMASTER, UNGROUPED,
-			gettext_noop("polar_dropdb_write_wal_before_modify_file"),
-			NULL,
-			GUC_NO_RESET_ALL | GUC_NO_SHOW_ALL
-		},
-		&polar_dropdb_write_wal_before_rmdir,
-		true,
-		NULL, NULL, NULL
-	},
-
-	{
 		{"polar_enable_pread", PGC_SIGHUP, UNGROUPED,
 			gettext_noop("polar_enable_pread."),
 			NULL,
@@ -1193,6 +1183,28 @@ static struct config_bool ConfigureNamesBool[] =
 		false,
 		NULL, NULL, NULL
 	},
+
+	{
+		{"polar_dropdb_write_wal_before_rm_file", PGC_POSTMASTER, UNGROUPED,
+			gettext_noop("polar_dropdb_write_wal_before_modify_file"),
+			NULL,
+			GUC_NO_RESET_ALL | GUC_NO_SHOW_ALL
+		},
+		&polar_dropdb_write_wal_beforehand,
+		false,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_enable_async_ddl_lock_replay", PGC_POSTMASTER, WAL,
+			gettext_noop("Enable async ddl lock replay while db recovery"),
+			NULL
+		},
+		&polar_enable_async_ddl_lock_replay,
+		true,
+		NULL, NULL, NULL
+	},
+
 	/* POLAR BOOL GUCs end */
 
 	{

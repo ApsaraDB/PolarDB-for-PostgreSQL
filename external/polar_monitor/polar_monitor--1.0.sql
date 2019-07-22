@@ -14,6 +14,11 @@ RETURNS pg_lsn
 AS 'MODULE_PATHNAME', 'polar_oldest_apply_lsn'
 LANGUAGE C PARALLEL SAFE;
 
+CREATE FUNCTION polar_oldest_lock_lsn()
+RETURNS pg_lsn
+AS 'MODULE_PATHNAME', 'polar_oldest_lock_lsn'
+LANGUAGE C PARALLEL SAFE;
+
 -- Register the normal buffer function.
 CREATE FUNCTION polar_get_normal_buffercache_pages()
 RETURNS SETOF RECORD
@@ -73,3 +78,40 @@ CREATE FUNCTION polar_node_type()
     RETURNS text
 AS 'MODULE_PATHNAME', 'polar_get_node_type'
     LANGUAGE C PARALLEL SAFE;
+
+-- POLAR: watch async ddl lock replay worker stat
+CREATE FUNCTION polar_stat_async_ddl_lock_replay_worker()
+RETURNS SETOF RECORD
+AS 'MODULE_PATHNAME', 'polar_stat_async_ddl_lock_replay_worker'
+LANGUAGE C PARALLEL SAFE;
+
+CREATE VIEW polar_stat_async_ddl_lock_replay_worker AS
+	SELECT P.* FROM polar_stat_async_ddl_lock_replay_worker() AS P
+		(id int4, pid int4, xid int4, lsn pg_lsn, commit_state text,
+		dbOid oid, relOid oid, rtime timestamp with time zone, state text);
+
+-- POLAR: watch async ddl lock replay transaction stat
+CREATE FUNCTION polar_stat_async_ddl_lock_replay_transaction()
+RETURNS SETOF RECORD
+AS 'MODULE_PATHNAME', 'polar_stat_async_ddl_lock_replay_transaction'
+LANGUAGE C PARALLEL SAFE;
+
+CREATE VIEW polar_stat_async_ddl_lock_replay_transaction AS
+	SELECT P.* FROM polar_stat_async_ddl_lock_replay_transaction() AS P
+		(xid int4, lsn pg_lsn, commit_state text, dbOid oid, relOid oid,
+		rtime timestamp with time zone, state text, worker_id int4, worker_pid int4);
+
+-- POLAR: watch async ddl lock replay lock stat
+CREATE FUNCTION polar_stat_async_ddl_lock_replay_lock()
+RETURNS SETOF RECORD
+AS 'MODULE_PATHNAME', 'polar_stat_async_ddl_lock_replay_lock'
+LANGUAGE C PARALLEL SAFE;
+
+CREATE VIEW polar_stat_async_ddl_lock_replay_lock AS
+	SELECT P.* FROM polar_stat_async_ddl_lock_replay_lock() AS P
+		(xid int4, dbOid oid, relOid oid, lsn pg_lsn, rtime timestamp with time zone,
+		state text, commit_state text, worker_id int4, worker_pid int4);
+
+REVOKE ALL ON FUNCTION polar_stat_async_ddl_lock_replay_worker() FROM PUBLIC;
+REVOKE ALL ON FUNCTION polar_stat_async_ddl_lock_replay_transaction() FROM PUBLIC;
+REVOKE ALL ON FUNCTION polar_stat_async_ddl_lock_replay_lock() FROM PUBLIC;

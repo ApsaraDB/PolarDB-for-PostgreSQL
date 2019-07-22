@@ -1,7 +1,7 @@
 # external/polar_monitor/Makefile
 
 MODULE_big = polar_monitor
-OBJS = polar_monitor.o polar_monitor_buf.o $(WIN32RES)
+OBJS = polar_monitor.o polar_monitor_buf.o polar_monitor_async_ddl_lock_replay.o $(WIN32RES)
 
 EXTENSION = polar_monitor
 DATA = polar_monitor--1.0.sql

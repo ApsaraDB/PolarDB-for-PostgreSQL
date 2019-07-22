@@ -38,6 +38,7 @@
 #include "utils/timeout.h"
 
 /* POLAR */
+#include "access/polar_async_ddl_lock_replay.h"
 #include "postmaster/polar_parallel_bgwriter.h"
 
 /*
@@ -137,6 +138,9 @@ static const struct
 	/* POLAR */
 	{
 		"polar_parallel_bgwriter_worker_main", polar_parallel_bgwriter_worker_main
+	},
+	{
+		"polar_async_ddl_lock_replay_worker_main", polar_async_ddl_lock_replay_worker_main
 	}
 };
 
