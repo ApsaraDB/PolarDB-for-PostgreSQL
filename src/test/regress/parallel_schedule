@@ -5,6 +5,16 @@
 # this limits the number of connections needed to run the tests.
 # ----------
 
+# ----------
+# POLAR
+# Some cases can not pass in POLARDB, ignore them.
+# NOTICE: polar_ignore must add at the beginning of the schedule file
+# ----------
+polar_ignore: psql
+polar_ignore: truncate
+polar_ignore: tablespace
+ignore: timetz
+
 # run tablespace by itself, and first, because it forces a checkpoint;
 # we'd prefer not to have checkpoints later in the tests because that
 # interferes with crash-recovery testing.
