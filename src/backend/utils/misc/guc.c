@@ -3238,7 +3238,13 @@ static struct config_bool ConfigureNamesBool[] =
 		 	GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
 		},
 		&polar_enable_persisted_buffer_pool,
-		true,
+		/*
+		 * PBP depend on the container, such as docker/k8s, to release shared 
+		 * memory, if PolarDB installed on the physical host, this memory may be
+		 * leaked, so we disable it default, it will be set to on by the upper
+		 * manager software if PolarDB deployed on k8s or docker.
+		 */
+		false,
 		NULL, NULL, NULL
 	},
 
