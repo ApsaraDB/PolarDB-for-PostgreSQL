@@ -1,0 +1,25 @@
+A litte helper module for testing MVCC performance.
+
+The populate_mvcc_test_table function can be used to create a test table,
+with given number of rows. Each row in the table is stamped with a different
+xmin, and XMIN_COMMITTED hint bit can be set or not. Furthermore, the
+xmins values are shuffled, to defeat caching in transam.c and clog.c as badly
+as possible.
+
+The test table is always called "mvcc_test_table". You'll have to drop it
+yourself between tests.
+
+For example:
+
+-- Create a test table with 10 million rows, without setting hint bits
+select populate_mvcc_test_table(10000000, false);
+
+-- See how long it takes to scan it
+\timing
+select count(*) from mvcc_test_table;
+
+
+
+If you do the above, but have another psql session open, in a transaction
+that's done some updates, i.e. is holding backthe xmin horizon, you will
+see the worst-case performance of the CSN patch.
