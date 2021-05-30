@@ -39,7 +39,9 @@ make
 
 or you can just call build script to build.
 
-        ./build.sh
+```bash
+./build.sh
+```
 
 * setup environment variables
 
