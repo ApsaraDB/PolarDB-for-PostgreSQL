@@ -25,74 +25,73 @@ We extend a tool named as pgxc_ctl from PG-XC/PG-XL open source project to suppo
 * install dependency packages (use Centos as an example)
 
 ```bash
-         sudo yum install libzstd-devel libzstd zstd cmake openssl-devel protobuf-devel readline-devel libxml2-devel libxslt-devel zlib-devel bzip2-devel lz4-devel snappy-devel
+sudo yum install libzstd-devel libzstd zstd cmake openssl-devel protobuf-devel readline-devel libxml2-devel libxslt-devel zlib-devel bzip2-devel lz4-devel snappy-devel
 ```
 * build and install binary
 
 ```bash
-         ./configure --prefix=/home/postgres/polardb/polardbhome
-         make
-         make install
-         cd contrib
-         make
+./configure --prefix=/home/postgres/polardb/polardbhome
+make
+make install
+cd contrib
+make
 ```
 
 or you can just call build script to build.
-
-        ./build.sh
-
+```bash
+./build.sh
+```
 * setup environment variables
 
 ```bash
-         vi ~/.bash_profile
-         export PGUSER=postgres
-         export PGHOME=/home/postgres/polardb/polardbhome
-         export PGXC_CTL_HOME=/home/postgres/polardb/polardbhome/bin/pgxc_ctl
+vi ~/.bash_profile
+export PGUSER=postgres
+export PGHOME=/home/postgres/polardb/polardbhome
+export PGXC_CTL_HOME=/home/postgres/polardb/polardbhome/bin/pgxc_ctl
 
-         export LD_LIBRARY_PATH=$PGHOME/lib
-         export LD_LIBRARY_PATH=${LD_LIBRARY_PATH}:/lib:/usr/lib:/usr/local/lib
-         export PATH=$PGHOME/bin:$PATH
+export LD_LIBRARY_PATH=$PGHOME/lib
+export LD_LIBRARY_PATH=${LD_LIBRARY_PATH}:/lib:/usr/lib:/usr/local/lib
+export PATH=$PGHOME/bin:$PATH
 ```
 
 * generate default configure file
 
 ```bash
-        pgxc_ctl -c $HOME/polardb/polardb_paxos.conf prepare standalone
-
+pgxc_ctl -c $HOME/polardb/polardb_paxos.conf prepare standalone
 ```
 
 * deploy binary file
 
 ```bash
-    pgxc_ctl -c $HOME/polardb/polardb_paxos.conf  deploy all
+pgxc_ctl -c $HOME/polardb/polardb_paxos.conf  deploy all
 ```
 
 * clean residual installation and init cluster
 
 ```bash
-         pgxc_ctl -c $HOME/polardb/polardb_paxos.conf  clean all
+pgxc_ctl -c $HOME/polardb/polardb_paxos.conf  clean all
 
-         pgxc_ctl -c $HOME/polardb/polardb_paxos.conf  init all
+pgxc_ctl -c $HOME/polardb/polardb_paxos.conf  init all
 
-         pgxc_ctl -c $HOME/polardb/polardb_paxos.conf  monitor all
+pgxc_ctl -c $HOME/polardb/polardb_paxos.conf  monitor all
 ```
 
 * install dependency packages for cluster management
 
 ```bash
-	 pgxc_ctl -c $HOME/polardb/polardb_paxos.conf deploy cm
+pgxc_ctl -c $HOME/polardb/polardb_paxos.conf deploy cm
 ```
 
 * start cluster or node
 
 ```bash
-         pgxc_ctl -c $HOME/polardb/polardb_paxos.conf start all
+pgxc_ctl -c $HOME/polardb/polardb_paxos.conf start all
 ```
 
 * stop cluster or node
 
 ```bash
-         pgxc_ctl -c $HOME/polardb/polardb_paxos.conf stop all
+pgxc_ctl -c $HOME/polardb/polardb_paxos.conf stop all
 ```
 
 * failover datanode
@@ -100,7 +99,7 @@ or you can just call build script to build.
 datanode_1 is node name configured in polardb_paxos.conf.
 
 ```bash
-         pgxc_ctl -c $HOME/polardb/polardb_paxos.conf failover datanode datanode_1
+pgxc_ctl -c $HOME/polardb/polardb_paxos.conf failover datanode datanode_1
 ```
 
 * cluster health check
@@ -108,31 +107,31 @@ datanode_1 is node name configured in polardb_paxos.conf.
  check cluster status and start failed node.
 
 ```bash
-         pgxc_ctl -c $HOME/polardb/polardb_paxos.conf healthcheck all
+pgxc_ctl -c $HOME/polardb/polardb_paxos.conf healthcheck all
 ```
 
 * example for other command
 
 ```bash
-        pgxc_ctl -c $HOME/polardb/polardb_paxos.conf kill all
-        pgxc_ctl -c $HOME/polardb/polardb_paxos.conf log var datanodeNames
-        pgxc_ctl -c $HOME/polardb/polardb_paxos.conf show configuration all
+pgxc_ctl -c $HOME/polardb/polardb_paxos.conf kill all
+pgxc_ctl -c $HOME/polardb/polardb_paxos.conf log var datanodeNames
+pgxc_ctl -c $HOME/polardb/polardb_paxos.conf show configuration all
 ```
 
 * check and test
 
 ```bash
-         ps -ef | grep postgres
-         psql -p 10001 -d postgres -c "create table t1(a int primary key, b int);"
-         createdb test -p 10001
-         psql -p 10001 -d test -c "select version();"
+ps -ef | grep postgres
+psql -p 10001 -d postgres -c "create table t1(a int primary key, b int);"
+createdb test -p 10001
+psql -p 10001 -d test -c "select version();"
 ```
 
 ### One-Key Deployment 
 onekey.sh can be used to build、configure、deploy and init a database cluster.
 
 ```bash
-         ./onekey.sh all
+./onekey.sh all
 ```
 
 reference [deployment](/doc/polardb/deployment.md) for detail instructions.
