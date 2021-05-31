@@ -129,7 +129,7 @@ datanode_1 is node name configured in polardb_paxos.conf.
 ```
 
 ### One-Key Deployment 
-onekey.sh can be used to build、configure、deploy and init a database cluster.
+onekey.sh can be used to build, configure, deploy and init a database cluster.
 
 ```bash
          ./onekey.sh all
