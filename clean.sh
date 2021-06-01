@@ -1,6 +1,6 @@
 #!/bin/bash
 
-PGHOME=$HOME/polardb/polarhome
+PGHOME=$HOME/polardb/polardbhome
 PGBIN=$PGHOME/bin
 CODEHOME=$PWD
 
