@@ -83,7 +83,7 @@ In this release, we will deliver the following features:
   * distributed transaction implementation in extension
   * time service plug-in
   *	patch of distributed MVCC 
-  * path of distributed lock and deadlock management 
+  * patch of distributed lock and deadlock management 
   * extension for distributed DDL/TCL/DCL/CCL statement
   * metadata unified management in extension
   * fine-grained sharding in extension
