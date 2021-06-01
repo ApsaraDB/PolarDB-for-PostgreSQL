@@ -19,11 +19,21 @@ TBD
 
 ### One-Key Deployment
 onekey.sh can be used to build, configure, deploy, start, init a Paxos HA environment by single command.
-for more detail please reference under "Deployment from Source Code".
-before call onekey.sh, please setup environment variables(LD_LIBRARY_PATH and PATH)
+for more detail please reference under "Deployment from Source Code" part.
+
+* prepare work
+setup environment variables(LD_LIBRARY_PATH and PATH) and  install dependency packages
+
+* call onekey.sh script
 
 ```bash
          ./onekey.sh all
+```
+
+* check running process, polardb dn_master, dn_slave, dn_learner already running:
+
+```bash
+         ps -ef|grep polardb
 ```
 
 
