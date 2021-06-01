@@ -47,7 +47,6 @@ or you can just call build script to build.
          vi ~/.bash_profile
          export PGUSER=postgres
          export PGHOME=/home/postgres/polardb/polardbhome
-         export PGXC_CTL_HOME=/home/postgres/polardb/polardbhome/bin/pgxc_ctl
 
          export LD_LIBRARY_PATH=$PGHOME/lib
          export LD_LIBRARY_PATH=${LD_LIBRARY_PATH}:/lib:/usr/lib:/usr/local/lib

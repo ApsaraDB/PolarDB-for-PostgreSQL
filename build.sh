@@ -17,7 +17,7 @@ CODEHOME=$PWD
 
 if [ -z $PG_INSTALL ];
 then
-    PG_INSTALL=$HOME/polarx/polarxhome
+    PG_INSTALL=$HOME/polardb/polarhome
 fi
 echo "PG installation dir: "$PG_INSTALL
 PGBIN=$PG_INSTALL/bin
