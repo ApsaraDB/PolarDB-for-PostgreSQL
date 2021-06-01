@@ -89,9 +89,9 @@ cmd_t *prepare_initPaxosDNMaster(char *nodeName)
         return(NULL);
 
     gettimeofday(&tv, NULL);
-	sysidentifier = ((uint64) tv.tv_sec) << 32;
-	sysidentifier |= ((uint64) tv.tv_usec) << 12;
-	sysidentifier |= getpid() & 0xFFF;
+    sysidentifier = ((uint64) tv.tv_sec) << 32;
+    sysidentifier |= ((uint64) tv.tv_usec) << 12;
+    sysidentifier |= getpid() & 0xFFF;
 
     identifierlist[idx] = sysidentifier;
 
@@ -186,9 +186,9 @@ cmd_t *prepare_initPaxosDNMaster(char *nodeName)
     
     fprintf(f,
             "port = %s\n",
-//            "pooler_port = %s\n",
+//          "pooler_port = %s\n",
             aval(VAR_datanodePorts)[idx]
-//            aval(VAR_datanodePoolerPorts)[idx]
+//          aval(VAR_datanodePoolerPorts)[idx]
             );
 //    if(isVarYes(VAR_multiCluster) && !is_none(aval(VAR_datanodeMasterCluster)[idx]))
 //    {
@@ -853,11 +853,11 @@ cmd_t *prepare_initPaxosDNSlave(char *nodeName)
             "# Added to startup the slave, %s\n"
             "hot_standby = on\n"
             "port = %s\n"
-//            "pooler_port = %s\n"
+//          "pooler_port = %s\n"
             "# End of addition\n",
             timeStampString(timestamp, MAXTOKEN),
             aval(VAR_datanodeSlavePorts)[idx]);
-//            aval(VAR_datanodeSlavePoolerPorts)[idx]);
+//          aval(VAR_datanodeSlavePoolerPorts)[idx]);
 //    if(isVarYes(VAR_multiCluster) && !is_none(aval(VAR_datanodeSlaveCluster)[idx]))
 //    {
 //        fprintf(f, 
@@ -1202,11 +1202,11 @@ cmd_t *prepare_initPaxosDNSecondSlave(char *nodeName)
             "# Added to startup the slave, %s\n"
             "hot_standby = on\n"
             "port = %s\n"
-//            "pooler_port = %s\n"
+//          "pooler_port = %s\n"
             "# End of addition\n",
             timeStampString(timestamp, MAXTOKEN),
             aval(VAR_datanodeLearnerPorts)[idx]);
-//            aval(VAR_datanodeSlavePoolerPorts)[idx]);
+//          aval(VAR_datanodeSlavePoolerPorts)[idx]);
 //    if(isVarYes(VAR_multiCluster) && !is_none(aval(VAR_datanodeSlaveCluster)[idx]))
 //    {
 //        fprintf(f, 
@@ -1366,9 +1366,9 @@ cmd_t *prepare_initPaxosDNLearner(char *nodeName)
     
     fprintf(f,
             "port = %s\n",
-//            "pooler_port = %s\n",
+//          "pooler_port = %s\n",
             aval(VAR_datanodeLearnerPorts)[idx]
-//            aval(VAR_datanodePoolerPorts)[idx]
+//          aval(VAR_datanodePoolerPorts)[idx]
             );
 //    if(isVarYes(VAR_multiCluster) && !is_none(aval(VAR_datanodeMasterCluster)[idx]))
 //    {
