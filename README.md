@@ -49,7 +49,9 @@ We extend a tool named as pgxc_ctl from PG-XC/PG-XL open source project to suppo
 
 or you can just call build script to build.
 
+```bash
          ./build.sh
+```
 
 * setup environment variables
 
