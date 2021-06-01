@@ -11,11 +11,21 @@ PolarDB will evolve and offer its functions and features in two major parts: an 
 Three approaches are offered to quickly try out PolarDB: Alibaba Cloud service, deployment using Docker images, and deployment from source codes.
 
 ### Alibaba Cloud Service
-
 TBD
 
 ### Deployment Using Docker Images
 TBD
+
+
+### One-Key Deployment
+onekey.sh can be used to build, configure, deploy, start, init a Paxos HA environment by single command.
+for more detail please reference under "Deployment from Source Code".
+before call onekey.sh, please setup environment variables(LD_LIBRARY_PATH and PATH)
+
+```bash
+         ./onekey.sh all
+```
+
 
 ### Deployment from Source Code
 
@@ -39,7 +49,7 @@ We extend a tool named as pgxc_ctl from PG-XC/PG-XL open source project to suppo
 
 or you can just call build script to build.
 
-        ./build.sh
+         ./build.sh
 
 * setup environment variables
 
@@ -56,14 +66,14 @@ or you can just call build script to build.
 * generate default configure file
 
 ```bash
-        pgxc_ctl -c $HOME/polardb/polardb_paxos.conf prepare standalone
+         pgxc_ctl -c $HOME/polardb/polardb_paxos.conf prepare standalone
 
 ```
 
 * deploy binary file
 
 ```bash
-    pgxc_ctl -c $HOME/polardb/polardb_paxos.conf  deploy all
+         pgxc_ctl -c $HOME/polardb/polardb_paxos.conf  deploy all
 ```
 
 * clean residual installation and init cluster
@@ -79,7 +89,7 @@ or you can just call build script to build.
 * install dependency packages for cluster management
 
 ```bash
-	 pgxc_ctl -c $HOME/polardb/polardb_paxos.conf deploy cm
+         pgxc_ctl -c $HOME/polardb/polardb_paxos.conf deploy cm
 ```
 
 * start cluster or node
@@ -113,9 +123,9 @@ datanode_1 is node name configured in polardb_paxos.conf.
 * example for other command
 
 ```bash
-        pgxc_ctl -c $HOME/polardb/polardb_paxos.conf kill all
-        pgxc_ctl -c $HOME/polardb/polardb_paxos.conf log var datanodeNames
-        pgxc_ctl -c $HOME/polardb/polardb_paxos.conf show configuration all
+         pgxc_ctl -c $HOME/polardb/polardb_paxos.conf kill all
+         pgxc_ctl -c $HOME/polardb/polardb_paxos.conf log var datanodeNames
+         pgxc_ctl -c $HOME/polardb/polardb_paxos.conf show configuration all
 ```
 
 * check and test
@@ -127,13 +137,6 @@ datanode_1 is node name configured in polardb_paxos.conf.
          psql -p 10001 -d test -c "select version();"
 ```
 
-### One-Key Deployment 
-onekey.sh can be used to build、configure、deploy and init a database cluster.
-
-```bash
-         ./onekey.sh all
-```
-
 reference [deployment](/doc/polardb/deployment.md) for detail instructions.
 
 Regress and other test details can be found [here](/doc/polardb/regress.md). Some benchmarking example is [here](/doc/polardb/benchmark.md)
@@ -142,7 +145,7 @@ Regress and other test details can be found [here](/doc/polardb/regress.md). Som
 
 PolarDB uses a share-nothing architecture.  Each node stores data and also executes queries, and they coordinate with each other through message passing.  The architecture allows the database to be scaled by adding more nodes to the cluster.
 
-PolarDB slices a table into shards by hashing its primary key. The number of shards is configurable. Shards are stored in PolarDB nodes. When a query accesses shards in multiple nodes, a distributed transaction and a transaction coordinator are used to maintain ACID across nodes. 
+PolarDB slices a table into shards by hashing its primary key. The number of shards is configurable. Shards are stored in PolarDB nodes. When a query accesses shards in multiple nodes, a distributed transaction and a transaction coordinator are used to maintain ACID across nodes.
 
 Each shard is replicated to three nodes with each replica stored on different node. In order to save costs, we can deploy two of the replicas to store complete data. The third replica only stores write ahead log (WAL), which participates in the election but cannot be chosen as the leader.
 
