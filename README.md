@@ -2,7 +2,7 @@
 
 ## What is PolarDB for PostgreSQL?
 
-PolarDB for PostgreSQL (PolarDB for short) is an open source database system based on PostgreSQL. It extends PostgreSQL to become a share-nothing distributed database, which supports **global data consistency** and **ACID across database nodes**, **distributed SQL processing**, and  **data redundancy** and **high availability** through Paxos based replication. PolarDB is designed to add values and new features to PostgreSQL in dimensions of high performance, scalability, high availability, and elasticity. At the same time, PolarDB remains SQL compatibility to single-node PostgreSQL with best effort.
+PolarDB for PostgreSQL (PolarDB for short) is an open source database system based on PostgreSQL. It extends PostgreSQL to become a share-nothing distributed database, which supports **global data consistency** and **ACID across database nodes**, **distributed SQL processing**, and **data redundancy** and **high availability** through Paxos based replication. PolarDB is designed to add values and new features to PostgreSQL in dimensions of high performance, scalability, high availability, and elasticity. At the same time, PolarDB remains SQL compatibility to single-node PostgreSQL with best effort.
 
 PolarDB will evolve and offer its functions and features in two major parts: an extension and a patch to Postgres. The extension part includes components implemented outside PostgreSQL kernel, such as distributed transaction management, global or distributed time service, distributed SQL processing, additional metadata and internal functions, and tools to manage database clusters and conduct fault tolerance or recovery. Having most of its functions in a Postgres extension, PolarDB targets **easy upgrading**, **easy migration**, and **fast adoption**. The patch part includes the changes necessary to the kernel, such as distributed MVCC for different isolation levels. We expect functions and codes in the patch part is limited. As a result, PolarDB can be easily upgraded with newer PostgreSQL versions and maintain full compatible to PostgreSQL.
 
@@ -16,26 +16,25 @@ TBD
 ### Deployment Using Docker Images
 TBD
 
-
 ### One-Key Deployment
 onekey.sh can be used to build, configure, deploy, start, init a Paxos HA environment by single command.
 for more detail please reference under "Deployment from Source Code" part.
 
 * prepare work
-setup environment variables(LD_LIBRARY_PATH and PATH) and  install dependency packages
+setup environment variables(LD_LIBRARY_PATH and PATH) and install dependency packages
 
 * call onekey.sh script
 
 ```bash
-         ./onekey.sh all
+./onekey.sh all
 ```
 
 * check process running(master, slave, learner), and replica roles and status:
 
 ```bash
-         ps -ef|grep polardb
-         psql -p 10001 -d postgres -c "select * from pg_stat_replication;"
-         psql -p 10001 -d postgres -c "select * from polar_dma_cluster_status;"
+ps -ef|grep polardb
+psql -p 10001 -d postgres -c "select * from pg_stat_replication;"
+psql -p 10001 -d postgres -c "select * from polar_dma_cluster_status;"
 ```
 
 
@@ -47,73 +46,72 @@ We extend a tool named as pgxc_ctl from PG-XC/PG-XL open source project to suppo
 * install dependency packages (use Centos as an example)
 
 ```bash
-         sudo yum install libzstd-devel libzstd zstd cmake openssl-devel protobuf-devel readline-devel libxml2-devel libxslt-devel zlib-devel bzip2-devel lz4-devel snappy-devel
+sudo yum install libzstd-devel libzstd zstd cmake openssl-devel protobuf-devel readline-devel libxml2-devel libxslt-devel zlib-devel bzip2-devel lz4-devel snappy-devel
 ```
 * build and install binary
 
 ```bash
-         ./configure --prefix=/home/postgres/polardb/polardbhome
-         make
-         make install
-         cd contrib
-         make
+./configure --prefix=/home/postgres/polardb/polardbhome
+make
+make install
+cd contrib
+make
 ```
 
 or you can just call build script to build.
 
 ```bash
-         ./build.sh
+./build.sh
 ```
 
 * setup environment variables
 
 ```bash
-         vi ~/.bash_profile
-         export PGUSER=postgres
-         export PGHOME=/home/postgres/polardb/polardbhome
+vi ~/.bash_profile
+export PGUSER=postgres
+export PGHOME=/home/postgres/polardb/polardbhome
 
-         export LD_LIBRARY_PATH=$PGHOME/lib
-         export LD_LIBRARY_PATH=${LD_LIBRARY_PATH}:/lib:/usr/lib:/usr/local/lib
-         export PATH=$PGHOME/bin:$PATH
+export LD_LIBRARY_PATH=$PGHOME/lib
+export LD_LIBRARY_PATH=${LD_LIBRARY_PATH}:/lib:/usr/lib:/usr/local/lib
+export PATH=$PGHOME/bin:$PATH
 ```
 
 * generate default configure file
 
 ```bash
-         pgxc_ctl -c $HOME/polardb/polardb_paxos.conf prepare standalone
-
+pgxc_ctl -c $HOME/polardb/polardb_paxos.conf prepare standalone
 ```
 
 * deploy binary file
 
 ```bash
-         pgxc_ctl -c $HOME/polardb/polardb_paxos.conf  deploy all
+pgxc_ctl -c $HOME/polardb/polardb_paxos.conf deploy all
 ```
 
 * clean residual installation and init cluster
 
 ```bash
-         pgxc_ctl -c $HOME/polardb/polardb_paxos.conf  clean all
-         pgxc_ctl -c $HOME/polardb/polardb_paxos.conf  init all
-         pgxc_ctl -c $HOME/polardb/polardb_paxos.conf  monitor all
+pgxc_ctl -c $HOME/polardb/polardb_paxos.conf clean all
+pgxc_ctl -c $HOME/polardb/polardb_paxos.conf init all
+pgxc_ctl -c $HOME/polardb/polardb_paxos.conf monitor all
 ```
 
 * install dependency packages for cluster management
 
 ```bash
-         pgxc_ctl -c $HOME/polardb/polardb_paxos.conf deploy cm
+pgxc_ctl -c $HOME/polardb/polardb_paxos.conf deploy cm
 ```
 
 * start cluster or node
 
 ```bash
-         pgxc_ctl -c $HOME/polardb/polardb_paxos.conf start all
+pgxc_ctl -c $HOME/polardb/polardb_paxos.conf start all
 ```
 
 * stop cluster or node
 
 ```bash
-         pgxc_ctl -c $HOME/polardb/polardb_paxos.conf stop all
+pgxc_ctl -c $HOME/polardb/polardb_paxos.conf stop all
 ```
 
 * failover datanode
@@ -121,7 +119,7 @@ or you can just call build script to build.
 datanode_1 is node name configured in polardb_paxos.conf.
 
 ```bash
-         pgxc_ctl -c $HOME/polardb/polardb_paxos.conf failover datanode datanode_1
+pgxc_ctl -c $HOME/polardb/polardb_paxos.conf failover datanode datanode_1
 ```
 
 * cluster health check
@@ -129,24 +127,24 @@ datanode_1 is node name configured in polardb_paxos.conf.
  check cluster status and start failed node.
 
 ```bash
-         pgxc_ctl -c $HOME/polardb/polardb_paxos.conf healthcheck all
+pgxc_ctl -c $HOME/polardb/polardb_paxos.conf healthcheck all
 ```
 
 * example for other command
 
 ```bash
-         pgxc_ctl -c $HOME/polardb/polardb_paxos.conf kill all
-         pgxc_ctl -c $HOME/polardb/polardb_paxos.conf log var datanodeNames
-         pgxc_ctl -c $HOME/polardb/polardb_paxos.conf show configuration all
+pgxc_ctl -c $HOME/polardb/polardb_paxos.conf kill all
+pgxc_ctl -c $HOME/polardb/polardb_paxos.conf log var datanodeNames
+pgxc_ctl -c $HOME/polardb/polardb_paxos.conf show configuration all
 ```
 
 * check and test
 
 ```bash
-         ps -ef | grep postgres
-         psql -p 10001 -d postgres -c "create table t1(a int primary key, b int);"
-         createdb test -p 10001
-         psql -p 10001 -d test -c "select version();"
+ps -ef | grep postgres
+psql -p 10001 -d postgres -c "create table t1(a int primary key, b int);"
+createdb test -p 10001
+psql -p 10001 -d test -c "select version();"
 ```
 
 reference [deployment](/doc/polardb/deployment.md) for detail instructions.
@@ -155,7 +153,7 @@ Regress and other test details can be found [here](/doc/polardb/regress.md). Som
 
 ## Architecture & Roadmap
 
-PolarDB uses a share-nothing architecture.  Each node stores data and also executes queries, and they coordinate with each other through message passing.  The architecture allows the database to be scaled by adding more nodes to the cluster.
+PolarDB uses a share-nothing architecture. Each node stores data and also executes queries, and they coordinate with each other through message passing. The architecture allows the database to be scaled by adding more nodes to the cluster.
 
 PolarDB slices a table into shards by hashing its primary key. The number of shards is configurable. Shards are stored in PolarDB nodes. When a query accesses shards in multiple nodes, a distributed transaction and a transaction coordinator are used to maintain ACID across nodes.
 

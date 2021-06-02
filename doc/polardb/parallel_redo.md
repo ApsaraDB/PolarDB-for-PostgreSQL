@@ -5,10 +5,10 @@ In order to speed up WAL redo for recovery and replication, PolarDB for PG imple
 a parallel WAL redo mechanism. PolarDB for PG supports two forms of parallelism: 
 table-level and page-level, which however reuse the same parallel framework.
 Specifically, PolarDB for PG creates a specified number of workers for parallel replaying.
-The main process reads WAL records from WAL continously and dispaches them to parallel 
+The main process reads WAL records from WAL continuously and dispatches them to parallel 
 workers for replaying. The main process communicates with the workers through shared-memory
 queues (shm) and uses batching to reduce the communication overhead. Our current parallel
-replaying does not support hot-standby repliation due to the adoption of batching.
+replaying does not support hot-standby replication due to the adoption of batching.
 
 ## How to use
 1. You should set the guc parameter of max_parallel_replay_workers with a value greater than 
