@@ -67,7 +67,7 @@ or you can just call build script to build.
 * setup environment variables
 
 ```bash
-vi ~/.bash_profile
+vi ~/.bashrc
 export PGUSER=postgres
 export PGHOME=/home/postgres/polardb/polardbhome
 
