@@ -30,10 +30,12 @@ setup environment variables(LD_LIBRARY_PATH and PATH) and  install dependency pa
          ./onekey.sh all
 ```
 
-* check running process, polardb dn_master, dn_slave, dn_learner already running:
+* check process running(master, slave, learner), and replica roles and status:
 
 ```bash
          ps -ef|grep polardb
+         psql -p 10001 -d postgres -c "select * from pg_stat_replication;"
+         psql -p 10001 -d postgres -c "select * from polar_dma_cluster_status;"
 ```
 
 
@@ -92,9 +94,7 @@ or you can just call build script to build.
 
 ```bash
          pgxc_ctl -c $HOME/polardb/polardb_paxos.conf  clean all
-
          pgxc_ctl -c $HOME/polardb/polardb_paxos.conf  init all
-
          pgxc_ctl -c $HOME/polardb/polardb_paxos.conf  monitor all
 ```
 
