@@ -185,7 +185,7 @@ Reference [License](LICENSE) and [NOTICE](NOTICE) for details.
 
 ## Acknowledgements
 
-Some codes and design ideas were from other open source projects, such as PG-XC/XL(pgxc_ctl), TBase (timestamp based vacuum and MVCC), and CitusDB (pg_cron). Thanks for their contributions.
+Some codes and design ideas were from other open source projects, such as PG-XC/XL(pgxc_ctl), TBase (timestamp based vacuum and MVCC), and Citus (pg_cron). Thanks for their contributions.
 ___
 
 Copyright © Alibaba Group, Inc.
