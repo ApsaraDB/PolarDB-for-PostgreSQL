@@ -3,14 +3,14 @@
 PolarDB project will gradually roll out features and components to form a share-nothing distributed database. Each major release offers complete functions as a RDBM system. We plan three major releases. 
 
 In the first release we target a cluster version based on Paxos replication, enhancing high performance and high availability for single-node PostgreSQL system. 
-In the second release, we introduce technologies such as distributed transactions, distributed MVCC, and distributed SQL compution to support a share-nothing OLTP system. In this version,  PolarDB can expand to a cluster of 100+ nodes with linear scalability. At the same time, it is compatible with a single-node PostgreSQL in term of SQL functions and ACID capabilities. 
-In the third release, Fine-grained sharding is implemented. The database components, such as coordinator node and data node, are unified as database node.  Most PolarDB functions adding to PostgreSQL are turned into extensions or plug-in to PG kernel. This allows PolarDB to be upgraded easily and timely with community versions. Users can adopts new community versions with minimum efforts while enjoying high availability and scalability offered by PolarDB.  
+In the second release, we introduce technologies such as distributed transactions, distributed MVCC, and distributed SQL computation to support a shared-nothing OLTP system. In this version,  PolarDB can expand to a cluster of 100+ nodes with linear scalability. At the same time, it is compatible with a single-node PostgreSQL in term of SQL functions and ACID capabilities. 
+In the third release, fine-grained sharding is implemented. The database components, such as coordinator node and data node, are unified in a single database node.  Most PolarDB functions adding to PostgreSQL are turned into extensions or plug-in to PG kernel. This allows PolarDB to be upgraded easily and timely with community versions. Users can adopt new community versions with minimum effort while enjoying high availability and scalability offered by PolarDB.  
 
 
 ### PolarDB for PG version 1.0
 <img src="ha_paxos_cluster.png" alt="Paxos based PolarDB cluster" width="200"/>
 
-As shown on the above figure, this version supports Paxos based replication and cluster management. We turns PostgreSQL into a high-available database cluster, which survive through database node failure. The survival database nodes maintain data consistency and no data loss occurs. The Paxos replication protocol used in this version is same as the one used by Alibaba group to support hundreds of Alibaba products and platforms. The implementation's have been fully tested for correctness and reliability under Alibaba's varying and often-intensive workload. More details can be found [here](ha_paxos.md).
+As shown on the above figure, this version supports Paxos based replication and cluster management. We turn PostgreSQL into a high-available database cluster, which survives through database node failures. The survived database nodes maintain data consistency and no data loss occurs. The Paxos replication protocol used in this version is the same as the one used by the Alibaba group to support hundreds of Alibaba products and platforms. The implementations have been fully tested for correctness and reliability under Alibaba's varying and often intensive workload. More details can be found [here](ha_paxos.md).
 
 In addition, a few performance enhancement features for single-node PostgreSQL are introduced, such as [using timestamp as snapshot](cts.md), [parallel redo](parallel_redo.md), and [removing full-page-write WAL](no_fpw.md). 
 
@@ -18,19 +18,19 @@ Here is a list of main features:
 * High Availability:
   * one leader and two followers replication configuration: zero data loss and data consistency across node failure
   * automatic leader election
-  * multi-role supports: leader/follower/logger, balance data redundancy and storage space, trade off recovery speed with storage cost
+  * multi-role support: leader/follower/logger, balance data redundancy and storage space, trade off recovery speed with storage cost
   * cluster management: cluster status monitoring, start/stop node or cluster, switchover, and load balancing. 
   * parallel WAL redo: multiple granularity of redo parallelism, such as per file or per page
-* High Performance
+* High Performance:
   * using timestamp as snapshot: remove ProcArray related bottleneck
   * CTS (timestamp control data structure) multi-core scalability
-  * removing full-page-write WAL: avoid enormous WAL IO for write-intensive workload
+  * removing full-page-write WAL: avoid enormous WAL IO for write-intensive workloads
 
 
 ### PolarDB for PG version 2.0
 <img src="hlc_distributed_oltp.png" alt="HLC based Distributed OLTP" width="250"/>
 
-This version introduces fundamental features for a distributed share-nothing OLTP system to support global data consistency, ACID across nodes, and distributed SQL process. The data of a database are partitioned based on chosen columns. Those partitions are distributed to data nodes in a PolarDB cluster. A new component, coordinator node, is introduced to handle SQL requests and decide how to execute them among data nodes. Data nodes are PostgreSQL based components which store partition data and process SQL queries from coordinator nodes. PolarDB allows distributed DML, DDL, and DCL. Coordinator nodes send queries to data nodes to execute according to their accessing data. Coordinator nodes also determine which operations or sub-queries can be pushed down to data nodes and conduct merging or aggregation operations of results from data nodes. For data consistency and ACID, PolarDB uses distributed transaction, hybrid logic clock (HLC), distributed MVCC, and HLC based vacuum and hot-chain pruning.  
+This version introduces fundamental features for a distributed shared-nothing OLTP system to support global data consistency, ACID across nodes, and distributed SQL process. Database data is partitioned based on chosen columns. Those partitions are distributed to data nodes in a PolarDB cluster. A new component, coordinator node, is introduced to handle SQL requests and decides how to execute them among data nodes. Data nodes are PostgreSQL based components which store partition data and process SQL queries from coordinator nodes. PolarDB allows distributed DML, DDL, and DCL. Coordinator nodes send queries to data nodes to execute according to their accessing data. Coordinator nodes also determine which operations or sub-queries can be pushed down to data nodes and conduct merging or aggregation operations of results from data nodes. For data consistency and ACID, PolarDB uses distributed transaction, hybrid logic clock (HLC), distributed MVCC, and HLC based vacuum and hot-chain pruning.  
 
 Here is a list of features:
 * HLC based ACID
@@ -43,10 +43,10 @@ Here is a list of features:
 * Distributed SQL computing
   * SQL language 
     * SQL2003 compatible
-    * support most PostgreSQL SQL syntax, data type, and internal functions
+    * support most PostgreSQL SQL syntax, data types, and internal functions
     * distributed processing of transaction-related statements
     * distributed processing of data control statements (GRANT/REVOKE)
-    * support CURSOR and TRIGGER
+    * support for CURSOR and TRIGGER
     * RULE
     * UDF
   * distributed query execution
@@ -69,13 +69,13 @@ Here is a list of features:
 ### PolarDB for PG version 3.0
 <img src="sharding_plug_in.png" alt="Sharding and Plug-in" width="250"/>
 
-This release emphasizes elasticity and easy use. For the former target, PolarDB implement fine-grained sharding and online shard relocation and cluster expansion. For the latter target, majority functions added by PolarDB in addition to PostgreSQL are integrated into an extension or plug-in. Users can easily download the extension and use it with vanila PostgreSQL. When the community rolls out a new version, PolarDB extension can be easily upgraded with the latest PostgreSQL version. 
+This release emphasizes elasticity and easy use. For the former goal, PolarDB implements fine-grained sharding, online shard relocation and cluster expansion. For the latter goal, the majority of functions added by PolarDB in addition to PostgreSQL are integrated into an extension or plug-in. Users can easily download the extension and use it with a vanilla PostgreSQL installation. When the community rolls out a new version, PolarDB extensions can be easily upgraded with the latest PostgreSQL version. 
 
 In this release, we will deliver the following features:
 
 * Sharding and elasticity
   * fine-grained sharding
-  * high-efficient online shard relocation
+  * high-efficiency online shard relocation
   * parallel logic replication 
   * online cluster expansion and reduction
   * hot spot removal and load balancing
