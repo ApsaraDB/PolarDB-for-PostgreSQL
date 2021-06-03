@@ -68,12 +68,8 @@ or you can just call build script to build.
 
 ```bash
 vi ~/.bashrc
-export PGUSER=postgres
-export PGHOME=/home/postgres/polardb/polardbhome
-
-export LD_LIBRARY_PATH=$PGHOME/lib
-export LD_LIBRARY_PATH=${LD_LIBRARY_PATH}:/lib:/usr/lib:/usr/local/lib
-export PATH=$PGHOME/bin:$PATH
+export PATH="$HOME/polardb/polardbhome/bin:$PATH"
+export LD_LIBRARY_PATH="$HOME/polardb/polardbhome/lib:$LD_LIBRARY_PATH"ß
 ```
 
 * generate default configure file
