@@ -21,7 +21,7 @@ onekey.sh can be used to build, configure, deploy, start, init a Paxos HA enviro
 for more detail please reference under "Deployment from Source Code" part.
 
 * prepare work
-setup environment variables(LD_LIBRARY_PATH and PATH) and install dependency packages
+setup environment variables(LD_LIBRARY_PATH and PATH), install dependency packages, setting mutual trust
 
 * call onekey.sh script
 
@@ -48,6 +48,13 @@ We extend a tool named as pgxc_ctl from PG-XC/PG-XL open source project to suppo
 ```bash
 sudo yum install libzstd-devel libzstd zstd cmake openssl-devel protobuf-devel readline-devel libxml2-devel libxslt-devel zlib-devel bzip2-devel lz4-devel snappy-devel
 ```
+* setting mutual trust
+Call ssh-copy-id command to setting mutual trust, then no need input password when use pgxc_ctl.
+
+```bash
+ssh-copy-id username@IP
+```
+
 * build and install binary
 
 ```bash
