@@ -58,6 +58,14 @@ if [[ "$BLD_OPT" != "repeat" ]]; then
     ./configure --prefix=$PG_INSTALL ${CMD[@]}
 fi
 
+cd $CODEHOME/src/backend/polar_dma/libconsensus/polar_wrapper
+if [[ "$BLD_OPT" == "debug" ]]; then
+./build.sh -r -t debug
+else
+./build.sh -r -t release
+fi
+cd $CODEHOME
+
 make -sj 16
 make install
 
