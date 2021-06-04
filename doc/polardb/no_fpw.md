@@ -1,5 +1,5 @@
 
-## Remote Recovery
+## Remote Recovery for data guarding
 
 PostgreSQL introduces full page write mechanism to avoid inconsistency in case of
 system crashes. However, full page writes can amplify writes and reduce performance.

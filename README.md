@@ -6,6 +6,27 @@ PolarDB for PostgreSQL (PolarDB for short) is an open source database system bas
 
 PolarDB will evolve and offer its functions and features in two major parts: an extension and a patch to Postgres. The extension part includes components implemented outside PostgreSQL kernel, such as distributed transaction management, global or distributed time service, distributed SQL processing, additional metadata and internal functions, and tools to manage database clusters and conduct fault tolerance or recovery. Having most of its functions in a Postgres extension, PolarDB targets **easy upgrading**, **easy migration**, and **fast adoption**. The patch part includes the changes necessary to the kernel, such as distributed MVCC for different isolation levels. We expect functions and codes in the patch part is limited. As a result, PolarDB can be easily upgraded with newer PostgreSQL versions and maintain full compatible to PostgreSQL.
 
+## Architecture & Roadmap
+
+PolarDB uses a share-nothing architecture. Each node stores data and also executes queries, and they coordinate with each other through message passing. The architecture allows the database to be scaled by adding more nodes to the cluster.
+
+PolarDB slices a table into shards by hashing its primary key. The number of shards is configurable. Shards are stored in PolarDB nodes. When a query accesses shards in multiple nodes, a distributed transaction and a transaction coordinator are used to maintain ACID across nodes.
+
+Each shard is replicated to three nodes with each replica stored on different node. In order to save costs, we can deploy two of the replicas to store complete data. The third replica only stores write ahead log (WAL), which participates in the election but cannot be chosen as the leader.
+
+See [architecture design](/doc/polardb/arch.md) for more information
+
+## Documentation
+
+* [Architecture design](/doc/polardb/arch.md)
+* [Roadmap](/doc/polardb/roadmap.md)
+* Features and their design in PolarDB for PG Version 1.0
+  * [Paxos replication](/doc/polardb/ha_paxos.md)
+  * [Cluster management](/doc/polardb/cluster.md)
+  * [Multi-core scaling OLTP performance](/doc/polardb/cts.md)
+  * [Parallel Redo](/doc/polardb/parallel_redo.md)
+  * [Remote Recovery for data guarding](/doc/polardb/no_fpw.md)
+
 ## Quick start with PolarDB
 
 Three approaches are offered to quickly try out PolarDB: Alibaba Cloud service, deployment using Docker images, and deployment from source codes.
@@ -154,25 +175,6 @@ reference [deployment](/doc/polardb/deployment.md) for detail instructions.
 
 Regress and other test details can be found [here](/doc/polardb/regress.md). Some benchmarking example is [here](/doc/polardb/benchmark.md)
 
-## Architecture & Roadmap
-
-PolarDB uses a share-nothing architecture. Each node stores data and also executes queries, and they coordinate with each other through message passing. The architecture allows the database to be scaled by adding more nodes to the cluster.
-
-PolarDB slices a table into shards by hashing its primary key. The number of shards is configurable. Shards are stored in PolarDB nodes. When a query accesses shards in multiple nodes, a distributed transaction and a transaction coordinator are used to maintain ACID across nodes.
-
-Each shard is replicated to three nodes with each replica stored on different node. In order to save costs, we can deploy two of the replicas to store complete data. The third replica only stores write ahead log (WAL), which participates in the election but cannot be chosen as the leader.
-
-See [architecture design](/doc/polardb/arch.md) for more information
-
-## Documentation
-
-* [architecture design](/doc/polardb/arch.md)
-* [roadmap](/doc/polardb/roadmap.md)
-* Features and their design in PolarDB for PG Version 1.0
-  * [Paxos replication](/doc/polardb/ha_paxos.md)
-  * [cluster management](/doc/polardb/cluster.md)
-  * [Parallel Redo](/doc/polardb/parallel_redo.md)
-  * [Timestamp based MVCC](/doc/polardb/cts.md)
 
 
 ## Contributing

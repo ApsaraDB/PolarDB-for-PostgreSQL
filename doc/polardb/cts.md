@@ -1,7 +1,7 @@
 
 ## HLC, CTS and (Distributed) Snapshot Isolation
 
-PolarDB for PG (or PolarDB for short) implements a multi-core scalable transaction processing system
+PolarDB for PG (or PolarDB for short) implements a multi-core scaling transaction processing system
 and supports distributed transactions (upcoming) by using commit timestamp based MVCC.
 The traditional PostgreSQL uses xid-based snapshot to provide transactional isolation
 on top of MVCC which can introduce scaling bottleneck on many-core machines.
@@ -31,7 +31,7 @@ PolarDB designs a hybrid logical clock (HLC) to generate start and commit timest
 The PTP within a local area network can keep the maximum clock skew between any two machines as small as several microseconds.
 The adoption of advanced PTP in a single data center can enable PolarDB-PG to provide strong external consistency across different nodes like Google Spanner. However, our upcoming open-sourced distributed version assumes machines being synchronized by NTP and only aims to guarantee snapshot isolation and internal consistency across nodes. A 64 bit HLC timestamp consists of 16 lowest bit logical counter, 48 higher bit physical time and 2 reserved bits. 
 
-To maintain distributed snapshot isolation, PolarDB adopts HLC to generate snapshot start timestmap for each transaction on the coordinator node. To commit a distributed transaction, PolarDB uses 2PC, collects prepared HLC timestamps from all the participating nodes during the prepare phase and determines its commit timestamp by choosing the maximum timestamp from all the prepared timestamps.
+To maintain distributed snapshot isolation, PolarDB adopts HLC to generate snapshot start timestmap for each transaction on the coordinator node. To commit a distributed transaction, the coordinator uses 2PC, collects prepared HLC timestamps from all the participating nodes during the prepare phase and determines its commit timestamp by choosing the maximum timestamp from all the prepared timestamps.
 The hybrid logical clock on each node is updated using the arriving start and commit timestamps when a transaction accesses it, e.g., transaction begin and commit. PolarDB uses 2PC prepared wait mechanism to resolve causality ordering between transactions like
 Google Percolator. The prepared status is maintained in CTS for fast access and is replaced with a commit timestamp when the prepared transaction commits. The HLC based distributed transaction will appear soon in our distributed shared-nothing version of PolarDB-PG.
 
