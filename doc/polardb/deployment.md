@@ -2,7 +2,7 @@
 
 ## Deploy from Source Code
 
-### Code Download
+### Download code
 
 git clone from one of our repositories
 
@@ -166,19 +166,20 @@ psql -p 10001 -d test -c "select version();"
 
 ## Fast Deployment Script onekey.sh
 
-This script uses default configuration to compile PolarDB, to deploy binary, and to start a cluster of three nodes, 
-including a leader, a follower, and a learner. 
+This script uses default configuration to compile PolarDB, to deploy binary, and to start a cluster of three nodes, including a leader and two followers. 
 
 ```bash
 sh onekey.sh [all|build|configure|deploy|setup]
 ```
 
-* all：fulfill all deployment tasks, including compile source code，generate default cluster configuration, install cluster; after that, we can start using the database cluster using *psql -p 10001 -d postgres*
+* all：fulfill all deployment tasks, including compile source code，generate default cluster configuration, install cluster; after that, we can access the database cluster using *psql -p 10001 -d postgres*
 * build：invoke *build.sh* script to compile and create a release version
 * configure：generate default cluster configuration; the default configuration includes two nodes (leader and follower). 
 * deploy：only deploy binary based on cluster configuration
 * setup：initialize and start database based on default configuration
 
+___
 
+Copyright © Alibaba Group, Inc.
 
 

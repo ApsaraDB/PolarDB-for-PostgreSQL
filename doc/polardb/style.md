@@ -9,7 +9,7 @@
   * Both, macros with arguments and static inline functions, may be used. The latter is preferred only if the former simplifies coding.
   * Follow BSD C programming conventions
 
-* Programs in Shell, Go, or Python can follows Google code conventions
+* Programs in Shell, Go, or Python can follow Google code conventions
   * https://google.github.io/styleguide/pyguide.html
   * https://github.com/golang/go/wiki/CodeReviewComments
   * https://google.github.io/styleguide/shellguide.html
@@ -20,7 +20,7 @@ We share the same thoughts and rules as [Google Open Source Code Review](https:/
 
 Before submitting for code review, please do unit test and pass all tests under src/test, such as regress and isolation. Unit tests or function tests should be submitted with code modification. 
 
-In addition to code review, this doc offers instructions for the whole cycle of high-quality development,  from design, implementation, testing, documentaion, to preparing for code review. Many good questions are asked for critical steps during development, such as about design, about function, about complexity, about test, about naming, about documentation, and about code review. The doc summarized rules for code review as follows. 
+In addition to code review, this doc offers instructions for the whole cycle of high-quality development,  from design, implementation, testing, documentation, to preparing for code review. Many good questions are asked for critical steps during development, such as about design, about function, about complexity, about test, about naming, about documentation, and about code review. The doc summarized rules for code review as follows. 
 
 *In doing a code review, you should make sure that:*
   * *The code is well-designed.*
@@ -35,3 +35,7 @@ In addition to code review, this doc offers instructions for the whole cycle of 
   * *Comments are clear and useful, and mostly explain why instead of what.*
   * *Code is appropriately documented.*
   * *The code conforms to our style guides.*
+
+___
+
+Copyright © Alibaba Group, Inc.

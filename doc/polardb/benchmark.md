@@ -95,3 +95,7 @@ statement latencies in milliseconds:
          0.327  INSERT INTO pgbench_history (tid, bid, aid, delta, mtime) VALUES (:tid, :bid, :aid, :delta, CURRENT_TIMESTAMP);
          0.481  END;
 ```
+
+___
+
+Copyright © Alibaba Group, Inc.

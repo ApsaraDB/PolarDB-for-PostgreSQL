@@ -9,3 +9,7 @@ The consensus service maintains a consensus log. Its records store WAL entriesâ€
 Follower nodes use X-Paxos state machine to manage streaming replication and log applying. WAL is pulled from leader node to follower nodes. When leadership changes, follower nodes use local received WAL position and send WAL requests to new leader node for any WAL after the position. When a follower is elected as a leader, it automatically exits from recovery and promotes itself as primary PostgreSQL instance, offering read and write service to clients
 
 PolarDB for PostgreSQL supports multiple X-Paxos roles, such as leader, follower, and logger. The logger node differs from follower nodes in whether storing data and whether applying WAL to recovery data. Logger nodes only retain real-time WAL logs. It conducts streaming replication as followers but the received WAL logs are not played back. This means a logger node does not stores data or run recovery.  Using logger nodes allows X-Paxos to achieve similar consensus across nodes with less storage cost paid. 
+
+___
+
+Copyright Â© Alibaba Group, Inc.
