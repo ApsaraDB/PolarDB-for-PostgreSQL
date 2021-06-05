@@ -2,9 +2,9 @@
 
 ## What is PolarDB for PostgreSQL?
 
-PolarDB for PostgreSQL (PolarDB for short) is an open source database system based on PostgreSQL. It extends PostgreSQL to become a share-nothing distributed database, which supports **global data consistency** and **ACID across database nodes**, **distributed SQL processing**, and **data redundancy** and **high availability** through Paxos based replication. PolarDB is designed to add values and new features to PostgreSQL in dimensions of high performance, scalability, high availability, and elasticity. At the same time, PolarDB remains SQL compatibility to single-node PostgreSQL with best effort.
+PolarDB for PostgreSQL (PolarDB for short) is an open-source database system based on PostgreSQL. It extends PostgreSQL to become a share-nothing distributed database, which supports **global data consistency** and **ACID across database nodes**, **distributed SQL processing**, and **data redundancy** and **high availability** through Paxos based replication. PolarDB is designed to add values and new features to PostgreSQL in dimensions of high performance, scalability, high availability, and elasticity. At the same time, PolarDB remains SQL compatibility to single-node PostgreSQL with the best effort.
 
-PolarDB will evolve and offer its functions and features in two major parts: an extension and a patch to Postgres. The extension part includes components implemented outside PostgreSQL kernel, such as distributed transaction management, global or distributed time service, distributed SQL processing, additional metadata and internal functions, and tools to manage database clusters and conduct fault tolerance or recovery. Having most of its functions in a Postgres extension, PolarDB targets **easy upgrading**, **easy migration**, and **fast adoption**. The patch part includes the changes necessary to the kernel, such as distributed MVCC for different isolation levels. We expect functions and codes in the patch part is limited. As a result, PolarDB can be easily upgraded with newer PostgreSQL versions and maintain full compatible to PostgreSQL.
+PolarDB will evolve and offer its functions and features in two major parts: an extension and a patch to PostgreSQL. The extension part includes components implemented outside PostgreSQL kernel, such as distributed transaction management, global or distributed time service, distributed SQL processing, additional metadata, internal functions, and tools to manage database clusters and conduct fault tolerance or recovery. Having most of its functions in a PostgreSQL extension, PolarDB targets **easy upgrading**, **easy migration**, and **fast adoption**. The patch part includes the changes necessary to the kernel, such as distributed MVCC for different isolation levels. We expect functions and codes in the patch part is limited. As a result, PolarDB can be easily upgraded with newer PostgreSQL versions and maintained full compatibility with PostgreSQL.
 
 ## Quick start with PolarDB
 
@@ -40,7 +40,7 @@ psql -p 10001 -d postgres -c "select * from polar_dma_cluster_status;"
 
 ### Deployment from Source Code
 
-We extend a tool named as pgxc_ctl from PG-XC/PG-XL open source project to support cluster management, such as configuration generation, configuration modification, cluster initialization, starting/stopping nodes, and switchover, etc. Its detail usage can be found [deployment](/doc/polardb/deployment.md).
+We extend a tool named pgxc_ctl from PG-XC/PG-XL open source project to support cluster management, such as configuration generation, configuration modification, cluster initialization, starting/stopping nodes, and switchover. Its detail usage can be found [deployment](/doc/polardb/deployment.md).
 
 * download source code
 * install dependency packages (use Centos as an example)
@@ -133,7 +133,7 @@ pgxc_ctl -c $HOME/polardb/polardb_paxos.conf failover datanode datanode_1
 pgxc_ctl -c $HOME/polardb/polardb_paxos.conf healthcheck all
 ```
 
-* example for other command
+* examples for other command
 
 ```bash
 pgxc_ctl -c $HOME/polardb/polardb_paxos.conf kill all
@@ -160,7 +160,7 @@ PolarDB uses a share-nothing architecture. Each node stores data and also execut
 
 PolarDB slices a table into shards by hashing its primary key. The number of shards is configurable. Shards are stored in PolarDB nodes. When a query accesses shards in multiple nodes, a distributed transaction and a transaction coordinator are used to maintain ACID across nodes.
 
-Each shard is replicated to three nodes with each replica stored on different node. In order to save costs, we can deploy two of the replicas to store complete data. The third replica only stores write ahead log (WAL), which participates in the election but cannot be chosen as the leader.
+Each shard is replicated to three nodes with each replica stored on a different node. In order to save costs, we can deploy two of the replicas to store complete data. The third replica only stores write-ahead log (WAL), which participates in the election but cannot be chosen as the leader.
 
 See [architecture design](/doc/polardb/arch.md) for more information
 
@@ -177,7 +177,7 @@ See [architecture design](/doc/polardb/arch.md) for more information
 
 ## Contributing
 
-PolarDB is built on and of open source, and extends open source PostgreSQL. Your contributions are welcome. How to start developing PolarDB is summarized in [coding style](/doc/polardb/style.md). It also introduces our coding style and quality guidelines.
+PolarDB is built on and of open source and extends open-source PostgreSQL. Your contributions are welcome. How to start developing PolarDB is summarized in [coding style](/doc/polardb/style.md). It also introduces our coding style and quality guidelines.
 
 ## Licensing
 PolarDB code is released under the Apache Version 2.0 License and the Licenses with PostgreSQL code.
@@ -188,7 +188,7 @@ Reference [License](LICENSE) and [NOTICE](NOTICE) for details.
 
 ## Acknowledgements
 
-Some codes and design ideas were from other open source projects, such as PG-XC/XL(pgxc_ctl), TBase (timestamp based vacuum and MVCC), and Citus (pg_cron). Thanks for their contributions.
+Some codes and design ideas were from other open-source projects, such as PG-XC/XL(pgxc_ctl), TBase (timestamp-based vacuum and MVCC), and Citus (pg_cron). Thanks for their contributions.
 ___
 
 Copyright © Alibaba Group, Inc.
