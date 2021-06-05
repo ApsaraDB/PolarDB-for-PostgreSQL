@@ -66,15 +66,7 @@ ssh-copy-id username@IP
 
 * build and install binary
 
-```bash
-./configure --prefix=/home/postgres/polardb/polardbhome
-make
-make install
-cd contrib
-make
-```
-
-or you can just call build.sh script.
+you can just call build script to build. If you get errors, please reference [deployment](/doc/polardb/deployment.md) for detail reasons.
 
 ```bash
 ./build.sh
