@@ -11,7 +11,7 @@ get_key_value()
 usage()
 {
 cat <<EOF
-Usage: $0 [-t debug|release] [-a ON|OFF] [-p ON|OFF] [-d install_prefix] [-c ON|OFF]
+Usage: $0 [-t debug|release] [-a ON|OFF] [-d install_prefix] [-c ON|OFF]
        Or
        $0 [-h | --help]
   -t                      Select the build type [debug|release].
@@ -102,7 +102,7 @@ fi
 cd bu
 
 # modify this cmake script for you own needs
-cmake -D CMAKE_INSTALL_PREFIX=$dest_dir -D WITH_DEBUG=$debug -D WITH_TSAN=OFF -D WITH_ASAN=$with_asan ..
+cmake -D CMAKE_INSTALL_PREFIX=$dest_dir -D WITH_DEBUG=$debug -D WITHOUT_CXX11_ABI=$without_cxx11_abi -D WITH_TSAN=OFF -D WITH_ASAN=$with_asan ..
 make libmyeasy -j
 cd ../protocol
 cd ../bu

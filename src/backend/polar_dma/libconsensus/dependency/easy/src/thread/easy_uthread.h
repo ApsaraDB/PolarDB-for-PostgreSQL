@@ -18,6 +18,7 @@
 
 #include <easy_pool.h>
 #include <easy_list.h>
+#include <signal.h>
 #include <ucontext.h>
 
 /**

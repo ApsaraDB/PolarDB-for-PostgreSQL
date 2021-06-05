@@ -13,7 +13,9 @@ git clone from one of our repositories
   * Centos 7
 
 * GCC versions 
-  * gcc 7.2.1 
+  * gcc 10.2.1
+  * gcc 9.2.1
+  * gcc 7.2.1
   * gcc 4.8.5
 
 
@@ -31,10 +33,24 @@ sh build.sh [deploy|verify|debug|repeat]
 * debug ：debug version
 * repeat：compile source code without calling configure
 
-
 for example:
 ```bash
 $ sh build.sh # release version
+```
+
+If you get linker errors about undefined references to symbols of protobuf. then it probably
+indicates that the system-installed protobuf was compiled with an older version of GCC or older
+ABI version, please set -c option to ON in following section of build.sh.
+
+```bash
+# build polardb consensus dynamic library
+cd $CODEHOME/src/backend/polar_dma/libconsensus/polar_wrapper
+if [[ "$BLD_OPT" == "debug" ]]; then
+sh ./build.sh -r -t debug -c ON
+else
+sh ./build.sh -r -t release -c ON
+fi
+cd $CODEHOME
 ```
 
 ## Cluster Installation

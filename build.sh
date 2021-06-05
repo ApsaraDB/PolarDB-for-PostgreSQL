@@ -58,11 +58,12 @@ if [[ "$BLD_OPT" != "repeat" ]]; then
     ./configure --prefix=$PG_INSTALL ${CMD[@]}
 fi
 
+# build polardb consensus dynamic library
 cd $CODEHOME/src/backend/polar_dma/libconsensus/polar_wrapper
 if [[ "$BLD_OPT" == "debug" ]]; then
-./build.sh -r -t debug
+sh ./build.sh -r -t debug
 else
-./build.sh -r -t release
+sh ./build.sh -r -t release
 fi
 cd $CODEHOME
 
