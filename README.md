@@ -136,7 +136,7 @@ pgxc_ctl -c $HOME/polardb/polardb_paxos.conf failover datanode datanode_1
 pgxc_ctl -c $HOME/polardb/polardb_paxos.conf healthcheck all
 ```
 
-* examples for other command
+* examples of other command
 
 ```bash
 pgxc_ctl -c $HOME/polardb/polardb_paxos.conf kill all
