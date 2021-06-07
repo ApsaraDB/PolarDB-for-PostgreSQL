@@ -2,7 +2,7 @@
 
 ## Deploy from Source Code
 
-### Code Download
+### Download code
 
 git clone from one of our repositories
 
@@ -13,7 +13,9 @@ git clone from one of our repositories
   * Centos 7
 
 * GCC versions 
-  * gcc 7.2.1 
+  * gcc 10.2.1
+  * gcc 9.2.1
+  * gcc 7.2.1
   * gcc 4.8.5
 
 
@@ -31,10 +33,24 @@ sh build.sh [deploy|verify|debug|repeat]
 * debug ：debug version
 * repeat：compile source code without calling configure
 
-
 for example:
 ```bash
 $ sh build.sh # release version
+```
+
+If you get linker errors about undefined references to symbols of protobuf. then it probably
+indicates that the system-installed protobuf was compiled with an older version of GCC or older
+ABI version, please set -c option to ON in following section of build.sh.
+
+```bash
+# build polardb consensus dynamic library
+cd $CODEHOME/src/backend/polar_dma/libconsensus/polar_wrapper
+if [[ "$BLD_OPT" == "debug" ]]; then
+sh ./build.sh -r -t debug -c ON
+else
+sh ./build.sh -r -t release -c ON
+fi
+cd $CODEHOME
 ```
 
 ## Cluster Installation
@@ -166,19 +182,20 @@ psql -p 10001 -d test -c "select version();"
 
 ## Fast Deployment Script onekey.sh
 
-This script uses default configuration to compile PolarDB, to deploy binary, and to start a cluster of three nodes, 
-including a leader, a follower, and a learner. 
+This script uses default configuration to compile PolarDB, to deploy binary, and to start a cluster of three nodes, including a leader and two followers. 
 
 ```bash
 sh onekey.sh [all|build|configure|deploy|setup]
 ```
 
-* all：fulfill all deployment tasks, including compile source code，generate default cluster configuration, install cluster; after that, we can start using the database cluster using *psql -p 10001 -d postgres*
+* all：fulfill all deployment tasks, including compile source code，generate default cluster configuration, install cluster; after that, we can access the database cluster using *psql -p 10001 -d postgres*
 * build：invoke *build.sh* script to compile and create a release version
 * configure：generate default cluster configuration; the default configuration includes two nodes (leader and follower). 
 * deploy：only deploy binary based on cluster configuration
 * setup：initialize and start database based on default configuration
 
+___
 
+Copyright © Alibaba Group, Inc.
 
 

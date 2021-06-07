@@ -3,7 +3,7 @@
 usage()
 {
 cat <<EOF
-Usage: $0 [-t debug|release] [-p] [-c] [-r] [-a] [-p]
+Usage: $0 [-t debug|release] [-r] [-a] [-c ON|OFF]
        Or
        $0 [-h | --help]
   -t                      Select the build type.
@@ -30,8 +30,11 @@ parse_options()
     -t)
       shift
       build_type=`get_key_value "$1"`;;
+    -c=*)
+      without_cxx11_abi=`get_key_value "$1"`;;
     -c)
-      without_cxx11_abi=ON;;
+      shift
+      without_cxx11_abi=`get_key_value "$1"`;;
     -a)
       with_asan=ON;;
     -r)
@@ -80,6 +83,6 @@ fi
 rm -rf bu
 mkdir bu && cd bu
 
-cmake -D CMAKE_INSTALL_PREFIX=../../../ -D WITH_DEBUG=$debug -D WITH_ASAN=$with_asan ..
+cmake -D CMAKE_INSTALL_PREFIX=../../../ -D WITH_DEBUG=$debug -D WITHOUT_CXX11_ABI=$without_cxx11_abi -D WITH_ASAN=$with_asan ..
 make -j
 make install

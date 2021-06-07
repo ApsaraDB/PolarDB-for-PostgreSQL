@@ -1,5 +1,5 @@
 
-## Remote Recovery
+## Remote Recovery for data guarding
 
 PostgreSQL introduces full page write mechanism to avoid inconsistency in case of
 system crashes. However, full page writes can amplify writes and reduce performance.
@@ -17,7 +17,7 @@ records in parallel.
 
 ## How to use
 1. You can put a remote_recovery.conf in the data directory to support remote recovery.
-   The command format of remote_recovery.conf is the same with recovery.conf.
+   The format of remote_recovery.conf is same as recovery.conf.
    You should specify the mirror node address for building connection. For example, you 
    can write "standby_conninfo = 'host=xx port=xx user=xx password=xx     application_name=standby'" into remote_recovery.conf.
 2. The parameter of max_wal_senders in the mirror node should be configured to be larger
