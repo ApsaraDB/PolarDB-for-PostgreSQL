@@ -18,9 +18,9 @@ in the top-level directory. (Or you can change to and run the command there.) At
 	All 187 tests passed. 1 tests in dma ignore
 	============================================
 
-Because this test method runs a temporary server, it will not work if you did the build as the root user, since the server will not start as root. Recommended procedure is not to do the build as root, or else to perform testing after completing the installation.
+This test method runs in a temporary database server. It will not work if the build is done by using root, since the server will not start as root.
 
-The parallel regression test starts quite a few processes under your user ID. Presently, the maximum concurrency is twenty parallel test scripts, which means forty processes: there's a server process and a psql process for each test script. So if your system enforces a per-user limit on the number of processes, make sure this limit is at least fifty or so, else you might get random-seeming failures in the parallel test. If you are not in a position to raise the limit, you can cut down the degree of parallelism by setting the MAX_CONNECTIONS parameter. For example:
+The parallel regression test starts quite a few processes under your user ID. Presently, the maximum concurrency is twenty parallel test scripts, which means forty processes: there's a server process and a psql process for each test script. If your system enforces a per-user limit on the number of processes, make sure this limit is at least fifty or so, else you might get random-seeming failures in the parallel test. If you are not in a position to raise the limit, you can cut down the degree of parallelism by setting the MAX_CONNECTIONS parameter. For example:
 
 	make MAX_CONNECTIONS=10 checkdma
 
@@ -54,3 +54,7 @@ You can refer to Postgresql regression tests.
 
 ## Single Node Regression
 You can refer to Postgresql regression tests.
+
+___
+
+Copyright © Alibaba Group, Inc.
