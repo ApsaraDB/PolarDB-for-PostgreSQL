@@ -78,7 +78,7 @@ ELSE()
 	SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11 -g -Wall -O3 -fPIC ")
 ENDIF()
 
-INCLUDE_DIRECTORIES (include
+include_directories(include
   ${CMAKE_INSTALL_PREFIX}/include/easy
   ${CMAKE_CURRENT_SOURCE_DIR}/include/
   ${CMAKE_CURRENT_SOURCE_DIR}/../dependency/easy/src/io/
@@ -119,22 +119,23 @@ link_directories(
   ${CMAKE_INSTALL_PREFIX}/lib
   )
 
-find_package(Protobuf)
+find_package(Protobuf REQUIRED)
 SET (PROTOBUF_CPP ${CMAKE_CURRENT_SOURCE_DIR}/consensus/protocol/paxos.pb.c ${CMAKE_CURRENT_SOURCE_DIR}/consensus/protocol/paxos.pb.h)
 add_custom_command (
   OUTPUT ${PROTOBUF_CPP}
   COMMAND cd ${CMAKE_CURRENT_SOURCE_DIR}/protocol &&
-  (${Protobuf_PROTOC_EXECUTABLE} -I. --cpp_out=. paxos.proto)
+  (${PROTOBUF_PROTOC_EXECUTABLE} -I. --cpp_out=. paxos.proto)
   COMMENT "generage protobuf cpp"
 )
 add_custom_target (paxos_pb
   ALL DEPENDS ${PROTOBUF_CPP}
 )
-INCLUDE_DIRECTORIES(${Protobuf_INCLUDE_DIRS})
-ADD_LIBRARY (aliconsensus STATIC ${AC_SRC})
-TARGET_LINK_LIBRARIES (aliconsensus pthread snappy z
+include_directories(${Protobuf_INCLUDE_DIRS})
+add_definitions(-w)
+add_library(aliconsensus STATIC ${AC_SRC})
+target_link_libraries(aliconsensus pthread snappy z
   	bz2 lz4 rt ssl crypto myeasy ${PROTOBUF_LIBRARIES} ${EXTRA_LINK})
-ADD_DEPENDENCIES(aliconsensus paxos_pb)
+add_dependencies(aliconsensus paxos_pb)
 
 install(TARGETS aliconsensus DESTINATION lib)
 install(FILES ${INC_FILE} DESTINATION include/aliconsensus)

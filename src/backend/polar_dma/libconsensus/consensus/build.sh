@@ -3,6 +3,8 @@
 # Script for Dev's daily work.  It is a good idea to use the exact same
 # build options as the released version.
 
+set -e
+
 get_key_value()
 {
   echo "$1" | sed 's/^--[a-zA-Z_-]*=//'
@@ -89,22 +91,21 @@ else
 fi
 
 CWD="`pwd`"
-if [[ "${install_dir:0:1}" == "/" ]]
-then
+if [[ "${install_dir:0:1}" == "/" ]]; then
 dest_dir=$install_dir
 else
 dest_dir=$CWD"/"$install_dir
 fi
 
 if [ ! -d bu ];then
-mkdir bu 
+mkdir bu
 fi
 cd bu
 
 # modify this cmake script for you own needs
 cmake -D CMAKE_INSTALL_PREFIX=$dest_dir -D WITH_DEBUG=$debug -D WITHOUT_CXX11_ABI=$without_cxx11_abi -D WITH_TSAN=OFF -D WITH_ASAN=$with_asan ..
-make libmyeasy -j
+make libmyeasy -sj
 cd ../protocol
 cd ../bu
-make -j
+make -sj
 make install

@@ -1,5 +1,7 @@
 #!/bin/bash
 
+set -e
+
 usage()
 {
 cat <<EOF
@@ -68,7 +70,7 @@ fi
 CWD="`pwd`"
 cd ../consensus
 xpaxos_dest_dir=$CWD
-sh -x ./build.sh -t $build_type -a $with_asan -c $without_cxx11_abi -d $xpaxos_dest_dir
+bash ./build.sh -t $build_type -a $with_asan -c $without_cxx11_abi -d $xpaxos_dest_dir
 cd "${CWD}" 
 
 if [ x"$build_type" = x"debug" ]; then
@@ -84,5 +86,5 @@ rm -rf bu
 mkdir bu && cd bu
 
 cmake -D CMAKE_INSTALL_PREFIX=../../../ -D WITH_DEBUG=$debug -D WITHOUT_CXX11_ABI=$without_cxx11_abi -D WITH_ASAN=$with_asan ..
-make -j
+make -sj
 make install
