@@ -12,6 +12,7 @@ PolarDB will evolve and offer its functions and features in two major parts: an 
 - [Contributing](#contributing)
 - [Licensing](#licensing)
 - [Acknowledgements](#acknowledgements)
+- [Communications](#communications)
 
 ## Quick start with PolarDB
 
@@ -28,7 +29,7 @@ onekey.sh can be used to build, configure, deploy, start, and init a cluster of 
 
 * before executing onekey.sh
   - set up environment variables (LD_LIBRARY_PATH and PATH)
-  - install dependent packages 
+  - install dependent packages
   - set up ssh login without password
 
 * run onekey.sh script
@@ -198,6 +199,16 @@ Reference [License](LICENSE) and [NOTICE](NOTICE) for details.
 ## Acknowledgements
 
 Some codes and design ideas were from other open source projects, such as PG-XC/XL(pgxc_ctl), TBase (part of timestamp-based vacuum and MVCC), and Citus (pg_cron). Thanks for their contributions.
+
+
+## Communications
+
+* PolarDB for PostgreSQL at Slack
+https://app.slack.com/client/T023NM10KGE/C023VEMKS02
+
+* PolarDB Technial Promotion Group at DingDing
+![PolarDB Technial Promotion Group](polardb_group.png)
+
 ___
 
 Copyright © Alibaba Group, Inc.
