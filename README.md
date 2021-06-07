@@ -161,7 +161,7 @@ PolarDB uses a share-nothing architecture. Each node stores data and also execut
 
 PolarDB slices a table into shards by hashing its primary key. The number of shards is configurable. Shards are stored in PolarDB nodes. When a query accesses shards in multiple nodes, a distributed transaction and a transaction coordinator are used to maintain ACID across nodes.
 
-Each shard is replicated to three nodes with each replica stored on different node. In order to save costs, we can deploy two of the replicas to store complete data. The third replica only stores write ahead log (WAL), which participates in the election but cannot be chosen as the leader.
+Each shard is replicated to three nodes with each replica stored on a different node. In order to save costs, we can deploy two of the replicas to store complete data. The third replica only stores write ahead log (WAL), which participates in the election but cannot be chosen as the leader.
 
 See [architecture design](/doc/polardb/arch.md) for more information
 
