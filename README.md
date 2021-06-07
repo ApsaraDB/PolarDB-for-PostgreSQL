@@ -2,9 +2,9 @@
 
 ## What is PolarDB for PostgreSQL?
 
-PolarDB for PostgreSQL (PolarDB for short) is an open-source database system based on PostgreSQL. It extends PostgreSQL to become a share-nothing distributed database, which supports **global data consistency** and **ACID across database nodes**, **distributed SQL processing**, and **data redundancy** and **high availability** through Paxos based replication. PolarDB is designed to add values and new features to PostgreSQL in dimensions of high performance, scalability, high availability, and elasticity. At the same time, PolarDB remains SQL compatibility to single-node PostgreSQL with the best effort.
+PolarDB for PostgreSQL (PolarDB for short) is an open-source database system based on PostgreSQL. It extends PostgreSQL to become a share-nothing distributed database, which supports **global data consistency** and **ACID across database nodes**, **distributed SQL processing**, and **data redundancy** and **high availability** through Paxos based replication. PolarDB is designed to add values and new features to PostgreSQL in dimensions of high performance, scalability, high availability, and elasticity. At the same time, PolarDB remains SQL compatibility to standalone PostgreSQL with the best effort.
 
-PolarDB will evolve and offer its functions and features in two major parts: an extension and a patch to PostgreSQL. The extension part includes components implemented outside PostgreSQL kernel, such as distributed transaction management, global or distributed time service, distributed SQL processing, additional metadata, internal functions, and tools to manage database clusters and conduct fault tolerance or recovery. Having most of its functions in a PostgreSQL extension, PolarDB targets **easy upgrading**, **easy migration**, and **fast adoption**. The patch part includes the changes necessary to the kernel, such as distributed MVCC for different isolation levels. We expect functions and codes in the patch part is limited. As a result, PolarDB can be easily upgraded with newer PostgreSQL versions and maintained full compatibility with PostgreSQL.
+PolarDB will evolve and offer its functions and features in two major parts: an extension and a patch to PostgreSQL. The extension part includes components implemented outside the PostgreSQL kernel, such as distributed transaction management, global or distributed time service, distributed SQL processing, additional metadata, internal functions, and tools to manage database clusters and conduct fault tolerance or recovery. Having most of its functions in a PostgreSQL extension, PolarDB targets **easy upgrading**, **easy migration**, and **fast adoption**. The patch part includes the changes necessary to the kernel, such as distributed MVCC for different isolation levels. We expect functions and codes in the patch part is limited. As a result, PolarDB can be easily upgraded with newer PostgreSQL versions and maintained full compatibility with PostgreSQL.
 
 - [Quick start with PolarDB](#quick-start-with-polardb)
 - [Architecture & Roadmap](#architecture--roadmap)
@@ -25,6 +25,7 @@ TBD
 TBD
 
 ### One-Key Deployment
+
 onekey.sh can be used to build, configure, deploy, start, and init a cluster of PolarDB.
 
 * before executing onekey.sh
@@ -49,7 +50,7 @@ psql -p 10001 -d postgres -c "select * from polar_dma_cluster_status;"
 
 ### Deployment from Source Code
 
-We extend a tool named pgxc_ctl from PG-XC/PG-XL open source project to support cluster management, such as configuration generation, configuration modification, cluster initialization, starting/stopping nodes, and switchover. Its detail usage can be found [deployment](/doc/polardb/deployment.md).
+We extend a tool named pgxc_ctl from PG-XC/PG-XL open-source project to support cluster management, such as configuration generation, configuration modification, cluster initialization, starting/stopping nodes, and switchover. Its detail usage can be found [deployment](/doc/polardb/deployment.md).
 
 * download source code
 * install dependent packages (use Centos as an example)
@@ -58,6 +59,7 @@ We extend a tool named pgxc_ctl from PG-XC/PG-XL open source project to support 
 sudo yum install libzstd-devel libzstd zstd cmake openssl-devel protobuf-devel readline-devel libxml2-devel libxslt-devel zlib-devel bzip2-devel lz4-devel snappy-devel
 ```
 * set up ssh login without password
+
 Call ssh-copy-id command to configure ssh so that no password is needed when using pgxc_ctl.
 
 ```bash
@@ -66,7 +68,7 @@ ssh-copy-id username@IP
 
 * build and install binary
 
-you can just call build script to build. If you get errors, please reference [deployment](/doc/polardb/deployment.md) for detail reasons.
+You can just call build script to build. If you get errors, please reference [deployment](/doc/polardb/deployment.md) for detail reasons.
 
 ```bash
 ./build.sh
@@ -153,15 +155,15 @@ psql -p 10001 -d test -c "select version();"
 
 reference [deployment](/doc/polardb/deployment.md) for detail instructions.
 
-Regress and other test details can be found [here](/doc/polardb/regress.md). Some benchmarking example is [here](/doc/polardb/benchmark.md)
+Regress and other test details can be found [here](/doc/polardb/regress.md). Some benchmarking example is [here](/doc/polardb/benchmark.md).
 
 ## Architecture & Roadmap
 
 PolarDB uses a share-nothing architecture. Each node stores data and also executes queries, and they coordinate with each other through message passing. The architecture allows the database to be scaled by adding more nodes to the cluster.
 
-PolarDB slices a table into shards by hashing its primary key. The number of shards is configurable. Shards are stored in PolarDB nodes. When a query accesses shards in multiple nodes, a distributed transaction and a transaction coordinator are used to maintain ACID across nodes.
+PolarDB slices a table into shards by hashing its primary key. The number of shards is configurable. Shards are stored in PolarDB nodes. When a query accesses shards in many nodes, a distributed transaction and a transaction coordinator are used to maintain ACID across nodes.
 
-Each shard is replicated to three nodes with each replica stored on a different node. In order to save costs, we can deploy two of the replicas to store complete data. The third replica only stores write ahead log (WAL), which participates in the election but cannot be chosen as the leader.
+Each shard is replicated to three nodes with each replica stored on a different node. In order to save costs, we can deploy two of the replicas to store complete data. The third replica only stores a write-ahead log (WAL), which participates in the election but cannot be chosen as the leader.
 
 See [architecture design](/doc/polardb/arch.md) for more information
 
@@ -179,9 +181,10 @@ See [architecture design](/doc/polardb/arch.md) for more information
 
 ## Contributing
 
-PolarDB is built on open source projects and extends open-source PostgreSQL. Your contribution is welcome and appreciated. Please refer [contributing](/doc/polardb/contributing) for how to start coding and submit a PR.
+PolarDB is built on open-source projects and extends open-source PostgreSQL. Your contribution is welcome and appreciated. Please refer [contributing](/doc/polardb/contributing) for how to start coding and submit a PR.
 
 ## Licensing
+
 PolarDB code is released under the Apache Version 2.0 License and the Licenses with PostgreSQL code.
 
 The relevant licenses can be found in the comments at the top of each file.
