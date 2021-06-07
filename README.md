@@ -1,4 +1,4 @@
-![PolarDB Banner](polardb.png)
+![PolarDB Banner](https://github.com/alibaba/PolarDB-for-PostgreSQL/blob/master/polardb.png)
 
 ## What is PolarDB for PostgreSQL?
 
@@ -202,7 +202,7 @@ Some codes and design ideas were from other open-source projects, such as PG-XC/
 https://app.slack.com/client/T023NM10KGE/C023VEMKS02
 
 * PolarDB Technial Promotion Group at DingDing
-![PolarDB Technial Promotion Group](polardb_group.png)
+![PolarDB Technial Promotion Group](https://github.com/alibaba/PolarDB-for-PostgreSQL/blob/master/polardb_group.png)
 
 ___
 
