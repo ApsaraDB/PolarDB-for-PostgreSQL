@@ -51,7 +51,7 @@ parse_options()
 }
 
 build_type="debug"
-without_cxx11_abi="ON"
+without_cxx11_abi="OFF"
 with_asan="OFF"
 rebuild_libraries="OFF"
 parse_options "$@"
