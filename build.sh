@@ -61,9 +61,9 @@ fi
 # build polardb consensus dynamic library
 cd $CODEHOME/src/backend/polar_dma/libconsensus/polar_wrapper
 if [[ "$BLD_OPT" == "debug" ]]; then
-sh ./build.sh -r -t debug
+bash ./build.sh -r -t debug
 else
-sh ./build.sh -r -t release
+bash ./build.sh -r -t release
 fi
 cd $CODEHOME
 
