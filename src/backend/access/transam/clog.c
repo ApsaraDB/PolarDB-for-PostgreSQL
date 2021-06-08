@@ -459,15 +459,15 @@ CLogSetStatusBit(TransactionId xid, CLogXidStatus status, XLogRecPtr lsn, int sl
 		   (curval == CLOG_XID_STATUS_SUB_COMMITTED &&
 			status != CLOG_XID_STATUS_IN_PROGRESS) ||
 		   curval == status);
-	
+
 	if (!(curval == 0 ||
-           (curval == CLOG_XID_STATUS_SUB_COMMITTED &&
-            status != CLOG_XID_STATUS_IN_PROGRESS) ||
-           curval == status))
-    {
-        elog(WARNING, "Unexpected clog condition. curval = %d, status = %d",
-                    curval, status);
-    }
+		  (curval == CLOG_XID_STATUS_SUB_COMMITTED &&
+		   status != CLOG_XID_STATUS_IN_PROGRESS) ||
+		  curval == status))
+	{
+		elog(WARNING, "Unexpected clog condition. curval = %d, status = %d",
+			 curval, status);
+	}
 
 	/* note this assumes exclusive access to the clog page */
 	byteval = *byteptr;
@@ -536,23 +536,23 @@ CLogGetStatus(TransactionId xid, XLogRecPtr *lsn)
 /*
  * We do not need to really read the page.
  * If the page is not buffered, it indicates it is written out
- * to disk. Under such situation, the xlog records of the 
+ * to disk. Under such situation, the xlog records of the
  * async transactions have been durable.
- * 
+ *
  * Written by Junbin Kang, 2020-09-03
- */ 
+ */
 XLogRecPtr
 CLogGetLSN(TransactionId xid)
 {
 	int			pageno = TransactionIdToPage(xid);
 	int			slotno;
 	int			lsnindex;
-	XLogRecPtr 	lsn = InvalidXLogRecPtr;
+	XLogRecPtr	lsn = InvalidXLogRecPtr;
 
 	/* lock is acquired by SimpleLruLookupSlotno */
 
 	slotno = SimpleLruLookupSlotno(ClogCtl, pageno);
-	
+
 	if (slotno >= 0)
 	{
 		lsnindex = GetLSNIndex(slotno, xid);

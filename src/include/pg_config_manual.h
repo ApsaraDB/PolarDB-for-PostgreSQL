@@ -325,15 +325,15 @@
 /* #define HEAPDEBUGALL */
 /* #define ACLDEBUG */
 
-/* 
- * All code on distributed transactions should be wrapped with 
+/*
+ * All code on distributed transactions should be wrapped with
  * the following MACRO.
  */
 #define ENABLE_DISTRIBUTED_TRANSACTION
-// #define ENABLE_DISTR_DEBUG
+/*  #define ENABLE_DISTR_DEBUG */
 
-/* 
- * All code on parallel recovery logic should be wrapped with 
+/*
+ * All code on parallel recovery logic should be wrapped with
  * the following MACRO.
  */
 
@@ -341,11 +341,11 @@
 /*
  * All code on remote fetching recovery is wrapped with
  * the ENABLE_REMOTE_RECOVERY MACRO.
- */ 
+ */
 #define ENABLE_REMOTE_RECOVERY
 
 /*
  * All code on remote fetching recovery is wrapped with
  * the ENABLE_ONLINE_MIGRATION MACRO.
- */ 
+ */
 #define ENABLE_ONLINE_MIGRATION

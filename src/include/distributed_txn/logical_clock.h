@@ -23,12 +23,12 @@ LogicalTime LogicalClockNow(void);
 LogicalTime LogicalClockTick(void);
 LogicalTime LogicalClockUpdate(LogicalTime);
 
-uint64 LogicalTimeGetMillis(LogicalTime);
-uint64 LogicalTimeGetCounter(LogicalTime);
+uint64		LogicalTimeGetMillis(LogicalTime);
+uint64		LogicalTimeGetCounter(LogicalTime);
 
 extern void LogicalClockShmemInit(void);
 
-#define LogicalClockMask   UINT64CONST(0xFFFF) 
+#define LogicalClockMask   UINT64CONST(0xFFFF)
 #define ClockLock (&ShmemVariableCache->ts_lock)
 #define ClockState (ShmemVariableCache->maxCommitTs)
 #define ToLogicalClock(ts) ((ts) & LogicalClockMask)
@@ -41,4 +41,4 @@ extern void LogicalClockShmemInit(void);
  * Datum logical_clock_tick();
 */
 
-#endif /* LOGICAL_CLOCK_H */
+#endif							/* LOGICAL_CLOCK_H */

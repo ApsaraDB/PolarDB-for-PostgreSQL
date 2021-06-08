@@ -171,12 +171,12 @@ GetNewTransactionId(bool isSubXact)
 	 *
 	 * Extend pg_subtrans and pg_commit_ts too.
 	 */
-	#ifdef ENABLE_DISTR_DEBUG
+#ifdef ENABLE_DISTR_DEBUG
 	ExtendCLOG(xid);
-	#endif
-	#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+#endif
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
 	ExtendCTSLOG(xid);
-	#endif
+#endif
 	ExtendCommitTs(xid);
 
 	/*
@@ -217,7 +217,7 @@ GetNewTransactionId(bool isSubXact)
 		 * nxids before filling the array entry.  Note we are assuming that
 		 * TransactionId and int fetch/store are atomic.
 		 */
-		volatile PGXACT *mypgxact = MyPgXact;
+		volatile	PGXACT *mypgxact = MyPgXact;
 
 		mypgxact->xid = xid;
 	}

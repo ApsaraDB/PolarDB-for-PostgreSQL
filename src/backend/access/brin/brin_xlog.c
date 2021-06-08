@@ -33,11 +33,12 @@ brin_xlog_createidx(XLogReaderState *record)
 	/* create the index' metapage */
 	buf = XLogInitBufferForRedo(record, 0);
 #ifdef ENABLE_PARALLEL_RECOVERY
-	if (!BufferIsValid(buf)){
+	if (!BufferIsValid(buf))
+	{
 		Assert(enable_parallel_recovery_bypage);
 		return;
-	} 
-#endif /* ENABLE_PARALLEL_RECOVERY */
+	}
+#endif							/* ENABLE_PARALLEL_RECOVERY */
 	Assert(BufferIsValid(buf));
 	page = (Page) BufferGetPage(buf);
 	brin_metapage_init(page, xlrec->pagesPerRange, xlrec->version);
@@ -68,12 +69,14 @@ brin_xlog_insert_update(XLogReaderState *record,
 	{
 		buffer = XLogInitBufferForRedo(record, 0);
 #ifdef ENABLE_PARALLEL_RECOVERY
-		if (!BufferIsValid(buffer)){
+		if (!BufferIsValid(buffer))
+		{
 			Assert(enable_parallel_recovery_bypage);
 			page = NULL;
 			action = BLK_DONE;
-		} else 
-#endif /* ENABLE_PARALLEL_RECOVERY */
+		}
+		else
+#endif							/* ENABLE_PARALLEL_RECOVERY */
 		{
 			page = BufferGetPage(buffer);
 			brin_page_init(page, BRIN_PAGETYPE_REGULAR);
@@ -272,10 +275,12 @@ brin_xlog_revmap_extend(XLogReaderState *record)
 
 	buf = XLogInitBufferForRedo(record, 1);
 #ifdef ENABLE_PARALLEL_RECOVERY
-	if (!BufferIsValid(buf)){
+	if (!BufferIsValid(buf))
+	{
 		Assert(enable_parallel_recovery_bypage);
-	} else 
-#endif /* ENABLE_PARALLEL_RECOVERY */
+	}
+	else
+#endif							/* ENABLE_PARALLEL_RECOVERY */
 	{
 		page = (Page) BufferGetPage(buf);
 		brin_page_init(page, BRIN_PAGETYPE_REVMAP);

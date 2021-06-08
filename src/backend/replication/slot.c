@@ -1047,10 +1047,10 @@ ReplicationSlotReserveWal(void)
 		}
 		else
 		{
-			/* 
-			 * POLAR: set restart lsn as the min received lsn when current node is datamax
-			 * so that we can send wal as much as possible 
-			 */ 
+			/*
+			 * POLAR: set restart lsn as the min received lsn when current
+			 * node is datamax so that we can send wal as much as possible
+			 */
 			if (!polar_is_dma_logger_node())
 				restart_lsn = GetRedoRecPtr();
 			else

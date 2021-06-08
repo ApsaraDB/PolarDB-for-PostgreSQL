@@ -43,42 +43,42 @@
 #define ALIGN_UP(a, b)   (((a) + (b) - 1)/(b)) * (b)
 #define ALIGN_DOWN(a, b) (((a))/(b)) * (b)
 #define DIVIDE_UP(a, b)   (((a) + (b) - 1)/(b))
-#define DIVIDE_DOWN(a, b)   (((a))/(b)) 
+#define DIVIDE_DOWN(a, b)   (((a))/(b))
 
 
-enum MT_thr_detach 
-{ 
-    MT_THR_JOINABLE, 
-    MT_THR_DETACHED 
+enum MT_thr_detach
+{
+	MT_THR_JOINABLE,
+	MT_THR_DETACHED
 };
 
 typedef struct
 {
-    int             m_cnt;
-    pthread_mutex_t m_mutex;
-    pthread_cond_t  m_cond;
-}ThreadSema;
+	int			m_cnt;
+	pthread_mutex_t m_mutex;
+	pthread_cond_t m_cond;
+}			ThreadSema;
 
-extern void ThreadSemaInit(ThreadSema *sema, int32 init);
-extern void ThreadSemaDown(ThreadSema *sema);
-extern void ThreadSemaUp(ThreadSema *sema);
+extern void ThreadSemaInit(ThreadSema * sema, int32 init);
+extern void ThreadSemaDown(ThreadSema * sema);
+extern void ThreadSemaUp(ThreadSema * sema);
 
 
-typedef struct 
+typedef struct
 {
-    void                 **m_List;
-    uint32               m_Length;
-    slock_t              m_lock; 
-    volatile uint32      m_Head;
-    volatile uint32      m_Tail;
-}PGPipe;
-extern PGPipe* CreatePipe(uint32 size);
-extern void    DestoryPipe(PGPipe *pPipe);
-extern void    *PipeGet(PGPipe *pPipe);
-extern int     PipePut(PGPipe *pPipe, void *p);
-extern bool    PipeIsFull(PGPipe *pPipe);
-extern bool    IsEmpty(PGPipe *pPipe);
-extern int        PipeLength(PGPipe *pPipe);
+	void	  **m_List;
+	uint32		m_Length;
+	slock_t		m_lock;
+	volatile uint32 m_Head;
+	volatile uint32 m_Tail;
+}			PGPipe;
+extern PGPipe * CreatePipe(uint32 size);
+extern void DestoryPipe(PGPipe * pPipe);
+extern void *PipeGet(PGPipe * pPipe);
+extern int	PipePut(PGPipe * pPipe, void *p);
+extern bool PipeIsFull(PGPipe * pPipe);
+extern bool IsEmpty(PGPipe * pPipe);
+extern int	PipeLength(PGPipe * pPipe);
 
 extern int32 CreateThread(void *(*f) (void *), void *arg, int32 mode);
 extern void ThreadMutexInit(pthread_mutex_t *mutex);

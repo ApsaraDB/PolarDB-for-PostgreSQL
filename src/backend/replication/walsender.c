@@ -236,7 +236,7 @@ static struct
 	int			write_head;
 	int			read_heads[NUM_SYNC_REP_WAIT_MODE];
 	WalTimeSample last_read[NUM_SYNC_REP_WAIT_MODE];
-}			LagTracker;
+} LagTracker;
 
 /* Signal handlers */
 static void WalSndLastCycleHandler(SIGNAL_ARGS);
@@ -351,7 +351,8 @@ WalSndErrorCleanup(void)
 static void
 WalSndShutdown(void)
 {
-        int i;
+	int			i;
+
 	/*
 	 * Reset whereToSendOutput to prevent ereport from attempting to send any
 	 * more messages to the standby.
@@ -360,20 +361,21 @@ WalSndShutdown(void)
 		whereToSendOutput = DestNone;
 
 	/*
-	 * check all sender is shutdown, and set WalSndCtl->sender_running
-	 * for max available falg.
+	 * check all sender is shutdown, and set WalSndCtl->sender_running for max
+	 * available falg.
 	 */
-	bool all_shutdown = true;
-	if(WalSndCtl->sender_running == true)
+	bool		all_shutdown = true;
+
+	if (WalSndCtl->sender_running == true)
 	{
 		/*
-		 * Find a free walsender slot and reserve it. If this fails, we must be
-		 * out of WalSnd structures.
+		 * Find a free walsender slot and reserve it. If this fails, we must
+		 * be out of WalSnd structures.
 		 */
 		for (i = 0; i < max_wal_senders; i++)
 		{
 			WalSnd	   *walsnd = &WalSndCtl->walsnds[i];
-	
+
 			SpinLockAcquire(&walsnd->mutex);
 			if ((walsnd->pid != 0) && (walsnd->pid != MyWalSnd->pid))
 			{
@@ -386,8 +388,8 @@ WalSndShutdown(void)
 				SpinLockRelease(&walsnd->mutex);
 			}
 		}
-	
-		if(all_shutdown)
+
+		if (all_shutdown)
 		{
 			LWLockAcquire(SyncRepLock, LW_EXCLUSIVE);
 			WalSndCtl->sender_running = false;
@@ -511,9 +513,10 @@ SendTimeLineHistory(TimeLineHistoryCmd *cmd)
 	 */
 
 	TLHistoryFileName(histfname, cmd->timeline);
-	polar_is_dma_logger_mode = polar_is_dma_logger_node();         /* POLAR: Enter datamax Mode. */
+	polar_is_dma_logger_mode = polar_is_dma_logger_node();	/* POLAR: Enter datamax
+															 * Mode. */
 	TLHistoryFilePath(path, cmd->timeline);
-	polar_is_dma_logger_mode = false;                           /* POLAR: Leave datamax mode. */
+	polar_is_dma_logger_mode = false;	/* POLAR: Leave datamax mode. */
 
 	/* Send a RowDescription message */
 	pq_beginmessage(&buf, 'T');
@@ -588,6 +591,7 @@ SendTimeLineHistory(TimeLineHistoryCmd *cmd)
 
 #ifdef ENABLE_REMOTE_RECOVERY
 static char *page_image;
+
 /*
  * Regular fetch page request from primary.
  */
@@ -597,24 +601,24 @@ ProcessFetchPageMessage(void)
 	RelFileNode rnode;
 	ForkNumber	forknum;
 	BlockNumber blkno;
-	Buffer buf;
+	Buffer		buf;
 	Page		page;
-	int r;
+	int			r;
 
 	/* the caller already consumed the msgtype byte */
-	rnode.spcNode = (Oid) pq_getmsgint(&reply_message, 4);	
-	rnode.dbNode = (Oid) pq_getmsgint(&reply_message, 4);	
+	rnode.spcNode = (Oid) pq_getmsgint(&reply_message, 4);
+	rnode.dbNode = (Oid) pq_getmsgint(&reply_message, 4);
 	rnode.relNode = (Oid) pq_getmsgint(&reply_message, 4);
 	forknum = pq_getmsgint(&reply_message, 4);
 	blkno = (BlockNumber) pq_getmsgint(&reply_message, 4);
-	
+
 	/* Read the request page */
 	buf = XLogReadBufferExtended(rnode, forknum, blkno,
-									 RBM_NORMAL);
-	
+								 RBM_NORMAL);
+
 	resetStringInfo(&output_message);
 	pq_sendbyte(&output_message, 'w');
-	
+
 	if (BufferIsValid(buf))
 	{
 		pq_sendint(&output_message, BLCKSZ, 4); /* len first */
@@ -629,20 +633,20 @@ ProcessFetchPageMessage(void)
 		UnlockReleaseBuffer(buf);
 
 		if (enable_remote_recovery_print)
-			elog(LOG, "REMOTE RECOVERY valid page on standby spcnode %d dbnode %d relnode %d forknum %d blkno %d", 
-		 					rnode.spcNode, rnode.dbNode, rnode.relNode, forknum, blkno);
+			elog(LOG, "REMOTE RECOVERY valid page on standby spcnode %d dbnode %d relnode %d forknum %d blkno %d",
+				 rnode.spcNode, rnode.dbNode, rnode.relNode, forknum, blkno);
 	}
 	else
 	{
-		pq_sendint(&output_message, 0, 4); /* len first */
-		elog(LOG, "REMOTE RECOVERY no valid page on standby spcnode %d dbnode %d relnode %d forknum %d blkno %d", 
-		 					rnode.spcNode, rnode.dbNode, rnode.relNode, forknum, blkno);
+		pq_sendint(&output_message, 0, 4);	/* len first */
+		elog(LOG, "REMOTE RECOVERY no valid page on standby spcnode %d dbnode %d relnode %d forknum %d blkno %d",
+			 rnode.spcNode, rnode.dbNode, rnode.relNode, forknum, blkno);
 	}
-	
+
 	pq_putmessage_noblock('d', output_message.data, output_message.len);
 
 	r = pq_flush();
-	if (r!= 0)
+	if (r != 0)
 	{
 		elog(LOG, "REMOTE RECOVERY cannot flush data");
 		proc_exit(1);
@@ -686,7 +690,7 @@ ProcessPrimaryMessage(void)
  *
  * At the moment, this never returns, but an ereport(ERROR) will take us back
  * to the main loop.
- * 
+ *
  * Loop to handle remote page fetching requests from primary.
  */
 static void
@@ -703,51 +707,51 @@ StartFetchPageReplication(StartReplicationCmd *cmd)
 	pq_flush();
 
 	page_image = (char *) palloc(BLCKSZ);
-	
+
 	streamingDoneSending = streamingDoneReceiving = false;
 	elog(LOG, "start fetch page replication %X/%X timeline %u",
-						(uint32) (cmd->startpoint >> 32),
-						(uint32) (cmd->startpoint),
-						cmd->timeline);
+		 (uint32) (cmd->startpoint >> 32),
+		 (uint32) (cmd->startpoint),
+		 cmd->timeline);
 
-	/* 
-	 * if we are standby, we must wait for the replay 
-	 * process to pass the target checkpoint.
-	 */ 
+	/*
+	 * if we are standby, we must wait for the replay process to pass the
+	 * target checkpoint.
+	 */
 	if (RecoveryInProgress())
 	{
 		XLogRecPtr	replayPtr;
 		TimeLineID	replayTLI;
-		int 		sleep_count = 0;
+		int			sleep_count = 0;
 
-		while(1)
+		while (1)
 		{
 			replayPtr = GetXLogReplayRecPtr(&replayTLI);
-		
+
 			if (cmd->timeline != replayTLI)
 				elog(ERROR, "request different timeline %u %u", cmd->timeline, replayTLI);
-		
+
 			if (cmd->startpoint > replayPtr)
 			{
 				if (!sleep_count)
-					elog(LOG, "REMOTE RECOVERY wait for replay process to pass the targert ckpt %X/%X replayPtr %X/%X", 
-									(uint32) (cmd->startpoint >> 32),
-									(uint32) (cmd->startpoint),
-									(uint32) (replayPtr >> 32),
-									(uint32) (replayPtr));
-				
-				
-				
+					elog(LOG, "REMOTE RECOVERY wait for replay process to pass the targert ckpt %X/%X replayPtr %X/%X",
+						 (uint32) (cmd->startpoint >> 32),
+						 (uint32) (cmd->startpoint),
+						 (uint32) (replayPtr >> 32),
+						 (uint32) (replayPtr));
+
+
+
 				pg_usleep(FETCH_SLEEP_INTERVAL);
 				sleep_count++;
 			}
 			else
 			{
-				elog(LOG, "REMOTE RECOVERY replay process passed the targert ckpt %X/%X replayPtr %X/%X", 
-									(uint32) (cmd->startpoint >> 32),
-									(uint32) (cmd->startpoint),
-									(uint32) (replayPtr >> 32),
-									(uint32) (replayPtr));
+				elog(LOG, "REMOTE RECOVERY replay process passed the targert ckpt %X/%X replayPtr %X/%X",
+					 (uint32) (cmd->startpoint >> 32),
+					 (uint32) (cmd->startpoint),
+					 (uint32) (replayPtr >> 32),
+					 (uint32) (replayPtr));
 				break;
 			}
 		}
@@ -823,7 +827,7 @@ StartFetchPageReplication(StartReplicationCmd *cmd)
 	}
 
 	elog(LOG, "REMOTE RECOVERY streaming done");
-	
+
 	/* Send CommandComplete message */
 	EndCommand("COPY 0", DestRemote);
 }
@@ -869,24 +873,29 @@ StartReplication(StartReplicationCmd *cmd)
 
 	if (cmd->polar_repl_mode == POLAR_REPL_DMA_LOGGER)
 	{
-		/* 
-		 * POLAR: if startpoint from DMA logger is invalid, 
-		 * send from old wal files of start timeline.
+		/*
+		 * POLAR: if startpoint from DMA logger is invalid, send from old wal
+		 * files of start timeline.
 		 */
 		if (XLogRecPtrIsInvalid(cmd->startpoint))
 		{
-			XLogRecPtr 	restart_lsn = polar_set_initial_datamax_restart_lsn(NULL);
+			XLogRecPtr	restart_lsn = polar_set_initial_datamax_restart_lsn(NULL);
 
-			/* Select the maximum of current timeline's switch point and oldest wal file */
+			/*
+			 * Select the maximum of current timeline's switch point and
+			 * oldest wal file
+			 */
 			if (cmd->timeline > 1)
 			{
-				List				*history;
+				List	   *history;
 				XLogRecPtr	switchpoint;
-				TimeLineID 	tli;
+				TimeLineID	tli;
 
-				polar_is_dma_logger_mode = polar_is_dma_logger_node();		/* POLAR: set datamax branch for xlog file path */
+				polar_is_dma_logger_mode = polar_is_dma_logger_node();	/* POLAR: set datamax
+																		 * branch for xlog file
+																		 * path */
 				history = readTimeLineHistory(cmd->timeline);
-				polar_is_dma_logger_mode = false;				/* POLAR: reset */
+				polar_is_dma_logger_mode = false;	/* POLAR: reset */
 
 				switchpoint = tliSwitchPoint(cmd->timeline - 1, history, &tli);
 				if (switchpoint > restart_lsn)
@@ -895,7 +904,7 @@ StartReplication(StartReplicationCmd *cmd)
 				list_free_deep(history);
 			}
 
-			cmd->startpoint = 
+			cmd->startpoint =
 				restart_lsn - XLogSegmentOffset(restart_lsn, wal_segment_size);
 		}
 	}
@@ -937,9 +946,11 @@ StartReplication(StartReplicationCmd *cmd)
 			 * Check that the timeline the client requested exists, and the
 			 * requested start location is on that timeline.
 			 */
-			polar_is_dma_logger_mode = polar_is_dma_logger_node();		/* POLAR: set datamax branch for xlog file path */
+			polar_is_dma_logger_mode = polar_is_dma_logger_node();	/* POLAR: set datamax
+																	 * branch for xlog file
+																	 * path */
 			timeLineHistory = readTimeLineHistory(ThisTimeLineID);
-			polar_is_dma_logger_mode = false;				/* POLAR: reset */
+			polar_is_dma_logger_mode = false;	/* POLAR: reset */
 			switchpoint = tliSwitchPoint(cmd->timeline, timeLineHistory,
 										 &sendTimeLineNextTLI);
 			list_free_deep(timeLineHistory);
@@ -1202,7 +1213,7 @@ CreateReplicationSlot(CreateReplicationSlotCmd *cmd)
 	char	   *slot_name;
 	bool		reserve_wal = false;
 #ifdef ENABLE_DISTRIBUTED_TRANSACTION
-	GlobalTimestamp	snapshot_start_ts = InvalidGlobalTimestamp;
+	GlobalTimestamp snapshot_start_ts = InvalidGlobalTimestamp;
 #endif
 	CRSSnapshotAction snapshot_action = CRS_EXPORT_SNAPSHOT;
 	DestReceiver *dest;
@@ -1317,21 +1328,21 @@ CreateReplicationSlot(CreateReplicationSlotCmd *cmd)
 		{
 			Snapshot	snap;
 #ifdef ENABLE_DISTRIBUTED_TRANSACTION
-			Snapshot 	cur_snap;
+			Snapshot	cur_snap;
 #endif
 			snap = SnapBuildInitialSnapshot(ctx->snapshot_builder);
 			RestoreTransactionSnapshot(snap, MyProc);
 #ifdef ENABLE_DISTRIBUTED_TRANSACTION
 			if (!IsolationUsesXactSnapshot())
 				elog(ERROR, "Isolation level should be larger than Repeatable Read");
-			
+
 			cur_snap = GetTransactionSnapshot();
 			snapshot_start_ts = cur_snap->snapshotcsn;
 			if (!COMMITSEQNO_IS_NORMAL(snapshot_start_ts))
-				elog(ERROR, "invalid snapshot start ts "UINT64_FORMAT, snapshot_start_ts);
-			
+				elog(ERROR, "invalid snapshot start ts " UINT64_FORMAT, snapshot_start_ts);
+
 			if (enable_distri_print)
-				elog(LOG, "logical replication sends snapshot start ts "UINT64_FORMAT, snapshot_start_ts);
+				elog(LOG, "logical replication sends snapshot start ts " UINT64_FORMAT, snapshot_start_ts);
 #endif
 		}
 
@@ -1415,9 +1426,9 @@ CreateReplicationSlot(CreateReplicationSlotCmd *cmd)
 		values[4] = Int64GetDatum(snapshot_start_ts);
 	else
 		nulls[4] = true;
-	
+
 	if (enable_distri_print)
-		elog(LOG, "logical replication sends snapshot start ts "UINT64_FORMAT, snapshot_start_ts);
+		elog(LOG, "logical replication sends snapshot start ts " UINT64_FORMAT, snapshot_start_ts);
 #endif
 	/* send it to dest */
 	do_tup_output(tstate, values, nulls);
@@ -2189,13 +2200,13 @@ ProcessStandbyReplyMessage(void)
 		 (uint32) (flushPtr >> 32), (uint32) flushPtr,
 		 (uint32) (applyPtr >> 32), (uint32) applyPtr,
 		 replyRequested ? " (reply requested)" : "");
-		
+
 	if (enable_distri_print)
 		elog(DEBUG2, "write %X/%X flush %X/%X apply %X/%X%s",
-			(uint32) (writePtr >> 32), (uint32) writePtr,
-			(uint32) (flushPtr >> 32), (uint32) flushPtr,
-			(uint32) (applyPtr >> 32), (uint32) applyPtr,
-			replyRequested ? " (reply requested)" : "");
+			 (uint32) (writePtr >> 32), (uint32) writePtr,
+			 (uint32) (flushPtr >> 32), (uint32) flushPtr,
+			 (uint32) (applyPtr >> 32), (uint32) applyPtr,
+			 replyRequested ? " (reply requested)" : "");
 
 	/* See if we can compute the round-trip lag for these positions. */
 	now = GetCurrentTimestamp();
@@ -2299,6 +2310,7 @@ PhysicalReplicationSlotNewXmin(TransactionId feedbackXmin, TransactionId feedbac
 		ReplicationSlotsComputeRequiredXmin(false);
 	}
 }
+
 /* POLAR end */
 
 /*
@@ -2317,7 +2329,10 @@ TransactionIdInRecentPast(TransactionId xid, uint32 epoch)
 	TransactionId nextXid;
 	uint32		nextEpoch;
 
-	/* POLAR: get primary's nextXid and epoch from polar_datamax_ctl when in datamax mode */
+	/*
+	 * POLAR: get primary's nextXid and epoch from polar_datamax_ctl when in
+	 * datamax mode
+	 */
 	if (!polar_is_dma_logger_node())
 		GetNextXidAndEpoch(&nextXid, &nextEpoch);
 	else
@@ -2429,10 +2444,11 @@ ProcessStandbyHSFeedbackMessage(void)
 	 */
 	if (MyReplicationSlot != NULL)	/* XXX: persistency configurable? */
 		PhysicalReplicationSlotNewXmin(feedbackXmin, feedbackCatalogXmin);
-	/* 
-	 * POLAR: no need to update MyPgXact->xmin in datamax mode 
-	 * MyPgXact->xmin is used to compute oldestxmin for vacuum
-	 * there is no primary data in datamax mode
+
+	/*
+	 * POLAR: no need to update MyPgXact->xmin in datamax mode MyPgXact->xmin
+	 * is used to compute oldestxmin for vacuum there is no primary data in
+	 * datamax mode
 	 */
 	else if (!polar_is_dma_logger_node())
 	{
@@ -2709,13 +2725,13 @@ InitWalSenderSlot(void)
 			/* don't need the lock anymore */
 			MyWalSnd = (WalSnd *) walsnd;
 
-			if(WalSndCtl->sender_running == false)
+			if (WalSndCtl->sender_running == false)
 			{
 				LWLockAcquire(SyncRepLock, LW_EXCLUSIVE);
 				WalSndCtl->sender_running = true;
 				LWLockRelease(SyncRepLock);
 			}
-			
+
 			break;
 		}
 	}
@@ -2826,9 +2842,11 @@ retry:
 					curFileTimeLine = sendTimeLineNextTLI;
 			}
 
-			polar_is_dma_logger_mode = polar_is_dma_logger_node();		/* POLAR: set datamax branch for xlog file path */
+			polar_is_dma_logger_mode = polar_is_dma_logger_node();	/* POLAR: set datamax
+																	 * branch for xlog file
+																	 * path */
 			XLogFilePath(path, curFileTimeLine, sendSegNo, wal_segment_size);
-			polar_is_dma_logger_mode = false;				/* POLAR: reset */
+			polar_is_dma_logger_mode = false;	/* POLAR: reset */
 
 			sendFile = BasicOpenFile(path, O_RDONLY | PG_BINARY);
 			if (sendFile < 0)
@@ -2954,9 +2972,10 @@ XLogSendPhysicalExt(polar_repl_mode_t polar_replication_mode)
 	Size		nbytes;
 
 	/* POLAR */
-	TransactionId polar_primary_next_xid; /* record primary next_xid */
-	uint32        polar_primary_epoch; /* record primary epoch */
-	XLogSegNo	  polar_last_removed_segno; /*record primary's last removed segno */
+	TransactionId polar_primary_next_xid;	/* record primary next_xid */
+	uint32		polar_primary_epoch;	/* record primary epoch */
+	XLogSegNo	polar_last_removed_segno;	/* record primary's last removed
+											 * segno */
 
 	/* If requested switch the WAL sender to the stopping state. */
 	if (got_STOPPING)
@@ -3011,10 +3030,11 @@ XLogSendPhysicalExt(polar_repl_mode_t polar_replication_mode)
 			 * ThisTimeLineID to the new current timeline.
 			 */
 			am_cascading_walsender = false;
+
 			/*
-			 * POLAR: if in DMA mode, ThisTimeLineID will be advance to new timeline 
-			 * in polar_dma_get_flush_lsn and new timeline will be sent before exit 
-			 * from recovery status.
+			 * POLAR: if in DMA mode, ThisTimeLineID will be advance to new
+			 * timeline in polar_dma_get_flush_lsn and new timeline will be
+			 * sent before exit from recovery status.
 			 */
 			if (!POLAR_IS_DMA_REPL(polar_replication_mode) || sendTimeLine != ThisTimeLineID)
 				becameHistoric = true;
@@ -3039,9 +3059,11 @@ XLogSendPhysicalExt(polar_repl_mode_t polar_replication_mode)
 			 */
 			List	   *history;
 
-			polar_is_dma_logger_mode = polar_is_dma_logger_node();		/* POLAR: set datamax branch for xlog file path */
+			polar_is_dma_logger_mode = polar_is_dma_logger_node();	/* POLAR: set datamax
+																	 * branch for xlog file
+																	 * path */
 			history = readTimeLineHistory(ThisTimeLineID);
-			polar_is_dma_logger_mode = false;                           /* POLAR: Leave datamax mode. */
+			polar_is_dma_logger_mode = false;	/* POLAR: Leave datamax mode. */
 			sendTimeLineValidUpto = tliSwitchPoint(sendTimeLine, history, &sendTimeLineNextTLI);
 
 			Assert(sendTimeLine < sendTimeLineNextTLI);
@@ -3174,11 +3196,11 @@ XLogSendPhysicalExt(polar_repl_mode_t polar_replication_mode)
 	resetStringInfo(&output_message);
 
 	/*
-	 * POLAR: when downstream mode is datamax
-	 * we need to send nextXid and Epoch to verify if xmin/epoch of standby is sane
-	 * we also send last_valid_lsn to ensure xlog consistency between primary and datamax
+	 * POLAR: when downstream mode is datamax we need to send nextXid and
+	 * Epoch to verify if xmin/epoch of standby is sane we also send
+	 * last_valid_lsn to ensure xlog consistency between primary and datamax
 	 */
-	if ( polar_replication_mode == POLAR_REPL_DMA_LOGGER)
+	if (polar_replication_mode == POLAR_REPL_DMA_LOGGER)
 		pq_sendbyte(&output_message, 'e');
 	else
 		pq_sendbyte(&output_message, 'w');
@@ -3187,25 +3209,31 @@ XLogSendPhysicalExt(polar_repl_mode_t polar_replication_mode)
 	pq_sendint64(&output_message, SendRqstPtr); /* walEnd */
 
 	{
-		/* 
-		 * POLAR: when downstream mode is datamax, send 
-		 * 1) nextxid and nextepoch to verify the sanity of standby xmin in datamax node 
-		 * 2) current last valid lsn to avoid wal inconsistency between upstream and downstream
-		 * 3) last_remove_segno to avoid datamax removing wal which haven't been removed in upstream 
+		/*
+		 * POLAR: when downstream mode is datamax, send 1) nextxid and
+		 * nextepoch to verify the sanity of standby xmin in datamax node 2)
+		 * current last valid lsn to avoid wal inconsistency between upstream
+		 * and downstream 3) last_remove_segno to avoid datamax removing wal
+		 * which haven't been removed in upstream
 		 */
 		if (polar_replication_mode == POLAR_REPL_DMA_LOGGER)
 		{
 			if (!polar_is_dma_logger_node())
 				GetNextXidAndEpoch(&polar_primary_next_xid, &polar_primary_epoch);
-			/* get next_xid and next_epoch from polar_datamax_ctl when in datamax mode */
+
+			/*
+			 * get next_xid and next_epoch from polar_datamax_ctl when in
+			 * datamax mode
+			 */
 			else
 			{
 				polar_primary_next_xid = pg_atomic_read_u32(&polar_datamax_ctl->polar_primary_next_xid);
 				polar_primary_epoch = pg_atomic_read_u32(&polar_datamax_ctl->polar_primary_epoch);
 			}
-			pq_sendint32(&output_message, polar_primary_next_xid); /* current next xid */
+			pq_sendint32(&output_message, polar_primary_next_xid);	/* current next xid */
 			pq_sendint32(&output_message, polar_primary_epoch); /* current epoch */
-			polar_last_removed_segno = XLogGetLastRemovedSegno(); /* current last removed segno */
+			polar_last_removed_segno = XLogGetLastRemovedSegno();	/* current last removed
+																	 * segno */
 			pq_sendint64(&output_message, polar_last_removed_segno);
 		}
 		/* POLAR end */
@@ -3221,12 +3249,13 @@ XLogSendPhysicalExt(polar_repl_mode_t polar_replication_mode)
 		output_message.data[output_message.len] = '\0';
 
 		/*
-		 * Fill the send timestamp last, so that it is taken as late as possible.
+		 * Fill the send timestamp last, so that it is taken as late as
+		 * possible.
 		 */
 		resetStringInfo(&tmpbuf);
 		pq_sendint64(&tmpbuf, GetCurrentTimestamp());
 		memcpy(&output_message.data[1 + sizeof(int64) + sizeof(int64)],
-				tmpbuf.data, sizeof(int64));
+			   tmpbuf.data, sizeof(int64));
 	}
 
 	pq_putmessage_noblock('d', output_message.data, output_message.len);
@@ -3242,13 +3271,14 @@ XLogSendPhysicalExt(polar_repl_mode_t polar_replication_mode)
 		SpinLockRelease(&walsnd->mutex);
 	}
 
-	if (update_process_title)		
-	{		
-		char		activitymsg[50];		
-		snprintf(activitymsg, sizeof(activitymsg), "streaming %X/%X",		
-				 (uint32) (sentPtr >> 32), (uint32) sentPtr);		
-		set_ps_display(activitymsg, false);		
-	}		
+	if (update_process_title)
+	{
+		char		activitymsg[50];
+
+		snprintf(activitymsg, sizeof(activitymsg), "streaming %X/%X",
+				 (uint32) (sentPtr >> 32), (uint32) sentPtr);
+		set_ps_display(activitymsg, false);
+	}
 
 	return;
 }
@@ -3921,7 +3951,7 @@ LagTrackerWrite(XLogRecPtr lsn, TimestampTz local_flush_time)
 	 */
 	if (LagTracker.last_lsn == lsn)
 		return;
-	LagTracker.last_lsn = lsn;
+	LagTracker. last_lsn = lsn;
 
 	/*
 	 * If advancing the write head of the circular buffer would crash into any
@@ -3929,7 +3959,7 @@ LagTrackerWrite(XLogRecPtr lsn, TimestampTz local_flush_time)
 	 * slowest reader (presumably apply) is the one that controls the release
 	 * of space.
 	 */
-	new_write_head = (LagTracker.write_head + 1) % LAG_TRACKER_BUFFER_SIZE;
+	new_write_head = (LagTracker.write_head + 1) %LAG_TRACKER_BUFFER_SIZE;
 	buffer_full = false;
 	for (i = 0; i < NUM_SYNC_REP_WAIT_MODE; ++i)
 	{
@@ -3945,16 +3975,18 @@ LagTrackerWrite(XLogRecPtr lsn, TimestampTz local_flush_time)
 	if (buffer_full)
 	{
 		new_write_head = LagTracker.write_head;
+
 		if (LagTracker.write_head > 0)
-			LagTracker.write_head--;
+			LagTracker. write_head--;
+
 		else
-			LagTracker.write_head = LAG_TRACKER_BUFFER_SIZE - 1;
+			LagTracker. write_head = LAG_TRACKER_BUFFER_SIZE - 1;
 	}
 
 	/* Store a sample at the current write head position. */
-	LagTracker.buffer[LagTracker.write_head].lsn = lsn;
-	LagTracker.buffer[LagTracker.write_head].time = local_flush_time;
-	LagTracker.write_head = new_write_head;
+	LagTracker. buffer[LagTracker.write_head].lsn = lsn;
+	LagTracker. buffer[LagTracker.write_head].time = local_flush_time;
+	LagTracker. write_head = new_write_head;
 }
 
 /*
@@ -3980,10 +4012,10 @@ LagTrackerRead(int head, XLogRecPtr lsn, TimestampTz now)
 		   LagTracker.buffer[LagTracker.read_heads[head]].lsn <= lsn)
 	{
 		time = LagTracker.buffer[LagTracker.read_heads[head]].time;
-		LagTracker.last_read[head] =
-			LagTracker.buffer[LagTracker.read_heads[head]];
-		LagTracker.read_heads[head] =
-			(LagTracker.read_heads[head] + 1) % LAG_TRACKER_BUFFER_SIZE;
+		LagTracker. last_read[head] =
+		LagTracker.buffer[LagTracker.read_heads[head]];
+		LagTracker. read_heads[head] =
+		(LagTracker.read_heads[head] + 1) %LAG_TRACKER_BUFFER_SIZE;
 	}
 
 	/*
@@ -3994,7 +4026,7 @@ LagTrackerRead(int head, XLogRecPtr lsn, TimestampTz now)
 	 * of idleness.
 	 */
 	if (LagTracker.read_heads[head] == LagTracker.write_head)
-		LagTracker.last_read[head].time = 0;
+		LagTracker. last_read[head].time = 0;
 
 	if (time > now)
 	{
@@ -4068,7 +4100,7 @@ LagTrackerRead(int head, XLogRecPtr lsn, TimestampTz now)
 	return now - time;
 }
 
-polar_repl_mode_t 
+polar_repl_mode_t
 polar_gen_replication_mode(void)
 {
 	if (polar_is_dma_data_node())
@@ -4079,7 +4111,7 @@ polar_gen_replication_mode(void)
 		return POLAR_REPL_DEFAULT;
 }
 
-const char* 
+const char *
 polar_replication_mode_str(polar_repl_mode_t mode)
 {
 	switch (mode)
@@ -4127,8 +4159,9 @@ polar_dma_get_flush_lsn(void)
 	XLogRecPtr	result;
 
 	/*
-	 * POLAR: in DMA mode, advance to new timeline from consensus flushed point.
-	 * otherwise, the new timeline cannot be sent before exit from recovery status.
+	 * POLAR: in DMA mode, advance to new timeline from consensus flushed
+	 * point. otherwise, the new timeline cannot be sent before exit from
+	 * recovery status.
 	 */
 	ConsensusGetXLogFlushedLSN(&receivePtr, &receiveTLI);
 

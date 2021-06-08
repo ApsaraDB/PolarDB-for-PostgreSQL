@@ -141,9 +141,9 @@ LogicalDecodingProcessRecord(LogicalDecodingContext *ctx, XLogReaderState *recor
 			 */
 		case RM_SMGR_ID:
 		case RM_CLOG_ID:
-		#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
 		case RM_CTSLOG_ID:
-		#endif
+#endif
 		case RM_DBASE_ID:
 		case RM_TBLSPC_ID:
 		case RM_MULTIXACT_ID:
@@ -627,11 +627,11 @@ DecodeCommit(LogicalDecodingContext *ctx, XLogRecordBuffer *buf,
 	/* replay actions of all transaction + subtransactions in order */
 	ReorderBufferCommit(ctx->reorder, xid, buf->origptr, buf->endptr,
 						commit_time, origin_id, origin_lsn
-						#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
 						,
 						cts
-						#endif
-						);
+#endif
+		);
 }
 
 /*

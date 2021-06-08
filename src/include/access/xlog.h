@@ -113,21 +113,21 @@ extern bool log_checkpoints;
 extern int	CheckPointSegments;
 
 #ifdef ENABLE_PARALLEL_RECOVERY
-extern int max_parallel_replay_workers;
+extern int	max_parallel_replay_workers;
 extern bool enable_parallel_recovery_print;
 extern bool enable_parallel_recovery_bypage;
 extern bool enable_parallel_recovery_locklog;
 extern bool AllowHotStandbyInconsistency;
-extern int max_workload_adjust_period;
+extern int	max_workload_adjust_period;
 extern double parallel_replay_workload_fluctuation_factor;
 extern bool enable_dynamic_adjust_workload;
 #endif
 
 #ifdef ENABLE_REMOTE_RECOVERY
-extern bool		checkpointSyncStandby;
-extern XLogRecPtr	checkpointRedo;
-extern TimeLineID   checkpointTLI;
-extern bool 	fullPageRemoteFetch;
+extern bool checkpointSyncStandby;
+extern XLogRecPtr checkpointRedo;
+extern TimeLineID checkpointTLI;
+extern bool fullPageRemoteFetch;
 #endif
 
 /* Archive modes */
@@ -288,10 +288,10 @@ extern void ParallelRecoveryWorkerMain(Datum main_arg);
 extern bool DispatchWalRecord(XLogRecord *record, XLogReaderState *xlogreader);
 extern void WaitForWorkersSyncDone(void);
 extern bool IsBlockAssignedToThisWorker(Oid relFile, ForkNumber forknum, BlockNumber blkno);
-extern int  GetParallelRedoWorkerId(void);
+extern int	GetParallelRedoWorkerId(void);
 
 extern int	max_queue_size;
-extern int replay_buffer_size;
+extern int	replay_buffer_size;
 #endif
 extern void BootStrapXLOG(void);
 extern void LocalProcessControlFile(bool reset);
@@ -349,15 +349,15 @@ extern XLogRecPtr do_pg_stop_backup(char *labelfile, bool waitforarchive,
 				  TimeLineID *stoptli_p);
 extern void do_pg_abort_backup(void);
 extern SessionBackupState get_backup_status(void);
-int GetSyncBit(void);
+int			GetSyncBit(void);
 
 #ifdef ENABLE_PARALLEL_RECOVERY
 typedef struct
 {
-	RelFileNode key;        /* lookup key - must be first */
-	int     workerIndex;
-	int     msgCnt;
-} ParallelRedoRelfilenodeMapEntry;
+	RelFileNode key;			/* lookup key - must be first */
+	int			workerIndex;
+	int			msgCnt;
+}			ParallelRedoRelfilenodeMapEntry;
 
 extern HTAB *ParallelRedoRelfilenodeMapHash;
 #endif
@@ -368,15 +368,15 @@ extern void polar_update_last_removed_ptr(char *filename);
 /* POLAR Consensus */
 extern bool polar_check_pm_in_state_change(void);
 extern void polar_signal_pm_state_change(int state,
-					const char *leaderAddr, int leaderPort, uint64 term, 
-					uint64 nextAppendTerm, uint32 tli, uint64 logUpto);
+							 const char *leaderAddr, int leaderPort, uint64 term,
+							 uint64 nextAppendTerm, uint32 tli, uint64 logUpto);
 extern void polar_signal_recovery_state_change(
-					bool newLeader, bool resumeLeader);
+								   bool newLeader, bool resumeLeader);
 extern bool polar_dma_check_logger_status(char **primaryConnInfo,
-					XLogRecPtr *receivedUpto, TimeLineID *receivedTLI, 
-					bool *requestNextTLI);
-extern int polar_wait_recovery_wakeup(int wakeEvents, long timeout, 
-					uint32 wait_event_info);
+							  XLogRecPtr *receivedUpto, TimeLineID *receivedTLI,
+							  bool *requestNextTLI);
+extern int polar_wait_recovery_wakeup(int wakeEvents, long timeout,
+						   uint32 wait_event_info);
 extern bool polar_is_dma_data_node(void);
 extern bool polar_is_dma_logger_node(void);
 

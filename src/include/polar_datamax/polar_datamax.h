@@ -27,18 +27,18 @@
 
 typedef struct polar_datamax_ctl_t
 {
-	LWLock              meta_lock;
-	polar_datamax_meta_data_t   meta;
+	LWLock		meta_lock;
+	polar_datamax_meta_data_t meta;
 
-	slock_t             lock;
+	slock_t		lock;
 
 	/* POLAR: record nextxid and epoch of primary */
-	pg_atomic_uint32        polar_primary_next_xid;
-	pg_atomic_uint32        polar_primary_epoch;
-} polar_datamax_ctl_t;
+	pg_atomic_uint32 polar_primary_next_xid;
+	pg_atomic_uint32 polar_primary_epoch;
+}			polar_datamax_ctl_t;
 
 extern bool polar_is_dma_logger_mode;
-extern polar_datamax_ctl_t *polar_datamax_ctl;
+extern polar_datamax_ctl_t * polar_datamax_ctl;
 extern bool polar_datamax_shutdown_requested;
 
 extern Size polar_datamax_shmem_size(void);
@@ -47,39 +47,47 @@ extern void polar_datamax_shmem_init(void);
 extern uint64 polar_datamax_get_sys_identifier(void);
 
 /* meta operations */
-extern bool polar_datamax_is_initial(polar_datamax_ctl_t *ctl);
-extern void polar_datamax_init_meta(polar_datamax_meta_data_t *meta, bool create);
+extern bool polar_datamax_is_initial(polar_datamax_ctl_t * ctl);
+extern void polar_datamax_init_meta(polar_datamax_meta_data_t * meta, bool create);
 extern bool polar_datamax_meta_file_exist(void);
-extern void polar_datamax_load_meta(polar_datamax_ctl_t *ctl);
-extern void polar_datamax_write_meta(polar_datamax_ctl_t *ctl, bool update);
-extern void polar_datamax_update_min_received_info(polar_datamax_ctl_t *ctl, TimeLineID tli, XLogRecPtr lsn);
-extern XLogRecPtr polar_datamax_get_min_received_lsn(polar_datamax_ctl_t *ctl, TimeLineID *tli);
-extern void polar_datamax_update_upstream_last_removed_segno(polar_datamax_ctl_t *ctl, XLogSegNo segno);
-extern XLogSegNo polar_datamax_get_upstream_last_removed_segno(polar_datamax_ctl_t *ctl);
+extern void polar_datamax_load_meta(polar_datamax_ctl_t * ctl);
+extern void polar_datamax_write_meta(polar_datamax_ctl_t * ctl, bool update);
+extern void polar_datamax_update_min_received_info(polar_datamax_ctl_t * ctl, TimeLineID tli, XLogRecPtr lsn);
+extern XLogRecPtr polar_datamax_get_min_received_lsn(polar_datamax_ctl_t * ctl, TimeLineID *tli);
+extern void polar_datamax_update_upstream_last_removed_segno(polar_datamax_ctl_t * ctl, XLogSegNo segno);
+extern XLogSegNo polar_datamax_get_upstream_last_removed_segno(polar_datamax_ctl_t * ctl);
+
 /* WAL */
 extern void polar_datamax_remove_old_wal(XLogRecPtr lsn, bool force);
-extern int  polar_datamax_remove_wal_file(char *seg_name);
+extern int	polar_datamax_remove_wal_file(char *seg_name);
+
 /* replication */
-extern  void polar_datamax_save_replication_slots(void);
+extern void polar_datamax_save_replication_slots(void);
 extern XLogRecPtr polar_datamax_replication_start_lsn(ReplicationSlot *slot);
 extern XLogRecPtr polar_get_smallest_walfile_lsn(void);
+
 /* utility */
 extern void polar_datamax_validate_dir(void);
 extern void polar_datamax_check_mkdir(const char *path, int emode);
+
 /* file path */
 extern void polar_datamax_wal_file_path(char *path, TimeLineID tli, XLogSegNo logSegNo, int wal_segsz_bytes);
 extern void polar_datamax_status_file_path(char *path, const char *xlog, char *suffix);
 extern void polar_datamax_tl_history_file_path(char *path, TimeLineID tli);
+
 /* archive func */
-extern  void polar_datamax_archive(void);
-extern  void polar_datamax_remove_archivedone_wal(polar_datamax_ctl_t *ctl);
-extern  void polar_datamax_handle_remove_archivedone_wal(polar_datamax_ctl_t *ctl);
+extern void polar_datamax_archive(void);
+extern void polar_datamax_remove_archivedone_wal(polar_datamax_ctl_t * ctl);
+extern void polar_datamax_handle_remove_archivedone_wal(polar_datamax_ctl_t * ctl);
+
 /* prealloc wal file */
-extern void  polar_datamax_prealloc_wal_file(polar_datamax_ctl_t *ctl);
-extern void  polar_datamax_handle_prealloc_walfile(polar_datamax_ctl_t *ctl);
-extern void  polar_datamax_report_io_error(const char *path, int log_level);
+extern void polar_datamax_prealloc_wal_file(polar_datamax_ctl_t * ctl);
+extern void polar_datamax_handle_prealloc_walfile(polar_datamax_ctl_t * ctl);
+extern void polar_datamax_report_io_error(const char *path, int log_level);
+
 /* func for test */
 extern uint64 polar_datamax_get_datamax_sys_identifier(void);
+
 /* inline func */
 /*
  * POLAR: Calculate crc for datamax meta, here we use unsigned char as data type
@@ -88,7 +96,7 @@ extern uint64 polar_datamax_get_datamax_sys_identifier(void);
 static inline pg_crc32c
 polar_datamax_calc_meta_crc(unsigned char *data, size_t len)
 {
-	pg_crc32c crc;
+	pg_crc32c	crc;
 
 	INIT_CRC32C(crc);
 	COMP_CRC32C(crc, data, len);
@@ -100,4 +108,4 @@ polar_datamax_calc_meta_crc(unsigned char *data, size_t len)
 /* main entry */
 extern void polar_datamax_main(void);
 
-#endif /* !POLAR_DATAMAX_H */
+#endif							/* !POLAR_DATAMAX_H */

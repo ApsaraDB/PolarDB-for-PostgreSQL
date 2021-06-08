@@ -4,7 +4,7 @@
  *	  PostgreSQL logical replay/reorder buffer management
  *
  * Support CTS-based logical replication
- * 
+ *
  * Portions Copyright (c) 2020, Alibaba Group Holding Limited
  * Copyright (c) 2012-2018, PostgreSQL Global Development Group
  *
@@ -470,8 +470,8 @@ ReorderBufferReturnTupleBuf(ReorderBuffer *rb, ReorderBufferTupleBuf *tuple)
 Oid *
 ReorderBufferGetRelids(ReorderBuffer *rb, int nrelids)
 {
-	Oid	   *relids;
-	Size	alloc_len;
+	Oid		   *relids;
+	Size		alloc_len;
 
 	alloc_len = sizeof(Oid) * nrelids;
 
@@ -1429,11 +1429,11 @@ ReorderBufferCommit(ReorderBuffer *rb, TransactionId xid,
 					XLogRecPtr commit_lsn, XLogRecPtr end_lsn,
 					TimestampTz commit_time,
 					RepOriginId origin_id, XLogRecPtr origin_lsn
-					#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
 					,
 					CommitTs cts
-					#endif
-					)
+#endif
+)
 {
 	ReorderBufferTXN *txn;
 	volatile Snapshot snapshot_now;
@@ -1453,9 +1453,9 @@ ReorderBufferCommit(ReorderBuffer *rb, TransactionId xid,
 	txn->commit_time = commit_time;
 	txn->origin_id = origin_id;
 	txn->origin_lsn = origin_lsn;
-	#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
 	txn->cts = cts;
-	#endif
+#endif
 
 	/*
 	 * If this transaction has no snapshot, it didn't make any changes to the
@@ -2450,8 +2450,8 @@ ReorderBufferSerializeChange(ReorderBuffer *rb, ReorderBufferTXN *txn,
 			}
 		case REORDER_BUFFER_CHANGE_TRUNCATE:
 			{
-				Size	size;
-				char   *data;
+				Size		size;
+				char	   *data;
 
 				/* account for the OIDs of truncated relations */
 				size = sizeof(Oid) * change->data.truncate.nrelids;
@@ -2745,7 +2745,7 @@ ReorderBufferRestoreChange(ReorderBuffer *rb, ReorderBufferTXN *txn,
 			/* the base struct contains all the data, easy peasy */
 		case REORDER_BUFFER_CHANGE_TRUNCATE:
 			{
-				Oid	   *relids;
+				Oid		   *relids;
 
 				relids = ReorderBufferGetRelids(rb,
 												change->data.truncate.nrelids);

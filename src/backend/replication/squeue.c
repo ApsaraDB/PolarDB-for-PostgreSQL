@@ -38,32 +38,36 @@
 #include "replication/squeue.h"
 
 
-extern void ThreadSemaInit(ThreadSema *sema, int32 init);
-extern void ThreadSemaDown(ThreadSema *sema);
-extern void ThreadSemaUp(ThreadSema *sema);
+extern void ThreadSemaInit(ThreadSema * sema, int32 init);
+extern void ThreadSemaDown(ThreadSema * sema);
+extern void ThreadSemaUp(ThreadSema * sema);
 
-typedef  slock_t pg_spin_lock;
+typedef slock_t pg_spin_lock;
 
-static void spinlock_init(pg_spin_lock *lock);
-static void spinlock_lock(pg_spin_lock *lock);
-static void spinlock_unlock(pg_spin_lock *lock);
+static void spinlock_init(pg_spin_lock * lock);
+static void spinlock_lock(pg_spin_lock * lock);
+static void spinlock_unlock(pg_spin_lock * lock);
 
-void ThreadMutexInit(pthread_mutex_t *mutex)
+void
+ThreadMutexInit(pthread_mutex_t *mutex)
 {
 	pthread_mutex_init(mutex, 0);
 }
 
-void ThreadMutexLock(pthread_mutex_t *mutex)
+void
+ThreadMutexLock(pthread_mutex_t *mutex)
 {
 	pthread_mutex_lock(mutex);
 }
 
-void ThreadMutexUnlock(pthread_mutex_t *mutex)
+void
+ThreadMutexUnlock(pthread_mutex_t *mutex)
 {
 	pthread_mutex_unlock(mutex);
 }
 
-void ThreadSemaInit(ThreadSema *sema, int32 init)
+void
+ThreadSemaInit(ThreadSema * sema, int32 init)
 {
 	if (sema)
 	{
@@ -73,71 +77,76 @@ void ThreadSemaInit(ThreadSema *sema, int32 init)
 	}
 }
 
-void ThreadSemaDown(ThreadSema *sema)
-{            
+void
+ThreadSemaDown(ThreadSema * sema)
+{
 	if (sema)
 	{
-		(void)pthread_mutex_lock(&sema->m_mutex);
+		(void) pthread_mutex_lock(&sema->m_mutex);
 
-		if (--(sema->m_cnt) < 0) 
+		if (--(sema->m_cnt) < 0)
 		{
 			/* thread goes to sleep */
 
-			(void)pthread_cond_wait(&sema->m_cond, &sema->m_mutex);
+			(void) pthread_cond_wait(&sema->m_cond, &sema->m_mutex);
 		}
 
-		(void)pthread_mutex_unlock(&sema->m_mutex);
+		(void) pthread_mutex_unlock(&sema->m_mutex);
 	}
 }
 
-void ThreadSemaUp(ThreadSema *sema)
+void
+ThreadSemaUp(ThreadSema * sema)
 {
 	if (sema)
 	{
-		(void)pthread_mutex_lock(&sema->m_mutex);
+		(void) pthread_mutex_lock(&sema->m_mutex);
 
-		if ((sema->m_cnt)++ < 0) 
+		if ((sema->m_cnt)++ < 0)
 		{
-			/*wake up sleeping thread*/                
-			(void)pthread_cond_signal(&sema->m_cond);
+			/* wake up sleeping thread */
+			(void) pthread_cond_signal(&sema->m_cond);
 		}
 
 
-		(void)pthread_mutex_unlock(&sema->m_mutex);
+		(void) pthread_mutex_unlock(&sema->m_mutex);
 	}
 }
 
-void spinlock_init(pg_spin_lock *lock)
-{    
+void
+spinlock_init(pg_spin_lock * lock)
+{
 	SpinLockInit(lock);
 }
 
-void spinlock_lock(pg_spin_lock *lock)
+void
+spinlock_lock(pg_spin_lock * lock)
 {
 	if (lock)
 	{
-		SpinLockAcquire(lock); 
+		SpinLockAcquire(lock);
 	}
 }
 
-void spinlock_unlock(pg_spin_lock *lock)
+void
+spinlock_unlock(pg_spin_lock * lock)
 {
 	if (lock)
 	{
-		SpinLockRelease(lock); 
+		SpinLockRelease(lock);
 	}
 }
 
 
-int32 CreateThread(void *(*f) (void *), void *arg, int32 mode)
+int32		CreateThread(void *(*f) (void *), void *arg, int32 mode)
 {
 
 	pthread_attr_t attr;
-	pthread_t      threadid;
-	int            ret = 0;
+	pthread_t	threadid;
+	int			ret = 0;
 
 	pthread_attr_init(&attr);
-	switch (mode) 
+	switch (mode)
 	{
 		case MT_THR_JOINABLE:
 			{
@@ -148,7 +157,7 @@ int32 CreateThread(void *(*f) (void *), void *arg, int32 mode)
 			{
 				pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
 				break;
-			}        
+			}
 		default:
 			{
 				elog(ERROR, "invalid thread mode %d\n", mode);
@@ -159,18 +168,21 @@ int32 CreateThread(void *(*f) (void *), void *arg, int32 mode)
 }
 
 
-PGPipe* CreatePipe(uint32 size)
+PGPipe *
+CreatePipe(uint32 size)
 {
-	PGPipe *pPipe = NULL;
-	pPipe = palloc0( sizeof(PGPipe));
-	pPipe->m_List = (void**)palloc0( sizeof(void*) * size);    
-	pPipe->m_Length = size;            
-	pPipe->m_Head   = 0;
-	pPipe->m_Tail   = 0;
+	PGPipe	   *pPipe = NULL;
+
+	pPipe = palloc0(sizeof(PGPipe));
+	pPipe->m_List = (void **) palloc0(sizeof(void *) * size);
+	pPipe->m_Length = size;
+	pPipe->m_Head = 0;
+	pPipe->m_Tail = 0;
 	spinlock_init(&(pPipe->m_lock));
 	return pPipe;
 }
-void DestoryPipe(PGPipe *pPipe)
+void
+DestoryPipe(PGPipe * pPipe)
 {
 	if (pPipe)
 	{
@@ -179,18 +191,20 @@ void DestoryPipe(PGPipe *pPipe)
 	}
 }
 
-void *PipeGet(PGPipe *pPipe)
+void *
+PipeGet(PGPipe * pPipe)
 {
-	void *ptr = NULL;
+	void	   *ptr = NULL;
+
 	spinlock_lock(&(pPipe->m_lock));
 	if (pPipe->m_Head == pPipe->m_Tail)
 	{
 		spinlock_unlock(&(pPipe->m_lock));
-		return NULL;                
-	}            
-	ptr                             = pPipe->m_List[pPipe->m_Head];
-	pPipe->m_List[pPipe->m_Head] = NULL;                
-	pPipe->m_Head                   = (pPipe->m_Head  + 1) % pPipe->m_Length;  
+		return NULL;
+	}
+	ptr = pPipe->m_List[pPipe->m_Head];
+	pPipe->m_List[pPipe->m_Head] = NULL;
+	pPipe->m_Head = (pPipe->m_Head + 1) % pPipe->m_Length;
 	spinlock_unlock(&(pPipe->m_lock));
 	return ptr;
 }
@@ -198,7 +212,8 @@ void *PipeGet(PGPipe *pPipe)
 /**
  * add p to the pipe, return 0 if successful, -1 if fail
  */
-int PipePut(PGPipe *pPipe, void *p)
+int
+PipePut(PGPipe * pPipe, void *p)
 {
 	spinlock_lock(&(pPipe->m_lock));
 	if ((pPipe->m_Tail + 1) % pPipe->m_Length == pPipe->m_Head)
@@ -207,11 +222,12 @@ int PipePut(PGPipe *pPipe, void *p)
 		return -1;
 	}
 	pPipe->m_List[pPipe->m_Tail] = p;
-	pPipe->m_Tail = (pPipe->m_Tail  + 1) % pPipe->m_Length;  
-	spinlock_unlock(&(pPipe->m_lock));    
+	pPipe->m_Tail = (pPipe->m_Tail + 1) % pPipe->m_Length;
+	spinlock_unlock(&(pPipe->m_lock));
 	return 0;
 }
-bool PipeIsFull(PGPipe *pPipe)
+bool
+PipeIsFull(PGPipe * pPipe)
 {
 	spinlock_lock(&(pPipe->m_lock));
 	if ((pPipe->m_Tail + 1) % pPipe->m_Length == pPipe->m_Head)
@@ -225,7 +241,8 @@ bool PipeIsFull(PGPipe *pPipe)
 		return false;
 	}
 }
-bool IsEmpty(PGPipe *pPipe)
+bool
+IsEmpty(PGPipe * pPipe)
 {
 	spinlock_lock(&(pPipe->m_lock));
 	if (pPipe->m_Tail == pPipe->m_Head)
@@ -239,12 +256,13 @@ bool IsEmpty(PGPipe *pPipe)
 		return false;
 	}
 }
-int PipeLength(PGPipe *pPipe)
+int
+PipeLength(PGPipe * pPipe)
 {
-	int len = -1;
+	int			len = -1;
+
 	spinlock_lock(&(pPipe->m_lock));
 	len = (pPipe->m_Tail - pPipe->m_Head + pPipe->m_Length) % pPipe->m_Length;
 	spinlock_unlock(&(pPipe->m_lock));
 	return len;
 }
-

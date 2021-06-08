@@ -38,17 +38,17 @@
 
 
 /*
- * During ConsensusSimpleLruFlush(), we will usually not need to fsync for every 
- * writes, because we may need to write several pages per file.  We can 
- * consolidate the I/O requests by leaving the file open until we flush next file.  
+ * During ConsensusSimpleLruFlush(), we will usually not need to fsync for every
+ * writes, because we may need to write several pages per file.  We can
+ * consolidate the I/O requests by leaving the file open until we flush next file.
  */
 typedef struct ConsensusSlruFlushFile
 {
 	int			fd;
-	uint64	segno;
-	bool		create_if_not_exists;	
+	uint64		segno;
+	bool		create_if_not_exists;
 	bool		fsync;
-} ConsensusSlruFlushFile;
+}			ConsensusSlruFlushFile;
 
 #define ConsensusSlruRecentlyUsed(shared, slotno)	\
 	do { \
@@ -59,28 +59,28 @@ typedef struct ConsensusSlruFlushFile
 		} \
 	} while (0)
 
-#define CONSENSUS_SLRU_VICTIM_WINDOW	128      /* victim slot window */
+#define CONSENSUS_SLRU_VICTIM_WINDOW	128 /* victim slot window */
 
-const consensus_slru_stat *consensus_slru_stats[CONSENSUS_SLRU_STATS_NUM];
-int n_consensus_slru_stats = 0;
+const		consensus_slru_stat *consensus_slru_stats[CONSENSUS_SLRU_STATS_NUM];
+int			n_consensus_slru_stats = 0;
 
 static void consensus_slru_wait_io(ConsensusSlruCtl ctl, int slotno);
-static bool consensus_slru_internal_write_page(ConsensusSlruCtl ctl, int slotno, ConsensusSlruFlushFile *fdata);
+static bool consensus_slru_internal_write_page(ConsensusSlruCtl ctl, int slotno, ConsensusSlruFlushFile * fdata);
 static bool consensus_slru_physical_read_page(ConsensusSlruCtl ctl, uint64 pageno, int slotno);
-static bool consensus_slru_physical_write_page(ConsensusSlruCtl ctl, uint64 pageno, int slotno, 
-													int offset, ConsensusSlruFlushFile *fdata);
+static bool consensus_slru_physical_write_page(ConsensusSlruCtl ctl, uint64 pageno, int slotno,
+								   int offset, ConsensusSlruFlushFile * fdata);
 static int	consensus_slru_select_lru_page(ConsensusSlruCtl ctl, uint64 pageno);
 
 static void consensus_slru_internal_delete_segment(ConsensusSlruCtl ctl, char *filename);
 
 static void consensus_slru_file_dir(ConsensusSlruCtl ctl, char *path);
-static void consensus_slru_file_name_by_seg(ConsensusSlruCtl ctl, 
-																							char *path, uint64 seg);
-static void consensus_slru_file_name_by_name(ConsensusSlruCtl ctl, 
-																							 char *path, char *filename);
+static void consensus_slru_file_name_by_seg(ConsensusSlruCtl ctl,
+								char *path, uint64 seg);
+static void consensus_slru_file_name_by_name(ConsensusSlruCtl ctl,
+								 char *path, char *filename);
 
-static inline void consensus_slru_set_page_status(ConsensusSlruShared shared, 
-																			int slotno, ConsensusSlruPageStatus pagestatus);
+static inline void consensus_slru_set_page_status(ConsensusSlruShared shared,
+							   int slotno, ConsensusSlruPageStatus pagestatus);
 
 /*
  * Initialization of shared memory
@@ -103,19 +103,19 @@ ConsensusSimpleLruShmemSize(int nslots, int szblock, int nlsns)
 }
 
 /*
- * Init share memory, so must be called by consensus master thread before start other thread 
+ * Init share memory, so must be called by consensus master thread before start other thread
  */
 void
-ConsensusSimpleLruInit(ConsensusSlruCtl ctl, const char *name, int szblock, int nslots, int nlsns, 
-							pthread_rwlock_t *ctllock, flush_hook before_flush_hook, const char *subdir)
+ConsensusSimpleLruInit(ConsensusSlruCtl ctl, const char *name, int szblock, int nslots, int nlsns,
+					   pthread_rwlock_t * ctllock, flush_hook before_flush_hook, const char *subdir)
 {
-	ConsensusSlruShared	shared;
+	ConsensusSlruShared shared;
 	bool		found;
-	char 		path[MAXPGPATH];
+	char		path[MAXPGPATH];
 
 	shared = (ConsensusSlruShared) ShmemInitStruct(name,
-										  ConsensusSimpleLruShmemSize(nslots, szblock, nlsns),
-										  &found);
+												   ConsensusSimpleLruShmemSize(nslots, szblock, nlsns),
+												   &found);
 
 	if (!IsUnderPostmaster)
 	{
@@ -126,7 +126,7 @@ ConsensusSimpleLruInit(ConsensusSlruCtl ctl, const char *name, int szblock, int 
 		pthread_rwlockattr_t lock_attr;
 
 		pthread_rwlockattr_init(&lock_attr);
-		pthread_rwlockattr_setpshared(&lock_attr,PTHREAD_PROCESS_SHARED);
+		pthread_rwlockattr_setpshared(&lock_attr, PTHREAD_PROCESS_SHARED);
 
 		Assert(!found);
 		memset(shared, 0, sizeof(ConsensusSlruSharedData));
@@ -181,8 +181,8 @@ ConsensusSimpleLruInit(ConsensusSlruCtl ctl, const char *name, int szblock, int 
 		/* for slru stat */
 		MemSet(&shared->stat, 0, sizeof(consensus_slru_stat));
 		shared->stat.name = shared->name;
-		shared->stat.n_slots = (uint)nslots;
-		shared->stat.n_page_status_stat[SLRU_PAGE_EMPTY] = (uint)nslots;
+		shared->stat.n_slots = (uint) nslots;
+		shared->stat.n_page_status_stat[SLRU_PAGE_EMPTY] = (uint) nslots;
 
 		if (n_consensus_slru_stats < CONSENSUS_SLRU_STATS_NUM)
 			consensus_slru_stats[n_consensus_slru_stats++] = &shared->stat;
@@ -194,8 +194,8 @@ ConsensusSimpleLruInit(ConsensusSlruCtl ctl, const char *name, int szblock, int 
 		Assert(found);
 
 	/*
-	 * Initialize the unshared control struct, including directory path 
-	 * and block size.
+	 * Initialize the unshared control struct, including directory path and
+	 * block size.
 	 */
 	ctl->shared = shared;
 	ctl->szblock = szblock;
@@ -246,8 +246,9 @@ ConsensusSimpleLruValidateDir(ConsensusSlruCtl ctl)
 int
 ConsensusSimpleLruZeroPage(ConsensusSlruCtl ctl, uint64 pageno)
 {
-	ConsensusSlruShared	shared = ctl->shared;
+	ConsensusSlruShared shared = ctl->shared;
 	int			slotno;
+
 	/* POLAR: slru stat */
 	consensus_slru_stat *stat = &shared->stat;
 
@@ -286,11 +287,12 @@ ConsensusSimpleLruZeroPage(ConsensusSlruCtl ctl, uint64 pageno)
 static void
 consensus_slru_wait_io(ConsensusSlruCtl ctl, int slotno)
 {
-	ConsensusSlruShared	shared = ctl->shared;
+	ConsensusSlruShared shared = ctl->shared;
 	consensus_slru_stat *stat = &shared->stat;
 
-	bool wait_reading = false;
-	bool wait_writing = false;
+	bool		wait_reading = false;
+	bool		wait_writing = false;
+
 	if (shared->page_status[slotno] == SLRU_PAGE_READ_IN_PROGRESS)
 	{
 		wait_reading = true;
@@ -330,9 +332,11 @@ consensus_slru_wait_io(ConsensusSlruCtl ctl, int slotno)
 int
 ConsensusSimpleLruReadPage(ConsensusSlruCtl ctl, uint64 pageno, bool write_ok)
 {
-	ConsensusSlruShared	shared = ctl->shared;
+	ConsensusSlruShared shared = ctl->shared;
+
 	/* POLAR: slru stat */
 	consensus_slru_stat *stat = &shared->stat;
+
 	stat->n_slru_read_count++;
 
 	/* Outer loop handles restart if we must wait for someone else's I/O */
@@ -418,7 +422,7 @@ ConsensusSimpleLruReadPage(ConsensusSlruCtl ctl, uint64 pageno, bool write_ok)
 int
 ConsensusSimpleLruReadPage_ReadOnly(ConsensusSlruCtl ctl, uint64 pageno)
 {
-	ConsensusSlruShared	shared = ctl->shared;
+	ConsensusSlruShared shared = ctl->shared;
 	int			slotno;
 	consensus_slru_stat *stat = &shared->stat;
 
@@ -430,8 +434,8 @@ ConsensusSimpleLruReadPage_ReadOnly(ConsensusSlruCtl ctl, uint64 pageno)
 	for (slotno = 0; slotno < shared->num_slots; slotno++)
 	{
 		if (shared->page_number[slotno] == pageno &&
-				shared->page_status[slotno] != SLRU_PAGE_EMPTY &&
-				shared->page_status[slotno] != SLRU_PAGE_READ_IN_PROGRESS)
+			shared->page_status[slotno] != SLRU_PAGE_EMPTY &&
+			shared->page_status[slotno] != SLRU_PAGE_READ_IN_PROGRESS)
 		{
 			/* See comments for ConsensusSlruRecentlyUsed macro */
 			ConsensusSlruRecentlyUsed(shared, slotno);
@@ -468,13 +472,14 @@ consensus_slru_try_write_page(ConsensusSlruCtl ctl, int slotno)
  *
  * Control lock must be held at entry, and will be held at exit.
  */
-static bool 
-consensus_slru_internal_write_page(ConsensusSlruCtl ctl, int slotno, ConsensusSlruFlushFile *fdata)
+static bool
+consensus_slru_internal_write_page(ConsensusSlruCtl ctl, int slotno, ConsensusSlruFlushFile * fdata)
 {
-	ConsensusSlruShared	shared = ctl->shared;
-	uint64	pageno = shared->page_number[slotno];
+	ConsensusSlruShared shared = ctl->shared;
+	uint64		pageno = shared->page_number[slotno];
 	int			offset;
 	bool		ok;
+
 	/* POLAR: stat */
 	consensus_slru_stat *stat = &shared->stat;
 
@@ -542,7 +547,7 @@ consensus_slru_internal_write_page(ConsensusSlruCtl ctl, int slotno, ConsensusSl
 static bool
 consensus_slru_physical_read_page(ConsensusSlruCtl ctl, uint64 pageno, int slotno)
 {
-	ConsensusSlruShared	shared = ctl->shared;
+	ConsensusSlruShared shared = ctl->shared;
 	uint64		segno = pageno / CONSENSUS_SLRU_PAGES_PER_SEGMENT;
 	int			rpageno = pageno % CONSENSUS_SLRU_PAGES_PER_SEGMENT;
 	int			offset = rpageno * BLCKSZ;
@@ -554,8 +559,8 @@ consensus_slru_physical_read_page(ConsensusSlruCtl ctl, uint64 pageno, int slotn
 
 	consensus_slru_file_name_by_seg(ctl, path, segno);
 
-	easy_debug_log("Consensus slru \"%s\" physical read page, segno: %llu, rpageno: %d", 
-			ctl->Dir, segno, rpageno);
+	easy_debug_log("Consensus slru \"%s\" physical read page, segno: %llu, rpageno: %d",
+				   ctl->Dir, segno, rpageno);
 
 	fd = open(path, O_RDWR | PG_BINARY, pg_file_create_mode);
 	if (fd < 0)
@@ -604,16 +609,16 @@ consensus_slru_physical_read_page(ConsensusSlruCtl ctl, uint64 pageno, int slotn
  *
  */
 static bool
-consensus_slru_physical_write_page(ConsensusSlruCtl ctl, uint64 pageno, int slotno, 
-													int offset, ConsensusSlruFlushFile *fdata)
+consensus_slru_physical_write_page(ConsensusSlruCtl ctl, uint64 pageno, int slotno,
+								   int offset, ConsensusSlruFlushFile * fdata)
 {
-	ConsensusSlruShared	shared = ctl->shared;
+	ConsensusSlruShared shared = ctl->shared;
 	uint64		segno = pageno / CONSENSUS_SLRU_PAGES_PER_SEGMENT;
 	int			rpageno = pageno % CONSENSUS_SLRU_PAGES_PER_SEGMENT;
 	int			segoffset;
 	char		path[MAXPGPATH];
 	int			fd = -1;
-	int 		flag;
+	int			flag;
 	consensus_slru_stat *stat = &shared->stat;
 
 	/* POLAR: slru stat */
@@ -626,8 +631,8 @@ consensus_slru_physical_write_page(ConsensusSlruCtl ctl, uint64 pageno, int slot
 		fd = fdata->fd;
 	}
 
-	easy_info_log("Consensus slru \"%s\" physical write page, segno: %llu, rpageno: %d, offset: %d", 
-			ctl->Dir, segno, rpageno, offset);
+	easy_info_log("Consensus slru \"%s\" physical write page, segno: %llu, rpageno: %d, offset: %d",
+				  ctl->Dir, segno, rpageno, offset);
 
 	consensus_slru_file_name_by_seg(ctl, path, segno);
 
@@ -653,8 +658,8 @@ consensus_slru_physical_write_page(ConsensusSlruCtl ctl, uint64 pageno, int slot
 
 	segoffset = offset + rpageno * ctl->szblock;
 
-	if (fdata && fdata->create_if_not_exists && 
-			posix_fallocate(fd, 0, (off_t) (rpageno+1)*ctl->szblock) != 0)
+	if (fdata && fdata->create_if_not_exists &&
+		posix_fallocate(fd, 0, (off_t) (rpageno + 1) * ctl->szblock) != 0)
 	{
 		if (!fdata || fdata->fsync)
 			close(fd);
@@ -673,8 +678,8 @@ consensus_slru_physical_write_page(ConsensusSlruCtl ctl, uint64 pageno, int slot
 
 	errno = 0;
 	easy_debug_log("Consensus slru \"%s\" vfs_write path: %s (fd: %d)", ctl->Dir, path, fd);
-	if (write(fd, shared->page_buffer[slotno] + offset, ctl->szblock - offset) != 
-			ctl->szblock - offset)
+	if (write(fd, shared->page_buffer[slotno] + offset, ctl->szblock - offset) !=
+		ctl->szblock - offset)
 	{
 		if (errno == 0)
 			errno = ENOSPC;
@@ -720,7 +725,7 @@ consensus_slru_physical_write_page(ConsensusSlruCtl ctl, uint64 pageno, int slot
 static int
 consensus_slru_select_lru_page(ConsensusSlruCtl ctl, uint64 pageno)
 {
-	ConsensusSlruShared	shared = ctl->shared;
+	ConsensusSlruShared shared = ctl->shared;
 	consensus_slru_stat *stat = &shared->stat;
 
 	/* Outer loop handles restart after I/O */
@@ -738,15 +743,15 @@ consensus_slru_select_lru_page(ConsensusSlruCtl ctl, uint64 pageno)
 		for (slotno = 0; slotno < shared->num_slots; slotno++)
 		{
 			if (shared->page_number[slotno] == pageno &&
-					shared->page_status[slotno] != SLRU_PAGE_EMPTY)
+				shared->page_status[slotno] != SLRU_PAGE_EMPTY)
 				return slotno;
 		}
 
 		cur_count = (shared->cur_lru_count)++;
-		for (slotno = shared->victim_pivot; 
-				slotno < shared->victim_pivot + CONSENSUS_SLRU_VICTIM_WINDOW && 
-				slotno < shared->num_slots;
-				slotno++)
+		for (slotno = shared->victim_pivot;
+			 slotno < shared->victim_pivot + CONSENSUS_SLRU_VICTIM_WINDOW &&
+			 slotno < shared->num_slots;
+			 slotno++)
 		{
 			int			this_delta;
 			int			this_page_number;
@@ -754,8 +759,8 @@ consensus_slru_select_lru_page(ConsensusSlruCtl ctl, uint64 pageno)
 			if (shared->page_status[slotno] == SLRU_PAGE_EMPTY)
 				return slotno;
 
-			if (shared->page_dirty[slotno] && 
-					shared->page_status[slotno] != SLRU_PAGE_WRITE_IN_PROGRESS)
+			if (shared->page_dirty[slotno] &&
+				shared->page_status[slotno] != SLRU_PAGE_WRITE_IN_PROGRESS)
 				continue;
 
 			this_delta = cur_count - shared->page_lru_count[slotno];
@@ -821,16 +826,17 @@ consensus_slru_select_lru_page(ConsensusSlruCtl ctl, uint64 pageno)
 }
 
 /*
- * Flush dirty pages before pageno 
+ * Flush dirty pages before pageno
  *
  * Control lock must be held at entry, and will be held at exit.
  */
 bool
 ConsensusSimpleLruFlush(ConsensusSlruCtl ctl, uint64 pageno)
 {
-	ConsensusSlruShared	shared = ctl->shared;
-	int			slotno, next_slotno;
-	uint64	pagesegno;
+	ConsensusSlruShared shared = ctl->shared;
+	int			slotno,
+				next_slotno;
+	uint64		pagesegno;
 	consensus_slru_stat *stat = &shared->stat;
 	ConsensusSlruFlushFile fdata;
 	bool		ok = true;
@@ -852,8 +858,8 @@ ConsensusSimpleLruFlush(ConsensusSlruCtl ctl, uint64 pageno)
 		fdata.fd = -1;
 		while (ok && slotno != shared->num_slots && fdata.segno == pagesegno)
 		{
-			easy_debug_log("Consensus slru \"%s\" flush page, slotno: %d, pageno: %lld", 
-					ctl->Dir, slotno, shared->page_number[slotno]);
+			easy_debug_log("Consensus slru \"%s\" flush page, slotno: %d, pageno: %lld",
+						   ctl->Dir, slotno, shared->page_number[slotno]);
 			next_slotno = shared->next_dirty_slot[slotno];
 			ok = consensus_slru_internal_write_page(ctl, slotno, &fdata);
 
@@ -865,23 +871,23 @@ ConsensusSimpleLruFlush(ConsensusSlruCtl ctl, uint64 pageno)
 		}
 		pthread_rwlock_unlock(shared->control_lock);
 
-		easy_debug_log("Consensus slru \"%s\" fsync segno: %llu (fd: %d)", 
-				ctl->Dir, fdata.segno, fdata.fd);
+		easy_debug_log("Consensus slru \"%s\" fsync segno: %llu (fd: %d)",
+					   ctl->Dir, fdata.segno, fdata.fd);
 		if (fdata.fd > 0 && pg_fsync(fdata.fd))
 		{
-			easy_fatal_log("Could not fsync file, segno: %llu, fd: %d, error: %s.", 
-					fdata.segno, fdata.fd, strerror(errno));
+			easy_fatal_log("Could not fsync file, segno: %llu, fd: %d, error: %s.",
+						   fdata.segno, fdata.fd, strerror(errno));
 			close(fdata.fd);
 			pthread_rwlock_wrlock(shared->control_lock);
 			return false;
 		}
 
-		easy_debug_log("Consensus slru \"%s\" close segno: %llu (fd: %d)", 
-				ctl->Dir, fdata.segno, fdata.fd);
+		easy_debug_log("Consensus slru \"%s\" close segno: %llu (fd: %d)",
+					   ctl->Dir, fdata.segno, fdata.fd);
 		if (fdata.fd > 0 && close(fdata.fd))
 		{
-			easy_fatal_log("Could not close file, segno: %llu, fd: %d, error: %s.", 
-					fdata.segno, fdata.fd, strerror(errno));
+			easy_fatal_log("Could not close file, segno: %llu, fd: %d, error: %s.",
+						   fdata.segno, fdata.fd, strerror(errno));
 			pthread_rwlock_wrlock(shared->control_lock);
 			return false;
 		}
@@ -893,7 +899,7 @@ ConsensusSimpleLruFlush(ConsensusSlruCtl ctl, uint64 pageno)
 }
 
 /*
- * Flush dirty pages 
+ * Flush dirty pages
  *
  * Control lock must be held at entry, and will be held at exit.
  */
@@ -913,8 +919,8 @@ ConsensusSimpleLruWritePage(ConsensusSlruCtl ctl, int slotno, bool create_if_not
 void
 consensus_slru_push_dirty(ConsensusSlruCtl ctl, int slotno, int write_offset, bool head)
 {
-	ConsensusSlruShared	shared = ctl->shared;
-	
+	ConsensusSlruShared shared = ctl->shared;
+
 	if (shared->page_dirty[slotno])
 		return;
 
@@ -922,7 +928,7 @@ consensus_slru_push_dirty(ConsensusSlruCtl ctl, int slotno, int write_offset, bo
 	{
 		shared->first_dirty_slot = slotno;
 		shared->last_dirty_slot = slotno;
-		shared->first_dirty_offset = write_offset; 
+		shared->first_dirty_offset = write_offset;
 	}
 	else if (!head)
 	{
@@ -944,17 +950,17 @@ consensus_slru_push_dirty(ConsensusSlruCtl ctl, int slotno, int write_offset, bo
 void
 consensus_slru_pop_dirty(ConsensusSlruCtl ctl, int slotno)
 {
-	ConsensusSlruShared	shared = ctl->shared;
-	
+	ConsensusSlruShared shared = ctl->shared;
+
 	if (!shared->page_dirty[slotno])
 		return;
 
 	Assert(shared->first_dirty_slot == slotno);
 
 	shared->first_dirty_slot = shared->next_dirty_slot[slotno];
-	shared->first_dirty_offset = 0; 
+	shared->first_dirty_offset = 0;
 
-	shared->next_dirty_slot[slotno] = shared->num_slots; 
+	shared->next_dirty_slot[slotno] = shared->num_slots;
 
 	if (shared->first_dirty_slot == shared->num_slots)
 	{
@@ -972,7 +978,7 @@ consensus_slru_pop_dirty(ConsensusSlruCtl ctl, int slotno)
 void
 ConsensusSimpleLruTruncateForward(ConsensusSlruCtl ctl, uint64 cutoffPage)
 {
-	ConsensusSlruShared	shared = ctl->shared;
+	ConsensusSlruShared shared = ctl->shared;
 	int			slotno;
 	consensus_slru_stat *stat = &shared->stat;
 	bool		ok = true;
@@ -986,7 +992,7 @@ ConsensusSimpleLruTruncateForward(ConsensusSlruCtl ctl, uint64 cutoffPage)
 
 	/*
 	 * While we are holding the lock, make an important safety check: the
-	 * planned cutoff point must be <= the current endpoint page. 
+	 * planned cutoff point must be <= the current endpoint page.
 	 */
 	if (shared->latest_page_number <= cutoffPage)
 	{
@@ -1008,7 +1014,7 @@ ConsensusSimpleLruTruncateForward(ConsensusSlruCtl ctl, uint64 cutoffPage)
 	}
 
 	for (slotno = 0; ok && slotno < shared->num_slots; slotno++)
-	{ 
+	{
 		if (shared->page_status[slotno] == SLRU_PAGE_EMPTY)
 			continue;
 
@@ -1018,7 +1024,7 @@ ConsensusSimpleLruTruncateForward(ConsensusSlruCtl ctl, uint64 cutoffPage)
 		/*
 		 * change state to EMPTY (expected case).
 		 */
-		Assert (shared->page_status[slotno] == SLRU_PAGE_VALID);
+		Assert(shared->page_status[slotno] == SLRU_PAGE_VALID);
 		consensus_slru_set_page_status(shared, slotno, SLRU_PAGE_EMPTY);
 	}
 }
@@ -1031,17 +1037,17 @@ ConsensusSimpleLruTruncateForward(ConsensusSlruCtl ctl, uint64 cutoffPage)
 void
 ConsensusSimpleLruTruncateBackward(ConsensusSlruCtl ctl, uint64 cutoffPage)
 {
-	ConsensusSlruShared	shared = ctl->shared;
+	ConsensusSlruShared shared = ctl->shared;
 	int			slotno;
 	consensus_slru_stat *stat = &shared->stat;
 	bool		ok = true;
 
 	stat->n_slru_truncate_backward_count++;
 
-	Assert (shared->latest_page_number >= cutoffPage);
+	Assert(shared->latest_page_number >= cutoffPage);
 
 	for (slotno = 0; ok && slotno < shared->num_slots; slotno++)
-	{ 
+	{
 		if (shared->page_status[slotno] == SLRU_PAGE_EMPTY)
 			continue;
 
@@ -1051,7 +1057,7 @@ ConsensusSimpleLruTruncateBackward(ConsensusSlruCtl ctl, uint64 cutoffPage)
 		/*
 		 * change state to EMPTY (expected case).
 		 */
-		Assert (shared->page_status[slotno] == SLRU_PAGE_VALID);
+		Assert(shared->page_status[slotno] == SLRU_PAGE_VALID);
 		consensus_slru_set_page_status(shared, slotno, SLRU_PAGE_EMPTY);
 	}
 }
@@ -1078,8 +1084,8 @@ consensus_slru_internal_delete_segment(ConsensusSlruCtl ctl, char *filename)
  *		containing the page passed as "data".
  */
 bool
-ConsensusSlruScanDirCbReportPresenceForward(ConsensusSlruCtl ctl, 
-																			char *filename, uint64 segpage, void *data)
+ConsensusSlruScanDirCbReportPresenceForward(ConsensusSlruCtl ctl,
+											char *filename, uint64 segpage, void *data)
 {
 	uint64		cutoffPage = *(uint64 *) data;
 
@@ -1096,8 +1102,8 @@ ConsensusSlruScanDirCbReportPresenceForward(ConsensusSlruCtl ctl,
  *		This callback deletes segments prior to the one passed in as "data".
  */
 bool
-consensus_slru_scan_dir_callback_delete_cutoff_forward(ConsensusSlruCtl ctl, 
-																			char *filename, uint64 segpage, void *data)
+consensus_slru_scan_dir_callback_delete_cutoff_forward(ConsensusSlruCtl ctl,
+													   char *filename, uint64 segpage, void *data)
 {
 	uint64		cutoffPage = *(uint64 *) data;
 
@@ -1115,8 +1121,8 @@ consensus_slru_scan_dir_callback_delete_cutoff_forward(ConsensusSlruCtl ctl,
  *		containing the page passed as "data".
  */
 bool
-ConsensusSlruScanDirCbReportPresenceBackward(ConsensusSlruCtl ctl, char *filename, 
-		uint64 segpage, void *data)
+ConsensusSlruScanDirCbReportPresenceBackward(ConsensusSlruCtl ctl, char *filename,
+											 uint64 segpage, void *data)
 {
 	uint64		cutoffPage = *(uint64 *) data;
 
@@ -1133,8 +1139,8 @@ ConsensusSlruScanDirCbReportPresenceBackward(ConsensusSlruCtl ctl, char *filenam
  *		This callback deletes segments after the one passed in as "data".
  */
 bool
-consensus_slru_scan_dir_callback_delete_cutoff_backward(ConsensusSlruCtl ctl, 
-																		char *filename, uint64 segpage, void *data)
+consensus_slru_scan_dir_callback_delete_cutoff_backward(ConsensusSlruCtl ctl,
+														char *filename, uint64 segpage, void *data)
 {
 	uint64		cutoffPage = *(uint64 *) data;
 
@@ -1168,8 +1174,8 @@ ConsensusSlruScanDirectory(ConsensusSlruCtl ctl, ConsensusSlruScanCallback callb
 	bool		retval = false;
 	DIR		   *cldir;
 	struct dirent *clde;
-	uint64	segno;
-	uint64	segpage;
+	uint64		segno;
+	uint64		segpage;
 	char		path[MAXPGPATH];
 
 	consensus_slru_file_dir(ctl, path);
@@ -1187,7 +1193,7 @@ ConsensusSlruScanDirectory(ConsensusSlruCtl ctl, ConsensusSlruScanCallback callb
 			segpage = segno * CONSENSUS_SLRU_PAGES_PER_SEGMENT;
 
 			easy_info_log("ConsensusSlruScanDirectory invoking callback on %s/%s",
-										ctl->Dir, clde->d_name);
+						  ctl->Dir, clde->d_name);
 			retval = callback(ctl, clde->d_name, segpage, data);
 			if (retval)
 				break;
@@ -1243,4 +1249,3 @@ ConsensusSlruStatsInit(void)
 	MemSet(consensus_slru_stats, 0, sizeof(consensus_slru_stat *) * CONSENSUS_SLRU_STATS_NUM);
 	n_consensus_slru_stats = 0;
 }
-

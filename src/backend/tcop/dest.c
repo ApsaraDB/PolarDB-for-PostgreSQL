@@ -156,18 +156,23 @@ CreateDestReceiver(CommandDest dest)
 static void
 ReplyTimestampIfAny()
 {
-	/* only in libpq 3.1, the backend will reply timestmap before ReadyForQuery */
+	/*
+	 * only in libpq 3.1, the backend will reply timestmap before
+	 * ReadyForQuery
+	 */
 	/* TODO check protocol version */
-	// if (PG_PROTOCOL_MAJOR(FrontendProtocol) >= 3 &&
-		// PG_PROTOCOL_MINOR(FrontendProtocol) >= 0)
+	/* if (PG_PROTOCOL_MAJOR(FrontendProtocol) >= 3 && */
+	/* PG_PROTOCOL_MINOR(FrontendProtocol) >= 0) */
 	{
 		LogicalTime ts = TxnGetAndClearReplyTimestamp();
-		if (ts) 
+
+		if (ts)
 		{
-			uint64 tmp = pg_hton64(ts);
-			pq_putmessage('L', (char*)&tmp, sizeof(tmp));
+			uint64		tmp = pg_hton64(ts);
+
+			pq_putmessage('L', (char *) &tmp, sizeof(tmp));
 			ereport(DEBUG1, (errmsg("reply timestamp %lu", ts)));
-		}	
+		}
 	}
 }
 

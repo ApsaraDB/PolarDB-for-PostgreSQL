@@ -151,8 +151,8 @@ typedef struct ReplicationSlot
 	XLogRecPtr	candidate_restart_lsn;
 
 	/* POLAR: record xmin epoch in datamax mode */
-	uint32		  polar_datamax_effective_xmin_epoch;
-	uint32		  polar_datamax_effective_catalog_xmin_epoch;
+	uint32		polar_datamax_effective_xmin_epoch;
+	uint32		polar_datamax_effective_catalog_xmin_epoch;
 	/* POLAR end */
 } ReplicationSlot;
 
@@ -212,5 +212,6 @@ extern void CheckSlotRequirements(void);
 
 /* POLAR */
 extern XLogRecPtr polar_set_initial_datamax_restart_lsn(ReplicationSlot *slot);
+
 /* POLAR: end */
 #endif							/* SLOT_H */

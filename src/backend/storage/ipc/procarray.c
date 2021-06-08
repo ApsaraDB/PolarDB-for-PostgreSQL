@@ -21,34 +21,34 @@
  * latestObservedXid, as we replay transaction commit/abort and standby WAL
  * records. Note that in hot standby, the PGPROC array represents standby
  * processes, which by definition are not running transactions that have XIDs.
- * 
- * 
- * We design a timestamp based MVCC garbage collection algorithm to 
+ *
+ *
+ * We design a timestamp based MVCC garbage collection algorithm to
  * make the gc not to vacuum the tuple versions that are visible to
  * concurrent and pending transactions.
- * 
- * The algorithm consists of two parts. 
+ *
+ * The algorithm consists of two parts.
  * The first part is the admission of transaction execution. We reject
  * the transaction with global snapshot that may access the tuple versions
  * garbage collected.
- * 
+ *
  * Specifically, we reject the snapshot with start ts < maxCommitTs - gc_interval
  * in order to resolve the conflict with vacuum and hot-chain cleanup.
- * 
- * The parameter gc_interval represents the allowed maximum delay from 
+ *
+ * The parameter gc_interval represents the allowed maximum delay from
  * the snapshot generated on the coordinator to its arrival on data node.
- * 
+ *
  * The second part is the determining of the oldest committs before which the tuple
  * versions can be pruned. See CommittsSatisfiesVacuum().
  * The oldest committs computation is implemented in GetRecentGlobalXmin() and GetOldestXmin().
- * 
+ *
  * We also develop a global MVCC garbage collection which periodically collects
  * the minimal snapshot timestamp on each node to determine the globally minimal
  * timestamp.
  * Then we can use the globally minimal timestamp to vacuum stale tuple versions within
  * the cluster.
- * 
- * Written by Junbin Kang, 2020.01.18	 
+ *
+ * Written by Junbin Kang, 2020.01.18
  *
  * Portions Copyright (c) 2020, Alibaba Group Holding Limited
  * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
@@ -90,7 +90,7 @@
 /* User-settable GUC parameters */
 int			gc_interval;
 int			snapshot_delay;
-static bool GlobalSnapshotIsAdmitted(Snapshot snapshot, CommitSeqNo *cutoffTs);
+static bool GlobalSnapshotIsAdmitted(Snapshot snapshot, CommitSeqNo * cutoffTs);
 #endif
 
 /* Our shared memory area */
@@ -111,7 +111,7 @@ typedef struct ProcArrayStruct
 static ProcArrayStruct *procArray;
 
 static PGPROC *allProcs;
-static PGXACT *allPgXact;
+static PGXACT * allPgXact;
 
 /*
  * Cached values for GetRecentGlobalXmin().
@@ -121,13 +121,13 @@ static PGXACT *allPgXact;
  * value. Readers should ensure that it has been set to something else
  * before using it.
  */
-static int XminCacheResetCounter = 0;
+static int	XminCacheResetCounter = 0;
 static TransactionId RecentGlobalXmin = InvalidTransactionId;
 static TransactionId RecentGlobalDataXmin = InvalidTransactionId;
 #ifdef ENABLE_DISTRIBUTED_TRANSACTION
 static CommitSeqNo GlobalCutoffTs = InvalidCommitSeqNo;
-CommitSeqNo	RecentGlobalTs = InvalidCommitSeqNo;
-bool txnUseGlobalSnapshot = false;
+CommitSeqNo RecentGlobalTs = InvalidCommitSeqNo;
+bool		txnUseGlobalSnapshot = false;
 #endif
 
 /*
@@ -139,13 +139,13 @@ static TransactionId latestObservedXid = InvalidTransactionId;
 bool
 CommittsSatisfiesVacuum(CommitSeqNo committs)
 {
-	#ifdef ENABLE_DISTR_DEBUG
+#ifdef ENABLE_DISTR_DEBUG
 	if (enable_timestamp_debug_print)
-		elog(LOG, "committs satisfy vacuum res %d cts "UINT64_FORMAT" cutoff "UINT64_FORMAT " MyTmin " UINT64_FORMAT, 
-										committs < GlobalCutoffTs,
-										committs, GlobalCutoffTs,
-										pg_atomic_read_u64(&MyPgXact->tmin));
-	#endif
+		elog(LOG, "committs satisfy vacuum res %d cts " UINT64_FORMAT " cutoff " UINT64_FORMAT " MyTmin " UINT64_FORMAT,
+			 committs < GlobalCutoffTs,
+			 committs, GlobalCutoffTs,
+			 pg_atomic_read_u64(&MyPgXact->tmin));
+#endif
 
 	if (committs < GlobalCutoffTs)
 		return true;
@@ -286,7 +286,8 @@ ProcArrayRemove(PGPROC *proc)
 	elog(LOG, "failed to find proc %p in ProcArray", proc);
 }
 
-static void resetGlobalXminCache(void)
+static void
+resetGlobalXminCache(void)
 {
 	if (++XminCacheResetCounter == 13)
 	{
@@ -317,9 +318,9 @@ ProcArrayEndTransaction(PGPROC *proc)
 	pgxact->xid = InvalidTransactionId;
 	proc->lxid = InvalidLocalTransactionId;
 	pgxact->xmin = InvalidTransactionId;
-	#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
 	pg_atomic_write_u64(&pgxact->tmin, InvalidCommitSeqNo);
-	#endif
+#endif
 	pgxact->snapshotcsn = InvalidCommitSeqNo;
 	/* must be cleared with xid/xmin/snapshotcsn: */
 	pgxact->vacuumFlags &= ~PROC_VACUUM_STATE_MASK;
@@ -342,8 +343,8 @@ ProcArrayResetXmin(PGPROC *proc)
 	PGXACT	   *pgxact = &allPgXact[proc->pgprocno];
 
 	/*
-	 * Note we can do this without locking because we assume that storing an Xid
-	 * is atomic.
+	 * Note we can do this without locking because we assume that storing an
+	 * Xid is atomic.
 	 */
 	pgxact->xmin = InvalidTransactionId;
 	/* Reset cached variables */
@@ -380,17 +381,17 @@ ProcArrayClearTransaction(PGPROC *proc)
 	pgxact->delayChkpt = false;
 
 	/*
-	 * We don't need to update oldestActiveXid, because the gxact entry in
-	 * the procarray is still running with the same XID.
+	 * We don't need to update oldestActiveXid, because the gxact entry in the
+	 * procarray is still running with the same XID.
 	 */
 
 	/* Reset cached variables */
 	RecentGlobalXmin = InvalidTransactionId;
 	RecentGlobalDataXmin = InvalidTransactionId;
-	#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
 	GlobalCutoffTs = InvalidCommitSeqNo;
 	pg_atomic_write_u64(&pgxact->tmin, InvalidCommitSeqNo);
-	#endif
+#endif
 }
 
 /*
@@ -407,8 +408,8 @@ ProcArrayInitRecovery(TransactionId oldestActiveXID, TransactionId initializedUp
 	Assert(TransactionIdIsNormal(initializedUptoXID));
 
 	/*
-	 * we set latestObservedXid to the xid SUBTRANS (XXX csnlog?) has been initialized up
-	 * to, so we can extend it from that point onwards in
+	 * we set latestObservedXid to the xid SUBTRANS (XXX csnlog?) has been
+	 * initialized up to, so we can extend it from that point onwards in
 	 * RecordKnownAssignedTransactionIds, and when we get consistent in
 	 * ProcArrayApplyRecoveryInfo().
 	 */
@@ -464,10 +465,10 @@ ProcArrayApplyRecoveryInfo(RunningTransactions running)
 	 */
 
 	/*
-	 * latestObservedXid is at least set to the point where CSNLOG was
-	 * started up to (c.f. ProcArrayInitRecovery()) or to the biggest xid
-	 * RecordKnownAssignedTransactionIds() (FIXME: gone!) was called for.  Initialize
-	 * csnlog from thereon, up to nextXid - 1.
+	 * latestObservedXid is at least set to the point where CSNLOG was started
+	 * up to (c.f. ProcArrayInitRecovery()) or to the biggest xid
+	 * RecordKnownAssignedTransactionIds() (FIXME: gone!) was called for.
+	 * Initialize csnlog from thereon, up to nextXid - 1.
 	 *
 	 * We need to duplicate parts of RecordKnownAssignedTransactionId() here,
 	 * because we've just added xids to the known assigned xids machinery that
@@ -477,16 +478,15 @@ ProcArrayApplyRecoveryInfo(RunningTransactions running)
 	TransactionIdAdvance(latestObservedXid);
 	while (TransactionIdPrecedes(latestObservedXid, running->nextXid))
 	{
-		#ifdef ENABLE_DISTRIBUTED_TRANSACTION
-		/* 
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+		/*
 		 * Each time the transaction/subtransaction id is allocated, we have
-		 * written CTS extend WAL entry. As a result, no extra CTS extend is needed
-		 * here to avoid nested WAL.
-		 * Written by Junbin Kang, 2020.06.16
-		 */ 
-		#else
+		 * written CTS extend WAL entry. As a result, no extra CTS extend is
+		 * needed here to avoid nested WAL. Written by Junbin Kang, 2020.06.16
+		 */
+#else
 		ExtendCSNLOG(latestObservedXid);
-		#endif
+#endif
 		TransactionIdAdvance(latestObservedXid);
 	}
 	TransactionIdRetreat(latestObservedXid);	/* = running->nextXid - 1 */
@@ -532,7 +532,7 @@ TransactionIdIsActive(TransactionId xid)
 	{
 		int			pgprocno = arrayP->pgprocnos[i];
 		volatile PGPROC *proc = &allProcs[pgprocno];
-		volatile PGXACT *pgxact = &allPgXact[pgprocno];
+		volatile	PGXACT *pgxact = &allPgXact[pgprocno];
 		TransactionId pxid;
 
 		/* Fetch xid just once - see GetNewTransactionId */
@@ -604,20 +604,21 @@ AdvanceOldestActiveXid(TransactionId myXid)
 		{
 			/*
 			 * Someone beat us to it. This can happen if we hit the race
-			 * condition described below. That's OK. We're no longer the oldest active
-			 * XID in that case, so we're done.
+			 * condition described below. That's OK. We're no longer the
+			 * oldest active XID in that case, so we're done.
 			 */
 			Assert(TransactionIdFollows(oldValue, myXid));
 			break;
 		}
 
 		/*
-		 * We're not necessarily done yet. It's possible that the XID that we saw
-		 * as still running committed just before we updated oldestActiveXid.
-		 * She didn't see herself as the oldest transaction, so she wouldn't
-		 * update oldestActiveXid. Loop back to check the XID that we saw as
-		 * the oldest in-progress one is still in-progress, and if not, update
-		 * oldestActiveXid again, on behalf of that transaction.
+		 * We're not necessarily done yet. It's possible that the XID that we
+		 * saw as still running committed just before we updated
+		 * oldestActiveXid. She didn't see herself as the oldest transaction,
+		 * so she wouldn't update oldestActiveXid. Loop back to check the XID
+		 * that we saw as the oldest in-progress one is still in-progress, and
+		 * if not, update oldestActiveXid again, on behalf of that
+		 * transaction.
 		 */
 		oldValue = xid;
 	}
@@ -626,23 +627,23 @@ AdvanceOldestActiveXid(TransactionId myXid)
 
 /*
  * This is like GetOldestXmin(NULL, true), but can return slightly stale, cached value.
- * 
+ *
  * --------------------------------------------------------------------------------------
- * We design a timestamp based MVCC garbage collection algorithm to 
+ * We design a timestamp based MVCC garbage collection algorithm to
  * make the gc not to vacuum the tuple versions that are visible to
  * concurrent and pending transactions.
- * 
- * The algorithm consists of two parts. 
+ *
+ * The algorithm consists of two parts.
  * The first part is the admission of transaction execution. We reject
  * the transaction with global snapshot that may access the tuple versions
  * garbage collected.
- * 
+ *
  * Specifically, we reject the snapshot with start ts < maxCommitTs - gc_interval
  * in order to resolve the conflict with vacuum and hot-chain cleanup.
- * 
- * The parameter gc_interval represents the allowed maximum delay from 
+ *
+ * The parameter gc_interval represents the allowed maximum delay from
  * the snapshot generated on the coordinator to its arrival on data node.
- * 
+ *
  * The second part is the determining of the oldest committs before which the tuple
  * versions can be pruned. See CommittsSatisfiesVacuum().
  * The oldest committs computation is implemented in GetRecentGlobalXmin() and GetOldestXmin().
@@ -657,32 +658,32 @@ GetRecentGlobalXmin(void)
 	int			index;
 	volatile TransactionId replication_slot_xmin = InvalidTransactionId;
 	volatile TransactionId replication_slot_catalog_xmin = InvalidTransactionId;
-	#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
 	CommitSeqNo cutoffTs;
-	#endif
+#endif
 
 	if (TransactionIdIsValid(RecentGlobalXmin))
 		return RecentGlobalXmin;
 
-	#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
 	SpinLockAcquire(&ShmemVariableCache->ts_lock);
 	cutoffTs = ShmemVariableCache->maxCommitTs;
 	SpinLockRelease(&ShmemVariableCache->ts_lock);
 	if (cutoffTs < SHIFT_GC_INTERVAL(gc_interval))
-		elog(ERROR, "maxCommitTs "UINT64_FORMAT" is smaller than gc_interval "UINT64_FORMAT, 
-							cutoffTs,SHIFT_GC_INTERVAL(gc_interval));
+		elog(ERROR, "maxCommitTs " UINT64_FORMAT " is smaller than gc_interval " UINT64_FORMAT,
+			 cutoffTs, SHIFT_GC_INTERVAL(gc_interval));
 	cutoffTs = cutoffTs - SHIFT_GC_INTERVAL(gc_interval);
 	pg_memory_barrier();
 	if (enable_timestamp_debug_print)
-		elog(LOG, "GetRecentGlobalXmin: Caculate cutoff ts "UINT64_FORMAT, cutoffTs);
-	#endif
+		elog(LOG, "GetRecentGlobalXmin: Caculate cutoff ts " UINT64_FORMAT, cutoffTs);
+#endif
 
 	LWLockAcquire(ProcArrayLock, LW_SHARED);
 
 	/*
-	 * We initialize the MIN() calculation with oldestActiveXid. This
-	 * is a lower bound for the XIDs that might appear in the ProcArray later,
-	 * and so protects us against overestimating the result due to future
+	 * We initialize the MIN() calculation with oldestActiveXid. This is a
+	 * lower bound for the XIDs that might appear in the ProcArray later, and
+	 * so protects us against overestimating the result due to future
 	 * additions.
 	 */
 	globalXmin = pg_atomic_read_u32(&ShmemVariableCache->oldestActiveXid);
@@ -691,13 +692,13 @@ GetRecentGlobalXmin(void)
 	for (index = 0; index < arrayP->numProcs; index++)
 	{
 		int			pgprocno = arrayP->pgprocnos[index];
-		volatile PGXACT *pgxact = &allPgXact[pgprocno];
+		volatile	PGXACT *pgxact = &allPgXact[pgprocno];
 		TransactionId xmin = pgxact->xmin;
-		#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
 		CommitSeqNo tmin;
-		#endif
+#endif
 
-		
+
 		/*
 		 * Backend is doing logical decoding which manages xmin separately,
 		 * check below.
@@ -714,19 +715,19 @@ GetRecentGlobalXmin(void)
 		if (TransactionIdIsNormal(xmin) &&
 			NormalTransactionIdPrecedes(xmin, globalXmin))
 			globalXmin = xmin;
-		
 
-		#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
 		tmin = pg_atomic_read_u64(&pgxact->tmin);
 
 		if (COMMITSEQNO_IS_NORMAL(tmin) && tmin < cutoffTs)
 		{
 			cutoffTs = tmin;
 			if (enable_timestamp_debug_print)
-				elog(LOG, "GetRecentGlobalXmin: update cutoff ts "UINT64_FORMAT, tmin);
+				elog(LOG, "GetRecentGlobalXmin: update cutoff ts " UINT64_FORMAT, tmin);
 		}
-		#endif
-		
+#endif
+
 	}
 
 	/* fetch into volatile var while ProcArrayLock is held */
@@ -748,18 +749,19 @@ GetRecentGlobalXmin(void)
 	/* Non-catalog tables can be vacuumed if older than this xid */
 	RecentGlobalDataXmin = RecentGlobalXmin;
 
-	#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
 	if (enable_global_cutoffts)
 	{
 		SpinLockAcquire(&ShmemVariableCache->ts_lock);
 		GlobalCutoffTs = ShmemVariableCache->globalCutoffTs;
 		SpinLockRelease(&ShmemVariableCache->ts_lock);
 	}
-	else 
+	else
 		GlobalCutoffTs = cutoffTs;
 	if (enable_timestamp_debug_print)
-		elog(LOG, "GetRecentGlobalXmin: Caculate global cutoff ts "UINT64_FORMAT, GlobalCutoffTs);
-	#endif
+		elog(LOG, "GetRecentGlobalXmin: Caculate global cutoff ts " UINT64_FORMAT, GlobalCutoffTs);
+#endif
+
 	/*
 	 * Check whether there's a replication slot requiring an older catalog
 	 * xmin.
@@ -846,24 +848,24 @@ GetRecentGlobalDataXmin(void)
  *
  * XXX: We track GlobalXmin in shared memory now. Would it makes sense to
  * have GetOldestXmin() just return that? At least for the rel == NULL case.
- * 
+ *
  *
  * --------------------------------------------------------------------------------------
- * We design a timestamp based MVCC garbage collection algorithm to 
+ * We design a timestamp based MVCC garbage collection algorithm to
  * make the gc not to vacuum the tuple versions that are visible to
  * concurrent and pending transactions.
- * 
- * The algorithm consists of two parts. 
+ *
+ * The algorithm consists of two parts.
  * The first part is the admission of transaction execution. We reject
  * the transaction with global snapshot that may access the tuple versions
  * garbage collected.
- * 
+ *
  * Specifically, we reject the snapshot with start ts < maxCommitTs - gc_interval
  * in order to resolve the conflict with vacuum and hot-chain cleanup.
- * 
- * The parameter gc_interval represents the allowed maximum delay from 
+ *
+ * The parameter gc_interval represents the allowed maximum delay from
  * the snapshot generated on the coordinator to its arrival on data node.
- * 
+ *
  * The second part is the determining of the oldest committs before which the tuple
  * versions can be pruned. See CommittsSatisfiesVacuum().
  * The oldest committs computation is implemented in GetRecentGlobalXmin() and GetOldestXmin().
@@ -895,18 +897,18 @@ GetOldestXmin(Relation rel, int flags)
 	/* Cannot look for individual databases during recovery */
 	Assert(allDbs || !RecoveryInProgress());
 
-	#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
 	SpinLockAcquire(&ShmemVariableCache->ts_lock);
 	cutoffTs = ShmemVariableCache->maxCommitTs;
 	SpinLockRelease(&ShmemVariableCache->ts_lock);
 	if (cutoffTs < SHIFT_GC_INTERVAL(gc_interval))
-		elog(ERROR, "maxCommitTs "UINT64_FORMAT" is smaller than gc_interval "UINT64_FORMAT, 
-							cutoffTs, SHIFT_GC_INTERVAL(gc_interval));
+		elog(ERROR, "maxCommitTs " UINT64_FORMAT " is smaller than gc_interval " UINT64_FORMAT,
+			 cutoffTs, SHIFT_GC_INTERVAL(gc_interval));
 	cutoffTs = cutoffTs - SHIFT_GC_INTERVAL(gc_interval);
 	pg_memory_barrier();
 	if (enable_timestamp_debug_print)
-		elog(LOG, "GetRecentGlobalXmin: Caculate cutoff ts "UINT64_FORMAT, cutoffTs);
-	#endif
+		elog(LOG, "GetRecentGlobalXmin: Caculate cutoff ts " UINT64_FORMAT, cutoffTs);
+#endif
 	LWLockAcquire(ProcArrayLock, LW_SHARED);
 
 	/*
@@ -923,7 +925,7 @@ GetOldestXmin(Relation rel, int flags)
 	{
 		int			pgprocno = arrayP->pgprocnos[index];
 		volatile PGPROC *proc = &allProcs[pgprocno];
-		volatile PGXACT *pgxact = &allPgXact[pgprocno];
+		volatile	PGXACT *pgxact = &allPgXact[pgprocno];
 
 		if (pgxact->vacuumFlags & (flags & PROCARRAY_PROC_FLAGS_MASK))
 			continue;
@@ -934,9 +936,9 @@ GetOldestXmin(Relation rel, int flags)
 		{
 			/* Fetch xid just once - see GetNewTransactionId */
 			TransactionId xid = pgxact->xid;
-			#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
 			CommitSeqNo tmin;
-			#endif
+#endif
 
 			/* First consider the transaction's own Xid, if any */
 			if (TransactionIdIsNormal(xid) &&
@@ -954,32 +956,32 @@ GetOldestXmin(Relation rel, int flags)
 			if (TransactionIdIsNormal(xid) &&
 				TransactionIdPrecedes(xid, result))
 				result = xid;
-			#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
 			tmin = pg_atomic_read_u64(&pgxact->tmin);
 			if (COMMITSEQNO_IS_NORMAL(tmin) && tmin < cutoffTs)
 			{
 				if (enable_timestamp_debug_print)
-					elog(LOG, "GetRecentGlobalXmin: update cutoff ts "UINT64_FORMAT, tmin);
+					elog(LOG, "GetRecentGlobalXmin: update cutoff ts " UINT64_FORMAT, tmin);
 				cutoffTs = tmin;
 			}
-			#endif
+#endif
 		}
 	}
 
-	#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
 	if (enable_global_cutoffts)
 	{
 		SpinLockAcquire(&ShmemVariableCache->ts_lock);
 		GlobalCutoffTs = ShmemVariableCache->globalCutoffTs;
 		SpinLockRelease(&ShmemVariableCache->ts_lock);
 	}
-	else 
+	else
 		GlobalCutoffTs = cutoffTs;
-	
-	if (enable_timestamp_debug_print)
-		elog(LOG, "GetOldestXmin: Caculate global cutoff ts "UINT64_FORMAT, GlobalCutoffTs);
 
-	#endif
+	if (enable_timestamp_debug_print)
+		elog(LOG, "GetOldestXmin: Caculate global cutoff ts " UINT64_FORMAT, GlobalCutoffTs);
+
+#endif
 	/* fetch into volatile var while ProcArrayLock is held */
 	replication_slot_xmin = procArray->replication_slot_xmin;
 	replication_slot_catalog_xmin = procArray->replication_slot_catalog_xmin;
@@ -1036,17 +1038,17 @@ GetOldestXmin(Relation rel, int flags)
  * Support cluster-wide global vacuum.
  * oldest Tmin = min{max_ts, min{per-Proc's Tmin}}
  * max_ts is the local hybrid logical timestamp.
- * 
+ *
  * As ProcArrayLock is held by both GetOldestTmin and GetSnapshot,
  * we can guarantee that no concurrent transactions would be assigned
  * start timestamps smaller than the returen oldest tmin.
- * 
+ *
  * Furthermore, per-proc lock may be used to reduce the conection, but
  * it seems unnecessary now as ProcArrayLock is acquired in shared mode
  * in most critical path.
- * 
+ *
  * Written by Junbin Kang
- */ 
+ */
 CommitSeqNo
 GetOldestTmin(void)
 {
@@ -1062,7 +1064,7 @@ GetOldestTmin(void)
 	for (index = 0; index < arrayP->numProcs; index++)
 	{
 		int			pgprocno = arrayP->pgprocnos[index];
-		volatile PGXACT *pgxact = &allPgXact[pgprocno];
+		volatile	PGXACT *pgxact = &allPgXact[pgprocno];
 		volatile PGPROC *pgproc = &allProcs[pgprocno];
 
 		/*
@@ -1081,37 +1083,38 @@ GetOldestTmin(void)
 		{
 			if (enable_timestamp_debug_print)
 				elog(LOG, "Proc %d: "
-						" tmin="LOGICALTIME_FORMAT
-						" xid=%d"
-						" pid=%d"
-						" csn="LOGICALTIME_FORMAT,
-						pgprocno, 
-						LOGICALTIME_STRING(tmin), 
-						pgxact->xid,
-						pgproc->pid,
-						LOGICALTIME_STRING(pgxact->snapshotcsn));
-						
+					 " tmin=" LOGICALTIME_FORMAT
+					 " xid=%d"
+					 " pid=%d"
+					 " csn=" LOGICALTIME_FORMAT,
+					 pgprocno,
+					 LOGICALTIME_STRING(tmin),
+					 pgxact->xid,
+					 pgproc->pid,
+					 LOGICALTIME_STRING(pgxact->snapshotcsn));
+
 			if (tmin < globalTmin)
 				globalTmin = tmin;
 		}
 	}
-	
+
 	LWLockRelease(ProcArrayLock);
 
 	if (enable_timestamp_debug_print)
-		elog(LOG, "Get global oldest tmin "UINT64_FORMAT, globalTmin);
-	
+		elog(LOG, "Get global oldest tmin " UINT64_FORMAT, globalTmin);
+
 	return globalTmin;
 }
 
-void SetGlobalCutoffTs(CommitSeqNo cutoffTs)
+void
+SetGlobalCutoffTs(CommitSeqNo cutoffTs)
 {
 	SpinLockAcquire(&ShmemVariableCache->ts_lock);
 	ShmemVariableCache->globalCutoffTs = cutoffTs;
 	SpinLockRelease(&ShmemVariableCache->ts_lock);
 
 	if (enable_timestamp_debug_print)
-		elog(LOG, "Set global cutoff "UINT64_FORMAT, cutoffTs);
+		elog(LOG, "Set global cutoff " UINT64_FORMAT, cutoffTs);
 }
 
 PG_FUNCTION_INFO_V1(pg_get_oldest_tmin);
@@ -1124,7 +1127,7 @@ pg_get_oldest_tmin(PG_FUNCTION_ARGS)
 	CommitSeqNo ts;
 
 	ts = GetOldestTmin();
-	
+
 	PG_RETURN_UINT64(ts);
 }
 
@@ -1135,20 +1138,20 @@ PG_FUNCTION_INFO_V1(pg_set_global_cutoffts);
 Datum
 pg_set_global_cutoffts(PG_FUNCTION_ARGS)
 {
-	CommitSeqNo	ts = PG_GETARG_INT64(0);
+	CommitSeqNo ts = PG_GETARG_INT64(0);
 
 	SetGlobalCutoffTs(ts);
 	PG_RETURN_BOOL(true);
 }
 
-static bool 
-GlobalSnapshotIsAdmitted(Snapshot snapshot, CommitSeqNo *cutoffTs)
+static bool
+GlobalSnapshotIsAdmitted(Snapshot snapshot, CommitSeqNo * cutoffTs)
 {
 	CommitSeqNo maxCommitTs;
 
 	if (enable_global_cutoffts)
 		return true;
-	
+
 	if (!txnUseGlobalSnapshot)
 	{
 		SpinLockAcquire(&ShmemVariableCache->ts_lock);
@@ -1159,38 +1162,39 @@ GlobalSnapshotIsAdmitted(Snapshot snapshot, CommitSeqNo *cutoffTs)
 	{
 		maxCommitTs = RecentGlobalTs;
 		if (!COMMITSEQNO_IS_NORMAL(maxCommitTs))
-			elog(ERROR, "Recent global ts is invalid "UINT64_FORMAT, maxCommitTs);
+			elog(ERROR, "Recent global ts is invalid " UINT64_FORMAT, maxCommitTs);
 	}
-	
+
 	/*
-	 * We design a timestamp based MVCC garbage collection algorithm to 
-	 * make the gc not to vacuum the tuple versions that are visible to
-	 * concurrent and pending transactions.
-	 * 
-	 * The algorithm consists of two parts. 
-	 * The first part is the admission of transaction execution. We reject
-	 * the transaction with global snapshot that may access the tuple versions
-	 * garbage collected.
-	 * 
-	 * Specifically, we reject the snapshot with start ts < maxCommitTs - gc_interval
-	 * in order to resolve the conflict with vacuum and hot-chain cleanup.
-	 * 
-	 * The parameter gc_interval represents the allowed maximum delay from 
-	 * the snapshot generated on the coordinator to its arrival on data node.
-	 * 
-	 * The second part is the determining of the oldest committs before which the tuple
- 	 * versions can be pruned. See CommittsSatisfiesVacuum().
-	 * 
-	 * The second part is the determining of the oldest committs before which the tuple
- 	 * versions can be pruned. See CommittsSatisfiesVacuum().
- 	 * The oldest committs computation is implemented in GetRecentGlobalXmin() and GetOldestXmin().
-	 * 
+	 * We design a timestamp based MVCC garbage collection algorithm to make
+	 * the gc not to vacuum the tuple versions that are visible to concurrent
+	 * and pending transactions.
+	 *
+	 * The algorithm consists of two parts. The first part is the admission of
+	 * transaction execution. We reject the transaction with global snapshot
+	 * that may access the tuple versions garbage collected.
+	 *
+	 * Specifically, we reject the snapshot with start ts < maxCommitTs -
+	 * gc_interval in order to resolve the conflict with vacuum and hot-chain
+	 * cleanup.
+	 *
+	 * The parameter gc_interval represents the allowed maximum delay from the
+	 * snapshot generated on the coordinator to its arrival on data node.
+	 *
+	 * The second part is the determining of the oldest committs before which
+	 * the tuple versions can be pruned. See CommittsSatisfiesVacuum().
+	 *
+	 * The second part is the determining of the oldest committs before which
+	 * the tuple versions can be pruned. See CommittsSatisfiesVacuum(). The
+	 * oldest committs computation is implemented in GetRecentGlobalXmin() and
+	 * GetOldestXmin().
+	 *
 	 * Written by Junbin Kang, 2020.01.18
-	 */ 
+	 */
 
 	if (maxCommitTs < SHIFT_GC_INTERVAL(gc_interval))
-		elog(ERROR, "maxCommitTs "UINT64_FORMAT" is smaller than vacuum delta "UINT64_FORMAT, 
-							maxCommitTs, SHIFT_GC_INTERVAL(gc_interval));
+		elog(ERROR, "maxCommitTs " UINT64_FORMAT " is smaller than vacuum delta " UINT64_FORMAT,
+			 maxCommitTs, SHIFT_GC_INTERVAL(gc_interval));
 	*cutoffTs = maxCommitTs - SHIFT_GC_INTERVAL(gc_interval);
 	if (snapshot->snapshotcsn < *cutoffTs)
 		return false;
@@ -1289,19 +1293,18 @@ GetSnapshotDataExtend(Snapshot snapshot, bool latest)
 	CommitSeqNo snapshotcsn;
 	LogicalTime startTs;
 	bool		takenDuringRecovery;
-	#ifdef ENABLE_DISTRIBUTED_TRANSACTION
-	CommitSeqNo	cutoffTs;
-	#endif
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+	CommitSeqNo cutoffTs;
+#endif
 
 	Assert(snapshot != NULL);
 
 	/*
-	 * The ProcArrayLock is not needed here. We only set our xmin if
-	 * it's not already set. There are only a few functions that check
-	 * the xmin under exclusive ProcArrayLock:
-	 * 1) ProcArrayInstallRestored/ImportedXmin -- can only care about
-	 * our xmin long after it has been first set.
-	 * 2) ProcArrayEndTransaction is not called concurrently with
+	 * The ProcArrayLock is not needed here. We only set our xmin if it's not
+	 * already set. There are only a few functions that check the xmin under
+	 * exclusive ProcArrayLock: 1) ProcArrayInstallRestored/ImportedXmin --
+	 * can only care about our xmin long after it has been first set. 2)
+	 * ProcArrayEndTransaction is not called concurrently with
 	 * GetSnapshotData.
 	 */
 
@@ -1320,8 +1323,8 @@ GetSnapshotDataExtend(Snapshot snapshot, bool latest)
 		/*
 		 * Recheck, if oldestActiveXid advanced after we read it.
 		 *
-		 * This protects against a race condition with AdvanceGlobalXmin().
-		 * If a transaction ends runs AdvanceGlobalXmin(), just after we fetch
+		 * This protects against a race condition with AdvanceGlobalXmin(). If
+		 * a transaction ends runs AdvanceGlobalXmin(), just after we fetch
 		 * oldestActiveXid, but before we set MyPgXact->xmin, it's possible
 		 * that AdvanceGlobalXmin() computed a new GlobalXmin that doesn't
 		 * cover the xmin that we got. To fix that, check oldestActiveXid
@@ -1333,13 +1336,14 @@ GetSnapshotDataExtend(Snapshot snapshot, bool latest)
 		 * lower than GlobalXmin, but it's OK because we don't use that xmin
 		 * until we've re-checked and corrected it if necessary.
 		 */
+
 		/*
-		 * memory barrier to make sure that setting the xmin in our PGPROC entry
-		 * is made visible to others, before the read below.
+		 * memory barrier to make sure that setting the xmin in our PGPROC
+		 * entry is made visible to others, before the read below.
 		 */
 		pg_memory_barrier();
 
-		oldestActiveXid  = pg_atomic_read_u32(&ShmemVariableCache->oldestActiveXid);
+		oldestActiveXid = pg_atomic_read_u32(&ShmemVariableCache->oldestActiveXid);
 		if (oldestActiveXid != xmin)
 		{
 			xmin = oldestActiveXid;
@@ -1355,42 +1359,43 @@ GetSnapshotDataExtend(Snapshot snapshot, bool latest)
 	 * Get the current snapshot CSN, and copy that to my PGPROC entry. This
 	 * serializes us with any concurrent commits.
 	 */
-	#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
 	if (enable_global_cutoffts)
 		LWLockAcquire(ProcArrayLock, LW_SHARED);
 
 	startTs = TxnGetOrGenerateStartTs(latest);
 	snapshotcsn = startTs;
 	if (!COMMITSEQNO_IS_NORMAL(snapshotcsn))
-		elog(ERROR, "invalid snapshot ts "UINT64_FORMAT, snapshotcsn);
-		
+		elog(ERROR, "invalid snapshot ts " UINT64_FORMAT, snapshotcsn);
+
 	Assert(snapshotcsn >= COMMITSEQNO_FIRST_NORMAL);
+
 	/*
-	 * Be carefull of the order between setting MyPgXact->tmin
-	 * and acquiring the ts_lock to fetch maxCommitTs in GlobalSnapshotIsAdmitted()
-	 * which is critical to the correctness of garbage collection algorithm.
-	 * Written by Junbin Kang, 2020.01.20
+	 * Be carefull of the order between setting MyPgXact->tmin and acquiring
+	 * the ts_lock to fetch maxCommitTs in GlobalSnapshotIsAdmitted() which is
+	 * critical to the correctness of garbage collection algorithm. Written by
+	 * Junbin Kang, 2020.01.20
 	 */
 	if (!txnUseGlobalSnapshot && !latest)
 	{
 		pg_atomic_write_u64(&MyPgXact->tmin, snapshotcsn);
 		pg_memory_barrier();
 		if (enable_timestamp_debug_print)
-			elog(LOG, "set local tmin "UINT64_FORMAT "procno %d", snapshotcsn, MyProc->pgprocno);
+			elog(LOG, "set local tmin " UINT64_FORMAT "procno %d", snapshotcsn, MyProc->pgprocno);
 	}
 
 	if (enable_global_cutoffts)
 		LWLockRelease(ProcArrayLock);
-	
-	#else
+
+#else
 	snapshotcsn = pg_atomic_read_u64(&ShmemVariableCache->nextCommitSeqNo);
-	#endif
+#endif
 	if (MyPgXact->snapshotcsn == InvalidCommitSeqNo)
 		MyPgXact->snapshotcsn = snapshotcsn;
-	
+
 	/*
-	 * Also get xmax. It is always latestCompletedXid + 1.
-	 * Make sure to read it after CSN (see TransactionIdAsyncCommitTree())
+	 * Also get xmax. It is always latestCompletedXid + 1. Make sure to read
+	 * it after CSN (see TransactionIdAsyncCommitTree())
 	 */
 	pg_read_barrier();
 	xmax = pg_atomic_read_u32(&ShmemVariableCache->latestCompletedXid);
@@ -1402,7 +1407,7 @@ GetSnapshotDataExtend(Snapshot snapshot, bool latest)
 	snapshot->snapshotcsn = snapshotcsn;
 	snapshot->curcid = GetCurrentCommandId(false);
 	snapshot->takenDuringRecovery = takenDuringRecovery;
-	
+
 	/*
 	 * This is a new snapshot, so set both refcounts are zero, and mark it as
 	 * not copied in persistent memory.
@@ -1411,23 +1416,23 @@ GetSnapshotDataExtend(Snapshot snapshot, bool latest)
 	snapshot->regd_count = 0;
 	snapshot->copied = false;
 
-	#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
 	if (!latest && !GlobalSnapshotIsAdmitted(snapshot, &cutoffTs))
 	{
-		ereport(ERROR, (errcode(ERRCODE_SNAPSHOT_TOO_OLD), 
-						errmsg("stale snapshot: start_ts "LOGICALTIME_FORMAT
-								" < cutoff_ts "LOGICALTIME_FORMAT,
-								LOGICALTIME_STRING(snapshotcsn),
-								LOGICALTIME_STRING(cutoffTs))));
+		ereport(ERROR, (errcode(ERRCODE_SNAPSHOT_TOO_OLD),
+						errmsg("stale snapshot: start_ts " LOGICALTIME_FORMAT
+							   " < cutoff_ts " LOGICALTIME_FORMAT,
+							   LOGICALTIME_STRING(snapshotcsn),
+							   LOGICALTIME_STRING(cutoffTs))));
 	}
-	#ifdef ENABLE_DISTR_DEBUG
+#ifdef ENABLE_DISTR_DEBUG
 	if (txnUseGlobalSnapshot && !latest)
 	{
 		if (snapshot_delay)
 			pg_usleep(snapshot_delay * 1000);
 	}
-	#endif
-	#endif
+#endif
+#endif
 	if (old_snapshot_threshold < 0)
 	{
 		/*
@@ -1483,7 +1488,7 @@ ProcArrayInstallImportedXmin(TransactionId xmin,
 	{
 		int			pgprocno = arrayP->pgprocnos[index];
 		volatile PGPROC *proc = &allProcs[pgprocno];
-		volatile PGXACT *pgxact = &allPgXact[pgprocno];
+		volatile	PGXACT *pgxact = &allPgXact[pgprocno];
 		TransactionId xid;
 
 		/* Ignore procs running LAZY VACUUM */
@@ -1544,7 +1549,7 @@ ProcArrayInstallRestoredXmin(TransactionId xmin, PGPROC *proc)
 {
 	bool		result = false;
 	TransactionId xid;
-	volatile PGXACT *pgxact;
+	volatile	PGXACT *pgxact;
 
 	Assert(TransactionIdIsNormal(xmin));
 	Assert(proc != NULL);
@@ -1626,7 +1631,7 @@ GetRunningTransactionData(void)
 	for (index = 0; index < arrayP->numProcs; index++)
 	{
 		int			pgprocno = arrayP->pgprocnos[index];
-		volatile PGXACT *pgxact = &allPgXact[pgprocno];
+		volatile	PGXACT *pgxact = &allPgXact[pgprocno];
 		TransactionId xid;
 
 		/* Fetch xid just once - see GetNewTransactionId */
@@ -1706,7 +1711,7 @@ GetOldestActiveTransactionId(void)
 	for (index = 0; index < arrayP->numProcs; index++)
 	{
 		int			pgprocno = arrayP->pgprocnos[index];
-		volatile PGXACT *pgxact = &allPgXact[pgprocno];
+		volatile	PGXACT *pgxact = &allPgXact[pgprocno];
 		TransactionId xid;
 
 		/* Fetch xid just once - see GetNewTransactionId */
@@ -1804,7 +1809,7 @@ GetOldestSafeDecodingTransactionId(bool catalogOnly)
 		for (index = 0; index < arrayP->numProcs; index++)
 		{
 			int			pgprocno = arrayP->pgprocnos[index];
-			volatile PGXACT *pgxact = &allPgXact[pgprocno];
+			volatile	PGXACT *pgxact = &allPgXact[pgprocno];
 			TransactionId xid;
 
 			/* Fetch xid just once - see GetNewTransactionId */
@@ -1859,7 +1864,7 @@ GetVirtualXIDsDelayingChkpt(int *nvxids)
 	{
 		int			pgprocno = arrayP->pgprocnos[index];
 		volatile PGPROC *proc = &allProcs[pgprocno];
-		volatile PGXACT *pgxact = &allPgXact[pgprocno];
+		volatile	PGXACT *pgxact = &allPgXact[pgprocno];
 
 		if (pgxact->delayChkpt)
 		{
@@ -1899,7 +1904,7 @@ HaveVirtualXIDsDelayingChkpt(VirtualTransactionId *vxids, int nvxids)
 	{
 		int			pgprocno = arrayP->pgprocnos[index];
 		volatile PGPROC *proc = &allProcs[pgprocno];
-		volatile PGXACT *pgxact = &allPgXact[pgprocno];
+		volatile	PGXACT *pgxact = &allPgXact[pgprocno];
 		VirtualTransactionId vxid;
 
 		GET_VXID_FROM_PGPROC(vxid, *proc);
@@ -2009,7 +2014,7 @@ BackendXidGetPid(TransactionId xid)
 	{
 		int			pgprocno = arrayP->pgprocnos[index];
 		volatile PGPROC *proc = &allProcs[pgprocno];
-		volatile PGXACT *pgxact = &allPgXact[pgprocno];
+		volatile	PGXACT *pgxact = &allPgXact[pgprocno];
 
 		if (pgxact->xid == xid)
 		{
@@ -2081,7 +2086,7 @@ GetCurrentVirtualXIDs(TransactionId limitXmin, bool excludeXmin0,
 	{
 		int			pgprocno = arrayP->pgprocnos[index];
 		volatile PGPROC *proc = &allProcs[pgprocno];
-		volatile PGXACT *pgxact = &allPgXact[pgprocno];
+		volatile	PGXACT *pgxact = &allPgXact[pgprocno];
 
 		if (proc == MyProc)
 			continue;
@@ -2178,7 +2183,7 @@ GetConflictingVirtualXIDs(TransactionId limitXmin, Oid dbOid)
 	{
 		int			pgprocno = arrayP->pgprocnos[index];
 		volatile PGPROC *proc = &allProcs[pgprocno];
-		volatile PGXACT *pgxact = &allPgXact[pgprocno];
+		volatile	PGXACT *pgxact = &allPgXact[pgprocno];
 
 		/* Exclude prepared transactions */
 		if (proc->pid == 0)
@@ -2292,7 +2297,7 @@ MinimumActiveBackends(int min)
 	{
 		int			pgprocno = arrayP->pgprocnos[index];
 		volatile PGPROC *proc = &allProcs[pgprocno];
-		volatile PGXACT *pgxact = &allPgXact[pgprocno];
+		volatile	PGXACT *pgxact = &allPgXact[pgprocno];
 
 		/*
 		 * Since we're not holding a lock, need to be prepared to deal with
@@ -2503,7 +2508,7 @@ CountOtherDBBackends(Oid databaseId, int *nbackends, int *nprepared)
 		{
 			int			pgprocno = arrayP->pgprocnos[index];
 			volatile PGPROC *proc = &allProcs[pgprocno];
-			volatile PGXACT *pgxact = &allPgXact[pgprocno];
+			volatile	PGXACT *pgxact = &allPgXact[pgprocno];
 
 			if (proc->databaseId != databaseId)
 				continue;
@@ -2631,16 +2636,17 @@ RecordKnownAssignedTransactionIds(TransactionId xid)
 		while (TransactionIdPrecedes(next_expected_xid, xid))
 		{
 			TransactionIdAdvance(next_expected_xid);
-			#ifdef ENABLE_DISTRIBUTED_TRANSACTION
-			/* 
-			 * Each time the transaction/subtransaction id is allocated, we have
-			 * written CTS extend WAL entry. As a result, no extra CTS extend is needed
-			 * here to avoid nested WAL which would report error.
-			 * Written by Junbin Kang, 2020.06.16
-			 */ 
-			#else
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+
+			/*
+			 * Each time the transaction/subtransaction id is allocated, we
+			 * have written CTS extend WAL entry. As a result, no extra CTS
+			 * extend is needed here to avoid nested WAL which would report
+			 * error. Written by Junbin Kang, 2020.06.16
+			 */
+#else
 			ExtendCSNLOG(next_expected_xid);
-			#endif
+#endif
 		}
 		Assert(next_expected_xid == xid);
 

@@ -149,6 +149,7 @@ static int	wal_segment_size_mb;
 
 /* POLAR */
 static char *polar_system_identifier = NULL;
+
 /* POLAR end */
 
 /* internal vars */
@@ -3276,11 +3277,11 @@ main(int argc, char *argv[])
 			case 'g':
 				SetDataDirectoryCreatePerm(PG_DIR_MODE_GROUP);
 				break;
-			/* POLAR */
+				/* POLAR */
 			case 'i':
 				polar_system_identifier = pg_strdup(optarg);
 				break;
-			/* POLAR end */
+				/* POLAR end */
 			default:
 				/* getopt_long already emitted a complaint */
 				fprintf(stderr, _("Try \"%s --help\" for more information.\n"),

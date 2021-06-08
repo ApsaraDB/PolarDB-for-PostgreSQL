@@ -1886,11 +1886,12 @@ seq_redo(XLogReaderState *record)
 
 	buffer = XLogInitBufferForRedo(record, 0);
 #ifdef ENABLE_PARALLEL_RECOVERY
-	if (!BufferIsValid(buffer)){
+	if (!BufferIsValid(buffer))
+	{
 		Assert(enable_parallel_recovery_bypage);
 		return;
-	} 
-#endif /* ENABLE_PARALLEL_RECOVERY */
+	}
+#endif							/* ENABLE_PARALLEL_RECOVERY */
 	page = (Page) BufferGetPage(buffer);
 
 	/*

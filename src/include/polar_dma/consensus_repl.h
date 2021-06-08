@@ -28,10 +28,10 @@
 #include "postgres.h"
 #include "access/xlog.h"
 
-extern uint64 ConsensusGetCommitIndex(void );
+extern uint64 ConsensusGetCommitIndex(void);
 extern void ConsensusSetCommitIndex(uint64 commit_index);
 
-extern bool consensus_check_physical_flush_lsn(uint64 term, 
-		XLogRecPtr lsn, TimeLineID tli, bool wait);
+extern bool consensus_check_physical_flush_lsn(uint64 term,
+								   XLogRecPtr lsn, TimeLineID tli, bool wait);
 
-#endif /* _CONSENSUS_REPL_H */
+#endif							/* _CONSENSUS_REPL_H */

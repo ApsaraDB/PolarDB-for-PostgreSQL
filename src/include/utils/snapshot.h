@@ -60,9 +60,9 @@ typedef struct SnapshotData
 	 * specially by HeapTupleSatisfiesDirty, and xmin is used specially by
 	 * HeapTupleSatisfiesNonVacuumable.)
 	 *
-	 * An MVCC snapshot can see the effects of those XIDs that committed
-	 * after snapshotlsn. xmin and xmax are stored as an optimization, to
-	 * avoid checking the commit LSN for most tuples.
+	 * An MVCC snapshot can see the effects of those XIDs that committed after
+	 * snapshotlsn. xmin and xmax are stored as an optimization, to avoid
+	 * checking the commit LSN for most tuples.
 	 */
 	TransactionId xmin;			/* all XID < xmin are visible to me */
 	TransactionId xmax;			/* all XID >= xmax are invisible to me */
@@ -71,7 +71,7 @@ typedef struct SnapshotData
 	 * This snapshot can see the effects of all transactions with CSN <=
 	 * snapshotcsn.
 	 */
-	CommitSeqNo	snapshotcsn;
+	CommitSeqNo snapshotcsn;
 
 	bool		takenDuringRecovery;	/* recovery-shaped snapshot? */
 	bool		copied;			/* false if it's a static snapshot */
@@ -86,11 +86,11 @@ typedef struct SnapshotData
 
 	/*
 	 * this_xip contains *all* xids assigned to the replayed transaction,
-	 * including the toplevel xid. Used only in a historic MVCC snapshot,
-	 * used in logical decoding.
+	 * including the toplevel xid. Used only in a historic MVCC snapshot, used
+	 * in logical decoding.
 	 */
 	TransactionId *this_xip;
-	uint32		this_xcnt;			/* # of xact ids in this_xip[] */
+	uint32		this_xcnt;		/* # of xact ids in this_xip[] */
 
 	/*
 	 * Book-keeping information, used by the snapshot manager
@@ -115,6 +115,6 @@ typedef enum
 	HeapTupleUpdated,
 	HeapTupleBeingUpdated,
 	HeapTupleWouldBlock			/* can be returned by heap_tuple_lock */
-} HTSU_Result;
+}			HTSU_Result;
 
 #endif							/* SNAPSHOT_H */

@@ -513,12 +513,12 @@ pgarch_archiveXlog(char *xlog)
 	int			rc;
 
 	/*
-	 * POLAR: datamax xlog is stored in polar_datamax/pg_wal
-	 * use polar_is_dma_logger_mode directly rather than polar_is_dma_logger() here,
-	 * because polar_is_dma_logger() need to access XLogCtl in shared memory,
-	 * and original archive process have detached shared memory 
+	 * POLAR: datamax xlog is stored in polar_datamax/pg_wal use
+	 * polar_is_dma_logger_mode directly rather than polar_is_dma_logger()
+	 * here, because polar_is_dma_logger() need to access XLogCtl in shared
+	 * memory, and original archive process have detached shared memory
 	 */
-	if(!polar_is_dma_logger_mode)
+	if (!polar_is_dma_logger_mode)
 		snprintf(pathname, MAXPGPATH, "%s/%s", XLOGDIR, xlog);
 	else
 		snprintf(pathname, MAXPGPATH, "%s/%s", POLAR_DATAMAX_WAL_DIR, xlog);
@@ -683,15 +683,16 @@ pgarch_readyXlog(char *xlog)
 	bool		found = false;
 	bool		historyFound = false;
 	XLogSegNo	committed_segno = 0;
-	TimeLineID committed_tli = 0;
+	TimeLineID	committed_tli = 0;
 
 	/*
-	 * POLAR: datamax archive_status is stored in polar_datamax/pg_wal/archive_status
-	 * use polar_is_dma_logger_mode directly rather than polar_is_dma_logger() here,
-	 * because polar_is_dma_logger() need to access XLogCtl in shared memory,
-	 * and original archive process have detached shared memory
+	 * POLAR: datamax archive_status is stored in
+	 * polar_datamax/pg_wal/archive_status use polar_is_dma_logger_mode
+	 * directly rather than polar_is_dma_logger() here, because
+	 * polar_is_dma_logger() need to access XLogCtl in shared memory, and
+	 * original archive process have detached shared memory
 	 */
-	if(!polar_is_dma_logger_mode)
+	if (!polar_is_dma_logger_mode)
 		snprintf(XLogArchiveStatusDir, MAXPGPATH, XLOGDIR "/archive_status");
 	else
 		snprintf(XLogArchiveStatusDir, MAXPGPATH, POLAR_DATAMAX_WAL_DIR "/archive_status");
@@ -715,10 +716,10 @@ pgarch_readyXlog(char *xlog)
 
 		if (polar_enable_dma && strcmp(rlde->d_name + basenamelen, ".local") == 0)
 		{
-			uint32 tli;
-			XLogSegNo segno;
-			char rloglocal[MAXPGPATH];
-			char rlogready[MAXPGPATH];
+			uint32		tli;
+			XLogSegNo	segno;
+			char		rloglocal[MAXPGPATH];
+			char		rlogready[MAXPGPATH];
 
 			XLogFromFileName(rlde->d_name, &tli, &segno, wal_segment_size);
 			if (committed_tli >= tli && committed_segno >= segno)
@@ -732,11 +733,11 @@ pgarch_readyXlog(char *xlog)
 		}
 		else if (polar_enable_dma && strcmp(rlde->d_name + basenamelen, ".paxos") == 0)
 		{
-			uint32 tli;
-			XLogSegNo segno;
-			char rlogpaxos[MAXPGPATH];
+			uint32		tli;
+			XLogSegNo	segno;
+			char		rlogpaxos[MAXPGPATH];
 
-			/* Advance committed tli and segno*/
+			/* Advance committed tli and segno */
 			XLogFromFileName(rlde->d_name + basenamelen, &tli, &segno, wal_segment_size);
 			if (committed_tli == 0 || committed_tli < tli || committed_segno < segno)
 			{
@@ -814,8 +815,9 @@ pgarch_archiveDone(char *xlog)
 void
 polar_datamax_ArchiverCopyLoop(void)
 {
-	if(!polar_is_dma_logger_mode)
+	if (!polar_is_dma_logger_mode)
 		return;
 	pgarch_ArchiverCopyLoop();
 }
+
 /* POLAR end */

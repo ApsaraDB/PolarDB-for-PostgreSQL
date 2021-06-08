@@ -867,17 +867,18 @@ copy_heap_data(Oid OIDNewHeap, Oid OIDOldHeap, Oid OIDOldIndex, bool verbose,
 	 * Since we're going to rewrite the whole table anyway, there's no reason
 	 * not to be aggressive about this.
 	 */
-	#ifdef ENABLE_DISTRIBUTED_TRANSACTION
-	 vacuum_set_xid_limits(OldHeap, vacuum_defer_freeze_min_age, 
-                          vacuum_defer_freeze_min_age, vacuum_defer_freeze_min_age, vacuum_defer_freeze_min_age,
-                          &OldestXmin, &FreezeXid, NULL, &MultiXactCutoff,
-                          NULL);
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+	vacuum_set_xid_limits(OldHeap, vacuum_defer_freeze_min_age,
+						  vacuum_defer_freeze_min_age, vacuum_defer_freeze_min_age, vacuum_defer_freeze_min_age,
+						  &OldestXmin, &FreezeXid, NULL, &MultiXactCutoff,
+						  NULL);
 
-	#else
+#else
 	vacuum_set_xid_limits(OldHeap, 0, 0, 0, 0,
 						  &OldestXmin, &FreezeXid, NULL, &MultiXactCutoff,
 						  NULL);
-	#endif
+#endif
+
 	/*
 	 * FreezeXid will become the table's new relfrozenxid, and that mustn't go
 	 * backwards, so take the max.

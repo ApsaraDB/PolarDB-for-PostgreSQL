@@ -74,7 +74,7 @@
 /*
  * Disable old snapshot feature for now.
  */
-int			old_snapshot_threshold = -1; /* number of minutes, -1 disables */
+int			old_snapshot_threshold = -1;	/* number of minutes, -1 disables */
 
 /*
  * Structure for dealing with old_snapshot_threshold implementation.
@@ -356,7 +356,7 @@ GetTransactionSnapshotExtend(bool latest)
 
 	/* Don't allow catalog snapshot to be older than xact snapshot. */
 	InvalidateCatalogSnapshot();
-	
+
 	CurrentSnapshot = GetSnapshotDataExtend(&CurrentSnapshotData, latest);
 
 	return CurrentSnapshot;
@@ -571,9 +571,9 @@ SetTransactionSnapshot(Snapshot sourcesnap, VirtualTransactionId *sourcevxid,
 	 * Even though we are not going to use the snapshot it computes, we must
 	 * call GetSnapshotData, for two reasons: (1) to be sure that
 	 * CurrentSnapshotData's XID arrays have been allocated, and (2) to update
-	 * RecentGlobalXmin.  (We could alternatively include those
-	 * two variables in exported snapshot files, but it seems better to have
-	 * snapshot importers compute reasonably up-to-date values for them.)
+	 * RecentGlobalXmin.  (We could alternatively include those two variables
+	 * in exported snapshot files, but it seems better to have snapshot
+	 * importers compute reasonably up-to-date values for them.)
 	 *
 	 * FIXME: neither of those reasons hold anymore. Can we drop this?
 	 */
@@ -1115,7 +1115,7 @@ ExportSnapshot(Snapshot snapshot)
 	MemoryContext oldcxt;
 	char		path[MAXPGPATH];
 	char		pathtmp[MAXPGPATH];
-    ExportedSnapshot *esnap;
+	ExportedSnapshot *esnap;
 
 	/*
 	 * It's tempting to call RequireTransactionBlock here, since it's not very
@@ -1146,12 +1146,12 @@ ExportSnapshot(Snapshot snapshot)
 				(errcode(ERRCODE_ACTIVE_SQL_TRANSACTION),
 				 errmsg("cannot export a snapshot from a subtransaction")));
 
-    /*
-     * Generate file path for the snapshot.  We start numbering of snapshots
-     * inside the transaction from 1.
-     */
-    snprintf(path, sizeof(path), SNAPSHOT_EXPORT_DIR "/%08X-%08X-%d",
-        MyProc->backendId, MyProc->lxid, list_length(exportedSnapshots) + 1);
+	/*
+	 * Generate file path for the snapshot.  We start numbering of snapshots
+	 * inside the transaction from 1.
+	 */
+	snprintf(path, sizeof(path), SNAPSHOT_EXPORT_DIR "/%08X-%08X-%d",
+			 MyProc->backendId, MyProc->lxid, list_length(exportedSnapshots) + 1);
 
 
 	/*
@@ -1162,12 +1162,12 @@ ExportSnapshot(Snapshot snapshot)
 	 */
 	snapshot = CopySnapshot(snapshot);
 
-    oldcxt = MemoryContextSwitchTo(TopTransactionContext);
-    esnap = (ExportedSnapshot *) palloc(sizeof(ExportedSnapshot));
-    esnap->snapfile = pstrdup(path);
-    esnap->snapshot = snapshot;
-    exportedSnapshots = lappend(exportedSnapshots, esnap);
-    MemoryContextSwitchTo(oldcxt);
+	oldcxt = MemoryContextSwitchTo(TopTransactionContext);
+	esnap = (ExportedSnapshot *) palloc(sizeof(ExportedSnapshot));
+	esnap->snapfile = pstrdup(path);
+	esnap->snapshot = snapshot;
+	exportedSnapshots = lappend(exportedSnapshots, esnap);
+	MemoryContextSwitchTo(oldcxt);
 
 	snapshot->regd_count++;
 	pairingheap_add(&RegisteredSnapshots, &snapshot->ph_node);
@@ -1741,7 +1741,7 @@ SerializeSnapshot(Snapshot snapshot, char *start_address)
 	serialized_snapshot.snapshotcsn = snapshot->snapshotcsn;
 #ifdef ENABLE_DISTRIBUTED_TRANSACTION
 	if (enable_timestamp_debug_print)
-		elog(LOG, "serialize snapshot ts "UINT64_FORMAT, serialized_snapshot.snapshotcsn);
+		elog(LOG, "serialize snapshot ts " UINT64_FORMAT, serialized_snapshot.snapshotcsn);
 #endif
 
 	/* Copy struct to possibly-unaligned buffer */
@@ -1774,7 +1774,7 @@ RestoreSnapshot(char *start_address)
 	snapshot->snapshotcsn = serialized_snapshot.snapshotcsn;
 #ifdef ENABLE_DISTRIBUTED_TRANSACTION
 	if (enable_timestamp_debug_print)
-		elog(LOG, "restore snapshot ts "UINT64_FORMAT, snapshot->snapshotcsn);
+		elog(LOG, "restore snapshot ts " UINT64_FORMAT, snapshot->snapshotcsn);
 #endif
 	snapshot->takenDuringRecovery = serialized_snapshot.takenDuringRecovery;
 	snapshot->curcid = serialized_snapshot.curcid;

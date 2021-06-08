@@ -79,16 +79,16 @@ typedef struct SlruFlushData
 	int			num_files;		/* # files actually open */
 	int			fd[MAX_FLUSH_BUFFERS];	/* their FD's */
 	int			segno[MAX_FLUSH_BUFFERS];	/* their log seg#s */
-} SlruFlushData;
+}			SlruFlushData;
 
 typedef struct SlruFlushData *SlruFlush;
 
 /* An entry of page-to-slot hash map */
 typedef struct PageSlotEntry
 {
-	int page;
-	int slot;
-} PageSlotEntry;
+	int			page;
+	int			slot;
+}			PageSlotEntry;
 
 /*
  * Macro to mark a buffer slot "most recently used".  Note multiple evaluation
@@ -178,10 +178,10 @@ SimpleLruInit(SlruCtl ctl, const char *name, int nslots, int nlsns,
 			  LWLock *ctllock, const char *subdir, int tranche_id)
 {
 	SlruShared	shared;
-	char *hashName;
-	HTAB *htab;
+	char	   *hashName;
+	HTAB	   *htab;
 	bool		found;
-	HASHCTL info;
+	HASHCTL		info;
 
 	shared = (SlruShared) ShmemInitStruct(name,
 										  SimpleLruShmemSize(nslots, nlsns),
@@ -189,7 +189,7 @@ SimpleLruInit(SlruCtl ctl, const char *name, int nslots, int nlsns,
 	hashName = psprintf("%s_hash", name);
 
 	MemSet(&info, 0, sizeof(info));
-	info.keysize = sizeof(((PageSlotEntry*)0)->page);
+	info.keysize = sizeof(((PageSlotEntry *) 0)->page);
 	info.entrysize = sizeof(PageSlotEntry);
 
 	htab = ShmemInitHash(hashName, nslots, nslots, &info,
@@ -303,7 +303,8 @@ SimpleLruZeroPage(SlruCtl ctl, int pageno)
 	/* Mark the slot as containing this page */
 	if (shared->page_status[slotno] == SLRU_PAGE_VALID)
 	{
-		int oldpageno = shared->page_number[slotno];
+		int			oldpageno = shared->page_number[slotno];
+
 		entry = hash_search(ctl->pageToSlot, &oldpageno, HASH_REMOVE, NULL);
 		Assert(entry != NULL);
 	}
@@ -384,7 +385,7 @@ SimpleLruWaitIO(SlruCtl ctl, int slotno)
 				Assert(hash_search(ctl->pageToSlot, &shared->page_number[slotno], HASH_REMOVE, NULL) != NULL);
 				shared->page_status[slotno] = SLRU_PAGE_EMPTY;
 			}
-			else	/* write_in_progress */
+			else				/* write_in_progress */
 			{
 				shared->page_status[slotno] = SLRU_PAGE_VALID;
 				shared->page_dirty[slotno] = true;
@@ -526,7 +527,7 @@ SimpleLruReadPage_ReadOnly(SlruCtl ctl, int pageno, TransactionId xid)
 {
 	SlruShared	shared = ctl->shared;
 	PageSlotEntry *entry = NULL;
-	int slotno;
+	int			slotno;
 
 	/* Try to find the page while holding only shared lock */
 	LWLockAcquire(shared->ControlLock, LW_SHARED);
@@ -554,17 +555,17 @@ SimpleLruReadPage_ReadOnly(SlruCtl ctl, int pageno, TransactionId xid)
 }
 
 /*
- * This is similar to SimpleLruReadPage_ReadOnly, but differs in that 
- * it does only find the slotno for the target pageno if the page is 
+ * This is similar to SimpleLruReadPage_ReadOnly, but differs in that
+ * it does only find the slotno for the target pageno if the page is
  * buffered.
  * Otherwise, return -1
- */ 
+ */
 int
 SimpleLruLookupSlotno(SlruCtl ctl, int pageno)
 {
 	SlruShared	shared = ctl->shared;
 	PageSlotEntry *entry = NULL;
-	int slotno;
+	int			slotno;
 
 	/* Try to find the page while holding only shared lock */
 	LWLockAcquire(shared->ControlLock, LW_SHARED);
@@ -595,7 +596,7 @@ int
 SimpleLruReadPage_ReadOnly_Locked(SlruCtl ctl, int pageno, XLogRecPtr lsn, TransactionId xid)
 {
 	SlruShared	shared = ctl->shared;
-	int slotno;
+	int			slotno;
 	PageSlotEntry *entry;
 
 	Assert(LWLockHeldByMe(shared->ControlLock));
@@ -1108,13 +1109,14 @@ SlruSelectLRUPage(SlruCtl ctl, int pageno)
 		int			bestvalidslot = 0;	/* keep compiler quiet */
 		int			best_valid_delta = -1;
 		int			best_valid_page_number = 0; /* keep compiler quiet */
-		int			bestinvalidslot = 0;		/* keep compiler quiet */
+		int			bestinvalidslot = 0;	/* keep compiler quiet */
 		int			best_invalid_delta = -1;
-		int			best_invalid_page_number = 0;		/* keep compiler quiet */
+		int			best_invalid_page_number = 0;	/* keep compiler quiet */
 
 		/* See if page already has a buffer assigned */
-		#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
 		PageSlotEntry *entry = NULL;
+
 		entry = hash_search(ctl->pageToSlot, &pageno, HASH_FIND, NULL);
 		if (entry != NULL)
 		{
@@ -1123,14 +1125,14 @@ SlruSelectLRUPage(SlruCtl ctl, int pageno)
 				shared->page_status[slotno] != SLRU_PAGE_EMPTY)
 				return slotno;
 		}
-		#else
+#else
 		for (slotno = 0; slotno < shared->num_slots; slotno++)
 		{
 			if (shared->page_number[slotno] == pageno &&
 				shared->page_status[slotno] != SLRU_PAGE_EMPTY)
 				return slotno;
 		}
-		#endif
+#endif
 
 		/*
 		 * If we find any EMPTY slot, just select that one. Else choose a

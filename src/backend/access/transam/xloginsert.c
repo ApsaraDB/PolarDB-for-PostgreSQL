@@ -11,7 +11,7 @@
  *
  * Support remote recovery.
  * Author: Junbin Kang
- * 
+ *
  * Portions Copyright (c) 2020, Alibaba Group Holding Limited
  * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
@@ -536,9 +536,9 @@ XLogRecordAssemble(RmgrId rmid, uint8 info,
 		bool		samerel;
 		bool		is_compressed = false;
 		bool		include_image;
-	#ifdef ENABLE_REMOTE_RECOVERY
+#ifdef ENABLE_REMOTE_RECOVERY
 		bool		needs_remote_fetch = false;
-	#endif
+#endif
 
 		if (!regbuf->in_use)
 			continue;
@@ -567,20 +567,20 @@ XLogRecordAssemble(RmgrId rmid, uint8 info,
 			}
 		}
 
-		#ifdef ENABLE_REMOTE_RECOVERY
+#ifdef ENABLE_REMOTE_RECOVERY
 		if (regbuf->flags & REGBUF_NO_IMAGE)
 			needs_remote_fetch = false;
 		else if (!fullPageRemoteFetch)
 			needs_remote_fetch = false;
-		else 
+		else
 		{
 			if (!needs_backup)
 			{
 				/*
-			 	 * We assume page LSN is first data on *every* page that can be
-				 * passed to XLogInsert, whether it has the standard page layout
-			     * or not.
-			     */
+				 * We assume page LSN is first data on *every* page that can
+				 * be passed to XLogInsert, whether it has the standard page
+				 * layout or not.
+				 */
 				XLogRecPtr	page_lsn = PageGetLSN(regbuf->page);
 
 				needs_remote_fetch = (page_lsn <= RedoRecPtr);
@@ -591,7 +591,7 @@ XLogRecordAssemble(RmgrId rmid, uint8 info,
 				}
 			}
 		}
-		#endif
+#endif
 
 		/* Determine if the buffer data needs to included */
 		if (regbuf->rdata_len == 0)
@@ -607,14 +607,14 @@ XLogRecordAssemble(RmgrId rmid, uint8 info,
 
 		if ((regbuf->flags & REGBUF_WILL_INIT) == REGBUF_WILL_INIT)
 			bkpb.fork_flags |= BKPBLOCK_WILL_INIT;
-		
-		#ifdef ENABLE_REMOTE_RECOVERY
+
+#ifdef ENABLE_REMOTE_RECOVERY
 		if (bkpb.fork_flags & BKPBLOCK_NEEDS_REMOTE_FETCH)
-			elog(PANIC,"forkno is out of range flag %d %d", bkpb.fork_flags, regbuf->forkno);
-		
+			elog(PANIC, "forkno is out of range flag %d %d", bkpb.fork_flags, regbuf->forkno);
+
 		if (needs_remote_fetch)
 			bkpb.fork_flags |= BKPBLOCK_NEEDS_REMOTE_FETCH;
-		#endif
+#endif
 
 		/*
 		 * If needs_backup is true or WAL checking is enabled for current
