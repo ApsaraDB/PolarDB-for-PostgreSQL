@@ -82,7 +82,11 @@ export PATH="$HOME/polardb/polardbhome/bin:$PATH"
 export LD_LIBRARY_PATH="$HOME/polardb/polardbhome/lib:$LD_LIBRARY_PATH"
 ```
 
-* generate default configure file
+* write the configure file
+
+Edit `HOME/polardb/polardb_paxos.conf`, if it exists, to include the [content](https://github.com/alibaba/PolarDB-for-PostgreSQL/blob/master/doc/polardb/deployment.md#cluster-configuration-format). If this file does not exist, then create the file `HOME/polardb/polardb_paxos.conf` and write the [content](https://github.com/alibaba/PolarDB-for-PostgreSQL/blob/master/doc/polardb/deployment.md#cluster-configuration-format).
+
+* generate datanode configure file in `$home/pgxc_ctl/`
 
 ```bash
 pgxc_ctl -c $HOME/polardb/polardb_paxos.conf prepare standalone
