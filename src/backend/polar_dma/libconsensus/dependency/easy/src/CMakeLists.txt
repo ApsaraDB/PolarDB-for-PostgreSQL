@@ -81,6 +81,7 @@ message("OpenSSL libraries: ${OPENSSL_LIBRARIES}")
 
 INCLUDE_DIRECTORIES (${OPENSSL_INCLUDE_DIR} include io packet thread util packet/http)
 
+add_definitions(-w)
 add_library (myeasy STATIC ${PRJ_SRC})
 TARGET_LINK_LIBRARIES (myeasy ev ${OPENSSL_LIBRARIES})
 

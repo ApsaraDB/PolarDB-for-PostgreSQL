@@ -43,7 +43,7 @@ ENDIF()
 
 find_package(Protobuf REQUIRED)
 INCLUDE_DIRECTORIES(${Protobuf_INCLUDE_DIRS})
-link_directories(${Protobuf_LIBRARIES})
+LINK_DIRECTORIES(${Protobuf_LIBRARIES})
 
 INCLUDE_DIRECTORIES (
   ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -54,6 +54,7 @@ INCLUDE_DIRECTORIES (
   ${CMAKE_CURRENT_SOURCE_DIR}/../../../../include
   )
 
+ADD_DEFINITIONS(-w)
 ADD_LIBRARY (polar_consensus_wrapper SHARED ${AC_SRC})
 TARGET_LINK_LIBRARIES (polar_consensus_wrapper protobuf ${EXTRA_LINK})
 
@@ -63,6 +64,6 @@ TARGET_LINK_LIBRARIES (polar_consensus_wrapper
   ${CMAKE_CURRENT_SOURCE_DIR}/lib/libaliconsensus.a
   "-Wl,--no-whole-archive" ${EXTRA_LINK})
 
-install(TARGETS polar_consensus_wrapper DESTINATION lib)
-install(FILES ${INC_FILE} DESTINATION include)
-install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/include/easy DESTINATION include)
+INSTALL(TARGETS polar_consensus_wrapper DESTINATION lib)
+INSTALL(FILES ${INC_FILE} DESTINATION include)
+INSTALL(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/include/easy DESTINATION include)
