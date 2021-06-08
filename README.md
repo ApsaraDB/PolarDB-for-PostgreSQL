@@ -56,7 +56,7 @@ We extend a tool named pgxc_ctl from PG-XC/PG-XL open-source project to support 
 * install dependent packages (use Centos as an example)
 
 ```bash
-sudo yum install bison flex libzstd-devel libzstd zstd cmake openssl-devel protobuf-devel readline-devel libxml2-devel libxslt-devel zlib-devel bzip2-devel lz4-devel snappy-devel
+sudo yum install bison flex libzstd-devel libzstd zstd cmake openssl-devel protobuf-devel readline-devel libxml2-devel libxslt-devel zlib-devel bzip2-devel lz4-devel snappy-devel python-devel
 ```
 * set up ssh login without password
 
