@@ -79,7 +79,7 @@ You can just call build script to build. If you get errors, please reference [de
 ```bash
 vi ~/.bashrc
 export PATH="$HOME/polardb/polardbhome/bin:$PATH"
-export LD_LIBRARY_PATH="$HOME/polardb/polardbhome/lib:$LD_LIBRARY_PATH"ß
+export LD_LIBRARY_PATH="$HOME/polardb/polardbhome/lib:$LD_LIBRARY_PATH"
 ```
 
 * generate default configure file
