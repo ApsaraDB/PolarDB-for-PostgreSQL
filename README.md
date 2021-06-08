@@ -60,7 +60,7 @@ sudo yum install bison flex libzstd-devel libzstd zstd cmake openssl-devel proto
 ```
 * set up ssh login without password
 
-Call ssh-copy-id command to configure ssh so that no password is needed when using pgxc_ctl.
+Call `ssh-copy-id` command to configure ssh so that no password is needed when using pgxc_ctl.
 
 ```bash
 ssh-copy-id username@IP
