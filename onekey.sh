@@ -34,6 +34,7 @@ CMD=()
 
 if [[ "$BLD_OPT" == "all" ]]; then
     sh ./build.sh
+    export PATH=$PGBIN:$PATH
     mkdir -p $HOME/polardb
     touch $HOME/polardb/polardb_paxos.conf
     pgxc_ctl -c $HOME/polardb/polardb_paxos.conf prepare standalone
