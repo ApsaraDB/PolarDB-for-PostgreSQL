@@ -57,7 +57,7 @@ cd $CODEHOME
 
 ### Cluster Configuration Format
 
-Edit `$HOME/polardb/polardb_paxos.conf`, if it exists, to include the [content](https://github.com/alibaba/PolarDB-for-PostgreSQL/blob/master/doc/polardb/deployment.md#cluster-configuration-format). If this file does not exist, then create the file `$HOME/polardb/polardb_paxos.conf` and write the [content](https://github.com/alibaba/PolarDB-for-PostgreSQL/blob/master/doc/polardb/deployment.md#cluster-configuration-format).
+Edit `$HOME/polardb/polardb_paxos.conf`, if it exists, to include the [content](#cluster-configuration-format). If this file does not exist, then create the file `$HOME/polardb/polardb_paxos.conf` and write the [content](#cluster-configuration-format).
 
 ```bash
 #!/usr/bin/env bash
