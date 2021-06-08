@@ -62,7 +62,7 @@ before call this script, please check "environment variables, dependent packages
 
 * onekey.sh script introduce
 ```bash
-sh onekey.sh [all|build|configure|deploy|setup|cm|clean]
+sh onekey.sh [all|build|configure|deploy|setup|dependencies|cm|clean]
 ```
 
     * all: uses default configuration to compile PolarDB, to deploy binary, and to start a cluster of three nodes, including a leader and two followers.
@@ -70,6 +70,7 @@ sh onekey.sh [all|build|configure|deploy|setup|cm|clean]
     * configure：generate default cluster configuration; the default configuration includes a leader and two followers.
     * deploy: deploy binary to all related machine.
     * setup: initialize and start database based on default configuration.
+    * dependencies: install dependent packages (use Centos as an example).
     * cm: setup cluster manager component.
     * clean: clean environment.
 
