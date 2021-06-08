@@ -55,15 +55,9 @@ cd $CODEHOME
 
 ## Cluster Installation
 
-### Create Cluster Configuration
-
-We use *pgxc_ctl prepare* to generate a default cluster configuration. 
-
-```bash
-pgxc_ctl -c $HOME/DATA/polardb/polardb_paxos.conf prepare standalone
-```
-
 ### Cluster Configuration Format
+
+Edit `$HOME/polardb/polardb_paxos.conf`, if it exists, to include the [content](https://github.com/alibaba/PolarDB-for-PostgreSQL/blob/master/doc/polardb/deployment.md#cluster-configuration-format). If this file does not exist, then create the file `$HOME/polardb/polardb_paxos.conf` and write the [content](https://github.com/alibaba/PolarDB-for-PostgreSQL/blob/master/doc/polardb/deployment.md#cluster-configuration-format).
 
 ```bash
 #!/usr/bin/env bash
@@ -148,7 +142,15 @@ datanodeSpecificExtraConfig=(none)
 datanodeSpecificExtraPgHba=(none)
 ```
 
-### Deploy Binary using *pgxc_ctl*
+### Create Cluster Configuration
+
+We use `pgxc_ctl prepare` to generate a default cluster configuration. 
+
+```bash
+pgxc_ctl -c $HOME/DATA/polardb/polardb_paxos.conf prepare standalone
+```
+
+### Deploy Binary using `pgxc_ctl`
 We use *pgxc_ctl deploy* command to deploy PolarDB binary in a cluster，option -c for configuration file. PolarDB binary is installed in **pgxcInstallDir** of all nodes specified in the configuration file. 
 
 ```bash
