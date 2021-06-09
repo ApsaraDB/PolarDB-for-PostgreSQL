@@ -74,7 +74,7 @@
 
 #ifdef ENABLE_DISTRIBUTED_TRANSACTION
 #include "distributed_txn/txn_timestamp.h"
-#endif/*ENABLE_DISTRIBUTED_TRANSACTION*/
+#endif							/* ENABLE_DISTRIBUTED_TRANSACTION */
 
 
 /* POLAR */
@@ -473,7 +473,7 @@ standard_ProcessUtility(PlannedStmt *pstmt,
 #ifdef ENABLE_DISTRIBUTED_TRANSACTION
 						if (stmt->commit_ts)
 							TxnSetCoordinatedCommitTsFromStr(stmt->commit_ts);
-#endif/*ENABLE_DISTRIBUTED_TRANSACTION*/
+#endif							/* ENABLE_DISTRIBUTED_TRANSACTION */
 						FinishPreparedTransaction(stmt->gid, true);
 						break;
 

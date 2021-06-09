@@ -115,8 +115,8 @@ static void compute_new_xmax_infomask(TransactionId xmax, uint16 old_infomask,
 						  TransactionId *result_xmax, uint16 *result_infomask,
 						  uint16 *result_infomask2);
 static HTSU_Result heap_lock_updated_tuple(Relation rel, HeapTuple tuple,
-						ItemPointer ctid, TransactionId xid,
-						LockTupleMode mode);
+										   ItemPointer ctid, TransactionId xid,
+										   LockTupleMode mode);
 static void GetMultiXactIdHintBits(MultiXactId multi, uint16 *new_infomask,
 					   uint16 *new_infomask2);
 static TransactionId MultiXactIdGetUpdateXid(TransactionId xmax,
@@ -3060,7 +3060,7 @@ xmax_infomask_changed(uint16 new_infomask, uint16 old_infomask)
 HTSU_Result
 heap_delete(Relation relation, ItemPointer tid,
 			CommandId cid, Snapshot crosscheck, bool wait,
-			HeapUpdateFailureData *hufd, bool changingPart)
+			HeapUpdateFailureData * hufd, bool changingPart)
 {
 	HTSU_Result result;
 	TransactionId xid = GetCurrentTransactionId();
@@ -3307,11 +3307,11 @@ l1:
 	 * the subsequent page pruning will be a no-op and the hint will be
 	 * cleared.
 	 */
-	#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
 	PageSetPrunable(page, xid, InvalidCommitSeqNo);
-	#else
+#else
 	PageSetPrunable(page, xid);
-	#endif
+#endif
 	if (PageIsAllVisible(page))
 	{
 		all_visible_cleared = true;
@@ -3521,7 +3521,7 @@ simple_heap_delete(Relation relation, ItemPointer tid)
 HTSU_Result
 heap_update(Relation relation, ItemPointer otid, HeapTuple newtup,
 			CommandId cid, Snapshot crosscheck, bool wait,
-			HeapUpdateFailureData *hufd, LockTupleMode *lockmode)
+			HeapUpdateFailureData * hufd, LockTupleMode *lockmode)
 {
 	HTSU_Result result;
 	TransactionId xid = GetCurrentTransactionId();
@@ -3827,7 +3827,8 @@ l2:
 
 			/*
 			 * There was no UPDATE in the MultiXact; or it aborted. It cannot
-			 * be in-progress anymore, since we called MultiXactIdWait() above.
+			 * be in-progress anymore, since we called MultiXactIdWait()
+			 * above.
 			 */
 			if (!TransactionIdIsValid(update_xact) ||
 				TransactionIdDidAbort(update_xact))
@@ -4264,11 +4265,11 @@ l2:
 	 * not to optimize for aborts.  Note that heap_xlog_update must be kept in
 	 * sync if this decision changes.
 	 */
-	#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
 	PageSetPrunable(page, xid, InvalidCommitSeqNo);
-	#else
+#else
 	PageSetPrunable(page, xid);
-	#endif
+#endif
 	if (use_hot_update)
 	{
 		/* Mark the old tuple as HOT-updated */
@@ -4693,7 +4694,7 @@ HTSU_Result
 heap_lock_tuple(Relation relation, HeapTuple tuple,
 				CommandId cid, LockTupleMode mode, LockWaitPolicy wait_policy,
 				bool follow_updates,
-				Buffer *buffer, HeapUpdateFailureData *hufd)
+				Buffer *buffer, HeapUpdateFailureData * hufd)
 {
 	HTSU_Result result;
 	ItemPointer tid = &(tuple->t_self);
@@ -5660,8 +5661,8 @@ l5:
 		/*
 		 * Can get here iff the locking/updating transaction was running when
 		 * the infomask was extracted from the tuple, but finished before
-		 * TransactionIdGetStatus got to run.  Deal with it as if there was
-		 * no locker at all in the first place.
+		 * TransactionIdGetStatus got to run.  Deal with it as if there was no
+		 * locker at all in the first place.
 		 */
 		old_infomask |= HEAP_XMAX_INVALID;
 		goto l5;
@@ -5734,18 +5735,17 @@ test_lockmode_for_conflict(MultiXactStatus status, TransactionId xid,
 
 	/*
 	 * The other transaction committed.  If it was only a locker, then the
-	 * lock is completely gone now and we can return success; but if it
-	 * was an update, then what we do depends on whether the two lock
-	 * modes conflict.  If they conflict, then we must report error to
-	 * caller. But if they don't, we can fall through to allow the current
-	 * transaction to lock the tuple.
+	 * lock is completely gone now and we can return success; but if it was an
+	 * update, then what we do depends on whether the two lock modes conflict.
+	 * If they conflict, then we must report error to caller. But if they
+	 * don't, we can fall through to allow the current transaction to lock the
+	 * tuple.
 	 *
-	 * Note: the reason we worry about ISUPDATE here is because as soon as
-	 * a transaction ends, all its locks are gone and meaningless, and
-	 * thus we can ignore them; whereas its updates persist.  In the
-	 * XID_INPROGRESS case, above, we don't need to check
-	 * because we know the lock is still "alive" and thus a conflict needs
-	 * always be checked.
+	 * Note: the reason we worry about ISUPDATE here is because as soon as a
+	 * transaction ends, all its locks are gone and meaningless, and thus we
+	 * can ignore them; whereas its updates persist.  In the XID_INPROGRESS
+	 * case, above, we don't need to check because we know the lock is still
+	 * "alive" and thus a conflict needs always be checked.
 	 */
 	Assert(xidstatus == XID_COMMITTED);
 
@@ -6305,11 +6305,11 @@ heap_abort_speculative(Relation relation, HeapTuple tuple)
 	 * inventing a nicer API for this.
 	 */
 	Assert(TransactionIdIsValid(GetRecentGlobalXmin()));
-	#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
 	PageSetPrunable(page, GetRecentGlobalXmin(), InvalidCommitSeqNo);
-	#else
+#else
 	PageSetPrunable(page, GetRecentGlobalXmin());
-	#endif
+#endif
 
 	/* store transaction information of xact deleting the tuple */
 	tp.t_data->t_infomask &= ~(HEAP_XMAX_BITS | HEAP_MOVED);
@@ -6838,7 +6838,7 @@ heap_prepare_freeze_tuple(HeapTupleHeader tuple,
 						(errcode(ERRCODE_DATA_CORRUPTED),
 						 errmsg_internal("uncommitted xmin %u from before xid cutoff %u needs to be frozen",
 										 xid, cutoff_xid)));
-			#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
 			{
 				CommitSeqNo committs = HeapTupleHderGetXminTimestampAtomic(tuple);
 
@@ -6849,7 +6849,7 @@ heap_prepare_freeze_tuple(HeapTupleHeader tuple,
 
 				if (!COMMITSEQNO_IS_COMMITTED(committs))
 				{
-					elog(ERROR, "xmin %d should have committs "UINT64_FORMAT, xid, committs);
+					elog(ERROR, "xmin %d should have committs " UINT64_FORMAT, xid, committs);
 				}
 
 				if (CommittsSatisfiesVacuum(committs))
@@ -6861,15 +6861,15 @@ heap_prepare_freeze_tuple(HeapTupleHeader tuple,
 				else
 				{
 					elog(ERROR, "tuple cannot be frozen now, please try later xid %u cutoff xid %u committs "
-                                        UINT64_FORMAT, 
-                                        xid, cutoff_xid, committs);
+						 UINT64_FORMAT,
+						 xid, cutoff_xid, committs);
 				}
 			}
-			#else
+#else
 			frz->t_infomask |= HEAP_XMIN_FROZEN;
 			changed = true;
 			xmin_frozen = true;
-			#endif
+#endif
 		}
 	}
 
@@ -7272,7 +7272,7 @@ DoesMultiXactIdConflict(MultiXactId multi, uint16 infomask,
 		{
 			TransactionId memxid;
 			LOCKMODE	memlockmode;
-			TransactionIdStatus	xidstatus;
+			TransactionIdStatus xidstatus;
 
 			memlockmode = LOCKMODE_from_mxstatus(members[i].status);
 
@@ -8533,7 +8533,7 @@ heap_xlog_delete(XLogReaderState *record)
 	ItemId		lp = NULL;
 	HeapTupleHeader htup;
 	BlockNumber blkno;
-	ForkNumber  forknum;
+	ForkNumber	forknum;
 	RelFileNode target_node;
 	ItemPointerData target_tid;
 
@@ -8541,7 +8541,7 @@ heap_xlog_delete(XLogReaderState *record)
 #ifdef ENABLE_PARALLEL_RECOVERY
 	if (enable_parallel_recovery_bypage && !IsBlockAssignedToThisWorker(target_node.relNode, forknum, blkno))
 		return;
-#endif /* ENABLE_PARALLEL_RECOVERY */
+#endif							/* ENABLE_PARALLEL_RECOVERY */
 
 	ItemPointerSetBlockNumber(&target_tid, blkno);
 	ItemPointerSetOffsetNumber(&target_tid, xlrec->offnum);
@@ -8585,11 +8585,11 @@ heap_xlog_delete(XLogReaderState *record)
 		HeapTupleHeaderSetCmax(htup, FirstCommandId, false);
 
 		/* Mark the page as a candidate for pruning */
-		#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
 		PageSetPrunable(page, XLogRecGetXid(record), InvalidCommitSeqNo);
-		#else
+#else
 		PageSetPrunable(page, XLogRecGetXid(record));
-		#endif
+#endif
 		if (xlrec->flags & XLH_DELETE_ALL_VISIBLE_CLEARED)
 			PageClearAllVisible(page);
 
@@ -8622,7 +8622,7 @@ heap_xlog_insert(XLogReaderState *record)
 	uint32		newlen;
 	Size		freespace = 0;
 	RelFileNode target_node;
-	ForkNumber  forknum;
+	ForkNumber	forknum;
 	BlockNumber blkno;
 	ItemPointerData target_tid;
 	XLogRedoAction action;
@@ -8631,7 +8631,7 @@ heap_xlog_insert(XLogReaderState *record)
 #ifdef ENABLE_PARALLEL_RECOVERY
 	if (enable_parallel_recovery_bypage && !IsBlockAssignedToThisWorker(target_node.relNode, forknum, blkno))
 		return;
-#endif /* ENABLE_PARALLEL_RECOVERY */
+#endif							/* ENABLE_PARALLEL_RECOVERY */
 
 	ItemPointerSetBlockNumber(&target_tid, blkno);
 	ItemPointerSetOffsetNumber(&target_tid, xlrec->offnum);
@@ -8733,7 +8733,7 @@ heap_xlog_multi_insert(XLogReaderState *record)
 	XLogRecPtr	lsn = record->EndRecPtr;
 	xl_heap_multi_insert *xlrec;
 	RelFileNode rnode;
-	ForkNumber  forknum;
+	ForkNumber	forknum;
 	BlockNumber blkno;
 	Buffer		buffer;
 	Page		page;
@@ -8759,7 +8759,7 @@ heap_xlog_multi_insert(XLogReaderState *record)
 #ifdef ENABLE_PARALLEL_RECOVERY
 	if (enable_parallel_recovery_bypage && !IsBlockAssignedToThisWorker(rnode.relNode, forknum, blkno))
 		return;
-#endif /* ENABLE_PARALLEL_RECOVERY */
+#endif							/* ENABLE_PARALLEL_RECOVERY */
 
 	/*
 	 * The visibility map may need to be fixed even if the heap page is
@@ -8973,11 +8973,11 @@ heap_xlog_update(XLogReaderState *record, bool hot_update)
 		htup->t_ctid = newtid;
 
 		/* Mark the page as a candidate for pruning */
-		#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
 		PageSetPrunable(page, XLogRecGetXid(record), InvalidCommitSeqNo);
-		#else
+#else
 		PageSetPrunable(page, XLogRecGetXid(record));
-		#endif
+#endif
 		if (xlrec->flags & XLH_UPDATE_OLD_ALL_VISIBLE_CLEARED)
 			PageClearAllVisible(page);
 
@@ -8997,12 +8997,14 @@ heap_xlog_update(XLogReaderState *record, bool hot_update)
 	{
 		nbuffer = XLogInitBufferForRedo(record, 0);
 #ifdef ENABLE_PARALLEL_RECOVERY
-		if (!BufferIsValid(nbuffer)){
+		if (!BufferIsValid(nbuffer))
+		{
 			Assert(enable_parallel_recovery_bypage);
 			page = NULL;
 			newaction = BLK_DONE;
-		} else 
-#endif /* ENABLE_PARALLEL_RECOVERY */
+		}
+		else
+#endif							/* ENABLE_PARALLEL_RECOVERY */
 		{
 			page = (Page) BufferGetPage(nbuffer);
 			PageInit(page, BufferGetPageSize(nbuffer), 0);

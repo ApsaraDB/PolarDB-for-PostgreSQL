@@ -4,7 +4,7 @@
  *
  * Support CTS-based logical replication
  * Author: Junbin Kang
- * 
+ *
  * Portions Copyright (c) 2020, Alibaba Group Holding Limited
  * Copyright (c) 2012-2018, PostgreSQL Global Development Group
  *
@@ -309,13 +309,13 @@ process_syncing_tables_for_sync(XLogRecPtr current_lsn)
 
 #ifdef ENABLE_DISTRIBUTED_TRANSACTION
 		UpdateSubscriptionRelStateExtend(MyLogicalRepWorker->subid,
-								   MyLogicalRepWorker->relid,
-								   MyLogicalRepWorker->relstate,
-								   MyLogicalRepWorker->relstate_lsn,
-								   MyLogicalRepWorker->snapshot_start_ts);
+										 MyLogicalRepWorker->relid,
+										 MyLogicalRepWorker->relstate,
+										 MyLogicalRepWorker->relstate_lsn,
+										 MyLogicalRepWorker->snapshot_start_ts);
 		if (enable_distri_print)
-			elog(LOG, "logical replication process_syncing_tables_for_sync start ts "UINT64_FORMAT, 
-							MyLogicalRepWorker->snapshot_start_ts);
+			elog(LOG, "logical replication process_syncing_tables_for_sync start ts " UINT64_FORMAT,
+				 MyLogicalRepWorker->snapshot_start_ts);
 #else
 		UpdateSubscriptionRelState(MyLogicalRepWorker->subid,
 								   MyLogicalRepWorker->relid,
@@ -447,18 +447,18 @@ process_syncing_tables_for_apply(XLogRecPtr current_lsn)
 					started_tx = true;
 				}
 
-				#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
 				Assert(rstate->start_ts != InvalidCommitSeqNo);
 
 				UpdateSubscriptionRelStateExtend(MyLogicalRepWorker->subid,
-										   rstate->relid, rstate->state,
-										   rstate->lsn,
-										   rstate->start_ts);
-				#else
+												 rstate->relid, rstate->state,
+												 rstate->lsn,
+												 rstate->start_ts);
+#else
 				UpdateSubscriptionRelState(MyLogicalRepWorker->subid,
 										   rstate->relid, rstate->state,
 										   rstate->lsn);
-				#endif
+#endif
 			}
 		}
 		else
@@ -513,12 +513,12 @@ process_syncing_tables_for_apply(XLogRecPtr current_lsn)
 
 					wait_for_relation_state_change(rstate->relid,
 												   SUBREL_STATE_SYNCDONE);
-					#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
 					rstate->start_ts = syncworker->snapshot_start_ts;
 					if (enable_distri_print)
-						elog(LOG, "logical replication apply waits for sync done start ts "UINT64_FORMAT, 
-												rstate->start_ts);
-					#endif	
+						elog(LOG, "logical replication apply waits for sync done start ts " UINT64_FORMAT,
+							 rstate->start_ts);
+#endif
 				}
 				else
 					LWLockRelease(LogicalRepWorkerLock);
@@ -897,9 +897,9 @@ LogicalRepSyncTableStart(XLogRecPtr *origin_startpos)
 			{
 				Relation	rel;
 				WalRcvExecResult *res;
-				#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
 				GlobalTimestamp snapshot_start_ts;
-				#endif
+#endif
 
 				SpinLockAcquire(&MyLogicalRepWorker->relmutex);
 				MyLogicalRepWorker->relstate = SUBREL_STATE_DATASYNC;
@@ -951,13 +951,13 @@ LogicalRepSyncTableStart(XLogRecPtr *origin_startpos)
 				 * that is consistent with the lsn used by the slot to start
 				 * decoding.
 				 */
-				#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
 				walrcv_create_slot(wrconn, slotname, true,
 								   CRS_USE_SNAPSHOT, origin_startpos, &snapshot_start_ts);
-				#else
+#else
 				walrcv_create_slot(wrconn, slotname, true,
 								   CRS_USE_SNAPSHOT, origin_startpos);
-				#endif
+#endif
 				PushActiveSnapshot(GetTransactionSnapshot());
 				copy_table(rel);
 				PopActiveSnapshot();
@@ -981,11 +981,11 @@ LogicalRepSyncTableStart(XLogRecPtr *origin_startpos)
 				SpinLockAcquire(&MyLogicalRepWorker->relmutex);
 				MyLogicalRepWorker->relstate = SUBREL_STATE_SYNCWAIT;
 				MyLogicalRepWorker->relstate_lsn = *origin_startpos;
-				#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
 				MyLogicalRepWorker->snapshot_start_ts = snapshot_start_ts;
 				if (enable_distri_print)
-					elog(LOG, "logical replical received start_ts "UINT64_FORMAT, snapshot_start_ts);
-				#endif
+					elog(LOG, "logical replical received start_ts " UINT64_FORMAT, snapshot_start_ts);
+#endif
 				SpinLockRelease(&MyLogicalRepWorker->relmutex);
 
 				/* Wait for main apply worker to tell us to catchup. */
@@ -1007,23 +1007,23 @@ LogicalRepSyncTableStart(XLogRecPtr *origin_startpos)
 					 * Update the new state in catalog.  No need to bother
 					 * with the shmem state as we are exiting for good.
 					 */
-					#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
 					UpdateSubscriptionRelStateExtend(MyLogicalRepWorker->subid,
-											   MyLogicalRepWorker->relid,
-											   SUBREL_STATE_SYNCDONE,
-											   *origin_startpos,
-											   snapshot_start_ts);
+													 MyLogicalRepWorker->relid,
+													 SUBREL_STATE_SYNCDONE,
+													 *origin_startpos,
+													 snapshot_start_ts);
 					if (enable_distri_print)
-						elog(LOG, "logical replication LogicalRepSyncTableStart start ts "UINT64_FORMAT, 
-												snapshot_start_ts);
+						elog(LOG, "logical replication LogicalRepSyncTableStart start ts " UINT64_FORMAT,
+							 snapshot_start_ts);
 
-					#else
+#else
 					UpdateSubscriptionRelState(MyLogicalRepWorker->subid,
 											   MyLogicalRepWorker->relid,
 											   SUBREL_STATE_SYNCDONE,
 											   *origin_startpos);
 
-					#endif
+#endif
 					finish_sync_worker();
 				}
 				break;

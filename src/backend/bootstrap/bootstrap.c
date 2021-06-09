@@ -49,7 +49,7 @@
 
 #ifdef POLARDB_X
 #include "pgxc/connpool.h"
-#endif /* POLARDB_X */
+#endif							/* POLARDB_X */
 
 /* POLAR consensus */
 #include "polar_dma/polar_dma.h"
@@ -58,6 +58,7 @@ uint32		bootstrap_data_checksum_version = 0;	/* No checksum */
 
 /* POLAR: save specific system identifier given by initdb */
 uint64		polar_sysidentifier = 0;
+
 /* POLAR end */
 
 #define ALLOC(t, c) \
@@ -233,7 +234,10 @@ AuxiliaryProcessMain(int argc, char *argv[])
 	/* If no -x argument, we are a CheckerProcess */
 	MyAuxProcType = CheckerProcess;
 
-	/* POLAR: add system identidier option here, allow to initdb with specific identifier */
+	/*
+	 * POLAR: add system identidier option here, allow to initdb with specific
+	 * identifier
+	 */
 	while ((flag = getopt(argc, argv, "B:c:d:D:Fkr:x:X:-:i:")) != -1)
 	{
 		switch (flag)
@@ -308,13 +312,13 @@ AuxiliaryProcessMain(int argc, char *argv[])
 						free(value);
 					break;
 				}
-			/* POLAR: record specific system_identifier */
+				/* POLAR: record specific system_identifier */
 			case 'i':
 				{
 					polar_sysidentifier = strtoull(optarg, NULL, 0);
 					break;
 				}
-			/* POLAR end */
+				/* POLAR end */
 			default:
 				write_stderr("Try \"%s --help\" for more information.\n",
 							 progname);
@@ -484,7 +488,7 @@ AuxiliaryProcessMain(int argc, char *argv[])
 			proc_exit(1);		/* should never return */
 
 		case ConsensusProcess:
-			ConsensusMain();        /* should never return*/
+			ConsensusMain();	/* should never return */
 			proc_exit(1);
 
 		default:

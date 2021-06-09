@@ -93,11 +93,12 @@ _bt_restore_meta(XLogReaderState *record, uint8 block_id)
 
 	metabuf = XLogInitBufferForRedo(record, block_id);
 #ifdef ENABLE_PARALLEL_RECOVERY
-	if (!BufferIsValid(metabuf)){
+	if (!BufferIsValid(metabuf))
+	{
 		Assert(enable_parallel_recovery_bypage);
 		return;
 	}
-#endif /* ENABLE_PARALLEL_RECOVERY */
+#endif							/* ENABLE_PARALLEL_RECOVERY */
 
 	ptr = XLogRecGetBlockData(record, block_id, &len);
 
@@ -227,8 +228,8 @@ btree_xlog_split(bool onleft, bool lhighkey, XLogReaderState *record)
 	BlockNumber rnext;
 
 #ifdef ENABLE_PARALLEL_RECOVERY
-	char tmpPage[BLCKSZ]; 
-#endif /* ENABLE_PARALLEL_RECOVERY */
+	char		tmpPage[BLCKSZ];
+#endif							/* ENABLE_PARALLEL_RECOVERY */
 
 	XLogRecGetBlockTag(record, 0, NULL, NULL, &leftsib);
 	XLogRecGetBlockTag(record, 1, NULL, NULL, &rightsib);
@@ -247,28 +248,31 @@ btree_xlog_split(bool onleft, bool lhighkey, XLogReaderState *record)
 	rbuf = XLogInitBufferForRedo(record, 1);
 	datapos = XLogRecGetBlockData(record, 1, &datalen);
 #ifdef ENABLE_PARALLEL_RECOVERY
-	if (!BufferIsValid(rbuf)){
+	if (!BufferIsValid(rbuf))
+	{
 		/*
-		 * So we are in parallel redo by page mode, and this worker
-		 * does not care about the right sibling page. We mock a temp page
-		 * using local buffer here.
-		 * 
-		 * This is sololy for the reason of computing left_hikey, which
-		 * maybe used when replaying the left sibling page down below.
-		 * 
-		 * And yes, technically we only need to do this if the current
-		 * worker is responsible for the left sibling page. But skiping
-		 * this computing when otherwise would add too much control logic,
-		 * and make the code hard to read.
+		 * So we are in parallel redo by page mode, and this worker does not
+		 * care about the right sibling page. We mock a temp page using local
+		 * buffer here.
+		 *
+		 * This is sololy for the reason of computing left_hikey, which maybe
+		 * used when replaying the left sibling page down below.
+		 *
+		 * And yes, technically we only need to do this if the current worker
+		 * is responsible for the left sibling page. But skiping this
+		 * computing when otherwise would add too much control logic, and make
+		 * the code hard to read.
 		 */
 		Assert(enable_parallel_recovery_bypage);
 		rpage = (Page) &(tmpPage[0]);
-	} else {
+	}
+	else
+	{
 		rpage = (Page) BufferGetPage(rbuf);
 	}
 #else
 	rpage = (Page) BufferGetPage(rbuf);
-#endif /* ENABLE_PARALLEL_RECOVERY */
+#endif							/* ENABLE_PARALLEL_RECOVERY */
 
 
 	_bt_pageinit(rpage, BLCKSZ);
@@ -296,7 +300,8 @@ btree_xlog_split(bool onleft, bool lhighkey, XLogReaderState *record)
 		left_hikeysz = ItemIdGetLength(hiItemId);
 	}
 
-	if (BufferIsValid(rbuf)){
+	if (BufferIsValid(rbuf))
+	{
 		PageSetLSN(rpage, lsn);
 		MarkBufferDirty(rbuf);
 	}
@@ -732,7 +737,7 @@ btree_xlog_delete(XLogReaderState *record)
 	{
 #ifdef ENABLE_PARALLEL_RECOVERY
 		Assert(!enable_parallel_recovery_bypage);
-#endif /* ENABLE_PARALLEL_RECOVERY */
+#endif							/* ENABLE_PARALLEL_RECOVERY */
 
 		TransactionId latestRemovedXid = btree_xlog_delete_get_latestRemovedXid(record);
 		RelFileNode rnode;
@@ -825,11 +830,12 @@ btree_xlog_mark_page_halfdead(uint8 info, XLogReaderState *record)
 	/* Rewrite the leaf page as a halfdead page */
 	buffer = XLogInitBufferForRedo(record, 0);
 #ifdef ENABLE_PARALLEL_RECOVERY
-	if (!BufferIsValid(buffer)){
+	if (!BufferIsValid(buffer))
+	{
 		Assert(enable_parallel_recovery_bypage);
 		return;
 	}
-#endif /* ENABLE_PARALLEL_RECOVERY */
+#endif							/* ENABLE_PARALLEL_RECOVERY */
 	page = (Page) BufferGetPage(buffer);
 
 	_bt_pageinit(page, BufferGetPageSize(buffer));
@@ -913,10 +919,12 @@ btree_xlog_unlink_page(uint8 info, XLogReaderState *record)
 	/* Rewrite target page as empty deleted page */
 	buffer = XLogInitBufferForRedo(record, 0);
 #ifdef ENABLE_PARALLEL_RECOVERY
-	if (!BufferIsValid(buffer)){
+	if (!BufferIsValid(buffer))
+	{
 		Assert(enable_parallel_recovery_bypage);
-	} else 
-#endif /* ENABLE_PARALLEL_RECOVERY */
+	}
+	else
+#endif							/* ENABLE_PARALLEL_RECOVERY */
 	{
 		page = (Page) BufferGetPage(buffer);
 
@@ -949,10 +957,12 @@ btree_xlog_unlink_page(uint8 info, XLogReaderState *record)
 
 		buffer = XLogInitBufferForRedo(record, 3);
 #ifdef ENABLE_PARALLEL_RECOVERY
-		if (!BufferIsValid(buffer)){
+		if (!BufferIsValid(buffer))
+		{
 			Assert(enable_parallel_recovery_bypage);
-		} else 
-#endif /* ENABLE_PARALLEL_RECOVERY */
+		}
+		else
+#endif							/* ENABLE_PARALLEL_RECOVERY */
 		{
 			page = (Page) BufferGetPage(buffer);
 
@@ -998,10 +1008,12 @@ btree_xlog_newroot(XLogReaderState *record)
 
 	buffer = XLogInitBufferForRedo(record, 0);
 #ifdef ENABLE_PARALLEL_RECOVERY
-	if (!BufferIsValid(buffer)){
+	if (!BufferIsValid(buffer))
+	{
 		Assert(enable_parallel_recovery_bypage);
-	} else 
-#endif /* ENABLE_PARALLEL_RECOVERY */
+	}
+	else
+#endif							/* ENABLE_PARALLEL_RECOVERY */
 	{
 		page = (Page) BufferGetPage(buffer);
 
@@ -1052,7 +1064,7 @@ btree_xlog_reuse_page(XLogReaderState *record)
 	{
 #ifdef ENABLE_PARALLEL_RECOVERY
 		Assert(!enable_parallel_recovery_bypage);
-#endif /* ENABLE_PARALLEL_RECOVERY */
+#endif							/* ENABLE_PARALLEL_RECOVERY */
 		ResolveRecoveryConflictWithSnapshot(xlrec->latestRemovedXid,
 											xlrec->node);
 	}

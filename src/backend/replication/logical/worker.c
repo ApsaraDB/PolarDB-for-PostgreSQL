@@ -6,9 +6,9 @@
  *
  *  Support CTS-based logical replication
  *  Author: Junbin Kang
- * 
+ *
  *  Portions Copyright (c) 2020, Alibaba Group Holding Limited
- * 
+ *
  * IDENTIFICATION
  *	  src/backend/replication/logical/worker.c
  *
@@ -124,7 +124,7 @@ bool		MySubscriptionValid = false;
 bool		in_remote_transaction = false;
 static XLogRecPtr remote_final_lsn = InvalidXLogRecPtr;
 
-#ifdef ENABLE_DISTRIBUTED_TRANSACTION 
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
 static CommitTs remote_final_cts = InvalidCommitSeqNo;
 #endif
 
@@ -153,13 +153,12 @@ static volatile sig_atomic_t got_SIGHUP = false;
 static bool
 should_apply_changes_for_rel(LogicalRepRelMapEntry *rel)
 {
-	#ifdef ENABLE_DISTRIBUTED_TRANSACTION
-	/* 
-	 * For CTS snapshot based logical replication, it should
-	 * skip record replay for the transactions whose commit timestamps
-	 * are equal or smaller than snapshot start timestamp.
-	 * Author: Junbin Kang
-	 */ 
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+	/*
+	 * For CTS snapshot based logical replication, it should skip record
+	 * replay for the transactions whose commit timestamps are equal or
+	 * smaller than snapshot start timestamp. Author: Junbin Kang
+	 */
 	Assert(remote_final_cts != InvalidCommitSeqNo);
 	if (am_tablesync_worker())
 	{
@@ -167,36 +166,36 @@ should_apply_changes_for_rel(LogicalRepRelMapEntry *rel)
 
 		if (enable_distri_print)
 			elog(LOG, "logical replication skipping sync worker rel start ts "
-								UINT64_FORMAT " cts "UINT64_FORMAT, 
-								MyLogicalRepWorker->snapshot_start_ts, remote_final_cts);
+				 UINT64_FORMAT " cts " UINT64_FORMAT,
+				 MyLogicalRepWorker->snapshot_start_ts, remote_final_cts);
 
 		return (MyLogicalRepWorker->relid == rel->localreloid) &&
-		 			(MyLogicalRepWorker->snapshot_start_ts < remote_final_cts);
+			(MyLogicalRepWorker->snapshot_start_ts < remote_final_cts);
 	}
 	else
 	{
 		if (rel->state == SUBREL_STATE_SYNCDONE || rel->state == SUBREL_STATE_READY)
 		{
 			if (rel->statestartts == InvalidCommitSeqNo)
-				elog(ERROR, "Invalid rel start ts "UINT64_FORMAT, rel->statestartts);
+				elog(ERROR, "Invalid rel start ts " UINT64_FORMAT, rel->statestartts);
 			else if (enable_distri_print)
 				elog(LOG, "logical replication skipping apply worker rel start ts "
-								UINT64_FORMAT " cts "UINT64_FORMAT, rel->statestartts, remote_final_cts);
+					 UINT64_FORMAT " cts " UINT64_FORMAT, rel->statestartts, remote_final_cts);
 		}
 
 		return (rel->state == SUBREL_STATE_READY ||
 				(rel->state == SUBREL_STATE_SYNCDONE &&
 				 rel->statelsn <= remote_final_lsn)) &&
-				 (rel->statestartts < remote_final_cts);
+			(rel->statestartts < remote_final_cts);
 	}
-	#else
+#else
 	if (am_tablesync_worker())
 		return MyLogicalRepWorker->relid == rel->localreloid;
 	else
 		return (rel->state == SUBREL_STATE_READY ||
 				(rel->state == SUBREL_STATE_SYNCDONE &&
 				 rel->statelsn <= remote_final_lsn));
-	#endif
+#endif
 }
 
 /*
@@ -507,9 +506,9 @@ apply_handle_begin(StringInfo s)
 
 	remote_final_lsn = begin_data.final_lsn;
 
-	#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
 	remote_final_cts = begin_data.cts;
-	#endif
+#endif
 	in_remote_transaction = true;
 
 	pgstat_report_activity(STATE_RUNNING, NULL);
@@ -1458,13 +1457,13 @@ send_feedback(XLogRecPtr recvpos, bool force, bool requestReply)
 		 (uint32) (writepos >> 32), (uint32) writepos,
 		 (uint32) (flushpos >> 32), (uint32) flushpos
 		);
-	
+
 	if (enable_distri_print)
 		elog(LOG, "sending feedback (force %d) to recv %X/%X, write %X/%X, flush %X/%X",
-			force,
-			(uint32) (recvpos >> 32), (uint32) recvpos,
-			(uint32) (writepos >> 32), (uint32) writepos,
-			(uint32) (flushpos >> 32), (uint32) flushpos
+			 force,
+			 (uint32) (recvpos >> 32), (uint32) recvpos,
+			 (uint32) (writepos >> 32), (uint32) writepos,
+			 (uint32) (flushpos >> 32), (uint32) flushpos
 			);
 
 	walrcv_send(wrconn, reply_message->data, reply_message->len);

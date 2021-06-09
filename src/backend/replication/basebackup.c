@@ -351,12 +351,12 @@ perform_base_backup(basebackup_options *opt)
 						ereport(ERROR,
 								(errcode_for_file_access(),
 								 errmsg("could not stat control file \"%s\": %m",
-									 "polar_dma/consensus_meta")));
+										"polar_dma/consensus_meta")));
 					sendFile("polar_dma/consensus_meta", "polar_dma/consensus_meta", &statbuf, false);
 					sendDir("./polar_dma/consensus_log", 1, false, NIL, false, true);
 					sendDir("./polar_dma/consensus_cc_log", 1, false, NIL, false, true);
 				}
-            /* POLAR end */
+				/* POLAR end */
 			}
 			else
 				sendTablespace(ti->path, false);

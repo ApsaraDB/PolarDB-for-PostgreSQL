@@ -9,7 +9,7 @@ echo "             with assertion enabled, and then build"
 echo "   debug:    configure the build with debug options and then"
 echo "             build."
 echo "   repeat:   skip configure, just build and install"
-echo "" 
+echo ""
 
 set -e
 pushd "$( dirname "${BASH_SOURCE[0]}" )"
@@ -67,7 +67,19 @@ bash ./build.sh -r -t release
 fi
 cd $CODEHOME
 
-make -sj 16
+function error_retry {
+    echo "Paxos library build failed, try again!"
+    cd $CODEHOME/src/backend/polar_dma/libconsensus/polar_wrapper
+    if [[ "$BLD_OPT" == "debug" ]]; then
+        bash ./build.sh -r -t debug -c ON
+    else
+        bash ./build.sh -r -t release -c ON
+    fi
+    cd $CODEHOME
+    make -sj 16
+}
+
+make -sj 16 || error_retry "build retry!"
 make install
 
 # extensions

@@ -266,7 +266,7 @@ AddSubscriptionRelState(Oid subid, Oid relid, char state,
 	else
 		nulls[Anum_pg_subscription_rel_srsublsn - 1] = true;
 #ifdef ENABLE_DISTRIBUTED_TRANSACTION
-    /**
+	/**
         * To fix subscription regression failure.
         * If create subscription with copy_data=false, the default srsubstartts will be 0 which is invalid,
         * but the apply of DML on subscription expects a valid srsubstartts. So we set MinValidCommitSeqNo which is 1
@@ -276,7 +276,7 @@ AddSubscriptionRelState(Oid subid, Oid relid, char state,
         * is 'i', and applyMainWorker will connect to publication instance, get valid srsubstartts, and update pg_subscription_rel.srsubstartts.
         * But if copy_data=false, the srsubstate initially is 'r', applyMainWorker will not update pg_subscription_rel.srsubstartts to a valid value.
         */
-        values[Anum_pg_subscription_rel_srsubstartts - 1] = Int64GetDatum((int64 )MinValidCommitSeqNo);
+	values[Anum_pg_subscription_rel_srsubstartts - 1] = Int64GetDatum((int64) MinValidCommitSeqNo);
 #endif
 	tup = heap_form_tuple(RelationGetDescr(rel), values, nulls);
 
@@ -297,8 +297,8 @@ AddSubscriptionRelState(Oid subid, Oid relid, char state,
 #ifdef ENABLE_DISTRIBUTED_TRANSACTION
 Oid
 UpdateSubscriptionRelStateExtend(Oid subid, Oid relid, char state,
-						   XLogRecPtr sublsn
-						   , GlobalTimestamp startts)
+								 XLogRecPtr sublsn
+								 ,GlobalTimestamp startts)
 #else
 UpdateSubscriptionRelState(Oid subid, Oid relid, char state,
 						   XLogRecPtr sublsn)
@@ -340,14 +340,14 @@ UpdateSubscriptionRelState(Oid subid, Oid relid, char state,
 #ifdef ENABLE_DISTRIBUTED_TRANSACTION
 	replaces[Anum_pg_subscription_rel_srsubstartts - 1] = true;
 	if (startts != InvalidCommitSeqNo)
-		values[Anum_pg_subscription_rel_srsubstartts - 1] = Int64GetDatum((int64 )startts);
+		values[Anum_pg_subscription_rel_srsubstartts - 1] = Int64GetDatum((int64) startts);
 	else
 		nulls[Anum_pg_subscription_rel_srsubstartts - 1] = true;
-	
+
 	if (enable_distri_print)
-		elog(LOG, "logical replication update sub oid %d, relid %d, start ts "UINT64_FORMAT
-					" null %d LSN "UINT64_FORMAT, 
-								subid, relid, startts, nulls[Anum_pg_subscription_rel_srsubstartts - 1], sublsn);
+		elog(LOG, "logical replication update sub oid %d, relid %d, start ts " UINT64_FORMAT
+			 " null %d LSN " UINT64_FORMAT,
+			 subid, relid, startts, nulls[Anum_pg_subscription_rel_srsubstartts - 1], sublsn);
 #endif
 
 	tup = heap_modify_tuple(tup, RelationGetDescr(rel), values, nulls,
@@ -371,8 +371,8 @@ UpdateSubscriptionRelState(Oid subid, Oid relid, char state,
  */
 #ifdef ENABLE_DISTRIBUTED_TRANSACTION
 char
-GetSubscriptionRelStateExtend(Oid subid, Oid relid, XLogRecPtr *sublsn, GlobalTimestamp *startts,
-						bool missing_ok)
+GetSubscriptionRelStateExtend(Oid subid, Oid relid, XLogRecPtr *sublsn, GlobalTimestamp * startts,
+							  bool missing_ok)
 #else
 char
 GetSubscriptionRelState(Oid subid, Oid relid, XLogRecPtr *sublsn,
@@ -425,12 +425,12 @@ GetSubscriptionRelState(Oid subid, Oid relid, XLogRecPtr *sublsn,
 		if (isnull)
 			*startts = InvalidCommitSeqNo;
 		else
-			*startts = (GlobalTimestamp )DatumGetInt64(d);
-		
+			*startts = (GlobalTimestamp) DatumGetInt64(d);
+
 		if (enable_distri_print)
-			elog(LOG, "logical replication get sub subid %d relid %d start ts "UINT64_FORMAT
-					" isnull %d LSN "UINT64_FORMAT
-					, subid, relid, *startts, isnull, *sublsn);
+			elog(LOG, "logical replication get sub subid %d relid %d start ts " UINT64_FORMAT
+				 " isnull %d LSN " UINT64_FORMAT
+				 ,subid, relid, *startts, isnull, *sublsn);
 	}
 #endif
 
@@ -522,9 +522,9 @@ GetSubscriptionRelations(Oid subid)
 		relstate->relid = subrel->srrelid;
 		relstate->state = subrel->srsubstate;
 		relstate->lsn = subrel->srsublsn;
-		#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
 		relstate->start_ts = subrel->srsubstartts;
-		#endif
+#endif
 
 		res = lappend(res, relstate);
 	}
@@ -577,9 +577,9 @@ GetSubscriptionNotReadyRelations(Oid subid)
 		relstate->relid = subrel->srrelid;
 		relstate->state = subrel->srsubstate;
 		relstate->lsn = subrel->srsublsn;
-		#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
 		relstate->start_ts = subrel->srsubstartts;
-		#endif
+#endif
 
 		res = lappend(res, relstate);
 	}

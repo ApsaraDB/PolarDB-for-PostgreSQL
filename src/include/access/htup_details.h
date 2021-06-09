@@ -123,8 +123,8 @@ typedef struct HeapTupleFields
 	TransactionId t_xmin;		/* inserting xact ID */
 	TransactionId t_xmax;		/* deleting or locking xact ID */
 #ifdef ENABLE_DISTRIBUTED_TRANSACTION
-    CommitSeqNo t_xmax_timestamp;
-    CommitSeqNo t_xmin_timestamp;
+	CommitSeqNo t_xmax_timestamp;
+	CommitSeqNo t_xmin_timestamp;
 #endif
 
 	union
@@ -285,9 +285,11 @@ struct HeapTupleHeaderData
 #define HEAP_ONLY_TUPLE			0x8000	/* this is heap-only tuple */
 
 #ifdef ENABLE_DISTRIBUTED_TRANSACTION
-#define HEAP_XMIN_TIMESTAMP_UPDATED        0x0800   /* tuple was updated with xmin commit timestamp */
-#define HEAP_XMAX_TIMESTAMP_UPDATED        0x1000   /* tuple was updated with xmax commit timestamp */
-#define HEAP2_XACT_MASK            0xF800    /* visibility-related bits */
+#define HEAP_XMIN_TIMESTAMP_UPDATED        0x0800	/* tuple was updated with
+													 * xmin commit timestamp */
+#define HEAP_XMAX_TIMESTAMP_UPDATED        0x1000	/* tuple was updated with
+													 * xmax commit timestamp */
+#define HEAP2_XACT_MASK            0xF800	/* visibility-related bits */
 #define HEAP_XMIN_TIMESTAMP_IS_UPDATED(infomask) \
     (((infomask) & HEAP_XMIN_TIMESTAMP_UPDATED) != 0 )
 #define HEAP_XMAX_TIMESTAMP_IS_UPDATED(infomask) \
@@ -306,7 +308,7 @@ extern void HeapTupleHderSetXmaxTimestampAtomic(HeapTupleHeader tuple, GlobalTim
 ( \
     (tup)->t_choice.t_heap.t_xmax_timestamp = (ts) \
 )
-    
+
 #define HeapTupleHeaderGetXminTimestamp(tup) \
 ( \
     (tup)->t_choice.t_heap.t_xmin_timestamp \
@@ -317,7 +319,7 @@ extern void HeapTupleHderSetXmaxTimestampAtomic(HeapTupleHeader tuple, GlobalTim
 )
 
 #else
-#define HEAP2_XACT_MASK            0xE000    /* visibility-related bits */
+#define HEAP2_XACT_MASK            0xE000	/* visibility-related bits */
 #endif
 
 /*

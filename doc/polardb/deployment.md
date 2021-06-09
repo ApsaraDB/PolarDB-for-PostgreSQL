@@ -1,28 +1,93 @@
+## Summarize For Deployment
+
+We support two type deployment:
+- [One-Key Deployment](#One-Key Deployment) is script for create new default environment by only one command.
+- [Deployment from Source Code](#Deployment from Source Code) introduce more detail usage about deploy command and script.
+
+Both two type of deployment need setup dependencies by - [Previous Preparation](#Previous Preparation) first.
+and make sure your system environment is meet requirements by - [OS and other dependencies](#OS and other dependencies)
+
+- [OS and other dependencies](#OS and other dependencies)
+- [Previous Preparation](#Previous Preparation)
+- [One-Key Deployment](#One-Key Deployment)
+- [Deployment from Source Code](#Deployment from Source Code)
 
 
-## Deploy from Source Code
-
-### Download code
-
-git clone from one of our repositories
-
-### OS and other dependencies
+## OS and other dependencies
 
 * operating systems
   * Alibaba Group Enterprise Linux Server, VERSION="7.2 (Paladin)", 3.10.0-327.ali2017.alios7.x86_64
   * Centos 7
 
-* GCC versions 
+* GCC versions
   * gcc 10.2.1
   * gcc 9.2.1
   * gcc 7.2.1
   * gcc 4.8.5
 
+## Previous Preparation
+
+* download source code from https://github.com/alibaba/PolarDB-for-PostgreSQL
+
+* install dependent packages (use Centos as an example)
+
+```bash
+sudo yum install bison flex libzstd-devel libzstd zstd cmake openssl-devel protobuf-devel readline-devel libxml2-devel libxslt-devel zlib-devel bzip2-devel lz4-devel snappy-devel python-devel
+```
+* set up authorized key for fast access
+
+Call ssh-copy-id command to configure ssh so that no password is needed when using pgxc_ctl.
+
+```bash
+ssh-copy-id username@IP
+```
+
+* set up environment variables
+
+```bash
+vi ~/.bashrc
+export PATH="$HOME/polardb/polardbhome/bin:$PATH"
+export LD_LIBRARY_PATH="$HOME/polardb/polardbhome/lib:$LD_LIBRARY_PATH"
+```
+
+### Fast Deployment(One-Key for all)
+This script uses default configuration to compile PolarDB, to deploy binary, and to start a cluster of three nodes, including a leader and two followers.
+before call this script, please check "environment variables, dependent packages, authorized key" at "Previous Preparation" frist.
+
+* run onekey.sh script
+
+```bash
+./onekey.sh all
+```
+
+* onekey.sh script introduce
+```bash
+sh onekey.sh [all|build|configure|deploy|setup|dependencies|cm|clean]
+```
+
+    * all: uses default configuration to compile PolarDB, to deploy binary, and to start a cluster of three nodes, including a leader and two followers.
+    * build: invoke *build.sh* script to compile and create a release version.
+    * configure：generate default cluster configuration; the default configuration includes a leader and two followers.
+    * deploy: deploy binary to all related machine.
+    * setup: initialize and start database based on default configuration.
+    * dependencies: install dependent packages (use Centos as an example).
+    * cm: setup cluster manager component.
+    * clean: clean environment.
+
+* check running processes (1 leader, 2 follower), their replica roles and status:
+```bash
+ps -ef|grep polardb
+psql -p 10001 -d postgres -c "select * from pg_stat_replication;"
+psql -p 10001 -d postgres -c "select * from polar_dma_cluster_status;"
+```
+
+## Deployment from Source Code
+We extend a tool named pgxc_ctl from PG-XC/PG-XL open-source project to support cluster management, such as configuration generation, configuration modification, cluster initialization, starting/stopping nodes, and switchover. Its detail usage can be found [deployment](/doc/polardb/deployment.md).
 
 ### Compile Source Code using *build.sh*
 
-We can use a shell script *build.sh* offered with PolarDB source code 
-to create and install binary locally. 
+We can use a shell script *build.sh* offered with PolarDB source code
+to create and install binary locally.
 
 ```bash
 sh build.sh [deploy|verify|debug|repeat]
@@ -40,7 +105,7 @@ $ sh build.sh # release version
 
 If you get linker errors about undefined references to symbols of protobuf. then it probably
 indicates that the system-installed protobuf was compiled with an older version of GCC or older
-ABI version, please set -c option to ON in following section of build.sh.
+AI version, please set -c option to ON in following section of build.sh.
 
 ```bash
 # build polardb consensus dynamic library
@@ -57,10 +122,10 @@ cd $CODEHOME
 
 ### Create Cluster Configuration
 
-We use *pgxc_ctl prepare* to generate a default cluster configuration. 
+We use *pgxc_ctl prepare* to generate a default cluster configuration.
 
 ```bash
-pgxc_ctl -c $HOME/DATA/polardb/polardb_paxos.conf prepare standalone
+pgxc_ctl -c $HOME/polardb/polardb_paxos.conf prepare standalone
 ```
 
 ### Cluster Configuration Format
@@ -149,50 +214,73 @@ datanodeSpecificExtraPgHba=(none)
 ```
 
 ### Deploy Binary using *pgxc_ctl*
-We use *pgxc_ctl deploy* command to deploy PolarDB binary in a cluster，option -c for configuration file. PolarDB binary is installed in **pgxcInstallDir** of all nodes specified in the configuration file. 
+We use *pgxc_ctl deploy* command to deploy PolarDB binary in a cluster，option -c for configuration file. PolarDB binary is installed in **pgxcInstallDir** of all nodes specified in the configuration file.
 
 ```bash
-pgxc_ctl -c $HOME/DATA/polardb/polardb_paxos.conf deploy all
+pgxc_ctl -c $HOME/polardb/polardb_paxos.conf deploy all
 ```
 
 ### Initialize Database
-* Initialize database nodes and start them based on the configuration file. 
+* Initialize database nodes and start them based on the configuration file.
 
 ```bash
-pgxc_ctl -c $HOME/DATA/polardb/polardb_paxos.conf clean all
-pgxc_ctl -c $HOME/DATA/polardb/polardb_paxos.conf init all
-pgxc_ctl -c $HOME/DATA/polardb/polardb_paxos.conf monitor all
+pgxc_ctl -c $HOME/polardb/polardb_paxos.conf clean all
+pgxc_ctl -c $HOME/polardb/polardb_paxos.conf init all
+pgxc_ctl -c $HOME/polardb/polardb_paxos.conf monitor all
 ```
 
+### check and test
 
 ```bash
-psql -p 10001 -d postgres -c "CREATE EXTENSION pg_cron;"
-psql -p 10001 -d postgres -c "CREATE EXTENSION plpythonu;"
-psql -p 10001 -d postgres -f "/home/postgres/polardb/healthcheck.sql"
-```
-
-* Test database
-
-```bash
-ps -ef | grep postgre
+ps -ef | grep postgres
 psql -p 10001 -d postgres -c "create table t1(a int primary key, b int);"
 createdb test -p 10001
 psql -p 10001 -d test -c "select version();"
-```
 
-## Fast Deployment Script onekey.sh
 
-This script uses default configuration to compile PolarDB, to deploy binary, and to start a cluster of three nodes, including a leader and two followers. 
+### Other command for cluster manager.
+
+* install dependent packages for cluster management
 
 ```bash
-sh onekey.sh [all|build|configure|deploy|setup]
+pgxc_ctl -c $HOME/polardb/polardb_paxos.conf deploy cm
 ```
 
-* all：fulfill all deployment tasks, including compile source code，generate default cluster configuration, install cluster; after that, we can access the database cluster using *psql -p 10001 -d postgres*
-* build：invoke *build.sh* script to compile and create a release version
-* configure：generate default cluster configuration; the default configuration includes two nodes (leader and follower). 
-* deploy：only deploy binary based on cluster configuration
-* setup：initialize and start database based on default configuration
+* start cluster or node
+
+```bash
+pgxc_ctl -c $HOME/polardb/polardb_paxos.conf start all
+```
+
+* stop cluster or node
+
+```bash
+pgxc_ctl -c $HOME/polardb/polardb_paxos.conf stop all
+```
+
+* failover datanode
+
+datanode_1 is node name configured in polardb_paxos.conf.
+
+```bash
+pgxc_ctl -c $HOME/polardb/polardb_paxos.conf failover datanode datanode_1
+```
+
+* cluster health check
+
+ check cluster status and start failed node.
+
+```bash
+pgxc_ctl -c $HOME/polardb/polardb_paxos.conf healthcheck all
+```
+
+* examples of other command
+
+```bash
+pgxc_ctl -c $HOME/polardb/polardb_paxos.conf kill all
+pgxc_ctl -c $HOME/polardb/polardb_paxos.conf log var datanodeNames
+pgxc_ctl -c $HOME/polardb/polardb_paxos.conf show configuration all
+```
 
 ___
 

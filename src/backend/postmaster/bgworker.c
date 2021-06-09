@@ -1,7 +1,7 @@
 /*--------------------------------------------------------------------
  * bgworker.c
  *		POSTGRES pluggable background workers implementation
- * 
+ *
  * Portions Copyright (c) 2020, Alibaba Group Holding Limited
  * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  *
@@ -129,12 +129,12 @@ static const struct
 	{
 		"ApplyWorkerMain", ApplyWorkerMain
 	}
-	#ifdef ENABLE_PARALLEL_RECOVERY
+#ifdef ENABLE_PARALLEL_RECOVERY
 	,
 	{
 		"ParallelRecoveryWorkerMain", ParallelRecoveryWorkerMain
 	}
-	#endif
+#endif
 };
 
 /* Private functions. */

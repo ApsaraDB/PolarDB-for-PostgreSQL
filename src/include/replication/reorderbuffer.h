@@ -203,9 +203,9 @@ typedef struct ReorderBufferTXN
 	RepOriginId origin_id;
 	XLogRecPtr	origin_lsn;
 
-	#ifdef ENABLE_DISTRIBUTED_TRANSACTION
-	CommitTs 	cts;
-	#endif
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+	CommitTs	cts;
+#endif
 
 	/*
 	 * Commit time, only known when we read the actual commit record.
@@ -407,21 +407,22 @@ void		ReorderBufferReturnTupleBuf(ReorderBuffer *, ReorderBufferTupleBuf *tuple)
 ReorderBufferChange *ReorderBufferGetChange(ReorderBuffer *);
 void		ReorderBufferReturnChange(ReorderBuffer *, ReorderBufferChange *);
 
-Oid * ReorderBufferGetRelids(ReorderBuffer *, int nrelids);
-void ReorderBufferReturnRelids(ReorderBuffer *, Oid *relids);
+Oid		   *ReorderBufferGetRelids(ReorderBuffer *, int nrelids);
+void		ReorderBufferReturnRelids(ReorderBuffer *, Oid *relids);
 
 void		ReorderBufferQueueChange(ReorderBuffer *, TransactionId, XLogRecPtr lsn, ReorderBufferChange *);
 void ReorderBufferQueueMessage(ReorderBuffer *, TransactionId, Snapshot snapshot, XLogRecPtr lsn,
 						  bool transactional, const char *prefix,
 						  Size message_size, const char *message);
-void ReorderBufferCommit(ReorderBuffer *, TransactionId,
+void
+ReorderBufferCommit(ReorderBuffer *, TransactionId,
 					XLogRecPtr commit_lsn, XLogRecPtr end_lsn,
 					TimestampTz commit_time, RepOriginId origin_id, XLogRecPtr origin_lsn
-					#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
 					,
 					CommitTs cts
-					#endif
-					);
+#endif
+);
 void		ReorderBufferAssignChild(ReorderBuffer *, TransactionId, TransactionId, XLogRecPtr commit_lsn);
 void ReorderBufferCommitChild(ReorderBuffer *, TransactionId, TransactionId,
 						 XLogRecPtr commit_lsn, XLogRecPtr end_lsn);

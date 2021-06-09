@@ -406,11 +406,12 @@ gistRedoPageSplitRecord(XLogReaderState *record)
 
 		buffer = XLogInitBufferForRedo(record, i + 1);
 #ifdef ENABLE_PARALLEL_RECOVERY
-		if (!BufferIsValid(buffer)){
+		if (!BufferIsValid(buffer))
+		{
 			Assert(enable_parallel_recovery_bypage);
 			continue;
-		}  
-#endif /* ENABLE_PARALLEL_RECOVERY */
+		}
+#endif							/* ENABLE_PARALLEL_RECOVERY */
 		page = (Page) BufferGetPage(buffer);
 		data = XLogRecGetBlockData(record, i + 1, &datalen);
 
@@ -478,11 +479,12 @@ gistRedoCreateIndex(XLogReaderState *record)
 
 	buffer = XLogInitBufferForRedo(record, 0);
 #ifdef ENABLE_PARALLEL_RECOVERY
-	if (!BufferIsValid(buffer)){
+	if (!BufferIsValid(buffer))
+	{
 		Assert(enable_parallel_recovery_bypage);
-			return;
-	} 
-#endif /* ENABLE_PARALLEL_RECOVERY */
+		return;
+	}
+#endif							/* ENABLE_PARALLEL_RECOVERY */
 
 	Assert(BufferGetBlockNumber(buffer) == GIST_ROOT_BLKNO);
 	page = (Page) BufferGetPage(buffer);

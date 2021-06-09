@@ -339,7 +339,7 @@ typedef enum
 								 * finish */
 	PM_WAIT_DEAD_END,			/* waiting for dead_end children to exit */
 	PM_NO_CHILDREN,				/* all important children have exited */
-	PM_DATAMAX 				/* in datamax mode */
+	PM_DATAMAX					/* in datamax mode */
 } PMState;
 
 static PMState pmState = PM_INIT;
@@ -575,7 +575,7 @@ HANDLE		PostmasterHandle;
 #endif
 
 #ifdef ENABLE_PARALLEL_RECOVERY
-bool 
+bool
 PostmasterIsFatalError(void)
 {
 	return FatalError;
@@ -2362,9 +2362,9 @@ canAcceptConnections(void)
 			return CAC_STARTUP; /* normal startup */
 		else if (!FatalError &&
 				 (pmState == PM_HOT_STANDBY ||
-				 /* POLAR */
-				 pmState == PM_DATAMAX))
-				 /* POLAR end */
+			/* POLAR */
+				  pmState == PM_DATAMAX))
+			/* POLAR end */
 			result = CAC_OK;	/* connection OK during hot standby */
 		else
 			return CAC_RECOVERY;	/* else must be crash recovery */
@@ -2641,7 +2641,7 @@ pmdie(SIGNAL_ARGS)
 
 			if (pmState == PM_RUN || pmState == PM_RECOVERY ||
 				pmState == PM_HOT_STANDBY || pmState == PM_STARTUP ||
-				/* POLAR */
+			/* POLAR */
 				pmState == PM_DATAMAX)
 				/* POLAR end */
 			{
@@ -2730,9 +2730,9 @@ pmdie(SIGNAL_ARGS)
 					 pmState == PM_WAIT_READONLY ||
 					 pmState == PM_WAIT_BACKENDS ||
 					 pmState == PM_HOT_STANDBY ||
-					 /* POLAR */
+				/* POLAR */
 					 pmState == PM_DATAMAX)
-					 /* POLAR end */
+				/* POLAR end */
 			{
 				ereport(LOG,
 						(errmsg("aborting any active transactions")));
@@ -3091,8 +3091,8 @@ reaper(SIGNAL_ARGS)
 		}
 
 		/*
-		 * Any unexpected exit of the consensus (including FATAL
-		 * exit) is treated as a crash.
+		 * Any unexpected exit of the consensus (including FATAL exit) is
+		 * treated as a crash.
 		 */
 		if (polar_enable_dma && pid == ConsensusPID)
 		{
@@ -3556,8 +3556,8 @@ HandleChildCrash(int pid, int exitstatus, const char *procname)
 	if (polar_enable_dma && ConsensusPID != 0 && take_action)
 	{
 		ereport(DEBUG2,
-				(errmsg_internal("sending %s to process %d", "SIGQUIT", 
-									(int) ConsensusPID)));
+				(errmsg_internal("sending %s to process %d", "SIGQUIT",
+								 (int) ConsensusPID)));
 		signal_child(ConsensusPID, SIGQUIT);
 	}
 
@@ -3569,9 +3569,9 @@ HandleChildCrash(int pid, int exitstatus, const char *procname)
 	/* We now transit into a state of waiting for children to die */
 	if (pmState == PM_RECOVERY ||
 		pmState == PM_HOT_STANDBY ||
-		/* POLAR */
+	/* POLAR */
 		pmState == PM_DATAMAX ||
-		/* POLAR end */
+	/* POLAR end */
 		pmState == PM_RUN ||
 		pmState == PM_WAIT_BACKUP ||
 		pmState == PM_WAIT_READONLY ||
@@ -3788,7 +3788,7 @@ PostmasterStateMachine(void)
 		 * shutdown is performed during recovery.
 		 */
 		if (PgArchPID == 0 && CountChildren(BACKEND_TYPE_ALL) == 0 &&
-				(!polar_enable_dma || ConsensusPID == 0) &&
+			(!polar_enable_dma || ConsensusPID == 0) &&
 			WalReceiverPID == 0)
 		{
 			pmState = PM_WAIT_DEAD_END;
@@ -3811,7 +3811,7 @@ PostmasterStateMachine(void)
 		 * FatalError processing.
 		 */
 		if (dlist_is_empty(&BackendList) &&
-			PgArchPID == 0 && PgStatPID == 0 && 
+			PgArchPID == 0 && PgStatPID == 0 &&
 			(!polar_enable_dma || ConsensusPID == 0))
 		{
 			/* These other guys should be dead already */
@@ -5171,7 +5171,7 @@ sigusr1_handler(SIGNAL_ARGS)
 
 		AddToDataDirLockFile(LOCK_FILE_LINE_PM_STATUS, PM_STATUS_DATAMAX);
 		pmState = PM_DATAMAX;
-		
+
 		StartWorkerNeeded = true;
 	}
 	/* POLAR end */
@@ -5243,8 +5243,8 @@ sigusr1_handler(SIGNAL_ARGS)
 
 	if (polar_enable_dma &&
 		CheckPostmasterSignal(PMSIGNAL_CONSENS_UPGRADE) &&
-			StartupPID != 0 &&
-			(pmState == PM_RECOVERY || pmState == PM_HOT_STANDBY || pmState == PM_DATAMAX))
+		StartupPID != 0 &&
+		(pmState == PM_RECOVERY || pmState == PM_HOT_STANDBY || pmState == PM_DATAMAX))
 	{
 		ereport(LOG,
 				(errmsg("postmaster sigusr1_handler signaled, became leader")));
@@ -5253,38 +5253,38 @@ sigusr1_handler(SIGNAL_ARGS)
 
 	if (polar_enable_dma &&
 		CheckPostmasterSignal(PMSIGNAL_CONSENS_LEADER_CHANGE) &&
-			StartupPID != 0 &&
-			(pmState == PM_RECOVERY || pmState == PM_HOT_STANDBY || pmState == PM_DATAMAX))
+		StartupPID != 0 &&
+		(pmState == PM_RECOVERY || pmState == PM_HOT_STANDBY || pmState == PM_DATAMAX))
 	{
 		ereport(LOG,
 				(errmsg("postmaster sigusr1_handler signaled, log term switch")));
 		polar_signal_recovery_state_change(false, false);
 	}
 
-	if (polar_enable_dma && 
+	if (polar_enable_dma &&
 		CheckPostmasterSignal(PMSIGNAL_CONSENS_LEADER_RESUME) &&
-			(pmState == PM_RECOVERY ||
-			 pmState == PM_HOT_STANDBY ||
-			 pmState == PM_RUN ||
-			 pmState == PM_DATAMAX ||
-			 pmState == PM_WAIT_BACKUP ||
-			 pmState == PM_WAIT_READONLY ||
-			 pmState == PM_WAIT_BACKENDS ||
-			 pmState == PM_SHUTDOWN))
+		(pmState == PM_RECOVERY ||
+		 pmState == PM_HOT_STANDBY ||
+		 pmState == PM_RUN ||
+		 pmState == PM_DATAMAX ||
+		 pmState == PM_WAIT_BACKUP ||
+		 pmState == PM_WAIT_READONLY ||
+		 pmState == PM_WAIT_BACKENDS ||
+		 pmState == PM_SHUTDOWN))
 	{
 		ereport(LOG,
 				(errmsg("postmaster sigusr1_handler signaled, old leader change "
-								"back to new leader")));
+						"back to new leader")));
 		polar_signal_recovery_state_change(false, true);
 	}
 
-	if (polar_is_dma_logger_node() && 
+	if (polar_is_dma_logger_node() &&
 		CheckPostmasterSignal(PMSIGNAL_CONSENS_DOWNGRADE) &&
-			(pmState == PM_RECOVERY ||
-			 pmState == PM_DATAMAX ||
-			 pmState == PM_WAIT_READONLY ||
-			 pmState == PM_WAIT_BACKENDS ||
-			 pmState == PM_SHUTDOWN))
+		(pmState == PM_RECOVERY ||
+		 pmState == PM_DATAMAX ||
+		 pmState == PM_WAIT_READONLY ||
+		 pmState == PM_WAIT_BACKENDS ||
+		 pmState == PM_SHUTDOWN))
 	{
 		ereport(LOG,
 				(errmsg("postmaster sigusr1_handler signaled, old leader change to follower")));
@@ -5293,14 +5293,14 @@ sigusr1_handler(SIGNAL_ARGS)
 
 	if (polar_is_dma_data_node() &&
 		CheckPostmasterSignal(PMSIGNAL_CONSENS_DOWNGRADE) &&
-			(pmState == PM_RECOVERY ||
-			 pmState == PM_HOT_STANDBY ||
-			 pmState == PM_RUN ||
-			 pmState == PM_DATAMAX ||
-			 pmState == PM_WAIT_BACKUP ||
-			 pmState == PM_WAIT_READONLY ||
-			 pmState == PM_WAIT_BACKENDS ||
-			 pmState == PM_SHUTDOWN))
+		(pmState == PM_RECOVERY ||
+		 pmState == PM_HOT_STANDBY ||
+		 pmState == PM_RUN ||
+		 pmState == PM_DATAMAX ||
+		 pmState == PM_WAIT_BACKUP ||
+		 pmState == PM_WAIT_READONLY ||
+		 pmState == PM_WAIT_BACKENDS ||
+		 pmState == PM_SHUTDOWN))
 	{
 		ereport(LOG,
 				(errmsg("postmaster sigusr1_handler signaled, old leader change to follower")));
@@ -5641,9 +5641,9 @@ MaybeStartWalReceiver(void)
 	if (WalReceiverPID == 0 &&
 		(pmState == PM_STARTUP || pmState == PM_RECOVERY ||
 		 pmState == PM_HOT_STANDBY || pmState == PM_WAIT_READONLY ||
-		 /* POLAR: Walreceiver can be start in DataMax mode. */
+	/* POLAR: Walreceiver can be start in DataMax mode. */
 		 pmState == PM_DATAMAX) &&
-		 /* POLAR end */
+	/* POLAR end */
 		Shutdown == NoShutdown)
 	{
 		WalReceiverPID = StartWalReceiver();
@@ -5904,9 +5904,9 @@ bgworker_should_start_now(BgWorkerStartTime start_time)
 			/* fall through */
 
 		case PM_HOT_STANDBY:
-		/* POLAR */
+			/* POLAR */
 		case PM_DATAMAX:
-		/* POLAR end */
+			/* POLAR end */
 			if (start_time == BgWorkerStart_ConsistentState)
 				return true;
 			/* fall through */

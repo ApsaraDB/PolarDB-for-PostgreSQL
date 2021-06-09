@@ -40,11 +40,11 @@ typedef struct VariableCacheData
 	 * These fields are protected by XidGenLock.
 	 */
 	TransactionId nextXid;		/* next XID to assign */
-	#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
 	CommitSeqNo maxCommitTs;	/* max commit ts */
-	CommitSeqNo	globalCutoffTs;	/* cluster-wide minimal start timestamp */
+	CommitSeqNo globalCutoffTs; /* cluster-wide minimal start timestamp */
 	slock_t		ts_lock;		/* protect lock */
-	#endif
+#endif
 
 	TransactionId oldestXid;	/* cluster-wide minimum datfrozenxid */
 	TransactionId xidVacLimit;	/* start forcing autovacuums here */
@@ -57,17 +57,17 @@ typedef struct VariableCacheData
 	/*
 	 * Fields related to MVCC snapshots.
 	 *
-	 * lastCommitSeqNo is the CSN assigned to last committed transaction.
-	 * It is protected by CommitSeqNoLock.
+	 * lastCommitSeqNo is the CSN assigned to last committed transaction. It
+	 * is protected by CommitSeqNoLock.
 	 *
-	 * latestCompletedXid is the highest XID that has committed. Anything
-	 * > this is seen by still in-progress by everyone. Use atomic ops to
+	 * latestCompletedXid is the highest XID that has committed. Anything >
+	 * this is seen by still in-progress by everyone. Use atomic ops to
 	 * update.
 	 *
 	 * oldestActiveXid is the XID of the oldest transaction that's still
 	 * in-progress. (Or rather, the oldest XID among all still in-progress
-	 * transactions; it's not necessarily the one that started first).
-	 * Must hold ProcArrayLock in shared mode, and use atomic ops, to update.
+	 * transactions; it's not necessarily the one that started first). Must
+	 * hold ProcArrayLock in shared mode, and use atomic ops, to update.
 	 */
 	pg_atomic_uint64 nextCommitSeqNo;
 	pg_atomic_uint32 latestCompletedXid;
@@ -90,4 +90,4 @@ typedef VariableCacheData *VariableCache;
 /* in transam/varsup.c */
 extern PGDLLIMPORT VariableCache ShmemVariableCache;
 
-#endif   /* MVCCVARS_H */
+#endif							/* MVCCVARS_H */

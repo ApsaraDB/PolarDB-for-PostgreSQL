@@ -30,10 +30,10 @@
  * There are no XLOG interactions since we do not care about preserving
  * data across crashes.  During database startup, we simply force the
  * currently-active page of CSNLOG to zeroes.
- * 
+ *
  * To support distributed transaction, XLOG is added for csnlog to preserve
  * data across crashes. During database startup, we would apply xlog records
- * to csnlog. 
+ * to csnlog.
  * Written by Junbin Kang, 2020-01-11
  *
  * Portions Copyright (c) 2020, Alibaba Group Holding Limited
@@ -61,8 +61,8 @@
 
 #ifdef ENABLE_DISTRIBUTED_TRANSACTION
 /*GUC parameter */
-int delay_before_set_committing_status = 0;
-int delay_after_set_committing_status = 0;
+int			delay_before_set_committing_status = 0;
+int			delay_after_set_committing_status = 0;
 #endif
 
 
@@ -150,17 +150,17 @@ static CommitSeqNo RecursiveGetCommitSeqNo(TransactionId xid);
  */
 void
 CSNLogSetCommitSeqNo(TransactionId xid, int nsubxids,
-					 TransactionId *subxids,  XLogRecPtr lsn, bool write_xlog, CommitSeqNo csn)
+					 TransactionId *subxids, XLogRecPtr lsn, bool write_xlog, CommitSeqNo csn)
 {
-	int nextSubxid;
-	int topPage;
+	int			nextSubxid;
+	int			topPage;
 	TransactionId topXid;
-	#ifndef ENABLE_DISTRIBUTED_TRANSACTION
+#ifndef ENABLE_DISTRIBUTED_TRANSACTION
 	TransactionId oldestActiveXid = pg_atomic_read_u32(
-				&ShmemVariableCache->oldestActiveXid);
-	#endif
-	XLogRecPtr max_lsn = lsn;
-	
+													   &ShmemVariableCache->oldestActiveXid);
+#endif
+	XLogRecPtr	max_lsn = lsn;
+
 	if (csn == InvalidCommitSeqNo || xid == BootstrapTransactionId)
 	{
 		if (IsBootstrapProcessingMode())
@@ -170,10 +170,11 @@ CSNLogSetCommitSeqNo(TransactionId xid, int nsubxids,
 	}
 
 #ifdef ENABLE_DISTRIBUTED_TRANSACTION
+
 	/*
 	 * Comply with the WAL-before-data rule: if caller specified it wants this
-	 * value to be recorded in WAL, do so before touching the data.
-	 * write xlog is only needed when the modification is not recorded in xlog before
+	 * value to be recorded in WAL, do so before touching the data. write xlog
+	 * is only needed when the modification is not recorded in xlog before
 	 * calling this function.
 	 */
 	if (write_xlog)
@@ -196,11 +197,12 @@ CSNLogSetCommitSeqNo(TransactionId xid, int nsubxids,
 	nextSubxid = nsubxids - 1;
 	do
 	{
-		int currentPage = topPage;
-		int subxidsOnPage = 0;
+		int			currentPage = topPage;
+		int			subxidsOnPage = 0;
+
 		for (; nextSubxid >= 0; nextSubxid--)
 		{
-			int subxidPage = TransactionIdToPage(subxids[nextSubxid]);
+			int			subxidPage = TransactionIdToPage(subxids[nextSubxid]);
 
 			if (subxidsOnPage == 0)
 				currentPage = subxidPage;
@@ -228,7 +230,7 @@ CSNLogSetCommitSeqNo(TransactionId xid, int nsubxids,
 		 * No subxids were on the same page as the main xid; we have to update
 		 * it separately
 		 */
-		
+
 		CSNLogSetPageStatus(xid, 0, NULL, csn, max_lsn, topPage);
 	}
 }
@@ -242,6 +244,7 @@ CSNLogAssignCommitSeqNo(TransactionId xid, int nxids, TransactionId *xids, bool 
 	TransactionId currentLatestCompletedXid;
 
 	latestXid = TransactionIdLatest(xid, nxids, xids);
+
 	/*
 	 * First update latestCompletedXid to cover this xid. We do this before
 	 * assigning a CSN, so that if someone acquires a new snapshot at the same
@@ -261,36 +264,36 @@ CSNLogAssignCommitSeqNo(TransactionId xid, int nxids, TransactionId *xids, bool 
 	 */
 	if (false == fromCoordinator)
 	{
-		#ifdef ENABLE_DISTR_DEBUG
+#ifdef ENABLE_DISTR_DEBUG
 		if (delay_before_set_committing_status)
 			pg_usleep(delay_before_set_committing_status * 1000);
-		#endif
-		
+#endif
+
 		CSNLogSetCommitSeqNo(xid, 0, NULL, InvalidXLogRecPtr, false, COMMITSEQNO_COMMITTING);
 
-		#ifdef ENABLE_DISTR_DEBUG
+#ifdef ENABLE_DISTR_DEBUG
 		if (delay_after_set_committing_status)
 			pg_usleep(delay_after_set_committing_status * 1000);
-		#endif
+#endif
 	}
 
-	#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
 	csn = TxnGetOrGenerateCommitTs(fromCoordinator);
 	Assert(!COMMITSEQNO_IS_SUBTRANS(csn));
 
 	if (!COMMITSEQNO_IS_NORMAL(csn))
-		elog(ERROR, "invalid commit ts "UINT64_FORMAT, csn);
-	
+		elog(ERROR, "invalid commit ts " UINT64_FORMAT, csn);
+
 	TxnSetReplyTimestamp(csn);
-	#else
+#else
 	/* Get our CSN and increment */
 	CSNLogSetCommitSeqNo(xid, 0, NULL, InvalidXLogRecPtr, false, COMMITSEQNO_COMMITTING);
 	csn = pg_atomic_fetch_add_u64(&ShmemVariableCache->nextCommitSeqNo, 1);
-	#endif
-	
+#endif
+
 	Assert(csn >= COMMITSEQNO_FIRST_NORMAL);
 	if (enable_timestamp_debug_print)
-		elog(LOG, "xid %d assign commit timestamp "UINT64_FORMAT, xid, csn);
+		elog(LOG, "xid %d assign commit timestamp " UINT64_FORMAT, xid, csn);
 	return csn;
 }
 #endif
@@ -354,10 +357,9 @@ SubTransSetParent(TransactionId xid, TransactionId parent)
 	newcsn = CSN_SUBTRANS_BIT | (uint64) parent;
 
 	/*
-	 * Shared page access is enough to set the subtransaction parent.
-	 * It is set when the subtransaction is assigned an xid,
-	 * and can be read only later, after the subtransaction have modified
-	 * some tuples.
+	 * Shared page access is enough to set the subtransaction parent. It is
+	 * set when the subtransaction is assigned an xid, and can be read only
+	 * later, after the subtransaction have modified some tuples.
 	 */
 	slotno = SimpleLruReadPage_ReadOnly(CsnlogCtl, pageno, xid);
 	ptr = (CommitSeqNo *) CsnlogCtl->shared->page_buffer[slotno];
@@ -467,7 +469,8 @@ CSNLogSetCSN(TransactionId xid, CommitSeqNo csn, XLogRecPtr lsn, int slotno)
 
 	*ptr = csn;
 
-	#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+
 	/*
 	 * Update the group LSN if the transaction completion LSN is higher.
 	 *
@@ -480,19 +483,18 @@ CSNLogSetCSN(TransactionId xid, CommitSeqNo csn, XLogRecPtr lsn, int slotno)
 	{
 		int			lsnindex = GetLSNIndex(slotno, xid);
 
-		/* 
-		 * As csnlog only holds shared control lock,
-		 * we should use a seperate spin lock to protect
-		 * group lsns from concurrent updates.
-		 * Read access in SlruPhysicalWritePage would be protected by 
-		 * CSNLogControlLock.
-		 * It is safe enough to use group_lsn_lock for update only.
+		/*
+		 * As csnlog only holds shared control lock, we should use a seperate
+		 * spin lock to protect group lsns from concurrent updates. Read
+		 * access in SlruPhysicalWritePage would be protected by
+		 * CSNLogControlLock. It is safe enough to use group_lsn_lock for
+		 * update only.
 		 */
 
 		if (CsnlogCtl->shared->group_lsn[lsnindex] < lsn)
 			CsnlogCtl->shared->group_lsn[lsnindex] = lsn;
 	}
-	#endif
+#endif
 }
 
 /*
@@ -520,17 +522,16 @@ CSNLogGetCommitSeqNo(TransactionId xid)
 	csn = RecursiveGetCommitSeqNo(xid);
 
 	LWLockRelease(CSNLogControlLock);
+
 	/*
-	 * As the cts status of crashed transactions may not be set,
-	 * it would be regarding as in-progress by mistaken.
-	 * Note that TransactionIdIsInProgress() is removed by CSN to 
-	 * avoid proc array walking.
-	 * As a result, we need to perform further checking:
-	 * If the xid is below TransactionXmin and does not have 
-	 * cts, it should be crashed or aborted transaction.
-	 * Written by Junbin Kang, 2020.06.22
-	 */ 
-	
+	 * As the cts status of crashed transactions may not be set, it would be
+	 * regarding as in-progress by mistaken. Note that
+	 * TransactionIdIsInProgress() is removed by CSN to avoid proc array
+	 * walking. As a result, we need to perform further checking: If the xid
+	 * is below TransactionXmin and does not have cts, it should be crashed or
+	 * aborted transaction. Written by Junbin Kang, 2020.06.22
+	 */
+
 	if (TransactionIdPrecedes(xid, CsnlogCtl->shared->oldestActiveStartupXid))
 	{
 		if (!COMMITSEQNO_IS_COMMITTED(csn))
@@ -596,7 +597,7 @@ InternalGetCommitSeqNo(TransactionId xid)
 	int			slotno;
 
 	/* Can't ask about stuff that might not be around anymore */
-	// Assert(TransactionIdFollowsOrEquals(xid, TransactionXmin));
+	/* Assert(TransactionIdFollowsOrEquals(xid, TransactionXmin)); */
 
 	if (!TransactionIdIsNormal(xid))
 	{
@@ -626,9 +627,9 @@ CSNLogGetNextActiveXid(TransactionId xid,
 
 	for (;;)
 	{
-		int pageno;
-		int slotno;
-		int entryno;
+		int			pageno;
+		int			slotno;
+		int			entryno;
 
 		if (!TransactionIdPrecedes(xid, end))
 			goto end;
@@ -724,9 +725,9 @@ BootStrapCSNLOG(void)
 static int
 ZeroCSNLOGPage(int pageno, bool writeXlog)
 {
-	int slotno;
+	int			slotno;
 
-	slotno =  SimpleLruZeroPage(CsnlogCtl, pageno);
+	slotno = SimpleLruZeroPage(CsnlogCtl, pageno);
 
 #ifdef ENABLE_DISTRIBUTED_TRANSACTION
 	if (writeXlog)
@@ -810,6 +811,7 @@ ShutdownCSNLOG(void)
 	SimpleLruFlush(CsnlogCtl, false);
 
 #ifdef ENABLE_DISTRIBUTED_TRANSACTION
+
 	/*
 	 * fsync pg_csnlog to ensure that any files flushed previously are durably
 	 * on disk.
@@ -884,6 +886,7 @@ CheckPointCSNLOG(void)
 	TRACE_POSTGRESQL_CSNLOG_CHECKPOINT_START(true);
 	SimpleLruFlush(CsnlogCtl, true);
 #ifdef ENABLE_DISTRIBUTED_TRANSACTION
+
 	/*
 	 * fsync pg_csnlog to ensure that any files flushed previously are durably
 	 * on disk.
@@ -902,7 +905,7 @@ CheckPointCSNLOG(void)
  * unless we're forced to write out a dirty clog or xlog page to make room
  * in shared memory.
  */
-void 
+void
 ExtendCSNLOG(TransactionId newestXact)
 {
 	int			i;
@@ -1000,17 +1003,17 @@ PG_FUNCTION_INFO_V1(pg_xact_get_csn);
 Datum
 pg_xact_get_csn(PG_FUNCTION_ARGS)
 {
-    TransactionId xid = PG_GETARG_UINT32(0);
-    CommitSeqNo csn;
+	TransactionId xid = PG_GETARG_UINT32(0);
+	CommitSeqNo csn;
 	StringInfoData str;
 
 	initStringInfo(&str);
 
-    csn = CSNLogGetCommitSeqNo(xid);
-	
-	appendStringInfo(&str, "csn: "UINT64_FORMAT, csn);
+	csn = CSNLogGetCommitSeqNo(xid);
 
-    PG_RETURN_CSTRING(str.data);
+	appendStringInfo(&str, "csn: " UINT64_FORMAT, csn);
+
+	PG_RETURN_CSTRING(str.data);
 }
 
 /*
@@ -1038,7 +1041,7 @@ WriteTruncateXlogRec(int pageno, TransactionId oldestXact)
 
 	xlrec.pageno = pageno;
 	xlrec.oldestXact = oldestXact;
-	
+
 	XLogBeginInsert();
 	XLogRegisterData((char *) (&xlrec), sizeof(xl_csnlog_truncate));
 	recptr = XLogInsert(RM_CSNLOG_ID, CSNLOG_TRUNCATE);
@@ -1052,7 +1055,7 @@ static XLogRecPtr
 WriteSetTimestampXlogRec(TransactionId mainxid, int nsubxids,
 						 TransactionId *subxids, CommitSeqNo csn)
 {
-	xl_csn_set record;
+	xl_csn_set	record;
 
 	record.csn = csn;
 	record.mainxid = mainxid;
@@ -1113,7 +1116,7 @@ csnlog_redo(XLogReaderState *record)
 
 		nsubxids = ((XLogRecGetDataLen(record) - SizeOfCsnSet) /
 					sizeof(TransactionId));
-		
+
 		if (nsubxids > 0)
 		{
 			subxids = palloc(sizeof(TransactionId) * nsubxids);

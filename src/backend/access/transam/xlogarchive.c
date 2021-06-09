@@ -562,8 +562,10 @@ XLogArchiveNotifySeg(XLogSegNo segno)
 
 	XLogFileName(xlog, ThisTimeLineID, segno, wal_segment_size);
 
-	/* POLAR: in dma mode, rename to .local firstly, 
-	 * rename it to .ready by archiver after consensus commit */
+	/*
+	 * POLAR: in dma mode, rename to .local firstly, rename it to .ready by
+	 * archiver after consensus commit
+	 */
 	if (polar_enable_dma)
 		polar_dma_xlog_archive_notify(xlog, true);
 	else
@@ -590,7 +592,10 @@ XLogArchiveForceDone(const char *xlog)
 	if (stat(archiveDone, &stat_buf) == 0)
 		return;
 
-	/* POLAR: in DMA mode, delete .paxos if exists. rename .local to .done if exists*/
+	/*
+	 * POLAR: in DMA mode, delete .paxos if exists. rename .local to .done if
+	 * exists
+	 */
 	if (polar_enable_dma)
 	{
 		StatusFilePath(archiveReady, xlog, ".paxos");
@@ -672,7 +677,10 @@ XLogArchiveCheckDone(const char *xlog)
 	if (stat(archiveStatusPath, &stat_buf) == 0)
 		return true;
 
-	/* POLAR: in dma mode, check for ready.local --- this means archiver is still busy with it */
+	/*
+	 * POLAR: in dma mode, check for ready.local --- this means archiver is
+	 * still busy with it
+	 */
 	if (polar_enable_dma)
 	{
 		StatusFilePath(archiveStatusPath, xlog, ".local");
@@ -854,11 +862,11 @@ XLogArchiveCleanup(const char *xlog)
 }
 
 /*
- * polar_dma_xlog_archive_notify_local 
+ * polar_dma_xlog_archive_notify_local
  *
  * Create an archive notification file
  *
- * In DMA mode, The name of the notification file is the message that will be 
+ * In DMA mode, The name of the notification file is the message that will be
  * picked up by the archiver, e.g. we write 0000000100000001000000C6.local
  * and the archiver then rename it to .ready if all record consensus commit
  * and the archiver then archive XLOGDIR/0000000100000001000000C6,
@@ -874,7 +882,7 @@ polar_dma_xlog_archive_notify(const char *xlog, bool local)
 	if (local && XLogArchiveIsReadyOrDone(xlog))
 		return;
 
-	/* insert an otherwise empty file called <XLOG>.local or <XLOG>.paxos*/
+	/* insert an otherwise empty file called <XLOG>.local or <XLOG>.paxos */
 	StatusFilePath(archiveStatusPath, xlog, local ? ".local" : ".paxos");
 
 	fd = AllocateFile(archiveStatusPath, "w");
@@ -883,7 +891,7 @@ polar_dma_xlog_archive_notify(const char *xlog, bool local)
 		ereport(LOG,
 				(errcode_for_file_access(),
 				 errmsg("could not create archive status file \"%s\": %m",
-					 archiveStatusPath)));
+						archiveStatusPath)));
 		return;
 	}
 	if (FreeFile(fd))
@@ -891,7 +899,7 @@ polar_dma_xlog_archive_notify(const char *xlog, bool local)
 		ereport(LOG,
 				(errcode_for_file_access(),
 				 errmsg("could not write archive status file \"%s\": %m",
-					 archiveStatusPath)));
+						archiveStatusPath)));
 		return;
 	}
 
@@ -899,4 +907,3 @@ polar_dma_xlog_archive_notify(const char *xlog, bool local)
 	if (IsUnderPostmaster)
 		SendPostmasterSignal(PMSIGNAL_WAKEN_ARCHIVER);
 }
-

@@ -15,7 +15,7 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- * 
+ *
  * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -98,14 +98,14 @@
 #include "replication/remote_recovery.h"
 #endif
 
-int max_parallel_replay_workers = 0;
-int max_workload_adjust_period = 10000000;
-double parallel_replay_workload_fluctuation_factor = 0.1;
-bool enable_dynamic_adjust_workload = true;
-bool enable_parallel_recovery_print = false;
-bool enable_parallel_recovery_bypage = false;
-bool enable_parallel_recovery_locklog = false;
-bool AllowHotStandbyInconsistency = true;
+int			max_parallel_replay_workers = 0;
+int			max_workload_adjust_period = 10000000;
+double		parallel_replay_workload_fluctuation_factor = 0.1;
+bool		enable_dynamic_adjust_workload = true;
+bool		enable_parallel_recovery_print = false;
+bool		enable_parallel_recovery_bypage = false;
+bool		enable_parallel_recovery_locklog = false;
+bool		AllowHotStandbyInconsistency = true;
 
 #define Dispatch_Func(relOid, forknum, blkno, workernum) ((relOid + (forknum * 7) + blkno + (relOid&3)*(workernum/4)) % (workernum))
 
@@ -113,8 +113,8 @@ bool AllowHotStandbyInconsistency = true;
 #define BUFFER_QUEUE_SIZE (1 << 20)
 
 /* guc control parameter */
-int	max_queue_size;
-int replay_buffer_size;
+int			max_queue_size;
+int			replay_buffer_size;
 
 /**  control the periodical logging of mq sizes for load balancing debug */
 static uint64 redologcount = 0;
@@ -124,47 +124,48 @@ static uint64 redologcount = 0;
  */
 typedef struct XLogParallelWorker
 {
-	pid_t pid; /* this worker's PID, or 0 if not active */
+	pid_t		pid;			/* this worker's PID, or 0 if not active */
 
-	int		worker_id; /* this worker's ID starting from 0 */
+	int			worker_id;		/* this worker's ID starting from 0 */
 	/* Protects shared variables shown above. */
-	slock_t mutex;
+	slock_t		mutex;
 
 	/*
-     * Pointer to the worker's latch. Used by backends to wake up this
-     * worker when it has work to do. NULL if the worker isn't active.
-     */
-	Latch latch;
+	 * Pointer to the worker's latch. Used by backends to wake up this worker
+	 * when it has work to do. NULL if the worker isn't active.
+	 */
+	Latch		latch;
 
-	shm_mq *mq;			   /* per-worker message queue */
-	shm_mq_handle *sender; /* per-worker sending queue handle */
-	shm_mq_handle *recver; /* per-worker recving queue handle */
-	int msgCnt;
-	int relfilenodeCnt;
-} XLogParallelWorker;
+	shm_mq	   *mq;				/* per-worker message queue */
+	shm_mq_handle *sender;		/* per-worker sending queue handle */
+	shm_mq_handle *recver;		/* per-worker recving queue handle */
+	int			msgCnt;
+	int			relfilenodeCnt;
+}			XLogParallelWorker;
 
 typedef struct XLogParallelCtlData
 {
-	slock_t mutex;
-	Latch latch; /* the main xlog process's latch */
-	int nworkers_ready;
-	int nworkers_sync_done;
-	int msgTotalCnt;
+	slock_t		mutex;
+	Latch		latch;			/* the main xlog process's latch */
+	int			nworkers_ready;
+	int			nworkers_sync_done;
+	int			msgTotalCnt;
 #ifdef ENABLE_REMOTE_RECOVERY
 	/* To support parallel standby fetch recovery */
-	bool enableRemoteFetchRecovery;
-	XLogRecPtr checkpointRedo;
-	TimeLineID checkpointTLI;
-	char standbyConn[MAXCONNINFO];
+	bool		enableRemoteFetchRecovery;
+	XLogRecPtr	checkpointRedo;
+	TimeLineID	checkpointTLI;
+	char		standbyConn[MAXCONNINFO];
 #endif
-	XLogParallelWorker
-		parallel_workers[FLEXIBLE_ARRAY_MEMBER]; /* parallel recovery worker state */
-} XLogParallelCtlData;
+				XLogParallelWorker
+				parallel_workers[FLEXIBLE_ARRAY_MEMBER];	/* parallel recovery
+															 * worker state */
+}			XLogParallelCtlData;
 
 #define XLogParallelCtlDataSize offsetof(XLogParallelCtlData, parallel_workers)
 
-static XLogParallelCtlData *XLogParallelCtl = NULL;
-static XLogParallelWorker *MyXLogWorker = NULL;
+static XLogParallelCtlData * XLogParallelCtl = NULL;
+static XLogParallelWorker * MyXLogWorker = NULL;
 static bool IsParallelReplayWorker = false;
 
 typedef enum
@@ -172,48 +173,49 @@ typedef enum
 	PARALLEL_REDO = 0,
 	PARALLEL_END,
 	PARALLEL_SYNC
-} WalRecordType;
+}			WalRecordType;
 
 /* Dispatch WAL record header structure */
 typedef struct
 {
-	uint8 type; /* record type: redo, finish or sync barrier */
+	uint8		type;			/* record type: redo, finish or sync barrier */
+
 	/*
-     * Start and end point of last record read.  EndRecPtr is also used as the
-     * position to read next, if XLogReadRecord receives an invalid recptr.
-     * Used to reconstruct xlogreader state in each worker.
-     */
-	XLogRecPtr ReadRecPtr; /* start of last record read */
-	XLogRecPtr EndRecPtr;  /* end+1 of last record read */
-} WalRecordDataHeader;
+	 * Start and end point of last record read.  EndRecPtr is also used as the
+	 * position to read next, if XLogReadRecord receives an invalid recptr.
+	 * Used to reconstruct xlogreader state in each worker.
+	 */
+	XLogRecPtr	ReadRecPtr;		/* start of last record read */
+	XLogRecPtr	EndRecPtr;		/* end+1 of last record read */
+}			WalRecordDataHeader;
 
 #define SizeOfWalRecordHeader sizeof(WalRecordDataHeader)
 
 /* xlog main process local structures */
 typedef struct BufferState
 {
-	Size size;
-	Size tail;
-	char *data;
-} BufferState;
+	Size		size;
+	Size		tail;
+	char	   *data;
+}			BufferState;
 
 typedef struct
 {
-	int nworkers;
+	int			nworkers;
 	BufferState buffers[FLEXIBLE_ARRAY_MEMBER];
-} BufferQueues;
+}			BufferQueues;
 
 typedef struct
 {
-	int nworkers;
+	int			nworkers;
 	BackgroundWorkerHandle *handle[FLEXIBLE_ARRAY_MEMBER];
-} WorkerStates;
+}			WorkerStates;
 
-static WorkerStates *XLogWorkerStates = NULL;
+static WorkerStates * XLogWorkerStates = NULL;
 
-static BufferQueues *XLogBufferQueues = NULL;
+static BufferQueues * XLogBufferQueues = NULL;
 
-static BufferState *LocalReceiveBuffer = NULL; /* for each worker */
+static BufferState * LocalReceiveBuffer = NULL; /* for each worker */
 
 #define BufferFreeSpace(bufferState) ((bufferState)->size - (bufferState)->tail)
 #define BufferHasData(bufferState) ((bufferState)->size - (bufferState)->tail)
@@ -229,51 +231,57 @@ static void WaitForWorkersReady(void);
 static void CleanupBackgroundWorkers(void);
 
 static bool DispatchWalRecordToWorker(XLogRecord *record,
-									  XLogReaderState *xlogreader);
+						  XLogReaderState *xlogreader);
 
 static void SendWalRecordToQueue(XLogRecord *record,
-								 WalRecordDataHeader *walRecordHeader,
-								 int workerNum);
+					 WalRecordDataHeader * walRecordHeader,
+					 int workerNum);
 static void WaitForBatchWorkersSyncDone(bool *workerBatch, int len);
-static int AssignBlockToWorker(RelFileNode* rnode, ForkNumber forknum, BlockNumber blkno);
+static int	AssignBlockToWorker(RelFileNode *rnode, ForkNumber forknum, BlockNumber blkno);
 
-bool IsBlockAssignedToThisWorker(Oid relFile, ForkNumber forknum, BlockNumber blkno)
+bool
+IsBlockAssignedToThisWorker(Oid relFile, ForkNumber forknum, BlockNumber blkno)
 {
 	if (!IsParallelReplayWorker)
 		return true;
-	
+
 	Assert(MyXLogWorker);
 	if (Dispatch_Func(relFile, forknum, blkno, XLogParallelCtl->nworkers_ready) == MyXLogWorker->worker_id)
 		return true;
-	//TODO!!! mod XLogWorkerStates->nworkers ?!!! WTF?
+	/* TODO!!! mod XLogWorkerStates->nworkers ?!!! WTF? */
 
 	return false;
 }
 
-int GetParallelRedoWorkerId(void){
-	if (NULL == MyXLogWorker) {
+int
+GetParallelRedoWorkerId(void)
+{
+	if (NULL == MyXLogWorker)
+	{
 		return -1;
 	}
 	return MyXLogWorker->worker_id;
 }
 
 
-Size ParallelRecoveryShmemSize(void)
+Size
+ParallelRecoveryShmemSize(void)
 {
-	Size size;
+	Size		size;
 
 	size = offsetof(XLogParallelCtlData, parallel_workers);
 	size = add_size(
-		size, mul_size(max_parallel_replay_workers, sizeof(XLogParallelWorker)));
+					size, mul_size(max_parallel_replay_workers, sizeof(XLogParallelWorker)));
 	size = add_size(size, mul_size(max_parallel_replay_workers, (max_queue_size << 20)));
 
 	elog(LOG, "parallel recovery: max_queue_size %d mb replay_buffer_size %d kb", max_queue_size, replay_buffer_size);
 	return size;
 }
 
-static void InitParallelRecoverySlot(void)
+static void
+InitParallelRecoverySlot(void)
 {
-	int i;
+	int			i;
 
 	elog(LOG, "xlog worker initialization start");
 
@@ -294,8 +302,8 @@ static void InitParallelRecoverySlot(void)
 		else
 		{
 			/*
-       * Found a free slot. Reserve it for us.
-       */
+			 * Found a free slot. Reserve it for us.
+			 */
 			worker->pid = MyProcPid;
 
 			SpinLockRelease(&worker->mutex);
@@ -321,14 +329,15 @@ static void InitParallelRecoverySlot(void)
 	elog(LOG, "xlog worker initialization finish");
 }
 
-void ParallelRecoveryInit(void)
+void
+ParallelRecoveryInit(void)
 {
-	bool foundParallelCtl;
-	int i;
-	char *queueStartAddress;
+	bool		foundParallelCtl;
+	int			i;
+	char	   *queueStartAddress;
 
-	XLogParallelCtl = (XLogParallelCtlData *)ShmemInitStruct(
-		"XLOG Parallel Ctl", ParallelRecoveryShmemSize(), &foundParallelCtl);
+	XLogParallelCtl = (XLogParallelCtlData *) ShmemInitStruct(
+															  "XLOG Parallel Ctl", ParallelRecoveryShmemSize(), &foundParallelCtl);
 
 	elog(LOG, "init parallel recovery");
 	if (foundParallelCtl)
@@ -337,19 +346,19 @@ void ParallelRecoveryInit(void)
 	memset(XLogParallelCtl, 0, XLogParallelCtlDataSize);
 	SpinLockInit(&XLogParallelCtl->mutex);
 
-	queueStartAddress = (char *)XLogParallelCtl + XLogParallelCtlDataSize +
-						max_parallel_replay_workers * sizeof(XLogParallelWorker);
+	queueStartAddress = (char *) XLogParallelCtl + XLogParallelCtlDataSize +
+		max_parallel_replay_workers * sizeof(XLogParallelWorker);
 
 	/*
-   * Setup per-worker queue.
-   */
+	 * Setup per-worker queue.
+	 */
 	for (i = 0; i < max_parallel_replay_workers; i++)
 	{
 		XLogParallelWorker *worker = &XLogParallelCtl->parallel_workers[i];
-		char *message_queue;
+		char	   *message_queue;
 
 		SpinLockInit(&worker->mutex);
-		worker->pid = 0; /* unused slot */
+		worker->pid = 0;		/* unused slot */
 		worker->worker_id = i;
 		message_queue = queueStartAddress + i * (max_queue_size << 20);
 		worker->mq = shm_mq_create(message_queue, (max_queue_size << 20));
@@ -357,7 +366,7 @@ void ParallelRecoveryInit(void)
 		worker->msgCnt = 0;
 		worker->relfilenodeCnt = 0;
 	}
-	
+
 	XLogParallelCtl->msgTotalCnt = 0;
 	elog(LOG, "parallel recovery init: max_queue_size %d replay_buffer_size %d", max_queue_size << 20, replay_buffer_size << 10);
 
@@ -367,10 +376,11 @@ void ParallelRecoveryInit(void)
 	InitSharedLatch(&XLogParallelCtl->latch);
 }
 
-static void SetupBackgroundWorkers()
+static void
+SetupBackgroundWorkers()
 {
 	BackgroundWorker worker;
-	int i;
+	int			i;
 
 	/* Configure a worker. */
 	memset(&worker, 0, sizeof(worker));
@@ -406,9 +416,10 @@ static void SetupBackgroundWorkers()
 	return;
 }
 
-static void CleanupBackgroundWorkers(void)
+static void
+CleanupBackgroundWorkers(void)
 {
-	int i;
+	int			i;
 	WalRecordDataHeader walRecordHeader;
 
 	walRecordHeader.type = PARALLEL_END;
@@ -429,14 +440,15 @@ static void CleanupBackgroundWorkers(void)
 	pfree(XLogBufferQueues);
 }
 
-static void WaitForWorkersReady(void)
+static void
+WaitForWorkersReady(void)
 {
-	bool result = false;
-	int rc;
+	bool		result = false;
+	int			rc;
 
 	for (;;)
 	{
-		int nworkers_ready;
+		int			nworkers_ready;
 
 		/* If all the workers are ready, we have succeeded. */
 		SpinLockAcquire(&XLogParallelCtl->mutex);
@@ -476,15 +488,16 @@ static void WaitForWorkersReady(void)
 						errmsg("background workers failed to start")));
 }
 
-static bool CheckWorkerStatus(void)
+static bool
+CheckWorkerStatus(void)
 {
-	int n;
+	int			n;
 
 	/* If any workers (or the postmaster) have died, we have failed. */
 	for (n = 0; n < XLogWorkerStates->nworkers; ++n)
 	{
 		BgwHandleStatus status;
-		pid_t pid;
+		pid_t		pid;
 
 		status = GetBackgroundWorkerPid(XLogWorkerStates->handle[n], &pid);
 		if (status == BGWH_STOPPED || status == BGWH_POSTMASTER_DIED)
@@ -498,17 +511,19 @@ static bool CheckWorkerStatus(void)
 	return true;
 }
 
-static void test_send(void)
+static void
+test_send(void)
 {
-	int i;
-	int res;
-	char message[16] = "hello world";
-	int message_size = strlen(message) + 1;
+	int			i;
+	int			res;
+	char		message[16] = "hello world";
+	int			message_size = strlen(message) + 1;
 
 	for (i = 0; i < XLogWorkerStates->nworkers; i++)
 	{
 		XLogParallelWorker *worker = &XLogParallelCtl->parallel_workers[i];
-		PGPROC *recv;
+		PGPROC	   *recv;
+
 		res = shm_mq_send(worker->sender, message_size, message, false);
 		recv = shm_mq_get_receiver(worker->mq);
 		elog(LOG, "send message %d to worker pid %d %d", message_size, worker->pid,
@@ -519,27 +534,31 @@ static void test_send(void)
 							errmsg("could not send message")));
 	}
 }
-static int test_receive(void)
+static int
+test_receive(void)
 {
-	int res;
-	void *data;
-	Size len;
+	int			res;
+	void	   *data;
+	Size		len;
+
 	Assert(MyXLogWorker);
 
 	res = shm_mq_receive(MyXLogWorker->recver, &len, &data, false);
 	if (res != SHM_MQ_SUCCESS)
 		ereport(ERROR, (errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 						errmsg("could not receive message")));
-	elog(LOG, "recv data %s len %lu", (char *)data, len);
+	elog(LOG, "recv data %s len %lu", (char *) data, len);
 	return len;
 }
+
 /*
  * The function entry is for xlog main process
  * to start up workers and initialize its per-worker dispatch queue.
  */
-void ParallelRecoveryStart(const char *standbyConnInfo, XLogRecPtr checkpointRedo, TimeLineID checkpointTLI)
+void
+ParallelRecoveryStart(const char *standbyConnInfo, XLogRecPtr checkpointRedo, TimeLineID checkpointTLI)
 {
-	int i;
+	int			i;
 
 	/* Create per-worker state object. */
 	XLogWorkerStates =
@@ -551,10 +570,10 @@ void ParallelRecoveryStart(const char *standbyConnInfo, XLogRecPtr checkpointRed
 
 	if (max_parallel_replay_workers == 0)
 		return;
+
 	/*
-   * Postmaster does not start background workers in
-   * case of FatalError.
-   */
+	 * Postmaster does not start background workers in case of FatalError.
+	 */
 	if (PostmasterIsFatalError())
 		return;
 
@@ -591,20 +610,21 @@ void ParallelRecoveryStart(const char *standbyConnInfo, XLogRecPtr checkpointRed
 	elog(LOG, "start up xlog workers");
 }
 
-void ParallelRecoveryFinish(void) 
-{ 
+void
+ParallelRecoveryFinish(void)
+{
 	/*
-	 * Wait for all workers to run to completion before notifying 
-	 * them to exit so as to ensure all WAL entries dispatched have
-	 * been replayed.
-	 */ 
+	 * Wait for all workers to run to completion before notifying them to exit
+	 * so as to ensure all WAL entries dispatched have been replayed.
+	 */
 	WaitForWorkersSyncDone();
-	CleanupBackgroundWorkers(); 
+	CleanupBackgroundWorkers();
 }
 
-static void SendBuffer(BufferState *bufferState, XLogParallelWorker *worker)
+static void
+SendBuffer(BufferState * bufferState, XLogParallelWorker * worker)
 {
-	int res;
+	int			res;
 
 	Assert(bufferState->tail);
 	res =
@@ -616,14 +636,15 @@ static void SendBuffer(BufferState *bufferState, XLogParallelWorker *worker)
 	bufferState->tail = 0;
 }
 
-static void SendWalRecordToQueue(XLogRecord *record,
-								 WalRecordDataHeader *walRecordHeader,
-								 int workerNum)
+static void
+SendWalRecordToQueue(XLogRecord *record,
+					 WalRecordDataHeader * walRecordHeader,
+					 int workerNum)
 {
 	BufferState *bufferState = &XLogBufferQueues->buffers[workerNum];
 	XLogParallelWorker *worker = &XLogParallelCtl->parallel_workers[workerNum];
-	Size send_size = SizeOfWalRecordHeader;
-	char *ptr;
+	Size		send_size = SizeOfWalRecordHeader;
+	char	   *ptr;
 
 	if (walRecordHeader->type == PARALLEL_REDO)
 		send_size += record->xl_tot_len;
@@ -632,12 +653,12 @@ static void SendWalRecordToQueue(XLogRecord *record,
 		SendBuffer(bufferState, worker);
 
 	ptr = bufferState->data + bufferState->tail;
-	memcpy(ptr, (char *)walRecordHeader, SizeOfWalRecordHeader);
+	memcpy(ptr, (char *) walRecordHeader, SizeOfWalRecordHeader);
 
 	if (walRecordHeader->type == PARALLEL_REDO)
 	{
 		ptr += SizeOfWalRecordHeader;
-		memcpy(ptr, (char *)record, record->xl_tot_len);
+		memcpy(ptr, (char *) record, record->xl_tot_len);
 	}
 
 	bufferState->tail += send_size;
@@ -647,92 +668,97 @@ static void SendWalRecordToQueue(XLogRecord *record,
 		SendBuffer(bufferState, worker);
 }
 
-static int AssignBlockToWorker(RelFileNode* rnode, ForkNumber forknum, BlockNumber blkno)
+static int
+AssignBlockToWorker(RelFileNode *rnode, ForkNumber forknum, BlockNumber blkno)
 {
 	return Dispatch_Func(rnode->relNode, forknum, blkno, XLogWorkerStates->nworkers);
 }
 
-static bool DispatchWalRecordToWorker(XLogRecord *record,
-									  XLogReaderState *xlogreader)
+static bool
+DispatchWalRecordToWorker(XLogRecord *record,
+						  XLogReaderState *xlogreader)
 {
 	BlockNumber blkno;
 	RelFileNode target_node;
-	uint32 workerNum;
+	uint32		workerNum;
 	WalRecordDataHeader walRecordHeader;
 	XLogParallelWorker *worker;
-	bool    found;
+	bool		found;
 	ParallelRedoRelfilenodeMapEntry *entry = NULL;
-	int i;
+	int			i;
 
 	if (!XLogRecGetBlockTag(xlogreader, 0, &target_node, NULL, &blkno))
 	{
-		uint8 info = XLogRecGetInfo(xlogreader) & ~XLR_INFO_MASK;
+		uint8		info = XLogRecGetInfo(xlogreader) & ~XLR_INFO_MASK;
+
 		elog(DEBUG2, "WAL record cannot find its referenced relfile %d info %x",
 			 record->xl_rmid, info);
 		return false;
 	}
 
-	if (enable_dynamic_adjust_workload && enable_parallel_recovery_bypage){
+	if (enable_dynamic_adjust_workload && enable_parallel_recovery_bypage)
+	{
 		elog(WARNING, "enable_dynamic_adjust_workload and enable_parallel_recovery_bypage can not be on at the same time! Turning off enable_parallel_recovery_bypage!");
 		enable_dynamic_adjust_workload = false;
 	}
-	if(enable_dynamic_adjust_workload)
+	if (enable_dynamic_adjust_workload)
 	{
-		if(XLogParallelCtl->msgTotalCnt >= max_workload_adjust_period)
+		if (XLogParallelCtl->msgTotalCnt >= max_workload_adjust_period)
 		{
-			int avgCnt = XLogParallelCtl->msgTotalCnt / max_parallel_replay_workers;
-			int targetRange = parallel_replay_workload_fluctuation_factor * avgCnt;
-			int topLine = avgCnt + targetRange;
-			int bottomLine = avgCnt - targetRange;
-			int diffCnt[XLogWorkerStates->nworkers];
+			int			avgCnt = XLogParallelCtl->msgTotalCnt / max_parallel_replay_workers;
+			int			targetRange = parallel_replay_workload_fluctuation_factor * avgCnt;
+			int			topLine = avgCnt + targetRange;
+			int			bottomLine = avgCnt - targetRange;
+			int			diffCnt[XLogWorkerStates->nworkers];
 			HASH_SEQ_STATUS status;
 			ParallelRedoRelfilenodeMapEntry *entryTmp = NULL;
-			bool needAdjust = false;
-			bool needSync[max_parallel_replay_workers];
+			bool		needAdjust = false;
+			bool		needSync[max_parallel_replay_workers];
 
 			hash_seq_init(&status, ParallelRedoRelfilenodeMapHash);
-			for(i=0; i< max_parallel_replay_workers; i++)
+			for (i = 0; i < max_parallel_replay_workers; i++)
 			{
-				if( (XLogParallelCtl->parallel_workers[i].msgCnt > topLine
-							|| XLogParallelCtl->parallel_workers[i].msgCnt < bottomLine))
+				if ((XLogParallelCtl->parallel_workers[i].msgCnt > topLine
+					 || XLogParallelCtl->parallel_workers[i].msgCnt < bottomLine))
 				{
 					diffCnt[i] = XLogParallelCtl->parallel_workers[i].msgCnt - avgCnt;
-					if((!needAdjust) && diffCnt[i] > 0 && XLogParallelCtl->parallel_workers[i].relfilenodeCnt > 1)
+					if ((!needAdjust) && diffCnt[i] > 0 && XLogParallelCtl->parallel_workers[i].relfilenodeCnt > 1)
 						needAdjust = true;
 				}
 				else
 					diffCnt[i] = 0;
 
 				elog(LOG, "worker%d: message count is %d, refinenode conunt is %d, avgCnt is %d, pid is %d",
-						i, XLogParallelCtl->parallel_workers[i].msgCnt, 
-						XLogParallelCtl->parallel_workers[i].relfilenodeCnt, 
-						avgCnt, XLogParallelCtl->parallel_workers[i].pid);
+					 i, XLogParallelCtl->parallel_workers[i].msgCnt,
+					 XLogParallelCtl->parallel_workers[i].relfilenodeCnt,
+					 avgCnt, XLogParallelCtl->parallel_workers[i].pid);
 				XLogParallelCtl->parallel_workers[i].msgCnt = 0;
 				needSync[i] = false;
 			}
 			while ((entryTmp = (ParallelRedoRelfilenodeMapEntry *) hash_seq_search(&status)) != NULL)
 			{
-				if(needAdjust && entryTmp->msgCnt > 0)
+				if (needAdjust && entryTmp->msgCnt > 0)
 				{
-					if(diffCnt[entryTmp->workerIndex] > 0
-							&& XLogParallelCtl->parallel_workers[entryTmp->workerIndex].relfilenodeCnt > 1
-							&& diffCnt[entryTmp->workerIndex] > targetRange)
+					if (diffCnt[entryTmp->workerIndex] > 0
+						&& XLogParallelCtl->parallel_workers[entryTmp->workerIndex].relfilenodeCnt > 1
+						&& diffCnt[entryTmp->workerIndex] > targetRange)
 					{
-						int j;
-						int minDiff = 0;
-						int maxRelfile = 0;
-						for(j=0; j< max_parallel_replay_workers; j++)
+						int			j;
+						int			minDiff = 0;
+						int			maxRelfile = 0;
+
+						for (j = 0; j < max_parallel_replay_workers; j++)
 						{
-							if(j != entryTmp->workerIndex && diffCnt[j] < 0 &&
-									(entryTmp->msgCnt + diffCnt[j] <= targetRange))
+							if (j != entryTmp->workerIndex && diffCnt[j] < 0 &&
+								(entryTmp->msgCnt + diffCnt[j] <= targetRange))
 								break;
-							if(minDiff == 0 || (diffCnt[j] < 0 && diffCnt[j] < diffCnt[minDiff]))
+							if (minDiff == 0 || (diffCnt[j] < 0 && diffCnt[j] < diffCnt[minDiff]))
 								minDiff = j;
-							if(maxRelfile == 0 || (XLogParallelCtl->parallel_workers[j].relfilenodeCnt > 
-										XLogParallelCtl->parallel_workers[maxRelfile].relfilenodeCnt))
+							if (maxRelfile == 0 || (XLogParallelCtl->parallel_workers[j].relfilenodeCnt >
+													XLogParallelCtl->parallel_workers[maxRelfile].relfilenodeCnt))
 								maxRelfile = j;
 						}
-						if(j != max_parallel_replay_workers)
+						if (j != max_parallel_replay_workers)
 						{
 							elog(LOG, "refilenode msgCnt is %d, move from %d to %d", entryTmp->msgCnt, entryTmp->workerIndex, j);
 							needSync[entryTmp->workerIndex] = true;
@@ -745,25 +771,25 @@ static bool DispatchWalRecordToWorker(XLogRecord *record,
 						}
 						else
 						{
-							int moveto = entryTmp->workerIndex;
+							int			moveto = entryTmp->workerIndex;
 
-							if(diffCnt[minDiff] < 0)
+							if (diffCnt[minDiff] < 0)
 							{
-								if(diffCnt[minDiff] + entryTmp->msgCnt > diffCnt[entryTmp->workerIndex])
+								if (diffCnt[minDiff] + entryTmp->msgCnt > diffCnt[entryTmp->workerIndex])
 								{
 									moveto = entryTmp->workerIndex;
 								}
-								else if(diffCnt[minDiff] + entryTmp->msgCnt < diffCnt[entryTmp->workerIndex])
+								else if (diffCnt[minDiff] + entryTmp->msgCnt < diffCnt[entryTmp->workerIndex])
 								{
 									moveto = minDiff;
 								}
-								else if(XLogParallelCtl->parallel_workers[minDiff].relfilenodeCnt >  XLogParallelCtl->parallel_workers[entryTmp->workerIndex].relfilenodeCnt)
+								else if (XLogParallelCtl->parallel_workers[minDiff].relfilenodeCnt > XLogParallelCtl->parallel_workers[entryTmp->workerIndex].relfilenodeCnt)
 								{
 									moveto = minDiff;
 								}
 							}
 
-							if(moveto != entryTmp->workerIndex)
+							if (moveto != entryTmp->workerIndex)
 							{
 								elog(LOG, "large refilenode msgCnt is %d, move from %d to %d", entryTmp->msgCnt, entryTmp->workerIndex, moveto);
 								needSync[entryTmp->workerIndex] = true;
@@ -781,13 +807,13 @@ static bool DispatchWalRecordToWorker(XLogRecord *record,
 				}
 				entryTmp->msgCnt = 0;
 			}
-			if(needAdjust)
+			if (needAdjust)
 				WaitForBatchWorkersSyncDone(needSync, max_parallel_replay_workers);
 			XLogParallelCtl->msgTotalCnt = 0;
 		}
 		entry = hash_search(ParallelRedoRelfilenodeMapHash, (void *) &target_node, HASH_FIND, &found);
 
-		if(found)
+		if (found)
 		{
 			workerNum = entry->workerIndex;
 		}
@@ -824,9 +850,9 @@ static bool DispatchWalRecordToWorker(XLogRecord *record,
 			if (!XLogRecGetBlockTag(xlogreader, block_id, &rnode, &forknum, &blkno))
 			{
 				/*
-				* WAL record doesn't contain a block reference with the given id.
-				* Do nothing.
-				*/
+				 * WAL record doesn't contain a block reference with the given
+				 * id. Do nothing.
+				 */
 				continue;
 			}
 
@@ -836,24 +862,25 @@ static bool DispatchWalRecordToWorker(XLogRecord *record,
 
 			if (enable_parallel_recovery_print)
 				elog(LOG, "dispatch reocrd xid %d relnode %d blkno %u redo at %X/%X to worker %d",
-					record->xl_xid, target_node.relNode,
-					blkno,
-					(uint32)(xlogreader->ReadRecPtr >> 32), (uint32)xlogreader->ReadRecPtr,
-					worker->pid);
-			
+					 record->xl_xid, target_node.relNode,
+					 blkno,
+					 (uint32) (xlogreader->ReadRecPtr >> 32), (uint32) xlogreader->ReadRecPtr,
+					 worker->pid);
+
 			walRecordHeader.ReadRecPtr = xlogreader->ReadRecPtr;
 			walRecordHeader.EndRecPtr = xlogreader->EndRecPtr;
 			walRecordHeader.type = PARALLEL_REDO;
 			SendWalRecordToQueue(record, &walRecordHeader, workerNum);
 		}
-		if ((++redologcount & 0xFFFFFFL) == 0){
-			// debug print every 16M
-			for(i=0; i< max_parallel_replay_workers; i++)
+		if ((++redologcount & 0xFFFFFFL) == 0)
+		{
+			/* debug print every 16M */
+			for (i = 0; i < max_parallel_replay_workers; i++)
 			{
 				elog(LOG, "worker%d: mq size: %lu", i, shm_mq_get_used_bytes(XLogParallelCtl->parallel_workers[i].sender));
 			}
 		}
-		
+
 	}
 	else
 	{
@@ -863,9 +890,9 @@ static bool DispatchWalRecordToWorker(XLogRecord *record,
 
 		if (enable_parallel_recovery_print)
 			elog(LOG, "dispatch reocrd xid %d relnode %d redo at %X/%X to worker %d",
-				record->xl_xid, target_node.relNode,
-				(uint32)(xlogreader->ReadRecPtr >> 32), (uint32)xlogreader->ReadRecPtr,
-				worker->pid);
+				 record->xl_xid, target_node.relNode,
+				 (uint32) (xlogreader->ReadRecPtr >> 32), (uint32) xlogreader->ReadRecPtr,
+				 worker->pid);
 
 		walRecordHeader.ReadRecPtr = xlogreader->ReadRecPtr;
 		walRecordHeader.EndRecPtr = xlogreader->EndRecPtr;
@@ -876,9 +903,10 @@ static bool DispatchWalRecordToWorker(XLogRecord *record,
 	return true;
 }
 
-void WaitForWorkersSyncDone(void)
+void
+WaitForWorkersSyncDone(void)
 {
-	int i;
+	int			i;
 	WalRecordDataHeader walRecordHeader;
 
 	walRecordHeader.type = PARALLEL_SYNC;
@@ -889,13 +917,13 @@ void WaitForWorkersSyncDone(void)
 	for (i = 0; i < XLogWorkerStates->nworkers; i++)
 		SendWalRecordToQueue(NULL, &walRecordHeader, i);
 
-  	/*
-    * Wait for completion.
-    */
+	/*
+	 * Wait for completion.
+	 */
 	for (;;)
 	{
-		int nworkers_sync;
-		int rc;
+		int			nworkers_sync;
+		int			rc;
 
 		/* If all the workers are ready, we have succeeded. */
 		SpinLockAcquire(&XLogParallelCtl->mutex);
@@ -932,9 +960,9 @@ void WaitForWorkersSyncDone(void)
 static void
 WaitForBatchWorkersSyncDone(bool *workerBatch, int len)
 {
-	int i;
-	int synNum = 0;
-	int nworkers_sync = 0;
+	int			i;
+	int			synNum = 0;
+	int			nworkers_sync = 0;
 	WalRecordDataHeader walRecordHeader;
 
 	walRecordHeader.type = PARALLEL_SYNC;
@@ -943,16 +971,17 @@ WaitForBatchWorkersSyncDone(bool *workerBatch, int len)
 
 	for (i = 0; i < len; i++)
 	{
-		if(workerBatch[i])
+		if (workerBatch[i])
 		{
 			SendWalRecordToQueue(NULL, &walRecordHeader, i);
 			synNum++;
 		}
 	}
-	if(synNum == 0)
+	if (synNum == 0)
 		return;
 
 	elog(LOG, "dispatch sync record");
+
 	/*
 	 * Wait for completion.
 	 */
@@ -972,17 +1001,17 @@ WaitForBatchWorkersSyncDone(bool *workerBatch, int len)
 		/* If any workers (or the postmaster) have died, we have failed. */
 		for (i = 0; i < len; i++)
 		{
-			if(workerBatch[i])
+			if (workerBatch[i])
 			{
 				BgwHandleStatus status;
-				pid_t pid;
+				pid_t		pid;
 
 				status = GetBackgroundWorkerPid(XLogWorkerStates->handle[i], &pid);
 				if (status == BGWH_STOPPED || status == BGWH_POSTMASTER_DIED)
 				{
 					elog(LOG, "worker status error %d", status);
 					ereport(ERROR, (errcode(ERRCODE_INSUFFICIENT_RESOURCES),
-								errmsg("background workers failed")));
+									errmsg("background workers failed")));
 					break;
 				}
 			}
@@ -990,16 +1019,18 @@ WaitForBatchWorkersSyncDone(bool *workerBatch, int len)
 		pg_usleep(1L);
 	}
 }
+
 /*
  * Dispatch the WAL record to the corresponding worker
  * for parallel replay to catch up the master under high
  * workloads.
  */
-bool DispatchWalRecord(XLogRecord *record, XLogReaderState *xlogreader)
+bool
+DispatchWalRecord(XLogRecord *record, XLogReaderState *xlogreader)
 {
-	bool canDispatch = false;
+	bool		canDispatch = false;
 
-	/* 
+	/*
 	 * TODO: currently do not support hot standby.
 	 */
 	if ((EnableHotStandby && !AllowHotStandbyInconsistency))
@@ -1010,91 +1041,95 @@ bool DispatchWalRecord(XLogRecord *record, XLogReaderState *xlogreader)
 
 	switch (record->xl_rmid)
 	{
-	/*
-     * The WAL records of the below types are replayed in parallel.
-     * Each WAL record is dispatched based on its associated relfilenode
-     * to make sure that modifications to the same relfile must be replayed
-     * by the same worker to resolve dependencies.
-     */
-	case RM_HEAP_ID:
-	case RM_HEAP2_ID:
-	case RM_BTREE_ID:
-	case RM_HASH_ID:
-	case RM_GIN_ID:
-	case RM_GIST_ID:
-	case RM_SEQ_ID:
-	case RM_SPGIST_ID:
-	case RM_BRIN_ID:
-	case RM_GENERIC_ID:
-		if (DispatchWalRecordToWorker(record, xlogreader))
-			canDispatch = true;
-		break;
-	/*
-     * Xact-related and database operation related WAL records should
-     * be replayed by the main xlog startup process.
-     */
-	case RM_XACT_ID:
-	case RM_CLOG_ID:
-	case RM_CTSLOG_ID:
-	case RM_MULTIXACT_ID:
-	case RM_COMMIT_TS_ID:
-	case RM_STANDBY_ID:
-	case RM_REPLORIGIN_ID:
-	case RM_LOGICALMSG_ID:
-		break;
-	/*
-     * Checkpoint-related WAL record should be replayed by the main xlog process
-     * and must be used as a barrier to wait for all workers to complete all
-     * previous WAL record replay to guarantee correctness.
-     */
-	case RM_XLOG_ID:
-		/* sync barrier */
-		{
-			uint8 info = record->xl_info & ~XLR_INFO_MASK;
+			/*
+			 * The WAL records of the below types are replayed in parallel.
+			 * Each WAL record is dispatched based on its associated
+			 * relfilenode to make sure that modifications to the same relfile
+			 * must be replayed by the same worker to resolve dependencies.
+			 */
+		case RM_HEAP_ID:
+		case RM_HEAP2_ID:
+		case RM_BTREE_ID:
+		case RM_HASH_ID:
+		case RM_GIN_ID:
+		case RM_GIST_ID:
+		case RM_SEQ_ID:
+		case RM_SPGIST_ID:
+		case RM_BRIN_ID:
+		case RM_GENERIC_ID:
+			if (DispatchWalRecordToWorker(record, xlogreader))
+				canDispatch = true;
+			break;
 
-			if (info == XLOG_CHECKPOINT_SHUTDOWN || info == XLOG_END_OF_RECOVERY ||
-				info == XLOG_CHECKPOINT_ONLINE || info == XLOG_BACKUP_END ||
-				info == XLOG_PARAMETER_CHANGE || info == XLOG_FPW_CHANGE)
-			{
-				WaitForWorkersSyncDone();
-			}
-			else if (info == XLOG_FPI || info == XLOG_FPI_FOR_HINT)
-			{
-				/*
-                 * full page writes for hints should be dispatched
-                 * according to relfile
-                 */
-				if (DispatchWalRecordToWorker(record, xlogreader))
-					canDispatch = true;
-				else
-					elog(ERROR, "full page image hint cannot be dispatched %d",
-						 record->xl_rmid);
-			}
-		}
-		break;
+			/*
+			 * Xact-related and database operation related WAL records should
+			 * be replayed by the main xlog startup process.
+			 */
+		case RM_XACT_ID:
+		case RM_CLOG_ID:
+		case RM_CTSLOG_ID:
+		case RM_MULTIXACT_ID:
+		case RM_COMMIT_TS_ID:
+		case RM_STANDBY_ID:
+		case RM_REPLORIGIN_ID:
+		case RM_LOGICALMSG_ID:
+			break;
 
-	/*
-     * Database, tablespace and relation related WAL records need to sync with
-     * parallel workers to make sure a consistent recovery point can be reached.
-     * Relation drop is handled by xact_redo and a sync barrier is also added
-     * within the xact_redo routine.
-     */
-	case RM_SMGR_ID:
-	case RM_DBASE_ID:
-	case RM_TBLSPC_ID:
-	case RM_RELMAP_ID:
-		WaitForWorkersSyncDone();
-		break;
-	default:
-		elog(FATAL, "unsupport WAL record type %d", record->xl_rmid);
+			/*
+			 * Checkpoint-related WAL record should be replayed by the main
+			 * xlog process and must be used as a barrier to wait for all
+			 * workers to complete all previous WAL record replay to guarantee
+			 * correctness.
+			 */
+		case RM_XLOG_ID:
+			/* sync barrier */
+			{
+				uint8		info = record->xl_info & ~XLR_INFO_MASK;
+
+				if (info == XLOG_CHECKPOINT_SHUTDOWN || info == XLOG_END_OF_RECOVERY ||
+					info == XLOG_CHECKPOINT_ONLINE || info == XLOG_BACKUP_END ||
+					info == XLOG_PARAMETER_CHANGE || info == XLOG_FPW_CHANGE)
+				{
+					WaitForWorkersSyncDone();
+				}
+				else if (info == XLOG_FPI || info == XLOG_FPI_FOR_HINT)
+				{
+					/*
+					 * full page writes for hints should be dispatched
+					 * according to relfile
+					 */
+					if (DispatchWalRecordToWorker(record, xlogreader))
+						canDispatch = true;
+					else
+						elog(ERROR, "full page image hint cannot be dispatched %d",
+							 record->xl_rmid);
+				}
+			}
+			break;
+
+			/*
+			 * Database, tablespace and relation related WAL records need to
+			 * sync with parallel workers to make sure a consistent recovery
+			 * point can be reached. Relation drop is handled by xact_redo and
+			 * a sync barrier is also added within the xact_redo routine.
+			 */
+		case RM_SMGR_ID:
+		case RM_DBASE_ID:
+		case RM_TBLSPC_ID:
+		case RM_RELMAP_ID:
+			WaitForWorkersSyncDone();
+			break;
+		default:
+			elog(FATAL, "unsupport WAL record type %d", record->xl_rmid);
 	}
 
 	return canDispatch;
 }
 
-static void InitRecoveryEnvironment(void)
+static void
+InitRecoveryEnvironment(void)
 {
-	int rmid;
+	int			rmid;
 
 	InRecovery = true;
 	/* Initialize resource managers */
@@ -1105,9 +1140,10 @@ static void InitRecoveryEnvironment(void)
 	}
 }
 
-static void CleanupRecoveryEnvironment(void)
+static void
+CleanupRecoveryEnvironment(void)
 {
-	int rmid;
+	int			rmid;
 
 	/* Cleanup resource managers */
 	for (rmid = 0; rmid <= RM_MAX_ID; rmid++)
@@ -1117,16 +1153,17 @@ static void CleanupRecoveryEnvironment(void)
 	}
 }
 
-static void ValidXLogRecord(XLogRecord *record)
+static void
+ValidXLogRecord(XLogRecord *record)
 {
-	pg_crc32c crc;
+	pg_crc32c	crc;
 
 	/* Calculate the CRC */
 	INIT_CRC32C(crc);
-	COMP_CRC32C(crc, ((char *)record) + SizeOfXLogRecord,
+	COMP_CRC32C(crc, ((char *) record) + SizeOfXLogRecord,
 				record->xl_tot_len - SizeOfXLogRecord);
 	/* include the record header last */
-	COMP_CRC32C(crc, (char *)record, offsetof(XLogRecord, xl_crc));
+	COMP_CRC32C(crc, (char *) record, offsetof(XLogRecord, xl_crc));
 	FIN_CRC32C(crc);
 
 	if (!EQ_CRC32C(record->xl_crc, crc))
@@ -1148,13 +1185,14 @@ static char *master_image_masked = NULL;
  * function should be called once WAL replay has been completed for a
  * given record.
  */
-static void checkXLogConsistency(XLogReaderState *record)
+static void
+checkXLogConsistency(XLogReaderState *record)
 {
-	RmgrId rmid = XLogRecGetRmid(record);
+	RmgrId		rmid = XLogRecGetRmid(record);
 	RelFileNode rnode;
-	ForkNumber forknum;
+	ForkNumber	forknum;
 	BlockNumber blkno;
-	int block_id;
+	int			block_id;
 
 	/* Records with no backup blocks have no need for consistency checks. */
 	if (!XLogRecHasAnyBlockRefs(record))
@@ -1164,15 +1202,15 @@ static void checkXLogConsistency(XLogReaderState *record)
 
 	for (block_id = 0; block_id <= record->max_block_id; block_id++)
 	{
-		Buffer buf;
-		Page page;
+		Buffer		buf;
+		Page		page;
 
 		if (!XLogRecGetBlockTag(record, block_id, &rnode, &forknum, &blkno))
 		{
 			/*
-             * WAL record doesn't contain a block reference with the given id.
-             * Do nothing.
-             */
+			 * WAL record doesn't contain a block reference with the given id.
+			 * Do nothing.
+			 */
 			continue;
 		}
 
@@ -1181,17 +1219,17 @@ static void checkXLogConsistency(XLogReaderState *record)
 		if (XLogRecBlockImageApply(record, block_id))
 		{
 			/*
-             * WAL record has already applied the page, so bypass the
-             * consistency check as that would result in comparing the full
-             * page stored in the record with itself.
-             */
+			 * WAL record has already applied the page, so bypass the
+			 * consistency check as that would result in comparing the full
+			 * page stored in the record with itself.
+			 */
 			continue;
 		}
 
 		/*
-         * Read the contents from the current buffer and store it in a
-         * temporary page.
-         */
+		 * Read the contents from the current buffer and store it in a
+		 * temporary page.
+		 */
 		buf = XLogReadBufferExtended(rnode, forknum, blkno, RBM_NORMAL_NO_LOG);
 		if (!BufferIsValid(buf))
 			continue;
@@ -1200,35 +1238,35 @@ static void checkXLogConsistency(XLogReaderState *record)
 		page = BufferGetPage(buf);
 
 		/*
-         * Take a copy of the local page where WAL has been applied to have a
-         * comparison base before masking it...
-         */
+		 * Take a copy of the local page where WAL has been applied to have a
+		 * comparison base before masking it...
+		 */
 		memcpy(replay_image_masked, page, BLCKSZ);
 
 		/* No need for this page anymore now that a copy is in. */
 		UnlockReleaseBuffer(buf);
 
 		/*
-         * If the block LSN is already ahead of this WAL record, we can't
-         * expect contents to match.  This can happen if recovery is
-         * restarted.
-         */
+		 * If the block LSN is already ahead of this WAL record, we can't
+		 * expect contents to match.  This can happen if recovery is
+		 * restarted.
+		 */
 		if (PageGetLSN(replay_image_masked) > record->EndRecPtr)
 			continue;
 
 		/*
-         * Read the contents from the backup copy, stored in WAL record and
-         * store it in a temporary page. There is no need to allocate a new
-         * page here, a local buffer is fine to hold its contents and a mask
-         * can be directly applied on it.
-         */
+		 * Read the contents from the backup copy, stored in WAL record and
+		 * store it in a temporary page. There is no need to allocate a new
+		 * page here, a local buffer is fine to hold its contents and a mask
+		 * can be directly applied on it.
+		 */
 		if (!RestoreBlockImage(record, block_id, master_image_masked))
 			elog(ERROR, "failed to restore block image");
 
 		/*
-         * If masking function is defined, mask both the master and replay
-         * images
-         */
+		 * If masking function is defined, mask both the master and replay
+		 * images
+		 */
 		if (RmgrTable[rmid].rm_mask != NULL)
 		{
 			RmgrTable[rmid].rm_mask(replay_image_masked, blkno);
@@ -1244,17 +1282,19 @@ static void checkXLogConsistency(XLogReaderState *record)
 	}
 }
 
-static void ReconstructXlogReader(WalRecordDataHeader *walRecordHeader,
-								  XLogReaderState *xlogreader)
+static void
+ReconstructXlogReader(WalRecordDataHeader * walRecordHeader,
+					  XLogReaderState *xlogreader)
 {
 	xlogreader->EndRecPtr = walRecordHeader->EndRecPtr;
 	xlogreader->ReadRecPtr = walRecordHeader->ReadRecPtr;
 }
 
-static void NotifyDispatcherCompletion(void)
+static void
+NotifyDispatcherCompletion(void)
 {
-	bool need_notify = false;
-	int sync_done;
+	bool		need_notify = false;
+	int			sync_done;
 
 	SpinLockAcquire(&XLogParallelCtl->mutex);
 	XLogParallelCtl->nworkers_sync_done++;
@@ -1267,10 +1307,10 @@ static void NotifyDispatcherCompletion(void)
 
 	if (enable_parallel_recovery_print)
 		elog(LOG, "sync done num %d", sync_done);
+
 	/*
-     * If it is the last completed worker,
-     * we should notify the dispatcher.
-     */
+	 * If it is the last completed worker, we should notify the dispatcher.
+	 */
 	if (need_notify)
 	{
 		elog(LOG, "notify the dispatcher of the sync completion");
@@ -1278,18 +1318,19 @@ static void NotifyDispatcherCompletion(void)
 	}
 }
 
-static void ReadWalRecordFromBuffer(WalRecordDataHeader **walRecordHeaderP,
-									XLogRecord **recordP)
+static void
+ReadWalRecordFromBuffer(WalRecordDataHeader * *walRecordHeaderP,
+						XLogRecord **recordP)
 {
-	int res;
-	char *ptr;
+	int			res;
+	char	   *ptr;
 	WalRecordDataHeader *walRecordHeader;
 	XLogRecord *record;
 
 	if (!LocalReceiveBuffer->size || !BufferHasData(LocalReceiveBuffer))
 	{
 		res = shm_mq_receive(MyXLogWorker->recver, &LocalReceiveBuffer->size,
-							 (void **)&LocalReceiveBuffer->data, false);
+							 (void **) &LocalReceiveBuffer->data, false);
 		if (res != SHM_MQ_SUCCESS)
 			ereport(ERROR, (errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 							errmsg("could not receive wal record header %d", res)));
@@ -1302,7 +1343,7 @@ static void ReadWalRecordFromBuffer(WalRecordDataHeader **walRecordHeaderP,
 	}
 
 	ptr = LocalReceiveBuffer->data + LocalReceiveBuffer->tail;
-	*walRecordHeaderP = (WalRecordDataHeader *)ptr;
+	*walRecordHeaderP = (WalRecordDataHeader *) ptr;
 	if (SizeOfWalRecordHeader > BufferFreeSpace(LocalReceiveBuffer))
 		elog(ERROR, "corrupted record header of size %lu expected %lu",
 			 BufferFreeSpace(LocalReceiveBuffer), SizeOfWalRecordHeader);
@@ -1311,7 +1352,7 @@ static void ReadWalRecordFromBuffer(WalRecordDataHeader **walRecordHeaderP,
 	if (walRecordHeader->type == PARALLEL_REDO)
 	{
 		ptr += SizeOfWalRecordHeader;
-		*recordP = (XLogRecord *)ptr;
+		*recordP = (XLogRecord *) ptr;
 		record = *recordP;
 
 		if (record->xl_tot_len > BufferFreeSpace(LocalReceiveBuffer))
@@ -1327,12 +1368,13 @@ static void ReadWalRecordFromBuffer(WalRecordDataHeader **walRecordHeaderP,
 /*
  * The xlog worker function entry.
  */
-void ParallelRecoveryWorkerMain(Datum main_arg)
+void
+ParallelRecoveryWorkerMain(Datum main_arg)
 {
 	XLogReaderState *xlogreader;
 	XLogRecord *record;
 	WalRecordDataHeader *walRecordHeader;
-	char *errm;
+	char	   *errm;
 
 	/* Establish signal handlers. */
 	pqsignal(SIGTERM, die);
@@ -1369,15 +1411,16 @@ void ParallelRecoveryWorkerMain(Datum main_arg)
 	LocalReceiveBuffer = palloc0(sizeof(BufferState));
 	LocalReceiveBuffer->size = 0;
 	LocalReceiveBuffer->tail = 0;
+
 	/*
-     * Allocate two page buffers dedicated to WAL consistency checks.  We do
-     * it this way, rather than just making static arrays, for two reasons:
-     * (1) no need to waste the storage in most instantiations of the backend;
-     * (2) a static char array isn't guaranteed to have any particular
-     * alignment, whereas palloc() will provide MAXALIGN'd storage.
-     */
-	replay_image_masked = (char *)palloc(BLCKSZ);
-	master_image_masked = (char *)palloc(BLCKSZ);
+	 * Allocate two page buffers dedicated to WAL consistency checks.  We do
+	 * it this way, rather than just making static arrays, for two reasons:
+	 * (1) no need to waste the storage in most instantiations of the backend;
+	 * (2) a static char array isn't guaranteed to have any particular
+	 * alignment, whereas palloc() will provide MAXALIGN'd storage.
+	 */
+	replay_image_masked = (char *) palloc(BLCKSZ);
+	master_image_masked = (char *) palloc(BLCKSZ);
 
 	Assert(MyXLogWorker);
 	do
@@ -1393,9 +1436,9 @@ void ParallelRecoveryWorkerMain(Datum main_arg)
 		else if (walRecordHeader->type == PARALLEL_SYNC)
 		{
 			/*
-       		 * Notify the xlog process of the completion of replaying
-       		 * previous WAL records in the queue.
-       		 */
+			 * Notify the xlog process of the completion of replaying previous
+			 * WAL records in the queue.
+			 */
 			NotifyDispatcherCompletion();
 			continue;
 		}
@@ -1412,17 +1455,17 @@ void ParallelRecoveryWorkerMain(Datum main_arg)
 				 xlogreader->errormsg_buf);
 
 		if (enable_parallel_recovery_print)
-			elog(LOG, "redo at %X/%X", (uint32)(xlogreader->ReadRecPtr >> 32),
-				 (uint32)xlogreader->ReadRecPtr);
+			elog(LOG, "redo at %X/%X", (uint32) (xlogreader->ReadRecPtr >> 32),
+				 (uint32) xlogreader->ReadRecPtr);
 
 		/* do the acutal redo stuff */
 		RmgrTable[record->xl_rmid].rm_redo(xlogreader);
+
 		/*
-         * After redo, check whether the backup pages associated with
-         * the WAL record are consistent with the existing pages. This
-         * check is done only if consistency check is enabled for this
-         * record.
-         */
+		 * After redo, check whether the backup pages associated with the WAL
+		 * record are consistent with the existing pages. This check is done
+		 * only if consistency check is enabled for this record.
+		 */
 		if ((record->xl_info & XLR_CHECK_CONSISTENCY) != 0)
 			checkXLogConsistency(xlogreader);
 

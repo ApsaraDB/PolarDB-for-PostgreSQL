@@ -276,11 +276,11 @@ page_header(PG_FUNCTION_ARGS)
 	values[6] = UInt16GetDatum(PageGetPageSize(page));
 	values[7] = UInt16GetDatum(PageGetPageLayoutVersion(page));
 	values[8] = TransactionIdGetDatum(page->pd_prune_xid);
-	#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
 	values[9] = UInt64GetDatum(page->pd_prune_ts);
-	#else
+#else
 	values[9] = UInt64GetDatum(0);
-	#endif
+#endif
 
 	/* Build and return the tuple. */
 

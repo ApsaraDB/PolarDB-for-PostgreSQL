@@ -250,7 +250,7 @@ extern bool session_auth_is_superuser;
 extern int	log_min_error_statement;
 extern PGDLLIMPORT int log_min_messages;
 extern PGDLLIMPORT int client_min_messages;
-extern bool	client_detail_message;
+extern bool client_detail_message;
 extern int	log_min_duration_statement;
 extern int	log_temp_files;
 
@@ -271,12 +271,13 @@ extern int	tcp_keepalives_interval;
 extern int	tcp_keepalives_count;
 
 /* POLAR datamax */
-extern int    polar_datamax_remove_archivedone_wal_timeout;
-extern int    polar_datamax_archive_timeout;
-extern int    polar_datamax_save_replication_slots_timeout;
-extern int    polar_datamax_prealloc_walfile_timeout;
-extern int    polar_datamax_prealloc_walfile_num;
-extern int 	  polar_dma_max_standby_wait_delay_size_mb;
+extern int	polar_datamax_remove_archivedone_wal_timeout;
+extern int	polar_datamax_archive_timeout;
+extern int	polar_datamax_save_replication_slots_timeout;
+extern int	polar_datamax_prealloc_walfile_timeout;
+extern int	polar_datamax_prealloc_walfile_num;
+extern int	polar_dma_max_standby_wait_delay_size_mb;
+
 /* POLAR end */
 
 #ifdef TRACE_SORT

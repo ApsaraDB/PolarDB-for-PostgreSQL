@@ -41,34 +41,42 @@ typedef enum
 	SLRU_PAGE_READ_IN_PROGRESS, /* page is being read in */
 	SLRU_PAGE_VALID,			/* page is valid and not being written */
 	SLRU_PAGE_WRITE_IN_PROGRESS /* page is being written out */
-} ConsensusSlruPageStatus;
+}			ConsensusSlruPageStatus;
 
-typedef struct consensus_slru_stat 
+typedef struct consensus_slru_stat
 {
-	const char *name;					/* slru name */
-	uint		n_slots; 				/* buffer slots number */
+	const char *name;			/* slru name */
+	uint		n_slots;		/* buffer slots number */
 	uint		n_page_status_stat[4];	/* SLRU_PAGE_VALID status page number */
- 	uint 		n_wait_reading_count;   /* waitor number for reading slots */
-	uint    n_wait_writing_count;   /* waitor number for writing slots */ 
-	uint64_t	n_victim_count;  			/* total victim slot count */
-	uint64_t	n_victim_write_count; /* total write victim slot count */
-	uint64_t	n_slru_read_count; 		/* total ConsensusSimpleLruReadPage calls */
-	uint64_t	n_slru_read_only_count; 		/* total ReadPage_ReadOnly but not ReadPage calls */
-	uint64_t	n_slru_read_upgrade_count;	/* total ReadPage_ReadOnly upgrade to ReadPage calls */
-	uint64_t	n_slru_write_count;		/* total SlruInternalWritePage calls */
-	uint64_t	n_slru_zero_count;		/* total ConsensusSimpleLruZeroPage calls */
-	uint64_t	n_slru_flush_count;		/* total ConsensusSimpleLruFlush calls */
-	uint64_t	n_slru_truncate_backward_count; /* total ConsensusSimpleLruTruncateBackward calls */
-	uint64_t	n_slru_truncate_forward_count;  /* total ConsensusSimpleLruTruncateForward calls */
-	uint64_t	n_storage_read_count;  /* total slru slot read from storage counts */
-	uint64_t	n_storage_write_count; /* total slru slot write to storage counts */
-} consensus_slru_stat;
+	uint		n_wait_reading_count;	/* waitor number for reading slots */
+	uint		n_wait_writing_count;	/* waitor number for writing slots */
+	uint64_t	n_victim_count; /* total victim slot count */
+	uint64_t	n_victim_write_count;	/* total write victim slot count */
+	uint64_t	n_slru_read_count;	/* total ConsensusSimpleLruReadPage calls */
+	uint64_t	n_slru_read_only_count; /* total ReadPage_ReadOnly but not
+										 * ReadPage calls */
+	uint64_t	n_slru_read_upgrade_count;	/* total ReadPage_ReadOnly upgrade
+											 * to ReadPage calls */
+	uint64_t	n_slru_write_count; /* total SlruInternalWritePage calls */
+	uint64_t	n_slru_zero_count;	/* total ConsensusSimpleLruZeroPage calls */
+	uint64_t	n_slru_flush_count; /* total ConsensusSimpleLruFlush calls */
+	uint64_t	n_slru_truncate_backward_count; /* total
+												 * ConsensusSimpleLruTruncateBackward
+												 * calls */
+	uint64_t	n_slru_truncate_forward_count;	/* total
+												 * ConsensusSimpleLruTruncateForward
+												 * calls */
+	uint64_t	n_storage_read_count;	/* total slru slot read from storage
+										 * counts */
+	uint64_t	n_storage_write_count;	/* total slru slot write to storage
+										 * counts */
+}			consensus_slru_stat;
 
-typedef bool (*flush_hook)(int slot);
+typedef bool (*flush_hook) (int slot);
 
 #define CONSENSUS_SLRU_STATS_NUM 2
 extern const consensus_slru_stat *consensus_slru_stats[CONSENSUS_SLRU_STATS_NUM];
-extern int n_consensus_slru_stats;
+extern int	n_consensus_slru_stats;
 
 /*
  * Shared-memory state
@@ -82,9 +90,9 @@ typedef struct ConsensusSlruSharedData
 
 	/* dirty page & flush point */
 	int			first_dirty_slot;
-	int		  first_dirty_offset;
+	int			first_dirty_offset;
 	int			last_dirty_slot;
-	int		  *next_dirty_slot;
+	int		   *next_dirty_slot;
 
 	/*
 	 * Arrays holding info for each buffer slot.  Page number is undefined
@@ -93,7 +101,7 @@ typedef struct ConsensusSlruSharedData
 	char	  **page_buffer;
 	ConsensusSlruPageStatus *page_status;
 	bool	   *page_dirty;
-	uint64	 *page_number;
+	uint64	   *page_number;
 	int		   *page_lru_count;
 
 	/*----------
@@ -117,10 +125,10 @@ typedef struct ConsensusSlruSharedData
 
 	consensus_slru_stat stat;
 
-	int 		victim_pivot;
-} ConsensusSlruSharedData;
+	int			victim_pivot;
+}			ConsensusSlruSharedData;
 
-typedef ConsensusSlruSharedData *ConsensusSlruShared;
+typedef ConsensusSlruSharedData * ConsensusSlruShared;
 
 /*
  * ConsensusSlruCtlData is an unshared structure that points to the active information
@@ -128,44 +136,44 @@ typedef ConsensusSlruSharedData *ConsensusSlruShared;
  */
 typedef struct ConsensusSlruCtlData
 {
-	ConsensusSlruShared	shared;
-	int szblock;
-	char Dir[64];
-	flush_hook before_flush_hook;
-} ConsensusSlruCtlData;
+	ConsensusSlruShared shared;
+	int			szblock;
+	char		Dir[64];
+	flush_hook	before_flush_hook;
+}			ConsensusSlruCtlData;
 
-typedef ConsensusSlruCtlData *ConsensusSlruCtl;
+typedef ConsensusSlruCtlData * ConsensusSlruCtl;
 
-void ConsensusSlruStatsInit(void);
+void		ConsensusSlruStatsInit(void);
 extern Size ConsensusSimpleLruShmemSize(int nslots, int szblock, int nlsns);
-extern void ConsensusSimpleLruInit(ConsensusSlruCtl ctl, const char *name, 
-		int szblock, int nslots, int nlsns, pthread_rwlock_t *ctllock, 
-		flush_hook before_flush_hook, const char *subdir);
+extern void ConsensusSimpleLruInit(ConsensusSlruCtl ctl, const char *name,
+					   int szblock, int nslots, int nlsns, pthread_rwlock_t * ctllock,
+					   flush_hook before_flush_hook, const char *subdir);
 extern bool ConsensusSimpleLruValidateDir(ConsensusSlruCtl ctl);
 extern int	ConsensusSimpleLruZeroPage(ConsensusSlruCtl ctl, uint64 pageno);
-extern int ConsensusSimpleLruReadPage(ConsensusSlruCtl ctl, uint64 pageno, bool write_ok);
-extern int ConsensusSimpleLruReadPage_ReadOnly(ConsensusSlruCtl ctl, uint64 pageno);
+extern int	ConsensusSimpleLruReadPage(ConsensusSlruCtl ctl, uint64 pageno, bool write_ok);
+extern int	ConsensusSimpleLruReadPage_ReadOnly(ConsensusSlruCtl ctl, uint64 pageno);
 extern bool ConsensusSimpleLruWritePage(ConsensusSlruCtl ctl, int slotno, bool create_if_not_exists);
 extern bool ConsensusSimpleLruFlush(ConsensusSlruCtl ctl, uint64 pageno);
 extern void ConsensusSimpleLruTruncateBackward(ConsensusSlruCtl ctl, uint64 cutoffPage);
 extern void ConsensusSimpleLruTruncateForward(ConsensusSlruCtl ctl, uint64 cutoffPage);
 
-extern void consensus_slru_push_dirty(ConsensusSlruCtl ctl, int slotno, 
-		int write_offset, bool head);
+extern void consensus_slru_push_dirty(ConsensusSlruCtl ctl, int slotno,
+						  int write_offset, bool head);
 extern void consensus_slru_pop_dirty(ConsensusSlruCtl ctl, int slotno);
 
-typedef bool (*ConsensusSlruScanCallback) (ConsensusSlruCtl ctl, char *filename, 
-		uint64 segpage, void *data);
+typedef bool (*ConsensusSlruScanCallback) (ConsensusSlruCtl ctl, char *filename,
+										   uint64 segpage, void *data);
 extern bool ConsensusSlruScanDirectory(ConsensusSlruCtl ctl, ConsensusSlruScanCallback callback, void *data);
 
 /* ConsensusSlruScanDirectory public callbacks */
 extern bool ConsensusSlruScanDirCbReportPresenceBackward(ConsensusSlruCtl ctl, char *filename,
-		uint64 segpage, void *data);
+											 uint64 segpage, void *data);
 extern bool ConsensusSlruScanDirCbReportPresenceForward(ConsensusSlruCtl ctl, char *filename,
-		uint64 segpage, void *data);
-bool consensus_slru_scan_dir_callback_delete_cutoff_forward(ConsensusSlruCtl ctl, 
-		char *filename, uint64 segpage, void *data);
-bool consensus_slru_scan_dir_callback_delete_cutoff_backward(ConsensusSlruCtl ctl, 
-		char *filename, uint64 segpage, void *data);
+											uint64 segpage, void *data);
+bool consensus_slru_scan_dir_callback_delete_cutoff_forward(ConsensusSlruCtl ctl,
+													   char *filename, uint64 segpage, void *data);
+bool consensus_slru_scan_dir_callback_delete_cutoff_backward(ConsensusSlruCtl ctl,
+														char *filename, uint64 segpage, void *data);
 
 #endif							/* SLRU_H */

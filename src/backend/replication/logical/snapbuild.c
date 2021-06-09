@@ -108,45 +108,45 @@
  * export a snapshot at that point, which *can* be used to read normal data.
  *
  * Copyright (c) 2012-2018, PostgreSQL Global Development Group
- * 
- * 
+ *
+ *
  * We develop a Commit-Timestamp-Store(CTS) based logical replication
- * by using CTS as a MVCC snapshot to copy inital table and 
+ * by using CTS as a MVCC snapshot to copy inital table and
  * decoding incremental updates in WAL from consistent point.
- * 
+ *
  * The logical replication consists of two states:start and consistent state.
  * Before entering consistent state, we wait for the running xacts before
  * initial_xmin_horizon to complete, which also indicates the end of the running xacts
  * collected by the start state.
- * 
- *                      
+ *
+ *
  *		   +-------------------------+
  *	  +----|		 START			 |-------------+
- *	       +-------------------------+			   
- *	  					|						   
- *	  					|						   
- *	  		   running_xacts #1	(RX1)		   
- *	  					|						   
- *	  					|						   
- *	  					v						   
- *	       +-------------------------+			   
+ *	       +-------------------------+
+ *	  					|
+ *	  					|
+ *	  		   running_xacts #1	(RX1)
+ *	  					|
+ *	  					|
+ *	  					v
+ *	       +-------------------------+
  *	       |       CONSISTENT        |   running_xacts #1 finished
- *	       +-------------------------+	
- *                  
- * 
+ *	       +-------------------------+
+ *
+ *
  * Then we generate a timestamp snapshot (HLC/TSO) to copy inital table and store
  * the snapshot in replication slot for later decoding.
- * 
- * Decoding from consistent point only interests in the committed xacts which are not 
- * visible to the built snapshot. 
- * 
+ *
+ * Decoding from consistent point only interests in the committed xacts which are not
+ * visible to the built snapshot.
+ *
  * The key to the correctness is that only transactions from running xacts 1 (RX1) span
  * cross the consistent point in WAL and they are all visisble to the built snapshot.
  * Starting from the consistent point, logical replication can decode entire transactions
  * in WAL only except for RX1.
- * 
+ *
  * Author: Junbin Kang, 2020.11.07
- * 
+ *
  * Portions Copyright (c) 2020, Alibaba Group Holding Limited
  *
  * IDENTIFICATION
@@ -422,8 +422,8 @@ SnapBuildBuildSnapshot(SnapBuild *builder)
 	 * Snapshots that are used in transactions that have modified the catalog
 	 * use the 'this_xip' array to store their toplevel xid and all the
 	 * subtransaction xids so we can recognize when we need to treat rows as
-	 * visible that would not normally be visible by the CSN test. this_xip only
-	 * gets filled when the transaction is copied into the context of a
+	 * visible that would not normally be visible by the CSN test. this_xip
+	 * only gets filled when the transaction is copied into the context of a
 	 * catalog modifying transaction since we otherwise share a snapshot
 	 * between transactions. As long as a txn hasn't modified the catalog it
 	 * doesn't need to treat any uncommitted rows as visible, so there is no
@@ -804,42 +804,42 @@ SnapBuildCommitTxn(SnapBuild *builder, XLogRecPtr lsn, TransactionId xid,
 #ifdef ENABLE_DISTRIBUTED_TRANSACTION
 /*
  * We develop a Commit-Timestamp-Store(CTS) based logical replication
- * by using CTS as a MVCC snapshot to copy inital table and 
+ * by using CTS as a MVCC snapshot to copy inital table and
  * decoding incremental updates in WAL from consistent point.
- * 
+ *
  * The logical replication consists of two states:start and consistent state.
  * Before entering consistent state, we wait for the running xacts before
  * initial_xmin_horizon to complete, which also indicates the end of the running xacts
  * collected by the start state.
- * 
- *                      
+ *
+ *
  *		   +-------------------------+
  *	  +----|		 START			 |-------------+
- *	       +-------------------------+			   
- *	  					|						   
- *	  					|						   
- *	  		   running_xacts #1	(RX1)		   
- *	  					|						   
- *	  					|						   
- *	  					v						   
- *	       +-------------------------+			   
+ *	       +-------------------------+
+ *	  					|
+ *	  					|
+ *	  		   running_xacts #1	(RX1)
+ *	  					|
+ *	  					|
+ *	  					v
+ *	       +-------------------------+
  *	       |       CONSISTENT        |   running_xacts #1 finished
- *	       +-------------------------+	
- *                  
- * 
+ *	       +-------------------------+
+ *
+ *
  * Then we generate a timestamp snapshot (HLC/TSO) to copy inital table and store
  * the snapshot in replication slot for later decoding.
- * 
- * Decoding from consistent point only interests in the committed xacts which are not 
- * visible to the built snapshot. 
- * 
+ *
+ * Decoding from consistent point only interests in the committed xacts which are not
+ * visible to the built snapshot.
+ *
  * The key to the correctness is that only transactions from running xacts 1 (RX1) span
  * cross the consistent point in WAL and they are all visisble to the built snapshot.
  * Starting from the consistent point, logical replication can decode entire transactions
  * in WAL only except for RX1.
- * 
+ *
  * Author: Junbin Kang, 2020.11.07
- */ 
+ */
 
 static bool
 SnapBuildFindDistriSnapshot(SnapBuild *builder, XLogRecPtr lsn, xl_running_xacts *running)
@@ -849,23 +849,24 @@ SnapBuildFindDistriSnapshot(SnapBuild *builder, XLogRecPtr lsn, xl_running_xacts
 	TransactionId xid;
 
 	if (enable_distri_print)
-		elog(LOG, "logical replication find snapshot xmin %u xmax %u xmin_horizon %u", 
-												xmin, xmax, builder->initial_xmin_horizon);
+		elog(LOG, "logical replication find snapshot xmin %u xmax %u xmin_horizon %u",
+			 xmin, xmax, builder->initial_xmin_horizon);
 	if (TransactionIdIsNormal(builder->initial_xmin_horizon) &&
 		NormalTransactionIdPrecedes(running->oldestRunningXid,
 									builder->initial_xmin_horizon))
 		xmax = builder->initial_xmin_horizon;
 
-	/* 
-	 * No running xacts when generating running xacts, enter into
-	 * consistent state directly.
+	/*
+	 * No running xacts when generating running xacts, enter into consistent
+	 * state directly.
 	 */
 	if (xmin == xmax)
 		return true;
 
 	/*
-	 * Phase 1: we should wait for running xacts between xmin and xmax to complete
-	 * by checking transaction status in Commit Timestamp Store (CTS).
+	 * Phase 1: we should wait for running xacts between xmin and xmax to
+	 * complete by checking transaction status in Commit Timestamp Store
+	 * (CTS).
 	 */
 	for (;;)
 	{
@@ -873,7 +874,7 @@ SnapBuildFindDistriSnapshot(SnapBuild *builder, XLogRecPtr lsn, xl_running_xacts
 
 		if (TransactionIdIsCurrentTransactionId(xid))
 			elog(ERROR, "waiting for ourselves");
-		
+
 		if (TransactionIdFollows(xid, xmax))
 			elog(ERROR, "xmin %u exceeds xmax %u", xid, xmax);
 
@@ -881,7 +882,7 @@ SnapBuildFindDistriSnapshot(SnapBuild *builder, XLogRecPtr lsn, xl_running_xacts
 			XactLockTableWait(xid, NULL, NULL, XLTW_None);
 		else
 			break;
-		
+
 		xmin = xid;
 	}
 
@@ -917,6 +918,7 @@ SnapBuildProcessRunningXacts(SnapBuild *builder, XLogRecPtr lsn, xl_running_xact
 			return;
 	}
 #endif
+
 	/*
 	 * Update range of interesting xids based on the running xacts
 	 * information.
@@ -930,8 +932,8 @@ SnapBuildProcessRunningXacts(SnapBuild *builder, XLogRecPtr lsn, xl_running_xact
 	Assert(lsn != InvalidXLogRecPtr);
 
 	/*
-	 * Increase shared memory limits, so vacuum can work on tuples we prevented
-	 * from being pruned till now.
+	 * Increase shared memory limits, so vacuum can work on tuples we
+	 * prevented from being pruned till now.
 	 */
 	xmin = ReorderBufferGetOldestXmin(builder->reorder);
 	if (xmin == InvalidTransactionId)

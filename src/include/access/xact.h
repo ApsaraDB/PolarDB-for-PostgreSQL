@@ -65,8 +65,8 @@ extern bool XactDeferrable;
 #ifdef ENABLE_DISTRIBUTED_TRANSACTION
 extern bool IsConnFromCoordinator;
 extern bool IsCoordinatorNode;
-extern int delay_before_set_prepare_ts;
-extern int delay_after_set_prepare_ts;
+extern int	delay_before_set_prepare_ts;
+extern int	delay_after_set_prepare_ts;
 #endif
 
 typedef enum
@@ -275,9 +275,9 @@ typedef struct xl_xact_origin
 typedef struct xl_xact_commit
 {
 	TimestampTz xact_time;		/* time of commit */
-	#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
 	CommitSeqNo csn;			/* commit seq number */
-	#endif
+#endif
 
 	/* xl_xact_xinfo follows if XLOG_XACT_HAS_INFO */
 	/* xl_xact_dbinfo follows if XINFO_HAS_DBINFO */
@@ -313,9 +313,9 @@ typedef struct xl_xact_abort
 typedef struct xl_xact_parsed_commit
 {
 	TimestampTz xact_time;
-	#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
 	CommitSeqNo csn;
-	#endif
+#endif
 	uint32		xinfo;
 
 	Oid			dbId;			/* MyDatabaseId */

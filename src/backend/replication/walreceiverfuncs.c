@@ -265,13 +265,18 @@ RequestXLogStreaming(TimeLineID tli, XLogRecPtr recptr, const char *conninfo,
 	/* POLAR: set received tli */
 	if (walrcv->receivedTLI != tli)
 		walrcv->receivedTLI = tli;
-	/* 
-	 * POLAR: set receivedUpto and latestChunkStart to the starting point each time when request xlog streaming
-	 * so that when we re-receive a wal segment file(there may be wrong data in the wal file so we need to re-receive it)
-	 * we can correctly judge whether we have received new wal in WaitForWALToBecomeAvailable func according to new receivedUpto
-	 * rather than the previous one, which maybe greater than the wal we actually received in current streaming process.
-	 * similarly, set latestChunkStart each time so that we can update XLogReceiptTime correctly when we have replayed new wal 
-	 */ 
+
+	/*
+	 * POLAR: set receivedUpto and latestChunkStart to the starting point each
+	 * time when request xlog streaming so that when we re-receive a wal
+	 * segment file(there may be wrong data in the wal file so we need to
+	 * re-receive it) we can correctly judge whether we have received new wal
+	 * in WaitForWALToBecomeAvailable func according to new receivedUpto
+	 * rather than the previous one, which maybe greater than the wal we
+	 * actually received in current streaming process. similarly, set
+	 * latestChunkStart each time so that we can update XLogReceiptTime
+	 * correctly when we have replayed new wal
+	 */
 	walrcv->receivedUpto = recptr;
 	walrcv->latestChunkStart = recptr;
 	walrcv->receiveStart = recptr;

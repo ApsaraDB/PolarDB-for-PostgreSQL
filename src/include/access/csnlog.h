@@ -18,20 +18,20 @@ typedef struct xl_csnlog_truncate
 {
 	int			pageno;
 	TransactionId oldestXact;
-} xl_csnlog_truncate;
+}			xl_csnlog_truncate;
 
 
 extern void CSNLogSetCommitSeqNo(TransactionId xid, int nsubxids,
 					 TransactionId *subxids, XLogRecPtr lsn, bool write_xlog, CommitSeqNo csn);
 #ifdef ENABLE_DISTRIBUTED_TRANSACTION
 extern CommitSeqNo CSNLogAssignCommitSeqNo(TransactionId xid, int nxids, TransactionId *xids, bool fromCoordinator);
-extern int delay_before_set_committing_status;
-extern int delay_after_set_committing_status;
+extern int	delay_before_set_committing_status;
+extern int	delay_after_set_committing_status;
 #endif
 
 extern CommitSeqNo CSNLogGetCommitSeqNo(TransactionId xid);
 extern TransactionId CSNLogGetNextActiveXid(TransactionId start,
-											TransactionId end);
+					   TransactionId end);
 
 extern Size CSNLOGShmemBuffers(void);
 extern Size CSNLOGShmemSize(void);
@@ -43,6 +43,7 @@ extern void ShutdownCSNLOG(void);
 extern void CheckPointCSNLOG(void);
 extern void ExtendCSNLOG(TransactionId newestXact);
 extern void TruncateCSNLOG(TransactionId oldestXact);
+
 /* XLOG stuff */
 #define CSNLOG_ZEROPAGE		0x00
 #define CSNLOG_TRUNCATE		0x10
@@ -53,7 +54,7 @@ typedef struct xl_csn_set
 	CommitSeqNo csn;
 	TransactionId mainxid;
 	/* subxact Xids follow */
-} xl_csn_set;
+}			xl_csn_set;
 
 #define SizeOfCsnSet	(offsetof(xl_csn_set, mainxid) + \
 							 sizeof(TransactionId))
@@ -63,4 +64,4 @@ extern void csnlog_redo(XLogReaderState *record);
 extern void csnlog_desc(StringInfo buf, XLogReaderState *record);
 extern const char *csnlog_identify(uint8 info);
 
-#endif   /* CSNLOG_H */
+#endif							/* CSNLOG_H */

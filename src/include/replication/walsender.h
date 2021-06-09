@@ -29,10 +29,11 @@ typedef enum
 /* POLAR: customized replication mode */
 typedef enum polar_repl_mode_t
 {
-	POLAR_REPL_DEFAULT,	/* Default mode, as original one */
-	POLAR_REPL_DMA_DATA,	/* DMA mode */
-	POLAR_REPL_DMA_LOGGER	/* DMA mode */
-} polar_repl_mode_t;
+	POLAR_REPL_DEFAULT,			/* Default mode, as original one */
+	POLAR_REPL_DMA_DATA,		/* DMA mode */
+	POLAR_REPL_DMA_LOGGER		/* DMA mode */
+}			polar_repl_mode_t;
+
 /* POLAR end */
 
 /* global state */
@@ -60,7 +61,8 @@ extern void WalSndRqstFileReload(void);
 
 /* POLAR */
 extern polar_repl_mode_t polar_gen_replication_mode(void);
-extern const char * polar_replication_mode_str(polar_repl_mode_t mode);
+extern const char *polar_replication_mode_str(polar_repl_mode_t mode);
+
 /* POLAR end */
 
 /*

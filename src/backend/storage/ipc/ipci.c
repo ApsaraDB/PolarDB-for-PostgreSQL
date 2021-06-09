@@ -135,15 +135,15 @@ CreateSharedMemoryAndSemaphores(bool makePrivate, int port)
 		size = add_size(size, PredicateLockShmemSize());
 		size = add_size(size, ProcGlobalShmemSize());
 		size = add_size(size, XLOGShmemSize());
-		#ifdef ENABLE_PARALLEL_RECOVERY
+#ifdef ENABLE_PARALLEL_RECOVERY
 		size = add_size(size, ParallelRecoveryShmemSize());
-		#endif
-		#ifdef ENABLE_DISTR_DEBUG
+#endif
+#ifdef ENABLE_DISTR_DEBUG
 		size = add_size(size, CLOGShmemSize());
-		#endif
-		#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+#endif
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
 		size = add_size(size, CTSLOGShmemSize());
-		#endif
+#endif
 		size = add_size(size, CommitTsShmemSize());
 		size = add_size(size, TwoPhaseShmemSize());
 		size = add_size(size, BackgroundWorkerShmemSize());
@@ -177,7 +177,7 @@ CreateSharedMemoryAndSemaphores(bool makePrivate, int port)
 		/* POLAR: Datamax control strunct size */
 		size = add_size(size, polar_datamax_shmem_size());
 		/* POLAR end */
-		
+
 		/* freeze the addin request size and include it */
 		addin_request_allowed = false;
 		size = add_size(size, total_addin_request);
@@ -242,15 +242,15 @@ CreateSharedMemoryAndSemaphores(bool makePrivate, int port)
 	 * Set up xlog, clog, and buffers
 	 */
 	XLOGShmemInit();
-	#ifdef ENABLE_PARALLEL_RECOVERY
+#ifdef ENABLE_PARALLEL_RECOVERY
 	ParallelRecoveryInit();
-	#endif
-	#ifdef ENABLE_DISTR_DEBUG
+#endif
+#ifdef ENABLE_DISTR_DEBUG
 	CLOGShmemInit();
-	#endif
-	#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+#endif
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
 	CTSLOGShmemInit();
-	#endif
+#endif
 	CommitTsShmemInit();
 	MultiXactShmemInit();
 	InitBufferPool();
@@ -258,7 +258,7 @@ CreateSharedMemoryAndSemaphores(bool makePrivate, int port)
 	/* POLAR: init DataMax control struct */
 	polar_datamax_shmem_init();
 	/* POLAR end */
-	
+
 	if (polar_enable_dma)
 		ConsensusShmemInit();
 

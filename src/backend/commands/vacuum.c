@@ -63,7 +63,7 @@ int			vacuum_freeze_table_age;
 int			vacuum_multixact_freeze_min_age;
 int			vacuum_multixact_freeze_table_age;
 #ifdef ENABLE_DISTRIBUTED_TRANSACTION
-int         vacuum_defer_freeze_min_age;
+int			vacuum_defer_freeze_min_age;
 #endif
 
 
@@ -123,17 +123,17 @@ ExecVacuum(VacuumStmt *vacstmt, bool isTopLevel)
 	 */
 	if (vacstmt->options & VACOPT_FREEZE)
 	{
-		#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
 		params.freeze_min_age = vacuum_defer_freeze_min_age;
 		params.freeze_table_age = vacuum_defer_freeze_min_age;
 		params.multixact_freeze_min_age = vacuum_defer_freeze_min_age;
 		params.multixact_freeze_table_age = vacuum_defer_freeze_min_age;
-		#else
+#else
 		params.freeze_min_age = 0;
 		params.freeze_table_age = 0;
 		params.multixact_freeze_min_age = 0;
 		params.multixact_freeze_table_age = 0;
-		#endif
+#endif
 	}
 	else
 	{
@@ -1275,12 +1275,12 @@ vac_truncate_clog(TransactionId frozenXID,
 	/*
 	 * Truncate CLOG, multixact and CommitTs to the oldest computed value.
 	 */
-	#ifdef ENABLE_DISTR_DEBUG
+#ifdef ENABLE_DISTR_DEBUG
 	TruncateCLOG(frozenXID, oldestxid_datoid);
-	#endif
-	#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+#endif
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
 	TruncateCTSLOG(frozenXID);
-	#endif
+#endif
 	TruncateCommitTs(frozenXID);
 	TruncateMultiXact(minMulti, minmulti_datoid);
 

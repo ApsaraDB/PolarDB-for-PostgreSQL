@@ -51,9 +51,9 @@ typedef struct
 	/* copy of the fork_flags field from the XLogRecordBlockHeader */
 	uint8		flags;
 
-	#ifdef ENABLE_REMOTE_RECOVERY
-	bool		remote_fetch_image;  /* needs remote fetch ? */
-	#endif
+#ifdef ENABLE_REMOTE_RECOVERY
+	bool		remote_fetch_image; /* needs remote fetch ? */
+#endif
 
 	/* Information on full-page image, if any */
 	bool		has_image;		/* has image, even for consistency checking */

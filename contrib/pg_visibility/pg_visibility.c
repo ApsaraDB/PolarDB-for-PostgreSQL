@@ -760,7 +760,7 @@ tuple_all_visible(HeapTuple tup, TransactionId OldestXmin, Buffer buffer)
 	if (!TransactionIdPrecedes(xmin, OldestXmin))
 		return false;			/* xmin not old enough for all to see */
 
-	#ifdef ENABLE_DISTRIBUTED_TRANSACTION	
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
 	{
 		CommitSeqNo committs = HeapTupleHderGetXminTimestampAtomic(tup->t_data);
 
@@ -771,13 +771,13 @@ tuple_all_visible(HeapTuple tup, TransactionId OldestXmin, Buffer buffer)
 
 		if (!COMMITSEQNO_IS_COMMITTED(committs))
 		{
-			elog(ERROR, "xmin %d should have committs "UINT64_FORMAT, xmin, committs);
+			elog(ERROR, "xmin %d should have committs " UINT64_FORMAT, xmin, committs);
 		}
 
 		if (!CommittsSatisfiesVacuum(committs))
 			return false;
 	}
-	#endif
+#endif
 	return true;
 }
 

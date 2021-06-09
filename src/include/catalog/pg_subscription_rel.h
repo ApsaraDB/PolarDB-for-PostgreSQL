@@ -41,7 +41,7 @@ CATALOG(pg_subscription_rel,6102,SubscriptionRelRelationId) BKI_WITHOUT_OIDS
 	XLogRecPtr	srsublsn;		/* remote lsn of the state change used for
 								 * synchronization coordination */
 #ifdef ENABLE_DISTRIBUTED_TRANSACTION
-	int64 		srsubstartts; /*snapshot start ts*/
+	int64		srsubstartts;	/* snapshot start ts */
 #endif
 } FormData_pg_subscription_rel;
 
@@ -73,17 +73,18 @@ typedef struct SubscriptionRelState
 	XLogRecPtr	lsn;
 	char		state;
 #ifdef ENABLE_DISTRIBUTED_TRANSACTION
-	GlobalTimestamp	start_ts;
+	GlobalTimestamp start_ts;
 #endif
 } SubscriptionRelState;
 
 extern Oid AddSubscriptionRelState(Oid subid, Oid relid, char state,
 						XLogRecPtr sublsn);
 #ifdef ENABLE_DISTRIBUTED_TRANSACTION
-extern Oid UpdateSubscriptionRelStateExtend(Oid subid, Oid relid, char state,
-						   XLogRecPtr sublsn
-						   , GlobalTimestamp startts
-						   );
+extern Oid
+UpdateSubscriptionRelStateExtend(Oid subid, Oid relid, char state,
+								 XLogRecPtr sublsn
+								 ,GlobalTimestamp startts
+);
 #define UpdateSubscriptionRelState(subid, relid, state, sublsn) UpdateSubscriptionRelStateExtend(subid, relid, state, sublsn, InvalidGlobalTimestamp)
 #else
 extern Oid UpdateSubscriptionRelState(Oid subid, Oid relid, char state,
@@ -91,7 +92,7 @@ extern Oid UpdateSubscriptionRelState(Oid subid, Oid relid, char state,
 #endif
 #ifdef ENABLE_DISTRIBUTED_TRANSACTION
 extern char GetSubscriptionRelStateExtend(Oid subid, Oid relid,
-						XLogRecPtr *sublsn, GlobalTimestamp *startts, bool missing_ok);
+							  XLogRecPtr *sublsn, GlobalTimestamp * startts, bool missing_ok);
 #define GetSubscriptionRelState(subid, relid, sublsn, missing_ok) GetSubscriptionRelStateExtend(subid, relid, sublsn, NULL, missing_ok)
 #else
 extern char GetSubscriptionRelState(Oid subid, Oid relid,

@@ -67,9 +67,9 @@ typedef struct LogicalRepBeginData
 	XLogRecPtr	final_lsn;
 	TimestampTz committime;
 	TransactionId xid;
-	#ifdef ENABLE_DISTRIBUTED_TRANSACTION
-	CommitTs 	cts;
-	#endif
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+	CommitTs	cts;
+#endif
 } LogicalRepBeginData;
 
 typedef struct LogicalRepCommitData

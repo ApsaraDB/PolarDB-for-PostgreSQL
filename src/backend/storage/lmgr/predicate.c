@@ -1717,13 +1717,13 @@ GetSerializableTransactionSnapshotInt(Snapshot snapshot,
 	} while (!sxact);
 
 	/* Get the snapshot, or check that it's safe to use */
-	#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
 	if (!sourcevxid)
 		snapshot = GetSnapshotDataExtend(snapshot, false);
-	#else
+#else
 	if (!sourcevxid)
 		snapshot = GetSnapshotData(snapshot);
-	#endif
+#endif
 	else if (!ProcArrayInstallImportedXmin(snapshot->xmin, sourcevxid))
 	{
 		ReleasePredXact(sxact);

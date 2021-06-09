@@ -5,7 +5,7 @@
  *
  * Support CTS-based transactions.
  * Author: Junbin Kang
- * 
+ *
  * Portions Copyright (c) 2020, Alibaba Group Holding Limited
  * Portions Copyright (C) 2019 THL A29 Limited, a Tencent company.  All rights reserved.
  * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
@@ -475,9 +475,9 @@ MarkAsPreparingGuts(GlobalTransaction gxact, TransactionId xid, const char *gid,
 	proc->lxid = (LocalTransactionId) xid;
 	pgxact->xid = xid;
 	pgxact->xmin = InvalidTransactionId;
-	#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
 	pg_atomic_write_u64(&pgxact->tmin, InvalidCommitSeqNo);
-	#endif
+#endif
 	pgxact->snapshotcsn = InvalidCommitSeqNo;
 	pgxact->delayChkpt = false;
 	pgxact->vacuumFlags = 0;
@@ -527,8 +527,8 @@ MarkAsPrepared(GlobalTransaction gxact, bool lock_held)
 		LWLockRelease(TwoPhaseStateLock);
 
 	/*
-	 * Put it into the global ProcArray so GetOldestActiveTransactionId() considers
-	 * the XID as still running.
+	 * Put it into the global ProcArray so GetOldestActiveTransactionId()
+	 * considers the XID as still running.
 	 */
 	ProcArrayAdd(&ProcGlobal->allProcs[gxact->pgprocno]);
 }
@@ -1166,19 +1166,19 @@ EndPrepare(GlobalTransaction gxact)
 	records.num_chunks = 0;
 }
 
-#ifdef ENABLE_DISTRIBUTED_TRANSACTION 
-void 
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+void
 EndGlobalPrepare(GlobalTransaction gxact)
-{    
-    volatile PGXACT    *pgxact = &ProcGlobal->allPgXact[gxact->pgprocno];
-    
-    pg_atomic_write_u64(&pgxact->tmin, pg_atomic_read_u64(&MyPgXact->tmin));
-    if (!COMMITSEQNO_IS_NORMAL(pg_atomic_read_u64(&MyPgXact->tmin)))
-    {
-        elog(WARNING,
-             "prepare transaction %d does not have valid tmin "UINT64_FORMAT, 
-             MyPgXact->xid, pg_atomic_read_u64(&MyPgXact->tmin));
-    }
+{
+	volatile	PGXACT *pgxact = &ProcGlobal->allPgXact[gxact->pgprocno];
+
+	pg_atomic_write_u64(&pgxact->tmin, pg_atomic_read_u64(&MyPgXact->tmin));
+	if (!COMMITSEQNO_IS_NORMAL(pg_atomic_read_u64(&MyPgXact->tmin)))
+	{
+		elog(WARNING,
+			 "prepare transaction %d does not have valid tmin " UINT64_FORMAT,
+			 MyPgXact->xid, pg_atomic_read_u64(&MyPgXact->tmin));
+	}
 }
 #endif
 /*
@@ -1489,7 +1489,7 @@ FinishPreparedTransaction(const char *gid, bool isCommit)
 	invalmsgs = (SharedInvalidationMessage *) bufptr;
 	bufptr += MAXALIGN(hdr->ninvalmsgs * sizeof(SharedInvalidationMessage));
 
-    /* Prevent cancel/die interrupt while cleaning up */
+	/* Prevent cancel/die interrupt while cleaning up */
 	HOLD_INTERRUPTS();
 
 	/*
@@ -2011,17 +2011,17 @@ RecoverPreparedTransactions(void)
 		xid = gxact->xid;
 
 		/*
-		 * Reconstruct subtrans state for the transaction --- needed
-		 * because pg_csnlog is not preserved over a restart.  Note that
-		 * we are linking all the subtransactions directly to the
-		 * top-level XID; there may originally have been a more complex
-		 * hierarchy, but there's no need to restore that exactly.
-		 * It's possible that SubTransSetParent has been set before, if
-		 * the prepared transaction generated xid assignment records.
+		 * Reconstruct subtrans state for the transaction --- needed because
+		 * pg_csnlog is not preserved over a restart.  Note that we are
+		 * linking all the subtransactions directly to the top-level XID;
+		 * there may originally have been a more complex hierarchy, but
+		 * there's no need to restore that exactly. It's possible that
+		 * SubTransSetParent has been set before, if the prepared transaction
+		 * generated xid assignment records.
 		 */
 		buf = ProcessTwoPhaseBuffer(xid,
-				gxact->prepare_start_lsn,
-				gxact->ondisk, true, false);
+									gxact->prepare_start_lsn,
+									gxact->ondisk, true, false);
 		if (buf == NULL)
 			continue;
 
@@ -2055,9 +2055,9 @@ RecoverPreparedTransactions(void)
 #ifdef ENABLE_DISTRIBUTED_TRANSACTION
 		/* Stamp this XID (and sub-XIDs) with the CSN */
 		CTSLogSetCommitTs(xid, 0, NULL, InvalidXLogRecPtr, false, MASK_PREPARE_BIT(0));
-		#ifdef ENABLE_DISTR_DEBUG
+#ifdef ENABLE_DISTR_DEBUG
 		elog(LOG, "recover prepare record xid %d", xid);
-		#endif
+#endif
 #endif
 
 		LWLockRelease(TwoPhaseStateLock);
@@ -2263,9 +2263,9 @@ RecordTransactionCommitPrepared(TransactionId xid,
 	XLogRecPtr	recptr;
 	TimestampTz committs = GetCurrentTimestamp();
 	bool		replorigin;
-	#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
 	CommitSeqNo csn;
-	#endif
+#endif
 
 	/*
 	 * Are we using the replication origins feature?  Or, in other words, are
@@ -2282,6 +2282,7 @@ RecordTransactionCommitPrepared(TransactionId xid,
 #ifdef ENABLE_DISTRIBUTED_TRANSACTION
 	csn = CTSLogAssignCommitTs(xid, nchildren, children, true);
 #endif
+
 	/*
 	 * Emit the XLOG commit record. Note that we mark 2PC commits as
 	 * potentially having AccessExclusiveLocks since we don't know whether or
@@ -2326,26 +2327,26 @@ RecordTransactionCommitPrepared(TransactionId xid,
 	XLogFlush(recptr);
 
 	/* Mark the transaction committed in pg_xact and pg_csnlog */
-	#ifdef ENABLE_DISTR_DEBUG
+#ifdef ENABLE_DISTR_DEBUG
 	TransactionIdCommitTree(xid, nchildren, children);
-	#endif
-	
-	#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+#endif
 
-	#ifdef ENABLE_DISTR_DEBUG
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+
+#ifdef ENABLE_DISTR_DEBUG
 	{
-		CommitTs prev_cts = CTSLogGetCommitTs(xid);
+		CommitTs	prev_cts = CTSLogGetCommitTs(xid);
 
 		if (!COMMITSEQNO_IS_PREPARED(prev_cts))
-			elog(PANIC, "The transaction did not prepared, cts "UINT64_FORMAT, prev_cts);
+			elog(PANIC, "The transaction did not prepared, cts " UINT64_FORMAT, prev_cts);
 	}
-	#endif
+#endif
 
 	/* Stamp this XID (and sub-XIDs) with the CSN */
 	CTSLogSetCommitTs(xid, nchildren, children, InvalidXLogRecPtr, false, csn);
 	if (enable_timestamp_debug_print)
-		elog(LOG, "commit prepared record xid %d csn "UINT64_FORMAT, xid, csn);
-	#endif
+		elog(LOG, "commit prepared record xid %d csn " UINT64_FORMAT, xid, csn);
+#endif
 
 	/* Checkpoint can proceed now */
 	MyPgXact->delayChkpt = false;
