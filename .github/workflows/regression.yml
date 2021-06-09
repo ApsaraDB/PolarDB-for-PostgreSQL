@@ -1,0 +1,42 @@
+## This is the basic regression action for PolarDB.
+name: PolarDB regression
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v2
+    - name: Setup Perl environment
+      uses: shogo82148/actions-setup-perl@v1.12.2
+      
+    - name: Restore install dependencies from cache
+      uses: actions/cache@v2
+      id: cache-perl-env
+      with:
+          path: /opt/hostedtoolcache/perl
+          key: builddeps-${{ hashFiles('**/Build.PL') }}
+          restore-keys: |
+            builddeps-
+    - name: Install perl modules
+      if: steps.cache-perl-env.outputs.cache-hit != 'true'
+      run: cpan -i IPC::Run Test::More Time::HiRes
+    
+    - name: Install dependencies
+      run: sudo apt-get install -y libprotobuf-dev protobuf-compiler libzstd-dev libssl-dev
+    
+    - name: configure
+      run: ./configure --enable-tap-tests --with-python --prefix=$HOME/polardb/polardbhome
+    - name: build
+      run: bash ./build.sh repeat
+    - name: make check
+      run: make check
+    - name: make checkdma
+      run: make checkdma
