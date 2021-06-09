@@ -6,12 +6,12 @@
  * The pg_ctslog manager is a pg_clog-like manager that stores the commit
  * sequence number, or parent transaction Id, for each transaction.  It is
  * a fundamental part of distributed MVCC.
- * 
+ *
  * To support distributed transaction, XLOG is added for csnlog to preserve
  * data across crashes. During database startup, we would apply xlog records
- * to csnlog. 
+ * to csnlog.
  * Author: Junbin Kang, 2020-01-11
- * 
+ *
  * Implement the scalable CTS (Commit Timestamp Store) that adopts multi-partition LRU
  * and use lock-free algorithms as far as possible, i.e., Get/Set commit timestamp
  * in LRU cached pages with only shared-lock being held.
@@ -121,13 +121,13 @@ static CommitTs RecursiveGetCommitTs(TransactionId xid, int partitionno);
  */
 void
 CTSLogSetCommitTs(TransactionId xid, int nsubxids,
-					 TransactionId *subxids,  XLogRecPtr lsn, bool write_xlog, CommitTs cts)
+				  TransactionId *subxids, XLogRecPtr lsn, bool write_xlog, CommitTs cts)
 {
-	int nextSubxid;
-	int topPage;
+	int			nextSubxid;
+	int			topPage;
 	TransactionId topXid;
-	XLogRecPtr max_lsn = lsn;
-	
+	XLogRecPtr	max_lsn = lsn;
+
 	if (cts == InvalidCommitSeqNo || xid == BootstrapTransactionId)
 	{
 		if (IsBootstrapProcessingMode())
@@ -137,10 +137,11 @@ CTSLogSetCommitTs(TransactionId xid, int nsubxids,
 	}
 
 #ifdef ENABLE_DISTRIBUTED_TRANSACTION
+
 	/*
 	 * Comply with the WAL-before-data rule: if caller specified it wants this
-	 * value to be recorded in WAL, do so before touching the data.
-	 * write xlog is only needed when the modification is not recorded in xlog before
+	 * value to be recorded in WAL, do so before touching the data. write xlog
+	 * is only needed when the modification is not recorded in xlog before
 	 * calling this function.
 	 */
 	if (write_xlog)
@@ -163,11 +164,12 @@ CTSLogSetCommitTs(TransactionId xid, int nsubxids,
 	nextSubxid = nsubxids - 1;
 	do
 	{
-		int currentPage = topPage;
-		int subxidsOnPage = 0;
+		int			currentPage = topPage;
+		int			subxidsOnPage = 0;
+
 		for (; nextSubxid >= 0; nextSubxid--)
 		{
-			int subxidPage = TransactionIdToPage(subxids[nextSubxid]);
+			int			subxidPage = TransactionIdToPage(subxids[nextSubxid]);
 
 			if (subxidsOnPage == 0)
 				currentPage = subxidPage;
@@ -195,7 +197,7 @@ CTSLogSetCommitTs(TransactionId xid, int nsubxids,
 		 * No subxids were on the same page as the main xid; we have to update
 		 * it separately
 		 */
-		
+
 		CTSLogSetPageStatus(xid, 0, NULL, cts, max_lsn, topPage);
 	}
 }
@@ -204,11 +206,12 @@ CTSLogSetCommitTs(TransactionId xid, int nsubxids,
 CommitTs
 CTSLogAssignCommitTs(TransactionId xid, int nxids, TransactionId *xids, bool fromCoordinator)
 {
-	CommitTs cts;
+	CommitTs	cts;
 	TransactionId latestXid;
 	TransactionId currentLatestCompletedXid;
 
 	latestXid = TransactionIdLatest(xid, nxids, xids);
+
 	/*
 	 * First update latestCompletedXid to cover this xid. We do this before
 	 * assigning a CSN, so that if someone acquires a new snapshot at the same
@@ -231,23 +234,23 @@ CTSLogAssignCommitTs(TransactionId xid, int nxids, TransactionId *xids, bool fro
 		CTSLogSetCommitTs(xid, 0, NULL, InvalidXLogRecPtr, false, COMMITSEQNO_COMMITTING);
 	}
 
-	#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
 	cts = TxnGetOrGenerateCommitTs(fromCoordinator);
 	Assert(!COMMITSEQNO_IS_SUBTRANS(cts));
 
 	if (!COMMITSEQNO_IS_NORMAL(cts))
-		elog(ERROR, "invalid commit ts "UINT64_FORMAT, cts);
-	
+		elog(ERROR, "invalid commit ts " UINT64_FORMAT, cts);
+
 	TxnSetReplyTimestamp(cts);
-	#else
+#else
 	/* Get our CSN and increment */
 	CSNLogSetCommitSeqNo(xid, 0, NULL, InvalidXLogRecPtr, false, COMMITSEQNO_COMMITTING);
 	csn = pg_atomic_fetch_add_u64(&ShmemVariableCache->nextCommitSeqNo, 1);
-	#endif
-	
+#endif
+
 	Assert(cts >= COMMITSEQNO_FIRST_NORMAL);
 	if (enable_timestamp_debug_print)
-		elog(LOG, "xid %d assign commit timestamp "UINT64_FORMAT, xid, cts);
+		elog(LOG, "xid %d assign commit timestamp " UINT64_FORMAT, xid, cts);
 	return cts;
 }
 #endif
@@ -264,15 +267,15 @@ CTSLogSetPageStatus(TransactionId xid, int nsubxids,
 {
 	int			slotno;
 	int			i;
-	int         partitionno;
-    LWLock       *partitionLock;    /* buffer partition lock for it */
-    
-    
-    partitionno = PagenoMappingPartitionno(CtslogCtl, pageno);
-    partitionLock = GetPartitionLock(CtslogCtl, partitionno);
-    LWLockAcquire(partitionLock, LW_SHARED);
-    
-    /* Try to find the page while holding only shared lock */
+	int			partitionno;
+	LWLock	   *partitionLock;	/* buffer partition lock for it */
+
+
+	partitionno = PagenoMappingPartitionno(CtslogCtl, pageno);
+	partitionLock = GetPartitionLock(CtslogCtl, partitionno);
+	LWLockAcquire(partitionLock, LW_SHARED);
+
+	/* Try to find the page while holding only shared lock */
 
 	slotno = LruReadPage_ReadOnly_Locked(CtslogCtl, partitionno, pageno, XLogRecPtrIsInvalid(lsn), xid);
 
@@ -310,10 +313,10 @@ SubTransSetParent(TransactionId xid, TransactionId parent)
 	int			pageno = TransactionIdToPage(xid);
 	int			entryno = TransactionIdToPgIndex(xid);
 	int			slotno;
-	CommitTs *ptr;
-	CommitTs newcts;
-	int    		partitionno = PagenoMappingPartitionno(CtslogCtl, pageno);
-	LWLock		*partitionLock = GetPartitionLock(CtslogCtl, partitionno);
+	CommitTs   *ptr;
+	CommitTs	newcts;
+	int			partitionno = PagenoMappingPartitionno(CtslogCtl, pageno);
+	LWLock	   *partitionLock = GetPartitionLock(CtslogCtl, partitionno);
 
 
 	Assert(TransactionIdIsValid(parent));
@@ -322,10 +325,9 @@ SubTransSetParent(TransactionId xid, TransactionId parent)
 	newcts = CSN_SUBTRANS_BIT | (uint64) parent;
 
 	/*
-	 * Shared page access is enough to set the subtransaction parent.
-	 * It is set when the subtransaction is assigned an xid,
-	 * and can be read only later, after the subtransaction have modified
-	 * some tuples.
+	 * Shared page access is enough to set the subtransaction parent. It is
+	 * set when the subtransaction is assigned an xid, and can be read only
+	 * later, after the subtransaction have modified some tuples.
 	 */
 	slotno = LruReadPage_ReadOnly(CtslogCtl, partitionno, pageno, xid);
 	ptr = (CommitSeqNo *) CtslogCtl->shared[partitionno]->page_buffer[slotno];
@@ -353,10 +355,10 @@ SubTransSetParent(TransactionId xid, TransactionId parent)
 TransactionId
 SubTransGetParent(TransactionId xid)
 {
-	CommitTs cts;
+	CommitTs	cts;
 	int			pageno = TransactionIdToPage(xid);
-	int    		partitionno = PagenoMappingPartitionno(CtslogCtl, pageno);
-	LWLock		*partitionLock = GetPartitionLock(CtslogCtl, partitionno);
+	int			partitionno = PagenoMappingPartitionno(CtslogCtl, pageno);
+	LWLock	   *partitionLock = GetPartitionLock(CtslogCtl, partitionno);
 
 	LWLockAcquire(partitionLock, LW_SHARED);
 
@@ -423,9 +425,10 @@ static void
 CTSLogSetCSN(TransactionId xid, int partitionno, CommitTs cts, XLogRecPtr lsn, int slotno)
 {
 	int			entryno = TransactionIdToPgIndex(xid);
-	CommitTs *ptr;
+	CommitTs   *ptr;
 
 #ifdef ENABLE_DISTRIBUTED_TRANSACTION
+
 	/*
 	 * Update the group LSN if the transaction completion LSN is higher.
 	 *
@@ -433,19 +436,19 @@ CTSLogSetCSN(TransactionId xid, int partitionno, CommitTs cts, XLogRecPtr lsn, i
 	 * so we don't need to do anything special to avoid LSN updates during
 	 * recovery. After recovery completes the next csnlog change will set the
 	 * LSN correctly.
-	 * 
+	 *
 	 * We must first set LSN before CTS is written so that we can guarantee
-	 * that CTSLogGetLSN() always reflects the fresh LSN corresponding to 
-	 * the asynchronous commit xid.
-	 * 
-	 * In other words, if we see a async committed xid, the corresponding LSN 
+	 * that CTSLogGetLSN() always reflects the fresh LSN corresponding to the
+	 * asynchronous commit xid.
+	 *
+	 * In other words, if we see a async committed xid, the corresponding LSN
 	 * has already been updated.
-	 * 
-	 * The consideration is due to lack of locking protection when setting 
-	 * and fetching LSN.
-	 * 
+	 *
+	 * The consideration is due to lack of locking protection when setting and
+	 * fetching LSN.
+	 *
 	 * Written by Junbin Kang, 2020-09-03
-	 * 
+	 *
 	 */
 
 	if (!XLogRecPtrIsInvalid(lsn))
@@ -492,9 +495,9 @@ CommitTs
 CTSLogGetCommitTs(TransactionId xid)
 {
 	int			pageno = TransactionIdToPage(xid);
-	int    		partitionno = PagenoMappingPartitionno(CtslogCtl, pageno);
-	LWLock		*partitionLock = GetPartitionLock(CtslogCtl, partitionno);
-	CommitTs cts;
+	int			partitionno = PagenoMappingPartitionno(CtslogCtl, pageno);
+	LWLock	   *partitionLock = GetPartitionLock(CtslogCtl, partitionno);
+	CommitTs	cts;
 
 
 	LWLockAcquire(partitionLock, LW_SHARED);
@@ -504,22 +507,20 @@ CTSLogGetCommitTs(TransactionId xid)
 	LWLockRelease(partitionLock);
 
 	/*
-	 * As the cts status of crashed transactions may not be set,
-	 * it would be regarding as in-progress by mistaken.
-	 * Note that TransactionIdIsInProgress() is removed by CSN to 
-	 * avoid proc array walking.
-	 * As a result, we need to perform further checking:
-	 * If the xid is below TransactionXmin and does not have 
-	 * cts, it should be crashed or aborted transaction.
-	 * Written by Junbin Kang, 2020.06.22
-	 */ 
-	
+	 * As the cts status of crashed transactions may not be set, it would be
+	 * regarding as in-progress by mistaken. Note that
+	 * TransactionIdIsInProgress() is removed by CSN to avoid proc array
+	 * walking. As a result, we need to perform further checking: If the xid
+	 * is below TransactionXmin and does not have cts, it should be crashed or
+	 * aborted transaction. Written by Junbin Kang, 2020.06.22
+	 */
+
 	if (TransactionIdPrecedes(xid, CtslogCtl->global_shared->oldestActiveStartupXid))
 	{
 		if (!COMMITSEQNO_IS_COMMITTED(cts))
 			cts = COMMITSEQNO_ABORTED;
 	}
-	
+
 	return cts;
 }
 
@@ -527,7 +528,7 @@ CTSLogGetCommitTs(TransactionId xid)
 static CommitTs
 RecursiveGetCommitTs(TransactionId xid, int partitionno)
 {
-	CommitTs cts;
+	CommitTs	cts;
 
 	cts = InternalGetCommitTs(xid, partitionno);
 
@@ -535,10 +536,10 @@ RecursiveGetCommitTs(TransactionId xid, int partitionno)
 	{
 		TransactionId parentXid = cts & ~CSN_SUBTRANS_BIT;
 		int			parentPageno = TransactionIdToPage(parentXid);
-		int    		parentPartitionno = PagenoMappingPartitionno(CtslogCtl, parentPageno);
-		LWLock		*partitionLock = GetPartitionLock(CtslogCtl, partitionno);
-		LWLock		*parentPartitionLock = GetPartitionLock(CtslogCtl, parentPartitionno);
-		CommitTs parentCts;
+		int			parentPartitionno = PagenoMappingPartitionno(CtslogCtl, parentPageno);
+		LWLock	   *partitionLock = GetPartitionLock(CtslogCtl, partitionno);
+		LWLock	   *parentPartitionLock = GetPartitionLock(CtslogCtl, parentPartitionno);
+		CommitTs	parentCts;
 
 		if (parentPartitionno != partitionno)
 		{
@@ -555,6 +556,7 @@ RecursiveGetCommitTs(TransactionId xid, int partitionno)
 		}
 
 		Assert(!COMMITSEQNO_IS_SUBTRANS(parentCts));
+
 		/*
 		 * The parent and child transaction status update is not atomic. We
 		 * must take care not to use the updated parent status with the old
@@ -598,7 +600,7 @@ InternalGetCommitTs(TransactionId xid, int partitionno)
 	int			slotno;
 
 	/* Can't ask about stuff that might not be around anymore */
-	// Assert(TransactionIdFollowsOrEquals(xid, TransactionXmin));
+	/* Assert(TransactionIdFollowsOrEquals(xid, TransactionXmin)); */
 
 	if (!TransactionIdIsNormal(xid))
 	{
@@ -608,41 +610,41 @@ InternalGetCommitTs(TransactionId xid, int partitionno)
 			return COMMITSEQNO_FROZEN;
 	}
 
-	slotno = LruReadPage_ReadOnly_Locked(CtslogCtl,partitionno, pageno, true, xid);
+	slotno = LruReadPage_ReadOnly_Locked(CtslogCtl, partitionno, pageno, true, xid);
 	return *(CommitTs *) (CtslogCtl->shared[partitionno]->page_buffer[slotno]
-							 + entryno * sizeof(XLogRecPtr));
+						  + entryno * sizeof(XLogRecPtr));
 }
 
 XLogRecPtr
 CTSLogGetLSN(TransactionId xid)
 {
 	int			pageno = TransactionIdToPage(xid);
-	int    		partitionno = PagenoMappingPartitionno(CtslogCtl, pageno);
-	LWLock		*partitionLock = GetPartitionLock(CtslogCtl, partitionno);
+	int			partitionno = PagenoMappingPartitionno(CtslogCtl, pageno);
+	LWLock	   *partitionLock = GetPartitionLock(CtslogCtl, partitionno);
 	int			lsnindex;
 	int			slotno;
 	XLogRecPtr	lsn;
 
 	LWLockAcquire(partitionLock, LW_SHARED);
 
-	slotno = LruLookupSlotno_Locked(CtslogCtl,partitionno, pageno);
+	slotno = LruLookupSlotno_Locked(CtslogCtl, partitionno, pageno);
+
 	/*
-	 * We do not need to really read the page.
-	 * If the page is not buffered, it indicates it is written out
-	 * to disk. Under such situation, the xlog records of the 
-	 * async transactions have been durable.
-	 */ 
+	 * We do not need to really read the page. If the page is not buffered, it
+	 * indicates it is written out to disk. Under such situation, the xlog
+	 * records of the async transactions have been durable.
+	 */
 	if (slotno == -1)
 	{
 		LWLockRelease(partitionLock);
 		return InvalidXLogRecPtr;
 	}
-	
+
 	lsnindex = GetLSNIndex(slotno, xid);
+
 	/*
-	 * We asume 8-byte atomic CPU to guarantee correctness 
-	 * with no locking.
-	 */ 
+	 * We asume 8-byte atomic CPU to guarantee correctness with no locking.
+	 */
 	lsn = CtslogCtl->shared[partitionno]->group_lsn[lsnindex];
 
 	LWLockRelease(partitionLock);
@@ -660,7 +662,7 @@ CTSLogGetNextActiveXid(TransactionId xid,
 					   TransactionId end)
 {
 	int			saved_partitionno = -1;
-	LWLock		*partitionLock = NULL;
+	LWLock	   *partitionLock = NULL;
 
 	Assert(TransactionIdIsValid(TransactionXmin));
 
@@ -668,9 +670,9 @@ CTSLogGetNextActiveXid(TransactionId xid,
 	for (;;)
 	{
 		int			pageno;
-		int    		partitionno;
-		int slotno;
-		int entryno;
+		int			partitionno;
+		int			slotno;
+		int			entryno;
 
 		if (!TransactionIdPrecedes(xid, end))
 			goto end;
@@ -682,18 +684,18 @@ CTSLogGetNextActiveXid(TransactionId xid,
 		{
 			if (saved_partitionno >= 0)
 				LWLockRelease(partitionLock);
-			
+
 			partitionLock = GetPartitionLock(CtslogCtl, partitionno);
 			saved_partitionno = partitionno;
 			LWLockAcquire(partitionLock, LW_SHARED);
 		}
-		
+
 		slotno = LruReadPage_ReadOnly_Locked(CtslogCtl, partitionno, pageno, true, xid);
 
 		for (entryno = TransactionIdToPgIndex(xid); entryno < CTSLOG_XACTS_PER_PAGE;
 			 entryno++)
 		{
-			CommitTs cts;
+			CommitTs	cts;
 
 			if (!TransactionIdPrecedes(xid, end))
 				goto end;
@@ -709,7 +711,7 @@ CTSLogGetNextActiveXid(TransactionId xid,
 			TransactionIdAdvance(xid);
 		}
 
-	
+
 	}
 
 end:
@@ -734,22 +736,22 @@ CTSLOGShmemBuffers(void)
 Size
 CTSLOGShmemSize(void)
 {
-	int     hash_table_size = NUM_PARTITIONS * CTSLOGShmemBuffers() + NUM_PARTITIONS;
+	int			hash_table_size = NUM_PARTITIONS * CTSLOGShmemBuffers() + NUM_PARTITIONS;
 
-	return NUM_PARTITIONS * (LruShmemSize(CTSLOGShmemBuffers(), CTSLOG_LSNS_PER_PAGE)) + 
-				MAXALIGN(sizeof(GlobalLruSharedData)) + LruBufTableShmemSize(hash_table_size);
+	return NUM_PARTITIONS * (LruShmemSize(CTSLOGShmemBuffers(), CTSLOG_LSNS_PER_PAGE)) +
+		MAXALIGN(sizeof(GlobalLruSharedData)) + LruBufTableShmemSize(hash_table_size);
 }
 
 void
 CTSLOGShmemInit(void)
 {
-	int     hash_table_size = NUM_PARTITIONS * CTSLOGShmemBuffers() + NUM_PARTITIONS;
+	int			hash_table_size = NUM_PARTITIONS * CTSLOGShmemBuffers() + NUM_PARTITIONS;
 
 	CtslogCtl->PagePrecedes = CTSLOGPagePrecedes;
-	
-	LruInit(CtslogCtl, "CTSLOG Ctl", CTSLOGShmemBuffers(), CTSLOG_LSNS_PER_PAGE,  hash_table_size, 
-                  					CTSLogControlLock, "pg_ctslog",
-                  					LWTRANCHE_CTSLOG_BUFFERS);
+
+	LruInit(CtslogCtl, "CTSLOG Ctl", CTSLOGShmemBuffers(), CTSLOG_LSNS_PER_PAGE, hash_table_size,
+			CTSLogControlLock, "pg_ctslog",
+			LWTRANCHE_CTSLOG_BUFFERS);
 }
 
 /*
@@ -762,9 +764,9 @@ void
 BootStrapCTSLOG(void)
 {
 	int			slotno;
-	int 		pageno = 0;
-	int    		partitionno = PagenoMappingPartitionno(CtslogCtl, pageno);
-	LWLock		*partitionLock = GetPartitionLock(CtslogCtl, partitionno);
+	int			pageno = 0;
+	int			partitionno = PagenoMappingPartitionno(CtslogCtl, pageno);
+	LWLock	   *partitionLock = GetPartitionLock(CtslogCtl, partitionno);
 
 	LWLockAcquire(partitionLock, LW_EXCLUSIVE);
 
@@ -791,9 +793,9 @@ BootStrapCTSLOG(void)
 static int
 ZeroCTSLOGPage(int pageno, int partitionno, bool writeXlog)
 {
-	int slotno;
+	int			slotno;
 
-	slotno =  LruZeroPage(CtslogCtl, partitionno, pageno);
+	slotno = LruZeroPage(CtslogCtl, partitionno, pageno);
 
 #ifdef ENABLE_DISTRIBUTED_TRANSACTION
 	if (writeXlog)
@@ -803,29 +805,30 @@ ZeroCTSLOGPage(int pageno, int partitionno, bool writeXlog)
 	return slotno;
 }
 
-void 
+void
 RecoverCTSLOG(TransactionId oldestActiveXID)
 {
-	elog(LOG, "start recover CTS log oldestActivXid %u nextXid %u", oldestActiveXID, 
-										ShmemVariableCache->nextXid);
-	
+	elog(LOG, "start recover CTS log oldestActivXid %u nextXid %u", oldestActiveXID,
+		 ShmemVariableCache->nextXid);
+
 	/*
-	 * For standby promotion, we must reset the oldestActiveStartupXid correctly.
-	 */ 
+	 * For standby promotion, we must reset the oldestActiveStartupXid
+	 * correctly.
+	 */
 	LWLockAcquire(CTSLogControlLock, LW_EXCLUSIVE);
 	CtslogCtl->global_shared->oldestActiveStartupXid = oldestActiveXID;
-    LWLockRelease(CTSLogControlLock);
+	LWLockRelease(CTSLogControlLock);
 
 	if (TransactionIdIsNormal(oldestActiveXID))
 	{
-		int start_xid 	= oldestActiveXID;
-		int end_xid 	= ShmemVariableCache->nextXid;
-		CommitTs 		cts;
+		int			start_xid = oldestActiveXID;
+		int			end_xid = ShmemVariableCache->nextXid;
+		CommitTs	cts;
 
 		/*
 		 * For each xid within [oldestActiveXid, nextXid), in-progress status
 		 * in CTSLog indicates it must be crash aborted.
-		 */  
+		 */
 		while (TransactionIdPrecedes(start_xid, end_xid))
 		{
 			cts = CTSLogGetCommitTs(start_xid);
@@ -834,12 +837,13 @@ RecoverCTSLOG(TransactionId oldestActiveXID)
 				CTSLogSetCommitTs(start_xid, 0, NULL, InvalidXLogRecPtr, false, COMMITSEQNO_ABORTED);
 				elog(LOG, "recover crash aborted xid %d next xid %d", start_xid, end_xid);
 			}
-			
+
 			TransactionIdAdvance(start_xid);
 		}
 	}
 
 }
+
 /*
  * This must be called ONCE during postmaster or standalone-backend startup,
  * after StartupXLOG has initialized ShmemVariableCache->nextXid.
@@ -854,28 +858,28 @@ StartupCTSLOG(TransactionId oldestActiveXID)
 #ifdef ENABLE_DISTRIBUTED_TRANSACTION
 	TransactionId xid = ShmemVariableCache->nextXid;
 	int			pageno = TransactionIdToPage(xid);
-    int 		partitionno = PagenoMappingPartitionno(CtslogCtl, pageno);
-    LWLock        *partitionlock;
+	int			partitionno = PagenoMappingPartitionno(CtslogCtl, pageno);
+	LWLock	   *partitionlock;
 
 	/*
 	 * Initialize our idea of the latest page number.
 	 */
 	LWLockAcquire(CTSLogControlLock, LW_EXCLUSIVE);
-    CtslogCtl->global_shared->latest_page_number = pageno;
+	CtslogCtl->global_shared->latest_page_number = pageno;
 	CtslogCtl->global_shared->oldestActiveStartupXid = oldestActiveXID;
-    LWLockRelease(CTSLogControlLock);
+	LWLockRelease(CTSLogControlLock);
 
-    partitionlock = GetPartitionLock(CtslogCtl, partitionno);
-    LWLockAcquire(partitionlock, LW_EXCLUSIVE);
+	partitionlock = GetPartitionLock(CtslogCtl, partitionno);
+	LWLockAcquire(partitionlock, LW_EXCLUSIVE);
 	CtslogCtl->shared[partitionno]->latest_page_number = pageno;
-    LWLockRelease(partitionlock);
+	LWLockRelease(partitionlock);
 
-	#ifdef ENABLE_DISTR_DEBUG
+#ifdef ENABLE_DISTR_DEBUG
 	elog(LOG, "Startup debug version CTS");
-	#else
+#else
 	elog(LOG, "Startup multi-core scaling CTS");
-	#endif
-	
+#endif
+
 #else
 	int			startPage;
 	int			endPage;
@@ -936,8 +940,8 @@ TrimCTSLOG(void)
 {
 	TransactionId xid = ShmemVariableCache->nextXid;
 	int			pageno = TransactionIdToPage(xid);
-    int 		partitionno = PagenoMappingPartitionno(CtslogCtl, pageno);
-    LWLock        *partitionlock;
+	int			partitionno = PagenoMappingPartitionno(CtslogCtl, pageno);
+	LWLock	   *partitionlock;
 
 	LWLockAcquire(CtslogCtl->global_shared->ControlLock, LW_EXCLUSIVE);
 	CtslogCtl->global_shared->latest_page_number = pageno;
@@ -999,6 +1003,7 @@ CheckPointCTSLOG(void)
 	 */
 	LruFlush(CtslogCtl, true);
 #ifdef ENABLE_DISTRIBUTED_TRANSACTION
+
 	/*
 	 * fsync pg_csnlog to ensure that any files flushed previously are durably
 	 * on disk.
@@ -1016,17 +1021,17 @@ CheckPointCTSLOG(void)
  * unless we're forced to write out a dirty clog or xlog page to make room
  * in shared memory.
  */
-void 
+void
 ExtendCTSLOG(TransactionId newestXact)
 {
-	
+
 	int			pageno;
-    int 		partitionno;
+	int			partitionno;
 #ifdef ENABLE_BATCH
 	int			pre_partitionno = -1;
-	int 		i;
+	int			i;
 #endif
-    LWLock        *partitionlock;
+	LWLock	   *partitionlock;
 
 	/*
 	 * No work except at first XID of a page.  But beware: just after
@@ -1041,11 +1046,11 @@ ExtendCTSLOG(TransactionId newestXact)
 	if (pageno % BATCH_SIZE)
 		return;
 
-	/* 
-	 * Acquire global lock to protect global latest page number
-	 * that would be modified in ZeroCTSLOGPage().
-	 * We keep the locking order of global lock -> partition lock.
-	 */ 
+	/*
+	 * Acquire global lock to protect global latest page number that would be
+	 * modified in ZeroCTSLOGPage(). We keep the locking order of global lock
+	 * -> partition lock.
+	 */
 
 	LWLockAcquire(CtslogCtl->global_shared->ControlLock, LW_EXCLUSIVE);
 	for (i = pageno; i < pageno + BATCH_SIZE; i++)
@@ -1059,7 +1064,7 @@ ExtendCTSLOG(TransactionId newestXact)
 			pre_partitionno = partitionno;
 			LWLockAcquire(partitionlock, LW_EXCLUSIVE);
 		}
-		
+
 		/* Zero the page and make an XLOG entry about it */
 		ZeroCTSLOGPage(i, partitionno, true);
 	}
@@ -1071,14 +1076,14 @@ ExtendCTSLOG(TransactionId newestXact)
 	LWLockAcquire(CtslogCtl->global_shared->ControlLock, LW_EXCLUSIVE);
 	partitionno = PagenoMappingPartitionno(CtslogCtl, pageno);
 	partitionlock = GetPartitionLock(CtslogCtl, partitionno);
-	
+
 	LWLockAcquire(partitionlock, LW_EXCLUSIVE);
 	ZeroCTSLOGPage(pageno, partitionno, true);
 	LWLockRelease(partitionlock);
 	LWLockRelease(CtslogCtl->global_shared->ControlLock);
 #endif
-	
-	
+
+
 }
 
 
@@ -1111,7 +1116,7 @@ TruncateCTSLOG(TransactionId oldestXact)
 	 */
 	WriteTruncateXlogRec(cutoffPage, oldestXact);
 
-    elog(LOG, "truncate cutoffpage %d", cutoffPage);
+	elog(LOG, "truncate cutoffpage %d", cutoffPage);
 	LruTruncate(CtslogCtl, cutoffPage);
 }
 
@@ -1149,17 +1154,17 @@ PG_FUNCTION_INFO_V1(pg_xact_get_cts);
 Datum
 pg_xact_get_cts(PG_FUNCTION_ARGS)
 {
-    TransactionId xid = PG_GETARG_UINT32(0);
-    CommitTs cts;
+	TransactionId xid = PG_GETARG_UINT32(0);
+	CommitTs	cts;
 	StringInfoData str;
 
 	initStringInfo(&str);
 
-    cts = CTSLogGetCommitTs(xid);
-	
-	appendStringInfo(&str, "csn: "UINT64_FORMAT, cts);
+	cts = CTSLogGetCommitTs(xid);
 
-    PG_RETURN_CSTRING(str.data);
+	appendStringInfo(&str, "csn: " UINT64_FORMAT, cts);
+
+	PG_RETURN_CSTRING(str.data);
 }
 
 /*
@@ -1187,7 +1192,7 @@ WriteTruncateXlogRec(int pageno, TransactionId oldestXact)
 
 	xlrec.pageno = pageno;
 	xlrec.oldestXact = oldestXact;
-	
+
 	XLogBeginInsert();
 	XLogRegisterData((char *) (&xlrec), sizeof(xl_ctslog_truncate));
 	recptr = XLogInsert(RM_CTSLOG_ID, CTSLOG_TRUNCATE);
@@ -1201,7 +1206,7 @@ static XLogRecPtr
 WriteSetTimestampXlogRec(TransactionId mainxid, int nsubxids,
 						 TransactionId *subxids, CommitSeqNo csn)
 {
-	xl_cts_set record;
+	xl_cts_set	record;
 
 	record.cts = csn;
 	record.mainxid = mainxid;
@@ -1229,30 +1234,30 @@ ctslog_redo(XLogReaderState *record)
 	{
 		int			pageno;
 		int			slotno;
-		int            partitionno;
-        LWLock        *partitionlock;
+		int			partitionno;
+		LWLock	   *partitionlock;
 
 		memcpy(&pageno, XLogRecGetData(record), sizeof(int));
-		
+
 		partitionno = PagenoMappingPartitionno(CtslogCtl, pageno);
-        
-        partitionlock = GetPartitionLock(CtslogCtl, partitionno);
-        elog(DEBUG1, "redo committs: zero partitionno %d pageno %d", partitionno, pageno);
-        LWLockAcquire(partitionlock, LW_EXCLUSIVE);
+
+		partitionlock = GetPartitionLock(CtslogCtl, partitionno);
+		elog(DEBUG1, "redo committs: zero partitionno %d pageno %d", partitionno, pageno);
+		LWLockAcquire(partitionlock, LW_EXCLUSIVE);
 		slotno = ZeroCTSLOGPage(pageno, partitionno, false);
-		LruWritePage(CtslogCtl,partitionno, slotno);
+		LruWritePage(CtslogCtl, partitionno, slotno);
 		Assert(!CtslogCtl->shared[partitionno]->page_dirty[slotno]);
 
 		LWLockRelease(partitionlock);
 	}
 	else if (info == CTSLOG_TRUNCATE)
 	{
-		int partitionno;
+		int			partitionno;
 		xl_ctslog_truncate xlrec;
 
 		memcpy(&xlrec, XLogRecGetData(record), sizeof(xl_ctslog_truncate));
 
-        partitionno = PagenoMappingPartitionno(CtslogCtl, xlrec.pageno);
+		partitionno = PagenoMappingPartitionno(CtslogCtl, xlrec.pageno);
 
 		/*
 		 * During XLOG replay, latest_page_number isn't set up yet; insert a
@@ -1271,7 +1276,7 @@ ctslog_redo(XLogReaderState *record)
 
 		nsubxids = ((XLogRecGetDataLen(record) - SizeOfCtsSet) /
 					sizeof(TransactionId));
-		
+
 		if (nsubxids > 0)
 		{
 			subxids = palloc(sizeof(TransactionId) * nsubxids);

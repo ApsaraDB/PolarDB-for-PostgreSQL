@@ -708,9 +708,9 @@ GuessControlValues(void)
 	ControlFile.checkPointCopy.fullPageWrites = false;
 	ControlFile.checkPointCopy.nextXidEpoch = 0;
 	ControlFile.checkPointCopy.nextXid = FirstNormalTransactionId;
-	#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
 	ControlFile.checkPointCopy.maxCommitTs = COMMITSEQNO_FIRST_NORMAL;
-	#endif
+#endif
 	ControlFile.checkPointCopy.nextOid = FirstBootstrapObjectId;
 	ControlFile.checkPointCopy.nextMulti = FirstMultiXactId;
 	ControlFile.checkPointCopy.nextMultiOffset = 0;

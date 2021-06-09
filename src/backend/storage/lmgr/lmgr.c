@@ -616,14 +616,15 @@ XactLockTableWait(TransactionId xid, Relation rel, ItemPointer ctid,
 		 * Ok, this xid is not running anymore. But it might be a
 		 * subtransaction whose parent is still running.
 		 */
-		//csn = TransactionIdGetCommitSeqNo(xid);
-		//if (COMMITSEQNO_IS_COMMITTED(csn) || COMMITSEQNO_IS_ABORTED(csn))
-		//	break;
+		/* csn = TransactionIdGetCommitSeqNo(xid); */
+		/* if (COMMITSEQNO_IS_COMMITTED(csn) || COMMITSEQNO_IS_ABORTED(csn)) */
+		/* break; */
 
 		parentXid = SubTransGetParent(xid);
 		if (parentXid == InvalidTransactionId)
 		{
 			CommitSeqNo csn;
+
 			csn = TransactionIdGetCommitSeqNo(xid);
 			Assert(COMMITSEQNO_IS_COMMITTED(csn) || COMMITSEQNO_IS_ABORTED(csn));
 			if (!(COMMITSEQNO_IS_COMMITTED(csn) || COMMITSEQNO_IS_ABORTED(csn)))
@@ -668,6 +669,7 @@ ConditionalXactLockTableWait(TransactionId xid)
 		 * subtransaction whose parent is still running.
 		 */
 		CommitSeqNo csn = TransactionIdGetCommitSeqNo(xid);
+
 		if (COMMITSEQNO_IS_COMMITTED(csn) || COMMITSEQNO_IS_ABORTED(csn))
 			break;
 

@@ -5,7 +5,7 @@
  *
  * Support remote recovery.
  * Author: Junbin Kang
- * 
+ *
  * Portions Copyright (c) 2020, Alibaba Group Holding Limited
  * Portions Copyright (c) 2013-2018, PostgreSQL Global Development Group
  *
@@ -1131,10 +1131,10 @@ DecodeXLogRecord(XLogReaderState *state, XLogRecord *record, char **errormsg)
 			blk->flags = fork_flags;
 			blk->has_image = ((fork_flags & BKPBLOCK_HAS_IMAGE) != 0);
 			blk->has_data = ((fork_flags & BKPBLOCK_HAS_DATA) != 0);
-			
-			#ifdef ENABLE_REMOTE_RECOVERY
+
+#ifdef ENABLE_REMOTE_RECOVERY
 			blk->remote_fetch_image = ((fork_flags & BKPBLOCK_NEEDS_REMOTE_FETCH) != 0);
-			#endif
+#endif
 
 			COPY_HEADER_FIELD(&blk->data_len, sizeof(uint16));
 			/* cross-check that the HAS_DATA flag is set iff data_length > 0 */
@@ -1268,7 +1268,7 @@ DecodeXLogRecord(XLogReaderState *state, XLogRecord *record, char **errormsg)
 
 	if (remaining != datatotal)
 		goto shortdata_err;
-	
+
 	/*
 	 * Ok, we've parsed the fragment headers, and verified that the total
 	 * length of the payload in the fragments is equal to the amount of data

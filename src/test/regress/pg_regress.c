@@ -121,7 +121,8 @@ static int	fail_count = 0;
 static int	fail_ignore_count = 0;
 
 /* POLAR */
-static int  dma_ignore_count = 0;
+static int	dma_ignore_count = 0;
+
 /* POLAR end */
 
 static bool directory_exists(const char *dir);
@@ -262,7 +263,7 @@ status_end(void)
 		fprintf(logfile, "\n");
 }
 
-static void 
+static void
 polar_dma_create_pg_conf(char *node_name)
 {
 	FILE	   *pg_conf;
@@ -270,12 +271,12 @@ polar_dma_create_pg_conf(char *node_name)
 	char		buf[MAXPGPATH * 4];
 
 	/*
-	 * Adjust the default postgresql.conf for regression testing. The user
-	 * can specify a file to be appended; in any case we expand logging
-	 * and set max_prepared_transactions to enable testing of prepared
-	 * xacts.  (Note: to reduce the probability of unexpected shmmax
-	 * failures, don't set max_prepared_transactions any higher than
-	 * actually needed by the prepared_xacts regression test.)
+	 * Adjust the default postgresql.conf for regression testing. The user can
+	 * specify a file to be appended; in any case we expand logging and set
+	 * max_prepared_transactions to enable testing of prepared xacts.  (Note:
+	 * to reduce the probability of unexpected shmmax failures, don't set
+	 * max_prepared_transactions any higher than actually needed by the
+	 * prepared_xacts regression test.)
 	 */
 	snprintf(buf, sizeof(buf), "%s/%s/data/postgresql.conf", temp_instance, node_name);
 	pg_conf = fopen(buf, "a");
@@ -294,15 +295,6 @@ polar_dma_create_pg_conf(char *node_name)
 	fputs("max_worker_processes = 16\n", pg_conf);
 	fputs("max_parallel_replay_workers = 0\n", pg_conf);
 	fputs("allow_hot_standby_inconsistency = off\n", pg_conf);
-
-	/*
-	 * Many of the EDB tests originate from old times when the default
-	 * autovacuum_vacuum_threshold was 1000. It has since been lowered
-	 * upstream, but we've been too lazy to update the regression tests
-	 * or expected output for differences in output order etc. that it
-	 * caused.
-	 */
-	/*fputs("autovacuum_vacuum_threshold = 1000\n", pg_conf);*/
 
 	for (sl = temp_configs; sl != NULL; sl = sl->next)
 	{
@@ -326,26 +318,23 @@ polar_dma_create_pg_conf(char *node_name)
 #ifdef ENABLE_SSPI
 
 	/*
-	 * Since we successfully used the same buffer for the much-longer
-	 * "initdb" command, this can't truncate.
+	 * Since we successfully used the same buffer for the much-longer "initdb"
+	 * command, this can't truncate.
 	 */
-	if (!no_restrict_auth)
-	{
-		snprintf(buf, sizeof(buf), "%s/%s/data", temp_instance, node_name);
-		config_sspi_auth(buf);
-	}
+	snprintf(buf, sizeof(buf), "%s/%s/data", temp_instance, node_name);
+	config_sspi_auth(buf);
 #elif !defined(HAVE_UNIX_SOCKETS)
 #error Platform has no means to secure the test installation.
 #endif
 }
 
-static void 
+static void
 polar_dma_create_dma_conf(char *node_name, bool follower)
 {
-	FILE	   	*dma_conf;
+	FILE	   *dma_conf;
 	char		buf[MAXPGPATH * 4];
-	const char	*username;
-	char		*errstr;
+	const char *username;
+	char	   *errstr;
 
 	snprintf(buf, sizeof(buf), "%s/%s/data/polar_dma.conf", temp_instance, node_name);
 	dma_conf = fopen(buf, "a");
@@ -378,10 +367,10 @@ polar_dma_create_dma_conf(char *node_name, bool follower)
 	fclose(dma_conf);
 }
 
-static int 
+static int
 polar_dma_start_node(char *node_name, int node_port, bool follower)
 {
-	PID_TYPE current_postmaster_pid = INVALID_PID;
+	PID_TYPE	current_postmaster_pid = INVALID_PID;
 	char		buf[MAXPGPATH * 4];
 	const char *env_wait;
 	int			wait_seconds;
@@ -392,17 +381,17 @@ polar_dma_start_node(char *node_name, int node_port, bool follower)
 	 */
 	header(_("starting postmaster of %s on port %d"), node_name, node_port);
 	snprintf(buf, sizeof(buf),
-			"\"%s%spostgres\" -D \"%s/%s/data\" %s "
-			"-c \"listen_addresses=%s\" -k \"%s\" -p %d "
-			"> \"%s/log/%s/postmaster.log\" 2>&1",
-			bindir ? bindir : "",
-			bindir ? "/" : "",
-			temp_instance, node_name, debug ? " -d 5" : "",
-			hostname ? hostname : "localhost", sockdir ? sockdir : "",
-			node_port, outputdir, node_name);
+			 "\"%s%spostgres\" -D \"%s/%s/data\" %s "
+			 "-c \"listen_addresses=%s\" -k \"%s\" -p %d "
+			 "> \"%s/log/%s/postmaster.log\" 2>&1",
+			 bindir ? bindir : "",
+			 bindir ? "/" : "",
+			 temp_instance, node_name, debug ? " -d 5" : "",
+			 hostname ? hostname : "localhost", sockdir ? sockdir : "",
+			 node_port, outputdir, node_name);
 	fprintf(stdout, "================================================\n"
-			 		"cmd: %s\n"
-					"================================================\n", buf);
+			"cmd: %s\n"
+			"================================================\n", buf);
 	current_postmaster_pid = spawn_process(buf);
 	if (current_postmaster_pid == INVALID_PID)
 	{
@@ -413,26 +402,26 @@ polar_dma_start_node(char *node_name, int node_port, bool follower)
 
 	if (follower)
 	{
-		psql_command("postgres", "alter system dma add follower \'%s:%d\'", 
-				hostname ? hostname : "localhost", node_port);
-	}	
+		psql_command("postgres", "alter system dma add follower \'%s:%d\'",
+					 hostname ? hostname : "localhost", node_port);
+	}
 
 	/*
 	 * Check if there is a postmaster running already.
 	 */
 	snprintf(buf, sizeof(buf),
-			"\"%s%spsql\" -X template1 -p %d <%s 2>%s",
-			bindir ? bindir : "",
-			bindir ? "/" : "",
-			node_port,
-			DEVNULL, DEVNULL);
+			 "\"%s%spsql\" -X template1 -p %d <%s 2>%s",
+			 bindir ? bindir : "",
+			 bindir ? "/" : "",
+			 node_port,
+			 DEVNULL, DEVNULL);
 
 	/*
-	 * Wait till postmaster is able to accept connections; normally this
-	 * is only a second or so, but Cygwin is reportedly *much* slower, and
-	 * test builds using Valgrind or similar tools might be too.  Hence,
-	 * allow the default timeout of 60 seconds to be overridden from the
-	 * PGCTLTIMEOUT environment variable.
+	 * Wait till postmaster is able to accept connections; normally this is
+	 * only a second or so, but Cygwin is reportedly *much* slower, and test
+	 * builds using Valgrind or similar tools might be too.  Hence, allow the
+	 * default timeout of 60 seconds to be overridden from the PGCTLTIMEOUT
+	 * environment variable.
 	 */
 	env_wait = getenv("PGCTLTIMEOUT");
 	if (env_wait != NULL)
@@ -456,12 +445,12 @@ polar_dma_start_node(char *node_name, int node_port, bool follower)
 #ifndef WIN32
 		if (waitpid(current_postmaster_pid, NULL, WNOHANG) == current_postmaster_pid)
 #else
-			if (WaitForSingleObject(current_postmaster_pid, 0) == WAIT_OBJECT_0)
+		if (WaitForSingleObject(current_postmaster_pid, 0) == WAIT_OBJECT_0)
 #endif
-			{
-				fprintf(stderr, _("\n%s: postmaster failed\nExamine %s/log/%s/postmaster.log for the reason\n"), progname, outputdir, node_name);
-				exit(2);
-			}
+		{
+			fprintf(stderr, _("\n%s: postmaster failed\nExamine %s/log/%s/postmaster.log for the reason\n"), progname, outputdir, node_name);
+			exit(2);
+		}
 
 		pg_usleep(1000000L);
 	}
@@ -472,13 +461,12 @@ polar_dma_start_node(char *node_name, int node_port, bool follower)
 
 		/*
 		 * If we get here, the postmaster is probably wedged somewhere in
-		 * startup.  Try to kill it ungracefully rather than leaving a
-		 * stuck postmaster that might interfere with subsequent test
-		 * attempts.
+		 * startup.  Try to kill it ungracefully rather than leaving a stuck
+		 * postmaster that might interfere with subsequent test attempts.
 		 */
 #ifndef WIN32
 		if (kill(current_postmaster_pid, SIGKILL) != 0 &&
-				errno != ESRCH)
+			errno != ESRCH)
 			fprintf(stderr, _("\n%s: could not kill failed postmaster: %s\n"),
 					progname, strerror(errno));
 #else
@@ -497,7 +485,7 @@ polar_dma_start_node(char *node_name, int node_port, bool follower)
 #define ULONGPID(x) (unsigned long) (x)
 #endif
 	printf(_("%s running on port %d with PID %lu\n"),
-			node_name, port, ULONGPID(current_postmaster_pid));
+		   node_name, port, ULONGPID(current_postmaster_pid));
 
 	return current_postmaster_pid;
 }
@@ -512,26 +500,24 @@ polar_dma_init_node(char *node_name, int node_port, uint64 sys_identifier, bool 
 	/* initdb */
 	header(_("initializing database system"));
 	snprintf(buf, sizeof(buf),
-			"\"%s%sinitdb\" -D \"%s/%s/data\" "
+			 "\"%s%sinitdb\" -D \"%s/%s/data\" "
 #ifdef POLARDB_X
-			"--nodename=regress --nodetype=coordinator "
-			"--master_gtm_nodename=regress_gtm --master_gtm_ip=localhost "
-			"--master_gtm_port=9999 "
-#endif /*POLARDB_X*/
-			"--no-clean -i %lu --no-sync%s%s%s%s > \"%s/log/initdb.log\" 2>&1",
-			bindir ? bindir : "",
-			bindir ? "/" : "",
-			temp_instance,
-			node_name,
-			sys_identifier,
-			debug ? " --debug" : "",
-			nolocale ? " --no-locale" : "",
-			user ? " --username=" : "",
-			user ? user : "",
-			outputdir);
+			 "--nodename=regress --nodetype=coordinator "
+			 "--master_gtm_nodename=regress_gtm --master_gtm_ip=localhost "
+			 "--master_gtm_port=9999 "
+#endif							/* POLARDB_X */
+			 "--no-clean -i %lu --no-sync%s%s > \"%s/log/initdb.log\" 2>&1",
+			 bindir ? bindir : "",
+			 bindir ? "/" : "",
+			 temp_instance,
+			 node_name,
+			 sys_identifier,
+			 debug ? " --debug" : "",
+			 nolocale ? " --no-locale" : "",
+			 outputdir);
 	fprintf(stdout, "================================================\n"
-			 		"cmd: %s\n"
-					"================================================\n", buf);
+			"cmd: %s\n"
+			"================================================\n", buf);
 	if (system(buf))
 	{
 		fprintf(stderr, _("\n%s: initdb failed\nExamine %s/log/%s/initdb.log for the reason.\nCommand was: %s\n"), progname, outputdir, node_name, buf);
@@ -545,11 +531,11 @@ polar_dma_init_node(char *node_name, int node_port, uint64 sys_identifier, bool 
 	 * Check if there is a postmaster running already.
 	 */
 	snprintf(buf2, sizeof(buf2),
-			"\"%s%spsql\" -X template1 -p %d <%s 2>%s",
-			bindir ? bindir : "",
-			bindir ? "/" : "",
-			node_port,
-			DEVNULL, DEVNULL);
+			 "\"%s%spsql\" -X template1 -p %d <%s 2>%s",
+			 bindir ? bindir : "",
+			 bindir ? "/" : "",
+			 node_port,
+			 DEVNULL, DEVNULL);
 
 
 	for (i = 0; i < 16; i++)
@@ -581,23 +567,23 @@ polar_dma_init_node(char *node_name, int node_port, uint64 sys_identifier, bool 
 	 */
 	header(_("init dma meta for node: %s"), node_name);
 	snprintf(buf, sizeof(buf),
-			"\"%s%spostgres\" -D \"%s/%s/data\" %s "
-			"-c \"listen_addresses=%s\" -k \"%s\" "
-			"-c \"polar_dma_init_meta=ON\" "
-			"-c \"%s=\"%s:%d%s\"\" "
-			"-p %d "
-			"> \"%s/log/%s/postmaster_init_meta.log\" 2>&1",
-			bindir ? bindir : "",
-			bindir ? "/" : "",
-			temp_instance, node_name, debug ? " -d 5" : "",
-			hostname ? hostname : "localhost", sockdir ? sockdir : "",
-			logger ? "polar_dma_learners_info" : "polar_dma_members_info",
-			hostname ? hostname : "localhost", node_port,
-			logger ? "" : "@1", node_port,
-			outputdir, node_name);
+			 "\"%s%spostgres\" -D \"%s/%s/data\" %s "
+			 "-c \"listen_addresses=%s\" -k \"%s\" "
+			 "-c \"polar_dma_init_meta=ON\" "
+			 "-c \"%s=\"%s:%d%s\"\" "
+			 "-p %d "
+			 "> \"%s/log/%s/postmaster_init_meta.log\" 2>&1",
+			 bindir ? bindir : "",
+			 bindir ? "/" : "",
+			 temp_instance, node_name, debug ? " -d 5" : "",
+			 hostname ? hostname : "localhost", sockdir ? sockdir : "",
+			 logger ? "polar_dma_learners_info" : "polar_dma_members_info",
+			 hostname ? hostname : "localhost", node_port,
+			 logger ? "" : "@1", node_port,
+			 outputdir, node_name);
 	fprintf(stdout, "================================================\n"
-			 		"cmd: %s\n"
-					"================================================\n", buf);
+			"cmd: %s\n"
+			"================================================\n", buf);
 	if (system(buf))
 	{
 		fprintf(stderr, _("\n%s: could not init dma meta of %s: %s\n"),
@@ -607,30 +593,28 @@ polar_dma_init_node(char *node_name, int node_port, uint64 sys_identifier, bool 
 	return node_port;
 }
 
-static int 
+static int
 polar_dma_build_node_from_backup(char *node_name, int start_port)
 {
 	char		buf[MAXPGPATH * 4];
 	char		buf2[MAXPGPATH * 4];
 	int			current_port = start_port;
-	int 		i;
+	int			i;
 
 	/* pg_basebackup */
 	header(_("initializing cluster node: %s"), node_name);
 	snprintf(buf, sizeof(buf),
-			"\"%s%spg_basebackup\" -D %s/%s/data -p %d %s%s > \"%s/log/%s/basebackup.log\" 2>&1",
-			bindir ? bindir : "",
-			bindir ? "/" : "",
-			temp_instance,
-			node_name,
-			port,
-			user ? " --username=" : "",
-			user ? user : "",
-			outputdir,
-			node_name);
+			 "\"%s%spg_basebackup\" -D %s/%s/data -p %d > \"%s/log/%s/basebackup.log\" 2>&1",
+			 bindir ? bindir : "",
+			 bindir ? "/" : "",
+			 temp_instance,
+			 node_name,
+			 port,
+			 outputdir,
+			 node_name);
 	fprintf(stdout, "================================================\n"
-			 		"cmd: %s\n"
-					"================================================\n", buf);
+			"cmd: %s\n"
+			"================================================\n", buf);
 	if (system(buf))
 	{
 		fprintf(stderr, _("\n%s: pg_basebackup failed\nExamine %s/log/%s/basebackup.log for the reason.\nCommand was: %s\n"), progname, outputdir, node_name, buf);
@@ -644,11 +628,11 @@ polar_dma_build_node_from_backup(char *node_name, int start_port)
 	 * Check if there is a postmaster running already.
 	 */
 	snprintf(buf2, sizeof(buf2),
-			"\"%s%spsql\" -X template1 -p %d <%s 2>%s",
-			bindir ? bindir : "",
-			bindir ? "/" : "",
-			current_port,
-			DEVNULL, DEVNULL);
+			 "\"%s%spsql\" -X template1 -p %d <%s 2>%s",
+			 bindir ? bindir : "",
+			 bindir ? "/" : "",
+			 current_port,
+			 DEVNULL, DEVNULL);
 
 	for (i = 0; i < 16; i++)
 	{
@@ -675,21 +659,21 @@ polar_dma_build_node_from_backup(char *node_name, int start_port)
 	 */
 	header(_("init dma meta of %s"), node_name);
 	snprintf(buf, sizeof(buf),
-			"\"%s%spostgres\" -D \"%s/%s/data\" %s "
-			"-c \"listen_addresses=%s\" -k \"%s\" "
-			"-c \"polar_dma_init_meta=ON\" "
-			"-c \"polar_dma_learners_info=\"%s:%d\"\" "
-			"-p %d "
-			"> \"%s/log/%s/postmaster_init_meta.log\" 2>&1",
-			bindir ? bindir : "",
-			bindir ? "/" : "",
-			temp_instance, node_name, debug ? " -d 5" : "",
-			hostname ? hostname : "localhost", sockdir ? sockdir : "",
-			hostname ? hostname : "localhost", current_port, current_port,
-			outputdir, node_name);
+			 "\"%s%spostgres\" -D \"%s/%s/data\" %s "
+			 "-c \"listen_addresses=%s\" -k \"%s\" "
+			 "-c \"polar_dma_init_meta=ON\" "
+			 "-c \"polar_dma_learners_info=\"%s:%d\"\" "
+			 "-p %d "
+			 "> \"%s/log/%s/postmaster_init_meta.log\" 2>&1",
+			 bindir ? bindir : "",
+			 bindir ? "/" : "",
+			 temp_instance, node_name, debug ? " -d 5" : "",
+			 hostname ? hostname : "localhost", sockdir ? sockdir : "",
+			 hostname ? hostname : "localhost", current_port, current_port,
+			 outputdir, node_name);
 	fprintf(stdout, "================================================\n"
-			 		"cmd: %s\n"
-					"================================================\n", buf);
+			"cmd: %s\n"
+			"================================================\n", buf);
 	if (system(buf))
 	{
 		fprintf(stderr, _("\n%s: could not init dma meta of %s: %s\n"),
@@ -699,7 +683,7 @@ polar_dma_build_node_from_backup(char *node_name, int start_port)
 	return current_port;
 }
 
-static bool 
+static bool
 wait_became_leader(char *node_name, int leader_port)
 {
 	char		buf[MAXPGPATH * 4];
@@ -708,32 +692,32 @@ wait_became_leader(char *node_name, int leader_port)
 	 * Check if there is a postmaster running already.
 	 */
 	snprintf(buf, sizeof(buf),
-			"\"%s%spsql\" -X postgres -p %d -c \"do \\$\\$ "
-			" DECLARE "
-			"   counter integer := %d; "
-			"	BEGIN "
-			"	  LOOP "
-			"     PERFORM 1 where pg_is_in_recovery() = false; "
-			"	  IF FOUND THEN "
-			"       RAISE NOTICE \'%s became leader\'; "
-			"		    EXIT; "
-			"	  END IF;"
-			"     PERFORM pg_sleep(1); "
-			"		  counter := counter - 1; "
-			"		  IF counter = 0 THEN "
-			" 		  RAISE EXCEPTION \'became leader timeout\'; "
-			"		    EXIT; "
-			"	    END IF; "
-			"	  END LOOP; "
-			" END\\$\\$;\" ",
-			bindir ? bindir : "",
-			bindir ? "/" : "",
-			leader_port,
-			dma_election_timeout, node_name);
+			 "\"%s%spsql\" -X postgres -p %d -c \"do \\$\\$ "
+			 " DECLARE "
+			 "   counter integer := %d; "
+			 "	BEGIN "
+			 "	  LOOP "
+			 "     PERFORM 1 where pg_is_in_recovery() = false; "
+			 "	  IF FOUND THEN "
+			 "       RAISE NOTICE \'%s became leader\'; "
+			 "		    EXIT; "
+			 "	  END IF;"
+			 "     PERFORM pg_sleep(1); "
+			 "		  counter := counter - 1; "
+			 "		  IF counter = 0 THEN "
+			 " 		  RAISE EXCEPTION \'became leader timeout\'; "
+			 "		    EXIT; "
+			 "	    END IF; "
+			 "	  END LOOP; "
+			 " END\\$\\$;\" ",
+			 bindir ? bindir : "",
+			 bindir ? "/" : "",
+			 leader_port,
+			 dma_election_timeout, node_name);
 
 	fprintf(stdout, "================================================\n"
-			 		"cmd: %s\n"
-					"================================================\n", buf);
+			"cmd: %s\n"
+			"================================================\n", buf);
 
 	/* kill postmaster if psql failed */
 	if (system(buf) != 0)
@@ -743,14 +727,15 @@ wait_became_leader(char *node_name, int leader_port)
 	return true;
 }
 
-static void 
+static void
 start_postmaster_cluster(void)
 {
 	char		buf[MAXPGPATH * 4];
-	int			port_f1, port_f2;
+	int			port_f1,
+				port_f2;
 	bool		suc;
-	uint64	sysidentifier;
-	struct 	timeval tv;
+	uint64		sysidentifier;
+	struct timeval tv;
 
 	/*
 	 * Prepare the temp instance
@@ -810,7 +795,7 @@ start_postmaster_cluster(void)
 	{
 #ifndef WIN32
 		if (kill(postmaster_pid, SIGKILL) != 0 &&
-				errno != ESRCH)
+			errno != ESRCH)
 			fprintf(stderr, _("\n%s: could not kill failed postmaster: %s\n"),
 					progname, strerror(errno));
 #else
@@ -824,14 +809,14 @@ start_postmaster_cluster(void)
 
 	if (dma_cluster)
 	{
-		port_f1 = polar_dma_build_node_from_backup("node2", port+1);
+		port_f1 = polar_dma_build_node_from_backup("node2", port + 1);
 		polar_dma_start_node("node2", port_f1, true);
-		port_f2 = polar_dma_init_node("node3", port_f1+1, sysidentifier, true);
+		port_f2 = polar_dma_init_node("node3", port_f1 + 1, sysidentifier, true);
 		polar_dma_start_node("node3", port_f2, true);
 	}
 }
 
-static int 
+static int
 stop_postmaster_node(char *node_name)
 {
 	/* We use pg_ctl to issue the kill and wait for stop */
@@ -843,11 +828,11 @@ stop_postmaster_node(char *node_name)
 	fflush(stderr);
 
 	snprintf(buf, sizeof(buf),
-			"\"%s%spg_ctl\" stop -mi -D \"%s/%s/data\" -s",
-			bindir ? bindir : "",
-			bindir ? "/" : "",
-			temp_instance,
-			node_name);
+			 "\"%s%spg_ctl\" stop -mi -D \"%s/%s/data\" -s",
+			 bindir ? bindir : "",
+			 bindir ? "/" : "",
+			 temp_instance,
+			 node_name);
 	r = system(buf);
 
 	return r;
@@ -863,19 +848,22 @@ stop_postmaster(void)
 	{
 		if (postmaster_running)
 		{
-			int			r1, r2 = 0, r3 = 0;
+			int			r1,
+						r2 = 0,
+						r3 = 0;
+
 			postmaster_running = false;
 			r1 = stop_postmaster_node("node1");
 			if (dma_cluster)
 			{
 				r2 = stop_postmaster_node("node2");
 				r3 = stop_postmaster_node("node3");
-			}	
+			}
 			if (r1 != 0 || r2 != 0 || r3 != 0)
 			{
 				fprintf(stderr, _("\n%s: could not stop postmaster: exit code was %d, %d, %d\n"),
 						progname, r1, r2, r3);
-				_exit(2);			/* not exit(), that could be recursive */
+				_exit(2);		/* not exit(), that could be recursive */
 			}
 			postmaster_running = false;
 		}
@@ -2270,7 +2258,7 @@ run_schedule(const char *schedule, test_function tfunc)
 				while (*c && isspace((unsigned char) *c))
 					c++;
 				add_stringlist_item(&ignorelist, c);
-				dma_ignore_count ++;
+				dma_ignore_count++;
 				continue;
 			}
 			else

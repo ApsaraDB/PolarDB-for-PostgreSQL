@@ -106,7 +106,6 @@
 #endif
 
 #include "polar_dma/polar_dma.h"
-#include "polar_dma/polar_dma.h"
 
 #ifndef PG_KRB_SRVTAB
 #define PG_KRB_SRVTAB ""
@@ -152,7 +151,7 @@ char	   *GUC_check_errdetail_string;
 char	   *GUC_check_errhint_string;
 
 /* POLAR GUCS */
-int 	polar_dma_max_standby_wait_delay_size_mb = 0;
+int			polar_dma_max_standby_wait_delay_size_mb = 0;
 
 static void do_serialize(char **destptr, Size *maxbytes, const char *fmt,...) pg_attribute_printf(3, 4);
 
@@ -488,7 +487,7 @@ char	   *cluster_name = "";
 char	   *ConfigFileName;
 char	   *HbaFileName;
 char	   *IdentFileName;
-char       *PolarDMAFileName;
+char	   *PolarDMAFileName;
 char	   *external_pid_file;
 
 char	   *pgstat_temp_directory;
@@ -937,24 +936,24 @@ static struct config_bool ConfigureNamesBool[] =
 	},
 
 	{
-        {"enable_parallel_recovery_bypage", PGC_POSTMASTER, CUSTOM_OPTIONS,
-            gettext_noop("enable parallel recovery by page"),
-            NULL
-        },
-        &enable_parallel_recovery_bypage,
-        false,
-        NULL, NULL, NULL
-    },
+		{"enable_parallel_recovery_bypage", PGC_POSTMASTER, CUSTOM_OPTIONS,
+			gettext_noop("enable parallel recovery by page"),
+			NULL
+		},
+		&enable_parallel_recovery_bypage,
+		false,
+		NULL, NULL, NULL
+	},
 
 	{
-        {"enable_parallel_recovery_locklog", PGC_POSTMASTER, CUSTOM_OPTIONS,
-            gettext_noop("enable logging of file locks during parallel recovery"),
-            NULL
-        },
-        &enable_parallel_recovery_locklog,
-        false,
-        NULL, NULL, NULL
-    },
+		{"enable_parallel_recovery_locklog", PGC_POSTMASTER, CUSTOM_OPTIONS,
+			gettext_noop("enable logging of file locks during parallel recovery"),
+			NULL
+		},
+		&enable_parallel_recovery_locklog,
+		false,
+		NULL, NULL, NULL
+	},
 #endif
 
 	{
@@ -1348,7 +1347,7 @@ static struct config_bool ConfigureNamesBool[] =
 		false,
 		NULL, NULL, NULL
 	},
-	
+
 	{
 		{"wal_warmup", PGC_SUSET, WAL_SETTINGS,
 			gettext_noop("Warmup wal file before write."),
@@ -1358,7 +1357,7 @@ static struct config_bool ConfigureNamesBool[] =
 		true,
 		NULL, NULL, NULL
 	},
-	
+
 
 	{
 		{"log_checkpoints", PGC_SIGHUP, LOGGING_WHAT,
@@ -2118,47 +2117,47 @@ static struct config_int ConfigureNamesInt[] =
 {
 
 #ifdef ENABLE_DISTRIBUTED_TRANSACTION
-	 {
-        {"gc_interval", PGC_POSTMASTER, REPLICATION_MASTER,
-            gettext_noop("The time interval (ms) before which VACUUM and HOT cleanup could clean the transactions, if any."),
-            NULL
-        },
-        &gc_interval,
-        100, 1, INT_MAX,
-        NULL, NULL, NULL
-    },
-
- 	{
-        {"snapshot_delay", PGC_POSTMASTER, REPLICATION_MASTER,
-            gettext_noop("The delay (ms) after acquiring a global snapshot."),
-            NULL
-        },
-        &snapshot_delay,
-        0, 0, INT_MAX,
-        NULL, NULL, NULL
-    },
 	{
-        {"delay_before_set_prepare_ts", PGC_USERSET, DEVELOPER_OPTIONS,
-            gettext_noop("Delay before prepare ts is set (ms)."),
-            NULL
-        },
-        &delay_before_set_prepare_ts,
-        0, 0, 100000000,
-        NULL, NULL, NULL
-    },
+		{"gc_interval", PGC_POSTMASTER, REPLICATION_MASTER,
+			gettext_noop("The time interval (ms) before which VACUUM and HOT cleanup could clean the transactions, if any."),
+			NULL
+		},
+		&gc_interval,
+		100, 1, INT_MAX,
+		NULL, NULL, NULL
+	},
 
-    {
-        {"delay_after_set_prepare_ts", PGC_USERSET, DEVELOPER_OPTIONS,
-            gettext_noop("Delay after prepare ts is set (ms)."),
-            NULL
-        },
-        &delay_after_set_prepare_ts,
-        0, 0, 100000000,
-        NULL, NULL, NULL
-    },
+	{
+		{"snapshot_delay", PGC_POSTMASTER, REPLICATION_MASTER,
+			gettext_noop("The delay (ms) after acquiring a global snapshot."),
+			NULL
+		},
+		&snapshot_delay,
+		0, 0, INT_MAX,
+		NULL, NULL, NULL
+	},
+	{
+		{"delay_before_set_prepare_ts", PGC_USERSET, DEVELOPER_OPTIONS,
+			gettext_noop("Delay before prepare ts is set (ms)."),
+			NULL
+		},
+		&delay_before_set_prepare_ts,
+		0, 0, 100000000,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"delay_after_set_prepare_ts", PGC_USERSET, DEVELOPER_OPTIONS,
+			gettext_noop("Delay after prepare ts is set (ms)."),
+			NULL
+		},
+		&delay_after_set_prepare_ts,
+		0, 0, 100000000,
+		NULL, NULL, NULL
+	},
 #endif
 
- 	{
+	{
 		{"polar_dma_cluster_id", PGC_POSTMASTER, UNGROUPED,
 			gettext_noop("polar consensus cluster id."),
 			NULL
@@ -2171,7 +2170,7 @@ static struct config_int ConfigureNamesInt[] =
 	{
 		{"polar_dma_port_deviation", PGC_POSTMASTER, UNGROUPED,
 			gettext_noop("Set the number which is added to the client port number to "
-					"obtain polar consensus port."),
+						 "obtain polar consensus port."),
 			NULL
 		},
 		&polar_dma_port_deviation,
@@ -2212,7 +2211,7 @@ static struct config_int ConfigureNamesInt[] =
 	{
 		{"polar_dma_log_slot_size", PGC_POSTMASTER, UNGROUPED,
 			gettext_noop("Set the number of polar consensus log slots. "
-					"each slot corresponds to an 8K memory block."),
+						 "each slot corresponds to an 8K memory block."),
 			NULL
 		},
 		&polar_dma_log_slots,
@@ -2342,8 +2341,8 @@ static struct config_int ConfigureNamesInt[] =
 	{
 		{"polar_dma_max_standby_wait_delay_size", PGC_SIGHUP, UNGROUPED,
 			gettext_noop("Sets the maximum delay WAL size for standby wait conflict snapshot."),
-		  NULL,
-		  GUC_UNIT_MB
+			NULL,
+			GUC_UNIT_MB
 		},
 		&polar_dma_max_standby_wait_delay_size_mb,
 		0, 0, INT_MAX,
@@ -2870,18 +2869,18 @@ static struct config_int ConfigureNamesInt[] =
 		5000000, 0, 1000000000,
 		NULL, NULL, NULL
 	},
-	#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
 	{
-        {"vacuum_defer_freeze_min_age", PGC_USERSET, CLIENT_CONN_STATEMENT,
-            gettext_noop("Minimum age at which VACUUM should defer to freeze a table row to avoid failure due to "
-                    "too old timestamp."),
-            NULL
-        },
-        &vacuum_defer_freeze_min_age,
-        10000, 0, 1000000000,
-        NULL, NULL, NULL
+		{"vacuum_defer_freeze_min_age", PGC_USERSET, CLIENT_CONN_STATEMENT,
+			gettext_noop("Minimum age at which VACUUM should defer to freeze a table row to avoid failure due to "
+						 "too old timestamp."),
+			NULL
+		},
+		&vacuum_defer_freeze_min_age,
+		10000, 0, 1000000000,
+		NULL, NULL, NULL
 	},
-	#endif
+#endif
 	{
 		{"vacuum_multixact_freeze_table_age", PGC_USERSET, CLIENT_CONN_STATEMENT,
 			gettext_noop("Multixact age at which VACUUM should scan whole table to freeze tuples."),
@@ -2983,7 +2982,7 @@ static struct config_int ConfigureNamesInt[] =
 		0, 0, INT_MAX,
 		NULL, NULL, NULL
 	},
-	
+
 	{
 		{"min_wal_size", PGC_SIGHUP, WAL_CHECKPOINTS,
 			gettext_noop("Sets the minimum size to shrink the WAL to."),
@@ -3524,7 +3523,7 @@ static struct config_int ConfigureNamesInt[] =
 		NULL, NULL, NULL
 	},
 #endif
- 
+
 	{
 		{"tcp_keepalives_idle", PGC_USERSET, CLIENT_CONN_OTHER,
 			gettext_noop("Time between issuing TCP keepalives."),
@@ -3946,7 +3945,7 @@ static struct config_real ConfigureNamesReal[] =
 
 static struct config_string ConfigureNamesString[] =
 {
- 	{
+	{
 		{"polar_dma_members_info", PGC_POSTMASTER, UNGROUPED,
 			gettext_noop("polar consensus nodes info"),
 			NULL
@@ -4458,7 +4457,7 @@ static struct config_string ConfigureNamesString[] =
 		NULL, NULL, NULL
 	},
 
- 	{
+	{
 		{"polar_dma_file", PGC_POSTMASTER, FILE_LOCATIONS,
 			gettext_noop("Sets the server's \"polar_dma\" configuration file."),
 			NULL,
@@ -5747,7 +5746,7 @@ SelectConfigFiles(const char *userDoption, const char *progname)
 	SetConfigOption("config_file", fname, PGC_POSTMASTER, PGC_S_OVERRIDE);
 	free(fname);
 
- 	/*
+	/*
 	 * Figure out where pg_hba.conf is, and make sure the path is absolute.
 	 */
 	if (PolarDMAFileName)

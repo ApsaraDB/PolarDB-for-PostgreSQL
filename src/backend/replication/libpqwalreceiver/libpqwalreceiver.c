@@ -8,7 +8,7 @@
  *
  * Interfaces to support remote recovery.
  * Author: Junbin Kang
- * 
+ *
  * Portions Copyright (c) 2020, Alibaba Group Holding Limited
  * Portions Copyright (c) 2010-2018, PostgreSQL Global Development Group
  *
@@ -73,11 +73,10 @@ static bool libpqrcv_startstreaming(WalReceiverConn *conn,
 static void libpqrcv_endstreaming(WalReceiverConn *conn,
 					  TimeLineID *next_tli);
 #ifdef ENABLE_REMOTE_RECOVERY
-static bool
-libpqrcv_startfetchpage(WalReceiverConn *conn, 
-					const WalRcvStreamOptions *options);
+static bool libpqrcv_startfetchpage(WalReceiverConn *conn,
+						const WalRcvStreamOptions *options);
 static void libpqrcv_endfetchpage(WalReceiverConn *conn);
-static int 	libpqrcv_fetchpage(WalReceiverConn *conn, char **buffer);
+static int	libpqrcv_fetchpage(WalReceiverConn *conn, char **buffer);
 
 #endif
 static int libpqrcv_receive(WalReceiverConn *conn, char **buffer,
@@ -85,13 +84,11 @@ static int libpqrcv_receive(WalReceiverConn *conn, char **buffer,
 static void libpqrcv_send(WalReceiverConn *conn, const char *buffer,
 			  int nbytes);
 #ifdef ENABLE_DISTRIBUTED_TRANSACTION
-static char *
-libpqrcv_create_slot(WalReceiverConn *conn, const char *slotname,
+static char *libpqrcv_create_slot(WalReceiverConn *conn, const char *slotname,
 					 bool temporary, CRSSnapshotAction snapshot_action,
-					 XLogRecPtr *lsn, GlobalTimestamp *snapshot_start_ts);
+					 XLogRecPtr *lsn, GlobalTimestamp * snapshot_start_ts);
 #else
-static char *
-libpqrcv_create_slot(WalReceiverConn *conn, const char *slotname,
+static char *libpqrcv_create_slot(WalReceiverConn *conn, const char *slotname,
 					 bool temporary, CRSSnapshotAction snapshot_action,
 					 XLogRecPtr *lsn);
 #endif
@@ -452,8 +449,8 @@ libpqrcv_startstreaming(WalReceiverConn *conn,
 		appendStringInfo(&cmd, " TIMELINE %u",
 						 options->proto.physical.startpointTLI);
 
-	 	appendStringInfo(&cmd, " POLAR_REPL_MODE \"%s\"", 
-			 	polar_replication_mode_str(options->polar_repl_mode));
+		appendStringInfo(&cmd, " POLAR_REPL_MODE \"%s\"",
+						 polar_replication_mode_str(options->polar_repl_mode));
 	}
 
 	elog(LOG, "start_replication cmd: %s", cmd.data);
@@ -480,8 +477,8 @@ libpqrcv_startstreaming(WalReceiverConn *conn,
 
 #ifdef ENABLE_REMOTE_RECOVERY
 static bool
-libpqrcv_startfetchpage(WalReceiverConn *conn, 
-								const WalRcvStreamOptions *options)
+libpqrcv_startfetchpage(WalReceiverConn *conn,
+						const WalRcvStreamOptions *options)
 {
 	StringInfoData cmd;
 	PGresult   *res;
@@ -495,11 +492,11 @@ libpqrcv_startfetchpage(WalReceiverConn *conn,
 	appendStringInfo(&cmd, " %X/%X",
 					 (uint32) (options->startpoint >> 32),
 					 (uint32) options->startpoint);
-	
+
 	/* time line */
 	appendStringInfo(&cmd, " TIMELINE %u",
-						 options->proto.physical.startpointTLI);
-	
+					 options->proto.physical.startpointTLI);
+
 	/* Start streaming. */
 	res = libpqrcv_PQexec(conn->streamConn, cmd.data);
 	pfree(cmd.data);
@@ -904,7 +901,7 @@ libpqrcv_fetchpage(WalReceiverConn *conn, char **buffer)
 
 	/* Try to receive a CopyData message */
 	rawlen = PQgetCopyData(conn->streamConn, &conn->recvBuf, 0);
-	
+
 	if (rawlen == -1)			/* end-of-streaming or error */
 	{
 		PGresult   *res;
@@ -984,7 +981,7 @@ libpqrcv_send(WalReceiverConn *conn, const char *buffer, int nbytes)
 static char *
 libpqrcv_create_slot(WalReceiverConn *conn, const char *slotname,
 					 bool temporary, CRSSnapshotAction snapshot_action,
-					 XLogRecPtr *lsn, GlobalTimestamp *snapshot_start_ts)
+					 XLogRecPtr *lsn, GlobalTimestamp * snapshot_start_ts)
 #else
 static char *
 libpqrcv_create_slot(WalReceiverConn *conn, const char *slotname,
@@ -1043,11 +1040,11 @@ libpqrcv_create_slot(WalReceiverConn *conn, const char *slotname,
 	{
 		if (!PQgetisnull(res, 0, 4))
 			*snapshot_start_ts = atol(PQgetvalue(res, 0, 4));
-		else 
+		else
 			*snapshot_start_ts = InvalidGlobalTimestamp;
-		
+
 		if (enable_distri_print)
-			elog(LOG, "logical replication received snapshot start ts "UINT64_FORMAT, *snapshot_start_ts);
+			elog(LOG, "logical replication received snapshot start ts " UINT64_FORMAT, *snapshot_start_ts);
 	}
 #endif
 

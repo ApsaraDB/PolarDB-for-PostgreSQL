@@ -3,7 +3,7 @@
  * logical_clock.c
  *
  * The implementation of hybrid logical clocks.
- * 
+ *
  * Copyright (c) 2020, Alibaba Group Holding Limited
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,7 +14,7 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- * 
+ *
  *
  * src/backend/distributed_txn/logical_clock.c
  *
@@ -34,7 +34,7 @@
 #include "portability/instr_time.h"
 
 
-bool DebugLogicalClock = false;
+bool		DebugLogicalClock = false;
 
 
 /* Init shared memory structures */
@@ -46,11 +46,12 @@ LogicalClockShmemInit(void)
 /*
  * Physical time: | 48 bits milliseconds | 16 bits counter |
  */
-LogicalTime 
+LogicalTime
 PhysicalClockNow(void)
 {
 	LogicalTime milli;
-	instr_time wall;
+	instr_time	wall;
+
 	/*
 	 * In debug mode, the physical clock will be fixed
 	 */
@@ -58,31 +59,34 @@ PhysicalClockNow(void)
 	{
 		return 0;
 	}
-	
+
 
 	/* Use monotonic clock to avoid clock jump back */
 	clock_gettime(CLOCK_REALTIME, &wall);
-	milli = (LogicalTime)INSTR_TIME_GET_MILLISEC(wall);
+	milli = (LogicalTime) INSTR_TIME_GET_MILLISEC(wall);
 	milli <<= 16;
-	
+
 	return milli;
 }
 
-uint64 LogicalTimeGetMillis(LogicalTime ts)
+uint64
+LogicalTimeGetMillis(LogicalTime ts)
 {
 	return ts >> 16;
 }
 
-uint64 LogicalTimeGetCounter(LogicalTime ts)
+uint64
+LogicalTimeGetCounter(LogicalTime ts)
 {
 	return ts & LogicalClockMask;
 }
 
-LogicalTime LogicalClockNow(void)
+LogicalTime
+LogicalClockNow(void)
 {
 	LogicalTime res;
 	LogicalTime newTime = PhysicalClockNow();
-	
+
 	SpinLockAcquire(ClockLock);
 	ClockState = Max(ClockState, newTime);
 	res = ClockState;
@@ -92,31 +96,33 @@ LogicalTime LogicalClockNow(void)
 	return res;
 }
 
-LogicalTime LogicalClockTick(void)
+LogicalTime
+LogicalClockTick(void)
 {
 	LogicalTime res;
 	LogicalTime physicalNow = PhysicalClockNow();
-	
+
 	SpinLockAcquire(ClockLock);
 	ClockState = Max(ClockState, physicalNow);
 	/* TODO handle overflow */
 	ClockState++;
 	res = ClockState;
 	SpinLockRelease(ClockLock);
-	
+
 	Assert(!COMMITSEQNO_IS_SUBTRANS(res));
 	return res;
 }
 
-LogicalTime LogicalClockUpdate(LogicalTime newTime)
+LogicalTime
+LogicalClockUpdate(LogicalTime newTime)
 {
 	LogicalTime res;
-	
+
 	SpinLockAcquire(ClockLock);
 	ClockState = Max(ClockState, newTime);
 	res = ClockState;
 	SpinLockRelease(ClockLock);
-	
+
 	return res;
 }
 
@@ -136,6 +142,7 @@ logical_clock_update(PG_FUNCTION_ARGS)
 {
 	LogicalTime newTime = PG_GETARG_INT64(0);
 	LogicalTime res = LogicalClockUpdate(newTime);
+
 	PG_RETURN_UINT64(res);
 }
 
@@ -143,6 +150,7 @@ Datum
 logical_clock_tick(PG_FUNCTION_ARGS)
 {
 	LogicalTime res = LogicalClockTick();
+
 	PG_RETURN_UINT64(res);
 }
 
@@ -150,9 +158,10 @@ Datum
 logical_clock_debug_set(PG_FUNCTION_ARGS)
 {
 	LogicalTime newTime = PG_GETARG_INT64(0);
+
 	SpinLockAcquire(ClockLock);
 	ClockState = newTime;
 	SpinLockRelease(ClockLock);
-	
+
 	PG_RETURN_NULL();
 }

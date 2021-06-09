@@ -70,7 +70,7 @@ populate_mvcc_test_table(PG_FUNCTION_ARGS)
 	/* shuffle */
 	for (i = 0; i < nrows - 1; i++)
 	{
-		int x = i + (random() % (nrows - i));
+		int			x = i + (random() % (nrows - i));
 		TransactionId tmp;
 
 		tmp = xids[i];
@@ -93,7 +93,7 @@ populate_mvcc_test_table(PG_FUNCTION_ARGS)
 			tup->t_data->t_infomask |= HEAP_XMIN_COMMITTED;
 		HeapTupleHeaderSetXmin(tup->t_data, xids[i]);
 		HeapTupleHeaderSetCmin(tup->t_data, 1);
-		HeapTupleHeaderSetXmax(tup->t_data, 0);		/* for cleanliness */
+		HeapTupleHeaderSetXmax(tup->t_data, 0); /* for cleanliness */
 		tup->t_tableOid = RelationGetRelid(rel);
 
 		heap_freetuple(tup);

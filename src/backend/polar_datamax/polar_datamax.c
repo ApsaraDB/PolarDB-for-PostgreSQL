@@ -1,7 +1,7 @@
 /*-------------------------------------------------------------------------
  *
  * polar_datamax.c
- *	       Datamax for DMA logger	
+ *	       Datamax for DMA logger
  *
  * Copyright (c) 2020, Alibaba Group Holding Limited
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -63,17 +63,18 @@
  * wil be kept while postmaster fork another sub-process. Eventually, all processes
  * know the DataMax mode.
  */
-bool polar_is_dma_logger_mode = false;
+bool		polar_is_dma_logger_mode = false;
 polar_datamax_ctl_t *polar_datamax_ctl = NULL;
+
 /* POLAR: set true when received shutdown request */
-bool polar_datamax_shutdown_requested = false;
+bool		polar_datamax_shutdown_requested = false;
 
 /* POLAR: polar datamax guc parameters */
-int polar_datamax_remove_archivedone_wal_timeout = 60000;
-int polar_datamax_archive_timeout = 60000;
-int polar_datamax_save_replication_slots_timeout = 300000;
-int polar_datamax_prealloc_walfile_timeout = 30000;
-int polar_datamax_prealloc_walfile_num = 2;
+int			polar_datamax_remove_archivedone_wal_timeout = 60000;
+int			polar_datamax_archive_timeout = 60000;
+int			polar_datamax_save_replication_slots_timeout = 300000;
+int			polar_datamax_prealloc_walfile_timeout = 30000;
+int			polar_datamax_prealloc_walfile_num = 2;
 
 
 /*
@@ -82,7 +83,7 @@ int polar_datamax_prealloc_walfile_num = 2;
 Size
 polar_datamax_shmem_size(void)
 {
-	Size size = 0;
+	Size		size = 0;
 
 	if (polar_is_dma_logger_node())
 		size = add_size(size, sizeof(polar_datamax_ctl_t));
@@ -96,17 +97,17 @@ polar_datamax_shmem_size(void)
 void
 polar_datamax_shmem_init(void)
 {
-	bool found = false;
+	bool		found = false;
 
 	if (!polar_is_dma_logger_node())
 		return;
 
 	polar_datamax_ctl = (polar_datamax_ctl_t *)
-						ShmemInitStruct("Datamax control", sizeof(polar_datamax_ctl_t), &found);
+		ShmemInitStruct("Datamax control", sizeof(polar_datamax_ctl_t), &found);
 
 	if (!IsUnderPostmaster)
 	{
-		int lock_tranche = LWLockNewTrancheId();
+		int			lock_tranche = LWLockNewTrancheId();
 
 		Assert(!found);
 		LWLockRegisterTranche(lock_tranche, "datamax meta lock");
@@ -126,9 +127,9 @@ polar_datamax_shmem_init(void)
  * it's not an initial DataMax node or not even a DataMax node.
  */
 bool
-polar_datamax_is_initial(polar_datamax_ctl_t *ctl)
+polar_datamax_is_initial(polar_datamax_ctl_t * ctl)
 {
-	bool ret = false;
+	bool		ret = false;
 
 	if (!polar_is_dma_logger_node())
 		return false;
@@ -151,28 +152,28 @@ polar_datamax_is_initial(polar_datamax_ctl_t *ctl)
  * Otherwise, if not we set all variables 0.
  */
 void
-polar_datamax_init_meta(polar_datamax_meta_data_t *meta, bool create)
+polar_datamax_init_meta(polar_datamax_meta_data_t * meta, bool create)
 {
 	if (create)
 	{
-		meta->magic         = POLAR_DATAMAX_MAGIC;
-		meta->version       = POLAR_DATAMAX_VERSION;
+		meta->magic = POLAR_DATAMAX_MAGIC;
+		meta->version = POLAR_DATAMAX_VERSION;
 	}
 	else
 	{
-		meta->magic         = 0;
-		meta->version       = 0;
+		meta->magic = 0;
+		meta->version = 0;
 	}
 
-	meta->min_timeline_id   = POLAR_INVALID_TIMELINE_ID;
-	meta->min_received_lsn  = InvalidXLogRecPtr;
-	meta->last_timeline_id  = POLAR_INVALID_TIMELINE_ID;
+	meta->min_timeline_id = POLAR_INVALID_TIMELINE_ID;
+	meta->min_received_lsn = InvalidXLogRecPtr;
+	meta->last_timeline_id = POLAR_INVALID_TIMELINE_ID;
 	meta->last_received_lsn = InvalidXLogRecPtr;
 	meta->last_valid_received_lsn = InvalidXLogRecPtr;
 	meta->upstream_last_removed_segno = 0;
-	meta->crc       = 0;
-	meta->crc       = polar_datamax_calc_meta_crc(
-						  (unsigned char *)meta, sizeof(polar_datamax_meta_data_t));
+	meta->crc = 0;
+	meta->crc = polar_datamax_calc_meta_crc(
+											(unsigned char *) meta, sizeof(polar_datamax_meta_data_t));
 }
 
 /*
@@ -180,13 +181,13 @@ polar_datamax_init_meta(polar_datamax_meta_data_t *meta, bool create)
  * We will check magic, version and crc of meta from data corruption.
  */
 void
-polar_datamax_load_meta(polar_datamax_ctl_t *ctl)
+polar_datamax_load_meta(polar_datamax_ctl_t * ctl)
 {
-	char        meta_path[MAXPGPATH];
-	pg_crc32c   crc;
-	int         fd;
-	int         ret;
-	Size        meta_size = sizeof(polar_datamax_meta_data_t);
+	char		meta_path[MAXPGPATH];
+	pg_crc32c	crc;
+	int			fd;
+	int			ret;
+	Size		meta_size = sizeof(polar_datamax_meta_data_t);
 	polar_datamax_meta_data_t *meta = NULL;
 
 	Assert(ctl);
@@ -213,10 +214,11 @@ polar_datamax_load_meta(polar_datamax_ctl_t *ctl)
 		return;
 	}
 
-	ret = FileRead(fd, (char *)meta, meta_size, WAIT_EVENT_DATAMAX_META_READ);
+	ret = FileRead(fd, (char *) meta, meta_size, WAIT_EVENT_DATAMAX_META_READ);
 	if (ret != meta_size)
 	{
-		int saved_errno = errno;
+		int			saved_errno = errno;
+
 		LWLockRelease(&ctl->meta_lock);
 		elog(FATAL, "fail to read whole datamax meta data, read %d of %lu, errno: %d",
 			 ret, meta_size, saved_errno);
@@ -244,7 +246,7 @@ polar_datamax_load_meta(polar_datamax_ctl_t *ctl)
 
 	crc = meta->crc;
 	meta->crc = 0;
-	meta->crc = polar_datamax_calc_meta_crc((unsigned char *)meta, meta_size);
+	meta->crc = polar_datamax_calc_meta_crc((unsigned char *) meta, meta_size);
 
 	if (crc != meta->crc)
 	{
@@ -263,13 +265,13 @@ polar_datamax_load_meta(polar_datamax_ctl_t *ctl)
  * This func can only be called in datamax process, so no need to get lock first.
  */
 void
-polar_datamax_write_meta(polar_datamax_ctl_t *ctl, bool update)
+polar_datamax_write_meta(polar_datamax_ctl_t * ctl, bool update)
 {
-	File    fd;
-	char    meta_path[MAXPGPATH];
-	int     flag = O_RDWR | PG_BINARY;
-	Size    meta_size = sizeof(polar_datamax_meta_data_t);
-	int     saved_errno;
+	File		fd;
+	char		meta_path[MAXPGPATH];
+	int			flag = O_RDWR | PG_BINARY;
+	Size		meta_size = sizeof(polar_datamax_meta_data_t);
+	int			saved_errno;
 	polar_datamax_meta_data_t *meta = NULL;
 
 	if (ctl)
@@ -290,7 +292,7 @@ polar_datamax_write_meta(polar_datamax_ctl_t *ctl, bool update)
 	meta->magic = POLAR_DATAMAX_MAGIC;
 	meta->version = POLAR_DATAMAX_VERSION;
 	meta->crc = 0;
-	meta->crc = polar_datamax_calc_meta_crc((unsigned char *)meta, meta_size);
+	meta->crc = polar_datamax_calc_meta_crc((unsigned char *) meta, meta_size);
 
 	if ((fd = PathNameOpenFile(meta_path, flag)) < 0)
 	{
@@ -303,7 +305,7 @@ polar_datamax_write_meta(polar_datamax_ctl_t *ctl, bool update)
 		return;
 	}
 
-	if (FileWrite(fd, (char *)meta, meta_size, WAIT_EVENT_DATAMAX_META_WRITE) != meta_size)
+	if (FileWrite(fd, (char *) meta, meta_size, WAIT_EVENT_DATAMAX_META_WRITE) != meta_size)
 	{
 		saved_errno = errno;
 
@@ -331,7 +333,7 @@ polar_datamax_write_meta(polar_datamax_ctl_t *ctl, bool update)
 }
 
 void
-polar_datamax_update_min_received_info(polar_datamax_ctl_t *ctl, TimeLineID tli, XLogRecPtr lsn)
+polar_datamax_update_min_received_info(polar_datamax_ctl_t * ctl, TimeLineID tli, XLogRecPtr lsn)
 {
 	Assert(ctl);
 	LWLockAcquire(&ctl->meta_lock, LW_EXCLUSIVE);
@@ -346,14 +348,15 @@ polar_datamax_update_min_received_info(polar_datamax_ctl_t *ctl, TimeLineID tli,
 }
 
 void
-polar_datamax_update_upstream_last_removed_segno(polar_datamax_ctl_t *ctl, XLogSegNo segno)
+polar_datamax_update_upstream_last_removed_segno(polar_datamax_ctl_t * ctl, XLogSegNo segno)
 {
 	Assert(ctl);
 	LWLockAcquire(&ctl->meta_lock, LW_EXCLUSIVE);
 
 	/*
-	 * POLAR: parameter segno could be smaller than meta.upstream_last_removed_segno
-	 * eg. it maybe 0 when primary restart and there is no wal file has been removed
+	 * POLAR: parameter segno could be smaller than
+	 * meta.upstream_last_removed_segno eg. it maybe 0 when primary restart
+	 * and there is no wal file has been removed
 	 */
 	if (segno > ctl->meta.upstream_last_removed_segno)
 		ctl->meta.upstream_last_removed_segno = segno;
@@ -362,9 +365,10 @@ polar_datamax_update_upstream_last_removed_segno(polar_datamax_ctl_t *ctl, XLogS
 }
 
 XLogRecPtr
-polar_datamax_get_min_received_lsn(polar_datamax_ctl_t *ctl, TimeLineID *tli)
+polar_datamax_get_min_received_lsn(polar_datamax_ctl_t * ctl, TimeLineID *tli)
 {
-	XLogRecPtr min_received_lsn = InvalidXLogRecPtr;
+	XLogRecPtr	min_received_lsn = InvalidXLogRecPtr;
+
 	Assert(ctl);
 
 	LWLockAcquire(&ctl->meta_lock, LW_SHARED);
@@ -383,9 +387,10 @@ polar_datamax_get_min_received_lsn(polar_datamax_ctl_t *ctl, TimeLineID *tli)
  * POLAR: get last removed segno of upstream
  */
 XLogSegNo
-polar_datamax_get_upstream_last_removed_segno(polar_datamax_ctl_t *ctl)
+polar_datamax_get_upstream_last_removed_segno(polar_datamax_ctl_t * ctl)
 {
-	XLogRecPtr upstream_last_removed_segno = 0;
+	XLogRecPtr	upstream_last_removed_segno = 0;
+
 	Assert(ctl);
 	LWLockAcquire(&ctl->meta_lock, LW_SHARED);
 	upstream_last_removed_segno = ctl->meta.upstream_last_removed_segno;
@@ -401,14 +406,15 @@ polar_datamax_get_upstream_last_removed_segno(polar_datamax_ctl_t *ctl)
 void
 polar_datamax_remove_old_wal(XLogRecPtr reserved_lsn, bool force)
 {
-	DIR         *xldir;
-	struct dirent   *xlde;
-	char        path[MAXPGPATH];
-	char        last_seg[MAXPGPATH];
-	XLogRecPtr  min_lsn = InvalidXLogRecPtr;
-	XLogSegNo   segno, upstream_last_removed_segno;
-	TimeLineID  min_reserved_tli = POLAR_INVALID_TIMELINE_ID;
-	XLogRecPtr  min_reserved_lsn = InvalidXLogRecPtr;
+	DIR		   *xldir;
+	struct dirent *xlde;
+	char		path[MAXPGPATH];
+	char		last_seg[MAXPGPATH];
+	XLogRecPtr	min_lsn = InvalidXLogRecPtr;
+	XLogSegNo	segno,
+				upstream_last_removed_segno;
+	TimeLineID	min_reserved_tli = POLAR_INVALID_TIMELINE_ID;
+	XLogRecPtr	min_reserved_lsn = InvalidXLogRecPtr;
 
 	if (!polar_is_dma_logger_node())
 		return;
@@ -432,7 +438,8 @@ polar_datamax_remove_old_wal(XLogRecPtr reserved_lsn, bool force)
 
 	/* calcute DMA purge lsn */
 	{
-		XLogRecPtr consensus_keep  = ConsensusGetPurgeLSN();
+		XLogRecPtr	consensus_keep = ConsensusGetPurgeLSN();
+
 		if (consensus_keep != InvalidXLogRecPtr)
 		{
 			XLogSegNo	slotSegNo;
@@ -470,19 +477,22 @@ polar_datamax_remove_old_wal(XLogRecPtr reserved_lsn, bool force)
 
 	while ((xlde = ReadDir(xldir, path)) != NULL)
 	{
-		bool removed = false;
+		bool		removed = false;
 
 		if (!IsXLogFileName(xlde->d_name) &&
-				!IsPartialXLogFileName(xlde->d_name))
+			!IsPartialXLogFileName(xlde->d_name))
 			continue;
 
 		/*
-		 * only compare segment name without timeline info, detail reason
-		 * is described at RemoveOldXlogFiles.
+		 * only compare segment name without timeline info, detail reason is
+		 * described at RemoveOldXlogFiles.
 		 */
 		if (strcmp(xlde->d_name + 8, last_seg + 8) <= 0)
 		{
-			/* if force is true or WAL segment has been archived, we will remove it. */
+			/*
+			 * if force is true or WAL segment has been archived, we will
+			 * remove it.
+			 */
 			if (force || XLogArchiveCheckDone(xlde->d_name))
 			{
 				if (polar_datamax_remove_wal_file(xlde->d_name) == 0)
@@ -492,9 +502,9 @@ polar_datamax_remove_old_wal(XLogRecPtr reserved_lsn, bool force)
 
 		if (!removed)
 		{
-			uint32      tmp_tli;
-			XLogSegNo   tmp_segno;
-			XLogRecPtr  tmp_seg_lsn;
+			uint32		tmp_tli;
+			XLogSegNo	tmp_segno;
+			XLogRecPtr	tmp_seg_lsn;
 
 			/* try to find min received info */
 			XLogFromFileName(xlde->d_name, &tmp_tli, &tmp_segno, wal_segment_size);
@@ -528,8 +538,8 @@ polar_datamax_remove_old_wal(XLogRecPtr reserved_lsn, bool force)
 int
 polar_datamax_remove_wal_file(char *seg_name)
 {
-	int     rc = 0;
-	char    seg_path[MAXPGPATH];
+	int			rc = 0;
+	char		seg_path[MAXPGPATH];
 
 	polar_update_last_removed_ptr(seg_name);
 
@@ -580,7 +590,7 @@ polar_datamax_archive(void)
  * so there is no need to judge archive_mode value in this func
  */
 void
-polar_datamax_remove_archivedone_wal(polar_datamax_ctl_t *ctl)
+polar_datamax_remove_archivedone_wal(polar_datamax_ctl_t * ctl)
 {
 	static TimestampTz last_remove_archivedone_wal_time = 0;
 
@@ -607,11 +617,11 @@ polar_datamax_remove_archivedone_wal(polar_datamax_ctl_t *ctl)
  * which will be judged in func polar_datamax_remove_old_wal
  */
 void
-polar_datamax_handle_remove_archivedone_wal(polar_datamax_ctl_t *ctl)
+polar_datamax_handle_remove_archivedone_wal(polar_datamax_ctl_t * ctl)
 {
-	XLogRecPtr  last_rec_lsn = InvalidXLogRecPtr;
-	XLogRecPtr  reserved_lsn = InvalidXLogRecPtr;
-	XLogSegNo   segno;
+	XLogRecPtr	last_rec_lsn = InvalidXLogRecPtr;
+	XLogRecPtr	reserved_lsn = InvalidXLogRecPtr;
+	XLogSegNo	segno;
 
 	if (!polar_is_dma_logger_node())
 		return;
@@ -639,8 +649,8 @@ polar_datamax_handle_remove_archivedone_wal(polar_datamax_ctl_t *ctl)
 void
 polar_datamax_validate_dir(void)
 {
-	char    path[MAXPGPATH];
-	int     i = 0;
+	char		path[MAXPGPATH];
+	int			i = 0;
 	const char *dirs[] =
 	{
 		POLAR_DATAMAX_DIR,
@@ -692,7 +702,7 @@ polar_datamax_check_mkdir(const char *path, int emode)
 XLogRecPtr
 polar_datamax_replication_start_lsn(ReplicationSlot *slot)
 {
-	XLogRecPtr restart_lsn = InvalidXLogRecPtr;
+	XLogRecPtr	restart_lsn = InvalidXLogRecPtr;
 
 	Assert(slot);
 	SpinLockAcquire(&slot->mutex);
@@ -711,11 +721,12 @@ polar_datamax_replication_start_lsn(ReplicationSlot *slot)
 XLogRecPtr
 polar_get_smallest_walfile_lsn(void)
 {
-	XLogRecPtr	smallest_lsn, tmp_smallest_lsn;
-	XLogSegNo 	segno;
-	char 		xlog_file[MAXFNAMELEN];
+	XLogRecPtr	smallest_lsn,
+				tmp_smallest_lsn;
+	XLogSegNo	segno;
+	char		xlog_file[MAXFNAMELEN];
 	char		polar_waldir_path[MAXPGPATH];
-	DIR			*polar_waldir;
+	DIR		   *polar_waldir;
 	struct dirent *polar_waldirent;
 	uint32		tli;
 
@@ -724,15 +735,15 @@ polar_get_smallest_walfile_lsn(void)
 		smallest_lsn = GetRedoRecPtr();
 	else
 		smallest_lsn = polar_datamax_get_min_received_lsn(polar_datamax_ctl, NULL);
-	
+
 	/* iterate the wal dir to get the smallest lsn */
 	if (!polar_is_dma_logger_node())
 		snprintf(polar_waldir_path, MAXPGPATH, "%s", XLOGDIR);
 	else
 		snprintf(polar_waldir_path, MAXPGPATH, "%s", POLAR_DATAMAX_WAL_DIR);
-	
+
 	polar_waldir = AllocateDir(polar_waldir_path);
-	XLByteToSeg(smallest_lsn, segno, wal_segment_size);	
+	XLByteToSeg(smallest_lsn, segno, wal_segment_size);
 	XLogFileName(xlog_file, 0, segno, wal_segment_size);
 	while ((polar_waldirent = ReadDir(polar_waldir, polar_waldir_path)) != NULL)
 	{
@@ -786,8 +797,8 @@ void
 polar_datamax_wal_file_path(char *path, TimeLineID tli, XLogSegNo logSegNo, int wal_segsz_bytes)
 {
 	snprintf(path, MAXPGPATH, POLAR_DATAMAX_WAL_DIR "/%08X%08X%08X", tli,
-			(uint32)((logSegNo) / XLogSegmentsPerXLogId(wal_segsz_bytes)),
-			(uint32)((logSegNo) % XLogSegmentsPerXLogId(wal_segsz_bytes)));
+			 (uint32) ((logSegNo) / XLogSegmentsPerXLogId(wal_segsz_bytes)),
+			 (uint32) ((logSegNo) % XLogSegmentsPerXLogId(wal_segsz_bytes)));
 }
 
 /*
@@ -811,7 +822,7 @@ polar_datamax_tl_history_file_path(char *path, TimeLineID tli)
  * add this func so it's unnecessary to start polar worker process in datamax mode
  */
 void
-polar_datamax_prealloc_wal_file(polar_datamax_ctl_t *ctl)
+polar_datamax_prealloc_wal_file(polar_datamax_ctl_t * ctl)
 {
 	static TimestampTz last_prealloc_walfile_time = 0;
 
@@ -836,13 +847,13 @@ polar_datamax_prealloc_wal_file(polar_datamax_ctl_t *ctl)
  * which is used to find the correct pg_wal path in datamax mode
  */
 void
-polar_datamax_handle_prealloc_walfile(polar_datamax_ctl_t *ctl)
+polar_datamax_handle_prealloc_walfile(polar_datamax_ctl_t * ctl)
 {
-	XLogRecPtr insert_ptr;
-	XLogSegNo  _log_seg_no;
-	int         lf;
-	bool        use_existent;
-	int         count = 0;
+	XLogRecPtr	insert_ptr;
+	XLogSegNo	_log_seg_no;
+	int			lf;
+	bool		use_existent;
+	int			count = 0;
 
 	insert_ptr = polar_dma_get_received_lsn();
 
@@ -866,7 +877,7 @@ polar_datamax_handle_prealloc_walfile(polar_datamax_ctl_t *ctl)
 bool
 polar_datamax_meta_file_exist(void)
 {
-	char    meta_path[MAXPGPATH];
+	char		meta_path[MAXPGPATH];
 	struct stat stat_buf;
 
 	snprintf(meta_path, MAXPGPATH, "%s/%s/%s", DataDir, POLAR_DATAMAX_DIR, POLAR_DATAMAX_META_FILE);
@@ -883,16 +894,16 @@ void
 polar_datamax_main(void)
 {
 	TimestampTz last_handle_interrupts_time = GetCurrentTimestamp();
-	char        activitymsg[MAXFNAMELEN + 16];
-	XLogRecPtr 	consensusReceivedUpto = InvalidXLogRecPtr;
-	TimeLineID 	consensusReceivedTLI = 0;
-	char		*consensusPrimaryConnInfo = NULL;
+	char		activitymsg[MAXFNAMELEN + 16];
+	XLogRecPtr	consensusReceivedUpto = InvalidXLogRecPtr;
+	TimeLineID	consensusReceivedTLI = 0;
+	char	   *consensusPrimaryConnInfo = NULL;
 	TransactionId latestCompletedXid;
 
 	/*
-	 * validate datamax directory. for shared storage, we keep meta data
-	 * info in local storage, for standalone storage, we keep meta and
-	 * wal data all in same storage.
+	 * validate datamax directory. for shared storage, we keep meta data info
+	 * in local storage, for standalone storage, we keep meta and wal data all
+	 * in same storage.
 	 */
 	polar_datamax_validate_dir();
 
@@ -922,7 +933,7 @@ polar_datamax_main(void)
 	while (true)
 	{
 		TimestampTz current_time = GetCurrentTimestamp();
-		int rc = 0;
+		int			rc = 0;
 
 		if (TimestampDifferenceExceeds(last_handle_interrupts_time, current_time, 5))
 		{
@@ -938,12 +949,12 @@ polar_datamax_main(void)
 
 		{
 			TimeLineID	tli = 0;
-			bool 		next_tli = false; 
+			bool		next_tli = false;
 
 			polar_is_dma_logger_mode = true;
 
-			if (polar_dma_check_logger_status(&consensusPrimaryConnInfo, 
-						&consensusReceivedUpto , &consensusReceivedTLI, &next_tli))
+			if (polar_dma_check_logger_status(&consensusPrimaryConnInfo,
+											  &consensusReceivedUpto, &consensusReceivedTLI, &next_tli))
 			{
 				if (next_tli)
 					tli = consensusReceivedTLI + 1;
@@ -951,8 +962,8 @@ polar_datamax_main(void)
 					tli = consensusReceivedTLI;
 
 				elog(LOG, "RequestXLogStreaming, PrimaryConnInfo: %s, TimeLineID: %d, LSN: \"%X/%X\"",
-						consensusPrimaryConnInfo, tli,
-						(uint32) (consensusReceivedUpto >> 32), (uint32) consensusReceivedUpto);
+					 consensusPrimaryConnInfo, tli,
+					 (uint32) (consensusReceivedUpto >> 32), (uint32) consensusReceivedUpto);
 
 				RequestXLogStreaming(tli, consensusReceivedUpto, consensusPrimaryConnInfo, NULL);
 			}
@@ -971,11 +982,9 @@ polar_datamax_main(void)
 		polar_datamax_prealloc_wal_file(polar_datamax_ctl);
 
 		rc = polar_wait_recovery_wakeup(WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH,
-					   1 * 1000 /* ms */, WAIT_EVENT_DATAMAX_MAIN);
+										1 * 1000 /* ms */ , WAIT_EVENT_DATAMAX_MAIN);
 
 		if (rc & WL_POSTMASTER_DEATH)
 			exit(1);
 	}
 }
-
-

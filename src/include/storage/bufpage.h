@@ -158,9 +158,9 @@ typedef struct PageHeaderData
 	LocationIndex pd_special;	/* offset to start of special space */
 	uint16		pd_pagesize_version;
 	TransactionId pd_prune_xid; /* oldest prunable XID, or zero if none */
-	#ifdef ENABLE_DISTRIBUTED_TRANSACTION
-	CommitSeqNo	pd_prune_ts;	/* oldest prunable ts, or zero if none */
-	#endif
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+	CommitSeqNo pd_prune_ts;	/* oldest prunable ts, or zero if none */
+#endif
 	ItemIdData	pd_linp[FLEXIBLE_ARRAY_MEMBER]; /* line pointer array */
 } PageHeaderData;
 

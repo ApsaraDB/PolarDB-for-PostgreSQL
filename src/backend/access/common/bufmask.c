@@ -50,9 +50,9 @@ mask_page_hint_bits(Page page)
 
 	/* Ignore prune_xid (it's like a hint-bit) */
 	phdr->pd_prune_xid = MASK_MARKER;
-	#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
 	phdr->pd_prune_ts = MASK_MARKER;
-	#endif
+#endif
 
 	/* Ignore PD_PAGE_FULL and PD_HAS_FREE_LINES flags, they are just hints. */
 	PageClearFull(page);

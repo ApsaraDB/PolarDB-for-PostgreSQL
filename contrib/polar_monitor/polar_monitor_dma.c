@@ -40,7 +40,7 @@ PG_FUNCTION_INFO_V1(polar_dma_get_member_status);
 Datum
 polar_dma_get_member_status(PG_FUNCTION_ARGS)
 {
-	bool success;
+	bool		success;
 	TupleDesc	tupdesc;
 	Datum	   *values;
 	bool	   *nulls;
@@ -81,14 +81,14 @@ Datum
 polar_dma_get_cluster_status(PG_FUNCTION_ARGS)
 {
 #define PG_GET_CLUSTER_INFO_COLS 10
-	bool	success;
+	bool		success;
 	ReturnSetInfo *clusters_info = (ReturnSetInfo *) fcinfo->resultinfo;
 	TupleDesc	tupdesc;
 	Tuplestorestate *tupstore;
 	MemoryContext per_query_ctx;
 	MemoryContext oldcontext;
 	int			cno;
-	ConsensusClusterInfo	clusterInfo[POLAR_DMA_MAX_NODES_NUM];
+	ConsensusClusterInfo clusterInfo[POLAR_DMA_MAX_NODES_NUM];
 	int			numCluster;
 
 	if (!polar_enable_dma)
@@ -101,7 +101,7 @@ polar_dma_get_cluster_status(PG_FUNCTION_ARGS)
 		PG_RETURN_NULL();
 	}
 	numCluster = ConsensusGetClusterInfo(clusterInfo);
-	
+
 	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
 		elog(ERROR, "consensus get stat return type must be a row type");
 
@@ -119,7 +119,7 @@ polar_dma_get_cluster_status(PG_FUNCTION_ARGS)
 	{
 		Datum		values[PG_GET_CLUSTER_INFO_COLS];
 		bool		nulls[PG_GET_CLUSTER_INFO_COLS];
-		int		 i;
+		int			i;
 		ConsensusClusterInfo cinfo = clusterInfo[cno];
 
 		memset(nulls, 0, sizeof(nulls));
@@ -129,11 +129,11 @@ polar_dma_get_cluster_status(PG_FUNCTION_ARGS)
 		values[i++] = CStringGetTextDatum(cinfo.ipPort);
 		values[i++] = UInt64GetDatum(cinfo.matchIndex);
 		values[i++] = UInt64GetDatum(cinfo.nextIndex);
-		values[i++]	= Int32GetDatum(cinfo.role);
+		values[i++] = Int32GetDatum(cinfo.role);
 		values[i++] = BoolGetDatum(cinfo.hasVoted != 0 ? true : false);
-		values[i++]	= BoolGetDatum(cinfo.forceSync);
+		values[i++] = BoolGetDatum(cinfo.forceSync);
 		values[i++] = UInt32GetDatum(cinfo.electionWeight);
-		values[i++]	= UInt64GetDatum(cinfo.learnerSource);
+		values[i++] = UInt64GetDatum(cinfo.learnerSource);
 		values[i++] = BoolGetDatum(cinfo.pipelining);
 
 		tuplestore_putvalues(tupstore, tupdesc, values, nulls);
@@ -149,7 +149,7 @@ PG_FUNCTION_INFO_V1(polar_dma_get_msg_stats);
 Datum
 polar_dma_get_msg_stats(PG_FUNCTION_ARGS)
 {
-	bool success;
+	bool		success;
 	TupleDesc	tupdesc;
 	Datum	   *values;
 	bool	   *nulls;
@@ -273,10 +273,12 @@ polar_dma_get_meta_status(PG_FUNCTION_ARGS)
 	Datum	   *values;
 	bool	   *nulls;
 	ConsensusMetaStatus status_info;
-	int	member_info_size, learner_info_size;
-	char *member_info_ptr, *learner_info_ptr;
-	char member_info_str[MEMBER_INFO_MAX_LENGTH], 
-			 learner_info_str[MEMBER_INFO_MAX_LENGTH];
+	int			member_info_size,
+				learner_info_size;
+	char	   *member_info_ptr,
+			   *learner_info_ptr;
+	char		member_info_str[MEMBER_INFO_MAX_LENGTH],
+				learner_info_str[MEMBER_INFO_MAX_LENGTH];
 	int			i;
 
 	if (!polar_enable_dma)
@@ -287,21 +289,21 @@ polar_dma_get_meta_status(PG_FUNCTION_ARGS)
 	member_info_size = ConsensusMetaGetMemberInfoFromArray(&member_info_ptr);
 	if (member_info_size > 0)
 	{
-		member_info_size  = member_info_size > MEMBER_INFO_MAX_LENGTH ? 
-															MEMBER_INFO_MAX_LENGTH : member_info_size;
-		strncpy(member_info_str, member_info_ptr, member_info_size-1);
+		member_info_size = member_info_size > MEMBER_INFO_MAX_LENGTH ?
+			MEMBER_INFO_MAX_LENGTH : member_info_size;
+		strncpy(member_info_str, member_info_ptr, member_info_size - 1);
 		free(member_info_ptr);
-		member_info_str[member_info_size-1] = '\0';
+		member_info_str[member_info_size - 1] = '\0';
 	}
 
 	learner_info_size = ConsensusMetaGetLearnerInfoFromArray(&learner_info_ptr);
 	if (learner_info_size > 0)
 	{
-		learner_info_size = learner_info_size > MEMBER_INFO_MAX_LENGTH ? 
-															MEMBER_INFO_MAX_LENGTH : learner_info_size;
-		strncpy(learner_info_str, learner_info_ptr, learner_info_size-1);
+		learner_info_size = learner_info_size > MEMBER_INFO_MAX_LENGTH ?
+			MEMBER_INFO_MAX_LENGTH : learner_info_size;
+		strncpy(learner_info_str, learner_info_ptr, learner_info_size - 1);
 		free(learner_info_ptr);
-		learner_info_str[learner_info_size-1] = '\0';
+		learner_info_str[learner_info_size - 1] = '\0';
 	}
 
 	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
@@ -334,7 +336,7 @@ polar_dma_get_meta_status(PG_FUNCTION_ARGS)
 }
 
 PG_FUNCTION_INFO_V1(polar_dma_get_consensus_stats);
-	
+
 Datum
 polar_dma_get_consensus_stats(PG_FUNCTION_ARGS)
 {
@@ -410,7 +412,7 @@ Datum
 polar_dma_get_slru_stats(PG_FUNCTION_ARGS)
 {
 #define SLRU_STAT_COLS 20
-	int i = 0;
+	int			i = 0;
 	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
 	TupleDesc	tupdesc;
 	Tuplestorestate *tupstore;
@@ -435,11 +437,11 @@ polar_dma_get_slru_stats(PG_FUNCTION_ARGS)
 
 	for (i = 0; i < n_consensus_slru_stats; i++)
 	{
-		const consensus_slru_stat *stat = consensus_slru_stats[i];
+		const		consensus_slru_stat *stat = consensus_slru_stats[i];
 		Datum		values[SLRU_STAT_COLS];
 		bool		nulls[SLRU_STAT_COLS];
-		int j = 0;
-		
+		int			j = 0;
+
 		if (stat == NULL)
 			continue;
 
@@ -477,7 +479,7 @@ polar_dma_get_slru_stats(PG_FUNCTION_ARGS)
 PG_FUNCTION_INFO_V1(polar_dma_wal_committed_lsn);
 
 /*
- * Report the current WAL consensus commit location 
+ * Report the current WAL consensus commit location
  */
 Datum
 polar_dma_wal_committed_lsn(PG_FUNCTION_ARGS)

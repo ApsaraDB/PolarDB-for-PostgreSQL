@@ -35,9 +35,9 @@
 typedef struct
 {
 	TransactionId new_prune_xid;	/* new prune hint value for page */
-	#ifdef ENABLE_DISTRIBUTED_TRANSACTION
-	CommitSeqNo new_prune_ts;		/* new prune hint ts value for page */
-	#endif
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+	CommitSeqNo new_prune_ts;	/* new prune hint ts value for page */
+#endif
 	TransactionId latestRemovedXid; /* latest xid to be removed by this prune */
 	int			nredirected;	/* numbers of entries in arrays below */
 	int			ndead;
@@ -55,7 +55,7 @@ static int heap_prune_chain(Relation relation, Buffer buffer,
 				 OffsetNumber rootoffnum,
 				 TransactionId OldestXmin,
 				 PruneState *prstate);
- #ifdef ENABLE_DISTRIBUTED_TRANSACTION
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
 static void heap_prune_record_prunable(PruneState *prstate, TransactionId xid, CommitSeqNo ts);
 #else
 static void heap_prune_record_prunable(PruneState *prstate, TransactionId xid);
@@ -87,9 +87,9 @@ heap_page_prune_opt(Relation relation, Buffer buffer)
 	Page		page = BufferGetPage(buffer);
 	Size		minfree;
 	TransactionId OldestXmin;
-	#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
 	CommitSeqNo OldestTmin;
-	#endif
+#endif
 
 	/*
 	 * We can't write WAL in recovery mode, so there's no point trying to
@@ -129,19 +129,20 @@ heap_page_prune_opt(Relation relation, Buffer buffer)
 	 * Forget it if page is not hinted to contain something prunable that's
 	 * older than OldestXmin.
 	 */
-	#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+
 	/*
-	 * Use prunable timestamp to avoid unnessaray 
-	 * hot-chain vacuum, so as to achieve the same performance
-	 * as xid-based vacuum.
-	 */ 
+	 * Use prunable timestamp to avoid unnessaray hot-chain vacuum, so as to
+	 * achieve the same performance as xid-based vacuum.
+	 */
 	OldestTmin = GetRecentGlobalTmin();
 	if (!PageIsPrunable(page, OldestXmin, OldestTmin))
 		return;
-	#else
+#else
 	if (!PageIsPrunable(page, OldestXmin))
 		return;
-	#endif
+#endif
+
 	/*
 	 * We prune when a previous UPDATE failed to find enough space on the page
 	 * for a new tuple version, or when free space falls below the relation's
@@ -223,9 +224,9 @@ heap_page_prune(Relation relation, Buffer buffer, TransactionId OldestXmin,
 	 * initialize the rest of our working state.
 	 */
 	prstate.new_prune_xid = InvalidTransactionId;
-	#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
 	prstate.new_prune_ts = InvalidCommitSeqNo;
-	#endif
+#endif
 	prstate.latestRemovedXid = *latestRemovedXid;
 	prstate.nredirected = prstate.ndead = prstate.nunused = 0;
 	memset(prstate.marked, 0, sizeof(prstate.marked));
@@ -273,9 +274,9 @@ heap_page_prune(Relation relation, Buffer buffer, TransactionId OldestXmin,
 		 * XID of any soon-prunable tuple.
 		 */
 		((PageHeader) page)->pd_prune_xid = prstate.new_prune_xid;
-		#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
 		((PageHeader) page)->pd_prune_ts = prstate.new_prune_ts;
-		#endif
+#endif
 
 		/*
 		 * Also clear the "page is full" flag, since there's no point in
@@ -313,17 +314,17 @@ heap_page_prune(Relation relation, Buffer buffer, TransactionId OldestXmin,
 		 * point in repeating the prune/defrag process until something else
 		 * happens to the page.
 		 */
-		#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
 		if (((PageHeader) page)->pd_prune_xid != prstate.new_prune_xid ||
-            ((PageHeader) page)->pd_prune_ts != prstate.new_prune_ts ||
-            PageIsFull(page))
-        {
-            ((PageHeader) page)->pd_prune_xid = prstate.new_prune_xid;
-            ((PageHeader) page)->pd_prune_ts = prstate.new_prune_ts;
-            PageClearFull(page);
-            MarkBufferDirtyHint(buffer, true);
+			((PageHeader) page)->pd_prune_ts != prstate.new_prune_ts ||
+			PageIsFull(page))
+		{
+			((PageHeader) page)->pd_prune_xid = prstate.new_prune_xid;
+			((PageHeader) page)->pd_prune_ts = prstate.new_prune_ts;
+			PageClearFull(page);
+			MarkBufferDirtyHint(buffer, true);
 		}
-		#else
+#else
 		if (((PageHeader) page)->pd_prune_xid != prstate.new_prune_xid ||
 			PageIsFull(page))
 		{
@@ -331,7 +332,7 @@ heap_page_prune(Relation relation, Buffer buffer, TransactionId OldestXmin,
 			PageClearFull(page);
 			MarkBufferDirtyHint(buffer, true);
 		}
-		#endif
+#endif
 	}
 
 	END_CRIT_SECTION();
@@ -467,9 +468,9 @@ heap_prune_chain(Relation relation, Buffer buffer, OffsetNumber rootoffnum,
 		ItemId		lp;
 		bool		tupdead,
 					recent_dead;
-		#ifdef ENABLE_DISTRIBUTED_TRANSACTION
-        CommitSeqNo committs;
-		#endif
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+		CommitSeqNo committs;
+#endif
 
 
 		/* Some sanity checks */
@@ -540,19 +541,20 @@ heap_prune_chain(Relation relation, Buffer buffer, OffsetNumber rootoffnum,
 
 			case HEAPTUPLE_RECENTLY_DEAD:
 				recent_dead = true;
-#ifdef ENABLE_DISTRIBUTED_TRANSACTION 
-                if(htup->t_infomask & HEAP_XMAX_IS_MULTI)
-                {
-                    committs = TransactionIdGetCommitSeqNo(HeapTupleHeaderGetUpdateXid(htup));
-                }
-                else
-                {
-                    committs = HeapTupleHderGetXmaxTimestampAtomic(htup);
-                }
-                heap_prune_record_prunable(prstate,
-                                           HeapTupleHeaderGetUpdateXid(htup),
-                                           committs);    
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+				if (htup->t_infomask & HEAP_XMAX_IS_MULTI)
+				{
+					committs = TransactionIdGetCommitSeqNo(HeapTupleHeaderGetUpdateXid(htup));
+				}
+				else
+				{
+					committs = HeapTupleHderGetXmaxTimestampAtomic(htup);
+				}
+				heap_prune_record_prunable(prstate,
+										   HeapTupleHeaderGetUpdateXid(htup),
+										   committs);
 #else
+
 				/*
 				 * This tuple may soon become DEAD.  Update the hint field so
 				 * that the page is reconsidered for pruning in future.
@@ -568,14 +570,14 @@ heap_prune_chain(Relation relation, Buffer buffer, OffsetNumber rootoffnum,
 				 * This tuple may soon become DEAD.  Update the hint field so
 				 * that the page is reconsidered for pruning in future.
 				 */
-				#ifdef ENABLE_DISTRIBUTED_TRANSACTION 
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
 				heap_prune_record_prunable(prstate,
 										   HeapTupleHeaderGetUpdateXid(htup),
 										   InvalidCommitSeqNo);
-				#else
+#else
 				heap_prune_record_prunable(prstate,
 										   HeapTupleHeaderGetUpdateXid(htup));
-				#endif
+#endif
 				break;
 
 			case HEAPTUPLE_LIVE:
@@ -701,12 +703,12 @@ heap_prune_record_prunable(PruneState *prstate, TransactionId xid)
 		prstate->new_prune_xid = xid;
 
 #ifdef ENABLE_DISTRIBUTED_TRANSACTION
-    if (!COMMITSEQNO_IS_NORMAL(ts))
-        return;
-    
-    if (!COMMITSEQNO_IS_NORMAL(prstate->new_prune_ts) ||
-        (ts < prstate->new_prune_ts))
-        prstate->new_prune_ts = ts;
+	if (!COMMITSEQNO_IS_NORMAL(ts))
+		return;
+
+	if (!COMMITSEQNO_IS_NORMAL(prstate->new_prune_ts) ||
+		(ts < prstate->new_prune_ts))
+		prstate->new_prune_ts = ts;
 #endif
 }
 

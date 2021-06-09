@@ -10,6 +10,7 @@ echo "   configure:  create default configure."
 echo "   deploy:  deploy binary to all related machine."
 echo "   setup:   setup 3 node paxos environment by default configure"
 echo "   cm: setup cluster manager component."
+echo "   dependencies: install dependent packages (use Centos as an example)."
 echo "   clean:   clean environment"
 echo ""
 
@@ -40,7 +41,7 @@ if [[ "$BLD_OPT" == "all" ]]; then
     pgxc_ctl -c $HOME/polardb/polardb_paxos.conf deploy all
     pgxc_ctl -c $HOME/polardb/polardb_paxos.conf clean all
     pgxc_ctl -c $HOME/polardb/polardb_paxos.conf init all
-    pgxc_ctl -c $HOME/polardb/polardb_paxos.conf deploy cm	
+    pgxc_ctl -c $HOME/polardb/polardb_paxos.conf deploy cm
     pgxc_ctl -c $HOME/polardb/polardb_paxos.conf monitor all
 elif [[ "$BLD_OPT" == "build" ]]; then
     sh ./build.sh
@@ -56,10 +57,12 @@ elif [[ "$BLD_OPT" == "setup" ]]; then
     pgxc_ctl -c $HOME/polardb/polardb_paxos.conf monitor all
 elif [[ "$BLD_OPT" == "cm" ]]; then
     pgxc_ctl -c $HOME/polardb/polardb_paxos.conf deploy cm
+elif [[ "$BLD_OPT" == "dependencies" ]]; then
+    sudo yum install bison flex libzstd-devel libzstd zstd cmake openssl-devel protobuf-devel readline-devel libxml2-devel libxslt-devel zlib-devel bzip2-devel lz4-devel snappy-devel python-devel
 elif [[ "$BLD_OPT" == "clean" ]]; then
-    pgxc_ctl -c $HOME/polardb/polardb_paxos.conf clean all	
+    pgxc_ctl -c $HOME/polardb/polardb_paxos.conf clean all
 else
-    echo "Invalid Parameter! Usage: $0 [all|build|configure|deploy|setup|cm|clean]"
+    echo "Invalid Parameter! Usage: $0 [all|build|configure|deploy|setup|dependencies|cm|clean]"
     popd
     exit
 fi

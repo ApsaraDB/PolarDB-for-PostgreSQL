@@ -42,7 +42,7 @@ extern void CLogSetTreeStatus(TransactionId xid, int nsubxids,
 				  TransactionId *subxids, CLogXidStatus status, XLogRecPtr lsn);
 extern CLogXidStatus CLogGetStatus(TransactionId xid, XLogRecPtr *lsn);
 extern XLogRecPtr
-CLogGetLSN(TransactionId xid);
+			CLogGetLSN(TransactionId xid);
 
 extern Size CLOGShmemBuffers(void);
 extern Size CLOGShmemSize(void);

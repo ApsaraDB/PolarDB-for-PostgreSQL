@@ -20,48 +20,52 @@
 #include <sys/types.h>
 
 #ifdef __cplusplus
-extern "C" {
+extern "C"
+{
 #endif
-typedef struct ConsensusMemberInfo {
-	uint64_t serverId;
-	uint64_t currentTerm;
-	uint64_t currentLeader;
-	uint64_t commitIndex;
-	uint64_t lastLogTerm;
-	uint64_t lastLogIndex;
-	int      role;
-	uint64_t votedFor;
-	uint64_t lastAppliedIndex;
-} ConsensusMemberInfo;
+	typedef struct ConsensusMemberInfo
+	{
+		uint64_t	serverId;
+		uint64_t	currentTerm;
+		uint64_t	currentLeader;
+		uint64_t	commitIndex;
+		uint64_t	lastLogTerm;
+		uint64_t	lastLogIndex;
+		int			role;
+		uint64_t	votedFor;
+		uint64_t	lastAppliedIndex;
+	}			ConsensusMemberInfo;
 
-typedef struct ConsensusClusterInfo {
-	uint64_t serverId;
-	char     ipPort[256];
-	uint64_t matchIndex;
-	uint64_t nextIndex;
-	int      role;
-	uint64_t hasVoted;
-	bool     forceSync;
-	uint     electionWeight;
-	uint64_t learnerSource;
-	uint64_t appliedIndex;
-	bool     pipelining;
-	bool     useApplied;
-} ConsensusClusterInfo;
+	typedef struct ConsensusClusterInfo
+	{
+		uint64_t	serverId;
+		char		ipPort[256];
+		uint64_t	matchIndex;
+		uint64_t	nextIndex;
+		int			role;
+		uint64_t	hasVoted;
+		bool		forceSync;
+		uint		electionWeight;
+		uint64_t	learnerSource;
+		uint64_t	appliedIndex;
+		bool		pipelining;
+		bool		useApplied;
+	}			ConsensusClusterInfo;
 
-typedef struct ConsensusStatsInfo {
-	uint64_t serverId;
-	uint64_t countMsgAppendLog;
-	uint64_t countMsgRequestVote;
-	uint64_t countHeartbeat;
-	uint64_t countOnMsgAppendLog;
-	uint64_t countOnMsgRequestVote;
-	uint64_t countOnHeartbeat;
-	uint64_t countReplicateLog;
-} ConsensusStatsInfo;
+	typedef struct ConsensusStatsInfo
+	{
+		uint64_t	serverId;
+		uint64_t	countMsgAppendLog;
+		uint64_t	countMsgRequestVote;
+		uint64_t	countHeartbeat;
+		uint64_t	countOnMsgAppendLog;
+		uint64_t	countOnMsgRequestVote;
+		uint64_t	countOnHeartbeat;
+		uint64_t	countReplicateLog;
+	}			ConsensusStatsInfo;
 
 #ifdef __cplusplus
-} // extern "C"
+} //extern "C"
 #endif
 
-#endif  /* CONSENSUS_STATS_H */
+#endif							/* CONSENSUS_STATS_H */

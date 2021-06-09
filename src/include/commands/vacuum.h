@@ -156,7 +156,7 @@ extern int	vacuum_freeze_table_age;
 extern int	vacuum_multixact_freeze_min_age;
 extern int	vacuum_multixact_freeze_table_age;
 #ifdef ENABLE_DISTRIBUTED_TRANSACTION
-extern int         vacuum_defer_freeze_min_age;
+extern int	vacuum_defer_freeze_min_age;
 #endif
 
 

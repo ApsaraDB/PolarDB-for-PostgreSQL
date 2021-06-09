@@ -39,16 +39,18 @@
 
 typedef struct polar_datamax_meta_data_t
 {
-	uint32      magic;
-	uint32      version;
-	TimeLineID  min_timeline_id;
-	XLogRecPtr  min_received_lsn;
-	TimeLineID  last_timeline_id; /* last received timeline id */
-	XLogRecPtr  last_received_lsn; /* last received lsn */
-	XLogRecPtr  last_valid_received_lsn; /* end of the last valid record received from primay */
-	XLogSegNo	upstream_last_removed_segno; /* last removed segno in upstream */
+	uint32		magic;
+	uint32		version;
+	TimeLineID	min_timeline_id;
+	XLogRecPtr	min_received_lsn;
+	TimeLineID	last_timeline_id;	/* last received timeline id */
+	XLogRecPtr	last_received_lsn;	/* last received lsn */
+	XLogRecPtr	last_valid_received_lsn;	/* end of the last valid record
+											 * received from primay */
+	XLogSegNo	upstream_last_removed_segno;	/* last removed segno in
+												 * upstream */
 
-	pg_crc32c   crc;
-} polar_datamax_meta_data_t;
+	pg_crc32c	crc;
+}			polar_datamax_meta_data_t;
 
-#endif /* !POLAR_DATAMAX_INTERNAL_H */
+#endif							/* !POLAR_DATAMAX_INTERNAL_H */

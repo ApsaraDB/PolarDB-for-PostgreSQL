@@ -358,7 +358,7 @@ extern int	isinf(double x);
 #undef isinf
 #define isinf __builtin_isinf
 #endif							/* __has_builtin(isinf) */
-#endif							/* __clang__ && !__cplusplus*/
+#endif							/* __clang__ && !__cplusplus */
 #endif							/* !HAVE_ISINF */
 
 #ifndef HAVE_MKDTEMP

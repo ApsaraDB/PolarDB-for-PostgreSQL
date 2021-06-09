@@ -101,8 +101,10 @@ static int	recvFile = -1;
 static TimeLineID recvFileTLI = 0;
 static XLogSegNo recvSegNo = 0;
 static uint32 recvOff = 0;
+
 /* POLAR: local flag for datamax */
-static bool 	polar_is_initial_datamax = false;
+static bool polar_is_initial_datamax = false;
+
 /* POLAR end */
 /*
  * Flags set by interrupt handlers of walreceiver for later service in the
@@ -118,7 +120,7 @@ static volatile sig_atomic_t got_SIGTERM = false;
 static struct
 {
 	XLogRecPtr	Receive;
-	XLogRecPtr      Send;
+	XLogRecPtr	Send;
 	XLogRecPtr	Write;			/* last byte + 1 written out in the standby */
 	XLogRecPtr	Flush;			/* last byte + 1 flushed in the standby */
 }			LogstreamResult;
@@ -126,72 +128,72 @@ static struct
 static StringInfoData reply_message;
 static StringInfoData incoming_message;
 
-bool EnableParallelWalreceiver = false;
-int max_parallel_write_thread = 10;
-int max_parallel_write_pipe_len = 10000;
-int wal_receiver_reply_threshold = 100;
+bool		EnableParallelWalreceiver = false;
+int			max_parallel_write_thread = 10;
+int			max_parallel_write_pipe_len = 10000;
+int			wal_receiver_reply_threshold = 100;
 
 typedef enum
 {
-	COMMAND_NONE	 	= 0,
-	COMMAND_WRITE		= 1,
-	COMMAND_FLUSH		= 2
-}WALReceiverAsyncCmd;
+	COMMAND_NONE = 0,
+	COMMAND_WRITE = 1,
+	COMMAND_FLUSH = 2
+} WALReceiverAsyncCmd;
 
 typedef struct
 {
-	int32   threadIndex;
-}WALReceiverWorkerThreadParam;
+	int32		threadIndex;
+}			WALReceiverWorkerThreadParam;
 
 /* Concurrently write wal log info */
 typedef struct
 {
-	WALReceiverAsyncCmd		cmd;
-	XLogRecPtr			Write;
-	XLogRecPtr                      start;
-	int				recvFile;
-	TimeLineID			recvFileTLI;
-	XLogSegNo			recvSegNo;
-	int				recvFileFlush;
-	XLogSegNo			recvSegNoFlush;
-	TimeLineID			recvFileTLIFlush;
-	XLogRecPtr			Flush;
-	int				len;
-	char				*buf;
-	bool				needClose;
-}WALParallelWriteReq;
+	WALReceiverAsyncCmd cmd;
+	XLogRecPtr	Write;
+	XLogRecPtr	start;
+	int			recvFile;
+	TimeLineID	recvFileTLI;
+	XLogSegNo	recvSegNo;
+	int			recvFileFlush;
+	XLogSegNo	recvSegNoFlush;
+	TimeLineID	recvFileTLIFlush;
+	XLogRecPtr	Flush;
+	int			len;
+	char	   *buf;
+	bool		needClose;
+}			WALParallelWriteReq;
 
 typedef struct
 {
 	slock_t		m_lock;			/* protect Write and Flush */
 	XLogRecPtr	Write;
 	XLogRecPtr	Flush;
-	int		recvFile;
+	int			recvFile;
 	TimeLineID	recvFileTLI;
 	XLogSegNo	recvSegNo;
 	uint32		recvOff;
 
-}LogFlushResultPerThread;
+}			LogFlushResultPerThread;
 
 typedef struct
 {
 	XLogRecPtr	threadWrite;
 	XLogRecPtr	threadFlush;
-	int		threadRecvFile;
+	int			threadRecvFile;
 	TimeLineID	threadRecvFileTLI;
 	XLogSegNo	threadRecvSegNo;
-}CurrentState;
+}			CurrentState;
 
 typedef struct
 {
-	PGPipe	**request;		/* request pipe */
-	PGPipe	**response;
-	ThreadSema *sem;		/* response sem */
+	PGPipe	  **request;		/* request pipe */
+	PGPipe	  **response;
+	ThreadSema *sem;			/* response sem */
 	LogFlushResultPerThread *results;
 	CurrentState *state;
 	pthread_mutex_t m_mutex;	/* thread lock it to create new xlog file */
-	int	messageCnt;
-}WALReceiverParallelControl;
+	int			messageCnt;
+}			WALReceiverParallelControl;
 
 static WALReceiverParallelControl rcv_ParallelWriteControl;
 
@@ -233,27 +235,29 @@ static void WalRcvSigUsr1Handler(SIGNAL_ARGS);
 static void WalRcvShutdownHandler(SIGNAL_ARGS);
 static void WalRcvQuickDieHandler(SIGNAL_ARGS);
 
-static void walreceiver_init_parallel_control(WALReceiverParallelControl *control, int threadCount);
+static void walreceiver_init_parallel_control(WALReceiverParallelControl * control, int threadCount);
 static void *walrecevier_async_write_management_thread(void *arg);
 static void WalRcvParallelWrite(char *buf, Size nbytes, XLogRecPtr recptr);
 static void WalRcvParallelFlush(XLogRecPtr flush);
 static void WalRcvParallelSync(void);
-static void XLogWalRcvParallelFlush(LogFlushResultPerThread *result);
-static void XLogWalRcvParallelWrite(LogFlushResultPerThread *result, WALParallelWriteReq *request, int threadIndex);
+static void XLogWalRcvParallelFlush(LogFlushResultPerThread * result);
+static void XLogWalRcvParallelWrite(LogFlushResultPerThread * result, WALParallelWriteReq * request, int threadIndex);
 static void XLogWalRcvWakeup(void);
-static int XLogFileParallelInit(XLogSegNo logsegno, bool *use_existent, bool use_lock, int threadIndex);
+static int	XLogFileParallelInit(XLogSegNo logsegno, bool *use_existent, bool use_lock, int threadIndex);
 
-static void walreceiver_init_parallel_control(WALReceiverParallelControl *control, int threadCount)
+static void
+walreceiver_init_parallel_control(WALReceiverParallelControl * control, int threadCount)
 {
-        int i;
-	control->request	= (PGPipe**)palloc0(threadCount * sizeof(PGPipe*));
-	control->response	= (PGPipe**)palloc0(threadCount * sizeof(PGPipe*));
-	control->sem		= (ThreadSema*)palloc0(threadCount * sizeof(ThreadSema));
-	control->results	= (LogFlushResultPerThread *)
+	int			i;
+
+	control->request = (PGPipe * *) palloc0(threadCount * sizeof(PGPipe *));
+	control->response = (PGPipe * *) palloc0(threadCount * sizeof(PGPipe *));
+	control->sem = (ThreadSema *) palloc0(threadCount * sizeof(ThreadSema));
+	control->results = (LogFlushResultPerThread *)
 		palloc0(threadCount * sizeof(LogFlushResultPerThread));
-	control->state		= (CurrentState*)palloc0(threadCount * sizeof(CurrentState));
+	control->state = (CurrentState *) palloc0(threadCount * sizeof(CurrentState));
 	control->messageCnt = 0;
-	for(i=0; i < threadCount; i++)
+	for (i = 0; i < threadCount; i++)
 	{
 		SpinLockInit(&(control->results[i].m_lock));
 		control->results[i].recvFile = -1;
@@ -313,10 +317,10 @@ WalReceiverMain(void)
 	char	   *err;
 	char	   *sender_host = NULL;
 	int			sender_port = 0;
-	WALReceiverWorkerThreadParam     threadParam[max_parallel_write_thread];
-	int		ret;
-	int 		message_cnt = 0;
-        int             i;
+	WALReceiverWorkerThreadParam threadParam[max_parallel_write_thread];
+	int			ret;
+	int			message_cnt = 0;
+	int			i;
 
 	/*
 	 * WalRcv should be set up already (if we are a backend, we inherit this
@@ -451,16 +455,16 @@ WalReceiverMain(void)
 		pfree(sender_host);
 
 	first_stream = true;
-	if(EnableParallelWalreceiver)
+	if (EnableParallelWalreceiver)
 	{
 		walreceiver_init_parallel_control(&rcv_ParallelWriteControl, max_parallel_write_thread);
 		for (i = 0; i < max_parallel_write_thread; i++)
 		{
-			rcv_ParallelWriteControl.request[i]  = CreatePipe(max_parallel_write_pipe_len);
-			rcv_ParallelWriteControl.response[i]  = CreatePipe(max_parallel_write_pipe_len);
+			rcv_ParallelWriteControl.request[i] = CreatePipe(max_parallel_write_pipe_len);
+			rcv_ParallelWriteControl.response[i] = CreatePipe(max_parallel_write_pipe_len);
 			ThreadSemaInit(&rcv_ParallelWriteControl.sem[i], 0);
 			threadParam[i].threadIndex = i;
-			ret = CreateThread(walrecevier_async_write_management_thread, (void*)&threadParam[i], MT_THR_DETACHED);
+			ret = CreateThread(walrecevier_async_write_management_thread, (void *) &threadParam[i], MT_THR_DETACHED);
 			if (ret)
 			{
 				elog(ERROR, "create walreceiver parallel write manage thread failed");
@@ -502,22 +506,23 @@ WalReceiverMain(void)
 
 			if (startpointTLI == POLAR_INVALID_TIMELINE_ID)
 			{
-				/* 
-				 * POLAR: If we are in Logger mode and requested timeline is invalid,
-				 * it means that we are a initial one, so we need to fetch as much as 
-				 * possible  WAL from Primary's current timeline, so update walreceiver's 
-				 * receiveStartTLI with primary's current one.  
+				/*
+				 * POLAR: If we are in Logger mode and requested timeline is
+				 * invalid, it means that we are a initial one, so we need to
+				 * fetch as much as possible  WAL from Primary's current
+				 * timeline, so update walreceiver's receiveStartTLI with
+				 * primary's current one.
 				 */
 				SpinLockAcquire(&walrcv->mutex);
 				walrcv->receiveStartTLI = startpointTLI = primaryTLI;
 				SpinLockRelease(&walrcv->mutex);
 				ereport(LOG,
-					(errmsg("initial Logger node update requested streaming timeline with primary's current one %d", 
-						primaryTLI)));
+						(errmsg("initial Logger node update requested streaming timeline with primary's current one %d",
+								primaryTLI)));
 			}
 			else
 				ereport(ERROR,
-					(errmsg("initial datamax requested with certain timeline id: %d", startpointTLI)));
+						(errmsg("initial datamax requested with certain timeline id: %d", startpointTLI)));
 		}
 		else
 			polar_is_initial_datamax = false;
@@ -578,11 +583,13 @@ WalReceiverMain(void)
 								startpointTLI)));
 			first_stream = false;
 
-			/* 
+			/*
 			 * Initialize LogstreamResult and buffers for processing messages
-			 * POLAR: Initialize LogstreamResult as last received lsn when in datamax mode
-			 * otherwise, when datamax_replay_lsn > received_lsn and we set flush_lsn = datamax_replay_lsn
-			 * the wal received won't be flushed to disk because flush_lsn > received_lsn(which is write lsn) in this case
+			 * POLAR: Initialize LogstreamResult as last received lsn when in
+			 * datamax mode otherwise, when datamax_replay_lsn > received_lsn
+			 * and we set flush_lsn = datamax_replay_lsn the wal received
+			 * won't be flushed to disk because flush_lsn > received_lsn(which
+			 * is write lsn) in this case
 			 */
 			if (!polar_is_dma_logger_node())
 				LogstreamResult.Receive = LogstreamResult.Send = LogstreamResult.Write = LogstreamResult.Flush = GetXLogReplayRecPtr(NULL);
@@ -655,8 +662,8 @@ WalReceiverMain(void)
 							endofwal = true;
 							break;
 						}
-						if(EnableParallelWalreceiver && 
-								((++message_cnt) > wal_receiver_reply_threshold))
+						if (EnableParallelWalreceiver &&
+							((++message_cnt) > wal_receiver_reply_threshold))
 						{
 							XLogWalRcvSendReply(false, false);
 							WalRcvParallelFlush(LogstreamResult.Receive);
@@ -668,9 +675,9 @@ WalReceiverMain(void)
 
 					if (EnableParallelWalreceiver)
 					{
-						if(rcv_ParallelWriteControl.messageCnt > max_parallel_write_pipe_len)
+						if (rcv_ParallelWriteControl.messageCnt > max_parallel_write_pipe_len)
 							elog(LOG, "wait sync complete, write cnt: %d",
-									rcv_ParallelWriteControl.messageCnt);
+								 rcv_ParallelWriteControl.messageCnt);
 						XLogWalRcvSendReply(false, false);
 						message_cnt = 0;
 						WalRcvParallelFlush(LogstreamResult.Receive);
@@ -682,14 +689,14 @@ WalReceiverMain(void)
 						XLogWalRcvSendReply(false, false);
 
 						/*
-						 * If we've written some records, flush them to disk and
-						 * let the startup process and primary server know about
-						 * them.
+						 * If we've written some records, flush them to disk
+						 * and let the startup process and primary server know
+						 * about them.
 						 */
 						XLogWalRcvFlush(false);
 					}
 				}
-				if(EnableParallelWalreceiver && (!endofwal) && rcv_ParallelWriteControl.messageCnt > 0)
+				if (EnableParallelWalreceiver && (!endofwal) && rcv_ParallelWriteControl.messageCnt > 0)
 				{
 					pg_usleep(1L);
 					WalRcvParallelSync();
@@ -721,7 +728,7 @@ WalReceiverMain(void)
 				if (rc & WL_LATCH_SET)
 				{
 					ResetLatch(walrcv->latch);
-					if(EnableParallelWalreceiver)
+					if (EnableParallelWalreceiver)
 						WalRcvParallelSync();
 					if (walrcv->force_reply)
 					{
@@ -791,19 +798,19 @@ WalReceiverMain(void)
 						}
 					}
 
-					if(EnableParallelWalreceiver)
+					if (EnableParallelWalreceiver)
 						WalRcvParallelSync();
 					XLogWalRcvSendReply(requestReply, requestReply);
 					XLogWalRcvSendHSFeedback(false);
 				}
 			}
 
-			if(EnableParallelWalreceiver)
+			if (EnableParallelWalreceiver)
 			{
-				while(rcv_ParallelWriteControl.messageCnt != 0)
+				while (rcv_ParallelWriteControl.messageCnt != 0)
 				{
 					elog(LOG, "wait sync complete, write cnt: %d",
-							rcv_ParallelWriteControl.messageCnt);
+						 rcv_ParallelWriteControl.messageCnt);
 					WalRcvParallelSync();
 				}
 			}
@@ -847,7 +854,8 @@ WalReceiverMain(void)
 			 * Create .done file forcibly to prevent the streamed segment from
 			 * being archived later.
 			 */
-			polar_is_dma_logger_mode = polar_is_dma_logger_node();		/* POLAR: Enter dma logger Mode. */
+			polar_is_dma_logger_mode = polar_is_dma_logger_node();	/* POLAR: Enter dma
+																	 * logger Mode. */
 			XLogFileName(xlogfname, recvFileTLI, recvSegNo, wal_segment_size);
 			if (XLogArchiveMode != ARCHIVE_MODE_ALWAYS)
 				XLogArchiveForceDone(xlogfname);
@@ -855,7 +863,8 @@ WalReceiverMain(void)
 				polar_dma_xlog_archive_notify(xlogfname, true);
 			else
 				XLogArchiveNotify(xlogfname);
-			polar_is_dma_logger_mode = false;				/* POLAR: Leave dma logger mode. */
+			polar_is_dma_logger_mode = false;	/* POLAR: Leave dma logger
+												 * mode. */
 		}
 		recvFile = -1;
 
@@ -958,7 +967,8 @@ WalRcvFetchTimeLineHistoryFiles(TimeLineID first, TimeLineID last)
 {
 	TimeLineID	tli;
 
-	polar_is_dma_logger_mode = polar_is_dma_logger_node();		/* POLAR: Enter datamax Mode. */
+	polar_is_dma_logger_mode = polar_is_dma_logger_node();	/* POLAR: Enter datamax
+															 * Mode. */
 	for (tli = first; tli <= last; tli++)
 	{
 		/* there's no history file for timeline 1 */
@@ -1009,7 +1019,7 @@ WalRcvFetchTimeLineHistoryFiles(TimeLineID first, TimeLineID last)
 			pfree(content);
 		}
 	}
-	polar_is_dma_logger_mode = false;				/* POLAR: Leave datamax mode. */
+	polar_is_dma_logger_mode = false;	/* POLAR: Leave datamax mode. */
 }
 
 /*
@@ -1099,11 +1109,11 @@ WalRcvQuickDieHandler(SIGNAL_ARGS)
 	 * anyway.
 	 *
 	 * Note we use _exit(2) not _exit(0).  This is to force the postmaster
-	 * into a system reset cycle if someone sends a manual SIGQUIT to a
-	 * random backend.  This is necessary precisely because we don't clean up
-	 * our shared memory state.  (The "dead man switch" mechanism in
-	 * pmsignal.c should ensure the postmaster sees this as a crash, too, but
-	 * no harm in being doubly sure.)
+	 * into a system reset cycle if someone sends a manual SIGQUIT to a random
+	 * backend.  This is necessary precisely because we don't clean up our
+	 * shared memory state.  (The "dead man switch" mechanism in pmsignal.c
+	 * should ensure the postmaster sees this as a crash, too, but no harm in
+	 * being doubly sure.)
 	 */
 	_exit(2);
 }
@@ -1124,6 +1134,7 @@ XLogWalRcvProcessMsg(unsigned char type, char *buf, Size len)
 	TransactionId polar_primary_next_xid;
 	uint32		polar_primary_epoch;
 	XLogSegNo	polar_upstream_last_removed_segno;
+
 	/* POLAR end */
 
 	resetStringInfo(&incoming_message);
@@ -1148,7 +1159,7 @@ XLogWalRcvProcessMsg(unsigned char type, char *buf, Size len)
 
 				buf += hdrlen;
 				len -= hdrlen;
-				if(EnableParallelWalreceiver)
+				if (EnableParallelWalreceiver)
 				{
 					LogstreamResult.Receive = dataStart + len;
 					WalRcvParallelWrite(buf, len, dataStart);
@@ -1181,21 +1192,24 @@ XLogWalRcvProcessMsg(unsigned char type, char *buf, Size len)
 					XLogWalRcvSendReply(true, false);
 				break;
 			}
-		/* 
-		 * POLAR: with next_xid and epoch of primary, needed when feedback standby xmin in datamax mode 
-		 * with last_valid_lsn of primary, used to keep xlog consistency 
-		 * also with last_removed_segno of primary, used to keep wal file those haven't been removed in primary
-		 */
+
+			/*
+			 * POLAR: with next_xid and epoch of primary, needed when feedback
+			 * standby xmin in datamax mode with last_valid_lsn of primary,
+			 * used to keep xlog consistency also with last_removed_segno of
+			 * primary, used to keep wal file those haven't been removed in
+			 * primary
+			 */
 		case 'e':
 			{
 				/* copy message to StringInfo */
 				hdrlen = sizeof(int64) + sizeof(int64) + sizeof(int32) + sizeof(int32) + sizeof(int64) + sizeof(int64);
 				if (len < hdrlen)
-				/*no cover begin*/
+					/* no cover begin */
 					ereport(ERROR,
 							(errcode(ERRCODE_PROTOCOL_VIOLATION),
 							 errmsg_internal("invalid WAL message received from primary")));
-				/*no cover end*/
+				/* no cover end */
 				appendBinaryStringInfo(&incoming_message, buf, hdrlen);
 
 				/* read the fields */
@@ -1229,7 +1243,7 @@ XLogWalRcvProcessMsg(unsigned char type, char *buf, Size len)
 				}
 				break;
 			}
-		/* POLAR end */
+			/* POLAR end */
 		default:
 			ereport(ERROR,
 					(errcode(ERRCODE_PROTOCOL_VIOLATION),
@@ -1281,23 +1295,26 @@ XLogWalRcvWrite(char *buf, Size nbytes, XLogRecPtr recptr)
 				 * from being archived later.
 				 */
 				XLogFileName(xlogfname, recvFileTLI, recvSegNo, wal_segment_size);
-				polar_is_dma_logger_mode = polar_is_dma_logger_node();		/* POLAR: Enter datamax Mode. */
+				polar_is_dma_logger_mode = polar_is_dma_logger_node();	/* POLAR: Enter datamax
+																		 * Mode. */
 				if (XLogArchiveMode != ARCHIVE_MODE_ALWAYS)
 					XLogArchiveForceDone(xlogfname);
 				else if (polar_enable_dma)
 					polar_dma_xlog_archive_notify(xlogfname, true);
 				else
 					XLogArchiveNotify(xlogfname);
-				polar_is_dma_logger_mode = false;				/* POLAR: Leave datamax mode. */
+				polar_is_dma_logger_mode = false;	/* POLAR: Leave datamax
+													 * mode. */
 			}
 			recvFile = -1;
 
 			/* Create/use new log file */
 			XLByteToSeg(recptr, recvSegNo, wal_segment_size);
 			use_existent = true;
-			polar_is_dma_logger_mode = polar_is_dma_logger_node();		/* POLAR: Enter datamax Mode. */
+			polar_is_dma_logger_mode = polar_is_dma_logger_node();	/* POLAR: Enter datamax
+																	 * Mode. */
 			recvFile = XLogFileInit(recvSegNo, &use_existent, true);
-			polar_is_dma_logger_mode = false;				/* POLAR: Leave datamax mode. */
+			polar_is_dma_logger_mode = false;	/* POLAR: Leave datamax mode. */
 			recvFileTLI = ThisTimeLineID;
 			recvOff = 0;
 		}
@@ -1354,13 +1371,13 @@ XLogWalRcvWrite(char *buf, Size nbytes, XLogRecPtr recptr)
  * ParallelWrite XLOG data to disk.
  */
 static void
-XLogWalRcvParallelWrite(LogFlushResultPerThread *result, WALParallelWriteReq *request, int threadIndex)
+XLogWalRcvParallelWrite(LogFlushResultPerThread * result, WALParallelWriteReq * request, int threadIndex)
 {
 	int			startoff;
 	int			byteswritten;
-	char			*buf = request->buf;
+	char	   *buf = request->buf;
 	int			nbytes = request->len;
-	XLogRecPtr		recptr = request->start;
+	XLogRecPtr	recptr = request->start;
 
 	while (nbytes > 0)
 	{
@@ -1409,8 +1426,8 @@ XLogWalRcvParallelWrite(LogFlushResultPerThread *result, WALParallelWriteReq *re
 				ereport(PANIC,
 						(errcode_for_file_access(),
 						 errmsg("could not seek in log segment %s to offset %u: %m",
-							 XLogFileNameP(result->recvFileTLI, result->recvSegNo),
-							 startoff)));
+								XLogFileNameP(result->recvFileTLI, result->recvSegNo),
+								startoff)));
 			result->recvOff = startoff;
 		}
 
@@ -1426,9 +1443,9 @@ XLogWalRcvParallelWrite(LogFlushResultPerThread *result, WALParallelWriteReq *re
 			ereport(PANIC,
 					(errcode_for_file_access(),
 					 errmsg("could not write to log segment %s "
-						 "at offset %u, length %lu: %m",
-						 XLogFileNameP(result->recvFileTLI, result->recvSegNo),
-						 result->recvOff, (unsigned long) segbytes)));
+							"at offset %u, length %lu: %m",
+							XLogFileNameP(result->recvFileTLI, result->recvSegNo),
+							result->recvOff, (unsigned long) segbytes)));
 		}
 
 		/* Update state for write */
@@ -1471,7 +1488,7 @@ XLogWalRcvFlush(bool dying)
 
 		/* POLAR: update received WAL lsn */
 		if (polar_enable_dma)
-			ConsensusSetXLogFlushedLSN(LogstreamResult.Flush, ThisTimeLineID, false);	
+			ConsensusSetXLogFlushedLSN(LogstreamResult.Flush, ThisTimeLineID, false);
 		/* POLAR end */
 
 		/* Signal the startup process and walsender that new WAL has arrived */
@@ -1503,7 +1520,7 @@ XLogWalRcvFlush(bool dying)
  * Parallel Flush the log to disk.
  */
 static void
-XLogWalRcvParallelFlush(LogFlushResultPerThread *result)
+XLogWalRcvParallelFlush(LogFlushResultPerThread * result)
 {
 	issue_xlog_fsync(result->recvFile, result->recvSegNo);
 }
@@ -1537,8 +1554,8 @@ XLogWalRcvWakeup(void)
 		char		activitymsg[50];
 
 		snprintf(activitymsg, sizeof(activitymsg), "streaming %X/%X",
-				(uint32) (LogstreamResult.Flush >> 32),
-				(uint32) LogstreamResult.Flush);
+				 (uint32) (LogstreamResult.Flush >> 32),
+				 (uint32) LogstreamResult.Flush);
 		set_ps_display(activitymsg, false);
 	}
 }
@@ -1584,30 +1601,30 @@ XLogWalRcvSendReply(bool force, bool requestReply)
 	 * this is only for reporting purposes and only on idle systems, that's
 	 * probably OK.
 	 */
-	if(EnableParallelWalreceiver)
+	if (EnableParallelWalreceiver)
 	{
 		if (!force
-				&& writePtr == LogstreamResult.Receive
-				&& flushPtr == LogstreamResult.Flush
-				&& !TimestampDifferenceExceeds(sendTime, now,
-					wal_receiver_status_interval * 1000))
+			&& writePtr == LogstreamResult.Receive
+			&& flushPtr == LogstreamResult.Flush
+			&& !TimestampDifferenceExceeds(sendTime, now,
+										   wal_receiver_status_interval * 1000))
 			return;
 	}
 	else
 	{
 
 		if (!force
-				&& writePtr == LogstreamResult.Write
-				&& flushPtr == LogstreamResult.Flush
-				&& !TimestampDifferenceExceeds(sendTime, now,
-					wal_receiver_status_interval * 1000))
+			&& writePtr == LogstreamResult.Write
+			&& flushPtr == LogstreamResult.Flush
+			&& !TimestampDifferenceExceeds(sendTime, now,
+										   wal_receiver_status_interval * 1000))
 			return;
 
 	}
 	sendTime = now;
 
 	/* Construct a new message */
-	if(EnableParallelWalreceiver)
+	if (EnableParallelWalreceiver)
 		writePtr = LogstreamResult.Receive;
 	else
 		writePtr = LogstreamResult.Write;
@@ -1714,13 +1731,13 @@ XLogWalRcvSendHSFeedback(bool immed)
 		if (TransactionIdIsValid(slot_xmin) &&
 			TransactionIdPrecedes(slot_xmin, xmin))
 			xmin = slot_xmin;
-		
-		/* 
-		 * POLAR: Don't consider oldestXmin in datamax mode
-		 * otherwise when datamax_oldestXmin < slot_xmin, datamax_oldestXmin 
-		 * will be sent to primary, which will infect the vacuum process of primary, 
-		 * but primary only cares about the xmin of standby in fact
-		 * datamax just records and sends them to primary
+
+		/*
+		 * POLAR: Don't consider oldestXmin in datamax mode otherwise when
+		 * datamax_oldestXmin < slot_xmin, datamax_oldestXmin will be sent to
+		 * primary, which will infect the vacuum process of primary, but
+		 * primary only cares about the xmin of standby in fact datamax just
+		 * records and sends them to primary
 		 */
 		if (polar_is_dma_logger_node())
 			xmin = slot_xmin;
@@ -1736,11 +1753,13 @@ XLogWalRcvSendHSFeedback(bool immed)
 	 * Get epoch and adjust if nextXid and oldestXmin are different sides of
 	 * the epoch boundary.
 	 */
+
 	/*
-	 * POLAR: get nextXid and epoch from polar_datamax_ctl when in datamax mode
-	 * we have checked the sanity of xmin feedbacked by standby in ProcessStandbyHSFeedbackMessage func
-	 * and there is no primary's data in datamax node
-	 * so we can feedback the epoch according to primary's epoch recorded in polar_datamax_ctl
+	 * POLAR: get nextXid and epoch from polar_datamax_ctl when in datamax
+	 * mode we have checked the sanity of xmin feedbacked by standby in
+	 * ProcessStandbyHSFeedbackMessage func and there is no primary's data in
+	 * datamax node so we can feedback the epoch according to primary's epoch
+	 * recorded in polar_datamax_ctl
 	 */
 	if (!polar_is_dma_logger_node())
 		GetNextXidAndEpoch(&nextXid, &xmin_epoch);
@@ -2001,11 +2020,11 @@ pg_stat_get_wal_receiver(PG_FUNCTION_ARGS)
 static void *
 walrecevier_async_write_management_thread(void *arg)
 {
-	int32                 threadIndex = 0;
-	WALParallelWriteReq  *request     = NULL;
+	int32		threadIndex = 0;
+	WALParallelWriteReq *request = NULL;
 	LogFlushResultPerThread *result;
 
-	threadIndex = ((WALReceiverWorkerThreadParam*)arg)->threadIndex;
+	threadIndex = ((WALReceiverWorkerThreadParam *) arg)->threadIndex;
 	result = &rcv_ParallelWriteControl.results[threadIndex];
 
 	while (1)
@@ -2014,7 +2033,7 @@ walrecevier_async_write_management_thread(void *arg)
 		ThreadSemaDown(&rcv_ParallelWriteControl.sem[threadIndex]);
 
 		/* create connect as needed */
-		request = (WALParallelWriteReq*)PipeGet(rcv_ParallelWriteControl.request[threadIndex]);
+		request = (WALParallelWriteReq *) PipeGet(rcv_ParallelWriteControl.request[threadIndex]);
 		if (request)
 		{
 
@@ -2031,7 +2050,7 @@ walrecevier_async_write_management_thread(void *arg)
 					}
 				case COMMAND_FLUSH:
 					{
-						if(result->Flush < result->Write)
+						if (result->Flush < result->Write)
 						{
 							XLogWalRcvParallelFlush(result);
 						}
@@ -2045,7 +2064,7 @@ walrecevier_async_write_management_thread(void *arg)
 					}
 			}
 
-			while(-1 == PipePut(rcv_ParallelWriteControl.response[threadIndex], request))
+			while (-1 == PipePut(rcv_ParallelWriteControl.response[threadIndex], request))
 			{
 				pg_usleep(1000L);
 			}
@@ -2058,14 +2077,14 @@ walrecevier_async_write_management_thread(void *arg)
 static void
 WalRcvParallelWrite(char *buf, Size nbytes, XLogRecPtr recptr)
 {
-	WALParallelWriteReq	*writeReq = NULL;
+	WALParallelWriteReq *writeReq = NULL;
 	int			threadIndex;
 	int			round = 1;
 	int			startoff;
 	int			segbytes;
-	XLogSegNo		segNo;
+	XLogSegNo	segNo;
 
-	while(nbytes > 0)
+	while (nbytes > 0)
 	{
 		XLByteToSeg(recptr, segNo, wal_segment_size);
 		threadIndex = segNo % max_parallel_write_thread;
@@ -2077,7 +2096,7 @@ WalRcvParallelWrite(char *buf, Size nbytes, XLogRecPtr recptr)
 		else
 			segbytes = nbytes;
 
-		writeReq  = (WALParallelWriteReq*)palloc0(sizeof(WALParallelWriteReq));
+		writeReq = (WALParallelWriteReq *) palloc0(sizeof(WALParallelWriteReq));
 		writeReq->buf = palloc(segbytes);
 		memcpy(writeReq->buf, buf, segbytes);
 
@@ -2085,7 +2104,7 @@ WalRcvParallelWrite(char *buf, Size nbytes, XLogRecPtr recptr)
 		writeReq->start = recptr;
 		writeReq->cmd = COMMAND_WRITE;
 
-		while (-1 == PipePut(rcv_ParallelWriteControl.request[threadIndex], (void*)writeReq))
+		while (-1 == PipePut(rcv_ParallelWriteControl.request[threadIndex], (void *) writeReq))
 		{
 			round++;
 		}
@@ -2101,21 +2120,21 @@ WalRcvParallelWrite(char *buf, Size nbytes, XLogRecPtr recptr)
 static void
 WalRcvParallelFlush(XLogRecPtr flush)
 {
-	WALParallelWriteReq     *flushReq = NULL;
-	int                     threadIndex = 0;
-	int                     round = 1;
-	XLogSegNo		segNo;
+	WALParallelWriteReq *flushReq = NULL;
+	int			threadIndex = 0;
+	int			round = 1;
+	XLogSegNo	segNo;
 
 	if (LogstreamResult.Send >= LogstreamResult.Receive)
 		return;
 	XLByteToSeg(flush, segNo, wal_segment_size);
 	threadIndex = segNo % max_parallel_write_thread;
 
-	flushReq  = (WALParallelWriteReq*)palloc0(sizeof(WALParallelWriteReq));
+	flushReq = (WALParallelWriteReq *) palloc0(sizeof(WALParallelWriteReq));
 	flushReq->cmd = COMMAND_FLUSH;
 
 
-	while (-1 == PipePut(rcv_ParallelWriteControl.request[threadIndex], (void*)flushReq))
+	while (-1 == PipePut(rcv_ParallelWriteControl.request[threadIndex], (void *) flushReq))
 	{
 		round++;
 	}
@@ -2127,28 +2146,28 @@ WalRcvParallelFlush(XLogRecPtr flush)
 static void
 WalRcvParallelSync(void)
 {
-	int threadIndex = 0;
-	int responseCnt = 0;
+	int			threadIndex = 0;
+	int			responseCnt = 0;
 	WALParallelWriteReq *wrsp = NULL;
 	XLogRecPtr	minWrite = 0;
 	XLogRecPtr	minFlush = 0;
-	int		minRecvFile = -1;
+	int			minRecvFile = -1;
 	TimeLineID	minRecvFileTLI = 0;
 	XLogSegNo	minRecvSegNo = 0;
-	CurrentState	*state = NULL;
-	int             minWriteThread = -1;
-	int		minFlushThread = -1;
+	CurrentState *state = NULL;
+	int			minWriteThread = -1;
+	int			minFlushThread = -1;
 
-	if(rcv_ParallelWriteControl.messageCnt == 0)
+	if (rcv_ParallelWriteControl.messageCnt == 0)
 		return;
 
 	while (threadIndex < max_parallel_write_thread)
 	{
 		state = &(rcv_ParallelWriteControl.state[threadIndex]);
-		for(responseCnt = 0; responseCnt < max_parallel_write_pipe_len; responseCnt++)
+		for (responseCnt = 0; responseCnt < max_parallel_write_pipe_len; responseCnt++)
 		{
-			wrsp = (WALParallelWriteReq*)PipeGet(rcv_ParallelWriteControl.response[threadIndex]);
-			if(wrsp)
+			wrsp = (WALParallelWriteReq *) PipeGet(rcv_ParallelWriteControl.response[threadIndex]);
+			if (wrsp)
 			{
 				switch (wrsp->cmd)
 				{
@@ -2159,28 +2178,30 @@ WalRcvParallelSync(void)
 							state->threadRecvSegNo = wrsp->recvSegNo;
 							state->threadRecvFileTLI = wrsp->recvFileTLI;
 
-							if(wrsp->needClose)
+							if (wrsp->needClose)
 							{
-								char    xlogfname[MAXFNAMELEN];
+								char		xlogfname[MAXFNAMELEN];
 
 								state->threadFlush = wrsp->Flush;
 								if (close(wrsp->recvFileFlush) != 0)
 									ereport(PANIC,
 											(errcode_for_file_access(),
 											 errmsg("could not close log segment %s: %m",
-												 XLogFileNameP(wrsp->recvFileFlush, wrsp->recvSegNoFlush))));
+													XLogFileNameP(wrsp->recvFileFlush, wrsp->recvSegNoFlush))));
 								XLogFileName(xlogfname, wrsp->recvFileTLIFlush, wrsp->recvSegNoFlush, wal_segment_size);
-								polar_is_dma_logger_mode = polar_is_dma_logger_node();		/* POLAR: Enter datamax Mode. */
+								polar_is_dma_logger_mode = polar_is_dma_logger_node();	/* POLAR: Enter datamax
+																						 * Mode. */
 								if (XLogArchiveMode != ARCHIVE_MODE_ALWAYS)
 									XLogArchiveForceDone(xlogfname);
 								else if (polar_enable_dma)
 									polar_dma_xlog_archive_notify(xlogfname, true);
 								else
 									XLogArchiveNotify(xlogfname);
-								polar_is_dma_logger_mode = false;				/* POLAR: Leave datamax mode. */
+								polar_is_dma_logger_mode = false;	/* POLAR: Leave datamax
+																	 * mode. */
 							}
 
-							if(wrsp->buf)
+							if (wrsp->buf)
 								pfree(wrsp->buf);
 							pfree(wrsp);
 							rcv_ParallelWriteControl.messageCnt--;
@@ -2205,12 +2226,12 @@ WalRcvParallelSync(void)
 		}
 		threadIndex++;
 
-		if(state->threadWrite == 0)
+		if (state->threadWrite == 0)
 		{
 			state->threadWrite = LogstreamResult.Write;
 			state->threadFlush = LogstreamResult.Flush;
 		}
-		if((minWrite == 0) || (minWrite > state->threadWrite))
+		if ((minWrite == 0) || (minWrite > state->threadWrite))
 		{
 			minWrite = state->threadWrite;
 			minRecvFile = state->threadRecvFile;
@@ -2218,33 +2239,34 @@ WalRcvParallelSync(void)
 			minRecvFileTLI = state->threadRecvFileTLI;
 			minWriteThread = threadIndex - 1;
 		}
-		if((minFlush == 0) || ( minFlush > state->threadFlush))
+		if ((minFlush == 0) || (minFlush > state->threadFlush))
 		{
 			minFlush = state->threadFlush;
 			minFlushThread = threadIndex - 1;
 		}
 	}
-	if(rcv_ParallelWriteControl.messageCnt != 0)
+	if (rcv_ParallelWriteControl.messageCnt != 0)
 	{
-		CurrentState    *writeState = NULL;
-		CurrentState    *flushState = NULL;
+		CurrentState *writeState = NULL;
+		CurrentState *flushState = NULL;
 		bool		needContinueWrite = (minWrite % wal_segment_size == 0);
 		bool		needContinueFlush = (minFlush % wal_segment_size == 0);
-		XLogRecPtr      minWriteTmp = minWrite;
-		XLogRecPtr      minFlushTmp = minFlush;
+		XLogRecPtr	minWriteTmp = minWrite;
+		XLogRecPtr	minFlushTmp = minFlush;
+
 		threadIndex = 0;
 		while (threadIndex < max_parallel_write_thread - 1)
 		{
 			writeState = &(rcv_ParallelWriteControl.state[(minWriteThread + threadIndex + 1) % max_parallel_write_thread]);
 			flushState = &(rcv_ParallelWriteControl.state[(minFlushThread + threadIndex + 1) % max_parallel_write_thread]);
 			threadIndex++;
-			if(needContinueWrite)
+			if (needContinueWrite)
 			{
-				if(writeState->threadWrite > (minWriteTmp + wal_segment_size))
+				if (writeState->threadWrite > (minWriteTmp + wal_segment_size))
 				{
 					needContinueWrite = false;
 				}
-				else if(writeState->threadWrite == (minWriteTmp + wal_segment_size))
+				else if (writeState->threadWrite == (minWriteTmp + wal_segment_size))
 				{
 					minWriteTmp = minWriteTmp + wal_segment_size;
 					minWrite = writeState->threadWrite;
@@ -2252,7 +2274,7 @@ WalRcvParallelSync(void)
 					minRecvSegNo = writeState->threadRecvSegNo;
 					minRecvFileTLI = writeState->threadRecvFileTLI;
 				}
-				else if(writeState->threadWrite > minWriteTmp)
+				else if (writeState->threadWrite > minWriteTmp)
 				{
 					needContinueWrite = false;
 					minWrite = writeState->threadWrite;
@@ -2261,18 +2283,18 @@ WalRcvParallelSync(void)
 					minRecvFileTLI = writeState->threadRecvFileTLI;
 				}
 			}
-			if(needContinueFlush)
+			if (needContinueFlush)
 			{
-				if(flushState->threadFlush > (minFlushTmp + wal_segment_size))
+				if (flushState->threadFlush > (minFlushTmp + wal_segment_size))
 				{
 					needContinueFlush = false;
 				}
-				else if(flushState->threadFlush == (minFlushTmp + wal_segment_size))
+				else if (flushState->threadFlush == (minFlushTmp + wal_segment_size))
 				{
 					minFlushTmp = minFlushTmp + wal_segment_size;
 					minFlush = flushState->threadFlush;
 				}
-				else if(flushState->threadFlush > minFlushTmp)
+				else if (flushState->threadFlush > minFlushTmp)
 				{
 					needContinueWrite = false;
 					minFlush = flushState->threadFlush;
@@ -2286,14 +2308,14 @@ WalRcvParallelSync(void)
 		while (threadIndex < max_parallel_write_thread)
 		{
 			state = &(rcv_ParallelWriteControl.state[threadIndex]);
-			if((minWrite == 0) || (minWrite < state->threadWrite))
+			if ((minWrite == 0) || (minWrite < state->threadWrite))
 			{
 				minWrite = state->threadWrite;
 				minRecvFile = state->threadRecvFile;
 				minRecvSegNo = state->threadRecvSegNo;
 				minRecvFileTLI = state->threadRecvFileTLI;
 			}
-			if((minFlush == 0) || ( minFlush < state->threadFlush))
+			if ((minFlush == 0) || (minFlush < state->threadFlush))
 			{
 				minFlush = state->threadFlush;
 			}
@@ -2301,20 +2323,20 @@ WalRcvParallelSync(void)
 		}
 
 	}
-	if(minWrite > LogstreamResult.Write)
+	if (minWrite > LogstreamResult.Write)
 	{
 		LogstreamResult.Write = minWrite;
 		recvFile = minRecvFile;
 		recvSegNo = minRecvSegNo;
 		recvFileTLI = minRecvFileTLI;
 	}
-	if(minFlush > LogstreamResult.Flush)
+	if (minFlush > LogstreamResult.Flush)
 	{
 		LogstreamResult.Flush = minFlush;
 
 		/* POLAR: update received WAL lsn */
 		if (polar_enable_dma)
-			ConsensusSetXLogFlushedLSN(LogstreamResult.Flush, ThisTimeLineID, false);	
+			ConsensusSetXLogFlushedLSN(LogstreamResult.Flush, ThisTimeLineID, false);
 		/* POLAR end */
 
 		XLogWalRcvWakeup();
@@ -2326,13 +2348,13 @@ WalRcvParallelSync(void)
 static int
 XLogFileParallelInit(XLogSegNo logsegno, bool *use_existent, bool use_lock, int threadIndex)
 {
-	char            path[MAXPGPATH];
-	char            tmppath[MAXPGPATH];
+	char		path[MAXPGPATH];
+	char		tmppath[MAXPGPATH];
 	PGAlignedXLogBlock zbuffer;
-	XLogSegNo       installed_segno;
-	XLogSegNo       max_segno;
-	int                     fd;
-	int                     nbytes;
+	XLogSegNo	installed_segno;
+	XLogSegNo	max_segno;
+	int			fd;
+	int			nbytes;
 
 	XLogFilePath(path, ThisTimeLineID, logsegno, wal_segment_size);
 
@@ -2370,7 +2392,7 @@ XLogFileParallelInit(XLogSegNo logsegno, bool *use_existent, bool use_lock, int 
 			errno = 0;
 			if ((int) write(fd, zbuffer.data, XLOG_BLCKSZ) != (int) XLOG_BLCKSZ)
 			{
-				int                     save_errno = errno;
+				int			save_errno = errno;
 
 				unlink(tmppath);
 				close(fd);
@@ -2386,7 +2408,7 @@ XLogFileParallelInit(XLogSegNo logsegno, bool *use_existent, bool use_lock, int 
 #if defined(HAVE_POSIX_FALLOCATE) && defined(__linux__)
 	else
 	{
-		#if defined(HAVE_POSIX_FALLOCATE) && defined(__linux__)
+#if defined(HAVE_POSIX_FALLOCATE) && defined(__linux__)
 		errno = posix_fallocate(fd, 0, wal_segment_size);
 		if (errno != 0)
 		{
@@ -2395,14 +2417,14 @@ XLogFileParallelInit(XLogSegNo logsegno, bool *use_existent, bool use_lock, int 
 					(errcode_for_file_access(),
 					 errmsg("could not write to file \"%s\": %m", tmppath)));
 		}
-		#else
+#else
 		elog(ERROR, "POSIX FALLOCATE is not supported");
-		#endif
+#endif
 	}
 #endif
 	if (pg_fsync(fd) != 0)
 	{
-		int                     save_errno = errno;
+		int			save_errno = errno;
 
 		close(fd);
 		errno = save_errno;
@@ -2448,8 +2470,8 @@ XLogFileParallelInit(XLogSegNo logsegno, bool *use_existent, bool use_lock, int 
 		}
 
 		/*
-		 * Perform the rename using link if available, paranoidly trying to avoid
-		 * overwriting an existing file (there shouldn't be one).
+		 * Perform the rename using link if available, paranoidly trying to
+		 * avoid overwriting an existing file (there shouldn't be one).
 		 */
 		if (durable_link_or_rename(tmppath, path, LOG) != 0)
 		{
@@ -2475,7 +2497,8 @@ XLogFileParallelInit(XLogSegNo logsegno, bool *use_existent, bool use_lock, int 
 /*
  * POLAR: return received LSN in DMA mode
  */
-XLogRecPtr polar_dma_get_received_lsn(void)
+XLogRecPtr
+polar_dma_get_received_lsn(void)
 {
 	XLogRecPtr	receivePtr;
 	TimeLineID	receiveTLI;
@@ -2484,5 +2507,5 @@ XLogRecPtr polar_dma_get_received_lsn(void)
 
 	return receivePtr;
 }
-/* POLAR end */
 
+/* POLAR end */

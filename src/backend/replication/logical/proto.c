@@ -54,11 +54,11 @@ logicalrep_write_begin(StringInfo out, ReorderBufferTXN *txn)
 	pq_sendint64(out, txn->final_lsn);
 	pq_sendint64(out, txn->commit_time);
 	pq_sendint32(out, txn->xid);
-	#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
 	pq_sendint64(out, txn->cts);
 	if (enable_distri_print)
-		elog(LOG, "logical replication write txn cts "UINT64_FORMAT, txn->cts);
-	#endif
+		elog(LOG, "logical replication write txn cts " UINT64_FORMAT, txn->cts);
+#endif
 }
 
 /*
@@ -73,13 +73,13 @@ logicalrep_read_begin(StringInfo in, LogicalRepBeginData *begin_data)
 		elog(ERROR, "final_lsn not set in begin message");
 	begin_data->committime = pq_getmsgint64(in);
 	begin_data->xid = pq_getmsgint(in, 4);
-	#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
 	begin_data->cts = pq_getmsgint64(in);
 	if (begin_data->cts == InvalidCommitSeqNo)
 		elog(ERROR, "cts not set in begin message");
 	if (enable_distri_print)
-		elog(LOG, "logical replication read txn cts "UINT64_FORMAT, begin_data->cts);
-	#endif
+		elog(LOG, "logical replication read txn cts " UINT64_FORMAT, begin_data->cts);
+#endif
 }
 
 

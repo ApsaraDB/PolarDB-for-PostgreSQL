@@ -61,7 +61,7 @@ clean-script:
 	rm -f pgxc_ctl_bash.c signature.h
 
 check:
-	$(prove_check)
+	echo "Nothing to be done for check."
 
 installcheck:
-	$(prove_installcheck)
+	echo "Nothing to be done for check."

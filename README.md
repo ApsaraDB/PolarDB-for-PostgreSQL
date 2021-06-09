@@ -24,14 +24,34 @@ TBD
 ### Deployment Using Docker Images
 TBD
 
-### One-Key Deployment
+### Previous Preparation
 
-onekey.sh can be used to build, configure, deploy, start, and init a cluster of PolarDB.
+* download source code from https://github.com/alibaba/PolarDB-for-PostgreSQL
 
-* before executing onekey.sh
-  - set up environment variables (LD_LIBRARY_PATH and PATH)
-  - install dependent packages
-  - set up ssh login without password
+* install dependent packages (use Centos as an example)
+
+```bash
+sudo yum install bison flex libzstd-devel libzstd zstd cmake openssl-devel protobuf-devel readline-devel libxml2-devel libxslt-devel zlib-devel bzip2-devel lz4-devel snappy-devel python-devel
+```
+* set up authorized key for fast access
+
+Call ssh-copy-id installs an authorized key. Its purpose is help pgxc_ctl to provision access without requiring a password for each login.
+
+```bash
+ssh-copy-id username@IP
+```
+
+* set up environment variables
+
+```bash
+vi ~/.bashrc
+export PATH="$HOME/polardb/polardbhome/bin:$PATH"
+export LD_LIBRARY_PATH="$HOME/polardb/polardbhome/lib:$LD_LIBRARY_PATH"
+```
+
+### Fast Deployment(One-Key for all)
+This script uses default configuration to compile PolarDB, to deploy binary, and to start a cluster of three nodes, including a leader and two followers.
+before call this script, please check "environment variables, dependent packages, authorized key" at "Previous Preparation" frist.
 
 * run onekey.sh script
 
@@ -39,7 +59,7 @@ onekey.sh can be used to build, configure, deploy, start, and init a cluster of 
 ./onekey.sh all
 ```
 
-* check running processes (leader, follower, logger), their replica roles and status:
+* check running processes (1 leader, 2 follower), their replica roles and status
 
 ```bash
 ps -ef|grep polardb
@@ -52,34 +72,12 @@ psql -p 10001 -d postgres -c "select * from polar_dma_cluster_status;"
 
 We extend a tool named pgxc_ctl from PG-XC/PG-XL open-source project to support cluster management, such as configuration generation, configuration modification, cluster initialization, starting/stopping nodes, and switchover. Its detail usage can be found [deployment](/doc/polardb/deployment.md).
 
-* download source code
-* install dependent packages (use Centos as an example)
-
-```bash
-sudo yum install bison flex libzstd-devel libzstd zstd cmake openssl-devel protobuf-devel readline-devel libxml2-devel libxslt-devel zlib-devel bzip2-devel lz4-devel snappy-devel python-devel
-```
-* set up ssh login without password
-
-Call ssh-copy-id command to configure ssh so that no password is needed when using pgxc_ctl.
-
-```bash
-ssh-copy-id username@IP
-```
-
 * build and install binary
 
 You can just call build script to build. If you get errors, please reference [deployment](/doc/polardb/deployment.md) for detail reasons.
 
 ```bash
 ./build.sh
-```
-
-* set up environment variables
-
-```bash
-vi ~/.bashrc
-export PATH="$HOME/polardb/polardbhome/bin:$PATH"
-export LD_LIBRARY_PATH="$HOME/polardb/polardbhome/lib:$LD_LIBRARY_PATH"ß
 ```
 
 * generate default configure file

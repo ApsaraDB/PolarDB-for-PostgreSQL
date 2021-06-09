@@ -7,7 +7,7 @@
  *
  * Support CTS-based distributed transactions
  * Author: Junbin Kang
- * 
+ *
  * Portions Copyright (c) 2020, Alibaba Group Holding Limited
  * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
@@ -116,10 +116,10 @@ TransactionId *ParallelCurrentXids;
 
 #ifdef ENABLE_DISTRIBUTED_TRANSACTION
 /*GUC parameter */
-bool IsConnFromCoordinator = false;
-bool IsCoordinatorNode = false;
-int delay_before_set_prepare_ts = 0;
-int delay_after_set_prepare_ts = 0;
+bool		IsConnFromCoordinator = false;
+bool		IsCoordinatorNode = false;
+int			delay_before_set_prepare_ts = 0;
+int			delay_after_set_prepare_ts = 0;
 #endif
 
 /*
@@ -199,10 +199,10 @@ typedef struct TransactionStateData
 	int			maxChildXids;	/* allocated size of childXids[] */
 	Oid			prevUser;		/* previous CurrentUserId setting */
 	int			prevSecContext; /* previous SecurityRestrictionContext */
-	bool		prevXactReadOnly;		/* entry-time xact r/o state */
-	bool		startedInRecovery;		/* did we start in recovery? */
-	int			parallelModeLevel;		/* Enter/ExitParallelMode counter */
-	struct TransactionStateData *parent;		/* back link to parent */
+	bool		prevXactReadOnly;	/* entry-time xact r/o state */
+	bool		startedInRecovery;	/* did we start in recovery? */
+	int			parallelModeLevel;	/* Enter/ExitParallelMode counter */
+	struct TransactionStateData *parent;	/* back link to parent */
 } TransactionStateData;
 
 typedef TransactionStateData *TransactionState;
@@ -231,7 +231,7 @@ static TransactionStateData TopTransactionStateData = {
 	0,							/* previous SecurityRestrictionContext */
 	false,						/* entry-time xact r/o state */
 	false,						/* startedInRecovery */
-	// false,						/* didLogXid */
+	//false,						/* didLogXid */ 
 	0,							/* parallelModeLevel */
 	NULL						/* link to parent state block */
 };
@@ -539,8 +539,8 @@ AssignTransactionId(TransactionState s)
 	 * somewhere inside a wal record, but not in XLogRecord->xl_xid, like in
 	 * xl_standby_locks.
 	 *
-	 * FIXME: didLogXid and the whole xact_assignment stuff is no more. We
-	 * no longer need it for subtransactions. Do we still need it for this
+	 * FIXME: didLogXid and the whole xact_assignment stuff is no more. We no
+	 * longer need it for subtransactions. Do we still need it for this
 	 * logical stuff?
 	 */
 
@@ -1085,9 +1085,9 @@ RecordTransactionCommit(void)
 	SharedInvalidationMessage *invalMessages = NULL;
 	bool		RelcacheInitFileInval = false;
 	bool		wrote_xlog;
-	#ifdef ENABLE_DISTRIBUTED_TRANSACTION
-	CommitSeqNo	 csn = InvalidCommitSeqNo;
-	#endif
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+	CommitSeqNo csn = InvalidCommitSeqNo;
+#endif
 
 	/* Get data needed for commit record */
 	nrels = smgrGetPendingDeletes(true, &rels);
@@ -1181,9 +1181,9 @@ RecordTransactionCommit(void)
 
 		SetCurrentTransactionStopTimestamp();
 
-		#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
 		csn = CTSLogAssignCommitTs(xid, nchildren, children, false);
-		#endif
+#endif
 
 		XactLogCommitRecord(csn,
 							xactStopTimestamp,
@@ -1248,19 +1248,20 @@ RecordTransactionCommit(void)
 		XLogFlush(XactLastRecEnd);
 
 		/*
-		 * Now we may update the CLOG and CSNLOG, if we wrote a COMMIT record above
+		 * Now we may update the CLOG and CSNLOG, if we wrote a COMMIT record
+		 * above
 		 */
 		if (markXidCommitted)
 		{
-			#ifdef ENABLE_DISTR_DEBUG
+#ifdef ENABLE_DISTR_DEBUG
 			TransactionIdCommitTree(xid, nchildren, children);
-			#endif
-			#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+#endif
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
 			/* Stamp this XID (and sub-XIDs) with the CSN */
 			CTSLogSetCommitTs(xid, nchildren, children, InvalidXLogRecPtr, false, csn);
 			if (enable_timestamp_debug_print)
-				elog(LOG, "commit record xid %d csn "UINT64_FORMAT, xid, csn);
-			#endif
+				elog(LOG, "commit record xid %d csn " UINT64_FORMAT, xid, csn);
+#endif
 		}
 	}
 	else
@@ -1285,17 +1286,17 @@ RecordTransactionCommit(void)
 		 */
 		if (markXidCommitted)
 		{
-			#ifdef ENABLE_DISTR_DEBUG
+#ifdef ENABLE_DISTR_DEBUG
 			TransactionIdAsyncCommitTree(xid, nchildren, children,
 										 XactLastRecEnd);
-			#endif
-			#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+#endif
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
 			/* Stamp this XID (and sub-XIDs) with the CSN */
 			CTSLogSetCommitTs(xid, nchildren, children, XactLastRecEnd, false, csn);
 			if (enable_timestamp_debug_print)
-				elog(LOG, "commit record xid %d csn "UINT64_FORMAT, xid, csn);
-			#endif
-			
+				elog(LOG, "commit record xid %d csn " UINT64_FORMAT, xid, csn);
+#endif
+
 		}
 	}
 
@@ -2131,7 +2132,7 @@ CommitTransaction(void)
 }
 
 #ifdef ENABLE_DISTRIBUTED_TRANSACTION
-static bool 
+static bool
 IsXactDistributedTransaction(void)
 {
 	return txnUseGlobalSnapshot;
@@ -2238,9 +2239,9 @@ PrepareTransaction(void)
 	/*
 	 * Similarly, PREPARE TRANSACTION is not allowed if the temporary
 	 * namespace has been involved in this transaction as we cannot allow it
-	 * to create, lock, or even drop objects within the temporary namespace
-	 * as this can mess up with this session or even a follow-up session
-	 * trying to use the same temporary namespace.
+	 * to create, lock, or even drop objects within the temporary namespace as
+	 * this can mess up with this session or even a follow-up session trying
+	 * to use the same temporary namespace.
 	 */
 	if ((MyXactFlags & XACT_FLAGS_ACCESSEDTEMPNAMESPACE))
 		ereport(ERROR,
@@ -2312,7 +2313,7 @@ PrepareTransaction(void)
 	AtPrepare_PgStat();
 	AtPrepare_MultiXact();
 	AtPrepare_RelationMap();
-	
+
 	/*
 	 * Here is where we really truly prepare.
 	 *
@@ -2330,9 +2331,10 @@ PrepareTransaction(void)
 	XactLastRecEnd = 0;
 
 #ifdef ENABLE_DISTRIBUTED_TRANSACTION
-	/* Stamp this XID (and sub-XIDs) with the CSN 
-	 * we only mark prepared state for connection 
-	 * from coordinator. 
+
+	/*
+	 * Stamp this XID (and sub-XIDs) with the CSN we only mark prepared state
+	 * for connection from coordinator.
 	 */
 	if (enable_timestamp_debug_print)
 		elog(LOG, "prepare record xid %d", xid);
@@ -2342,43 +2344,44 @@ PrepareTransaction(void)
 		LogicalTime prepareTs;
 
 		/*
-		 * We must first set committing status in CTS 
-		 * in order to ensure consistency: guaranteeing that 
-		 * if start timestamp is larger than prepare ts, then it can see
-		 * the committing status to wait for completion.
-		 * 
+		 * We must first set committing status in CTS in order to ensure
+		 * consistency: guaranteeing that if start timestamp is larger than
+		 * prepare ts, then it can see the committing status to wait for
+		 * completion.
+		 *
 		 * Written by Junbin Kang, 2020.06.08
-		 */ 
+		 */
 		CTSLogSetCommitTs(xid, 0, NULL, InvalidXLogRecPtr, false, COMMITSEQNO_COMMITTING);
-		
+
 		prepareTs = LogicalClockTick();
-		
+
 		if (!COMMITSEQNO_IS_NORMAL(prepareTs))
-			elog(ERROR, "invalid prepare ts "UINT64_FORMAT, prepareTs);
-		
-		#ifdef ENABLE_DISTR_DEBUG
-		/* 
-		 * For debugging purpose, we add guc parameters to stop
-		 * before/after storing prepare ts
-		 */ 
+			elog(ERROR, "invalid prepare ts " UINT64_FORMAT, prepareTs);
+
+#ifdef ENABLE_DISTR_DEBUG
+
+		/*
+		 * For debugging purpose, we add guc parameters to stop before/after
+		 * storing prepare ts
+		 */
 		if (delay_before_set_prepare_ts)
 			pg_usleep(delay_before_set_prepare_ts * 1000);
-		#endif
-		
+#endif
+
 		CTSLogSetCommitTs(xid, 0, NULL, InvalidXLogRecPtr, false, MASK_PREPARE_BIT(prepareTs));
-		
-		#ifdef ENABLE_DISTR_DEBUG
+
+#ifdef ENABLE_DISTR_DEBUG
 		if (delay_after_set_prepare_ts)
 			pg_usleep(delay_after_set_prepare_ts * 1000);
-		#endif
+#endif
 		TxnSetReplyTimestamp(prepareTs);
 		if (enable_timestamp_debug_print)
-			elog(LOG, "prepare record xid %d prepare timestamp "UINT64_FORMAT, 
-								xid, prepareTs);
+			elog(LOG, "prepare record xid %d prepare timestamp " UINT64_FORMAT,
+				 xid, prepareTs);
 	}
 	EndGlobalPrepare(gxact);
 #endif
-		
+
 	/*
 	 * Let others know about no transaction in progress by me.  This has to be
 	 * done *after* the prepared transaction has been marked valid, else
@@ -5303,9 +5306,9 @@ XactLogCommitRecord(CommitSeqNo csn,
 	/* First figure out and collect all the information needed */
 
 	xlrec.xact_time = commit_time;
-	#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
 	xlrec.csn = csn;
-	#endif
+#endif
 
 	if (relcacheInval)
 		xl_xinfo.xinfo |= XACT_COMPLETION_UPDATE_RELCACHE_FILE;
@@ -5563,9 +5566,9 @@ xact_redo_commit(xl_xact_parsed_commit *parsed,
 {
 	TransactionId max_xid;
 	TimestampTz commit_time;
-	#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
 	CommitSeqNo csn;
-	#endif
+#endif
 
 	Assert(TransactionIdIsValid(xid));
 
@@ -5595,21 +5598,22 @@ xact_redo_commit(xl_xact_parsed_commit *parsed,
 	else
 		commit_time = parsed->xact_time;
 
-	#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
 	csn = parsed->csn;
 	if (!COMMITSEQNO_IS_NORMAL(csn) || !TransactionIdIsValid(xid))
 	{
-		elog(ERROR, "commit csn or xid is invalid for xid %d csn "UINT64_FORMAT, xid, csn);
+		elog(ERROR, "commit csn or xid is invalid for xid %d csn " UINT64_FORMAT, xid, csn);
 	}
 	CTSLogSetCommitTs(xid, parsed->nsubxacts, parsed->subxacts, InvalidXLogRecPtr, false, csn);
-	
+
 	LogicalClockUpdate(csn);
+
 	/*
-	if (enable_timestamp_debug_print)
-		elog(LOG, "redo commit record xid %d csn "UINT64_FORMAT " max ts "UINT64_FORMAT, 
-			xid, csn, ShmemVariableCache->maxCommitTs);
-	*/
-	#endif
+	 * if (enable_timestamp_debug_print) elog(LOG, "redo commit record xid %d
+	 * csn "UINT64_FORMAT " max ts "UINT64_FORMAT, xid, csn,
+	 * ShmemVariableCache->maxCommitTs);
+	 */
+#endif
 
 	/* Set the transaction commit timestamp and metadata */
 	TransactionTreeSetCommitTsData(xid, parsed->nsubxacts, parsed->subxacts,
@@ -5621,11 +5625,11 @@ xact_redo_commit(xl_xact_parsed_commit *parsed,
 		 * Mark the transaction committed in pg_xact. We don't bother updating
 		 * pg_csnlog during replay.
 		 */
-		#ifdef ENABLE_DISTR_DEBUG
+#ifdef ENABLE_DISTR_DEBUG
 		CLogSetTreeStatus(xid, parsed->nsubxacts, parsed->subxacts,
 						  CLOG_XID_STATUS_COMMITTED,
 						  InvalidXLogRecPtr);
-		#endif
+#endif
 	}
 	else
 	{
@@ -5767,17 +5771,17 @@ xact_redo_abort(xl_xact_parsed_abort *parsed, TransactionId xid)
 		 * Mark the transaction aborted in pg_xact, no need for async stuff or
 		 * to update pg_csnlog.
 		 */
-		#ifdef ENABLE_DISTR_DEBUG
+#ifdef ENABLE_DISTR_DEBUG
 		CLogSetTreeStatus(xid, parsed->nsubxacts, parsed->subxacts,
 						  CLOG_XID_STATUS_ABORTED,
 						  InvalidXLogRecPtr);
-		#endif
-		#ifdef ENABLE_DISTRIBUTED_TRANSACTION
-		CTSLogSetCommitTs(xid, parsed->nsubxacts, parsed->subxacts, 
-												InvalidXLogRecPtr, 
-												false, 
-												COMMITSEQNO_ABORTED);
-		#endif
+#endif
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+		CTSLogSetCommitTs(xid, parsed->nsubxacts, parsed->subxacts,
+						  InvalidXLogRecPtr,
+						  false,
+						  COMMITSEQNO_ABORTED);
+#endif
 	}
 	else
 	{
@@ -5793,9 +5797,10 @@ xact_redo_abort(xl_xact_parsed_abort *parsed, TransactionId xid)
 		RecordKnownAssignedTransactionIds(max_xid);
 
 		/* Mark the transaction aborted in pg_xact, no need for async stuff */
-		#ifdef ENABLE_DISTR_DEBUG
+#ifdef ENABLE_DISTR_DEBUG
 		TransactionIdAbortTree(xid, parsed->nsubxacts, parsed->subxacts);
-		#endif
+#endif
+
 		/*
 		 * There are no flat files that need updating, nor invalidation
 		 * messages to send or undo.
@@ -5826,17 +5831,18 @@ xact_redo(XLogReaderState *record)
 		xl_xact_parsed_commit parsed;
 
 		ParseCommitRecord(XLogRecGetInfo(record), xlrec, &parsed);
-		#ifdef ENABLE_PARALLEL_RECOVERY
+#ifdef ENABLE_PARALLEL_RECOVERY
+
 		/*
-		 * For xact records which drop relations, a sync barrier should
-		 * be added to ensure that a recovery consistent state can be 
-		 * reached in CheckRecoveryConsistency().
-		 * 
+		 * For xact records which drop relations, a sync barrier should be
+		 * added to ensure that a recovery consistent state can be reached in
+		 * CheckRecoveryConsistency().
+		 *
 		 * Written by Junbin Kang, 2020-07-22
-		 */ 
+		 */
 		if (parsed.nrels)
 			WaitForWorkersSyncDone();
-		#endif
+#endif
 		xact_redo_commit(&parsed, XLogRecGetXid(record),
 						 record->EndRecPtr, XLogRecGetOrigin(record));
 	}
@@ -5846,10 +5852,10 @@ xact_redo(XLogReaderState *record)
 		xl_xact_parsed_commit parsed;
 
 		ParseCommitRecord(XLogRecGetInfo(record), xlrec, &parsed);
-		#ifdef ENABLE_PARALLEL_RECOVERY
+#ifdef ENABLE_PARALLEL_RECOVERY
 		if (parsed.nrels)
 			WaitForWorkersSyncDone();
-		#endif
+#endif
 		xact_redo_commit(&parsed, parsed.twophase_xid,
 						 record->EndRecPtr, XLogRecGetOrigin(record));
 
@@ -5864,10 +5870,10 @@ xact_redo(XLogReaderState *record)
 		xl_xact_parsed_abort parsed;
 
 		ParseAbortRecord(XLogRecGetInfo(record), xlrec, &parsed);
-		#ifdef ENABLE_PARALLEL_RECOVERY
+#ifdef ENABLE_PARALLEL_RECOVERY
 		if (parsed.nrels)
 			WaitForWorkersSyncDone();
-		#endif
+#endif
 		xact_redo_abort(&parsed, XLogRecGetXid(record));
 	}
 	else if (info == XLOG_XACT_ABORT_PREPARED)
@@ -5876,10 +5882,10 @@ xact_redo(XLogReaderState *record)
 		xl_xact_parsed_abort parsed;
 
 		ParseAbortRecord(XLogRecGetInfo(record), xlrec, &parsed);
-		#ifdef ENABLE_PARALLEL_RECOVERY
+#ifdef ENABLE_PARALLEL_RECOVERY
 		if (parsed.nrels)
 			WaitForWorkersSyncDone();
-		#endif
+#endif
 		xact_redo_abort(&parsed, parsed.twophase_xid);
 
 		/* Delete TwoPhaseState gxact entry and/or 2PC file. */

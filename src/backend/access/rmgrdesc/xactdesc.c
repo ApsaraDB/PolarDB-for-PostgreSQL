@@ -42,9 +42,9 @@ ParseCommitRecord(uint8 info, xl_xact_commit *xlrec, xl_xact_parsed_commit *pars
 								 * present */
 
 	parsed->xact_time = xlrec->xact_time;
-	#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
 	parsed->csn = xlrec->csn;
-	#endif
+#endif
 
 	if (info & XLOG_XACT_HAS_INFO)
 	{

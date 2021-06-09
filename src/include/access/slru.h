@@ -82,9 +82,9 @@ typedef struct SlruSharedData
 	XLogRecPtr *group_lsn;
 	int			lsn_groups_per_page;
 #ifdef ENABLE_DISTRIBUTED_TRANSACTION
-	TransactionId  oldestActiveStartupXid; 
+	TransactionId oldestActiveStartupXid;
 #endif
-	
+
 
 	/*----------
 	 * We mark a page "most recently used" by setting
@@ -121,7 +121,7 @@ typedef struct PageSlotEntry PageSlotEntry;
 typedef struct SlruCtlData
 {
 	SlruShared	shared;
-	HTAB *pageToSlot;
+	HTAB	   *pageToSlot;
 
 	/*
 	 * This flag tells whether to fsync writes (true for pg_xact and multixact
@@ -155,9 +155,9 @@ extern int SimpleLruReadPage(SlruCtl ctl, int pageno, bool write_ok,
 extern int SimpleLruReadPage_ReadOnly(SlruCtl ctl, int pageno,
 						   TransactionId xid);
 extern int
-SimpleLruLookupSlotno(SlruCtl ctl, int pageno);
+			SimpleLruLookupSlotno(SlruCtl ctl, int pageno);
 extern int SimpleLruReadPage_ReadOnly_Locked(SlruCtl ctl, int pageno, XLogRecPtr lsn,
-						   TransactionId xid);
+								  TransactionId xid);
 extern void SimpleLruWritePage(SlruCtl ctl, int slotno);
 extern void SimpleLruFlush(SlruCtl ctl, bool allow_redirtied);
 extern void SimpleLruTruncate(SlruCtl ctl, int cutoffPage);

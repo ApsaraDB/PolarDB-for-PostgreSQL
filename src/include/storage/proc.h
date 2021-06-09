@@ -146,8 +146,8 @@ struct PGPROC
 	SHM_QUEUE	syncRepLinks;	/* list link if process is in syncrep queue */
 
 	/*
-	 * POLAR: Info used for waiting for consensus to synchronize our XLog Flush 
-	 * point or consensus command.
+	 * POLAR: Info used for waiting for consensus to synchronize our XLog
+	 * Flush point or consensus command.
 	 */
 	ConsensusProcInfo consensusInfo;
 
@@ -177,14 +177,14 @@ struct PGPROC
 	bool		clogGroupMember;	/* true, if member of clog group */
 	pg_atomic_uint32 clogGroupNext; /* next clog group member */
 	TransactionId clogGroupMemberXid;	/* transaction id of clog group member */
-	CLogXidStatus	clogGroupMemberXidStatus;	/* transaction status of clog
+	CLogXidStatus clogGroupMemberXidStatus; /* transaction status of clog
 											 * group member */
 	int			clogGroupMemberPage;	/* clog page corresponding to
 										 * transaction id of clog group member */
 	XLogRecPtr	clogGroupMemberLsn; /* WAL location of commit record for clog
 									 * group member */
-	TransactionId		clogGroupSubxids[THRESHOLD_SUBTRANS_CLOG_OPT];
-	int					clogGroupNSubxids;
+	TransactionId clogGroupSubxids[THRESHOLD_SUBTRANS_CLOG_OPT];
+	int			clogGroupNSubxids;
 
 	/* Per-backend LWLock.  Protects fields below (but not group fields). */
 	LWLock		backendLock;
@@ -233,19 +233,19 @@ typedef struct PGXACT
 								 * starting our xact, excluding LAZY VACUUM:
 								 * xid >= xmin ! */
 
-	CommitSeqNo	snapshotcsn;	/* oldest snapshot in use in this backend:
+	CommitSeqNo snapshotcsn;	/* oldest snapshot in use in this backend:
 								 * vacuum must not remove tuples deleted by
 								 * xacts with commit seqno > snapshotcsn !
-								 * XXX: currently unused, vacuum uses just xmin, still.
-								 */
-	#ifdef ENABLE_DISTRIBUTED_TRANSACTION
-	pg_atomic_uint64	tmin;			/* start timestamp */
-	#endif
+								 * XXX: currently unused, vacuum uses just
+								 * xmin, still. */
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+	pg_atomic_uint64 tmin;		/* start timestamp */
+#endif
 
 	uint8		vacuumFlags;	/* vacuum-related flags, see above */
 	bool		delayChkpt;		/* true if this proc delays checkpoint start;
 								 * previously called InCommit */
-} PGXACT;
+}			PGXACT;
 
 /*
  * There is one ProcGlobal struct for the whole database cluster.

@@ -22,8 +22,8 @@
 
 #ifdef ENABLE_DISTRIBUTED_TRANSACTION
 /* User-settable GUC parameters */
-extern int			gc_interval;
-extern int			snapshot_delay;
+extern int	gc_interval;
+extern int	snapshot_delay;
 #endif
 
 /*
