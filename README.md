@@ -47,6 +47,7 @@ ssh-copy-id username@IP
 vi ~/.bashrc
 export PATH="$HOME/polardb/polardbhome/bin:$PATH"
 export LD_LIBRARY_PATH="$HOME/polardb/polardbhome/lib:$LD_LIBRARY_PATH"
+source ~/.bashrc
 ```
 
 ### Fast Deployment(One-Key for all)
