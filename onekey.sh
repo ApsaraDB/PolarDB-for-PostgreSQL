@@ -60,7 +60,7 @@ elif [[ "$BLD_OPT" == "setup" ]]; then
 elif [[ "$BLD_OPT" == "cm" ]]; then
     $PGXC_CTL -c $HOME/polardb/polardb_paxos.conf deploy cm
 elif [[ "$BLD_OPT" == "dependencies" ]]; then
-    sudo yum install bison flex libzstd-devel libzstd zstd cmake openssl-devel protobuf-devel readline-devel libxml2-devel libxslt-devel zlib-devel bzip2-devel lz4-devel snappy-devel python-devel
+    sudo yum install gcc gcc-c++ bison flex libzstd-devel libzstd zstd cmake openssl-devel protobuf-devel readline-devel libxml2-devel libxslt-devel zlib-devel bzip2-devel lz4-devel snappy-devel python-devel
 elif [[ "$BLD_OPT" == "clean" ]]; then
     $PGXC_CTL -c $HOME/polardb/polardb_paxos.conf clean all
 else

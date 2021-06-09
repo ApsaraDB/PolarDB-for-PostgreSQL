@@ -31,7 +31,7 @@ TBD
 * install dependent packages (use Centos as an example)
 
 ```bash
-sudo yum install bison flex libzstd-devel libzstd zstd cmake openssl-devel protobuf-devel readline-devel libxml2-devel libxslt-devel zlib-devel bzip2-devel lz4-devel snappy-devel python-devel
+sudo yum install gcc gcc-c++ bison flex libzstd-devel libzstd zstd cmake openssl-devel protobuf-devel readline-devel libxml2-devel libxslt-devel zlib-devel bzip2-devel lz4-devel snappy-devel python-devel
 ```
 * set up authorized key for fast access
 
