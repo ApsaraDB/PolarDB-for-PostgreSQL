@@ -52,7 +52,7 @@ export LD_LIBRARY_PATH="$HOME/polardb/polardbhome/lib:$LD_LIBRARY_PATH"
 
 ### Fast Deployment(One-Key for all)
 This script uses default configuration to compile PolarDB, to deploy binary, and to start a cluster of three nodes, including a leader and two followers.
-before call this script, please check "environment variables, dependent packages, authorized key" at "Previous Preparation" frist.
+before call this script, please check "environment variables, dependent packages, authorized key" at "Previous Preparation" first.
 
 * run onekey.sh script
 

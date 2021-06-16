@@ -2,7 +2,7 @@
 
 PolarDB for PostgreSQL HA Support Paxos 3 Nodes, Steaming HA, Logical replication based Active-Acitve HA models. Cluster version, and standalone version will base on above HA models to keep system High Availability.
 
-pgxc_ctl is support by pgxc, main use for manage pgxc cluster, support cluster deploy, cluster configure, cluster init, cluster start, cluster stop, cluster clean ect. We have extend ability for Paxos 3 Nodes support, Logical replication based Active-Acitve support, standalone version support, cluster manager support For pgxc, pgxl customer will use PolarDB cluster and standalone verison easily.
+pgxc_ctl is support by pgxc, main use for manage pgxc cluster, support cluster deploy, cluster configure, cluster init, cluster start, cluster stop, cluster clean etc. We have extend ability for Paxos 3 Nodes support, Logical replication based Active-Active support, standalone version support, cluster manager support For pgxc, pgxl customer will use PolarDB cluster and standalone version easily.
 
 pg_cron is a time-based job scheduler support by Citus, and main use for cluster heartbeat. it will auto call healthcheck command to check cluster health, and auto active-standby switch if it's needed.
 
