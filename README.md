@@ -21,8 +21,32 @@ Three approaches are offered to quickly try out PolarDB: Alibaba Cloud service, 
 ### Alibaba Cloud Service
 TBD
 
-### Deployment Using Docker Images
-TBD
+### Deployment Using Docker Image
+This section describes how to create a PolarDB-for-Postgresql image, and how to use the image for a quick start.
+
+* build a PolarDB-for-Postgresql image.
+
+```bash
+docker build -t polardb-for-postgresql -f ./docker/Dockerfile .
+```
+
+* run PolarDB-for-Postgresql image on port 10001.
+
+```bash
+docker run --name polardb -p 10001:10001 -d polardb-for-postgresql:latest
+```
+
+* access PolarDB-for-Postgresql with local psql.
+
+```bash
+psql -d postgres -U postgres -h localhost -p 10001
+```
+
+* if psql is not installed locally, you can login the container to use it.
+
+```bash
+docker exec -it polardb /bin/bash
+```
 
 ### Previous Preparation
 

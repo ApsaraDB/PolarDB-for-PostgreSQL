@@ -2,8 +2,8 @@
 
 echo "This script uses default configuration to compile PolarDB, to deploy binary, "
 echo "and to start a cluster of three nodes including a leader, 2 follower. "
-echo "   all:   one key for full environment build, include build source code、deploy"
-                 "and setup 3 node paxos environment by default configure."
+echo "   all:   one key for full environment build, include build source code, deploy"
+echo "          and setup 3 node paxos environment by default configure."
 echo "   build:   configure the build with performance optimzation"
 echo "             with assertion enabled, and then build"
 echo "   configure:  create default configure."
