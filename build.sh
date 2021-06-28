@@ -46,6 +46,7 @@ elif [[ "$BLD_OPT" == "debug" ]]; then
     CMD+=(--enable-cassert)
     CMD+=(--with-python)
     CMD+=(--enable-debug)
+#    CMD+=(--enable-tap-tests)
 elif [[ "$BLD_OPT" != "repeat" ]]; then
     echo "Invalid Parameter! Usage: $0 [deploy|verify|debug|repeat]"
     popd
