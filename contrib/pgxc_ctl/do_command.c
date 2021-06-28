@@ -356,6 +356,9 @@ static void do_failover_command(char *line)
     }
     else if (TestToken("datanode"))
     {
+        if (isPaxosEnv())
+            elog(ERROR, "ERROR: failover command only support streaming HA, dont support paxos for now.\n");
+            
         if (!isVarYes(VAR_datanodeSlave))
             elog(ERROR, "ERROR: datanode slave is not configured.\n");
         else if (!GetToken())
