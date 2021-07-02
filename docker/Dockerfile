@@ -44,6 +44,7 @@ RUN yum install --enablerepo=* -y \
 	openssh-clients \
 	openssh-server \
 	initscripts \
+	vim \
 	&& yum clean all
 # install cmake from source code
 RUN wget http://www.cmake.org/files/v2.8/cmake-2.8.10.2.tar.gz \
