@@ -204,7 +204,7 @@ See [architecture design](/doc/polardb/arch.md) for more information
 
 ## Contributing
 
-PolarDB is built on open-source projects and extends open-source PostgreSQL. Your contribution is welcome and appreciated. Please refer [contributing](/doc/polardb/contributing.md) for how to start coding and submit a PR.
+PolarDB is built on open-source projects and extends open-source PostgreSQL. Your contribution is welcome and appreciated. Please refer to [contributing](/doc/polardb/contributing.md) for how to start coding and submit a PR.
 
 ## Licensing
 
