@@ -55,7 +55,7 @@ export LD_LIBRARY_PATH="$HOME/polardb/polardbhome/lib:$LD_LIBRARY_PATH"
 ## One-Key Deployment
 
 This script uses default configuration to compile PolarDB, to deploy binary and start a cluster of three nodes, including a leader and two followers.
-Before calling this script, please check your environment variables, dependent packages, and authorized key, [Before You Start](#Before You Start) in [Preparation](#Preparation).
+Before calling this script, please check your environment variables, dependent packages, and authorized key, [Before You Start](#before-you-start) in [Preparation](#Preparation).
 
 * run onekey.sh script
 
