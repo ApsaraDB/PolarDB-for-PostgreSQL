@@ -1,10 +1,10 @@
 ## Summarize For Deployment
 
-We support two type deployment:
-- [One-Key Deployment](#One-Key Deployment) is script for create new default environment by only one command.
-- [Deployment from Source Code](#Deployment from Source Code) introduce more detail usage about deploy command and script.
+We support two deployment types:
+- [One-Key Deployment](#One-Key Deployment) is script for creating new default environment by only one command.
+- [Deployment from Source Code](#Deployment from Source Code) introduce more detailed usage about deploy command and script.
 
-Both two type of deployment need setup dependencies by - [Previous Preparation](#Previous Preparation) first.
+Both two types of deployment need setup dependencies, refer to - [Previous Preparation](#Previous Preparation) first.
 and make sure your system environment is meet requirements by - [OS and other dependencies](#OS and other dependencies)
 
 - [OS and other dependencies](#OS and other dependencies)
