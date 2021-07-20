@@ -40,7 +40,8 @@ RUN yum install --enablerepo=* -y \
 	bzip2-devel \
 	lz4-devel \
 	snappy-devel \
-	python36-devel \
+	python39 \
+	python39-devel \
 	openssh-clients \
 	openssh-server \
 	initscripts \
