@@ -3107,11 +3107,11 @@ show_all_help()
     if(isVarYes(VAR_standAlone))
         printf("You are using pgxc_ctl, the configuration utility for PGXL\n"
                "Type:\n"
+               "    help [all]\n"
                "    help <command>\n"
-               "    where <command> is either add, clean, monitor, \n"
-               "        configure, deploy, failover, init, kill, log, \n"
-               "        prepare, start, unregister \n"
-               "        stop or unregister\n");
+               "    where <command> is either clean, \n"
+               "        deploy, failover, healthcheck, init, kill, log, monitor, \n"
+               "        prepare, show, start or stop\n");
     else
         printf("You are using pgxc_ctl, the configuration utility for PGXL\n"
                "Type:\n"
@@ -3575,6 +3575,7 @@ do_show_help_single(char *line)
     {
         printf(
                 "\n"
+                "log [ variable | var ] all\n"
                 "log [ variable | var ] varname\n"
                 "log [ message | msg ] message_body\n"
                 "\n"
@@ -3601,7 +3602,7 @@ do_show_help_single(char *line)
     {
         printf(
                 "\n"
-                "prepare [ path ]\n"
+                "prepare [ config ] [ empty|minimal|standalone|complete ] [ path ]\n"
                 "\n"
                 "Write pgxc_ctl configuration file template to the specified file\n"
                 "For more details, please see the pgxc_ctl documentation\n"
