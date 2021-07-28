@@ -1,4 +1,4 @@
-PolarDB集中式版本开源项目持续的发布对用户有价值的功能。我们计划了5个阶段。
+PolarDB集中式版本开源项目持续的发布对用户有价值的功能。我们目前计划了5个阶段。
 ### PolarDB for PG version 1.0
 基于Shared-Storage的存储计算分离后架构必备最小的功能集合，如：PolarVfs，刷脏和Buffer管理，LogIndex，SyncDDL:
 
@@ -9,7 +9,7 @@ PolarDB集中式版本开源项目持续的发布对用户有价值的功能。�
 ### PolarDB for PG version 2.0
 PolarDB除了在存储计算分离架构上改动之外，还在优化器上进行了深度的优化：
 
-- UniqueKey：[@一挃(yizhi.fzh)](/yizhi.fzh)
+- UniqueKey：
 ### PolarDB for PG version 3.0
 3.0版本主要在存储计算分离后在可用性上的重大优化：
 
