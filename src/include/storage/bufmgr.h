@@ -236,7 +236,7 @@ extern bool HoldingBufferPinThatDelaysRecovery(void);
 extern void AbortBufferIO(void);
 
 extern void BufmgrCommit(void);
-extern bool BgBufferSync(struct WritebackContext *wb_context);
+extern bool BgBufferSync(struct WritebackContext *wb_context, int flags);
 
 extern void AtProcExit_LocalBuffers(void);
 
@@ -254,6 +254,12 @@ extern bool polar_start_buffer_io_extend(BufferDesc *buf,
 
 /* POLAR: change static to extern */
 extern void TerminateBufferIO(BufferDesc *buf, bool clear_dirty, uint32 set_flag_bits);
+
+/* POLAR */
+extern void polar_lock_buffer_ext(Buffer buffer, int mode, bool fresh_check);
+extern bool polar_conditional_lock_buffer_ext(Buffer buffer, bool fresh_check);
+extern void polar_lock_buffer_for_cleanup_ext(Buffer buffer, bool fresh_check);
+/* POLAR end */
 
 /* inline functions */
 

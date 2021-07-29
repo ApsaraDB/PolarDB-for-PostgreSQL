@@ -64,6 +64,7 @@
 #include "utils/tqual.h"
 
 /* POLAR */
+#include "common/file_perm.h"
 #include "replication/syncrep.h"
 #include "storage/polar_fd.h"
 #include "utils/guc.h"
@@ -637,7 +638,7 @@ createdb(ParseState *pstate, const CreatedbStmt *stmt)
 				char	   *polar_dstpath = NULL;
 
 				polar_dstpath = polar_get_database_path(dboid, dsttablespace);
-				polar_copydir(srcpath, polar_dstpath, false);
+				polar_copydir(srcpath, polar_dstpath, false, false, false);
 
 				/* POLAR: Also need create local dir for cache file */ 
 				if (mkdir(dstpath, S_IRWXU) != 0)
@@ -1295,7 +1296,7 @@ movedb(const char *dbname, const char *tblspcname)
 		 */
 		if (POLAR_FILE_IN_SHARED_STORAGE())
 		{
-			polar_copydir(src_dbpath, polar_dst_dbpath, false);
+			polar_copydir(src_dbpath, polar_dst_dbpath, false, false, false);
 
 			/* POLAR: create local dir for cache file */
 			if (mkdir(dst_dbpath, S_IRWXU) != 0)
@@ -2213,7 +2214,20 @@ dbase_redo(XLogReaderState *record)
 		 *
 		 * We don't need to copy subdirectories
 		 */
-		polar_copydir(src_path, dst_path, false);
+		polar_copydir(src_path, dst_path, false, false, false);
+
+		if (!polar_in_replica_mode())
+		{
+			dst_path = GetDatabasePath(xlrec->db_id, xlrec->tablespace_id, false);
+			if (lstat(dst_path, &st) < 0)
+			{
+				/* POLAR: Also need create local dir for cache file */
+				if (mkdir(dst_path, pg_dir_create_mode) != 0)
+					ereport(ERROR,
+							(errcode_for_file_access(),
+							errmsg("could not create directory \"%s\": %m", dst_path)));
+			}
+		}
 	}
 	else if (info == XLOG_DBASE_DROP)
 	{
@@ -2258,6 +2272,16 @@ dbase_redo(XLogReaderState *record)
 			ereport(WARNING,
 					(errmsg("some useless files may be left behind in old database directory \"%s\"",
 							dst_path)));
+
+		if (!polar_in_replica_mode())
+		{
+			dst_path = GetDatabasePath(xlrec->db_id, xlrec->tablespace_id, false);
+			/* POLAR: Also need remove local dir */
+			if (!rmtree(dst_path, true))
+				ereport(WARNING,
+						(errmsg("some useless files may be left behind in old database directory \"%s\"",
+								dst_path)));
+		}
 
 		if (InHotStandby)
 		{

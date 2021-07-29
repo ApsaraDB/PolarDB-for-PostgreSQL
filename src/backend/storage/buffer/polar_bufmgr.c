@@ -44,7 +44,7 @@ static int        prev_sync_count = 0;
 static int64      consistent_lsn_delta = 0;
 
 static XLogRecPtr polar_cal_cur_consistent_lsn(void);
-static void polar_sync_buffer_from_copy_buffer(WritebackContext *wb_context);
+static void polar_sync_buffer_from_copy_buffer(WritebackContext *wb_context, int flags);
 static void polar_start_or_stop_parallel_bgwriter(bool is_normal_bgwriter, uint64 lag);
 static int evaluate_sync_buffer_num(uint64 lag);
 static XLogRecPtr update_consistent_lsn_delta(XLogRecPtr cur_consistent_lsn);
@@ -97,14 +97,14 @@ polar_reset_buffer_oldest_lsn(BufferDesc *buf_hdr)
  * low-power hibernation mode.
  */
 bool
-polar_bg_buffer_sync(WritebackContext *wb_context)
+polar_bg_buffer_sync(WritebackContext *wb_context, int flags)
 {
 	bool       res = false;
 	XLogRecPtr consistent_lsn = InvalidXLogRecPtr;
 
 	/* Use normal BgBufferSync */
 	if (!polar_enable_shared_storage_mode || polar_in_replica_mode())
-		return BgBufferSync(wb_context);
+		return BgBufferSync(wb_context, flags);
 
 	/*
 	 * For polardb, it should enable the flush list, otherwise, the consistent
@@ -113,11 +113,11 @@ polar_bg_buffer_sync(WritebackContext *wb_context)
 	if (polar_flush_list_enabled())
 	{
 		if (polar_enable_normal_bgwriter)
-			res = BgBufferSync(wb_context);
-		res = polar_buffer_sync(wb_context, &consistent_lsn, true) || res;
+			res = BgBufferSync(wb_context, flags);
+		res = polar_buffer_sync(wb_context, &consistent_lsn, true, flags) || res;
 	}
 	else
-		res = BgBufferSync(wb_context);
+		res = BgBufferSync(wb_context, flags);
 
 	polar_set_consistent_lsn(consistent_lsn);
 
@@ -244,7 +244,8 @@ polar_buffer_can_be_flushed_by_checkpoint(BufferDesc *buf_hdr,
 bool
 polar_buffer_sync(WritebackContext *wb_context,
 				  XLogRecPtr *consistent_lsn,
-				  bool is_normal_bgwriter)
+				  bool is_normal_bgwriter,
+				  int flags)
 {
 	static int       *batch_buf = NULL;
 
@@ -266,6 +267,16 @@ polar_buffer_sync(WritebackContext *wb_context,
 
 	if (XLogRecPtrIsInvalid(oldest_apply_lsn))
 		lag = polar_max_valid_lsn() - cur_consistent_lsn;
+	/* POLAR: when enable fullpage snapshot, we don't care about oledest_applied_lsn anymore */
+	else if (polar_enable_fullpage_snapshot)
+	{
+		uint64	consistent_lsn_lag = polar_max_valid_lsn() - cur_consistent_lsn;
+		/* If consistent_lsn is too old, start to trigger to write fullpage */
+		if (consistent_lsn_lag > polar_fullpage_snapshot_oldest_lsn_delay_threshold)
+			lag = consistent_lsn_lag - polar_fullpage_snapshot_oldest_lsn_delay_threshold;
+		else
+			lag = 0;
+	}
 	else
 		lag = oldest_apply_lsn > cur_consistent_lsn ? oldest_apply_lsn - cur_consistent_lsn : 0;
 
@@ -277,7 +288,7 @@ polar_buffer_sync(WritebackContext *wb_context,
 
 	/* Only normal bgwriter sync buffers from the copy buffer. */
 	if (is_normal_bgwriter)
-		polar_sync_buffer_from_copy_buffer(wb_context);
+		polar_sync_buffer_from_copy_buffer(wb_context, flags);
 
 	if (unlikely(polar_enable_debug))
 		elog(DEBUG1, "Try to get %d buffers to flush from flushlist", num_to_sync);
@@ -299,7 +310,7 @@ polar_buffer_sync(WritebackContext *wb_context,
 		/* Sync buffers */
 		while (i < num)
 		{
-			int sync_state = SyncOneBuffer(batch_buf[i], false, wb_context);
+			int sync_state = SyncOneBuffer(batch_buf[i], false, wb_context, flags);
 
 			i++;
 			if (sync_state & BUF_WRITTEN)
@@ -573,7 +584,7 @@ polar_set_buffer_fake_oldest_lsn(BufferDesc *buf_hdr)
 }
 
 static void
-polar_sync_buffer_from_copy_buffer(WritebackContext *wb_context)
+polar_sync_buffer_from_copy_buffer(WritebackContext *wb_context, int flags)
 {
 	int            i;
 	CopyBufferDesc *cbuf;
@@ -597,7 +608,7 @@ polar_sync_buffer_from_copy_buffer(WritebackContext *wb_context)
 		 * SyncOneBuffer try to flush the original buffer, if it can be flushed,
 		 * flush it and free its copy buffer, otherwise, flush its copy buffer.
 		 */
-		SyncOneBuffer(buf_id, false, wb_context);
+		SyncOneBuffer(buf_id, false, wb_context, flags);
 	}
 }
 
@@ -730,4 +741,200 @@ polar_check_lazy_checkpoint(bool shutdown, int *flags, XLogRecPtr *lazy_redo)
 		*flags &= ~CHECKPOINT_LAZY;
 
 	return is_lazy;
+}
+
+bool
+polar_pin_buffer(BufferDesc *buf_desc, BufferAccessStrategy strategy)
+{
+	return PinBuffer(buf_desc, strategy);
+}
+
+/*
+ * POLAR: An extended version ConditionalLockBuffer. It can detect outdate status
+ * before obtaining the lock.
+ *
+ * If fresh_check is True, it will try to check flag of corresponding buffer
+ * descriptor and redo the buffer, otherwise it will do what the origin one do.
+ */
+bool
+polar_conditional_lock_buffer_ext(Buffer buffer, bool fresh_check)
+{
+	BufferDesc  *buf_desc;
+	bool        result;
+
+	Assert(BufferIsValid(buffer));
+
+	if (BufferIsLocal(buffer))
+		return true;            /* act as though we got it */
+
+	buf_desc = GetBufferDescriptor(buffer - 1);
+
+	result = LWLockConditionalAcquire(BufferDescriptorGetContentLock(buf_desc),
+									  LW_EXCLUSIVE);
+
+	if (fresh_check && result)
+		polar_log_index_lock_apply_buffer(&buffer);
+
+	return result;
+}
+
+/*
+ * POLAR: An extended version LockBuffer. It can detect outdate status
+ * before obtaining the lock.
+ *
+ * If fresh_check is True, it will try to check flag of corresponding buffer
+ * descriptor and do replay, otherwise it will do what the origin one do.
+ */
+void
+polar_lock_buffer_ext(Buffer buffer, int mode, bool fresh_check)
+{
+	BufferDesc  *buf_desc;
+
+	Assert(BufferIsValid(buffer));
+
+	if (BufferIsLocal(buffer))
+		return;                 /* local buffers need no lock */
+
+	buf_desc = GetBufferDescriptor(buffer - 1);
+
+	do
+	{
+		if (mode == BUFFER_LOCK_UNLOCK)
+		{
+			LWLockRelease(BufferDescriptorGetContentLock(buf_desc));
+			return;
+		}
+		else if (mode == BUFFER_LOCK_SHARE)
+			LWLockAcquire(BufferDescriptorGetContentLock(buf_desc), LW_SHARED);
+		else if (mode == BUFFER_LOCK_EXCLUSIVE)
+			LWLockAcquire(BufferDescriptorGetContentLock(buf_desc), LW_EXCLUSIVE);
+		else
+		{
+			elog(ERROR, "unrecognized buffer lock mode: %d", mode);
+			return;
+		}
+
+		/* Is this fresh buffer? */
+		if (!fresh_check || !polar_redo_check_state(buf_desc, POLAR_REDO_OUTDATE))
+			break;
+
+		switch (mode)
+		{
+			case BUFFER_LOCK_SHARE:
+				/* release s-lock and acquire x-lock for redo */
+				LWLockRelease(BufferDescriptorGetContentLock(buf_desc));
+				LWLockAcquire(BufferDescriptorGetContentLock(buf_desc), LW_EXCLUSIVE);
+				break;
+
+			case BUFFER_LOCK_EXCLUSIVE:
+				break;
+
+			default:
+				elog(ERROR, "unrecognized buffer lock mode: %d", mode);
+				return;
+		}
+
+		/*
+		 * Now, we hold exclusive lock. Because we released lock
+		 * while BUFFER_LOCK_SHARE mode, so we should re-check
+		 * buffer outdate state.
+		 */
+		polar_log_index_lock_apply_buffer(&buffer);
+
+		switch (mode)
+		{
+			case BUFFER_LOCK_SHARE:
+				/*
+				 * target lock mode is shared one, so we release exclusive lock
+				 * and try to hold shared one
+				 */
+				LWLockRelease(BufferDescriptorGetContentLock(buf_desc));
+				continue;
+
+			case BUFFER_LOCK_EXCLUSIVE:
+				/* target lock mode is exclusive, so we are done here, just return. */
+				return;
+
+			default:
+				elog(ERROR, "unrecognized buffer lock mode: %d", mode);
+				return;
+		}
+	}
+	while (true);
+}
+
+bool
+polar_is_future_page(BufferDesc *buf_hdr)
+{
+	XLogRecPtr replayed_lsn = GetXLogReplayRecPtr(NULL);
+	Page page = BufferGetPage(BufferDescriptorGetBuffer(buf_hdr));
+
+	if (!XLogRecPtrIsInvalid(replayed_lsn) &&
+			PageGetLSN(page) > replayed_lsn &&
+			buf_hdr->tag.forkNum == MAIN_FORKNUM)
+	{
+		if (!POLAR_ENABLE_FULLPAGE_SNAPSHOT())
+			elog(FATAL, "Read a future page, page lsn = %lx, replayed_lsn = %lx, page_tag = '([%u, %u, %u]), %u, %u'",
+					PageGetLSN(page), replayed_lsn, buf_hdr->tag.rnode.spcNode, buf_hdr->tag.rnode.dbNode,
+					buf_hdr->tag.rnode.relNode, buf_hdr->tag.forkNum, buf_hdr->tag.blockNum);
+		return true;
+	}
+	return false;
+}
+
+/*
+ * POLAR: check buffer need write fullpage snapshot image
+ */
+bool
+polar_buffer_need_fullpage_snapshot(BufferDesc *buf_hdr, XLogRecPtr oldest_apply_lsn)
+{
+	XLogRecPtr	cur_insert_lsn = InvalidXLogRecPtr;
+	XLogRecPtr	buf_oldest_lsn = pg_atomic_read_u64((pg_atomic_uint64 *) &buf_hdr->oldest_lsn);
+	XLogRecPtr	page_latest_lsn = BufferGetLSN(buf_hdr);
+	CopyBufferDesc *copy_buf = NULL;
+	uint32		buf_state = 0;
+	int		replay_threshold = polar_fullpage_snapshot_replay_delay_threshold;
+	int		oldest_lsn_threshold = polar_fullpage_snapshot_oldest_lsn_delay_threshold;
+	int		min_modified_count = polar_fullpage_snapshot_min_modified_count;
+
+	/*
+	 * 1. if it's not a future page, quick check
+	 * 2. only support main fork data page
+	 */
+	if (PageIsNew(BufHdrGetBlock(buf_hdr)) ||
+		page_latest_lsn <= oldest_apply_lsn ||
+		buf_hdr->tag.forkNum != MAIN_FORKNUM)
+		return false;
+
+	buf_state = LockBufHdr(buf_hdr);
+	copy_buf = buf_hdr->copy_buffer;
+	if (copy_buf)
+	{
+		Assert(!XLogRecPtrIsInvalid(buf_oldest_lsn));
+		Assert(!XLogRecPtrIsInvalid(polar_copy_buffer_get_lsn(copy_buf)));
+		buf_oldest_lsn = Min(pg_atomic_read_u64((pg_atomic_uint64 *) &copy_buf->oldest_lsn), buf_oldest_lsn);
+	}
+	UnlockBufHdr(buf_hdr, buf_state);
+
+	if (!POLAR_ENABLE_FULLPAGE_SNAPSHOT() ||
+		RecoveryInProgress() || /* Standby don't support fullpage snapshot */
+		XLogRecPtrIsInvalid(oldest_apply_lsn) ||
+		XLogRecPtrIsInvalid(buf_oldest_lsn))
+		return false;
+
+#define ONE_MB (1024 * 1024L)
+	cur_insert_lsn = GetXLogInsertRecPtr();
+
+	/*
+	 * In following case togather, we need to write fullpage
+	 * 1. buf_oldest_lsn is too old, block to advance consist_lsn
+	 * 2. replica is too slow
+	 * 3. is hot page
+	 */
+	if (cur_insert_lsn >= buf_oldest_lsn + oldest_lsn_threshold * ONE_MB &&
+		(page_latest_lsn >= oldest_apply_lsn + replay_threshold * ONE_MB ||
+		buf_hdr->recently_modified_count > min_modified_count))
+		return true;
+
+	return false;
 }

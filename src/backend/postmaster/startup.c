@@ -254,3 +254,13 @@ ResetPromoteTriggered(void)
 {
 	promote_triggered = false;
 }
+
+/*
+ * POLAR: when polar worker receive SIGTERM signal, we need
+ * set shutdown_requested flag, so polar worker can exit
+ */
+void
+polar_set_shutdown_requested_flag(void)
+{
+	shutdown_requested = true;
+}

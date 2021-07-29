@@ -3955,7 +3955,41 @@ pgstat_get_wait_io(WaitEventIO w)
 		case WAIT_EVENT_DATA_VFS_FILE_LSEEK:
 			event_name = "VFSFileLseek";
 			break;
-			/* no default case, so that compiler will warn */
+		/* POLAR: Wait Events - logindex */
+		case WAIT_EVENT_LOGINDEX_META_WRITE:
+			event_name = "LogIndexMetaWrite";
+			break;
+		case WAIT_EVENT_LOGINDEX_META_READ:
+			event_name = "LogIndexMetaRead";
+			break;
+		case WAIT_EVENT_LOGINDEX_META_FLUSH:
+			event_name = "LogIndexMetaFlush";
+			break;
+		case WAIT_EVENT_LOGINDEX_TBL_WRITE:
+			event_name = "LogIndexTblWrite";
+			break;
+		case WAIT_EVENT_LOGINDEX_TBL_READ:
+			event_name = "LogIndexTblRead";
+			break;
+		case WAIT_EVENT_LOGINDEX_TBL_FLUSH:
+			event_name = "LogIndexTblFlush";
+			break;
+		case  WAIT_EVENT_LOGINDEX_QUEUE_SPACE:
+			event_name = "LogIndexQueueFreeup";
+			break;
+		case WAIT_EVENT_LOGINDEX_WAIT_ACTIVE:
+			event_name = "LogIndexWaitActive";
+			break;
+		/*no cover begin*/
+		case WAIT_EVENT_LOGINDEX_WAIT_FULLPAGE:
+			event_name = "LogIndexWaitFullpage";
+			break;
+		case WAIT_EVENT_FULLPAGE_FILE_INIT_WRITE:
+			event_name = "FullpageFileInitWrite";
+			break;
+		/*no cover end*/
+		/* POLAR end */
+		/* no default case, so that compiler will warn */
 	}
 
 	return event_name;

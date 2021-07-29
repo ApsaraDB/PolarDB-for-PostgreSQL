@@ -79,6 +79,8 @@
 #include "utils/timestamp.h"
 #include "mb/pg_wchar.h"
 
+/* POLAR */
+#include "access/polar_logindex.h"
 
 /* ----------------
  *		global variables
@@ -3989,6 +3991,12 @@ PostgresMain(int argc, char *argv[],
 			ereport(FATAL,
 					(errcode(ERRCODE_PROTOCOL_VIOLATION),
 					 errmsg("terminating connection because protocol synchronization was lost")));
+
+		/*
+		 * POLAR: Release allocated memory for page iterator
+		 * if backend process create logindex page iterator to replay page
+		 */
+		polar_log_index_abort_page_iterator();
 
 		/* Now we can allow interrupts again */
 		RESUME_INTERRUPTS();

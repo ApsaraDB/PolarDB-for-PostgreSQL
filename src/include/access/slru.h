@@ -15,6 +15,7 @@
 
 #include "access/xlogdefs.h"
 #include "storage/lwlock.h"
+#include "utils/hsearch.h"
 
 
 /*
@@ -139,6 +140,12 @@ typedef struct SlruCtlData
 
 typedef SlruCtlData *SlruCtl;
 
+typedef struct polar_slru_hash_entry
+{
+	int pageno; 						/* hash key */
+	int slotno;
+} polar_slru_hash_entry;
+
 
 extern Size SimpleLruShmemSize(int nslots, int nlsns);
 extern void SimpleLruInit(SlruCtl ctl, const char *name, int nslots, int nlsns,
@@ -164,4 +171,8 @@ extern bool SlruScanDirCbReportPresence(SlruCtl ctl, char *filename,
 extern bool SlruScanDirCbDeleteAll(SlruCtl ctl, char *filename, int segpage,
 					   void *data);
 
+/* POLAR */
+extern void polar_slru_invalid_page(SlruCtl ctl, int pageno);
+extern void polar_slru_append_page(SlruCtl ctl, int slotno, bool update);
+extern bool polar_slru_page_physical_exists(SlruCtl ctl, int pageno);
 #endif							/* SLRU_H */

@@ -96,27 +96,8 @@
 
 
 /* POLAR */
+#include "access/polar_logindex.h"
 #include "storage/polar_bufmgr.h"
-
-/*#define TRACE_VISIBILITYMAP */
-
-/*
- * Size of the bitmap on each visibility map page, in bytes. There's no
- * extra headers, so the whole page minus the standard page header is
- * used for the bitmap.
- */
-#define MAPSIZE (BLCKSZ - MAXALIGN(SizeOfPageHeaderData))
-
-/* Number of heap blocks we can represent in one byte */
-#define HEAPBLOCKS_PER_BYTE (BITS_PER_BYTE / BITS_PER_HEAPBLOCK)
-
-/* Number of heap blocks we can represent in one visibility map page. */
-#define HEAPBLOCKS_PER_PAGE (MAPSIZE * HEAPBLOCKS_PER_BYTE)
-
-/* Mapping from heap block number to the right bit in the visibility map */
-#define HEAPBLK_TO_MAPBLOCK(x) ((x) / HEAPBLOCKS_PER_PAGE)
-#define HEAPBLK_TO_MAPBYTE(x) (((x) % HEAPBLOCKS_PER_PAGE) / HEAPBLOCKS_PER_BYTE)
-#define HEAPBLK_TO_OFFSET(x) (((x) % HEAPBLOCKS_PER_BYTE) * BITS_PER_HEAPBLOCK)
 
 /* tables for fast counting of set bits for visible and frozen */
 static const uint8 number_of_ones_for_visible[256] = {
@@ -649,7 +630,17 @@ vm_readbuf(Relation rel, BlockNumber blkno, bool extend)
 	if (blkno >= rel->rd_smgr->smgr_vm_nblocks)
 	{
 		if (extend)
-			vm_extend(rel, blkno + 1);
+		{
+			/*
+			 * POLAR: replica don't write to filesystem, the block should
+			 * already be extened by rw node, so we update vm block size
+			 */
+			if (!polar_in_replica_mode())
+				vm_extend(rel, blkno + 1);
+			else
+				rel->rd_smgr->smgr_vm_nblocks = smgrnblocks(rel->rd_smgr,
+															VISIBILITYMAP_FORKNUM);
+		}
 		else
 			return InvalidBuffer;
 	}
@@ -731,3 +722,9 @@ vm_extend(Relation rel, BlockNumber vm_nblocks)
 
 	pfree(pg);
 }
+
+/* POLAR */
+#ifndef POLAR_VISIBILITYMAP_C
+#define POLAR_VISIBILITYMAP_C
+#include "polar_visibilitymap.c"
+#endif

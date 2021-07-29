@@ -34,6 +34,9 @@
 #include "pg_trace.h"
 #include "utils/snapmgr.h"
 
+/* POLAR */
+#include "access/xlog.h"
+#include "utils/guc.h"
 
 /*
  * Defines for SubTrans page sizes.  A page is the same BLCKSZ as is used
@@ -83,6 +86,22 @@ SubTransSetParent(TransactionId xid, TransactionId parent)
 
 	LWLockAcquire(SubtransControlLock, LW_EXCLUSIVE);
 
+	/*
+	 * POLAR: If we enable lazy checkpoint and recovery from last consistent lsn,
+	 * we may replay subtrans xlog which parent transaction is commited and subtrans file is truncated.
+	 * Here we will try to fallocate a new block and zero it if we replay xlog to record the parent.
+	 */
+	if (InRecovery && !reachedConsistency && polar_enable_lazy_checkpoint)
+	{
+		if (!polar_slru_page_physical_exists(SubTransCtl, pageno))
+		{
+			/* Zero the page */
+			slotno = ZeroSUBTRANSPage(pageno);
+			SimpleLruWritePage(SubTransCtl, slotno);
+			Assert(!SubTransCtl->shared->page_dirty[slotno]);
+		}
+	}
+
 	slotno = SimpleLruReadPage(SubTransCtl, pageno, true, xid);
 	ptr = (TransactionId *) SubTransCtl->shared->page_buffer[slotno];
 	ptr += entryno;
@@ -120,6 +139,18 @@ SubTransGetParent(TransactionId xid)
 	/* Bootstrap and frozen XIDs have no parent */
 	if (!TransactionIdIsNormal(xid))
 		return InvalidTransactionId;
+
+	/*
+	 * POLAR: If we enable lazy checkpoint and recovery from last consistent lsn,
+	 * we may replay subtrans xlog which parent transaction is commited and subtrans file is truncated.
+	 * Here we will InvalidTransactionId, and in the following xlog repaly it's parent transaction should
+	 * be commited.
+	 */
+	if (InRecovery && !reachedConsistency && polar_enable_lazy_checkpoint)
+	{
+		if (!polar_slru_page_physical_exists(SubTransCtl, pageno))
+			return InvalidTransactionId;
+	}
 
 	/* lock is acquired by SimpleLruReadPage_ReadOnly */
 

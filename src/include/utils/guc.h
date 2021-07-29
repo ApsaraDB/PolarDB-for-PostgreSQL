@@ -275,6 +275,14 @@ extern bool trace_sort;
 
 /* POLAR */
 #define MAX_NUM_OF_PARALLEL_BGWRITER	16
+#define MAX_READ_AHEAD_XLOGS	200
+
+#define CORE_DUMP_PRINT_MASK 0x0001
+#define CORE_DUMP_CLEAR_MASK 0x0010
+#define POLAR_CORE_DUMP_DISABLE 0x0000
+#define POLAR_CORE_DUMP_PRINT CORE_DUMP_PRINT_MASK
+#define POLAR_CORE_DUMP_CLEAR CORE_DUMP_CLEAR_MASK
+#define POLAR_CORE_DUMP_ALL (CORE_DUMP_PRINT_MASK | CORE_DUMP_CLEAR_MASK)
 
 /* POLAR GUCs */
 extern int		polar_hostid;
@@ -312,6 +320,30 @@ extern bool 	polar_startup_from_local_data_file;
 extern bool 	polar_enable_parallel_bgwriter;
 extern bool 	polar_enable_dynamic_parallel_bgwriter;
 
+extern int		polar_logindex_unit_test;
+extern int 		polar_logindex_table_batch_size;
+extern int		polar_max_logindex_files;
+extern int		polar_fullpage_keep_segments;
+extern int		polar_read_ahead_xlog_num;
+extern int		polar_bg_replay_batch_size;
+extern int		polar_wait_old_version_page_timeout;
+extern int		polar_startup_replay_delay_size;
+extern int		polar_write_logindex_active_table_delay;
+extern int		polar_fullpage_snapshot_replay_delay_threshold;
+extern int		polar_fullpage_snapshot_oldest_lsn_delay_threshold;
+extern int		polar_fullpage_snapshot_min_modified_count;
+extern int 		polar_clog_max_local_cache_segments;
+extern bool		polar_enable_redo_logindex;
+extern bool		polar_enable_flush_active_logindex_memtable;
+extern bool		polar_streaming_xlog_meta;
+extern bool		polar_enable_fullpage_snapshot;
+extern bool		polar_enable_run_walreceiver_always;
+extern bool		polar_enable_xlog_buffer;
+extern bool		polar_enable_master_xlog_read_ahead;
+extern bool		polar_enable_page_outdate;
+extern bool		polar_enable_redo_debug;
+extern bool		polar_enable_resolve_conflict;
+extern bool		polar_enable_standby_xlog_meta;
 /* POLAR end */
 
 /*

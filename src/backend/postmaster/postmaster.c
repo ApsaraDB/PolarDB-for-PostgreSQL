@@ -136,6 +136,7 @@
 #endif
 
 /* POLAR */
+#include "access/polar_logindex.h"
 #include "storage/polar_fd.h"
 
 /* POLAR */
@@ -1388,14 +1389,15 @@ PostmasterMain(int argc, char *argv[])
 			elog(PANIC, "polar vfs not ready, please set \'polar_vfs\' to shared_preload_libraries");
 
 		polar_load_and_check_controlfile();
-#if 0
 
 		/*
 		 * POLAR: Initialize the local directories for replica, copy some directories
 		 * from shared storage to local.
 		 */
 		polar_init_local_dir_for_replica();
-#endif
+
+		if (polar_enable_redo_logindex)
+			log_index_validate_dir();
 	}
 
 	/*
@@ -3882,10 +3884,10 @@ PostmasterStateMachine(polar_pmstate_change_reason reason, pid_t pid)
 
 		if (POLAR_FILE_IN_SHARED_STORAGE())
 			polar_load_and_check_controlfile();
-#if 0
+
 		/* POLAR: for replica, copy latest file from shared storage. */
 		polar_init_local_dir_for_replica();
-#endif
+
 		StartupPID = StartupDataBase();
 		Assert(StartupPID != 0);
 		StartupStatus = STARTUP_RUNNING;

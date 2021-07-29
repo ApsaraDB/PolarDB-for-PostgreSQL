@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# arg is local_data arg2 is polar_data
+# arg1 is local_data, arg2 is polar_data, arg3 is cluster_name or flag "localfs" to use localfs mode
 # local_data and polar_data must be full path
 
 pfs=/usr/local/bin/pfs
@@ -21,7 +21,7 @@ function pfs_cp_dir()
     cluster_name=$3
 
     if [ -z "${src_path}" ] || [ -z "${dst_path}" ]; then
-        echo "pfs cp: src_path and dst_path can not be empty"
+        echo "cp: src_path and dst_path can not be empty"
         exit 1
     fi
 
@@ -45,7 +45,7 @@ function rm_dir()
         exit 1
     fi
 
-    echo　"delete ${path}"
+    echo "delete ${path}"
     rm -rf ${path}
     if [ $? -ne 0 ]; then
             echo "delete ${path} fail"
@@ -53,7 +53,10 @@ function rm_dir()
     fi
 }
 
-if [ "$3" != "" ]; then
+if [ "$3" == "localfs" ]; then
+	echo "use localfs mode"
+	localfs_mode="on"
+elif [ "$3" != "" ]; then
     echo "use pfs cluster $3"
     cluster_name="$3"
     pfs_common_args="${pfs_common_args} -C $3"
@@ -86,16 +89,18 @@ if [ "$end" != '/' ]; then
         exit 1
 fi
 
-# check pfs commamd line
-if [ ! -f "${pfs}" ]; then
+# check pfs commamd line in pfs mode
+if [ ! -z "${localfs_mode}" ]; then
+	pfs=""
+elif [ ! -f "${pfs}" ]; then
 	echo "pfs does not exist"
 	exit 1
 fi
 
 # check local_data
 if [ ! -d "${local_data}" ]; then
-        echo "local data :("${local_data}") dir does not exist"
-        exit 1
+	echo "local data :("${local_data}") dir does not exist"
+	exit 1
 else
 	if [ ! -f "${local_data}/postgresql.conf" ]; then
 		echo "postgresql.conf in local data dir does not exist"
@@ -103,56 +108,75 @@ else
 	fi
 
 	if [ ! -d "${local_data}/pg_twophase" ]; then
-                echo "pg_twophase in local data dir does not exist"
-                exit 1
-        fi
+		echo "pg_twophase in local data dir does not exist"
+		exit 1
+	fi
 
 	if [ ! -d "${local_data}/pg_wal" ]; then
-                echo "pg_wal in local data dir does not exist"
-                exit 1
-        fi
+		echo "pg_wal in local data dir does not exist"
+		exit 1
+	fi
 
-#	if [ ! -d "${local_data}/pg_logindex" ]; then
-#		echo "pg_logindex in local data dir does not exist"
-#		exit 1
-#	fi
+	if [ ! -d "${local_data}/pg_logindex" ]; then
+		echo "pg_logindex in local data dir does not exist"
+		exit 1
+	fi
 
 	if [ ! -f "${local_data}/global/pg_control" ]; then
-                echo "pg_control in local data dir does not exist"
-                exit 1
-        fi
+		echo "pg_control in local data dir does not exist"
+		exit 1
+	fi
 
 	if [ ! -d "${local_data}/pg_xact" ]; then
-                echo "pg_xact in local data dir does not exist"
-                exit 1
-        fi
+		echo "pg_xact in local data dir does not exist"
+		exit 1
+	fi
+
 fi
 
-#check polar_data
-`${pfs} ${pfs_common_args} stat ${polar_data} 1>/dev/null 2>&1`
-if [ $? -ne 0 ]; then
-	echo "${polar_data} dir does not exist"
-	exit 1
+#check polar_data in pfs mode
+if [ -z "${localfs_mode}" ]; then
+	`${pfs} ${pfs_common_args} stat ${polar_data} 1>/dev/null 2>&1`
+	if [ $? -ne 0 ]; then
+		echo "${polar_data} dir does not exist"
+		exit 1
+	fi
+
+	polar_object_type_str=`${pfs} ${pfs_common_args} stat ${polar_data}`
+	polar_object_type=`expr substr "${polar_object_type_str}" 1 6`
+	if [ "$polar_object_type" != '   dir' ]; then
+    	    echo "${polar_data} is not dir"
+        	exit 1
+	fi
+
+	filenum_polar_data=`${pfs} ${pfs_common_args} ls ${polar_data} | wc -l`
+	if [[ ${filenum_polar_data} -ne 1 ]]; then
+    	    echo "${polar_data} dir not empty"
+        	exit 1
+	fi
+else
+	`stat ${polar_data} 1>/dev/null 2>&1`
+	if [ $? -ne 0 ]; then
+		echo "${polar_data} dir does not exist"
+		exit 1
+	elif [ ! -d "${polar_data}" ]; then
+		echo "${polar_data} is not dir"
+		exit 1
+	else
+		filenum_polar_data=`ls ${polar_data} | wc -l`
+		if [[ ${filenum_polar_data} -ne 0 ]]; then
+	    	    echo "${polar_data} dir not empty"
+    	    	exit 1
+		fi
+	fi
 fi
 
-polar_object_type_str=`${pfs} ${pfs_common_args} stat ${polar_data}`
-polar_object_type=`expr substr "${polar_object_type_str}" 1 6`
-if [ "$polar_object_type" != '   dir' ]; then
-        echo "${polar_data} is not dir"
-        exit 1
-fi
-
-filenum_polar_data=`${pfs} ${pfs_common_args} ls ${polar_data} | wc -l`
-if [[ ${filenum_polar_data} -ne 1 ]]; then
-        echo "${polar_data} dir not empty"
-        exit 1
-fi
-
+# do copy work
 pfs_cp_dir ${local_data}/base ${polar_data} ${cluster_name}
 pfs_cp_dir ${local_data}/global ${polar_data} ${cluster_name}
 pfs_cp_dir ${local_data}/pg_tblspc ${polar_data} ${cluster_name}
 pfs_cp_dir ${local_data}/pg_wal ${polar_data} ${cluster_name}
-#pfs_cp_dir ${local_data}/pg_logindex ${polar_data} ${cluster_name}
+pfs_cp_dir ${local_data}/pg_logindex ${polar_data} ${cluster_name}
 pfs_cp_dir ${local_data}/pg_twophase ${polar_data} ${cluster_name}
 pfs_cp_dir ${local_data}/pg_xact ${polar_data} ${cluster_name}
 pfs_cp_dir ${local_data}/pg_commit_ts ${polar_data} ${cluster_name}
@@ -168,7 +192,7 @@ do
 done
 rm_dir ${local_data}global/*
 rm_dir ${local_data}pg_wal
-#rm_dir ${local_data}pg_logindex
+rm_dir ${local_data}pg_logindex
 rm_dir ${local_data}pg_twophase
 rm_dir ${local_data}pg_xact
 rm_dir ${local_data}pg_commit_ts

@@ -31,8 +31,11 @@
 #include "utils/rel.h"
 
 /* POLAR */
+#include "access/polar_logindex.h"
+#include "access/polar_logindex_internal.h"
 #include "storage/bufpage.h"
 #include "storage/polar_fd.h"
+#include "storage/polar_xlogbuf.h"
 
 /*
  * During XLOG replay, we may see XLOG records for incremental updates of
@@ -345,23 +348,30 @@ XLogReadBufferForRedoExtended(XLogReaderState *record,
 		elog(PANIC, "failed to locate backup block with ID %d", block_id);
 	}
 
-	/*
-	 * Make sure that if the block is marked with WILL_INIT, the caller is
-	 * going to initialize it. And vice versa.
-	 */
-	zeromode = (mode == RBM_ZERO_AND_LOCK || mode == RBM_ZERO_AND_CLEANUP_LOCK);
-	willinit = (record->blocks[block_id].flags & BKPBLOCK_WILL_INIT) != 0;
-	if (willinit && !zeromode)
-		elog(PANIC, "block with WILL_INIT flag in WAL record must be zeroed by redo routine");
-	if (!willinit && zeromode)
-		elog(PANIC, "block to be initialized in redo routine must be marked with WILL_INIT flag in the WAL record");
+	/* POLAR: If buffer is valid we don't check WILL_INIT */
+	if (mode != RBM_NORMAL_VALID)
+	{
+		/*
+		* Make sure that if the block is marked with WILL_INIT, the caller is
+		* going to initialize it. And vice versa.
+		*/
+		zeromode = (mode == RBM_ZERO_AND_LOCK || mode == RBM_ZERO_AND_CLEANUP_LOCK);
+		willinit = (record->blocks[block_id].flags & BKPBLOCK_WILL_INIT) != 0;
+		if (willinit && !zeromode)
+			elog(PANIC, "block with WILL_INIT flag in WAL record must be zeroed by redo routine");
+		if (!willinit && zeromode)
+			elog(PANIC, "block to be initialized in redo routine must be marked with WILL_INIT flag in the WAL record");
+	}
 
 	/* If it has a full-page image and it should be restored, do it. */
 	if (XLogRecBlockImageApply(record, block_id))
 	{
 		Assert(XLogRecHasBlockImage(record, block_id));
-		*buf = XLogReadBufferExtended(rnode, forknum, blkno,
-									  get_cleanup_lock ? RBM_ZERO_AND_CLEANUP_LOCK : RBM_ZERO_AND_LOCK);
+		/* POLAR */
+		if (mode != RBM_NORMAL_VALID)
+			*buf = XLogReadBufferExtended(rnode, forknum, blkno,
+										  get_cleanup_lock ? RBM_ZERO_AND_CLEANUP_LOCK : RBM_ZERO_AND_LOCK);
+		/* POLAR ends */
 		page = BufferGetPage(*buf);
 		if (!RestoreBlockImage(record, block_id, page))
 			elog(ERROR, "failed to restore block image");
@@ -396,10 +406,14 @@ XLogReadBufferForRedoExtended(XLogReaderState *record,
 	}
 	else
 	{
-		*buf = XLogReadBufferExtended(rnode, forknum, blkno, mode);
+		/* POLAR */
+		if (mode != RBM_NORMAL_VALID)
+			*buf = XLogReadBufferExtended(rnode, forknum, blkno, mode);
+		/* POLAR end */
 		if (BufferIsValid(*buf))
 		{
-			if (mode != RBM_ZERO_AND_LOCK && mode != RBM_ZERO_AND_CLEANUP_LOCK)
+			if (mode != RBM_ZERO_AND_LOCK && mode != RBM_ZERO_AND_CLEANUP_LOCK &&
+				mode != RBM_NORMAL_VALID)
 			{
 				if (get_cleanup_lock)
 					LockBufferForCleanup(*buf);
@@ -565,7 +579,7 @@ CreateFakeRelcacheEntry(RelFileNode rnode)
 	FakeRelCacheEntry fakeentry;
 	Relation	rel;
 
-	Assert(InRecovery);
+	Assert(InRecovery || polar_in_replica_mode());
 
 	/* Allocate the Relation struct and all related space in one block. */
 	fakeentry = palloc0(sizeof(FakeRelCacheEntryData));
@@ -941,9 +955,18 @@ read_local_xlog_page(XLogReaderState *state, XLogRecPtr targetPagePtr,
 		 * RecoveryInProgress() will update ThisTimeLineID when it first
 		 * notices recovery finishes, so we only have to maintain it for the
 		 * local process until recovery ends.
+		 *
+		 * POLAR: If call logindex parse we read upto replayEndRecPtr instead
+		 * of lastReplayedEndRecPtr. Because we may read xlog during logindex parse 
+		 * but lastReplayedEndRecPtr is set after logindex parsed.
+		 * If we read data block and replay replayEndRecPtr XLOG in startup or backend process,
+		 * but read_upto is set to lastReplayedEndRecPtr, because lastReplayedEndRecPtr
+		 * is less than replayEndRecPtr, then replayEndRecPtr XLOG will never be read.
 		 */
 		if (!RecoveryInProgress())
 			read_upto = GetFlushRecPtr();
+		else if (polar_enable_logindex_parse())
+			read_upto = polar_get_replay_end_rec_ptr(&ThisTimeLineID);
 		else
 			read_upto = GetXLogReplayRecPtr(&ThisTimeLineID);
 
@@ -977,6 +1000,10 @@ read_local_xlog_page(XLogReaderState *state, XLogRecPtr targetPagePtr,
 
 		if (state->currTLI == ThisTimeLineID)
 		{
+			/* POLAR: if enable fullpage snapshot, read_upto maybe behind of fullpage lsn */
+			if (loc > read_upto && POLAR_ENABLE_FULLPAGE_SNAPSHOT())
+				read_upto = Max(read_upto, polar_get_logindex_snapshot_max_lsn(POLAR_LOGINDEX_FULLPAGE_SNAPSHOT));
+			/* POLAR end */
 
 			if (loc <= read_upto)
 				break;
@@ -1030,13 +1057,45 @@ read_local_xlog_page(XLogReaderState *state, XLogRecPtr targetPagePtr,
 		count = read_upto - targetPagePtr;
 	}
 
-	/*
-	 * Even though we just determined how much of the page can be validly read
-	 * as 'count', read the whole page anyway. It's guaranteed to be
-	 * zero-padded up to the page boundary if it's incomplete.
-	 */
-	XLogRead(cur_page, state->wal_segment_size, *pageTLI, targetPagePtr,
-			 XLOG_BLCKSZ);
+	/* POLAR: If we enable xlog buffer, we will read from buffer first. */
+	if (POLAR_ENABLE_XLOG_BUFFER())
+	{
+		int		buf_id = -1;
+
+		Assert((targetPagePtr % XLOG_BLCKSZ) == 0);
+
+		/* POLAR: Try to lookup xlog buffer. */
+		if (polar_xlog_buffer_lookup(targetPagePtr, count, true, true, &buf_id))
+		{
+			memcpy(cur_page, polar_get_xlog_buffer(buf_id), count);
+			Assert(reqLen <= count);
+		}
+		else
+		{
+			XLogRead(cur_page, state->wal_segment_size, *pageTLI, targetPagePtr,
+					 XLOG_BLCKSZ);
+
+			if (buf_id >= 0)
+			{
+				/* Copy data to xlog buffer */
+				memcpy(polar_get_xlog_buffer(buf_id), cur_page, count);
+			}
+		}
+
+		if (buf_id >=0)
+			polar_xlog_buffer_unlock(buf_id);
+	}
+	/* POLAR end */
+	else
+	{
+		/*
+		* Even though we just determined how much of the page can be validly read
+		* as 'count', read the whole page anyway. It's guaranteed to be
+		* zero-padded up to the page boundary if it's incomplete.
+		*/
+		XLogRead(cur_page, state->wal_segment_size, *pageTLI, targetPagePtr,
+				 XLOG_BLCKSZ);
+	}
 
 	/* number of valid bytes in the buffer */
 	return count;

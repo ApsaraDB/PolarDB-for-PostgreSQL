@@ -121,8 +121,8 @@ extern int polar_mkdir(const char *path, mode_t mode);
 extern int polar_rmdir(const char *path);
 extern int polar_make_pg_directory(const char *directoryName);
 
-extern void polar_copy_file(char *fromfile, char *tofile);
-extern void polar_copydir(char *fromdir, char *todir, bool recurse);
+extern void polar_copy_file(char *fromfile, char *tofile, bool skiperr);
+extern void polar_copydir(char *fromdir, char *todir, bool recurse, bool clean, bool skiperr);
 
 extern void polar_make_file_path_level3(char *path, char *base, char *file_path);
 extern void polar_make_file_path_level2(char *path, char *file_path);
@@ -130,4 +130,5 @@ extern void polar_make_file_path_level2(char *path, char *file_path);
 extern void polar_reset_vfs_switch(void);
 extern void polar_init_node_type(void);
 extern PolarNodeType polar_node_type_by_file(void);
+extern struct dirent * polar_read_dir_ext(DIR *dir, const char *dirname, int elevel, int *err);
 #endif

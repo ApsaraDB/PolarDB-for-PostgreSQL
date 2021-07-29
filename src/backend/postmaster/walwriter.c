@@ -61,6 +61,11 @@
 #include "utils/memutils.h"
 #include "utils/resowner.h"
 
+/* POLAR */
+#include "access/polar_logindex.h"
+#include "access/polar_logindex_internal.h"
+#include "access/polar_queue_manager.h"
+#include "utils/timestamp.h"
 
 /*
  * GUC parameters
@@ -101,6 +106,11 @@ WalWriterMain(void)
 	MemoryContext walwriter_context;
 	int			left_till_hibernate;
 	bool		hibernating;
+
+	/* POLAR */
+	polar_ringbuf_ref_t logindex_ref;
+	polar_ringbuf_ref_t data_ref;
+	TimestampTz polar_last_flush_time = 0;
 
 	/*
 	 * Properly accept or ignore signals the postmaster might send us
@@ -145,6 +155,17 @@ WalWriterMain(void)
 											  "Wal Writer",
 											  ALLOCSET_DEFAULT_SIZES);
 	MemoryContextSwitchTo(walwriter_context);
+
+	/* POLAR: Init send queue reference */
+	if (polar_streaming_xlog_meta)
+	{
+		if (!POLAR_XLOG_QUEUE_NEW_REF(&logindex_ref, true, "xlog_queue_wal_writer")
+				|| !POLAR_XLOG_QUEUE_NEW_REF(&data_ref, true, "xlog_queue_data_keep"))
+			elog(PANIC, "Failed to create send queue reference");
+		polar_ringbuf_auto_release_ref(&logindex_ref);
+		polar_ringbuf_auto_release_ref(&data_ref);
+	}
+	/* POLAR END */
 
 	/*
 	 * If an exception is encountered, processing resumes here.
@@ -271,6 +292,14 @@ WalWriterMain(void)
 			proc_exit(0);		/* done */
 		}
 
+		if (polar_streaming_xlog_meta)
+		{
+			/* POLAR: Parse xlog from queue and save to logindex */
+			polar_xlog_send_queue_save(&logindex_ref);
+			polar_xlog_send_queue_keep_data(&data_ref);
+			/* POLAR END */
+		}
+
 		/*
 		 * Do what we're here for; then, if XLogBackgroundFlush() found useful
 		 * work to do, reset hibernation counter.
@@ -279,6 +308,19 @@ WalWriterMain(void)
 			left_till_hibernate = LOOPS_UNTIL_HIBERNATE;
 		else if (left_till_hibernate > 0)
 			left_till_hibernate--;
+
+		/*
+		 * POLAR: try to flush inactive and active table for fullpage snapshot,
+		 * for performance, we should avoid writing active table too frequently
+		 */
+		if (POLAR_ENABLE_FULLPAGE_SNAPSHOT() &&
+			polar_enable_flush_active_logindex_memtable &&
+				TimestampDifferenceExceeds(polar_last_flush_time, GetCurrentTimestamp(),
+					polar_write_logindex_active_table_delay))
+		{
+			polar_log_index_flush_table(POLAR_LOGINDEX_FULLPAGE_SNAPSHOT, InvalidXLogRecPtr);
+			polar_last_flush_time = GetCurrentTimestamp();
+		}
 
 		/*
 		 * Sleep until we are signaled or WalWriterDelay has elapsed.  If we

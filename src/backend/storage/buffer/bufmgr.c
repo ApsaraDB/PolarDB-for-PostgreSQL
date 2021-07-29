@@ -53,6 +53,9 @@
 #include "utils/timestamp.h"
 
 /* POLAR */
+#include "access/polar_fullpage.h"
+#include "access/polar_logindex.h"
+#include "access/polar_logindex_internal.h"
 #include "storage/checksum.h"
 #include "storage/polar_bufmgr.h"
 #include "storage/polar_copybuf.h"
@@ -183,6 +186,8 @@ static PrivateRefCountEntry *NewPrivateRefCountEntry(Buffer buffer);
 static PrivateRefCountEntry *GetPrivateRefCountEntry(Buffer buffer, bool do_move);
 static inline int32 GetPrivateRefCount(Buffer buffer);
 static void ForgetPrivateRefCountEntry(PrivateRefCountEntry *ref);
+
+static void polar_apply_io_locked_page(BufferDesc *bufHdr, XLogRecPtr consist_lsn, XLogRecPtr checkpoint_redo_lsn, SMgrRelation smgr, ForkNumber forkNum, BlockNumber blockNum);
 
 /*
  * Ensure that the PrivateRefCountArray has sufficient space to store one more
@@ -444,7 +449,7 @@ static void PinBuffer_Locked(BufferDesc *buf);
 static void UnpinBuffer(BufferDesc *buf, bool fixOwner);
 static void BufferSync(int flags);
 static uint32 WaitBufHdrUnlocked(BufferDesc *buf);
-static int	SyncOneBuffer(int buf_id, bool skip_recently_used, WritebackContext *flush_context);
+static int	SyncOneBuffer(int buf_id, bool skip_recently_used, WritebackContext *flush_context, int flags);
 static void WaitIO(BufferDesc *buf);
 static bool StartBufferIO(BufferDesc *buf, bool forInput);
 static void shared_buffer_write_error_callback(void *arg);
@@ -455,7 +460,7 @@ static BufferDesc *BufferAlloc(SMgrRelation smgr,
 			BlockNumber blockNum,
 			BufferAccessStrategy strategy,
 			bool *foundPtr);
-static void FlushBuffer(BufferDesc *buf, SMgrRelation reln, XLogRecPtr polar_oldest_apply_lsn);
+static void FlushBuffer(BufferDesc *buf, SMgrRelation reln, XLogRecPtr polar_oldest_apply_lsn, bool polar_skip_fullpage);
 static void AtProcExit_Buffers(int code, Datum arg);
 static void CheckForBufferLeaks(void);
 static int	rnode_comparator(const void *p1, const void *p2);
@@ -692,7 +697,7 @@ ReadBufferWithoutRelcache(RelFileNode rnode, ForkNumber forkNum,
 
 	SMgrRelation smgr = smgropen(rnode, InvalidBackendId);
 
-	Assert(InRecovery);
+	Assert(RecoveryInProgress());
 
 	return ReadBuffer_common(smgr, RELPERSISTENCE_PERMANENT, forkNum, blockNum,
 							 mode, strategy, &hit);
@@ -714,6 +719,9 @@ ReadBuffer_common(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 	bool		found;
 	bool		isExtend;
 	bool		isLocalBuf = SmgrIsTemp(smgr);
+	/* Polar: start lsn to do replay */
+	XLogRecPtr  consist_lsn = InvalidXLogRecPtr;
+	XLogRecPtr  checkpoint_redo_lsn = InvalidXLogRecPtr;
 
 	*hit = false;
 
@@ -847,6 +855,25 @@ ReadBuffer_common(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 	}
 
 	/*
+	 * POLAR: page-replay.
+	 *
+	 * Get consistent lsn which used by replay.
+	 *
+	 * Note: All modifications about reply-page must be
+	 *       applied to ReadBuffer_common().
+	 */
+	if (polar_in_replica_mode() && !isLocalBuf)
+	{
+		checkpoint_redo_lsn = GetRedoRecPtr();
+		consist_lsn = polar_get_primary_consist_ptr();
+		if (polar_enable_fullpage_snapshot)
+			POLAR_SET_BACKEND_READ_MIN_LSN(checkpoint_redo_lsn);
+		else
+			POLAR_SET_BACKEND_READ_MIN_LSN(consist_lsn);
+	}
+	/* POLAR end */
+
+	/*
 	 * if we have gotten to this point, we have allocated a buffer for the
 	 * page but its contents are not yet valid.  IO_IN_PROGRESS is set for it,
 	 * if it's a shared buffer.
@@ -944,6 +971,27 @@ ReadBuffer_common(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 		LWLockAcquire(BufferDescriptorGetContentLock(bufHdr), LW_EXCLUSIVE);
 	}
 
+	/*
+	 * POLAR: page-replay.
+	 *
+	 * apply logs to this old page when read from disk.
+	 *
+	 * Note: All modifications about reply-page must be
+	 *       applied to both polar_bulk_read_buffer_common() and ReadBuffer_common().
+	 */
+	if (polar_in_replica_mode() && !isLocalBuf)
+	{
+		/*
+		 * POLAR: we want to do record replay on page only in
+		 * non-Startup process and consistency reached Startup process.
+		 * This judge is *ONLY* valid in replica mode, so we set 
+		 * replica check above with polar_in_replica_mode().
+		 */
+		polar_apply_io_locked_page(bufHdr, consist_lsn, checkpoint_redo_lsn, smgr, forkNum, blockNum);
+		POLAR_RESET_BACKEND_READ_MIN_LSN();
+	}
+	/* POLAR end */
+
 	if (isLocalBuf)
 	{
 		/* Only need to adjust flags */
@@ -1012,6 +1060,7 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 
 	/* POLAR */
 	XLogRecPtr	oldest_apply_lsn = InvalidXLogRecPtr;
+	uint32		redo_state;
 
 	/* create a tag so we can lookup the buffer */
 	INIT_BUFFERTAG(newTag, smgr->smgr_rnode.node, forkNum, blockNum);
@@ -1159,7 +1208,7 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 														  smgr->smgr_rnode.node.dbNode,
 														  smgr->smgr_rnode.node.relNode);
 
-				FlushBuffer(buf, NULL, oldest_apply_lsn);
+				FlushBuffer(buf, NULL, oldest_apply_lsn, false);
 				LWLockRelease(BufferDescriptorGetContentLock(buf));
 
 				ScheduleBufferTagForWriteback(&BackendWritebackContext,
@@ -1330,6 +1379,13 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 		buf_state |= BM_TAG_VALID | BUF_USAGECOUNT_ONE;
 
 	UnlockBufHdr(buf, buf_state);
+
+	/*
+	 * POLAR: reset redo state for the new buffer
+	 */
+	redo_state = polar_lock_redo_state(buf);
+	redo_state &= ~(POLAR_REDO_READ_IO_END | POLAR_REDO_REPLAYING | POLAR_REDO_OUTDATE);
+	polar_unlock_redo_state(buf, redo_state);
 
 	if (oldPartitionLock != NULL)
 	{
@@ -2022,7 +2078,7 @@ BufferSync(int flags)
 		 */
 		if (pg_atomic_read_u32(&bufHdr->state) & BM_CHECKPOINT_NEEDED)
 		{
-			if (SyncOneBuffer(buf_id, false, &wb_context) & BUF_WRITTEN)
+			if (SyncOneBuffer(buf_id, false, &wb_context, flags) & BUF_WRITTEN)
 			{
 				TRACE_POSTGRESQL_BUFFER_SYNC_WRITTEN(buf_id);
 				BgWriterStats.m_buf_written_checkpoints++;
@@ -2083,7 +2139,7 @@ BufferSync(int flags)
  * bgwriter_lru_maxpages to 0.)
  */
 bool
-BgBufferSync(WritebackContext *wb_context)
+BgBufferSync(WritebackContext *wb_context, int flags)
 {
 	/* info obtained from freelist.c */
 	int			strategy_buf_id;
@@ -2309,7 +2365,7 @@ BgBufferSync(WritebackContext *wb_context)
 	while (num_to_scan > 0 && reusable_buffers < upcoming_alloc_est)
 	{
 		int			sync_state = SyncOneBuffer(next_to_clean, true,
-											   wb_context);
+											   wb_context, flags);
 
 		if (++next_to_clean >= NBuffers)
 		{
@@ -2386,7 +2442,7 @@ BgBufferSync(WritebackContext *wb_context)
  * Note: caller must have done ResourceOwnerEnlargeBuffers.
  */
 static int
-SyncOneBuffer(int buf_id, bool skip_recently_used, WritebackContext *wb_context)
+SyncOneBuffer(int buf_id, bool skip_recently_used, WritebackContext *wb_context, int flags)
 {
 	BufferDesc *bufHdr = GetBufferDescriptor(buf_id);
 	int			result = 0;
@@ -2442,7 +2498,7 @@ SyncOneBuffer(int buf_id, bool skip_recently_used, WritebackContext *wb_context)
 	if (polar_buffer_can_be_flushed(bufHdr, polar_oldest_apply_lsn, false))
 	{
 		/* Flush buffer directly, if it has copy buffer, that will be freed */
-		FlushBuffer(bufHdr, NULL, polar_oldest_apply_lsn);
+		FlushBuffer(bufHdr, NULL, polar_oldest_apply_lsn, false);
 		LWLockRelease(BufferDescriptorGetContentLock(bufHdr));
 
 		tag = bufHdr->tag;
@@ -2451,6 +2507,18 @@ SyncOneBuffer(int buf_id, bool skip_recently_used, WritebackContext *wb_context)
 
 		ScheduleBufferTagForWriteback(wb_context, &tag);
 
+		return result | BUF_WRITTEN;
+	}
+	/*
+	 * POLAR: try to write fullpage wal
+	 * NOTE: shutdown checkpoint don't allow write wal record
+	 */
+	else if (!(flags & CHECKPOINT_IS_SHUTDOWN) &&
+			polar_buffer_need_fullpage_snapshot(bufHdr, polar_oldest_apply_lsn))
+	{
+		FlushBuffer(bufHdr, NULL, polar_oldest_apply_lsn, false);
+		LWLockRelease(BufferDescriptorGetContentLock(bufHdr));
+		UnpinBuffer(bufHdr, true);
 		return result | BUF_WRITTEN;
 	}
 	/*
@@ -2753,7 +2821,7 @@ BufferGetTag(Buffer buffer, RelFileNode *rnode, ForkNumber *forknum,
  * POLAR: If this buffer has copy buffer, that will be freed.
  */
 static void
-FlushBuffer(BufferDesc *buf, SMgrRelation reln, XLogRecPtr polar_oldest_apply_lsn)
+FlushBuffer(BufferDesc *buf, SMgrRelation reln, XLogRecPtr polar_oldest_apply_lsn, bool polar_skip_fullpage)
 {
 	XLogRecPtr	recptr;
 	ErrorContextCallback errcallback;
@@ -2857,6 +2925,15 @@ FlushBuffer(BufferDesc *buf, SMgrRelation reln, XLogRecPtr polar_oldest_apply_ls
 
 	if (!polar_replica)
 	{
+		/* POLAR: write fullpage wal when flush a future page */
+		if (!polar_skip_fullpage && !PageIsNew(bufBlock) &&
+			!XLogRecPtrIsInvalid(polar_oldest_apply_lsn) &&
+			BufferGetLSN(buf) > polar_oldest_apply_lsn &&
+			buf->tag.forkNum == MAIN_FORKNUM)
+		{
+			polar_log_fullpage_snapshot_image(BufferDescriptorGetBuffer(buf), polar_oldest_apply_lsn);
+		}
+
 		/*
 		 * bufToWrite is either the shared buffer or a copy, as appropriate.
 		 */
@@ -3361,7 +3438,11 @@ FlushRelationBuffers(Relation rel)
 				continue;
 			}
 
-			FlushBuffer(bufHdr, rel->rd_smgr, oldest_apply_lsn);
+			/*
+			 * POLAR: it's no need to do buffer flush control for
+			 * vacuum full/rewrite table
+			 */
+			FlushBuffer(bufHdr, rel->rd_smgr, oldest_apply_lsn, true);
 			LWLockRelease(BufferDescriptorGetContentLock(bufHdr));
 			UnpinBuffer(bufHdr, true);
 		}
@@ -3434,7 +3515,11 @@ FlushDatabaseBuffers(Oid dbid)
 				continue;
 			}
 
-			FlushBuffer(bufHdr, NULL, oldest_apply_lsn);
+			/*
+			 * POLAR: it's no need to do buffer flush control for
+			 * vacuum full/rewrite table
+			 */
+			FlushBuffer(bufHdr, NULL, oldest_apply_lsn, true);
 			LWLockRelease(BufferDescriptorGetContentLock(bufHdr));
 			UnpinBuffer(bufHdr, true);
 		}
@@ -3462,7 +3547,7 @@ FlushOneBuffer(Buffer buffer)
 	Assert(LWLockHeldByMe(BufferDescriptorGetContentLock(bufHdr)));
 
 	/* POLAR: FlushOneBuffer currently only used for hash xlog, do not care about it */
-	FlushBuffer(bufHdr, NULL, InvalidXLogRecPtr);
+	FlushBuffer(bufHdr, NULL, InvalidXLogRecPtr, false);
 }
 
 /*
@@ -3709,22 +3794,16 @@ UnlockBuffers(void)
 void
 LockBuffer(Buffer buffer, int mode)
 {
-	BufferDesc *buf;
-
-	Assert(BufferIsValid(buffer));
-	if (BufferIsLocal(buffer))
-		return;					/* local buffers need no lock */
-
-	buf = GetBufferDescriptor(buffer - 1);
-
-	if (mode == BUFFER_LOCK_UNLOCK)
-		LWLockRelease(BufferDescriptorGetContentLock(buf));
-	else if (mode == BUFFER_LOCK_SHARE)
-		LWLockAcquire(BufferDescriptorGetContentLock(buf), LW_SHARED);
-	else if (mode == BUFFER_LOCK_EXCLUSIVE)
-		LWLockAcquire(BufferDescriptorGetContentLock(buf), LW_EXCLUSIVE);
+	/* POLAR: Call extended version when page outdate enabled */
+	if (POLAR_ENABLE_PAGE_OUTDATE())
+	{
+		polar_lock_buffer_ext(buffer, mode, true);
+	}
 	else
-		elog(ERROR, "unrecognized buffer lock mode: %d", mode);
+	{
+		polar_lock_buffer_ext(buffer, mode, false);
+	}
+	/* POLAR end */
 }
 
 /*
@@ -3735,16 +3814,12 @@ LockBuffer(Buffer buffer, int mode)
 bool
 ConditionalLockBuffer(Buffer buffer)
 {
-	BufferDesc *buf;
-
-	Assert(BufferIsValid(buffer));
-	if (BufferIsLocal(buffer))
-		return true;			/* act as though we got it */
-
-	buf = GetBufferDescriptor(buffer - 1);
-
-	return LWLockConditionalAcquire(BufferDescriptorGetContentLock(buf),
-									LW_EXCLUSIVE);
+	/* POLAR: Call extended version when page outdate enabled */
+	if (POLAR_ENABLE_PAGE_OUTDATE())
+		return polar_conditional_lock_buffer_ext(buffer, true);
+	else
+		return polar_conditional_lock_buffer_ext(buffer, false);
+	/* POLAR end */
 }
 
 /*
@@ -3765,6 +3840,17 @@ ConditionalLockBuffer(Buffer buffer)
  */
 void
 LockBufferForCleanup(Buffer buffer)
+{
+	/* POLAR: Call extended version when page outdate enabled */
+	if (POLAR_ENABLE_PAGE_OUTDATE())
+		polar_lock_buffer_for_cleanup_ext(buffer, true);
+	else
+		polar_lock_buffer_for_cleanup_ext(buffer, false);
+	/* POLAR end */
+}
+
+void
+polar_lock_buffer_for_cleanup_ext(Buffer buffer, bool fresh_check)
 {
 	BufferDesc *bufHdr;
 
@@ -3793,13 +3879,16 @@ LockBufferForCleanup(Buffer buffer)
 		uint32		buf_state;
 
 		/* Try to acquire lock */
-		LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
+		polar_lock_buffer_ext(buffer, BUFFER_LOCK_EXCLUSIVE, false);
 		buf_state = LockBufHdr(bufHdr);
 
 		Assert(BUF_STATE_GET_REFCOUNT(buf_state) > 0);
 		if (BUF_STATE_GET_REFCOUNT(buf_state) == 1)
 		{
 			/* Successfully acquired exclusive lock with pincount 1 */
+			if (fresh_check)
+				polar_log_index_lock_apply_buffer(&buffer);
+
 			UnlockBufHdr(bufHdr, buf_state);
 			return;
 		}
@@ -3814,7 +3903,7 @@ LockBufferForCleanup(Buffer buffer)
 		PinCountWaitBuf = bufHdr;
 		buf_state |= BM_PIN_COUNT_WAITER;
 		UnlockBufHdr(bufHdr, buf_state);
-		LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
+		polar_lock_buffer_ext(buffer, BUFFER_LOCK_UNLOCK, fresh_check);
 
 		/* Wait to be signaled by UnpinBuffer() */
 		if (InHotStandby)
@@ -4545,6 +4634,47 @@ TestForOldSnapshot_impl(Snapshot snapshot, Relation relation)
 		ereport(ERROR,
 				(errcode(ERRCODE_SNAPSHOT_TOO_OLD),
 				 errmsg("snapshot too old")));
+}
+
+/* POLAR */
+static void
+polar_apply_io_locked_page(BufferDesc *bufHdr, XLogRecPtr consist_lsn, XLogRecPtr checkpoint_redo_lsn, SMgrRelation smgr, ForkNumber forkNum, BlockNumber blockNum)
+{
+	/*
+	 * POLAR: It's better to use AmStartupProcess() than InRecovery to avoid
+	 * ambiguity.
+	 */
+	if (polar_enable_redo_logindex &&
+		((!InRecovery) || (InRecovery && reachedConsistency)))
+	{
+		/*
+		 * Note: All modifications about reply-page must be
+		 *       applied to both polar_bulk_read_buffer_common() and ReadBuffer_common().
+		 */
+		BufferTag tag;
+		uint32 redo_state;
+		Buffer	buffer = BufferDescriptorGetBuffer(bufHdr);
+		XLogRecPtr start_lsn = consist_lsn;
+
+		INIT_BUFFERTAG(tag, smgr->smgr_rnode.node, forkNum, blockNum);
+		Assert(BufferIsValid(buffer));
+
+		/* If we read a future page, then restore old fullpage version and reset start_lsn */
+		if (polar_log_index_restore_fullpage_snapshot_if_needed(&tag, &buffer))
+		{
+			start_lsn = checkpoint_redo_lsn;
+			Assert(!XLogRecPtrIsInvalid(start_lsn));
+		}
+
+		/*
+		 * POLAR: We finished reading data from storage and now start to do page replaying
+		 */
+		redo_state = polar_lock_redo_state(bufHdr);
+		redo_state |= (POLAR_REDO_READ_IO_END | POLAR_REDO_REPLAYING);
+		polar_unlock_redo_state(bufHdr, redo_state);
+
+		polar_log_index_lock_apply_page_from(start_lsn, &tag, &buffer);
+	}
 }
 
 /* POLAR */

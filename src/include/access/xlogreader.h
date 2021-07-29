@@ -191,6 +191,14 @@ struct XLogReaderState
 
 	/* Buffer to hold error message */
 	char	   *errormsg_buf;
+
+	/* POLAR: Is this only have meta data? */
+	bool noPayload;
+	/*
+	 * POLAR: Save the length of record's XLogRecordHeader, XLogRecordBlockHeader, XLogOrigin and XLogRecordDataHaeder.
+	 * In order to reserve XLOG queue space to store logindex meta.
+	 */
+	uint32		polar_logindex_meta_size;
 };
 
 /* Get a new XLogReader */
@@ -242,5 +250,9 @@ extern char *XLogRecGetBlockData(XLogReaderState *record, uint8 block_id, Size *
 extern bool XLogRecGetBlockTag(XLogReaderState *record, uint8 block_id,
 				   RelFileNode *rnode, ForkNumber *forknum,
 				   BlockNumber *blknum);
+extern void report_invalid_record(XLogReaderState *state, const char *fmt,...) pg_attribute_printf(2, 3);
+extern struct XLogRecord *polar_xlog_read_record(XLogReaderState *state,
+			XLogRecPtr RecPtr, char **errormsg);
+extern bool allocate_recordbuf(XLogReaderState *state, uint32 reclength);
 
 #endif							/* XLOGREADER_H */

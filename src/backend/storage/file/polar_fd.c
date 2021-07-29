@@ -334,25 +334,41 @@ polar_make_pg_directory(const char *directoryName)
 }
 
 void
-polar_copydir(char *fromdir, char *todir, bool recurse)
+polar_copydir(char *fromdir, char *todir, bool recurse, bool clean, bool skiperr)
 {
 	DIR		   *xldir;
 	struct dirent *xlde;
 	char		fromfile[MAXPGPATH * 2];
 	char		tofile[MAXPGPATH * 2];
+	int			read_dir_err;
 
-	if (polar_mkdir(todir, S_IRWXU) != 0)
-		ereport(ERROR,
-				(errcode_for_file_access(),
-				 errmsg("could not create directory \"%s\": %m", todir)));
+	if (polar_mkdir(todir, pg_dir_create_mode) != 0)
+	{
+		if (EEXIST == errno && clean)
+			polar_remove_file_in_dir(todir);
+		else
+			ereport(ERROR,
+					(errcode_for_file_access(),
+					 errmsg("could not create directory \"%s\": %m", todir)));
+	}
 
+	/*
+	 * For polar store, the readdir will cache a dir entry, if the dir is deleted
+	 * when readdir, it will fail. So we should retry.
+	 *
+	 * For create/drop database, we will have a lock during the copying time,
+	 * no directories will be deleted, so do not care this failure.
+	 */
+read_dir_failed:
+
+	read_dir_err = 0;
 	xldir = polar_allocate_dir(fromdir);
 	if (xldir == NULL)
 		ereport(ERROR,
 				(errcode_for_file_access(),
 				 errmsg("could not open directory \"%s\": %m", fromdir)));
 
-	while ((xlde = ReadDir(xldir, fromdir)) != NULL)
+	while ((xlde = polar_read_dir_ext(xldir, fromdir, WARNING, &read_dir_err)) != NULL)
 	{
 		struct stat fst;
 
@@ -366,27 +382,48 @@ polar_copydir(char *fromdir, char *todir, bool recurse)
 		snprintf(tofile, sizeof(tofile), "%s/%s", todir, xlde->d_name);
 
 		if (polar_stat(fromfile, &fst) < 0)
-			ereport(ERROR,
-					(errcode_for_file_access(),
-					 errmsg("could not stat file \"%s\": %m", fromfile)));
+		{
+			/* File may be deleted after ReadDir */
+			if (ENOENT == errno && skiperr)
+			{
+				ereport(LOG,
+						(errcode_for_file_access(),
+						 errmsg("file \"%s\" not exist: %m", fromfile)));
+
+				/* Skip it, continue to deal with other directories */
+				continue;
+			}
+			else
+			{
+				ereport(ERROR,
+						(errcode_for_file_access(),
+						 errmsg("could not stat file \"%s\": %m", fromfile)));
+			}
+		}
 
 		if (S_ISDIR(fst.st_mode))
 		{
 			if (recurse)
-			{
-				polar_copydir(fromfile, tofile, true);
-			}
+				polar_copydir(fromfile, tofile, true, clean, skiperr);
 		}
 		else if (S_ISREG(fst.st_mode))
-			polar_copy_file(fromfile, tofile);
+			polar_copy_file(fromfile, tofile, skiperr);
 	}
 	FreeDir(xldir);
+
+	if (read_dir_err == ENOENT)
+	{
+		ereport(LOG,
+				(errcode_for_file_access(),
+					errmsg("When readdir, some entries were deleted, retry.")));
+		goto read_dir_failed;
+	}
 
 	return;
 }
 
 void
-polar_copy_file(char *fromfile, char *tofile)
+polar_copy_file(char *fromfile, char *tofile, bool skiperr)
 {
 	char	   *buffer;
 	int			srcfd;
@@ -400,9 +437,24 @@ polar_copy_file(char *fromfile, char *tofile)
 
 	srcfd = polar_open_transient_file(fromfile, O_RDONLY | PG_BINARY);
 	if (srcfd < 0)
-		ereport(ERROR,
-				(errcode_for_file_access(),
-				 errmsg("could not open file \"%s\": %m", fromfile)));
+	if (srcfd < 0)
+	{
+		/* File may be deleted, skip it and free buffer */
+		if (ENOENT == errno && skiperr)
+		{
+			ereport(LOG,
+					(errcode_for_file_access(),
+					 errmsg("file \"%s\" not exist: %m", fromfile)));
+			pfree(buffer);
+			return;
+		}
+		else
+		{
+			ereport(ERROR,
+					(errcode_for_file_access(),
+					 errmsg("could not open file \"%s\": %m", fromfile)));
+		}
+	}
 
 	dstfd = polar_open_transient_file(tofile, O_RDWR | O_CREAT | O_EXCL | PG_BINARY);
 	if (dstfd < 0)
@@ -656,4 +708,14 @@ polar_node_type_by_file(void)
 	FreeConfigVariables(head);
 
 	return polar_node_type;
+}
+
+struct dirent *
+polar_read_dir_ext(DIR *dir, const char *dirname, int elevel, int *err)
+{
+	struct dirent *res;
+
+	res = ReadDirExtended(dir, dirname, elevel);
+	*err = errno;
+	return res;
 }

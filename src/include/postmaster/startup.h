@@ -19,4 +19,7 @@ extern void PostRestoreCommand(void);
 extern bool IsPromoteTriggered(void);
 extern void ResetPromoteTriggered(void);
 
+/* POLAR */
+extern void polar_set_shutdown_requested_flag(void);
+
 #endif							/* _STARTUP_H */

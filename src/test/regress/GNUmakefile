@@ -131,11 +131,20 @@ REGRESS_OPTS = --dlpath=. --max-concurrent-tests=20 $(EXTRA_REGRESS_OPTS)
 check: all tablespace-setup
 	$(pg_regress_check) $(REGRESS_OPTS) --schedule=$(srcdir)/parallel_schedule $(MAXCONNOPT) $(EXTRA_TESTS)
 
+# POLAR check
+polar-check: all tablespace-setup temp-install check
+	$(PERL) $(srcdir)/cpdirstructure.pl
+	$(pg_regress_check) $(REGRESS_OPTS) --schedule=$(srcdir)/polar-dev-schedule $(MAXCONNOPT) $(EXTRA_TESTS)
+
 check-tests: all tablespace-setup | temp-install
 	$(pg_regress_check) $(REGRESS_OPTS) $(MAXCONNOPT) $(TESTS) $(EXTRA_TESTS)
 
 installcheck: all tablespace-setup
 	$(pg_regress_installcheck) $(REGRESS_OPTS) --schedule=$(srcdir)/serial_schedule $(EXTRA_TESTS)
+
+polar-installcheck: all tablespace-setup temp-install
+	$(PERL) $(srcdir)/cpdirstructure.pl
+	PATH="$(bindir):$$PATH" $(pg_regress_installcheck) $(REGRESS_OPTS) --schedule=$(srcdir)/polar-dev-schedule $(EXTRA_TESTS)
 
 installcheck-parallel: all tablespace-setup
 	$(pg_regress_installcheck) $(REGRESS_OPTS) --schedule=$(srcdir)/parallel_schedule $(MAXCONNOPT) $(EXTRA_TESTS)

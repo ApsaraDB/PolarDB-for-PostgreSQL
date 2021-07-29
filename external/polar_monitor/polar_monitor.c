@@ -22,9 +22,12 @@
  */
 #include "postgres.h"
 
+#include "access/polar_logindex.h"
+#include "access/polar_logindex_internal.h"
 #include "access/xlog.h"
 #include "funcapi.h"
 #include "storage/polar_fd.h"
+#include "storage/procarray.h"
 #include "utils/builtins.h"
 #include "utils/pg_lsn.h"
 
@@ -78,4 +81,61 @@ polar_get_node_type(PG_FUNCTION_ARGS)
 	}
 
 	PG_RETURN_TEXT_P(cstring_to_text(mode));
+}
+
+/*
+ * Used in master and calculate min LSN used by cluster.
+ * The WAL and logindex which LSN is less than min LSN
+ * can be removed
+ */
+PG_FUNCTION_INFO_V1(polar_min_used_lsn);
+Datum
+polar_min_used_lsn(PG_FUNCTION_ARGS)
+{
+	XLogRecPtr min_lsn = polar_calc_min_used_lsn();
+
+	PG_RETURN_LSN(min_lsn);
+}
+
+/*
+ * Used in replica and calculate min LSN used by replica
+ * backends or background process
+ */
+PG_FUNCTION_INFO_V1(polar_replica_min_used_lsn);
+Datum
+polar_replica_min_used_lsn(PG_FUNCTION_ARGS)
+{
+	XLogRecPtr min_lsn = InvalidXLogRecPtr;
+
+	if (polar_in_replica_mode())
+		min_lsn = polar_get_read_min_lsn(polar_get_primary_consist_ptr());
+
+	PG_RETURN_LSN(min_lsn);
+}
+
+/* Used in replica. Check whether wal receiver get xlog from xlog queue */
+PG_FUNCTION_INFO_V1(polar_replica_use_xlog_queue);
+Datum
+polar_replica_use_xlog_queue(PG_FUNCTION_ARGS)
+{
+	bool used = false;
+
+	if (polar_in_replica_mode() && WalRcv)
+	{
+		SpinLockAcquire(&WalRcv->mutex);
+		used = WalRcv->polar_use_xlog_queue;
+		SpinLockRelease(&WalRcv->mutex);
+	}
+
+	return (Datum)used;
+}
+
+/* Used in replica.Get background process replayed lsn */
+PG_FUNCTION_INFO_V1(polar_replica_bg_replay_lsn);
+Datum
+polar_replica_bg_replay_lsn(PG_FUNCTION_ARGS)
+{
+	XLogRecPtr bg_lsn = polar_bg_redo_get_replayed_lsn();
+
+	PG_RETURN_LSN(bg_lsn);
 }

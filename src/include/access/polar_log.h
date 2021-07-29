@@ -25,6 +25,7 @@
 #ifndef POLAR_LOG_H
 #define POLAR_LOG_H
 
+#include "replication/walreceiver.h"
 #include "storage/buf_internals.h"
 #include "storage/polar_copybuf.h"
 #include "storage/polar_flushlist.h"
@@ -70,5 +71,68 @@
              (buf)->tag.forkNum, (buf)->tag.blockNum, pg_atomic_read_u32(&((buf)->state)), \
              (buf)->oldest_lsn, (buf)->polar_flags, FLUSH_LIST_LEN, (buf)->flush_prev, (buf)->flush_next); \
     } while (0)
+
+/* Log information of PageHeader */
+#define POLAR_LOG_PAGE_INFO(page) \
+	do { \
+		PageHeader phdr = (PageHeader) (page);  \
+		elog(LOG, "%s page info: lsn=%lx, lower=%u, upper=%u, special=%u", \
+			 __func__, PageGetLSN(page), phdr->pd_lower, phdr->pd_upper, phdr->pd_special); \
+	} while (0)
+
+/* Log information of XLogReaderState */
+#define POLAR_LOG_XLOG_RECORD_INFO(record) \
+	do { \
+		elog(LOG, "%s xlog record: ReadRecPtr=%lx, EndRecPtr=%lx, currRecPtr=%lx", \
+			 __func__,  (record)->ReadRecPtr, (record)->EndRecPtr, (record)->currRecPtr); \
+	} while (0)
+
+/* Log consistent lsn */
+#define POLAR_LOG_CONSISTENT_LSN() \
+	do { \
+		elog(LOG, "%s consistent lsn=%lX, background_replayed_lsn=%lX", __func__, polar_in_replica_mode() ? \
+			 polar_get_primary_consist_ptr() : polar_get_consistent_lsn(), polar_bg_redo_get_replayed_lsn()); \
+	} while (0)
+
+/* Log information of log_index_lsn_t */
+#define POLAR_LOG_LOGINDEX_LSN_INFO(index) \
+	do { \
+		POLAR_LOG_BUFFER_TAG_INFO((index)->tag); \
+		elog(LOG, "%s logindex index lsn info: lsn=%lX, prev_lsn=%lX", \
+			 __func__, (index)->lsn, (index)->prev_lsn); \
+	} while (0)
+
+/* Log redo information of PageHeader and XLogReaderState */
+#define POLAR_LOG_REDO_INFO(page, record) \
+	do { \
+		POLAR_LOG_CONSISTENT_LSN(); \
+		polar_log_page_iter_context(); \
+		POLAR_LOG_PAGE_INFO(page); \
+		POLAR_LOG_XLOG_RECORD_INFO(record); \
+	} while (0)
+
+/* Log information of log_index_meta_t */
+#define POLAR_LOG_LOGINDEX_META_INFO(meta) \
+	do { \
+		elog(LOG, "%s logindex meta: magic=%x version=%x max_table_id=%ld seg.no=%ld seg.max_lsn=%lx seg.max_id=%ld seg.min_id=%ld start_lsn=%lx max_lsn=%lx crc=%x\n", \
+			 __func__, (meta)->magic, (meta)->version, (meta)->max_idx_table_id, (meta)->min_segment_info.segment_no, \
+			 (meta)->min_segment_info.max_lsn, (meta)->min_segment_info.max_idx_table_id, \
+			 (meta)->min_segment_info.min_idx_table_id, (meta)->start_lsn, (meta)->max_lsn, (meta)->crc); \
+	} while (0)
+
+/* Log information of log_idx_table_data_t */
+#define POLAR_LOG_LOGINDEX_TABLE_INFO(table) \
+	do { \
+		elog(LOG, "%s logindex table info: table_id=%lu, min_lsn=%lX, max_lsn=%lX, prefix_lsn=%X, crc=%u, last_order=%u", \
+			 __func__, (table)->idx_table_id, (table)->min_lsn, (table)->max_lsn, (table)->prefix_lsn, \
+			 (table)->crc, (table)->last_order); \
+	} while (0)
+
+/* Log information of log_mem_table_t */
+#define POLAR_LOG_LOGINDEX_MEM_TABLE_INFO(table) \
+	do { \
+		elog(LOG, "%s logindex mem table info: free_head=%d, state=%d", __func__, (table)->free_head, LOG_INDEX_MEM_TBL_STATE(table)); \
+		POLAR_LOG_LOGINDEX_TABLE_INFO(&((table)->data)); \
+	} while (0)
 
 #endif

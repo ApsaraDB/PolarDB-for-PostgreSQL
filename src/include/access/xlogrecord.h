@@ -224,5 +224,11 @@ typedef struct XLogRecordDataHeaderLong
 #define XLR_BLOCK_ID_DATA_SHORT		255
 #define XLR_BLOCK_ID_DATA_LONG		254
 #define XLR_BLOCK_ID_ORIGIN			253
+/* Polar: Define extra data which used by xlog seng queue */
+#define XLR_BLOCK_ID_POLAR_EXTRA    252
+
+/* POLAR */
+extern void polar_handle_walreceiver_die(XLogRecPtr pagePtr, XLogRecPtr recPtr);
+/* POLAR end */
 
 #endif							/* XLOGRECORD_H */

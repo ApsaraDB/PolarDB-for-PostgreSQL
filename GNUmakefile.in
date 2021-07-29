@@ -55,6 +55,7 @@ clean:
 # will be gone too soon.
 distclean maintainer-clean:
 	$(MAKE) -C doc $@
+	$(MAKE) -C external $@
 	$(MAKE) -C contrib $@
 	$(MAKE) -C config $@
 	$(MAKE) -C src $@

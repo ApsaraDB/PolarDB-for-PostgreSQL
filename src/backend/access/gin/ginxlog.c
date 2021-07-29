@@ -101,7 +101,7 @@ ginRedoCreatePTree(XLogReaderState *record)
 	UnlockReleaseBuffer(buffer);
 }
 
-static void
+void
 ginRedoInsertEntry(Buffer buffer, bool isLeaf, BlockNumber rightblkno, void *rdata)
 {
 	Page		page = BufferGetPage(buffer);
@@ -139,7 +139,7 @@ ginRedoInsertEntry(Buffer buffer, bool isLeaf, BlockNumber rightblkno, void *rda
 	}
 }
 
-static void
+void
 ginRedoRecompress(Page page, ginxlogRecompressDataLeaf *data)
 {
 	int			actionno;
@@ -296,7 +296,7 @@ ginRedoRecompress(Page page, ginxlogRecompressDataLeaf *data)
 	GinDataPageSetDataSize(page, totalsize);
 }
 
-static void
+void
 ginRedoInsertData(Buffer buffer, bool isLeaf, BlockNumber rightblkno, void *rdata)
 {
 	Page		page = BufferGetPage(buffer);

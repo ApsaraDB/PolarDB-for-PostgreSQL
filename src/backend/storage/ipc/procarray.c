@@ -61,6 +61,11 @@
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 
+/* POLAR */
+#include "access/polar_logindex.h"
+#include "access/polar_logindex_internal.h"
+#include "access/xlogdefs.h"
+#include "utils/guc.h"
 
 /* Our shared memory area */
 typedef struct ProcArrayStruct
@@ -3965,4 +3970,66 @@ KnownAssignedXidsReset(void)
 	pArray->headKnownAssignedXids = 0;
 
 	LWLockRelease(ProcArrayLock);
+}
+
+/*
+ * polar_get_min_read_lsn --- get minimum database backends polar_read_min_lsn
+ */
+XLogRecPtr
+polar_get_read_min_lsn(XLogRecPtr primary_consist_ptr)
+{
+	ProcArrayStruct *arrayP = procArray;
+	int			index;
+	XLogRecPtr		result = primary_consist_ptr;
+	XLogRecPtr  	last_replayed_lsn = InvalidXLogRecPtr;
+	XLogRecPtr      bg_replayed_lsn = InvalidXLogRecPtr;
+	XLogRecPtr  	last_checkpoint_redo_lsn = InvalidXLogRecPtr;
+
+	LWLockAcquire(ProcArrayLock, LW_SHARED);
+
+	for (index = 0; index < arrayP->numProcs; index++)
+	{
+		int			pgprocno = arrayP->pgprocnos[index];
+		volatile PGPROC *proc = &allProcs[pgprocno];
+		XLogRecPtr		read_min_lsn = InvalidXLogRecPtr;
+
+		if (proc->pid == 0)
+			continue;			/* do not count prepared xacts */
+
+		read_min_lsn = (XLogRecPtr) pg_atomic_read_u64(&(proc->polar_read_min_lsn));
+		if (!XLogRecPtrIsInvalid(read_min_lsn) && read_min_lsn < result)
+			result = read_min_lsn;
+	}
+
+	LWLockRelease(ProcArrayLock);
+
+	if (POLAR_ENABLE_FULLPAGE_SNAPSHOT())
+	{
+		/* This checkpoint lsn can avoid clear xlog when restore old fullpage */
+		last_checkpoint_redo_lsn = GetRedoRecPtr();
+		if (!XLogRecPtrIsInvalid(result) &&
+		    !XLogRecPtrIsInvalid(last_checkpoint_redo_lsn) &&
+		    last_checkpoint_redo_lsn < result)
+		{
+			result = last_checkpoint_redo_lsn;
+		}
+	}
+
+	/* This replay lsn can avoid clearing last pending parsing redo log */
+	last_replayed_lsn = GetXLogReplayRecPtr(NULL);
+	/* Note: this can happen when last some logs don't be involved buffers */
+	if (!XLogRecPtrIsInvalid(result) &&
+	    !XLogRecPtrIsInvalid(last_replayed_lsn) &&
+	    last_replayed_lsn < result)
+	{
+		result = last_replayed_lsn;
+	}
+	bg_replayed_lsn = InvalidXLogRecPtr;
+
+	bg_replayed_lsn = polar_bg_redo_get_replayed_lsn();
+	if (!XLogRecPtrIsInvalid(bg_replayed_lsn) && bg_replayed_lsn < result)
+		result = bg_replayed_lsn;
+
+
+	return result;
 }

@@ -316,6 +316,18 @@ extern XLogRecPtr polar_get_consistent_lsn(void);
 extern void polar_set_consistent_lsn(XLogRecPtr consistent_lsn);
 extern void polar_checkpointer_do_reload(void);
 extern bool polar_checkpointer_recv_shutdown_requested(void);
+extern XLogRecPtr polar_calc_min_used_lsn(void);
+extern int	get_sync_bit(int method);
+extern void polar_set_read_and_end_rec_ptr(XLogRecPtr read_rec_ptr, XLogRecPtr end_rec_ptr);
+extern void polar_update_receipt_time(void);
+extern void polar_fullpage_bgworker_wait_primary_xlog_message(XLogReaderState *state);
+extern void polar_wait_primary_xlog_message(XLogReaderState *state);
+extern void polar_keep_wal_receiver_up(XLogReaderState *state);
+extern bool CheckForStandbyTrigger(void);
+extern void polar_bgworker_fullpage_snapshot_replay_main(void);
+extern XLogRecPtr polar_get_replay_end_rec_ptr(TimeLineID *replyTLI);
+extern void polar_bg_redo_set_replayed_lsn(XLogRecPtr lsn);
+extern XLogRecPtr polar_get_last_checkpoint_redo_ptr(void);
 
 /*
  * Routines to start, stop, and get status of a base backup.

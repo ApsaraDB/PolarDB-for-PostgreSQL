@@ -124,4 +124,7 @@ extern void ProcArraySetReplicationSlotXmin(TransactionId xmin,
 extern void ProcArrayGetReplicationSlotXmin(TransactionId *xmin,
 								TransactionId *catalog_xmin);
 
+/* POLAR */
+extern XLogRecPtr polar_get_read_min_lsn(XLogRecPtr primary_consist_ptr);
+
 #endif							/* PROCARRAY_H */

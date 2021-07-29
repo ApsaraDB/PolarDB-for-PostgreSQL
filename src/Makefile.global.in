@@ -378,6 +378,7 @@ endif
 # on abs_top_builddir prevents doing anything foolish to the root directory.
 
 check: temp-install
+polar-check: temp-install
 
 .PHONY: temp-install
 

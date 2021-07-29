@@ -210,6 +210,8 @@ typedef struct BufferDesc
 	CopyBufferDesc	*copy_buffer;
 	uint8		polar_flags;
 	uint16		recently_modified_count;
+	/* POLAR: record buffer redo state */
+	pg_atomic_uint32 polar_redo_state;
 } BufferDesc;
 
 /*

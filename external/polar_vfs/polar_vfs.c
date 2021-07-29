@@ -63,10 +63,6 @@ typedef enum polardb_node_state
 /* POLAR: Status at startup, determined from the configuration file recovery.conf */
 polardb_node_state	polardb_start_state = unknown;
 
-static volatile sig_atomic_t got_sighup = false;
-static volatile sig_atomic_t got_sigterm = false;
-static volatile sig_atomic_t shutdown_requested = false;
-
 #define MIN_VFS_FD_DIR_SIZE		10
 
 #define VFD_CLOSED (-1)
@@ -106,7 +102,7 @@ static shmem_startup_hook_type prev_shmem_startup_hook = NULL;
 #define PFSD_MAX_MAX_IOSIZE			(128 * 1024 * 1024)
 
 static	int max_pfsd_io_size = PFSD_DEAFAULT_MAX_IOSIZE;
-static bool	localfs_test_mode = false;
+static bool	localfs_mode = false;
 static bool	pfs_force_mount = true;
 
 typedef void (*vfs_umount_type)(void);
@@ -274,10 +270,10 @@ _PG_init(void)
 								NULL,
 								NULL);
 
-	DefineCustomBoolVariable("polar_vfs.localfs_test_mode",
+	DefineCustomBoolVariable("polar_vfs.localfs_mode",
 							"localfs test mode",
 							 NULL,
-							 &localfs_test_mode,
+							 &localfs_mode,
 							 false,
 							 PGC_POSTMASTER,
 							 0,
@@ -339,7 +335,7 @@ vfs_umount(int code, Datum arg)
 	if (code != STATUS_OK)
 		elog(WARNING, "subprocess exit abnormally");
 
-	if (localfs_test_mode)
+	if (localfs_mode)
 	{
 		elog(LOG, "vfs shutdown success");
 		inited = false;
@@ -401,7 +397,7 @@ vfs_mount(void)
 		flag = PFS_RDWR;
 	}
 
-	if (localfs_test_mode)
+	if (localfs_mode)
 	{
 		elog(LOG, "pfs in localfs test mode");
 		elog(LOG, "mount pfs %s %s mode success", polar_disk_name, mode);
@@ -511,7 +507,7 @@ vfs_remount(void)
 {
 	int		flag = 0;
 
-	if (localfs_test_mode)
+	if (localfs_mode)
 	{
 		elog(LOG, "pfs in localfs mode");
 		return 0;
@@ -1029,7 +1025,7 @@ vfs_file_type(const char *path)
 	static int	polar_disk_strsize = 0;
 	int		strpathlen = 0;
 
-	if (localfs_test_mode)
+	if (localfs_mode)
 		return VFS_LOCAL_FILE;
 
 	if (path == NULL)

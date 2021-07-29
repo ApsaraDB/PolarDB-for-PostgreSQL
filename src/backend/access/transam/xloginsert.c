@@ -78,6 +78,8 @@ static int	max_registered_block_id = 0;	/* highest block_id + 1 currently
 static XLogRecData *mainrdata_head;
 static XLogRecData *mainrdata_last = (XLogRecData *) &mainrdata_head;
 static uint32 mainrdata_len;	/* total # of bytes in chain */
+/* POLAR: save main data addresss and length temporarily. */
+static XLogRecData polar_mainrdata;
 
 /* flags for the in-progress insertion */
 static uint8 curinsert_flags = 0;
@@ -1073,4 +1075,42 @@ InitXLogInsert(void)
 	if (hdr_scratch == NULL)
 		hdr_scratch = MemoryContextAllocZero(xloginsert_cxt,
 											 HEADER_SCRATCH_SIZE);
+}
+
+/* POLAR: Return main data head */
+XLogRecData *
+polar_get_main_data_head(void)
+{
+	Assert(mainrdata_head != NULL);
+	return mainrdata_head;
+}
+
+/* POLAR: Return main data len */
+uint32
+polar_get_main_data_len(void)
+{
+	return mainrdata_len;
+}
+
+/* POLAR: Add a temporary XLogRecData to save main data address and length. */
+void
+polar_set_main_data(void *data, uint32 len)
+{
+	Assert(mainrdata_last == (XLogRecData *) &mainrdata_head);
+	Assert(mainrdata_len == 0);
+	polar_mainrdata.next = NULL;
+	polar_mainrdata.data = data;
+	polar_mainrdata.len = len;
+	mainrdata_last->next = &polar_mainrdata;
+	mainrdata_last = &polar_mainrdata;
+	mainrdata_len += len;
+}
+
+/* POLAR: Rset mainrdata_head and mainrdata_last. */
+void
+polar_reset_main_data(void)
+{
+	mainrdata_len = 0;
+	mainrdata_head = NULL;
+	mainrdata_last = (XLogRecData *) &mainrdata_head;
 }

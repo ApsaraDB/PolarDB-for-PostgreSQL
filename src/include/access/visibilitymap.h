@@ -22,6 +22,27 @@
 /* POLAR */
 #include "access/xlogreader.h"
 
+/* POLAR: move define here for extern */
+/*#define TRACE_VISIBILITYMAP */
+
+/*
+ * Size of the bitmap on each visibility map page, in bytes. There's no
+ * extra headers, so the whole page minus the standard page header is
+ * used for the bitmap.
+ */
+#define MAPSIZE (BLCKSZ - MAXALIGN(SizeOfPageHeaderData))
+
+/* Number of heap blocks we can represent in one byte */
+#define HEAPBLOCKS_PER_BYTE (BITS_PER_BYTE / BITS_PER_HEAPBLOCK)
+
+/* Number of heap blocks we can represent in one visibility map page. */
+#define HEAPBLOCKS_PER_PAGE (MAPSIZE * HEAPBLOCKS_PER_BYTE)
+
+/* Mapping from heap block number to the right bit in the visibility map */
+#define HEAPBLK_TO_MAPBLOCK(x) ((x) / HEAPBLOCKS_PER_PAGE)
+#define HEAPBLK_TO_MAPBYTE(x) (((x) % HEAPBLOCKS_PER_PAGE) / HEAPBLOCKS_PER_BYTE)
+#define HEAPBLK_TO_OFFSET(x) (((x) % HEAPBLOCKS_PER_BYTE) * BITS_PER_HEAPBLOCK)
+
 /* Number of bits for one heap page */
 #define BITS_PER_HEAPBLOCK 2
 
@@ -48,5 +69,8 @@ extern void visibilitymap_set(Relation rel, BlockNumber heapBlk, Buffer heapBuf,
 extern uint8 visibilitymap_get_status(Relation rel, BlockNumber heapBlk, Buffer *vmbuf);
 extern void visibilitymap_count(Relation rel, BlockNumber *all_visible, BlockNumber *all_frozen);
 extern void visibilitymap_truncate(Relation rel, BlockNumber nheapblocks);
+
+/* POLAR */
+extern void polar_visibilitymap_set(BlockNumber heapBlk, Buffer vmBuf, uint8 flags);
 
 #endif							/* VISIBILITYMAP_H */

@@ -53,6 +53,7 @@
 #include "utils/varlena.h"
 
 /* POLAR */
+#include "access/xlog.h"
 #include "storage/polar_fd.h"
 
 #define DIRECTORY_LOCK_FILE		"postmaster.pid"
@@ -1629,3 +1630,178 @@ polar_set_database_path(const char *path)
 	polar_database_path = MemoryContextStrdup(TopMemoryContext, path);
 }
 
+/*
+ * Remove all subdirectories and files in a directory
+ */
+void
+polar_remove_file_in_dir(const char *dirname)
+{
+	DIR           *dir;
+	struct dirent *de;
+	char          rm_path[MAXPGPATH * 2];
+	struct stat   statbuf;
+
+	dir = AllocateDir(dirname, false);
+
+	if (dir == NULL)
+		ereport(ERROR,
+		        (errcode_for_file_access(),
+			        errmsg("could not open directory \"%s\": %m", dirname)));
+
+	while ((de = ReadDir(dir, dirname)) != NULL)
+	{
+		if (strcmp(de->d_name, ".") == 0 ||
+			strcmp(de->d_name, "..") == 0)
+			continue;
+
+		snprintf(rm_path, sizeof(rm_path), "%s/%s", dirname, de->d_name);
+		if (lstat(rm_path, &statbuf) < 0)
+			ereport(LOG,
+			        (errcode_for_file_access(),
+				        errmsg("could not stat file \"%s\": %m", rm_path)));
+
+		if (S_ISDIR(statbuf.st_mode))
+		{
+			/* recursively remove contents, then directory itself */
+			polar_remove_file_in_dir(rm_path);
+
+			if (rmdir(rm_path) < 0)
+				ereport(LOG,
+				        (errcode_for_file_access(),
+					        errmsg("could not remove directory \"%s\": %m", rm_path)));
+		}
+		else
+		{
+			if (unlink(rm_path) < 0)
+				ereport(LOG,
+				        (errcode_for_file_access(),
+					        errmsg("could not remove file \"%s\": %m", rm_path)));
+		}
+	}
+
+	FreeDir(dir);
+}
+
+void
+polar_copy_dirs_from_shared_storage_to_local(void)
+{
+	char	   *dirs_to_copy[] = {"pg_twophase", "pg_xact", "pg_commit_ts", "pg_multixact", NULL};
+	char	   *global = "global";
+	char	   *base = "base";
+	char	   *control = "pg_control";
+	char	  **cur_dir = dirs_to_copy;
+	char        ss_path[MAXPGPATH * 2];
+	char        to_path[MAXPGPATH * 2];
+	DIR		   *dir;
+	struct dirent *de;
+	int         read_dir_err;
+
+	/* For global directory, if exists, clean it and copy the pg_control file */
+	if (mkdir(global, S_IRWXU) != 0)
+	{
+		if (EEXIST == errno)
+			polar_remove_file_in_dir(global);
+		else
+			ereport(ERROR,
+			        (errcode_for_file_access(),
+				        errmsg("could not create directory \"%s\": %m", global)));
+	}
+
+	/* Copy the pg_control file */
+	snprintf(to_path, sizeof(to_path), "%s/%s", global, control);
+	polar_make_file_path_level2(ss_path, to_path);
+
+	polar_copy_file(ss_path, to_path, false);
+
+	/* For base directory, copy the new files from shared storage */
+	if (mkdir(base, S_IRWXU) != 0 && EEXIST != errno)
+		ereport(ERROR,
+		        (errcode_for_file_access(),
+			        errmsg("could not create directory \"%s\": %m", base)));
+
+	/* Copy base subdirectories to local */
+	polar_make_file_path_level2(ss_path, base);
+
+	/*
+	 * For polar store, the readdir will cache a dir entry, if the dir is deleted
+	 * when readdir, it will fail. So we should retry.
+	 */
+read_dir_failed:
+
+	read_dir_err = 0;
+	dir = polar_allocate_dir(ss_path);
+	if (dir == NULL)
+		ereport(ERROR,
+		        (errcode_for_file_access(),
+			        errmsg("could not open directory \"%s\": %m", ss_path)));
+
+	while ((de = polar_read_dir_ext(dir, ss_path, WARNING, &read_dir_err)) != NULL)
+	{
+		struct stat fst;
+
+		/* If we got a cancel signal during the copy of the directory, quit */
+		CHECK_FOR_INTERRUPTS();
+
+		if (strcmp(de->d_name, ".") == 0 ||
+			strcmp(de->d_name, "..") == 0)
+			continue;
+
+		snprintf(to_path, sizeof(to_path), "%s/%s", base, de->d_name);
+		polar_make_file_path_level2(ss_path, to_path);
+
+		if (polar_stat(ss_path, &fst) < 0)
+		{
+			/* May be deleted after ReadDir */
+			ereport(INFO,
+			        (errcode_for_file_access(),
+				        errmsg("could not stat file \"%s\": %m", ss_path)));
+
+			/* Skip it, continue to deal with other directories */
+			continue;
+		}
+
+		if (S_ISDIR(fst.st_mode))
+		{
+			/* If it is nonexistent, create one, if has error, skip it */
+			if (mkdir(to_path, S_IRWXU) != 0 && EEXIST != errno)
+				ereport(INFO,
+				     (errcode_for_file_access(),
+					     errmsg("could not create directory \"%s\": %m", to_path)));
+		}
+	}
+
+	FreeDir(dir);
+
+	if (read_dir_err == ENOENT)
+	{
+		ereport(LOG,
+				(errcode_for_file_access(),
+					errmsg("When readdir, some entries were deleted, retry.")));
+		goto read_dir_failed;
+	}
+
+	/* Copy other trans status log files */
+	while (*cur_dir != NULL)
+	{
+		/* Copy files from shared storage to local. */
+		polar_make_file_path_level2(ss_path, *cur_dir);
+		polar_copydir(ss_path, *cur_dir, true, true, true);
+		cur_dir++;
+	}
+}
+
+/*
+ * Initialize the local directories for replica, copy some directories
+ * from shared storage to local.
+ */
+void
+polar_init_local_dir_for_replica(void)
+{
+	if (!IsUnderPostmaster
+		&& polar_enable_shared_storage_mode
+		&& polar_in_replica_mode()
+		&& (!polar_startup_from_local_data_file))
+	{
+		polar_copy_dirs_from_shared_storage_to_local();
+	}
+}

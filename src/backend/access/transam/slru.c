@@ -129,10 +129,10 @@ static int	slru_errno;
 
 static void SimpleLruZeroLSNs(SlruCtl ctl, int slotno);
 static void SimpleLruWaitIO(SlruCtl ctl, int slotno);
-static void SlruInternalWritePage(SlruCtl ctl, int slotno, SlruFlush fdata);
+static void SlruInternalWritePage(SlruCtl ctl, int slotno, SlruFlush fdata, bool update);
 static bool SlruPhysicalReadPage(SlruCtl ctl, int pageno, int slotno);
 static bool SlruPhysicalWritePage(SlruCtl ctl, int pageno, int slotno,
-					  SlruFlush fdata);
+					  SlruFlush fdata, bool update);
 static void SlruReportIOError(SlruCtl ctl, int pageno, TransactionId xid);
 static int	SlruSelectLRUPage(SlruCtl ctl, int pageno);
 
@@ -142,9 +142,9 @@ static void SlruInternalDeleteSegment(SlruCtl ctl, char *filename);
 
 /* POLAR */
 static void polar_slru_file_name_by_seg(SlruCtl ctl, char *path, int seg);
+#define SlruFileName(a,b,c)			polar_slru_file_name_by_seg(a,b,c)
 static void polar_slru_file_name_by_name(SlruCtl ctl, char *path, char *filename);
 static void polar_slru_file_dir(SlruCtl ctl, char *path);
-#define SlruFileName(a,b,c)			polar_slru_file_name_by_seg(a,b,c)
 
 /*
  * Initialization of shared memory
@@ -430,7 +430,6 @@ SimpleLruReadPage(SlruCtl ctl, int pageno, bool write_ok,
 		shared->page_number[slotno] = pageno;
 		shared->page_status[slotno] = SLRU_PAGE_READ_IN_PROGRESS;
 		shared->page_dirty[slotno] = false;
-
 		/* Acquire per-buffer lock (cannot deadlock, see notes at top) */
 		LWLockAcquire(&shared->buffer_locks[slotno].lock, LW_EXCLUSIVE);
 
@@ -518,7 +517,7 @@ SimpleLruReadPage_ReadOnly(SlruCtl ctl, int pageno, TransactionId xid)
  * Control lock must be held at entry, and will be held at exit.
  */
 static void
-SlruInternalWritePage(SlruCtl ctl, int slotno, SlruFlush fdata)
+SlruInternalWritePage(SlruCtl ctl, int slotno, SlruFlush fdata, bool update)
 {
 	SlruShared	shared = ctl->shared;
 	int			pageno = shared->page_number[slotno];
@@ -554,7 +553,7 @@ SlruInternalWritePage(SlruCtl ctl, int slotno, SlruFlush fdata)
 	LWLockRelease(shared->ControlLock);
 
 	/* Do the write */
-	ok = SlruPhysicalWritePage(ctl, pageno, slotno, fdata);
+	ok = SlruPhysicalWritePage(ctl, pageno, slotno, fdata, update);
 
 	/* If we failed, and we're in a flush, better close the files */
 	if (!ok && fdata)
@@ -591,7 +590,7 @@ SlruInternalWritePage(SlruCtl ctl, int slotno, SlruFlush fdata)
 void
 SimpleLruWritePage(SlruCtl ctl, int slotno)
 {
-	SlruInternalWritePage(ctl, slotno, NULL);
+	SlruInternalWritePage(ctl, slotno, NULL, false);
 }
 
 /*
@@ -730,7 +729,7 @@ SlruPhysicalReadPage(SlruCtl ctl, int pageno, int slotno)
  * SimpleLruFlush.
  */
 static bool
-SlruPhysicalWritePage(SlruCtl ctl, int pageno, int slotno, SlruFlush fdata)
+SlruPhysicalWritePage(SlruCtl ctl, int pageno, int slotno, SlruFlush fdata, bool update)
 {
 	SlruShared	shared = ctl->shared;
 	int			segno = pageno / SLRU_PAGES_PER_SEGMENT;
@@ -824,6 +823,17 @@ SlruPhysicalWritePage(SlruCtl ctl, int pageno, int slotno, SlruFlush fdata)
 		 * code simultaneously for different pages of the same file. Hence,
 		 * don't use O_EXCL or O_TRUNC or anything like that.
 		 */
+
+		/*
+		 * POLAR: We reuse this slru code for other usage.If we know this is an append-only
+		 * file then we will set O_CREAT flag only when offset is zero.
+		 * This is an optimization for pfs lock. When O_CREAT is set pfs will use write lock,
+		 * and otherwise it uses read lock
+		 */
+		int flag = O_RDWR | PG_BINARY;
+		if (!update)
+			flag |= O_CREAT;
+
 		SlruFileName(ctl, path, segno);
 		fd = polar_open_transient_file(path, O_RDWR | O_CREAT | PG_BINARY);
 		if (fd < 0)
@@ -1107,7 +1117,7 @@ SlruSelectLRUPage(SlruCtl ctl, int pageno)
 		/*
 		 * Write the page.
 		 */
-		SlruInternalWritePage(ctl, bestvalidslot, NULL);
+		SlruInternalWritePage(ctl, bestvalidslot, NULL, false);
 
 		/*
 		 * Now loop back and try again.  This is the easiest way of dealing
@@ -1139,7 +1149,7 @@ SimpleLruFlush(SlruCtl ctl, bool allow_redirtied)
 
 	for (slotno = 0; slotno < shared->num_slots; slotno++)
 	{
-		SlruInternalWritePage(ctl, slotno, &fdata);
+		SlruInternalWritePage(ctl, slotno, &fdata, false);
 
 		/*
 		 * In some places (e.g. checkpoints), we cannot assert that the slot
@@ -1158,6 +1168,7 @@ SimpleLruFlush(SlruCtl ctl, bool allow_redirtied)
 	 * Now fsync and close any files that were open
 	 */
 	ok = true;
+
 	for (i = 0; i < fdata.num_files; i++)
 	{
 		pgstat_report_wait_start(WAIT_EVENT_SLRU_FLUSH_SYNC);
@@ -1182,6 +1193,7 @@ SimpleLruFlush(SlruCtl ctl, bool allow_redirtied)
 			ok = false;
 		}
 	}
+
 	if (!ok)
 		SlruReportIOError(ctl, pageno, InvalidTransactionId);
 }
@@ -1250,7 +1262,7 @@ restart:;
 		 * keep the logic the same as it was.)
 		 */
 		if (shared->page_status[slotno] == SLRU_PAGE_VALID)
-			SlruInternalWritePage(ctl, slotno, NULL);
+			SlruInternalWritePage(ctl, slotno, NULL, false);
 		else
 			SimpleLruWaitIO(ctl, slotno);
 		goto restart;
@@ -1320,7 +1332,7 @@ restart:
 
 		/* Same logic as SimpleLruTruncate() */
 		if (shared->page_status[slotno] == SLRU_PAGE_VALID)
-			SlruInternalWritePage(ctl, slotno, NULL);
+			SlruInternalWritePage(ctl, slotno, NULL, false);
 		else
 			SimpleLruWaitIO(ctl, slotno);
 
@@ -1480,3 +1492,64 @@ polar_slru_file_name_by_name(SlruCtl ctl, char *path, char *filename)
 	return;
 }
 
+/*
+ * POLAR: Scan SimpleLru and force to invalid specific page
+ */
+void
+polar_slru_invalid_page(SlruCtl ctl, int pageno)
+{
+	SlruShared	shared = ctl->shared;
+	int			slotno;
+
+	LWLockAcquire(shared->ControlLock, LW_EXCLUSIVE);
+	for (slotno = 0; slotno < shared->num_slots; slotno++)
+	{
+		if (shared->page_number[slotno] == pageno)
+		{
+			if (shared->page_status[slotno] == SLRU_PAGE_READ_IN_PROGRESS ||
+					shared->page_status[slotno] == SLRU_PAGE_WRITE_IN_PROGRESS)
+				SimpleLruWaitIO(ctl, slotno);
+
+			Assert(shared->page_status[slotno] == SLRU_PAGE_EMPTY ||
+				(shared->page_status[slotno] == SLRU_PAGE_VALID &&
+				!shared->page_dirty[slotno]));
+
+			shared->page_dirty[slotno] = false;
+			shared->page_lru_count[slotno] = 0;
+			break;
+		}
+	}
+
+	LWLockRelease(shared->ControlLock);
+}
+
+/*
+ * POLAR: Wrapper of SlruInternalWritePage, for external callers to append data to segment file.
+ * fdata is always passed a NULL here.
+ * If we know the segment file does not exists then set update to be false, otherwise set to be true.
+ */
+void
+polar_slru_append_page(SlruCtl ctl, int slotno, bool update)
+{
+	SlruInternalWritePage(ctl, slotno, NULL, update);
+}
+
+/*
+ * POLAR:Check whether page exists in file
+ */
+bool
+polar_slru_page_physical_exists(SlruCtl ctl, int pageno)
+{
+	int			segno = pageno / SLRU_PAGES_PER_SEGMENT;
+	int			rpageno = pageno % SLRU_PAGES_PER_SEGMENT;
+	int			offset = rpageno * BLCKSZ;
+	char		path[MAXPGPATH];
+	struct stat fst;
+
+	SlruFileName(ctl, path, segno);
+
+	if (polar_stat(path, &fst) < 0)
+		return false;
+
+	return fst.st_size >= (offset + BLCKSZ);
+}

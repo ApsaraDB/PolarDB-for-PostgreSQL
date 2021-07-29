@@ -95,6 +95,9 @@
 #include "utils/timestamp.h"
 
 /* POLAR */
+#include "access/polar_queue_manager.h"
+#include "access/polar_logindex.h"
+#include "access/polar_logindex_internal.h"
 #include "storage/polar_fd.h"
 
 /*
@@ -107,6 +110,9 @@
  * default 8k blocks) seems like a reasonable guess for now.
  */
 #define MAX_SEND_SIZE (XLOG_BLCKSZ * 16)
+
+/* POLAR: Maximum XLOG meta or CLOG in a WAL data message */
+#define POLAR_QUEUE_MAX_SEND_SIZE 1024
 
 /* Array of WalSnds in shared memory */
 WalSndCtlData *WalSndCtl = NULL;
@@ -200,6 +206,10 @@ static volatile sig_atomic_t replication_active = false;
 
 static LogicalDecodingContext *logical_decoding_ctx = NULL;
 static XLogRecPtr logical_startptr = InvalidXLogRecPtr;
+
+/* POLAR */
+static polar_ringbuf_ref_t  xlog_queue_ref = {0};
+/* POLAR ends */
 
 /* A sample associating a WAL location with the time it was written. */
 typedef struct
@@ -1785,6 +1795,9 @@ ProcessStandbyReplyMessage(void)
 	TimestampTz now;
 
 	static bool fullyAppliedLastTime = false;
+	/* POLAR */
+	XLogRecPtr	polar_bg_replay_lsn = InvalidXLogRecPtr;
+	/* POLAR end */
 
 	/* the caller already consumed the msgtype byte */
 	writePtr = pq_getmsgint64(&reply_message);
@@ -1792,6 +1805,9 @@ ProcessStandbyReplyMessage(void)
 	applyPtr = pq_getmsgint64(&reply_message);
 	(void) pq_getmsgint64(&reply_message);	/* sendTime; not used ATM */
 	replyRequested = pq_getmsgbyte(&reply_message);
+
+	if (MyWalSnd->to_replica)
+		polar_bg_replay_lsn = pq_getmsgint64(&reply_message);
 
 	elog(DEBUG2, "write %X/%X flush %X/%X apply %X/%X%s",
 		 (uint32) (writePtr >> 32), (uint32) writePtr,
@@ -1858,10 +1874,18 @@ ProcessStandbyReplyMessage(void)
 	 */
 	if (MyReplicationSlot && flushPtr != InvalidXLogRecPtr)
 	{
+		XLogRecPtr	polar_confirm_lsn = flushPtr;
+		/* 
+		 * POLAR: If polar_bg_replay_lsn is valid, it means background replay exists in replica, 
+		 * so we should gurantee xlog before polar_bg_replay_lsn not being removed 
+		 */
+		if (!XLogRecPtrIsInvalid(polar_bg_replay_lsn))
+			polar_confirm_lsn = polar_bg_replay_lsn;
+
 		if (SlotIsLogical(MyReplicationSlot))
-			LogicalConfirmReceivedLocation(flushPtr);
+			LogicalConfirmReceivedLocation(polar_confirm_lsn);
 		else
-			PhysicalConfirmReceivedLocation(flushPtr);
+			PhysicalConfirmReceivedLocation(polar_confirm_lsn);
 	}
 }
 
@@ -2120,6 +2144,29 @@ WalSndLoop(WalSndSendDataCallback send_data)
 	 */
 	last_reply_timestamp = GetCurrentTimestamp();
 	waiting_for_ping_response = false;
+
+	/* POLAR: acquire reference of xlog queue */
+	if (polar_streaming_xlog_meta && MyWalSnd->to_replica)
+	{
+		if (!MyReplicationSlot)
+			elog(FATAL, "Failed to create replication slot");
+
+		if (!polar_ringbuf_valid_ref(&xlog_queue_ref))
+		{
+			if (!POLAR_XLOG_QUEUE_NEW_REF(&xlog_queue_ref, false, NameStr(MyReplicationSlot->data.name)))
+				elog(PANIC, "Failed to create send queue reference for %s", NameStr(MyReplicationSlot->data.name));
+
+			polar_ringbuf_auto_release_ref(&xlog_queue_ref);
+		}
+	}
+
+	/* POLAR: Send a keepalive message to replica with consistent lsn immediately*/
+	if (MyWalSnd->to_replica)
+	{
+		/* POLAR: Set slot apply ptr to last redo ptr to avoid truncating needed table file. */
+		polar_record_replica_apply_lsn(GetRedoRecPtr());
+		WalSndKeepalive(false);
+	}
 
 	/*
 	 * Loop until we reach the end of this timeline or the client requests to
@@ -3624,12 +3671,6 @@ LagTrackerRead(int head, XLogRecPtr lsn, TimestampTz now)
 }
 
 static void
-polar_xlog_send(void)
-{
-	XLogSendPhysicalExt(true);
-}
-
-static void
 polar_record_replica_apply_lsn(XLogRecPtr apply_lsn)
 {
 	bool		changed = false;
@@ -3670,4 +3711,174 @@ polar_wal_snd_keepalive(bool requestReply)
 
 	/* ... and send it wrapped in CopyData */
 	pq_putmessage_noblock('d', output_message.data, output_message.len);
+}
+
+/*
+ * POLAR: Send out the XLOG meta or CLOG in its normal physical/stored form.
+ *
+ * Read up to POLAR_QUEUE_MAX_SEND_SIZE or one whole packet bytes of XLOG meta or CLOG  that's been flushed to disk,
+ * but not yet sent to the client, and buffer it in the libpq output
+ * buffer.
+ *
+ * If there is no unsent WAL remaining, WalSndCaughtUp is set to true,
+ * otherwise WalSndCaughtUp is set to false.
+ * Return false if failed to get xlog queue reference, otherwise return true.
+ */
+static bool
+polar_send_physical_by_queue(polar_ringbuf_ref_t *ref)
+{
+	XLogRecPtr	consistentptr = InvalidXLogRecPtr;
+	XLogRecPtr	flush_ptr = InvalidXLogRecPtr;
+	XLogRecPtr  next_lsn;
+	ssize_t		send_bytes = 0;
+	size_t      pktlen = 0;
+	size_t      max_send_size;
+	XLogRecPtr	max_send_ptr = InvalidXLogRecPtr;
+	static	XLogRecPtr	last_flush_ptr = InvalidXLogRecPtr;
+
+	/* If requested switch the WAL sender to the stopping state. */
+	if (got_STOPPING)
+		WalSndSetState(WALSNDSTATE_STOPPING);
+
+	if (streamingDoneSending)
+	{
+		WalSndCaughtUp = true;
+		return true;
+	}
+
+	if (!polar_ringbuf_get_ref(ref))
+	{
+		elog(WARNING, "Polar: failed to catch up xlog write queue");
+		return false;
+	}
+
+	/* POLAR: Flush lsn is not updated in recovery mode, especially for replica and standby.*/
+	flush_ptr = POLAR_LOGINDEX_FLUSHABLE_LSN();
+	next_lsn = polar_xlog_send_queue_next_lsn(ref, &pktlen);
+
+	if (last_flush_ptr >= flush_ptr || next_lsn > flush_ptr
+			|| next_lsn == InvalidXLogRecPtr)
+	{
+		WalSndCaughtUp = true;
+
+		if (!polar_ringbuf_clear_ref(ref))
+			elog(PANIC, "Polar: Failed to clear send queue reference");
+		return true;
+	}
+
+	WalSndCaughtUp = false;
+
+	/* Track master and replica lag */
+	LagTrackerWrite(flush_ptr, GetCurrentTimestamp());
+
+	/*
+	 * Figure out how much to send in one message. If packet length is larger than POLAR_QUEUE_MAX_SEND_SIZE
+	 * then set max_send_size to be packet length. If there's no more than
+	 * max_send_size bytes to send, send everything. Otherwise send packets while total bytes is less than
+	 * max_send_size.
+	 *
+	 * The rounding is not only for performance reasons. Walreceiver relies on
+	 * the fact that we never split a WAL record across two messages. Since a
+	 * long WAL record is split at page boundary into continuation records,
+	 * page boundary is always a safe cut-off point. We also assume that
+	 * SendRqstPtr never points to the middle of a WAL record.
+	 */
+
+	/*
+	 * OK to read and send the slice.
+	 */
+
+	/* This is for clog separation */
+	resetStringInfo(&output_message);
+	pq_sendbyte(&output_message, 'y');
+
+	pq_sendint64(&output_message, flush_ptr);	/* flush_ptr */
+	/* get the consist lsn */
+	consistentptr = polar_get_consistent_lsn();
+	pq_sendint64(&output_message, consistentptr); /* consistentptr */
+	pq_sendint64(&output_message, 0);	/* sendtime, filled in last */
+
+	/*
+	 * POLAR: Pop XLOG meta or CLOG from xlog queue to output buffer.
+	 * When wal receiver decode data it read packet length first and then read packet data,
+	 * so buffer must have space to save packet data and one more uint32, which save packet length.
+	 */
+	max_send_size = Max((pktlen+sizeof(uint32)), POLAR_QUEUE_MAX_SEND_SIZE);
+	enlargeStringInfo(&output_message, max_send_size);
+
+	send_bytes = polar_xlog_send_queue_pop(ref,
+			(uint8*)&output_message.data[output_message.len],
+			max_send_size, &max_send_ptr);
+
+
+	if (!polar_ringbuf_clear_ref(ref))
+		elog(PANIC, "Polar: Failed to clear send queue reference");
+
+	output_message.len += send_bytes;
+	output_message.data[output_message.len] = '\0';
+
+	/*
+	 * POLAR: Fill the max valid lsn and send timestamp last, so that it is taken as late as possible.
+	 */
+	resetStringInfo(&tmpbuf);
+	pq_sendint64(&tmpbuf, GetCurrentTimestamp());
+	memcpy(&output_message.data[1 + sizeof(int64) + sizeof(int64)],
+		   tmpbuf.data, sizeof(int64));
+	pq_putmessage_noblock('d', output_message.data, output_message.len);
+
+	if (send_bytes != 0)
+	{
+		if (polar_enable_debug)
+		{
+			ereport(LOG, (errmsg("Sent lsn %X/%X from queue",
+							(uint32)(max_send_ptr>> 32),
+							(uint32)max_send_ptr)));
+		}
+
+		last_flush_ptr = sentPtr = max_send_ptr;
+	}
+
+	/* Update shared memory status */
+	{
+		WalSnd	   *walsnd = MyWalSnd;
+
+		SpinLockAcquire(&walsnd->mutex);
+		walsnd->sentPtr = sentPtr;
+		SpinLockRelease(&walsnd->mutex);
+	}
+
+	/* Report progress of XLOG streaming in PS display */
+	if (update_process_title)
+	{
+		char		activitymsg[50];
+
+		snprintf(activitymsg, sizeof(activitymsg), "streaming %X/%X, consistptr %X/%X",
+			(uint32) (sentPtr >> 32), (uint32) sentPtr,
+			(uint32) (consistentptr >> 32), (uint32) consistentptr);
+
+		set_ps_display(activitymsg, false);
+	}
+	
+	return true;
+}
+
+static void
+polar_xlog_send(void)
+{
+	/* Before we send xlog meta from send queue,
+	 * we need to check whether next WAL location is in send queue first
+	 */
+	static bool check_succeed = false;
+
+	if (polar_streaming_xlog_meta && MyWalSnd->to_replica)
+	{
+		if (!check_succeed)
+			check_succeed = polar_xlog_send_queue_check(&xlog_queue_ref, sentPtr);
+
+		if (check_succeed)
+			check_succeed = polar_send_physical_by_queue(&xlog_queue_ref);
+	}
+
+	if (!check_succeed)
+		XLogSendPhysicalExt(true);
 }

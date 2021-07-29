@@ -145,6 +145,8 @@ typedef struct
 
 	/* POLAR: current consistent lsn of primary */
 	XLogRecPtr  curr_primary_consistent_lsn;
+	/* POLAR: set true when receive XLOG meta from xlog queue */
+	bool        polar_use_xlog_queue;
 } WalRcvData;
 
 extern WalRcvData *WalRcv;
@@ -320,5 +322,6 @@ extern void WalRcvForceReply(void);
 /* POLAR */
 extern void polar_set_primary_consistent_lsn(XLogRecPtr new_consistent_lsn);
 extern XLogRecPtr polar_get_primary_consist_ptr(void);
+extern TimestampTz polar_get_walrcv_last_msg_receipt_time(void);
 
 #endif							/* _WALRECEIVER_H */

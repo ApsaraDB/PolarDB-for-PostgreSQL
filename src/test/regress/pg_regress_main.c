@@ -20,6 +20,9 @@
 
 #include "pg_regress.h"
 
+/* POLAR */
+extern bool polar_is_enable;
+
 /*
  * start a psql test process for specified file (including redirection),
  * and return process ID

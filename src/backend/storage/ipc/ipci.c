@@ -49,8 +49,12 @@
 
 
 /* POLAR */
+#include "access/polar_fullpage.h"
+#include "access/polar_logindex.h"
+#include "access/polar_queue_manager.h"
 #include "postmaster/polar_parallel_bgwriter.h"
 #include "storage/polar_copybuf.h"
+#include "storage/polar_xlogbuf.h"
 
 shmem_startup_hook_type shmem_startup_hook = NULL;
 
@@ -164,6 +168,20 @@ CreateSharedMemoryAndSemaphores(bool makePrivate, int port)
 		/* POLAR: add parallel background writer shared memory size */
 		size = add_size(size, polar_parallel_bgwriter_shmem_size());
 
+		/* POLAR: add polar xlog buffer share memory size */
+		if (polar_enable_xlog_buffer)
+			size = add_size(size, polar_xlog_buffer_shmem_size());
+		/* POLAR end */
+
+		/* POLAR : Add log index share memory size */
+		size = add_size(size, polar_log_index_shmem_size());
+		size = add_size(size, polar_xlog_queue_size());
+		/* POLAR end */
+
+		/* POLAR: add fullpage shmem size */
+		size = add_size(size, polar_fullpage_shmem_size());
+		/* POLAR end */
+
 		/* freeze the addin request size and include it */
 		addin_request_allowed = false;
 		size = add_size(size, total_addin_request);
@@ -239,6 +257,22 @@ CreateSharedMemoryAndSemaphores(bool makePrivate, int port)
 
 	/* POLAR: init parallel background writer */
 	polar_init_parallel_bgwriter();
+
+	/* POLAR: init xlog buffer share memory */
+	if (polar_enable_xlog_buffer)
+		polar_init_xlog_buffer();
+	/* POLAR end */
+
+	/*
+	 * POLAR: Setup logindex
+	 */
+	polar_log_index_shmem_init();
+	polar_xlog_queue_init();
+	/* POLAR end */
+
+	/* POLAR: init fullpage shared memory */
+	polar_fullpage_shmem_init();
+	/* POLAR end */
 
 	/*
 	 * Set up lock manager

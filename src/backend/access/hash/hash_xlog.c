@@ -1000,7 +1000,7 @@ hash_xlog_update_meta_page(XLogReaderState *record)
  * tuples being deleted. See also btree_xlog_delete_get_latestRemovedXid,
  * on which this function is based.
  */
-static TransactionId
+TransactionId
 hash_xlog_vacuum_get_latestRemovedXid(XLogReaderState *record)
 {
 	xl_hash_vacuum_one_page *xlrec;

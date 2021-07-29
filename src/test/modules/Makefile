@@ -5,6 +5,9 @@ top_builddir = ../../..
 include $(top_builddir)/src/Makefile.global
 
 SUBDIRS = \
+		  test_page_outdate \
+		  test_ringbuf \
+		  test_logindex \
 		  brin \
 		  commit_ts \
 		  dummy_seclabel \

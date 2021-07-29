@@ -17,6 +17,10 @@
 #include "lib/stringinfo.h"
 #include "storage/off.h"
 
+/* POLAR */
+#include "storage/buf.h"
+#include "storage/bufpage.h"
+
 /*
  * XLOG records for btree operations
  *
@@ -256,5 +260,9 @@ extern void btree_redo(XLogReaderState *record);
 extern void btree_desc(StringInfo buf, XLogReaderState *record);
 extern const char *btree_identify(uint8 info);
 extern void btree_mask(char *pagedata, BlockNumber blkno);
+
+/* POLAR: change static to extern */
+extern void _bt_restore_page(Page page, char *from, int len);
+extern TransactionId btree_xlog_delete_get_latestRemovedXid(XLogReaderState *record);
 
 #endif							/* NBXLOG_H */

@@ -277,4 +277,7 @@ extern void hash_desc(StringInfo buf, XLogReaderState *record);
 extern const char *hash_identify(uint8 info);
 extern void hash_mask(char *pagedata, BlockNumber blkno);
 
+/* POLAR: change static to extern */
+extern TransactionId hash_xlog_vacuum_get_latestRemovedXid(XLogReaderState *record);
+
 #endif							/* HASH_XLOG_H */

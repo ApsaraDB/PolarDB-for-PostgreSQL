@@ -455,4 +455,9 @@ extern bool has_rolreplication(Oid roleid);
 extern bool BackupInProgress(void);
 extern void CancelBackup(void);
 
+/* POLAR: for replica, copy some directories from shared storage to local. */
+extern void polar_copy_dirs_from_shared_storage_to_local(void);
+extern void polar_remove_file_in_dir(const char *dirname);
+extern void polar_init_local_dir_for_replica(void);
+
 #endif							/* MISCADMIN_H */

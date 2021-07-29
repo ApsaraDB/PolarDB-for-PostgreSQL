@@ -54,9 +54,13 @@ extern void polar_set_buffer_fake_oldest_lsn(BufferDesc *buf_hdr);
 extern void polar_reset_buffer_oldest_lsn(BufferDesc *buf_hdr);
 extern bool polar_buffer_can_be_flushed(BufferDesc *buf_hdr, XLogRecPtr oldest_apply_lsn, bool use_cbuf);
 extern bool polar_buffer_can_be_flushed_by_checkpoint(BufferDesc *buf_hdr, XLogRecPtr oldest_apply_lsn, int flags);
-extern bool polar_bg_buffer_sync(WritebackContext *wb_context);
+extern bool polar_bg_buffer_sync(WritebackContext *wb_context, int flags);
 extern bool polar_donot_control_vm_buffer(BufferDesc *buf_hdr);
-extern bool polar_buffer_sync(WritebackContext *wb_context, XLogRecPtr *consistent_lsn, bool is_normal_bgwriter);
+extern bool polar_buffer_sync(WritebackContext *wb_context, XLogRecPtr *consistent_lsn, bool is_normal_bgwriter, int flags);
 extern void polar_set_reg_buffer_oldest_lsn(Buffer buffer);
 extern bool polar_check_lazy_checkpoint(bool shutdown, int *flags, XLogRecPtr *lazy_redo);
+extern bool polar_pin_buffer(BufferDesc *buf, BufferAccessStrategy strategy);
+extern bool polar_is_future_page(BufferDesc *buf_hdr);
+extern bool polar_buffer_need_fullpage_snapshot(BufferDesc *buf_hdr, XLogRecPtr oldest_apply_lsn);
+
 #endif							/* POLAR_BUFMGR_H */

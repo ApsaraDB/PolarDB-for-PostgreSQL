@@ -32,7 +32,7 @@
  * tuples had been added to the page in item-number order, and therefore
  * the one with highest item number appears first (lowest on the page).
  */
-static void
+void
 _bt_restore_page(Page page, char *from, int len)
 {
 	IndexTupleData itupdata;
@@ -536,7 +536,7 @@ btree_xlog_vacuum(XLogReaderState *record)
  *
  * XXX optimise later with something like XLogPrefetchBuffer()
  */
-static TransactionId
+TransactionId
 btree_xlog_delete_get_latestRemovedXid(XLogReaderState *record)
 {
 	xl_btree_delete *xlrec = (xl_btree_delete *) XLogRecGetData(record);

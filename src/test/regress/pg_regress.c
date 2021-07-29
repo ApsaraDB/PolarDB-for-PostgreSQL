@@ -115,12 +115,20 @@ static int	success_count = 0;
 static int	fail_count = 0;
 static int	fail_ignore_count = 0;
 
+/* POLAR */
+static int 	ignore_count = 0;
+static int	polar_ignore_count = 0;
+/* POLAR end */
+
 static bool directory_exists(const char *dir);
 static void make_directory(const char *dir);
 
 static void header(const char *fmt,...) pg_attribute_printf(1, 2);
 static void status(const char *fmt,...) pg_attribute_printf(1, 2);
 static void psql_command(const char *database, const char *query,...) pg_attribute_printf(2, 3);
+
+/* POLAR */
+bool polar_is_enable = true;
 
 /*
  * allow core files if possible.
@@ -1592,6 +1600,8 @@ run_schedule(const char *schedule, test_function tfunc)
 	char		scbuf[1024];
 	FILE	   *scf;
 	int			line_num = 0;
+	/* POLAR */
+	_stringlist *polar_ignorelist = NULL;
 
 	memset(tests, 0, sizeof(tests));
 	memset(resultfiles, 0, sizeof(resultfiles));
@@ -1637,6 +1647,26 @@ run_schedule(const char *schedule, test_function tfunc)
 			 * failure of this test when run later on is to be ignored. A bit
 			 * odd but that's how the shell-script version did it.
 			 */
+			continue;
+		}
+		else if (strncmp(scbuf, "polar_ignore: ", 14) == 0)
+		{
+			/*
+			 * polar_ignore: some cases is ignored in master-slave sync
+			 * cases will run but will not output to the regression.diff
+			 * usage: the same with "ignore"
+			 * 1. polar_ignore: case
+			 *    test: case
+			 * run the case but no output in regression.diff
+			 * 2. polar_ignore: case
+			 * not run the case
+			 */
+			c = scbuf + 14;
+			while (*c && isspace((unsigned char) *c))
+				c++;
+			add_stringlist_item(&polar_ignorelist, c);
+			if (polar_is_enable)
+				polar_ignore_count ++;
 			continue;
 		}
 		else
@@ -1739,6 +1769,9 @@ run_schedule(const char *schedule, test_function tfunc)
 					   *el,
 					   *tl;
 			bool		differ = false;
+			/* POLAR */
+			bool polar_ignore = false;
+			/* POLAR end */
 
 			if (num_tests > 1)
 				status(_("     %-28s ... "), tests[i]);
@@ -1756,6 +1789,23 @@ run_schedule(const char *schedule, test_function tfunc)
 				 tl = tl ? tl->next : NULL)
 			{
 				bool		newdiff;
+				/* POLAR */
+				_stringlist *sl;
+
+				if (polar_is_enable)
+				{
+					for (sl = polar_ignorelist; sl != NULL; sl = sl->next)
+					{
+						if (strcmp(tests[i], sl->str) == 0)
+						{
+							polar_ignore = true;
+							break;
+						}
+					}
+				}
+				if (polar_ignore)
+					continue;
+				/* POLAR end */
 
 				newdiff = results_differ(tests[i], rl->str, el->str);
 				if (newdiff && tl)
@@ -1791,7 +1841,12 @@ run_schedule(const char *schedule, test_function tfunc)
 			}
 			else
 			{
-				status(_("ok"));
+				/* POLAR */
+				if (polar_ignore)
+					status(_("ok (polar ignored)"));
+				else
+					status(_("ok"));
+				/* POLAR end */
 				success_count++;
 			}
 
@@ -1812,6 +1867,7 @@ run_schedule(const char *schedule, test_function tfunc)
 	}
 
 	free_stringlist(&ignorelist);
+	free_stringlist(&polar_ignorelist);
 
 	fclose(scf);
 }
@@ -2077,6 +2133,8 @@ regression_main(int argc, char *argv[], init_function ifunc, test_function tfunc
 	int			option_index;
 	char		buf[MAXPGPATH * 4];
 	char		buf2[MAXPGPATH * 4];
+	/* POLAR */
+	char    polar_buf[MAXPGPATH * 4];
 
 	progname = get_progname(argv[0]);
 	set_pglocale_pgservice(argv[0], PG_TEXTDOMAIN("pg_regress"));
@@ -2556,10 +2614,24 @@ regression_main(int argc, char *argv[], init_function ifunc, test_function tfunc
 				 fail_ignore_count);
 
 	putchar('\n');
-	for (i = strlen(buf); i > 0; i--)
+
+	/* POLAR */
+	snprintf(polar_buf, sizeof(polar_buf),
+			_(" All %d tests, %d tests in ignore, %d tests in polar ignore. "),
+			success_count + polar_ignore_count + ignore_count,
+			ignore_count,
+			polar_ignore_count);
+
+	putchar('\n');
+
+	/* POLAR use strlen(polar_buf) */
+	for (i = strlen(polar_buf); i > 0; i--)
 		putchar('=');
 	printf("\n%s\n", buf);
-	for (i = strlen(buf); i > 0; i--)
+	/* POLAR */
+	printf("\n POLARDB:\n%s\n", polar_buf);
+	/* POLAR end*/
+	for (i = strlen(polar_buf); i > 0; i--)
 		putchar('=');
 	putchar('\n');
 	putchar('\n');

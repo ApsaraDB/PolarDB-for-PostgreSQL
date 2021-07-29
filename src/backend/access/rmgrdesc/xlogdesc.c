@@ -82,6 +82,14 @@ xlog_desc(StringInfo buf, XLogReaderState *record)
 	{
 		/* no further information to print */
 	}
+	/* POLAR: print fullpage_no */
+	else if (info == XLOG_FPSI)
+	{
+		uint64	fullpage_no = 0;
+		/* get fullpage_no from record */
+		memcpy(&fullpage_no, XLogRecGetData(record), sizeof(uint64));
+		appendStringInfo(buf, "%ld", fullpage_no);
+	}
 	else if (info == XLOG_BACKUP_END)
 	{
 		XLogRecPtr	startpoint;
@@ -181,6 +189,9 @@ xlog_identify(uint8 info)
 			break;
 		case XLOG_FPI_FOR_HINT:
 			id = "FPI_FOR_HINT";
+			break;
+		case XLOG_FPSI:
+			id = "FPSI";
 			break;
 	}
 

@@ -29,6 +29,9 @@
 #include "storage/shmem.h"
 #include "utils/timestamp.h"
 
+/* POLAR */
+#include "utils/guc.h"
+
 WalRcvData *WalRcv = NULL;
 
 /*
@@ -64,6 +67,8 @@ WalRcvShmemInit(void)
 		WalRcv->walRcvState = WALRCV_STOPPED;
 		SpinLockInit(&WalRcv->mutex);
 		WalRcv->latch = NULL;
+		if (polar_streaming_xlog_meta)
+			WalRcv->polar_use_xlog_queue = true;
 	}
 }
 

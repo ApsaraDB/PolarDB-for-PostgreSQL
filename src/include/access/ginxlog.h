@@ -16,6 +16,9 @@
 #include "lib/stringinfo.h"
 #include "storage/off.h"
 
+/* POLAR */
+#include "storage/buf.h"
+
 #define XLOG_GIN_CREATE_INDEX  0x00
 
 #define XLOG_GIN_CREATE_PTREE  0x10
@@ -213,5 +216,10 @@ extern const char *gin_identify(uint8 info);
 extern void gin_xlog_startup(void);
 extern void gin_xlog_cleanup(void);
 extern void gin_mask(char *pagedata, BlockNumber blkno);
+
+/* POLAR: change static to extern */
+extern void ginRedoInsertData(Buffer buffer, bool isLeaf, BlockNumber rightblkno, void *rdata);
+extern void ginRedoInsertEntry(Buffer buffer, bool isLeaf, BlockNumber rightblkno, void *rdata);
+extern void ginRedoRecompress(Page page, ginxlogRecompressDataLeaf *data);
 
 #endif							/* GINXLOG_H */

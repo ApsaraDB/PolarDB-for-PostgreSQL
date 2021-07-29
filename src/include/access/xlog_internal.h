@@ -322,11 +322,16 @@ extern void polar_backup_history_file_path(char *path, TimeLineID tli, XLogSegNo
 extern void polar_status_file_path(char *path, const char *xlog, char *suffix);
 extern void polar_tl_history_file_path(char *path, TimeLineID tli);
 extern void polar_xLog_file_path(char *path, TimeLineID tli, XLogSegNo logSegNo, int wal_segsz_bytes);
+extern XLogRecData *polar_get_main_data_head(void);
+extern uint32 polar_get_main_data_len(void);
+extern void polar_set_main_data(void *data, uint32 len);
+extern void polar_reset_main_data(void);
 
 #define XLogFilePath(a,b,c,d)				polar_xLog_file_path(a,b,c,d)
 #define TLHistoryFilePath(a,b)				polar_tl_history_file_path(a,b)
 #define StatusFilePath(a,b,c)				polar_status_file_path(a,b,c)
 #define BackupHistoryFilePath(a,b,c,d,e)	polar_backup_history_file_path(a,b,c,d,e)
+
 #else
 #define XLogFilePath(path, tli, logSegNo, wal_segsz_bytes)	\
 	snprintf(path, MAXPGPATH, XLOGDIR "/%08X%08X%08X", tli,	\

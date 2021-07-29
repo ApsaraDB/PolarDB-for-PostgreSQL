@@ -424,6 +424,18 @@ static const struct config_enum_entry password_encryption_options[] = {
 };
 
 /*
+ * Polar: Options for core_dump options
+ */
+static const struct config_enum_entry coredump_options[] = {
+	{"disable", POLAR_CORE_DUMP_DISABLE, false},
+	{"stack_print", POLAR_CORE_DUMP_PRINT, false},
+	{"core_clear", POLAR_CORE_DUMP_CLEAR, false},
+	{"all", POLAR_CORE_DUMP_ALL, false},
+	{NULL, 0, false}
+};
+/* Polar: end */
+
+/*
  * Options for enum values stored in other modules
  */
 extern const struct config_enum_entry wal_level_options[];
@@ -566,6 +578,34 @@ bool 	polar_startup_from_local_data_file = false;
 bool 	polar_enable_parallel_bgwriter = true;
 bool 	polar_enable_dynamic_parallel_bgwriter = true;
 
+int 	polar_logindex_unit_test = 0;
+int 	polar_logindex_table_batch_size = 1;
+int     polar_max_logindex_files;
+int		polar_fullpage_keep_segments = 16;
+int     polar_read_ahead_xlog_num;
+int 	polar_bg_replay_batch_size;
+int		polar_wait_old_version_page_timeout = 30 * 1000;
+int     polar_logindex_bloom_blocks;
+int     polar_logindex_mem_size;
+int     polar_xlog_queue_buffers;
+int	    polar_xlog_page_buffers;
+int		polar_startup_replay_delay_size = 0;
+int		polar_write_logindex_active_table_delay = 200;
+int		polar_fullpage_snapshot_replay_delay_threshold = 0;
+int		polar_fullpage_snapshot_oldest_lsn_delay_threshold = 0;
+int		polar_fullpage_snapshot_min_modified_count = 0;
+int 	polar_clog_max_local_cache_segments = 0;
+bool    polar_enable_redo_logindex = true;
+bool	polar_enable_flush_active_logindex_memtable = true;
+bool	polar_streaming_xlog_meta = false;
+bool	polar_enable_fullpage_snapshot = true;
+bool	polar_enable_run_walreceiver_always = false;
+bool	polar_enable_xlog_buffer = false;
+bool    polar_enable_master_xlog_read_ahead;
+bool	polar_enable_page_outdate = false;
+bool	polar_enable_redo_debug = false;
+bool	polar_enable_resolve_conflict = true;
+bool	polar_enable_standby_xlog_meta = false;
 /* POLAR GUC End */
 
 /*
@@ -863,6 +903,116 @@ static const unit_conversion time_unit_conversion_table[] =
 static struct config_bool ConfigureNamesBool[] =
 {
 	/* POLAR BOOL GUCs Start */
+	{
+		{"polar_enable_standby_xlog_meta", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("Whether push xlog meta into queue in startup."),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_enable_standby_xlog_meta,
+		false,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_enable_resolve_conflict", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("A switch to control conflict resolving in polar standby mode"),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_enable_resolve_conflict,
+		false,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_enable_redo_debug", PGC_USERSET, UNGROUPED,
+			gettext_noop("A switch to control whether to open debug when replica redo."),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_enable_redo_debug,
+		false,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_enable_page_outdate", PGC_POSTMASTER, UNGROUPED,
+			gettext_noop("Enable page outdate while replaying xlog with logindex in replica"),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_enable_page_outdate,
+		true,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_enable_master_xlog_read_ahead", PGC_POSTMASTER, UNGROUPED,
+			gettext_noop("Enable master xlog read ahead in recovery"),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_enable_master_xlog_read_ahead,
+		false,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_enable_xlog_buffer", PGC_POSTMASTER, UNGROUPED,
+			gettext_noop("Enable xlog buffer"),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_enable_xlog_buffer,
+		true,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_enable_run_walreceiver_always", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("Enable always run walreceiver in replica mode."),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_enable_run_walreceiver_always,
+		false,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_enable_fullpage_snapshot", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("Enable fullpage snapshot feature"),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_enable_fullpage_snapshot,
+		true,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_streaming_xlog_meta", PGC_POSTMASTER, UNGROUPED,
+			gettext_noop("Enable send xlog meta to replication."),
+			NULL,
+			GUC_NO_RESET_ALL
+		},
+		&polar_streaming_xlog_meta,
+		true,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_enable_flush_active_logindex_memtable", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("Enable flush logindex active memtable"),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_enable_flush_active_logindex_memtable,
+		true,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_enable_redo_logindex", PGC_POSTMASTER, UNGROUPED,
+			gettext_noop("Whether use log index or not."),
+			NULL,
+			GUC_NO_RESET_ALL
+		},
+		&polar_enable_redo_logindex,
+		true,
+		NULL, NULL, NULL
+	},
 	{
 		{"polar_parallel_bgwriter_enable_dynamic", PGC_POSTMASTER, RESOURCES_BGWRITER,
 			gettext_noop("Start or stop extra parallel background writer dynamically."),
@@ -2061,6 +2211,175 @@ static struct config_bool ConfigureNamesBool[] =
 static struct config_int ConfigureNamesInt[] =
 {
 	/* POLAR INT GUCs Start */
+	{
+		{"polar_clog_max_local_cache_segments", PGC_POSTMASTER, UNGROUPED,
+			gettext_noop("Set the maximum number of local segment file cache for clog"),
+			NULL
+		},
+		&polar_clog_max_local_cache_segments,
+		128, 0, INT_MAX / 2,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_fullpage_snapshot_min_modified_count", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("Sets the minimum modified count when log fullpage"),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_fullpage_snapshot_min_modified_count,
+		10, 0, INT32_MAX,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_fullpage_snapshot_oldest_lsn_delay_threshold", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("Minimum diff lsn(MB) between insert lsn and oldest_lsn when log fullpage snapshot."),
+			NULL,
+			GUC_UNIT_MB | GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_fullpage_snapshot_oldest_lsn_delay_threshold,
+		1024,
+		0, INT32_MAX,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_fullpage_snapshot_replay_delay_threshold", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("Max diff lsn(MB) between page lsn and replay_lsn when log fullpage snapshot."),
+			NULL,
+			GUC_UNIT_MB | GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_fullpage_snapshot_replay_delay_threshold,
+		16,
+		0, INT32_MAX,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_write_logindex_active_table_delay", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("Time between walwriter write active logindex table."),
+			NULL,
+			GUC_UNIT_MS | GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_write_logindex_active_table_delay,
+		500, 1, INT32_MAX,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_startup_replay_delay_size", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("Manual startup replay delay wal size(MB), just for test!"),
+			NULL,
+			GUC_UNIT_MB | GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_startup_replay_delay_size,
+		0,
+		0, 40960,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_xlog_page_buffers", PGC_POSTMASTER, RESOURCES_MEM,
+			gettext_noop("Sets the size of xlog buffer used by startup and backedn in replica and standby mode."),
+			NULL,
+			GUC_UNIT_MB
+		},
+		&polar_xlog_page_buffers,
+		1 * 1024, 16, INT_MAX / 2,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_xlog_queue_buffers", PGC_POSTMASTER, RESOURCES_MEM,
+			gettext_noop("Sets the size of xlog queue buffer used to keep xlog meta."),
+			NULL,
+			GUC_UNIT_MB
+		},
+		&polar_xlog_queue_buffers,
+		512, 256, INT_MAX / 2,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_logindex_mem_size", PGC_POSTMASTER, RESOURCES_MEM,
+		 gettext_noop("Set the size for logindex memory table"),
+		 NULL,
+		 GUC_UNIT_MB
+		},
+		&polar_logindex_mem_size,
+		512, 128, INT_MAX / 2,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_logindex_bloom_blocks", PGC_POSTMASTER, UNGROUPED,
+		 gettext_noop("Set the number of blocks for logindex bloom filter"),
+		 NULL
+		},
+		&polar_logindex_bloom_blocks,
+		1024, 8, INT_MAX / 2,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_wait_old_version_page_timeout", PGC_USERSET, UNGROUPED,
+			gettext_noop("Sets the maximum time to wait for old version page when reading a future page."),
+			NULL,
+			GUC_UNIT_MS | GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_wait_old_version_page_timeout,
+		30 * 1000, 0, INT_MAX,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_bg_replay_batch_size", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("Batch size of each bgwriter replay run."),
+			NULL
+		},
+		&polar_bg_replay_batch_size,
+		20000, 1000, INT_MAX,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_read_ahead_xlog_num", PGC_POSTMASTER, UNGROUPED,
+		 gettext_noop(
+			 "How many xlog pages are read ahead. A value of 0 turns off this feature."),
+		 NULL,
+		 GUC_UNIT_BLOCKS
+		},
+		&polar_read_ahead_xlog_num,
+		200, 0, MAX_READ_AHEAD_XLOGS,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_fullpage_keep_segments", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("Sets the number of FULLPAGE files held for replica."),
+			NULL
+		},
+		&polar_fullpage_keep_segments,
+		16,
+		3, INT32_MAX,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_max_logindex_files", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("A switch to control number of max logindex files.This param is used when truncate logindex file"),
+			NULL,
+			GUC_NO_RESET_ALL | GUC_NOT_IN_SAMPLE | GUC_NOT_WHILE_SEC_REST
+		},
+		&polar_max_logindex_files,
+		80, 10, INT_MAX,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_logindex_table_batch_size", PGC_SIGHUP, RESOURCES_BGWRITER,
+		 gettext_noop("Set the batch size of logindex table to be flushed in background process."),
+		 NULL
+		},
+		&polar_logindex_table_batch_size,
+		100, 0, 1000,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_logindex_unit_test", PGC_POSTMASTER, UNGROUPED,
+		 gettext_noop("polar_logindex_unit_test"),
+		 NULL
+		},
+		&polar_logindex_unit_test,
+		0, 0, 5,
+		NULL, NULL, NULL
+	},
 	{
 		{"polar_parallel_new_bgwriter_threshold_lag", PGC_SIGHUP, RESOURCES_BGWRITER,
 			gettext_noop(

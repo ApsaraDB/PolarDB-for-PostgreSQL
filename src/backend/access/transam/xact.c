@@ -65,6 +65,9 @@
 #include "utils/timestamp.h"
 #include "pg_trace.h"
 
+/* POLAR */
+#include "access/polar_logindex.h"
+#include "parser/parse_utilcmd.h"
 
 /*
  *	User-tweakable parameters
@@ -2454,6 +2457,19 @@ AbortTransaction(void)
 	/* Make sure we have a valid memory context and resource owner */
 	AtAbort_Memory();
 	AtAbort_ResourceOwner();
+
+	/*
+	 * POLAR: Clear POLAR_REDO_REPLAYING state from current replaying buffer.
+	 * If buffer redo state is POLAR_REDO_REPLAYING startup will add logindex without
+	 * this buffer IO or content lock
+	 */
+	polar_log_index_abort_replaying_buffer();
+
+	/*
+	 * POLAR: Release logindex mini transaction resource.
+	 * During this function we release mini transaction lock, so it must be called before LWLockReleaseAll
+	 */
+	polar_log_index_abort_mini_transaction();
 
 	/*
 	 * Release any LW locks we might be holding as quickly as possible.

@@ -488,7 +488,7 @@ static bool
 parallel_sync_buffer(WritebackContext *wb_context)
 {
 	XLogRecPtr	consistent_lsn = InvalidXLogRecPtr;
-	return polar_buffer_sync(wb_context, &consistent_lsn, false);
+	return polar_buffer_sync(wb_context, &consistent_lsn, false, 0);
 }
 
 /* Shut down #workers parallel background workers. */

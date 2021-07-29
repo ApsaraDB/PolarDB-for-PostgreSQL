@@ -17,6 +17,9 @@
 #include "access/xlogreader.h"
 #include "lib/stringinfo.h"
 
+/* POLAR */
+#include "access/itup.h"
+
 #define XLOG_GIST_PAGE_UPDATE		0x00
  /* #define XLOG_GIST_NEW_ROOT			 0x20 */	/* not used anymore */
 #define XLOG_GIST_PAGE_SPLIT		0x30
@@ -65,5 +68,8 @@ extern const char *gist_identify(uint8 info);
 extern void gist_xlog_startup(void);
 extern void gist_xlog_cleanup(void);
 extern void gist_mask(char *pagedata, BlockNumber blkno);
+
+/* POLAR: change static to extern */
+extern IndexTuple *decodePageSplitRecord(char *begin, int len, int *n);
 
 #endif

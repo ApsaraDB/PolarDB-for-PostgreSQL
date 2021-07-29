@@ -200,4 +200,7 @@ extern BlockNumber ss_get_location(Relation rel, BlockNumber relnblocks);
 extern void SyncScanShmemInit(void);
 extern Size SyncScanShmemSize(void);
 
+/* POLAR: change static to extern */
+extern void fix_infomask_from_infobits(uint8 infobits, uint16 *infomask, uint16 *infomask2);
+
 #endif							/* HEAPAM_H */
