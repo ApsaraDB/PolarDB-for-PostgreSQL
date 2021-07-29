@@ -32,9 +32,22 @@ CMD=()
 
 CFLAGS="-fno-omit-frame-pointer -Wno-declaration-after-statement"
 LDFLAGS="-L/usr/local/lib"
+
+if [[ "$(uname -v)" =~ "hunghu-" ]]; then
+        PATH="/opt/local/gcc8/bin:/opt/local/bin:/opt/local/sbin:/usr/bin:/usr/sbin"
+	CFLAGS="${CFLAGS} -I/opt/local/include -I/usr/include"
+	CPPFLAGS="${CFLAGS} -I/opt/local/include -I/usr/include"
+	LDFLAGS="${LDFLAGS} -L/opt/local/lib -L/usr/lib"
+        LIBS="${LIBS} -l/usr/lib -l/opt/local/lib"
+        LD_LIBRARY_PATH="/usr/lib:/opt/local/lib"
+        export PATH LD_LIBRARY_PATH
+fi
+
 if [[ "$BLD_OPT" == "deploy" ]]; then
     CFLAGS="${CFLAGS} -g -O2"
     CMD+=(--with-python)
+    CMD+=(--with-openssl)
+    CMD+=(--enable-dtrace)
 elif [[ "$BLD_OPT" == "verify" ]]; then
     CFLAGS="${CFLAGS} -g -O2"
     CMD+=(--enable-cassert)
@@ -59,12 +72,24 @@ if [[ "$BLD_OPT" != "repeat" ]]; then
     ./configure --prefix=$PG_INSTALL ${CMD[@]}
 fi
 
+
+if [[ "$(uname -v)" =~ "hunghu-" ]]; then
+    echo ""
+    echo ">>>> CONFIGURE SUCCESS <<<<"
+    echo "configuration is done and success"
+    echo "since it is in the progress to porting libeasy to Hunghu OS"
+    echo "so just do configure right now, then it will exit"
+    echo ">>>> CONFIGURE SUCCESS <<<<"
+    echo ""
+    exit 0
+fi
+
 # build polardb consensus dynamic library
 cd $CODEHOME/src/backend/polar_dma/libconsensus/polar_wrapper
 if [[ "$BLD_OPT" == "debug" ]]; then
-bash ./build.sh -r -t debug
+    bash ./build.sh -r -t debug
 else
-bash ./build.sh -r -t release
+    bash ./build.sh -r -t release
 fi
 cd $CODEHOME
 
