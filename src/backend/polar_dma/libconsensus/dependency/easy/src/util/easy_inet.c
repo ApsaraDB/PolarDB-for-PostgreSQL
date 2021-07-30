@@ -21,7 +21,11 @@
 #include <netdb.h>
 #include <arpa/inet.h>      // inet_addr
 #include <sys/ioctl.h>
+#ifdef __linux__
 #include <linux/if.h>
+#elif __solaris__
+#include <net/if.h>
+#endif
 
 /**
  * 把sockaddr_in转成string

@@ -183,7 +183,11 @@
 #include <sys/types.h>
 #include <time.h>
 #include <limits.h>
+#ifdef __linux__
 #include <syscall.h>
+#elif __solaris__
+#include <sys/syscall.h>
+#endif
 #include <signal.h>
 
 #ifdef EV_H
