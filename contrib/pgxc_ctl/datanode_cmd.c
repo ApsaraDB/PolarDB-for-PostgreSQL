@@ -2122,7 +2122,7 @@ int failover_datanode(char **nodeList)
     elog(INFO, "Failover specified datanodes.\n");
     if (!isVarYes(VAR_datanodeSlave))
     {
-        elog(ERROR, "ERROR: datnaode slave is not configured.\n");
+        elog(ERROR, "ERROR: datanode slave is not configured.\n");
         return 1;
     }
     actualNodeList = makeActualNodeList(nodeList);
