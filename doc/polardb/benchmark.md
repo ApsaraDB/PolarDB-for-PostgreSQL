@@ -1,9 +1,9 @@
-## benchmarking using pgbench
+# Benchmarking using pgbench
 
-### install pgbench
+## Install pgbench
 The source code of pgbench is placed in the directory `contrib/pgbench`, simply by running `make && make install` to get pgbench installed.
 
-### init
+## init
 * First of all, a database (ie: pgbench) is required to run pgbench:
 
 ```bash
@@ -63,7 +63,7 @@ vacuuming...
 creating primary keys...
 done.
 ```
-### benchmark
+## benchmark
 Running benchmark with some options,  using `--help` to see more:
 ```bash
 $~/pghome/bin/pgbench -M prepared -r -c 16 -j 4 -T 30 -p 5432 -d pgbench -l
