@@ -1245,6 +1245,19 @@ setup_config(void)
 								  "log_file_mode = 0640");
 	}
 
+	/*
+	 *   set tcp keepalive to on, prevent some problems caused by network instability.
+	 */
+	snprintf(repltok, sizeof(repltok), "tcp_keepalives_idle = 5");
+	conflines = replace_token(conflines, "#tcp_keepalives_idle = 0", repltok);
+
+	snprintf(repltok, sizeof(repltok), "tcp_keepalives_interval = 5");
+	conflines = replace_token(conflines, "#tcp_keepalives_interval = 0", repltok);
+
+	snprintf(repltok, sizeof(repltok), "tcp_keepalives_count = 3");
+	conflines = replace_token(conflines, "#tcp_keepalives_count = 0", repltok);
+
+
 	snprintf(path, sizeof(path), "%s/postgresql.conf", pg_data);
 
 	writefile(path, conflines);
