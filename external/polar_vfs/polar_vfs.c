@@ -30,7 +30,9 @@
 #include "miscadmin.h"
 #include "storage/backendid.h"
 #include "storage/ipc.h"
+#include "storage/polar_directio.h"
 #include "storage/polar_fd.h"
+#include "storage/polar_pfsd.h"
 #include "storage/shmem.h"
 #include "storage/lwlock.h"
 #include "tcop/utility.h"
@@ -70,6 +72,26 @@ polardb_node_state	polardb_start_state = unknown;
 #define		VFS_UNKNOWN_FILE	-1
 #define		VFS_LOCAL_FILE		0
 #define		VFS_PFS_FILE		1
+#define		VFS_LOCAL_FILE_DIRECTIO	2
+#define		VFS_KIND_MAX		3
+
+#define	VFS_KIND_MAX_LEN	64
+
+/*
+ * POLAR: polar_vfs_kind[*] must conform to a certain format:
+ * [protocol]://
+ * Finally, polar_datadir will look like the following format:
+ * [protocol]://[path]
+ * 
+ * Notice: If you change the format of polar_vfs_kind[*], you must
+ * modify the function polar_path_remove_protocol(...) in polar_fd.c.
+ */
+static const char polar_vfs_kind[VFS_KIND_MAX][VFS_KIND_MAX_LEN] =
+{
+	"file://",		//VFS_LOCAL_FILE
+	"pfsd://",		//VFS_PFS_FILE
+	"file-dio://",	//VFS_LOCAL_FILE_DIRECTIO
+};
 
 typedef struct vfs_vfd
 {
@@ -97,11 +119,6 @@ static vfs_dir_desc *vfs_dir_descs = NULL;
 static	bool	inited = false;
 static shmem_startup_hook_type prev_shmem_startup_hook = NULL;
 
-#define PFSD_MIN_MAX_IOSIZE			(4 * 1024)
-#define PFSD_DEAFAULT_MAX_IOSIZE	(4 * 1024 * 1024)
-#define PFSD_MAX_MAX_IOSIZE			(128 * 1024 * 1024)
-
-static	int max_pfsd_io_size = PFSD_DEAFAULT_MAX_IOSIZE;
 static bool	localfs_mode = false;
 static bool	pfs_force_mount = true;
 
@@ -160,8 +177,14 @@ static inline vfs_vfd *vfs_find_file(int file);
 static inline int vfs_file_type(const char *path);
 static const vfs_mgr *vfs_get_mgr(const char *path);
 
+static inline const char *polar_vfs_file_type_and_path(const char *path, int *kind);
+
 static const vfs_mgr vfs[] = 
 {
+	/*
+	 * POLAR: Local file system interface.
+	 * It use original file system interface.
+	 */
 	{
 		.vfs_mount = NULL,
 		.vfs_umount = NULL,
@@ -190,6 +213,10 @@ static const vfs_mgr vfs[] =
 		.vfs_rmdir = rmdir,
 		.vfs_mgr_func = NULL
 	},
+	/*
+	 * POLAR: Pfsd file system interface.
+	 * It use original pfsd's file access interface.
+	 */
 	{
 		.vfs_mount = NULL,
 		.vfs_umount = NULL,
@@ -197,10 +224,10 @@ static const vfs_mgr vfs[] =
 		.vfs_open = pfsd_open,
 		.vfs_creat = pfsd_creat,
 		.vfs_close = pfsd_close,
-		.vfs_read = pfsd_read,
-		.vfs_write = pfsd_write,
-		.vfs_pread = pfsd_pread,
-		.vfs_pwrite = pfsd_pwrite,
+		.vfs_read = polar_pfsd_read,
+		.vfs_write = polar_pfsd_write,
+		.vfs_pread = polar_pfsd_pread,
+		.vfs_pwrite = polar_pfsd_pwrite,
 		.vfs_stat = pfsd_stat,
 		.vfs_fstat = pfsd_fstat,
 		.vfs_lstat = pfsd_stat,
@@ -216,6 +243,42 @@ static const vfs_mgr vfs[] =
 		.vfs_closedir = pfsd_closedir,
 		.vfs_mkdir = pfsd_mkdir,
 		.vfs_rmdir = pfsd_rmdir,
+		.vfs_mgr_func = NULL
+	},
+	/*
+	 * POLAR: Local file system interface with O_DIRECT flag.
+	 * It use original file system interface to do other jobs
+	 * except for open, (p)read and (p)write. To make sure that
+	 * O_DIRECT flag can work well, we packaged open/(p)read/(p)write
+	 * in order to make aligned buffer, aligned offset and aligned length. 
+	 * Besides, the length of aligned buffer is the upper limit of content
+	 * for one single (p)read or (p)write.
+	 */
+	{
+		.vfs_mount = NULL,
+		.vfs_remount = NULL,
+		.vfs_open = (vfs_open_type) polar_directio_open,
+		.vfs_creat = creat,
+		.vfs_close = close,
+		.vfs_read = polar_directio_read,
+		.vfs_write = polar_directio_write,
+		.vfs_pread = polar_directio_pread,
+		.vfs_pwrite = polar_directio_pwrite,
+		.vfs_stat = stat,
+		.vfs_fstat = fstat,
+		.vfs_lstat = lstat,
+		.vfs_lseek = lseek,
+		.vfs_access = access,
+		.vfs_fsync = pg_fsync,
+		.vfs_unlink = unlink,
+		.vfs_rename = rename,
+		.vfs_fallocate = posix_fallocate,
+		.vfs_ftruncate = ftruncate,
+		.vfs_opendir = opendir,
+		.vfs_readdir = readdir,
+		.vfs_closedir = closedir,
+		.vfs_mkdir = mkdir,
+		.vfs_rmdir = rmdir,
 		.vfs_mgr_func = NULL
 	}
 };
@@ -285,9 +348,22 @@ _PG_init(void)
 							"max pfsd io size",
 							NULL,
 							&max_pfsd_io_size,
-							PFSD_DEAFAULT_MAX_IOSIZE,
+							PFSD_DEFAULT_MAX_IOSIZE,
 							PFSD_MIN_MAX_IOSIZE,
 							PFSD_MAX_MAX_IOSIZE,
+							PGC_POSTMASTER,
+							0,
+							NULL,
+							NULL,
+							NULL);
+
+	DefineCustomIntVariable("polar_vfs.max_direct_io_size",
+							"max direct io size",
+							NULL,
+							&polar_max_direct_io_size,
+							POLAR_DIRECTIO_DEFAULT_IOSIZE,
+							POLAR_DIRECTIO_MIN_IOSIZE,
+							POLAR_DIRECTIO_MAX_IOSIZE,
 							PGC_POSTMASTER,
 							0,
 							NULL,
@@ -399,11 +475,23 @@ vfs_mount(void)
 
 	if (localfs_mode)
 	{
-		elog(LOG, "pfs in localfs test mode");
-		elog(LOG, "mount pfs %s %s mode success", polar_disk_name, mode);
-		polar_vfs_switch = POLAR_VFS_SWITCH_PLUGIN;
-		inited = true;
-		return 0;
+		if (!POLAR_DIECRTIO_IS_ALIGNED(polar_max_direct_io_size))
+			elog(FATAL, "polar_max_direct_io_size is not aligned!");
+		else if (polar_directio_buffer == NULL &&
+				 posix_memalign((void **)&polar_directio_buffer,
+								POLAR_DIRECTIO_ALIGN_LEN,
+								polar_max_direct_io_size) != 0)
+		{
+			elog(ERROR, "posix_memalign alloc polar_directio_buffer failed!");
+		}
+		else
+		{
+			elog(LOG, "pfs in localfs test mode");
+			elog(LOG, "mount pfs %s %s mode success", polar_disk_name, mode);
+			polar_vfs_switch = POLAR_VFS_SWITCH_PLUGIN;
+			inited = true;
+			return 0;
+		}
 	}
 
 	if (do_force_mount)
@@ -537,10 +625,11 @@ vfs_creat(const char *path, mode_t mode)
 {
 	int		file = vfs_allocate_vfd();
 	vfs_vfd		*vfdP = &vfs_vfd_cache[file];
+	const char *vfs_path;
 
 	elog(LOG, "vfs creat file %s, fd %d file %d num open file %d", vfdP->file_name, vfdP->fd, file, num_open_file);
-	vfdP->kind = vfs_file_type(path);
-	vfdP->fd = vfs[vfdP->kind].vfs_creat(path, mode);
+	vfs_path = polar_vfs_file_type_and_path(path, &(vfdP->kind));
+	vfdP->fd = vfs[vfdP->kind].vfs_creat(vfs_path, mode);
 	if (vfdP->fd < 0)
 	{
 		int save_errno = errno;
@@ -563,6 +652,7 @@ vfs_open(const char *path, int flags, mode_t mode)
 {
 	int			file = -1;
 	vfs_vfd		*vfdP = NULL;
+	const char	*vfs_path;
 
 	if (path == NULL)
 		return -1;
@@ -570,9 +660,9 @@ vfs_open(const char *path, int flags, mode_t mode)
 	file = vfs_allocate_vfd();
 	vfdP = &vfs_vfd_cache[file];
 	elog(DEBUG1, "vfs open file %s num open file %d", path, num_open_file);
-	vfdP->kind = vfs_file_type(path);
+	vfs_path = polar_vfs_file_type_and_path(path, &(vfdP->kind));
 	pgstat_report_wait_start(WAIT_EVENT_DATA_VFS_FILE_OPEN);
-	vfdP->fd = vfs[vfdP->kind].vfs_open(path, flags, mode);
+	vfdP->fd = vfs[vfdP->kind].vfs_open(vfs_path, flags, mode);
 	if (vfdP->fd < 0)
 	{
 		int	save_errno = errno;
@@ -619,34 +709,12 @@ vfs_write(int file, const void *buf, size_t len)
 {
 	vfs_vfd		*vfdP = NULL;
 	ssize_t		res = -1;
-	char		*from;
-	ssize_t		nleft;
-	ssize_t		writesize;
-	ssize_t		count = 0;
 
 	vfdP = vfs_find_file(file);
-	nleft = len;
-	from = (char *)buf;
+	errno = 0;
+	res = vfs[vfdP->kind].vfs_write(vfdP->fd, buf, len);
 
-	while(nleft > 0)
-	{
-		writesize = Min(nleft, max_pfsd_io_size);
-		errno = 0;
-		res = vfs[vfdP->kind].vfs_write(vfdP->fd, from, writesize);
-		if (res <= 0)
-		{
-			if (count == 0)
-				count = res;
-
-			break;
-		}
-
-		count += res;
-		nleft -= res;
-		from += res;
-	}
-
-	return count;
+	return res;
 }
 
 static ssize_t
@@ -654,32 +722,12 @@ vfs_read(int file, void *buf, size_t len)
 {
 	vfs_vfd		*vfdP = NULL;
 	ssize_t		res = -1;
-	ssize_t		iolen = 0;
-	ssize_t		nleft = len;
-	char		*from = (char *)buf;
-	ssize_t		count = 0;
 
 	vfdP = vfs_find_file(file);
+	errno = 0;
+	res = vfs[vfdP->kind].vfs_read(vfdP->fd, buf, len);
 
-	while (nleft > 0)
-	{
-		iolen = Min(nleft, max_pfsd_io_size);
-		errno = 0;
-		res = vfs[vfdP->kind].vfs_read(vfdP->fd, from, iolen);
-		if (res <= 0)
-		{
-			if (count == 0)
-				count = res;
-
-			break;
-		}
-
-		count += res;
-		from += res;
-		nleft -= res;
-	}
-
-	return count;
+	return res;
 }
 
 static ssize_t
@@ -687,73 +735,25 @@ vfs_pread(int file, void *buf, size_t len, off_t offset)
 {
 	vfs_vfd		*vfdP = NULL;
 	ssize_t		res = -1;
-	ssize_t		iolen = 0;
-	off_t		off = offset;
-	ssize_t		nleft = len;
-	char		*from = (char *)buf;
-	ssize_t		count = 0;
 
 	vfdP = vfs_find_file(file);
+	errno = 0;
+	res = vfs[vfdP->kind].vfs_pread(vfdP->fd, buf, len, offset);
 
-	while (nleft > 0)
-	{
-		iolen = Min(nleft, max_pfsd_io_size);
-		errno = 0;
-		res = vfs[vfdP->kind].vfs_pread(vfdP->fd, from, iolen, off);
-		if (res <= 0)
-		{
-			if (count == 0)
-				count = res;
-
-			break;
-		}
-
-		count += res;
-		from += res;
-		off += res;
-		nleft -= res;
-	}
-
-	return count;
+	return res;
 }
 
 static ssize_t
 vfs_pwrite(int file, const void *buf, size_t len, off_t offset)
 {
 	vfs_vfd		*vfdP = NULL;
-	char		*from;
-	ssize_t		nleft;
-	off_t		startoffset;
-	ssize_t		writesize;
 	ssize_t 	res = -1;
-	ssize_t		count = 0;
 
 	vfdP = vfs_find_file(file);
+	errno = 0;
+	res = vfs[vfdP->kind].vfs_pwrite(vfdP->fd, buf, len, offset);
 
-	nleft = len;
-	from = (char *)buf;
-	startoffset = offset;
-
-	while(nleft > 0)
-	{
-		writesize = Min(nleft, max_pfsd_io_size);
-		errno = 0;
-		res = vfs[vfdP->kind].vfs_pwrite(vfdP->fd, from, writesize, startoffset);
-		if (res <= 0)
-		{
-			if (count == 0)
-				count = res;
-
-			break;
-		}
-
-		count += res;
-		nleft -= res;
-		from += res;
-		startoffset += res;
-	}
-
-	return count;
+	return res;
 }
 
 static int
@@ -761,12 +761,13 @@ vfs_stat(const char *path, struct stat *buf)
 {
 	int			rc = -1;
 	int			kind = -1;
+	const char	*vfs_path;
 
 	if (path == NULL)
 		return -1;
 
-	kind = vfs_file_type(path);
-	rc = vfs[kind].vfs_stat(path, buf);
+	vfs_path = polar_vfs_file_type_and_path(path, &kind);
+	rc = vfs[kind].vfs_stat(vfs_path, buf);
 
 	return rc;
 }
@@ -788,12 +789,13 @@ vfs_lstat(const char *path, struct stat *buf)
 {
 	int			rc = -1;
 	int			kind = -1;
+	const char	*vfs_path;
 
 	if (path == NULL)
 		return -1;
 
-	kind = vfs_file_type(path);
-	rc = vfs[kind].vfs_lstat(path, buf);
+	vfs_path = polar_vfs_file_type_and_path(path, &kind);
+	rc = vfs[kind].vfs_lstat(vfs_path, buf);
 
 	return rc;
 }
@@ -817,12 +819,13 @@ vfs_access(const char *path, int mode)
 {
 	int		rc = -1;
 	int		kind = -1;
+	const char	*vfs_path;
 
 	if (path == NULL)
 		return -1;
 
-	kind = vfs_file_type(path);
-	rc = vfs[kind].vfs_access(path, mode);
+	vfs_path = polar_vfs_file_type_and_path(path, &kind);
+	rc = vfs[kind].vfs_access(vfs_path, mode);
 
 	return rc;
 }
@@ -844,13 +847,14 @@ vfs_unlink(const char *fname)
 {
 	int		rc = -1;
 	int		kind = -1;
+	const char	*vfs_path;
 
 	if (fname == NULL)
 		return -1;
 
 	elog(LOG, "vfs_unlink %s", fname);
-	kind = vfs_file_type(fname);
-	rc = vfs[kind].vfs_unlink(fname);
+	vfs_path = polar_vfs_file_type_and_path(fname, &kind);
+	rc = vfs[kind].vfs_unlink(vfs_path);
 
 	return rc;
 }
@@ -861,15 +865,17 @@ vfs_rename(const char *oldfile, const char *newfile)
 	int			rc = -1;
 	int			kindold = -1;
 	int			kindnew = -1;
+	const char	*vfs_old_path;
+	const char	*vfs_new_path;
 
 	if (oldfile == NULL || newfile == NULL)
 		return -1;
 
-	kindold = vfs_file_type(oldfile);
-	kindnew = vfs_file_type(newfile);
+	vfs_old_path = polar_vfs_file_type_and_path(oldfile, &kindold);
+	vfs_new_path = polar_vfs_file_type_and_path(newfile, &kindnew);
 	elog(LOG, "vfs_rename from %s to %s", oldfile, newfile);
 	if (kindold == kindnew)
-		rc = vfs[kindold].vfs_rename(oldfile, newfile);
+		rc = vfs[kindold].vfs_rename(vfs_old_path, vfs_new_path);
 	else
 		elog(ERROR, "vfs unsupported rename operation");
 
@@ -907,6 +913,7 @@ vfs_opendir(const char *dirname)
 {
 	DIR		   *dir = NULL;
 	int			kind = -1;
+	const char	*vfs_path;
 
 	if (dirname == NULL)
 		return NULL;
@@ -917,8 +924,8 @@ vfs_opendir(const char *dirname)
 				 errmsg("exceeded max_vfs_dir_descs (%d) while trying to open directory \"%s\"",
 						max_vfs_dir_descs, dirname)));
 
-	kind = vfs_file_type(dirname);
-	dir = vfs[kind].vfs_opendir(dirname);
+	vfs_path = polar_vfs_file_type_and_path(dirname, &kind);
+	dir = vfs[kind].vfs_opendir(vfs_path);
 	if (dir != NULL)
 	{
 		vfs_dir_desc *desc = &vfs_dir_descs[num_vfs_dir_descs];
@@ -993,12 +1000,13 @@ vfs_mkdir(const char *path, mode_t mode)
 {
 	int			rc = -1;
 	int			kind = -1;
+	const char	*vfs_path;
 
 	if (path == NULL)
 		return -1;
 
-	kind = vfs_file_type(path);
-	rc = vfs[kind].vfs_mkdir(path, mode);
+	vfs_path = polar_vfs_file_type_and_path(path, &kind);
+	rc = vfs[kind].vfs_mkdir(vfs_path, mode);
 
 	return rc;
 }
@@ -1008,14 +1016,45 @@ vfs_rmdir(const char *path)
 {
 	int			rc = -1;
 	int			kind = -1;
+	const char	*vfs_path;
 
 	if (path == NULL)
 		return -1;
 
-	kind = vfs_file_type(path);
-	rc = vfs[kind].vfs_rmdir(path);
+	vfs_path = polar_vfs_file_type_and_path(path, &kind);
+	rc = vfs[kind].vfs_rmdir(vfs_path);
 
 	return rc;
+}
+
+/*
+ * POLAR: Determine which kind of device the file is on.
+ * Besides, vfs_path is the available part of path which is pointing
+ * to the target file.
+ */
+static inline const char *
+polar_vfs_file_type_and_path(const char *path, int *kind)
+{
+	int i;
+	int vfs_kind_len;
+	const char *vfs_path = path;
+	*kind = VFS_UNKNOWN_FILE;
+	if (path != NULL)
+	{
+		for (i = 0; i < VFS_KIND_MAX; i ++)
+		{
+			vfs_kind_len = strlen(polar_vfs_kind[i]);
+			if (strncmp(polar_vfs_kind[i], path, vfs_kind_len) == 0)
+			{
+				*kind = i;
+				vfs_path = path + vfs_kind_len;
+				break;
+			}
+		}
+	}
+	if (*kind == VFS_UNKNOWN_FILE)
+		*kind = vfs_file_type(path);
+	return vfs_path;
 }
 
 /* Determine if the file is on a shared storage device */
@@ -1183,7 +1222,8 @@ file_exists(const char *name)
 static const vfs_mgr*
 vfs_get_mgr(const char *path)
 {
-	int kind = vfs_file_type(path);
+	int kind = VFS_LOCAL_FILE;
+	polar_vfs_file_type_and_path(path, &kind);
 
 	return &vfs[kind];
 }

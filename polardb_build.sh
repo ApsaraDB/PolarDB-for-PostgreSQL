@@ -285,7 +285,7 @@ function polar_init_primary() {
     # common configs
     echo "$common_configs" >> $polar_primary_dir/postgresql.conf
     echo "polar_disk_name = '${disk_name}'" >> $polar_primary_dir/postgresql.conf
-    echo "polar_datadir = '${polar_data_dir}'" >> $polar_primary_dir/postgresql.conf
+    echo "polar_datadir = 'file-dio://${polar_data_dir}'" >> $polar_primary_dir/postgresql.conf
 
     su_eval "sh $polar_basedir/bin/polar-initdb.sh ${polar_primary_dir}/ ${polar_data_dir}/ localfs"
   fi

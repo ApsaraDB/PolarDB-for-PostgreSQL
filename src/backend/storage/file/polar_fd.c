@@ -719,3 +719,22 @@ polar_read_dir_ext(DIR *dir, const char *dirname, int elevel, int *err)
 	*err = errno;
 	return res;
 }
+
+/*
+ * POLAR: We provide this macro in order to remove protocol
+ * from polar_datadir. The polar_datadir must conform to the format:
+ * [protocol]://[path]
+ *
+ * Notice: The polar_datadir's protocol must be same as the polar_vfs_klind
+ * inside polar_vfs.c. This macro should ONLY be used when you can't use polar_vfs
+ * interface.
+ */
+const char *
+polar_path_remove_protocol(const char *path)
+{
+	const char *vfs_path = strstr(path, POLAR_VFS_PROTOCOL_TAG);
+	if (vfs_path)
+		return vfs_path + strlen(POLAR_VFS_PROTOCOL_TAG);
+	else
+		return path;
+}

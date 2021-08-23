@@ -40,6 +40,7 @@
 
 #define	POLAR_VFS_SWITCH_LOCAL		0
 #define	POLAR_VFS_SWITCH_PLUGIN		1
+#define POLAR_VFS_PROTOCOL_TAG	"://"
 
 typedef enum PolarNodeType
 {
@@ -131,4 +132,5 @@ extern void polar_reset_vfs_switch(void);
 extern void polar_init_node_type(void);
 extern PolarNodeType polar_node_type_by_file(void);
 extern struct dirent * polar_read_dir_ext(DIR *dir, const char *dirname, int elevel, int *err);
+const char *polar_path_remove_protocol(const char *path);
 #endif
