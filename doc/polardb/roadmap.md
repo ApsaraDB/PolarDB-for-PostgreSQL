@@ -1,6 +1,6 @@
 ## Roadmap of PolarDB 
 
-PolarDB project will gradually roll out features and components to form a share-nothing distributed database. Each major release offers complete functions as a RDBM system. We plan three major releases. 
+PolarDB project will gradually release features and components to form a share-nothing distributed database. Each major release offers complete functions as a RDBM system. We plan three major releases. 
 
 In the first release we target a cluster version based on Paxos replication, enhancing high performance and high availability for single-node PostgreSQL system. 
 In the second release, we introduce technologies such as distributed transactions, distributed MVCC, and distributed SQL computation to support a shared-nothing OLTP system. In this version,  PolarDB can expand to a cluster of 100+ nodes with linear scalability. At the same time, it is compatible with a single-node PostgreSQL in term of SQL functions and ACID capabilities. 
