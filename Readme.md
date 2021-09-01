@@ -20,11 +20,11 @@ PolarDB uses a shared storage-based architecture in which computing is decoupled
 After computing is decoupled from storage, the I/O latency and throughput increase. When a single read-only node is used to process analytical queries, the CPUs, memory, and I/O of other read-only nodes and the large storage I/O bandwidth cannot be fully utilized. To resolve the issue, PolarDB provides the shared storage-based MPP engine. The engine can use CPUs to accelerate analytical queries at the SQL level and support a mix of OLAP workloads and OLTP workloads for HTAP. 
 For more information, see Roadmap and Architecture. 
 # Branch Description
-20210901: The default branch of PolarDB switched to **main** on 20210901, which supports compute-storage saparation architecture. The **master** branch in the past switched to **distribute** branch, which supports distributed architecture of PolarDB.
+20210901: The default branch of PolarDB switched to **main** on 20210901, which supports compute-storage separation architecture. The **master** branch in the past switched to **distribute** branch, which supports distributed architecture of PolarDB.
 # Documentation
 
-- Service architecture (/doc/polardb/architecture.md)
-- Roadmap (/doc/polardb/roadmap.md)
+- Service architecture (Coming soon)
+- Roadmap (Coming soon)
 - Features of PolarDB PostgreSQL 1.0 (Coming soon)
    - PolarVFS
    - Buffer manager
@@ -33,11 +33,12 @@ For more information, see Roadmap and Architecture.
    - DB Monitoring
    - PolarStack
 # Quick Start with PolarDB
-Three approaches are offered to quickly try out PolarDB: Alibaba cloud service, deployment of instance based on local storage, and deployment of instance based on PFS shared storage.
+Three approaches are offered to quickly try out PolarDB: Alibaba cloud service, deployment of instance based on local storage, and deployment of instance based on PFS shared storage (coming soon).
 ## Alibaba Cloud Service
 Alibaba provides ApsaraDB for PolarDB PostgreSQL-Compatible Edition, which is a cloud-native relational database service compatible with PostgreSQL: [Official site](https://www.alibabacloud.com/product/polardb).
 ## Deploy Instance based on Local Storage
 We provide a script which uses default configuration to compile PolarDB. This section describes how to fast deploy a PolarDB instance with storage on your local disks, by this script.
+System Requirements: CentOS 7.5 and above. The following setup steps are tested based on CentOS 7.5.
 
 1. Download the source code of PolarDB from [https://github.com/alibaba/PolarDB-for-PostgreSQL/tree/main](https://github.com/alibaba/PolarDB-for-PostgreSQL/tree/main).
 1. Install dependent packages:
