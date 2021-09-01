@@ -97,7 +97,7 @@ You are welcome to make contributions to PolarDB. We appreciate all the contribu
 # Software License
 The released PolarDB code is based on the licenses of PostgreSQL code and Apache License 2.0. For more information about the license description, see [License](https://github.com/alibaba/PolarDB-for-PostgreSQL/blob/master/LICENSE) and [NOTICE](https://github.com/alibaba/PolarDB-for-PostgreSQL/blob/master/NOTICE). 
 # Acknowledgments
-Some code and design ideas are based on other open source projects, such as Postgres-XC and Postgres-XL (pgxc_ctl), TBase (part of timestamp-based vacuum and MVCC), Greenplum, and Citus (pg_cron). We thank the contributions of the preceding open source projects. 
+Some code and design ideas are based on other open source projects, such as Greenplum. We thank the contributions of the preceding open source projects. 
 
 Copyright © Alibaba Group, Inc.
 ​
