@@ -10,7 +10,7 @@ If you are using a conventional database system and the complexity of your workl
 3. The time that is required to create a read-only instance increases due to the increase in the amount of data.
 4. The latency of data replication between the primary instance and the secondary instance is high.
 ## Benefits of PolarDB
-![image.png](doc/pic/1_polardb_architecture.png)
+![image.png](pic/1_polardb_architecture.png)
 To help you resolve the issues that occur in conventional database systems, Alibaba Cloud provides PolarDB. PolarDB runs in a proprietary compute-storage separation architecture of Alibaba Cloud. This architecture has the following benefits:
 
 1. Scalability: Computing is separated from storage. You can flexibly scale out the computing cluster or the storage cluster based on your business requirements.
@@ -25,7 +25,7 @@ PolarDB is integrated with various technologies and innovations. This document d
 # Overview of the PolarDB architecture
 This section explains the following two aspects of the PolarDB architecture: compute-storage separation and HTAP.
 ## Compute-storage separation
-![image.png](doc/pic/2_compute-storage_separation_architecture.png)
+![image.png](pic/2_compute-storage_separation_architecture.png)
 PolarDB supports compute-storage separation. Each PolarDB cluster consists of a computing cluster and a storage cluster. You can flexibly scale out the computing cluster or the storage cluster based on your business requirements.
 
 1. If the computing power is insufficient, you can scale out only the computing cluster.
@@ -49,7 +49,7 @@ PolarDB supports a complete suite of data types that are used in OLTP scenarios.
 
 
 
-![image.png](doc/pic/3_HTAP_architecture.png)
+![image.png](pic/3_HTAP_architecture.png)
 When the same hardware resources are used, PolarDB delivers performance that is 90% of the performance delivered by Greenplum. PolarDB also provides SQL statement-level scalability. If the computing power of your PolarDB cluster is insufficient, you can allocate more CPU resources to OLAP queries without the need to rearrange data. 
 The following sections provide more details about compute-storage separation and HTAP.
 # PolarDB - Compute-storage separation
@@ -61,7 +61,7 @@ Compute-storage separation enables the compute nodes of your PolarDB cluster to 
 - High availability: how to perform recovery and failover.
 - I/O model: how to optimize the file system from buffered I/O to direct I/O.
 ### Basic principles of shared storage
-![image.png](doc/pic/4_principles_of_shared_storage.png)
+![image.png](pic/4_principles_of_shared_storage.png)
 The following basic principles of shared storage apply to PolarDB:
 
 - The primary node can process read requests and write requests. The read-only nodes can process only read requests.
@@ -74,14 +74,14 @@ The following basic principles of shared storage apply to PolarDB:
 In a conventional database system, the primary instance and read-only instances each are allocated independent memory resources and storage resources. The primary instance replicates WAL records to the read-only instances, and the read-only instances read and apply the WAL records. These basic principles also apply to replication state machines.
 #### In-memory page synchronization in the shared-storage architecture
 In a PolarDB cluster, the primary node replicates WAL records to the shared storage. The read-only nodes read and apply the most recent WAL records from the shared storage to ensure that the pages in the memory of the read-only nodes are synchronous with the pages in the memory of the primary node.
-![image.png](doc/pic/5_In-memory_page_synchronization.png)
+![image.png](pic/5_In-memory_page_synchronization.png)
 
 1. The primary node flushes the WAL records of a page to write version 200 of the page to the shared storage.
 2. The read-only nodes read and apply the WAL records of the page to update the page from version 100 to version 200.
 #### Outdated pages in the shared-storage architecture
 In the workflow shown in the preceding figure, the new page that the read-only nodes obtain by applying WAL records is removed from the buffer pools of the read-only nodes. When you query the page on the read-only nodes, the read-only nodes read the page from the shared storage. As a result, only the previous version of the page is returned. This previous version is called an outdated page. 
 The following figure shows more details.
-![image.png](doc/pic/6_outdated_pages.png)
+![image.png](pic/6_outdated_pages.png)
 
 1. At T1, the primary node writes a WAL record with a log sequence number (LSN) of 200 to the memory to update Page 1 from version 500 to version 600.
 2. At T1, Page 1 on the read-only nodes is in version 500.
@@ -93,7 +93,7 @@ The following figure shows more details.
 ##### Solution to outdated pages
 When you query a page on the read-only nodes at a specific point in time, the read-only nodes need to read the base version of the page and the WAL records up to that point in time. Then, the read-only nodes need to apply the WAL records one by one in sequence. 
 The following figure shows more details.
-![image.png](doc/pic/7_solution_to_outdated_pages.png)
+![image.png](pic/7_solution_to_outdated_pages.png)
 
 1. The metadata of the WAL records of each page is retained in the memory of the read-only nodes.
 2. When you query a page on the read-only nodes, the read-only nodes need to read and apply the WAL records of the page until the read-only nodes obtain the most recent version of the page.
@@ -110,11 +110,11 @@ PolarDB needs to maintain an inverted index that stores the mapping from each pa
 5. The read-only nodes mark each updated page as outdated in their buffer pools. When you query an updated page on the read-only nodes, the read-only nodes can read and apply the WAL records of the page based on the LogIndex records that map the WAL records.
 6. When the memory usage of the read-only nodes reaches a specific threshold, the hash data that is stored in LogIndex structures is asynchronously flushed from the memory to the disk.
 
-![image.png](doc/pic/8_solution_to_outdated_pages_LogIndex.png)
+![image.png](pic/8_solution_to_outdated_pages_LogIndex.png)
 LogIndex helps prevent outdated pages and enable the read-only nodes to run in lazy log apply mode. In the lazy log apply mode, the read-only nodes apply only the metadata of the WAL records for dirty pages.
 #### Future pages in the shared-storage architecture
 The read-only nodes may return future pages, whose versions are later than the versions that are recorded on the read-only nodes. The following figure shows more details.
-![image.png](doc/pic/9_future_pages.png)
+![image.png](pic/9_future_pages.png)
 
 1. At T1, the primary node updates Page 1 twice from version 500 to version 700. Two WAL records are generated during the update process. The LSN of one WAL record is 200, and the LSN of the other WAL record is 300. At this time, Page 1 is still in version 500 on the primary node and the read-only nodes.
 2. At T2, the primary node sends WAL Record 200 to the read-only nodes.
@@ -125,7 +125,7 @@ The read-only nodes may return future pages, whose versions are later than the v
 #### Solutions to future pages
 The read-only nodes apply WAL records at high speeds in lazy apply mode. However, the speeds may still be lower than the speed at which the primary node flushes WAL records. If the primary node flushes WAL records faster than the read-only nodes apply WAL records, future pages are returned. To prevent future pages, PolarDB must ensure that the speed at which the primary node flushes WAL records does not exceed the speeds at which the read-only nodes apply WAL records. 
 The following figure shows more details. 
-![image.png](doc/pic/10_solutions_to_future_pages.png)
+![image.png](pic/10_solutions_to_future_pages.png)
 
 1. The read-only nodes apply the WAL record that is generated at T4.
 2. When the primary node flushes WAL records to the shared storage, it sorts all WAL records by LSN and flushes only the WAL records that are updated up to T4.
@@ -141,7 +141,7 @@ The following figure shows more details.
 
 
 The following figure shows more details.
-![image.png](doc/pic/11_issues_of_conventional_streaming_replication.png)
+![image.png](pic/11_issues_of_conventional_streaming_replication.png)
 
 1. The primary node writes WAL records to its local file system.
 2. The WAL sender process of the primary node reads and sends the WAL records to the read-only nodes.
@@ -157,9 +157,9 @@ The read-only nodes can read WAL records from the shared storage. Therefore, the
 2. The primary node replicates only the metadata of WAL records to the read-only nodes.
 3. The read-only nodes read WAL records from the shared storage based on the metadata of the WAL records.
 
-![image.png](doc/pic/12_Replicate_only_metadata_of_WAL_records.png)
+![image.png](pic/12_Replicate_only_metadata_of_WAL_records.png)
 This optimization method significantly reduces the amount of data that needs to be transmitted between the primary node and the read-only nodes. The amount of data that needs to be transmitted decreases by 98%, as shown in the following figure. 
-![image.png](doc/pic/13_optimization1_result.png)
+![image.png](pic/13_optimization1_result.png)
 
 #### Optimization Method 2 - Optimize the log apply of WAL records
 Conventional database systems need to read a large number of pages, apply WAL records to these pages one by one, and then flush the updated pages to the disk. To reduce the read I/O loads on critical paths, PolarDB supports compute-storage separation. If the page that you query on the read-only nodes cannot be hit in the buffer pools of the read-only nodes, no I/O loads are generated and only LogIndex records are recorded. 
@@ -172,7 +172,7 @@ The following I/O operations that are performed by log apply processes can be of
 
 
 In the example shown in the following figure, when the log apply process of a read-only node applies the metadata of a WAL record of a page:
-![image.png](doc/pic/14_optimize_log_apply_of_WAL_records.png)
+![image.png](pic/14_optimize_log_apply_of_WAL_records.png)
 
 1. If the page cannot be hit in the memory, only the LogIndex record that maps the WAL record is recorded.
 2. If the page can be hit in the memory, the page is marked as outdated and the LogIndex record that maps the WAL record is recorded. The log apply process is complete.
@@ -182,13 +182,13 @@ In the example shown in the following figure, when the log apply process of a re
 
 
 This optimization method significantly reduces the log apply latency and increases the log apply speed by 30 times compared with Amazon Aurora. 
-![image.png](doc/pic/15_optimization2_result.png)
+![image.png](pic/15_optimization2_result.png)
 #### Optimization Method 3 - Optimize the log apply of DDL locks
 When the primary node runs a DDL operation such as DROP TABLE to modify a table, the primary node acquires an exclusive DDL lock on the table. The exclusive DDL lock is replicated to the read-only nodes along with WAL records. The read-only nodes apply the WAL records to acquire the exclusive DDL lock on the table. This ensures that the table cannot be deleted by the primary node when a read-only node is reading the table. Only one copy of the table is stored in the shared storage. 
 When the applying process of a read-only node applies the exclusive DDL lock, the read-only node may require a long period of time to acquire the exclusive DDL lock on the table. You can optimize the critical path of the log apply process by offloading the task of acquiring the exclusive DDL lock to other processes. 
-![image.png](doc/pic/16_optimize_log_apply_of_DDL_locks.png)
+![image.png](pic/16_optimize_log_apply_of_DDL_locks.png)
 This optimization method ensures that the critical path of the log apply process of a read-only node is not blocked even if the log apply process needs to wait for the release of an exclusive DDL lock. 
-![image.png](doc/pic/17_optimization3_result.png)
+![image.png](pic/17_optimization3_result.png)
 The three optimization methods in combination significantly reduce replication latency and have the following benefits:
 
 - Read/write splitting: Loads are balanced, which allows PolarDB to deliver user experience that is comparable to Oracle Real Application Clusters (RAC).
@@ -197,10 +197,10 @@ The three optimization methods in combination significantly reduce replication l
 ### Recovery optimization
 #### Background information
 If the read-only nodes apply WAL records at low speeds, your PolarDB cluster may require a long period of time to recover from exceptions such as out of memory (OOM) errors and unexpected crashes. When the direct I/O model is used for the shared storage, the severity of this issue increases. 
-![image.png](doc/pic/18_recovery_optimization_background.png)
+![image.png](pic/18_recovery_optimization_background.png)
 #### Lazy recovery
 The preceding sections explain how LogIndex enables the read-only nodes to apply WAL records in lazy log apply mode. In general, the recovery process of the primary node after a restart is the same as the process in which the read-only nodes apply WAL records. In this sense, the lazy log apply mode can also be used to accelerate the recovery of the primary node.
-![image.png](doc/pic/19_lazy_recovery.png)
+![image.png](pic/19_lazy_recovery.png)
 
 1. The primary node begins to apply WAL records in lazy log apply mode one by one starting from a specific checkpoint.
 2. After the primary node applies all LogIndex records, the log apply is complete.
@@ -210,20 +210,20 @@ The preceding sections explain how LogIndex enables the read-only nodes to apply
 
 
 The example in the following figure shows how the optimized recovery method significantly reduces the time that is required to apply 500 MB of WAL records.
-![image.png](doc/pic/20_recovery_optimization_result.png)
+![image.png](pic/20_recovery_optimization_result.png)
 
 #### Persistent buffer pool
 After the primary node recovers, a session process may need to apply the pages that the session process reads. When a session process is applying pages, the primary node responds at low speeds for a short period of time. To resolve this issue, PolarDB does not delete pages from the buffer pool of the primary node if the primary node restarts or unexpectedly crashes. 
-![image.png](doc/pic/21_Persistent_BufferPool.png)
+![image.png](pic/21_Persistent_BufferPool.png)
 The shared memory of the database engine consists of the following two parts:
 
 1. One part is used to store global structures and ProcArray structures.
 2. The other part is used to store buffer pool structures. The buffer pool is allocated as a specific amount of named shared memory. Therefore, the buffer pool remains valid after the primary node restarts. However, global structures need to be reinitialized after the primary node restarts.
 
-![image.png](doc/pic/22_buffer_pool_structure.png)
+![image.png](pic/22_buffer_pool_structure.png)
 Not all pages in the buffer pool of the primary node can be reused. For example, if a process acquires an exclusive lock on a page before the primary node restarts and then unexpectedly crashes, no other processes can release the exclusive lock on the page. Therefore, after the primary node unexpectedly crashes or restarts, it needs to traverse all pages in its buffer pool to identify and remove the pages that cannot be reused. In addition, the recycling of buffer pools depends on Kubernetes. 
 This optimized buffer pool mechanism ensures the stable performance of your PolarDB cluster before and after a restart. 
-![image.png](doc/pic/23_persistent_buffer_pool_result.png)
+![image.png](pic/23_persistent_buffer_pool_result.png)
 # PolarDB - HTAP
 The shared storage of PolarDB is organized as a storage pool. When read/write splitting is enabled, the theoretical I/O throughput that is supported by the shared storage is infinite. However, large queries can be run only on individual compute nodes, and the CPU, memory, and I/O specifications of a single compute node are limited. Therefore, a single compute node cannot fully utilize the high I/O throughput that is supported by the shared storage or accelerate large queries by acquiring more computing resources. To resolve these issues, PolarDB uses the shared storage-based MPP architecture to accelerate OLAP queries in OLTP scenarios.
 ## Basic principles of HTAP
@@ -235,7 +235,7 @@ This shared storage-based MPP architecture is the first architecture of its kind
 
 
 
-![image.png](doc/pic/24_principles_of_HTAP.png)
+![image.png](pic/24_principles_of_HTAP.png)
 The preceding figure shows an example.
 
 1. Table A and Table B are joined and aggregated.
@@ -245,16 +245,16 @@ The preceding figure shows an example.
 The GPORCA optmizer is extended to provide a set of transformation rules that can recognize shared storage. The GPORCA optimizer enables PolarDB to access a specific amount of planned search space. For example, PolarDB can scan a table as a whole or as different virtual partitions. This is a major difference between shared storage-based MPP and conventional MPP. 
 The modules in gray in the upper part of the following figure are modules of the database engine. These modules enable the database engine of PolarDB to adapt to the GPORCA optimizer. 
 The modules in the lower part of the following figure comprise the GPORCA optimizer. Among these modules, the modules in gray are extended modules, which enable the GPORCA optimizer to communicate with the shared storage of PolarDB. 
-![image.png](doc/pic/25_distributed_optimizer.png)
+![image.png](pic/25_distributed_optimizer.png)
 ## Parallelism of operators
 Four types of operators in PolarDB require parallelism. This section describes how to enable parallelism for operators that are used to run sequential scans. To fully utilize the I/O throughput that is supported by the shared storage, PolarDB splits each table into logical units during a sequential scan. Each unit contains 4 MB of data. This way, PolarDB can distribute I/O loads to different disks, and the disks can simultaneously scan data to accelerate the sequential scan. In addition, each read-only node needs to scan only specific tables rather than all tables. The size of tables that can be cached is the total size of the buffer pools of all read-only nodes. 
-![image.png](doc/pic/26_parallelism_of_operators.png)
+![image.png](pic/26_parallelism_of_operators.png)
 Parallelism has the following benefits, as shown in the following figure:
 
 1. You can increase scan performance by 30 times by creating read-only nodes.
 2. You can reduce the time that is required for a scan from 37 minutes to 3.75 seconds by enabling the buffering feature.
 
-![image.png](doc/pic/27_parallelism_of_operators_result.png)
+![image.png](pic/27_parallelism_of_operators_result.png)
 
 
 ## Solve the issue of data skew
@@ -264,7 +264,7 @@ Data skew is a common issue in conventional MPP:
 2. In addition, the transactions, buffer pools, network connections, and I/O loads of the read-only nodes jitter.
 3. The preceding issues cause long-tail processes.
 
-![image.png](doc/pic/28_data_skew.png)
+![image.png](pic/28_data_skew.png)
 
 1. The coordinator node consists of two parts: DataThread and ControlThread.
 2. DataThread collects and aggregates tuples.
@@ -275,43 +275,43 @@ Data skew is a common issue in conventional MPP:
 Although a scan task is dynamically distributed, we recommend that you maintain the affinity of buffers at your best. In addition, the context of each operator is stored in the private memory of the worker threads. The coordinator node does not store the information about specific tables. 
 
 In the example shown in the following table, PolarDB uses static sharding to shard large objects. During the static sharding process, data skew occurs, but the performance of dynamic scanning can still linearly increase. 
-![image.png](doc/pic/29_Solve_data_skew_result.png)
+![image.png](pic/29_Solve_data_skew_result.png)
 
 ## SQL statement-level scalability
 Data sharing helps deliver ultimate scalability in cloud-native environments. The full path of the coordinator node involves various modules, and PolarDB can store the external dependencies of these modules to the shared storage. In addition, the full path of a worker thread involves a number of operational parameters, and PolarDB can synchronize these parameters from the coordinator node over the control path. This way, the coordinator node and the worker thread are stateless. 
-![image.png](doc/pic/30_SQL_statement-level_scalability.png)
+![image.png](pic/30_SQL_statement-level_scalability.png)
 The following conclusions are made based on the preceding analysis:
 1. All read-only nodes that run SQL joins can function as coordinator nodes. Therefore, the performance of PolarDB is no longer limited due to the availability of only a single coordinator node. 
 2. Each SQL statement can start any number of worker threads on any compute node. This increases the computing power and allows you to schedule your workloads in a more flexible manner. You can configure PolarDB to simultaneously run different kinds of workloads on different compute nodes. 
-![image.png](doc/pic/31_schedule_workloads.png)
+![image.png](pic/31_schedule_workloads.png)
 
 ## Transactional consistency
 The log apply wait mechanism and the global snapshot mechanism are used to ensure data consistency among multiple compute nodes. The log apply wait mechanism ensures that all worker threads can obtain the most recent version of each page. The global snapshot mechanism ensures that a unified version of each page can be selected. 
-![image.png](doc/pic/32_transactional_consistency.png)
+![image.png](pic/32_transactional_consistency.png)
 ## TPC-H performance - Speedup
-![image.png](doc/pic/33_TPC-H_performance_Speedup1.png)
+![image.png](pic/33_TPC-H_performance_Speedup1.png)
 A total of 1 TB of data is used for TPC-H testing.
 First, run 22 SQL statements in a PolarDB cluster and in a conventional database system. The PolarDB cluster supports distributed parallelism, and the conventional database system supports standalone parallelism. The test result shows that the PolarDB cluster executes three SQL statements at speeds that are 60 times higher and 19 statements at speeds that are 10 times higher than the conventional database system.
-![image.png](doc/pic/34_TPC-H_performance_Speedup2.png)
-![image.png](doc/pic/35_TPC-H_performance_Speedup3.png)
+![image.png](pic/34_TPC-H_performance_Speedup2.png)
+![image.png](pic/35_TPC-H_performance_Speedup3.png)
 Then, run a TPC-H test by using a distributed execution engine.
 The test result shows that the speed at which each of the 22 SQL statements runs linearly increases as the number of cores increases from 16 to 128.
 ​
 
 ## TPC-H performance - Comparison with Greenplum
 When 16 nodes are configured, PolarDB delivers performance that is 90% of the performance delivered by MPP-based Greenplum. 
-![image.png](doc/pic/36_TPC-H_performance_Comparison_with_Greenplum1.png)
-![image.png](doc/pic/37_TPC-H_performance_Comparison_with_Greenplum2.png)
+![image.png](pic/36_TPC-H_performance_Comparison_with_Greenplum1.png)
+![image.png](pic/37_TPC-H_performance_Comparison_with_Greenplum2.png)
 As mentioned earlier, the distributed execution engine of PolarDB supports scalability, and data in PolarDB does not need to be redistributed. When the degree of parallelism (DOP) is 8, PolarDB delivers performance that is 5.6 times the performance delivered by Greenplum.
 ## Index creation accelerated by distributed execution
 A large number of indexes are created in OLTP scenarios. The workloads that you run to create these indexes are divided into two parts: 80% of the workloads are run to sort and create index pages, and 20% of the workloads are run to write index pages. Distributed execution accelerates the process of sorting indexes and supports the batch writing of index pages. 
-![image.png](doc/pic/38_Index_creation_accelerated_by_PX.png)
+![image.png](pic/38_Index_creation_accelerated_by_PX.png)
 Distributed execution accelerates the creation of indexes by four to five times. 
-![image.png](doc/pic/39_Index_creation_accelerated_by_PX2.png)
+![image.png](pic/39_Index_creation_accelerated_by_PX2.png)
 
 ## Multi-model spatio-temporal databases accelerated by distributed, parallel execution
 PolarDB is a multi-model database service that supports spatio-temporal data. PolarDB runs CPU-bound workloads and I/O-bound workloads. These workloads can be accelerated by distributed execution. The shared storage of PolarDB supports scans on shared R-tree indexes. 
-![image.png](doc/pic/40_spatio-temporal_databases.png)
+![image.png](pic/40_spatio-temporal_databases.png)
 
 - Data volume: 400 million data records, which amount to 500 GB in total
 - Configuration: 5 read-only nodes, each of which provides 16 cores and 128 GB of memory
@@ -319,7 +319,7 @@ PolarDB is a multi-model database service that supports spatio-temporal data. Po
    - Linearly increases with the number of cores.
    - Increases by **71 times** when the number of cores increases from 16 to 80.
 
-![image.png](doc/pic/41_spatio-temporal_databases_result.png)
+![image.png](pic/41_spatio-temporal_databases_result.png)
 
 
 # Summary
