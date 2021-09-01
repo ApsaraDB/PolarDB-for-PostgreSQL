@@ -1,12 +1,10 @@
 #!/bin/sh
-# TODO: Copyright information. Following is a demo
-# Copyright 2013-present Alibaba Cloud, Inc.
-#
+# Copyright (c) 2020, Alibaba Group Holding Limited
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
 #
-#    http://www.apache.org/licenses/LICENSE-2.0
+# http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
@@ -32,6 +30,7 @@ It can be called with following options:
   -t,-r,--regress, runs regression test after compilation and installation
   --withrep init the database with a hot standby replica
   --withstandby init the database with a hot standby replica
+  --with-pfsd, compile polar_vfs with PFSD support
   --polar_rep_port=<port to run PG rep on>, specifies which port to run PG replica on
   --polar_standby_port=<port to run PG standby on>, specifies which port to run PG standby on
   --repdir=<temp dir for databases>], specifies which dir to store replica data, note this dir would be cleaned up before being used
@@ -183,6 +182,10 @@ function polar_reset_dir() {
 
 function polar_set_env() {
   gcc_opt_level_flag=
+
+  if [[ $with_pfsd == "yes" ]]; then
+    configure_flag="$configure_flag --with-pfsd"
+  fi
 
   if [[ $debug_mode == "on" ]]; then
     gcc_opt_level_flag="-ggdb -O0 -g3 -fno-omit-frame-pointer "
@@ -547,6 +550,7 @@ for arg; do
   --debug=*) debug_mode="$val" ;;
   --withrep*) withrep=yes ;;
   --withstandby*) withstandby=yes ;;
+  --with-pfsd*) with_pfsd=yes ;;
   -c | --coverage)
     debug_mode=on
     coverage=on

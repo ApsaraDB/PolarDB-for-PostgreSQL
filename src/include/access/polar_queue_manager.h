@@ -1,3 +1,25 @@
+/*-------------------------------------------------------------------------
+ *
+ * polar_queue_manager.h
+ *      Polar logindex queuen manager
+ *
+ * Copyright (c) 2020, Alibaba Group Holding Limited
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * src/include/access/polar_queue_manager.h
+ *
+ *-------------------------------------------------------------------------
+ */
 #ifndef POLAR_QUEUE_MANAGER_H
 #define POLAR_QUEUE_MANAGER_H
 
@@ -6,11 +28,11 @@
 #include "access/xlogreader.h"
 #include "access/xlog_internal.h"
 
-typedef struct log_index_snapshot_t		*logindex_snapshot_t;
+typedef struct log_index_snapshot_t *logindex_snapshot_t;
 
-extern polar_ringbuf_t  polar_xlog_queue;
+extern polar_ringbuf_t polar_xlog_queue;
 
-extern int           polar_xlog_queue_buffers;
+extern int	polar_xlog_queue_buffers;
 
 #define POLAR_XLOG_QUEUE_ENABLE() \
 	(polar_streaming_xlog_meta && !IsBootstrapProcessingMode())
@@ -40,7 +62,7 @@ extern bool polar_xlog_send_queue_push(size_t rbuf_pos, struct XLogRecData *rdat
 extern void polar_standby_xlog_send_queue_push(XLogReaderState *xlogreader);
 extern Size polar_xlog_reserve_size(XLogRecData *rdata);
 
-extern ssize_t polar_xlog_send_queue_pop(polar_ringbuf_ref_t *ref,  uint8 *data, size_t size, XLogRecPtr *max_lsn);
+extern ssize_t polar_xlog_send_queue_pop(polar_ringbuf_ref_t *ref, uint8 *data, size_t size, XLogRecPtr *max_lsn);
 
 extern void polar_xlog_send_queue_save(polar_ringbuf_ref_t *ref);
 extern void polar_xlog_send_queue_keep_data(polar_ringbuf_ref_t *ref);
@@ -57,4 +79,3 @@ extern XLogRecPtr polar_xlog_send_queue_next_lsn(polar_ringbuf_ref_t *ref, size_
 extern bool polar_xlog_remove_payload(XLogRecord *record);
 extern bool polar_xlog_queue_decode(XLogReaderState *state, XLogRecord *record, bool decode_payload, char **errormsg);
 #endif
-

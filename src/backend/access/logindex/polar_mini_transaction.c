@@ -3,7 +3,18 @@
  * polar_mini_transaction.c
  *      Polar mini transaction manager
  *
- * Copyright (c) 2019, Alibaba.inc
+ * Copyright (c) 2020, Alibaba Group Holding Limited
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  *
  * src/backend/access/logindexm/polar_mini_transaction.
  *
@@ -90,7 +101,7 @@ mini_trans_insert_tag(BufferTag *tag, uint32 key)
 	}
 	else
 	{
-		uint32 i = MINI_TRANSACTION_TABLE_SIZE;
+		uint32		i = MINI_TRANSACTION_TABLE_SIZE;
 		mini_trans_info_t *it;
 
 		/* Find the first empty bucket */
@@ -133,11 +144,12 @@ mini_trans_find(BufferTag *tag, uint32 key)
 
 	if (MINI_TRANS_IS_OCCUPIED(key + 1))
 	{
-		uint32 i = key + 1;
+		uint32		i = key + 1;
 
 		while (i != 0)
 		{
 			mini_trans_info_t *it = &info[i - 1];
+
 			Assert(MINI_TRANS_IS_OCCUPIED(i));
 
 			if (BUFFERTAGS_EQUAL(*tag, it->tag))
@@ -153,7 +165,7 @@ mini_trans_find(BufferTag *tag, uint32 key)
 static polar_page_lock_t
 mini_trans_increase_ref(BufferTag *tag, uint32 key)
 {
-	uint32 i;
+	uint32		i;
 
 	mini_trans_t *trans = &POLAR_LOGINDEX_WAL_SNAPSHOT->mini_transaction;
 	mini_trans_info_t *info = trans->info;
@@ -163,6 +175,7 @@ mini_trans_increase_ref(BufferTag *tag, uint32 key)
 	if (i != POLAR_INVALID_PAGE_LOCK)
 	{
 		mini_trans_info_t *it;
+
 		it = &info[i - 1];
 		pg_atomic_add_fetch_u32(&(it->refcount), 1);
 	}
@@ -175,7 +188,7 @@ polar_log_index_mini_trans_cond_key_lock(BufferTag *tag, uint32 key,
 										 LWLockMode mode, XLogRecPtr *lsn)
 {
 	polar_page_lock_t l = POLAR_INVALID_PAGE_LOCK;
-	LWLock *lock = NULL;
+	LWLock	   *lock = NULL;
 	mini_trans_t *trans = &POLAR_LOGINDEX_WAL_SNAPSHOT->mini_transaction;
 
 	LWLockAcquire(MINI_TRANSACTION_LOCK, LW_SHARED);
@@ -208,14 +221,15 @@ polar_page_lock_t
 polar_log_index_mini_trans_cond_lock(BufferTag *tag,
 									 LWLockMode mode, XLogRecPtr *lsn)
 {
-	uint32 key = MINI_TRANSACTION_HASH_PAGE(tag);
+	uint32		key = MINI_TRANSACTION_HASH_PAGE(tag);
+
 	return polar_log_index_mini_trans_cond_key_lock(tag, key, mode, lsn);
 }
 
 XLogRecPtr
 polar_log_index_mini_trans_key_find(BufferTag *tag, uint32 key)
 {
-	XLogRecPtr lsn = InvalidXLogRecPtr;
+	XLogRecPtr	lsn = InvalidXLogRecPtr;
 	mini_trans_t *trans = &POLAR_LOGINDEX_WAL_SNAPSHOT->mini_transaction;
 
 	LWLockAcquire(MINI_TRANSACTION_LOCK, LW_SHARED);
@@ -234,7 +248,7 @@ polar_log_index_mini_trans_key_find(BufferTag *tag, uint32 key)
 XLogRecPtr
 polar_log_index_mini_trans_find(BufferTag *tag)
 {
-	uint32 key = MINI_TRANSACTION_HASH_PAGE(tag);
+	uint32		key = MINI_TRANSACTION_HASH_PAGE(tag);
 
 	return polar_log_index_mini_trans_key_find(tag, key);
 }
@@ -244,7 +258,7 @@ polar_log_index_mini_trans_key_lock(BufferTag *tag, uint32 key,
 									LWLockMode mode, XLogRecPtr *lsn)
 {
 	polar_page_lock_t l;
-	LWLock *lock = NULL;
+	LWLock	   *lock = NULL;
 
 	LWLockAcquire(MINI_TRANSACTION_LOCK, LW_EXCLUSIVE);
 	l = mini_trans_increase_ref(tag, key);
@@ -283,8 +297,8 @@ polar_log_index_mini_trans_key_lock(BufferTag *tag, uint32 key,
 polar_page_lock_t
 polar_log_index_mini_trans_lock(BufferTag *tag, LWLockMode mode, XLogRecPtr *lsn)
 {
-	uint32 key = MINI_TRANSACTION_HASH_PAGE(tag);
-	uint32 l = polar_log_index_mini_trans_key_lock(tag, key, mode, lsn);
+	uint32		key = MINI_TRANSACTION_HASH_PAGE(tag);
+	uint32		l = polar_log_index_mini_trans_key_lock(tag, key, mode, lsn);
 
 	if (l == POLAR_INVALID_PAGE_LOCK)
 		ereport(PANIC, (errmsg("The mini transaction hash table is full")));
@@ -297,7 +311,7 @@ polar_log_index_mini_trans_unlock(polar_page_lock_t l)
 {
 	mini_trans_t *trans = &POLAR_LOGINDEX_WAL_SNAPSHOT->mini_transaction;
 	mini_trans_info_t *info = trans->info;
-	uint32 i ;
+	uint32		i;
 
 	if (l == POLAR_INVALID_PAGE_LOCK || l > MINI_TRANSACTION_TABLE_SIZE)
 		ereport(PANIC, (errmsg("The mini transaction hash slot value is incorrect")));
@@ -311,7 +325,7 @@ polar_log_index_mini_trans_unlock(polar_page_lock_t l)
 	LWLockAcquire(MINI_TRANSACTION_LOCK, LW_SHARED);
 
 	if (!MINI_TRANS_IS_OCCUPIED(l)
-			|| pg_atomic_read_u32(&info[i].refcount) <= 0)
+		|| pg_atomic_read_u32(&info[i].refcount) <= 0)
 	{
 		LWLockRelease(MINI_TRANSACTION_LOCK);
 		ereport(PANIC, (errmsg("The mini transaction hash slot state is incorrect, occupied=%ld, refcount=%d",
@@ -329,9 +343,9 @@ polar_log_index_mini_trans_end(XLogRecPtr lsn)
 {
 	mini_trans_t *trans = &(POLAR_LOGINDEX_WAL_SNAPSHOT->mini_transaction);
 	mini_trans_info_t *info = trans->info;
-	uint64_t occupied;
-	bool unlock_all;
-	int pos;
+	uint64_t	occupied;
+	bool		unlock_all;
+	int			pos;
 
 	LWLockAcquire(MINI_TRANSACTION_LOCK, LW_EXCLUSIVE);
 
@@ -384,4 +398,3 @@ polar_log_index_mini_trans_end(XLogRecPtr lsn)
 
 	return 0;
 }
-

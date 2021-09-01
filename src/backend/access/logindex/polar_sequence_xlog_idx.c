@@ -4,7 +4,18 @@
  *    WAL redo parse logic for sequence index.
  *
  *
- * Portions Copyright (c) 2019, Alibaba.inc
+ * Copyright (c) 2020, Alibaba Group Holding Limited
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  *
  * IDENTIFICATION
  *           src/backend/access/logindex/polar_sequence_xlog_idx.c
@@ -23,14 +34,14 @@
 static XLogRedoAction
 polar_seq_xlog_redo(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 {
-	XLogRecPtr  lsn = record->EndRecPtr;
-	Page        page;
-	Page        localpage;
-	char       *item;
-	Size        itemsz;
+	XLogRecPtr	lsn = record->EndRecPtr;
+	Page		page;
+	Page		localpage;
+	char	   *item;
+	Size		itemsz;
 	xl_seq_rec *xlrec = (xl_seq_rec *) XLogRecGetData(record);
 	sequence_magic *sm;
-	BufferTag   tag0;
+	BufferTag	tag0;
 
 	POLAR_GET_LOG_TAG(record, tag0, 0);
 
@@ -76,7 +87,7 @@ polar_seq_xlog_redo(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 void
 polar_seq_idx_save(XLogReaderState *record)
 {
-	uint8       info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
+	uint8		info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
 
 	switch (info)
 	{
@@ -93,7 +104,7 @@ polar_seq_idx_save(XLogReaderState *record)
 bool
 polar_seq_idx_parse(XLogReaderState *record)
 {
-	uint8       info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
+	uint8		info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
 
 	/*
 	 * These operations don't overwrite MVCC data so no conflict processing is
@@ -115,9 +126,9 @@ polar_seq_idx_parse(XLogReaderState *record)
 }
 
 XLogRedoAction
-polar_seq_idx_redo(XLogReaderState *record,  BufferTag *tag, Buffer *buffer)
+polar_seq_idx_redo(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 {
-	uint8       info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
+	uint8		info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
 
 	/*
 	 * These operations don't overwrite MVCC data so no conflict processing is

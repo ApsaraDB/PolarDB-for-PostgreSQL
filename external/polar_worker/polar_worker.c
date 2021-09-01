@@ -2,10 +2,20 @@
  *
  * polar_worker.c
  *		Do some backgroud things for polardb periodically. Such as:
- *		(1) auto prealloc wal files, (2) auto clean core dump files,
- * 		(3) auto clean xlog temp files.
+ *		(1) auto prealloc wal files, (2) auto clean xlog temp files.
  *
- *	Copyright (c) 2019, Alibaba.inc
+ * Copyright (c) 2020, Alibaba Group Holding Limited
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  *
  *	IDENTIFICATION
  *		external/polar_worker/polar_worker.c
@@ -35,7 +45,6 @@
 #include "storage/proc.h"
 #include "storage/procsignal.h"
 #include "utils/guc.h"
-#include "utils/polar_coredump.h"
 #include "utils/timestamp.h"
 
 PG_MODULE_MAGIC;
@@ -50,8 +59,8 @@ PG_MODULE_MAGIC;
 
 typedef struct
 {
-	time_t mtime;
-	char file_path[MAXPGPATH];
+	time_t		mtime;
+	char		file_path[MAXPGPATH];
 } polar_file_descriptor;
 
 void		_PG_init(void);
@@ -71,12 +80,7 @@ static volatile sig_atomic_t got_sighup = false;
 static bool enable_polar_worker = true; /* Start prealloc wal file worker? */
 static int	polar_worker_check_interval;	/* Check interval */
 static int	prealloc_wal_file_num;	/* How many files needed to prealloc */
-static char *polar_core_file_path;
-static char *core_name_suffix;
-static int	core_file_outdate_time;
-static int	num_corefile_reserved_old;
-static int	num_corefile_reserved_new;
-static int  xlog_temp_outdate_time;
+static int	xlog_temp_outdate_time;
 
 /*
  * Module load callback.
@@ -120,70 +124,6 @@ _PG_init(void)
 							 NULL,
 							 NULL);
 
-  DefineCustomStringVariable(
-							"polar_worker.core_file_path",
-							"path of core file",
-							"path of core file",
-							&polar_core_file_path,
-							".",
-							PGC_SIGHUP,
-							0,
-							NULL,
-							NULL,
-							NULL
-							);
-
-	DefineCustomStringVariable(
-							"polar_worker.core_name_suffix",
-							"To assign corefile name.",
-							"To assign corefile name.",
-							&core_name_suffix,
-							"core",
-							PGC_SIGHUP,
-							0,
-							NULL,
-							NULL,
-							NULL
-							);
-	DefineCustomIntVariable(
-							"polar_worker.core_file_outdate_time",
-							"outdate time of core file.",
-							NULL,
-							&core_file_outdate_time,
-							-1 ,
-							-1, INT_MAX / 1000,
-							PGC_SIGHUP,
-							0,
-							NULL,
-							NULL,
-							NULL
-							);
-	DefineCustomIntVariable(
-							"polar_worker.num_corefile_reserved_old",
-							"num of oldest reserverd corefile.",
-							NULL,
-							&num_corefile_reserved_old,
-							32,
-							0, INT_MAX / 1000,
-							PGC_SIGHUP,
-							0,
-							NULL,
-							NULL,
-							NULL
-							);
-	DefineCustomIntVariable(
-							"polar_worker.num_corefile_reserved_new",
-							"num of newest reserverd corefile.",
-							NULL,
-							&num_corefile_reserved_new,
-							32,
-							0, INT_MAX / 1000,
-							PGC_SIGHUP,
-							0,
-							NULL,
-							NULL,
-							NULL
-							);
 	DefineCustomIntVariable(
 							"polar_worker.xlog_temp_outdate_time",
 							"outdate time of xlog temp.",
@@ -196,7 +136,7 @@ _PG_init(void)
 							NULL,
 							NULL,
 							NULL
-							);
+		);
 	EmitWarningsOnPlaceholders("polar_worker");
 
 	/* Register polar worker. */
@@ -256,7 +196,7 @@ prealloc_wal_files(void)
 	XLogSegNo	_log_seg_no;
 	int			lf;
 	bool		use_existent;
-	int		count = 0;
+	int			count = 0;
 
 	XLByteToPrevSeg(insert_ptr, _log_seg_no, wal_segment_size);
 	while (count < prealloc_wal_file_num)
@@ -288,7 +228,7 @@ polar_worker_handler_main(Datum main_arg)
 	/* Periodically prealloc wal file until terminated. */
 	while (!got_sigterm)
 	{
-		int		rc = 0;
+		int			rc = 0;
 
 		/* In case of a SIGHUP, just reload the configuration. */
 		if (got_sighup)
@@ -310,7 +250,7 @@ polar_worker_handler_main(Datum main_arg)
 		{
 			polar_bgworker_fullpage_snapshot_replay_main();
 		}
-		/*POLAR: coredump/wal prefetch only in master/standby take affect */
+		/* POLAR: coredump/wal prefetch only in master/standby take affect */
 		else
 		{
 			long		delay_in_ms = 0;
@@ -332,7 +272,11 @@ polar_worker_handler_main(Datum main_arg)
 			else if (delay_in_ms <= 0)
 			{
 				last_time = GetCurrentTimestamp();
-				/* Perform a prealloc wal and fullpage file operation if it's time. */
+
+				/*
+				 * Perform a prealloc wal and fullpage file operation if it's
+				 * time.
+				 */
 				if (!RecoveryInProgress())
 				{
 					prealloc_wal_files();
@@ -360,9 +304,8 @@ polar_worker_handler_main(Datum main_arg)
 	}
 
 	/*
-	 * Don't allow to exit in signal handler,maybe process
-	 * is IO pending now, file cannot close normally, so
-	 * exit here for safety
+	 * Don't allow to exit in signal handler,maybe process is IO pending now,
+	 * file cannot close normally, so exit here for safety
 	 */
 	if (got_sigterm)
 		proc_exit(1);
@@ -409,19 +352,19 @@ polar_worker_sighup_handler(SIGNAL_ARGS)
 static void
 polar_xlog_temp_file_clean(void)
 {
-	DIR *waldir;
+	DIR		   *waldir;
 	struct dirent *walde;
 	struct stat st;
-	char current_xlog_temp_file_path[MAXPGPATH] = {0};
-	char current_dir[MAXPGPATH] = {0};
-	time_t timestamp;
+	char		current_xlog_temp_file_path[MAXPGPATH] = {0};
+	char		current_dir[MAXPGPATH] = {0};
+	time_t		timestamp;
 	static time_t last_clean_timestamp;
 
 	time(&timestamp);
 
 	/* to scan disk periodically */
 	if (last_clean_timestamp && timestamp - last_clean_timestamp < xlog_temp_outdate_time)
-		return ;
+		return;
 	last_clean_timestamp = timestamp;
 
 	/* search xlog info in the PG WAL DIR */
@@ -458,75 +401,4 @@ polar_xlog_temp_file_clean(void)
 		}
 	}
 	FreeDir(waldir);
-}
-
-/*
- * POLAR: Get the core-file path from the system core-pattern file
- */
-bool
-polar_read_core_pattern(const char *core_pattern_path, char *core_file_path)
-{
-	int fd = 0;
-	char* ret = NULL;
-	struct stat st;
-	char cwd[MAXPGPATH] = {0};
-	char buf[MAXPGPATH] = {0};
-
-	/* open system file and read core pattern path */
-	fd = open(core_pattern_path, O_RDONLY | PG_BINARY);
-	if (fd < 0)
-	{
-		ereport(LOG, (errcode_for_file_access(), 
-			errmsg("could not open file \"%s\".", core_pattern_path)));
-		return false;
-	}
-	if (read(fd, (char *) buf, sizeof(buf)) < 0)
-	{
-		ereport(LOG, (errcode_for_file_access(), 
-			errmsg("could not read file \"%s\".", core_pattern_path)));
-		return false;
-	}
-	close(fd);
-
-	/* get the current working path */
-	if (!getcwd(cwd, MAXPGPATH))
-	{
-		elog(LOG, "could not determine current directory");
-		return false;
-	}
-
-	/* get the rightmost / if possible */
-	ret = strrchr(buf, '/');
-
-	/* first case: / did not exsit in path (e.g. core) the practical path is the current working path */
-	if (ret == NULL)
-	{
-		snprintf(core_file_path, MAXPGPATH, "%s", cwd);
-		return true;
-	}
-
-	/* get the core directory from the core pattern */ 
-	if (ret - buf + 1 > MAXPGPATH)
-	{
-		elog(LOG, "core pattern length exceeds MAXPGPATH");
-		return false;
-	}
-	buf[ret - buf + 1] = '\0';
-
-	/* second case: absolute path (e.g. /tmp/corefile/core) */
-	if (buf[0] == '/')
-	{
-		snprintf(core_file_path, MAXPGPATH, "%s", buf);
-	}
-	else
-	{
-		/* third case: relative path (e.g. corefile/core) */
-		snprintf(core_file_path, MAXPGPATH, "%s/%s", cwd, buf);
-	}
-
-	/* judge whether core_file_path could be opened valid */
-	if (stat(core_file_path, &st))
-		return false;
-
-	return true;
 }

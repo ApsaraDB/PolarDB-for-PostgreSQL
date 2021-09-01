@@ -4,7 +4,18 @@
  *    WAL redo parse logic for inverted index.
  *
  *
- * Portions Copyright (c) 2019, Alibaba.inc
+ * Copyright (c) 2020, Alibaba Group Holding Limited
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  *
  * IDENTIFICATION
  *           src/backend/access/gin/polar_ginxlog_idx.c
@@ -24,9 +35,9 @@
 static void
 polar_gin_redo_create_index_parse(XLogReaderState *record)
 {
-	BufferTag meta_tag;
+	BufferTag	meta_tag;
 	polar_page_lock_t meta_lock;
-	Buffer meta_buf = InvalidBuffer;
+	Buffer		meta_buf = InvalidBuffer;
 
 	POLAR_MINI_TRANS_REDO_PARSE(record, 0, meta_tag, meta_lock, meta_buf);
 
@@ -72,10 +83,12 @@ polar_gin_redo_split_save(XLogReaderState *record)
 static void
 polar_gin_redo_split_parse(XLogReaderState *record)
 {
-	BufferTag left_tag, right_tag;
-	polar_page_lock_t left_lock, right_lock;
-	Buffer left_buf = InvalidBuffer,
-		   right_buf = InvalidBuffer;
+	BufferTag	left_tag,
+				right_tag;
+	polar_page_lock_t left_lock,
+				right_lock;
+	Buffer		left_buf = InvalidBuffer,
+				right_buf = InvalidBuffer;
 
 	if (XLogRecHasBlockRef(record, 3))
 		polar_log_index_redo_parse(record, 3);
@@ -109,9 +122,15 @@ polar_gin_redo_delete_page_save(XLogReaderState *record)
 static void
 polar_gin_redo_delete_page_parse(XLogReaderState *record)
 {
-	BufferTag ltag, dtag, ptag;
-	polar_page_lock_t llock, dlock, plock;
-	Buffer lbuf, dbuf, pbuf;
+	BufferTag	ltag,
+				dtag,
+				ptag;
+	polar_page_lock_t llock,
+				dlock,
+				plock;
+	Buffer		lbuf,
+				dbuf,
+				pbuf;
 
 	POLAR_MINI_TRANS_REDO_PARSE(record, 2, ltag, llock, lbuf);
 	POLAR_MINI_TRANS_REDO_PARSE(record, 0, dtag, dlock, dbuf);
@@ -146,9 +165,9 @@ polar_gin_redo_update_metapage_save(XLogReaderState *record)
 static void
 polar_gin_redo_update_metapage_parse(XLogReaderState *record)
 {
-	BufferTag meta_tag;
+	BufferTag	meta_tag;
 	polar_page_lock_t meta_lock;
-	Buffer meta_buf;
+	Buffer		meta_buf;
 
 	POLAR_MINI_TRANS_REDO_PARSE(record, 0, meta_tag, meta_lock, meta_buf);
 
@@ -164,7 +183,7 @@ polar_gin_redo_update_metapage_parse(XLogReaderState *record)
 static void
 polar_gin_redo_delete_list_pages_save(XLogReaderState *record)
 {
-	int i = 1;
+	int			i = 1;
 
 	polar_log_index_save_block(record, 0);
 
@@ -180,10 +199,10 @@ polar_gin_redo_delete_list_pages_save(XLogReaderState *record)
 static void
 polar_gin_redo_delete_list_pages_parse(XLogReaderState *record)
 {
-	BufferTag meta_tag;
+	BufferTag	meta_tag;
 	polar_page_lock_t meta_lock;
-	Buffer meta_buf;
-	int i = 1;
+	Buffer		meta_buf;
+	int			i = 1;
 
 	POLAR_MINI_TRANS_REDO_PARSE(record, 0, meta_tag, meta_lock, meta_buf);
 
@@ -204,9 +223,10 @@ polar_gin_redo_delete_list_pages_parse(XLogReaderState *record)
 static XLogRedoAction
 polar_gin_redo_create_index(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 {
-	XLogRecPtr  lsn = record->EndRecPtr;
-	Page        page;
-	BufferTag   meta_tag, root_tag;
+	XLogRecPtr	lsn = record->EndRecPtr;
+	Page		page;
+	BufferTag	meta_tag,
+				root_tag;
 
 	POLAR_GET_LOG_TAG(record, meta_tag, 0);
 	POLAR_GET_LOG_TAG(record, root_tag, 1);
@@ -243,11 +263,11 @@ polar_gin_redo_create_index(XLogReaderState *record, BufferTag *tag, Buffer *buf
 static XLogRedoAction
 polar_gin_redo_create_ptree(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 {
-	XLogRecPtr  lsn = record->EndRecPtr;
+	XLogRecPtr	lsn = record->EndRecPtr;
 	ginxlogCreatePostingTree *data = (ginxlogCreatePostingTree *) XLogRecGetData(record);
-	char       *ptr;
-	Page        page;
-	BufferTag   tag0;
+	char	   *ptr;
+	Page		page;
+	BufferTag	tag0;
 
 	POLAR_GET_LOG_TAG(record, tag0, 0);
 
@@ -275,8 +295,8 @@ polar_gin_redo_create_ptree(XLogReaderState *record, BufferTag *tag, Buffer *buf
 static XLogRedoAction
 polar_gin_redo_clear_incomplete_split(XLogReaderState *record, uint8 block_id, Buffer *buffer)
 {
-	XLogRecPtr  lsn = record->EndRecPtr;
-	Page        page;
+	XLogRecPtr	lsn = record->EndRecPtr;
+	Page		page;
 	XLogRedoAction action;
 
 	action = POLAR_READ_BUFFER_FOR_REDO(record, block_id, buffer);
@@ -295,15 +315,16 @@ polar_gin_redo_clear_incomplete_split(XLogReaderState *record, uint8 block_id, B
 static XLogRedoAction
 polar_gin_redo_insert(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 {
-	XLogRecPtr  lsn = record->EndRecPtr;
+	XLogRecPtr	lsn = record->EndRecPtr;
 	ginxlogInsert *data = (ginxlogInsert *) XLogRecGetData(record);
 #ifdef NOT_USED
 	BlockNumber leftChildBlkno = InvalidBlockNumber;
 #endif
 	BlockNumber rightChildBlkno = InvalidBlockNumber;
-	bool        isLeaf = (data->flags & GIN_INSERT_ISLEAF) != 0;
+	bool		isLeaf = (data->flags & GIN_INSERT_ISLEAF) != 0;
 	XLogRedoAction action = BLK_NOTFOUND;
-	BufferTag   incomp_tag, payload_tag;
+	BufferTag	incomp_tag,
+				payload_tag;
 
 	/*
 	 * First clear incomplete-split flag on child page if this finishes a
@@ -311,7 +332,7 @@ polar_gin_redo_insert(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 	 */
 	if (!isLeaf)
 	{
-		char       *payload = XLogRecGetData(record) + sizeof(ginxlogInsert);
+		char	   *payload = XLogRecGetData(record) + sizeof(ginxlogInsert);
 #ifdef NOT_USED
 		leftChildBlkno = BlockIdGetBlockNumber((BlockId) payload);
 #endif
@@ -332,9 +353,9 @@ polar_gin_redo_insert(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 
 		if (action == BLK_NEEDS_REDO)
 		{
-			Page        page = BufferGetPage(*buffer);
-			Size        len;
-			char       *payload = XLogRecGetBlockData(record, 0, &len);
+			Page		page = BufferGetPage(*buffer);
+			Size		len;
+			char	   *payload = XLogRecGetBlockData(record, 0, &len);
 
 			/* How to insert the payload is tree-type specific */
 			if (data->flags & GIN_INSERT_ISDATA)
@@ -359,10 +380,13 @@ static XLogRedoAction
 polar_gin_redo_split(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 {
 	ginxlogSplit *data = (ginxlogSplit *) XLogRecGetData(record);
-	bool        isLeaf = (data->flags & GIN_INSERT_ISLEAF) != 0;
-	bool        isRoot = (data->flags & GIN_SPLIT_ROOT) != 0;
+	bool		isLeaf = (data->flags & GIN_INSERT_ISLEAF) != 0;
+	bool		isRoot = (data->flags & GIN_SPLIT_ROOT) != 0;
 	XLogRedoAction action = BLK_NOTFOUND;
-	BufferTag   incom_tag, ltag, rtag, root_tag;
+	BufferTag	incom_tag,
+				ltag,
+				rtag,
+				root_tag;
 
 	/*
 	 * First clear incomplete-split flag on child page if this finishes a
@@ -373,7 +397,7 @@ polar_gin_redo_split(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 		POLAR_GET_LOG_TAG(record, incom_tag, 3);
 
 		if (BUFFERTAGS_EQUAL(*tag, incom_tag))
-			return  polar_gin_redo_clear_incomplete_split(record, 3, buffer);
+			return polar_gin_redo_clear_incomplete_split(record, 3, buffer);
 	}
 
 	POLAR_GET_LOG_TAG(record, ltag, 0);
@@ -412,7 +436,7 @@ polar_gin_redo_split(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 static XLogRedoAction
 polar_gin_redo_vacuum_page(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 {
-	BufferTag vacuum_tag;
+	BufferTag	vacuum_tag;
 	XLogRedoAction action = BLK_NOTFOUND;
 
 	POLAR_GET_LOG_TAG(record, vacuum_tag, 0);
@@ -426,9 +450,9 @@ polar_gin_redo_vacuum_page(XLogReaderState *record, BufferTag *tag, Buffer *buff
 static XLogRedoAction
 polar_gin_redo_vacuum_data_leaf_page(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 {
-	XLogRecPtr  lsn = record->EndRecPtr;
+	XLogRecPtr	lsn = record->EndRecPtr;
 	XLogRedoAction action = BLK_NOTFOUND;
-	BufferTag vacuum_tag;
+	BufferTag	vacuum_tag;
 
 	POLAR_GET_LOG_TAG(record, vacuum_tag, 0);
 
@@ -438,8 +462,8 @@ polar_gin_redo_vacuum_data_leaf_page(XLogReaderState *record, BufferTag *tag, Bu
 
 		if (action == BLK_NEEDS_REDO)
 		{
-			Page        page = BufferGetPage(*buffer);
-			Size        len;
+			Page		page = BufferGetPage(*buffer);
+			Size		len;
 			ginxlogVacuumDataLeafPage *xlrec;
 
 			xlrec = (ginxlogVacuumDataLeafPage *) XLogRecGetBlockData(record, 0, &len);
@@ -458,11 +482,13 @@ polar_gin_redo_vacuum_data_leaf_page(XLogReaderState *record, BufferTag *tag, Bu
 static XLogRedoAction
 polar_gin_redo_delete_page(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 {
-	XLogRecPtr  lsn = record->EndRecPtr;
+	XLogRecPtr	lsn = record->EndRecPtr;
 	ginxlogDeletePage *data = (ginxlogDeletePage *) XLogRecGetData(record);
-	XLogRedoAction    action = BLK_NOTFOUND;
-	Page        page;
-	BufferTag   ltag, dtag, ptag;
+	XLogRedoAction action = BLK_NOTFOUND;
+	Page		page;
+	BufferTag	ltag,
+				dtag,
+				ptag;
 
 	POLAR_GET_LOG_TAG(record, ltag, 2);
 
@@ -520,11 +546,11 @@ polar_gin_redo_delete_page(XLogReaderState *record, BufferTag *tag, Buffer *buff
 static XLogRedoAction
 polar_gin_redo_update_metapage(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 {
-	XLogRecPtr  lsn = record->EndRecPtr;
+	XLogRecPtr	lsn = record->EndRecPtr;
 	ginxlogUpdateMeta *data = (ginxlogUpdateMeta *) XLogRecGetData(record);
-	XLogRedoAction    action = BLK_NOTFOUND;
-	Page        metapage;
-	BufferTag   meta_tag;
+	XLogRedoAction action = BLK_NOTFOUND;
+	Page		metapage;
+	BufferTag	meta_tag;
 
 	POLAR_GET_LOG_TAG(record, meta_tag, 0);
 
@@ -532,8 +558,8 @@ polar_gin_redo_update_metapage(XLogReaderState *record, BufferTag *tag, Buffer *
 	{
 		/*
 		 * Restore the metapage. This is essentially the same as a full-page
-		 * image, so restore the metapage unconditionally without looking at the
-		 * LSN, to avoid torn page hazards.
+		 * image, so restore the metapage unconditionally without looking at
+		 * the LSN, to avoid torn page hazards.
 		 */
 		POLAR_INIT_BUFFER_FOR_REDO(record, 0, buffer);
 		Assert(BufferGetBlockNumber(*buffer) == GIN_METAPAGE_BLKNO);
@@ -548,7 +574,8 @@ polar_gin_redo_update_metapage(XLogReaderState *record, BufferTag *tag, Buffer *
 
 	if (data->ntuples > 0)
 	{
-		BufferTag tail_tag;
+		BufferTag	tail_tag;
+
 		POLAR_GET_LOG_TAG(record, tail_tag, 1);
 
 		if (BUFFERTAGS_EQUAL(*tag, tail_tag))
@@ -560,13 +587,13 @@ polar_gin_redo_update_metapage(XLogReaderState *record, BufferTag *tag, Buffer *
 
 			if (action == BLK_NEEDS_REDO)
 			{
-				Page        page = BufferGetPage(*buffer);
+				Page		page = BufferGetPage(*buffer);
 				OffsetNumber off;
-				int         i;
-				Size        tupsize;
-				char       *payload;
-				IndexTuple  tuples;
-				Size        totaltupsize;
+				int			i;
+				Size		tupsize;
+				char	   *payload;
+				IndexTuple	tuples;
+				Size		totaltupsize;
 
 				payload = XLogRecGetBlockData(record, 1, &totaltupsize);
 				tuples = (IndexTuple) payload;
@@ -587,7 +614,7 @@ polar_gin_redo_update_metapage(XLogReaderState *record, BufferTag *tag, Buffer *
 						elog(ERROR, "failed to add item to index page");
 					}
 
-					tuples = (IndexTuple)(((char *) tuples) + tupsize);
+					tuples = (IndexTuple) (((char *) tuples) + tupsize);
 
 					off++;
 				}
@@ -605,7 +632,8 @@ polar_gin_redo_update_metapage(XLogReaderState *record, BufferTag *tag, Buffer *
 	}
 	else if (data->prevTail != InvalidBlockNumber)
 	{
-		BufferTag tail_tag;
+		BufferTag	tail_tag;
+
 		POLAR_GET_LOG_TAG(record, tail_tag, 1);
 
 		if (BUFFERTAGS_EQUAL(*tag, tail_tag))
@@ -617,7 +645,7 @@ polar_gin_redo_update_metapage(XLogReaderState *record, BufferTag *tag, Buffer *
 
 			if (action == BLK_NEEDS_REDO)
 			{
-				Page        page = BufferGetPage(*buffer);
+				Page		page = BufferGetPage(*buffer);
 
 				GinPageGetOpaque(page)->rightlink = data->newRightlink;
 
@@ -632,17 +660,17 @@ polar_gin_redo_update_metapage(XLogReaderState *record, BufferTag *tag, Buffer *
 static XLogRedoAction
 polar_gin_redo_insert_list_page(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 {
-	XLogRecPtr  lsn = record->EndRecPtr;
+	XLogRecPtr	lsn = record->EndRecPtr;
 	ginxlogInsertListPage *data = (ginxlogInsertListPage *) XLogRecGetData(record);
-	Page        page;
+	Page		page;
 	OffsetNumber l,
-				 off = FirstOffsetNumber;
-	int         i,
+				off = FirstOffsetNumber;
+	int			i,
 				tupsize;
-	char       *payload;
-	IndexTuple  tuples;
-	Size        totaltupsize;
-	BufferTag   insert_tag;
+	char	   *payload;
+	IndexTuple	tuples;
+	Size		totaltupsize;
+	BufferTag	insert_tag;
 
 	POLAR_GET_LOG_TAG(record, insert_tag, 0);
 
@@ -680,7 +708,7 @@ polar_gin_redo_insert_list_page(XLogReaderState *record, BufferTag *tag, Buffer 
 			elog(ERROR, "failed to add item to index page");
 		}
 
-		tuples = (IndexTuple)(((char *) tuples) + tupsize);
+		tuples = (IndexTuple) (((char *) tuples) + tupsize);
 		off++;
 	}
 
@@ -694,11 +722,12 @@ polar_gin_redo_insert_list_page(XLogReaderState *record, BufferTag *tag, Buffer 
 static XLogRedoAction
 polar_gin_redo_delete_list_pages(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 {
-	XLogRecPtr  lsn = record->EndRecPtr;
+	XLogRecPtr	lsn = record->EndRecPtr;
 	ginxlogDeleteListPages *data = (ginxlogDeleteListPages *) XLogRecGetData(record);
-	Page        metapage;
-	uint8           i;
-	BufferTag   meta_tag, del_tag;
+	Page		metapage;
+	uint8		i;
+	BufferTag	meta_tag,
+				del_tag;
 
 	POLAR_GET_LOG_TAG(record, meta_tag, 0);
 
@@ -733,8 +762,8 @@ polar_gin_redo_delete_list_pages(XLogReaderState *record, BufferTag *tag, Buffer
 	 */
 	for (i = 0; i < data->ndeleted; i++)
 	{
-		uint8       block_id = i + 1;
-		Page        page;
+		uint8		block_id = i + 1;
+		Page		page;
 
 		POLAR_GET_LOG_TAG(record, del_tag, block_id);
 
@@ -756,7 +785,7 @@ polar_gin_redo_delete_list_pages(XLogReaderState *record, BufferTag *tag, Buffer
 void
 polar_gin_idx_save(XLogReaderState *record)
 {
-	uint8       info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
+	uint8		info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
 
 	switch (info)
 	{
@@ -807,7 +836,7 @@ polar_gin_idx_save(XLogReaderState *record)
 bool
 polar_gin_idx_parse(XLogReaderState *record)
 {
-	uint8       info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
+	uint8		info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
 
 	switch (info)
 	{
@@ -862,7 +891,7 @@ polar_gin_idx_parse(XLogReaderState *record)
 XLogRedoAction
 polar_gin_idx_redo(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 {
-	uint8       info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
+	uint8		info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
 
 	switch (info)
 	{

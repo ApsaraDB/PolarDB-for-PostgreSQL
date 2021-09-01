@@ -1,3 +1,26 @@
+/*-------------------------------------------------------------------------
+ *
+ * polar_logindex.h
+ *  Implementation of wal logindex snapshot.
+ *
+ * Copyright (c) 2020, Alibaba Group Holding Limited
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * IDENTIFICATION
+ *  src/include/access/polar_logindex.h
+ *
+ *-------------------------------------------------------------------------
+ */
 #ifndef POLAR_LOG_INDEX_H
 #define POLAR_LOG_INDEX_H
 
@@ -11,37 +34,37 @@
 #include "storage/relfilenode.h"
 #include "utils/guc.h"
 
-typedef uint16  log_seg_id_t;
-typedef uint64  log_idx_table_id_t;
-typedef uint64  log_range_id_t;
-typedef uint32  polar_page_lock_t;
+typedef uint16 log_seg_id_t;
+typedef uint64 log_idx_table_id_t;
+typedef uint64 log_range_id_t;
+typedef uint32 polar_page_lock_t;
 
 #define LOG_INDEX_SUPPORT_NO_PREVIOUS_LSN
 #define POLAR_INVALID_PAGE_LOCK 0
 
 struct log_mem_table_t;
 struct log_index_iter_data_t;
-typedef struct log_index_snapshot_t		*logindex_snapshot_t;
-typedef struct log_index_page_iter_data_t       *log_index_page_iter_t;
-typedef struct log_index_lsn_iter_data_t        *log_index_lsn_iter_t;
+typedef struct log_index_snapshot_t *logindex_snapshot_t;
+typedef struct log_index_page_iter_data_t *log_index_page_iter_t;
+typedef struct log_index_lsn_iter_data_t *log_index_lsn_iter_t;
 
 typedef struct log_index_lsn_t
 {
-	BufferTag           *tag;
-	XLogRecPtr          lsn;
-	XLogRecPtr          prev_lsn;
+	BufferTag  *tag;
+	XLogRecPtr	lsn;
+	XLogRecPtr	prev_lsn;
 } log_index_lsn_t;
 
 
 typedef struct xlog_bg_redo_state_t
 {
-	log_index_lsn_iter_t    log_index_iter; /* record iterator */
-	log_index_lsn_t         *log_index_page; /* current iterator page */
-	XLogReaderState     *state;
+	log_index_lsn_iter_t log_index_iter;	/* record iterator */
+	log_index_lsn_t *log_index_page;	/* current iterator page */
+	XLogReaderState *state;
 } xlog_bg_redo_state_t;
 
 /* User-settable parameters */
-extern int polar_log_index_bloom_buffers;
+extern int	polar_log_index_bloom_buffers;
 
 
 extern Size polar_log_index_shmem_size(void);
@@ -65,8 +88,8 @@ extern log_index_lsn_iter_t polar_log_index_create_lsn_iterator(logindex_snapsho
 extern void polar_log_index_release_lsn_iterator(log_index_lsn_iter_t iter);
 extern log_index_lsn_t *polar_log_index_lsn_iterator_next(logindex_snapshot_t logindex_snapshot, log_index_lsn_iter_t iter);
 
-extern int polar_log_index_mini_trans_start(XLogRecPtr lsn);
-extern int polar_log_index_mini_trans_end(XLogRecPtr lsn);
+extern int	polar_log_index_mini_trans_start(XLogRecPtr lsn);
+extern int	polar_log_index_mini_trans_end(XLogRecPtr lsn);
 extern void polar_log_index_abort_mini_transaction(void);
 
 extern void polar_log_index_abort_replaying_buffer(void);
@@ -121,9 +144,13 @@ extern bool polar_log_index_check_state(logindex_snapshot_t logindex_snapshot, u
 #define POLAR_UPDATE_BACKEND_LSN_INTERVAL (1 * 1000)
 
 /* define logindex_snapshot bit state */
-#define POLAR_LOGINDEX_STATE_INITIALIZED (1U << 0)  /* The logindex snapshot is initialized */
-#define POLAR_LOGINDEX_STATE_ADDING      (1U << 1)  /* Finish checking saved lsn, and it's ready to add new lsn */
-#define POLAR_LOGINDEX_STATE_WAITING     (1U << 2)  /* Wait for new active table */
+#define POLAR_LOGINDEX_STATE_INITIALIZED (1U << 0)	/* The logindex snapshot
+													 * is initialized */
+#define POLAR_LOGINDEX_STATE_ADDING      (1U << 1)	/* Finish checking saved
+													 * lsn, and it's ready to
+													 * add new lsn */
+#define POLAR_LOGINDEX_STATE_WAITING     (1U << 2)	/* Wait for new active
+													 * table */
 
 extern bool polar_log_index_parse_xlog(RmgrId rmid, XLogReaderState *state, XLogRecPtr redo_start_lsn, XLogRecPtr *mini_trans_lsn);
 
@@ -155,10 +182,13 @@ extern void polar_log_index_invalid_bloom_cache(logindex_snapshot_t logindex_sna
 /*
  * POLAR: Flags for buffer redo state
  */
-#define POLAR_REDO_LOCKED               (1U << 1) /* redo state is locked */
-#define POLAR_REDO_READ_IO_END          (1U << 2) /* Finish to read buffer content from storage */
-#define POLAR_REDO_REPLAYING            (1U << 3) /* It's replaying buffer content */
-#define POLAR_REDO_OUTDATE              (1U << 4) /* The buffer content is outdated */
+#define POLAR_REDO_LOCKED               (1U << 1)	/* redo state is locked */
+#define POLAR_REDO_READ_IO_END          (1U << 2)	/* Finish to read buffer
+													 * content from storage */
+#define POLAR_REDO_REPLAYING            (1U << 3)	/* It's replaying buffer
+													 * content */
+#define POLAR_REDO_OUTDATE              (1U << 4)	/* The buffer content is
+													 * outdated */
 
 /*
  * Functions for acquiring/releasing a shared buffer redo state's spinlock.

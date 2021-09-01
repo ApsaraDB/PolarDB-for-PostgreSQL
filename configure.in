@@ -387,6 +387,13 @@ if test "$with_llvm" = yes ; then
    PGAC_LLVM_SUPPORT()
 fi
 
+#
+# PFSD
+#
+AC_MSG_CHECKING([whether to build with PFSD support])
+PGAC_ARG_BOOL(with, pfsd, no, [build with PFSD support],
+              [AC_DEFINE([USE_PFSD], 1, [Define to 1 to build with PFSD support. (--with-pfsd)])])
+AC_SUBST(with_pfsd)
 
 unset CFLAGS
 unset CXXFLAGS

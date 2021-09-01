@@ -2,7 +2,7 @@
  *
  * polar_monitor_buf.c
  *  display some information of polardb buffer.
- *  
+ *
  * Copyright (c) 2018, Alibaba Group Holding Limited
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -37,62 +37,62 @@
 /* Record structure holding the to be exposed cache data. */
 typedef struct
 {
-	uint32      bufferid;
-	Oid         relfilenode;
-	Oid         reltablespace;
-	Oid         reldatabase;
-	ForkNumber  forknum;
+	uint32		bufferid;
+	Oid			relfilenode;
+	Oid			reltablespace;
+	Oid			reldatabase;
+	ForkNumber	forknum;
 	BlockNumber blocknum;
-	bool        isvalid;
-	bool        isdirty;
-	uint16      usagecount;
-	XLogRecPtr  oldest_lsn;
-	XLogRecPtr  newest_lsn;
-	int         flush_next;
-	int         flush_prev;
-	bool        incopybuffer;
-	bool        first_touched_after_copy;
-	uint16      recently_modified_count;
-	bool        oldest_lsn_is_fake;
+	bool		isvalid;
+	bool		isdirty;
+	uint16		usagecount;
+	XLogRecPtr	oldest_lsn;
+	XLogRecPtr	newest_lsn;
+	int			flush_next;
+	int			flush_prev;
+	bool		incopybuffer;
+	bool		first_touched_after_copy;
+	uint16		recently_modified_count;
+	bool		oldest_lsn_is_fake;
 
 	/*
 	 * An int32 is sufficiently large, as MAX_BACKENDS prevents a buffer from
 	 * being pinned by too many backends and each backend will only pin once
 	 * because of bufmgr.c's PrivateRefCount infrastructure.
 	 */
-	int32       pinning_backends;
+	int32		pinning_backends;
 } NormalBufferCachePagesRec;
 
 
 /* Function context for data persisting over repeated calls. */
 typedef struct
 {
-	TupleDesc   tupdesc;
+	TupleDesc	tupdesc;
 	NormalBufferCachePagesRec *record;
 } NormalBufferCachePagesContext;
 
 /* Record structure holding the to be exposed cache data. */
 typedef struct
 {
-	uint32      bufferid;
-	Oid         relfilenode;
-	Oid         reltablespace;
-	Oid         reldatabase;
-	ForkNumber  forknum;
+	uint32		bufferid;
+	Oid			relfilenode;
+	Oid			reltablespace;
+	Oid			reldatabase;
+	ForkNumber	forknum;
 	BlockNumber blocknum;
-	int         free_next;
-	uint32      pass_count;
-	int         state;
-	XLogRecPtr  oldest_lsn;
-	XLogRecPtr  newest_lsn;
-	bool        is_flushed;
+	int			free_next;
+	uint32		pass_count;
+	int			state;
+	XLogRecPtr	oldest_lsn;
+	XLogRecPtr	newest_lsn;
+	bool		is_flushed;
 } CopyBufferCachePagesRec;
 
 
 /* Function context for data persisting over repeated calls. */
 typedef struct
 {
-	TupleDesc   tupdesc;
+	TupleDesc	tupdesc;
 	CopyBufferCachePagesRec *record;
 } CopyBufferCachePagesContext;
 
@@ -106,16 +106,16 @@ Datum
 polar_get_normal_buffercache_pages(PG_FUNCTION_ARGS)
 {
 	FuncCallContext *funcctx;
-	Datum       result;
+	Datum		result;
 	MemoryContext oldcontext;
-	NormalBufferCachePagesContext *fctx;    /* User function context. */
-	TupleDesc   tupledesc;
-	TupleDesc   expected_tupledesc;
-	HeapTuple   tuple;
+	NormalBufferCachePagesContext *fctx;	/* User function context. */
+	TupleDesc	tupledesc;
+	TupleDesc	expected_tupledesc;
+	HeapTuple	tuple;
 
 	if (SRF_IS_FIRSTCALL())
 	{
-		int         i;
+		int			i;
 
 		funcctx = SRF_FIRSTCALL_INIT();
 
@@ -201,7 +201,7 @@ polar_get_normal_buffercache_pages(PG_FUNCTION_ARGS)
 		for (i = 0; i < NBuffers; i++)
 		{
 			BufferDesc *buf_hdr;
-			uint32      buf_state;
+			uint32		buf_state;
 
 			buf_hdr = GetBufferDescriptor(i);
 			/* Lock each buffer header before inspecting. */
@@ -215,7 +215,11 @@ polar_get_normal_buffercache_pages(PG_FUNCTION_ARGS)
 			fctx->record[i].blocknum = buf_hdr->tag.blockNum;
 			fctx->record[i].usagecount = BUF_STATE_GET_USAGECOUNT(buf_state);
 			fctx->record[i].pinning_backends = BUF_STATE_GET_REFCOUNT(buf_state);
-			/* We don't lock buffer content, maybe these status is not very correct */
+
+			/*
+			 * We don't lock buffer content, maybe these status is not very
+			 * correct
+			 */
 			fctx->record[i].oldest_lsn = buf_hdr->oldest_lsn;
 			fctx->record[i].newest_lsn = BufferGetLSN(buf_hdr);
 			fctx->record[i].flush_next = buf_hdr->flush_next;
@@ -241,9 +245,9 @@ polar_get_normal_buffercache_pages(PG_FUNCTION_ARGS)
 
 	if (funcctx->call_cntr < funcctx->max_calls)
 	{
-		uint32      i = funcctx->call_cntr;
-		Datum       values[NUM_NORMAL_BUFFERCACHE_PAGES_ELEM];
-		bool        nulls[NUM_NORMAL_BUFFERCACHE_PAGES_ELEM];
+		uint32		i = funcctx->call_cntr;
+		Datum		values[NUM_NORMAL_BUFFERCACHE_PAGES_ELEM];
+		bool		nulls[NUM_NORMAL_BUFFERCACHE_PAGES_ELEM];
 
 		values[0] = Int32GetDatum(fctx->record[i].bufferid);
 		MemSet(nulls, 0, sizeof(nulls));
@@ -292,19 +296,19 @@ Datum
 polar_get_copy_buffercache_pages(PG_FUNCTION_ARGS)
 {
 	FuncCallContext *funcctx;
-	Datum       result;
+	Datum		result;
 	MemoryContext oldcontext;
-	CopyBufferCachePagesContext *fctx;  /* User function context. */
-	TupleDesc   tupledesc;
-	TupleDesc   expected_tupledesc;
-	HeapTuple   tuple;
+	CopyBufferCachePagesContext *fctx;	/* User function context. */
+	TupleDesc	tupledesc;
+	TupleDesc	expected_tupledesc;
+	HeapTuple	tuple;
 
 	if (!polar_copy_buffer_enabled())
 		PG_RETURN_NULL();
 
 	if (SRF_IS_FIRSTCALL())
 	{
-		int         i;
+		int			i;
 
 		funcctx = SRF_FIRSTCALL_INIT();
 
@@ -388,7 +392,11 @@ polar_get_copy_buffercache_pages(PG_FUNCTION_ARGS)
 			fctx->record[i].reldatabase = cbufHdr->tag.rnode.dbNode;
 			fctx->record[i].forknum = cbufHdr->tag.forkNum;
 			fctx->record[i].blocknum = cbufHdr->tag.blockNum;
-			/* We don't lock buffer content, maybe these status is not very correct */
+
+			/*
+			 * We don't lock buffer content, maybe these status is not very
+			 * correct
+			 */
 			fctx->record[i].free_next = cbufHdr->free_next;
 			fctx->record[i].pass_count = pg_atomic_read_u32(&cbufHdr->pass_count);
 			fctx->record[i].state = (int) cbufHdr->state;
@@ -405,9 +413,9 @@ polar_get_copy_buffercache_pages(PG_FUNCTION_ARGS)
 
 	if (funcctx->call_cntr < funcctx->max_calls)
 	{
-		uint32      i = funcctx->call_cntr;
-		Datum       values[NUM_COPY_BUFFERCACHE_PAGES_ELEM];
-		bool        nulls[NUM_COPY_BUFFERCACHE_PAGES_ELEM];
+		uint32		i = funcctx->call_cntr;
+		Datum		values[NUM_COPY_BUFFERCACHE_PAGES_ELEM];
+		bool		nulls[NUM_COPY_BUFFERCACHE_PAGES_ELEM];
 
 		values[0] = Int32GetDatum(fctx->record[i].bufferid);
 		MemSet(nulls, 0, sizeof(nulls));
@@ -450,9 +458,9 @@ polar_flushlist(PG_FUNCTION_ARGS)
 {
 #define FLUSH_LIST_COLUMN_SIZE 6
 
-	TupleDesc       tupdesc;
-	Datum           values[FLUSH_LIST_COLUMN_SIZE];
-	bool            nulls[FLUSH_LIST_COLUMN_SIZE];
+	TupleDesc	tupdesc;
+	Datum		values[FLUSH_LIST_COLUMN_SIZE];
+	bool		nulls[FLUSH_LIST_COLUMN_SIZE];
 
 	if (!polar_flush_list_enabled())
 		PG_RETURN_NULL();
@@ -485,9 +493,9 @@ polar_cbuf(PG_FUNCTION_ARGS)
 {
 #define CBUF_COLUMN_SIZE 5
 
-	TupleDesc       tupdesc;
-	Datum           values[CBUF_COLUMN_SIZE];
-	bool            nulls[CBUF_COLUMN_SIZE];
+	TupleDesc	tupdesc;
+	Datum		values[CBUF_COLUMN_SIZE];
+	bool		nulls[CBUF_COLUMN_SIZE];
 
 	if (!polar_copy_buffer_enabled())
 		PG_RETURN_NULL();

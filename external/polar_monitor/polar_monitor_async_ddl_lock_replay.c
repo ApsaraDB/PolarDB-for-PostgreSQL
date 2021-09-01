@@ -50,8 +50,8 @@ Datum
 polar_stat_async_ddl_lock_replay_worker(PG_FUNCTION_ARGS)
 {
 #define ASYNC_DDL_LOCK_REPLAY_COUNT 9
-	int i;
-	int cols = 1;
+	int			i;
+	int			cols = 1;
 	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
 	TupleDesc	tupdesc;
 	Tuplestorestate *tupstore;
@@ -71,23 +71,23 @@ polar_stat_async_ddl_lock_replay_worker(PG_FUNCTION_ARGS)
 	/* Build a tuple descriptor for our result type */
 	tupdesc = CreateTemplateTupleDesc(ASYNC_DDL_LOCK_REPLAY_COUNT, false);
 	TupleDescInitEntry(tupdesc, (AttrNumber) cols++, "id",
-						INT4OID, -1, 0);
+					   INT4OID, -1, 0);
 	TupleDescInitEntry(tupdesc, (AttrNumber) cols++, "pid",
-						INT4OID, -1, 0);
+					   INT4OID, -1, 0);
 	TupleDescInitEntry(tupdesc, (AttrNumber) cols++, "xid",
-						INT4OID, -1, 0);
+					   INT4OID, -1, 0);
 	TupleDescInitEntry(tupdesc, (AttrNumber) cols++, "last end lsn",
-						LSNOID, -1, 0);
+					   LSNOID, -1, 0);
 	TupleDescInitEntry(tupdesc, (AttrNumber) cols++, "commit_state",
-						TEXTOID, -1, 0);
+					   TEXTOID, -1, 0);
 	TupleDescInitEntry(tupdesc, (AttrNumber) cols++, "dbOid",
-						INT4OID, -1, 0);
+					   INT4OID, -1, 0);
 	TupleDescInitEntry(tupdesc, (AttrNumber) cols++, "relOid",
-						INT4OID, -1, 0);
+					   INT4OID, -1, 0);
 	TupleDescInitEntry(tupdesc, (AttrNumber) cols++, "rtime",
-						TIMESTAMPTZOID, -1, 0);
+					   TIMESTAMPTZOID, -1, 0);
 	TupleDescInitEntry(tupdesc, (AttrNumber) cols++, "state",
-						TEXTOID, -1, 0);
+					   TEXTOID, -1, 0);
 
 	per_query_ctx = rsinfo->econtext->ecxt_per_query_memory;
 	oldcontext = MemoryContextSwitchTo(per_query_ctx);
@@ -116,6 +116,7 @@ polar_stat_async_ddl_lock_replay_worker(PG_FUNCTION_ARGS)
 		{
 			polar_pending_tx *tx = workers[i].cur_tx;
 			polar_pending_lock *lock = tx->cur_lock;
+
 			values[2] = ObjectIdGetDatum(lock->xid);
 			values[3] = LSNGetDatum(lock->last_ptr);
 			values[4] = CStringGetTextDatum(POLAR_PENDING_TX_RELEASE_STATE_STR(tx->commit_state));
@@ -148,7 +149,7 @@ Datum
 polar_stat_async_ddl_lock_replay_transaction(PG_FUNCTION_ARGS)
 {
 #define ASYNC_DDL_LOCK_REPLAY_COUNT 9
-	int cols = 1;
+	int			cols = 1;
 	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
 	TupleDesc	tupdesc;
 	Tuplestorestate *tupstore;
@@ -169,23 +170,23 @@ polar_stat_async_ddl_lock_replay_transaction(PG_FUNCTION_ARGS)
 	/* Build a tuple descriptor for our result type */
 	tupdesc = CreateTemplateTupleDesc(ASYNC_DDL_LOCK_REPLAY_COUNT, false);
 	TupleDescInitEntry(tupdesc, (AttrNumber) cols++, "xid",
-						INT4OID, -1, 0);
+					   INT4OID, -1, 0);
 	TupleDescInitEntry(tupdesc, (AttrNumber) cols++, "last end lsn",
-						LSNOID, -1, 0);
+					   LSNOID, -1, 0);
 	TupleDescInitEntry(tupdesc, (AttrNumber) cols++, "commit_state",
-						TEXTOID, -1, 0);
+					   TEXTOID, -1, 0);
 	TupleDescInitEntry(tupdesc, (AttrNumber) cols++, "dbOid",
-						INT4OID, -1, 0);
+					   INT4OID, -1, 0);
 	TupleDescInitEntry(tupdesc, (AttrNumber) cols++, "relOid",
-						INT4OID, -1, 0);
+					   INT4OID, -1, 0);
 	TupleDescInitEntry(tupdesc, (AttrNumber) cols++, "rtime",
-						TIMESTAMPTZOID, -1, 0);
+					   TIMESTAMPTZOID, -1, 0);
 	TupleDescInitEntry(tupdesc, (AttrNumber) cols++, "state",
-						TEXTOID, -1, 0);
+					   TEXTOID, -1, 0);
 	TupleDescInitEntry(tupdesc, (AttrNumber) cols++, "worker_id",
-						INT4OID, -1, 0);
+					   INT4OID, -1, 0);
 	TupleDescInitEntry(tupdesc, (AttrNumber) cols++, "worker_pid",
-						INT4OID, -1, 0);
+					   INT4OID, -1, 0);
 
 	per_query_ctx = rsinfo->econtext->ecxt_per_query_memory;
 	oldcontext = MemoryContextSwitchTo(per_query_ctx);
@@ -203,6 +204,7 @@ polar_stat_async_ddl_lock_replay_transaction(PG_FUNCTION_ARGS)
 		Datum		values[ASYNC_DDL_LOCK_REPLAY_COUNT];
 		bool		nulls[ASYNC_DDL_LOCK_REPLAY_COUNT];
 		polar_pending_lock *lock;
+
 		lock = tx->cur_lock;
 
 		MemSet(nulls, 0, sizeof(bool) * ASYNC_DDL_LOCK_REPLAY_COUNT);
@@ -240,7 +242,7 @@ Datum
 polar_stat_async_ddl_lock_replay_lock(PG_FUNCTION_ARGS)
 {
 #define ASYNC_DDL_LOCK_REPLAY_COUNT 9
-	int cols = 1;
+	int			cols = 1;
 	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
 	TupleDesc	tupdesc;
 	Tuplestorestate *tupstore;
@@ -261,23 +263,23 @@ polar_stat_async_ddl_lock_replay_lock(PG_FUNCTION_ARGS)
 	/* Build a tuple descriptor for our result type */
 	tupdesc = CreateTemplateTupleDesc(ASYNC_DDL_LOCK_REPLAY_COUNT, false);
 	TupleDescInitEntry(tupdesc, (AttrNumber) cols++, "xid",
-						INT4OID, -1, 0);
+					   INT4OID, -1, 0);
 	TupleDescInitEntry(tupdesc, (AttrNumber) cols++, "dbOid",
-						INT4OID, -1, 0);
+					   INT4OID, -1, 0);
 	TupleDescInitEntry(tupdesc, (AttrNumber) cols++, "relOid",
-						INT4OID, -1, 0);
+					   INT4OID, -1, 0);
 	TupleDescInitEntry(tupdesc, (AttrNumber) cols++, "last end lsn",
-						LSNOID, -1, 0);
+					   LSNOID, -1, 0);
 	TupleDescInitEntry(tupdesc, (AttrNumber) cols++, "rtime",
-						TIMESTAMPTZOID, -1, 0);
+					   TIMESTAMPTZOID, -1, 0);
 	TupleDescInitEntry(tupdesc, (AttrNumber) cols++, "state",
-						TEXTOID, -1, 0);
+					   TEXTOID, -1, 0);
 	TupleDescInitEntry(tupdesc, (AttrNumber) cols++, "commit_state",
-						TEXTOID, -1, 0);
+					   TEXTOID, -1, 0);
 	TupleDescInitEntry(tupdesc, (AttrNumber) cols++, "worker_id",
-						INT4OID, -1, 0);
+					   INT4OID, -1, 0);
 	TupleDescInitEntry(tupdesc, (AttrNumber) cols++, "worker_pid",
-						INT4OID, -1, 0);
+					   INT4OID, -1, 0);
 
 	per_query_ctx = rsinfo->econtext->ecxt_per_query_memory;
 	oldcontext = MemoryContextSwitchTo(per_query_ctx);

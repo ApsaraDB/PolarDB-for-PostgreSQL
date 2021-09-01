@@ -4,7 +4,18 @@
  *   Implementation of parse xlog states and replay.
  *
  *
- * Portions Copyright (c) 2019, Alibaba.inc
+ * Copyright (c) 2020, Alibaba Group Holding Limited
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  *
  * src/backend/access/logindex/polar_log_index_redo.c
  *
@@ -53,22 +64,22 @@ static bool polar_evict_buffer(Buffer buffer, LWLock *buf_lock);
 static void
 polar_xlog_log(int level, XLogReaderState *record, const char *func)
 {
-	RmgrId      rmid = XLogRecGetRmid(record);
-	uint8       info = XLogRecGetInfo(record);
-	XLogRecPtr  lsn = record->ReadRecPtr;
+	RmgrId		rmid = XLogRecGetRmid(record);
+	uint8		info = XLogRecGetInfo(record);
+	XLogRecPtr	lsn = record->ReadRecPtr;
 	const char *id;
 
 	id = RmgrTable[rmid].rm_identify(info);
 
 	if (id == NULL)
 		elog(level, "%s lsn=%X/%X UNKNOWN (%X)", func,
-			 (uint32)(lsn >> 32),
-			 (uint32)lsn,
+			 (uint32) (lsn >> 32),
+			 (uint32) lsn,
 			 info & ~XLR_INFO_MASK);
 	else
 		elog(level, "%s lsn=%X/%X %s/%s", func,
-			 (uint32)(lsn >> 32),
-			 (uint32)lsn, RmgrTable[rmid].rm_name, id);
+			 (uint32) (lsn >> 32),
+			 (uint32) lsn, RmgrTable[rmid].rm_name, id);
 }
 
 /*
@@ -81,7 +92,8 @@ polar_log_index_abort_replaying_buffer(void)
 {
 	if (polar_replaying_buffer != NULL)
 	{
-		uint32 redo_state = polar_lock_redo_state(polar_replaying_buffer);
+		uint32		redo_state = polar_lock_redo_state(polar_replaying_buffer);
+
 		redo_state &= (~POLAR_REDO_REPLAYING);
 		polar_unlock_redo_state(polar_replaying_buffer, redo_state);
 		polar_replaying_buffer = NULL;
@@ -104,8 +116,8 @@ polar_log_index_apply_one_record(XLogReaderState *state, BufferTag *tag, Buffer 
 	{
 		elog(LOG, "%s %d %X/%X, ([%u, %u, %u]), %u, %u", __func__,
 			 *buffer,
-			 (uint32)(state->ReadRecPtr >> 32),
-			 (uint32)state->ReadRecPtr,
+			 (uint32) (state->ReadRecPtr >> 32),
+			 (uint32) state->ReadRecPtr,
 			 tag->rnode.spcNode,
 			 tag->rnode.dbNode,
 			 tag->rnode.relNode,
@@ -121,8 +133,8 @@ XLogRecord *
 polar_log_index_read_xlog(XLogReaderState *state, XLogRecPtr lsn)
 {
 	XLogRecord *record = NULL;
-	char        *errormsg = NULL;
-	int i = 1;
+	char	   *errormsg = NULL;
+	int			i = 1;
 
 	while (record == NULL)
 	{
@@ -132,7 +144,7 @@ polar_log_index_read_xlog(XLogReaderState *state, XLogRecPtr lsn)
 		{
 			if (i % 100000 == 0)
 				elog(WARNING, "Failed to read record which lsn=%X/%X",
-					 (uint32)(lsn >> 32), (uint32)lsn);
+					 (uint32) (lsn >> 32), (uint32) lsn);
 
 			i++;
 			pg_usleep(1000);
@@ -145,8 +157,8 @@ polar_log_index_read_xlog(XLogReaderState *state, XLogRecPtr lsn)
 static Buffer
 polar_read_vm_buffer(BufferTag *heap_tag)
 {
-	Buffer buf = InvalidBuffer;
-	Relation rel = CreateFakeRelcacheEntry(heap_tag->rnode);
+	Buffer		buf = InvalidBuffer;
+	Relation	rel = CreateFakeRelcacheEntry(heap_tag->rnode);
 
 	visibilitymap_pin(rel, heap_tag->blockNum, &buf);
 
@@ -157,14 +169,14 @@ polar_read_vm_buffer(BufferTag *heap_tag)
 
 Buffer
 polar_log_index_outdate_parse(XLogReaderState *state, BufferTag *heap_tag,
-							  bool get_cleanup_lock, polar_page_lock_t *page_lock, bool vm_parse)
+							  bool get_cleanup_lock, polar_page_lock_t * page_lock, bool vm_parse)
 {
-	uint32      page_hash;
-	LWLock      *partition_lock;    /* buffer partition lock for it */
-	int         buf_id;
-	Buffer      buffer = InvalidBuffer;
-	BufferTag   vm_tag;
-	BufferTag   *tag;
+	uint32		page_hash;
+	LWLock	   *partition_lock; /* buffer partition lock for it */
+	int			buf_id;
+	Buffer		buffer = InvalidBuffer;
+	BufferTag	vm_tag;
+	BufferTag  *tag;
 
 	if (!vm_parse)
 		tag = heap_tag;
@@ -186,7 +198,7 @@ polar_log_index_outdate_parse(XLogReaderState *state, BufferTag *heap_tag,
 	/* Found the buffer */
 	if (buf_id >= 0)
 	{
-		uint32 redo_state;
+		uint32		redo_state;
 		BufferDesc *buf_desc = GetBufferDescriptor(buf_id);
 
 		polar_pin_buffer(buf_desc, NULL);
@@ -195,13 +207,15 @@ polar_log_index_outdate_parse(XLogReaderState *state, BufferTag *heap_tag,
 		redo_state = polar_lock_redo_state(buf_desc);
 
 		/*
-		 * 1. A backend process is reading this buffer from storage and it will redo for this buffer.
-		 * 2. The mini transaction lock is acquired by the startup process.
-		 * 3. We add lsn to logindex in startup process with the acquired mini transaction lock.
-		 * 4. When backend process compete buffer read and start to redo for buffer, it will redo to this lsn
+		 * 1. A backend process is reading this buffer from storage and it
+		 * will redo for this buffer. 2. The mini transaction lock is acquired
+		 * by the startup process. 3. We add lsn to logindex in startup
+		 * process with the acquired mini transaction lock. 4. When backend
+		 * process compete buffer read and start to redo for buffer, it will
+		 * redo to this lsn
 		 */
 		if (!(redo_state & POLAR_REDO_READ_IO_END) ||
-				((redo_state & POLAR_REDO_REPLAYING) && !get_cleanup_lock))
+			((redo_state & POLAR_REDO_REPLAYING) && !get_cleanup_lock))
 		{
 			redo_state |= POLAR_REDO_OUTDATE;
 			polar_unlock_redo_state(buf_desc, redo_state);
@@ -257,12 +271,12 @@ polar_log_index_outdate_parse(XLogReaderState *state, BufferTag *heap_tag,
 
 static Buffer
 polar_log_index_fresh_parse(XLogReaderState *state, BufferTag *tag,
-							bool get_cleanup_lock, polar_page_lock_t *page_lock)
+							bool get_cleanup_lock, polar_page_lock_t * page_lock)
 {
-	uint32      page_hash;
-	LWLock      *partition_lock;    /* buffer partition lock for it */
-	int         buf_id;
-	Buffer      buffer = InvalidBuffer;
+	uint32		page_hash;
+	LWLock	   *partition_lock; /* buffer partition lock for it */
+	int			buf_id;
+	Buffer		buffer = InvalidBuffer;
 
 	page_hash = BufTableHashCode(tag);
 	partition_lock = BufMappingPartitionLock(page_hash);
@@ -311,9 +325,9 @@ polar_log_index_fresh_parse(XLogReaderState *state, BufferTag *tag,
 
 Buffer
 polar_log_index_parse(XLogReaderState *state, BufferTag *tag,
-					  bool get_cleanup_lock, polar_page_lock_t *page_lock)
+					  bool get_cleanup_lock, polar_page_lock_t * page_lock)
 {
-	Buffer      buffer = InvalidBuffer;
+	Buffer		buffer = InvalidBuffer;
 
 	if (POLAR_ENABLE_PAGE_OUTDATE())
 		buffer = polar_log_index_outdate_parse(state, tag, get_cleanup_lock, page_lock, false);
@@ -327,8 +341,8 @@ static void
 polar_log_index_parse_tag(XLogReaderState *state, BufferTag *tag,
 						  bool get_cleanup_lock)
 {
-	polar_page_lock_t   page_lock;
-	Buffer              buffer;
+	polar_page_lock_t page_lock;
+	Buffer		buffer;
 
 	page_lock = polar_log_index_mini_trans_lock(tag, LW_EXCLUSIVE, NULL);
 	buffer = polar_log_index_parse(state, tag, get_cleanup_lock, &page_lock);
@@ -342,7 +356,7 @@ polar_log_index_parse_tag(XLogReaderState *state, BufferTag *tag,
 void
 polar_log_index_save_block(XLogReaderState *state, uint8 block_id)
 {
-	BufferTag tag;
+	BufferTag	tag;
 	DecodedBkpBlock *blk;
 
 	Assert(block_id <= XLR_MAX_BLOCK_ID);
@@ -354,7 +368,7 @@ polar_log_index_save_block(XLogReaderState *state, uint8 block_id)
 	INIT_BUFFERTAG(tag, blk->rnode, blk->forknum, blk->blkno);
 
 	if (XLogRecGetRmid(state) == RM_XLOG_ID &&
-			(XLogRecGetInfo(state) & ~XLR_INFO_MASK) == XLOG_FPSI)
+		(XLogRecGetInfo(state) & ~XLR_INFO_MASK) == XLOG_FPSI)
 		polar_log_index_add_lsn(POLAR_LOGINDEX_FULLPAGE_SNAPSHOT, &tag, InvalidXLogRecPtr, state->ReadRecPtr);
 	else
 		polar_log_index_add_lsn(POLAR_LOGINDEX_WAL_SNAPSHOT, &tag, InvalidXLogRecPtr, state->ReadRecPtr);
@@ -363,7 +377,7 @@ polar_log_index_save_block(XLogReaderState *state, uint8 block_id)
 void
 polar_log_index_redo_parse(XLogReaderState *state, uint8 block_id)
 {
-	BufferTag tag;
+	BufferTag	tag;
 
 	POLAR_GET_LOG_TAG(state, tag, block_id);
 	polar_log_index_parse_tag(state, &tag, false);
@@ -372,7 +386,7 @@ polar_log_index_redo_parse(XLogReaderState *state, uint8 block_id)
 void
 polar_log_index_cleanup_parse(XLogReaderState *state, uint8 block_id)
 {
-	BufferTag tag;
+	BufferTag	tag;
 
 	POLAR_GET_LOG_TAG(state, tag, block_id);
 	polar_log_index_parse_tag(state, &tag, true);
@@ -381,7 +395,7 @@ polar_log_index_cleanup_parse(XLogReaderState *state, uint8 block_id)
 void
 polar_log_index_save_lsn(XLogReaderState *state)
 {
-	RmgrId rmid = XLogRecGetRmid(state);
+	RmgrId		rmid = XLogRecGetRmid(state);
 
 	if (polar_idx_redo[rmid].rm_polar_idx_save != NULL)
 		polar_idx_redo[rmid].rm_polar_idx_save(state);
@@ -397,18 +411,19 @@ bool
 polar_enable_logindex_parse(void)
 {
 	/*
-	 * We don't call logindex parse if it's not replica mode or logindex is not enabled
+	 * We don't call logindex parse if it's not replica mode or logindex is
+	 * not enabled
 	 */
 	if (!(polar_in_replica_mode() && polar_enable_redo_logindex))
 		return false;
 
 	/*
-	 * If it's replica mode and logindex is enabled, we parse XLOG and save it to logindex.
-	 * During recovery we read XLOG from checkpoint, master node can drop or truncate table
-	 * after this checkpoint. We can't read these removed data blocks, so it will be PANIC
-	 * if we read data block and replay XLOG.
-	 * In master node it will create table if it does not exist, but we can not do this in
-	 * replica mode.
+	 * If it's replica mode and logindex is enabled, we parse XLOG and save it
+	 * to logindex. During recovery we read XLOG from checkpoint, master node
+	 * can drop or truncate table after this checkpoint. We can't read these
+	 * removed data blocks, so it will be PANIC if we read data block and
+	 * replay XLOG. In master node it will create table if it does not exist,
+	 * but we can not do this in replica mode.
 	 */
 	return true;
 }
@@ -416,7 +431,7 @@ polar_enable_logindex_parse(void)
 bool
 polar_log_index_parse_xlog(RmgrId rmid, XLogReaderState *state, XLogRecPtr redo_start_lsn, XLogRecPtr *mini_trans_lsn)
 {
-	bool redo = false;
+	bool		redo = false;
 
 	Assert(mini_trans_lsn != NULL);
 	*mini_trans_lsn = InvalidXLogRecPtr;
@@ -426,19 +441,23 @@ polar_log_index_parse_xlog(RmgrId rmid, XLogReaderState *state, XLogRecPtr redo_
 
 
 	if (polar_in_replica_mode()
-			&& polar_idx_redo[rmid].rm_polar_idx_parse != NULL)
+		&& polar_idx_redo[rmid].rm_polar_idx_parse != NULL)
 	{
 		if (polar_enable_debug)
 			polar_xlog_log(LOG, state, __func__);
 
 		polar_log_index_mini_trans_start(state->EndRecPtr);
 		redo = polar_idx_redo[rmid].rm_polar_idx_parse(state);
+
 		/*
-		 * We can not end mini transaction here because XLogCtl->lastReplayedEndRecPtr is not updated.
-		 * If we end mini transaction here, and one backend start to do buffer replay,
-		 * it can not acquire mini transaction lock and replay to XLogCtl->lastReplayedEndRecPtr,
-		 * so the current record which was parsed and saved to logindex will be lost.
-		 * We will end mini transaction after startup process update XLogCtl->lastReplayedEndRecPtr.
+		 * We can not end mini transaction here because
+		 * XLogCtl->lastReplayedEndRecPtr is not updated. If we end mini
+		 * transaction here, and one backend start to do buffer replay, it can
+		 * not acquire mini transaction lock and replay to
+		 * XLogCtl->lastReplayedEndRecPtr, so the current record which was
+		 * parsed and saved to logindex will be lost. We will end mini
+		 * transaction after startup process update
+		 * XLogCtl->lastReplayedEndRecPtr.
 		 */
 		*mini_trans_lsn = state->EndRecPtr;
 	}
@@ -449,7 +468,10 @@ polar_log_index_parse_xlog(RmgrId rmid, XLogReaderState *state, XLogRecPtr redo_
 			polar_idx_redo[rmid].rm_polar_idx_save(state);
 	}
 
-	/* If current record lsn is smaller than redo start lsn, then we only parse xlog and create logindex. */
+	/*
+	 * If current record lsn is smaller than redo start lsn, then we only
+	 * parse xlog and create logindex.
+	 */
 	if (state->ReadRecPtr < redo_start_lsn)
 		redo = true;
 
@@ -459,9 +481,9 @@ polar_log_index_parse_xlog(RmgrId rmid, XLogReaderState *state, XLogRecPtr redo_
 static XLogRecPtr
 polar_log_index_apply_page_from(XLogRecPtr start_lsn, BufferTag *tag, Buffer *buffer, polar_page_lock_t page_lock, bool outdate)
 {
-	XLogRecPtr end_lsn;
+	XLogRecPtr	end_lsn;
 	log_index_page_iter_t iter;
-	Page page;
+	Page		page;
 
 	Assert(BufferIsValid(*buffer));
 	page = BufferGetPage(*buffer);
@@ -470,10 +492,11 @@ polar_log_index_apply_page_from(XLogRecPtr start_lsn, BufferTag *tag, Buffer *bu
 		start_lsn = Max(start_lsn, PageGetLSN(page));
 
 	/*
-	 * If this buffer replaying is protected by mini transaction page_lock then we replay to the record
-	 * which is currently replaying.Otherwise we replay to the last record which is successfully replayed.
-	 * If we replay to the currently replaying record without mini transaction page_lock, we may get inconsistent
-	 * date structure in memory.
+	 * If this buffer replaying is protected by mini transaction page_lock
+	 * then we replay to the record which is currently replaying.Otherwise we
+	 * replay to the last record which is successfully replayed. If we replay
+	 * to the currently replaying record without mini transaction page_lock,
+	 * we may get inconsistent date structure in memory.
 	 */
 	if (page_lock != POLAR_INVALID_PAGE_LOCK)
 		end_lsn = polar_get_replay_end_rec_ptr(NULL);
@@ -484,10 +507,10 @@ polar_log_index_apply_page_from(XLogRecPtr start_lsn, BufferTag *tag, Buffer *bu
 	{
 		elog(LOG, "%s %d %X/%X %X/%X, ([%u, %u, %u]), %u, %u", __func__,
 			 *buffer,
-			 (uint32)(start_lsn >> 32),
-			 (uint32)start_lsn,
-			 (uint32)(end_lsn >> 32),
-			 (uint32)end_lsn,
+			 (uint32) (start_lsn >> 32),
+			 (uint32) start_lsn,
+			 (uint32) (end_lsn >> 32),
+			 (uint32) end_lsn,
 			 tag->rnode.spcNode,
 			 tag->rnode.dbNode,
 			 tag->rnode.relNode,
@@ -496,8 +519,9 @@ polar_log_index_apply_page_from(XLogRecPtr start_lsn, BufferTag *tag, Buffer *bu
 	}
 
 	/*
-	 * Logindex record the start position of XLOG and we search LSN between [start_lsn, end_lsn].
-	 * And end_lsn points to the end position of the last xlog, so we should subtract 1 here .
+	 * Logindex record the start position of XLOG and we search LSN between
+	 * [start_lsn, end_lsn]. And end_lsn points to the end position of the
+	 * last xlog, so we should subtract 1 here .
 	 */
 	iter = polar_log_index_create_page_iterator(POLAR_LOGINDEX_WAL_SNAPSHOT, tag, start_lsn, end_lsn - 1);
 
@@ -509,8 +533,8 @@ polar_log_index_apply_page_from(XLogRecPtr start_lsn, BufferTag *tag, Buffer *bu
 			 tag->rnode.relNode,
 			 tag->forkNum,
 			 tag->blockNum,
-			 (uint32)(start_lsn >> 32), (uint32)start_lsn,
-			 (uint32)(end_lsn >> 32), (uint32)end_lsn);
+			 (uint32) (start_lsn >> 32), (uint32) start_lsn,
+			 (uint32) (end_lsn >> 32), (uint32) end_lsn);
 	}
 
 	polar_log_index_apply_one_page(POLAR_LOGINDEX_WAL_SNAPSHOT, tag, buffer, iter);
@@ -525,15 +549,15 @@ polar_log_index_lock_apply_page_from(XLogRecPtr start_lsn, BufferTag *tag, Buffe
 {
 	BufferDesc *buf_hdr;
 	polar_page_lock_t page_lock;
-	uint32 redo_state;
-	bool outdate;
+	uint32		redo_state;
+	bool		outdate;
 
 	Assert(BufferIsValid(*buffer));
 
 	/*
-	 * Record the buffer that is replaying.If we abort transaction in
-	 * this backend process, we need to clear POLAR_REDO_REPLAYING from
-	 * buffer redo state
+	 * Record the buffer that is replaying.If we abort transaction in this
+	 * backend process, we need to clear POLAR_REDO_REPLAYING from buffer redo
+	 * state
 	 */
 	polar_replaying_buffer = buf_hdr = GetBufferDescriptor(*buffer - 1);
 
@@ -598,7 +622,7 @@ void
 polar_log_index_lock_apply_buffer(Buffer *buffer)
 {
 	BufferDesc *buf_desc;
-	XLogRecPtr bg_replayed_lsn;
+	XLogRecPtr	bg_replayed_lsn;
 
 	Assert(BufferIsValid(*buffer));
 	buf_desc = GetBufferDescriptor(*buffer - 1);
@@ -640,7 +664,7 @@ polar_log_index_apply_one_page(log_index_snapshot_t *logindex_snapshot, BufferTa
 
 	while ((lsn_info = polar_log_index_page_iterator_next(iter)) != NULL)
 	{
-		XLogRecPtr lsn = lsn_info->lsn;
+		XLogRecPtr	lsn = lsn_info->lsn;
 
 		polar_log_index_read_xlog(state, lsn);
 		polar_log_index_apply_one_record(state, tag, buffer);
@@ -655,7 +679,7 @@ static bool
 polar_bg_redo_ready(void)
 {
 	return polar_log_index_check_state(POLAR_LOGINDEX_WAL_SNAPSHOT, POLAR_LOGINDEX_STATE_INITIALIZED)
-		   && !XLogRecPtrIsInvalid(polar_bg_redo_get_replayed_lsn());
+		&& !XLogRecPtrIsInvalid(polar_bg_redo_get_replayed_lsn());
 }
 
 /*
@@ -679,13 +703,14 @@ polar_bg_redo_ready(void)
 bool
 polar_log_index_apply_xlog_background(void)
 {
-	int     replayed_count = 0;
-	XLogRecPtr  replayed_lsn;
+	int			replayed_count = 0;
+	XLogRecPtr	replayed_lsn;
 
 	if (xlog_bg_redo_state.state == NULL)
 	{
 		/* ensure we can control memory */
 		MemoryContext oldcontext = MemoryContextSwitchTo(POLAR_LOGINDEX_WAL_SNAPSHOT->mem_cxt);
+
 		xlog_bg_redo_state.state = XLogReaderAllocate(wal_segment_size, &read_local_xlog_page, NULL);
 		MemoryContextSwitchTo(oldcontext);
 
@@ -703,22 +728,22 @@ polar_log_index_apply_xlog_background(void)
 		return true;
 	else if (xlog_bg_redo_state.log_index_iter == NULL)
 	{
-		XLogRecPtr start_lsn = polar_bg_redo_get_replayed_lsn();
+		XLogRecPtr	start_lsn = polar_bg_redo_get_replayed_lsn();
 
 		/* Init log index iterator */
 		xlog_bg_redo_state.log_index_iter =
 			polar_log_index_create_lsn_iterator(POLAR_LOGINDEX_WAL_SNAPSHOT, start_lsn);
 
 		ereport(LOG, (errmsg("Start background replay iter from %X/%X",
-							 (uint32)(start_lsn >> 32),
-							 (uint32)(start_lsn))));
+							 (uint32) (start_lsn >> 32),
+							 (uint32) (start_lsn))));
 	}
 
 	replayed_lsn = GetXLogReplayRecPtr(NULL);
 
 	for (replayed_count = 0; replayed_count < polar_bg_replay_batch_size; replayed_count++)
 	{
-		XLogRecPtr current_ptr;
+		XLogRecPtr	current_ptr;
 
 		if (xlog_bg_redo_state.log_index_page == NULL)
 			xlog_bg_redo_state.log_index_page =
@@ -738,8 +763,9 @@ polar_log_index_apply_xlog_background(void)
 		current_ptr = xlog_bg_redo_state.log_index_page->lsn;
 
 		/*
-		 * replay each page of current record. because we checked log_index_page->lsn < replayed_lsn,
-		 * we will get all related pages of the record, so use do-while to go through each page replay
+		 * replay each page of current record. because we checked
+		 * log_index_page->lsn < replayed_lsn, we will get all related pages
+		 * of the record, so use do-while to go through each page replay
 		 */
 		do
 		{
@@ -748,13 +774,16 @@ polar_log_index_apply_xlog_background(void)
 				polar_log_index_lsn_iterator_next(POLAR_LOGINDEX_WAL_SNAPSHOT, xlog_bg_redo_state.log_index_iter);
 		}
 		while (xlog_bg_redo_state.log_index_page != NULL &&
-				current_ptr == xlog_bg_redo_state.log_index_page->lsn);
+			   current_ptr == xlog_bg_redo_state.log_index_page->lsn);
 
-		/* now, record related pages have all been replayed, so we can advance bg_replayed_lsn */
+		/*
+		 * now, record related pages have all been replayed, so we can advance
+		 * bg_replayed_lsn
+		 */
 
 		if (polar_enable_debug)
 			ereport(LOG, (errmsg("apply record at %X/%X done",
-								 (uint32)(current_ptr >> 32), (uint32)(current_ptr))));
+								 (uint32) (current_ptr >> 32), (uint32) (current_ptr))));
 
 		polar_bg_redo_set_replayed_lsn(current_ptr);
 	}
@@ -775,19 +804,19 @@ polar_log_index_apply_xlog_background(void)
 static bool
 polar_evict_buffer(Buffer buffer, LWLock *buf_lock)
 {
-	uint32 buf_state;
+	uint32		buf_state;
 	BufferDesc *buf_desc = GetBufferDescriptor(buffer - 1);
-	BufferTag tag = buf_desc->tag;
-	uint32 hash = BufTableHashCode(&tag);
-	LWLock *partition_lock = BufMappingPartitionLock(hash);
-	bool evict = false;
+	BufferTag	tag = buf_desc->tag;
+	uint32		hash = BufTableHashCode(&tag);
+	LWLock	   *partition_lock = BufMappingPartitionLock(hash);
+	bool		evict = false;
 
 	LWLockAcquire(partition_lock, LW_EXCLUSIVE);
 	buf_state = LockBufHdr(buf_desc);
 
 	/* We should already pin this buffer, and then evict it */
 	if (BUF_STATE_GET_REFCOUNT(buf_state) == 1 && !(buf_state & BM_DIRTY)
-			&& (buf_state & BM_TAG_VALID))
+		&& (buf_state & BM_TAG_VALID))
 	{
 		CLEAR_BUFFERTAG(buf_desc->tag);
 		buf_state &= ~(BUF_FLAG_MASK | BUF_USAGECOUNT_MASK);
@@ -803,6 +832,7 @@ polar_evict_buffer(Buffer buffer, LWLock *buf_lock)
 
 		BufTableDelete(&tag, hash);
 		ReleaseBuffer(buffer);
+
 		/*
 		 * Insert the buffer at the head of the list of free buffers.
 		 */
@@ -816,15 +846,19 @@ polar_evict_buffer(Buffer buffer, LWLock *buf_lock)
 static void
 polar_bg_redo_apply_read_record(log_index_lsn_t *log_index_page, Buffer buffer)
 {
-	char        *errormsg = NULL;
+	char	   *errormsg = NULL;
 	BufferDesc *buf_desc = GetBufferDescriptor(buffer - 1);
-	Page page = BufferGetPage(BufferDescriptorGetBuffer(buf_desc));
+	Page		page = BufferGetPage(BufferDescriptorGetBuffer(buf_desc));
 
 	/* If needed record has not been read, just read it */
 	if (xlog_bg_redo_state.state->ReadRecPtr != log_index_page->lsn)
 	{
 		XLogRecord *record = NULL;
-		/* In XLogReadRecord, it may enlarge buffer of XlogReaderState, so we should switch context */
+
+		/*
+		 * In XLogReadRecord, it may enlarge buffer of XlogReaderState, so we
+		 * should switch context
+		 */
 		MemoryContext oldcontext = MemoryContextSwitchTo(POLAR_LOGINDEX_WAL_SNAPSHOT->mem_cxt);
 
 		record = XLogReadRecord(xlog_bg_redo_state.state, log_index_page->lsn, &errormsg);
@@ -840,7 +874,7 @@ polar_bg_redo_apply_read_record(log_index_lsn_t *log_index_page, Buffer buffer)
 			ereport(PANIC,
 					(errcode_for_file_access(),
 					 errmsg("could not read record from WAL at %X/%X",
-							(uint32)(xlog_bg_redo_state.state->EndRecPtr >> 32),
+							(uint32) (xlog_bg_redo_state.state->EndRecPtr >> 32),
 							(uint32) xlog_bg_redo_state.state->EndRecPtr)));
 		}
 	}
@@ -848,8 +882,8 @@ polar_bg_redo_apply_read_record(log_index_lsn_t *log_index_page, Buffer buffer)
 	if (!polar_redo_check_state(buf_desc, POLAR_REDO_REPLAYING))
 	{
 		/*
-		 * Check redo state again, if it's replaying then this xlog will be replayed by replaying
-		 * process.
+		 * Check redo state again, if it's replaying then this xlog will be
+		 * replayed by replaying process.
 		 */
 		polar_lock_buffer_ext(buffer, BUFFER_LOCK_EXCLUSIVE, false);
 
@@ -858,7 +892,7 @@ polar_bg_redo_apply_read_record(log_index_lsn_t *log_index_page, Buffer buffer)
 		/* Apply current record on page */
 		if (PageGetLSN(page) <= log_index_page->lsn)
 			polar_log_index_apply_one_record(
-				xlog_bg_redo_state.state, log_index_page->tag, &buffer);
+											 xlog_bg_redo_state.state, log_index_page->tag, &buffer);
 
 		if (polar_enable_debug)
 		{
@@ -875,6 +909,7 @@ polar_bg_redo_apply_read_record(log_index_lsn_t *log_index_page, Buffer buffer)
 	}
 
 }
+
 /*
  * POLAR: Apply one record on one page.
  *
@@ -888,9 +923,9 @@ polar_bg_redo_apply_read_record(log_index_lsn_t *log_index_page, Buffer buffer)
 static void
 polar_bg_redo_apply_one_record_on_page(log_index_lsn_t *log_index_page)
 {
-	uint32      new_hash = 0;                /* hash value for new_tag */
-	LWLock      *new_partition_lock = NULL;    /* buffer partition lock for it */
-	int     buf_id = 0;
+	uint32		new_hash = 0;	/* hash value for new_tag */
+	LWLock	   *new_partition_lock = NULL;	/* buffer partition lock for it */
+	int			buf_id = 0;
 
 	Assert(log_index_page != NULL);
 
@@ -904,9 +939,9 @@ polar_bg_redo_apply_one_record_on_page(log_index_lsn_t *log_index_page)
 	/* If page is in buffer, we can apply record, otherwise we do nothing */
 	if (buf_id >= 0)
 	{
-		Buffer buffer;
+		Buffer		buffer;
 		BufferDesc *buf_desc = GetBufferDescriptor(buf_id);
-		bool valid;
+		bool		valid;
 
 		/* Pin buffer from being evicted */
 		valid = polar_pin_buffer(buf_desc, NULL);
@@ -919,21 +954,24 @@ polar_bg_redo_apply_one_record_on_page(log_index_lsn_t *log_index_page)
 		if (!valid || polar_redo_check_state(buf_desc, POLAR_REDO_REPLAYING))
 		{
 			/*
-			 * Invalid buffer or redo state is replaying  means some other process is reading or replaying this page
-			 * currently. After reading or replaying, xlog replay will be done, so we don't need to
-			 * replay it. Even error occurs while io, invalid buffer will be read from
-			 * disk next access try, or evicted from buffer pool if no one else access it.
+			 * Invalid buffer or redo state is replaying  means some other
+			 * process is reading or replaying this page currently. After
+			 * reading or replaying, xlog replay will be done, so we don't
+			 * need to replay it. Even error occurs while io, invalid buffer
+			 * will be read from disk next access try, or evicted from buffer
+			 * pool if no one else access it.
 			 */
 			ReleaseBuffer(buffer);
 		}
 		else
 		{
-			Page page = BufferGetPage(BufferDescriptorGetBuffer(buf_desc));
-			XLogRecPtr consist_lsn = polar_get_primary_consist_ptr();
-			bool evicted = false;
+			Page		page = BufferGetPage(BufferDescriptorGetBuffer(buf_desc));
+			XLogRecPtr	consist_lsn = polar_get_primary_consist_ptr();
+			bool		evicted = false;
 
 			/*
-			 * At this point, we expect buffer valid already. If not, error occurs.
+			 * At this point, we expect buffer valid already. If not, error
+			 * occurs.
 			 */
 			if (!BufferIsValid(buffer))
 			{
@@ -945,9 +983,10 @@ polar_bg_redo_apply_one_record_on_page(log_index_lsn_t *log_index_page)
 			}
 
 			/*
-			 * 1. In this function the buffer is marked outdate
-			 * 2. If consistent lsn is larger than page lsn then the data in storage is newer than in buffer
-			 * 3. We will try to remove this page from buffer pool, and then backend will read newer data from storage
+			 * 1. In this function the buffer is marked outdate 2. If
+			 * consistent lsn is larger than page lsn then the data in storage
+			 * is newer than in buffer 3. We will try to remove this page from
+			 * buffer pool, and then backend will read newer data from storage
 			 */
 			if (!PageIsNew(page) && consist_lsn > PageGetLSN(page))
 				evicted = polar_evict_buffer(buffer, NULL);
@@ -1000,7 +1039,7 @@ uint32
 polar_lock_redo_state(BufferDesc *desc)
 {
 	SpinDelayStatus delayStatus;
-	uint32      old_redo_state;
+	uint32		old_redo_state;
 
 	init_local_spin_delay(&delayStatus);
 
@@ -1039,11 +1078,11 @@ polar_log_index_restore_fullpage_snapshot_if_needed(BufferTag *tag, Buffer *buff
 	static XLogReaderState *state = NULL;
 	log_index_lsn_t *lsn_info = NULL;
 	MemoryContext oldcontext = NULL;
-	XLogRecPtr replayed_lsn = InvalidXLogRecPtr;
-	XLogRecPtr end_lsn = PG_INT64_MAX;
+	XLogRecPtr	replayed_lsn = InvalidXLogRecPtr;
+	XLogRecPtr	end_lsn = PG_INT64_MAX;
 	log_index_page_iter_t iter;
-	Page page;
-	bool    success = false;
+	Page		page;
+	bool		success = false;
 	TimestampTz start_time = GetCurrentTimestamp();
 
 	Assert(BufferIsValid(*buffer));
@@ -1052,8 +1091,8 @@ polar_log_index_restore_fullpage_snapshot_if_needed(BufferTag *tag, Buffer *buff
 retry:
 
 	/*
-	 * POLAR: If page lsn is larger than replayed xlog lsn,
-	 * then this replica read a future page
+	 * POLAR: If page lsn is larger than replayed xlog lsn, then this replica
+	 * read a future page
 	 */
 	if (!polar_is_future_page(GetBufferDescriptor(*buffer - 1)))
 		return false;
@@ -1063,8 +1102,9 @@ retry:
 	replayed_lsn = GetXLogReplayRecPtr(&ThisTimeLineID);
 
 	/*
-	 * Logindex record the start position of XLOG and we search LSN between [replayed_lsn, end_lsn].
-	 * And end_lsn points to the end position of the last xlog, so we should subtract 1 here .
+	 * Logindex record the start position of XLOG and we search LSN between
+	 * [replayed_lsn, end_lsn]. And end_lsn points to the end position of the
+	 * last xlog, so we should subtract 1 here .
 	 */
 	iter = polar_log_index_create_page_iterator(POLAR_LOGINDEX_FULLPAGE_SNAPSHOT, tag, replayed_lsn, end_lsn - 1);
 
@@ -1076,8 +1116,8 @@ retry:
 			 tag->rnode.relNode,
 			 tag->forkNum,
 			 tag->blockNum,
-			 (uint32)(replayed_lsn >> 32), (uint32)replayed_lsn,
-			 (uint32)(end_lsn >> 32), (uint32)end_lsn);
+			 (uint32) (replayed_lsn >> 32), (uint32) replayed_lsn,
+			 (uint32) (end_lsn >> 32), (uint32) end_lsn);
 	}
 
 	oldcontext = MemoryContextSwitchTo(POLAR_LOGINDEX_FULLPAGE_SNAPSHOT->mem_cxt);
@@ -1099,7 +1139,7 @@ retry:
 
 	if (lsn_info != NULL)
 	{
-		XLogRecPtr lsn = lsn_info->lsn;
+		XLogRecPtr	lsn = lsn_info->lsn;
 
 		polar_log_index_read_xlog(state, lsn);
 		polar_log_index_apply_one_record(state, tag, buffer);
@@ -1115,11 +1155,11 @@ retry:
 		CHECK_FOR_INTERRUPTS();
 		/* Force FATAL future page if we wait fullpage logindex too long */
 		if (TimestampDifferenceExceeds(start_time, GetCurrentTimestamp(),
-					polar_wait_old_version_page_timeout))
+									   polar_wait_old_version_page_timeout))
 			elog(FATAL, "Read a future page due to timeout, page lsn = %lx, replayed_lsn = %lx, page_tag = '([%u, %u, %u]), %u, %u'",
-					PageGetLSN(page), replayed_lsn, tag->rnode.spcNode, tag->rnode.dbNode,
-					tag->rnode.relNode, tag->forkNum, tag->blockNum);
-		pg_usleep(100); /* 0.1ms */
+				 PageGetLSN(page), replayed_lsn, tag->rnode.spcNode, tag->rnode.dbNode,
+				 tag->rnode.relNode, tag->forkNum, tag->blockNum);
+		pg_usleep(100);			/* 0.1ms */
 		pgstat_report_wait_end();
 		goto retry;
 	}
@@ -1133,7 +1173,7 @@ retry:
 			 tag->rnode.relNode,
 			 tag->forkNum,
 			 tag->blockNum,
-			 (uint32)(PageGetLSN(page) >> 32), (uint32)PageGetLSN(page));
+			 (uint32) (PageGetLSN(page) >> 32), (uint32) PageGetLSN(page));
 
 	return true;
 }

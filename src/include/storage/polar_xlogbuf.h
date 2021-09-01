@@ -4,20 +4,21 @@
  *	  xlog buffer manager data types.
  *
  *
- * Copyright (c) 2018, Alibaba inc.
+ * Copyright (c) 2020, Alibaba Group Holding Limited
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
- * src/include/storage/polar_xlogbuf.h
+ * http://www.apache.org/licenses/LICENSE-2.0
  *
- * Xlog buffer will reserve recent xlog pages in memory to reduce io overhead.
- * When lookup a xlog page, if buffer matched or current buffer is olaer than 
- * requested page, we will return buffer id and hold content lock of buffer.
- * Caller should release content lock after read or update buffer.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  *
- * For now, replace strategy is to reserve newer xlog pages than old ones. So
- * in polar_xlog_buffer_should_evict() we will check lsn from buffer meta and 
- * requested page, if requested page is newer we will evict current buffer, 
- * otherwise requested page should be obtained by io directly.
- *
+ * IDENTIFICATION
+ *  src/include/storage/polar_xlogbuf.h
  *-------------------------------------------------------------------------
  */
 
@@ -48,21 +49,21 @@
 
 typedef struct XLogBufferDesc
 {
-	int		buf_id; /* buffer index */
+	int			buf_id;			/* buffer index */
 	XLogRecPtr	start_lsn;
 	XLogRecPtr	end_lsn;
 } XLogBufferDesc;
 
 typedef union XLogBufferDescPadded
 {
-	XLogBufferDesc	desc;
+	XLogBufferDesc desc;
 	char		pad[XLOGBUFFERDESC_PAD_TO_SIZE];
 } XLogBufferDescPadded;
 
 /* in polar_xlogbuf.c */
-extern XLogBufferDescPadded 	*polar_xlog_buffer_descriptors;
-extern char 			*polar_xlog_buffers;
-extern LWLockMinimallyPadded 	*polar_xlog_buffer_lock_array;
+extern XLogBufferDescPadded *polar_xlog_buffer_descriptors;
+extern char *polar_xlog_buffers;
+extern LWLockMinimallyPadded *polar_xlog_buffer_lock_array;
 
 extern Size polar_xlog_buffer_shmem_size(void);
 extern void polar_init_xlog_buffer(void);
@@ -76,6 +77,7 @@ extern void polar_xlog_buffer_remove(XLogRecPtr lsn);
 
 /* internal begin */
 extern bool polar_xlog_buffer_should_evict(XLogBufferDesc *desc, XLogRecPtr lsn, int len);
+
 /* internal end */
 
-#endif /* POLAR_XLOGBUF_H */
+#endif							/* POLAR_XLOGBUF_H */

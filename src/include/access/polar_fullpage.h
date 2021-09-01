@@ -1,3 +1,26 @@
+/*-------------------------------------------------------------------------
+ *
+ * polar_fullpage.h
+ *  Implementation of fullpage logindex snapshot.
+ *
+ * Copyright (c) 2020, Alibaba Group Holding Limited
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * IDENTIFICATION
+ *  src/include/access/polar_fullpage.h
+ *
+ *-------------------------------------------------------------------------
+ */
 #ifndef POLAR_FULLPAGE_H
 #define POLAR_FULLPAGE_H
 
@@ -9,19 +32,19 @@
 #include "utils/guc.h"
 
 
-typedef struct log_index_snapshot_t		*logindex_snapshot_t;
+typedef struct log_index_snapshot_t *logindex_snapshot_t;
 typedef struct polar_fullpage_ctl_t
 {
-	pg_atomic_uint64            max_fullpage_no;
-	/* New file init lock*/
-	LWLockMinimallyPadded		file_lock;
+	pg_atomic_uint64 max_fullpage_no;
+	/* New file init lock */
+	LWLockMinimallyPadded file_lock;
 	/* write fullpage wal lock, only one process can write fullpage wal */
-	LWLockMinimallyPadded		write_lock;
+	LWLockMinimallyPadded write_lock;
 } polar_fullpage_ctl_t;
 
 #define POLAR_FULLPAGE_DIR              "polar_fullpage"
 
-#define FULLPAGE_SEGMENT_SIZE (256 * 1024 * 1024) /* 256MB */
+#define FULLPAGE_SEGMENT_SIZE (256 * 1024 * 1024)	/* 256MB */
 
 #define FULLPAGE_NUM_PER_FILE (FULLPAGE_SEGMENT_SIZE / BLCKSZ)
 #define FULLPAGE_FILE_SEG_NO(fullpage_no) (fullpage_no / FULLPAGE_NUM_PER_FILE)
@@ -44,11 +67,11 @@ extern uint64 polar_log_fullpage_begin(void);
 extern void polar_log_fullpage_end(void);
 extern void polar_write_fullpage(Page page, uint64 fullpage_no);
 extern void polar_read_fullpage(Page page, uint64 fullpage_no);
-extern int polar_fullpage_file_init(logindex_snapshot_t logindex_snapshot, uint64 fullpage_no);
+extern int	polar_fullpage_file_init(logindex_snapshot_t logindex_snapshot, uint64 fullpage_no);
 extern void polar_update_max_fullpage_no(uint64 fullpage_no);
 extern void polar_prealloc_fullpage_files(void);
 extern void polar_remove_old_fullpage_files(void);
 extern void polar_remove_old_fullpage_file(logindex_snapshot_t logindex_snapshot, const char *segname, uint64 min_fullpage_seg_no);
 extern void polar_logindex_calc_max_fullpage_no(logindex_snapshot_t logindex_snapshot);
 extern XLogRecPtr polar_log_fullpage_snapshot_image(Buffer buffer, XLogRecPtr oldest_apply_lsn);
-#endif	/* POLAR_FULLPAGE_H */
+#endif							/* POLAR_FULLPAGE_H */

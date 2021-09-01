@@ -3,7 +3,7 @@
  * polar_parallel_bgwriter.c
  *		Parallel background writer process manager.
  *
- * Copyright (c) 2019, Alibaba Group Holding Limited
+ * Copyright (c) 2020, Alibaba Group Holding Limited
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -14,9 +14,9 @@
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
- * limitations under the License.*
- * 
- * IDENTIFICATION 
+ * limitations under the License.
+ *
+ * IDENTIFICATION
  *  src/backend/postmaster/polar_parallel_bgwriter.c
  *
  *-------------------------------------------------------------------------
@@ -50,10 +50,10 @@
 #define ILLEGAL_GENERATION 0
 #define ILLEGAL_SLOT -1
 
-static int  check_running_bgwriter_workers(void);
+static int	check_running_bgwriter_workers(void);
 static bool parallel_sync_buffer(WritebackContext *wb_context);
-static int  find_one_unused_handle_slot(void);
-static int  find_one_used_handle_slot(void);
+static int	find_one_unused_handle_slot(void);
+static int	find_one_used_handle_slot(void);
 static void reset_bgwriter_handle(ParallelBgwriterHandle *handle);
 static bool handle_is_used(ParallelBgwriterHandle *handle);
 static bool handle_is_unused(ParallelBgwriterHandle *handle);
@@ -78,16 +78,16 @@ ParallelBgwriterInfo *polar_parallel_bgwriter_info = NULL;
 void
 polar_init_parallel_bgwriter(void)
 {
-	bool found;
-	int  i;
+	bool		found;
+	int			i;
 
 	if (!polar_parallel_bgwriter_enabled())
 		return;
 
 	polar_parallel_bgwriter_info = (ParallelBgwriterInfo *) ShmemInitStruct(
-		"Parallel bgwriter info",
-		sizeof(ParallelBgwriterInfo),
-		&found);
+																			"Parallel bgwriter info",
+																			sizeof(ParallelBgwriterInfo),
+																			&found);
 
 	if (!found)
 	{
@@ -115,11 +115,11 @@ polar_parallel_bgwriter_shmem_size(void)
 void
 polar_launch_parallel_bgwriter_workers(void)
 {
-	uint32	current_workers;
-	int		running_workers;
-	int		launch_workers = 0;
-	int		guc_workers;
-	bool	update = false;
+	uint32		current_workers;
+	int			running_workers;
+	int			launch_workers = 0;
+	int			guc_workers;
+	bool		update = false;
 
 	/*
 	 * Now, only master launch parallel background writers. If we want replica
@@ -162,20 +162,20 @@ polar_launch_parallel_bgwriter_workers(void)
 static int
 check_running_bgwriter_workers(void)
 {
-	int                    i;
+	int			i;
 	ParallelBgwriterHandle *handle;
-	BgwHandleStatus        status;
-	pid_t                  pid;
-	int                    workers = 0;
+	BgwHandleStatus status;
+	pid_t		pid;
+	int			workers = 0;
 
-	for(i = 0; i < MAX_NUM_OF_PARALLEL_BGWRITER; i++)
+	for (i = 0; i < MAX_NUM_OF_PARALLEL_BGWRITER; i++)
 	{
 		handle = &polar_parallel_bgwriter_info->handles[i];
 
 		if (handle_is_unused(handle))
 			continue;
 
-		status = GetBackgroundWorkerPid((BackgroundWorkerHandle *)handle, &pid);
+		status = GetBackgroundWorkerPid((BackgroundWorkerHandle *) handle, &pid);
 
 		/* Already stopped */
 		if (status == BGWH_STOPPED)
@@ -192,9 +192,9 @@ void
 polar_register_parallel_bgwriter_workers(int workers, bool update_workers)
 {
 	BackgroundWorker worker;
-	uint32           current_workers;
-	int              slot;
-	int              i;
+	uint32		current_workers;
+	int			slot;
+	int			i;
 
 	Assert(polar_parallel_bgwriter_enabled());
 
@@ -220,9 +220,9 @@ polar_register_parallel_bgwriter_workers(int workers, bool update_workers)
 		{
 			ereport(WARNING,
 					(errmsg(
-						"Can not start new parallel background workers, current workers: %d, at most workers %d",
-						current_workers,
-						POLAR_MAX_BGWRITER_WORKERS)));
+							"Can not start new parallel background workers, current workers: %d, at most workers %d",
+							current_workers,
+							POLAR_MAX_BGWRITER_WORKERS)));
 			break;
 		}
 
@@ -232,8 +232,8 @@ polar_register_parallel_bgwriter_workers(int workers, bool update_workers)
 		{
 			ereport(WARNING,
 					(errmsg(
-						"Can not find an empty background worker handle slot to register a worker, total number of workers is %d",
-						current_workers)));
+							"Can not find an empty background worker handle slot to register a worker, total number of workers is %d",
+							current_workers)));
 			break;
 		}
 
@@ -249,16 +249,16 @@ polar_register_parallel_bgwriter_workers(int workers, bool update_workers)
 		{
 			ereport(WARNING,
 					(errcode(ERRCODE_INSUFFICIENT_RESOURCES),
-						errmsg("could not register background process"),
-						errhint("You may need to increase max_worker_processes.")));
+					 errmsg("could not register background process"),
+					 errhint("You may need to increase max_worker_processes.")));
 			continue;
 		}
 
 		if (polar_enable_debug)
 			ereport(LOG,
 					(errmsg(
-						"Register one background writer worker, its handle slot index is %d",
-						slot)));
+							"Register one background writer worker, its handle slot index is %d",
+							slot)));
 	}
 
 	/* Set current parallel workers */
@@ -286,7 +286,8 @@ polar_parallel_bgwriter_worker_main(Datum main_arg)
 	 * bgwriter doesn't participate in ProcSignal signalling, but a SIGUSR1
 	 * handler is still needed for latch wakeups.
 	 */
-	pqsignal(SIGHUP, worker_sighup_handler);	/* set flag to read config file */
+	pqsignal(SIGHUP, worker_sighup_handler);	/* set flag to read config
+												 * file */
 	pqsignal(SIGINT, SIG_IGN);
 	pqsignal(SIGTERM, worker_sigterm_handler);	/* shutdown */
 	pqsignal(SIGQUIT, worker_quit_handler); /* hard crash time */
@@ -488,6 +489,7 @@ static bool
 parallel_sync_buffer(WritebackContext *wb_context)
 {
 	XLogRecPtr	consistent_lsn = InvalidXLogRecPtr;
+
 	return polar_buffer_sync(wb_context, &consistent_lsn, false, 0);
 }
 
@@ -495,8 +497,8 @@ parallel_sync_buffer(WritebackContext *wb_context)
 void
 polar_shutdown_parallel_bgwriter_workers(int workers)
 {
-	int             used_slot;
-	int             i;
+	int			used_slot;
+	int			i;
 	ParallelBgwriterHandle *handle;
 
 	Assert(polar_parallel_bgwriter_enabled());
@@ -508,8 +510,8 @@ polar_shutdown_parallel_bgwriter_workers(int workers)
 		{
 			ereport(WARNING,
 					(errmsg(
-						"Can not find a used background worker handle slot to shutdown a worker, total number of workers is %d",
-						CURRENT_PARALLEL_WORKERS)));
+							"Can not find a used background worker handle slot to shutdown a worker, total number of workers is %d",
+							CURRENT_PARALLEL_WORKERS)));
 			break;
 		}
 
@@ -524,8 +526,8 @@ polar_shutdown_parallel_bgwriter_workers(int workers)
 		{
 			ereport(DEBUG1,
 					(errmsg(
-						"Shut down one background writer worker, its handle slot index is %d",
-						used_slot)));
+							"Shut down one background writer worker, its handle slot index is %d",
+							used_slot)));
 		}
 	}
 }
@@ -562,7 +564,7 @@ polar_check_parallel_bgwriter_worker(void)
 static int
 find_one_unused_handle_slot(void)
 {
-	int i;
+	int			i;
 
 	for (i = 0; i < MAX_NUM_OF_PARALLEL_BGWRITER; i++)
 	{
@@ -577,7 +579,7 @@ find_one_unused_handle_slot(void)
 static int
 find_one_used_handle_slot(void)
 {
-	int i;
+	int			i;
 
 	for (i = 0; i < MAX_NUM_OF_PARALLEL_BGWRITER; i++)
 	{
@@ -592,8 +594,8 @@ find_one_used_handle_slot(void)
 static bool
 handle_is_unused(ParallelBgwriterHandle *handle)
 {
-	bool res = handle->slot == ILLEGAL_SLOT ||
-		handle->generation == ILLEGAL_GENERATION;
+	bool		res = handle->slot == ILLEGAL_SLOT ||
+	handle->generation == ILLEGAL_GENERATION;
 
 	if (res)
 	{

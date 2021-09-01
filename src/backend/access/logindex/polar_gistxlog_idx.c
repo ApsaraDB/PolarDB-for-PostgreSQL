@@ -4,7 +4,18 @@
  *    WAL redo parse logic for gist index.
  *
  *
- * Portions Copyright (c) 2019, Alibaba.inc
+ * Copyright (c) 2020, Alibaba Group Holding Limited
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  *
  * IDENTIFICATION
  *           src/backend/access/logindex/polar_gistxlog_idx.c
@@ -34,9 +45,9 @@ polar_gist_redo_page_update_record_save(XLogReaderState *record)
 static void
 polar_gist_redo_page_update_record_parse(XLogReaderState *record)
 {
-	BufferTag update_tag;
-	polar_page_lock_t    update_lock;
-	Buffer    update_buf = InvalidBuffer;
+	BufferTag	update_tag;
+	polar_page_lock_t update_lock;
+	Buffer		update_buf = InvalidBuffer;
 
 	/*
 	 * If we have any conflict processing to do, it must happen before we
@@ -71,7 +82,7 @@ polar_gist_redo_page_update_record_parse(XLogReaderState *record)
 static void
 polar_gist_redo_page_split_record_save(XLogReaderState *record)
 {
-	int block_id;
+	int			block_id;
 
 	polar_log_index_save_block(record, 1);
 
@@ -90,10 +101,10 @@ polar_gist_redo_page_split_record_save(XLogReaderState *record)
 static void
 polar_gist_redo_page_split_record_parse(XLogReaderState *record)
 {
-	BufferTag first_tag;
-	polar_page_lock_t    first_lock;
-	Buffer    first_buf = InvalidBuffer;
-	int       block_id = 2;
+	BufferTag	first_tag;
+	polar_page_lock_t first_lock;
+	Buffer		first_buf = InvalidBuffer;
+	int			block_id = 2;
 
 	POLAR_MINI_TRANS_REDO_PARSE(record, 1, first_tag, first_lock, first_buf);
 
@@ -128,9 +139,9 @@ polar_gist_redo_page_split_record_parse(XLogReaderState *record)
 static XLogRedoAction
 polar_gist_redo_clear_follow_right(XLogReaderState *record, uint8 block_id, Buffer *buffer)
 {
-	XLogRecPtr  lsn = record->EndRecPtr;
+	XLogRecPtr	lsn = record->EndRecPtr;
 	XLogRedoAction action = BLK_NOTFOUND;
-	Page        page;
+	Page		page;
 
 	/*
 	 * Note that we still update the page even if it was restored from a full
@@ -157,11 +168,11 @@ polar_gist_redo_clear_follow_right(XLogReaderState *record, uint8 block_id, Buff
 static XLogRedoAction
 polar_gist_redo_page_update_record(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 {
-	XLogRecPtr  lsn = record->EndRecPtr;
+	XLogRecPtr	lsn = record->EndRecPtr;
 	gistxlogPageUpdate *xldata = (gistxlogPageUpdate *) XLogRecGetData(record);
 	XLogRedoAction action = BLK_NOTFOUND;
-	Page        page;
-	BufferTag   update_tag;
+	Page		page;
+	BufferTag	update_tag;
 
 	POLAR_GET_LOG_TAG(record, update_tag, 0);
 
@@ -171,10 +182,10 @@ polar_gist_redo_page_update_record(XLogReaderState *record, BufferTag *tag, Buff
 
 		if (action == BLK_NEEDS_REDO)
 		{
-			char       *begin;
-			char       *data;
-			Size        datalen;
-			int         ninserted = 0;
+			char	   *begin;
+			char	   *data;
+			Size		datalen;
+			int			ninserted = 0;
 
 			data = begin = XLogRecGetBlockData(record, 0, &datalen);
 
@@ -184,11 +195,12 @@ polar_gist_redo_page_update_record(XLogReaderState *record, BufferTag *tag, Buff
 			{
 				/*
 				 * When replacing one tuple with one other tuple, we must use
-				 * PageIndexTupleOverwrite for consistency with gistplacetopage.
+				 * PageIndexTupleOverwrite for consistency with
+				 * gistplacetopage.
 				 */
 				OffsetNumber offnum = *((OffsetNumber *) data);
-				IndexTuple  itup;
-				Size        itupsize;
+				IndexTuple	itup;
+				Size		itupsize;
 
 				data += sizeof(OffsetNumber);
 				itup = (IndexTuple) data;
@@ -224,12 +236,12 @@ polar_gist_redo_page_update_record(XLogReaderState *record, BufferTag *tag, Buff
 			if (data - begin < datalen)
 			{
 				OffsetNumber off = (PageIsEmpty(page)) ? FirstOffsetNumber :
-								   OffsetNumberNext(PageGetMaxOffsetNumber(page));
+				OffsetNumberNext(PageGetMaxOffsetNumber(page));
 
 				while (data - begin < datalen)
 				{
-					IndexTuple  itup = (IndexTuple) data;
-					Size        sz = IndexTupleSize(itup);
+					IndexTuple	itup = (IndexTuple) data;
+					Size		sz = IndexTupleSize(itup);
 					OffsetNumber l;
 
 					data += sz;
@@ -266,7 +278,8 @@ polar_gist_redo_page_update_record(XLogReaderState *record, BufferTag *tag, Buff
 	 */
 	if (XLogRecHasBlockRef(record, 1))
 	{
-		BufferTag right_tag;
+		BufferTag	right_tag;
+
 		POLAR_GET_LOG_TAG(record, right_tag, 1);
 
 		if (BUFFERTAGS_EQUAL(*tag, right_tag))
@@ -279,12 +292,12 @@ polar_gist_redo_page_update_record(XLogReaderState *record, BufferTag *tag, Buff
 static XLogRedoAction
 polar_gist_redo_page_split_record(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 {
-	XLogRecPtr  lsn = record->EndRecPtr;
+	XLogRecPtr	lsn = record->EndRecPtr;
 	gistxlogPageSplit *xldata = (gistxlogPageSplit *) XLogRecGetData(record);
 	XLogRedoAction action = BLK_NOTFOUND;
-	Page        page;
-	int         i;
-	bool        isrootsplit = false;
+	Page		page;
+	int			i;
+	bool		isrootsplit = false;
 
 	/*
 	 * We must hold lock on the first-listed page throughout the action,
@@ -297,13 +310,13 @@ polar_gist_redo_page_split_record(XLogReaderState *record, BufferTag *tag, Buffe
 	/* loop around all pages */
 	for (i = 0; i < xldata->npage; i++)
 	{
-		int         flags;
-		char       *data;
-		Size        datalen;
-		int         num;
+		int			flags;
+		char	   *data;
+		Size		datalen;
+		int			num;
 		IndexTuple *tuples;
-		BufferTag   page_tag;
-		int         block_id = i + 1;
+		BufferTag	page_tag;
+		int			block_id = i + 1;
 
 		POLAR_GET_LOG_TAG(record, page_tag, block_id);
 
@@ -354,7 +367,7 @@ polar_gist_redo_page_split_record(XLogReaderState *record, BufferTag *tag, Buffe
 			GistPageSetNSN(page, xldata->orignsn);
 
 			if (i < xldata->npage - 1 && !isrootsplit &&
-					xldata->markfollowright)
+				xldata->markfollowright)
 				GistMarkFollowRight(page);
 			else
 				GistClearFollowRight(page);
@@ -369,7 +382,7 @@ polar_gist_redo_page_split_record(XLogReaderState *record, BufferTag *tag, Buffe
 	/* Fix follow-right data on left child page, if any */
 	if (XLogRecHasBlockRef(record, 0))
 	{
-		BufferTag right_tag;
+		BufferTag	right_tag;
 
 		POLAR_GET_LOG_TAG(record, right_tag, 0);
 
@@ -383,9 +396,9 @@ polar_gist_redo_page_split_record(XLogReaderState *record, BufferTag *tag, Buffe
 static XLogRedoAction
 polar_gist_redo_create_index(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 {
-	XLogRecPtr  lsn = record->EndRecPtr;
-	Page        page;
-	BufferTag create_tag;
+	XLogRecPtr	lsn = record->EndRecPtr;
+	Page		page;
+	BufferTag	create_tag;
 
 	POLAR_GET_LOG_TAG(record, create_tag, 0);
 
@@ -408,7 +421,7 @@ polar_gist_redo_create_index(XLogReaderState *record, BufferTag *tag, Buffer *bu
 void
 polar_gist_idx_save(XLogReaderState *record)
 {
-	uint8       info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
+	uint8		info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
 
 	switch (info)
 	{
@@ -433,7 +446,8 @@ polar_gist_idx_save(XLogReaderState *record)
 bool
 polar_gist_idx_parse(XLogReaderState *record)
 {
-	uint8       info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
+	uint8		info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
+
 	/*
 	 * GiST indexes do not require any conflict processing. NB: If we ever
 	 * implement a similar optimization we have in b-tree, and remove killed
@@ -463,9 +477,10 @@ polar_gist_idx_parse(XLogReaderState *record)
 }
 
 XLogRedoAction
-polar_gist_idx_redo(XLogReaderState *record,  BufferTag *tag, Buffer *buffer)
+polar_gist_idx_redo(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 {
-	uint8       info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
+	uint8		info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
+
 	/*
 	 * GiST indexes do not require any conflict processing. NB: If we ever
 	 * implement a similar optimization we have in b-tree, and remove killed
@@ -489,4 +504,3 @@ polar_gist_idx_redo(XLogReaderState *record,  BufferTag *tag, Buffer *buffer)
 
 	return BLK_NOTFOUND;
 }
-

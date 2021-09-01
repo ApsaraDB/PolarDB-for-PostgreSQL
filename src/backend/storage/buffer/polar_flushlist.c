@@ -49,7 +49,7 @@ static void append_one_buffer(BufferDesc *buf);
 Size
 polar_flush_list_ctl_shmem_size(void)
 {
-	Size        size = 0;
+	Size		size = 0;
 
 	if (!polar_flush_list_enabled())
 		return size;
@@ -66,15 +66,15 @@ polar_flush_list_ctl_shmem_size(void)
 void
 polar_init_flush_list_ctl(bool init)
 {
-	bool found;
+	bool		found;
 
 	if (!polar_flush_list_enabled())
 		return;
 
 	/* Get or create the shared memory for flushlist control block */
 	polar_flush_list_ctl = (FlushListControl *)
-						   ShmemInitStruct("Flushlist Control Status",
-										   sizeof(FlushListControl), &found);
+		ShmemInitStruct("Flushlist Control Status",
+						sizeof(FlushListControl), &found);
 
 	if (!found)
 	{
@@ -86,7 +86,7 @@ polar_init_flush_list_ctl(bool init)
 		SpinLockInit(&polar_flush_list_ctl->flushlist_lock);
 
 		polar_flush_list_ctl->first_flush_buffer = POLAR_FLUSHNEXT_END_OF_LIST;
-		polar_flush_list_ctl->last_flush_buffer  = POLAR_FLUSHNEXT_END_OF_LIST;
+		polar_flush_list_ctl->last_flush_buffer = POLAR_FLUSHNEXT_END_OF_LIST;
 		polar_flush_list_ctl->current_pos = POLAR_FLUSHNEXT_NOT_IN_LIST;
 		polar_flush_list_ctl->latest_flush_count = 0;
 
@@ -109,9 +109,9 @@ polar_init_flush_list_ctl(bool init)
 int
 polar_get_batch_flush_buffer(int *batch_buf)
 {
-	int         i = 0;
-	int         buffer_id;
-	int         flush_count;
+	int			i = 0;
+	int			buffer_id;
+	int			flush_count;
 
 	Assert(polar_flush_list_enabled());
 
@@ -254,8 +254,8 @@ polar_adjust_position_in_flush_list(BufferDesc *buf)
 static void
 remove_one_buffer(BufferDesc *buf)
 {
-	int         prev_flush_id;
-	int         next_flush_id;
+	int			prev_flush_id;
+	int			next_flush_id;
 	BufferDesc *prev_buf;
 	BufferDesc *next_buf;
 
@@ -268,8 +268,8 @@ remove_one_buffer(BufferDesc *buf)
 	prev_flush_id = buf->flush_prev;
 	next_flush_id = buf->flush_next;
 
-	// if (polar_enable_debug)
-		// POLAR_LOG_BUFFER_DESC_WITH_FLUSHLIST(buf);
+	/* if (polar_enable_debug) */
+	/* POLAR_LOG_BUFFER_DESC_WITH_FLUSHLIST(buf); */
 
 	if (prev_flush_id == POLAR_FLUSHNEXT_END_OF_LIST &&
 		next_flush_id == POLAR_FLUSHNEXT_END_OF_LIST)
@@ -279,7 +279,7 @@ remove_one_buffer(BufferDesc *buf)
 		polar_flush_list_ctl->last_flush_buffer = POLAR_FLUSHNEXT_END_OF_LIST;
 	}
 	else if (prev_flush_id == POLAR_FLUSHNEXT_END_OF_LIST &&
-		next_flush_id != POLAR_FLUSHNEXT_END_OF_LIST)
+			 next_flush_id != POLAR_FLUSHNEXT_END_OF_LIST)
 	{
 		/* First one, and has next buffer */
 		next_buf = GetBufferDescriptor(next_flush_id);
@@ -287,7 +287,7 @@ remove_one_buffer(BufferDesc *buf)
 		polar_flush_list_ctl->first_flush_buffer = next_flush_id;
 	}
 	else if (prev_flush_id != POLAR_FLUSHNEXT_END_OF_LIST &&
-		next_flush_id == POLAR_FLUSHNEXT_END_OF_LIST)
+			 next_flush_id == POLAR_FLUSHNEXT_END_OF_LIST)
 	{
 		/* Last one, and has prev buffer */
 		prev_buf = GetBufferDescriptor(prev_flush_id);

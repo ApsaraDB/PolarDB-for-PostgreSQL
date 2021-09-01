@@ -26,9 +26,9 @@
 #include "storage/polar_flushlist.h"
 #include "utils/guc.h"
 
-CopyBufferControl    *polar_copy_buffer_ctl;
+CopyBufferControl *polar_copy_buffer_ctl;
 CopyBufferDescPadded *polar_copy_buffer_descriptors;
-char                 *polar_copy_buffer_blocks;
+char	   *polar_copy_buffer_blocks;
 
 extern XLogRecPtr GetXLogInsertRecPtr(void);
 extern void XLogFlush(XLogRecPtr record);
@@ -57,13 +57,13 @@ polar_init_copy_buffer_pool(void)
 
 	/* Align descriptors to a cacheline boundary. */
 	polar_copy_buffer_descriptors = (CopyBufferDescPadded *)
-									ShmemInitStruct("Copy Buffer Descriptors",
-											polar_copy_buffers * sizeof(CopyBufferDescPadded),
-											&found_copy_descs);
+		ShmemInitStruct("Copy Buffer Descriptors",
+						polar_copy_buffers * sizeof(CopyBufferDescPadded),
+						&found_copy_descs);
 
 	polar_copy_buffer_blocks = (char *)
-							   ShmemInitStruct("Copy Buffer Blocks",
-										   polar_copy_buffers * (Size) BLCKSZ, &found_copy_bufs);
+		ShmemInitStruct("Copy Buffer Blocks",
+						polar_copy_buffers * (Size) BLCKSZ, &found_copy_bufs);
 
 	if (found_copy_bufs || found_copy_descs)
 	{
@@ -106,11 +106,11 @@ polar_init_copy_buffer_pool(void)
 static void
 init_copy_buffer_ctl(bool init)
 {
-	bool        found;
+	bool		found;
 
 	polar_copy_buffer_ctl = (CopyBufferControl *)
-							ShmemInitStruct("Copy Buffer Status",
-											sizeof(CopyBufferControl), &found);
+		ShmemInitStruct("Copy Buffer Status",
+						sizeof(CopyBufferControl), &found);
 
 	if (!found)
 	{
@@ -141,7 +141,7 @@ init_copy_buffer_ctl(bool init)
 Size
 polar_copy_buffer_shmem_size(void)
 {
-	Size        size = 0;
+	Size		size = 0;
 
 	if (!polar_copy_buffer_enabled())
 		return size;
@@ -181,10 +181,10 @@ polar_buffer_copy_is_satisfied(BufferDesc *buf,
 							   XLogRecPtr oldest_apply_lsn,
 							   bool check_io)
 {
-	uint32     buf_state;
-	uint32     lsn_lag_with_cons_lsn;
-	XLogRecPtr oldest_lsn;
-	bool       is_dirty;
+	uint32		buf_state;
+	uint32		lsn_lag_with_cons_lsn;
+	XLogRecPtr	oldest_lsn;
+	bool		is_dirty;
 
 	if (!polar_copy_buffer_enabled())
 		return false;
@@ -221,7 +221,7 @@ polar_buffer_copy_is_satisfied(BufferDesc *buf,
 			 buf->tag.rnode.relNode,
 			 buf->tag.blockNum,
 			 buf->tag.forkNum,
-			 is_dirty, ((PageHeader)BufferGetPage(buf->buf_id + 1))->pd_flags);
+			 is_dirty, ((PageHeader) BufferGetPage(buf->buf_id + 1))->pd_flags);
 
 		/* If buffer oldest lsn is invalid, it must be not in the flushlist */
 		Assert(buf->flush_next == POLAR_FLUSHNEXT_NOT_IN_LIST);
@@ -230,16 +230,16 @@ polar_buffer_copy_is_satisfied(BufferDesc *buf,
 	}
 
 	if (!(buf_state & BM_PERMANENT) ||
-			(check_io && (buf_state & BM_IO_IN_PROGRESS)))
+		(check_io && (buf_state & BM_IO_IN_PROGRESS)))
 		return false;
 
 	lsn_lag_with_cons_lsn = oldest_lsn - polar_get_consistent_lsn();
 
 	if ((buf->recently_modified_count > polar_buffer_copy_min_modified_count &&
+		 lsn_lag_with_cons_lsn <
+		 polar_buffer_copy_lsn_lag_with_cons_lsn * 1024 * 1024) ||
 		lsn_lag_with_cons_lsn <
-			polar_buffer_copy_lsn_lag_with_cons_lsn * 1024 * 1024) ||
-		lsn_lag_with_cons_lsn <
-			polar_buffer_copy_lsn_lag_with_cons_lsn * 1024 * 1024 / 2)
+		polar_buffer_copy_lsn_lag_with_cons_lsn * 1024 * 1024 / 2)
 		return true;
 
 	return false;
@@ -249,8 +249,8 @@ static bool
 copy_buffer_alloc(BufferDesc *buf, XLogRecPtr oldest_apply_lsn)
 {
 	CopyBufferDesc *cbuf;
-	uint32         buf_state;
-	XLogRecPtr     consistent_lsn;
+	uint32		buf_state;
+	XLogRecPtr	consistent_lsn;
 
 	/* Before copy, lock the buffer using io_in_progress lock like FlushBuffer */
 	if (!start_copy_buffer_io(buf, true))
@@ -304,8 +304,8 @@ copy_buffer_alloc(BufferDesc *buf, XLogRecPtr oldest_apply_lsn)
 	cbuf->free_next = FREENEXT_NOT_IN_LIST;
 
 	/*
-	 * Release the lock so someone else can access the freelist while
-	 * we check out this buffer.
+	 * Release the lock so someone else can access the freelist while we check
+	 * out this buffer.
 	 */
 	SpinLockRelease(&polar_copy_buffer_ctl->copy_buffer_ctl_lock);
 
@@ -318,7 +318,7 @@ copy_buffer_alloc(BufferDesc *buf, XLogRecPtr oldest_apply_lsn)
 	pg_atomic_write_u64((pg_atomic_uint64 *) &cbuf->oldest_lsn,
 						buf->oldest_lsn);
 	pg_atomic_write_u32((pg_atomic_uint32 *) &cbuf->origin_buffer,
-					   (uint32) BufferDescriptorGetBuffer(buf));
+						(uint32) BufferDescriptorGetBuffer(buf));
 	cbuf->state = POLAR_COPY_BUFFER_USED;
 
 	buf_state = LockBufHdr(buf);
@@ -338,7 +338,7 @@ copy_buffer_alloc(BufferDesc *buf, XLogRecPtr oldest_apply_lsn)
 void
 polar_free_copy_buffer(BufferDesc *buf)
 {
-	uint32         buf_state;
+	uint32		buf_state;
 	CopyBufferDesc *cbuf = buf->copy_buffer;
 
 	if (cbuf == NULL)
@@ -392,18 +392,18 @@ polar_free_copy_buffer(BufferDesc *buf)
 void
 polar_flush_copy_buffer(BufferDesc *buf, SMgrRelation reln)
 {
-	XLogRecPtr     latest_lsn;
-	XLogRecPtr     oldest_apply_lsn;
-	Block          buf_block;
-	uint32         buf_state;
+	XLogRecPtr	latest_lsn;
+	XLogRecPtr	oldest_apply_lsn;
+	Block		buf_block;
+	uint32		buf_state;
 	CopyBufferDesc *cbuf;
 
 	Assert(polar_copy_buffer_enabled());
 
 	/*
 	 * Acquire the buffer's io_in_progress lock.  If start_copy_buffer_io
-	 * returns false, then someone else flushed the buffer before we could,
-	 * so we need not do anything.
+	 * returns false, then someone else flushed the buffer before we could, so
+	 * we need not do anything.
 	 */
 	if (!start_copy_buffer_io(buf, false))
 		return;
@@ -412,8 +412,8 @@ polar_flush_copy_buffer(BufferDesc *buf, SMgrRelation reln)
 	Assert(cbuf);
 
 	/*
-	 * Double check. The copy buffer may have been replaced by others,
-	 * its latest lsn may be greater than oldest apply lsn.
+	 * Double check. The copy buffer may have been replaced by others, its
+	 * latest lsn may be greater than oldest apply lsn.
 	 */
 	oldest_apply_lsn = polar_get_oldest_applied_lsn();
 	if (!polar_buffer_can_be_flushed(buf, oldest_apply_lsn, true))
@@ -467,16 +467,16 @@ polar_flush_copy_buffer(BufferDesc *buf, SMgrRelation reln)
 		XLogFlush(latest_lsn);
 
 	/*
-	 * Now it's safe to write copy buffer to disk. Note that no one else should
-	 * have been able to write it while we were busy with log flushing because
-	 * we have the io_in_progress lock.
+	 * Now it's safe to write copy buffer to disk. Note that no one else
+	 * should have been able to write it while we were busy with log flushing
+	 * because we have the io_in_progress lock.
 	 */
 	buf_block = CopyBufHdrGetBlock(cbuf);
 
 	/*
 	 * For copy buffer, only call the PageSetChecksumInplace instead of
-	 * PageSetChecksumCopy for buffer, no other process can be modifying
-	 * this copy buffer.
+	 * PageSetChecksumCopy for buffer, no other process can be modifying this
+	 * copy buffer.
 	 */
 	PageSetChecksumInplace((Page) buf_block, buf->tag.blockNum);
 
@@ -495,8 +495,8 @@ polar_flush_copy_buffer(BufferDesc *buf, SMgrRelation reln)
 	polar_free_copy_buffer(buf);
 
 	/*
-	 * For copy buffer, do not mark the original buffer as clean and
-	 * end the io_in_progress state.
+	 * For copy buffer, do not mark the original buffer as clean and end the
+	 * io_in_progress state.
 	 */
 	TerminateBufferIO(buf, false, 0);
 }
@@ -514,10 +514,10 @@ start_copy_buffer_io(BufferDesc *buf, bool for_input)
 XLogRecPtr
 polar_copy_buffers_get_oldest_lsn(void)
 {
-	int            i;
+	int			i;
 	CopyBufferDesc *cbuf;
-	XLogRecPtr     cur_lsn;
-	XLogRecPtr     res = InvalidXLogRecPtr;
+	XLogRecPtr	cur_lsn;
+	XLogRecPtr	res = InvalidXLogRecPtr;
 
 	if (!polar_copy_buffer_enabled())
 		return res;

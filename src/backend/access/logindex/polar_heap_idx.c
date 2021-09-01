@@ -4,7 +4,18 @@
  *   Implementation of parse heap2 records.
  *
  *
- * Portions Copyright (c) 2019, Alibaba.inc
+ * Copyright (c) 2020, Alibaba Group Holding Limited
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  *
  * src/backend/access/logindex/polar_heap2_idx.c
  *
@@ -30,11 +41,11 @@ static XLogRedoAction
 polar_heap_clear_vm(XLogReaderState *record, RelFileNode *rnode,
 					BlockNumber heapBlk, Buffer *buffer, uint8 flags)
 {
-	Relation    reln = CreateFakeRelcacheEntry(*rnode);
-	int         mapByte = HEAPBLK_TO_MAPBYTE(heapBlk);
-	int         mapOffset = HEAPBLK_TO_OFFSET(heapBlk);
-	uint8       mask = flags << mapOffset;
-	char       *map;
+	Relation	reln = CreateFakeRelcacheEntry(*rnode);
+	int			mapByte = HEAPBLK_TO_MAPBYTE(heapBlk);
+	int			mapOffset = HEAPBLK_TO_OFFSET(heapBlk);
+	uint8		mask = flags << mapOffset;
+	char	   *map;
 
 	if (!BufferIsValid(*buffer))
 	{
@@ -54,12 +65,12 @@ polar_heap_clear_vm(XLogReaderState *record, RelFileNode *rnode,
 
 static Buffer
 polar_heap_vm_fresh_parse(XLogReaderState *record, Relation rel,
-						  BufferTag *heap_tag, BufferTag *vm_tag, polar_page_lock_t *page_lock)
+						  BufferTag *heap_tag, BufferTag *vm_tag, polar_page_lock_t * page_lock)
 {
-	uint32 page_hash;
-	int      buf_id;
-	LWLock   *partition_lock;
-	Buffer vm_buf = InvalidBuffer;
+	uint32		page_hash;
+	int			buf_id;
+	LWLock	   *partition_lock;
+	Buffer		vm_buf = InvalidBuffer;
 
 	page_hash = BufTableHashCode(vm_tag);
 	partition_lock = BufMappingPartitionLock(page_hash);
@@ -103,10 +114,11 @@ polar_heap_vm_fresh_parse(XLogReaderState *record, Relation rel,
 static void
 polar_heap_vm_parse(XLogReaderState *record, uint8 heap_block, uint8 vm_block)
 {
-	BufferTag heap_tag, vm_tag;
+	BufferTag	heap_tag,
+				vm_tag;
 	polar_page_lock_t vm_lock;
-	Relation rel;
-	Buffer buf;
+	Relation	rel;
+	Buffer		buf;
 
 	POLAR_GET_LOG_TAG(record, heap_tag, heap_block);
 	POLAR_GET_LOG_TAG(record, vm_tag, vm_block);
@@ -129,7 +141,7 @@ polar_heap_vm_parse(XLogReaderState *record, uint8 heap_block, uint8 vm_block)
 static void
 polar_heap_insert_save(XLogReaderState *record)
 {
-	xl_heap_insert *xlrec = (xl_heap_insert *)record->main_data;
+	xl_heap_insert *xlrec = (xl_heap_insert *) record->main_data;
 
 	if (xlrec->flags & XLH_INSERT_ALL_VISIBLE_CLEARED)
 		polar_log_index_save_block(record, 1);
@@ -140,7 +152,7 @@ polar_heap_insert_save(XLogReaderState *record)
 static void
 polar_heap_insert_parse(XLogReaderState *record)
 {
-	xl_heap_insert *xlrec = (xl_heap_insert *)record->main_data;
+	xl_heap_insert *xlrec = (xl_heap_insert *) record->main_data;
 
 	if (xlrec->flags & XLH_INSERT_ALL_VISIBLE_CLEARED)
 		polar_heap_vm_parse(record, 0, 1);
@@ -151,7 +163,7 @@ polar_heap_insert_parse(XLogReaderState *record)
 static void
 polar_heap_multi_insert_save(XLogReaderState *record)
 {
-	xl_heap_multi_insert *xlrec = (xl_heap_multi_insert *)record->main_data;
+	xl_heap_multi_insert *xlrec = (xl_heap_multi_insert *) record->main_data;
 
 	if (xlrec->flags & XLH_INSERT_ALL_VISIBLE_CLEARED)
 		polar_log_index_save_block(record, 1);
@@ -211,6 +223,7 @@ polar_heap_cleanup_info_parse(XLogReaderState *record)
 	if (polar_enable_resolve_conflict && reachedConsistency && InHotStandby)
 	{
 		xl_heap_cleanup_info *xlrec = (xl_heap_cleanup_info *) XLogRecGetData(record);
+
 		ResolveRecoveryConflictWithSnapshot(xlrec->latestRemovedXid, xlrec->node);
 	}
 
@@ -252,7 +265,7 @@ polar_heap_visible_parse(XLogReaderState *record)
 static void
 polar_heap_multi_insert_parse(XLogReaderState *record)
 {
-	xl_heap_multi_insert *xlrec = (xl_heap_multi_insert *)record->main_data;
+	xl_heap_multi_insert *xlrec = (xl_heap_multi_insert *) record->main_data;
 
 	if (xlrec->flags & XLH_INSERT_ALL_VISIBLE_CLEARED)
 		polar_heap_vm_parse(record, 0, 1);
@@ -263,7 +276,7 @@ polar_heap_multi_insert_parse(XLogReaderState *record)
 static void
 polar_heap_delete_save(XLogReaderState *record)
 {
-	xl_heap_delete *xlrec = (xl_heap_delete *)record->main_data;
+	xl_heap_delete *xlrec = (xl_heap_delete *) record->main_data;
 
 	if (xlrec->flags & XLH_DELETE_ALL_VISIBLE_CLEARED)
 		polar_log_index_save_block(record, 1);
@@ -274,7 +287,7 @@ polar_heap_delete_save(XLogReaderState *record)
 static void
 polar_heap_delete_parse(XLogReaderState *record)
 {
-	xl_heap_delete *xlrec = (xl_heap_delete *)record->main_data;
+	xl_heap_delete *xlrec = (xl_heap_delete *) record->main_data;
 
 	if (xlrec->flags & XLH_DELETE_ALL_VISIBLE_CLEARED)
 		polar_heap_vm_parse(record, 0, 1);
@@ -285,7 +298,7 @@ polar_heap_delete_parse(XLogReaderState *record)
 static void
 polar_heap_lock_update_save(XLogReaderState *record)
 {
-	xl_heap_lock_updated *xlrec = (xl_heap_lock_updated *)record->main_data;
+	xl_heap_lock_updated *xlrec = (xl_heap_lock_updated *) record->main_data;
 
 	if (xlrec->flags & XLH_LOCK_ALL_FROZEN_CLEARED)
 		polar_log_index_save_block(record, 1);
@@ -296,7 +309,7 @@ polar_heap_lock_update_save(XLogReaderState *record)
 static void
 polar_heap_lock_update_parse(XLogReaderState *record)
 {
-	xl_heap_lock_updated *xlrec = (xl_heap_lock_updated *)record->main_data;
+	xl_heap_lock_updated *xlrec = (xl_heap_lock_updated *) record->main_data;
 
 	if (xlrec->flags & XLH_LOCK_ALL_FROZEN_CLEARED)
 		polar_heap_vm_parse(record, 0, 1);
@@ -307,7 +320,7 @@ polar_heap_lock_update_parse(XLogReaderState *record)
 static void
 polar_heap_lock_save(XLogReaderState *record)
 {
-	xl_heap_lock *xlrec = (xl_heap_lock *)record->main_data;
+	xl_heap_lock *xlrec = (xl_heap_lock *) record->main_data;
 
 	if (xlrec->flags & XLH_LOCK_ALL_FROZEN_CLEARED)
 		polar_log_index_save_block(record, 1);
@@ -318,7 +331,7 @@ polar_heap_lock_save(XLogReaderState *record)
 static void
 polar_heap_lock_parse(XLogReaderState *record)
 {
-	xl_heap_lock *xlrec = (xl_heap_lock *)record->main_data;
+	xl_heap_lock *xlrec = (xl_heap_lock *) record->main_data;
 
 	if (xlrec->flags & XLH_LOCK_ALL_FROZEN_CLEARED)
 		polar_heap_vm_parse(record, 0, 1);
@@ -329,8 +342,9 @@ polar_heap_lock_parse(XLogReaderState *record)
 static void
 polar_heap_xlog_update_save(XLogReaderState *record, bool hotupdate)
 {
-	BlockNumber oldblk, newblk;
-	xl_heap_update *xlrec = (xl_heap_update *)(record->main_data);
+	BlockNumber oldblk,
+				newblk;
+	xl_heap_update *xlrec = (xl_heap_update *) (record->main_data);
 
 	XLogRecGetBlockTag(record, 0, NULL, NULL, &newblk);
 
@@ -359,13 +373,16 @@ polar_heap_xlog_update_save(XLogReaderState *record, bool hotupdate)
 static void
 polar_heap_xlog_update_parse(XLogReaderState *record, bool hotupdate)
 {
-	BufferTag tag0, tag1;
-	BufferTag *old_tag;
-	BlockNumber oldblk, newblk;
+	BufferTag	tag0,
+				tag1;
+	BufferTag  *old_tag;
+	BlockNumber oldblk,
+				newblk;
 	polar_page_lock_t new_page_lock = POLAR_INVALID_PAGE_LOCK;
 	polar_page_lock_t old_page_lock = POLAR_INVALID_PAGE_LOCK;
-	Buffer nbuffer = InvalidBuffer, obuffer = InvalidBuffer;
-	xl_heap_update *xlrec = (xl_heap_update *)(record->main_data);
+	Buffer		nbuffer = InvalidBuffer,
+				obuffer = InvalidBuffer;
+	xl_heap_update *xlrec = (xl_heap_update *) (record->main_data);
 
 	POLAR_GET_LOG_TAG(record, tag0, 0);
 	newblk = tag0.blockNum;
@@ -416,10 +433,10 @@ polar_heap_xlog_update_parse(XLogReaderState *record, bool hotupdate)
 static XLogRedoAction
 polar_heap_xlog_clean(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 {
-	XLogRecPtr  lsn = record->EndRecPtr;
+	XLogRecPtr	lsn = record->EndRecPtr;
 	xl_heap_clean *xlrec = (xl_heap_clean *) XLogRecGetData(record);
 	XLogRedoAction action = BLK_NOTFOUND;
-	BufferTag tag0;
+	BufferTag	tag0;
 
 	POLAR_GET_LOG_TAG(record, tag0, 0);
 
@@ -434,21 +451,21 @@ polar_heap_xlog_clean(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 
 	if (action == BLK_NEEDS_REDO)
 	{
-		Page        page = (Page) BufferGetPage(*buffer);
+		Page		page = (Page) BufferGetPage(*buffer);
 		OffsetNumber *end;
 		OffsetNumber *redirected;
 		OffsetNumber *nowdead;
 		OffsetNumber *nowunused;
-		int         nredirected;
-		int         ndead;
-		int         nunused;
-		Size        datalen;
+		int			nredirected;
+		int			ndead;
+		int			nunused;
+		Size		datalen;
 
 		redirected = (OffsetNumber *) XLogRecGetBlockData(record, 0, &datalen);
 
 		nredirected = xlrec->nredirected;
 		ndead = xlrec->ndead;
-		end = (OffsetNumber *)((char *) redirected + datalen);
+		end = (OffsetNumber *) ((char *) redirected + datalen);
 		nowdead = redirected + (nredirected * 2);
 		nowunused = nowdead + ndead;
 		nunused = (end - nowunused);
@@ -482,11 +499,12 @@ polar_heap_xlog_clean(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 static XLogRedoAction
 polar_heap_xlog_visible(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 {
-	XLogRecPtr  lsn = record->EndRecPtr;
+	XLogRecPtr	lsn = record->EndRecPtr;
 	xl_heap_visible *xlrec = (xl_heap_visible *) XLogRecGetData(record);
 	XLogRedoAction action = BLK_NOTFOUND;
-	Page        page;
-	BufferTag   tag0, tag1;
+	Page		page;
+	BufferTag	tag0,
+				tag1;
 
 	POLAR_GET_LOG_TAG(record, tag0, 0);
 	POLAR_GET_LOG_TAG(record, tag1, 1);
@@ -494,27 +512,28 @@ polar_heap_xlog_visible(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 	if (BUFFERTAGS_EQUAL(*tag, tag1))
 	{
 		/*
-		 * Read the heap page, if it still exists. If the heap file has dropped or
-		 * truncated later in recovery, we don't need to update the page, but we'd
-		 * better still update the visibility map.
+		 * Read the heap page, if it still exists. If the heap file has
+		 * dropped or truncated later in recovery, we don't need to update the
+		 * page, but we'd better still update the visibility map.
 		 */
 		action = POLAR_READ_BUFFER_FOR_REDO(record, 1, buffer);
 
 		if (action == BLK_NEEDS_REDO)
 		{
 			/*
-			 * We don't bump the LSN of the heap page when setting the visibility
-			 * map bit (unless checksums or wal_hint_bits is enabled, in which
-			 * case we must), because that would generate an unworkable volume of
-			 * full-page writes.  This exposes us to torn page hazards, but since
-			 * we're not inspecting the existing page contents in any way, we
-			 * don't care.
+			 * We don't bump the LSN of the heap page when setting the
+			 * visibility map bit (unless checksums or wal_hint_bits is
+			 * enabled, in which case we must), because that would generate an
+			 * unworkable volume of full-page writes.  This exposes us to torn
+			 * page hazards, but since we're not inspecting the existing page
+			 * contents in any way, we don't care.
 			 *
-			 * However, all operations that clear the visibility map bit *do* bump
-			 * the LSN, and those operations will only be replayed if the XLOG LSN
-			 * follows the page LSN.  Thus, if the page LSN has advanced past our
-			 * XLOG record's LSN, we mustn't mark the page all-visible, because
-			 * the subsequent update won't be replayed to clear the flag.
+			 * However, all operations that clear the visibility map bit *do*
+			 * bump the LSN, and those operations will only be replayed if the
+			 * XLOG LSN follows the page LSN.  Thus, if the page LSN has
+			 * advanced past our XLOG record's LSN, we mustn't mark the page
+			 * all-visible, because the subsequent update won't be replayed to
+			 * clear the flag.
 			 */
 			page = BufferGetPage(*buffer);
 
@@ -533,17 +552,18 @@ polar_heap_xlog_visible(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 	if (BUFFERTAGS_EQUAL(*tag, tag0))
 	{
 		ReadBufferMode mode = BufferIsValid(*buffer) ? RBM_NORMAL_VALID : RBM_ZERO_ON_ERROR;
+
 		/*
-		 * Even if we skipped the heap page update due to the LSN interlock, it's
-		 * still safe to update the visibility map.  Any WAL record that clears
-		 * the visibility map bit does so before checking the page LSN, so any
-		 * bits that need to be cleared will still be cleared.
+		 * Even if we skipped the heap page update due to the LSN interlock,
+		 * it's still safe to update the visibility map.  Any WAL record that
+		 * clears the visibility map bit does so before checking the page LSN,
+		 * so any bits that need to be cleared will still be cleared.
 		 */
 		action = XLogReadBufferForRedoExtended(record, 0, mode, false, buffer);
 
 		if (action == BLK_NEEDS_REDO)
 		{
-			Page        vmpage = BufferGetPage(*buffer);
+			Page		vmpage = BufferGetPage(*buffer);
 
 			/* initialize the page if it was read as zeros */
 			if (PageIsNew(vmpage))
@@ -552,13 +572,14 @@ polar_heap_xlog_visible(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 			/*
 			 * Don't set the bit if replay has already passed this point.
 			 *
-			 * It might be safe to do this unconditionally; if replay has passed
-			 * this point, we'll replay at least as far this time as we did
-			 * before, and if this bit needs to be cleared, the record responsible
-			 * for doing so should be again replayed, and clear it.  For right
-			 * now, out of an abundance of conservatism, we use the same test here
-			 * we did for the heap page.  If this results in a dropped bit, no
-			 * real harm is done; and the next VACUUM will fix it.
+			 * It might be safe to do this unconditionally; if replay has
+			 * passed this point, we'll replay at least as far this time as we
+			 * did before, and if this bit needs to be cleared, the record
+			 * responsible for doing so should be again replayed, and clear
+			 * it.  For right now, out of an abundance of conservatism, we use
+			 * the same test here we did for the heap page.  If this results
+			 * in a dropped bit, no real harm is done; and the next VACUUM
+			 * will fix it.
 			 */
 			if (lsn > PageGetLSN(vmpage))
 				polar_visibilitymap_set(tag1.blockNum, *buffer, xlrec->flags);
@@ -571,11 +592,11 @@ polar_heap_xlog_visible(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 static XLogRedoAction
 polar_heap_xlog_freeze_page(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 {
-	XLogRecPtr  lsn = record->EndRecPtr;
+	XLogRecPtr	lsn = record->EndRecPtr;
 	xl_heap_freeze_page *xlrec = (xl_heap_freeze_page *) XLogRecGetData(record);
 	XLogRedoAction action = BLK_NOTFOUND;
-	int         ntup;
-	BufferTag tag0;
+	int			ntup;
+	BufferTag	tag0;
 
 	POLAR_GET_LOG_TAG(record, tag0, 0);
 
@@ -586,7 +607,7 @@ polar_heap_xlog_freeze_page(XLogReaderState *record, BufferTag *tag, Buffer *buf
 
 	if (action == BLK_NEEDS_REDO)
 	{
-		Page        page = BufferGetPage(*buffer);
+		Page		page = BufferGetPage(*buffer);
 		xl_heap_freeze_tuple *tuples;
 
 		tuples = (xl_heap_freeze_tuple *) XLogRecGetBlockData(record, 0, NULL);
@@ -595,7 +616,7 @@ polar_heap_xlog_freeze_page(XLogReaderState *record, BufferTag *tag, Buffer *buf
 		for (ntup = 0; ntup < xlrec->ntuples; ntup++)
 		{
 			xl_heap_freeze_tuple *xlrec_tp;
-			ItemId      lp;
+			ItemId		lp;
 			HeapTupleHeader tuple;
 
 			xlrec_tp = &tuples[ntup];
@@ -617,22 +638,24 @@ polar_heap_xlog_freeze_page(XLogReaderState *record, BufferTag *tag, Buffer *buf
 static XLogRedoAction
 polar_heap_xlog_multi_insert(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 {
-	XLogRecPtr  lsn = record->EndRecPtr;
+	XLogRecPtr	lsn = record->EndRecPtr;
 	XLogRedoAction action = BLK_NOTFOUND;
 	xl_heap_multi_insert *xlrec;
-	Page        page;
+	Page		page;
 	union
 	{
 		HeapTupleHeaderData hdr;
-		char        data[MaxHeapTupleSize];
-	}           tbuf;
+		char		data[MaxHeapTupleSize];
+	}			tbuf;
 	HeapTupleHeader htup;
-	uint32      newlen;
-	int         i;
-	bool        isinit = (XLogRecGetInfo(record) & XLOG_HEAP_INIT_PAGE) != 0;
-	BufferTag   tag0, tag1;
+	uint32		newlen;
+	int			i;
+	bool		isinit = (XLogRecGetInfo(record) & XLOG_HEAP_INIT_PAGE) != 0;
+	BufferTag	tag0,
+				tag1;
 
 	POLAR_GET_LOG_TAG(record, tag0, 0);
+
 	/*
 	 * Insertion doesn't overwrite MVCC data, so no conflict processing is
 	 * required.
@@ -670,9 +693,9 @@ polar_heap_xlog_multi_insert(XLogReaderState *record, BufferTag *tag, Buffer *bu
 
 		if (action == BLK_NEEDS_REDO)
 		{
-			char       *tupdata;
-			char       *endptr;
-			Size        len;
+			char	   *tupdata;
+			char	   *endptr;
+			Size		len;
 
 			/* Tuples are stored as block data */
 			tupdata = XLogRecGetBlockData(record, 0, &len);
@@ -752,14 +775,15 @@ polar_heap_xlog_multi_insert(XLogReaderState *record, BufferTag *tag, Buffer *bu
 static XLogRedoAction
 polar_heap_xlog_lock_updated(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 {
-	XLogRecPtr  lsn = record->EndRecPtr;
+	XLogRecPtr	lsn = record->EndRecPtr;
 	XLogRedoAction action = BLK_NOTFOUND;
 	xl_heap_lock_updated *xlrec;
-	Page        page;
+	Page		page;
 	OffsetNumber offnum;
-	ItemId      lp = NULL;
+	ItemId		lp = NULL;
 	HeapTupleHeader htup;
-	BufferTag   tag0, tag1;
+	BufferTag	tag0,
+				tag1;
 
 	POLAR_GET_LOG_TAG(record, tag0, 0);
 	INIT_BUFFERTAG(tag1, tag0.rnode, VISIBILITYMAP_FORKNUM, HEAPBLK_TO_MAPBLOCK(tag0.blockNum));
@@ -817,19 +841,20 @@ polar_heap_xlog_lock_updated(XLogReaderState *record, BufferTag *tag, Buffer *bu
 static XLogRedoAction
 polar_heap_xlog_insert(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 {
-	XLogRecPtr  lsn = record->EndRecPtr;
+	XLogRecPtr	lsn = record->EndRecPtr;
 	xl_heap_insert *xlrec = (xl_heap_insert *) XLogRecGetData(record);
-	Page        page;
+	Page		page;
 	union
 	{
 		HeapTupleHeaderData hdr;
-		char        data[MaxHeapTupleSize];
-	}           tbuf;
+		char		data[MaxHeapTupleSize];
+	}			tbuf;
 	HeapTupleHeader htup;
 	xl_heap_header xlhdr;
-	uint32      newlen;
+	uint32		newlen;
 	ItemPointerData target_tid;
-	BufferTag   tag0, tag1;
+	BufferTag	tag0,
+				tag1;
 	XLogRedoAction action = BLK_NOTFOUND;
 
 	POLAR_GET_LOG_TAG(record, tag0, 0);
@@ -854,8 +879,8 @@ polar_heap_xlog_insert(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 		ItemPointerSetOffsetNumber(&target_tid, xlrec->offnum);
 
 		/*
-		 * If we inserted the first and only tuple on the page, re-initialize the
-		 * page from scratch.
+		 * If we inserted the first and only tuple on the page, re-initialize
+		 * the page from scratch.
 		 */
 		if (XLogRecGetInfo(record) & XLOG_HEAP_INIT_PAGE)
 		{
@@ -870,8 +895,8 @@ polar_heap_xlog_insert(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 
 		if (action == BLK_NEEDS_REDO)
 		{
-			Size        datalen;
-			char       *data;
+			Size		datalen;
+			char	   *data;
 
 			page = BufferGetPage(*buffer);
 
@@ -923,13 +948,14 @@ polar_heap_xlog_insert(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 static XLogRedoAction
 polar_heap_xlog_delete(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 {
-	XLogRecPtr  lsn = record->EndRecPtr;
+	XLogRecPtr	lsn = record->EndRecPtr;
 	xl_heap_delete *xlrec = (xl_heap_delete *) XLogRecGetData(record);
-	Page        page;
-	ItemId      lp = NULL;
+	Page		page;
+	ItemId		lp = NULL;
 	HeapTupleHeader htup;
 	ItemPointerData target_tid;
-	BufferTag tag0, tag1;
+	BufferTag	tag0,
+				tag1;
 
 	XLogRedoAction action = BLK_NOTFOUND;
 
@@ -1009,32 +1035,35 @@ polar_heap_xlog_delete(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 static XLogRedoAction
 polar_heap_xlog_update(XLogReaderState *record, BufferTag *tag, Buffer *buffer, bool hotupdate)
 {
-	XLogRecPtr  lsn = record->EndRecPtr;
+	XLogRecPtr	lsn = record->EndRecPtr;
 	xl_heap_update *xlrec = (xl_heap_update *) XLogRecGetData(record);
 	BlockNumber oldblk;
 	BlockNumber newblk;
 	ItemPointerData newtid;
-	Page        page;
+	Page		page;
 	OffsetNumber offnum;
-	ItemId      lp = NULL;
+	ItemId		lp = NULL;
 	HeapTupleData oldtup;
 	HeapTupleHeader htup;
-	uint16      prefixlen = 0,
+	uint16		prefixlen = 0,
 				suffixlen = 0;
-	char       *newp;
+	char	   *newp;
 	union
 	{
 		HeapTupleHeaderData hdr;
-		char        data[MaxHeapTupleSize];
-	}           tbuf;
+		char		data[MaxHeapTupleSize];
+	}			tbuf;
 	xl_heap_header xlhdr;
-	uint32      newlen;
+	uint32		newlen;
 	XLogRedoAction action = BLK_NOTFOUND;
-	BufferTag   tag0, tag1, tag2, tag3;
-	BufferTag   *old_tag = NULL,
-				 *new_tag = NULL,
-				  *old_vm_tag = NULL,
-				   *new_vm_tag = NULL;
+	BufferTag	tag0,
+				tag1,
+				tag2,
+				tag3;
+	BufferTag  *old_tag = NULL,
+			   *new_tag = NULL,
+			   *old_vm_tag = NULL,
+			   *new_vm_tag = NULL;
 
 	/* initialize to keep the compiler quiet */
 	oldtup.t_data = NULL;
@@ -1118,11 +1147,11 @@ polar_heap_xlog_update(XLogReaderState *record, BufferTag *tag, Buffer *buffer, 
 		/*
 		 * In normal operation, it is important to lock the two pages in
 		 * page-number order, to avoid possible deadlocks against other update
-		 * operations going the other way.  However, during WAL replay there can
-		 * be no other update happening, so we don't need to worry about that. But
-		 * we *do* need to worry that we don't expose an inconsistent state to Hot
-		 * Standby queries --- so the original page can't be unlocked before we've
-		 * added the new tuple to the new page.
+		 * operations going the other way.  However, during WAL replay there
+		 * can be no other update happening, so we don't need to worry about
+		 * that. But we *do* need to worry that we don't expose an
+		 * inconsistent state to Hot Standby queries --- so the original page
+		 * can't be unlocked before we've added the new tuple to the new page.
 		 */
 
 		/* Deal with old tuple version */
@@ -1197,10 +1226,10 @@ polar_heap_xlog_update(XLogReaderState *record, BufferTag *tag, Buffer *buffer, 
 		/* Deal with new tuple */
 		if (action == BLK_NEEDS_REDO)
 		{
-			char       *recdata;
-			char       *recdata_end;
-			Size        datalen;
-			Size        tuplen;
+			char	   *recdata;
+			char	   *recdata_end;
+			Size		datalen;
+			Size		tuplen;
 
 			recdata = XLogRecGetBlockData(record, 0, &datalen);
 			recdata_end = recdata + datalen;
@@ -1218,7 +1247,10 @@ polar_heap_xlog_update(XLogReaderState *record, BufferTag *tag, Buffer *buffer, 
 
 			if (xlrec->flags & XLH_UPDATE_PREFIX_FROM_OLD)
 			{
-				/* pageTag->blockNum must equal oldblk, see function log_heap_update */
+				/*
+				 * pageTag->blockNum must equal oldblk, see function
+				 * log_heap_update
+				 */
 				Assert(newblk == oldblk);
 				memcpy(&prefixlen, recdata, sizeof(uint16));
 				recdata += sizeof(uint16);
@@ -1226,7 +1258,10 @@ polar_heap_xlog_update(XLogReaderState *record, BufferTag *tag, Buffer *buffer, 
 
 			if (xlrec->flags & XLH_UPDATE_SUFFIX_FROM_OLD)
 			{
-				/* pageTag->blockNum must equal oldblk, see function log_heap_update */
+				/*
+				 * pageTag->blockNum must equal oldblk, see function
+				 * log_heap_update
+				 */
 				Assert(newblk == oldblk);
 				memcpy(&suffixlen, recdata, sizeof(uint16));
 				recdata += sizeof(uint16);
@@ -1242,14 +1277,14 @@ polar_heap_xlog_update(XLogReaderState *record, BufferTag *tag, Buffer *buffer, 
 			MemSet((char *) htup, 0, SizeofHeapTupleHeader);
 
 			/*
-			 * Reconstruct the new tuple using the prefix and/or suffix from the
-			 * old tuple, and the data stored in the WAL record.
+			 * Reconstruct the new tuple using the prefix and/or suffix from
+			 * the old tuple, and the data stored in the WAL record.
 			 */
 			newp = (char *) htup + SizeofHeapTupleHeader;
 
 			if (prefixlen > 0)
 			{
-				int         len;
+				int			len;
 
 				/* copy bitmap [+ padding] [+ oid] from WAL record */
 				len = xlhdr.t_hoff - SizeofHeapTupleHeader;
@@ -1276,8 +1311,8 @@ polar_heap_xlog_update(XLogReaderState *record, BufferTag *tag, Buffer *buffer, 
 			else
 			{
 				/*
-				 * copy bitmap [+ padding] [+ oid] + data from record, all in one
-				 * go
+				 * copy bitmap [+ padding] [+ oid] + data from record, all in
+				 * one go
 				 */
 				memcpy(newp, recdata, tuplen);
 				recdata += tuplen;
@@ -1334,14 +1369,14 @@ polar_heap_xlog_update(XLogReaderState *record, BufferTag *tag, Buffer *buffer, 
 static XLogRedoAction
 polar_heap_xlog_confirm(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 {
-	XLogRecPtr  lsn = record->EndRecPtr;
+	XLogRecPtr	lsn = record->EndRecPtr;
 	xl_heap_confirm *xlrec = (xl_heap_confirm *) XLogRecGetData(record);
 	XLogRedoAction action = BLK_NOTFOUND;
-	Page        page;
+	Page		page;
 	OffsetNumber offnum;
-	ItemId      lp = NULL;
+	ItemId		lp = NULL;
 	HeapTupleHeader htup;
-	BufferTag tag0;
+	BufferTag	tag0;
 
 	POLAR_GET_LOG_TAG(record, tag0, 0);
 
@@ -1382,14 +1417,15 @@ polar_heap_xlog_confirm(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 static XLogRedoAction
 polar_heap_xlog_lock(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 {
-	XLogRecPtr  lsn = record->EndRecPtr;
+	XLogRecPtr	lsn = record->EndRecPtr;
 	xl_heap_lock *xlrec = (xl_heap_lock *) XLogRecGetData(record);
 	XLogRedoAction action = BLK_NOTFOUND;
-	Page        page;
+	Page		page;
 	OffsetNumber offnum;
-	ItemId      lp = NULL;
+	ItemId		lp = NULL;
 	HeapTupleHeader htup;
-	BufferTag   tag0, tag1;
+	BufferTag	tag0,
+				tag1;
 
 	POLAR_GET_LOG_TAG(record, tag0, 0);
 	INIT_BUFFERTAG(tag1, tag0.rnode, VISIBILITYMAP_FORKNUM, HEAPBLK_TO_MAPBLOCK(tag0.blockNum));
@@ -1431,8 +1467,8 @@ polar_heap_xlog_lock(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 									   &htup->t_infomask2);
 
 			/*
-			 * Clear relevant update flags, but only if the modified infomask says
-			 * there's no update.
+			 * Clear relevant update flags, but only if the modified infomask
+			 * says there's no update.
 			 */
 			if (HEAP_XMAX_IS_LOCKED_ONLY(htup->t_infomask))
 			{
@@ -1455,16 +1491,16 @@ polar_heap_xlog_lock(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 static XLogRedoAction
 polar_heap_xlog_inplace(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 {
-	XLogRecPtr  lsn = record->EndRecPtr;
+	XLogRecPtr	lsn = record->EndRecPtr;
 	xl_heap_inplace *xlrec = (xl_heap_inplace *) XLogRecGetData(record);
 	XLogRedoAction action = BLK_NOTFOUND;
-	Page        page;
+	Page		page;
 	OffsetNumber offnum;
-	ItemId      lp = NULL;
+	ItemId		lp = NULL;
 	HeapTupleHeader htup;
-	uint32      oldlen;
-	Size        newlen;
-	BufferTag   tag0;
+	uint32		oldlen;
+	Size		newlen;
+	BufferTag	tag0;
 
 	POLAR_GET_LOG_TAG(record, tag0, 0);
 
@@ -1475,7 +1511,7 @@ polar_heap_xlog_inplace(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 
 	if (action == BLK_NEEDS_REDO)
 	{
-		char       *newtup = XLogRecGetBlockData(record, 0, &newlen);
+		char	   *newtup = XLogRecGetBlockData(record, 0, &newlen);
 
 		page = BufferGetPage(*buffer);
 
@@ -1512,7 +1548,7 @@ polar_heap_xlog_inplace(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 void
 polar_heap2_idx_save(XLogReaderState *record)
 {
-	uint8       info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
+	uint8		info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
 
 	switch (info & XLOG_HEAP_OPMASK)
 	{
@@ -1553,7 +1589,7 @@ polar_heap2_idx_save(XLogReaderState *record)
 bool
 polar_heap2_idx_parse(XLogReaderState *record)
 {
-	uint8       info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
+	uint8		info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
 
 	switch (info & XLOG_HEAP_OPMASK)
 	{
@@ -1599,7 +1635,7 @@ polar_heap2_idx_parse(XLogReaderState *record)
 XLogRedoAction
 polar_heap2_idx_redo(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 {
-	uint8       info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
+	uint8		info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
 
 	switch (info & XLOG_HEAP_OPMASK)
 	{
@@ -1610,7 +1646,7 @@ polar_heap2_idx_redo(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 			return polar_heap_xlog_freeze_page(record, tag, buffer);
 
 		case XLOG_HEAP2_CLEANUP_INFO:
-			/* nothing to do, don't modify buffer, never here*/
+			/* nothing to do, don't modify buffer, never here */
 			Assert(0);
 			break;
 
@@ -1634,7 +1670,7 @@ polar_heap2_idx_redo(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 void
 polar_heap_idx_save(XLogReaderState *record)
 {
-	uint8       info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
+	uint8		info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
 
 	switch (info & XLOG_HEAP_OPMASK)
 	{
@@ -1679,7 +1715,7 @@ polar_heap_idx_save(XLogReaderState *record)
 bool
 polar_heap_idx_parse(XLogReaderState *record)
 {
-	uint8       info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
+	uint8		info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
 
 	switch (info & XLOG_HEAP_OPMASK)
 	{
@@ -1731,7 +1767,7 @@ polar_heap_idx_parse(XLogReaderState *record)
 XLogRedoAction
 polar_heap_idx_redo(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 {
-	uint8       info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
+	uint8		info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
 
 	switch (info & XLOG_HEAP_OPMASK)
 	{

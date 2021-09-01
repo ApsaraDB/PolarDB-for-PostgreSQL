@@ -54,13 +54,14 @@ typedef struct polar_pending_tx polar_pending_tx;
 typedef enum polar_pending_lock_get_state
 {
 	POLAR_PENDING_LOCK_IDLE,	/* new added, need to be owned */
-	POLAR_PENDING_LOCK_GETTING,	/* owned, and try to get */
+	POLAR_PENDING_LOCK_GETTING, /* owned, and try to get */
 	POLAR_PENDING_LOCK_GOT		/* get succeed */
 } polar_pending_lock_get_state;
 
 typedef struct polar_pending_lock
 {
-	XLogRecPtr last_ptr;		/* last_replayed_end_rec_ptr, which is fucking long */
+	XLogRecPtr	last_ptr;		/* last_replayed_end_rec_ptr, which is fucking
+								 * long */
 	TimestampTz rtime;			/* rtime of startup replay this lock */
 
 	TransactionId xid;			/* xid of holder of AccessExclusiveLock */
@@ -75,21 +76,22 @@ typedef struct polar_pending_lock
 
 typedef enum polar_pending_tx_commit_state
 {
-	POLAR_PENDING_TX_UNKNOWN,		/* in progress */
-	POLAR_PENDING_TX_RELEASED		/* commited/aborted */
+	POLAR_PENDING_TX_UNKNOWN,	/* in progress */
+	POLAR_PENDING_TX_RELEASED	/* commited/aborted */
 } polar_pending_tx_commit_state;
 
 typedef struct polar_pending_tx
 {
-	TransactionId	xid;
-	polar_pending_tx_commit_state commit_state;/* is this transaction commited or aborted? */
+	TransactionId xid;
+	polar_pending_tx_commit_state commit_state; /* is this transaction
+												 * commited or aborted? */
 
-	polar_pending_lock *head;		/* points to lock list head */
-	polar_pending_lock *tail;		/* points to lock list tail */
+	polar_pending_lock *head;	/* points to lock list head */
+	polar_pending_lock *tail;	/* points to lock list tail */
 	polar_pending_lock *cur_lock;	/* current lock trying to get */
 
-	XLogRecPtr		last_ptr;		/* for quick accesss */
-	LWLock			lock;			/* lock used for own this transaction */
+	XLogRecPtr	last_ptr;		/* for quick accesss */
+	LWLock		lock;			/* lock used for own this transaction */
 	polar_pending_tx *next;
 	polar_async_ddl_lock_replay_worker_t *worker;
 } polar_pending_tx;
@@ -102,30 +104,30 @@ typedef struct polar_async_ddl_lock_replay_worker_handle_t
 
 typedef struct polar_async_ddl_lock_replay_worker_t
 {
-	int		id;
-	int		pid;
-	bool	working;
+	int			id;
+	int			pid;
+	bool		working;
 
-	polar_pending_tx *head;			/* points to transaction list head */
-	polar_pending_tx *cur_tx;		/* points to current transaction trying to get */
+	polar_pending_tx *head;		/* points to transaction list head */
+	polar_pending_tx *cur_tx;	/* points to current transaction trying to get */
 
-	LWLock			lock;			/* Lock to transaction list, read on this by
-									   current worker no need for this lock */
+	LWLock		lock;			/* Lock to transaction list, read on this by
+								 * current worker no need for this lock */
 	polar_async_ddl_lock_replay_worker_handle_t handle;
 } polar_async_ddl_lock_replay_worker_t;
 
 typedef struct polar_async_ddl_lock_replay_ctl_t
 {
-	bool			working;
-	HTAB			*entries;
-	HTAB			*locks;
+	bool		working;
+	HTAB	   *entries;
+	HTAB	   *locks;
 
-	LWLock			lock_tbl_lock;	/* Lock to pending lock table */
-	LWLock			tx_tbl_lock;	/* Lock to pending transaction table */
+	LWLock		lock_tbl_lock;	/* Lock to pending lock table */
+	LWLock		tx_tbl_lock;	/* Lock to pending transaction table */
 	polar_async_ddl_lock_replay_worker_t workers[FLEXIBLE_ARRAY_MEMBER];
 } polar_async_ddl_lock_replay_ctl_t;
 
-extern int polar_async_ddl_lock_replay_worker_num;
+extern int	polar_async_ddl_lock_replay_worker_num;
 extern polar_async_ddl_lock_replay_ctl_t *polar_async_ddl_lock_replay_ctl;
 
 /* worker operation interface */
@@ -146,4 +148,4 @@ extern bool polar_async_ddl_lock_replay_lock_is_replaying(xl_standby_lock *lock)
 extern void polar_async_ddl_lock_replay_release_one_tx(TransactionId xid);
 extern void polar_async_ddl_lock_replay_release_all_tx(void);
 
-#endif /* !POLAR_ASYNC_DDL_LOCK_REPLAY_H */
+#endif							/* !POLAR_ASYNC_DDL_LOCK_REPLAY_H */

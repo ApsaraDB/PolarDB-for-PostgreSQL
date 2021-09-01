@@ -4,16 +4,18 @@
  *
  *	  PolarDB Virtual file descriptor code.
  *
- *	  Copyright (c) 2020, Alibaba Group Holding Limited
- *	  Licensed under the Apache License, Version 2.0 (the "License");
- *	  you may not use this file except in compliance with the License.
- *	  You may obtain a copy of the License at
- *	  http://www.apache.org/licenses/LICENSE-2.0
- *	  Unless required by applicable law or agreed to in writing, software
- *	  distributed under the License is distributed on an "AS IS" BASIS,
- *	  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- *	  See the License for the specific language governing permissions and
- *	  limitations under the License.
+ * Copyright (c) 2020, Alibaba Group Holding Limited
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  *
  * IDENTIFICATION
  *	  src/backend/storage/file/polar_fd.c
@@ -56,17 +58,17 @@
 #define		POLAR_STANDBY_MODE	0x02
 #define		POLAR_DATAMAX_MODE	0x04
 
-bool	polar_mount_pfs_readonly_mode = true;
-bool	polar_openfile_with_readonly_in_replica = false;
-int		polar_vfs_switch = POLAR_VFS_SWITCH_LOCAL;
+bool		polar_mount_pfs_readonly_mode = true;
+bool		polar_openfile_with_readonly_in_replica = false;
+int			polar_vfs_switch = POLAR_VFS_SWITCH_LOCAL;
 
-static inline const vfs_mgr* polar_get_local_vfs_mgr(const char *path);
+static inline const vfs_mgr *polar_get_local_vfs_mgr(const char *path);
 
 /*
  * Record the initial node type, it is initialized by postmaster, inherited by
  * other backends. We record this value in shared memory later.
  */
-PolarNodeType	polar_local_node_type = POLAR_UNKNOWN;
+PolarNodeType polar_local_node_type = POLAR_UNKNOWN;
 
 /*
  * POLAR: The virtual file interface
@@ -74,16 +76,16 @@ PolarNodeType	polar_local_node_type = POLAR_UNKNOWN;
  * polar_vfs_switch = POLAR_VFS_SWITCH_LOCAL
  * 2 When a storage plugin is accessed, all io call implemented in the plugin.
  * polar_vfs_switch = POLAR_VFS_SWITCH_PLUGIN
- * 3 polar_vfs means use function in plugin to read write data which include local file or 
+ * 3 polar_vfs means use function in plugin to read write data which include local file or
  * stared storage file.
  */
-vfs_mgr polar_vfs[] =
+vfs_mgr		polar_vfs[] =
 {
 	{
 		.vfs_mount = NULL,
 		.vfs_umount = NULL,
 		.vfs_remount = NULL,
-		.vfs_open = (vfs_open_type)open,
+		.vfs_open = (vfs_open_type) open,
 		.vfs_creat = creat,
 		.vfs_close = close,
 		.vfs_read = read,
@@ -158,13 +160,17 @@ polar_umount(void)
 inline int
 polar_remount(void)
 {
-	int ret = 0;
+	int			ret = 0;
+
 	if (polar_vfs[polar_vfs_switch].vfs_remount)
 		ret = polar_vfs[polar_vfs_switch].vfs_remount();
 #if 0
 	if (polar_enable_io_fencing && ret == 0)
 	{
-		/* POLAR: FATAL when shared storage is unavailable, or force to write RWID. */
+		/*
+		 * POLAR: FATAL when shared storage is unavailable, or force to write
+		 * RWID.
+		 */
 		if (polar_shared_storage_is_available())
 		{
 			polar_hold_shared_storage(true);
@@ -281,7 +287,7 @@ polar_ftruncate(int fd, off_t len)
 	return polar_vfs[polar_vfs_switch].vfs_ftruncate(fd, len);
 }
 
-inline DIR	*
+inline DIR *
 polar_opendir(const char *path)
 {
 	return polar_vfs[polar_vfs_switch].vfs_opendir(path);
@@ -312,17 +318,17 @@ polar_rmdir(const char *path)
 	return polar_vfs[polar_vfs_switch].vfs_rmdir(path);
 }
 
-static inline const vfs_mgr*
+static inline const vfs_mgr *
 polar_get_local_vfs_mgr(const char *path)
 {
 	return &polar_vfs[POLAR_VFS_SWITCH_LOCAL];
 }
 
-const vfs_mgr*
+const vfs_mgr *
 polar_vfs_mgr(const char *path)
 {
 	if (polar_vfs[polar_vfs_switch].vfs_mgr_func)
-		return (polar_vfs[polar_vfs_switch].vfs_mgr_func)(path);
+		return (polar_vfs[polar_vfs_switch].vfs_mgr_func) (path);
 
 	return NULL;
 }
@@ -353,8 +359,8 @@ polar_copydir(char *fromdir, char *todir, bool recurse, bool clean, bool skiperr
 	}
 
 	/*
-	 * For polar store, the readdir will cache a dir entry, if the dir is deleted
-	 * when readdir, it will fail. So we should retry.
+	 * For polar store, the readdir will cache a dir entry, if the dir is
+	 * deleted when readdir, it will fail. So we should retry.
 	 *
 	 * For create/drop database, we will have a lock during the copying time,
 	 * no directories will be deleted, so do not care this failure.
@@ -415,7 +421,7 @@ read_dir_failed:
 	{
 		ereport(LOG,
 				(errcode_for_file_access(),
-					errmsg("When readdir, some entries were deleted, retry.")));
+				 errmsg("When readdir, some entries were deleted, retry.")));
 		goto read_dir_failed;
 	}
 
@@ -437,24 +443,24 @@ polar_copy_file(char *fromfile, char *tofile, bool skiperr)
 
 	srcfd = polar_open_transient_file(fromfile, O_RDONLY | PG_BINARY);
 	if (srcfd < 0)
-	if (srcfd < 0)
-	{
-		/* File may be deleted, skip it and free buffer */
-		if (ENOENT == errno && skiperr)
+		if (srcfd < 0)
 		{
-			ereport(LOG,
-					(errcode_for_file_access(),
-					 errmsg("file \"%s\" not exist: %m", fromfile)));
-			pfree(buffer);
-			return;
+			/* File may be deleted, skip it and free buffer */
+			if (ENOENT == errno && skiperr)
+			{
+				ereport(LOG,
+						(errcode_for_file_access(),
+						 errmsg("file \"%s\" not exist: %m", fromfile)));
+				pfree(buffer);
+				return;
+			}
+			else
+			{
+				ereport(ERROR,
+						(errcode_for_file_access(),
+						 errmsg("could not open file \"%s\": %m", fromfile)));
+			}
 		}
-		else
-		{
-			ereport(ERROR,
-					(errcode_for_file_access(),
-					 errmsg("could not open file \"%s\": %m", fromfile)));
-		}
-	}
 
 	dstfd = polar_open_transient_file(tofile, O_RDWR | O_CREAT | O_EXCL | PG_BINARY);
 	if (dstfd < 0)
@@ -531,15 +537,15 @@ polar_xLog_file_path(char *path, TimeLineID tli, XLogSegNo logSegNo, int wal_seg
 {
 	if (POLAR_FILE_IN_SHARED_STORAGE())
 	{
-		snprintf(path, MAXPGPATH, "%s/" XLOGDIR "/%08X%08X%08X", polar_datadir, tli,	
-			 (uint32) ((logSegNo) / XLogSegmentsPerXLogId(wal_segsz_bytes)), 
-			 (uint32) ((logSegNo) % XLogSegmentsPerXLogId(wal_segsz_bytes)));
+		snprintf(path, MAXPGPATH, "%s/" XLOGDIR "/%08X%08X%08X", polar_datadir, tli,
+				 (uint32) ((logSegNo) / XLogSegmentsPerXLogId(wal_segsz_bytes)),
+				 (uint32) ((logSegNo) % XLogSegmentsPerXLogId(wal_segsz_bytes)));
 	}
 	else
 	{
-		snprintf(path, MAXPGPATH, XLOGDIR "/%08X%08X%08X", tli,	
-			 (uint32) ((logSegNo) / XLogSegmentsPerXLogId(wal_segsz_bytes)), 
-			 (uint32) ((logSegNo) % XLogSegmentsPerXLogId(wal_segsz_bytes)));
+		snprintf(path, MAXPGPATH, XLOGDIR "/%08X%08X%08X", tli,
+				 (uint32) ((logSegNo) / XLogSegmentsPerXLogId(wal_segsz_bytes)),
+				 (uint32) ((logSegNo) % XLogSegmentsPerXLogId(wal_segsz_bytes)));
 	}
 
 	return;
@@ -582,16 +588,16 @@ polar_backup_history_file_path(char *path, TimeLineID tli, XLogSegNo logSegNo, X
 	if (POLAR_FILE_IN_SHARED_STORAGE())
 	{
 		snprintf(path, MAXPGPATH, "%s/" XLOGDIR "/%08X%08X%08X.%08X.backup", polar_datadir, tli,
-			 (uint32) ((logSegNo) / XLogSegmentsPerXLogId(wal_segsz_bytes)),
-			 (uint32) ((logSegNo) % XLogSegmentsPerXLogId(wal_segsz_bytes)),
-			 (uint32) (XLogSegmentOffset((startpoint), wal_segsz_bytes)));
+				 (uint32) ((logSegNo) / XLogSegmentsPerXLogId(wal_segsz_bytes)),
+				 (uint32) ((logSegNo) % XLogSegmentsPerXLogId(wal_segsz_bytes)),
+				 (uint32) (XLogSegmentOffset((startpoint), wal_segsz_bytes)));
 	}
 	else
 	{
 		snprintf(path, MAXPGPATH, XLOGDIR "/%08X%08X%08X.%08X.backup", tli,
-			 (uint32) ((logSegNo) / XLogSegmentsPerXLogId(wal_segsz_bytes)),
-			 (uint32) ((logSegNo) % XLogSegmentsPerXLogId(wal_segsz_bytes)),
-			 (uint32) (XLogSegmentOffset((startpoint), wal_segsz_bytes)));
+				 (uint32) ((logSegNo) / XLogSegmentsPerXLogId(wal_segsz_bytes)),
+				 (uint32) ((logSegNo) % XLogSegmentsPerXLogId(wal_segsz_bytes)),
+				 (uint32) (XLogSegmentOffset((startpoint), wal_segsz_bytes)));
 	}
 
 	return;
@@ -614,10 +620,11 @@ polar_node_type_by_file(void)
 {
 	FILE	   *fd;
 	ConfigVariable *item,
-	               *head = NULL,
-	               *tail = NULL;
+			   *head = NULL,
+			   *tail = NULL;
+
 	/* use flag to show whether replica/standby/datamax is requested */
-	uint8_t 	flag = 0;
+	uint8_t		flag = 0;
 	PolarNodeType polar_node_type = POLAR_UNKNOWN;
 
 #define RECOVERY_COMMAND_FILE	"recovery.conf"
@@ -632,9 +639,9 @@ polar_node_type_by_file(void)
 			return polar_node_type;
 		}
 		ereport(FATAL,
-		        (errcode_for_file_access(),
-			        errmsg("could not open recovery command file \"%s\": %m",
-			               RECOVERY_COMMAND_FILE)));
+				(errcode_for_file_access(),
+				 errmsg("could not open recovery command file \"%s\": %m",
+						RECOVERY_COMMAND_FILE)));
 	}
 
 	/*
@@ -648,16 +655,17 @@ polar_node_type_by_file(void)
 	for (item = head; item; item = item->next)
 	{
 		/* set true when replica or standby mode is set */
-		bool polar_is_set = false;
+		bool		polar_is_set = false;
+
 		if (strcmp(item->name, "polar_replica") == 0)
 		{
 			if (!parse_bool(item->value, &polar_is_set))
 				ereport(ERROR,
-				        (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-					        errmsg("parameter \"%s\" requires a Boolean value",
-					               "polar_replica")));
+						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						 errmsg("parameter \"%s\" requires a Boolean value",
+								"polar_replica")));
 			ereport(LOG,
-			        (errmsg_internal("polar_replica = '%s'", item->value)));
+					(errmsg_internal("polar_replica = '%s'", item->value)));
 			if (polar_is_set)
 				flag |= POLAR_REPLICA_MODE;
 		}
@@ -665,11 +673,11 @@ polar_node_type_by_file(void)
 		{
 			if (!parse_bool(item->value, &polar_is_set))
 				ereport(ERROR,
-				        (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-					        errmsg("parameter \"%s\" requires a Boolean value",
-					               "standby_mode")));
+						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						 errmsg("parameter \"%s\" requires a Boolean value",
+								"standby_mode")));
 			ereport(LOG,
-			        (errmsg_internal("standby_mode = '%s'", item->value)));
+					(errmsg_internal("standby_mode = '%s'", item->value)));
 			if (polar_is_set)
 				flag |= POLAR_STANDBY_MODE;
 		}
@@ -679,25 +687,25 @@ polar_node_type_by_file(void)
 	{
 		polar_node_type = POLAR_REPLICA;
 		elog(LOG,
-		     "read polar_replica = on, polardb in replica mode, use ro mode mount pfs");
+			 "read polar_replica = on, polardb in replica mode, use ro mode mount pfs");
 	}
 
 	if (flag & POLAR_STANDBY_MODE)
 	{
 		polar_node_type = POLAR_STANDBY;
 		elog(LOG,
-		     "read standby_mode = on, polardb in standby mode, use readwrite mode mount pfs");
+			 "read standby_mode = on, polardb in standby mode, use readwrite mode mount pfs");
 	}
 
 	if ((flag & (flag - 1)) != 0)
 	{
 		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-			errmsg("replica, standby and datamax mode is mutually exclusive.")));
+						errmsg("replica, standby and datamax mode is mutually exclusive.")));
 	}
 
 	/*
-	 * Exists one recovery.conf, but it is not replica or standby, it may be
-	 * a PITR recovery.conf.
+	 * Exists one recovery.conf, but it is not replica or standby, it may be a
+	 * PITR recovery.conf.
 	 */
 	if (!flag)
 	{
@@ -733,6 +741,7 @@ const char *
 polar_path_remove_protocol(const char *path)
 {
 	const char *vfs_path = strstr(path, POLAR_VFS_PROTOCOL_TAG);
+
 	if (vfs_path)
 		return vfs_path + strlen(POLAR_VFS_PROTOCOL_TAG);
 	else

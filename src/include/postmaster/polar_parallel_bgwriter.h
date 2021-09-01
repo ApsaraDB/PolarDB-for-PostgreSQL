@@ -15,7 +15,7 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.*
- * 
+ *
  * IDENTIFICATION
  *  src/include/postmaster/polar_parallel_bgwriter.h
  *
@@ -60,10 +60,10 @@ extern ParallelBgwriterInfo *polar_parallel_bgwriter_info;
 
 extern void polar_init_parallel_bgwriter(void);
 extern Size polar_parallel_bgwriter_shmem_size(void);
-extern void	polar_parallel_bgwriter_worker_main(Datum main_arg);
+extern void polar_parallel_bgwriter_worker_main(Datum main_arg);
 extern void polar_launch_parallel_bgwriter_workers(void);
 extern void polar_register_parallel_bgwriter_workers(int workers, bool update_workers);
 extern void polar_shutdown_parallel_bgwriter_workers(int workers);
 extern void polar_check_parallel_bgwriter_worker(void);
 
-#endif //PALAR_PARALLEL_BGWRITER_H
+#endif	/* //PALAR_PARALLEL_BGWRITER_H */

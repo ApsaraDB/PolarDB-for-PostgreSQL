@@ -3,8 +3,18 @@
  * polar_brin_xlog_idx.c
  *    WAL redo parse logic for brin index.
  *
+ * Copyright (c) 2020, Alibaba Group Holding Limited
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
- * Portions Copyright (c) 2019, Alibaba.inc
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  *
  * IDENTIFICATION
  *           src/backend/access/logindex/polar_brin_xlog_idx.c
@@ -40,9 +50,9 @@ polar_brin_xlog_insert_parse(XLogReaderState *record)
 static void
 polar_brin_xlog_update_parse(XLogReaderState *record)
 {
-	BufferTag old_tag;
-	polar_page_lock_t  old_lock;
-	Buffer  old_buf;
+	BufferTag	old_tag;
+	polar_page_lock_t old_lock;
+	Buffer		old_buf;
 
 	POLAR_MINI_TRANS_REDO_PARSE(record, 2, old_tag, old_lock, old_buf);
 
@@ -58,9 +68,9 @@ polar_brin_xlog_update_parse(XLogReaderState *record)
 static void
 polar_brin_xlog_revmap_extend_parse(XLogReaderState *record)
 {
-	BufferTag meta_tag;
-	polar_page_lock_t    meta_lock;
-	Buffer    meta_buf;
+	BufferTag	meta_tag;
+	polar_page_lock_t meta_lock;
+	Buffer		meta_buf;
 
 	POLAR_MINI_TRANS_REDO_PARSE(record, 0, meta_tag, meta_lock, meta_buf);
 
@@ -78,10 +88,10 @@ polar_brin_xlog_revmap_extend_parse(XLogReaderState *record)
 static XLogRedoAction
 polar_brin_xlog_createidx(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 {
-	XLogRecPtr  lsn = record->EndRecPtr;
+	XLogRecPtr	lsn = record->EndRecPtr;
 	xl_brin_createidx *xlrec = (xl_brin_createidx *) XLogRecGetData(record);
-	Page        page;
-	BufferTag   meta_tag;
+	Page		page;
+	BufferTag	meta_tag;
 
 	POLAR_GET_LOG_TAG(record, meta_tag, 0);
 
@@ -106,18 +116,19 @@ static XLogRedoAction
 polar_brin_xlog_insert_update(XLogReaderState *record,
 							  xl_brin_insert *xlrec, BufferTag *tag, Buffer *buffer)
 {
-	XLogRecPtr  lsn = record->EndRecPtr;
+	XLogRecPtr	lsn = record->EndRecPtr;
 	XLogRedoAction action = BLK_NOTFOUND;
-	Page        page;
-	BufferTag   index_tag, revmap_tag;;
+	Page		page;
+	BufferTag	index_tag,
+				revmap_tag;;
 
 	POLAR_GET_LOG_TAG(record, index_tag, 0);
 
 	if (BUFFERTAGS_EQUAL(*tag, index_tag))
 	{
 		/*
-		 * If we inserted the first and only tuple on the page, re-initialize the
-		 * page from scratch.
+		 * If we inserted the first and only tuple on the page, re-initialize
+		 * the page from scratch.
 		 */
 		if (XLogRecGetInfo(record) & XLOG_BRIN_INIT_PAGE)
 		{
@@ -134,7 +145,7 @@ polar_brin_xlog_insert_update(XLogReaderState *record,
 		{
 			OffsetNumber offnum;
 			BrinTuple  *tuple;
-			Size        tuplen;
+			Size		tuplen;
 
 			tuple = (BrinTuple *) XLogRecGetBlockData(record, 0, &tuplen);
 
@@ -204,10 +215,10 @@ polar_brin_xlog_insert(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 static XLogRedoAction
 polar_brin_xlog_update(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 {
-	XLogRecPtr  lsn = record->EndRecPtr;
+	XLogRecPtr	lsn = record->EndRecPtr;
 	xl_brin_update *xlrec = (xl_brin_update *) XLogRecGetData(record);
 	XLogRedoAction action = BLK_NOTFOUND;
-	BufferTag old_tag;
+	BufferTag	old_tag;
 
 	POLAR_GET_LOG_TAG(record, old_tag, 2);
 
@@ -218,7 +229,7 @@ polar_brin_xlog_update(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 
 		if (action == BLK_NEEDS_REDO)
 		{
-			Page        page;
+			Page		page;
 			OffsetNumber offnum;
 
 			page = (Page) BufferGetPage(*buffer);
@@ -243,10 +254,10 @@ polar_brin_xlog_update(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 static XLogRedoAction
 polar_brin_xlog_samepage_update(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 {
-	XLogRecPtr  lsn = record->EndRecPtr;
+	XLogRecPtr	lsn = record->EndRecPtr;
 	XLogRedoAction action = BLK_NOTFOUND;
 	xl_brin_samepage_update *xlrec;
-	BufferTag page_tag;
+	BufferTag	page_tag;
 
 	POLAR_GET_LOG_TAG(record, page_tag, 0);
 
@@ -258,9 +269,9 @@ polar_brin_xlog_samepage_update(XLogReaderState *record, BufferTag *tag, Buffer 
 
 	if (action == BLK_NEEDS_REDO)
 	{
-		Size        tuplen;
+		Size		tuplen;
 		BrinTuple  *brintuple;
-		Page        page;
+		Page		page;
 		OffsetNumber offnum;
 
 		brintuple = (BrinTuple *) XLogRecGetBlockData(record, 0, &tuplen);
@@ -287,12 +298,13 @@ polar_brin_xlog_samepage_update(XLogReaderState *record, BufferTag *tag, Buffer 
 static XLogRedoAction
 polar_brin_xlog_revmap_extend(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 {
-	XLogRecPtr  lsn = record->EndRecPtr;
+	XLogRecPtr	lsn = record->EndRecPtr;
 	XLogRedoAction action = BLK_NOTFOUND;
 	xl_brin_revmap_extend *xlrec;
-	Page        page;
+	Page		page;
 	BlockNumber targetBlk;
-	BufferTag  meta_tag, revmap_tag;
+	BufferTag	meta_tag,
+				revmap_tag;
 
 	xlrec = (xl_brin_revmap_extend *) XLogRecGetData(record);
 
@@ -308,7 +320,7 @@ polar_brin_xlog_revmap_extend(XLogReaderState *record, BufferTag *tag, Buffer *b
 
 		if (action == BLK_NEEDS_REDO)
 		{
-			Page        metapg;
+			Page		metapg;
 			BrinMetaPageData *metadata;
 
 			metapg = BufferGetPage(*buffer);
@@ -328,8 +340,8 @@ polar_brin_xlog_revmap_extend(XLogReaderState *record, BufferTag *tag, Buffer *b
 	if (POLAR_PAGETAGS_EQUAL(*tag, revmap_tag))
 	{
 		/*
-		 * Re-init the target block as a revmap page.  There's never a full- page
-		 * image here.
+		 * Re-init the target block as a revmap page.  There's never a full-
+		 * page image here.
 		 */
 		POLAR_INIT_BUFFER_FOR_REDO(record, 1, buffer);
 		page = (Page) BufferGetPage(*buffer);
@@ -345,10 +357,11 @@ polar_brin_xlog_revmap_extend(XLogReaderState *record, BufferTag *tag, Buffer *b
 static XLogRedoAction
 polar_brin_xlog_desummarize_page(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 {
-	XLogRecPtr  lsn = record->EndRecPtr;
+	XLogRecPtr	lsn = record->EndRecPtr;
 	XLogRedoAction action = BLK_NOTFOUND;
 	xl_brin_desummarize *xlrec;
-	BufferTag revmap_tag, left_tag;
+	BufferTag	revmap_tag,
+				left_tag;
 
 	xlrec = (xl_brin_desummarize *) XLogRecGetData(record);
 	POLAR_GET_LOG_TAG(record, revmap_tag, 0);
@@ -380,7 +393,7 @@ polar_brin_xlog_desummarize_page(XLogReaderState *record, BufferTag *tag, Buffer
 
 		if (action == BLK_NEEDS_REDO)
 		{
-			Page        regPg = BufferGetPage(*buffer);
+			Page		regPg = BufferGetPage(*buffer);
 
 			PageIndexTupleDeleteNoCompact(regPg, xlrec->regOffset);
 
@@ -394,7 +407,7 @@ polar_brin_xlog_desummarize_page(XLogReaderState *record, BufferTag *tag, Buffer
 void
 polar_brin_idx_save(XLogReaderState *record)
 {
-	uint8 info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
+	uint8		info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
 
 	switch (info & XLOG_BRIN_OPMASK)
 	{
@@ -435,7 +448,7 @@ polar_brin_idx_save(XLogReaderState *record)
 bool
 polar_brin_idx_parse(XLogReaderState *record)
 {
-	uint8       info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
+	uint8		info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
 
 	switch (info & XLOG_BRIN_OPMASK)
 	{
@@ -474,7 +487,7 @@ polar_brin_idx_parse(XLogReaderState *record)
 XLogRedoAction
 polar_brin_idx_redo(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 {
-	uint8       info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
+	uint8		info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
 
 	switch (info & XLOG_BRIN_OPMASK)
 	{

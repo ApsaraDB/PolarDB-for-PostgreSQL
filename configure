@@ -730,6 +730,7 @@ CPP
 BITCODE_CXXFLAGS
 BITCODE_CFLAGS
 CFLAGS_VECTOR
+with_pfsd
 LLVM_BINPATH
 LLVM_CXXFLAGS
 LLVM_CFLAGS
@@ -838,6 +839,7 @@ with_segsize
 with_wal_blocksize
 with_CC
 with_llvm
+with_pfsd
 enable_depend
 enable_cassert
 enable_thread_safety
@@ -1540,6 +1542,7 @@ Optional Packages:
                           set WAL block size in kB [8]
   --with-CC=CMD           set compiler (deprecated)
   --with-llvm             build with LLVM based JIT support
+  --with-pfsd             build with PFSD support
   --with-icu              build with ICU support
   --with-tcl              build Tcl modules (PL/Tcl)
   --with-tclconfig=DIR    tclConfig.sh is in DIR
@@ -5054,6 +5057,38 @@ _ACEOF
 
 
 fi
+
+#
+# PFSD
+#
+{ $as_echo "$as_me:${as_lineno-$LINENO}: checking whether to build with PFSD support" >&5
+$as_echo_n "checking whether to build with PFSD support... " >&6; }
+
+
+
+# Check whether --with-pfsd was given.
+if test "${with_pfsd+set}" = set; then :
+  withval=$with_pfsd;
+  case $withval in
+    yes)
+
+$as_echo "#define USE_PFSD 1" >>confdefs.h
+
+      ;;
+    no)
+      :
+      ;;
+    *)
+      as_fn_error $? "no argument expected for --with-pfsd option" "$LINENO" 5
+      ;;
+  esac
+
+else
+  with_pfsd=no
+
+fi
+
+
 
 
 unset CFLAGS

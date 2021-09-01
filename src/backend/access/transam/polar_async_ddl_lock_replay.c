@@ -44,8 +44,8 @@ static volatile sig_atomic_t got_sighup = false;
 static volatile sig_atomic_t shutdown_requested = false;
 static bool update_ptr = false; /* if true, update lock ptr and wait shorter */
 
-bool	polar_enable_async_ddl_lock_replay = true;
-int		polar_async_ddl_lock_replay_worker_num = 1;
+bool		polar_enable_async_ddl_lock_replay = true;
+int			polar_async_ddl_lock_replay_worker_num = 1;
 polar_async_ddl_lock_replay_ctl_t *polar_async_ddl_lock_replay_ctl = NULL;
 
 static HTAB *polar_pending_tx_tbl = NULL;
@@ -79,14 +79,14 @@ static void polar_remove_released_tx_and_update_ptr(void);
 Size
 polar_async_ddl_lock_replay_shmem_size(void)
 {
-	Size size = 0;
+	Size		size = 0;
 
 	if (!polar_enable_async_ddl_lock_replay)
 		return size;
 
 	size = offsetof(polar_async_ddl_lock_replay_ctl_t, workers);
 	size = add_size(size, mul_size(sizeof(polar_async_ddl_lock_replay_worker_t),
-					polar_async_ddl_lock_replay_worker_num));
+								   polar_async_ddl_lock_replay_worker_num));
 
 	return size;
 }
@@ -94,25 +94,25 @@ polar_async_ddl_lock_replay_shmem_size(void)
 static void
 terminate_async_ddl_lock_replay_worker(int id)
 {
-	TerminateBackgroundWorker((BackgroundWorkerHandle *)&polar_async_ddl_lock_replay_ctl->workers[id].handle);
+	TerminateBackgroundWorker((BackgroundWorkerHandle *) &polar_async_ddl_lock_replay_ctl->workers[id].handle);
 	polar_async_ddl_lock_replay_ctl->workers[id].working = false;
 }
 
 void
 polar_init_async_ddl_lock_replay(void)
 {
-	int i = 0;
-	bool found = false;
+	int			i = 0;
+	bool		found = false;
 
 	if (!polar_allow_async_ddl_lock_replay())
 		return;
 
 	polar_async_ddl_lock_replay_ctl = (polar_async_ddl_lock_replay_ctl_t *)
-					ShmemInitStruct("async ddl lock replay control",
-							offsetof(polar_async_ddl_lock_replay_ctl_t, workers) +
-							mul_size(sizeof(polar_async_ddl_lock_replay_worker_t),
-									 polar_async_ddl_lock_replay_worker_num),
-							&found);
+		ShmemInitStruct("async ddl lock replay control",
+						offsetof(polar_async_ddl_lock_replay_ctl_t, workers) +
+						mul_size(sizeof(polar_async_ddl_lock_replay_worker_t),
+								 polar_async_ddl_lock_replay_worker_num),
+						&found);
 
 	if (!IsUnderPostmaster)
 	{
@@ -153,7 +153,7 @@ register_async_ddl_lock_replay_worker(int id)
 {
 	BackgroundWorker worker;
 	polar_async_ddl_lock_replay_worker_handle_t *worker_handle;
-	bool ret = false;
+	bool		ret = false;
 
 	memset(&worker, 0, sizeof(BackgroundWorker));
 	worker.bgw_flags = BGWORKER_SHMEM_ACCESS;
@@ -161,12 +161,12 @@ register_async_ddl_lock_replay_worker(int id)
 	worker.bgw_restart_time = BGW_NEVER_RESTART;
 	sprintf(worker.bgw_library_name, "postgres");
 	sprintf(worker.bgw_function_name, "polar_async_ddl_lock_replay_worker_main");
-	snprintf(worker.bgw_name, BGW_MAXLEN, POLAR_ASYNC_DDL_LOCK_REPLAY_WORKER_NAME" %d", id);
+	snprintf(worker.bgw_name, BGW_MAXLEN, POLAR_ASYNC_DDL_LOCK_REPLAY_WORKER_NAME " %d", id);
 	snprintf(worker.bgw_type, BGW_MAXLEN, POLAR_ASYNC_DDL_LOCK_REPLAY_WORKER_NAME);
 	worker.bgw_main_arg = Int32GetDatum(id);
 	worker.bgw_notify_pid = MyProcPid;
 
-	if (RegisterDynamicBackgroundWorker(&worker, (BackgroundWorkerHandle **)&worker_handle))
+	if (RegisterDynamicBackgroundWorker(&worker, (BackgroundWorkerHandle **) &worker_handle))
 	{
 		polar_async_ddl_lock_replay_ctl->workers[id].handle.slot = worker_handle->slot;
 		polar_async_ddl_lock_replay_ctl->workers[id].handle.generation = worker_handle->generation;
@@ -199,6 +199,7 @@ polar_pending_tx *
 polar_own_pending_tx(void)
 {
 	polar_pending_tx *tx;
+
 	tx = polar_get_oldest_idle_tx();
 
 	if (tx != NULL && tx->worker == NULL)
@@ -308,7 +309,7 @@ polar_get_one_lock(polar_pending_tx *tx,
 				   polar_pending_lock *lock,
 				   bool dontWait)
 {
-	LOCKTAG locktag;
+	LOCKTAG		locktag;
 	LockAcquireResult result;
 
 	Assert(lock);
@@ -347,7 +348,8 @@ static void
 polar_release_one_pending_lock(polar_pending_tx *tx,
 							   polar_pending_lock *lock)
 {
-	LOCKTAG locktag;
+	LOCKTAG		locktag;
+
 	Assert(lock);
 	SET_LOCKTAG_RELATION(locktag, lock->dbOid, lock->relOid);
 	/* if got, release the lock */
@@ -469,13 +471,14 @@ polar_async_ddl_lock_replay_worker_init(int id)
 void
 polar_async_ddl_lock_replay_worker_main(Datum main_arg)
 {
-	int id = DatumGetInt32(main_arg);
+	int			id = DatumGetInt32(main_arg);
 	polar_pending_tx *tx = NULL;
 
-	pqsignal(SIGHUP, worker_sighup_handler);	/* set flag to read config file */
+	pqsignal(SIGHUP, worker_sighup_handler);	/* set flag to read config
+												 * file */
 	pqsignal(SIGINT, SIG_IGN);
 	pqsignal(SIGTERM, worker_sigterm_handler);	/* shutdown */
-	pqsignal(SIGQUIT, worker_quit_handler);		/* hard crash time */
+	pqsignal(SIGQUIT, worker_quit_handler); /* hard crash time */
 	pqsignal(SIGPIPE, SIG_IGN);
 	pqsignal(SIGUSR1, worker_sigusr1_handler);
 
@@ -503,7 +506,8 @@ polar_async_ddl_lock_replay_worker_main(Datum main_arg)
 
 	for (;;)
 	{
-		int rc = 0;
+		int			rc = 0;
+
 		update_ptr = false;
 
 		if (got_sighup)
@@ -515,13 +519,14 @@ polar_async_ddl_lock_replay_worker_main(Datum main_arg)
 		if (shutdown_requested)
 		{
 			polar_release_all_pending_tx();
+
 			/*
 			 * From here on, elog(ERROR) should end with exit(1), not send
 			 * control back to the sigsetjmp block above
 			 */
 			ExitOnAnyError = true;
 			/* Normal exit from the bgwriter is here */
-			proc_exit(0);	/* done */
+			proc_exit(0);		/* done */
 		}
 
 		polar_own_pending_tx();
@@ -540,7 +545,7 @@ polar_async_ddl_lock_replay_worker_main(Datum main_arg)
 
 		rc = WaitLatch(MyLatch,
 					   WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH,
-					   update_ptr ? 50 : 500 /* ms */, WAIT_EVENT_ASYNC_DDL_LOCK_REPLAY_MAIN);
+					   update_ptr ? 50 : 500 /* ms */ , WAIT_EVENT_ASYNC_DDL_LOCK_REPLAY_MAIN);
 
 		if (rc & WL_POSTMASTER_DEATH)
 			exit(1);
@@ -564,9 +569,9 @@ polar_create_pending_tx_tbl(void)
 	hash_ctl.keysize = sizeof(TransactionId);
 	hash_ctl.entrysize = sizeof(polar_pending_tx);
 	polar_pending_tx_tbl = ShmemInitHash("polar async ddl lock replay pending entries",
-									64, 64,
-									&hash_ctl,
-									HASH_ELEM | HASH_BLOBS);
+										 64, 64,
+										 &hash_ctl,
+										 HASH_ELEM | HASH_BLOBS);
 }
 
 /*
@@ -584,9 +589,9 @@ polar_create_pending_lock_tbl(void)
 	hash_ctl.keysize = sizeof(XLogRecPtr);
 	hash_ctl.entrysize = sizeof(polar_pending_lock);
 	polar_pending_lock_tbl = ShmemInitHash("polar async ddl lock replay pending locks",
-									64, 64,
-									&hash_ctl,
-									HASH_ELEM | HASH_BLOBS);
+										   64, 64,
+										   &hash_ctl,
+										   HASH_ELEM | HASH_BLOBS);
 }
 
 /*
@@ -603,7 +608,7 @@ polar_launch_async_ddl_lock_replay_workers(void)
 	for (i = 0; i < polar_async_ddl_lock_replay_worker_num; ++i)
 	{
 		/* start worker */
-		if(register_async_ddl_lock_replay_worker(i))
+		if (register_async_ddl_lock_replay_worker(i))
 			elog(LOG, "start polar async ddl lock replay worker %d started", i);
 	}
 
@@ -615,7 +620,7 @@ polar_launch_async_ddl_lock_replay_workers(void)
 bool
 polar_stop_async_ddl_lock_replay_workers(void)
 {
-	int i = 0;
+	int			i = 0;
 
 	if (!polar_allow_async_ddl_lock_replay())
 		return false;
@@ -642,7 +647,7 @@ polar_stop_async_ddl_lock_replay_workers(void)
 void
 polar_add_lock_to_pending_tbl(xl_standby_lock *lock, XLogRecPtr last_ptr, TimestampTz rtime)
 {
-	bool found;
+	bool		found;
 	polar_pending_tx *tx;
 	polar_pending_lock *newlock;
 
@@ -711,6 +716,7 @@ void
 polar_async_ddl_lock_replay_release_one_tx(TransactionId xid)
 {
 	polar_pending_tx *tx;
+
 	LWLockAcquire(&polar_async_ddl_lock_replay_ctl->tx_tbl_lock, LW_SHARED);
 
 	tx = hash_search(polar_pending_tx_tbl, &xid, HASH_FIND, NULL);
@@ -731,6 +737,7 @@ polar_async_ddl_lock_replay_release_all_tx(void)
 {
 	HASH_SEQ_STATUS status;
 	polar_pending_tx *tx;
+
 	LWLockAcquire(&polar_async_ddl_lock_replay_ctl->tx_tbl_lock, LW_SHARED);
 
 	elog(LOG, "startup: mark release all lock!");
@@ -762,8 +769,8 @@ static polar_pending_tx *
 polar_get_oldest_idle_tx(void)
 {
 	HASH_SEQ_STATUS hash_seq;
-	polar_pending_tx  *tx;
-	polar_pending_tx  *oldest_tx;
+	polar_pending_tx *tx;
+	polar_pending_tx *oldest_tx;
 
 	oldest_tx = NULL;
 
@@ -796,8 +803,8 @@ XLogRecPtr
 polar_get_async_ddl_lock_replay_oldest_ptr(void)
 {
 	HASH_SEQ_STATUS hash_seq;
-	polar_pending_tx  *tx;
-	XLogRecPtr oldest;
+	polar_pending_tx *tx;
+	XLogRecPtr	oldest;
 
 	oldest = InvalidXLogRecPtr;
 
@@ -826,8 +833,9 @@ polar_get_async_ddl_lock_replay_oldest_ptr(void)
 bool
 polar_async_ddl_lock_replay_tx_is_replaying(TransactionId xid)
 {
-	bool found = false;
+	bool		found = false;
 	polar_pending_tx *tx;
+
 	LWLockAcquire(&polar_async_ddl_lock_replay_ctl->tx_tbl_lock, LW_SHARED);
 	tx = hash_search(polar_pending_tx_tbl, &xid, HASH_FIND, &found);
 	if (found)
@@ -843,10 +851,11 @@ polar_async_ddl_lock_replay_tx_is_replaying(TransactionId xid)
 bool
 polar_async_ddl_lock_replay_lock_is_replaying(xl_standby_lock *lock)
 {
-	bool found = false;
-	bool result = false;
+	bool		found = false;
+	bool		result = false;
 	polar_pending_tx *pending_tx;
 	polar_pending_lock *pending_lock;
+
 	LWLockAcquire(&polar_async_ddl_lock_replay_ctl->tx_tbl_lock, LW_SHARED);
 	pending_tx = hash_search(polar_pending_tx_tbl, &lock->xid, HASH_FIND, &found);
 	if (found)
