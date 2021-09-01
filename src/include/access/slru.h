@@ -3,6 +3,7 @@
  * slru.h
  *		Simple LRU buffering for transaction status logfiles
  *
+ * Portions Copyright (c) 2020, Alibaba Group Holding Limited
  * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -15,6 +16,7 @@
 
 #include "access/xlogdefs.h"
 #include "storage/lwlock.h"
+#include "storage/spin.h"
 
 
 /*
@@ -79,6 +81,10 @@ typedef struct SlruSharedData
 	 */
 	XLogRecPtr *group_lsn;
 	int			lsn_groups_per_page;
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+	TransactionId oldestActiveStartupXid;
+#endif
+
 
 	/*----------
 	 * We mark a page "most recently used" by setting
@@ -105,6 +111,8 @@ typedef struct SlruSharedData
 } SlruSharedData;
 
 typedef SlruSharedData *SlruShared;
+typedef struct HTAB HTAB;
+typedef struct PageSlotEntry PageSlotEntry;
 
 /*
  * SlruCtlData is an unshared structure that points to the active information
@@ -113,6 +121,7 @@ typedef SlruSharedData *SlruShared;
 typedef struct SlruCtlData
 {
 	SlruShared	shared;
+	HTAB	   *pageToSlot;
 
 	/*
 	 * This flag tells whether to fsync writes (true for pg_xact and multixact
@@ -145,6 +154,10 @@ extern int SimpleLruReadPage(SlruCtl ctl, int pageno, bool write_ok,
 				  TransactionId xid);
 extern int SimpleLruReadPage_ReadOnly(SlruCtl ctl, int pageno,
 						   TransactionId xid);
+extern int
+			SimpleLruLookupSlotno(SlruCtl ctl, int pageno);
+extern int SimpleLruReadPage_ReadOnly_Locked(SlruCtl ctl, int pageno, XLogRecPtr lsn,
+								  TransactionId xid);
 extern void SimpleLruWritePage(SlruCtl ctl, int slotno);
 extern void SimpleLruFlush(SlruCtl ctl, bool allow_redirtied);
 extern void SimpleLruTruncate(SlruCtl ctl, int cutoffPage);

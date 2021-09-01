@@ -130,6 +130,7 @@
 #include "parser/parse_coerce.h"
 #include "parser/parsetree.h"
 #include "statistics/statistics.h"
+#include "storage/procarray.h"
 #include "utils/acl.h"
 #include "utils/builtins.h"
 #include "utils/bytea.h"
@@ -5555,7 +5556,7 @@ get_actual_variable_range(PlannerInfo *root, VariableStatData *vardata,
 			slot = MakeSingleTupleTableSlot(RelationGetDescr(heapRel));
 			econtext->ecxt_scantuple = slot;
 			get_typlenbyval(vardata->atttype, &typLen, &typByVal);
-			InitNonVacuumableSnapshot(SnapshotNonVacuumable, RecentGlobalXmin);
+			InitNonVacuumableSnapshot(SnapshotNonVacuumable, GetRecentGlobalXmin());
 
 			/* set up an IS NOT NULL scan key so that we ignore nulls */
 			ScanKeyEntryInitialize(&scankeys[0],

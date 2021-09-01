@@ -581,7 +581,10 @@ wait_for_postmaster(pgpid_t pm_pid, bool do_checkpoint)
 				char	   *pmstatus = optlines[LOCK_FILE_LINE_PM_STATUS - 1];
 
 				if (strcmp(pmstatus, PM_STATUS_READY) == 0 ||
-					strcmp(pmstatus, PM_STATUS_STANDBY) == 0)
+					strcmp(pmstatus, PM_STATUS_STANDBY) == 0 ||
+				/* POLAR: add terminal state DataMax */
+					strcmp(pmstatus, PM_STATUS_DATAMAX) == 0)
+					/* POLAR end */
 				{
 					/* postmaster is done starting up */
 					free_readfile(optlines);
@@ -1117,13 +1120,13 @@ do_promote(void)
 	if ((prmfile = fopen(promote_file, "w")) == NULL)
 	{
 		write_stderr(_("%s: could not create promote signal file \"%s\": %s\n"),
-					 progname, promote_file, strerror(errno));
+				progname, promote_file, strerror(errno));
 		exit(1);
 	}
 	if (fclose(prmfile))
 	{
 		write_stderr(_("%s: could not write promote signal file \"%s\": %s\n"),
-					 progname, promote_file, strerror(errno));
+				progname, promote_file, strerror(errno));
 		exit(1);
 	}
 
@@ -1134,7 +1137,7 @@ do_promote(void)
 					 progname, pid, strerror(errno));
 		if (unlink(promote_file) != 0)
 			write_stderr(_("%s: could not remove promote signal file \"%s\": %s\n"),
-						 progname, promote_file, strerror(errno));
+					progname, promote_file, strerror(errno));
 		exit(1);
 	}
 
@@ -1920,7 +1923,9 @@ do_help(void)
 			 "                  [-o OPTIONS] [-c]\n"), progname);
 	printf(_("  %s reload   [-D DATADIR] [-s]\n"), progname);
 	printf(_("  %s status   [-D DATADIR]\n"), progname);
-	printf(_("  %s promote  [-D DATADIR] [-W] [-t SECS] [-s]\n"), progname);
+	/* POLAR */
+	printf(_("  %s promote  [-D DATADIR] [-W] [-t SECS] [-s] [-f]\n"), progname);
+	/* POLAR end */
 	printf(_("  %s kill     SIGNALNAME PID\n"), progname);
 #ifdef WIN32
 	printf(_("  %s register [-D DATADIR] [-N SERVICENAME] [-U USERNAME] [-P PASSWORD]\n"

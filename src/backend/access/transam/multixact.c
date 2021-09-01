@@ -69,6 +69,7 @@
 #include "postgres.h"
 
 #include "access/multixact.h"
+#include "access/mvccvars.h"
 #include "access/slru.h"
 #include "access/transam.h"
 #include "access/twophase.h"
@@ -513,9 +514,11 @@ MultiXactIdExpand(MultiXactId multi, TransactionId xid, MultiXactStatus status)
 
 	for (i = 0, j = 0; i < nmembers; i++)
 	{
-		if (TransactionIdIsInProgress(members[i].xid) ||
+		TransactionIdStatus xidstatus = TransactionIdGetStatus(members[i].xid);
+
+		if (xidstatus == XID_INPROGRESS ||
 			(ISUPDATE_from_mxstatus(members[i].status) &&
-			 TransactionIdDidCommit(members[i].xid)))
+			 xidstatus == XID_COMMITTED))
 		{
 			newMembers[j].xid = members[i].xid;
 			newMembers[j++].status = members[i].status;
@@ -590,7 +593,7 @@ MultiXactIdIsRunning(MultiXactId multi, bool isLockOnly)
 	 */
 	for (i = 0; i < nmembers; i++)
 	{
-		if (TransactionIdIsInProgress(members[i].xid))
+		if (TransactionIdGetStatus(members[i].xid) == XID_INPROGRESS)
 		{
 			debug_elog4(DEBUG2, "IsRunning: member %d (%u) is running",
 						i, members[i].xid);
@@ -2555,7 +2558,7 @@ SetOffsetVacuumLimit(bool is_startup)
 
 	/*
 	 * NB: Have to prevent concurrent truncation, we might otherwise try to
-	 * lookup a oldestMulti that's concurrently getting truncated away.
+	 * lookup an oldestMulti that's concurrently getting truncated away.
 	 */
 	LWLockAcquire(MultiXactTruncationLock, LW_SHARED);
 
@@ -2732,7 +2735,7 @@ find_multixact_start(MultiXactId multi, MultiXactOffset *result)
 	/*
 	 * Flush out dirty data, so PhysicalPageExists can work correctly.
 	 * SimpleLruFlush() is a pretty big hammer for that.  Alternatively we
-	 * could add a in-memory version of page exists, but find_multixact_start
+	 * could add an in-memory version of page exists, but find_multixact_start
 	 * is called infrequently, and it doesn't seem bad to flush buffers to
 	 * disk before truncation.
 	 */

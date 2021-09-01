@@ -23,6 +23,11 @@ ifdef MAX_CONNECTIONS
 MAXCONNOPT += --max-connections=$(MAX_CONNECTIONS)
 endif
 
+DMA_REGRESS_OPTS =
+ifdef DMA_OPTS
+DMA_REGRESS_OPTS += --dma=$(DMA_OPTS)
+endif
+
 # stuff to pass into build of pg_regress
 EXTRADEFS = '-DHOST_TUPLE="$(host_tuple)"' \
 	'-DSHELLPROG="$(SHELL)"' \
@@ -126,10 +131,13 @@ tablespace-setup:
 ## Run tests
 ##
 
-REGRESS_OPTS = --dlpath=. --max-concurrent-tests=20 $(EXTRA_REGRESS_OPTS)
+REGRESS_OPTS = --dlpath=. --max-concurrent-tests=20 $(DMA_REGRESS_OPTS) $(EXTRA_REGRESS_OPTS)
 
 check: all tablespace-setup
 	$(pg_regress_check) $(REGRESS_OPTS) --schedule=$(srcdir)/parallel_schedule $(MAXCONNOPT) $(EXTRA_TESTS)
+
+checkdma: all tablespace-setup
+	$(pg_regress_check) $(REGRESS_OPTS) --dma=cluster --schedule=$(srcdir)/parallel_schedule $(MAXCONNOPT) $(EXTRA_TESTS)
 
 check-tests: all tablespace-setup | temp-install
 	$(pg_regress_check) $(REGRESS_OPTS) $(MAXCONNOPT) $(TESTS) $(EXTRA_TESTS)

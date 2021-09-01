@@ -472,9 +472,7 @@ errfinish(int dummy,...)
 	 * progress, so that we can report the message before dying.  (Without
 	 * this, pq_putmessage will refuse to send the message at all, which is
 	 * what we want for NOTICE messages, but not for fatal exits.) This hack
-	 * is necessary because of poor design of old-style copy protocol.  Note
-	 * we must do this even if client is fool enough to have set
-	 * client_min_messages above FATAL, so don't look at output_to_client.
+	 * is necessary because of poor design of old-style copy protocol.
 	 */
 	if (elevel >= FATAL && whereToSendOutput == DestRemote)
 		pq_endcopyout(true);
@@ -1758,12 +1756,7 @@ pg_re_throw(void)
 		else
 			edata->output_to_server = (FATAL >= log_min_messages);
 		if (whereToSendOutput == DestRemote)
-		{
-			if (ClientAuthInProgress)
-				edata->output_to_client = true;
-			else
-				edata->output_to_client = (FATAL >= client_min_messages);
-		}
+			edata->output_to_client = true;
 
 		/*
 		 * We can use errfinish() for the rest, but we don't want it to call
@@ -3189,7 +3182,7 @@ send_message_to_frontend(ErrorData *edata)
 		else
 			err_sendstring(&msgbuf, _("missing error text"));
 
-		if (edata->detail)
+		if (client_detail_message && edata->detail)
 		{
 			pq_sendbyte(&msgbuf, PG_DIAG_MESSAGE_DETAIL);
 			err_sendstring(&msgbuf, edata->detail);
@@ -3197,13 +3190,13 @@ send_message_to_frontend(ErrorData *edata)
 
 		/* detail_log is intentionally not used here */
 
-		if (edata->hint)
+		if (client_detail_message && edata->hint)
 		{
 			pq_sendbyte(&msgbuf, PG_DIAG_MESSAGE_HINT);
 			err_sendstring(&msgbuf, edata->hint);
 		}
 
-		if (edata->context)
+		if (client_detail_message && edata->context)
 		{
 			pq_sendbyte(&msgbuf, PG_DIAG_CONTEXT);
 			err_sendstring(&msgbuf, edata->context);
@@ -3246,33 +3239,33 @@ send_message_to_frontend(ErrorData *edata)
 			err_sendstring(&msgbuf, tbuf);
 		}
 
-		if (edata->internalpos > 0)
+		if (client_detail_message && edata->internalpos > 0)
 		{
 			snprintf(tbuf, sizeof(tbuf), "%d", edata->internalpos);
 			pq_sendbyte(&msgbuf, PG_DIAG_INTERNAL_POSITION);
 			err_sendstring(&msgbuf, tbuf);
 		}
 
-		if (edata->internalquery)
+		if (client_detail_message && edata->internalquery)
 		{
 			pq_sendbyte(&msgbuf, PG_DIAG_INTERNAL_QUERY);
 			err_sendstring(&msgbuf, edata->internalquery);
 		}
 
-		if (edata->filename)
+		if (client_detail_message && edata->filename)
 		{
 			pq_sendbyte(&msgbuf, PG_DIAG_SOURCE_FILE);
 			err_sendstring(&msgbuf, edata->filename);
 		}
 
-		if (edata->lineno > 0)
+		if (client_detail_message && edata->lineno > 0)
 		{
 			snprintf(tbuf, sizeof(tbuf), "%d", edata->lineno);
 			pq_sendbyte(&msgbuf, PG_DIAG_SOURCE_LINE);
 			err_sendstring(&msgbuf, tbuf);
 		}
 
-		if (edata->funcname)
+		if (client_detail_message && edata->funcname)
 		{
 			pq_sendbyte(&msgbuf, PG_DIAG_SOURCE_FUNCTION);
 			err_sendstring(&msgbuf, edata->funcname);

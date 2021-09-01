@@ -103,6 +103,7 @@ extern void smgrwrite(SMgrRelation reln, ForkNumber forknum,
 extern void smgrwriteback(SMgrRelation reln, ForkNumber forknum,
 			  BlockNumber blocknum, BlockNumber nblocks);
 extern BlockNumber smgrnblocks(SMgrRelation reln, ForkNumber forknum);
+extern void smgr_extend_locked(SMgrRelation reln, ForkNumber forknum, BlockNumber sizeInBlks);
 extern void smgrtruncate(SMgrRelation reln, ForkNumber forknum,
 			 BlockNumber nblocks);
 extern void smgrimmedsync(SMgrRelation reln, ForkNumber forknum);
@@ -131,6 +132,7 @@ extern void mdwrite(SMgrRelation reln, ForkNumber forknum,
 extern void mdwriteback(SMgrRelation reln, ForkNumber forknum,
 			BlockNumber blocknum, BlockNumber nblocks);
 extern BlockNumber mdnblocks(SMgrRelation reln, ForkNumber forknum);
+extern void mdextlocked(SMgrRelation reln, ForkNumber forknum, BlockNumber sizeInBlks);
 extern void mdtruncate(SMgrRelation reln, ForkNumber forknum,
 		   BlockNumber nblocks);
 extern void mdimmedsync(SMgrRelation reln, ForkNumber forknum);
@@ -143,5 +145,6 @@ extern void RememberFsyncRequest(RelFileNode rnode, ForkNumber forknum,
 					 BlockNumber segno);
 extern void ForgetRelationFsyncRequests(RelFileNode rnode, ForkNumber forknum);
 extern void ForgetDatabaseFsyncRequests(Oid dbid);
+extern void DropRelationFiles(RelFileNode *delrels, int ndelrels, bool isRedo);
 
 #endif							/* SMGR_H */

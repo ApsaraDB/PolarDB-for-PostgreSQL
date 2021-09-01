@@ -2695,7 +2695,7 @@ CreateSharedBackendStatus(void)
 
 	if (!found)
 	{
-		MemSet(BackendActivityBuffer, 0, size);
+		MemSet(BackendActivityBuffer, 0, BackendActivityBufferSize);
 
 		/* Initialize st_activity pointers. */
 		buffer = BackendActivityBuffer;
@@ -2869,6 +2869,9 @@ pgstat_bestart(void)
 				break;
 			case WalReceiverProcess:
 				beentry->st_backendType = B_WAL_RECEIVER;
+				break;
+			case ConsensusProcess:
+				beentry->st_backendType = B_CONSENSUS;
 				break;
 			default:
 				elog(FATAL, "unrecognized process type: %d",
@@ -3519,7 +3522,13 @@ pgstat_get_wait_activity(WaitEventActivity w)
 		case WAIT_EVENT_WAL_WRITER_MAIN:
 			event_name = "WalWriterMain";
 			break;
-			/* no default case, so that compiler will warn */
+		case WAIT_EVENT_CONSENSUS_MAIN:
+			event_name = "ConsensusMain";
+			break;
+		case WAIT_EVENT_DATAMAX_MAIN:
+			event_name = "DataMaxMain";
+			break;
+		/* no default case, so that compiler will warn */
 	}
 
 	return event_name;
@@ -3683,6 +3692,12 @@ pgstat_get_wait_ipc(WaitEventIPC w)
 		case WAIT_EVENT_SYNC_REP:
 			event_name = "SyncRep";
 			break;
+		case WAIT_EVENT_CONSENSUS_COMMIT:
+			event_name = "ConsensusCommit";
+			break;
+		case WAIT_EVENT_CONSENSUS:
+			event_name = "Consensus";
+			break;
 			/* no default case, so that compiler will warn */
 	}
 
@@ -3800,7 +3815,7 @@ pgstat_get_wait_io(WaitEventIO w)
 			event_name = "LockFileCreateSync";
 			break;
 		case WAIT_EVENT_LOCK_FILE_CREATE_WRITE:
-			event_name = "LockFileCreateWRITE";
+			event_name = "LockFileCreateWrite";
 			break;
 		case WAIT_EVENT_LOCK_FILE_RECHECKDATADIR_READ:
 			event_name = "LockFileReCheckDataDirRead";
@@ -3931,7 +3946,13 @@ pgstat_get_wait_io(WaitEventIO w)
 		case WAIT_EVENT_WAL_WRITE:
 			event_name = "WALWrite";
 			break;
-
+		case WAIT_EVENT_DATAMAX_META_READ:
+			event_name = "PolarDataMaxMetaRead";
+			break;
+		case WAIT_EVENT_DATAMAX_META_WRITE:
+			event_name = "PolarDataMaxMetaWrite";
+			break;
+		/* POLAR end */
 			/* no default case, so that compiler will warn */
 	}
 
@@ -4131,6 +4152,9 @@ pgstat_get_backend_desc(BackendType backendType)
 			break;
 		case B_WAL_WRITER:
 			backendDesc = "walwriter";
+			break;
+		case B_CONSENSUS:
+			backendDesc = "consensus";
 			break;
 	}
 
@@ -4807,7 +4831,7 @@ get_dbstat_filename(bool permanent, bool tempname, Oid databaseid,
 					   pgstat_stat_directory,
 					   databaseid,
 					   tempname ? "tmp" : "stat");
-	if (printed > len)
+	if (printed >= len)
 		elog(ERROR, "overlength pgstat path");
 }
 

@@ -62,6 +62,7 @@ typedef struct f_smgr
 	void		(*smgr_pre_ckpt) (void);	/* may be NULL */
 	void		(*smgr_sync) (void);	/* may be NULL */
 	void		(*smgr_post_ckpt) (void);	/* may be NULL */
+	void        (*smgr_extend_locked) (SMgrRelation reln, ForkNumber forknum, BlockNumber sizeInBlks);
 } f_smgr;
 
 
@@ -69,7 +70,7 @@ static const f_smgr smgrsw[] = {
 	/* magnetic disk */
 	{mdinit, NULL, mdclose, mdcreate, mdexists, mdunlink, mdextend,
 		mdprefetch, mdread, mdwrite, mdwriteback, mdnblocks, mdtruncate,
-		mdimmedsync, mdpreckpt, mdsync, mdpostckpt
+		mdimmedsync, mdpreckpt, mdsync, mdpostckpt, mdextlocked
 	}
 };
 
@@ -672,6 +673,15 @@ BlockNumber
 smgrnblocks(SMgrRelation reln, ForkNumber forknum)
 {
 	return smgrsw[reln->smgr_which].smgr_nblocks(reln, forknum);
+}
+
+
+/**
+ * Extend the size of the fork, with each file write under flock to prevent
+ * racing condition during parallel replay
+ */
+void smgr_extend_locked(SMgrRelation reln, ForkNumber forknum, BlockNumber sizeInBlks){
+	smgrsw[reln->smgr_which].smgr_extend_locked(reln, forknum, sizeInBlks);
 }
 
 /*

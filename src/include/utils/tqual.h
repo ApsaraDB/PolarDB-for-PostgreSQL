@@ -5,6 +5,7 @@
  *
  *	  Should be moved/renamed...    - vadim 07/28/98
  *
+ * Portions Copyright (c) 2020, Alibaba Group Holding Limited
  * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -17,6 +18,7 @@
 
 #include "utils/snapshot.h"
 #include "access/xlogdefs.h"
+#include "access/transam.h"
 
 
 /* Static variables representing various special snapshot semantics */
@@ -78,7 +80,8 @@ extern HTSV_Result HeapTupleSatisfiesVacuum(HeapTuple htup,
 						 TransactionId OldestXmin, Buffer buffer);
 extern bool HeapTupleIsSurelyDead(HeapTuple htup,
 					  TransactionId OldestXmin);
-extern bool XidInMVCCSnapshot(TransactionId xid, Snapshot snapshot);
+extern bool XidVisibleInSnapshot(TransactionId xid, Snapshot snapshot,
+					  TransactionIdStatus *hintstatus);
 
 extern void HeapTupleSetHintBits(HeapTupleHeader tuple, Buffer buffer,
 					 uint16 infomask, TransactionId xid);
@@ -119,5 +122,13 @@ extern bool ResolveCminCmaxDuringDecoding(struct HTAB *tuplecid_data,
 	((snapshotdata).satisfies = HeapTupleSatisfiesToast, \
 	 (snapshotdata).lsn = (l),					\
 	 (snapshotdata).whenTaken = (w))
+
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+/* guc parameter */
+extern bool enable_distri_visibility_print;
+extern bool enable_distri_print;
+extern bool enable_global_cutoffts;
+
+#endif
 
 #endif							/* TQUAL_H */

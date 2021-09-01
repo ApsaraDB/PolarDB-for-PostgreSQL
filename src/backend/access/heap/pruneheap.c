@@ -3,6 +3,8 @@
  * pruneheap.c
  *	  heap page pruning and HOT-chain management code
  *
+ * Portions Copyright (c) 2020, Alibaba Group Holding Limited
+ * Portions Copyright (C) 2019 THL A29 Limited, a Tencent company.  All rights reserved.
  * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -23,14 +25,19 @@
 #include "miscadmin.h"
 #include "pgstat.h"
 #include "storage/bufmgr.h"
+#include "storage/procarray.h"
 #include "utils/snapmgr.h"
 #include "utils/rel.h"
 #include "utils/tqual.h"
+#include "access/htup_details.h"
 
 /* Working data for heap_page_prune and subroutines */
 typedef struct
 {
 	TransactionId new_prune_xid;	/* new prune hint value for page */
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+	CommitSeqNo new_prune_ts;	/* new prune hint ts value for page */
+#endif
 	TransactionId latestRemovedXid; /* latest xid to be removed by this prune */
 	int			nredirected;	/* numbers of entries in arrays below */
 	int			ndead;
@@ -48,7 +55,11 @@ static int heap_prune_chain(Relation relation, Buffer buffer,
 				 OffsetNumber rootoffnum,
 				 TransactionId OldestXmin,
 				 PruneState *prstate);
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+static void heap_prune_record_prunable(PruneState *prstate, TransactionId xid, CommitSeqNo ts);
+#else
 static void heap_prune_record_prunable(PruneState *prstate, TransactionId xid);
+#endif
 static void heap_prune_record_redirect(PruneState *prstate,
 						   OffsetNumber offnum, OffsetNumber rdoffnum);
 static void heap_prune_record_dead(PruneState *prstate, OffsetNumber offnum);
@@ -76,6 +87,9 @@ heap_page_prune_opt(Relation relation, Buffer buffer)
 	Page		page = BufferGetPage(buffer);
 	Size		minfree;
 	TransactionId OldestXmin;
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+	CommitSeqNo OldestTmin;
+#endif
 
 	/*
 	 * We can't write WAL in recovery mode, so there's no point trying to
@@ -101,10 +115,10 @@ heap_page_prune_opt(Relation relation, Buffer buffer)
 	 */
 	if (IsCatalogRelation(relation) ||
 		RelationIsAccessibleInLogicalDecoding(relation))
-		OldestXmin = RecentGlobalXmin;
+		OldestXmin = GetRecentGlobalXmin();
 	else
 		OldestXmin =
-			TransactionIdLimitedForOldSnapshots(RecentGlobalDataXmin,
+			TransactionIdLimitedForOldSnapshots(GetRecentGlobalDataXmin(),
 												relation);
 
 	Assert(TransactionIdIsValid(OldestXmin));
@@ -115,8 +129,19 @@ heap_page_prune_opt(Relation relation, Buffer buffer)
 	 * Forget it if page is not hinted to contain something prunable that's
 	 * older than OldestXmin.
 	 */
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+
+	/*
+	 * Use prunable timestamp to avoid unnessaray hot-chain vacuum, so as to
+	 * achieve the same performance as xid-based vacuum.
+	 */
+	OldestTmin = GetRecentGlobalTmin();
+	if (!PageIsPrunable(page, OldestXmin, OldestTmin))
+		return;
+#else
 	if (!PageIsPrunable(page, OldestXmin))
 		return;
+#endif
 
 	/*
 	 * We prune when a previous UPDATE failed to find enough space on the page
@@ -199,6 +224,9 @@ heap_page_prune(Relation relation, Buffer buffer, TransactionId OldestXmin,
 	 * initialize the rest of our working state.
 	 */
 	prstate.new_prune_xid = InvalidTransactionId;
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+	prstate.new_prune_ts = InvalidCommitSeqNo;
+#endif
 	prstate.latestRemovedXid = *latestRemovedXid;
 	prstate.nredirected = prstate.ndead = prstate.nunused = 0;
 	memset(prstate.marked, 0, sizeof(prstate.marked));
@@ -246,6 +274,9 @@ heap_page_prune(Relation relation, Buffer buffer, TransactionId OldestXmin,
 		 * XID of any soon-prunable tuple.
 		 */
 		((PageHeader) page)->pd_prune_xid = prstate.new_prune_xid;
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+		((PageHeader) page)->pd_prune_ts = prstate.new_prune_ts;
+#endif
 
 		/*
 		 * Also clear the "page is full" flag, since there's no point in
@@ -283,6 +314,17 @@ heap_page_prune(Relation relation, Buffer buffer, TransactionId OldestXmin,
 		 * point in repeating the prune/defrag process until something else
 		 * happens to the page.
 		 */
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+		if (((PageHeader) page)->pd_prune_xid != prstate.new_prune_xid ||
+			((PageHeader) page)->pd_prune_ts != prstate.new_prune_ts ||
+			PageIsFull(page))
+		{
+			((PageHeader) page)->pd_prune_xid = prstate.new_prune_xid;
+			((PageHeader) page)->pd_prune_ts = prstate.new_prune_ts;
+			PageClearFull(page);
+			MarkBufferDirtyHint(buffer, true);
+		}
+#else
 		if (((PageHeader) page)->pd_prune_xid != prstate.new_prune_xid ||
 			PageIsFull(page))
 		{
@@ -290,6 +332,7 @@ heap_page_prune(Relation relation, Buffer buffer, TransactionId OldestXmin,
 			PageClearFull(page);
 			MarkBufferDirtyHint(buffer, true);
 		}
+#endif
 	}
 
 	END_CRIT_SECTION();
@@ -425,6 +468,10 @@ heap_prune_chain(Relation relation, Buffer buffer, OffsetNumber rootoffnum,
 		ItemId		lp;
 		bool		tupdead,
 					recent_dead;
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+		CommitSeqNo committs;
+#endif
+
 
 		/* Some sanity checks */
 		if (offnum < FirstOffsetNumber || offnum > maxoff)
@@ -494,6 +541,19 @@ heap_prune_chain(Relation relation, Buffer buffer, OffsetNumber rootoffnum,
 
 			case HEAPTUPLE_RECENTLY_DEAD:
 				recent_dead = true;
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+				if (htup->t_infomask & HEAP_XMAX_IS_MULTI)
+				{
+					committs = TransactionIdGetCommitSeqNo(HeapTupleHeaderGetUpdateXid(htup));
+				}
+				else
+				{
+					committs = HeapTupleHderGetXmaxTimestampAtomic(htup);
+				}
+				heap_prune_record_prunable(prstate,
+										   HeapTupleHeaderGetUpdateXid(htup),
+										   committs);
+#else
 
 				/*
 				 * This tuple may soon become DEAD.  Update the hint field so
@@ -501,6 +561,7 @@ heap_prune_chain(Relation relation, Buffer buffer, OffsetNumber rootoffnum,
 				 */
 				heap_prune_record_prunable(prstate,
 										   HeapTupleHeaderGetUpdateXid(htup));
+#endif
 				break;
 
 			case HEAPTUPLE_DELETE_IN_PROGRESS:
@@ -509,8 +570,14 @@ heap_prune_chain(Relation relation, Buffer buffer, OffsetNumber rootoffnum,
 				 * This tuple may soon become DEAD.  Update the hint field so
 				 * that the page is reconsidered for pruning in future.
 				 */
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+				heap_prune_record_prunable(prstate,
+										   HeapTupleHeaderGetUpdateXid(htup),
+										   InvalidCommitSeqNo);
+#else
 				heap_prune_record_prunable(prstate,
 										   HeapTupleHeaderGetUpdateXid(htup));
+#endif
 				break;
 
 			case HEAPTUPLE_LIVE:
@@ -618,8 +685,13 @@ heap_prune_chain(Relation relation, Buffer buffer, OffsetNumber rootoffnum,
 }
 
 /* Record lowest soon-prunable XID */
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+static void
+heap_prune_record_prunable(PruneState *prstate, TransactionId xid, CommitSeqNo ts)
+#else
 static void
 heap_prune_record_prunable(PruneState *prstate, TransactionId xid)
+#endif
 {
 	/*
 	 * This should exactly match the PageSetPrunable macro.  We can't store
@@ -629,6 +701,15 @@ heap_prune_record_prunable(PruneState *prstate, TransactionId xid)
 	if (!TransactionIdIsValid(prstate->new_prune_xid) ||
 		TransactionIdPrecedes(xid, prstate->new_prune_xid))
 		prstate->new_prune_xid = xid;
+
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+	if (!COMMITSEQNO_IS_NORMAL(ts))
+		return;
+
+	if (!COMMITSEQNO_IS_NORMAL(prstate->new_prune_ts) ||
+		(ts < prstate->new_prune_ts))
+		prstate->new_prune_ts = ts;
+#endif
 }
 
 /* Record item pointer to be redirected */

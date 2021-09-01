@@ -38,6 +38,7 @@
  *
  * This code is released under the terms of the PostgreSQL License.
  *
+ * Portions Copyright (c) 2020, Alibaba Group Holding Limited
  * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -146,6 +147,11 @@ static char *str_wal_segment_size_mb = NULL;
 static int	wal_segment_size_mb;
 
 
+/* POLAR */
+static char *polar_system_identifier = NULL;
+
+/* POLAR end */
+
 /* internal vars */
 static const char *progname;
 static int	encodingid;
@@ -155,6 +161,7 @@ static char *shdesc_file;
 static char *hba_file;
 static char *ident_file;
 static char *conf_file;
+static char *polar_dma_file;
 static char *conversion_file;
 static char *dictionary_file;
 static char *info_schema_file;
@@ -201,16 +208,20 @@ static const char *backend_options = "--single -F -O -j -c search_path=pg_catalo
 static const char *const subdirs[] = {
 	"global",
 	"pg_wal/archive_status",
+	"pg_csnlog",
+	"pg_ctslog",
 	"pg_commit_ts",
 	"pg_dynshmem",
 	"pg_notify",
 	"pg_serial",
 	"pg_snapshots",
-	"pg_subtrans",
 	"pg_twophase",
 	"pg_multixact",
 	"pg_multixact/members",
 	"pg_multixact/offsets",
+	"polar_dma",
+	"polar_dma/consensus_log",
+	"polar_dma/consensus_cc_log",
 	"base",
 	"base/1",
 	"pg_replslot",
@@ -922,6 +933,9 @@ choose_dsm_implementation(void)
 #ifdef HAVE_SHM_OPEN
 	int			ntries = 10;
 
+	/* Initialize random(); this function is its only user in this program. */
+	srandom((unsigned int) (getpid() ^ time(NULL)));
+
 	while (ntries > 0)
 	{
 		uint32		handle;
@@ -1366,6 +1380,22 @@ setup_config(void)
 
 	free(conflines);
 
+	/* pg_dma.conf */
+
+	conflines = readfile(polar_dma_file);
+
+	snprintf(path, sizeof(path), "%s/polar_dma.conf", pg_data);
+
+	writefile(path, conflines);
+	if (chmod(path, pg_file_create_mode) != 0)
+	{
+		fprintf(stderr, _("%s: could not change permissions of \"%s\": %s\n"),
+				progname, path, strerror(errno));
+		exit_nicely();
+	}
+
+	free(conflines);
+
 	check_ok();
 }
 
@@ -1448,14 +1478,16 @@ bootstrap_template1(void)
 	/* Also ensure backend isn't confused by this environment var: */
 	unsetenv("PGCLIENTENCODING");
 
+	/* POLAR: add specific system identifier */
 	snprintf(cmd, sizeof(cmd),
-			 "\"%s\" --boot -x1 -X %u %s %s %s",
+			 "\"%s\" --boot -x1 -X %u %s %s %s %s %s",
 			 backend_exec,
 			 wal_segment_size_mb * (1024 * 1024),
 			 data_checksums ? "-k" : "",
 			 boot_options,
-			 debug ? "-d 5" : "");
-
+			 debug ? "-d 5" : "",
+			 polar_system_identifier ? "-i" : "",
+			 polar_system_identifier ? polar_system_identifier : "");
 
 	PG_CMD_OPEN;
 
@@ -2408,6 +2440,9 @@ usage(const char *progname)
 	printf(_("  -N, --no-sync             do not wait for changes to be written safely to disk\n"));
 	printf(_("  -s, --show                show internal settings\n"));
 	printf(_("  -S, --sync-only           only sync data directory\n"));
+	/* POLAR */
+	printf(_("  -i, --system-identifier   specify system identifier\n"));
+	/* POLAR end */
 	printf(_("\nOther options:\n"));
 	printf(_("  -V, --version             output version information, then exit\n"));
 	printf(_("  -?, --help                show this help, then exit\n"));
@@ -2652,6 +2687,7 @@ setup_data_file_paths(void)
 	set_input(&hba_file, "pg_hba.conf.sample");
 	set_input(&ident_file, "pg_ident.conf.sample");
 	set_input(&conf_file, "postgresql.conf.sample");
+	set_input(&polar_dma_file, "polar_dma.conf.sample");
 	set_input(&conversion_file, "conversion_create.sql");
 	set_input(&dictionary_file, "snowball_create.sql");
 	set_input(&info_schema_file, "information_schema.sql");
@@ -2683,6 +2719,7 @@ setup_data_file_paths(void)
 	check_input(hba_file);
 	check_input(ident_file);
 	check_input(conf_file);
+	check_input(polar_dma_file);
 	check_input(conversion_file);
 	check_input(dictionary_file);
 	check_input(info_schema_file);
@@ -2915,7 +2952,7 @@ create_xlog_or_symlink(void)
 			exit_nicely();
 		}
 #else
-		fprintf(stderr, _("%s: symlinks are not supported on this platform"));
+		fprintf(stderr, _("%s: symlinks are not supported on this platform\n"), progname);
 		exit_nicely();
 #endif
 	}
@@ -3099,6 +3136,9 @@ main(int argc, char *argv[])
 		{"wal-segsize", required_argument, NULL, 12},
 		{"data-checksums", no_argument, NULL, 'k'},
 		{"allow-group-access", no_argument, NULL, 'g'},
+		/* POLAR: add specific system identifier option here */
+		{"system-indetifier", required_argument, NULL, 'i'},
+		/* POLAR end */
 		{NULL, 0, NULL, 0}
 	};
 
@@ -3140,7 +3180,7 @@ main(int argc, char *argv[])
 
 	/* process command-line options */
 
-	while ((c = getopt_long(argc, argv, "dD:E:kL:nNU:WA:sST:X:g", long_options, &option_index)) != -1)
+	while ((c = getopt_long(argc, argv, "dD:E:kL:nNU:WA:sST:X:gi:", long_options, &option_index)) != -1)
 	{
 		switch (c)
 		{
@@ -3237,6 +3277,11 @@ main(int argc, char *argv[])
 			case 'g':
 				SetDataDirectoryCreatePerm(PG_DIR_MODE_GROUP);
 				break;
+				/* POLAR */
+			case 'i':
+				polar_system_identifier = pg_strdup(optarg);
+				break;
+				/* POLAR end */
 			default:
 				/* getopt_long already emitted a complaint */
 				fprintf(stderr, _("Try \"%s --help\" for more information.\n"),

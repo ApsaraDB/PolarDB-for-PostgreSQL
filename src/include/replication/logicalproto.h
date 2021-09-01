@@ -3,6 +3,7 @@
  * logicalproto.h
  *		logical replication protocol
  *
+ * Portions Copyright (c) 2020, Alibaba Group Holding Limited
  * Copyright (c) 2015-2018, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
@@ -66,6 +67,9 @@ typedef struct LogicalRepBeginData
 	XLogRecPtr	final_lsn;
 	TimestampTz committime;
 	TransactionId xid;
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+	CommitTs	cts;
+#endif
 } LogicalRepBeginData;
 
 typedef struct LogicalRepCommitData

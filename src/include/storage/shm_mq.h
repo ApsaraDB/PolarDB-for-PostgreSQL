@@ -68,6 +68,8 @@ extern void shm_mq_detach(shm_mq_handle *mqh);
 /* Get the shm_mq from handle. */
 extern shm_mq *shm_mq_get_queue(shm_mq_handle *mqh);
 
+extern uint64 shm_mq_get_used_bytes(shm_mq_handle *mqh);
+
 /* Send or receive messages. */
 extern shm_mq_result shm_mq_send(shm_mq_handle *mqh,
 			Size nbytes, const void *data, bool nowait);

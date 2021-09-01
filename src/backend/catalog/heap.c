@@ -70,6 +70,7 @@
 #include "parser/parse_relation.h"
 #include "storage/lmgr.h"
 #include "storage/predicate.h"
+#include "storage/procarray.h"
 #include "storage/smgr.h"
 #include "utils/acl.h"
 #include "utils/builtins.h"
@@ -297,7 +298,6 @@ heap_create(const char *relname,
 		case RELKIND_COMPOSITE_TYPE:
 		case RELKIND_FOREIGN_TABLE:
 		case RELKIND_PARTITIONED_TABLE:
-		case RELKIND_PARTITIONED_INDEX:
 			create_storage = false;
 
 			/*
@@ -306,6 +306,15 @@ heap_create(const char *relname,
 			 */
 			reltablespace = InvalidOid;
 			break;
+
+		case RELKIND_PARTITIONED_INDEX:
+			/*
+			 * Preserve tablespace so that it's used as tablespace for indexes
+			 * on future partitions.
+			 */
+			create_storage = false;
+			break;
+
 		case RELKIND_SEQUENCE:
 			create_storage = true;
 
@@ -901,7 +910,7 @@ AddNewRelationTuple(Relation pg_class_desc,
 		 * We know that no xacts older than RecentXmin are still running, so
 		 * that will do.
 		 */
-		new_rel_reltup->relfrozenxid = RecentXmin;
+		new_rel_reltup->relfrozenxid = GetOldestActiveTransactionId();
 
 		/*
 		 * Similarly, initialize the minimum Multixact to the first value that
@@ -1312,12 +1321,15 @@ heap_create_with_catalog(const char *relname,
 		myself.classId = RelationRelationId;
 		myself.objectId = relid;
 		myself.objectSubId = 0;
+
 		referenced.classId = NamespaceRelationId;
 		referenced.objectId = relnamespace;
 		referenced.objectSubId = 0;
 		recordDependencyOn(&myself, &referenced, DEPENDENCY_NORMAL);
 
 		recordDependencyOnOwner(RelationRelationId, relid, ownerid);
+
+		recordDependencyOnNewAcl(RelationRelationId, relid, 0, ownerid, relacl);
 
 		recordDependencyOnCurrentExtension(&myself, false);
 
@@ -1327,18 +1339,6 @@ heap_create_with_catalog(const char *relname,
 			referenced.objectId = reloftypeid;
 			referenced.objectSubId = 0;
 			recordDependencyOn(&myself, &referenced, DEPENDENCY_NORMAL);
-		}
-
-		if (relacl != NULL)
-		{
-			int			nnewmembers;
-			Oid		   *newmembers;
-
-			nnewmembers = aclmembers(relacl, &newmembers);
-			updateAclDependencies(RelationRelationId, relid, 0,
-								  ownerid,
-								  0, NULL,
-								  nnewmembers, newmembers);
 		}
 	}
 
@@ -2707,7 +2707,7 @@ MergeWithExistingConstraint(Relation rel, const char *ccname, Node *expr,
 	bool		found;
 	Relation	conDesc;
 	SysScanDesc conscan;
-	ScanKeyData skey[2];
+	ScanKeyData skey[3];
 	HeapTuple	tup;
 
 	/* Search for a pg_constraint entry with same name and relation */
@@ -2716,120 +2716,120 @@ MergeWithExistingConstraint(Relation rel, const char *ccname, Node *expr,
 	found = false;
 
 	ScanKeyInit(&skey[0],
+				Anum_pg_constraint_conrelid,
+				BTEqualStrategyNumber, F_OIDEQ,
+				ObjectIdGetDatum(RelationGetRelid(rel)));
+	ScanKeyInit(&skey[1],
+				Anum_pg_constraint_contypid,
+				BTEqualStrategyNumber, F_OIDEQ,
+				ObjectIdGetDatum(InvalidOid));
+	ScanKeyInit(&skey[2],
 				Anum_pg_constraint_conname,
 				BTEqualStrategyNumber, F_NAMEEQ,
 				CStringGetDatum(ccname));
 
-	ScanKeyInit(&skey[1],
-				Anum_pg_constraint_connamespace,
-				BTEqualStrategyNumber, F_OIDEQ,
-				ObjectIdGetDatum(RelationGetNamespace(rel)));
+	conscan = systable_beginscan(conDesc, ConstraintRelidTypidNameIndexId, true,
+								 NULL, 3, skey);
 
-	conscan = systable_beginscan(conDesc, ConstraintNameNspIndexId, true,
-								 NULL, 2, skey);
-
-	while (HeapTupleIsValid(tup = systable_getnext(conscan)))
+	/* There can be at most one matching row */
+	if (HeapTupleIsValid(tup = systable_getnext(conscan)))
 	{
 		Form_pg_constraint con = (Form_pg_constraint) GETSTRUCT(tup);
 
-		if (con->conrelid == RelationGetRelid(rel))
+		/* Found it.  Conflicts if not identical check constraint */
+		if (con->contype == CONSTRAINT_CHECK)
 		{
-			/* Found it.  Conflicts if not identical check constraint */
-			if (con->contype == CONSTRAINT_CHECK)
-			{
-				Datum		val;
-				bool		isnull;
+			Datum		val;
+			bool		isnull;
 
-				val = fastgetattr(tup,
-								  Anum_pg_constraint_conbin,
-								  conDesc->rd_att, &isnull);
-				if (isnull)
-					elog(ERROR, "null conbin for rel %s",
-						 RelationGetRelationName(rel));
-				if (equal(expr, stringToNode(TextDatumGetCString(val))))
-					found = true;
-			}
-
-			/*
-			 * If the existing constraint is purely inherited (no local
-			 * definition) then interpret addition of a local constraint as a
-			 * legal merge.  This allows ALTER ADD CONSTRAINT on parent and
-			 * child tables to be given in either order with same end state.
-			 * However if the relation is a partition, all inherited
-			 * constraints are always non-local, including those that were
-			 * merged.
-			 */
-			if (is_local && !con->conislocal && !rel->rd_rel->relispartition)
-				allow_merge = true;
-
-			if (!found || !allow_merge)
-				ereport(ERROR,
-						(errcode(ERRCODE_DUPLICATE_OBJECT),
-						 errmsg("constraint \"%s\" for relation \"%s\" already exists",
-								ccname, RelationGetRelationName(rel))));
-
-			/* If the child constraint is "no inherit" then cannot merge */
-			if (con->connoinherit)
-				ereport(ERROR,
-						(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
-						 errmsg("constraint \"%s\" conflicts with non-inherited constraint on relation \"%s\"",
-								ccname, RelationGetRelationName(rel))));
-
-			/*
-			 * Must not change an existing inherited constraint to "no
-			 * inherit" status.  That's because inherited constraints should
-			 * be able to propagate to lower-level children.
-			 */
-			if (con->coninhcount > 0 && is_no_inherit)
-				ereport(ERROR,
-						(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
-						 errmsg("constraint \"%s\" conflicts with inherited constraint on relation \"%s\"",
-								ccname, RelationGetRelationName(rel))));
-
-			/*
-			 * If the child constraint is "not valid" then cannot merge with a
-			 * valid parent constraint
-			 */
-			if (is_initially_valid && !con->convalidated)
-				ereport(ERROR,
-						(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
-						 errmsg("constraint \"%s\" conflicts with NOT VALID constraint on relation \"%s\"",
-								ccname, RelationGetRelationName(rel))));
-
-			/* OK to update the tuple */
-			ereport(NOTICE,
-					(errmsg("merging constraint \"%s\" with inherited definition",
-							ccname)));
-
-			tup = heap_copytuple(tup);
-			con = (Form_pg_constraint) GETSTRUCT(tup);
-
-			/*
-			 * In case of partitions, an inherited constraint must be
-			 * inherited only once since it cannot have multiple parents and
-			 * it is never considered local.
-			 */
-			if (rel->rd_rel->relispartition)
-			{
-				con->coninhcount = 1;
-				con->conislocal = false;
-			}
-			else
-			{
-				if (is_local)
-					con->conislocal = true;
-				else
-					con->coninhcount++;
-			}
-
-			if (is_no_inherit)
-			{
-				Assert(is_local);
-				con->connoinherit = true;
-			}
-			CatalogTupleUpdate(conDesc, &tup->t_self, tup);
-			break;
+			val = fastgetattr(tup,
+							  Anum_pg_constraint_conbin,
+							  conDesc->rd_att, &isnull);
+			if (isnull)
+				elog(ERROR, "null conbin for rel %s",
+					 RelationGetRelationName(rel));
+			if (equal(expr, stringToNode(TextDatumGetCString(val))))
+				found = true;
 		}
+
+		/*
+		 * If the existing constraint is purely inherited (no local
+		 * definition) then interpret addition of a local constraint as a
+		 * legal merge.  This allows ALTER ADD CONSTRAINT on parent and child
+		 * tables to be given in either order with same end state.  However if
+		 * the relation is a partition, all inherited constraints are always
+		 * non-local, including those that were merged.
+		 */
+		if (is_local && !con->conislocal && !rel->rd_rel->relispartition)
+			allow_merge = true;
+
+		if (!found || !allow_merge)
+			ereport(ERROR,
+					(errcode(ERRCODE_DUPLICATE_OBJECT),
+					 errmsg("constraint \"%s\" for relation \"%s\" already exists",
+							ccname, RelationGetRelationName(rel))));
+
+		/* If the child constraint is "no inherit" then cannot merge */
+		if (con->connoinherit)
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
+					 errmsg("constraint \"%s\" conflicts with non-inherited constraint on relation \"%s\"",
+							ccname, RelationGetRelationName(rel))));
+
+		/*
+		 * Must not change an existing inherited constraint to "no inherit"
+		 * status.  That's because inherited constraints should be able to
+		 * propagate to lower-level children.
+		 */
+		if (con->coninhcount > 0 && is_no_inherit)
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
+					 errmsg("constraint \"%s\" conflicts with inherited constraint on relation \"%s\"",
+							ccname, RelationGetRelationName(rel))));
+
+		/*
+		 * If the child constraint is "not valid" then cannot merge with a
+		 * valid parent constraint.
+		 */
+		if (is_initially_valid && !con->convalidated)
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
+					 errmsg("constraint \"%s\" conflicts with NOT VALID constraint on relation \"%s\"",
+							ccname, RelationGetRelationName(rel))));
+
+		/* OK to update the tuple */
+		ereport(NOTICE,
+				(errmsg("merging constraint \"%s\" with inherited definition",
+						ccname)));
+
+		tup = heap_copytuple(tup);
+		con = (Form_pg_constraint) GETSTRUCT(tup);
+
+		/*
+		 * In case of partitions, an inherited constraint must be inherited
+		 * only once since it cannot have multiple parents and it is never
+		 * considered local.
+		 */
+		if (rel->rd_rel->relispartition)
+		{
+			con->coninhcount = 1;
+			con->conislocal = false;
+		}
+		else
+		{
+			if (is_local)
+				con->conislocal = true;
+			else
+				con->coninhcount++;
+		}
+
+		if (is_no_inherit)
+		{
+			Assert(is_local);
+			con->connoinherit = true;
+		}
+
+		CatalogTupleUpdate(conDesc, &tup->t_self, tup);
 	}
 
 	systable_endscan(conscan);
@@ -3138,6 +3138,13 @@ heap_truncate_one_rel(Relation rel)
 {
 	Oid			toastrelid;
 
+	/*
+	 * Truncate the relation.  Partitioned tables have no storage, so there is
+	 * nothing to do for them here.
+	 */
+	if (rel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
+		return;
+
 	/* Truncate the actual file (and discard buffers) */
 	RelationTruncate(rel, 0);
 
@@ -3181,13 +3188,16 @@ heap_truncate_check_FKs(List *relations, bool tempTables)
 	 * Build a list of OIDs of the interesting relations.
 	 *
 	 * If a relation has no triggers, then it can neither have FKs nor be
-	 * referenced by a FK from another table, so we can ignore it.
+	 * referenced by a FK from another table, so we can ignore it.  For
+	 * partitioned tables, FKs have no triggers, so we must include them
+	 * anyway.
 	 */
 	foreach(cell, relations)
 	{
 		Relation	rel = lfirst(cell);
 
-		if (rel->rd_rel->relhastriggers)
+		if (rel->rd_rel->relhastriggers ||
+			rel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
 			oids = lappend_oid(oids, RelationGetRelid(rel));
 	}
 
@@ -3410,7 +3420,7 @@ StorePartitionKey(Relation rel,
 
 	/* Mark this relation as dependent on a few things as follows */
 	myself.classId = RelationRelationId;
-	myself.objectId = RelationGetRelid(rel);;
+	myself.objectId = RelationGetRelid(rel);
 	myself.objectSubId = 0;
 
 	/* Operator class and collation per key column */
@@ -3429,9 +3439,9 @@ StorePartitionKey(Relation rel,
 			referenced.classId = CollationRelationId;
 			referenced.objectId = partcollation[i];
 			referenced.objectSubId = 0;
-		}
 
-		recordDependencyOn(&myself, &referenced, DEPENDENCY_NORMAL);
+			recordDependencyOn(&myself, &referenced, DEPENDENCY_NORMAL);
+		}
 	}
 
 	/*

@@ -93,57 +93,6 @@
 #define FirstBootstrapObjectId	10000
 #define FirstNormalObjectId		16384
 
-/*
- * VariableCache is a data structure in shared memory that is used to track
- * OID and XID assignment state.  For largely historical reasons, there is
- * just one struct with different fields that are protected by different
- * LWLocks.
- *
- * Note: xidWrapLimit and oldestXidDB are not "active" values, but are
- * used just to generate useful messages when xidWarnLimit or xidStopLimit
- * are exceeded.
- */
-typedef struct VariableCacheData
-{
-	/*
-	 * These fields are protected by OidGenLock.
-	 */
-	Oid			nextOid;		/* next OID to assign */
-	uint32		oidCount;		/* OIDs available before must do XLOG work */
-
-	/*
-	 * These fields are protected by XidGenLock.
-	 */
-	TransactionId nextXid;		/* next XID to assign */
-
-	TransactionId oldestXid;	/* cluster-wide minimum datfrozenxid */
-	TransactionId xidVacLimit;	/* start forcing autovacuums here */
-	TransactionId xidWarnLimit; /* start complaining here */
-	TransactionId xidStopLimit; /* refuse to advance nextXid beyond here */
-	TransactionId xidWrapLimit; /* where the world ends */
-	Oid			oldestXidDB;	/* database with minimum datfrozenxid */
-
-	/*
-	 * These fields are protected by CommitTsLock
-	 */
-	TransactionId oldestCommitTsXid;
-	TransactionId newestCommitTsXid;
-
-	/*
-	 * These fields are protected by ProcArrayLock.
-	 */
-	TransactionId latestCompletedXid;	/* newest XID that has committed or
-										 * aborted */
-
-	/*
-	 * These fields are protected by CLogTruncationLock
-	 */
-	TransactionId oldestClogXid;	/* oldest it's safe to look up in clog */
-
-} VariableCacheData;
-
-typedef VariableCacheData *VariableCache;
-
 
 /* ----------------
  *		extern declarations
@@ -153,15 +102,49 @@ typedef VariableCacheData *VariableCache;
 /* in transam/xact.c */
 extern bool TransactionStartedDuringRecovery(void);
 
-/* in transam/varsup.c */
-extern PGDLLIMPORT VariableCache ShmemVariableCache;
-
 /*
  * prototypes for functions in transam/transam.c
  */
 extern bool TransactionIdDidCommit(TransactionId transactionId);
 extern bool TransactionIdDidAbort(TransactionId transactionId);
-extern bool TransactionIdIsKnownCompleted(TransactionId transactionId);
+
+
+#define COMMITSEQNO_INPROGRESS	UINT64CONST(0x0)
+#define COMMITSEQNO_ABORTED		UINT64CONST(0x1)
+/*
+ * COMMITSEQNO_COMMITING is an intermediate state that is used to set CSN
+ * atomically for a top level transaction and its subtransactions.
+ * High-level users should not see this value, see TransactionIdGetCommitSeqNo().
+ */
+#define COMMITSEQNO_COMMITTING	UINT64CONST(0x2)
+#define COMMITSEQNO_FROZEN		UINT64CONST(0x3)
+#define COMMITSEQNO_FIRST_NORMAL ((unsigned long)1000000 << 16)
+
+#define CSN_SUBTRANS_BIT		(UINT64CONST(1)<<63)
+#define CSN_PREPARE_BIT			(UINT64CONST(1)<<62)
+
+#define COMMITSEQNO_IS_SUBTRANS(csn) ((csn) & CSN_SUBTRANS_BIT)
+#define COMMITSEQNO_IS_PREPARED(csn) ((csn) & CSN_PREPARE_BIT)
+#define MASK_PREPARE_BIT(csn) ((csn) | CSN_PREPARE_BIT)
+#define UNMASK_PREPARE_BIT(csn) ((csn) & (~CSN_PREPARE_BIT))
+
+#define COMMITSEQNO_IS_INPROGRESS(csn) (((csn) == COMMITSEQNO_INPROGRESS) || COMMITSEQNO_IS_PREPARED(csn))
+#define COMMITSEQNO_IS_ABORTED(csn) ((csn) == COMMITSEQNO_ABORTED)
+#define COMMITSEQNO_IS_FROZEN(csn) ((csn) == COMMITSEQNO_FROZEN)
+#define COMMITSEQNO_IS_COMMITTING(csn) ((csn) == COMMITSEQNO_COMMITTING)
+#define COMMITSEQNO_IS_COMMITTED(csn) ((csn) >= COMMITSEQNO_FROZEN && !COMMITSEQNO_IS_SUBTRANS(csn) && !COMMITSEQNO_IS_PREPARED(csn))
+#define COMMITSEQNO_IS_NORMAL(csn) ((csn) >= COMMITSEQNO_FIRST_NORMAL && !COMMITSEQNO_IS_SUBTRANS(csn) && !COMMITSEQNO_IS_PREPARED(csn))
+
+
+typedef enum
+{
+	XID_COMMITTED,
+	XID_ABORTED,
+	XID_INPROGRESS
+} TransactionIdStatus;
+
+extern CommitSeqNo TransactionIdGetCommitSeqNo(TransactionId xid);
+extern TransactionIdStatus TransactionIdGetStatus(TransactionId transactionId);
 extern void TransactionIdAbort(TransactionId transactionId);
 extern void TransactionIdCommitTree(TransactionId xid, int nxids, TransactionId *xids);
 extern void TransactionIdAsyncCommitTree(TransactionId xid, int nxids, TransactionId *xids, XLogRecPtr lsn);

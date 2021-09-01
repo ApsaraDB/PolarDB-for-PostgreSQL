@@ -1,0 +1,292 @@
+# Overview of Deployment
+
+We support two deployment types:
+
+- [One-Key Deployment](#one-key-deployment) provides script for creating new default environment with only one command.
+- [Deployment from Source Code](#deployment-from-source-code) introduces more detailed usage about deploy commands and scripts.
+
+Both two types of deployment have preconditions, refer to  [Preparation](#preparation).
+
+- [Preparation](#preparation)
+- [One-Key Deployment](#one-key-deployment)
+- [Deployment from Source Code](#deployment-from-source-code)
+
+# Preparation
+
+## Before You Start
+
+* download source code from https://github.com/alibaba/PolarDB-for-PostgreSQL
+
+* install dependent packages (use CentOS as an example)
+
+```bash
+sudo yum install bison flex libzstd-devel libzstd zstd cmake openssl-devel protobuf-devel readline-devel libxml2-devel libxslt-devel zlib-devel bzip2-devel lz4-devel snappy-devel python-devel
+```
+
+* set up authorized key for fast access
+
+Call ssh-copy-id command to configure ssh so that no password is needed when using pgxc_ctl.
+
+```bash
+ssh-copy-id username@IP
+```
+
+* set up environment variables
+
+```bash
+vi ~/.bashrc
+export PATH="$HOME/polardb/polardbhome/bin:$PATH"
+export LD_LIBRARY_PATH="$HOME/polardb/polardbhome/lib:$LD_LIBRARY_PATH"
+```
+
+ ## OS and Other Dependencies
+
+* operating systems
+  * Alibaba Group Enterprise Linux Server, VERSION="7.2 (Paladin)", 3.10.0-327.ali2017.alios7.x86_64
+  * CentOS 7
+
+* GCC versions
+  * gcc 10.2.1
+  * gcc 9.2.1
+  * gcc 7.2.1
+  * gcc 4.8.5
+
+
+## One-Key Deployment
+
+This script uses default configuration to compile PolarDB, to deploy binary and start a cluster of three nodes, including a leader and two followers.
+Before calling this script, please check your environment variables, dependent packages, and authorized key, [Before You Start](#before-you-start) in [Preparation](#Preparation).
+
+* run onekey.sh script
+
+```bash
+./onekey.sh all
+```
+
+* onekey.sh script introduce
+
+```bash
+sh onekey.sh [all|build|configure|deploy|setup|dependencies|cm|clean]
+```
+
+    * all: uses default configuration to compile PolarDB, to deploy binary, and to start a cluster of three nodes, including a leader and two followers.
+    * build: invoke *build.sh* script to compile and create a release version.
+    * configure：generate default cluster configuration; the default configuration includes a leader and two followers.
+    * deploy: deploy binary to all related machine.
+    * setup: initialize and start database based on default configuration.
+    * dependencies: install dependent packages (use Centos as an example).
+    * cm: setup cluster manager component.
+    * clean: clean environment.
+
+* check running processes (1 leader, 2 followers), their replica roles and status:
+
+```bash
+ps -ef|grep polardb
+psql -p 10001 -d postgres -c "select * from pg_stat_replication;"
+psql -p 10001 -d postgres -c "select * from polar_dma_cluster_status;"
+```
+
+
+# Deployment from Source Code
+We extend a tool named pgxc_ctl from PG-XC/PG-XL open-source project to support cluster management, such as configuration generation, configuration modification, cluster initialization, starting/stopping nodes, and switchover. Its detailed usage can be found in[deployment](/doc/polardb/deployment.md).
+
+## Compile Source Code Using *build.sh*
+
+We can use a shell script *build.sh* offered with PolarDB source code to create and install binary locally.
+
+```bash
+sh build.sh [deploy|verify|debug|repeat]
+```
+
+* deploy：release version, default
+* verify：release version，assertion enabled
+* debug ：debug version
+* repeat：compile source code without calling configure
+
+For example:
+```bash
+$ sh build.sh # release version
+```
+
+If you get linker errors about undefined references to symbols of protobuf. It probably indicates that the system-installed protobuf was compiled with an older version of GCC or older AI version, please set -c option to ON as the following section of *build.sh* .
+
+```bash
+# build polardb consensus dynamic library
+cd $CODEHOME/src/backend/polar_dma/libconsensus/polar_wrapper
+if [[ "$BLD_OPT" == "debug" ]]; then
+sh ./build.sh -r -t debug -c ON
+else
+sh ./build.sh -r -t release -c ON
+fi
+cd $CODEHOME
+```
+
+# Cluster Installation
+
+## Create Cluster Configuration
+
+Use *pgxc_ctl prepare* to generate the default cluster configuration.
+
+```bash
+pgxc_ctl -c $HOME/polardb/polardb_paxos.conf prepare standalone
+```
+
+## Cluster Configuration Format
+
+```bash
+#!/usr/bin/env bash
+#
+# polardb Configuration file for pgxc_ctl utility.
+
+pgxcInstallDir=$HOME/pghome
+#---- OVERALL -----------------------------------------------------------------------------
+#
+pgxcOwner=$USER         # owner of the Postgres-XC databaseo cluster.  Here, we use this
+                                                # both as linus user and database user.  This must be
+                                                # the super user of each coordinator and datanode.
+pgxcUser=$pgxcOwner             # OS user of Postgres-XC owner
+
+tmpDir=/tmp                                     # temporary dir used in XC servers
+localTmpDir=$tmpDir                     # temporary dir used here locally
+
+standAlone=y                    # cluster version still not open source for now
+
+dataDirRoot=$HOME/DATA/polardb/nodes
+
+#---- Datanodes -------------------------------------------------------------------------------------------------------
+
+#---- Shortcuts --------------
+datanodeMasterDir=$dataDirRoot/dn_master
+datanodeSlaveDir=$dataDirRoot/dn_slave
+datanodeLearnerDir=$dataDirRoot/dn_learner
+datanodeArchLogDir=$dataDirRoot/datanode_archlog
+
+#---- Overall ---------------
+primaryDatanode=datanode_1                              # Primary Node.
+datanodeNames=(datanode_1)
+datanodePorts=(10001)   # Master and slave use the same port!
+datanodePoolerPorts=(10011)     # Master and slave use the same port!
+datanodePgHbaEntries=(::1/128)  # Assumes that all the coordinator (master/slave) accepts
+#datanodePgHbaEntries=(127.0.0.1/32)    # Same as above but for IPv4 connections
+
+#---- Master ----------------
+datanodeMasterServers=(localhost)       # none means this master is not available.
+datanodeMasterDirs=($datanodeMasterDir)
+datanodeMaxWalSender=5                     # max_wal_senders: needed to configure slave. If zero value is
+datanodeMaxWALSenders=($datanodeMaxWalSender)   # max_wal_senders configuration for each datanode
+
+
+#---- Slave -----------------
+datanodeSlave=y                 # Specify y if you configure at least one coordiantor slave.  Otherwise, the following
+datanodeSlaveServers=(localhost)        # value none means this slave is not available
+datanodeSlavePorts=(10101)      # Master and slave use the same port!
+datanodeSlavePoolerPorts=(10111)        # Master and slave use the same port!
+datanodeSlaveSync=y             # If datanode slave is connected in synchronized mode
+datanodeSlaveDirs=($datanodeSlaveDir)
+datanodeArchLogDirs=( $datanodeArchLogDir)
+datanodeRepNum=2  #  no HA setting 0, streaming HA and active-active logcial replication setting 1 replication,  paxos HA setting 2 replication.
+datanodeSlaveType=(3) # 1 is streaming HA, 2 is active-active logcial replication, 3 paxos HA.
+
+#---- Learner -----------------
+datanodeLearnerServers=(localhost)      # value none means this learner is not available
+datanodeLearnerPorts=(11001)    # learner port!
+#datanodeSlavePoolerPorts=(11011)       # learner pooler port!
+datanodeLearnerSync=y           # If datanode learner is connected in synchronized mode
+datanodeLearnerDirs=($datanodeLearnerDir)
+
+# ---- Configuration files ---
+# You may supply your bash script to setup extra config lines and extra pg_hba.conf entries here.
+datanodeExtraConfig=datanodeExtraConfig
+cat > $datanodeExtraConfig <<EOF
+#================================================
+# Added to all the datanode postgresql.conf
+# Original: $datanodeExtraConfig
+log_destination = 'stderr'
+logging_collector = on
+log_directory = 'pg_log'
+listen_addresses = '*'
+max_connections = 100
+hot_standby = on
+max_parallel_replay_workers = 0
+max_worker_processes = 30
+EOF
+# Additional Configuration file for specific datanode master.
+# You can define each setting by similar means as above.
+datanodeSpecificExtraConfig=(none)
+datanodeSpecificExtraPgHba=(none)
+```
+
+## Deploy Binary Using *pgxc_ctl*
+Use *pgxc_ctl deploy* command to deploy PolarDB binary in a cluster，option -c for configuration file. PolarDB binary is installed in **pgxcInstallDir** of all nodes specified in the configuration file.
+
+```bash
+pgxc_ctl -c $HOME/polardb/polardb_paxos.conf deploy all
+```
+
+## Initialize Database
+* Initialize database nodes and start them based on the configuration file.
+
+```bash
+pgxc_ctl -c $HOME/polardb/polardb_paxos.conf clean all
+pgxc_ctl -c $HOME/polardb/polardb_paxos.conf init all
+pgxc_ctl -c $HOME/polardb/polardb_paxos.conf monitor all
+```
+
+## Check and Test
+
+```bash
+ps -ef | grep postgres
+psql -p 10001 -d postgres -c "create table t1(a int primary key, b int);"
+createdb test -p 10001
+psql -p 10001 -d test -c "select version();"
+
+
+### Other command for cluster manager.
+
+* install dependent packages for cluster management
+
+```bash
+pgxc_ctl -c $HOME/polardb/polardb_paxos.conf deploy cm
+```
+
+* start cluster or node
+
+```bash
+pgxc_ctl -c $HOME/polardb/polardb_paxos.conf start all
+```
+
+* stop cluster or node
+
+```bash
+pgxc_ctl -c $HOME/polardb/polardb_paxos.conf stop all
+```
+
+* failover datanode
+
+datanode_1 is node name configured in polardb_paxos.conf.
+
+```bash
+pgxc_ctl -c $HOME/polardb/polardb_paxos.conf failover datanode datanode_1
+```
+
+* cluster health check
+
+ check cluster status and start failed node.
+
+```bash
+pgxc_ctl -c $HOME/polardb/polardb_paxos.conf healthcheck all
+```
+
+* examples of other commands
+
+```bash
+pgxc_ctl -c $HOME/polardb/polardb_paxos.conf kill all
+pgxc_ctl -c $HOME/polardb/polardb_paxos.conf log var datanodeNames
+pgxc_ctl -c $HOME/polardb/polardb_paxos.conf show configuration all
+```
+
+___
+
+Copyright © Alibaba Group, Inc.
+
+

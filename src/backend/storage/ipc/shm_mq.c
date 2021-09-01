@@ -850,6 +850,16 @@ shm_mq_get_queue(shm_mq_handle *mqh)
 	return mqh->mqh_queue;
 }
 
+uint64 shm_mq_get_used_bytes(shm_mq_handle *mqh){
+	shm_mq *mq = mqh->mqh_queue;
+	uint64 rb = pg_atomic_read_u64(&mq->mq_bytes_read);
+	uint64 wb = pg_atomic_read_u64(&mq->mq_bytes_written);
+	Assert(wb >= rb);
+	uint64	used = wb - rb;
+	Assert(used <= mq->mq_ring_size);
+	return used;
+}
+
 /*
  * Write bytes into a shared message queue.
  */

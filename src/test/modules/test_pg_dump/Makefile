@@ -20,6 +20,9 @@ include $(top_srcdir)/contrib/contrib-global.mk
 endif
 
 check: prove-check
+checkdma: prove-checkdma
 
 prove-check: | temp-install
 	$(prove_check)
+prove-checkdma: | temp-install
+	$(prove_checkdma)

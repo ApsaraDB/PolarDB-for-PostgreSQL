@@ -241,6 +241,8 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 	PartitionSpec		*partspec;
 	PartitionBoundSpec	*partboundspec;
 	RoleSpec			*rolespec;
+
+	PolarDMACommandStmt	*ccstmt;
 }
 
 %type <node>	stmt schema_stmt
@@ -318,6 +320,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 %type <str>		opt_type
 %type <str>		foreign_server_version opt_foreign_server_version
 %type <str>		opt_in_database
+%type <str>		transaction_commit_ts_or_empty
 
 %type <str>		OptSchemaName
 %type <list>	OptSchemaEltList
@@ -585,6 +588,10 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 %type <list>		hash_partbound partbound_datum_list range_datum_list
 %type <defelt>		hash_partbound_elem
 
+/* POLAR: Consensus command specific nonterminals */
+%type <ccstmt> dma_command 
+/* POLAR end */
+
 /*
  * Non-keyword token types.  These are hard-wired into the "flex" lexer.
  * They must be listed first so that their numeric codes do not depend on
@@ -614,7 +621,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 	BACKWARD BEFORE BEGIN_P BETWEEN BIGINT BINARY BIT
 	BOOLEAN_P BOTH BY
 
-	CACHE CALL CALLED CASCADE CASCADED CASE CAST CATALOG_P CHAIN CHAR_P
+	CACHE CALL CALLED CASCADE CASCADED CASE CAST CATALOG_P CHANGE CHAIN CHAR_P
 	CHARACTER CHARACTERISTICS CHECK CHECKPOINT CLASS CLOSE
 	CLUSTER COALESCE COLLATE COLLATION COLUMN COLUMNS COMMENT COMMENTS COMMIT
 	COMMITTED CONCURRENTLY CONFIGURATION CONFLICT CONNECTION CONSTRAINT
@@ -625,14 +632,14 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 
 	DATA_P DATABASE DAY_P DEALLOCATE DEC DECIMAL_P DECLARE DEFAULT DEFAULTS
 	DEFERRABLE DEFERRED DEFINER DELETE_P DELIMITER DELIMITERS DEPENDS DESC
-	DETACH DICTIONARY DISABLE_P DISCARD DISTINCT DO DOCUMENT_P DOMAIN_P
+	DETACH DICTIONARY DISABLE_P DISCARD DISTINCT DMA DO DOCUMENT_P DOMAIN_P
 	DOUBLE_P DROP
 
 	EACH ELSE ENABLE_P ENCODING ENCRYPTED END_P ENUM_P ESCAPE EVENT EXCEPT
 	EXCLUDE EXCLUDING EXCLUSIVE EXECUTE EXISTS EXPLAIN
 	EXTENSION EXTERNAL EXTRACT
 
-	FALSE_P FAMILY FETCH FILTER FIRST_P FLOAT_P FOLLOWING FOR
+	FALSE_P FAMILY FETCH FILTER FIRST_P FLOAT_P FOLLOWER FOLLOWING FOR
 	FORCE FOREIGN FORWARD FREEZE FROM FULL FUNCTION FUNCTIONS
 
 	GENERATED GLOBAL GRANT GRANTED GREATEST GROUP_P GROUPING GROUPS
@@ -649,12 +656,12 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 	KEY
 
 	LABEL LANGUAGE LARGE_P LAST_P LATERAL_P
-	LEADING LEAKPROOF LEAST LEFT LEVEL LIKE LIMIT LISTEN LOAD LOCAL
-	LOCALTIME LOCALTIMESTAMP LOCATION LOCK_P LOCKED LOGGED
+	LEADER LEADING LEAKPROOF LEARNER LEAST LEFT LEVEL LIKE LIMIT LISTEN LOAD LOCAL
+	LOCALTIME LOCALTIMESTAMP LOCATION LOCK_P LOCKED LOGGED LOGS
 
 	MAPPING MATCH MATERIALIZED MAXVALUE METHOD MINUTE_P MINVALUE MODE MONTH_P MOVE
 
-	NAME_P NAMES NATIONAL NATURAL NCHAR NEW NEXT NO NONE
+	NAME_P NAMES NATIONAL NATURAL NCHAR NEW NEXT NO NODE NONE
 	NOT NOTHING NOTIFY NOTNULL NOWAIT NULL_P NULLIF
 	NULLS_P NUMERIC
 
@@ -664,7 +671,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 
 	PARALLEL PARSER PARTIAL PARTITION PASSING PASSWORD PLACING PLANS POLICY
 	POSITION PRECEDING PRECISION PRESERVE PREPARE PREPARED PRIMARY
-	PRIOR PRIVILEGES PROCEDURAL PROCEDURE PROCEDURES PROGRAM PUBLICATION
+	PRIOR PRIVILEGES PROCEDURAL PROCEDURE PROCEDURES PROGRAM PUBLICATION PURGE
 
 	QUOTE
 
@@ -675,7 +682,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 
 	SAVEPOINT SCHEMA SCHEMAS SCROLL SEARCH SECOND_P SECURITY SELECT SEQUENCE SEQUENCES
 	SERIALIZABLE SERVER SESSION SESSION_USER SET SETS SETOF SHARE SHOW
-	SIMILAR SIMPLE SKIP SMALLINT SNAPSHOT SOME SQL_P STABLE STANDALONE_P
+	SIMILAR SIMPLE SINGLETON SKIP SMALLINT SNAPSHOT SOME SQL_P STABLE STANDALONE_P
 	START STATEMENT STATISTICS STDIN STDOUT STORAGE STRICT_P STRIP_P
 	SUBSCRIPTION SUBSTRING SYMMETRIC SYSID SYSTEM_P
 
@@ -690,7 +697,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 	VACUUM VALID VALIDATE VALIDATOR VALUE_P VALUES VARCHAR VARIADIC VARYING
 	VERBOSE VERSION_P VIEW VIEWS VOLATILE
 
-	WHEN WHERE WHITESPACE_P WINDOW WITH WITHIN WITHOUT WORK WRAPPER WRITE
+	WEIGHT WHEN WHERE WHITESPACE_P WINDOW WITH WITHIN WITHOUT WORK WRAPPER WRITE
 
 	XML_P XMLATTRIBUTES XMLCONCAT XMLELEMENT XMLEXISTS XMLFOREST XMLNAMESPACES
 	XMLPARSE XMLPI XMLROOT XMLSERIALIZE XMLTABLE
@@ -2685,7 +2692,7 @@ alter_identity_column_option:
 		;
 
 PartitionBoundSpec:
-			/* a HASH partition*/
+			/* a HASH partition */
 			FOR VALUES WITH '(' hash_partbound ')'
 				{
 					ListCell   *lc;
@@ -3389,7 +3396,6 @@ columnDef:	ColId Typename create_generic_options ColQualList
 					n->is_local = true;
 					n->is_not_null = false;
 					n->is_from_type = false;
-					n->is_from_parent = false;
 					n->storage = 0;
 					n->raw_default = NULL;
 					n->cooked_default = NULL;
@@ -3411,7 +3417,6 @@ columnOptions:	ColId ColQualList
 					n->is_local = true;
 					n->is_not_null = false;
 					n->is_from_type = false;
-					n->is_from_parent = false;
 					n->storage = 0;
 					n->raw_default = NULL;
 					n->cooked_default = NULL;
@@ -3430,7 +3435,6 @@ columnOptions:	ColId ColQualList
 					n->is_local = true;
 					n->is_not_null = false;
 					n->is_from_type = false;
-					n->is_from_parent = false;
 					n->storage = 0;
 					n->raw_default = NULL;
 					n->cooked_default = NULL;
@@ -5344,7 +5348,7 @@ CreateAmStmt: CREATE ACCESS METHOD name TYPE_P INDEX HANDLER handler_name
 CreateTrigStmt:
 			CREATE TRIGGER name TriggerActionTime TriggerEvents ON
 			qualified_name TriggerReferencing TriggerForSpec TriggerWhen
-			EXECUTE PROCEDURE func_name '(' TriggerFuncArgs ')'
+			EXECUTE FUNCTION_or_PROCEDURE func_name '(' TriggerFuncArgs ')'
 				{
 					CreateTrigStmt *n = makeNode(CreateTrigStmt);
 					n->trigname = $3;
@@ -5366,7 +5370,7 @@ CreateTrigStmt:
 			| CREATE CONSTRAINT TRIGGER name AFTER TriggerEvents ON
 			qualified_name OptConstrFromTable ConstraintAttributeSpec
 			FOR EACH ROW TriggerWhen
-			EXECUTE PROCEDURE func_name '(' TriggerFuncArgs ')'
+			EXECUTE FUNCTION_or_PROCEDURE func_name '(' TriggerFuncArgs ')'
 				{
 					CreateTrigStmt *n = makeNode(CreateTrigStmt);
 					n->trigname = $4;
@@ -5504,6 +5508,11 @@ TriggerWhen:
 			| /*EMPTY*/								{ $$ = NULL; }
 		;
 
+FUNCTION_or_PROCEDURE:
+			FUNCTION
+		|	PROCEDURE
+		;
+
 TriggerFuncArgs:
 			TriggerFuncArg							{ $$ = list_make1($1); }
 			| TriggerFuncArgs ',' TriggerFuncArg	{ $$ = lappend($1, $3); }
@@ -5574,7 +5583,7 @@ ConstraintAttributeElem:
 
 CreateEventTrigStmt:
 			CREATE EVENT TRIGGER name ON ColLabel
-			EXECUTE PROCEDURE func_name '(' ')'
+			EXECUTE FUNCTION_or_PROCEDURE func_name '(' ')'
 				{
 					CreateEventTrigStmt *n = makeNode(CreateEventTrigStmt);
 					n->trigname = $4;
@@ -5585,7 +5594,7 @@ CreateEventTrigStmt:
 				}
 		  | CREATE EVENT TRIGGER name ON ColLabel
 			WHEN event_trigger_when_list
-			EXECUTE PROCEDURE func_name '(' ')'
+			EXECUTE FUNCTION_or_PROCEDURE func_name '(' ')'
 				{
 					CreateEventTrigStmt *n = makeNode(CreateEventTrigStmt);
 					n->trigname = $4;
@@ -9936,11 +9945,12 @@ TransactionStmt:
 					n->gid = $3;
 					$$ = (Node *)n;
 				}
-			| COMMIT PREPARED Sconst
+			| COMMIT PREPARED Sconst transaction_commit_ts_or_empty
 				{
 					TransactionStmt *n = makeNode(TransactionStmt);
 					n->kind = TRANS_STMT_COMMIT_PREPARED;
 					n->gid = $3;
+					n->commit_ts = $4;
 					$$ = (Node *)n;
 				}
 			| ROLLBACK PREPARED Sconst
@@ -9989,6 +9999,13 @@ transaction_mode_list_or_empty:
 			transaction_mode_list
 			| /* EMPTY */
 					{ $$ = NIL; }
+		;
+
+transaction_commit_ts_or_empty:
+			WITH TIMESTAMP Sconst
+					{ $$ = $3; }
+			| /* EMPTY */
+					{ $$ = NULL;  }
 		;
 
 
@@ -10259,7 +10276,124 @@ AlterSystemStmt:
 					n->setstmt = $4;
 					$$ = (Node *)n;
 				}
+   		| ALTER SYSTEM_P DMA dma_command
+        {
+					AlterSystemStmt *n = makeNode(AlterSystemStmt);
+					n->dma_stmt = $4;
+					$$ = (Node *)n;
+				}
 		;
+
+dma_command:
+			CHANGE LEADER TO Sconst
+			{
+				PolarDMACommandStmt *n = makeNode(PolarDMACommandStmt);
+				n->kind = CC_TRANSFER_LEADER;
+				n->node= $4;
+				$$ = n;
+			}
+		|	CHANGE TO SINGLETON MODE
+			{
+				PolarDMACommandStmt *n = makeNode(PolarDMACommandStmt);
+				n->kind = CC_FORCE_SIGNLE_MODE;
+				n->node = NULL;
+				$$ = n;
+			}
+		|	CHANGE NODE Sconst WEIGHT TO Iconst
+			{
+				PolarDMACommandStmt *n = makeNode(PolarDMACommandStmt);
+				n->kind = CC_CHANGE_WEIGHT_CONFIG;
+				n->node = $3;
+				n->weight = $6;
+				$$ = n;
+			}
+		|	CHANGE NODE Sconst MATCH INDEX TO Sconst 
+			{
+				PolarDMACommandStmt *n = makeNode(PolarDMACommandStmt);
+				n->kind = CC_CHANGE_MATCH_INDEX;
+				n->node = $3;
+				n->matchindex = (uint64)atoll($7);
+				$$ = n;
+			}
+		|	CHANGE LEARNER Sconst TO FOLLOWER
+			{
+				PolarDMACommandStmt *n = makeNode(PolarDMACommandStmt);
+				n->kind = CC_CHANGE_LEARNER_TO_FOLLOWER;
+				n->node = $3;
+				$$ = n;
+			}
+		|	CHANGE FOLLOWER Sconst TO LEARNER
+			{
+				PolarDMACommandStmt *n = makeNode(PolarDMACommandStmt);
+				n->kind = CC_CHANGE_FOLLOWER_TO_LEARNER;
+				n->node = $3;
+				$$ = n;
+			}
+		|	ADD_P FOLLOWER Sconst
+			{
+				PolarDMACommandStmt *n = makeNode(PolarDMACommandStmt);
+				n->kind = CC_ADD_FOLLOWER;
+				n->node = $3;
+				$$ = n;
+			}
+		|	ADD_P LEARNER Sconst
+			{
+				PolarDMACommandStmt *n = makeNode(PolarDMACommandStmt);
+				n->kind = CC_ADD_LEARNER;
+				n->node = $3;
+				$$ = n;
+			}
+		|	DROP FOLLOWER Sconst
+			{
+				PolarDMACommandStmt *n = makeNode(PolarDMACommandStmt);
+				n->kind = CC_DROP_FOLLOWER;
+				n->node = $3;
+				$$ = n;
+			}
+		|	DROP LEARNER Sconst
+			{
+				PolarDMACommandStmt *n = makeNode(PolarDMACommandStmt);
+				n->kind = CC_DROP_LEARNER;
+				n->node = $3;
+				$$ = n;
+			}
+		| FORCE CHANGE LEADER 
+			{
+				PolarDMACommandStmt *n = makeNode(PolarDMACommandStmt);
+				n->kind = CC_REQUEST_VOTE;
+				n->node = NULL;
+				$$ = n;
+			}
+		|	PURGE LOGS BEFORE Sconst
+			{
+				PolarDMACommandStmt *n = makeNode(PolarDMACommandStmt);
+				n->kind = CC_PURGE_LOGS;
+				n->purgeindex = (uint64)atoll($4);
+				$$ = n;
+			}
+		|	FORCE PURGE LOGS BEFORE Sconst
+			{
+				PolarDMACommandStmt *n = makeNode(PolarDMACommandStmt);
+				n->kind = CC_FORCE_PURGE_LOGS;
+				n->purgeindex = (uint64)atoll($5);
+				$$ = n;
+			}
+		|	PURGE LOGS
+			{
+				PolarDMACommandStmt *n = makeNode(PolarDMACommandStmt);
+				n->kind = CC_PURGE_LOGS;
+				n->purgeindex = 0;
+				$$ = n;
+			}
+		|	CHANGE CLUSTER TO Sconst
+			{
+				PolarDMACommandStmt *n = makeNode(PolarDMACommandStmt);
+				n->kind = CC_CHANGE_CLUSTER_ID;
+				n->clusterid = (uint64)atoll($4);
+				$$ = n;
+			}
+			;
+
 
 
 /*****************************************************************************
@@ -12269,7 +12403,6 @@ TableFuncElement:	ColId Typename opt_collate_clause
 					n->is_local = true;
 					n->is_not_null = false;
 					n->is_from_type = false;
-					n->is_from_parent = false;
 					n->storage = 0;
 					n->raw_default = NULL;
 					n->cooked_default = NULL;
@@ -15021,6 +15154,7 @@ unreserved_keyword:
 			| CASCADED
 			| CATALOG_P
 			| CHAIN
+			| CHANGE
 			| CHARACTERISTICS
 			| CHECKPOINT
 			| CLASS
@@ -15061,6 +15195,7 @@ unreserved_keyword:
 			| DICTIONARY
 			| DISABLE_P
 			| DISCARD
+			| DMA
 			| DOCUMENT_P
 			| DOMAIN_P
 			| DOUBLE_P
@@ -15082,6 +15217,7 @@ unreserved_keyword:
 			| FAMILY
 			| FILTER
 			| FIRST_P
+			| FOLLOWER
 			| FOLLOWING
 			| FORCE
 			| FORWARD
@@ -15120,7 +15256,9 @@ unreserved_keyword:
 			| LANGUAGE
 			| LARGE_P
 			| LAST_P
+			| LEADER
 			| LEAKPROOF
+			| LEARNER
 			| LEVEL
 			| LISTEN
 			| LOAD
@@ -15129,6 +15267,7 @@ unreserved_keyword:
 			| LOCK_P
 			| LOCKED
 			| LOGGED
+			| LOGS
 			| MAPPING
 			| MATCH
 			| MATERIALIZED
@@ -15181,6 +15320,7 @@ unreserved_keyword:
 			| PROCEDURES
 			| PROGRAM
 			| PUBLICATION
+			| PURGE
 			| QUOTE
 			| RANGE
 			| READ
@@ -15226,6 +15366,7 @@ unreserved_keyword:
 			| SHARE
 			| SHOW
 			| SIMPLE
+			| SINGLETON
 			| SKIP
 			| SNAPSHOT
 			| SQL_P
@@ -15274,6 +15415,7 @@ unreserved_keyword:
 			| VIEW
 			| VIEWS
 			| VOLATILE
+			| WEIGHT
 			| WHITESPACE_P
 			| WITHIN
 			| WITHOUT

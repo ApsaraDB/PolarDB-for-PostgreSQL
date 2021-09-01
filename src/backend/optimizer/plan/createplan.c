@@ -19,7 +19,6 @@
 #include <limits.h>
 #include <math.h>
 
-#include "access/stratnum.h"
 #include "access/sysattr.h"
 #include "catalog/pg_class.h"
 #include "foreign/fdwapi.h"
@@ -29,11 +28,11 @@
 #include "nodes/nodeFuncs.h"
 #include "optimizer/clauses.h"
 #include "optimizer/cost.h"
+#include "optimizer/paramassign.h"
 #include "optimizer/paths.h"
 #include "optimizer/placeholder.h"
 #include "optimizer/plancat.h"
 #include "optimizer/planmain.h"
-#include "optimizer/planner.h"
 #include "optimizer/predtest.h"
 #include "optimizer/restrictinfo.h"
 #include "optimizer/subselect.h"
@@ -107,15 +106,6 @@ static WindowAgg *create_windowagg_plan(PlannerInfo *root, WindowAggPath *best_p
 static SetOp *create_setop_plan(PlannerInfo *root, SetOpPath *best_path,
 				  int flags);
 static RecursiveUnion *create_recursiveunion_plan(PlannerInfo *root, RecursiveUnionPath *best_path);
-static void get_column_info_for_window(PlannerInfo *root, WindowClause *wc,
-						   List *tlist,
-						   int numSortCols, AttrNumber *sortColIdx,
-						   int *partNumCols,
-						   AttrNumber **partColIdx,
-						   Oid **partOperators,
-						   int *ordNumCols,
-						   AttrNumber **ordColIdx,
-						   Oid **ordOperators);
 static LockRows *create_lockrows_plan(PlannerInfo *root, LockRowsPath *best_path,
 					 int flags);
 static ModifyTable *create_modifytable_plan(PlannerInfo *root, ModifyTablePath *best_path);
@@ -133,6 +123,7 @@ static BitmapHeapScan *create_bitmap_scan_plan(PlannerInfo *root,
 static Plan *create_bitmap_subplan(PlannerInfo *root, Path *bitmapqual,
 					  List **qual, List **indexqual, List **indexECs);
 static void bitmap_subplan_mark_shared(Plan *plan);
+static List *flatten_partitioned_rels(List *partitioned_rels);
 static TidScan *create_tidscan_plan(PlannerInfo *root, TidPath *best_path,
 					List *tlist, List *scan_clauses);
 static SubqueryScan *create_subqueryscan_plan(PlannerInfo *root,
@@ -160,8 +151,6 @@ static MergeJoin *create_mergejoin_plan(PlannerInfo *root, MergePath *best_path)
 static HashJoin *create_hashjoin_plan(PlannerInfo *root, HashPath *best_path);
 static Node *replace_nestloop_params(PlannerInfo *root, Node *expr);
 static Node *replace_nestloop_params_mutator(Node *node, PlannerInfo *root);
-static void process_subquery_nestloop_params(PlannerInfo *root,
-								 List *subplan_params);
 static List *fix_indexqual_references(PlannerInfo *root, IndexPath *index_path);
 static List *fix_indexorderby_references(PlannerInfo *root, IndexPath *index_path);
 static Node *fix_indexqual_operand(Node *node, IndexOptInfo *index, int indexcol);
@@ -211,7 +200,8 @@ static NamedTuplestoreScan *make_namedtuplestorescan(List *qptlist, List *qpqual
 static WorkTableScan *make_worktablescan(List *qptlist, List *qpqual,
 				   Index scanrelid, int wtParam);
 static Append *make_append(List *appendplans, int first_partial_plan,
-			List *tlist, List *partitioned_rels, List *partpruneinfos);
+			List *tlist, List *partitioned_rels,
+			PartitionPruneInfo *partpruneinfo);
 static RecursiveUnion *make_recursive_union(List *tlist,
 					 Plan *lefttree,
 					 Plan *righttree,
@@ -319,7 +309,7 @@ create_plan(PlannerInfo *root, Path *best_path)
 	/* plan_params should not be in use in current query level */
 	Assert(root->plan_params == NIL);
 
-	/* Initialize this module's private workspace in PlannerInfo */
+	/* Initialize this module's workspace in PlannerInfo */
 	root->curOuterRels = NULL;
 	root->curOuterParams = NIL;
 
@@ -588,10 +578,10 @@ create_scan_plan(PlannerInfo *root, Path *best_path, int flags)
 			tlist = copyObject(((IndexPath *) best_path)->indexinfo->indextlist);
 
 			/*
-			 * Transfer any sortgroupref data to the replacement tlist, unless
-			 * we don't care because the gating Result will handle it.
+			 * Transfer sortgroupref data to the replacement tlist, if
+			 * requested (use_physical_tlist checked that this will work).
 			 */
-			if (!gating_clauses)
+			if (flags & CP_LABEL_TLIST)
 				apply_pathtarget_labeling_to_tlist(tlist, best_path->pathtarget);
 		}
 		else
@@ -605,7 +595,7 @@ create_scan_plan(PlannerInfo *root, Path *best_path, int flags)
 			else
 			{
 				/* As above, transfer sortgroupref data to replacement tlist */
-				if (!gating_clauses)
+				if (flags & CP_LABEL_TLIST)
 					apply_pathtarget_labeling_to_tlist(tlist, best_path->pathtarget);
 			}
 		}
@@ -1039,7 +1029,7 @@ create_append_plan(PlannerInfo *root, AppendPath *best_path)
 	List	   *subplans = NIL;
 	ListCell   *subpaths;
 	RelOptInfo *rel = best_path->path.parent;
-	List	   *partpruneinfos = NIL;
+	PartitionPruneInfo *partpruneinfo = NULL;
 
 	/*
 	 * The subpaths list could be empty, if every child was proven empty by
@@ -1077,6 +1067,11 @@ create_append_plan(PlannerInfo *root, AppendPath *best_path)
 		subplans = lappend(subplans, subplan);
 	}
 
+	/*
+	 * If any quals exist, they may be useful to perform further partition
+	 * pruning during execution.  Gather information needed by the executor to
+	 * do partition pruning.
+	 */
 	if (enable_partition_pruning &&
 		rel->reloptkind == RELOPT_BASEREL &&
 		best_path->partitioned_rels != NIL)
@@ -1104,10 +1099,11 @@ create_append_plan(PlannerInfo *root, AppendPath *best_path)
 		 * partition indexes into subpath indexes.
 		 */
 		if (prunequal != NIL)
-			partpruneinfos =
-				make_partition_pruneinfo(root,
+			partpruneinfo =
+				make_partition_pruneinfo(root, rel,
+										 best_path->subpaths,
 										 best_path->partitioned_rels,
-										 best_path->subpaths, prunequal);
+										 prunequal);
 	}
 
 	/*
@@ -1119,7 +1115,7 @@ create_append_plan(PlannerInfo *root, AppendPath *best_path)
 
 	plan = make_append(subplans, best_path->first_partial_path,
 					   tlist, best_path->partitioned_rels,
-					   partpruneinfos);
+					   partpruneinfo);
 
 	copy_generic_path_info(&plan->plan, (Path *) best_path);
 
@@ -1227,7 +1223,8 @@ create_merge_append_plan(PlannerInfo *root, MergeAppendPath *best_path)
 		subplans = lappend(subplans, subplan);
 	}
 
-	node->partitioned_rels = best_path->partitioned_rels;
+	node->partitioned_rels =
+		flatten_partitioned_rels(best_path->partitioned_rels);
 	node->mergeplans = subplans;
 
 	return (Plan *) node;
@@ -1384,20 +1381,10 @@ create_unique_plan(PlannerInfo *root, UniquePath *best_path, int flags)
 		}
 	}
 
+	/* Use change_plan_targetlist in case we need to insert a Result node */
 	if (newitems || best_path->umethod == UNIQUE_PATH_SORT)
-	{
-		/*
-		 * If the top plan node can't do projections and its existing target
-		 * list isn't already what we need, we need to add a Result node to
-		 * help it along.
-		 */
-		if (!is_projection_capable_plan(subplan) &&
-			!tlist_same_exprs(newtlist, subplan->targetlist))
-			subplan = inject_projection_plan(subplan, newtlist,
-											 best_path->path.parallel_safe);
-		else
-			subplan->targetlist = newtlist;
-	}
+		subplan = change_plan_targetlist(subplan, newtlist,
+										 best_path->path.parallel_safe);
 
 	/*
 	 * Build control information showing which subplan output columns are to
@@ -1541,7 +1528,7 @@ create_gather_plan(PlannerInfo *root, GatherPath *best_path)
 	gather_plan = make_gather(tlist,
 							  NIL,
 							  best_path->num_workers,
-							  SS_assign_special_param(root),
+							  assign_special_exec_param(root),
 							  best_path->single_copy,
 							  subplan);
 
@@ -1577,7 +1564,7 @@ create_gather_merge_plan(PlannerInfo *root, GatherMergePath *best_path)
 	copy_generic_path_info(&gm_plan->plan, &best_path->path);
 
 	/* Assign the rescan Param. */
-	gm_plan->rescan_param = SS_assign_special_param(root);
+	gm_plan->rescan_param = assign_special_exec_param(root);
 
 	/* Gather Merge is pointless with no pathkeys; use Gather instead. */
 	Assert(pathkeys != NIL);
@@ -1648,7 +1635,7 @@ create_projection_plan(PlannerInfo *root, ProjectionPath *best_path, int flags)
 		 */
 		subplan = create_plan_recurse(root, best_path->subpath, 0);
 		tlist = subplan->targetlist;
-		if ((flags & CP_LABEL_TLIST) != 0)
+		if (flags & CP_LABEL_TLIST)
 			apply_pathtarget_labeling_to_tlist(tlist,
 											   best_path->path.pathtarget);
 	}
@@ -1737,6 +1724,40 @@ inject_projection_plan(Plan *subplan, List *tlist, bool parallel_safe)
 	plan->parallel_safe = parallel_safe;
 
 	return plan;
+}
+
+/*
+ * change_plan_targetlist
+ *	  Externally available wrapper for inject_projection_plan.
+ *
+ * This is meant for use by FDW plan-generation functions, which might
+ * want to adjust the tlist computed by some subplan tree.  In general,
+ * a Result node is needed to compute the new tlist, but we can optimize
+ * some cases.
+ *
+ * In most cases, tlist_parallel_safe can just be passed as the parallel_safe
+ * flag of the FDW's own Path node.
+ */
+Plan *
+change_plan_targetlist(Plan *subplan, List *tlist, bool tlist_parallel_safe)
+{
+	/*
+	 * If the top plan node can't do projections and its existing target list
+	 * isn't already what we need, we need to add a Result node to help it
+	 * along.
+	 */
+	if (!is_projection_capable_plan(subplan) &&
+		!tlist_same_exprs(tlist, subplan->targetlist))
+		subplan = inject_projection_plan(subplan, tlist,
+										 subplan->parallel_safe &&
+										 tlist_parallel_safe);
+	else
+	{
+		/* Else we can just replace the plan node's tlist */
+		subplan->targetlist = tlist;
+		subplan->parallel_safe &= tlist_parallel_safe;
+	}
+	return subplan;
 }
 
 /*
@@ -2160,19 +2181,17 @@ create_windowagg_plan(PlannerInfo *root, WindowAggPath *best_path)
 {
 	WindowAgg  *plan;
 	WindowClause *wc = best_path->winclause;
+	int			numPart = list_length(wc->partitionClause);
+	int			numOrder = list_length(wc->orderClause);
 	Plan	   *subplan;
 	List	   *tlist;
-	int			numsortkeys;
-	AttrNumber *sortColIdx;
-	Oid		   *sortOperators;
-	Oid		   *collations;
-	bool	   *nullsFirst;
 	int			partNumCols;
 	AttrNumber *partColIdx;
 	Oid		   *partOperators;
 	int			ordNumCols;
 	AttrNumber *ordColIdx;
 	Oid		   *ordOperators;
+	ListCell   *lc;
 
 	/*
 	 * WindowAgg can project, so no need to be terribly picky about child
@@ -2183,32 +2202,43 @@ create_windowagg_plan(PlannerInfo *root, WindowAggPath *best_path)
 	tlist = build_path_tlist(root, &best_path->path);
 
 	/*
-	 * We shouldn't need to actually sort, but it's convenient to use
-	 * prepare_sort_from_pathkeys to identify the input's sort columns.
+	 * Convert SortGroupClause lists into arrays of attr indexes and equality
+	 * operators, as wanted by executor.  (Note: in principle, it's possible
+	 * to drop some of the sort columns, if they were proved redundant by
+	 * pathkey logic.  However, it doesn't seem worth going out of our way to
+	 * optimize such cases.  In any case, we must *not* remove the ordering
+	 * column for RANGE OFFSET cases, as the executor needs that for in_range
+	 * tests even if it's known to be equal to some partitioning column.)
 	 */
-	subplan = prepare_sort_from_pathkeys(subplan,
-										 best_path->winpathkeys,
-										 NULL,
-										 NULL,
-										 false,
-										 &numsortkeys,
-										 &sortColIdx,
-										 &sortOperators,
-										 &collations,
-										 &nullsFirst);
+	partColIdx = (AttrNumber *) palloc(sizeof(AttrNumber) * numPart);
+	partOperators = (Oid *) palloc(sizeof(Oid) * numPart);
 
-	/* Now deconstruct that into partition and ordering portions */
-	get_column_info_for_window(root,
-							   wc,
-							   subplan->targetlist,
-							   numsortkeys,
-							   sortColIdx,
-							   &partNumCols,
-							   &partColIdx,
-							   &partOperators,
-							   &ordNumCols,
-							   &ordColIdx,
-							   &ordOperators);
+	partNumCols = 0;
+	foreach(lc, wc->partitionClause)
+	{
+		SortGroupClause *sgc = (SortGroupClause *) lfirst(lc);
+		TargetEntry *tle = get_sortgroupclause_tle(sgc, subplan->targetlist);
+
+		Assert(OidIsValid(sgc->eqop));
+		partColIdx[partNumCols] = tle->resno;
+		partOperators[partNumCols] = sgc->eqop;
+		partNumCols++;
+	}
+
+	ordColIdx = (AttrNumber *) palloc(sizeof(AttrNumber) * numOrder);
+	ordOperators = (Oid *) palloc(sizeof(Oid) * numOrder);
+
+	ordNumCols = 0;
+	foreach(lc, wc->orderClause)
+	{
+		SortGroupClause *sgc = (SortGroupClause *) lfirst(lc);
+		TargetEntry *tle = get_sortgroupclause_tle(sgc, subplan->targetlist);
+
+		Assert(OidIsValid(sgc->eqop));
+		ordColIdx[ordNumCols] = tle->resno;
+		ordOperators[ordNumCols] = sgc->eqop;
+		ordNumCols++;
+	}
 
 	/* And finally we can make the WindowAgg node */
 	plan = make_windowagg(tlist,
@@ -2232,112 +2262,6 @@ create_windowagg_plan(PlannerInfo *root, WindowAggPath *best_path)
 	copy_generic_path_info(&plan->plan, (Path *) best_path);
 
 	return plan;
-}
-
-/*
- * get_column_info_for_window
- *		Get the partitioning/ordering column numbers and equality operators
- *		for a WindowAgg node.
- *
- * This depends on the behavior of planner.c's make_pathkeys_for_window!
- *
- * We are given the target WindowClause and an array of the input column
- * numbers associated with the resulting pathkeys.  In the easy case, there
- * are the same number of pathkey columns as partitioning + ordering columns
- * and we just have to copy some data around.  However, it's possible that
- * some of the original partitioning + ordering columns were eliminated as
- * redundant during the transformation to pathkeys.  (This can happen even
- * though the parser gets rid of obvious duplicates.  A typical scenario is a
- * window specification "PARTITION BY x ORDER BY y" coupled with a clause
- * "WHERE x = y" that causes the two sort columns to be recognized as
- * redundant.)	In that unusual case, we have to work a lot harder to
- * determine which keys are significant.
- *
- * The method used here is a bit brute-force: add the sort columns to a list
- * one at a time and note when the resulting pathkey list gets longer.  But
- * it's a sufficiently uncommon case that a faster way doesn't seem worth
- * the amount of code refactoring that'd be needed.
- */
-static void
-get_column_info_for_window(PlannerInfo *root, WindowClause *wc, List *tlist,
-						   int numSortCols, AttrNumber *sortColIdx,
-						   int *partNumCols,
-						   AttrNumber **partColIdx,
-						   Oid **partOperators,
-						   int *ordNumCols,
-						   AttrNumber **ordColIdx,
-						   Oid **ordOperators)
-{
-	int			numPart = list_length(wc->partitionClause);
-	int			numOrder = list_length(wc->orderClause);
-
-	if (numSortCols == numPart + numOrder)
-	{
-		/* easy case */
-		*partNumCols = numPart;
-		*partColIdx = sortColIdx;
-		*partOperators = extract_grouping_ops(wc->partitionClause);
-		*ordNumCols = numOrder;
-		*ordColIdx = sortColIdx + numPart;
-		*ordOperators = extract_grouping_ops(wc->orderClause);
-	}
-	else
-	{
-		List	   *sortclauses;
-		List	   *pathkeys;
-		int			scidx;
-		ListCell   *lc;
-
-		/* first, allocate what's certainly enough space for the arrays */
-		*partNumCols = 0;
-		*partColIdx = (AttrNumber *) palloc(numPart * sizeof(AttrNumber));
-		*partOperators = (Oid *) palloc(numPart * sizeof(Oid));
-		*ordNumCols = 0;
-		*ordColIdx = (AttrNumber *) palloc(numOrder * sizeof(AttrNumber));
-		*ordOperators = (Oid *) palloc(numOrder * sizeof(Oid));
-		sortclauses = NIL;
-		pathkeys = NIL;
-		scidx = 0;
-		foreach(lc, wc->partitionClause)
-		{
-			SortGroupClause *sgc = (SortGroupClause *) lfirst(lc);
-			List	   *new_pathkeys;
-
-			sortclauses = lappend(sortclauses, sgc);
-			new_pathkeys = make_pathkeys_for_sortclauses(root,
-														 sortclauses,
-														 tlist);
-			if (list_length(new_pathkeys) > list_length(pathkeys))
-			{
-				/* this sort clause is actually significant */
-				(*partColIdx)[*partNumCols] = sortColIdx[scidx++];
-				(*partOperators)[*partNumCols] = sgc->eqop;
-				(*partNumCols)++;
-				pathkeys = new_pathkeys;
-			}
-		}
-		foreach(lc, wc->orderClause)
-		{
-			SortGroupClause *sgc = (SortGroupClause *) lfirst(lc);
-			List	   *new_pathkeys;
-
-			sortclauses = lappend(sortclauses, sgc);
-			new_pathkeys = make_pathkeys_for_sortclauses(root,
-														 sortclauses,
-														 tlist);
-			if (list_length(new_pathkeys) > list_length(pathkeys))
-			{
-				/* this sort clause is actually significant */
-				(*ordColIdx)[*ordNumCols] = sortColIdx[scidx++];
-				(*ordOperators)[*ordNumCols] = sgc->eqop;
-				(*ordNumCols)++;
-				pathkeys = new_pathkeys;
-			}
-		}
-		/* complain if we didn't eat exactly the right number of sort cols */
-		if (scidx != numSortCols)
-			elog(ERROR, "failed to deconstruct sort operators into partitioning/ordering operators");
-	}
 }
 
 /*
@@ -3779,9 +3703,6 @@ create_nestloop_plan(PlannerInfo *root,
 	Relids		outerrelids;
 	List	   *nestParams;
 	Relids		saveOuterRels = root->curOuterRels;
-	ListCell   *cell;
-	ListCell   *prev;
-	ListCell   *next;
 
 	/* NestLoop can project, so no need to be picky about child tlists */
 	outer_plan = create_plan_recurse(root, best_path->outerjoinpath, 0);
@@ -3825,38 +3746,10 @@ create_nestloop_plan(PlannerInfo *root,
 
 	/*
 	 * Identify any nestloop parameters that should be supplied by this join
-	 * node, and move them from root->curOuterParams to the nestParams list.
+	 * node, and remove them from root->curOuterParams.
 	 */
 	outerrelids = best_path->outerjoinpath->parent->relids;
-	nestParams = NIL;
-	prev = NULL;
-	for (cell = list_head(root->curOuterParams); cell; cell = next)
-	{
-		NestLoopParam *nlp = (NestLoopParam *) lfirst(cell);
-
-		next = lnext(cell);
-		if (IsA(nlp->paramval, Var) &&
-			bms_is_member(nlp->paramval->varno, outerrelids))
-		{
-			root->curOuterParams = list_delete_cell(root->curOuterParams,
-													cell, prev);
-			nestParams = lappend(nestParams, nlp);
-		}
-		else if (IsA(nlp->paramval, PlaceHolderVar) &&
-				 bms_overlap(((PlaceHolderVar *) nlp->paramval)->phrels,
-							 outerrelids) &&
-				 bms_is_subset(find_placeholder_info(root,
-													 (PlaceHolderVar *) nlp->paramval,
-													 false)->ph_eval_at,
-							   outerrelids))
-		{
-			root->curOuterParams = list_delete_cell(root->curOuterParams,
-													cell, prev);
-			nestParams = lappend(nestParams, nlp);
-		}
-		else
-			prev = cell;
-	}
+	nestParams = identify_current_nestloop_params(root, outerrelids);
 
 	join_plan = make_nestloop(tlist,
 							  joinclauses,
@@ -4356,42 +4249,18 @@ replace_nestloop_params_mutator(Node *node, PlannerInfo *root)
 	if (IsA(node, Var))
 	{
 		Var		   *var = (Var *) node;
-		Param	   *param;
-		NestLoopParam *nlp;
-		ListCell   *lc;
 
 		/* Upper-level Vars should be long gone at this point */
 		Assert(var->varlevelsup == 0);
 		/* If not to be replaced, we can just return the Var unmodified */
 		if (!bms_is_member(var->varno, root->curOuterRels))
 			return node;
-		/* Create a Param representing the Var */
-		param = assign_nestloop_param_var(root, var);
-		/* Is this param already listed in root->curOuterParams? */
-		foreach(lc, root->curOuterParams)
-		{
-			nlp = (NestLoopParam *) lfirst(lc);
-			if (nlp->paramno == param->paramid)
-			{
-				Assert(equal(var, nlp->paramval));
-				/* Present, so we can just return the Param */
-				return (Node *) param;
-			}
-		}
-		/* No, so add it */
-		nlp = makeNode(NestLoopParam);
-		nlp->paramno = param->paramid;
-		nlp->paramval = var;
-		root->curOuterParams = lappend(root->curOuterParams, nlp);
-		/* And return the replacement Param */
-		return (Node *) param;
+		/* Replace the Var with a nestloop Param */
+		return (Node *) replace_nestloop_param_var(root, var);
 	}
 	if (IsA(node, PlaceHolderVar))
 	{
 		PlaceHolderVar *phv = (PlaceHolderVar *) node;
-		Param	   *param;
-		NestLoopParam *nlp;
-		ListCell   *lc;
 
 		/* Upper-level PlaceHolderVars should be long gone at this point */
 		Assert(phv->phlevelsup == 0);
@@ -4428,116 +4297,12 @@ replace_nestloop_params_mutator(Node *node, PlannerInfo *root)
 												root);
 			return (Node *) newphv;
 		}
-		/* Create a Param representing the PlaceHolderVar */
-		param = assign_nestloop_param_placeholdervar(root, phv);
-		/* Is this param already listed in root->curOuterParams? */
-		foreach(lc, root->curOuterParams)
-		{
-			nlp = (NestLoopParam *) lfirst(lc);
-			if (nlp->paramno == param->paramid)
-			{
-				Assert(equal(phv, nlp->paramval));
-				/* Present, so we can just return the Param */
-				return (Node *) param;
-			}
-		}
-		/* No, so add it */
-		nlp = makeNode(NestLoopParam);
-		nlp->paramno = param->paramid;
-		nlp->paramval = (Var *) phv;
-		root->curOuterParams = lappend(root->curOuterParams, nlp);
-		/* And return the replacement Param */
-		return (Node *) param;
+		/* Replace the PlaceHolderVar with a nestloop Param */
+		return (Node *) replace_nestloop_param_placeholdervar(root, phv);
 	}
 	return expression_tree_mutator(node,
 								   replace_nestloop_params_mutator,
 								   (void *) root);
-}
-
-/*
- * process_subquery_nestloop_params
- *	  Handle params of a parameterized subquery that need to be fed
- *	  from an outer nestloop.
- *
- * Currently, that would be *all* params that a subquery in FROM has demanded
- * from the current query level, since they must be LATERAL references.
- *
- * The subplan's references to the outer variables are already represented
- * as PARAM_EXEC Params, so we need not modify the subplan here.  What we
- * do need to do is add entries to root->curOuterParams to signal the parent
- * nestloop plan node that it must provide these values.
- */
-static void
-process_subquery_nestloop_params(PlannerInfo *root, List *subplan_params)
-{
-	ListCell   *ppl;
-
-	foreach(ppl, subplan_params)
-	{
-		PlannerParamItem *pitem = (PlannerParamItem *) lfirst(ppl);
-
-		if (IsA(pitem->item, Var))
-		{
-			Var		   *var = (Var *) pitem->item;
-			NestLoopParam *nlp;
-			ListCell   *lc;
-
-			/* If not from a nestloop outer rel, complain */
-			if (!bms_is_member(var->varno, root->curOuterRels))
-				elog(ERROR, "non-LATERAL parameter required by subquery");
-			/* Is this param already listed in root->curOuterParams? */
-			foreach(lc, root->curOuterParams)
-			{
-				nlp = (NestLoopParam *) lfirst(lc);
-				if (nlp->paramno == pitem->paramId)
-				{
-					Assert(equal(var, nlp->paramval));
-					/* Present, so nothing to do */
-					break;
-				}
-			}
-			if (lc == NULL)
-			{
-				/* No, so add it */
-				nlp = makeNode(NestLoopParam);
-				nlp->paramno = pitem->paramId;
-				nlp->paramval = copyObject(var);
-				root->curOuterParams = lappend(root->curOuterParams, nlp);
-			}
-		}
-		else if (IsA(pitem->item, PlaceHolderVar))
-		{
-			PlaceHolderVar *phv = (PlaceHolderVar *) pitem->item;
-			NestLoopParam *nlp;
-			ListCell   *lc;
-
-			/* If not from a nestloop outer rel, complain */
-			if (!bms_is_subset(find_placeholder_info(root, phv, false)->ph_eval_at,
-							   root->curOuterRels))
-				elog(ERROR, "non-LATERAL parameter required by subquery");
-			/* Is this param already listed in root->curOuterParams? */
-			foreach(lc, root->curOuterParams)
-			{
-				nlp = (NestLoopParam *) lfirst(lc);
-				if (nlp->paramno == pitem->paramId)
-				{
-					Assert(equal(phv, nlp->paramval));
-					/* Present, so nothing to do */
-					break;
-				}
-			}
-			if (lc == NULL)
-			{
-				/* No, so add it */
-				nlp = makeNode(NestLoopParam);
-				nlp->paramno = pitem->paramId;
-				nlp->paramval = (Var *) copyObject(phv);
-				root->curOuterParams = lappend(root->curOuterParams, nlp);
-			}
-		}
-		else
-			elog(ERROR, "unexpected type of subquery parameter");
-	}
 }
 
 /*
@@ -5074,6 +4839,27 @@ bitmap_subplan_mark_shared(Plan *plan)
 		elog(ERROR, "unrecognized node type: %d", nodeTag(plan));
 }
 
+/*
+ * flatten_partitioned_rels
+ *		Convert List of Lists into a single List with all elements from the
+ *		sub-lists.
+ */
+static List *
+flatten_partitioned_rels(List *partitioned_rels)
+{
+	List	   *newlist = NIL;
+	ListCell   *lc;
+
+	foreach(lc, partitioned_rels)
+	{
+		List	   *sublist = lfirst(lc);
+
+		newlist = list_concat(newlist, list_copy(sublist));
+	}
+
+	return newlist;
+}
+
 /*****************************************************************************
  *
  *	PLAN NODE BUILDING ROUTINES
@@ -5417,7 +5203,7 @@ make_foreignscan(List *qptlist,
 static Append *
 make_append(List *appendplans, int first_partial_plan,
 			List *tlist, List *partitioned_rels,
-			List *partpruneinfos)
+			PartitionPruneInfo *partpruneinfo)
 {
 	Append	   *node = makeNode(Append);
 	Plan	   *plan = &node->plan;
@@ -5428,8 +5214,8 @@ make_append(List *appendplans, int first_partial_plan,
 	plan->righttree = NULL;
 	node->appendplans = appendplans;
 	node->first_partial_plan = first_partial_plan;
-	node->partitioned_rels = partitioned_rels;
-	node->part_prune_infos = partpruneinfos;
+	node->partitioned_rels = flatten_partitioned_rels(partitioned_rels);
+	node->part_prune_info = partpruneinfo;
 	return node;
 }
 
@@ -6586,7 +6372,7 @@ make_modifytable(PlannerInfo *root,
 	node->operation = operation;
 	node->canSetTag = canSetTag;
 	node->nominalRelation = nominalRelation;
-	node->partitioned_rels = partitioned_rels;
+	node->partitioned_rels = flatten_partitioned_rels(partitioned_rels);
 	node->partColsUpdated = partColsUpdated;
 	node->resultRelations = resultRelations;
 	node->resultRelIndex = -1;	/* will be set correctly in setrefs.c */

@@ -294,6 +294,15 @@ dlist_is_empty(dlist_head *head)
 }
 
 /*
+ * Returns true when the list has more than one elements.
+ */
+static inline bool
+dlist_is_multi(dlist_head *head)
+{
+	return !dlist_is_empty(head) && head->head.prev != head->head.next;
+}
+
+/*
  * Insert a node at the beginning of the list.
  */
 static inline void

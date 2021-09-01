@@ -31,6 +31,7 @@
 #include "storage/indexfsm.h"
 #include "storage/ipc.h"
 #include "storage/lmgr.h"
+#include "storage/procarray.h"
 #include "storage/smgr.h"
 #include "utils/builtins.h"
 #include "utils/index_selfuncs.h"
@@ -804,7 +805,7 @@ _bt_vacuum_needs_cleanup(IndexVacuumInfo *info)
 	}
 	else if (TransactionIdIsValid(metad->btm_oldest_btpo_xact) &&
 			 TransactionIdPrecedes(metad->btm_oldest_btpo_xact,
-								   RecentGlobalXmin))
+								   GetRecentGlobalXmin()))
 	{
 		/*
 		 * If oldest btpo.xact in the deleted pages is older than

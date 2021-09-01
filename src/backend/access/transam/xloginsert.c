@@ -9,6 +9,10 @@
  * of XLogRecData structs by a call to XLogRecordAssemble(). See
  * access/transam/README for details.
  *
+ * Support remote recovery.
+ * Author: Junbin Kang
+ *
+ * Portions Copyright (c) 2020, Alibaba Group Holding Limited
  * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -532,6 +536,9 @@ XLogRecordAssemble(RmgrId rmid, uint8 info,
 		bool		samerel;
 		bool		is_compressed = false;
 		bool		include_image;
+#ifdef ENABLE_REMOTE_RECOVERY
+		bool		needs_remote_fetch = false;
+#endif
 
 		if (!regbuf->in_use)
 			continue;
@@ -560,6 +567,32 @@ XLogRecordAssemble(RmgrId rmid, uint8 info,
 			}
 		}
 
+#ifdef ENABLE_REMOTE_RECOVERY
+		if (regbuf->flags & REGBUF_NO_IMAGE)
+			needs_remote_fetch = false;
+		else if (!fullPageRemoteFetch)
+			needs_remote_fetch = false;
+		else
+		{
+			if (!needs_backup)
+			{
+				/*
+				 * We assume page LSN is first data on *every* page that can
+				 * be passed to XLogInsert, whether it has the standard page
+				 * layout or not.
+				 */
+				XLogRecPtr	page_lsn = PageGetLSN(regbuf->page);
+
+				needs_remote_fetch = (page_lsn <= RedoRecPtr);
+				if (!needs_remote_fetch)
+				{
+					if (*fpw_lsn == InvalidXLogRecPtr || page_lsn < *fpw_lsn)
+						*fpw_lsn = page_lsn;
+				}
+			}
+		}
+#endif
+
 		/* Determine if the buffer data needs to included */
 		if (regbuf->rdata_len == 0)
 			needs_data = false;
@@ -574,6 +607,14 @@ XLogRecordAssemble(RmgrId rmid, uint8 info,
 
 		if ((regbuf->flags & REGBUF_WILL_INIT) == REGBUF_WILL_INIT)
 			bkpb.fork_flags |= BKPBLOCK_WILL_INIT;
+
+#ifdef ENABLE_REMOTE_RECOVERY
+		if (bkpb.fork_flags & BKPBLOCK_NEEDS_REMOTE_FETCH)
+			elog(PANIC, "forkno is out of range flag %d %d", bkpb.fork_flags, regbuf->forkno);
+
+		if (needs_remote_fetch)
+			bkpb.fork_flags |= BKPBLOCK_NEEDS_REMOTE_FETCH;
+#endif
 
 		/*
 		 * If needs_backup is true or WAL checking is enabled for current
@@ -809,12 +850,12 @@ XLogCompressBackupBlock(char *page, uint16 hole_offset, uint16 hole_length,
 	int32		len;
 	int32		extra_bytes = 0;
 	char	   *source;
-	char		tmp[BLCKSZ];
+	PGAlignedBlock tmp;
 
 	if (hole_length != 0)
 	{
 		/* must skip the hole */
-		source = tmp;
+		source = tmp.data;
 		memcpy(source, page, hole_offset);
 		memcpy(source + hole_offset,
 			   page + (hole_offset + hole_length),
@@ -917,7 +958,7 @@ XLogSaveBufferForHint(Buffer buffer, bool buffer_std)
 	if (lsn <= RedoRecPtr)
 	{
 		int			flags;
-		char		copied_buffer[BLCKSZ];
+		PGAlignedBlock copied_buffer;
 		char	   *origdata = (char *) BufferGetBlock(buffer);
 		RelFileNode rnode;
 		ForkNumber	forkno;
@@ -935,11 +976,11 @@ XLogSaveBufferForHint(Buffer buffer, bool buffer_std)
 			uint16		lower = ((PageHeader) page)->pd_lower;
 			uint16		upper = ((PageHeader) page)->pd_upper;
 
-			memcpy(copied_buffer, origdata, lower);
-			memcpy(copied_buffer + upper, origdata + upper, BLCKSZ - upper);
+			memcpy(copied_buffer.data, origdata, lower);
+			memcpy(copied_buffer.data + upper, origdata + upper, BLCKSZ - upper);
 		}
 		else
-			memcpy(copied_buffer, origdata, BLCKSZ);
+			memcpy(copied_buffer.data, origdata, BLCKSZ);
 
 		XLogBeginInsert();
 
@@ -948,7 +989,7 @@ XLogSaveBufferForHint(Buffer buffer, bool buffer_std)
 			flags |= REGBUF_STANDARD;
 
 		BufferGetTag(buffer, &rnode, &forkno, &blkno);
-		XLogRegisterBlock(0, &rnode, forkno, blkno, copied_buffer, flags);
+		XLogRegisterBlock(0, &rnode, forkno, blkno, copied_buffer.data, flags);
 
 		recptr = XLogInsert(RM_XLOG_ID, XLOG_FPI_FOR_HINT);
 	}

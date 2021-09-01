@@ -5,6 +5,7 @@
  *
  * Author: Magnus Hagander <magnus@hagander.net>
  *
+ * Portions Copyright (c) 2020, Alibaba Group Holding Limited
  * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
@@ -550,7 +551,11 @@ CreateReplicationSlot(PGconn *conn, const char *slot_name, const char *plugin,
 		}
 	}
 
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+	if (PQntuples(res) != 1 || PQnfields(res) != 5)
+#else
 	if (PQntuples(res) != 1 || PQnfields(res) != 4)
+#endif
 	{
 		fprintf(stderr,
 				_("%s: could not create replication slot \"%s\": got %d rows and %d fields, expected %d rows and %d fields\n"),

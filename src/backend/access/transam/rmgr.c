@@ -8,6 +8,7 @@
 #include "postgres.h"
 
 #include "access/clog.h"
+#include "access/ctslog.h"
 #include "access/commit_ts.h"
 #include "access/ginxlog.h"
 #include "access/gistxlog.h"

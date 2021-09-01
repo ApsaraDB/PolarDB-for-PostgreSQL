@@ -1,6 +1,6 @@
 # src/test/regress/serial_schedule
 # This should probably be in an order similar to parallel_schedule.
-test: tablespace
+cluster_ignore: tablespace
 test: boolean
 test: char
 test: name
@@ -102,7 +102,6 @@ test: portals
 test: arrays
 test: btree_index
 test: hash_index
-test: func_index
 test: update
 test: delete
 test: namespace
@@ -113,7 +112,7 @@ test: gist
 test: spgist
 test: privileges
 test: init_privs
-test: security_label
+#test: security_label
 test: collate
 test: matview
 test: lock

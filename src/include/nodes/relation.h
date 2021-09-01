@@ -687,8 +687,12 @@ typedef struct RelOptInfo
 								 * involving this rel */
 	bool		has_eclass_joins;	/* T means joininfo is incomplete */
 
-	/* used by "other" relations */
-	Relids		top_parent_relids;	/* Relids of topmost parents */
+	/* used by partitionwise joins: */
+	bool		consider_partitionwise_join;	/* consider partitionwise
+												 * join paths? (if
+												 * partitioned rel) */
+	Relids		top_parent_relids;	/* Relids of topmost parents (if "other"
+									 * rel) */
 
 	/* used for partitioned relations */
 	PartitionScheme part_scheme;	/* Partitioning scheme. */
@@ -1653,17 +1657,12 @@ typedef struct MinMaxAggPath
 
 /*
  * WindowAggPath represents generic computation of window functions
- *
- * Note: winpathkeys is separate from path.pathkeys because the actual sort
- * order might be an extension of winpathkeys; but createplan.c needs to
- * know exactly how many pathkeys match the window clause.
  */
 typedef struct WindowAggPath
 {
 	Path		path;
 	Path	   *subpath;		/* path representing input source */
 	WindowClause *winclause;	/* WindowClause we'll be using */
-	List	   *winpathkeys;	/* PathKeys for PARTITION keys + ORDER keys */
 } WindowAggPath;
 
 /*

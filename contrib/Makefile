@@ -27,9 +27,10 @@ SUBDIRS = \
 		lo		\
 		ltree		\
 		oid2name	\
-		pageinspect	\
 		passwordcheck	\
 		pg_buffercache	\
+		pgxc_ctl	\
+		pg_cron		\
 		pg_freespacemap \
 		pg_prewarm	\
 		pg_standby	\
@@ -37,17 +38,16 @@ SUBDIRS = \
 		pg_trgm		\
 		pgcrypto	\
 		pgrowlocks	\
-		pgstattuple	\
 		pg_visibility	\
 		postgres_fdw	\
 		seg		\
 		spi		\
 		tablefunc	\
 		tcn		\
-		test_decoding	\
 		tsm_system_rows \
 		tsm_system_time \
 		unaccent	\
+		polar_monitor \
 		vacuumlo
 
 ifeq ($(with_openssl),yes)

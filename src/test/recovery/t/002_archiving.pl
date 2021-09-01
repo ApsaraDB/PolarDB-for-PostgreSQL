@@ -20,7 +20,7 @@ $node_master->start;
 $node_master->backup($backup_name);
 
 # Initialize standby node from backup, fetching WAL from archives
-my $node_standby = get_new_node('standby');
+my $node_standby = get_new_node('standby', 0);
 $node_standby->init_from_backup($node_master, $backup_name,
 	has_restoring => 1);
 $node_standby->append_conf('postgresql.conf',

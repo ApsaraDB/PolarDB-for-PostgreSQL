@@ -245,7 +245,7 @@ _copyAppend(const Append *from)
 	COPY_NODE_FIELD(appendplans);
 	COPY_SCALAR_FIELD(first_partial_plan);
 	COPY_NODE_FIELD(partitioned_rels);
-	COPY_NODE_FIELD(part_prune_infos);
+	COPY_NODE_FIELD(part_prune_info);
 
 	return newnode;
 }
@@ -1180,6 +1180,17 @@ static PartitionPruneInfo *
 _copyPartitionPruneInfo(const PartitionPruneInfo *from)
 {
 	PartitionPruneInfo *newnode = makeNode(PartitionPruneInfo);
+
+	COPY_NODE_FIELD(prune_infos);
+	COPY_BITMAPSET_FIELD(other_subplans);
+
+	return newnode;
+}
+
+static PartitionedRelPruneInfo *
+_copyPartitionedRelPruneInfo(const PartitionedRelPruneInfo *from)
+{
+	PartitionedRelPruneInfo *newnode = makeNode(PartitionedRelPruneInfo);
 
 	COPY_SCALAR_FIELD(reloid);
 	COPY_NODE_FIELD(pruning_steps);
@@ -3645,6 +3656,7 @@ _copyTransactionStmt(const TransactionStmt *from)
 	COPY_NODE_FIELD(options);
 	COPY_STRING_FIELD(savepoint_name);
 	COPY_STRING_FIELD(gid);
+	COPY_STRING_FIELD(commit_ts);
 
 	return newnode;
 }
@@ -3904,12 +3916,35 @@ _copyReplicaIdentityStmt(const ReplicaIdentityStmt *from)
 	return newnode;
 }
 
+/*
+ * POLAR: DMA Command Statement 
+ */
+static PolarDMACommandStmt *
+_copyPolarDMACommandStmt(const PolarDMACommandStmt *from)
+{
+	PolarDMACommandStmt *newnode = makeNode(PolarDMACommandStmt);
+
+	COPY_SCALAR_FIELD(kind);
+	COPY_STRING_FIELD(node);
+	COPY_SCALAR_FIELD(weight);
+	COPY_SCALAR_FIELD(matchindex);
+	COPY_SCALAR_FIELD(purgeindex);
+	COPY_SCALAR_FIELD(clusterid);
+
+	return newnode;
+}
+/* POLAR end */
+
+
 static AlterSystemStmt *
 _copyAlterSystemStmt(const AlterSystemStmt *from)
 {
 	AlterSystemStmt *newnode = makeNode(AlterSystemStmt);
 
 	COPY_NODE_FIELD(setstmt);
+	/* POLAR: DMA Command Statement */
+	COPY_NODE_FIELD(dma_stmt);
+	/* POLAR end */
 
 	return newnode;
 }
@@ -4735,6 +4770,7 @@ _copyForeignKeyCacheInfo(const ForeignKeyCacheInfo *from)
 {
 	ForeignKeyCacheInfo *newnode = makeNode(ForeignKeyCacheInfo);
 
+	COPY_SCALAR_FIELD(conoid);
 	COPY_SCALAR_FIELD(conrelid);
 	COPY_SCALAR_FIELD(confrelid);
 	COPY_SCALAR_FIELD(nkeys);
@@ -4906,6 +4942,9 @@ copyObjectImpl(const void *from)
 			break;
 		case T_PartitionPruneInfo:
 			retval = _copyPartitionPruneInfo(from);
+			break;
+		case T_PartitionedRelPruneInfo:
+			retval = _copyPartitionedRelPruneInfo(from);
 			break;
 		case T_PartitionPruneStepOp:
 			retval = _copyPartitionPruneStepOp(from);
@@ -5324,6 +5363,9 @@ copyObjectImpl(const void *from)
 			break;
 		case T_ReplicaIdentityStmt:
 			retval = _copyReplicaIdentityStmt(from);
+			break;
+		case T_PolarDMACommandStmt:
+			retval = _copyPolarDMACommandStmt(from);
 			break;
 		case T_AlterSystemStmt:
 			retval = _copyAlterSystemStmt(from);

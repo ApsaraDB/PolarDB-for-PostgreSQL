@@ -38,6 +38,7 @@
  * by re-setting the page's page_dirty flag.
  *
  *
+ * Portions Copyright (c) 2020, Alibaba Group Holding Limited
  * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -57,6 +58,7 @@
 #include "pgstat.h"
 #include "storage/fd.h"
 #include "storage/shmem.h"
+#include "utils/hsearch.h"
 #include "miscadmin.h"
 
 
@@ -77,9 +79,16 @@ typedef struct SlruFlushData
 	int			num_files;		/* # files actually open */
 	int			fd[MAX_FLUSH_BUFFERS];	/* their FD's */
 	int			segno[MAX_FLUSH_BUFFERS];	/* their log seg#s */
-} SlruFlushData;
+}			SlruFlushData;
 
 typedef struct SlruFlushData *SlruFlush;
+
+/* An entry of page-to-slot hash map */
+typedef struct PageSlotEntry
+{
+	int			page;
+	int			slot;
+}			PageSlotEntry;
 
 /*
  * Macro to mark a buffer slot "most recently used".  Note multiple evaluation
@@ -158,6 +167,9 @@ SimpleLruShmemSize(int nslots, int nlsns)
 	if (nlsns > 0)
 		sz += MAXALIGN(nslots * nlsns * sizeof(XLogRecPtr));	/* group_lsn[] */
 
+	/* Fix shmem size: forget the hash tab */
+	sz += hash_estimate_size(nslots, sizeof(PageSlotEntry));
+
 	return BUFFERALIGN(sz) + BLCKSZ * nslots;
 }
 
@@ -166,11 +178,24 @@ SimpleLruInit(SlruCtl ctl, const char *name, int nslots, int nlsns,
 			  LWLock *ctllock, const char *subdir, int tranche_id)
 {
 	SlruShared	shared;
+	char	   *hashName;
+	HTAB	   *htab;
 	bool		found;
+	HASHCTL		info;
 
 	shared = (SlruShared) ShmemInitStruct(name,
 										  SimpleLruShmemSize(nslots, nlsns),
 										  &found);
+	hashName = psprintf("%s_hash", name);
+
+	MemSet(&info, 0, sizeof(info));
+	info.keysize = sizeof(((PageSlotEntry *) 0)->page);
+	info.entrysize = sizeof(PageSlotEntry);
+
+	htab = ShmemInitHash(hashName, nslots, nslots, &info,
+						 HASH_ELEM | HASH_BLOBS | HASH_FIXED_SIZE);
+
+	pfree(hashName);
 
 	if (!IsUnderPostmaster)
 	{
@@ -184,6 +209,7 @@ SimpleLruInit(SlruCtl ctl, const char *name, int nslots, int nlsns,
 		memset(shared, 0, sizeof(SlruSharedData));
 
 		shared->ControlLock = ctllock;
+
 
 		shared->num_slots = nslots;
 		shared->lsn_groups_per_page = nlsns;
@@ -247,6 +273,7 @@ SimpleLruInit(SlruCtl ctl, const char *name, int nslots, int nlsns,
 	 * assume caller set PagePrecedes.
 	 */
 	ctl->shared = shared;
+	ctl->pageToSlot = htab;
 	ctl->do_fsync = true;		/* default behavior */
 	StrNCpy(ctl->Dir, subdir, sizeof(ctl->Dir));
 }
@@ -264,6 +291,7 @@ SimpleLruZeroPage(SlruCtl ctl, int pageno)
 {
 	SlruShared	shared = ctl->shared;
 	int			slotno;
+	PageSlotEntry *entry = NULL;
 
 	/* Find a suitable buffer slot for the page */
 	slotno = SlruSelectLRUPage(ctl, pageno);
@@ -273,7 +301,17 @@ SimpleLruZeroPage(SlruCtl ctl, int pageno)
 		   shared->page_number[slotno] == pageno);
 
 	/* Mark the slot as containing this page */
+	if (shared->page_status[slotno] == SLRU_PAGE_VALID)
+	{
+		int			oldpageno = shared->page_number[slotno];
+
+		entry = hash_search(ctl->pageToSlot, &oldpageno, HASH_REMOVE, NULL);
+		Assert(entry != NULL);
+	}
+
 	shared->page_number[slotno] = pageno;
+	entry = hash_search(ctl->pageToSlot, &pageno, HASH_ENTER, NULL);
+	entry->slot = slotno;
 	shared->page_status[slotno] = SLRU_PAGE_VALID;
 	shared->page_dirty[slotno] = true;
 	SlruRecentlyUsed(shared, slotno);
@@ -343,7 +381,10 @@ SimpleLruWaitIO(SlruCtl ctl, int slotno)
 		{
 			/* indeed, the I/O must have failed */
 			if (shared->page_status[slotno] == SLRU_PAGE_READ_IN_PROGRESS)
+			{
+				Assert(hash_search(ctl->pageToSlot, &shared->page_number[slotno], HASH_REMOVE, NULL) != NULL);
 				shared->page_status[slotno] = SLRU_PAGE_EMPTY;
+			}
 			else				/* write_in_progress */
 			{
 				shared->page_status[slotno] = SLRU_PAGE_VALID;
@@ -382,6 +423,7 @@ SimpleLruReadPage(SlruCtl ctl, int pageno, bool write_ok,
 	{
 		int			slotno;
 		bool		ok;
+		PageSlotEntry *entry;
 
 		/* See if page already is in memory; if not, pick victim slot */
 		slotno = SlruSelectLRUPage(ctl, pageno);
@@ -413,7 +455,14 @@ SimpleLruReadPage(SlruCtl ctl, int pageno, bool write_ok,
 				!shared->page_dirty[slotno]));
 
 		/* Mark the slot read-busy */
+		if (shared->page_status[slotno] == SLRU_PAGE_VALID)
+		{
+			Assert(hash_search(ctl->pageToSlot, &shared->page_number[slotno], HASH_REMOVE, NULL) != NULL);
+		}
+
 		shared->page_number[slotno] = pageno;
+		entry = hash_search(ctl->pageToSlot, &pageno, HASH_ENTER, NULL);
+		entry->slot = slotno;
 		shared->page_status[slotno] = SLRU_PAGE_READ_IN_PROGRESS;
 		shared->page_dirty[slotno] = false;
 
@@ -436,7 +485,13 @@ SimpleLruReadPage(SlruCtl ctl, int pageno, bool write_ok,
 			   shared->page_status[slotno] == SLRU_PAGE_READ_IN_PROGRESS &&
 			   !shared->page_dirty[slotno]);
 
-		shared->page_status[slotno] = ok ? SLRU_PAGE_VALID : SLRU_PAGE_EMPTY;
+		if (ok)
+			shared->page_status[slotno] = SLRU_PAGE_VALID;
+		else
+		{
+			Assert(hash_search(ctl->pageToSlot, &pageno, HASH_REMOVE, NULL) != NULL);
+			shared->page_status[slotno] = SLRU_PAGE_EMPTY;
+		}
 
 		LWLockRelease(&shared->buffer_locks[slotno].lock);
 
@@ -450,9 +505,13 @@ SimpleLruReadPage(SlruCtl ctl, int pageno, bool write_ok,
 }
 
 /*
+ * !!! FIXME: rename to SimpleLruReadPage_Shared
+ *
  * Find a page in a shared buffer, reading it in if necessary.
  * The page number must correspond to an already-initialized page.
- * The caller must intend only read-only access to the page.
+ * The caller can dirty the page holding the shared lock, but it
+ * becomes their responsibility to synchronize the access to the
+ * page data.
  *
  * The passed-in xid is used only for error reporting, and may be
  * InvalidTransactionId if no specific xid is associated with the action.
@@ -467,19 +526,22 @@ int
 SimpleLruReadPage_ReadOnly(SlruCtl ctl, int pageno, TransactionId xid)
 {
 	SlruShared	shared = ctl->shared;
+	PageSlotEntry *entry = NULL;
 	int			slotno;
 
 	/* Try to find the page while holding only shared lock */
 	LWLockAcquire(shared->ControlLock, LW_SHARED);
 
 	/* See if page is already in a buffer */
-	for (slotno = 0; slotno < shared->num_slots; slotno++)
+	entry = hash_search(ctl->pageToSlot, &pageno, HASH_FIND, NULL);
+	if (entry != NULL)
 	{
-		if (shared->page_number[slotno] == pageno &&
-			shared->page_status[slotno] != SLRU_PAGE_EMPTY &&
-			shared->page_status[slotno] != SLRU_PAGE_READ_IN_PROGRESS)
+		slotno = entry->slot;
+		Assert(shared->page_status[slotno] != SLRU_PAGE_EMPTY);
+		if (shared->page_status[slotno] != SLRU_PAGE_EMPTY
+			&& shared->page_status[slotno] != SLRU_PAGE_READ_IN_PROGRESS)
 		{
-			/* See comments for SlruRecentlyUsed macro */
+			Assert(shared->page_number[slotno] == pageno);
 			SlruRecentlyUsed(shared, slotno);
 			return slotno;
 		}
@@ -490,6 +552,78 @@ SimpleLruReadPage_ReadOnly(SlruCtl ctl, int pageno, TransactionId xid)
 	LWLockAcquire(shared->ControlLock, LW_EXCLUSIVE);
 
 	return SimpleLruReadPage(ctl, pageno, true, xid);
+}
+
+/*
+ * This is similar to SimpleLruReadPage_ReadOnly, but differs in that
+ * it does only find the slotno for the target pageno if the page is
+ * buffered.
+ * Otherwise, return -1
+ */
+int
+SimpleLruLookupSlotno(SlruCtl ctl, int pageno)
+{
+	SlruShared	shared = ctl->shared;
+	PageSlotEntry *entry = NULL;
+	int			slotno;
+
+	/* Try to find the page while holding only shared lock */
+	LWLockAcquire(shared->ControlLock, LW_SHARED);
+
+	/* See if page is already in a buffer */
+	entry = hash_search(ctl->pageToSlot, &pageno, HASH_FIND, NULL);
+	if (entry != NULL)
+	{
+		slotno = entry->slot;
+		Assert(shared->page_status[slotno] != SLRU_PAGE_EMPTY);
+		if (shared->page_status[slotno] != SLRU_PAGE_EMPTY
+			&& shared->page_status[slotno] != SLRU_PAGE_READ_IN_PROGRESS)
+		{
+			Assert(shared->page_number[slotno] == pageno);
+			SlruRecentlyUsed(shared, slotno);
+			return slotno;
+		}
+	}
+
+	return -1;
+}
+
+/*
+ * Same as SimpleLruReadPage_ReadOnly, but the shared lock must be held by the caller
+ * and will be held at exit.
+ */
+int
+SimpleLruReadPage_ReadOnly_Locked(SlruCtl ctl, int pageno, XLogRecPtr lsn, TransactionId xid)
+{
+	SlruShared	shared = ctl->shared;
+	int			slotno;
+	PageSlotEntry *entry;
+
+	Assert(LWLockHeldByMe(shared->ControlLock));
+
+	for (;;)
+	{
+		/* See if page is already in a buffer */
+		entry = hash_search(ctl->pageToSlot, &pageno, HASH_FIND, NULL);
+		if (entry != NULL)
+		{
+			slotno = entry->slot;
+			if (shared->page_status[slotno] != SLRU_PAGE_EMPTY
+				&& shared->page_status[slotno] != SLRU_PAGE_READ_IN_PROGRESS)
+			{
+				Assert(shared->page_number[slotno] == pageno);
+				SlruRecentlyUsed(shared, slotno);
+				return slotno;
+			}
+		}
+
+		/* No luck, so switch to normal exclusive lock and do regular read */
+		LWLockRelease(shared->ControlLock);
+		LWLockAcquire(shared->ControlLock, LW_EXCLUSIVE);
+		SimpleLruReadPage(ctl, pageno, XLogRecPtrIsInvalid(lsn), xid);
+		LWLockRelease(shared->ControlLock);
+		LWLockAcquire(shared->ControlLock, LW_SHARED);
+	}
 }
 
 /*
@@ -928,7 +1062,7 @@ SlruReportIOError(SlruCtl ctl, int pageno, TransactionId xid)
 							   path, offset)));
 			break;
 		case SLRU_FSYNC_FAILED:
-			ereport(ERROR,
+			ereport(data_sync_elevel(ERROR),
 					(errcode_for_file_access(),
 					 errmsg("could not access status of transaction %u", xid),
 					 errdetail("Could not fsync file \"%s\": %m.",
@@ -980,12 +1114,25 @@ SlruSelectLRUPage(SlruCtl ctl, int pageno)
 		int			best_invalid_page_number = 0;	/* keep compiler quiet */
 
 		/* See if page already has a buffer assigned */
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+		PageSlotEntry *entry = NULL;
+
+		entry = hash_search(ctl->pageToSlot, &pageno, HASH_FIND, NULL);
+		if (entry != NULL)
+		{
+			slotno = entry->slot;
+			if (shared->page_number[slotno] == pageno &&
+				shared->page_status[slotno] != SLRU_PAGE_EMPTY)
+				return slotno;
+		}
+#else
 		for (slotno = 0; slotno < shared->num_slots; slotno++)
 		{
 			if (shared->page_number[slotno] == pageno &&
 				shared->page_status[slotno] != SLRU_PAGE_EMPTY)
 				return slotno;
 		}
+#endif
 
 		/*
 		 * If we find any EMPTY slot, just select that one. Else choose a
@@ -1213,6 +1360,7 @@ restart:;
 		if (shared->page_status[slotno] == SLRU_PAGE_VALID &&
 			!shared->page_dirty[slotno])
 		{
+			Assert(hash_search(ctl->pageToSlot, &shared->page_number[slotno], HASH_REMOVE, NULL) != NULL);
 			shared->page_status[slotno] = SLRU_PAGE_EMPTY;
 			continue;
 		}
@@ -1284,6 +1432,7 @@ restart:
 		if (shared->page_status[slotno] == SLRU_PAGE_VALID &&
 			!shared->page_dirty[slotno])
 		{
+			Assert(hash_search(ctl->pageToSlot, &shared->page_number[slotno], HASH_REMOVE, NULL) != NULL);
 			shared->page_status[slotno] = SLRU_PAGE_EMPTY;
 			continue;
 		}

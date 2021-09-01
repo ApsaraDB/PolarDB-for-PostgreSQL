@@ -3,6 +3,7 @@
  * xactdesc.c
  *	  rmgr descriptor routines for access/transam/xact.c
  *
+ * Portions Copyright (c) 2020, Alibaba Group Holding Limited
  * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -41,6 +42,9 @@ ParseCommitRecord(uint8 info, xl_xact_commit *xlrec, xl_xact_parsed_commit *pars
 								 * present */
 
 	parsed->xact_time = xlrec->xact_time;
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+	parsed->csn = xlrec->csn;
+#endif
 
 	if (info & XLOG_XACT_HAS_INFO)
 	{
@@ -293,17 +297,6 @@ xact_desc_abort(StringInfo buf, uint8 info, xl_xact_abort *xlrec)
 	}
 }
 
-static void
-xact_desc_assignment(StringInfo buf, xl_xact_assignment *xlrec)
-{
-	int			i;
-
-	appendStringInfoString(buf, "subxacts:");
-
-	for (i = 0; i < xlrec->nsubxacts; i++)
-		appendStringInfo(buf, " %u", xlrec->xsub[i]);
-}
-
 void
 xact_desc(StringInfo buf, XLogReaderState *record)
 {
@@ -322,18 +315,6 @@ xact_desc(StringInfo buf, XLogReaderState *record)
 		xl_xact_abort *xlrec = (xl_xact_abort *) rec;
 
 		xact_desc_abort(buf, XLogRecGetInfo(record), xlrec);
-	}
-	else if (info == XLOG_XACT_ASSIGNMENT)
-	{
-		xl_xact_assignment *xlrec = (xl_xact_assignment *) rec;
-
-		/*
-		 * Note that we ignore the WAL record's xid, since we're more
-		 * interested in the top-level xid that issued the record and which
-		 * xids are being reported here.
-		 */
-		appendStringInfo(buf, "xtop %u: ", xlrec->xtop);
-		xact_desc_assignment(buf, xlrec);
 	}
 }
 
@@ -358,9 +339,6 @@ xact_identify(uint8 info)
 			break;
 		case XLOG_XACT_ABORT_PREPARED:
 			id = "ABORT_PREPARED";
-			break;
-		case XLOG_XACT_ASSIGNMENT:
-			id = "ASSIGNMENT";
 			break;
 	}
 

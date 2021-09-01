@@ -3,6 +3,7 @@
  * pg_subscription.c
  *		replication subscriptions
  *
+ * Portions Copyright (c) 2020, Alibaba Group Holding Limited
  * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -36,6 +37,9 @@
 #include "utils/pg_lsn.h"
 #include "utils/rel.h"
 #include "utils/syscache.h"
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+#include "utils/tqual.h"
+#endif
 
 
 static List *textarray_to_stringlist(ArrayType *textarray);
@@ -261,7 +265,19 @@ AddSubscriptionRelState(Oid subid, Oid relid, char state,
 		values[Anum_pg_subscription_rel_srsublsn - 1] = LSNGetDatum(sublsn);
 	else
 		nulls[Anum_pg_subscription_rel_srsublsn - 1] = true;
-
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+	/**
+        * To fix subscription regression failure.
+        * If create subscription with copy_data=false, the default srsubstartts will be 0 which is invalid,
+        * but the apply of DML on subscription expects a valid srsubstartts. So we set MinValidCommitSeqNo which is 1
+        * as srsubstartts.
+        *
+        * If create subscription with copy_data=true, the default srsubstartts works fine since the srsubstate initially
+        * is 'i', and applyMainWorker will connect to publication instance, get valid srsubstartts, and update pg_subscription_rel.srsubstartts.
+        * But if copy_data=false, the srsubstate initially is 'r', applyMainWorker will not update pg_subscription_rel.srsubstartts to a valid value.
+        */
+	values[Anum_pg_subscription_rel_srsubstartts - 1] = Int64GetDatum((int64) MinValidCommitSeqNo);
+#endif
 	tup = heap_form_tuple(RelationGetDescr(rel), values, nulls);
 
 	/* Insert tuple into catalog. */
@@ -278,9 +294,15 @@ AddSubscriptionRelState(Oid subid, Oid relid, char state,
 /*
  * Update the state of a subscription table.
  */
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
 Oid
+UpdateSubscriptionRelStateExtend(Oid subid, Oid relid, char state,
+								 XLogRecPtr sublsn
+								 ,GlobalTimestamp startts)
+#else
 UpdateSubscriptionRelState(Oid subid, Oid relid, char state,
 						   XLogRecPtr sublsn)
+#endif
 {
 	Relation	rel;
 	HeapTuple	tup;
@@ -315,6 +337,19 @@ UpdateSubscriptionRelState(Oid subid, Oid relid, char state,
 	else
 		nulls[Anum_pg_subscription_rel_srsublsn - 1] = true;
 
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+	replaces[Anum_pg_subscription_rel_srsubstartts - 1] = true;
+	if (startts != InvalidCommitSeqNo)
+		values[Anum_pg_subscription_rel_srsubstartts - 1] = Int64GetDatum((int64) startts);
+	else
+		nulls[Anum_pg_subscription_rel_srsubstartts - 1] = true;
+
+	if (enable_distri_print)
+		elog(LOG, "logical replication update sub oid %d, relid %d, start ts " UINT64_FORMAT
+			 " null %d LSN " UINT64_FORMAT,
+			 subid, relid, startts, nulls[Anum_pg_subscription_rel_srsubstartts - 1], sublsn);
+#endif
+
 	tup = heap_modify_tuple(tup, RelationGetDescr(rel), values, nulls,
 							replaces);
 
@@ -334,9 +369,15 @@ UpdateSubscriptionRelState(Oid subid, Oid relid, char state,
  *
  * Returns SUBREL_STATE_UNKNOWN when not found and missing_ok is true.
  */
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+char
+GetSubscriptionRelStateExtend(Oid subid, Oid relid, XLogRecPtr *sublsn, GlobalTimestamp * startts,
+							  bool missing_ok)
+#else
 char
 GetSubscriptionRelState(Oid subid, Oid relid, XLogRecPtr *sublsn,
 						bool missing_ok)
+#endif
 {
 	Relation	rel;
 	HeapTuple	tup;
@@ -375,6 +416,23 @@ GetSubscriptionRelState(Oid subid, Oid relid, XLogRecPtr *sublsn,
 		*sublsn = InvalidXLogRecPtr;
 	else
 		*sublsn = DatumGetLSN(d);
+
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+	if (startts)
+	{
+		d = SysCacheGetAttr(SUBSCRIPTIONRELMAP, tup,
+							Anum_pg_subscription_rel_srsubstartts, &isnull);
+		if (isnull)
+			*startts = InvalidCommitSeqNo;
+		else
+			*startts = (GlobalTimestamp) DatumGetInt64(d);
+
+		if (enable_distri_print)
+			elog(LOG, "logical replication get sub subid %d relid %d start ts " UINT64_FORMAT
+				 " isnull %d LSN " UINT64_FORMAT
+				 ,subid, relid, *startts, isnull, *sublsn);
+	}
+#endif
 
 	/* Cleanup */
 	ReleaseSysCache(tup);
@@ -464,6 +522,9 @@ GetSubscriptionRelations(Oid subid)
 		relstate->relid = subrel->srrelid;
 		relstate->state = subrel->srsubstate;
 		relstate->lsn = subrel->srsublsn;
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+		relstate->start_ts = subrel->srsubstartts;
+#endif
 
 		res = lappend(res, relstate);
 	}
@@ -516,6 +577,9 @@ GetSubscriptionNotReadyRelations(Oid subid)
 		relstate->relid = subrel->srrelid;
 		relstate->state = subrel->srsubstate;
 		relstate->lsn = subrel->srsublsn;
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+		relstate->start_ts = subrel->srsubstartts;
+#endif
 
 		res = lappend(res, relstate);
 	}

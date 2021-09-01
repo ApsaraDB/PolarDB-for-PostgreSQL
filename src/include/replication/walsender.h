@@ -26,6 +26,16 @@ typedef enum
 	CRS_USE_SNAPSHOT
 } CRSSnapshotAction;
 
+/* POLAR: customized replication mode */
+typedef enum polar_repl_mode_t
+{
+	POLAR_REPL_DEFAULT,			/* Default mode, as original one */
+	POLAR_REPL_DMA_DATA,		/* DMA mode */
+	POLAR_REPL_DMA_LOGGER		/* DMA mode */
+}			polar_repl_mode_t;
+
+/* POLAR end */
+
 /* global state */
 extern bool am_walsender;
 extern bool am_cascading_walsender;
@@ -48,6 +58,12 @@ extern void WalSndInitStopping(void);
 extern void WalSndWaitStopping(void);
 extern void HandleWalSndInitStopping(void);
 extern void WalSndRqstFileReload(void);
+
+/* POLAR */
+extern polar_repl_mode_t polar_gen_replication_mode(void);
+extern const char *polar_replication_mode_str(polar_repl_mode_t mode);
+
+/* POLAR end */
 
 /*
  * Remember that we want to wakeup walsenders later

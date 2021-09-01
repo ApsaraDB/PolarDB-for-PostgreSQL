@@ -34,7 +34,7 @@
  * we don't try to change MyPgXact->xmin except when the active-snapshot
  * stack is empty.
  *
- *
+ * Portions Copyright (c) 2020, Alibaba Group Holding Limited
  * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -67,12 +67,14 @@
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
 #include "utils/tqual.h"
-
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+#include "distributed_txn/txn_timestamp.h"
+#endif
 
 /*
- * GUC parameters
+ * Disable old snapshot feature for now.
  */
-int			old_snapshot_threshold; /* number of minutes, -1 disables */
+int			old_snapshot_threshold = -1;	/* number of minutes, -1 disables */
 
 /*
  * Structure for dealing with old_snapshot_threshold implementation.
@@ -152,19 +154,11 @@ static Snapshot CatalogSnapshot = NULL;
 static Snapshot HistoricSnapshot = NULL;
 
 /*
- * These are updated by GetSnapshotData.  We initialize them this way
- * for the convenience of TransactionIdIsInProgress: even in bootstrap
- * mode, we don't want it to say that BootstrapTransactionId is in progress.
- *
- * RecentGlobalXmin and RecentGlobalDataXmin are initialized to
- * InvalidTransactionId, to ensure that no one tries to use a stale
- * value. Readers should ensure that it has been set to something else
- * before using it.
+ * These are updated by GetSnapshotData.  We initialize them this way,
+ * because even in bootstrap mode, we don't want it to say that
+ * BootstrapTransactionId is in progress.
  */
 TransactionId TransactionXmin = FirstNormalTransactionId;
-TransactionId RecentXmin = FirstNormalTransactionId;
-TransactionId RecentGlobalXmin = InvalidTransactionId;
-TransactionId RecentGlobalDataXmin = InvalidTransactionId;
 
 /* (table, ctid) => (cmin, cmax) mapping during timetravel */
 static HTAB *tuplecid_data = NULL;
@@ -238,9 +232,7 @@ typedef struct SerializedSnapshotData
 {
 	TransactionId xmin;
 	TransactionId xmax;
-	uint32		xcnt;
-	int32		subxcnt;
-	bool		suboverflowed;
+	CommitSeqNo snapshotcsn;
 	bool		takenDuringRecovery;
 	CommandId	curcid;
 	TimestampTz whenTaken;
@@ -301,7 +293,7 @@ SnapMgrInit(void)
  * used very long.
  */
 Snapshot
-GetTransactionSnapshot(void)
+GetTransactionSnapshotExtend(bool latest)
 {
 	/*
 	 * Return historic snapshot if doing logical decoding. We'll never need a
@@ -344,7 +336,7 @@ GetTransactionSnapshot(void)
 			if (IsolationIsSerializable())
 				CurrentSnapshot = GetSerializableTransactionSnapshot(&CurrentSnapshotData);
 			else
-				CurrentSnapshot = GetSnapshotData(&CurrentSnapshotData);
+				CurrentSnapshot = GetSnapshotDataExtend(&CurrentSnapshotData, latest);
 			/* Make a saved copy */
 			CurrentSnapshot = CopySnapshot(CurrentSnapshot);
 			FirstXactSnapshot = CurrentSnapshot;
@@ -353,7 +345,7 @@ GetTransactionSnapshot(void)
 			pairingheap_add(&RegisteredSnapshots, &FirstXactSnapshot->ph_node);
 		}
 		else
-			CurrentSnapshot = GetSnapshotData(&CurrentSnapshotData);
+			CurrentSnapshot = GetSnapshotDataExtend(&CurrentSnapshotData, latest);
 
 		FirstSnapshotSet = true;
 		return CurrentSnapshot;
@@ -365,7 +357,7 @@ GetTransactionSnapshot(void)
 	/* Don't allow catalog snapshot to be older than xact snapshot. */
 	InvalidateCatalogSnapshot();
 
-	CurrentSnapshot = GetSnapshotData(&CurrentSnapshotData);
+	CurrentSnapshot = GetSnapshotDataExtend(&CurrentSnapshotData, latest);
 
 	return CurrentSnapshot;
 }
@@ -579,26 +571,18 @@ SetTransactionSnapshot(Snapshot sourcesnap, VirtualTransactionId *sourcevxid,
 	 * Even though we are not going to use the snapshot it computes, we must
 	 * call GetSnapshotData, for two reasons: (1) to be sure that
 	 * CurrentSnapshotData's XID arrays have been allocated, and (2) to update
-	 * RecentXmin and RecentGlobalXmin.  (We could alternatively include those
-	 * two variables in exported snapshot files, but it seems better to have
-	 * snapshot importers compute reasonably up-to-date values for them.)
+	 * RecentGlobalXmin.  (We could alternatively include those two variables
+	 * in exported snapshot files, but it seems better to have snapshot
+	 * importers compute reasonably up-to-date values for them.)
+	 *
+	 * FIXME: neither of those reasons hold anymore. Can we drop this?
 	 */
 	CurrentSnapshot = GetSnapshotData(&CurrentSnapshotData);
 
 	/*
 	 * Now copy appropriate fields from the source snapshot.
 	 */
-	CurrentSnapshot->xmin = sourcesnap->xmin;
 	CurrentSnapshot->xmax = sourcesnap->xmax;
-	CurrentSnapshot->xcnt = sourcesnap->xcnt;
-	Assert(sourcesnap->xcnt <= GetMaxSnapshotXidCount());
-	memcpy(CurrentSnapshot->xip, sourcesnap->xip,
-		   sourcesnap->xcnt * sizeof(TransactionId));
-	CurrentSnapshot->subxcnt = sourcesnap->subxcnt;
-	Assert(sourcesnap->subxcnt <= GetMaxSnapshotSubxidCount());
-	memcpy(CurrentSnapshot->subxip, sourcesnap->subxip,
-		   sourcesnap->subxcnt * sizeof(TransactionId));
-	CurrentSnapshot->suboverflowed = sourcesnap->suboverflowed;
 	CurrentSnapshot->takenDuringRecovery = sourcesnap->takenDuringRecovery;
 	/* NB: curcid should NOT be copied, it's a local matter */
 
@@ -660,49 +644,16 @@ static Snapshot
 CopySnapshot(Snapshot snapshot)
 {
 	Snapshot	newsnap;
-	Size		subxipoff;
-	Size		size;
 
 	Assert(snapshot != InvalidSnapshot);
 
 	/* We allocate any XID arrays needed in the same palloc block. */
-	size = subxipoff = sizeof(SnapshotData) +
-		snapshot->xcnt * sizeof(TransactionId);
-	if (snapshot->subxcnt > 0)
-		size += snapshot->subxcnt * sizeof(TransactionId);
-
-	newsnap = (Snapshot) MemoryContextAlloc(TopTransactionContext, size);
+	newsnap = (Snapshot) MemoryContextAlloc(TopTransactionContext, sizeof(SnapshotData));
 	memcpy(newsnap, snapshot, sizeof(SnapshotData));
 
 	newsnap->regd_count = 0;
 	newsnap->active_count = 0;
 	newsnap->copied = true;
-
-	/* setup XID array */
-	if (snapshot->xcnt > 0)
-	{
-		newsnap->xip = (TransactionId *) (newsnap + 1);
-		memcpy(newsnap->xip, snapshot->xip,
-			   snapshot->xcnt * sizeof(TransactionId));
-	}
-	else
-		newsnap->xip = NULL;
-
-	/*
-	 * Setup subXID array. Don't bother to copy it if it had overflowed,
-	 * though, because it's not used anywhere in that case. Except if it's a
-	 * snapshot taken during recovery; all the top-level XIDs are in subxip as
-	 * well in that case, so we mustn't lose them.
-	 */
-	if (snapshot->subxcnt > 0 &&
-		(!snapshot->suboverflowed || snapshot->takenDuringRecovery))
-	{
-		newsnap->subxip = (TransactionId *) ((char *) newsnap + subxipoff);
-		memcpy(newsnap->subxip, snapshot->subxip,
-			   snapshot->subxcnt * sizeof(TransactionId));
-	}
-	else
-		newsnap->subxip = NULL;
 
 	return newsnap;
 }
@@ -984,7 +935,7 @@ SnapshotResetXmin(void)
 
 	if (pairingheap_is_empty(&RegisteredSnapshots))
 	{
-		MyPgXact->xmin = InvalidTransactionId;
+		ProcArrayResetXmin(MyProc);
 		return;
 	}
 
@@ -992,7 +943,7 @@ SnapshotResetXmin(void)
 										pairingheap_first(&RegisteredSnapshots));
 
 	if (TransactionIdPrecedes(MyPgXact->xmin, minSnapshot->xmin))
-		MyPgXact->xmin = minSnapshot->xmin;
+		ProcArrayResetXmin(MyProc);
 }
 
 /*
@@ -1087,8 +1038,8 @@ AtEOXact_Snapshot(bool isCommit, bool resetXmin)
 		 * it's too late to abort the transaction, and (2) leaving a leaked
 		 * file around has little real consequence anyway.
 		 *
-		 * We also also need to remove the snapshots from RegisteredSnapshots
-		 * to prevent a warning below.
+		 * We also need to remove the snapshots from RegisteredSnapshots to
+		 * prevent a warning below.
 		 *
 		 * As with the FirstXactSnapshot, we don't need to free resources of
 		 * the snapshot iself as it will go away with the memory context.
@@ -1159,16 +1110,12 @@ char *
 ExportSnapshot(Snapshot snapshot)
 {
 	TransactionId topXid;
-	TransactionId *children;
-	ExportedSnapshot *esnap;
-	int			nchildren;
-	int			addTopXid;
 	StringInfoData buf;
 	FILE	   *f;
-	int			i;
 	MemoryContext oldcxt;
 	char		path[MAXPGPATH];
 	char		pathtmp[MAXPGPATH];
+	ExportedSnapshot *esnap;
 
 	/*
 	 * It's tempting to call RequireTransactionBlock here, since it's not very
@@ -1185,9 +1132,9 @@ ExportSnapshot(Snapshot snapshot)
 	 */
 
 	/*
-	 * Get our transaction ID if there is one, to include in the snapshot.
+	 * This will assign a transaction ID if we do not yet have one.
 	 */
-	topXid = GetTopTransactionIdIfAny();
+	topXid = GetTopTransactionId();
 
 	/*
 	 * We cannot export a snapshot from a subtransaction because there's no
@@ -1200,18 +1147,12 @@ ExportSnapshot(Snapshot snapshot)
 				 errmsg("cannot export a snapshot from a subtransaction")));
 
 	/*
-	 * We do however allow previous committed subtransactions to exist.
-	 * Importers of the snapshot must see them as still running, so get their
-	 * XIDs to add them to the snapshot.
-	 */
-	nchildren = xactGetCommittedChildren(&children);
-
-	/*
 	 * Generate file path for the snapshot.  We start numbering of snapshots
 	 * inside the transaction from 1.
 	 */
 	snprintf(path, sizeof(path), SNAPSHOT_EXPORT_DIR "/%08X-%08X-%d",
 			 MyProc->backendId, MyProc->lxid, list_length(exportedSnapshots) + 1);
+
 
 	/*
 	 * Copy the snapshot into TopTransactionContext, add it to the
@@ -1238,7 +1179,7 @@ ExportSnapshot(Snapshot snapshot)
 	 */
 	initStringInfo(&buf);
 
-	appendStringInfo(&buf, "vxid:%d/%u\n", MyProc->backendId, MyProc->lxid);
+	appendStringInfo(&buf, "xid:%u\n", topXid);
 	appendStringInfo(&buf, "pid:%d\n", MyProcPid);
 	appendStringInfo(&buf, "dbid:%u\n", MyDatabaseId);
 	appendStringInfo(&buf, "iso:%d\n", XactIsoLevel);
@@ -1247,42 +1188,10 @@ ExportSnapshot(Snapshot snapshot)
 	appendStringInfo(&buf, "xmin:%u\n", snapshot->xmin);
 	appendStringInfo(&buf, "xmax:%u\n", snapshot->xmax);
 
-	/*
-	 * We must include our own top transaction ID in the top-xid data, since
-	 * by definition we will still be running when the importing transaction
-	 * adopts the snapshot, but GetSnapshotData never includes our own XID in
-	 * the snapshot.  (There must, therefore, be enough room to add it.)
-	 *
-	 * However, it could be that our topXid is after the xmax, in which case
-	 * we shouldn't include it because xip[] members are expected to be before
-	 * xmax.  (We need not make the same check for subxip[] members, see
-	 * snapshot.h.)
-	 */
-	addTopXid = (TransactionIdIsValid(topXid) &&
-				 TransactionIdPrecedes(topXid, snapshot->xmax)) ? 1 : 0;
-	appendStringInfo(&buf, "xcnt:%d\n", snapshot->xcnt + addTopXid);
-	for (i = 0; i < snapshot->xcnt; i++)
-		appendStringInfo(&buf, "xip:%u\n", snapshot->xip[i]);
-	if (addTopXid)
-		appendStringInfo(&buf, "xip:%u\n", topXid);
-
-	/*
-	 * Similarly, we add our subcommitted child XIDs to the subxid data. Here,
-	 * we have to cope with possible overflow.
-	 */
-	if (snapshot->suboverflowed ||
-		snapshot->subxcnt + nchildren > GetMaxSnapshotSubxidCount())
-		appendStringInfoString(&buf, "sof:1\n");
-	else
-	{
-		appendStringInfoString(&buf, "sof:0\n");
-		appendStringInfo(&buf, "sxcnt:%d\n", snapshot->subxcnt + nchildren);
-		for (i = 0; i < snapshot->subxcnt; i++)
-			appendStringInfo(&buf, "sxp:%u\n", snapshot->subxip[i]);
-		for (i = 0; i < nchildren; i++)
-			appendStringInfo(&buf, "sxp:%u\n", children[i]);
-	}
 	appendStringInfo(&buf, "rec:%u\n", snapshot->takenDuringRecovery);
+	appendStringInfo(&buf, "snapshotcsn:%X/%X\n",
+					 (uint32) (snapshot->snapshotcsn >> 32),
+					 (uint32) snapshot->snapshotcsn);
 
 	/*
 	 * Now write the text representation into a file.  We first write to a
@@ -1327,6 +1236,7 @@ ExportSnapshot(Snapshot snapshot)
 	return pstrdup(path + strlen(SNAPSHOT_EXPORT_DIR) + 1);
 }
 
+
 /*
  * pg_export_snapshot
  *		SQL-callable wrapper for ExportSnapshot.
@@ -1342,85 +1252,6 @@ pg_export_snapshot(PG_FUNCTION_ARGS)
 
 
 /*
- * Parsing subroutines for ImportSnapshot: parse a line with the given
- * prefix followed by a value, and advance *s to the next line.  The
- * filename is provided for use in error messages.
- */
-static int
-parseIntFromText(const char *prefix, char **s, const char *filename)
-{
-	char	   *ptr = *s;
-	int			prefixlen = strlen(prefix);
-	int			val;
-
-	if (strncmp(ptr, prefix, prefixlen) != 0)
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
-				 errmsg("invalid snapshot data in file \"%s\"", filename)));
-	ptr += prefixlen;
-	if (sscanf(ptr, "%d", &val) != 1)
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
-				 errmsg("invalid snapshot data in file \"%s\"", filename)));
-	ptr = strchr(ptr, '\n');
-	if (!ptr)
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
-				 errmsg("invalid snapshot data in file \"%s\"", filename)));
-	*s = ptr + 1;
-	return val;
-}
-
-static TransactionId
-parseXidFromText(const char *prefix, char **s, const char *filename)
-{
-	char	   *ptr = *s;
-	int			prefixlen = strlen(prefix);
-	TransactionId val;
-
-	if (strncmp(ptr, prefix, prefixlen) != 0)
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
-				 errmsg("invalid snapshot data in file \"%s\"", filename)));
-	ptr += prefixlen;
-	if (sscanf(ptr, "%u", &val) != 1)
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
-				 errmsg("invalid snapshot data in file \"%s\"", filename)));
-	ptr = strchr(ptr, '\n');
-	if (!ptr)
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
-				 errmsg("invalid snapshot data in file \"%s\"", filename)));
-	*s = ptr + 1;
-	return val;
-}
-
-static void
-parseVxidFromText(const char *prefix, char **s, const char *filename,
-				  VirtualTransactionId *vxid)
-{
-	char	   *ptr = *s;
-	int			prefixlen = strlen(prefix);
-
-	if (strncmp(ptr, prefix, prefixlen) != 0)
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
-				 errmsg("invalid snapshot data in file \"%s\"", filename)));
-	ptr += prefixlen;
-	if (sscanf(ptr, "%d/%u", &vxid->backendId, &vxid->localTransactionId) != 2)
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
-				 errmsg("invalid snapshot data in file \"%s\"", filename)));
-	ptr = strchr(ptr, '\n');
-	if (!ptr)
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
-				 errmsg("invalid snapshot data in file \"%s\"", filename)));
-	*s = ptr + 1;
-}
-
-/*
  * ImportSnapshot
  *		Import a previously exported snapshot.  The argument should be a
  *		filename in SNAPSHOT_EXPORT_DIR.  Load the snapshot from that file.
@@ -1429,170 +1260,7 @@ parseVxidFromText(const char *prefix, char **s, const char *filename,
 void
 ImportSnapshot(const char *idstr)
 {
-	char		path[MAXPGPATH];
-	FILE	   *f;
-	struct stat stat_buf;
-	char	   *filebuf;
-	int			xcnt;
-	int			i;
-	VirtualTransactionId src_vxid;
-	int			src_pid;
-	Oid			src_dbid;
-	int			src_isolevel;
-	bool		src_readonly;
-	SnapshotData snapshot;
-
-	/*
-	 * Must be at top level of a fresh transaction.  Note in particular that
-	 * we check we haven't acquired an XID --- if we have, it's conceivable
-	 * that the snapshot would show it as not running, making for very screwy
-	 * behavior.
-	 */
-	if (FirstSnapshotSet ||
-		GetTopTransactionIdIfAny() != InvalidTransactionId ||
-		IsSubTransaction())
-		ereport(ERROR,
-				(errcode(ERRCODE_ACTIVE_SQL_TRANSACTION),
-				 errmsg("SET TRANSACTION SNAPSHOT must be called before any query")));
-
-	/*
-	 * If we are in read committed mode then the next query would execute with
-	 * a new snapshot thus making this function call quite useless.
-	 */
-	if (!IsolationUsesXactSnapshot())
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("a snapshot-importing transaction must have isolation level SERIALIZABLE or REPEATABLE READ")));
-
-	/*
-	 * Verify the identifier: only 0-9, A-F and hyphens are allowed.  We do
-	 * this mainly to prevent reading arbitrary files.
-	 */
-	if (strspn(idstr, "0123456789ABCDEF-") != strlen(idstr))
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("invalid snapshot identifier: \"%s\"", idstr)));
-
-	/* OK, read the file */
-	snprintf(path, MAXPGPATH, SNAPSHOT_EXPORT_DIR "/%s", idstr);
-
-	f = AllocateFile(path, PG_BINARY_R);
-	if (!f)
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("invalid snapshot identifier: \"%s\"", idstr)));
-
-	/* get the size of the file so that we know how much memory we need */
-	if (fstat(fileno(f), &stat_buf))
-		elog(ERROR, "could not stat file \"%s\": %m", path);
-
-	/* and read the file into a palloc'd string */
-	filebuf = (char *) palloc(stat_buf.st_size + 1);
-	if (fread(filebuf, stat_buf.st_size, 1, f) != 1)
-		elog(ERROR, "could not read file \"%s\": %m", path);
-
-	filebuf[stat_buf.st_size] = '\0';
-
-	FreeFile(f);
-
-	/*
-	 * Construct a snapshot struct by parsing the file content.
-	 */
-	memset(&snapshot, 0, sizeof(snapshot));
-
-	parseVxidFromText("vxid:", &filebuf, path, &src_vxid);
-	src_pid = parseIntFromText("pid:", &filebuf, path);
-	/* we abuse parseXidFromText a bit here ... */
-	src_dbid = parseXidFromText("dbid:", &filebuf, path);
-	src_isolevel = parseIntFromText("iso:", &filebuf, path);
-	src_readonly = parseIntFromText("ro:", &filebuf, path);
-
-	snapshot.xmin = parseXidFromText("xmin:", &filebuf, path);
-	snapshot.xmax = parseXidFromText("xmax:", &filebuf, path);
-
-	snapshot.xcnt = xcnt = parseIntFromText("xcnt:", &filebuf, path);
-
-	/* sanity-check the xid count before palloc */
-	if (xcnt < 0 || xcnt > GetMaxSnapshotXidCount())
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
-				 errmsg("invalid snapshot data in file \"%s\"", path)));
-
-	snapshot.xip = (TransactionId *) palloc(xcnt * sizeof(TransactionId));
-	for (i = 0; i < xcnt; i++)
-		snapshot.xip[i] = parseXidFromText("xip:", &filebuf, path);
-
-	snapshot.suboverflowed = parseIntFromText("sof:", &filebuf, path);
-
-	if (!snapshot.suboverflowed)
-	{
-		snapshot.subxcnt = xcnt = parseIntFromText("sxcnt:", &filebuf, path);
-
-		/* sanity-check the xid count before palloc */
-		if (xcnt < 0 || xcnt > GetMaxSnapshotSubxidCount())
-			ereport(ERROR,
-					(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
-					 errmsg("invalid snapshot data in file \"%s\"", path)));
-
-		snapshot.subxip = (TransactionId *) palloc(xcnt * sizeof(TransactionId));
-		for (i = 0; i < xcnt; i++)
-			snapshot.subxip[i] = parseXidFromText("sxp:", &filebuf, path);
-	}
-	else
-	{
-		snapshot.subxcnt = 0;
-		snapshot.subxip = NULL;
-	}
-
-	snapshot.takenDuringRecovery = parseIntFromText("rec:", &filebuf, path);
-
-	/*
-	 * Do some additional sanity checking, just to protect ourselves.  We
-	 * don't trouble to check the array elements, just the most critical
-	 * fields.
-	 */
-	if (!VirtualTransactionIdIsValid(src_vxid) ||
-		!OidIsValid(src_dbid) ||
-		!TransactionIdIsNormal(snapshot.xmin) ||
-		!TransactionIdIsNormal(snapshot.xmax))
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
-				 errmsg("invalid snapshot data in file \"%s\"", path)));
-
-	/*
-	 * If we're serializable, the source transaction must be too, otherwise
-	 * predicate.c has problems (SxactGlobalXmin could go backwards).  Also, a
-	 * non-read-only transaction can't adopt a snapshot from a read-only
-	 * transaction, as predicate.c handles the cases very differently.
-	 */
-	if (IsolationIsSerializable())
-	{
-		if (src_isolevel != XACT_SERIALIZABLE)
-			ereport(ERROR,
-					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-					 errmsg("a serializable transaction cannot import a snapshot from a non-serializable transaction")));
-		if (src_readonly && !XactReadOnly)
-			ereport(ERROR,
-					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-					 errmsg("a non-read-only serializable transaction cannot import a snapshot from a read-only transaction")));
-	}
-
-	/*
-	 * We cannot import a snapshot that was taken in a different database,
-	 * because vacuum calculates OldestXmin on a per-database basis; so the
-	 * source transaction's xmin doesn't protect us from data loss.  This
-	 * restriction could be removed if the source transaction were to mark its
-	 * xmin as being globally applicable.  But that would require some
-	 * additional syntax, since that has to be known when the snapshot is
-	 * initially taken.  (See pgsql-hackers discussion of 2011-10-21.)
-	 */
-	if (src_dbid != MyDatabaseId)
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("cannot import a snapshot from a different database")));
-
-	/* OK, install the snapshot */
-	SetTransactionSnapshot(&snapshot, &src_vxid, src_pid, NULL);
+	Assert(false);
 }
 
 /*
@@ -1837,7 +1505,6 @@ TransactionIdLimitedForOldSnapshots(TransactionId recentXmin,
 		if (NormalTransactionIdFollows(xlimit, recentXmin))
 			return xlimit;
 	}
-
 	return recentXmin;
 }
 
@@ -2048,13 +1715,7 @@ EstimateSnapshotSpace(Snapshot snap)
 	Assert(snap != InvalidSnapshot);
 	Assert(snap->satisfies == HeapTupleSatisfiesMVCC);
 
-	/* We allocate any XID arrays needed in the same palloc block. */
-	size = add_size(sizeof(SerializedSnapshotData),
-					mul_size(snap->xcnt, sizeof(TransactionId)));
-	if (snap->subxcnt > 0 &&
-		(!snap->suboverflowed || snap->takenDuringRecovery))
-		size = add_size(size,
-						mul_size(snap->subxcnt, sizeof(TransactionId)));
+	size = sizeof(SerializedSnapshotData);
 
 	return size;
 }
@@ -2069,51 +1730,24 @@ SerializeSnapshot(Snapshot snapshot, char *start_address)
 {
 	SerializedSnapshotData serialized_snapshot;
 
-	Assert(snapshot->subxcnt >= 0);
-
 	/* Copy all required fields */
 	serialized_snapshot.xmin = snapshot->xmin;
 	serialized_snapshot.xmax = snapshot->xmax;
-	serialized_snapshot.xcnt = snapshot->xcnt;
-	serialized_snapshot.subxcnt = snapshot->subxcnt;
-	serialized_snapshot.suboverflowed = snapshot->suboverflowed;
 	serialized_snapshot.takenDuringRecovery = snapshot->takenDuringRecovery;
 	serialized_snapshot.curcid = snapshot->curcid;
 	serialized_snapshot.whenTaken = snapshot->whenTaken;
 	serialized_snapshot.lsn = snapshot->lsn;
 
-	/*
-	 * Ignore the SubXID array if it has overflowed, unless the snapshot was
-	 * taken during recovery - in that case, top-level XIDs are in subxip as
-	 * well, and we mustn't lose them.
-	 */
-	if (serialized_snapshot.suboverflowed && !snapshot->takenDuringRecovery)
-		serialized_snapshot.subxcnt = 0;
+	serialized_snapshot.snapshotcsn = snapshot->snapshotcsn;
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+	if (enable_timestamp_debug_print)
+		elog(LOG, "serialize snapshot ts " UINT64_FORMAT, serialized_snapshot.snapshotcsn);
+#endif
 
 	/* Copy struct to possibly-unaligned buffer */
 	memcpy(start_address,
 		   &serialized_snapshot, sizeof(SerializedSnapshotData));
 
-	/* Copy XID array */
-	if (snapshot->xcnt > 0)
-		memcpy((TransactionId *) (start_address +
-								  sizeof(SerializedSnapshotData)),
-			   snapshot->xip, snapshot->xcnt * sizeof(TransactionId));
-
-	/*
-	 * Copy SubXID array. Don't bother to copy it if it had overflowed,
-	 * though, because it's not used anywhere in that case. Except if it's a
-	 * snapshot taken during recovery; all the top-level XIDs are in subxip as
-	 * well in that case, so we mustn't lose them.
-	 */
-	if (serialized_snapshot.subxcnt > 0)
-	{
-		Size		subxipoff = sizeof(SerializedSnapshotData) +
-		snapshot->xcnt * sizeof(TransactionId);
-
-		memcpy((TransactionId *) (start_address + subxipoff),
-			   snapshot->subxip, snapshot->subxcnt * sizeof(TransactionId));
-	}
 }
 
 /*
@@ -2127,52 +1761,25 @@ Snapshot
 RestoreSnapshot(char *start_address)
 {
 	SerializedSnapshotData serialized_snapshot;
-	Size		size;
 	Snapshot	snapshot;
-	TransactionId *serialized_xids;
 
 	memcpy(&serialized_snapshot, start_address,
 		   sizeof(SerializedSnapshotData));
-	serialized_xids = (TransactionId *)
-		(start_address + sizeof(SerializedSnapshotData));
-
-	/* We allocate any XID arrays needed in the same palloc block. */
-	size = sizeof(SnapshotData)
-		+ serialized_snapshot.xcnt * sizeof(TransactionId)
-		+ serialized_snapshot.subxcnt * sizeof(TransactionId);
 
 	/* Copy all required fields */
-	snapshot = (Snapshot) MemoryContextAlloc(TopTransactionContext, size);
+	snapshot = (Snapshot) MemoryContextAlloc(TopTransactionContext, sizeof(SnapshotData));
 	snapshot->satisfies = HeapTupleSatisfiesMVCC;
 	snapshot->xmin = serialized_snapshot.xmin;
 	snapshot->xmax = serialized_snapshot.xmax;
-	snapshot->xip = NULL;
-	snapshot->xcnt = serialized_snapshot.xcnt;
-	snapshot->subxip = NULL;
-	snapshot->subxcnt = serialized_snapshot.subxcnt;
-	snapshot->suboverflowed = serialized_snapshot.suboverflowed;
+	snapshot->snapshotcsn = serialized_snapshot.snapshotcsn;
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+	if (enable_timestamp_debug_print)
+		elog(LOG, "restore snapshot ts " UINT64_FORMAT, snapshot->snapshotcsn);
+#endif
 	snapshot->takenDuringRecovery = serialized_snapshot.takenDuringRecovery;
 	snapshot->curcid = serialized_snapshot.curcid;
 	snapshot->whenTaken = serialized_snapshot.whenTaken;
 	snapshot->lsn = serialized_snapshot.lsn;
-
-	/* Copy XIDs, if present. */
-	if (serialized_snapshot.xcnt > 0)
-	{
-		snapshot->xip = (TransactionId *) (snapshot + 1);
-		memcpy(snapshot->xip, serialized_xids,
-			   serialized_snapshot.xcnt * sizeof(TransactionId));
-	}
-
-	/* Copy SubXIDs, if present. */
-	if (serialized_snapshot.subxcnt > 0)
-	{
-		snapshot->subxip = ((TransactionId *) (snapshot + 1)) +
-			serialized_snapshot.xcnt;
-		memcpy(snapshot->subxip, serialized_xids + serialized_snapshot.xcnt,
-			   serialized_snapshot.subxcnt * sizeof(TransactionId));
-	}
-
 	/* Set the copied flag so that the caller will set refcounts correctly. */
 	snapshot->regd_count = 0;
 	snapshot->active_count = 0;

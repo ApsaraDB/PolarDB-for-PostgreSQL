@@ -79,6 +79,11 @@ CheckLogicalDecodingRequirements(void)
 {
 	CheckSlotRequirements();
 
+	/*
+	 * NB: Adding a new requirement likely means that RestoreSlotFromDisk()
+	 * needs the same check.
+	 */
+
 	if (wal_level < WAL_LEVEL_LOGICAL)
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
@@ -312,7 +317,7 @@ CreateInitDecodingContext(char *plugin,
 	ReplicationSlotSave();
 
 	ctx = StartupDecodingContext(NIL, InvalidXLogRecPtr, xmin_horizon,
-								 need_full_snapshot, true,
+								 need_full_snapshot, false,
 								 read_page, prepare_write, do_write,
 								 update_progress);
 
@@ -338,7 +343,10 @@ CreateInitDecodingContext(char *plugin,
  *		that, see below).
  *
  * output_plugin_options
- *		contains options passed to the output plugin.
+ *		options passed to the output plugin.
+ *
+ * fast_forward
+ *		bypass the generation of logical changes.
  *
  * read_page, prepare_write, do_write, update_progress
  *		callbacks that have to be filled to perform the use-case dependent,
@@ -849,12 +857,12 @@ message_cb_wrapper(ReorderBuffer *cache, ReorderBufferTXN *txn,
 }
 
 /*
- * Set the required catalog xmin horizon for historic snapshots in the current
- * replication slot.
+ * Set the oldest snapshot required for historic catalog lookups in the
+ * current replication slot.
  *
- * Note that in the most cases, we won't be able to immediately use the xmin
- * to increase the xmin horizon: we need to wait till the client has confirmed
- * receiving current_lsn with LogicalConfirmReceivedLocation().
+ * Note that in the most cases, we won't be able to immediately use the
+ * snapshot to increase the oldest snapshot, we need to wait till the client
+ * has confirmed receiving current_lsn with LogicalConfirmReceivedLocation().
  */
 void
 LogicalIncreaseXminForSlot(XLogRecPtr current_lsn, TransactionId xmin)

@@ -6,6 +6,7 @@
  * for developers.  If you edit any of these, be sure to do a *full*
  * rebuild (and an initdb if noted).
  *
+ * Portions Copyright (c) 2020, Alibaba Group Holding Limited
  * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -14,8 +15,8 @@
  */
 
 /*
- * This is default value for wal_segment_size to be used at initdb when run
- * without --walsegsize option. Must be a valid segment size.
+ * This is the default value for wal_segment_size to be used when initdb is run
+ * without the --wal-segsize option.  It must be a valid segment size.
  */
 #define DEFAULT_XLOG_SEG_SIZE	(16*1024*1024)
 
@@ -136,7 +137,9 @@
 /*
  * USE_PREFETCH code should be compiled only if we have a way to implement
  * prefetching.  (This is decoupled from USE_POSIX_FADVISE because there
- * might in future be support for alternative low-level prefetch APIs.)
+ * might in future be support for alternative low-level prefetch APIs.
+ * If you change this, you probably need to adjust the error message in
+ * check_effective_io_concurrency.)
  */
 #ifdef USE_POSIX_FADVISE
 #define USE_PREFETCH
@@ -232,6 +235,7 @@
  */
 #define PG_CACHE_LINE_SIZE		128
 
+
 /*
  *------------------------------------------------------------------------
  * The following symbols are for enabling debugging code, not for
@@ -320,3 +324,28 @@
  */
 /* #define HEAPDEBUGALL */
 /* #define ACLDEBUG */
+
+/*
+ * All code on distributed transactions should be wrapped with
+ * the following MACRO.
+ */
+#define ENABLE_DISTRIBUTED_TRANSACTION
+/*  #define ENABLE_DISTR_DEBUG */
+
+/*
+ * All code on parallel recovery logic should be wrapped with
+ * the following MACRO.
+ */
+
+#define ENABLE_PARALLEL_RECOVERY
+/*
+ * All code on remote fetching recovery is wrapped with
+ * the ENABLE_REMOTE_RECOVERY MACRO.
+ */
+#define ENABLE_REMOTE_RECOVERY
+
+/*
+ * All code on remote fetching recovery is wrapped with
+ * the ENABLE_ONLINE_MIGRATION MACRO.
+ */
+#define ENABLE_ONLINE_MIGRATION

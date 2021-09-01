@@ -6,6 +6,10 @@
  * loaded as a dynamic module to avoid linking the main server binary with
  * libpq.
  *
+ * Interfaces to support remote recovery.
+ * Author: Junbin Kang
+ *
+ * Portions Copyright (c) 2020, Alibaba Group Holding Limited
  * Portions Copyright (c) 2010-2018, PostgreSQL Global Development Group
  *
  *
@@ -32,6 +36,9 @@
 #include "utils/memutils.h"
 #include "utils/pg_lsn.h"
 #include "utils/tuplestore.h"
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+#include "utils/tqual.h"
+#endif
 
 PG_MODULE_MAGIC;
 
@@ -65,15 +72,26 @@ static bool libpqrcv_startstreaming(WalReceiverConn *conn,
 						const WalRcvStreamOptions *options);
 static void libpqrcv_endstreaming(WalReceiverConn *conn,
 					  TimeLineID *next_tli);
+#ifdef ENABLE_REMOTE_RECOVERY
+static bool libpqrcv_startfetchpage(WalReceiverConn *conn,
+						const WalRcvStreamOptions *options);
+static void libpqrcv_endfetchpage(WalReceiverConn *conn);
+static int	libpqrcv_fetchpage(WalReceiverConn *conn, char **buffer);
+
+#endif
 static int libpqrcv_receive(WalReceiverConn *conn, char **buffer,
 				 pgsocket *wait_fd);
 static void libpqrcv_send(WalReceiverConn *conn, const char *buffer,
 			  int nbytes);
-static char *libpqrcv_create_slot(WalReceiverConn *conn,
-					 const char *slotname,
-					 bool temporary,
-					 CRSSnapshotAction snapshot_action,
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+static char *libpqrcv_create_slot(WalReceiverConn *conn, const char *slotname,
+					 bool temporary, CRSSnapshotAction snapshot_action,
+					 XLogRecPtr *lsn, GlobalTimestamp * snapshot_start_ts);
+#else
+static char *libpqrcv_create_slot(WalReceiverConn *conn, const char *slotname,
+					 bool temporary, CRSSnapshotAction snapshot_action,
 					 XLogRecPtr *lsn);
+#endif
 static WalRcvExecResult *libpqrcv_exec(WalReceiverConn *conn,
 			  const char *query,
 			  const int nRetTypes,
@@ -89,6 +107,11 @@ static WalReceiverFunctionsType PQWalReceiverFunctions = {
 	libpqrcv_readtimelinehistoryfile,
 	libpqrcv_startstreaming,
 	libpqrcv_endstreaming,
+#ifdef ENABLE_REMOTE_RECOVERY
+	libpqrcv_startfetchpage,
+	libpqrcv_endfetchpage,
+	libpqrcv_fetchpage,
+#endif
 	libpqrcv_receive,
 	libpqrcv_send,
 	libpqrcv_create_slot,
@@ -422,8 +445,15 @@ libpqrcv_startstreaming(WalReceiverConn *conn,
 		appendStringInfoChar(&cmd, ')');
 	}
 	else
+	{
 		appendStringInfo(&cmd, " TIMELINE %u",
 						 options->proto.physical.startpointTLI);
+
+		appendStringInfo(&cmd, " POLAR_REPL_MODE \"%s\"",
+						 polar_replication_mode_str(options->polar_repl_mode));
+	}
+
+	elog(LOG, "start_replication cmd: %s", cmd.data);
 
 	/* Start streaming. */
 	res = libpqrcv_PQexec(conn->streamConn, cmd.data);
@@ -445,6 +475,97 @@ libpqrcv_startstreaming(WalReceiverConn *conn,
 	return true;
 }
 
+#ifdef ENABLE_REMOTE_RECOVERY
+static bool
+libpqrcv_startfetchpage(WalReceiverConn *conn,
+						const WalRcvStreamOptions *options)
+{
+	StringInfoData cmd;
+	PGresult   *res;
+
+	initStringInfo(&cmd);
+
+	/* Build the command. */
+	appendStringInfoString(&cmd, "START_REPLICATION FETCH_PAGE");
+
+	/* Checkpoint position */
+	appendStringInfo(&cmd, " %X/%X",
+					 (uint32) (options->startpoint >> 32),
+					 (uint32) options->startpoint);
+
+	/* time line */
+	appendStringInfo(&cmd, " TIMELINE %u",
+					 options->proto.physical.startpointTLI);
+
+	/* Start streaming. */
+	res = libpqrcv_PQexec(conn->streamConn, cmd.data);
+	pfree(cmd.data);
+
+	if (PQresultStatus(res) == PGRES_COMMAND_OK)
+	{
+		PQclear(res);
+		return false;
+	}
+	else if (PQresultStatus(res) != PGRES_COPY_BOTH)
+	{
+		PQclear(res);
+		ereport(ERROR,
+				(errmsg("could not start fetching page: %s",
+						pchomp(PQerrorMessage(conn->streamConn)))));
+	}
+	PQclear(res);
+	return true;
+}
+
+static void
+libpqrcv_endfetchpage(WalReceiverConn *conn)
+{
+	PGresult   *res;
+
+	if (PQputCopyEnd(conn->streamConn, NULL) <= 0 ||
+		PQflush(conn->streamConn))
+		ereport(ERROR,
+				(errmsg("could not send end-of-streaming message to primary: %s",
+						pchomp(PQerrorMessage(conn->streamConn)))));
+
+	/*
+	 * After COPY is finished, we should receive a result set indicating the
+	 * next timeline's ID, or just CommandComplete if the server was shut
+	 * down.
+	 *
+	 * If we had not yet received CopyDone from the backend, PGRES_COPY_OUT is
+	 * also possible in case we aborted the copy in mid-stream.
+	 */
+	res = PQgetResult(conn->streamConn);
+	if (PQresultStatus(res) == PGRES_COPY_OUT)
+	{
+		PQclear(res);
+		elog(LOG, "REMOTE RECOVERY end copy");
+		/* End the copy */
+		if (PQendcopy(conn->streamConn))
+			ereport(ERROR,
+					(errmsg("error while shutting down streaming COPY res %d : %s",
+							PQresultStatus(res), pchomp(PQerrorMessage(conn->streamConn)))));
+
+		/* CommandComplete should follow */
+		res = PQgetResult(conn->streamConn);
+	}
+
+	if (PQresultStatus(res) != PGRES_COMMAND_OK)
+		ereport(ERROR,
+				(errmsg("error reading result of streaming command res %d  %s",
+						PQresultStatus(res), pchomp(PQerrorMessage(conn->streamConn)))));
+	PQclear(res);
+
+	/* Verify that there are no more results */
+	res = PQgetResult(conn->streamConn);
+	if (res != NULL)
+		ereport(ERROR,
+				(errmsg("unexpected result after CommandComplete: %s",
+						pchomp(PQerrorMessage(conn->streamConn)))));
+}
+
+#endif
 /*
  * Stop streaming WAL data. Returns the next timeline's ID in *next_tli, as
  * reported by the server, or 0 if it did not report it.
@@ -767,6 +888,75 @@ libpqrcv_receive(WalReceiverConn *conn, char **buffer,
 	return rawlen;
 }
 
+#ifdef ENABLE_REMOTE_RECOVERY
+
+static int
+libpqrcv_fetchpage(WalReceiverConn *conn, char **buffer)
+{
+	int			rawlen;
+
+	if (conn->recvBuf != NULL)
+		PQfreemem(conn->recvBuf);
+	conn->recvBuf = NULL;
+
+	/* Try to receive a CopyData message */
+	rawlen = PQgetCopyData(conn->streamConn, &conn->recvBuf, 0);
+
+	if (rawlen == -1)			/* end-of-streaming or error */
+	{
+		PGresult   *res;
+
+		res = PQgetResult(conn->streamConn);
+		if (PQresultStatus(res) == PGRES_COMMAND_OK)
+		{
+			PQclear(res);
+
+			/* Verify that there are no more results. */
+			res = PQgetResult(conn->streamConn);
+			if (res != NULL)
+			{
+				PQclear(res);
+
+				/*
+				 * If the other side closed the connection orderly (otherwise
+				 * we'd seen an error, or PGRES_COPY_IN) don't report an error
+				 * here, but let callers deal with it.
+				 */
+				if (PQstatus(conn->streamConn) == CONNECTION_BAD)
+					return -1;
+
+				ereport(ERROR,
+						(errmsg("unexpected result after CommandComplete: %s",
+								PQerrorMessage(conn->streamConn))));
+			}
+
+			return -1;
+		}
+		else if (PQresultStatus(res) == PGRES_COPY_IN)
+		{
+			PQclear(res);
+			return -1;
+		}
+		else
+		{
+			PQclear(res);
+			ereport(ERROR,
+					(errmsg("could not receive data from WAL stream: %s",
+							pchomp(PQerrorMessage(conn->streamConn)))));
+		}
+	}
+	if (rawlen < -1)
+		ereport(ERROR,
+				(errmsg("could not receive data from WAL stream: %s",
+						pchomp(PQerrorMessage(conn->streamConn)))));
+
+	/* Return received messages to caller */
+	*buffer = conn->recvBuf;
+	return rawlen;
+}
+
+#endif
+
 /*
  * Send a message to XLOG stream.
  *
@@ -787,10 +977,17 @@ libpqrcv_send(WalReceiverConn *conn, const char *buffer, int nbytes)
  * Returns the name of the exported snapshot for logical slot or NULL for
  * physical slot.
  */
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+static char *
+libpqrcv_create_slot(WalReceiverConn *conn, const char *slotname,
+					 bool temporary, CRSSnapshotAction snapshot_action,
+					 XLogRecPtr *lsn, GlobalTimestamp * snapshot_start_ts)
+#else
 static char *
 libpqrcv_create_slot(WalReceiverConn *conn, const char *slotname,
 					 bool temporary, CRSSnapshotAction snapshot_action,
 					 XLogRecPtr *lsn)
+#endif
 {
 	PGresult   *res;
 	StringInfoData cmd;
@@ -837,6 +1034,19 @@ libpqrcv_create_slot(WalReceiverConn *conn, const char *slotname,
 		snapshot = pstrdup(PQgetvalue(res, 0, 2));
 	else
 		snapshot = NULL;
+
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+	if (snapshot_start_ts)
+	{
+		if (!PQgetisnull(res, 0, 4))
+			*snapshot_start_ts = atol(PQgetvalue(res, 0, 4));
+		else
+			*snapshot_start_ts = InvalidGlobalTimestamp;
+
+		if (enable_distri_print)
+			elog(LOG, "logical replication received snapshot start ts " UINT64_FORMAT, *snapshot_start_ts);
+	}
+#endif
 
 	PQclear(res);
 

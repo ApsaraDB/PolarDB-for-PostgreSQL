@@ -63,6 +63,7 @@
 
 #include "access/hash.h"
 #include "catalog/pg_authid.h"
+#include "catalog/namespace.h"
 #include "executor/instrument.h"
 #include "funcapi.h"
 #include "mb/pg_wchar.h"
@@ -1049,10 +1050,37 @@ pgss_ProcessUtility(PlannedStmt *pstmt, const char *queryString,
 		INSTR_TIME_SUBTRACT(bufusage.blk_read_time, bufusage_start.blk_read_time);
 		bufusage.blk_write_time = pgBufferUsage.blk_write_time;
 		INSTR_TIME_SUBTRACT(bufusage.blk_write_time, bufusage_start.blk_write_time);
+		
+		/* 2PC statement is specical, which has constants, so we need to normalize them.
+		   2PC prepare: PREPARE TRANSACTION 'xxxxxx'
+		   2PC commit:  COMMIT PREPARED 'xxxxxxx' WITH TIMESTAMP 'yyyyyyyy'
+		 */
+		const char *sourceString = queryString;
+		int queryId = 0;
+		int stmt_location = pstmt->stmt_location;
+		if (IsA(parsetree, TransactionStmt))
+		{
+			sourceString = CreateCommandTag(parsetree);
+			queryId = pgss_hash_string(sourceString, strlen(sourceString));
+			stmt_location = -1;
+		}
+		
+		/* CALL statement should be processed according to the statement name */
+		if (IsA(parsetree, CallStmt))
+		{
+			CallStmt *call = castNode(CallStmt, parsetree);
+			StringInfo str = makeStringInfo();
 
-		pgss_store(queryString,
-				   0,			/* signal that it's a utility stmt */
-				   pstmt->stmt_location,
+			appendStringInfo(str, "CALL %s", NameListToString(call->funccall->funcname));
+			sourceString = str->data;
+			queryId = pgss_hash_string(sourceString, strlen(sourceString));
+			stmt_location = -1;
+		}
+		
+
+		pgss_store(sourceString,
+				   queryId,			/* signal that it's a utility stmt */
+				   stmt_location,
 				   pstmt->stmt_len,
 				   INSTR_TIME_GET_MILLISEC(duration),
 				   rows,

@@ -4,6 +4,7 @@
  *	  postgres transaction system definitions
  *
  *
+ * Portions Copyright (c) 2020, Alibaba Group Holding Limited
  * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -61,6 +62,13 @@ extern bool XactReadOnly;
 extern bool DefaultXactDeferrable;
 extern bool XactDeferrable;
 
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+extern bool IsConnFromCoordinator;
+extern bool IsCoordinatorNode;
+extern int	delay_before_set_prepare_ts;
+extern int	delay_after_set_prepare_ts;
+#endif
+
 typedef enum
 {
 	SYNCHRONOUS_COMMIT_OFF,		/* asynchronous commit */
@@ -98,6 +106,11 @@ extern int	MyXactFlags;
  */
 #define XACT_FLAGS_ACQUIREDACCESSEXCLUSIVELOCK	(1U << 1)
 
+/*
+ * XACT_FLAGS_ACCESSEDTEMPNAMESPACE - set when a temporary namespace is
+ * accessed.  We don't allow PREPARE TRANSACTION in that case.
+ */
+#define XACT_FLAGS_ACCESSEDTEMPNAMESPACE		(1U << 2)
 
 /*
  *	start- and end-of-transaction callbacks for dynamically loaded modules
@@ -142,7 +155,7 @@ typedef void (*SubXactCallback) (SubXactEvent event, SubTransactionId mySubid,
 #define XLOG_XACT_ABORT				0x20
 #define XLOG_XACT_COMMIT_PREPARED	0x30
 #define XLOG_XACT_ABORT_PREPARED	0x40
-#define XLOG_XACT_ASSIGNMENT		0x50
+/* free opcode 0x50 */
 /* free opcode 0x60 */
 /* free opcode 0x70 */
 
@@ -262,6 +275,9 @@ typedef struct xl_xact_origin
 typedef struct xl_xact_commit
 {
 	TimestampTz xact_time;		/* time of commit */
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+	CommitSeqNo csn;			/* commit seq number */
+#endif
 
 	/* xl_xact_xinfo follows if XLOG_XACT_HAS_INFO */
 	/* xl_xact_dbinfo follows if XINFO_HAS_DBINFO */
@@ -272,7 +288,7 @@ typedef struct xl_xact_commit
 	/* twophase_gid follows if XINFO_HAS_GID. As a null-terminated string. */
 	/* xl_xact_origin follows if XINFO_HAS_ORIGIN, stored unaligned! */
 } xl_xact_commit;
-#define MinSizeOfXactCommit (offsetof(xl_xact_commit, xact_time) + sizeof(TimestampTz))
+#define MinSizeOfXactCommit (offsetof(xl_xact_commit, csn) + sizeof(CommitSeqNo))
 
 typedef struct xl_xact_abort
 {
@@ -297,6 +313,9 @@ typedef struct xl_xact_abort
 typedef struct xl_xact_parsed_commit
 {
 	TimestampTz xact_time;
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+	CommitSeqNo csn;
+#endif
 	uint32		xinfo;
 
 	Oid			dbId;			/* MyDatabaseId */
@@ -356,9 +375,9 @@ extern TransactionId GetCurrentTransactionId(void);
 extern TransactionId GetCurrentTransactionIdIfAny(void);
 extern TransactionId GetStableLatestTransactionId(void);
 extern SubTransactionId GetCurrentSubTransactionId(void);
-extern void MarkCurrentTransactionIdLoggedIfAny(void);
 extern bool SubTransactionIsActive(SubTransactionId subxid);
 extern CommandId GetCurrentCommandId(bool used);
+extern void SetParallelStartTimestamps(TimestampTz xact_ts, TimestampTz stmt_ts);
 extern TimestampTz GetCurrentTransactionStartTimestamp(void);
 extern TimestampTz GetCurrentStatementStartTimestamp(void);
 extern TimestampTz GetCurrentTransactionStopTimestamp(void);
@@ -402,7 +421,8 @@ extern void UnregisterSubXactCallback(SubXactCallback callback, void *arg);
 
 extern int	xactGetCommittedChildren(TransactionId **ptr);
 
-extern XLogRecPtr XactLogCommitRecord(TimestampTz commit_time,
+extern XLogRecPtr XactLogCommitRecord(CommitSeqNo csn,
+					TimestampTz commit_time,
 					int nsubxacts, TransactionId *subxacts,
 					int nrels, RelFileNode *rels,
 					int nmsgs, SharedInvalidationMessage *msgs,

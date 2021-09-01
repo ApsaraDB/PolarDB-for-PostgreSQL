@@ -55,6 +55,8 @@ clean distclean maintainer-clean:
 
 check:
 	$(prove_check)
+checkdma:
+	$(prove_checkdma)
 
 installcheck:
 	$(prove_installcheck)

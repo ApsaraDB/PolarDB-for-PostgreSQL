@@ -29,6 +29,7 @@
 
 #include "postgres.h"
 
+#include "miscadmin.h"
 #include "nodes/extensible.h"
 #include "nodes/relation.h"
 #include "utils/datum.h"
@@ -1506,6 +1507,7 @@ _equalTransactionStmt(const TransactionStmt *a, const TransactionStmt *b)
 	COMPARE_NODE_FIELD(options);
 	COMPARE_STRING_FIELD(savepoint_name);
 	COMPARE_STRING_FIELD(gid);
+	COMPARE_STRING_FIELD(commit_ts);
 
 	return true;
 }
@@ -1723,10 +1725,30 @@ _equalReplicaIdentityStmt(const ReplicaIdentityStmt *a, const ReplicaIdentityStm
 	return true;
 }
 
+/*
+ * POLAR: DMA Command Statement 
+ */
+static bool
+_equalPolarDMACommandStmt(const PolarDMACommandStmt *a, const PolarDMACommandStmt *b)
+{
+	COMPARE_SCALAR_FIELD(kind);
+	COMPARE_STRING_FIELD(node);
+	COMPARE_SCALAR_FIELD(weight);
+	COMPARE_SCALAR_FIELD(matchindex);
+	COMPARE_SCALAR_FIELD(purgeindex);
+	COMPARE_SCALAR_FIELD(clusterid);
+
+	return true;
+}
+/* POLAR end */
+
 static bool
 _equalAlterSystemStmt(const AlterSystemStmt *a, const AlterSystemStmt *b)
 {
 	COMPARE_NODE_FIELD(setstmt);
+	/* POLAR: DMA Command Statement */
+	COMPARE_NODE_FIELD(dma_stmt);
+	/* POLAR end */
 
 	return true;
 }
@@ -2553,7 +2575,6 @@ _equalColumnDef(const ColumnDef *a, const ColumnDef *b)
 	COMPARE_SCALAR_FIELD(is_local);
 	COMPARE_SCALAR_FIELD(is_not_null);
 	COMPARE_SCALAR_FIELD(is_from_type);
-	COMPARE_SCALAR_FIELD(is_from_parent);
 	COMPARE_SCALAR_FIELD(storage);
 	COMPARE_NODE_FIELD(raw_default);
 	COMPARE_NODE_FIELD(cooked_default);
@@ -3002,6 +3023,9 @@ equal(const void *a, const void *b)
 	if (nodeTag(a) != nodeTag(b))
 		return false;
 
+	/* Guard against stack overflow due to overly complex expressions */
+	check_stack_depth();
+
 	switch (nodeTag(a))
 	{
 			/*
@@ -3398,6 +3422,9 @@ equal(const void *a, const void *b)
 			break;
 		case T_ReplicaIdentityStmt:
 			retval = _equalReplicaIdentityStmt(a, b);
+			break;
+		case T_PolarDMACommandStmt:
+			retval = _equalPolarDMACommandStmt(a, b);
 			break;
 		case T_AlterSystemStmt:
 			retval = _equalAlterSystemStmt(a, b);

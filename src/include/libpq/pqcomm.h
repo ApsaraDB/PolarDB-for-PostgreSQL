@@ -108,7 +108,7 @@ typedef struct
 /* The earliest and latest frontend/backend protocol version supported. */
 
 #define PG_PROTOCOL_EARLIEST	PG_PROTOCOL(2,0)
-#define PG_PROTOCOL_LATEST		PG_PROTOCOL(3,0)
+#define PG_PROTOCOL_LATEST		PG_PROTOCOL(3,1)
 
 typedef uint32 ProtocolVersion; /* FE/BE protocol version number */
 

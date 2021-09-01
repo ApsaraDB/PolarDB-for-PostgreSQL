@@ -1942,35 +1942,13 @@ asyncQueueProcessPageEntries(volatile QueuePosition *current,
 		/* Ignore messages destined for other databases */
 		if (qe->dboid == MyDatabaseId)
 		{
-			if (XidInMVCCSnapshot(qe->xid, snapshot))
-			{
-				/*
-				 * The source transaction is still in progress, so we can't
-				 * process this message yet.  Break out of the loop, but first
-				 * back up *current so we will reprocess the message next
-				 * time.  (Note: it is unlikely but not impossible for
-				 * TransactionIdDidCommit to fail, so we can't really avoid
-				 * this advance-then-back-up behavior when dealing with an
-				 * uncommitted message.)
-				 *
-				 * Note that we must test XidInMVCCSnapshot before we test
-				 * TransactionIdDidCommit, else we might return a message from
-				 * a transaction that is not yet visible to snapshots; compare
-				 * the comments at the head of tqual.c.
-				 *
-				 * Also, while our own xact won't be listed in the snapshot,
-				 * we need not check for TransactionIdIsCurrentTransactionId
-				 * because our transaction cannot (yet) have queued any
-				 * messages.
-				 */
-				*current = thisentry;
-				reachedStop = true;
-				break;
-			}
-			else if (TransactionIdDidCommit(qe->xid))
+			TransactionIdStatus status;
+			if (XidVisibleInSnapshot(qe->xid, snapshot, &status))
 			{
 				/* qe->data is the null-terminated channel name */
 				char	   *channel = qe->data;
+
+				Assert(status == XID_COMMITTED);
 
 				if (IsListeningOn(channel))
 				{
@@ -1980,8 +1958,29 @@ asyncQueueProcessPageEntries(volatile QueuePosition *current,
 					NotifyMyFrontEnd(channel, payload, qe->srcPid);
 				}
 			}
+			else if (status == XID_INPROGRESS || status == XID_COMMITTED)
+			{
+				/*
+				 * The source transaction is still in progress accroding to our
+				 * snapshot, so we can't process this message yet. Break out
+				 * of the loop, but first back up *current so we will reprocess
+				 * the message next time.  (Note: it is unlikely but not impossible
+				 * for TransactionIdDidCommit to fail, so we can't really avoid
+				 * this advance-then-back-up behavior when dealing with an
+				 * uncommitted message.)
+				 *
+				 * Note that while our own xact won't be listed in the snapshot,
+				 * we need not check for TransactionIdIsCurrentTransactionId
+				 * because our transaction cannot (yet) have queued any
+				 * messages.
+				 */
+				*current = thisentry;
+				reachedStop = true;
+				break;
+			}
 			else
 			{
+				Assert(status == XID_ABORTED);
 				/*
 				 * The source transaction aborted or crashed, so we just
 				 * ignore its notifications.

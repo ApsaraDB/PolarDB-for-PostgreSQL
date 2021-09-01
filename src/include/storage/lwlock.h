@@ -110,14 +110,14 @@ extern PGDLLIMPORT int NamedLWLockTrancheRequests;
  */
 
 /* Number of partitions of the shared buffer mapping hashtable */
-#define NUM_BUFFER_PARTITIONS  128
+#define NUM_BUFFER_PARTITIONS  512
 
 /* Number of partitions the shared lock tables are divided into */
-#define LOG2_NUM_LOCK_PARTITIONS  4
+#define LOG2_NUM_LOCK_PARTITIONS  10
 #define NUM_LOCK_PARTITIONS  (1 << LOG2_NUM_LOCK_PARTITIONS)
 
 /* Number of partitions the shared predicate lock tables are divided into */
-#define LOG2_NUM_PREDICATELOCK_PARTITIONS  4
+#define LOG2_NUM_PREDICATELOCK_PARTITIONS  10
 #define NUM_PREDICATELOCK_PARTITIONS  (1 << LOG2_NUM_PREDICATELOCK_PARTITIONS)
 
 /* Offsets for various chunks of preallocated lwlocks. */
@@ -197,7 +197,8 @@ typedef enum BuiltinTrancheIds
 {
 	LWTRANCHE_CLOG_BUFFERS = NUM_INDIVIDUAL_LWLOCKS,
 	LWTRANCHE_COMMITTS_BUFFERS,
-	LWTRANCHE_SUBTRANS_BUFFERS,
+	LWTRANCHE_CSNLOG_BUFFERS,
+	LWTRANCHE_CTSLOG_BUFFERS,
 	LWTRANCHE_MXACTOFFSET_BUFFERS,
 	LWTRANCHE_MXACTMEMBER_BUFFERS,
 	LWTRANCHE_ASYNC_BUFFERS,

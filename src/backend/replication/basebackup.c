@@ -56,7 +56,7 @@ typedef struct
 
 
 static int64 sendDir(const char *path, int basepathlen, bool sizeonly,
-		List *tablespaces, bool sendtblspclinks);
+		List *tablespaces, bool sendtblspclinks, bool senddmafiles);
 static bool sendFile(const char *readfilename, const char *tarfilename,
 		 struct stat *statbuf, bool missing_ok);
 static void sendFileWithContent(const char *filename, const char *content);
@@ -189,12 +189,19 @@ static const char *excludeFiles[] =
 
 /*
  * List of files excluded from checksum validation.
+ *
+ * Note: this list should be kept in sync with what pg_verify_checksums.c
+ * includes.
  */
 static const char *noChecksumFiles[] = {
 	"pg_control",
 	"pg_filenode.map",
 	"pg_internal.init",
 	"PG_VERSION",
+#ifdef EXEC_BACKEND
+	"config_exec_params",
+	"config_exec_params.new",
+#endif
 	NULL,
 };
 
@@ -268,7 +275,7 @@ perform_base_backup(basebackup_options *opt)
 
 		/* Add a node for the base directory at the end */
 		ti = palloc0(sizeof(tablespaceinfo));
-		ti->size = opt->progress ? sendDir(".", 1, true, tablespaces, true) : -1;
+		ti->size = opt->progress ? sendDir(".", 1, true, tablespaces, true, true) : -1;
 		tablespaces = lappend(tablespaces, ti);
 
 		/* Send tablespace header */
@@ -324,10 +331,10 @@ perform_base_backup(basebackup_options *opt)
 				if (tblspc_map_file && opt->sendtblspcmapfile)
 				{
 					sendFileWithContent(TABLESPACE_MAP, tblspc_map_file->data);
-					sendDir(".", 1, false, tablespaces, false);
+					sendDir(".", 1, false, tablespaces, false, false);
 				}
 				else
-					sendDir(".", 1, false, tablespaces, true);
+					sendDir(".", 1, false, tablespaces, true, false);
 
 				/* ... and pg_control after everything else. */
 				if (lstat(XLOG_CONTROL_FILE, &statbuf) != 0)
@@ -336,6 +343,20 @@ perform_base_backup(basebackup_options *opt)
 							 errmsg("could not stat control file \"%s\": %m",
 									XLOG_CONTROL_FILE)));
 				sendFile(XLOG_CONTROL_FILE, XLOG_CONTROL_FILE, &statbuf, false);
+
+				/* POLAR: backup polar_dma after pg_control */
+				if (polar_enable_dma)
+				{
+					if (lstat("polar_dma/consensus_meta", &statbuf) != 0)
+						ereport(ERROR,
+								(errcode_for_file_access(),
+								 errmsg("could not stat control file \"%s\": %m",
+										"polar_dma/consensus_meta")));
+					sendFile("polar_dma/consensus_meta", "polar_dma/consensus_meta", &statbuf, false);
+					sendDir("./polar_dma/consensus_log", 1, false, NIL, false, true);
+					sendDir("./polar_dma/consensus_cc_log", 1, false, NIL, false, true);
+				}
+				/* POLAR end */
 			}
 			else
 				sendTablespace(ti->path, false);
@@ -992,7 +1013,7 @@ sendTablespace(char *path, bool sizeonly)
 						   sizeonly);
 
 	/* Send all the files in the tablespace version directory */
-	size += sendDir(pathbuf, strlen(path), sizeonly, NIL, true);
+	size += sendDir(pathbuf, strlen(path), sizeonly, NIL, true, false);
 
 	return size;
 }
@@ -1011,7 +1032,7 @@ sendTablespace(char *path, bool sizeonly)
  */
 static int64
 sendDir(const char *path, int basepathlen, bool sizeonly, List *tablespaces,
-		bool sendtblspclinks)
+		bool sendtblspclinks, bool senddmafiles)
 {
 	DIR		   *dir;
 	struct dirent *de;
@@ -1205,6 +1226,18 @@ sendDir(const char *path, int basepathlen, bool sizeonly, List *tablespaces,
 			continue;			/* don't recurse into pg_wal */
 		}
 
+		/* Skip polar_dma meta file if not required */
+		if (strcmp(pathbuf, "./polar_dma/consensus_meta") == 0 && !senddmafiles)
+			continue;
+
+		/* Skip polar_dma log files if not required */
+		if (strncmp(pathbuf, "./polar_dma/consensus", strlen("./polar_dma/consensus")) == 0 && !senddmafiles)
+		{
+			/* don't recurse into polar_dma/consensus_log & consensus_cc_log */
+			size += _tarWriteDir(pathbuf, basepathlen, &statbuf, sizeonly);
+			continue;
+		}
+
 		/* Allow symbolic links in pg_tblspc only */
 		if (strcmp(path, "./pg_tblspc") == 0 &&
 #ifndef WIN32
@@ -1287,7 +1320,7 @@ sendDir(const char *path, int basepathlen, bool sizeonly, List *tablespaces,
 				skip_this_dir = true;
 
 			if (!skip_this_dir)
-				size += sendDir(pathbuf, basepathlen, sizeonly, tablespaces, sendtblspclinks);
+				size += sendDir(pathbuf, basepathlen, sizeonly, tablespaces, sendtblspclinks, senddmafiles);
 		}
 		else if (S_ISREG(statbuf.st_mode))
 		{

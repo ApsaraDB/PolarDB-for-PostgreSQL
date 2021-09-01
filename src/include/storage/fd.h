@@ -51,6 +51,7 @@ typedef int File;
 
 /* GUC parameter */
 extern PGDLLIMPORT int max_files_per_process;
+extern PGDLLIMPORT bool data_sync_retry;
 
 /*
  * This is private to fd.c, but exported for save/restore_backend_variables()
@@ -72,6 +73,7 @@ extern int	FileRead(File file, char *buffer, int amount, uint32 wait_event_info)
 extern int	FileWrite(File file, char *buffer, int amount, uint32 wait_event_info);
 extern int	FileSync(File file, uint32 wait_event_info);
 extern off_t FileSeek(File file, off_t offset, int whence);
+extern void FileExtendLocked(File file, int newSize, uint32 wait_event_info, bool logLocks);
 extern int	FileTruncate(File file, off_t offset, uint32 wait_event_info);
 extern void FileWriteback(File file, off_t offset, off_t nbytes, uint32 wait_event_info);
 extern char *FilePathName(File file);
@@ -138,6 +140,7 @@ extern int	durable_rename(const char *oldfile, const char *newfile, int loglevel
 extern int	durable_unlink(const char *fname, int loglevel);
 extern int	durable_link_or_rename(const char *oldfile, const char *newfile, int loglevel);
 extern void SyncDataDirectory(void);
+extern int data_sync_elevel(int elevel);
 
 /* Filename components */
 #define PG_TEMP_FILES_DIR "pgsql_tmp"

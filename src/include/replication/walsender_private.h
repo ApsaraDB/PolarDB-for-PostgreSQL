@@ -14,6 +14,7 @@
 
 #include "access/xlog.h"
 #include "nodes/nodes.h"
+#include "port/atomics.h"
 #include "replication/syncrep.h"
 #include "storage/latch.h"
 #include "storage/shmem.h"
@@ -100,6 +101,13 @@ typedef struct
 	 * Protected by SyncRepLock.
 	 */
 	bool		sync_standbys_defined;
+
+	/*
+	 * check sender is running or not, if sender not start or close by connect issus.
+	 * set it to false. and use for max available falg.
+	 */
+	bool		sender_running;
+
 
 	WalSnd		walsnds[FLEXIBLE_ARRAY_MEMBER];
 } WalSndCtlData;

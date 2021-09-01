@@ -5,6 +5,7 @@
  *	  commands.  At one time acted as an interface between the Lisp and C
  *	  systems.
  *
+ * Portions Copyright (c) 2020, Alibaba Group Holding Limited
  * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -71,6 +72,14 @@
 #include "utils/syscache.h"
 #include "utils/rel.h"
 
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+#include "distributed_txn/txn_timestamp.h"
+#endif							/* ENABLE_DISTRIBUTED_TRANSACTION */
+
+
+/* POLAR */
+#include "storage/proc.h"
+#include "polar_dma/polar_dma.h"
 
 /* Hook for plugins to get control in ProcessUtility() */
 ProcessUtility_hook_type ProcessUtility_hook = NULL;
@@ -387,6 +396,9 @@ standard_ProcessUtility(PlannedStmt *pstmt,
 	bool		isAtomicContext = (!(context == PROCESS_UTILITY_TOPLEVEL || context == PROCESS_UTILITY_QUERY_NONATOMIC) || IsTransactionBlock());
 	ParseState *pstate;
 
+	/* This can recurse, so check for excessive recursion */
+	check_stack_depth();
+
 	check_xact_readonly(parsetree);
 
 	if (completionTag)
@@ -458,6 +470,10 @@ standard_ProcessUtility(PlannedStmt *pstmt,
 					case TRANS_STMT_COMMIT_PREPARED:
 						PreventInTransactionBlock(isTopLevel, "COMMIT PREPARED");
 						PreventCommandDuringRecovery("COMMIT PREPARED");
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+						if (stmt->commit_ts)
+							TxnSetCoordinatedCommitTsFromStr(stmt->commit_ts);
+#endif							/* ENABLE_DISTRIBUTED_TRANSACTION */
 						FinishPreparedTransaction(stmt->gid, true);
 						break;
 
@@ -626,7 +642,7 @@ standard_ProcessUtility(PlannedStmt *pstmt,
 			{
 				UnlistenStmt *stmt = (UnlistenStmt *) parsetree;
 
-				PreventCommandDuringRecovery("UNLISTEN");
+				/* we allow UNLISTEN during recovery, as it's a noop */
 				CheckRestrictedOperation("UNLISTEN");
 				if (stmt->conditionname)
 					Async_Unlisten(stmt->conditionname);
@@ -675,7 +691,15 @@ standard_ProcessUtility(PlannedStmt *pstmt,
 
 		case T_AlterSystemStmt:
 			PreventInTransactionBlock(isTopLevel, "ALTER SYSTEM");
-			AlterSystemSetConfigFile((AlterSystemStmt *) parsetree);
+			if (((AlterSystemStmt *) parsetree)->setstmt != NULL)
+			{
+				AlterSystemSetConfigFile((AlterSystemStmt *) parsetree);
+			}
+			else if (polar_enable_dma)
+			{
+				Assert(((AlterSystemStmt *) parsetree)->dma_stmt != NULL);
+				PolarDMAUtility(((AlterSystemStmt *) parsetree)->dma_stmt);
+			}
 			break;
 
 		case T_VariableSetStmt:
@@ -1744,6 +1768,12 @@ UtilityReturnsTuples(Node *parsetree)
 {
 	switch (nodeTag(parsetree))
 	{
+		case T_CallStmt:
+			{
+				CallStmt   *stmt = (CallStmt *) parsetree;
+
+				return (stmt->funcexpr->funcresulttype == RECORDOID);
+			}
 		case T_FetchStmt:
 			{
 				FetchStmt  *stmt = (FetchStmt *) parsetree;
@@ -1794,6 +1824,9 @@ UtilityTupleDescriptor(Node *parsetree)
 {
 	switch (nodeTag(parsetree))
 	{
+		case T_CallStmt:
+			return CallStmtResultDesc((CallStmt *) parsetree);
+
 		case T_FetchStmt:
 			{
 				FetchStmt  *stmt = (FetchStmt *) parsetree;

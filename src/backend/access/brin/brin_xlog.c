@@ -2,6 +2,7 @@
  * brin_xlog.c
  *		XLog replay routines for BRIN indexes
  *
+ * Portions Copyright (c) 2020, Alibaba Group Holding Limited
  * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -12,6 +13,7 @@
 
 #include "access/brin_page.h"
 #include "access/brin_pageops.h"
+#include "access/xlog.h"
 #include "access/brin_xlog.h"
 #include "access/bufmask.h"
 #include "access/xlogutils.h"
@@ -30,6 +32,13 @@ brin_xlog_createidx(XLogReaderState *record)
 
 	/* create the index' metapage */
 	buf = XLogInitBufferForRedo(record, 0);
+#ifdef ENABLE_PARALLEL_RECOVERY
+	if (!BufferIsValid(buf))
+	{
+		Assert(enable_parallel_recovery_bypage);
+		return;
+	}
+#endif							/* ENABLE_PARALLEL_RECOVERY */
 	Assert(BufferIsValid(buf));
 	page = (Page) BufferGetPage(buf);
 	brin_metapage_init(page, xlrec->pagesPerRange, xlrec->version);
@@ -47,7 +56,7 @@ brin_xlog_insert_update(XLogReaderState *record,
 						xl_brin_insert *xlrec)
 {
 	XLogRecPtr	lsn = record->EndRecPtr;
-	Buffer		buffer;
+	Buffer		buffer = InvalidBuffer;
 	BlockNumber regpgno;
 	Page		page;
 	XLogRedoAction action;
@@ -59,9 +68,20 @@ brin_xlog_insert_update(XLogReaderState *record,
 	if (XLogRecGetInfo(record) & XLOG_BRIN_INIT_PAGE)
 	{
 		buffer = XLogInitBufferForRedo(record, 0);
-		page = BufferGetPage(buffer);
-		brin_page_init(page, BRIN_PAGETYPE_REGULAR);
-		action = BLK_NEEDS_REDO;
+#ifdef ENABLE_PARALLEL_RECOVERY
+		if (!BufferIsValid(buffer))
+		{
+			Assert(enable_parallel_recovery_bypage);
+			page = NULL;
+			action = BLK_DONE;
+		}
+		else
+#endif							/* ENABLE_PARALLEL_RECOVERY */
+		{
+			page = BufferGetPage(buffer);
+			brin_page_init(page, BRIN_PAGETYPE_REGULAR);
+			action = BLK_NEEDS_REDO;
+		}
 	}
 	else
 	{
@@ -69,7 +89,7 @@ brin_xlog_insert_update(XLogReaderState *record,
 	}
 
 	/* need this page's blkno to store in revmap */
-	regpgno = BufferGetBlockNumber(buffer);
+	XLogRecGetBlockTag(record, 0, NULL, NULL, &regpgno);
 
 	/* insert the index item into the page */
 	if (action == BLK_NEEDS_REDO)
@@ -254,13 +274,22 @@ brin_xlog_revmap_extend(XLogReaderState *record)
 	 */
 
 	buf = XLogInitBufferForRedo(record, 1);
-	page = (Page) BufferGetPage(buf);
-	brin_page_init(page, BRIN_PAGETYPE_REVMAP);
+#ifdef ENABLE_PARALLEL_RECOVERY
+	if (!BufferIsValid(buf))
+	{
+		Assert(enable_parallel_recovery_bypage);
+	}
+	else
+#endif							/* ENABLE_PARALLEL_RECOVERY */
+	{
+		page = (Page) BufferGetPage(buf);
+		brin_page_init(page, BRIN_PAGETYPE_REVMAP);
 
-	PageSetLSN(page, lsn);
-	MarkBufferDirty(buf);
+		PageSetLSN(page, lsn);
+		MarkBufferDirty(buf);
+		UnlockReleaseBuffer(buf);
+	}
 
-	UnlockReleaseBuffer(buf);
 	if (BufferIsValid(metabuf))
 		UnlockReleaseBuffer(metabuf);
 }

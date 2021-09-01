@@ -31,7 +31,7 @@ use Scalar::Util qw(blessed);
 my ($stdout, $stderr, $ret);
 
 # Initialize master node
-my $node_master = get_new_node('master');
+my $node_master = get_new_node('master', 0);
 $node_master->init(allows_streaming => 1, has_archiving => 1);
 $node_master->append_conf(
 	'postgresql.conf', q[
@@ -71,7 +71,7 @@ $node_master->backup_fs_hot($backup_name);
 $node_master->safe_psql('postgres',
 	q[SELECT pg_create_physical_replication_slot('phys_slot');]);
 
-my $node_replica = get_new_node('replica');
+my $node_replica = get_new_node('replica', 0);
 $node_replica->init_from_backup(
 	$node_master, $backup_name,
 	has_streaming => 1,
@@ -183,7 +183,7 @@ my $endpos = $node_replica->safe_psql('postgres',
 
 $stdout = $node_replica->pg_recvlogical_upto(
 	'postgres', 'before_basebackup',
-	$endpos,    30,
+	$endpos,    180,
 	'include-xids'     => '0',
 	'skip-empty-xacts' => '1');
 

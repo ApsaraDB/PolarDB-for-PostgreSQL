@@ -3,6 +3,7 @@
  * logicalrelation.h
  *	  Relation definitions for logical replication relation mapping.
  *
+ * Portions Copyright (c) 2020, Alibaba Group Holding Limited
  * Portions Copyright (c) 2016-2018, PostgreSQL Global Development Group
  *
  * src/include/replication/logicalrelation.h
@@ -27,6 +28,9 @@ typedef struct LogicalRepRelMapEntry
 	/* Sync state. */
 	char		state;
 	XLogRecPtr	statelsn;
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+	GlobalTimestamp statestartts;
+#endif
 } LogicalRepRelMapEntry;
 
 extern void logicalrep_relmap_update(LogicalRepRelation *remoterel);

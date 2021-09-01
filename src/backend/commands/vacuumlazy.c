@@ -22,7 +22,8 @@
  * of index scans performed.  So we don't use maintenance_work_mem memory for
  * the TID array, just enough to hold as many heap tuples as fit on one page.
  *
- *
+ * Portions Copyright (c) 2020, Alibaba Group Holding Limited
+ * Portions Copyright (C) 2019 THL A29 Limited, a Tencent company.  All rights reserved.
  * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -60,6 +61,8 @@
 #include "utils/pg_rusage.h"
 #include "utils/timestamp.h"
 #include "utils/tqual.h"
+#include "access/ctslog.h"
+#include "storage/procarray.h"
 
 
 /*
@@ -1084,6 +1087,27 @@ lazy_scan_heap(Relation onerel, int options, LVRelStats *vacrelstats,
 							all_visible = false;
 							break;
 						}
+						#ifdef ENABLE_DISTRIBUTED_TRANSACTION	
+						{
+							CommitSeqNo committs = HeapTupleHderGetXminTimestampAtomic(tuple.t_data);
+
+							if (!COMMITSEQNO_IS_COMMITTED(committs))
+							{
+								committs = TransactionIdGetCommitSeqNo(xmin);
+							}
+
+							if (!COMMITSEQNO_IS_COMMITTED(committs))
+							{
+								elog(ERROR, "xmin %d should have committs "UINT64_FORMAT, xmin, committs);
+							}
+
+							if (!CommittsSatisfiesVacuum(committs))
+							{
+								all_visible = false;
+								break;
+							}
+						}
+						#endif
 
 						/* Track newest xmin on page. */
 						if (TransactionIdFollows(xmin, visibility_cutoff_xid))
@@ -2261,6 +2285,29 @@ heap_page_is_all_visible(Relation rel, Buffer buf,
 						*all_frozen = false;
 						break;
 					}
+
+					#ifdef ENABLE_DISTRIBUTED_TRANSACTION	
+					{
+						CommitSeqNo committs = HeapTupleHderGetXmaxTimestampAtomic(tuple.t_data);
+
+						if (!COMMITSEQNO_IS_COMMITTED(committs))
+						{
+							committs = TransactionIdGetCommitSeqNo(xmin);
+						}
+
+						if (!COMMITSEQNO_IS_COMMITTED(committs))
+						{
+							elog(ERROR, "xmin %d should have committs "UINT64_FORMAT, xmin, committs);
+						}
+
+						if (!CommittsSatisfiesVacuum(committs))
+						{
+							all_visible = false;
+							*all_frozen = false;
+							break;
+						}
+					}
+					#endif
 
 					/* Track newest xmin on page. */
 					if (TransactionIdFollows(xmin, *visibility_cutoff_xid))

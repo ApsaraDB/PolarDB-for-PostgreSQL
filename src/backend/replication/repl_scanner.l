@@ -107,6 +107,8 @@ EXPORT_SNAPSHOT		{ return K_EXPORT_SNAPSHOT; }
 NOEXPORT_SNAPSHOT	{ return K_NOEXPORT_SNAPSHOT; }
 USE_SNAPSHOT		{ return K_USE_SNAPSHOT; }
 WAIT				{ return K_WAIT; }
+FETCH_PAGE			{ return K_FETCH_PAGE; }
+POLAR_REPL_MODE		{ return K_POLAR_REPL_MODE; }
 
 ","				{ return ','; }
 ";"				{ return ';'; }

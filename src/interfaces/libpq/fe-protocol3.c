@@ -20,6 +20,7 @@
 #include "libpq-fe.h"
 #include "libpq-int.h"
 
+#include "distributed_txn/txn_timestamp.h"
 #include "mb/pg_wchar.h"
 #include "port/pg_bswap.h"
 
@@ -31,6 +32,8 @@
 #include <netinet/tcp.h>
 #endif
 #endif
+
+PQTimestampReceiver pq_timestamp_receiver = NULL;
 
 
 /*
@@ -153,6 +156,17 @@ pqParseInput3(PGconn *conn)
 		{
 			if (pqGetErrorNotice3(conn, false))
 				return;
+		}
+		else if (id == 'L')
+		{
+			LogicalTime ts;
+			if (pqGetTimestamp(&ts, conn))
+				return;
+			conn->txn_timestamp = ts;
+			if (pq_timestamp_receiver)
+			{
+				pq_timestamp_receiver(ts);
+			}
 		}
 		else if (conn->asyncStatus != PGASYNC_BUSY)
 		{

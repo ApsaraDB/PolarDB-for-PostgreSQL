@@ -105,11 +105,12 @@ void
 LockRelationOid(Oid relid, LOCKMODE lockmode)
 {
 	LOCKTAG		tag;
+	LOCALLOCK  *locallock;
 	LockAcquireResult res;
 
 	SetLocktagRelationOid(&tag, relid);
 
-	res = LockAcquire(&tag, lockmode, false, false);
+	res = LockAcquireExtended(&tag, lockmode, false, false, true, &locallock);
 
 	/*
 	 * Now that we have the lock, check for invalidation messages, so that we
@@ -120,9 +121,18 @@ LockRelationOid(Oid relid, LOCKMODE lockmode)
 	 * relcache entry in an undesirable way.  (In the case where our own xact
 	 * modifies the rel, the relcache update happens via
 	 * CommandCounterIncrement, not here.)
+	 *
+	 * However, in corner cases where code acts on tables (usually catalogs)
+	 * recursively, we might get here while still processing invalidation
+	 * messages in some outer execution of this function or a sibling.  The
+	 * "cleared" status of the lock tells us whether we really are done
+	 * absorbing relevant inval messages.
 	 */
-	if (res != LOCKACQUIRE_ALREADY_HELD)
+	if (res != LOCKACQUIRE_ALREADY_CLEAR)
+	{
 		AcceptInvalidationMessages();
+		MarkLockClear(locallock);
+	}
 }
 
 /*
@@ -138,11 +148,12 @@ bool
 ConditionalLockRelationOid(Oid relid, LOCKMODE lockmode)
 {
 	LOCKTAG		tag;
+	LOCALLOCK  *locallock;
 	LockAcquireResult res;
 
 	SetLocktagRelationOid(&tag, relid);
 
-	res = LockAcquire(&tag, lockmode, false, true);
+	res = LockAcquireExtended(&tag, lockmode, false, true, true, &locallock);
 
 	if (res == LOCKACQUIRE_NOT_AVAIL)
 		return false;
@@ -151,8 +162,11 @@ ConditionalLockRelationOid(Oid relid, LOCKMODE lockmode)
 	 * Now that we have the lock, check for invalidation messages; see notes
 	 * in LockRelationOid.
 	 */
-	if (res != LOCKACQUIRE_ALREADY_HELD)
+	if (res != LOCKACQUIRE_ALREADY_CLEAR)
+	{
 		AcceptInvalidationMessages();
+		MarkLockClear(locallock);
+	}
 
 	return true;
 }
@@ -199,20 +213,24 @@ void
 LockRelation(Relation relation, LOCKMODE lockmode)
 {
 	LOCKTAG		tag;
+	LOCALLOCK  *locallock;
 	LockAcquireResult res;
 
 	SET_LOCKTAG_RELATION(tag,
 						 relation->rd_lockInfo.lockRelId.dbId,
 						 relation->rd_lockInfo.lockRelId.relId);
 
-	res = LockAcquire(&tag, lockmode, false, false);
+	res = LockAcquireExtended(&tag, lockmode, false, false, true, &locallock);
 
 	/*
 	 * Now that we have the lock, check for invalidation messages; see notes
 	 * in LockRelationOid.
 	 */
-	if (res != LOCKACQUIRE_ALREADY_HELD)
+	if (res != LOCKACQUIRE_ALREADY_CLEAR)
+	{
 		AcceptInvalidationMessages();
+		MarkLockClear(locallock);
+	}
 }
 
 /*
@@ -226,13 +244,14 @@ bool
 ConditionalLockRelation(Relation relation, LOCKMODE lockmode)
 {
 	LOCKTAG		tag;
+	LOCALLOCK  *locallock;
 	LockAcquireResult res;
 
 	SET_LOCKTAG_RELATION(tag,
 						 relation->rd_lockInfo.lockRelId.dbId,
 						 relation->rd_lockInfo.lockRelId.relId);
 
-	res = LockAcquire(&tag, lockmode, false, true);
+	res = LockAcquireExtended(&tag, lockmode, false, true, true, &locallock);
 
 	if (res == LOCKACQUIRE_NOT_AVAIL)
 		return false;
@@ -241,8 +260,11 @@ ConditionalLockRelation(Relation relation, LOCKMODE lockmode)
 	 * Now that we have the lock, check for invalidation messages; see notes
 	 * in LockRelationOid.
 	 */
-	if (res != LOCKACQUIRE_ALREADY_HELD)
+	if (res != LOCKACQUIRE_ALREADY_CLEAR)
+	{
 		AcceptInvalidationMessages();
+		MarkLockClear(locallock);
+	}
 
 	return true;
 }
@@ -557,7 +579,6 @@ XactLockTableWait(TransactionId xid, Relation rel, ItemPointer ctid,
 	LOCKTAG		tag;
 	XactLockTableWaitInfo info;
 	ErrorContextCallback callback;
-	bool		first = true;
 
 	/*
 	 * If an operation is specified, set up our verbose error context
@@ -580,6 +601,8 @@ XactLockTableWait(TransactionId xid, Relation rel, ItemPointer ctid,
 
 	for (;;)
 	{
+		TransactionId parentXid;
+
 		Assert(TransactionIdIsValid(xid));
 		Assert(!TransactionIdEquals(xid, GetTopTransactionIdIfAny()));
 
@@ -589,28 +612,28 @@ XactLockTableWait(TransactionId xid, Relation rel, ItemPointer ctid,
 
 		LockRelease(&tag, ShareLock, false);
 
-		if (!TransactionIdIsInProgress(xid))
-			break;
-
 		/*
-		 * If the Xid belonged to a subtransaction, then the lock would have
-		 * gone away as soon as it was finished; for correct tuple visibility,
-		 * the right action is to wait on its parent transaction to go away.
-		 * But instead of going levels up one by one, we can just wait for the
-		 * topmost transaction to finish with the same end result, which also
-		 * incurs less locktable traffic.
-		 *
-		 * Some uses of this function don't involve tuple visibility -- such
-		 * as when building snapshots for logical decoding.  It is possible to
-		 * see a transaction in ProcArray before it registers itself in the
-		 * locktable.  The topmost transaction in that case is the same xid,
-		 * so we try again after a short sleep.  (Don't sleep the first time
-		 * through, to avoid slowing down the normal case.)
+		 * Ok, this xid is not running anymore. But it might be a
+		 * subtransaction whose parent is still running.
 		 */
-		if (!first)
-			pg_usleep(1000L);
-		first = false;
-		xid = SubTransGetTopmostTransaction(xid);
+		/* csn = TransactionIdGetCommitSeqNo(xid); */
+		/* if (COMMITSEQNO_IS_COMMITTED(csn) || COMMITSEQNO_IS_ABORTED(csn)) */
+		/* break; */
+
+		parentXid = SubTransGetParent(xid);
+		if (parentXid == InvalidTransactionId)
+		{
+			CommitSeqNo csn;
+
+			csn = TransactionIdGetCommitSeqNo(xid);
+			Assert(COMMITSEQNO_IS_COMMITTED(csn) || COMMITSEQNO_IS_ABORTED(csn));
+			if (!(COMMITSEQNO_IS_COMMITTED(csn) || COMMITSEQNO_IS_ABORTED(csn)))
+				elog(ERROR, "csn is not committed or aborted");
+
+			break;
+		}
+
+		xid = parentXid;
 	}
 
 	if (oper != XLTW_None)
@@ -627,7 +650,7 @@ bool
 ConditionalXactLockTableWait(TransactionId xid)
 {
 	LOCKTAG		tag;
-	bool		first = true;
+	TransactionId parentXid;
 
 	for (;;)
 	{
@@ -641,14 +664,24 @@ ConditionalXactLockTableWait(TransactionId xid)
 
 		LockRelease(&tag, ShareLock, false);
 
-		if (!TransactionIdIsInProgress(xid))
+		/*
+		 * Ok, this xid is not running anymore. But it might be a
+		 * subtransaction whose parent is still running.
+		 */
+		CommitSeqNo csn = TransactionIdGetCommitSeqNo(xid);
+
+		if (COMMITSEQNO_IS_COMMITTED(csn) || COMMITSEQNO_IS_ABORTED(csn))
 			break;
 
-		/* See XactLockTableWait about this case */
-		if (!first)
-			pg_usleep(1000L);
-		first = false;
-		xid = SubTransGetTopmostTransaction(xid);
+		parentXid = SubTransGetParent(xid);
+		if (parentXid == InvalidTransactionId)
+		{
+			csn = TransactionIdGetCommitSeqNo(xid);
+			Assert(COMMITSEQNO_IS_COMMITTED(csn) || COMMITSEQNO_IS_ABORTED(csn));
+			break;
+		}
+
+		xid = parentXid;
 	}
 
 	return true;

@@ -14,8 +14,8 @@ include $(top_builddir)/src/Makefile.global
 
 override CPPFLAGS := -I. -I$(srcdir) $(CPPFLAGS)
 
-OBJS = walsender.o walreceiverfuncs.o walreceiver.o basebackup.o \
-	repl_gram.o slot.o slotfuncs.o syncrep.o syncrep_gram.o
+OBJS = walsender.o walreceiverfuncs.o walreceiver.o basebackup.o remote_recovery.o\
+	repl_gram.o slot.o slotfuncs.o syncrep.o syncrep_gram.o squeue.o
 
 SUBDIRS = logical
 

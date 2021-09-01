@@ -17,7 +17,7 @@ sub test_recovery_standby
 	my $num_rows        = shift;
 	my $until_lsn       = shift;
 
-	my $node_standby = get_new_node($node_name);
+	my $node_standby = get_new_node($node_name, 0);
 	$node_standby->init_from_backup($node_master, 'my_backup',
 		has_restoring => 1);
 

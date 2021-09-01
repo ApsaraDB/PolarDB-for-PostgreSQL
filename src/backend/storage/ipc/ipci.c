@@ -3,6 +3,7 @@
  * ipci.c
  *	  POSTGRES inter-process communication initialization code.
  *
+ * Portions Copyright (c) 2020, Alibaba Group Holding Limited
  * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -16,12 +17,13 @@
 
 #include "access/clog.h"
 #include "access/commit_ts.h"
+#include "access/ctslog.h"
 #include "access/heapam.h"
 #include "access/multixact.h"
 #include "access/nbtree.h"
-#include "access/subtrans.h"
 #include "access/twophase.h"
 #include "commands/async.h"
+#include "distributed_txn/logical_clock.h"
 #include "miscadmin.h"
 #include "pgstat.h"
 #include "postmaster/autovacuum.h"
@@ -46,7 +48,14 @@
 #include "storage/spin.h"
 #include "utils/backend_random.h"
 #include "utils/snapmgr.h"
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+#include "access/ctslog.h"
+#endif
 
+/* POLAR */
+#include "polar_datamax/polar_datamax.h"
+#include "polar_dma/polar_dma.h"
+/* POLAR end */
 
 shmem_startup_hook_type shmem_startup_hook = NULL;
 
@@ -126,9 +135,16 @@ CreateSharedMemoryAndSemaphores(bool makePrivate, int port)
 		size = add_size(size, PredicateLockShmemSize());
 		size = add_size(size, ProcGlobalShmemSize());
 		size = add_size(size, XLOGShmemSize());
+#ifdef ENABLE_PARALLEL_RECOVERY
+		size = add_size(size, ParallelRecoveryShmemSize());
+#endif
+#ifdef ENABLE_DISTR_DEBUG
 		size = add_size(size, CLOGShmemSize());
+#endif
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+		size = add_size(size, CTSLOGShmemSize());
+#endif
 		size = add_size(size, CommitTsShmemSize());
-		size = add_size(size, SUBTRANSShmemSize());
 		size = add_size(size, TwoPhaseShmemSize());
 		size = add_size(size, BackgroundWorkerShmemSize());
 		size = add_size(size, MultiXactShmemSize());
@@ -150,9 +166,17 @@ CreateSharedMemoryAndSemaphores(bool makePrivate, int port)
 		size = add_size(size, SyncScanShmemSize());
 		size = add_size(size, AsyncShmemSize());
 		size = add_size(size, BackendRandomShmemSize());
+		/* POLAR: consensus share memory size */
+		if (polar_enable_dma)
+			size = add_size(size, ConsensusShmemSize());
+
 #ifdef EXEC_BACKEND
 		size = add_size(size, ShmemBackendArraySize());
 #endif
+
+		/* POLAR: Datamax control strunct size */
+		size = add_size(size, polar_datamax_shmem_size());
+		/* POLAR end */
 
 		/* freeze the addin request size and include it */
 		addin_request_allowed = false;
@@ -218,11 +242,25 @@ CreateSharedMemoryAndSemaphores(bool makePrivate, int port)
 	 * Set up xlog, clog, and buffers
 	 */
 	XLOGShmemInit();
+#ifdef ENABLE_PARALLEL_RECOVERY
+	ParallelRecoveryInit();
+#endif
+#ifdef ENABLE_DISTR_DEBUG
 	CLOGShmemInit();
+#endif
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+	CTSLOGShmemInit();
+#endif
 	CommitTsShmemInit();
-	SUBTRANSShmemInit();
 	MultiXactShmemInit();
 	InitBufferPool();
+
+	/* POLAR: init DataMax control struct */
+	polar_datamax_shmem_init();
+	/* POLAR end */
+
+	if (polar_enable_dma)
+		ConsensusShmemInit();
 
 	/*
 	 * Set up lock manager
@@ -270,6 +308,7 @@ CreateSharedMemoryAndSemaphores(bool makePrivate, int port)
 	SyncScanShmemInit();
 	AsyncShmemInit();
 	BackendRandomShmemInit();
+	LogicalClockShmemInit();
 
 #ifdef EXEC_BACKEND
 

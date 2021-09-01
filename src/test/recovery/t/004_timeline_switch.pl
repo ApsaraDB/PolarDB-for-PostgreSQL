@@ -11,7 +11,7 @@ use Test::More tests => 1;
 $ENV{PGDATABASE} = 'postgres';
 
 # Initialize master node
-my $node_master = get_new_node('master');
+my $node_master = get_new_node('master', 0);
 $node_master->init(allows_streaming => 1);
 $node_master->start;
 
@@ -20,7 +20,7 @@ my $backup_name = 'my_backup';
 $node_master->backup($backup_name);
 
 # Create two standbys linking to it
-my $node_standby_1 = get_new_node('standby_1');
+my $node_standby_1 = get_new_node('standby_1', 0);
 $node_standby_1->init_from_backup($node_master, $backup_name,
 	has_streaming => 1);
 $node_standby_1->start;

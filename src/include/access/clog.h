@@ -17,16 +17,19 @@
 /*
  * Possible transaction statuses --- note that all-zeroes is the initial
  * state.
- *
- * A "subcommitted" transaction is a committed subtransaction whose parent
- * hasn't committed or aborted yet.
  */
-typedef int XidStatus;
+typedef int CLogXidStatus;
 
-#define TRANSACTION_STATUS_IN_PROGRESS		0x00
-#define TRANSACTION_STATUS_COMMITTED		0x01
-#define TRANSACTION_STATUS_ABORTED			0x02
-#define TRANSACTION_STATUS_SUB_COMMITTED	0x03
+#define CLOG_XID_STATUS_IN_PROGRESS		0x00
+#define CLOG_XID_STATUS_COMMITTED		0x01
+#define CLOG_XID_STATUS_ABORTED			0x02
+
+/*
+ * A "subcommitted" transaction is a committed subtransaction whose parent
+ * hasn't committed or aborted yet. We don't create these anymore, but accept
+ * them in existing clog, if we've been pg_upgraded from an older version.
+ */
+#define CLOG_XID_STATUS_SUB_COMMITTED	0x03
 
 typedef struct xl_clog_truncate
 {
@@ -35,9 +38,11 @@ typedef struct xl_clog_truncate
 	Oid			oldestXactDb;
 } xl_clog_truncate;
 
-extern void TransactionIdSetTreeStatus(TransactionId xid, int nsubxids,
-						   TransactionId *subxids, XidStatus status, XLogRecPtr lsn);
-extern XidStatus TransactionIdGetStatus(TransactionId xid, XLogRecPtr *lsn);
+extern void CLogSetTreeStatus(TransactionId xid, int nsubxids,
+				  TransactionId *subxids, CLogXidStatus status, XLogRecPtr lsn);
+extern CLogXidStatus CLogGetStatus(TransactionId xid, XLogRecPtr *lsn);
+extern XLogRecPtr
+			CLogGetLSN(TransactionId xid);
 
 extern Size CLOGShmemBuffers(void);
 extern Size CLOGShmemSize(void);

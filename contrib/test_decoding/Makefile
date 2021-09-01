@@ -27,6 +27,7 @@ installcheck:;
 installcheck-force: regresscheck-install-force isolationcheck-install-force
 
 check: regresscheck isolationcheck
+checkdma: regresscheckdma isolationcheckdma
 
 submake-regress:
 	$(MAKE) -C $(top_builddir)/src/test/regress all
@@ -45,6 +46,10 @@ regresscheck: | submake-regress submake-test_decoding temp-install
 	$(pg_regress_check) \
 	    --temp-config $(top_srcdir)/contrib/test_decoding/logical.conf \
 	    $(REGRESSCHECKS)
+regresscheckdma: | submake-regress submake-test_decoding temp-install
+	$(pg_regress_check) \
+	    --dma=cluster --temp-config $(top_srcdir)/contrib/test_decoding/logical.conf \
+	    $(REGRESSCHECKS)
 
 regresscheck-install-force: | submake-regress submake-test_decoding temp-install
 	$(pg_regress_installcheck) \
@@ -57,6 +62,10 @@ isolationcheck: | submake-isolation submake-test_decoding temp-install
 	$(pg_isolation_regress_check) \
 	    --temp-config $(top_srcdir)/contrib/test_decoding/logical.conf \
 	    $(ISOLATIONCHECKS)
+isolationcheckdma: | submake-isolation submake-test_decoding temp-install
+	$(pg_isolation_regress_check) \
+	    --dma=cluster --temp-config $(top_srcdir)/contrib/test_decoding/logical.conf \
+	    $(ISOLATIONCHECKS)
 
 isolationcheck-install-force: all | submake-isolation submake-test_decoding temp-install
 	$(pg_isolation_regress_installcheck) \
@@ -65,5 +74,3 @@ isolationcheck-install-force: all | submake-isolation submake-test_decoding temp
 .PHONY: submake-test_decoding submake-regress check \
 	regresscheck regresscheck-install-force \
 	isolationcheck isolationcheck-install-force
-
-temp-install: EXTRA_INSTALL=contrib/test_decoding

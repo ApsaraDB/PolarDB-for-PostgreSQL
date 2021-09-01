@@ -9,7 +9,7 @@ use PostgresNode;
 use TestLib;
 use Test::More tests => 12;
 
-my $node = get_new_node('main');
+my $node = get_new_node('main', 1);
 
 $node->init;
 $node->start;

@@ -17,6 +17,8 @@ include $(top_builddir)/src/Makefile.global
 
 check:
 	$(prove_check)
+checkdma:
+	$(prove_checkdma)
 
 installcheck:
 	$(prove_installcheck)

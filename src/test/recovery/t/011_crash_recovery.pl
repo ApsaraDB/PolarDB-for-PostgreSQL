@@ -18,7 +18,7 @@ else
 	plan tests => 3;
 }
 
-my $node = get_new_node('master');
+my $node = get_new_node('master', 0);
 $node->init(allows_streaming => 1);
 $node->start;
 

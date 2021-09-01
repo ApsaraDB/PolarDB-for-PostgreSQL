@@ -82,6 +82,9 @@ uninstall-data:
 check: submake
 	$(pg_regress_check) $(REGRESS_OPTS) $(REGRESS)
 
+checkdma: submake
+	$(pg_regress_check) $(REGRESS_OPTS) --dma=cluster $(REGRESS)
+
 installcheck: submake
 	$(pg_regress_installcheck) $(REGRESS_OPTS) $(REGRESS)
 

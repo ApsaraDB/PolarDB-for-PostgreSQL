@@ -4,6 +4,7 @@
  *	  POSTGRES heap tuple header definitions.
  *
  *
+ * Portions Copyright (c) 2020, Alibaba Group Holding Limited
  * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -121,6 +122,10 @@ typedef struct HeapTupleFields
 {
 	TransactionId t_xmin;		/* inserting xact ID */
 	TransactionId t_xmax;		/* deleting or locking xact ID */
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+	CommitSeqNo t_xmax_timestamp;
+	CommitSeqNo t_xmin_timestamp;
+#endif
 
 	union
 	{
@@ -279,7 +284,43 @@ struct HeapTupleHeaderData
 #define HEAP_HOT_UPDATED		0x4000	/* tuple was HOT-updated */
 #define HEAP_ONLY_TUPLE			0x8000	/* this is heap-only tuple */
 
-#define HEAP2_XACT_MASK			0xE000	/* visibility-related bits */
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+#define HEAP_XMIN_TIMESTAMP_UPDATED        0x0800	/* tuple was updated with
+													 * xmin commit timestamp */
+#define HEAP_XMAX_TIMESTAMP_UPDATED        0x1000	/* tuple was updated with
+													 * xmax commit timestamp */
+#define HEAP2_XACT_MASK            0xF800	/* visibility-related bits */
+#define HEAP_XMIN_TIMESTAMP_IS_UPDATED(infomask) \
+    (((infomask) & HEAP_XMIN_TIMESTAMP_UPDATED) != 0 )
+#define HEAP_XMAX_TIMESTAMP_IS_UPDATED(infomask) \
+    (((infomask) & HEAP_XMAX_TIMESTAMP_UPDATED) != 0 )
+
+extern CommitSeqNo HeapTupleHderGetXminTimestampAtomic(HeapTupleHeader tuple);
+extern CommitSeqNo HeapTupleHderGetXmaxTimestampAtomic(HeapTupleHeader tuple);
+extern void HeapTupleHderSetXminTimestampAtomic(HeapTupleHeader tuple, GlobalTimestamp committs);
+extern void HeapTupleHderSetXmaxTimestampAtomic(HeapTupleHeader tuple, GlobalTimestamp committs);
+
+#define HeapTupleHeaderSetXminTimestamp(tup, ts) \
+( \
+    (tup)->t_choice.t_heap.t_xmin_timestamp = (ts) \
+)
+#define HeapTupleHeaderSetXmaxTimestamp(tup, ts) \
+( \
+    (tup)->t_choice.t_heap.t_xmax_timestamp = (ts) \
+)
+
+#define HeapTupleHeaderGetXminTimestamp(tup) \
+( \
+    (tup)->t_choice.t_heap.t_xmin_timestamp \
+)
+#define HeapTupleHeaderGetXmaxTimestamp(tup) \
+( \
+    (tup)->t_choice.t_heap.t_xmax_timestamp \
+)
+
+#else
+#define HEAP2_XACT_MASK            0xE000	/* visibility-related bits */
+#endif
 
 /*
  * HEAP_TUPLE_HAS_MATCH is a temporary flag used during hash joins.  It is
@@ -783,10 +824,7 @@ extern Datum fastgetattr(HeapTuple tup, int attnum, TupleDesc tupleDesc,
 		((attnum) > 0) ? \
 		( \
 			((attnum) > (int) HeapTupleHeaderGetNatts((tup)->t_data)) ? \
-			( \
-				(*(isnull) = true), \
-				(Datum)NULL \
-			) \
+				getmissingattr((tupleDesc), (attnum), (isnull)) \
 			: \
 				fastgetattr((tup), (attnum), (tupleDesc), (isnull)) \
 		) \
@@ -807,6 +845,8 @@ extern Datum nocachegetattr(HeapTuple tup, int attnum,
 			   TupleDesc att);
 extern Datum heap_getsysattr(HeapTuple tup, int attnum, TupleDesc tupleDesc,
 				bool *isnull);
+extern Datum getmissingattr(TupleDesc tupleDesc,
+			   int attnum, bool *isnull);
 extern HeapTuple heap_copytuple(HeapTuple tuple);
 extern void heap_copytuple_with_tuple(HeapTuple src, HeapTuple dest);
 extern Datum heap_copy_tuple_as_datum(HeapTuple tuple, TupleDesc tupleDesc);

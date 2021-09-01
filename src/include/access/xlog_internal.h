@@ -11,6 +11,7 @@
  * Note: This file must be includable in both frontend and backend contexts,
  * to allow stand-alone tools like pg_receivewal to deal with WAL files.
  *
+ * Portions Copyright (c) 2020, Alibaba Group Holding Limited
  * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -101,7 +102,7 @@ typedef XLogLongPageHeaderData *XLogLongPageHeader;
 #define XLogSegmentsPerXLogId(wal_segsz_bytes)	\
 	(UINT64CONST(0x100000000) / (wal_segsz_bytes))
 
-#define XLogSegNoOffsetToRecPtr(segno, offset, dest, wal_segsz_bytes) \
+#define XLogSegNoOffsetToRecPtr(segno, offset, wal_segsz_bytes, dest) \
 		(dest) = (segno) * (wal_segsz_bytes) + (offset)
 
 #define XLogSegmentOffset(xlogptr, wal_segsz_bytes)	\
@@ -143,6 +144,10 @@ typedef XLogLongPageHeaderData *XLogLongPageHeader;
 #define XLOGDIR				"pg_wal"
 #define XLOG_CONTROL_FILE	"global/pg_control"
 
+#define POLAR_DATAMAX_DIR               "polar_datamax"
+#define POLAR_DATAMAX_WAL_DIR           POLAR_DATAMAX_DIR "/pg_wal"
+#define POLAR_DATAMAX_META_FILE         "polar_datamax_meta"
+
 /*
  * These macros encapsulate knowledge about the exact layout of XLog file
  * names, timeline history file names, and archive-status file names.
@@ -182,10 +187,18 @@ typedef XLogLongPageHeaderData *XLogLongPageHeader;
 		*logSegNo = (uint64) log * XLogSegmentsPerXLogId(wal_segsz_bytes) + seg; \
 	} while (0)
 
-#define XLogFilePath(path, tli, logSegNo, wal_segsz_bytes)	\
-	snprintf(path, MAXPGPATH, XLOGDIR "/%08X%08X%08X", tli,	\
-			 (uint32) ((logSegNo) / XLogSegmentsPerXLogId(wal_segsz_bytes)), \
-			 (uint32) ((logSegNo) % XLogSegmentsPerXLogId(wal_segsz_bytes)))
+#ifndef FRONTEND
+#define XLogFilePath(path, tli, logSegNo, wal_segsz_bytes)                           \
+      snprintf(path, MAXPGPATH, (polar_is_dma_logger_mode) ?                         \
+               POLAR_DATAMAX_WAL_DIR "/%08X%08X%08X" : XLOGDIR "/%08X%08X%08X", tli, \
+               (uint32)((logSegNo) / XLogSegmentsPerXLogId(wal_segsz_bytes)),        \
+               (uint32)((logSegNo) % XLogSegmentsPerXLogId(wal_segsz_bytes)));
+#else
+#define XLogFilePath(path, tli, logSegNo, wal_segsz_bytes)                     \
+      snprintf(path, MAXPGPATH, XLOGDIR "/%08X%08X%08X", tli, 		       \
+               (uint32)((logSegNo) / XLogSegmentsPerXLogId(wal_segsz_bytes)),  \
+               (uint32)((logSegNo) % XLogSegmentsPerXLogId(wal_segsz_bytes)));
+#endif
 
 #define TLHistoryFileName(fname, tli)	\
 	snprintf(fname, MAXFNAMELEN, "%08X.history", tli)
@@ -195,11 +208,24 @@ typedef XLogLongPageHeaderData *XLogLongPageHeader;
 	 strspn(fname, "0123456789ABCDEF") == 8 &&		\
 	 strcmp((fname) + 8, ".history") == 0)
 
+#ifndef FRONTEND
+#define TLHistoryFilePath(path, tli)	\
+	snprintf(path, MAXPGPATH, (polar_is_dma_logger_mode) ? \
+			 POLAR_DATAMAX_WAL_DIR "/%08X.history" : XLOGDIR "/%08X.history", tli)
+#else
 #define TLHistoryFilePath(path, tli)	\
 	snprintf(path, MAXPGPATH, XLOGDIR "/%08X.history", tli)
+#endif
 
+#ifndef FRONTEND
+#define StatusFilePath(path, xlog, suffix)	\
+	snprintf(path, MAXPGPATH, (polar_is_dma_logger_mode) ? \
+			 POLAR_DATAMAX_WAL_DIR "/archive_status/%s%s" : XLOGDIR "/archive_status/%s%s", \
+			 xlog, suffix)
+#else
 #define StatusFilePath(path, xlog, suffix)	\
 	snprintf(path, MAXPGPATH, XLOGDIR "/archive_status/%s%s", xlog, suffix)
+#endif
 
 #define BackupHistoryFileName(fname, tli, logSegNo, startpoint, wal_segsz_bytes) \
 	snprintf(fname, MAXFNAMELEN, "%08X%08X%08X.%08X.backup", tli, \
@@ -212,11 +238,20 @@ typedef XLogLongPageHeaderData *XLogLongPageHeader;
 	 strspn(fname, "0123456789ABCDEF") == XLOG_FNAME_LEN && \
 	 strcmp((fname) + strlen(fname) - strlen(".backup"), ".backup") == 0)
 
+#ifndef FRONTEND
+#define BackupHistoryFilePath(path, tli, logSegNo, startpoint, wal_segsz_bytes)	\
+	snprintf(path, MAXPGPATH, (polar_is_dma_logger_mode) ? \
+			 POLAR_DATAMAX_WAL_DIR "/%08X%08X%08X.%08X.backup" : XLOGDIR "/%08X%08X%08X.%08X.backup", tli, \
+			 (uint32) ((logSegNo) / XLogSegmentsPerXLogId(wal_segsz_bytes)), \
+			 (uint32) ((logSegNo) % XLogSegmentsPerXLogId(wal_segsz_bytes)), \
+			 (uint32) (XLogSegmentOffset((startpoint), wal_segsz_bytes)))
+#else
 #define BackupHistoryFilePath(path, tli, logSegNo, startpoint, wal_segsz_bytes)	\
 	snprintf(path, MAXPGPATH, XLOGDIR "/%08X%08X%08X.%08X.backup", tli, \
 			 (uint32) ((logSegNo) / XLogSegmentsPerXLogId(wal_segsz_bytes)), \
 			 (uint32) ((logSegNo) % XLogSegmentsPerXLogId(wal_segsz_bytes)), \
 			 (uint32) (XLogSegmentOffset((startpoint), wal_segsz_bytes)))
+#endif
 
 /*
  * Information logged when we detect a change in one of the parameters
@@ -314,6 +349,9 @@ extern bool ArchiveRecoveryRequested;
 extern bool InArchiveRecovery;
 extern bool StandbyMode;
 extern char *recoveryRestoreCommand;
+#ifdef ENABLE_REMOTE_RECOVERY
+extern bool EnableRemoteFetchRecovery;
+#endif
 
 /*
  * Prototypes for functions in xlogarchive.c
@@ -332,5 +370,12 @@ extern bool XLogArchiveIsBusy(const char *xlog);
 extern bool XLogArchiveIsReady(const char *xlog);
 extern bool XLogArchiveIsReadyOrDone(const char *xlog);
 extern void XLogArchiveCleanup(const char *xlog);
+
+/* POLAR: DMA */
+#ifndef FRONTEND
+extern bool polar_is_dma_logger_mode;
+#endif
+extern void polar_dma_xlog_archive_notify(const char *xlog, bool local);
+/* POLAR end */
 
 #endif							/* XLOG_INTERNAL_H */

@@ -1,6 +1,5 @@
 /* -*-pgsql-c-*- */
-/*
- * Scanner for the configuration file
+/* * Scanner for the configuration file
  *
  * Copyright (c) 2000-2018, PostgreSQL Global Development Group
  *
@@ -199,6 +198,16 @@ ProcessConfigFileInternal(GucContext context, bool applySettings, int elevel)
 	 */
 	if (DataDir)
 	{
+		if (!ParseConfigFile(PolarDMAFileName, false,
+							 NULL, 0, 0, elevel,
+							 &head, &tail))
+		{
+			/* Syntax error(s) detected in the file, so bail out */
+			error = true;
+			ConfFileWithError = PolarDMAFileName;
+			goto bail_out;
+		}
+
 		if (!ParseConfigFile(PG_AUTOCONF_FILENAME, false,
 							 NULL, 0, 0, elevel,
 							 &head, &tail))
@@ -485,6 +494,8 @@ ProcessConfigFileInternal(GucContext context, bool applySettings, int elevel)
 	/* Remember when we last successfully loaded the config file. */
 	if (applySettings)
 		PgReloadTime = GetCurrentTimestamp();
+
+	ereport(LOG, (errmsg("Finished Loading Config File")));
 
 bail_out:
 	if (error && applySettings)

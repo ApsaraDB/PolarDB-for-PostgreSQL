@@ -5,6 +5,7 @@
  *	  in a page which can be different when the WAL is generated
  *	  and when the WAL is applied.
  *
+ * Portions Copyright (c) 2020, Alibaba Group Holding Limited
  * Portions Copyright (c) 2016-2018, PostgreSQL Global Development Group
  *
  * Contains common routines required for masking a page.
@@ -49,6 +50,9 @@ mask_page_hint_bits(Page page)
 
 	/* Ignore prune_xid (it's like a hint-bit) */
 	phdr->pd_prune_xid = MASK_MARKER;
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+	phdr->pd_prune_ts = MASK_MARKER;
+#endif
 
 	/* Ignore PD_PAGE_FULL and PD_HAS_FREE_LINES flags, they are just hints. */
 	PageClearFull(page);

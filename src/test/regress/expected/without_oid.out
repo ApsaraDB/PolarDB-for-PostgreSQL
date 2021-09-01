@@ -53,7 +53,7 @@ SELECT min(relpages) < max(relpages), min(reltuples) - max(reltuples)
  WHERE relname IN ('wi', 'wo');
  ?column? | ?column? 
 ----------+----------
- t        |        0
+ f        |        0
 (1 row)
 
 DROP TABLE wi;

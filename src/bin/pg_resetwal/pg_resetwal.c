@@ -20,6 +20,7 @@
  * step 2 ...
  *
  *
+ * Portions Copyright (c) 2020, Alibaba Group Holding Limited
  * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -707,6 +708,9 @@ GuessControlValues(void)
 	ControlFile.checkPointCopy.fullPageWrites = false;
 	ControlFile.checkPointCopy.nextXidEpoch = 0;
 	ControlFile.checkPointCopy.nextXid = FirstNormalTransactionId;
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+	ControlFile.checkPointCopy.maxCommitTs = COMMITSEQNO_FIRST_NORMAL;
+#endif
 	ControlFile.checkPointCopy.nextOid = FirstBootstrapObjectId;
 	ControlFile.checkPointCopy.nextMulti = FirstMultiXactId;
 	ControlFile.checkPointCopy.nextMultiOffset = 0;
@@ -933,8 +937,8 @@ RewriteControlFile(void)
 	 * Adjust fields as needed to force an empty XLOG starting at
 	 * newXlogSegNo.
 	 */
-	XLogSegNoOffsetToRecPtr(newXlogSegNo, SizeOfXLogLongPHD,
-							ControlFile.checkPointCopy.redo, WalSegSz);
+	XLogSegNoOffsetToRecPtr(newXlogSegNo, SizeOfXLogLongPHD, WalSegSz,
+							ControlFile.checkPointCopy.redo);
 	ControlFile.checkPointCopy.time = (pg_time_t) time(NULL);
 
 	ControlFile.state = DB_SHUTDOWNED;
@@ -1209,7 +1213,7 @@ KillExistingArchiveStatus(void)
 static void
 WriteEmptyXLOG(void)
 {
-	char	   *buffer;
+	PGAlignedXLogBlock buffer;
 	XLogPageHeader page;
 	XLogLongPageHeader longpage;
 	XLogRecord *record;
@@ -1219,12 +1223,10 @@ WriteEmptyXLOG(void)
 	int			nbytes;
 	char	   *recptr;
 
-	/* Use malloc() to ensure buffer is MAXALIGNED */
-	buffer = (char *) pg_malloc(XLOG_BLCKSZ);
-	page = (XLogPageHeader) buffer;
-	memset(buffer, 0, XLOG_BLCKSZ);
+	memset(buffer.data, 0, XLOG_BLCKSZ);
 
 	/* Set up the XLOG page header */
+	page = (XLogPageHeader) buffer.data;
 	page->xlp_magic = XLOG_PAGE_MAGIC;
 	page->xlp_info = XLP_LONG_HEADER;
 	page->xlp_tli = ControlFile.checkPointCopy.ThisTimeLineID;
@@ -1271,7 +1273,7 @@ WriteEmptyXLOG(void)
 	}
 
 	errno = 0;
-	if (write(fd, buffer, XLOG_BLCKSZ) != XLOG_BLCKSZ)
+	if (write(fd, buffer.data, XLOG_BLCKSZ) != XLOG_BLCKSZ)
 	{
 		/* if write didn't set errno, assume problem is no disk space */
 		if (errno == 0)
@@ -1282,11 +1284,11 @@ WriteEmptyXLOG(void)
 	}
 
 	/* Fill the rest of the file with zeroes */
-	memset(buffer, 0, XLOG_BLCKSZ);
+	memset(buffer.data, 0, XLOG_BLCKSZ);
 	for (nbytes = XLOG_BLCKSZ; nbytes < WalSegSz; nbytes += XLOG_BLCKSZ)
 	{
 		errno = 0;
-		if (write(fd, buffer, XLOG_BLCKSZ) != XLOG_BLCKSZ)
+		if (write(fd, buffer.data, XLOG_BLCKSZ) != XLOG_BLCKSZ)
 		{
 			if (errno == 0)
 				errno = ENOSPC;

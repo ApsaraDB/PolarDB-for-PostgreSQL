@@ -8,7 +8,8 @@
  * ANALYZE in analyze.c, and VACUUM FULL is a variant of CLUSTER, handled
  * in cluster.c.
  *
- *
+ * Portions Copyright (c) 2020, Alibaba Group Holding Limited
+ * Portions Copyright (C) 2019 THL A29 Limited, a Tencent company.  All rights reserved.
  * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -23,6 +24,7 @@
 #include <math.h>
 
 #include "access/clog.h"
+#include "access/ctslog.h"
 #include "access/commit_ts.h"
 #include "access/genam.h"
 #include "access/heapam.h"
@@ -60,6 +62,9 @@ int			vacuum_freeze_min_age;
 int			vacuum_freeze_table_age;
 int			vacuum_multixact_freeze_min_age;
 int			vacuum_multixact_freeze_table_age;
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+int			vacuum_defer_freeze_min_age;
+#endif
 
 
 /* A few variables that don't seem worth passing around as parameters */
@@ -118,10 +123,17 @@ ExecVacuum(VacuumStmt *vacstmt, bool isTopLevel)
 	 */
 	if (vacstmt->options & VACOPT_FREEZE)
 	{
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+		params.freeze_min_age = vacuum_defer_freeze_min_age;
+		params.freeze_table_age = vacuum_defer_freeze_min_age;
+		params.multixact_freeze_min_age = vacuum_defer_freeze_min_age;
+		params.multixact_freeze_table_age = vacuum_defer_freeze_min_age;
+#else
 		params.freeze_min_age = 0;
 		params.freeze_table_age = 0;
 		params.multixact_freeze_min_age = 0;
 		params.multixact_freeze_table_age = 0;
+#endif
 	}
 	else
 	{
@@ -351,7 +363,7 @@ vacuum(int options, List *relations, VacuumParams *params,
 				{
 					StartTransactionCommand();
 					/* functions in indexes may want a snapshot set */
-					PushActiveSnapshot(GetTransactionSnapshot());
+					PushActiveSnapshot(GetLocalTransactionSnapshot());
 				}
 
 				analyze_rel(vrel->oid, vrel->relation, options, params,
@@ -1263,7 +1275,12 @@ vac_truncate_clog(TransactionId frozenXID,
 	/*
 	 * Truncate CLOG, multixact and CommitTs to the oldest computed value.
 	 */
+#ifdef ENABLE_DISTR_DEBUG
 	TruncateCLOG(frozenXID, oldestxid_datoid);
+#endif
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+	TruncateCTSLOG(frozenXID);
+#endif
 	TruncateCommitTs(frozenXID);
 	TruncateMultiXact(minMulti, minmulti_datoid);
 
@@ -1318,7 +1335,7 @@ vacuum_rel(Oid relid, RangeVar *relation, int options, VacuumParams *params)
 	 * Functions in indexes may want a snapshot set.  Also, setting a snapshot
 	 * ensures that RecentGlobalXmin is kept truly recent.
 	 */
-	PushActiveSnapshot(GetTransactionSnapshot());
+	PushActiveSnapshot(GetLocalTransactionSnapshot());
 
 	if (!(options & VACOPT_FULL))
 	{

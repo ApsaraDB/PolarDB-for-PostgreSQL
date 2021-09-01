@@ -7,7 +7,10 @@
  * This file contains support routines that are used by XLOG replay functions.
  * None of this code is used during normal system operation.
  *
+ * Support remote recovery.
+ * Author: Junbin Kang
  *
+ * Portions Copyright (c) 2020, Alibaba Group Holding Limited
  * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -29,7 +32,9 @@
 #include "utils/guc.h"
 #include "utils/hsearch.h"
 #include "utils/rel.h"
-
+#ifdef ENABLE_REMOTE_RECOVERY
+#include "replication/remote_recovery.h"
+#endif
 
 /*
  * During XLOG replay, we may see XLOG records for incremental updates of
@@ -300,10 +305,18 @@ XLogReadBufferForRedo(XLogReaderState *record, uint8 block_id,
 Buffer
 XLogInitBufferForRedo(XLogReaderState *record, uint8 block_id)
 {
-	Buffer		buf;
+	Buffer		buf = InvalidBuffer;
 
 	XLogReadBufferForRedoExtended(record, block_id, RBM_ZERO_AND_LOCK, false,
 								  &buf);
+
+#ifdef ENABLE_PARALLEL_RECOVERY
+	if (!BufferIsValid(buf))
+	{
+		Assert(enable_parallel_recovery_bypage);
+	}
+#endif							/* ENABLE_PARALLEL_RECOVERY */
+
 	return buf;
 }
 
@@ -341,6 +354,21 @@ XLogReadBufferForRedoExtended(XLogReaderState *record,
 		/* Caller specified a bogus block_id */
 		elog(PANIC, "failed to locate backup block with ID %d", block_id);
 	}
+
+#ifdef ENABLE_PARALLEL_RECOVERY
+	if (enable_parallel_recovery_bypage)
+	{
+		if (EnableHotStandby || InHotStandby)
+		{
+			elog(PANIC, "Parallel recovery by page is not compatible with hot standby!");
+		}
+		if (!IsBlockAssignedToThisWorker(rnode.relNode, forknum, blkno))
+		{
+			*buf = InvalidBuffer;
+			return BLK_DONE;
+		}
+	}
+#endif
 
 	/*
 	 * Make sure that if the block is marked with WILL_INIT, the caller is
@@ -385,6 +413,59 @@ XLogReadBufferForRedoExtended(XLogReaderState *record,
 
 		return BLK_RESTORED;
 	}
+#ifdef ENABLE_REMOTE_RECOVERY
+	else if (EnableRemoteFetchRecovery && XLogRecBlockImageFetch(record, block_id))
+	{
+		char	   *remote_page;
+
+		/*
+		 * PageIsVerified would keep slient in case of standby-fetch-recovery,
+		 * giving a chance to fetch remote page.
+		 */
+		*buf = XLogReadBufferExtended(rnode, forknum, blkno,
+									  get_cleanup_lock ? RBM_ZERO_AND_CLEANUP_LOCK : RBM_ZERO_AND_LOCK);
+		page = BufferGetPage(*buf);
+
+		if (RemoteFetchPageStreaming(rnode, forknum, blkno, &remote_page))
+		{
+			/*
+			 * This may happen for pages created before the latest checkpoint
+			 * but having not yet synced to the standby when
+			 * checkpoint_sync_standby is turned off.
+			 */
+			elog(LOG, "page LSN " UINT64_FORMAT " ckpt redo " UINT64_FORMAT, PageGetLSN(BufferGetPage(*buf)), checkpointRedo);
+			elog(WARNING, "no page on standby mode %d, this may happen when the page is trunacted or the file is deleted later: "
+				 "spcnode %d dbnode %d relnode %d forknum %d blkno %d",
+				 mode, rnode.spcNode, rnode.dbNode, rnode.relNode, forknum, blkno);
+
+			return BLK_NOTFOUND;
+		}
+		else
+		{
+			memcpy(page, remote_page, BLCKSZ);
+
+			if (PageIsNew(page))
+			{
+				if (enable_remote_recovery_print)
+					elog(LOG, "REMOTE RECOVERY fetch new page : spcnode %d dbnode %d relnode %d forknum %d blkno %d",
+						 rnode.spcNode, rnode.dbNode, rnode.relNode, forknum, blkno);
+			}
+
+			MarkBufferDirty(*buf);
+			if (forknum == INIT_FORKNUM)
+				FlushOneBuffer(*buf);
+		}
+
+		/*
+		 * also skip redo if the page has been replayed on the standby.
+		 */
+		if (lsn <= PageGetLSN(BufferGetPage(*buf)))
+			return BLK_DONE;
+		else
+			return BLK_NEEDS_REDO;
+
+	}
+#endif
 	else
 	{
 		*buf = XLogReadBufferExtended(rnode, forknum, blkno, mode);
@@ -437,7 +518,7 @@ Buffer
 XLogReadBufferExtended(RelFileNode rnode, ForkNumber forknum,
 					   BlockNumber blkno, ReadBufferMode mode)
 {
-	BlockNumber lastblock;
+	BlockNumber lastblock = InvalidBlockNumber;
 	Buffer		buffer;
 	SMgrRelation smgr;
 
@@ -458,6 +539,17 @@ XLogReadBufferExtended(RelFileNode rnode, ForkNumber forknum,
 
 	lastblock = smgrnblocks(smgr, forknum);
 
+#ifdef ENABLE_PARALLEL_RECOVERY
+	if (enable_parallel_recovery_bypage && blkno >= lastblock)
+	{
+		/* extend file underlock during parallel recovery */
+		smgr_extend_locked(smgr, forknum, blkno + 1 + 256);
+		lastblock = blkno + 1;
+		Assert(smgrnblocks(smgr, forknum) >= lastblock);
+	}
+#endif
+
+
 	if (blkno < lastblock)
 	{
 		/* page exists in file */
@@ -475,6 +567,12 @@ XLogReadBufferExtended(RelFileNode rnode, ForkNumber forknum,
 		if (mode == RBM_NORMAL_NO_LOG)
 			return InvalidBuffer;
 		/* OK to extend the file */
+#ifdef ENABLE_PARALLEL_RECOVERY
+		if (enable_parallel_recovery_bypage)
+		{
+			elog(PANIC, "file extension should have been taken care of! blkno:%u lastblock:%u", blkno, lastblock);
+		}
+#endif
 		/* we do this in recovery only - no rel-extension lock needed */
 		Assert(InRecovery);
 		buffer = InvalidBuffer;

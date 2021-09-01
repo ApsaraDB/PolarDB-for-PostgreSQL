@@ -26,6 +26,7 @@
 #include "storage/bufmgr.h"
 #include "storage/indexfsm.h"
 #include "storage/lmgr.h"
+#include "storage/procarray.h"
 #include "utils/snapmgr.h"
 
 
@@ -521,7 +522,7 @@ vacuumRedirectAndPlaceholder(Relation index, Buffer buffer)
 		dt = (SpGistDeadTuple) PageGetItem(page, PageGetItemId(page, i));
 
 		if (dt->tupstate == SPGIST_REDIRECT &&
-			TransactionIdPrecedes(dt->xid, RecentGlobalXmin))
+			TransactionIdPrecedes(dt->xid, GetRecentGlobalXmin()))
 		{
 			dt->tupstate = SPGIST_PLACEHOLDER;
 			Assert(opaque->nRedirection > 0);

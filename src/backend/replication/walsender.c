@@ -36,7 +36,7 @@
  * walsender to send any outstanding WAL, including the shutdown checkpoint
  * record, wait for it to be replicated to the standby, and then exit.
  *
- *
+ * Portions Copyright (c) 2020, Alibaba Group Holding Limited
  * Portions Copyright (c) 2010-2018, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
@@ -66,6 +66,7 @@
 #include "miscadmin.h"
 #include "nodes/replnodes.h"
 #include "pgstat.h"
+#include "port/atomics.h"
 #include "replication/basebackup.h"
 #include "replication/decode.h"
 #include "replication/logical.h"
@@ -94,6 +95,17 @@
 #include "utils/timeout.h"
 #include "utils/timestamp.h"
 
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+#include "access/transam.h"
+#endif
+#ifdef ENABLE_REMOTE_RECOVERY
+#include "replication/remote_recovery.h"
+#endif
+
+/* POLAR */
+#include "polar_datamax/polar_datamax.h"
+#include "polar_dma/polar_dma.h"
+
 /*
  * Maximum data payload in a WAL data message.  Must be >= XLOG_BLCKSZ.
  *
@@ -104,6 +116,11 @@
  * default 8k blocks) seems like a reasonable guess for now.
  */
 #define MAX_SEND_SIZE (XLOG_BLCKSZ * 16)
+
+/* POLAR: dma replication mode */
+#define POLAR_IS_DMA_REPL(mode) \
+	((mode) == POLAR_REPL_DMA_DATA || (mode) == POLAR_REPL_DMA_LOGGER)
+/* POLAR end */
 
 /* Array of WalSnds in shared memory */
 WalSndCtlData *WalSndCtl = NULL;
@@ -162,9 +179,12 @@ static StringInfoData output_message;
 static StringInfoData reply_message;
 static StringInfoData tmpbuf;
 
+/* Timestamp of last ProcessRepliesIfAny(). */
+static TimestampTz last_processing = 0;
+
 /*
- * Timestamp of the last receipt of the reply from the standby. Set to 0 if
- * wal_sender_timeout doesn't need to be active.
+ * Timestamp of last ProcessRepliesIfAny() that saw a reply from the
+ * standby. Set to 0 if wal_sender_timeout doesn't need to be active.
  */
 static TimestampTz last_reply_timestamp = 0;
 
@@ -216,7 +236,7 @@ static struct
 	int			write_head;
 	int			read_heads[NUM_SYNC_REP_WAIT_MODE];
 	WalTimeSample last_read[NUM_SYNC_REP_WAIT_MODE];
-}			LagTracker;
+} LagTracker;
 
 /* Signal handlers */
 static void WalSndLastCycleHandler(SIGNAL_ARGS);
@@ -235,14 +255,19 @@ static void IdentifySystem(void);
 static void CreateReplicationSlot(CreateReplicationSlotCmd *cmd);
 static void DropReplicationSlot(DropReplicationSlotCmd *cmd);
 static void StartReplication(StartReplicationCmd *cmd);
+#ifdef ENABLE_REMOTE_RECOVERY
+static void StartFetchPageReplication(StartReplicationCmd *cmd);
+static void ProcessPrimaryMessage(void);
+static void ProcessFetchPageMessage(void);
+#endif
 static void StartLogicalReplication(StartReplicationCmd *cmd);
 static void ProcessStandbyMessage(void);
 static void ProcessStandbyReplyMessage(void);
 static void ProcessStandbyHSFeedbackMessage(void);
 static void ProcessRepliesIfAny(void);
 static void WalSndKeepalive(bool requestReply);
-static void WalSndKeepaliveIfNecessary(TimestampTz now);
-static void WalSndCheckTimeOut(TimestampTz now);
+static void WalSndKeepaliveIfNecessary(void);
+static void WalSndCheckTimeOut(void);
 static long WalSndComputeSleeptime(TimestampTz now);
 static void WalSndPrepareWrite(LogicalDecodingContext *ctx, XLogRecPtr lsn, TransactionId xid, bool last_write);
 static void WalSndWriteData(LogicalDecodingContext *ctx, XLogRecPtr lsn, TransactionId xid, bool last_write);
@@ -252,8 +277,13 @@ static void LagTrackerWrite(XLogRecPtr lsn, TimestampTz local_flush_time);
 static TimeOffset LagTrackerRead(int head, XLogRecPtr lsn, TimestampTz now);
 static bool TransactionIdInRecentPast(TransactionId xid, uint32 epoch);
 
-static void XLogRead(char *buf, XLogRecPtr startptr, Size count);
+static void XLogRead(char *buf, XLogRecPtr startptr, Size count, polar_repl_mode_t polar_replication_mode);
 
+/* POLAR */
+static void XLogSendPhysicalExt(polar_repl_mode_t polar_replication_mode);
+static void polar_dma_logger_xlog_send_physical(void);
+static void polar_dma_data_xlog_send_physical(void);
+static XLogRecPtr polar_dma_get_flush_lsn(void);
 
 /* Initialize walsender process before entering the main command loop */
 void
@@ -321,12 +351,51 @@ WalSndErrorCleanup(void)
 static void
 WalSndShutdown(void)
 {
+	int			i;
+
 	/*
 	 * Reset whereToSendOutput to prevent ereport from attempting to send any
 	 * more messages to the standby.
 	 */
 	if (whereToSendOutput == DestRemote)
 		whereToSendOutput = DestNone;
+
+	/*
+	 * check all sender is shutdown, and set WalSndCtl->sender_running for max
+	 * available falg.
+	 */
+	bool		all_shutdown = true;
+
+	if (WalSndCtl->sender_running == true)
+	{
+		/*
+		 * Find a free walsender slot and reserve it. If this fails, we must
+		 * be out of WalSnd structures.
+		 */
+		for (i = 0; i < max_wal_senders; i++)
+		{
+			WalSnd	   *walsnd = &WalSndCtl->walsnds[i];
+
+			SpinLockAcquire(&walsnd->mutex);
+			if ((walsnd->pid != 0) && (walsnd->pid != MyWalSnd->pid))
+			{
+				SpinLockRelease(&walsnd->mutex);
+				all_shutdown = false;
+				break;
+			}
+			else
+			{
+				SpinLockRelease(&walsnd->mutex);
+			}
+		}
+
+		if (all_shutdown)
+		{
+			LWLockAcquire(SyncRepLock, LW_EXCLUSIVE);
+			WalSndCtl->sender_running = false;
+			LWLockRelease(SyncRepLock);
+		}
+	}
 
 	proc_exit(0);
 	abort();					/* keep the compiler quiet */
@@ -361,7 +430,10 @@ IdentifySystem(void)
 	if (am_cascading_walsender)
 	{
 		/* this also updates ThisTimeLineID */
-		logptr = GetStandbyFlushRecPtr();
+		if (polar_enable_dma)
+			logptr = polar_dma_get_flush_lsn();
+		else
+			logptr = GetStandbyFlushRecPtr();
 	}
 	else
 		logptr = GetFlushRecPtr();
@@ -441,7 +513,10 @@ SendTimeLineHistory(TimeLineHistoryCmd *cmd)
 	 */
 
 	TLHistoryFileName(histfname, cmd->timeline);
+	polar_is_dma_logger_mode = polar_is_dma_logger_node();	/* POLAR: Enter datamax
+															 * Mode. */
 	TLHistoryFilePath(path, cmd->timeline);
+	polar_is_dma_logger_mode = false;	/* POLAR: Leave datamax mode. */
 
 	/* Send a RowDescription message */
 	pq_beginmessage(&buf, 'T');
@@ -495,18 +570,18 @@ SendTimeLineHistory(TimeLineHistoryCmd *cmd)
 	bytesleft = histfilelen;
 	while (bytesleft > 0)
 	{
-		char		rbuf[BLCKSZ];
+		PGAlignedBlock rbuf;
 		int			nread;
 
 		pgstat_report_wait_start(WAIT_EVENT_WALSENDER_TIMELINE_HISTORY_READ);
-		nread = read(fd, rbuf, sizeof(rbuf));
+		nread = read(fd, rbuf.data, sizeof(rbuf));
 		pgstat_report_wait_end();
 		if (nread <= 0)
 			ereport(ERROR,
 					(errcode_for_file_access(),
 					 errmsg("could not read file \"%s\": %m",
 							path)));
-		pq_sendbytes(&buf, rbuf, nread);
+		pq_sendbytes(&buf, rbuf.data, nread);
 		bytesleft -= nread;
 	}
 	CloseTransientFile(fd);
@@ -514,6 +589,249 @@ SendTimeLineHistory(TimeLineHistoryCmd *cmd)
 	pq_endmessage(&buf);
 }
 
+#ifdef ENABLE_REMOTE_RECOVERY
+static char *page_image;
+
+/*
+ * Regular fetch page request from primary.
+ */
+static void
+ProcessFetchPageMessage(void)
+{
+	RelFileNode rnode;
+	ForkNumber	forknum;
+	BlockNumber blkno;
+	Buffer		buf;
+	Page		page;
+	int			r;
+
+	/* the caller already consumed the msgtype byte */
+	rnode.spcNode = (Oid) pq_getmsgint(&reply_message, 4);
+	rnode.dbNode = (Oid) pq_getmsgint(&reply_message, 4);
+	rnode.relNode = (Oid) pq_getmsgint(&reply_message, 4);
+	forknum = pq_getmsgint(&reply_message, 4);
+	blkno = (BlockNumber) pq_getmsgint(&reply_message, 4);
+
+	/* Read the request page */
+	buf = XLogReadBufferExtended(rnode, forknum, blkno,
+								 RBM_NORMAL);
+
+	resetStringInfo(&output_message);
+	pq_sendbyte(&output_message, 'w');
+
+	if (BufferIsValid(buf))
+	{
+		pq_sendint(&output_message, BLCKSZ, 4); /* len first */
+		enlargeStringInfo(&output_message, BLCKSZ);
+		LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
+
+		page = BufferGetPage(buf);
+		memcpy(&output_message.data[output_message.len], page, BLCKSZ);
+		output_message.len += BLCKSZ;
+		output_message.data[output_message.len] = '\0';
+
+		UnlockReleaseBuffer(buf);
+
+		if (enable_remote_recovery_print)
+			elog(LOG, "REMOTE RECOVERY valid page on standby spcnode %d dbnode %d relnode %d forknum %d blkno %d",
+				 rnode.spcNode, rnode.dbNode, rnode.relNode, forknum, blkno);
+	}
+	else
+	{
+		pq_sendint(&output_message, 0, 4);	/* len first */
+		elog(LOG, "REMOTE RECOVERY no valid page on standby spcnode %d dbnode %d relnode %d forknum %d blkno %d",
+			 rnode.spcNode, rnode.dbNode, rnode.relNode, forknum, blkno);
+	}
+
+	pq_putmessage_noblock('d', output_message.data, output_message.len);
+
+	r = pq_flush();
+	if (r != 0)
+	{
+		elog(LOG, "REMOTE RECOVERY cannot flush data");
+		proc_exit(1);
+	}
+}
+
+
+/*
+ * Process a status update message received from standby.
+ */
+static void
+ProcessPrimaryMessage(void)
+{
+	char		msgtype;
+
+	/*
+	 * Check message type from the first byte.
+	 */
+	msgtype = pq_getmsgbyte(&reply_message);
+	if (enable_remote_recovery_print)
+		elog(LOG, "process primary message %c", msgtype);
+
+	switch (msgtype)
+	{
+		case 'f':
+			ProcessFetchPageMessage();
+			break;
+
+		default:
+			ereport(COMMERROR,
+					(errcode(ERRCODE_PROTOCOL_VIOLATION),
+					 errmsg("unexpected message type \"%c\"", msgtype)));
+			proc_exit(0);
+	}
+}
+
+#define FETCH_SLEEP_INTERVAL (1 * 1000 * 1000)
+
+/*
+ * Handle START_REPLICATION command.
+ *
+ * At the moment, this never returns, but an ereport(ERROR) will take us back
+ * to the main loop.
+ *
+ * Loop to handle remote page fetching requests from primary.
+ */
+static void
+StartFetchPageReplication(StartReplicationCmd *cmd)
+{
+	StringInfoData buf;
+	int			r;
+
+	/* Send a CopyBothResponse message, and start streaming */
+	pq_beginmessage(&buf, 'W');
+	pq_sendbyte(&buf, 0);
+	pq_sendint16(&buf, 0);
+	pq_endmessage(&buf);
+	pq_flush();
+
+	page_image = (char *) palloc(BLCKSZ);
+
+	streamingDoneSending = streamingDoneReceiving = false;
+	elog(LOG, "start fetch page replication %X/%X timeline %u",
+		 (uint32) (cmd->startpoint >> 32),
+		 (uint32) (cmd->startpoint),
+		 cmd->timeline);
+
+	/*
+	 * if we are standby, we must wait for the replay process to pass the
+	 * target checkpoint.
+	 */
+	if (RecoveryInProgress())
+	{
+		XLogRecPtr	replayPtr;
+		TimeLineID	replayTLI;
+		int			sleep_count = 0;
+
+		while (1)
+		{
+			replayPtr = GetXLogReplayRecPtr(&replayTLI);
+
+			if (cmd->timeline != replayTLI)
+				elog(ERROR, "request different timeline %u %u", cmd->timeline, replayTLI);
+
+			if (cmd->startpoint > replayPtr)
+			{
+				if (!sleep_count)
+					elog(LOG, "REMOTE RECOVERY wait for replay process to pass the targert ckpt %X/%X replayPtr %X/%X",
+						 (uint32) (cmd->startpoint >> 32),
+						 (uint32) (cmd->startpoint),
+						 (uint32) (replayPtr >> 32),
+						 (uint32) (replayPtr));
+
+
+
+				pg_usleep(FETCH_SLEEP_INTERVAL);
+				sleep_count++;
+			}
+			else
+			{
+				elog(LOG, "REMOTE RECOVERY replay process passed the targert ckpt %X/%X replayPtr %X/%X",
+					 (uint32) (cmd->startpoint >> 32),
+					 (uint32) (cmd->startpoint),
+					 (uint32) (replayPtr >> 32),
+					 (uint32) (replayPtr));
+				break;
+			}
+		}
+	}
+
+	for (;;)
+	{
+		pq_startmsgread();
+		r = pq_getbyte();
+		if (r == EOF)
+		{
+			/* unexpected error or EOF */
+			ereport(COMMERROR,
+					(errcode(ERRCODE_PROTOCOL_VIOLATION),
+					 errmsg("unexpected EOF on primary connection")));
+			proc_exit(0);
+		}
+		elog(DEBUG6, "REMOTE RECOVERY receives command %c", r);
+
+		/* Read the message contents */
+		resetStringInfo(&reply_message);
+		if (pq_getmessage(&reply_message, 0))
+		{
+			ereport(COMMERROR,
+					(errcode(ERRCODE_PROTOCOL_VIOLATION),
+					 errmsg("unexpected EOF on standby connection")));
+			proc_exit(0);
+		}
+
+		/* Handle the very limited subset of commands expected in this phase */
+		switch (r)
+		{
+				/*
+				 * 'd' means a standby reply wrapped in a CopyData packet.
+				 */
+			case 'd':
+				ProcessPrimaryMessage();
+				break;
+
+				/*
+				 * CopyDone means the primary requested to finish streaming.
+				 * Reply with CopyDone, if we had not sent that already.
+				 */
+			case 'c':
+				if (!streamingDoneSending)
+				{
+					pq_putmessage_noblock('c', NULL, 0);
+					streamingDoneSending = true;
+				}
+
+				streamingDoneReceiving = true;
+				elog(LOG, "REMOTE RECOVERY streaming copy done");
+
+				break;
+
+				/*
+				 * 'X' means that the primary is closing down the socket.
+				 */
+			case 'X':
+				elog(LOG, "REMOTE RECOVERY primary disconnected");
+				proc_exit(0);
+
+			default:
+				ereport(FATAL,
+						(errcode(ERRCODE_PROTOCOL_VIOLATION),
+						 errmsg("invalid primary message type \"%c\"",
+								r)));
+		}
+		pq_endmsgread();
+
+		if (streamingDoneReceiving)
+			break;
+	}
+
+	elog(LOG, "REMOTE RECOVERY streaming done");
+
+	/* Send CommandComplete message */
+	EndCommand("COPY 0", DestRemote);
+}
+#endif
 /*
  * Handle START_REPLICATION command.
  *
@@ -531,6 +849,11 @@ StartReplication(StartReplicationCmd *cmd)
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 				 errmsg("IDENTIFY_SYSTEM has not been run before START_REPLICATION")));
 
+	/* POLAR: do not allow DMA replication if not in DMA mode */
+	if (!polar_enable_dma && POLAR_IS_DMA_REPL(cmd->polar_repl_mode))
+		ereport(ERROR,
+				(errmsg("DMA replication is illegally requested if not in DMA mode.")));
+
 	/*
 	 * We assume here that we're logging enough information in the WAL for
 	 * log-shipping, since this is checked in PostmasterMain().
@@ -539,7 +862,6 @@ StartReplication(StartReplicationCmd *cmd)
 	 * difficult for there to be WAL data that we can still see that was
 	 * written at wal_level='minimal'.
 	 */
-
 	if (cmd->slotname)
 	{
 		ReplicationSlotAcquire(cmd->slotname, true);
@@ -549,6 +871,45 @@ StartReplication(StartReplicationCmd *cmd)
 					 (errmsg("cannot use a logical replication slot for physical replication"))));
 	}
 
+	if (cmd->polar_repl_mode == POLAR_REPL_DMA_LOGGER)
+	{
+		/*
+		 * POLAR: if startpoint from DMA logger is invalid, send from old wal
+		 * files of start timeline.
+		 */
+		if (XLogRecPtrIsInvalid(cmd->startpoint))
+		{
+			XLogRecPtr	restart_lsn = polar_set_initial_datamax_restart_lsn(NULL);
+
+			/*
+			 * Select the maximum of current timeline's switch point and
+			 * oldest wal file
+			 */
+			if (cmd->timeline > 1)
+			{
+				List	   *history;
+				XLogRecPtr	switchpoint;
+				TimeLineID	tli;
+
+				polar_is_dma_logger_mode = polar_is_dma_logger_node();	/* POLAR: set datamax
+																		 * branch for xlog file
+																		 * path */
+				history = readTimeLineHistory(cmd->timeline);
+				polar_is_dma_logger_mode = false;	/* POLAR: reset */
+
+				switchpoint = tliSwitchPoint(cmd->timeline - 1, history, &tli);
+				if (switchpoint > restart_lsn)
+					restart_lsn = switchpoint;
+
+				list_free_deep(history);
+			}
+
+			cmd->startpoint =
+				restart_lsn - XLogSegmentOffset(restart_lsn, wal_segment_size);
+		}
+	}
+	/* POLAR end */
+
 	/*
 	 * Select the timeline. If it was given explicitly by the client, use
 	 * that. Otherwise use the timeline of the last replayed record, which is
@@ -557,7 +918,10 @@ StartReplication(StartReplicationCmd *cmd)
 	if (am_cascading_walsender)
 	{
 		/* this also updates ThisTimeLineID */
-		FlushPtr = GetStandbyFlushRecPtr();
+		if (polar_enable_dma)
+			FlushPtr = polar_dma_get_flush_lsn();
+		else
+			FlushPtr = GetStandbyFlushRecPtr();
 	}
 	else
 		FlushPtr = GetFlushRecPtr();
@@ -582,7 +946,11 @@ StartReplication(StartReplicationCmd *cmd)
 			 * Check that the timeline the client requested exists, and the
 			 * requested start location is on that timeline.
 			 */
+			polar_is_dma_logger_mode = polar_is_dma_logger_node();	/* POLAR: set datamax
+																	 * branch for xlog file
+																	 * path */
 			timeLineHistory = readTimeLineHistory(ThisTimeLineID);
+			polar_is_dma_logger_mode = false;	/* POLAR: reset */
 			switchpoint = tliSwitchPoint(cmd->timeline, timeLineHistory,
 										 &sendTimeLineNextTLI);
 			list_free_deep(timeLineHistory);
@@ -678,7 +1046,12 @@ StartReplication(StartReplicationCmd *cmd)
 		/* Main loop of walsender */
 		replication_active = true;
 
-		WalSndLoop(XLogSendPhysical);
+		if (cmd->polar_repl_mode == POLAR_REPL_DMA_LOGGER)
+			WalSndLoop(polar_dma_logger_xlog_send_physical);
+		else if (cmd->polar_repl_mode == POLAR_REPL_DMA_DATA)
+			WalSndLoop(polar_dma_data_xlog_send_physical);
+		else
+			WalSndLoop(XLogSendPhysical);
 
 		replication_active = false;
 		if (got_STOPPING)
@@ -771,7 +1144,7 @@ logical_read_xlog_page(XLogReaderState *state, XLogRecPtr targetPagePtr, int req
 		count = flushptr - targetPagePtr;	/* part of the page available */
 
 	/* now actually read the data, we know it's there */
-	XLogRead(cur_page, targetPagePtr, XLOG_BLCKSZ);
+	XLogRead(cur_page, targetPagePtr, XLOG_BLCKSZ, POLAR_REPL_DEFAULT);
 
 	return count;
 }
@@ -839,13 +1212,20 @@ CreateReplicationSlot(CreateReplicationSlotCmd *cmd)
 	char		xloc[MAXFNAMELEN];
 	char	   *slot_name;
 	bool		reserve_wal = false;
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+	GlobalTimestamp snapshot_start_ts = InvalidGlobalTimestamp;
+#endif
 	CRSSnapshotAction snapshot_action = CRS_EXPORT_SNAPSHOT;
 	DestReceiver *dest;
 	TupOutputState *tstate;
 	TupleDesc	tupdesc;
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+	Datum		values[5];
+	bool		nulls[5];
+#else
 	Datum		values[4];
 	bool		nulls[4];
-
+#endif
 	Assert(!MyReplicationSlot);
 
 	parseCreateReplSlotOptions(cmd, &reserve_wal, &snapshot_action);
@@ -947,9 +1327,23 @@ CreateReplicationSlot(CreateReplicationSlotCmd *cmd)
 		else if (snapshot_action == CRS_USE_SNAPSHOT)
 		{
 			Snapshot	snap;
-
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+			Snapshot	cur_snap;
+#endif
 			snap = SnapBuildInitialSnapshot(ctx->snapshot_builder);
 			RestoreTransactionSnapshot(snap, MyProc);
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+			if (!IsolationUsesXactSnapshot())
+				elog(ERROR, "Isolation level should be larger than Repeatable Read");
+
+			cur_snap = GetTransactionSnapshot();
+			snapshot_start_ts = cur_snap->snapshotcsn;
+			if (!COMMITSEQNO_IS_NORMAL(snapshot_start_ts))
+				elog(ERROR, "invalid snapshot start ts " UINT64_FORMAT, snapshot_start_ts);
+
+			if (enable_distri_print)
+				elog(LOG, "logical replication sends snapshot start ts " UINT64_FORMAT, snapshot_start_ts);
+#endif
 		}
 
 		/* don't need the decoding context anymore */
@@ -982,9 +1376,15 @@ CreateReplicationSlot(CreateReplicationSlotCmd *cmd)
 	 * - second field: LSN at which we became consistent
 	 * - third field: exported snapshot's name
 	 * - fourth field: output plugin
+	 * - fifth filed: snapshot start_ts added for CTS-based logical replication
 	 *----------
 	 */
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+	tupdesc = CreateTemplateTupleDesc(5, false);
+#else
 	tupdesc = CreateTemplateTupleDesc(4, false);
+#endif
+
 	TupleDescInitBuiltinEntry(tupdesc, (AttrNumber) 1, "slot_name",
 							  TEXTOID, -1, 0);
 	TupleDescInitBuiltinEntry(tupdesc, (AttrNumber) 2, "consistent_point",
@@ -993,6 +1393,11 @@ CreateReplicationSlot(CreateReplicationSlotCmd *cmd)
 							  TEXTOID, -1, 0);
 	TupleDescInitBuiltinEntry(tupdesc, (AttrNumber) 4, "output_plugin",
 							  TEXTOID, -1, 0);
+
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+	TupleDescInitBuiltinEntry(tupdesc, (AttrNumber) 5, "snapshot_start_ts",
+							  INT8OID, -1, 0);
+#endif
 
 	/* prepare for projection of tuples */
 	tstate = begin_tup_output_tupdesc(dest, tupdesc);
@@ -1016,6 +1421,15 @@ CreateReplicationSlot(CreateReplicationSlotCmd *cmd)
 	else
 		nulls[3] = true;
 
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+	if (snapshot_start_ts != InvalidGlobalTimestamp)
+		values[4] = Int64GetDatum(snapshot_start_ts);
+	else
+		nulls[4] = true;
+
+	if (enable_distri_print)
+		elog(LOG, "logical replication sends snapshot start ts " UINT64_FORMAT, snapshot_start_ts);
+#endif
 	/* send it to dest */
 	do_tup_output(tstate, values, nulls);
 	end_tup_output(tstate);
@@ -1061,6 +1475,19 @@ StartLogicalReplication(StartReplicationCmd *cmd)
 		got_STOPPING = true;
 	}
 
+	/*
+	 * Create our decoding context, making it start at the previously ack'ed
+	 * position.
+	 *
+	 * Do this before sending CopyBoth, so that any errors are reported early.
+	 */
+	logical_decoding_ctx =
+		CreateDecodingContext(cmd->startpoint, cmd->options, false,
+							  logical_read_xlog_page,
+							  WalSndPrepareWrite, WalSndWriteData,
+							  WalSndUpdateProgress);
+
+
 	WalSndSetState(WALSNDSTATE_CATCHUP);
 
 	/* Send a CopyBothResponse message, and start streaming */
@@ -1070,16 +1497,6 @@ StartLogicalReplication(StartReplicationCmd *cmd)
 	pq_endmessage(&buf);
 	pq_flush();
 
-	/*
-	 * Initialize position to the last ack'ed one, then the xlog records begin
-	 * to be shipped from that position.
-	 */
-	logical_decoding_ctx = CreateDecodingContext(cmd->startpoint, cmd->options,
-												 false,
-												 logical_read_xlog_page,
-												 WalSndPrepareWrite,
-												 WalSndWriteData,
-												 WalSndUpdateProgress);
 
 	/* Start reading WAL from the oldest required WAL. */
 	logical_startptr = MyReplicationSlot->data.restart_lsn;
@@ -1192,18 +1609,16 @@ WalSndWriteData(LogicalDecodingContext *ctx, XLogRecPtr lsn, TransactionId xid,
 		/* Check for input from the client */
 		ProcessRepliesIfAny();
 
-		now = GetCurrentTimestamp();
-
 		/* die if timeout was reached */
-		WalSndCheckTimeOut(now);
+		WalSndCheckTimeOut();
 
 		/* Send keepalive if the time has come */
-		WalSndKeepaliveIfNecessary(now);
+		WalSndKeepaliveIfNecessary();
 
 		if (!pq_is_send_pending())
 			break;
 
-		sleeptime = WalSndComputeSleeptime(now);
+		sleeptime = WalSndComputeSleeptime(GetCurrentTimestamp());
 
 		wakeEvents = WL_LATCH_SET | WL_POSTMASTER_DEATH |
 			WL_SOCKET_WRITEABLE | WL_SOCKET_READABLE | WL_TIMEOUT;
@@ -1298,7 +1713,6 @@ WalSndWaitForWal(XLogRecPtr loc)
 	for (;;)
 	{
 		long		sleeptime;
-		TimestampTz now;
 
 		/*
 		 * Emergency bailout if postmaster has died.  This is to avoid the
@@ -1383,13 +1797,11 @@ WalSndWaitForWal(XLogRecPtr loc)
 			!pq_is_send_pending())
 			break;
 
-		now = GetCurrentTimestamp();
-
 		/* die if timeout was reached */
-		WalSndCheckTimeOut(now);
+		WalSndCheckTimeOut();
 
 		/* Send keepalive if the time has come */
-		WalSndKeepaliveIfNecessary(now);
+		WalSndKeepaliveIfNecessary();
 
 		/*
 		 * Sleep until something happens or we time out.  Also wait for the
@@ -1398,7 +1810,7 @@ WalSndWaitForWal(XLogRecPtr loc)
 		 * new WAL to be generated.  (But if we have nothing to send, we don't
 		 * want to wake on socket-writable.)
 		 */
-		sleeptime = WalSndComputeSleeptime(now);
+		sleeptime = WalSndComputeSleeptime(GetCurrentTimestamp());
 
 		wakeEvents = WL_LATCH_SET | WL_POSTMASTER_DEATH |
 			WL_SOCKET_READABLE | WL_TIMEOUT;
@@ -1533,7 +1945,13 @@ exec_replication_command(const char *cmd_string)
 				StartReplicationCmd *cmd = (StartReplicationCmd *) cmd_node;
 
 				PreventInTransactionBlock(true, "START_REPLICATION");
-
+#ifdef ENABLE_REMOTE_RECOVERY
+				if (cmd->kind == REPLICATION_KIND_FETCH_PAGE)
+				{
+					StartFetchPageReplication(cmd);
+				}
+				else
+#endif
 				if (cmd->kind == REPLICATION_KIND_PHYSICAL)
 					StartReplication(cmd);
 				else
@@ -1594,6 +2012,8 @@ ProcessRepliesIfAny(void)
 	unsigned char firstchar;
 	int			r;
 	bool		received = false;
+
+	last_processing = GetCurrentTimestamp();
 
 	for (;;)
 	{
@@ -1682,7 +2102,7 @@ ProcessRepliesIfAny(void)
 	 */
 	if (received)
 	{
-		last_reply_timestamp = GetCurrentTimestamp();
+		last_reply_timestamp = last_processing;
 		waiting_for_ping_response = false;
 	}
 }
@@ -1780,6 +2200,13 @@ ProcessStandbyReplyMessage(void)
 		 (uint32) (flushPtr >> 32), (uint32) flushPtr,
 		 (uint32) (applyPtr >> 32), (uint32) applyPtr,
 		 replyRequested ? " (reply requested)" : "");
+
+	if (enable_distri_print)
+		elog(DEBUG2, "write %X/%X flush %X/%X apply %X/%X%s",
+			 (uint32) (writePtr >> 32), (uint32) writePtr,
+			 (uint32) (flushPtr >> 32), (uint32) flushPtr,
+			 (uint32) (applyPtr >> 32), (uint32) applyPtr,
+			 replyRequested ? " (reply requested)" : "");
 
 	/* See if we can compute the round-trip lag for these positions. */
 	now = GetCurrentTimestamp();
@@ -1884,6 +2311,8 @@ PhysicalReplicationSlotNewXmin(TransactionId feedbackXmin, TransactionId feedbac
 	}
 }
 
+/* POLAR end */
+
 /*
  * Check that the provided xmin/epoch are sane, that is, not in the future
  * and not so far back as to be already wrapped around.
@@ -1900,7 +2329,18 @@ TransactionIdInRecentPast(TransactionId xid, uint32 epoch)
 	TransactionId nextXid;
 	uint32		nextEpoch;
 
-	GetNextXidAndEpoch(&nextXid, &nextEpoch);
+	/*
+	 * POLAR: get primary's nextXid and epoch from polar_datamax_ctl when in
+	 * datamax mode
+	 */
+	if (!polar_is_dma_logger_node())
+		GetNextXidAndEpoch(&nextXid, &nextEpoch);
+	else
+	{
+		nextXid = pg_atomic_read_u32(&polar_datamax_ctl->polar_primary_next_xid);
+		nextEpoch = pg_atomic_read_u32(&polar_datamax_ctl->polar_primary_epoch);
+	}
+	/* POLAR end */
 
 	if (xid <= nextXid)
 	{
@@ -2004,7 +2444,13 @@ ProcessStandbyHSFeedbackMessage(void)
 	 */
 	if (MyReplicationSlot != NULL)	/* XXX: persistency configurable? */
 		PhysicalReplicationSlotNewXmin(feedbackXmin, feedbackCatalogXmin);
-	else
+
+	/*
+	 * POLAR: no need to update MyPgXact->xmin in datamax mode MyPgXact->xmin
+	 * is used to compute oldestxmin for vacuum there is no primary data in
+	 * datamax mode
+	 */
+	else if (!polar_is_dma_logger_node())
 	{
 		if (TransactionIdIsNormal(feedbackCatalogXmin)
 			&& TransactionIdPrecedes(feedbackCatalogXmin, feedbackXmin))
@@ -2012,6 +2458,7 @@ ProcessStandbyHSFeedbackMessage(void)
 		else
 			MyPgXact->xmin = feedbackXmin;
 	}
+	/* POLAR end */
 }
 
 /*
@@ -2061,10 +2508,18 @@ WalSndComputeSleeptime(TimestampTz now)
 
 /*
  * Check whether there have been responses by the client within
- * wal_sender_timeout and shutdown if not.
+ * wal_sender_timeout and shutdown if not.  Using last_processing as the
+ * reference point avoids counting server-side stalls against the client.
+ * However, a long server-side stall can make WalSndKeepaliveIfNecessary()
+ * postdate last_processing by more than wal_sender_timeout.  If that happens,
+ * the client must reply almost immediately to avoid a timeout.  This rarely
+ * affects the default configuration, under which clients spontaneously send a
+ * message every standby_message_timeout = wal_sender_timeout/6 = 10s.  We
+ * could eliminate that problem by recognizing timeout expiration at
+ * wal_sender_timeout/2 after the keepalive.
  */
 static void
-WalSndCheckTimeOut(TimestampTz now)
+WalSndCheckTimeOut(void)
 {
 	TimestampTz timeout;
 
@@ -2075,7 +2530,7 @@ WalSndCheckTimeOut(TimestampTz now)
 	timeout = TimestampTzPlusMilliseconds(last_reply_timestamp,
 										  wal_sender_timeout);
 
-	if (wal_sender_timeout > 0 && now >= timeout)
+	if (wal_sender_timeout > 0 && last_processing >= timeout)
 	{
 		/*
 		 * Since typically expiration of replication timeout means
@@ -2106,8 +2561,6 @@ WalSndLoop(WalSndSendDataCallback send_data)
 	 */
 	for (;;)
 	{
-		TimestampTz now;
-
 		/*
 		 * Emergency bailout if postmaster has died.  This is to avoid the
 		 * necessity for manual cleanup of all postmaster children.
@@ -2169,7 +2622,7 @@ WalSndLoop(WalSndSendDataCallback send_data)
 			if (MyWalSnd->state == WALSNDSTATE_CATCHUP)
 			{
 				ereport(DEBUG1,
-						(errmsg("standby \"%s\" has now caught up with primary",
+						(errmsg("\"%s\" has now caught up with upstream server",
 								application_name)));
 				WalSndSetState(WALSNDSTATE_STREAMING);
 			}
@@ -2185,13 +2638,11 @@ WalSndLoop(WalSndSendDataCallback send_data)
 				WalSndDone(send_data);
 		}
 
-		now = GetCurrentTimestamp();
-
 		/* Check for replication timeout. */
-		WalSndCheckTimeOut(now);
+		WalSndCheckTimeOut();
 
 		/* Send keepalive if the time has come */
-		WalSndKeepaliveIfNecessary(now);
+		WalSndKeepaliveIfNecessary();
 
 		/*
 		 * We don't block if not caught up, unless there is unsent data
@@ -2209,7 +2660,11 @@ WalSndLoop(WalSndSendDataCallback send_data)
 			wakeEvents = WL_LATCH_SET | WL_POSTMASTER_DEATH | WL_TIMEOUT |
 				WL_SOCKET_READABLE;
 
-			sleeptime = WalSndComputeSleeptime(now);
+			/*
+			 * Use fresh timestamp, not last_processed, to reduce the chance
+			 * of reaching wal_sender_timeout before sending a keepalive.
+			 */
+			sleeptime = WalSndComputeSleeptime(GetCurrentTimestamp());
 
 			if (pq_is_send_pending())
 				wakeEvents |= WL_SOCKET_WRITEABLE;
@@ -2270,6 +2725,13 @@ InitWalSenderSlot(void)
 			/* don't need the lock anymore */
 			MyWalSnd = (WalSnd *) walsnd;
 
+			if (WalSndCtl->sender_running == false)
+			{
+				LWLockAcquire(SyncRepLock, LW_EXCLUSIVE);
+				WalSndCtl->sender_running = true;
+				LWLockRelease(SyncRepLock);
+			}
+
 			break;
 		}
 	}
@@ -2314,7 +2776,7 @@ WalSndKill(int code, Datum arg)
  * more than one.
  */
 static void
-XLogRead(char *buf, XLogRecPtr startptr, Size count)
+XLogRead(char *buf, XLogRecPtr startptr, Size count, polar_repl_mode_t polar_replication_mode)
 {
 	char	   *p;
 	XLogRecPtr	recptr;
@@ -2371,7 +2833,7 @@ retry:
 			 *-------
 			 */
 			curFileTimeLine = sendTimeLine;
-			if (sendTimeLineIsHistoric)
+			if (!POLAR_IS_DMA_REPL(polar_replication_mode) && sendTimeLineIsHistoric)
 			{
 				XLogSegNo	endSegNo;
 
@@ -2380,7 +2842,11 @@ retry:
 					curFileTimeLine = sendTimeLineNextTLI;
 			}
 
+			polar_is_dma_logger_mode = polar_is_dma_logger_node();	/* POLAR: set datamax
+																	 * branch for xlog file
+																	 * path */
 			XLogFilePath(path, curFileTimeLine, sendSegNo, wal_segment_size);
+			polar_is_dma_logger_mode = false;	/* POLAR: reset */
 
 			sendFile = BasicOpenFile(path, O_RDONLY | PG_BINARY);
 			if (sendFile < 0)
@@ -2491,10 +2957,25 @@ retry:
 static void
 XLogSendPhysical(void)
 {
+	XLogSendPhysicalExt(POLAR_REPL_DEFAULT);
+}
+
+/*
+ * POLAR: Eextend function for support polar replica mode and polar datamax mode
+ */
+static void
+XLogSendPhysicalExt(polar_repl_mode_t polar_replication_mode)
+{
 	XLogRecPtr	SendRqstPtr;
 	XLogRecPtr	startptr;
 	XLogRecPtr	endptr;
 	Size		nbytes;
+
+	/* POLAR */
+	TransactionId polar_primary_next_xid;	/* record primary next_xid */
+	uint32		polar_primary_epoch;	/* record primary epoch */
+	XLogSegNo	polar_last_removed_segno;	/* record primary's last removed
+											 * segno */
 
 	/* If requested switch the WAL sender to the stopping state. */
 	if (got_STOPPING)
@@ -2537,7 +3018,10 @@ XLogSendPhysical(void)
 		 */
 		bool		becameHistoric = false;
 
-		SendRqstPtr = GetStandbyFlushRecPtr();
+		if (polar_enable_dma)
+			SendRqstPtr = polar_dma_get_flush_lsn();
+		else
+			SendRqstPtr = GetStandbyFlushRecPtr();
 
 		if (!RecoveryInProgress())
 		{
@@ -2546,7 +3030,14 @@ XLogSendPhysical(void)
 			 * ThisTimeLineID to the new current timeline.
 			 */
 			am_cascading_walsender = false;
-			becameHistoric = true;
+
+			/*
+			 * POLAR: if in DMA mode, ThisTimeLineID will be advance to new
+			 * timeline in polar_dma_get_flush_lsn and new timeline will be
+			 * sent before exit from recovery status.
+			 */
+			if (!POLAR_IS_DMA_REPL(polar_replication_mode) || sendTimeLine != ThisTimeLineID)
+				becameHistoric = true;
 		}
 		else
 		{
@@ -2568,7 +3059,11 @@ XLogSendPhysical(void)
 			 */
 			List	   *history;
 
+			polar_is_dma_logger_mode = polar_is_dma_logger_node();	/* POLAR: set datamax
+																	 * branch for xlog file
+																	 * path */
 			history = readTimeLineHistory(ThisTimeLineID);
+			polar_is_dma_logger_mode = false;	/* POLAR: Leave datamax mode. */
 			sendTimeLineValidUpto = tliSwitchPoint(sendTimeLine, history, &sendTimeLineNextTLI);
 
 			Assert(sendTimeLine < sendTimeLineNextTLI);
@@ -2654,7 +3149,7 @@ XLogSendPhysical(void)
 	}
 
 	/* Do we have any work to do? */
-	Assert(sentPtr <= SendRqstPtr);
+	Assert(POLAR_IS_DMA_REPL(polar_replication_mode) || sentPtr <= SendRqstPtr);
 	if (SendRqstPtr <= sentPtr)
 	{
 		WalSndCaughtUp = true;
@@ -2699,28 +3194,69 @@ XLogSendPhysical(void)
 	 * OK to read and send the slice.
 	 */
 	resetStringInfo(&output_message);
-	pq_sendbyte(&output_message, 'w');
+
+	/*
+	 * POLAR: when downstream mode is datamax we need to send nextXid and
+	 * Epoch to verify if xmin/epoch of standby is sane we also send
+	 * last_valid_lsn to ensure xlog consistency between primary and datamax
+	 */
+	if (polar_replication_mode == POLAR_REPL_DMA_LOGGER)
+		pq_sendbyte(&output_message, 'e');
+	else
+		pq_sendbyte(&output_message, 'w');
 
 	pq_sendint64(&output_message, startptr);	/* dataStart */
 	pq_sendint64(&output_message, SendRqstPtr); /* walEnd */
-	pq_sendint64(&output_message, 0);	/* sendtime, filled in last */
 
-	/*
-	 * Read the log directly into the output buffer to avoid extra memcpy
-	 * calls.
-	 */
-	enlargeStringInfo(&output_message, nbytes);
-	XLogRead(&output_message.data[output_message.len], startptr, nbytes);
-	output_message.len += nbytes;
-	output_message.data[output_message.len] = '\0';
+	{
+		/*
+		 * POLAR: when downstream mode is datamax, send 1) nextxid and
+		 * nextepoch to verify the sanity of standby xmin in datamax node 2)
+		 * current last valid lsn to avoid wal inconsistency between upstream
+		 * and downstream 3) last_remove_segno to avoid datamax removing wal
+		 * which haven't been removed in upstream
+		 */
+		if (polar_replication_mode == POLAR_REPL_DMA_LOGGER)
+		{
+			if (!polar_is_dma_logger_node())
+				GetNextXidAndEpoch(&polar_primary_next_xid, &polar_primary_epoch);
 
-	/*
-	 * Fill the send timestamp last, so that it is taken as late as possible.
-	 */
-	resetStringInfo(&tmpbuf);
-	pq_sendint64(&tmpbuf, GetCurrentTimestamp());
-	memcpy(&output_message.data[1 + sizeof(int64) + sizeof(int64)],
-		   tmpbuf.data, sizeof(int64));
+			/*
+			 * get next_xid and next_epoch from polar_datamax_ctl when in
+			 * datamax mode
+			 */
+			else
+			{
+				polar_primary_next_xid = pg_atomic_read_u32(&polar_datamax_ctl->polar_primary_next_xid);
+				polar_primary_epoch = pg_atomic_read_u32(&polar_datamax_ctl->polar_primary_epoch);
+			}
+			pq_sendint32(&output_message, polar_primary_next_xid);	/* current next xid */
+			pq_sendint32(&output_message, polar_primary_epoch); /* current epoch */
+			polar_last_removed_segno = XLogGetLastRemovedSegno();	/* current last removed
+																	 * segno */
+			pq_sendint64(&output_message, polar_last_removed_segno);
+		}
+		/* POLAR end */
+		pq_sendint64(&output_message, 0);	/* sendtime, filled in last */
+
+		/*
+		 * Read the log directly into the output buffer to avoid extra memcpy
+		 * calls.
+		 */
+		enlargeStringInfo(&output_message, nbytes);
+		XLogRead(&output_message.data[output_message.len], startptr, nbytes, polar_replication_mode);
+		output_message.len += nbytes;
+		output_message.data[output_message.len] = '\0';
+
+		/*
+		 * Fill the send timestamp last, so that it is taken as late as
+		 * possible.
+		 */
+		resetStringInfo(&tmpbuf);
+		pq_sendint64(&tmpbuf, GetCurrentTimestamp());
+		memcpy(&output_message.data[1 + sizeof(int64) + sizeof(int64)],
+			   tmpbuf.data, sizeof(int64));
+	}
 
 	pq_putmessage_noblock('d', output_message.data, output_message.len);
 
@@ -2735,7 +3271,6 @@ XLogSendPhysical(void)
 		SpinLockRelease(&walsnd->mutex);
 	}
 
-	/* Report progress of XLOG streaming in PS display */
 	if (update_process_title)
 	{
 		char		activitymsg[50];
@@ -2758,10 +3293,10 @@ XLogSendLogical(void)
 	char	   *errm;
 
 	/*
-	 * Don't know whether we've caught up yet. We'll set it to true in
-	 * WalSndWaitForWal, if we're actually waiting. We also set to true if
-	 * XLogReadRecord() had to stop reading but WalSndWaitForWal didn't wait -
-	 * i.e. when we're shutting down.
+	 * Don't know whether we've caught up yet. We'll set WalSndCaughtUp to
+	 * true in WalSndWaitForWal, if we're actually waiting. We also set to
+	 * true if XLogReadRecord() had to stop reading but WalSndWaitForWal
+	 * didn't wait - i.e. when we're shutting down.
 	 */
 	WalSndCaughtUp = false;
 
@@ -2774,6 +3309,9 @@ XLogSendLogical(void)
 
 	if (record != NULL)
 	{
+		/* XXX: Note that logical decoding cannot be used while in recovery */
+		XLogRecPtr	flushPtr = GetFlushRecPtr();
+
 		/*
 		 * Note the lack of any call to LagTrackerWrite() which is handled by
 		 * WalSndUpdateProgress which is called by output plugin through
@@ -2782,6 +3320,13 @@ XLogSendLogical(void)
 		LogicalDecodingProcessRecord(logical_decoding_ctx, logical_decoding_ctx->reader);
 
 		sentPtr = logical_decoding_ctx->reader->EndRecPtr;
+
+		/*
+		 * If we have sent a record that is at or beyond the flushed point, we
+		 * have caught up.
+		 */
+		if (sentPtr >= flushPtr)
+			WalSndCaughtUp = true;
 	}
 	else
 	{
@@ -2875,7 +3420,6 @@ GetStandbyFlushRecPtr(void)
 	 * is streaming WAL from the same timeline, we can send anything that it
 	 * has streamed, but hasn't been replayed yet.
 	 */
-
 	receivePtr = GetWalRcvWriteRecPtr(NULL, &receiveTLI);
 	replayPtr = GetXLogReplayRecPtr(&replayTLI);
 
@@ -2997,6 +3541,8 @@ WalSndShmemInit(void)
 	{
 		/* First time through, so initialize */
 		MemSet(WalSndCtl, 0, WalSndShmemSize());
+
+		WalSndCtl->sender_running = false;
 
 		for (i = 0; i < NUM_SYNC_REP_WAIT_MODE; i++)
 			SHMQueueInit(&(WalSndCtl->SyncRepQueue[i]));
@@ -3351,7 +3897,7 @@ WalSndKeepalive(bool requestReply)
  * Send keepalive message if too much time has elapsed.
  */
 static void
-WalSndKeepaliveIfNecessary(TimestampTz now)
+WalSndKeepaliveIfNecessary(void)
 {
 	TimestampTz ping_time;
 
@@ -3372,7 +3918,7 @@ WalSndKeepaliveIfNecessary(TimestampTz now)
 	 */
 	ping_time = TimestampTzPlusMilliseconds(last_reply_timestamp,
 											wal_sender_timeout / 2);
-	if (now >= ping_time)
+	if (last_processing >= ping_time)
 	{
 		WalSndKeepalive(true);
 		waiting_for_ping_response = true;
@@ -3405,7 +3951,7 @@ LagTrackerWrite(XLogRecPtr lsn, TimestampTz local_flush_time)
 	 */
 	if (LagTracker.last_lsn == lsn)
 		return;
-	LagTracker.last_lsn = lsn;
+	LagTracker. last_lsn = lsn;
 
 	/*
 	 * If advancing the write head of the circular buffer would crash into any
@@ -3413,7 +3959,7 @@ LagTrackerWrite(XLogRecPtr lsn, TimestampTz local_flush_time)
 	 * slowest reader (presumably apply) is the one that controls the release
 	 * of space.
 	 */
-	new_write_head = (LagTracker.write_head + 1) % LAG_TRACKER_BUFFER_SIZE;
+	new_write_head = (LagTracker.write_head + 1) %LAG_TRACKER_BUFFER_SIZE;
 	buffer_full = false;
 	for (i = 0; i < NUM_SYNC_REP_WAIT_MODE; ++i)
 	{
@@ -3429,16 +3975,18 @@ LagTrackerWrite(XLogRecPtr lsn, TimestampTz local_flush_time)
 	if (buffer_full)
 	{
 		new_write_head = LagTracker.write_head;
+
 		if (LagTracker.write_head > 0)
-			LagTracker.write_head--;
+			LagTracker. write_head--;
+
 		else
-			LagTracker.write_head = LAG_TRACKER_BUFFER_SIZE - 1;
+			LagTracker. write_head = LAG_TRACKER_BUFFER_SIZE - 1;
 	}
 
 	/* Store a sample at the current write head position. */
-	LagTracker.buffer[LagTracker.write_head].lsn = lsn;
-	LagTracker.buffer[LagTracker.write_head].time = local_flush_time;
-	LagTracker.write_head = new_write_head;
+	LagTracker. buffer[LagTracker.write_head].lsn = lsn;
+	LagTracker. buffer[LagTracker.write_head].time = local_flush_time;
+	LagTracker. write_head = new_write_head;
 }
 
 /*
@@ -3464,10 +4012,10 @@ LagTrackerRead(int head, XLogRecPtr lsn, TimestampTz now)
 		   LagTracker.buffer[LagTracker.read_heads[head]].lsn <= lsn)
 	{
 		time = LagTracker.buffer[LagTracker.read_heads[head]].time;
-		LagTracker.last_read[head] =
-			LagTracker.buffer[LagTracker.read_heads[head]];
-		LagTracker.read_heads[head] =
-			(LagTracker.read_heads[head] + 1) % LAG_TRACKER_BUFFER_SIZE;
+		LagTracker. last_read[head] =
+		LagTracker.buffer[LagTracker.read_heads[head]];
+		LagTracker. read_heads[head] =
+		(LagTracker.read_heads[head] + 1) %LAG_TRACKER_BUFFER_SIZE;
 	}
 
 	/*
@@ -3478,7 +4026,7 @@ LagTrackerRead(int head, XLogRecPtr lsn, TimestampTz now)
 	 * of idleness.
 	 */
 	if (LagTracker.read_heads[head] == LagTracker.write_head)
-		LagTracker.last_read[head].time = 0;
+		LagTracker. last_read[head].time = 0;
 
 	if (time > now)
 	{
@@ -3551,3 +4099,83 @@ LagTrackerRead(int head, XLogRecPtr lsn, TimestampTz now)
 	Assert(time != 0);
 	return now - time;
 }
+
+polar_repl_mode_t
+polar_gen_replication_mode(void)
+{
+	if (polar_is_dma_data_node())
+		return POLAR_REPL_DMA_DATA;
+	else if (polar_is_dma_logger_node())
+		return POLAR_REPL_DMA_LOGGER;
+	else
+		return POLAR_REPL_DEFAULT;
+}
+
+const char *
+polar_replication_mode_str(polar_repl_mode_t mode)
+{
+	switch (mode)
+	{
+		case POLAR_REPL_DEFAULT:
+			return "default";
+		case POLAR_REPL_DMA_LOGGER:
+			return "dma_logger";
+		case POLAR_REPL_DMA_DATA:
+			return "dma_data";
+		default:
+			return "unknown";
+	}
+}
+
+/* POLAR: send wal data when downstream is dma logger */
+static void
+polar_dma_logger_xlog_send_physical(void)
+{
+	XLogSendPhysicalExt(POLAR_REPL_DMA_LOGGER);
+}
+
+/* POLAR: send wal data when downstream is dma logger */
+static void
+polar_dma_data_xlog_send_physical(void)
+{
+	XLogSendPhysicalExt(POLAR_REPL_DMA_DATA);
+}
+
+/*
+ * POLAR: Returns the latest point in WAL that has been safely flushed, and
+ * can be sent to the standby. This should only be called when in recovery,
+ * ie. we're streaming to a cascaded standby.
+ *
+ * As a side-effect, ThisTimeLineID is updated to the TLI of the last
+ * replayed WAL record.
+ */
+static XLogRecPtr
+polar_dma_get_flush_lsn(void)
+{
+	XLogRecPtr	replayPtr;
+	TimeLineID	replayTLI;
+	XLogRecPtr	receivePtr;
+	TimeLineID	receiveTLI;
+	XLogRecPtr	result;
+
+	/*
+	 * POLAR: in DMA mode, advance to new timeline from consensus flushed
+	 * point. otherwise, the new timeline cannot be sent before exit from
+	 * recovery status.
+	 */
+	ConsensusGetXLogFlushedLSN(&receivePtr, &receiveTLI);
+
+	ThisTimeLineID = receiveTLI;
+	result = receivePtr;
+
+	if (!polar_is_dma_logger_node())
+	{
+		replayPtr = GetXLogReplayRecPtr(&replayTLI);
+		if (replayTLI == ThisTimeLineID && replayPtr > receivePtr)
+			result = replayPtr;
+	}
+
+	return result;
+}
+
+/* POLAR end */

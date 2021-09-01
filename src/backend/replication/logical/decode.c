@@ -16,6 +16,7 @@
  *		contents of records in here except turning them into a more usable
  *		format.
  *
+ * Portions Copyright (c) 2020, Alibaba Group Holding Limited
  * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -140,6 +141,9 @@ LogicalDecodingProcessRecord(LogicalDecodingContext *ctx, XLogReaderState *recor
 			 */
 		case RM_SMGR_ID:
 		case RM_CLOG_ID:
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+		case RM_CTSLOG_ID:
+#endif
 		case RM_DBASE_ID:
 		case RM_TBLSPC_ID:
 		case RM_MULTIXACT_ID:
@@ -169,7 +173,6 @@ LogicalDecodingProcessRecord(LogicalDecodingContext *ctx, XLogReaderState *recor
 static void
 DecodeXLogOp(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 {
-	SnapBuild  *builder = ctx->snapshot_builder;
 	uint8		info = XLogRecGetInfo(buf->record) & ~XLR_INFO_MASK;
 
 	ReorderBufferProcessXid(ctx->reorder, XLogRecGetXid(buf->record),
@@ -180,8 +183,6 @@ DecodeXLogOp(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 			/* this is also used in END_OF_RECOVERY checkpoints */
 		case XLOG_CHECKPOINT_SHUTDOWN:
 		case XLOG_END_OF_RECOVERY:
-			SnapBuildSerializationPoint(builder, buf->origptr);
-
 			break;
 		case XLOG_CHECKPOINT_ONLINE:
 
@@ -221,8 +222,11 @@ DecodeXactOp(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 	 * ok not to call ReorderBufferProcessXid() in that case, except in the
 	 * assignment case there'll not be any later records with the same xid;
 	 * and in the assignment case we'll not decode those xacts.
+	 *
+	 * FIXME: the assignment record is no more. I don't understand the above
+	 * comment. Can it be just removed?
 	 */
-	if (SnapBuildCurrentState(builder) < SNAPBUILD_FULL_SNAPSHOT)
+	if (SnapBuildCurrentState(builder) < SNAPBUILD_CONSISTENT)
 		return;
 
 	switch (info)
@@ -261,23 +265,6 @@ DecodeXactOp(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 					xid = parsed.twophase_xid;
 
 				DecodeAbort(ctx, buf, &parsed, xid);
-				break;
-			}
-		case XLOG_XACT_ASSIGNMENT:
-			{
-				xl_xact_assignment *xlrec;
-				int			i;
-				TransactionId *sub_xid;
-
-				xlrec = (xl_xact_assignment *) XLogRecGetData(r);
-
-				sub_xid = &xlrec->xsub[0];
-
-				for (i = 0; i < xlrec->nsubxacts; i++)
-				{
-					ReorderBufferAssignChild(reorder, xlrec->xtop,
-											 *(sub_xid++), buf->origptr);
-				}
 				break;
 			}
 		case XLOG_XACT_PREPARE:
@@ -363,7 +350,7 @@ DecodeHeap2Op(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 	 * If we don't have snapshot or we are just fast-forwarding, there is no
 	 * point in decoding changes.
 	 */
-	if (SnapBuildCurrentState(builder) < SNAPBUILD_FULL_SNAPSHOT ||
+	if (SnapBuildCurrentState(builder) < SNAPBUILD_CONSISTENT ||
 		ctx->fast_forward)
 		return;
 
@@ -423,7 +410,7 @@ DecodeHeapOp(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 	 * If we don't have snapshot or we are just fast-forwarding, there is no
 	 * point in decoding data changes.
 	 */
-	if (SnapBuildCurrentState(builder) < SNAPBUILD_FULL_SNAPSHOT ||
+	if (SnapBuildCurrentState(builder) < SNAPBUILD_CONSISTENT ||
 		ctx->fast_forward)
 		return;
 
@@ -525,7 +512,8 @@ DecodeLogicalMsgOp(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 	 * If we don't have snapshot or we are just fast-forwarding, there is no
 	 * point in decoding messages.
 	 */
-	if (SnapBuildCurrentState(builder) < SNAPBUILD_FULL_SNAPSHOT ||
+	/* No point in doing anything yet. */
+	if (SnapBuildCurrentState(builder) < SNAPBUILD_CONSISTENT ||
 		ctx->fast_forward)
 		return;
 
@@ -563,6 +551,9 @@ DecodeCommit(LogicalDecodingContext *ctx, XLogRecordBuffer *buf,
 	XLogRecPtr	origin_lsn = InvalidXLogRecPtr;
 	TimestampTz commit_time = parsed->xact_time;
 	RepOriginId origin_id = XLogRecGetOrigin(buf->record);
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+	CommitTs	cts = parsed->csn;
+#endif
 	int			i;
 
 	if (parsed->xinfo & XACT_XINFO_HAS_ORIGIN)
@@ -635,7 +626,12 @@ DecodeCommit(LogicalDecodingContext *ctx, XLogRecordBuffer *buf,
 
 	/* replay actions of all transaction + subtransactions in order */
 	ReorderBufferCommit(ctx->reorder, xid, buf->origptr, buf->endptr,
-						commit_time, origin_id, origin_lsn);
+						commit_time, origin_id, origin_lsn
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+						,
+						cts
+#endif
+		);
 }
 
 /*
@@ -665,12 +661,22 @@ DecodeAbort(LogicalDecodingContext *ctx, XLogRecordBuffer *buf,
 static void
 DecodeInsert(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 {
+	Size		datalen;
+	char	   *tupledata;
+	Size		tuplelen;
 	XLogReaderState *r = buf->record;
 	xl_heap_insert *xlrec;
 	ReorderBufferChange *change;
 	RelFileNode target_node;
 
 	xlrec = (xl_heap_insert *) XLogRecGetData(r);
+
+	/*
+	 * Ignore insert records without new tuples (this does happen when
+	 * raw_heap_insert marks the TOAST record as HEAP_INSERT_NO_LOGICAL).
+	 */
+	if (!(xlrec->flags & XLH_INSERT_CONTAINS_NEW_TUPLE))
+		return;
 
 	/* only interested in our database */
 	XLogRecGetBlockTag(r, 0, &target_node, NULL, NULL);
@@ -690,17 +696,13 @@ DecodeInsert(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 
 	memcpy(&change->data.tp.relnode, &target_node, sizeof(RelFileNode));
 
-	if (xlrec->flags & XLH_INSERT_CONTAINS_NEW_TUPLE)
-	{
-		Size		datalen;
-		char	   *tupledata = XLogRecGetBlockData(r, 0, &datalen);
-		Size		tuplelen = datalen - SizeOfHeapHeader;
+	tupledata = XLogRecGetBlockData(r, 0, &datalen);
+	tuplelen = datalen - SizeOfHeapHeader;
 
-		change->data.tp.newtuple =
-			ReorderBufferGetTupleBuf(ctx->reorder, tuplelen);
+	change->data.tp.newtuple =
+		ReorderBufferGetTupleBuf(ctx->reorder, tuplelen);
 
-		DecodeXLogTuple(tupledata, datalen, change->data.tp.newtuple);
-	}
+	DecodeXLogTuple(tupledata, datalen, change->data.tp.newtuple);
 
 	change->data.tp.clear_toast_afterwards = true;
 
@@ -859,7 +861,8 @@ DecodeTruncate(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 	if (xlrec->flags & XLH_TRUNCATE_RESTART_SEQS)
 		change->data.truncate.restart_seqs = true;
 	change->data.truncate.nrelids = xlrec->nrelids;
-	change->data.truncate.relids = palloc(xlrec->nrelids * sizeof(Oid));
+	change->data.truncate.relids = ReorderBufferGetRelids(ctx->reorder,
+														  xlrec->nrelids);
 	memcpy(change->data.truncate.relids, xlrec->relids,
 		   xlrec->nrelids * sizeof(Oid));
 	ReorderBufferQueueChange(ctx->reorder, XLogRecGetXid(r),

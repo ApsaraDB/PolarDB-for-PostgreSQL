@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+#
+# polardb Configuration file for pgxc_ctl utility. 
+#
+# Configuration file can be specified as -c option from pgxc_ctl command.   Default is
+# $PGXC_CTL_HOME/pgxc_ctl.org.
+#
+# This is bash script so you can make any addition for your convenience to configure
+# your polardb.
+#
+#========================================================================================
+#
+#
+# pgxcInstallDir variable is needed if you invoke "deploy" command from pgxc_ctl utility.
+# If don't you don't need this variable.
+pgxcInstallDir=$HOME/polardb/polardbhome
+#---- OVERALL -----------------------------------------------------------------------------
+#
+pgxcOwner=$USER		# owner of the Postgres-XC databaseo cluster.  Here, we use this
+						# both as linus user and database user.  This must be
+						# the super user of each coordinator and datanode.
+pgxcUser=$pgxcOwner		# OS user of Postgres-XC owner
+
+tmpDir=/tmp					# temporary dir used in XC servers
+localTmpDir=$tmpDir			# temporary dir used here locally
+
+configBackup=n					# If you want config file backup, specify y to this value.
+configBackupHost=pgxc-linker	# host to backup config file
+configBackupDir=$HOME/pgxc		# Backup directory
+configBackupFile=pgxc_ctl.bak	# Backup file name --> Need to synchronize when original changed.
+standAlone=y
+
+dataDirRoot=$HOME/polardb/data
+
+#---- Datanodes -------------------------------------------------------------------------------------------------------
+
+#---- Shortcuts --------------
+datanodeMasterDir=$dataDirRoot/dn_master
+datanodeSlaveDir=$dataDirRoot/dn_slave
+datanodeLearnerDir=$dataDirRoot/dn_learner
+datanodeArchLogDir=$dataDirRoot/datanode_archlog
+
+#---- Overall ---------------
+primaryDatanode=datanode_1				# Primary Node.
+datanodeNames=(datanode_1)
+datanodePorts=(10001)	# Master and slave use the same port!
+datanodePoolerPorts=(10011)	# Master and slave use the same port!
+datanodePgHbaEntries=(::1/128)	# Assumes that all the coordinator (master/slave) accepts
+										# the same connection
+										# This list sets up pg_hba.conf for $pgxcOwner user.
+										# If you'd like to setup other entries, supply them
+										# through extra configuration files specified below.
+#datanodePgHbaEntries=(127.0.0.1/32)	# Same as above but for IPv4 connections
+
+#---- Master ----------------
+datanodeMasterServers=(localhost)	# none means this master is not available.
+													# This means that there should be the master but is down.
+													# The cluster is not operational until the master is
+													# recovered and ready to run.	
+datanodeMasterDirs=($datanodeMasterDir)
+datanodeMaxWalSender=5								# max_wal_senders: needed to configure slave. If zero value is 
+													# specified, it is expected this parameter is explicitly supplied
+													# by external configuration files.
+													# If you don't configure slaves, leave this value zero.
+datanodeMaxWALSenders=($datanodeMaxWalSender)
+						# max_wal_senders configuration for each datanode
+
+#---- Slave -----------------
+datanodeSlave=y			# Specify y if you configure at least one coordiantor slave.  Otherwise, the following
+						# configuration parameters will be set to empty values.
+						# If no effective server names are found (that is, every servers are specified as none),
+						# then datanodeSlave value will be set to n and all the following values will be set to
+						# empty values.
+datanodeSlaveServers=(localhost)	# value none means this slave is not available
+datanodeSlavePorts=(10101)	# Master and slave use the same port!
+datanodeSlavePoolerPorts=(10111)	# Master and slave use the same port!
+datanodeSlaveSync=y		# If datanode slave is connected in synchronized mode
+datanodeSlaveDirs=($datanodeSlaveDir)
+datanodeArchLogDirs=( $datanodeArchLogDir)
+datanodeRepNum=2  #  no HA setting 0, streaming HA and active-active logcial replication setting 1 replication,  paxos HA setting 2 replication.	
+datanodeSlaveType=(3) # 1 is streaming HA, 2 is active-active logcial replication, 3 paxos HA.
+
+#---- Learner -----------------
+datanodeLearnerServers=(localhost)	# value none means this learner is not available
+datanodeLearnerPorts=(11001)	# learner port!
+#datanodeSlavePoolerPorts=(11011)	# learner pooler port!
+datanodeLearnerSync=y		# If datanode learner is connected in synchronized mode
+datanodeLearnerDirs=($datanodeLearnerDir)
+
+# ---- Configuration files ---
+# You may supply your bash script to setup extra config lines and extra pg_hba.conf entries here.
+# These files will go to corresponding files for the master.
+# Or you may supply these files manually.
+datanodeExtraConfig=datanodeExtraConfig	
+cat > $datanodeExtraConfig <<EOF
+#================================================
+# Added to all the datanode postgresql.conf
+# Original: $datanodeExtraConfig
+log_destination = 'stderr'
+logging_collector = on
+log_directory = 'pg_log'
+listen_addresses = '*'
+max_connections = 100
+hot_standby = on
+synchronous_commit = on
+max_parallel_replay_workers = 0
+max_worker_processes = 30
+shared_preload_libraries = 'pg_cron'
+cron.database_name = 'postgres'
+EOF
+# Additional Configuration file for specific datanode master.
+# You can define each setting by similar means as above.
+datanodeSpecificExtraConfig=(none)
+datanodeSpecificExtraPgHba=(none)
+

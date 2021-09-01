@@ -55,6 +55,8 @@
 #include "utils/timeout.h"
 #include "utils/timestamp.h"
 
+/* POLAR */
+#include "polar_dma/polar_dma.h"
 
 /* GUC variables */
 int			DeadlockTimeout = 1000;
@@ -267,6 +269,13 @@ InitProcGlobal(void)
 
 		/* Initialize lockGroupMembers list. */
 		dlist_init(&procs[i].lockGroupMembers);
+
+		/*
+		 * Initialize the atomic variables, otherwise, it won't be safe to
+		 * access them for backends that aren't currently in use.
+		 */
+		pg_atomic_init_u32(&(procs[i].procArrayGroupNext), INVALID_PGPROCNO);
+		pg_atomic_init_u32(&(procs[i].clogGroupNext), INVALID_PGPROCNO);
 	}
 
 	/*
@@ -365,12 +374,13 @@ InitProcess(void)
 	MyProc->fpVXIDLock = false;
 	MyProc->fpLocalTransactionId = InvalidLocalTransactionId;
 	MyPgXact->xid = InvalidTransactionId;
-	MyPgXact->xmin = InvalidTransactionId;
+	MyPgXact->snapshotcsn = InvalidCommitSeqNo;
 	MyProc->pid = MyProcPid;
 	/* backendId, databaseId and roleId will be filled in later */
 	MyProc->backendId = InvalidBackendId;
 	MyProc->databaseId = InvalidOid;
 	MyProc->roleId = InvalidOid;
+	MyProc->tempNamespaceId = InvalidOid;
 	MyProc->isBackgroundWorker = IsBackgroundWorker;
 	MyPgXact->delayChkpt = false;
 	MyPgXact->vacuumFlags = 0;
@@ -397,10 +407,16 @@ InitProcess(void)
 	MyProc->syncRepState = SYNC_REP_NOT_WAITING;
 	SHMQueueElemInit(&(MyProc->syncRepLinks));
 
+	/* Initialize fields for consensus rep */
+	if (polar_enable_dma)
+	{
+		ConsensusProcInit(&MyProc->consensusInfo);
+	}
+
 	/* Initialize fields for group XID clearing. */
 	MyProc->procArrayGroupMember = false;
 	MyProc->procArrayGroupMemberXid = InvalidTransactionId;
-	pg_atomic_init_u32(&MyProc->procArrayGroupNext, INVALID_PGPROCNO);
+	Assert(pg_atomic_read_u32(&MyProc->procArrayGroupNext) == INVALID_PGPROCNO);
 
 	/* Check that group locking fields are in a proper initial state. */
 	Assert(MyProc->lockGroupLeader == NULL);
@@ -412,9 +428,10 @@ InitProcess(void)
 	/* Initialize fields for group transaction status update. */
 	MyProc->clogGroupMember = false;
 	MyProc->clogGroupMemberXid = InvalidTransactionId;
-	MyProc->clogGroupMemberXidStatus = TRANSACTION_STATUS_IN_PROGRESS;
+	MyProc->clogGroupMemberXidStatus = CLOG_XID_STATUS_IN_PROGRESS;
 	MyProc->clogGroupMemberPage = -1;
 	MyProc->clogGroupMemberLsn = InvalidXLogRecPtr;
+	MyProc->clogGroupNSubxids = 0;
 	pg_atomic_init_u32(&MyProc->clogGroupNext, INVALID_PGPROCNO);
 
 	/*
@@ -548,10 +565,11 @@ InitAuxiliaryProcess(void)
 	MyProc->fpVXIDLock = false;
 	MyProc->fpLocalTransactionId = InvalidLocalTransactionId;
 	MyPgXact->xid = InvalidTransactionId;
-	MyPgXact->xmin = InvalidTransactionId;
+	MyPgXact->snapshotcsn = InvalidCommitSeqNo;
 	MyProc->backendId = InvalidBackendId;
 	MyProc->databaseId = InvalidOid;
 	MyProc->roleId = InvalidOid;
+	MyProc->tempNamespaceId = InvalidOid;
 	MyProc->isBackgroundWorker = IsBackgroundWorker;
 	MyPgXact->delayChkpt = false;
 	MyPgXact->vacuumFlags = 0;
@@ -568,6 +586,12 @@ InitAuxiliaryProcess(void)
 			Assert(SHMQueueEmpty(&(MyProc->myProcLocks[i])));
 	}
 #endif
+
+	/* Initialize fields for consensus rep */
+	if (polar_enable_dma)
+	{
+		ConsensusProcInit(&MyProc->consensusInfo);
+	}
 
 	/*
 	 * Acquire ownership of the PGPROC's latch, so that we can use WaitLatch
@@ -779,7 +803,7 @@ static void
 RemoveProcFromArray(int code, Datum arg)
 {
 	Assert(MyProc != NULL);
-	ProcArrayRemove(MyProc, InvalidTransactionId);
+	ProcArrayRemove(MyProc);
 }
 
 /*

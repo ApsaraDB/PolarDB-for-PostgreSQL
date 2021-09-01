@@ -99,6 +99,7 @@ use Test::More;
 use TestLib ();
 use Time::HiRes qw(usleep);
 use Scalar::Util qw(blessed);
+use Getopt::Long;
 
 our @EXPORT = qw(
   get_new_node
@@ -136,7 +137,7 @@ INIT
 
 =over
 
-=item PostgresNode::new($class, $name, $pghost, $pgport)
+=item PostgresNode::new($class, $name, $pghost, $pgport [, $dma])
 
 Create a new PostgresNode instance. Does not initdb or start it.
 
@@ -147,15 +148,19 @@ of finding port numbers, registering instances for cleanup, etc.
 
 sub new
 {
-	my ($class, $name, $pghost, $pgport) = @_;
+	my ($class, $name, $pghost, $pgport, $dma, $follower1, $follower2) = @_;
 	my $testname = basename($0);
+	$dma = 0 unless defined($dma);    # default value
 	$testname =~ s/\.[^.]+$//;
 	my $self = {
 		_port    => $pgport,
 		_host    => $pghost,
 		_basedir => "$TestLib::tmp_check/t_${testname}_${name}_data",
 		_name    => $name,
-		_logfile => "$TestLib::log_path/${testname}_${name}.log"
+		_logfile => "$TestLib::log_path/${testname}_${name}.log",
+		_dma => $dma,
+		_follower1 => $follower1,
+		_follower2 => $follower2,
 	};
 
 	bless $self, $class;
@@ -435,6 +440,11 @@ sub init
 	mkdir $self->backup_dir;
 	mkdir $self->archive_dir;
 
+	if ($self->dma)
+	{
+		return $self->init_dma_3_nodes(%params);
+	}
+
 	TestLib::system_or_bail('initdb', '-D', $pgdata, '-A', 'trust', '-N',
 		@{ $params{extra} });
 	TestLib::system_or_bail($ENV{PG_REGRESS}, '--config-auth', $pgdata);
@@ -465,12 +475,23 @@ sub init
 		print $conf "shared_buffers = 1MB\n";
 		print $conf "wal_log_hints = on\n";
 		print $conf "hot_standby = on\n";
-		print $conf "max_connections = 10\n";
+		print $conf "max_connections = 20\n";
+		print $conf "max_worker_processes = 10\n";
+		print $conf "max_parallel_replay_workers = 0\n";
+		print $conf "allow_hot_standby_inconsistency = false\n";
+		print $conf "full_page_remote_fetch = false\n";
+		print $conf "checkpoint_sync_standby = false\n";
 	}
 	else
 	{
 		print $conf "wal_level = minimal\n";
 		print $conf "max_wal_senders = 0\n";
+		print $conf "max_connections = 20\n";
+		print $conf "max_worker_processes = 10\n";
+		print $conf "max_parallel_replay_workers = 0\n";
+		print $conf "allow_hot_standby_inconsistency = false\n";
+		print $conf "full_page_remote_fetch = false\n";
+		print $conf "checkpoint_sync_standby = false\n";
 	}
 
 	if ($TestLib::windows_os)
@@ -534,7 +555,7 @@ target server since it isn't done by default.
 
 sub backup
 {
-	my ($self, $backup_name) = @_;
+	my ($self, $backup_name, $cluster) = @_;
 	my $backup_path = $self->backup_dir . '/' . $backup_name;
 	my $port        = $self->port;
 	my $name        = $self->name;
@@ -542,6 +563,10 @@ sub backup
 	print "# Taking pg_basebackup $backup_name from node \"$name\"\n";
 	TestLib::system_or_bail('pg_basebackup', '-D', $backup_path, '-p', $port,
 		'--no-sync');
+
+	rmtree(join('/', $backup_path, 'polar_dma.conf')) if not defined $cluster;
+	rmdir(join('/', $backup_path, 'polar_dma')) if not defined $cluster;
+
 	print "# Backup finished\n";
 	return;
 }
@@ -686,6 +711,42 @@ port = $port
 
 =pod
 
+=item $node->dma()
+
+=cut
+
+sub dma
+{
+	my ($self) = @_;
+	return $self->{_dma};
+}
+
+=pod
+
+=item $node->follower1()
+
+=cut
+
+sub follower1
+{
+	my ($self) = @_;
+	return $self->{_follower1};
+}
+
+=pod
+
+=item $node->follower2()
+
+=cut
+
+sub follower2
+{
+	my ($self) = @_;
+	return $self->{_follower2};
+}
+
+=pod
+
 =item $node->start()
 
 Wrapper for pg_ctl start
@@ -696,10 +757,13 @@ Start the node and wait until it is ready to accept connections.
 
 sub start
 {
-	my ($self) = @_;
+	my ($self, $cluster) = @_;
 	my $port   = $self->port;
 	my $pgdata = $self->data_dir;
 	my $name   = $self->name;
+
+	$cluster = 1 unless defined $cluster;
+
 	BAIL_OUT("node \"$name\" is already running") if defined $self->{_pid};
 	print("### Starting node \"$name\"\n");
 	my $ret = TestLib::system_log('pg_ctl', '-D', $self->data_dir, '-l',
@@ -710,6 +774,22 @@ sub start
 		print "# pg_ctl start failed; logfile:\n";
 		print TestLib::slurp_file($self->logfile);
 		BAIL_OUT("pg_ctl start failed");
+	}
+
+	if ($self->dma)
+	{
+		if ($cluster && defined($self->follower1))
+		{
+			my $node2 = $self->follower1;
+			$node2->start(0);
+		}
+
+		if ($cluster && defined($self->follower2))
+		{
+			my $node3 = $self->follower2;
+			$node3->start(0);
+		} 
+		$self->force_became_leader;
 	}
 
 	$self->_update_pid(1);
@@ -730,15 +810,35 @@ this to fail.  Otherwise, tests might fail to detect server crashes.
 
 sub stop
 {
-	my ($self, $mode) = @_;
+	my ($self, $mode, $cluster) = @_;
 	my $port   = $self->port;
 	my $pgdata = $self->data_dir;
 	my $name   = $self->name;
 	$mode = 'fast' unless defined $mode;
+	$cluster = 1 unless defined $cluster;
 	return unless defined $self->{_pid};
 	print "### Stopping node \"$name\" using mode $mode\n";
+
 	TestLib::system_or_bail('pg_ctl', '-D', $pgdata, '-m', $mode, 'stop');
 	$self->_update_pid(0);
+
+	if ($self->dma && $cluster)
+	{
+		if (defined($self->follower1) && defined($self->follower2->{_pid}))
+		{
+			my $node2 = $self->follower1;
+			$node2->teardown_node(0);
+			$node2->_update_pid(0);
+		}
+
+		if (defined($self->follower2) && defined($self->follower2->{_pid}))
+		{
+			my $node3 = $self->follower2;
+			$node3->teardown_node(0);
+			$node3->_update_pid(0);
+		}
+	}
+
 	return;
 }
 
@@ -779,6 +879,10 @@ sub restart
 	print "### Restarting node \"$name\"\n";
 	TestLib::system_or_bail('pg_ctl', '-D', $pgdata, '-l', $logfile,
 		'restart');
+	if ($self->dma)
+	{
+		$self->wait_became_leader;
+	}
 	$self->_update_pid(1);
 	return;
 }
@@ -816,6 +920,7 @@ sub enable_streaming
 		'recovery.conf', qq(
 primary_conninfo='$root_connstr application_name=$name'
 standby_mode=on
+recovery_target_timeline=latest
 ));
 	return;
 }
@@ -908,7 +1013,7 @@ sub _update_pid
 
 =pod
 
-=item PostgresNode->get_new_node(node_name)
+=item PostgresNode->get_new_node(node_name [, $cluster ])
 
 Build a new object of class C<PostgresNode> (or of a subclass, if you have
 one), assigning a free port number.  Remembers the node, to prevent its port
@@ -925,10 +1030,44 @@ which can only create objects of class C<PostgresNode>.
 sub get_new_node
 {
 	my $class = 'PostgresNode';
-	$class = shift if 1 < scalar @_;
+	$class = shift if 2 < scalar @_;
 	my $name  = shift;
 	my $found = 0;
 	my $port  = $last_port_assigned;
+	my ($dma, $cluster);
+
+	GetOptions(
+		'dma=s' => \$dma,
+	);
+
+	if ($dma eq 'cluster')
+	{
+		my ($follower1, $follower2);
+		$cluster = shift;
+		$cluster = 3 unless defined($cluster);    # default value
+		if ($cluster == 3)
+		{
+			print("### init dma cluster with 3 nodes \"$name\"\n");
+			$follower1 = $class->get_new_dma_node(join('_', $name, 'follower1'));
+			$follower2 = $class->get_new_dma_node(join('_', $name, 'follower2'));
+			my $node = $class->get_new_dma_node(join('_', $name, 'master'), 1, $follower1, $follower2);
+			# Add node to list of nodes
+			push(@all_nodes, $node);
+			push(@all_nodes, $follower1);
+			push(@all_nodes, $follower2);
+			return $node;
+		}
+
+		if ($cluster == 1)
+		{
+			print("### init dma cluster with 1 nodes \"$name\"\n");
+			my $node = $class->get_new_dma_node(join('_', $name, 'master'), 1);
+			# Add node to list of nodes
+			push(@all_nodes, $node);
+			return $node;
+		}
+
+	}
 
 	while ($found == 0)
 	{
@@ -995,6 +1134,149 @@ $SIG{__DIE__} = sub {
 	}
 };
 
+=pod
+
+=item PostgresNode::init_dma_3_nodes(node_name)
+
+Build a new dma cluster
+
+=cut
+
+sub init_dma_3_nodes
+{
+	my ($self, %params) = @_;
+	my $name   = $self->name;
+	my $backup_name;
+
+	print("### init dma leader node \"$name\"\n");
+	$self->dma_leader_init(%params);
+	$self->start(0);
+
+	# Take backup
+	if (defined($self->follower1) || defined($self->follower2))
+	{
+		$backup_name = join('_', $name, 'my_backup');
+		$self->backup($backup_name, 1);
+	}
+
+	if (defined($self->follower1))
+	{
+		my $node2 = $self->follower1;
+		my $node2_name  = $node2->name;
+		print("### init dma follower node \"$node2_name\"\n");
+		$node2->dma_learner_init_from_backup($self, $backup_name);
+		$node2->start(0);
+		$self->add_follower($node2);
+	}
+
+	if (defined($self->follower2))
+	{
+		my $node3 = $self->follower2;
+		my $node3_name  = $node3->name;
+		print("### init dma follower node \"$node3_name\"\n");
+		$node3->dma_learner_init_from_backup($self, $backup_name);
+		$node3->start(0);
+		$self->add_follower($node3);
+	}
+
+	$self->stop('fast');
+
+	return;
+}
+
+=pod
+
+=item PostgresNode::get_new_dma_node(node_name)
+
+Build a new dma object of class C<PostgresNode> (or of a subclass, if you have
+one), assigning a free port number.  Remembers the node, to prevent its port
+number from being reused for another node, and to ensure that it gets
+shut down when the test script exits.
+
+You should generally use this instead of C<PostgresNode::new(...)>.
+
+=cut
+
+sub get_new_dma_node
+{
+	my ($class, $name, $master, $follower1, $follower2) = @_;
+	my $found = 0;
+	my $port  = $last_port_assigned;
+
+	while ($found == 0)
+	{
+
+		# advance $port, wrapping correctly around range end
+		$port = 49152 if ++$port >= 55536;
+		print "# Checking port $port\n";
+
+		# Check first that candidate port number is not included in
+		# the list of already-registered nodes.
+		$found = 1;
+		foreach my $node (@all_nodes)
+		{
+			$found = 0 if ($node->port == $port || $node->port + 10000 == $port || $node->port == $port + 10000);
+		}
+
+		# Check to see if anything else is listening on this TCP port.
+		# This is *necessary* on Windows, and seems like a good idea
+		# on Unixen as well, even though we don't ask the postmaster
+		# to open a TCP port on Unix.
+		if ($found == 1)
+		{
+			print "host:$test_localhost";
+
+			my $iaddr = inet_aton($test_localhost);
+			my $paddr = sockaddr_in($port, $iaddr);
+			my $paddr2 = sockaddr_in($port+10000, $iaddr);
+			my $proto = getprotobyname("tcp");
+
+			socket(SOCK, PF_INET, SOCK_STREAM, $proto)
+			  or die "socket failed: $!";
+
+			# As in postmaster, don't use SO_REUSEADDR on Windows
+			setsockopt(SOCK, SOL_SOCKET, SO_REUSEADDR, pack("l", 1))
+			  unless $TestLib::windows_os;
+			(bind(SOCK, $paddr) && listen(SOCK, SOMAXCONN))
+			  or $found = 0;
+			close(SOCK);
+
+			socket(SOCK, PF_INET, SOCK_STREAM, $proto)
+			  or die "socket failed: $!";
+
+			setsockopt(SOCK, SOL_SOCKET, SO_REUSEADDR, pack("l", 1))
+			  unless $TestLib::windows_os;
+			(bind(SOCK, $paddr2) && listen(SOCK, SOMAXCONN))
+			  or $found = 0;
+			close(SOCK);
+		}
+	}
+
+	print "# Found free port $port\n";
+
+	# Lock port number found by creating a new node
+	my $node = $class->new($name, $test_pghost, $port, $master, $follower1, $follower2);
+
+	# And update port for next time
+	$last_port_assigned = $port;
+
+	return $node;
+}
+
+# Retain the errno on die() if set, else assume a generic errno of 1.
+# This will instruct the END handler on how to handle artifacts left
+# behind from tests.
+$SIG{__DIE__} = sub {
+	if ($!)
+	{
+		$died = $!;
+	}
+	else
+	{
+		$died = 1;
+	}
+};
+
 # Automatically shut down any still-running nodes when the test script exits.
 # Note that this just stops the postmasters (in the same order the nodes were
 # created in).  Any temporary directories are deleted, in an unspecified
@@ -1007,7 +1289,19 @@ END
 
 	foreach my $node (@all_nodes)
 	{
-		$node->teardown_node;
+		if ($node->dma)
+		{
+			if (defined($node->follower1))
+			{
+				$node->follower1->teardown_node(0);
+			}
+			if (defined($node->follower2))
+			{
+				$node->follower2->teardown_node(0);
+			}
+		}
+
+		$node->teardown_node(0);
 
 		# skip clean if we are requested to retain the basedir
 		next if defined $ENV{'PG_TEST_NOCLEAN'};
@@ -1031,8 +1325,11 @@ Do an immediate stop of the node
 sub teardown_node
 {
 	my $self = shift;
+	my $cluster = shift;
 
-	$self->stop('immediate');
+	$cluster = 1 unless defined $cluster;
+
+	$self->stop('immediate', $cluster);
 	return;
 }
 
@@ -1348,9 +1645,18 @@ sub poll_query_until
 		$attempts++;
 	}
 
-	# The query result didn't change in 180 seconds. Give up. Print the stderr
-	# from the last attempt, hopefully that's useful for debugging.
-	diag $stderr;
+	# The query result didn't change in 180 seconds. Give up. Print the
+	# output from the last attempt, hopefully that's useful for debugging.
+	chomp($stderr);
+	$stderr =~ s/\r//g if $TestLib::windows_os;
+	diag qq(poll_query_until timed out executing this query:
+$query
+expecting this output:
+$expected
+last actual query output:
+$stdout
+with stderr:
+$stderr);
 	return 0;
 }
 
@@ -1525,7 +1831,8 @@ also works for logical subscriptions)
 until its replication location in pg_stat_replication equals or passes the
 upstream's WAL insert point at the time this function is called. By default
 the replay_lsn is waited for, but 'mode' may be specified to wait for any of
-sent|write|flush|replay.
+sent|write|flush|replay. The connection catching up must be in a streaming
+state.
 
 If there is no active replication connection from this peer, waits until
 poll_query_until timeout.
@@ -1570,7 +1877,7 @@ sub wait_for_catchup
 	  . $lsn_expr . " on "
 	  . $self->name . "\n";
 	my $query =
-	  qq[SELECT $lsn_expr <= ${mode}_lsn FROM pg_catalog.pg_stat_replication WHERE application_name = '$standby_name';];
+	  qq[SELECT $lsn_expr <= ${mode}_lsn AND state = 'streaming' FROM pg_catalog.pg_stat_replication WHERE application_name = '$standby_name';];
 	$self->poll_query_until('postgres', $query)
 	  or croak "timed out waiting for catchup";
 	print "done\n";
@@ -1787,6 +2094,270 @@ sub pg_recvlogical_upto
 
 =pod
 
+=item $node->dma_leader_init(...)
+
+Initialize a new master node on polar for testing.
+
+=cut
+
+sub dma_leader_init 
+{
+	my ($self, %params) = @_;
+
+	my $host   = $self->host;
+	my $port = $self->port;
+	my $pgdata = $self->data_dir;
+
+	TestLib::system_or_bail('initdb', '-D', $pgdata, '-A', 'trust', '-N',
+		@{ $params{extra} });
+	TestLib::system_or_bail($ENV{PG_REGRESS}, '--config-auth', $pgdata);
+
+	open my $conf, '>>', "$pgdata/postgresql.conf";
+
+	print $conf "\n# Added by PostgresNode.pm\n";
+	print $conf "fsync = off\n";
+	print $conf "restart_after_crash = off\n";
+	print $conf "log_line_prefix = '%m [%p] %q%a '\n";
+	print $conf "log_statement = all\n";
+	print $conf "log_replication_commands = on\n";
+	print $conf "wal_retrieve_retry_interval = '500ms'\n";
+	print $conf "max_parallel_replay_workers = 0\n";
+	print $conf "allow_hot_standby_inconsistency = false\n";
+	print $conf "full_page_remote_fetch = false\n";
+	print $conf "checkpoint_sync_standby = false\n";
+	print $conf "port = $port\n";
+
+	if ($params{allows_streaming} || defined($self->follower1) || defined($self->follower2))
+	{
+		if ($params{allows_streaming} eq "logical")
+		{
+			print $conf "wal_level = logical\n";
+		}
+		else
+		{
+			print $conf "wal_level = replica\n";
+		}
+		print $conf "max_wal_senders = 10\n";
+		print $conf "max_replication_slots = 10\n";
+		print $conf "max_wal_size = 128MB\n";
+		print $conf "shared_buffers = 1MB\n";
+		print $conf "wal_log_hints = on\n";
+		print $conf "hot_standby = on\n";
+		print $conf "max_connections = 100\n";
+		print $conf "max_worker_processes = 10\n";
+	}
+	elsif ($self->dma)
+	{
+		print $conf "hot_standby = on\n";
+		print $conf "wal_level = replica\n";
+		print $conf "max_wal_senders = 0\n";
+		print $conf "max_connections = 100\n";
+		print $conf "max_worker_processes = 10\n";
+	}
+	else
+	{
+		print $conf "wal_level = minimal\n";
+		print $conf "max_wal_senders = 0\n";
+		print $conf "max_connections = 100\n";
+		print $conf "max_worker_processes = 10\n";
+	}
+
+	open my $dma_conf, '>>', "$pgdata/polar_dma.conf";
+
+	my $dma_default_conf =<<"dma_default_conf";
+
+	polar_enable_dma = on
+	polar_dma_config_change_timeout = 600000
+
+dma_default_conf
+
+	print $dma_conf $dma_default_conf;
+
+	if (defined($self->follower1) || defined($self->follower2))
+	{
+		print $conf "polar_dma_repl_user = '$ENV{'USER'}'\n";
+	}
+
+	if ($TestLib::windows_os)
+	{
+		print $conf "listen_addresses = '$host'\n";
+	}
+	else
+	{
+		print $conf "unix_socket_directories = '$host'\n";
+		print $conf "listen_addresses = '127.0.0.1'\n";
+	}
+
+	close $conf;
+	close $dma_conf;
+
+	chmod($self->group_access ? 0640 : 0600, "$pgdata/postgresql.conf")
+	  or die("unable to set permissions for $pgdata/postgresql.conf");
+
+	$self->set_replication_conf if $params{allows_streaming};
+	$self->enable_archiving     if $params{has_archiving};
+
+	my $polar_dma_members_info = 'polar_dma_members_info=' . $test_localhost . ':' . $port . '@1';
+	TestLib::system_or_bail('postgres', '-c', 'polar_dma_init_meta=ON', 
+					'-c', $polar_dma_members_info, '-D', $pgdata);
+
+	return;
+}
+
+=pod
+
+=item $node->dma_learner_init_from_backup(...)
+
+Initialize a new master node on polar for testing.
+
+=cut
+
+sub dma_learner_init_from_backup 
+{
+	my ($self, $root_node, $backup_name) = @_;
+	my $backup_path = $root_node->backup_dir . '/' . $backup_name;
+	my $host        = $self->host;
+	my $port        = $self->port;
+	my $node_name   = $self->name;
+	my $root_name   = $root_node->name;
+
+	print
+	  "# Initializing node \"$node_name\" from backup \"$backup_name\" of node \"$root_name\"\n";
+	croak "Backup \"$backup_name\" does not exist at $backup_path"
+	  unless -d $backup_path;
+
+	mkdir $self->backup_dir;
+	mkdir $self->archive_dir;
+
+	my $data_path = $self->data_dir;
+	rmdir($data_path);
+	RecursiveCopy::copypath($backup_path, $data_path);
+	chmod(0700, $data_path);
+
+	# Base configuration for this node
+	$self->append_conf(
+		'postgresql.conf',
+		qq(
+port = $port
+));
+
+	my $polar_dma_learners_info = 'polar_dma_members_info=' . $test_localhost . ':' . $port;
+	TestLib::system_or_bail('postgres', '-c', 'polar_dma_init_meta=ON', 
+					'-c', $polar_dma_learners_info, '-D', $data_path);
+
+  return;
+}
+
+=pod
+
+=item $node->wait_became_leader(...)
+
+wait node became leader
+
+=cut
+
+sub wait_became_leader 
+{
+	my ($self) = @_;
+
+	$self->poll_query_until('postgres', 'SELECT pg_is_in_recovery() = false;', 't', 5)
+		or die "timed out";
+}
+
+=pod
+
+=item $node->add_follower(...)
+
+add follower node
+
+=cut
+
+sub add_follower
+{
+	my ($self, $learner_node) = @_;
+
+  	my $follower_info = '\'' . $test_localhost . ':' . $learner_node->port . '\'';
+	my $result = $self->safe_psql('postgres', 'alter system dma add follower ' . $follower_info);
+
+	return $result;
+}
+
+=pod
+
+=item $node->delete_follower(...)
+
+delete follower node
+
+=cut
+
+sub delete_follower
+{
+	my ($self, $follower_node) = @_;
+
+  	my $follower_info = '\'' . $test_localhost . ':' . $follower_node->port . '\'';
+
+	my $result = $self->safe_psql('postgres', 'alter system dma drop follower ' . $follower_info);
+
+	return $result;
+}
+
+=pod
+
+=item $node->transfer_leader(...)
+
+leader transfer
+
+=cut
+
+sub transfer_leader 
+{
+	my ($self, $new_leader) = @_;
+
+  	my $new_leader_info = '\'' . $test_localhost . ':' . $new_leader->port . '\'';
+	my $result = $self->safe_psql('postgres', 'alter system dma change leader to' . $new_leader_info);
+
+	return $result;
+}
+
+=pod
+
+=item $node->force_became_leader(...)
+
+force became leader
+
+=cut
+
+sub force_became_leader
+{
+	my ($self) = @_;
+	my $max_attempts = 10;
+	my $attempts     = 0;
+
+	while ($attempts < $max_attempts)
+	{
+		if(!$self->poll_query_until('postgres', 'SELECT 1;', '1', 5))
+		{
+			$attempts++;
+			continue;
+		}
+
+		$self->safe_psql('postgres', 'alter system dma force change leader');
+
+		if($self->poll_query_until('postgres', 'SELECT pg_is_in_recovery() = false;', 't', 5))
+		{
+			print "became_leader success";
+			return 1;
+		}
+
+		$attempts++;
+	}
+
+	print "became_leader timed out";
+
+	return 0;
+}
+
+=pod
 =back
 
 =cut

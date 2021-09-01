@@ -22,3 +22,5 @@ endif
 
 wal-check: temp-install
 	$(prove_check)
+wal-checkdma: temp-install
+	$(prove_checkdma)

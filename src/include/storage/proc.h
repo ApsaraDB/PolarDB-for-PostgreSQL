@@ -4,6 +4,8 @@
  *	  per-process shared memory data structures
  *
  *
+ * Portions Copyright (c) 2020, Alibaba Group Holding Limited
+ * Portions Copyright (C) 2019 THL A29 Limited, a Tencent company.  All rights reserved.
  * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -21,24 +23,7 @@
 #include "storage/lock.h"
 #include "storage/pg_sema.h"
 #include "storage/proclist_types.h"
-
-/*
- * Each backend advertises up to PGPROC_MAX_CACHED_SUBXIDS TransactionIds
- * for non-aborted subtransactions of its current top transaction.  These
- * have to be treated as running XIDs by other backends.
- *
- * We also keep track of whether the cache overflowed (ie, the transaction has
- * generated at least one subtransaction that didn't fit in the cache).
- * If none of the caches have overflowed, we can assume that an XID that's not
- * listed anywhere in the PGPROC array is not a running transaction.  Else we
- * have to look at pg_subtrans.
- */
-#define PGPROC_MAX_CACHED_SUBXIDS 64	/* XXX guessed-at value */
-
-struct XidCache
-{
-	TransactionId xids[PGPROC_MAX_CACHED_SUBXIDS];
-};
+#include "polar_dma/polar_dma.h"
 
 /*
  * Flags for PGXACT->vacuumFlags
@@ -75,6 +60,14 @@ struct XidCache
  * structures we could possibly have.  See comments for MAX_BACKENDS.
  */
 #define INVALID_PGPROCNO		PG_INT32_MAX
+
+/*
+ * The number of subtransactions below which we consider to apply clog group
+ * update optimization.  Testing reveals that the number higher than this can
+ * hurt performance.
+ */
+#define THRESHOLD_SUBTRANS_CLOG_OPT	5
+
 
 /*
  * Each backend has a PGPROC struct in shared memory.  There is also a list of
@@ -114,6 +107,9 @@ struct PGPROC
 	Oid			databaseId;		/* OID of database this backend is using */
 	Oid			roleId;			/* OID of role using this backend */
 
+	Oid			tempNamespaceId;	/* OID of temp schema this backend is
+									 * using */
+
 	bool		isBackgroundWorker; /* true if background worker. */
 
 	/*
@@ -150,13 +146,18 @@ struct PGPROC
 	SHM_QUEUE	syncRepLinks;	/* list link if process is in syncrep queue */
 
 	/*
+	 * POLAR: Info used for waiting for consensus to synchronize our XLog
+	 * Flush point or consensus command.
+	 */
+	ConsensusProcInfo consensusInfo;
+
+
+	/*
 	 * All PROCLOCK objects for locks held or awaited by this backend are
 	 * linked into one of these lists, according to the partition number of
 	 * their lock.
 	 */
 	SHM_QUEUE	myProcLocks[NUM_LOCK_PARTITIONS];
-
-	struct XidCache subxids;	/* cache for subtransaction XIDs */
 
 	/* Support for group XID clearing. */
 	/* true, if member of ProcArray group waiting for XID clear */
@@ -176,12 +177,14 @@ struct PGPROC
 	bool		clogGroupMember;	/* true, if member of clog group */
 	pg_atomic_uint32 clogGroupNext; /* next clog group member */
 	TransactionId clogGroupMemberXid;	/* transaction id of clog group member */
-	XidStatus	clogGroupMemberXidStatus;	/* transaction status of clog
+	CLogXidStatus clogGroupMemberXidStatus; /* transaction status of clog
 											 * group member */
 	int			clogGroupMemberPage;	/* clog page corresponding to
 										 * transaction id of clog group member */
 	XLogRecPtr	clogGroupMemberLsn; /* WAL location of commit record for clog
 									 * group member */
+	TransactionId clogGroupSubxids[THRESHOLD_SUBTRANS_CLOG_OPT];
+	int			clogGroupNSubxids;
 
 	/* Per-backend LWLock.  Protects fields below (but not group fields). */
 	LWLock		backendLock;
@@ -208,6 +211,7 @@ struct PGPROC
 extern PGDLLIMPORT PGPROC *MyProc;
 extern PGDLLIMPORT struct PGXACT *MyPgXact;
 
+
 /*
  * Prior to PostgreSQL 9.2, the fields below were stored as part of the
  * PGPROC.  However, benchmarking revealed that packing these particular
@@ -215,6 +219,9 @@ extern PGDLLIMPORT struct PGXACT *MyPgXact;
  * considerably on systems with many CPU cores, by reducing the number of
  * cache lines needing to be fetched.  Thus, think very carefully before adding
  * anything else here.
+ *
+ * XXX: GetSnapshotData no longer does that, so perhaps we should put these
+ * back to PGPROC for simplicity's sake.
  */
 typedef struct PGXACT
 {
@@ -224,16 +231,21 @@ typedef struct PGXACT
 
 	TransactionId xmin;			/* minimal running XID as it was when we were
 								 * starting our xact, excluding LAZY VACUUM:
-								 * vacuum must not remove tuples deleted by
 								 * xid >= xmin ! */
 
+	CommitSeqNo snapshotcsn;	/* oldest snapshot in use in this backend:
+								 * vacuum must not remove tuples deleted by
+								 * xacts with commit seqno > snapshotcsn !
+								 * XXX: currently unused, vacuum uses just
+								 * xmin, still. */
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+	pg_atomic_uint64 tmin;		/* start timestamp */
+#endif
+
 	uint8		vacuumFlags;	/* vacuum-related flags, see above */
-	bool		overflowed;
 	bool		delayChkpt;		/* true if this proc delays checkpoint start;
 								 * previously called InCommit */
-
-	uint8		nxids;
-} PGXACT;
+}			PGXACT;
 
 /*
  * There is one ProcGlobal struct for the whole database cluster.
@@ -284,7 +296,7 @@ extern PGPROC *PreparedXactProcs;
  * Startup process and WAL receiver also consume 2 slots, but WAL writer is
  * launched only after startup has exited, so we only need 4 slots.
  */
-#define NUM_AUXILIARY_PROCS		4
+#define NUM_AUXILIARY_PROCS		5
 
 /* configurable options */
 extern PGDLLIMPORT int DeadlockTimeout;

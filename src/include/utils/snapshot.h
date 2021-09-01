@@ -60,37 +60,18 @@ typedef struct SnapshotData
 	 * specially by HeapTupleSatisfiesDirty, and xmin is used specially by
 	 * HeapTupleSatisfiesNonVacuumable.)
 	 *
-	 * An MVCC snapshot can never see the effects of XIDs >= xmax. It can see
-	 * the effects of all older XIDs except those listed in the snapshot. xmin
-	 * is stored as an optimization to avoid needing to search the XID arrays
-	 * for most tuples.
+	 * An MVCC snapshot can see the effects of those XIDs that committed after
+	 * snapshotlsn. xmin and xmax are stored as an optimization, to avoid
+	 * checking the commit LSN for most tuples.
 	 */
 	TransactionId xmin;			/* all XID < xmin are visible to me */
 	TransactionId xmax;			/* all XID >= xmax are invisible to me */
 
 	/*
-	 * For normal MVCC snapshot this contains the all xact IDs that are in
-	 * progress, unless the snapshot was taken during recovery in which case
-	 * it's empty. For historic MVCC snapshots, the meaning is inverted, i.e.
-	 * it contains *committed* transactions between xmin and xmax.
-	 *
-	 * note: all ids in xip[] satisfy xmin <= xip[i] < xmax
+	 * This snapshot can see the effects of all transactions with CSN <=
+	 * snapshotcsn.
 	 */
-	TransactionId *xip;
-	uint32		xcnt;			/* # of xact ids in xip[] */
-
-	/*
-	 * For non-historic MVCC snapshots, this contains subxact IDs that are in
-	 * progress (and other transactions that are in progress if taken during
-	 * recovery). For historic snapshot it contains *all* xids assigned to the
-	 * replayed transaction, including the toplevel xid.
-	 *
-	 * note: all ids in subxip[] are >= xmin, but we don't bother filtering
-	 * out any that are >= xmax
-	 */
-	TransactionId *subxip;
-	int32		subxcnt;		/* # of xact ids in subxip[] */
-	bool		suboverflowed;	/* has the subxip array overflowed? */
+	CommitSeqNo snapshotcsn;
 
 	bool		takenDuringRecovery;	/* recovery-shaped snapshot? */
 	bool		copied;			/* false if it's a static snapshot */
@@ -102,6 +83,14 @@ typedef struct SnapshotData
 	 * snapshots.
 	 */
 	uint32		speculativeToken;
+
+	/*
+	 * this_xip contains *all* xids assigned to the replayed transaction,
+	 * including the toplevel xid. Used only in a historic MVCC snapshot, used
+	 * in logical decoding.
+	 */
+	TransactionId *this_xip;
+	uint32		this_xcnt;		/* # of xact ids in this_xip[] */
 
 	/*
 	 * Book-keeping information, used by the snapshot manager
@@ -126,6 +115,6 @@ typedef enum
 	HeapTupleUpdated,
 	HeapTupleBeingUpdated,
 	HeapTupleWouldBlock			/* can be returned by heap_tuple_lock */
-} HTSU_Result;
+}			HTSU_Result;
 
 #endif							/* SNAPSHOT_H */

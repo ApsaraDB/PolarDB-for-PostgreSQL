@@ -5,6 +5,7 @@
  *	  However, we define it here so that the format is documented.
  *
  *
+ * Portions Copyright (c) 2020, Alibaba Group Holding Limited
  * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -41,6 +42,9 @@ typedef struct CheckPoint
 	bool		fullPageWrites; /* current full_page_writes */
 	uint32		nextXidEpoch;	/* higher-order bits of nextXid */
 	TransactionId nextXid;		/* next free XID */
+	#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+	CommitSeqNo maxCommitTs;	/* max commit ts */
+	#endif
 	Oid			nextOid;		/* next free OID */
 	MultiXactId nextMulti;		/* next free MultiXactId */
 	MultiXactOffset nextMultiOffset;	/* next free MultiXact offset */

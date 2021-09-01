@@ -137,6 +137,13 @@ explain (costs off) select * from mc2p where a = 2 and b < 1;
 explain (costs off) select * from mc2p where a > 1;
 explain (costs off) select * from mc2p where a = 1 and b > 1;
 
+-- all partitions but the default one should be pruned
+explain (costs off) select * from mc2p where a = 1 and b is null;
+explain (costs off) select * from mc2p where a is null and b is null;
+explain (costs off) select * from mc2p where a is null and b = 1;
+explain (costs off) select * from mc2p where a is null;
+explain (costs off) select * from mc2p where b is null;
+
 -- boolean partitioning
 create table boolpart (a bool) partition by list (a);
 create table boolpart_default partition of boolpart default;
@@ -165,6 +172,13 @@ explain (costs off) select * from coercepart where a ~ any ('{ab,bc}');
 explain (costs off) select * from coercepart where a !~ all ('{ab,bc}');
 
 drop table coercepart;
+
+CREATE TABLE part (a INT, b INT) PARTITION BY LIST (a);
+CREATE TABLE part_p1 PARTITION OF part FOR VALUES IN (-2,-1,0,1,2);
+CREATE TABLE part_p2 PARTITION OF part DEFAULT PARTITION BY RANGE(a);
+CREATE TABLE part_p2_p1 PARTITION OF part_p2 DEFAULT;
+INSERT INTO part VALUES (-1,-1), (1,1), (2,NULL), (NULL,-2),(NULL,NULL);
+EXPLAIN (COSTS OFF) SELECT tableoid::regclass as part, a, b FROM part WHERE a IS NULL ORDER BY 1, 2, 3;
 
 --
 -- some more cases
@@ -526,11 +540,25 @@ reset max_parallel_workers_per_gather;
 explain (analyze, costs off, summary off, timing off)
 select * from ab where a = (select max(a) from lprt_a) and b = (select max(a)-1 from lprt_a);
 
+-- Test run-time partition pruning with UNION ALL parents
+explain (analyze, costs off, summary off, timing off)
+select * from (select * from ab where a = 1 union all select * from ab) ab where b = (select 1);
+
+-- A case containing a UNION ALL with a non-partitioned child.
+explain (analyze, costs off, summary off, timing off)
+select * from (select * from ab where a = 1 union all (values(10,5)) union all select * from ab) ab where b = (select 1);
+
 deallocate ab_q1;
 deallocate ab_q2;
 deallocate ab_q3;
 deallocate ab_q4;
 deallocate ab_q5;
+
+-- UPDATE on a partition subtree has been seen to have problems.
+insert into ab values (1,2);
+explain (analyze, costs off, summary off, timing off)
+update ab_a1 set b = 3 from ab where ab.a = 1 and ab.a = ab_a1.a;
+table ab;
 
 drop table ab, lprt_a;
 
@@ -721,6 +749,8 @@ create table pp_arrpart2 partition of pp_arrpart for values in ('{2, 3}', '{4, 5
 explain (costs off) select * from pp_arrpart where a = '{1}';
 explain (costs off) select * from pp_arrpart where a = '{1, 2}';
 explain (costs off) select * from pp_arrpart where a in ('{4, 5}', '{1}');
+explain (costs off) update pp_arrpart set a = a where a = '{1}';
+explain (costs off) delete from pp_arrpart where a = '{1}';
 drop table pp_arrpart;
 
 -- array type hash partition key
@@ -821,3 +851,52 @@ create temp table pp_temp_part_def partition of pp_temp_parent default;
 explain (costs off) select * from pp_temp_parent where true;
 explain (costs off) select * from pp_temp_parent where a = 2;
 drop table pp_temp_parent;
+
+-- Stress run-time partition pruning a bit more, per bug reports
+create temp table p (a int, b int, c int) partition by list (a);
+create temp table p1 partition of p for values in (1);
+create temp table p2 partition of p for values in (2);
+create temp table q (a int, b int, c int) partition by list (a);
+create temp table q1 partition of q for values in (1) partition by list (b);
+create temp table q11 partition of q1 for values in (1) partition by list (c);
+create temp table q111 partition of q11 for values in (1);
+create temp table q2 partition of q for values in (2) partition by list (b);
+create temp table q21 partition of q2 for values in (1);
+create temp table q22 partition of q2 for values in (2);
+
+insert into q22 values (2, 2, 3);
+
+explain (costs off)
+select *
+from (
+      select * from p
+      union all
+      select * from q1
+      union all
+      select 1, 1, 1
+     ) s(a, b, c)
+where s.a = 1 and s.b = 1 and s.c = (select 1);
+
+select *
+from (
+      select * from p
+      union all
+      select * from q1
+      union all
+      select 1, 1, 1
+     ) s(a, b, c)
+where s.a = 1 and s.b = 1 and s.c = (select 1);
+
+drop table p, q;
+
+-- Ensure run-time pruning works correctly when we match a partitioned table
+-- on the first level but find no matching partitions on the second level.
+create table listp (a int, b int) partition by list (a);
+create table listp1 partition of listp for values in(1);
+create table listp2 partition of listp for values in(2) partition by list(b);
+create table listp2_10 partition of listp2 for values in (10);
+
+explain (analyze, costs off, summary off, timing off)
+select * from listp where a = (select 2) and b <> 10;
+
+drop table listp;

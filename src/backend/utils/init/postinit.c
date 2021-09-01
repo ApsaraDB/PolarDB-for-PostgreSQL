@@ -62,6 +62,8 @@
 #include "utils/timeout.h"
 #include "utils/tqual.h"
 
+/* POLAR */
+#include "polar_dma/polar_dma.h"
 
 static HeapTuple GetDatabaseTuple(const char *dbname);
 static HeapTuple GetDatabaseTupleByOid(Oid dboid);
@@ -628,11 +630,14 @@ InitPostgres(const char *in_dbname, Oid dboid, const char *username,
 	}
 	else
 	{
+
 		/*
 		 * We are either a bootstrap process or a standalone backend. Either
 		 * way, start up the XLOG machinery, and register to have it closed
 		 * down at exit.
+		 * POLAR: disable consensus
 		 */
+		polar_enable_dma = false;
 		StartupXLOG();
 		on_shmem_exit(ShutdownXLOG, 0);
 	}
@@ -753,7 +758,7 @@ InitPostgres(const char *in_dbname, Oid dboid, const char *username,
 	 * If we're trying to shut down, only superusers can connect, and new
 	 * replication connections are not allowed.
 	 */
-	if ((!am_superuser || am_walsender) &&
+	if ((!polar_enable_dma && (!am_superuser || am_walsender)) &&
 		MyProcPort != NULL &&
 		MyProcPort->canAcceptConnections == CAC_WAITBACKUP)
 	{

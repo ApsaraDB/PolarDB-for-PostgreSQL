@@ -3,6 +3,7 @@
  * xlogreader.h
  *		Definitions for the generic XLog reading facility
  *
+ * Portions Copyright (c) 2020, Alibaba Group Holding Limited
  * Portions Copyright (c) 2013-2018, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
@@ -49,6 +50,10 @@ typedef struct
 
 	/* copy of the fork_flags field from the XLogRecordBlockHeader */
 	uint8		flags;
+
+#ifdef ENABLE_REMOTE_RECOVERY
+	bool		remote_fetch_image; /* needs remote fetch ? */
+#endif
 
 	/* Information on full-page image, if any */
 	bool		has_image;		/* has image, even for consistency checking */
@@ -236,6 +241,11 @@ extern bool DecodeXLogRecord(XLogReaderState *state, XLogRecord *record,
 	((decoder)->blocks[block_id].has_image)
 #define XLogRecBlockImageApply(decoder, block_id) \
 	((decoder)->blocks[block_id].apply_image)
+
+#ifdef ENABLE_REMOTE_RECOVERY
+#define XLogRecBlockImageFetch(decoder, block_id) \
+	((decoder)->blocks[block_id].remote_fetch_image)
+#endif
 
 extern bool RestoreBlockImage(XLogReaderState *recoder, uint8 block_id, char *dst);
 extern char *XLogRecGetBlockData(XLogReaderState *record, uint8 block_id, Size *len);

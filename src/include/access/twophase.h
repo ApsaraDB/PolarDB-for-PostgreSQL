@@ -45,6 +45,10 @@ extern void StartPrepare(GlobalTransaction gxact);
 extern void EndPrepare(GlobalTransaction gxact);
 extern bool StandbyTransactionIdIsPrepared(TransactionId xid);
 
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+extern void EndGlobalPrepare(GlobalTransaction gxact);
+#endif
+
 extern TransactionId PrescanPreparedTransactions(TransactionId **xids_p,
 							int *nxids_p);
 extern void ParsePrepareRecord(uint8 info, char *xlrec,

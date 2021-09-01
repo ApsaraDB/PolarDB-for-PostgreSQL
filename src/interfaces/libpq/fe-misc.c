@@ -298,6 +298,21 @@ pqGetInt(int *result, size_t bytes, PGconn *conn)
 	return 0;
 }
 
+int 
+pqGetTimestamp(LogicalTime *result, PGconn *conn)
+{
+	uint64 tmp;
+	if (conn->inCursor + 8 > conn->inEnd)
+		return EOF;
+	memcpy(&tmp, conn->inBuffer + conn->inCursor, 8);
+	conn->inCursor += 8;
+	*result = (LogicalTime)pg_ntoh64(tmp);
+	
+	if (conn->Pfdebug)
+		fprintf(conn->Pfdebug, "From backend %lu\n", *result);
+	return 0;
+}
+
 /*
  * pqPutInt
  * write an integer of 2 or 4 bytes, converting from host byte order

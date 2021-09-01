@@ -3,7 +3,7 @@
  * nbtxlog.c
  *	  WAL replay logic for btrees.
  *
- *
+ * Portions Copyright (c) 2020, Alibaba Group Holding Limited
  * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -92,6 +92,14 @@ _bt_restore_meta(XLogReaderState *record, uint8 block_id)
 	Size		len;
 
 	metabuf = XLogInitBufferForRedo(record, block_id);
+#ifdef ENABLE_PARALLEL_RECOVERY
+	if (!BufferIsValid(metabuf))
+	{
+		Assert(enable_parallel_recovery_bypage);
+		return;
+	}
+#endif							/* ENABLE_PARALLEL_RECOVERY */
+
 	ptr = XLogRecGetBlockData(record, block_id, &len);
 
 	Assert(len == sizeof(xl_btree_metadata));
@@ -219,6 +227,10 @@ btree_xlog_split(bool onleft, bool lhighkey, XLogReaderState *record)
 	BlockNumber rightsib;
 	BlockNumber rnext;
 
+#ifdef ENABLE_PARALLEL_RECOVERY
+	char		tmpPage[BLCKSZ];
+#endif							/* ENABLE_PARALLEL_RECOVERY */
+
 	XLogRecGetBlockTag(record, 0, NULL, NULL, &leftsib);
 	XLogRecGetBlockTag(record, 1, NULL, NULL, &rightsib);
 	if (!XLogRecGetBlockTag(record, 2, NULL, NULL, &rnext))
@@ -235,9 +247,35 @@ btree_xlog_split(bool onleft, bool lhighkey, XLogReaderState *record)
 	/* Reconstruct right (new) sibling page from scratch */
 	rbuf = XLogInitBufferForRedo(record, 1);
 	datapos = XLogRecGetBlockData(record, 1, &datalen);
+#ifdef ENABLE_PARALLEL_RECOVERY
+	if (!BufferIsValid(rbuf))
+	{
+		/*
+		 * So we are in parallel redo by page mode, and this worker does not
+		 * care about the right sibling page. We mock a temp page using local
+		 * buffer here.
+		 *
+		 * This is sololy for the reason of computing left_hikey, which maybe
+		 * used when replaying the left sibling page down below.
+		 *
+		 * And yes, technically we only need to do this if the current worker
+		 * is responsible for the left sibling page. But skiping this
+		 * computing when otherwise would add too much control logic, and make
+		 * the code hard to read.
+		 */
+		Assert(enable_parallel_recovery_bypage);
+		rpage = (Page) &(tmpPage[0]);
+	}
+	else
+	{
+		rpage = (Page) BufferGetPage(rbuf);
+	}
+#else
 	rpage = (Page) BufferGetPage(rbuf);
+#endif							/* ENABLE_PARALLEL_RECOVERY */
 
-	_bt_pageinit(rpage, BufferGetPageSize(rbuf));
+
+	_bt_pageinit(rpage, BLCKSZ);
 	ropaque = (BTPageOpaque) PageGetSpecialPointer(rpage);
 
 	ropaque->btpo_prev = leftsib;
@@ -262,8 +300,11 @@ btree_xlog_split(bool onleft, bool lhighkey, XLogReaderState *record)
 		left_hikeysz = ItemIdGetLength(hiItemId);
 	}
 
-	PageSetLSN(rpage, lsn);
-	MarkBufferDirty(rbuf);
+	if (BufferIsValid(rbuf))
+	{
+		PageSetLSN(rpage, lsn);
+		MarkBufferDirty(rbuf);
+	}
 
 	/* don't release the buffer yet; we touch right page's first item below */
 
@@ -366,7 +407,8 @@ btree_xlog_split(bool onleft, bool lhighkey, XLogReaderState *record)
 	/* We no longer need the buffers */
 	if (BufferIsValid(lbuf))
 		UnlockReleaseBuffer(lbuf);
-	UnlockReleaseBuffer(rbuf);
+	if (BufferIsValid(rbuf))
+		UnlockReleaseBuffer(rbuf);
 
 	/*
 	 * Fix left-link of the page to the right of the new right sibling.
@@ -693,6 +735,10 @@ btree_xlog_delete(XLogReaderState *record)
 	 */
 	if (InHotStandby)
 	{
+#ifdef ENABLE_PARALLEL_RECOVERY
+		Assert(!enable_parallel_recovery_bypage);
+#endif							/* ENABLE_PARALLEL_RECOVERY */
+
 		TransactionId latestRemovedXid = btree_xlog_delete_get_latestRemovedXid(record);
 		RelFileNode rnode;
 
@@ -783,6 +829,13 @@ btree_xlog_mark_page_halfdead(uint8 info, XLogReaderState *record)
 
 	/* Rewrite the leaf page as a halfdead page */
 	buffer = XLogInitBufferForRedo(record, 0);
+#ifdef ENABLE_PARALLEL_RECOVERY
+	if (!BufferIsValid(buffer))
+	{
+		Assert(enable_parallel_recovery_bypage);
+		return;
+	}
+#endif							/* ENABLE_PARALLEL_RECOVERY */
 	page = (Page) BufferGetPage(buffer);
 
 	_bt_pageinit(page, BufferGetPageSize(buffer));
@@ -865,20 +918,29 @@ btree_xlog_unlink_page(uint8 info, XLogReaderState *record)
 
 	/* Rewrite target page as empty deleted page */
 	buffer = XLogInitBufferForRedo(record, 0);
-	page = (Page) BufferGetPage(buffer);
+#ifdef ENABLE_PARALLEL_RECOVERY
+	if (!BufferIsValid(buffer))
+	{
+		Assert(enable_parallel_recovery_bypage);
+	}
+	else
+#endif							/* ENABLE_PARALLEL_RECOVERY */
+	{
+		page = (Page) BufferGetPage(buffer);
 
-	_bt_pageinit(page, BufferGetPageSize(buffer));
-	pageop = (BTPageOpaque) PageGetSpecialPointer(page);
+		_bt_pageinit(page, BufferGetPageSize(buffer));
+		pageop = (BTPageOpaque) PageGetSpecialPointer(page);
 
-	pageop->btpo_prev = leftsib;
-	pageop->btpo_next = rightsib;
-	pageop->btpo.xact = xlrec->btpo_xact;
-	pageop->btpo_flags = BTP_DELETED;
-	pageop->btpo_cycleid = 0;
+		pageop->btpo_prev = leftsib;
+		pageop->btpo_next = rightsib;
+		pageop->btpo.xact = xlrec->btpo_xact;
+		pageop->btpo_flags = BTP_DELETED;
+		pageop->btpo_cycleid = 0;
 
-	PageSetLSN(page, lsn);
-	MarkBufferDirty(buffer);
-	UnlockReleaseBuffer(buffer);
+		PageSetLSN(page, lsn);
+		MarkBufferDirty(buffer);
+		UnlockReleaseBuffer(buffer);
+	}
 
 	/*
 	 * If we deleted a parent of the targeted leaf page, instead of the leaf
@@ -894,29 +956,38 @@ btree_xlog_unlink_page(uint8 info, XLogReaderState *record)
 		IndexTupleData trunctuple;
 
 		buffer = XLogInitBufferForRedo(record, 3);
-		page = (Page) BufferGetPage(buffer);
+#ifdef ENABLE_PARALLEL_RECOVERY
+		if (!BufferIsValid(buffer))
+		{
+			Assert(enable_parallel_recovery_bypage);
+		}
+		else
+#endif							/* ENABLE_PARALLEL_RECOVERY */
+		{
+			page = (Page) BufferGetPage(buffer);
 
-		_bt_pageinit(page, BufferGetPageSize(buffer));
-		pageop = (BTPageOpaque) PageGetSpecialPointer(page);
+			_bt_pageinit(page, BufferGetPageSize(buffer));
+			pageop = (BTPageOpaque) PageGetSpecialPointer(page);
 
-		pageop->btpo_flags = BTP_HALF_DEAD | BTP_LEAF;
-		pageop->btpo_prev = xlrec->leafleftsib;
-		pageop->btpo_next = xlrec->leafrightsib;
-		pageop->btpo.level = 0;
-		pageop->btpo_cycleid = 0;
+			pageop->btpo_flags = BTP_HALF_DEAD | BTP_LEAF;
+			pageop->btpo_prev = xlrec->leafleftsib;
+			pageop->btpo_next = xlrec->leafrightsib;
+			pageop->btpo.level = 0;
+			pageop->btpo_cycleid = 0;
 
-		/* Add a dummy hikey item */
-		MemSet(&trunctuple, 0, sizeof(IndexTupleData));
-		trunctuple.t_info = sizeof(IndexTupleData);
-		BTreeTupleSetTopParent(&trunctuple, xlrec->topparent);
+			/* Add a dummy hikey item */
+			MemSet(&trunctuple, 0, sizeof(IndexTupleData));
+			trunctuple.t_info = sizeof(IndexTupleData);
+			BTreeTupleSetTopParent(&trunctuple, xlrec->topparent);
 
-		if (PageAddItem(page, (Item) &trunctuple, sizeof(IndexTupleData), P_HIKEY,
-						false, false) == InvalidOffsetNumber)
-			elog(ERROR, "could not add dummy high key to half-dead page");
+			if (PageAddItem(page, (Item) &trunctuple, sizeof(IndexTupleData), P_HIKEY,
+							false, false) == InvalidOffsetNumber)
+				elog(ERROR, "could not add dummy high key to half-dead page");
 
-		PageSetLSN(page, lsn);
-		MarkBufferDirty(buffer);
-		UnlockReleaseBuffer(buffer);
+			PageSetLSN(page, lsn);
+			MarkBufferDirty(buffer);
+			UnlockReleaseBuffer(buffer);
+		}
 	}
 
 	/* Update metapage if needed */
@@ -936,31 +1007,41 @@ btree_xlog_newroot(XLogReaderState *record)
 	Size		len;
 
 	buffer = XLogInitBufferForRedo(record, 0);
-	page = (Page) BufferGetPage(buffer);
+#ifdef ENABLE_PARALLEL_RECOVERY
+	if (!BufferIsValid(buffer))
+	{
+		Assert(enable_parallel_recovery_bypage);
+	}
+	else
+#endif							/* ENABLE_PARALLEL_RECOVERY */
+	{
+		page = (Page) BufferGetPage(buffer);
 
-	_bt_pageinit(page, BufferGetPageSize(buffer));
-	pageop = (BTPageOpaque) PageGetSpecialPointer(page);
+		_bt_pageinit(page, BufferGetPageSize(buffer));
+		pageop = (BTPageOpaque) PageGetSpecialPointer(page);
 
-	pageop->btpo_flags = BTP_ROOT;
-	pageop->btpo_prev = pageop->btpo_next = P_NONE;
-	pageop->btpo.level = xlrec->level;
-	if (xlrec->level == 0)
-		pageop->btpo_flags |= BTP_LEAF;
-	pageop->btpo_cycleid = 0;
+		pageop->btpo_flags = BTP_ROOT;
+		pageop->btpo_prev = pageop->btpo_next = P_NONE;
+		pageop->btpo.level = xlrec->level;
+		if (xlrec->level == 0)
+			pageop->btpo_flags |= BTP_LEAF;
+		pageop->btpo_cycleid = 0;
 
+		if (xlrec->level > 0)
+		{
+			ptr = XLogRecGetBlockData(record, 0, &len);
+			_bt_restore_page(page, ptr, len);
+		}
+
+		PageSetLSN(page, lsn);
+		MarkBufferDirty(buffer);
+		UnlockReleaseBuffer(buffer);
+	}
 	if (xlrec->level > 0)
 	{
-		ptr = XLogRecGetBlockData(record, 0, &len);
-		_bt_restore_page(page, ptr, len);
-
 		/* Clear the incomplete-split flag in left child */
 		_bt_clear_incomplete_split(record, 1);
 	}
-
-	PageSetLSN(page, lsn);
-	MarkBufferDirty(buffer);
-	UnlockReleaseBuffer(buffer);
-
 	_bt_restore_meta(record, 2);
 }
 
@@ -981,6 +1062,9 @@ btree_xlog_reuse_page(XLogReaderState *record)
 	 */
 	if (InHotStandby)
 	{
+#ifdef ENABLE_PARALLEL_RECOVERY
+		Assert(!enable_parallel_recovery_bypage);
+#endif							/* ENABLE_PARALLEL_RECOVERY */
 		ResolveRecoveryConflictWithSnapshot(xlrec->latestRemovedXid,
 											xlrec->node);
 	}

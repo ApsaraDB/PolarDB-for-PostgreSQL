@@ -5,6 +5,7 @@
  *
  * Access-method specific inspection functions are in separate files.
  *
+ * Portions Copyright (c) 2020, Alibaba Group Holding Limited
  * Copyright (c) 2007-2018, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
@@ -224,8 +225,8 @@ page_header(PG_FUNCTION_ARGS)
 
 	Datum		result;
 	HeapTuple	tuple;
-	Datum		values[9];
-	bool		nulls[9];
+	Datum		values[10];
+	bool		nulls[10];
 
 	PageHeader	page;
 	XLogRecPtr	lsn;
@@ -275,6 +276,11 @@ page_header(PG_FUNCTION_ARGS)
 	values[6] = UInt16GetDatum(PageGetPageSize(page));
 	values[7] = UInt16GetDatum(PageGetPageLayoutVersion(page));
 	values[8] = TransactionIdGetDatum(page->pd_prune_xid);
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+	values[9] = UInt64GetDatum(page->pd_prune_ts);
+#else
+	values[9] = UInt64GetDatum(0);
+#endif
 
 	/* Build and return the tuple. */
 

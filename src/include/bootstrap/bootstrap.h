@@ -30,7 +30,8 @@
 extern Relation boot_reldesc;
 extern Form_pg_attribute attrtypes[MAXATTR];
 extern int	numattr;
-
+/* POLAR */
+extern uint64 polar_sysidentifier;
 
 extern void AuxiliaryProcessMain(int argc, char *argv[]) pg_attribute_noreturn();
 

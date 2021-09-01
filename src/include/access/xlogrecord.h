@@ -176,7 +176,14 @@ typedef struct XLogRecordBlockCompressHeader
  * The fork number fits in the lower 4 bits in the fork_flags field. The upper
  * bits are used for flags.
  */
+#ifdef ENABLE_REMOTE_RECOVERY
+#define BKPBLOCK_FORK_MASK	0x07
+#define BKPBLOCK_NEEDS_REMOTE_FETCH	0x08	/* we borrow one bit from fork num for remote fetch, 
+												as result the max fork num should not exceeds 7.
+														*/
+#else
 #define BKPBLOCK_FORK_MASK	0x0F
+#endif
 #define BKPBLOCK_FLAG_MASK	0xF0
 #define BKPBLOCK_HAS_IMAGE	0x10	/* block data is an XLogRecordBlockImage */
 #define BKPBLOCK_HAS_DATA	0x20

@@ -28,6 +28,8 @@ extern "C"
  */
 #include "postgres_ext.h"
 
+#include "distributed_txn/logical_clock.h"
+
 /*
  * Option flags for PQcopyResult
  */
@@ -399,6 +401,9 @@ extern PGresult *PQexecPrepared(PGconn *conn,
 			   int resultFormat);
 
 /* Interface for multiple-result or asynchronous queries */
+extern int PQsendTimestamp(PGconn *conn, LogicalTime ts);
+extern int PQrecvTimestamp(PGconn *conn, LogicalTime *ts);
+
 extern int	PQsendQuery(PGconn *conn, const char *query);
 extern int PQsendQueryParams(PGconn *conn,
 				  const char *command,
@@ -604,6 +609,10 @@ extern char *PQencryptPasswordConn(PGconn *conn, const char *passwd, const char 
 extern int	pg_char_to_encoding(const char *name);
 extern const char *pg_encoding_to_char(int encoding);
 extern int	pg_valid_server_encoding_id(int encoding);
+
+/* Recv timestamp callback */
+typedef void (*PQTimestampReceiver) (LogicalTime ts);
+extern PQTimestampReceiver pq_timestamp_receiver;
 
 #ifdef __cplusplus
 }

@@ -3,6 +3,10 @@
  * transam.c
  *	  postgres transaction (commit) log interface routines
  *
+ * Support CTS-based transactions.
+ * Author: Junbin Kang
+ *
+ * Portions Copyright (c) 2020, Alibaba Group Holding Limited
  * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -10,56 +14,50 @@
  * IDENTIFICATION
  *	  src/backend/access/transam/transam.c
  *
- * NOTES
- *	  This file contains the high level access-method interface to the
- *	  transaction system.
- *
  *-------------------------------------------------------------------------
  */
 
 #include "postgres.h"
 
 #include "access/clog.h"
+#include "access/ctslog.h"
+#include "access/mvccvars.h"
 #include "access/subtrans.h"
 #include "access/transam.h"
+#include "distributed_txn/txn_timestamp.h"
+#include "storage/lmgr.h"
 #include "utils/snapmgr.h"
 
 /*
- * Single-item cache for results of TransactionLogFetch.  It's worth having
+ * Single-item cache for results of TransactionIdGetCommitSeqNo.  It's worth
+ * having
  * such a cache because we frequently find ourselves repeatedly checking the
  * same XID, for example when scanning a table just after a bulk insert,
  * update, or delete.
  */
 static TransactionId cachedFetchXid = InvalidTransactionId;
-static XidStatus cachedFetchXidStatus;
-static XLogRecPtr cachedCommitLSN;
-
-/* Local functions */
-static XidStatus TransactionLogFetch(TransactionId transactionId);
-
-
-/* ----------------------------------------------------------------
- *		Postgres log access method interface
- *
- *		TransactionLogFetch
- * ----------------------------------------------------------------
- */
+static CommitSeqNo cachedCSN;
 
 /*
- * TransactionLogFetch --- fetch commit status of specified transaction id
+ * Also have a (separate) cache for CLogGetCommitLSN()
  */
-static XidStatus
-TransactionLogFetch(TransactionId transactionId)
+static TransactionId cachedLSNFetchXid = InvalidTransactionId;
+static XLogRecPtr cachedCommitLSN;
+
+/*
+ * TransactionIdGetCommitSeqNo --- fetch CSN of specified transaction id
+ */
+CommitSeqNo
+TransactionIdGetCommitSeqNo(TransactionId transactionId)
 {
-	XidStatus	xidstatus;
-	XLogRecPtr	xidlsn;
+	CommitSeqNo csn;
 
 	/*
 	 * Before going to the commit log manager, check our single item cache to
 	 * see if we didn't just check the transaction status a moment ago.
 	 */
 	if (TransactionIdEquals(transactionId, cachedFetchXid))
-		return cachedFetchXidStatus;
+		return cachedCSN;
 
 	/*
 	 * Also, check to see if the transaction ID is a permanent one.
@@ -67,52 +65,78 @@ TransactionLogFetch(TransactionId transactionId)
 	if (!TransactionIdIsNormal(transactionId))
 	{
 		if (TransactionIdEquals(transactionId, BootstrapTransactionId))
-			return TRANSACTION_STATUS_COMMITTED;
+			return COMMITSEQNO_FROZEN;
 		if (TransactionIdEquals(transactionId, FrozenTransactionId))
-			return TRANSACTION_STATUS_COMMITTED;
-		return TRANSACTION_STATUS_ABORTED;
+			return COMMITSEQNO_FROZEN;
+		return COMMITSEQNO_ABORTED;
 	}
 
 	/*
-	 * Get the transaction status.
+	 * If the XID is older than TransactionXmin, check the clog. Otherwise
+	 * check the csnlog.
 	 */
-	xidstatus = TransactionIdGetStatus(transactionId, &xidlsn);
+#ifndef ENABLE_DISTRIBUTED_TRANSACTION
+	Assert(TransactionIdIsValid(TransactionXmin));
+	if (TransactionIdPrecedes(transactionId, TransactionXmin))
+	{
+		XLogRecPtr	lsn;
+
+		if (CLogGetStatus(transactionId, &lsn) == CLOG_XID_STATUS_COMMITTED)
+			csn = COMMITSEQNO_FROZEN;
+		else
+			csn = COMMITSEQNO_ABORTED;
+	}
+	else
+#endif
+	{
+		csn = CTSLogGetCommitTs(transactionId);
+
+		if (csn == COMMITSEQNO_COMMITTING)
+		{
+			/*
+			 * If the transaction is committing at this very instant, and
+			 * hasn't set its CSN yet, wait for it to finish doing so.
+			 *
+			 * XXX: Alternatively, we could wait on the heavy-weight lock on
+			 * the XID. that'd make TransactionIdCommitTree() slightly
+			 * cheaper, as it wouldn't need to acquire CommitSeqNoLock (even
+			 * in shared mode).
+			 */
+
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+			/*
+			 * We choose to wait for the specific transaction to run to
+			 * completion, so as the transaction commit path does not need to
+			 * acquire CommitSeqNoLock.
+			 */
+#ifdef ENABLE_DISTR_DEBUG
+			if (enable_timestamp_debug_print)
+				elog(LOG, "wait for committing transaction xid %d to complete", transactionId);
+#endif
+			XactLockTableWait(transactionId, NULL, NULL, XLTW_None);
+#else
+			LWLockAcquire(CommitSeqNoLock, LW_EXCLUSIVE);
+			LWLockRelease(CommitSeqNoLock);
+#endif
+
+			csn = CTSLogGetCommitTs(transactionId);
+			Assert(csn != COMMITSEQNO_COMMITTING);
+		}
+	}
 
 	/*
-	 * Cache it, but DO NOT cache status for unfinished or sub-committed
-	 * transactions!  We only cache status that is guaranteed not to change.
+	 * Cache it, but DO NOT cache status for unfinished transactions! We only
+	 * cache status that is guaranteed not to change.
 	 */
-	if (xidstatus != TRANSACTION_STATUS_IN_PROGRESS &&
-		xidstatus != TRANSACTION_STATUS_SUB_COMMITTED)
+	if (COMMITSEQNO_IS_COMMITTED(csn) ||
+		COMMITSEQNO_IS_ABORTED(csn))
 	{
 		cachedFetchXid = transactionId;
-		cachedFetchXidStatus = xidstatus;
-		cachedCommitLSN = xidlsn;
+		cachedCSN = csn;
 	}
 
-	return xidstatus;
+	return csn;
 }
-
-/* ----------------------------------------------------------------
- *						Interface functions
- *
- *		TransactionIdDidCommit
- *		TransactionIdDidAbort
- *		========
- *		   these functions test the transaction status of
- *		   a specified transaction id.
- *
- *		TransactionIdCommitTree
- *		TransactionIdAsyncCommitTree
- *		TransactionIdAbortTree
- *		========
- *		   these functions set the transaction status of the specified
- *		   transaction tree.
- *
- * See also TransactionIdIsInProgress, which once was in this module
- * but now lives in procarray.c.
- * ----------------------------------------------------------------
- */
 
 /*
  * TransactionIdDidCommit
@@ -124,50 +148,42 @@ TransactionLogFetch(TransactionId transactionId)
 bool							/* true if given transaction committed */
 TransactionIdDidCommit(TransactionId transactionId)
 {
-	XidStatus	xidstatus;
+	CommitSeqNo csn;
 
-	xidstatus = TransactionLogFetch(transactionId);
+	csn = TransactionIdGetCommitSeqNo(transactionId);
 
-	/*
-	 * If it's marked committed, it's committed.
-	 */
-	if (xidstatus == TRANSACTION_STATUS_COMMITTED)
-		return true;
-
-	/*
-	 * If it's marked subcommitted, we have to check the parent recursively.
-	 * However, if it's older than TransactionXmin, we can't look at
-	 * pg_subtrans; instead assume that the parent crashed without cleaning up
-	 * its children.
-	 *
-	 * Originally we Assert'ed that the result of SubTransGetParent was not
-	 * zero. However with the introduction of prepared transactions, there can
-	 * be a window just after database startup where we do not have complete
-	 * knowledge in pg_subtrans of the transactions after TransactionXmin.
-	 * StartupSUBTRANS() has ensured that any missing information will be
-	 * zeroed.  Since this case should not happen under normal conditions, it
-	 * seems reasonable to emit a WARNING for it.
-	 */
-	if (xidstatus == TRANSACTION_STATUS_SUB_COMMITTED)
+#ifdef ENABLE_DISTR_DEBUG
+	/* perform check against clog for debugging purpose */
 	{
-		TransactionId parentXid;
-
-		if (TransactionIdPrecedes(transactionId, TransactionXmin))
-			return false;
-		parentXid = SubTransGetParent(transactionId);
-		if (!TransactionIdIsValid(parentXid))
+		if (COMMITSEQNO_IS_COMMITTED(csn))
 		{
-			elog(WARNING, "no pg_subtrans entry for subcommitted XID %u",
-				 transactionId);
-			return false;
-		}
-		return TransactionIdDidCommit(parentXid);
-	}
+			XLogRecPtr	result;
+			CLogXidStatus clogstatus;
 
-	/*
-	 * It's not committed.
-	 */
-	return false;
+			clogstatus = CLogGetStatus(transactionId, &result);
+
+			if (clogstatus != CLOG_XID_STATUS_COMMITTED)
+				elog(PANIC, "cts log status " UINT64_FORMAT " does not match clog %d",
+					 csn, clogstatus);
+		}
+		else if (COMMITSEQNO_IS_ABORTED(csn))
+		{
+			XLogRecPtr	result;
+			CLogXidStatus clogstatus;
+
+			clogstatus = CLogGetStatus(transactionId, &result);
+
+			if (clogstatus != CLOG_XID_STATUS_ABORTED)
+				elog(PANIC, "cts log status " UINT64_FORMAT " does not match clog %d",
+					 csn, clogstatus);
+		}
+	}
+#endif
+
+	if (COMMITSEQNO_IS_COMMITTED(csn))
+		return true;
+	else
+		return false;
 }
 
 /*
@@ -180,70 +196,90 @@ TransactionIdDidCommit(TransactionId transactionId)
 bool							/* true if given transaction aborted */
 TransactionIdDidAbort(TransactionId transactionId)
 {
-	XidStatus	xidstatus;
+	CommitSeqNo csn;
 
-	xidstatus = TransactionLogFetch(transactionId);
+	csn = TransactionIdGetCommitSeqNo(transactionId);
 
-	/*
-	 * If it's marked aborted, it's aborted.
-	 */
-	if (xidstatus == TRANSACTION_STATUS_ABORTED)
-		return true;
-
-	/*
-	 * If it's marked subcommitted, we have to check the parent recursively.
-	 * However, if it's older than TransactionXmin, we can't look at
-	 * pg_subtrans; instead assume that the parent crashed without cleaning up
-	 * its children.
-	 */
-	if (xidstatus == TRANSACTION_STATUS_SUB_COMMITTED)
+#ifdef ENABLE_DISTR_DEBUG
+	/* perform check against clog for debugging purpose */
 	{
-		TransactionId parentXid;
-
-		if (TransactionIdPrecedes(transactionId, TransactionXmin))
-			return true;
-		parentXid = SubTransGetParent(transactionId);
-		if (!TransactionIdIsValid(parentXid))
+		if (COMMITSEQNO_IS_ABORTED(csn))
 		{
-			/* see notes in TransactionIdDidCommit */
-			elog(WARNING, "no pg_subtrans entry for subcommitted XID %u",
-				 transactionId);
-			return true;
-		}
-		return TransactionIdDidAbort(parentXid);
-	}
+			XLogRecPtr	result;
+			CLogXidStatus clogstatus;
 
-	/*
-	 * It's not aborted.
-	 */
-	return false;
+			clogstatus = CLogGetStatus(transactionId, &result);
+
+			if (clogstatus != CLOG_XID_STATUS_ABORTED)
+				elog(PANIC, "cts log status " UINT64_FORMAT " does not match clog %d",
+					 csn, clogstatus);
+		}
+		else if (COMMITSEQNO_IS_COMMITTED(csn))
+		{
+			XLogRecPtr	result;
+			CLogXidStatus clogstatus;
+
+			clogstatus = CLogGetStatus(transactionId, &result);
+
+			if (clogstatus != CLOG_XID_STATUS_COMMITTED)
+				elog(PANIC, "cts log status " UINT64_FORMAT " does not match clog %d",
+					 csn, clogstatus);
+		}
+	}
+#endif
+
+	if (COMMITSEQNO_IS_ABORTED(csn))
+		return true;
+	else
+		return false;
 }
 
 /*
- * TransactionIdIsKnownCompleted
- *		True iff transaction associated with the identifier is currently
- *		known to have either committed or aborted.
+ * Returns the status of the tranaction.
  *
- * This does NOT look into pg_xact but merely probes our local cache
- * (and so it's not named TransactionIdDidComplete, which would be the
- * appropriate name for a function that worked that way).  The intended
- * use is just to short-circuit TransactionIdIsInProgress calls when doing
- * repeated tqual.c checks for the same XID.  If this isn't extremely fast
- * then it will be counterproductive.
- *
- * Note:
- *		Assumes transaction identifier is valid.
+ * Note that this treats a a crashed transaction as still in-progress,
+ * until it falls off the xmin horizon.
  */
-bool
-TransactionIdIsKnownCompleted(TransactionId transactionId)
+TransactionIdStatus
+TransactionIdGetStatus(TransactionId xid)
 {
-	if (TransactionIdEquals(transactionId, cachedFetchXid))
-	{
-		/* If it's in the cache at all, it must be completed. */
-		return true;
-	}
+	CommitSeqNo csn;
+	TransactionIdStatus status;
 
-	return false;
+	csn = TransactionIdGetCommitSeqNo(xid);
+
+	if (COMMITSEQNO_IS_COMMITTED(csn))
+		status = XID_COMMITTED;
+	else if (COMMITSEQNO_IS_ABORTED(csn))
+		status = XID_ABORTED;
+	else
+		status = XID_INPROGRESS;
+
+#ifdef ENABLE_DISTR_DEBUG
+	/* perform check against clog for debugging purpose */
+	{
+		XLogRecPtr	result;
+		CLogXidStatus clogstatus;
+
+		clogstatus = CLogGetStatus(xid, &result);
+
+		switch (status)
+		{
+			case XID_COMMITTED:
+				if (clogstatus != CLOG_XID_STATUS_COMMITTED)
+					elog(PANIC, "cts log status %d does not match clog %d",
+						 status, clogstatus);
+				break;
+			case XID_ABORTED:
+				if (clogstatus != CLOG_XID_STATUS_ABORTED)
+					elog(PANIC, "cts log status %d does not match clog %d",
+						 status, clogstatus);
+				break;
+		}
+	}
+#endif
+
+	return status;
 }
 
 /*
@@ -252,28 +288,87 @@ TransactionIdIsKnownCompleted(TransactionId transactionId)
  *
  * "xid" is a toplevel transaction commit, and the xids array contains its
  * committed subtransactions.
- *
- * This commit operation is not guaranteed to be atomic, but if not, subxids
- * are correctly marked subcommit first.
  */
 void
 TransactionIdCommitTree(TransactionId xid, int nxids, TransactionId *xids)
 {
-	TransactionIdSetTreeStatus(xid, nxids, xids,
-							   TRANSACTION_STATUS_COMMITTED,
-							   InvalidXLogRecPtr);
+	TransactionIdAsyncCommitTree(xid, nxids, xids, InvalidXLogRecPtr);
 }
 
 /*
  * TransactionIdAsyncCommitTree
- *		Same as above, but for async commits.  The commit record LSN is needed.
+ *		Same as above, but for async commits.
+ *
+ * "xid" is a toplevel transaction commit, and the xids array contains its
+ * committed subtransactions.
  */
 void
 TransactionIdAsyncCommitTree(TransactionId xid, int nxids, TransactionId *xids,
 							 XLogRecPtr lsn)
 {
-	TransactionIdSetTreeStatus(xid, nxids, xids,
-							   TRANSACTION_STATUS_COMMITTED, lsn);
+#ifndef ENABLE_DISTRIBUTED_TRANSACTION
+	CommitSeqNo csn;
+#endif
+	TransactionId latestXid;
+	TransactionId currentLatestCompletedXid;
+
+	latestXid = TransactionIdLatest(xid, nxids, xids);
+
+	/*
+	 * First update the clog, then CSN log. oldestActiveXid advances based on
+	 * CSN log content (see AdvanceOldestActiveXid), and it should not become
+	 * greater than our xid before we set the clog status. Otherwise other
+	 * transactions could see us as aborted for some time after we have
+	 * written to CSN log, and somebody advanced the oldest active xid past
+	 * our xid, but before we write to clog.
+	 */
+#ifdef ENABLE_DISTR_DEBUG
+	CLogSetTreeStatus(xid, nxids, xids,
+					  CLOG_XID_STATUS_COMMITTED,
+					  lsn);
+#endif
+
+	/*
+	 * Grab the CommitSeqNoLock, in shared mode. This is only used to provide
+	 * a way for a concurrent transaction to wait for us to complete (see
+	 * TransactionIdGetCommitSeqNo()).
+	 *
+	 * XXX: We could reduce the time the lock is held, by only setting the CSN
+	 * on the top-XID while holding the lock, and updating the sub-XIDs later.
+	 * But it doesn't matter much, because we're only holding it in shared
+	 * mode, and it's rare for it to be acquired in exclusive mode.
+	 */
+	LWLockAcquire(CommitSeqNoLock, LW_SHARED);
+
+	/*
+	 * First update latestCompletedXid to cover this xid. We do this before
+	 * assigning a CSN, so that if someone acquires a new snapshot at the same
+	 * time, the xmax it computes is sure to cover our XID.
+	 */
+	currentLatestCompletedXid = pg_atomic_read_u32(&ShmemVariableCache->latestCompletedXid);
+	while (TransactionIdFollows(latestXid, currentLatestCompletedXid))
+	{
+		if (pg_atomic_compare_exchange_u32(&ShmemVariableCache->latestCompletedXid,
+										   &currentLatestCompletedXid,
+										   latestXid))
+			break;
+	}
+#ifndef ENABLE_DISTRIBUTED_TRANSACTION
+
+	/*
+	 * Mark our top transaction id as commit-in-progress.
+	 */
+	CSNLogSetCommitSeqNo(xid, 0, NULL, lsn, true, COMMITSEQNO_COMMITTING);
+
+	/* Get our CSN and increment */
+	csn = pg_atomic_fetch_add_u64(&ShmemVariableCache->nextCommitSeqNo, 1);
+	Assert(csn >= COMMITSEQNO_FIRST_NORMAL);
+
+	/* Stamp this XID (and sub-XIDs) with the CSN */
+	CSNLogSetCommitSeqNo(xid, nxids, xids, lsn, true, csn);
+
+#endif
+	LWLockRelease(CommitSeqNoLock);
 }
 
 /*
@@ -289,8 +384,28 @@ TransactionIdAsyncCommitTree(TransactionId xid, int nxids, TransactionId *xids,
 void
 TransactionIdAbortTree(TransactionId xid, int nxids, TransactionId *xids)
 {
-	TransactionIdSetTreeStatus(xid, nxids, xids,
-							   TRANSACTION_STATUS_ABORTED, InvalidXLogRecPtr);
+	TransactionId latestXid;
+	TransactionId currentLatestCompletedXid;
+
+	latestXid = TransactionIdLatest(xid, nxids, xids);
+
+	currentLatestCompletedXid = pg_atomic_read_u32(&ShmemVariableCache->latestCompletedXid);
+	while (TransactionIdFollows(latestXid, currentLatestCompletedXid))
+	{
+		if (pg_atomic_compare_exchange_u32(&ShmemVariableCache->latestCompletedXid,
+										   &currentLatestCompletedXid,
+										   latestXid))
+			break;
+	}
+	if (enable_timestamp_debug_print)
+		elog(LOG, "abort transaction xid %d", xid);
+
+#ifdef ENABLE_DISTR_DEBUG
+	CLogSetTreeStatus(xid, nxids, xids,
+					  CLOG_XID_STATUS_ABORTED, InvalidXLogRecPtr);
+#endif
+
+	CTSLogSetCommitTs(xid, nxids, xids, InvalidXLogRecPtr, false, COMMITSEQNO_ABORTED);
 }
 
 /*
@@ -409,7 +524,7 @@ TransactionIdGetCommitLSN(TransactionId xid)
 	 * checking TransactionLogFetch's cache will usually succeed and avoid an
 	 * extra trip to shared memory.
 	 */
-	if (TransactionIdEquals(xid, cachedFetchXid))
+	if (TransactionIdEquals(xid, cachedLSNFetchXid))
 		return cachedCommitLSN;
 
 	/* Special XIDs are always known committed */
@@ -419,7 +534,14 @@ TransactionIdGetCommitLSN(TransactionId xid)
 	/*
 	 * Get the transaction status.
 	 */
-	(void) TransactionIdGetStatus(xid, &result);
+#ifdef ENABLE_DISTR_DEBUG
+	result = CLogGetLSN(xid);
+#endif
+
+	result = CTSLogGetLSN(xid);
+
+	cachedLSNFetchXid = xid;
+	cachedCommitLSN = result;
 
 	return result;
 }

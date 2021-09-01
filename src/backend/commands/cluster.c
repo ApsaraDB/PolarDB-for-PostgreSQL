@@ -5,7 +5,7 @@
  *
  * There is hardly anything left of Paul Brown's original implementation...
  *
- *
+ * Portions Copyright (c) 2020, Alibaba Group Holding Limited
  * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994-5, Regents of the University of California
  *
@@ -867,9 +867,17 @@ copy_heap_data(Oid OIDNewHeap, Oid OIDOldHeap, Oid OIDOldIndex, bool verbose,
 	 * Since we're going to rewrite the whole table anyway, there's no reason
 	 * not to be aggressive about this.
 	 */
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+	vacuum_set_xid_limits(OldHeap, vacuum_defer_freeze_min_age,
+						  vacuum_defer_freeze_min_age, vacuum_defer_freeze_min_age, vacuum_defer_freeze_min_age,
+						  &OldestXmin, &FreezeXid, NULL, &MultiXactCutoff,
+						  NULL);
+
+#else
 	vacuum_set_xid_limits(OldHeap, 0, 0, 0, 0,
 						  &OldestXmin, &FreezeXid, NULL, &MultiXactCutoff,
 						  NULL);
+#endif
 
 	/*
 	 * FreezeXid will become the table's new relfrozenxid, and that mustn't go
@@ -1581,7 +1589,7 @@ finish_heap_swap(Oid OIDOldHeap, Oid OIDNewHeap,
 	 * swap_relation_files()), thus relfrozenxid was not updated. That's
 	 * annoying because a potential reason for doing a VACUUM FULL is a
 	 * imminent or actual anti-wraparound shutdown.  So, now that we can
-	 * access the new relation using it's indices, update relfrozenxid.
+	 * access the new relation using its indices, update relfrozenxid.
 	 * pg_class doesn't have a toast relation, so we don't need to update the
 	 * corresponding toast relation. Not that there's little point moving all
 	 * relfrozenxid updates here since swap_relation_files() needs to write to

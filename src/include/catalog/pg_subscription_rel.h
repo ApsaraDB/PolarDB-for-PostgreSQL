@@ -4,6 +4,7 @@
  *	  definition of the system catalog containing the state for each
  *	  replicated table in each subscription (pg_subscription_rel)
  *
+ * Portions Copyright (c) 2020, Alibaba Group Holding Limited
  * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -23,6 +24,9 @@
 
 #include "access/xlogdefs.h"
 #include "nodes/pg_list.h"
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+#include "c.h"
+#endif
 
 /* ----------------
  *		pg_subscription_rel definition. cpp turns this into
@@ -36,6 +40,9 @@ CATALOG(pg_subscription_rel,6102,SubscriptionRelRelationId) BKI_WITHOUT_OIDS
 	char		srsubstate;		/* state of the relation in subscription */
 	XLogRecPtr	srsublsn;		/* remote lsn of the state change used for
 								 * synchronization coordination */
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+	int64		srsubstartts;	/* snapshot start ts */
+#endif
 } FormData_pg_subscription_rel;
 
 typedef FormData_pg_subscription_rel *Form_pg_subscription_rel;
@@ -65,14 +72,32 @@ typedef struct SubscriptionRelState
 	Oid			relid;
 	XLogRecPtr	lsn;
 	char		state;
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+	GlobalTimestamp start_ts;
+#endif
 } SubscriptionRelState;
 
 extern Oid AddSubscriptionRelState(Oid subid, Oid relid, char state,
 						XLogRecPtr sublsn);
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+extern Oid
+UpdateSubscriptionRelStateExtend(Oid subid, Oid relid, char state,
+								 XLogRecPtr sublsn
+								 ,GlobalTimestamp startts
+);
+#define UpdateSubscriptionRelState(subid, relid, state, sublsn) UpdateSubscriptionRelStateExtend(subid, relid, state, sublsn, InvalidGlobalTimestamp)
+#else
 extern Oid UpdateSubscriptionRelState(Oid subid, Oid relid, char state,
 						   XLogRecPtr sublsn);
+#endif
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+extern char GetSubscriptionRelStateExtend(Oid subid, Oid relid,
+							  XLogRecPtr *sublsn, GlobalTimestamp * startts, bool missing_ok);
+#define GetSubscriptionRelState(subid, relid, sublsn, missing_ok) GetSubscriptionRelStateExtend(subid, relid, sublsn, NULL, missing_ok)
+#else
 extern char GetSubscriptionRelState(Oid subid, Oid relid,
 						XLogRecPtr *sublsn, bool missing_ok);
+#endif
 extern void RemoveSubscriptionRel(Oid subid, Oid relid);
 
 extern List *GetSubscriptionRelations(Oid subid);

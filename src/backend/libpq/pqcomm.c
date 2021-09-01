@@ -1115,6 +1115,22 @@ pq_getbytes(char *s, size_t len)
 	return 0;
 }
 
+int 
+pq_gettimestamp(LogicalTime *value)
+{
+	uint64 tmp;
+	
+	if (pq_getbytes((char *) &tmp, sizeof(uint64)) == EOF)
+	{
+		ereport(COMMERROR,
+				(errcode(ERRCODE_PROTOCOL_VIOLATION),
+				 errmsg("unexpected EOF within message length word")));
+		return EOF;
+	}
+	*value = (LogicalTime)pg_ntoh64(tmp);
+	return 0;
+}
+
 /* --------------------------------
  *		pq_discardbytes		- throw away a known number of bytes
  *

@@ -6,6 +6,7 @@
  * by the PG_RMGR macro, which is not defined in this file; it can be
  * defined by the caller for special purposes.
  *
+ * Portions Copyright (c) 2020, Alibaba Group Holding Limited
  * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -29,6 +30,11 @@ PG_RMGR(RM_XLOG_ID, "XLOG", xlog_redo, xlog_desc, xlog_identify, NULL, NULL, NUL
 PG_RMGR(RM_XACT_ID, "Transaction", xact_redo, xact_desc, xact_identify, NULL, NULL, NULL)
 PG_RMGR(RM_SMGR_ID, "Storage", smgr_redo, smgr_desc, smgr_identify, NULL, NULL, NULL)
 PG_RMGR(RM_CLOG_ID, "CLOG", clog_redo, clog_desc, clog_identify, NULL, NULL, NULL)
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+PG_RMGR(RM_CTSLOG_ID, "CTSLOG", ctslog_redo, ctslog_desc, ctslog_identify, NULL, NULL, NULL)
+#else
+PG_RMGR(RM_CSNLOG_ID, "CSNLOG", csnlog_redo, csnlog_desc, csnlog_identify, NULL, NULL, NULL)
+#endif
 PG_RMGR(RM_DBASE_ID, "Database", dbase_redo, dbase_desc, dbase_identify, NULL, NULL, NULL)
 PG_RMGR(RM_TBLSPC_ID, "Tablespace", tblspc_redo, tblspc_desc, tblspc_identify, NULL, NULL, NULL)
 PG_RMGR(RM_MULTIXACT_ID, "MultiXact", multixact_redo, multixact_desc, multixact_identify, NULL, NULL, NULL)

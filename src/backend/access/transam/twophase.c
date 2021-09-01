@@ -3,6 +3,11 @@
  * twophase.c
  *		Two-phase commit support functions.
  *
+ * Support CTS-based transactions.
+ * Author: Junbin Kang
+ *
+ * Portions Copyright (c) 2020, Alibaba Group Holding Limited
+ * Portions Copyright (C) 2019 THL A29 Limited, a Tencent company.  All rights reserved.
  * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -22,7 +27,7 @@
  *		transaction in prepared state with the same GID.
  *
  *		A global transaction (gxact) also has dummy PGXACT and PGPROC; this is
- *		what keeps the XID considered running by TransactionIdIsInProgress.
+ *		what keeps the XID considered running by the functions in procarray.c.
  *		It is also convenient as a PGPROC to hook the gxact's locks to.
  *
  *		Information to recover prepared transactions in case of crash is
@@ -77,7 +82,9 @@
 #include <unistd.h>
 
 #include "access/commit_ts.h"
+#include "access/ctslog.h"
 #include "access/htup_details.h"
+#include "access/mvccvars.h"
 #include "access/subtrans.h"
 #include "access/transam.h"
 #include "access/twophase.h"
@@ -106,6 +113,9 @@
 #include "utils/builtins.h"
 #include "utils/memutils.h"
 #include "utils/timestamp.h"
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+#include "distributed_txn/txn_timestamp.h"
+#endif
 
 
 /*
@@ -465,12 +475,17 @@ MarkAsPreparingGuts(GlobalTransaction gxact, TransactionId xid, const char *gid,
 	proc->lxid = (LocalTransactionId) xid;
 	pgxact->xid = xid;
 	pgxact->xmin = InvalidTransactionId;
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+	pg_atomic_write_u64(&pgxact->tmin, InvalidCommitSeqNo);
+#endif
+	pgxact->snapshotcsn = InvalidCommitSeqNo;
 	pgxact->delayChkpt = false;
 	pgxact->vacuumFlags = 0;
 	proc->pid = 0;
 	proc->backendId = InvalidBackendId;
 	proc->databaseId = databaseid;
 	proc->roleId = owner;
+	proc->tempNamespaceId = InvalidOid;
 	proc->isBackgroundWorker = false;
 	proc->lwWaiting = false;
 	proc->lwWaitMode = 0;
@@ -478,9 +493,6 @@ MarkAsPreparingGuts(GlobalTransaction gxact, TransactionId xid, const char *gid,
 	proc->waitProcLock = NULL;
 	for (i = 0; i < NUM_LOCK_PARTITIONS; i++)
 		SHMQueueInit(&(proc->myProcLocks[i]));
-	/* subxid data must be filled later by GXactLoadSubxactData */
-	pgxact->overflowed = false;
-	pgxact->nxids = 0;
 
 	gxact->prepared_at = prepared_at;
 	gxact->xid = xid;
@@ -495,34 +507,6 @@ MarkAsPreparingGuts(GlobalTransaction gxact, TransactionId xid, const char *gid,
 	 * abort after this, we must release it.
 	 */
 	MyLockedGxact = gxact;
-}
-
-/*
- * GXactLoadSubxactData
- *
- * If the transaction being persisted had any subtransactions, this must
- * be called before MarkAsPrepared() to load information into the dummy
- * PGPROC.
- */
-static void
-GXactLoadSubxactData(GlobalTransaction gxact, int nsubxacts,
-					 TransactionId *children)
-{
-	PGPROC	   *proc = &ProcGlobal->allProcs[gxact->pgprocno];
-	PGXACT	   *pgxact = &ProcGlobal->allPgXact[gxact->pgprocno];
-
-	/* We need no extra lock since the GXACT isn't valid yet */
-	if (nsubxacts > PGPROC_MAX_CACHED_SUBXIDS)
-	{
-		pgxact->overflowed = true;
-		nsubxacts = PGPROC_MAX_CACHED_SUBXIDS;
-	}
-	if (nsubxacts > 0)
-	{
-		memcpy(proc->subxids.xids, children,
-			   nsubxacts * sizeof(TransactionId));
-		pgxact->nxids = nsubxacts;
-	}
 }
 
 /*
@@ -543,8 +527,8 @@ MarkAsPrepared(GlobalTransaction gxact, bool lock_held)
 		LWLockRelease(TwoPhaseStateLock);
 
 	/*
-	 * Put it into the global ProcArray so TransactionIdIsInProgress considers
-	 * the XID as still running.
+	 * Put it into the global ProcArray so GetOldestActiveTransactionId()
+	 * considers the XID as still running.
 	 */
 	ProcArrayAdd(&ProcGlobal->allProcs[gxact->pgprocno]);
 }
@@ -1036,8 +1020,6 @@ StartPrepare(GlobalTransaction gxact)
 	if (hdr.nsubxacts > 0)
 	{
 		save_state_data(children, hdr.nsubxacts * sizeof(TransactionId));
-		/* While we have the child-xact data, stuff it in the gxact too */
-		GXactLoadSubxactData(gxact, hdr.nsubxacts, children);
 	}
 	if (hdr.ncommitrels > 0)
 	{
@@ -1150,7 +1132,7 @@ EndPrepare(GlobalTransaction gxact)
 	 * NB: a side effect of this is to make a dummy ProcArray entry for the
 	 * prepared XID.  This must happen before we clear the XID from MyPgXact,
 	 * else there is a window where the XID is not running according to
-	 * TransactionIdIsInProgress, and onlookers would be entitled to assume
+	 * GetOldestActiveTransactionId, and onlookers would be entitled to assume
 	 * the xact crashed.  Instead we have a window where the same XID appears
 	 * twice in ProcArray, which is OK.
 	 */
@@ -1184,6 +1166,21 @@ EndPrepare(GlobalTransaction gxact)
 	records.num_chunks = 0;
 }
 
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+void
+EndGlobalPrepare(GlobalTransaction gxact)
+{
+	volatile	PGXACT *pgxact = &ProcGlobal->allPgXact[gxact->pgprocno];
+
+	pg_atomic_write_u64(&pgxact->tmin, pg_atomic_read_u64(&MyPgXact->tmin));
+	if (!COMMITSEQNO_IS_NORMAL(pg_atomic_read_u64(&MyPgXact->tmin)))
+	{
+		elog(WARNING,
+			 "prepare transaction %d does not have valid tmin " UINT64_FORMAT,
+			 MyPgXact->xid, pg_atomic_read_u64(&MyPgXact->tmin));
+	}
+}
+#endif
 /*
  * Register a 2PC record to be written to state file.
  */
@@ -1449,14 +1446,12 @@ FinishPreparedTransaction(const char *gid, bool isCommit)
 	char	   *buf;
 	char	   *bufptr;
 	TwoPhaseFileHeader *hdr;
-	TransactionId latestXid;
 	TransactionId *children;
 	RelFileNode *commitrels;
 	RelFileNode *abortrels;
 	RelFileNode *delrels;
 	int			ndelrels;
 	SharedInvalidationMessage *invalmsgs;
-	int			i;
 
 	/*
 	 * Validate the GID, and lock the GXACT to ensure that two backends do not
@@ -1494,9 +1489,6 @@ FinishPreparedTransaction(const char *gid, bool isCommit)
 	invalmsgs = (SharedInvalidationMessage *) bufptr;
 	bufptr += MAXALIGN(hdr->ninvalmsgs * sizeof(SharedInvalidationMessage));
 
-	/* compute latestXid among all children */
-	latestXid = TransactionIdLatest(xid, hdr->nsubxacts, children);
-
 	/* Prevent cancel/die interrupt while cleaning up */
 	HOLD_INTERRUPTS();
 
@@ -1504,7 +1496,7 @@ FinishPreparedTransaction(const char *gid, bool isCommit)
 	 * The order of operations here is critical: make the XLOG entry for
 	 * commit or abort, then mark the transaction committed or aborted in
 	 * pg_xact, then remove its PGPROC from the global ProcArray (which means
-	 * TransactionIdIsInProgress will stop saying the prepared xact is in
+	 * GetOldestActiveTransactionId() will stop saying the prepared xact is in
 	 * progress), then run the post-commit or post-abort callbacks. The
 	 * callbacks will release the locks the transaction held.
 	 */
@@ -1520,7 +1512,8 @@ FinishPreparedTransaction(const char *gid, bool isCommit)
 									   hdr->nabortrels, abortrels,
 									   gid);
 
-	ProcArrayRemove(proc, latestXid);
+	ProcArrayRemove(proc);
+	AdvanceOldestActiveXid(xid);
 
 	/*
 	 * In case we fail while running the callbacks, mark the gxact invalid so
@@ -1549,13 +1542,9 @@ FinishPreparedTransaction(const char *gid, bool isCommit)
 		delrels = abortrels;
 		ndelrels = hdr->nabortrels;
 	}
-	for (i = 0; i < ndelrels; i++)
-	{
-		SMgrRelation srel = smgropen(delrels[i], InvalidBackendId);
 
-		smgrdounlink(srel, false);
-		smgrclose(srel);
-	}
+	/* Make sure files supposed to be dropped are dropped */
+	DropRelationFiles(delrels, ndelrels, false);
 
 	/*
 	 * Handle cache invalidation messages.
@@ -1670,6 +1659,7 @@ RecreateTwoPhaseFile(TransactionId xid, void *content, int len)
 						path)));
 
 	/* Write content and CRC */
+	errno = 0;
 	pgstat_report_wait_start(WAIT_EVENT_TWOPHASE_FILE_WRITE);
 	if (write(fd, content, len) != len)
 	{
@@ -2022,7 +2012,7 @@ RecoverPreparedTransactions(void)
 
 		/*
 		 * Reconstruct subtrans state for the transaction --- needed because
-		 * pg_subtrans is not preserved over a restart.  Note that we are
+		 * pg_csnlog is not preserved over a restart.  Note that we are
 		 * linking all the subtransactions directly to the top-level XID;
 		 * there may originally have been a more complex hierarchy, but
 		 * there's no need to restore that exactly. It's possible that
@@ -2060,8 +2050,15 @@ RecoverPreparedTransactions(void)
 		/* recovered, so reset the flag for entries generated by redo */
 		gxact->inredo = false;
 
-		GXactLoadSubxactData(gxact, hdr->nsubxacts, subxids);
 		MarkAsPrepared(gxact, true);
+
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+		/* Stamp this XID (and sub-XIDs) with the CSN */
+		CTSLogSetCommitTs(xid, 0, NULL, InvalidXLogRecPtr, false, MASK_PREPARE_BIT(0));
+#ifdef ENABLE_DISTR_DEBUG
+		elog(LOG, "recover prepare record xid %d", xid);
+#endif
+#endif
 
 		LWLockRelease(TwoPhaseStateLock);
 
@@ -2121,7 +2118,7 @@ ProcessTwoPhaseBuffer(TransactionId xid,
 		Assert(prepare_start_lsn != InvalidXLogRecPtr);
 
 	/* Already processed? */
-	if (TransactionIdDidCommit(xid) || TransactionIdDidAbort(xid))
+	if (TransactionIdGetStatus(xid) != XID_INPROGRESS)
 	{
 		if (fromdisk)
 		{
@@ -2266,6 +2263,9 @@ RecordTransactionCommitPrepared(TransactionId xid,
 	XLogRecPtr	recptr;
 	TimestampTz committs = GetCurrentTimestamp();
 	bool		replorigin;
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+	CommitSeqNo csn;
+#endif
 
 	/*
 	 * Are we using the replication origins feature?  Or, in other words, are
@@ -2279,12 +2279,17 @@ RecordTransactionCommitPrepared(TransactionId xid,
 	/* See notes in RecordTransactionCommit */
 	MyPgXact->delayChkpt = true;
 
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+	csn = CTSLogAssignCommitTs(xid, nchildren, children, true);
+#endif
+
 	/*
 	 * Emit the XLOG commit record. Note that we mark 2PC commits as
 	 * potentially having AccessExclusiveLocks since we don't know whether or
 	 * not they do.
 	 */
-	recptr = XactLogCommitRecord(committs,
+	recptr = XactLogCommitRecord(csn,
+								 committs,
 								 nchildren, children, nrels, rels,
 								 ninvalmsgs, invalmsgs,
 								 initfileinval, false,
@@ -2321,8 +2326,27 @@ RecordTransactionCommitPrepared(TransactionId xid,
 	/* Flush XLOG to disk */
 	XLogFlush(recptr);
 
-	/* Mark the transaction committed in pg_xact */
+	/* Mark the transaction committed in pg_xact and pg_csnlog */
+#ifdef ENABLE_DISTR_DEBUG
 	TransactionIdCommitTree(xid, nchildren, children);
+#endif
+
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+
+#ifdef ENABLE_DISTR_DEBUG
+	{
+		CommitTs	prev_cts = CTSLogGetCommitTs(xid);
+
+		if (!COMMITSEQNO_IS_PREPARED(prev_cts))
+			elog(PANIC, "The transaction did not prepared, cts " UINT64_FORMAT, prev_cts);
+	}
+#endif
+
+	/* Stamp this XID (and sub-XIDs) with the CSN */
+	CTSLogSetCommitTs(xid, nchildren, children, InvalidXLogRecPtr, false, csn);
+	if (enable_timestamp_debug_print)
+		elog(LOG, "commit prepared record xid %d csn " UINT64_FORMAT, xid, csn);
+#endif
 
 	/* Checkpoint can proceed now */
 	MyPgXact->delayChkpt = false;
@@ -2360,7 +2384,7 @@ RecordTransactionAbortPrepared(TransactionId xid,
 	 * Catch the scenario where we aborted partway through
 	 * RecordTransactionCommitPrepared ...
 	 */
-	if (TransactionIdDidCommit(xid))
+	if (TransactionIdGetStatus(xid) == XID_COMMITTED)
 		elog(PANIC, "cannot abort transaction %u, it was already committed",
 			 xid);
 

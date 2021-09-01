@@ -2,6 +2,10 @@
  * relation.c
  *	   PostgreSQL logical replication
  *
+ * Support CTS-based logical replication
+ * Author: Junbin Kang
+ * 
+ * Portions Copyright (c) 2020, Alibaba Group Holding Limited
  * Copyright (c) 2016-2018, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
@@ -353,11 +357,18 @@ logicalrep_rel_open(LogicalRepRelId remoteid, LOCKMODE lockmode)
 		entry->localrel = heap_open(entry->localreloid, lockmode);
 
 	if (entry->state != SUBREL_STATE_READY)
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+		entry->state = GetSubscriptionRelStateExtend(MySubscription->oid,
+											   entry->localreloid,
+											   &entry->statelsn,
+											   &entry->statestartts,
+											   true);
+#else
 		entry->state = GetSubscriptionRelState(MySubscription->oid,
 											   entry->localreloid,
 											   &entry->statelsn,
 											   true);
-
+#endif
 	return entry;
 }
 

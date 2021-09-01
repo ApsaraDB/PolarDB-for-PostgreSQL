@@ -18,10 +18,12 @@ top_builddir = ../..
 include $(top_builddir)/src/Makefile.global
 
 SUBDIRS = access bootstrap catalog parser commands executor foreign lib libpq \
+	distributed_txn \
 	main nodes optimizer partitioning port postmaster \
 	regex replication rewrite \
 	statistics storage tcop tsearch utils $(top_builddir)/src/timezone \
-	jit
+	jit polar_dma \
+	polar_datamax
 
 include $(srcdir)/common.mk
 
@@ -50,6 +52,12 @@ LIBS := $(filter-out -lz -lreadline -ledit -ltermcap -lncurses -lcurses, $(LIBS)
 ifeq ($(with_systemd),yes)
 LIBS += -lsystemd
 endif
+
+# POLAR libs
+LIBS += -lpthread
+###POLAR consensus libs
+LIBS += -lpolar_consensus_wrapper -lprotobuf -lstdc++ -lrt -lssl -lcrypto
+# POLAR end
 
 ##########################################################################
 
@@ -171,7 +179,6 @@ $(top_builddir)/src/include/storage/lwlocknames.h: storage/lmgr/lwlocknames.h
 	  cd '$(dir $@)' && rm -f $(notdir $@) && \
 	  $(LN_S) "$$prereqdir/$(notdir $<)" .
 
-
 utils/probes.o: utils/probes.d $(SUBDIROBJS)
 	$(DTRACE) $(DTRACEFLAGS) -C -G -s $(call expand_subsys,$^) -o $@
 
@@ -209,6 +216,7 @@ endif
 	$(INSTALL_DATA) $(srcdir)/libpq/pg_hba.conf.sample '$(DESTDIR)$(datadir)/pg_hba.conf.sample'
 	$(INSTALL_DATA) $(srcdir)/libpq/pg_ident.conf.sample '$(DESTDIR)$(datadir)/pg_ident.conf.sample'
 	$(INSTALL_DATA) $(srcdir)/utils/misc/postgresql.conf.sample '$(DESTDIR)$(datadir)/postgresql.conf.sample'
+	$(INSTALL_DATA) $(srcdir)/polar_dma/polar_dma.conf.sample '$(DESTDIR)$(datadir)/polar_dma.conf.sample'
 	$(INSTALL_DATA) $(srcdir)/access/transam/recovery.conf.sample '$(DESTDIR)$(datadir)/recovery.conf.sample'
 
 ifeq ($(with_llvm), yes)

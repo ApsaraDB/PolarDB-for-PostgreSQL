@@ -7,7 +7,7 @@ use TestLib;
 use Test::More tests => 12;
 
 # Setup master node
-my $node_master = get_new_node("master");
+my $node_master = get_new_node("master", 0);
 $node_master->init(allows_streaming => 1);
 $node_master->append_conf(
 	'postgresql.conf', qq(
@@ -19,7 +19,7 @@ $node_master->backup('master_backup');
 $node_master->psql('postgres', "CREATE TABLE t_012_tbl (id int)");
 
 # Setup standby node
-my $node_standby = get_new_node('standby');
+my $node_standby = get_new_node('standby', 0);
 $node_standby->init_from_backup($node_master, 'master_backup',
 	has_streaming => 1);
 $node_standby->start;

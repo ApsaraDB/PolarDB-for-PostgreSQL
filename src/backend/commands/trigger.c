@@ -2726,11 +2726,19 @@ ExecASDeleteTriggers(EState *estate, ResultRelInfo *relinfo,
 							  false, NULL, NULL, NIL, NULL, transition_capture);
 }
 
+/*
+ * Execute BEFORE ROW DELETE triggers.
+ *
+ * True indicates caller can proceed with the delete.  False indicates caller
+ * need to suppress the delete and additionally if requested, we need to pass
+ * back the concurrently updated tuple if any.
+ */
 bool
 ExecBRDeleteTriggers(EState *estate, EPQState *epqstate,
 					 ResultRelInfo *relinfo,
 					 ItemPointer tupleid,
-					 HeapTuple fdw_trigtuple)
+					 HeapTuple fdw_trigtuple,
+					 TupleTableSlot **epqslot)
 {
 	TriggerDesc *trigdesc = relinfo->ri_TrigDesc;
 	bool		result = true;
@@ -2747,6 +2755,18 @@ ExecBRDeleteTriggers(EState *estate, EPQState *epqstate,
 									   LockTupleExclusive, &newSlot);
 		if (trigtuple == NULL)
 			return false;
+
+		/*
+		 * If the tuple was concurrently updated and the caller of this
+		 * function requested for the updated tuple, skip the trigger
+		 * execution.
+		 */
+		if (newSlot != NULL && epqslot != NULL)
+		{
+			*epqslot = newSlot;
+			heap_freetuple(trigtuple);
+			return false;
+		}
 	}
 	else
 		trigtuple = fdw_trigtuple;
@@ -3376,7 +3396,15 @@ ltrmark:;
 		LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
 	}
 
-	result = heap_copytuple(&tuple);
+	/*
+	 * While this is not necessary anymore after 297d627e, as a defense
+	 * against C code that has not recompiled for minor releases after the
+	 * fix, continue to expand the tuple.
+	 */
+	if (HeapTupleHeaderGetNatts(tuple.t_data) < relation->rd_att->natts)
+		result = heap_expand_tuple(&tuple, relation->rd_att);
+	else
+		result = heap_copytuple(&tuple);
 	ReleaseBuffer(buffer);
 
 	return result;
@@ -5735,7 +5763,7 @@ AfterTriggerSaveEvent(EState *estate, ResultRelInfo *relinfo,
 		bool		delete_old_table = transition_capture->tcs_delete_old_table;
 		bool		update_old_table = transition_capture->tcs_update_old_table;
 		bool		update_new_table = transition_capture->tcs_update_new_table;
-		bool		insert_new_table = transition_capture->tcs_insert_new_table;;
+		bool		insert_new_table = transition_capture->tcs_insert_new_table;
 
 		/*
 		 * For INSERT events newtup should be non-NULL, for DELETE events

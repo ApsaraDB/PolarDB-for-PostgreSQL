@@ -3,6 +3,7 @@
  * subscriptioncmds.c
  *		subscription catalog manipulation functions
  *
+ * Portions Copyright (c) 2020, Alibaba Group Holding Limited
  * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -463,8 +464,13 @@ CreateSubscription(CreateSubscriptionStmt *stmt, bool isTopLevel)
 			{
 				Assert(slotname);
 
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+				walrcv_create_slot(wrconn, slotname, false,
+								   CRS_NOEXPORT_SNAPSHOT, &lsn, NULL);
+#else
 				walrcv_create_slot(wrconn, slotname, false,
 								   CRS_NOEXPORT_SNAPSHOT, &lsn);
+#endif
 				ereport(NOTICE,
 						(errmsg("created replication slot \"%s\" on publisher",
 								slotname)));

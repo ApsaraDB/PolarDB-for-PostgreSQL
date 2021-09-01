@@ -124,9 +124,6 @@ InitRecoveryTransactionEnvironment(void)
 void
 ShutdownRecoveryTransactionEnvironment(void)
 {
-	/* Mark all tracked in-progress transactions as finished. */
-	ExpireAllKnownAssignedTransactionIds();
-
 	/* Release all locks the tracked transactions were holding */
 	StandbyReleaseAllLocks();
 
@@ -336,7 +333,7 @@ ResolveRecoveryConflictWithTablespace(Oid tsid)
 	 *
 	 * We don't wait for commit because drop tablespace is non-transactional.
 	 */
-	temp_file_users = GetConflictingVirtualXIDs(InvalidTransactionId,
+	temp_file_users = GetConflictingVirtualXIDs(InvalidCommitSeqNo,
 												InvalidOid);
 	ResolveRecoveryConflictWithVirtualXIDs(temp_file_users,
 										   PROCSIG_RECOVERY_CONFLICT_TABLESPACE);
@@ -635,8 +632,7 @@ StandbyAcquireAccessExclusiveLock(TransactionId xid, Oid dbOid, Oid relOid)
 
 	/* Already processed? */
 	if (!TransactionIdIsValid(xid) ||
-		TransactionIdDidCommit(xid) ||
-		TransactionIdDidAbort(xid))
+		TransactionIdGetStatus(xid) != XID_INPROGRESS)
 		return;
 
 	elog(trace_recovery(DEBUG4),
@@ -661,7 +657,7 @@ StandbyAcquireAccessExclusiveLock(TransactionId xid, Oid dbOid, Oid relOid)
 
 	SET_LOCKTAG_RELATION(locktag, newlock->dbOid, newlock->relOid);
 
-	LockAcquireExtended(&locktag, AccessExclusiveLock, true, false, false);
+	(void) LockAcquire(&locktag, AccessExclusiveLock, true, false);
 }
 
 static void
@@ -807,13 +803,8 @@ standby_redo(XLogReaderState *record)
 		xl_running_xacts *xlrec = (xl_running_xacts *) XLogRecGetData(record);
 		RunningTransactionsData running;
 
-		running.xcnt = xlrec->xcnt;
-		running.subxcnt = xlrec->subxcnt;
-		running.subxid_overflow = xlrec->subxid_overflow;
 		running.nextXid = xlrec->nextXid;
-		running.latestCompletedXid = xlrec->latestCompletedXid;
 		running.oldestRunningXid = xlrec->oldestRunningXid;
-		running.xids = xlrec->xids;
 
 		ProcArrayApplyRecoveryInfo(&running);
 	}
@@ -941,7 +932,7 @@ LogStandbySnapshot(void)
 	/* Release lock if we kept it longer ... */
 	if (wal_level >= WAL_LEVEL_LOGICAL)
 		LWLockRelease(ProcArrayLock);
-
+		
 	/* GetRunningTransactionData() acquired XidGenLock, we must release it */
 	LWLockRelease(XidGenLock);
 
@@ -963,41 +954,21 @@ LogCurrentRunningXacts(RunningTransactions CurrRunningXacts)
 	xl_running_xacts xlrec;
 	XLogRecPtr	recptr;
 
-	xlrec.xcnt = CurrRunningXacts->xcnt;
-	xlrec.subxcnt = CurrRunningXacts->subxcnt;
-	xlrec.subxid_overflow = CurrRunningXacts->subxid_overflow;
 	xlrec.nextXid = CurrRunningXacts->nextXid;
 	xlrec.oldestRunningXid = CurrRunningXacts->oldestRunningXid;
-	xlrec.latestCompletedXid = CurrRunningXacts->latestCompletedXid;
 
 	/* Header */
 	XLogBeginInsert();
 	XLogSetRecordFlags(XLOG_MARK_UNIMPORTANT);
-	XLogRegisterData((char *) (&xlrec), MinSizeOfXactRunningXacts);
-
-	/* array of TransactionIds */
-	if (xlrec.xcnt > 0)
-		XLogRegisterData((char *) CurrRunningXacts->xids,
-						 (xlrec.xcnt + xlrec.subxcnt) * sizeof(TransactionId));
+	XLogRegisterData((char *) (&xlrec), SizeOfXactRunningXacts);
 
 	recptr = XLogInsert(RM_STANDBY_ID, XLOG_RUNNING_XACTS);
 
-	if (CurrRunningXacts->subxid_overflow)
-		elog(trace_recovery(DEBUG2),
-			 "snapshot of %u running transactions overflowed (lsn %X/%X oldest xid %u latest complete %u next xid %u)",
-			 CurrRunningXacts->xcnt,
-			 (uint32) (recptr >> 32), (uint32) recptr,
-			 CurrRunningXacts->oldestRunningXid,
-			 CurrRunningXacts->latestCompletedXid,
-			 CurrRunningXacts->nextXid);
-	else
-		elog(trace_recovery(DEBUG2),
-			 "snapshot of %u+%u running transaction ids (lsn %X/%X oldest xid %u latest complete %u next xid %u)",
-			 CurrRunningXacts->xcnt, CurrRunningXacts->subxcnt,
-			 (uint32) (recptr >> 32), (uint32) recptr,
-			 CurrRunningXacts->oldestRunningXid,
-			 CurrRunningXacts->latestCompletedXid,
-			 CurrRunningXacts->nextXid);
+	elog(trace_recovery(DEBUG2),
+		 "snapshot of running transaction ids (lsn %X/%X oldest xid %u next xid %u)",
+		 (uint32) (recptr >> 32), (uint32) recptr,
+		 CurrRunningXacts->oldestRunningXid,
+		 CurrRunningXacts->nextXid);
 
 	/*
 	 * Ensure running_xacts information is synced to disk not too far in the

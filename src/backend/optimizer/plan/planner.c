@@ -39,6 +39,7 @@
 #endif
 #include "optimizer/clauses.h"
 #include "optimizer/cost.h"
+#include "optimizer/paramassign.h"
 #include "optimizer/pathnode.h"
 #include "optimizer/paths.h"
 #include "optimizer/plancat.h"
@@ -123,7 +124,6 @@ static void preprocess_rowmarks(PlannerInfo *root);
 static double preprocess_limit(PlannerInfo *root,
 				 double tuple_fraction,
 				 int64 *offset_est, int64 *count_est);
-static bool limit_needed(Query *parse);
 static void remove_useless_groupby_columns(PlannerInfo *root);
 static List *preprocess_groupclause(PlannerInfo *root, List *force);
 static List *extract_rollup_sets(List *groupingSets);
@@ -626,7 +626,7 @@ subquery_planner(PlannerGlobal *glob, Query *parse,
 	root->inhTargetKind = INHKIND_NONE;
 	root->hasRecursion = hasRecursion;
 	if (hasRecursion)
-		root->wt_param_id = SS_assign_special_param(root);
+		root->wt_param_id = assign_special_exec_param(root);
 	else
 		root->wt_param_id = -1;
 	root->non_recursive_path = NULL;
@@ -1324,6 +1324,59 @@ inheritance_planner(PlannerInfo *root)
 		parent_rte->securityQuals = NIL;
 
 		/*
+		 * Mark whether we're planning a query to a partitioned table or an
+		 * inheritance parent.
+		 */
+		subroot->inhTargetKind =
+			partitioned_relids ? INHKIND_PARTITIONED : INHKIND_INHERITED;
+
+		/*
+		 * If this child is further partitioned, remember it as a parent.
+		 * Since a partitioned table does not have any data, we don't need to
+		 * create a plan for it, and we can stop processing it here.  We do,
+		 * however, need to remember its modified PlannerInfo for use when
+		 * processing its children, since we'll update their varnos based on
+		 * the delta from immediate parent to child, not from top to child.
+		 *
+		 * Note: a very non-obvious point is that we have not yet added
+		 * duplicate subquery RTEs to the subroot's rtable.  We mustn't,
+		 * because then its children would have two sets of duplicates,
+		 * confusing matters.
+		 */
+		if (child_rte->inh)
+		{
+			Assert(child_rte->relkind == RELKIND_PARTITIONED_TABLE);
+			parent_relids = bms_add_member(parent_relids, appinfo->child_relid);
+			parent_roots[appinfo->child_relid] = subroot;
+
+			continue;
+		}
+
+		/*
+		 * Set the nominal target relation of the ModifyTable node if not
+		 * already done.  We use the inheritance parent RTE as the nominal
+		 * target relation if it's a partitioned table (see just above this
+		 * loop).  In the non-partitioned parent case, we'll use the first
+		 * child relation (even if it's excluded) as the nominal target
+		 * relation.  Because of the way expand_inherited_rtentry works, the
+		 * latter should be the RTE representing the parent table in its role
+		 * as a simple member of the inheritance set.
+		 *
+		 * It would be logically cleaner to *always* use the inheritance
+		 * parent RTE as the nominal relation; but that RTE is not otherwise
+		 * referenced in the plan in the non-partitioned inheritance case.
+		 * Instead the duplicate child RTE created by expand_inherited_rtentry
+		 * is used elsewhere in the plan, so using the original parent RTE
+		 * would give rise to confusing use of multiple aliases in EXPLAIN
+		 * output for what the user will think is the "same" table.  OTOH,
+		 * it's not a problem in the partitioned inheritance case, because the
+		 * duplicate child RTE added for the parent does not appear anywhere
+		 * else in the plan tree.
+		 */
+		if (nominalRelation < 0)
+			nominalRelation = appinfo->child_relid;
+
+		/*
 		 * The rowMarks list might contain references to subquery RTEs, so
 		 * make a copy that we can apply ChangeVarNodes to.  (Fortunately, the
 		 * executor doesn't need to see the modified copies --- we can just
@@ -1426,55 +1479,8 @@ inheritance_planner(PlannerInfo *root)
 		/* and we haven't created PlaceHolderInfos, either */
 		Assert(subroot->placeholder_list == NIL);
 
-		/*
-		 * Mark if we're planning a query to a partitioned table or an
-		 * inheritance parent.
-		 */
-		subroot->inhTargetKind =
-			partitioned_relids ? INHKIND_PARTITIONED : INHKIND_INHERITED;
-
-		/*
-		 * If the child is further partitioned, remember it as a parent. Since
-		 * a partitioned table does not have any data, we don't need to create
-		 * a plan for it. We do, however, need to remember the PlannerInfo for
-		 * use when processing its children.
-		 */
-		if (child_rte->inh)
-		{
-			Assert(child_rte->relkind == RELKIND_PARTITIONED_TABLE);
-			parent_relids =
-				bms_add_member(parent_relids, appinfo->child_relid);
-			parent_roots[appinfo->child_relid] = subroot;
-
-			continue;
-		}
-
 		/* Generate Path(s) for accessing this result relation */
 		grouping_planner(subroot, true, 0.0 /* retrieve all tuples */ );
-
-		/*
-		 * Set the nomimal target relation of the ModifyTable node if not
-		 * already done.  We use the inheritance parent RTE as the nominal
-		 * target relation if it's a partitioned table (see just above this
-		 * loop).  In the non-partitioned parent case, we'll use the first
-		 * child relation (even if it's excluded) as the nominal target
-		 * relation.  Because of the way expand_inherited_rtentry works, the
-		 * latter should be the RTE representing the parent table in its role
-		 * as a simple member of the inheritance set.
-		 *
-		 * It would be logically cleaner to *always* use the inheritance
-		 * parent RTE as the nominal relation; but that RTE is not otherwise
-		 * referenced in the plan in the non-partitioned inheritance case.
-		 * Instead the duplicate child RTE created by expand_inherited_rtentry
-		 * is used elsewhere in the plan, so using the original parent RTE
-		 * would give rise to confusing use of multiple aliases in EXPLAIN
-		 * output for what the user will think is the "same" table.  OTOH,
-		 * it's not a problem in the partitioned inheritance case, because the
-		 * duplicate child RTE added for the parent does not appear anywhere
-		 * else in the plan tree.
-		 */
-		if (nominalRelation < 0)
-			nominalRelation = appinfo->child_relid;
 
 		/*
 		 * Select cheapest path in case there's more than one.  We always run
@@ -1493,9 +1499,9 @@ inheritance_planner(PlannerInfo *root)
 			continue;
 
 		/*
-		 * Add the current parent's RT index to the partitione_rels set if
-		 * we're going to create the ModifyTable path for a partitioned root
-		 * table.
+		 * Add the current parent's RT index to the partitioned_relids set if
+		 * we're creating the ModifyTable path for a partitioned root table.
+		 * (We only care about parents of non-excluded children.)
 		 */
 		if (partitioned_relids)
 			partitioned_relids = bms_add_member(partitioned_relids,
@@ -1617,6 +1623,7 @@ inheritance_planner(PlannerInfo *root)
 		 * contain at least one member, that is, the root parent's index.
 		 */
 		Assert(list_length(partitioned_rels) >= 1);
+		partitioned_rels = list_make1(partitioned_rels);
 	}
 
 	/* Create Path representing a ModifyTable to do the UPDATE/DELETE work */
@@ -1634,7 +1641,7 @@ inheritance_planner(PlannerInfo *root)
 									 returningLists,
 									 rowMarks,
 									 NULL,
-									 SS_assign_special_param(root)));
+									 assign_special_exec_param(root)));
 }
 
 /*--------------------
@@ -2149,7 +2156,7 @@ grouping_planner(PlannerInfo *root, bool inheritance_update,
 		{
 			path = (Path *) create_lockrows_path(root, final_rel, path,
 												 root->rowMarks,
-												 SS_assign_special_param(root));
+												 assign_special_exec_param(root));
 		}
 
 		/*
@@ -2211,7 +2218,7 @@ grouping_planner(PlannerInfo *root, bool inheritance_update,
 										returningLists,
 										rowMarks,
 										parse->onConflict,
-										SS_assign_special_param(root));
+										assign_special_exec_param(root));
 		}
 
 		/* And shove it into final_rel */
@@ -2864,7 +2871,7 @@ preprocess_limit(PlannerInfo *root, double tuple_fraction,
  * a key distinction: here we need hard constants in OFFSET/LIMIT, whereas
  * in preprocess_limit it's good enough to consider estimated values.
  */
-static bool
+bool
 limit_needed(Query *parse)
 {
 	Node	   *node;
@@ -4604,8 +4611,7 @@ create_one_window_path(PlannerInfo *root,
 		path = (Path *)
 			create_windowagg_path(root, window_rel, path, window_target,
 								  wflists->windowFuncs[wc->winref],
-								  wc,
-								  window_pathkeys);
+								  wc);
 	}
 
 	add_path(window_rel, path);
@@ -5466,8 +5472,6 @@ make_window_input_target(PlannerInfo *root,
  * The required ordering is first the PARTITION keys, then the ORDER keys.
  * In the future we might try to implement windowing using hashing, in which
  * case the ordering could be relaxed, but for now we always sort.
- *
- * Caution: if you change this, see createplan.c's get_column_info_for_window!
  */
 static List *
 make_pathkeys_for_window(PlannerInfo *root, WindowClause *wc,
@@ -6095,11 +6099,13 @@ plan_create_index_workers(Oid tableOid, Oid indexOid)
 	/*
 	 * Determine if it's safe to proceed.
 	 *
-	 * Currently, parallel workers can't access the leader's temporary tables.
-	 * Furthermore, any index predicate or index expressions must be parallel
-	 * safe.
+	 * Currently, parallel workers can't access the leader's temporary tables,
+	 * or the leader's relmapper.c state, which is needed for builds on mapped
+	 * relations.  Furthermore, any index predicate or index expressions must
+	 * be parallel safe.
 	 */
 	if (heap->rd_rel->relpersistence == RELPERSISTENCE_TEMP ||
+		RelationIsMapped(heap) ||
 		!is_parallel_safe(root, (Node *) RelationGetIndexExpressions(index)) ||
 		!is_parallel_safe(root, (Node *) RelationGetIndexPredicate(index)))
 	{
@@ -6913,8 +6919,8 @@ apply_scanjoin_target_to_paths(PlannerInfo *root,
 							  scanjoin_targets_contain_srfs);
 
 	/*
-	 * If the relation is partitioned, recurseively apply the same changes to
-	 * all partitions and generate new Append paths. Since Append is not
+	 * If the relation is partitioned, recursively apply the same changes to
+	 * all partitions and generate new Append paths.  Since Append is not
 	 * projection-capable, that might save a separate Result node, and it also
 	 * is important for partitionwise aggregate.
 	 */

@@ -46,15 +46,12 @@ typedef struct xl_standby_locks
  */
 typedef struct xl_running_xacts
 {
-	int			xcnt;			/* # of xact ids in xids[] */
-	int			subxcnt;		/* # of subxact ids in xids[] */
-	bool		subxid_overflow;	/* snapshot overflowed, subxids missing */
 	TransactionId nextXid;		/* copy of ShmemVariableCache->nextXid */
 	TransactionId oldestRunningXid; /* *not* oldestXmin */
 	TransactionId latestCompletedXid;	/* so we can set xmax */
-
-	TransactionId xids[FLEXIBLE_ARRAY_MEMBER];
 } xl_running_xacts;
+
+#define SizeOfXactRunningXacts (offsetof(xl_running_xacts, latestCompletedXid) + sizeof(TransactionId))
 
 /*
  * Invalidations for standby, currently only when transactions without an

@@ -6,7 +6,7 @@ use File::Basename qw(basename dirname);
 use File::Path qw(rmtree);
 use PostgresNode;
 use TestLib;
-use Test::More tests => 106;
+use Test::More tests => 105;
 
 program_help_ok('pg_basebackup');
 program_version_ok('pg_basebackup');
@@ -14,7 +14,7 @@ program_options_handling_ok('pg_basebackup');
 
 my $tempdir = TestLib::tempdir;
 
-my $node = get_new_node('main');
+my $node = get_new_node('main', 1);
 
 # Set umask so test directories and files are created with default permissions
 umask(0077);
@@ -123,7 +123,7 @@ is_deeply(
 
 # Contents of these directories should not be copied.
 foreach my $dirname (
-	qw(pg_dynshmem pg_notify pg_replslot pg_serial pg_snapshots pg_stat_tmp pg_subtrans)
+	qw(pg_dynshmem pg_notify pg_replslot pg_serial pg_snapshots pg_stat_tmp)
   )
 {
 	is_deeply(
@@ -499,12 +499,14 @@ my $pageheader_size = 24;
 my $block_size = $node->safe_psql('postgres', 'SHOW block_size;');
 
 # induce corruption
-system_or_bail 'pg_ctl', '-D', $pgdata, 'stop';
+# system_or_bail 'pg_ctl', '-D', $pgdata, 'stop';
+$node->stop;
 open $file, '+<', "$pgdata/$file_corrupt1";
 seek($file, $pageheader_size, 0);
 syswrite($file, '\0\0\0\0\0\0\0\0\0');
 close $file;
-system_or_bail 'pg_ctl', '-D', $pgdata, 'start';
+#system_or_bail 'pg_ctl', '-D', $pgdata, 'start';
+$node->start;
 
 $node->command_checks_all(
 	[ 'pg_basebackup', '-D', "$tempdir/backup_corrupt" ],
@@ -515,7 +517,9 @@ $node->command_checks_all(
 rmtree("$tempdir/backup_corrupt");
 
 # induce further corruption in 5 more blocks
-system_or_bail 'pg_ctl', '-D', $pgdata, 'stop';
+#system_or_bail 'pg_ctl', '-D', $pgdata, 'stop';
+$node->stop;
+open $file, '+<', "$pgdata/$file_corrupt1";
 open $file, '+<', "$pgdata/$file_corrupt1";
 for my $i (1 .. 5)
 {
@@ -524,7 +528,8 @@ for my $i (1 .. 5)
 	syswrite($file, '\0\0\0\0\0\0\0\0\0');
 }
 close $file;
-system_or_bail 'pg_ctl', '-D', $pgdata, 'start';
+#system_or_bail 'pg_ctl', '-D', $pgdata, 'start';
+$node->start;
 
 $node->command_checks_all(
 	[ 'pg_basebackup', '-D', "$tempdir/backup_corrupt2" ],
@@ -535,12 +540,14 @@ $node->command_checks_all(
 rmtree("$tempdir/backup_corrupt2");
 
 # induce corruption in a second file
-system_or_bail 'pg_ctl', '-D', $pgdata, 'stop';
+#system_or_bail 'pg_ctl', '-D', $pgdata, 'stop';
+$node->stop;
 open $file, '+<', "$pgdata/$file_corrupt2";
 seek($file, 4000, 0);
 syswrite($file, '\0\0\0\0\0\0\0\0\0');
 close $file;
-system_or_bail 'pg_ctl', '-D', $pgdata, 'start';
+#system_or_bail 'pg_ctl', '-D', $pgdata, 'start';
+$node->start;
 
 $node->command_checks_all(
 	[ 'pg_basebackup', '-D', "$tempdir/backup_corrupt3" ],

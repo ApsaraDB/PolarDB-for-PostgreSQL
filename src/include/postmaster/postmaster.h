@@ -3,6 +3,7 @@
  * postmaster.h
  *	  Exports from postmaster/postmaster.c.
  *
+ * Portions Copyright (c) 2020, Alibaba Group Holding Limited
  * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -62,6 +63,9 @@ extern Size ShmemBackendArraySize(void);
 extern void ShmemBackendArrayAllocation(void);
 #endif
 
+#ifdef ENABLE_PARALLEL_RECOVERY
+extern bool PostmasterIsFatalError(void);
+#endif
 /*
  * Note: MAX_BACKENDS is limited to 2^18-1 because that's the width reserved
  * for buffer references in buf_internals.h.  This limitation could be lifted

@@ -47,7 +47,7 @@
 #include "parser/parse_func.h"
 #include "storage/ipc.h"
 #include "storage/lmgr.h"
-#include "storage/sinval.h"
+#include "storage/sinvaladt.h"
 #include "utils/acl.h"
 #include "utils/builtins.h"
 #include "utils/catcache.h"
@@ -192,6 +192,7 @@ char	   *namespace_search_path = NULL;
 
 /* Local functions */
 static void recomputeNamespacePath(void);
+static void AccessTempTableNamespace(bool force);
 static void InitTempTableNamespace(void);
 static void RemoveTempRelations(Oid tempNamespaceId);
 static void RemoveTempRelationsCallback(int code, Datum arg);
@@ -459,9 +460,8 @@ RangeVarGetCreationNamespace(const RangeVar *newRelation)
 		/* check for pg_temp alias */
 		if (strcmp(newRelation->schemaname, "pg_temp") == 0)
 		{
-			/* Initialize temp namespace if first time through */
-			if (!OidIsValid(myTempNamespace))
-				InitTempTableNamespace();
+			/* Initialize temp namespace */
+			AccessTempTableNamespace(false);
 			return myTempNamespace;
 		}
 		/* use exact schema given */
@@ -470,9 +470,8 @@ RangeVarGetCreationNamespace(const RangeVar *newRelation)
 	}
 	else if (newRelation->relpersistence == RELPERSISTENCE_TEMP)
 	{
-		/* Initialize temp namespace if first time through */
-		if (!OidIsValid(myTempNamespace))
-			InitTempTableNamespace();
+		/* Initialize temp namespace */
+		AccessTempTableNamespace(false);
 		return myTempNamespace;
 	}
 	else
@@ -482,7 +481,7 @@ RangeVarGetCreationNamespace(const RangeVar *newRelation)
 		if (activeTempCreationPending)
 		{
 			/* Need to initialize temp namespace */
-			InitTempTableNamespace();
+			AccessTempTableNamespace(true);
 			return myTempNamespace;
 		}
 		namespaceId = activeCreationNamespace;
@@ -2920,9 +2919,8 @@ LookupCreationNamespace(const char *nspname)
 	/* check for pg_temp alias */
 	if (strcmp(nspname, "pg_temp") == 0)
 	{
-		/* Initialize temp namespace if first time through */
-		if (!OidIsValid(myTempNamespace))
-			InitTempTableNamespace();
+		/* Initialize temp namespace */
+		AccessTempTableNamespace(false);
 		return myTempNamespace;
 	}
 
@@ -2985,9 +2983,8 @@ QualifiedNameGetCreationNamespace(List *names, char **objname_p)
 		/* check for pg_temp alias */
 		if (strcmp(schemaname, "pg_temp") == 0)
 		{
-			/* Initialize temp namespace if first time through */
-			if (!OidIsValid(myTempNamespace))
-				InitTempTableNamespace();
+			/* Initialize temp namespace */
+			AccessTempTableNamespace(false);
 			return myTempNamespace;
 		}
 		/* use exact schema given */
@@ -3001,7 +2998,7 @@ QualifiedNameGetCreationNamespace(List *names, char **objname_p)
 		if (activeTempCreationPending)
 		{
 			/* Need to initialize temp namespace */
-			InitTempTableNamespace();
+			AccessTempTableNamespace(true);
 			return myTempNamespace;
 		}
 		namespaceId = activeCreationNamespace;
@@ -3202,6 +3199,46 @@ isOtherTempNamespace(Oid namespaceId)
 		return false;
 	/* Else, if it's any temp namespace, say "true" */
 	return isAnyTempNamespace(namespaceId);
+}
+
+/*
+ * isTempNamespaceInUse - is the given namespace owned and actively used
+ * by a backend?
+ *
+ * Note: this can be used while scanning relations in pg_class to detect
+ * orphaned temporary tables or namespaces with a backend connected to a
+ * given database.  The result may be out of date quickly, so the caller
+ * must be careful how to handle this information.
+ */
+bool
+isTempNamespaceInUse(Oid namespaceId)
+{
+	PGPROC	   *proc;
+	int			backendId;
+
+	Assert(OidIsValid(MyDatabaseId));
+
+	backendId = GetTempNamespaceBackendId(namespaceId);
+
+	if (backendId == InvalidBackendId ||
+		backendId == MyBackendId)
+		return false;
+
+	/* Is the backend alive? */
+	proc = BackendIdGetProc(backendId);
+	if (proc == NULL)
+		return false;
+
+	/* Is the backend connected to the same database we are looking at? */
+	if (proc->databaseId != MyDatabaseId)
+		return false;
+
+	/* Does the backend own the temporary namespace? */
+	if (proc->tempNamespaceId != namespaceId)
+		return false;
+
+	/* all good to go */
+	return true;
 }
 
 /*
@@ -3791,6 +3828,38 @@ recomputeNamespacePath(void)
 }
 
 /*
+ * AccessTempTableNamespace
+ *		Provide access to a temporary namespace, potentially creating it
+ *		if not present yet.  This routine registers if the namespace gets
+ *		in use in this transaction.  'force' can be set to true to allow
+ *		the caller to enforce the creation of the temporary namespace for
+ *		use in this backend, which happens if its creation is pending.
+ */
+static void
+AccessTempTableNamespace(bool force)
+{
+	/*
+	 * Make note that this temporary namespace has been accessed in this
+	 * transaction.
+	 */
+	MyXactFlags |= XACT_FLAGS_ACCESSEDTEMPNAMESPACE;
+
+	/*
+	 * If the caller attempting to access a temporary schema expects the
+	 * creation of the namespace to be pending and should be enforced, then go
+	 * through the creation.
+	 */
+	if (!force && OidIsValid(myTempNamespace))
+		return;
+
+	/*
+	 * The temporary tablespace does not exist yet and is wanted, so
+	 * initialize it.
+	 */
+	InitTempTableNamespace();
+}
+
+/*
  * InitTempTableNamespace
  *		Initialize temp table namespace on first use in a particular backend
  */
@@ -3893,6 +3962,18 @@ InitTempTableNamespace(void)
 	myTempNamespace = namespaceId;
 	myTempToastNamespace = toastspaceId;
 
+	/*
+	 * Mark MyProc as owning this namespace which other processes can use to
+	 * decide if a temporary namespace is in use or not.  We assume that
+	 * assignment of namespaceId is an atomic operation.  Even if it is not,
+	 * the temporary relation which resulted in the creation of this temporary
+	 * namespace is still locked until the current transaction commits, and
+	 * its pg_namespace row is not visible yet.  However it does not matter:
+	 * this flag makes the namespace as being in use, so no objects created on
+	 * it would be removed concurrently.
+	 */
+	MyProc->tempNamespaceId = namespaceId;
+
 	/* It should not be done already. */
 	AssertState(myTempNamespaceSubID == InvalidSubTransactionId);
 	myTempNamespaceSubID = GetCurrentSubTransactionId();
@@ -3923,6 +4004,17 @@ AtEOXact_Namespace(bool isCommit, bool parallel)
 			myTempNamespace = InvalidOid;
 			myTempToastNamespace = InvalidOid;
 			baseSearchPathValid = false;	/* need to rebuild list */
+
+			/*
+			 * Reset the temporary namespace flag in MyProc.  We assume that
+			 * this operation is atomic.
+			 *
+			 * Because this transaction is aborting, the pg_namespace row is
+			 * not visible to anyone else anyway, but that doesn't matter:
+			 * it's not a problem if objects contained in this namespace are
+			 * removed concurrently.
+			 */
+			MyProc->tempNamespaceId = InvalidOid;
 		}
 		myTempNamespaceSubID = InvalidSubTransactionId;
 	}
@@ -3975,6 +4067,17 @@ AtEOSubXact_Namespace(bool isCommit, SubTransactionId mySubid,
 			myTempNamespace = InvalidOid;
 			myTempToastNamespace = InvalidOid;
 			baseSearchPathValid = false;	/* need to rebuild list */
+
+			/*
+			 * Reset the temporary namespace flag in MyProc.  We assume that
+			 * this operation is atomic.
+			 *
+			 * Because this subtransaction is aborting, the pg_namespace row
+			 * is not visible to anyone else anyway, but that doesn't matter:
+			 * it's not a problem if objects contained in this namespace are
+			 * removed concurrently.
+			 */
+			MyProc->tempNamespaceId = InvalidOid;
 		}
 	}
 
@@ -4199,7 +4302,7 @@ fetch_search_path(bool includeImplicit)
 	 */
 	if (activeTempCreationPending)
 	{
-		InitTempTableNamespace();
+		AccessTempTableNamespace(true);
 		recomputeNamespacePath();
 	}
 

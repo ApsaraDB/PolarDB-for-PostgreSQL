@@ -16,7 +16,7 @@ WALWriteLock						8
 ControlFileLock						9
 CheckpointLock						10
 CLogControlLock						11
-SubtransControlLock					12
+CSNLogControlLock					12
 MultiXactGenLock					13
 MultiXactOffsetControlLock			14
 MultiXactMemberControlLock			15
@@ -47,6 +47,9 @@ CommitTsLock						39
 ReplicationOriginLock				40
 MultiXactTruncationLock				41
 OldSnapshotTimeMapLock				42
-BackendRandomLock					43
-LogicalRepWorkerLock				44
-CLogTruncationLock					45
+CommitSeqNoLock						43
+BackendRandomLock				44
+LogicalRepWorkerLock				45
+CLogTruncationLock				46
+CTSLogControlLock					47
+ConsensusLock                       48

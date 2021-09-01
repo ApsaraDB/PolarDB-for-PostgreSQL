@@ -20,17 +20,25 @@ include $(top_srcdir)/contrib/contrib-global.mk
 endif
 
 check: isolation-check prove-check
+checkdma: isolation-checkdma prove-checkdma
 
 isolation-check: | submake-isolation temp-install
 	$(MKDIR_P) isolation_output
 	$(pg_isolation_regress_check) \
 	    --outputdir=./isolation_output \
 	    $(ISOLATIONCHECKS)
+isolation-checkdma: | submake-isolation temp-install
+	$(MKDIR_P) isolation_output
+	$(pg_isolation_regress_check) \
+	    --dma=cluster --outputdir=./isolation_output \
+	    $(ISOLATIONCHECKS)
 
 prove-check: | temp-install
 	$(prove_check)
+prove-checkdma: | temp-install
+	$(prove_checkdma)
 
-.PHONY: check isolation-check prove-check
+.PHONY: check isolation-check prove-check checkdma isolation-checkdma prove-checkdma
 
 submake-isolation:
 	$(MAKE) -C $(top_builddir)/src/test/isolation all

@@ -1,0 +1,52 @@
+# -----------------------------
+# PolarDB consensus configuration file
+# -----------------------------
+#
+# This file consists of lines of the form:
+#
+#   name = value
+#
+# (The "=" is optional.)  Whitespace may be used.  Comments are introduced with
+# "#" anywhere on a line.  The complete list of parameter names and allowed
+# values can be found in the PostgreSQL documentation.
+#
+# The commented-out settings shown in this file represent the default values.
+# Re-commenting a setting is NOT sufficient to revert it to the default value;
+# you need to reload the server.
+#
+# This file is read on server startup and when the server receives a SIGHUP
+# signal.  If you edit the file on a running system, you have to SIGHUP the
+# server for the changes to take effect, run "pg_ctl reload", or execute
+# "SELECT pg_reload_conf()".  Some parameters, which are marked below,
+# require a server shutdown and restart to take effect.
+#
+# Any parameter can also be given as a command-line option to the server, e.g.,
+# "postgres -c log_connections=on".  Some parameters can be changed at run time
+# with the "SET" SQL command.
+#
+# Memory units:  kB = kilobytes        Time units:  ms  = milliseconds
+#                MB = megabytes                     s   = seconds
+#                GB = gigabytes                     min = minutes
+#                TB = terabytes                     h   = hours
+#                                                   d   = days
+
+#polar_enable_dma = false
+#polar_dma_port_deviation = 10000
+#polar_dma_io_thread_count = 4
+#polar_dma_worker_thread_count = 4
+#polar_dma_log_slot_size = 128
+#polar_dma_xlog_check_timeout = 5ms
+#polar_dma_election_timeout = 10s
+#polar_dma_delay_election_timeout = 30min
+#polar_dma_pipeline_timeout = 3ms
+#polar_dma_config_change_timeout = 60s
+#polar_dma_purge_timeout = 10s
+#polar_dma_max_packet_size = 128kB
+#polar_dma_send_timeout = 5ms
+#polar_dma_max_delay_index = 50000
+#polar_dma_min_delay_index = 5000
+#polar_dma_new_follower_threshold = 5000
+#polar_dma_repl_appname = ''
+#polar_dma_repl_user = ''
+#polar_dma_repl_passwd = ''
+

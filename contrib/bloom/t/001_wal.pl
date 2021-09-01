@@ -49,7 +49,7 @@ my $backup_name = 'my_backup';
 $node_master->backup($backup_name);
 
 # Create streaming standby linking to master
-$node_standby = get_new_node('standby');
+$node_standby = get_new_node('standby', 0);
 $node_standby->init_from_backup($node_master, $backup_name,
 	has_streaming => 1);
 $node_standby->start;

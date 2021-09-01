@@ -22,6 +22,7 @@
 #include "libpq-int.h"
 
 #include "mb/pg_wchar.h"
+#include "port/pg_bswap.h"
 
 #ifdef WIN32
 #include "win32.h"
@@ -1172,6 +1173,55 @@ fail:
 }
 
 
+int 
+PQsendTimestamp(PGconn *conn, LogicalTime ts)
+{
+	if (!PQsendQueryStart(conn))
+		return 0;
+
+	uint64 tmp = pg_hton64(ts);
+	if (pqPutMsgStart('L', false, conn) < 0 ||
+		pqPutnchar((const char *)&tmp, sizeof(tmp), conn) < 0 || 
+		pqPutMsgEnd(conn) < 0)
+	{
+		pqHandleSendFailure(conn);
+		return 0;
+	}
+
+	/*
+	 * Give the data a push.  In nonblock mode, don't complain if we're unable
+	 * to send it all; PQgetResult() will do any additional flushing needed.
+	 */
+#if 0
+	if (pqFlush(conn) < 0)
+	{
+		pqHandleSendFailure(conn);
+		return 0;
+	}
+#endif
+	return 1;
+}
+
+/*
+ * read a tiemstamp from conn
+ */
+int 
+PQrecvTimestamp(PGconn *conn, LogicalTime *ts)
+{
+	if (conn->txn_timestamp)
+	{
+		*ts = conn->txn_timestamp;
+		conn->txn_timestamp = 0;
+		return 1;
+	}
+	else 
+	{
+		printfPQExpBuffer(&conn->errorMessage,
+						  libpq_gettext("no timestamp available"));
+		return 0;
+	}
+}
+
 /*
  * PQsendQuery
  *	 Submit a query, but don't wait for it to finish
@@ -2239,6 +2289,9 @@ sendFailed:
  * no unhandled async notification from the backend
  *
  * the CALLER is responsible for FREE'ing the structure returned
+ *
+ * Note that this function does not read any new data from the socket;
+ * so usually, caller should call PQconsumeInput() first.
  */
 PGnotify *
 PQnotifies(PGconn *conn)

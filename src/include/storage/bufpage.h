@@ -4,6 +4,8 @@
  *	  Standard POSTGRES buffer page definitions.
  *
  *
+ * Portions Copyright (c) 2020, Alibaba Group Holding Limited
+ * Portions Copyright (C) 2019 THL A29 Limited, a Tencent company.  All rights reserved.
  * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -156,6 +158,9 @@ typedef struct PageHeaderData
 	LocationIndex pd_special;	/* offset to start of special space */
 	uint16		pd_pagesize_version;
 	TransactionId pd_prune_xid; /* oldest prunable XID, or zero if none */
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+	CommitSeqNo pd_prune_ts;	/* oldest prunable ts, or zero if none */
+#endif
 	ItemIdData	pd_linp[FLEXIBLE_ARRAY_MEMBER]; /* line pointer array */
 } PageHeaderData;
 
@@ -177,7 +182,6 @@ typedef PageHeaderData *PageHeader;
 #define PD_PAGE_FULL		0x0002	/* not enough free space for new tuple? */
 #define PD_ALL_VISIBLE		0x0004	/* all tuples on page are visible to
 									 * everyone */
-
 #define PD_VALID_FLAG_BITS	0x0007	/* OR of all valid pd_flags bits */
 
 /*
@@ -385,6 +389,35 @@ PageValidateSpecialPointer(Page page)
 #define PageClearAllVisible(page) \
 	(((PageHeader) (page))->pd_flags &= ~PD_ALL_VISIBLE)
 
+
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+#define PageIsPrunable(page, oldestxmin, oldestts) \
+( \
+    AssertMacro(TransactionIdIsNormal(oldestxmin)), \
+    TransactionIdIsValid(((PageHeader) (page))->pd_prune_xid) && \
+    TransactionIdPrecedes(((PageHeader) (page))->pd_prune_xid, oldestxmin) &&\
+    ((((PageHeader) (page))->pd_prune_ts) < oldestts) \
+)
+#define PageSetPrunable(page, xid, ts) \
+do { \
+    Assert(TransactionIdIsNormal(xid)); \
+    if (!TransactionIdIsValid(((PageHeader) (page))->pd_prune_xid) || \
+        TransactionIdPrecedes(xid, ((PageHeader) (page))->pd_prune_xid)) \
+        ((PageHeader) (page))->pd_prune_xid = (xid); \
+    if (!COMMITSEQNO_IS_NORMAL(((PageHeader) (page))->pd_prune_ts) || \
+        (COMMITSEQNO_IS_NORMAL(ts) && (ts < (((PageHeader) (page))->pd_prune_ts)))) \
+        ((PageHeader) (page))->pd_prune_ts = (ts); \
+} while (0)
+
+#define PageSetPrunableTs(page,  ts) \
+do { \
+    if (!COMMITSEQNO_IS_NORMAL(((PageHeader) (page))->pd_prune_ts) || \
+        (COMMITSEQNO_IS_NORMAL(ts) && (ts < (((PageHeader) (page))->pd_prune_ts)))) \
+        ((PageHeader) (page))->pd_prune_ts = (ts); \
+} while (0)
+
+
+#else
 #define PageIsPrunable(page, oldestxmin) \
 ( \
 	AssertMacro(TransactionIdIsNormal(oldestxmin)), \
@@ -400,7 +433,7 @@ do { \
 } while (0)
 #define PageClearPrunable(page) \
 	(((PageHeader) (page))->pd_prune_xid = InvalidTransactionId)
-
+#endif
 
 /* ----------------------------------------------------------------
  *		extern declarations

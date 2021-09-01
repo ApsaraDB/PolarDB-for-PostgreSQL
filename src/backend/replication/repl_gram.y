@@ -87,6 +87,8 @@ static SQLCmd *make_sqlcmd(void);
 %token K_EXPORT_SNAPSHOT
 %token K_NOEXPORT_SNAPSHOT
 %token K_USE_SNAPSHOT
+%token K_FETCH_PAGE
+%token K_POLAR_REPL_MODE
 
 %type <node>	command
 %type <node>	base_backup start_replication start_logical_replication
@@ -100,6 +102,7 @@ static SQLCmd *make_sqlcmd(void);
 %type <node>	plugin_opt_arg
 %type <str>		opt_slot var_name
 %type <boolval>	opt_temporary
+%type <uintval>	opt_polar_repl_mode
 %type <list>	create_slot_opt_list
 %type <defelt>	create_slot_opt
 
@@ -296,7 +299,7 @@ drop_replication_slot:
  * START_REPLICATION [SLOT slot] [PHYSICAL] %X/%X [TIMELINE %d]
  */
 start_replication:
-			K_START_REPLICATION opt_slot opt_physical RECPTR opt_timeline
+			K_START_REPLICATION opt_slot opt_physical RECPTR opt_timeline opt_polar_repl_mode
 				{
 					StartReplicationCmd *cmd;
 
@@ -305,6 +308,27 @@ start_replication:
 					cmd->slotname = $2;
 					cmd->startpoint = $4;
 					cmd->timeline = $5;
+					cmd->polar_repl_mode = $6;
+					$$ = (Node *) cmd;
+				}
+			;
+
+/*
+ * START_REPLICATION FETCH_PAGE %X/%X [TIMELINE %d]
+ */ 
+start_replication:
+			K_START_REPLICATION K_FETCH_PAGE RECPTR opt_timeline
+				{
+					StartReplicationCmd *cmd;
+
+					cmd = makeNode(StartReplicationCmd);
+					#ifdef ENABLE_REMOTE_RECOVERY
+					cmd->kind = REPLICATION_KIND_FETCH_PAGE;
+					#else
+					cmd->kind = REPLICATION_KIND_PHYSICAL;
+					#endif
+					cmd->startpoint = $3;
+					cmd->timeline = $4;
 					$$ = (Node *) cmd;
 				}
 			;
@@ -345,6 +369,24 @@ timeline_history:
 opt_physical:
 			K_PHYSICAL
 			| /* EMPTY */
+			;
+
+opt_polar_repl_mode:
+	      		K_POLAR_REPL_MODE IDENT
+				{ 
+					if (strcmp($2, "default") == 0)
+						$$ = POLAR_REPL_DEFAULT;
+					else if (strcmp($2, "dma_data") == 0)
+						$$ = POLAR_REPL_DMA_DATA;
+					else if (strcmp($2, "dma_logger") == 0)
+						$$ = POLAR_REPL_DMA_LOGGER;
+					else
+						ereport(ERROR,
+							(errcode(ERRCODE_SYNTAX_ERROR),
+							 errmsg("unrecognized polar_repl_mode option \"%s\"", $2)));
+				}
+			| /* EMPTY */
+				{ $$ = POLAR_REPL_DEFAULT; }
 			;
 
 opt_temporary:

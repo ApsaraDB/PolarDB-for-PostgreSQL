@@ -29,6 +29,12 @@
 #include "storage/lwlock.h"
 #include "storage/pmsignal.h"
 
+/* POLAR */
+#include "polar_datamax/polar_datamax.h"
+#include "utils/guc.h"
+#include "polar_dma/polar_dma.h"
+/* POLAR end */
+
 /*
  * Attempt to retrieve the specified file from off-line archival storage.
  * If successful, fill "path" with its complete path (note that this will be
@@ -59,7 +65,6 @@ RestoreArchivedFile(char *path, const char *xlogfname,
 	char	   *endp;
 	const char *sp;
 	int			rc;
-	bool		signaled;
 	struct stat stat_buf;
 	XLogSegNo	restartSegNo;
 	XLogRecPtr	restartRedoPtr;
@@ -289,17 +294,12 @@ RestoreArchivedFile(char *path, const char *xlogfname,
 	 * will perform an immediate shutdown when it sees us exiting
 	 * unexpectedly.
 	 *
-	 * Per the Single Unix Spec, shells report exit status > 128 when a called
-	 * command died on a signal.  Also, 126 and 127 are used to report
-	 * problems such as an unfindable command; treat those as fatal errors
-	 * too.
+	 * We treat hard shell errors such as "command not found" as fatal, too.
 	 */
-	if (WIFSIGNALED(rc) && WTERMSIG(rc) == SIGTERM)
+	if (wait_result_is_signal(rc, SIGTERM))
 		proc_exit(1);
 
-	signaled = WIFSIGNALED(rc) || WEXITSTATUS(rc) > 125;
-
-	ereport(signaled ? FATAL : DEBUG2,
+	ereport(wait_result_is_any_signal(rc, true) ? FATAL : DEBUG2,
 			(errmsg("could not restore file \"%s\" from archive: %s",
 					xlogfname, wait_result_to_str(rc))));
 
@@ -335,7 +335,6 @@ ExecuteRecoveryCommand(const char *command, const char *commandName, bool failOn
 	char	   *endp;
 	const char *sp;
 	int			rc;
-	bool		signaled;
 	XLogSegNo	restartSegNo;
 	XLogRecPtr	restartRedoPtr;
 	TimeLineID	restartTli;
@@ -403,12 +402,9 @@ ExecuteRecoveryCommand(const char *command, const char *commandName, bool failOn
 	{
 		/*
 		 * If the failure was due to any sort of signal, it's best to punt and
-		 * abort recovery. See also detailed comments on signals in
-		 * RestoreArchivedFile().
+		 * abort recovery.  See comments in RestoreArchivedFile().
 		 */
-		signaled = WIFSIGNALED(rc) || WEXITSTATUS(rc) > 125;
-
-		ereport((signaled && failOnSignal) ? FATAL : WARNING,
+		ereport((failOnSignal && wait_result_is_any_signal(rc, true)) ? FATAL : WARNING,
 		/*------
 		   translator: First %s represents a recovery.conf parameter name like
 		  "recovery_end_command", the 2nd is the value of that parameter, the
@@ -516,6 +512,20 @@ XLogArchiveNotify(const char *xlog)
 	char		archiveStatusPath[MAXPGPATH];
 	FILE	   *fd;
 
+	if (polar_enable_dma)
+	{
+		char		archiveLocalReady[MAXPGPATH];
+		struct stat stat_buf;
+
+		/* If .local exists, rename it to .ready */
+		StatusFilePath(archiveLocalReady, xlog, ".local");
+		if (stat(archiveLocalReady, &stat_buf) == 0)
+		{
+			(void) durable_rename(archiveLocalReady, archiveStatusPath, WARNING);
+			return;
+		}
+	}
+
 	/* insert an otherwise empty file called <XLOG>.ready */
 	StatusFilePath(archiveStatusPath, xlog, ".ready");
 	fd = AllocateFile(archiveStatusPath, "w");
@@ -537,7 +547,8 @@ XLogArchiveNotify(const char *xlog)
 	}
 
 	/* Notify archiver that it's got something to do */
-	if (IsUnderPostmaster)
+	/* POLAR: No need to notify archiver in datamax mode */
+	if (IsUnderPostmaster && !polar_is_dma_logger_mode)
 		SendPostmasterSignal(PMSIGNAL_WAKEN_ARCHIVER);
 }
 
@@ -550,7 +561,15 @@ XLogArchiveNotifySeg(XLogSegNo segno)
 	char		xlog[MAXFNAMELEN];
 
 	XLogFileName(xlog, ThisTimeLineID, segno, wal_segment_size);
-	XLogArchiveNotify(xlog);
+
+	/*
+	 * POLAR: in dma mode, rename to .local firstly, rename it to .ready by
+	 * archiver after consensus commit
+	 */
+	if (polar_enable_dma)
+		polar_dma_xlog_archive_notify(xlog, true);
+	else
+		XLogArchiveNotify(xlog);
 }
 
 /*
@@ -572,6 +591,27 @@ XLogArchiveForceDone(const char *xlog)
 	StatusFilePath(archiveDone, xlog, ".done");
 	if (stat(archiveDone, &stat_buf) == 0)
 		return;
+
+	/*
+	 * POLAR: in DMA mode, delete .paxos if exists. rename .local to .done if
+	 * exists
+	 */
+	if (polar_enable_dma)
+	{
+		StatusFilePath(archiveReady, xlog, ".paxos");
+		if (stat(archiveReady, &stat_buf) == 0)
+		{
+			unlink(archiveReady);
+		}
+
+		StatusFilePath(archiveReady, xlog, ".local");
+		if (stat(archiveReady, &stat_buf) == 0)
+		{
+			(void) durable_rename(archiveReady, archiveDone, WARNING);
+			return;
+		}
+	}
+	/* POLAR end */
 
 	/* If .ready exists, rename it to .done */
 	StatusFilePath(archiveReady, xlog, ".ready");
@@ -620,15 +660,34 @@ XLogArchiveCheckDone(const char *xlog)
 {
 	char		archiveStatusPath[MAXPGPATH];
 	struct stat stat_buf;
+	bool		inRecovery = RecoveryInProgress();
 
-	/* Always deletable if archiving is off */
-	if (!XLogArchivingActive())
+	/*
+	 * The file is always deletable if archive_mode is "off".  On standbys
+	 * archiving is disabled if archive_mode is "on", and enabled with
+	 * "always".  On a primary, archiving is enabled if archive_mode is "on"
+	 * or "always".
+	 */
+	if (!((XLogArchivingActive() && !inRecovery) ||
+		  (XLogArchivingAlways() && inRecovery)))
 		return true;
 
 	/* First check for .done --- this means archiver is done with it */
 	StatusFilePath(archiveStatusPath, xlog, ".done");
 	if (stat(archiveStatusPath, &stat_buf) == 0)
 		return true;
+
+	/*
+	 * POLAR: in dma mode, check for ready.local --- this means archiver is
+	 * still busy with it
+	 */
+	if (polar_enable_dma)
+	{
+		StatusFilePath(archiveStatusPath, xlog, ".local");
+		if (stat(archiveStatusPath, &stat_buf) == 0)
+			return false;
+	}
+	/* POLAR: end */
 
 	/* check for .ready --- this means archiver is still busy with it */
 	StatusFilePath(archiveStatusPath, xlog, ".ready");
@@ -665,6 +724,15 @@ XLogArchiveIsBusy(const char *xlog)
 	StatusFilePath(archiveStatusPath, xlog, ".done");
 	if (stat(archiveStatusPath, &stat_buf) == 0)
 		return false;
+
+	/* POLAR: check for .local --- this means archiver is still busy with it */
+	if (polar_enable_dma)
+	{
+		StatusFilePath(archiveStatusPath, xlog, ".local");
+		if (stat(archiveStatusPath, &stat_buf) == 0)
+			return true;
+	}
+	/* POLAR end */
 
 	/* check for .ready --- this means archiver is still busy with it */
 	StatusFilePath(archiveStatusPath, xlog, ".ready");
@@ -711,6 +779,15 @@ XLogArchiveIsReadyOrDone(const char *xlog)
 	if (stat(archiveStatusPath, &stat_buf) == 0)
 		return true;
 
+	/* POLAR: check for .local --- this means archiver is still busy with it */
+	if (polar_enable_dma)
+	{
+		StatusFilePath(archiveStatusPath, xlog, ".local");
+		if (stat(archiveStatusPath, &stat_buf) == 0)
+			return true;
+	}
+	/* POLAR end */
+
 	/* check for .ready --- this means archiver is still busy with it */
 	StatusFilePath(archiveStatusPath, xlog, ".ready");
 	if (stat(archiveStatusPath, &stat_buf) == 0)
@@ -735,6 +812,15 @@ XLogArchiveIsReady(const char *xlog)
 {
 	char		archiveStatusPath[MAXPGPATH];
 	struct stat stat_buf;
+
+	/* POLAR: in dma mode, check .local file firstly */
+	if (polar_enable_dma)
+	{
+		StatusFilePath(archiveStatusPath, xlog, ".local");
+		if (stat(archiveStatusPath, &stat_buf) == 0)
+			return true;
+	}
+	/* POLAR: end */
 
 	StatusFilePath(archiveStatusPath, xlog, ".ready");
 	if (stat(archiveStatusPath, &stat_buf) == 0)
@@ -762,4 +848,62 @@ XLogArchiveCleanup(const char *xlog)
 	StatusFilePath(archiveStatusPath, xlog, ".ready");
 	unlink(archiveStatusPath);
 	/* should we complain about failure? */
+
+	/* POLAR: Remove the .local file if present --- normally it shouldn't be */
+	if (polar_enable_dma)
+	{
+		StatusFilePath(archiveStatusPath, xlog, ".local");
+		unlink(archiveStatusPath);
+		StatusFilePath(archiveStatusPath, xlog, ".paxos");
+		unlink(archiveStatusPath);
+	}
+	/* should we complain about failure? */
+	/* POLAR: end */
+}
+
+/*
+ * polar_dma_xlog_archive_notify_local
+ *
+ * Create an archive notification file
+ *
+ * In DMA mode, The name of the notification file is the message that will be
+ * picked up by the archiver, e.g. we write 0000000100000001000000C6.local
+ * and the archiver then rename it to .ready if all record consensus commit
+ * and the archiver then archive XLOGDIR/0000000100000001000000C6,
+ * then when complete, rename it to 0000000100000001000000C6.done
+ */
+void
+polar_dma_xlog_archive_notify(const char *xlog, bool local)
+{
+	char		archiveStatusPath[MAXPGPATH];
+	FILE	   *fd;
+
+	/* POLAR: if ready or done, ignore it */
+	if (local && XLogArchiveIsReadyOrDone(xlog))
+		return;
+
+	/* insert an otherwise empty file called <XLOG>.local or <XLOG>.paxos */
+	StatusFilePath(archiveStatusPath, xlog, local ? ".local" : ".paxos");
+
+	fd = AllocateFile(archiveStatusPath, "w");
+	if (fd == NULL)
+	{
+		ereport(LOG,
+				(errcode_for_file_access(),
+				 errmsg("could not create archive status file \"%s\": %m",
+						archiveStatusPath)));
+		return;
+	}
+	if (FreeFile(fd))
+	{
+		ereport(LOG,
+				(errcode_for_file_access(),
+				 errmsg("could not write archive status file \"%s\": %m",
+						archiveStatusPath)));
+		return;
+	}
+
+	/* Notify archiver that it's got something to do */
+	if (IsUnderPostmaster)
+		SendPostmasterSignal(PMSIGNAL_WAKEN_ARCHIVER);
 }

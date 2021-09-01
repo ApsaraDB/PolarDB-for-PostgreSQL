@@ -4,6 +4,7 @@
  *	  definitions for replication grammar parse nodes
  *
  *
+ * Portions Copyright (c) 2020, Alibaba Group Holding Limited
  * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -21,6 +22,10 @@ typedef enum ReplicationKind
 {
 	REPLICATION_KIND_PHYSICAL,
 	REPLICATION_KIND_LOGICAL
+#ifdef ENABLE_REMOTE_RECOVERY
+	,
+	REPLICATION_KIND_FETCH_PAGE
+#endif
 } ReplicationKind;
 
 
@@ -84,6 +89,8 @@ typedef struct StartReplicationCmd
 	TimeLineID	timeline;
 	XLogRecPtr	startpoint;
 	List	   *options;
+	uint32		polar_version;  /* POLAR: stream replication protocol version */
+	uint32 		polar_repl_mode;	/* POLAR: mode to indicate what role walreceiver belongs to */
 } StartReplicationCmd;
 
 

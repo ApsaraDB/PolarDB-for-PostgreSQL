@@ -49,6 +49,9 @@
 #include "utils/guc.h"
 #include "utils/ps_status.h"
 
+/* POLAR */
+#include "polar_datamax/polar_datamax.h"
+/* POLAR end */
 
 /* ----------
  * Timer definitions.
@@ -509,7 +512,17 @@ pgarch_archiveXlog(char *xlog)
 	const char *sp;
 	int			rc;
 
-	snprintf(pathname, MAXPGPATH, XLOGDIR "/%s", xlog);
+	/*
+	 * POLAR: datamax xlog is stored in polar_datamax/pg_wal use
+	 * polar_is_dma_logger_mode directly rather than polar_is_dma_logger()
+	 * here, because polar_is_dma_logger() need to access XLogCtl in shared
+	 * memory, and original archive process have detached shared memory
+	 */
+	if (!polar_is_dma_logger_mode)
+		snprintf(pathname, MAXPGPATH, "%s/%s", XLOGDIR, xlog);
+	else
+		snprintf(pathname, MAXPGPATH, "%s/%s", POLAR_DATAMAX_WAL_DIR, xlog);
+	/* POLAR end */
 
 	/*
 	 * construct the command to be executed
@@ -573,13 +586,11 @@ pgarch_archiveXlog(char *xlog)
 		 * If either the shell itself, or a called command, died on a signal,
 		 * abort the archiver.  We do this because system() ignores SIGINT and
 		 * SIGQUIT while waiting; so a signal is very likely something that
-		 * should have interrupted us too.  If we overreact it's no big deal,
-		 * the postmaster will just start the archiver again.
-		 *
-		 * Per the Single Unix Spec, shells report exit status > 128 when a
-		 * called command died on a signal.
+		 * should have interrupted us too.  Also die if the shell got a hard
+		 * "command not found" type of error.  If we overreact it's no big
+		 * deal, the postmaster will just start the archiver again.
 		 */
-		int			lev = (WIFSIGNALED(rc) || WEXITSTATUS(rc) > 128) ? FATAL : LOG;
+		int			lev = wait_result_is_any_signal(rc, true) ? FATAL : LOG;
 
 		if (WIFEXITED(rc))
 		{
@@ -650,11 +661,12 @@ pgarch_archiveXlog(char *xlog)
  * 2) because the oldest ones will sooner become candidates for
  * recycling at time of checkpoint
  *
- * NOTE: the "oldest" comparison will presently consider all segments of
- * a timeline with a smaller ID to be older than all segments of a timeline
- * with a larger ID; the net result being that past timelines are given
- * higher priority for archiving.  This seems okay, or at least not
- * obviously worth changing.
+ * NOTE: the "oldest" comparison will consider any .history file to be older
+ * than any other file except another .history file.  Segments on a timeline
+ * with a smaller ID will be older than all segments on a timeline with a
+ * larger ID; the net result being that past timelines are given higher
+ * priority for archiving.  This seems okay, or at least not obviously worth
+ * changing.
  */
 static bool
 pgarch_readyXlog(char *xlog)
@@ -666,43 +678,117 @@ pgarch_readyXlog(char *xlog)
 	 * of calls, so....
 	 */
 	char		XLogArchiveStatusDir[MAXPGPATH];
-	char		newxlog[MAX_XFN_CHARS + 6 + 1];
 	DIR		   *rldir;
 	struct dirent *rlde;
 	bool		found = false;
+	bool		historyFound = false;
+	XLogSegNo	committed_segno = 0;
+	TimeLineID	committed_tli = 0;
 
-	snprintf(XLogArchiveStatusDir, MAXPGPATH, XLOGDIR "/archive_status");
+	/*
+	 * POLAR: datamax archive_status is stored in
+	 * polar_datamax/pg_wal/archive_status use polar_is_dma_logger_mode
+	 * directly rather than polar_is_dma_logger() here, because
+	 * polar_is_dma_logger() need to access XLogCtl in shared memory, and
+	 * original archive process have detached shared memory
+	 */
+	if (!polar_is_dma_logger_mode)
+		snprintf(XLogArchiveStatusDir, MAXPGPATH, XLOGDIR "/archive_status");
+	else
+		snprintf(XLogArchiveStatusDir, MAXPGPATH, POLAR_DATAMAX_WAL_DIR "/archive_status");
+	/* POLAR end */
 	rldir = AllocateDir(XLogArchiveStatusDir);
 
 	while ((rlde = ReadDir(rldir, XLogArchiveStatusDir)) != NULL)
 	{
 		int			basenamelen = (int) strlen(rlde->d_name) - 6;
+		char		basename[MAX_XFN_CHARS + 1];
+		bool		ishistory;
 
-		if (basenamelen >= MIN_XFN_CHARS &&
-			basenamelen <= MAX_XFN_CHARS &&
-			strspn(rlde->d_name, VALID_XFN_CHARS) >= basenamelen &&
-			strcmp(rlde->d_name + basenamelen, ".ready") == 0)
+		/* Ignore entries with unexpected number of characters */
+		if (basenamelen < MIN_XFN_CHARS ||
+			basenamelen > MAX_XFN_CHARS)
+			continue;
+
+		/* Ignore entries with unexpected characters */
+		if (strspn(rlde->d_name, VALID_XFN_CHARS) < basenamelen)
+			continue;
+
+		if (polar_enable_dma && strcmp(rlde->d_name + basenamelen, ".local") == 0)
 		{
-			if (!found)
+			uint32		tli;
+			XLogSegNo	segno;
+			char		rloglocal[MAXPGPATH];
+			char		rlogready[MAXPGPATH];
+
+			XLogFromFileName(rlde->d_name, &tli, &segno, wal_segment_size);
+			if (committed_tli >= tli && committed_segno >= segno)
+				continue;
+
+			memcpy(basename, rlde->d_name, basenamelen);
+			basename[basenamelen] = '\0';
+			StatusFilePath(rloglocal, basename, ".local");
+			StatusFilePath(rlogready, basename, ".ready");
+			(void) durable_rename(rloglocal, rlogready, WARNING);
+		}
+		else if (polar_enable_dma && strcmp(rlde->d_name + basenamelen, ".paxos") == 0)
+		{
+			uint32		tli;
+			XLogSegNo	segno;
+			char		rlogpaxos[MAXPGPATH];
+
+			/* Advance committed tli and segno */
+			XLogFromFileName(rlde->d_name + basenamelen, &tli, &segno, wal_segment_size);
+			if (committed_tli == 0 || committed_tli < tli || committed_segno < segno)
 			{
-				strcpy(newxlog, rlde->d_name);
-				found = true;
+				committed_tli = tli;
+				committed_segno = segno;
 			}
-			else
-			{
-				if (strcmp(rlde->d_name, newxlog) < 0)
-					strcpy(newxlog, rlde->d_name);
-			}
+
+			/* Remove the .paxos file */
+			memcpy(basename, rlde->d_name, basenamelen);
+			basename[basenamelen] = '\0';
+			StatusFilePath(rlogpaxos, basename, ".paxos");
+			unlink(rlogpaxos);
+
+			continue;
+		}
+		else
+		{
+			/* Ignore anything not suffixed with .ready */
+			if (strcmp(rlde->d_name + basenamelen, ".ready") != 0)
+				continue;
+
+			/* Truncate off the .ready */
+			memcpy(basename, rlde->d_name, basenamelen);
+			basename[basenamelen] = '\0';
+		}
+
+		/* Is this a history file? */
+		ishistory = IsTLHistoryFileName(basename);
+
+		/*
+		 * Consume the file to archive.  History files have the highest
+		 * priority.  If this is the first file or the first history file
+		 * ever, copy it.  In the presence of a history file already chosen as
+		 * target, ignore all other files except history files which have been
+		 * generated for an older timeline than what is already chosen as
+		 * target to archive.
+		 */
+		if (!found || (ishistory && !historyFound))
+		{
+			strcpy(xlog, basename);
+			found = true;
+			historyFound = ishistory;
+		}
+		else if (ishistory || !historyFound)
+		{
+			if (strcmp(basename, xlog) < 0)
+				strcpy(xlog, basename);
 		}
 	}
 	FreeDir(rldir);
 
-	if (found)
-	{
-		/* truncate off the .ready */
-		newxlog[strlen(newxlog) - 6] = '\0';
-		strcpy(xlog, newxlog);
-	}
 	return found;
 }
 
@@ -724,3 +810,14 @@ pgarch_archiveDone(char *xlog)
 	StatusFilePath(rlogdone, xlog, ".done");
 	(void) durable_rename(rlogready, rlogdone, WARNING);
 }
+
+/* POLAR: datamax archive */
+void
+polar_datamax_ArchiverCopyLoop(void)
+{
+	if (!polar_is_dma_logger_mode)
+		return;
+	pgarch_ArchiverCopyLoop();
+}
+
+/* POLAR end */

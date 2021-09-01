@@ -41,6 +41,10 @@
 #include "pgstat.h"
 #include "storage/fd.h"
 
+/* POLAR */
+#include "polar_datamax/polar_datamax.h"
+#include "utils/guc.h"
+
 /*
  * Copies all timeline history files with id's between 'begin' and 'end'
  * from archive to pg_wal.
@@ -93,7 +97,13 @@ readTimeLineHistory(TimeLineID targetTLI)
 		return list_make1(entry);
 	}
 
-	if (ArchiveRecoveryRequested)
+	/*
+	 * POLAR: we need to test whether it's Logger now to skip some restore
+	 * operation which Logger doesn't need to care. See detail in comments of
+	 * existsTimeLineHistory.
+	 */
+	if (ArchiveRecoveryRequested && !polar_is_dma_logger_node())
+		/* POLAR end */
 	{
 		TLHistoryFileName(histfname, targetTLI);
 		fromArchive =
@@ -214,7 +224,14 @@ existsTimeLineHistory(TimeLineID probeTLI)
 	if (probeTLI == 1)
 		return false;
 
-	if (ArchiveRecoveryRequested)
+	/*
+	 * POLAR: In Logger mode, we reuse startup as main process and it may do
+	 * something what startup do, so we don't want to change global variable.
+	 * As a result, we need to test whether it's Logger now to skip some
+	 * restore operation which Logger doesn't need to care.
+	 */
+	if (ArchiveRecoveryRequested && !polar_is_dma_logger_node())
+		/* POLAR end */
 	{
 		TLHistoryFileName(histfname, probeTLI);
 		RestoreArchivedFile(path, histfname, "RECOVERYHISTORY", 0, false);
@@ -316,7 +333,14 @@ writeTimeLineHistory(TimeLineID newTLI, TimeLineID parentTLI,
 	/*
 	 * If a history file exists for the parent, copy it verbatim
 	 */
-	if (ArchiveRecoveryRequested)
+
+	/*
+	 * POLAR: we need to test whether it's Logger now to skip some restore
+	 * operation which Logger doesn't need to care. See detail in comments of
+	 * existsTimeLineHistory.
+	 */
+	if (ArchiveRecoveryRequested && !polar_is_dma_logger_node())
+		/* POLAR end */
 	{
 		TLHistoryFileName(histfname, parentTLI);
 		RestoreArchivedFile(path, histfname, "RECOVERYHISTORY", 0, false);
@@ -406,7 +430,7 @@ writeTimeLineHistory(TimeLineID newTLI, TimeLineID parentTLI,
 
 	pgstat_report_wait_start(WAIT_EVENT_TIMELINE_HISTORY_SYNC);
 	if (pg_fsync(fd) != 0)
-		ereport(ERROR,
+		ereport(data_sync_elevel(ERROR),
 				(errcode_for_file_access(),
 				 errmsg("could not fsync file \"%s\": %m", tmppath)));
 	pgstat_report_wait_end();
@@ -428,8 +452,11 @@ writeTimeLineHistory(TimeLineID newTLI, TimeLineID parentTLI,
 	 */
 	durable_link_or_rename(tmppath, path, ERROR);
 
-	/* The history file can be archived immediately. */
-	if (XLogArchivingActive())
+	/*
+	 * POLAR: if in dma mode, nofity wal file ready after consensus commit.
+	 * The history file can be archived immediately.
+	 */
+	if (!polar_enable_dma && XLogArchivingActive())
 	{
 		TLHistoryFileName(histfname, newTLI);
 		XLogArchiveNotify(histfname);
@@ -453,7 +480,9 @@ writeTimeLineHistoryFile(TimeLineID tli, char *content, int size)
 	/*
 	 * Write into a temp file name.
 	 */
-	snprintf(tmppath, MAXPGPATH, XLOGDIR "/xlogtemp.%d", (int) getpid());
+	/* POLAR: adapt datamax mode */
+	snprintf(tmppath, MAXPGPATH, "%s/xlogtemp.%d", POLAR_DATAMAX_WAL_PATH, (int) getpid());
+	/* POLAR end */
 
 	unlink(tmppath);
 
@@ -485,7 +514,7 @@ writeTimeLineHistoryFile(TimeLineID tli, char *content, int size)
 
 	pgstat_report_wait_start(WAIT_EVENT_TIMELINE_HISTORY_FILE_SYNC);
 	if (pg_fsync(fd) != 0)
-		ereport(ERROR,
+		ereport(data_sync_elevel(ERROR),
 				(errcode_for_file_access(),
 				 errmsg("could not fsync file \"%s\": %m", tmppath)));
 	pgstat_report_wait_end();

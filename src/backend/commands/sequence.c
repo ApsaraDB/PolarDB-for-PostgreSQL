@@ -3,6 +3,7 @@
  * sequence.c
  *	  PostgreSQL sequences support code.
  *
+ * Portions Copyright (c) 2020, Alibaba Group Holding Limited
  * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -172,7 +173,6 @@ DefineSequence(ParseState *pstate, CreateSeqStmt *seq)
 		coldef->is_local = true;
 		coldef->is_not_null = true;
 		coldef->is_from_type = false;
-		coldef->is_from_parent = false;
 		coldef->storage = 0;
 		coldef->raw_default = NULL;
 		coldef->cooked_default = NULL;
@@ -1885,6 +1885,13 @@ seq_redo(XLogReaderState *record)
 		elog(PANIC, "seq_redo: unknown op code %u", info);
 
 	buffer = XLogInitBufferForRedo(record, 0);
+#ifdef ENABLE_PARALLEL_RECOVERY
+	if (!BufferIsValid(buffer))
+	{
+		Assert(enable_parallel_recovery_bypage);
+		return;
+	}
+#endif							/* ENABLE_PARALLEL_RECOVERY */
 	page = (Page) BufferGetPage(buffer);
 
 	/*

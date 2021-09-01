@@ -3,6 +3,7 @@
  * walreceiver.h
  *	  Exports from replication/walreceiverfuncs.c.
  *
+ * Portions Copyright (c) 2020, Alibaba Group Holding Limited
  * Portions Copyright (c) 2010-2018, PostgreSQL Global Development Group
  *
  * src/include/replication/walreceiver.h
@@ -165,6 +166,7 @@ typedef struct
 			List	   *publication_names;	/* String list of publications */
 		}			logical;
 	}			proto;
+	polar_repl_mode_t polar_repl_mode;
 } WalRcvStreamOptions;
 
 struct WalReceiverConn;
@@ -219,14 +221,27 @@ typedef bool (*walrcv_startstreaming_fn) (WalReceiverConn *conn,
 										  const WalRcvStreamOptions *options);
 typedef void (*walrcv_endstreaming_fn) (WalReceiverConn *conn,
 										TimeLineID *next_tli);
+#ifdef ENABLE_REMOTE_RECOVERY
+typedef bool (*walrcv_startfetchpage_fn) (WalReceiverConn *conn,
+										  const WalRcvStreamOptions *options);
+typedef void (*walrcv_endfetchpage_fn) (WalReceiverConn *conn);
+typedef int (*walrcv_fetchpage_fn) (WalReceiverConn *conn, char **buffer);
+#endif
 typedef int (*walrcv_receive_fn) (WalReceiverConn *conn, char **buffer,
 								  pgsocket *wait_fd);
 typedef void (*walrcv_send_fn) (WalReceiverConn *conn, const char *buffer,
 								int nbytes);
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+typedef char *(*walrcv_create_slot_fn) (WalReceiverConn *conn,
+										const char *slotname, bool temporary,
+										CRSSnapshotAction snapshot_action,
+										XLogRecPtr *lsn, GlobalTimestamp * snapshot_start_ts);
+#else
 typedef char *(*walrcv_create_slot_fn) (WalReceiverConn *conn,
 										const char *slotname, bool temporary,
 										CRSSnapshotAction snapshot_action,
 										XLogRecPtr *lsn);
+#endif
 typedef WalRcvExecResult *(*walrcv_exec_fn) (WalReceiverConn *conn,
 											 const char *query,
 											 const int nRetTypes,
@@ -243,6 +258,11 @@ typedef struct WalReceiverFunctionsType
 	walrcv_readtimelinehistoryfile_fn walrcv_readtimelinehistoryfile;
 	walrcv_startstreaming_fn walrcv_startstreaming;
 	walrcv_endstreaming_fn walrcv_endstreaming;
+#ifdef ENABLE_REMOTE_RECOVERY
+	walrcv_startfetchpage_fn walrcv_startfetchpage;
+	walrcv_endfetchpage_fn walrcv_endfetchpage;
+	walrcv_fetchpage_fn walrcv_fetchpage;
+#endif
 	walrcv_receive_fn walrcv_receive;
 	walrcv_send_fn walrcv_send;
 	walrcv_create_slot_fn walrcv_create_slot;
@@ -268,12 +288,25 @@ extern PGDLLIMPORT WalReceiverFunctionsType *WalReceiverFunctions;
 	WalReceiverFunctions->walrcv_startstreaming(conn, options)
 #define walrcv_endstreaming(conn, next_tli) \
 	WalReceiverFunctions->walrcv_endstreaming(conn, next_tli)
+#ifdef ENABLE_REMOTE_RECOVERY
+#define walrcv_startfetchpage(conn, options) \
+	WalReceiverFunctions->walrcv_startfetchpage(conn, options)
+#define walrcv_endfetchpage(conn) \
+	WalReceiverFunctions->walrcv_endfetchpage(conn)
+#define walrcv_fetchpage(conn, buffer) \
+	WalReceiverFunctions->walrcv_fetchpage(conn, buffer)
+#endif
 #define walrcv_receive(conn, buffer, wait_fd) \
 	WalReceiverFunctions->walrcv_receive(conn, buffer, wait_fd)
 #define walrcv_send(conn, buffer, nbytes) \
 	WalReceiverFunctions->walrcv_send(conn, buffer, nbytes)
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+#define walrcv_create_slot(conn, slotname, temporary, snapshot_action, lsn, snapshot_start_ts) \
+	WalReceiverFunctions->walrcv_create_slot(conn, slotname, temporary, snapshot_action, lsn, snapshot_start_ts)
+#else
 #define walrcv_create_slot(conn, slotname, temporary, snapshot_action, lsn) \
 	WalReceiverFunctions->walrcv_create_slot(conn, slotname, temporary, snapshot_action, lsn)
+#endif
 #define walrcv_exec(conn, exec, nRetTypes, retTypes) \
 	WalReceiverFunctions->walrcv_exec(conn, exec, nRetTypes, retTypes)
 #define walrcv_disconnect(conn) \
@@ -312,5 +345,15 @@ extern XLogRecPtr GetWalRcvWriteRecPtr(XLogRecPtr *latestChunkStart, TimeLineID 
 extern int	GetReplicationApplyDelay(void);
 extern int	GetReplicationTransferLatency(void);
 extern void WalRcvForceReply(void);
+
+extern int	max_parallel_write_thread;
+extern int	max_parallel_write_pipe_len;
+extern int	wal_receiver_reply_threshold;
+extern bool EnableParallelWalreceiver;
+
+/* POLAR */
+extern XLogRecPtr polar_dma_get_received_lsn(void);
+
+/* POLAR end */
 
 #endif							/* _WALRECEIVER_H */

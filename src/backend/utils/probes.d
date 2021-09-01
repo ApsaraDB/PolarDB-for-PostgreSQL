@@ -75,6 +75,8 @@ provider postgresql {
 	probe checkpoint__done(int, int, int, int, int);
 	probe clog__checkpoint__start(bool);
 	probe clog__checkpoint__done(bool);
+	probe csnlog__checkpoint__start(bool);
+	probe csnlog__checkpoint__done(bool);
 	probe subtrans__checkpoint__start(bool);
 	probe subtrans__checkpoint__done(bool);
 	probe multixact__checkpoint__start(bool);

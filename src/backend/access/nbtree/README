@@ -321,6 +321,9 @@ older than RecentGlobalXmin.  As collateral damage, this implementation
 also waits for running XIDs with no snapshots and for snapshots taken
 until the next transaction to allocate an XID commits.
 
+XXX: now that we use CSNs as snapshots, it would be more
+straightforward to use something based on CSNs instead of RecentGlobalXmin.
+
 Reclaiming a page doesn't actually change its state on disk --- we simply
 record it in the shared-memory free space map, from which it will be
 handed out the next time a new page is needed for a page split.  The

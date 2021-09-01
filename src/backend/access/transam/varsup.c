@@ -3,6 +3,7 @@
  * varsup.c
  *	  postgres OID & XID variables support routines
  *
+ * Portions Copyright (c) 2020, Alibaba Group Holding Limited
  * Copyright (c) 2000-2018, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
@@ -15,6 +16,8 @@
 
 #include "access/clog.h"
 #include "access/commit_ts.h"
+#include "access/ctslog.h"
+#include "access/mvccvars.h"
 #include "access/subtrans.h"
 #include "access/transam.h"
 #include "access/xact.h"
@@ -168,9 +171,13 @@ GetNewTransactionId(bool isSubXact)
 	 *
 	 * Extend pg_subtrans and pg_commit_ts too.
 	 */
+#ifdef ENABLE_DISTR_DEBUG
 	ExtendCLOG(xid);
+#endif
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+	ExtendCTSLOG(xid);
+#endif
 	ExtendCommitTs(xid);
-	ExtendSUBTRANS(xid);
 
 	/*
 	 * Now advance the nextXid counter.  This must not happen until after we
@@ -200,17 +207,8 @@ GetNewTransactionId(bool isSubXact)
 	 * A solution to the atomic-store problem would be to give each PGXACT its
 	 * own spinlock used only for fetching/storing that PGXACT's xid and
 	 * related fields.
-	 *
-	 * If there's no room to fit a subtransaction XID into PGPROC, set the
-	 * cache-overflowed flag instead.  This forces readers to look in
-	 * pg_subtrans to map subtransaction XIDs up to top-level XIDs. There is a
-	 * race-condition window, in that the new XID will not appear as running
-	 * until its parent link has been placed into pg_subtrans. However, that
-	 * will happen before anyone could possibly have a reason to inquire about
-	 * the status of the XID, so it seems OK.  (Snapshots taken during this
-	 * window *will* include the parent XID, so they will deliver the correct
-	 * answer later on when someone does have a reason to inquire.)
 	 */
+	if (!isSubXact)
 	{
 		/*
 		 * Use volatile pointer to prevent code rearrangement; other backends
@@ -219,23 +217,9 @@ GetNewTransactionId(bool isSubXact)
 		 * nxids before filling the array entry.  Note we are assuming that
 		 * TransactionId and int fetch/store are atomic.
 		 */
-		volatile PGPROC *myproc = MyProc;
-		volatile PGXACT *mypgxact = MyPgXact;
+		volatile	PGXACT *mypgxact = MyPgXact;
 
-		if (!isSubXact)
-			mypgxact->xid = xid;
-		else
-		{
-			int			nxids = mypgxact->nxids;
-
-			if (nxids < PGPROC_MAX_CACHED_SUBXIDS)
-			{
-				myproc->subxids.xids[nxids] = xid;
-				mypgxact->nxids = nxids + 1;
-			}
-			else
-				mypgxact->overflowed = true;
-		}
+		mypgxact->xid = xid;
 	}
 
 	LWLockRelease(XidGenLock);

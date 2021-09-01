@@ -27,7 +27,7 @@ DATA = plpgsql.control plpgsql--1.0.sql plpgsql--unpackaged--1.0.sql
 REGRESS_OPTS = --dbname=$(PL_TESTDB)
 
 REGRESS = plpgsql_call plpgsql_control plpgsql_domain plpgsql_record \
-	plpgsql_transaction plpgsql_varprops
+	plpgsql_cache plpgsql_transaction plpgsql_trigger plpgsql_varprops
 
 all: all-lib
 
@@ -75,6 +75,9 @@ plerrcodes.h: $(top_srcdir)/src/backend/utils/errcodes.txt generate-plerrcodes.p
 
 check: submake
 	$(pg_regress_check) $(REGRESS_OPTS) $(REGRESS)
+
+checkdma: submake
+	$(pg_regress_check) $(REGRESS_OPTS) --dma=cluster $(REGRESS)
 
 installcheck: submake
 	$(pg_regress_installcheck) $(REGRESS_OPTS) $(REGRESS)

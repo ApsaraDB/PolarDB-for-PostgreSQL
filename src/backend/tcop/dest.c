@@ -34,6 +34,7 @@
 #include "commands/copy.h"
 #include "commands/createas.h"
 #include "commands/matview.h"
+#include "distributed_txn/txn_timestamp.h"
 #include "executor/functions.h"
 #include "executor/tqueue.h"
 #include "executor/tstoreReceiver.h"
@@ -149,6 +150,32 @@ CreateDestReceiver(CommandDest dest)
 	return &donothingDR;
 }
 
+/*
+ * reply prepare timestamp or commit timestmap at the end of transaction
+ */
+static void
+ReplyTimestampIfAny()
+{
+	/*
+	 * only in libpq 3.1, the backend will reply timestmap before
+	 * ReadyForQuery
+	 */
+	/* TODO check protocol version */
+	/* if (PG_PROTOCOL_MAJOR(FrontendProtocol) >= 3 && */
+	/* PG_PROTOCOL_MINOR(FrontendProtocol) >= 0) */
+	{
+		LogicalTime ts = TxnGetAndClearReplyTimestamp();
+
+		if (ts)
+		{
+			uint64		tmp = pg_hton64(ts);
+
+			pq_putmessage('L', (char *) &tmp, sizeof(tmp));
+			ereport(DEBUG1, (errmsg("reply timestamp %lu", ts)));
+		}
+	}
+}
+
 /* ----------------
  *		EndCommand - clean up the destination at end of command
  * ----------------
@@ -245,6 +272,7 @@ ReadyForQuery(CommandDest dest)
 		case DestRemote:
 		case DestRemoteExecute:
 		case DestRemoteSimple:
+			ReplyTimestampIfAny();
 			if (PG_PROTOCOL_MAJOR(FrontendProtocol) >= 3)
 			{
 				StringInfoData buf;

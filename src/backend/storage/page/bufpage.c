@@ -3,6 +3,10 @@
  * bufpage.c
  *	  POSTGRES standard buffer page code.
  *
+ * Support remote recovery.
+ * Author: Junbin Kang
+ *
+ * Portions Copyright (c) 2020, Alibaba Group Holding Limited
  * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -20,6 +24,9 @@
 #include "storage/checksum.h"
 #include "utils/memdebug.h"
 #include "utils/memutils.h"
+#ifdef ENABLE_REMOTE_RECOVERY
+#include "access/xlog_internal.h"
+#endif
 
 
 /* GUC variable */
@@ -153,6 +160,15 @@ PageIsVerified(Page page, BlockNumber blkno)
 
 		if (header_sane && ignore_checksum_failure)
 			return true;
+#ifdef ENABLE_REMOTE_RECOVERY
+
+		/*
+		 * If we are in standby-fetch-reocvery, return true and let REMOTE
+		 * RECOVERY to fetch the remote page to correct the error.
+		 */
+		if (RecoveryInProgress() && EnableRemoteFetchRecovery)
+			return true;
+#endif
 	}
 
 	return false;
@@ -422,8 +438,8 @@ typedef struct itemIdSortData
 	uint16		offsetindex;	/* linp array index */
 	int16		itemoff;		/* page offset of item data */
 	uint16		alignedlen;		/* MAXALIGN(item data len) */
-} itemIdSortData;
-typedef itemIdSortData *itemIdSort;
+}			itemIdSortData;
+typedef itemIdSortData * itemIdSort;
 
 static int
 itemoffcompare(const void *itemidp1, const void *itemidp2)

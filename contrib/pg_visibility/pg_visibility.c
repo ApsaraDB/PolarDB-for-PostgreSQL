@@ -3,6 +3,7 @@
  * pg_visibility.c
  *	  display visibility map information and page-level visibility bits
  *
+ * Portions Copyright (c) 2020, Alibaba Group Holding Limited
  * Copyright (c) 2016-2018, PostgreSQL Global Development Group
  *
  *	  contrib/pg_visibility/pg_visibility.c
@@ -759,6 +760,24 @@ tuple_all_visible(HeapTuple tup, TransactionId OldestXmin, Buffer buffer)
 	if (!TransactionIdPrecedes(xmin, OldestXmin))
 		return false;			/* xmin not old enough for all to see */
 
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+	{
+		CommitSeqNo committs = HeapTupleHderGetXminTimestampAtomic(tup->t_data);
+
+		if (!COMMITSEQNO_IS_COMMITTED(committs))
+		{
+			committs = TransactionIdGetCommitSeqNo(xmin);
+		}
+
+		if (!COMMITSEQNO_IS_COMMITTED(committs))
+		{
+			elog(ERROR, "xmin %d should have committs " UINT64_FORMAT, xmin, committs);
+		}
+
+		if (!CommittsSatisfiesVacuum(committs))
+			return false;
+	}
+#endif
 	return true;
 }
 

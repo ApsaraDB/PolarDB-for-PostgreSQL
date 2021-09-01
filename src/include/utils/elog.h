@@ -17,6 +17,7 @@
 #include <setjmp.h>
 
 /* Error level codes */
+#define DEBUG6		9
 #define DEBUG5		10			/* Debugging messages, in categories of
 								 * decreasing detail. */
 #define DEBUG4		11

@@ -39,7 +39,7 @@ ssl/new_certs_dir:
 
 # Rule for creating private/public key pairs.
 ssl/%.key:
-	openssl genrsa -out $@ 1024
+	openssl genrsa -out $@ 2048
 	chmod 0600 $@
 
 # Root CA certificate
@@ -139,6 +139,8 @@ clean distclean maintainer-clean:
 
 check:
 	$(prove_check)
+checkdma:
+	$(prove_checkdma)
 
 installcheck:
 	$(prove_installcheck)

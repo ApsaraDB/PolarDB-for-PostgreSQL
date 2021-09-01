@@ -17,6 +17,8 @@ export with_gssapi with_krb_srvnam
 
 check:
 	$(prove_check)
+checkdma:
+	$(prove_checkdma)
 
 installcheck:
 	$(prove_installcheck)

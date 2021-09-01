@@ -3,7 +3,9 @@
  * reorderbuffer.c
  *	  PostgreSQL logical replay/reorder buffer management
  *
+ * Support CTS-based logical replication
  *
+ * Portions Copyright (c) 2020, Alibaba Group Holding Limited
  * Copyright (c) 2012-2018, PostgreSQL Global Development Group
  *
  *
@@ -409,10 +411,16 @@ ReorderBufferReturnChange(ReorderBuffer *rb, ReorderBufferChange *change)
 			}
 			break;
 			/* no data in addition to the struct itself */
+		case REORDER_BUFFER_CHANGE_TRUNCATE:
+			if (change->data.truncate.relids != NULL)
+			{
+				ReorderBufferReturnRelids(rb, change->data.truncate.relids);
+				change->data.truncate.relids = NULL;
+			}
+			break;
 		case REORDER_BUFFER_CHANGE_INTERNAL_SPEC_CONFIRM:
 		case REORDER_BUFFER_CHANGE_INTERNAL_COMMAND_ID:
 		case REORDER_BUFFER_CHANGE_INTERNAL_TUPLECID:
-		case REORDER_BUFFER_CHANGE_TRUNCATE:
 			break;
 	}
 
@@ -448,6 +456,37 @@ void
 ReorderBufferReturnTupleBuf(ReorderBuffer *rb, ReorderBufferTupleBuf *tuple)
 {
 	pfree(tuple);
+}
+
+/*
+ * Get an array for relids of truncated relations.
+ *
+ * We use the global memory context (for the whole reorder buffer), because
+ * none of the existing ones seems like a good match (some are SLAB, so we
+ * can't use those, and tup_context is meant for tuple data, not relids). We
+ * could add yet another context, but it seems like an overkill - TRUNCATE is
+ * not particularly common operation, so it does not seem worth it.
+ */
+Oid *
+ReorderBufferGetRelids(ReorderBuffer *rb, int nrelids)
+{
+	Oid		   *relids;
+	Size		alloc_len;
+
+	alloc_len = sizeof(Oid) * nrelids;
+
+	relids = (Oid *) MemoryContextAlloc(rb->context, alloc_len);
+
+	return relids;
+}
+
+/*
+ * Free an array of relids.
+ */
+void
+ReorderBufferReturnRelids(ReorderBuffer *rb, Oid *relids)
+{
+	pfree(relids);
 }
 
 /*
@@ -1318,7 +1357,6 @@ ReorderBufferCopySnap(ReorderBuffer *rb, Snapshot orig_snap,
 	Size		size;
 
 	size = sizeof(SnapshotData) +
-		sizeof(TransactionId) * orig_snap->xcnt +
 		sizeof(TransactionId) * (txn->nsubtxns + 1);
 
 	snap = MemoryContextAllocZero(rb->context, size);
@@ -1327,36 +1365,33 @@ ReorderBufferCopySnap(ReorderBuffer *rb, Snapshot orig_snap,
 	snap->copied = true;
 	snap->active_count = 1;		/* mark as active so nobody frees it */
 	snap->regd_count = 0;
-	snap->xip = (TransactionId *) (snap + 1);
-
-	memcpy(snap->xip, orig_snap->xip, sizeof(TransactionId) * snap->xcnt);
 
 	/*
 	 * snap->subxip contains all txids that belong to our transaction which we
 	 * need to check via cmin/cmax. That's why we store the toplevel
 	 * transaction in there as well.
 	 */
-	snap->subxip = snap->xip + snap->xcnt;
-	snap->subxip[i++] = txn->xid;
+	snap->this_xip = (TransactionId *) (snap + 1);
+	snap->this_xip[i++] = txn->xid;
 
 	/*
 	 * nsubxcnt isn't decreased when subtransactions abort, so count manually.
 	 * Since it's an upper boundary it is safe to use it for the allocation
 	 * above.
 	 */
-	snap->subxcnt = 1;
+	snap->this_xcnt = 1;
 
 	dlist_foreach(iter, &txn->subtxns)
 	{
 		ReorderBufferTXN *sub_txn;
 
 		sub_txn = dlist_container(ReorderBufferTXN, node, iter.cur);
-		snap->subxip[i++] = sub_txn->xid;
-		snap->subxcnt++;
+		snap->this_xip[i++] = sub_txn->xid;
+		snap->this_xcnt++;
 	}
 
 	/* sort so we can bsearch() later */
-	qsort(snap->subxip, snap->subxcnt, sizeof(TransactionId), xidComparator);
+	qsort(snap->this_xip, snap->this_xcnt, sizeof(TransactionId), xidComparator);
 
 	/* store the specified current CommandId */
 	snap->curcid = cid;
@@ -1393,7 +1428,12 @@ void
 ReorderBufferCommit(ReorderBuffer *rb, TransactionId xid,
 					XLogRecPtr commit_lsn, XLogRecPtr end_lsn,
 					TimestampTz commit_time,
-					RepOriginId origin_id, XLogRecPtr origin_lsn)
+					RepOriginId origin_id, XLogRecPtr origin_lsn
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+					,
+					CommitTs cts
+#endif
+)
 {
 	ReorderBufferTXN *txn;
 	volatile Snapshot snapshot_now;
@@ -1413,6 +1453,9 @@ ReorderBufferCommit(ReorderBuffer *rb, TransactionId xid,
 	txn->commit_time = commit_time;
 	txn->origin_id = origin_id;
 	txn->origin_lsn = origin_lsn;
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+	txn->cts = cts;
+#endif
 
 	/*
 	 * If this transaction has no snapshot, it didn't make any changes to the
@@ -1428,6 +1471,7 @@ ReorderBufferCommit(ReorderBuffer *rb, TransactionId xid,
 	}
 
 	snapshot_now = txn->base_snapshot;
+	Assert(snapshot_now->snapshotcsn != InvalidCommitSeqNo);
 
 	/* build data to be able to lookup the CommandIds of catalog tuples */
 	ReorderBufferBuildTupleCidHash(rb, txn);
@@ -1474,6 +1518,8 @@ ReorderBufferCommit(ReorderBuffer *rb, TransactionId xid,
 					 * use as a normal record. It'll be cleaned up at the end
 					 * of INSERT processing.
 					 */
+					if (specinsert == NULL)
+						elog(ERROR, "invalid ordering of speculative insertion changes");
 					Assert(specinsert->data.tp.oldtuple == NULL);
 					change = specinsert;
 					change->action = REORDER_BUFFER_CHANGE_INSERT;
@@ -1488,8 +1534,16 @@ ReorderBufferCommit(ReorderBuffer *rb, TransactionId xid,
 												change->data.tp.relnode.relNode);
 
 					/*
-					 * Catalog tuple without data, emitted while catalog was
-					 * in the process of being rewritten.
+					 * Mapped catalog tuple without data, emitted while
+					 * catalog table was in the process of being rewritten. We
+					 * can fail to look up the relfilenode, because the the
+					 * relmapper has no "historic" view, in contrast to normal
+					 * the normal catalog during decoding. Thus repeated
+					 * rewrites can cause a lookup failure. That's OK because
+					 * we do not decode catalog changes anyway. Normally such
+					 * tuples would be skipped over below, but we can't
+					 * identify whether the table should be logically logged
+					 * without mapping the relfilenode to the oid.
 					 */
 					if (reloid == InvalidOid &&
 						change->data.tp.newtuple == NULL &&
@@ -1552,6 +1606,8 @@ ReorderBufferCommit(ReorderBuffer *rb, TransactionId xid,
 						 * freed/reused while restoring spooled data from
 						 * disk.
 						 */
+						Assert(change->data.tp.newtuple != NULL);
+
 						dlist_delete(&change->node);
 						ReorderBufferToastAppendChunk(rb, txn, relation,
 													  change);
@@ -2380,10 +2436,7 @@ ReorderBufferSerializeChange(ReorderBuffer *rb, ReorderBufferTXN *txn,
 
 				snap = change->data.snapshot;
 
-				sz += sizeof(SnapshotData) +
-					sizeof(TransactionId) * snap->xcnt +
-					sizeof(TransactionId) * snap->subxcnt
-					;
+				sz += sizeof(SnapshotData);
 
 				/* make sure we have enough space */
 				ReorderBufferSerializeReserve(rb, sz);
@@ -2393,23 +2446,29 @@ ReorderBufferSerializeChange(ReorderBuffer *rb, ReorderBufferTXN *txn,
 
 				memcpy(data, snap, sizeof(SnapshotData));
 				data += sizeof(SnapshotData);
-
-				if (snap->xcnt)
-				{
-					memcpy(data, snap->xip,
-						   sizeof(TransactionId) * snap->xcnt);
-					data += sizeof(TransactionId) * snap->xcnt;
-				}
-
-				if (snap->subxcnt)
-				{
-					memcpy(data, snap->subxip,
-						   sizeof(TransactionId) * snap->subxcnt);
-					data += sizeof(TransactionId) * snap->subxcnt;
-				}
 				break;
 			}
 		case REORDER_BUFFER_CHANGE_TRUNCATE:
+			{
+				Size		size;
+				char	   *data;
+
+				/* account for the OIDs of truncated relations */
+				size = sizeof(Oid) * change->data.truncate.nrelids;
+				sz += size;
+
+				/* make sure we have enough space */
+				ReorderBufferSerializeReserve(rb, sz);
+
+				data = ((char *) rb->outbuf) + sizeof(ReorderBufferDiskChange);
+				/* might have been reallocated above */
+				ondisk = (ReorderBufferDiskChange *) rb->outbuf;
+
+				memcpy(data, change->data.truncate.relids, size);
+				data += size;
+
+				break;
+			}
 		case REORDER_BUFFER_CHANGE_INTERNAL_SPEC_CONFIRM:
 		case REORDER_BUFFER_CHANGE_INTERNAL_COMMAND_ID:
 		case REORDER_BUFFER_CHANGE_INTERNAL_TUPLECID:
@@ -2419,6 +2478,7 @@ ReorderBufferSerializeChange(ReorderBuffer *rb, ReorderBufferTXN *txn,
 
 	ondisk->size = sz;
 
+	errno = 0;
 	pgstat_report_wait_start(WAIT_EVENT_REORDER_BUFFER_WRITE);
 	if (write(fd, rb->outbuf, ondisk->size) != ondisk->size)
 	{
@@ -2669,29 +2729,31 @@ ReorderBufferRestoreChange(ReorderBuffer *rb, ReorderBufferTXN *txn,
 			}
 		case REORDER_BUFFER_CHANGE_INTERNAL_SNAPSHOT:
 			{
-				Snapshot	oldsnap;
 				Snapshot	newsnap;
 				Size		size;
 
-				oldsnap = (Snapshot) data;
-
-				size = sizeof(SnapshotData) +
-					sizeof(TransactionId) * oldsnap->xcnt +
-					sizeof(TransactionId) * (oldsnap->subxcnt + 0);
+				size = sizeof(SnapshotData);
 
 				change->data.snapshot = MemoryContextAllocZero(rb->context, size);
 
 				newsnap = change->data.snapshot;
 
 				memcpy(newsnap, data, size);
-				newsnap->xip = (TransactionId *)
-					(((char *) newsnap) + sizeof(SnapshotData));
-				newsnap->subxip = newsnap->xip + newsnap->xcnt;
 				newsnap->copied = true;
 				break;
 			}
 			/* the base struct contains all the data, easy peasy */
 		case REORDER_BUFFER_CHANGE_TRUNCATE:
+			{
+				Oid		   *relids;
+
+				relids = ReorderBufferGetRelids(rb,
+												change->data.truncate.nrelids);
+				memcpy(relids, data, change->data.truncate.nrelids * sizeof(Oid));
+				change->data.truncate.relids = relids;
+
+				break;
+			}
 		case REORDER_BUFFER_CHANGE_INTERNAL_SPEC_CONFIRM:
 		case REORDER_BUFFER_CHANGE_INTERNAL_COMMAND_ID:
 		case REORDER_BUFFER_CHANGE_INTERNAL_TUPLECID:
@@ -2780,7 +2842,7 @@ ReorderBufferSerializedPath(char *path, ReplicationSlot *slot, TransactionId xid
 {
 	XLogRecPtr	recptr;
 
-	XLogSegNoOffsetToRecPtr(segno, 0, recptr, wal_segment_size);
+	XLogSegNoOffsetToRecPtr(segno, 0, wal_segment_size, recptr);
 
 	snprintf(path, MAXPGPATH, "pg_replslot/%s/xid-%u-lsn-%X-%X.snap",
 			 NameStr(MyReplicationSlot->data.name),
@@ -3275,11 +3337,13 @@ ApplyLogicalMappingFile(HTAB *tuplecid_data, Oid relid, const char *fname)
 			new_ent->combocid = ent->combocid;
 		}
 	}
+
+	CloseTransientFile(fd);
 }
 
 
 /*
- * Check whether the TransactionOId 'xid' is in the pre-sorted array 'xip'.
+ * Check whether the TransactionOid 'xid' is in the pre-sorted array 'xip'.
  */
 static bool
 TransactionIdInArray(TransactionId xid, TransactionId *xip, Size num)
@@ -3359,7 +3423,7 @@ UpdateLogicalMappings(HTAB *tuplecid_data, Oid relid, Snapshot snapshot)
 			continue;
 
 		/* not for our transaction */
-		if (!TransactionIdInArray(f_mapped_xid, snapshot->subxip, snapshot->subxcnt))
+		if (!TransactionIdInArray(f_mapped_xid, snapshot->this_xip, snapshot->this_xcnt))
 			continue;
 
 		/* ok, relevant, queue for apply */
@@ -3387,7 +3451,7 @@ UpdateLogicalMappings(HTAB *tuplecid_data, Oid relid, Snapshot snapshot)
 		RewriteMappingFile *f = files_a[off];
 
 		elog(DEBUG1, "applying mapping: \"%s\" in %u", f->fname,
-			 snapshot->subxip[0]);
+			 snapshot->this_xip[0]);
 		ApplyLogicalMappingFile(tuplecid_data, relid, f->fname);
 		pfree(f);
 	}

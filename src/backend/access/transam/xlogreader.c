@@ -3,6 +3,10 @@
  * xlogreader.c
  *		Generic XLog reading facility
  *
+ * Support remote recovery.
+ * Author: Junbin Kang
+ *
+ * Portions Copyright (c) 2020, Alibaba Group Holding Limited
  * Portions Copyright (c) 2013-2018, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
@@ -747,7 +751,7 @@ XLogReaderValidatePageHeader(XLogReaderState *state, XLogRecPtr recptr,
 	XLByteToSeg(recptr, segno, state->wal_segment_size);
 	offset = XLogSegmentOffset(recptr, state->wal_segment_size);
 
-	XLogSegNoOffsetToRecPtr(segno, offset, recaddr, state->wal_segment_size);
+	XLogSegNoOffsetToRecPtr(segno, offset, state->wal_segment_size, recaddr);
 
 	if (hdr->xlp_magic != XLOG_PAGE_MAGIC)
 	{
@@ -1128,6 +1132,10 @@ DecodeXLogRecord(XLogReaderState *state, XLogRecord *record, char **errormsg)
 			blk->has_image = ((fork_flags & BKPBLOCK_HAS_IMAGE) != 0);
 			blk->has_data = ((fork_flags & BKPBLOCK_HAS_DATA) != 0);
 
+#ifdef ENABLE_REMOTE_RECOVERY
+			blk->remote_fetch_image = ((fork_flags & BKPBLOCK_NEEDS_REMOTE_FETCH) != 0);
+#endif
+
 			COPY_HEADER_FIELD(&blk->data_len, sizeof(uint16));
 			/* cross-check that the HAS_DATA flag is set iff data_length > 0 */
 			if (blk->has_data && blk->data_len == 0)
@@ -1339,8 +1347,8 @@ DecodeXLogRecord(XLogReaderState *state, XLogRecord *record, char **errormsg)
 
 shortdata_err:
 	report_invalid_record(state,
-						  "record with invalid length at %X/%X",
-						  (uint32) (state->ReadRecPtr >> 32), (uint32) state->ReadRecPtr);
+						  "record with invalid length at %X/%X remaining %u datalen %u",
+						  (uint32) (state->ReadRecPtr >> 32), (uint32) state->ReadRecPtr, remaining, datatotal);
 err:
 	*errormsg = state->errormsg_buf;
 
@@ -1412,7 +1420,7 @@ RestoreBlockImage(XLogReaderState *record, uint8 block_id, char *page)
 {
 	DecodedBkpBlock *bkpb;
 	char	   *ptr;
-	char		tmp[BLCKSZ];
+	PGAlignedBlock tmp;
 
 	if (!record->blocks[block_id].in_use)
 		return false;
@@ -1425,7 +1433,7 @@ RestoreBlockImage(XLogReaderState *record, uint8 block_id, char *page)
 	if (bkpb->bimg_info & BKPIMAGE_IS_COMPRESSED)
 	{
 		/* If a backup block image is compressed, decompress it */
-		if (pglz_decompress(ptr, bkpb->bimg_len, tmp,
+		if (pglz_decompress(ptr, bkpb->bimg_len, tmp.data,
 							BLCKSZ - bkpb->hole_length) < 0)
 		{
 			report_invalid_record(record, "invalid compressed image at %X/%X, block %d",
@@ -1434,7 +1442,7 @@ RestoreBlockImage(XLogReaderState *record, uint8 block_id, char *page)
 								  block_id);
 			return false;
 		}
-		ptr = tmp;
+		ptr = tmp.data;
 	}
 
 	/* generate page, taking into account hole if necessary */

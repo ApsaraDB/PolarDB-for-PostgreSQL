@@ -127,6 +127,7 @@
  *		- Protects both PredXact and SerializableXidHash.
  *
  *
+ * Portions Copyright (c) 2020, Alibaba Group Holding Limited
  * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -185,7 +186,9 @@
 
 #include "postgres.h"
 
+#include "access/clog.h"
 #include "access/htup_details.h"
+#include "access/mvccvars.h"
 #include "access/slru.h"
 #include "access/subtrans.h"
 #include "access/transam.h"
@@ -1714,8 +1717,13 @@ GetSerializableTransactionSnapshotInt(Snapshot snapshot,
 	} while (!sxact);
 
 	/* Get the snapshot, or check that it's safe to use */
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+	if (!sourcevxid)
+		snapshot = GetSnapshotDataExtend(snapshot, false);
+#else
 	if (!sourcevxid)
 		snapshot = GetSnapshotData(snapshot);
+#endif
 	else if (!ProcArrayInstallImportedXmin(snapshot->xmin, sourcevxid))
 	{
 		ReleasePredXact(sxact);
@@ -3856,7 +3864,7 @@ static bool
 XidIsConcurrent(TransactionId xid)
 {
 	Snapshot	snap;
-	uint32		i;
+	XLogRecPtr	csn;
 
 	Assert(TransactionIdIsValid(xid));
 	Assert(!TransactionIdEquals(xid, GetTopTransactionIdIfAny()));
@@ -3869,11 +3877,11 @@ XidIsConcurrent(TransactionId xid)
 	if (TransactionIdFollowsOrEquals(xid, snap->xmax))
 		return true;
 
-	for (i = 0; i < snap->xcnt; i++)
-	{
-		if (xid == snap->xip[i])
-			return true;
-	}
+	csn = TransactionIdGetCommitSeqNo(xid);
+	if (COMMITSEQNO_IS_INPROGRESS(csn))
+		return true;
+	if (COMMITSEQNO_IS_COMMITTED(csn))
+		return csn >= snap->snapshotcsn;
 
 	return false;
 }

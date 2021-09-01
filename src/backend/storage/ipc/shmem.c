@@ -65,7 +65,7 @@
 
 #include "postgres.h"
 
-#include "access/transam.h"
+#include "access/mvccvars.h"
 #include "miscadmin.h"
 #include "storage/lwlock.h"
 #include "storage/pg_shmem.h"

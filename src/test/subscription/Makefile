@@ -17,6 +17,8 @@ EXTRA_INSTALL = contrib/hstore
 
 check:
 	$(prove_check)
+checkdma:
+	$(prove_checkdma)
 
 installcheck:
 	$(prove_installcheck)

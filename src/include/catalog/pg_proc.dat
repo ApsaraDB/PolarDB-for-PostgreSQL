@@ -5872,6 +5872,21 @@
   prorettype => 'timestamptz', proargtypes => 'xid',
   prosrc => 'pg_xact_commit_timestamp' },
 
+{ oid => '6123', descr => 'get commit timestamp of a transaction',
+  proname => 'pg_xact_get_cts', provolatile => 'v',
+  prorettype => 'cstring', proargtypes => 'xid',
+  prosrc => 'pg_xact_get_cts' },
+
+{ oid => '6124', descr => 'get oldest tmin',
+  proname => 'pg_get_oldest_tmin', provolatile => 'v',
+  prorettype => 'int8', proargtypes => '',
+  prosrc => 'pg_get_oldest_tmin' },
+
+{ oid => '6125', descr => 'set global cutoff ts',
+  proname => 'pg_set_global_cutoffts', provolatile => 'v',
+  prorettype => 'bool', proargtypes => 'int8',
+  prosrc => 'pg_set_global_cutoffts' },
+
 { oid => '3583',
   descr => 'get transaction Id and commit timestamp of latest transaction commit',
   proname => 'pg_last_committed_xact', provolatile => 'v',
@@ -5907,7 +5922,7 @@
   prorettype => 'record', proargtypes => 'text _text _text',
   proallargtypes => '{text,_text,_text,oid,oid,int4}',
   proargmodes => '{i,i,i,o,o,o}',
-  proargnames => '{type,name,args,classid,objid,objsubid}',
+  proargnames => '{type,object_names,object_args,classid,objid,objsubid}',
   prosrc => 'pg_get_object_address' },
 
 { oid => '2079', descr => 'is table visible in search path?',
@@ -9326,10 +9341,6 @@
 { oid => '2946', descr => 'get xmax of snapshot',
   proname => 'txid_snapshot_xmax', prorettype => 'int8',
   proargtypes => 'txid_snapshot', prosrc => 'txid_snapshot_xmax' },
-{ oid => '2947', descr => 'get set of in-progress txids in snapshot',
-  proname => 'txid_snapshot_xip', prorows => '50', proretset => 't',
-  prorettype => 'int8', proargtypes => 'txid_snapshot',
-  prosrc => 'txid_snapshot_xip' },
 { oid => '2948', descr => 'is txid visible in snapshot?',
   proname => 'txid_visible_in_snapshot', prorettype => 'bool',
   proargtypes => 'int8 txid_snapshot', prosrc => 'txid_visible_in_snapshot' },
@@ -10205,5 +10216,26 @@
   proname => 'satisfies_hash_partition', provariadic => 'any',
   proisstrict => 'f', prorettype => 'bool', proargtypes => 'oid int4 int4 any',
   proargmodes => '{i,i,i,v}', prosrc => 'satisfies_hash_partition' },
+
+# distributed transaction
+{ oid => '3434', descr => 'hlc now',
+  proname => 'logical_clock_now', provolatile => 'v', proparallel => 'u',
+  prorettype => 'int8', proargtypes => '', prosrc => 'logical_clock_now' },
+{ oid => '3435', descr => 'hlc update',
+  proname => 'logical_clock_update', provolatile => 'v', proparallel => 'u',
+  prorettype => 'int8', proargtypes => 'int8', prosrc => 'logical_clock_update' },
+{ oid => '3436', descr => 'hlc tick',
+  proname => 'logical_clock_tick', provolatile => 'v', proparallel => 'u',
+  prorettype => 'int8', proargtypes => '', prosrc => 'logical_clock_tick' },
+
+{ oid => '13436', descr => 'set logical clock for debug purpose',
+  proname => 'logical_clock_debug_set', provolatile => 'v', proparallel => 'u',
+  prorettype => 'int8', proargtypes => 'int8', prosrc => 'logical_clock_debug_set' },
+{ oid => '13437', descr => 'commit prepared transaction',
+  proname => 'txn_commit_prepared', provolatile => 'v', proparallel => 'u',
+  prorettype => 'int8', proargtypes => 'text int8', prosrc => 'txn_commit_prepared' },
+{ oid => '13438', descr => 'get start_ts of a transaction',
+  proname => 'txn_get_start_ts', provolatile => 'v', proparallel => 'u',
+  prorettype => 'int8', proargtypes => '', prosrc => 'txn_get_start_ts' },
 
 ]

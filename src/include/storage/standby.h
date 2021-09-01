@@ -54,7 +54,6 @@ extern void StandbyReleaseOldLocks(TransactionId oldxid);
 
 #define MinSizeOfXactRunningXacts offsetof(xl_running_xacts, xids)
 
-
 /*
  * Declarations for GetRunningTransactionData(). Similar to Snapshots, but
  * not quite. This has nothing at all to do with visibility on this server,
@@ -69,14 +68,8 @@ extern void StandbyReleaseOldLocks(TransactionId oldxid);
 
 typedef struct RunningTransactionsData
 {
-	int			xcnt;			/* # of xact ids in xids[] */
-	int			subxcnt;		/* # of subxact ids in xids[] */
-	bool		subxid_overflow;	/* snapshot overflowed, subxids missing */
 	TransactionId nextXid;		/* copy of ShmemVariableCache->nextXid */
-	TransactionId oldestRunningXid; /* *not* oldestXmin */
-	TransactionId latestCompletedXid;	/* so we can set xmax */
-
-	TransactionId *xids;		/* array of (sub)xids still running */
+	TransactionId oldestRunningXid;		/* *not* oldestXmin */
 } RunningTransactionsData;
 
 typedef RunningTransactionsData *RunningTransactions;

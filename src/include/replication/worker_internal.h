@@ -3,6 +3,7 @@
  * worker_internal.h
  *	  Internal headers shared by logical replication workers.
  *
+ * Portions Copyright (c) 2020, Alibaba Group Holding Limited
  * Portions Copyright (c) 2016-2018, PostgreSQL Global Development Group
  *
  * src/include/replication/worker_internal.h
@@ -46,6 +47,9 @@ typedef struct LogicalRepWorker
 	Oid			relid;
 	char		relstate;
 	XLogRecPtr	relstate_lsn;
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+	GlobalTimestamp snapshot_start_ts;
+#endif
 	slock_t		relmutex;
 
 	/* Stats. */

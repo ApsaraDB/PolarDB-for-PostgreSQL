@@ -19,7 +19,7 @@ $master->append_conf(
 $master->start;
 $master->backup($bkplabel);
 
-my $standby = get_new_node('standby');
+my $standby = get_new_node('standby', 0);
 $standby->init_from_backup($master, $bkplabel, has_streaming => 1);
 $standby->start;
 

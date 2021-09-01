@@ -336,7 +336,7 @@ check_data_dir(ClusterInfo *cluster)
 	check_single_dir(pg_data, "base");
 	check_single_dir(pg_data, "global");
 	check_single_dir(pg_data, "pg_multixact");
-	check_single_dir(pg_data, "pg_subtrans");
+	check_single_dir(pg_data, "pg_ctslog");
 	check_single_dir(pg_data, "pg_tblspc");
 	check_single_dir(pg_data, "pg_twophase");
 

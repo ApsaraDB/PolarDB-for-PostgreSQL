@@ -50,6 +50,7 @@
 #include "catalog/pg_type.h"
 #include "catalog/storage.h"
 #include "commands/tablecmds.h"
+#include "commands/event_trigger.h"
 #include "commands/trigger.h"
 #include "executor/executor.h"
 #include "miscadmin.h"
@@ -212,18 +213,19 @@ relationHasPrimaryKey(Relation rel)
 void
 index_check_primary_key(Relation heapRel,
 						IndexInfo *indexInfo,
-						bool is_alter_table)
+						bool is_alter_table,
+						IndexStmt *stmt)
 {
 	List	   *cmds;
 	int			i;
 
 	/*
-	 * If ALTER TABLE, check that there isn't already a PRIMARY KEY. In CREATE
-	 * TABLE, we have faith that the parser rejected multiple pkey clauses;
-	 * and CREATE INDEX doesn't have a way to say PRIMARY KEY, so it's no
-	 * problem either.
+	 * If ALTER TABLE and CREATE TABLE .. PARTITION OF, check that there isn't
+	 * already a PRIMARY KEY.  In CREATE TABLE for an ordinary relations, we
+	 * have faith that the parser rejected multiple pkey clauses; and CREATE
+	 * INDEX doesn't have a way to say PRIMARY KEY, so it's no problem either.
 	 */
-	if (is_alter_table &&
+	if ((is_alter_table || heapRel->rd_rel->relispartition) &&
 		relationHasPrimaryKey(heapRel))
 	{
 		ereport(ERROR,
@@ -280,7 +282,11 @@ index_check_primary_key(Relation heapRel,
 	 * unduly.
 	 */
 	if (cmds)
+	{
+		EventTriggerAlterTableStart((Node *) stmt);
 		AlterTableInternal(RelationGetRelid(heapRel), cmds, true);
+		EventTriggerAlterTableEnd();
+	}
 }
 
 /*
@@ -847,6 +853,12 @@ index_create(Relation heapRelation,
 	if (shared_relation && tableSpaceId != GLOBALTABLESPACE_OID)
 		elog(ERROR, "shared relations must be placed in pg_global tablespace");
 
+	/*
+	 * Check for duplicate name (both as to the index, and as to the
+	 * associated constraint if any).  Such cases would fail on the relevant
+	 * catalogs' unique indexes anyway, but we prefer to give a friendlier
+	 * error message.
+	 */
 	if (get_relname_relid(indexRelationName, namespaceId))
 	{
 		if ((flags & INDEX_CREATE_IF_NOT_EXISTS) != 0)
@@ -863,6 +875,20 @@ index_create(Relation heapRelation,
 				(errcode(ERRCODE_DUPLICATE_TABLE),
 				 errmsg("relation \"%s\" already exists",
 						indexRelationName)));
+	}
+
+	if ((flags & INDEX_CREATE_ADD_CONSTRAINT) != 0 &&
+		ConstraintNameIsUsed(CONSTRAINT_RELATION, heapRelationId,
+							 indexRelationName))
+	{
+		/*
+		 * INDEX_CREATE_IF_NOT_EXISTS does not apply here, since the
+		 * conflicting constraint is not an index.
+		 */
+		ereport(ERROR,
+				(errcode(ERRCODE_DUPLICATE_OBJECT),
+				 errmsg("constraint \"%s\" for relation \"%s\" already exists",
+						indexRelationName, RelationGetRelationName(heapRelation))));
 	}
 
 	/*
@@ -977,6 +1003,12 @@ index_create(Relation heapRelation,
 						(constr_flags & INDEX_CONSTR_CREATE_DEFERRABLE) == 0,
 						!concurrent && !invalid,
 						!concurrent);
+
+	/*
+	 * Register relcache invalidation on the indexes' heap relation, to
+	 * maintain consistency of its index list
+	 */
+	CacheInvalidateRelcache(heapRelation);
 
 	/* update pg_inherits, if needed */
 	if (OidIsValid(parentIndexRelid))

@@ -88,6 +88,7 @@ typedef enum NodeTag
 	T_NestLoopParam,
 	T_PlanRowMark,
 	T_PartitionPruneInfo,
+	T_PartitionedRelPruneInfo,
 	T_PartitionPruneStepOp,
 	T_PartitionPruneStepCombine,
 	T_PlanInvalItem,
@@ -504,7 +505,11 @@ typedef enum NodeTag
 	T_IndexAmRoutine,			/* in access/amapi.h */
 	T_TsmRoutine,				/* in access/tsmapi.h */
 	T_ForeignKeyCacheInfo,		/* in utils/rel.h */
-	T_CallContext				/* in nodes/parsenodes.h */
+	T_CallContext,				/* in nodes/parsenodes.h */
+
+	/* POLAR: DMA Command */
+	T_PolarDMACommandStmt
+	/* POLAR end */
 } NodeTag;
 
 /*
