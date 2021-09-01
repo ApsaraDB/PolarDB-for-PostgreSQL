@@ -23,8 +23,8 @@ For more information, see Roadmap and Architecture.
 20210901: The default branch of PolarDB switched to **main** on 20210901, which supports compute-storage separation architecture. The **master** branch in the past switched to **distribute** branch, which supports distributed architecture of PolarDB.
 # Documentation
 
-- Service architecture(/doc/Architecture.md)
-- Roadmap (Coming soon)
+- [Architecture Design](doc/Architecture.md)
+- [Roadmap](doc/Roadmap.md)
 - Features of PolarDB PostgreSQL 1.0 (Coming soon)
    - PolarVFS
    - Buffer manager
