@@ -1,5 +1,6 @@
 <!--
 doc/src/sgml/ref/create_procedure.sgml
+PostgreSQL documentation
 -->
 
 <refentry id="sql-createprocedure">
@@ -202,6 +203,12 @@ CREATE [ OR REPLACE ] PROCEDURE
       The key word <literal>EXTERNAL</literal> is allowed for SQL
       conformance, but it is optional since, unlike in SQL, this feature
       applies to all procedures not only external ones.
+     </para>
+
+     <para>
+      A <literal>SECURITY DEFINER</literal> procedure cannot execute
+      transaction control statements (for example, <command>COMMIT</command>
+      and <command>ROLLBACK</command>, depending on the language).
      </para>
     </listitem>
    </varlistentry>

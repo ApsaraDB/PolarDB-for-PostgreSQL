@@ -1,4 +1,7 @@
-<!-- doc/src/sgml/ref/pg_restore.sgml -->
+<!--
+doc/src/sgml/ref/pg_restore.sgml
+PostgreSQL documentation
+-->
 
 <refentry id="app-pgrestore">
  <indexterm zone="app-pgrestore">
@@ -176,8 +179,8 @@
       <listitem>
        <para>
         Specify output file for generated script, or for the listing
-        when used with <option>-l</option>. Default is the standard
-        output.
+        when used with <option>-l</option>. Use <literal>-</literal>
+        for the standard output, which is also the default.
        </para>
       </listitem>
      </varlistentry>

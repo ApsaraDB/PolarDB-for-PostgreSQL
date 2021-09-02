@@ -76,6 +76,7 @@ typedef struct CheckPoint
 #define XLOG_END_OF_RECOVERY			0x90
 #define XLOG_FPI_FOR_HINT				0xA0
 #define XLOG_FPI						0xB0
+#define XLOG_FPI_MULTI					0xC0
 
 /* POLAR: maybe 0xC0 is used in the future community version */
 #define XLOG_FPSI						0xD0	/* POLAR: write fullpage snapshot image */

@@ -1,4 +1,4 @@
-/* Convert a broken-down timestamp to a string. */
+/* Convert a broken-down timestamp to a string.  */
 
 /*
  * Copyright 1989 The Regents of the University of California.
@@ -114,10 +114,16 @@ enum warn
 static char *_add(const char *, char *, const char *);
 static char *_conv(int, const char *, char *, const char *);
 static char *_fmt(const char *, const struct pg_tm *, char *, const char *,
-	 enum warn *);
-static char *_yconv(int, int, bool, bool, char *, const char *);
+				  enum warn *);
+static char *_yconv(int, int, bool, bool, char *, char const *);
 
 
+/*
+ * Convert timestamp t to string s, a caller-allocated buffer of size maxsize,
+ * using the given format pattern.
+ *
+ * See also timestamptz_to_str.
+ */
 size_t
 pg_strftime(char *s, size_t maxsize, const char *format, const struct pg_tm *t)
 {
@@ -441,7 +447,8 @@ _fmt(const char *format, const struct pg_tm *t, char *pt,
 
 					/*
 					 * C99 and later say that %Z must be replaced by the empty
-					 * string if the time zone is not determinable.
+					 * string if the time zone abbreviation is not
+					 * determinable.
 					 */
 					continue;
 				case 'z':
@@ -498,7 +505,7 @@ _fmt(const char *format, const struct pg_tm *t, char *pt,
 static char *
 _conv(int n, const char *format, char *pt, const char *ptlim)
 {
-	char		buf[INT_STRLEN_MAXIMUM(int) +1];
+	char		buf[INT_STRLEN_MAXIMUM(int) + 1];
 
 	sprintf(buf, format, n);
 	return _add(buf, pt, ptlim);
@@ -519,6 +526,7 @@ _add(const char *str, char *pt, const char *ptlim)
  * same output as %Y, and that %Y contains at least 4 bytes,
  * with more only if necessary.
  */
+
 static char *
 _yconv(int a, int b, bool convert_top, bool convert_yy,
 	   char *pt, const char *ptlim)
@@ -526,7 +534,7 @@ _yconv(int a, int b, bool convert_top, bool convert_yy,
 	int			lead;
 	int			trail;
 
-#define DIVISOR 100
+#define DIVISOR	100
 	trail = a % DIVISOR + b % DIVISOR;
 	lead = a / DIVISOR + b / DIVISOR + trail / DIVISOR;
 	trail %= DIVISOR;

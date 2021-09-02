@@ -129,8 +129,13 @@ INIT
 END
 {
 
-	# Preserve temporary directory for this test on failure
-	$File::Temp::KEEP_ALL = 1 unless all_tests_passing();
+	# Test files have several ways of causing prove_check to fail:
+	# 1. Exit with a non-zero status.
+	# 2. Call ok(0) or similar, indicating that a constituent test failed.
+	# 3. Deviate from the planned number of tests.
+	#
+	# Preserve temporary directories after (1) and after (2).
+	$File::Temp::KEEP_ALL = 1 unless $? == 0 && all_tests_passing();
 }
 
 sub all_tests_passing
@@ -164,22 +169,37 @@ sub tempdir_short
 	return File::Temp::tempdir(CLEANUP => 1);
 }
 
-# Return the real directory for a virtual path directory under msys.
-# The directory  must exist. If it's not an existing directory or we're
-# not under msys, return the input argument unchanged.
-sub real_dir
+# Translate a Perl file name to a host file name.  Currently, this is a no-op
+# except for the case of Perl=msys and host=mingw32.  The subject need not
+# exist, but its parent directory must exist.
+sub perl2host
 {
-	my $dir = "$_[0]";
-	return $dir unless -d $dir;
-	return $dir unless $Config{osname} eq 'msys';
+	my ($subject) = @_;
+	return $subject unless $Config{osname} eq 'msys';
 	my $here = cwd;
-	chdir $dir;
+	my $leaf;
+	if (chdir $subject)
+	{
+		$leaf = '';
+	}
+	else
+	{
+		$leaf = '/' . basename $subject;
+		my $parent = dirname $subject;
+		chdir $parent or die "could not chdir \"$parent\": $!";
+	}
 
 	# this odd way of calling 'pwd -W' is the only way that seems to work.
-	$dir = qx{sh -c "pwd -W"};
+	my $dir = qx{sh -c "pwd -W"};
 	chomp $dir;
 	chdir $here;
-	return $dir;
+	return $dir . $leaf;
+}
+
+# For backward compatibility only.
+sub real_dir
+{
+	return perl2host(@_);
 }
 
 sub system_log
@@ -234,7 +254,7 @@ sub slurp_file
 	  or die "could not read \"$filename\": $!";
 	my $contents = <$in>;
 	close $in;
-	$contents =~ s/\r//g if $Config{osname} eq 'msys';
+	$contents =~ s/\r\n/\n/g if $Config{osname} eq 'msys';
 	return $contents;
 }
 
@@ -261,8 +281,6 @@ sub check_mode_recursive
 		{
 			follow_fast => 1,
 			wanted      => sub {
-				my $file_stat = stat($File::Find::name);
-
 				# Is file in the ignore list?
 				foreach my $ignore ($ignore_list ? @{$ignore_list} : [])
 				{
@@ -272,8 +290,23 @@ sub check_mode_recursive
 					}
 				}
 
-				defined($file_stat)
-				  or die("unable to stat $File::Find::name");
+				# Allow ENOENT.  A running server can delete files, such as
+				# those in pg_stat.  Other stat() failures are fatal.
+				my $file_stat = stat($File::Find::name);
+				unless (defined($file_stat))
+				{
+					my $is_ENOENT = $!{ENOENT};
+					my $msg = "unable to stat $File::Find::name: $!";
+					if ($is_ENOENT)
+					{
+						warn $msg;
+						return;
+					}
+					else
+					{
+						die $msg;
+					}
+				}
 
 				my $file_mode = S_IMODE($file_stat->mode);
 
@@ -354,6 +387,7 @@ sub check_pg_config
 	  \$stdout, '2>', \$stderr
 	  or die "could not execute pg_config";
 	chomp($stdout);
+	$stdout =~ s/\r$//;
 
 	open my $pg_config_h, '<', "$stdout/pg_config.h" or die "$!";
 	my $match = (grep { /^$regexp/ } <$pg_config_h>);

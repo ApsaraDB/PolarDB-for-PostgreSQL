@@ -237,7 +237,8 @@ protocol to make nodes agree on a serializable transactional order.
    <listitem>
 
     <para>
-     For servers that are not regularly connected, like laptops or
+     For servers that are not regularly connected or have slow
+     communication links, like laptops or
      remote servers, keeping data consistent among servers is a
      challenge.  Using asynchronous multimaster replication, each
      server works independently, and periodically communicates with
@@ -256,9 +257,8 @@ protocol to make nodes agree on a serializable transactional order.
      In synchronous multimaster replication, each server can accept
      write requests, and modified data is transmitted from the
      original server to every other server before each transaction
-     commits.  Heavy write activity can cause excessive locking,
-     leading to poor performance.  In fact, write performance is
-     often worse than that of a single server.  Read requests can
+     commits.  Heavy write activity can cause excessive locking and
+     commit delays, leading to poor performance.  Read requests can
      be sent to any server.  Some implementations use shared disk
      to reduce the communication overhead.  Synchronous multimaster
      replication is best for mostly read workloads, though its big
@@ -433,7 +433,7 @@ protocol to make nodes agree on a serializable transactional order.
      <entry align="center">&bull;</entry>
      <entry align="center"></entry>
      <entry align="center">&bull;</entry>
-     <entry align="center"></entry>
+     <entry align="center">&bull;</entry>
      <entry align="center"></entry>
      <entry align="center">&bull;</entry>
     </row>
@@ -475,8 +475,7 @@ protocol to make nodes agree on a serializable transactional order.
      concurrently on a single query.  It is usually accomplished by
      splitting the data among servers and having each server execute its
      part of the query and return results to a central server where they
-     are combined and returned to the user.  <productname>Pgpool-II</productname>
-     has this capability.  Also, this can be implemented using the
+     are combined and returned to the user. This can be implemented using the
      <productname>PL/Proxy</productname> tool set.
     </para>
 
@@ -966,10 +965,10 @@ postgres=# SELECT * FROM pg_create_physical_replication_slot('node_a_slot');
 -------------+-----
  node_a_slot |
 
-postgres=# SELECT * FROM pg_replication_slots;
-  slot_name  | slot_type | datoid | database | active | xmin | restart_lsn | confirmed_flush_lsn
--------------+-----------+--------+----------+--------+------+-------------+---------------------
- node_a_slot | physical  |        |          | f      |      |             |
+postgres=# SELECT slot_name, slot_type, active FROM pg_replication_slots;
+  slot_name  | slot_type | active 
+-------------+-----------+--------
+ node_a_slot | physical  | f
 (1 row)
 </programlisting>
      To configure the standby to use this slot, <varname>primary_slot_name</varname>
@@ -1774,6 +1773,11 @@ if (!triggered)
        Plugins and extensions - <command>LOAD</command>
       </para>
      </listitem>
+     <listitem>
+      <para>
+       <command>UNLISTEN</command>
+      </para>
+     </listitem>
     </itemizedlist>
    </para>
 
@@ -1863,7 +1867,7 @@ if (!triggered)
      </listitem>
      <listitem>
       <para>
-       <command>LISTEN</command>, <command>UNLISTEN</command>, <command>NOTIFY</command>
+       <command>LISTEN</command>, <command>NOTIFY</command>
       </para>
      </listitem>
     </itemizedlist>
@@ -1871,8 +1875,8 @@ if (!triggered)
 
    <para>
     In normal operation, <quote>read-only</quote> transactions are allowed to
-    use <command>LISTEN</command>, <command>UNLISTEN</command>, and
-    <command>NOTIFY</command>, so Hot Standby sessions operate under slightly tighter
+    use <command>LISTEN</command> and <command>NOTIFY</command>,
+    so Hot Standby sessions operate under slightly tighter
     restrictions than ordinary read-only sessions.  It is possible that some
     of these restrictions might be loosened in a future release.
    </para>

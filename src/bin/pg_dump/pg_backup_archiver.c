@@ -658,11 +658,11 @@ RestoreArchive(Archive *AHX)
 	{
 		/*
 		 * In serial mode, process everything in three phases: normal items,
-		 * then ACLs, then matview refresh items.  We might be able to skip
-		 * one or both extra phases in some cases, eg data-only restores.
+		 * then ACLs, then post-ACL items.  We might be able to skip one or
+		 * both extra phases in some cases, eg data-only restores.
 		 */
 		bool		haveACL = false;
-		bool		haveRefresh = false;
+		bool		havePostACL = false;
 
 		for (te = AH->toc->next; te != AH->toc; te = te->next)
 		{
@@ -677,8 +677,8 @@ RestoreArchive(Archive *AHX)
 				case RESTORE_PASS_ACL:
 					haveACL = true;
 					break;
-				case RESTORE_PASS_REFRESH:
-					haveRefresh = true;
+				case RESTORE_PASS_POST_ACL:
+					havePostACL = true;
 					break;
 			}
 		}
@@ -693,12 +693,12 @@ RestoreArchive(Archive *AHX)
 			}
 		}
 
-		if (haveRefresh)
+		if (havePostACL)
 		{
 			for (te = AH->toc->next; te != AH->toc; te = te->next)
 			{
 				if ((te->reqs & (REQ_SCHEMA | REQ_DATA)) != 0 &&
-					_tocEntryRestorePass(te) == RESTORE_PASS_REFRESH)
+					_tocEntryRestorePass(te) == RESTORE_PASS_POST_ACL)
 					(void) restore_toc_entry(AH, te, false);
 			}
 		}
@@ -901,9 +901,7 @@ restore_toc_entry(ArchiveHandle *AH, TocEntry *te, bool is_parallel)
 						ahprintf(AH, "TRUNCATE TABLE %s%s;\n\n",
 								 (PQserverVersion(AH->connection) >= 80400 ?
 								  "ONLY " : ""),
-								 fmtQualifiedId(PQserverVersion(AH->connection),
-												te->namespace,
-												te->tag));
+								 fmtQualifiedId(te->namespace, te->tag));
 					}
 
 					/*
@@ -991,9 +989,7 @@ _disableTriggersIfNecessary(ArchiveHandle *AH, TocEntry *te)
 	 * Disable them.
 	 */
 	ahprintf(AH, "ALTER TABLE %s DISABLE TRIGGER ALL;\n\n",
-			 fmtQualifiedId(PQserverVersion(AH->connection),
-							te->namespace,
-							te->tag));
+			 fmtQualifiedId(te->namespace, te->tag));
 }
 
 static void
@@ -1019,9 +1015,7 @@ _enableTriggersIfNecessary(ArchiveHandle *AH, TocEntry *te)
 	 * Enable them.
 	 */
 	ahprintf(AH, "ALTER TABLE %s ENABLE TRIGGER ALL;\n\n",
-			 fmtQualifiedId(PQserverVersion(AH->connection),
-							te->namespace,
-							te->tag));
+			 fmtQualifiedId(te->namespace, te->tag));
 }
 
 /*
@@ -1517,7 +1511,12 @@ SetOutput(ArchiveHandle *AH, const char *filename, int compression)
 	int			fn;
 
 	if (filename)
-		fn = -1;
+	{
+		if (strcmp(filename, "-") == 0)
+			fn = fileno(stdout);
+		else
+			fn = -1;
+	}
 	else if (AH->FH)
 		fn = fileno(AH->FH);
 	else if (AH->fSpec)
@@ -1790,8 +1789,11 @@ warn_or_exit_horribly(ArchiveHandle *AH,
 	{
 		write_msg(modulename, "Error from TOC entry %d; %u %u %s %s %s\n",
 				  AH->currentTE->dumpId,
-				  AH->currentTE->catalogId.tableoid, AH->currentTE->catalogId.oid,
-				  AH->currentTE->desc, AH->currentTE->tag, AH->currentTE->owner);
+				  AH->currentTE->catalogId.tableoid,
+				  AH->currentTE->catalogId.oid,
+				  AH->currentTE->desc ? AH->currentTE->desc : "(no desc)",
+				  AH->currentTE->tag ? AH->currentTE->tag : "(no tag)",
+				  AH->currentTE->owner ? AH->currentTE->owner : "(no owner)");
 	}
 	AH->lastErrorStage = AH->stage;
 	AH->lastErrorTE = AH->currentTE;
@@ -2861,8 +2863,13 @@ _tocEntryRequired(TocEntry *te, teSection curSection, ArchiveHandle *AH)
 	if (ropt->no_comments && strcmp(te->desc, "COMMENT") == 0)
 		return 0;
 
-	/* If it's a publication, maybe ignore it */
-	if (ropt->no_publications && strcmp(te->desc, "PUBLICATION") == 0)
+	/*
+	 * If it's a publication or a table part of a publication, maybe ignore
+	 * it.
+	 */
+	if (ropt->no_publications &&
+		(strcmp(te->desc, "PUBLICATION") == 0 ||
+		 strcmp(te->desc, "PUBLICATION TABLE") == 0))
 		return 0;
 
 	/* If it's a security label, maybe ignore it */
@@ -3082,8 +3089,21 @@ _tocEntryRestorePass(TocEntry *te)
 		strcmp(te->desc, "ACL LANGUAGE") == 0 ||
 		strcmp(te->desc, "DEFAULT ACL") == 0)
 		return RESTORE_PASS_ACL;
-	if (strcmp(te->desc, "MATERIALIZED VIEW DATA") == 0)
-		return RESTORE_PASS_REFRESH;
+	if (strcmp(te->desc, "EVENT TRIGGER") == 0 ||
+		strcmp(te->desc, "MATERIALIZED VIEW DATA") == 0)
+		return RESTORE_PASS_POST_ACL;
+
+	/*
+	 * Comments need to be emitted in the same pass as their parent objects.
+	 * ACLs haven't got comments, and neither do matview data objects, but
+	 * event triggers do.  (Fortunately, event triggers haven't got ACLs, or
+	 * we'd need yet another weird special case.)
+	 */
+	if (strcmp(te->desc, "COMMENT") == 0 &&
+		strncmp(te->tag, "EVENT TRIGGER ", 14) == 0)
+		return RESTORE_PASS_POST_ACL;
+
+	/* All else can be handled in the main pass. */
 	return RESTORE_PASS_MAIN;
 }
 
@@ -3139,6 +3159,9 @@ _doSetFixedOutputState(ArchiveHandle *AH)
 
 	/* Make sure function checking is disabled */
 	ahprintf(AH, "SET check_function_bodies = false;\n");
+
+	/* Ensure that all valid XML data will be accepted */
+	ahprintf(AH, "SET xmloption = content;\n");
 
 	/* Avoid annoying notices etc */
 	ahprintf(AH, "SET client_min_messages = warning;\n");
@@ -4595,16 +4618,24 @@ identify_locking_dependencies(ArchiveHandle *AH, TocEntry *te)
 	int			nlockids;
 	int			i;
 
+	/*
+	 * We only care about this for POST_DATA items.  PRE_DATA items are not
+	 * run in parallel, and DATA items are all independent by assumption.
+	 */
+	if (te->section != SECTION_POST_DATA)
+		return;
+
 	/* Quick exit if no dependencies at all */
 	if (te->nDeps == 0)
 		return;
 
-	/* Exit if this entry doesn't need exclusive lock on other objects */
-	if (!(strcmp(te->desc, "CONSTRAINT") == 0 ||
-		  strcmp(te->desc, "CHECK CONSTRAINT") == 0 ||
-		  strcmp(te->desc, "FK CONSTRAINT") == 0 ||
-		  strcmp(te->desc, "RULE") == 0 ||
-		  strcmp(te->desc, "TRIGGER") == 0))
+	/*
+	 * Most POST_DATA items are ALTER TABLEs or some moral equivalent of that,
+	 * and hence require exclusive lock.  However, we know that CREATE INDEX
+	 * does not.  (Maybe someday index-creating CONSTRAINTs will fall in that
+	 * category too ... but today is not that day.)
+	 */
+	if (strcmp(te->desc, "INDEX") == 0)
 		return;
 
 	/*

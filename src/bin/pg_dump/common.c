@@ -30,7 +30,7 @@
  */
 static DumpableObject **dumpIdMap = NULL;
 static int	allocedDumpIds = 0;
-static DumpId lastDumpId = 0;
+static DumpId lastDumpId = 0;	/* Note: 0 is InvalidDumpId */
 
 /*
  * Variables for mapping CatalogId to DumpableObject
@@ -425,17 +425,31 @@ flagInhIndexes(Archive *fout, TableInfo tblinfo[], int numTables)
 			attachinfo[k].dobj.catId.oid = 0;
 			AssignDumpId(&attachinfo[k].dobj);
 			attachinfo[k].dobj.name = pg_strdup(index->dobj.name);
+			attachinfo[k].dobj.namespace = index->indextable->dobj.namespace;
 			attachinfo[k].parentIdx = parentidx;
 			attachinfo[k].partitionIdx = index;
 
 			/*
-			 * We want dependencies from parent to partition (so that the
-			 * partition index is created first), and another one from attach
-			 * object to parent (so that the partition index is attached once
-			 * the parent index has been created).
+			 * We must state the DO_INDEX_ATTACH object's dependencies
+			 * explicitly, since it will not match anything in pg_depend.
+			 *
+			 * Give it dependencies on both the partition index and the parent
+			 * index, so that it will not be executed till both of those
+			 * exist.  (There's no need to care what order those are created
+			 * in.)
+			 *
+			 * In addition, give it dependencies on the indexes' underlying
+			 * tables.  This does nothing of great value so far as serial
+			 * restore ordering goes, but it ensures that a parallel restore
+			 * will not try to run the ATTACH concurrently with other
+			 * operations on those tables.
 			 */
-			addObjectDependency(&parentidx->dobj, index->dobj.dumpId);
+			addObjectDependency(&attachinfo[k].dobj, index->dobj.dumpId);
 			addObjectDependency(&attachinfo[k].dobj, parentidx->dobj.dumpId);
+			addObjectDependency(&attachinfo[k].dobj,
+								index->indextable->dobj.dumpId);
+			addObjectDependency(&attachinfo[k].dobj,
+								parentidx->indextable->dobj.dumpId);
 
 			k++;
 		}
@@ -573,6 +587,7 @@ AssignDumpId(DumpableObject *dobj)
 	dobj->namespace = NULL;		/* may be set later */
 	dobj->dump = DUMP_COMPONENT_ALL;	/* default assumption */
 	dobj->ext_member = false;	/* default assumption */
+	dobj->depends_on_ext = false;	/* default assumption */
 	dobj->dependencies = NULL;
 	dobj->nDeps = 0;
 	dobj->allocDeps = 0;

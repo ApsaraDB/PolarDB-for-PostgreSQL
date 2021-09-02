@@ -10,6 +10,10 @@
  *-------------------------------------------------------------------------
  */
 
+#ifdef WIN32
+#define FD_SETSIZE 1024			/* must set before winsock2.h is included */
+#endif
+
 #include "postgres_fe.h"
 
 #ifdef HAVE_SYS_SELECT_H
@@ -200,12 +204,6 @@ main(int argc, char *argv[])
 							progname);
 					exit(1);
 				}
-				if (concurrentCons > FD_SETSIZE - 1)
-				{
-					fprintf(stderr, _("%s: too many parallel jobs requested (maximum: %d)\n"),
-							progname, FD_SETSIZE - 1);
-					exit(1);
-				}
 				break;
 			case 2:
 				maintenance_db = pg_strdup(optarg);
@@ -371,7 +369,7 @@ vacuum_one_database(const char *dbname, vacuumingOptions *vacopts,
 	{
 		if (stage != ANALYZE_NO_STAGE)
 			printf(_("%s: processing database \"%s\": %s\n"),
-				   progname, PQdb(conn), stage_messages[stage]);
+				   progname, PQdb(conn), _(stage_messages[stage]));
 		else
 			printf(_("%s: vacuuming database \"%s\"\n"),
 				   progname, PQdb(conn));
@@ -406,8 +404,7 @@ vacuum_one_database(const char *dbname, vacuumingOptions *vacopts,
 		for (i = 0; i < ntups; i++)
 		{
 			appendPQExpBufferStr(&buf,
-								 fmtQualifiedId(PQserverVersion(conn),
-												PQgetvalue(res, i, 1),
+								 fmtQualifiedId(PQgetvalue(res, i, 1),
 												PQgetvalue(res, i, 0)));
 
 			simple_string_list_append(&dbtables, buf.data);
@@ -443,6 +440,20 @@ vacuum_one_database(const char *dbname, vacuumingOptions *vacopts,
 		{
 			conn = connectDatabase(dbname, host, port, username, prompt_password,
 								   progname, echo, false, true);
+
+			/*
+			 * Fail and exit immediately if trying to use a socket in an
+			 * unsupported range.  POSIX requires open(2) to use the lowest
+			 * unused file descriptor and the hint given relies on that.
+			 */
+			if (PQsocket(conn) >= FD_SETSIZE)
+			{
+				fprintf(stderr,
+						_("%s: too many jobs for this platform -- try %d\n"),
+						progname, i);
+				exit(1);
+			}
+
 			init_slot(slots + i, conn);
 		}
 	}
@@ -525,7 +536,10 @@ vacuum_one_database(const char *dbname, vacuumingOptions *vacopts,
 		for (j = 0; j < concurrentCons; j++)
 		{
 			if (!GetQueryResult((slots + j)->connection, progname))
+			{
+				failed = true;
 				goto finish;
+			}
 		}
 	}
 

@@ -1153,7 +1153,6 @@ CreateTrigger(CreateTrigStmt *stmt, const char *queryString,
 			 */
 			childStmt = (CreateTrigStmt *) copyObject(stmt);
 			childStmt->funcname = NIL;
-			childStmt->args = NIL;
 			childStmt->whenClause = NULL;
 
 			/* If there is a WHEN clause, create a modified copy of it */
@@ -2726,11 +2725,19 @@ ExecASDeleteTriggers(EState *estate, ResultRelInfo *relinfo,
 							  false, NULL, NULL, NIL, NULL, transition_capture);
 }
 
+/*
+ * Execute BEFORE ROW DELETE triggers.
+ *
+ * True indicates caller can proceed with the delete.  False indicates caller
+ * need to suppress the delete and additionally if requested, we need to pass
+ * back the concurrently updated tuple if any.
+ */
 bool
 ExecBRDeleteTriggers(EState *estate, EPQState *epqstate,
 					 ResultRelInfo *relinfo,
 					 ItemPointer tupleid,
-					 HeapTuple fdw_trigtuple)
+					 HeapTuple fdw_trigtuple,
+					 TupleTableSlot **epqslot)
 {
 	TriggerDesc *trigdesc = relinfo->ri_TrigDesc;
 	bool		result = true;
@@ -2747,6 +2754,18 @@ ExecBRDeleteTriggers(EState *estate, EPQState *epqstate,
 									   LockTupleExclusive, &newSlot);
 		if (trigtuple == NULL)
 			return false;
+
+		/*
+		 * If the tuple was concurrently updated and the caller of this
+		 * function requested for the updated tuple, skip the trigger
+		 * execution.
+		 */
+		if (newSlot != NULL && epqslot != NULL)
+		{
+			*epqslot = newSlot;
+			heap_freetuple(trigtuple);
+			return false;
+		}
 	}
 	else
 		trigtuple = fdw_trigtuple;
@@ -3033,7 +3052,9 @@ ExecBRUpdateTriggers(EState *estate, EPQState *epqstate,
 									   relinfo->ri_TrigFunctions,
 									   relinfo->ri_TrigInstrument,
 									   GetPerTupleMemoryContext(estate));
-		if (oldtuple != newtuple && oldtuple != slottuple)
+		if (oldtuple != newtuple &&
+			oldtuple != slottuple &&
+			oldtuple != trigtuple)
 			heap_freetuple(oldtuple);
 		if (newtuple == NULL)
 		{
@@ -3376,7 +3397,15 @@ ltrmark:;
 		LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
 	}
 
-	result = heap_copytuple(&tuple);
+	/*
+	 * While this is not necessary anymore after 297d627e, as a defense
+	 * against C code that has not recompiled for minor releases after the
+	 * fix, continue to expand the tuple.
+	 */
+	if (HeapTupleHeaderGetNatts(tuple.t_data) < relation->rd_att->natts)
+		result = heap_expand_tuple(&tuple, relation->rd_att);
+	else
+		result = heap_copytuple(&tuple);
 	ReleaseBuffer(buffer);
 
 	return result;
@@ -5490,12 +5519,9 @@ AfterTriggerSetState(ConstraintsSetStmt *stmt)
 		foreach(lc, conoidlist)
 		{
 			Oid			conoid = lfirst_oid(lc);
-			bool		found;
 			ScanKeyData skey;
 			SysScanDesc tgscan;
 			HeapTuple	htup;
-
-			found = false;
 
 			ScanKeyInit(&skey,
 						Anum_pg_trigger_tgconstraint,
@@ -5518,16 +5544,9 @@ AfterTriggerSetState(ConstraintsSetStmt *stmt)
 				if (pg_trigger->tgdeferrable)
 					tgoidlist = lappend_oid(tgoidlist,
 											HeapTupleGetOid(htup));
-
-				found = true;
 			}
 
 			systable_endscan(tgscan);
-
-			/* Safety check: a deferrable constraint should have triggers */
-			if (!found)
-				elog(ERROR, "no triggers found for constraint with OID %u",
-					 conoid);
 		}
 
 		heap_close(tgrel, AccessShareLock);
@@ -5735,7 +5754,7 @@ AfterTriggerSaveEvent(EState *estate, ResultRelInfo *relinfo,
 		bool		delete_old_table = transition_capture->tcs_delete_old_table;
 		bool		update_old_table = transition_capture->tcs_update_old_table;
 		bool		update_new_table = transition_capture->tcs_update_new_table;
-		bool		insert_new_table = transition_capture->tcs_insert_new_table;;
+		bool		insert_new_table = transition_capture->tcs_insert_new_table;
 
 		/*
 		 * For INSERT events newtup should be non-NULL, for DELETE events
