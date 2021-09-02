@@ -4,11 +4,11 @@
 PolarDB PostgreSQL (hereafter simplified as PolarDB) is a cloud native database service independently developed by Alibaba Cloud. This service is 100% compatible with PostgreSQL and uses a shared storage-based architecture in which computing is decoupled from storage. This service features flexible scalability, millisecond-level latency and hybrid transactional/analytical processing (HTAP) capabilities. 
 
 1. Flexible scalability: You can use the service to scale out a compute cluster or a storage cluster based on your business requirements. 
-1. If the computing power is insufficient, you can scale out only the compute cluster. 
-1. If the storage capacity or the storage I/O is insufficient, you can scale out a storage cluster without interrupting your service. 
+    - If the computing power is insufficient, you can scale out only the compute cluster. 
+    - If the storage capacity or the storage I/O is insufficient, you can scale out a storage cluster without interrupting your service. 
 1. Millisecond-level latency:
-1. Write-ahead logging (WAL) logs are stored in the shared storage. Only the metadata of WAL records is replicated from the read-write node to read-only nodes. 
-1. The LogIndex technology provided by PolarDB features two record replay modes: lazy replay and parallel replay. The technology can be used to minimize the record replication latency from the read-write node to read-only nodes. 
+    - Write-ahead logging (WAL) logs are stored in the shared storage. Only the metadata of WAL records is replicated from the read-write node to read-only nodes. 
+    - The LogIndex technology provided by PolarDB features two record replay modes: lazy replay and parallel replay. The technology can be used to minimize the record replication latency from the read-write node to read-only nodes. 
 1. HTAP: HTAP is implemented by using a shared storage-based massively parallel processing (MPP) architecture. The architecture is used to accelerate online analytical processing (OLAP) queries in online transaction processing (OLTP) scenarios. PolarDB supports a complete suite of data types that are used in OLTP scenarios. PolarDB supports two computing engines that can process these types of data:
    - Standalone execution: processes OLTP queries that feature high concurrency. 
    - Distributed execution: processes large OLAP queries. 
@@ -19,8 +19,9 @@ Besides the Shared Storage architecture mentioned above, PolarDB also supports d
 PolarDB uses a shared storage-based architecture in which computing is decoupled from storage. The conventional shared-nothing architecture is changed to the shared-storage architecture. N copies of data in the compute cluster and N copies of data in the storage cluster are changed to N copies of data in the compute cluster and one copy of data in the storage cluster. The shared storage stores one copy of data, but the data states in the memory are different. The WAL logs must be synchronized from the primary node to read-only nodes to ensure data consistency. In addition, when the primary node flushes dirty pages, the primary node must be controlled to prevent the read-only nodes from reading future pages. In addition, the read-only nodes must be prevented from reading the outdated pages that are not correctly replayed in the memory. To resolve the issue, PolarDB provides the index structure LogIndex to maintain the page replay history. LogIndex can be used to synchronize data from the primary node to read-only nodes.
 After computing is decoupled from storage, the I/O latency and throughput increase. When a single read-only node is used to process analytical queries, the CPUs, memory, and I/O of other read-only nodes and the large storage I/O bandwidth cannot be fully utilized. To resolve the issue, PolarDB provides the shared storage-based MPP engine. The engine can use CPUs to accelerate analytical queries at the SQL level and support a mix of OLAP workloads and OLTP workloads for HTAP. 
 For more information, see Roadmap and Architecture. 
+
 # Branch Introduction
-20210901: The default branch of PolarDB switched to **main** on 20210901, which supports compute-storage separation architecture. The **master** branch in the past switched to **distribute** branch, which supports distributed architecture of PolarDB.
+20210901: The default branch of PolarDB switched to **main** on 20210901, which supports compute-storage separation architecture. The **master** branch in the past switched to **distributed** branch, which supports distributed architecture of PolarDB.
 # Documentation
 
 - [Architecture Design](doc/Architecture.md)
