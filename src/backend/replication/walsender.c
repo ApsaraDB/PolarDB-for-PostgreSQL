@@ -521,7 +521,7 @@ SendTimeLineHistory(TimeLineHistoryCmd *cmd)
 		int			nread;
 
 		pgstat_report_wait_start(WAIT_EVENT_WALSENDER_TIMELINE_HISTORY_READ);
-		nread = polar_read(fd, rbuf, sizeof(rbuf));
+		nread = polar_read(fd, rbuf.data, sizeof(rbuf));
 		pgstat_report_wait_end();
 		if (nread <= 0)
 			ereport(ERROR,

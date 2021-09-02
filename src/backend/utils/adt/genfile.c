@@ -528,7 +528,7 @@ pg_ls_dir(PG_FUNCTION_ARGS)
 
 	MemoryContextSwitchTo(oldcontext);
 
-	dirdesc = AllocateDir(location);
+	dirdesc = polar_allocate_dir(location);
 	if (!dirdesc)
 	{
 		/* Return empty tuplestore if appropriate */
@@ -613,7 +613,7 @@ pg_ls_dir_files(FunctionCallInfo fcinfo, const char *dir)
 	 * call, not leave the directory open across multiple calls, since we
 	 * can't count on the SRF being run to completion.
 	 */
-	dirdesc = AllocateDir(dir);
+	dirdesc = polar_allocate_dir(dir);
 	while ((de = ReadDir(dirdesc, dir)) != NULL)
 	{
 		Datum		values[3];
@@ -665,5 +665,8 @@ pg_ls_logdir(PG_FUNCTION_ARGS)
 Datum
 pg_ls_waldir(PG_FUNCTION_ARGS)
 {
-	return pg_ls_dir_files(fcinfo, XLOGDIR);
+	char 			walpath[MAXPGPATH] = {0};
+
+	polar_make_file_path_level2(walpath, XLOGDIR);
+	return pg_ls_dir_files(fcinfo, walpath);
 }

@@ -139,7 +139,6 @@ ginRedoInsertEntry(Buffer buffer, bool isLeaf, BlockNumber rightblkno, void *rda
 	}
 }
 
-void
 /*
  * Redo recompression of posting list.  Doing all the changes in-place is not
  * always possible, because it might require more space than we've on the page.
@@ -148,7 +147,7 @@ void
  * versions of segments.  Thanks to that we don't bother about moving page data
  * in-place.
  */
-static void
+void
 ginRedoRecompress(Page page, ginxlogRecompressDataLeaf *data)
 {
 	int			actionno;

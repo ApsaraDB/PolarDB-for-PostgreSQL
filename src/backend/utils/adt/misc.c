@@ -442,8 +442,7 @@ pg_tablespace_databases(PG_FUNCTION_ARGS)
 		location = psprintf("pg_tblspc/%u/%s", tablespaceOid,
 							TABLESPACE_VERSION_DIRECTORY);
 
-	dirdesc = AllocateDir(location);
-
+	dirdesc = polar_allocate_dir(location);
 	if (!dirdesc)
 	{
 		/* the only expected error is ENOENT */

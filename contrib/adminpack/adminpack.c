@@ -521,7 +521,7 @@ pg_logdir_ls_internal(FunctionCallInfo fcinfo)
 
 	attinmeta = TupleDescGetAttInMetadata(tupdesc);
 
-	dirdesc = AllocateDir(Log_directory);
+	dirdesc = polar_allocate_dir(Log_directory);
 	while ((de = ReadDir(dirdesc, Log_directory)) != NULL)
 	{
 		char	   *values[2];
