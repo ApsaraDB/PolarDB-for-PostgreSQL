@@ -13,6 +13,7 @@
 # limitations under the License.
 
 set -x
+set -e
 
 ##################### Function Defination Start #####################
 function usage() {
@@ -327,7 +328,11 @@ function polar_init_replicas() {
         echo "recovery_target_timeline = 'latest'" >>$polar_replica_dir_n/recovery.conf
         echo "primary_slot_name = '$name'" >>$polar_replica_dir_n/recovery.conf
 
-        $synchronous_standby_names="$synchronous_standby_names,$name"
+        if [ -z $synchronous_standby_names ]; then
+            synchronous_standby_names="$name"
+        else
+            synchronous_standby_names="$synchronous_standby_names,$name"
+        fi
       done
     fi
 
