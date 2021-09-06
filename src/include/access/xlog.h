@@ -199,7 +199,7 @@ extern bool XLOG_DEBUG;
 #define CHECKPOINT_REQUESTED	0x0100	/* Checkpoint request has been made */
 
 /* POLAR: lazy checkpoint */
-#define CHECKPOINT_LAZY         0x0100
+#define CHECKPOINT_LAZY         0x1000
 
 /*
  * Flag bits for the record being inserted, set using XLogSetRecordFlags().
@@ -309,6 +309,8 @@ extern void assign_checkpoint_completion_target(double newval, void *extra);
 	(polar_enable_shared_storage_mode && polar_node_type() == POLAR_STANDBY)
 /* POLAR: judge standby node type no matter whether polar_enable_shared_storage_mode is true */
 #define polar_in_standby_mode() (polar_node_type() == POLAR_STANDBY)
+#define polar_is_standby_in_recovery() \
+	(RecoveryInProgress() && polar_is_standby())
 #define polar_is_master_in_recovery() \
 	(RecoveryInProgress() && polar_is_master())
 #define polar_max_valid_lsn() \

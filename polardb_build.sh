@@ -13,6 +13,8 @@
 # limitations under the License.
 
 set -x
+set -e
+set -o pipefail
 
 ##################### Function Defination Start #####################
 function usage() {
@@ -109,6 +111,7 @@ function check_core() {
 }
 
 function check_failed_case() {
+  set +e
   failcases=$(grep "\.\. FAILED" testlog | head -n 1)
   failcases=$(grep "\.\. Failed" testlog | head -n 1)$failcases
   failcases=$(grep "CMake Error at" testlog | head -n 1)$failcases
@@ -144,6 +147,7 @@ function check_failed_case() {
     echo "==========================="
     echo ""
   fi
+  set -e
 }
 
 function polar_stop_database() {
@@ -247,12 +251,12 @@ function polar_test_non_polar() {
   if [[ $make_check_world == "on" ]]; then
     unset COPT
     su_eval "make check-world PG_TEST_EXTRA='kerberos ldap ssl' 2>&1" | tee -a testlog
-    su_eval "make polar-check 2>&1" | tee -a testlog
+    su_eval "make -C src/test/regress polar-check 2>&1" | tee -a testlog
     check_failed_case "check-world"
   fi
 
   if [[ $regress_test == "on" ]]; then
-    su_eval "make polar-check 2>&1" | tee -a testlog
+    su_eval "make -C src/test/regress polar-check 2>&1" | tee -a testlog
     if [ -e ./src/test/regress/regression.diffs ]; then
       cat ./src/test/regress/regression.diffs
       exit 1
@@ -327,7 +331,11 @@ function polar_init_replicas() {
         echo "recovery_target_timeline = 'latest'" >>$polar_replica_dir_n/recovery.conf
         echo "primary_slot_name = '$name'" >>$polar_replica_dir_n/recovery.conf
 
-        $synchronous_standby_names="$synchronous_standby_names,$name"
+        if [ -z $synchronous_standby_names ]; then
+            synchronous_standby_names="$name"
+        else
+            synchronous_standby_names="$synchronous_standby_names,$name"
+        fi
       done
     fi
 
@@ -364,12 +372,6 @@ function polar_init_standby() {
 }
 
 function polar_init() {
-  if [[ "$EUID" == 0 ]]; then
-    chown -R $polar_user ../polardb_pg
-    chown -R $polar_user $polar_basedir
-    chown -R $polar_user $polar_primary_dir
-  fi
-
   polar_init_primary
 
   polar_init_replicas
@@ -398,9 +400,9 @@ function polar_start() {
 
   echo "Following command can be used to connect to PG:"
   echo ""
-  echo su $polar_user -c \"$polar_basedir/bin/psql -h 127.0.0.1 -d -p $polar_port postgres \"
-  echo su $polar_user -c \"$polar_basedir/bin/psql -h 127.0.0.1 -d -p $polar_rep_port postgres \"
-  echo su $polar_user -c \"$polar_basedir/bin/psql -h 127.0.0.1 -d -p $polar_standby_port postgres \"
+  echo $polar_basedir/bin/psql -h 127.0.0.1 -d postgres -U $pg_db_user -p $polar_port
+  echo $polar_basedir/bin/psql -h 127.0.0.1 -d postgres -U $pg_db_user -p $polar_rep_port
+  echo $polar_basedir/bin/psql -h 127.0.0.1 -d postgres -U $pg_db_user -p $polar_standby_port
   echo ""
 }
 
@@ -413,7 +415,7 @@ function polar_test_regress() {
       cat ./src/test/regress/regression.diffs
     fi
 
-    su_eval "make polar-installcheck 2>&1" | tee -a testlog
+    su_eval "make -C src/test/regress polar-installcheck 2>&1" | tee -a testlog
 
     if [ -e ./src/test/regress/regression.diffs ]; then
       cat ./src/test/regress/regression.diffs
@@ -467,7 +469,7 @@ function polar_test_installcheck() {
   if [[ $make_installcheck_world == "on" ]] && [[ $regress_test_quick == "off" ]]; then
     export PGHOST=/tmp
     su_eval "make installcheck-world PG_TEST_EXTRA='kerberos ldap ssl' 2>&1" | tee -a testlog
-    su_eval "make polar-installcheck 2>&1" | tee -a testlog
+    su_eval "make -C src/test/regress polar-installcheck 2>&1" | tee -a testlog
     check_failed_case "installcheck-world"
     unset PGHOST
   fi
@@ -608,11 +610,6 @@ unset PGDATA
 unset PGHOST
 unset PGDATABASE
 unset PGUSER
-
-if [[ "$EUID" == 0 ]]; then
-  echo "Running with user $polar_user!"
-  su_str="su $polar_user -c "
-fi
 
 ####### PHASE 2: cleanup dir and env, and set new dir and env #######
 polar_reset_dir

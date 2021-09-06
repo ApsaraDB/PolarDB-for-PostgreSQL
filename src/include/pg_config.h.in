@@ -920,6 +920,9 @@
 /* Define to 1 to build with PAM support. (--with-pam) */
 #undef USE_PAM
 
+/* Define to 1 to build with PFSD support. (--with-pfsd) */
+#undef USE_PFSD
+
 /* Use replacement snprintf() functions. */
 #undef USE_REPL_SNPRINTF
 

@@ -12852,7 +12852,8 @@ WaitForWALToBecomeAvailable(XLogRecPtr RecPtr, bool randAccess,
 				 * WAL receiver must not be running when reading WAL from
 				 * archive or pg_wal.
 				 */
-				Assert(!WalRcvStreaming());
+				if (!polar_in_replica_mode())
+					Assert(!WalRcvStreaming());
 
 				/* Close any old file we might have open. */
 				if (readFile >= 0)
@@ -13277,11 +13278,13 @@ polar_set_consistent_lsn(XLogRecPtr consistent_lsn)
 	bool		updated = false;
 	XLogRecPtr  cur_consistent_lsn;
 
-	/* For replica or master in recovery, we don't set the consistent lsn. */
-	if (polar_in_replica_mode() || polar_is_master_in_recovery())
+	/* For replica or master/standby in recovery, we don't set the consistent lsn. */
+	if (polar_in_replica_mode() ||
+		polar_is_master_in_recovery() ||
+		polar_is_standby_in_recovery())
 	{
 		elog(DEBUG1,
-			 "replica or master in recovery do not set consistent lsn.");
+			 "replica or master/standby in recovery do not set consistent lsn.");
 		return;
 	}
 
