@@ -607,6 +607,7 @@ bool	polar_enable_page_outdate = false;
 bool	polar_enable_redo_debug = false;
 bool	polar_enable_resolve_conflict = true;
 bool	polar_enable_standby_xlog_meta = false;
+bool    polar_enable_stat_wait_info = true;
 /* POLAR GUC End */
 
 /*
@@ -972,6 +973,16 @@ static struct config_bool ConfigureNamesBool[] =
 		},
 		&polar_enable_run_walreceiver_always,
 		false,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_enable_stat_wait_info", PGC_POSTMASTER, UNGROUPED,
+		 	gettext_noop("Enable to stat wait object and wait time."),
+		 	NULL,
+		 	GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_enable_stat_wait_info,
+		true,
 		NULL, NULL, NULL
 	},
 	{
