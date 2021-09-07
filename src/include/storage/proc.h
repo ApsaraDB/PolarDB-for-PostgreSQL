@@ -17,6 +17,7 @@
 #include "access/clog.h"
 #include "access/xlogdefs.h"
 #include "lib/ilist.h"
+#include "portability/instr_time.h"
 #include "storage/latch.h"
 #include "storage/lock.h"
 #include "storage/pg_sema.h"
@@ -34,6 +35,10 @@
  * have to look at pg_subtrans.
  */
 #define PGPROC_MAX_CACHED_SUBXIDS 64	/* XXX guessed-at value */
+#define PGPROC_WAIT_STACK_LEN	4		/* the stack length for wait object and wait time */
+#define PGPROC_WAIT_PID 0				/* current proc wait for pid */
+#define PGPROC_WAIT_FD 1				/* current proc wait for fd */
+#define PGPROC_INVAILD_WAIT_OBJ -1		/* flag of current wait obj invalid */
 
 struct XidCache
 {
@@ -171,6 +176,10 @@ struct PGPROC
 	TransactionId procArrayGroupMemberXid;
 
 	uint32		wait_event_info;	/* proc's wait information */
+	int			wait_object[PGPROC_WAIT_STACK_LEN];  		/* proc's wait object stack */
+	int8		wait_type[PGPROC_WAIT_STACK_LEN];			/* proc's wait type: 0 pid, 1 fd...*/
+	instr_time	wait_time[PGPROC_WAIT_STACK_LEN];			/* proc's wait time stack*/
+	int8		cur_wait_stack_index;						/* current index for wait stack */
 
 	/* Support for group transaction status update. */
 	bool		clogGroupMember;	/* true, if member of clog group */

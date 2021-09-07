@@ -56,6 +56,8 @@
 #include "storage/polar_pfsd.h"
 #endif
 
+#include "storage/polar_io_stat.h"
+
 PG_MODULE_MAGIC;
 
 typedef enum polardb_node_state
@@ -108,6 +110,7 @@ typedef struct vfs_vfd
 {
 	int			fd;
 	int			kind;
+	int 		type; /* enum { data, xlog,clog }*/
 	int			next_free;
 	off_t		file_size;
 	char	   *file_name;
@@ -130,8 +133,17 @@ static vfs_dir_desc *vfs_dir_descs = NULL;
 static bool inited = false;
 static shmem_startup_hook_type prev_shmem_startup_hook = NULL;
 
+static polar_postmaster_child_init_register prev_polar_stat_hook = NULL;
+static instr_time	tmp_io_start;
+static instr_time	tmp_io_time;
+static int 		save_errno;
+
 static bool localfs_mode = false;
 static bool pfs_force_mount = true;
+
+/* POLAR: Switch to statistics of IO time consumption */
+static bool enable_io_time_stat = false;
+/* POLAR: end */
 
 typedef void (*vfs_umount_type) (void);
 
@@ -188,7 +200,22 @@ static inline File vfs_allocate_vfd(void);
 static inline bool vfs_allocated_dir(void);
 static inline vfs_vfd *vfs_find_file(int file);
 static inline int vfs_file_type(const char *path);
+static inline int vfs_data_type(const char *path);
 static const vfs_mgr *vfs_get_mgr(const char *path);
+
+/* POLAR : IO statistics collection functions */
+static void polar_stat_io_open_info(int vfdkind, int vfdtype);
+static void polar_stat_io_close_info(int vfdkind, int vfdtype);
+static void polar_stat_io_read_info(int vfdkind, int vfdtype, ssize_t size);
+static void polar_stat_io_write_info(int vfdkind, int vfdtype, ssize_t size);
+static void polar_stat_io_seek_info(int vfdkind, int vfdtype);
+static void polar_stat_io_creat_info(int vfdkind, int vfdtype);
+static void polar_stat_io_falloc_info(int vfdkind, int vfdtype);
+static void polar_stat_io_fsync_info(int vfdkind, int vfdtype);
+static inline void polar_set_distribution_interval(instr_time *intervaltime, int kind);
+static inline void polar_vfs_timer_begin_iostat(void);
+static inline void polar_vfs_timer_end_iostat(instr_time *time, int kind);
+/* POLAR end */
 
 static inline const char *polar_vfs_file_type_and_path(const char *path, int *kind);
 
@@ -374,6 +401,18 @@ _PG_init(void)
 							NULL);
 #endif
 
+	/* This parameter is a switch that controls whether IO time statistics are turned on. */
+	DefineCustomBoolVariable("polar_vfs.enable_io_time_stat",
+								"pfs force mount mode when ro switch rw",
+								NULL,
+								&enable_io_time_stat,
+								true,
+								PGC_POSTMASTER,
+								0,
+								NULL,
+								NULL,
+								NULL);
+
 	DefineCustomIntVariable("polar_vfs.max_direct_io_size",
 							"max direct io size",
 							NULL,
@@ -394,8 +433,14 @@ _PG_init(void)
 
 	EmitWarningsOnPlaceholders("polar_vfs");
 
+	RequestAddinShmemSpace(mul_size(sizeof(POLAR_PROC_IO), PolarNumProcIOStatSlots));
+
 	prev_shmem_startup_hook = shmem_startup_hook;
 	shmem_startup_hook = vfs_startup;
+
+	/* registed a func to total io statistics before shmem exit*/
+	prev_polar_stat_hook = polar_stat_hook;
+	polar_stat_hook = polar_io_shmem_exit_cleanup;
 
 	return;
 }
@@ -413,6 +458,7 @@ vfs_startup(void)
 		prev_shmem_startup_hook();
 
 	vfs_mount();
+	polar_io_stat_shmem_startup();
 
 	if (!IsUnderPostmaster)
 		on_shmem_exit(vfs_umount, (Datum) 0);
@@ -670,10 +716,21 @@ vfs_creat(const char *path, mode_t mode)
 
 	elog(LOG, "vfs creat file %s, fd %d file %d num open file %d", vfdP->file_name, vfdP->fd, file, num_open_file);
 	vfs_path = polar_vfs_file_type_and_path(path, &(vfdP->kind));
+	vfdP->type = vfs_data_type(path);
+	/*begin stat info for io, wait_time, wait_object*/
+	polar_vfs_timer_begin_iostat();
+	polar_stat_wait_obj_and_time_set(vfdP->fd, &tmp_io_start, PGPROC_WAIT_FD);
+	/* end */
 	vfdP->fd = vfs[vfdP->kind].vfs_creat(vfs_path, mode);
+	/*end stat info for io, wait_time, wait_object*/
+	save_errno = errno;
+	polar_stat_io_creat_info(vfdP->kind, vfdP->type);
+	polar_stat_wait_obj_and_time_clear();
+	errno = save_errno;
+	/* end */
 	if (vfdP->fd < 0)
 	{
-		int			save_errno = errno;
+		save_errno = errno;
 
 		vfs_free_vfd(file);
 		errno = save_errno;
@@ -702,11 +759,21 @@ vfs_open(const char *path, int flags, mode_t mode)
 	vfdP = &vfs_vfd_cache[file];
 	elog(DEBUG1, "vfs open file %s num open file %d", path, num_open_file);
 	vfs_path = polar_vfs_file_type_and_path(path, &(vfdP->kind));
+	vfdP->type = vfs_data_type(path);
+	/*begin stat info for io, wait_time, wait_object*/
+	polar_vfs_timer_begin_iostat();
+	polar_stat_wait_obj_and_time_set(vfdP->fd, &tmp_io_start, PGPROC_WAIT_FD);
+	/* end */
 	pgstat_report_wait_start(WAIT_EVENT_DATA_VFS_FILE_OPEN);
 	vfdP->fd = vfs[vfdP->kind].vfs_open(vfs_path, flags, mode);
+	/*end stat info for io, wait_time, wait_object*/
+	save_errno = errno;
+	polar_stat_wait_obj_and_time_clear();
+	polar_stat_io_open_info(vfdP->kind,vfdP->type);
+	errno = save_errno;
 	if (vfdP->fd < 0)
 	{
-		int			save_errno = errno;
+		save_errno = errno;
 
 		pgstat_report_wait_end();
 		vfs_free_vfd(file);
@@ -739,7 +806,7 @@ vfs_close(int file)
 	}
 	else
 		elog(WARNING, "vfs file %s file %d not open", vfdP->file_name, file);
-
+	polar_stat_io_close_info(vfdP->kind, vfdP->type);
 	vfs_free_vfd(file);
 
 	return 0;
@@ -752,8 +819,17 @@ vfs_write(int file, const void *buf, size_t len)
 	ssize_t		res = -1;
 
 	vfdP = vfs_find_file(file);
+	/*begin stat info for io, wait_time, wait_object*/
+	polar_vfs_timer_begin_iostat();
+	polar_stat_wait_obj_and_time_set(vfdP->fd, &tmp_io_start, PGPROC_WAIT_FD);
+	/* end */
 	errno = 0;
 	res = vfs[vfdP->kind].vfs_write(vfdP->fd, buf, len);
+	/*end stat info for io, wait_time, wait_object*/
+	save_errno = errno;
+	polar_stat_io_write_info(vfdP->kind, vfdP->type, res);
+	polar_stat_wait_obj_and_time_clear();
+	errno = save_errno;
 
 	return res;
 }
@@ -765,9 +841,18 @@ vfs_read(int file, void *buf, size_t len)
 	ssize_t		res = -1;
 
 	vfdP = vfs_find_file(file);
+	/*begin stat info for io, wait_time, wait_object*/
+	polar_vfs_timer_begin_iostat();
+	polar_stat_wait_obj_and_time_set(vfdP->fd, &tmp_io_start, PGPROC_WAIT_FD);
+	/* end */
 	errno = 0;
 	res = vfs[vfdP->kind].vfs_read(vfdP->fd, buf, len);
-
+	/*end stat info for io, wait_time, wait_object*/
+	save_errno = errno;
+	polar_stat_io_read_info(vfdP->kind, vfdP->type, res);
+	polar_stat_wait_obj_and_time_clear();
+	errno = save_errno;
+	
 	return res;
 }
 
@@ -778,9 +863,18 @@ vfs_pread(int file, void *buf, size_t len, off_t offset)
 	ssize_t		res = -1;
 
 	vfdP = vfs_find_file(file);
+	/*begin stat info for io, wait_time, wait_object*/
+	polar_vfs_timer_begin_iostat();
+	polar_stat_wait_obj_and_time_set(vfdP->fd, &tmp_io_start, PGPROC_WAIT_FD);
+	/* end */
 	errno = 0;
 	res = vfs[vfdP->kind].vfs_pread(vfdP->fd, buf, len, offset);
-
+	/*end stat info for io, wait_time, wait_object*/
+	save_errno = errno;
+	polar_stat_io_read_info(vfdP->kind, vfdP->type, res);
+	polar_stat_wait_obj_and_time_clear();
+	errno = save_errno;
+	/* end */
 	return res;
 }
 
@@ -791,8 +885,18 @@ vfs_pwrite(int file, const void *buf, size_t len, off_t offset)
 	ssize_t		res = -1;
 
 	vfdP = vfs_find_file(file);
+	/*begin stat info for io, wait_time, wait_object*/
+	polar_vfs_timer_begin_iostat();
+	polar_stat_wait_obj_and_time_set(vfdP->fd, &tmp_io_start, PGPROC_WAIT_FD);
+	/* end */
 	errno = 0;
 	res = vfs[vfdP->kind].vfs_pwrite(vfdP->fd, buf, len, offset);
+	/*end stat info for io, wait_time, wait_object*/
+	save_errno = errno;
+	polar_stat_io_write_info(vfdP->kind, vfdP->type, res);
+	polar_stat_wait_obj_and_time_clear();
+	errno = save_errno;
+	/* end */
 
 	return res;
 }
@@ -848,9 +952,18 @@ vfs_lseek(int file, off_t offset, int whence)
 	off_t		rc = 0;
 
 	vfdP = vfs_find_file(file);
+	/*begin stat info for io, wait_time, wait_object*/
+	polar_vfs_timer_begin_iostat();
+	polar_stat_wait_obj_and_time_set(vfdP->fd, &tmp_io_start, PGPROC_WAIT_FD);
+	/* end */
 	pgstat_report_wait_start(WAIT_EVENT_DATA_VFS_FILE_LSEEK);
 	rc = vfs[vfdP->kind].vfs_lseek(vfdP->fd, offset, whence);
 	pgstat_report_wait_end();
+	/*end stat info for io, wait_time, wait_object*/
+	save_errno = errno;
+	polar_stat_io_seek_info(vfdP->kind,vfdP->type);
+	polar_stat_wait_obj_and_time_clear();
+	errno = save_errno;
 
 	return rc;
 }
@@ -878,7 +991,17 @@ vfs_fsync(int file)
 	int			rc = 0;
 
 	vfdP = vfs_find_file(file);
+	/*begin stat info for io, wait_time, wait_object*/
+	polar_vfs_timer_begin_iostat();
+	polar_stat_wait_obj_and_time_set(vfdP->fd, &tmp_io_start, PGPROC_WAIT_FD);
+	/* end */
 	rc = vfs[vfdP->kind].vfs_fsync(vfdP->fd);
+	/*end stat info for io, wait_time, wait_object*/
+	save_errno = errno;
+	polar_stat_io_fsync_info(vfdP->kind, vfdP->type);
+	polar_stat_wait_obj_and_time_clear();
+	errno = save_errno;
+	/* end */
 
 	return rc;
 }
@@ -931,7 +1054,15 @@ vfs_fallocate(int file, off_t offset, off_t len)
 
 	vfdP = vfs_find_file(file);
 	elog(LOG, "vfs_fallocate from %s", vfdP->file_name);
+	/*begin stat info for io, wait_time, wait_object*/
+	polar_vfs_timer_begin_iostat();
+	/* end */
 	rc = vfs[vfdP->kind].vfs_fallocate(vfdP->fd, offset, len);
+	/*end stat info for io, wait_time, wait_object*/
+	save_errno = errno;
+	polar_stat_io_falloc_info(vfdP->kind, vfdP->type);
+	errno = save_errno;
+	/* end */
 
 	return rc;
 }
@@ -1137,6 +1268,237 @@ vfs_file_type(const char *path)
 	}
 
 	return VFS_LOCAL_FILE;
+}
+
+/* Determine if the datatype is data ,xlog , clog ... and so on*/
+static inline int
+vfs_data_type(const char *path)
+{
+	if(strstr(path, "base"))
+		return POLARIO_DATA;
+	else if(strstr(path, "pg_wal"))
+		return POLARIO_WAL;
+	else if(strstr(path,"pg_xact"))
+		return POLARIO_CLOG;
+	else if(strstr(path,"global"))
+		return POLARIO_GLOBAL;
+	else if(strstr(path,"logindex"))
+		return POLARIO_LOGINDEX;
+	else if(strstr(path,"multixact"))
+		return POLARIO_MULTIXACT;
+	else if(strstr(path,"subtrans"))
+		return POLARIO_SUBTRANS;
+	else if(strstr(path,"twophase"))
+		return POLARIO_TWOPHASE;
+	else if(strstr(path,"replslot"))
+		return POLARIO_REPLSOT;
+	else if(strstr(path,"snapshots"))
+		return POLARIO_SNAPSHOTS;
+	else
+		return POLARIO_OTHER;
+}
+
+static inline void
+polar_vfs_timer_begin_iostat(void)
+{
+	if(enable_io_time_stat)
+		INSTR_TIME_SET_CURRENT(tmp_io_start);
+	else
+		INSTR_TIME_SET_ZERO(tmp_io_start);	
+}
+
+static inline void
+polar_vfs_timer_end_iostat(instr_time *time, int kind)
+{
+	if (!enable_io_time_stat)
+		return;
+
+	INSTR_TIME_SET_CURRENT(tmp_io_time);
+	INSTR_TIME_SUBTRACT(tmp_io_time, tmp_io_start);
+
+	if (INSTR_TIME_GET_DOUBLE(tmp_io_time) > 1000 )
+	{
+		elog(WARNING, "This io time took %lf seconds, which is abnormal and we will not count."
+				, INSTR_TIME_GET_DOUBLE(tmp_io_time));
+		return;
+	}
+
+	polar_set_distribution_interval(&tmp_io_time, kind);
+	if (time)
+		INSTR_TIME_ADD(*time, tmp_io_time);
+}
+
+/* As easy as understanding its function name */
+static void 
+polar_stat_io_open_info(int vfdkind, int vfdtype)
+{
+	if (PolarIOStatArray != NULL)
+	{
+		int index, loc;
+		index = polar_get_io_proc_index();
+		if (index < 0)
+			return;
+		loc = polario_kind_to_location(vfdkind);
+		if (loc < 0 || loc >= POLARIO_LOC_SIZE)
+		{
+			elog(WARNING, "polar io stat does not recognize that: kind = %d, loc = %d", vfdkind, loc);
+			return;
+		}
+		polar_vfs_timer_end_iostat(&PolarIOStatArray[index].polar_proc_io_stat_dist[vfdtype][loc].io_open_time, LATENCY_open);
+		PolarIOStatArray[index].polar_proc_io_stat_dist[vfdtype][loc].io_open_num++;
+		PolarIOStatArray[index].pid = MyProcPid ;
+	}
+}
+
+/* As easy as understanding its function name */
+static void
+polar_stat_io_close_info(int vfdkind, int vfdtype)
+{
+	if (PolarIOStatArray != NULL)
+	{
+		int index, loc;
+		index = polar_get_io_proc_index();
+		if (index < 0)
+			return;
+		loc = polario_kind_to_location(vfdkind);
+		if (loc < 0 || loc >= POLARIO_LOC_SIZE)
+			return;
+		PolarIOStatArray[index].polar_proc_io_stat_dist[vfdtype][loc].io_close_num++;
+	}
+}
+
+/* As easy as understanding its function name */
+static void
+polar_stat_io_read_info(int vfdkind, int vfdtype,ssize_t size)
+{
+	if (PolarIOStatArray != NULL)
+	{
+		int index, loc;
+		index = polar_get_io_proc_index();
+		if (index < 0)
+			return;
+		loc = polario_kind_to_location(vfdkind);
+		if (loc < 0 || loc >= POLARIO_LOC_SIZE)
+			return;
+		polar_vfs_timer_end_iostat(&PolarIOStatArray[index].polar_proc_io_stat_dist[vfdtype][loc].io_latency_read, LATENCY_read);
+		PolarIOStatArray[index].polar_proc_io_stat_dist[vfdtype][loc].io_number_read++;
+		PolarIOStatArray[index].polar_proc_io_stat_dist[vfdtype][loc].io_throughtput_read += size;
+	}
+}
+
+/* As easy as understanding its function name */
+static void
+polar_stat_io_write_info(int vfdkind, int vfdtype, ssize_t size)
+{
+	if (PolarIOStatArray != NULL)
+	{
+		int index, loc;
+		index = polar_get_io_proc_index();
+		if (index < 0)
+			return;
+		loc = polario_kind_to_location(vfdkind);
+		if (loc < 0 || loc >= POLARIO_LOC_SIZE)
+			return;
+		polar_vfs_timer_end_iostat(&PolarIOStatArray[index].polar_proc_io_stat_dist[vfdtype][loc].io_latency_write, LATENCY_write);
+		PolarIOStatArray[index].polar_proc_io_stat_dist[vfdtype][loc].io_number_write++;
+		PolarIOStatArray[index].polar_proc_io_stat_dist[vfdtype][loc].io_throughtput_write += size;
+	}
+}
+
+static void
+polar_stat_io_seek_info(int vfdkind, int vfdtype)
+{
+	if (PolarIOStatArray != NULL)
+	{
+		int index, loc;
+		index = polar_get_io_proc_index();
+		if (index < 0)
+			return;
+		loc = polario_kind_to_location(vfdkind);
+		if (loc < 0 || loc >= POLARIO_LOC_SIZE)
+			return;
+		polar_vfs_timer_end_iostat(&PolarIOStatArray[index].polar_proc_io_stat_dist[vfdtype][loc].io_seek_time, LATENCY_seek);
+		PolarIOStatArray[index].polar_proc_io_stat_dist[vfdtype][loc].io_seek_count++;
+	}
+}
+
+static void
+polar_stat_io_creat_info(int vfdkind, int vfdtype)
+{
+	if (PolarIOStatArray != NULL)
+	{
+		int index, loc;
+		index = polar_get_io_proc_index();
+		if (index < 0)
+			return;
+		loc = polario_kind_to_location(vfdkind);
+		if (loc < 0 || loc >= POLARIO_LOC_SIZE)
+			return;
+		polar_vfs_timer_end_iostat(&PolarIOStatArray[index].polar_proc_io_stat_dist[vfdtype][loc].io_creat_time, LATENCY_creat);
+		PolarIOStatArray[index].polar_proc_io_stat_dist[vfdtype][loc].io_creat_count++;
+	}
+}
+
+static void
+polar_stat_io_falloc_info(int vfdkind, int vfdtype)
+{
+	if (PolarIOStatArray != NULL)
+	{
+		int index, loc;
+		index = polar_get_io_proc_index();
+		if (index < 0)
+			return;
+		loc = polario_kind_to_location(vfdkind);
+		if (loc < 0 || loc >= POLARIO_LOC_SIZE)
+			return;
+		polar_vfs_timer_end_iostat(&PolarIOStatArray[index].polar_proc_io_stat_dist[vfdtype][loc].io_falloc_time, LATENCY_falloc);
+		PolarIOStatArray[index].polar_proc_io_stat_dist[vfdtype][loc].io_falloc_count++;
+	}
+}
+
+static void 
+polar_stat_io_fsync_info(int vfdkind, int vfdtype)
+{
+	if (PolarIOStatArray != NULL)
+	{
+		int index, loc;
+		index = polar_get_io_proc_index();
+		if (index < 0)
+			return;
+		loc = polario_kind_to_location(vfdkind);
+		if (loc < 0 || loc >= POLARIO_LOC_SIZE)
+			return;
+		polar_vfs_timer_end_iostat(&PolarIOStatArray[index].polar_proc_io_stat_dist[vfdtype][loc].io_fsync_time, LATENCY_fsync);
+		PolarIOStatArray[index].polar_proc_io_stat_dist[vfdtype][loc].io_fsync_count++;
+	}
+}
+
+static inline void
+polar_set_distribution_interval(instr_time *intervaltime, int kind)
+{
+	int index = polar_get_io_proc_index();
+	int 		interval;
+	uint64 		valus = 0;
+
+	if (index < 0)
+		return;
+
+	if(kind >= LATENCY_KIND_LEN)
+		return ;
+
+	valus = INSTR_TIME_GET_MICROSEC(*intervaltime);
+
+	if (valus < 1000)
+		interval =	valus/200;
+	else if (valus < 10000)
+		interval = LATENCY_10ms;
+	else if (valus < 100000)
+	 	interval = LATENCY_100ms;
+	else
+		interval = LATENCY_OUT;
+	
+	if (PolarIOStatArray)
+		PolarIOStatArray[index].num_latency_dist[kind][interval]++;
 }
 
 /* local file fd cache */

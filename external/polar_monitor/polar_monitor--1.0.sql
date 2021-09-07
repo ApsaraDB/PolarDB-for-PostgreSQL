@@ -115,3 +115,99 @@ CREATE VIEW polar_stat_async_ddl_lock_replay_lock AS
 REVOKE ALL ON FUNCTION polar_stat_async_ddl_lock_replay_worker() FROM PUBLIC;
 REVOKE ALL ON FUNCTION polar_stat_async_ddl_lock_replay_transaction() FROM PUBLIC;
 REVOKE ALL ON FUNCTION polar_stat_async_ddl_lock_replay_lock() FROM PUBLIC;
+
+-- Create customized polar process info func
+CREATE FUNCTION polar_stat_process(
+            OUT pid oid,
+            OUT wait_object int4,
+            OUT wait_time float8,
+            OUT cpu_user int8,
+            OUT cpu_sys int8,
+            OUT rss  int8,
+            OUT shared_read_ps int8,
+            OUT shared_write_ps int8,
+            OUT shared_read_throughput int8,
+            OUT shared_write_throughput int8,
+            OUT shared_read_latency_ms float8,
+            OUT shared_write_latency_ms float8,
+            OUT local_read_ps int8,
+            OUT local_write_ps int8,
+            OUT local_read_throughput int8,
+            OUT local_write_throughput int8,
+            OUT local_read_latency_ms float8,
+            OUT local_write_latency_ms float8,
+            OUT wait_type text,
+            OUT queryid int8
+)
+RETURNS record
+AS 'MODULE_PATHNAME', 'polar_stat_process'
+LANGUAGE C PARALLEL SAFE;
+
+
+CREATE VIEW polar_stat_activity AS
+  SELECT b.*, a.queryid,
+  (CASE WHEN a.wait_object IS NULL and a.wait_time IS NOT NULL THEN CAST(pg_blocking_pids(b.pid) as text) ELSE CAST(a.wait_object as text) END)::text AS wait_object,
+  wait_type,wait_time as "wait_time_ms", cpu_user, cpu_sys, rss, 
+  shared_read_ps, shared_write_ps, shared_read_throughput, shared_write_throughput, shared_read_latency_ms, shared_write_latency_ms,
+  local_read_ps, local_write_ps, local_read_throughput, local_write_throughput, local_read_latency_ms, local_write_latency_ms
+  FROM pg_stat_activity AS b left join polar_stat_process() AS a on b.pid = a.pid;
+
+-- Create customized polar IO info func
+CREATE FUNCTION polar_stat_io_info(
+            OUT pid oid,
+            OUT filetype text,
+            OUT fileloc text,
+            OUT open_count int8,
+            OUT open_latency_us float8,
+            OUT close_count int8,
+            OUT read_count int8,
+            OUT write_count int8,
+            OUT read_throughput int8,
+            OUT write_throughput int8,
+            OUT read_latency_us float8,
+            OUT write_latency_us float8,
+            OUT seek_count int8,
+            OUT seek_latency_us float8,
+            OUT creat_count int8,
+            OUT creat_latency_us float8,
+            OUT fsync_count int8,
+            OUT fsync_latency_us float8,
+            OUT falloc_count int8,
+            OUT falloc_latency_us float8
+)
+RETURNS record
+AS 'MODULE_PATHNAME', 'polar_stat_io_info'
+LANGUAGE C PARALLEL SAFE;
+
+CREATE VIEW polar_stat_io_info AS
+  SELECT filetype, fileloc, sum(open_count) as open_count, sum(open_latency_us) as open_latency_us,
+  sum(close_count) as close_count, sum(read_count) as read_count, sum(write_count) as write_count, sum(read_throughput)  as read_throughput,
+  sum(write_throughput) as write_throughput,
+  sum(read_latency_us) as read_latency_us, sum(write_latency_us) as write_latency_us, sum(seek_count) as seek_count, sum(seek_latency_us) as seek_latency_us,
+  sum(creat_count) as creat_count, sum(creat_latency_us) as creat_latency_us, sum(fsync_count) as fsync_count,
+  sum(fsync_latency_us) as fsync_latency_us, sum(falloc_count) as falloc_count, sum(falloc_latency_us) as falloc_latency_us
+  FROM polar_stat_io_info() GROUP BY filetype, fileloc;
+
+-- Create customized io latency info func
+CREATE FUNCTION polar_io_latency_info(
+	          OUT pid oid,
+            OUT IOKind text,
+            OUT Num_LessThan200us int8,
+            OUT Num_LessThan400us int8,
+            OUT Num_LessThan600us int8,
+            OUT Num_LessThan800us int8,
+            OUT Num_LessThan1ms int8,
+            OUT Num_LessThan10ms int8,
+            OUT Num_LessThan100ms int8,
+            OUT Num_MoreThan100ms int8
+)
+RETURNS record
+AS 'MODULE_PATHNAME', 'polar_io_latency_info'
+LANGUAGE C PARALLEL SAFE;
+
+CREATE VIEW polar_stat_io_latency AS
+  SELECT IOKind, sum(Num_LessThan200us) Num_LessThan200us, sum(Num_LessThan400us) Num_LessThan400us,
+  sum(Num_LessThan600us) Num_LessThan600us, sum(Num_LessThan800us) Num_LessThan800us,
+  sum(Num_LessThan1ms) Num_LessThan1ms, sum(Num_LessThan10ms) Num_LessThan10ms,
+  sum(Num_LessThan100ms) Num_LessThan100ms, sum(Num_MoreThan100ms) Num_MoreThan100ms
+  FROM polar_io_latency_info() GROUP BY IOKind;
