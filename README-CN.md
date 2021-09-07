@@ -94,7 +94,7 @@ $HOME/tmp_basedir_polardb_pg_1100_bld/bin/psql -p 5432 -c 'select * from pg_repl
 ./polardb_build.sh --withrep --repnum=1 --withstandby -r-check-all -e -r-contrib -r-pl -r-external -r-installcheck-all
 ```
 # 软件许可说明
-PolarDB的代码的发布基于Apache 2.0版本和PostgreSQL代码的软件许可。相关的许可说明可参见[License](doc-CN/PolarDB/LICENSE.txt)和[NOTICE](doc-CN/PolarDB/NOTICE.txt)。
+PolarDB的代码的发布基于Apache 2.0版本和PostgreSQL代码的软件许可。相关的许可说明可参见[License](doc/PolarDB-CN/LICENSE.txt)和[NOTICE](doc/PolarDB-CN/NOTICE.txt)。
 # 致谢
 部分代码和设计思路参考了其他开源项目，例如：PG-XC/XL（pgxc_ctl）、TBase（部分基于时间戳的vacuum 和MVCC）、Greenplum以及Citus（pg_cron）。感谢以上开源项目的贡献。
 # 联系我们
