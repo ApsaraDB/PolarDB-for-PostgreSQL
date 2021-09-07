@@ -369,12 +369,6 @@ function polar_init_standby() {
 }
 
 function polar_init() {
-  if [[ "$EUID" == 0 ]]; then
-    chown -R $polar_user ../polardb_pg
-    chown -R $polar_user $polar_basedir
-    chown -R $polar_user $polar_primary_dir
-  fi
-
   polar_init_primary
 
   polar_init_replicas
@@ -613,11 +607,6 @@ unset PGDATA
 unset PGHOST
 unset PGDATABASE
 unset PGUSER
-
-if [[ "$EUID" == 0 ]]; then
-  echo "Running with user $polar_user!"
-  su_str="su $polar_user -c "
-fi
 
 ####### PHASE 2: cleanup dir and env, and set new dir and env #######
 polar_reset_dir
