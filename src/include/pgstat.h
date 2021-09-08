@@ -18,6 +18,7 @@
 #include "portability/instr_time.h"
 #include "postmaster/pgarch.h"
 #include "storage/proc.h"
+#include "utils/guc.h"
 #include "utils/hsearch.h"
 #include "utils/relcache.h"
 
@@ -1061,7 +1062,58 @@ typedef struct PgBackendStatus
 	ProgressCommandType st_progress_command;
 	Oid			st_progress_command_target;
 	int64		st_progress_param[PGSTAT_NUM_PROGRESS_PARAM];
+
+	/* POLAR: this backend index in backend array */
+	int 		backendid;
+	/* POLAR end */
+
+	/* POLAR: queryid of  the current backend */
+	int64 		queryid;
 } PgBackendStatus;
+
+/*
+ * Macros to load and store st_changecount with appropriate memory barriers.
+ *
+ * Use PGSTAT_BEGIN_WRITE_ACTIVITY() before, and PGSTAT_END_WRITE_ACTIVITY()
+ * after, modifying the current process's PgBackendStatus data.  Note that,
+ * since there is no mechanism for cleaning up st_changecount after an error,
+ * THESE MACROS FORM A CRITICAL SECTION.  Any error between them will be
+ * promoted to PANIC, causing a database restart to clean up shared memory!
+ * Hence, keep the critical section as short and straight-line as possible.
+ * Aside from being safer, that minimizes the window in which readers will
+ * have to loop.
+ *
+ * Reader logic should follow this sketch:
+ *
+ *		for (;;)
+ *		{
+ *			int before_ct, after_ct;
+ *
+ *			pgstat_begin_read_activity(beentry, before_ct);
+ *			... copy beentry data to local memory ...
+ *			pgstat_end_read_activity(beentry, after_ct);
+ *			if (pgstat_read_activity_complete(before_ct, after_ct))
+ *				break;
+ *			CHECK_FOR_INTERRUPTS();
+ *		}
+ *
+ * For extra safety, we generally use volatile beentry pointers, although
+ * the memory barriers should theoretically be sufficient.
+ */
+#define PGSTAT_BEGIN_WRITE_ACTIVITY(beentry) \
+	do { \
+		START_CRIT_SECTION(); \
+		(beentry)->st_changecount++; \
+		pg_write_barrier(); \
+	} while (0)
+
+#define PGSTAT_END_WRITE_ACTIVITY(beentry) \
+	do { \
+		pg_write_barrier(); \
+		(beentry)->st_changecount++; \
+		Assert(((beentry)->st_changecount & 1) == 0); \
+		END_CRIT_SECTION(); \
+	} while (0)
 
 /*
  * Macros to load and store st_changecount with the memory barriers.
@@ -1292,6 +1344,57 @@ pgstat_report_wait_end(void)
 	proc->wait_event_info = 0;
 }
 
+/* 
+ * POLAR: stat wait_object and wait_time start
+ */
+static inline void
+polar_stat_wait_obj_and_time_set(int id, const instr_time *start_time, const int8 type)
+{
+	if (!polar_enable_stat_wait_info)
+		return;
+
+	if (!pgstat_track_activities || !MyProc)
+		return;
+
+	MyProc->cur_wait_stack_index++;
+	/* push stack if not overflow */
+	if (MyProc->cur_wait_stack_index < PGPROC_WAIT_STACK_LEN)
+	{
+		/*
+	 	 * POLAR:  We do not use pid 0 because it belongs to the root process. 
+	 	 * We think -1 is an invalid pid.
+	 	 */
+		if (type == PGPROC_WAIT_PID && id == 0)
+			id = PGPROC_INVAILD_WAIT_OBJ;
+		MyProc->wait_object[MyProc->cur_wait_stack_index] = id;
+		MyProc->wait_type[MyProc->cur_wait_stack_index] = type;
+		INSTR_TIME_SET_ZERO(MyProc->wait_time[MyProc->cur_wait_stack_index]);
+		if (!INSTR_TIME_IS_ZERO(*start_time))
+		{
+			INSTR_TIME_ADD(MyProc->wait_time[MyProc->cur_wait_stack_index], *start_time);
+		}
+	}
+}
+static inline void
+polar_stat_wait_obj_and_time_clear(void)
+{
+	if (!polar_enable_stat_wait_info)
+		return;
+
+	if (!pgstat_track_activities || !MyProc)
+		return;
+
+	/* pop stack if not overflow*/
+	if (MyProc->cur_wait_stack_index > -1 && MyProc->cur_wait_stack_index < PGPROC_WAIT_STACK_LEN)
+	{
+		MyProc->wait_object[MyProc->cur_wait_stack_index] = PGPROC_INVAILD_WAIT_OBJ;
+		MyProc->wait_type[MyProc->cur_wait_stack_index] = PGPROC_INVAILD_WAIT_OBJ;
+		INSTR_TIME_SET_ZERO(MyProc->wait_time[MyProc->cur_wait_stack_index]);
+		
+	}
+	MyProc->cur_wait_stack_index--;
+}
+
 /* nontransactional event counts are simple enough to inline */
 
 #define pgstat_count_heap_scan(rel)									\
@@ -1358,6 +1461,12 @@ extern void pgstat_twophase_postabort(TransactionId xid, uint16 info,
 
 extern void pgstat_send_archiver(const char *xlog, bool failed);
 extern void pgstat_send_bgwriter(void);
+
+typedef void (*polar_postmaster_child_init_register) (void);
+extern polar_postmaster_child_init_register polar_stat_hook;
+
+/* POLAR */
+extern void polar_report_queryid(int64 queryid);
 
 /* ----------
  * Support functions for the SQL-callable functions to
