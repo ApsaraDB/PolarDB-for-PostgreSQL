@@ -542,7 +542,8 @@ char	   *role_string;
 #define POLAR_MAX_PDB_HOSTID			512
 
 /* POLAR GUCs */
-static char *polar_version;         /* format:1.1.0 */
+static char *polar_release_date;	/* format: YYYYMMDD */
+static char *polar_version;			/* format: 1.1.0 */
 
 int		polar_hostid = 0;
 int		polar_clog_slot_size = 0;
@@ -3971,6 +3972,17 @@ static struct config_string ConfigureNamesString[] =
 {
 	/* POLAR String GUCs Start */
 	{
+		{"polar_release_date", PGC_INTERNAL, UNGROUPED,
+			gettext_noop("Show the server release date."),
+			NULL,
+			GUC_NOT_IN_SAMPLE | GUC_DISALLOW_IN_FILE
+		},
+		&polar_release_date,
+		"20210930",
+		NULL, NULL, NULL
+	},
+
+	{
 		{"polar_version", PGC_INTERNAL, UNGROUPED,
 		    gettext_noop("Show the PolarDB server version."),
 		    NULL,
@@ -3980,6 +3992,7 @@ static struct config_string ConfigureNamesString[] =
 		"1.1.15",
 		NULL, NULL, NULL
 	},
+
 	{
 		{"polar_storage_cluster_name", PGC_POSTMASTER, UNGROUPED,
 		 	gettext_noop("polar storage cluster name"),

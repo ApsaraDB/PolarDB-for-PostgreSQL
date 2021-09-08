@@ -5,3 +5,4 @@
 # ----------
 
 test: polar-dev/polar_parallel_bgwriter
+test: polar-dev/polar_release_date
