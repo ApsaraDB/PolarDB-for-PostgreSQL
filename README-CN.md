@@ -1,4 +1,5 @@
-## ![image.png](doc/PolarDB-CN/pic/PolarDB_logo.png)
+## ![image.png](doc/PolarDB-CN/pic/PolarDB_logo.png)  
+PolarDB PostgreSQL开源数据库官网：https://developer.aliyun.com/topic/polardb-for-pg  
 # 什么是PolarDB PostgreSQL
 ![image.png](doc/PolarDB-CN/pic/1_polardb_architecture.png)
 PolarDB PostgreSQL（下文简称为PolarDB)是一款阿里云自主研发的云原生数据库产品，100%兼容PostgreSQL，采用基于Shared-Storage的存储计算分离架构，具有极致弹性、毫秒级延迟、HTAP的能力。
@@ -38,8 +39,8 @@ PolarDB采用了基于Shared-Storage的存储计算分离架构。数据库由�
 阿里云云原生关系型数据库PolarDB PostgreSQL引擎：[官网地址](https://www.aliyun.com/product/polardb)。
 ## 搭建本地存储的实例
 我们提供了一键部署脚本，助您快速编译PolarDB内核并搭建本地实例。本节介绍了如何通过提供的一键部署脚本，快速搭建存储为本地磁盘的PolarDB实例。  
-**操作系统要求：**CentOS 7.5及以上。以下步骤在CentOS 7.5上通过测试。  
-**说明：**请使用同一个用户进行以下步骤。请勿使用root用户搭建实例。
+**操作系统要求**：CentOS 7.5及以上。以下步骤在CentOS 7.5上通过测试。  
+**说明**：请使用同一个用户进行以下步骤。请勿使用root用户搭建实例。
 
 1. 下载PolarDB源代码，地址：[https://github.com/alibaba/PolarDB-for-PostgreSQL/tree/main](https://github.com/alibaba/PolarDB-for-PostgreSQL/tree/main)。
 1. 安装相关依赖：
