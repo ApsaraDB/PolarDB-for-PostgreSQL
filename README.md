@@ -1,4 +1,5 @@
-![](doc/PolarDB-EN/pic/PolarDB_logo.png)
+![](doc/PolarDB-EN/pic/PolarDB_logo.png)  
+Official site of PolarDB PostgreSQL open source database: https://developer.aliyun.com/topic/polardb-for-pg
 # Overview 
 ![image.png](doc/PolarDB-EN/pic/1_polardb_architecture.png)
 PolarDB PostgreSQL (hereafter simplified as PolarDB) is a cloud native database service independently developed by Alibaba Cloud. This service is 100% compatible with PostgreSQL and uses a shared storage-based architecture in which computing is decoupled from storage. This service features flexible scalability, millisecond-level latency and hybrid transactional/analytical processing (HTAP) capabilities. 
