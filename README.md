@@ -30,7 +30,7 @@ For more information, see [Roadmap](doc/PolarDB-EN/Roadmap.md) and [Architecture
 - Features of PolarDB PostgreSQL 1.0 (documents coming soon)
    - PolarVFS
    - Buffer manager
-   - Sync DDL
+   - [DDL Synchronization](doc/PolarDB-EN/DDL_Synchronization.md)
    - LogIndex
    - DB Monitoring
    - PolarStack
