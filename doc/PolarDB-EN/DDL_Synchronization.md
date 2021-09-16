@@ -10,17 +10,17 @@ In most cases, DDL is used to perform operations on files. For DDL operations, P
 ## DDL Locks
 The DDL synchronization mechanism uses AccessExclusiveLocks (DDL locks) to synchronize DDL operations between primary and read-only nodes.   
 ![image.png](pic/45_DDL_1.png)  
-<center>Figure 1 Relationship Between DDL Lock and WAL Log</center>
+Figure 1 Relationship Between DDL Lock and WAL Log  
 
 DDL locks are table locks at the highest level in databases. DDL locks and locks at other levels are mutually exclusive. When the primary node synchronizes a WAL log file of a table to the read-only nodes, the primary node acquires the LSN of the lock in the WAL log file. When a read-only node applies the WAL log file beyond the LSN of the lock, the lock is considered to have been acquired on the read-only node. The DDL lock is released after the transaction ends. Figure 1 shows the entire process from the acquisition to the release of a DDL lock. When the WAL log file is applied at Apply LSN 1, the DDL lock is not acquired. When the WAL log file is applied at Apply LSN 2, the DDL lock is acquired. When the WAL log file is applied at Apply LSN 3, the DDL lock is released.   
 ![image.png](pic/46_DDL_2.png)  
-<center>Figure 2 Conditions for Acquiring DDL Lock</center>
+Figure 2 Conditions for Acquiring DDL Lock  
 
 When the WAL log file is applied beyond the LSN of the lock on all read-only nodes, the DDL lock is considered to have been acquired by the transaction of the primary node at the cluster level. Then, this table cannot be accessed over other sessions on the primary node or read-only nodes. During this time period, the primary node can perform various file operations on the table.  
 > Note: A standby node in an active/standby environment has independent file storage. When a standby node acquires a lock, the preceding situation never occurs. 
 
 ![image.png](pic/47_DDL_3.png)
-<center>Figure 3 DDL Synchronization Workflow</center>
+Figure 3 DDL Synchronization Workflow  
 
 Figure 3 shows the workflow of how DDL operations are synchronized.
 
@@ -53,7 +53,7 @@ In specific cases, for a read-only node to apply a DDL lock, the data latency is
 ## Asynchronous Apply of DDL Locks
 To resolve this issue, PolarDB optimizes DDL lock apply on read-only nodes.  
 ![image.png](pic/48_DDL_4.png)
-<center>Figure 4 Asynchronous Apply of DDL Locks on Read-Only Nodes</center>
+Figure 4 Asynchronous Apply of DDL Locks on Read-Only Nodes
 
 PolarDB uses an asynchronous process to apply DDL locks so that the main apply process is not blocked.  
 Figure 4 shows the overall workflow in which PolarDB offloads the acquisition of DDL locks from the main apply process to the lock apply process and immediately returns to the main apply process. This way, the main apply process is not affected even if lock apply are blocked.   
