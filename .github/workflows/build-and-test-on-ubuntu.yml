@@ -62,3 +62,8 @@ jobs:
                       ./polardb_build.sh --withrep --repnum=1 --withstandby \
                                          -r-check-all -e -r-contrib -r-pl   \
                                          -r-external -r-installcheck-all"
+
+    - name: Change ownership of the source code.
+      run: |
+        sudo chown -R runner:runner `pwd`
+
