@@ -194,9 +194,10 @@ See [architecture design](/doc/polardb/arch.md) for more information
 
 * [Architecture design](/doc/polardb/arch.md)
 * [Roadmap](/doc/polardb/roadmap.md)
+* [Deployment](/doc/polardb/deployment.md)
 * Features and their design in PolarDB for PostgreSQL Version 1.0
   * [Paxos replication](/doc/polardb/ha_paxos.md)
-  * [Cluster management](/doc/polardb/deployment.md)
+  * [Cluster management](/doc/polardb/cluster_manager.md)
   * [Timestamp based MVCC](/doc/polardb/cts.md)
   * [Parallel Redo](/doc/polardb/parallel_redo.md)
   * [Remote Recovery](/doc/polardb/no_fpw.md)
