@@ -200,9 +200,16 @@ FileList=`ls ${local_data}/base/ 2>/dev/null`
 echo "list base dir file $FileList"
 for pFile in $FileList
 do
-    rm_dir ${local_data}base/${pFile}/*
+	BaseFiles=${local_data}base/${pFile}/*
+	for BaseFile in $BaseFiles; do
+		rm_dir $BaseFile
+	done
 done
-rm_dir ${local_data}global/*
+
+GlobalFiles=${local_data}global/*
+for GlobalFile in $GlobalFiles; do
+	rm_dir $GlobalFile
+done
 rm_dir ${local_data}pg_wal
 rm_dir ${local_data}pg_logindex
 rm_dir ${local_data}pg_twophase
