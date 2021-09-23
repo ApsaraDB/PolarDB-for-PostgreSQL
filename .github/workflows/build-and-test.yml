@@ -1,4 +1,4 @@
-name: (CentOS) Build and test PolarDB
+name: Build and test PolarDB
 
 on:
   push:
