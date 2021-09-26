@@ -1394,7 +1394,8 @@ dumpDatabases(PGconn *conn)
 		 * otherwise we'll merely restore their contents.  Other databases
 		 * should simply be created.
 		 */
-		if (strcmp(dbname, "template1") == 0 || strcmp(dbname, "postgres") == 0)
+		if (strcmp(dbname, "template1") == 0 || strcmp(dbname, "postgres") == 0 ||
+			strcmp(dbname, "polardb_admin") == 0)
 		{
 			if (output_clean)
 				create_opts = "--clean --create";
