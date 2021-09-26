@@ -35,6 +35,7 @@ sub run_test
 		'SELECT datname FROM pg_database ORDER BY 1',
 		qq(beforepromotion
 inmaster
+polardb_admin
 postgres
 standby_afterpromotion
 template0
