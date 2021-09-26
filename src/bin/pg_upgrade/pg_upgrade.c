@@ -376,7 +376,7 @@ create_new_objects(void)
 		 * otherwise we would fail to propagate their database-level
 		 * properties.
 		 */
-		if (strcmp(old_db->db_name, "postgres") == 0)
+		if (strcmp(old_db->db_name, "postgres") == 0 || strcmp(old_db->db_name, "polardb_admin") == 0)
 			create_opts = "--clean --create";
 		else
 			create_opts = "--create";
