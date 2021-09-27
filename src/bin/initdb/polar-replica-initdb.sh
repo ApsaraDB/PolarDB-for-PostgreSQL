@@ -80,12 +80,6 @@ if [ "$polar_object_type" != '   dir' ]; then
         exit 1
 fi
 
-filenum_polar_data=`${pfs} ls ${polar_data} | wc -l`
-if [[ ${filenum_polar_data} -ne 8 ]]; then
-        echo "${polar_data} dir ne 8"
-        exit 1
-fi
-
 # do mkdir dir in data
 mkdir -p ${local_data}base
 mkdir -p ${local_data}global
@@ -103,7 +97,7 @@ mkdir -p ${local_data}pg_subtrans
 mkdir -p ${local_data}pg_tblspc
 mkdir -p ${local_data}pg_twophase
 
-echo "10" > ${local_data}PG_VERSION
+echo "11" > ${local_data}PG_VERSION
 
 if [ ! -d "${local_data}base" ]; then
         echo "local data :("${local_data}base") dir does not exist"
