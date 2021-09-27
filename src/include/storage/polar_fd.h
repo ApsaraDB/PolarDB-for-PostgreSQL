@@ -43,6 +43,13 @@
 #define	POLAR_VFS_SWITCH_LOCAL		0
 #define	POLAR_VFS_SWITCH_PLUGIN		1
 #define POLAR_VFS_PROTOCOL_TAG	"://"
+typedef enum PolarVFSKind{
+	POLAR_VFS_LOCAL_BIO = 0,
+	POLAR_VFS_PFS = 1,
+	POLAR_VFS_LOCAL_DIO = 2,
+	/* NB: Define the size here for future maintenance */
+	POLAR_VFS_KIND_SIZE = 3
+}PolarVFSKind;
 
 typedef enum PolarNodeType
 {

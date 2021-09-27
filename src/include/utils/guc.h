@@ -350,6 +350,7 @@ extern bool		polar_enable_page_outdate;
 extern bool		polar_enable_redo_debug;
 extern bool		polar_enable_resolve_conflict;
 extern bool		polar_enable_standby_xlog_meta;
+extern bool		polar_enable_stat_wait_info;
 /* POLAR end */
 
 /*

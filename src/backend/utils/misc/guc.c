@@ -543,7 +543,8 @@ char	   *role_string;
 #define POLAR_MAX_PDB_HOSTID			512
 
 /* POLAR GUCs */
-static char *polar_version;         /* format:1.1.0 */
+static char *polar_release_date;	/* format: YYYYMMDD */
+static char *polar_version;			/* format: 1.1.0 */
 
 int		polar_hostid = 0;
 int		polar_clog_slot_size = 0;
@@ -608,6 +609,7 @@ bool	polar_enable_page_outdate = false;
 bool	polar_enable_redo_debug = false;
 bool	polar_enable_resolve_conflict = true;
 bool	polar_enable_standby_xlog_meta = false;
+bool    polar_enable_stat_wait_info = true;
 /* POLAR GUC End */
 
 /*
@@ -973,6 +975,16 @@ static struct config_bool ConfigureNamesBool[] =
 		},
 		&polar_enable_run_walreceiver_always,
 		false,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_enable_stat_wait_info", PGC_POSTMASTER, UNGROUPED,
+		 	gettext_noop("Enable to stat wait object and wait time."),
+		 	NULL,
+		 	GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_enable_stat_wait_info,
+		true,
 		NULL, NULL, NULL
 	},
 	{
@@ -3981,6 +3993,17 @@ static struct config_string ConfigureNamesString[] =
 {
 	/* POLAR String GUCs Start */
 	{
+		{"polar_release_date", PGC_INTERNAL, UNGROUPED,
+			gettext_noop("Show the server release date."),
+			NULL,
+			GUC_NOT_IN_SAMPLE | GUC_DISALLOW_IN_FILE
+		},
+		&polar_release_date,
+		"20210930",
+		NULL, NULL, NULL
+	},
+
+	{
 		{"polar_version", PGC_INTERNAL, UNGROUPED,
 		    gettext_noop("Show the PolarDB server version."),
 		    NULL,
@@ -3990,6 +4013,7 @@ static struct config_string ConfigureNamesString[] =
 		"1.1.15",
 		NULL, NULL, NULL
 	},
+
 	{
 		{"polar_storage_cluster_name", PGC_POSTMASTER, UNGROUPED,
 		 	gettext_noop("polar storage cluster name"),

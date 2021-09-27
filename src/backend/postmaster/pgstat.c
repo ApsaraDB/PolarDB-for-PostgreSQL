@@ -127,6 +127,8 @@ bool		pgstat_track_counts = false;
 int			pgstat_track_functions = TRACK_FUNC_OFF;
 int			pgstat_track_activity_query_size = 1024;
 
+polar_postmaster_child_init_register polar_stat_hook = NULL;
+
 /* ----------
  * Built from GUC parameter
  * ----------
@@ -3344,6 +3346,9 @@ pgstat_read_current_status(void)
 					localentry->backendStatus.st_sslstatus = localsslstatus;
 				}
 #endif
+				/* POLAR: we must know backend id here for stat */
+				localentry->backendStatus.backendid = i;
+				/* POLAR end */
 			}
 
 			pgstat_end_read_activity(beentry, after_changecount);
@@ -3377,6 +3382,28 @@ pgstat_read_current_status(void)
 
 	/* Set the pointer only after completion of a valid table */
 	localBackendStatusTable = localtable;
+}
+
+/*-----------
+ * polar_report_queryid() -
+ *
+ * Set queryid in own backend entry
+ * 
+ * POLAR *
+ *-----------
+ */
+void
+polar_report_queryid(int64 queryid)
+{
+	volatile PgBackendStatus *beentry = MyBEEntry;
+
+	if (!beentry || !pgstat_track_activities)
+		return;
+
+	PGSTAT_BEGIN_WRITE_ACTIVITY(beentry);
+	beentry->queryid = queryid;
+
+	PGSTAT_END_WRITE_ACTIVITY(beentry);
 }
 
 /* ----------

@@ -1,7 +1,7 @@
 # contrib/polar_vfs/Makefile
 
 MODULE_big = polar_vfs
-OBJS = polar_vfs.o polar_directio.o
+OBJS = polar_vfs.o polar_directio.o polar_io_stat.o
 
 EXTENSION = polar_vfs
 DATA = polar_vfs--1.0.sql
