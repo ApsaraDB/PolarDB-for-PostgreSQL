@@ -63,7 +63,7 @@ WORKDIR /home/postgres
 # set up authorized key for fast access, download source code from github and set up environment variables
 RUN ssh-keygen -q -t rsa -f ~/.ssh/id_rsa -N '' \
 	&& cp ~/.ssh/id_rsa.pub ~/.ssh/authorized_keys \
-	&& git clone https://github.com/alibaba/PolarDB-for-PostgreSQL.git \
+	&& git clone -b distributed https://github.com/alibaba/PolarDB-for-PostgreSQL.git \
 	&& echo -e "export PATH=\"\$HOME/polardb/polardbhome/bin:\$PATH\"\nexport LD_LIBRARY_PATH=\"\$HOME/polardb/polardbhome/lib:\$LD_LIBRARY_PATH\"" >> ~/.bashrc
 
 # set up PolarDB-for-PostgreSQL
