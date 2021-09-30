@@ -40,12 +40,12 @@ PolarDB 采用了基于 Shared-Storage 的存储计算分离架构。数据库�
 - [产品架构](/doc/PolarDB-CN/Architecture.md)
 - [版本规划](/doc/PolarDB-CN/Roadmap.md)
 - PolarDB PostgreSQL 1.0 版本功能特性
-    - PolarVFS（即将上线）
     - [Buffer 管理](/doc/PolarDB-CN/Buffer_Management.md)
     - [DDL 同步](/doc/PolarDB-CN/DDL_Synchronization.md)
     - [LogIndex](/doc/PolarDB-CN/LogIndex.md)
-    - 数据库监控（即将上线）
-    - PolarStack（即将上线）
+- 数据库监控（即将上线）
+- PolarStack（即将上线）
+- PolarVFS（即将上线）
 
 # 快速入门
 

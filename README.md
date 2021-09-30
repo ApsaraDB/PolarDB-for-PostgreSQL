@@ -39,13 +39,13 @@ For more information, see [Roadmap](doc/PolarDB-EN/Roadmap.md) and [Architecture
 
 - [Architecture Design](doc/PolarDB-EN/Architecture.md)
 - [Roadmap](doc/PolarDB-EN/Roadmap.md)
-- Features of PolarDB PostgreSQL 1.0 (documents coming soon)
-    - PolarVFS
-    - Buffer manager
+- Features of PolarDB PostgreSQL 1.0
+    - [Buffer Management](doc/PolarDB-EN/Buffer_Management.md)
     - [DDL Synchronization](doc/PolarDB-EN/DDL_Synchronization.md)
-    - LogIndex
-    - DB Monitoring
-    - PolarStack
+    - [LogIndex](doc/PolarDB-EN/LogIndex.md)
+- DB Monitoring
+- PolarStack
+- PolarDB File System
 
 # Quick Start with PolarDB
 
