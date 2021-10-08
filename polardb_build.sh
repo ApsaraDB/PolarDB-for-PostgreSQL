@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 # Copyright (c) 2020, Alibaba Group Holding Limited
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -295,7 +295,7 @@ function polar_init_primary() {
     echo "polar_disk_name = '${disk_name}'" >> $polar_primary_dir/postgresql.conf
     echo "polar_datadir = 'file-dio://${polar_data_dir}'" >> $polar_primary_dir/postgresql.conf
 
-    su_eval "sh $polar_basedir/bin/polar-initdb.sh ${polar_primary_dir}/ ${polar_data_dir}/ localfs"
+    su_eval "$polar_basedir/bin/polar-initdb.sh ${polar_primary_dir}/ ${polar_data_dir}/ localfs"
   fi
 
   echo "port = ${polar_port}" >>$polar_primary_dir/postgresql.conf

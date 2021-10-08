@@ -426,18 +426,6 @@ static const struct config_enum_entry password_encryption_options[] = {
 };
 
 /*
- * Polar: Options for core_dump options
- */
-static const struct config_enum_entry coredump_options[] = {
-	{"disable", POLAR_CORE_DUMP_DISABLE, false},
-	{"stack_print", POLAR_CORE_DUMP_PRINT, false},
-	{"core_clear", POLAR_CORE_DUMP_CLEAR, false},
-	{"all", POLAR_CORE_DUMP_ALL, false},
-	{NULL, 0, false}
-};
-/* Polar: end */
-
-/*
  * Options for enum values stored in other modules
  */
 extern const struct config_enum_entry wal_level_options[];

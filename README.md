@@ -1,6 +1,6 @@
-![](doc/PolarDB-EN/pic/PolarDB_logo.png)
+[![logo](doc/PolarDB-EN/pic/PolarDB_logo.png)](https://developer.aliyun.com/topic/polardb-for-pg)
 
-[![Build and test PolarDB](https://github.com/alibaba/PolarDB-for-PostgreSQL/actions/workflows/build-and-test.yml/badge.svg)](https://github.com/alibaba/PolarDB-for-PostgreSQL/actions/workflows/build-and-test.yml)
+[![Build and test PolarDB](https://github.com/alibaba/PolarDB-for-PostgreSQL/actions/workflows/build-and-test.yml/badge.svg)](https://github.com/alibaba/PolarDB-for-PostgreSQL/actions/workflows/build-and-test.yml) [![GitHub issues](https://img.shields.io/github/issues/alibaba/PolarDB-for-PostgreSQL)](https://GitHub.com/alibaba/PolarDB-for-PostgreSQL/issues/) [![GitHub pull-requests](https://img.shields.io/github/issues-pr/alibaba/PolarDB-for-PostgreSQL)](https://GitHub.com/alibaba/PolarDB-for-PostgreSQL/pull/) [![GitHub forks](https://badgen.net/github/forks/alibaba/PolarDB-for-PostgreSQL)](https://github.com/alibaba/PolarDB-for-PostgreSQL/network/members) [![GitHub stars](https://badgen.net/github/stars/alibaba/PolarDB-for-PostgreSQL)](https://github.com/alibaba/PolarDB-for-PostgreSQL/stargazers) [![GitHub contributors](https://badgen.net/github/contributors/alibaba/PolarDB-for-PostgreSQL)](https://github.com/alibaba/PolarDB-for-PostgreSQL/graphs/contributors) [![license](https://img.shields.io/badge/license-Apache--2.0-blue)](doc/PolarDB-EN/LICENSE.txt)
 
 # Overview
 
@@ -38,13 +38,13 @@ For more information, see [Roadmap](doc/PolarDB-EN/Roadmap.md) and [Architecture
 
 - [Architecture Design](doc/PolarDB-EN/Architecture.md)
 - [Roadmap](doc/PolarDB-EN/Roadmap.md)
-- Features of PolarDB PostgreSQL 1.0 (documents coming soon)
-    - PolarVFS
-    - Buffer manager
-    - Sync DDL
-    - LogIndex
-    - DB Monitoring
-    - PolarStack
+- Features of PolarDB PostgreSQL 1.0
+    - [Buffer Management](doc/PolarDB-EN/Buffer_Management.md)
+    - [DDL Synchronization](doc/PolarDB-EN/DDL_Synchronization.md)
+    - [LogIndex](doc/PolarDB-EN/LogIndex.md)
+- DB Monitoring
+- PolarStack
+- PolarDB File System
 
 # Quick Start with PolarDB
 
@@ -62,7 +62,7 @@ We provide a script which uses default configuration to compile PolarDB. This se
 
 > **Note**: For the following steps, please use the same user. DO NOT use *root* user to create instances.
 
-1. Download the source code of PolarDB from [https://github.com/alibaba/PolarDB-for-PostgreSQL/tree/main](https://github.com/alibaba/PolarDB-for-PostgreSQL/tree/main).
+1. Download the source code of PolarDB from [here](https://github.com/alibaba/PolarDB-for-PostgreSQL/tree/main).
 2. Install dependent packages:
 
     ```bash
