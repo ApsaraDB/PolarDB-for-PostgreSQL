@@ -62,7 +62,7 @@ We provide a script which uses default configuration to compile PolarDB. This se
 
 > **Note**: For the following steps, please use the same user. DO NOT use *root* user to create instances.
 
-1. Download the source code of PolarDB from [https://github.com/alibaba/PolarDB-for-PostgreSQL/tree/main](https://github.com/alibaba/PolarDB-for-PostgreSQL/tree/main).
+1. Download the source code of PolarDB from [here](https://github.com/alibaba/PolarDB-for-PostgreSQL/tree/main).
 2. Install dependent packages:
 
     ```bash
