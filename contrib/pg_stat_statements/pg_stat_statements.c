@@ -873,6 +873,9 @@ pgss_ExecutorStart(QueryDesc *queryDesc, int eflags)
 			queryDesc->totaltime = InstrAlloc(1, INSTRUMENT_ALL);
 			MemoryContextSwitchTo(oldcxt);
 		}
+
+		/* POLAR */
+		polar_report_queryid(queryDesc->plannedstmt->queryId);
 	}
 }
 
@@ -947,6 +950,9 @@ pgss_ExecutorEnd(QueryDesc *queryDesc)
 				   queryDesc->estate->es_processed,
 				   &queryDesc->totaltime->bufusage,
 				   NULL);
+		
+		/* POLAR */
+		polar_report_queryid(0);
 	}
 
 	if (prev_ExecutorEnd)

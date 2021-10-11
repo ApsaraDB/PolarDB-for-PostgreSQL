@@ -35,6 +35,18 @@ PG_MODULE_MAGIC;
 
 PG_FUNCTION_INFO_V1(polar_consistent_lsn);
 
+/*
+ * POLAR: return the IO stat info ever backend and auxiliary  process
+ */
+PG_FUNCTION_INFO_V1(polar_stat_process);
+
+/*
+ * POLAR: return the IO stat info ever flie type
+ */
+PG_FUNCTION_INFO_V1(polar_stat_io_info);
+
+PG_FUNCTION_INFO_V1(polar_io_latency_info);
+
 Datum
 polar_consistent_lsn(PG_FUNCTION_ARGS)
 {

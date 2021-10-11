@@ -229,6 +229,9 @@ static const char *const subdirs[] = {
 static char bin_path[MAXPGPATH];
 static char backend_exec[MAXPGPATH];
 
+/* POLAR: Create polardb_admin or not. */
+static bool polar_no_polardb_admin = false;
+
 static char **replace_token(char **lines,
 			  const char *token, const char *replacement);
 
@@ -2094,6 +2097,17 @@ make_postgres(FILE *cmdfd)
 
 	for (line = postgres_setup; *line; line++)
 		PG_CMD_PUTS(*line);
+
+	/*
+	 * POLAR: polar_superuser can not access polardb_admin, but superuser could.
+	 * Internal business can be done in polardb_admin without affect normal users' business.
+	 */
+	if (!polar_no_polardb_admin)
+	{
+		PG_CMD_PUTS("CREATE DATABASE polardb_admin;\n\n");
+		PG_CMD_PUTS("REVOKE CONNECT ON DATABASE polardb_admin FROM PUBLIC;\n\n");
+		PG_CMD_PUTS("COMMENT ON DATABASE polardb_admin IS 'default administrative connection database';\n\n");
+	}
 }
 
 /*
@@ -3106,6 +3120,7 @@ main(int argc, char *argv[])
 		{"wal-segsize", required_argument, NULL, 12},
 		{"data-checksums", no_argument, NULL, 'k'},
 		{"allow-group-access", no_argument, NULL, 'g'},
+		{"polar-no-polardb-admin", no_argument, NULL, 15},
 		{NULL, 0, NULL, 0}
 	};
 
@@ -3243,6 +3258,9 @@ main(int argc, char *argv[])
 				break;
 			case 'g':
 				SetDataDirectoryCreatePerm(PG_DIR_MODE_GROUP);
+				break;
+			case 15:
+				polar_no_polardb_admin = true;
 				break;
 			default:
 				/* getopt_long already emitted a complaint */
