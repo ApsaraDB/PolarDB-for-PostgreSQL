@@ -2774,6 +2774,10 @@ pgstat_initialize(void)
 
 	/* Set up a process-exit hook to clean up */
 	on_shmem_exit(pgstat_beshutdown_hook, 0);
+	
+	/* POLAR: io stat cleanup shmem when child process */
+	if (polar_stat_hook)
+		polar_stat_hook();
 }
 
 /* ----------

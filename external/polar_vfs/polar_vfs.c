@@ -449,6 +449,7 @@ void
 _PG_fini(void)
 {
 	shmem_startup_hook = prev_shmem_startup_hook;
+	polar_stat_hook = prev_polar_stat_hook;
 }
 
 static void
