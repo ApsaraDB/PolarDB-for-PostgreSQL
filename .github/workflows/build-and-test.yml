@@ -2,9 +2,9 @@ name: Build and test PolarDB
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, POLARDB_11_STABLE ]
   pull_request:
-    branches: [ main ]
+    branches: [ main, POLARDB_11_STABLE ]
 
 jobs:
   build:
