@@ -32,7 +32,7 @@ For more information, see [Roadmap](doc/PolarDB-EN/Roadmap.md) and [Architecture
 
 # Branch Introduction
 
-20210901: The default branch of PolarDB switched to **main** on 20210901, which supports compute-storage-separation architecture. The **master** branch in the past has been switched to **distributed** branch, which supports distributed architecture of PolarDB.
+20210901: The default branch of PolarDB switched to **main** on 20210901, which supports compute-storage-separation architecture. The “POLARDB_11_STABLE” is the stable branch which is based on PostgreSQL 11.9. The original **master** branch in the past has been switched to **distributed** branch, which supports distributed architecture of PolarDB.
 
 # Documentation
 
@@ -62,7 +62,7 @@ We provide a script which uses default configuration to compile PolarDB. This se
 
 > **Note**: For the following steps, please use the same user. DO NOT use *root* user to create instances.
 
-1. Download the source code of PolarDB from [here](https://github.com/alibaba/PolarDB-for-PostgreSQL/tree/main).
+1. Download the stable branch "POLARDB_11_STABLE" of PolarDB from [here](https://github.com/ApsaraDB/PolarDB-for-PostgreSQL/tree/POLARDB_11_STABLE).
 2. Install dependent packages:
 
     ```bash
