@@ -61,12 +61,12 @@ PolarDB 采用了基于 Shared-Storage 的存储计算分离架构。数据库�
     - [DDL 同步](/doc/PolarDB-CN/DDL_Synchronization.md)
     - [LogIndex](/doc/PolarDB-CN/LogIndex.md)
 - 数据库监控（即将上线）
-- PolarStack（即将上线）
+- [PolarDB Stack](https://github.com/ApsaraDB/PolarDB-Stack-Operator/blob/master/README.md)
 - PolarVFS（即将上线）
 
 # 快速入门
 
-我们提供了三种途径来使用PolarDB数据库：阿里巴巴云服务、搭建本地存储的实例、搭建基于 PFS 共享存储的实例（即将上线）。
+我们提供了三种途径来使用PolarDB数据库：阿里巴巴云服务、搭建本地存储的实例、搭建基于 PolarDB Stack共享存储的实例。
 
 ## 阿里巴巴云服务
 
@@ -133,6 +133,14 @@ PolarDB 采用了基于 Shared-Storage 的存储计算分离架构。数据库�
         ```bash
         ./polardb_build.sh --withrep --repnum=1 --withstandby -r-check-all -e -r-contrib -r-pl -r-external -r-installcheck-all
         ```
+
+## 搭建基于 PolarDB Stack共享存储的实例
+
+PolarDB Stack是轻量级PolarDB PaaS软件。基于共享存储提供一写多读的PolarDB数据库服务，特别定制和深度优化了数据库生命周期管理。通过PolarDB Stack可以一键部署PolarDB-for-PostgreSQL内核和PolarDB-FileSystem。
+
+PolarDB Stack架构如下图所示，[进入PolarDB Stack的部署文档](https://github.com/ApsaraDB/PolarDB-Stack-Operator/blob/master/README.md)
+
+![PolarDB Stack arch](doc/PolarDB-CN/pic/63-PolarDBStack-arch.png)
 
 # 软件许可说明
 
