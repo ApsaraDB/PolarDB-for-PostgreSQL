@@ -1,6 +1,24 @@
+<div align="center">
+
 [![logo](doc/PolarDB-EN/pic/PolarDB_logo.png)](https://developer.aliyun.com/topic/polardb-for-pg)
 
-[![Build and test PolarDB](https://github.com/alibaba/PolarDB-for-PostgreSQL/actions/workflows/build-and-test.yml/badge.svg)](https://github.com/alibaba/PolarDB-for-PostgreSQL/actions/workflows/build-and-test.yml) [![GitHub issues](https://img.shields.io/github/issues/alibaba/PolarDB-for-PostgreSQL)](https://GitHub.com/alibaba/PolarDB-for-PostgreSQL/issues/) [![GitHub pull-requests](https://img.shields.io/github/issues-pr/alibaba/PolarDB-for-PostgreSQL)](https://GitHub.com/alibaba/PolarDB-for-PostgreSQL/pull/) [![GitHub forks](https://badgen.net/github/forks/alibaba/PolarDB-for-PostgreSQL)](https://github.com/alibaba/PolarDB-for-PostgreSQL/network/members) [![GitHub stars](https://badgen.net/github/stars/alibaba/PolarDB-for-PostgreSQL)](https://github.com/alibaba/PolarDB-for-PostgreSQL/stargazers) [![GitHub contributors](https://badgen.net/github/contributors/alibaba/PolarDB-for-PostgreSQL)](https://github.com/alibaba/PolarDB-for-PostgreSQL/graphs/contributors) [![license](https://img.shields.io/badge/license-Apache--2.0-blue)](doc/PolarDB-EN/LICENSE.txt)
+# PolarDB for PostgreSQL
+
+**A cloud-native database service independently developed by Alibaba Cloud**
+
+[![official](https://img.shields.io/badge/official%20site-blueviolet?style=for-the-badge&logo=alibabacloud)](https://developer.aliyun.com/topic/polardb-for-pg)
+
+[![github-actions](https://img.shields.io/github/workflow/status/ApsaraDB/PolarDB-for-PostgreSQL/Build%20and%20test%20PolarDB?style=for-the-badge&logo=githubactions)](https://github.com/ApsaraDB/PolarDB-for-PostgreSQL/actions/workflows/build-and-test.yml)
+[![platform-centos](https://img.shields.io/badge/platform-CentOS-green?style=for-the-badge&logo=centos)](https://github.com/ApsaraDB/PolarDB-for-PostgreSQL/actions/workflows/build-and-test.yml)
+[![platform-ubuntu](https://img.shields.io/badge/platform-Ubuntu-green?style=for-the-badge&logo=ubuntu)](https://github.com/ApsaraDB/PolarDB-for-PostgreSQL/actions/workflows/build-and-test.yml)
+[![license](https://img.shields.io/badge/license-Apache--2.0-blue?style=for-the-badge&logo=apache)](doc/PolarDB-EN/LICENSE.txt)
+[![github-issues](https://img.shields.io/github/issues/ApsaraDB/PolarDB-for-PostgreSQL?style=for-the-badge&logo=github)](https://GitHub.com/ApsaraDB/PolarDB-for-PostgreSQL/issues)
+[![github-pullrequest](https://img.shields.io/github/issues-pr/ApsaraDB/PolarDB-for-PostgreSQL?style=for-the-badge&logo=github)](https://GitHub.com/ApsaraDB/PolarDB-for-PostgreSQL/pulls)
+[![github-forks](https://img.shields.io/github/forks/ApsaraDB/PolarDB-for-PostgreSQL?style=for-the-badge&logo=github)](https://github.com/ApsaraDB/PolarDB-for-PostgreSQL/network/members)
+[![github-stars](https://img.shields.io/github/stars/ApsaraDB/PolarDB-for-PostgreSQL?style=for-the-badge&logo=github)](https://github.com/ApsaraDB/PolarDB-for-PostgreSQL/stargazers)
+[![github-contributors](https://img.shields.io/github/contributors/ApsaraDB/PolarDB-for-PostgreSQL?style=for-the-badge&logo=github)](https://github.com/ApsaraDB/PolarDB-for-PostgreSQL/graphs/contributors)
+
+</div>
 
 # Overview
 
@@ -20,7 +38,7 @@ PolarDB PostgreSQL (hereafter simplified as PolarDB) is a cloud native database 
 
 PolarDB provides a wide range of innovative multi-model database capabilities to help you process, analyze, and search for different types of data, such as spatio-temporal, geographic information system (GIS), image, vector, and graph data.
 
-Besides the **Shared-Storage** architecture mentioned above, PolarDB also supports depolyments in **Shared-Nothing** architecture. For more details, refer to [README](https://github.com/alibaba/PolarDB-for-PostgreSQL/blob/distributed/README.md) in the **distributed** branch.
+Besides the **Shared-Storage** architecture mentioned above, PolarDB also supports depolyments in **Shared-Nothing** architecture. For more details, refer to [README](https://github.com/ApsaraDB/PolarDB-for-PostgreSQL/blob/distributed/README.md) in the **distributed** branch.
 
 # Architecture and Roadmap
 
@@ -43,12 +61,12 @@ For more information, see [Roadmap](doc/PolarDB-EN/Roadmap.md) and [Architecture
     - [DDL Synchronization](doc/PolarDB-EN/DDL_Synchronization.md)
     - [LogIndex](doc/PolarDB-EN/LogIndex.md)
 - DB Monitoring
-- PolarStack
+- [PolarDB Stack](https://github.com/ApsaraDB/PolarDB-Stack-Operator/blob/master/README.md)
 - PolarDB File System
 
 # Quick Start with PolarDB
 
-Three approaches are offered to quickly try out PolarDB: Alibaba Cloud service, deployment of instance based on local storage, and deployment of instance based on PFS shared storage (coming soon).
+Three approaches are offered to quickly try out PolarDB: Alibaba Cloud service, deployment of instance based on local storage, and deployment of instance based on PolarDB Stack.
 
 ## Alibaba Cloud Service
 
@@ -62,7 +80,7 @@ We provide a script which uses default configuration to compile PolarDB. This se
 
 > **Note**: For the following steps, please use the same user. DO NOT use *root* user to create instances.
 
-1. Download the source code of PolarDB from [here](https://github.com/ApsaraDB/PolarDB-for-PostgreSQL/tree/POLARDB_11_STABLE).
+1. Download the stable branch "POLARDB_11_STABLE" of PolarDB from [here](https://github.com/ApsaraDB/PolarDB-for-PostgreSQL/tree/POLARDB_11_STABLE).
 2. Install dependent packages:
 
     ```bash
@@ -115,6 +133,14 @@ We provide a script which uses default configuration to compile PolarDB. This se
         ```bash
         ./polardb_build.sh --withrep --repnum=1 --withstandby -r-check-all -e -r-contrib -r-pl -r-external -r-installcheck-all
         ```
+
+## Deploy Instance based on PolarDB Stack
+
+PolarDB Stack is a PolarDB PaaS Software。It provides features for Database lifecycle。Through PolarDB Stack you can start up PolarDB-for-PostgreSQL kernel and PolarDB-FileSystem。
+
+PolarDB Stack Architecture，[PolarDB Stack Document](https://github.com/ApsaraDB/PolarDB-Stack-Operator/blob/master/README.md)
+
+![PolarDB Stack arch](doc/PolarDB-CN/pic/63-PolarDBStack-arch.png)
 
 # Contributions
 
