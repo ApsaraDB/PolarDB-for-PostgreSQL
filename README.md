@@ -136,9 +136,9 @@ We provide a script which uses default configuration to compile PolarDB. This se
 
 ## Deploy Instance based on PolarDB Stack
 
-PolarDB Stack is a PolarDB PaaS Software。It provides features for Database lifecycle。Through PolarDB Stack you can start up PolarDB-for-PostgreSQL kernel and PolarDB-FileSystem。
+PolarDB Stack is a PaaS software of PolarDB for PostgreSQL. It provides features of database lifecycle management. You can deploy a PolarDB instance (kernel) and PolarDB File System based on PolarDB Stack.
 
-PolarDB Stack Architecture，[PolarDB Stack Document](https://github.com/ApsaraDB/PolarDB-Stack-Operator/blob/master/README.md)
+The architecture of PolarDB Stack is as follows. For more details [refer to PolarDB Stack Documents](https://github.com/ApsaraDB/PolarDB-Stack-Operator/blob/master/README.md)
 
 ![PolarDB Stack arch](doc/PolarDB-CN/pic/63-PolarDBStack-arch.png)
 
