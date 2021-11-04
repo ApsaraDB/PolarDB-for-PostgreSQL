@@ -61,12 +61,12 @@ For more information, see [Roadmap](doc/PolarDB-EN/Roadmap.md) and [Architecture
     - [DDL Synchronization](doc/PolarDB-EN/DDL_Synchronization.md)
     - [LogIndex](doc/PolarDB-EN/LogIndex.md)
 - DB Monitoring
-- PolarStack
+- [PolarDB Stack](https://github.com/ApsaraDB/PolarDB-Stack-Operator/blob/master/README.md)
 - PolarDB File System
 
 # Quick Start with PolarDB
 
-Three approaches are offered to quickly try out PolarDB: Alibaba Cloud service, deployment of instance based on local storage, and deployment of instance based on PFS shared storage (coming soon).
+Three approaches are offered to quickly try out PolarDB: Alibaba Cloud service, deployment of instance based on local storage, and deployment of instance based on PolarDB Stack.
 
 ## Alibaba Cloud Service
 
@@ -133,6 +133,14 @@ We provide a script which uses default configuration to compile PolarDB. This se
         ```bash
         ./polardb_build.sh --withrep --repnum=1 --withstandby -r-check-all -e -r-contrib -r-pl -r-external -r-installcheck-all
         ```
+
+## Deploy Instance based on PolarDB Stack
+
+PolarDB Stack is a PolarDB PaaS Software。It provides features for Database lifecycle。Through PolarDB Stack you can start up PolarDB-for-PostgreSQL kernel and PolarDB-FileSystem。
+
+PolarDB Stack Architecture，[PolarDB Stack Document](https://github.com/ApsaraDB/PolarDB-Stack-Operator/blob/master/README.md)
+
+![PolarDB Stack arch](doc/PolarDB-CN/pic/63-PolarDBStack-arch.png)
 
 # Contributions
 
