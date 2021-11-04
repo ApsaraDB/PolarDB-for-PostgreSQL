@@ -1,6 +1,24 @@
+<div align="center">
+
 [![logo](doc/PolarDB-CN/pic/PolarDB_logo.png)](https://developer.aliyun.com/topic/polardb-for-pg)
 
-[![Build and test PolarDB](https://github.com/alibaba/PolarDB-for-PostgreSQL/actions/workflows/build-and-test.yml/badge.svg)](https://github.com/alibaba/PolarDB-for-PostgreSQL/actions/workflows/build-and-test.yml) [![GitHub issues](https://img.shields.io/github/issues/alibaba/PolarDB-for-PostgreSQL)](https://GitHub.com/alibaba/PolarDB-for-PostgreSQL/issues/) [![GitHub pull-requests](https://img.shields.io/github/issues-pr/alibaba/PolarDB-for-PostgreSQL)](https://GitHub.com/alibaba/PolarDB-for-PostgreSQL/pull/) [![GitHub forks](https://badgen.net/github/forks/alibaba/PolarDB-for-PostgreSQL)](https://github.com/alibaba/PolarDB-for-PostgreSQL/network/members) [![GitHub stars](https://badgen.net/github/stars/alibaba/PolarDB-for-PostgreSQL)](https://github.com/alibaba/PolarDB-for-PostgreSQL/stargazers) [![GitHub contributors](https://badgen.net/github/contributors/alibaba/PolarDB-for-PostgreSQL)](https://github.com/alibaba/PolarDB-for-PostgreSQL/graphs/contributors) [![license](https://img.shields.io/badge/license-Apache--2.0-blue)](doc/PolarDB-CN/LICENSE.txt)
+# PolarDB for PostgreSQL
+
+**阿里云自主研发的云原生数据库产品**
+
+[![official](https://img.shields.io/badge/官方网站-blueviolet?style=for-the-badge&logo=alibabacloud)](https://developer.aliyun.com/topic/polardb-for-pg)
+
+[![github-actions](https://img.shields.io/github/workflow/status/ApsaraDB/PolarDB-for-PostgreSQL/Build%20and%20test%20PolarDB?style=for-the-badge&logo=githubactions)](https://github.com/ApsaraDB/PolarDB-for-PostgreSQL/actions/workflows/build-and-test.yml)
+[![platform-centos](https://img.shields.io/badge/platform-CentOS-green?style=for-the-badge&logo=centos)](https://github.com/ApsaraDB/PolarDB-for-PostgreSQL/actions/workflows/build-and-test.yml)
+[![platform-ubuntu](https://img.shields.io/badge/platform-Ubuntu-green?style=for-the-badge&logo=ubuntu)](https://github.com/ApsaraDB/PolarDB-for-PostgreSQL/actions/workflows/build-and-test.yml)
+[![license](https://img.shields.io/badge/license-Apache--2.0-blue?style=for-the-badge&logo=apache)](doc/PolarDB-CN/LICENSE.txt)
+[![github-issues](https://img.shields.io/github/issues/ApsaraDB/PolarDB-for-PostgreSQL?style=for-the-badge&logo=github)](https://GitHub.com/ApsaraDB/PolarDB-for-PostgreSQL/issues)
+[![github-pullrequest](https://img.shields.io/github/issues-pr/ApsaraDB/PolarDB-for-PostgreSQL?style=for-the-badge&logo=github)](https://GitHub.com/ApsaraDB/PolarDB-for-PostgreSQL/pulls)
+[![github-forks](https://img.shields.io/github/forks/ApsaraDB/PolarDB-for-PostgreSQL?style=for-the-badge&logo=github)](https://github.com/ApsaraDB/PolarDB-for-PostgreSQL/network/members)
+[![github-stars](https://img.shields.io/github/stars/ApsaraDB/PolarDB-for-PostgreSQL?style=for-the-badge&logo=github)](https://github.com/ApsaraDB/PolarDB-for-PostgreSQL/stargazers)
+[![github-contributors](https://img.shields.io/github/contributors/ApsaraDB/PolarDB-for-PostgreSQL?style=for-the-badge&logo=github)](https://github.com/ApsaraDB/PolarDB-for-PostgreSQL/graphs/contributors)
+
+</div>
 
 # 什么是 PolarDB PostgreSQL
 
@@ -20,7 +38,7 @@ PolarDB PostgreSQL（下文简称为 PolarDB）是一款阿里云自主研发的
 
 PolarDB 还支持时空、GIS、图像、向量、搜索、图谱等多模创新特性，应对企业对数据处理日新月异的需求。
 
-另外，除了上述 Shared-Storage 云原生的模式，PolarDB 还支持以 Shared-Nothing 模式部署，详见 **distribute** 分支的 [README](https://github.com/alibaba/PolarDB-for-PostgreSQL/blob/distributed/README.md)。
+另外，除了上述 Shared-Storage 云原生的模式，PolarDB 还支持以 Shared-Nothing 模式部署，详见 **distribute** 分支的 [README](https://github.com/ApsaraDB/PolarDB-for-PostgreSQL/blob/distributed/README.md)。
 
 # 分支说明
 
@@ -62,7 +80,7 @@ PolarDB 采用了基于 Shared-Storage 的存储计算分离架构。数据库�
 
 > 说明：请使用同一个用户进行以下步骤。请勿使用 *root* 用户搭建实例。
 
-1. 从 [这里](https://github.com/alibaba/PolarDB-for-PostgreSQL/tree/main) 下载 PolarDB 源代码。
+1. 从 [这里](https://github.com/ApsaraDB/PolarDB-for-PostgreSQL/tree/main) 下载 PolarDB 源代码。
 2. 安装相关依赖：
 
     ```bash
