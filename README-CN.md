@@ -66,13 +66,13 @@ PolarDB 采用了基于 Shared-Storage 的存储计算分离架构。数据库�
 
 # 快速入门
 
-我们提供了三种途径来使用PolarDB数据库：阿里巴巴云服务、搭建本地存储的实例、搭建基于 PolarDB Stack共享存储的实例。
+我们提供了4种方式来使用PolarDB数据库：阿里巴巴云服务、搭建本地存储的实例、搭建基于NBD共享存储的实例、搭建基于PolarDB Stack共享存储的实例。
 
-## 阿里巴巴云服务
+## 方式1：阿里巴巴云服务
 
 阿里云云原生关系型数据库 PolarDB PostgreSQL 引擎：[官网地址](https://www.aliyun.com/product/polardb)。
 
-## 搭建本地存储的实例
+## 方式2：搭建本地存储的实例
 
 我们提供了一键部署脚本，助您快速编译 PolarDB 内核并搭建本地实例。本节介绍了如何通过提供的一键部署脚本，快速搭建存储为本地磁盘的 PolarDB 实例。
 
@@ -134,7 +134,7 @@ PolarDB 采用了基于 Shared-Storage 的存储计算分离架构。数据库�
         ./polardb_build.sh --withrep --repnum=1 --withstandby -r-check-all -e -r-contrib -r-pl -r-external -r-installcheck-all
         ```
 
-## 搭建基于NBD共享存储的实例
+## 方式3：搭建基于NBD共享存储的实例
 Network Block Device（NBD）是一种网络协议，可以在多个主机间共享块存储设备，它是Client-Server的架构，因此至少需要两台物理机来部署。
 
 以两台物理机环境为例，本小节介绍基于NBD共享存储的实例构建方法大体如下：首先，两台主机通过NBD共享一个块设备；然后，两台主机上均部署PolarDB-FileSystem（PFS）来初始化并挂载到同一个块设备；最后，在两台主机上分别部署PolarDB-for-PostgreSQL内核，构建主节点、只读节点已形成简单的一写多读实例。
@@ -325,7 +325,8 @@ Network Block Device（NBD）是一种网络协议，可以在多个主机间共
         ```bash
         $HOME/tmp_basedir_polardb_pg_1100_bld/bin/psql -q -p 5433 -d postgres -c "select * from t;"
         ```
-## 搭建基于 PolarDB Stack共享存储的实例
+
+## 方式4：搭建基于 PolarDB Stack共享存储的实例
 
 PolarDB Stack是轻量级PolarDB PaaS软件。基于共享存储提供一写多读的PolarDB数据库服务，特别定制和深度优化了数据库生命周期管理。通过PolarDB Stack可以一键部署PolarDB-for-PostgreSQL内核和PolarDB-FileSystem。
 
