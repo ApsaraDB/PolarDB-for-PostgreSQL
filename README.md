@@ -156,7 +156,7 @@ Some code and design ideas are based on other open source projects, such as PG-X
 
 # Contact us
 
-- PolarDB PostgreSQL at Slack: [https://join.slack.com/t/polardbforpostgresql/shared_invite/zt-zcqw2t00-TIF550cXFRx_9kY8tfs~kg (https://join.slack.com/t/polardbforpostgresql/shared_invite/zt-zcqw2t00-TIF550cXFRx_9kY8tfs~kg)
+- PolarDB PostgreSQL at Slack: [https://join.slack.com/t/polardbforpostgresql/shared_invite/zt-zcqw2t00-TIF550cXFRx_9kY8tfs~kg](https://join.slack.com/t/polardbforpostgresql/shared_invite/zt-zcqw2t00-TIF550cXFRx_9kY8tfs~kg)
 - Use the DingTalk application to scan the following QR code and join the DingTalk group for PolarDB technology promotion.
 
     ![polardb_group](doc/PolarDB-EN/pic/polardb_group.png)
