@@ -1,6 +1,6 @@
 /*-------------------------------------------------------------------------
  *
- * polar_flushlist.c
+ * polar_flushlist.h
  *  Routines for managing the buffer pool's flushlist.
  *
  * Copyright (c) 2018, Alibaba Group Holding Limited
