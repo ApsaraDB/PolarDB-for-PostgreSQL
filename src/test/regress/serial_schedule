@@ -1,6 +1,9 @@
 # src/test/regress/serial_schedule
 # This should probably be in an order similar to parallel_schedule.
 polar_ignore: tablespace
+ignore: timetz
+
+cluster_ignore: tablespace
 test: boolean
 test: char
 test: name
