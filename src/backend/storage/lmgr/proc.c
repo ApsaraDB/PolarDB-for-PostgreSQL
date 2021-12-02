@@ -376,11 +376,6 @@ InitProcess(void)
 				 errmsg("sorry, too many clients already")));
 	}
 
-#ifdef LOCK_DEBUG
-	/* POLAR: PGPROC is part of PROCLOCK, we print MyProc previous pid to validate it's cleared */
-	elog(LOG, "Alloc PRPROC %p for pid %d, and it's used by previous pid %d", MyProc, MyProcPid, MyProc->pid);
-#endif
-
 	MyPgXact = &ProcGlobal->allPgXact[MyProc->pgprocno];
 
 	/*
