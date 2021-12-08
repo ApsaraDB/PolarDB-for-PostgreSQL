@@ -275,6 +275,9 @@ standard_ExecutorStart_PX(QueryDesc *queryDesc, int eflags)
 	 * We don't eliminate aliens if we don't have an PX plan
 	 * or we are executing on master.
 	 */
+#ifdef FAULT_INJECTOR
+	INJECT_PX_HANG_FOR_SECOND("pdml_deadlock_creation", "", "pdml_test_table", 20);
+#endif
 	estate->eliminateAliens = (px_execute_pruned_plan && 
 								estate->es_sliceTable && 
 								estate->es_sliceTable->hasMotions && 
