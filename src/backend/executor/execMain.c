@@ -548,6 +548,7 @@ standard_ExecutorEnd(QueryDesc *queryDesc)
 {
 	EState	   *estate;
 	MemoryContext oldcontext;
+	bool old_px_is_executing;
 
 	/* sanity checks */
 	Assert(queryDesc != NULL);
@@ -564,8 +565,15 @@ standard_ExecutorEnd(QueryDesc *queryDesc)
 	Assert(estate->es_finished ||
 		   (estate->es_top_eflags & EXEC_FLAG_EXPLAIN_ONLY));
 
-	if (should_px_executor(queryDesc))
-		return standard_ExecutorEnd_PX(queryDesc);
+	old_px_is_executing = px_is_executing;
+	SET_PX_EXECUTION_STATUS(should_px_executor(queryDesc));
+	if (px_is_executing)
+	{
+		standard_ExecutorEnd_PX(queryDesc);
+		SET_PX_EXECUTION_STATUS(old_px_is_executing);
+		return;
+	}
+	SET_PX_EXECUTION_STATUS(old_px_is_executing);
 
 	/*
 	 * Switch into per-query memory context to run ExecEndPlan

@@ -2534,12 +2534,12 @@ struct config_int ConfigureNamesInt_px[] =
 
 	{
 		{"polar_px_wait_lock_timeout", PGC_USERSET, LOCK_MANAGEMENT,
-			gettext_noop("Sets the maximum time to wait on a lock held by PX process."),
+			gettext_noop("Sets the maximum time (in milliseconds) to wait on a lock held by PX process."),
 			NULL,
 			GUC_UNIT_MS
 		},
 		&px_wait_lock_timeout,
-		0, 0, INT_MAX,
+		3600000, 0, INT_MAX,
 		NULL, NULL, NULL
 	},
 
