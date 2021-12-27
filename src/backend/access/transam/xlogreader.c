@@ -1551,7 +1551,8 @@ polar_read_xlog_page(XLogReaderState *state, char *buf, XLogRecPtr targetptr, in
 		if (errno == ENOENT)
 			elog(LOG, "requested WAL segment file \"%s\" doesn't exist", path);
 		else
-			elog(LOG, "could not open WAL segment file \"%s\"",path);		
+			elog(LOG, "could not open WAL segment file \"%s\"", path);
+		goto err;		
 	}
 	
 	readoff = XLogSegmentOffset(targetptr, wal_segment_size);
