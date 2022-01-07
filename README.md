@@ -207,13 +207,10 @@ See [architecture design](/doc/polardb/arch.md) for more information
 
 PolarDB is built on open-source projects and extends open-source PostgreSQL. Your contribution is welcome and appreciated. Please refer to [contributing](/doc/polardb/contributing.md) for how to start coding and submit a PR.
 
-## Licensing
+# Software License
 
-PolarDB code is released under the Apache Version 2.0 License and the Licenses with PostgreSQL code.
-
-The relevant licenses can be found in the comments at the top of each file.
-
-Reference [License](LICENSE) and [NOTICE](NOTICE) for details.
+PolarDB code is released under the Apache License (Version 2.0), developed based on the PostgreSQL which is released under the PostgreSQL License. This product contains various third-party components under other open source licenses. 
+See the [LICENSE](./LICENSE.txt) and [NOTICE](./NOTICE.txt) file for more information.
 
 ## Acknowledgements
 
