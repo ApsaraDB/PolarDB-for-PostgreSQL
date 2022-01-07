@@ -687,7 +687,7 @@ PolarDB Stack架构如下图所示，[进入PolarDB Stack的部署文档](https:
 # Software License
 
 PolarDB code is released under the Apache License (Version 2.0), developed based on the PostgreSQL which is released under the PostgreSQL License. This product contains various third-party components under other open source licenses. 
-See the License and [NOTICE](./NOTICE.txt) file for more information.
+See the [LICENSE](./LICENSE.txt) and [NOTICE](./NOTICE.txt) file for more information.
 
 # 致谢
 
