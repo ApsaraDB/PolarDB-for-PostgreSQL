@@ -210,7 +210,7 @@ PolarDB is built on open-source projects and extends open-source PostgreSQL. You
 # Software License
 
 PolarDB code is released under the Apache License (Version 2.0), developed based on the PostgreSQL which is released under the PostgreSQL License. This product contains various third-party components under other open source licenses. 
-See the [LICENSE](./LICENSE.txt) and [NOTICE](./NOTICE.txt) file for more information.
+See the [LICENSE](./LICENSE) and [NOTICE](./NOTICE) file for more information.
 
 ## Acknowledgements
 
