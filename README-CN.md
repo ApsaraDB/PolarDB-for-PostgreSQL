@@ -224,6 +224,7 @@ Network Block Device（NBD）是一种网络协议，可以在多个主机间共
         sudo /usr/local/polarstore/pfsd/bin/start_pfsd.sh -p nvme0n1
         ```
 4. PolarDB-for-PostgreSQL内核安装部署
+  
     > 说明：请使用同一个用户进行以下步骤。请勿使用 *root* 用户搭建实例。
 - 主节点部署
     - 内核编译：
@@ -361,7 +362,7 @@ ceph搭建需要2台及以上的物理机/虚拟机实现存储共享与数据�
             yum-config-manager --add-repo http://mirrors.aliyun.com/docker-ce/linux/centos/docker-ce.repo
             yum makecache
             yum install -y docker-ce
-
+            
             systemctl start docker
             systemctl enable docker
             ```
@@ -369,7 +370,7 @@ ceph搭建需要2台及以上的物理机/虚拟机实现存储共享与数据�
 
             ```
             docker run hello-world
-             ```
+            ```
     - 配置ssh免密登录
         - 密钥的生成与拷贝：
 
@@ -412,12 +413,12 @@ ceph搭建需要2台及以上的物理机/虚拟机实现存储共享与数据�
         cluster:
           id:     937ccded-3483-4245-9f61-e6ef0dbd85ca
           health: HEALTH_OK
-
+        
         services:
           mon: 1 daemons, quorum ceph001 (age 26m)
           mgr: no daemons active
           osd: 0 osds: 0 up, 0 in
-
+        
         data:
           pools:   0 pools, 0 pgs
           objects: 0 objects, 0 B
@@ -458,7 +459,7 @@ ceph搭建需要2台及以上的物理机/虚拟机实现存储共享与数据�
             --security-opt seccomp=unconfined \
             --name=mon02 \
             ceph/daemon mon
-
+        
          docker run -d \
             --net=host \
             --privileged=true \
@@ -471,18 +472,18 @@ ceph搭建需要2台及以上的物理机/虚拟机实现存储共享与数据�
             ceph/daemon mon
         ```
     - 查看当前集群状态
-        
+      
         ```
         docker exec mon01 ceph -s
         cluster:
           id:     937ccded-3483-4245-9f61-e6ef0dbd85ca
           health: HEALTH_OK
-
+        
         services:
           mon: 3 daemons, quorum ceph001,ceph002,   ceph003 (age 35s)
           mgr: no daemons active
           osd: 0 osds: 0 up, 0 in
-
+        
         data:
           pools:   0 pools, 0 pgs
           objects: 0 objects, 0 B
@@ -537,12 +538,12 @@ ceph搭建需要2台及以上的物理机/虚拟机实现存储共享与数据�
           id:     e430d054-dda8-43f1-9cda-c0881b782e17
           health: HEALTH_WARN
                   no active mgr
-
+        
         services:
           mon: 3 daemons, quorum ceph001,ceph002,   ceph003 (age 44m)
           mgr: no daemons active
           osd: 3 osds: 3 up (since 7m), 3 in (since     13m)
-
+        
         data:
           pools:   0 pools, 0 pgs
           objects: 0 objects, 0 B
@@ -560,7 +561,7 @@ ceph搭建需要2台及以上的物理机/虚拟机实现存储共享与数据�
                       -v /var/lib/ceph/:/var/lib/ceph/ \
                       --name=ceph-mgr-0 \
                       ceph/daemon mgr
-
+        
         docker run -d --net=host \
                       --privileged=true \
                       --security-opt seccomp=unconfined \
@@ -569,7 +570,7 @@ ceph搭建需要2台及以上的物理机/虚拟机实现存储共享与数据�
                       -e CEPHFS_CREATE=1 \
                       --name=ceph-mds-0 \
                       ceph/daemon mds
-
+        
         docker run -d --net=host \
                       --privileged=true \
                       --security-opt seccomp=unconfined \
@@ -585,14 +586,14 @@ ceph搭建需要2台及以上的物理机/虚拟机实现存储共享与数据�
         cluster:
           id:     e430d054-dda8-43f1-9cda-c0881b782e17
           health: HEALTH_OK
-
+        
         services:
           mon: 3 daemons, quorum ceph001,ceph002,   ceph003 (age 92m)
           mgr: ceph001(active, since 25m)
           mds: 1/1 daemons up
           osd: 3 osds: 3 up (since 54m), 3 in (since    60m)
           rgw: 1 daemon active (1 hosts, 1 zones)
-
+        
         data:
           volumes: 1/1 healthy
           pools:   7 pools, 145 pgs
@@ -613,7 +614,7 @@ ceph搭建需要2台及以上的物理机/虚拟机实现存储共享与数据�
         ```
         rbd create --size 512000 rbd_polar/image02
         rbd info rbd_polar/image02
-
+        
         rbd image 'image02':
 	    size 500 GiB in 128000 objects
 	    order 22 (4 MiB objects)
@@ -632,7 +633,7 @@ ceph搭建需要2台及以上的物理机/虚拟机实现存储共享与数据�
 
         ```
         rbd map rbd_polar/image02
-
+        
         rbd: sysfs write failed
         RBD image feature set mismatch. You can     disable features unsupported by the kernel  with "rbd feature    disable rbd_polar/image02   object-map fast-diff deep-flatten".
         In some cases useful info is found in syslog -  try "dmesg | tail".
@@ -644,7 +645,7 @@ ceph搭建需要2台及以上的物理机/虚拟机实现存储共享与数据�
         rbd feature disable rbd_polar/image02   object-map fast-diff deep-flatten
         rbd map rbd_polar/image02
         rbd device list
-
+        
         id  pool       namespace  image    snap  device
         0   rbd_polar             image01  -     /dev/  rbd0
         1   rbd_polar             image02  -     /dev/  rbd1
@@ -655,7 +656,7 @@ ceph搭建需要2台及以上的物理机/虚拟机实现存储共享与数据�
 
         ```
         lsblk
-
+        
         NAME                                                               MAJ:MIN RM  SIZE RO TYPE  MOUNTPOINT
         vda                                                                253:0    0  500G  0 disk
         └─vda1                                                             253:1    0  500G  0 part /
@@ -668,9 +669,11 @@ ceph搭建需要2台及以上的物理机/虚拟机实现存储共享与数据�
         **注意：块设备镜像需要在各个节点都进行映射才可以在本地环境中通过lsblk命令查看到，否则不显示。ceph002与ceph003上映射命令与上述一致。**
 
 6. PolarDB-FileSystem安装部署
+  
     >请参考 方式3：搭建基于NBD共享存储 — PolarDB-FileSystem安装部署
-
+    
 7. PolarDB-for-PostgreSQL内核安装部署
+  
     >请参考 方式3：搭建基于NBD共享存储 — PolarDB-for-PostgreSQL内核安装部署
 
 ## 方式5：搭建基于 PolarDB Stack共享存储的实例
@@ -681,9 +684,10 @@ PolarDB Stack架构如下图所示，[进入PolarDB Stack的部署文档](https:
 
 ![PolarDB Stack arch](doc/PolarDB-CN/pic/63-PolarDBStack-arch.png)
 
-# 软件许可说明
+# Software License
 
-PolarDB 的代码的发布基于 Apache 2.0 版本和 PostgreSQL 代码的软件许可。相关的许可说明可参见 [LICENSE](doc/PolarDB-CN/LICENSE.txt) 和 [NOTICE](doc/PolarDB-CN/NOTICE.txt)。
+PolarDB code is released under the Apache License (Version 2.0), developed based on the PostgreSQL which is released under the PostgreSQL License. This product contains various third-party components under other open source licenses. 
+See the License and [NOTICE](./NOTICE.txt) file for more information.
 
 # 致谢
 

@@ -148,7 +148,8 @@ You are welcome to make contributions to PolarDB. We appreciate all the contribu
 
 # Software License
 
-The released PolarDB code is based on the licenses of PostgreSQL code and Apache License 2.0. For more information about the license description, see [LICENSE](doc/PolarDB-EN/LICENSE.txt) and [NOTICE](doc/PolarDB-EN/NOTICE.txt).
+PolarDB code is released under the Apache License (Version 2.0), developed based on the PostgreSQL which is released under the PostgreSQL License. This product contains various third-party components under other open source licenses. 
+See the License and [NOTICE](./NOTICE.txt) file for more information.
 
 # Acknowledgments
 
