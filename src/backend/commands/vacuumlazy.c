@@ -61,6 +61,8 @@
 #include "utils/timestamp.h"
 #include "utils/tqual.h"
 
+/* POLAR */
+#include "utils/guc.h"
 
 /* POLAR */
 #include "storage/polar_bufmgr.h"
@@ -785,8 +787,39 @@ lazy_scan_heap(Relation onerel, int options, LVRelStats *vacrelstats,
 		 */
 		visibilitymap_pin(onerel, blkno, &vmbuffer);
 
-		buf = ReadBufferExtended(onerel, MAIN_FORKNUM, blkno,
-								 RBM_NORMAL, vac_strategy);
+		/*
+		 * POLAR: bulk read
+		 *
+		 * If skipping_blocks == true, don't bulk read.
+		 *
+		 * 'skipping_blocks == true', we can ensure that:
+		 *    1. pages [blkno + 1, next_unskippable_block) is skippable
+		 *    2. next_unskippable_block - blkno > SKIP_PAGES_THRESHOLD.
+		 *
+		 * 'skipping_blocks == true' appear in the following situations,
+		 * blkno is the last unskipable in a small range.
+		 * So bulk read for blkno is unnecessary.
+		 * ---------+--------+--------+--------+--------+--------+----------------+--------+
+         * |  skip  | UNSKIP |  skip  |  skip  |  skip  |  skip  | ......|  skip  | UNSKIP |
+         * |        |        |        |        |        |        |       |        |        |
+         * ---------+---+----+--------+--------+--------+--------+-------+--------+----+---+
+         *              ^                                                              ^
+         *              |                                                              |
+         *              +                                                              +
+         *            blkno                                              next_unskippable_block
+		 */
+		if (polar_bulk_read_size > 0 && !skipping_blocks)
+		{
+			int maxBlockCount = nblocks - blkno;
+			buf = polar_bulk_read_buffer_extended(onerel, MAIN_FORKNUM, blkno,
+												  RBM_NORMAL, vac_strategy,
+												  maxBlockCount);
+		} /* POLAR end */
+		else
+		{
+			buf = ReadBufferExtended(onerel, MAIN_FORKNUM, blkno,
+									 RBM_NORMAL, vac_strategy);
+		}
 
 		/* We need buffer cleanup lock so that we can prune HOT chains. */
 		if (!ConditionalLockBufferForCleanup(buf))
@@ -1309,11 +1342,18 @@ lazy_scan_heap(Relation onerel, int options, LVRelStats *vacrelstats,
 				 !VM_ALL_FROZEN(onerel, blkno, &vmbuffer))
 		{
 			/*
+			 * POLAR: The heap page will set new lsn in visibilitymap_set function,
+			 * so we mark this buffer dirty before set lsn
+			 */
+			if (XLogHintBitIsNeeded())
+				MarkBufferDirty(buf);
+
+			/*
 			 * We can pass InvalidTransactionId as the cutoff XID here,
 			 * because setting the all-frozen bit doesn't cause recovery
 			 * conflicts.
 			 */
-			/* POLAR: we should call MarkBufferDirty to set its oldest lsn. */
+			/* POLAR: we should set MarkBufferDirty to set its oldest lsn. */
 			MarkBufferDirty(buf);
 			visibilitymap_set(onerel, blkno, buf, InvalidXLogRecPtr,
 							  vmbuffer, InvalidTransactionId,
@@ -1797,7 +1837,8 @@ should_attempt_truncation(LVRelStats *vacrelstats)
 	BlockNumber possibly_freeable;
 
 	possibly_freeable = vacrelstats->rel_pages - vacrelstats->nonempty_pages;
-	if (possibly_freeable > 0 &&
+	/* POLAR: We don't expect that vacuum cleanup our prealloc file blocks */
+	if (possibly_freeable > (polar_bulk_extend_size > 0 ? polar_bulk_extend_size : 0) &&
 		(possibly_freeable >= REL_TRUNCATE_MINIMUM ||
 		 possibly_freeable >= vacrelstats->rel_pages / REL_TRUNCATE_FRACTION) &&
 		old_snapshot_threshold < 0)
@@ -2062,9 +2103,12 @@ count_nondeletable_pages(Relation onerel, LVRelStats *vacrelstats)
 
 		UnlockReleaseBuffer(buf);
 
-		/* Done scanning if we found a tuple here */
+		/* POLAR: Done scanning if we found a tuple here */
 		if (hastup)
-			return blkno + 1;
+		{
+			return blkno +
+				(polar_bulk_extend_size > 0 ? polar_bulk_extend_size : 1);
+		}
 	}
 
 	/*

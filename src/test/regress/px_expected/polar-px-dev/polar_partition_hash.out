@@ -1,0 +1,1743 @@
+------------------------------------------------------------------------
+--hash partition
+--Partition constraint: satisfies_hash_partition('16384'::oid, 3, 1, id)
+/*--EXPLAIN_QUERY_BEGIN*/
+drop table t1_hash cascade;
+ERROR:  table "t1_hash" does not exist
+CREATE TABLE t1_hash (id int8, value int) PARTITION BY HASH(id);
+CREATE TABLE t1_hash_p1 PARTITION OF t1_hash FOR VALUES WITH (modulus 2, remainder 0);
+CREATE TABLE t1_hash_p2 PARTITION OF t1_hash FOR VALUES WITH (modulus 2, remainder 1);
+INSERT INTO t1_hash VALUES (1,58), (2,60), (3,75), (4,90);
+select * from t1_hash where id =1;
+ id | value 
+----+-------
+  1 |    58
+(1 row)
+
+select * from t1_hash where id =1::int8;
+ id | value 
+----+-------
+  1 |    58
+(1 row)
+
+                      QUERY PLAN                       
+-------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: t1_hash_p1.id, t1_hash_p1.value
+   ->  Append
+         ->  Partial Seq Scan on public.t1_hash_p1
+               Output: t1_hash_p1.id, t1_hash_p1.value
+               Filter: (t1_hash_p1.id = '1'::bigint)
+ Optimizer: PolarDB PX Optimizer
+(7 rows)
+
+select * from t1_hash where id =1::int4;
+ id | value 
+----+-------
+  1 |    58
+(1 row)
+
+select * from t1_hash where id =1::int2;
+ id | value 
+----+-------
+  1 |    58
+(1 row)
+
+select * from t1_hash where id =1::real;
+ id | value 
+----+-------
+  1 |    58
+(1 row)
+
+                              QUERY PLAN                               
+-----------------------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: t1_hash_p1.id, t1_hash_p1.value
+   ->  Append
+         ->  Partial Seq Scan on public.t1_hash_p1
+               Output: t1_hash_p1.id, t1_hash_p1.value
+               Filter: ((t1_hash_p1.id)::double precision = '1'::real)
+         ->  Partial Seq Scan on public.t1_hash_p2
+               Output: t1_hash_p2.id, t1_hash_p2.value
+               Filter: ((t1_hash_p2.id)::double precision = '1'::real)
+ Optimizer: PolarDB PX Optimizer
+(10 rows)
+
+select * from t1_hash where id =1::float4;
+ id | value 
+----+-------
+  1 |    58
+(1 row)
+
+                              QUERY PLAN                               
+-----------------------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: t1_hash_p1.id, t1_hash_p1.value
+   ->  Append
+         ->  Partial Seq Scan on public.t1_hash_p1
+               Output: t1_hash_p1.id, t1_hash_p1.value
+               Filter: ((t1_hash_p1.id)::double precision = '1'::real)
+         ->  Partial Seq Scan on public.t1_hash_p2
+               Output: t1_hash_p2.id, t1_hash_p2.value
+               Filter: ((t1_hash_p2.id)::double precision = '1'::real)
+ Optimizer: PolarDB PX Optimizer
+(10 rows)
+
+select * from t1_hash where id =1::float8;
+ id | value 
+----+-------
+  1 |    58
+(1 row)
+
+                                    QUERY PLAN                                     
+-----------------------------------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: t1_hash_p1.id, t1_hash_p1.value
+   ->  Append
+         ->  Partial Seq Scan on public.t1_hash_p1
+               Output: t1_hash_p1.id, t1_hash_p1.value
+               Filter: ((t1_hash_p1.id)::double precision = '1'::double precision)
+         ->  Partial Seq Scan on public.t1_hash_p2
+               Output: t1_hash_p2.id, t1_hash_p2.value
+               Filter: ((t1_hash_p2.id)::double precision = '1'::double precision)
+ Optimizer: PolarDB PX Optimizer
+(10 rows)
+
+select * from t1_hash where id =1::bool;
+ERROR:  operator does not exist: bigint = boolean
+LINE 1: select * from t1_hash where id =1::bool;
+                                       ^
+HINT:  No operator matches the given name and argument types. You might need to add explicit type casts.
+select * from t1_hash where id =1::decimal;
+ id | value 
+----+-------
+  1 |    58
+(1 row)
+
+                           QUERY PLAN                            
+-----------------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: t1_hash_p1.id, t1_hash_p1.value
+   ->  Append
+         ->  Partial Seq Scan on public.t1_hash_p1
+               Output: t1_hash_p1.id, t1_hash_p1.value
+               Filter: ((t1_hash_p1.id)::numeric = '1'::numeric)
+         ->  Partial Seq Scan on public.t1_hash_p2
+               Output: t1_hash_p2.id, t1_hash_p2.value
+               Filter: ((t1_hash_p2.id)::numeric = '1'::numeric)
+ Optimizer: PolarDB PX Optimizer
+(10 rows)
+
+select * from t1_hash where id =1::numeric;
+ id | value 
+----+-------
+  1 |    58
+(1 row)
+
+                           QUERY PLAN                            
+-----------------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: t1_hash_p1.id, t1_hash_p1.value
+   ->  Append
+         ->  Partial Seq Scan on public.t1_hash_p1
+               Output: t1_hash_p1.id, t1_hash_p1.value
+               Filter: ((t1_hash_p1.id)::numeric = '1'::numeric)
+         ->  Partial Seq Scan on public.t1_hash_p2
+               Output: t1_hash_p2.id, t1_hash_p2.value
+               Filter: ((t1_hash_p2.id)::numeric = '1'::numeric)
+ Optimizer: PolarDB PX Optimizer
+(10 rows)
+
+select * from t1_hash where id =1::text;
+ERROR:  operator does not exist: bigint = text
+LINE 1: select * from t1_hash where id =1::text;
+                                       ^
+HINT:  No operator matches the given name and argument types. You might need to add explicit type casts.
+select * from t1_hash where id ='1';
+ id | value 
+----+-------
+  1 |    58
+(1 row)
+
+                      QUERY PLAN                       
+-------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: t1_hash_p1.id, t1_hash_p1.value
+   ->  Append
+         ->  Partial Seq Scan on public.t1_hash_p1
+               Output: t1_hash_p1.id, t1_hash_p1.value
+               Filter: (t1_hash_p1.id = '1'::bigint)
+ Optimizer: PolarDB PX Optimizer
+(7 rows)
+
+select * from t1_hash where id =1+1-1;
+ id | value 
+----+-------
+  1 |    58
+(1 row)
+
+drop table t1_hash cascade;
+CREATE TABLE t1_hash (id int4, value int) PARTITION BY HASH(id);
+CREATE TABLE t1_hash_p1 PARTITION OF t1_hash FOR VALUES WITH (modulus 2, remainder 0);
+CREATE TABLE t1_hash_p2 PARTITION OF t1_hash FOR VALUES WITH (modulus 2, remainder 1);
+INSERT INTO t1_hash VALUES (1,58), (2,60), (3,75), (4,90);
+select * from t1_hash where id =1;
+ id | value 
+----+-------
+  1 |    58
+(1 row)
+
+                      QUERY PLAN                       
+-------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: t1_hash_p1.id, t1_hash_p1.value
+   ->  Append
+         ->  Partial Seq Scan on public.t1_hash_p1
+               Output: t1_hash_p1.id, t1_hash_p1.value
+               Filter: (t1_hash_p1.id = 1)
+ Optimizer: PolarDB PX Optimizer
+(7 rows)
+
+select * from t1_hash where id =1::bigint;
+ id | value 
+----+-------
+  1 |    58
+(1 row)
+
+select * from t1_hash where id =1::int4;
+ id | value 
+----+-------
+  1 |    58
+(1 row)
+
+                      QUERY PLAN                       
+-------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: t1_hash_p1.id, t1_hash_p1.value
+   ->  Append
+         ->  Partial Seq Scan on public.t1_hash_p1
+               Output: t1_hash_p1.id, t1_hash_p1.value
+               Filter: (t1_hash_p1.id = 1)
+ Optimizer: PolarDB PX Optimizer
+(7 rows)
+
+select * from t1_hash where id =1::int2;
+ id | value 
+----+-------
+  1 |    58
+(1 row)
+
+select * from t1_hash where id =1::real;
+ id | value 
+----+-------
+  1 |    58
+(1 row)
+
+                              QUERY PLAN                               
+-----------------------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: t1_hash_p1.id, t1_hash_p1.value
+   ->  Append
+         ->  Partial Seq Scan on public.t1_hash_p1
+               Output: t1_hash_p1.id, t1_hash_p1.value
+               Filter: ((t1_hash_p1.id)::double precision = '1'::real)
+         ->  Partial Seq Scan on public.t1_hash_p2
+               Output: t1_hash_p2.id, t1_hash_p2.value
+               Filter: ((t1_hash_p2.id)::double precision = '1'::real)
+ Optimizer: PolarDB PX Optimizer
+(10 rows)
+
+select * from t1_hash where id =1::float4;
+ id | value 
+----+-------
+  1 |    58
+(1 row)
+
+                              QUERY PLAN                               
+-----------------------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: t1_hash_p1.id, t1_hash_p1.value
+   ->  Append
+         ->  Partial Seq Scan on public.t1_hash_p1
+               Output: t1_hash_p1.id, t1_hash_p1.value
+               Filter: ((t1_hash_p1.id)::double precision = '1'::real)
+         ->  Partial Seq Scan on public.t1_hash_p2
+               Output: t1_hash_p2.id, t1_hash_p2.value
+               Filter: ((t1_hash_p2.id)::double precision = '1'::real)
+ Optimizer: PolarDB PX Optimizer
+(10 rows)
+
+select * from t1_hash where id =1::float8;
+ id | value 
+----+-------
+  1 |    58
+(1 row)
+
+                                    QUERY PLAN                                     
+-----------------------------------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: t1_hash_p1.id, t1_hash_p1.value
+   ->  Append
+         ->  Partial Seq Scan on public.t1_hash_p1
+               Output: t1_hash_p1.id, t1_hash_p1.value
+               Filter: ((t1_hash_p1.id)::double precision = '1'::double precision)
+         ->  Partial Seq Scan on public.t1_hash_p2
+               Output: t1_hash_p2.id, t1_hash_p2.value
+               Filter: ((t1_hash_p2.id)::double precision = '1'::double precision)
+ Optimizer: PolarDB PX Optimizer
+(10 rows)
+
+select * from t1_hash where id =1::bool;
+ERROR:  operator does not exist: integer = boolean
+LINE 1: select * from t1_hash where id =1::bool;
+                                       ^
+HINT:  No operator matches the given name and argument types. You might need to add explicit type casts.
+select * from t1_hash where id =1::decimal;
+ id | value 
+----+-------
+  1 |    58
+(1 row)
+
+                           QUERY PLAN                            
+-----------------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: t1_hash_p1.id, t1_hash_p1.value
+   ->  Append
+         ->  Partial Seq Scan on public.t1_hash_p1
+               Output: t1_hash_p1.id, t1_hash_p1.value
+               Filter: ((t1_hash_p1.id)::numeric = '1'::numeric)
+         ->  Partial Seq Scan on public.t1_hash_p2
+               Output: t1_hash_p2.id, t1_hash_p2.value
+               Filter: ((t1_hash_p2.id)::numeric = '1'::numeric)
+ Optimizer: PolarDB PX Optimizer
+(10 rows)
+
+select * from t1_hash where id =1::numeric;
+ id | value 
+----+-------
+  1 |    58
+(1 row)
+
+                           QUERY PLAN                            
+-----------------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: t1_hash_p1.id, t1_hash_p1.value
+   ->  Append
+         ->  Partial Seq Scan on public.t1_hash_p1
+               Output: t1_hash_p1.id, t1_hash_p1.value
+               Filter: ((t1_hash_p1.id)::numeric = '1'::numeric)
+         ->  Partial Seq Scan on public.t1_hash_p2
+               Output: t1_hash_p2.id, t1_hash_p2.value
+               Filter: ((t1_hash_p2.id)::numeric = '1'::numeric)
+ Optimizer: PolarDB PX Optimizer
+(10 rows)
+
+select * from t1_hash where id =1::text;
+ERROR:  operator does not exist: integer = text
+LINE 1: select * from t1_hash where id =1::text;
+                                       ^
+HINT:  No operator matches the given name and argument types. You might need to add explicit type casts.
+select * from t1_hash where id ='1';
+ id | value 
+----+-------
+  1 |    58
+(1 row)
+
+                      QUERY PLAN                       
+-------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: t1_hash_p1.id, t1_hash_p1.value
+   ->  Append
+         ->  Partial Seq Scan on public.t1_hash_p1
+               Output: t1_hash_p1.id, t1_hash_p1.value
+               Filter: (t1_hash_p1.id = 1)
+ Optimizer: PolarDB PX Optimizer
+(7 rows)
+
+select * from t1_hash where id =1+1-1;
+ id | value 
+----+-------
+  1 |    58
+(1 row)
+
+                      QUERY PLAN                       
+-------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: t1_hash_p1.id, t1_hash_p1.value
+   ->  Append
+         ->  Partial Seq Scan on public.t1_hash_p1
+               Output: t1_hash_p1.id, t1_hash_p1.value
+               Filter: (t1_hash_p1.id = 1)
+ Optimizer: PolarDB PX Optimizer
+(7 rows)
+
+drop table t1_hash cascade;
+CREATE TABLE t1_hash (id int2, value int) PARTITION BY HASH(id);
+CREATE TABLE t1_hash_p1 PARTITION OF t1_hash FOR VALUES WITH (modulus 2, remainder 0);
+CREATE TABLE t1_hash_p2 PARTITION OF t1_hash FOR VALUES WITH (modulus 2, remainder 1);
+INSERT INTO t1_hash VALUES (1,58), (2,60), (3,75), (4,90);
+select * from t1_hash where id =1;
+ id | value 
+----+-------
+  1 |    58
+(1 row)
+
+select * from t1_hash where id =1::bigint;
+ id | value 
+----+-------
+  1 |    58
+(1 row)
+
+select * from t1_hash where id =1::int4;
+ id | value 
+----+-------
+  1 |    58
+(1 row)
+
+select * from t1_hash where id =1::int2;
+ id | value 
+----+-------
+  1 |    58
+(1 row)
+
+                      QUERY PLAN                       
+-------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: t1_hash_p1.id, t1_hash_p1.value
+   ->  Append
+         ->  Partial Seq Scan on public.t1_hash_p1
+               Output: t1_hash_p1.id, t1_hash_p1.value
+               Filter: (t1_hash_p1.id = '1'::smallint)
+ Optimizer: PolarDB PX Optimizer
+(7 rows)
+
+select * from t1_hash where id =1::real;
+ id | value 
+----+-------
+  1 |    58
+(1 row)
+
+                              QUERY PLAN                               
+-----------------------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: t1_hash_p1.id, t1_hash_p1.value
+   ->  Append
+         ->  Partial Seq Scan on public.t1_hash_p1
+               Output: t1_hash_p1.id, t1_hash_p1.value
+               Filter: ((t1_hash_p1.id)::double precision = '1'::real)
+         ->  Partial Seq Scan on public.t1_hash_p2
+               Output: t1_hash_p2.id, t1_hash_p2.value
+               Filter: ((t1_hash_p2.id)::double precision = '1'::real)
+ Optimizer: PolarDB PX Optimizer
+(10 rows)
+
+select * from t1_hash where id =1::float4;
+ id | value 
+----+-------
+  1 |    58
+(1 row)
+
+                              QUERY PLAN                               
+-----------------------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: t1_hash_p1.id, t1_hash_p1.value
+   ->  Append
+         ->  Partial Seq Scan on public.t1_hash_p1
+               Output: t1_hash_p1.id, t1_hash_p1.value
+               Filter: ((t1_hash_p1.id)::double precision = '1'::real)
+         ->  Partial Seq Scan on public.t1_hash_p2
+               Output: t1_hash_p2.id, t1_hash_p2.value
+               Filter: ((t1_hash_p2.id)::double precision = '1'::real)
+ Optimizer: PolarDB PX Optimizer
+(10 rows)
+
+select * from t1_hash where id =1::float8;
+ id | value 
+----+-------
+  1 |    58
+(1 row)
+
+                                    QUERY PLAN                                     
+-----------------------------------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: t1_hash_p1.id, t1_hash_p1.value
+   ->  Append
+         ->  Partial Seq Scan on public.t1_hash_p1
+               Output: t1_hash_p1.id, t1_hash_p1.value
+               Filter: ((t1_hash_p1.id)::double precision = '1'::double precision)
+         ->  Partial Seq Scan on public.t1_hash_p2
+               Output: t1_hash_p2.id, t1_hash_p2.value
+               Filter: ((t1_hash_p2.id)::double precision = '1'::double precision)
+ Optimizer: PolarDB PX Optimizer
+(10 rows)
+
+select * from t1_hash where id =1::bool;
+ERROR:  operator does not exist: smallint = boolean
+LINE 1: select * from t1_hash where id =1::bool;
+                                       ^
+HINT:  No operator matches the given name and argument types. You might need to add explicit type casts.
+select * from t1_hash where id =1::decimal;
+ id | value 
+----+-------
+  1 |    58
+(1 row)
+
+                           QUERY PLAN                            
+-----------------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: t1_hash_p1.id, t1_hash_p1.value
+   ->  Append
+         ->  Partial Seq Scan on public.t1_hash_p1
+               Output: t1_hash_p1.id, t1_hash_p1.value
+               Filter: ((t1_hash_p1.id)::numeric = '1'::numeric)
+         ->  Partial Seq Scan on public.t1_hash_p2
+               Output: t1_hash_p2.id, t1_hash_p2.value
+               Filter: ((t1_hash_p2.id)::numeric = '1'::numeric)
+ Optimizer: PolarDB PX Optimizer
+(10 rows)
+
+select * from t1_hash where id =1::numeric;
+ id | value 
+----+-------
+  1 |    58
+(1 row)
+
+                           QUERY PLAN                            
+-----------------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: t1_hash_p1.id, t1_hash_p1.value
+   ->  Append
+         ->  Partial Seq Scan on public.t1_hash_p1
+               Output: t1_hash_p1.id, t1_hash_p1.value
+               Filter: ((t1_hash_p1.id)::numeric = '1'::numeric)
+         ->  Partial Seq Scan on public.t1_hash_p2
+               Output: t1_hash_p2.id, t1_hash_p2.value
+               Filter: ((t1_hash_p2.id)::numeric = '1'::numeric)
+ Optimizer: PolarDB PX Optimizer
+(10 rows)
+
+select * from t1_hash where id =1::text;
+ERROR:  operator does not exist: smallint = text
+LINE 1: select * from t1_hash where id =1::text;
+                                       ^
+HINT:  No operator matches the given name and argument types. You might need to add explicit type casts.
+select * from t1_hash where id ='1';
+ id | value 
+----+-------
+  1 |    58
+(1 row)
+
+                      QUERY PLAN                       
+-------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: t1_hash_p1.id, t1_hash_p1.value
+   ->  Append
+         ->  Partial Seq Scan on public.t1_hash_p1
+               Output: t1_hash_p1.id, t1_hash_p1.value
+               Filter: (t1_hash_p1.id = '1'::smallint)
+ Optimizer: PolarDB PX Optimizer
+(7 rows)
+
+drop table t1_hash cascade;
+CREATE TABLE t1_hash (id real, value int) PARTITION BY HASH(id);
+CREATE TABLE t1_hash_p1 PARTITION OF t1_hash FOR VALUES WITH (modulus 2, remainder 0);
+CREATE TABLE t1_hash_p2 PARTITION OF t1_hash FOR VALUES WITH (modulus 2, remainder 1);
+INSERT INTO t1_hash VALUES (1,58), (2,60), (3,75), (4,90);
+select * from t1_hash where id =1;
+ id | value 
+----+-------
+  1 |    58
+(1 row)
+
+select * from t1_hash where id =1::bigint;
+ id | value 
+----+-------
+  1 |    58
+(1 row)
+
+select * from t1_hash where id =1::int4;
+ id | value 
+----+-------
+  1 |    58
+(1 row)
+
+select * from t1_hash where id =1::int2;
+ id | value 
+----+-------
+  1 |    58
+(1 row)
+
+select * from t1_hash where id =1::real;
+ id | value 
+----+-------
+  1 |    58
+(1 row)
+
+                      QUERY PLAN                       
+-------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: t1_hash_p2.id, t1_hash_p2.value
+   ->  Append
+         ->  Partial Seq Scan on public.t1_hash_p2
+               Output: t1_hash_p2.id, t1_hash_p2.value
+               Filter: (t1_hash_p2.id = '1'::real)
+ Optimizer: PolarDB PX Optimizer
+(7 rows)
+
+select * from t1_hash where id =1::float4;
+ id | value 
+----+-------
+  1 |    58
+(1 row)
+
+                      QUERY PLAN                       
+-------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: t1_hash_p2.id, t1_hash_p2.value
+   ->  Append
+         ->  Partial Seq Scan on public.t1_hash_p2
+               Output: t1_hash_p2.id, t1_hash_p2.value
+               Filter: (t1_hash_p2.id = '1'::real)
+ Optimizer: PolarDB PX Optimizer
+(7 rows)
+
+select * from t1_hash where id =1::float8;
+ id | value 
+----+-------
+  1 |    58
+(1 row)
+
+select * from t1_hash where id =1::bool;
+ERROR:  operator does not exist: real = boolean
+LINE 1: select * from t1_hash where id =1::bool;
+                                       ^
+HINT:  No operator matches the given name and argument types. You might need to add explicit type casts.
+select * from t1_hash where id =1::decimal;
+ id | value 
+----+-------
+  1 |    58
+(1 row)
+
+select * from t1_hash where id =1::numeric;
+ id | value 
+----+-------
+  1 |    58
+(1 row)
+
+select * from t1_hash where id =1::text;
+ERROR:  operator does not exist: real = text
+LINE 1: select * from t1_hash where id =1::text;
+                                       ^
+HINT:  No operator matches the given name and argument types. You might need to add explicit type casts.
+select * from t1_hash where id ='1';
+ id | value 
+----+-------
+  1 |    58
+(1 row)
+
+                      QUERY PLAN                       
+-------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: t1_hash_p2.id, t1_hash_p2.value
+   ->  Append
+         ->  Partial Seq Scan on public.t1_hash_p2
+               Output: t1_hash_p2.id, t1_hash_p2.value
+               Filter: (t1_hash_p2.id = '1'::real)
+ Optimizer: PolarDB PX Optimizer
+(7 rows)
+
+select * from t1_hash where id =1+1-1;
+ id | value 
+----+-------
+  1 |    58
+(1 row)
+
+drop table t1_hash cascade;
+CREATE TABLE t1_hash (id float4, value int) PARTITION BY HASH(id);
+CREATE TABLE t1_hash_p1 PARTITION OF t1_hash FOR VALUES WITH (modulus 2, remainder 0);
+CREATE TABLE t1_hash_p2 PARTITION OF t1_hash FOR VALUES WITH (modulus 2, remainder 1);
+INSERT INTO t1_hash VALUES (1,58), (2,60), (3,75), (4,90);
+select * from t1_hash where id =1;
+ id | value 
+----+-------
+  1 |    58
+(1 row)
+
+select * from t1_hash where id =1::bigint;
+ id | value 
+----+-------
+  1 |    58
+(1 row)
+
+select * from t1_hash where id =1::int4;
+ id | value 
+----+-------
+  1 |    58
+(1 row)
+
+select * from t1_hash where id =1::int2;
+ id | value 
+----+-------
+  1 |    58
+(1 row)
+
+select * from t1_hash where id =1::real;
+ id | value 
+----+-------
+  1 |    58
+(1 row)
+
+                      QUERY PLAN                       
+-------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: t1_hash_p2.id, t1_hash_p2.value
+   ->  Append
+         ->  Partial Seq Scan on public.t1_hash_p2
+               Output: t1_hash_p2.id, t1_hash_p2.value
+               Filter: (t1_hash_p2.id = '1'::real)
+ Optimizer: PolarDB PX Optimizer
+(7 rows)
+
+select * from t1_hash where id =1::float4;
+ id | value 
+----+-------
+  1 |    58
+(1 row)
+
+                      QUERY PLAN                       
+-------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: t1_hash_p2.id, t1_hash_p2.value
+   ->  Append
+         ->  Partial Seq Scan on public.t1_hash_p2
+               Output: t1_hash_p2.id, t1_hash_p2.value
+               Filter: (t1_hash_p2.id = '1'::real)
+ Optimizer: PolarDB PX Optimizer
+(7 rows)
+
+select * from t1_hash where id =1::float8;
+ id | value 
+----+-------
+  1 |    58
+(1 row)
+
+select * from t1_hash where id =1::bool;
+ERROR:  operator does not exist: real = boolean
+LINE 1: select * from t1_hash where id =1::bool;
+                                       ^
+HINT:  No operator matches the given name and argument types. You might need to add explicit type casts.
+select * from t1_hash where id =1::decimal;
+ id | value 
+----+-------
+  1 |    58
+(1 row)
+
+select * from t1_hash where id =1::numeric;
+ id | value 
+----+-------
+  1 |    58
+(1 row)
+
+select * from t1_hash where id =1::text;
+ERROR:  operator does not exist: real = text
+LINE 1: select * from t1_hash where id =1::text;
+                                       ^
+HINT:  No operator matches the given name and argument types. You might need to add explicit type casts.
+select * from t1_hash where id ='1';
+ id | value 
+----+-------
+  1 |    58
+(1 row)
+
+                      QUERY PLAN                       
+-------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: t1_hash_p2.id, t1_hash_p2.value
+   ->  Append
+         ->  Partial Seq Scan on public.t1_hash_p2
+               Output: t1_hash_p2.id, t1_hash_p2.value
+               Filter: (t1_hash_p2.id = '1'::real)
+ Optimizer: PolarDB PX Optimizer
+(7 rows)
+
+select * from t1_hash where id =1+1-1;
+ id | value 
+----+-------
+  1 |    58
+(1 row)
+
+drop table t1_hash cascade;
+CREATE TABLE t1_hash (id float8, value int) PARTITION BY HASH(id);
+CREATE TABLE t1_hash_p1 PARTITION OF t1_hash FOR VALUES WITH (modulus 2, remainder 0);
+CREATE TABLE t1_hash_p2 PARTITION OF t1_hash FOR VALUES WITH (modulus 2, remainder 1);
+INSERT INTO t1_hash VALUES (1,58), (2,60), (3,75), (4,90);
+select * from t1_hash where id =1;
+ id | value 
+----+-------
+  1 |    58
+(1 row)
+
+                          QUERY PLAN                           
+---------------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: t1_hash_p2.id, t1_hash_p2.value
+   ->  Append
+         ->  Partial Seq Scan on public.t1_hash_p2
+               Output: t1_hash_p2.id, t1_hash_p2.value
+               Filter: (t1_hash_p2.id = '1'::double precision)
+ Optimizer: PolarDB PX Optimizer
+(7 rows)
+
+select * from t1_hash where id =1::bigint;
+ id | value 
+----+-------
+  1 |    58
+(1 row)
+
+                          QUERY PLAN                           
+---------------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: t1_hash_p2.id, t1_hash_p2.value
+   ->  Append
+         ->  Partial Seq Scan on public.t1_hash_p2
+               Output: t1_hash_p2.id, t1_hash_p2.value
+               Filter: (t1_hash_p2.id = '1'::double precision)
+ Optimizer: PolarDB PX Optimizer
+(7 rows)
+
+select * from t1_hash where id =1::int4;
+ id | value 
+----+-------
+  1 |    58
+(1 row)
+
+                          QUERY PLAN                           
+---------------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: t1_hash_p2.id, t1_hash_p2.value
+   ->  Append
+         ->  Partial Seq Scan on public.t1_hash_p2
+               Output: t1_hash_p2.id, t1_hash_p2.value
+               Filter: (t1_hash_p2.id = '1'::double precision)
+ Optimizer: PolarDB PX Optimizer
+(7 rows)
+
+select * from t1_hash where id =1::int2;
+ id | value 
+----+-------
+  1 |    58
+(1 row)
+
+                          QUERY PLAN                           
+---------------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: t1_hash_p2.id, t1_hash_p2.value
+   ->  Append
+         ->  Partial Seq Scan on public.t1_hash_p2
+               Output: t1_hash_p2.id, t1_hash_p2.value
+               Filter: (t1_hash_p2.id = '1'::double precision)
+ Optimizer: PolarDB PX Optimizer
+(7 rows)
+
+select * from t1_hash where id =1::real;
+ id | value 
+----+-------
+  1 |    58
+(1 row)
+
+select * from t1_hash where id =1::float4;
+ id | value 
+----+-------
+  1 |    58
+(1 row)
+
+select * from t1_hash where id =1::float8;
+ id | value 
+----+-------
+  1 |    58
+(1 row)
+
+                          QUERY PLAN                           
+---------------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: t1_hash_p2.id, t1_hash_p2.value
+   ->  Append
+         ->  Partial Seq Scan on public.t1_hash_p2
+               Output: t1_hash_p2.id, t1_hash_p2.value
+               Filter: (t1_hash_p2.id = '1'::double precision)
+ Optimizer: PolarDB PX Optimizer
+(7 rows)
+
+select * from t1_hash where id =1::bool;
+ERROR:  operator does not exist: double precision = boolean
+LINE 1: select * from t1_hash where id =1::bool;
+                                       ^
+HINT:  No operator matches the given name and argument types. You might need to add explicit type casts.
+select * from t1_hash where id =1::decimal;
+ id | value 
+----+-------
+  1 |    58
+(1 row)
+
+                          QUERY PLAN                           
+---------------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: t1_hash_p2.id, t1_hash_p2.value
+   ->  Append
+         ->  Partial Seq Scan on public.t1_hash_p2
+               Output: t1_hash_p2.id, t1_hash_p2.value
+               Filter: (t1_hash_p2.id = '1'::double precision)
+ Optimizer: PolarDB PX Optimizer
+(7 rows)
+
+select * from t1_hash where id =1::numeric;
+ id | value 
+----+-------
+  1 |    58
+(1 row)
+
+                          QUERY PLAN                           
+---------------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: t1_hash_p2.id, t1_hash_p2.value
+   ->  Append
+         ->  Partial Seq Scan on public.t1_hash_p2
+               Output: t1_hash_p2.id, t1_hash_p2.value
+               Filter: (t1_hash_p2.id = '1'::double precision)
+ Optimizer: PolarDB PX Optimizer
+(7 rows)
+
+select * from t1_hash where id =1::text;
+ERROR:  operator does not exist: double precision = text
+LINE 1: select * from t1_hash where id =1::text;
+                                       ^
+HINT:  No operator matches the given name and argument types. You might need to add explicit type casts.
+select * from t1_hash where id ='1';
+ id | value 
+----+-------
+  1 |    58
+(1 row)
+
+                          QUERY PLAN                           
+---------------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: t1_hash_p2.id, t1_hash_p2.value
+   ->  Append
+         ->  Partial Seq Scan on public.t1_hash_p2
+               Output: t1_hash_p2.id, t1_hash_p2.value
+               Filter: (t1_hash_p2.id = '1'::double precision)
+ Optimizer: PolarDB PX Optimizer
+(7 rows)
+
+select * from t1_hash where id =1+1-1;
+ id | value 
+----+-------
+  1 |    58
+(1 row)
+
+                          QUERY PLAN                           
+---------------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: t1_hash_p2.id, t1_hash_p2.value
+   ->  Append
+         ->  Partial Seq Scan on public.t1_hash_p2
+               Output: t1_hash_p2.id, t1_hash_p2.value
+               Filter: (t1_hash_p2.id = '1'::double precision)
+ Optimizer: PolarDB PX Optimizer
+(7 rows)
+
+drop table t1_hash cascade;
+CREATE TABLE t1_hash (id bool, value int) PARTITION BY HASH(id);
+CREATE TABLE t1_hash_p1 PARTITION OF t1_hash FOR VALUES WITH (modulus 2, remainder 0);
+CREATE TABLE t1_hash_p2 PARTITION OF t1_hash FOR VALUES WITH (modulus 2, remainder 1);
+INSERT INTO t1_hash VALUES (1,58), (2,60), (3,75), (4,90);
+ERROR:  column "id" is of type boolean but expression is of type integer
+LINE 1: INSERT INTO t1_hash VALUES (1,58), (2,60), (3,75), (4,90);
+                                    ^
+HINT:  You will need to rewrite or cast the expression.
+select * from t1_hash where id =1;
+ERROR:  operator does not exist: boolean = integer
+LINE 1: select * from t1_hash where id =1;
+                                       ^
+HINT:  No operator matches the given name and argument types. You might need to add explicit type casts.
+select * from t1_hash where id =1::bigint;
+ERROR:  operator does not exist: boolean = bigint
+LINE 1: select * from t1_hash where id =1::bigint;
+                                       ^
+HINT:  No operator matches the given name and argument types. You might need to add explicit type casts.
+select * from t1_hash where id =1::int4;
+ERROR:  operator does not exist: boolean = integer
+LINE 1: select * from t1_hash where id =1::int4;
+                                       ^
+HINT:  No operator matches the given name and argument types. You might need to add explicit type casts.
+select * from t1_hash where id =1::int2;
+ERROR:  operator does not exist: boolean = smallint
+LINE 1: select * from t1_hash where id =1::int2;
+                                       ^
+HINT:  No operator matches the given name and argument types. You might need to add explicit type casts.
+select * from t1_hash where id =1::real;
+ERROR:  operator does not exist: boolean = real
+LINE 1: select * from t1_hash where id =1::real;
+                                       ^
+HINT:  No operator matches the given name and argument types. You might need to add explicit type casts.
+select * from t1_hash where id =1::float4;
+ERROR:  operator does not exist: boolean = real
+LINE 1: select * from t1_hash where id =1::float4;
+                                       ^
+HINT:  No operator matches the given name and argument types. You might need to add explicit type casts.
+select * from t1_hash where id =1::float8;
+ERROR:  operator does not exist: boolean = double precision
+LINE 1: select * from t1_hash where id =1::float8;
+                                       ^
+HINT:  No operator matches the given name and argument types. You might need to add explicit type casts.
+select * from t1_hash where id =1::bool;
+ id | value 
+----+-------
+(0 rows)
+
+                      QUERY PLAN                       
+-------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: t1_hash_p1.id, t1_hash_p1.value
+   ->  Append
+         ->  Partial Seq Scan on public.t1_hash_p1
+               Output: t1_hash_p1.id, t1_hash_p1.value
+               Filter: t1_hash_p1.id
+         ->  Partial Seq Scan on public.t1_hash_p2
+               Output: t1_hash_p2.id, t1_hash_p2.value
+               Filter: t1_hash_p2.id
+ Optimizer: PolarDB PX Optimizer
+(10 rows)
+
+select * from t1_hash where id =1::decimal;
+ERROR:  operator does not exist: boolean = numeric
+LINE 1: select * from t1_hash where id =1::decimal;
+                                       ^
+HINT:  No operator matches the given name and argument types. You might need to add explicit type casts.
+select * from t1_hash where id =1::numeric;
+ERROR:  operator does not exist: boolean = numeric
+LINE 1: select * from t1_hash where id =1::numeric;
+                                       ^
+HINT:  No operator matches the given name and argument types. You might need to add explicit type casts.
+select * from t1_hash where id =1::text;
+ERROR:  operator does not exist: boolean = text
+LINE 1: select * from t1_hash where id =1::text;
+                                       ^
+HINT:  No operator matches the given name and argument types. You might need to add explicit type casts.
+select * from t1_hash where id ='1';
+ id | value 
+----+-------
+(0 rows)
+
+                      QUERY PLAN                       
+-------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: t1_hash_p1.id, t1_hash_p1.value
+   ->  Append
+         ->  Partial Seq Scan on public.t1_hash_p1
+               Output: t1_hash_p1.id, t1_hash_p1.value
+               Filter: t1_hash_p1.id
+         ->  Partial Seq Scan on public.t1_hash_p2
+               Output: t1_hash_p2.id, t1_hash_p2.value
+               Filter: t1_hash_p2.id
+ Optimizer: PolarDB PX Optimizer
+(10 rows)
+
+select * from t1_hash where id =1+1-1;
+ERROR:  operator does not exist: boolean = integer
+LINE 1: select * from t1_hash where id =1+1-1;
+                                       ^
+HINT:  No operator matches the given name and argument types. You might need to add explicit type casts.
+drop table t1_hash cascade;
+CREATE TABLE t1_hash (id bool, value int) PARTITION BY HASH(id);
+CREATE TABLE t1_hash_p1 PARTITION OF t1_hash FOR VALUES WITH (modulus 2, remainder 0);
+CREATE TABLE t1_hash_p2 PARTITION OF t1_hash FOR VALUES WITH (modulus 2, remainder 1);
+INSERT INTO t1_hash VALUES (1,58), (2,60), (3,75), (4,90);
+ERROR:  column "id" is of type boolean but expression is of type integer
+LINE 1: INSERT INTO t1_hash VALUES (1,58), (2,60), (3,75), (4,90);
+                                    ^
+HINT:  You will need to rewrite or cast the expression.
+select * from t1_hash where id =1;
+ERROR:  operator does not exist: boolean = integer
+LINE 1: select * from t1_hash where id =1;
+                                       ^
+HINT:  No operator matches the given name and argument types. You might need to add explicit type casts.
+select * from t1_hash where id =1::bigint;
+ERROR:  operator does not exist: boolean = bigint
+LINE 1: select * from t1_hash where id =1::bigint;
+                                       ^
+HINT:  No operator matches the given name and argument types. You might need to add explicit type casts.
+select * from t1_hash where id =1::int4;
+ERROR:  operator does not exist: boolean = integer
+LINE 1: select * from t1_hash where id =1::int4;
+                                       ^
+HINT:  No operator matches the given name and argument types. You might need to add explicit type casts.
+select * from t1_hash where id =1::int2;
+ERROR:  operator does not exist: boolean = smallint
+LINE 1: select * from t1_hash where id =1::int2;
+                                       ^
+HINT:  No operator matches the given name and argument types. You might need to add explicit type casts.
+select * from t1_hash where id =1::real;
+ERROR:  operator does not exist: boolean = real
+LINE 1: select * from t1_hash where id =1::real;
+                                       ^
+HINT:  No operator matches the given name and argument types. You might need to add explicit type casts.
+select * from t1_hash where id =1::float4;
+ERROR:  operator does not exist: boolean = real
+LINE 1: select * from t1_hash where id =1::float4;
+                                       ^
+HINT:  No operator matches the given name and argument types. You might need to add explicit type casts.
+select * from t1_hash where id =1::float8;
+ERROR:  operator does not exist: boolean = double precision
+LINE 1: select * from t1_hash where id =1::float8;
+                                       ^
+HINT:  No operator matches the given name and argument types. You might need to add explicit type casts.
+select * from t1_hash where id =1::bool;
+ id | value 
+----+-------
+(0 rows)
+
+                      QUERY PLAN                       
+-------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: t1_hash_p1.id, t1_hash_p1.value
+   ->  Append
+         ->  Partial Seq Scan on public.t1_hash_p1
+               Output: t1_hash_p1.id, t1_hash_p1.value
+               Filter: t1_hash_p1.id
+         ->  Partial Seq Scan on public.t1_hash_p2
+               Output: t1_hash_p2.id, t1_hash_p2.value
+               Filter: t1_hash_p2.id
+ Optimizer: PolarDB PX Optimizer
+(10 rows)
+
+select * from t1_hash where id =1::decimal;
+ERROR:  operator does not exist: boolean = numeric
+LINE 1: select * from t1_hash where id =1::decimal;
+                                       ^
+HINT:  No operator matches the given name and argument types. You might need to add explicit type casts.
+select * from t1_hash where id =1::numeric;
+ERROR:  operator does not exist: boolean = numeric
+LINE 1: select * from t1_hash where id =1::numeric;
+                                       ^
+HINT:  No operator matches the given name and argument types. You might need to add explicit type casts.
+select * from t1_hash where id =1::text;
+ERROR:  operator does not exist: boolean = text
+LINE 1: select * from t1_hash where id =1::text;
+                                       ^
+HINT:  No operator matches the given name and argument types. You might need to add explicit type casts.
+select * from t1_hash where id ='1';
+ id | value 
+----+-------
+(0 rows)
+
+                      QUERY PLAN                       
+-------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: t1_hash_p1.id, t1_hash_p1.value
+   ->  Append
+         ->  Partial Seq Scan on public.t1_hash_p1
+               Output: t1_hash_p1.id, t1_hash_p1.value
+               Filter: t1_hash_p1.id
+         ->  Partial Seq Scan on public.t1_hash_p2
+               Output: t1_hash_p2.id, t1_hash_p2.value
+               Filter: t1_hash_p2.id
+ Optimizer: PolarDB PX Optimizer
+(10 rows)
+
+select * from t1_hash where id =1+1-1;
+ERROR:  operator does not exist: boolean = integer
+LINE 1: select * from t1_hash where id =1+1-1;
+                                       ^
+HINT:  No operator matches the given name and argument types. You might need to add explicit type casts.
+drop table t1_hash cascade;
+CREATE TABLE t1_hash (id decimal, value int) PARTITION BY HASH(id);
+CREATE TABLE t1_hash_p1 PARTITION OF t1_hash FOR VALUES WITH (modulus 2, remainder 0);
+CREATE TABLE t1_hash_p2 PARTITION OF t1_hash FOR VALUES WITH (modulus 2, remainder 1);
+INSERT INTO t1_hash VALUES (1,58), (2,60), (3,75), (4,90);
+select * from t1_hash where id =1;
+ id | value 
+----+-------
+  1 |    58
+(1 row)
+
+                      QUERY PLAN                       
+-------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: t1_hash_p2.id, t1_hash_p2.value
+   ->  Append
+         ->  Partial Seq Scan on public.t1_hash_p2
+               Output: t1_hash_p2.id, t1_hash_p2.value
+               Filter: (t1_hash_p2.id = '1'::numeric)
+ Optimizer: PolarDB PX Optimizer
+(7 rows)
+
+select * from t1_hash where id =1::bigint;
+ id | value 
+----+-------
+  1 |    58
+(1 row)
+
+                      QUERY PLAN                       
+-------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: t1_hash_p2.id, t1_hash_p2.value
+   ->  Append
+         ->  Partial Seq Scan on public.t1_hash_p2
+               Output: t1_hash_p2.id, t1_hash_p2.value
+               Filter: (t1_hash_p2.id = '1'::numeric)
+ Optimizer: PolarDB PX Optimizer
+(7 rows)
+
+select * from t1_hash where id =1::int4;
+ id | value 
+----+-------
+  1 |    58
+(1 row)
+
+                      QUERY PLAN                       
+-------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: t1_hash_p2.id, t1_hash_p2.value
+   ->  Append
+         ->  Partial Seq Scan on public.t1_hash_p2
+               Output: t1_hash_p2.id, t1_hash_p2.value
+               Filter: (t1_hash_p2.id = '1'::numeric)
+ Optimizer: PolarDB PX Optimizer
+(7 rows)
+
+select * from t1_hash where id =1::int2;
+ id | value 
+----+-------
+  1 |    58
+(1 row)
+
+                      QUERY PLAN                       
+-------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: t1_hash_p2.id, t1_hash_p2.value
+   ->  Append
+         ->  Partial Seq Scan on public.t1_hash_p2
+               Output: t1_hash_p2.id, t1_hash_p2.value
+               Filter: (t1_hash_p2.id = '1'::numeric)
+ Optimizer: PolarDB PX Optimizer
+(7 rows)
+
+select * from t1_hash where id =1::real;
+ id | value 
+----+-------
+  1 |    58
+(1 row)
+
+                              QUERY PLAN                               
+-----------------------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: t1_hash_p1.id, t1_hash_p1.value
+   ->  Append
+         ->  Partial Seq Scan on public.t1_hash_p1
+               Output: t1_hash_p1.id, t1_hash_p1.value
+               Filter: ((t1_hash_p1.id)::double precision = '1'::real)
+         ->  Partial Seq Scan on public.t1_hash_p2
+               Output: t1_hash_p2.id, t1_hash_p2.value
+               Filter: ((t1_hash_p2.id)::double precision = '1'::real)
+ Optimizer: PolarDB PX Optimizer
+(10 rows)
+
+select * from t1_hash where id =1::float4;
+ id | value 
+----+-------
+  1 |    58
+(1 row)
+
+                              QUERY PLAN                               
+-----------------------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: t1_hash_p1.id, t1_hash_p1.value
+   ->  Append
+         ->  Partial Seq Scan on public.t1_hash_p1
+               Output: t1_hash_p1.id, t1_hash_p1.value
+               Filter: ((t1_hash_p1.id)::double precision = '1'::real)
+         ->  Partial Seq Scan on public.t1_hash_p2
+               Output: t1_hash_p2.id, t1_hash_p2.value
+               Filter: ((t1_hash_p2.id)::double precision = '1'::real)
+ Optimizer: PolarDB PX Optimizer
+(10 rows)
+
+select * from t1_hash where id =1::float8;
+ id | value 
+----+-------
+  1 |    58
+(1 row)
+
+                                    QUERY PLAN                                     
+-----------------------------------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: t1_hash_p1.id, t1_hash_p1.value
+   ->  Append
+         ->  Partial Seq Scan on public.t1_hash_p1
+               Output: t1_hash_p1.id, t1_hash_p1.value
+               Filter: ((t1_hash_p1.id)::double precision = '1'::double precision)
+         ->  Partial Seq Scan on public.t1_hash_p2
+               Output: t1_hash_p2.id, t1_hash_p2.value
+               Filter: ((t1_hash_p2.id)::double precision = '1'::double precision)
+ Optimizer: PolarDB PX Optimizer
+(10 rows)
+
+select * from t1_hash where id =1::bool;
+ERROR:  operator does not exist: numeric = boolean
+LINE 1: select * from t1_hash where id =1::bool;
+                                       ^
+HINT:  No operator matches the given name and argument types. You might need to add explicit type casts.
+select * from t1_hash where id =1::decimal;
+ id | value 
+----+-------
+  1 |    58
+(1 row)
+
+                      QUERY PLAN                       
+-------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: t1_hash_p2.id, t1_hash_p2.value
+   ->  Append
+         ->  Partial Seq Scan on public.t1_hash_p2
+               Output: t1_hash_p2.id, t1_hash_p2.value
+               Filter: (t1_hash_p2.id = '1'::numeric)
+ Optimizer: PolarDB PX Optimizer
+(7 rows)
+
+select * from t1_hash where id =1::numeric;
+ id | value 
+----+-------
+  1 |    58
+(1 row)
+
+                      QUERY PLAN                       
+-------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: t1_hash_p2.id, t1_hash_p2.value
+   ->  Append
+         ->  Partial Seq Scan on public.t1_hash_p2
+               Output: t1_hash_p2.id, t1_hash_p2.value
+               Filter: (t1_hash_p2.id = '1'::numeric)
+ Optimizer: PolarDB PX Optimizer
+(7 rows)
+
+select * from t1_hash where id =1::text;
+ERROR:  operator does not exist: numeric = text
+LINE 1: select * from t1_hash where id =1::text;
+                                       ^
+HINT:  No operator matches the given name and argument types. You might need to add explicit type casts.
+select * from t1_hash where id ='1';
+ id | value 
+----+-------
+  1 |    58
+(1 row)
+
+                      QUERY PLAN                       
+-------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: t1_hash_p2.id, t1_hash_p2.value
+   ->  Append
+         ->  Partial Seq Scan on public.t1_hash_p2
+               Output: t1_hash_p2.id, t1_hash_p2.value
+               Filter: (t1_hash_p2.id = '1'::numeric)
+ Optimizer: PolarDB PX Optimizer
+(7 rows)
+
+drop table t1_hash cascade;
+CREATE TABLE t1_hash (id numeric, value int) PARTITION BY HASH(id);
+CREATE TABLE t1_hash_p1 PARTITION OF t1_hash FOR VALUES WITH (modulus 2, remainder 0);
+CREATE TABLE t1_hash_p2 PARTITION OF t1_hash FOR VALUES WITH (modulus 2, remainder 1);
+select * from t1_hash where id =1;
+ id | value 
+----+-------
+(0 rows)
+
+                      QUERY PLAN                       
+-------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: t1_hash_p2.id, t1_hash_p2.value
+   ->  Append
+         ->  Partial Seq Scan on public.t1_hash_p2
+               Output: t1_hash_p2.id, t1_hash_p2.value
+               Filter: (t1_hash_p2.id = '1'::numeric)
+ Optimizer: PolarDB PX Optimizer
+(7 rows)
+
+select * from t1_hash where id =1::bigint;
+ id | value 
+----+-------
+(0 rows)
+
+                      QUERY PLAN                       
+-------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: t1_hash_p2.id, t1_hash_p2.value
+   ->  Append
+         ->  Partial Seq Scan on public.t1_hash_p2
+               Output: t1_hash_p2.id, t1_hash_p2.value
+               Filter: (t1_hash_p2.id = '1'::numeric)
+ Optimizer: PolarDB PX Optimizer
+(7 rows)
+
+select * from t1_hash where id =1::int4;
+ id | value 
+----+-------
+(0 rows)
+
+                      QUERY PLAN                       
+-------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: t1_hash_p2.id, t1_hash_p2.value
+   ->  Append
+         ->  Partial Seq Scan on public.t1_hash_p2
+               Output: t1_hash_p2.id, t1_hash_p2.value
+               Filter: (t1_hash_p2.id = '1'::numeric)
+ Optimizer: PolarDB PX Optimizer
+(7 rows)
+
+select * from t1_hash where id =1::int2;
+ id | value 
+----+-------
+(0 rows)
+
+                      QUERY PLAN                       
+-------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: t1_hash_p2.id, t1_hash_p2.value
+   ->  Append
+         ->  Partial Seq Scan on public.t1_hash_p2
+               Output: t1_hash_p2.id, t1_hash_p2.value
+               Filter: (t1_hash_p2.id = '1'::numeric)
+ Optimizer: PolarDB PX Optimizer
+(7 rows)
+
+select * from t1_hash where id =1::real;
+ id | value 
+----+-------
+(0 rows)
+
+                              QUERY PLAN                               
+-----------------------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: t1_hash_p1.id, t1_hash_p1.value
+   ->  Append
+         ->  Partial Seq Scan on public.t1_hash_p1
+               Output: t1_hash_p1.id, t1_hash_p1.value
+               Filter: ((t1_hash_p1.id)::double precision = '1'::real)
+         ->  Partial Seq Scan on public.t1_hash_p2
+               Output: t1_hash_p2.id, t1_hash_p2.value
+               Filter: ((t1_hash_p2.id)::double precision = '1'::real)
+ Optimizer: PolarDB PX Optimizer
+(10 rows)
+
+select * from t1_hash where id =1::float4;
+ id | value 
+----+-------
+(0 rows)
+
+                              QUERY PLAN                               
+-----------------------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: t1_hash_p1.id, t1_hash_p1.value
+   ->  Append
+         ->  Partial Seq Scan on public.t1_hash_p1
+               Output: t1_hash_p1.id, t1_hash_p1.value
+               Filter: ((t1_hash_p1.id)::double precision = '1'::real)
+         ->  Partial Seq Scan on public.t1_hash_p2
+               Output: t1_hash_p2.id, t1_hash_p2.value
+               Filter: ((t1_hash_p2.id)::double precision = '1'::real)
+ Optimizer: PolarDB PX Optimizer
+(10 rows)
+
+select * from t1_hash where id =1::float8;
+ id | value 
+----+-------
+(0 rows)
+
+                                    QUERY PLAN                                     
+-----------------------------------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: t1_hash_p1.id, t1_hash_p1.value
+   ->  Append
+         ->  Partial Seq Scan on public.t1_hash_p1
+               Output: t1_hash_p1.id, t1_hash_p1.value
+               Filter: ((t1_hash_p1.id)::double precision = '1'::double precision)
+         ->  Partial Seq Scan on public.t1_hash_p2
+               Output: t1_hash_p2.id, t1_hash_p2.value
+               Filter: ((t1_hash_p2.id)::double precision = '1'::double precision)
+ Optimizer: PolarDB PX Optimizer
+(10 rows)
+
+select * from t1_hash where id =1::bool;
+ERROR:  operator does not exist: numeric = boolean
+LINE 1: select * from t1_hash where id =1::bool;
+                                       ^
+HINT:  No operator matches the given name and argument types. You might need to add explicit type casts.
+select * from t1_hash where id =1::decimal;
+ id | value 
+----+-------
+(0 rows)
+
+                      QUERY PLAN                       
+-------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: t1_hash_p2.id, t1_hash_p2.value
+   ->  Append
+         ->  Partial Seq Scan on public.t1_hash_p2
+               Output: t1_hash_p2.id, t1_hash_p2.value
+               Filter: (t1_hash_p2.id = '1'::numeric)
+ Optimizer: PolarDB PX Optimizer
+(7 rows)
+
+select * from t1_hash where id =1::numeric;
+ id | value 
+----+-------
+(0 rows)
+
+                      QUERY PLAN                       
+-------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: t1_hash_p2.id, t1_hash_p2.value
+   ->  Append
+         ->  Partial Seq Scan on public.t1_hash_p2
+               Output: t1_hash_p2.id, t1_hash_p2.value
+               Filter: (t1_hash_p2.id = '1'::numeric)
+ Optimizer: PolarDB PX Optimizer
+(7 rows)
+
+select * from t1_hash where id =1::text;
+ERROR:  operator does not exist: numeric = text
+LINE 1: select * from t1_hash where id =1::text;
+                                       ^
+HINT:  No operator matches the given name and argument types. You might need to add explicit type casts.
+select * from t1_hash where id ='1';
+ id | value 
+----+-------
+(0 rows)
+
+                      QUERY PLAN                       
+-------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: t1_hash_p2.id, t1_hash_p2.value
+   ->  Append
+         ->  Partial Seq Scan on public.t1_hash_p2
+               Output: t1_hash_p2.id, t1_hash_p2.value
+               Filter: (t1_hash_p2.id = '1'::numeric)
+ Optimizer: PolarDB PX Optimizer
+(7 rows)
+
+select * from t1_hash where id =1+1-1;
+ id | value 
+----+-------
+(0 rows)
+
+                      QUERY PLAN                       
+-------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: t1_hash_p2.id, t1_hash_p2.value
+   ->  Append
+         ->  Partial Seq Scan on public.t1_hash_p2
+               Output: t1_hash_p2.id, t1_hash_p2.value
+               Filter: (t1_hash_p2.id = '1'::numeric)
+ Optimizer: PolarDB PX Optimizer
+(7 rows)
+
+drop table t1_hash cascade;
+CREATE TABLE t1_hash (id char(10), value int) PARTITION BY HASH(id);
+CREATE TABLE t1_hash_p1 PARTITION OF t1_hash FOR VALUES WITH (modulus 2, remainder 0);
+CREATE TABLE t1_hash_p2 PARTITION OF t1_hash FOR VALUES WITH (modulus 2, remainder 1);
+INSERT INTO t1_hash VALUES (1,58), (2,60), (3,75), (4,90);
+select * from t1_hash where id =1;
+ERROR:  operator does not exist: character = integer
+LINE 1: select * from t1_hash where id =1;
+                                       ^
+HINT:  No operator matches the given name and argument types. You might need to add explicit type casts.
+select * from t1_hash where id =1::bigint;
+ERROR:  operator does not exist: character = bigint
+LINE 1: select * from t1_hash where id =1::bigint;
+                                       ^
+HINT:  No operator matches the given name and argument types. You might need to add explicit type casts.
+select * from t1_hash where id =1::int4;
+ERROR:  operator does not exist: character = integer
+LINE 1: select * from t1_hash where id =1::int4;
+                                       ^
+HINT:  No operator matches the given name and argument types. You might need to add explicit type casts.
+select * from t1_hash where id =1::int2;
+ERROR:  operator does not exist: character = smallint
+LINE 1: select * from t1_hash where id =1::int2;
+                                       ^
+HINT:  No operator matches the given name and argument types. You might need to add explicit type casts.
+select * from t1_hash where id =1::real;
+ERROR:  operator does not exist: character = real
+LINE 1: select * from t1_hash where id =1::real;
+                                       ^
+HINT:  No operator matches the given name and argument types. You might need to add explicit type casts.
+select * from t1_hash where id =1::float4;
+ERROR:  operator does not exist: character = real
+LINE 1: select * from t1_hash where id =1::float4;
+                                       ^
+HINT:  No operator matches the given name and argument types. You might need to add explicit type casts.
+select * from t1_hash where id =1::float8;
+ERROR:  operator does not exist: character = double precision
+LINE 1: select * from t1_hash where id =1::float8;
+                                       ^
+HINT:  No operator matches the given name and argument types. You might need to add explicit type casts.
+select * from t1_hash where id =1::bool;
+ERROR:  operator does not exist: character = boolean
+LINE 1: select * from t1_hash where id =1::bool;
+                                       ^
+HINT:  No operator matches the given name and argument types. You might need to add explicit type casts.
+select * from t1_hash where id =1::decimal;
+ERROR:  operator does not exist: character = numeric
+LINE 1: select * from t1_hash where id =1::decimal;
+                                       ^
+HINT:  No operator matches the given name and argument types. You might need to add explicit type casts.
+select * from t1_hash where id =1::numeric;
+ERROR:  operator does not exist: character = numeric
+LINE 1: select * from t1_hash where id =1::numeric;
+                                       ^
+HINT:  No operator matches the given name and argument types. You might need to add explicit type casts.
+select * from t1_hash where id =1::text;
+     id     | value 
+------------+-------
+ 1          |    58
+(1 row)
+
+                        QUERY PLAN                         
+-----------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: t1_hash_p1.id, t1_hash_p1.value
+   ->  Append
+         ->  Partial Seq Scan on public.t1_hash_p1
+               Output: t1_hash_p1.id, t1_hash_p1.value
+               Filter: ((t1_hash_p1.id)::text = '1'::text)
+         ->  Partial Seq Scan on public.t1_hash_p2
+               Output: t1_hash_p2.id, t1_hash_p2.value
+               Filter: ((t1_hash_p2.id)::text = '1'::text)
+ Optimizer: PolarDB PX Optimizer
+(10 rows)
+
+select * from t1_hash where id ='1';
+     id     | value 
+------------+-------
+ 1          |    58
+(1 row)
+
+                      QUERY PLAN                       
+-------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: t1_hash_p2.id, t1_hash_p2.value
+   ->  Append
+         ->  Partial Seq Scan on public.t1_hash_p2
+               Output: t1_hash_p2.id, t1_hash_p2.value
+               Filter: (t1_hash_p2.id = '1'::bpchar)
+ Optimizer: PolarDB PX Optimizer
+(7 rows)
+
+select * from t1_hash where id =1+1-1;
+ERROR:  operator does not exist: character = integer
+LINE 1: select * from t1_hash where id =1+1-1;
+                                       ^
+HINT:  No operator matches the given name and argument types. You might need to add explicit type casts.
+drop table t1_hash cascade;
+CREATE TABLE t1_hash (id text, value int) PARTITION BY HASH(id);
+CREATE TABLE t1_hash_p1 PARTITION OF t1_hash FOR VALUES WITH (modulus 2, remainder 0);
+CREATE TABLE t1_hash_p2 PARTITION OF t1_hash FOR VALUES WITH (modulus 2, remainder 1);
+INSERT INTO t1_hash VALUES (1,58), (2,60), (3,75), (4,90);
+select * from t1_hash where id =1;
+ERROR:  operator does not exist: text = integer
+LINE 1: select * from t1_hash where id =1;
+                                       ^
+HINT:  No operator matches the given name and argument types. You might need to add explicit type casts.
+select * from t1_hash where id =1::bigint;
+ERROR:  operator does not exist: text = bigint
+LINE 1: select * from t1_hash where id =1::bigint;
+                                       ^
+HINT:  No operator matches the given name and argument types. You might need to add explicit type casts.
+select * from t1_hash where id =1::int4;
+ERROR:  operator does not exist: text = integer
+LINE 1: select * from t1_hash where id =1::int4;
+                                       ^
+HINT:  No operator matches the given name and argument types. You might need to add explicit type casts.
+select * from t1_hash where id =1::int2;
+ERROR:  operator does not exist: text = smallint
+LINE 1: select * from t1_hash where id =1::int2;
+                                       ^
+HINT:  No operator matches the given name and argument types. You might need to add explicit type casts.
+select * from t1_hash where id =1::real;
+ERROR:  operator does not exist: text = real
+LINE 1: select * from t1_hash where id =1::real;
+                                       ^
+HINT:  No operator matches the given name and argument types. You might need to add explicit type casts.
+select * from t1_hash where id =1::float4;
+ERROR:  operator does not exist: text = real
+LINE 1: select * from t1_hash where id =1::float4;
+                                       ^
+HINT:  No operator matches the given name and argument types. You might need to add explicit type casts.
+select * from t1_hash where id =1::float8;
+ERROR:  operator does not exist: text = double precision
+LINE 1: select * from t1_hash where id =1::float8;
+                                       ^
+HINT:  No operator matches the given name and argument types. You might need to add explicit type casts.
+select * from t1_hash where id =1::bool;
+ERROR:  operator does not exist: text = boolean
+LINE 1: select * from t1_hash where id =1::bool;
+                                       ^
+HINT:  No operator matches the given name and argument types. You might need to add explicit type casts.
+select * from t1_hash where id =1::decimal;
+ERROR:  operator does not exist: text = numeric
+LINE 1: select * from t1_hash where id =1::decimal;
+                                       ^
+HINT:  No operator matches the given name and argument types. You might need to add explicit type casts.
+select * from t1_hash where id =1::numeric;
+ERROR:  operator does not exist: text = numeric
+LINE 1: select * from t1_hash where id =1::numeric;
+                                       ^
+HINT:  No operator matches the given name and argument types. You might need to add explicit type casts.
+select * from t1_hash where id =1::text;
+ id | value 
+----+-------
+ 1  |    58
+(1 row)
+
+                      QUERY PLAN                       
+-------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: t1_hash_p2.id, t1_hash_p2.value
+   ->  Append
+         ->  Partial Seq Scan on public.t1_hash_p2
+               Output: t1_hash_p2.id, t1_hash_p2.value
+               Filter: (t1_hash_p2.id = '1'::text)
+ Optimizer: PolarDB PX Optimizer
+(7 rows)
+
+select * from t1_hash where id ='1';
+ id | value 
+----+-------
+ 1  |    58
+(1 row)
+
+                      QUERY PLAN                       
+-------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: t1_hash_p2.id, t1_hash_p2.value
+   ->  Append
+         ->  Partial Seq Scan on public.t1_hash_p2
+               Output: t1_hash_p2.id, t1_hash_p2.value
+               Filter: (t1_hash_p2.id = '1'::text)
+ Optimizer: PolarDB PX Optimizer
+(7 rows)
+
+select * from t1_hash where id =1+1-1;
+ERROR:  operator does not exist: text = integer
+LINE 1: select * from t1_hash where id =1+1-1;
+                                       ^
+HINT:  No operator matches the given name and argument types. You might need to add explicit type casts.
+set polar_px_enable_partition_hash=0;
+select * from t1_hash where id ='1';
+ id | value 
+----+-------
+ 1  |    58
+(1 row)
+

@@ -85,11 +85,19 @@
 #include "utils/varlena.h"
 
 /* POLAR */
+#include "polar_dma/polar_dma.h"
+#include "replication/syncrep.h"
+#include "storage/smgr.h"
 #include "storage/polar_fd.h"
 
 /* GUC variables */
 char	   *default_tablespace = NULL;
 char	   *temp_tablespaces = NULL;
+
+/* POLAR */
+extern bool		polar_temp_relation_file_in_shared_storage;
+static bool		local_droptbl_write_wal_beforehand = true;
+static void		polar_sync_droptbl_wal(Oid tablespaceoid);
 
 
 static void create_tablespace_directories(const char *location,
@@ -115,7 +123,7 @@ static bool destroy_tablespace_directories(Oid tablespaceoid, bool redo);
  * re-create a database subdirectory (of $PGDATA/base) during WAL replay.
  */
 void
-TablespaceCreateDbspace(Oid spcNode, Oid dbNode, bool isRedo)
+TablespaceCreateDbspace(Oid spcNode, Oid dbNode, bool isRedo, bool polar_is_temp_table)
 {
 	struct stat st;
 	char	   *dir;
@@ -130,7 +138,18 @@ TablespaceCreateDbspace(Oid spcNode, Oid dbNode, bool isRedo)
 	Assert(OidIsValid(spcNode));
 	Assert(OidIsValid(dbNode));
 
-	dir = polar_get_database_path(dbNode, spcNode);
+	/*
+	 * POLAR: If this is used to create a temp table in local storage, get
+	 * the orignal database path. If not, just use the polar database path.
+	 * 
+	 * Also in DMA mode, user created tablespaces need to be stored in 
+	 * local storage, rather than polar database path
+	 */
+	if ((polar_is_temp_table && !polar_temp_relation_file_in_shared_storage) ||
+		(polar_enable_dma && spcNode != DEFAULTTABLESPACE_OID))
+		dir = GetDatabasePath(dbNode, spcNode, false);
+	else
+		dir = polar_get_database_path(dbNode, spcNode);
 
 	if (polar_stat(dir, &st) < 0)
 	{
@@ -245,12 +264,10 @@ CreateTableSpace(CreateTableSpaceStmt *stmt)
 	Oid			ownerId;
 	Datum		newOptions;
 
-	/* POLAR: disable tablespace ddl for now */
-	if (POLAR_FILE_IN_SHARED_STORAGE())
-		elog(ERROR, "polardb is not support user define tablespace yet");
-
-	/* Must be super user */
-	if (!superuser())
+	/*
+	 * POLAR: superuser or polar_superuser can create tablespaces
+	 */
+	if (!superuser() && !polar_superuser())
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 				 errmsg("permission denied to create tablespace \"%s\"",
@@ -361,20 +378,32 @@ CreateTableSpace(CreateTableSpaceStmt *stmt)
 	/* Post creation hook for new tablespace */
 	InvokeObjectPostCreateHook(TableSpaceRelationId, tablespaceoid, 0);
 
-	create_tablespace_directories(location, tablespaceoid);
-
-	/* Record the filesystem change in XLOG */
+	/*
+	 * POLAR: In DMA mode, which is equivalent to local disk mode, we support 
+	 * the creation of real tablespaces
+	 * In non-DMA mode, superuser needs to create real tablespaces in order to 
+	 * support local temporary tablespaces.
+	 * polar superuser supports only syntactically compatible tablespaces on shared disks
+	 * 
+	 * real tablespaces need to create directories and soft links. And record WAL logs
+	 */
+	if (polar_enable_dma || superuser())
 	{
-		xl_tblspc_create_rec xlrec;
+		create_tablespace_directories(location, tablespaceoid);
 
-		xlrec.ts_id = tablespaceoid;
+		/* Record the filesystem change in XLOG */
+		{
+			xl_tblspc_create_rec xlrec;
 
-		XLogBeginInsert();
-		XLogRegisterData((char *) &xlrec,
-						 offsetof(xl_tblspc_create_rec, ts_path));
-		XLogRegisterData((char *) location, strlen(location) + 1);
+			xlrec.ts_id = tablespaceoid;
 
-		(void) XLogInsert(RM_TBLSPC_ID, XLOG_TBLSPC_CREATE);
+			XLogBeginInsert();
+			XLogRegisterData((char *)&xlrec,
+							 offsetof(xl_tblspc_create_rec, ts_path));
+			XLogRegisterData((char *)location, strlen(location) + 1);
+
+			(void)XLogInsert(RM_TBLSPC_ID, XLOG_TBLSPC_CREATE);
+		}
 	}
 
 	/*
@@ -483,53 +512,74 @@ DropTableSpace(DropTableSpaceStmt *stmt)
 	deleteSharedDependencyRecordsFor(TableSpaceRelationId, tablespaceoid, 0);
 
 	/*
+	 * POLAR: Before drop pages for this tablespace that are in the shared buffer
+	 * cache and remove tablespace files, we should synchronize a wal to ensure
+	 * that all replicas have no backends to use these pages and files.
+	 * the function is the same as polar_sync_dropdb_wal
+	 */
+	polar_sync_droptbl_wal(tablespaceoid);
+
+	/*
 	 * Acquire TablespaceCreateLock to ensure that no TablespaceCreateDbspace
 	 * is running concurrently.
 	 */
 	LWLockAcquire(TablespaceCreateLock, LW_EXCLUSIVE);
 
 	/*
-	 * Try to remove the physical infrastructure.
+	 * POLAR: In DMA mode, which is equivalent to local disk mode, we support 
+	 * the creation of real tablespaces
+	 * In non-DMA mode, superuser needs to create real tablespaces in order to 
+	 * support local temporary tablespaces.
+	 * polar superuser supports only syntactically compatible tablespaces on shared disks
+	 * 
+	 * real tablespaces need to drop directories and soft links. And record WAL logs
 	 */
-	if (!destroy_tablespace_directories(tablespaceoid, false))
+	if (polar_enable_dma || superuser())
 	{
 		/*
-		 * Not all files deleted?  However, there can be lingering empty files
-		 * in the directories, left behind by for example DROP TABLE, that
-		 * have been scheduled for deletion at next checkpoint (see comments
-		 * in mdunlink() for details).  We could just delete them immediately,
-		 * but we can't tell them apart from important data files that we
-		 * mustn't delete.  So instead, we force a checkpoint which will clean
-		 * out any lingering files, and try again.
-		 *
-		 * XXX On Windows, an unlinked file persists in the directory listing
-		 * until no process retains an open handle for the file.  The DDL
-		 * commands that schedule files for unlink send invalidation messages
-		 * directing other PostgreSQL processes to close the files.  DROP
-		 * TABLESPACE should not give up on the tablespace becoming empty
-		 * until all relevant invalidation processing is complete.
+		 * Try to remove the physical infrastructure.
 		 */
-		RequestCheckpoint(CHECKPOINT_IMMEDIATE | CHECKPOINT_FORCE | CHECKPOINT_WAIT);
 		if (!destroy_tablespace_directories(tablespaceoid, false))
 		{
-			/* Still not empty, the files must be important then */
-			ereport(ERROR,
-					(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-					 errmsg("tablespace \"%s\" is not empty",
-							tablespacename)));
+			/*
+			 * Not all files deleted?  However, there can be lingering empty files
+			 * in the directories, left behind by for example DROP TABLE, that
+			 * have been scheduled for deletion at next checkpoint (see comments
+			 * in mdunlink() for details).  We could just delete them immediately,
+			 * but we can't tell them apart from important data files that we
+			 * mustn't delete.  So instead, we force a checkpoint which will clean
+			 * out any lingering files, and try again.
+			 *
+			 * XXX On Windows, an unlinked file persists in the directory listing
+			 * until no process retains an open handle for the file.  The DDL
+			 * commands that schedule files for unlink send invalidation messages
+			 * directing other PostgreSQL processes to close the files.  DROP
+			 * TABLESPACE should not give up on the tablespace becoming empty
+			 * until all relevant invalidation processing is complete.
+			 */
+			RequestCheckpoint(CHECKPOINT_IMMEDIATE | CHECKPOINT_FORCE | CHECKPOINT_WAIT);
+			if (!destroy_tablespace_directories(tablespaceoid, false))
+			{
+				/* Still not empty, the files must be important then */
+				ereport(ERROR,
+						(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+						 errmsg("tablespace \"%s\" is not empty",
+								tablespacename)));
+			}
 		}
-	}
 
-	/* Record the filesystem change in XLOG */
-	{
-		xl_tblspc_drop_rec xlrec;
+		/* Record the filesystem change in XLOG */
+		if (local_droptbl_write_wal_beforehand == false)
+		{
+			xl_tblspc_drop_rec xlrec;
 
-		xlrec.ts_id = tablespaceoid;
+			xlrec.ts_id = tablespaceoid;
 
-		XLogBeginInsert();
-		XLogRegisterData((char *) &xlrec, sizeof(xl_tblspc_drop_rec));
+			XLogBeginInsert();
+			XLogRegisterData((char *)&xlrec, sizeof(xl_tblspc_drop_rec));
 
-		(void) XLogInsert(RM_TBLSPC_ID, XLOG_TBLSPC_DROP);
+			(void)XLogInsert(RM_TBLSPC_ID, XLOG_TBLSPC_DROP);
+		}
 	}
 
 	/*
@@ -617,8 +667,14 @@ create_tablespace_directories(const char *location, const Oid tablespaceoid)
 	/*
 	 * The creation of the version directory prevents more than one tablespace
 	 * in a single location.
+	 * In Polar local fs mode, master create tablespace directory but replica
+	 * will not create tablespace directory, it happen just for testing mode.
+	 * Because in testing mode, master and replica will create tablespace in
+	 * the same directory.
 	 */
-	if (MakePGDirectory(location_with_version_dir, false) < 0)
+	if (MakePGDirectory(location_with_version_dir, false) < 0 &&
+		!polar_enable_localfs_test_mode &&
+		!polar_in_replica_mode())
 	{
 		if (errno == EEXIST)
 			ereport(ERROR,
@@ -674,6 +730,9 @@ destroy_tablespace_directories(Oid tablespaceoid, bool redo)
 	struct dirent *de;
 	char	   *subfile;
 	struct stat st;
+
+	if (polar_enable_localfs_test_mode && polar_in_replica_mode())
+		return true;
 
 	linkloc_with_version_dir = psprintf("pg_tblspc/%u/%s", tablespaceoid,
 										TABLESPACE_VERSION_DIRECTORY);
@@ -1484,10 +1543,6 @@ tblspc_redo(XLogReaderState *record)
 	/* Backup blocks are not used in tblspc records */
 	Assert(!XLogRecHasAnyBlockRefs(record));
 
-	/* POLAR: disable tablespace ddl */
-	if (POLAR_FILE_IN_SHARED_STORAGE())
-		elog(ERROR, "user defined tablespace is not supported yet");
-
 	if (info == XLOG_TBLSPC_CREATE)
 	{
 		xl_tblspc_create_rec *xlrec = (xl_tblspc_create_rec *) XLogRecGetData(record);
@@ -1536,4 +1591,34 @@ tblspc_redo(XLogReaderState *record)
 	}
 	else
 		elog(PANIC, "tblspc_redo: unknown op code %u", info);
+}
+
+/*
+ * POLAR: Record the filesystem change in XLOG
+ */
+static void
+polar_sync_droptbl_wal(Oid tablespaceoid)
+{
+	xl_tblspc_drop_rec xlrec;
+	XLogRecPtr        polar_recptr;
+
+	/* Read the guc to a local copy, in case it gets changed by conf reload */
+	local_droptbl_write_wal_beforehand = polar_droptbl_write_wal_beforehand;
+
+	if (!POLAR_FILE_IN_SHARED_STORAGE() || !local_droptbl_write_wal_beforehand)
+		return;
+
+	xlrec.ts_id = tablespaceoid;
+
+	XLogBeginInsert();
+	XLogRegisterData((char *) &xlrec, sizeof(xl_tblspc_drop_rec));
+
+	polar_recptr = XLogInsert(RM_TBLSPC_ID, XLOG_TBLSPC_DROP);
+
+	/* POLAR: sync ddl, enable standby lock, wait all ro node reply this log */
+	if (polar_enable_ddl_sync_mode)
+	{
+		XLogFlush(polar_recptr);
+		SyncRepWaitForLSN(polar_recptr, false, true);
+	}
 }

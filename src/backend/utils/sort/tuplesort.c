@@ -3580,8 +3580,22 @@ copytup_heap(Tuplesortstate *state, SortTuple *stup, void *tup)
 	HeapTupleData htup;
 	MemoryContext oldcontext = MemoryContextSwitchTo(state->tuplecontext);
 
-	/* copy the tuple into sort storage */
-	tuple = ExecCopySlotMinimalTuple(slot);
+	/* POLAR px */
+	if (tup_has_memtuple(slot))
+	{
+		slot_getallattrs(slot);
+		tuple = heap_form_minimal_tuple(state->tupDesc,
+										slot_get_values(slot),
+										slot_get_isnull(slot));
+	}
+	else
+	{
+		/* copy the tuple into sort storage */
+		tuple = ExecCopySlotMinimalTuple(slot);
+	}
+	/* POLAR end */
+
+
 	stup->tuple = (void *) tuple;
 	USEMEM(state, GetMemoryChunkSpace(tuple));
 	/* set up first-column key value */

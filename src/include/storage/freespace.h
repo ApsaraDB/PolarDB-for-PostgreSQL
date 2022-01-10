@@ -18,6 +18,10 @@
 #include "storage/relfilenode.h"
 #include "utils/relcache.h"
 
+/* POLAR */
+#include "access/xlogdefs.h"
+#include "storage/smgr.h"
+
 /* prototypes for public functions in freespace.c */
 extern Size GetRecordedFreeSpace(Relation rel, BlockNumber heapBlk);
 extern BlockNumber GetPageWithFreeSpace(Relation rel, Size spaceNeeded);
@@ -34,5 +38,7 @@ extern void FreeSpaceMapTruncateRel(Relation rel, BlockNumber nblocks);
 extern void FreeSpaceMapVacuum(Relation rel);
 extern void FreeSpaceMapVacuumRange(Relation rel, BlockNumber start,
 						BlockNumber end);
+
+extern BlockNumber polar_calc_fsm_blocks(SMgrRelation reln, BlockNumber heap_blocks, uint16 *first_removed_slot);
 
 #endif							/* FREESPACE_H_ */

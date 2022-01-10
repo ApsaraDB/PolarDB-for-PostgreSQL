@@ -28,10 +28,12 @@
 
 #include "access/commit_ts.h"
 #include "access/gin.h"
+#include "access/parallel.h"
 #include "access/rmgr.h"
 #include "access/transam.h"
 #include "access/twophase.h"
 #include "access/xact.h"
+#include "access/xlog.h"
 #include "access/xlog_internal.h"
 #include "catalog/namespace.h"
 #include "catalog/pg_authid.h"
@@ -68,7 +70,9 @@
 #include "replication/walreceiver.h"
 #include "replication/walsender.h"
 #include "storage/bufmgr.h"
+#include "storage/encryption.h"
 #include "storage/dsm_impl.h"
+#include "storage/kmgr.h"
 #include "storage/standby.h"
 #include "storage/fd.h"
 #include "storage/large_object.h"
@@ -76,6 +80,7 @@
 #include "storage/proc.h"
 #include "storage/predicate.h"
 #include "tcop/tcopprot.h"
+#include "storage/smgr.h"
 #include "tsearch/ts_cache.h"
 #include "utils/builtins.h"
 #include "utils/bytea.h"
@@ -93,7 +98,20 @@
 
 /* POLAR */
 #include "access/polar_async_ddl_lock_replay.h"
+#include "access/polar_queue_manager.h"
+#include "access/multixact.h"
+#include "access/subtrans.h"
+#include "commands/async.h"
+#include "commands/tablecmds.h"
+#include "common/username.h"
+#include "polar_flashback/polar_flashback_log.h"
+#include "replication/polar_priority_replication.h"
+#include "storage/predicate.h"
 #include "storage/polar_fd.h"
+#include "storage/polar_io_stat.h"
+#include "nodes/replnodes.h"
+#include "storage/s_lock.h"
+#include "polar_dma/polar_dma.h"
 
 #ifndef PG_KRB_SRVTAB
 #define PG_KRB_SRVTAB ""
@@ -102,6 +120,7 @@
 #define CONFIG_FILENAME "postgresql.conf"
 #define HBA_FILENAME	"pg_hba.conf"
 #define IDENT_FILENAME	"pg_ident.conf"
+#define POLAR_DMA_FILENAME	"polar_dma.conf"
 
 #ifdef EXEC_BACKEND
 #define CONFIG_EXEC_PARAMS "global/config_exec_params"
@@ -113,6 +132,7 @@
  * serialization.
  */
 #define REALTYPE_PRECISION 17
+
 
 /* XXX these should appear in other modules' header files */
 extern bool Log_disconnections;
@@ -136,6 +156,82 @@ static int	GUC_check_errcode_value;
 char	   *GUC_check_errmsg_string;
 char	   *GUC_check_errdetail_string;
 char	   *GUC_check_errhint_string;
+
+/* POLAR GUCS */
+bool           polar_force_unlogged_to_logged_table;
+bool           polar_allow_huge_alloc;
+bool	polar_suppress_preload_error;
+bool           polar_hold_truncate_interrupt;
+bool 		   polar_replay_fpi_check_lsn;
+bool           polar_enable_localfs_test_mode;
+bool 			polar_enable_ro_prewarm;
+
+/* polar_realease_date, format:YYYYMMDD */
+static char *polar_release_date;
+/* polar_version, format:1.1.0 */
+static char *polar_version;
+bool           polar_enable_polar_superuser;
+bool           polar_apply_global_guc_for_super;
+char      *polar_available_extensions;
+char      *polar_forbidden_extensions;
+char      *polar_supported_extensions;
+char      *polar_internal_allowed_extensions;
+char	  *polar_internal_allowed_roles;
+bool                   polar_force_trans_ro_non_sup;
+int                    polar_max_non_super_conns;
+int                    polar_max_super_conns;
+int                    polar_reserved_polar_super_conns;
+int 	polar_dma_max_standby_wait_delay_size_mb = 0;
+
+/* POLAR */
+double	polar_max_normal_backends_factor;
+
+
+static int	polar_virtual_pid;
+static int	polar_cancel_key;
+int			polar_delay_dml_option;
+int			polar_primary_dml_delay = 0;
+int			polar_delay_dml_lsn_lag_threshold = 0;
+bool		polar_shutdown_walsnd_wait_non_super;
+int			polar_shutdown_walsnd_wait_replication_kind;
+bool		polar_temp_relation_file_in_shared_storage = false;
+bool		polar_enable_convert_or_to_union_all;
+bool 		polar_publish_via_partition_root = false;
+
+char		*polar_partition_recursive_reloptions = NULL;
+
+/* POLAR: GUC variable for audit log */
+bool 		polar_enable_audit_log_bind_sql_parameter = false;
+bool 		polar_enable_audit_log_bind_sql_parameter_new = false;
+bool		polar_enable_replica_use_smgr_cache = false;
+bool 		polar_enable_standby_use_smgr_cache = false;
+int			polar_nblocks_cache_mode;
+
+/* auto cascade extensions */
+char      *polar_auto_cascade_extensions;
+
+/* POLAR: timeout for sync replication */
+int			polar_sync_replication_timeout;
+int			polar_sync_rep_timeout_break_lsn_lag;
+int			polar_semi_sync_observation_window;
+int			polar_semi_sync_max_backoff_window;
+int			polar_semi_sync_min_backoff_window;
+bool		polar_enable_semi_sync_optimization;
+
+bool		polar_enable_flashback_drop = false;
+
+/* POLAR: gap limit between local redoptr and shared redoptr for replica */
+int			polar_replica_redo_gap_limit;
+
+/* POLAR: Crash recovery RTO */
+double 		polar_crash_recovery_rto_threshold;
+int 		polar_crash_recovery_rto;
+int 		polar_crash_recovery_rto_delay_count;
+int 		polar_io_read_throughtput_userset;
+int 		polar_crash_recovery_rto_statistics_count;
+
+/* POLAR: Btree build page buffer count */
+int			polar_bt_write_page_buffer_size;
 
 static void do_serialize(char **destptr, Size *maxbytes, const char *fmt,...) pg_attribute_printf(3, 4);
 
@@ -199,10 +295,44 @@ static const char *show_unix_socket_permissions(void);
 static const char *show_log_file_mode(void);
 static const char *show_data_directory_mode(void);
 
+/* POLAR px */
+static void polar_assign_max_normal_backends(double newval, void *extra);
+
 /* Private functions in guc-file.l that need to be called from guc.c */
 static ConfigVariable *ProcessConfigFileInternal(GucContext context,
 						  bool applySettings, int elevel);
 
+/* POLAR: Private functions in guc-file.l that need to be called from guc.c */
+static bool polar_process_polar_node_static_config_internal(void);
+
+/* POLAR: for security definer function */
+static bool polar_verify_list_syntax(const char *liststring);
+static void assign_polar_forbidden_functions(const char *newval, void *extra);
+static bool check_polar_forbidden_functions(char **newval, void **extra, GucSource source);
+static const char *show_polar_supported_extensions(void);
+static bool check_polar_available_extensions(char **newval, void **extra, GucSource source);
+static bool check_polar_allowed_roles(char **newval, void **extra, GucSource source);
+static bool check_session_preload_libs(char **newval, void **extra, GucSource source);
+static void assign_polar_rename_wal_ready_file(const char *newval, void *extra);
+static bool polar_check_internal_shared_preload_libraries(char **newval, void **extra, GucSource source);
+static bool polar_check_nblocks_cache_mode(int *newval, void **extra, GucSource source);
+static bool polar_check_recursive_reloptions(char **newval, void **extra, GucSource source);
+static void polar_assign_recursive_reloptions(const char *newval, void *extra);
+
+static void polar_assign_virtual_pid(const int newval, void *extra);
+static void polar_assign_cancel_key(const int newval, void *extra);
+static const char *polar_show_max_connections(void);
+static bool check_high_priority_replication_standby_names(char **newval, void **extra, GucSource source);
+static bool check_low_priority_replication_standby_names(char **newval, void **extra, GucSource source);
+static bool polar_check_xact_split_xids(char **newval, void **extra, GucSource source);
+static void polar_assign_xact_split_wait_lsn(const char *newval, void *extra);
+
+static void polar_assign_crash_recovery_rto(const int newval, void *extra);
+static void polar_assign_crash_recovery_rto_threshold(double newval, void *extra);
+static void polar_assign_crash_recovery_rto_delay_time(const int newval, void *extra);
+
+static bool polar_check_enable_lazy_checkpoint(bool *newval, void **extra, GucSource source);
+static bool polar_check_enable_full_page_writes(bool *newval, void **extra, GucSource source);
 
 /*
  * Options for enum values defined in this module.
@@ -251,6 +381,15 @@ static const struct config_enum_entry server_message_level_options[] = {
 	{"log", LOG, false},
 	{"fatal", FATAL, false},
 	{"panic", PANIC, false},
+	{NULL, 0, false}
+};
+
+/* POLAR */
+static const struct config_enum_entry polar_save_stack_info_level_options[] = {
+	{"error", ERROR, false},
+	{"fatal", FATAL, false},
+	{"panic", PANIC, false},
+	{"none", 0, false},
 	{NULL, 0, false}
 };
 
@@ -426,6 +565,86 @@ static const struct config_enum_entry password_encryption_options[] = {
 };
 
 /*
+ * Polar: Options for core_dump options
+ */
+static const struct config_enum_entry coredump_options[] = {
+	{"disable", POLAR_CORE_DUMP_DISABLE, false},
+	{"stack_print", POLAR_CORE_DUMP_PRINT, false},
+	{"core_clear", POLAR_CORE_DUMP_CLEAR, false},
+	{"all", POLAR_CORE_DUMP_ALL, false},
+	{NULL, 0, false}
+};
+/* Polar: end */
+
+/* POLAR: Options for delay dml */
+static const struct config_enum_entry delay_dml_options[] = {
+	{"once", POLAR_DELAY_DML_ONCE, false},
+	{"multi", POLAR_DELAY_DML_MULTI, false},
+	{"off", POLAR_DELAY_DML_OFF, false},
+	{NULL, 0, false}
+};
+
+const struct config_enum_entry data_encryption_cipher_options[] = {
+	{"off",		TDE_ENCRYPTION_OFF, false},
+	{"aes-128", TDE_ENCRYPTION_AES_128, false},
+	{"aes-256", TDE_ENCRYPTION_AES_256, false},
+	{"sm4",     TDE_ENCRYPTION_SM4, false},
+	{NULL, 0, false}
+};
+
+/* POLAR: Options for shutdown optimization */
+static const struct config_enum_entry polar_shutdown_walsnd_wait_replication_kind_options[] = {
+	{"none", POLAR_REPLICATION_KIND_INVALID, false},
+	{"logical", REPLICATION_KIND_LOGICAL, false},
+	{"physical", REPLICATION_KIND_PHYSICAL, false},
+	{"all", POLAR_REPLICATION_KIND_ALL, false},
+	{NULL, 0, false}
+};
+
+/*
+ * POLAR: Priority replication mode options
+ */
+static const struct config_enum_entry polar_priority_replication_mode_options[] = {
+	{"any", POLAR_PRI_REP_ANY, false},
+	{"all", POLAR_PRI_REP_ALL, false},
+	{"off", POLAR_PRI_REP_OFF, false},
+	{"false", POLAR_PRI_REP_OFF, true},
+	{"no", POLAR_PRI_REP_OFF, true},
+	{"0", POLAR_PRI_REP_OFF, true},
+	{NULL, 0, false}
+};
+
+/* POLAR: smgr nblocks cache mode */
+static const struct config_enum_entry polar_block_cache_options[] = {
+	{"all", POLAR_NBLOCKS_CACHE_ALL_MODE, false},
+	{"bitmapscan", POLAR_NBLOCKS_CACHE_BITMAPSCAN_MODE, false},
+	{"scan", POLAR_NBLOCKS_CACHE_SCAN_MODE, false},
+	{"off", POLAR_NBLOCKS_CACHE_OFF_MODE, false},
+	{"false", POLAR_NBLOCKS_CACHE_OFF_MODE, true},
+	{"no", POLAR_NBLOCKS_CACHE_OFF_MODE, true},
+	{"0", POLAR_NBLOCKS_CACHE_OFF_MODE, true},
+	{NULL, 0, false}
+};
+
+/*
+ * POLAR
+ * instance specification for cpu and memory
+ * 
+ * CPU/MEM
+ * 0  indicates ignore instance specification, features rely on instance specification should enable
+ */
+int polar_instance_spec_cpu = 0;
+int polar_instance_spec_mem = 0;
+int polar_instance_spec_normal_mem = 0;
+
+/* POLAR: operator level mem limit */
+int	polar_max_dsm_request_size = 0;
+int polar_max_hashagg_mem = 0;
+int polar_max_setop_mem = 0;
+int polar_max_subplan_mem = 0;
+int polar_max_recursiveunion_mem = 0;
+
+/*
  * Options for enum values stored in other modules
  */
 extern const struct config_enum_entry wal_level_options[];
@@ -470,6 +689,7 @@ char	   *cluster_name = "";
 char	   *ConfigFileName;
 char	   *HbaFileName;
 char	   *IdentFileName;
+char	   *PolarDMAFileName;
 char	   *external_pid_file;
 
 char	   *pgstat_temp_directory;
@@ -479,6 +699,7 @@ char	   *application_name;
 int			tcp_keepalives_idle;
 int			tcp_keepalives_interval;
 int			tcp_keepalives_count;
+
 
 /*
  * SSL renegotiation was been removed in PostgreSQL 9.5, but we tolerate it
@@ -494,11 +715,58 @@ int			ssl_renegotiation_limit;
  */
 int			huge_pages;
 
+/* POLAR */
+bool		polar_csn_enable;
+bool 		polar_csn_elog_panic_enable;
+bool		polar_csnlog_upperbound_enable;
+bool		polar_csn_xid_snapshot;
+/* POLAR end */
+
+/* POLAR wal pipeline */
+
+/* general params */
+bool polar_wal_pipeline_enable = false;
+/*
+ * mode 1	advance+write+flush+notify 	1 thread
+ * mode 2	advance+write+flush notify	2 threads
+ * mode 3	advance write+flush notify  3 threads
+ * mode 4	advance+write flush notify  3 threads
+ * mode 5	advance write flush notify  4 threads
+ */
+int polar_wal_pipeline_mode = 2;
+bool polar_wal_pipeline_wait_object_align = true;
+int	polar_wal_pipeline_wait_timeout = 10;				/* unit us */
+int polar_wal_pipeline_commit_wait_spin_delay = 0;	/* 1000 spin corresponds to 4us */
+int polar_wal_pipeline_commit_wait_timeout = 10000;		/* unit us */
+int	polar_wal_pipeline_flush_event_array_size = 128;	/* should be multiple of 2 */
+int	polar_wal_pipeline_flush_event_slot_size = 1024;		/* should be multiple of 2 */
+int polar_wal_pipeline_unflushed_xlog_array_size = 1024;	/* should be multiple of 2 */
+
+/* params for advance worker */
+int polar_wal_pipeline_advance_worker_spin_delay = 0;
+int polar_wal_pipeline_advance_worker_timeout = 10;
+int polar_wal_pipeline_advance_worker_write_max_size = 0; /* 0 indicate no limit */
+int polar_wal_pipeline_recent_written_array_size = 1024;	/* should be multiple of 2 */
+
+/* params for write worker */
+int polar_wal_pipeline_write_worker_spin_delay = 0;
+int polar_wal_pipeline_write_worker_timeout = 10000;
+
+/* params for flush worker */
+int polar_wal_pipeline_flush_worker_spin_delay = 0;
+int polar_wal_pipeline_flush_worker_timeout = 10000;
+
+/* params for notify worker */
+int polar_wal_pipeline_notify_worker_spin_delay = 0;
+int polar_wal_pipeline_notify_worker_timeout = 10;
+int	polar_wal_pipeline_notify_worker_num = 1;
+
 /*
  * These variables are all dummies that don't do anything, except in some
  * cases provide the value for SHOW to display.  The real state is elsewhere
  * and is kept in sync by assign_hooks.
  */
+
 static char *syslog_ident_str;
 static double phony_random_seed;
 static char *client_encoding_string;
@@ -524,81 +792,196 @@ static bool data_checksums;
 static bool integer_datetimes;
 static bool assert_enabled;
 
+/* POLAR */
+bool		polar_log_statement_with_duration = true;		/* Log statement text
+														 * along with duration
+														 * info, in order to
+														 * facilitate slow query
+														 * collection */
+static int num_forbidden_functions = 0;
+static char **polar_forbidden_functions;
+static char *polar_rename_wal_ready_file;
+int		polar_max_log_files;
+int     polar_max_auditlog_files;
+int     polar_max_slowlog_files;
+int     polar_max_logindex_files;
+int 	polar_trace_logindex_messages = LOG;
+
+/*
+ * Forbidden functions names for non-superuser
+ *
+ * Note: these strings are deliberately not localized.
+ */
+const char *const polar_forbidden_funcnames[] =
+{
+	"pg_ls_dir",
+	"pg_read_file",
+	"pg_read_binary_file",
+	"pg_stat_file",
+	"set_config",
+	"pg_reload_conf",
+	"pg_rotate_logfile",
+	"pg_drop_replication_slot",
+	"pg_create_logical_replication_slot",
+	"pg_create_physical_replication_slot",
+	"pg_start_backup",
+	"pg_stop_backup",
+	"lo_import",
+	"lo_export",
+	NULL /* end */
+};
+
+bool		polar_super_run_as_secdef;
+char	   *polar_forbidden_functions_ext;
+/* POLAR end */
+
 /* should be static, but commands/variable.c needs to get at this */
 char	   *role_string;
 
 /* POLAR */
 #define POLAR_MAX_PDB_HOSTID			512
-
-/* POLAR GUCs */
-static char *polar_release_date;	/* format: YYYYMMDD */
-static char *polar_version;			/* format: 1.1.0 */
-
 int		polar_hostid = 0;
+int		polar_bulk_extend_size = 0;
+int		polar_min_bulk_extend_table_size = 0;
+int		polar_bulk_read_size = 0;
+int		polar_recovery_bulk_extend_size = 0;
+bool 	polar_enable_master_recovery_bulk_extend = false;
+int		polar_index_create_bulk_extend_size = 0;
+int		polar_index_bulk_extend_size = 0;
+int 	polar_csnlog_slot_size = 0;
 int		polar_clog_slot_size = 0;
+int     polar_committs_buffer_slot_size = 0;
+int		polar_mxact_offset_buffer_slot_size = 0;
+int		polar_mxact_member_buffer_slot_size = 0;
+int 	polar_subtrans_buffer_slot_size = 0;
+int		polar_async_buffer_slot_size = 0;
+int		polar_oldserxid_buffer_slot_size = 0;
+int 	polar_clog_max_local_cache_segments = 0;
+int		polar_logindex_max_local_cache_segments = 0;
+int 	polar_commit_ts_max_local_cache_segments = 0;
+int 	polar_multixact_max_local_cache_segments = 0;
+int		polar_csnlog_max_local_cache_segments = 0;
+int 	polar_parallel_replay_proc_num = 0;
+int 	polar_parallel_replay_task_queue_depth = 0;
 char	*polar_datadir = NULL;
 char	*polar_disk_name = NULL;
 char	*polar_storage_cluster_name = NULL;
+bool	polar_use_statistical_relpages = false;
 bool	polar_enable_shared_storage_mode = false;
 bool	polar_enable_ddl_sync_mode = true;
 bool	polar_enable_transaction_sync_mode = false;
 bool    polar_enable_debug = false;
 bool    polar_enable_pwrite = false;
 bool    polar_enable_pread = false;
-
-int  	polar_copy_buffers;
-int  	polar_bgwriter_max_batch_size;
+bool    polar_enable_parallel_replay_standby_mode = false;
 int  	polar_check_checkpoint_legal_interval;
+int  	polar_copy_buffers;
+int 	polar_logindex_table_batch_size = 1;
+bool 	polar_enable_copy_buffer;
+bool 	polar_enable_flushlist;
+int  	polar_bgwriter_max_batch_size;
 int  	polar_bgwriter_batch_size_flushlist;
+bool 	polar_force_flush_buffer = false;
 int  	polar_buffer_copy_min_modified_count;
 int  	polar_buffer_copy_lsn_lag_with_cons_lsn;
+bool 	polar_enable_normal_bgwriter;
 int  	polar_bgwriter_sleep_lsn_lag;
-int  	polar_parallel_bgwriter_workers;
-int  	polar_parallel_bgwriter_delay;
-int		polar_parallel_bgwriter_check_interval;
-int		polar_parallel_new_bgwriter_threshold_lag;
-int		polar_parallel_new_bgwriter_threshold_time;
-bool	polar_enable_flushlist = true;
-bool	polar_enable_copy_buffer = true;
-bool 	polar_force_flush_buffer = false;
-bool 	polar_enable_normal_bgwriter = false;
-bool 	polar_enable_control_vm_flush = false;
-bool 	polar_enable_lazy_checkpoint = false;
-bool 	polar_startup_from_local_data_file = false;
-bool 	polar_enable_parallel_bgwriter = true;
-bool 	polar_enable_dynamic_parallel_bgwriter = true;
-bool	polar_dropdb_write_wal_beforehand = true;
-
-int 	polar_logindex_unit_test = 0;
-int 	polar_logindex_table_batch_size = 1;
-int     polar_max_logindex_files;
-int		polar_fullpage_keep_segments = 16;
+int  	polar_ring_buffer_vacuum;
+bool  	polar_enable_control_vm_flush;
+bool    polar_enable_lazy_checkpoint;
 int     polar_read_ahead_xlog_num;
-int 	polar_bg_replay_batch_size;
-int		polar_wait_old_version_page_timeout = 30 * 1000;
-int     polar_logindex_bloom_blocks;
-int     polar_logindex_mem_size;
-int     polar_xlog_queue_buffers;
+bool    polar_enable_master_xlog_read_ahead;
+bool    polar_enable_parallel_bgwriter;
+int     polar_parallel_bgwriter_workers;
+int     polar_parallel_bgwriter_delay;
+int     polar_parallel_bgwriter_check_interval;
+int     polar_parallel_new_bgwriter_threshold_lag;
+int     polar_parallel_new_bgwriter_threshold_time;
+bool    polar_parallel_bgwriter_enable_dynamic;
+bool    polar_enable_physical_repl_non_super_wal_snd;
+int     polar_wal_snd_reserved_for_superuser;
+int     polar_repl_slots_reserved_for_superuser;
+int     polar_logical_repl_workers_reserved_for_superuser;
+
+/* POLAR gucs */
+bool    polar_force_change_checkpoint = false;
+bool	polar_enable_resolve_conflict = true;
+
+bool    polar_enable_fallocate_walfile = true;
+bool    polar_skip_fill_walfile_zero_page = false;
+bool	polar_enable_maxscale_support = true;
+bool	polar_enable_xlog_buffer = false;
 int	    polar_xlog_page_buffers;
-int		polar_startup_replay_delay_size = 0;
-int		polar_write_logindex_active_table_delay = 200;
+int     polar_xlog_queue_buffers;
+int     polar_logindex_mem_size;
+int     polar_logindex_bloom_blocks;
+int     polar_rel_size_cache_blocks;
+int     polar_unit_test_mem_size;
+
+int 	polar_bg_replay_batch_size;
+int		polar_enable_coredump_handler;
+bool	polar_dropdb_write_wal_beforehand = true;
+bool	polar_enable_full_page_write_in_backup;
+bool	polar_enable_lazy_checkpoint_in_backup;
+bool	polar_enable_checkpoint_in_backup;
+bool	polar_enable_switch_wal_in_backup;
+bool	polar_enable_create_backup_history_file_in_backup;
+bool	polar_enable_persisted_logical_slot = true;
+bool	polar_enable_persisted_physical_slot = false;
+bool	polar_enable_persisted_spill_file = false;
+bool	polar_enable_early_launch_checkpointer = true;
+int		polar_fullpage_snapshot_min_modified_count = 0;
 int		polar_fullpage_snapshot_replay_delay_threshold = 0;
 int		polar_fullpage_snapshot_oldest_lsn_delay_threshold = 0;
-int		polar_fullpage_snapshot_min_modified_count = 0;
-int 	polar_clog_max_local_cache_segments = 0;
-bool    polar_enable_redo_logindex = true;
-bool	polar_enable_flush_active_logindex_memtable = true;
-bool	polar_streaming_xlog_meta = false;
+int		polar_write_logindex_active_table_delay = 200;
 bool	polar_enable_fullpage_snapshot = true;
-bool	polar_enable_run_walreceiver_always = false;
-bool	polar_enable_xlog_buffer = false;
-bool    polar_enable_master_xlog_read_ahead;
-bool	polar_enable_page_outdate = false;
-bool	polar_enable_redo_debug = false;
-bool	polar_enable_resolve_conflict = true;
-bool	polar_enable_standby_xlog_meta = false;
+int		polar_startup_replay_delay_size = 0;
+int		polar_wait_old_version_page_timeout = 30 * 1000;
+bool	polar_enable_keep_wal_ready_file = true;
+bool 	polar_enable_node_static_config = true;
+bool    polar_enable_slru_hash_index = false;
+int		polar_fullpage_keep_segments = 16;
+bool    polar_enable_track_lock_timing = false;
+bool    polar_enable_track_lock_stat = false;
+bool    polar_enable_track_network_timing = false;
+bool    polar_enable_track_network_stat = false;
 bool    polar_enable_stat_wait_info = true;
-/* POLAR GUC End */
+bool 	polar_super_call_all_trigger_event = false;
+bool    polar_enable_track_sql_time_stat = false;
+bool	polar_droptbl_write_wal_beforehand = true;
+bool	polar_enable_promote_wait_for_walreceive_done = false;
+bool	polar_enable_send_stop = false;
+bool	polar_enable_buffer_alignment = false;
+bool	polar_enable_io_fencing = true;
+bool	polar_enable_operator_mem_limit = true;
+bool	polar_enable_operator_mem_limit_by_level = true;
+bool	polar_enable_dump_incorrect_checksum_xlog = false;
+bool	polar_trace_heap_scan_flow = false;
+
+/*
+ * polar replica multi version snapshot related GUC parameters
+ */
+bool 	polar_replica_multi_version_snapshot_enable = true;
+int  	polar_replica_multi_version_snapshot_slot_num = 32;
+int  	polar_replica_multi_version_snapshot_retry_times = 3;
+
+bool	polar_enable_simply_redo_error_log = false;
+bool	polar_enable_persisted_buffer_pool;
+bool	polar_enable_early_launch_parallel_bgwriter;
+bool	polar_enable_alb_client_address = true;
+bool	polar_enable_lazy_end_of_recovery_checkpoint = false;
+bool	polar_create_table_with_full_replica_identity = true;
+bool    polar_enable_standby_pbp = true;
+bool    polar_enable_master_pbp = false;
+int		polar_save_stack_info_level = FATAL;
+
+/* POLAR: xact split */
+bool    polar_enable_xact_split = true;
+bool    polar_enable_xact_split_debug = true;
+char   *polar_xact_split_xids = NULL;
+bool	polar_xact_split_enable_sethintbits = false;
+static char *polar_xact_split_wait_lsn_str = NULL;
+/* POLAR end */
 
 /*
  * Displayable names for context types (enum GucContext)
@@ -714,6 +1097,8 @@ const char *const config_group_names[] =
 	gettext_noop("Statistics / Monitoring"),
 	/* STATS_COLLECTOR */
 	gettext_noop("Statistics / Query and Index Statistics Collector"),
+	/* Encryption for TDE */
+	gettext_noop("Encryption for TDE"),
 	/* AUTOVACUUM */
 	gettext_noop("Autovacuum"),
 	/* CLIENT_CONN */
@@ -742,6 +1127,12 @@ const char *const config_group_names[] =
 	gettext_noop("Customized Options"),
 	/* DEVELOPER_OPTIONS */
 	gettext_noop("Developer Options"),
+	/* POLAR_NODE_STATIC */
+	gettext_noop("polar node static arguments group"),
+	/* PX PX_WORKER_IDENTITY */
+	gettext_noop(PACKAGE_NAME " / Worker Process Identity"),
+	/* PX PX_ARRAY_TUNING */
+	gettext_noop(PACKAGE_NAME " / Array Tuning"),
 	/* help_config wants this array to be null-terminated */
 	NULL
 };
@@ -887,6 +1278,10 @@ static const unit_conversion time_unit_conversion_table[] =
  *
  * 7. If it's a new GUC_LIST_QUOTE option, you must add it to
  *	  variable_is_guc_list_quote() in src/bin/pg_dump/dumputils.c.
+ *
+ * 8. In PX, the guc is force explicit declare whether it needs to sync value
+ *	  between master and primary. Add guc name into either sync_guc_names_array
+ *	  or unsync_guc_names_array.
  */
 
 
@@ -894,221 +1289,119 @@ static const unit_conversion time_unit_conversion_table[] =
 
 static struct config_bool ConfigureNamesBool[] =
 {
-	/* POLAR BOOL GUCs Start */
 	{
-		{"polar_enable_standby_xlog_meta", PGC_SIGHUP, UNGROUPED,
-			gettext_noop("Whether push xlog meta into queue in startup."),
-			NULL,
-			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		{"polar_enable_flashback_drop",PGC_SUSET,UNGROUPED,
+			gettext_noop("whether to open flashback_drop"),
+			NULL
 		},
-		&polar_enable_standby_xlog_meta,
+		&polar_enable_flashback_drop,
 		false,
-		NULL, NULL, NULL
+		NULL,NULL,NULL
 	},
+
 	{
-		{"polar_enable_resolve_conflict", PGC_SIGHUP, UNGROUPED,
-			gettext_noop("A switch to control conflict resolving in polar standby mode"),
-			NULL,
-			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		{"polar_enable_master_pbp", PGC_POSTMASTER, UNGROUPED,
+		    gettext_noop("Enable master persisted buffer pool."),
+		    NULL,
 		},
-		&polar_enable_resolve_conflict,
-		false,
-		NULL, NULL, NULL
-	},
-	{
-		{"polar_enable_redo_debug", PGC_USERSET, UNGROUPED,
-			gettext_noop("A switch to control whether to open debug when replica redo."),
-			NULL,
-			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
-		},
-		&polar_enable_redo_debug,
-		false,
-		NULL, NULL, NULL
-	},
-	{
-		{"polar_enable_page_outdate", PGC_POSTMASTER, UNGROUPED,
-			gettext_noop("Enable page outdate while replaying xlog with logindex in replica"),
-			NULL,
-			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
-		},
-		&polar_enable_page_outdate,
+		&polar_enable_master_pbp,
 		true,
-		NULL, NULL, NULL
-	},
-	{
-		{"polar_enable_master_xlog_read_ahead", PGC_POSTMASTER, UNGROUPED,
-			gettext_noop("Enable master xlog read ahead in recovery"),
-			NULL,
-			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
-		},
-		&polar_enable_master_xlog_read_ahead,
-		false,
-		NULL, NULL, NULL
-	},
-	{
-		{"polar_enable_xlog_buffer", PGC_POSTMASTER, UNGROUPED,
-			gettext_noop("Enable xlog buffer"),
-			NULL,
-			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
-		},
-		&polar_enable_xlog_buffer,
-		true,
-		NULL, NULL, NULL
-	},
-	{
-		{"polar_enable_run_walreceiver_always", PGC_SIGHUP, UNGROUPED,
-			gettext_noop("Enable always run walreceiver in replica mode."),
-			NULL,
-			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
-		},
-		&polar_enable_run_walreceiver_always,
-		false,
-		NULL, NULL, NULL
-	},
-	{
-		{"polar_enable_stat_wait_info", PGC_POSTMASTER, UNGROUPED,
-		 	gettext_noop("Enable to stat wait object and wait time."),
-		 	NULL,
-		 	GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
-		},
-		&polar_enable_stat_wait_info,
-		true,
-		NULL, NULL, NULL
-	},
-	{
-		{"polar_enable_fullpage_snapshot", PGC_SIGHUP, UNGROUPED,
-			gettext_noop("Enable fullpage snapshot feature"),
-			NULL,
-			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
-		},
-		&polar_enable_fullpage_snapshot,
-		true,
-		NULL, NULL, NULL
-	},
-	{
-		{"polar_streaming_xlog_meta", PGC_POSTMASTER, UNGROUPED,
-			gettext_noop("Enable send xlog meta to replication."),
-			NULL,
-			GUC_NO_RESET_ALL
-		},
-		&polar_streaming_xlog_meta,
-		true,
-		NULL, NULL, NULL
-	},
-	{
-		{"polar_enable_flush_active_logindex_memtable", PGC_SIGHUP, UNGROUPED,
-			gettext_noop("Enable flush logindex active memtable"),
-			NULL,
-			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
-		},
-		&polar_enable_flush_active_logindex_memtable,
-		true,
-		NULL, NULL, NULL
-	},
-	{
-		{"polar_enable_redo_logindex", PGC_POSTMASTER, UNGROUPED,
-			gettext_noop("Whether use log index or not."),
-			NULL,
-			GUC_NO_RESET_ALL
-		},
-		&polar_enable_redo_logindex,
-		true,
-		NULL, NULL, NULL
-	},
-	{
-		{"polar_parallel_bgwriter_enable_dynamic", PGC_POSTMASTER, RESOURCES_BGWRITER,
-			gettext_noop("Start or stop extra parallel background writer dynamically."),
-			NULL,
-			GUC_NO_RESET_ALL
-		},
-		&polar_enable_dynamic_parallel_bgwriter,
-		true,
-		NULL, NULL, NULL
-	},
-	{
-		{"polar_enable_parallel_bgwriter", PGC_POSTMASTER, RESOURCES_BGWRITER,
-			gettext_noop("Enable parallel background writer."),
-			NULL,
-			GUC_NO_RESET_ALL
-		},
-		&polar_enable_parallel_bgwriter,
-		true,
-		NULL, NULL, NULL
-	},
-	{
-		{"polar_enable_lazy_checkpoint", PGC_SIGHUP, UNGROUPED,
-			gettext_noop("Enable lazy checkpoint."),
-			NULL,
-			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
-		},
-		&polar_enable_lazy_checkpoint,
-		/* default true, we need lazy checkpoint to advance checkpoint ptr regularly */
-		true,
-		NULL, NULL, NULL
-	},
-	{
-		{"polar_enable_control_vm_flush", PGC_POSTMASTER, UNGROUPED,
-			gettext_noop("Enable control visibility map to flush buffer."),
-			NULL,
-			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
-		},
-		&polar_enable_control_vm_flush,
-		false,
-		NULL, NULL, NULL
-	},
-	{
-		{"polar_enable_normal_bgwriter", PGC_SIGHUP, UNGROUPED,
-			gettext_noop("Enable normal background writer."),
-			NULL,
-			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
-		},
-		&polar_enable_normal_bgwriter,
-		false,
-		NULL, NULL, NULL
-	},
-	{
-		{"polar_force_flush_buffer", PGC_SIGHUP, UNGROUPED,
-			gettext_noop("Enable force flush buffer, this parameter is only helpful when there are not replicas."),
-			NULL,
-			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
-		},
-		&polar_force_flush_buffer,
-		false,
-		NULL, NULL, NULL
-	},
-	{
-		{"polar_enable_copy_buffer", PGC_POSTMASTER, UNGROUPED,
-			gettext_noop("Enable copy buffer."),
-			NULL,
-			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
-		},
-		&polar_enable_copy_buffer,
-		true,
-		NULL, NULL, NULL
-	},
-	{
-		{"polar_enable_flushlist", PGC_POSTMASTER, UNGROUPED,
-			gettext_noop("Enable flush list."),
-			NULL,
-			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
-		},
-		&polar_enable_flushlist,
-		true,
-		NULL, NULL, NULL
-	},
-	{
-		{"polar_startup_from_local_data_file", PGC_POSTMASTER, UNGROUPED,
-			gettext_noop("When replica start up, whether we copy some files from shared "
-						 "storage to local storage. If it is false, we do not copy any files,"
-						 "start up from local files, such as pg_xact, pg_commit_ts, pg_control and so on."),
-			NULL,
-			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
-		},
-		&polar_startup_from_local_data_file,
-		false,
 		NULL, NULL, NULL
 	},
 
+	{
+		{"polar_enable_standby_pbp", PGC_POSTMASTER, UNGROUPED,
+		    gettext_noop("Enable standby persisted buffer pool."),
+		    NULL,
+		},
+		&polar_enable_standby_pbp,
+		true,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_create_table_with_full_replica_identity", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("polar create table with full replica identity."),
+			NULL,
+		},
+		&polar_create_table_with_full_replica_identity,
+		true,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_enable_dma", PGC_POSTMASTER, UNGROUPED,
+			gettext_noop("whether to enable data max availability"),
+			NULL
+		},
+		&polar_enable_dma,
+		false,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_dma_async_commit", PGC_POSTMASTER, UNGROUPED,
+			gettext_noop("whether to enable async consensus commit"),
+			NULL
+		},
+		&polar_dma_async_commit,
+		false,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_dma_auto_purge", PGC_POSTMASTER, UNGROUPED,
+			gettext_noop("whether to auto purge log"),
+			NULL
+		},
+		&polar_dma_auto_purge,
+		true,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_dma_auto_leader_transfer", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("whether to disable election"),
+			NULL
+		},
+		&polar_dma_auto_leader_transfer,
+		false,
+		NULL, assign_dma_auto_leader_transfer, NULL
+	},
+	{
+		{"polar_dma_disable_election", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("whether to disable election"),
+			NULL
+		},
+		&polar_dma_disable_election,
+		false,
+		NULL, assign_dma_disable_election, NULL
+	},
+	{
+		{"polar_dma_delay_election", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("whether to delay election"),
+			NULL
+		},
+		&polar_dma_delay_election,
+		false,
+		NULL, assign_dma_delay_election, NULL
+	},
+	{
+		{"polar_dma_sync_meta", PGC_POSTMASTER, UNGROUPED,
+			gettext_noop("whether to force to change consensus meta"),
+			NULL,
+			GUC_NOT_IN_SAMPLE | GUC_SUPERUSER_ONLY | GUC_DISALLOW_IN_AUTO_FILE | GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL | GUC_DISALLOW_IN_FILE
+		},
+		&polar_dma_force_change_meta,
+		false,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_dma_init_meta", PGC_POSTMASTER, UNGROUPED,
+			gettext_noop("whether to force to initiailize meta"),
+			NULL,
+			GUC_NOT_IN_SAMPLE | GUC_SUPERUSER_ONLY | GUC_DISALLOW_IN_AUTO_FILE | GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL | GUC_DISALLOW_IN_FILE
+		},
+		&polar_dma_init_meta,
+		false,
+		NULL, NULL, NULL
+	},
 	{
 		{"polar_openfile_with_readonly_in_replica", PGC_POSTMASTER, UNGROUPED,
 			gettext_noop("open datafile with readonly mode in replica"),
@@ -1116,6 +1409,239 @@ static struct config_bool ConfigureNamesBool[] =
 		},
 		&polar_openfile_with_readonly_in_replica,
 		false,
+		NULL, NULL, NULL
+	},
+	
+	{
+		{"polar_wal_pipeline_enable", PGC_POSTMASTER, UNGROUPED,
+			gettext_noop("whether enable wal pipeline"),
+			NULL,
+			GUC_NO_RESET_ALL | GUC_NO_SHOW_ALL
+		},
+		&polar_wal_pipeline_enable,
+		false,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_wal_pipeline_wait_object_align", PGC_POSTMASTER, UNGROUPED,
+			gettext_noop("whether enable wal pipeline mutex align"),
+			NULL,
+			GUC_NO_RESET_ALL | GUC_NO_SHOW_ALL
+		},
+		&polar_wal_pipeline_wait_object_align,
+		true,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_csn_xid_snapshot", PGC_SUSET, UNGROUPED,
+			gettext_noop("enable polar xid snapshot under csn mode"),
+		    NULL,
+		},
+		&polar_csn_xid_snapshot,
+		false,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_csn_enable", PGC_POSTMASTER, UNGROUPED,
+			gettext_noop("enable polar csn snapshot"),
+		    NULL,
+		},
+		&polar_csn_enable,
+		false,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_csn_elog_panic_enable", PGC_POSTMASTER, UNGROUPED,
+			gettext_noop("enable polar csn "),
+		    NULL,
+		},
+		&polar_csn_elog_panic_enable,
+		true,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_csnlog_upperbound_enable", PGC_POSTMASTER, UNGROUPED,
+			gettext_noop("enable polar csn upperbound cache"),
+		    NULL,
+		},
+		&polar_csnlog_upperbound_enable,
+		false,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_enable_early_launch_parallel_bgwriter", PGC_POSTMASTER, UNGROUPED,
+		 	gettext_noop("Enable launch parallel bgwriter when recovery start"),
+		 	NULL,
+		 	GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_enable_early_launch_parallel_bgwriter,
+		false,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_temp_relation_file_in_shared_storage", PGC_POSTMASTER, UNGROUPED,
+			gettext_noop("Force temp relation file in remote storage."),
+			NULL,
+			GUC_NO_RESET_ALL
+		},
+		&polar_temp_relation_file_in_shared_storage,
+		false,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_dropdb_write_wal_before_rm_file", PGC_POSTMASTER, UNGROUPED,
+			gettext_noop("polar_dropdb_write_wal_before_modify_file"),
+			NULL,
+			GUC_NO_RESET_ALL | GUC_NO_SHOW_ALL
+		},
+		&polar_dropdb_write_wal_beforehand,
+		true,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_droptbl_write_wal_before_rm_file", PGC_POSTMASTER, UNGROUPED,
+			gettext_noop("polar_droptbl_write_wal_before_modify_file"),
+			NULL,
+			GUC_NO_RESET_ALL | GUC_NO_SHOW_ALL
+		},
+		&polar_droptbl_write_wal_beforehand,
+		true,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_force_change_checkpoint", PGC_POSTMASTER, UNGROUPED,
+			gettext_noop("Force to recovery from redo point set in pg_control"),
+			NULL,
+			GUC_NO_RESET_ALL
+		},
+		&polar_force_change_checkpoint,
+		false,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_replica_multi_version_snapshot_enable", PGC_POSTMASTER, REPLICATION_STANDBY,
+		 gettext_noop("Whether use polar replica multi version snapshot."),
+		 NULL,
+		 GUC_NO_RESET_ALL | GUC_NO_SHOW_ALL
+		},
+		&polar_replica_multi_version_snapshot_enable,
+		true,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_parallel_bgwriter_enable_dynamic", PGC_POSTMASTER, RESOURCES_BGWRITER,
+		 gettext_noop("Start or stop extra parallel background writer dynamically."),
+		 NULL,
+		 GUC_NO_RESET_ALL
+		},
+		&polar_parallel_bgwriter_enable_dynamic,
+		true,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_enable_parallel_bgwriter", PGC_POSTMASTER, RESOURCES_BGWRITER,
+		 gettext_noop("Enables the use of parallel background writer."),
+		 NULL,
+		 GUC_NO_RESET_ALL
+		},
+		&polar_enable_parallel_bgwriter,
+		true,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_skip_fill_walfile_zero_page", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("polar skip fill walfile zere page."),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_skip_fill_walfile_zero_page,
+		false,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_enable_fallocate_walfile", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("polar enable fallocate walfile."),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_enable_fallocate_walfile,
+		true,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_enable_lazy_checkpoint", PGC_SIGHUP, UNGROUPED,
+		 gettext_noop("Enable the use of lazy checkpoint."),
+		 NULL,
+		 GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_enable_lazy_checkpoint,
+		/* POLAR: default to true, we need lazy checkpoint to advance checkpoint ptr regularly */
+		true,
+		polar_check_enable_lazy_checkpoint, NULL, NULL
+	},
+
+	{
+		{"polar_enable_control_vm_flush", PGC_POSTMASTER, UNGROUPED,
+		 gettext_noop("Enable control visibility map to flush buffer."),
+		 NULL,
+		 GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_enable_control_vm_flush,
+		false,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_enable_normal_bgwriter", PGC_SIGHUP, UNGROUPED,
+		 gettext_noop("Enable the use of normal background writer."),
+		 NULL,
+		 GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_enable_normal_bgwriter,
+		false,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_force_flush_buffer", PGC_SIGHUP, UNGROUPED,
+		 gettext_noop(
+			 "Enable the use of force flush buffer, this parameter is only helpful when there are not replicas."),
+		 NULL,
+		 GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_force_flush_buffer,
+		false,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_enable_copy_buffer", PGC_POSTMASTER, UNGROUPED,
+		 gettext_noop("Enable the use of copy buffer."),
+		 NULL,
+		 GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_enable_copy_buffer,
+		true,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_enable_flushlist", PGC_POSTMASTER, UNGROUPED,
+		 gettext_noop("Enable the use of flush list."),
+		 NULL,
+		 GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_enable_flushlist,
+		true,
 		NULL, NULL, NULL
 	},
 
@@ -1126,6 +1652,18 @@ static struct config_bool ConfigureNamesBool[] =
 			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
 		},
 		&polar_enable_pread,
+		true,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_enable_parallel_replay_standby_mode", PGC_POSTMASTER, UNGROUPED,
+			gettext_noop("Enable WAL parallel replay in a standby node."
+						 "This has no effect on non-standby nodes."),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_enable_parallel_replay_standby_mode,
 		true,
 		NULL, NULL, NULL
 	},
@@ -1149,6 +1687,17 @@ static struct config_bool ConfigureNamesBool[] =
 		},
 		&polar_enable_debug,
 		false,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_use_statistical_relpages", PGC_USERSET, UNGROUPED,
+			gettext_noop("polar_use_statistical_relpages."),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_use_statistical_relpages,
+		true,
 		NULL, NULL, NULL
 	},
 
@@ -1184,29 +1733,6 @@ static struct config_bool ConfigureNamesBool[] =
 		false,
 		NULL, NULL, NULL
 	},
-
-	{
-		{"polar_dropdb_write_wal_before_rm_file", PGC_POSTMASTER, UNGROUPED,
-			gettext_noop("polar_dropdb_write_wal_before_modify_file"),
-			NULL,
-			GUC_NO_RESET_ALL | GUC_NO_SHOW_ALL
-		},
-		&polar_dropdb_write_wal_beforehand,
-		false,
-		NULL, NULL, NULL
-	},
-
-	{
-		{"polar_enable_async_ddl_lock_replay", PGC_POSTMASTER, WAL,
-			gettext_noop("Enable async ddl lock replay while db recovery"),
-			NULL
-		},
-		&polar_enable_async_ddl_lock_replay,
-		true,
-		NULL, NULL, NULL
-	},
-
-	/* POLAR BOOL GUCs end */
 
 	{
 		{"enable_seqscan", PGC_USERSET, QUERY_TUNING_METHOD,
@@ -1374,6 +1900,19 @@ static struct config_bool ConfigureNamesBool[] =
 		NULL, NULL, NULL
 	},
 	{
+		{"polar_enable_inline_cte", PGC_USERSET, QUERY_TUNING_METHOD,
+			gettext_noop("Enables the planner' to inline a CTE."),
+			NULL
+		},
+		&polar_enable_inline_cte,
+		/*
+		 * Set it to false to keep the previous behavior, for new instance,
+		 * dbaas willl set it to true for new created instance.
+		 */
+		false,
+		NULL, NULL, NULL
+	},
+	{
 		/* Not for general use --- used by SET SESSION AUTHORIZATION */
 		{"is_superuser", PGC_INTERNAL, UNGROUPED,
 			gettext_noop("Shows whether the current user is a superuser."),
@@ -1481,7 +2020,7 @@ static struct config_bool ConfigureNamesBool[] =
 		},
 		&fullPageWrites,
 		true,
-		NULL, NULL, NULL
+		polar_check_enable_full_page_writes, NULL, NULL
 	},
 
 	{
@@ -1501,6 +2040,16 @@ static struct config_bool ConfigureNamesBool[] =
 		},
 		&wal_compression,
 		false,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"wal_recycle", PGC_SUSET, WAL_SETTINGS,
+			gettext_noop("Recycles WAL files by renaming them."),
+			NULL
+		},
+		&wal_recycle,
+		true,
 		NULL, NULL, NULL
 	},
 
@@ -1733,6 +2282,18 @@ static struct config_bool ConfigureNamesBool[] =
 		NULL, NULL, NULL
 	},
 
+#ifdef LWLOCK_DEBUG
+	{
+		{"trace_lwlocks", PGC_SUSET, DEVELOPER_OPTIONS,
+			gettext_noop("Emits information about lightweight lock usage."),
+			NULL,
+			GUC_NOT_IN_SAMPLE
+		},
+		&Trace_lwlocks,
+		false,
+		NULL, NULL, NULL
+	},
+#endif
 #ifdef LOCK_DEBUG
 	{
 		{"trace_locks", PGC_SUSET, DEVELOPER_OPTIONS,
@@ -1755,22 +2316,32 @@ static struct config_bool ConfigureNamesBool[] =
 		NULL, NULL, NULL
 	},
 	{
-		{"trace_lwlocks", PGC_SUSET, DEVELOPER_OPTIONS,
-			gettext_noop("Emits information about lightweight lock usage."),
-			NULL,
-			GUC_NOT_IN_SAMPLE
-		},
-		&Trace_lwlocks,
-		false,
-		NULL, NULL, NULL
-	},
-	{
 		{"debug_deadlocks", PGC_SUSET, DEVELOPER_OPTIONS,
 			gettext_noop("Dumps information about all current locks when a deadlock timeout occurs."),
 			NULL,
 			GUC_NOT_IN_SAMPLE
 		},
 		&Debug_deadlocks,
+		false,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_trace_lock_flow", PGC_SUSET, DEVELOPER_OPTIONS,
+			gettext_noop("Print all log when try to acquire or release lock"),
+			NULL,
+			GUC_NOT_IN_SAMPLE
+		},
+		&polar_trace_lock_flow,
+		false,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_trace_system_table", PGC_SUSET, DEVELOPER_OPTIONS,
+			gettext_noop("Trace locks set on system table"),
+			NULL,
+			GUC_NOT_IN_SAMPLE
+		},
+		&polar_trace_system_table,
 		false,
 		NULL, NULL, NULL
 	},
@@ -2043,7 +2614,18 @@ static struct config_bool ConfigureNamesBool[] =
 	},
 
 	{
-		{"allow_system_table_mods", PGC_POSTMASTER, DEVELOPER_OPTIONS,
+		{"polar_standby_feedback", PGC_SIGHUP, REPLICATION_STANDBY,
+			gettext_noop("polar standby use this parameter to make hot_standby_feedback off"),
+			NULL
+		},
+		&polar_standby_feedback,
+		false,
+		NULL, NULL, NULL
+	},
+
+	{
+		/* POLAR: maybe we want to modify catalog sometimes */
+		{"allow_system_table_mods", PGC_SUSET, DEVELOPER_OPTIONS,
 			gettext_noop("Allows modifications of the structure of system tables."),
 			NULL,
 			GUC_NOT_IN_SAMPLE
@@ -2223,6 +2805,821 @@ static struct config_bool ConfigureNamesBool[] =
 		NULL, NULL, NULL
 	},
 
+	/* POLAR Bool GUCs, the end of block */
+	{
+		{"polar_force_unlogged_to_logged_table", PGC_USERSET, UNGROUPED,
+			gettext_noop("A switch to control whether to force use of logged table for unlogged table creation."),
+			NULL,
+			GUC_NO_SHOW_ALL
+		},
+		&polar_force_unlogged_to_logged_table,
+		true,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_enable_master_recovery_bulk_extend", PGC_POSTMASTER, UNGROUPED,
+			gettext_noop("A switch to control whether to use xlog bulk extend opt during recovery on master."),
+			NULL,
+			GUC_NO_RESET_ALL
+		},
+		&polar_enable_master_recovery_bulk_extend,
+		true,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_allow_huge_alloc", PGC_USERSET, UNGROUPED,
+			gettext_noop("Whether enable alloc huge query string memory or not"),
+			NULL,
+			GUC_NO_SHOW_ALL
+		},
+		&polar_allow_huge_alloc,
+		/* if false, default max alloc size is 512M, if true, it can be 1G-1 */
+		true,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_super_run_as_secdef", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("A switch to control whether to superuser run as security definer."),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_super_run_as_secdef,
+		true,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_replay_fpi_check_lsn", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("When this flag is true and replay FPI xlog we will not restore full image if page lsn is larger than xlog record lsn"),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_replay_fpi_check_lsn,
+		false,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_enable_polar_superuser", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("Enables polar user which use create polar_useruser to take superuser privilege do something."),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL | GUC_SUPERUSER_ONLY
+		},
+		&polar_enable_polar_superuser,
+		true,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_apply_global_guc_for_super", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("A switch to control whether to apply all-user-settings for super users."),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL | GUC_SUPERUSER_ONLY
+		},
+		&polar_apply_global_guc_for_super,
+		false,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_enable_physical_repl_non_super_wal_snd", PGC_SIGHUP, REPLICATION_STANDBY,
+			gettext_noop("Enabel pysical replication request by non-super users"),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL | GUC_SUPERUSER_ONLY
+		},
+		&polar_enable_physical_repl_non_super_wal_snd,
+		false,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_suppress_preload_error", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("A switch to control whether to suppress error for shared preload libraries."),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL | GUC_SUPERUSER_ONLY
+		},
+		&polar_suppress_preload_error,
+		true,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_hold_truncate_interrupt", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("A switch to control whether to disable query cancel during truncating."),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL | GUC_SUPERUSER_ONLY
+		},
+		&polar_hold_truncate_interrupt,
+		true,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_force_trans_ro_non_sup", PGC_SUSET, UNGROUPED,
+			gettext_noop("A switch to control whether to force all non-super users' transaction to be readonly"),
+			NULL,
+			GUC_NO_SHOW_ALL |GUC_NO_RESET_ALL | GUC_NOT_IN_SAMPLE | GUC_SUPERUSER_ONLY
+		},
+		&polar_force_trans_ro_non_sup,
+		false,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_log_statement_with_duration", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("Enables printing SQL statement along with duration inforation."),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_log_statement_with_duration,
+		true,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_enable_resolve_conflict", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("A switch to control conflict resolving in polar standby mode"),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_enable_resolve_conflict,
+		false,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_enable_simply_redo_error_log", PGC_USERSET, UNGROUPED,
+			gettext_noop("A switch to print simple message in pg_log of rm_redo_error_callback"),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_enable_simply_redo_error_log,
+		true,
+		NULL, NULL, NULL
+	},
+
+	/* POLAR */
+ 	{
+ 		{"polar_enable_multi_syslogger", PGC_SIGHUP, LOGGING,
+ 			gettext_noop("Enable polar multi sys logger"),
+ 			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+ 		},
+ 		&polar_enable_multi_syslogger,
+		DEFAULT_MULTI_SYSLOGGER_FLAG,
+		NULL, NULL, NULL
+ 	},
+	{
+		{"polar_enable_syslog_pipe_buffer", PGC_SIGHUP, LOGGING,
+			gettext_noop("Enable log pipe buffer"),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_enable_syslog_pipe_buffer,
+		true,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_enable_error_to_audit_log", PGC_SIGHUP, LOGGING,
+			gettext_noop("Enable error sql print to audit log"),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_enable_error_to_audit_log,
+		true,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_enable_maxscale_support", PGC_POSTMASTER, UNGROUPED,
+			gettext_noop("Enable Maxscale support."),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_enable_maxscale_support,
+		true,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_enable_syslog_file_buffer", PGC_SIGHUP, LOGGING,
+			gettext_noop("Enable log file buffer"),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_enable_syslog_file_buffer,
+		false,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_enable_xlog_buffer", PGC_POSTMASTER, UNGROUPED,
+			gettext_noop("Enable xlog buffer"),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_enable_xlog_buffer,
+		true,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_enable_full_page_write_in_backup", PGC_SIGHUP, UNGROUPED,
+			 gettext_noop("Enable full-page write in backup"),
+			 NULL,
+			 GUC_SUPERUSER_ONLY | GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_enable_full_page_write_in_backup,
+		false,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_enable_lazy_checkpoint_in_backup", PGC_SIGHUP, UNGROUPED,
+			 gettext_noop("Enable lazy checkpoint in backup"),
+			 NULL,
+			 GUC_SUPERUSER_ONLY | GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_enable_lazy_checkpoint_in_backup,
+		true,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_enable_checkpoint_in_backup", PGC_SIGHUP, UNGROUPED,
+			 gettext_noop("Enable checkpoint in backup"),
+			 NULL,
+			 GUC_SUPERUSER_ONLY | GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_enable_checkpoint_in_backup,
+		true,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_enable_switch_wal_in_backup", PGC_SIGHUP, UNGROUPED,
+			 gettext_noop("Enable switch wal in backup"),
+			 NULL,
+			 GUC_SUPERUSER_ONLY | GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_enable_switch_wal_in_backup,
+		false,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_enable_create_backup_history_file_in_backup", PGC_SIGHUP, UNGROUPED,
+			 gettext_noop("Enable create .backup file in backup"),
+			 NULL,
+			 GUC_SUPERUSER_ONLY | GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_enable_create_backup_history_file_in_backup,
+		false,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_enable_persisted_logical_slot", PGC_POSTMASTER, UNGROUPED,
+			gettext_noop("Enable persisted logical slot on shared storage"),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_enable_persisted_logical_slot,
+		true,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_enable_persisted_physical_slot", PGC_POSTMASTER, UNGROUPED,
+			gettext_noop("Enable online promote for polardb rw"),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_enable_persisted_physical_slot,
+		true,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_enable_persisted_spill_file", PGC_POSTMASTER, UNGROUPED,
+			gettext_noop("Enable persisted spill file on shared storage"),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_enable_persisted_spill_file,
+		false,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_enable_early_launch_checkpointer", PGC_POSTMASTER, UNGROUPED,
+			gettext_noop("Enable launch checkpointer and bgwriter when recovery start"),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_enable_early_launch_checkpointer,
+		false,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_enable_keep_wal_ready_file", PGC_POSTMASTER, UNGROUPED,
+			gettext_noop("Enable remove wal.ready file in recovery"),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_enable_keep_wal_ready_file,
+		true,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_enable_node_static_config", PGC_POSTMASTER, UNGROUPED,
+			gettext_noop("Enable load polar_node_static.conf file"),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_enable_node_static_config,
+		true,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_enable_virtual_pid", PGC_USERSET, UNGROUPED,
+			gettext_noop("Enable virtual pid when use proxy"),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL | GUC_SUPERUSER_ONLY
+		},
+		&polar_enable_virtual_pid,
+		true,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_enable_fullpage_snapshot", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("Enable fullpage snapshot feature"),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_enable_fullpage_snapshot,
+		true,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_enable_master_xlog_read_ahead", PGC_POSTMASTER, UNGROUPED,
+			gettext_noop("Enable master xlog read ahead in recovery"),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_enable_master_xlog_read_ahead,
+		true,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_enable_slru_hash_index", PGC_POSTMASTER, UNGROUPED,
+			gettext_noop("Enable slru hash index"),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_enable_slru_hash_index,
+		true,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_enable_stat_wait_info", PGC_POSTMASTER, UNGROUPED,
+		 	gettext_noop("Enable to stat wait object and wait time."),
+		 	NULL,
+		 	GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_enable_stat_wait_info,
+		true,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_super_call_all_trigger_event", PGC_SUSET, UNGROUPED,
+		 	gettext_noop("Superuser enable to call all event_triggers."),
+		 	NULL,
+		 	GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_super_call_all_trigger_event,
+		false,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_enable_tde_warning", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("Enable to log warning when the page is not encrypted with data encryption enabled."),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_enable_tde_warning,
+		true,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_enable_persisted_buffer_pool", PGC_POSTMASTER, UNGROUPED,
+		 	gettext_noop("Enable persisted buffer pool."),
+		 	NULL,
+		 	GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_enable_persisted_buffer_pool,
+		true,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_enable_track_lock_stat", PGC_SIGHUP, STATS_COLLECTOR,
+			gettext_noop("Enable track lock stat"),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_enable_track_lock_stat,
+		true,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_enable_track_lock_timing", PGC_SIGHUP, STATS_COLLECTOR,
+			gettext_noop("Enable track lock timing"),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_enable_track_lock_timing,
+		true,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_enable_track_network_stat", PGC_USERSET, STATS_COLLECTOR,
+			gettext_noop("Enable track net stat"),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_enable_track_network_stat,
+		true,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_enable_track_network_timing", PGC_SIGHUP, STATS_COLLECTOR,
+			gettext_noop("Enable track net timing"),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_enable_track_network_timing,
+		true,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_enable_alb_client_address", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("Whether get real client address from ALB through getpeername."),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_enable_alb_client_address,
+		true,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_shutdown_walsnd_wait_non_super", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("Wait non-superuser's walsender or not during shutdown."),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL | GUC_SUPERUSER_ONLY
+		},
+		&polar_shutdown_walsnd_wait_non_super,
+		false,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_priority_replication_force_wait", PGC_SIGHUP, REPLICATION_MASTER,
+			gettext_noop("In priority replication, whether wait if all higher level standbys are down."),
+			NULL,
+		},
+		&polar_priority_replication_force_wait,
+		false,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_enable_semi_sync_optimization", PGC_SUSET, REPLICATION_MASTER,
+			gettext_noop("enable semi-synchronous replication optimization under network jitter."),
+			NULL,
+		},
+		&polar_enable_semi_sync_optimization,
+		true,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_enable_lazy_end_of_recovery_checkpoint", PGC_SIGHUP, UNGROUPED,
+		 	gettext_noop("Enable lazy checkpoint for end of recovery checkpoint."),
+		 	NULL,
+		 	GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_enable_lazy_end_of_recovery_checkpoint,
+		true,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_enable_async_ddl_lock_replay", PGC_POSTMASTER, WAL,
+			gettext_noop("Enable async ddl lock replay while db recovery"),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_enable_async_ddl_lock_replay,
+		true,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_enable_async_ddl_lock_replay_unit_test", PGC_POSTMASTER, UNGROUPED,
+			gettext_noop("Enable async ddl lock replay unit test"),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_enable_async_ddl_lock_replay_unit_test,
+		false,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_enable_ro_prewarm", PGC_POSTMASTER, UNGROUPED,
+			gettext_noop("Enable ro to prewarm block modified by rw"),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_enable_ro_prewarm,
+		false,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_enable_track_sql_time_stat", PGC_USERSET, STATS_COLLECTOR,
+			gettext_noop("Enable track sql time stat"),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_enable_track_sql_time_stat,
+		false,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_enable_audit_log_bind_sql_parameter", PGC_SIGHUP, LOGGING,
+			gettext_noop("Enable output audit log with sql and parameters"),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_enable_audit_log_bind_sql_parameter,
+		false,
+		NULL, NULL, NULL
+	},
+
+	/* 
+	 * POLAR: this parameter is replace of polar_enable_audit_log_bind_sql_parameter, 
+	 * the function of them is equal. polar_enable_audit_log_bind_sql_parameter is nolonger effect 
+	 * since polar_enable_audit_log_bind_sql_parameter_new appears.
+	 */
+	{
+		{"polar_enable_audit_log_bind_sql_parameter_new", PGC_SUSET, LOGGING,
+			gettext_noop("Enable output audit log with sql and parameters"),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_enable_audit_log_bind_sql_parameter_new,
+		true,
+		NULL, NULL, NULL
+	},
+
+   	/*
+	 * POLAR: this parameter is different from polar_vfs.localfs_mode.
+   	 * When creating rw and ro nodes by polardb_build.sh for testing, superuser
+   	 * can create tablespace, and link a directory on the machine. If rw
+	 * drop a tablespace, ro will replay the xlog, drop the tablespace and
+   	 * remove the tablespace directory. Then rw goes to remove the directory,
+	 * it will get a warnning elog. This situation happens some regression test
+   	 * cases. polar_enable_localfs_test_mode always set to false except in
+   	 * polardb_build.sh
+   	 */
+	{
+		{"polar_enable_localfs_test_mode", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("Enable local pfs test mode"),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_SUPERUSER_ONLY | GUC_NO_RESET_ALL
+		},
+		&polar_enable_localfs_test_mode,
+		false,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_enable_promote_wait_for_walreceive_done", PGC_POSTMASTER, UNGROUPED,
+			gettext_noop("Enable wait for receiving all wal when promote"),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_enable_promote_wait_for_walreceive_done,
+		false,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_enable_convert_or_to_union_all", PGC_USERSET, UNGROUPED,
+			gettext_noop("support convert OR clauses to UNION ALL queries."),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_enable_convert_or_to_union_all,
+		false,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_publish_via_partition_root", PGC_USERSET, UNGROUPED,
+			gettext_noop("support publish via partition root on pgoutput."),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_publish_via_partition_root,
+		false,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_enable_xact_split", PGC_USERSET, UNGROUPED,
+			gettext_noop("Switch to decide whether transactions rw-split support is on."),
+			NULL
+		},
+		&polar_enable_xact_split,
+		true,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_enable_xact_split_debug", PGC_SUSET, UNGROUPED,
+			gettext_noop("Switch to decide whether transactions rw-split debug support is on."),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL | GUC_NOT_IN_SAMPLE
+		},
+		&polar_enable_xact_split_debug,
+		false,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_xact_split_enable_sethintbits", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("Allow to set hintbit in xact split query"),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL | GUC_NOT_IN_SAMPLE
+		},
+		&polar_xact_split_enable_sethintbits,
+		false,
+		NULL, NULL, NULL
+	},
+
+	/*
+	 * POLAR: In the event that some backend dumps core, send SIGSTOP rather than SIGQUIT
+	 * to all its peers, this lets the wily post_hacker collect core dumps from everyone.
+	 * in original way, this is set with -T parameter when start postgres
+	 * changes to set via guc parameter polar_enable_send_stop
+	 */
+	{
+		{"polar_enable_send_stop", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("Enable to send SIGSTOP to all peers when some backend exit abnormally"),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_enable_send_stop,
+		false,
+		NULL, polar_assign_enable_send_stop, NULL
+	},
+
+	{
+		{"polar_enable_replica_use_smgr_cache", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("smgr shared cache used in polar relica"),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_enable_replica_use_smgr_cache,
+		false,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_enable_standby_use_smgr_cache", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("smgr shared cache used in polar standby"),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_enable_standby_use_smgr_cache,
+		false,
+                NULL, NULL, NULL
+        },
+
+	{
+		{"polar_enable_flashback_log", PGC_POSTMASTER, UNGROUPED,
+			gettext_noop("Writes origin pages to flashback log when first exclusive lock after a checkpoint."),
+			gettext_noop("A page write in process during an operating system crash might be "
+						 "only partially written to disk.  During recovery, the row changes "
+						 "stored in WAL are not enough to recover.  This option writes "
+						 "pages when first exclusive lock after a checkpoint to flashback log so full recovery "
+						 "is possible. NB: It can't be on while polar_enable_lazy_checkpoint is on"),
+			GUC_SUPERUSER_ONLY | GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_enable_flashback_log,
+		false,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_flashback_log_debug", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("Enable flashback log debug"),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_SUPERUSER_ONLY | GUC_NO_RESET_ALL
+		},
+		&polar_flashback_log_debug,
+		false,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_has_partial_write", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("There are partial write problems"),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_SUPERUSER_ONLY | GUC_NO_RESET_ALL
+		},
+		&polar_has_partial_write,
+		false,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_enable_max_slot_wal_keep_size", PGC_POSTMASTER, WAL_SETTINGS,
+			gettext_noop("enable max_slot_wal_keep_size function"),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_enable_max_slot_wal_keep_size,
+		false,
+		NULL, NULL, NULL
+	},
+
+	/* POLAR end */
+
+	{
+		{"polar_enable_io_fencing", PGC_POSTMASTER, UNGROUPED,
+			gettext_noop("enable detection of more than one RW runging in one cluster."),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_SUPERUSER_ONLY | GUC_NO_RESET_ALL
+		},
+		&polar_enable_io_fencing,
+		true,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_enable_operator_mem_limit", PGC_USERSET, UNGROUPED,
+			gettext_noop("enable operator memory limit."),
+			NULL,
+			GUC_NO_SHOW_ALL
+		},
+		&polar_enable_operator_mem_limit,
+		true,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_enable_operator_mem_limit_by_level", PGC_USERSET, UNGROUPED,
+			gettext_noop("enable operator memory limit by level."),
+			NULL,
+			GUC_NO_SHOW_ALL
+		},
+		&polar_enable_operator_mem_limit_by_level,
+		false,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_enable_dump_incorrect_checksum_xlog", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("enable dump incorrect checksum xlogrecord into file in primary node."),
+			NULL,
+			GUC_NO_SHOW_ALL
+		},
+		&polar_enable_dump_incorrect_checksum_xlog,
+		false,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_trace_heap_scan_flow", PGC_SUSET, DEVELOPER_OPTIONS,
+			gettext_noop("Print heap scan debug log if necessary"),
+			NULL,
+			GUC_NOT_IN_SAMPLE
+		},
+		&polar_trace_heap_scan_flow,
+		false,
+		NULL, NULL, NULL
+	},
+
 	/* End-of-list marker */
 	{
 		{NULL, 0, 0, NULL, NULL}, NULL, false, NULL, NULL, NULL
@@ -2232,87 +3629,427 @@ static struct config_bool ConfigureNamesBool[] =
 
 static struct config_int ConfigureNamesInt[] =
 {
-	/* POLAR INT GUCs Start */
 	{
-		{"polar_clog_max_local_cache_segments", PGC_POSTMASTER, UNGROUPED,
-			gettext_noop("Set the maximum number of local segment file cache for clog"),
+		{"polar_dma_cluster_id", PGC_POSTMASTER, UNGROUPED,
+			gettext_noop("polar consensus cluster id."),
 			NULL
 		},
-		&polar_clog_max_local_cache_segments,
-		128, 0, INT_MAX / 2,
+		&polar_dma_cluster_id,
+		0, 0, INT_MAX,
 		NULL, NULL, NULL
 	},
+
 	{
-		{"polar_fullpage_snapshot_min_modified_count", PGC_SIGHUP, UNGROUPED,
-			gettext_noop("Sets the minimum modified count when log fullpage"),
-			NULL,
-			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		{"polar_dma_port_deviation", PGC_POSTMASTER, UNGROUPED,
+			gettext_noop("Set the number which is added to the client port number to "
+					"obtain polar consensus port."),
+			NULL
 		},
-		&polar_fullpage_snapshot_min_modified_count,
-		10, 0, INT32_MAX,
+		&polar_dma_port_deviation,
+		10000, 1, 65535,
 		NULL, NULL, NULL
 	},
+
 	{
-		{"polar_fullpage_snapshot_oldest_lsn_delay_threshold", PGC_SIGHUP, UNGROUPED,
-			gettext_noop("Minimum diff lsn(MB) between insert lsn and oldest_lsn when log fullpage snapshot."),
-			NULL,
-			GUC_UNIT_MB | GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		{"polar_dma_hb_thread_count", PGC_POSTMASTER, UNGROUPED,
+			gettext_noop("Set the number of polar consensus heartbeat thread."),
+			NULL
 		},
-		&polar_fullpage_snapshot_oldest_lsn_delay_threshold,
-		1024,
-		0, INT32_MAX,
+		&polar_dma_hb_thread_count,
+		1, 0, 256,
 		NULL, NULL, NULL
 	},
+
+
 	{
-		{"polar_fullpage_snapshot_replay_delay_threshold", PGC_SIGHUP, UNGROUPED,
-			gettext_noop("Max diff lsn(MB) between page lsn and replay_lsn when log fullpage snapshot."),
-			NULL,
-			GUC_UNIT_MB | GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		{"polar_dma_io_thread_count", PGC_POSTMASTER, UNGROUPED,
+			gettext_noop("Set the number of polar consensus io thread."),
+			NULL
 		},
-		&polar_fullpage_snapshot_replay_delay_threshold,
-		16,
-		0, INT32_MAX,
+		&polar_dma_io_thread_count,
+		8, 2, 256,
 		NULL, NULL, NULL
 	},
+
 	{
-		{"polar_write_logindex_active_table_delay", PGC_SIGHUP, UNGROUPED,
-			gettext_noop("Time between walwriter write active logindex table."),
-			NULL,
-			GUC_UNIT_MS | GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		{"polar_dma_worker_thread_count", PGC_POSTMASTER, UNGROUPED,
+			gettext_noop("Set the number of polar consensus worker thread."),
+			NULL
 		},
-		&polar_write_logindex_active_table_delay,
-		500, 1, INT32_MAX,
+		&polar_dma_worker_thread_count,
+		8, 2, 256,
 		NULL, NULL, NULL
 	},
+
 	{
-		{"polar_startup_replay_delay_size", PGC_SIGHUP, UNGROUPED,
-			gettext_noop("Manual startup replay delay wal size(MB), just for test!"),
-			NULL,
-			GUC_UNIT_MB | GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		{"polar_dma_log_slot_size", PGC_POSTMASTER, UNGROUPED,
+			gettext_noop("Set the number of polar consensus log slots. "
+					"each slot corresponds to an 8K memory block."),
+			NULL
 		},
-		&polar_startup_replay_delay_size,
-		0,
-		0, 40960,
+		&polar_dma_log_slots,
+		8192, 32, 16 * 128 * 1024,
 		NULL, NULL, NULL
 	},
+
 	{
-		{"polar_xlog_page_buffers", PGC_POSTMASTER, RESOURCES_MEM,
-			gettext_noop("Sets the size of xlog buffer used by startup and backedn in replica and standby mode."),
-			NULL,
-			GUC_UNIT_MB
-		},
-		&polar_xlog_page_buffers,
-		1 * 1024, 16, INT_MAX / 2,
-		NULL, NULL, NULL
-	},
-	{
-		{"polar_xlog_queue_buffers", PGC_POSTMASTER, RESOURCES_MEM,
-			gettext_noop("Sets the size of xlog queue buffer used to keep xlog meta."),
+		{"polar_dma_log_keep_size", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("Set the size of polar consensus log held for non-leader servers. "),
 			NULL,
 			GUC_UNIT_MB
 		},
-		&polar_xlog_queue_buffers,
-		512, 256, INT_MAX / 2,
+		&polar_dma_log_keep_size_mb,
+		8, 0, MAX_KILOBYTES,
+		NULL, assign_dma_log_keep_size, NULL
+	},
+
+	{
+		{"polar_dma_xlog_check_timeout", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("Polar consensus log append wait N ms before WAL flushed."),
+			NULL,
+			GUC_UNIT_MS
+		},
+		&polar_dma_xlog_check_timeout,
+		10, 1, 600 * 1000,
+		NULL, assign_dma_xlog_check_timeout, NULL
+	},
+
+	{
+		{"polar_dma_send_timeout", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("Polar consensus send packet timeout."),
+			NULL,
+			GUC_UNIT_MS
+		},
+		&polar_dma_send_timeout,
+		5, 1, 600 * 1000,
+		NULL, assign_dma_send_timeout, NULL
+	},
+
+	{
+		{"polar_dma_election_timeout", PGC_POSTMASTER, UNGROUPED,
+			gettext_noop("Polar consensus election timeout."),
+			NULL,
+			GUC_UNIT_MS
+		},
+		&polar_dma_election_timeout,
+		5000, 1000, 600 * 1000,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_dma_delay_election_timeout", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("Polar consensus delay election timeout."),
+			NULL,
+			GUC_UNIT_MS
+		},
+		&polar_dma_delay_electionTimeout,
+		36 * 60 * 1000, 1000, INT_MAX,
+		NULL, assign_dma_delay_election_timeout, NULL
+	},
+
+	{
+		{"polar_dma_pipeline_timeout", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("Polar consensus election timeout."),
+			NULL,
+			GUC_UNIT_MS
+		},
+		&polar_dma_pipeline_timeout,
+		1, 0, 1024 * 1024 * 1024,
+		NULL, assign_dma_pipeline_timeout, NULL
+	},
+
+	{
+		{"polar_dma_config_change_timeout", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("Polar consensus configure change timeout."),
+			NULL,
+			GUC_UNIT_MS
+		},
+		&polar_dma_config_change_timeout,
+		60 * 1000, 0, 600 * 1000,
+		NULL, assign_dma_config_change_timeout, NULL
+	},
+
+	{
+		{"polar_dma_purge_timeout", PGC_POSTMASTER, UNGROUPED,
+			gettext_noop("Polar consensus log purge timeout."),
+			NULL,
+			GUC_UNIT_MS
+		},
+		&polar_dma_purge_timeout,
+		30 * 1000, 100, 24 * 3600 * 1000,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_dma_max_packet_size", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("Polar consensus max packet size send at once."),
+			NULL,
+			GUC_UNIT_KB
+		},
+		&polar_dma_max_packet_size,
+		128, 1, 1024 * 1024,
+		NULL, assign_dma_max_packet_size, NULL
+	},
+
+	{
+		{"polar_dma_max_delay_index", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("Polar consensus max index delay for pipeline log delivery."),
+			NULL
+		},
+		&polar_dma_max_delay_index,
+		50000, 1, INT_MAX,
+		NULL, assign_dma_max_delay_index, NULL
+	},
+
+	{
+		{"polar_dma_min_delay_index", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("Polar consensus min index delay for pipeline log delivery."),
+			NULL
+		},
+		&polar_dma_min_delay_index,
+		5000, 1, INT_MAX,
+		NULL, assign_dma_min_delay_index, NULL
+	},
+
+	{
+		{"polar_dma_max_standby_wait_delay_size", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("Sets the maximum delay WAL size for standby wait conflict snapshot."),
+		  NULL,
+		  GUC_UNIT_MB
+		},
+		&polar_dma_max_standby_wait_delay_size_mb,
+		0, 0, INT_MAX,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_dma_new_follower_threshold", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("Polar consensus max delay index to allow a learner becomes to a follower."),
+			NULL
+		},
+		&polar_dma_min_delay_index,
+		5000, 1, INT_MAX,
+		NULL, assign_dma_new_follower_threshold, NULL
+	},
+
+	{
+		{"polar_wal_pipeline_mode", PGC_POSTMASTER, WAL_SETTINGS,
+			gettext_noop("Set mode for wal pipeline"),
+			NULL
+		},
+		&polar_wal_pipeline_mode,
+		2, 1, 5,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_wal_pipeline_flush_event_array_size", PGC_POSTMASTER, WAL_SETTINGS,
+			gettext_noop("Set flush event array size for wal pipeline"),
+			NULL
+		},
+		&polar_wal_pipeline_flush_event_array_size,
+		128, 1, INT_MAX,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_wal_pipeline_flush_event_slot_size", PGC_POSTMASTER, WAL_SETTINGS,
+			gettext_noop("Set flush event slot size for wal pipeline"),
+			NULL
+		},
+		&polar_wal_pipeline_flush_event_slot_size,
+		1024, 1, INT_MAX,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_wal_pipeline_unflushed_xlog_array_size", PGC_POSTMASTER, WAL_SETTINGS,
+			gettext_noop("Set unflushed xlog array size for wal pipeline"),
+			NULL
+		},
+		&polar_wal_pipeline_unflushed_xlog_array_size,
+		1024, 1, INT_MAX,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_wal_pipeline_recent_written_array_size", PGC_POSTMASTER, WAL_SETTINGS,
+			gettext_noop("Set recent written array size for wal pipeline"),
+			NULL
+		},
+		&polar_wal_pipeline_recent_written_array_size,
+		1024*1024, 1, INT_MAX,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_wal_pipeline_wait_timeout", PGC_POSTMASTER, WAL_SETTINGS,
+			gettext_noop("Set default wait timeout for wal pipeline"),
+			NULL
+		},
+		&polar_wal_pipeline_wait_timeout,
+		10, POLAR_MIN_WAIT_TIMEOUT_USEC, POLAR_MAX_WAIT_TIMEOUT_USEC,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_wal_pipeline_commit_wait_spin_delay", PGC_POSTMASTER, WAL_SETTINGS,
+			gettext_noop("Set commit wait spin delay for wal pipeline"),
+			NULL
+		},
+		&polar_wal_pipeline_commit_wait_spin_delay,
+		0, POLAR_MIN_WAIT_SPINS, POLAR_MAX_WAIT_SPINS,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_wal_pipeline_commit_wait_timeout", PGC_POSTMASTER, WAL_SETTINGS,
+			gettext_noop("Set commit wait timeout for wal pipeline"),
+			NULL
+		},
+		&polar_wal_pipeline_commit_wait_timeout,
+		10000, POLAR_MIN_WAIT_TIMEOUT_USEC, POLAR_MAX_WAIT_TIMEOUT_USEC,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_wal_pipeline_advance_worker_spin_delay", PGC_POSTMASTER, WAL_SETTINGS,
+			gettext_noop("Set spin delay of advance worker for wal pipeline"),
+			NULL
+		},
+		&polar_wal_pipeline_advance_worker_spin_delay,
+		0, POLAR_MIN_WAIT_SPINS, POLAR_MAX_WAIT_SPINS,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_wal_pipeline_advance_worker_timeout", PGC_POSTMASTER, WAL_SETTINGS,
+			gettext_noop("Set timeout of advance worker for wal pipeline"),
+			NULL
+		},
+		&polar_wal_pipeline_advance_worker_timeout,
+		10, POLAR_MIN_WAIT_TIMEOUT_USEC, POLAR_MAX_WAIT_TIMEOUT_USEC,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_wal_pipeline_advance_worker_write_max_size", PGC_POSTMASTER, WAL_SETTINGS,
+			gettext_noop("Set max wal size per advance of advance worker for wal pipeline"),
+			NULL
+		},
+		&polar_wal_pipeline_advance_worker_write_max_size,
+		0, 0, INT_MAX,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_wal_pipeline_write_worker_spin_delay", PGC_POSTMASTER, WAL_SETTINGS,
+			gettext_noop("Set spin delay of write worker for wal pipeline"),
+			NULL
+		},
+		&polar_wal_pipeline_write_worker_spin_delay,
+		0, POLAR_MIN_WAIT_SPINS, POLAR_MAX_WAIT_SPINS,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_wal_pipeline_write_worker_timeout", PGC_POSTMASTER, WAL_SETTINGS,
+			gettext_noop("Set timeout of write worker for wal pipeline"),
+			NULL
+		},
+		&polar_wal_pipeline_write_worker_timeout,
+		10000, POLAR_MIN_WAIT_TIMEOUT_USEC, POLAR_MAX_WAIT_TIMEOUT_USEC,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_wal_pipeline_flush_worker_spin_delay", PGC_POSTMASTER, WAL_SETTINGS,
+			gettext_noop("Set spin delay of flush worker for wal pipeline"),
+			NULL
+		},
+		&polar_wal_pipeline_flush_worker_spin_delay,
+		0, POLAR_MIN_WAIT_SPINS, POLAR_MAX_WAIT_SPINS,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_wal_pipeline_flush_worker_timeout", PGC_POSTMASTER, WAL_SETTINGS,
+			gettext_noop("Set timeout of flush worker for wal pipeline"),
+			NULL
+		},
+		&polar_wal_pipeline_flush_worker_timeout,
+		10000, POLAR_MIN_WAIT_TIMEOUT_USEC, POLAR_MAX_WAIT_TIMEOUT_USEC,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_wal_pipeline_notify_worker_spin_delay", PGC_POSTMASTER, WAL_SETTINGS,
+			gettext_noop("Set spin delay of notify worker for wal pipeline"),
+			NULL
+		},
+		&polar_wal_pipeline_notify_worker_spin_delay,
+		0, POLAR_MIN_WAIT_SPINS, POLAR_MAX_WAIT_SPINS,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_wal_pipeline_notify_worker_timeout", PGC_POSTMASTER, WAL_SETTINGS,
+			gettext_noop("Set timeout of notify worker for wal pipeline"),
+			NULL
+		},
+		&polar_wal_pipeline_notify_worker_timeout,
+		10, POLAR_MIN_WAIT_TIMEOUT_USEC, POLAR_MAX_WAIT_TIMEOUT_USEC,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_wal_pipeline_notify_worker_num", PGC_POSTMASTER, WAL_SETTINGS,
+			gettext_noop("Set the number of notify worker for wal pipeline"),
+			NULL
+		},
+		&polar_wal_pipeline_notify_worker_num,
+		1, POLAR_WAL_PIPELINE_NOTIFY_WORKER_NUM_MIN, POLAR_WAL_PIPELINE_NOTIFY_WORKER_NUM_MAX,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_wal_buffer_insert_locks", PGC_POSTMASTER, UNGROUPED,
+			gettext_noop("Set the number of locks for wal buffer insert"),
+			NULL
+		},
+		&polar_wal_buffer_insert_locks,
+		64, 1, INT_MAX,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_replica_multi_version_snapshot_slot_num", PGC_POSTMASTER, RESOURCES_MEM,
+		 gettext_noop("Set polar replica multi version snapshot slot number"),
+		 NULL,
+		 GUC_NO_RESET_ALL | GUC_NO_SHOW_ALL
+		},
+		&polar_replica_multi_version_snapshot_slot_num,
+		32, 32, 128,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_replica_multi_version_snapshot_retry_times", PGC_POSTMASTER, UNGROUPED,
+		 gettext_noop("Set polar replica multi version snapshot retry times"),
+		 NULL,
+		 GUC_NO_RESET_ALL | GUC_NO_SHOW_ALL
+		},
+		&polar_replica_multi_version_snapshot_retry_times,
+		3, 0, INT_MAX,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_unit_test_mem_size", PGC_POSTMASTER, RESOURCES_MEM,
+		 gettext_noop("Set additional shared memory size for unit test"),
+		 NULL,
+		 GUC_UNIT_MB
+		},
+		&polar_unit_test_mem_size,
+		0, 0, INT_MAX / 2,
 		NULL, NULL, NULL
 	},
 	{
@@ -2322,7 +4059,7 @@ static struct config_int ConfigureNamesInt[] =
 		 GUC_UNIT_MB
 		},
 		&polar_logindex_mem_size,
-		512, 128, INT_MAX / 2,
+		512, 0, INT_MAX / 2,
 		NULL, NULL, NULL
 	},
 	{
@@ -2335,53 +4072,90 @@ static struct config_int ConfigureNamesInt[] =
 		NULL, NULL, NULL
 	},
 	{
-		{"polar_wait_old_version_page_timeout", PGC_USERSET, UNGROUPED,
-			gettext_noop("Sets the maximum time to wait for old version page when reading a future page."),
-			NULL,
-			GUC_UNIT_MS | GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
-		},
-		&polar_wait_old_version_page_timeout,
-		30 * 1000, 0, INT_MAX,
-		NULL, NULL, NULL
-	},
-	{
-		{"polar_bg_replay_batch_size", PGC_SIGHUP, UNGROUPED,
-			gettext_noop("Batch size of each bgwriter replay run."),
-			NULL
-		},
-		&polar_bg_replay_batch_size,
-		20000, 1000, INT_MAX,
-		NULL, NULL, NULL
-	},
-	{
-		{"polar_read_ahead_xlog_num", PGC_POSTMASTER, UNGROUPED,
-		 gettext_noop(
-			 "How many xlog pages are read ahead. A value of 0 turns off this feature."),
+		{"polar_flashback_logindex_mem_size", PGC_POSTMASTER, RESOURCES_MEM,
+		 gettext_noop("Set the size for flashback logindex memory table"),
 		 NULL,
-		 GUC_UNIT_BLOCKS
+		 GUC_UNIT_MB
 		},
-		&polar_read_ahead_xlog_num,
-		200, 0, MAX_READ_AHEAD_XLOGS,
+		&polar_flashback_logindex_mem_size,
+		64, 3, INT_MAX / 2,
 		NULL, NULL, NULL
 	},
 	{
-		{"polar_fullpage_keep_segments", PGC_SIGHUP, UNGROUPED,
-			gettext_noop("Sets the number of FULLPAGE files held for replica."),
-			NULL
+		{"polar_flashback_logindex_bloom_blocks", PGC_POSTMASTER, UNGROUPED,
+		 gettext_noop("Set the number of blocks for flashback logindex bloom filter"),
+		 NULL
 		},
-		&polar_fullpage_keep_segments,
-		16,
-		3, INT32_MAX,
+		&polar_flashback_logindex_bloom_blocks,
+		512, 8, INT_MAX / 2,
 		NULL, NULL, NULL
 	},
 	{
-		{"polar_max_logindex_files", PGC_SIGHUP, UNGROUPED,
-			gettext_noop("A switch to control number of max logindex files.This param is used when truncate logindex file"),
-			NULL,
-			GUC_NO_RESET_ALL | GUC_NOT_IN_SAMPLE | GUC_NOT_WHILE_SEC_REST
+		{"polar_rel_size_cache_blocks", PGC_POSTMASTER, UNGROUPED,
+		 gettext_noop("Set the number of blocks to record relation size cache"),
+		 NULL
 		},
-		&polar_max_logindex_files,
-		80, 10, INT_MAX,
+		&polar_rel_size_cache_blocks,
+		2, 0, INT_MAX / 2,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_parallel_new_bgwriter_threshold_lag", PGC_SIGHUP, RESOURCES_BGWRITER,
+		 gettext_noop(
+			 "Set the threshold to add a new bgwriter, if the consistent lag greater than "
+			 "this lag #polar_parallel_new_bgwriter_threshold_time, we will add a "
+			 "new parallel background writer."),
+		 NULL,
+		 GUC_UNIT_MB
+		},
+		&polar_parallel_new_bgwriter_threshold_lag,
+		1024, 256, INT_MAX / 2,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_parallel_new_bgwriter_threshold_time", PGC_SIGHUP, RESOURCES_BGWRITER,
+		 gettext_noop(
+			 "Set the threshold to add a new bgwriter, if the consistent lag greater than "
+			 "this lag #polar_parallel_new_bgwriter_threshold_time, we will add a "
+			 "new parallel background writer."),
+		 NULL,
+		 GUC_UNIT_S
+		},
+		&polar_parallel_new_bgwriter_threshold_time,
+		10, 1, 3600,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_parallel_bgwriter_check_interval", PGC_SIGHUP, RESOURCES_BGWRITER,
+		 gettext_noop("The interval to check whether the server has enough parallel background writers."),
+		 NULL,
+		 GUC_UNIT_S
+		},
+		&polar_parallel_bgwriter_check_interval,
+		10, 1, 600,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_parallel_bgwriter_delay", PGC_SIGHUP, RESOURCES_BGWRITER,
+		 gettext_noop("Parallel background writer sleep time between rounds."),
+		 NULL,
+		 GUC_UNIT_MS
+		},
+		&polar_parallel_bgwriter_delay,
+		10, 1, 10000,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_parallel_bgwriter_workers", PGC_SIGHUP, RESOURCES_BGWRITER,
+		 gettext_noop("Set the max number of the parallel background workers."),
+		 NULL
+		},
+		&polar_parallel_bgwriter_workers,
+		5, 0, MAX_NUM_OF_PARALLEL_BGWRITER/2,
 		NULL, NULL, NULL
 	},
 	{
@@ -2394,147 +4168,185 @@ static struct config_int ConfigureNamesInt[] =
 		NULL, NULL, NULL
 	},
 	{
-		{"polar_logindex_unit_test", PGC_POSTMASTER, UNGROUPED,
-		 gettext_noop("polar_logindex_unit_test"),
-		 NULL
+		{"polar_read_ahead_xlog_num", PGC_POSTMASTER, UNGROUPED,
+		 gettext_noop(
+			 "How many xlog pages are read ahead. A value of 0 turns off this feature."),
+		 NULL,
+		 GUC_UNIT_BLOCKS
 		},
-		&polar_logindex_unit_test,
-		0, 0, 5,
+		&polar_read_ahead_xlog_num,
+		20, 0, MAX_READ_AHEAD_XLOGS,
 		NULL, NULL, NULL
 	},
-	{
-		{"polar_parallel_new_bgwriter_threshold_lag", PGC_SIGHUP, RESOURCES_BGWRITER,
-			gettext_noop(
-				"Set the threshold to add a new bgwriter, if the consistent lag greater than "
-				 "this lag, we will add a new parallel background writer."),
-			NULL,
-			GUC_UNIT_MB
-		},
-		&polar_parallel_new_bgwriter_threshold_lag,
-		1024, 256, INT_MAX / 2,
-		NULL, NULL, NULL
-	},
-	{
-		{"polar_parallel_new_bgwriter_threshold_time", PGC_SIGHUP, RESOURCES_BGWRITER,
-			gettext_noop(
-				"Set the threshold to add a new bgwriter, if the delay time greater than "
-				 "this threshold, we will add a new parallel background writer."),
-			NULL,
-			GUC_UNIT_S
-		},
-		&polar_parallel_new_bgwriter_threshold_time,
-		10, 1, 3600,
-		NULL, NULL, NULL
-	},
-	{
-		{"polar_parallel_bgwriter_check_interval", PGC_SIGHUP, RESOURCES_BGWRITER,
-			gettext_noop("The interval to check whether the server has enough parallel background writers."),
-			NULL,
-			GUC_UNIT_S
-		},
-		&polar_parallel_bgwriter_check_interval,
-		10, 1, 600,
-		NULL, NULL, NULL
-	},
-	{
-		{"polar_parallel_bgwriter_delay", PGC_SIGHUP, RESOURCES_BGWRITER,
-			gettext_noop("Parallel background writer sleep time between rounds."),
-			NULL,
-			GUC_UNIT_MS
-		},
-		&polar_parallel_bgwriter_delay,
-		10, 1, 10000,
-		NULL, NULL, NULL
-	},
-	{
-		{"polar_parallel_bgwriter_workers", PGC_SIGHUP, RESOURCES_BGWRITER,
-			gettext_noop("Set the max number of the parallel background workers."),
-			NULL
-		},
-		&polar_parallel_bgwriter_workers,
-		5, 0, MAX_NUM_OF_PARALLEL_BGWRITER/2,
-		NULL, NULL, NULL
-	},
+
 	{
 		{"polar_copy_buffers", PGC_POSTMASTER, UNGROUPED,
-			gettext_noop("Set the size of copy buffer."),
-			NULL,
-			GUC_UNIT_BLOCKS
+		 gettext_noop("Set the size of copy buffer."),
+		 NULL,
+		 GUC_UNIT_BLOCKS
 		},
 		&polar_copy_buffers,
 		16384, 10, INT_MAX / 2,
 		NULL, NULL, NULL
 	},
+
+	{
+		{"polar_ring_buffer_vacuum", PGC_SIGHUP, UNGROUPED,
+		 gettext_noop("polar_ring_buffer_vacuum"),
+		 NULL,
+		 GUC_UNIT_MB
+		},
+		&polar_ring_buffer_vacuum,
+		128, 10, 1000,
+		NULL, NULL, NULL
+	},
+
 	{
 		{"polar_bgwriter_sleep_lsn_lag", PGC_SIGHUP, UNGROUPED,
-			gettext_noop("Delay lag less than this threshold, bgwriter maybe sleep."),
-			NULL,
-			GUC_UNIT_MB
+		 gettext_noop("polar_bgwriter_sleep_lsn_lag"),
+		 NULL,
+		 GUC_UNIT_MB
 		},
 		&polar_bgwriter_sleep_lsn_lag,
 		100, 0, 1000,
 		NULL, NULL, NULL
 	},
+
 	{
 		{"polar_buffer_copy_lsn_lag_with_cons_lsn", PGC_SIGHUP, UNGROUPED,
-			gettext_noop("Sets the max lag between consistent lsn and oldest "
-						 "lsn when a buffer should be copied"),
-			NULL,
-			GUC_UNIT_MB
+		 gettext_noop("Sets the max lag between consistent lsn and oldest lsn "
+					  "when a buffer should be copied"),
+		 NULL,
+		 GUC_UNIT_MB
 		},
 		&polar_buffer_copy_lsn_lag_with_cons_lsn,
 		100, 1, 1000,
 		NULL, NULL, NULL
 	},
+
 	{
 		{"polar_buffer_copy_min_modified_count", PGC_SIGHUP, UNGROUPED,
-			gettext_noop("Sets the minimum modified count when a buffer should be copied"),
-			NULL
+		 gettext_noop("Sets the minimum modified count when a buffer should be copied"),
+		 NULL
 		},
 		&polar_buffer_copy_min_modified_count,
 		5, 0, 1000,
 		NULL, NULL, NULL
 	},
+
 	{
 		{"polar_bgwriter_batch_size_flushlist", PGC_POSTMASTER, UNGROUPED,
-			gettext_noop("Sets the batch size when bgwriter get buffer from flush list"),
-			NULL
+				gettext_noop("Sets the batch size when bgwriter get buffer from flush list"),
+				NULL
 		},
 		&polar_bgwriter_batch_size_flushlist,
 		100, 1, 10000,
 		NULL, NULL, NULL
 	},
+
 	{
 		{"polar_bgwriter_max_batch_size", PGC_SIGHUP, UNGROUPED,
-			gettext_noop("Sets the maximum batch size when bgwriter flush buffer from flush list"),
-			NULL
+		    gettext_noop("Sets the maximum batch size when bgwriter flush buffer from flush list"),
+		    NULL
 		},
 		&polar_bgwriter_max_batch_size,
 		5000, 0, INT_MAX / 2,
 		NULL, NULL, NULL
 	},
+
 	{
 		{"polar_check_checkpoint_legal_interval", PGC_SIGHUP, UNGROUPED,
-			gettext_noop("Sets the maximum interval between check the checkpoint legal or not."),
-			NULL,
-			GUC_UNIT_S
+		 gettext_noop("Sets the maximum interval between check the checkpoint legal or not."),
+		 NULL,
+		 GUC_UNIT_MS
 		},
 		&polar_check_checkpoint_legal_interval,
-		10, 1, 3600,
-		NULL, NULL, NULL
-	},
-	{
-		{"polar_clog_slot_size", PGC_POSTMASTER, UNGROUPED,
-			gettext_noop("polar_clog_slot_size."),
-			NULL
-		},
-		&polar_clog_slot_size,
-		128, 128, 8192,
+		100, 1, 10000,
 		NULL, NULL, NULL
 	},
 
 	{
-		{"polar_hostid", PGC_POSTMASTER, UNGROUPED,
+		{"polar_csnlog_slot_size", PGC_POSTMASTER, UNGROUPED,
+			gettext_noop("polar_csnlog_slot_size."),
+			NULL
+		},
+		&polar_csnlog_slot_size,
+		8192, 128, 65536,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_clog_slot_size", PGC_POSTMASTER, UNGROUPED,
+				gettext_noop("polar_clog_slot_size."),
+				NULL
+		},
+		&polar_clog_slot_size,
+		512, 128, 65536,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_committs_buffer_slot_size", PGC_POSTMASTER, UNGROUPED,
+				gettext_noop("polar_committs_buffer_slot_size."),
+				NULL
+		},
+		&polar_committs_buffer_slot_size,
+		16, 16, 65536,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_mxact_offset_buffer_slot_size", PGC_POSTMASTER, UNGROUPED,
+				gettext_noop("polar_mxact_offset_buffer_slot_size."),
+				NULL
+		},
+		&polar_mxact_offset_buffer_slot_size,
+		NUM_MXACTOFFSET_BUFFERS, NUM_MXACTOFFSET_BUFFERS, 65536,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_mxact_member_buffer_slot_size", PGC_POSTMASTER, UNGROUPED,
+				gettext_noop("polar_mxact_member_buffer_slot_size."),
+				NULL
+		},
+		&polar_mxact_member_buffer_slot_size,
+		NUM_MXACTMEMBER_BUFFERS, NUM_MXACTMEMBER_BUFFERS, 65536,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_subtrans_buffer_slot_size", PGC_POSTMASTER, UNGROUPED,
+				gettext_noop("polar_subtrans_buffer_slot_size."),
+				NULL
+		},
+		&polar_subtrans_buffer_slot_size,
+		NUM_SUBTRANS_BUFFERS, NUM_SUBTRANS_BUFFERS, 65536,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_async_buffer_slot_size", PGC_POSTMASTER, UNGROUPED,
+				gettext_noop("polar_async_buffer_slot_size."),
+				NULL
+		},
+		&polar_async_buffer_slot_size,
+		NUM_ASYNC_BUFFERS, NUM_ASYNC_BUFFERS, 65536,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_oldserxid_buffer_slot_size", PGC_POSTMASTER, UNGROUPED,
+				gettext_noop("polar_oldserxid_buffer_slot_size."),
+				NULL
+		},
+		&polar_oldserxid_buffer_slot_size,
+		NUM_OLDSERXID_BUFFERS, NUM_OLDSERXID_BUFFERS, 65536,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_hostid", PGC_POSTMASTER, POLAR_NODE_STATIC,
 			gettext_noop("polardb hostid."),
 			NULL
 		},
@@ -2543,7 +4355,17 @@ static struct config_int ConfigureNamesInt[] =
 		1, 1, POLAR_MAX_PDB_HOSTID,
 		NULL, NULL, NULL
 	},
-	/* POLAR INT GUCs end */
+
+	{
+		{"polar_auditlog_max_query_length", PGC_SIGHUP, LOGGING,
+			gettext_noop("polardb max audit log length"),
+			NULL
+		},
+		&polar_auditlog_max_query_length,
+		/* MIN should not be 0, MAX should better not larger than a half of LOG_CHANNEL_WRITE_BUFFER_SIZE */
+		POLAR_DEFAULT_MAX_AUDIT_LOG_LEN, 512, 48 * 1024,
+		NULL, NULL, NULL
+	},
 
 	{
 		{"archive_timeout", PGC_SIGHUP, WAL_ARCHIVING,
@@ -2700,7 +4522,7 @@ static struct config_int ConfigureNamesInt[] =
 		},
 		&MaxConnections,
 		100, 1, MAX_BACKENDS,
-		check_maxconnections, NULL, NULL
+		check_maxconnections, NULL, polar_show_max_connections
 	},
 
 	{
@@ -2835,7 +4657,8 @@ static struct config_int ConfigureNamesInt[] =
 	},
 
 	{
-		{"temp_file_limit", PGC_SUSET, RESOURCES_DISK,
+		/* POLAR: many user want to change it, so let no-super to set it */
+		{"temp_file_limit", PGC_USERSET, RESOURCES_DISK,
 			gettext_noop("Limits the total size of all temporary files used by each process."),
 			gettext_noop("-1 means no limit."),
 			GUC_UNIT_KB
@@ -2927,6 +4750,26 @@ static struct config_int ConfigureNamesInt[] =
 		NULL, NULL, NULL
 	},
 
+	{
+		{"smgr_shared_relations", PGC_POSTMASTER, RESOURCES_MEM,
+			gettext_noop("Sets the number of shared relation objects in memory at one time."),
+			NULL
+		},
+		&smgr_shared_relations,
+		128, 64, INT_MAX,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"smgr_pool_sweep_times", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("Sets the times for smgr pool to clock sweep, 0 means always uses a random cache"),
+			NULL
+		},
+		&smgr_pool_sweep_times,
+		8, 0, INT_MAX,
+		NULL, NULL, NULL
+	},
+
 	/*
 	 * See also CheckRequiredParameterValues() if this parameter changes
 	 */
@@ -2970,7 +4813,18 @@ static struct config_int ConfigureNamesInt[] =
 			GUC_UNIT_MS
 		},
 		&StatementTimeout,
-		0, 0, INT_MAX,
+		0, 0, INT_MAX, 
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_audit_log_flush_timeout", PGC_USERSET, UNGROUPED,
+			gettext_noop("Sets the audit log timeout to flush."),
+			gettext_noop("A value of 0 turns off the timeout."),
+			GUC_UNIT_MS
+		},
+		&polar_audit_log_flush_timeout,
+		30000, 0, INT_MAX,
 		NULL, NULL, NULL
 	},
 
@@ -2982,6 +4836,31 @@ static struct config_int ConfigureNamesInt[] =
 		},
 		&LockTimeout,
 		0, 0, INT_MAX,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_delay_dml_lsn_lag_threshold", PGC_USERSET, UNGROUPED,
+			gettext_noop("Sets the polar dml delay size for replay."),
+			gettext_noop("A value of 0 turns off the size threshold."),
+			GUC_UNIT_KB,
+			GUC_SUPERUSER_ONLY | GUC_NO_RESET_ALL
+		},
+		&polar_delay_dml_lsn_lag_threshold,
+		10 * 1024 * 1024 /* default 10GB */, 0, INT_MAX,
+		NULL, NULL, NULL
+	},
+
+
+	{
+		{"polar_primary_dml_delay", PGC_USERSET, UNGROUPED,
+			gettext_noop("Sets the polar dml delay for replay."),
+			gettext_noop("A value of 0 turns off the timeout."),
+			GUC_UNIT_MS,
+			GUC_SUPERUSER_ONLY | GUC_NO_RESET_ALL
+		},
+		&polar_primary_dml_delay,
+		1, 0, INT_MAX,
 		NULL, NULL, NULL
 	},
 
@@ -3228,7 +5107,7 @@ static struct config_int ConfigureNamesInt[] =
 			NULL
 		},
 		&max_wal_senders,
-		10, 0, MAX_BACKENDS,
+		64, 0, MAX_BACKENDS,
 		NULL, NULL, NULL
 	},
 
@@ -3239,7 +5118,20 @@ static struct config_int ConfigureNamesInt[] =
 			NULL
 		},
 		&max_replication_slots,
-		10, 0, MAX_BACKENDS /* XXX? */ ,
+		64, 0, MAX_BACKENDS /* XXX? */ ,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"max_slot_wal_keep_size", PGC_SIGHUP, REPLICATION_SENDING,
+			gettext_noop("Sets the maximum WAL size that can be reserved by replication slots."),
+			gettext_noop("Replication slots will be marked as failed, and segments released "
+						 "for deletion or recycling, if this much space is occupied by WAL "
+						 "on disk."),
+			GUC_UNIT_MB
+		},
+		&max_slot_wal_keep_size_mb,
+		-1, -1, MAX_KILOBYTES,
 		NULL, NULL, NULL
 	},
 
@@ -3381,7 +5273,7 @@ static struct config_int ConfigureNamesInt[] =
 			NULL,
 		},
 		&max_worker_processes,
-		8, 0, MAX_BACKENDS,
+		24, 0, MAX_BACKENDS,
 		check_max_worker_processes, NULL, NULL
 	},
 
@@ -3393,7 +5285,7 @@ static struct config_int ConfigureNamesInt[] =
 			NULL,
 		},
 		&max_logical_replication_workers,
-		4, 0, MAX_BACKENDS,
+		32, 0, MAX_BACKENDS,
 		NULL, NULL, NULL
 	},
 
@@ -3608,7 +5500,7 @@ static struct config_int ConfigureNamesInt[] =
 			NULL
 		},
 		&max_parallel_workers,
-		8, 0, MAX_PARALLEL_WORKER_LIMIT,
+		16, 0, MAX_PARALLEL_WORKER_LIMIT,
 		NULL, NULL, NULL
 	},
 
@@ -3769,6 +5661,814 @@ static struct config_int ConfigureNamesInt[] =
 		NULL, NULL, NULL
 	},
 
+	/* POLAR Int GUCs, the end of block */
+	{
+		{"polar_max_non_super_conns", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("A switch to control number of max connections allowed for non-super users"),
+			NULL,
+			GUC_NO_RESET_ALL | GUC_NOT_IN_SAMPLE | GUC_NOT_WHILE_SEC_REST
+		},
+		&polar_max_non_super_conns,
+		/* -1 means this variable is disabled */
+		-1, -1, MAX_BACKENDS,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_max_super_conns", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("A switch to control number of max connections allowed for super users"),
+			NULL,
+			GUC_NO_RESET_ALL | GUC_NOT_IN_SAMPLE | GUC_NOT_WHILE_SEC_REST
+		},
+		&polar_max_super_conns,
+		/* -1 means this variable is disabled */
+		-1, -1, MAX_BACKENDS,
+		NULL, NULL, NULL
+	},
+	{
+		/* num of walsenders reserved for superuser */
+		{"polar_wal_snd_reserved_for_superuser", PGC_SIGHUP, REPLICATION_STANDBY,
+			gettext_noop("Sets the maximum number of walsenders reserved for superuser."),
+			NULL
+		},
+		&polar_wal_snd_reserved_for_superuser,
+		32, -1, MAX_BACKENDS,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_reserved_polar_super_conns", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("A switch to control number of max connections allowed for polar_super users"),
+			NULL,
+			GUC_NO_RESET_ALL | GUC_NOT_IN_SAMPLE | GUC_NOT_WHILE_SEC_REST
+		},
+		&polar_reserved_polar_super_conns,
+		8, -1, MAX_BACKENDS,
+		NULL, NULL, NULL
+	},
+	{
+		/* num of replication slots reserved for superuser */
+		{"polar_repl_slots_reserved_for_superuser", PGC_SIGHUP, REPLICATION_STANDBY,
+			gettext_noop("Sets the num of replication slots reserved for superuser."),
+			NULL
+		},
+		&polar_repl_slots_reserved_for_superuser,
+		32, -1, MAX_BACKENDS,
+		NULL, NULL, NULL
+	},
+	{
+		/* num of replication workers reserved for superuser */
+		{"polar_logical_repl_workers_reserved_for_superuser", PGC_SIGHUP, REPLICATION_STANDBY,
+			gettext_noop("Sets the num of replication workers reserved for superuser."),
+			NULL
+		},
+		&polar_logical_repl_workers_reserved_for_superuser,
+		16, -1, MAX_BACKENDS,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_max_log_files", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("A switch to control number of max pg sys log files"),
+			NULL,
+			GUC_NO_RESET_ALL | GUC_NOT_IN_SAMPLE | GUC_NOT_WHILE_SEC_REST
+		},
+		&polar_max_log_files,
+		/* -1 means this variable is disabled */
+		20, -1, INT_MAX,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_max_auditlog_files", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("A switch to control number of max pg audit log files"),
+			NULL,
+			GUC_NO_RESET_ALL | GUC_NOT_IN_SAMPLE | GUC_NOT_WHILE_SEC_REST
+		},
+		&polar_max_auditlog_files,
+		/* -1 means this variable is disabled */
+		20, -1, INT_MAX,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_max_slowlog_files", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("A switch to control number of max pg slow log files"),
+			NULL,
+			GUC_NO_RESET_ALL | GUC_NOT_IN_SAMPLE | GUC_NOT_WHILE_SEC_REST
+		},
+		&polar_max_slowlog_files,
+		/* -1 means this variable is disabled */
+		20, -1, INT_MAX,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_max_logindex_files", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("A switch to control number of max logindex files.This param is used when truncate logindex file"),
+			NULL,
+			GUC_NO_RESET_ALL | GUC_NOT_IN_SAMPLE | GUC_NOT_WHILE_SEC_REST
+		},
+		&polar_max_logindex_files,
+		80, 10, INT_MAX,
+		NULL, NULL, NULL
+	},
+	/* POLAR */
+ 	{
+ 		{"polar_num_of_sysloggers", PGC_POSTMASTER, LOGGING,
+ 			gettext_noop("Sets the number of syslogger process."),
+ 			NULL,
+ 		},
+ 		&polar_num_of_sysloggers,
+ 		DEFAULT_SYSLOGGER_NUM, 1, MAX_SYSLOGGER_NUM,
+ 		NULL, NULL, NULL
+ 	},
+	{
+		{"polar_bulk_extend_size", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("Sets the size of preallocate file, 0 (turning this feature off)."),
+			NULL,
+			GUC_UNIT_BLOCKS
+		},
+		&polar_bulk_extend_size,
+		0, 0, INT_MAX / 2,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_clog_max_local_cache_segments", PGC_POSTMASTER, UNGROUPED,
+			gettext_noop("Set the maximum number of local segment file cache for clog"),
+			NULL
+		},
+		&polar_clog_max_local_cache_segments,
+		128, 0, INT_MAX / 2,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_logindex_max_local_cache_segments", PGC_POSTMASTER, UNGROUPED,
+			gettext_noop("Set the maximum number of local segment file cache for logindex"),
+			NULL
+		},
+		&polar_logindex_max_local_cache_segments,
+		32, 0, INT_MAX / 2,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_parallel_replay_proc_num", PGC_POSTMASTER, UNGROUPED,
+			gettext_noop("Set the number of processes to do parallel replay"),
+			NULL
+		},
+		&polar_parallel_replay_proc_num,
+		8, 0, 256,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_parallel_replay_task_queue_depth", PGC_POSTMASTER, UNGROUPED,
+			gettext_noop("Set the task queue depth when do parallel replay"),
+			NULL
+		},
+		&polar_parallel_replay_task_queue_depth,
+		1024, 0, 1048576,
+		NULL, NULL, NULL
+	},
+
+	{
+	
+		{"polar_commit_ts_max_local_cache_segments", PGC_POSTMASTER, UNGROUPED,
+			gettext_noop("Set the maximum number of local segment file cache for commit_ts"),
+			NULL
+		},
+		&polar_commit_ts_max_local_cache_segments,
+		32, 0, INT_MAX / 2,
+		NULL, NULL, NULL
+	},
+	{
+	
+		{"polar_csnlog_max_local_cache_segments", PGC_POSTMASTER, UNGROUPED,
+			gettext_noop("Set the maximum number of local segment file cache for csnlog"),
+			NULL
+		},
+		&polar_csnlog_max_local_cache_segments,
+		256, 0, INT_MAX / 2,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_index_bulk_extend_size", PGC_USERSET, UNGROUPED,
+			gettext_noop("Sets the size of preallocate file for index, 0 (turning this feature off)."),
+			NULL,
+			GUC_UNIT_BLOCKS
+		},
+		/* POLAR: default 1MB */
+		&polar_index_bulk_extend_size,
+		128, 0, INT_MAX / 2,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_multixact_max_local_cache_segments", PGC_POSTMASTER, UNGROUPED,
+			gettext_noop("Set the maximum number of local segment file cache for multixact"),
+			NULL
+		},
+		&polar_multixact_max_local_cache_segments,
+		32, 0, INT_MAX / 2,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_min_bulk_extend_table_size", PGC_USERSET, UNGROUPED,
+			gettext_noop("Sets the minimum amount of table data for bulk extend, "
+						 "bulk extend is enabled only when the table size >= polar_min_bulk_extend_table_size"),
+			NULL,
+			GUC_UNIT_BLOCKS
+		},
+		&polar_min_bulk_extend_table_size,
+		(8 * 1024 * 1024) / BLCKSZ, 0, INT_MAX / 2,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_recovery_bulk_extend_size", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("Sets the size for bulk file extension while replaying xlog on standby (0 turns this feature off)."),
+			NULL,
+			GUC_UNIT_BLOCKS,
+		},
+		&polar_recovery_bulk_extend_size,
+		512, 0, 2048,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_bulk_read_size", PGC_USERSET, UNGROUPED,
+			gettext_noop("Sets size of bulk read, 0 (turning this feature off)."),
+			NULL,
+			GUC_UNIT_BLOCKS
+		},
+		&polar_bulk_read_size,
+		(128 * 1024) / BLCKSZ, 0, POLAR_MAX_BULK_IO_SIZE,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_index_create_bulk_extend_size", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("Sets the size of preallocate file for index create, 0 (turning this feature off)."),
+			NULL,
+			GUC_UNIT_BLOCKS
+		},
+		/* POLAR: default 4MB */
+		&polar_index_create_bulk_extend_size,
+		512, 0, INT_MAX / 2,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_xlog_page_buffers", PGC_POSTMASTER, RESOURCES_MEM,
+			gettext_noop("Sets the size of xlog buffer used by startup and backedn in replica and standby mode."),
+			NULL,
+			GUC_UNIT_MB
+		},
+		&polar_xlog_page_buffers,
+		1 * 1024, 16, INT_MAX / 2,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_xlog_queue_buffers", PGC_POSTMASTER, RESOURCES_MEM,
+			gettext_noop("Sets the size of xlog queue buffer used to keep xlog meta. 0 means disable xlog buffer"),
+			NULL,
+			GUC_UNIT_MB
+		},
+		&polar_xlog_queue_buffers,
+		512, 0, INT_MAX / 2,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_bg_replay_batch_size", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("Batch size of each bgwriter replay run."),
+			NULL
+		},
+		&polar_bg_replay_batch_size,
+		20000, 1000, INT_MAX,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_virtual_pid", PGC_USERSET, UNGROUPED,
+			gettext_noop("Sets the process cancel key which connect to rds proxy ."),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL | GUC_NOT_IN_SAMPLE | GUC_DISALLOW_IN_FILE
+		},
+		&polar_virtual_pid,
+		0, INT32_MIN, INT32_MAX,
+		NULL, polar_assign_virtual_pid, NULL
+	},
+
+	{
+		{"polar_cancel_key", PGC_USERSET, UNGROUPED,
+			gettext_noop("Sets the process cancel key which connect to rds proxy ."),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL | GUC_NOT_IN_SAMPLE | GUC_DISALLOW_IN_FILE
+		},
+		&polar_cancel_key,
+		0, INT32_MIN, INT32_MAX,
+		NULL, polar_assign_cancel_key, NULL
+	},
+
+	{
+		{"polar_fullpage_snapshot_min_modified_count", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("Sets the minimum modified count when log fullpage"),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_fullpage_snapshot_min_modified_count,
+		10, 0, INT32_MAX,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_fullpage_snapshot_replay_delay_threshold", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("Max diff lsn(MB) between page lsn and replay_lsn when log fullpage snapshot."),
+			NULL,
+			GUC_UNIT_MB | GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_fullpage_snapshot_replay_delay_threshold,
+		16,
+		0, INT32_MAX,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_fullpage_snapshot_oldest_lsn_delay_threshold", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("Minimum diff lsn(MB) between insert lsn and oldest_lsn when log fullpage snapshot."),
+			NULL,
+			GUC_UNIT_MB | GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_fullpage_snapshot_oldest_lsn_delay_threshold,
+		1024,
+		0, INT32_MAX,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_write_logindex_active_table_delay", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("Time between walwriter write active logindex table."),
+			NULL,
+			GUC_UNIT_MS | GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_write_logindex_active_table_delay,
+		500, 1, INT32_MAX,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_startup_replay_delay_size", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("Manual startup replay delay wal size(MB), just for test!"),
+			NULL,
+			GUC_UNIT_MB | GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_startup_replay_delay_size,
+		0,
+		0, 40960,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_wait_old_version_page_timeout", PGC_USERSET, UNGROUPED,
+			gettext_noop("Sets the maximum time to wait for old version page when reading a future page."),
+			NULL,
+			GUC_UNIT_MS | GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_wait_old_version_page_timeout,
+		30 * 1000, 0, INT_MAX,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_fullpage_keep_segments", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("Sets the number of FULLPAGE files held for replica."),
+			NULL
+		},
+		&polar_fullpage_keep_segments,
+		16,
+		3, INT32_MAX,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_sync_replication_timeout", PGC_SUSET, REPLICATION_MASTER,
+			gettext_noop("Sets the maximum time to wait for WAL synchronous replication."),
+			gettext_noop("A value of 0 turns off the timeout."),
+			GUC_UNIT_MS
+		},
+		&polar_sync_replication_timeout,
+		0, 0, INT_MAX,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_sync_rep_timeout_break_lsn_lag", PGC_SUSET, REPLICATION_MASTER,
+			gettext_noop("Sets the minimal lag between each process and timeout synchronous replication flush or write or apply lsn, in bytes."),
+			gettext_noop("When the lag exceed the value, timeout synchronous replication back to synchronous."),
+			GUC_UNIT_BYTE
+		},
+		&polar_sync_rep_timeout_break_lsn_lag,
+		8 * 1024, 0, INT_MAX,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_semi_sync_observation_window", PGC_SUSET, REPLICATION_MASTER,
+			gettext_noop("The maximum window time to observe whether the network is healthy."),
+			gettext_noop("If it is less than 2 * polar_sync_replication_timeout, it will be ignored."),
+			GUC_UNIT_MS
+		},
+		&polar_semi_sync_observation_window,
+		5 * 60 * 1000, 0, INT_MAX,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_semi_sync_max_backoff_window", PGC_SUSET, REPLICATION_MASTER,
+			gettext_noop("Sets the maximum value of semi-synchronous replication backoff window."),
+			NULL,
+			GUC_UNIT_MS
+		},
+		&polar_semi_sync_max_backoff_window,
+		1024 * 1000, 0, INT_MAX,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_semi_sync_min_backoff_window", PGC_SUSET, REPLICATION_MASTER,
+			gettext_noop("Sets the minimum initial value of the semi-synchronous replication backoff window."),
+			NULL,
+			GUC_UNIT_MS
+		},
+		&polar_semi_sync_min_backoff_window,
+		8 * 1000, 0, INT_MAX,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_async_ddl_lock_replay_worker_num", PGC_POSTMASTER, UNGROUPED,
+			gettext_noop("Async ddl lock replay worker count."),
+			NULL
+		},
+		&polar_async_ddl_lock_replay_worker_num,
+		1, 0, MAX_ASYNC_DDL_LOCK_REPLAY_WORKER_NUM,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_datamax_remove_archivedone_wal_timeout", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("Time between remove archive done wal"),
+			NULL,
+			GUC_UNIT_MS
+		},
+		/* POLAR: 0 means invalid remove archivedone wal */
+		&polar_datamax_remove_archivedone_wal_timeout,
+		60000,
+		0, INT32_MAX,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_datamax_archive_timeout", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("Time between archive wal"),
+			NULL,
+			GUC_UNIT_MS
+		},
+		/* POLAR: 0 means invalid archive */
+		&polar_datamax_archive_timeout,
+		60000,
+		0, INT32_MAX,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_datamax_save_replication_slots_timeout", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("Time between save replication slots in datamax mode"),
+			NULL,
+			GUC_UNIT_MS
+		},
+		/* POLAR: 0 means invalid save replication slots */
+		&polar_datamax_save_replication_slots_timeout,
+		300000,
+		0, INT32_MAX,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_datamax_prealloc_walfile_timeout", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("Time between prealloc wal file in datamax mode"),
+			NULL,
+			GUC_UNIT_MS
+		},
+		/* POLAR: 0 means invalid prealloc walfile */
+		&polar_datamax_prealloc_walfile_timeout,
+		30000,
+		0, INT32_MAX,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_datamax_prealloc_walfile_num", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("Prealloc walfile num in datamax mode"),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_datamax_prealloc_walfile_num,
+		2,
+		1, INT_MAX / 1000,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_flashback_log_buffers", PGC_POSTMASTER, UNGROUPED,
+			gettext_noop("Sets the number of disk-page(8kB) buffers in shared memory for flashback log."),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_flashback_log_buffers,
+		POLAR_FLOG_DEFAULT_BUFFERS, 4, (INT_MAX / POLAR_FLOG_BLCKSZ),
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_flashback_log_insert_locks", PGC_POSTMASTER, UNGROUPED,
+			gettext_noop("Set the number of locks for flashback log buffer insert"),
+			NULL
+		},
+		&polar_flashback_log_insert_locks,
+		POLAR_FLOG_DEFAULT_BUFF_INSERT_LOCKS, 1, INT_MAX,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_flashback_log_keep_segments", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("Sets the number of flashback log files held, the files will be recycled."),
+			NULL
+		},
+		&polar_flashback_log_keep_segments,
+		8, 3, INT32_MAX,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_flashback_logindex_queue_buffers", PGC_POSTMASTER, RESOURCES_MEM,
+			gettext_noop("Sets the size (MB) of log queue buffer used to keep flashback logindex. "
+					"0 means disable flashback logindex queue"),
+			NULL,
+			GUC_UNIT_MB
+		},
+		&polar_flashback_logindex_queue_buffers,
+		8, 0, INT_MAX / 2,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_flashback_log_bgwrite_delay", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("Flashback log background writer sleep time between rounds."),
+			NULL,
+			GUC_UNIT_MS
+		},
+		&polar_flashback_log_bgwrite_delay,
+		100, 1, INT_MAX,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_flashback_log_sync_buf_timeout", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("The process wait N ms before background worker inserting "
+					"flashback log record into buffer."),
+			NULL,
+			GUC_UNIT_MS
+		},
+		&polar_flashback_log_sync_buf_timeout,
+		0, 0, INT_MAX,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_flashback_log_insert_list_delay", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("Flashback log list background sleep time between rounds."),
+			NULL,
+			GUC_UNIT_MS
+		},
+		&polar_flashback_log_insert_list_delay,
+		100, 1, INT_MAX,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_flashback_log_flush_max_size", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("Flashback log background writer will flush log no more than N kilobytes."),
+			NULL,
+			GUC_UNIT_KB
+		},
+		&polar_flashback_log_flush_max_size,
+		5 * 1024, 0, INT_MAX / 1024,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_flashback_log_insert_list_max_num", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("Flashback log background inserter will insert no more than N records."),
+			NULL
+		},
+		&polar_flashback_log_insert_list_max_num,
+		10240, 16, INT_MAX / 2,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_flashback_point_segments", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("Sets the minimum WAL distance between automatic flashback point."),
+			NULL
+		},
+		&polar_flashback_point_segments,
+		20, 1, INT_MAX,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_flashback_point_timeout", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("Sets the minimum time between automatic flashback point."),
+			NULL,
+			GUC_UNIT_S
+		},
+		&polar_flashback_point_timeout,
+		300, 1, 86400,
+		NULL, NULL, NULL
+	},
+
+	/* POLAR end */
+
+
+	/* POLAR: gap limit between local redoptr and shared redoptr for replica */
+	{
+		{"polar_replica_redo_gap_limit", PGC_POSTMASTER, UNGROUPED,
+			gettext_noop("gap limit between local redoptr and shared redoptr for replica, copy base dirs and other trans status log files when gap exceeds the limit"),
+			gettext_noop("disable the gap comparison when set 0, which means copy process will execute unconditionally when replica start"),
+			GUC_UNIT_KB
+		},
+		&polar_replica_redo_gap_limit,
+		1024 * 1024, 0, INT_MAX,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_crash_recovery_rto", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("Sets the polar crash recovery rto."),
+			gettext_noop("A value of 0 turns off this option."),
+			GUC_UNIT_S,
+		},
+		&polar_crash_recovery_rto,
+		0, 0, INT_MAX,
+		NULL, polar_assign_crash_recovery_rto, NULL
+	},
+
+	{
+		{"polar_crash_recovery_rto_delay_count", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("Sets the polar crash recovery delay time."),
+			gettext_noop("A value of 0 turns off this option."),
+			GUC_UNIT_MS,
+		},
+		&polar_crash_recovery_rto_delay_count,
+		1, 0, INT_MAX,
+		NULL, polar_assign_crash_recovery_rto_delay_time, NULL
+	},
+
+	{
+		{"polar_io_read_throughtput_userset", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("Set the io read throughtput by users."),
+			gettext_noop("A value of 0 turns off this option."),
+			GUC_UNIT_MB
+		},
+		&polar_io_read_throughtput_userset,
+		0, 0, INT_MAX,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_crash_recovery_rto_statistics_count", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("Sets the polar crash recovery rto max statistics time."),
+			gettext_noop("A value of 0 turns off this option."),
+			GUC_NO_SHOW_ALL,
+		},
+		&polar_crash_recovery_rto_statistics_count,
+		100000, 0, INT_MAX,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_bt_write_page_buffer_size", PGC_USERSET, UNGROUPED,
+			gettext_noop("Sets the size of btbuild index page write buffer size."),
+			NULL,
+			GUC_UNIT_BLOCKS | GUC_NOT_IN_SAMPLE
+		},
+		&polar_bt_write_page_buffer_size,
+		0, 0, 8192,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_instance_spec_cpu", PGC_POSTMASTER, DEVELOPER_OPTIONS,
+			gettext_noop("PolarDB instance specification for cpu."),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_instance_spec_cpu,
+		0, 0, INT_MAX,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_instance_spec_mem", PGC_POSTMASTER, DEVELOPER_OPTIONS,
+			gettext_noop("PolarDB instance specification for memory."),
+			NULL,
+			GUC_UNIT_MB | GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_instance_spec_mem,
+		0, 0, INT_MAX,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_instance_spec_normal_mem", PGC_POSTMASTER, DEVELOPER_OPTIONS,
+			gettext_noop("PolarDB instance specification for normal memory."),
+			NULL,
+			GUC_UNIT_MB | GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_instance_spec_normal_mem,
+		0, 0, INT_MAX,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_max_dsm_request_size", PGC_USERSET, DEVELOPER_OPTIONS,
+			gettext_noop("PolarDB max DSM memory."),
+			gettext_noop("0 means no limit."),
+			GUC_UNIT_KB
+		},
+		&polar_max_dsm_request_size,
+		0, 0, INT_MAX,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_max_hashagg_mem", PGC_USERSET, DEVELOPER_OPTIONS,
+			gettext_noop("PolarDB max HashAggregation operator memory."),
+			gettext_noop("0 means no limit."),
+			GUC_UNIT_KB
+		},
+		&polar_max_hashagg_mem,
+		0, 0, INT_MAX,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_max_setop_mem", PGC_USERSET, DEVELOPER_OPTIONS,
+			gettext_noop("PolarDB max SetOp operator memory."),
+			gettext_noop("0 means no limit."),
+			GUC_UNIT_KB
+		},
+		&polar_max_setop_mem,
+		0, 0, INT_MAX,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_max_subplan_mem", PGC_USERSET, DEVELOPER_OPTIONS,
+			gettext_noop("PolarDB max Subplan operator memory."),
+			gettext_noop("0 means no limit."),
+			GUC_UNIT_KB
+		},
+		&polar_max_subplan_mem,
+		0, 0, INT_MAX,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_max_recursiveunion_mem", PGC_USERSET, DEVELOPER_OPTIONS,
+			gettext_noop("PolarDB max RecursiveUnion operator memory."),
+			gettext_noop("0 means no limit."),
+			GUC_UNIT_KB
+		},
+		&polar_max_recursiveunion_mem,
+		0, 0, INT_MAX,
+		NULL, NULL, NULL
+	},
+
+	/* POLAR: relax strategies for cas spin */
+#ifdef POLAR_ARM_S_LOCK_RELAX
+	{
+		{"polar_spin_nops", PGC_POSTMASTER, LOCK_MANAGEMENT,
+			gettext_noop("Sets the number of nops in spin lock."),
+			NULL
+		},
+		&polar_spin_nops,
+		0, 0, INT_MAX,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_spin_yield", PGC_POSTMASTER, LOCK_MANAGEMENT,
+			gettext_noop("Sets yield in spin lock."),
+			NULL
+		},
+		&polar_spin_yield,
+		0, 0, 1,
+		NULL, NULL, NULL
+	},
+#endif
+	/* POLAR end */
+
 	/* End-of-list marker */
 	{
 		{NULL, 0, 0, NULL, NULL}, NULL, 0, 0, 0, NULL, NULL, NULL
@@ -3826,6 +6526,16 @@ static struct config_real ConfigureNamesReal[] =
 		},
 		&cpu_operator_cost,
 		DEFAULT_CPU_OPERATOR_COST, 0, DBL_MAX,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_stat_stale_cost", PGC_USERSET, QUERY_TUNING_COST,
+		 	gettext_noop("Add some extra cost to reduce the impact of stale statistics "
+				"0.01 should be a good value to start with"),
+		 NULL
+		},
+		&polar_stat_stale_cost,
+		0, 0, DBL_MAX,
 		NULL, NULL, NULL
 	},
 	{
@@ -3970,6 +6680,26 @@ static struct config_real ConfigureNamesReal[] =
 		NULL, NULL, NULL
 	},
 
+	{
+		{"polar_crash_recovery_rto_threshold", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("Sets the polar crash recovery threshold time to delay."),
+			NULL
+		},
+		&polar_crash_recovery_rto_threshold,
+		0.8, 0.0, 1.0,
+		NULL, polar_assign_crash_recovery_rto_threshold, NULL
+	},
+	/* POLAR begin */
+	{
+		{"polar_max_normal_backends_factor", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("A switch to control max allowed normal backends based on max_connections"),
+			NULL
+		},
+		&polar_max_normal_backends_factor,
+		1.2, 0, 2.0,
+		NULL, polar_assign_max_normal_backends, NULL
+	},
+	/* POLAR end*/
 	/* End-of-list marker */
 	{
 		{NULL, 0, 0, NULL, NULL}, NULL, 0.0, 0.0, 0.0, NULL, NULL, NULL
@@ -3979,33 +6709,88 @@ static struct config_real ConfigureNamesReal[] =
 
 static struct config_string ConfigureNamesString[] =
 {
-	/* POLAR String GUCs Start */
 	{
-		{"polar_release_date", PGC_INTERNAL, UNGROUPED,
-			gettext_noop("Show the server release date."),
+		{"polar_dma_members_info", PGC_POSTMASTER, UNGROUPED,
+			gettext_noop("polar consensus nodes info"),
 			NULL,
-			GUC_NOT_IN_SAMPLE | GUC_DISALLOW_IN_FILE
+			GUC_NOT_IN_SAMPLE | GUC_SUPERUSER_ONLY | GUC_DISALLOW_IN_AUTO_FILE | GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL | GUC_DISALLOW_IN_FILE
 		},
-		&polar_release_date,
-		"20210930",
+		&polar_dma_members_info_string,
+		NULL,
 		NULL, NULL, NULL
 	},
 
 	{
-		{"polar_version", PGC_INTERNAL, UNGROUPED,
-		    gettext_noop("Show the PolarDB server version."),
-		    NULL,
-		    GUC_NOT_IN_SAMPLE | GUC_DISALLOW_IN_FILE
+		{"polar_dma_learners_info", PGC_POSTMASTER, UNGROUPED,
+			gettext_noop("polar consensus learners info"),
+			NULL,
+			GUC_NOT_IN_SAMPLE | GUC_SUPERUSER_ONLY | GUC_DISALLOW_IN_AUTO_FILE | GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL | GUC_DISALLOW_IN_FILE
 		},
-		&polar_version,
-		"1.1.15",
+		&polar_dma_learners_info_string,
+		NULL,
 		NULL, NULL, NULL
 	},
+
+	{
+		{"polar_dma_logger_start_point", PGC_POSTMASTER, UNGROUPED,
+			gettext_noop("polar consensus logger start point"),
+			NULL,
+			GUC_NOT_IN_SAMPLE | GUC_SUPERUSER_ONLY | GUC_DISALLOW_IN_AUTO_FILE | GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL | GUC_DISALLOW_IN_FILE
+		},
+		&polar_dma_start_point_string,
+		NULL,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_dma_repl_slotname", PGC_POSTMASTER, WAL,
+			gettext_noop("consensus replication slot name"),
+			NULL,
+			GUC_NOT_IN_SAMPLE | GUC_SUPERUSER_ONLY | GUC_DISALLOW_IN_AUTO_FILE | GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_dma_repl_slot_name,
+		NULL,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_dma_repl_appname", PGC_POSTMASTER, WAL,
+			gettext_noop("consensus replication application name"),
+			NULL,
+			GUC_NOT_IN_SAMPLE | GUC_SUPERUSER_ONLY | GUC_DISALLOW_IN_AUTO_FILE | GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_dma_repl_app_name,
+		NULL,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_dma_repl_user", PGC_POSTMASTER, WAL,
+			gettext_noop("consensus replication user"),
+			NULL,
+			GUC_NOT_IN_SAMPLE | GUC_SUPERUSER_ONLY | GUC_DISALLOW_IN_AUTO_FILE | GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_dma_repl_user,
+		"repl",
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_dma_repl_passwd", PGC_POSTMASTER, WAL,
+			gettext_noop("consensus replication password"),
+			NULL,
+			GUC_NOT_IN_SAMPLE | GUC_SUPERUSER_ONLY | GUC_DISALLOW_IN_AUTO_FILE | GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_dma_repl_password,
+		"",
+		NULL, NULL, show_polar_dma_repl_password 
+	},
+
 
 	{
 		{"polar_storage_cluster_name", PGC_POSTMASTER, UNGROUPED,
-		 	gettext_noop("polar storage cluster name"),
-		 	NULL
+			gettext_noop("polar storage cluster name"),
+			NULL
 		},
 		&polar_storage_cluster_name,
 		NULL,
@@ -4013,25 +6798,24 @@ static struct config_string ConfigureNamesString[] =
 	},
 
 	{
-		{"polar_datadir", PGC_POSTMASTER, UNGROUPED,
-		 	gettext_noop("polardb datadir."),
-		 	NULL
+		{"polar_datadir", PGC_POSTMASTER, POLAR_NODE_STATIC,
+			gettext_noop("polardb datadir."),
+			NULL
 		},
 		&polar_datadir,
 		"",
-		NULL, NULL, NULL
+		NULL, assign_polar_datadir, NULL
 	},
 
 	{
-		{"polar_disk_name", PGC_POSTMASTER, UNGROUPED,
-		 	gettext_noop("The virtual disk name privided by polarFS."),
-		 	NULL
+		{"polar_disk_name", PGC_POSTMASTER, POLAR_NODE_STATIC,
+			gettext_noop("The virtual disk name privided by polarFS."),
+			NULL
 		},
 		&polar_disk_name,
 		"",
 		NULL, NULL, NULL
 	},
-	/* POLAR String GUCs end */
 
 	{
 		{"archive_command", PGC_SIGHUP, WAL_ARCHIVING,
@@ -4208,14 +6992,15 @@ static struct config_string ConfigureNamesString[] =
 	},
 
 	{
-		{"session_preload_libraries", PGC_SUSET, CLIENT_CONN_PRELOAD,
+		/* POLAR: it's safe for non-superuser to change it */
+		{"session_preload_libraries", PGC_USERSET, CLIENT_CONN_PRELOAD,
 			gettext_noop("Lists shared libraries to preload into each backend."),
 			NULL,
 			GUC_LIST_INPUT | GUC_LIST_QUOTE | GUC_SUPERUSER_ONLY
 		},
 		&session_preload_libraries_string,
 		"",
-		NULL, NULL, NULL
+		check_session_preload_libs, NULL, NULL
 	},
 
 	{
@@ -4308,7 +7093,7 @@ static struct config_string ConfigureNamesString[] =
 			GUC_LIST_INPUT
 		},
 		&Log_destination_string,
-		"stderr",
+		"polar_multi_dest",   /* POLAR */
 		check_log_destination, assign_log_destination, NULL
 	},
 	{
@@ -4467,6 +7252,17 @@ static struct config_string ConfigureNamesString[] =
 			GUC_SUPERUSER_ONLY
 		},
 		&IdentFileName,
+		NULL,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_dma_file", PGC_POSTMASTER, FILE_LOCATIONS,
+			gettext_noop("Sets the server's \"polar_dma\" configuration file."),
+			NULL,
+			GUC_SUPERUSER_ONLY
+		},
+		&PolarDMAFileName,
 		NULL,
 		NULL, NULL, NULL
 	},
@@ -4649,6 +7445,206 @@ static struct config_string ConfigureNamesString[] =
 		NULL, NULL, NULL
 	},
 
+	/* POLAR String GUCs, the end of block */
+	{
+		{"polar_release_date", PGC_INTERNAL, UNGROUPED,
+			gettext_noop("Show the server release date."),
+			NULL,
+			GUC_NOT_IN_SAMPLE | GUC_DISALLOW_IN_FILE
+		},
+		&polar_release_date,
+		"20211231",
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_version", PGC_INTERNAL, UNGROUPED,
+			gettext_noop("Show the PolarDB server version."),
+			NULL,
+			GUC_NOT_IN_SAMPLE | GUC_DISALLOW_IN_FILE
+		},
+		&polar_version,
+		"1.1.20",
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_forbidden_functions_ext", PGC_SUSET, UNGROUPED,
+			gettext_noop("Changes the list of functions that are not allowed to create rule by nosuper users."),
+			NULL,
+			GUC_LIST_INPUT | GUC_LIST_QUOTE | GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL | GUC_NOT_IN_SAMPLE | GUC_NOT_WHILE_SEC_REST
+		},
+		&polar_forbidden_functions_ext,
+		"",
+		check_polar_forbidden_functions, assign_polar_forbidden_functions, NULL
+	},
+
+	{
+		{"polar_available_extensions", PGC_SUSET, UNGROUPED,
+			gettext_noop("Changes the list of extensions that are allowed to create by polar users."),
+			NULL,
+			GUC_LIST_INPUT | GUC_LIST_QUOTE | GUC_NO_RESET_ALL | GUC_NOT_IN_SAMPLE | GUC_NOT_WHILE_SEC_REST
+		},
+		&polar_available_extensions,
+		NULL,
+		check_polar_available_extensions, NULL, NULL
+	},
+
+	{
+		{"polar_forbidden_extensions", PGC_SUSET, UNGROUPED,
+			gettext_noop("Changes the list of extensions that are't allowed to create by polar users."),
+			NULL,
+			GUC_LIST_INPUT | GUC_LIST_QUOTE | GUC_NO_RESET_ALL | GUC_NOT_IN_SAMPLE | GUC_NOT_WHILE_SEC_REST
+		},
+		&polar_forbidden_extensions,
+		NULL,
+		check_polar_available_extensions, NULL, NULL
+	},
+
+	{
+		{"polar_internal_allowed_extensions", PGC_SUSET, UNGROUPED,
+			gettext_noop("Changes the list of internal extensions that are allowed to create by polar users."),
+			NULL,
+			GUC_LIST_INPUT | GUC_LIST_QUOTE | GUC_NO_RESET_ALL | GUC_NOT_IN_SAMPLE | GUC_NOT_WHILE_SEC_REST
+		},
+		&polar_internal_allowed_extensions,
+		/* POLAR: extensions in contrib dir */
+		"pg_stat_statements,btree_gin,btree_gist,citext,cube,dict_int,earthdistance,"
+		"hstore,intagg,intarray,isn,ltree,pgcrypto,pgrowlocks,pg_prewarm,pg_trgm,"
+		"sslinfo,tablefunc,unaccent,fuzzystrmatch,pgstattuple,pg_buffercache,\"uuid-ossp\",bloom,"
+		/* POLAR: extensions in src/pl dir */
+		"plpgsql,plperl,"
+		/* POLAR: extensions in external dir */
+		"polar_csn,polar_monitor,polar_monitor_preload,polar_px",
+		check_polar_available_extensions, NULL, NULL
+	},
+	
+	{
+		{"polar_auto_cascade_extensions", PGC_SUSET, UNGROUPED,
+		 gettext_noop("Changes the list of extensions that are "
+			 "automatically cascaded."),
+		 NULL,
+		 GUC_LIST_INPUT | GUC_LIST_QUOTE | GUC_NO_RESET_ALL | GUC_NOT_IN_SAMPLE | GUC_NOT_WHILE_SEC_REST
+		},
+		&polar_auto_cascade_extensions,
+		"postgis, postgis_topology, postgis_sfcgal, address_standardizer, "
+            "address_standardizer_data_us, postgis_tiger_geocoder, pgrouting",
+		check_polar_available_extensions, NULL, NULL
+	},
+
+	{
+		{"polar_supported_extensions", PGC_INTERNAL, UNGROUPED,
+			gettext_noop("The list of supported extensions that are allowed to create by polar users."),
+			NULL,
+			GUC_NOT_IN_SAMPLE
+		},
+		&polar_supported_extensions,
+		NULL,
+		NULL, NULL, show_polar_supported_extensions
+	},
+
+	{
+		{"polar_rename_wal_ready_file", PGC_SUSET, UNGROUPED,
+			gettext_noop("rename file under /pfs-disk/data/pg_wal/archive_status from .ready to .done"),
+			NULL,
+			GUC_SUPERUSER_ONLY, GUC_NO_RESET_ALL
+		},
+		&polar_rename_wal_ready_file,
+		"",
+		NULL, assign_polar_rename_wal_ready_file, NULL
+	},
+
+	{
+		{"polar_internal_shared_preload_libraries", PGC_POSTMASTER, CLIENT_CONN_PRELOAD,
+			gettext_noop("Lists polardb internal shared libraries with high priority to preload into server."),
+			NULL,
+			GUC_LIST_INPUT | GUC_LIST_QUOTE | GUC_SUPERUSER_ONLY
+		},
+		&polar_internal_shared_preload_libraries,
+		"polar_vfs,polar_worker,polar_resource_group,polar_monitor_preload,pg_stat_statements,polar_stat_sql",
+		polar_check_internal_shared_preload_libraries, NULL, NULL
+	},
+
+	{
+		{"polar_internal_allowed_roles", PGC_SUSET, UNGROUPED,
+			gettext_noop("Mark roles that polar_superuser has privs to."),
+			NULL,
+			GUC_LIST_INPUT | GUC_LIST_QUOTE | GUC_NO_RESET_ALL | GUC_NOT_IN_SAMPLE | GUC_NOT_WHILE_SEC_REST
+		},
+		&polar_internal_allowed_roles,
+		/* POLAR: roles are defined in src/include/catalog/pg_authid.dat */
+		"pg_read_all_stats,pg_stat_scan_tables,pg_signal_backend,pg_polar_superuser",
+		check_polar_allowed_roles, NULL, NULL
+	},
+
+	{
+		{"polar_cluster_passphrase_command", PGC_SIGHUP, ENCRYPTION,
+			gettext_noop("Command to obtain passphrases for database encryption."),
+			NULL,
+			GUC_NO_RESET_ALL | GUC_SUPERUSER_ONLY
+		},
+		&polar_cluster_passphrase_command,
+		"",
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_high_priority_replication_standby_names", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("Comma-separated list of high priority replication standby names."),
+			NULL,
+			GUC_NO_RESET_ALL | GUC_NOT_IN_SAMPLE | GUC_SUPERUSER_ONLY
+		},
+		&polar_high_priority_replication_standby_names,
+		POLAR_DEFAULT_HIGH_PRI_REP_STANDBY_NAME,
+		check_high_priority_replication_standby_names, NULL, NULL
+	},
+
+	{
+		{"polar_low_priority_replication_standby_names", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("Comma-separated list of low priority replication standby names."),
+			NULL,
+			GUC_NO_RESET_ALL | GUC_NOT_IN_SAMPLE | GUC_SUPERUSER_ONLY
+		},
+		&polar_low_priority_replication_standby_names,
+		"",
+		check_low_priority_replication_standby_names, NULL, NULL
+	},
+	/* POLAR: xact split */
+	{
+		{"polar_xact_split_xids", PGC_USERSET, UNGROUPED,
+			gettext_noop("xact id of current split transaction."),
+			NULL,
+			GUC_SUPERUSER_ONLY | GUC_NOT_IN_SAMPLE | GUC_DISALLOW_IN_FILE
+		},
+		&polar_xact_split_xids,
+		NULL,
+		polar_check_xact_split_xids, NULL, NULL
+	},
+
+	{
+		{"polar_xact_split_wait_lsn", PGC_USERSET, UNGROUPED,
+			gettext_noop("xact id of current split transaction."),
+			NULL,
+			GUC_SUPERUSER_ONLY | GUC_NOT_IN_SAMPLE | GUC_DISALLOW_IN_FILE
+		},
+		&polar_xact_split_wait_lsn_str,
+		NULL,
+		NULL, polar_assign_xact_split_wait_lsn, NULL
+	},
+
+	{
+		{"polar_partition_recursive_reloptions", PGC_SUSET, UNGROUPED,
+			gettext_noop("Reloptions to be recursively set on partitioned tables."),
+			NULL,
+			GUC_LIST_INPUT | GUC_LIST_QUOTE | GUC_NO_RESET_ALL | GUC_NOT_IN_SAMPLE | GUC_NOT_WHILE_SEC_REST
+		},
+		&polar_partition_recursive_reloptions,
+		"px_workers",
+		polar_check_recursive_reloptions, polar_assign_recursive_reloptions, NULL
+	},
+
+	/* POLAR end */
+
 	/* End-of-list marker */
 	{
 		{NULL, 0, 0, NULL, NULL}, NULL, NULL, NULL, NULL, NULL
@@ -4739,7 +7735,7 @@ static struct config_enum ConfigureNamesEnum[] =
 		},
 		&log_min_messages,
 		WARNING, server_message_level_options,
-		NULL, NULL, NULL
+		NULL, assign_dma_log_level, NULL
 	},
 
 	{
@@ -4779,7 +7775,8 @@ static struct config_enum ConfigureNamesEnum[] =
 	},
 
 	{
-		{"session_replication_role", PGC_SUSET, CLIENT_CONN_STATEMENT,
+		/* POLAR: many users want to change it, let no-super to do it */
+		{"session_replication_role", PGC_USERSET, CLIENT_CONN_STATEMENT,
 			gettext_noop("Sets the session's behavior for triggers and rewrite rules."),
 			NULL
 		},
@@ -4915,6 +7912,97 @@ static struct config_enum ConfigureNamesEnum[] =
 		NULL, NULL, NULL
 	},
 
+	/* POLAR */
+	{
+		{"polar_enable_coredump_handler", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("Enable print coredump info and clear coredump"),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_enable_coredump_handler,
+		POLAR_CORE_DUMP_ALL, coredump_options,
+		NULL, NULL, NULL
+	},
+
+	/* POLAR */
+	{
+		{"polar_delay_dml_option", PGC_USERSET, UNGROUPED,
+			gettext_noop("Delay DML for once or each tuple"),
+			NULL,
+			GUC_SUPERUSER_ONLY | GUC_NO_RESET_ALL
+		},
+		&polar_delay_dml_option,
+		POLAR_DELAY_DML_OFF, delay_dml_options,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_data_encryption_cipher", PGC_INTERNAL, PRESET_OPTIONS,
+			gettext_noop("Specify encryption algorithms to use."),
+			NULL,
+			GUC_NOT_IN_SAMPLE | GUC_DISALLOW_IN_FILE | GUC_SUPERUSER_ONLY
+		},
+		&data_encryption_cipher,
+		TDE_ENCRYPTION_OFF, data_encryption_cipher_options,
+		NULL, assign_data_encryption_cipher, NULL
+	},
+
+	{
+		{"polar_shutdown_walsnd_wait_replication_kind", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("Wait walsender whose replication type is polar_shutdown_walsnd_wait_replication_kind during shutdown."),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL | GUC_SUPERUSER_ONLY
+		},
+		&polar_shutdown_walsnd_wait_replication_kind,
+		REPLICATION_KIND_PHYSICAL, polar_shutdown_walsnd_wait_replication_kind_options,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_priority_replication_mode", PGC_SIGHUP, REPLICATION_MASTER,
+			gettext_noop("Sets priority replication mode."),
+			NULL
+		},
+		&polar_priority_replication_mode,
+		POLAR_PRI_REP_ANY, polar_priority_replication_mode_options,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_save_stack_info_level", PGC_SUSET, LOGGING_WHEN,
+			gettext_noop("print stack info if error level is above stack info level."),
+			NULL
+		},
+		&polar_save_stack_info_level,
+		FATAL, polar_save_stack_info_level_options,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_nblocks_cache_mode", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("Number of Blocks cache mode"),
+			NULL,
+		},
+		&polar_nblocks_cache_mode,
+		POLAR_NBLOCKS_CACHE_SCAN_MODE, polar_block_cache_options,
+		polar_check_nblocks_cache_mode, NULL, NULL
+	},
+	{
+		{"polar_trace_logindex_messages", PGC_SIGHUP, DEVELOPER_OPTIONS,
+			gettext_noop("Enables logging of logindex-related debugging information."),
+			gettext_noop("Each level includes all the levels that follow it. The later"
+						 " the level, the fewer messages are sent.")
+		},
+		&polar_trace_logindex_messages,
+
+		/*
+		 * client_message_level_options allows too many values, really, but
+		 * it's not worth having a separate options array for this.
+		 */
+		LOG, client_message_level_options,
+		NULL, NULL, NULL
+	},
+
 	/* End-of-list marker */
 	{
 		{NULL, 0, 0, NULL, NULL}, NULL, 0, NULL, NULL, NULL, NULL
@@ -4955,9 +8043,7 @@ static bool reporting_enabled;	/* true to enable GUC_REPORT */
 
 static int	GUCNestLevel = 0;	/* 1 when in main transaction */
 
-
 static int	guc_var_compare(const void *a, const void *b);
-static int	guc_name_compare(const char *namea, const char *nameb);
 static void InitializeGUCOptionsFromEnvironment(void);
 static void InitializeOneGUCOption(struct config_generic *gconf);
 static void push_old_value(struct config_generic *gconf, GucAction action);
@@ -4975,7 +8061,6 @@ static bool validate_option_array_item(const char *name, const char *value,
 static void write_auto_conf_file(int fd, const char *filename, ConfigVariable *head_p);
 static void replace_auto_config_value(ConfigVariable **head_p, ConfigVariable **tail_p,
 						  const char *name, const char *value);
-
 
 /*
  * Some infrastructure for checking malloc/strdup/realloc calls
@@ -5220,6 +8305,16 @@ build_guc_variables(void)
 		num_vars++;
 	}
 
+	/* POLAR px */
+	for (i = 0; ConfigureNamesBool_px[i].gen.name; i++)
+	{
+		struct config_bool *conf = &ConfigureNamesBool_px[i];
+
+		conf->gen.vartype = PGC_BOOL;
+		num_vars++;
+	}
+	/* POLAR end */
+
 	for (i = 0; ConfigureNamesInt[i].gen.name; i++)
 	{
 		struct config_int *conf = &ConfigureNamesInt[i];
@@ -5227,6 +8322,16 @@ build_guc_variables(void)
 		conf->gen.vartype = PGC_INT;
 		num_vars++;
 	}
+
+	/* POLAR px */
+	for (i = 0; ConfigureNamesInt_px[i].gen.name; i++)
+	{
+		struct config_int *conf = &ConfigureNamesInt_px[i];
+
+		conf->gen.vartype = PGC_INT;
+		num_vars++;
+	}
+	/* POLAR end */
 
 	for (i = 0; ConfigureNamesReal[i].gen.name; i++)
 	{
@@ -5236,6 +8341,16 @@ build_guc_variables(void)
 		num_vars++;
 	}
 
+	/* POLAR px */
+	for (i = 0; ConfigureNamesReal_px[i].gen.name; i++)
+	{
+		struct config_real *conf = &ConfigureNamesReal_px[i];
+
+		conf->gen.vartype = PGC_REAL;
+		num_vars++;
+	}
+	/* POLAR end */
+
 	for (i = 0; ConfigureNamesString[i].gen.name; i++)
 	{
 		struct config_string *conf = &ConfigureNamesString[i];
@@ -5244,6 +8359,16 @@ build_guc_variables(void)
 		num_vars++;
 	}
 
+	/* POLAR px */
+	for (i = 0; ConfigureNamesString_px[i].gen.name; i++)
+	{
+		struct config_string *conf = &ConfigureNamesString_px[i];
+
+		conf->gen.vartype = PGC_STRING;
+		num_vars++;
+	}
+	/* POLAR end */
+
 	for (i = 0; ConfigureNamesEnum[i].gen.name; i++)
 	{
 		struct config_enum *conf = &ConfigureNamesEnum[i];
@@ -5251,6 +8376,16 @@ build_guc_variables(void)
 		conf->gen.vartype = PGC_ENUM;
 		num_vars++;
 	}
+
+	/* POLAR px */
+	for (i = 0; ConfigureNamesEnum_px[i].gen.name; i++)
+	{
+		struct config_enum *conf = &ConfigureNamesEnum_px[i];
+
+		conf->gen.vartype = PGC_ENUM;
+		num_vars++;
+	}
+	/* POLAR end */
 
 	/*
 	 * Create table with 20% slack
@@ -5265,23 +8400,53 @@ build_guc_variables(void)
 	for (i = 0; ConfigureNamesBool[i].gen.name; i++)
 		guc_vars[num_vars++] = &ConfigureNamesBool[i].gen;
 
+	/* POLAR px */
+	for (i = 0; ConfigureNamesBool_px[i].gen.name; i++)
+		guc_vars[num_vars++] = &ConfigureNamesBool_px[i].gen;
+	/* POLAR end */
+
 	for (i = 0; ConfigureNamesInt[i].gen.name; i++)
 		guc_vars[num_vars++] = &ConfigureNamesInt[i].gen;
+
+	/* POLAR px */
+	for (i = 0; ConfigureNamesInt_px[i].gen.name; i++)
+		guc_vars[num_vars++] = &ConfigureNamesInt_px[i].gen;
+	/* POLAR end */
 
 	for (i = 0; ConfigureNamesReal[i].gen.name; i++)
 		guc_vars[num_vars++] = &ConfigureNamesReal[i].gen;
 
+	/* POLAR px */
+	for (i = 0; ConfigureNamesReal_px[i].gen.name; i++)
+		guc_vars[num_vars++] = &ConfigureNamesReal_px[i].gen;
+	/* POLAR end */
+
 	for (i = 0; ConfigureNamesString[i].gen.name; i++)
 		guc_vars[num_vars++] = &ConfigureNamesString[i].gen;
 
+	/* POLAR px */
+	for (i = 0; ConfigureNamesString_px[i].gen.name; i++)
+		guc_vars[num_vars++] = &ConfigureNamesString_px[i].gen;
+	/* POLAR end */
+
 	for (i = 0; ConfigureNamesEnum[i].gen.name; i++)
 		guc_vars[num_vars++] = &ConfigureNamesEnum[i].gen;
+
+	/* POLAR px */
+	for (i = 0; ConfigureNamesEnum_px[i].gen.name; i++)
+		guc_vars[num_vars++] = &ConfigureNamesEnum_px[i].gen;
+	/* POLAR end */
 
 	if (guc_variables)
 		free(guc_variables);
 	guc_variables = guc_vars;
 	num_guc_variables = num_vars;
 	size_guc_variables = size_vars;
+
+	/* POLAR px */
+	px_assign_sync_flag(guc_variables, num_guc_variables, true /* predefine */);
+	/* POLAR end */
+
 	qsort((void *) guc_variables, num_guc_variables,
 		  sizeof(struct config_generic *), guc_var_compare);
 }
@@ -5320,6 +8485,11 @@ add_guc_variable(struct config_generic *var, int elevel)
 		size_guc_variables = size_vars;
 	}
 	guc_variables[num_guc_variables++] = var;
+
+	/* POLAR px */
+	px_assign_sync_flag(&var, 1, false /* predefine */);
+	/* POLAR end */
+
 	qsort((void *) guc_variables, num_guc_variables,
 		  sizeof(struct config_generic *), guc_var_compare);
 	return true;
@@ -5437,7 +8607,7 @@ guc_var_compare(const void *a, const void *b)
 /*
  * the bare comparison function for GUC names
  */
-static int
+int
 guc_name_compare(const char *namea, const char *nameb)
 {
 	/*
@@ -5591,7 +8761,7 @@ InitializeOneGUCOption(struct config_generic *gconf)
 		case PGC_BOOL:
 			{
 				struct config_bool *conf = (struct config_bool *) gconf;
-				bool		newval = conf->boot_val;
+				bool        newval = conf->boot_val;
 				void	   *extra = NULL;
 
 				if (!call_bool_check_hook(conf, &newval, &extra,
@@ -5607,10 +8777,13 @@ InitializeOneGUCOption(struct config_generic *gconf)
 		case PGC_INT:
 			{
 				struct config_int *conf = (struct config_int *) gconf;
-				int			newval = conf->boot_val;
+				int        newval = conf->boot_val;
 				void	   *extra = NULL;
 
 				Assert(newval >= conf->min);
+				if ( newval > conf->max)
+					elog(LOG, "xlc failed to initialize %s to %d, %d, %d",
+							 conf->gen.name, newval, conf->min, conf->max);
 				Assert(newval <= conf->max);
 				if (!call_int_check_hook(conf, &newval, &extra,
 										 PGC_S_DEFAULT, LOG))
@@ -5665,7 +8838,7 @@ InitializeOneGUCOption(struct config_generic *gconf)
 		case PGC_ENUM:
 			{
 				struct config_enum *conf = (struct config_enum *) gconf;
-				int			newval = conf->boot_val;
+				int        newval = conf->boot_val;
 				void	   *extra = NULL;
 
 				if (!call_enum_check_hook(conf, &newval, &extra,
@@ -5745,6 +8918,29 @@ SelectConfigFiles(const char *userDoption, const char *progname)
 	 * it can't be overridden later.
 	 */
 	SetConfigOption("config_file", fname, PGC_POSTMASTER, PGC_S_OVERRIDE);
+	free(fname);
+
+	/*
+	 * Figure out where pg_hba.conf is, and make sure the path is absolute.
+	 */
+	if (PolarDMAFileName)
+		fname = make_absolute_path(PolarDMAFileName);
+	else if (configdir)
+	{
+		fname = guc_malloc(FATAL,
+						   strlen(configdir) + strlen(POLAR_DMA_FILENAME) + 2);
+		sprintf(fname, "%s/%s", configdir, POLAR_DMA_FILENAME);
+	}
+	else
+	{
+		write_stderr("%s does not know where to find the \"polar_dma\" configuration file.\n"
+					 "This can be specified as \"polar_dma_file\" in \"%s\", "
+					 "or by the -D invocation option, or by the "
+					 "PGDATA environment variable.\n",
+					 progname, ConfigFileName);
+		return false;
+	}
+	SetConfigOption("polar_dma_file", fname, PGC_POSTMASTER, PGC_S_OVERRIDE);
 	free(fname);
 
 	/*
@@ -8973,6 +12169,27 @@ GetPGVariableResultDesc(const char *name)
 	return tupdesc;
 }
 
+/*
+ * POLAR: For non-superuser, show max_connections will return the polar_max_non_super_conns. However,
+ * 1. If the polar_max_non_super_conns is not set, means polar_max_non_super_conns=-1, just return 
+ * max_connections;
+ * 2. If the polar_max_non_super_conns is larger than max_connections, just return max_connections;
+ * 3. Only if the polar_max_non_super_conns is less than max_connections, and it is not -1, return
+ * polar_max_non_super_conns instead of max_connections.
+ */
+static const char*
+polar_show_max_connections(void)
+{
+	static char nbuf[16];
+	int result;
+	if (MyProc->issuper)
+		result = MaxConnections;
+	else
+		result = (polar_max_non_super_conns < 0 || (MaxConnections < polar_max_non_super_conns)) ?
+					MaxConnections : polar_max_non_super_conns;
+	snprintf(nbuf, sizeof(nbuf), "%d", result);
+	return nbuf;
+}
 
 /*
  * SHOW command
@@ -11026,7 +14243,6 @@ call_enum_check_hook(struct config_enum *conf, int *newval, void **extra,
 	return true;
 }
 
-
 /*
  * check_hook, assign_hook and show_hook subroutines
  */
@@ -11149,6 +14365,14 @@ check_log_destination(char **newval, void **extra, GucSource source)
 		else if (pg_strcasecmp(tok, "eventlog") == 0)
 			newlogdest |= LOG_DESTINATION_EVENTLOG;
 #endif
+		/* POLAR */
+		else if (pg_strcasecmp(tok, "polar_multi_dest") == 0)
+		{
+			newlogdest |= LOG_DESTINATION_STDERR;
+			newlogdest |= LOG_DESTINATION_POLAR_SLOWLOG;
+			newlogdest |= LOG_DESTINATION_POLAR_AUDITLOG;
+		}
+		/* POLAR end */
 		else
 		{
 			GUC_check_errdetail("Unrecognized key word: \"%s\".", tok);
@@ -11573,6 +14797,94 @@ check_cluster_name(char **newval, void **extra, GucSource source)
 	return true;
 }
 
+/*
+ * Check if items in a string list exists in a list
+ *
+ * 'list1_str': a comma-separated list of items to check
+ * 'list2_str': a comma-separated list of items
+ *
+ * Note that, if either of list1_str or list2_str is NULL or empty, false will
+ * be returned.
+ */
+static bool
+find_list_in_list(const char *list1_str, const char *list2_str)
+{
+	char	   *list1_str_copy;
+	char	   *list2_str_copy;
+	List	   *list1;
+	List	   *list2;
+	ListCell   *l1;
+	ListCell   *l2;
+	bool		found = false;
+
+	if (list1_str == NULL || list1_str[0] == '\0' ||
+		list2_str == NULL || list2_str[0] == '\0')
+		/* no cover line */
+		return false;			/* nothing to do */
+
+	/* Need a modifiable copy of string */
+	list1_str_copy = pstrdup(list1_str);
+
+	/* Parse string into list of identifiers */
+	if (!SplitIdentifierString(list1_str_copy, ',', &list1))
+	{
+		/* no cover begin */
+		/* syntax error in list */
+		list_free(list1);
+		pfree(list1_str_copy);
+		ereport(ERROR,
+				(errcode(ERRCODE_SYNTAX_ERROR),
+		  errmsg("invalid list syntax in parsing allowed list string \"%s\"",
+				 list1_str)));
+		return false;
+		/* no cover end */
+	}
+
+	/* Need a modifiable copy of string */
+	list2_str_copy = pstrdup(list2_str);
+
+	/* Parse string into list of identifiers */
+	if (!SplitIdentifierString(list2_str_copy, ',', &list2))
+	{
+		/* no cover begin */
+		/* syntax error in list */
+		list_free(list1);
+		pfree(list1_str_copy);
+		list_free(list2);
+		pfree(list2_str_copy);
+		ereport(ERROR,
+				(errcode(ERRCODE_SYNTAX_ERROR),
+		  errmsg("invalid list syntax in parsing allowed list string \"%s\"",
+				 list2_str)));
+		return false;
+		/* no cover end */
+	}
+
+	foreach(l1, list1)
+	{
+		found = false;
+		foreach(l2, list2)
+		{
+			if (strcmp((char *) lfirst(l2), (char *) lfirst(l1)) == 0)
+			{
+				found = true;
+				break;
+			}
+		}
+
+		if (!found)
+			break;
+	}
+
+	list_free(list1);
+	pfree(list1_str_copy);
+	list_free(list2);
+	pfree(list2_str_copy);
+
+	return found;
+}
+
+
 static const char *
 show_unix_socket_permissions(void)
 {
@@ -11599,5 +14911,559 @@ show_data_directory_mode(void)
 	snprintf(buf, sizeof(buf), "%04o", data_directory_mode);
 	return buf;
 }
+
+/* POLAR: check is valid list ? */
+static bool
+polar_verify_list_syntax(const char *liststring)
+{
+	char	   *rawname;
+	List	   *namelist;
+
+	if (!liststring || liststring[0] == '\0')
+		return true;
+
+	/* Need a modifiable copy of string */
+	rawname = pstrdup(liststring);
+
+	/* Parse string into list of identifiers */
+	if (!SplitIdentifierString(rawname, ',', &namelist))
+	{
+		/* syntax error in name list */
+		GUC_check_errdetail("List syntax is invalid.");
+		list_free(namelist);
+		pfree(rawname);
+		return false;
+	}
+
+	pfree(rawname);
+	list_free(namelist);
+
+	return true;
+}
+
+static bool
+check_polar_forbidden_functions(char **newval, void **extra, GucSource source)
+{
+	return polar_verify_list_syntax(*newval);
+}
+
+/*
+ * polar_check_is_forbidden_funcs()
+ * check function name is forbidden due to security problem
+ * e.g.
+ * When creating rule, no-super user can put system functions into
+ * rule view, so when superuser select this rule view, that will execute
+ * system functions, it is unsafe, so we must filter so functions.
+ *
+ */
+bool
+polar_check_is_forbidden_funcs(List *funcname)
+{
+    ListCell   *l;
+
+    foreach(l, funcname)
+    {
+        Node       *name = (Node *) lfirst(l);
+
+        if (IsA(name, String) &&
+			bsearch(&strVal(name), polar_forbidden_functions, num_forbidden_functions,
+					sizeof(char *), pg_qsort_strcmp))
+			return true;
+    }
+
+	return false;
+}
+
+static void
+assign_polar_forbidden_functions(const char *newval, void *extra)
+{
+	int			i;
+	char	   *rawstring = NULL;
+	List	   *elemlist = NULL;
+	ListCell   *l = NULL;
+
+	if (newval == NULL)
+		return;
+
+	/* first, we must free polar_forbidden_functions memory */
+	for (i = 0; i < num_forbidden_functions; i++)
+	{
+		/* Must free before malloc */
+		if (polar_forbidden_functions[i])
+			free(polar_forbidden_functions[i]);
+	}
+	if (polar_forbidden_functions)
+		free(polar_forbidden_functions);
+	num_forbidden_functions = 0;
+
+	/* second, we should count the num of forbidden funcs */
+	i = 0;
+	/* this is num of fixed forbidden functions */
+	while (polar_forbidden_funcnames[i]) i++;
+	num_forbidden_functions = i;
+
+	/* Need a modifiable copy of string */
+	rawstring = pstrdup(newval);
+
+	/* Parse string into list of identifiers */
+	if (!SplitIdentifierString(rawstring, ',', &elemlist))
+	{
+		/* no cover begin */
+		/* syntax error in list */
+		list_free(elemlist);
+		pfree(rawstring);
+		/*
+		 * we have check syntax in check_polar_forbidden_functions,
+		 * so we can not be here
+		 */
+		ereport(FATAL,
+				(errcode(ERRCODE_SYNTAX_ERROR),
+				 errmsg("invalid list syntax in parsing forbidden functions string \"%s\"",
+						rawstring)));
+		/* no cover end */
+	}
+	/* this is num of postgresql.conf forbidden functions */
+	if (elemlist != NULL)
+		num_forbidden_functions += elemlist->length;
+	/*
+	 * we must use guc_malloc instead of palloc,
+	 * because palloc memory is valid only one statement,
+	 * it will free next PostgresMain() loop
+	 */
+	polar_forbidden_functions = guc_malloc(FATAL, num_forbidden_functions * sizeof(char *));
+
+	/* save fixed forbidden functions */
+	for (i = 0; polar_forbidden_funcnames[i]; i++)
+	{
+		polar_forbidden_functions[i] = guc_strdup(FATAL, polar_forbidden_funcnames[i]);
+	}
+	/* save postgresql.conf forbidden functions */
+	foreach(l, elemlist)
+	{
+		polar_forbidden_functions[i++] = guc_strdup(FATAL, (char *) lfirst(l));
+	}
+
+	qsort(polar_forbidden_functions, num_forbidden_functions, sizeof(char *), pg_qsort_strcmp);
+
+	pfree(rawstring);
+	list_free(elemlist);
+}
+
+/*
+  * Check if preload libs are allowed. Note this can only be called AFTER postmaster startup,
+  * since we will check against other GUC (polar_available_exstensions). So the routine can only
+  * be used for session preload libs (not for shared_preload_libs)!
+  */
+static bool
+check_session_preload_libs(char **newval, void **extra, GucSource source)
+{
+	char	   *rawstring;
+	List	   *elemlist;
+	ListCell   *l;
+
+	/* Note the default value is actuall "", so return true in case of '\0' */
+	if (*newval == NULL || *newval[0] == '\0')
+		return true;
+
+	/* Need a modifiable copy of string */
+	rawstring = pstrdup(*newval);
+
+	/* Parse string into list of identifiers */
+	if (!SplitIdentifierString(rawstring, ',', &elemlist))
+	{
+		/* syntax error in list */
+		pfree(rawstring);
+		list_free(elemlist);
+		return false;
+	}
+
+	foreach(l, elemlist)
+	{
+		char	   *tok = (char *) lfirst(l);
+
+		if (!find_list_in_list(tok, polar_available_extensions) &&
+		    !find_list_in_list(tok, polar_internal_allowed_extensions))
+		{
+			pfree(rawstring);
+			list_free(elemlist);
+			return false;
+		}
+	}
+	pfree(rawstring);
+	list_free(elemlist);
+	return true;
+}
+
+static bool
+check_polar_available_extensions(char **newval, void **extra, GucSource source)
+{
+	return polar_verify_list_syntax(*newval);
+}
+
+static bool
+check_polar_allowed_roles(char **newval, void **extra, GucSource source)
+{
+	return polar_verify_list_syntax(*newval);
+}
+
+/*
+ * POLAR: check function for priority replication 
+ */
+static bool
+check_high_priority_replication_standby_names(char **newval, void **extra, GucSource source)
+{
+	if (!polar_verify_list_syntax(*newval))
+		return false;
+
+	return !find_list_in_list(*newval, polar_low_priority_replication_standby_names);
+}
+
+static bool
+check_low_priority_replication_standby_names(char **newval, void **extra, GucSource source)
+{
+	if (!polar_verify_list_syntax(*newval))
+		return false;
+	
+	return !find_list_in_list(*newval, polar_high_priority_replication_standby_names);
+}
+
+static const char *
+show_polar_supported_extensions(void)
+{
+	static char buf[1024];
+	int i = 0, len  = 0;
+
+	if (polar_internal_allowed_extensions && polar_available_extensions)
+		snprintf(buf, sizeof(buf), "%s\n%s", polar_available_extensions, polar_internal_allowed_extensions);
+	else if (polar_available_extensions != NULL)
+		snprintf(buf, sizeof(buf), "%s", polar_available_extensions);
+	else if (polar_internal_allowed_extensions != NULL)
+		snprintf(buf, sizeof(buf), "%s", polar_internal_allowed_extensions);
+
+	len = strlen(buf);
+	for (i = 0; i < len; i++)
+		if (buf[i] == ',')
+			buf[i] = '\n';
+	return buf;
+}
+
+static void
+assign_polar_rename_wal_ready_file(const char *newval, void *extra)
+{
+	char	old_filename[MAXPGPATH] = "";
+	char	new_filename[MAXPGPATH] = "";
+	char	archive_status_dir[] = "/pg_wal/archive_status/";
+	size_t	total_len = 0;
+
+	if (newval == NULL || strlen(newval) == 0)
+		return;
+
+	if (polar_datadir == NULL || strlen(polar_datadir) == 0 || polar_enable_shared_storage_mode == false)
+		elog(ERROR, "could only run under shared storage mode");
+
+	if (polar_in_replica_mode())
+		elog(ERROR, "could only run on RW/master node");
+
+	if (strstr(newval, "..") != 0 || strstr(newval, "/") != 0)
+		elog(ERROR, "could only rename file under /pfs-disk/data/pg_wal/archive_status");
+
+	total_len = strlen(polar_datadir) + strlen(archive_status_dir) + strlen(newval) + strlen(".ready") + 1;
+	if (total_len > MAXPGPATH)
+		elog(ERROR, "too long wal ready file path");
+
+	snprintf(old_filename, MAXPGPATH, "%s%s%s%s", polar_datadir, archive_status_dir, newval, ".ready");
+	snprintf(new_filename, MAXPGPATH, "%s%s%s%s", polar_datadir, archive_status_dir, newval, ".done");
+
+	polar_durable_rename(old_filename, new_filename, ERROR);
+}
+
+/*
+ * POLAR: check polar_internal_shared_preload_libraries string format,
+ * e.g: "x,y,z"
+ */
+static bool
+polar_check_internal_shared_preload_libraries(char **newval, void **extra, GucSource source)
+{
+	return polar_verify_list_syntax(*newval);
+}
+
+static void
+polar_assign_virtual_pid(const int newval, void *extra)
+{
+	if (IsUnderPostmaster && !IsParallelWorker())
+		polar_pgstat_set_virtual_pid(newval);
+}
+
+static void
+polar_assign_cancel_key(const int newval, void *extra)
+{
+	if (IsUnderPostmaster && !IsParallelWorker())
+		polar_pgstat_set_cancel_key(newval);
+}
+
+/*
+ * POLAR: check parameter name valid.
+ */
+
+struct config_generic *
+polar_parameter_check_name_internal(const char* guc_name)
+{
+	char *opt_name;
+	struct	config_generic *record;
+
+	/* find the record of the guc parameter */
+	record = find_option(guc_name, false, WARNING);
+
+	if (record != NULL)
+		/* case: find, return directly */
+		return record;
+	else if(strncasecmp(guc_name, "rds_", 4) == 0 &&
+			strlen(guc_name) > 4 && strchr(guc_name, '.') == NULL)
+	{
+		/* case: rds_xx, find xx again */
+		opt_name = palloc(strlen(guc_name) - 4 + 1);
+		strncpy(opt_name, guc_name + 4, strlen(guc_name) - 4);
+		opt_name[strlen(guc_name) - 4] = '\0';
+		record = find_option(opt_name, false, WARNING);
+		pfree(opt_name);
+		return record;
+	}
+	else if(strncasecmp(guc_name, "polar_", 6) == 0 &&
+			strlen(guc_name) > 6 && strchr(guc_name, '.') == NULL)
+	{
+		/* case: polar_xx, find xx again */
+		opt_name = palloc(strlen(guc_name) - 6 + 1);
+		strncpy(opt_name, guc_name + 6, strlen(guc_name) - 6);
+		opt_name[strlen(guc_name) - 6] = '\0';
+		record = find_option(opt_name, false, WARNING);
+		pfree(opt_name);
+		return record;
+	}
+	else
+		return NULL;
+}
+
+/*
+ * POLAR: check parameter value valid.
+ */
+
+bool
+polar_parameter_check_value_internal(const char* guc_name, const char* guc_value)
+{
+	void	*newextra = NULL;
+	bool	result = false;
+	struct	config_generic *record;
+	union	config_var_val newval;
+
+	/* first: find the record of the guc parameter */
+	record = polar_parameter_check_name_internal(guc_name);
+	if (record == NULL)
+	{
+		ereport(ERROR,
+				(errcode(ERRCODE_UNDEFINED_OBJECT),
+					errmsg("unrecognized configuration parameter \"%s\"",
+						guc_name)));
+		return false;
+	}
+
+	/* second: check that it's acceptable for the indicated parameter */
+	result = parse_and_validate_value(record, guc_name, guc_value, PGC_S_DEFAULT, WARNING, &newval, &newextra);
+
+	/* third: free possible memory allocate in function */
+	if (result && record->vartype == PGC_STRING && newval.stringval != NULL)
+		free(newval.stringval);
+	if (result && newextra)
+		free(newextra);
+
+	return result;
+}
+
+int
+px_get_num_guc_variables(void)
+{
+	return num_guc_variables;
+}
+
+/* POLAR: don't allow polar_xact_split_xids be set in RW or Standby */
+static bool
+polar_check_xact_split_xids(char **newval, void **extra, GucSource source)
+{
+	if (*newval == NULL || strlen(*newval) == 0 || polar_in_replica_mode())
+		return polar_verify_list_syntax(*newval);
+	return false;
+}
+
+static void
+polar_assign_xact_split_wait_lsn(const char *newval, void *extra)
+{
+	if (newval == NULL || strlen(newval) == 0)
+	{
+		polar_xact_split_wait_lsn = InvalidXLogRecPtr;
+		return;
+	}
+	polar_xact_split_wait_lsn = polar_strtouint64(newval, ERROR, "lsn", NULL);
+}
+
+/*
+ * POLAR: polar_nblocks_cache_mode can be changed to off without restart,
+ * but can not be changed to on without restart.
+ * In Parallel Workers, it will init polar_nblocks_cache_mode to off, and
+ * set it to postgresql.conf settings, set check will ignore this.
+*/
+static bool
+polar_check_nblocks_cache_mode(int *newval, void **extra, GucSource source)
+{
+	if (IsUnderPostmaster &&
+		!(IsInParallelMode() || IsParallelWorker()) &&
+		(polar_nblocks_cache_mode == POLAR_NBLOCKS_CACHE_OFF_MODE) && 
+		(*newval != POLAR_NBLOCKS_CACHE_OFF_MODE))
+	{
+		ereport(ERROR,
+				(errcode(ERRCODE_CANT_CHANGE_RUNTIME_PARAM),
+				 errmsg("polar_nblocks_cache_mode can not be used without restart"),
+				 errdetail("add polar_nblocks_cache_mode=xxx in postgres.conf to use it")));
+	}
+	return true;
+}
+
+static void
+polar_assign_crash_recovery_rto(const int newval, void *extra)
+{
+	if (IsUnderPostmaster && !IsParallelWorker() && PolarGlobalIOReadStats != NULL)
+	{
+		PolarGlobalIOReadStats->enabled = (newval != 0 &&
+									  polar_crash_recovery_rto_threshold != 0 &&
+									  polar_crash_recovery_rto_delay_count != 0);
+	}
+}
+
+static void
+polar_assign_crash_recovery_rto_threshold(double newval, void *extra)
+{
+	if (IsUnderPostmaster && !IsParallelWorker() && PolarGlobalIOReadStats != NULL)
+	{
+		PolarGlobalIOReadStats->enabled = (newval != 0 &&
+									  polar_crash_recovery_rto != 0 &&
+									  polar_crash_recovery_rto_delay_count != 0);
+	}
+}
+
+static void
+polar_assign_crash_recovery_rto_delay_time(const int newval, void *extra)
+{
+	if (IsUnderPostmaster && !IsParallelWorker() && PolarGlobalIOReadStats != NULL)
+	{
+		PolarGlobalIOReadStats->enabled = (newval != 0 &&
+									  polar_crash_recovery_rto_threshold != 0 &&
+									  polar_crash_recovery_rto != 0);
+	}
+}
+
+static bool
+polar_check_enable_lazy_checkpoint(bool *newval, void **extra, GucSource source)
+{
+	if (IsUnderPostmaster && !(IsInParallelMode() || IsParallelWorker()) &&
+			source != PGC_S_DEFAULT && *newval && fullPageWrites)
+	{
+		/*no cover begin*/
+		GUC_check_errdetail("Cannot enable parameter when \"full_page_writes\" is true.");
+		return false;
+		/*no cover end*/
+	}
+	return true;
+}
+
+static bool
+polar_check_enable_full_page_writes(bool *newval, void **extra, GucSource source)
+{
+
+	if (IsUnderPostmaster && !(IsInParallelMode() || IsParallelWorker()) &&
+			source != PGC_S_DEFAULT && *newval && polar_enable_lazy_checkpoint)
+	{
+		/*no cover begin*/
+		GUC_check_errdetail("Cannot enable parameter when \"polar_enable_lazy_checkpoint\" is true.");
+		return false;
+		/*no cover end*/
+	}
+	return true;
+}
+
+/*
+ * POLAR: util routine for check/assign polar_partition_recursive_reloptions.
+ *        Parse the xxx,xxx,... format array of reloption names to check 
+ *        syntax. If it is an assign operation, store the names to a global
+ *        string list, which resides in TopMemoryContext - otherwise, the
+ *        list cells will be freed after this routine exits.
+ */
+static bool
+polar_recursive_reloptions(const char *newval, bool assign)
+{
+	char			*rawstr;
+	List			*namelist;
+	ListCell		*cell;
+	MemoryContext	current_ctx = CurrentMemoryContext;
+
+	if (!newval || newval[0] == '\0')
+		return true;
+
+	/* Need a modifiable copy of string */
+	rawstr = pstrdup(newval);
+
+	/* Parse string into list of identifiers */
+	if (!SplitIdentifierString(rawstr, ',', &namelist))
+	{
+		/* syntax error in name list */
+		GUC_check_errdetail("List syntax is invalid.");
+		list_free(namelist);
+		pfree(rawstr);
+		return false;
+	}
+
+	if (assign)
+	{
+		/* Switch to top memory context */
+		MemoryContextSwitchTo(TopMemoryContext);
+		list_free_deep(recursive_relopts);
+		recursive_relopts = NIL;
+		foreach (cell, namelist)
+		{
+			char *recurse_opt = (char *) lfirst(cell);
+			if (strcmp(recurse_opt, ""))	/* not null string */
+				recursive_relopts = lappend(recursive_relopts,
+											pstrdup(recurse_opt));
+		}
+		MemoryContextSwitchTo(current_ctx);
+		/* Switch back to current */
+	}
+
+	/* No need for namelist anymore, so free it. */
+	list_free(namelist);
+	pfree(rawstr);
+
+	return true;
+}
+
+/* POLAR: assign hook for polar_partition_recursive_reloptions */
+static void
+polar_assign_recursive_reloptions(const char *newval, void *extra)
+{
+	polar_recursive_reloptions(newval, true);
+}
+
+/* POLAR: check hook for polar_partition_recursive_reloptions */
+static bool
+polar_check_recursive_reloptions(char **newval, void **extra, GucSource source)
+{
+	return polar_recursive_reloptions(*newval, false);
+}
+
+/* POLAR */
+static void
+polar_assign_max_normal_backends(double newval, void *extra)
+{
+	MaxNormalBackends = (int)floor(newval * MaxConnections);
+}
+
+/* POLAR end */
 
 #include "guc-file.c"

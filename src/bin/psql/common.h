@@ -46,4 +46,7 @@ extern void expand_tilde(char **filename);
 
 extern bool recognized_connection_string(const char *connstr);
 
+/* POLAR */
+extern bool polar_set_replica_fout(const char *fname);
+
 #endif							/* COMMON_H */

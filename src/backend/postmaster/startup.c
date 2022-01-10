@@ -20,6 +20,7 @@
 #include "postgres.h"
 
 #include <signal.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include "access/xlog.h"
@@ -27,13 +28,28 @@
 #include "miscadmin.h"
 #include "pgstat.h"
 #include "postmaster/startup.h"
+#include "storage/fd.h"
 #include "storage/ipc.h"
 #include "storage/latch.h"
 #include "storage/pmsignal.h"
 #include "storage/standby.h"
+#include "utils/elog.h"
 #include "utils/guc.h"
+#include "utils/polar_coredump.h"
 #include "utils/timeout.h"
+#include "replication/walreceiver.h"
 
+/* POLAR */
+#include "storage/bufmgr.h"
+/* POLAR end */
+
+/* POLAR: keep in sync with PROMOTE_SIGNAL_FILE of xlog.c */
+#define PROMOTE_SIGNAL_FILE		"promote"
+/* POLAR end */
+
+/* POLAR */
+#include "polar_datamax/polar_datamax.h"
+/* POLAR end */
 
 /*
  * Flags set by interrupt handlers for later service in the redo loop.
@@ -103,9 +119,35 @@ static void
 StartupProcTriggerHandler(SIGNAL_ARGS)
 {
 	int			save_errno = errno;
-
+	/* POLAR */
+	struct stat stat_buf;
+	/* POLAR end */
+	
 	promote_triggered = true;
-	WakeupRecovery();
+
+	/*
+	 * POLAR: notify walrcv promote is triggered 
+	 * no need when force promote or in replica mode
+	 */
+	if (polar_enable_promote_wait_for_walreceive_done 
+		&& stat(POLAR_FORCE_PROMOTE_SIGNAL_FILE, &stat_buf) != 0
+		&& !polar_in_replica_mode())
+	{
+		if (WalRcvStreaming())
+		{
+			elog(LOG,"notify walrcv promote is triggered");
+			POLAR_SET_RECEIVE_PROMOTE_TRIGGER();
+			POLAR_RESET_PROMOTE_ALLOWED_STATE();
+			POLAR_SET_END_LSN_INVALID();
+		}
+	}
+	/* 
+	 * POLAR: WakeupRecovery after promote is ready
+	 * wakeup now when force promote or in replica mode 
+	 */
+	else
+		WakeupRecovery();
+	/* POLAR end */
 
 	errno = save_errno;
 }
@@ -127,6 +169,11 @@ static void
 StartupProcShutdownHandler(SIGNAL_ARGS)
 {
 	int			save_errno = errno;
+
+	/* POLAR: set datamax_shutdown flag when in datamax mode */
+	if (polar_is_datamax())
+		polar_datamax_shutdown_requested = true;
+	/* POLAR end */
 
 	if (in_restore_command)
 		proc_exit(1);
@@ -193,12 +240,32 @@ StartupProcessMain(void)
 	pqsignal(SIGCONT, SIG_DFL);
 	pqsignal(SIGWINCH, SIG_DFL);
 
+	/* POLAR : register for coredump print */
+#ifndef _WIN32
+#ifdef SIGILL
+	pqsignal(SIGILL, polar_program_error_handler);
+#endif
+#ifdef SIGSEGV
+	pqsignal(SIGSEGV, polar_program_error_handler);
+#endif
+#ifdef SIGBUS
+	pqsignal(SIGBUS, polar_program_error_handler);
+#endif
+#endif	/* _WIN32 */
+	/* POLAR: end */
+
 	/*
 	 * Register timeouts needed for standby mode
 	 */
 	RegisterTimeout(STANDBY_DEADLOCK_TIMEOUT, StandbyDeadLockHandler);
 	RegisterTimeout(STANDBY_TIMEOUT, StandbyTimeoutHandler);
 	RegisterTimeout(STANDBY_LOCK_TIMEOUT, StandbyLockTimeoutHandler);
+
+	/*
+	 * POLAR: Initialize the local directories, copy some directories
+	 * from shared storage to local before unblock signals if needed
+	 */
+	polar_init_local_dir();
 
 	/*
 	 * Unblock signals (they were blocked when the postmaster forked us)
@@ -258,3 +325,84 @@ polar_set_shutdown_requested_flag(void)
 {
 	shutdown_requested = true;
 }
+
+/* 
+ * POLAR: create promote_not_allowed file and unlink promote file 
+ * when promote is not allowed 
+ */
+void
+polar_clear_promote_file(void)
+{
+	struct stat stat_buf;
+	FILE *file = NULL;
+
+	/* reset promote trigger and unlink promote file */
+	if (stat(PROMOTE_SIGNAL_FILE, &stat_buf) == 0)
+	{
+		ResetPromoteTriggered();
+		unlink(PROMOTE_SIGNAL_FILE);
+	}
+
+	/* create promote_not_allowed file for pg_ctl */
+	file = AllocateFile(POLAR_PROMOTE_NOT_ALLOWED_FILE, "w");
+	if (file == NULL)
+		ereport(LOG,
+				(errcode_for_file_access(),
+				 errmsg("could not create polar_promote_not_allowed file \"%s\": %m",
+						POLAR_PROMOTE_NOT_ALLOWED_FILE)));
+	else
+		FreeFile(file);
+
+}
+
+/* POLAR: judge if promote can be executed right now */
+bool
+polar_is_promote_ready(void)
+{
+	/* promote is enabled when polar_enable_promote_wait_for_walreceive_done = off or in replica mode */
+	if (!polar_enable_promote_wait_for_walreceive_done || polar_in_replica_mode())
+		return true;
+
+	/* disable promote when upstream node is not alive */
+	if (!polar_upstream_node_is_alive())
+	{
+		ereport(WARNING,
+				(errmsg("promote is not allowed"),
+				 errdetail("Promote is not allowed when polar_enable_promote_wait_for_walreceive_done = on and primary/datamax/standby node can't be connected. "
+							"Use promote -f to execute force promote")));
+		/* reset promote trigger and unlink promote file */
+		polar_clear_promote_file();
+		return false;
+	}
+	/* upstream node is alive and walreceiver is ready, result based on the reply of walsender */
+	else
+	{
+		/* return true when promote is enabled, WakeupRecovery now */
+		if (POLAR_IS_PROMOTE_ALLOWED())
+		{
+			WakeupRecovery();
+			return true;
+		}
+		if (POLAR_IS_PROMOTE_NOT_ALLOWED())
+		{
+			ereport(WARNING,
+					(errmsg("promote is not allowed"),
+					 errdetail("Promote is not allowed when polar_enable_promote_wait_for_walreceive_done = on and primary is running normally. "
+								"Use promote -f to execute force promote")));
+			/* reset promote trigger and unlink promote file */ 
+			polar_clear_promote_file();
+			return false;
+		}
+	}
+	return false;
+}
+
+void
+polar_startup_interrupt_with_pinned_buf(int buf)
+{
+	if (shutdown_requested)
+		polar_unpin_buffer_proc_exit(buf);
+
+	HandleStartupProcInterrupts();
+}
+/* POLAR end */

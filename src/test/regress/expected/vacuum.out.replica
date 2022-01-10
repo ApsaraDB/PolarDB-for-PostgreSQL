@@ -1,0 +1,182 @@
+--
+-- VACUUM
+--
+CREATE TABLE vactst (i INT);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+INSERT INTO vactst VALUES (1);
+ERROR:  cannot execute INSERT in a read-only transaction
+INSERT INTO vactst SELECT * FROM vactst;
+ERROR:  cannot execute INSERT in a read-only transaction
+INSERT INTO vactst SELECT * FROM vactst;
+ERROR:  cannot execute INSERT in a read-only transaction
+INSERT INTO vactst SELECT * FROM vactst;
+ERROR:  cannot execute INSERT in a read-only transaction
+INSERT INTO vactst SELECT * FROM vactst;
+ERROR:  cannot execute INSERT in a read-only transaction
+INSERT INTO vactst SELECT * FROM vactst;
+ERROR:  cannot execute INSERT in a read-only transaction
+INSERT INTO vactst SELECT * FROM vactst;
+ERROR:  cannot execute INSERT in a read-only transaction
+INSERT INTO vactst SELECT * FROM vactst;
+ERROR:  cannot execute INSERT in a read-only transaction
+INSERT INTO vactst SELECT * FROM vactst;
+ERROR:  cannot execute INSERT in a read-only transaction
+INSERT INTO vactst SELECT * FROM vactst;
+ERROR:  cannot execute INSERT in a read-only transaction
+INSERT INTO vactst SELECT * FROM vactst;
+ERROR:  cannot execute INSERT in a read-only transaction
+INSERT INTO vactst SELECT * FROM vactst;
+ERROR:  cannot execute INSERT in a read-only transaction
+INSERT INTO vactst VALUES (0);
+ERROR:  cannot execute INSERT in a read-only transaction
+SELECT count(*) FROM vactst;
+ count 
+-------
+  2049
+(1 row)
+
+DELETE FROM vactst WHERE i != 0;
+ERROR:  cannot execute DELETE in a read-only transaction
+SELECT * FROM vactst;
+ i 
+---
+ 0
+(1 row)
+
+VACUUM FULL vactst;
+ERROR:  cannot execute VACUUM during recovery
+UPDATE vactst SET i = i + 1;
+ERROR:  cannot execute UPDATE in a read-only transaction
+INSERT INTO vactst SELECT * FROM vactst;
+ERROR:  cannot execute INSERT in a read-only transaction
+INSERT INTO vactst SELECT * FROM vactst;
+ERROR:  cannot execute INSERT in a read-only transaction
+INSERT INTO vactst SELECT * FROM vactst;
+ERROR:  cannot execute INSERT in a read-only transaction
+INSERT INTO vactst SELECT * FROM vactst;
+ERROR:  cannot execute INSERT in a read-only transaction
+INSERT INTO vactst SELECT * FROM vactst;
+ERROR:  cannot execute INSERT in a read-only transaction
+INSERT INTO vactst SELECT * FROM vactst;
+ERROR:  cannot execute INSERT in a read-only transaction
+INSERT INTO vactst SELECT * FROM vactst;
+ERROR:  cannot execute INSERT in a read-only transaction
+INSERT INTO vactst SELECT * FROM vactst;
+ERROR:  cannot execute INSERT in a read-only transaction
+INSERT INTO vactst SELECT * FROM vactst;
+ERROR:  cannot execute INSERT in a read-only transaction
+INSERT INTO vactst SELECT * FROM vactst;
+ERROR:  cannot execute INSERT in a read-only transaction
+INSERT INTO vactst SELECT * FROM vactst;
+ERROR:  cannot execute INSERT in a read-only transaction
+INSERT INTO vactst VALUES (0);
+ERROR:  cannot execute INSERT in a read-only transaction
+SELECT count(*) FROM vactst;
+ count 
+-------
+  2049
+(1 row)
+
+DELETE FROM vactst WHERE i != 0;
+ERROR:  cannot execute DELETE in a read-only transaction
+VACUUM (FULL) vactst;
+ERROR:  cannot execute VACUUM during recovery
+DELETE FROM vactst;
+ERROR:  cannot execute DELETE in a read-only transaction
+SELECT * FROM vactst;
+ i 
+---
+(0 rows)
+
+VACUUM (FULL, FREEZE) vactst;
+ERROR:  cannot execute VACUUM during recovery
+VACUUM (ANALYZE, FULL) vactst;
+ERROR:  cannot execute VACUUM during recovery
+CREATE TABLE vaccluster (i INT PRIMARY KEY);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+ALTER TABLE vaccluster CLUSTER ON vaccluster_pkey;
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+CLUSTER vaccluster;
+ERROR:  cannot execute CLUSTER during recovery
+CREATE FUNCTION do_analyze() RETURNS VOID VOLATILE LANGUAGE SQL
+	AS 'ANALYZE pg_am';
+ERROR:  cannot execute CREATE FUNCTION in a read-only transaction
+CREATE FUNCTION wrap_do_analyze(c INT) RETURNS INT IMMUTABLE LANGUAGE SQL
+	AS 'SELECT $1 FROM do_analyze()';
+ERROR:  cannot execute CREATE FUNCTION in a read-only transaction
+CREATE INDEX ON vaccluster(wrap_do_analyze(i));
+ERROR:  cannot execute CREATE INDEX in a read-only transaction
+INSERT INTO vaccluster VALUES (1), (2);
+ERROR:  cannot execute INSERT in a read-only transaction
+ANALYZE vaccluster;
+ERROR:  cannot execute ANALYZE during recovery
+VACUUM FULL pg_am;
+ERROR:  cannot execute VACUUM during recovery
+VACUUM FULL pg_class;
+ERROR:  cannot execute VACUUM during recovery
+VACUUM FULL pg_database;
+ERROR:  cannot execute VACUUM during recovery
+VACUUM FULL vaccluster;
+ERROR:  cannot execute VACUUM during recovery
+VACUUM FULL vactst;
+ERROR:  cannot execute VACUUM during recovery
+VACUUM (DISABLE_PAGE_SKIPPING) vaccluster;
+ERROR:  cannot execute VACUUM during recovery
+-- partitioned table
+CREATE TABLE vacparted (a int, b char) PARTITION BY LIST (a);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE vacparted1 PARTITION OF vacparted FOR VALUES IN (1);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+INSERT INTO vacparted VALUES (1, 'a');
+ERROR:  cannot execute INSERT in a read-only transaction
+UPDATE vacparted SET b = 'b';
+ERROR:  cannot execute UPDATE in a read-only transaction
+VACUUM (ANALYZE) vacparted;
+ERROR:  cannot execute VACUUM during recovery
+VACUUM (FULL) vacparted;
+ERROR:  cannot execute VACUUM during recovery
+VACUUM (FREEZE) vacparted;
+ERROR:  cannot execute VACUUM during recovery
+-- check behavior with duplicate column mentions
+VACUUM ANALYZE vacparted(a,b,a);
+ERROR:  cannot execute VACUUM during recovery
+ANALYZE vacparted(a,b,b);
+ERROR:  cannot execute ANALYZE during recovery
+-- multiple tables specified
+VACUUM vaccluster, vactst;
+ERROR:  cannot execute VACUUM during recovery
+VACUUM vacparted, does_not_exist;
+ERROR:  cannot execute VACUUM during recovery
+VACUUM (FREEZE) vacparted, vaccluster, vactst;
+ERROR:  cannot execute VACUUM during recovery
+VACUUM (FREEZE) does_not_exist, vaccluster;
+ERROR:  cannot execute VACUUM during recovery
+VACUUM ANALYZE vactst, vacparted (a);
+ERROR:  cannot execute VACUUM during recovery
+VACUUM ANALYZE vactst (does_not_exist), vacparted (b);
+ERROR:  cannot execute VACUUM during recovery
+VACUUM FULL vacparted, vactst;
+ERROR:  cannot execute VACUUM during recovery
+VACUUM FULL vactst, vacparted (a, b), vaccluster (i);
+ERROR:  cannot execute VACUUM during recovery
+ANALYZE vactst, vacparted;
+ERROR:  cannot execute ANALYZE during recovery
+ANALYZE vacparted (b), vactst;
+ERROR:  cannot execute ANALYZE during recovery
+ANALYZE vactst, does_not_exist, vacparted;
+ERROR:  cannot execute ANALYZE during recovery
+ANALYZE vactst (i), vacparted (does_not_exist);
+ERROR:  cannot execute ANALYZE during recovery
+-- parenthesized syntax for ANALYZE
+ANALYZE (VERBOSE) does_not_exist;
+ERROR:  cannot execute ANALYZE during recovery
+ANALYZE (nonexistant-arg) does_not_exist;
+ERROR:  syntax error at or near "nonexistant"
+LINE 1: ANALYZE (nonexistant-arg) does_not_exist;
+                 ^
+DROP TABLE vaccluster;
+ERROR:  cannot execute DROP TABLE in a read-only transaction
+DROP TABLE vactst;
+ERROR:  cannot execute DROP TABLE in a read-only transaction
+DROP TABLE vacparted;
+ERROR:  cannot execute DROP TABLE in a read-only transaction

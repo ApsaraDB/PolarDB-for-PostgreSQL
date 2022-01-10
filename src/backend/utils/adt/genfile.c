@@ -37,13 +37,6 @@
 #include "storage/fd.h"
 #include "storage/polar_fd.h"
 
-typedef struct
-{
-	char	   *location;
-	DIR		   *dirdesc;
-	bool		include_dot_dirs;
-} directory_fctx;
-
 
 /*
  * Convert a "text" filename argument to C string, and check it's allowable.
@@ -668,5 +661,6 @@ pg_ls_waldir(PG_FUNCTION_ARGS)
 	char 			walpath[MAXPGPATH] = {0};
 
 	polar_make_file_path_level2(walpath, XLOGDIR);
+
 	return pg_ls_dir_files(fcinfo, walpath);
 }

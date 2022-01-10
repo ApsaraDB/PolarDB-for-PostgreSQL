@@ -1,0 +1,108 @@
+--
+-- ORCA tests
+--
+-- Mask out Log & timestamp for orca message that has feature not supported.
+-- start_matchsubs
+-- m/^LOG.*\"Feature/
+-- s/^LOG.*\"Feature/\"Feature/
+-- end_matchsubs
+/*--EXPLAIN_QUERY_BEGIN*/
+create schema tableless_scan;
+-- start_ignore
+SET search_path to tableless_scan;
+-- end_ignore
+CREATE TABLE csq_r(a int);
+INSERT INTO csq_r VALUES (1);
+SELECT * FROM csq_r WHERE a IN (SELECT * FROM csq_f(csq_r.a));
+ERROR:  function csq_f(integer) does not exist
+LINE 1: SELECT * FROM csq_r WHERE a IN (SELECT * FROM csq_f(csq_r.a)...
+                                                      ^
+HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
+set polar_px_enable_tableless_scan=true;
+select * from ((select a as x from csq_r) union (select 1 as x )) as foo order by x;
+ x 
+---
+ 1
+(1 row)
+
+ERROR:  function polar_px_workerid() does not exist
+----COMPARE PX RESULT explain query failed
+explain (costs off, verbose)
+select (select generate_series(1,5));
+               QUERY PLAN                
+-----------------------------------------
+ Result
+   Output: $0
+   InitPlan 1 (returns $0)
+     ->  ProjectSet
+           Output: generate_series(1, 5)
+           ->  Result
+(6 rows)
+
+select (select generate_series(1,5));
+ERROR:  more than one row returned by a subquery used as an expression
+explain (costs off, verbose)
+select 'foo'::text in (select 'bar'::name union all select 'bar'::name);
+             QUERY PLAN              
+-------------------------------------
+ Result
+   Output: (hashed SubPlan 1)
+   SubPlan 1
+     ->  Append
+           ->  Result
+                 Output: 'bar'::name
+           ->  Result
+                 Output: 'bar'::name
+(8 rows)
+
+select 'foo'::text in (select 'bar'::name union all select 'bar'::name);
+ ?column? 
+----------
+ f
+(1 row)
+
+reset polar_px_enable_tableless_scan;
+select * from ((select a as x from csq_r) union (select 1 as x )) as foo order by x;
+ x 
+---
+ 1
+(1 row)
+
+ERROR:  function polar_px_workerid() does not exist
+----COMPARE PX RESULT explain query failed
+explain (costs off, verbose)
+select (select generate_series(1,5));
+               QUERY PLAN                
+-----------------------------------------
+ Result
+   Output: $0
+   InitPlan 1 (returns $0)
+     ->  ProjectSet
+           Output: generate_series(1, 5)
+           ->  Result
+(6 rows)
+
+explain (costs off, verbose)
+select 'foo'::text in (select 'bar'::name union all select 'bar'::name);
+             QUERY PLAN              
+-------------------------------------
+ Result
+   Output: (hashed SubPlan 1)
+   SubPlan 1
+     ->  Append
+           ->  Result
+                 Output: 'bar'::name
+           ->  Result
+                 Output: 'bar'::name
+(8 rows)
+
+select 'foo'::text in (select 'bar'::name union all select 'bar'::name);
+ ?column? 
+----------
+ f
+(1 row)
+
+-- start_ignore
+set client_min_messages='warning';
+DROP SCHEMA tableless_scan CASCADE;
+-- end_ignore

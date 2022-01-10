@@ -1,10 +1,33 @@
+/*-------------------------------------------------------------------------
+ *
+ * polar_io_stat.c
+ *
+ * Copyright (c) 2020, Alibaba Group Holding Limited
+ * 
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * IDENTIFICATION
+ *	  external/polar_vfs/polar_io_stat.c
+ *
+ *-------------------------------------------------------------------------
+ */
+
 #include "postgres.h"
 
 #include "access/xlog.h"
 #include "catalog/pg_type.h"
 #include "funcapi.h"
 #include "miscadmin.h"
-#include "pgstat.h"
 #include "storage/ipc.h"
 #include "storage/polar_io_stat.h"
 #include "storage/sinvaladt.h"
@@ -56,7 +79,17 @@ polar_io_stat_shmem_startup(void)
 		polario_location_register(POLAR_VFS_PFS, POLARIO_SHARED);
 		polario_location_register(POLAR_VFS_LOCAL_DIO, POLARIO_SHARED);
 	}
-	
+
+	PolarGlobalIOReadStats = ShmemInitStruct("PolarGlobalIOReadStats", sizeof(POLAR_PROC_GLOBAL_IO_READ), &found);
+
+	elog(LOG, "PolarGlobalIOReadStats share memory size is %ld", sizeof(POLAR_PROC_GLOBAL_IO_READ));
+
+	if (!found)
+	{
+		memset(PolarGlobalIOReadStats, 0, sizeof(POLAR_PROC_GLOBAL_IO_READ) - sizeof(pg_atomic_uint32));
+		pg_atomic_init_u32(&PolarGlobalIOReadStats->lock, 0);
+	}
+
 	LWLockRelease(AddinShmemInitLock);
 }
 

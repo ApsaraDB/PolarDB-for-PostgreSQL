@@ -147,3 +147,4 @@ rmtree(const char *path, bool rmtopdir)
 
 	return result;
 }
+

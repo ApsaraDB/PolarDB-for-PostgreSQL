@@ -30,6 +30,7 @@ typedef struct
 	char		enabled;		/* as SESSION_REPLICATION_ROLE_* */
 	int			ntags;			/* number of command tags */
 	char	  **tag;			/* command tags in SORTED order */
+	Oid			polar_evtowner;		/* POLAR: owner of event trigger */
 } EventTriggerCacheItem;
 
 extern List *EventCacheLookup(EventTriggerEvent event);

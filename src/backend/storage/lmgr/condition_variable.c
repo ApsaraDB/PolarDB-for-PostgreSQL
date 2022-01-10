@@ -122,8 +122,25 @@ ConditionVariablePrepareToSleep(ConditionVariable *cv)
 void
 ConditionVariableSleep(ConditionVariable *cv, uint32 wait_event_info)
 {
-	WaitEvent	event;
-	bool		done = false;
+	(void) ConditionVariableTimedSleep(cv, -1 /* no timeout */ ,
+									   wait_event_info);
+}
+
+/*
+ * Wait for a condition variable to be signaled or a timeout to be reached.
+ *
+ * Returns true when timeout expires, otherwise returns false.
+ *
+ * See ConditionVariableSleep() for general usage.
+ */
+bool
+ConditionVariableTimedSleep(ConditionVariable *cv, long timeout,
+							uint32 wait_event_info)
+{
+	long		cur_timeout = -1;
+	instr_time	start_time;
+	instr_time	cur_time;
+	int			wait_events;
 
 	/*
 	 * If the caller didn't prepare to sleep explicitly, then do so now and
@@ -143,27 +160,32 @@ ConditionVariableSleep(ConditionVariable *cv, uint32 wait_event_info)
 	if (cv_sleep_target != cv)
 	{
 		ConditionVariablePrepareToSleep(cv);
-		return;
+		return false;
 	}
 
-	do
+	/*
+	 * Record the current time so that we can calculate the remaining timeout
+	 * if we are woken up spuriously.
+	 */
+	if (timeout >= 0)
 	{
-		CHECK_FOR_INTERRUPTS();
+		INSTR_TIME_SET_CURRENT(start_time);
+		Assert(timeout >= 0 && timeout <= INT_MAX);
+		cur_timeout = timeout;
+		wait_events = WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH;
+	}
+	else
+		wait_events = WL_LATCH_SET | WL_POSTMASTER_DEATH;
+
+	while (true)
+	{
+		bool		done = false;
 
 		/*
 		 * Wait for latch to be set.  (If we're awakened for some other
 		 * reason, the code below will cope anyway.)
 		 */
-		WaitEventSetWait(cv_wait_event_set, -1, &event, 1, wait_event_info);
-
-		if (event.events & WL_POSTMASTER_DEATH)
-		{
-			/*
-			 * Emergency bailout if postmaster has died.  This is to avoid the
-			 * necessity for manual cleanup of all postmaster children.
-			 */
-			exit(1);
-		}
+		(void) WaitLatch(MyLatch, wait_events, cur_timeout, wait_event_info);
 
 		/* Reset latch before examining the state of the wait list. */
 		ResetLatch(MyLatch);
@@ -190,7 +212,32 @@ ConditionVariableSleep(ConditionVariable *cv, uint32 wait_event_info)
 			proclist_push_tail(&cv->wakeup, MyProc->pgprocno, cvWaitLink);
 		}
 		SpinLockRelease(&cv->mutex);
-	} while (!done);
+
+		/*
+		 * Check for interrupts, and return spuriously if that caused the
+		 * current sleep target to change (meaning that interrupt handler code
+		 * waited for a different condition variable).
+		 */
+		CHECK_FOR_INTERRUPTS();
+		if (cv != cv_sleep_target)
+			done = true;
+
+		/* We were signaled, so return */
+		if (done)
+			return false;
+
+		/* If we're not done, update cur_timeout for next iteration */
+		if (timeout >= 0)
+		{
+			INSTR_TIME_SET_CURRENT(cur_time);
+			INSTR_TIME_SUBTRACT(cur_time, start_time);
+			cur_timeout = timeout - (long) INSTR_TIME_GET_MILLISEC(cur_time);
+
+			/* Have we crossed the timeout threshold? */
+			if (cur_timeout <= 0)
+				return true;
+		}
+	}
 }
 
 /*

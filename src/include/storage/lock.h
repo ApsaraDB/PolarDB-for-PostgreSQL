@@ -42,6 +42,8 @@ extern bool Trace_locks;
 extern bool Trace_userlocks;
 extern int	Trace_lock_table;
 extern bool Debug_deadlocks;
+extern bool polar_trace_lock_flow;
+extern bool polar_trace_system_table;
 #endif							/* LOCK_DEBUG */
 
 
@@ -588,5 +590,12 @@ extern void DumpAllLocks(void);
 extern void VirtualXactLockTableInsert(VirtualTransactionId vxid);
 extern void VirtualXactLockTableCleanup(void);
 extern bool VirtualXactLock(VirtualTransactionId vxid, bool wait);
+
+extern void polar_init_lock_access(void);
+
+/* POLAR */
+extern bool polar_check_wait_lockmode_conflict_holdmask(LOCKTAG tag,
+														LOCKMODE waitLockMode,
+														LOCKMASK holderMask);
 
 #endif							/* LOCK_H */

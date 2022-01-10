@@ -41,6 +41,9 @@
 #include "utils/memutils.h"
 #include "utils/syscache.h"
 
+/* POLAR */
+#include "fmgr.h"
+
 /*
  * We maintain a simple linked list caching the fmgr lookup info for the
  * currently selected conversion functions, as well as any that have been
@@ -151,10 +154,13 @@ PrepareClientEncoding(int encoding)
 													   sizeof(ConvProcInfo));
 		convinfo->s_encoding = current_server_encoding;
 		convinfo->c_encoding = encoding;
-		fmgr_info_cxt(to_server_proc, &convinfo->to_server_info,
-					  TopMemoryContext);
-		fmgr_info_cxt(to_client_proc, &convinfo->to_client_info,
-					  TopMemoryContext);
+
+		/* POLAR: caller maybe not in transaction, superuser() check will crash */
+		polar_fmgr_info_cxt_w_trans_state(to_server_proc, &convinfo->to_server_info,
+					  TopMemoryContext, false);
+		polar_fmgr_info_cxt_w_trans_state(to_client_proc, &convinfo->to_client_info,
+					  TopMemoryContext, false);
+		/* POLAR end */
 
 		/* Attach new info to head of list */
 		oldcontext = MemoryContextSwitchTo(TopMemoryContext);

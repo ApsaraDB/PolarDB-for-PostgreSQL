@@ -63,6 +63,9 @@
 #include "executor/tuptable.h"
 #include "utils/expandeddatum.h"
 
+/* POLAR px */
+#include "catalog/index.h"
+/* POLAR end */
 
 /* Does att's datatype allow packing into the 1-byte-header varlena format? */
 #define ATT_IS_PACKABLE(att) \
@@ -71,6 +74,10 @@
 #define VARLENA_ATT_IS_PACKABLE(att) \
 	((att)->attstorage != 'p')
 
+/* POLAR px */
+Datum _slot_getattr(TupleTableSlot *slot, int attnum, bool *isnull);
+void _slot_getallattrs(TupleTableSlot *slot);
+/* POLAR end */
 
 /* ----------------------------------------------------------------
  *						misc support routines
@@ -279,8 +286,10 @@ fill_val(Form_pg_attribute att,
 			else
 			{
 				*infomask |= HEAP_HASEXTERNAL;
+
 				/* no alignment, since it's short by definition */
 				data_length = VARSIZE_EXTERNAL(val);
+                
 				memcpy(data, val, data_length);
 			}
 		}
@@ -423,6 +432,8 @@ heap_attisnull(HeapTuple tup, int attnum, TupleDesc tupleDesc)
 		case MinTransactionIdAttributeNumber:
 		case MinCommandIdAttributeNumber:
 		case MaxTransactionIdAttributeNumber:
+		case PxWorkerIdAttributeNumber:/* POLAR px */
+		case RootSelfItemPointerAttributeNumber:/* POLAR px */
 		case MaxCommandIdAttributeNumber:
 			/* these are never null */
 			break;
@@ -700,6 +711,14 @@ heap_getsysattr(HeapTuple tup, int attnum, TupleDesc tupleDesc, bool *isnull)
 		case TableOidAttributeNumber:
 			result = ObjectIdGetDatum(tup->t_tableOid);
 			break;
+		/* POLAR px */
+		case PxWorkerIdAttributeNumber:
+			result = Int32GetDatum(PxIdentity.workerid);
+			break;
+		case RootSelfItemPointerAttributeNumber:
+			result = polar_get_root_ctid(tup, InvalidBuffer, NULL);
+			break;
+		/* POLAR end */
 		default:
 			elog(ERROR, "invalid attnum: %d", attnum);
 			result = 0;			/* keep compiler quiet */
@@ -758,6 +777,51 @@ heap_copytuple_with_tuple(HeapTuple src, HeapTuple dest)
 	dest->t_data = (HeapTupleHeader) palloc(src->t_len);
 	memcpy((char *) dest->t_data, (char *) src->t_data, src->t_len);
 }
+
+
+/* 
+ *	mem_getsysattr
+ *
+ *	Fetch the value of a system attribute for a memtuple.
+ */
+Datum
+mem_getsysattr(TupleTableSlot *slot, int attnum, TupleDesc tupleDesc, bool *isnull)
+{
+	Datum		result;
+
+	Assert(tup_has_memtuple(slot));
+
+	/* Currently, no sys attribute ever reads as NULL. */
+	*isnull = false;
+
+	switch(attnum)
+	{
+		case SelfItemPointerAttributeNumber:
+			Assert(ItemPointerIsValid(&(slot->tts_synthetic_ctid)));
+			result = PointerGetDatum(&(slot->tts_synthetic_ctid));
+			break;
+		case ObjectIdAttributeNumber:
+			result = ObjectIdGetDatum(MemTupleGetOid(slot->tts_memtuple, slot->tts_mt_bind));
+			break;
+		case PxWorkerIdAttributeNumber:
+			result = Int32GetDatum(PxIdentity.workerid);
+			break;
+		case RootSelfItemPointerAttributeNumber:
+			result = polar_get_root_ctid(slot->tts_tuple, slot->tts_buffer, NULL);
+			break;
+
+		/* POLAR px TODO
+		case TableOidAttributeNumber:
+			result = ObjectIdGetDatum(slot->tts_tableOid);
+			break;
+		*/
+
+		default:
+			elog(ERROR, "Invalid attnum: %d", attnum);
+	}
+	return result;
+}
+
 
 /*
  * Expand a tuple which has less attributes than required. For each attribute
@@ -1493,7 +1557,7 @@ slot_deform_tuple(TupleTableSlot *slot, int natts)
 }
 
 /*
- * slot_getattr
+ * _slot_getattr
  *		This function fetches an attribute of the slot's current tuple.
  *		It is functionally equivalent to heap_getattr, but fetches of
  *		multiple attributes of the same tuple will be optimized better,
@@ -1503,9 +1567,11 @@ slot_deform_tuple(TupleTableSlot *slot, int natts)
  *		A difference from raw heap_getattr is that attnums beyond the
  *		slot's tupdesc's last attribute will be considered NULL even
  *		when the physical tuple is longer than the tupdesc.
+ *
+ * 		Mainly used for heapTuple.
  */
 Datum
-slot_getattr(TupleTableSlot *slot, int attnum, bool *isnull)
+_slot_getattr(TupleTableSlot *slot, int attnum, bool *isnull)
 {
 	HeapTuple	tuple = slot->tts_tuple;
 	TupleDesc	tupleDesc = slot->tts_tupleDescriptor;
@@ -1593,21 +1659,65 @@ slot_getattr(TupleTableSlot *slot, int attnum, bool *isnull)
 }
 
 /*
- * slot_getallattrs
+ * slot_getattr
+ *		This function fetches an attribute of the slot's current tuple.
+ *		It is functionally equivalent to heap_getattr or memtuple_getattr.
+ */
+Datum
+slot_getattr(TupleTableSlot *slot, int attnum, bool *isnull)
+{
+	TupleDesc	tupleDesc = slot->tts_tupleDescriptor;
+
+	if (tup_has_memtuple(slot))
+	{
+		/*
+		 * system attributes are handled by heap_getsysattr
+		 */
+		if (attnum <= 0)
+		{
+			return mem_getsysattr(slot, attnum, tupleDesc, isnull);
+		}
+
+		/*
+		 * fast path if desired attribute already cached
+		 */
+		if (attnum <= slot->tts_nvalid)
+		{
+			*isnull = slot->tts_isnull[attnum - 1];
+			return slot->tts_values[attnum - 1];
+		}
+
+		/*
+		 * return NULL if attnum is out of range according to the tupdesc
+		 */
+		if (attnum > tupleDesc->natts)
+		{
+			*isnull = true;
+			return (Datum) 0;
+		}
+
+		Assert(slot->tts_mt_bind);
+		return memtuple_getattr(slot->tts_memtuple, slot->tts_mt_bind, attnum, isnull);
+	}
+
+	/* Slow: heap tuple */
+	return _slot_getattr(slot, attnum, isnull);
+}
+
+/*
+ * _slot_getallattrs
  *		This function forces all the entries of the slot's Datum/isnull
  *		arrays to be valid.  The caller may then extract data directly
  *		from those arrays instead of using slot_getattr.
+ *
+ * 		Only used for heapTuple.
  */
 void
-slot_getallattrs(TupleTableSlot *slot)
+_slot_getallattrs(TupleTableSlot *slot)
 {
 	int			tdesc_natts = slot->tts_tupleDescriptor->natts;
 	int			attnum;
 	HeapTuple	tuple;
-
-	/* Quick out if we have 'em all already */
-	if (slot->tts_nvalid == tdesc_natts)
-		return;
 
 	/*
 	 * otherwise we had better have a physical tuple (tts_nvalid should equal
@@ -1638,6 +1748,37 @@ slot_getallattrs(TupleTableSlot *slot)
 }
 
 /*
+ * slot_getallattrs
+ *		This function forces all the entries of the slot's Datum/isnull
+ *		arrays to be valid.  The caller may then extract data directly
+ *		from those arrays instead of using slot_getattr.
+ */
+void
+slot_getallattrs(TupleTableSlot *slot)
+{
+	int attnum = slot->tts_tupleDescriptor->natts;
+	int i;
+
+	/* Quick out if we have 'em all already */
+	if (slot->tts_nvalid >= attnum)
+		return;
+
+	if (tup_has_memtuple(slot))
+	{
+		for(i = 0; i<attnum; ++i)
+			slot->tts_values[i] = memtuple_getattr(slot->tts_memtuple,
+												   slot->tts_mt_bind,
+												   i+1,
+												   &(slot->tts_isnull[i]));
+		slot->tts_nvalid = attnum;
+		return;
+	}
+
+	/* Slow: heap tuple */
+	_slot_getallattrs(slot);
+}
+
+/*
  * slot_getsomeattrs
  *		This function forces the entries of the slot's Datum/isnull
  *		arrays to be valid at least up through the attnum'th entry.
@@ -1647,6 +1788,7 @@ slot_getsomeattrs(TupleTableSlot *slot, int attnum)
 {
 	HeapTuple	tuple;
 	int			attno;
+	int			i;
 
 	/* Quick out if we have 'em all already */
 	if (slot->tts_nvalid >= attnum)
@@ -1655,6 +1797,19 @@ slot_getsomeattrs(TupleTableSlot *slot, int attnum)
 	/* Check for caller error */
 	if (attnum <= 0 || attnum > slot->tts_tupleDescriptor->natts)
 		elog(ERROR, "invalid attribute number %d", attnum);
+
+	/* POLAR px */
+	if(tup_has_memtuple(slot))
+	{
+		for(i = 0; i < attnum; ++i)
+			slot->tts_values[i] = memtuple_getattr(slot->tts_memtuple, 
+												   slot->tts_mt_bind,
+												   i+1, 
+												   &(slot->tts_isnull[i]));
+		slot->tts_nvalid = attnum;
+		return;
+	}
+	/* POLAR end */
 
 	/*
 	 * otherwise we had better have a physical tuple (tts_nvalid should equal
@@ -1694,6 +1849,15 @@ slot_attisnull(TupleTableSlot *slot, int attnum)
 {
 	HeapTuple	tuple = slot->tts_tuple;
 	TupleDesc	tupleDesc = slot->tts_tupleDescriptor;
+
+	if (tup_has_memtuple(slot))
+	{
+		if (attnum <= 0)
+			return false;
+		if (attnum <= slot->tts_nvalid)
+			return slot->tts_isnull[attnum - 1];
+		return memtuple_attisnull(slot->tts_memtuple, slot->tts_mt_bind, attnum);
+	}
 
 	/*
 	 * system attributes are handled by heap_attisnull

@@ -54,6 +54,7 @@
 #include "catalog/pg_trigger.h"
 #include "commands/defrem.h"
 #include "commands/trigger.h"
+#include "miscadmin.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "parser/gramparse.h"
@@ -64,6 +65,7 @@
 #include "utils/datetime.h"
 #include "utils/numeric.h"
 #include "utils/xml.h"
+#include "polar_flashback/polar_flashback_drop.h"
 
 
 /*
@@ -187,7 +189,9 @@ static void processCASbits(int cas_bits, int location, const char *constrType,
 			   bool *deferrable, bool *initdeferred, bool *not_valid,
 			   bool *no_inherit, core_yyscan_t yyscanner);
 static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
+static Node *makeShowRecyclebin(char *name, core_yyscan_t yyscanner);
 
+static bool polar_is_ignore_user_defined_tablespace(char *tablespace_name);
 %}
 
 %pure-parser
@@ -241,6 +245,8 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 	PartitionSpec		*partspec;
 	PartitionBoundSpec	*partboundspec;
 	RoleSpec			*rolespec;
+
+	PolarDMACommandStmt	*ccstmt;
 }
 
 %type <node>	stmt schema_stmt
@@ -296,6 +302,8 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 %type <defelt>  alter_identity_column_option
 
 %type <dbehavior>	opt_drop_behavior
+
+%type <boolean>	opt_purge
 
 %type <list>	createdb_opt_list createdb_opt_items copy_opt_list
 				transaction_mode_list
@@ -479,7 +487,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 %type <list>	row explicit_row implicit_row type_list array_expr_list
 %type <node>	case_expr case_arg when_clause case_default
 %type <list>	when_clause_list
-%type <ival>	sub_type
+%type <ival>	sub_type opt_materialized
 %type <value>	NumericOnly
 %type <list>	NumericOnly_list
 %type <alias>	alias_clause opt_alias_clause
@@ -585,6 +593,10 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 %type <list>		hash_partbound partbound_datum_list range_datum_list
 %type <defelt>		hash_partbound_elem
 
+/* POLAR: Consensus command specific nonterminals */
+%type <ccstmt> dma_command 
+/* POLAR end */
+
 /*
  * Non-keyword token types.  These are hard-wired into the "flex" lexer.
  * They must be listed first so that their numeric codes do not depend on
@@ -614,7 +626,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 	BACKWARD BEFORE BEGIN_P BETWEEN BIGINT BINARY BIT
 	BOOLEAN_P BOTH BY
 
-	CACHE CALL CALLED CASCADE CASCADED CASE CAST CATALOG_P CHAIN CHAR_P
+	CACHE CALL CALLED CASCADE CASCADED CASE CAST CATALOG_P CHANGE CHAIN CHAR_P
 	CHARACTER CHARACTERISTICS CHECK CHECKPOINT CLASS CLOSE
 	CLUSTER COALESCE COLLATE COLLATION COLUMN COLUMNS COMMENT COMMENTS COMMIT
 	COMMITTED CONCURRENTLY CONFIGURATION CONFLICT CONNECTION CONSTRAINT
@@ -625,14 +637,14 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 
 	DATA_P DATABASE DAY_P DEALLOCATE DEC DECIMAL_P DECLARE DEFAULT DEFAULTS
 	DEFERRABLE DEFERRED DEFINER DELETE_P DELIMITER DELIMITERS DEPENDS DESC
-	DETACH DICTIONARY DISABLE_P DISCARD DISTINCT DO DOCUMENT_P DOMAIN_P
+	DETACH DICTIONARY DISABLE_P DISCARD DISTINCT DMA DO DOCUMENT_P DOMAIN_P
 	DOUBLE_P DROP
 
 	EACH ELSE ENABLE_P ENCODING ENCRYPTED END_P ENUM_P ESCAPE EVENT EXCEPT
 	EXCLUDE EXCLUDING EXCLUSIVE EXECUTE EXISTS EXPLAIN
 	EXTENSION EXTERNAL EXTRACT
 
-	FALSE_P FAMILY FETCH FILTER FIRST_P FLOAT_P FOLLOWING FOR
+	FALSE_P FAMILY FETCH FILTER FIRST_P FLASHBACK FLOAT_P FOLLOWER FOLLOWING FOR
 	FORCE FOREIGN FORWARD FREEZE FROM FULL FUNCTION FUNCTIONS
 
 	GENERATED GLOBAL GRANT GRANTED GREATEST GROUP_P GROUPING GROUPS
@@ -649,12 +661,12 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 	KEY
 
 	LABEL LANGUAGE LARGE_P LAST_P LATERAL_P
-	LEADING LEAKPROOF LEAST LEFT LEVEL LIKE LIMIT LISTEN LOAD LOCAL
-	LOCALTIME LOCALTIMESTAMP LOCATION LOCK_P LOCKED LOGGED
+	LEADER LEADING LEAKPROOF LEARNER LEAST LEFT LEVEL LIKE LIMIT LISTEN LOAD LOCAL
+	LOCALTIME LOCALTIMESTAMP LOCATION LOCK_P LOCKED LOGGED LOGS
 
 	MAPPING MATCH MATERIALIZED MAXVALUE METHOD MINUTE_P MINVALUE MODE MONTH_P MOVE
 
-	NAME_P NAMES NATIONAL NATURAL NCHAR NEW NEXT NO NONE
+	NAME_P NAMES NATIONAL NATURAL NCHAR NEW NEXT NO NODE NONE
 	NOT NOTHING NOTIFY NOTNULL NOWAIT NULL_P NULLIF
 	NULLS_P NUMERIC
 
@@ -664,7 +676,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 
 	PARALLEL PARSER PARTIAL PARTITION PASSING PASSWORD PLACING PLANS POLICY
 	POSITION PRECEDING PRECISION PRESERVE PREPARE PREPARED PRIMARY
-	PRIOR PRIVILEGES PROCEDURAL PROCEDURE PROCEDURES PROGRAM PUBLICATION
+	PRIOR PRIVILEGES PROCEDURAL PROCEDURE PROCEDURES PROGRAM PUBLICATION PURGE
 
 	QUOTE
 
@@ -675,7 +687,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 
 	SAVEPOINT SCHEMA SCHEMAS SCROLL SEARCH SECOND_P SECURITY SELECT SEQUENCE SEQUENCES
 	SERIALIZABLE SERVER SESSION SESSION_USER SET SETS SETOF SHARE SHOW
-	SIMILAR SIMPLE SKIP SMALLINT SNAPSHOT SOME SQL_P STABLE STANDALONE_P
+	SIMILAR SIMPLE SINGLETON SKIP SMALLINT SNAPSHOT SOME SQL_P STABLE STANDALONE_P
 	START STATEMENT STATISTICS STDIN STDOUT STORAGE STRICT_P STRIP_P
 	SUBSCRIPTION SUBSTRING SYMMETRIC SYSID SYSTEM_P
 
@@ -690,7 +702,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 	VACUUM VALID VALIDATE VALIDATOR VALUE_P VALUES VARCHAR VARIADIC VARYING
 	VERBOSE VERSION_P VIEW VIEWS VOLATILE
 
-	WHEN WHERE WHITESPACE_P WINDOW WITH WITHIN WITHOUT WORK WRAPPER WRITE
+	WEIGHT WHEN WHERE WHITESPACE_P WINDOW WITH WITHIN WITHOUT WORK WRAPPER WRITE
 
 	XML_P XMLATTRIBUTES XMLCONCAT XMLELEMENT XMLEXISTS XMLFOREST XMLNAMESPACES
 	XMLPARSE XMLPI XMLROOT XMLSERIALIZE XMLTABLE
@@ -1075,6 +1087,12 @@ AlterOptRoleElem:
 						$$ = makeDefElem("bypassrls", (Node *)makeInteger(true), @1);
 					else if (strcmp($1, "nobypassrls") == 0)
 						$$ = makeDefElem("bypassrls", (Node *)makeInteger(false), @1);
+					/* POLAR: for polar superuser */
+					else if (strcmp($1, "polar_superuser") == 0)
+						$$ = makeDefElem("polar_superuser", (Node *)makeInteger(true), @1);
+					else if (strcmp($1, "nopolar_superuser") == 0)
+						$$ = makeDefElem("polar_superuser", (Node *)makeInteger(false), @1);
+					/* POLAR end */
 					else if (strcmp($1, "noinherit") == 0)
 					{
 						/*
@@ -1708,9 +1726,16 @@ FunctionSetResetClause:
 VariableShowStmt:
 			SHOW var_name
 				{
-					VariableShowStmt *n = makeNode(VariableShowStmt);
-					n->name = $2;
-					$$ = (Node *) n;
+					if(strcmp($2, RECYCLEBINNAME) == 0)
+					{
+						$$ = makeShowRecyclebin($2, yyscanner);
+					}
+					else
+					{
+						VariableShowStmt *n = makeNode(VariableShowStmt);
+						n->name = $2;
+						$$ = (Node *) n;
+					}
 				}
 			| SHOW TIME ZONE
 				{
@@ -2495,7 +2520,17 @@ alter_table_cmd:
 				{
 					AlterTableCmd *n = makeNode(AlterTableCmd);
 					n->subtype = AT_SetTableSpace;
-					n->name = $3;
+					if (polar_is_ignore_user_defined_tablespace($3))
+					{
+						ereport(NOTICE,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("User defined tablespace is not supported, The tablespace set by the user will be ignored")));
+						n->name = pstrdup("pg_default");
+					}
+					else
+					{
+						n->name = $3;
+					}
 					$$ = (Node *)n;
 				}
 			/* ALTER TABLE <name> SET (...) */
@@ -3958,11 +3993,37 @@ OnCommitOption:  ON COMMIT DROP				{ $$ = ONCOMMIT_DROP; }
 			| /*EMPTY*/						{ $$ = ONCOMMIT_NOOP; }
 		;
 
-OptTableSpace:   TABLESPACE name					{ $$ = $2; }
+OptTableSpace:   TABLESPACE name
+				{
+					if (polar_is_ignore_user_defined_tablespace($2))
+					{
+						ereport(NOTICE,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("User defined tablespace is not supported, The tablespace set by the user will be ignored")));
+						$$ = NULL; 
+					}
+					else
+					{
+						$$ = $2;
+					}
+				}
 			| /*EMPTY*/								{ $$ = NULL; }
 		;
 
-OptConsTableSpace:   USING INDEX TABLESPACE name	{ $$ = $4; }
+OptConsTableSpace:   USING INDEX TABLESPACE name
+				{
+					if (polar_is_ignore_user_defined_tablespace($4))
+					{
+						ereport(NOTICE,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("User defined tablespace is not supported, The tablespace set by the user will be ignored")));
+						$$ = NULL; 
+					}
+					else
+					{
+						$$ = $4;
+					}
+				}
 			| /*EMPTY*/								{ $$ = NULL; }
 		;
 
@@ -6201,7 +6262,7 @@ ReassignOwnedStmt:
  *
  *****************************************************************************/
 
-DropStmt:	DROP drop_type_any_name IF_P EXISTS any_name_list opt_drop_behavior
+DropStmt:	DROP drop_type_any_name IF_P EXISTS any_name_list opt_drop_behavior opt_purge
 				{
 					DropStmt *n = makeNode(DropStmt);
 					n->removeType = $2;
@@ -6209,9 +6270,11 @@ DropStmt:	DROP drop_type_any_name IF_P EXISTS any_name_list opt_drop_behavior
 					n->objects = $5;
 					n->behavior = $6;
 					n->concurrent = false;
+					n->ispurge = $7;
+					n->opt_flashback = ($7) ? true:false;
 					$$ = (Node *)n;
 				}
-			| DROP drop_type_any_name any_name_list opt_drop_behavior
+			| DROP drop_type_any_name any_name_list opt_drop_behavior opt_purge
 				{
 					DropStmt *n = makeNode(DropStmt);
 					n->removeType = $2;
@@ -6219,6 +6282,8 @@ DropStmt:	DROP drop_type_any_name IF_P EXISTS any_name_list opt_drop_behavior
 					n->objects = $3;
 					n->behavior = $4;
 					n->concurrent = false;
+					n->ispurge = $5;
+					n->opt_flashback = ($5) ? true:false;
 					$$ = (Node *)n;
 				}
 			| DROP drop_type_name IF_P EXISTS name_list opt_drop_behavior
@@ -6229,6 +6294,7 @@ DropStmt:	DROP drop_type_any_name IF_P EXISTS any_name_list opt_drop_behavior
 					n->objects = $5;
 					n->behavior = $6;
 					n->concurrent = false;
+					n->clean_up = false;
 					$$ = (Node *)n;
 				}
 			| DROP drop_type_name name_list opt_drop_behavior
@@ -6239,6 +6305,39 @@ DropStmt:	DROP drop_type_any_name IF_P EXISTS any_name_list opt_drop_behavior
 					n->objects = $3;
 					n->behavior = $4;
 					n->concurrent = false;
+					n->clean_up = false;
+					$$ = (Node *)n;
+				}
+			| PURGE name
+				{
+					if(strcmp($2, RECYCLEBINNAME) == 0)
+					{
+						DropStmt *n = makeNode(DropStmt);
+						n->removeType = OBJECT_SCHEMA;
+						n->missing_ok = false;
+						n->objects = list_make1(makeString($2));
+						n->behavior = DROP_CASCADE;
+						n->concurrent = false;
+						n->opt_flashback = true;
+						n->clean_up = true;
+						$$ = (Node *)n;
+					}
+					else{
+						ereport(ERROR,
+								(errcode(ERRCODE_DUPLICATE_TABLE),
+								 errmsg("\"%s\" do not support purge",$2)));
+					}
+				}
+			| PURGE TABLE any_name_list
+				{
+					DropStmt *n = makeNode(DropStmt);
+					n->removeType = OBJECT_TABLE;
+					n->missing_ok = false;
+					n->objects = $3;
+					n->behavior = DROP_RESTRICT;
+					n->concurrent = false;
+					n->opt_flashback = true;
+					n->purge_drop = true;
 					$$ = (Node *)n;
 				}
 			| DROP drop_type_name_on_any_name name ON any_name opt_drop_behavior
@@ -6349,6 +6448,11 @@ drop_type_name:
 			| PUBLICATION							{ $$ = OBJECT_PUBLICATION; }
 			| SCHEMA								{ $$ = OBJECT_SCHEMA; }
 			| SERVER								{ $$ = OBJECT_FOREIGN_SERVER; }
+		;
+
+opt_purge:
+		PURGE						{ $$ = true; }
+		| /* EMPTY */				{ $$ = false; }
 		;
 
 /* object types attached to a table */
@@ -7404,6 +7508,23 @@ IndexStmt:	CREATE opt_unique INDEX opt_concurrently opt_index_name
 					n->initdeferred = false;
 					n->transformed = false;
 					n->if_not_exists = false;
+					{
+						ListCell *lc;
+						foreach(lc, n->options)
+						{
+							DefElem *rel_option = lfirst_node(DefElem, lc);
+							if ((strcmp(rel_option->defname, "px_build") == 0 &&
+								strcmp(defGetString(rel_option), "on") == 0) &&
+								(n->unique || n->indexIncludingParams != NULL ||
+								n->tableSpace != NULL || n->whereClause != NULL))
+							{
+								ereport(ERROR,
+										(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+											errmsg("PX index build does not support current scene"),
+											parser_errposition(rel_option->location)));
+							}
+						}
+					}
 					$$ = (Node *)n;
 				}
 			| CREATE opt_unique INDEX opt_concurrently IF_P NOT EXISTS index_name
@@ -7432,6 +7553,23 @@ IndexStmt:	CREATE opt_unique INDEX opt_concurrently opt_index_name
 					n->initdeferred = false;
 					n->transformed = false;
 					n->if_not_exists = true;
+					{
+						ListCell *lc;
+						foreach(lc, n->options)
+						{
+							DefElem *rel_option = lfirst_node(DefElem, lc);
+							if ((strcmp(rel_option->defname, "px_build") == 0 &&
+								strcmp(defGetString(rel_option), "on") == 0) &&
+								(n->unique || n->indexIncludingParams != NULL ||
+								n->tableSpace != NULL || n->whereClause != NULL))
+							{
+								ereport(ERROR,
+										(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+											errmsg("PX index build does not support current scene"),
+											parser_errposition(rel_option->location)));
+							}
+						}
+					}
 					$$ = (Node *)n;
 				}
 		;
@@ -9045,6 +9183,7 @@ AlterObjectSchemaStmt:
 					n->object = (Node *) $3;
 					n->newschema = $6;
 					n->missing_ok = false;
+					n->is_flashback = false;
 					$$ = (Node *)n;
 				}
 			| ALTER COLLATION any_name SET SCHEMA name
@@ -9054,6 +9193,7 @@ AlterObjectSchemaStmt:
 					n->object = (Node *) $3;
 					n->newschema = $6;
 					n->missing_ok = false;
+					n->is_flashback = false;
 					$$ = (Node *)n;
 				}
 			| ALTER CONVERSION_P any_name SET SCHEMA name
@@ -9063,6 +9203,7 @@ AlterObjectSchemaStmt:
 					n->object = (Node *) $3;
 					n->newschema = $6;
 					n->missing_ok = false;
+					n->is_flashback = false;
 					$$ = (Node *)n;
 				}
 			| ALTER DOMAIN_P any_name SET SCHEMA name
@@ -9072,6 +9213,7 @@ AlterObjectSchemaStmt:
 					n->object = (Node *) $3;
 					n->newschema = $6;
 					n->missing_ok = false;
+					n->is_flashback = false;
 					$$ = (Node *)n;
 				}
 			| ALTER EXTENSION name SET SCHEMA name
@@ -9081,6 +9223,7 @@ AlterObjectSchemaStmt:
 					n->object = (Node *) makeString($3);
 					n->newschema = $6;
 					n->missing_ok = false;
+					n->is_flashback = false;
 					$$ = (Node *)n;
 				}
 			| ALTER FUNCTION function_with_argtypes SET SCHEMA name
@@ -9090,6 +9233,7 @@ AlterObjectSchemaStmt:
 					n->object = (Node *) $3;
 					n->newschema = $6;
 					n->missing_ok = false;
+					n->is_flashback = false;
 					$$ = (Node *)n;
 				}
 			| ALTER OPERATOR operator_with_argtypes SET SCHEMA name
@@ -9099,6 +9243,7 @@ AlterObjectSchemaStmt:
 					n->object = (Node *) $3;
 					n->newschema = $6;
 					n->missing_ok = false;
+					n->is_flashback = false;
 					$$ = (Node *)n;
 				}
 			| ALTER OPERATOR CLASS any_name USING access_method SET SCHEMA name
@@ -9108,6 +9253,7 @@ AlterObjectSchemaStmt:
 					n->object = (Node *) lcons(makeString($6), $4);
 					n->newschema = $9;
 					n->missing_ok = false;
+					n->is_flashback = false;
 					$$ = (Node *)n;
 				}
 			| ALTER OPERATOR FAMILY any_name USING access_method SET SCHEMA name
@@ -9117,6 +9263,7 @@ AlterObjectSchemaStmt:
 					n->object = (Node *) lcons(makeString($6), $4);
 					n->newschema = $9;
 					n->missing_ok = false;
+					n->is_flashback = false;
 					$$ = (Node *)n;
 				}
 			| ALTER PROCEDURE function_with_argtypes SET SCHEMA name
@@ -9126,6 +9273,7 @@ AlterObjectSchemaStmt:
 					n->object = (Node *) $3;
 					n->newschema = $6;
 					n->missing_ok = false;
+					n->is_flashback = false;
 					$$ = (Node *)n;
 				}
 			| ALTER ROUTINE function_with_argtypes SET SCHEMA name
@@ -9135,6 +9283,7 @@ AlterObjectSchemaStmt:
 					n->object = (Node *) $3;
 					n->newschema = $6;
 					n->missing_ok = false;
+					n->is_flashback = false;
 					$$ = (Node *)n;
 				}
 			| ALTER TABLE relation_expr SET SCHEMA name
@@ -9144,6 +9293,7 @@ AlterObjectSchemaStmt:
 					n->relation = $3;
 					n->newschema = $6;
 					n->missing_ok = false;
+					n->is_flashback = false;
 					$$ = (Node *)n;
 				}
 			| ALTER TABLE IF_P EXISTS relation_expr SET SCHEMA name
@@ -9153,6 +9303,7 @@ AlterObjectSchemaStmt:
 					n->relation = $5;
 					n->newschema = $8;
 					n->missing_ok = true;
+					n->is_flashback = false;
 					$$ = (Node *)n;
 				}
 			| ALTER STATISTICS any_name SET SCHEMA name
@@ -9162,6 +9313,7 @@ AlterObjectSchemaStmt:
 					n->object = (Node *) $3;
 					n->newschema = $6;
 					n->missing_ok = false;
+					n->is_flashback = false;
 					$$ = (Node *)n;
 				}
 			| ALTER TEXT_P SEARCH PARSER any_name SET SCHEMA name
@@ -9171,6 +9323,7 @@ AlterObjectSchemaStmt:
 					n->object = (Node *) $5;
 					n->newschema = $8;
 					n->missing_ok = false;
+					n->is_flashback = false;
 					$$ = (Node *)n;
 				}
 			| ALTER TEXT_P SEARCH DICTIONARY any_name SET SCHEMA name
@@ -9180,6 +9333,7 @@ AlterObjectSchemaStmt:
 					n->object = (Node *) $5;
 					n->newschema = $8;
 					n->missing_ok = false;
+					n->is_flashback = false;
 					$$ = (Node *)n;
 				}
 			| ALTER TEXT_P SEARCH TEMPLATE any_name SET SCHEMA name
@@ -9189,6 +9343,7 @@ AlterObjectSchemaStmt:
 					n->object = (Node *) $5;
 					n->newschema = $8;
 					n->missing_ok = false;
+					n->is_flashback = false;
 					$$ = (Node *)n;
 				}
 			| ALTER TEXT_P SEARCH CONFIGURATION any_name SET SCHEMA name
@@ -9198,6 +9353,7 @@ AlterObjectSchemaStmt:
 					n->object = (Node *) $5;
 					n->newschema = $8;
 					n->missing_ok = false;
+					n->is_flashback = false;
 					$$ = (Node *)n;
 				}
 			| ALTER SEQUENCE qualified_name SET SCHEMA name
@@ -9207,6 +9363,7 @@ AlterObjectSchemaStmt:
 					n->relation = $3;
 					n->newschema = $6;
 					n->missing_ok = false;
+					n->is_flashback = false;
 					$$ = (Node *)n;
 				}
 			| ALTER SEQUENCE IF_P EXISTS qualified_name SET SCHEMA name
@@ -9216,6 +9373,7 @@ AlterObjectSchemaStmt:
 					n->relation = $5;
 					n->newschema = $8;
 					n->missing_ok = true;
+					n->is_flashback = false;
 					$$ = (Node *)n;
 				}
 			| ALTER VIEW qualified_name SET SCHEMA name
@@ -9225,6 +9383,7 @@ AlterObjectSchemaStmt:
 					n->relation = $3;
 					n->newschema = $6;
 					n->missing_ok = false;
+					n->is_flashback = false;
 					$$ = (Node *)n;
 				}
 			| ALTER VIEW IF_P EXISTS qualified_name SET SCHEMA name
@@ -9234,6 +9393,7 @@ AlterObjectSchemaStmt:
 					n->relation = $5;
 					n->newschema = $8;
 					n->missing_ok = true;
+					n->is_flashback = false;
 					$$ = (Node *)n;
 				}
 			| ALTER MATERIALIZED VIEW qualified_name SET SCHEMA name
@@ -9243,6 +9403,7 @@ AlterObjectSchemaStmt:
 					n->relation = $4;
 					n->newschema = $7;
 					n->missing_ok = false;
+					n->is_flashback = false;
 					$$ = (Node *)n;
 				}
 			| ALTER MATERIALIZED VIEW IF_P EXISTS qualified_name SET SCHEMA name
@@ -9252,6 +9413,7 @@ AlterObjectSchemaStmt:
 					n->relation = $6;
 					n->newschema = $9;
 					n->missing_ok = true;
+					n->is_flashback = false;
 					$$ = (Node *)n;
 				}
 			| ALTER FOREIGN TABLE relation_expr SET SCHEMA name
@@ -9261,6 +9423,7 @@ AlterObjectSchemaStmt:
 					n->relation = $4;
 					n->newschema = $7;
 					n->missing_ok = false;
+					n->is_flashback = false;
 					$$ = (Node *)n;
 				}
 			| ALTER FOREIGN TABLE IF_P EXISTS relation_expr SET SCHEMA name
@@ -9270,6 +9433,7 @@ AlterObjectSchemaStmt:
 					n->relation = $6;
 					n->newschema = $9;
 					n->missing_ok = true;
+					n->is_flashback = false;
 					$$ = (Node *)n;
 				}
 			| ALTER TYPE_P any_name SET SCHEMA name
@@ -9279,6 +9443,28 @@ AlterObjectSchemaStmt:
 					n->object = (Node *) $3;
 					n->newschema = $6;
 					n->missing_ok = false;
+					n->is_flashback = false;
+					$$ = (Node *)n;
+				}
+			| FLASHBACK TABLE relation_expr TO BEFORE DROP
+				{
+					AlterObjectSchemaStmt *n = makeNode(AlterObjectSchemaStmt);
+					n->objectType = OBJECT_TABLE;
+					n->relation = $3;
+					n->newschema = NULL;
+					n->missing_ok = false;
+					n->is_flashback = true;
+					$$ = (Node *)n;
+				}
+			| FLASHBACK TABLE relation_expr TO BEFORE DROP RENAME TO name
+				{
+					AlterObjectSchemaStmt *n = makeNode(AlterObjectSchemaStmt);
+					n->objectType = OBJECT_TABLE;
+					n->relation = $3;
+					n->newschema = NULL;
+					n->missing_ok = false;
+					n->is_flashback = true;
+					n->newtablename = $9;
 					$$ = (Node *)n;
 				}
 		;
@@ -10124,7 +10310,17 @@ createdb_opt_item:
 				}
 			| createdb_opt_name opt_equal opt_boolean_or_string
 				{
-					$$ = makeDefElem($1, (Node *)makeString($3), @1);
+					if (strcmp($1, "tablespace") == 0 && polar_is_ignore_user_defined_tablespace($3))
+					{
+						ereport(NOTICE,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+								errmsg("User defined tablespace is not supported, The tablespace set by the user will be ignored")));
+						$$ = makeDefElem($1, (Node *)makeString("pg_default"), @1);
+					}
+					else
+					{
+						$$ = makeDefElem($1, (Node *)makeString($3), @1);
+					}
 				}
 			| createdb_opt_name opt_equal DEFAULT
 				{
@@ -10187,8 +10383,17 @@ AlterDatabaseStmt:
 				 {
 					AlterDatabaseStmt *n = makeNode(AlterDatabaseStmt);
 					n->dbname = $3;
-					n->options = list_make1(makeDefElem("tablespace",
-														(Node *)makeString($6), @6));
+					if (polar_is_ignore_user_defined_tablespace($6))
+					{
+						ereport(NOTICE,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("User defined tablespace is not supported, The tablespace set by the user will be ignored")));
+						n->options = list_make1(makeDefElem("tablespace", (Node *)makeString("pg_default"), @6));
+					}
+					else
+					{
+						n->options = list_make1(makeDefElem("tablespace", (Node *)makeString($6), @6));
+					}
 					$$ = (Node *)n;
 				 }
 		;
@@ -10263,7 +10468,124 @@ AlterSystemStmt:
 					n->setstmt = $4;
 					$$ = (Node *)n;
 				}
+   		| ALTER SYSTEM_P DMA dma_command
+        {
+					AlterSystemStmt *n = makeNode(AlterSystemStmt);
+					n->dma_stmt = $4;
+					$$ = (Node *)n;
+				}
 		;
+
+dma_command:
+			CHANGE LEADER TO Sconst
+			{
+				PolarDMACommandStmt *n = makeNode(PolarDMACommandStmt);
+				n->kind = CC_TRANSFER_LEADER;
+				n->node= $4;
+				$$ = n;
+			}
+		|	CHANGE TO SINGLETON MODE
+			{
+				PolarDMACommandStmt *n = makeNode(PolarDMACommandStmt);
+				n->kind = CC_FORCE_SIGNLE_MODE;
+				n->node = NULL;
+				$$ = n;
+			}
+		|	CHANGE NODE Sconst WEIGHT TO Iconst
+			{
+				PolarDMACommandStmt *n = makeNode(PolarDMACommandStmt);
+				n->kind = CC_CHANGE_WEIGHT_CONFIG;
+				n->node = $3;
+				n->weight = $6;
+				$$ = n;
+			}
+		|	CHANGE NODE Sconst MATCH INDEX TO Sconst 
+			{
+				PolarDMACommandStmt *n = makeNode(PolarDMACommandStmt);
+				n->kind = CC_CHANGE_MATCH_INDEX;
+				n->node = $3;
+				n->matchindex = (uint64)atoll($7);
+				$$ = n;
+			}
+		|	CHANGE LEARNER Sconst TO FOLLOWER
+			{
+				PolarDMACommandStmt *n = makeNode(PolarDMACommandStmt);
+				n->kind = CC_CHANGE_LEARNER_TO_FOLLOWER;
+				n->node = $3;
+				$$ = n;
+			}
+		|	CHANGE FOLLOWER Sconst TO LEARNER
+			{
+				PolarDMACommandStmt *n = makeNode(PolarDMACommandStmt);
+				n->kind = CC_CHANGE_FOLLOWER_TO_LEARNER;
+				n->node = $3;
+				$$ = n;
+			}
+		|	ADD_P FOLLOWER Sconst
+			{
+				PolarDMACommandStmt *n = makeNode(PolarDMACommandStmt);
+				n->kind = CC_ADD_FOLLOWER;
+				n->node = $3;
+				$$ = n;
+			}
+		|	ADD_P LEARNER Sconst
+			{
+				PolarDMACommandStmt *n = makeNode(PolarDMACommandStmt);
+				n->kind = CC_ADD_LEARNER;
+				n->node = $3;
+				$$ = n;
+			}
+		|	DROP FOLLOWER Sconst
+			{
+				PolarDMACommandStmt *n = makeNode(PolarDMACommandStmt);
+				n->kind = CC_DROP_FOLLOWER;
+				n->node = $3;
+				$$ = n;
+			}
+		|	DROP LEARNER Sconst
+			{
+				PolarDMACommandStmt *n = makeNode(PolarDMACommandStmt);
+				n->kind = CC_DROP_LEARNER;
+				n->node = $3;
+				$$ = n;
+			}
+		| FORCE CHANGE LEADER 
+			{
+				PolarDMACommandStmt *n = makeNode(PolarDMACommandStmt);
+				n->kind = CC_REQUEST_VOTE;
+				n->node = NULL;
+				$$ = n;
+			}
+		|	PURGE LOGS BEFORE Sconst
+			{
+				PolarDMACommandStmt *n = makeNode(PolarDMACommandStmt);
+				n->kind = CC_PURGE_LOGS;
+				n->purgeindex = (uint64)atoll($4);
+				$$ = n;
+			}
+		|	FORCE PURGE LOGS BEFORE Sconst
+			{
+				PolarDMACommandStmt *n = makeNode(PolarDMACommandStmt);
+				n->kind = CC_FORCE_PURGE_LOGS;
+				n->purgeindex = (uint64)atoll($5);
+				$$ = n;
+			}
+		|	PURGE LOGS
+			{
+				PolarDMACommandStmt *n = makeNode(PolarDMACommandStmt);
+				n->kind = CC_PURGE_LOGS;
+				n->purgeindex = 0;
+				$$ = n;
+			}
+		|	CHANGE CLUSTER TO Sconst
+			{
+				PolarDMACommandStmt *n = makeNode(PolarDMACommandStmt);
+				n->kind = CC_CHANGE_CLUSTER_ID;
+				n->clusterid = (uint64)atoll($4);
+				$$ = n;
+			}
+			;
+
 
 
 /*****************************************************************************
@@ -11419,15 +11741,22 @@ cte_list:
 		| cte_list ',' common_table_expr		{ $$ = lappend($1, $3); }
 		;
 
-common_table_expr:  name opt_name_list AS '(' PreparableStmt ')'
+common_table_expr:  name opt_name_list AS opt_materialized '(' PreparableStmt ')'
 			{
 				CommonTableExpr *n = makeNode(CommonTableExpr);
 				n->ctename = $1;
 				n->aliascolnames = $2;
-				n->ctequery = $5;
+				n->ctematerialized = $4;
+				n->ctequery = $6;
 				n->location = @1;
 				$$ = (Node *) n;
 			}
+		;
+
+opt_materialized:
+		MATERIALIZED							{ $$ = CTEMaterializeAlways; }
+		| NOT MATERIALIZED						{ $$ = CTEMaterializeNever; }
+		| /*EMPTY*/								{ $$ = CTEMaterializeDefault; }
 		;
 
 opt_with_clause:
@@ -15042,6 +15371,7 @@ unreserved_keyword:
 			| CASCADED
 			| CATALOG_P
 			| CHAIN
+			| CHANGE
 			| CHARACTERISTICS
 			| CHECKPOINT
 			| CLASS
@@ -15082,6 +15412,7 @@ unreserved_keyword:
 			| DICTIONARY
 			| DISABLE_P
 			| DISCARD
+			| DMA
 			| DOCUMENT_P
 			| DOMAIN_P
 			| DOUBLE_P
@@ -15103,6 +15434,8 @@ unreserved_keyword:
 			| FAMILY
 			| FILTER
 			| FIRST_P
+			| FLASHBACK
+			| FOLLOWER
 			| FOLLOWING
 			| FORCE
 			| FORWARD
@@ -15141,7 +15474,9 @@ unreserved_keyword:
 			| LANGUAGE
 			| LARGE_P
 			| LAST_P
+			| LEADER
 			| LEAKPROOF
+			| LEARNER
 			| LEVEL
 			| LISTEN
 			| LOAD
@@ -15150,6 +15485,7 @@ unreserved_keyword:
 			| LOCK_P
 			| LOCKED
 			| LOGGED
+			| LOGS
 			| MAPPING
 			| MATCH
 			| MATERIALIZED
@@ -15165,6 +15501,7 @@ unreserved_keyword:
 			| NEW
 			| NEXT
 			| NO
+			| NODE
 			| NOTHING
 			| NOTIFY
 			| NOWAIT
@@ -15202,6 +15539,7 @@ unreserved_keyword:
 			| PROCEDURES
 			| PROGRAM
 			| PUBLICATION
+			| PURGE
 			| QUOTE
 			| RANGE
 			| READ
@@ -15247,6 +15585,7 @@ unreserved_keyword:
 			| SHARE
 			| SHOW
 			| SIMPLE
+			| SINGLETON
 			| SKIP
 			| SNAPSHOT
 			| SQL_P
@@ -15295,6 +15634,7 @@ unreserved_keyword:
 			| VIEW
 			| VIEWS
 			| VOLATILE
+			| WEIGHT
 			| WHITESPACE_P
 			| WITHIN
 			| WITHOUT
@@ -15503,6 +15843,72 @@ static void
 base_yyerror(YYLTYPE *yylloc, core_yyscan_t yyscanner, const char *msg)
 {
 	parser_yyerror(msg);
+}
+
+static Node *
+makeShowRecyclebin(char *name, core_yyscan_t yyscanner)
+{
+	SelectStmt *n; 
+	RangeVar   *r;
+	List       *fc; 
+	char 	   *col_name;
+	Node	   *col1;
+	Node       *valstr;
+	Node       *t_n ;
+	
+	Value	   *ls1, *ls2, *ls3;
+	ColumnRef  *ln1, *ln2, *ln3;
+	ResTarget  *n1, *n2, *n3;
+
+	List *targetlist;
+
+	n = makeNode(SelectStmt);
+	r = makeRangeVar("information_schema", "tables", 0);
+	fc = list_make1((Node *)r);
+	col_name = "table_schema" ;
+	col1 = makeColumnRef(col_name, NIL, 0, yyscanner);
+	valstr = makeStringConst(RECYCLEBINNAME, 0);
+	t_n = (Node *) makeSimpleA_Expr(AEXPR_OP, "=", col1, valstr, 0);
+	
+	ls1 = makeString("table_catalog");
+	ls2 = makeString("table_name");
+	ls3 = makeString("table_type");
+
+	ln1 = makeNode(ColumnRef);
+	ln2 = makeNode(ColumnRef);
+	ln3 = makeNode(ColumnRef);
+
+	n1 = makeNode(ResTarget);
+	n2 = makeNode(ResTarget);
+	n3 = makeNode(ResTarget);
+
+	ln1->fields = list_make1(ls1);
+	ln2->fields = list_make1(ls2);
+	ln3->fields = list_make1(ls3);
+
+	n1->val = (Node*)ln1;
+	n1->indirection = NIL;
+
+	n2->val = (Node*)ln2;
+	n2->indirection = NIL;
+
+	n3->val = (Node*)ln3;
+	n3->indirection = NIL;
+
+	targetlist = list_make1(n1);
+	targetlist = lappend(targetlist, n2);
+	targetlist = lappend(targetlist, n3);
+		
+	n->targetList = targetlist;
+	n->intoClause = NULL;
+	r->inh = true;
+	r->alias = NULL;
+	n->fromClause = fc;
+	n->whereClause = t_n;
+	n->groupClause = NULL;
+	n->havingClause = NULL;
+	n->windowClause = NULL;
+	return (Node*)n;
 }
 
 static RawStmt *
@@ -16311,6 +16717,7 @@ makeRecursiveViewSelect(char *relname, List *aliases, Node *query)
 	/* create common table expression */
 	cte->ctename = relname;
 	cte->aliascolnames = aliases;
+	cte->ctematerialized = CTEMaterializeDefault;
 	cte->ctequery = query;
 	cte->location = -1;
 
@@ -16349,4 +16756,15 @@ void
 parser_init(base_yy_extra_type *yyext)
 {
 	yyext->parsetree = NIL;		/* in case grammar forgets to set it */
+}
+
+static bool
+polar_is_ignore_user_defined_tablespace(char *tablespace_name)
+{
+	if (polar_syntactically_compatible_tablespace_mode() &&
+		tablespace_name != NULL &&
+		pg_strncasecmp(tablespace_name, "pg_default", 10) != 0)
+			return true;
+
+	return false;
 }

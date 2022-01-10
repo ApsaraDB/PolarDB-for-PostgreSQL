@@ -282,4 +282,9 @@ extern bytea *attribute_reloptions(Datum reloptions, bool validate);
 extern bytea *tablespace_reloptions(Datum reloptions, bool validate);
 extern LOCKMODE AlterTableGetRelOptionsLockLevel(List *defList);
 
+/* POLAR px */
+extern int polar_relation_get_parallel_query_nodes(Relation rel,
+												   LOCKMODE lockmode);
+/* POLAR end */
+
 #endif							/* RELOPTIONS_H */

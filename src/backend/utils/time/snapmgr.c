@@ -68,6 +68,9 @@
 #include "utils/syscache.h"
 #include "utils/tqual.h"
 
+/* POLAR */
+#include "utils/guc.h"
+#include "px/px_snapshot.h"
 
 /*
  * GUC parameters
@@ -238,6 +241,8 @@ typedef struct SerializedSnapshotData
 {
 	TransactionId xmin;
 	TransactionId xmax;
+	CommitSeqNo	polar_snapshot_csn;		/* POLAR csn */
+	bool        polar_csn_xid_snapshot;	/* POLAR csn */
 	uint32		xcnt;
 	int32		subxcnt;
 	bool		suboverflowed;
@@ -593,14 +598,18 @@ SetTransactionSnapshot(Snapshot sourcesnap, VirtualTransactionId *sourcevxid,
 	CurrentSnapshot->xcnt = sourcesnap->xcnt;
 	Assert(sourcesnap->xcnt <= GetMaxSnapshotXidCount());
 	memcpy(CurrentSnapshot->xip, sourcesnap->xip,
-		   sourcesnap->xcnt * sizeof(TransactionId));
+		sourcesnap->xcnt * sizeof(TransactionId));
 	CurrentSnapshot->subxcnt = sourcesnap->subxcnt;
 	Assert(sourcesnap->subxcnt <= GetMaxSnapshotSubxidCount());
 	memcpy(CurrentSnapshot->subxip, sourcesnap->subxip,
-		   sourcesnap->subxcnt * sizeof(TransactionId));
+		sourcesnap->subxcnt * sizeof(TransactionId));
 	CurrentSnapshot->suboverflowed = sourcesnap->suboverflowed;
 	CurrentSnapshot->takenDuringRecovery = sourcesnap->takenDuringRecovery;
 	/* NB: curcid should NOT be copied, it's a local matter */
+
+	/* polar csn */
+	CurrentSnapshot->polar_snapshot_csn = sourcesnap->polar_snapshot_csn;
+	CurrentSnapshot->polar_csn_xid_snapshot = sourcesnap->polar_csn_xid_snapshot;
 
 	/*
 	 * Now we have to fix what GetSnapshotData did with MyPgXact->xmin and
@@ -984,7 +993,11 @@ SnapshotResetXmin(void)
 
 	if (pairingheap_is_empty(&RegisteredSnapshots))
 	{
-		MyPgXact->xmin = InvalidTransactionId;
+		if (polar_csn_enable)
+			ProcArrayResetXminCSN(MyProc, InvalidTransactionId);
+		else
+			MyPgXact->xmin = InvalidTransactionId;
+
 		return;
 	}
 
@@ -992,7 +1005,12 @@ SnapshotResetXmin(void)
 										pairingheap_first(&RegisteredSnapshots));
 
 	if (TransactionIdPrecedes(MyPgXact->xmin, minSnapshot->xmin))
-		MyPgXact->xmin = minSnapshot->xmin;
+	{
+		if (polar_csn_enable)
+			ProcArrayResetXminCSN(MyProc, minSnapshot->xmin);
+		else
+			MyPgXact->xmin = minSnapshot->xmin;
+	}
 }
 
 /*
@@ -1146,6 +1164,7 @@ AtEOXact_Snapshot(bool isCommit, bool resetXmin)
 		SnapshotResetXmin();
 
 	Assert(resetXmin || MyPgXact->xmin == 0);
+	pxsn_set_snapshot(InvalidSnapshot);
 }
 
 
@@ -1159,9 +1178,9 @@ char *
 ExportSnapshot(Snapshot snapshot)
 {
 	TransactionId topXid;
-	TransactionId *children;
+	TransactionId *children = NULL;
 	ExportedSnapshot *esnap;
-	int			nchildren;
+	int			nchildren = 0;
 	int			addTopXid;
 	StringInfoData buf;
 	FILE	   *f;
@@ -1283,6 +1302,16 @@ ExportSnapshot(Snapshot snapshot)
 			appendStringInfo(&buf, "sxp:%u\n", children[i]);
 	}
 	appendStringInfo(&buf, "rec:%u\n", snapshot->takenDuringRecovery);
+
+	/* POLAR csn */
+	if (polar_csn_enable)
+	{
+		appendStringInfo(&buf, "polar_snapshot_csn:%X/%X\n",
+					 	(uint32) (snapshot->polar_snapshot_csn >> 32),
+					 	(uint32) snapshot->polar_snapshot_csn);
+		appendStringInfo(&buf, "polar_csn_xid_snapshot:%d\n",
+					 	 snapshot->polar_csn_xid_snapshot?1:0);				 
+	}
 
 	/*
 	 * Now write the text representation into a file.  We first write to a
@@ -1420,6 +1449,34 @@ parseVxidFromText(const char *prefix, char **s, const char *filename,
 	*s = ptr + 1;
 }
 
+/* POLAR csn*/
+static CommitSeqNo
+parseCSNFromText(const char *prefix, char **s, const char *filename)
+{
+	char	   *ptr = *s;
+	int			prefixlen = strlen(prefix);
+	uint32		high_part;
+	uint32		low_part;
+
+	if (strncmp(ptr, prefix, prefixlen) != 0)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
+				 errmsg("invalid snapshot data in file \"%s\"", filename)));
+	ptr += prefixlen;
+	if (sscanf(ptr, "%u/%u", &high_part, &low_part) != 2)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
+				 errmsg("invalid snapshot data in file \"%s\"", filename)));
+	ptr = strchr(ptr, '\n');
+	if (!ptr)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
+				 errmsg("invalid snapshot data in file \"%s\"", filename)));
+	*s = ptr + 1;
+	return ((CommitSeqNo)high_part) << 32 | low_part;
+}
+/* POLAR end */
+
 /*
  * ImportSnapshot
  *		Import a previously exported snapshot.  The argument should be a
@@ -1532,7 +1589,7 @@ ImportSnapshot(const char *idstr)
 		if (xcnt < 0 || xcnt > GetMaxSnapshotSubxidCount())
 			ereport(ERROR,
 					(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
-					 errmsg("invalid snapshot data in file \"%s\"", path)));
+					errmsg("invalid snapshot data in file \"%s\"", path)));
 
 		snapshot.subxip = (TransactionId *) palloc(xcnt * sizeof(TransactionId));
 		for (i = 0; i < xcnt; i++)
@@ -1545,6 +1602,13 @@ ImportSnapshot(const char *idstr)
 	}
 
 	snapshot.takenDuringRecovery = parseIntFromText("rec:", &filebuf, path);
+
+	/* POLAR csn */
+	if (polar_csn_enable)
+	{
+		snapshot.polar_snapshot_csn = parseCSNFromText("polar_snapshot_csn:", &filebuf, path);
+		snapshot.polar_csn_xid_snapshot = parseIntFromText("polar_csn_xid_snapshot:", &filebuf, path);
+	}
 
 	/*
 	 * Do some additional sanity checking, just to protect ourselves.  We
@@ -2081,6 +2145,11 @@ SerializeSnapshot(Snapshot snapshot, char *start_address)
 	serialized_snapshot.curcid = snapshot->curcid;
 	serialized_snapshot.whenTaken = snapshot->whenTaken;
 	serialized_snapshot.lsn = snapshot->lsn;
+	if(polar_csn_enable)
+	{
+		serialized_snapshot.polar_snapshot_csn = snapshot->polar_snapshot_csn;
+		serialized_snapshot.polar_csn_xid_snapshot = snapshot->polar_csn_xid_snapshot;
+	}
 
 	/*
 	 * Ignore the SubXID array if it has overflowed, unless the snapshot was
@@ -2146,6 +2215,11 @@ RestoreSnapshot(char *start_address)
 	snapshot->satisfies = HeapTupleSatisfiesMVCC;
 	snapshot->xmin = serialized_snapshot.xmin;
 	snapshot->xmax = serialized_snapshot.xmax;
+	if (polar_csn_enable)
+	{
+		snapshot->polar_snapshot_csn = serialized_snapshot.polar_snapshot_csn;
+		snapshot->polar_csn_xid_snapshot = serialized_snapshot.polar_csn_xid_snapshot;
+	}
 	snapshot->xip = NULL;
 	snapshot->xcnt = serialized_snapshot.xcnt;
 	snapshot->subxip = NULL;

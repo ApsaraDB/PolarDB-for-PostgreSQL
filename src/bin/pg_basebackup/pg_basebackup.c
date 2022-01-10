@@ -30,6 +30,7 @@
 #include "common/file_perm.h"
 #include "common/file_utils.h"
 #include "common/string.h"
+#include "common/polar_fs_fe.h"
 #include "fe_utils/string_utils.h"
 #include "getopt_long.h"
 #include "libpq-fe.h"
@@ -78,6 +79,7 @@ typedef enum
 
 /* Global options */
 static char *basedir = NULL;
+static char *datadir = NULL;
 static TablespaceList tablespace_dirs = {NULL, NULL};
 static char *xlog_dir = NULL;
 static char format = 'p';		/* p(lain)/t(ar) */
@@ -102,11 +104,15 @@ static bool verify_checksums = true;
 
 static bool success = false;
 static bool made_new_pgdata = false;
+static bool made_new_pgbase = false;
 static bool found_existing_pgdata = false;
+static bool found_existing_poalrdata = false;
 static bool made_new_xlogdir = false;
 static bool found_existing_xlogdir = false;
 static bool made_tablespace_dirs = false;
 static bool found_tablespace_dirs = false;
+bool is_pfs_mode = false;
+bool is_polar_mode = false;
 
 /* Progress counters */
 static uint64 totalsize;
@@ -137,7 +143,7 @@ static PQExpBuffer recoveryconfcontents = NULL;
 /* Function headers */
 static void usage(void);
 static void disconnect_and_exit(int code) pg_attribute_noreturn();
-static void verify_dir_is_empty_or_create(char *dirname, bool *created, bool *found);
+static void verify_dir_is_empty_or_create(char *dirname, bool *created, bool *found, bool is_pfs);
 static void progress_report(int tablespacenum, const char *filename, bool force);
 
 static void ReceiveTarFile(PGconn *conn, PGresult *res, int rownum);
@@ -161,7 +167,7 @@ cleanup_directories_atexit(void)
 
 	if (!noclean && !checksum_failure)
 	{
-		if (made_new_pgdata)
+		if (made_new_pgbase)
 		{
 			fprintf(stderr, _("%s: removing data directory \"%s\"\n"),
 					progname, basedir);
@@ -179,11 +185,30 @@ cleanup_directories_atexit(void)
 						progname);
 		}
 
+		if (made_new_pgdata)
+		{
+			fprintf(stderr, _("%s: removing data directory \"%s\"\n"),
+					progname, datadir);
+			if (!polar_rmtree(datadir, true, is_pfs_mode))
+				fprintf(stderr, _("%s: failed to remove data directory\n"),
+						progname);
+		}
+		else if (found_existing_poalrdata)
+		{
+			fprintf(stderr,
+					_("%s: removing contents of data directory \"%s\"\n"),
+					progname, datadir);
+			if (!polar_rmtree(datadir, false, is_pfs_mode))
+				fprintf(stderr, _("%s: failed to remove contents of data directory\n"),
+						progname);
+		}
+		
+
 		if (made_new_xlogdir)
 		{
 			fprintf(stderr, _("%s: removing WAL directory \"%s\"\n"),
 					progname, xlog_dir);
-			if (!rmtree(xlog_dir, true))
+			if (!polar_rmtree(xlog_dir, true, is_pfs_mode))
 				fprintf(stderr, _("%s: failed to remove WAL directory\n"),
 						progname);
 		}
@@ -192,7 +217,7 @@ cleanup_directories_atexit(void)
 			fprintf(stderr,
 					_("%s: removing contents of WAL directory \"%s\"\n"),
 					progname, xlog_dir);
-			if (!rmtree(xlog_dir, false))
+			if (!polar_rmtree(xlog_dir, false, is_pfs_mode))
 				fprintf(stderr, _("%s: failed to remove contents of WAL directory\n"),
 						progname);
 		}
@@ -203,6 +228,11 @@ cleanup_directories_atexit(void)
 			fprintf(stderr,
 					_("%s: data directory \"%s\" not removed at user's request\n"),
 					progname, basedir);
+
+		if ((made_new_pgdata || found_existing_poalrdata) && !checksum_failure)
+			fprintf(stderr,
+					_("%s: data directory \"%s\" not removed at user's request\n"),
+					progname, datadir);
 
 		if (made_new_xlogdir || found_existing_xlogdir)
 			fprintf(stderr,
@@ -378,7 +408,11 @@ usage(void)
 	printf(_("  -U, --username=NAME    connect as specified database user\n"));
 	printf(_("  -w, --no-password      never prompt for password\n"));
 	printf(_("  -W, --password         force password prompt (should happen automatically)\n"));
-	printf(_("\nReport bugs to <pgsql-bugs@postgresql.org>.\n"));
+	printf(_("      --polardata=datadir  receive polar data backup into directory\n"));
+	printf(_("      --polar_disk_home=disk  polar_disk_home for polar data backup \n"));
+	printf(_("      --polar_host_id=host_id  polar_host_id for polar data backup\n"));
+	printf(_("      --polar_storage_cluster_name=cluster_name  polar_storage_cluster_name for polar data backup\n"));
+	printf(_("\nReport bugs to <support@alibaba.com>.\n"));
 }
 
 
@@ -509,7 +543,7 @@ LogStreamerMain(logstreamer_param *param)
 
 	if (format == 'p')
 		stream.walmethod = CreateWalDirectoryMethod(param->xlog, 0,
-													stream.do_sync);
+													stream.do_sync, is_pfs_mode);
 	else
 		stream.walmethod = CreateWalTarMethod(param->xlog, compresslevel,
 											  stream.do_sync);
@@ -590,7 +624,7 @@ StartLogStreamer(char *startpos, uint32 timeline, char *sysidentifier)
 
 	/* In post-10 cluster, pg_xlog has been renamed to pg_wal */
 	snprintf(param->xlog, sizeof(param->xlog), "%s/%s",
-			 basedir,
+			 datadir,
 			 PQserverVersion(conn) < MINIMUM_VERSION_FOR_PG_WAL ?
 			 "pg_xlog" : "pg_wal");
 
@@ -629,11 +663,11 @@ StartLogStreamer(char *startpos, uint32 timeline, char *sysidentifier)
 		 * tar file may arrive later.
 		 */
 		snprintf(statusdir, sizeof(statusdir), "%s/%s/archive_status",
-				 basedir,
+				 datadir,
 				 PQserverVersion(conn) < MINIMUM_VERSION_FOR_PG_WAL ?
 				 "pg_xlog" : "pg_wal");
 
-		if (pg_mkdir_p(statusdir, pg_dir_create_mode) != 0 && errno != EEXIST)
+		if (polar_mkdir_p(statusdir, pg_dir_create_mode, is_pfs_mode) != 0 && errno != EEXIST)
 		{
 			fprintf(stderr,
 					_("%s: could not create directory \"%s\": %s\n"),
@@ -680,16 +714,16 @@ StartLogStreamer(char *startpos, uint32 timeline, char *sysidentifier)
  * be given and the process ended.
  */
 static void
-verify_dir_is_empty_or_create(char *dirname, bool *created, bool *found)
+verify_dir_is_empty_or_create(char *dirname, bool *created, bool *found, bool is_pfs)
 {
-	switch (pg_check_dir(dirname))
+	switch (polar_check_dir(dirname, is_pfs))
 	{
 		case 0:
 
 			/*
 			 * Does not exist, so create
 			 */
-			if (pg_mkdir_p(dirname, pg_dir_create_mode) == -1)
+			if (polar_mkdir_p(dirname, pg_dir_create_mode, is_pfs) == -1)
 			{
 				fprintf(stderr,
 						_("%s: could not create directory \"%s\": %s\n"),
@@ -991,6 +1025,8 @@ ReceiveTarFile(PGconn *conn, PGresult *res, int rownum)
 #ifdef HAVE_LIBZ
 	gzFile		ztarfile = NULL;
 #endif
+	/* POLAR: Is this tar streaming for polar data? */
+	bool		polar_data = !PQgetisnull(res, rownum, 3);
 
 	if (basetablespace)
 	{
@@ -1023,11 +1059,25 @@ ReceiveTarFile(PGconn *conn, PGresult *res, int rownum)
 		}
 		else
 		{
+			/*
+			 * POLAR:
+			 * There are two basetablespaces during server was in polar mode
+			 * which including data_directory and polar_datadir. We consume that
+			 * polar_datadir's tar streaming is fllowing by data_directory. If server
+			 * changes these two basetablespaces's streaming order, please update
+			 * here at the same time.
+			 */
+			char polar_mode[4] = {0};
+			if (polar_data)
+				strlcpy(polar_mode, "ab", 4);
+			else
+				strlcpy(polar_mode, "wb", 4);
+
 #ifdef HAVE_LIBZ
 			if (compresslevel != 0)
 			{
 				snprintf(filename, sizeof(filename), "%s/base.tar.gz", basedir);
-				ztarfile = gzopen(filename, "wb");
+				ztarfile = gzopen(filename, polar_mode);
 				if (gzsetparams(ztarfile, compresslevel,
 								Z_DEFAULT_STRATEGY) != Z_OK)
 				{
@@ -1041,7 +1091,7 @@ ReceiveTarFile(PGconn *conn, PGresult *res, int rownum)
 #endif
 			{
 				snprintf(filename, sizeof(filename), "%s/base.tar", basedir);
-				tarfile = fopen(filename, "wb");
+				tarfile = fopen(filename, polar_mode);
 			}
 		}
 	}
@@ -1134,7 +1184,14 @@ ReceiveTarFile(PGconn *conn, PGresult *res, int rownum)
 
 			MemSet(zerobuf, 0, sizeof(zerobuf));
 
-			if (basetablespace && writerecoveryconf)
+			/* POLAR: In case of forgetting the last tar header. */
+			if (in_tarhdr &&
+				tarhdrsz == 512 &&
+				!skip_file)
+				WRITE_TAR_DATA(tarhdr, 512);
+
+			/* POLAR: Only write recovery in non-polar basetablespace. */
+			if (basetablespace && writerecoveryconf && !polar_data)
 			{
 				char		header[512];
 				int			padding;
@@ -1152,8 +1209,21 @@ ReceiveTarFile(PGconn *conn, PGresult *res, int rownum)
 					WRITE_TAR_DATA(zerobuf, padding);
 			}
 
-			/* 2 * 512 bytes empty data at end of file */
-			WRITE_TAR_DATA(zerobuf, sizeof(zerobuf));
+			/*
+			 * POLAR: Append zero to compelete tar file.
+			 * (1) original basebackup tool can just append zero.
+			 * (2) polar basebackup tool can't append zero until polar_datadir was received.
+			 * There are two basetablespaces during server was in polar mode
+			 * which including data_directory and polar_datadir. We consume that
+			 * polar_datadir's tar streaming is fllowing by data_directory. If server
+			 * changes these two basetablespaces's streaming order, please update
+			 * here at the same time.
+			 *
+			 * 2 * 512 bytes empty data at end of file
+			 */
+			if (!is_polar_mode ||
+				(is_polar_mode && polar_data))
+				WRITE_TAR_DATA(zerobuf, sizeof(zerobuf));
 
 #ifdef HAVE_LIBZ
 			if (ztarfile != NULL)
@@ -1214,6 +1284,10 @@ ReceiveTarFile(PGconn *conn, PGresult *res, int rownum)
 			 */
 			int			rr = r;
 			int			pos = 0;
+#define POLAR_TAR_NAME_MAX_LEN 100
+#define POLAR_TAR_NAME_PREFIX POLAR_SHARED_DATA
+			static bool polar_create_shared_datadir = false;
+			char		polar_file_name[POLAR_TAR_NAME_MAX_LEN];
 
 			while (rr > 0)
 			{
@@ -1262,6 +1336,45 @@ ReceiveTarFile(PGconn *conn, PGresult *res, int rownum)
 
 						/* Next part is the file, not the header */
 						in_tarhdr = false;
+
+						/*
+						 * POLAR:
+						 * In order to make these two basetablespaces into one,
+						 * we append polar tar streaming to the tail of non-polar
+						 * tar streaming. In case of polar_datadir path was missing,
+						 * we need to add one dir tar head to create polar_datadir which
+						 * is default set to POLAR_SHARED_DATA.
+						 * Besides, we need to change every file or directory's tar header
+						 * to make path correct. The max length of path is 100 bytes.
+						 */
+						if (polar_data)
+						{
+							if (!polar_create_shared_datadir)
+							{
+								char		header[512];
+								tarCreateHeader(header, POLAR_TAR_NAME_PREFIX, NULL,
+												0, S_IFDIR | pg_dir_create_mode, 04000, 02000,
+												time(NULL));
+								WRITE_TAR_DATA(header, sizeof(header));
+								polar_create_shared_datadir = true;
+							}
+							/* POLAR: POLAR_TAR_NAME_PREFIX + "/" + &tarhdr[0] is the true path. */
+							if (strlen(POLAR_TAR_NAME_PREFIX) + strlen(&tarhdr[0]) + 1 >= POLAR_TAR_NAME_MAX_LEN)
+							{
+								fprintf(stderr, _("%s: Polar tar name is too long: %s%s(%zu)"),
+										progname, POLAR_TAR_NAME_PREFIX, &tarhdr[0],
+										strlen(POLAR_TAR_NAME_PREFIX) + strlen(&tarhdr[0]));
+								disconnect_and_exit(1);
+							}
+							else
+							{
+								memset(polar_file_name, 0x0, POLAR_TAR_NAME_MAX_LEN);
+								snprintf(polar_file_name, POLAR_TAR_NAME_MAX_LEN,
+										 "%s/%s", POLAR_TAR_NAME_PREFIX, &tarhdr[0]);
+								strlcpy(&tarhdr[0], polar_file_name, POLAR_TAR_NAME_MAX_LEN);
+								print_tar_number(&tarhdr[148], 8, tarChecksum(tarhdr));
+							}
+						}
 
 						/*
 						 * If we're not skipping the file, write the tar
@@ -1361,17 +1474,27 @@ ReceiveAndUnpackTarFile(PGconn *conn, PGresult *res, int rownum)
 	pgoff_t		current_len_left = 0;
 	int			current_padding = 0;
 	bool		basetablespace;
+	bool 		polar_data;
+	bool		need_pfs;
 	char	   *copybuf = NULL;
-	FILE	   *file = NULL;
+	int			fd = -1;
 
 	basetablespace = PQgetisnull(res, rownum, 0);
+	polar_data = !PQgetisnull(res, rownum, 3);
+
 	if (basetablespace)
-		strlcpy(current_path, basedir, sizeof(current_path));
+	{
+		if (polar_data)
+			strlcpy(current_path, datadir, sizeof(current_path));
+		else
+			strlcpy(current_path, basedir, sizeof(current_path));
+	}
 	else
 		strlcpy(current_path,
 				get_tablespace_mapping(PQgetvalue(res, rownum, 1)),
 				sizeof(current_path));
 
+	need_pfs = polar_data && is_pfs_mode;
 	/*
 	 * Get the COPY data
 	 */
@@ -1400,8 +1523,8 @@ ReceiveAndUnpackTarFile(PGconn *conn, PGresult *res, int rownum)
 			/*
 			 * End of chunk
 			 */
-			if (file)
-				fclose(file);
+			if (fd > -1)
+				polar_close(fd, need_pfs);
 
 			break;
 		}
@@ -1412,7 +1535,7 @@ ReceiveAndUnpackTarFile(PGconn *conn, PGresult *res, int rownum)
 			disconnect_and_exit(1);
 		}
 
-		if (file == NULL)
+		if (fd < 0)
 		{
 			int			filemode;
 
@@ -1454,7 +1577,7 @@ ReceiveAndUnpackTarFile(PGconn *conn, PGresult *res, int rownum)
 					 * Directory
 					 */
 					filename[strlen(filename) - 1] = '\0';	/* Remove trailing slash */
-					if (mkdir(filename, pg_dir_create_mode) != 0)
+					if (polar_mkdir(filename, pg_dir_create_mode, need_pfs) != 0)
 					{
 						/*
 						 * When streaming WAL, pg_wal (or pg_xlog for pre-9.6
@@ -1477,7 +1600,7 @@ ReceiveAndUnpackTarFile(PGconn *conn, PGresult *res, int rownum)
 						}
 					}
 #ifndef WIN32
-					if (chmod(filename, (mode_t) filemode))
+					if (polar_chmod(filename, (mode_t) filemode, need_pfs))
 						fprintf(stderr,
 								_("%s: could not set permissions on directory \"%s\": %s\n"),
 								progname, filename, strerror(errno));
@@ -1522,8 +1645,8 @@ ReceiveAndUnpackTarFile(PGconn *conn, PGresult *res, int rownum)
 			/*
 			 * regular file
 			 */
-			file = fopen(filename, "wb");
-			if (!file)
+			fd = polar_open(filename, O_WRONLY | O_CREAT | PG_BINARY, pg_file_create_mode, need_pfs);
+			if (fd < 0)
 			{
 				fprintf(stderr, _("%s: could not create file \"%s\": %s\n"),
 						progname, filename, strerror(errno));
@@ -1531,7 +1654,7 @@ ReceiveAndUnpackTarFile(PGconn *conn, PGresult *res, int rownum)
 			}
 
 #ifndef WIN32
-			if (chmod(filename, (mode_t) filemode))
+			if (polar_chmod(filename, (mode_t) filemode, need_pfs))
 				fprintf(stderr, _("%s: could not set permissions on file \"%s\": %s\n"),
 						progname, filename, strerror(errno));
 #endif
@@ -1541,8 +1664,8 @@ ReceiveAndUnpackTarFile(PGconn *conn, PGresult *res, int rownum)
 				/*
 				 * Done with this file, next one will be a new tar header
 				 */
-				fclose(file);
-				file = NULL;
+				polar_close(fd, need_pfs);
+				fd = -1;
 				continue;
 			}
 		}						/* new file */
@@ -1557,14 +1680,13 @@ ReceiveAndUnpackTarFile(PGconn *conn, PGresult *res, int rownum)
 				 * Received the padding block for this file, ignore it and
 				 * close the file, then move on to the next tar header.
 				 */
-				fclose(file);
-				file = NULL;
+				polar_close(fd, need_pfs);
+				fd = -1;
 				totaldone += r;
 				continue;
 			}
 
-			errno = 0;
-			if (fwrite(copybuf, r, 1, file) != 1)
+			if (polar_write(fd, copybuf, r, need_pfs) < 0)
 			{
 				/* if write didn't set errno, assume problem is no disk space */
 				if (errno == 0)
@@ -1584,15 +1706,15 @@ ReceiveAndUnpackTarFile(PGconn *conn, PGresult *res, int rownum)
 				 * expected. Close the file and move on to the next tar
 				 * header.
 				 */
-				fclose(file);
-				file = NULL;
+				polar_close(fd, need_pfs);
+				fd = -1;
 				continue;
 			}
 		}						/* continuing data in existing file */
 	}							/* loop over all data blocks */
 	progress_report(rownum, filename, true);
 
-	if (file != NULL)
+	if (fd > -1)
 	{
 		fprintf(stderr,
 				_("%s: COPY stream ended before last file was finished\n"),
@@ -1920,14 +2042,41 @@ BaseBackup(void)
 		{
 			char	   *path = (char *) get_tablespace_mapping(PQgetvalue(res, i, 1));
 
-			verify_dir_is_empty_or_create(path, &made_tablespace_dirs, &found_tablespace_dirs);
+			verify_dir_is_empty_or_create(path, &made_tablespace_dirs, &found_tablespace_dirs, is_pfs_mode);
+		}
+
+		if (!PQgetisnull(res, i, 3))
+		{
+			if (!is_polar_mode)
+			{
+				/* In pfs mode, you must specify polardata. */
+				if (is_pfs_mode)
+				{
+					fprintf(stderr, _("%s: In pfs mode, polardata cannot be empty.\n"), progname);
+					disconnect_and_exit(1);
+				}
+				else
+				{
+					/* If polardata is not specified, the default value is ./POLAR_SHARED_DATA */
+					char tmpdata[MAXPGPATH];
+					is_polar_mode = true;
+					sprintf(tmpdata, "%s/%s", basedir, POLAR_SHARED_DATA);
+					datadir = pg_strdup(tmpdata);
+					if (format == 'p')
+						verify_dir_is_empty_or_create(datadir, &made_new_pgdata, &found_existing_poalrdata, is_pfs_mode);
+				}
+			}
 		}
 	}
 
 	/*
 	 * When writing to stdout, require a single tablespace
+	 *
+	 * POLAR:
+	 * There are two basetablespaces when server is in polar mode. But we will
+	 * combine these two basetablespaces into one.
 	 */
-	if (format == 't' && strcmp(basedir, "-") == 0 && PQntuples(res) > 1)
+	if (format == 't' && strcmp(basedir, "-") == 0 && PQntuples(res) > 1 && !is_polar_mode)
 	{
 		fprintf(stderr,
 				_("%s: can only write single tablespace to stdout, database has %d\n"),
@@ -2129,7 +2278,14 @@ BaseBackup(void)
 		}
 		else
 		{
-			(void) fsync_pgdata(basedir, progname, serverVersion);
+			if (is_polar_mode)
+			{
+				(void) polar_fsync_pgdata(basedir, progname, serverVersion);
+				if (!is_pfs_mode)
+					(void) polar_fsync_pgdata(datadir, progname, serverVersion);
+			}
+			else
+				(void) fsync_pgdata(basedir, progname, serverVersion);
 		}
 	}
 
@@ -2170,11 +2326,18 @@ main(int argc, char **argv)
 		{"waldir", required_argument, NULL, 1},
 		{"no-slot", no_argument, NULL, 2},
 		{"no-verify-checksums", no_argument, NULL, 3},
+		{"polardata", required_argument, NULL, 4},
+		{"polar_disk_name", required_argument, NULL, 5},
+		{"polar_host_id", required_argument, NULL, 6},
+		{"polar_storage_cluster_name", required_argument, NULL, 7},
 		{NULL, 0, NULL, 0}
 	};
 	int			c;
 
 	int			option_index;
+	char		*polar_disk_name = NULL;
+	char		*polar_storage_cluster_name = NULL;
+	int			polar_hostid = 0;
 
 	progname = get_progname(argv[0]);
 	set_pglocale_pgservice(argv[0], PG_TEXTDOMAIN("pg_basebackup"));
@@ -2206,6 +2369,18 @@ main(int argc, char **argv)
 				break;
 			case 'D':
 				basedir = pg_strdup(optarg);
+				break;
+			case  4 :
+				datadir = pg_strdup(optarg);
+				break;
+			case 5 :
+				polar_disk_name = pg_strdup(optarg);
+				break;
+			case 6 :
+				polar_hostid = atoi(optarg);
+				break;
+			case 7 :
+				polar_storage_cluster_name = pg_strdup(optarg);
 				break;
 			case 'F':
 				if (strcmp(optarg, "p") == 0 || strcmp(optarg, "plain") == 0)
@@ -2376,6 +2551,57 @@ main(int argc, char **argv)
 		exit(1);
 	}
 
+	if (strcmp(basedir, "-") == 0 && datadir != NULL)
+	{
+		fprintf(stderr, _("%s: In polar mode, backup sets cannot be output to standard outputs.\n"), progname);
+		exit(1);
+	}
+
+	if(datadir == NULL)
+	{
+		if (polar_disk_name != NULL || polar_hostid != 0 || polar_storage_cluster_name != NULL)
+		{
+			fprintf(stderr, _("%s: In polar mode, The polardata, polar_disk_name and polar_host_id parameters must be specified or not.\n"), progname);
+			exit(1);
+		}
+
+		is_pfs_mode = false;
+		is_polar_mode = false;
+		datadir = basedir;
+	}
+	else
+	{
+		if (polar_disk_name != NULL)
+		{
+			if (polar_hostid == 0)
+			{
+				fprintf(stderr, _("%s: In polar mode, polar_disk_name and polar_host_id must be specified.\n"), progname);
+				exit(1);
+			}
+			is_pfs_mode = true;
+			is_polar_mode = true;
+			
+		}
+		else
+		{
+			if ( polar_hostid != 0 || polar_storage_cluster_name != NULL)
+			{
+				fprintf(stderr, _("%s: In polar mode, The polardata, polar_disk_name and polar_host_id parameters must be specified or not.\n"), progname);
+				exit(1);
+			}
+			is_pfs_mode = false;
+			is_polar_mode = true;
+		}
+
+		if (format == 't')
+		{
+			fprintf(stderr,
+					_("%s: In polar mode, tar mode is not supported.\n"),
+					progname);
+			exit(1);
+		}
+	}
+
 	/*
 	 * Mutually exclusive arguments
 	 */
@@ -2480,6 +2706,8 @@ main(int argc, char **argv)
 	}
 #endif
 
+	polar_fs_init(is_pfs_mode, polar_storage_cluster_name, polar_disk_name, polar_hostid);
+
 	/* connection in replication mode to server */
 	conn = GetConnection();
 	if (!conn)
@@ -2504,7 +2732,11 @@ main(int argc, char **argv)
 	 * unless we are writing to stdout.
 	 */
 	if (format == 'p' || strcmp(basedir, "-") != 0)
-		verify_dir_is_empty_or_create(basedir, &made_new_pgdata, &found_existing_pgdata);
+	{
+		verify_dir_is_empty_or_create(basedir, &made_new_pgbase, &found_existing_pgdata, false);
+		if (is_polar_mode)
+			verify_dir_is_empty_or_create(datadir, &made_new_pgdata, &found_existing_poalrdata, is_pfs_mode);
+	}
 
 	/* determine remote server's xlog segment size */
 	if (!RetrieveWalSegSize(conn))
@@ -2515,7 +2747,7 @@ main(int argc, char **argv)
 	{
 		char	   *linkloc;
 
-		verify_dir_is_empty_or_create(xlog_dir, &made_new_xlogdir, &found_existing_xlogdir);
+		verify_dir_is_empty_or_create(xlog_dir, &made_new_xlogdir, &found_existing_xlogdir, is_pfs_mode);
 
 		/*
 		 * Form name of the place where the symlink must go. pg_xlog has been
@@ -2542,5 +2774,7 @@ main(int argc, char **argv)
 	BaseBackup();
 
 	success = true;
+
+	polar_fs_destory(is_pfs_mode, polar_disk_name, polar_hostid);
 	return 0;
 }

@@ -1,0 +1,4 @@
+comment = 'Test code for read core pattern function'
+default_version = '1.0'
+module_pathname = '$libdir/test_read_core_pattern'
+relocatable = true

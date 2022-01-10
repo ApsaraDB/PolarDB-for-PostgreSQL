@@ -367,6 +367,44 @@ convert_tuples_by_name_map(TupleDesc indesc,
  * Perform conversion of a tuple according to the map.
  */
 HeapTuple
+execute_attr_map_tuple(HeapTuple tuple, TupleConversionMap *map)
+{
+	AttrNumber *attrMap = map->attrMap;
+	Datum	   *invalues = map->invalues;
+	bool	   *inisnull = map->inisnull;
+	Datum	   *outvalues = map->outvalues;
+	bool	   *outisnull = map->outisnull;
+	int			outnatts = map->outdesc->natts;
+	int			i;
+
+	/*
+	 * Extract all the values of the old tuple, offsetting the arrays so that
+	 * invalues[0] is left NULL and invalues[1] is the first source attribute;
+	 * this exactly matches the numbering convention in attrMap.
+	 */
+	heap_deform_tuple(tuple, map->indesc, invalues + 1, inisnull + 1);
+
+	/*
+	 * Transpose into proper fields of the new tuple.
+	 */
+	for (i = 0; i < outnatts; i++)
+	{
+		int			j = attrMap[i];
+
+		outvalues[i] = invalues[j];
+		outisnull[i] = inisnull[j];
+	}
+
+	/*
+	 * Now form the new tuple.
+	 */
+	return heap_form_tuple(map->outdesc, outvalues, outisnull);
+}
+
+/*
+ * Perform conversion of a tuple according to the map.
+ */
+HeapTuple
 do_convert_tuple(HeapTuple tuple, TupleConversionMap *map)
 {
 	AttrNumber *attrMap = map->attrMap;

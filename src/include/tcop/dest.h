@@ -143,4 +143,8 @@ extern void EndCommand(const char *commandTag, CommandDest dest);
 extern void NullCommand(CommandDest dest);
 extern void ReadyForQuery(CommandDest dest);
 
+/* POLAR px */
+extern void sendPXDetails(void);
+/* POLAR end */
+
 #endif							/* DEST_H */

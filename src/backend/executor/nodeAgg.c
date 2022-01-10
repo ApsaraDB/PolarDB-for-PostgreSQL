@@ -233,6 +233,7 @@
 #include "parser/parse_coerce.h"
 #include "utils/acl.h"
 #include "utils/builtins.h"
+#include "utils/guc.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/syscache.h"
@@ -1499,6 +1500,7 @@ lookup_hash_entry(AggState *aggstate)
 			initialize_aggregate(aggstate, pertrans, pergroupstate);
 		}
 	}
+	polar_check_hash_table_size(polar_max_hashagg_mem, "HashAggregation", perhash->hashtable, NULL);
 
 	return entry;
 }
@@ -1750,7 +1752,8 @@ agg_retrieve_direct(AggState *aggstate)
 					 * Make a copy of the first input tuple; we will use this
 					 * for comparisons (in group mode) and for projection.
 					 */
-					aggstate->grp_firstTuple = ExecCopySlotTuple(outerslot);
+					/* POLAR px */
+					aggstate->grp_firstTuple = ExecCopySlotGenericTuple(outerslot);
 				}
 				else
 				{
@@ -1809,10 +1812,9 @@ agg_retrieve_direct(AggState *aggstate)
 				 * reserved for it.  The tuple will be deleted when it is
 				 * cleared from the slot.
 				 */
-				ExecStoreTuple(aggstate->grp_firstTuple,
-							   firstSlot,
-							   InvalidBuffer,
-							   true);
+				ExecStoreGenericTuple(aggstate->grp_firstTuple,
+									  firstSlot,
+									  true);
 				aggstate->grp_firstTuple = NULL;	/* don't keep two pointers */
 
 				/* set up for first advance_aggregates call */
@@ -1868,7 +1870,8 @@ agg_retrieve_direct(AggState *aggstate)
 						if (!ExecQual(aggstate->phase->eqfunctions[node->numCols - 1],
 									  tmpcontext))
 						{
-							aggstate->grp_firstTuple = ExecCopySlotTuple(outerslot);
+							/* POLAR px */
+							aggstate->grp_firstTuple = ExecCopySlotGenericTuple(outerslot);
 							break;
 						}
 					}
@@ -3445,7 +3448,7 @@ ExecReScanAgg(AggState *node)
 	/* Release first tuple of group, if we have made a copy */
 	if (node->grp_firstTuple != NULL)
 	{
-		heap_freetuple(node->grp_firstTuple);
+		heap_freetuple((HeapTuple)node->grp_firstTuple);
 		node->grp_firstTuple = NULL;
 	}
 	ExecClearTuple(node->ss.ss_ScanTupleSlot);

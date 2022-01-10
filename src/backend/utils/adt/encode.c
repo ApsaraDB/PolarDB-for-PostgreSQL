@@ -17,6 +17,9 @@
 
 #include "utils/builtins.h"
 
+/* POLAR */
+#include "access/xlog.h"
+
 
 struct pg_encoding
 {
@@ -560,3 +563,4 @@ pg_find_encoding(const char *name)
 
 	return NULL;
 }
+

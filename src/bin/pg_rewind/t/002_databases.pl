@@ -12,7 +12,7 @@ sub run_test
 {
 	my $test_mode = shift;
 
-	RewindTest::setup_cluster($test_mode, ['-g']);
+	RewindTest::setup_cluster($test_mode);
 	RewindTest::start_master();
 
 	# Create a database in master with a table.
@@ -60,7 +60,7 @@ template1
 		skip "unix-style permissions not supported on Windows", 1
 		  if ($windows_os);
 
-		ok(check_mode_recursive($node_master->data_dir(), 0750, 0640),
+		ok(check_mode_recursive($node_master->data_dir(), 0700, 0600),
 			'check PGDATA permissions');
 	}
 

@@ -4,6 +4,7 @@ CREATE EXTENSION pg_stat_statements;
 -- simple and compound statements
 --
 SET pg_stat_statements.track_utility = FALSE;
+SET pg_stat_statements.enable_superuser_track = ON;
 SELECT pg_stat_statements_reset();
 
 SELECT 1 AS "int";
@@ -192,6 +193,22 @@ DROP TABLE IF EXISTS test \;
 DROP TABLE IF EXISTS test \;
 DROP FUNCTION IF EXISTS PLUS_ONE(INTEGER);
 DROP FUNCTION PLUS_TWO(INTEGER);
+
+SELECT query, calls, rows FROM pg_stat_statements ORDER BY query COLLATE "C";
+
+/*
+ * POLAR: disable super user track
+ */
+SET pg_stat_statements.enable_superuser_track = FALSE;
+SELECT pg_stat_statements_reset();
+
+CREATE FUNCTION PLUS_ONE(i INTEGER) RETURNS INTEGER AS
+$$ SELECT (i + 1.0)::INTEGER LIMIT 1 $$ LANGUAGE SQL;
+
+SELECT PLUS_ONE(8);
+SELECT PLUS_ONE(10);
+
+DROP FUNCTION PLUS_ONE(INTEGER);
 
 SELECT query, calls, rows FROM pg_stat_statements ORDER BY query COLLATE "C";
 

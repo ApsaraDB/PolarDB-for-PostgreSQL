@@ -756,7 +756,7 @@ LogicalTapeRewindForRead(LogicalTapeSet *lts, int tapenum, size_t buffer_size)
 			 * once.  Tell valgrind that its contents are defined, so it
 			 * doesn't bleat.
 			 */
-			VALGRIND_MAKE_MEM_DEFINED(lt->buffer + lt->nbytes,
+			MEMDEBUG_MAKE_MEM_DEFINED(lt->buffer + lt->nbytes,
 									  lt->buffer_size - lt->nbytes);
 
 			TapeBlockSetNBytes(lt->buffer, lt->nbytes);
@@ -903,7 +903,7 @@ LogicalTapeFreeze(LogicalTapeSet *lts, int tapenum, TapeShare *share)
 		 * small amount of data that we do not fill the buffer even once. Tell
 		 * valgrind that its contents are defined, so it doesn't bleat.
 		 */
-		VALGRIND_MAKE_MEM_DEFINED(lt->buffer + lt->nbytes,
+		MEMDEBUG_MAKE_MEM_DEFINED(lt->buffer + lt->nbytes,
 								  lt->buffer_size - lt->nbytes);
 
 		TapeBlockSetNBytes(lt->buffer, lt->nbytes);

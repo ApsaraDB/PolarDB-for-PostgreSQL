@@ -1,0 +1,147 @@
+--
+-- SUBSCRIPTION
+--
+CREATE ROLE regress_subscription_user LOGIN SUPERUSER;
+ERROR:  cannot execute CREATE ROLE in a read-only transaction
+CREATE ROLE regress_subscription_user2;
+ERROR:  cannot execute CREATE ROLE in a read-only transaction
+CREATE ROLE regress_subscription_user_dummy LOGIN NOSUPERUSER;
+ERROR:  cannot execute CREATE ROLE in a read-only transaction
+SET SESSION AUTHORIZATION 'regress_subscription_user';
+-- fail - no publications
+CREATE SUBSCRIPTION testsub CONNECTION 'foo';
+ERROR:  syntax error at or near ";"
+LINE 1: CREATE SUBSCRIPTION testsub CONNECTION 'foo';
+                                                    ^
+-- fail - no connection
+CREATE SUBSCRIPTION testsub PUBLICATION foo;
+ERROR:  syntax error at or near "PUBLICATION"
+LINE 1: CREATE SUBSCRIPTION testsub PUBLICATION foo;
+                                    ^
+-- fail - cannot do CREATE SUBSCRIPTION CREATE SLOT inside transaction block
+BEGIN;
+CREATE SUBSCRIPTION testsub CONNECTION 'testconn' PUBLICATION testpub WITH (create_slot);
+ERROR:  cannot execute CREATE SUBSCRIPTION in a read-only transaction
+COMMIT;
+-- fail - invalid connection string
+CREATE SUBSCRIPTION testsub CONNECTION 'testconn' PUBLICATION testpub;
+ERROR:  cannot execute CREATE SUBSCRIPTION in a read-only transaction
+-- fail - duplicate publications
+CREATE SUBSCRIPTION testsub CONNECTION 'dbname=doesnotexist' PUBLICATION foo, testpub, foo WITH (connect = false);
+ERROR:  cannot execute CREATE SUBSCRIPTION in a read-only transaction
+-- ok
+CREATE SUBSCRIPTION testsub CONNECTION 'dbname=doesnotexist' PUBLICATION testpub WITH (connect = false);
+ERROR:  cannot execute CREATE SUBSCRIPTION in a read-only transaction
+COMMENT ON SUBSCRIPTION testsub IS 'test subscription';
+ERROR:  cannot execute COMMENT in a read-only transaction
+SELECT obj_description(s.oid, 'pg_subscription') FROM pg_subscription s;
+  obj_description  
+-------------------
+ test subscription
+(1 row)
+
+-- fail - name already exists
+CREATE SUBSCRIPTION testsub CONNECTION 'dbname=doesnotexist' PUBLICATION testpub WITH (connect = false);
+ERROR:  cannot execute CREATE SUBSCRIPTION in a read-only transaction
+-- fail - must be superuser
+SET SESSION AUTHORIZATION 'regress_subscription_user2';
+CREATE SUBSCRIPTION testsub2 CONNECTION 'dbname=doesnotexist' PUBLICATION foo WITH (connect = false);
+ERROR:  cannot execute CREATE SUBSCRIPTION in a read-only transaction
+SET SESSION AUTHORIZATION 'regress_subscription_user';
+-- fail - invalid option combinations
+CREATE SUBSCRIPTION testsub2 CONNECTION 'dbname=doesnotexist' PUBLICATION testpub WITH (connect = false, copy_data = true);
+ERROR:  cannot execute CREATE SUBSCRIPTION in a read-only transaction
+CREATE SUBSCRIPTION testsub2 CONNECTION 'dbname=doesnotexist' PUBLICATION testpub WITH (connect = false, enabled = true);
+ERROR:  cannot execute CREATE SUBSCRIPTION in a read-only transaction
+CREATE SUBSCRIPTION testsub2 CONNECTION 'dbname=doesnotexist' PUBLICATION testpub WITH (connect = false, create_slot = true);
+ERROR:  cannot execute CREATE SUBSCRIPTION in a read-only transaction
+CREATE SUBSCRIPTION testsub2 CONNECTION 'dbname=doesnotexist' PUBLICATION testpub WITH (slot_name = NONE, enabled = true);
+ERROR:  cannot execute CREATE SUBSCRIPTION in a read-only transaction
+CREATE SUBSCRIPTION testsub2 CONNECTION 'dbname=doesnotexist' PUBLICATION testpub WITH (slot_name = NONE, create_slot = true);
+ERROR:  cannot execute CREATE SUBSCRIPTION in a read-only transaction
+CREATE SUBSCRIPTION testsub2 CONNECTION 'dbname=doesnotexist' PUBLICATION testpub WITH (slot_name = NONE);
+ERROR:  cannot execute CREATE SUBSCRIPTION in a read-only transaction
+CREATE SUBSCRIPTION testsub2 CONNECTION 'dbname=doesnotexist' PUBLICATION testpub WITH (slot_name = NONE, enabled = false);
+ERROR:  cannot execute CREATE SUBSCRIPTION in a read-only transaction
+CREATE SUBSCRIPTION testsub2 CONNECTION 'dbname=doesnotexist' PUBLICATION testpub WITH (slot_name = NONE, create_slot = false);
+ERROR:  cannot execute CREATE SUBSCRIPTION in a read-only transaction
+-- ok - with slot_name = NONE
+CREATE SUBSCRIPTION testsub3 CONNECTION 'dbname=doesnotexist' PUBLICATION testpub WITH (slot_name = NONE, connect = false);
+ERROR:  cannot execute CREATE SUBSCRIPTION in a read-only transaction
+-- fail
+ALTER SUBSCRIPTION testsub3 ENABLE;
+ERROR:  cannot execute ALTER SUBSCRIPTION in a read-only transaction
+ALTER SUBSCRIPTION testsub3 REFRESH PUBLICATION;
+ERROR:  cannot execute ALTER SUBSCRIPTION in a read-only transaction
+DROP SUBSCRIPTION testsub3;
+ERROR:  cannot execute DROP SUBSCRIPTION in a read-only transaction
+-- fail - invalid connection string
+ALTER SUBSCRIPTION testsub CONNECTION 'foobar';
+ERROR:  cannot execute ALTER SUBSCRIPTION in a read-only transaction
+\dRs+
+ALTER SUBSCRIPTION testsub SET PUBLICATION testpub2, testpub3 WITH (refresh = false);
+ERROR:  cannot execute ALTER SUBSCRIPTION in a read-only transaction
+ALTER SUBSCRIPTION testsub CONNECTION 'dbname=doesnotexist2';
+ERROR:  cannot execute ALTER SUBSCRIPTION in a read-only transaction
+ALTER SUBSCRIPTION testsub SET (slot_name = 'newname');
+ERROR:  cannot execute ALTER SUBSCRIPTION in a read-only transaction
+-- fail
+ALTER SUBSCRIPTION doesnotexist CONNECTION 'dbname=doesnotexist2';
+ERROR:  cannot execute ALTER SUBSCRIPTION in a read-only transaction
+ALTER SUBSCRIPTION testsub SET (create_slot = false);
+ERROR:  cannot execute ALTER SUBSCRIPTION in a read-only transaction
+\dRs+
+BEGIN;
+ALTER SUBSCRIPTION testsub ENABLE;
+ERROR:  cannot execute ALTER SUBSCRIPTION in a read-only transaction
+\dRs
+ALTER SUBSCRIPTION testsub DISABLE;
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
+\dRs
+COMMIT;
+-- fail - must be owner of subscription
+SET ROLE regress_subscription_user_dummy;
+ALTER SUBSCRIPTION testsub RENAME TO testsub_dummy;
+ERROR:  cannot execute ALTER SUBSCRIPTION in a read-only transaction
+RESET ROLE;
+ALTER SUBSCRIPTION testsub RENAME TO testsub_foo;
+ERROR:  cannot execute ALTER SUBSCRIPTION in a read-only transaction
+ALTER SUBSCRIPTION testsub_foo SET (synchronous_commit = local);
+ERROR:  cannot execute ALTER SUBSCRIPTION in a read-only transaction
+ALTER SUBSCRIPTION testsub_foo SET (synchronous_commit = foobar);
+ERROR:  cannot execute ALTER SUBSCRIPTION in a read-only transaction
+\dRs+
+-- rename back to keep the rest simple
+ALTER SUBSCRIPTION testsub_foo RENAME TO testsub;
+ERROR:  cannot execute ALTER SUBSCRIPTION in a read-only transaction
+-- fail - new owner must be superuser
+ALTER SUBSCRIPTION testsub OWNER TO regress_subscription_user2;
+ERROR:  cannot execute ALTER SUBSCRIPTION in a read-only transaction
+ALTER ROLE regress_subscription_user2 SUPERUSER;
+ERROR:  cannot execute ALTER ROLE in a read-only transaction
+-- now it works
+ALTER SUBSCRIPTION testsub OWNER TO regress_subscription_user2;
+ERROR:  cannot execute ALTER SUBSCRIPTION in a read-only transaction
+-- fail - cannot do DROP SUBSCRIPTION inside transaction block with slot name
+BEGIN;
+DROP SUBSCRIPTION testsub;
+ERROR:  cannot execute DROP SUBSCRIPTION in a read-only transaction
+COMMIT;
+ALTER SUBSCRIPTION testsub SET (slot_name = NONE);
+ERROR:  cannot execute ALTER SUBSCRIPTION in a read-only transaction
+-- now it works
+BEGIN;
+DROP SUBSCRIPTION testsub;
+ERROR:  cannot execute DROP SUBSCRIPTION in a read-only transaction
+COMMIT;
+DROP SUBSCRIPTION IF EXISTS testsub;
+ERROR:  cannot execute DROP SUBSCRIPTION in a read-only transaction
+DROP SUBSCRIPTION testsub;  -- fail
+ERROR:  cannot execute DROP SUBSCRIPTION in a read-only transaction
+RESET SESSION AUTHORIZATION;
+DROP ROLE regress_subscription_user;
+ERROR:  cannot execute DROP ROLE in a read-only transaction
+DROP ROLE regress_subscription_user2;
+ERROR:  cannot execute DROP ROLE in a read-only transaction
+DROP ROLE regress_subscription_user_dummy;
+ERROR:  cannot execute DROP ROLE in a read-only transaction

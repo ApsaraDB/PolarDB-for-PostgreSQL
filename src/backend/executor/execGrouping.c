@@ -18,10 +18,13 @@
  */
 #include "postgres.h"
 
+#include <math.h>
+
 #include "access/hash.h"
 #include "access/parallel.h"
 #include "executor/executor.h"
 #include "miscadmin.h"
+#include "utils/guc.h"
 #include "utils/lsyscache.h"
 #include "utils/hashutils.h"
 #include "utils/memutils.h"
@@ -473,4 +476,44 @@ TupleHashTableMatch(struct tuplehash_hash *tb, const MinimalTuple tuple1, const 
 	econtext->ecxt_innertuple = slot2;
 	econtext->ecxt_outertuple = slot1;
 	return !ExecQualAndReset(hashtable->cur_eq_func, econtext);
+}
+
+/*
+ * POLAR: check if all the hashtable memory usage is less than max_size(in KB),
+ * the last parameter should be NULL. 0 means no limit.
+ */
+void
+polar_check_hash_table_size_extend(int max_size, const char *guc_name, const char *msg, TupleHashTable hashtable, ...)
+{
+	va_list	valist;
+	Size	total_size = 0;
+
+	if (!polar_enable_operator_mem_limit)
+		return;
+
+	if (max_size == 0)
+	{
+		/* limit memory by level */
+		if (polar_enable_operator_mem_limit_by_level && polar_max_non_super_conns > 200)
+			max_size = polar_instance_spec_normal_mem * 1024 / (log((float)polar_max_non_super_conns / 200) * 4);
+		/* if it's still 0, means no limit, just return */
+		if (max_size == 0)
+			return;
+	}
+
+	va_start(valist, hashtable);
+	while (hashtable != NULL)
+	{
+		total_size += MemoryContextMemAllocated(hashtable->tablecxt, true) +
+					  MemoryContextMemAllocated(hashtable->tempcxt, true);
+		hashtable = va_arg(valist, TupleHashTable);
+	}
+	va_end(valist);
+
+	if (total_size > (long)max_size * 1024)
+		ereport(ERROR,
+				(errcode(ERRCODE_OUT_OF_MEMORY),
+				 errmsg("out of memory"),
+				 errdetail("Too much memory usage in %s, max: %d kB, please adjust %s to enlarge memory limit",
+						   msg, max_size, guc_name)));
 }

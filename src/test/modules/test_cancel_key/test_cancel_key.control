@@ -1,0 +1,4 @@
+comment = 'Test code for cancel key feature'
+default_version = '1.0'
+module_pathname = '$libdir/test_cancel_key'
+relocatable = true

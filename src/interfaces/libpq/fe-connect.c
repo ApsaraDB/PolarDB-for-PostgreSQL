@@ -75,6 +75,11 @@ static int ldapServiceLookup(const char *purl, PQconninfoOption *options,
 #include "mb/pg_wchar.h"
 #include "port/pg_bswap.h"
 
+/* POLAR */
+#include <openssl/aes.h>
+#include <openssl/evp.h>
+#include "common/base64.h"
+
 
 #ifndef WIN32
 #define PGPASSFILE ".pgpass"
@@ -203,6 +208,11 @@ static const internalPQconninfoOption PQconninfoOptions[] = {
 		"Database-Password-File", "", 64,
 	offsetof(struct pg_conn, pgpassfile)},
 
+	/* POLAR: encrypt password */
+	{"encrypted_password", NULL, NULL, NULL,
+		"Database-Password", "*", 20, -1},
+	/* POLAR end */
+
 	{"connect_timeout", "PGCONNECT_TIMEOUT", NULL, NULL,
 		"Connect-timeout", "", 10,	/* strlen(INT32_MAX) == 10 */
 	offsetof(struct pg_conn, connect_timeout)},
@@ -319,6 +329,17 @@ static const internalPQconninfoOption PQconninfoOptions[] = {
 		DefaultTargetSessionAttrs, NULL,
 		"Target-Session-Attrs", "", 11, /* sizeof("read-write") = 11 */
 	offsetof(struct pg_conn, target_session_attrs)},
+
+	/*
+	 * POLAR px: PX wants some info from QC before GUCs are processed.
+	 */
+	{"pxid", NULL, "", NULL,
+	 "px-debug-pxid", "D", 40,
+	 offsetof(struct pg_conn, pxid)},
+
+	{PXCONN_TYPE, NULL, NULL, NULL,
+	 "connection type", "D", 10,
+	 offsetof(struct pg_conn, pxconntype)},
 
 	/* Terminating entry --- MUST BE LAST */
 	{NULL, NULL, NULL, NULL,
@@ -3606,12 +3627,16 @@ freePGconn(PGconn *conn)
 		free(conn->krbsrvname);
 	if (conn->gsslib)
 		free(conn->gsslib);
+	/* POLAR px */
+	if (conn->pxid)
+		free(conn->pxid);
 	/* Note that conn->Pfdebug is not ours to close or free */
 	if (conn->last_query)
 		free(conn->last_query);
 	if (conn->inBuffer)
 		free(conn->inBuffer);
-	if (conn->outBuffer)
+	/* POLAR px */
+	if (conn->outBuffer && !conn->outBuffer_shared)
 		free(conn->outBuffer);
 	if (conn->rowBuf)
 		free(conn->rowBuf);
@@ -6695,3 +6720,4 @@ PQregisterThreadLock(pgthreadlock_t newhandler)
 
 	return prev;
 }
+

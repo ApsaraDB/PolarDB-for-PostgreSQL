@@ -54,7 +54,8 @@ static void reportErrorPosition(PQExpBuffer msg, const char *query,
 					int loc, int encoding);
 static int build_startup_packet(const PGconn *conn, char *packet,
 					 const PQEnvironmentOption *options);
-
+/* POLAR px */
+static void savePxStatMsg(PGresult *result, char *data, int len);
 
 /*
  * parseInput: if appropriate, parse input data from backend
@@ -405,6 +406,73 @@ pqParseInput3(PGconn *conn)
 					 * the COPY command.
 					 */
 					break;
+				case 'Y':
+					/* POLAR px: statistical response from PX to QC */
+					/* for certain queries, the stats may arrive
+					 * before the completion status -- for this case
+					 * we're responsible for allocating the result
+					 * struct */
+					if (conn->result == NULL)
+						conn->result = PQmakeEmptyPGresult(conn, PGRES_COMMAND_OK);
+					if (conn->result)
+						savePxStatMsg(conn->result,
+									   conn->inBuffer + conn->inCursor,
+									   msgLength);
+					conn->inCursor += msgLength;
+					break;
+					/* Polar end */
+#ifndef FRONTEND
+				case 'j':
+					/*
+					 * PX COPY reports number of rejected rows to the QC COPY
+					 * in single row error handling mode.
+					 */
+					if (conn->result == NULL)
+					{
+						conn->result = PQmakeEmptyPGresult(conn, PGRES_COMMAND_OK);
+						if (!conn->result)
+							return;
+					}
+
+					if (pqGetInt64(&numRejected, conn))
+						return;
+
+					conn->result->numRejected += numRejected;
+
+					/* Optionally receive completed number when COPY FROM ON SEGMENT */
+					if (msgLength >= 12 && !pqGetInt64(&numCompleted, conn))
+					{
+						conn->result->numCompleted += numCompleted;
+					}
+
+					break;
+				case 'y':
+					/*
+					 * POLAR px: for gang management and stats collection for Vacuum/Analyze
+					 * commands.
+					 */
+					if (pqGets(&conn->workBuffer, conn))
+						return;
+					if (conn->result == NULL)
+					{
+						conn->result = PQmakeEmptyPGresult(conn,
+														   PGRES_COMMAND_OK);
+						if (!conn->result)
+							return;
+					}
+					strlcpy(conn->result->cmdStatus, conn->workBuffer.data,
+							CMDSTATUS_LEN);
+
+					if (pqGetInt(&conn->result->extraslen, 4, conn))
+						return;
+					conn->result->extras = malloc(conn->result->extraslen);
+					if (pqGetnchar((char *)conn->result->extras, conn->result->extraslen, conn))
+						return;
+					conn->asyncStatus = PGASYNC_READY;
+
+					break;
+#endif
+
 				default:
 					printfPQExpBuffer(&conn->errorMessage,
 									  libpq_gettext(
@@ -951,6 +1019,29 @@ pqGetErrorNotice3(PGconn *conn, bool isError)
 	{
 		if (res)
 			res->errMsg = pqResultStrdup(res, workBuf.data);
+
+		/* POLAR px: Transfer statistical messages on to the new result. */
+		if (conn->result &&
+		    conn->result->pxstats)
+		{
+			pgPxStatCell  *cell;
+			pgPxStatCell  *next;
+			pgPxStatCell  *prev = NULL;
+
+			/* Copy messages (incidentally reversing the list). */
+			for (cell = conn->result->pxstats; cell; cell = cell->next)
+				savePxStatMsg(res, cell->data, cell->len);
+
+			/* Reverse the list again to restore newest-first ordering. */
+			for (cell = res->pxstats; cell; cell = next)
+			{
+				next = cell->next;
+				cell->next = prev;
+				prev = cell;
+			}
+			res->pxstats = prev;
+		}
+
 		pqClearAsyncResult(conn);	/* redundant, but be safe */
 		conn->result = res;
 		if (PQExpBufferDataBroken(workBuf))
@@ -2179,6 +2270,9 @@ build_startup_packet(const PGconn *conn, char *packet,
 		ADD_STARTUP_OPTION("database", conn->dbName);
 	if (conn->replication && conn->replication[0])
 		ADD_STARTUP_OPTION("replication", conn->replication);
+	/* POLAR px */
+	if (conn->pxconntype && conn->pxconntype[0])
+		ADD_STARTUP_OPTION(PXCONN_TYPE, conn->pxconntype);
 	if (conn->pgoptions && conn->pgoptions[0])
 		ADD_STARTUP_OPTION("options", conn->pgoptions);
 	if (conn->send_appname)
@@ -2191,6 +2285,10 @@ build_startup_packet(const PGconn *conn, char *packet,
 
 	if (conn->client_encoding_initial && conn->client_encoding_initial[0])
 		ADD_STARTUP_OPTION("client_encoding", conn->client_encoding_initial);
+
+	/* POLAR px: Add PX startup data */
+	if (conn->pxid && conn->pxid[0])
+		ADD_STARTUP_OPTION("pxid", conn->pxid);
 
 	/* Add any environment-driven GUC settings needed */
 	for (next_eo = options; next_eo->envName; next_eo++)
@@ -2209,3 +2307,31 @@ build_startup_packet(const PGconn *conn, char *packet,
 
 	return packet_len;
 }
+
+/*
+ * POLAR px: savePxStatMsg - attach PX statistics message to PGresult
+ */
+static void
+savePxStatMsg(PGresult *result, char *data, int len)
+{
+    pgPxStatCell  *cell;
+
+    /* Allocate list element. */
+    cell = pqResultAlloc(result, sizeof(*cell), true);
+    if (!cell)
+        return;
+
+    /* Allocate an aligned buffer from the PGresult's memory pool. */
+    cell->data = (char *)pqResultAlloc(result, len, true);
+    if (!cell->data)
+        return;
+
+    /* Copy the message data. */
+    cell->len = len;
+	memcpy(cell->data, data, len);
+
+    /* Add to head of list. */
+    cell->next = result->pxstats;
+    result->pxstats = cell;
+    return;
+}                               /* savePxStatMsg */

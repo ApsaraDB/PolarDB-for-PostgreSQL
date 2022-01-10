@@ -1,0 +1,2 @@
+test: test_cancel_key
+test: test_cancel_key_a test_cancel_key_b test_cancel_key_c

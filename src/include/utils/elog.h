@@ -182,6 +182,10 @@ extern int	geterrcode(void);
 extern int	geterrposition(void);
 extern int	getinternalerrposition(void);
 
+/* POLAR */
+extern int	polar_mark_audit_log(bool is_audit_log);
+extern int  polar_mark_slow_log(bool is_slow_log);
+extern int	polar_mark_needs_mask(bool needs_mask);
 
 /*----------
  * Old-style error reporting API: to be used in this way:
@@ -356,6 +360,13 @@ typedef struct ErrorData
 	char	   *internalquery;	/* text of internally-generated query */
 	int			saved_errno;	/* errno at entry */
 
+	/* POLAR */
+	bool		is_audit_log;	/* true for audit log */
+	bool 		is_slow_log;	/* true for slow log */
+	bool		needs_mask;		/* Has password ? */
+	char	   *backtrace;		/* backtrace */
+	/* POLAR end */
+
 	/* context containing associated non-constant strings */
 	struct MemoryContextData *assoc_context;
 } ErrorData;
@@ -396,6 +407,21 @@ extern bool syslog_split_messages;
 #define LOG_DESTINATION_SYSLOG	 2
 #define LOG_DESTINATION_EVENTLOG 4
 #define LOG_DESTINATION_CSVLOG	 8
+/* POLAR */
+#define LOG_DESTINATION_POLAR_AUDITLOG 64
+#define LOG_DESTINATION_POLAR_SLOWLOG  128
+
+/* log file suffix */
+#define AUDITLOG_SUFFIX			"_audit.log"
+#define SLOWLOG_SUFFIX			"_slow.log"
+#define SYSLOG_SUFFIX			"_error.log"
+
+/* define pipe chunk flag */
+#define AUDITLOG_CHUNK			'a'
+#define AUDITLOG_LAST_CHUNK		'A'
+#define SLOWLOG_CHUNK			's'
+#define SLOWLOG_LAST_CHUNK		'S'
+/* POLAR end */
 
 /* Other exported functions */
 extern void DebugFileOpen(void);
@@ -412,5 +438,61 @@ extern void set_syslog_parameters(const char *ident, int facility);
  * safely (memory context, GUC load etc)
  */
 extern void write_stderr(const char *fmt,...) pg_attribute_printf(1, 2);
+
+/* POLAR */
+#define POLAR_ERROR_DATA_INIT_FOR_AUDITLOG(edata)			\
+	do														\
+	{														\
+				MemSet(&edata, 0, sizeof(ErrorData));		\
+				edata.elevel = LOG;							\
+				edata.is_audit_log = true;					\
+				edata.hide_stmt = true;						\
+				edata.output_to_server = true;				\
+				edata.message = NULL;						\
+				edata.needs_mask = false;					\
+	} while (0)
+
+extern int64 polar_last_audit_log_flush_time;
+extern void polar_write_audit_log(ErrorData *edata, const char *fmt, ...) pg_attribute_printf(2, 3);
+extern void polar_audit_log_flush(void);
+extern bool polar_audit_log_buffer_is_null(void);
+/* POLAR end */
+
+/*
+ * Insist(assertion)
+ *
+ * Returns true if assertion is true; else issues a generic internal
+ * error message and exits to the closest enclosing PG_TRY block via
+ * plain old ereport(ERROR, (errcode(ERRCODE_INTERNAL_ERROR), ...)).
+ *
+ ** Use instead of Assert() for internal errors that should always be checked
+ *  even in release builds; and to suppress warnings (such as uninitialized
+ *  variables) along paths that should never be executed (eg. switch defaults).
+ ** Use instead of ExceptionalCondition() for internal errors that are not
+ *  so severe as to necessitate aborting the process, where ordinary error
+ *  handling should suffice.
+ ** Use when elog()/ereport() is just not worth it because no user would
+ *  ever see the nice customized message that you would otherwise code up
+ *  for that weird case that should never happen.
+ */
+/*
+ * TODO  Why aren't we passing the text of the assertion to px_elog_internalerror?
+ * How is anybody supposed to know what was wrong?
+ */
+#define Insist(assertion) \
+	do {				  \
+		if (!(assertion))										   \
+			px_elog_internalerror(__FILE__, __LINE__, PG_FUNCNAME_MACRO);	\
+	} while(0)
+void px_elog_internalerror(const char *filename, int lineno, const char *funcname)
+						pg_attribute_noreturn();
+
+extern int	px_elog_geterrcode(void);
+extern int	px_sqlstate_to_errcode(const char *sqlstate);
+extern char *elog_message(void);
+extern ErrorData *px_errfinish_and_return(int dummy,...);
+void px_elog_internalerror(const char *filename, int lineno, const char *funcname)
+						pg_attribute_noreturn();
+extern pg_noinline void set_backtrace(ErrorData *edata, int num_skip);
 
 #endif							/* ELOG_H */

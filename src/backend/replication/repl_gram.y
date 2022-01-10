@@ -81,6 +81,7 @@ static SQLCmd *make_sqlcmd(void);
 %token K_TIMELINE
 %token K_PHYSICAL
 %token K_ONPOLARDB
+%token K_POLAR_VERSION
 %token K_LOGICAL
 %token K_SLOT
 %token K_RESERVE_WAL
@@ -88,6 +89,7 @@ static SQLCmd *make_sqlcmd(void);
 %token K_EXPORT_SNAPSHOT
 %token K_NOEXPORT_SNAPSHOT
 %token K_USE_SNAPSHOT
+%token K_POLAR_REPL_MODE
 
 %type <node>	command
 %type <node>	base_backup start_replication start_logical_replication
@@ -102,6 +104,8 @@ static SQLCmd *make_sqlcmd(void);
 %type <str>		opt_slot var_name
 %type <boolval>	opt_temporary
 %type <boolval>	opt_onpolardb
+%type <uintval> opt_polar_version
+%type <uintval>	opt_polar_repl_mode
 %type <list>	create_slot_opt_list
 %type <defelt>	create_slot_opt
 
@@ -295,10 +299,10 @@ drop_replication_slot:
 			;
 
 /*
- * START_REPLICATION [SLOT slot] [PHYSICAL] %X/%X [TIMELINE %d] [opt_onpolardb]
+ * START_REPLICATION [SLOT slot] [PHYSICAL] %X/%X [TIMELINE %d] [ONPOLARDB] [POLAR_VERSION version] [POLAR_MODE mode]
  */
 start_replication:
-			K_START_REPLICATION opt_slot opt_physical RECPTR opt_timeline opt_onpolardb
+			K_START_REPLICATION opt_slot opt_physical RECPTR opt_timeline opt_onpolardb opt_polar_version opt_polar_repl_mode
 				{
 					StartReplicationCmd *cmd;
 
@@ -307,7 +311,11 @@ start_replication:
 					cmd->slotname = $2;
 					cmd->startpoint = $4;
 					cmd->timeline = $5;
-					cmd->polar_replica = $6;
+					if ($6)
+						cmd->polar_repl_mode = POLAR_REPL_REPLICA;
+					else
+						cmd->polar_repl_mode = $8;
+					cmd->polar_version = $7;
 					$$ = (Node *) cmd;
 				}
 			;
@@ -354,6 +362,35 @@ opt_onpolardb:
             K_ONPOLARDB					   { $$ = true; }
             | /* EMPTY */                   { $$ = false; }
             ;                               
+
+opt_polar_version:
+		 	K_POLAR_VERSION UCONST				{ $$ = $2; }
+			| /* EMPTY */					{ $$ = 0; }
+			;
+
+opt_polar_repl_mode:
+	      		K_POLAR_REPL_MODE IDENT
+				{ 
+					if (strcmp($2, "default") == 0)
+						$$ = POLAR_REPL_DEFAULT;
+					else if (strcmp($2, "replica") == 0)
+						$$ = POLAR_REPL_REPLICA;
+					else if (strcmp($2, "standby") == 0)
+						$$ = POLAR_REPL_STANDBY;
+					else if (strcmp($2, "standalone_datamax") == 0)
+						$$ = POLAR_REPL_SA_DATAMAX;
+					else if (strcmp($2, "dma_data") == 0)
+						$$ = POLAR_REPL_DMA_DATA;
+					else if (strcmp($2, "dma_logger") == 0)
+						$$ = POLAR_REPL_DMA_LOGGER;
+					else
+						ereport(ERROR,
+							(errcode(ERRCODE_SYNTAX_ERROR),
+							 errmsg("unrecognized polar_repl_mode option \"%s\"", $2)));
+				}
+			| /* EMPTY */
+				{ $$ = POLAR_REPL_DEFAULT; }
+			;
 
 opt_temporary:
 			K_TEMPORARY						{ $$ = true; }

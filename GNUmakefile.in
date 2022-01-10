@@ -45,7 +45,7 @@ $(call recurse,distprep coverage,doc src config contrib)
 
 # clean, distclean, etc should apply to contrib too, even though
 # it's not built by default
-$(call recurse,clean,doc contrib src config)
+$(call recurse,clean,doc external contrib src config)
 clean:
 	rm -rf tmp_install/
 # Garbage from autoconf:
@@ -55,7 +55,9 @@ clean:
 # will be gone too soon.
 distclean maintainer-clean:
 	$(MAKE) -C doc $@
-	$(MAKE) -C external $@
+# POLAR	polar added extension
+	$(MAKE) -C external distclean
+# POLAR end	
 	$(MAKE) -C contrib $@
 	$(MAKE) -C config $@
 	$(MAKE) -C src $@
@@ -65,14 +67,20 @@ distclean maintainer-clean:
 	rm -f config.cache config.log config.status GNUmakefile
 
 check-tests: | temp-install
-check check-tests installcheck installcheck-parallel installcheck-tests: CHECKPREP_TOP=src/test/regress
-check check-tests installcheck installcheck-parallel installcheck-tests: submake-generated-headers
+check check-tests installcheck installcheck-parallel installcheck-tests polar-check polar-installcheck polar-installcheck-px quick-installcheck quick-installcheck-px: CHECKPREP_TOP=src/test/regress
+check check-tests installcheck installcheck-parallel installcheck-tests polar-check polar-installcheck polar-installcheck-px quick-installcheck quick-installcheck-px: submake-generated-headers
 	$(MAKE) -C src/test/regress $@
 
-$(call recurse,check-world,src/test src/pl src/interfaces/ecpg contrib src/bin,check)
+# Polar for polardb_build.sh
+$(call recurse,check-world,src/test src/pl contrib external,check)
 $(call recurse,checkprep,  src/test src/pl src/interfaces/ecpg contrib src/bin)
 
-$(call recurse,installcheck-world,src/test src/pl src/interfaces/ecpg contrib src/bin,installcheck)
+# Polar for polardb_build.sh
+$(call recurse,installcheck-world,src/test src/pl contrib external,installcheck)
+px-regress-file=src/test/authentication src/test/encryption src/test/isolation src/test/kerberos src/test/ldap src/test/locale/
+px-regress-file+=src/test/mb src/test/modules/ src/test/polar_px src/test/polar_pl src/test/riority_replication
+px-regress-file+=src/test/python src/test/recovery src/test/rename_wal_ready_file src/test/ssl src/test/subscription src/test/thread
+$(call recurse,installcheck-world-px,$(px-regress-file) src/pl src/interfaces/ecpg contrib external,installcheck)
 $(call recurse,install-tests,src/test/regress,install-tests)
 
 GNUmakefile: GNUmakefile.in $(top_builddir)/config.status

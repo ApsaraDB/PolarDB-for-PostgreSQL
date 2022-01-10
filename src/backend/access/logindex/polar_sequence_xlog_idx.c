@@ -14,8 +14,7 @@
 #include "postgres.h"
 
 #include "access/bufmask.h"
-#include "access/polar_logindex.h"
-#include "access/polar_logindex_internal.h"
+#include "access/polar_logindex_redo.h"
 #include "access/xlogutils.h"
 #include "access/xlog_internal.h"
 #include "commands/sequence.h"
@@ -24,14 +23,14 @@
 static XLogRedoAction
 polar_seq_xlog_redo(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 {
-	XLogRecPtr	lsn = record->EndRecPtr;
-	Page		page;
-	Page		localpage;
-	char	   *item;
-	Size		itemsz;
+	XLogRecPtr  lsn = record->EndRecPtr;
+	Page        page;
+	Page        localpage;
+	char       *item;
+	Size        itemsz;
 	xl_seq_rec *xlrec = (xl_seq_rec *) XLogRecGetData(record);
 	sequence_magic *sm;
-	BufferTag	tag0;
+	BufferTag   tag0;
 
 	POLAR_GET_LOG_TAG(record, tag0, 0);
 
@@ -75,14 +74,14 @@ polar_seq_xlog_redo(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 }
 
 void
-polar_seq_idx_save(XLogReaderState *record)
+polar_seq_idx_save(polar_logindex_redo_ctl_t instance, XLogReaderState *record)
 {
-	uint8		info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
+	uint8       info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
 
 	switch (info)
 	{
 		case XLOG_SEQ_LOG:
-			polar_log_index_save_block(record, 0);
+			polar_logindex_save_block(instance, record, 0);
 			break;
 
 		default:
@@ -92,9 +91,9 @@ polar_seq_idx_save(XLogReaderState *record)
 }
 
 bool
-polar_seq_idx_parse(XLogReaderState *record)
+polar_seq_idx_parse(polar_logindex_redo_ctl_t instance, XLogReaderState *record)
 {
-	uint8		info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
+	uint8       info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
 
 	/*
 	 * These operations don't overwrite MVCC data so no conflict processing is
@@ -104,7 +103,7 @@ polar_seq_idx_parse(XLogReaderState *record)
 	switch (info)
 	{
 		case XLOG_SEQ_LOG:
-			polar_log_index_redo_parse(record, 0);
+			polar_logindex_redo_parse(instance, record, 0);
 			break;
 
 		default:
@@ -116,9 +115,9 @@ polar_seq_idx_parse(XLogReaderState *record)
 }
 
 XLogRedoAction
-polar_seq_idx_redo(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
+polar_seq_idx_redo(polar_logindex_redo_ctl_t instance, XLogReaderState *record,  BufferTag *tag, Buffer *buffer)
 {
-	uint8		info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
+	uint8       info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
 
 	/*
 	 * These operations don't overwrite MVCC data so no conflict processing is

@@ -1,0 +1,16 @@
+set client_min_messages = error;
+alter system set polar_flashback_log_debug=on;
+select * from pg_reload_conf();
+ pg_reload_conf 
+----------------
+ t
+(1 row)
+
+CREATE EXTENSION if not exists test_flashback_log ;
+checkpoint;
+SELECT test_flashback_log();
+ test_flashback_log 
+--------------------
+ 
+(1 row)
+

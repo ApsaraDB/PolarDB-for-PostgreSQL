@@ -292,6 +292,10 @@ _equalFuncExpr(const FuncExpr *a, const FuncExpr *b)
 	COMPARE_NODE_FIELD(args);
 	COMPARE_LOCATION_FIELD(location);
 
+	/* POALR px */
+	COMPARE_SCALAR_FIELD(isGlobalFunc);
+	/* POLAR end */
+
 	return true;
 }
 
@@ -1724,10 +1728,30 @@ _equalReplicaIdentityStmt(const ReplicaIdentityStmt *a, const ReplicaIdentityStm
 	return true;
 }
 
+/*
+ * POLAR: DMA Command Statement 
+ */
+static bool
+_equalPolarDMACommandStmt(const PolarDMACommandStmt *a, const PolarDMACommandStmt *b)
+{
+	COMPARE_SCALAR_FIELD(kind);
+	COMPARE_STRING_FIELD(node);
+	COMPARE_SCALAR_FIELD(weight);
+	COMPARE_SCALAR_FIELD(matchindex);
+	COMPARE_SCALAR_FIELD(purgeindex);
+	COMPARE_SCALAR_FIELD(clusterid);
+
+	return true;
+}
+/* POLAR end */
+
 static bool
 _equalAlterSystemStmt(const AlterSystemStmt *a, const AlterSystemStmt *b)
 {
 	COMPARE_NODE_FIELD(setstmt);
+	/* POLAR: DMA Command Statement */
+	COMPARE_NODE_FIELD(dma_stmt);
+	/* POLAR end */
 
 	return true;
 }
@@ -2790,6 +2814,7 @@ _equalCommonTableExpr(const CommonTableExpr *a, const CommonTableExpr *b)
 {
 	COMPARE_STRING_FIELD(ctename);
 	COMPARE_NODE_FIELD(aliascolnames);
+	COMPARE_SCALAR_FIELD(ctematerialized);
 	COMPARE_NODE_FIELD(ctequery);
 	COMPARE_LOCATION_FIELD(location);
 	COMPARE_SCALAR_FIELD(cterecursive);
@@ -3401,6 +3426,9 @@ equal(const void *a, const void *b)
 			break;
 		case T_ReplicaIdentityStmt:
 			retval = _equalReplicaIdentityStmt(a, b);
+			break;
+		case T_PolarDMACommandStmt:
+			retval = _equalPolarDMACommandStmt(a, b);
 			break;
 		case T_AlterSystemStmt:
 			retval = _equalAlterSystemStmt(a, b);

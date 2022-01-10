@@ -1,0 +1,1864 @@
+-- config
+/*--POLAR_ENABLE_PX*/
+set polar_enable_px = 1;
+set polar_px_optimizer_enable_dml_constraints = 1;
+set polar_px_enable_delete = 1;
+-- polar_px_delete_dop_num = 1
+set polar_px_delete_dop_num = 1;
+\i sql/polar-px-dev/px_parallel_delete_init.sql
+-- create normal table
+drop table if exists px_parallel_delete_t1 cascade;
+psql:sql/polar-px-dev/px_parallel_delete_init.sql:2: NOTICE:  table "px_parallel_delete_t1" does not exist, skipping
+CREATE TABLE px_parallel_delete_t1 (c1 int, c2 int) ;
+insert into px_parallel_delete_t1 select generate_series(1,100),generate_series(1,100);
+drop table if exists px_parallel_delete_t2 cascade;
+psql:sql/polar-px-dev/px_parallel_delete_init.sql:6: NOTICE:  table "px_parallel_delete_t2" does not exist, skipping
+CREATE TABLE px_parallel_delete_t2 (c1 int, c2 int) ;
+insert into px_parallel_delete_t2 select generate_series(1,100),generate_series(1,100);
+drop table if exists px_parallel_delete_t3 cascade;
+psql:sql/polar-px-dev/px_parallel_delete_init.sql:10: NOTICE:  table "px_parallel_delete_t3" does not exist, skipping
+CREATE TABLE px_parallel_delete_t3 (c1 int, c2 int) ;
+insert into px_parallel_delete_t3 select generate_series(1,1000),generate_series(1,1000);
+select count(*) from px_parallel_delete_t1;
+ count 
+-------
+   100
+(1 row)
+
+select count(*) from px_parallel_delete_t2;
+ count 
+-------
+   100
+(1 row)
+
+------------------------------------------------------------------------
+--range partition
+--Partition constraint: ((x IS NOT NULL) AND (x >= 10) AND (x < 20))
+drop table if exists px_parallel_delete_t1_range cascade;
+psql:sql/polar-px-dev/px_parallel_delete_init.sql:22: NOTICE:  table "px_parallel_delete_t1_range" does not exist, skipping
+CREATE TABLE px_parallel_delete_t1_range(id int, value int) PARTITION BY RANGE(id);
+CREATE TABLE px_parallel_delete_t1_range_p1 PARTITION OF px_parallel_delete_t1_range FOR VALUES FROM (1) TO (10000);
+CREATE TABLE px_parallel_delete_t1_range_p2 PARTITION OF px_parallel_delete_t1_range FOR VALUES FROM (10000) TO (20000);
+CREATE TABLE px_parallel_delete_t1_range_p3 PARTITION OF px_parallel_delete_t1_range DEFAULT;
+insert into px_parallel_delete_t1_range select generate_series(1,30000, 2);
+-- Hash partition table
+drop table if exists px_parallel_delete_t0_hash cascade;
+psql:sql/polar-px-dev/px_parallel_delete_init.sql:30: NOTICE:  table "px_parallel_delete_t0_hash" does not exist, skipping
+CREATE TABLE px_parallel_delete_t0_hash (id int, value int) PARTITION BY HASH(id);
+CREATE TABLE px_parallel_delete_t0_hash_p1 PARTITION OF px_parallel_delete_t0_hash FOR VALUES WITH (modulus 3, remainder 0);
+CREATE TABLE px_parallel_delete_t0_hash_p2 PARTITION OF px_parallel_delete_t0_hash FOR VALUES WITH (modulus 3, remainder 1);
+CREATE TABLE px_parallel_delete_t0_hash_p3 PARTITION OF px_parallel_delete_t0_hash FOR VALUES WITH (modulus 3, remainder 2);
+insert into px_parallel_delete_t0_hash select generate_series(1,30000),generate_series(1,30000);
+-- List partition table
+drop table if exists px_parallel_delete_t2_list cascade;
+psql:sql/polar-px-dev/px_parallel_delete_init.sql:38: NOTICE:  table "px_parallel_delete_t2_list" does not exist, skipping
+create table px_parallel_delete_t2_list(job character varying(30), pvalue int) partition by list (job);
+CREATE TABLE px_parallel_delete_t2_list_p1 PARTITION OF px_parallel_delete_t2_list FOR VALUES IN ('student');
+CREATE TABLE px_parallel_delete_t2_list_p2 PARTITION OF px_parallel_delete_t2_list FOR VALUES IN ('teacher');
+CREATE TABLE px_parallel_delete_t2_list_p3 PARTITION OF px_parallel_delete_t2_list DEFAULT;
+insert into px_parallel_delete_t2_list select 'student',generate_series(1,10000);
+insert into px_parallel_delete_t2_list select 'teacher',generate_series(10000,20000);
+insert into px_parallel_delete_t2_list select 'other',generate_series(20000,30000);
+-- Index Test Init
+drop table if exists px_parallel_delete_t4 cascade;
+psql:sql/polar-px-dev/px_parallel_delete_init.sql:50: NOTICE:  table "px_parallel_delete_t4" does not exist, skipping
+CREATE TABLE px_parallel_delete_t4 (c1 int, c2 int) ;
+insert into px_parallel_delete_t4 select generate_series(1,1000),generate_series(1,1000);
+CREATE INDEX t_index_delete_plan on px_parallel_delete_t4(c1);
+-- Constrain Test Init
+drop table if exists px_parallel_delete_t5 cascade;
+psql:sql/polar-px-dev/px_parallel_delete_init.sql:57: NOTICE:  table "px_parallel_delete_t5" does not exist, skipping
+CREATE TABLE px_parallel_delete_t5 (c1 int, c2 int not NULL);
+drop table if exists px_parallel_delete_t6 cascade;
+psql:sql/polar-px-dev/px_parallel_delete_init.sql:59: NOTICE:  table "px_parallel_delete_t6" does not exist, skipping
+CREATE TABLE px_parallel_delete_t6 (c1 int, c2 int);
+drop table if exists px_parallel_delete_t7 cascade;
+psql:sql/polar-px-dev/px_parallel_delete_init.sql:63: NOTICE:  table "px_parallel_delete_t7" does not exist, skipping
+CREATE TABLE px_parallel_delete_t7 (c1 int, c2 int CHECK (c2 < 1000));
+drop table if exists px_parallel_delete_t10 cascade;
+psql:sql/polar-px-dev/px_parallel_delete_init.sql:66: NOTICE:  table "px_parallel_delete_t10" does not exist, skipping
+CREATE TABLE px_parallel_delete_t10(
+   ID INT PRIMARY KEY     NOT NULL,
+   NAME           TEXT    NOT NULL
+);
+insert into px_parallel_delete_t10 select generate_series(1,1000), 'hello';
+drop table if exists px_parallel_delete_audit cascade;
+psql:sql/polar-px-dev/px_parallel_delete_init.sql:74: NOTICE:  table "px_parallel_delete_audit" does not exist, skipping
+CREATE TABLE px_parallel_delete_audit(
+   EMP_ID INT NOT NULL,
+   ENTRY_DATE TEXT NOT NULL
+);
+insert into px_parallel_delete_audit select generate_series(1,1000), 'world';
+-- Create Updatable View
+drop table if exists px_parallel_delete_t11 cascade;
+psql:sql/polar-px-dev/px_parallel_delete_init.sql:82: NOTICE:  table "px_parallel_delete_t11" does not exist, skipping
+CREATE TABLE px_parallel_delete_t11 (c1 int, c2 int, c3 int) ;
+insert into px_parallel_delete_t11 select generate_series(1,1000), generate_series(1,1000), generate_series(1,1000);
+CREATE VIEW px_parallel_delete_view AS select
+c1,
+c2,
+c3
+from px_parallel_delete_t11
+where c1 < 200;
+-- Create with CTE
+drop table if exists px_parallel_delete_t12 cascade;
+psql:sql/polar-px-dev/px_parallel_delete_init.sql:94: NOTICE:  table "px_parallel_delete_t12" does not exist, skipping
+CREATE TABLE px_parallel_delete_t12 (c1 int, c2 int, c3 int) ;
+insert into px_parallel_delete_t12 select generate_series(1,1000), generate_series(1,1000), generate_series(1,1000);
+drop table if exists px_parallel_delete_t13 cascade;
+psql:sql/polar-px-dev/px_parallel_delete_init.sql:97: NOTICE:  table "px_parallel_delete_t13" does not exist, skipping
+CREATE TABLE px_parallel_delete_t13 (c1 int, c2 int, c3 int) ;
+insert into px_parallel_delete_t13 select generate_series(1,1000), generate_series(1,1000), generate_series(1,1000);
+-- Delete twice
+drop table if exists px_parallel_delete_t14 cascade;
+psql:sql/polar-px-dev/px_parallel_delete_init.sql:103: NOTICE:  table "px_parallel_delete_t14" does not exist, skipping
+CREATE TABLE px_parallel_delete_t14 (c1 int, c2 int);
+insert into px_parallel_delete_t14 VALUES(1,1),(1,1);
+drop table if exists px_parallel_delete_t15 cascade;
+psql:sql/polar-px-dev/px_parallel_delete_init.sql:106: NOTICE:  table "px_parallel_delete_t15" does not exist, skipping
+CREATE TABLE px_parallel_delete_t15 (c1 int, c2 int);
+insert into px_parallel_delete_t15 select generate_series(1,1000), generate_series(1,1000);
+update px_parallel_delete_t15 set c1=1;
+-- Delete with trigger
+drop table if exists px_parallel_delete_t16 cascade;
+psql:sql/polar-px-dev/px_parallel_delete_init.sql:112: NOTICE:  table "px_parallel_delete_t16" does not exist, skipping
+CREATE TABLE px_parallel_delete_t16(c1 int, c2 int);
+insert into px_parallel_delete_t16 select generate_series(1,1000),generate_series(1,1000);
+drop table if exists px_parallel_delete_audit cascade;
+CREATE TABLE px_parallel_delete_audit(
+   EMP_ID INT NOT NULL,
+   ENTRY_DATE TEXT NOT NULL
+);
+insert into px_parallel_delete_audit select generate_series(1,1000), 'world';
+CREATE OR REPLACE FUNCTION auditlogfunc_delete() RETURNS TRIGGER AS $example_table$
+   BEGIN
+      DELETE FROM px_parallel_delete_audit where EMP_ID < 20;
+      RETURN NEW;
+   END;
+$example_table$ LANGUAGE plpgsql;
+CREATE TRIGGER px_parallel_delete_trigger AFTER DELETE ON px_parallel_delete_t16 FOR EACH STATEMENT EXECUTE PROCEDURE auditlogfunc_delete();
+ANALYZE;
+\i sql/polar-px-dev/px_parallel_delete_base.sql
+-- Delete without subplan
+EXPLAIN (VERBOSE, COSTS OFF) delete from px_parallel_delete_t1 where c1 < 30;
+                                                                         QUERY PLAN                                                                         
+------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Delete (segment: 1) on public.px_parallel_delete_t1
+   ->  Result
+         Output: px_parallel_delete_t1_1.c1, px_parallel_delete_t1_1.c2, px_parallel_delete_t1_1.ctid
+         ->  PX Hash 6:1  (slice1; segments: 6)
+               Output: px_parallel_delete_t1_1.c1, px_parallel_delete_t1_1.c2, px_parallel_delete_t1_1.ctid, px_parallel_delete_t1_1._px_worker_id, (0)
+               ->  Partial Seq Scan on public.px_parallel_delete_t1 px_parallel_delete_t1_1
+                     Output: px_parallel_delete_t1_1.c1, px_parallel_delete_t1_1.c2, px_parallel_delete_t1_1.ctid, px_parallel_delete_t1_1._px_worker_id, 0
+                     Filter: (px_parallel_delete_t1_1.c1 < 30)
+ Optimizer: PolarDB PX Optimizer
+(9 rows)
+
+delete from px_parallel_delete_t1 where c1 < 30;
+select count(*) from px_parallel_delete_t1;
+ count 
+-------
+    71
+(1 row)
+
+EXPLAIN (VERBOSE, COSTS OFF) delete from px_parallel_delete_t1 where c1 > 970;
+                                                                         QUERY PLAN                                                                         
+------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Delete (segment: 1) on public.px_parallel_delete_t1
+   ->  Result
+         Output: px_parallel_delete_t1_1.c1, px_parallel_delete_t1_1.c2, px_parallel_delete_t1_1.ctid
+         ->  PX Hash 6:1  (slice1; segments: 6)
+               Output: px_parallel_delete_t1_1.c1, px_parallel_delete_t1_1.c2, px_parallel_delete_t1_1.ctid, px_parallel_delete_t1_1._px_worker_id, (0)
+               ->  Partial Seq Scan on public.px_parallel_delete_t1 px_parallel_delete_t1_1
+                     Output: px_parallel_delete_t1_1.c1, px_parallel_delete_t1_1.c2, px_parallel_delete_t1_1.ctid, px_parallel_delete_t1_1._px_worker_id, 0
+                     Filter: (px_parallel_delete_t1_1.c1 > 970)
+ Optimizer: PolarDB PX Optimizer
+(9 rows)
+
+delete from px_parallel_delete_t1 where c1 > 970;
+select count(*) from px_parallel_delete_t1;
+ count 
+-------
+    71
+(1 row)
+
+-- Delete with subplan
+EXPLAIN (VERBOSE, COSTS OFF) delete from px_parallel_delete_t2 where c1 in (select c1 from px_parallel_delete_t1 where c1 < 50);
+                                                                             QUERY PLAN                                                                              
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Delete (segment: 1) on public.px_parallel_delete_t2
+   ->  Result
+         Output: px_parallel_delete_t2_1.c1, px_parallel_delete_t2_1.c2, px_parallel_delete_t2_1.ctid
+         ->  PX Hash 6:1  (slice1; segments: 6)
+               Output: px_parallel_delete_t2_1.c1, px_parallel_delete_t2_1.c2, px_parallel_delete_t2_1.ctid, px_parallel_delete_t2_1._px_worker_id
+               ->  Hash Semi Join
+                     Output: px_parallel_delete_t2_1.c1, px_parallel_delete_t2_1.c2, px_parallel_delete_t2_1.ctid, px_parallel_delete_t2_1._px_worker_id
+                     Hash Cond: (px_parallel_delete_t2_1.c1 = px_parallel_delete_t1.c1)
+                     ->  PX Hash 6:6  (slice2; segments: 6)
+                           Output: px_parallel_delete_t2_1.c1, px_parallel_delete_t2_1.c2, px_parallel_delete_t2_1.ctid, px_parallel_delete_t2_1._px_worker_id
+                           Hash Key: px_parallel_delete_t2_1.c1
+                           ->  Partial Seq Scan on public.px_parallel_delete_t2 px_parallel_delete_t2_1
+                                 Output: px_parallel_delete_t2_1.c1, px_parallel_delete_t2_1.c2, px_parallel_delete_t2_1.ctid, px_parallel_delete_t2_1._px_worker_id
+                     ->  Hash
+                           Output: px_parallel_delete_t1.c1
+                           ->  PX Hash 6:6  (slice3; segments: 6)
+                                 Output: px_parallel_delete_t1.c1
+                                 Hash Key: px_parallel_delete_t1.c1
+                                 ->  Partial Seq Scan on public.px_parallel_delete_t1
+                                       Output: px_parallel_delete_t1.c1
+                                       Filter: (px_parallel_delete_t1.c1 < 50)
+ Optimizer: PolarDB PX Optimizer
+(22 rows)
+
+delete from px_parallel_delete_t2 where c1 in (select c1 from px_parallel_delete_t1 where c1 < 50);
+select count(*) from px_parallel_delete_t2;
+ count 
+-------
+    80
+(1 row)
+
+EXPLAIN (VERBOSE, COSTS OFF) delete from px_parallel_delete_t2 where c1 in (select c1 from px_parallel_delete_t1 where c1 > 950);
+                                                                          QUERY PLAN                                                                           
+---------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Delete (segment: 1) on public.px_parallel_delete_t2
+   ->  Result
+         Output: px_parallel_delete_t2_1.c1, px_parallel_delete_t2_1.c2, px_parallel_delete_t2_1.ctid
+         ->  PX Hash 6:1  (slice1; segments: 6)
+               Output: px_parallel_delete_t2_1.c1, px_parallel_delete_t2_1.c2, px_parallel_delete_t2_1.ctid, px_parallel_delete_t2_1._px_worker_id, (0)
+               ->  Hash Semi Join
+                     Output: px_parallel_delete_t2_1.c1, px_parallel_delete_t2_1.c2, px_parallel_delete_t2_1.ctid, px_parallel_delete_t2_1._px_worker_id, 0
+                     Hash Cond: (px_parallel_delete_t2_1.c1 = px_parallel_delete_t1.c1)
+                     ->  Partial Seq Scan on public.px_parallel_delete_t2 px_parallel_delete_t2_1
+                           Output: px_parallel_delete_t2_1.c1, px_parallel_delete_t2_1.c2, px_parallel_delete_t2_1.ctid, px_parallel_delete_t2_1._px_worker_id
+                     ->  Hash
+                           Output: px_parallel_delete_t1.c1
+                           ->  PX Broadcast 6:6  (slice2; segments: 6)
+                                 Output: px_parallel_delete_t1.c1
+                                 ->  Partial Seq Scan on public.px_parallel_delete_t1
+                                       Output: px_parallel_delete_t1.c1
+                                       Filter: (px_parallel_delete_t1.c1 > 950)
+ Optimizer: PolarDB PX Optimizer
+(18 rows)
+
+delete from px_parallel_delete_t2 where c1 in (select c1 from px_parallel_delete_t1 where c1 > 950);
+select count(*) from px_parallel_delete_t2;
+ count 
+-------
+    80
+(1 row)
+
+-- Delete Partitiion Table, should be fallback
+EXPLAIN (VERBOSE, COSTS OFF) delete from px_parallel_delete_t1_range where id < 50;
+                        QUERY PLAN                        
+----------------------------------------------------------
+ Delete on public.px_parallel_delete_t1_range
+   Delete on public.px_parallel_delete_t1_range_p1
+   Delete on public.px_parallel_delete_t1_range_p3
+   ->  Seq Scan on public.px_parallel_delete_t1_range_p1
+         Output: px_parallel_delete_t1_range_p1.ctid
+         Filter: (px_parallel_delete_t1_range_p1.id < 50)
+   ->  Seq Scan on public.px_parallel_delete_t1_range_p3
+         Output: px_parallel_delete_t1_range_p3.ctid
+         Filter: (px_parallel_delete_t1_range_p3.id < 50)
+(9 rows)
+
+EXPLAIN (VERBOSE, COSTS OFF) delete from px_parallel_delete_t1_range where id in (select c1 from px_parallel_delete_t3 where c1 > 960);
+                                          QUERY PLAN                                          
+----------------------------------------------------------------------------------------------
+ Delete on public.px_parallel_delete_t1_range
+   Delete on public.px_parallel_delete_t1_range_p1
+   Delete on public.px_parallel_delete_t1_range_p2
+   Delete on public.px_parallel_delete_t1_range_p3
+   ->  Hash Semi Join
+         Output: px_parallel_delete_t1_range_p1.ctid, px_parallel_delete_t3.ctid
+         Hash Cond: (px_parallel_delete_t1_range_p1.id = px_parallel_delete_t3.c1)
+         ->  Seq Scan on public.px_parallel_delete_t1_range_p1
+               Output: px_parallel_delete_t1_range_p1.ctid, px_parallel_delete_t1_range_p1.id
+         ->  Hash
+               Output: px_parallel_delete_t3.ctid, px_parallel_delete_t3.c1
+               ->  Seq Scan on public.px_parallel_delete_t3
+                     Output: px_parallel_delete_t3.ctid, px_parallel_delete_t3.c1
+                     Filter: (px_parallel_delete_t3.c1 > 960)
+   ->  Hash Semi Join
+         Output: px_parallel_delete_t1_range_p2.ctid, px_parallel_delete_t3.ctid
+         Hash Cond: (px_parallel_delete_t1_range_p2.id = px_parallel_delete_t3.c1)
+         ->  Seq Scan on public.px_parallel_delete_t1_range_p2
+               Output: px_parallel_delete_t1_range_p2.ctid, px_parallel_delete_t1_range_p2.id
+         ->  Hash
+               Output: px_parallel_delete_t3.ctid, px_parallel_delete_t3.c1
+               ->  Seq Scan on public.px_parallel_delete_t3
+                     Output: px_parallel_delete_t3.ctid, px_parallel_delete_t3.c1
+                     Filter: (px_parallel_delete_t3.c1 > 960)
+   ->  Hash Semi Join
+         Output: px_parallel_delete_t1_range_p3.ctid, px_parallel_delete_t3.ctid
+         Hash Cond: (px_parallel_delete_t1_range_p3.id = px_parallel_delete_t3.c1)
+         ->  Seq Scan on public.px_parallel_delete_t1_range_p3
+               Output: px_parallel_delete_t1_range_p3.ctid, px_parallel_delete_t1_range_p3.id
+         ->  Hash
+               Output: px_parallel_delete_t3.ctid, px_parallel_delete_t3.c1
+               ->  Seq Scan on public.px_parallel_delete_t3
+                     Output: px_parallel_delete_t3.ctid, px_parallel_delete_t3.c1
+                     Filter: (px_parallel_delete_t3.c1 > 960)
+(34 rows)
+
+delete from px_parallel_delete_t1_range where id < 50;
+select count(*) from px_parallel_delete_t1_range;
+ count 
+-------
+ 14975
+(1 row)
+
+delete from px_parallel_delete_t1_range where id in (select c1 from px_parallel_delete_t3 where c1 > 960);
+select count(*) from px_parallel_delete_t1_range;
+ count 
+-------
+ 14955
+(1 row)
+
+-- select Range Partition Table, use PX
+EXPLAIN (VERBOSE, COSTS OFF) delete from px_parallel_delete_t3 where c1 in (select id from px_parallel_delete_t1_range where id > 900);
+                                                                             QUERY PLAN                                                                              
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Delete (segment: 1) on public.px_parallel_delete_t3
+   ->  Result
+         Output: px_parallel_delete_t3_1.c1, px_parallel_delete_t3_1.c2, px_parallel_delete_t3_1.ctid
+         ->  PX Hash 6:1  (slice1; segments: 6)
+               Output: px_parallel_delete_t3_1.c1, px_parallel_delete_t3_1.c2, px_parallel_delete_t3_1.ctid, px_parallel_delete_t3_1._px_worker_id
+               ->  Hash Semi Join
+                     Output: px_parallel_delete_t3_1.c1, px_parallel_delete_t3_1.c2, px_parallel_delete_t3_1.ctid, px_parallel_delete_t3_1._px_worker_id
+                     Hash Cond: (px_parallel_delete_t3_1.c1 = px_parallel_delete_t1_range_p1.id)
+                     ->  PX Hash 6:6  (slice2; segments: 6)
+                           Output: px_parallel_delete_t3_1.c1, px_parallel_delete_t3_1.c2, px_parallel_delete_t3_1.ctid, px_parallel_delete_t3_1._px_worker_id
+                           Hash Key: px_parallel_delete_t3_1.c1
+                           ->  Partial Seq Scan on public.px_parallel_delete_t3 px_parallel_delete_t3_1
+                                 Output: px_parallel_delete_t3_1.c1, px_parallel_delete_t3_1.c2, px_parallel_delete_t3_1.ctid, px_parallel_delete_t3_1._px_worker_id
+                     ->  Hash
+                           Output: px_parallel_delete_t1_range_p1.id
+                           ->  PX Hash 6:6  (slice3; segments: 6)
+                                 Output: px_parallel_delete_t1_range_p1.id
+                                 Hash Key: px_parallel_delete_t1_range_p1.id
+                                 ->  Append
+                                       ->  Partial Seq Scan on public.px_parallel_delete_t1_range_p1
+                                             Output: px_parallel_delete_t1_range_p1.id
+                                             Filter: (px_parallel_delete_t1_range_p1.id > 900)
+                                       ->  Partial Seq Scan on public.px_parallel_delete_t1_range_p2
+                                             Output: px_parallel_delete_t1_range_p2.id
+                                             Filter: (px_parallel_delete_t1_range_p2.id > 900)
+                                       ->  Partial Seq Scan on public.px_parallel_delete_t1_range_p3
+                                             Output: px_parallel_delete_t1_range_p3.id
+                                             Filter: (px_parallel_delete_t1_range_p3.id > 900)
+ Optimizer: PolarDB PX Optimizer
+(29 rows)
+
+delete from px_parallel_delete_t3 where c1 in (select id from px_parallel_delete_t1_range where id > 900);
+select count(*) from px_parallel_delete_t3;
+ count 
+-------
+   970
+(1 row)
+
+-- select Hash Partition Table, use PX
+EXPLAIN (VERBOSE, COSTS OFF) delete from px_parallel_delete_t3 where c1 in (select id from px_parallel_delete_t0_hash where id > 800);
+                                                                             QUERY PLAN                                                                              
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Delete (segment: 1) on public.px_parallel_delete_t3
+   ->  Result
+         Output: px_parallel_delete_t3_1.c1, px_parallel_delete_t3_1.c2, px_parallel_delete_t3_1.ctid
+         ->  PX Hash 6:1  (slice1; segments: 6)
+               Output: px_parallel_delete_t3_1.c1, px_parallel_delete_t3_1.c2, px_parallel_delete_t3_1.ctid, px_parallel_delete_t3_1._px_worker_id
+               ->  Hash Semi Join
+                     Output: px_parallel_delete_t3_1.c1, px_parallel_delete_t3_1.c2, px_parallel_delete_t3_1.ctid, px_parallel_delete_t3_1._px_worker_id
+                     Hash Cond: (px_parallel_delete_t3_1.c1 = px_parallel_delete_t0_hash_p1.id)
+                     ->  PX Hash 6:6  (slice2; segments: 6)
+                           Output: px_parallel_delete_t3_1.c1, px_parallel_delete_t3_1.c2, px_parallel_delete_t3_1.ctid, px_parallel_delete_t3_1._px_worker_id
+                           Hash Key: px_parallel_delete_t3_1.c1
+                           ->  Partial Seq Scan on public.px_parallel_delete_t3 px_parallel_delete_t3_1
+                                 Output: px_parallel_delete_t3_1.c1, px_parallel_delete_t3_1.c2, px_parallel_delete_t3_1.ctid, px_parallel_delete_t3_1._px_worker_id
+                     ->  Hash
+                           Output: px_parallel_delete_t0_hash_p1.id
+                           ->  PX Hash 6:6  (slice3; segments: 6)
+                                 Output: px_parallel_delete_t0_hash_p1.id
+                                 Hash Key: px_parallel_delete_t0_hash_p1.id
+                                 ->  Append
+                                       ->  Partial Seq Scan on public.px_parallel_delete_t0_hash_p1
+                                             Output: px_parallel_delete_t0_hash_p1.id
+                                             Filter: (px_parallel_delete_t0_hash_p1.id > 800)
+                                       ->  Partial Seq Scan on public.px_parallel_delete_t0_hash_p2
+                                             Output: px_parallel_delete_t0_hash_p2.id
+                                             Filter: (px_parallel_delete_t0_hash_p2.id > 800)
+                                       ->  Partial Seq Scan on public.px_parallel_delete_t0_hash_p3
+                                             Output: px_parallel_delete_t0_hash_p3.id
+                                             Filter: (px_parallel_delete_t0_hash_p3.id > 800)
+ Optimizer: PolarDB PX Optimizer
+(29 rows)
+
+delete from px_parallel_delete_t3 where c1 in (select id from px_parallel_delete_t0_hash where id > 800);
+select count(*) from px_parallel_delete_t3;
+ count 
+-------
+   800
+(1 row)
+
+-- select List Partition Table, use PX
+EXPLAIN (VERBOSE, COSTS OFF) delete from px_parallel_delete_t3 where c1 in (select pvalue from px_parallel_delete_t2_list where job = 'student');
+                                                                             QUERY PLAN                                                                              
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Delete (segment: 1) on public.px_parallel_delete_t3
+   ->  Result
+         Output: px_parallel_delete_t3_1.c1, px_parallel_delete_t3_1.c2, px_parallel_delete_t3_1.ctid
+         ->  PX Hash 6:1  (slice1; segments: 6)
+               Output: px_parallel_delete_t3_1.c1, px_parallel_delete_t3_1.c2, px_parallel_delete_t3_1.ctid, px_parallel_delete_t3_1._px_worker_id
+               ->  Hash Semi Join
+                     Output: px_parallel_delete_t3_1.c1, px_parallel_delete_t3_1.c2, px_parallel_delete_t3_1.ctid, px_parallel_delete_t3_1._px_worker_id
+                     Hash Cond: (px_parallel_delete_t3_1.c1 = px_parallel_delete_t2_list_p1.pvalue)
+                     ->  PX Hash 6:6  (slice2; segments: 6)
+                           Output: px_parallel_delete_t3_1.c1, px_parallel_delete_t3_1.c2, px_parallel_delete_t3_1.ctid, px_parallel_delete_t3_1._px_worker_id
+                           Hash Key: px_parallel_delete_t3_1.c1
+                           ->  Partial Seq Scan on public.px_parallel_delete_t3 px_parallel_delete_t3_1
+                                 Output: px_parallel_delete_t3_1.c1, px_parallel_delete_t3_1.c2, px_parallel_delete_t3_1.ctid, px_parallel_delete_t3_1._px_worker_id
+                     ->  Hash
+                           Output: px_parallel_delete_t2_list_p1.pvalue
+                           ->  PX Hash 6:6  (slice3; segments: 6)
+                                 Output: px_parallel_delete_t2_list_p1.pvalue
+                                 Hash Key: px_parallel_delete_t2_list_p1.pvalue
+                                 ->  Result
+                                       Output: px_parallel_delete_t2_list_p1.pvalue
+                                       ->  Append
+                                             ->  Partial Seq Scan on public.px_parallel_delete_t2_list_p1
+                                                   Output: px_parallel_delete_t2_list_p1.job, px_parallel_delete_t2_list_p1.pvalue
+                                                   Filter: ((px_parallel_delete_t2_list_p1.job)::text = 'student'::text)
+ Optimizer: PolarDB PX Optimizer
+(25 rows)
+
+delete from px_parallel_delete_t3 where c1 in (select pvalue from px_parallel_delete_t2_list where job = 'student');
+select count(*) from px_parallel_delete_t3;
+ count 
+-------
+     0
+(1 row)
+
+-- Delete With Index
+EXPLAIN (VERBOSE, COSTS OFF) delete from px_parallel_delete_t4 where c1 < 50;
+                                                                         QUERY PLAN                                                                         
+------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Delete (segment: 1) on public.px_parallel_delete_t4
+   ->  Result
+         Output: px_parallel_delete_t4_1.c1, px_parallel_delete_t4_1.c2, px_parallel_delete_t4_1.ctid
+         ->  PX Hash 6:1  (slice1; segments: 6)
+               Output: px_parallel_delete_t4_1.c1, px_parallel_delete_t4_1.c2, px_parallel_delete_t4_1.ctid, px_parallel_delete_t4_1._px_worker_id, (0)
+               ->  Partial Index Scan using t_index_delete_plan on public.px_parallel_delete_t4 px_parallel_delete_t4_1
+                     Output: px_parallel_delete_t4_1.c1, px_parallel_delete_t4_1.c2, px_parallel_delete_t4_1.ctid, px_parallel_delete_t4_1._px_worker_id, 0
+                     Index Cond: (px_parallel_delete_t4_1.c1 < 50)
+ Optimizer: PolarDB PX Optimizer
+(9 rows)
+
+EXPLAIN (VERBOSE, COSTS OFF) delete from px_parallel_delete_t4 where c1 in (select c1 from px_parallel_delete_t3 where c1 > 960);
+                                                                          QUERY PLAN                                                                           
+---------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Delete (segment: 1) on public.px_parallel_delete_t4
+   ->  Result
+         Output: px_parallel_delete_t4_1.c1, px_parallel_delete_t4_1.c2, px_parallel_delete_t4_1.ctid
+         ->  PX Hash 6:1  (slice1; segments: 6)
+               Output: px_parallel_delete_t4_1.c1, px_parallel_delete_t4_1.c2, px_parallel_delete_t4_1.ctid, px_parallel_delete_t4_1._px_worker_id, (0)
+               ->  Hash Semi Join
+                     Output: px_parallel_delete_t4_1.c1, px_parallel_delete_t4_1.c2, px_parallel_delete_t4_1.ctid, px_parallel_delete_t4_1._px_worker_id, 0
+                     Hash Cond: (px_parallel_delete_t4_1.c1 = px_parallel_delete_t3.c1)
+                     ->  Partial Seq Scan on public.px_parallel_delete_t4 px_parallel_delete_t4_1
+                           Output: px_parallel_delete_t4_1.c1, px_parallel_delete_t4_1.c2, px_parallel_delete_t4_1.ctid, px_parallel_delete_t4_1._px_worker_id
+                     ->  Hash
+                           Output: px_parallel_delete_t3.c1
+                           ->  PX Broadcast 6:6  (slice2; segments: 6)
+                                 Output: px_parallel_delete_t3.c1
+                                 ->  Partial Seq Scan on public.px_parallel_delete_t3
+                                       Output: px_parallel_delete_t3.c1
+                                       Filter: (px_parallel_delete_t3.c1 > 960)
+ Optimizer: PolarDB PX Optimizer
+(18 rows)
+
+delete from px_parallel_delete_t4 where c1 < 50;
+select count(*) from px_parallel_delete_t4;
+ count 
+-------
+   951
+(1 row)
+
+delete from px_parallel_delete_t4 where c1 in (select c1 from px_parallel_delete_t15 where c1 > 960);
+select count(*) from px_parallel_delete_t4;
+ count 
+-------
+   951
+(1 row)
+
+-- Delete with CTE
+EXPLAIN (VERBOSE, COSTS OFF) WITH delete_move_rows AS (
+    delete from px_parallel_delete_t12 where c1 < 30 RETURNING c2
+)
+delete from px_parallel_delete_t13 where c1 in (select c1 from delete_move_rows);
+                        QUERY PLAN                        
+----------------------------------------------------------
+ Delete on public.px_parallel_delete_t13
+   CTE delete_move_rows
+     ->  Delete on public.px_parallel_delete_t12
+           Output: px_parallel_delete_t12.c2
+           ->  Seq Scan on public.px_parallel_delete_t12
+                 Output: px_parallel_delete_t12.ctid
+                 Filter: (px_parallel_delete_t12.c1 < 30)
+   ->  Seq Scan on public.px_parallel_delete_t13
+         Output: px_parallel_delete_t13.ctid
+         Filter: (SubPlan 2)
+         SubPlan 2
+           ->  CTE Scan on delete_move_rows
+                 Output: px_parallel_delete_t13.c1
+(13 rows)
+
+-- Delete with VIEW
+EXPLAIN (VERBOSE, COSTS OFF) delete from px_parallel_delete_view;
+                                                                                         QUERY PLAN                                                                                          
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Delete (segment: 1) on public.px_parallel_delete_t11
+   ->  Result
+         Output: px_parallel_delete_t11_1.c1, px_parallel_delete_t11_1.c2, px_parallel_delete_t11_1.c3, px_parallel_delete_t11_1.ctid
+         ->  PX Hash 6:1  (slice1; segments: 6)
+               Output: px_parallel_delete_t11_1.c1, px_parallel_delete_t11_1.c2, px_parallel_delete_t11_1.c3, px_parallel_delete_t11_1.ctid, px_parallel_delete_t11_1._px_worker_id, (0)
+               ->  Partial Seq Scan on public.px_parallel_delete_t11 px_parallel_delete_t11_1
+                     Output: px_parallel_delete_t11_1.c1, px_parallel_delete_t11_1.c2, px_parallel_delete_t11_1.c3, px_parallel_delete_t11_1.ctid, px_parallel_delete_t11_1._px_worker_id, 0
+                     Filter: (px_parallel_delete_t11_1.c1 < 200)
+ Optimizer: PolarDB PX Optimizer
+(9 rows)
+
+delete from px_parallel_delete_view;
+select count(*) from px_parallel_delete_t11;
+ count 
+-------
+   801
+(1 row)
+
+select count(*) from px_parallel_delete_t11;
+ count 
+-------
+   801
+(1 row)
+
+-- Delete twice case
+EXPLAIN(VERBOSE, COSTS OFF) delete from px_parallel_delete_t14 where c2 in (select c1 from px_parallel_delete_t15);
+                                                                            QUERY PLAN                                                                             
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Delete (segment: 1) on public.px_parallel_delete_t14
+   ->  Result
+         Output: px_parallel_delete_t14_1.c1, px_parallel_delete_t14_1.c2, px_parallel_delete_t14_1.ctid
+         ->  PX Hash 6:1  (slice1; segments: 6)
+               Output: px_parallel_delete_t14_1.c1, px_parallel_delete_t14_1.c2, px_parallel_delete_t14_1.ctid, px_parallel_delete_t14_1._px_worker_id, (0)
+               ->  Hash Join
+                     Output: px_parallel_delete_t14_1.c1, px_parallel_delete_t14_1.c2, px_parallel_delete_t14_1.ctid, px_parallel_delete_t14_1._px_worker_id, 0
+                     Hash Cond: (px_parallel_delete_t14_1.c2 = px_parallel_delete_t15.c1)
+                     ->  Partial Seq Scan on public.px_parallel_delete_t14 px_parallel_delete_t14_1
+                           Output: px_parallel_delete_t14_1.c1, px_parallel_delete_t14_1.c2, px_parallel_delete_t14_1.ctid, px_parallel_delete_t14_1._px_worker_id
+                     ->  Hash
+                           Output: px_parallel_delete_t15.c1
+                           ->  PX Broadcast 6:6  (slice2; segments: 6)
+                                 Output: px_parallel_delete_t15.c1
+                                 ->  GroupAggregate
+                                       Output: px_parallel_delete_t15.c1
+                                       Group Key: px_parallel_delete_t15.c1
+                                       ->  Sort
+                                             Output: px_parallel_delete_t15.c1
+                                             Sort Key: px_parallel_delete_t15.c1
+                                             ->  PX Hash 6:6  (slice3; segments: 6)
+                                                   Output: px_parallel_delete_t15.c1
+                                                   Hash Key: px_parallel_delete_t15.c1
+                                                   ->  HashAggregate
+                                                         Output: px_parallel_delete_t15.c1
+                                                         Group Key: px_parallel_delete_t15.c1
+                                                         ->  Partial Seq Scan on public.px_parallel_delete_t15
+                                                               Output: px_parallel_delete_t15.c1
+ Optimizer: PolarDB PX Optimizer
+(29 rows)
+
+delete from px_parallel_delete_t14 where c2 in (select c1 from px_parallel_delete_t15);
+select count(*) from px_parallel_delete_t14;
+ count 
+-------
+     0
+(1 row)
+
+-- Delete with returning
+EXPLAIN(VERBOSE, COSTS OFF) delete from px_parallel_delete_t15 where c2 < 10 returning *;
+                    QUERY PLAN                    
+--------------------------------------------------
+ Delete on public.px_parallel_delete_t15
+   Output: c1, c2
+   ->  Seq Scan on public.px_parallel_delete_t15
+         Output: ctid
+         Filter: (px_parallel_delete_t15.c2 < 10)
+(5 rows)
+
+delete from px_parallel_delete_t15 where c2 < 10 returning *;
+ c1 | c2 
+----+----
+  1 |  1
+  1 |  2
+  1 |  3
+  1 |  4
+  1 |  5
+  1 |  6
+  1 |  7
+  1 |  8
+  1 |  9
+(9 rows)
+
+-- Delete with trigger
+EXPLAIN(VERBOSE, COSTS OFF) delete from px_parallel_delete_t16 where c1 < 50;
+                                                                           QUERY PLAN                                                                           
+----------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Delete (segment: 1) on public.px_parallel_delete_t16
+   ->  Result
+         Output: px_parallel_delete_t16_1.c1, px_parallel_delete_t16_1.c2, px_parallel_delete_t16_1.ctid
+         ->  PX Hash 6:1  (slice1; segments: 6)
+               Output: px_parallel_delete_t16_1.c1, px_parallel_delete_t16_1.c2, px_parallel_delete_t16_1.ctid, px_parallel_delete_t16_1._px_worker_id, (0)
+               ->  Partial Seq Scan on public.px_parallel_delete_t16 px_parallel_delete_t16_1
+                     Output: px_parallel_delete_t16_1.c1, px_parallel_delete_t16_1.c2, px_parallel_delete_t16_1.ctid, px_parallel_delete_t16_1._px_worker_id, 0
+                     Filter: (px_parallel_delete_t16_1.c1 < 50)
+ Optimizer: PolarDB PX Optimizer
+(9 rows)
+
+delete from px_parallel_delete_t16 where c1 < 50;
+select count(*) from px_parallel_delete_t16;
+ count 
+-------
+   951
+(1 row)
+
+select count(*) from px_parallel_delete_audit;
+ count 
+-------
+   981
+(1 row)
+
+-- polar_px_delete_dop_num = 6
+set polar_px_delete_dop_num = 6;
+\i sql/polar-px-dev/px_parallel_delete_init.sql
+-- create normal table
+drop table if exists px_parallel_delete_t1 cascade;
+CREATE TABLE px_parallel_delete_t1 (c1 int, c2 int) ;
+insert into px_parallel_delete_t1 select generate_series(1,100),generate_series(1,100);
+drop table if exists px_parallel_delete_t2 cascade;
+CREATE TABLE px_parallel_delete_t2 (c1 int, c2 int) ;
+insert into px_parallel_delete_t2 select generate_series(1,100),generate_series(1,100);
+drop table if exists px_parallel_delete_t3 cascade;
+CREATE TABLE px_parallel_delete_t3 (c1 int, c2 int) ;
+insert into px_parallel_delete_t3 select generate_series(1,1000),generate_series(1,1000);
+select count(*) from px_parallel_delete_t1;
+ count 
+-------
+   100
+(1 row)
+
+select count(*) from px_parallel_delete_t2;
+ count 
+-------
+   100
+(1 row)
+
+------------------------------------------------------------------------
+--range partition
+--Partition constraint: ((x IS NOT NULL) AND (x >= 10) AND (x < 20))
+drop table if exists px_parallel_delete_t1_range cascade;
+CREATE TABLE px_parallel_delete_t1_range(id int, value int) PARTITION BY RANGE(id);
+CREATE TABLE px_parallel_delete_t1_range_p1 PARTITION OF px_parallel_delete_t1_range FOR VALUES FROM (1) TO (10000);
+CREATE TABLE px_parallel_delete_t1_range_p2 PARTITION OF px_parallel_delete_t1_range FOR VALUES FROM (10000) TO (20000);
+CREATE TABLE px_parallel_delete_t1_range_p3 PARTITION OF px_parallel_delete_t1_range DEFAULT;
+insert into px_parallel_delete_t1_range select generate_series(1,30000, 2);
+-- Hash partition table
+drop table if exists px_parallel_delete_t0_hash cascade;
+CREATE TABLE px_parallel_delete_t0_hash (id int, value int) PARTITION BY HASH(id);
+CREATE TABLE px_parallel_delete_t0_hash_p1 PARTITION OF px_parallel_delete_t0_hash FOR VALUES WITH (modulus 3, remainder 0);
+CREATE TABLE px_parallel_delete_t0_hash_p2 PARTITION OF px_parallel_delete_t0_hash FOR VALUES WITH (modulus 3, remainder 1);
+CREATE TABLE px_parallel_delete_t0_hash_p3 PARTITION OF px_parallel_delete_t0_hash FOR VALUES WITH (modulus 3, remainder 2);
+insert into px_parallel_delete_t0_hash select generate_series(1,30000),generate_series(1,30000);
+-- List partition table
+drop table if exists px_parallel_delete_t2_list cascade;
+create table px_parallel_delete_t2_list(job character varying(30), pvalue int) partition by list (job);
+CREATE TABLE px_parallel_delete_t2_list_p1 PARTITION OF px_parallel_delete_t2_list FOR VALUES IN ('student');
+CREATE TABLE px_parallel_delete_t2_list_p2 PARTITION OF px_parallel_delete_t2_list FOR VALUES IN ('teacher');
+CREATE TABLE px_parallel_delete_t2_list_p3 PARTITION OF px_parallel_delete_t2_list DEFAULT;
+insert into px_parallel_delete_t2_list select 'student',generate_series(1,10000);
+insert into px_parallel_delete_t2_list select 'teacher',generate_series(10000,20000);
+insert into px_parallel_delete_t2_list select 'other',generate_series(20000,30000);
+-- Index Test Init
+drop table if exists px_parallel_delete_t4 cascade;
+CREATE TABLE px_parallel_delete_t4 (c1 int, c2 int) ;
+insert into px_parallel_delete_t4 select generate_series(1,1000),generate_series(1,1000);
+CREATE INDEX t_index_delete_plan on px_parallel_delete_t4(c1);
+-- Constrain Test Init
+drop table if exists px_parallel_delete_t5 cascade;
+CREATE TABLE px_parallel_delete_t5 (c1 int, c2 int not NULL);
+drop table if exists px_parallel_delete_t6 cascade;
+CREATE TABLE px_parallel_delete_t6 (c1 int, c2 int);
+drop table if exists px_parallel_delete_t7 cascade;
+CREATE TABLE px_parallel_delete_t7 (c1 int, c2 int CHECK (c2 < 1000));
+drop table if exists px_parallel_delete_t10 cascade;
+CREATE TABLE px_parallel_delete_t10(
+   ID INT PRIMARY KEY     NOT NULL,
+   NAME           TEXT    NOT NULL
+);
+insert into px_parallel_delete_t10 select generate_series(1,1000), 'hello';
+drop table if exists px_parallel_delete_audit cascade;
+CREATE TABLE px_parallel_delete_audit(
+   EMP_ID INT NOT NULL,
+   ENTRY_DATE TEXT NOT NULL
+);
+insert into px_parallel_delete_audit select generate_series(1,1000), 'world';
+-- Create Updatable View
+drop table if exists px_parallel_delete_t11 cascade;
+psql:sql/polar-px-dev/px_parallel_delete_init.sql:82: NOTICE:  drop cascades to view px_parallel_delete_view
+CREATE TABLE px_parallel_delete_t11 (c1 int, c2 int, c3 int) ;
+insert into px_parallel_delete_t11 select generate_series(1,1000), generate_series(1,1000), generate_series(1,1000);
+CREATE VIEW px_parallel_delete_view AS select
+c1,
+c2,
+c3
+from px_parallel_delete_t11
+where c1 < 200;
+-- Create with CTE
+drop table if exists px_parallel_delete_t12 cascade;
+CREATE TABLE px_parallel_delete_t12 (c1 int, c2 int, c3 int) ;
+insert into px_parallel_delete_t12 select generate_series(1,1000), generate_series(1,1000), generate_series(1,1000);
+drop table if exists px_parallel_delete_t13 cascade;
+CREATE TABLE px_parallel_delete_t13 (c1 int, c2 int, c3 int) ;
+insert into px_parallel_delete_t13 select generate_series(1,1000), generate_series(1,1000), generate_series(1,1000);
+-- Delete twice
+drop table if exists px_parallel_delete_t14 cascade;
+CREATE TABLE px_parallel_delete_t14 (c1 int, c2 int);
+insert into px_parallel_delete_t14 VALUES(1,1),(1,1);
+drop table if exists px_parallel_delete_t15 cascade;
+CREATE TABLE px_parallel_delete_t15 (c1 int, c2 int);
+insert into px_parallel_delete_t15 select generate_series(1,1000), generate_series(1,1000);
+update px_parallel_delete_t15 set c1=1;
+-- Delete with trigger
+drop table if exists px_parallel_delete_t16 cascade;
+CREATE TABLE px_parallel_delete_t16(c1 int, c2 int);
+insert into px_parallel_delete_t16 select generate_series(1,1000),generate_series(1,1000);
+drop table if exists px_parallel_delete_audit cascade;
+CREATE TABLE px_parallel_delete_audit(
+   EMP_ID INT NOT NULL,
+   ENTRY_DATE TEXT NOT NULL
+);
+insert into px_parallel_delete_audit select generate_series(1,1000), 'world';
+CREATE OR REPLACE FUNCTION auditlogfunc_delete() RETURNS TRIGGER AS $example_table$
+   BEGIN
+      DELETE FROM px_parallel_delete_audit where EMP_ID < 20;
+      RETURN NEW;
+   END;
+$example_table$ LANGUAGE plpgsql;
+CREATE TRIGGER px_parallel_delete_trigger AFTER DELETE ON px_parallel_delete_t16 FOR EACH STATEMENT EXECUTE PROCEDURE auditlogfunc_delete();
+ANALYZE;
+\i sql/polar-px-dev/px_parallel_delete_base.sql
+-- Delete without subplan
+EXPLAIN (VERBOSE, COSTS OFF) delete from px_parallel_delete_t1 where c1 < 30;
+                                                                         QUERY PLAN                                                                         
+------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Delete (segment: 6) on public.px_parallel_delete_t1
+   ->  Result
+         Output: px_parallel_delete_t1_1.c1, px_parallel_delete_t1_1.c2, px_parallel_delete_t1_1.ctid
+         ->  PX Hash 6:6  (slice1; segments: 6)
+               Output: px_parallel_delete_t1_1.c1, px_parallel_delete_t1_1.c2, px_parallel_delete_t1_1.ctid, px_parallel_delete_t1_1._px_worker_id, (0)
+               ->  Partial Seq Scan on public.px_parallel_delete_t1 px_parallel_delete_t1_1
+                     Output: px_parallel_delete_t1_1.c1, px_parallel_delete_t1_1.c2, px_parallel_delete_t1_1.ctid, px_parallel_delete_t1_1._px_worker_id, 0
+                     Filter: (px_parallel_delete_t1_1.c1 < 30)
+ Optimizer: PolarDB PX Optimizer
+(9 rows)
+
+delete from px_parallel_delete_t1 where c1 < 30;
+select count(*) from px_parallel_delete_t1;
+ count 
+-------
+    71
+(1 row)
+
+EXPLAIN (VERBOSE, COSTS OFF) delete from px_parallel_delete_t1 where c1 > 970;
+                                                                         QUERY PLAN                                                                         
+------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Delete (segment: 6) on public.px_parallel_delete_t1
+   ->  Result
+         Output: px_parallel_delete_t1_1.c1, px_parallel_delete_t1_1.c2, px_parallel_delete_t1_1.ctid
+         ->  PX Hash 6:6  (slice1; segments: 6)
+               Output: px_parallel_delete_t1_1.c1, px_parallel_delete_t1_1.c2, px_parallel_delete_t1_1.ctid, px_parallel_delete_t1_1._px_worker_id, (0)
+               ->  Partial Seq Scan on public.px_parallel_delete_t1 px_parallel_delete_t1_1
+                     Output: px_parallel_delete_t1_1.c1, px_parallel_delete_t1_1.c2, px_parallel_delete_t1_1.ctid, px_parallel_delete_t1_1._px_worker_id, 0
+                     Filter: (px_parallel_delete_t1_1.c1 > 970)
+ Optimizer: PolarDB PX Optimizer
+(9 rows)
+
+delete from px_parallel_delete_t1 where c1 > 970;
+select count(*) from px_parallel_delete_t1;
+ count 
+-------
+    71
+(1 row)
+
+-- Delete with subplan
+EXPLAIN (VERBOSE, COSTS OFF) delete from px_parallel_delete_t2 where c1 in (select c1 from px_parallel_delete_t1 where c1 < 50);
+                                                                             QUERY PLAN                                                                              
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Delete (segment: 6) on public.px_parallel_delete_t2
+   ->  Result
+         Output: px_parallel_delete_t2_1.c1, px_parallel_delete_t2_1.c2, px_parallel_delete_t2_1.ctid
+         ->  PX Hash 6:6  (slice1; segments: 6)
+               Output: px_parallel_delete_t2_1.c1, px_parallel_delete_t2_1.c2, px_parallel_delete_t2_1.ctid, px_parallel_delete_t2_1._px_worker_id
+               ->  Hash Semi Join
+                     Output: px_parallel_delete_t2_1.c1, px_parallel_delete_t2_1.c2, px_parallel_delete_t2_1.ctid, px_parallel_delete_t2_1._px_worker_id
+                     Hash Cond: (px_parallel_delete_t2_1.c1 = px_parallel_delete_t1.c1)
+                     ->  PX Hash 6:6  (slice2; segments: 6)
+                           Output: px_parallel_delete_t2_1.c1, px_parallel_delete_t2_1.c2, px_parallel_delete_t2_1.ctid, px_parallel_delete_t2_1._px_worker_id
+                           Hash Key: px_parallel_delete_t2_1.c1
+                           ->  Partial Seq Scan on public.px_parallel_delete_t2 px_parallel_delete_t2_1
+                                 Output: px_parallel_delete_t2_1.c1, px_parallel_delete_t2_1.c2, px_parallel_delete_t2_1.ctid, px_parallel_delete_t2_1._px_worker_id
+                     ->  Hash
+                           Output: px_parallel_delete_t1.c1
+                           ->  PX Hash 6:6  (slice3; segments: 6)
+                                 Output: px_parallel_delete_t1.c1
+                                 Hash Key: px_parallel_delete_t1.c1
+                                 ->  Partial Seq Scan on public.px_parallel_delete_t1
+                                       Output: px_parallel_delete_t1.c1
+                                       Filter: (px_parallel_delete_t1.c1 < 50)
+ Optimizer: PolarDB PX Optimizer
+(22 rows)
+
+delete from px_parallel_delete_t2 where c1 in (select c1 from px_parallel_delete_t1 where c1 < 50);
+select count(*) from px_parallel_delete_t2;
+ count 
+-------
+    80
+(1 row)
+
+EXPLAIN (VERBOSE, COSTS OFF) delete from px_parallel_delete_t2 where c1 in (select c1 from px_parallel_delete_t1 where c1 > 950);
+                                                                          QUERY PLAN                                                                           
+---------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Delete (segment: 6) on public.px_parallel_delete_t2
+   ->  Result
+         Output: px_parallel_delete_t2_1.c1, px_parallel_delete_t2_1.c2, px_parallel_delete_t2_1.ctid
+         ->  PX Hash 6:6  (slice1; segments: 6)
+               Output: px_parallel_delete_t2_1.c1, px_parallel_delete_t2_1.c2, px_parallel_delete_t2_1.ctid, px_parallel_delete_t2_1._px_worker_id, (0)
+               ->  Hash Semi Join
+                     Output: px_parallel_delete_t2_1.c1, px_parallel_delete_t2_1.c2, px_parallel_delete_t2_1.ctid, px_parallel_delete_t2_1._px_worker_id, 0
+                     Hash Cond: (px_parallel_delete_t2_1.c1 = px_parallel_delete_t1.c1)
+                     ->  Partial Seq Scan on public.px_parallel_delete_t2 px_parallel_delete_t2_1
+                           Output: px_parallel_delete_t2_1.c1, px_parallel_delete_t2_1.c2, px_parallel_delete_t2_1.ctid, px_parallel_delete_t2_1._px_worker_id
+                     ->  Hash
+                           Output: px_parallel_delete_t1.c1
+                           ->  PX Broadcast 6:6  (slice2; segments: 6)
+                                 Output: px_parallel_delete_t1.c1
+                                 ->  Partial Seq Scan on public.px_parallel_delete_t1
+                                       Output: px_parallel_delete_t1.c1
+                                       Filter: (px_parallel_delete_t1.c1 > 950)
+ Optimizer: PolarDB PX Optimizer
+(18 rows)
+
+delete from px_parallel_delete_t2 where c1 in (select c1 from px_parallel_delete_t1 where c1 > 950);
+select count(*) from px_parallel_delete_t2;
+ count 
+-------
+    80
+(1 row)
+
+-- Delete Partitiion Table, should be fallback
+EXPLAIN (VERBOSE, COSTS OFF) delete from px_parallel_delete_t1_range where id < 50;
+                        QUERY PLAN                        
+----------------------------------------------------------
+ Delete on public.px_parallel_delete_t1_range
+   Delete on public.px_parallel_delete_t1_range_p1
+   Delete on public.px_parallel_delete_t1_range_p3
+   ->  Seq Scan on public.px_parallel_delete_t1_range_p1
+         Output: px_parallel_delete_t1_range_p1.ctid
+         Filter: (px_parallel_delete_t1_range_p1.id < 50)
+   ->  Seq Scan on public.px_parallel_delete_t1_range_p3
+         Output: px_parallel_delete_t1_range_p3.ctid
+         Filter: (px_parallel_delete_t1_range_p3.id < 50)
+(9 rows)
+
+EXPLAIN (VERBOSE, COSTS OFF) delete from px_parallel_delete_t1_range where id in (select c1 from px_parallel_delete_t3 where c1 > 960);
+                                          QUERY PLAN                                          
+----------------------------------------------------------------------------------------------
+ Delete on public.px_parallel_delete_t1_range
+   Delete on public.px_parallel_delete_t1_range_p1
+   Delete on public.px_parallel_delete_t1_range_p2
+   Delete on public.px_parallel_delete_t1_range_p3
+   ->  Hash Semi Join
+         Output: px_parallel_delete_t1_range_p1.ctid, px_parallel_delete_t3.ctid
+         Hash Cond: (px_parallel_delete_t1_range_p1.id = px_parallel_delete_t3.c1)
+         ->  Seq Scan on public.px_parallel_delete_t1_range_p1
+               Output: px_parallel_delete_t1_range_p1.ctid, px_parallel_delete_t1_range_p1.id
+         ->  Hash
+               Output: px_parallel_delete_t3.ctid, px_parallel_delete_t3.c1
+               ->  Seq Scan on public.px_parallel_delete_t3
+                     Output: px_parallel_delete_t3.ctid, px_parallel_delete_t3.c1
+                     Filter: (px_parallel_delete_t3.c1 > 960)
+   ->  Hash Semi Join
+         Output: px_parallel_delete_t1_range_p2.ctid, px_parallel_delete_t3.ctid
+         Hash Cond: (px_parallel_delete_t1_range_p2.id = px_parallel_delete_t3.c1)
+         ->  Seq Scan on public.px_parallel_delete_t1_range_p2
+               Output: px_parallel_delete_t1_range_p2.ctid, px_parallel_delete_t1_range_p2.id
+         ->  Hash
+               Output: px_parallel_delete_t3.ctid, px_parallel_delete_t3.c1
+               ->  Seq Scan on public.px_parallel_delete_t3
+                     Output: px_parallel_delete_t3.ctid, px_parallel_delete_t3.c1
+                     Filter: (px_parallel_delete_t3.c1 > 960)
+   ->  Hash Semi Join
+         Output: px_parallel_delete_t1_range_p3.ctid, px_parallel_delete_t3.ctid
+         Hash Cond: (px_parallel_delete_t1_range_p3.id = px_parallel_delete_t3.c1)
+         ->  Seq Scan on public.px_parallel_delete_t1_range_p3
+               Output: px_parallel_delete_t1_range_p3.ctid, px_parallel_delete_t1_range_p3.id
+         ->  Hash
+               Output: px_parallel_delete_t3.ctid, px_parallel_delete_t3.c1
+               ->  Seq Scan on public.px_parallel_delete_t3
+                     Output: px_parallel_delete_t3.ctid, px_parallel_delete_t3.c1
+                     Filter: (px_parallel_delete_t3.c1 > 960)
+(34 rows)
+
+delete from px_parallel_delete_t1_range where id < 50;
+select count(*) from px_parallel_delete_t1_range;
+ count 
+-------
+ 14975
+(1 row)
+
+delete from px_parallel_delete_t1_range where id in (select c1 from px_parallel_delete_t3 where c1 > 960);
+select count(*) from px_parallel_delete_t1_range;
+ count 
+-------
+ 14955
+(1 row)
+
+-- select Range Partition Table, use PX
+EXPLAIN (VERBOSE, COSTS OFF) delete from px_parallel_delete_t3 where c1 in (select id from px_parallel_delete_t1_range where id > 900);
+                                                                             QUERY PLAN                                                                              
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Delete (segment: 6) on public.px_parallel_delete_t3
+   ->  Result
+         Output: px_parallel_delete_t3_1.c1, px_parallel_delete_t3_1.c2, px_parallel_delete_t3_1.ctid
+         ->  PX Hash 6:6  (slice1; segments: 6)
+               Output: px_parallel_delete_t3_1.c1, px_parallel_delete_t3_1.c2, px_parallel_delete_t3_1.ctid, px_parallel_delete_t3_1._px_worker_id
+               ->  Hash Semi Join
+                     Output: px_parallel_delete_t3_1.c1, px_parallel_delete_t3_1.c2, px_parallel_delete_t3_1.ctid, px_parallel_delete_t3_1._px_worker_id
+                     Hash Cond: (px_parallel_delete_t3_1.c1 = px_parallel_delete_t1_range_p1.id)
+                     ->  PX Hash 6:6  (slice2; segments: 6)
+                           Output: px_parallel_delete_t3_1.c1, px_parallel_delete_t3_1.c2, px_parallel_delete_t3_1.ctid, px_parallel_delete_t3_1._px_worker_id
+                           Hash Key: px_parallel_delete_t3_1.c1
+                           ->  Partial Seq Scan on public.px_parallel_delete_t3 px_parallel_delete_t3_1
+                                 Output: px_parallel_delete_t3_1.c1, px_parallel_delete_t3_1.c2, px_parallel_delete_t3_1.ctid, px_parallel_delete_t3_1._px_worker_id
+                     ->  Hash
+                           Output: px_parallel_delete_t1_range_p1.id
+                           ->  PX Hash 6:6  (slice3; segments: 6)
+                                 Output: px_parallel_delete_t1_range_p1.id
+                                 Hash Key: px_parallel_delete_t1_range_p1.id
+                                 ->  Append
+                                       ->  Partial Seq Scan on public.px_parallel_delete_t1_range_p1
+                                             Output: px_parallel_delete_t1_range_p1.id
+                                             Filter: (px_parallel_delete_t1_range_p1.id > 900)
+                                       ->  Partial Seq Scan on public.px_parallel_delete_t1_range_p2
+                                             Output: px_parallel_delete_t1_range_p2.id
+                                             Filter: (px_parallel_delete_t1_range_p2.id > 900)
+                                       ->  Partial Seq Scan on public.px_parallel_delete_t1_range_p3
+                                             Output: px_parallel_delete_t1_range_p3.id
+                                             Filter: (px_parallel_delete_t1_range_p3.id > 900)
+ Optimizer: PolarDB PX Optimizer
+(29 rows)
+
+delete from px_parallel_delete_t3 where c1 in (select id from px_parallel_delete_t1_range where id > 900);
+select count(*) from px_parallel_delete_t3;
+ count 
+-------
+   970
+(1 row)
+
+-- select Hash Partition Table, use PX
+EXPLAIN (VERBOSE, COSTS OFF) delete from px_parallel_delete_t3 where c1 in (select id from px_parallel_delete_t0_hash where id > 800);
+                                                                             QUERY PLAN                                                                              
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Delete (segment: 6) on public.px_parallel_delete_t3
+   ->  Result
+         Output: px_parallel_delete_t3_1.c1, px_parallel_delete_t3_1.c2, px_parallel_delete_t3_1.ctid
+         ->  PX Hash 6:6  (slice1; segments: 6)
+               Output: px_parallel_delete_t3_1.c1, px_parallel_delete_t3_1.c2, px_parallel_delete_t3_1.ctid, px_parallel_delete_t3_1._px_worker_id
+               ->  Hash Semi Join
+                     Output: px_parallel_delete_t3_1.c1, px_parallel_delete_t3_1.c2, px_parallel_delete_t3_1.ctid, px_parallel_delete_t3_1._px_worker_id
+                     Hash Cond: (px_parallel_delete_t3_1.c1 = px_parallel_delete_t0_hash_p1.id)
+                     ->  PX Hash 6:6  (slice2; segments: 6)
+                           Output: px_parallel_delete_t3_1.c1, px_parallel_delete_t3_1.c2, px_parallel_delete_t3_1.ctid, px_parallel_delete_t3_1._px_worker_id
+                           Hash Key: px_parallel_delete_t3_1.c1
+                           ->  Partial Seq Scan on public.px_parallel_delete_t3 px_parallel_delete_t3_1
+                                 Output: px_parallel_delete_t3_1.c1, px_parallel_delete_t3_1.c2, px_parallel_delete_t3_1.ctid, px_parallel_delete_t3_1._px_worker_id
+                     ->  Hash
+                           Output: px_parallel_delete_t0_hash_p1.id
+                           ->  PX Hash 6:6  (slice3; segments: 6)
+                                 Output: px_parallel_delete_t0_hash_p1.id
+                                 Hash Key: px_parallel_delete_t0_hash_p1.id
+                                 ->  Append
+                                       ->  Partial Seq Scan on public.px_parallel_delete_t0_hash_p1
+                                             Output: px_parallel_delete_t0_hash_p1.id
+                                             Filter: (px_parallel_delete_t0_hash_p1.id > 800)
+                                       ->  Partial Seq Scan on public.px_parallel_delete_t0_hash_p2
+                                             Output: px_parallel_delete_t0_hash_p2.id
+                                             Filter: (px_parallel_delete_t0_hash_p2.id > 800)
+                                       ->  Partial Seq Scan on public.px_parallel_delete_t0_hash_p3
+                                             Output: px_parallel_delete_t0_hash_p3.id
+                                             Filter: (px_parallel_delete_t0_hash_p3.id > 800)
+ Optimizer: PolarDB PX Optimizer
+(29 rows)
+
+delete from px_parallel_delete_t3 where c1 in (select id from px_parallel_delete_t0_hash where id > 800);
+select count(*) from px_parallel_delete_t3;
+ count 
+-------
+   800
+(1 row)
+
+-- select List Partition Table, use PX
+EXPLAIN (VERBOSE, COSTS OFF) delete from px_parallel_delete_t3 where c1 in (select pvalue from px_parallel_delete_t2_list where job = 'student');
+                                                                             QUERY PLAN                                                                              
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Delete (segment: 6) on public.px_parallel_delete_t3
+   ->  Result
+         Output: px_parallel_delete_t3_1.c1, px_parallel_delete_t3_1.c2, px_parallel_delete_t3_1.ctid
+         ->  PX Hash 6:6  (slice1; segments: 6)
+               Output: px_parallel_delete_t3_1.c1, px_parallel_delete_t3_1.c2, px_parallel_delete_t3_1.ctid, px_parallel_delete_t3_1._px_worker_id
+               ->  Hash Semi Join
+                     Output: px_parallel_delete_t3_1.c1, px_parallel_delete_t3_1.c2, px_parallel_delete_t3_1.ctid, px_parallel_delete_t3_1._px_worker_id
+                     Hash Cond: (px_parallel_delete_t3_1.c1 = px_parallel_delete_t2_list_p1.pvalue)
+                     ->  PX Hash 6:6  (slice2; segments: 6)
+                           Output: px_parallel_delete_t3_1.c1, px_parallel_delete_t3_1.c2, px_parallel_delete_t3_1.ctid, px_parallel_delete_t3_1._px_worker_id
+                           Hash Key: px_parallel_delete_t3_1.c1
+                           ->  Partial Seq Scan on public.px_parallel_delete_t3 px_parallel_delete_t3_1
+                                 Output: px_parallel_delete_t3_1.c1, px_parallel_delete_t3_1.c2, px_parallel_delete_t3_1.ctid, px_parallel_delete_t3_1._px_worker_id
+                     ->  Hash
+                           Output: px_parallel_delete_t2_list_p1.pvalue
+                           ->  PX Hash 6:6  (slice3; segments: 6)
+                                 Output: px_parallel_delete_t2_list_p1.pvalue
+                                 Hash Key: px_parallel_delete_t2_list_p1.pvalue
+                                 ->  Result
+                                       Output: px_parallel_delete_t2_list_p1.pvalue
+                                       ->  Append
+                                             ->  Partial Seq Scan on public.px_parallel_delete_t2_list_p1
+                                                   Output: px_parallel_delete_t2_list_p1.job, px_parallel_delete_t2_list_p1.pvalue
+                                                   Filter: ((px_parallel_delete_t2_list_p1.job)::text = 'student'::text)
+ Optimizer: PolarDB PX Optimizer
+(25 rows)
+
+delete from px_parallel_delete_t3 where c1 in (select pvalue from px_parallel_delete_t2_list where job = 'student');
+select count(*) from px_parallel_delete_t3;
+ count 
+-------
+     0
+(1 row)
+
+-- Delete With Index
+EXPLAIN (VERBOSE, COSTS OFF) delete from px_parallel_delete_t4 where c1 < 50;
+                                                                         QUERY PLAN                                                                         
+------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Delete (segment: 6) on public.px_parallel_delete_t4
+   ->  Result
+         Output: px_parallel_delete_t4_1.c1, px_parallel_delete_t4_1.c2, px_parallel_delete_t4_1.ctid
+         ->  PX Hash 6:6  (slice1; segments: 6)
+               Output: px_parallel_delete_t4_1.c1, px_parallel_delete_t4_1.c2, px_parallel_delete_t4_1.ctid, px_parallel_delete_t4_1._px_worker_id, (0)
+               ->  Partial Index Scan using t_index_delete_plan on public.px_parallel_delete_t4 px_parallel_delete_t4_1
+                     Output: px_parallel_delete_t4_1.c1, px_parallel_delete_t4_1.c2, px_parallel_delete_t4_1.ctid, px_parallel_delete_t4_1._px_worker_id, 0
+                     Index Cond: (px_parallel_delete_t4_1.c1 < 50)
+ Optimizer: PolarDB PX Optimizer
+(9 rows)
+
+EXPLAIN (VERBOSE, COSTS OFF) delete from px_parallel_delete_t4 where c1 in (select c1 from px_parallel_delete_t3 where c1 > 960);
+                                                                          QUERY PLAN                                                                           
+---------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Delete (segment: 6) on public.px_parallel_delete_t4
+   ->  Result
+         Output: px_parallel_delete_t4_1.c1, px_parallel_delete_t4_1.c2, px_parallel_delete_t4_1.ctid
+         ->  PX Hash 6:6  (slice1; segments: 6)
+               Output: px_parallel_delete_t4_1.c1, px_parallel_delete_t4_1.c2, px_parallel_delete_t4_1.ctid, px_parallel_delete_t4_1._px_worker_id, (0)
+               ->  Hash Semi Join
+                     Output: px_parallel_delete_t4_1.c1, px_parallel_delete_t4_1.c2, px_parallel_delete_t4_1.ctid, px_parallel_delete_t4_1._px_worker_id, 0
+                     Hash Cond: (px_parallel_delete_t4_1.c1 = px_parallel_delete_t3.c1)
+                     ->  Partial Seq Scan on public.px_parallel_delete_t4 px_parallel_delete_t4_1
+                           Output: px_parallel_delete_t4_1.c1, px_parallel_delete_t4_1.c2, px_parallel_delete_t4_1.ctid, px_parallel_delete_t4_1._px_worker_id
+                     ->  Hash
+                           Output: px_parallel_delete_t3.c1
+                           ->  PX Broadcast 6:6  (slice2; segments: 6)
+                                 Output: px_parallel_delete_t3.c1
+                                 ->  Partial Seq Scan on public.px_parallel_delete_t3
+                                       Output: px_parallel_delete_t3.c1
+                                       Filter: (px_parallel_delete_t3.c1 > 960)
+ Optimizer: PolarDB PX Optimizer
+(18 rows)
+
+delete from px_parallel_delete_t4 where c1 < 50;
+select count(*) from px_parallel_delete_t4;
+ count 
+-------
+   951
+(1 row)
+
+delete from px_parallel_delete_t4 where c1 in (select c1 from px_parallel_delete_t15 where c1 > 960);
+select count(*) from px_parallel_delete_t4;
+ count 
+-------
+   951
+(1 row)
+
+-- Delete with CTE
+EXPLAIN (VERBOSE, COSTS OFF) WITH delete_move_rows AS (
+    delete from px_parallel_delete_t12 where c1 < 30 RETURNING c2
+)
+delete from px_parallel_delete_t13 where c1 in (select c1 from delete_move_rows);
+                        QUERY PLAN                        
+----------------------------------------------------------
+ Delete on public.px_parallel_delete_t13
+   CTE delete_move_rows
+     ->  Delete on public.px_parallel_delete_t12
+           Output: px_parallel_delete_t12.c2
+           ->  Seq Scan on public.px_parallel_delete_t12
+                 Output: px_parallel_delete_t12.ctid
+                 Filter: (px_parallel_delete_t12.c1 < 30)
+   ->  Seq Scan on public.px_parallel_delete_t13
+         Output: px_parallel_delete_t13.ctid
+         Filter: (SubPlan 2)
+         SubPlan 2
+           ->  CTE Scan on delete_move_rows
+                 Output: px_parallel_delete_t13.c1
+(13 rows)
+
+-- Delete with VIEW
+EXPLAIN (VERBOSE, COSTS OFF) delete from px_parallel_delete_view;
+                                                                                         QUERY PLAN                                                                                          
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Delete (segment: 6) on public.px_parallel_delete_t11
+   ->  Result
+         Output: px_parallel_delete_t11_1.c1, px_parallel_delete_t11_1.c2, px_parallel_delete_t11_1.c3, px_parallel_delete_t11_1.ctid
+         ->  PX Hash 6:6  (slice1; segments: 6)
+               Output: px_parallel_delete_t11_1.c1, px_parallel_delete_t11_1.c2, px_parallel_delete_t11_1.c3, px_parallel_delete_t11_1.ctid, px_parallel_delete_t11_1._px_worker_id, (0)
+               ->  Partial Seq Scan on public.px_parallel_delete_t11 px_parallel_delete_t11_1
+                     Output: px_parallel_delete_t11_1.c1, px_parallel_delete_t11_1.c2, px_parallel_delete_t11_1.c3, px_parallel_delete_t11_1.ctid, px_parallel_delete_t11_1._px_worker_id, 0
+                     Filter: (px_parallel_delete_t11_1.c1 < 200)
+ Optimizer: PolarDB PX Optimizer
+(9 rows)
+
+delete from px_parallel_delete_view;
+select count(*) from px_parallel_delete_t11;
+ count 
+-------
+   801
+(1 row)
+
+select count(*) from px_parallel_delete_t11;
+ count 
+-------
+   801
+(1 row)
+
+-- Delete twice case
+EXPLAIN(VERBOSE, COSTS OFF) delete from px_parallel_delete_t14 where c2 in (select c1 from px_parallel_delete_t15);
+                                                                            QUERY PLAN                                                                             
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Delete (segment: 6) on public.px_parallel_delete_t14
+   ->  Result
+         Output: px_parallel_delete_t14_1.c1, px_parallel_delete_t14_1.c2, px_parallel_delete_t14_1.ctid
+         ->  PX Hash 6:6  (slice1; segments: 6)
+               Output: px_parallel_delete_t14_1.c1, px_parallel_delete_t14_1.c2, px_parallel_delete_t14_1.ctid, px_parallel_delete_t14_1._px_worker_id, (0)
+               ->  Hash Join
+                     Output: px_parallel_delete_t14_1.c1, px_parallel_delete_t14_1.c2, px_parallel_delete_t14_1.ctid, px_parallel_delete_t14_1._px_worker_id, 0
+                     Hash Cond: (px_parallel_delete_t14_1.c2 = px_parallel_delete_t15.c1)
+                     ->  Partial Seq Scan on public.px_parallel_delete_t14 px_parallel_delete_t14_1
+                           Output: px_parallel_delete_t14_1.c1, px_parallel_delete_t14_1.c2, px_parallel_delete_t14_1.ctid, px_parallel_delete_t14_1._px_worker_id
+                     ->  Hash
+                           Output: px_parallel_delete_t15.c1
+                           ->  PX Broadcast 6:6  (slice2; segments: 6)
+                                 Output: px_parallel_delete_t15.c1
+                                 ->  GroupAggregate
+                                       Output: px_parallel_delete_t15.c1
+                                       Group Key: px_parallel_delete_t15.c1
+                                       ->  Sort
+                                             Output: px_parallel_delete_t15.c1
+                                             Sort Key: px_parallel_delete_t15.c1
+                                             ->  PX Hash 6:6  (slice3; segments: 6)
+                                                   Output: px_parallel_delete_t15.c1
+                                                   Hash Key: px_parallel_delete_t15.c1
+                                                   ->  HashAggregate
+                                                         Output: px_parallel_delete_t15.c1
+                                                         Group Key: px_parallel_delete_t15.c1
+                                                         ->  Partial Seq Scan on public.px_parallel_delete_t15
+                                                               Output: px_parallel_delete_t15.c1
+ Optimizer: PolarDB PX Optimizer
+(29 rows)
+
+delete from px_parallel_delete_t14 where c2 in (select c1 from px_parallel_delete_t15);
+select count(*) from px_parallel_delete_t14;
+ count 
+-------
+     0
+(1 row)
+
+-- Delete with returning
+EXPLAIN(VERBOSE, COSTS OFF) delete from px_parallel_delete_t15 where c2 < 10 returning *;
+                    QUERY PLAN                    
+--------------------------------------------------
+ Delete on public.px_parallel_delete_t15
+   Output: c1, c2
+   ->  Seq Scan on public.px_parallel_delete_t15
+         Output: ctid
+         Filter: (px_parallel_delete_t15.c2 < 10)
+(5 rows)
+
+delete from px_parallel_delete_t15 where c2 < 10 returning *;
+ c1 | c2 
+----+----
+  1 |  1
+  1 |  2
+  1 |  3
+  1 |  4
+  1 |  5
+  1 |  6
+  1 |  7
+  1 |  8
+  1 |  9
+(9 rows)
+
+-- Delete with trigger
+EXPLAIN(VERBOSE, COSTS OFF) delete from px_parallel_delete_t16 where c1 < 50;
+                                                                           QUERY PLAN                                                                           
+----------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Delete (segment: 6) on public.px_parallel_delete_t16
+   ->  Result
+         Output: px_parallel_delete_t16_1.c1, px_parallel_delete_t16_1.c2, px_parallel_delete_t16_1.ctid
+         ->  PX Hash 6:6  (slice1; segments: 6)
+               Output: px_parallel_delete_t16_1.c1, px_parallel_delete_t16_1.c2, px_parallel_delete_t16_1.ctid, px_parallel_delete_t16_1._px_worker_id, (0)
+               ->  Partial Seq Scan on public.px_parallel_delete_t16 px_parallel_delete_t16_1
+                     Output: px_parallel_delete_t16_1.c1, px_parallel_delete_t16_1.c2, px_parallel_delete_t16_1.ctid, px_parallel_delete_t16_1._px_worker_id, 0
+                     Filter: (px_parallel_delete_t16_1.c1 < 50)
+ Optimizer: PolarDB PX Optimizer
+(9 rows)
+
+delete from px_parallel_delete_t16 where c1 < 50;
+select count(*) from px_parallel_delete_t16;
+ count 
+-------
+   951
+(1 row)
+
+select count(*) from px_parallel_delete_audit;
+ count 
+-------
+   981
+(1 row)
+
+-- polar_px_delete_dop_num = 9
+set polar_px_delete_dop_num = 9;
+\i sql/polar-px-dev/px_parallel_delete_init.sql
+-- create normal table
+drop table if exists px_parallel_delete_t1 cascade;
+CREATE TABLE px_parallel_delete_t1 (c1 int, c2 int) ;
+insert into px_parallel_delete_t1 select generate_series(1,100),generate_series(1,100);
+drop table if exists px_parallel_delete_t2 cascade;
+CREATE TABLE px_parallel_delete_t2 (c1 int, c2 int) ;
+insert into px_parallel_delete_t2 select generate_series(1,100),generate_series(1,100);
+drop table if exists px_parallel_delete_t3 cascade;
+CREATE TABLE px_parallel_delete_t3 (c1 int, c2 int) ;
+insert into px_parallel_delete_t3 select generate_series(1,1000),generate_series(1,1000);
+select count(*) from px_parallel_delete_t1;
+ count 
+-------
+   100
+(1 row)
+
+select count(*) from px_parallel_delete_t2;
+ count 
+-------
+   100
+(1 row)
+
+------------------------------------------------------------------------
+--range partition
+--Partition constraint: ((x IS NOT NULL) AND (x >= 10) AND (x < 20))
+drop table if exists px_parallel_delete_t1_range cascade;
+CREATE TABLE px_parallel_delete_t1_range(id int, value int) PARTITION BY RANGE(id);
+CREATE TABLE px_parallel_delete_t1_range_p1 PARTITION OF px_parallel_delete_t1_range FOR VALUES FROM (1) TO (10000);
+CREATE TABLE px_parallel_delete_t1_range_p2 PARTITION OF px_parallel_delete_t1_range FOR VALUES FROM (10000) TO (20000);
+CREATE TABLE px_parallel_delete_t1_range_p3 PARTITION OF px_parallel_delete_t1_range DEFAULT;
+insert into px_parallel_delete_t1_range select generate_series(1,30000, 2);
+-- Hash partition table
+drop table if exists px_parallel_delete_t0_hash cascade;
+CREATE TABLE px_parallel_delete_t0_hash (id int, value int) PARTITION BY HASH(id);
+CREATE TABLE px_parallel_delete_t0_hash_p1 PARTITION OF px_parallel_delete_t0_hash FOR VALUES WITH (modulus 3, remainder 0);
+CREATE TABLE px_parallel_delete_t0_hash_p2 PARTITION OF px_parallel_delete_t0_hash FOR VALUES WITH (modulus 3, remainder 1);
+CREATE TABLE px_parallel_delete_t0_hash_p3 PARTITION OF px_parallel_delete_t0_hash FOR VALUES WITH (modulus 3, remainder 2);
+insert into px_parallel_delete_t0_hash select generate_series(1,30000),generate_series(1,30000);
+-- List partition table
+drop table if exists px_parallel_delete_t2_list cascade;
+create table px_parallel_delete_t2_list(job character varying(30), pvalue int) partition by list (job);
+CREATE TABLE px_parallel_delete_t2_list_p1 PARTITION OF px_parallel_delete_t2_list FOR VALUES IN ('student');
+CREATE TABLE px_parallel_delete_t2_list_p2 PARTITION OF px_parallel_delete_t2_list FOR VALUES IN ('teacher');
+CREATE TABLE px_parallel_delete_t2_list_p3 PARTITION OF px_parallel_delete_t2_list DEFAULT;
+insert into px_parallel_delete_t2_list select 'student',generate_series(1,10000);
+insert into px_parallel_delete_t2_list select 'teacher',generate_series(10000,20000);
+insert into px_parallel_delete_t2_list select 'other',generate_series(20000,30000);
+-- Index Test Init
+drop table if exists px_parallel_delete_t4 cascade;
+CREATE TABLE px_parallel_delete_t4 (c1 int, c2 int) ;
+insert into px_parallel_delete_t4 select generate_series(1,1000),generate_series(1,1000);
+CREATE INDEX t_index_delete_plan on px_parallel_delete_t4(c1);
+-- Constrain Test Init
+drop table if exists px_parallel_delete_t5 cascade;
+CREATE TABLE px_parallel_delete_t5 (c1 int, c2 int not NULL);
+drop table if exists px_parallel_delete_t6 cascade;
+CREATE TABLE px_parallel_delete_t6 (c1 int, c2 int);
+drop table if exists px_parallel_delete_t7 cascade;
+CREATE TABLE px_parallel_delete_t7 (c1 int, c2 int CHECK (c2 < 1000));
+drop table if exists px_parallel_delete_t10 cascade;
+CREATE TABLE px_parallel_delete_t10(
+   ID INT PRIMARY KEY     NOT NULL,
+   NAME           TEXT    NOT NULL
+);
+insert into px_parallel_delete_t10 select generate_series(1,1000), 'hello';
+drop table if exists px_parallel_delete_audit cascade;
+CREATE TABLE px_parallel_delete_audit(
+   EMP_ID INT NOT NULL,
+   ENTRY_DATE TEXT NOT NULL
+);
+insert into px_parallel_delete_audit select generate_series(1,1000), 'world';
+-- Create Updatable View
+drop table if exists px_parallel_delete_t11 cascade;
+psql:sql/polar-px-dev/px_parallel_delete_init.sql:82: NOTICE:  drop cascades to view px_parallel_delete_view
+CREATE TABLE px_parallel_delete_t11 (c1 int, c2 int, c3 int) ;
+insert into px_parallel_delete_t11 select generate_series(1,1000), generate_series(1,1000), generate_series(1,1000);
+CREATE VIEW px_parallel_delete_view AS select
+c1,
+c2,
+c3
+from px_parallel_delete_t11
+where c1 < 200;
+-- Create with CTE
+drop table if exists px_parallel_delete_t12 cascade;
+CREATE TABLE px_parallel_delete_t12 (c1 int, c2 int, c3 int) ;
+insert into px_parallel_delete_t12 select generate_series(1,1000), generate_series(1,1000), generate_series(1,1000);
+drop table if exists px_parallel_delete_t13 cascade;
+CREATE TABLE px_parallel_delete_t13 (c1 int, c2 int, c3 int) ;
+insert into px_parallel_delete_t13 select generate_series(1,1000), generate_series(1,1000), generate_series(1,1000);
+-- Delete twice
+drop table if exists px_parallel_delete_t14 cascade;
+CREATE TABLE px_parallel_delete_t14 (c1 int, c2 int);
+insert into px_parallel_delete_t14 VALUES(1,1),(1,1);
+drop table if exists px_parallel_delete_t15 cascade;
+CREATE TABLE px_parallel_delete_t15 (c1 int, c2 int);
+insert into px_parallel_delete_t15 select generate_series(1,1000), generate_series(1,1000);
+update px_parallel_delete_t15 set c1=1;
+-- Delete with trigger
+drop table if exists px_parallel_delete_t16 cascade;
+CREATE TABLE px_parallel_delete_t16(c1 int, c2 int);
+insert into px_parallel_delete_t16 select generate_series(1,1000),generate_series(1,1000);
+drop table if exists px_parallel_delete_audit cascade;
+CREATE TABLE px_parallel_delete_audit(
+   EMP_ID INT NOT NULL,
+   ENTRY_DATE TEXT NOT NULL
+);
+insert into px_parallel_delete_audit select generate_series(1,1000), 'world';
+CREATE OR REPLACE FUNCTION auditlogfunc_delete() RETURNS TRIGGER AS $example_table$
+   BEGIN
+      DELETE FROM px_parallel_delete_audit where EMP_ID < 20;
+      RETURN NEW;
+   END;
+$example_table$ LANGUAGE plpgsql;
+CREATE TRIGGER px_parallel_delete_trigger AFTER DELETE ON px_parallel_delete_t16 FOR EACH STATEMENT EXECUTE PROCEDURE auditlogfunc_delete();
+ANALYZE;
+\i sql/polar-px-dev/px_parallel_delete_base.sql
+-- Delete without subplan
+EXPLAIN (VERBOSE, COSTS OFF) delete from px_parallel_delete_t1 where c1 < 30;
+                                                                         QUERY PLAN                                                                         
+------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Delete (segment: 9) on public.px_parallel_delete_t1
+   ->  Result
+         Output: px_parallel_delete_t1_1.c1, px_parallel_delete_t1_1.c2, px_parallel_delete_t1_1.ctid
+         ->  PX Hash 6:9  (slice1; segments: 6)
+               Output: px_parallel_delete_t1_1.c1, px_parallel_delete_t1_1.c2, px_parallel_delete_t1_1.ctid, px_parallel_delete_t1_1._px_worker_id, (0)
+               ->  Partial Seq Scan on public.px_parallel_delete_t1 px_parallel_delete_t1_1
+                     Output: px_parallel_delete_t1_1.c1, px_parallel_delete_t1_1.c2, px_parallel_delete_t1_1.ctid, px_parallel_delete_t1_1._px_worker_id, 0
+                     Filter: (px_parallel_delete_t1_1.c1 < 30)
+ Optimizer: PolarDB PX Optimizer
+(9 rows)
+
+delete from px_parallel_delete_t1 where c1 < 30;
+select count(*) from px_parallel_delete_t1;
+ count 
+-------
+    71
+(1 row)
+
+EXPLAIN (VERBOSE, COSTS OFF) delete from px_parallel_delete_t1 where c1 > 970;
+                                                                         QUERY PLAN                                                                         
+------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Delete (segment: 9) on public.px_parallel_delete_t1
+   ->  Result
+         Output: px_parallel_delete_t1_1.c1, px_parallel_delete_t1_1.c2, px_parallel_delete_t1_1.ctid
+         ->  PX Hash 6:9  (slice1; segments: 6)
+               Output: px_parallel_delete_t1_1.c1, px_parallel_delete_t1_1.c2, px_parallel_delete_t1_1.ctid, px_parallel_delete_t1_1._px_worker_id, (0)
+               ->  Partial Seq Scan on public.px_parallel_delete_t1 px_parallel_delete_t1_1
+                     Output: px_parallel_delete_t1_1.c1, px_parallel_delete_t1_1.c2, px_parallel_delete_t1_1.ctid, px_parallel_delete_t1_1._px_worker_id, 0
+                     Filter: (px_parallel_delete_t1_1.c1 > 970)
+ Optimizer: PolarDB PX Optimizer
+(9 rows)
+
+delete from px_parallel_delete_t1 where c1 > 970;
+select count(*) from px_parallel_delete_t1;
+ count 
+-------
+    71
+(1 row)
+
+-- Delete with subplan
+EXPLAIN (VERBOSE, COSTS OFF) delete from px_parallel_delete_t2 where c1 in (select c1 from px_parallel_delete_t1 where c1 < 50);
+                                                                             QUERY PLAN                                                                              
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Delete (segment: 9) on public.px_parallel_delete_t2
+   ->  Result
+         Output: px_parallel_delete_t2_1.c1, px_parallel_delete_t2_1.c2, px_parallel_delete_t2_1.ctid
+         ->  PX Hash 6:9  (slice1; segments: 6)
+               Output: px_parallel_delete_t2_1.c1, px_parallel_delete_t2_1.c2, px_parallel_delete_t2_1.ctid, px_parallel_delete_t2_1._px_worker_id
+               ->  Hash Semi Join
+                     Output: px_parallel_delete_t2_1.c1, px_parallel_delete_t2_1.c2, px_parallel_delete_t2_1.ctid, px_parallel_delete_t2_1._px_worker_id
+                     Hash Cond: (px_parallel_delete_t2_1.c1 = px_parallel_delete_t1.c1)
+                     ->  PX Hash 6:6  (slice2; segments: 6)
+                           Output: px_parallel_delete_t2_1.c1, px_parallel_delete_t2_1.c2, px_parallel_delete_t2_1.ctid, px_parallel_delete_t2_1._px_worker_id
+                           Hash Key: px_parallel_delete_t2_1.c1
+                           ->  Partial Seq Scan on public.px_parallel_delete_t2 px_parallel_delete_t2_1
+                                 Output: px_parallel_delete_t2_1.c1, px_parallel_delete_t2_1.c2, px_parallel_delete_t2_1.ctid, px_parallel_delete_t2_1._px_worker_id
+                     ->  Hash
+                           Output: px_parallel_delete_t1.c1
+                           ->  PX Hash 6:6  (slice3; segments: 6)
+                                 Output: px_parallel_delete_t1.c1
+                                 Hash Key: px_parallel_delete_t1.c1
+                                 ->  Partial Seq Scan on public.px_parallel_delete_t1
+                                       Output: px_parallel_delete_t1.c1
+                                       Filter: (px_parallel_delete_t1.c1 < 50)
+ Optimizer: PolarDB PX Optimizer
+(22 rows)
+
+delete from px_parallel_delete_t2 where c1 in (select c1 from px_parallel_delete_t1 where c1 < 50);
+select count(*) from px_parallel_delete_t2;
+ count 
+-------
+    80
+(1 row)
+
+EXPLAIN (VERBOSE, COSTS OFF) delete from px_parallel_delete_t2 where c1 in (select c1 from px_parallel_delete_t1 where c1 > 950);
+                                                                          QUERY PLAN                                                                           
+---------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Delete (segment: 9) on public.px_parallel_delete_t2
+   ->  Result
+         Output: px_parallel_delete_t2_1.c1, px_parallel_delete_t2_1.c2, px_parallel_delete_t2_1.ctid
+         ->  PX Hash 6:9  (slice1; segments: 6)
+               Output: px_parallel_delete_t2_1.c1, px_parallel_delete_t2_1.c2, px_parallel_delete_t2_1.ctid, px_parallel_delete_t2_1._px_worker_id, (0)
+               ->  Hash Semi Join
+                     Output: px_parallel_delete_t2_1.c1, px_parallel_delete_t2_1.c2, px_parallel_delete_t2_1.ctid, px_parallel_delete_t2_1._px_worker_id, 0
+                     Hash Cond: (px_parallel_delete_t2_1.c1 = px_parallel_delete_t1.c1)
+                     ->  Partial Seq Scan on public.px_parallel_delete_t2 px_parallel_delete_t2_1
+                           Output: px_parallel_delete_t2_1.c1, px_parallel_delete_t2_1.c2, px_parallel_delete_t2_1.ctid, px_parallel_delete_t2_1._px_worker_id
+                     ->  Hash
+                           Output: px_parallel_delete_t1.c1
+                           ->  PX Broadcast 6:6  (slice2; segments: 6)
+                                 Output: px_parallel_delete_t1.c1
+                                 ->  Partial Seq Scan on public.px_parallel_delete_t1
+                                       Output: px_parallel_delete_t1.c1
+                                       Filter: (px_parallel_delete_t1.c1 > 950)
+ Optimizer: PolarDB PX Optimizer
+(18 rows)
+
+delete from px_parallel_delete_t2 where c1 in (select c1 from px_parallel_delete_t1 where c1 > 950);
+select count(*) from px_parallel_delete_t2;
+ count 
+-------
+    80
+(1 row)
+
+-- Delete Partitiion Table, should be fallback
+EXPLAIN (VERBOSE, COSTS OFF) delete from px_parallel_delete_t1_range where id < 50;
+                        QUERY PLAN                        
+----------------------------------------------------------
+ Delete on public.px_parallel_delete_t1_range
+   Delete on public.px_parallel_delete_t1_range_p1
+   Delete on public.px_parallel_delete_t1_range_p3
+   ->  Seq Scan on public.px_parallel_delete_t1_range_p1
+         Output: px_parallel_delete_t1_range_p1.ctid
+         Filter: (px_parallel_delete_t1_range_p1.id < 50)
+   ->  Seq Scan on public.px_parallel_delete_t1_range_p3
+         Output: px_parallel_delete_t1_range_p3.ctid
+         Filter: (px_parallel_delete_t1_range_p3.id < 50)
+(9 rows)
+
+EXPLAIN (VERBOSE, COSTS OFF) delete from px_parallel_delete_t1_range where id in (select c1 from px_parallel_delete_t3 where c1 > 960);
+                                          QUERY PLAN                                          
+----------------------------------------------------------------------------------------------
+ Delete on public.px_parallel_delete_t1_range
+   Delete on public.px_parallel_delete_t1_range_p1
+   Delete on public.px_parallel_delete_t1_range_p2
+   Delete on public.px_parallel_delete_t1_range_p3
+   ->  Hash Semi Join
+         Output: px_parallel_delete_t1_range_p1.ctid, px_parallel_delete_t3.ctid
+         Hash Cond: (px_parallel_delete_t1_range_p1.id = px_parallel_delete_t3.c1)
+         ->  Seq Scan on public.px_parallel_delete_t1_range_p1
+               Output: px_parallel_delete_t1_range_p1.ctid, px_parallel_delete_t1_range_p1.id
+         ->  Hash
+               Output: px_parallel_delete_t3.ctid, px_parallel_delete_t3.c1
+               ->  Seq Scan on public.px_parallel_delete_t3
+                     Output: px_parallel_delete_t3.ctid, px_parallel_delete_t3.c1
+                     Filter: (px_parallel_delete_t3.c1 > 960)
+   ->  Hash Semi Join
+         Output: px_parallel_delete_t1_range_p2.ctid, px_parallel_delete_t3.ctid
+         Hash Cond: (px_parallel_delete_t1_range_p2.id = px_parallel_delete_t3.c1)
+         ->  Seq Scan on public.px_parallel_delete_t1_range_p2
+               Output: px_parallel_delete_t1_range_p2.ctid, px_parallel_delete_t1_range_p2.id
+         ->  Hash
+               Output: px_parallel_delete_t3.ctid, px_parallel_delete_t3.c1
+               ->  Seq Scan on public.px_parallel_delete_t3
+                     Output: px_parallel_delete_t3.ctid, px_parallel_delete_t3.c1
+                     Filter: (px_parallel_delete_t3.c1 > 960)
+   ->  Hash Semi Join
+         Output: px_parallel_delete_t1_range_p3.ctid, px_parallel_delete_t3.ctid
+         Hash Cond: (px_parallel_delete_t1_range_p3.id = px_parallel_delete_t3.c1)
+         ->  Seq Scan on public.px_parallel_delete_t1_range_p3
+               Output: px_parallel_delete_t1_range_p3.ctid, px_parallel_delete_t1_range_p3.id
+         ->  Hash
+               Output: px_parallel_delete_t3.ctid, px_parallel_delete_t3.c1
+               ->  Seq Scan on public.px_parallel_delete_t3
+                     Output: px_parallel_delete_t3.ctid, px_parallel_delete_t3.c1
+                     Filter: (px_parallel_delete_t3.c1 > 960)
+(34 rows)
+
+delete from px_parallel_delete_t1_range where id < 50;
+select count(*) from px_parallel_delete_t1_range;
+ count 
+-------
+ 14975
+(1 row)
+
+delete from px_parallel_delete_t1_range where id in (select c1 from px_parallel_delete_t3 where c1 > 960);
+select count(*) from px_parallel_delete_t1_range;
+ count 
+-------
+ 14955
+(1 row)
+
+-- select Range Partition Table, use PX
+EXPLAIN (VERBOSE, COSTS OFF) delete from px_parallel_delete_t3 where c1 in (select id from px_parallel_delete_t1_range where id > 900);
+                                                                             QUERY PLAN                                                                              
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Delete (segment: 9) on public.px_parallel_delete_t3
+   ->  Result
+         Output: px_parallel_delete_t3_1.c1, px_parallel_delete_t3_1.c2, px_parallel_delete_t3_1.ctid
+         ->  PX Hash 6:9  (slice1; segments: 6)
+               Output: px_parallel_delete_t3_1.c1, px_parallel_delete_t3_1.c2, px_parallel_delete_t3_1.ctid, px_parallel_delete_t3_1._px_worker_id
+               ->  Hash Semi Join
+                     Output: px_parallel_delete_t3_1.c1, px_parallel_delete_t3_1.c2, px_parallel_delete_t3_1.ctid, px_parallel_delete_t3_1._px_worker_id
+                     Hash Cond: (px_parallel_delete_t3_1.c1 = px_parallel_delete_t1_range_p1.id)
+                     ->  PX Hash 6:6  (slice2; segments: 6)
+                           Output: px_parallel_delete_t3_1.c1, px_parallel_delete_t3_1.c2, px_parallel_delete_t3_1.ctid, px_parallel_delete_t3_1._px_worker_id
+                           Hash Key: px_parallel_delete_t3_1.c1
+                           ->  Partial Seq Scan on public.px_parallel_delete_t3 px_parallel_delete_t3_1
+                                 Output: px_parallel_delete_t3_1.c1, px_parallel_delete_t3_1.c2, px_parallel_delete_t3_1.ctid, px_parallel_delete_t3_1._px_worker_id
+                     ->  Hash
+                           Output: px_parallel_delete_t1_range_p1.id
+                           ->  PX Hash 6:6  (slice3; segments: 6)
+                                 Output: px_parallel_delete_t1_range_p1.id
+                                 Hash Key: px_parallel_delete_t1_range_p1.id
+                                 ->  Append
+                                       ->  Partial Seq Scan on public.px_parallel_delete_t1_range_p1
+                                             Output: px_parallel_delete_t1_range_p1.id
+                                             Filter: (px_parallel_delete_t1_range_p1.id > 900)
+                                       ->  Partial Seq Scan on public.px_parallel_delete_t1_range_p2
+                                             Output: px_parallel_delete_t1_range_p2.id
+                                             Filter: (px_parallel_delete_t1_range_p2.id > 900)
+                                       ->  Partial Seq Scan on public.px_parallel_delete_t1_range_p3
+                                             Output: px_parallel_delete_t1_range_p3.id
+                                             Filter: (px_parallel_delete_t1_range_p3.id > 900)
+ Optimizer: PolarDB PX Optimizer
+(29 rows)
+
+delete from px_parallel_delete_t3 where c1 in (select id from px_parallel_delete_t1_range where id > 900);
+select count(*) from px_parallel_delete_t3;
+ count 
+-------
+   970
+(1 row)
+
+-- select Hash Partition Table, use PX
+EXPLAIN (VERBOSE, COSTS OFF) delete from px_parallel_delete_t3 where c1 in (select id from px_parallel_delete_t0_hash where id > 800);
+                                                                             QUERY PLAN                                                                              
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Delete (segment: 9) on public.px_parallel_delete_t3
+   ->  Result
+         Output: px_parallel_delete_t3_1.c1, px_parallel_delete_t3_1.c2, px_parallel_delete_t3_1.ctid
+         ->  PX Hash 6:9  (slice1; segments: 6)
+               Output: px_parallel_delete_t3_1.c1, px_parallel_delete_t3_1.c2, px_parallel_delete_t3_1.ctid, px_parallel_delete_t3_1._px_worker_id
+               ->  Hash Semi Join
+                     Output: px_parallel_delete_t3_1.c1, px_parallel_delete_t3_1.c2, px_parallel_delete_t3_1.ctid, px_parallel_delete_t3_1._px_worker_id
+                     Hash Cond: (px_parallel_delete_t3_1.c1 = px_parallel_delete_t0_hash_p1.id)
+                     ->  PX Hash 6:6  (slice2; segments: 6)
+                           Output: px_parallel_delete_t3_1.c1, px_parallel_delete_t3_1.c2, px_parallel_delete_t3_1.ctid, px_parallel_delete_t3_1._px_worker_id
+                           Hash Key: px_parallel_delete_t3_1.c1
+                           ->  Partial Seq Scan on public.px_parallel_delete_t3 px_parallel_delete_t3_1
+                                 Output: px_parallel_delete_t3_1.c1, px_parallel_delete_t3_1.c2, px_parallel_delete_t3_1.ctid, px_parallel_delete_t3_1._px_worker_id
+                     ->  Hash
+                           Output: px_parallel_delete_t0_hash_p1.id
+                           ->  PX Hash 6:6  (slice3; segments: 6)
+                                 Output: px_parallel_delete_t0_hash_p1.id
+                                 Hash Key: px_parallel_delete_t0_hash_p1.id
+                                 ->  Append
+                                       ->  Partial Seq Scan on public.px_parallel_delete_t0_hash_p1
+                                             Output: px_parallel_delete_t0_hash_p1.id
+                                             Filter: (px_parallel_delete_t0_hash_p1.id > 800)
+                                       ->  Partial Seq Scan on public.px_parallel_delete_t0_hash_p2
+                                             Output: px_parallel_delete_t0_hash_p2.id
+                                             Filter: (px_parallel_delete_t0_hash_p2.id > 800)
+                                       ->  Partial Seq Scan on public.px_parallel_delete_t0_hash_p3
+                                             Output: px_parallel_delete_t0_hash_p3.id
+                                             Filter: (px_parallel_delete_t0_hash_p3.id > 800)
+ Optimizer: PolarDB PX Optimizer
+(29 rows)
+
+delete from px_parallel_delete_t3 where c1 in (select id from px_parallel_delete_t0_hash where id > 800);
+select count(*) from px_parallel_delete_t3;
+ count 
+-------
+   800
+(1 row)
+
+-- select List Partition Table, use PX
+EXPLAIN (VERBOSE, COSTS OFF) delete from px_parallel_delete_t3 where c1 in (select pvalue from px_parallel_delete_t2_list where job = 'student');
+                                                                             QUERY PLAN                                                                              
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Delete (segment: 9) on public.px_parallel_delete_t3
+   ->  Result
+         Output: px_parallel_delete_t3_1.c1, px_parallel_delete_t3_1.c2, px_parallel_delete_t3_1.ctid
+         ->  PX Hash 6:9  (slice1; segments: 6)
+               Output: px_parallel_delete_t3_1.c1, px_parallel_delete_t3_1.c2, px_parallel_delete_t3_1.ctid, px_parallel_delete_t3_1._px_worker_id
+               ->  Hash Semi Join
+                     Output: px_parallel_delete_t3_1.c1, px_parallel_delete_t3_1.c2, px_parallel_delete_t3_1.ctid, px_parallel_delete_t3_1._px_worker_id
+                     Hash Cond: (px_parallel_delete_t3_1.c1 = px_parallel_delete_t2_list_p1.pvalue)
+                     ->  PX Hash 6:6  (slice2; segments: 6)
+                           Output: px_parallel_delete_t3_1.c1, px_parallel_delete_t3_1.c2, px_parallel_delete_t3_1.ctid, px_parallel_delete_t3_1._px_worker_id
+                           Hash Key: px_parallel_delete_t3_1.c1
+                           ->  Partial Seq Scan on public.px_parallel_delete_t3 px_parallel_delete_t3_1
+                                 Output: px_parallel_delete_t3_1.c1, px_parallel_delete_t3_1.c2, px_parallel_delete_t3_1.ctid, px_parallel_delete_t3_1._px_worker_id
+                     ->  Hash
+                           Output: px_parallel_delete_t2_list_p1.pvalue
+                           ->  PX Hash 6:6  (slice3; segments: 6)
+                                 Output: px_parallel_delete_t2_list_p1.pvalue
+                                 Hash Key: px_parallel_delete_t2_list_p1.pvalue
+                                 ->  Result
+                                       Output: px_parallel_delete_t2_list_p1.pvalue
+                                       ->  Append
+                                             ->  Partial Seq Scan on public.px_parallel_delete_t2_list_p1
+                                                   Output: px_parallel_delete_t2_list_p1.job, px_parallel_delete_t2_list_p1.pvalue
+                                                   Filter: ((px_parallel_delete_t2_list_p1.job)::text = 'student'::text)
+ Optimizer: PolarDB PX Optimizer
+(25 rows)
+
+delete from px_parallel_delete_t3 where c1 in (select pvalue from px_parallel_delete_t2_list where job = 'student');
+select count(*) from px_parallel_delete_t3;
+ count 
+-------
+     0
+(1 row)
+
+-- Delete With Index
+EXPLAIN (VERBOSE, COSTS OFF) delete from px_parallel_delete_t4 where c1 < 50;
+                                                                         QUERY PLAN                                                                         
+------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Delete (segment: 9) on public.px_parallel_delete_t4
+   ->  Result
+         Output: px_parallel_delete_t4_1.c1, px_parallel_delete_t4_1.c2, px_parallel_delete_t4_1.ctid
+         ->  PX Hash 6:9  (slice1; segments: 6)
+               Output: px_parallel_delete_t4_1.c1, px_parallel_delete_t4_1.c2, px_parallel_delete_t4_1.ctid, px_parallel_delete_t4_1._px_worker_id, (0)
+               ->  Partial Index Scan using t_index_delete_plan on public.px_parallel_delete_t4 px_parallel_delete_t4_1
+                     Output: px_parallel_delete_t4_1.c1, px_parallel_delete_t4_1.c2, px_parallel_delete_t4_1.ctid, px_parallel_delete_t4_1._px_worker_id, 0
+                     Index Cond: (px_parallel_delete_t4_1.c1 < 50)
+ Optimizer: PolarDB PX Optimizer
+(9 rows)
+
+EXPLAIN (VERBOSE, COSTS OFF) delete from px_parallel_delete_t4 where c1 in (select c1 from px_parallel_delete_t3 where c1 > 960);
+                                                                          QUERY PLAN                                                                           
+---------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Delete (segment: 9) on public.px_parallel_delete_t4
+   ->  Result
+         Output: px_parallel_delete_t4_1.c1, px_parallel_delete_t4_1.c2, px_parallel_delete_t4_1.ctid
+         ->  PX Hash 6:9  (slice1; segments: 6)
+               Output: px_parallel_delete_t4_1.c1, px_parallel_delete_t4_1.c2, px_parallel_delete_t4_1.ctid, px_parallel_delete_t4_1._px_worker_id, (0)
+               ->  Hash Semi Join
+                     Output: px_parallel_delete_t4_1.c1, px_parallel_delete_t4_1.c2, px_parallel_delete_t4_1.ctid, px_parallel_delete_t4_1._px_worker_id, 0
+                     Hash Cond: (px_parallel_delete_t4_1.c1 = px_parallel_delete_t3.c1)
+                     ->  Partial Seq Scan on public.px_parallel_delete_t4 px_parallel_delete_t4_1
+                           Output: px_parallel_delete_t4_1.c1, px_parallel_delete_t4_1.c2, px_parallel_delete_t4_1.ctid, px_parallel_delete_t4_1._px_worker_id
+                     ->  Hash
+                           Output: px_parallel_delete_t3.c1
+                           ->  PX Broadcast 6:6  (slice2; segments: 6)
+                                 Output: px_parallel_delete_t3.c1
+                                 ->  Partial Seq Scan on public.px_parallel_delete_t3
+                                       Output: px_parallel_delete_t3.c1
+                                       Filter: (px_parallel_delete_t3.c1 > 960)
+ Optimizer: PolarDB PX Optimizer
+(18 rows)
+
+delete from px_parallel_delete_t4 where c1 < 50;
+select count(*) from px_parallel_delete_t4;
+ count 
+-------
+   951
+(1 row)
+
+delete from px_parallel_delete_t4 where c1 in (select c1 from px_parallel_delete_t15 where c1 > 960);
+select count(*) from px_parallel_delete_t4;
+ count 
+-------
+   951
+(1 row)
+
+-- Delete with CTE
+EXPLAIN (VERBOSE, COSTS OFF) WITH delete_move_rows AS (
+    delete from px_parallel_delete_t12 where c1 < 30 RETURNING c2
+)
+delete from px_parallel_delete_t13 where c1 in (select c1 from delete_move_rows);
+                        QUERY PLAN                        
+----------------------------------------------------------
+ Delete on public.px_parallel_delete_t13
+   CTE delete_move_rows
+     ->  Delete on public.px_parallel_delete_t12
+           Output: px_parallel_delete_t12.c2
+           ->  Seq Scan on public.px_parallel_delete_t12
+                 Output: px_parallel_delete_t12.ctid
+                 Filter: (px_parallel_delete_t12.c1 < 30)
+   ->  Seq Scan on public.px_parallel_delete_t13
+         Output: px_parallel_delete_t13.ctid
+         Filter: (SubPlan 2)
+         SubPlan 2
+           ->  CTE Scan on delete_move_rows
+                 Output: px_parallel_delete_t13.c1
+(13 rows)
+
+-- Delete with VIEW
+EXPLAIN (VERBOSE, COSTS OFF) delete from px_parallel_delete_view;
+                                                                                         QUERY PLAN                                                                                          
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Delete (segment: 9) on public.px_parallel_delete_t11
+   ->  Result
+         Output: px_parallel_delete_t11_1.c1, px_parallel_delete_t11_1.c2, px_parallel_delete_t11_1.c3, px_parallel_delete_t11_1.ctid
+         ->  PX Hash 6:9  (slice1; segments: 6)
+               Output: px_parallel_delete_t11_1.c1, px_parallel_delete_t11_1.c2, px_parallel_delete_t11_1.c3, px_parallel_delete_t11_1.ctid, px_parallel_delete_t11_1._px_worker_id, (0)
+               ->  Partial Seq Scan on public.px_parallel_delete_t11 px_parallel_delete_t11_1
+                     Output: px_parallel_delete_t11_1.c1, px_parallel_delete_t11_1.c2, px_parallel_delete_t11_1.c3, px_parallel_delete_t11_1.ctid, px_parallel_delete_t11_1._px_worker_id, 0
+                     Filter: (px_parallel_delete_t11_1.c1 < 200)
+ Optimizer: PolarDB PX Optimizer
+(9 rows)
+
+delete from px_parallel_delete_view;
+select count(*) from px_parallel_delete_t11;
+ count 
+-------
+   801
+(1 row)
+
+select count(*) from px_parallel_delete_t11;
+ count 
+-------
+   801
+(1 row)
+
+-- Delete twice case
+EXPLAIN(VERBOSE, COSTS OFF) delete from px_parallel_delete_t14 where c2 in (select c1 from px_parallel_delete_t15);
+                                                                            QUERY PLAN                                                                             
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Delete (segment: 9) on public.px_parallel_delete_t14
+   ->  Result
+         Output: px_parallel_delete_t14_1.c1, px_parallel_delete_t14_1.c2, px_parallel_delete_t14_1.ctid
+         ->  PX Hash 6:9  (slice1; segments: 6)
+               Output: px_parallel_delete_t14_1.c1, px_parallel_delete_t14_1.c2, px_parallel_delete_t14_1.ctid, px_parallel_delete_t14_1._px_worker_id, (0)
+               ->  Hash Join
+                     Output: px_parallel_delete_t14_1.c1, px_parallel_delete_t14_1.c2, px_parallel_delete_t14_1.ctid, px_parallel_delete_t14_1._px_worker_id, 0
+                     Hash Cond: (px_parallel_delete_t14_1.c2 = px_parallel_delete_t15.c1)
+                     ->  Partial Seq Scan on public.px_parallel_delete_t14 px_parallel_delete_t14_1
+                           Output: px_parallel_delete_t14_1.c1, px_parallel_delete_t14_1.c2, px_parallel_delete_t14_1.ctid, px_parallel_delete_t14_1._px_worker_id
+                     ->  Hash
+                           Output: px_parallel_delete_t15.c1
+                           ->  PX Broadcast 6:6  (slice2; segments: 6)
+                                 Output: px_parallel_delete_t15.c1
+                                 ->  GroupAggregate
+                                       Output: px_parallel_delete_t15.c1
+                                       Group Key: px_parallel_delete_t15.c1
+                                       ->  Sort
+                                             Output: px_parallel_delete_t15.c1
+                                             Sort Key: px_parallel_delete_t15.c1
+                                             ->  PX Hash 6:6  (slice3; segments: 6)
+                                                   Output: px_parallel_delete_t15.c1
+                                                   Hash Key: px_parallel_delete_t15.c1
+                                                   ->  HashAggregate
+                                                         Output: px_parallel_delete_t15.c1
+                                                         Group Key: px_parallel_delete_t15.c1
+                                                         ->  Partial Seq Scan on public.px_parallel_delete_t15
+                                                               Output: px_parallel_delete_t15.c1
+ Optimizer: PolarDB PX Optimizer
+(29 rows)
+
+delete from px_parallel_delete_t14 where c2 in (select c1 from px_parallel_delete_t15);
+select count(*) from px_parallel_delete_t14;
+ count 
+-------
+     0
+(1 row)
+
+-- Delete with returning
+EXPLAIN(VERBOSE, COSTS OFF) delete from px_parallel_delete_t15 where c2 < 10 returning *;
+                    QUERY PLAN                    
+--------------------------------------------------
+ Delete on public.px_parallel_delete_t15
+   Output: c1, c2
+   ->  Seq Scan on public.px_parallel_delete_t15
+         Output: ctid
+         Filter: (px_parallel_delete_t15.c2 < 10)
+(5 rows)
+
+delete from px_parallel_delete_t15 where c2 < 10 returning *;
+ c1 | c2 
+----+----
+  1 |  1
+  1 |  2
+  1 |  3
+  1 |  4
+  1 |  5
+  1 |  6
+  1 |  7
+  1 |  8
+  1 |  9
+(9 rows)
+
+-- Delete with trigger
+EXPLAIN(VERBOSE, COSTS OFF) delete from px_parallel_delete_t16 where c1 < 50;
+                                                                           QUERY PLAN                                                                           
+----------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Delete (segment: 9) on public.px_parallel_delete_t16
+   ->  Result
+         Output: px_parallel_delete_t16_1.c1, px_parallel_delete_t16_1.c2, px_parallel_delete_t16_1.ctid
+         ->  PX Hash 6:9  (slice1; segments: 6)
+               Output: px_parallel_delete_t16_1.c1, px_parallel_delete_t16_1.c2, px_parallel_delete_t16_1.ctid, px_parallel_delete_t16_1._px_worker_id, (0)
+               ->  Partial Seq Scan on public.px_parallel_delete_t16 px_parallel_delete_t16_1
+                     Output: px_parallel_delete_t16_1.c1, px_parallel_delete_t16_1.c2, px_parallel_delete_t16_1.ctid, px_parallel_delete_t16_1._px_worker_id, 0
+                     Filter: (px_parallel_delete_t16_1.c1 < 50)
+ Optimizer: PolarDB PX Optimizer
+(9 rows)
+
+delete from px_parallel_delete_t16 where c1 < 50;
+select count(*) from px_parallel_delete_t16;
+ count 
+-------
+   951
+(1 row)
+
+select count(*) from px_parallel_delete_audit;
+ count 
+-------
+   981
+(1 row)
+

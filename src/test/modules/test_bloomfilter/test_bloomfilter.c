@@ -100,7 +100,34 @@ create_and_test_bloom(int power, int64 nelements, int callerseed)
 	bloom_free(filter);
 }
 
+static void
+create_and_test_bloom_buf(int64 nelements, int callerseed)
+{
+	uint64	seed;
+	char	*buf;
+	bloom_filter *filter;
+	int64	nfalsepos;
+	size_t	buf_size = 3996;
+
+	buf = palloc0(buf_size);
+	MemSet(buf, 0, buf_size);
+
+	seed = callerseed < 0 ? random() % PG_INT32_MAX : callerseed;
+	/* Initialize Bloom filter base on allocated buffer, populate it, and report on false positive rate */
+	filter = bloom_init_struct(buf, buf_size, nelements, seed);
+	populate_with_dummy_strings(filter, nelements);
+	nfalsepos = nfalsepos_for_missing_strings(filter, nelements);
+
+	ereport((nfalsepos > nelements * FPOSITIVE_THRESHOLD) ? WARNING : DEBUG1,
+			(errmsg_internal("seed: " UINT64_FORMAT " false positives: " INT64_FORMAT " (%.6f%%) bitset %.2f%% set",
+							 seed, nfalsepos, (double) nfalsepos / nelements,
+							 100.0 * bloom_prop_bits_set(filter))));
+
+	pfree(buf);
+}
+
 PG_FUNCTION_INFO_V1(test_bloomfilter);
+PG_FUNCTION_INFO_V1(test_bloomfilter_buf);
 
 /*
  * SQL-callable entry point to perform all tests.
@@ -132,6 +159,29 @@ test_bloomfilter(PG_FUNCTION_ARGS)
 		elog(DEBUG1, "beginning test #%d...", i + 1);
 
 		create_and_test_bloom(power, nelements, seed);
+	}
+
+	PG_RETURN_VOID();
+}
+
+Datum
+test_bloomfilter_buf(PG_FUNCTION_ARGS)
+{
+	int64       nelements = PG_GETARG_INT64(0);
+	int         seed = PG_GETARG_INT32(1);
+	int         tests = PG_GETARG_INT32(2);
+	int			i;
+
+	if (tests <= 0)
+		elog(ERROR, "invalid number of tests: %d", tests);
+
+	if (nelements < 0)
+		elog(ERROR, "invalid number of elements: %d", tests);
+
+	for (i = 0; i < tests; i++)
+	{
+		elog(DEBUG1, "beginning test #%d...", i + 1);
+		create_and_test_bloom_buf(nelements, seed);
 	}
 
 	PG_RETURN_VOID();

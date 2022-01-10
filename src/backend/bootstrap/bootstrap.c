@@ -36,6 +36,8 @@
 #include "storage/bufmgr.h"
 #include "storage/bufpage.h"
 #include "storage/condition_variable.h"
+#include "storage/encryption.h"
+#include "storage/kmgr.h"
 #include "storage/ipc.h"
 #include "storage/proc.h"
 #include "tcop/tcopprot.h"
@@ -47,8 +49,23 @@
 #include "utils/relmapper.h"
 #include "utils/tqual.h"
 
-uint32		bootstrap_data_checksum_version = 0;	/* No checksum */
+/* POLAR logindex */
+#include "access/polar_logindex_redo.h"
+/* POLAR consensus */
+#include "polar_dma/polar_dma.h"
+/* POLAR flashback log */
+#include "polar_flashback/polar_flashback_log_worker.h"
 
+/* POLAR wal pipeline */
+#include "postmaster/polar_wal_pipeliner.h"
+
+
+uint32		bootstrap_data_checksum_version = 0;	/* No checksum */
+uint32		bootstrap_data_encryption_cipher = TDE_ENCRYPTION_OFF;	/* No encryption */
+
+/* POLAR: save specific system identifier given by initdb */
+uint64		polar_sysidentifier = 0;
+/* POLAR end */
 
 #define ALLOC(t, c) \
 	((t *) MemoryContextAllocZero(TopMemoryContext, (unsigned)(c) * sizeof(t)))
@@ -223,7 +240,8 @@ AuxiliaryProcessMain(int argc, char *argv[])
 	/* If no -x argument, we are a CheckerProcess */
 	MyAuxProcType = CheckerProcess;
 
-	while ((flag = getopt(argc, argv, "B:c:d:D:Fkr:x:X:-:")) != -1)
+	/* POLAR: add system identidier option here, allow to initdb with specific identifier */
+	while ((flag = getopt(argc, argv, "B:c:d:D:e:Fkr:x:X:-:i:")) != -1)
 	{
 		switch (flag)
 		{
@@ -245,6 +263,10 @@ AuxiliaryProcessMain(int argc, char *argv[])
 									PGC_POSTMASTER, PGC_S_ARGV);
 					pfree(debugstr);
 				}
+				break;
+
+			case 'e':
+				bootstrap_data_encryption_cipher = EncryptionCipherValue(optarg);
 				break;
 			case 'F':
 				SetConfigOption("fsync", "false", PGC_POSTMASTER, PGC_S_ARGV);
@@ -297,6 +319,13 @@ AuxiliaryProcessMain(int argc, char *argv[])
 						free(value);
 					break;
 				}
+			/* POLAR: record specific system_identifier */
+			case 'i':
+				{
+					polar_sysidentifier = strtoull(optarg, NULL, 0);
+					break;
+				}
+			/* POLAR end */
 			default:
 				write_stderr("Try \"%s --help\" for more information.\n",
 							 progname);
@@ -334,6 +363,21 @@ AuxiliaryProcessMain(int argc, char *argv[])
 				break;
 			case WalReceiverProcess:
 				statmsg = pgstat_get_backend_desc(B_WAL_RECEIVER);
+				break;
+			case ConsensusProcess:
+				statmsg = pgstat_get_backend_desc(B_CONSENSUS);
+				break;
+			case PolarWalPipelinerProcess:
+				statmsg = pgstat_get_backend_desc(B_POLAR_WAL_PIPELINER);
+				break;
+			case LogIndexBgWriterProcess:
+				statmsg = pgstat_get_backend_desc(B_BG_LOGINDEX);
+				break;
+			case FlogBgInserterProcess:
+				statmsg = pgstat_get_backend_desc(B_BG_FLOG_INSERTER);
+				break;
+			case FlogBgWriterProcess:
+				statmsg = pgstat_get_backend_desc(B_BG_FLOG_WRITER);
 				break;
 			default:
 				statmsg = "??? process";
@@ -461,6 +505,27 @@ AuxiliaryProcessMain(int argc, char *argv[])
 			/* don't set signals, walreceiver has its own agenda */
 			WalReceiverMain();
 			proc_exit(1);		/* should never return */
+
+		case ConsensusProcess:
+			ConsensusMain();        /* should never return*/
+			proc_exit(1);
+             
+		case PolarWalPipelinerProcess:
+			InitXLOGAccess();
+			polar_wal_pipeliner_main();        /* should never return*/
+			proc_exit(1);
+
+		case LogIndexBgWriterProcess:
+			polar_logindex_bg_worker_main();
+			proc_exit(1); 		/* should never return */
+
+		case FlogBgInserterProcess:
+			polar_flog_bginserter_main();
+			proc_exit(1); 		/* should never return */
+
+		case FlogBgWriterProcess:
+			polar_flog_bgwriter_main();
+			proc_exit(1); 		/* should never return */
 
 		default:
 			elog(PANIC, "unrecognized process type: %d", (int) MyAuxProcType);

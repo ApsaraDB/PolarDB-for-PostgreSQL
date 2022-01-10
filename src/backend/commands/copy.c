@@ -52,6 +52,9 @@
 #include "utils/rls.h"
 #include "utils/snapmgr.h"
 
+/* POLAR */
+#include "utils/guc.h"
+
 
 #define ISOCTAL(c) (((c) >= '0') && ((c) <= '7'))
 #define OCTVALUE(c) ((c) - '0')
@@ -2614,11 +2617,19 @@ CopyFrom(CopyState cstate)
 	errcallback.previous = error_context_stack;
 	error_context_stack = &errcallback;
 
+	/* POLAR: delay dml if necessary, for once */
+	if (polar_delay_dml_option == POLAR_DELAY_DML_ONCE)
+		polar_delay_dml_wait();
+
 	for (;;)
 	{
 		TupleTableSlot *slot;
 		bool		skip_tuple;
 		Oid			loaded_oid = InvalidOid;
+
+		/* POLAR: delay dml if necessary, for multiple tuple */
+		if (polar_delay_dml_option == POLAR_DELAY_DML_MULTI)
+			polar_delay_dml_wait();
 
 		CHECK_FOR_INTERRUPTS();
 

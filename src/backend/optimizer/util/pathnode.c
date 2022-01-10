@@ -3440,6 +3440,9 @@ create_modifytable_path(PlannerInfo *root, RelOptInfo *rel,
 	pathnode->rowMarks = rowMarks;
 	pathnode->onconflict = onconflict;
 	pathnode->epqParam = epqParam;
+	/* POLAR px */
+	pathnode->is_split_updates = NIL;
+	/* POLAR end */
 
 	return pathnode;
 }

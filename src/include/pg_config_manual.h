@@ -17,7 +17,7 @@
  * This is the default value for wal_segment_size to be used when initdb is run
  * without the --wal-segsize option.  It must be a valid segment size.
  */
-#define DEFAULT_XLOG_SEG_SIZE	(16*1024*1024)
+#define DEFAULT_XLOG_SEG_SIZE	(1024*1024*1024)
 
 /*
  * Maximum length for identifiers (e.g. table names, column names,
@@ -298,7 +298,12 @@
 /*
  * Enable debugging print statements for lock-related operations.
  */
-/* #define LOCK_DEBUG */
+#define LOCK_DEBUG
+
+/*
+ * POLAR:Enable debuging print statements for lwlock related operations.
+ */
+/* #define LWLOCK_DEBUG */
 
 /*
  * Enable debugging print statements for WAL-related operations; see
@@ -320,5 +325,5 @@
 /*
  * Other debug #defines (documentation, anyone?)
  */
-/* #define HEAPDEBUGALL */
+#define HEAPDEBUGALL
 /* #define ACLDEBUG */

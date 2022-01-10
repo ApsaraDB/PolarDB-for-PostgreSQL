@@ -29,9 +29,9 @@ SUBDIRS = \
 	pg_verify_checksums \
 	pg_waldump \
 	pgbench \
+	polar_tools \
 	psql \
 	scripts
-SUBDIRS += polar_tools
 
 ifeq ($(PORTNAME), win32)
 SUBDIRS += pgevent

@@ -1,0 +1,84 @@
+--
+-- CREATE_CAST
+--
+-- Create some types to test with
+CREATE TYPE casttesttype;
+ERROR:  cannot execute CREATE TYPE in a read-only transaction
+CREATE FUNCTION casttesttype_in(cstring)
+   RETURNS casttesttype
+   AS 'textin'
+   LANGUAGE internal STRICT IMMUTABLE;
+ERROR:  cannot execute CREATE FUNCTION in a read-only transaction
+CREATE FUNCTION casttesttype_out(casttesttype)
+   RETURNS cstring
+   AS 'textout'
+   LANGUAGE internal STRICT IMMUTABLE;
+ERROR:  cannot execute CREATE FUNCTION in a read-only transaction
+CREATE TYPE casttesttype (
+   internallength = variable,
+   input = casttesttype_in,
+   output = casttesttype_out,
+   alignment = int4
+);
+ERROR:  cannot execute CREATE TYPE in a read-only transaction
+-- a dummy function to test with
+CREATE FUNCTION casttestfunc(casttesttype) RETURNS int4 LANGUAGE SQL AS
+$$ SELECT 1; $$;
+ERROR:  cannot execute CREATE FUNCTION in a read-only transaction
+SELECT casttestfunc('foo'::text); -- fails, as there's no cast
+ERROR:  function casttestfunc(text) does not exist
+LINE 1: SELECT casttestfunc('foo'::text);
+               ^
+HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
+-- Try binary coercion cast
+CREATE CAST (text AS casttesttype) WITHOUT FUNCTION;
+ERROR:  cannot execute CREATE CAST in a read-only transaction
+SELECT casttestfunc('foo'::text); -- doesn't work, as the cast is explicit
+ERROR:  function casttestfunc(text) does not exist
+LINE 1: SELECT casttestfunc('foo'::text);
+               ^
+HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
+SELECT casttestfunc('foo'::text::casttesttype); -- should work
+ casttestfunc 
+--------------
+            1
+(1 row)
+
+DROP CAST (text AS casttesttype); -- cleanup
+ERROR:  cannot execute DROP CAST in a read-only transaction
+-- Try IMPLICIT binary coercion cast
+CREATE CAST (text AS casttesttype) WITHOUT FUNCTION AS IMPLICIT;
+ERROR:  cannot execute CREATE CAST in a read-only transaction
+SELECT casttestfunc('foo'::text); -- Should work now
+ casttestfunc 
+--------------
+            1
+(1 row)
+
+-- Try I/O conversion cast.
+SELECT 1234::int4::casttesttype; -- No cast yet, should fail
+ERROR:  cannot cast type integer to casttesttype
+LINE 1: SELECT 1234::int4::casttesttype;
+                         ^
+CREATE CAST (int4 AS casttesttype) WITH INOUT;
+ERROR:  cannot execute CREATE CAST in a read-only transaction
+SELECT 1234::int4::casttesttype; -- Should work now
+ casttesttype 
+--------------
+ 1234
+(1 row)
+
+DROP CAST (int4 AS casttesttype);
+ERROR:  cannot execute DROP CAST in a read-only transaction
+-- Try cast with a function
+CREATE FUNCTION int4_casttesttype(int4) RETURNS casttesttype LANGUAGE SQL AS
+$$ SELECT ('foo'::text || $1::text)::casttesttype; $$;
+ERROR:  cannot execute CREATE FUNCTION in a read-only transaction
+CREATE CAST (int4 AS casttesttype) WITH FUNCTION int4_casttesttype(int4) AS IMPLICIT;
+ERROR:  cannot execute CREATE CAST in a read-only transaction
+SELECT 1234::int4::casttesttype; -- Should work now
+ casttesttype 
+--------------
+ foo1234
+(1 row)
+

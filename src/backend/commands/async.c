@@ -141,6 +141,8 @@
 #include "utils/timestamp.h"
 #include "utils/tqual.h"
 
+/* POLAR */
+#include "utils/guc.h"
 
 /*
  * Maximum size of a NOTIFY payload, including terminating NULL.  This
@@ -431,7 +433,8 @@ AsyncShmemSize(void)
 	size = mul_size(MaxBackends + 1, sizeof(QueueBackendStatus));
 	size = add_size(size, offsetof(AsyncQueueControl, backend));
 
-	size = add_size(size, SimpleLruShmemSize(NUM_ASYNC_BUFFERS, 0));
+	/* POLAR: change size variable to guc */
+	size = add_size(size, SimpleLruShmemSize(polar_async_buffer_slot_size, 0));
 
 	return size;
 }
@@ -480,7 +483,7 @@ AsyncShmemInit(void)
 	 */
 	AsyncCtl->PagePrecedes = asyncQueuePagePrecedes;
 	/* POLAR: pg_notify file not in shared storage */
-	SimpleLruInit(AsyncCtl, "async", NUM_ASYNC_BUFFERS, 0,
+	SimpleLruInit(AsyncCtl, "async", polar_async_buffer_slot_size, 0,
 				  AsyncCtlLock, "pg_notify", LWTRANCHE_ASYNC_BUFFERS, false);
 	/* Override default assumption that writes should be fsync'd */
 	AsyncCtl->do_fsync = false;
@@ -2098,6 +2101,9 @@ ProcessIncomingNotify(void)
 void
 NotifyMyFrontEnd(const char *channel, const char *payload, int32 srcPid)
 {
+	/* POLAR: return virtual pid if available */
+	srcPid = polar_pgstat_get_virtual_pid(srcPid, false);
+
 	if (whereToSendOutput == DestRemote)
 	{
 		StringInfoData buf;

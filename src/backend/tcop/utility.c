@@ -71,6 +71,17 @@
 #include "utils/syscache.h"
 #include "utils/rel.h"
 
+/* POLAR */
+#include "storage/proc.h"
+#include "polar_dma/polar_dma.h"
+
+/* POLAR px */
+#include "access/px_btbuild.h"
+
+#include "polar_flashback/polar_flashback_drop.h"
+
+
+
 
 /* Hook for plugins to get control in ProcessUtility() */
 ProcessUtility_hook_type ProcessUtility_hook = NULL;
@@ -124,6 +135,93 @@ CommandIsReadOnly(PlannedStmt *pstmt)
 	return false;
 }
 
+static  bool
+polar_is_allow_stmt_type(NodeTag type)
+{
+	switch(type)
+	{
+		case T_AlterDatabaseStmt:
+		case T_AlterDatabaseSetStmt:
+		case T_AlterDomainStmt:
+		case T_AlterFunctionStmt:
+		case T_AlterRoleStmt:
+		case T_AlterRoleSetStmt:
+		case T_AlterObjectDependsStmt:
+		case T_AlterObjectSchemaStmt:
+		case T_AlterOwnerStmt:
+		case T_AlterOperatorStmt:
+		case T_AlterSeqStmt:
+		case T_AlterTableMoveAllStmt:
+		case T_AlterTableStmt:
+		case T_RenameStmt:
+		case T_CommentStmt:
+		case T_DefineStmt:
+		case T_CreateCastStmt:
+		case T_CreateEventTrigStmt:
+		case T_AlterEventTrigStmt:
+		case T_CreateConversionStmt:
+		case T_CreatedbStmt:
+		case T_CreateDomainStmt:
+		case T_CreateFunctionStmt:
+		case T_CreateRoleStmt:
+		case T_IndexStmt:
+		case T_CreatePLangStmt:
+		case T_CreateOpClassStmt:
+		case T_CreateOpFamilyStmt:
+		case T_AlterOpFamilyStmt:
+		case T_RuleStmt:
+		case T_CreateSchemaStmt:
+		case T_CreateSeqStmt:
+		case T_CreateStmt:
+		case T_CreateTableAsStmt:
+		case T_RefreshMatViewStmt:
+		case T_CreateTableSpaceStmt:
+		case T_CreateTransformStmt:
+		case T_CreateTrigStmt:
+		case T_CompositeTypeStmt:
+		case T_CreateEnumStmt:
+		case T_CreateRangeStmt:
+		case T_AlterEnumStmt:
+		case T_ViewStmt:		
+		case T_AlterDefaultPrivilegesStmt:	
+		case T_ReassignOwnedStmt:
+		case T_AlterTSDictionaryStmt:
+		case T_AlterTSConfigurationStmt:
+		case T_CreateExtensionStmt:
+		case T_AlterExtensionStmt:
+		case T_AlterExtensionContentsStmt:
+		case T_CreateFdwStmt:
+		case T_AlterFdwStmt:
+		case T_CreateForeignServerStmt:
+		case T_AlterForeignServerStmt:
+		case T_CreateUserMappingStmt:
+		case T_AlterUserMappingStmt:
+		case T_AlterTableSpaceOptionsStmt:
+		case T_CreateForeignTableStmt:
+		case T_ImportForeignSchemaStmt:
+		case T_SecLabelStmt:
+		case T_CreatePublicationStmt:
+		case T_AlterPublicationStmt:
+		case T_CreateSubscriptionStmt:
+		case T_AlterSubscriptionStmt:
+			return false;
+		
+		case T_DropStmt:
+		case T_DropdbStmt:
+		case T_DropTableSpaceStmt:
+		case T_DropRoleStmt:
+		case T_GrantStmt:
+		case T_GrantRoleStmt:
+		case T_TruncateStmt:
+		case T_DropOwnedStmt:
+		case T_DropUserMappingStmt:		
+		case T_DropSubscriptionStmt:
+			return true;
+		default:
+			return false;			
+	}
+}
+
 /*
  * check_xact_readonly: is a utility command read-only?
  *
@@ -133,6 +231,13 @@ CommandIsReadOnly(PlannedStmt *pstmt)
 static void
 check_xact_readonly(Node *parsetree)
 {
+
+	/* POLAR: don't limit superuser */
+	if (!MyProc->issuper && polar_force_trans_ro_non_sup &&
+	    polar_is_allow_stmt_type(nodeTag(parsetree)))
+		return;
+	/* POLAR end */
+	
 	/* Only perform the check if we have a reason to do so. */
 	if (!XactReadOnly && !IsInParallelMode())
 		return;
@@ -238,7 +343,8 @@ check_xact_readonly(Node *parsetree)
 void
 PreventCommandIfReadOnly(const char *cmdname)
 {
-	if (XactReadOnly)
+	/* POLAR: check transaction read only */
+	if (XactReadOnly || (!MyProc->issuper && polar_force_trans_ro_non_sup))
 		ereport(ERROR,
 				(errcode(ERRCODE_READ_ONLY_SQL_TRANSACTION),
 		/* translator: %s is name of a SQL command, eg CREATE */
@@ -353,13 +459,24 @@ ProcessUtility(PlannedStmt *pstmt,
 	 * call standard_ProcessUtility().
 	 */
 	if (ProcessUtility_hook)
-		(*ProcessUtility_hook) (pstmt, queryString,
-								context, params, queryEnv,
-								dest, completionTag);
+	{
+		if(polar_flashback_drop_process_utility(pstmt, queryString, context, params, queryEnv, dest, completionTag,true)) {}
+		else
+		{
+			(*ProcessUtility_hook) (pstmt, queryString,
+							context, params, queryEnv,
+							dest, completionTag);
+		}
+	}
 	else
-		standard_ProcessUtility(pstmt, queryString,
-								context, params, queryEnv,
-								dest, completionTag);
+	{
+		if(polar_flashback_drop_process_utility(pstmt, queryString, context, params, queryEnv, dest, completionTag,false)) {}
+		else
+			standard_ProcessUtility(pstmt, queryString,
+									context, params, queryEnv,
+									dest, completionTag);
+
+	}
 }
 
 /*
@@ -678,7 +795,15 @@ standard_ProcessUtility(PlannedStmt *pstmt,
 
 		case T_AlterSystemStmt:
 			PreventInTransactionBlock(isTopLevel, "ALTER SYSTEM");
-			AlterSystemSetConfigFile((AlterSystemStmt *) parsetree);
+			if (((AlterSystemStmt *) parsetree)->setstmt != NULL)
+			{
+				AlterSystemSetConfigFile((AlterSystemStmt *) parsetree);
+			}
+			else if (polar_enable_dma)
+			{
+				Assert(((AlterSystemStmt *) parsetree)->dma_stmt != NULL);
+				PolarDMAUtility(((AlterSystemStmt *) parsetree)->dma_stmt);
+			}
 			break;
 
 		case T_VariableSetStmt:
@@ -1302,6 +1427,9 @@ ProcessUtilitySlow(ParseState *pstate,
 					if (stmt->concurrent)
 						PreventInTransactionBlock(isTopLevel,
 												  "CREATE INDEX CONCURRENTLY");
+
+					/* POLAR px */
+					(void) polar_px_enable_btbuild_precheck(isTopLevel, stmt->options);
 
 					/*
 					 * Look up the relation OID just once, right here at the
@@ -2404,7 +2532,10 @@ CreateCommandTag(Node *parsetree)
 			break;
 
 		case T_AlterObjectSchemaStmt:
-			tag = AlterObjectTypeCommandTag(((AlterObjectSchemaStmt *) parsetree)->objectType);
+			if(((AlterObjectSchemaStmt*) parsetree)->is_flashback)
+				tag = "FLASHBACK COMPLETE";
+			else
+				tag = AlterObjectTypeCommandTag(((AlterObjectSchemaStmt *) parsetree)->objectType);
 			break;
 
 		case T_AlterOwnerStmt:

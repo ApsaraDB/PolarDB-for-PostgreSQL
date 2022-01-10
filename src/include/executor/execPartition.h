@@ -199,8 +199,12 @@ extern void ExecCleanupTupleRouting(ModifyTableState *mtstate,
 extern PartitionPruneState *ExecCreatePartitionPruneState(PlanState *planstate,
 							  PartitionPruneInfo *partitionpruneinfo);
 extern void ExecDestroyPartitionPruneState(PartitionPruneState *prunestate);
-extern Bitmapset *ExecFindMatchingSubPlans(PartitionPruneState *prunestate);
+extern Bitmapset *ExecFindMatchingSubPlans(PartitionPruneState *prunestate,
+										   EState *estate,
+										   int nplans, List *join_prune_paramids);
 extern Bitmapset *ExecFindInitialMatchingSubPlans(PartitionPruneState *prunestate,
 								int nsubplans);
+
+extern Bitmapset *ExecAddMatchingSubPlans(PartitionPruneState *prunestate, Bitmapset *result);
 
 #endif							/* EXECPARTITION_H */

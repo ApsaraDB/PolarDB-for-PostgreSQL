@@ -1126,6 +1126,7 @@ inet_client_addr(PG_FUNCTION_ARGS)
 	Port	   *port = MyProcPort;
 	char		remote_host[NI_MAXHOST];
 	int			ret;
+	SockAddr 	real_sock;
 
 	if (port == NULL)
 		PG_RETURN_NULL();
@@ -1141,16 +1142,21 @@ inet_client_addr(PG_FUNCTION_ARGS)
 			PG_RETURN_NULL();
 	}
 
+	if (port->polar_proxy)
+		real_sock = port->polar_origin_addr;
+	else
+		real_sock = port->raddr;
+
 	remote_host[0] = '\0';
 
-	ret = pg_getnameinfo_all(&port->raddr.addr, port->raddr.salen,
+	ret = pg_getnameinfo_all(&real_sock.addr, real_sock.salen,
 							 remote_host, sizeof(remote_host),
 							 NULL, 0,
 							 NI_NUMERICHOST | NI_NUMERICSERV);
 	if (ret != 0)
 		PG_RETURN_NULL();
 
-	clean_ipv6_addr(port->raddr.addr.ss_family, remote_host);
+	clean_ipv6_addr(real_sock.addr.ss_family, remote_host);
 
 	PG_RETURN_INET_P(network_in(remote_host, false));
 }
@@ -1165,6 +1171,7 @@ inet_client_port(PG_FUNCTION_ARGS)
 	Port	   *port = MyProcPort;
 	char		remote_port[NI_MAXSERV];
 	int			ret;
+	SockAddr 	real_sock;
 
 	if (port == NULL)
 		PG_RETURN_NULL();
@@ -1180,9 +1187,14 @@ inet_client_port(PG_FUNCTION_ARGS)
 			PG_RETURN_NULL();
 	}
 
+	if (port->polar_proxy)
+		real_sock = port->polar_origin_addr;
+	else
+		real_sock = port->raddr;
+
 	remote_port[0] = '\0';
 
-	ret = pg_getnameinfo_all(&port->raddr.addr, port->raddr.salen,
+	ret = pg_getnameinfo_all(&real_sock.addr, real_sock.salen,
 							 NULL, 0,
 							 remote_port, sizeof(remote_port),
 							 NI_NUMERICHOST | NI_NUMERICSERV);
@@ -1202,6 +1214,16 @@ inet_server_addr(PG_FUNCTION_ARGS)
 	Port	   *port = MyProcPort;
 	char		local_host[NI_MAXHOST];
 	int			ret;
+
+	/* POLAR: hidden server ip */
+	if (!superuser())
+	{
+		ereport(NOTICE,
+				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+				 (errmsg("must be superuser to show server ip, NULL is returned instead"))));
+		PG_RETURN_NULL();
+	}
+	/* POLAR end */
 
 	if (port == NULL)
 		PG_RETURN_NULL();
@@ -1242,6 +1264,16 @@ inet_server_port(PG_FUNCTION_ARGS)
 	char		local_port[NI_MAXSERV];
 	int			ret;
 
+	/* POLAR: hidden server port */
+	if (!superuser())
+	{
+		ereport(NOTICE,
+				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+				 (errmsg("must be superuser to show server port, NULL is returned instead"))));
+		PG_RETURN_NULL();
+	}
+	/* POLAR end */
+
 	if (port == NULL)
 		PG_RETURN_NULL();
 
@@ -1267,7 +1299,6 @@ inet_server_port(PG_FUNCTION_ARGS)
 
 	PG_RETURN_DATUM(DirectFunctionCall1(int4in, CStringGetDatum(local_port)));
 }
-
 
 Datum
 inetnot(PG_FUNCTION_ARGS)

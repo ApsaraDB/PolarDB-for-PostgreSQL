@@ -79,14 +79,14 @@ randomize_mem(char *ptr, size_t size)
 	int			ctr;
 
 	ctr = save_ctr;
-	VALGRIND_MAKE_MEM_UNDEFINED(ptr, size);
+	MEMDEBUG_MAKE_MEM_UNDEFINED(ptr, size);
 	while (remaining-- > 0)
 	{
 		*ptr++ = ctr;
 		if (++ctr > 251)
 			ctr = 1;
 	}
-	VALGRIND_MAKE_MEM_UNDEFINED(ptr - size, size);
+	MEMDEBUG_MAKE_MEM_UNDEFINED(ptr - size, size);
 	save_ctr = ctr;
 }
 

@@ -24,6 +24,10 @@ $node->init(extra => ['--data-checksums']);
 $node->start;
 my $pgdata = $node->data_dir;
 
+# turn off polar_force_unlogged_to_logged_table
+$node->psql('postgres', 'alter system set polar_force_unlogged_to_logged_table TO off;select pg_reload_conf();');
+sleep 2;
+
 $node->command_fails(['pg_basebackup'],
 	'pg_basebackup needs target directory specified');
 

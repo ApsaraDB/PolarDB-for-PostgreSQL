@@ -37,6 +37,10 @@
 #include "utils/memutils.h"
 #include "utils/snapmgr.h"
 
+/* POLAR csn */
+#include "utils/guc.h"
+#include "storage/procarray.h"
+/* POLAR end */
 
 PG_MODULE_MAGIC;
 
@@ -370,8 +374,10 @@ bt_check_every_level(Relation rel, Relation heaprel, bool readonly,
 	/*
 	 * RecentGlobalXmin assertion matches index_getnext_tid().  See note on
 	 * RecentGlobalXmin/B-Tree page deletion.
+	 *
+	 * POLAR csn: get newest global xmin 
 	 */
-	Assert(TransactionIdIsValid(RecentGlobalXmin));
+	Assert(TransactionIdIsValid(GetRecentGlobalXmin()));
 
 	/*
 	 * Initialize state for entire verification operation

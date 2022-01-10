@@ -20,6 +20,8 @@
 #define MAX_RATE_LOWER	32
 #define MAX_RATE_UPPER	1048576
 
+/* POLAR: default directory name for polar_datadir inside data_directory. */
+#define POLAR_SHARED_DATA "polar_shared_data"
 
 typedef struct
 {
@@ -27,6 +29,7 @@ typedef struct
 	char	   *path;
 	char	   *rpath;			/* relative path within PGDATA, or NULL */
 	int64		size;
+	bool		polar_shared;  /* polar mode, shared storage*/
 } tablespaceinfo;
 
 extern void SendBaseBackup(BaseBackupCmd *cmd);

@@ -190,6 +190,15 @@ typedef struct Port
 	SSL		   *ssl;
 	X509	   *peer;
 #endif
+
+	/* POLAR: Information about origin connection */
+	bool 		polar_proxy;
+	bool		polar_send_lsn;
+	bool 		polar_send_xact;
+	bool		polar_proxy_ssl_in_use;
+	SockAddr 	polar_origin_addr;
+	char		*polar_proxy_ssl_cipher_name;
+	char		*polar_proxy_ssl_version;
 } Port;
 
 #ifdef USE_SSL

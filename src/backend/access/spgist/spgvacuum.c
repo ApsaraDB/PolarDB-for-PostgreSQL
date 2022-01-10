@@ -28,6 +28,10 @@
 #include "storage/lmgr.h"
 #include "utils/snapmgr.h"
 
+/* POLAR csn */
+#include "utils/guc.h"
+#include "storage/procarray.h"
+/* POLAR end */
 
 /* Entry in pending-list of TIDs we need to revisit */
 typedef struct spgVacPendingItem
@@ -517,11 +521,16 @@ vacuumRedirectAndPlaceholder(Relation index, Buffer buffer)
 		 i--)
 	{
 		SpGistDeadTuple dt;
+		/* POLAR csn */
+		TransactionId tmpRecentGlobalXmin;
 
 		dt = (SpGistDeadTuple) PageGetItem(page, PageGetItemId(page, i));
 
+		/* POLAR csn: get newest global xmin */
+		tmpRecentGlobalXmin = GetRecentGlobalXmin();
+
 		if (dt->tupstate == SPGIST_REDIRECT &&
-			TransactionIdPrecedes(dt->xid, RecentGlobalXmin))
+			TransactionIdPrecedes(dt->xid, tmpRecentGlobalXmin))
 		{
 			dt->tupstate = SPGIST_PLACEHOLDER;
 			Assert(opaque->nRedirection > 0);

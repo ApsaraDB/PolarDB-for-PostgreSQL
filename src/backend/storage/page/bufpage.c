@@ -18,9 +18,15 @@
 #include "access/itup.h"
 #include "access/xlog.h"
 #include "storage/checksum.h"
+#include "storage/encryption.h"
+#include "storage/smgr.h"
 #include "utils/memdebug.h"
 #include "utils/memutils.h"
 
+/* POLAR */
+#include "utils/guc.h"
+#include "polar_flashback/polar_flashback_log_repair_page.h"
+/* POLAR end */
 
 /* GUC variable */
 bool		ignore_checksum_failure = false;
@@ -76,9 +82,11 @@ PageInit(Page page, Size pageSize, Size specialSize)
  * allow zeroed pages here, and are careful that the page access macros
  * treat such a page as empty and without free space.  Eventually, VACUUM
  * will clean up such a page and make it usable.
+ *
+ * POLAR: add smgr parameter to print error message when PageDecrypt failed.
  */
 bool
-PageIsVerified(Page page, BlockNumber blkno)
+PageIsVerified(Page page, ForkNumber forknum, BlockNumber blkno, void *smgr)
 {
 	PageHeader	p = (PageHeader) page;
 	size_t	   *pagebytes;
@@ -100,6 +108,8 @@ PageIsVerified(Page page, BlockNumber blkno)
 			if (checksum != p->pd_checksum)
 				checksum_failure = true;
 		}
+
+		PageDecryptInplace(page, forknum, blkno, smgr);
 
 		/*
 		 * The following checks don't prove the header is correct, only that
@@ -146,10 +156,17 @@ PageIsVerified(Page page, BlockNumber blkno)
 	 */
 	if (checksum_failure)
 	{
-		ereport(WARNING,
-				(errcode(ERRCODE_DATA_CORRUPTED),
-				 errmsg("page verification failed, calculated checksum %u but expected %u",
-						checksum, p->pd_checksum)));
+		/*
+		 * POLAR: In replica mode, if the filesystem block I/O size is less than database
+		 * BLOCK size, we will try to repeat read this block, so ignore this warning.
+		 */
+		if (!(polar_has_partial_write && polar_in_replica_mode()))
+		{
+			ereport(WARNING,
+					(ERRCODE_DATA_CORRUPTED,
+					 errmsg("page verification failed, calculated checksum %u but expected %u",
+							checksum, p->pd_checksum)));
+		}
 
 		if (header_sane && ignore_checksum_failure)
 			return true;
@@ -210,8 +227,8 @@ PageAddItemExtended(Page page,
 		phdr->pd_special > BLCKSZ)
 		ereport(PANIC,
 				(errcode(ERRCODE_DATA_CORRUPTED),
-				 errmsg("corrupted page pointers: lower = %u, upper = %u, special = %u",
-						phdr->pd_lower, phdr->pd_upper, phdr->pd_special)));
+				 errmsg("corrupted page pointers: lsn = %lx, lower = %u, upper = %u, special = %u",
+						PageGetLSN(page), phdr->pd_lower, phdr->pd_upper, phdr->pd_special)));
 
 	/*
 	 * Select offsetNumber to place the new item at
@@ -326,7 +343,7 @@ PageAddItemExtended(Page page,
 	 * uninitialized bytes; see comment in btrescan().  Valgrind will report
 	 * this as an error, but it is safe to ignore.
 	 */
-	VALGRIND_CHECK_MEM_IS_DEFINED(item, size);
+	MEMDEBUG_CHECK_MEM_IS_DEFINED(item, size);
 
 	/* copy the item's data onto the page */
 	memcpy((char *) page + upper, item, size);
@@ -504,8 +521,8 @@ PageRepairFragmentation(Page page)
 		pd_special != MAXALIGN(pd_special))
 		ereport(ERROR,
 				(errcode(ERRCODE_DATA_CORRUPTED),
-				 errmsg("corrupted page pointers: lower = %u, upper = %u, special = %u",
-						pd_lower, pd_upper, pd_special)));
+				 errmsg("page lsn = %lx, corrupted page pointers: lower = %u, upper = %u, special = %u",
+						PageGetLSN(page), pd_lower, pd_upper, pd_special)));
 
 	/*
 	 * Run through the line pointer array and collect data about live items.
@@ -526,8 +543,8 @@ PageRepairFragmentation(Page page)
 							 itemidptr->itemoff >= (int) pd_special))
 					ereport(ERROR,
 							(errcode(ERRCODE_DATA_CORRUPTED),
-							 errmsg("corrupted item pointer: %u",
-									itemidptr->itemoff)));
+							 errmsg("page lsn = %lx, corrupted item pointer: %u",
+									PageGetLSN(page), itemidptr->itemoff)));
 				itemidptr->alignedlen = MAXALIGN(ItemIdGetLength(lp));
 				totallen += itemidptr->alignedlen;
 				itemidptr++;
@@ -553,8 +570,8 @@ PageRepairFragmentation(Page page)
 		if (totallen > (Size) (pd_special - pd_lower))
 			ereport(ERROR,
 					(errcode(ERRCODE_DATA_CORRUPTED),
-					 errmsg("corrupted item lengths: total %u, available space %u",
-							(unsigned int) totallen, pd_special - pd_lower)));
+					 errmsg("page lsn = %lx, corrupted item lengths: total %u, available space %u",
+							PageGetLSN(page), (unsigned int) totallen, pd_special - pd_lower)));
 
 		compactify_tuples(itemidbase, nstorage, page);
 	}
@@ -741,12 +758,12 @@ PageIndexTupleDelete(Page page, OffsetNumber offnum)
 		phdr->pd_special != MAXALIGN(phdr->pd_special))
 		ereport(ERROR,
 				(errcode(ERRCODE_DATA_CORRUPTED),
-				 errmsg("corrupted page pointers: lower = %u, upper = %u, special = %u",
-						phdr->pd_lower, phdr->pd_upper, phdr->pd_special)));
+				 errmsg("page lsn = %lx, corrupted page pointers: lower = %u, upper = %u, special = %u",
+						PageGetLSN(page), phdr->pd_lower, phdr->pd_upper, phdr->pd_special)));
 
 	nline = PageGetMaxOffsetNumber(page);
 	if ((int) offnum <= 0 || (int) offnum > nline)
-		elog(ERROR, "invalid index offnum: %u", offnum);
+		elog(ERROR, "page lsn = %lx, invalid index offnum: %u", PageGetLSN(page), offnum);
 
 	/* change offset number to offset index */
 	offidx = offnum - 1;
@@ -760,8 +777,8 @@ PageIndexTupleDelete(Page page, OffsetNumber offnum)
 		offset != MAXALIGN(offset))
 		ereport(ERROR,
 				(errcode(ERRCODE_DATA_CORRUPTED),
-				 errmsg("corrupted item pointer: offset = %u, size = %u",
-						offset, (unsigned int) size)));
+				 errmsg("page lsn = %lx, corrupted item pointer: offset = %u, size = %u",
+						PageGetLSN(page), offset, (unsigned int) size)));
 
 	/* Amount of space to actually be deleted */
 	size = MAXALIGN(size);
@@ -874,8 +891,8 @@ PageIndexMultiDelete(Page page, OffsetNumber *itemnos, int nitems)
 		pd_special != MAXALIGN(pd_special))
 		ereport(ERROR,
 				(errcode(ERRCODE_DATA_CORRUPTED),
-				 errmsg("corrupted page pointers: lower = %u, upper = %u, special = %u",
-						pd_lower, pd_upper, pd_special)));
+				 errmsg("page lsn = %lx, corrupted page pointers: lower = %u, upper = %u, special = %u",
+						PageGetLSN(page), pd_lower, pd_upper, pd_special)));
 
 	/*
 	 * Scan the item pointer array and build a list of just the ones we are
@@ -898,8 +915,8 @@ PageIndexMultiDelete(Page page, OffsetNumber *itemnos, int nitems)
 			offset != MAXALIGN(offset))
 			ereport(ERROR,
 					(errcode(ERRCODE_DATA_CORRUPTED),
-					 errmsg("corrupted item pointer: offset = %u, length = %u",
-							offset, (unsigned int) size)));
+					 errmsg("page lsn = %lx, corrupted item pointer: offset = %u, length = %u",
+							PageGetLSN(page), offset, (unsigned int) size)));
 
 		if (nextitm < nitems && offnum == itemnos[nextitm])
 		{
@@ -920,13 +937,14 @@ PageIndexMultiDelete(Page page, OffsetNumber *itemnos, int nitems)
 
 	/* this will catch invalid or out-of-order itemnos[] */
 	if (nextitm != nitems)
-		elog(ERROR, "incorrect index offsets supplied");
+		elog(ERROR, "page lsn = %lx, incorrect index offsets supplied",
+				PageGetLSN(page));
 
 	if (totallen > (Size) (pd_special - pd_lower))
 		ereport(ERROR,
 				(errcode(ERRCODE_DATA_CORRUPTED),
-				 errmsg("corrupted item lengths: total %u, available space %u",
-						(unsigned int) totallen, pd_special - pd_lower)));
+				 errmsg("page lsn = %lx, corrupted item lengths: total %u, available space %u",
+						PageGetLSN(page), (unsigned int) totallen, pd_special - pd_lower)));
 
 	/*
 	 * Looks good. Overwrite the line pointers with the copy, from which we've
@@ -970,12 +988,13 @@ PageIndexTupleDeleteNoCompact(Page page, OffsetNumber offnum)
 		phdr->pd_special != MAXALIGN(phdr->pd_special))
 		ereport(ERROR,
 				(errcode(ERRCODE_DATA_CORRUPTED),
-				 errmsg("corrupted page pointers: lower = %u, upper = %u, special = %u",
-						phdr->pd_lower, phdr->pd_upper, phdr->pd_special)));
+				 errmsg("page lsn = %lx, corrupted page pointers: lower = %u, upper = %u, special = %u",
+						PageGetLSN(page), phdr->pd_lower, phdr->pd_upper, phdr->pd_special)));
 
 	nline = PageGetMaxOffsetNumber(page);
 	if ((int) offnum <= 0 || (int) offnum > nline)
-		elog(ERROR, "invalid index offnum: %u", offnum);
+		elog(ERROR, "page lsn = %lx, invalid index offnum: %u",
+				PageGetLSN(page), offnum);
 
 	tup = PageGetItemId(page, offnum);
 	Assert(ItemIdHasStorage(tup));
@@ -986,8 +1005,8 @@ PageIndexTupleDeleteNoCompact(Page page, OffsetNumber offnum)
 		offset != MAXALIGN(offset))
 		ereport(ERROR,
 				(errcode(ERRCODE_DATA_CORRUPTED),
-				 errmsg("corrupted item pointer: offset = %u, size = %u",
-						offset, (unsigned int) size)));
+				 errmsg("page lsn = %lx, corrupted item pointer: offset = %u, size = %u",
+						PageGetLSN(page), offset, (unsigned int) size)));
 
 	/* Amount of space to actually be deleted */
 	size = MAXALIGN(size);
@@ -1080,12 +1099,12 @@ PageIndexTupleOverwrite(Page page, OffsetNumber offnum,
 		phdr->pd_special != MAXALIGN(phdr->pd_special))
 		ereport(ERROR,
 				(errcode(ERRCODE_DATA_CORRUPTED),
-				 errmsg("corrupted page pointers: lower = %u, upper = %u, special = %u",
-						phdr->pd_lower, phdr->pd_upper, phdr->pd_special)));
+				 errmsg("page lsn = %lx, corrupted page pointers: lower = %u, upper = %u, special = %u",
+						PageGetLSN(page), phdr->pd_lower, phdr->pd_upper, phdr->pd_special)));
 
 	itemcount = PageGetMaxOffsetNumber(page);
 	if ((int) offnum <= 0 || (int) offnum > itemcount)
-		elog(ERROR, "invalid index offnum: %u", offnum);
+		elog(ERROR, "page lsn = %lx, invalid index offnum: %u", PageGetLSN(page), offnum);
 
 	tupid = PageGetItemId(page, offnum);
 	Assert(ItemIdHasStorage(tupid));
@@ -1096,8 +1115,8 @@ PageIndexTupleOverwrite(Page page, OffsetNumber offnum,
 		offset != MAXALIGN(offset))
 		ereport(ERROR,
 				(errcode(ERRCODE_DATA_CORRUPTED),
-				 errmsg("corrupted item pointer: offset = %u, size = %u",
-						offset, (unsigned int) oldsize)));
+				 errmsg("page lsn = %lx, corrupted item pointer: offset = %u, size = %u",
+						PageGetLSN(page), offset, (unsigned int) oldsize)));
 
 	/*
 	 * Determine actual change in space requirement, check for page overflow.
@@ -1178,7 +1197,12 @@ PageSetChecksumCopy(Page page, BlockNumber blkno)
 	 * and second to avoid wasting space in processes that never call this.
 	 */
 	if (pageCopy == NULL)
-		pageCopy = MemoryContextAlloc(TopMemoryContext, BLCKSZ);
+	{
+		pageCopy = MemoryContextAlloc(TopMemoryContext,
+									  polar_enable_buffer_alignment ? POLAR_BUFFER_EXTEND_SIZE(BLCKSZ) : BLCKSZ);
+		if (polar_enable_buffer_alignment)
+			pageCopy = (char *) POLAR_BUFFER_ALIGN(pageCopy);
+	}
 
 	memcpy(pageCopy, (char *) page, BLCKSZ);
 	((PageHeader) pageCopy)->pd_checksum = pg_checksum_page(pageCopy, blkno);
@@ -1199,4 +1223,131 @@ PageSetChecksumInplace(Page page, BlockNumber blkno)
 		return;
 
 	((PageHeader) page)->pd_checksum = pg_checksum_page((char *) page, blkno);
+}
+
+/*
+ * POLAR: polar_page_is_just_inited -- check if page is just inited by PageInit()
+ * and it has no more modifications.
+ *
+ * return true, if just-inited page.
+ */
+bool
+polar_page_is_just_inited(Page page)
+{
+	PageHeader	p = (PageHeader) page;
+	XLogRecPtr	lsn;
+	size_t	   *pagebytes;
+	int			zero_space_lower;
+	int         zero_space_upper;
+
+	/*
+	 * check lsn frist for performance.
+	 * Most pages aren't just-inited page, return fastly.
+	 * For just-inited page, lsn should be 0.
+	 */
+	lsn = PageGetLSN(page);
+	if (lsn != 0)
+		return false;
+
+	/* check pagesize and version */
+	if (PageSizeIsValid(PageGetPageSize(page)) != true ||
+		PageGetPageLayoutVersion(page) != PG_PAGE_LAYOUT_VERSION)
+		return false;
+
+	if (p->pd_flags != 0 || p->pd_prune_xid != 0)
+		return false;
+
+	if (p->pd_lower != SizeOfPageHeaderData)
+		return false;
+
+	if (!(p->pd_upper > p->pd_lower && p->pd_upper <= BLCKSZ))
+		return false;
+
+	if (p->pd_special != p->pd_upper)
+		return false;
+
+	pagebytes = (size_t *) page;
+	/*
+	 * Check [p->pd_lower, p->pd_upper) bytes are all zero.
+	 * Have checked that  (p->pd_lower == SizeOfPageHeaderData) && (p->pd_upper > p->pd_lower && p->pd_upper <= BLCKSZ)
+	 *
+	 * If p->pd_lower is not sizeof(size_t) aligned,
+	 * [p->pd_lower, TYPEALIGN(sizeof(size_t), p->pd_lower) is not checked. We think it is OK.
+	 * It's the same with p->pd_upper.
+	 */
+	zero_space_lower = TYPEALIGN(sizeof(size_t), SizeOfPageHeaderData) / sizeof(size_t);
+	zero_space_upper =  p->pd_upper / sizeof(size_t);
+	for (; zero_space_lower < zero_space_upper; zero_space_lower++)
+	{
+		if (pagebytes[zero_space_lower] != 0)
+			return false;
+	}
+
+	return true;
+}
+/* POLAR end */
+
+char *
+PageEncryptCopy(Page page, ForkNumber forknum, BlockNumber blkno)
+{
+	static char *pageCopy = NULL;
+
+	if (PageIsNew(page) || !DataEncryptionEnabled() || !EncryptForkNum(forknum))
+		return (char *) page;
+
+	/*
+	 * We allocate the copy space once and use it over on each subsequent
+	 * call.  The point of palloc'ing here, rather than having a static char
+	 * array, is first to ensure adequate alignment for the checksumming code
+	 * and second to avoid wasting space in processes that never call this.
+	 */
+	if (pageCopy == NULL)
+	{
+		pageCopy = MemoryContextAlloc(TopMemoryContext,
+									  polar_enable_buffer_alignment ? POLAR_BUFFER_EXTEND_SIZE(BLCKSZ) : BLCKSZ);
+		if (polar_enable_buffer_alignment)
+			pageCopy = (char *) POLAR_BUFFER_ALIGN(pageCopy);
+	}
+
+	memcpy(pageCopy, (char *) page, BLCKSZ);
+	EncryptBufferBlock(blkno, pageCopy);
+	return pageCopy;
+}
+
+void
+PageEncryptInplace(Page page, ForkNumber forknum, BlockNumber blkno)
+{
+	Assert(forknum <= MAX_FORKNUM && blkno != InvalidBlockNumber);
+	if (PageIsNew(page) || !DataEncryptionEnabled() || !EncryptForkNum(forknum))
+		return;
+
+	EncryptBufferBlock(blkno, page);
+}
+
+
+void
+PageDecryptInplace(Page page, ForkNumber forknum, BlockNumber blkno, void *smgr)
+{
+	Assert(forknum <= MAX_FORKNUM && blkno != InvalidBlockNumber);
+	if (PageIsNew(page) || !DataEncryptionEnabled() || !EncryptForkNum(forknum))
+		return;
+	if (DataEncryptionEnabled())
+	{
+		Assert(PageIsEncrypted(page));
+		if (!PageIsEncrypted(page)){
+			/*no cover begin*/
+
+			if (smgr && polar_enable_tde_warning)
+			{
+				char *relpath = relpath(((SMgrRelation)smgr)->smgr_rnode, forknum);
+				elog(WARNING, "POLARDB: data encryption is enabled, "
+						"but the page %u of relation %s is not encrypted.", blkno, relpath);
+				pfree(relpath);
+			}
+			/*no cover end*/
+			return;
+		}
+	}
+
+	DecryptBufferBlock(blkno, page);
 }

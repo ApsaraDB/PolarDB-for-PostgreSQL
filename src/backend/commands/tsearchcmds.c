@@ -740,7 +740,8 @@ DefineTSTemplate(List *names, List *parameters)
 	char	   *tmplname;
 	ObjectAddress address;
 
-	if (!superuser())
+	/* POLAR: allow polar_superuser to create text search */
+	if (!superuser() && !polar_superuser())
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 				 errmsg("must be superuser to create text search templates")));

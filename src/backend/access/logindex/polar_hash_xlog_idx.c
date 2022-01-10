@@ -7,6 +7,7 @@
  * Portions Copyright (c) 1994, Regents of the University of California
  * Portions Copyright (c) 2021, Alibaba Group Holding limited
  *
+ * IDENTIFICATION
  * src/backend/access/logindex/polar_hash_xlog_idx.c
  *
  *-------------------------------------------------------------------------
@@ -16,126 +17,121 @@
 #include "access/bufmask.h"
 #include "access/hash.h"
 #include "access/hash_xlog.h"
-#include "access/polar_logindex.h"
-#include "access/polar_logindex_internal.h"
+#include "access/polar_logindex_redo.h"
 #include "access/xlog.h"
 #include "miscadmin.h"
 #include "storage/buf_internals.h"
 #include "storage/standby.h"
 
 static void
-polar_hash_xlog_add_ovfl_page_save(XLogReaderState *record)
+polar_hash_xlog_add_ovfl_page_save(polar_logindex_redo_ctl_t instance, XLogReaderState *record)
 {
-	polar_log_index_save_block(record, 0);
-	polar_log_index_save_block(record, 1);
+	polar_logindex_save_block(instance, record, 0);
+	polar_logindex_save_block(instance, record, 1);
 
 	if (XLogRecHasBlockRef(record, 2))
-		polar_log_index_save_block(record, 2);
+		polar_logindex_save_block(instance, record, 2);
 
 	if (XLogRecHasBlockRef(record, 3))
-		polar_log_index_save_block(record, 3);
+		polar_logindex_save_block(instance, record, 3);
 
-	polar_log_index_save_block(record, 4);
+	polar_logindex_save_block(instance, record, 4);
 }
 
 static void
-polar_hash_xlog_add_ovfl_page_parse(XLogReaderState *record)
+polar_hash_xlog_add_ovfl_page_parse(polar_logindex_redo_ctl_t instance, XLogReaderState *record)
 {
-	BufferTag	ovfl_tag;
-	polar_page_lock_t ovfl_lock;
-	Buffer		ovfl_buf;
+	BufferTag ovfl_tag;
+	polar_page_lock_t    ovfl_lock;
+	Buffer    ovfl_buf;
 
-	POLAR_MINI_TRANS_REDO_PARSE(record, 0, ovfl_tag, ovfl_lock, ovfl_buf);
+	POLAR_MINI_TRANS_REDO_PARSE(instance, record, 0, ovfl_tag, ovfl_lock, ovfl_buf);
 
-	polar_log_index_redo_parse(record, 1);
+	polar_logindex_redo_parse(instance, record, 1);
 
 	if (BufferIsValid(ovfl_buf))
 		UnlockReleaseBuffer(ovfl_buf);
 
-	polar_log_index_mini_trans_unlock(ovfl_lock);
+	polar_logindex_mini_trans_unlock(instance->mini_trans, ovfl_lock);
 
 	if (XLogRecHasBlockRef(record, 2))
-		polar_log_index_redo_parse(record, 2);
+		polar_logindex_redo_parse(instance, record, 2);
 
 	if (XLogRecHasBlockRef(record, 3))
-		polar_log_index_redo_parse(record, 3);
+		polar_logindex_redo_parse(instance, record, 3);
 
-	polar_log_index_redo_parse(record, 4);
+	polar_logindex_redo_parse(instance, record, 4);
 }
 
 static void
-polar_hash_xlog_split_allocate_page_save(XLogReaderState *record)
+polar_hash_xlog_split_allocate_page_save(polar_logindex_redo_ctl_t instance, XLogReaderState *record)
 {
-	polar_log_index_save_block(record, 0);
-	polar_log_index_save_block(record, 1);
-	polar_log_index_save_block(record, 2);
+	polar_logindex_save_block(instance, record, 0);
+	polar_logindex_save_block(instance, record, 1);
+	polar_logindex_save_block(instance, record, 2);
 }
 
 static void
-polar_hash_xlog_split_allocate_page_parse(XLogReaderState *record)
+polar_hash_xlog_split_allocate_page_parse(polar_logindex_redo_ctl_t instance, XLogReaderState *record)
 {
-	BufferTag	old_tag,
-				new_tag;
-	polar_page_lock_t old_page_lock,
-				new_page_lock;
-	Buffer		old_buf = InvalidBuffer;
-	Buffer		new_buf = InvalidBuffer;
+	BufferTag old_tag, new_tag;
+	polar_page_lock_t old_page_lock, new_page_lock;
+	Buffer old_buf = InvalidBuffer;
+	Buffer new_buf = InvalidBuffer;
 
 
-	POLAR_MINI_TRANS_CLEANUP_PARSE(record, 0, old_tag, old_page_lock, old_buf);
-	POLAR_MINI_TRANS_REDO_PARSE(record, 1, new_tag, new_page_lock, new_buf);
+	POLAR_MINI_TRANS_CLEANUP_PARSE(instance, record, 0, old_tag, old_page_lock, old_buf);
+	POLAR_MINI_TRANS_REDO_PARSE(instance, record, 1, new_tag, new_page_lock, new_buf);
 
 	if (BufferIsValid(old_buf))
 		UnlockReleaseBuffer(old_buf);
 
-	polar_log_index_mini_trans_unlock(old_page_lock);
+	polar_logindex_mini_trans_unlock(instance->mini_trans, old_page_lock);
 
 	if (BufferIsValid(new_buf))
 		UnlockReleaseBuffer(new_buf);
 
-	polar_log_index_mini_trans_unlock(new_page_lock);
+	polar_logindex_mini_trans_unlock(instance->mini_trans, new_page_lock);
 
-	polar_log_index_redo_parse(record, 2);
+	polar_logindex_redo_parse(instance, record, 2);
 }
 
 static void
-polar_hash_xlog_move_page_contents_save(XLogReaderState *record)
+polar_hash_xlog_move_page_contents_save(polar_logindex_redo_ctl_t instance, XLogReaderState *record)
 {
 	if (XLogRecHasBlockRef(record, 0))
 	{
-		polar_log_index_save_block(record, 0);
-		polar_log_index_save_block(record, 1);
+		polar_logindex_save_block(instance, record, 0);
+		polar_logindex_save_block(instance, record, 1);
 	}
 	else
-		polar_log_index_save_block(record, 1);
+		polar_logindex_save_block(instance, record, 1);
 
-	polar_log_index_save_block(record, 2);
+	polar_logindex_save_block(instance, record, 2);
 }
 
 static void
-polar_hash_xlog_move_page_contents_parse(XLogReaderState *record)
+polar_hash_xlog_move_page_contents_parse(polar_logindex_redo_ctl_t instance, XLogReaderState *record)
 {
-	BufferTag	write_tag,
-				bucket_tag;
-	polar_page_lock_t write_lock,
-				bucket_lock = POLAR_INVALID_PAGE_LOCK;
-	Buffer		write_buf = InvalidBuffer,
-				bucket_buf = InvalidBuffer;
+	BufferTag write_tag, bucket_tag;
+	polar_page_lock_t write_lock, bucket_lock = POLAR_INVALID_PAGE_LOCK;
+	Buffer write_buf = InvalidBuffer,
+		   bucket_buf = InvalidBuffer;
 
 	if (XLogRecHasBlockRef(record, 0))
 	{
-		POLAR_MINI_TRANS_CLEANUP_PARSE(record, 0, bucket_tag, bucket_lock, bucket_buf);
-		POLAR_MINI_TRANS_REDO_PARSE(record, 1, write_tag, write_lock, write_buf);
+		POLAR_MINI_TRANS_CLEANUP_PARSE(instance, record, 0, bucket_tag, bucket_lock, bucket_buf);
+		POLAR_MINI_TRANS_REDO_PARSE(instance, record, 1, write_tag, write_lock, write_buf);
 	}
 	else
-		POLAR_MINI_TRANS_CLEANUP_PARSE(record, 1, write_tag, write_lock, write_buf);
+		POLAR_MINI_TRANS_CLEANUP_PARSE(instance, record, 1, write_tag, write_lock, write_buf);
 
-	polar_log_index_redo_parse(record, 2);
+	polar_logindex_redo_parse(instance, record, 2);
 
 	if (BufferIsValid(write_buf))
 		UnlockReleaseBuffer(write_buf);
 
-	polar_log_index_mini_trans_unlock(write_lock);
+	polar_logindex_mini_trans_unlock(instance->mini_trans, write_lock);
 
 	if (XLogRecHasBlockRef(record, 0))
 	{
@@ -143,65 +139,63 @@ polar_hash_xlog_move_page_contents_parse(XLogReaderState *record)
 			UnlockReleaseBuffer(bucket_buf);
 
 		if (bucket_lock != POLAR_INVALID_PAGE_LOCK)
-			polar_log_index_mini_trans_unlock(bucket_lock);
+			polar_logindex_mini_trans_unlock(instance->mini_trans, bucket_lock);
 	}
 }
 
 static void
-polar_hash_xlog_squeeze_page_save(XLogReaderState *record)
+polar_hash_xlog_squeeze_page_save(polar_logindex_redo_ctl_t instance, XLogReaderState *record)
 {
 	if (XLogRecHasBlockRef(record, 0))
 	{
-		polar_log_index_save_block(record, 0);
-		polar_log_index_save_block(record, 1);
+		polar_logindex_save_block(instance, record, 0);
+		polar_logindex_save_block(instance, record, 1);
 	}
 	else
-		polar_log_index_save_block(record, 1);
+		polar_logindex_save_block(instance, record, 1);
 
-	polar_log_index_save_block(record, 2);
+	polar_logindex_save_block(instance, record, 2);
 
 	if (XLogRecHasBlockRef(record, 3))
-		polar_log_index_save_block(record, 3);
+		polar_logindex_save_block(instance, record, 3);
 
 	if (XLogRecHasBlockRef(record, 4))
-		polar_log_index_save_block(record, 4);
+		polar_logindex_save_block(instance, record, 4);
 
-	polar_log_index_save_block(record, 5);
+	polar_logindex_save_block(instance, record, 5);
 
 	if (XLogRecHasBlockRef(record, 6))
-		polar_log_index_save_block(record, 6);
+		polar_logindex_save_block(instance, record, 6);
 }
 
 static void
-polar_hash_xlog_squeeze_page_parse(XLogReaderState *record)
+polar_hash_xlog_squeeze_page_parse(polar_logindex_redo_ctl_t instance, XLogReaderState *record)
 {
-	BufferTag	write_tag,
-				bucket_tag;
-	polar_page_lock_t write_lock,
-				bucket_lock = POLAR_INVALID_PAGE_LOCK;
-	Buffer		write_buf = InvalidBuffer,
-				bucket_buf = InvalidBuffer;
+	BufferTag write_tag, bucket_tag;
+	polar_page_lock_t write_lock, bucket_lock = POLAR_INVALID_PAGE_LOCK;
+	Buffer write_buf = InvalidBuffer,
+		   bucket_buf = InvalidBuffer;
 
 	if (XLogRecHasBlockRef(record, 0))
 	{
-		POLAR_MINI_TRANS_CLEANUP_PARSE(record, 0, bucket_tag, bucket_lock, bucket_buf);
-		POLAR_MINI_TRANS_REDO_PARSE(record, 1, write_tag, write_lock, write_buf);
+		POLAR_MINI_TRANS_CLEANUP_PARSE(instance, record, 0, bucket_tag, bucket_lock, bucket_buf);
+		POLAR_MINI_TRANS_REDO_PARSE(instance, record, 1, write_tag, write_lock, write_buf);
 	}
 	else
-		POLAR_MINI_TRANS_CLEANUP_PARSE(record, 1, write_tag, write_lock, write_buf);
+		POLAR_MINI_TRANS_CLEANUP_PARSE(instance, record, 1, write_tag, write_lock, write_buf);
 
-	polar_log_index_redo_parse(record, 2);
+	polar_logindex_redo_parse(instance, record, 2);
 
 	if (XLogRecHasBlockRef(record, 3))
-		polar_log_index_redo_parse(record, 3);
+		polar_logindex_redo_parse(instance, record, 3);
 
 	if (XLogRecHasBlockRef(record, 4))
-		polar_log_index_redo_parse(record, 4);
+		polar_logindex_redo_parse(instance, record, 4);
 
 	if (BufferIsValid(write_buf))
 		UnlockReleaseBuffer(write_buf);
 
-	polar_log_index_mini_trans_unlock(write_lock);
+	polar_logindex_mini_trans_unlock(instance->mini_trans, write_lock);
 
 	if (XLogRecHasBlockRef(record, 0))
 	{
@@ -209,17 +203,17 @@ polar_hash_xlog_squeeze_page_parse(XLogReaderState *record)
 			UnlockReleaseBuffer(bucket_buf);
 
 		if (bucket_lock != POLAR_INVALID_PAGE_LOCK)
-			polar_log_index_mini_trans_unlock(bucket_lock);
+			polar_logindex_mini_trans_unlock(instance->mini_trans, bucket_lock);
 	}
 
-	polar_log_index_redo_parse(record, 5);
+	polar_logindex_redo_parse(instance, record, 5);
 
 	if (XLogRecHasBlockRef(record, 6))
-		polar_log_index_redo_parse(record, 6);
+		polar_logindex_redo_parse(instance, record, 6);
 }
 
 static void
-polar_hash_xlog_vacuum_one_page_parse(XLogReaderState *record)
+polar_hash_xlog_vacuum_one_page_parse(polar_logindex_redo_ctl_t instance, XLogReaderState *record)
 {
 	/*
 	 * If we have any conflict processing to do, it must happen before we
@@ -236,58 +230,55 @@ polar_hash_xlog_vacuum_one_page_parse(XLogReaderState *record)
 	if (reachedConsistency && InHotStandby && polar_enable_resolve_conflict)
 	{
 		TransactionId latestRemovedXid =
-		hash_xlog_vacuum_get_latestRemovedXid(record);
+			hash_xlog_vacuum_get_latestRemovedXid(record);
 		RelFileNode rnode;
 
 		XLogRecGetBlockTag(record, 0, &rnode, NULL, NULL);
 		ResolveRecoveryConflictWithSnapshot(latestRemovedXid, rnode);
 	}
 
-	polar_log_index_cleanup_parse(record, 0);
-	polar_log_index_redo_parse(record, 1);
+	polar_logindex_cleanup_parse(instance, record, 0);
+	polar_logindex_redo_parse(instance, record, 1);
 }
 
 static void
-polar_hash_xlog_delete_save(XLogReaderState *record)
+polar_hash_xlog_delete_save(polar_logindex_redo_ctl_t instance, XLogReaderState *record)
 {
 	if (XLogRecHasBlockRef(record, 0))
 	{
-		polar_log_index_save_block(record, 0);
-		polar_log_index_save_block(record, 1);
+		polar_logindex_save_block(instance, record, 0);
+		polar_logindex_save_block(instance, record, 1);
 	}
 	else
-		polar_log_index_save_block(record, 1);
+		polar_logindex_save_block(instance, record, 1);
 }
 
 static void
-polar_hash_xlog_delete_parse(XLogReaderState *record)
+polar_hash_xlog_delete_parse(polar_logindex_redo_ctl_t instance, XLogReaderState *record)
 {
-	BufferTag	bucket_tag,
-				del_tag;
-	polar_page_lock_t bucket_lock = POLAR_INVALID_PAGE_LOCK,
-				del_lock;
-	Buffer		bucket_buf = InvalidBuffer,
-				del_buf = InvalidBuffer;
+	BufferTag bucket_tag, del_tag;
+	polar_page_lock_t bucket_lock = POLAR_INVALID_PAGE_LOCK, del_lock;
+	Buffer bucket_buf = InvalidBuffer, del_buf = InvalidBuffer;
 
 	if (XLogRecHasBlockRef(record, 0))
 	{
-		POLAR_MINI_TRANS_CLEANUP_PARSE(record, 0, bucket_tag, bucket_lock, bucket_buf);
-		POLAR_MINI_TRANS_REDO_PARSE(record, 1, del_tag, del_lock, del_buf);
+		POLAR_MINI_TRANS_CLEANUP_PARSE(instance, record, 0, bucket_tag, bucket_lock, bucket_buf);
+		POLAR_MINI_TRANS_REDO_PARSE(instance, record, 1, del_tag, del_lock, del_buf);
 	}
 	else
-		POLAR_MINI_TRANS_CLEANUP_PARSE(record, 1, del_tag, del_lock, del_buf);
+		POLAR_MINI_TRANS_CLEANUP_PARSE(instance, record, 1, del_tag, del_lock, del_buf);
 
 	if (BufferIsValid(del_buf))
 		UnlockReleaseBuffer(del_buf);
 
-	polar_log_index_mini_trans_unlock(del_lock);
+	polar_logindex_mini_trans_unlock(instance->mini_trans, del_lock);
 
 	if (XLogRecHasBlockRef(record, 0))
 	{
 		if (BufferIsValid(bucket_buf))
 			UnlockReleaseBuffer(bucket_buf);
 
-		polar_log_index_mini_trans_unlock(bucket_lock);
+		polar_logindex_mini_trans_unlock(instance->mini_trans, bucket_lock);
 	}
 }
 
@@ -297,11 +288,11 @@ polar_hash_xlog_delete_parse(XLogReaderState *record)
 static XLogRedoAction
 polar_hash_xlog_init_meta_page(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 {
-	XLogRecPtr	lsn = record->EndRecPtr;
+	XLogRecPtr  lsn = record->EndRecPtr;
 	xl_hash_init_meta_page *xlrec = (xl_hash_init_meta_page *) XLogRecGetData(record);
 	XLogRedoAction action = BLK_NOTFOUND;
-	Page		page;
-	BufferTag	meta_tag;
+	Page        page;
+	BufferTag      meta_tag;
 
 	POLAR_GET_LOG_TAG(record, meta_tag, 0);
 
@@ -318,9 +309,9 @@ polar_hash_xlog_init_meta_page(XLogReaderState *record, BufferTag *tag, Buffer *
 
 		/*
 		 * Force the on-disk state of init forks to always be in sync with the
-		 * state in shared buffers.  See XLogReadBufferForRedoExtended.  We
-		 * need special handling for init forks as create index operations
-		 * don't log a full page image of the metapage.
+		 * state in shared buffers.  See XLogReadBufferForRedoExtended.  We need
+		 * special handling for init forks as create index operations don't log a
+		 * full page image of the metapage.
 		 */
 		if (meta_tag.forkNum == INIT_FORKNUM)
 			FlushOneBuffer(*buffer);
@@ -337,14 +328,13 @@ polar_hash_xlog_init_meta_page(XLogReaderState *record, BufferTag *tag, Buffer *
 static XLogRedoAction
 polar_hash_xlog_init_bitmap_page(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 {
-	XLogRecPtr	lsn = record->EndRecPtr;
+	XLogRecPtr  lsn = record->EndRecPtr;
 	xl_hash_init_bitmap_page *xlrec = (xl_hash_init_bitmap_page *) XLogRecGetData(record);
 	XLogRedoAction action = BLK_NOTFOUND;
-	Page		page;
+	Page        page;
 	HashMetaPage metap;
-	uint32		num_buckets;
-	BufferTag	bitmap_tag,
-				meta_tag;
+	uint32      num_buckets;
+	BufferTag   bitmap_tag, meta_tag;
 
 	POLAR_GET_LOG_TAG(record, bitmap_tag, 0);
 
@@ -359,9 +349,9 @@ polar_hash_xlog_init_bitmap_page(XLogReaderState *record, BufferTag *tag, Buffer
 
 		/*
 		 * Force the on-disk state of init forks to always be in sync with the
-		 * state in shared buffers.  See XLogReadBufferForRedoExtended.  We
-		 * need special handling for init forks as create index operations
-		 * don't log a full page image of the metapage.
+		 * state in shared buffers.  See XLogReadBufferForRedoExtended.  We need
+		 * special handling for init forks as create index operations don't log a
+		 * full page image of the metapage.
 		 */
 		if (bitmap_tag.forkNum == INIT_FORKNUM)
 			FlushOneBuffer(*buffer);
@@ -408,12 +398,11 @@ static XLogRedoAction
 polar_hash_xlog_insert(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 {
 	HashMetaPage metap;
-	XLogRecPtr	lsn = record->EndRecPtr;
+	XLogRecPtr  lsn = record->EndRecPtr;
 	xl_hash_insert *xlrec = (xl_hash_insert *) XLogRecGetData(record);
 	XLogRedoAction action = BLK_NOTFOUND;
-	Page		page;
-	BufferTag	insert_tag,
-				meta_tag;
+	Page        page;
+	BufferTag   insert_tag, meta_tag;
 
 	POLAR_GET_LOG_TAG(record, insert_tag, 0);
 
@@ -423,8 +412,8 @@ polar_hash_xlog_insert(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 
 		if (action == BLK_NEEDS_REDO)
 		{
-			Size		datalen;
-			char	   *datapos = XLogRecGetBlockData(record, 0, &datalen);
+			Size        datalen;
+			char       *datapos = XLogRecGetBlockData(record, 0, &datalen);
 
 			page = BufferGetPage(*buffer);
 
@@ -451,9 +440,9 @@ polar_hash_xlog_insert(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 		{
 			/*
 			 * Note: in normal operation, we'd update the metapage while still
-			 * holding lock on the page we inserted into.  But during replay
-			 * it's not necessary to hold that lock, since no other index
-			 * updates can be happening concurrently.
+			 * holding lock on the page we inserted into.  But during replay it's
+			 * not necessary to hold that lock, since no other index updates can
+			 * be happening concurrently.
 			 */
 			page = BufferGetPage(*buffer);
 			metap = HashPageGetMeta(page);
@@ -472,21 +461,17 @@ polar_hash_xlog_insert(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 static XLogRedoAction
 polar_hash_xlog_add_ovfl_page(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 {
-	XLogRecPtr	lsn = record->EndRecPtr;
+	XLogRecPtr  lsn = record->EndRecPtr;
 	xl_hash_add_ovfl_page *xlrec = (xl_hash_add_ovfl_page *) XLogRecGetData(record);
 	XLogRedoAction action = BLK_NOTFOUND;
-	Page		ovflpage;
+	Page        ovflpage;
 	HashPageOpaque ovflopaque;
-	uint32	   *num_bucket;
-	char	   *data;
-	Size		datalen PG_USED_FOR_ASSERTS_ONLY;
-	bool		new_bmpage = false;
+	uint32     *num_bucket;
+	char       *data;
+	Size        datalen PG_USED_FOR_ASSERTS_ONLY;
+	bool        new_bmpage = false;
 	BlockNumber newmapblk = InvalidBlockNumber;
-	BufferTag	meta_tag,
-				left_tag,
-				newmap_tag,
-				ovfl_tag,
-				map_tag;
+	BufferTag   meta_tag, left_tag, newmap_tag, ovfl_tag, map_tag;
 
 	POLAR_GET_LOG_TAG(record, ovfl_tag, 0);
 	POLAR_GET_LOG_TAG(record, left_tag, 1);
@@ -517,7 +502,7 @@ polar_hash_xlog_add_ovfl_page(XLogReaderState *record, BufferTag *tag, Buffer *b
 
 		if (action == BLK_NEEDS_REDO)
 		{
-			Page		leftpage;
+			Page        leftpage;
 			HashPageOpaque leftopaque;
 
 			leftpage = BufferGetPage(*buffer);
@@ -546,10 +531,9 @@ polar_hash_xlog_add_ovfl_page(XLogReaderState *record, BufferTag *tag, Buffer *b
 
 			if (action == BLK_NEEDS_REDO)
 			{
-				Page		mappage = (Page) BufferGetPage(*buffer);
-				uint32	   *freep = NULL;
-				char	   *data;
-				uint32	   *bitmap_page_bit;
+				Page        mappage = (Page) BufferGetPage(*buffer);
+				uint32     *freep = NULL;
+				uint32     *bitmap_page_bit;
 
 				freep = HashPageGetBitmap(mappage);
 
@@ -591,8 +575,8 @@ polar_hash_xlog_add_ovfl_page(XLogReaderState *record, BufferTag *tag, Buffer *b
 		if (action == BLK_NEEDS_REDO)
 		{
 			HashMetaPage metap;
-			Page		page;
-			uint32	   *firstfree_ovflpage;
+			Page        page;
+			uint32     *firstfree_ovflpage;
 
 			data = XLogRecGetBlockData(record, 4, &datalen);
 			firstfree_ovflpage = (uint32 *) data;
@@ -623,52 +607,17 @@ polar_hash_xlog_add_ovfl_page(XLogReaderState *record, BufferTag *tag, Buffer *b
 }
 
 /*
- * polar_redo_cleanup_ok - Check whether is ok to perform cleanup on a buffer.
- * If we hold its IO lock we can cleanup it, otherwise call IsBufferCleanupOK
- * function to check.
- */
-static bool
-polar_redo_cleanup_ok(Buffer buffer)
-{
-	Assert(BufferIsValid(buffer));
-
-	if (!BufferIsLocal(buffer))
-	{
-		if (!AmStartupProcess())
-		{
-			BufferDesc *bufHdr = GetBufferDescriptor(buffer - 1);
-
-			if (!LWLockHeldByMeInMode(BufferDescriptorGetIOLock(bufHdr), LW_EXCLUSIVE))
-			{
-				elog(WARNING, "Buffer IO lock is not held by this process");
-				return false;
-			}
-
-			/*
-			 * It's in backend process and we should hold IO lock, so it's
-			 * safe to cleanup
-			 */
-			return true;
-		}
-	}
-
-	return IsBufferCleanupOK(buffer);
-}
-
-/*
  * replay allocation of page for split operation
  */
 static XLogRedoAction
 polar_hash_xlog_split_allocate_page(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 {
-	XLogRecPtr	lsn = record->EndRecPtr;
+	XLogRecPtr  lsn = record->EndRecPtr;
 	xl_hash_split_allocate_page *xlrec = (xl_hash_split_allocate_page *) XLogRecGetData(record);
 	XLogRedoAction action = BLK_NOTFOUND;
-	Size		datalen PG_USED_FOR_ASSERTS_ONLY;
-	char	   *data;
-	BufferTag	old_tag,
-				new_tag,
-				meta_tag;
+	Size        datalen PG_USED_FOR_ASSERTS_ONLY;
+	char       *data;
+	BufferTag  old_tag, new_tag, meta_tag;
 
 	/*
 	 * To be consistent with normal operation, here we take cleanup locks on
@@ -684,13 +633,12 @@ polar_hash_xlog_split_allocate_page(XLogReaderState *record, BufferTag *tag, Buf
 		action = XLogReadBufferForRedoExtended(record, 0, POLAR_READ_MODE(*buffer), true, buffer);
 
 		/*
-		 * Note that we still update the page even if it was restored from a
-		 * full page image, because the special space is not included in the
-		 * image.
+		 * Note that we still update the page even if it was restored from a full
+		 * page image, because the special space is not included in the image.
 		 */
 		if (action == BLK_NEEDS_REDO || action == BLK_RESTORED)
 		{
-			Page		oldpage;
+			Page        oldpage;
 			HashPageOpaque oldopaque;
 
 			oldpage = BufferGetPage(*buffer);
@@ -714,12 +662,6 @@ polar_hash_xlog_split_allocate_page(XLogReaderState *record, BufferTag *tag, Buf
 		_hash_initbuf(*buffer, xlrec->new_bucket, xlrec->new_bucket,
 					  xlrec->new_bucket_flag, true);
 
-		if (!polar_redo_cleanup_ok(*buffer))
-		{
-			POLAR_LOG_REDO_INFO(BufferGetPage(*buffer), record);
-			elog(PANIC, "polar_hash_xlog_split_allocate_page: failed to acquire cleanup lock");
-		}
-
 		PageSetLSN(BufferGetPage(*buffer), lsn);
 
 		return BLK_NEEDS_REDO;
@@ -731,9 +673,9 @@ polar_hash_xlog_split_allocate_page(XLogReaderState *record, BufferTag *tag, Buf
 	{
 		/*
 		 * Note: in normal operation, we'd update the meta page while still
-		 * holding lock on the old and new bucket pages.  But during replay
-		 * it's not necessary to hold those locks, since no other bucket
-		 * splits can be happening concurrently.
+		 * holding lock on the old and new bucket pages.  But during replay it's
+		 * not necessary to hold those locks, since no other bucket splits can be
+		 * happening concurrently.
 		 */
 
 		/* replay the record for metapage changes */
@@ -741,7 +683,7 @@ polar_hash_xlog_split_allocate_page(XLogReaderState *record, BufferTag *tag, Buf
 
 		if (action == BLK_NEEDS_REDO)
 		{
-			Page		page;
+			Page        page;
 			HashMetaPage metap;
 
 			page = BufferGetPage(*buffer);
@@ -752,12 +694,12 @@ polar_hash_xlog_split_allocate_page(XLogReaderState *record, BufferTag *tag, Buf
 
 			if (xlrec->flags & XLH_SPLIT_META_UPDATE_MASKS)
 			{
-				uint32		lowmask;
-				uint32	   *highmask;
+				uint32      lowmask;
+				uint32     *highmask;
 
 				/* extract low and high masks. */
 				memcpy(&lowmask, data, sizeof(uint32));
-				highmask = (uint32 *) ((char *) data + sizeof(uint32));
+				highmask = (uint32 *)((char *) data + sizeof(uint32));
 
 				/* update metapage */
 				metap->hashm_lowmask = lowmask;
@@ -768,12 +710,12 @@ polar_hash_xlog_split_allocate_page(XLogReaderState *record, BufferTag *tag, Buf
 
 			if (xlrec->flags & XLH_SPLIT_META_UPDATE_SPLITPOINT)
 			{
-				uint32		ovflpoint;
-				uint32	   *ovflpages;
+				uint32      ovflpoint;
+				uint32     *ovflpages;
 
 				/* extract information of overflow pages. */
 				memcpy(&ovflpoint, data, sizeof(uint32));
-				ovflpages = (uint32 *) ((char *) data + sizeof(uint32));
+				ovflpages = (uint32 *)((char *) data + sizeof(uint32));
 
 				/* update metapage */
 				metap->hashm_spares[ovflpoint] = *ovflpages;
@@ -799,11 +741,10 @@ polar_hash_xlog_split_page(XLogReaderState *record, BufferTag *tag, Buffer *buff
 static XLogRedoAction
 polar_hash_xlog_split_complete(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 {
-	XLogRecPtr	lsn = record->EndRecPtr;
+	XLogRecPtr  lsn = record->EndRecPtr;
 	xl_hash_split_complete *xlrec = (xl_hash_split_complete *) XLogRecGetData(record);
 	XLogRedoAction action = BLK_NOTFOUND;
-	BufferTag	old_tag,
-				new_tag;
+	BufferTag old_tag, new_tag;
 
 	POLAR_GET_LOG_TAG(record, old_tag, 0);
 
@@ -814,13 +755,12 @@ polar_hash_xlog_split_complete(XLogReaderState *record, BufferTag *tag, Buffer *
 		action = POLAR_READ_BUFFER_FOR_REDO(record, 0, buffer);
 
 		/*
-		 * Note that we still update the page even if it was restored from a
-		 * full page image, because the bucket flag is not included in the
-		 * image.
+		 * Note that we still update the page even if it was restored from a full
+		 * page image, because the bucket flag is not included in the image.
 		 */
 		if (action == BLK_NEEDS_REDO || action == BLK_RESTORED)
 		{
-			Page		oldpage;
+			Page        oldpage;
 			HashPageOpaque oldopaque;
 
 			oldpage = BufferGetPage(*buffer);
@@ -842,13 +782,12 @@ polar_hash_xlog_split_complete(XLogReaderState *record, BufferTag *tag, Buffer *
 		action = POLAR_READ_BUFFER_FOR_REDO(record, 1, buffer);
 
 		/*
-		 * Note that we still update the page even if it was restored from a
-		 * full page image, because the bucket flag is not included in the
-		 * image.
+		 * Note that we still update the page even if it was restored from a full
+		 * page image, because the bucket flag is not included in the image.
 		 */
 		if (action == BLK_NEEDS_REDO || action == BLK_RESTORED)
 		{
-			Page		newpage;
+			Page        newpage;
 			HashPageOpaque nopaque;
 
 			newpage = BufferGetPage(*buffer);
@@ -869,12 +808,10 @@ polar_hash_xlog_split_complete(XLogReaderState *record, BufferTag *tag, Buffer *
 static XLogRedoAction
 polar_hash_xlog_move_page_contents(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 {
-	XLogRecPtr	lsn = record->EndRecPtr;
+	XLogRecPtr  lsn = record->EndRecPtr;
 	xl_hash_move_page_contents *xldata = (xl_hash_move_page_contents *) XLogRecGetData(record);
 	XLogRedoAction action = BLK_NOTFOUND;
-	BufferTag	bucket_tag,
-				write_tag,
-				del_tag;
+	BufferTag bucket_tag, write_tag, del_tag;
 
 	if (!xldata->is_prim_bucket_same_wrt)
 	{
@@ -883,8 +820,8 @@ polar_hash_xlog_move_page_contents(XLogReaderState *record, BufferTag *tag, Buff
 		if (BUFFERTAGS_EQUAL(*tag, bucket_tag))
 		{
 			/*
-			 * we don't care for return value as the purpose of reading
-			 * bucketbuf is to ensure a cleanup lock on primary bucket page.
+			 * we don't care for return value as the purpose of reading bucketbuf
+			 * is to ensure a cleanup lock on primary bucket page.
 			 */
 			return XLogReadBufferForRedoExtended(record, 0,
 												 POLAR_READ_MODE(*buffer), true, buffer);
@@ -896,12 +833,11 @@ polar_hash_xlog_move_page_contents(XLogReaderState *record, BufferTag *tag, Buff
 	if (BUFFERTAGS_EQUAL(*tag, write_tag))
 	{
 		/*
-		 * Ensure we have a cleanup lock on primary bucket page before we
-		 * start with the actual replay operation.  This is to ensure that
-		 * neither a scan can start nor a scan can be already-in-progress
-		 * during the replay of this operation.  If we allow scans during this
-		 * operation, then they can miss some records or show the same record
-		 * multiple times.
+		 * Ensure we have a cleanup lock on primary bucket page before we start
+		 * with the actual replay operation.  This is to ensure that neither a
+		 * scan can start nor a scan can be already-in-progress during the replay
+		 * of this operation.  If we allow scans during this operation, then they
+		 * can miss some records or show the same record multiple times.
 		 */
 		if (xldata->is_prim_bucket_same_wrt)
 			action = XLogReadBufferForRedoExtended(record, 1,
@@ -912,11 +848,11 @@ polar_hash_xlog_move_page_contents(XLogReaderState *record, BufferTag *tag, Buff
 		/* replay the record for adding entries in overflow buffer */
 		if (action == BLK_NEEDS_REDO)
 		{
-			Page		writepage;
-			char	   *begin;
-			char	   *data;
-			Size		datalen;
-			uint16		ninserted = 0;
+			Page        writepage;
+			char       *begin;
+			char       *data;
+			Size        datalen;
+			uint16      ninserted = 0;
 
 			data = begin = XLogRecGetBlockData(record, 1, &datalen);
 
@@ -930,8 +866,8 @@ polar_hash_xlog_move_page_contents(XLogReaderState *record, BufferTag *tag, Buff
 
 				while (data - begin < datalen)
 				{
-					IndexTuple	itup = (IndexTuple) data;
-					Size		itemsz;
+					IndexTuple  itup = (IndexTuple) data;
+					Size        itemsz;
 					OffsetNumber l;
 
 					itemsz = IndexTupleSize(itup);
@@ -953,8 +889,7 @@ polar_hash_xlog_move_page_contents(XLogReaderState *record, BufferTag *tag, Buff
 			}
 
 			/*
-			 * number of tuples inserted must be same as requested in REDO
-			 * record.
+			 * number of tuples inserted must be same as requested in REDO record.
 			 */
 			Assert(ninserted == xldata->ntups);
 
@@ -973,9 +908,9 @@ polar_hash_xlog_move_page_contents(XLogReaderState *record, BufferTag *tag, Buff
 
 		if (action == BLK_NEEDS_REDO)
 		{
-			Page		page;
-			char	   *ptr;
-			Size		len;
+			Page        page;
+			char       *ptr;
+			Size        len;
 
 			ptr = XLogRecGetBlockData(record, 2, &len);
 
@@ -987,7 +922,7 @@ polar_hash_xlog_move_page_contents(XLogReaderState *record, BufferTag *tag, Buff
 				OffsetNumber *unend;
 
 				unused = (OffsetNumber *) ptr;
-				unend = (OffsetNumber *) ((char *) ptr + len);
+				unend = (OffsetNumber *)((char *) ptr + len);
 
 				if ((unend - unused) > 0)
 					PageIndexMultiDelete(page, unused, unend - unused);
@@ -1006,16 +941,10 @@ polar_hash_xlog_move_page_contents(XLogReaderState *record, BufferTag *tag, Buff
 static XLogRedoAction
 polar_hash_xlog_squeeze_page(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 {
-	XLogRecPtr	lsn = record->EndRecPtr;
+	XLogRecPtr  lsn = record->EndRecPtr;
 	xl_hash_squeeze_page *xldata = (xl_hash_squeeze_page *) XLogRecGetData(record);
 	XLogRedoAction action = BLK_NOTFOUND;
-	BufferTag	bucket_tag,
-				write_tag,
-				ovfl_tag,
-				prev_tag,
-				next_tag,
-				map_tag,
-				meta_tag;
+	BufferTag bucket_tag, write_tag, ovfl_tag, prev_tag, next_tag, map_tag, meta_tag;
 
 	if (!xldata->is_prim_bucket_same_wrt)
 	{
@@ -1024,8 +953,8 @@ polar_hash_xlog_squeeze_page(XLogReaderState *record, BufferTag *tag, Buffer *bu
 		if (BUFFERTAGS_EQUAL(*tag, bucket_tag))
 		{
 			/*
-			 * we don't care for return value as the purpose of reading
-			 * bucketbuf is to ensure a cleanup lock on primary bucket page.
+			 * we don't care for return value as the purpose of reading bucketbuf
+			 * is to ensure a cleanup lock on primary bucket page.
 			 */
 			return XLogReadBufferForRedoExtended(record, 0, POLAR_READ_MODE(*buffer),
 												 true, buffer);
@@ -1037,12 +966,11 @@ polar_hash_xlog_squeeze_page(XLogReaderState *record, BufferTag *tag, Buffer *bu
 	if (BUFFERTAGS_EQUAL(*tag, write_tag))
 	{
 		/*
-		 * Ensure we have a cleanup lock on primary bucket page before we
-		 * start with the actual replay operation.  This is to ensure that
-		 * neither a scan can start nor a scan can be already-in-progress
-		 * during the replay of this operation.  If we allow scans during this
-		 * operation, then they can miss some records or show the same record
-		 * multiple times.
+		 * Ensure we have a cleanup lock on primary bucket page before we start
+		 * with the actual replay operation.  This is to ensure that neither a
+		 * scan can start nor a scan can be already-in-progress during the replay
+		 * of this operation.  If we allow scans during this operation, then they
+		 * can miss some records or show the same record multiple times.
 		 */
 		if (xldata->is_prim_bucket_same_wrt)
 			action = XLogReadBufferForRedoExtended(record, 1,
@@ -1053,11 +981,11 @@ polar_hash_xlog_squeeze_page(XLogReaderState *record, BufferTag *tag, Buffer *bu
 		/* replay the record for adding entries in overflow buffer */
 		if (action == BLK_NEEDS_REDO)
 		{
-			Page		writepage;
-			char	   *begin;
-			char	   *data;
-			Size		datalen;
-			uint16		ninserted = 0;
+			Page        writepage;
+			char       *begin;
+			char       *data;
+			Size        datalen;
+			uint16      ninserted = 0;
 
 			data = begin = XLogRecGetBlockData(record, 1, &datalen);
 
@@ -1071,8 +999,8 @@ polar_hash_xlog_squeeze_page(XLogReaderState *record, BufferTag *tag, Buffer *bu
 
 				while (data - begin < datalen)
 				{
-					IndexTuple	itup = (IndexTuple) data;
-					Size		itemsz;
+					IndexTuple  itup = (IndexTuple) data;
+					Size        itemsz;
 					OffsetNumber l;
 
 					itemsz = IndexTupleSize(itup);
@@ -1094,14 +1022,13 @@ polar_hash_xlog_squeeze_page(XLogReaderState *record, BufferTag *tag, Buffer *bu
 			}
 
 			/*
-			 * number of tuples inserted must be same as requested in REDO
-			 * record.
+			 * number of tuples inserted must be same as requested in REDO record.
 			 */
 			Assert(ninserted == xldata->ntups);
 
 			/*
-			 * if the page on which are adding tuples is a page previous to
-			 * freed overflow page, then update its nextblno.
+			 * if the page on which are adding tuples is a page previous to freed
+			 * overflow page, then update its nextblno.
 			 */
 			if (xldata->is_prev_bucket_same_wrt)
 			{
@@ -1125,7 +1052,7 @@ polar_hash_xlog_squeeze_page(XLogReaderState *record, BufferTag *tag, Buffer *bu
 
 		if (action == BLK_NEEDS_REDO)
 		{
-			Page		ovflpage;
+			Page        ovflpage;
 			HashPageOpaque ovflopaque;
 
 			ovflpage = BufferGetPage(*buffer);
@@ -1157,7 +1084,7 @@ polar_hash_xlog_squeeze_page(XLogReaderState *record, BufferTag *tag, Buffer *bu
 			/* replay the record for page previous to the freed overflow page */
 			if (action == BLK_NEEDS_REDO)
 			{
-				Page		prevpage = BufferGetPage(*buffer);
+				Page        prevpage = BufferGetPage(*buffer);
 				HashPageOpaque prevopaque = (HashPageOpaque) PageGetSpecialPointer(prevpage);
 
 				prevopaque->hasho_nextblkno = xldata->nextblkno;
@@ -1180,7 +1107,7 @@ polar_hash_xlog_squeeze_page(XLogReaderState *record, BufferTag *tag, Buffer *bu
 
 			if (action == BLK_NEEDS_REDO)
 			{
-				Page		nextpage = BufferGetPage(*buffer);
+				Page        nextpage = BufferGetPage(*buffer);
 				HashPageOpaque nextopaque = (HashPageOpaque) PageGetSpecialPointer(nextpage);
 
 				nextopaque->hasho_prevblkno = xldata->prevblkno;
@@ -1197,21 +1124,21 @@ polar_hash_xlog_squeeze_page(XLogReaderState *record, BufferTag *tag, Buffer *bu
 	if (BUFFERTAGS_EQUAL(*tag, map_tag))
 	{
 		/*
-		 * Note: in normal operation, we'd update the bitmap and meta page
-		 * while still holding lock on the primary bucket page and overflow
-		 * pages.  But during replay it's not necessary to hold those locks,
-		 * since no other index updates can be happening concurrently.
+		 * Note: in normal operation, we'd update the bitmap and meta page while
+		 * still holding lock on the primary bucket page and overflow pages.  But
+		 * during replay it's not necessary to hold those locks, since no other
+		 * index updates can be happening concurrently.
 		 */
 		/* replay the record for bitmap page */
 		action = POLAR_READ_BUFFER_FOR_REDO(record, 5, buffer);
 
 		if (action == BLK_NEEDS_REDO)
 		{
-			Page		mappage = (Page) BufferGetPage(*buffer);
-			uint32	   *freep = NULL;
-			char	   *data;
-			uint32	   *bitmap_page_bit;
-			Size		datalen;
+			Page        mappage = (Page) BufferGetPage(*buffer);
+			uint32     *freep = NULL;
+			char       *data;
+			uint32     *bitmap_page_bit;
+			Size        datalen;
 
 			freep = HashPageGetBitmap(mappage);
 
@@ -1238,10 +1165,10 @@ polar_hash_xlog_squeeze_page(XLogReaderState *record, BufferTag *tag, Buffer *bu
 			if (action == BLK_NEEDS_REDO)
 			{
 				HashMetaPage metap;
-				Page		page;
-				char	   *data;
-				uint32	   *firstfree_ovflpage;
-				Size		datalen;
+				Page        page;
+				char       *data;
+				uint32     *firstfree_ovflpage;
+				Size        datalen;
 
 				data = XLogRecGetBlockData(record, 6, &datalen);
 				firstfree_ovflpage = (uint32 *) data;
@@ -1264,12 +1191,11 @@ polar_hash_xlog_squeeze_page(XLogReaderState *record, BufferTag *tag, Buffer *bu
 static XLogRedoAction
 polar_hash_xlog_delete(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 {
-	XLogRecPtr	lsn = record->EndRecPtr;
+	XLogRecPtr  lsn = record->EndRecPtr;
 	xl_hash_delete *xldata = (xl_hash_delete *) XLogRecGetData(record);
 	XLogRedoAction action = BLK_NOTFOUND;
-	Page		page;
-	BufferTag	bucket_tag,
-				del_tag;
+	Page        page;
+	BufferTag   bucket_tag, del_tag;
 
 	if (!xldata->is_primary_bucket_page)
 	{
@@ -1278,11 +1204,11 @@ polar_hash_xlog_delete(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 		if (BUFFERTAGS_EQUAL(*tag, bucket_tag))
 		{
 			/*
-			 * we don't care for return value as the purpose of reading
-			 * bucketbuf is to ensure a cleanup lock on primary bucket page.
+			 * we don't care for return value as the purpose of reading bucketbuf
+			 * is to ensure a cleanup lock on primary bucket page.
 			 */
 			return XLogReadBufferForRedoExtended(record, 0, POLAR_READ_MODE(*buffer)
-												 ,true, buffer);
+												 , true, buffer);
 		}
 	}
 
@@ -1291,12 +1217,11 @@ polar_hash_xlog_delete(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 	if (BUFFERTAGS_EQUAL(*tag, del_tag))
 	{
 		/*
-		 * Ensure we have a cleanup lock on primary bucket page before we
-		 * start with the actual replay operation.  This is to ensure that
-		 * neither a scan can start nor a scan can be already-in-progress
-		 * during the replay of this operation.  If we allow scans during this
-		 * operation, then they can miss some records or show the same record
-		 * multiple times.
+		 * Ensure we have a cleanup lock on primary bucket page before we start
+		 * with the actual replay operation.  This is to ensure that neither a
+		 * scan can start nor a scan can be already-in-progress during the replay
+		 * of this operation.  If we allow scans during this operation, then they
+		 * can miss some records or show the same record multiple times.
 		 */
 		if (xldata->is_primary_bucket_page)
 			action = XLogReadBufferForRedoExtended(record, 1, POLAR_READ_MODE(*buffer),
@@ -1307,8 +1232,8 @@ polar_hash_xlog_delete(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 		/* replay the record for deleting entries in bucket page */
 		if (action == BLK_NEEDS_REDO)
 		{
-			char	   *ptr;
-			Size		len;
+			char       *ptr;
+			Size        len;
 
 			ptr = XLogRecGetBlockData(record, 1, &len);
 
@@ -1320,7 +1245,7 @@ polar_hash_xlog_delete(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 				OffsetNumber *unend;
 
 				unused = (OffsetNumber *) ptr;
-				unend = (OffsetNumber *) ((char *) ptr + len);
+				unend = (OffsetNumber *)((char *) ptr + len);
 
 				if ((unend - unused) > 0)
 					PageIndexMultiDelete(page, unused, unend - unused);
@@ -1352,10 +1277,10 @@ polar_hash_xlog_delete(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 static XLogRedoAction
 polar_hash_xlog_split_cleanup(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 {
-	XLogRecPtr	lsn = record->EndRecPtr;
+	XLogRecPtr  lsn = record->EndRecPtr;
 	XLogRedoAction action = BLK_NOTFOUND;
-	Page		page;
-	BufferTag	bucket_tag;
+	Page        page;
+	BufferTag   bucket_tag;
 
 	POLAR_GET_LOG_TAG(record, bucket_tag, 0);
 
@@ -1384,12 +1309,12 @@ polar_hash_xlog_split_cleanup(XLogReaderState *record, BufferTag *tag, Buffer *b
 static XLogRedoAction
 polar_hash_xlog_update_meta_page(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 {
-	XLogRecPtr	lsn = record->EndRecPtr;
+	XLogRecPtr  lsn = record->EndRecPtr;
 	xl_hash_update_meta_page *xldata = (xl_hash_update_meta_page *) XLogRecGetData(record);
 	XLogRedoAction action = BLK_NOTFOUND;
 	HashMetaPage metap;
-	Page		page;
-	BufferTag	meta_tag;
+	Page        page;
+	BufferTag   meta_tag;
 
 	POLAR_GET_LOG_TAG(record, meta_tag, 0);
 
@@ -1418,13 +1343,12 @@ polar_hash_xlog_update_meta_page(XLogReaderState *record, BufferTag *tag, Buffer
 static XLogRedoAction
 polar_hash_xlog_vacuum_one_page(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 {
-	XLogRecPtr	lsn = record->EndRecPtr;
+	XLogRecPtr  lsn = record->EndRecPtr;
 	xl_hash_vacuum_one_page *xldata = (xl_hash_vacuum_one_page *) XLogRecGetData(record);
 	XLogRedoAction action = BLK_NOTFOUND;
-	Page		page;
+	Page        page;
 	HashPageOpaque pageopaque;
-	BufferTag	del_tag,
-				meta_tag;
+	BufferTag del_tag, meta_tag;
 
 	POLAR_GET_LOG_TAG(record, del_tag, 0);
 
@@ -1440,14 +1364,14 @@ polar_hash_xlog_vacuum_one_page(XLogReaderState *record, BufferTag *tag, Buffer 
 			{
 				OffsetNumber *unused;
 
-				unused = (OffsetNumber *) ((char *) xldata + SizeOfHashVacuumOnePage);
+				unused = (OffsetNumber *)((char *) xldata + SizeOfHashVacuumOnePage);
 
 				PageIndexMultiDelete(page, unused, xldata->ntuples);
 			}
 
 			/*
-			 * Mark the page as not containing any LP_DEAD items. See comments
-			 * in _hash_vacuum_one_page() for details.
+			 * Mark the page as not containing any LP_DEAD items. See comments in
+			 * _hash_vacuum_one_page() for details.
 			 */
 			pageopaque = (HashPageOpaque) PageGetSpecialPointer(page);
 			pageopaque->hasho_flag &= ~LH_PAGE_HAS_DEAD_TUPLES;
@@ -1466,7 +1390,7 @@ polar_hash_xlog_vacuum_one_page(XLogReaderState *record, BufferTag *tag, Buffer 
 
 		if (action == BLK_NEEDS_REDO)
 		{
-			Page		metapage;
+			Page        metapage;
 			HashMetaPage metap;
 
 			metapage = BufferGetPage(*buffer);
@@ -1482,63 +1406,63 @@ polar_hash_xlog_vacuum_one_page(XLogReaderState *record, BufferTag *tag, Buffer 
 }
 
 void
-polar_hash_idx_save(XLogReaderState *record)
+polar_hash_idx_save(polar_logindex_redo_ctl_t instance, XLogReaderState *record)
 {
-	uint8		info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
+	uint8       info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
 
 	switch (info)
 	{
 		case XLOG_HASH_INIT_META_PAGE:
-			polar_log_index_save_block(record, 0);
+			polar_logindex_save_block(instance, record, 0);
 			break;
 
 		case XLOG_HASH_INIT_BITMAP_PAGE:
-			polar_log_index_save_block(record, 0);
-			polar_log_index_save_block(record, 1);
+			polar_logindex_save_block(instance, record, 0);
+			polar_logindex_save_block(instance, record, 1);
 			break;
 
 		case XLOG_HASH_INSERT:
-			polar_log_index_save_block(record, 0);
-			polar_log_index_save_block(record, 1);
+			polar_logindex_save_block(instance, record, 0);
+			polar_logindex_save_block(instance, record, 1);
 			break;
 
 		case XLOG_HASH_ADD_OVFL_PAGE:
-			polar_hash_xlog_add_ovfl_page_save(record);
+			polar_hash_xlog_add_ovfl_page_save(instance, record);
 			break;
 
 		case XLOG_HASH_SPLIT_ALLOCATE_PAGE:
-			polar_hash_xlog_split_allocate_page_save(record);
+			polar_hash_xlog_split_allocate_page_save(instance, record);
 			break;
 
 		case XLOG_HASH_SPLIT_PAGE:
-			polar_log_index_save_block(record, 0);
+			polar_logindex_save_block(instance, record, 0);
 			break;
 
 		case XLOG_HASH_SPLIT_COMPLETE:
-			polar_log_index_save_block(record, 0);
-			polar_log_index_save_block(record, 1);
+			polar_logindex_save_block(instance, record, 0);
+			polar_logindex_save_block(instance, record, 1);
 			break;
 
 		case XLOG_HASH_MOVE_PAGE_CONTENTS:
-			polar_hash_xlog_move_page_contents_save(record);
+			polar_hash_xlog_move_page_contents_save(instance, record);
 			break;
 
 		case XLOG_HASH_SQUEEZE_PAGE:
-			polar_hash_xlog_squeeze_page_save(record);
+			polar_hash_xlog_squeeze_page_save(instance, record);
 			break;
 
 		case XLOG_HASH_DELETE:
-			polar_hash_xlog_delete_save(record);
+			polar_hash_xlog_delete_save(instance, record);
 			break;
 
 		case XLOG_HASH_SPLIT_CLEANUP:
 		case XLOG_HASH_UPDATE_META_PAGE:
-			polar_log_index_save_block(record, 0);
+			polar_logindex_save_block(instance, record, 0);
 			break;
 
 		case XLOG_HASH_VACUUM_ONE_PAGE:
-			polar_log_index_save_block(record, 0);
-			polar_log_index_save_block(record, 1);
+			polar_logindex_save_block(instance, record, 0);
+			polar_logindex_save_block(instance, record, 1);
 			break;
 
 		default:
@@ -1548,62 +1472,62 @@ polar_hash_idx_save(XLogReaderState *record)
 }
 
 bool
-polar_hash_idx_parse(XLogReaderState *record)
+polar_hash_idx_parse(polar_logindex_redo_ctl_t instance, XLogReaderState *record)
 {
-	uint8		info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
+	uint8       info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
 
 	switch (info)
 	{
 		case XLOG_HASH_INIT_META_PAGE:
-			polar_log_index_redo_parse(record, 0);
+			polar_logindex_redo_parse(instance, record, 0);
 			break;
 
 		case XLOG_HASH_INIT_BITMAP_PAGE:
-			polar_log_index_redo_parse(record, 0);
-			polar_log_index_redo_parse(record, 1);
+			polar_logindex_redo_parse(instance, record, 0);
+			polar_logindex_redo_parse(instance, record, 1);
 			break;
 
 		case XLOG_HASH_INSERT:
-			polar_log_index_redo_parse(record, 0);
-			polar_log_index_redo_parse(record, 1);
+			polar_logindex_redo_parse(instance, record, 0);
+			polar_logindex_redo_parse(instance, record, 1);
 			break;
 
 		case XLOG_HASH_ADD_OVFL_PAGE:
-			polar_hash_xlog_add_ovfl_page_parse(record);
+			polar_hash_xlog_add_ovfl_page_parse(instance, record);
 			break;
 
 		case XLOG_HASH_SPLIT_ALLOCATE_PAGE:
-			polar_hash_xlog_split_allocate_page_parse(record);
+			polar_hash_xlog_split_allocate_page_parse(instance, record);
 			break;
 
 		case XLOG_HASH_SPLIT_PAGE:
-			polar_log_index_redo_parse(record, 0);
+			polar_logindex_redo_parse(instance, record, 0);
 			break;
 
 		case XLOG_HASH_SPLIT_COMPLETE:
-			polar_log_index_redo_parse(record, 0);
-			polar_log_index_redo_parse(record, 1);
+			polar_logindex_redo_parse(instance, record, 0);
+			polar_logindex_redo_parse(instance, record, 1);
 			break;
 
 		case XLOG_HASH_MOVE_PAGE_CONTENTS:
-			polar_hash_xlog_move_page_contents_parse(record);
+			polar_hash_xlog_move_page_contents_parse(instance, record);
 			break;
 
 		case XLOG_HASH_SQUEEZE_PAGE:
-			polar_hash_xlog_squeeze_page_parse(record);
+			polar_hash_xlog_squeeze_page_parse(instance, record);
 			break;
 
 		case XLOG_HASH_DELETE:
-			polar_hash_xlog_delete_parse(record);
+			polar_hash_xlog_delete_parse(instance, record);
 			break;
 
 		case XLOG_HASH_SPLIT_CLEANUP:
 		case XLOG_HASH_UPDATE_META_PAGE:
-			polar_log_index_redo_parse(record, 0);
+			polar_logindex_redo_parse(instance, record, 0);
 			break;
 
 		case XLOG_HASH_VACUUM_ONE_PAGE:
-			polar_hash_xlog_vacuum_one_page_parse(record);
+			polar_hash_xlog_vacuum_one_page_parse(instance, record);
 			break;
 
 		default:
@@ -1615,9 +1539,9 @@ polar_hash_idx_parse(XLogReaderState *record)
 }
 
 XLogRedoAction
-polar_hash_idx_redo(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
+polar_hash_idx_redo(polar_logindex_redo_ctl_t instance, XLogReaderState *record,  BufferTag *tag, Buffer *buffer)
 {
-	uint8		info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
+	uint8       info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
 
 	switch (info)
 	{

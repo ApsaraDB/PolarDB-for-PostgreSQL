@@ -1,7 +1,6 @@
 /*-------------------------------------------------------------------------
  *
  * logindex_table_dump.c
- *  Implementation of dumping logindex's memory table data.
  *
  * Copyright (c) 2020, Alibaba Group Holding Limited
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,7 +16,7 @@
  * limitations under the License.
  *
  * IDENTIFICATION
- *  src/bin/polar_tools/logindex_table_dump.c
+ *	  src/bin/polar_tools/logindex_table_dump.c
  *
  *-------------------------------------------------------------------------
  */

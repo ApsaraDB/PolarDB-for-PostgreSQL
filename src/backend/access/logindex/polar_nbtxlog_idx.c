@@ -3,12 +3,12 @@
  * polar_nbtxlog_idx.c
  *   Implementation of parse btree records.
  *
- *
  * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  * Portions Copyright (c) 2021, Alibaba Group Holding limited
  *
- * src/backend/access/logindex/polar_nbtree_idx.c
+ * IDENTIFICATION
+ *    src/backend/access/logindex/polar_nbtxlog_idx.c
  *
  *-------------------------------------------------------------------------
  */
@@ -17,8 +17,7 @@
 #include "access/bufmask.h"
 #include "access/nbtxlog.h"
 #include "access/nbtree.h"
-#include "access/polar_logindex.h"
-#include "access/polar_logindex_internal.h"
+#include "access/polar_logindex_redo.h"
 #include "access/xlog.h"
 #include "catalog/pg_control.h"
 #include "miscadmin.h"
@@ -26,68 +25,68 @@
 #include "storage/standby.h"
 
 static void
-polar_btree_xlog_insert_save(bool isleaf, bool ismeta, XLogReaderState *record)
+polar_btree_xlog_insert_save(polar_logindex_redo_ctl_t instance, bool isleaf, bool ismeta, XLogReaderState *record)
 {
 	if (!isleaf)
-		polar_log_index_save_block(record, 1);
+		polar_logindex_save_block(instance, record, 1);
 
-	polar_log_index_save_block(record, 0);
+	polar_logindex_save_block(instance, record, 0);
 
 	if (ismeta)
-		polar_log_index_save_block(record, 2);
+		polar_logindex_save_block(instance, record, 2);
 }
 
 static void
-polar_btree_xlog_insert_parse(bool isleaf, bool ismeta, XLogReaderState *record)
+polar_btree_xlog_insert_parse(polar_logindex_redo_ctl_t instance, bool isleaf, bool ismeta, XLogReaderState *record)
 {
 	if (!isleaf)
-		polar_log_index_redo_parse(record, 1);
+		polar_logindex_redo_parse(instance, record, 1);
 
-	polar_log_index_redo_parse(record, 0);
+	polar_logindex_redo_parse(instance, record, 0);
 
 	if (ismeta)
-		polar_log_index_redo_parse(record, 2);
+		polar_logindex_redo_parse(instance, record, 2);
 }
 
 static void
-polar_btree_xlog_split_save(XLogReaderState *record)
+polar_btree_xlog_split_save(polar_logindex_redo_ctl_t instance, XLogReaderState *record)
 {
 	if (XLogRecHasBlockRef(record, 3))
-		polar_log_index_save_block(record, 3);
+		polar_logindex_save_block(instance, record, 3);
 
-	polar_log_index_save_block(record, 1);
-	polar_log_index_save_block(record, 0);
+	polar_logindex_save_block(instance, record, 1);
+	polar_logindex_save_block(instance, record, 0);
 
 	if (XLogRecHasBlockRef(record, 2))
-		polar_log_index_save_block(record, 2);
+		polar_logindex_save_block(instance, record, 2);
 }
 
 static void
-polar_btree_xlog_split_parse(XLogReaderState *record)
+polar_btree_xlog_split_parse(polar_logindex_redo_ctl_t instance, XLogReaderState *record)
 {
-	BufferTag	rtag;
-	Buffer		rbuf;
-	polar_page_lock_t rpage_lock;
+	BufferTag rtag;
+	Buffer    rbuf;
+	polar_page_lock_t    rpage_lock;
 
 	/* block id 3 is set only when isleaf is false */
 	if (XLogRecHasBlockRef(record, 3))
-		polar_log_index_redo_parse(record, 3);
+		polar_logindex_redo_parse(instance, record, 3);
 
-	POLAR_MINI_TRANS_REDO_PARSE(record, 1, rtag, rpage_lock, rbuf);
+	POLAR_MINI_TRANS_REDO_PARSE(instance, record, 1, rtag, rpage_lock, rbuf);
 
-	polar_log_index_redo_parse(record, 0);
+	polar_logindex_redo_parse(instance, record, 0);
 
 	if (BufferIsValid(rbuf))
 		UnlockReleaseBuffer(rbuf);
 
-	polar_log_index_mini_trans_unlock(rpage_lock);
+	polar_logindex_mini_trans_unlock(instance->mini_trans, rpage_lock);
 
 	if (XLogRecHasBlockRef(record, 2))
-		polar_log_index_redo_parse(record, 2);
+		polar_logindex_redo_parse(instance, record, 2);
 }
 
 static void
-polar_btree_xlog_delete_parse(XLogReaderState *record)
+polar_btree_xlog_delete_parse(polar_logindex_redo_ctl_t instance, XLogReaderState *record)
 {
 	/*
 	 * If we have any conflict processing to do, it must happen before we
@@ -110,7 +109,7 @@ polar_btree_xlog_delete_parse(XLogReaderState *record)
 		ResolveRecoveryConflictWithSnapshot(latestRemovedXid, rnode);
 	}
 
-	polar_log_index_redo_parse(record, 0);
+	polar_logindex_redo_parse(instance, record, 0);
 }
 
 static void
@@ -129,77 +128,76 @@ polar_btree_xlog_reuse_page_parse(XLogReaderState *record)
 	if (polar_enable_resolve_conflict && reachedConsistency && InHotStandby)
 	{
 		xl_btree_reuse_page *xlrec = (xl_btree_reuse_page *) XLogRecGetData(record);
-
 		ResolveRecoveryConflictWithSnapshot(xlrec->latestRemovedXid,
 											xlrec->node);
 	}
 }
 
 static void
-polar_btree_xlog_unlink_page_save(uint8 info, XLogReaderState *record)
+polar_btree_xlog_unlink_page_save(polar_logindex_redo_ctl_t instance, uint8 info, XLogReaderState *record)
 {
-	polar_log_index_save_block(record, 2);
+	polar_logindex_save_block(instance, record, 2);
 
 	if (XLogRecHasBlockRef(record, 1))
-		polar_log_index_save_block(record, 1);
+		polar_logindex_save_block(instance, record, 1);
 
-	polar_log_index_save_block(record, 0);
+	polar_logindex_save_block(instance, record, 0);
 
 	if (XLogRecHasBlockRef(record, 3))
-		polar_log_index_save_block(record, 3);
+		polar_logindex_save_block(instance, record, 3);
 
 	if (info == XLOG_BTREE_UNLINK_PAGE_META)
-		polar_log_index_save_block(record, 4);
+		polar_logindex_save_block(instance, record, 4);
 }
 
 static void
-polar_btree_xlog_unlink_page_parse(uint8 info, XLogReaderState *record)
+polar_btree_xlog_unlink_page_parse(polar_logindex_redo_ctl_t instance, uint8 info, XLogReaderState *record)
 {
-	polar_log_index_redo_parse(record, 2);
+	polar_logindex_redo_parse(instance, record, 2);
 
 	/* block 1 is set when leftsib is not P_NONE */
 	if (XLogRecHasBlockRef(record, 1))
-		polar_log_index_redo_parse(record, 1);
+		polar_logindex_redo_parse(instance, record, 1);
 
-	polar_log_index_redo_parse(record, 0);
+	polar_logindex_redo_parse(instance, record, 0);
 
 	if (XLogRecHasBlockRef(record, 3))
-		polar_log_index_redo_parse(record, 3);
+		polar_logindex_redo_parse(instance, record, 3);
 
 	if (info == XLOG_BTREE_UNLINK_PAGE_META)
-		polar_log_index_redo_parse(record, 4);
+		polar_logindex_redo_parse(instance, record, 4);
 }
 
 static void
-polar_btree_xlog_newroot_save(XLogReaderState *record)
+polar_btree_xlog_newroot_save(polar_logindex_redo_ctl_t instance, XLogReaderState *record)
 {
-	polar_log_index_save_block(record, 0);
+	polar_logindex_save_block(instance, record, 0);
 
 	if (XLogRecHasBlockRef(record, 1))
-		polar_log_index_save_block(record, 1);
+		polar_logindex_save_block(instance, record, 1);
 
-	polar_log_index_save_block(record, 2);
+	polar_logindex_save_block(instance, record, 2);
 }
 
 static void
-polar_btree_xlog_newroot_parse(XLogReaderState *record)
+polar_btree_xlog_newroot_parse(polar_logindex_redo_ctl_t instance, XLogReaderState *record)
 {
-	BufferTag	root_tag;
-	Buffer		root_buf;
-	polar_page_lock_t root_lock;
+	BufferTag root_tag;
+	Buffer    root_buf;
+	polar_page_lock_t    root_lock;
 
-	POLAR_MINI_TRANS_REDO_PARSE(record, 0, root_tag, root_lock, root_buf);
+	POLAR_MINI_TRANS_REDO_PARSE(instance, record, 0, root_tag, root_lock, root_buf);
 
 	/* block 1 is set when xlrec->level > 0 */
 	if (XLogRecHasBlockRef(record, 1))
-		polar_log_index_redo_parse(record, 1);
+		polar_logindex_redo_parse(instance, record, 1);
 
 	if (BufferIsValid(root_buf))
 		UnlockReleaseBuffer(root_buf);
 
-	polar_log_index_mini_trans_unlock(root_lock);
+	polar_logindex_mini_trans_unlock(instance->mini_trans, root_lock);
 
-	polar_log_index_redo_parse(record, 2);
+	polar_logindex_redo_parse(instance, record, 2);
 }
 
 /*
@@ -211,14 +209,14 @@ polar_btree_xlog_newroot_parse(XLogReaderState *record)
 static XLogRedoAction
 polar_bt_clear_incomplete_split(XLogReaderState *record, uint8 block_id, Buffer *buffer)
 {
-	XLogRecPtr	lsn = record->EndRecPtr;
+	XLogRecPtr  lsn = record->EndRecPtr;
 	XLogRedoAction action = BLK_NOTFOUND;
 
 	action = POLAR_READ_BUFFER_FOR_REDO(record, block_id, buffer);
 
 	if (action == BLK_NEEDS_REDO)
 	{
-		Page		page = (Page) BufferGetPage(*buffer);
+		Page        page = (Page) BufferGetPage(*buffer);
 		BTPageOpaque pageop = (BTPageOpaque) PageGetSpecialPointer(page);
 
 		Assert(P_INCOMPLETE_SPLIT(pageop));
@@ -232,13 +230,13 @@ polar_bt_clear_incomplete_split(XLogReaderState *record, uint8 block_id, Buffer 
 static XLogRedoAction
 polar_bt_restore_meta(XLogReaderState *record, uint8 block_id, Buffer *metabuf)
 {
-	XLogRecPtr	lsn = record->EndRecPtr;
-	Page		metapg;
+	XLogRecPtr  lsn = record->EndRecPtr;
+	Page        metapg;
 	BTMetaPageData *md;
 	BTPageOpaque pageop;
 	xl_btree_metadata *xlrec;
-	char	   *ptr;
-	Size		len;
+	char       *ptr;
+	Size        len;
 
 	POLAR_INIT_BUFFER_FOR_REDO(record, block_id, metabuf);
 
@@ -281,24 +279,24 @@ static XLogRedoAction
 polar_btree_xlog_insert(bool isleaf, bool ismeta, XLogReaderState *record,
 						BufferTag *tag, Buffer *buffer)
 {
-	XLogRecPtr	lsn = record->EndRecPtr;
+	XLogRecPtr  lsn = record->EndRecPtr;
 	xl_btree_insert *xlrec = (xl_btree_insert *) XLogRecGetData(record);
 	XLogRedoAction action = BLK_NOTFOUND;
-	Page		page;
-	BufferTag	tags[3];
+	Page        page;
+	BufferTag   tags[3];
 
 	if (!isleaf)
 	{
 		POLAR_GET_LOG_TAG(record, tags[1], 1);
 
 		/*
-		 * Insertion to an internal page finishes an incomplete split at the
-		 * child level.  Clear the incomplete-split flag in the child.  Note:
-		 * during normal operation, the child and parent pages are locked at
-		 * the same time, so that clearing the flag and inserting the downlink
-		 * appear atomic to other backends.  We don't bother with that during
-		 * replay, because readers don't care about the incomplete-split flag
-		 * and there cannot be updates happening.
+		 * Insertion to an internal page finishes an incomplete split at the child
+		 * level.  Clear the incomplete-split flag in the child.  Note: during
+		 * normal operation, the child and parent pages are locked at the same
+		 * time, so that clearing the flag and inserting the downlink appear
+		 * atomic to other backends.  We don't bother with that during replay,
+		 * because readers don't care about the incomplete-split flag and there
+		 * cannot be updates happening.
 		 */
 		if (BUFFERTAGS_EQUAL(*tag, tags[1]))
 			return polar_bt_clear_incomplete_split(record, 1, buffer);
@@ -312,8 +310,8 @@ polar_btree_xlog_insert(bool isleaf, bool ismeta, XLogReaderState *record,
 
 		if (action == BLK_NEEDS_REDO)
 		{
-			Size		datalen;
-			char	   *datapos = XLogRecGetBlockData(record, 0, &datalen);
+			Size        datalen;
+			char       *datapos = XLogRecGetBlockData(record, 0, &datalen);
 
 			page = BufferGetPage(*buffer);
 
@@ -337,11 +335,11 @@ polar_btree_xlog_insert(bool isleaf, bool ismeta, XLogReaderState *record,
 		if (BUFFERTAGS_EQUAL(*tag, tags[2]))
 		{
 			/*
-			 * Note: in normal operation, we'd update the metapage while still
-			 * holding lock on the page we inserted into.  But during replay
-			 * it's not necessary to hold that lock, since no other index
-			 * updates can be happening concurrently, and readers will cope
-			 * fine with following an obsolete link from the metapage.
+			 * Note: in normal operation, we'd update the metapage while still holding
+			 * lock on the page we inserted into.  But during replay it's not
+			 * necessary to hold that lock, since no other index updates can be
+			 * happening concurrently, and readers will cope fine with following an
+			 * obsolete link from the metapage.
 			 */
 			return polar_bt_restore_meta(record, 2, buffer);
 		}
@@ -354,9 +352,9 @@ static BTPageOpaque
 polar_restore_right(XLogReaderState *record, Page rpage, Size size)
 {
 	xl_btree_split *xlrec = (xl_btree_split *) XLogRecGetData(record);
-	bool		isleaf = (xlrec->level == 0);
-	char	   *datapos;
-	Size		datalen;
+	bool        isleaf = (xlrec->level == 0);
+	char       *datapos;
+	Size        datalen;
 	BlockNumber rnext;
 	BlockNumber leftsib;
 	BTPageOpaque ropaque;
@@ -385,11 +383,11 @@ polar_restore_right(XLogReaderState *record, Page rpage, Size size)
 static XLogRedoAction
 polar_btree_xlog_vacuum(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 {
-	XLogRecPtr	lsn = record->EndRecPtr;
+	XLogRecPtr  lsn = record->EndRecPtr;
 	XLogRedoAction action = BLK_NOTFOUND;
-	Page		page;
+	Page        page;
 	BTPageOpaque opaque;
-	BufferTag	vacuum_tag;
+	BufferTag vacuum_tag;
 
 #ifdef UNUSED
 	/* Should never be here, we delete some unused codes */
@@ -409,8 +407,8 @@ polar_btree_xlog_vacuum(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 
 	if (action == BLK_NEEDS_REDO)
 	{
-		char	   *ptr;
-		Size		len;
+		char       *ptr;
+		Size        len;
 
 		ptr = XLogRecGetBlockData(record, 0, &len);
 
@@ -422,7 +420,7 @@ polar_btree_xlog_vacuum(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 			OffsetNumber *unend;
 
 			unused = (OffsetNumber *) ptr;
-			unend = (OffsetNumber *) ((char *) ptr + len);
+			unend = (OffsetNumber *)((char *) ptr + len);
 
 			if ((unend - unused) > 0)
 				PageIndexMultiDelete(page, unused, unend - unused);
@@ -445,18 +443,18 @@ static XLogRedoAction
 polar_btree_xlog_split(bool onleft, bool lhighkey, XLogReaderState *record,
 					   BufferTag *tag, Buffer *buffer)
 {
-	XLogRecPtr	lsn = record->EndRecPtr;
+	XLogRecPtr  lsn = record->EndRecPtr;
 	xl_btree_split *xlrec = (xl_btree_split *) XLogRecGetData(record);
-	bool		isleaf = (xlrec->level == 0);
+	bool        isleaf = (xlrec->level == 0);
 	XLogRedoAction action = BLK_NOTFOUND;
-	Page		rpage = NULL;
+	Page        rpage = NULL;
 	BTPageOpaque ropaque;
-	char	   *datapos;
-	Size		datalen;
-	IndexTuple	left_hikey = NULL;
-	Size		left_hikeysz = 0;
+	char       *datapos;
+	Size        datalen;
+	IndexTuple  left_hikey = NULL;
+	Size        left_hikeysz = 0;
 	BlockNumber rnext;
-	BufferTag	tags[4];
+	BufferTag   tags[4];
 
 	/* leftsib */
 	POLAR_GET_LOG_TAG(record, tags[0], 0);
@@ -471,9 +469,9 @@ polar_btree_xlog_split(bool onleft, bool lhighkey, XLogReaderState *record,
 		POLAR_GET_LOG_TAG(record, tags[3], 3);
 
 		/*
-		 * Clear the incomplete split flag on the left sibling of the child
-		 * page this is a downlink for.  (Like in polar_btree_xlog_insert,
-		 * this can be done before locking the other pages)
+		 * Clear the incomplete split flag on the left sibling of the child page
+		 * this is a downlink for.  (Like in polar_btree_xlog_insert, this can be done
+		 * before locking the other pages)
 		 */
 		if (BUFFERTAGS_EQUAL(tags[3], *tag))
 			return polar_bt_clear_incomplete_split(record, 3, buffer);
@@ -498,23 +496,22 @@ polar_btree_xlog_split(bool onleft, bool lhighkey, XLogReaderState *record,
 		/* Now reconstruct left (original) sibling page */
 		if (action == BLK_NEEDS_REDO)
 		{
-			Page		fake_rpage = NULL;
-
+			Page fake_rpage = NULL;
 			/*
-			 * To retain the same physical order of the tuples that they had,
-			 * we initialize a temporary empty page for the left page and add
-			 * all the items to that in item number order.  This mirrors how
-			 * _bt_split() works.  It's not strictly required to retain the
-			 * same physical order, as long as the items are in the correct
-			 * item number order, but it helps debugging.  See also
-			 * _bt_restore_page(), which does the same for the right page.
+			 * To retain the same physical order of the tuples that they had, we
+			 * initialize a temporary empty page for the left page and add all the
+			 * items to that in item number order.  This mirrors how _bt_split()
+			 * works.  It's not strictly required to retain the same physical
+			 * order, as long as the items are in the correct item number order,
+			 * but it helps debugging.  See also _bt_restore_page(), which does
+			 * the same for the right page.
 			 */
-			Page		lpage = (Page) BufferGetPage(*buffer);
+			Page        lpage = (Page) BufferGetPage(*buffer);
 			BTPageOpaque lopaque = (BTPageOpaque) PageGetSpecialPointer(lpage);
 			OffsetNumber off;
-			IndexTuple	newitem = NULL;
-			Size		newitemsz = 0;
-			Page		newlpage;
+			IndexTuple  newitem = NULL;
+			Size        newitemsz = 0;
+			Page        newlpage;
 			OffsetNumber leftoff;
 
 			datapos = XLogRecGetBlockData(record, 0, &datalen);
@@ -536,7 +533,7 @@ polar_btree_xlog_split(bool onleft, bool lhighkey, XLogReaderState *record,
 			}
 			else
 			{
-				ItemId		hiItemId;
+				ItemId      hiItemId;
 
 				fake_rpage = (Page) palloc0(BLCKSZ);
 				/* Restore right page */
@@ -566,9 +563,9 @@ polar_btree_xlog_split(bool onleft, bool lhighkey, XLogReaderState *record,
 
 			for (off = P_FIRSTDATAKEY(lopaque); off < xlrec->firstright; off++)
 			{
-				ItemId		itemid;
-				Size		itemsz;
-				IndexTuple	item;
+				ItemId      itemid;
+				Size        itemsz;
+				IndexTuple      item;
 
 				/* add the new item if it was inserted on left page */
 				if (onleft && off == xlrec->newitemoff)
@@ -637,7 +634,7 @@ polar_btree_xlog_split(bool onleft, bool lhighkey, XLogReaderState *record,
 
 			if (action == BLK_NEEDS_REDO)
 			{
-				Page		page = (Page) BufferGetPage(*buffer);
+				Page        page = (Page) BufferGetPage(*buffer);
 				BTPageOpaque pageop = (BTPageOpaque) PageGetSpecialPointer(page);
 
 				pageop->btpo_prev = tags[1].blockNum;
@@ -654,12 +651,12 @@ polar_btree_xlog_split(bool onleft, bool lhighkey, XLogReaderState *record,
 static XLogRedoAction
 polar_btree_xlog_delete(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 {
-	XLogRecPtr	lsn = record->EndRecPtr;
+	XLogRecPtr  lsn = record->EndRecPtr;
 	xl_btree_delete *xlrec = (xl_btree_delete *) XLogRecGetData(record);
 	XLogRedoAction action = BLK_NOTFOUND;
-	Page		page;
+	Page        page;
 	BTPageOpaque opaque;
-	BufferTag	del_tag;
+	BufferTag  del_tag;
 
 	POLAR_GET_LOG_TAG(record, del_tag, 0);
 
@@ -680,7 +677,7 @@ polar_btree_xlog_delete(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 		{
 			OffsetNumber *unused;
 
-			unused = (OffsetNumber *) ((char *) xlrec + SizeOfBtreeDelete);
+			unused = (OffsetNumber *)((char *) xlrec + SizeOfBtreeDelete);
 
 			PageIndexMultiDelete(page, unused, xlrec->nitems);
 		}
@@ -701,13 +698,13 @@ polar_btree_xlog_delete(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 static XLogRedoAction
 polar_btree_xlog_mark_page_halfdead(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 {
-	XLogRecPtr	lsn = record->EndRecPtr;
+	XLogRecPtr  lsn = record->EndRecPtr;
 	xl_btree_mark_page_halfdead *xlrec = (xl_btree_mark_page_halfdead *) XLogRecGetData(record);
 	XLogRedoAction action = BLK_NOTFOUND;
-	Page		page;
+	Page        page;
 	BTPageOpaque pageop;
 	IndexTupleData trunctuple;
-	BufferTag	tags[2];
+	BufferTag   tags[2];
 
 	POLAR_GET_LOG_TAG(record, tags[0], 0);
 	POLAR_GET_LOG_TAG(record, tags[1], 1);
@@ -716,10 +713,10 @@ polar_btree_xlog_mark_page_halfdead(XLogReaderState *record, BufferTag *tag, Buf
 	{
 		/*
 		 * In normal operation, we would lock all the pages this WAL record
-		 * touches before changing any of them.  In WAL replay, it should be
-		 * okay to lock just one page at a time, since no concurrent index
-		 * updates can be happening, and readers should not care whether they
-		 * arrive at the target page or not (since it's surely empty).
+		 * touches before changing any of them.  In WAL replay, it should be okay
+		 * to lock just one page at a time, since no concurrent index updates can
+		 * be happening, and readers should not care whether they arrive at the
+		 * target page or not (since it's surely empty).
 		 */
 
 		/* parent page */
@@ -728,8 +725,8 @@ polar_btree_xlog_mark_page_halfdead(XLogReaderState *record, BufferTag *tag, Buf
 		if (action == BLK_NEEDS_REDO)
 		{
 			OffsetNumber poffset;
-			ItemId		itemid;
-			IndexTuple	itup;
+			ItemId      itemid;
+			IndexTuple  itup;
 			OffsetNumber nextoffset;
 			BlockNumber rightsib;
 
@@ -791,14 +788,14 @@ polar_btree_xlog_mark_page_halfdead(XLogReaderState *record, BufferTag *tag, Buf
 static XLogRedoAction
 polar_btree_xlog_unlink_page(uint8 info, XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 {
-	XLogRecPtr	lsn = record->EndRecPtr;
+	XLogRecPtr  lsn = record->EndRecPtr;
 	xl_btree_unlink_page *xlrec = (xl_btree_unlink_page *) XLogRecGetData(record);
 	XLogRedoAction action = BLK_NOTFOUND;
 	BlockNumber leftsib;
 	BlockNumber rightsib;
-	Page		page;
+	Page        page;
 	BTPageOpaque pageop;
-	BufferTag	tags[5];
+	BufferTag   tags[5];
 
 	leftsib = xlrec->leftsib;
 	rightsib = xlrec->rightsib;
@@ -809,10 +806,10 @@ polar_btree_xlog_unlink_page(uint8 info, XLogReaderState *record, BufferTag *tag
 	{
 		/*
 		 * In normal operation, we would lock all the pages this WAL record
-		 * touches before changing any of them.  In WAL replay, it should be
-		 * okay to lock just one page at a time, since no concurrent index
-		 * updates can be happening, and readers should not care whether they
-		 * arrive at the target page or not (since it's surely empty).
+		 * touches before changing any of them.  In WAL replay, it should be okay
+		 * to lock just one page at a time, since no concurrent index updates can
+		 * be happening, and readers should not care whether they arrive at the
+		 * target page or not (since it's surely empty).
 		 */
 
 		/* Fix left-link of right sibling */
@@ -879,9 +876,9 @@ polar_btree_xlog_unlink_page(uint8 info, XLogReaderState *record, BufferTag *tag
 		POLAR_GET_LOG_TAG(record, tags[3], 3);
 
 		/*
-		 * If we deleted a parent of the targeted leaf page, instead of the
-		 * leaf itself, update the leaf to point to the next remaining child
-		 * in the branch.
+		 * If we deleted a parent of the targeted leaf page, instead of the leaf
+		 * itself, update the leaf to point to the next remaining child in the
+		 * branch.
 		 */
 		if (BUFFERTAGS_EQUAL(*tag, tags[3]))
 		{
@@ -939,13 +936,13 @@ polar_btree_xlog_unlink_page(uint8 info, XLogReaderState *record, BufferTag *tag
 static XLogRedoAction
 polar_btree_xlog_newroot(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 {
-	XLogRecPtr	lsn = record->EndRecPtr;
+	XLogRecPtr  lsn = record->EndRecPtr;
 	xl_btree_newroot *xlrec = (xl_btree_newroot *) XLogRecGetData(record);
-	Page		page;
+	Page        page;
 	BTPageOpaque pageop;
-	char	   *ptr;
-	Size		len;
-	BufferTag	tags[3];
+	char       *ptr;
+	Size        len;
+	BufferTag   tags[3];
 
 	POLAR_GET_LOG_TAG(record, tags[0], 0);
 
@@ -997,58 +994,58 @@ polar_btree_xlog_newroot(XLogReaderState *record, BufferTag *tag, Buffer *buffer
 }
 
 void
-polar_btree_idx_save(XLogReaderState *record)
+polar_btree_idx_save(polar_logindex_redo_ctl_t instance, XLogReaderState *record)
 {
-	uint8		info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
+	uint8       info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
 
 	switch (info)
 	{
 		case XLOG_BTREE_INSERT_LEAF:
-			polar_btree_xlog_insert_save(true, false, record);
+			polar_btree_xlog_insert_save(instance, true, false, record);
 			break;
 
 		case XLOG_BTREE_INSERT_UPPER:
-			polar_btree_xlog_insert_save(false, false, record);
+			polar_btree_xlog_insert_save(instance, false, false, record);
 			break;
 
 		case XLOG_BTREE_INSERT_META:
-			polar_btree_xlog_insert_save(false, true, record);
+			polar_btree_xlog_insert_save(instance, false, true, record);
 			break;
 
 		case XLOG_BTREE_SPLIT_L:
 		case XLOG_BTREE_SPLIT_R:
 		case XLOG_BTREE_SPLIT_L_HIGHKEY:
 		case XLOG_BTREE_SPLIT_R_HIGHKEY:
-			polar_btree_xlog_split_save(record);
+			polar_btree_xlog_split_save(instance, record);
 			break;
 
 		case XLOG_BTREE_VACUUM:
-			polar_log_index_save_block(record, 0);
+			polar_logindex_save_block(instance, record, 0);
 			break;
 
 		case XLOG_BTREE_DELETE:
-			polar_log_index_save_block(record, 0);
+			polar_logindex_save_block(instance, record, 0);
 			break;
 
 		case XLOG_BTREE_MARK_PAGE_HALFDEAD:
-			polar_log_index_save_block(record, 1);
-			polar_log_index_save_block(record, 0);
+			polar_logindex_save_block(instance, record, 1);
+			polar_logindex_save_block(instance, record, 0);
 			break;
 
 		case XLOG_BTREE_UNLINK_PAGE:
 		case XLOG_BTREE_UNLINK_PAGE_META:
-			polar_btree_xlog_unlink_page_save(info, record);
+			polar_btree_xlog_unlink_page_save(instance, info, record);
 			break;
 
 		case XLOG_BTREE_NEWROOT:
-			polar_btree_xlog_newroot_save(record);
+			polar_btree_xlog_newroot_save(instance, record);
 			break;
 
 		case XLOG_BTREE_REUSE_PAGE:
 			break;
 
 		case XLOG_BTREE_META_CLEANUP:
-			polar_log_index_save_block(record, 0);
+			polar_logindex_save_block(instance, record, 0);
 			break;
 
 		default:
@@ -1058,51 +1055,51 @@ polar_btree_idx_save(XLogReaderState *record)
 }
 
 bool
-polar_btree_idx_parse(XLogReaderState *record)
+polar_btree_idx_parse(polar_logindex_redo_ctl_t instance, XLogReaderState *record)
 {
-	uint8		info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
+	uint8       info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
 
 	switch (info)
 	{
 		case XLOG_BTREE_INSERT_LEAF:
-			polar_btree_xlog_insert_parse(true, false, record);
+			polar_btree_xlog_insert_parse(instance, true, false, record);
 			break;
 
 		case XLOG_BTREE_INSERT_UPPER:
-			polar_btree_xlog_insert_parse(false, false, record);
+			polar_btree_xlog_insert_parse(instance, false, false, record);
 			break;
 
 		case XLOG_BTREE_INSERT_META:
-			polar_btree_xlog_insert_parse(false, true, record);
+			polar_btree_xlog_insert_parse(instance, false, true, record);
 			break;
 
 		case XLOG_BTREE_SPLIT_L:
 		case XLOG_BTREE_SPLIT_R:
 		case XLOG_BTREE_SPLIT_L_HIGHKEY:
 		case XLOG_BTREE_SPLIT_R_HIGHKEY:
-			polar_btree_xlog_split_parse(record);
+			polar_btree_xlog_split_parse(instance, record);
 			break;
 
 		case XLOG_BTREE_VACUUM:
-			polar_log_index_cleanup_parse(record, 0);
+			polar_logindex_cleanup_parse(instance, record, 0);
 			break;
 
 		case XLOG_BTREE_DELETE:
-			polar_btree_xlog_delete_parse(record);
+			polar_btree_xlog_delete_parse(instance, record);
 			break;
 
 		case XLOG_BTREE_MARK_PAGE_HALFDEAD:
-			polar_log_index_redo_parse(record, 1);
-			polar_log_index_redo_parse(record, 0);
+			polar_logindex_redo_parse(instance, record, 1);
+			polar_logindex_redo_parse(instance, record, 0);
 			break;
 
 		case XLOG_BTREE_UNLINK_PAGE:
 		case XLOG_BTREE_UNLINK_PAGE_META:
-			polar_btree_xlog_unlink_page_parse(info, record);
+			polar_btree_xlog_unlink_page_parse(instance, info, record);
 			break;
 
 		case XLOG_BTREE_NEWROOT:
-			polar_btree_xlog_newroot_parse(record);
+			polar_btree_xlog_newroot_parse(instance, record);
 			break;
 
 		case XLOG_BTREE_REUSE_PAGE:
@@ -1110,7 +1107,7 @@ polar_btree_idx_parse(XLogReaderState *record)
 			break;
 
 		case XLOG_BTREE_META_CLEANUP:
-			polar_log_index_redo_parse(record, 0);
+			polar_logindex_redo_parse(instance, record, 0);
 			break;
 
 		default:
@@ -1122,9 +1119,9 @@ polar_btree_idx_parse(XLogReaderState *record)
 }
 
 XLogRedoAction
-polar_btree_idx_redo(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
+polar_btree_idx_redo(polar_logindex_redo_ctl_t instance, XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 {
-	uint8		info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
+	uint8       info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
 
 	switch (info)
 	{

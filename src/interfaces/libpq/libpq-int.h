@@ -164,6 +164,14 @@ typedef struct PGEvent
 	bool		resultInitialized;	/* T if RESULTCREATE/COPY succeeded */
 } PGEvent;
 
+/* POLAR px: Statistical response message list element */
+typedef struct pgPxStatCell
+{
+	struct pgPxStatCell   *next;
+	int			len;
+	char	   *data;
+} pgPxStatCell;
+
 struct pg_result
 {
 	int			ntups;
@@ -208,6 +216,15 @@ struct pg_result
 	PGresult_data *curBlock;	/* most recently allocated block */
 	int			curOffset;		/* start offset of free space in block */
 	int			spaceLeft;		/* number of free bytes remaining in block */
+
+	/* POLAR px: List of statistical response messages ('Y') from PX. */
+	pgPxStatCell *pxstats;		/* ordered from newest to oldest */
+
+
+	/* POLAR px: number of rows rejected in SREH (protocol message 'j') */
+	int64		numRejected;
+	/* POLAR px: number of rows completed when COPY FROM ON SEGMENT */
+	int64		numCompleted;
 };
 
 /* PGAsyncStatusType defines the state of the query-execution state machine */
@@ -361,6 +378,9 @@ struct pg_conn
 	char	   *gsslib;			/* What GSS library to use ("gssapi" or
 								 * "sspi") */
 
+    char       *pxconntype; /* POLAR px: type of connection */
+    char       *pxid;        /* POLAR px: session id & startup info for PX */
+
 	/* Type of connection to make.  Possible values: any, read-write. */
 	char	   *target_session_attrs;
 
@@ -437,6 +457,9 @@ struct pg_conn
 	char	   *outBuffer;		/* currently allocated buffer */
 	int			outBufSize;		/* allocated size of buffer */
 	int			outCount;		/* number of chars waiting in buffer */
+
+	bool		outBuffer_shared; /* POLAR px: are we sending external buffer? */
+	char	   *outBufferSaved; /* POLAR px: stash area in case of outBuffer_shared */
 
 	/* State for constructing messages in outBuffer */
 	int			outMsgStart;	/* offset to msg start (length word); if -1,
@@ -581,6 +604,9 @@ extern void pqSaveParameterStatus(PGconn *conn, const char *name,
 					  const char *value);
 extern int	pqRowProcessor(PGconn *conn, const char **errmsgp);
 extern void pqHandleSendFailure(PGconn *conn);
+/* POLAR px */
+extern bool PQsendQueryStart(PGconn *conn);
+
 
 /* === in fe-protocol2.c === */
 
@@ -643,6 +669,9 @@ extern int pqWaitTimed(int forRead, int forWrite, PGconn *conn,
 			time_t finish_time);
 extern int	pqReadReady(PGconn *conn);
 extern int	pqWriteReady(PGconn *conn);
+
+/* POLAR px */
+extern int	pqFlushNonBlocking(PGconn *conn);
 
 /* === in fe-secure.c === */
 

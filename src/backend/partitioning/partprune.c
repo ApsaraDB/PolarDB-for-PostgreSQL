@@ -55,6 +55,7 @@
 #include "partitioning/partbounds.h"
 #include "rewrite/rewriteManip.h"
 #include "utils/lsyscache.h"
+#include "parser/parsetree.h"
 
 
 /*
@@ -393,6 +394,9 @@ make_partitionedrel_pruneinfo(PlannerInfo *root, RelOptInfo *parentrel,
 		Bitmapset  *execparamids;
 		GeneratePruningStepsContext context;
 
+		/* POLAR px */
+		Oid		   *relid_map;
+
 		/*
 		 * The first item in the list is the target partitioned relation.
 		 */
@@ -521,6 +525,9 @@ make_partitionedrel_pruneinfo(PlannerInfo *root, RelOptInfo *parentrel,
 		subpart_map = (int *) palloc(nparts * sizeof(int));
 		present_parts = NULL;
 
+		/* POLAR px */
+		relid_map = (Oid *) palloc0(nparts * sizeof(int));
+
 		for (i = 0; i < nparts; i++)
 		{
 			RelOptInfo *partrel = subpart->part_rels[i];
@@ -529,6 +536,10 @@ make_partitionedrel_pruneinfo(PlannerInfo *root, RelOptInfo *parentrel,
 
 			subplan_map[i] = subplanidx;
 			subpart_map[i] = subpartidx;
+
+			/* POLAR px */
+			relid_map[i] = planner_rt_fetch(partrel->relid, root)->relid;
+
 			if (subplanidx >= 0)
 			{
 				present_parts = bms_add_member(present_parts, i);
@@ -550,6 +561,9 @@ make_partitionedrel_pruneinfo(PlannerInfo *root, RelOptInfo *parentrel,
 		pinfo->nexprs = 0;		/* not used */
 		pinfo->subplan_map = subplan_map;
 		pinfo->subpart_map = subpart_map;
+		/* POLAR px */
+		pinfo->relid_map = relid_map;
+
 		pinfo->hasexecparam = NULL; /* not used */
 		pinfo->do_initial_prune = (initial_pruning_steps != NIL);
 		pinfo->do_exec_prune = (exec_pruning_steps != NIL);

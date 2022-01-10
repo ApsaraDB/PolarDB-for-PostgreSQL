@@ -657,7 +657,7 @@ postgresGetForeignRelSize(PlannerInfo *root,
 		{
 			baserel->pages = 10;
 			baserel->tuples =
-				(10 * BLCKSZ) / (baserel->reltarget->width +
+				(10 * BLCKSZ * 1.0) / (baserel->reltarget->width +
 								 MAXALIGN(SizeofHeapTupleHeader));
 		}
 

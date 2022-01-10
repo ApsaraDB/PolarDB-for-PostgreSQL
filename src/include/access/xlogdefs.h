@@ -29,6 +29,13 @@ typedef uint64 XLogRecPtr;
 #define XLogRecPtrIsInvalid(r)	((r) == InvalidXLogRecPtr)
 
 /*
+ * Handy macro for printing XLogRecPtr in conventional format, e.g.,
+ *
+ * printf("%X/%X", LSN_FORMAT_ARGS(lsn));
+ */
+#define LSN_FORMAT_ARGS(lsn) (AssertVariableIsOfTypeMacro((lsn), XLogRecPtr), (uint32) ((lsn) >> 32)), ((uint32) (lsn))
+
+/*
  * XLogSegNo - physical log file sequence number.
  */
 typedef uint64 XLogSegNo;
@@ -98,5 +105,8 @@ typedef uint16 RepOriginId;
 #else
 #define DEFAULT_SYNC_METHOD		SYNC_METHOD_FSYNC
 #endif
+
+/* POLAR */
+#define DEFAULT_XLOG_INSERT_LOCKS 8
 
 #endif							/* XLOG_DEFS_H */

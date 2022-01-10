@@ -1,0 +1,1333 @@
+-- config
+/*--POLAR_ENABLE_PX*/
+set polar_enable_px = 1;
+set polar_px_optimizer_enable_dml_constraints = 1;
+set polar_px_enable_update = 1;
+-- polar_px_update_dop_num = 1
+set polar_px_update_dop_num = 1;
+\i sql/polar-px-dev/px_parallel_update_init.sql
+-- create normal table
+drop table if exists px_parallel_update_t1 cascade;
+psql:sql/polar-px-dev/px_parallel_update_init.sql:2: NOTICE:  table "px_parallel_update_t1" does not exist, skipping
+CREATE TABLE px_parallel_update_t1 (c1 int, c2 int) ;
+insert into px_parallel_update_t1 select generate_series(1,100),generate_series(1,100);
+drop table if exists px_parallel_update_t2 cascade;
+psql:sql/polar-px-dev/px_parallel_update_init.sql:6: NOTICE:  table "px_parallel_update_t2" does not exist, skipping
+CREATE TABLE px_parallel_update_t2 (c1 int, c2 int) ;
+insert into px_parallel_update_t2 select generate_series(1,100),generate_series(1,100);
+drop table if exists px_parallel_update_t3 cascade;
+psql:sql/polar-px-dev/px_parallel_update_init.sql:10: NOTICE:  table "px_parallel_update_t3" does not exist, skipping
+CREATE TABLE px_parallel_update_t3 (c1 int, c2 int) ;
+insert into px_parallel_update_t3 select generate_series(1,1000),generate_series(1,1000);
+select count(*) from px_parallel_update_t1;
+ count 
+-------
+   100
+(1 row)
+
+select count(*) from px_parallel_update_t2;
+ count 
+-------
+   100
+(1 row)
+
+------------------------------------------------------------------------
+--range partition
+--Partition constraint: ((x IS NOT NULL) AND (x >= 10) AND (x < 20))
+drop table if exists px_parallel_update_t1_range cascade;
+psql:sql/polar-px-dev/px_parallel_update_init.sql:21: NOTICE:  table "px_parallel_update_t1_range" does not exist, skipping
+CREATE TABLE px_parallel_update_t1_range(id int, value int) PARTITION BY RANGE(id);
+CREATE TABLE px_parallel_update_t1_range_p1 PARTITION OF px_parallel_update_t1_range FOR VALUES FROM (1) TO (10000);
+CREATE TABLE px_parallel_update_t1_range_p2 PARTITION OF px_parallel_update_t1_range FOR VALUES FROM (10000) TO (20000);
+CREATE TABLE px_parallel_update_t1_range_p3 PARTITION OF px_parallel_update_t1_range DEFAULT;
+insert into px_parallel_update_t1_range select generate_series(1,30000, 2);
+-- Index Test Init
+drop table if exists px_parallel_update_t4 cascade;
+psql:sql/polar-px-dev/px_parallel_update_init.sql:30: NOTICE:  table "px_parallel_update_t4" does not exist, skipping
+CREATE TABLE px_parallel_update_t4 (c1 int, c2 int) ;
+insert into px_parallel_update_t4 select generate_series(1,1000),generate_series(1,1000);
+CREATE INDEX t_index_update_plan on px_parallel_update_t4(c1);
+-- Constrain Test Init
+drop table if exists px_parallel_update_t5 cascade;
+psql:sql/polar-px-dev/px_parallel_update_init.sql:37: NOTICE:  table "px_parallel_update_t5" does not exist, skipping
+CREATE TABLE px_parallel_update_t5 (c1 int, c2 int not NULL) ;
+drop table if exists px_parallel_update_t6 cascade;
+psql:sql/polar-px-dev/px_parallel_update_init.sql:39: NOTICE:  table "px_parallel_update_t6" does not exist, skipping
+CREATE TABLE px_parallel_update_t6 (c1 int, c2 int) ;
+drop table if exists px_parallel_update_t7 cascade;
+psql:sql/polar-px-dev/px_parallel_update_init.sql:43: NOTICE:  table "px_parallel_update_t7" does not exist, skipping
+CREATE TABLE px_parallel_update_t7 (c1 int, c2 int CHECK (c2 < 1000)) ;
+drop table if exists px_parallel_update_t10 cascade;
+psql:sql/polar-px-dev/px_parallel_update_init.sql:46: NOTICE:  table "px_parallel_update_t10" does not exist, skipping
+CREATE TABLE px_parallel_update_t10(
+   ID INT PRIMARY KEY     NOT NULL,
+   NAME           TEXT    NOT NULL
+);
+insert into px_parallel_update_t10 select generate_series(1,1000), 'hello';
+drop table if exists px_parallel_update_audit cascade;
+psql:sql/polar-px-dev/px_parallel_update_init.sql:54: NOTICE:  table "px_parallel_update_audit" does not exist, skipping
+CREATE TABLE px_parallel_update_audit(
+   EMP_ID INT NOT NULL,
+   ENTRY_DATE TEXT NOT NULL
+);
+insert into px_parallel_update_audit select generate_series(1,1000), 'world';
+CREATE OR REPLACE FUNCTION auditlogfunc() RETURNS TRIGGER AS $example_table$
+   BEGIN
+      UPDATE px_parallel_update_audit set EMP_ID=new.ID, ENTRY_DATE='xxxx';
+      RETURN NEW;
+   END;
+$example_table$ LANGUAGE plpgsql;
+CREATE TRIGGER px_parallel_update_trigger AFTER UPDATE ON px_parallel_update_t10 FOR EACH ROW EXECUTE PROCEDURE auditlogfunc();
+-- Create Updatable View
+drop table if exists px_parallel_update_t11 cascade;
+psql:sql/polar-px-dev/px_parallel_update_init.sql:75: NOTICE:  table "px_parallel_update_t11" does not exist, skipping
+CREATE TABLE px_parallel_update_t11 (c1 int, c2 int, c3 int) ;
+insert into px_parallel_update_t11 select generate_series(1,1000), generate_series(1,1000), generate_series(1,1000);
+CREATE VIEW px_parallel_update_view AS select
+c1,
+c2,
+c3
+from px_parallel_update_t11
+where c1 < 200;
+-- Create with CTE
+drop table if exists px_parallel_update_t12 cascade;
+psql:sql/polar-px-dev/px_parallel_update_init.sql:87: NOTICE:  table "px_parallel_update_t12" does not exist, skipping
+CREATE TABLE px_parallel_update_t12 (c1 int, c2 int, c3 int) ;
+insert into px_parallel_update_t12 select generate_series(1,1000), generate_series(1,1000), generate_series(1,1000);
+drop table if exists px_parallel_update_t13 cascade;
+psql:sql/polar-px-dev/px_parallel_update_init.sql:90: NOTICE:  table "px_parallel_update_t13" does not exist, skipping
+CREATE TABLE px_parallel_update_t13 (c1 int, c2 int, c3 int) ;
+insert into px_parallel_update_t13 select generate_series(1,1000), generate_series(1,1000), generate_series(1,1000);
+-- Create for double delete error case
+drop table if exists px_parallel_update_t14 cascade;
+psql:sql/polar-px-dev/px_parallel_update_init.sql:95: NOTICE:  table "px_parallel_update_t14" does not exist, skipping
+CREATE TABLE px_parallel_update_t14 (c1 int, c2 int);
+insert into px_parallel_update_t14 VALUES(1,1);
+drop table if exists px_parallel_update_t15 cascade;
+psql:sql/polar-px-dev/px_parallel_update_init.sql:98: NOTICE:  table "px_parallel_update_t15" does not exist, skipping
+CREATE TABLE px_parallel_update_t15 (c1 int, c2 int);
+insert into px_parallel_update_t15 VALUES(1,2),(1,7);
+ANALYZE;
+\i sql/polar-px-dev/px_parallel_update_base.sql
+-- Update without subplan
+EXPLAIN (COSTS OFF) update px_parallel_update_t1 set c1 = 3;
+                                           QUERY PLAN                                            
+-------------------------------------------------------------------------------------------------
+ Update (segment: 1) on px_parallel_update_t1
+   ->  Result
+         ->  PX Hash 6:1  (slice1; segments: 6)
+               ->  Result
+                     ->  Split
+                           ->  Partial Seq Scan on px_parallel_update_t1 px_parallel_update_t1_1
+ Optimizer: PolarDB PX Optimizer
+(7 rows)
+
+update px_parallel_update_t1 set c1 = 3;
+EXPLAIN (COSTS OFF) update px_parallel_update_t2 set c1 = 4;
+                                           QUERY PLAN                                            
+-------------------------------------------------------------------------------------------------
+ Update (segment: 1) on px_parallel_update_t2
+   ->  Result
+         ->  PX Hash 6:1  (slice1; segments: 6)
+               ->  Result
+                     ->  Split
+                           ->  Partial Seq Scan on px_parallel_update_t2 px_parallel_update_t2_1
+ Optimizer: PolarDB PX Optimizer
+(7 rows)
+
+update px_parallel_update_t2 set c1 = 4;
+select max(c1) from px_parallel_update_t1;
+ max 
+-----
+   3
+(1 row)
+
+select max(c1) from px_parallel_update_t2;
+ max 
+-----
+   4
+(1 row)
+
+-- Update with subplan
+EXPLAIN (COSTS OFF) update px_parallel_update_t3 set c2=(select MAX(c2) from px_parallel_update_t1);
+                                                  QUERY PLAN                                                   
+---------------------------------------------------------------------------------------------------------------
+ Update (segment: 1) on px_parallel_update_t3
+   ->  Result
+         ->  PX Hash 6:1  (slice1; segments: 6)
+               ->  Result
+                     ->  Split
+                           ->  Partial Seq Scan on px_parallel_update_t3 px_parallel_update_t3_1
+                                 SubPlan 1
+                                   ->  Materialize
+                                         ->  PX Broadcast 1:6  (slice2)
+                                               ->  Finalize Aggregate
+                                                     ->  PX Coordinator 6:1  (slice3; segments: 6)
+                                                           ->  Partial Aggregate
+                                                                 ->  Partial Seq Scan on px_parallel_update_t1
+ Optimizer: PolarDB PX Optimizer
+(14 rows)
+
+EXPLAIN (COSTS OFF) update px_parallel_update_t3 set c1=(select AVG(c2) from px_parallel_update_t2);
+                                                  QUERY PLAN                                                   
+---------------------------------------------------------------------------------------------------------------
+ Update (segment: 1) on px_parallel_update_t3
+   ->  Result
+         ->  PX Hash 6:1  (slice1; segments: 6)
+               ->  Result
+                     ->  Split
+                           ->  Partial Seq Scan on px_parallel_update_t3 px_parallel_update_t3_1
+                                 SubPlan 1
+                                   ->  Materialize
+                                         ->  PX Broadcast 1:6  (slice2)
+                                               ->  Finalize Aggregate
+                                                     ->  PX Coordinator 6:1  (slice3; segments: 6)
+                                                           ->  Partial Aggregate
+                                                                 ->  Partial Seq Scan on px_parallel_update_t2
+ Optimizer: PolarDB PX Optimizer
+(14 rows)
+
+update px_parallel_update_t3 set c2=(select MAX(c2) from px_parallel_update_t1);
+update px_parallel_update_t3 set c1=(select AVG(c2) from px_parallel_update_t2);
+select AVG(c1) from px_parallel_update_t3;
+         avg         
+---------------------
+ 51.0000000000000000
+(1 row)
+
+select AVG(c2) from px_parallel_update_t3;
+         avg          
+----------------------
+ 100.0000000000000000
+(1 row)
+
+-- Update vector
+EXPLAIN (COSTS OFF) update px_parallel_update_t3 set c1=10, c2=(select MAX(c2) from px_parallel_update_t2);
+                                                  QUERY PLAN                                                   
+---------------------------------------------------------------------------------------------------------------
+ Update (segment: 1) on px_parallel_update_t3
+   ->  Result
+         ->  PX Hash 6:1  (slice1; segments: 6)
+               ->  Result
+                     ->  Split
+                           ->  Partial Seq Scan on px_parallel_update_t3 px_parallel_update_t3_1
+                                 SubPlan 1
+                                   ->  Materialize
+                                         ->  PX Broadcast 1:6  (slice2)
+                                               ->  Finalize Aggregate
+                                                     ->  PX Coordinator 6:1  (slice3; segments: 6)
+                                                           ->  Partial Aggregate
+                                                                 ->  Partial Seq Scan on px_parallel_update_t2
+ Optimizer: PolarDB PX Optimizer
+(14 rows)
+
+update px_parallel_update_t3 set c1=10, c2=(select MAX(c2) from px_parallel_update_t2);
+select AVG(c1) + MAX(c2) from px_parallel_update_t3;
+       ?column?       
+----------------------
+ 110.0000000000000000
+(1 row)
+
+-- Update Partition Table, should be fallback
+EXPLAIN (COSTS OFF) update px_parallel_update_t1_range set id = 3;
+                    QUERY PLAN                    
+--------------------------------------------------
+ Update on px_parallel_update_t1_range
+   Update on px_parallel_update_t1_range_p1
+   Update on px_parallel_update_t1_range_p2
+   Update on px_parallel_update_t1_range_p3
+   ->  Seq Scan on px_parallel_update_t1_range_p1
+   ->  Seq Scan on px_parallel_update_t1_range_p2
+   ->  Seq Scan on px_parallel_update_t1_range_p3
+(7 rows)
+
+EXPLAIN (COSTS OFF) update px_parallel_update_t1_range set id =(select max(c2) from px_parallel_update_t2);
+                    QUERY PLAN                    
+--------------------------------------------------
+ Update on px_parallel_update_t1_range
+   Update on px_parallel_update_t1_range_p1
+   Update on px_parallel_update_t1_range_p2
+   Update on px_parallel_update_t1_range_p3
+   InitPlan 1 (returns $0)
+     ->  Aggregate
+           ->  Seq Scan on px_parallel_update_t2
+   ->  Seq Scan on px_parallel_update_t1_range_p1
+   ->  Seq Scan on px_parallel_update_t1_range_p2
+   ->  Seq Scan on px_parallel_update_t1_range_p3
+(10 rows)
+
+EXPLAIN (COSTS OFF) update px_parallel_update_t1_range set id =(select max(c2) from px_parallel_update_t2), value = 5;
+                    QUERY PLAN                    
+--------------------------------------------------
+ Update on px_parallel_update_t1_range
+   Update on px_parallel_update_t1_range_p1
+   Update on px_parallel_update_t1_range_p2
+   Update on px_parallel_update_t1_range_p3
+   InitPlan 1 (returns $0)
+     ->  Aggregate
+           ->  Seq Scan on px_parallel_update_t2
+   ->  Seq Scan on px_parallel_update_t1_range_p1
+   ->  Seq Scan on px_parallel_update_t1_range_p2
+   ->  Seq Scan on px_parallel_update_t1_range_p3
+(10 rows)
+
+-- Update With Index
+EXPLAIN (COSTS OFF) update px_parallel_update_t4 set c1 = 5;
+                                           QUERY PLAN                                            
+-------------------------------------------------------------------------------------------------
+ Update (segment: 1) on px_parallel_update_t4
+   ->  Result
+         ->  PX Hash 6:1  (slice1; segments: 6)
+               ->  Result
+                     ->  Split
+                           ->  Partial Seq Scan on px_parallel_update_t4 px_parallel_update_t4_1
+ Optimizer: PolarDB PX Optimizer
+(7 rows)
+
+EXPLAIN (COSTS OFF) update px_parallel_update_t3 set c2 = (select min(c1) from px_parallel_update_t4);
+                                                  QUERY PLAN                                                   
+---------------------------------------------------------------------------------------------------------------
+ Update (segment: 1) on px_parallel_update_t3
+   ->  Result
+         ->  PX Hash 6:1  (slice1; segments: 6)
+               ->  Result
+                     ->  Split
+                           ->  Partial Seq Scan on px_parallel_update_t3 px_parallel_update_t3_1
+                                 SubPlan 1
+                                   ->  Materialize
+                                         ->  PX Broadcast 1:6  (slice2)
+                                               ->  Finalize Aggregate
+                                                     ->  PX Coordinator 6:1  (slice3; segments: 6)
+                                                           ->  Partial Aggregate
+                                                                 ->  Partial Seq Scan on px_parallel_update_t4
+ Optimizer: PolarDB PX Optimizer
+(14 rows)
+
+update px_parallel_update_t3 set c2 = (select min(c1) from px_parallel_update_t4);
+update px_parallel_update_t4 set c1 = 5;
+-- Update not NULL CONSTRAIN
+insert into px_parallel_update_t5 select generate_series(1,1000),generate_series(1,1000);
+EXPLAIN (COSTS OFF) update px_parallel_update_t5 set c2 = NULL;
+                                           QUERY PLAN                                            
+-------------------------------------------------------------------------------------------------
+ Update (segment: 1) on px_parallel_update_t5
+   ->  Result
+         ->  PX Hash 6:1  (slice1; segments: 6)
+               ->  Result
+                     ->  Split
+                           ->  Partial Seq Scan on px_parallel_update_t5 px_parallel_update_t5_1
+ Optimizer: PolarDB PX Optimizer
+(7 rows)
+
+-- Update with CHECK OPTION
+insert into px_parallel_update_t7 select generate_series(1,999),generate_series(1,999);
+EXPLAIN (COSTS OFF) update px_parallel_update_t7 set c2 = 1000;
+                                           QUERY PLAN                                            
+-------------------------------------------------------------------------------------------------
+ Update (segment: 1) on px_parallel_update_t7
+   ->  Result
+         ->  PX Hash 6:1  (slice1; segments: 6)
+               ->  Result
+                     ->  Split
+                           ->  Partial Seq Scan on px_parallel_update_t7 px_parallel_update_t7_1
+ Optimizer: PolarDB PX Optimizer
+(7 rows)
+
+EXPLAIN (COSTS OFF) update px_parallel_update_t7 set c2 = 500;
+                                           QUERY PLAN                                            
+-------------------------------------------------------------------------------------------------
+ Update (segment: 1) on px_parallel_update_t7
+   ->  Result
+         ->  PX Hash 6:1  (slice1; segments: 6)
+               ->  Result
+                     ->  Split
+                           ->  Partial Seq Scan on px_parallel_update_t7 px_parallel_update_t7_1
+ Optimizer: PolarDB PX Optimizer
+(7 rows)
+
+-- Update with TRIGGER
+EXPLAIN (COSTS OFF) update px_parallel_update_t10 set NAME='123456';
+                QUERY PLAN                
+------------------------------------------
+ Update on px_parallel_update_t10
+   ->  Seq Scan on px_parallel_update_t10
+(2 rows)
+
+update px_parallel_update_t10 set NAME='123456';
+select * from px_parallel_update_t10 order by ID limit 1;
+ id |  name  
+----+--------
+  1 | 123456
+(1 row)
+
+select * from px_parallel_update_audit order by EMP_ID limit 1;
+ emp_id | entry_date 
+--------+------------
+   1000 | xxxx
+(1 row)
+
+-- Update with VIEW
+EXPLAIN (COSTS OFF) update px_parallel_update_view set c2 = -100, c3 = 100;
+                                            QUERY PLAN                                             
+---------------------------------------------------------------------------------------------------
+ Update (segment: 1) on px_parallel_update_t11
+   ->  Result
+         ->  PX Hash 6:1  (slice1; segments: 6)
+               ->  Result
+                     ->  Split
+                           ->  Partial Seq Scan on px_parallel_update_t11 px_parallel_update_t11_1
+                                 Filter: (c1 < 200)
+ Optimizer: PolarDB PX Optimizer
+(8 rows)
+
+update px_parallel_update_view set c2 = -100, c3 = 100;
+select * from px_parallel_update_view order by c1 ASC limit 10;
+ c1 |  c2  | c3  
+----+------+-----
+  1 | -100 | 100
+  2 | -100 | 100
+  3 | -100 | 100
+  4 | -100 | 100
+  5 | -100 | 100
+  6 | -100 | 100
+  7 | -100 | 100
+  8 | -100 | 100
+  9 | -100 | 100
+ 10 | -100 | 100
+(10 rows)
+
+select * from px_parallel_update_t11 order by c1 ASC limit 10;
+ c1 |  c2  | c3  
+----+------+-----
+  1 | -100 | 100
+  2 | -100 | 100
+  3 | -100 | 100
+  4 | -100 | 100
+  5 | -100 | 100
+  6 | -100 | 100
+  7 | -100 | 100
+  8 | -100 | 100
+  9 | -100 | 100
+ 10 | -100 | 100
+(10 rows)
+
+-- Update with CTE
+EXPLAIN (COSTS OFF) WITH update_move_rows AS (
+   update px_parallel_update_t12 set c1=3 RETURNING *
+)
+update px_parallel_update_t13 set c1=(select count(*) from update_move_rows);
+                    QUERY PLAN                    
+--------------------------------------------------
+ Update on px_parallel_update_t13
+   CTE update_move_rows
+     ->  Update on px_parallel_update_t12
+           ->  Seq Scan on px_parallel_update_t12
+   InitPlan 2 (returns $2)
+     ->  Aggregate
+           ->  CTE Scan on update_move_rows
+   ->  Seq Scan on px_parallel_update_t13
+(8 rows)
+
+-- Update double delete error case
+EXPLAIN (COSTS OFF) UPDATE px_parallel_update_t14 set c1 = px_parallel_update_t15.c2 from px_parallel_update_t15
+where px_parallel_update_t14.c2 = px_parallel_update_t15.c1;
+                                                 QUERY PLAN                                                 
+------------------------------------------------------------------------------------------------------------
+ Update (segment: 1) on px_parallel_update_t14
+   ->  Result
+         ->  PX Hash 6:1  (slice1; segments: 6)
+               ->  Result
+                     ->  Split
+                           ->  Hash Join
+                                 Hash Cond: (px_parallel_update_t15.c1 = px_parallel_update_t14_1.c2)
+                                 ->  Partial Seq Scan on px_parallel_update_t15
+                                 ->  Hash
+                                       ->  Full Seq Scan on px_parallel_update_t14 px_parallel_update_t14_1
+ Optimizer: PolarDB PX Optimizer
+(11 rows)
+
+UPDATE px_parallel_update_t14 set c1 = px_parallel_update_t15.c2 from px_parallel_update_t15
+where px_parallel_update_t14.c2 = px_parallel_update_t15.c1;
+psql:sql/polar-px-dev/px_parallel_update_base.sql:70: ERROR:  multiple updates to a row by the same query is not allowed
+select * from px_parallel_update_t14;
+ c1 | c2 
+----+----
+  1 |  1
+(1 row)
+
+-- polar_px_update_dop_num = 6
+set polar_px_update_dop_num = 6;
+\i sql/polar-px-dev/px_parallel_update_init.sql
+-- create normal table
+drop table if exists px_parallel_update_t1 cascade;
+CREATE TABLE px_parallel_update_t1 (c1 int, c2 int) ;
+insert into px_parallel_update_t1 select generate_series(1,100),generate_series(1,100);
+drop table if exists px_parallel_update_t2 cascade;
+CREATE TABLE px_parallel_update_t2 (c1 int, c2 int) ;
+insert into px_parallel_update_t2 select generate_series(1,100),generate_series(1,100);
+drop table if exists px_parallel_update_t3 cascade;
+CREATE TABLE px_parallel_update_t3 (c1 int, c2 int) ;
+insert into px_parallel_update_t3 select generate_series(1,1000),generate_series(1,1000);
+select count(*) from px_parallel_update_t1;
+ count 
+-------
+   100
+(1 row)
+
+select count(*) from px_parallel_update_t2;
+ count 
+-------
+   100
+(1 row)
+
+------------------------------------------------------------------------
+--range partition
+--Partition constraint: ((x IS NOT NULL) AND (x >= 10) AND (x < 20))
+drop table if exists px_parallel_update_t1_range cascade;
+CREATE TABLE px_parallel_update_t1_range(id int, value int) PARTITION BY RANGE(id);
+CREATE TABLE px_parallel_update_t1_range_p1 PARTITION OF px_parallel_update_t1_range FOR VALUES FROM (1) TO (10000);
+CREATE TABLE px_parallel_update_t1_range_p2 PARTITION OF px_parallel_update_t1_range FOR VALUES FROM (10000) TO (20000);
+CREATE TABLE px_parallel_update_t1_range_p3 PARTITION OF px_parallel_update_t1_range DEFAULT;
+insert into px_parallel_update_t1_range select generate_series(1,30000, 2);
+-- Index Test Init
+drop table if exists px_parallel_update_t4 cascade;
+CREATE TABLE px_parallel_update_t4 (c1 int, c2 int) ;
+insert into px_parallel_update_t4 select generate_series(1,1000),generate_series(1,1000);
+CREATE INDEX t_index_update_plan on px_parallel_update_t4(c1);
+-- Constrain Test Init
+drop table if exists px_parallel_update_t5 cascade;
+CREATE TABLE px_parallel_update_t5 (c1 int, c2 int not NULL) ;
+drop table if exists px_parallel_update_t6 cascade;
+CREATE TABLE px_parallel_update_t6 (c1 int, c2 int) ;
+drop table if exists px_parallel_update_t7 cascade;
+CREATE TABLE px_parallel_update_t7 (c1 int, c2 int CHECK (c2 < 1000)) ;
+drop table if exists px_parallel_update_t10 cascade;
+CREATE TABLE px_parallel_update_t10(
+   ID INT PRIMARY KEY     NOT NULL,
+   NAME           TEXT    NOT NULL
+);
+insert into px_parallel_update_t10 select generate_series(1,1000), 'hello';
+drop table if exists px_parallel_update_audit cascade;
+CREATE TABLE px_parallel_update_audit(
+   EMP_ID INT NOT NULL,
+   ENTRY_DATE TEXT NOT NULL
+);
+insert into px_parallel_update_audit select generate_series(1,1000), 'world';
+CREATE OR REPLACE FUNCTION auditlogfunc() RETURNS TRIGGER AS $example_table$
+   BEGIN
+      UPDATE px_parallel_update_audit set EMP_ID=new.ID, ENTRY_DATE='xxxx';
+      RETURN NEW;
+   END;
+$example_table$ LANGUAGE plpgsql;
+CREATE TRIGGER px_parallel_update_trigger AFTER UPDATE ON px_parallel_update_t10 FOR EACH ROW EXECUTE PROCEDURE auditlogfunc();
+-- Create Updatable View
+drop table if exists px_parallel_update_t11 cascade;
+psql:sql/polar-px-dev/px_parallel_update_init.sql:75: NOTICE:  drop cascades to view px_parallel_update_view
+CREATE TABLE px_parallel_update_t11 (c1 int, c2 int, c3 int) ;
+insert into px_parallel_update_t11 select generate_series(1,1000), generate_series(1,1000), generate_series(1,1000);
+CREATE VIEW px_parallel_update_view AS select
+c1,
+c2,
+c3
+from px_parallel_update_t11
+where c1 < 200;
+-- Create with CTE
+drop table if exists px_parallel_update_t12 cascade;
+CREATE TABLE px_parallel_update_t12 (c1 int, c2 int, c3 int) ;
+insert into px_parallel_update_t12 select generate_series(1,1000), generate_series(1,1000), generate_series(1,1000);
+drop table if exists px_parallel_update_t13 cascade;
+CREATE TABLE px_parallel_update_t13 (c1 int, c2 int, c3 int) ;
+insert into px_parallel_update_t13 select generate_series(1,1000), generate_series(1,1000), generate_series(1,1000);
+-- Create for double delete error case
+drop table if exists px_parallel_update_t14 cascade;
+CREATE TABLE px_parallel_update_t14 (c1 int, c2 int);
+insert into px_parallel_update_t14 VALUES(1,1);
+drop table if exists px_parallel_update_t15 cascade;
+CREATE TABLE px_parallel_update_t15 (c1 int, c2 int);
+insert into px_parallel_update_t15 VALUES(1,2),(1,7);
+ANALYZE;
+\i sql/polar-px-dev/px_parallel_update_base.sql
+-- Update without subplan
+EXPLAIN (COSTS OFF) update px_parallel_update_t1 set c1 = 3;
+                                           QUERY PLAN                                            
+-------------------------------------------------------------------------------------------------
+ Update (segment: 6) on px_parallel_update_t1
+   ->  Result
+         ->  PX Hash 6:6  (slice1; segments: 6)
+               ->  Result
+                     ->  Split
+                           ->  Partial Seq Scan on px_parallel_update_t1 px_parallel_update_t1_1
+ Optimizer: PolarDB PX Optimizer
+(7 rows)
+
+update px_parallel_update_t1 set c1 = 3;
+EXPLAIN (COSTS OFF) update px_parallel_update_t2 set c1 = 4;
+                                           QUERY PLAN                                            
+-------------------------------------------------------------------------------------------------
+ Update (segment: 6) on px_parallel_update_t2
+   ->  Result
+         ->  PX Hash 6:6  (slice1; segments: 6)
+               ->  Result
+                     ->  Split
+                           ->  Partial Seq Scan on px_parallel_update_t2 px_parallel_update_t2_1
+ Optimizer: PolarDB PX Optimizer
+(7 rows)
+
+update px_parallel_update_t2 set c1 = 4;
+select max(c1) from px_parallel_update_t1;
+ max 
+-----
+   3
+(1 row)
+
+select max(c1) from px_parallel_update_t2;
+ max 
+-----
+   4
+(1 row)
+
+-- Update with subplan
+EXPLAIN (COSTS OFF) update px_parallel_update_t3 set c2=(select MAX(c2) from px_parallel_update_t1);
+                                                  QUERY PLAN                                                   
+---------------------------------------------------------------------------------------------------------------
+ Update (segment: 6) on px_parallel_update_t3
+   ->  Result
+         ->  PX Hash 6:6  (slice1; segments: 6)
+               ->  Result
+                     ->  Split
+                           ->  Partial Seq Scan on px_parallel_update_t3 px_parallel_update_t3_1
+                                 SubPlan 1
+                                   ->  Materialize
+                                         ->  PX Broadcast 1:6  (slice2)
+                                               ->  Finalize Aggregate
+                                                     ->  PX Coordinator 6:1  (slice3; segments: 6)
+                                                           ->  Partial Aggregate
+                                                                 ->  Partial Seq Scan on px_parallel_update_t1
+ Optimizer: PolarDB PX Optimizer
+(14 rows)
+
+EXPLAIN (COSTS OFF) update px_parallel_update_t3 set c1=(select AVG(c2) from px_parallel_update_t2);
+                                                  QUERY PLAN                                                   
+---------------------------------------------------------------------------------------------------------------
+ Update (segment: 6) on px_parallel_update_t3
+   ->  Result
+         ->  PX Hash 6:6  (slice1; segments: 6)
+               ->  Result
+                     ->  Split
+                           ->  Partial Seq Scan on px_parallel_update_t3 px_parallel_update_t3_1
+                                 SubPlan 1
+                                   ->  Materialize
+                                         ->  PX Broadcast 1:6  (slice2)
+                                               ->  Finalize Aggregate
+                                                     ->  PX Coordinator 6:1  (slice3; segments: 6)
+                                                           ->  Partial Aggregate
+                                                                 ->  Partial Seq Scan on px_parallel_update_t2
+ Optimizer: PolarDB PX Optimizer
+(14 rows)
+
+update px_parallel_update_t3 set c2=(select MAX(c2) from px_parallel_update_t1);
+update px_parallel_update_t3 set c1=(select AVG(c2) from px_parallel_update_t2);
+select AVG(c1) from px_parallel_update_t3;
+         avg         
+---------------------
+ 51.0000000000000000
+(1 row)
+
+select AVG(c2) from px_parallel_update_t3;
+         avg          
+----------------------
+ 100.0000000000000000
+(1 row)
+
+-- Update vector
+EXPLAIN (COSTS OFF) update px_parallel_update_t3 set c1=10, c2=(select MAX(c2) from px_parallel_update_t2);
+                                                  QUERY PLAN                                                   
+---------------------------------------------------------------------------------------------------------------
+ Update (segment: 6) on px_parallel_update_t3
+   ->  Result
+         ->  PX Hash 6:6  (slice1; segments: 6)
+               ->  Result
+                     ->  Split
+                           ->  Partial Seq Scan on px_parallel_update_t3 px_parallel_update_t3_1
+                                 SubPlan 1
+                                   ->  Materialize
+                                         ->  PX Broadcast 1:6  (slice2)
+                                               ->  Finalize Aggregate
+                                                     ->  PX Coordinator 6:1  (slice3; segments: 6)
+                                                           ->  Partial Aggregate
+                                                                 ->  Partial Seq Scan on px_parallel_update_t2
+ Optimizer: PolarDB PX Optimizer
+(14 rows)
+
+update px_parallel_update_t3 set c1=10, c2=(select MAX(c2) from px_parallel_update_t2);
+select AVG(c1) + MAX(c2) from px_parallel_update_t3;
+       ?column?       
+----------------------
+ 110.0000000000000000
+(1 row)
+
+-- Update Partition Table, should be fallback
+EXPLAIN (COSTS OFF) update px_parallel_update_t1_range set id = 3;
+                    QUERY PLAN                    
+--------------------------------------------------
+ Update on px_parallel_update_t1_range
+   Update on px_parallel_update_t1_range_p1
+   Update on px_parallel_update_t1_range_p2
+   Update on px_parallel_update_t1_range_p3
+   ->  Seq Scan on px_parallel_update_t1_range_p1
+   ->  Seq Scan on px_parallel_update_t1_range_p2
+   ->  Seq Scan on px_parallel_update_t1_range_p3
+(7 rows)
+
+EXPLAIN (COSTS OFF) update px_parallel_update_t1_range set id =(select max(c2) from px_parallel_update_t2);
+                    QUERY PLAN                    
+--------------------------------------------------
+ Update on px_parallel_update_t1_range
+   Update on px_parallel_update_t1_range_p1
+   Update on px_parallel_update_t1_range_p2
+   Update on px_parallel_update_t1_range_p3
+   InitPlan 1 (returns $0)
+     ->  Aggregate
+           ->  Seq Scan on px_parallel_update_t2
+   ->  Seq Scan on px_parallel_update_t1_range_p1
+   ->  Seq Scan on px_parallel_update_t1_range_p2
+   ->  Seq Scan on px_parallel_update_t1_range_p3
+(10 rows)
+
+EXPLAIN (COSTS OFF) update px_parallel_update_t1_range set id =(select max(c2) from px_parallel_update_t2), value = 5;
+                    QUERY PLAN                    
+--------------------------------------------------
+ Update on px_parallel_update_t1_range
+   Update on px_parallel_update_t1_range_p1
+   Update on px_parallel_update_t1_range_p2
+   Update on px_parallel_update_t1_range_p3
+   InitPlan 1 (returns $0)
+     ->  Aggregate
+           ->  Seq Scan on px_parallel_update_t2
+   ->  Seq Scan on px_parallel_update_t1_range_p1
+   ->  Seq Scan on px_parallel_update_t1_range_p2
+   ->  Seq Scan on px_parallel_update_t1_range_p3
+(10 rows)
+
+-- Update With Index
+EXPLAIN (COSTS OFF) update px_parallel_update_t4 set c1 = 5;
+                                           QUERY PLAN                                            
+-------------------------------------------------------------------------------------------------
+ Update (segment: 6) on px_parallel_update_t4
+   ->  Result
+         ->  PX Hash 6:6  (slice1; segments: 6)
+               ->  Result
+                     ->  Split
+                           ->  Partial Seq Scan on px_parallel_update_t4 px_parallel_update_t4_1
+ Optimizer: PolarDB PX Optimizer
+(7 rows)
+
+EXPLAIN (COSTS OFF) update px_parallel_update_t3 set c2 = (select min(c1) from px_parallel_update_t4);
+                                                  QUERY PLAN                                                   
+---------------------------------------------------------------------------------------------------------------
+ Update (segment: 6) on px_parallel_update_t3
+   ->  Result
+         ->  PX Hash 6:6  (slice1; segments: 6)
+               ->  Result
+                     ->  Split
+                           ->  Partial Seq Scan on px_parallel_update_t3 px_parallel_update_t3_1
+                                 SubPlan 1
+                                   ->  Materialize
+                                         ->  PX Broadcast 1:6  (slice2)
+                                               ->  Finalize Aggregate
+                                                     ->  PX Coordinator 6:1  (slice3; segments: 6)
+                                                           ->  Partial Aggregate
+                                                                 ->  Partial Seq Scan on px_parallel_update_t4
+ Optimizer: PolarDB PX Optimizer
+(14 rows)
+
+update px_parallel_update_t3 set c2 = (select min(c1) from px_parallel_update_t4);
+update px_parallel_update_t4 set c1 = 5;
+-- Update not NULL CONSTRAIN
+insert into px_parallel_update_t5 select generate_series(1,1000),generate_series(1,1000);
+EXPLAIN (COSTS OFF) update px_parallel_update_t5 set c2 = NULL;
+                                           QUERY PLAN                                            
+-------------------------------------------------------------------------------------------------
+ Update (segment: 6) on px_parallel_update_t5
+   ->  Result
+         ->  PX Hash 6:6  (slice1; segments: 6)
+               ->  Result
+                     ->  Split
+                           ->  Partial Seq Scan on px_parallel_update_t5 px_parallel_update_t5_1
+ Optimizer: PolarDB PX Optimizer
+(7 rows)
+
+-- Update with CHECK OPTION
+insert into px_parallel_update_t7 select generate_series(1,999),generate_series(1,999);
+EXPLAIN (COSTS OFF) update px_parallel_update_t7 set c2 = 1000;
+                                           QUERY PLAN                                            
+-------------------------------------------------------------------------------------------------
+ Update (segment: 6) on px_parallel_update_t7
+   ->  Result
+         ->  PX Hash 6:6  (slice1; segments: 6)
+               ->  Result
+                     ->  Split
+                           ->  Partial Seq Scan on px_parallel_update_t7 px_parallel_update_t7_1
+ Optimizer: PolarDB PX Optimizer
+(7 rows)
+
+EXPLAIN (COSTS OFF) update px_parallel_update_t7 set c2 = 500;
+                                           QUERY PLAN                                            
+-------------------------------------------------------------------------------------------------
+ Update (segment: 6) on px_parallel_update_t7
+   ->  Result
+         ->  PX Hash 6:6  (slice1; segments: 6)
+               ->  Result
+                     ->  Split
+                           ->  Partial Seq Scan on px_parallel_update_t7 px_parallel_update_t7_1
+ Optimizer: PolarDB PX Optimizer
+(7 rows)
+
+-- Update with TRIGGER
+EXPLAIN (COSTS OFF) update px_parallel_update_t10 set NAME='123456';
+                QUERY PLAN                
+------------------------------------------
+ Update on px_parallel_update_t10
+   ->  Seq Scan on px_parallel_update_t10
+(2 rows)
+
+update px_parallel_update_t10 set NAME='123456';
+select * from px_parallel_update_t10 order by ID limit 1;
+ id |  name  
+----+--------
+  1 | 123456
+(1 row)
+
+select * from px_parallel_update_audit order by EMP_ID limit 1;
+ emp_id | entry_date 
+--------+------------
+   1000 | xxxx
+(1 row)
+
+-- Update with VIEW
+EXPLAIN (COSTS OFF) update px_parallel_update_view set c2 = -100, c3 = 100;
+                                            QUERY PLAN                                             
+---------------------------------------------------------------------------------------------------
+ Update (segment: 6) on px_parallel_update_t11
+   ->  Result
+         ->  PX Hash 6:6  (slice1; segments: 6)
+               ->  Result
+                     ->  Split
+                           ->  Partial Seq Scan on px_parallel_update_t11 px_parallel_update_t11_1
+                                 Filter: (c1 < 200)
+ Optimizer: PolarDB PX Optimizer
+(8 rows)
+
+update px_parallel_update_view set c2 = -100, c3 = 100;
+select * from px_parallel_update_view order by c1 ASC limit 10;
+ c1 |  c2  | c3  
+----+------+-----
+  1 | -100 | 100
+  2 | -100 | 100
+  3 | -100 | 100
+  4 | -100 | 100
+  5 | -100 | 100
+  6 | -100 | 100
+  7 | -100 | 100
+  8 | -100 | 100
+  9 | -100 | 100
+ 10 | -100 | 100
+(10 rows)
+
+select * from px_parallel_update_t11 order by c1 ASC limit 10;
+ c1 |  c2  | c3  
+----+------+-----
+  1 | -100 | 100
+  2 | -100 | 100
+  3 | -100 | 100
+  4 | -100 | 100
+  5 | -100 | 100
+  6 | -100 | 100
+  7 | -100 | 100
+  8 | -100 | 100
+  9 | -100 | 100
+ 10 | -100 | 100
+(10 rows)
+
+-- Update with CTE
+EXPLAIN (COSTS OFF) WITH update_move_rows AS (
+   update px_parallel_update_t12 set c1=3 RETURNING *
+)
+update px_parallel_update_t13 set c1=(select count(*) from update_move_rows);
+                    QUERY PLAN                    
+--------------------------------------------------
+ Update on px_parallel_update_t13
+   CTE update_move_rows
+     ->  Update on px_parallel_update_t12
+           ->  Seq Scan on px_parallel_update_t12
+   InitPlan 2 (returns $2)
+     ->  Aggregate
+           ->  CTE Scan on update_move_rows
+   ->  Seq Scan on px_parallel_update_t13
+(8 rows)
+
+-- Update double delete error case
+EXPLAIN (COSTS OFF) UPDATE px_parallel_update_t14 set c1 = px_parallel_update_t15.c2 from px_parallel_update_t15
+where px_parallel_update_t14.c2 = px_parallel_update_t15.c1;
+                                                 QUERY PLAN                                                 
+------------------------------------------------------------------------------------------------------------
+ Update (segment: 6) on px_parallel_update_t14
+   ->  Result
+         ->  PX Hash 6:6  (slice1; segments: 6)
+               ->  Result
+                     ->  Split
+                           ->  Hash Join
+                                 Hash Cond: (px_parallel_update_t15.c1 = px_parallel_update_t14_1.c2)
+                                 ->  Partial Seq Scan on px_parallel_update_t15
+                                 ->  Hash
+                                       ->  Full Seq Scan on px_parallel_update_t14 px_parallel_update_t14_1
+ Optimizer: PolarDB PX Optimizer
+(11 rows)
+
+UPDATE px_parallel_update_t14 set c1 = px_parallel_update_t15.c2 from px_parallel_update_t15
+where px_parallel_update_t14.c2 = px_parallel_update_t15.c1;
+psql:sql/polar-px-dev/px_parallel_update_base.sql:70: ERROR:  multiple updates to a row by the same query is not allowed
+select * from px_parallel_update_t14;
+ c1 | c2 
+----+----
+  1 |  1
+(1 row)
+
+-- polar_px_update_dop_num = 9
+set polar_px_update_dop_num = 9;
+\i sql/polar-px-dev/px_parallel_update_init.sql
+-- create normal table
+drop table if exists px_parallel_update_t1 cascade;
+CREATE TABLE px_parallel_update_t1 (c1 int, c2 int) ;
+insert into px_parallel_update_t1 select generate_series(1,100),generate_series(1,100);
+drop table if exists px_parallel_update_t2 cascade;
+CREATE TABLE px_parallel_update_t2 (c1 int, c2 int) ;
+insert into px_parallel_update_t2 select generate_series(1,100),generate_series(1,100);
+drop table if exists px_parallel_update_t3 cascade;
+CREATE TABLE px_parallel_update_t3 (c1 int, c2 int) ;
+insert into px_parallel_update_t3 select generate_series(1,1000),generate_series(1,1000);
+select count(*) from px_parallel_update_t1;
+ count 
+-------
+   100
+(1 row)
+
+select count(*) from px_parallel_update_t2;
+ count 
+-------
+   100
+(1 row)
+
+------------------------------------------------------------------------
+--range partition
+--Partition constraint: ((x IS NOT NULL) AND (x >= 10) AND (x < 20))
+drop table if exists px_parallel_update_t1_range cascade;
+CREATE TABLE px_parallel_update_t1_range(id int, value int) PARTITION BY RANGE(id);
+CREATE TABLE px_parallel_update_t1_range_p1 PARTITION OF px_parallel_update_t1_range FOR VALUES FROM (1) TO (10000);
+CREATE TABLE px_parallel_update_t1_range_p2 PARTITION OF px_parallel_update_t1_range FOR VALUES FROM (10000) TO (20000);
+CREATE TABLE px_parallel_update_t1_range_p3 PARTITION OF px_parallel_update_t1_range DEFAULT;
+insert into px_parallel_update_t1_range select generate_series(1,30000, 2);
+-- Index Test Init
+drop table if exists px_parallel_update_t4 cascade;
+CREATE TABLE px_parallel_update_t4 (c1 int, c2 int) ;
+insert into px_parallel_update_t4 select generate_series(1,1000),generate_series(1,1000);
+CREATE INDEX t_index_update_plan on px_parallel_update_t4(c1);
+-- Constrain Test Init
+drop table if exists px_parallel_update_t5 cascade;
+CREATE TABLE px_parallel_update_t5 (c1 int, c2 int not NULL) ;
+drop table if exists px_parallel_update_t6 cascade;
+CREATE TABLE px_parallel_update_t6 (c1 int, c2 int) ;
+drop table if exists px_parallel_update_t7 cascade;
+CREATE TABLE px_parallel_update_t7 (c1 int, c2 int CHECK (c2 < 1000)) ;
+drop table if exists px_parallel_update_t10 cascade;
+CREATE TABLE px_parallel_update_t10(
+   ID INT PRIMARY KEY     NOT NULL,
+   NAME           TEXT    NOT NULL
+);
+insert into px_parallel_update_t10 select generate_series(1,1000), 'hello';
+drop table if exists px_parallel_update_audit cascade;
+CREATE TABLE px_parallel_update_audit(
+   EMP_ID INT NOT NULL,
+   ENTRY_DATE TEXT NOT NULL
+);
+insert into px_parallel_update_audit select generate_series(1,1000), 'world';
+CREATE OR REPLACE FUNCTION auditlogfunc() RETURNS TRIGGER AS $example_table$
+   BEGIN
+      UPDATE px_parallel_update_audit set EMP_ID=new.ID, ENTRY_DATE='xxxx';
+      RETURN NEW;
+   END;
+$example_table$ LANGUAGE plpgsql;
+CREATE TRIGGER px_parallel_update_trigger AFTER UPDATE ON px_parallel_update_t10 FOR EACH ROW EXECUTE PROCEDURE auditlogfunc();
+-- Create Updatable View
+drop table if exists px_parallel_update_t11 cascade;
+psql:sql/polar-px-dev/px_parallel_update_init.sql:75: NOTICE:  drop cascades to view px_parallel_update_view
+CREATE TABLE px_parallel_update_t11 (c1 int, c2 int, c3 int) ;
+insert into px_parallel_update_t11 select generate_series(1,1000), generate_series(1,1000), generate_series(1,1000);
+CREATE VIEW px_parallel_update_view AS select
+c1,
+c2,
+c3
+from px_parallel_update_t11
+where c1 < 200;
+-- Create with CTE
+drop table if exists px_parallel_update_t12 cascade;
+CREATE TABLE px_parallel_update_t12 (c1 int, c2 int, c3 int) ;
+insert into px_parallel_update_t12 select generate_series(1,1000), generate_series(1,1000), generate_series(1,1000);
+drop table if exists px_parallel_update_t13 cascade;
+CREATE TABLE px_parallel_update_t13 (c1 int, c2 int, c3 int) ;
+insert into px_parallel_update_t13 select generate_series(1,1000), generate_series(1,1000), generate_series(1,1000);
+-- Create for double delete error case
+drop table if exists px_parallel_update_t14 cascade;
+CREATE TABLE px_parallel_update_t14 (c1 int, c2 int);
+insert into px_parallel_update_t14 VALUES(1,1);
+drop table if exists px_parallel_update_t15 cascade;
+CREATE TABLE px_parallel_update_t15 (c1 int, c2 int);
+insert into px_parallel_update_t15 VALUES(1,2),(1,7);
+ANALYZE;
+\i sql/polar-px-dev/px_parallel_update_base.sql
+-- Update without subplan
+EXPLAIN (COSTS OFF) update px_parallel_update_t1 set c1 = 3;
+                                           QUERY PLAN                                            
+-------------------------------------------------------------------------------------------------
+ Update (segment: 9) on px_parallel_update_t1
+   ->  Result
+         ->  PX Hash 6:9  (slice1; segments: 6)
+               ->  Result
+                     ->  Split
+                           ->  Partial Seq Scan on px_parallel_update_t1 px_parallel_update_t1_1
+ Optimizer: PolarDB PX Optimizer
+(7 rows)
+
+update px_parallel_update_t1 set c1 = 3;
+EXPLAIN (COSTS OFF) update px_parallel_update_t2 set c1 = 4;
+                                           QUERY PLAN                                            
+-------------------------------------------------------------------------------------------------
+ Update (segment: 9) on px_parallel_update_t2
+   ->  Result
+         ->  PX Hash 6:9  (slice1; segments: 6)
+               ->  Result
+                     ->  Split
+                           ->  Partial Seq Scan on px_parallel_update_t2 px_parallel_update_t2_1
+ Optimizer: PolarDB PX Optimizer
+(7 rows)
+
+update px_parallel_update_t2 set c1 = 4;
+select max(c1) from px_parallel_update_t1;
+ max 
+-----
+   3
+(1 row)
+
+select max(c1) from px_parallel_update_t2;
+ max 
+-----
+   4
+(1 row)
+
+-- Update with subplan
+EXPLAIN (COSTS OFF) update px_parallel_update_t3 set c2=(select MAX(c2) from px_parallel_update_t1);
+                                                  QUERY PLAN                                                   
+---------------------------------------------------------------------------------------------------------------
+ Update (segment: 9) on px_parallel_update_t3
+   ->  Result
+         ->  PX Hash 6:9  (slice1; segments: 6)
+               ->  Result
+                     ->  Split
+                           ->  Partial Seq Scan on px_parallel_update_t3 px_parallel_update_t3_1
+                                 SubPlan 1
+                                   ->  Materialize
+                                         ->  PX Broadcast 1:6  (slice2)
+                                               ->  Finalize Aggregate
+                                                     ->  PX Coordinator 6:1  (slice3; segments: 6)
+                                                           ->  Partial Aggregate
+                                                                 ->  Partial Seq Scan on px_parallel_update_t1
+ Optimizer: PolarDB PX Optimizer
+(14 rows)
+
+EXPLAIN (COSTS OFF) update px_parallel_update_t3 set c1=(select AVG(c2) from px_parallel_update_t2);
+                                                  QUERY PLAN                                                   
+---------------------------------------------------------------------------------------------------------------
+ Update (segment: 9) on px_parallel_update_t3
+   ->  Result
+         ->  PX Hash 6:9  (slice1; segments: 6)
+               ->  Result
+                     ->  Split
+                           ->  Partial Seq Scan on px_parallel_update_t3 px_parallel_update_t3_1
+                                 SubPlan 1
+                                   ->  Materialize
+                                         ->  PX Broadcast 1:6  (slice2)
+                                               ->  Finalize Aggregate
+                                                     ->  PX Coordinator 6:1  (slice3; segments: 6)
+                                                           ->  Partial Aggregate
+                                                                 ->  Partial Seq Scan on px_parallel_update_t2
+ Optimizer: PolarDB PX Optimizer
+(14 rows)
+
+update px_parallel_update_t3 set c2=(select MAX(c2) from px_parallel_update_t1);
+update px_parallel_update_t3 set c1=(select AVG(c2) from px_parallel_update_t2);
+select AVG(c1) from px_parallel_update_t3;
+         avg         
+---------------------
+ 51.0000000000000000
+(1 row)
+
+select AVG(c2) from px_parallel_update_t3;
+         avg          
+----------------------
+ 100.0000000000000000
+(1 row)
+
+-- Update vector
+EXPLAIN (COSTS OFF) update px_parallel_update_t3 set c1=10, c2=(select MAX(c2) from px_parallel_update_t2);
+                                                  QUERY PLAN                                                   
+---------------------------------------------------------------------------------------------------------------
+ Update (segment: 9) on px_parallel_update_t3
+   ->  Result
+         ->  PX Hash 6:9  (slice1; segments: 6)
+               ->  Result
+                     ->  Split
+                           ->  Partial Seq Scan on px_parallel_update_t3 px_parallel_update_t3_1
+                                 SubPlan 1
+                                   ->  Materialize
+                                         ->  PX Broadcast 1:6  (slice2)
+                                               ->  Finalize Aggregate
+                                                     ->  PX Coordinator 6:1  (slice3; segments: 6)
+                                                           ->  Partial Aggregate
+                                                                 ->  Partial Seq Scan on px_parallel_update_t2
+ Optimizer: PolarDB PX Optimizer
+(14 rows)
+
+update px_parallel_update_t3 set c1=10, c2=(select MAX(c2) from px_parallel_update_t2);
+select AVG(c1) + MAX(c2) from px_parallel_update_t3;
+       ?column?       
+----------------------
+ 110.0000000000000000
+(1 row)
+
+-- Update Partition Table, should be fallback
+EXPLAIN (COSTS OFF) update px_parallel_update_t1_range set id = 3;
+                    QUERY PLAN                    
+--------------------------------------------------
+ Update on px_parallel_update_t1_range
+   Update on px_parallel_update_t1_range_p1
+   Update on px_parallel_update_t1_range_p2
+   Update on px_parallel_update_t1_range_p3
+   ->  Seq Scan on px_parallel_update_t1_range_p1
+   ->  Seq Scan on px_parallel_update_t1_range_p2
+   ->  Seq Scan on px_parallel_update_t1_range_p3
+(7 rows)
+
+EXPLAIN (COSTS OFF) update px_parallel_update_t1_range set id =(select max(c2) from px_parallel_update_t2);
+                    QUERY PLAN                    
+--------------------------------------------------
+ Update on px_parallel_update_t1_range
+   Update on px_parallel_update_t1_range_p1
+   Update on px_parallel_update_t1_range_p2
+   Update on px_parallel_update_t1_range_p3
+   InitPlan 1 (returns $0)
+     ->  Aggregate
+           ->  Seq Scan on px_parallel_update_t2
+   ->  Seq Scan on px_parallel_update_t1_range_p1
+   ->  Seq Scan on px_parallel_update_t1_range_p2
+   ->  Seq Scan on px_parallel_update_t1_range_p3
+(10 rows)
+
+EXPLAIN (COSTS OFF) update px_parallel_update_t1_range set id =(select max(c2) from px_parallel_update_t2), value = 5;
+                    QUERY PLAN                    
+--------------------------------------------------
+ Update on px_parallel_update_t1_range
+   Update on px_parallel_update_t1_range_p1
+   Update on px_parallel_update_t1_range_p2
+   Update on px_parallel_update_t1_range_p3
+   InitPlan 1 (returns $0)
+     ->  Aggregate
+           ->  Seq Scan on px_parallel_update_t2
+   ->  Seq Scan on px_parallel_update_t1_range_p1
+   ->  Seq Scan on px_parallel_update_t1_range_p2
+   ->  Seq Scan on px_parallel_update_t1_range_p3
+(10 rows)
+
+-- Update With Index
+EXPLAIN (COSTS OFF) update px_parallel_update_t4 set c1 = 5;
+                                           QUERY PLAN                                            
+-------------------------------------------------------------------------------------------------
+ Update (segment: 9) on px_parallel_update_t4
+   ->  Result
+         ->  PX Hash 6:9  (slice1; segments: 6)
+               ->  Result
+                     ->  Split
+                           ->  Partial Seq Scan on px_parallel_update_t4 px_parallel_update_t4_1
+ Optimizer: PolarDB PX Optimizer
+(7 rows)
+
+EXPLAIN (COSTS OFF) update px_parallel_update_t3 set c2 = (select min(c1) from px_parallel_update_t4);
+                                                  QUERY PLAN                                                   
+---------------------------------------------------------------------------------------------------------------
+ Update (segment: 9) on px_parallel_update_t3
+   ->  Result
+         ->  PX Hash 6:9  (slice1; segments: 6)
+               ->  Result
+                     ->  Split
+                           ->  Partial Seq Scan on px_parallel_update_t3 px_parallel_update_t3_1
+                                 SubPlan 1
+                                   ->  Materialize
+                                         ->  PX Broadcast 1:6  (slice2)
+                                               ->  Finalize Aggregate
+                                                     ->  PX Coordinator 6:1  (slice3; segments: 6)
+                                                           ->  Partial Aggregate
+                                                                 ->  Partial Seq Scan on px_parallel_update_t4
+ Optimizer: PolarDB PX Optimizer
+(14 rows)
+
+update px_parallel_update_t3 set c2 = (select min(c1) from px_parallel_update_t4);
+update px_parallel_update_t4 set c1 = 5;
+-- Update not NULL CONSTRAIN
+insert into px_parallel_update_t5 select generate_series(1,1000),generate_series(1,1000);
+EXPLAIN (COSTS OFF) update px_parallel_update_t5 set c2 = NULL;
+                                           QUERY PLAN                                            
+-------------------------------------------------------------------------------------------------
+ Update (segment: 9) on px_parallel_update_t5
+   ->  Result
+         ->  PX Hash 6:9  (slice1; segments: 6)
+               ->  Result
+                     ->  Split
+                           ->  Partial Seq Scan on px_parallel_update_t5 px_parallel_update_t5_1
+ Optimizer: PolarDB PX Optimizer
+(7 rows)
+
+-- Update with CHECK OPTION
+insert into px_parallel_update_t7 select generate_series(1,999),generate_series(1,999);
+EXPLAIN (COSTS OFF) update px_parallel_update_t7 set c2 = 1000;
+                                           QUERY PLAN                                            
+-------------------------------------------------------------------------------------------------
+ Update (segment: 9) on px_parallel_update_t7
+   ->  Result
+         ->  PX Hash 6:9  (slice1; segments: 6)
+               ->  Result
+                     ->  Split
+                           ->  Partial Seq Scan on px_parallel_update_t7 px_parallel_update_t7_1
+ Optimizer: PolarDB PX Optimizer
+(7 rows)
+
+EXPLAIN (COSTS OFF) update px_parallel_update_t7 set c2 = 500;
+                                           QUERY PLAN                                            
+-------------------------------------------------------------------------------------------------
+ Update (segment: 9) on px_parallel_update_t7
+   ->  Result
+         ->  PX Hash 6:9  (slice1; segments: 6)
+               ->  Result
+                     ->  Split
+                           ->  Partial Seq Scan on px_parallel_update_t7 px_parallel_update_t7_1
+ Optimizer: PolarDB PX Optimizer
+(7 rows)
+
+-- Update with TRIGGER
+EXPLAIN (COSTS OFF) update px_parallel_update_t10 set NAME='123456';
+                QUERY PLAN                
+------------------------------------------
+ Update on px_parallel_update_t10
+   ->  Seq Scan on px_parallel_update_t10
+(2 rows)
+
+update px_parallel_update_t10 set NAME='123456';
+select * from px_parallel_update_t10 order by ID limit 1;
+ id |  name  
+----+--------
+  1 | 123456
+(1 row)
+
+select * from px_parallel_update_audit order by EMP_ID limit 1;
+ emp_id | entry_date 
+--------+------------
+   1000 | xxxx
+(1 row)
+
+-- Update with VIEW
+EXPLAIN (COSTS OFF) update px_parallel_update_view set c2 = -100, c3 = 100;
+                                            QUERY PLAN                                             
+---------------------------------------------------------------------------------------------------
+ Update (segment: 9) on px_parallel_update_t11
+   ->  Result
+         ->  PX Hash 6:9  (slice1; segments: 6)
+               ->  Result
+                     ->  Split
+                           ->  Partial Seq Scan on px_parallel_update_t11 px_parallel_update_t11_1
+                                 Filter: (c1 < 200)
+ Optimizer: PolarDB PX Optimizer
+(8 rows)
+
+update px_parallel_update_view set c2 = -100, c3 = 100;
+select * from px_parallel_update_view order by c1 ASC limit 10;
+ c1 |  c2  | c3  
+----+------+-----
+  1 | -100 | 100
+  2 | -100 | 100
+  3 | -100 | 100
+  4 | -100 | 100
+  5 | -100 | 100
+  6 | -100 | 100
+  7 | -100 | 100
+  8 | -100 | 100
+  9 | -100 | 100
+ 10 | -100 | 100
+(10 rows)
+
+select * from px_parallel_update_t11 order by c1 ASC limit 10;
+ c1 |  c2  | c3  
+----+------+-----
+  1 | -100 | 100
+  2 | -100 | 100
+  3 | -100 | 100
+  4 | -100 | 100
+  5 | -100 | 100
+  6 | -100 | 100
+  7 | -100 | 100
+  8 | -100 | 100
+  9 | -100 | 100
+ 10 | -100 | 100
+(10 rows)
+
+-- Update with CTE
+EXPLAIN (COSTS OFF) WITH update_move_rows AS (
+   update px_parallel_update_t12 set c1=3 RETURNING *
+)
+update px_parallel_update_t13 set c1=(select count(*) from update_move_rows);
+                    QUERY PLAN                    
+--------------------------------------------------
+ Update on px_parallel_update_t13
+   CTE update_move_rows
+     ->  Update on px_parallel_update_t12
+           ->  Seq Scan on px_parallel_update_t12
+   InitPlan 2 (returns $2)
+     ->  Aggregate
+           ->  CTE Scan on update_move_rows
+   ->  Seq Scan on px_parallel_update_t13
+(8 rows)
+
+-- Update double delete error case
+EXPLAIN (COSTS OFF) UPDATE px_parallel_update_t14 set c1 = px_parallel_update_t15.c2 from px_parallel_update_t15
+where px_parallel_update_t14.c2 = px_parallel_update_t15.c1;
+                                                 QUERY PLAN                                                 
+------------------------------------------------------------------------------------------------------------
+ Update (segment: 9) on px_parallel_update_t14
+   ->  Result
+         ->  PX Hash 6:9  (slice1; segments: 6)
+               ->  Result
+                     ->  Split
+                           ->  Hash Join
+                                 Hash Cond: (px_parallel_update_t15.c1 = px_parallel_update_t14_1.c2)
+                                 ->  Partial Seq Scan on px_parallel_update_t15
+                                 ->  Hash
+                                       ->  Full Seq Scan on px_parallel_update_t14 px_parallel_update_t14_1
+ Optimizer: PolarDB PX Optimizer
+(11 rows)
+
+UPDATE px_parallel_update_t14 set c1 = px_parallel_update_t15.c2 from px_parallel_update_t15
+where px_parallel_update_t14.c2 = px_parallel_update_t15.c1;
+psql:sql/polar-px-dev/px_parallel_update_base.sql:70: ERROR:  multiple updates to a row by the same query is not allowed
+select * from px_parallel_update_t14;
+ c1 | c2 
+----+----
+  1 |  1
+(1 row)
+

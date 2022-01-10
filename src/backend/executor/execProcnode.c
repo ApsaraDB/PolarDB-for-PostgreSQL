@@ -115,7 +115,15 @@
 #include "executor/nodeWorktablescan.h"
 #include "nodes/nodeFuncs.h"
 #include "miscadmin.h"
-
+/* POLAR: include the head file */
+#include "executor/polar_exec_procnode.h"
+/* POLAR px */
+#include "executor/nodeAssertOp.h"
+#include "executor/nodeMotion_px.h"
+#include "executor/nodeSequence.h"
+#include "executor/nodeShareInputScan.h"
+#include "executor/nodePartitionSelector.h"
+#include "executor/nodeSplitUpdate.h"
 
 static TupleTableSlot *ExecProcNodeFirst(PlanState *node);
 static TupleTableSlot *ExecProcNodeInstr(PlanState *node);
@@ -178,6 +186,12 @@ ExecInitNode(Plan *node, EState *estate, int eflags)
 		case T_Append:
 			result = (PlanState *) ExecInitAppend((Append *) node,
 												  estate, eflags);
+			break;
+
+		/* POLAR px */
+		case T_Sequence:
+			result = (PlanState *) ExecInitSequence((Sequence *) node,
+													estate, eflags);
 			break;
 
 		case T_MergeAppend:
@@ -301,6 +315,11 @@ ExecInitNode(Plan *node, EState *estate, int eflags)
 													estate, eflags);
 			break;
 
+		/* POLAR px */
+		case T_ShareInputScan:
+			result = (PlanState *) ExecInitShareInputScan((ShareInputScan *) node, estate, eflags);
+			break;
+
 			/*
 			 * materialization nodes
 			 */
@@ -364,6 +383,30 @@ ExecInitNode(Plan *node, EState *estate, int eflags)
 												 estate, eflags);
 			break;
 
+		/* POLAR px */
+		case T_Motion:
+			result = (PlanState *) ExecInitMotion((Motion *) node,
+												  estate, eflags);
+			break;
+
+		/* POLAR px */
+		case T_SplitUpdate:
+			result = (PlanState *) ExecInitSplitUpdate((SplitUpdate *) node,
+												  estate, eflags);
+			break;
+
+		/* POLAR px */
+		case T_PartitionSelector:
+			result = (PlanState *) ExecInitPartitionSelector((PartitionSelector *) node,
+															 estate, eflags);
+			break;
+
+		/* POLAR px */
+		case T_AssertOp:
+ 			result = (PlanState *) ExecInitAssertOp((AssertOp *) node,
+ 													estate, eflags);
+			break;
+
 		default:
 			elog(ERROR, "unrecognized node type: %d", (int) nodeTag(node));
 			result = NULL;		/* keep compiler quiet */
@@ -381,15 +424,25 @@ ExecInitNode(Plan *node, EState *estate, int eflags)
 	{
 		SubPlan    *subplan = (SubPlan *) lfirst(l);
 		SubPlanState *sstate;
+		int			save_currentSliceId;
+
+		save_currentSliceId = estate->currentSliceId;
+		if (estate->currentSliceId)
+			estate->currentSliceId = estate->es_plannedstmt->subplan_sliceIds[subplan->plan_id - 1];
 
 		Assert(IsA(subplan, SubPlan));
 		sstate = ExecInitSubPlan(subplan, result);
 		subps = lappend(subps, sstate);
+
+		estate->currentSliceId = save_currentSliceId;
 	}
 	result->initPlan = subps;
 
+	/* POALR px */
+	result->plan_line_id = ++estate->max_plan_line_id;
+
 	/* Set up instrumentation for this node if requested */
-	if (estate->es_instrument)
+	if (estate->es_instrument && polar_check_instrument_option(node, estate))
 		result->instrument = InstrAlloc(1, estate->es_instrument);
 
 	return result;
@@ -442,7 +495,11 @@ ExecProcNodeFirst(PlanState *node)
 	else
 		node->ExecProcNode = node->ExecProcNodeReal;
 
-	return node->ExecProcNode(node);
+	/* POALR px */
+	if (ExecProcNode_hook)
+		return (*ExecProcNode_hook)(node);
+	else
+		return node->ExecProcNode(node);
 }
 
 
@@ -537,6 +594,16 @@ MultiExecProcNode(PlanState *node)
 void
 ExecEndNode(PlanState *node)
 {
+	if (ExecEndNode_hook)
+		(*ExecEndNode_hook)(node);
+	else
+		standard_ExecEndNode(node);
+}
+
+/* POALR px */
+void
+standard_ExecEndNode(PlanState *node)
+{
 	/*
 	 * do nothing when we get to the end of a leaf on tree.
 	 */
@@ -583,6 +650,11 @@ ExecEndNode(PlanState *node)
 
 		case T_RecursiveUnionState:
 			ExecEndRecursiveUnion((RecursiveUnionState *) node);
+			break;
+
+		/* POLAR px */
+		case T_SequenceState:
+			ExecEndSequence((SequenceState *) node);
 			break;
 
 		case T_BitmapAndState:
@@ -683,6 +755,11 @@ ExecEndNode(PlanState *node)
 			ExecEndHashJoin((HashJoinState *) node);
 			break;
 
+		/* POLAR px */
+		case T_ShareInputScanState:
+			ExecEndShareInputScan((ShareInputScanState *) node);
+			break;
+
 			/*
 			 * materialization nodes
 			 */
@@ -725,6 +802,23 @@ ExecEndNode(PlanState *node)
 		case T_LimitState:
 			ExecEndLimit((LimitState *) node);
 			break;
+
+		/* POLAR px */
+		case T_MotionState:
+			ExecEndMotion((MotionState *) node);
+			break;
+
+		/* POLAR px */
+		case T_PartitionSelectorState:
+			ExecEndPartitionSelector((PartitionSelectorState *) node);
+			break;
+		case T_AssertOpState:
+			ExecEndAssertOp((AssertOpState *) node);
+			break;
+		case T_SplitUpdateState:
+			ExecEndSplitUpdate((SplitUpdateState *) node);
+			break;
+		/* POLAR end */
 
 		default:
 			elog(ERROR, "unrecognized node type: %d", (int) nodeTag(node));

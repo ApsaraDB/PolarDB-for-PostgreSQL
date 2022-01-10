@@ -89,6 +89,9 @@ Section: Class 01 - Warning
 01006    W    ERRCODE_WARNING_PRIVILEGE_NOT_REVOKED                          privilege_not_revoked
 01004    W    ERRCODE_WARNING_STRING_DATA_RIGHT_TRUNCATION                   string_data_right_truncation
 01P01    W    ERRCODE_WARNING_DEPRECATED_FEATURE                             deprecated_feature
+#01M01 no longer used
+01M02    W    ERRCODE_WARNING_PX_INTERCONNECTION                             px_interconnection
+
 
 Section: Class 02 - No Data (this is also a warning class per the SQL standard)
 
@@ -117,6 +120,8 @@ Section: Class 09 - Triggered Action Exception
 Section: Class 0A - Feature Not Supported
 
 0A000    E    ERRCODE_FEATURE_NOT_SUPPORTED                                  feature_not_supported
+0AM01    E    ERRCODE_PX_FEATURE_NOT_YET                                     px_feature_not_yet
+0AM02    E    ERRCODE_PX_FEATURE_NOT_CONFIGURED                              px_feature_not_configured
 
 Section: Class 0B - Invalid Transaction Initiation
 
@@ -234,6 +239,7 @@ Section: Class 25 - Invalid Transaction State
 25007    E    ERRCODE_SCHEMA_AND_DATA_STATEMENT_MIXING_NOT_SUPPORTED         schema_and_data_statement_mixing_not_supported
 25P01    E    ERRCODE_NO_ACTIVE_SQL_TRANSACTION                              no_active_sql_transaction
 25P02    E    ERRCODE_IN_FAILED_SQL_TRANSACTION                              in_failed_sql_transaction
+25M01    E    ERRCODE_PX_OPERATION_CANCELED                                  px_operation_canceled
 25P03    E    ERRCODE_IDLE_IN_TRANSACTION_SESSION_TIMEOUT                    idle_in_transaction_session_timeout
 
 Section: Class 26 - Invalid SQL Statement Name
@@ -308,6 +314,7 @@ Section: Class 40 - Transaction Rollback
 40001    E    ERRCODE_T_R_SERIALIZATION_FAILURE                              serialization_failure
 40003    E    ERRCODE_T_R_STATEMENT_COMPLETION_UNKNOWN                       statement_completion_unknown
 40P01    E    ERRCODE_T_R_DEADLOCK_DETECTED                                  deadlock_detected
+
 
 Section: Class 42 - Syntax Error or Access Rule Violation
 
@@ -419,6 +426,8 @@ Section: Class 58 - System Error (errors external to PostgreSQL itself)
 58030    E    ERRCODE_IO_ERROR                                               io_error
 58P01    E    ERRCODE_UNDEFINED_FILE                                         undefined_file
 58P02    E    ERRCODE_DUPLICATE_FILE                                         duplicate_file
+# POLAR px
+58M01    E    ERRCODE_PX_INTERCONNECTION_ERROR                               px_interconnection_error
 
 Section: Class 72 - Snapshot Failure
 # (class borrowed from Oracle)
@@ -476,3 +485,7 @@ Section: Class XX - Internal Error
 XX000    E    ERRCODE_INTERNAL_ERROR                                         internal_error
 XX001    E    ERRCODE_DATA_CORRUPTED                                         data_corrupted
 XX002    E    ERRCODE_INDEX_CORRUPTED                                        index_corrupted
+
+Section: Class PX - Internal Error
+
+PX000    E    ERRCODE_PX_INTERNAL_ERROR                                      px_internal_error

@@ -30,6 +30,10 @@
 #include "utils/lsyscache.h"
 #include "utils/syscache.h"
 
+/* POLAR */
+#include "access/xact.h"
+#include "commands/extension.h"
+
 /*
  * Hooks for function calls
  */
@@ -53,7 +57,7 @@ static HTAB *CFuncHash = NULL;
 
 
 static void fmgr_info_cxt_security(Oid functionId, FmgrInfo *finfo, MemoryContext mcxt,
-					   bool ignore_security);
+					 bool ignore_security, bool polar_call_context_in_trans_state);
 static void fmgr_info_C_lang(Oid functionId, FmgrInfo *finfo, HeapTuple procedureTuple);
 static void fmgr_info_other_lang(Oid functionId, FmgrInfo *finfo, HeapTuple procedureTuple);
 static CFuncHashTabEntry *lookup_C_func(HeapTuple procedureTuple);
@@ -123,7 +127,7 @@ fmgr_lookupByName(const char *name)
 void
 fmgr_info(Oid functionId, FmgrInfo *finfo)
 {
-	fmgr_info_cxt_security(functionId, finfo, CurrentMemoryContext, false);
+	fmgr_info_cxt_security(functionId, finfo, CurrentMemoryContext, false, true);
 }
 
 /*
@@ -133,7 +137,7 @@ fmgr_info(Oid functionId, FmgrInfo *finfo)
 void
 fmgr_info_cxt(Oid functionId, FmgrInfo *finfo, MemoryContext mcxt)
 {
-	fmgr_info_cxt_security(functionId, finfo, mcxt, false);
+	fmgr_info_cxt_security(functionId, finfo, mcxt, false, true);
 }
 
 /*
@@ -142,7 +146,7 @@ fmgr_info_cxt(Oid functionId, FmgrInfo *finfo, MemoryContext mcxt)
  */
 static void
 fmgr_info_cxt_security(Oid functionId, FmgrInfo *finfo, MemoryContext mcxt,
-					   bool ignore_security)
+					   bool ignore_security, bool polar_call_context_in_trans_state)
 {
 	const FmgrBuiltin *fbp;
 	HeapTuple	procedureTuple;
@@ -198,9 +202,13 @@ fmgr_info_cxt_security(Oid functionId, FmgrInfo *finfo, MemoryContext mcxt,
 	 * overhead of fmgr_security_definer to the function, but gains the
 	 * ability to set the track_functions GUC as a local GUC parameter of an
 	 * interesting function and have the right things happen.
+	 *
+	 * POLAR: superuser must run as security definer
 	 */
 	if (!ignore_security &&
 		(procedureStruct->prosecdef ||
+		 (polar_super_run_as_secdef && polar_call_context_in_trans_state &&
+		 superuser() && !superuser_arg(procedureStruct->proowner)) ||
 		 !heap_attisnull(procedureTuple, Anum_pg_proc_proconfig, NULL) ||
 		 FmgrHookIsNeeded(functionId)))
 	{
@@ -449,7 +457,7 @@ fmgr_info_other_lang(Oid functionId, FmgrInfo *finfo, HeapTuple procedureTuple)
 	 * to get back a bare pointer to the actual C-language function.
 	 */
 	fmgr_info_cxt_security(languageStruct->lanplcallfoid, &plfinfo,
-						   CurrentMemoryContext, true);
+						   CurrentMemoryContext, true, true);
 	finfo->fn_addr = plfinfo.fn_addr;
 
 	ReleaseSysCache(languageTuple);
@@ -679,7 +687,7 @@ fmgr_security_definer(PG_FUNCTION_ARGS)
 										sizeof(*fcache));
 
 		fmgr_info_cxt_security(fcinfo->flinfo->fn_oid, &fcache->flinfo,
-							   fcinfo->flinfo->fn_mcxt, true);
+							   fcinfo->flinfo->fn_mcxt, true, true);
 		fcache->flinfo.fn_expr = fcinfo->flinfo->fn_expr;
 
 		tuple = SearchSysCache1(PROCOID,
@@ -689,8 +697,11 @@ fmgr_security_definer(PG_FUNCTION_ARGS)
 				 fcinfo->flinfo->fn_oid);
 		procedureStruct = (Form_pg_proc) GETSTRUCT(tuple);
 
-		if (procedureStruct->prosecdef)
+		/* POLAR: superuser must run as security definer */
+		if (procedureStruct->prosecdef ||
+			(polar_super_run_as_secdef && superuser() && !superuser_arg(procedureStruct->proowner)))
 			fcache->userid = procedureStruct->proowner;
+		/* POLAR end */
 
 		datum = SysCacheGetAttr(PROCOID, tuple, Anum_pg_proc_proconfig,
 								&isnull);
@@ -715,6 +726,13 @@ fmgr_security_definer(PG_FUNCTION_ARGS)
 	else
 		save_nestlevel = 0;		/* keep compiler quiet */
 
+	/*
+	 * POLAR: The invoking user of CREATE/ALTER EXTENSION is treated as superuser. Disable this
+	 * for function calling, since it may cause execution of malicious function on behalf of
+	 * superuser by defining trigger/rules
+	 */
+	polar_enable_promoting_privilege = false;
+	
 	if (OidIsValid(fcache->userid))
 		SetUserIdAndSecContext(fcache->userid,
 							   save_sec_context | SECURITY_LOCAL_USERID_CHANGE);
@@ -758,6 +776,10 @@ fmgr_security_definer(PG_FUNCTION_ARGS)
 	}
 	PG_CATCH();
 	{
+		/* POLAR: promoting privilage */
+		polar_enable_promoting_privilege = true;
+		/* POLAR end */
+
 		fcinfo->flinfo = save_flinfo;
 		if (fmgr_hook)
 			(*fmgr_hook) (FHET_ABORT, &fcache->flinfo, &fcache->arg);
@@ -765,6 +787,7 @@ fmgr_security_definer(PG_FUNCTION_ARGS)
 	}
 	PG_END_TRY();
 
+	polar_enable_promoting_privilege = true;
 	fcinfo->flinfo = save_flinfo;
 
 	if (fcache->proconfig)
@@ -2231,4 +2254,15 @@ CheckFunctionValidatorAccess(Oid validatorOid, Oid functionOid)
 	ReleaseSysCache(langTup);
 
 	return true;
+}
+
+/*
+ * POLAR: the same to above, but add flag polar_call_context_in_trans_state mark function
+ * can execute without transaction whether or not
+ */
+void
+polar_fmgr_info_cxt_w_trans_state(Oid functionId, FmgrInfo *finfo, MemoryContext mcxt,
+							bool polar_call_context_in_trans_state)
+{
+	fmgr_info_cxt_security(functionId, finfo, mcxt, false, polar_call_context_in_trans_state);
 }

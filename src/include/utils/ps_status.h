@@ -12,6 +12,9 @@
 #ifndef PS_STATUS_H
 #define PS_STATUS_H
 
+/* POLAR: define walsender/walreceiver streaming ps status buffer size */
+#define MAX_REPLICATION_PS_BUFFER_SIZE (100)
+
 extern bool update_process_title;
 
 extern char **save_ps_display_args(int argc, char **argv);

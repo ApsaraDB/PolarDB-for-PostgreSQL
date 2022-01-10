@@ -54,5 +54,5 @@ typedef struct StreamCtl
 extern bool CheckServerVersionForStreaming(PGconn *conn);
 extern bool ReceiveXlogStream(PGconn *conn,
 				  StreamCtl *stream);
-
+extern bool is_polar_mode;
 #endif							/* RECEIVELOG_H */

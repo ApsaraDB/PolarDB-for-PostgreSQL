@@ -78,6 +78,10 @@ extern StringInfo makeStringInfo(void);
  */
 extern void initStringInfo(StringInfo str);
 
+/* POLAR px */
+extern void initStringInfoOfSize(StringInfo str, int bufsize);
+/* POLAR end */
+
 /*------------------------
  * resetStringInfo
  * Clears the current content of the StringInfo, if any. The
@@ -156,5 +160,14 @@ extern void appendBinaryStringInfoNT(StringInfo str,
  * Make sure a StringInfo's buffer can hold at least 'needed' more bytes.
  */
 extern void enlargeStringInfo(StringInfo str, int needed);
+
+/*------------------------
+ * POLAR px
+ * appendBinaryStringInfoPX
+ * Append arbitrary binary data to a StringInfo, allocating more space
+ * if necessary.
+ */
+extern void appendBinaryStringInfoPX(StringInfo str,
+					   const void *data, int datalen);
 
 #endif							/* STRINGINFO_H */

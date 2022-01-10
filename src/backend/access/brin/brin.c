@@ -669,8 +669,11 @@ brinbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 	 * We expect to be called exactly once for any index relation.
 	 */
 	if (RelationGetNumberOfBlocks(index) != 0)
+	{
+		polar_check_nblocks_consistent(index);
 		elog(ERROR, "index \"%s\" already contains data",
 			 RelationGetRelationName(index));
+	}
 
 	/*
 	 * Critical section not required, because on error the creation of the

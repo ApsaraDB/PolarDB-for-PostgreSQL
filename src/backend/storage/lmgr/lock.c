@@ -49,6 +49,11 @@
 #include "utils/ps_status.h"
 #include "utils/resowner_private.h"
 
+/* POLAR */
+#include "libpq/libpq.h"
+#include "storage/polar_lock_stats.h"
+#include "utils/guc.h"
+/* POLAR end */
 
 /* This configuration variable is used to set the lock table size */
 int			max_locks_per_xact; /* set by guc.c */
@@ -161,7 +166,6 @@ typedef struct TwoPhaseLockRecord
 	LOCKMODE	lockmode;
 } TwoPhaseLockRecord;
 
-
 /*
  * Count of the number of fast path lock slots we believe to be used.  This
  * might be higher than the real number if another backend has transferred
@@ -260,6 +264,43 @@ static LOCALLOCK *StrongLockInProgress;
 static LOCALLOCK *awaitedLock;
 static ResourceOwner awaitedOwner;
 
+inline static void
+polar_proclock_print(const char *where, const PROCLOCK *proclockP, bool hide)
+{
+	ereport(LOG,
+		 (errmsg("%s: proclock(%p) lock(%p) method(%u) proc(%p) hold(%x) release(%x) group(%p) l_empty(%d:%p) p_empty(%d:%p)",
+		 where, proclockP, proclockP->tag.myLock,
+		 PROCLOCK_LOCKMETHOD(*(proclockP)),
+		 proclockP->tag.myProc, (int) proclockP->holdMask,
+		 (int) proclockP->releaseMask, proclockP->groupLeader,
+		 SHMQueueEmpty(&proclockP->lockLink), proclockP->lockLink.next,
+		 SHMQueueEmpty(&proclockP->procLink), proclockP->procLink.next),
+		  errhidestmt(hide), errhidecontext(hide)));
+}
+
+inline static void
+polar_lock_print(const char *where, const LOCK *lock, LOCKMODE type, bool hide)
+{
+	ereport(LOG,
+		 (errmsg("%s: lock(%p) id(%u,%u,%u,%u,%u,%u) grantMask(%x) "
+		 "req(%d,%d,%d,%d,%d,%d,%d)=%d "
+		 "grant(%d,%d,%d,%d,%d,%d,%d)=%d wait(%d:%x) type(%s)",
+		 where, lock,
+		 lock->tag.locktag_field1, lock->tag.locktag_field2,
+		 lock->tag.locktag_field3, lock->tag.locktag_field4,
+		 lock->tag.locktag_type, lock->tag.locktag_lockmethodid,
+		 lock->grantMask,
+		 lock->requested[1], lock->requested[2], lock->requested[3],
+		 lock->requested[4], lock->requested[5], lock->requested[6],
+		 lock->requested[7], lock->nRequested,
+		 lock->granted[1], lock->granted[2], lock->granted[3],
+		 lock->granted[4], lock->granted[5], lock->granted[6],
+		 lock->granted[7], lock->nGranted,
+		 lock->waitProcs.size, lock->waitMask,
+		 LockMethods[LOCK_LOCKMETHOD(*lock)]->lockModeNames[type]),
+		  errhidestmt(hide), errhidecontext(hide)));
+}
+
 
 #ifdef LOCK_DEBUG
 
@@ -285,7 +326,8 @@ bool		Trace_locks = false;
 bool		Trace_userlocks = false;
 int			Trace_lock_table = 0;
 bool		Debug_deadlocks = false;
-
+bool 		polar_trace_lock_flow = false;
+bool 		polar_trace_system_table = false;
 
 inline static bool
 LOCK_DEBUG_ENABLED(const LOCKTAG *tag)
@@ -294,43 +336,34 @@ LOCK_DEBUG_ENABLED(const LOCKTAG *tag)
 		(*(LockMethods[tag->locktag_lockmethodid]->trace_flag) &&
 		 ((Oid) tag->locktag_field2 >= (Oid) Trace_lock_oidmin))
 		|| (Trace_lock_table &&
-			(tag->locktag_field2 == Trace_lock_table));
+			(tag->locktag_field2 == Trace_lock_table))
+		|| (polar_trace_system_table &&
+			(tag->locktag_field2 < FirstNormalObjectId) &&
+			(tag->locktag_field2 > 0));
 }
 
+inline static void
+polar_lock_proclock_print(const char *where, const LOCK *lock, const PROCLOCK *proclock, LOCKMODE type)
+{
+	if (LOCK_DEBUG_ENABLED(&lock->tag))
+	{
+		polar_lock_print(where, lock, type, true);
+		polar_proclock_print(where, proclock, false);
+	}
+}
 
 inline static void
 LOCK_PRINT(const char *where, const LOCK *lock, LOCKMODE type)
 {
 	if (LOCK_DEBUG_ENABLED(&lock->tag))
-		elog(LOG,
-			 "%s: lock(%p) id(%u,%u,%u,%u,%u,%u) grantMask(%x) "
-			 "req(%d,%d,%d,%d,%d,%d,%d)=%d "
-			 "grant(%d,%d,%d,%d,%d,%d,%d)=%d wait(%d) type(%s)",
-			 where, lock,
-			 lock->tag.locktag_field1, lock->tag.locktag_field2,
-			 lock->tag.locktag_field3, lock->tag.locktag_field4,
-			 lock->tag.locktag_type, lock->tag.locktag_lockmethodid,
-			 lock->grantMask,
-			 lock->requested[1], lock->requested[2], lock->requested[3],
-			 lock->requested[4], lock->requested[5], lock->requested[6],
-			 lock->requested[7], lock->nRequested,
-			 lock->granted[1], lock->granted[2], lock->granted[3],
-			 lock->granted[4], lock->granted[5], lock->granted[6],
-			 lock->granted[7], lock->nGranted,
-			 lock->waitProcs.size,
-			 LockMethods[LOCK_LOCKMETHOD(*lock)]->lockModeNames[type]);
+		polar_lock_print(where, lock, type, false);
 }
-
 
 inline static void
 PROCLOCK_PRINT(const char *where, const PROCLOCK *proclockP)
 {
 	if (LOCK_DEBUG_ENABLED(&proclockP->tag.myLock->tag))
-		elog(LOG,
-			 "%s: proclock(%p) lock(%p) method(%u) proc(%p) hold(%x)",
-			 where, proclockP, proclockP->tag.myLock,
-			 PROCLOCK_LOCKMETHOD(*(proclockP)),
-			 proclockP->tag.myProc, (int) proclockP->holdMask);
+		polar_proclock_print(where, proclockP, false);
 }
 #else							/* not LOCK_DEBUG */
 
@@ -626,9 +659,10 @@ LockHasWaiters(const LOCKTAG *locktag, LOCKMODE lockmode, bool sessionLock)
 	 * while we were holding a lock on them.
 	 */
 	lock = locallock->lock;
-	LOCK_PRINT("LockHasWaiters: found", lock, lockmode);
 	proclock = locallock->proclock;
-	PROCLOCK_PRINT("LockHasWaiters: found", proclock);
+#ifdef LOCK_DEBUG
+	polar_lock_proclock_print("LockHasWaiters: found", lock, proclock, lockmode);
+#endif
 
 	/*
 	 * Double-check that we are actually holding a lock of the type we want to
@@ -742,7 +776,7 @@ LockAcquireExtended(const LOCKTAG *locktag,
 				 errhint("Only RowExclusiveLock or less can be acquired on database objects during recovery.")));
 
 #ifdef LOCK_DEBUG
-	if (LOCK_DEBUG_ENABLED(locktag))
+	if (polar_trace_lock_flow && LOCK_DEBUG_ENABLED(locktag))
 		elog(LOG, "LockAcquire: lock [%u,%u] %s",
 			 locktag->locktag_field1, locktag->locktag_field2,
 			 lockMethodTable->lockModeNames[lockmode]);
@@ -816,6 +850,10 @@ LockAcquireExtended(const LOCKTAG *locktag,
 			return LOCKACQUIRE_ALREADY_HELD;
 	}
 
+	/* POLAR: lock stats */
+	polar_lock_stat_lock(locktag->locktag_type, lockmode);
+	/* POLAR end */
+
 	/*
 	 * Prepare to emit a WAL record if acquisition of this lock needs to be
 	 * replayed in a standby server.
@@ -835,6 +873,8 @@ LockAcquireExtended(const LOCKTAG *locktag,
 	{
 		LogAccessExclusiveLockPrepare();
 		log_lock = true;
+		/* POLAR: split xact: this is a ddl xact, mark this xact unsplittable */
+		polar_xact_split_mark_unsplittable(POLAR_UNSPLITTABLE_FOR_LOCK);
 	}
 
 	/*
@@ -876,6 +916,11 @@ LockAcquireExtended(const LOCKTAG *locktag,
 			locallock->lock = NULL;
 			locallock->proclock = NULL;
 			GrantLockLocal(locallock, owner);
+
+			/* POLAR: stat fast path */
+			polar_lock_stat_fastpath(locktag->locktag_type, lockmode);
+			/* POLAR end */
+
 			return LOCKACQUIRE_OK;
 		}
 	}
@@ -1045,14 +1090,19 @@ LockAcquireExtended(const LOCKTAG *locktag,
 		if (!(proclock->holdMask & LOCKBIT_ON(lockmode)))
 		{
 			AbortStrongLockAcquire();
-			PROCLOCK_PRINT("LockAcquire: INCONSISTENT", proclock);
-			LOCK_PRINT("LockAcquire: INCONSISTENT", lock, lockmode);
+#ifdef LOCK_DEBUG
+			polar_lock_proclock_print("LockAcquire: INCONSISTENT", lock, proclock, lockmode);
+#endif
 			/* Should we retry ? */
 			LWLockRelease(partitionLock);
 			elog(ERROR, "LockAcquire failed");
 		}
-		PROCLOCK_PRINT("LockAcquire: granted", proclock);
-		LOCK_PRINT("LockAcquire: granted", lock, lockmode);
+#ifdef LOCK_DEBUG
+		if (polar_trace_lock_flow)
+		{
+			polar_lock_proclock_print("LockAcquire: granted", lock, proclock, lockmode);
+		}
+#endif
 	}
 
 	/*
@@ -1125,11 +1175,17 @@ SetupLockInTable(LockMethod lockMethodTable, PGPROC *proc,
 		lock->nGranted = 0;
 		MemSet(lock->requested, 0, sizeof(int) * MAX_LOCKMODES);
 		MemSet(lock->granted, 0, sizeof(int) * MAX_LOCKMODES);
-		LOCK_PRINT("LockAcquire: new", lock, lockmode);
+#ifdef LOCK_DEBUG
+		if (polar_trace_lock_flow)
+			LOCK_PRINT("LockAcquire: new", lock, lockmode);
+#endif
 	}
 	else
 	{
-		LOCK_PRINT("LockAcquire: found", lock, lockmode);
+#ifdef LOCK_DEBUG
+		if (polar_trace_lock_flow)
+			LOCK_PRINT("LockAcquire: found", lock, lockmode);
+#endif
 		Assert((lock->nRequested >= 0) && (lock->requested[lockmode] >= 0));
 		Assert((lock->nGranted >= 0) && (lock->granted[lockmode] >= 0));
 		Assert(lock->nGranted <= lock->nRequested);
@@ -1198,11 +1254,17 @@ SetupLockInTable(LockMethod lockMethodTable, PGPROC *proc,
 		SHMQueueInsertBefore(&lock->procLocks, &proclock->lockLink);
 		SHMQueueInsertBefore(&(proc->myProcLocks[partition]),
 							 &proclock->procLink);
-		PROCLOCK_PRINT("LockAcquire: new", proclock);
+#ifdef LOCK_DEBUG
+		if (polar_trace_lock_flow)
+			PROCLOCK_PRINT("LockAcquire: new", proclock);
+#endif
 	}
 	else
 	{
-		PROCLOCK_PRINT("LockAcquire: found", proclock);
+#ifdef LOCK_DEBUG
+		if (polar_trace_lock_flow)
+			PROCLOCK_PRINT("LockAcquire: found", proclock);
+#endif
 		Assert((proclock->holdMask & ~lock->grantMask) == 0);
 
 #ifdef CHECK_DEADLOCK_RISK
@@ -1257,10 +1319,17 @@ SetupLockInTable(LockMethod lockMethodTable, PGPROC *proc,
 	 * broken.
 	 */
 	if (proclock->holdMask & LOCKBIT_ON(lockmode))
-		elog(ERROR, "lock %s on object %u/%u/%u is already held",
+	{
+		/* POLAR: print lock value when got unexpected mask */
+		polar_lock_print(__func__, lock, lockmode, false);
+		polar_proclock_print(__func__, proclock, false);
+
+		elog(ERROR, "lock %s on object %u/%u/%u is already held, proclocktag %p:%p, found=%d",
 			 lockMethodTable->lockModeNames[lockmode],
 			 lock->tag.locktag_field1, lock->tag.locktag_field2,
-			 lock->tag.locktag_field3);
+			 lock->tag.locktag_field3,
+			 proclocktag.myLock, proclocktag.myProc, found);
+	}
 
 	return proclock;
 }
@@ -1342,7 +1411,10 @@ LockCheckConflicts(LockMethod lockMethodTable,
 	 */
 	if (!(conflictMask & lock->grantMask))
 	{
-		PROCLOCK_PRINT("LockCheckConflicts: no conflict", proclock);
+#ifdef LOCK_DEBUG
+		if (polar_trace_lock_flow)
+			PROCLOCK_PRINT("LockCheckConflicts: no conflict", proclock);
+#endif
 		return STATUS_OK;
 	}
 
@@ -1368,7 +1440,10 @@ LockCheckConflicts(LockMethod lockMethodTable,
 	/* If no conflicts remain, we get the lock. */
 	if (totalConflictsRemaining == 0)
 	{
-		PROCLOCK_PRINT("LockCheckConflicts: resolved (simple)", proclock);
+#ifdef LOCK_DEBUG
+		if (polar_trace_lock_flow)
+			PROCLOCK_PRINT("LockCheckConflicts: resolved (simple)", proclock);
+#endif
 		return STATUS_OK;
 	}
 
@@ -1448,7 +1523,9 @@ GrantLock(LOCK *lock, PROCLOCK *proclock, LOCKMODE lockmode)
 	if (lock->granted[lockmode] == lock->requested[lockmode])
 		lock->waitMask &= LOCKBIT_OFF(lockmode);
 	proclock->holdMask |= LOCKBIT_ON(lockmode);
-	LOCK_PRINT("GrantLock", lock, lockmode);
+#ifdef LOCK_DEBUG
+	polar_lock_proclock_print("GrantLock", lock, proclock, lockmode);
+#endif
 	Assert((lock->nGranted > 0) && (lock->granted[lockmode] > 0));
 	Assert(lock->nGranted <= lock->nRequested);
 }
@@ -1486,8 +1563,6 @@ UnGrantLock(LOCK *lock, LOCKMODE lockmode,
 		lock->grantMask &= LOCKBIT_OFF(lockmode);
 	}
 
-	LOCK_PRINT("UnGrantLock: updated", lock, lockmode);
-
 	/*
 	 * We need only run ProcLockWakeup if the released lock conflicts with at
 	 * least one of the lock types requested by waiter(s).  Otherwise whatever
@@ -1504,8 +1579,9 @@ UnGrantLock(LOCK *lock, LOCKMODE lockmode,
 	 * Now fix the per-proclock state.
 	 */
 	proclock->holdMask &= LOCKBIT_OFF(lockmode);
-	PROCLOCK_PRINT("UnGrantLock: updated", proclock);
-
+#ifdef LOCK_DEBUG
+	polar_lock_proclock_print("UnGrantLock: updated", lock, proclock, lockmode);
+#endif
 	return wakeupNeeded;
 }
 
@@ -1533,6 +1609,7 @@ CleanUpLock(LOCK *lock, PROCLOCK *proclock,
 		uint32		proclock_hashcode;
 
 		PROCLOCK_PRINT("CleanUpLock: deleting", proclock);
+
 		SHMQueueDelete(&proclock->lockLink);
 		SHMQueueDelete(&proclock->procLink);
 		proclock_hashcode = ProcLockHashCode(&proclock->tag, hashcode);
@@ -1702,6 +1779,15 @@ WaitOnLock(LOCALLOCK *locallock, ResourceOwner owner)
 	LockMethod	lockMethodTable = LockMethods[lockmethodid];
 	char	   *volatile new_status = NULL;
 
+	/* POLAR: lock wait time stat start */
+	instr_time  lock_start_time;
+	INSTR_TIME_SET_ZERO(lock_start_time);
+	polar_lock_stat_block(locallock->tag.lock.locktag_type, locallock->tag.mode);
+	POLAR_LOCK_STATS_TIME_START(lock_start_time);
+	/* there isn't set wait pid, because we get pid by use pg_blocking_pids(pid) */
+	polar_stat_wait_obj_and_time_set(-1, &lock_start_time, PGPROC_WAIT_PID);
+	/* POLAR: end */
+
 	LOCK_PRINT("WaitOnLock: sleeping on lock",
 			   locallock->lock, locallock->tag.mode);
 
@@ -1784,6 +1870,12 @@ WaitOnLock(LOCALLOCK *locallock, ResourceOwner owner)
 		set_ps_display(new_status, false);
 		pfree(new_status);
 	}
+
+	/* POLAR:  lock wait time stat end */
+	polar_lock_stat_record_time(locallock->tag.lock.locktag_type,
+							    locallock->tag.mode, &lock_start_time);
+	polar_stat_wait_obj_and_time_clear();
+	/* POLAR: end */
 
 	LOCK_PRINT("WaitOnLock: wakeup on lock",
 			   locallock->lock, locallock->tag.mode);
@@ -1875,7 +1967,7 @@ LockRelease(const LOCKTAG *locktag, LOCKMODE lockmode, bool sessionLock)
 		elog(ERROR, "unrecognized lock mode: %d", lockmode);
 
 #ifdef LOCK_DEBUG
-	if (LOCK_DEBUG_ENABLED(locktag))
+	if (polar_trace_lock_flow && LOCK_DEBUG_ENABLED(locktag))
 		elog(LOG, "LockRelease: lock [%u,%u] %s",
 			 locktag->locktag_field1, locktag->locktag_field2,
 			 lockMethodTable->lockModeNames[lockmode]);
@@ -2020,9 +2112,13 @@ LockRelease(const LOCKTAG *locktag, LOCKMODE lockmode, bool sessionLock)
 		if (!locallock->proclock)
 			elog(ERROR, "failed to re-find shared proclock object");
 	}
-	LOCK_PRINT("LockRelease: found", lock, lockmode);
 	proclock = locallock->proclock;
-	PROCLOCK_PRINT("LockRelease: found", proclock);
+#ifdef LOCK_DEBUG
+	if (polar_trace_lock_flow)
+	{
+		polar_lock_proclock_print("LockRelease: found", lock, proclock, lockmode);
+	}
+#endif
 
 	/*
 	 * Double-check that we are actually holding a lock of the type we want to
@@ -2184,6 +2280,16 @@ LockReleaseAll(LOCKMETHODID lockmethodid, bool allLocks)
 			relid = locallock->tag.lock.locktag_field2;
 			if (FastPathUnGrantRelationLock(relid, lockmode))
 			{
+#ifdef LOCK_DEBUG
+				if (polar_trace_lock_flow && LOCK_DEBUG_ENABLED(&locallock->tag.lock))
+				{
+					elog(LOG, "FastPathUnGrantRelationLock (%d/%d/%d) mode=%d",
+							locallock->tag.lock.locktag_field1,
+							locallock->tag.lock.locktag_field2,
+							locallock->tag.lock.locktag_field3, lockmode);
+
+				}
+#endif
 				RemoveLocalLock(locallock);
 				continue;
 			}
@@ -2293,8 +2399,12 @@ LockReleaseAll(LOCKMETHODID lockmethodid, bool allLocks)
 			if (proclock->releaseMask == 0 && proclock->holdMask != 0)
 				continue;
 
-			PROCLOCK_PRINT("LockReleaseAll", proclock);
-			LOCK_PRINT("LockReleaseAll", lock, 0);
+#ifdef LOCK_DEBUG
+			if (polar_trace_lock_flow)
+			{
+				polar_lock_proclock_print("LockReleaseAll", lock, proclock, NoLock);
+			}
+#endif
 			Assert(lock->nRequested >= 0);
 			Assert(lock->nGranted >= 0);
 			Assert(lock->nGranted <= lock->nRequested);
@@ -2311,8 +2421,10 @@ LockReleaseAll(LOCKMETHODID lockmethodid, bool allLocks)
 			}
 			Assert((lock->nRequested >= 0) && (lock->nGranted >= 0));
 			Assert(lock->nGranted <= lock->nRequested);
-			LOCK_PRINT("LockReleaseAll: updated", lock, 0);
-
+#ifdef LOCK_DEBUG
+			if (polar_trace_lock_flow)
+				LOCK_PRINT("LockReleaseAll: updated", lock, 0);
+#endif
 			proclock->releaseMask = 0;
 
 			/* CleanUpLock will wake up waiters if needed. */
@@ -2510,6 +2622,21 @@ LockReassignOwner(LOCALLOCK *locallock, ResourceOwner parent)
 		else if (lockOwners[i].owner == parent)
 			ip = i;
 	}
+
+#ifdef LOCK_DEBUG
+	if (locallock->lock && LOCK_DEBUG_ENABLED(&locallock->lock->tag))
+	{
+		const char *cur_name, *p_name;
+
+		cur_name = polar_get_resourceowner_name(CurrentResourceOwner);
+		p_name = polar_get_resourceowner_name(parent);
+
+		elog(LOG, "reassign owner lock(%p), ic(%d), ip(%d), cur_owner(%s),parent_owner(%s)",
+				locallock->lock, ic, ip,
+				cur_name ? cur_name : "null",
+				p_name ? p_name : "null");
+	}
+#endif
 
 	if (ic < 0)
 		return;					/* no current locks */
@@ -3338,8 +3465,9 @@ PostPrepare_Locks(TransactionId xid)
 			if (lock->tag.locktag_type == LOCKTAG_VIRTUALTRANSACTION)
 				continue;
 
-			PROCLOCK_PRINT("PostPrepare_Locks", proclock);
-			LOCK_PRINT("PostPrepare_Locks", lock, 0);
+#ifdef LOCK_DEBUG
+			polar_lock_proclock_print("PostPrepare_Locks", lock, proclock, NoLock);
+#endif
 			Assert(lock->nRequested >= 0);
 			Assert(lock->nGranted >= 0);
 			Assert(lock->nGranted <= lock->nRequested);
@@ -3932,10 +4060,9 @@ DumpLocks(PGPROC *proc)
 			Assert(proclock->tag.myProc == proc);
 
 			lock = proclock->tag.myLock;
-
-			PROCLOCK_PRINT("DumpLocks", proclock);
-			LOCK_PRINT("DumpLocks", lock, 0);
-
+#ifdef LOCK_DEBUG
+			polar_lock_proclock_print("DumpLocks", lock, proclock, NoLock);
+#endif
 			proclock = (PROCLOCK *)
 				SHMQueueNext(procLocks, &proclock->procLink,
 							 offsetof(PROCLOCK, procLink));
@@ -4154,10 +4281,17 @@ lock_twophase_recover(TransactionId xid, uint16 info,
 	 * We shouldn't already hold the desired lock.
 	 */
 	if (proclock->holdMask & LOCKBIT_ON(lockmode))
-		elog(ERROR, "lock %s on object %u/%u/%u is already held",
+	{
+		/* POLAR: print lock value when got unexpected mask */
+		polar_lock_print(__func__, lock, lockmode, false);
+		polar_proclock_print(__func__, proclock, false);
+
+		elog(ERROR, "lock %s on object %u/%u/%u is already held, proclocktag %p:%p, found=%d",
 			 lockMethodTable->lockModeNames[lockmode],
 			 lock->tag.locktag_field1, lock->tag.locktag_field2,
-			 lock->tag.locktag_field3);
+			 lock->tag.locktag_field3,
+			 proclocktag.myLock, proclocktag.myProc, found);
+	}
 
 	/*
 	 * We ignore any possible conflicts and just grant ourselves the lock. Not
@@ -4282,6 +4416,10 @@ VirtualXactLockTableInsert(VirtualTransactionId vxid)
 
 	MyProc->fpVXIDLock = true;
 	MyProc->fpLocalTransactionId = vxid.localTransactionId;
+
+	/* POLAR: record virtual xact lock */
+	polar_lock_stat_lock(LOCKTAG_VIRTUALTRANSACTION, ExclusiveLock);
+	/* POLAR end */
 
 	LWLockRelease(&MyProc->backendLock);
 }
@@ -4465,4 +4603,33 @@ LockWaiterCount(const LOCKTAG *locktag)
 	LWLockRelease(partitionLock);
 
 	return waiters;
+}
+
+/*
+ * POLAR: init backend-local state needed for lock access
+ */
+void
+polar_init_lock_access(void)
+{
+	polar_init_lock_local_stats();
+}
+
+/*
+ * POLAR px: Check whether a waiter's request lockmode conflict
+ *           with holder's hold mask.
+ */
+bool
+polar_check_wait_lockmode_conflict_holdmask(LOCKTAG tag,
+											LOCKMODE waitLockMode,
+											LOCKMASK holderMask)
+{
+	int				waiterConflictMask;
+	LOCKMETHODID	lockmethodid = (LOCKMETHODID) tag.locktag_lockmethodid;
+
+	Assert(0 < lockmethodid && lockmethodid < lengthof(LockMethods));
+
+	waiterConflictMask = LockMethods[lockmethodid]->conflictTab[waitLockMode];
+	if (holderMask & waiterConflictMask)
+		return true;
+	return false;
 }

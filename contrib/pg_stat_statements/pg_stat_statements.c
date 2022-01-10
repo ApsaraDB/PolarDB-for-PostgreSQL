@@ -271,10 +271,18 @@ static int	pgss_track;			/* tracking level */
 static bool pgss_track_utility; /* whether to track utility commands */
 static bool pgss_save;			/* whether to save stats across shutdown */
 
+/* POLAR */
+static bool polar_pgss_track_superuser; /* whether to track commands executed by superuser */
 
+#define polar_pgss_enable_superuser_track() ((MyProc && MyProc->issuper) ? polar_pgss_track_superuser : true)
+/* POLAR end */
+
+/* POLAR: add super user check track */
 #define pgss_enabled() \
-	(pgss_track == PGSS_TRACK_ALL || \
-	(pgss_track == PGSS_TRACK_TOP && nested_level == 0))
+	((pgss_track == PGSS_TRACK_ALL || \
+	(pgss_track == PGSS_TRACK_TOP && nested_level == 0)) && \
+     polar_pgss_enable_superuser_track())
+/* POLAR end */
 
 #define record_gc_qtexts() \
 	do { \
@@ -386,23 +394,48 @@ _PG_init(void)
 							 NULL,
 							 NULL);
 
+	/*
+	 * POLAR: Set the default value to be 'false' here, because we want to prevent
+	 * sensitive DDL commands such as 'create role xxx password yy' by superuser
+	 * to be preset in pg_stat_statements output and files for sake of security.
+	 */
 	DefineCustomBoolVariable("pg_stat_statements.track_utility",
 							 "Selects whether utility commands are tracked by pg_stat_statements.",
 							 NULL,
 							 &pgss_track_utility,
-							 true,
+							 false,
 							 PGC_SUSET,
 							 0,
 							 NULL,
 							 NULL,
 							 NULL);
 
+	/*
+	 * POLAR: Set the default value to be 'false' here, because we need to prevent
+	 * sensitive DDL commands such as 'create role xxx password yy' by superuser
+	 * from being present in pg_stat_statements output and files for sake of security.
+	 */
 	DefineCustomBoolVariable("pg_stat_statements.save",
 							 "Save pg_stat_statements statistics across server shutdowns.",
 							 NULL,
 							 &pgss_save,
-							 true,
+							 false,
 							 PGC_SIGHUP,
+							 0,
+							 NULL,
+							 NULL,
+							 NULL);
+
+	/*
+	 * POLAR: ignore what superuser execute
+	 */
+	DefineCustomBoolVariable("pg_stat_statements.enable_superuser_track",
+							 "Selects whether commands executed by superuser "
+							 "are tracked by pg_stat_statements.",
+							 NULL,
+							 &polar_pgss_track_superuser,
+							 false,
+							 PGC_SUSET,
 							 0,
 							 NULL,
 							 NULL,
@@ -784,6 +817,10 @@ pgss_post_parse_analyze(ParseState *pstate, Query *query)
 
 	/* Assert we didn't do this already */
 	Assert(query->queryId == UINT64CONST(0));
+
+	/* add enable switch */
+	if (!pgss_enabled())
+		return;
 
 	/* Safety check... */
 	if (!pgss || !pgss_hash)
@@ -1374,6 +1411,7 @@ pg_stat_statements_internal(FunctionCallInfo fcinfo,
 	MemoryContext per_query_ctx;
 	MemoryContext oldcontext;
 	Oid			userid = GetUserId();
+	bool		is_polar_superuser = polar_superuser();
 	bool		is_allowed_role = false;
 	char	   *qbuffer = NULL;
 	Size		qbuffer_size = 0;
@@ -1527,7 +1565,8 @@ pg_stat_statements_internal(FunctionCallInfo fcinfo,
 		values[i++] = ObjectIdGetDatum(entry->key.userid);
 		values[i++] = ObjectIdGetDatum(entry->key.dbid);
 
-		if (is_allowed_role || entry->key.userid == userid)
+		if (is_allowed_role || entry->key.userid == userid ||
+			(is_polar_superuser && polar_has_more_privs_than_role(userid, entry->key.userid)))
 		{
 			if (api_version >= PGSS_V1_2)
 				values[i++] = Int64GetDatumFast(queryid);
@@ -2859,6 +2898,7 @@ JumbleExpr(pgssJumbleState *jstate, Node *node)
 
 				/* we store the string name because RTE_CTE RTEs need it */
 				APP_JUMB_STRING(cte->ctename);
+				APP_JUMB(cte->ctematerialized);
 				JumbleQuery(jstate, castNode(Query, cte->ctequery));
 			}
 			break;

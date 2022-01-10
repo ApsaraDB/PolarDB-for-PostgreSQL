@@ -1,0 +1,5 @@
+comment = 'Internal extension for TDE'
+default_version = '1.0'
+module_pathname = '$libdir/polar_tde_utils'
+relocatable = true
+

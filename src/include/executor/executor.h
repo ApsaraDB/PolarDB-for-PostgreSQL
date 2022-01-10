@@ -18,6 +18,9 @@
 #include "nodes/parsenodes.h"
 #include "utils/memutils.h"
 
+/* POLAR px */
+#include "px/px_def.h"
+/* POLAR end */
 
 /*
  * The "eflags" argument to ExecutorStart and the various ExecInitNode
@@ -88,6 +91,13 @@ extern PGDLLIMPORT ExecutorEnd_hook_type ExecutorEnd_hook;
 typedef bool (*ExecutorCheckPerms_hook_type) (List *, bool);
 extern PGDLLIMPORT ExecutorCheckPerms_hook_type ExecutorCheckPerms_hook;
 
+/* Hook for plugins to get control in ExecProcNode() */
+typedef TupleTableSlot *(*ExecProcNode_hook_type) (PlanState *node);
+extern PGDLLIMPORT ExecProcNode_hook_type ExecProcNode_hook;
+
+/* Hook for plugins to get control in ExecEndNode() */
+typedef void (*ExecEndNode_hook_type) (PlanState *node);
+extern PGDLLIMPORT ExecEndNode_hook_type ExecEndNode_hook;
 
 /*
  * prototypes from functions in execAmi.c
@@ -230,6 +240,32 @@ extern void ExecEndNode(PlanState *node);
 extern bool ExecShutdownNode(PlanState *node);
 extern void ExecSetTupleBound(int64 tuples_needed, PlanState *child_node);
 
+/* POLAR px */
+extern void ExecSquelchNode(PlanState *node);
+extern void ExecutorCleanup_PX(QueryDesc *queryDesc);
+extern void standard_ExecEndNode(PlanState *node);
+extern bool should_px_executor(QueryDesc *queryDesc);
+
+typedef enum
+{
+	PX_IGNORE,
+	PX_ROOT_SLICE,
+	PX_NON_ROOT_ON_PX
+} PxExecIdentity;
+
+extern PxExecIdentity getPxExecIdentity(QueryDesc *queryDesc,
+										  ScanDirection direction,
+										  EState	   *estate);
+extern void ExecutorFinishup_PX(QueryDesc *queryDesc);
+extern void ExecAssignResultType(PlanState *planstate, TupleDesc tupDesc);
+extern void ExecAssignResultTypeFromTL(PlanState *planstate);
+
+
+PxVisitOpt
+planstate_walk_node(PlanState	   *planstate,
+					PxVisitOpt		(*walker)(PlanState *planstate, void *context),
+					void			*context);
+/* POLAR end */
 
 /* ----------------------------------------------------------------
  *		ExecProcNode
@@ -244,10 +280,15 @@ ExecProcNode(PlanState *node)
 	if (node->chgParam != NULL) /* something changed? */
 		ExecReScan(node);		/* let ReScan handle this */
 
-	return node->ExecProcNode(node);
+	/* POLAR px */
+	if (ExecProcNode_hook)
+		return (*ExecProcNode_hook)(node);
+	else
+		return node->ExecProcNode(node);
 }
 #endif
 
+extern void ExecSquelchNode(PlanState *node);
 /*
  * prototypes from functions in execExpr.c
  */
@@ -268,10 +309,19 @@ extern ProjectionInfo *ExecBuildProjectionInfo(List *targetList,
 						TupleTableSlot *slot,
 						PlanState *parent,
 						TupleDesc inputDesc);
+extern ProjectionInfo *ExecBuildProjectionInfoExt(List *targetList,
+												  ExprContext *econtext,
+												  TupleTableSlot *slot,
+												  bool assignJunkEntries,
+												  PlanState *parent,
+												  TupleDesc inputDesc);
 extern ExprState *ExecPrepareExpr(Expr *node, EState *estate);
 extern ExprState *ExecPrepareQual(List *qual, EState *estate);
 extern ExprState *ExecPrepareCheck(List *qual, EState *estate);
 extern List *ExecPrepareExprList(List *nodes, EState *estate);
+
+/* POLAR px */
+extern bool polar_isJoinExprNull(List *joinExpr, ExprContext *econtext);
 
 /*
  * ExecEvalExpr
@@ -440,6 +490,11 @@ extern void ExecScanReScan(ScanState *node);
  * prototypes from functions in execTuples.c
  */
 extern void ExecInitResultTupleSlotTL(EState *estate, PlanState *planstate);
+
+/* POLAR px */
+extern void ExecInitResultTupleSlot(EState *estate, PlanState *planstate);
+/* POLAR end */
+
 extern void ExecInitScanTupleSlot(EState *estate, ScanState *scanstate, TupleDesc tupleDesc);
 extern TupleTableSlot *ExecInitExtraTupleSlot(EState *estate,
 					   TupleDesc tupleDesc);
@@ -579,5 +634,8 @@ extern void CheckCmdReplicaIdentity(Relation rel, CmdType cmd);
 
 extern void CheckSubscriptionRelkind(char relkind, const char *nspname,
 						 const char *relname);
+
+extern void polar_check_hash_table_size_extend(int max_size, const char *guc_name, const char *msg, TupleHashTable hashtable, ...);
+#define polar_check_hash_table_size(guc_name, msg, hashtable, ...) polar_check_hash_table_size_extend(guc_name, CppAsString(guc_name), msg, hashtable, __VA_ARGS__)
 
 #endif							/* EXECUTOR_H  */

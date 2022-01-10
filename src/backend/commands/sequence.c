@@ -45,6 +45,9 @@
 #include "utils/syscache.h"
 #include "utils/varlena.h"
 
+/* POLAR */
+#include "px/px_vars.h"
+/* POLAR end */
 
 /*
  * We don't want to log each fetching of a value from a sequence,
@@ -552,6 +555,17 @@ nextval_oid(PG_FUNCTION_ARGS)
 
 	PG_RETURN_INT64(nextval_internal(relid, true));
 }
+
+/* POLAR px */
+void
+nextval_qc(Oid relid, int64 *plast, int64 *pcached, int64  *pincrement, bool *poverflow)
+{
+	*plast = nextval_internal(relid, true);
+	*pcached = last_used_seq->cached;
+	*pincrement = last_used_seq->increment;
+	*poverflow = !last_used_seq->last_valid;
+}
+/* POLAR end */
 
 int64
 nextval_internal(Oid relid, bool check_permissions)
@@ -1168,6 +1182,9 @@ read_seq_tuple(Relation rel, Buffer *buf, HeapTuple seqdatatuple)
 	/* Note we currently only bother to set these two fields of *seqdatatuple */
 	seqdatatuple->t_data = (HeapTupleHeader) PageGetItem(page, lp);
 	seqdatatuple->t_len = ItemIdGetLength(lp);
+
+	/* POALR */
+	seqdatatuple->t_tableOid = InvalidOid;
 
 	/*
 	 * Previous releases of Postgres neglected to prevent SELECT FOR UPDATE on
@@ -1899,6 +1916,11 @@ seq_redo(XLogReaderState *record)
 		elog(PANIC, "seq_redo: failed to add item to page");
 
 	PageSetLSN(localpage, lsn);
+
+	/*
+	 * POLAR: BufferGetPage(buffer) is not equal to localpage, so we do not
+	 * call the PageSetLSN to set the oldest lsn.
+	 */
 	polar_redo_set_buffer_oldest_lsn(buffer, lsn);
 
 	memcpy(page, localpage, BufferGetPageSize(buffer));

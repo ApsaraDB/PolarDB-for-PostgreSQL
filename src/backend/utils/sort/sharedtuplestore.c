@@ -522,7 +522,7 @@ MinimalTuple
 sts_parallel_scan_next(SharedTuplestoreAccessor *accessor, void *meta_data)
 {
 	SharedTuplestoreParticipant *p;
-	BlockNumber read_page;
+	BlockNumber read_page = InvalidBlockNumber;
 	bool		eof;
 
 	for (;;)

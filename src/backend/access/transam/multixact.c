@@ -91,6 +91,8 @@
 #include "utils/memutils.h"
 #include "utils/snapmgr.h"
 
+/* POLAR */
+#include "utils/guc.h"
 
 /*
  * Defines for MultiXactOffset page sizes.  A page is the same BLCKSZ as is
@@ -189,6 +191,9 @@ static SlruCtlData MultiXactMemberCtlData;
 
 #define MultiXactOffsetCtl	(&MultiXactOffsetCtlData)
 #define MultiXactMemberCtl	(&MultiXactMemberCtlData)
+
+/* POLAR: Check whether multixact local file cache is enabled */
+#define POLAR_ENABLE_MULTIXACT_LOCAL_CACHE() (polar_multixact_max_local_cache_segments > 0 && polar_enable_shared_storage_mode)
 
 /*
  * MultiXact state shared across all backends.  All this state is protected
@@ -1810,8 +1815,14 @@ MultiXactShmemSize(void)
 			 mul_size(sizeof(MultiXactId) * 2, MaxOldestSlot))
 
 	size = SHARED_MULTIXACT_STATE_SIZE;
-	size = add_size(size, SimpleLruShmemSize(NUM_MXACTOFFSET_BUFFERS, 0));
-	size = add_size(size, SimpleLruShmemSize(NUM_MXACTMEMBER_BUFFERS, 0));
+
+	/* POLAR: change size variable to guc */
+	size = add_size(size, SimpleLruShmemSize(polar_mxact_offset_buffer_slot_size, 0));
+	size = add_size(size, SimpleLruShmemSize(polar_mxact_member_buffer_slot_size, 0));
+	/* POLAR: end */
+
+	if (POLAR_ENABLE_MULTIXACT_LOCAL_CACHE())
+		size = add_size(MAXALIGN(size), mul_size(polar_local_cache_shmem_size(polar_multixact_max_local_cache_segments), 2));
 
 	return size;
 }
@@ -1827,18 +1838,39 @@ MultiXactShmemInit(void)
 	MultiXactMemberCtl->PagePrecedes = MultiXactMemberPagePrecedes;
 	/* POLAR: pg_multixact file in shared storage */
 	SimpleLruInit(MultiXactOffsetCtl,
-				  "multixact_offset", NUM_MXACTOFFSET_BUFFERS, 0,
+				  "multixact_offset", polar_mxact_offset_buffer_slot_size, 0,
 				  MultiXactOffsetControlLock, "pg_multixact/offsets",
-				  LWTRANCHE_MXACTOFFSET_BUFFERS, true);
+				  LWTRANCHE_MXACTOFFSET_BUFFERS,
+				  polar_slru_file_in_shared_storage(true));
 	SimpleLruInit(MultiXactMemberCtl,
-				  "multixact_member", NUM_MXACTMEMBER_BUFFERS, 0,
+				  "multixact_member", polar_mxact_member_buffer_slot_size, 0,
 				  MultiXactMemberControlLock, "pg_multixact/members",
-				  LWTRANCHE_MXACTMEMBER_BUFFERS, true);
+				  LWTRANCHE_MXACTMEMBER_BUFFERS,
+				  polar_slru_file_in_shared_storage(true));
 
 	/* Initialize our shared state struct */
 	MultiXactState = ShmemInitStruct("Shared MultiXact State",
 									 SHARED_MULTIXACT_STATE_SIZE,
 									 &found);
+	if (POLAR_ENABLE_MULTIXACT_LOCAL_CACHE())
+	{
+		uint32  io_permission = POLAR_CACHE_LOCAL_FILE_READ | POLAR_CACHE_LOCAL_FILE_WRITE;
+		polar_local_cache cache;
+
+		if (!polar_in_replica_mode())
+			io_permission |= (POLAR_CACHE_SHARED_FILE_READ | POLAR_CACHE_SHARED_FILE_WRITE);
+
+		cache = polar_create_local_cache("multixact_offset", "pg_multixact/offsets",
+				polar_multixact_max_local_cache_segments, (SLRU_PAGES_PER_SEGMENT * BLCKSZ),
+				LWTRANCHE_POLAR_MULTIXACT_OFFSET_LOCAL_CACHE, io_permission, NULL);
+		polar_slru_reg_local_cache(MultiXactOffsetCtl, cache);
+
+		cache = polar_create_local_cache("multixact_member", "pg_multixact/members",
+				polar_multixact_max_local_cache_segments, (SLRU_PAGES_PER_SEGMENT * BLCKSZ),
+				LWTRANCHE_POLAR_MULTIXACT_OFFSET_LOCAL_CACHE, io_permission, NULL);
+		polar_slru_reg_local_cache(MultiXactMemberCtl, cache);
+	}
+
 	if (!IsUnderPostmaster)
 	{
 		Assert(!found);
@@ -3403,4 +3435,26 @@ pg_get_multixact_members(PG_FUNCTION_ARGS)
 	pfree(multi);
 
 	SRF_RETURN_DONE(funccxt);
+}
+
+/* POLAR: do online promote for multixact offsets */
+void
+polar_promote_multixact_offset(void)
+{
+	polar_slru_promote(MultiXactOffsetCtl);
+}
+
+/* POLAR: do online promote for multixact members */
+void
+polar_promote_multixact_member(void)
+{
+	polar_slru_promote(MultiXactMemberCtl);
+}
+
+/* POLAR: remove multixcat local cache file */
+void
+polar_remove_multixcat_local_cache_file(void)
+{
+	polar_slru_remove_local_cache_file(MultiXactOffsetCtl);
+	polar_slru_remove_local_cache_file(MultiXactMemberCtl);
 }

@@ -84,7 +84,8 @@ typedef struct StartReplicationCmd
 	TimeLineID	timeline;
 	XLogRecPtr	startpoint;
 	List	   *options;
-	bool		polar_replica;	/* POLAR: replica mode */
+	uint32		polar_version;  /* POLAR: stream replication protocol version */
+	uint32 		polar_repl_mode;	/* POLAR: mode to indicate what role walreceiver belongs to */
 } StartReplicationCmd;
 
 

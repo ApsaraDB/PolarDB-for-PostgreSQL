@@ -1,0 +1,59 @@
+create user test_tablespace_polar_super_u1 WITH polar_superuser;
+create user test_tablespace_super_u1 WITH superuser;
+\c - test_tablespace_polar_super_u1
+
+CREATE TABLESPACE test_tablespace_ts1 LOCATION '@testtablespace@';
+
+CREATE DATABASE test_tablespace_db1 TABLESPACE test_tablespace_ts1;
+
+create table test_ts_t1(i int) tablespace test_tablespace_ts1;
+
+create table test_ts_t13(i int) tablespace test_tablespace_ts1;
+
+create table test_tablespace_t1(i int) tablespace test_tablespace_ts1;
+
+create index test_tablespace_i1 on test_tablespace_t1(i) tablespace test_tablespace_ts1;
+
+Create table test_tablespace_t2(name varchar(10),constraint TEST_UID_PK PRIMARY KEY(NAME)
+ USING INDEX tablespace test_tablespace_ts1);
+
+CREATE TABLE test_tablespace_t3 (
+    c circle,
+    EXCLUDE USING gist (c WITH &&) USING INDEX tablespace test_tablespace_ts1
+);
+
+
+create table test_tablespace_ts4(i int UNIQUE USING INDEX tablespace test_tablespace_ts1,  CONSTRAINT c1 UNIQUE(i)) tablespace test_tablespace_ts1;
+
+CREATE TABLE test_tablespace_ts5 (
+    logdate         date not null,
+    peaktemp        int,
+    unitsales       int
+) PARTITION BY RANGE (EXTRACT(YEAR FROM logdate), EXTRACT(MONTH FROM logdate));
+
+CREATE TABLE test_tablespace_ts6
+    PARTITION OF test_tablespace_ts5
+    FOR VALUES FROM (MINVALUE, MINVALUE) TO (2016, 11) TABLESPACE test_tablespace_ts1;
+
+alter table test_tablespace_t1 set tablespace test_tablespace_ts1;
+
+alter index test_tablespace_i1 set tablespace test_tablespace_ts1;
+
+
+create table test_tablespace_t4(i int);
+alter table test_tablespace_t4 set tablespace test_tablespace_ts1;
+
+create table test_tablespace_t5 tablespace test_tablespace_ts1 as select 1;
+
+drop TABLESPACE test_tablespace_ts1;
+drop DATABASE test_tablespace_db1;
+
+\c - test_tablespace_super_u1
+create user test_tablespace_u1;
+\c - test_tablespace_u1
+CREATE TABLESPACE test_tablespace_ts7 LOCATION '@testtablespace@';
+drop TABLESPACE test_tablespace_ts7;
+\c - test_tablespace_super_u1
+drop user test_tablespace_u1;
+
+

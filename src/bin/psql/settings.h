@@ -80,9 +80,12 @@ enum trivalue
 typedef struct _psqlSettings
 {
 	PGconn	   *db;				/* connection to backend */
+	PGconn	   *replicadb;				/* replica connection to backend */
 	int			encoding;		/* client_encoding */
 	FILE	   *queryFout;		/* where to send the query results */
+	FILE	   *queryReplicaFout;		/* where to send the replica query results */
 	bool		queryFoutPipe;	/* queryFout is from a popen() */
+	bool		queryReplicaFoutPipe;	/* queryReplicaFout is from a popen() */
 
 	FILE	   *copyStream;		/* Stream to read/write for \copy command */
 
@@ -139,6 +142,14 @@ typedef struct _psqlSettings
 	const char *prompt3;
 	PGVerbosity verbosity;		/* current error verbosity level */
 	PGContextVisibility show_context;	/* current context display level */
+
+	/* POLARD px begin */
+	bool		explain_query;/* add auto explain for select/values cmd */
+	bool		sort_result;/* add auto sort result for select/values cmd */
+	bool		explain_analyze;/* add auto explain analyze for select/values cmd */
+	bool		compare_px_result;/* add compare px result for select/values cmd */
+	/* POLARD px end */
+
 } PsqlSettings;
 
 extern PsqlSettings pset;

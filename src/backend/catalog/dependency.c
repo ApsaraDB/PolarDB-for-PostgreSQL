@@ -1023,6 +1023,39 @@ reportDependentObjects(const ObjectAddresses *targetObjects,
 	pfree(logdetail.data);
 }
 
+void polar_find_report_dependentobjects(ObjectAddresses *objects)
+{
+	ObjectAddresses *targetObjects;
+	Relation	depRel;
+	int 		i;
+
+	
+	depRel = heap_open(DependRelationId, AccessShareLock);	
+	targetObjects = new_object_addresses();
+	
+	for (i = 0; i < objects->numrefs; i++)
+	{
+		const ObjectAddress *thisobj = objects->refs + i;
+
+		AcquireDeletionLock(thisobj, 0);
+		findDependentObjects(thisobj,
+							DEPFLAG_ORIGINAL,
+							0,
+							NULL,	/* empty stack */
+							targetObjects,
+							objects,
+							&depRel);
+	}
+	reportDependentObjects(targetObjects,
+						   DROP_RESTRICT,
+						   0,
+						   (objects->numrefs == 1 ? objects->refs : NULL));
+
+	free_object_addresses(targetObjects);
+	heap_close(depRel,  AccessShareLock);
+	
+}
+
 /*
  * deleteOneObject: delete a single object for performDeletion.
  *

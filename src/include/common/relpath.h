@@ -88,6 +88,25 @@ extern char *GetRelationPath(Oid dbNode, Oid spcNode, Oid relNode,
 	relpathbackend((rnode).node, (rnode).backend, forknum)
 
 /* POLAR */
+#define POLAR_TEMP_TABLE_FILE_IN_SHARED_STORAGE(backendId) \
+	( \
+		polar_enable_shared_storage_mode && \
+	 	backendId != InvalidBackendId && \
+		polar_temp_relation_file_in_shared_storage \
+	)
+
+#define POLAR_TEMP_TABLE_FILE_IN_LOCAL_STORAGE(backendId) \
+	( \
+	 	backendId != InvalidBackendId && \
+		!polar_temp_relation_file_in_shared_storage \
+	)
+
+#define POLAR_NORMAL_TABLE_FILE_IN_SHARED_STORAGE(backendId) \
+	( \
+		polar_enable_shared_storage_mode && \
+	 	backendId == InvalidBackendId \
+	)
+
 extern char *polar_get_database_path(Oid dbNode, Oid spcNode);
 
 #endif							/* RELPATH_H */

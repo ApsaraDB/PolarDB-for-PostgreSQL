@@ -18,10 +18,12 @@ use Test::More tests => 3;
 
 my $node_publisher = get_new_node('publisher');
 $node_publisher->init(allows_streaming => 'logical');
+$node_publisher->append_conf('postgresql.conf', "polar_create_table_with_full_replica_identity=on");
 $node_publisher->start;
 
 my $node_subscriber = get_new_node('subscriber');
 $node_subscriber->init(allows_streaming => 'logical');
+$node_subscriber->append_conf('postgresql.conf', "polar_create_table_with_full_replica_identity=on");
 $node_subscriber->start;
 
 my $publisher_connstr = $node_publisher->connstr . ' dbname=postgres';
@@ -78,6 +80,7 @@ $node_subscriber->stop('fast');
 
 $node_publisher = get_new_node('publisher2');
 $node_publisher->init(allows_streaming => 'logical');
+$node_publisher->append_conf('postgresql.conf', "polar_create_table_with_full_replica_identity=on");
 $node_publisher->start;
 
 $node_publisher->safe_psql('postgres',

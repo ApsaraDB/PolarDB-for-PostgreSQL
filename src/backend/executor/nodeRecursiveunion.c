@@ -21,6 +21,7 @@
 #include "executor/execdebug.h"
 #include "executor/nodeRecursiveunion.h"
 #include "miscadmin.h"
+#include "utils/guc.h"
 #include "utils/memutils.h"
 
 
@@ -102,6 +103,7 @@ ExecRecursiveUnion(PlanState *pstate)
 			}
 			/* Each non-duplicate tuple goes to the working table ... */
 			tuplestore_puttupleslot(node->working_table, slot);
+			polar_check_hash_table_size(polar_max_recursiveunion_mem, "RecursiveUnion", node->hashtable, NULL);
 			/* ... and to the caller */
 			return slot;
 		}
@@ -151,6 +153,7 @@ ExecRecursiveUnion(PlanState *pstate)
 		/* Else, tuple is good; stash it in intermediate table ... */
 		node->intermediate_empty = false;
 		tuplestore_puttupleslot(node->intermediate_table, slot);
+		polar_check_hash_table_size(polar_max_recursiveunion_mem, "RecursiveUnion", node->hashtable, NULL);
 		/* ... and return it */
 		return slot;
 	}

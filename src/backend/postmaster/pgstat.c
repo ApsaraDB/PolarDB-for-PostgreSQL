@@ -28,6 +28,11 @@
 #include <arpa/inet.h>
 #include <signal.h>
 #include <time.h>
+
+/* POLAR */
+#include <libpq/pqcomm.h>
+/* POLAR end */
+
 #ifdef HAVE_SYS_SELECT_H
 #include <sys/select.h>
 #endif
@@ -63,12 +68,18 @@
 #include "utils/ascii.h"
 #include "utils/guc.h"
 #include "utils/memutils.h"
+#include "utils/polar_coredump.h"
 #include "utils/ps_status.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 #include "utils/timestamp.h"
 #include "utils/tqual.h"
 
+/* POLAR */
+#include "commands/extension.h"
+#include "replication/polar_priority_replication.h"
+#include "storage/polar_io_stat.h"
+#include "tcop/tcopprot.h"
 
 /* ----------
  * Timer definitions.
@@ -127,6 +138,8 @@ bool		pgstat_track_counts = false;
 int			pgstat_track_functions = TRACK_FUNC_OFF;
 int			pgstat_track_activity_query_size = 1024;
 
+/* POLAR */
+bool		polar_enable_virtual_pid;
 polar_postmaster_child_init_register polar_stat_hook = NULL;
 
 /* ----------
@@ -143,6 +156,11 @@ char	   *pgstat_stat_tmpname = NULL;
  * without needing to copy things around.  We assume this inits to zeroes.
  */
 PgStat_MsgBgWriter BgWriterStats;
+
+/* POLAR: stats for proxy */
+PolarStat_Proxy *polar_stat_proxy = NULL;
+polar_unsplittable_reason_t polar_unable_to_split_reason;
+bool polar_stat_need_update_proxy_info;
 
 /* ----------
  * Local data
@@ -338,6 +356,14 @@ static void pgstat_recv_funcpurge(PgStat_MsgFuncpurge *msg, int len);
 static void pgstat_recv_recoveryconflict(PgStat_MsgRecoveryConflict *msg, int len);
 static void pgstat_recv_deadlock(PgStat_MsgDeadlock *msg, int len);
 static void pgstat_recv_tempfile(PgStat_MsgTempFile *msg, int len);
+/* POLAR */
+static void pgstat_recv_delay_dml(PolarStat_MsgDelayDml *msg, int len);
+
+/* POLAR */
+static PgStat_Counter polar_pgstat_get_current_examined_row_count(void);
+static void polar_log_beentry_proxy_state(volatile PgBackendStatus *beentry, const char *func);
+static bool polar_backend_parse_attrs(volatile PgBackendStatus *beentry, int pid, 
+									  bool *is_high_pri, bool *is_low_pri);
 
 /* ------------------------------------------------------------
  * Public functions called from postmaster follow
@@ -828,6 +854,10 @@ pgstat_report_stat(bool force)
 		pgStatXactCommit == 0 && pgStatXactRollback == 0 &&
 		!have_function_stats)
 		return;
+
+	/* POLAR: first init audit log status */
+	MemSet(&polar_audit_log, 0, sizeof(Pg_audit_log));
+	/* POLAR end */
 
 	/*
 	 * Don't send a message unless it's been at least PGSTAT_STAT_INTERVAL
@@ -2627,6 +2657,7 @@ BackendStatusShmemSize(void)
 	size = add_size(size,
 					mul_size(sizeof(PgBackendSSLStatus), NumBackendStatSlots));
 #endif
+	size = add_size(size, sizeof(PolarStat_Proxy));
 	return size;
 }
 
@@ -2733,6 +2764,13 @@ CreateSharedBackendStatus(void)
 		}
 	}
 #endif
+	/* Create or attach to the shared SSL status buffer */
+	size = sizeof(PolarStat_Proxy);
+	polar_stat_proxy = (PolarStat_Proxy *)
+		ShmemInitStruct("Proxy Stats Buffer", size, &found);
+
+	if (!found)
+		MemSet(polar_stat_proxy, 0, size);
 }
 
 
@@ -2774,7 +2812,7 @@ pgstat_initialize(void)
 
 	/* Set up a process-exit hook to clean up */
 	on_shmem_exit(pgstat_beshutdown_hook, 0);
-	
+
 	/* POLAR: io stat cleanup shmem when child process */
 	if (polar_stat_hook)
 		polar_stat_hook();
@@ -2880,6 +2918,21 @@ pgstat_bestart(void)
 			case WalReceiverProcess:
 				lbeentry.st_backendType = B_WAL_RECEIVER;
 				break;
+			case ConsensusProcess:
+				lbeentry.st_backendType = B_CONSENSUS;
+				break;
+			case PolarWalPipelinerProcess:
+				lbeentry.st_backendType = B_POLAR_WAL_PIPELINER;
+				break;
+			case LogIndexBgWriterProcess:
+				lbeentry.st_backendType = B_BG_LOGINDEX;
+				break;
+			case FlogBgInserterProcess:
+				lbeentry.st_backendType = B_BG_FLOG_INSERTER;
+				break;
+			case FlogBgWriterProcess:
+				lbeentry.st_backendType = B_BG_FLOG_WRITER;
+				break;
 			default:
 				elog(FATAL, "unrecognized process type: %d",
 					 (int) MyAuxProcType);
@@ -2918,6 +2971,33 @@ pgstat_bestart(void)
 			   sizeof(lbeentry.st_clientaddr));
 	else
 		MemSet(&lbeentry.st_clientaddr, 0, sizeof(lbeentry.st_clientaddr));
+
+	/* POLAR */
+	if (MyProcPort && MyProcPort->polar_proxy)
+	{
+		lbeentry.polar_st_proxy = true;
+		lbeentry.polar_st_origin_addr = MyProcPort->polar_origin_addr;
+		if (polar_enable_virtual_pid && !polar_in_replica_mode())
+		{
+			lbeentry.polar_st_virtual_pid = MyProcPid + POLAR_BASE_VIRTUAL_PID;
+			lbeentry.polar_st_cancel_key = MyCancelKey;
+		}
+		else
+		{
+			lbeentry.polar_st_virtual_pid = 0;
+			lbeentry.polar_st_cancel_key = 0;
+		}
+	}
+	else
+	{
+		SockAddr zeroAddr;
+		lbeentry.polar_st_proxy = false;
+		memset(&zeroAddr, 0, sizeof(zeroAddr));
+		lbeentry.polar_st_origin_addr = zeroAddr;
+		lbeentry.polar_st_virtual_pid = 0;
+		lbeentry.polar_st_cancel_key = 0;
+	}
+	/* POLAR end */
 
 #ifdef USE_SSL
 	if (MyProcPort && MyProcPort->ssl != NULL)
@@ -3024,7 +3104,6 @@ pgstat_beshutdown_hook(int code, Datum arg)
 	PGSTAT_END_WRITE_ACTIVITY(beentry);
 }
 
-
 /* ----------
  * pgstat_report_activity() -
  *
@@ -3072,6 +3151,20 @@ pgstat_report_activity(BackendState state, const char *cmd_str)
 		}
 		return;
 	}
+	/* POLAR: count audit log information */
+	if (state == STATE_RUNNING)
+	{
+		MemSet(&polar_audit_log, 0, sizeof(Pg_audit_log));
+		polar_audit_log.examined_row_count = polar_pgstat_get_current_examined_row_count();
+	}
+	/* POLAR end */
+
+	/* POLAR: debug info for xact split */
+	if (unlikely(polar_enable_xact_split_debug) && cmd_str != NULL
+		&& strstr(cmd_str, "POLAR_XACT_SPLIT_DEBUG") != NULL)
+		elog(LOG, "xact split: execute in: %s; query: %s; xids: %s", polar_in_replica_mode() ? "RO" : "RW",
+			 cmd_str, polar_xact_split_xids);
+	/* POLAR end */
 
 	/*
 	 * To minimize the time spent modifying the entry, and avoid risk of
@@ -3103,6 +3196,28 @@ pgstat_report_activity(BackendState state, const char *cmd_str)
 		beentry->st_activity_raw[len] = '\0';
 		beentry->st_activity_start_timestamp = start_timestamp;
 	}
+
+	PGSTAT_END_WRITE_ACTIVITY(beentry);
+}
+
+/*-----------
+ * polar_report_queryid() -
+ *
+ * Set queryid in own backend entry
+ * 
+ * POLAR *
+ *-----------
+ */
+void
+polar_report_queryid(int64 queryid)
+{
+	volatile PgBackendStatus *beentry = MyBEEntry;
+
+	if (!beentry || !pgstat_track_activities)
+		return;
+
+	PGSTAT_BEGIN_WRITE_ACTIVITY(beentry);
+	beentry->queryid = queryid;
 
 	PGSTAT_END_WRITE_ACTIVITY(beentry);
 }
@@ -3388,28 +3503,6 @@ pgstat_read_current_status(void)
 	localBackendStatusTable = localtable;
 }
 
-/*-----------
- * polar_report_queryid() -
- *
- * Set queryid in own backend entry
- * 
- * POLAR *
- *-----------
- */
-void
-polar_report_queryid(int64 queryid)
-{
-	volatile PgBackendStatus *beentry = MyBEEntry;
-
-	if (!beentry || !pgstat_track_activities)
-		return;
-
-	PGSTAT_BEGIN_WRITE_ACTIVITY(beentry);
-	beentry->queryid = queryid;
-
-	PGSTAT_END_WRITE_ACTIVITY(beentry);
-}
-
 /* ----------
  * pgstat_get_wait_event_type() -
  *
@@ -3597,10 +3690,41 @@ pgstat_get_wait_activity(WaitEventActivity w)
 		case WAIT_EVENT_WAL_WRITER_MAIN:
 			event_name = "WalWriterMain";
 			break;
+		/* POLAR: new add func for dml delay */
+		case WAIT_EVENT_DELAY_DML:
+			event_name = "PolarDmlDelay";
+			break;
+		/* POLAR end */
+		/* POLAR: main func for async redo */
+		/*no cover begin*/
+		case WAIT_EVENT_ASYNC_REDO_MAIN:
+			event_name = "AsyncRedoMain";
+			break;
+		/*no cover end*/
 		case WAIT_EVENT_ASYNC_DDL_LOCK_REPLAY_MAIN:
 			event_name = "AsyncDdlLockReplayMain";
 			break;
-			/* no default case, so that compiler will warn */
+		case WAIT_EVENT_CONSENSUS_MAIN:
+			event_name = "ConsensusMain";
+			break;
+		case WAIT_EVENT_DATAMAX_MAIN:
+			event_name = "DataMaxMain";
+			break;
+		case WAIT_EVENT_POLAR_SUB_TASK_MAIN:
+			event_name = "PolarSubTaskMain";
+			break;
+		case WAIT_EVENT_LOGINDEX_BG_MAIN:
+			event_name = "LogIndexBgMain";
+			break;
+		/*no cover begin*/
+		case WAIT_EVENT_FLOG_WRITE_BG_MAIN:
+			event_name = "FlashbackLogWriteBgMain";
+			break;
+		case WAIT_EVENT_FLOG_INSERT_BG_MAIN:
+			event_name = "FlashbackLogInsertBgMain";
+			break;
+		/*no cover end*/
+		/* no default case, so that compiler will warn */
 	}
 
 	return event_name;
@@ -3642,6 +3766,9 @@ pgstat_get_wait_client(WaitEventClient w)
 			break;
 		case WAIT_EVENT_WAL_SENDER_WRITE_DATA:
 			event_name = "WalSenderWriteData";
+			break;
+		case WAIT_EVENT_PX_MOTION_WAIT_RECV:
+			event_name = "PXMotionWaitRecv";
 			break;
 			/* no default case, so that compiler will warn */
 	}
@@ -3761,9 +3888,25 @@ pgstat_get_wait_ipc(WaitEventIPC w)
 		case WAIT_EVENT_SAFE_SNAPSHOT:
 			event_name = "SafeSnapshot";
 			break;
+		case WAIT_EVENT_SMGR_DROP_SYNC:
+			event_name = "SmgrDropSync";
+			break;
 		case WAIT_EVENT_SYNC_REP:
 			event_name = "SyncRep";
 			break;
+		case WAIT_EVENT_CONSENSUS_COMMIT:
+			event_name = "ConsensusCommit";
+			break;
+		case WAIT_EVENT_CONSENSUS:
+			event_name = "Consensus";
+			break;
+		case WAIT_EVENT_WAL_PIPELINE_WAIT_RECENT_WRITTEN_SPACE:
+			event_name = "PolarWALPipelineWaitRecentWrittenSpace";
+			break;
+		case WAIT_EVENT_WAL_PIPELINE_WAIT_UNFLUSHED_XLOG_SLOT:
+			event_name = "PolarWALPipelineWaitUnflushedXlogSlot";
+			break;
+			
 			/* no default case, so that compiler will warn */
 	}
 
@@ -3865,6 +4008,17 @@ pgstat_get_wait_io(WaitEventIO w)
 		case WAIT_EVENT_DSM_FILL_ZERO_WRITE:
 			event_name = "DSMFillZeroWrite";
 			break;
+		/*no cover begin*/
+		case WAIT_EVENT_KMGR_FILE_READ:
+			event_name = "KmgrFileRead";
+			break;
+		case WAIT_EVENT_KMGR_FILE_SYNC:
+			event_name = "KmgrFileSync";
+			break;
+		case WAIT_EVENT_KMGR_FILE_WRITE:
+			event_name = "KmgrFileWrite";
+			break;
+		/*no cover end*/
 		case WAIT_EVENT_LOCK_FILE_ADDTODATADIR_READ:
 			event_name = "LockFileAddToDataDirRead";
 			break;
@@ -4068,9 +4222,110 @@ pgstat_get_wait_io(WaitEventIO w)
 		case WAIT_EVENT_FULLPAGE_FILE_INIT_WRITE:
 			event_name = "FullpageFileInitWrite";
 			break;
+		case WAIT_EVENT_REL_SIZE_CACHE_WRITE:
+			event_name = "RelSizeCacheWrite";
+			break;
+		case WAIT_EVENT_REL_SIZE_CACHE_READ:
+			event_name = "RelSizeCacheRead";
+			break;
+		/*no cover end*/
+		case WAIT_EVENT_SYSLOG_PIPE_WRITE:
+			event_name = "SyslogPipeWrite";
+			break;
+		case WAIT_EVENT_SYSLOG_CHANNEL_WRITE:
+			event_name = "SyslogChannelWrite";
+			break;
+		case WAIT_EVENT_CACHE_LOCAL_OPEN:
+			event_name = "PolarCacheLocalOpen";
+			break;
+		case WAIT_EVENT_CACHE_LOCAL_READ:
+			event_name = "PolarCacheLocalRead";
+			break;
+		case WAIT_EVENT_CACHE_LOCAL_WRITE:
+			event_name = "PolarCacheLocalWrite";
+			break;
+		case WAIT_EVENT_CACHE_LOCAL_LSEEK:
+			event_name = "PolarCacheLocalLSeek";
+			break;
+		case WAIT_EVENT_CACHE_LOCAL_UNLINK:
+			event_name = "PolarCacheLocalUnlink";
+			break;
+		case WAIT_EVENT_CACHE_LOCAL_SYNC:
+			event_name = "PolarCacheLocalSync";
+			break;
+		case WAIT_EVENT_CACHE_LOCAL_STAT:
+			event_name = "PolarCacheLocalStat";
+			break;
+		case WAIT_EVENT_CACHE_SHARED_OPEN:
+			event_name = "PolarCacheSharedOpen";
+			break;
+		case WAIT_EVENT_CACHE_SHARED_READ:
+			event_name = "PolarCacheSharedRead";
+			break;
+		case WAIT_EVENT_CACHE_SHARED_WRITE:
+			event_name = "PolarCacheSharedWrite";
+			break;
+		case  WAIT_EVENT_CACHE_SHARED_LSEEK:
+			event_name = "PolarCacheSharedLSeek";
+			break;
+		case WAIT_EVENT_CACHE_SHARED_UNLINK:
+			event_name = "PolarCacheSharedUnlink";
+			break;
+		case WAIT_EVENT_CACHE_SHARED_SYNC:
+			event_name = "PolarCacheSharedSync";
+			break;
+		case WAIT_EVENT_CACHE_SHARED_STAT:
+			event_name = "PolarCacheSharedStat";
+			break;
+		case WAIT_EVENT_DATAMAX_META_READ:
+			event_name = "PolarDataMaxMetaRead";
+			break;
+		case WAIT_EVENT_DATAMAX_META_WRITE:
+			event_name = "PolarDataMaxMetaWrite";
+			break;
+		case WAIT_EVENT_WAL_PIPELINE_COMMIT_WAIT:
+		 	event_name = "PolarWALPipelineCommitWait";
+		    break;
+		/*no cover begin*/
+		case WAIT_EVENT_FLASHBACK_LOG_CTL_FILE_WRITE:
+			event_name = "PolarFlashbackLogCtlFileWrite";
+			break;
+		case WAIT_EVENT_FLASHBACK_LOG_CTL_FILE_READ:
+			event_name = "PolarFlashbackLogCtlFileRead";
+			break;
+		case WAIT_EVENT_FLASHBACK_LOG_CTL_FILE_SYNC:
+			event_name = "PolarFlashbackLogCtlFileSync";
+			break;
+		case WAIT_EVENT_FLASHBACK_LOG_INIT_WRITE:
+			event_name = "PolarFlashbackLogInitWrite";
+			break;
+		case WAIT_EVENT_FLASHBACK_LOG_INIT_SYNC:
+			event_name = "PolarFlashbackLogInitSync";
+			break;
+		case WAIT_EVENT_FLASHBACK_LOG_WRITE:
+			event_name = "PolarFlashbackLogWrite";
+			break;
+		case WAIT_EVENT_FLASHBACK_LOG_READ:
+			event_name = "PolarFlashbackLogRead";
+			break;
+		case WAIT_EVENT_FLASHBACK_LOG_HISTORY_FILE_WRITE:
+			event_name = "PolarFlashbackLogHistoryFileWrite";
+			break;
+		case WAIT_EVENT_FLASHBACK_LOG_HISTORY_FILE_READ:
+			event_name = "PolarFlashbackLogHistoryFileRead";
+			break;
+		case WAIT_EVENT_FLASHBACK_LOG_HISTORY_FILE_SYNC:
+			event_name = "PolarFlashbackLogHistoryFileSync";
+			break;
+		case WAIT_EVENT_FLASHBACK_LOG_BUF_READY:
+			event_name = "PolarFlashbackLogBufferReady";
+			break;
+		case WAIT_EVENT_FLASHBACK_LOG_INSERT:
+			event_name = "PolarFlashbackLogInsert";
+			break;
 		/*no cover end*/
 		/* POLAR end */
-		/* no default case, so that compiler will warn */
+			/* no default case, so that compiler will warn */
 	}
 
 	return event_name;
@@ -4140,7 +4395,10 @@ pgstat_get_backend_current_activity(int pid, bool checkUser)
 		if (found)
 		{
 			/* Now it is safe to use the non-volatile pointer */
-			if (checkUser && !superuser() && beentry->st_userid != GetUserId())
+			if (checkUser && !superuser() &&
+				beentry->st_userid != GetUserId() &&
+				!(polar_superuser() &&
+				  polar_has_more_privs_than_role(GetUserId(), beentry->st_userid)))
 				return "<insufficient privilege>";
 			else if (*(beentry->st_activity_raw) == '\0')
 				return "<command string not enabled>";
@@ -4269,6 +4527,21 @@ pgstat_get_backend_desc(BackendType backendType)
 			break;
 		case B_WAL_WRITER:
 			backendDesc = "walwriter";
+			break;
+		case B_CONSENSUS:
+			backendDesc = "consensus";
+			break;
+		case B_POLAR_WAL_PIPELINER:
+			backendDesc = "polar wal pipeliner";
+			break;
+		case B_BG_LOGINDEX:
+			backendDesc = "background logindex writer";
+			break;
+		case B_BG_FLOG_INSERTER:
+			backendDesc = "background flashback log inserter";
+			break;
+		case B_BG_FLOG_WRITER:
+			backendDesc = "background flashback log writer";
 			break;
 	}
 
@@ -4412,6 +4685,21 @@ PgstatCollectorMain(int argc, char *argv[])
 	pqsignal(SIGTTOU, SIG_DFL);
 	pqsignal(SIGCONT, SIG_DFL);
 	pqsignal(SIGWINCH, SIG_DFL);
+
+	/* POLAR : register for coredump print */
+#ifndef _WIN32
+#ifdef SIGILL
+	pqsignal(SIGILL, polar_program_error_handler);
+#endif
+#ifdef SIGSEGV
+	pqsignal(SIGSEGV, polar_program_error_handler);
+#endif
+#ifdef SIGBUS
+	pqsignal(SIGBUS, polar_program_error_handler);
+#endif
+#endif	/* _WIN32 */
+	/* POLAR: end */
+
 	PG_SETMASK(&UnBlockSig);
 
 	/*
@@ -4593,6 +4881,10 @@ PgstatCollectorMain(int argc, char *argv[])
 					pgstat_recv_tempfile((PgStat_MsgTempFile *) &msg, len);
 					break;
 
+				case POLAR_PGSTAT_MTYPE_DELAY_DML:
+					pgstat_recv_delay_dml((PolarStat_MsgDelayDml *) &msg, len);
+					break;
+
 				default:
 					break;
 			}
@@ -4695,6 +4987,13 @@ reset_dbentry_counters(PgStat_StatDBEntry *dbentry)
 	dbentry->n_block_read_time = 0;
 	dbentry->n_block_write_time = 0;
 
+	/* POLAR: bulk read stats */
+	dbentry->polar_n_bulk_read_calls = 0;
+	dbentry->polar_n_bulk_read_calls_IO = 0;
+	dbentry->polar_n_bulk_read_blocks_IO = 0;
+	dbentry->polar_delay_dml_count = 0;
+	/* POLAR end */
+
 	dbentry->stat_reset_timestamp = GetCurrentTimestamp();
 	dbentry->stats_timestamp = 0;
 
@@ -4788,6 +5087,12 @@ pgstat_get_tab_entry(PgStat_StatDBEntry *dbentry, Oid tableoid, bool create)
 		result->analyze_count = 0;
 		result->autovac_analyze_timestamp = 0;
 		result->autovac_analyze_count = 0;
+
+		/* POLAR: bulk read stats */
+		result->polar_bulk_read_calls = 0;
+		result->polar_bulk_read_calls_IO = 0;
+		result->polar_bulk_read_blocks_IO = 0;
+		/* POLAR end */
 	}
 
 	return result;
@@ -5911,6 +6216,12 @@ pgstat_recv_tabstat(PgStat_MsgTabstat *msg, int len)
 			tabentry->blocks_fetched = tabmsg->t_counts.t_blocks_fetched;
 			tabentry->blocks_hit = tabmsg->t_counts.t_blocks_hit;
 
+			/* POLAR: bulk read stats */
+			tabentry->polar_bulk_read_calls = tabmsg->t_counts.polar_t_bulk_read_calls;
+			tabentry->polar_bulk_read_calls_IO = tabmsg->t_counts.polar_t_bulk_read_calls_IO;
+			tabentry->polar_bulk_read_blocks_IO = tabmsg->t_counts.polar_t_bulk_read_blocks_IO;
+			/* POLAR end */
+
 			tabentry->vacuum_timestamp = 0;
 			tabentry->vacuum_count = 0;
 			tabentry->autovac_vacuum_timestamp = 0;
@@ -5943,6 +6254,12 @@ pgstat_recv_tabstat(PgStat_MsgTabstat *msg, int len)
 			tabentry->changes_since_analyze += tabmsg->t_counts.t_changed_tuples;
 			tabentry->blocks_fetched += tabmsg->t_counts.t_blocks_fetched;
 			tabentry->blocks_hit += tabmsg->t_counts.t_blocks_hit;
+
+			/* POLAR: bulk read stats */
+			tabentry->polar_bulk_read_calls += tabmsg->t_counts.polar_t_bulk_read_calls;
+			tabentry->polar_bulk_read_calls_IO += tabmsg->t_counts.polar_t_bulk_read_calls_IO;
+			tabentry->polar_bulk_read_blocks_IO += tabmsg->t_counts.polar_t_bulk_read_blocks_IO;
+			/* POLAR end */
 		}
 
 		/* Clamp n_live_tuples in case of negative delta_live_tuples */
@@ -5960,6 +6277,12 @@ pgstat_recv_tabstat(PgStat_MsgTabstat *msg, int len)
 		dbentry->n_tuples_deleted += tabmsg->t_counts.t_tuples_deleted;
 		dbentry->n_blocks_fetched += tabmsg->t_counts.t_blocks_fetched;
 		dbentry->n_blocks_hit += tabmsg->t_counts.t_blocks_hit;
+
+		/* POLAR: bulk read stats */
+		dbentry->polar_n_bulk_read_calls += tabmsg->t_counts.polar_t_bulk_read_calls;
+		dbentry->polar_n_bulk_read_calls_IO += tabmsg->t_counts.polar_t_bulk_read_calls_IO;
+		dbentry->polar_n_bulk_read_blocks_IO += tabmsg->t_counts.polar_t_bulk_read_blocks_IO;
+		/* POLAR end */
 	}
 }
 
@@ -6514,4 +6837,533 @@ pgstat_clip_activity(const char *raw_activity)
 	activity[cliplen] = '\0';
 
 	return activity;
+}
+
+/*
+ * POLAR: polar_pgstat_get_current_examined_row_count
+ */
+PgStat_Counter
+polar_pgstat_get_current_examined_row_count(void)
+{
+	PgStat_TableStatus *entry;
+	TabStatusArray *tsa;
+	int			i;
+	PgStat_Counter total_rows = 0;
+
+	/*
+	 * Count examined row counts for all relations.
+	 */
+	for (tsa = pgStatTabList; tsa != NULL; tsa = tsa->tsa_next)
+	{
+		for (i = 0; i < tsa->tsa_used; i++)
+		{
+			entry = &tsa->tsa_entries[i];
+			total_rows += entry->t_counts.t_tuples_returned
+						+ entry->t_counts.t_tuples_fetched;
+		}
+	}
+	return total_rows;
+}
+
+/*
+ * POLAR: for elog.c get polar audit log examined row count
+ */
+PgStat_Counter
+polar_get_audit_log_row_count(void)
+{
+	return polar_pgstat_get_current_examined_row_count()
+				- polar_audit_log.examined_row_count;
+}
+
+/*
+ * POLAR: log beentry infomation of proxy.
+ * Just log, no changecount check here.
+ */
+static void
+polar_log_beentry_proxy_state(volatile PgBackendStatus *beentry, const char *func)
+{
+	if (beentry)
+		elog(DEBUG2, "%s: pid: %d, in_proxy: %d, vpid: %d, ckey: %d",
+					 func, beentry->st_procpid, beentry->polar_st_proxy,
+					 beentry->polar_st_virtual_pid, beentry->polar_st_cancel_key);
+	else
+		elog(DEBUG2, "%s: beentry is NULL", func);
+}
+
+/*
+ * POLAR: set virtual pid for proxy and check this pid.
+ */
+void
+polar_pgstat_set_virtual_pid(int virtual_pid)
+{
+	volatile PgBackendStatus *my_beentry = MyBEEntry;
+	volatile PgBackendStatus *beentry = NULL;
+	int i;
+
+	if (!polar_enable_virtual_pid)
+		return;
+	if (!my_beentry)
+		elog(ERROR, "POLAR: Unable to set virtual pid for beentry is NULL");
+	if (!my_beentry->polar_st_proxy)
+		elog(ERROR, "POLAR: Unable to set virtual pid when not under proxy mode");
+	if (!POLAR_IS_VIRTUAL_PID(virtual_pid))
+		elog(ERROR, "POLAR: Invalid virtual pid: %d, should between (10^7, 2*10^7)", virtual_pid);
+
+	if (unlikely(polar_enable_debug))
+	{
+		polar_log_beentry_proxy_state(my_beentry, __func__);
+		elog(DEBUG2, "%s: new_vpid: %d", __func__, virtual_pid);
+	}
+
+	/*  The virtual pid has already been set to this session */
+	if (my_beentry->polar_st_virtual_pid == virtual_pid)
+		return;
+
+	beentry = BackendStatusArray;
+	for (i = 1; i <= MaxBackends; i++)
+	{
+		int			save_procpid = 0;
+		int			save_polar_virtual_pid = InvalidPid;
+
+		/*
+		 * Follow the protocol of retrying if st_changecount changes while we
+		 * copy the entry, or if it's odd.  (The check for odd is needed to
+		 * cover the case where we are able to completely copy the entry while
+		 * the source backend is between increment steps.)	We use a volatile
+		 * pointer here to ensure the compiler doesn't try to get cute.
+		 */
+		for (;;)
+		{
+			int			before_changecount;
+			int			after_changecount;
+
+			pgstat_save_changecount_before(beentry, before_changecount);
+
+			save_procpid = beentry->st_procpid;
+			save_polar_virtual_pid = beentry->polar_st_virtual_pid;
+
+			pgstat_save_changecount_after(beentry, after_changecount);
+			if (before_changecount == after_changecount &&
+				(before_changecount & 1) == 0)
+				break;
+
+			/* Make sure we can break out of loop if stuck... */
+			CHECK_FOR_INTERRUPTS();
+		}
+		/*
+		 * Found a conflict virtual pid, report ERROR.
+		 */
+		if (save_procpid > 0 && unlikely(save_polar_virtual_pid == virtual_pid))
+		{
+			if (unlikely(polar_enable_debug))
+				polar_log_beentry_proxy_state(beentry, __func__);
+			elog(ERROR, "POLAR: The virtual pid %d is already in use", virtual_pid);
+		}
+		beentry++;
+	}
+
+	pgstat_increment_changecount_before(my_beentry);
+	my_beentry->polar_st_virtual_pid = virtual_pid;
+	pgstat_increment_changecount_after(my_beentry);
+}
+
+/*
+ * POLAR: set cancel key for proxy.
+ */
+void
+polar_pgstat_set_cancel_key(int32 cancel_key)
+{
+	volatile PgBackendStatus *my_beentry = MyBEEntry;
+
+	if (!polar_enable_virtual_pid)
+		return;
+	if (!my_beentry)
+		elog(ERROR, "POLAR: Unable to set cancel key for beentry is NULL");
+	if (!my_beentry->polar_st_proxy)
+		elog(ERROR, "POLAR: Unable to set cancel key when not under proxy mode");
+
+	if (unlikely(polar_enable_debug))
+	{
+		polar_log_beentry_proxy_state(my_beentry, __func__);
+		elog(DEBUG2, "%s: new_ckey: %d", __func__, cancel_key);
+	}
+
+	pgstat_increment_changecount_before(my_beentry);
+	my_beentry->polar_st_cancel_key = cancel_key;
+	pgstat_increment_changecount_after(my_beentry);
+}
+
+/*
+ * POLAR: get real pid for proxy.
+ * The pid passed in might be a real pid, so we just return it.
+ * Otherwise we search it in PgBackendStatus.
+ * Every proc can get the real pid through it's virtual pid, which
+ * means every proc can cancel/terminate a virtual pid.
+ *
+ * Return:	= 0 stand for not find real pid through this virtual pid
+ * 			= -1 (InvalidPid) stand for the cancel_key is not correct!
+ * 			> 0 stand for a real system pid
+ */
+int
+polar_pgstat_get_real_pid(int pid, int32 cancel_key, bool auth_cancel_key, bool force)
+{
+	volatile PgBackendStatus *beentry = NULL;
+	int			i = 0;
+	int			save_procpid = 0;
+	long		save_polar_cancel_key = 0;
+	int			save_polar_virtual_pid = InvalidPid;
+
+	Assert(!pgStatRunningInCollector);
+
+	if (polar_enable_debug)
+		elog(DEBUG2, "%s, pid: %d, cancel_key: %d, auth_cancel_key: %d",
+					__func__, pid, cancel_key, auth_cancel_key);
+
+	/* this pid is the real pid */
+	if (POLAR_IS_REAL_PID(pid) && !force)
+		return pid;
+
+	beentry = BackendStatusArray;
+	for (i = 1; i <= MaxBackends; i++)
+	{
+		/*
+		 * Follow the protocol of retrying if st_changecount changes while we
+		 * copy the entry, or if it's odd.  (The check for odd is needed to
+		 * cover the case where we are able to completely copy the entry while
+		 * the source backend is between increment steps.)	We use a volatile
+		 * pointer here to ensure the compiler doesn't try to get cute.
+		 */
+		for (;;)
+		{
+			int			before_changecount;
+			int			after_changecount;
+
+			pgstat_save_changecount_before(beentry, before_changecount);
+
+			save_procpid = beentry->st_procpid;
+			save_polar_virtual_pid = beentry->polar_st_virtual_pid;
+			save_polar_cancel_key = beentry->polar_st_cancel_key;
+
+			pgstat_save_changecount_after(beentry, after_changecount);
+			if (before_changecount == after_changecount &&
+				(before_changecount & 1) == 0)
+				break;
+
+			/* Make sure we can break out of loop if stuck... */
+			CHECK_FOR_INTERRUPTS();
+		}
+		/*
+		 * Found a match process id, but cancel key is wrong, so we return
+		 * -1, mark it
+		 */
+		if (save_procpid > 0 && save_polar_virtual_pid == pid)
+		{
+			if (unlikely(polar_enable_debug))
+				polar_log_beentry_proxy_state(beentry, __func__);
+			/* Found a match; return current real process id */
+			if (!auth_cancel_key || save_polar_cancel_key == cancel_key)
+				return save_procpid;
+
+			return InvalidPid;
+		}
+		if (force && save_procpid > 0 && save_procpid == pid)
+		{
+			if (unlikely(polar_enable_debug))
+				polar_log_beentry_proxy_state(beentry, __func__);
+			/* Found a match; return current real process id */
+			if (!auth_cancel_key || save_polar_cancel_key == cancel_key)
+				return save_procpid;
+			else if (force)
+				elog(ERROR, "POLAR: No corresponding real pid: %d", pid);
+			else
+				return InvalidPid;
+		}
+		beentry++;
+	}
+	/* Not found, so we return 0 which is not a correct pid , mark it */
+	if (force)
+		elog(ERROR, "POLAR: No corresponding real pid");
+	return 0;
+}
+
+/*
+ * POLAR: get virtual pid for proxy.
+ * The pid passed in must be a real pid. We search it in
+ * PgBackendStatus, and return the virtual pid.
+ * Every proc can get the virtual pid through real pid, which
+ * means all proc can see a virtual pid.
+ *
+ * Return:	< 10000000 and > 1 stand for real_pid
+ *			> 10000000 stand for a virtual pid
+ */
+int
+polar_pgstat_get_virtual_pid(int real_pid, bool force)
+{
+	volatile PgBackendStatus *my_beentry = MyBEEntry;
+	volatile PgBackendStatus *beentry = NULL;
+	int			i = 0;
+	int			save_procpid = 0;
+	int			save_polar_virtual_pid = InvalidPid;
+	bool		save_polar_st_proxy = false;
+
+	Assert(!pgStatRunningInCollector);
+
+	if (!polar_enable_virtual_pid && !force)
+		return real_pid;
+
+	if (unlikely(polar_enable_debug))
+	{
+		polar_log_beentry_proxy_state(my_beentry, __func__);
+		elog(DEBUG2, "%s, real_pid: %d", __func__, real_pid);
+	}
+
+	/* This is the proc, no need for search */
+	if (my_beentry && real_pid == MyProcPid)
+	{
+		if (my_beentry->polar_st_proxy && my_beentry->polar_st_virtual_pid != 0)
+			return my_beentry->polar_st_virtual_pid;
+		else
+			return real_pid;
+	}
+
+	beentry = BackendStatusArray;
+	for (i = 1; i <= MaxBackends; i++)
+	{
+		/*
+		 * Follow the protocol of retrying if st_changecount changes while we
+		 * copy the entry, or if it's odd.  (The check for odd is needed to
+		 * cover the case where we are able to completely copy the entry while
+		 * the source backend is between increment steps.)	We use a volatile
+		 * pointer here to ensure the compiler doesn't try to get cute.
+		 */
+		for (;;)
+		{
+			int			before_changecount;
+			int			after_changecount;
+
+			pgstat_save_changecount_before(beentry, before_changecount);
+
+			save_procpid = beentry->st_procpid;
+			save_polar_virtual_pid = beentry->polar_st_virtual_pid;
+			save_polar_st_proxy = beentry->polar_st_proxy;
+
+			pgstat_save_changecount_after(beentry, after_changecount);
+			if (before_changecount == after_changecount &&
+				(before_changecount & 1) == 0)
+				break;
+
+			/* Make sure we can break out of loop if stuck... */
+			CHECK_FOR_INTERRUPTS();
+		}
+		/* find process id, so return */
+		if (save_procpid > 0 && save_procpid == real_pid)
+		{
+			if (unlikely(polar_enable_debug))
+				polar_log_beentry_proxy_state(beentry, __func__);
+			/* Found a match; return current real process id */
+			if (save_polar_st_proxy && save_polar_virtual_pid != 0)
+				return save_polar_virtual_pid;
+			else if (force)
+				elog(ERROR, "POLAR: No corresponding virtual pid: %d", real_pid);
+			else
+				return real_pid;
+		}
+		beentry++;
+	}
+	/* Not found, we return the real pid */
+	if (force)
+		elog(ERROR, "POLAR: No such pid: %d", real_pid);
+	return real_pid;
+}
+
+/*
+ * POLAR: get virtual pid for proxy by beentry.
+ */
+int
+polar_pgstat_get_virtual_pid_by_beentry(PgBackendStatus *beentry)
+{
+	int			save_procpid = 0;
+	int			save_polar_virtual_pid = InvalidPid;
+	bool		save_polar_st_proxy = false;
+
+	if (beentry == NULL)
+		elog(ERROR, "POLAR: get vpid from a NULL beentry");
+
+	if (!polar_enable_virtual_pid)
+		return beentry->st_procpid;
+
+	if (unlikely(polar_enable_debug))
+		polar_log_beentry_proxy_state(beentry, __func__);
+
+	/*
+	 * Follow the protocol of retrying if st_changecount changes while we
+	 * copy the entry, or if it's odd.  (The check for odd is needed to
+	 * cover the case where we are able to completely copy the entry while
+	 * the source backend is between increment steps.)	We use a volatile
+	 * pointer here to ensure the compiler doesn't try to get cute.
+	 */
+	for (;;)
+	{
+		int			before_changecount;
+		int			after_changecount;
+
+		pgstat_save_changecount_before(beentry, before_changecount);
+
+		save_procpid = beentry->st_procpid;
+		save_polar_virtual_pid = beentry->polar_st_virtual_pid;
+		save_polar_st_proxy = beentry->polar_st_proxy;
+
+		pgstat_save_changecount_after(beentry, after_changecount);
+		if (before_changecount == after_changecount &&
+			(before_changecount & 1) == 0)
+			break;
+
+		/* Make sure we can break out of loop if stuck... */
+		CHECK_FOR_INTERRUPTS();
+	}
+	if (save_polar_st_proxy && save_polar_virtual_pid != 0)
+		return save_polar_virtual_pid;
+	return save_procpid;
+}
+
+/*
+ * POLAR: send message to collector process update delay dml
+ * count.
+ */
+void
+polar_update_delay_dml_count(void)
+{
+	PgStat_MsgDropdb msg;
+
+	if (pgStatSock == PGINVALID_SOCKET)
+		return;
+
+	pgstat_setheader(&msg.m_hdr, POLAR_PGSTAT_MTYPE_DELAY_DML);
+	msg.m_databaseid = MyDatabaseId;
+	pgstat_send(&msg, sizeof(msg));
+}
+
+/*
+ * POLAR: count the number of delay dml
+ */
+static void
+pgstat_recv_delay_dml(PolarStat_MsgDelayDml *msg, int len)
+{
+	Oid			dbid = msg->m_databaseid;
+	PgStat_StatDBEntry *dbentry;
+
+	/*
+	 * Lookup the database in the hashtable.
+	 */
+	dbentry = pgstat_get_db_entry(dbid, true);
+	dbentry->polar_delay_dml_count++;
+}
+
+/*
+ * POLAR: just for maxscale debug test
+ */
+void
+polar_enable_proxy_for_unit_test(bool enable)
+{
+	Assert(MyProcPort && MyBEEntry);
+	MyProcPort->polar_proxy = enable;
+	MyBEEntry->polar_st_proxy = enable;
+}
+
+/*
+ * POLAR: identify a walsender, whether it's a walsender with a high priority 
+ * replication standby, or a walsender with a low priority replication standby.
+ */
+bool
+polar_walsender_parse_attrs(int pid, bool *is_high_pri, bool *is_low_pri)
+{
+	volatile PgBackendStatus *beentry;
+	int		i;
+
+	beentry = BackendStatusArray;
+
+	*is_high_pri = *is_low_pri = false;
+
+	for (i = 1; i <= MaxBackends; i++)
+	{
+		volatile PgBackendStatus *vbeentry = beentry;
+		bool		found = false;
+
+		found = polar_backend_parse_attrs(vbeentry, pid, is_high_pri, is_low_pri);
+
+		if (found)
+			return true;
+
+		beentry++;
+	}
+
+	return false;
+}
+
+bool
+polar_walsender_parse_my_attrs(bool *is_high_pri, bool *is_low_pri)
+{
+	volatile PgBackendStatus *beentry = MyBEEntry;
+
+	Assert(beentry != NULL);
+
+	/* POLAR: should never return false */
+	if (beentry == NULL)
+		return false;
+
+	polar_backend_parse_attrs(beentry, 0, is_high_pri, is_low_pri);
+
+	return true;
+}
+
+/*
+ * POLAR: return true if the backend's pid matches the pid parameter.
+ * Identify weather it's a walsender of a high priority replication standby, 
+ * or a walsender of a low priority replication standby.
+ */
+static bool
+polar_backend_parse_attrs(volatile PgBackendStatus *beentry, int pid, 
+						  bool *is_high_pri, bool *is_low_pri)
+{
+	bool		found = false;
+
+	if (!beentry)
+		return false;
+
+	for (;;)
+	{
+		int			before_changecount;
+		int			after_changecount;
+
+		pgstat_save_changecount_before(beentry, before_changecount);
+
+		if (pid > 0)
+			found = (beentry->st_procpid == pid);
+		
+		*is_high_pri = *is_low_pri = false;
+
+		if (beentry->st_appname != NULL)
+		{
+			if (POLAR_HIGH_PRI_REP_STANDBYS_DEFINED())
+				*is_high_pri = polar_find_in_string_list(beentry->st_appname,
+					polar_high_priority_replication_standby_names);
+
+			if (POLAR_LOW_PRI_REP_STANDBYS_DEFINED())
+				*is_low_pri = polar_find_in_string_list(beentry->st_appname,
+					polar_low_priority_replication_standby_names);
+		}
+
+		pgstat_save_changecount_after(beentry, after_changecount);
+
+		if (before_changecount == after_changecount &&
+			(before_changecount & 1) == 0)
+			break;
+
+		/*no cover begin*/
+		/* Make sure we can break out of loop if stuck... */
+		CHECK_FOR_INTERRUPTS();
+		/*no cover end*/
+	}
+
+	return found;
 }

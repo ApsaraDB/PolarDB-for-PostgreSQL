@@ -305,8 +305,10 @@ extern int	gettimeofday(struct timeval *tp, struct timezone *tzp);
  */
 #ifndef WIN32
 #define PG_IOLBF	_IOLBF
+#define PG_IOFBF	_IOFBF    /* POLAR */
 #else
 #define PG_IOLBF	_IONBF
+#define PG_IOFBF	_IONBF 	  /* POLAR */
 #endif
 
 /*
@@ -456,6 +458,11 @@ extern int	pg_mkdir_p(char *path, int omode);
 /* port/pqsignal.c */
 typedef void (*pqsigfunc) (int signo);
 extern pqsigfunc pqsignal(int signo, pqsigfunc func);
+
+/* POALR */
+extern pqsigfunc pqsignal_with_sigsets(int signo, pqsigfunc func,
+										int signum1, int signum2);
+
 #ifndef WIN32
 extern pqsigfunc pqsignal_no_restart(int signo, pqsigfunc func);
 #else

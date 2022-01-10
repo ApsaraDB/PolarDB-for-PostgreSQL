@@ -62,6 +62,7 @@
 #include "rewrite/rewriteManip.h"
 #include "storage/bufmgr.h"
 #include "storage/lmgr.h"
+#include "storage/polar_bufmgr.h"
 #include "storage/predicate.h"
 #include "storage/procarray.h"
 #include "storage/smgr.h"
@@ -77,6 +78,9 @@
 #include "utils/snapmgr.h"
 #include "utils/tqual.h"
 
+/* POLAR */
+#include "access/px_btbuild.h"
+#include "executor/spi.h"
 
 /* Potentially set by pg_upgrade_support functions */
 Oid			binary_upgrade_next_index_pg_class_oid = InvalidOid;
@@ -145,6 +149,13 @@ static void ResetReindexProcessing(void);
 static void SetReindexPending(List *indexes);
 static void RemoveReindexPending(Oid indexOid);
 
+/* POLAR */
+Datum polar_get_root_ctid(HeapTuple tuple, Buffer buffer, ExprContext *econtext);
+static void polar_px_validate_index_heapscan(Relation heapRelation,
+						Relation indexRelation,
+						IndexInfo *indexInfo,
+						Snapshot snapshot,
+						v_i_state *state);
 
 /*
  * relationHasPrimaryKey
@@ -3294,11 +3305,22 @@ validate_index(Oid heapId, Oid indexId, Snapshot snapshot)
 	/*
 	 * Now scan the heap and "merge" it with the index
 	 */
-	validate_index_heapscan(heapRelation,
-							indexRelation,
-							indexInfo,
-							snapshot,
-							&state);
+	if (PX_ENABLE_BTBUILD_CIC_PHASE2(indexRelation))
+	{
+		polar_px_validate_index_heapscan(heapRelation,
+										indexRelation,
+										indexInfo,
+										snapshot,
+										&state);
+	}
+	else
+	{
+		validate_index_heapscan(heapRelation,
+								indexRelation,
+								indexInfo,
+								snapshot,
+								&state);
+	}
 
 	/* Done with tuplesort object */
 	tuplesort_end(state.tuplesort);
@@ -4227,4 +4249,272 @@ RestoreReindexState(void *reindexstate)
 
 	/* Note the worker has its own transaction nesting level */
 	reindexingNestLevel = GetCurrentTransactionNestLevel();
+}
+
+/*
+ * POLAR:
+ * Input a ctid of tuple, and return its root ctid.
+ */
+Datum
+polar_get_root_ctid(HeapTuple tuple, Buffer buffer, ExprContext *econtext)
+{
+	BlockNumber max_block_count;
+	BlockNumber rel_size;
+	BlockNumber blkno;
+	OffsetNumber offnum;
+	OffsetNumber root_offnum;
+	char *root_ctid = NULL;
+	Datum result;
+	OffsetNumber *cached_root_offsets = NULL;
+	bool is_memory_alloc = false;
+
+	Assert(tuple);
+	blkno = ItemPointerGetBlockNumberNoCheck(&(tuple->t_self));
+	offnum = ItemPointerGetOffsetNumberNoCheck(&(tuple->t_self));
+
+	/*
+	 * If the cached_blkno is invalid or the current blkno is a new BlockNumber,
+	 * we should get the new cached_root_offsets.
+	 */
+	if (buffer == InvalidBuffer || econtext == NULL ||
+		econtext->cached_blkno == InvalidBlockNumber || blkno != econtext->cached_blkno)
+	{
+		Page page;
+		Relation rel;
+		if (buffer == InvalidBuffer || econtext == NULL)
+		{
+			cached_root_offsets = palloc0(sizeof(OffsetNumber) * MaxHeapTuplesPerPage);
+			is_memory_alloc = true;
+			rel = heap_open(tuple->t_tableOid, AccessShareLock);
+			if (polar_bulk_read_size > 0)
+			{
+				rel_size = RelationGetNumberOfBlocks(rel);
+				if (rel_size <= blkno)
+					elog(ERROR, "get root ctid, block number out of range");
+				max_block_count = rel_size - blkno;
+				buffer = polar_bulk_read_buffer_extended(rel, MAIN_FORKNUM, blkno, RBM_NORMAL, NULL, max_block_count);
+			}
+			else
+				buffer = ReadBuffer(rel, blkno);
+			page = BufferGetPage(buffer);
+			LockBuffer(buffer, BUFFER_LOCK_SHARE);
+			heap_get_root_tuples(page, cached_root_offsets);
+			UnlockReleaseBuffer(buffer);
+			heap_close(rel, AccessShareLock);
+		}
+		else
+		{
+			Assert(buffer != InvalidBuffer && econtext != NULL);
+			cached_root_offsets = econtext->cached_root_offsets;
+			/* Buffer has already be locked by caller. */
+			page = BufferGetPage(buffer);
+			heap_get_root_tuples(page, cached_root_offsets);
+		}
+		econtext->cached_blkno = blkno;
+	}
+
+	if (HeapTupleIsHeapOnly(tuple))
+	{
+		/*
+		 * For a heap-only tuple, pretend its TID is that of the root. See
+		 * src/backend/access/heap/README.HOT for discussion.
+		 */
+		root_offnum = econtext->cached_root_offsets[offnum - 1];
+		if (!OffsetNumberIsValid(root_offnum))
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+						errmsg_internal("failed to find parent tuple for heap-only tuple at (%u,%u) in table \"%s\"",
+										ItemPointerGetBlockNumber(&tuple->t_self),
+										offnum,
+										get_rel_name(tuple->t_tableOid))));
+
+	}
+	else
+		root_offnum = offnum;
+
+	root_ctid = psprintf("(%u, %u)", blkno, root_offnum);
+	result = DirectFunctionCall1(tidin, CStringGetDatum(root_ctid));
+
+	if (is_memory_alloc)
+		pfree(cached_root_offsets);
+
+	pfree(root_ctid);
+	PG_RETURN_DATUM(result);
+}
+
+/*
+ * POLAR: This has much code in common with validate_index_heapscan. Second
+ * table scan for concurrent index build. We don't support expressions and
+ * predicates index in pxbtbuild, so we drop some operations about expressions
+ * and predicates index.
+ */
+static void
+polar_px_validate_index_heapscan(Relation heapRelation,
+						Relation indexRelation,
+						IndexInfo *indexInfo,
+						Snapshot snapshot,
+						v_i_state *state)
+{
+	bool			in_index[MaxHeapTuplesPerPage];
+
+	/* state variables for the merge */
+	ItemPointer		indexcursor = NULL;
+	ItemPointerData decoded;
+	bool			tuplesort_empty = false;
+
+	/* px: build px sql init */
+	StringInfo	sql;
+	SPIPlanPtr	plan;
+	Portal		portal;
+	bool 		old_enable_px = polar_enable_px;
+	bool 		old_px_plancache = px_enable_plan_cache;
+	bool 		old_px_index = px_optimizer_enable_indexscan;
+	bool 		old_px_check_workers = px_enable_check_workers;
+	bool 		old_px_tx = px_enable_transaction;
+	bool 		old_px_replay_wait = px_enable_replay_wait;
+
+	/*
+	 * sanity checks
+	 */
+	Assert(OidIsValid(indexRelation->rd_rel->relam));
+
+	/* px: generate sql */
+	sql = makeStringInfo();
+	{
+		int i;
+		StringInfo attrs = makeStringInfo();
+		TupleDesc tupdes = RelationGetDescr(indexRelation);
+		int natts = tupdes->natts;
+		Form_pg_attribute lastattr = TupleDescAttr(tupdes, natts-1);
+		Assert(natts > 0);
+
+		for (i = 0; i < natts - 1; i++)
+		{
+			Form_pg_attribute att = TupleDescAttr(tupdes, i);
+			appendStringInfo(attrs, "%s, ", NameStr(att->attname));
+		}
+		appendStringInfo(attrs, "%s", NameStr(lastattr->attname));
+
+		/* should be order by ctid. PX scan table can not guarantee in sequence */
+		appendStringInfo(sql, "select _root_ctid, %s from %s order by ctid", 
+							attrs->data, RelationGetRelationName(heapRelation));
+	}
+
+	/* invoke SPI interface */
+	polar_enable_px = true;
+	px_optimizer_enable_indexscan = false;
+	px_enable_check_workers = false;
+	px_enable_plan_cache = false;
+	px_enable_transaction = true;
+	px_enable_replay_wait = true;
+
+	SPI_connect();
+	if ((plan = SPI_prepare_px(sql->data, 0, NULL)) == NULL)
+		elog(ERROR, "SPI_prepare(\"%s\") failed", sql->data);
+	if ((portal = SPI_cursor_open(NULL, plan, NULL, NULL, true)) == NULL)
+		elog(ERROR, "SPI_cursor_open(\"%s\") failed", sql->data);
+
+	/* reset SPI interface */
+	polar_enable_px = old_enable_px;
+	px_optimizer_enable_indexscan = old_px_index;
+	px_enable_check_workers = old_px_check_workers;
+	px_enable_plan_cache = old_px_plancache;
+	px_enable_transaction = old_px_tx;
+	px_enable_replay_wait = old_px_replay_wait;
+
+	/* fetch heap tuple */
+	SPI_cursor_fetch(portal, true, px_btbuild_batch_size);
+	while (SPI_processed > 0)
+	{
+		uint64 i;
+		for (i = 0; i < SPI_processed; i++)
+		{
+			BlockNumber	root_blkno = InvalidBlockNumber;
+			OffsetNumber root_offnum;
+			Datum values[INDEX_MAX_KEYS + 1];
+			bool nulls[INDEX_MAX_KEYS + 1];
+			ItemPointer heapcursor;
+			ItemPointerData rootTuple;
+			HeapTuple tup = SPI_tuptable->vals[i];
+
+			heap_deform_tuple(tup, SPI_tuptable->tupdesc, values, nulls);
+
+			/* ctid for current heap tuple */
+			heapcursor = (ItemPointer)values[0];
+			rootTuple = *heapcursor;
+			root_blkno = ItemPointerGetBlockNumber(heapcursor);
+			root_offnum = ItemPointerGetOffsetNumber(heapcursor);
+			CHECK_FOR_INTERRUPTS();
+
+			/*
+			* "merge" by skipping through the index tuples until we find or pass
+			* the current root tuple.
+			*/
+			while (!tuplesort_empty &&
+				(!indexcursor ||
+					ItemPointerCompare(indexcursor, &rootTuple) < 0))
+			{
+				Datum		ts_val;
+				bool		ts_isnull;
+
+				if (indexcursor)
+				{
+					/*
+					* Remember index items seen earlier on the current heap page
+					*/
+					if (ItemPointerGetBlockNumber(indexcursor) == root_blkno)
+						in_index[ItemPointerGetOffsetNumber(indexcursor) - 1] = true;
+				}
+
+				tuplesort_empty = !tuplesort_getdatum(state->tuplesort, true,
+													&ts_val, &ts_isnull, NULL);
+				Assert(tuplesort_empty || !ts_isnull);
+				if (!tuplesort_empty)
+				{
+					itemptr_decode(&decoded, DatumGetInt64(ts_val));
+					indexcursor = &decoded;
+
+					/* If int8 is pass-by-ref, free (encoded) TID Datum memory */
+	#ifndef USE_FLOAT8_BYVAL
+					pfree(DatumGetPointer(ts_val));
+	#endif
+				}
+				else
+				{
+					/* Be tidy */
+					indexcursor = NULL;
+				}
+			}
+
+			/*
+			* If the tuplesort has overshot *and* we didn't see a match earlier,
+			* then this tuple is missing from the index, so insert it.
+			*/
+			if ((tuplesort_empty ||
+				ItemPointerCompare(indexcursor, &rootTuple) > 0) &&
+				!in_index[root_offnum - 1])
+			{
+				index_insert(indexRelation,
+								values + 1,
+								nulls + 1,
+								&rootTuple,
+								heapRelation,
+								indexInfo->ii_Unique ?
+								UNIQUE_CHECK_YES : UNIQUE_CHECK_NO,
+								indexInfo);
+
+				state->tups_inserted += 1;
+			}
+		}
+		SPI_freetuptable(SPI_tuptable);
+		SPI_cursor_fetch(portal, true, px_btbuild_batch_size);
+	}
+
+	SPI_cursor_close(portal);
+	SPI_freeplan(plan);
+	SPI_finish();
+
+	/* These may have been pointing to the now-gone estate */
+	indexInfo->ii_ExpressionsState = NIL;
+	indexInfo->ii_PredicateState = NULL;
 }

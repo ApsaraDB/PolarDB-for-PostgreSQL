@@ -217,6 +217,9 @@ CreatePortal(const char *name, bool allowDup, bool dupSilent)
 	portal->visible = true;
 	portal->creation_time = GetCurrentStatementStartTimestamp();
 
+	/* POLAR px */
+	portal->is_extended_query = false; /* default value */
+
 	/* put portal in table (sets portal->name) */
 	PortalHashTableInsert(portal, name);
 
@@ -281,6 +284,7 @@ void
 PortalDefineQuery(Portal portal,
 				  const char *prepStmtName,
 				  const char *sourceText,
+				  NodeTag	  sourceTag,/* POLAR px */
 				  const char *commandTag,
 				  List *stmts,
 				  CachedPlan *cplan)
@@ -293,6 +297,9 @@ PortalDefineQuery(Portal portal,
 
 	portal->prepStmtName = prepStmtName;
 	portal->sourceText = sourceText;
+	/* POLAR px */
+	portal->sourceTag = sourceTag;
+	/* POLAR end */
 	portal->commandTag = commandTag;
 	portal->stmts = stmts;
 	portal->cplan = cplan;
@@ -786,6 +793,13 @@ AtAbort_Portals(void)
 		 */
 		if (portal->status == PORTAL_ACTIVE && shmem_exit_inprogress)
 			MarkPortalFailed(portal);
+
+		/* POLAR px */
+		if (portal->is_extended_query && portal->queryDesc != NULL)
+		{
+			Assert(portal->queryDesc->estate != NULL);
+			portal->queryDesc->estate->cancelUnfinished = true;
+		}
 
 		/*
 		 * Do nothing else to cursors held over from a previous transaction.

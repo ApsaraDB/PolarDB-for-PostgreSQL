@@ -6,7 +6,7 @@ use warnings;
 use PostgresNode;
 use TestLib;
 use Test::More;
-plan tests => 4;
+plan tests => 6;
 
 # Delete pg_hba.conf from the given node, add a new entry to it
 # and then execute a reload to refresh it.
@@ -48,16 +48,18 @@ $node->start;
 $node->safe_psql(
 	'postgres',
     "CREATE ROLE polardb_test_1 LOGIN;
+     CREATE ROLE polardb_test_2 POLAR_SUPERUSER LOGIN;
      CREATE ROLE polardb_super_1 SUPERUSER LOGIN;
      CREATE USER polardb_test_3 LOGIN;
+     CREATE USER polardb_test_4 POLAR_SUPERUSER LOGIN;
      CREATE USER polardb_super_2 SUPERUSER LOGIN;");
 
 reset_pg_hba($node, 'trust');
 
 # Test access.
 test_login($node, 'polardb_test_1', "polardb_admin",   2);
-# test_login($node, 'polardb_test_2', "polardb_admin",   2);
+test_login($node, 'polardb_test_2', "polardb_admin",   2);
 test_login($node, 'polardb_test_3', "polardb_admin",   2);
-# test_login($node, 'polardb_test_4', "polardb_admin",   2);
+test_login($node, 'polardb_test_4', "polardb_admin",   2);
 test_login($node, 'polardb_super_1', "polardb_admin",   0);
 test_login($node, 'polardb_super_2', "polardb_admin",   0);

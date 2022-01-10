@@ -7,6 +7,9 @@ PGFILEDESC = "test_decoding - example of a logical decoding output plugin"
 # we have to clean those result files explicitly
 EXTRA_CLEAN = $(pg_regress_clean_files)
 
+NO_CHECK = 1
+NO_INSTALLCHECK = 1
+
 ifdef USE_PGXS
 PG_CONFIG = pg_config
 PGXS := $(shell $(PG_CONFIG) --pgxs)

@@ -16,7 +16,8 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  *
- * src/include/access/polar_ringbuf.h
+ * IDENTIFICATION
+ *    src/include/access/polar_ringbuf.h
  * ---------------------------------------------------------------------------------------
  */
 
@@ -26,7 +27,7 @@
 #include "port/atomics.h"
 #include "storage/lwlock.h"
 
-typedef void (*polar_interrupt_callback) (void);
+typedef void (*polar_interrupt_callback)(void);
 
 /*
  * Each ring buffer reference occupy one slot.
@@ -34,68 +35,62 @@ typedef void (*polar_interrupt_callback) (void);
  */
 #define POLAR_RINGBUF_MAX_SLOT              32
 #define POLAR_RINGBUF_MAX_REF_NAME          63
-typedef struct polar_ringbuf_data_t *polar_ringbuf_t;
+typedef struct polar_ringbuf_data_t         *polar_ringbuf_t;
 
 typedef struct polar_ringbuf_slot_t
 {
 	/* Is this a strong reference? */
-	bool		strong;
+	bool                            strong;
 	/* The read position of the ring buffer */
-	uint64		pread;
-
+	uint64                          pread;
 	/*
-	 * The times of read operation And compare visit times to get least read
-	 * position
+	 * The times of read operation
+	 * And compare visit times to get least read position
 	 */
-	uint64		visit;
+	uint64                          visit;
 	/* Each reference has one identity number */
-	uint64		ref_num;
-	char		ref_name[POLAR_RINGBUF_MAX_REF_NAME + 1];
+	uint64                          ref_num;
+	char                            ref_name[POLAR_RINGBUF_MAX_REF_NAME + 1];
 } polar_ringbuf_slot_t;
 
 /* The ring buffer reference struct */
 typedef struct polar_ringbuf_ref_t
 {
 	/* referenced ring buffer */
-	polar_ringbuf_t rbuf;
+	polar_ringbuf_t  rbuf;
 	/* The identity number for this reference */
-	uint64		ref_num;
+	uint64           ref_num;
 	/* The slot number this reference occupied */
-	int			slot;
+	int              slot;
 	/* Is this a strong reference? */
-	bool		strong;
-	char		ref_name[POLAR_RINGBUF_MAX_REF_NAME + 1];
+	bool             strong;
+	char             ref_name[POLAR_RINGBUF_MAX_REF_NAME + 1];
 } polar_ringbuf_ref_t;
 
 typedef struct polar_ringbuf_data_t
 {
 	/* This lock is used to manage slot */
-	LWLock		lock;
+	LWLock                  lock;
 	/* The least read position of this ring buffer */
-	pg_atomic_uint64 pread;
+	pg_atomic_uint64        pread;
 	/* The write position of this ring buffer */
-	pg_atomic_uint64 pwrite;
+	pg_atomic_uint64        pwrite;
 	/* Increase this counter for each new reference */
-	uint64		ref_num;
-
-	/*
-	 * Map to slot array, if slot is in use then corresponding bit is set in
-	 * occupied
-	 */
-	uint64		occupied;
+	uint64                  ref_num;
+	/* Map to slot array, if slot is in use then corresponding bit is set in occupied */
+	uint64                  occupied;
 	/* Used to manage reference */
-	polar_ringbuf_slot_t slot[POLAR_RINGBUF_MAX_SLOT];
-
+	polar_ringbuf_slot_t    slot[POLAR_RINGBUF_MAX_SLOT];
 	/*
-	 * For ring buffer we cant compare read position to get least read
-	 * position And we record each reference's read times. The read position
-	 * with least read times is the least read position
+	 * For ring buffer we cant compare read position to get least read position
+	 * And we record each reference's read times.
+	 * The read position with least read times is the least read position
 	 */
-	uint64		min_visit;
+	uint64                  min_visit;
 	/* ring buffer data size */
-	size_t		size;
-	uint8		data[FLEXIBLE_ARRAY_MEMBER];
-}			polar_ringbuf_data_t;
+	size_t                  size;
+	uint8                   data[FLEXIBLE_ARRAY_MEMBER];
+} polar_ringbuf_data_t;
 
 /*
  * The data record in ring buffer as packet.
@@ -106,33 +101,28 @@ typedef struct polar_ringbuf_data_t
 #define POLAR_RINGBUF_PKT_SIZE(len) ((len) + POLAR_RINGBUF_PKTHDRSIZE)
 
 /* Each packet has one bit state flag */
-#define POLAR_RINGBUF_PKT_FREE                  (0x00)	/* The packet data is
-														 * not ready for read */
-#define POLAR_RINGBUF_PKT_READY                 (0x01)	/* The packet data is
-														 * ready for read */
-#define POLAR_RINGBUF_PKT_STATE_MASK            (0x01)	/* The packet state mask */
-/* Define packet type */
-#define POLAR_RINGBUF_PKT_INVALID_TYPE          (0x00)	/* The packet type is
-														 * invalid */
-#define POLAR_RINGBUF_PKT_WAL_META              (0x10)	/* The packet content is
-														 * xlog meta or clog */
-#define POLAR_RINGBUF_PKT_WAL_STORAGE_BEGIN     (0x20)	/* Indicate we need to
-														 * read from storage
-														 * directly from this
-														 * position */
-#define POLAR_RINGBUF_PKT_WAL_STORAGE_END       (0x30)	/* Indicate we will read
-														 * from queue after this
-														 * position */
-#define POLAR_RINGBUF_PKT_TYPE_MASK             (0xF0)	/* The packet type mask */
+#define POLAR_RINGBUF_PKT_FREE                  (0x00)          /* The packet data is not ready for read */
+#define POLAR_RINGBUF_PKT_READY                 (0x01)          /* The packet data is ready for read */
+#define POLAR_RINGBUF_PKT_STATE_MASK            (0x01)      /* The packet state mask */
+/*
+ * Define packet type about WAL.
+ * Anyone can define it in your file, but the
+ * POLAR_RINGBUF_PKT_INVALID_TYPE and POLAR_RINGBUF_PKT_TYPE_MASK
+ * are stable.
+ */
+#define POLAR_RINGBUF_PKT_INVALID_TYPE          (0x00)      /* The packet type is invalid */
+#define POLAR_RINGBUF_PKT_WAL_META              (0x10)      /* The packet content is xlog meta or clog */
+#define POLAR_RINGBUF_PKT_WAL_STORAGE_BEGIN     (0x20)      /* Indicate we need to read from storage directly from this position */
+#define POLAR_RINGBUF_PKT_WAL_STORAGE_END       (0x30)          /* Indicate we will read from queue after this position */
+#define POLAR_RINGBUF_PKT_TYPE_MASK             (0xF0)      /* The packet type mask */
 
 /* Get the packet data size and idx is the start position of the packet */
 static inline uint32
 polar_ringbuf_pkt_len(polar_ringbuf_t rbuf, size_t idx)
 {
-	uint32		len;
-	uint8	   *buf = (uint8 *) &len;
-	size_t		split,
-				todo = sizeof(len);
+	uint32 len;
+	uint8  *buf = (uint8 *)&len;
+	size_t split, todo = sizeof(len);
 
 	/* packet len is saved from idx+1 */
 	idx = (idx + 1) % rbuf->size;
@@ -166,13 +156,16 @@ extern void polar_ringbuf_free_up(polar_ringbuf_t rbuf, size_t len, polar_interr
 extern void polar_ringbuf_auto_release_ref(polar_ringbuf_ref_t *ref);
 extern bool polar_ringbuf_valid_ref(polar_ringbuf_ref_t *ref);
 
+extern void polar_ringbuf_ref_keep_data(polar_ringbuf_ref_t *ref, float ratio);
+extern void polar_ringbuf_reset(polar_ringbuf_t rbuf);
+
 /*
  * get the free size of the ring buffer
  */
 static inline ssize_t
 polar_ringbuf_free_size(polar_ringbuf_t rbuf)
 {
-	ssize_t		free_bytes;
+	ssize_t free_bytes;
 
 	free_bytes = pg_atomic_read_u64(&rbuf->pread);
 	free_bytes -= pg_atomic_read_u64(&rbuf->pwrite);
@@ -189,7 +182,7 @@ polar_ringbuf_free_size(polar_ringbuf_t rbuf)
 static inline ssize_t
 polar_ringbuf_avail(polar_ringbuf_ref_t *ref)
 {
-	ssize_t		avail;
+	ssize_t avail;
 	polar_ringbuf_t rbuf = ref->rbuf;
 
 	avail = pg_atomic_read_u64(&rbuf->pwrite);
@@ -205,11 +198,10 @@ polar_ringbuf_avail(polar_ringbuf_ref_t *ref)
  * Reserve space from ring buffer for future write
  * This function should be protected by exclusive lock
  */
-static inline ssize_t
+static inline size_t
 polar_ringbuf_pkt_reserve(polar_ringbuf_t rbuf, size_t len)
 {
-	size_t		idx = pg_atomic_read_u64(&rbuf->pwrite);
-
+	size_t idx = pg_atomic_read_u64(&rbuf->pwrite);
 	rbuf->data[idx] = POLAR_RINGBUF_PKT_FREE;
 
 	/* ensure set packet flag before update pwrite */
@@ -227,7 +219,7 @@ static inline uint8
 polar_ringbuf_next_ready_pkt(polar_ringbuf_ref_t *ref, uint32 *pktlen)
 {
 	polar_ringbuf_t rbuf = ref->rbuf;
-	size_t		idx = rbuf->slot[ref->slot].pread;
+	size_t idx = rbuf->slot[ref->slot].pread;
 
 	*pktlen = 0;
 
@@ -249,9 +241,8 @@ polar_ringbuf_next_ready_pkt(polar_ringbuf_ref_t *ref, uint32 *pktlen)
 static inline void
 polar_ringbuf_set_pkt_length(polar_ringbuf_t rbuf, size_t idx, uint32 len)
 {
-	size_t		split,
-				todo = sizeof(len);
-	uint8	   *buf = (uint8 *) &len;
+	size_t split, todo = sizeof(len);
+	uint8 *buf = (uint8 *)&len;
 
 	/* The first byte is flag and packet length is saved in next 4 bytes */
 	idx = (idx + 1) % rbuf->size;

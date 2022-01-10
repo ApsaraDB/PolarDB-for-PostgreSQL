@@ -28,6 +28,9 @@
 #include "utils/syscache.h"
 #include "utils/timestamp.h"
 
+/* POLAR */
+#include "access/htup_details.h"
+
 
 /*
  * Fetch stored password for a user, for authentication.
@@ -91,14 +94,15 @@ get_role_password(const char *role, char **logdetail)
 PasswordType
 get_password_type(const char *shadow_pass)
 {
-	char	   *encoded_salt;
-	int			iterations;
+	char		*encoded_salt;
+	int		iterations;
 	uint8		stored_key[SCRAM_KEY_LEN];
 	uint8		server_key[SCRAM_KEY_LEN];
 
-	if (strncmp(shadow_pass, "md5", 3) == 0 &&
+	if ((strncmp(shadow_pass, "md5", 3) == 0 &&
 		strlen(shadow_pass) == MD5_PASSWD_LEN &&
-		strspn(shadow_pass + 3, MD5_PASSWD_CHARSET) == MD5_PASSWD_LEN - 3)
+		strspn(shadow_pass + 3, MD5_PASSWD_CHARSET) == MD5_PASSWD_LEN - 3) ||
+		false)
 		return PASSWORD_TYPE_MD5;
 	if (parse_scram_verifier(shadow_pass, &iterations, &encoded_salt,
 							 stored_key, server_key))
@@ -115,7 +119,7 @@ get_password_type(const char *shadow_pass)
  */
 char *
 encrypt_password(PasswordType target_type, const char *role,
-				 const char *password)
+				 const char *password, bool polar_role_is_super)
 {
 	PasswordType guessed_type = get_password_type(password);
 	char	   *encrypted_password;
@@ -166,7 +170,8 @@ encrypt_password(PasswordType target_type, const char *role,
  * that will be sent to the postmaster log (but not the client).
  */
 int
-md5_crypt_verify(const char *role, const char *shadow_pass,
+md5_crypt_verify(const char *role,
+				 const char *polar_shadow_pass,
 				 const char *client_pass,
 				 const char *md5_salt, int md5_salt_len,
 				 char **logdetail)
@@ -176,7 +181,7 @@ md5_crypt_verify(const char *role, const char *shadow_pass,
 
 	Assert(md5_salt_len > 0);
 
-	if (get_password_type(shadow_pass) != PASSWORD_TYPE_MD5)
+	if (get_password_type(polar_shadow_pass) != PASSWORD_TYPE_MD5)
 	{
 		/* incompatible password hash format. */
 		*logdetail = psprintf(_("User \"%s\" has a password that cannot be used with MD5 authentication."),
@@ -192,7 +197,7 @@ md5_crypt_verify(const char *role, const char *shadow_pass,
 	 * if it did happen adding a psprintf call would only make things worse.
 	 */
 	/* stored password already encrypted, only do salt */
-	if (!pg_md5_encrypt(shadow_pass + strlen("md5"),
+	if (!pg_md5_encrypt(polar_shadow_pass + strlen("md5"),
 						md5_salt, md5_salt_len,
 						crypt_pwd))
 	{

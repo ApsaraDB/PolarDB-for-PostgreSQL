@@ -48,7 +48,7 @@ typedef enum
 	RBM_ZERO_ON_ERROR,			/* Read, but return an all-zeros page on error */
 	RBM_NORMAL_NO_LOG,			/* Don't log page as invalid during WAL
 								 * replay; otherwise same as RBM_NORMAL */
-	RBM_NORMAL_VALID			/* Polar: Don't read from disk, buffer is valid */							
+	RBM_NORMAL_VALID			/* Polar: Don't read from disk, buffer is valid */
 } ReadBufferMode;
 
 /* forward declared, to avoid having to expose buf_internals.h here */
@@ -75,6 +75,11 @@ extern PGDLLIMPORT char *BufferBlocks;
 extern int	effective_io_concurrency;
 /* POLAR */
 extern bool	polar_enable_shared_storage_mode;
+
+/* POLAR: bulk read */
+extern bool polar_bulk_io_is_in_progress;
+extern int polar_bulk_io_in_progress_count;
+/* POLAR end */
 
 /* in localbuf.c */
 extern PGDLLIMPORT int NLocBuffer;
@@ -210,8 +215,21 @@ extern void DropRelFileNodeBuffers(RelFileNodeBackend rnode,
 extern void DropRelFileNodesAllBuffers(RelFileNodeBackend *rnodes, int nnodes);
 extern void DropDatabaseBuffers(Oid dbid);
 
+/*
+ * POLAR: the same function of RelationGetNumberOfBlocksInFork.
+ * But use polar_smgrnblocks_cache instead of smgrnblocks.
+ */
+extern BlockNumber polar_relation_get_number_of_cache_blocks_in_fork(Relation relation,
+								ForkNumber forkNum);
+
 #define RelationGetNumberOfBlocks(reln) \
 	RelationGetNumberOfBlocksInFork(reln, MAIN_FORKNUM)
+
+/*
+ * POLAR: the same function of RelationGetNumberOfBlocks.
+ */
+#define polar_relation_get_cached_number_of_blocks(reln) \
+	polar_relation_get_number_of_cache_blocks_in_fork(reln, MAIN_FORKNUM)
 
 extern bool BufferIsPermanent(Buffer buffer);
 extern XLogRecPtr BufferGetLSNAtomic(Buffer buffer);
@@ -254,11 +272,19 @@ extern bool polar_start_buffer_io_extend(BufferDesc *buf,
 
 /* POLAR: change static to extern */
 extern void TerminateBufferIO(BufferDesc *buf, bool clear_dirty, uint32 set_flag_bits);
+/* POLAR: change static to extern */
+extern bool StartBufferIO(BufferDesc *buf, bool forInput);
+/* POLAR: bulk read */
+extern int polar_get_buffer_access_strategy_ring_size(BufferAccessStrategy strategy);
+extern BufferDesc **polar_bulk_io_in_progress_buf;
+/* POLAR end */
 
 /* POLAR */
 extern void polar_lock_buffer_ext(Buffer buffer, int mode, bool fresh_check);
 extern bool polar_conditional_lock_buffer_ext(Buffer buffer, bool fresh_check);
 extern void polar_lock_buffer_for_cleanup_ext(Buffer buffer, bool fresh_check);
+extern void polar_strategy_set_first_free_buffer(int buf_id);
+extern void polar_unpin_buffer_proc_exit(Buffer buf);
 /* POLAR end */
 
 /* inline functions */

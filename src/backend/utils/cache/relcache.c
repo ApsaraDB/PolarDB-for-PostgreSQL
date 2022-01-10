@@ -93,6 +93,8 @@
 #include "utils/syscache.h"
 #include "utils/tqual.h"
 
+/* POLAR */
+#include "utils/guc.h"
 
 #define RELCACHE_INIT_FILEMAGIC		0x573266	/* version ID value */
 
@@ -3245,7 +3247,12 @@ RelationBuildLocalRelation(const char *relname,
 		(relkind == RELKIND_RELATION ||
 		 relkind == RELKIND_MATVIEW ||
 		 relkind == RELKIND_PARTITIONED_TABLE))
-		rel->rd_rel->relreplident = REPLICA_IDENTITY_DEFAULT;
+	{
+		if (polar_create_table_with_full_replica_identity)
+			rel->rd_rel->relreplident = REPLICA_IDENTITY_FULL;
+		else
+			rel->rd_rel->relreplident = REPLICA_IDENTITY_DEFAULT;
+	}
 	else
 		rel->rd_rel->relreplident = REPLICA_IDENTITY_NOTHING;
 
@@ -5270,6 +5277,20 @@ GetRelationPublicationActions(Relation relation)
 
 	/* Fetch the publication membership info. */
 	puboids = GetRelationPublications(RelationGetRelid(relation));
+	if (relation->rd_rel->relispartition)
+	{
+		/* Add publications that the ancestors are in too. */
+		List   *ancestors = get_partition_ancestors(RelationGetRelid(relation));
+		ListCell *lc;
+
+		foreach(lc, ancestors)
+		{
+			Oid		ancestor = lfirst_oid(lc);
+
+			puboids = list_concat_unique_oid(puboids,
+											 GetRelationPublications(ancestor));
+		}
+	}
 	puboids = list_concat_unique_oid(puboids, GetAllTablesPublications());
 
 	foreach(lc, puboids)
@@ -6205,4 +6226,40 @@ unlink_initfile(const char *initfilename, int elevel)
 					 errmsg("could not remove cache file \"%s\": %m",
 							initfilename)));
 	}
+}
+
+/*
+ * POLAR: Check the consistent of nblocks from the cache and real disk file.
+ */
+void
+polar_check_nblocks_consistent(Relation rel)
+{
+	BlockNumber cache_blkno, real_blkno;
+	RelFileNode rnode;
+	int old_nblocks_cache_mode;
+
+	if (!polar_enabled_nblock_cache())
+		return;
+
+	RelationOpenSmgr(rel);
+
+	rnode = rel->rd_smgr->smgr_rnode.node;
+
+	/* Get the nblocks from cache */
+	cache_blkno = polar_nblocks_cache_search_and_update(rel->rd_smgr, MAIN_FORKNUM, false);
+
+	/*
+	 * Set polar_nblocks_cache_mode to off, and get the nblocks from the
+	 * real disk file by smgrnblocks.
+	 */
+	old_nblocks_cache_mode = polar_nblocks_cache_mode;
+	polar_nblocks_cache_mode = POLAR_NBLOCKS_CACHE_OFF_MODE;
+	real_blkno = smgrnblocks(rel->rd_smgr, MAIN_FORKNUM);
+	polar_nblocks_cache_mode = old_nblocks_cache_mode;
+
+	RelationCloseSmgr(rel);
+
+	if (cache_blkno != real_blkno)
+		elog(LOG, "relation \"%s\" nblocks is not consistent, spcNode:%d, dbNode:%d, relNode:%d, cache is %d, real is %d",
+			 RelationGetRelationName(rel), rnode.spcNode, rnode.dbNode, rnode.relNode, cache_blkno, real_blkno);
 }

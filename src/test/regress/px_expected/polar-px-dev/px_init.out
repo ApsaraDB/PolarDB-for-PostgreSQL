@@ -1,0 +1,5 @@
+--
+-- PX SUBSELECT
+--
+CREATE EXTENSION IF NOT EXISTS  polar_px;
+NOTICE:  extension "polar_px" already exists, skipping

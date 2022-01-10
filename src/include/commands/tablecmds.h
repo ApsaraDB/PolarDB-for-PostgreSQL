@@ -98,4 +98,9 @@ extern void RangeVarCallbackOwnsRelation(const RangeVar *relation,
 extern bool PartConstraintImpliedByRelConstraint(Relation scanrel,
 									 List *partConstraint);
 
+/* POLAR */
+extern List *recursive_relopts;		/* parsed from GUC  */
+extern void polar_px_btbuild_update_pg_class(Relation heap, Relation index);
+/* POLAR end */
+
 #endif							/* TABLECMDS_H */

@@ -1,0 +1,69 @@
+create table test_spi_table(id integer);
+insert into test_spi_table values (1),(2),(3),(4),(5),(6);
+CREATE OR REPLACE FUNCTION test_spi_select(i integer)
+    RETURNS void
+AS
+$$
+begin
+EXECUTE 'SELECT * FROM test_spi_table';
+end;
+$$ LANGUAGE 'plpgsql';
+CREATE OR REPLACE FUNCTION test_spi_select_system(i integer)
+    RETURNS void
+AS
+$$
+begin
+EXECUTE 'SELECT * FROM pg_am LIMIT 1';
+end;
+$$ LANGUAGE 'plpgsql';
+set polar_px_enable_spi_read_all_namespaces=false;
+select test_spi_select_system(id) test_spi_select from test_spi_table;
+ test_spi_select 
+-----------------
+ 
+ 
+ 
+ 
+ 
+ 
+(6 rows)
+
+select test_spi_select(id) from test_spi_table;
+ test_spi_select 
+-----------------
+ 
+ 
+ 
+ 
+ 
+ 
+(6 rows)
+
+ERROR:  function cannot execute on a PX slice because it accesses relation "public.test_spi_table"
+CONTEXT:  SQL statement "SELECT * FROM test_spi_table"
+PL/pgSQL function test_spi_select(integer) line 3 at EXECUTE
+----COMPARE PX RESULT status not match(7, 2)
+set polar_px_enable_spi_read_all_namespaces=true;
+select test_spi_select_system(id) test_spi_select from test_spi_table;
+ test_spi_select 
+-----------------
+ 
+ 
+ 
+ 
+ 
+ 
+(6 rows)
+
+select test_spi_select(id) from test_spi_table;
+ test_spi_select 
+-----------------
+ 
+ 
+ 
+ 
+ 
+ 
+(6 rows)
+
+drop table test_spi_table;

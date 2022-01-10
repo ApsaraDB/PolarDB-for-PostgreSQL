@@ -37,8 +37,18 @@ typedef enum ReplicationSlotPersistency
 	RS_TEMPORARY
 } ReplicationSlotPersistency;
 
+/* For ReplicationSlotAcquire, q.v. */
+typedef enum SlotAcquireBehavior
+{
+	SAB_Error,
+	SAB_Block,
+	SAB_Inquire
+} SlotAcquireBehavior;
+
 /*
  * On-Disk data of a replication slot, preserved across restarts.
+ * Warning!!!: modifying this structure will affect the compatibility. 
+ * Please add the compatibility logic in the restoreslotfromdisk function.
  */
 typedef struct ReplicationSlotPersistentData
 {
@@ -85,6 +95,9 @@ typedef struct ReplicationSlotPersistentData
 
 	/* POLAR: replica apply lsn */
 	XLogRecPtr	polar_replica_apply_lsn;
+
+	/* restart_lsn is copied here when the slot is invalidated */
+	XLogRecPtr	polar_invalidated_at;
 } ReplicationSlotPersistentData;
 
 /*
@@ -160,6 +173,52 @@ typedef struct ReplicationSlot
 #define SlotIsPhysical(slot) ((slot)->data.database == InvalidOid)
 #define SlotIsLogical(slot) ((slot)->data.database != InvalidOid)
 
+/* POLAR BEGIN */
+
+/*
+ * POLAR: polardb standby mounts a remote filesystem different from master's in read and write mode
+ */
+#define POLAR_IS_MASTER_IN_RECOVERY_OR_STANDBY \
+	(RecoveryInProgress() && polar_enable_shared_storage_mode && !polar_in_replica_mode())
+
+#define	POLAR_IS_MASTER_OR_STANDBY \
+	(polar_enable_shared_storage_mode && !polar_in_replica_mode())
+/*
+ * POLAR: whether persist logical slot in polarstore
+ */
+#define POLAR_PERSIST_LOGICAL_SLOT(slot) \
+	(polar_enable_persisted_logical_slot && \
+	(POLAR_IS_MASTER_OR_STANDBY) && \
+	!RecoveryInProgress() && \
+	SlotIsLogical(slot))
+
+/*
+ * POLAR: whether restore persisted logical slot from polarstore
+ */
+#define POLAR_RESTORE_PERSISTED_LOGICAL_SLOT \
+	(polar_enable_persisted_logical_slot && POLAR_IS_MASTER_IN_RECOVERY_OR_STANDBY)
+
+/*
+ * POLAR: whether persist spill file in polarstore
+ */
+#define POLAR_PERSIST_SPILL_FILE \
+	(polar_enable_persisted_logical_slot && polar_enable_persisted_spill_file && \
+	POLAR_IS_MASTER_OR_STANDBY)
+/* POLAR END */
+
+/*
+ * POLAR: whether persisted physical slot in shared storage for online promote
+ */
+#define POLAR_PERSIST_PHYSICAL_SLOT_FOR_ONLINE_PROMOTE(slot) \
+	(polar_enable_persisted_physical_slot && POLAR_IS_MASTER_OR_STANDBY && \
+	!SlotIsLogical(slot))
+
+/*
+ * POLAR: whether restore persisted physical slot from polarstore for online promote
+ */
+#define POLAR_RESTORE_PERSISTED_PHYSICAL_SLOT_FOR_ONLINE_PROMOTE \
+	(polar_enable_persisted_physical_slot && POLAR_IS_MASTER_OR_STANDBY)
+
 /*
  * Shared memory control area for all of replication slots.
  */
@@ -211,7 +270,14 @@ extern void CheckPointReplicationSlots(void);
 
 extern void CheckSlotRequirements(void);
 
+extern void InvalidateObsoleteReplicationSlots(XLogSegNo oldestSegno);
+extern ReplicationSlot *SearchNamedReplicationSlot(const char *name);
+
 /* POLAR */
 extern void polar_compute_and_set_oldest_apply_lsn(void);
+extern int polar_repl_slots_reserved_for_superuser;
+extern void polar_reload_replication_slots_from_shared_storage(void);
+extern XLogRecPtr polar_set_initial_datamax_restart_lsn(ReplicationSlot *slot);
+/* POLAR: end */
 
 #endif							/* SLOT_H */

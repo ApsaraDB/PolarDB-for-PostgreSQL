@@ -58,6 +58,7 @@ spgvalidate(Oid opclassoid)
 	Oid			configOutLefttype = InvalidOid;
 	Oid			configOutRighttype = InvalidOid;
 
+	memset(&configOut, 0, sizeof(configOut));
 	/* Fetch opclass information */
 	classtup = SearchSysCache1(CLAOID, ObjectIdGetDatum(opclassoid));
 	if (!HeapTupleIsValid(classtup))

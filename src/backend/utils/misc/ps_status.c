@@ -31,9 +31,19 @@
 #include "utils/ps_status.h"
 #include "utils/guc.h"
 
+/* POLAR px */
+#include "px/px_vars.h"
+/* POLAR end */
+
 extern char **environ;
 bool		update_process_title = true;
 
+/* POLAR px */
+extern int px_identifier;
+/* POLAR end */
+
+/* POLAR */
+extern PGDLLIMPORT int	PostPortNumber;
 
 /*
  * Alternative ways of updating ps display:
@@ -294,20 +304,28 @@ init_ps_display(const char *username, const char *dbname,
 	 */
 #define PROGRAM_NAME_PREFIX ""
 #else
-#define PROGRAM_NAME_PREFIX "postgres: "
+#define PROGRAM_NAME_PREFIX "postgres(%d): "
 #endif
 
 	if (*cluster_name == '\0')
 	{
 		snprintf(ps_buffer, ps_buffer_size,
-				 PROGRAM_NAME_PREFIX "%s %s %s ",
+				 PROGRAM_NAME_PREFIX "%s %s %s",
+#ifdef PS_USE_SETPROCTITLE
 				 username, dbname, host_info);
+#else
+				 PostPortNumber, username, dbname, host_info);
+#endif
 	}
 	else
 	{
 		snprintf(ps_buffer, ps_buffer_size,
-				 PROGRAM_NAME_PREFIX "%s: %s %s %s ",
+				 PROGRAM_NAME_PREFIX "%s: %s %s %s",
+#ifdef PS_USE_SETPROCTITLE
 				 cluster_name, username, dbname, host_info);
+#else
+				 PostPortNumber, cluster_name, username, dbname, host_info);
+#endif
 	}
 
 	ps_buffer_cur_len = ps_buffer_fixed_size = strlen(ps_buffer);
@@ -344,6 +362,45 @@ set_ps_display(const char *activity, bool force)
 	strlcpy(ps_buffer + ps_buffer_fixed_size, activity,
 			ps_buffer_size - ps_buffer_fixed_size);
 	ps_buffer_cur_len = strlen(ps_buffer);
+
+	/* POLAR px */
+	if (px_is_executing && !strstr(ps_buffer,"sessid"))
+	{
+		char role[256] = {0};
+		size_t len = 0;
+
+		switch (px_role)
+		{
+			case PX_ROLE_QC:
+				len = strlcpy(role, " qc", sizeof(role));
+				break;
+			case PX_ROLE_PX:
+				len = strlcpy(role, " px", sizeof(role));
+				break;
+			case PX_ROLE_UTILITY:
+				len = strlcpy(role, " util", sizeof(role));
+				break;
+			default:
+				len = strlcpy(role, " undefined", sizeof(role));
+				break;
+		}
+
+		len += snprintf(role + len, sizeof(role)-len, " sessid%d", px_session_id);
+
+		if (currentSliceId > 0)
+			len += snprintf(role + len, sizeof(role)-len, " slice%d", currentSliceId);
+
+		if (px_role == PX_ROLE_PX && PxIdentity.workerid >= -1)
+			len += snprintf(role + len , sizeof(role)-len, " worker%d", PxIdentity.workerid);
+
+		if (px_identifier >= 0)
+			len += snprintf(role + len, sizeof(role)-len, " identifier%d", px_identifier);
+
+		len = strlcpy(ps_buffer + ps_buffer_cur_len, role,
+				ps_buffer_size - ps_buffer_cur_len);
+		ps_buffer_cur_len += len;
+	}
+	/* POLAR end */
 
 	/* Transmit new setting to kernel, if necessary */
 

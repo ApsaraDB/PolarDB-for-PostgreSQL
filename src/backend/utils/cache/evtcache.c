@@ -175,7 +175,7 @@ BuildEventTriggerCache(void)
 		item = palloc0(sizeof(EventTriggerCacheItem));
 		item->fnoid = form->evtfoid;
 		item->enabled = form->evtenabled;
-
+		item->polar_evtowner = form->evtowner;
 		/* Decode and sort tags array. */
 		evttags = heap_getattr(tup, Anum_pg_event_trigger_evttags,
 							   RelationGetDescr(rel), &evttags_isnull);

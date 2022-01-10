@@ -26,6 +26,9 @@
 #include "utils/memdebug.h"
 #include "utils/memutils.h"
 
+/* POLAR px */
+#include "px/px_vars.h"
+/* POLAR end */
 
 /*****************************************************************************
  *	  GLOBAL MEMORY															 *
@@ -48,6 +51,12 @@ MemoryContext CacheMemoryContext = NULL;
 MemoryContext MessageContext = NULL;
 MemoryContext TopTransactionContext = NULL;
 MemoryContext CurTransactionContext = NULL;
+
+/* POLAR px */
+MemoryContext px_DispatcherContext = NULL;
+MemoryContext px_InterconnectContext = NULL;
+MemoryContext px_OptimizerMemoryContext = NULL;
+/* POLAR end */
 
 /* This is a transient link to the active portal's memory context: */
 MemoryContext PortalContext = NULL;
@@ -173,8 +182,8 @@ MemoryContextResetOnly(MemoryContext context)
 
 		context->methods->reset(context);
 		context->isReset = true;
-		VALGRIND_DESTROY_MEMPOOL(context);
-		VALGRIND_CREATE_MEMPOOL(context, 0, false);
+		MEMDEBUG_DESTROY_MEMPOOL(context);
+		MEMDEBUG_CREATE_MEMPOOL(context, 0, false);
 	}
 }
 
@@ -244,7 +253,7 @@ MemoryContextDelete(MemoryContext context)
 
 	context->methods->delete_context(context);
 
-	VALGRIND_DESTROY_MEMPOOL(context);
+	MEMDEBUG_DESTROY_MEMPOOL(context);
 }
 
 /*
@@ -460,6 +469,30 @@ MemoryContextIsEmpty(MemoryContext context)
 		return false;
 	/* Otherwise use the type-specific inquiry */
 	return context->methods->is_empty(context);
+}
+
+/*
+ * Find the memory allocated to blocks for this memory context. If recurse is
+ * true, also include children.
+ */
+Size
+MemoryContextMemAllocated(MemoryContext context, bool recurse)
+{
+	Size		total = context->mem_allocated;
+
+	AssertArg(MemoryContextIsValid(context));
+
+	if (recurse)
+	{
+		MemoryContext child;
+
+		for (child = context->firstchild;
+			 child != NULL;
+			 child = child->nextchild)
+			total += MemoryContextMemAllocated(child, true);
+	}
+
+	return total;
 }
 
 /*
@@ -736,6 +769,7 @@ MemoryContextCreate(MemoryContext node,
 	node->methods = methods;
 	node->parent = parent;
 	node->firstchild = NULL;
+	node->mem_allocated = 0;
 	node->prevchild = NULL;
 	node->name = name;
 	node->ident = NULL;
@@ -757,7 +791,7 @@ MemoryContextCreate(MemoryContext node,
 		node->allowInCritSection = false;
 	}
 
-	VALGRIND_CREATE_MEMPOOL(node, 0, false);
+	MEMDEBUG_CREATE_MEMPOOL(node, 0, false);
 }
 
 /*
@@ -798,7 +832,7 @@ MemoryContextAlloc(MemoryContext context, Size size)
 						   size, context->name)));
 	}
 
-	VALGRIND_MEMPOOL_ALLOC(context, ret, size);
+	MEMDEBUG_MEMPOOL_ALLOC(context, ret, size);
 
 	return ret;
 }
@@ -834,7 +868,7 @@ MemoryContextAllocZero(MemoryContext context, Size size)
 						   size, context->name)));
 	}
 
-	VALGRIND_MEMPOOL_ALLOC(context, ret, size);
+	MEMDEBUG_MEMPOOL_ALLOC(context, ret, size);
 
 	MemSetAligned(ret, 0, size);
 
@@ -872,7 +906,7 @@ MemoryContextAllocZeroAligned(MemoryContext context, Size size)
 						   size, context->name)));
 	}
 
-	VALGRIND_MEMPOOL_ALLOC(context, ret, size);
+	MEMDEBUG_MEMPOOL_ALLOC(context, ret, size);
 
 	MemSetLoop(ret, 0, size);
 
@@ -912,7 +946,7 @@ MemoryContextAllocExtended(MemoryContext context, Size size, int flags)
 		return NULL;
 	}
 
-	VALGRIND_MEMPOOL_ALLOC(context, ret, size);
+	MEMDEBUG_MEMPOOL_ALLOC(context, ret, size);
 
 	if ((flags & MCXT_ALLOC_ZERO) != 0)
 		MemSetAligned(ret, 0, size);
@@ -946,7 +980,7 @@ palloc(Size size)
 						   size, context->name)));
 	}
 
-	VALGRIND_MEMPOOL_ALLOC(context, ret, size);
+	MEMDEBUG_MEMPOOL_ALLOC(context, ret, size);
 
 	return ret;
 }
@@ -977,7 +1011,7 @@ palloc0(Size size)
 						   size, context->name)));
 	}
 
-	VALGRIND_MEMPOOL_ALLOC(context, ret, size);
+	MEMDEBUG_MEMPOOL_ALLOC(context, ret, size);
 
 	MemSetAligned(ret, 0, size);
 
@@ -1015,7 +1049,7 @@ palloc_extended(Size size, int flags)
 		return NULL;
 	}
 
-	VALGRIND_MEMPOOL_ALLOC(context, ret, size);
+	MEMDEBUG_MEMPOOL_ALLOC(context, ret, size);
 
 	if ((flags & MCXT_ALLOC_ZERO) != 0)
 		MemSetAligned(ret, 0, size);
@@ -1033,7 +1067,7 @@ pfree(void *pointer)
 	MemoryContext context = GetMemoryChunkContext(pointer);
 
 	context->methods->free_p(context, pointer);
-	VALGRIND_MEMPOOL_FREE(context, pointer);
+	MEMDEBUG_MEMPOOL_FREE(context, pointer);
 }
 
 /*
@@ -1065,7 +1099,7 @@ repalloc(void *pointer, Size size)
 						   size, context->name)));
 	}
 
-	VALGRIND_MEMPOOL_CHANGE(context, pointer, ret, size);
+	MEMDEBUG_MEMPOOL_CHANGE(context, pointer, ret, size);
 
 	return ret;
 }
@@ -1100,7 +1134,7 @@ MemoryContextAllocHuge(MemoryContext context, Size size)
 						   size, context->name)));
 	}
 
-	VALGRIND_MEMPOOL_ALLOC(context, ret, size);
+	MEMDEBUG_MEMPOOL_ALLOC(context, ret, size);
 
 	return ret;
 }
@@ -1135,7 +1169,7 @@ repalloc_huge(void *pointer, Size size)
 						   size, context->name)));
 	}
 
-	VALGRIND_MEMPOOL_CHANGE(context, pointer, ret, size);
+	MEMDEBUG_MEMPOOL_CHANGE(context, pointer, ret, size);
 
 	return ret;
 }
@@ -1194,4 +1228,42 @@ pchomp(const char *in)
 	while (n > 0 && in[n - 1] == '\n')
 		n--;
 	return pnstrdup(in, n);
+}
+
+/*
+ * POLAR: Like palloc, but don't care the elog level
+ * update to PANIC in the critical section.
+ */
+void *
+polar_palloc_in_crit(Size size)
+{
+	/* duplicates MemoryContextAlloc to avoid increased overhead */
+	void	   *ret;
+	MemoryContext context = CurrentMemoryContext;
+	bool allow_in_crit;
+
+	allow_in_crit = context->allowInCritSection;
+	context->allowInCritSection = true;
+	ret = palloc(size);
+	context->allowInCritSection = allow_in_crit;
+	return ret;
+}
+
+/*
+ * POLAR: Like palloc_extended, but don't care the elog level
+ * update to PANIC in the critical section.
+ */
+void *
+polar_palloc_extended_in_crit(Size size, int flags)
+{
+	/* duplicates MemoryContextAlloc to avoid increased overhead */
+	void	   *ret;
+	MemoryContext context = CurrentMemoryContext;
+	bool allow_in_crit;
+
+	allow_in_crit = context->allowInCritSection;
+	context->allowInCritSection = true;
+	ret = palloc_extended(size, flags);
+	context->allowInCritSection = allow_in_crit;
+	return ret;
 }

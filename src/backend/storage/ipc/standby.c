@@ -29,10 +29,8 @@
 #include "storage/procarray.h"
 #include "storage/sinvaladt.h"
 #include "storage/standby.h"
-#include "replication/syncrep.h"
 #include "utils/hsearch.h"
 #include "utils/memutils.h"
-#include "utils/guc.h"
 #include "utils/ps_status.h"
 #include "utils/timeout.h"
 #include "utils/timestamp.h"
@@ -999,11 +997,25 @@ LogStandbySnapshot(void)
 	if (wal_level < WAL_LEVEL_LOGICAL)
 		LWLockRelease(ProcArrayLock);
 
+	/* 
+	 * POLAR csn
+	 * For the same reason with ProcArrayLock
+	 */
+	if (polar_csn_enable && wal_level < WAL_LEVEL_LOGICAL)
+		LWLockRelease(CommitSeqNoLock);
+
 	recptr = LogCurrentRunningXacts(running);
 
 	/* Release lock if we kept it longer ... */
 	if (wal_level >= WAL_LEVEL_LOGICAL)
 		LWLockRelease(ProcArrayLock);
+
+	/* 
+	 * POLAR csn
+	 * For the same reason with ProcArrayLock
+	 */
+	if (polar_csn_enable && wal_level >= WAL_LEVEL_LOGICAL)
+		LWLockRelease(CommitSeqNoLock);
 
 	/* GetRunningTransactionData() acquired XidGenLock, we must release it */
 	LWLockRelease(XidGenLock);

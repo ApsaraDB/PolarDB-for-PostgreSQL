@@ -43,10 +43,15 @@
 #ifndef POSTGRES_H
 #define POSTGRES_H
 
+/* POLAR px */
+#ifdef __cplusplus
+extern "C" {
+#endif
+/* POLAR end */
+
 #include "c.h"
 #include "utils/elog.h"
 #include "utils/palloc.h"
-
 /* ----------------------------------------------------------------
  *				Section 1:	variable-length datatypes (TOAST support)
  * ----------------------------------------------------------------
@@ -254,12 +259,17 @@ typedef struct
 #define VARTAG_1B_E(PTR) \
 	(((varattrib_1b_e *) (PTR))->va_tag)
 
+/* POLAR px */
+#define VARATT_LEN_1B(len) \
+	((((uint8) (len)) << 1) | 0x01)
+/* POLAR end */
+
 #define SET_VARSIZE_4B(PTR,len) \
 	(((varattrib_4b *) (PTR))->va_4byte.va_header = (((uint32) (len)) << 2))
 #define SET_VARSIZE_4B_C(PTR,len) \
 	(((varattrib_4b *) (PTR))->va_4byte.va_header = (((uint32) (len)) << 2) | 0x02)
 #define SET_VARSIZE_1B(PTR,len) \
-	(((varattrib_1b *) (PTR))->va_header = (((uint8) (len)) << 1) | 0x01)
+	(((varattrib_1b *) (PTR))->va_header = VARATT_LEN_1B(len))
 #define SET_VARTAG_1B_E(PTR,tag) \
 	(((varattrib_1b_e *) (PTR))->va_header = 0x01, \
 	 ((varattrib_1b_e *) (PTR))->va_tag = (tag))
@@ -312,7 +322,9 @@ typedef struct
 #define VARATT_IS_COMPRESSED(PTR)			VARATT_IS_4B_C(PTR)
 #define VARATT_IS_EXTERNAL(PTR)				VARATT_IS_1B_E(PTR)
 #define VARATT_IS_EXTERNAL_ONDISK(PTR) \
-	(VARATT_IS_EXTERNAL(PTR) && VARTAG_EXTERNAL(PTR) == VARTAG_ONDISK)
+	(VARATT_IS_EXTERNAL(PTR) && \
+	((VARTAG_EXTERNAL(PTR) == VARTAG_ONDISK)))
+
 #define VARATT_IS_EXTERNAL_INDIRECT(PTR) \
 	(VARATT_IS_EXTERNAL(PTR) && VARTAG_EXTERNAL(PTR) == VARTAG_INDIRECT)
 #define VARATT_IS_EXTERNAL_EXPANDED_RO(PTR) \
@@ -347,7 +359,6 @@ typedef struct
 /* caution: this will return a possibly unaligned pointer */
 #define VARDATA_ANY(PTR) \
 	 (VARATT_IS_1B(PTR) ? VARDATA_1B(PTR) : VARDATA_4B(PTR))
-
 
 /* ----------------------------------------------------------------
  *				Section 2:	Datum type + support macros
@@ -766,5 +777,11 @@ extern Datum Float8GetDatum(float8 X);
 #else
 #define Float4GetDatumFast(X) PointerGetDatum(&(X))
 #endif
+
+/* POLAR px */
+#ifdef __cplusplus
+}   /* extern "C" */
+#endif
+/* POLAR end */
 
 #endif							/* POSTGRES_H */

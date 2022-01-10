@@ -1445,7 +1445,8 @@ PGTYPESnumeric_from_long(signed long int long_val, numeric *var)
 		reach_limit /= 10;
 	}
 
-	if (alloc_var(var, size) < 0)
+	/* POALR */
+	if (alloc_var(var, size) < 0 || 0 == reach_limit)
 		return -1;
 
 	var->rscale = 1;

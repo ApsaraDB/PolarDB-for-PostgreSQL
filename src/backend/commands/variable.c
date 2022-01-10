@@ -33,6 +33,9 @@
 #include "utils/varlena.h"
 #include "mb/pg_wchar.h"
 
+/* POLAR */
+#include "storage/proc.h"
+
 /*
  * DATESTYLE
  */
@@ -508,6 +511,15 @@ check_transaction_read_only(bool *newval, void **extra, GucSource source)
 			GUC_check_errmsg("cannot set transaction read-write mode during recovery");
 			return false;
 		}
+
+		/* POLAR: we use MyProc->issuper as more convenient way for super user check */
+		if (polar_force_trans_ro_non_sup && !MyProc->issuper)
+		{
+			GUC_check_errcode(ERRCODE_ACTIVE_SQL_TRANSACTION);
+			GUC_check_errmsg("cannot set transaction read-write mode while being locked as readonly globally");
+			return false;
+		}
+		/* POLAR end */
 	}
 
 	return true;
@@ -949,4 +961,22 @@ show_role(void)
 
 	/* Otherwise we can just use the GUC string */
 	return role_string ? role_string : "none";
+}
+
+TransactionId
+polar_str_to_xid(const char * s, int mode, bool *success)
+{
+	uint64	cvt = polar_strtouint64(s, mode, "xid", success);
+
+	if (cvt > MaxTransactionId)
+	{
+		ereport(mode,
+			(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
+			 errmsg("value \"%s\" is out of range for type %s",
+					 s, "xid")));
+		if (success)
+			*success = false;
+		return InvalidTransactionId;
+	}
+	return (TransactionId) cvt;
 }

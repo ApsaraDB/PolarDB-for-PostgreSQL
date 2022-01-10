@@ -30,7 +30,8 @@
 #include "utils/timestamp.h"
 
 /* POLAR */
-#include "utils/guc.h"
+#include "access/polar_logindex_redo.h"
+#include "polar_datamax/polar_datamax.h"
 
 WalRcvData *WalRcv = NULL;
 
@@ -67,7 +68,8 @@ WalRcvShmemInit(void)
 		WalRcv->walRcvState = WALRCV_STOPPED;
 		SpinLockInit(&WalRcv->mutex);
 		WalRcv->latch = NULL;
-		if (polar_streaming_xlog_meta)
+
+		if (POLAR_LOGINDEX_ENABLE_XLOG_QUEUE())
 			WalRcv->polar_use_xlog_queue = true;
 	}
 }
@@ -233,14 +235,18 @@ RequestXLogStreaming(TimeLineID tli, XLogRecPtr recptr, const char *conninfo,
 	pg_time_t	now = (pg_time_t) time(NULL);
 	Latch	   *latch;
 
-	/*
-	 * We always start at the beginning of the segment. That prevents a broken
-	 * segment (i.e., with no records in the first half of a segment) from
-	 * being created by XLOG streaming, which might cause trouble later on if
-	 * the segment is e.g archived.
-	 */
-	if (XLogSegmentOffset(recptr, wal_segment_size) != 0)
-		recptr -= XLogSegmentOffset(recptr, wal_segment_size);
+	/* POLAR: In replica mode we don't write XLOG to disk, so care nothing about half of a segment */
+	if (!polar_in_replica_mode())
+	{
+		/*
+		 * We always start at the beginning of the segment. That prevents a broken
+		 * segment (i.e., with no records in the first half of a segment) from
+		 * being created by XLOG streaming, which might cause trouble later on if
+		 * the segment is e.g archived.
+		 */
+		if (XLogSegmentOffset(recptr, wal_segment_size) != 0)
+			recptr -= XLogSegmentOffset(recptr, wal_segment_size);
+	}
 
 	SpinLockAcquire(&walrcv->mutex);
 
@@ -270,13 +276,38 @@ RequestXLogStreaming(TimeLineID tli, XLogRecPtr recptr, const char *conninfo,
 	/*
 	 * If this is the first startup of walreceiver (on this timeline),
 	 * initialize receivedUpto and latestChunkStart to the starting point.
+	 *
+	 * In DMA mode, the starting point must be the end of WAL record.
 	 */
-	if (walrcv->receiveStart == 0 || walrcv->receivedTLI != tli)
+	if (polar_enable_dma || walrcv->receiveStart == 0 || walrcv->receivedTLI != tli)
 	{
 		walrcv->receivedUpto = recptr;
 		walrcv->receivedTLI = tli;
 		walrcv->latestChunkStart = recptr;
 	}
+	else
+	{
+		/* 
+		 * POLAR: when no timeline switch, set receivedUpto and latestChunkStart to the last valid lsn when request xlog streaming
+		 * so that when we re-receive a wal segment file(there may be wrong data in the wal file so we need to re-receive it)
+		 * we can correctly judge whether we have received new wal in WaitForWALToBecomeAvailable func according to new receivedUpto
+		 * rather than the previous one, which maybe greater than the wal we actually received in current streaming process.
+		 * similarly, set latestChunkStart each time so that we can update XLogReceiptTime correctly when we have replayed new wal 
+		 */ 
+		TimeLineID valid_tli = 0;
+		XLogRecPtr valid_lsn = InvalidXLogRecPtr;
+		valid_lsn = polar_is_datamax() ? polar_datamax_get_last_valid_received_lsn(polar_datamax_ctl, &valid_tli) :
+				GetXLogReplayRecPtr(&valid_tli);
+		/* POLAR: set receivedUpto as the max value */
+		if (valid_lsn > recptr)
+		{
+			walrcv->latestChunkStart = walrcv->receivedUpto = valid_lsn;
+			walrcv->receivedTLI = valid_tli;
+		}
+		else
+			walrcv->latestChunkStart = walrcv->receivedUpto = recptr;
+	}
+	
 	walrcv->receiveStart = recptr;
 	walrcv->receiveStartTLI = tli;
 

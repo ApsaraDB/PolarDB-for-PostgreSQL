@@ -1,9 +1,10 @@
 /*-------------------------------------------------------------------------
  *
  * polar_flushlist.c
- *  routines for managing the buffer pool's flushlist.
+ *	  routines for managing the buffer pool's flushlist.
  *
- * Copyright (c) 2018, Alibaba Group Holding Limited
+ * Copyright (c) 2021, Alibaba Group Holding Limited
+ *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -14,18 +15,19 @@
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
- * limitations under the License.*
+ * limitations under the License.
+ *
  *
  * IDENTIFICATION
- *  src/backend/storage/buffer/polar_flushlist.c
+ *	  src/backend/storage/buffer/polar_flushlist.c
  *
  *-------------------------------------------------------------------------
  */
 #include "postgres.h"
 
-#include "access/polar_log.h"
-#include "storage/polar_bufmgr.h"
+#include "access/polar_logindex_redo.h"
 #include "storage/polar_flushlist.h"
+#include "storage/polar_bufmgr.h"
 #include "utils/guc.h"
 
 #define buffer_not_in_flush_list(buf) \
@@ -49,7 +51,7 @@ static void append_one_buffer(BufferDesc *buf);
 Size
 polar_flush_list_ctl_shmem_size(void)
 {
-	Size		size = 0;
+	Size        size = 0;
 
 	if (!polar_flush_list_enabled())
 		return size;
@@ -66,15 +68,15 @@ polar_flush_list_ctl_shmem_size(void)
 void
 polar_init_flush_list_ctl(bool init)
 {
-	bool		found;
+	bool found;
 
 	if (!polar_flush_list_enabled())
 		return;
 
 	/* Get or create the shared memory for flushlist control block */
 	polar_flush_list_ctl = (FlushListControl *)
-		ShmemInitStruct("Flushlist Control Status",
-						sizeof(FlushListControl), &found);
+						   ShmemInitStruct("Flushlist Control Status",
+										   sizeof(FlushListControl), &found);
 
 	if (!found)
 	{
@@ -86,7 +88,7 @@ polar_init_flush_list_ctl(bool init)
 		SpinLockInit(&polar_flush_list_ctl->flushlist_lock);
 
 		polar_flush_list_ctl->first_flush_buffer = POLAR_FLUSHNEXT_END_OF_LIST;
-		polar_flush_list_ctl->last_flush_buffer = POLAR_FLUSHNEXT_END_OF_LIST;
+		polar_flush_list_ctl->last_flush_buffer  = POLAR_FLUSHNEXT_END_OF_LIST;
 		polar_flush_list_ctl->current_pos = POLAR_FLUSHNEXT_NOT_IN_LIST;
 		polar_flush_list_ctl->latest_flush_count = 0;
 
@@ -109,9 +111,9 @@ polar_init_flush_list_ctl(bool init)
 int
 polar_get_batch_flush_buffer(int *batch_buf)
 {
-	int			i = 0;
-	int			buffer_id;
-	int			flush_count;
+	int         i = 0;
+	int         buffer_id;
+	int         flush_count;
 
 	Assert(polar_flush_list_enabled());
 
@@ -202,7 +204,9 @@ polar_put_buffer_to_flush_list(BufferDesc *buf,
 
 	/* Allocate the current insert lsn as a fake oldest lsn */
 	if (XLogRecPtrIsInvalid(lsn))
+	{
 		polar_buffer_set_fake_oldest_lsn(buf);
+	}
 	else
 		polar_buffer_set_oldest_lsn(buf, lsn);
 
@@ -254,8 +258,8 @@ polar_adjust_position_in_flush_list(BufferDesc *buf)
 static void
 remove_one_buffer(BufferDesc *buf)
 {
-	int			prev_flush_id;
-	int			next_flush_id;
+	int         prev_flush_id;
+	int         next_flush_id;
 	BufferDesc *prev_buf;
 	BufferDesc *next_buf;
 
@@ -268,8 +272,8 @@ remove_one_buffer(BufferDesc *buf)
 	prev_flush_id = buf->flush_prev;
 	next_flush_id = buf->flush_next;
 
-	/* if (polar_enable_debug) */
-	/* POLAR_LOG_BUFFER_DESC_WITH_FLUSHLIST(buf); */
+	if (polar_enable_debug)
+		POLAR_LOG_BUFFER_DESC_WITH_FLUSHLIST(buf);
 
 	if (prev_flush_id == POLAR_FLUSHNEXT_END_OF_LIST &&
 		next_flush_id == POLAR_FLUSHNEXT_END_OF_LIST)
@@ -279,7 +283,7 @@ remove_one_buffer(BufferDesc *buf)
 		polar_flush_list_ctl->last_flush_buffer = POLAR_FLUSHNEXT_END_OF_LIST;
 	}
 	else if (prev_flush_id == POLAR_FLUSHNEXT_END_OF_LIST &&
-			 next_flush_id != POLAR_FLUSHNEXT_END_OF_LIST)
+		next_flush_id != POLAR_FLUSHNEXT_END_OF_LIST)
 	{
 		/* First one, and has next buffer */
 		next_buf = GetBufferDescriptor(next_flush_id);
@@ -287,7 +291,7 @@ remove_one_buffer(BufferDesc *buf)
 		polar_flush_list_ctl->first_flush_buffer = next_flush_id;
 	}
 	else if (prev_flush_id != POLAR_FLUSHNEXT_END_OF_LIST &&
-			 next_flush_id == POLAR_FLUSHNEXT_END_OF_LIST)
+		next_flush_id == POLAR_FLUSHNEXT_END_OF_LIST)
 	{
 		/* Last one, and has prev buffer */
 		prev_buf = GetBufferDescriptor(prev_flush_id);

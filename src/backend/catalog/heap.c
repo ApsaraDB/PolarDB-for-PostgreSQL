@@ -84,6 +84,11 @@
 #include "utils/syscache.h"
 #include "utils/tqual.h"
 
+/* POLAR */
+#include "utils/guc.h"
+#include "storage/procarray.h"
+#include "px/px_vars.h"
+/* POLAR end */
 
 /* Potentially set by pg_upgrade_support functions */
 Oid			binary_upgrade_next_heap_pg_class_oid = InvalidOid;
@@ -192,7 +197,31 @@ static FormData_pg_attribute a7 = {
 	true, 'p', 'i', true, false, false, '\0', false, true, 0
 };
 
-static const Form_pg_attribute SysAtt[] = {&a1, &a2, &a3, &a4, &a5, &a6, &a7};
+/* POLAR px */
+static FormData_pg_attribute a8 = {
+	0, {"_px_worker_id"}, INT4OID, 0, sizeof(PxWorkerId),
+	PxWorkerIdAttributeNumber, 0, -1, -1,
+	true, 'p', 'i', true, false, false, '\0', false, true, 0
+};
+
+static FormData_pg_attribute a9 = {
+	0, {"_root_ctid"}, TIDOID, 0, sizeof(ItemPointerData),
+	RootSelfItemPointerAttributeNumber, 0, -1, -1,
+	false, 'p', 's', true, false, false, '\0', false, true, 0
+};
+/* POLAR end */
+
+static const Form_pg_attribute SysAtt[] = {&a1, &a2, &a3, &a4, &a5, &a6, &a7, &a8, &a9};
+
+/*
+ * POLAR px: get sysattr len
+ */
+static inline int
+sysattr_len()
+{
+	return (int) lengthof(SysAtt);
+}
+/* POLAR end */
 
 /*
  * This function returns a Form_pg_attribute pointer for a system attribute.
@@ -202,7 +231,7 @@ static const Form_pg_attribute SysAtt[] = {&a1, &a2, &a3, &a4, &a5, &a6, &a7};
 Form_pg_attribute
 SystemAttributeDefinition(AttrNumber attno, bool relhasoids)
 {
-	if (attno >= 0 || attno < -(int) lengthof(SysAtt))
+	if (attno >= 0 || attno < -(int) (sysattr_len()))
 		elog(ERROR, "invalid system attribute number %d", attno);
 	if (attno == ObjectIdAttributeNumber && !relhasoids)
 		elog(ERROR, "invalid system attribute number %d", attno);
@@ -217,8 +246,7 @@ Form_pg_attribute
 SystemAttributeByName(const char *attname, bool relhasoids)
 {
 	int			j;
-
-	for (j = 0; j < (int) lengthof(SysAtt); j++)
+	for (j = 0; j < sysattr_len(); j++)
 	{
 		Form_pg_attribute att = SysAtt[j];
 
@@ -623,9 +651,24 @@ InsertPgAttributeTuple(Relation pg_attribute_rel,
 					   Form_pg_attribute new_attribute,
 					   CatalogIndexState indstate)
 {
+	HeapTuple tup = heaptuple_from_pg_attribute(pg_attribute_rel, new_attribute);
+
+	/* finally insert the new tuple, update the indexes, and clean up */
+	if (indstate != NULL)
+		CatalogTupleInsertWithInfo(pg_attribute_rel, tup, indstate);
+	else
+		CatalogTupleInsert(pg_attribute_rel, tup);
+
+	heap_freetuple(tup);
+}
+
+/* POLAR px */
+HeapTuple heaptuple_from_pg_attribute(Relation pg_attribute_rel,
+					Form_pg_attribute new_attribute)
+{
+
 	Datum		values[Natts_pg_attribute];
 	bool		nulls[Natts_pg_attribute];
-	HeapTuple	tup;
 
 	/* This is a tad tedious, but way cleaner than what we used to do... */
 	memset(values, 0, sizeof(values));
@@ -658,15 +701,7 @@ InsertPgAttributeTuple(Relation pg_attribute_rel,
 	nulls[Anum_pg_attribute_attfdwoptions - 1] = true;
 	nulls[Anum_pg_attribute_attmissingval - 1] = true;
 
-	tup = heap_form_tuple(RelationGetDescr(pg_attribute_rel), values, nulls);
-
-	/* finally insert the new tuple, update the indexes, and clean up */
-	if (indstate != NULL)
-		CatalogTupleInsertWithInfo(pg_attribute_rel, tup, indstate);
-	else
-		CatalogTupleInsert(pg_attribute_rel, tup);
-
-	heap_freetuple(tup);
+	return heap_form_tuple(RelationGetDescr(pg_attribute_rel), values, nulls);
 }
 
 /* --------------------------------
@@ -740,13 +775,18 @@ AddNewAttributeTuples(Oid new_rel_oid,
 	 */
 	if (relkind != RELKIND_VIEW && relkind != RELKIND_COMPOSITE_TYPE)
 	{
-		for (i = 0; i < (int) lengthof(SysAtt); i++)
+		for (i = 0; i < (int) sysattr_len(); i++)
 		{
 			FormData_pg_attribute attStruct;
 
 			/* skip OID where appropriate */
 			if (!tupdesc->tdhasoid &&
 				SysAtt[i]->attnum == ObjectIdAttributeNumber)
+				continue;
+
+			/* POLAR px: skip _px_worker_id and _root_ctid pg_attribute */
+			if (SysAtt[i]->attnum == PxWorkerIdAttributeNumber ||
+				SysAtt[i]->attnum == RootSelfItemPointerAttributeNumber)
 				continue;
 
 			memcpy(&attStruct, (char *) SysAtt[i], sizeof(FormData_pg_attribute));
@@ -918,8 +958,16 @@ AddNewRelationTuple(Relation pg_class_desc,
 		 * Initialize to the minimum XID that could put tuples in the table.
 		 * We know that no xacts older than RecentXmin are still running, so
 		 * that will do.
+		 * POLAR csn
+		 * We nolonger maintain RecentXmin in csn mode, get newest value by func 
+		 * call.
 		 */
-		new_rel_reltup->relfrozenxid = RecentXmin;
+		if (polar_csn_enable)
+		{
+			new_rel_reltup->relfrozenxid = GetOldestActiveTransactionId();
+		}
+		else
+			new_rel_reltup->relfrozenxid = RecentXmin;
 
 		/*
 		 * Similarly, initialize the minimum Multixact to the first value that

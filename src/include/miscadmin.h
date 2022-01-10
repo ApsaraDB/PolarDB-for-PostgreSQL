@@ -82,6 +82,12 @@ extern PGDLLIMPORT volatile bool QueryCancelPending;
 extern PGDLLIMPORT volatile bool ProcDiePending;
 extern PGDLLIMPORT volatile bool IdleInTransactionSessionTimeoutPending;
 extern PGDLLIMPORT volatile sig_atomic_t ConfigReloadPending;
+extern PGDLLIMPORT volatile sig_atomic_t LogCurrentPlanPending;    /* POLAR: log query */
+extern PGDLLIMPORT volatile bool MemoryContextDumpPending;
+
+/* POLADR px */
+extern PGDLLIMPORT volatile bool QueryFinishPending;
+/* POLADR end */
 
 extern volatile bool ClientConnectionLost;
 
@@ -92,6 +98,9 @@ extern PGDLLIMPORT volatile uint32 CritSectionCount;
 
 /* in tcop/postgres.c */
 extern void ProcessInterrupts(void);
+
+/* POLAR: file identify whether replica node has booted before */
+#define POLAR_REPLICA_BOOTED_FILE	"polar_replica_booted"
 
 #ifndef WIN32
 
@@ -160,6 +169,9 @@ extern PGDLLIMPORT int MaxBackends;
 extern PGDLLIMPORT int MaxConnections;
 extern PGDLLIMPORT int max_worker_processes;
 extern PGDLLIMPORT int max_parallel_workers;
+
+/* POLAR */
+extern PGDLLIMPORT int MaxNormalBackends;
 
 extern PGDLLIMPORT int MyProcPid;
 extern PGDLLIMPORT pg_time_t MyStartTime;
@@ -313,6 +325,7 @@ extern char *GetUserNameFromId(Oid roleid, bool noerr);
 extern Oid	GetUserId(void);
 extern Oid	GetOuterUserId(void);
 extern Oid	GetSessionUserId(void);
+extern void	SetSessionUserId(Oid, bool);
 extern Oid	GetAuthenticatedUserId(void);
 extern void GetUserIdAndSecContext(Oid *userid, int *sec_context);
 extern void SetUserIdAndSecContext(Oid userid, int sec_context);
@@ -338,6 +351,10 @@ extern void SwitchBackToLocalLatch(void);
 extern bool superuser(void);	/* current user is superuser */
 extern bool superuser_arg(Oid roleid);	/* given user is superuser */
 
+/* POLAR: in utils/misc/superuser.c */
+extern bool polar_superuser(void);	/* current user is superuser */
+extern bool polar_superuser_arg(Oid roleid);	/* given user is superuser */
+extern bool polar_has_more_privs_than_role(Oid member, Oid role);
 
 /* POLAR */
 extern void polar_set_database_path(const char *path);
@@ -406,7 +423,11 @@ typedef enum
 	CheckpointerProcess,
 	WalWriterProcess,
 	WalReceiverProcess,
-
+	ConsensusProcess,
+	PolarWalPipelinerProcess,
+	LogIndexBgWriterProcess,
+	FlogBgInserterProcess,
+	FlogBgWriterProcess,
 	NUM_AUXPROCTYPES			/* Must be last! */
 } AuxProcType;
 
@@ -418,7 +439,7 @@ extern AuxProcType MyAuxProcType;
 #define AmCheckpointerProcess()		(MyAuxProcType == CheckpointerProcess)
 #define AmWalWriterProcess()		(MyAuxProcType == WalWriterProcess)
 #define AmWalReceiverProcess()		(MyAuxProcType == WalReceiverProcess)
-
+#define AmLogIndexBgWriterProcess() (MyAuxProcType == LogIndexBgWriterProcess)
 
 /*****************************************************************************
  *	  pinit.h --															 *
@@ -438,6 +459,8 @@ extern PGDLLIMPORT bool process_shared_preload_libraries_in_progress;
 extern char *session_preload_libraries_string;
 extern char *shared_preload_libraries_string;
 extern char *local_preload_libraries_string;
+/* POLAR: used for shared libraries update when binary upgrade */
+extern char *polar_internal_shared_preload_libraries;
 
 extern void CreateDataDirLockFile(bool amPostmaster);
 extern void CreateSocketLockFile(const char *socketfile, bool amPostmaster,
@@ -458,6 +481,37 @@ extern void CancelBackup(void);
 /* POLAR: for replica, copy some directories from shared storage to local. */
 extern void polar_copy_dirs_from_shared_storage_to_local(void);
 extern void polar_remove_file_in_dir(const char *dirname);
-extern void polar_init_local_dir_for_replica(void);
+extern void polar_init_local_dir(void);
+extern void polar_init_global_dir_for_replica_or_standby(void);
+extern bool polar_replica_behind_exceed_size(uint64 size);
+extern bool polar_need_copy_local_dir_for_replica(void);
+extern void polar_create_replica_booted_file(void);
+extern void polar_remove_replica_booted_file(void);
 
+extern void polar_copy_pg_control_from_shared_storage_to_local(void);
+
+/* POLAR px */
+extern bool px_authenticated_user_is_superuser(void);
+extern bool IsAuthenticatedUserSuperUser(void);
+/* POLAR end */
+
+/* POLAR */
+typedef enum
+{
+	SHMEM_FILE_NOT_EXIST = 0,  	/* file doesn't exist */
+	SHMEM_FILE_INVALID,         /* file exists but content is invalid */
+	SHMEM_FILE_VALID,			/* file exists and content is valid */
+	SHMEM_FILE_SHM_IN_USE,		/* shared memory is in use */
+	SHMEM_FILE_SHM_NOT_IN_USE,	/* shared memory is not in use */
+} PolarShmemFileStatus;
+
+extern PolarShmemFileStatus polar_read_shmem_info_from_file(unsigned long *key, unsigned long *id, bool skip_enoent);
+extern void polar_write_shmem_info_to_file(unsigned long key, unsigned long id);
+extern void polar_create_shmem_info_file(bool am_postmaster);
+
+/* POLAR: delay dml */
+extern void polar_delay_dml_wait(void);
+extern void polar_init_dynamic_bgworker_in_backends(void);
+
+#define polar_syntactically_compatible_tablespace_mode() (!polar_enable_dma && !superuser())
 #endif							/* MISCADMIN_H */

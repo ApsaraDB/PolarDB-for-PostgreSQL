@@ -1,7 +1,6 @@
 /*-------------------------------------------------------------------------
  *
  * control_data_change.c
- *  Implementation of modifying controlfile's content.
  *
  * Copyright (c) 2020, Alibaba Group Holding Limited
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,7 +16,7 @@
  * limitations under the License.
  *
  * IDENTIFICATION
- *  src/bin/polar_tools/control_data_change.c
+ *	  src/bin/polar_tools/control_data_change.c
  *
  *-------------------------------------------------------------------------
  */
@@ -31,6 +30,7 @@ usage(void)
 	printf("Control file data change\n");
 	printf("-f, --file-path control file path\n");
 	printf("-n, --new-path new control file path\n");
+	printf("-c, --checkpoint-location\n");
 	printf("-p, --redo-position new redo position\n");
 	printf("-?, --help show this help, then exit\n");
 }
@@ -38,6 +38,7 @@ usage(void)
 static struct option long_options[] = {
 	{"file-path", required_argument, NULL, 'f'},
 	{"new-path", required_argument, NULL, 'n'},
+	{"checkpoint-location", required_argument, NULL, 'c'},
 	{"redo-position", required_argument, NULL, 'p'},
 	{"help", no_argument, NULL, '?'},
 	{NULL, 0, NULL, 0}
@@ -130,6 +131,7 @@ control_data_change_main(int argc, char **argv)
 	bool succeed = false;
 	ControlFileData *data;
 	XLogRecPtr redo_position = InvalidXLogRecPtr;
+	XLogRecPtr checkpoint_loc = InvalidXLogRecPtr;
 
 	if (argc <= 1)
 	{
@@ -137,7 +139,7 @@ control_data_change_main(int argc, char **argv)
 		return -1;
 	}
 
-	while ((option = getopt_long(argc, argv, "f:n:p:?", long_options, &optindex)) != -1)
+	while ((option = getopt_long(argc, argv, "f:n:p:c:?", long_options, &optindex)) != -1)
 	{
 		switch (option)
 		{
@@ -151,6 +153,13 @@ control_data_change_main(int argc, char **argv)
 				if (sscanf(optarg, "%lX", &redo_position) != 1)
 				{
 					fprintf(stderr, "Could not parse redo position\n");
+					goto end;
+				}	
+				break;
+			case 'c':
+				if (sscanf(optarg, "%lX", &checkpoint_loc) != 1)
+				{
+					fprintf(stderr, "Could not parse checkpoint position\n");
 					goto end;
 				}	
 				break;
@@ -174,6 +183,8 @@ control_data_change_main(int argc, char **argv)
 
 	if (redo_position != InvalidXLogRecPtr)
 		data->checkPointCopy.redo = redo_position;
+	if (checkpoint_loc != InvalidXLogRecPtr)
+		data->checkPoint = checkpoint_loc;
 
 	if (write_control_data(new_file_path, data))
 		succeed = true;

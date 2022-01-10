@@ -53,6 +53,10 @@
 #include "utils/syscache.h"
 #include "utils/rel.h"
 
+/* POLAR px */
+#include "utils/regproc.h"
+#include "catalog/pg_proc.h"
+
 
 /* Convenience macro for the most common makeNamespaceItem() case */
 #define makeDefaultNSItem(rte)	makeNamespaceItem(rte, true, true, false, true)
@@ -104,7 +108,9 @@ static Node *transformFrameOffset(ParseState *pstate, int frameOptions,
 					 Oid rangeopfamily, Oid rangeopcintype, Oid *inRangeFunc,
 					 Node *clause);
 
-
+static bool polar_checkTransformGlobalFunction(ParseState *pstate, RangeFunction *r, 
+								FuncCall *fc, List *coldeflist, List **funcexprs,
+								List **funcnames, List **coldeflists);
 /*
  * transformFromClause -
  *	  Process the FROM clause and add items to the query's range table,
@@ -503,6 +509,86 @@ transformRangeSubselect(ParseState *pstate, RangeSubselect *r)
 	return rte;
 }
 
+/* transform polar_global_function('funcname', arg1, arg2...) */
+static bool
+polar_checkTransformGlobalFunction(ParseState *pstate, RangeFunction *r, 
+	FuncCall *fc, List *coldeflist, List **funcexprs, List **funcnames, 
+	List **coldeflists)
+{
+	if (NULL != r &&
+		NULL != fc &&
+		!r->is_rowsfrom && 
+		list_length(r->functions) == 1 &&
+		list_length(fc->funcname) == 1 &&
+		strcmp(strVal(linitial(fc->funcname)), POLAR_GLOBAL_FUNCTION) == 0 &&
+		fc->agg_order == NIL &&
+		fc->agg_filter == NULL &&
+		!fc->agg_star &&
+		!fc->agg_distinct &&
+		!fc->func_variadic &&
+		fc->over == NULL &&
+		list_length(fc->args) >= 1 &&
+		IsA(linitial(fc->args), A_Const) &&
+		IsA(&(((A_Const  *)linitial(fc->args))->val), String) &&
+		coldeflist == NIL)
+	{
+		/* If we see a polar_global_function('name') call with no special decoration, it actually
+		* refers to a table.
+		*/
+		A_Const  *arg_val = linitial(fc->args);
+		Node 	 *last_srf = pstate->p_last_srf;
+		char 	 *new_funcname = strVal(&(arg_val->val));
+		List 	 *new_args = list_delete_first(list_copy(fc->args));
+
+		FuncCall *new_funccall = makeFuncCall(
+								list_make1(makeString(new_funcname)),
+								new_args,
+								fc->location);
+		Node 	 *new_funcexpr = transformExpr(pstate, 
+												(Node *) new_funccall,
+												EXPR_KIND_FROM_FUNCTION);
+
+		if (!IsA(new_funcexpr, FuncExpr))
+			return false;
+
+		if (!((FuncExpr *)new_funcexpr)->funcretset)
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+						errmsg("only support set-returning function now"),
+							parser_errposition(pstate,
+										exprLocation(pstate->p_last_srf))));
+
+		/* nodeFunctionscan.c requires SRFs to be at top level */
+		if (pstate->p_last_srf != last_srf &&
+			pstate->p_last_srf != new_funcexpr)
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+						errmsg("set-returning functions must appear at top level of FROM"),
+							parser_errposition(pstate,
+										exprLocation(pstate->p_last_srf))));
+
+		if (coldeflist && r->coldeflist)
+			ereport(ERROR,
+					(errcode(ERRCODE_SYNTAX_ERROR),
+					errmsg("multiple column definition lists are not allowed for the same function"),
+					parser_errposition(pstate,
+									exprLocation((Node *) r->coldeflist))));
+
+		((FuncExpr *)new_funcexpr)->isGlobalFunc = true;
+
+		*funcexprs = lappend(*funcexprs, new_funcexpr);
+
+		*funcnames = lappend(*funcnames, FigureColname((Node *)new_funccall));
+
+		*coldeflists = lappend(*coldeflists, coldeflist);
+
+		px_use_global_function = true;
+
+		return true;
+	}
+
+	return false;
+}
 
 /*
  * transformRangeFunction --- transform a function call appearing in FROM
@@ -626,6 +712,13 @@ transformRangeFunction(ParseState *pstate, RangeFunction *r)
 					coldeflists = lappend(coldeflists, coldeflist);
 				}
 				continue;		/* done with this function item */
+			}
+
+			/* transform polar_global_function('funcname', arg1, arg2...) */
+			if (polar_checkTransformGlobalFunction(pstate, r, fc, coldeflist, 
+										&funcexprs, &funcnames, &coldeflists))
+			{
+				break;
 			}
 		}
 

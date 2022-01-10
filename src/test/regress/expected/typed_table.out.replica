@@ -1,0 +1,92 @@
+CREATE TABLE ttable1 OF nothing;
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TYPE person_type AS (id int, name text);
+ERROR:  cannot execute CREATE TYPE in a read-only transaction
+CREATE TABLE persons OF person_type;
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE IF NOT EXISTS persons OF person_type;
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+SELECT * FROM persons;
+ id | name 
+----+------
+(0 rows)
+
+\d persons
+CREATE FUNCTION get_all_persons() RETURNS SETOF person_type
+LANGUAGE SQL
+AS $$
+    SELECT * FROM persons;
+$$;
+ERROR:  cannot execute CREATE FUNCTION in a read-only transaction
+SELECT * FROM get_all_persons();
+ id | name 
+----+------
+(0 rows)
+
+-- certain ALTER TABLE operations on typed tables are not allowed
+ALTER TABLE persons ADD COLUMN comment text;
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+ALTER TABLE persons DROP COLUMN name;
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+ALTER TABLE persons RENAME COLUMN id TO num;
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+ALTER TABLE persons ALTER COLUMN name TYPE varchar;
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+CREATE TABLE stuff (id int);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+ALTER TABLE persons INHERIT stuff;
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+CREATE TABLE personsx OF person_type (myname WITH OPTIONS NOT NULL); -- error
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE persons2 OF person_type (
+    id WITH OPTIONS PRIMARY KEY,
+    UNIQUE (name)
+);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+\d persons2
+CREATE TABLE persons3 OF person_type (
+    PRIMARY KEY (id),
+    name WITH OPTIONS DEFAULT ''
+);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+\d persons3
+CREATE TABLE persons4 OF person_type (
+    name WITH OPTIONS NOT NULL,
+    name WITH OPTIONS DEFAULT ''  -- error, specified more than once
+);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+DROP TYPE person_type RESTRICT;
+ERROR:  cannot execute DROP TYPE in a read-only transaction
+DROP TYPE person_type CASCADE;
+ERROR:  cannot execute DROP TYPE in a read-only transaction
+CREATE TABLE persons5 OF stuff; -- only CREATE TYPE AS types may be used
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+DROP TABLE stuff;
+ERROR:  cannot execute DROP TABLE in a read-only transaction
+-- implicit casting
+CREATE TYPE person_type AS (id int, name text);
+ERROR:  cannot execute CREATE TYPE in a read-only transaction
+CREATE TABLE persons OF person_type;
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+INSERT INTO persons VALUES (1, 'test');
+ERROR:  cannot execute INSERT in a read-only transaction
+CREATE FUNCTION namelen(person_type) RETURNS int LANGUAGE SQL AS $$ SELECT length($1.name) $$;
+ERROR:  cannot execute CREATE FUNCTION in a read-only transaction
+SELECT id, namelen(persons) FROM persons;
+ id | namelen 
+----+---------
+  1 |       4
+(1 row)
+
+CREATE TABLE persons2 OF person_type (
+    id WITH OPTIONS PRIMARY KEY,
+    UNIQUE (name)
+);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+\d persons2
+CREATE TABLE persons3 OF person_type (
+    PRIMARY KEY (id),
+    name NOT NULL DEFAULT ''
+);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+\d persons3

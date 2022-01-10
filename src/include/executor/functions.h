@@ -38,4 +38,8 @@ extern bool check_sql_fn_retval(Oid func_id, Oid rettype,
 
 extern DestReceiver *CreateSQLFunctionDestReceiver(void);
 
+/* POLAR px */
+extern void querytree_safe_for_px(Node *node);
+/* POLAR end */
+
 #endif							/* FUNCTIONS_H */

@@ -58,6 +58,9 @@ typedef void (*ResourceReleaseCallback) (ResourceReleasePhase phase,
 										 bool isTopLevel,
 										 void *arg);
 
+/* POLAR px */
+typedef void (*ResourceWalkerCallback) (const struct ResourceOwnerData * owner);
+/* POLAR end */
 
 /*
  * Functions in resowner.c
@@ -78,5 +81,10 @@ extern void RegisterResourceReleaseCallback(ResourceReleaseCallback callback,
 								void *arg);
 extern void UnregisterResourceReleaseCallback(ResourceReleaseCallback callback,
 								  void *arg);
+
+/* POLAR px */
+extern void PxResourceOwnerWalker(ResourceOwner owner,
+							ResourceWalkerCallback callback);
+extern const char* polar_get_resourceowner_name(ResourceOwner owner);
 
 #endif							/* RESOWNER_H */

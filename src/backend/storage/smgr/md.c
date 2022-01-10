@@ -40,7 +40,9 @@
 #include "pg_trace.h"
 
 /* POLAR */
+#include "access/polar_logindex_redo.h"
 #include "storage/polar_fd.h"
+#include "utils/faultinjector.h"
 #include "utils/guc.h"
 
 /* intervals for calling AbsorbFsyncRequests in mdsync and mdpostckpt */
@@ -200,6 +202,7 @@ static MdfdVec *_mdfd_getseg(SMgrRelation reln, ForkNumber forkno,
 			 BlockNumber blkno, bool skipFsync, int behavior);
 static BlockNumber _mdnblocks(SMgrRelation reln, ForkNumber forknum,
 		   MdfdVec *seg);
+static BlockNumber polar_cache_mdnblocks(SMgrRelation reln, ForkNumber forknum, MdfdVec *seg);
 
 
 /*
@@ -217,8 +220,7 @@ mdinit(void)
 	 * it if we are standalone (not under a postmaster) or if we are a startup
 	 * or checkpointer auxiliary process.
 	 */
-	if (!IsUnderPostmaster || AmStartupProcess() || AmCheckpointerProcess() ||
-		AmPolarBackgroundWriterProcess())
+	if (!IsUnderPostmaster || AmStartupProcess() || AmCheckpointerProcess())
 	{
 		HASHCTL		hash_ctl;
 
@@ -246,6 +248,8 @@ mdinit(void)
 									  HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 		pendingUnlinks = NIL;
 	}
+
+	polar_env_init();
 }
 
 /*
@@ -503,9 +507,18 @@ mdextend(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
 	int			nbytes = 0;
 	MdfdVec    *v;
 
+	/* POLAR: bulk extend */
+	if (polar_smgr_being_bulk_extend(reln, forknum) == true)
+	{
+		Assert(reln->polar_nblocks_faked_for_bulk_extend[forknum] == blocknum);
+		++reln->polar_nblocks_faked_for_bulk_extend[forknum];
+		return;
+	}
+	/* POLAR end */
+
 	/* This assert is too expensive to have on normally ... */
 #ifdef CHECK_WRITE_VS_EXTEND
-	Assert(blocknum >= mdnblocks(reln, forknum));
+	Assert(blocknum >= mdnblocks(reln, forknum, false));
 #endif
 
 	/*
@@ -803,7 +816,12 @@ mdread(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
 		 * complaining.  This allows, for example, the case of trying to
 		 * update a block that was later truncated away.
 		 */
-		if (zero_damaged_pages || InRecovery)
+		/*
+		 * POLAR: If it's in logindex background process it may replay xlog which block doesn't exist in the storage,
+		 * like FPI or init page.So we should to init this buffer to be zero if it doesn't exist.
+		 */
+		if (zero_damaged_pages || InRecovery
+				|| POLAR_IN_LOGINDEX_PARALLEL_REPLAY())
 			MemSet(buffer, 0, BLCKSZ);
 		else
 			ereport(ERROR,
@@ -813,6 +831,89 @@ mdread(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
 							nbytes, BLCKSZ)));
 	}
 }
+
+/*
+ *  POLAR: bulk read
+ *
+ *	polar_mdbulkread() -- Read the specified continuous blocks from a relation.
+ *
+ *  Caller must ensure that the blockcount does not exceed the length of the relation file.
+ */
+void
+polar_mdbulkread(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
+				 int blockCount, char *buffer)
+{
+	off_t		seekpos;
+	int			nbytes;
+	MdfdVec    *v;
+	int         amount = blockCount * BLCKSZ;
+
+	TRACE_POSTGRESQL_SMGR_MD_READ_START(forknum, blocknum,
+										reln->smgr_rnode.node.spcNode,
+										reln->smgr_rnode.node.dbNode,
+										reln->smgr_rnode.node.relNode,
+										reln->smgr_rnode.backend);
+
+	v = _mdfd_getseg(reln, forknum, blocknum, false,
+					 EXTENSION_FAIL | EXTENSION_CREATE_RECOVERY);
+
+	seekpos = (off_t) BLCKSZ * (blocknum % ((BlockNumber) RELSEG_SIZE));
+
+	Assert(seekpos < (off_t) BLCKSZ * RELSEG_SIZE);
+	Assert(seekpos + (off_t) amount <= (off_t) BLCKSZ * RELSEG_SIZE);
+
+	if (POLAR_ENABLE_PREAD())
+		nbytes = polar_file_pread(v->mdfd_vfd, buffer, amount, seekpos, WAIT_EVENT_DATA_FILE_PREAD);
+	else
+	{
+		if (FileSeek(v->mdfd_vfd, seekpos, SEEK_SET) != seekpos)
+			ereport(ERROR,
+					(errcode_for_file_access(),
+					 errmsg("could not seek to block %u in file \"%s\": %m",
+							blocknum, FilePathName(v->mdfd_vfd))));
+
+		nbytes = FileRead(v->mdfd_vfd, buffer, amount, WAIT_EVENT_DATA_FILE_READ);
+	}
+
+	TRACE_POSTGRESQL_SMGR_MD_READ_DONE(forknum, blocknum,
+									   reln->smgr_rnode.node.spcNode,
+									   reln->smgr_rnode.node.dbNode,
+									   reln->smgr_rnode.node.relNode,
+									   reln->smgr_rnode.backend,
+									   nbytes,
+									   amount);
+
+	if (nbytes != amount)
+	{
+		if (nbytes < 0)
+			ereport(ERROR,
+					(errcode_for_file_access(),
+					 errmsg("could not read block %u in file \"%s\": %m",
+							blocknum, FilePathName(v->mdfd_vfd))));
+
+		/*
+		 * Short read: we are at or past EOF, or we read a partial block at
+		 * EOF.  Normally this is an error; upper levels should never try to
+		 * read a nonexistent block.  However, if zero_damaged_pages is ON or
+		 * we are InRecovery, we should instead return zeroes without
+		 * complaining.  This allows, for example, the case of trying to
+		 * update a block that was later truncated away.
+		 */
+		if (zero_damaged_pages || InRecovery)
+		{
+			/* only zero damaged_pages */
+			int damaged_pages_start_offset = nbytes - nbytes % BLCKSZ;
+			MemSet((char*)buffer + damaged_pages_start_offset, 0, amount - damaged_pages_start_offset);
+		}
+		else
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("could not bulk read block %u in file \"%s\": read only %d of %d bytes",
+							blocknum, FilePathName(v->mdfd_vfd),
+							nbytes, amount)));
+	}
+}
+/* POLAR end */
 
 /*
  *	mdwrite() -- Write the supplied block at the appropriate location.
@@ -831,7 +932,7 @@ mdwrite(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
 
 	/* This assert is too expensive to have on normally ... */
 #ifdef CHECK_WRITE_VS_EXTEND
-	Assert(blocknum < mdnblocks(reln, forknum));
+	Assert(blocknum < mdnblocks(reln, forknum, false));
 #endif
 
 	TRACE_POSTGRESQL_SMGR_MD_WRITE_START(forknum, blocknum,
@@ -846,6 +947,35 @@ mdwrite(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
 	seekpos = (off_t) BLCKSZ * (blocknum % ((BlockNumber) RELSEG_SIZE));
 
 	Assert(seekpos < (off_t) BLCKSZ * RELSEG_SIZE);
+
+	/*no cover begin*/
+#ifdef FAULT_INJECTOR
+#define MAX_ATOM_WRITE_SIZE 4096
+	if (SIMPLE_FAULT_INJECTOR("polar_partial_write_fault") == FaultInjectorTypeEnable)
+	{
+		/* POLAR: use pwrite to replace lseek + write */
+		if (POLAR_ENABLE_PWRITE())
+		{
+			nbytes = polar_file_pwrite(v->mdfd_vfd, buffer, MAX_ATOM_WRITE_SIZE, seekpos,
+				WAIT_EVENT_DATA_FILE_PWRITE);
+		}
+		else
+		{
+			if (FileSeek(v->mdfd_vfd, seekpos, SEEK_SET) != seekpos)
+				ereport(ERROR,
+						(errcode_for_file_access(),
+						 errmsg("could not seek to block %u in file \"%s\": %m",
+								blocknum, FilePathName(v->mdfd_vfd))));
+
+			nbytes = FileWrite(v->mdfd_vfd, buffer, MAX_ATOM_WRITE_SIZE, WAIT_EVENT_DATA_FILE_WRITE);
+		}
+
+		elog(PANIC, "The block ([%u, %u, %u]), %u, %u is partial written.",
+					        reln->smgr_rnode.node.spcNode, reln->smgr_rnode.node.dbNode,
+					        reln->smgr_rnode.node.relNode, forknum, blocknum);
+	}
+	/*no cover end*/
+#endif
 
 	/* POLAR: use pwrite to replace lseek + write */
 	if (POLAR_ENABLE_PWRITE())
@@ -894,6 +1024,89 @@ mdwrite(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
 }
 
 /*
+ *	POLAR: bulk write
+ *	mdwrite() -- Write the supplied continuous block at the appropriate location.
+ *
+ *		This is to be used only for updating already-existing blocks of a
+ *		relation (ie, those before the current EOF).  To extend a relation,
+ *		use mdextend().
+ */
+void
+polar_mdbulkwrite(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
+		int blockCount, char *buffer, bool skipFsync)
+{
+	off_t		seekpos;
+	int			nbytes;
+	MdfdVec    *v;
+	int 		amount = blockCount * BLCKSZ;
+
+	/* This assert is too expensive to have on normally ... */
+#ifdef CHECK_WRITE_VS_EXTEND
+	Assert(blocknum < mdnblocks(reln, forknum, false));
+#endif
+
+	TRACE_POSTGRESQL_SMGR_MD_WRITE_START(forknum, blocknum,
+										 reln->smgr_rnode.node.spcNode,
+										 reln->smgr_rnode.node.dbNode,
+										 reln->smgr_rnode.node.relNode,
+										 reln->smgr_rnode.backend);
+
+	v = _mdfd_getseg(reln, forknum, blocknum, skipFsync,
+					 EXTENSION_FAIL | EXTENSION_CREATE_RECOVERY);
+
+	seekpos = (off_t) BLCKSZ * (blocknum % ((BlockNumber) RELSEG_SIZE));
+
+	Assert(seekpos < (off_t) BLCKSZ * RELSEG_SIZE);
+	Assert(seekpos + (off_t) amount <= (off_t) BLCKSZ * RELSEG_SIZE);
+
+	/* POLAR: use pwrite to replace lseek + write */
+	if (POLAR_ENABLE_PWRITE())
+	{
+		nbytes = polar_file_pwrite(v->mdfd_vfd, buffer, amount, seekpos, 
+			WAIT_EVENT_DATA_FILE_PWRITE);
+	}
+	else
+	{
+		if (FileSeek(v->mdfd_vfd, seekpos, SEEK_SET) != seekpos)
+			ereport(ERROR,
+					(errcode_for_file_access(),
+					 errmsg("could not seek to block %u in file \"%s\": %m",
+							blocknum, FilePathName(v->mdfd_vfd))));
+
+		nbytes = FileWrite(v->mdfd_vfd, buffer, amount, WAIT_EVENT_DATA_FILE_WRITE);
+	}
+
+	TRACE_POSTGRESQL_SMGR_MD_WRITE_DONE(forknum, blocknum,
+									reln->smgr_rnode.node.spcNode,
+									reln->smgr_rnode.node.dbNode,
+									reln->smgr_rnode.node.relNode,
+									reln->smgr_rnode.backend,
+									nbytes,
+									amount);
+
+	if (nbytes != amount)
+	{
+		if (nbytes < 0)
+			ereport(ERROR,
+					(errcode_for_file_access(),
+					 errmsg("could not write block %u in file \"%s\": %m",
+							blocknum, FilePathName(v->mdfd_vfd))));
+		/* short write: complain appropriately */
+		ereport(ERROR,
+				(errcode(ERRCODE_DISK_FULL),
+				 errmsg("could not write block %u in file \"%s\": wrote only %d of %d bytes",
+						blocknum,
+						FilePathName(v->mdfd_vfd),
+						nbytes, BLCKSZ),
+				 errhint("Check free disk space.")));
+	}
+
+	if (!skipFsync && !SmgrIsTemp(reln))
+		register_dirty_segment(reln, forknum, v);
+}
+
+
+/*
  *	mdnblocks() -- Get the number of blocks stored in a relation.
  *
  *		Important side effect: all active segments of the relation are opened
@@ -902,11 +1115,18 @@ mdwrite(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
  *		are present in the array.
  */
 BlockNumber
-mdnblocks(SMgrRelation reln, ForkNumber forknum)
+mdnblocks(SMgrRelation reln, ForkNumber forknum, bool polar_use_file_cache)
 {
-	MdfdVec    *v = mdopen(reln, forknum, EXTENSION_FAIL);
+	MdfdVec    *v = NULL;
 	BlockNumber nblocks;
 	BlockNumber segno = 0;
+
+	/* POLAR: bulk extend */
+	if (polar_smgr_being_bulk_extend(reln, forknum) == true)
+		return reln->polar_nblocks_faked_for_bulk_extend[forknum];
+	/* POLAR end */
+
+	v = mdopen(reln, forknum, EXTENSION_FAIL);
 
 	/* mdopen has opened the first segment */
 	Assert(reln->md_num_open_segs[forknum] > 0);
@@ -929,7 +1149,10 @@ mdnblocks(SMgrRelation reln, ForkNumber forknum)
 
 	for (;;)
 	{
-		nblocks = _mdnblocks(reln, forknum, v);
+		if (polar_use_file_cache)
+			nblocks = polar_cache_mdnblocks(reln, forknum, v);
+		else
+			nblocks = _mdnblocks(reln, forknum, v);
 		if (nblocks > ((BlockNumber) RELSEG_SIZE))
 			elog(FATAL, "segment too big");
 		if (nblocks < ((BlockNumber) RELSEG_SIZE))
@@ -967,7 +1190,7 @@ mdtruncate(SMgrRelation reln, ForkNumber forknum, BlockNumber nblocks)
 	 * NOTE: mdnblocks makes sure we have opened all active segments, so that
 	 * truncation loop will get them all!
 	 */
-	curnblk = mdnblocks(reln, forknum);
+	curnblk = mdnblocks(reln, forknum, false);
 	if (nblocks > curnblk)
 	{
 		/* Bogus request ... but no complaint if InRecovery */
@@ -1062,7 +1285,7 @@ mdimmedsync(SMgrRelation reln, ForkNumber forknum)
 	 * NOTE: mdnblocks makes sure we have opened all active segments, so that
 	 * fsync loop will get them all!
 	 */
-	mdnblocks(reln, forknum);
+	mdnblocks(reln, forknum, false);
 
 	segno = reln->md_num_open_segs[forknum];
 
@@ -1944,8 +2167,9 @@ _mdfd_getseg(SMgrRelation reln, ForkNumber forknum, BlockNumber blkno,
 		if (nblocks > ((BlockNumber) RELSEG_SIZE))
 			elog(FATAL, "segment too big");
 
+		/* POLAR: replica cannot create/extend file anytime */
 		if ((behavior & EXTENSION_CREATE) ||
-			(InRecovery && (behavior & EXTENSION_CREATE_RECOVERY)))
+			(!polar_in_replica_mode() && InRecovery && (behavior & EXTENSION_CREATE_RECOVERY)))
 		{
 			/*
 			 * Normally we will create new segments only if authorized by the
@@ -2039,6 +2263,70 @@ _mdnblocks(SMgrRelation reln, ForkNumber forknum, MdfdVec *seg)
 	return (BlockNumber) (len / BLCKSZ);
 }
 
+/*
+ *	mdextendbatch() -- Add a block to the specified relation.
+ *
+ *		The semantics are nearly the same as mdwrite(): write at the
+ *		specified position.  However, this is to be used for the case of
+ *		extending a relation (i.e., blocknum is at or beyond the current
+ *		EOF).  Note that we assume writing a block beyond current EOF
+ *		causes intervening file space to become filled with zeroes.
+ */
+void
+mdextendbatch(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
+		 int blockCount, char *buffer, bool skipFsync)
+{
+	off_t		seekpos;
+	int			nbytes;
+	MdfdVec    *v;
+
+	/* This assert is too expensive to have on normally ... */
+#ifdef CHECK_WRITE_VS_EXTEND
+	Assert(blocknum >= mdnblocks(reln, forknum, false));
+#endif
+
+	/*
+	 * If a relation manages to grow to 2^32-1 blocks, refuse to extend it any
+	 * more --- we mustn't create a block whose number actually is
+	 * InvalidBlockNumber.
+	 */
+	if (blocknum == InvalidBlockNumber)
+		ereport(ERROR,
+				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+				 errmsg("cannot extend file \"%s\" beyond %u blocks",
+						relpath(reln->smgr_rnode, forknum),
+						InvalidBlockNumber)));
+
+	v = _mdfd_getseg(reln, forknum, blocknum, skipFsync, EXTENSION_CREATE);
+
+	seekpos = (off_t) BLCKSZ * (blocknum % ((BlockNumber) RELSEG_SIZE));
+
+	Assert(seekpos < (off_t) BLCKSZ * RELSEG_SIZE);
+	/* We assum all the block in the same segment file */
+	Assert((off_t) BLCKSZ * ((blocknum + blockCount) % ((BlockNumber) RELSEG_SIZE)) < (off_t) BLCKSZ * RELSEG_SIZE);
+
+	if ((nbytes = polar_file_pwrite(v->mdfd_vfd, buffer, BLCKSZ * blockCount, seekpos,
+			WAIT_EVENT_DATA_FILE_BATCH_PWRITE_EXTEND)) != BLCKSZ * blockCount)
+	{
+		if (nbytes < 0)
+			ereport(ERROR,
+					(errcode_for_file_access(),
+					 errmsg("could not extend file \"%s\": %m",
+							FilePathName(v->mdfd_vfd)),
+					 errhint("Check free disk space.")));
+		/* short write: complain appropriately */
+		ereport(ERROR,
+				(errcode(ERRCODE_DISK_FULL),
+				 errmsg("could not extend file \"%s\": wrote only %d of %d bytes at block %u",
+						FilePathName(v->mdfd_vfd),
+						nbytes, BLCKSZ * blockCount, blocknum),
+				 errhint("Check free disk space.")));
+	}
+
+	if (!skipFsync && !SmgrIsTemp(reln))
+		register_dirty_segment(reln, forknum, v);
+}
+
 bool
 polar_need_skip_request(BlockNumber segno)
 {
@@ -2056,5 +2344,21 @@ polar_need_skip_request(BlockNumber segno)
 	}
 
 	return polar_need_skip;
+}
+
+static BlockNumber
+polar_cache_mdnblocks(SMgrRelation reln, ForkNumber forknum, MdfdVec *seg)
+{
+	off_t		len;
+	File		file = seg->mdfd_vfd;
+
+	len = polar_file_seek_end(file);
+	if (len < 0)
+		ereport(ERROR,
+				(errcode_for_file_access(),
+				 errmsg("could not seek to end of file \"%s\": %m",
+						FilePathName(seg->mdfd_vfd))));
+	/* note that this calculation will ignore any partial block at EOF */
+	return (BlockNumber) (len / BLCKSZ);
 }
 

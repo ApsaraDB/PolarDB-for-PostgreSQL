@@ -46,6 +46,9 @@
 #include "utils/rel.h"
 #include "utils/tqual.h"
 
+/* polar_superuser_name string is used to store the system reserved superuser_name.*/
+char 		polar_superuser_name[20] = "pg_polar_superuser";
+
 /* POLAR */
 #include "storage/polar_fd.h"
 

@@ -9,6 +9,7 @@
  *-------------------------------------------------------------------------
  */
 
+#define MAX_SEND_SIZE (XLOG_BLCKSZ * 16)
 
 typedef void *Walfile;
 
@@ -18,6 +19,13 @@ typedef enum
 	CLOSE_UNLINK,
 	CLOSE_NO_RENAME
 } WalCloseMethod;
+
+typedef union PolarAlignedXLogBlock
+{
+	char		data[MAX_SEND_SIZE];
+	double		force_align_d;
+	int64		force_align_i64;
+} PolarAlignedXLogBlock;
 
 /*
  * A WalWriteMethod structure represents the different methods used
@@ -86,7 +94,7 @@ struct WalWriteMethod
  *						   not all those required for pg_receivewal)
  */
 WalWriteMethod *CreateWalDirectoryMethod(const char *basedir,
-						 int compression, bool sync);
+						 int compression, bool sync, bool is_pfs);
 WalWriteMethod *CreateWalTarMethod(const char *tarbase, int compression, bool sync);
 
 /* Cleanup routines for previously-created methods */

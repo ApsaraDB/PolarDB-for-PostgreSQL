@@ -1,0 +1,3551 @@
+/*--EXPLAIN_QUERY_BEGIN*/
+drop table if exists with_test1 cascade;
+NOTICE:  table "with_test1" does not exist, skipping
+create table with_test1 (i int, t text, value int);
+insert into with_test1 select i%10, 'text' || i%20, i%30 from generate_series(0, 99) i;
+drop table if exists with_test2 cascade;
+NOTICE:  table "with_test2" does not exist, skipping
+create table with_test2 (i int, t text, value int);
+insert into with_test2 select i%100, 'text' || i%200, i%300 from generate_series(0, 999) i;
+-- With clause with one common table expression
+--begin_equivalent
+with my_sum(total) as (select sum(value) from with_test1)
+select *
+from my_sum;
+ total 
+-------
+  1350
+(1 row)
+
+                       QUERY PLAN                        
+---------------------------------------------------------
+ Finalize Aggregate
+   Output: sum(value)
+   ->  PX Coordinator 6:1  (slice1; segments: 6)
+         Output: (PARTIAL sum(value))
+         ->  Partial Aggregate
+               Output: PARTIAL sum(value)
+               ->  Partial Seq Scan on public.with_test1
+                     Output: value
+ Optimizer: PolarDB PX Optimizer
+(9 rows)
+
+select sum(value) as total from with_test1;
+ total 
+-------
+  1350
+(1 row)
+
+                       QUERY PLAN                        
+---------------------------------------------------------
+ Finalize Aggregate
+   Output: sum(value)
+   ->  PX Coordinator 6:1  (slice1; segments: 6)
+         Output: (PARTIAL sum(value))
+         ->  Partial Aggregate
+               Output: PARTIAL sum(value)
+               ->  Partial Seq Scan on public.with_test1
+                     Output: value
+ Optimizer: PolarDB PX Optimizer
+(9 rows)
+
+--end_equivalent
+-- With clause with two common table expression
+--begin_equivalent
+with my_sum(total) as (select sum(value) from with_test1),
+     my_count(cnt) as (select count(*) from with_test1)
+select cnt, total
+from my_sum, my_count;
+ cnt | total 
+-----+-------
+ 100 |  1350
+(1 row)
+
+                                 QUERY PLAN                                 
+----------------------------------------------------------------------------
+ Nested Loop
+   Output: (count()), (sum(with_test1_1.value))
+   Join Filter: true
+   ->  Finalize Aggregate
+         Output: sum(with_test1_1.value)
+         ->  PX Coordinator 6:1  (slice2; segments: 6)
+               Output: (PARTIAL sum(with_test1_1.value))
+               ->  Partial Aggregate
+                     Output: PARTIAL sum(with_test1_1.value)
+                     ->  Partial Seq Scan on public.with_test1 with_test1_1
+                           Output: with_test1_1.value
+   ->  Materialize
+         Output: (count())
+         ->  Finalize Aggregate
+               Output: count()
+               ->  PX Coordinator 6:1  (slice1; segments: 6)
+                     Output: (PARTIAL count())
+                     ->  Partial Aggregate
+                           Output: PARTIAL count()
+                           ->  Partial Seq Scan on public.with_test1
+ Optimizer: PolarDB PX Optimizer
+(21 rows)
+
+select cnt, total
+from (select sum(value) as total from with_test1) tmp1,
+     (select count(*) as cnt from with_test1) tmp2;
+ cnt | total 
+-----+-------
+ 100 |  1350
+(1 row)
+
+                                 QUERY PLAN                                 
+----------------------------------------------------------------------------
+ Nested Loop
+   Output: (count()), (sum(with_test1_1.value))
+   Join Filter: true
+   ->  Finalize Aggregate
+         Output: sum(with_test1_1.value)
+         ->  PX Coordinator 6:1  (slice2; segments: 6)
+               Output: (PARTIAL sum(with_test1_1.value))
+               ->  Partial Aggregate
+                     Output: PARTIAL sum(with_test1_1.value)
+                     ->  Partial Seq Scan on public.with_test1 with_test1_1
+                           Output: with_test1_1.value
+   ->  Materialize
+         Output: (count())
+         ->  Finalize Aggregate
+               Output: count()
+               ->  PX Coordinator 6:1  (slice1; segments: 6)
+                     Output: (PARTIAL count())
+                     ->  Partial Aggregate
+                           Output: PARTIAL count()
+                           ->  Partial Seq Scan on public.with_test1
+ Optimizer: PolarDB PX Optimizer
+(21 rows)
+
+--end_equivalent
+-- With clause with one common table expression that is referenced twice
+--begin_equivalent
+with my_group_sum(i, total) as (select i, sum(value) from with_test1 group by i)
+select gs1.i, gs1.total, gs2.total
+from my_group_sum gs1, my_group_sum gs2
+where gs1.i = gs2.i + 1;
+ i | total | total 
+---+-------+-------
+ 8 |   170 |   160
+ 9 |   180 |   170
+ 7 |   160 |   150
+ 1 |   100 |    90
+ 5 |   140 |   130
+ 4 |   130 |   120
+ 2 |   110 |   100
+ 6 |   150 |   140
+ 3 |   120 |   110
+(9 rows)
+
+                                        QUERY PLAN                                         
+-------------------------------------------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: share0_ref3.i, share0_ref3.sum, share0_ref2.sum
+   ->  Sequence
+         Output: share0_ref3.i, share0_ref3.sum, share0_ref2.sum
+         ->  Shared Scan (Producer; slice1; share0)
+               Output: share0_ref1.i, share0_ref1.sum
+               ->  Finalize GroupAggregate
+                     Output: with_test1.i, sum(with_test1.value)
+                     Group Key: with_test1.i
+                     ->  Sort
+                           Output: with_test1.i, (PARTIAL sum(with_test1.value))
+                           Sort Key: with_test1.i
+                           ->  PX Hash 6:6  (slice2; segments: 6)
+                                 Output: with_test1.i, (PARTIAL sum(with_test1.value))
+                                 Hash Key: with_test1.i
+                                 ->  Partial HashAggregate
+                                       Output: with_test1.i, PARTIAL sum(with_test1.value)
+                                       Group Key: with_test1.i
+                                       ->  Partial Seq Scan on public.with_test1
+                                             Output: with_test1.i, with_test1.value
+         ->  Hash Join
+               Output: share0_ref3.i, share0_ref3.sum, share0_ref2.sum
+               Hash Cond: (share0_ref3.i = (share0_ref2.i + 1))
+               ->  Shared Scan (Producer; slice1; share0)
+                     Output: share0_ref3.i, share0_ref3.sum
+               ->  Hash
+                     Output: share0_ref2.i, share0_ref2.sum
+                     ->  PX Hash 6:6  (slice3; segments: 6)
+                           Output: share0_ref2.i, share0_ref2.sum
+                           Hash Key: (share0_ref2.i + 1)
+                           ->  Shared Scan (Consumer; slice3; share0)
+                                 Output: share0_ref2.i, share0_ref2.sum
+ Optimizer: PolarDB PX Optimizer
+(33 rows)
+
+select gs1.i, gs1.total, gs2.total
+from (select i, sum(value) as total from with_test1 group by i) gs1,
+     (select i, sum(value) as total from with_test1 group by i) gs2
+where gs1.i = gs2.i + 1;
+ i | total | total 
+---+-------+-------
+ 9 |   180 |   170
+ 8 |   170 |   160
+ 2 |   110 |   100
+ 6 |   150 |   140
+ 5 |   140 |   130
+ 3 |   120 |   110
+ 7 |   160 |   150
+ 1 |   100 |    90
+ 4 |   130 |   120
+(9 rows)
+
+                                             QUERY PLAN                                              
+-----------------------------------------------------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: with_test1.i, (sum(with_test1.value)), (sum(with_test1_1.value))
+   ->  Hash Join
+         Output: with_test1.i, (sum(with_test1.value)), (sum(with_test1_1.value))
+         Hash Cond: (with_test1.i = (with_test1_1.i + 1))
+         ->  Finalize GroupAggregate
+               Output: sum(with_test1.value), with_test1.i
+               Group Key: with_test1.i
+               ->  Sort
+                     Output: with_test1.i, (PARTIAL sum(with_test1.value))
+                     Sort Key: with_test1.i
+                     ->  PX Hash 6:6  (slice2; segments: 6)
+                           Output: with_test1.i, (PARTIAL sum(with_test1.value))
+                           Hash Key: with_test1.i
+                           ->  Partial HashAggregate
+                                 Output: with_test1.i, PARTIAL sum(with_test1.value)
+                                 Group Key: with_test1.i
+                                 ->  Partial Seq Scan on public.with_test1
+                                       Output: with_test1.i, with_test1.value
+         ->  Hash
+               Output: with_test1_1.i, (sum(with_test1_1.value))
+               ->  PX Hash 6:6  (slice3; segments: 6)
+                     Output: with_test1_1.i, (sum(with_test1_1.value))
+                     Hash Key: (with_test1_1.i + 1)
+                     ->  Finalize GroupAggregate
+                           Output: with_test1_1.i, sum(with_test1_1.value)
+                           Group Key: with_test1_1.i
+                           ->  Sort
+                                 Output: with_test1_1.i, (PARTIAL sum(with_test1_1.value))
+                                 Sort Key: with_test1_1.i
+                                 ->  PX Hash 6:6  (slice4; segments: 6)
+                                       Output: with_test1_1.i, (PARTIAL sum(with_test1_1.value))
+                                       Hash Key: with_test1_1.i
+                                       ->  Partial HashAggregate
+                                             Output: with_test1_1.i, PARTIAL sum(with_test1_1.value)
+                                             Group Key: with_test1_1.i
+                                             ->  Partial Seq Scan on public.with_test1 with_test1_1
+                                                   Output: with_test1_1.i, with_test1_1.value
+ Optimizer: PolarDB PX Optimizer
+(39 rows)
+
+--end_equivalent
+-- With clause with one common table expression that contains the other common table expression
+--begin_equivalent
+with my_count(i, cnt) as (select i, count(*) from with_test1 group by i),
+     my_sum(total) as (select sum(cnt) from my_count)
+select *
+from my_sum;
+ total 
+-------
+   100
+(1 row)
+
+                                      QUERY PLAN                                       
+---------------------------------------------------------------------------------------
+ Finalize Aggregate
+   Output: sum((count()))
+   ->  PX Coordinator 6:1  (slice1; segments: 6)
+         Output: (PARTIAL sum((count())))
+         ->  Partial Aggregate
+               Output: PARTIAL sum((count()))
+               ->  Finalize GroupAggregate
+                     Output: count(), i
+                     Group Key: with_test1.i
+                     ->  Sort
+                           Output: i, (PARTIAL count())
+                           Sort Key: with_test1.i
+                           ->  PX Hash 6:6  (slice2; segments: 6)
+                                 Output: i, (PARTIAL count())
+                                 Hash Key: i
+                                 ->  Partial GroupAggregate
+                                       Output: i, PARTIAL count()
+                                       Group Key: with_test1.i
+                                       ->  Sort
+                                             Output: i
+                                             Sort Key: with_test1.i
+                                             ->  Partial Seq Scan on public.with_test1
+                                                   Output: i
+ Optimizer: PolarDB PX Optimizer
+(24 rows)
+
+select sum(cnt) as total from (select i, count(*) as cnt from with_test1 group by i) my_count;
+ total 
+-------
+   100
+(1 row)
+
+                                      QUERY PLAN                                       
+---------------------------------------------------------------------------------------
+ Finalize Aggregate
+   Output: sum((count()))
+   ->  PX Coordinator 6:1  (slice1; segments: 6)
+         Output: (PARTIAL sum((count())))
+         ->  Partial Aggregate
+               Output: PARTIAL sum((count()))
+               ->  Finalize GroupAggregate
+                     Output: count(), i
+                     Group Key: with_test1.i
+                     ->  Sort
+                           Output: i, (PARTIAL count())
+                           Sort Key: with_test1.i
+                           ->  PX Hash 6:6  (slice2; segments: 6)
+                                 Output: i, (PARTIAL count())
+                                 Hash Key: i
+                                 ->  Partial GroupAggregate
+                                       Output: i, PARTIAL count()
+                                       Group Key: with_test1.i
+                                       ->  Sort
+                                             Output: i
+                                             Sort Key: with_test1.i
+                                             ->  Partial Seq Scan on public.with_test1
+                                                   Output: i
+ Optimizer: PolarDB PX Optimizer
+(24 rows)
+
+--end_equivalent
+-- WITH query contains WITH
+--begin_equivalent
+with my_sum(total) as (
+     with my_group_sum(total) as (select sum(value) from with_test1 group by i)
+     select sum(total) from my_group_sum)
+select *
+from my_sum;
+ total 
+-------
+  1350
+(1 row)
+
+                                   QUERY PLAN                                    
+---------------------------------------------------------------------------------
+ Finalize Aggregate
+   Output: sum((sum(value)))
+   ->  PX Coordinator 6:1  (slice1; segments: 6)
+         Output: (PARTIAL sum((sum(value))))
+         ->  Partial Aggregate
+               Output: PARTIAL sum((sum(value)))
+               ->  Finalize GroupAggregate
+                     Output: sum(value), i
+                     Group Key: with_test1.i
+                     ->  Sort
+                           Output: i, (PARTIAL sum(value))
+                           Sort Key: with_test1.i
+                           ->  PX Hash 6:6  (slice2; segments: 6)
+                                 Output: i, (PARTIAL sum(value))
+                                 Hash Key: i
+                                 ->  Partial HashAggregate
+                                       Output: i, PARTIAL sum(value)
+                                       Group Key: with_test1.i
+                                       ->  Partial Seq Scan on public.with_test1
+                                             Output: i, value
+ Optimizer: PolarDB PX Optimizer
+(21 rows)
+
+select sum(total) from (select sum(value) as total from with_test1 group by i) my_group_sum;
+ sum  
+------
+ 1350
+(1 row)
+
+                                   QUERY PLAN                                    
+---------------------------------------------------------------------------------
+ Finalize Aggregate
+   Output: sum((sum(value)))
+   ->  PX Coordinator 6:1  (slice1; segments: 6)
+         Output: (PARTIAL sum((sum(value))))
+         ->  Partial Aggregate
+               Output: PARTIAL sum((sum(value)))
+               ->  Finalize GroupAggregate
+                     Output: sum(value), i
+                     Group Key: with_test1.i
+                     ->  Sort
+                           Output: i, (PARTIAL sum(value))
+                           Sort Key: with_test1.i
+                           ->  PX Hash 6:6  (slice2; segments: 6)
+                                 Output: i, (PARTIAL sum(value))
+                                 Hash Key: i
+                                 ->  Partial HashAggregate
+                                       Output: i, PARTIAL sum(value)
+                                       Group Key: with_test1.i
+                                       ->  Partial Seq Scan on public.with_test1
+                                             Output: i, value
+ Optimizer: PolarDB PX Optimizer
+(21 rows)
+
+--end_equivalent
+-- pathkeys
+explain (costs off)
+with my_order as (select * from with_test1 order by i)
+select i, count(*)
+from my_order
+group by i order by i;
+              QUERY PLAN              
+--------------------------------------
+ GroupAggregate
+   Group Key: my_order.i
+   CTE my_order
+     ->  Sort
+           Sort Key: with_test1.i
+           ->  Seq Scan on with_test1
+   ->  Sort
+         Sort Key: my_order.i
+         ->  CTE Scan on my_order
+(9 rows)
+
+with my_order as (select * from with_test1 order by i)
+select i, count(*)
+from my_order
+group by i order by i;
+ i | count 
+---+-------
+ 0 |    10
+ 1 |    10
+ 2 |    10
+ 3 |    10
+ 4 |    10
+ 5 |    10
+ 6 |    10
+ 7 |    10
+ 8 |    10
+ 9 |    10
+(10 rows)
+
+                                   QUERY PLAN                                    
+---------------------------------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: i, (count())
+   Merge Key: i
+   ->  Sort
+         Output: i, (count())
+         Sort Key: with_test1.i
+         ->  Finalize GroupAggregate
+               Output: i, count()
+               Group Key: with_test1.i
+               ->  Sort
+                     Output: i, (PARTIAL count())
+                     Sort Key: with_test1.i
+                     ->  PX Hash 6:6  (slice2; segments: 6)
+                           Output: i, (PARTIAL count())
+                           Hash Key: i
+                           ->  Partial GroupAggregate
+                                 Output: i, PARTIAL count()
+                                 Group Key: with_test1.i
+                                 ->  Sort
+                                       Output: i
+                                       Sort Key: with_test1.i
+                                       ->  Partial Seq Scan on public.with_test1
+                                             Output: i
+ Optimizer: PolarDB PX Optimizer
+(24 rows)
+
+-- WITH query used in InitPlan
+--begin_equivalent
+with my_max(maximum) as (select max(value) from with_test1)
+select * from with_test2
+where value < (select * from my_max);
+ i  |    t    | value 
+----+---------+-------
+  0 | text0   |     0
+  1 | text1   |     1
+  2 | text2   |     2
+  3 | text3   |     3
+  4 | text4   |     4
+  5 | text5   |     5
+  6 | text6   |     6
+  7 | text7   |     7
+  8 | text8   |     8
+  9 | text9   |     9
+ 10 | text10  |    10
+ 11 | text11  |    11
+ 12 | text12  |    12
+ 13 | text13  |    13
+ 14 | text14  |    14
+ 15 | text15  |    15
+ 16 | text16  |    16
+ 17 | text17  |    17
+ 18 | text18  |    18
+ 19 | text19  |    19
+ 20 | text20  |    20
+ 21 | text21  |    21
+ 22 | text22  |    22
+ 23 | text23  |    23
+ 24 | text24  |    24
+ 25 | text25  |    25
+ 26 | text26  |    26
+ 27 | text27  |    27
+ 28 | text28  |    28
+  0 | text100 |     0
+  1 | text101 |     1
+  2 | text102 |     2
+  3 | text103 |     3
+  4 | text104 |     4
+  5 | text105 |     5
+  6 | text106 |     6
+  7 | text107 |     7
+  8 | text108 |     8
+  9 | text109 |     9
+ 10 | text110 |    10
+ 11 | text111 |    11
+ 12 | text112 |    12
+ 13 | text113 |    13
+ 14 | text114 |    14
+ 15 | text115 |    15
+ 16 | text116 |    16
+ 17 | text117 |    17
+ 18 | text118 |    18
+ 19 | text119 |    19
+ 20 | text120 |    20
+ 21 | text121 |    21
+ 22 | text122 |    22
+ 23 | text123 |    23
+ 24 | text124 |    24
+ 25 | text125 |    25
+ 26 | text126 |    26
+ 27 | text127 |    27
+ 28 | text128 |    28
+  0 | text0   |     0
+  1 | text1   |     1
+  2 | text2   |     2
+  3 | text3   |     3
+  4 | text4   |     4
+  5 | text5   |     5
+  6 | text6   |     6
+  7 | text7   |     7
+  8 | text8   |     8
+  9 | text9   |     9
+ 10 | text10  |    10
+ 11 | text11  |    11
+ 12 | text12  |    12
+ 13 | text13  |    13
+ 14 | text14  |    14
+ 15 | text15  |    15
+ 16 | text16  |    16
+ 17 | text17  |    17
+ 18 | text18  |    18
+ 19 | text19  |    19
+ 20 | text20  |    20
+ 21 | text21  |    21
+ 22 | text22  |    22
+ 23 | text23  |    23
+ 24 | text24  |    24
+ 25 | text25  |    25
+ 26 | text26  |    26
+ 27 | text27  |    27
+ 28 | text28  |    28
+  0 | text100 |     0
+  1 | text101 |     1
+  2 | text102 |     2
+  3 | text103 |     3
+  4 | text104 |     4
+  5 | text105 |     5
+  6 | text106 |     6
+  7 | text107 |     7
+  8 | text108 |     8
+  9 | text109 |     9
+ 10 | text110 |    10
+ 11 | text111 |    11
+ 12 | text112 |    12
+ 13 | text113 |    13
+ 14 | text114 |    14
+ 15 | text115 |    15
+ 16 | text116 |    16
+ 17 | text117 |    17
+ 18 | text118 |    18
+ 19 | text119 |    19
+ 20 | text120 |    20
+ 21 | text121 |    21
+ 22 | text122 |    22
+ 23 | text123 |    23
+ 24 | text124 |    24
+ 25 | text125 |    25
+ 26 | text126 |    26
+ 27 | text127 |    27
+ 28 | text128 |    28
+(116 rows)
+
+                                QUERY PLAN                                 
+---------------------------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: with_test2.i, with_test2.t, with_test2.value
+   ->  Nested Loop
+         Output: with_test2.i, with_test2.t, with_test2.value
+         Join Filter: (with_test2.value < (max(with_test1.value)))
+         ->  PX Broadcast 1:6  (slice2)
+               Output: (max(with_test1.value))
+               ->  Finalize Aggregate
+                     Output: max(with_test1.value)
+                     ->  PX Coordinator 6:1  (slice3; segments: 6)
+                           Output: (PARTIAL max(with_test1.value))
+                           ->  Partial Aggregate
+                                 Output: PARTIAL max(with_test1.value)
+                                 ->  Partial Seq Scan on public.with_test1
+                                       Output: with_test1.value
+         ->  Partial Seq Scan on public.with_test2
+               Output: with_test2.i, with_test2.t, with_test2.value
+ Optimizer: PolarDB PX Optimizer
+(18 rows)
+
+select * from with_test2
+where value < (with my_max(maximum) as (select max(value) from with_test1)
+               select * from my_max);
+ i  |    t    | value 
+----+---------+-------
+  0 | text0   |     0
+  1 | text1   |     1
+  2 | text2   |     2
+  3 | text3   |     3
+  4 | text4   |     4
+  5 | text5   |     5
+  6 | text6   |     6
+  7 | text7   |     7
+  8 | text8   |     8
+  9 | text9   |     9
+ 10 | text10  |    10
+ 11 | text11  |    11
+ 12 | text12  |    12
+ 13 | text13  |    13
+ 14 | text14  |    14
+ 15 | text15  |    15
+ 16 | text16  |    16
+ 17 | text17  |    17
+ 18 | text18  |    18
+ 19 | text19  |    19
+ 20 | text20  |    20
+ 21 | text21  |    21
+ 22 | text22  |    22
+ 23 | text23  |    23
+ 24 | text24  |    24
+ 25 | text25  |    25
+ 26 | text26  |    26
+ 27 | text27  |    27
+ 28 | text28  |    28
+  0 | text100 |     0
+  1 | text101 |     1
+  2 | text102 |     2
+  3 | text103 |     3
+  4 | text104 |     4
+  5 | text105 |     5
+  6 | text106 |     6
+  7 | text107 |     7
+  8 | text108 |     8
+  9 | text109 |     9
+ 10 | text110 |    10
+ 11 | text111 |    11
+ 12 | text112 |    12
+ 13 | text113 |    13
+ 14 | text114 |    14
+ 15 | text115 |    15
+ 16 | text116 |    16
+ 17 | text117 |    17
+ 18 | text118 |    18
+ 19 | text119 |    19
+ 20 | text120 |    20
+ 21 | text121 |    21
+ 22 | text122 |    22
+ 23 | text123 |    23
+ 24 | text124 |    24
+ 25 | text125 |    25
+ 26 | text126 |    26
+ 27 | text127 |    27
+ 28 | text128 |    28
+  0 | text0   |     0
+  1 | text1   |     1
+  2 | text2   |     2
+  3 | text3   |     3
+  4 | text4   |     4
+  5 | text5   |     5
+  6 | text6   |     6
+  7 | text7   |     7
+  8 | text8   |     8
+  9 | text9   |     9
+ 10 | text10  |    10
+ 11 | text11  |    11
+ 12 | text12  |    12
+ 13 | text13  |    13
+ 14 | text14  |    14
+ 15 | text15  |    15
+ 16 | text16  |    16
+ 17 | text17  |    17
+ 18 | text18  |    18
+ 19 | text19  |    19
+ 20 | text20  |    20
+ 21 | text21  |    21
+ 22 | text22  |    22
+ 23 | text23  |    23
+ 24 | text24  |    24
+ 25 | text25  |    25
+ 26 | text26  |    26
+ 27 | text27  |    27
+ 28 | text28  |    28
+  0 | text100 |     0
+  1 | text101 |     1
+  2 | text102 |     2
+  3 | text103 |     3
+  4 | text104 |     4
+  5 | text105 |     5
+  6 | text106 |     6
+  7 | text107 |     7
+  8 | text108 |     8
+  9 | text109 |     9
+ 10 | text110 |    10
+ 11 | text111 |    11
+ 12 | text112 |    12
+ 13 | text113 |    13
+ 14 | text114 |    14
+ 15 | text115 |    15
+ 16 | text116 |    16
+ 17 | text117 |    17
+ 18 | text118 |    18
+ 19 | text119 |    19
+ 20 | text120 |    20
+ 21 | text121 |    21
+ 22 | text122 |    22
+ 23 | text123 |    23
+ 24 | text124 |    24
+ 25 | text125 |    25
+ 26 | text126 |    26
+ 27 | text127 |    27
+ 28 | text128 |    28
+(116 rows)
+
+                                QUERY PLAN                                 
+---------------------------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: with_test2.i, with_test2.t, with_test2.value
+   ->  Nested Loop
+         Output: with_test2.i, with_test2.t, with_test2.value
+         Join Filter: (with_test2.value < (max(with_test1.value)))
+         ->  PX Broadcast 1:6  (slice2)
+               Output: (max(with_test1.value))
+               ->  Finalize Aggregate
+                     Output: max(with_test1.value)
+                     ->  PX Coordinator 6:1  (slice3; segments: 6)
+                           Output: (PARTIAL max(with_test1.value))
+                           ->  Partial Aggregate
+                                 Output: PARTIAL max(with_test1.value)
+                                 ->  Partial Seq Scan on public.with_test1
+                                       Output: with_test1.value
+         ->  Partial Seq Scan on public.with_test2
+               Output: with_test2.i, with_test2.t, with_test2.value
+ Optimizer: PolarDB PX Optimizer
+(18 rows)
+
+select * from with_test2
+where value < (select max(value) from with_test1);
+ i  |    t    | value 
+----+---------+-------
+  0 | text0   |     0
+  1 | text1   |     1
+  2 | text2   |     2
+  3 | text3   |     3
+  4 | text4   |     4
+  5 | text5   |     5
+  6 | text6   |     6
+  7 | text7   |     7
+  8 | text8   |     8
+  9 | text9   |     9
+ 10 | text10  |    10
+ 11 | text11  |    11
+ 12 | text12  |    12
+ 13 | text13  |    13
+ 14 | text14  |    14
+ 15 | text15  |    15
+ 16 | text16  |    16
+ 17 | text17  |    17
+ 18 | text18  |    18
+ 19 | text19  |    19
+ 20 | text20  |    20
+ 21 | text21  |    21
+ 22 | text22  |    22
+ 23 | text23  |    23
+ 24 | text24  |    24
+ 25 | text25  |    25
+ 26 | text26  |    26
+ 27 | text27  |    27
+ 28 | text28  |    28
+  0 | text100 |     0
+  1 | text101 |     1
+  2 | text102 |     2
+  3 | text103 |     3
+  4 | text104 |     4
+  5 | text105 |     5
+  6 | text106 |     6
+  7 | text107 |     7
+  8 | text108 |     8
+  9 | text109 |     9
+ 10 | text110 |    10
+ 11 | text111 |    11
+ 12 | text112 |    12
+ 13 | text113 |    13
+ 14 | text114 |    14
+ 15 | text115 |    15
+ 16 | text116 |    16
+ 17 | text117 |    17
+ 18 | text118 |    18
+ 19 | text119 |    19
+ 20 | text120 |    20
+ 21 | text121 |    21
+ 22 | text122 |    22
+ 23 | text123 |    23
+ 24 | text124 |    24
+ 25 | text125 |    25
+ 26 | text126 |    26
+ 27 | text127 |    27
+ 28 | text128 |    28
+  0 | text0   |     0
+  1 | text1   |     1
+  2 | text2   |     2
+  3 | text3   |     3
+  4 | text4   |     4
+  5 | text5   |     5
+  6 | text6   |     6
+  7 | text7   |     7
+  8 | text8   |     8
+  9 | text9   |     9
+ 10 | text10  |    10
+ 11 | text11  |    11
+ 12 | text12  |    12
+ 13 | text13  |    13
+ 14 | text14  |    14
+ 15 | text15  |    15
+ 16 | text16  |    16
+ 17 | text17  |    17
+ 18 | text18  |    18
+ 19 | text19  |    19
+ 20 | text20  |    20
+ 21 | text21  |    21
+ 22 | text22  |    22
+ 23 | text23  |    23
+ 24 | text24  |    24
+ 25 | text25  |    25
+ 26 | text26  |    26
+ 27 | text27  |    27
+ 28 | text28  |    28
+  0 | text100 |     0
+  1 | text101 |     1
+  2 | text102 |     2
+  3 | text103 |     3
+  4 | text104 |     4
+  5 | text105 |     5
+  6 | text106 |     6
+  7 | text107 |     7
+  8 | text108 |     8
+  9 | text109 |     9
+ 10 | text110 |    10
+ 11 | text111 |    11
+ 12 | text112 |    12
+ 13 | text113 |    13
+ 14 | text114 |    14
+ 15 | text115 |    15
+ 16 | text116 |    16
+ 17 | text117 |    17
+ 18 | text118 |    18
+ 19 | text119 |    19
+ 20 | text120 |    20
+ 21 | text121 |    21
+ 22 | text122 |    22
+ 23 | text123 |    23
+ 24 | text124 |    24
+ 25 | text125 |    25
+ 26 | text126 |    26
+ 27 | text127 |    27
+ 28 | text128 |    28
+(116 rows)
+
+                                QUERY PLAN                                 
+---------------------------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: with_test2.i, with_test2.t, with_test2.value
+   ->  Nested Loop
+         Output: with_test2.i, with_test2.t, with_test2.value
+         Join Filter: (with_test2.value < (max(with_test1.value)))
+         ->  PX Broadcast 1:6  (slice2)
+               Output: (max(with_test1.value))
+               ->  Finalize Aggregate
+                     Output: max(with_test1.value)
+                     ->  PX Coordinator 6:1  (slice3; segments: 6)
+                           Output: (PARTIAL max(with_test1.value))
+                           ->  Partial Aggregate
+                                 Output: PARTIAL max(with_test1.value)
+                                 ->  Partial Seq Scan on public.with_test1
+                                       Output: with_test1.value
+         ->  Partial Seq Scan on public.with_test2
+               Output: with_test2.i, with_test2.t, with_test2.value
+ Optimizer: PolarDB PX Optimizer
+(18 rows)
+
+--end_equivalent
+-- WITH query used in InitPlan and the main query at the same time
+--begin_equivalent
+with my_max(maximum) as (select max(value) from with_test1)
+select with_test2.* from with_test2, my_max
+where value < (select * from my_max)
+and i < maximum and i > maximum - 10;
+ i  |    t    | value 
+----+---------+-------
+ 20 | text20  |    20
+ 21 | text21  |    21
+ 22 | text22  |    22
+ 23 | text23  |    23
+ 24 | text24  |    24
+ 25 | text25  |    25
+ 26 | text26  |    26
+ 27 | text27  |    27
+ 28 | text28  |    28
+ 20 | text120 |    20
+ 21 | text121 |    21
+ 22 | text122 |    22
+ 23 | text123 |    23
+ 24 | text124 |    24
+ 25 | text125 |    25
+ 26 | text126 |    26
+ 27 | text127 |    27
+ 28 | text128 |    28
+ 20 | text20  |    20
+ 21 | text21  |    21
+ 22 | text22  |    22
+ 23 | text23  |    23
+ 24 | text24  |    24
+ 25 | text25  |    25
+ 26 | text26  |    26
+ 27 | text27  |    27
+ 28 | text28  |    28
+ 20 | text120 |    20
+ 21 | text121 |    21
+ 22 | text122 |    22
+ 23 | text123 |    23
+ 24 | text124 |    24
+ 25 | text125 |    25
+ 26 | text126 |    26
+ 27 | text127 |    27
+ 28 | text128 |    28
+(36 rows)
+
+                                                QUERY PLAN                                                 
+-----------------------------------------------------------------------------------------------------------
+ Sequence
+   Output: with_test2.i, with_test2.t, with_test2.value
+   ->  Shared Scan (Producer; slice0; share0)
+         Output: share0_ref1.max
+         ->  Finalize Aggregate
+               Output: max(with_test1.value)
+               ->  PX Coordinator 6:1  (slice1; segments: 6)
+                     Output: (PARTIAL max(with_test1.value))
+                     ->  Partial Aggregate
+                           Output: PARTIAL max(with_test1.value)
+                           ->  Partial Seq Scan on public.with_test1
+                                 Output: with_test1.value
+   ->  PX Coordinator 6:1  (slice2; segments: 6)
+         Output: with_test2.i, with_test2.t, with_test2.value
+         ->  Nested Loop
+               Output: with_test2.i, with_test2.t, with_test2.value
+               Join Filter: ((with_test2.i < share0_ref3.max) AND (with_test2.i > (share0_ref3.max - 10)))
+               ->  PX Broadcast 1:6  (slice4)
+                     Output: share0_ref3.max
+                     ->  Shared Scan (Consumer; slice4; share0)
+                           Output: share0_ref3.max
+               ->  Materialize
+                     Output: with_test2.i, with_test2.t, with_test2.value
+                     ->  Nested Loop
+                           Output: with_test2.i, with_test2.t, with_test2.value
+                           Join Filter: (with_test2.value < share0_ref2.max)
+                           ->  PX Broadcast 1:6  (slice3)
+                                 Output: share0_ref2.max
+                                 ->  Shared Scan (Consumer; slice3; share0)
+                                       Output: share0_ref2.max
+                           ->  Partial Seq Scan on public.with_test2
+                                 Output: with_test2.i, with_test2.t, with_test2.value
+ Optimizer: PolarDB PX Optimizer
+(33 rows)
+
+select with_test2.* from with_test2, (select max(value) as maximum from with_test1) as my_max
+where value < (select max(value) from with_test1)
+and i < maximum and i > maximum - 10;
+ i  |    t    | value 
+----+---------+-------
+ 20 | text20  |    20
+ 21 | text21  |    21
+ 22 | text22  |    22
+ 23 | text23  |    23
+ 24 | text24  |    24
+ 25 | text25  |    25
+ 26 | text26  |    26
+ 27 | text27  |    27
+ 28 | text28  |    28
+ 20 | text120 |    20
+ 21 | text121 |    21
+ 22 | text122 |    22
+ 23 | text123 |    23
+ 24 | text124 |    24
+ 25 | text125 |    25
+ 26 | text126 |    26
+ 27 | text127 |    27
+ 28 | text128 |    28
+ 20 | text20  |    20
+ 21 | text21  |    21
+ 22 | text22  |    22
+ 23 | text23  |    23
+ 24 | text24  |    24
+ 25 | text25  |    25
+ 26 | text26  |    26
+ 27 | text27  |    27
+ 28 | text28  |    28
+ 20 | text120 |    20
+ 21 | text121 |    21
+ 22 | text122 |    22
+ 23 | text123 |    23
+ 24 | text124 |    24
+ 25 | text125 |    25
+ 26 | text126 |    26
+ 27 | text127 |    27
+ 28 | text128 |    28
+(36 rows)
+
+                                                       QUERY PLAN                                                        
+-------------------------------------------------------------------------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: with_test2.i, with_test2.t, with_test2.value
+   ->  Nested Loop
+         Output: with_test2.i, with_test2.t, with_test2.value
+         Join Filter: ((with_test2.i < (max(with_test1_1.value))) AND (with_test2.i > ((max(with_test1_1.value)) - 10)))
+         ->  PX Broadcast 1:6  (slice4)
+               Output: (max(with_test1_1.value))
+               ->  Finalize Aggregate
+                     Output: max(with_test1_1.value)
+                     ->  PX Coordinator 6:1  (slice5; segments: 6)
+                           Output: (PARTIAL max(with_test1_1.value))
+                           ->  Partial Aggregate
+                                 Output: PARTIAL max(with_test1_1.value)
+                                 ->  Partial Seq Scan on public.with_test1 with_test1_1
+                                       Output: with_test1_1.value
+         ->  Materialize
+               Output: with_test2.i, with_test2.t, with_test2.value
+               ->  Nested Loop
+                     Output: with_test2.i, with_test2.t, with_test2.value
+                     Join Filter: (with_test2.value < (max(with_test1.value)))
+                     ->  PX Broadcast 1:6  (slice2)
+                           Output: (max(with_test1.value))
+                           ->  Finalize Aggregate
+                                 Output: max(with_test1.value)
+                                 ->  PX Coordinator 6:1  (slice3; segments: 6)
+                                       Output: (PARTIAL max(with_test1.value))
+                                       ->  Partial Aggregate
+                                             Output: PARTIAL max(with_test1.value)
+                                             ->  Partial Seq Scan on public.with_test1
+                                                   Output: with_test1.value
+                     ->  Partial Seq Scan on public.with_test2
+                           Output: with_test2.i, with_test2.t, with_test2.value
+ Optimizer: PolarDB PX Optimizer
+(33 rows)
+
+--end_equivalent
+-- WITH query used in subplan
+--begin_equivalent
+with my_groupmax(i, maximum) as (select i, max(value) from with_test1 group by i)
+select * from with_test2
+where value < all (select maximum from my_groupmax);
+ i  |    t    | value 
+----+---------+-------
+  0 | text0   |     0
+  1 | text1   |     1
+  2 | text2   |     2
+  3 | text3   |     3
+  4 | text4   |     4
+  5 | text5   |     5
+  6 | text6   |     6
+  7 | text7   |     7
+  8 | text8   |     8
+  9 | text9   |     9
+ 10 | text10  |    10
+ 11 | text11  |    11
+ 12 | text12  |    12
+ 13 | text13  |    13
+ 14 | text14  |    14
+ 15 | text15  |    15
+ 16 | text16  |    16
+ 17 | text17  |    17
+ 18 | text18  |    18
+ 19 | text19  |    19
+  0 | text100 |     0
+  1 | text101 |     1
+  2 | text102 |     2
+  3 | text103 |     3
+  4 | text104 |     4
+  5 | text105 |     5
+  6 | text106 |     6
+  7 | text107 |     7
+  8 | text108 |     8
+  9 | text109 |     9
+ 10 | text110 |    10
+ 11 | text111 |    11
+ 12 | text112 |    12
+ 13 | text113 |    13
+ 14 | text114 |    14
+ 15 | text115 |    15
+ 16 | text116 |    16
+ 17 | text117 |    17
+ 18 | text118 |    18
+ 19 | text119 |    19
+  0 | text0   |     0
+  1 | text1   |     1
+  2 | text2   |     2
+  3 | text3   |     3
+  4 | text4   |     4
+  5 | text5   |     5
+  6 | text6   |     6
+  7 | text7   |     7
+  8 | text8   |     8
+  9 | text9   |     9
+ 10 | text10  |    10
+ 11 | text11  |    11
+ 12 | text12  |    12
+ 13 | text13  |    13
+ 14 | text14  |    14
+ 15 | text15  |    15
+ 16 | text16  |    16
+ 17 | text17  |    17
+ 18 | text18  |    18
+ 19 | text19  |    19
+  0 | text100 |     0
+  1 | text101 |     1
+  2 | text102 |     2
+  3 | text103 |     3
+  4 | text104 |     4
+  5 | text105 |     5
+  6 | text106 |     6
+  7 | text107 |     7
+  8 | text108 |     8
+  9 | text109 |     9
+ 10 | text110 |    10
+ 11 | text111 |    11
+ 12 | text112 |    12
+ 13 | text113 |    13
+ 14 | text114 |    14
+ 15 | text115 |    15
+ 16 | text116 |    16
+ 17 | text117 |    17
+ 18 | text118 |    18
+ 19 | text119 |    19
+(80 rows)
+
+                                                                                                                                                                                                                    QUERY PLAN                                                                                                                                                                                                                    
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: with_test2.i, with_test2.t, with_test2.value
+   ->  Partial Seq Scan on public.with_test2
+         Output: with_test2.i, with_test2.t, with_test2.value
+         Filter: (SubPlan 1)
+         SubPlan 1
+           ->  Result
+                 Output: true
+                 Filter: ((CASE WHEN (sum((CASE WHEN (with_test2.value >= (max(with_test1.value))) THEN 1 ELSE 0 END)) IS NULL) THEN true WHEN (sum((CASE WHEN ((max(with_test1.value)) IS NULL) THEN 1 ELSE 0 END)) > '0'::bigint) THEN NULL::boolean WHEN (with_test2.value IS NULL) THEN NULL::boolean WHEN (sum((CASE WHEN (with_test2.value >= (max(with_test1.value))) THEN 1 ELSE 0 END)) = '0'::bigint) THEN true ELSE false END) = true)
+                 ->  Aggregate
+                       Output: CASE WHEN (sum((CASE WHEN (with_test2.value >= (max(with_test1.value))) THEN 1 ELSE 0 END)) IS NULL) THEN true WHEN (sum((CASE WHEN ((max(with_test1.value)) IS NULL) THEN 1 ELSE 0 END)) > '0'::bigint) THEN NULL::boolean WHEN (with_test2.value IS NULL) THEN NULL::boolean WHEN (sum((CASE WHEN (with_test2.value >= (max(with_test1.value))) THEN 1 ELSE 0 END)) = '0'::bigint) THEN true ELSE false END
+                       ->  Result
+                             Output: CASE WHEN (with_test2.value >= (max(with_test1.value))) THEN 1 ELSE 0 END, CASE WHEN ((max(with_test1.value)) IS NULL) THEN 1 ELSE 0 END
+                             ->  Materialize
+                                   Output: (max(with_test1.value))
+                                   ->  PX Broadcast 6:6  (slice2; segments: 6)
+                                         Output: (max(with_test1.value))
+                                         ->  Finalize GroupAggregate
+                                               Output: max(with_test1.value)
+                                               Group Key: with_test1.i
+                                               ->  Sort
+                                                     Output: with_test1.i, (PARTIAL max(with_test1.value))
+                                                     Sort Key: with_test1.i
+                                                     ->  PX Hash 6:6  (slice3; segments: 6)
+                                                           Output: with_test1.i, (PARTIAL max(with_test1.value))
+                                                           Hash Key: with_test1.i
+                                                           ->  Partial HashAggregate
+                                                                 Output: with_test1.i, PARTIAL max(with_test1.value)
+                                                                 Group Key: with_test1.i
+                                                                 ->  Partial Seq Scan on public.with_test1
+                                                                       Output: with_test1.i, with_test1.value
+ Optimizer: PolarDB PX Optimizer
+(32 rows)
+
+select * from with_test2
+where value < all (select max(value) from with_test1 group by i);
+ i  |    t    | value 
+----+---------+-------
+  0 | text0   |     0
+  1 | text1   |     1
+  2 | text2   |     2
+  3 | text3   |     3
+  4 | text4   |     4
+  5 | text5   |     5
+  6 | text6   |     6
+  7 | text7   |     7
+  8 | text8   |     8
+  9 | text9   |     9
+ 10 | text10  |    10
+ 11 | text11  |    11
+ 12 | text12  |    12
+ 13 | text13  |    13
+ 14 | text14  |    14
+ 15 | text15  |    15
+ 16 | text16  |    16
+ 17 | text17  |    17
+ 18 | text18  |    18
+ 19 | text19  |    19
+  0 | text100 |     0
+  1 | text101 |     1
+  2 | text102 |     2
+  3 | text103 |     3
+  4 | text104 |     4
+  5 | text105 |     5
+  6 | text106 |     6
+  7 | text107 |     7
+  8 | text108 |     8
+  9 | text109 |     9
+ 10 | text110 |    10
+ 11 | text111 |    11
+ 12 | text112 |    12
+ 13 | text113 |    13
+ 14 | text114 |    14
+ 15 | text115 |    15
+ 16 | text116 |    16
+ 17 | text117 |    17
+ 18 | text118 |    18
+ 19 | text119 |    19
+  0 | text0   |     0
+  1 | text1   |     1
+  2 | text2   |     2
+  3 | text3   |     3
+  4 | text4   |     4
+  5 | text5   |     5
+  6 | text6   |     6
+  7 | text7   |     7
+  8 | text8   |     8
+  9 | text9   |     9
+ 10 | text10  |    10
+ 11 | text11  |    11
+ 12 | text12  |    12
+ 13 | text13  |    13
+ 14 | text14  |    14
+ 15 | text15  |    15
+ 16 | text16  |    16
+ 17 | text17  |    17
+ 18 | text18  |    18
+ 19 | text19  |    19
+  0 | text100 |     0
+  1 | text101 |     1
+  2 | text102 |     2
+  3 | text103 |     3
+  4 | text104 |     4
+  5 | text105 |     5
+  6 | text106 |     6
+  7 | text107 |     7
+  8 | text108 |     8
+  9 | text109 |     9
+ 10 | text110 |    10
+ 11 | text111 |    11
+ 12 | text112 |    12
+ 13 | text113 |    13
+ 14 | text114 |    14
+ 15 | text115 |    15
+ 16 | text116 |    16
+ 17 | text117 |    17
+ 18 | text118 |    18
+ 19 | text119 |    19
+(80 rows)
+
+                                                                                                                                                                                                                    QUERY PLAN                                                                                                                                                                                                                    
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: with_test2.i, with_test2.t, with_test2.value
+   ->  Partial Seq Scan on public.with_test2
+         Output: with_test2.i, with_test2.t, with_test2.value
+         Filter: (SubPlan 1)
+         SubPlan 1
+           ->  Result
+                 Output: true
+                 Filter: ((CASE WHEN (sum((CASE WHEN (with_test2.value >= (max(with_test1.value))) THEN 1 ELSE 0 END)) IS NULL) THEN true WHEN (sum((CASE WHEN ((max(with_test1.value)) IS NULL) THEN 1 ELSE 0 END)) > '0'::bigint) THEN NULL::boolean WHEN (with_test2.value IS NULL) THEN NULL::boolean WHEN (sum((CASE WHEN (with_test2.value >= (max(with_test1.value))) THEN 1 ELSE 0 END)) = '0'::bigint) THEN true ELSE false END) = true)
+                 ->  Aggregate
+                       Output: CASE WHEN (sum((CASE WHEN (with_test2.value >= (max(with_test1.value))) THEN 1 ELSE 0 END)) IS NULL) THEN true WHEN (sum((CASE WHEN ((max(with_test1.value)) IS NULL) THEN 1 ELSE 0 END)) > '0'::bigint) THEN NULL::boolean WHEN (with_test2.value IS NULL) THEN NULL::boolean WHEN (sum((CASE WHEN (with_test2.value >= (max(with_test1.value))) THEN 1 ELSE 0 END)) = '0'::bigint) THEN true ELSE false END
+                       ->  Result
+                             Output: CASE WHEN (with_test2.value >= (max(with_test1.value))) THEN 1 ELSE 0 END, CASE WHEN ((max(with_test1.value)) IS NULL) THEN 1 ELSE 0 END
+                             ->  Materialize
+                                   Output: (max(with_test1.value))
+                                   ->  PX Broadcast 6:6  (slice2; segments: 6)
+                                         Output: (max(with_test1.value))
+                                         ->  Finalize GroupAggregate
+                                               Output: max(with_test1.value)
+                                               Group Key: with_test1.i
+                                               ->  Sort
+                                                     Output: with_test1.i, (PARTIAL max(with_test1.value))
+                                                     Sort Key: with_test1.i
+                                                     ->  PX Hash 6:6  (slice3; segments: 6)
+                                                           Output: with_test1.i, (PARTIAL max(with_test1.value))
+                                                           Hash Key: with_test1.i
+                                                           ->  Partial HashAggregate
+                                                                 Output: with_test1.i, PARTIAL max(with_test1.value)
+                                                                 Group Key: with_test1.i
+                                                                 ->  Partial Seq Scan on public.with_test1
+                                                                       Output: with_test1.i, with_test1.value
+ Optimizer: PolarDB PX Optimizer
+(32 rows)
+
+--end_equivalent
+-- WITH query used in subplan and the main query at the same time
+--begin_equivalent
+with my_groupmax(i, maximum) as (select i, max(value) from with_test1 group by i)
+select * from with_test2, my_groupmax
+where with_test2.i = my_groupmax.i
+and value < all (select maximum from my_groupmax);
+ i |    t    | value | i | maximum 
+---+---------+-------+---+---------
+ 0 | text0   |     0 | 0 |      20
+ 1 | text1   |     1 | 1 |      21
+ 2 | text2   |     2 | 2 |      22
+ 3 | text3   |     3 | 3 |      23
+ 4 | text4   |     4 | 4 |      24
+ 5 | text5   |     5 | 5 |      25
+ 6 | text6   |     6 | 6 |      26
+ 7 | text7   |     7 | 7 |      27
+ 8 | text8   |     8 | 8 |      28
+ 9 | text9   |     9 | 9 |      29
+ 0 | text100 |     0 | 0 |      20
+ 1 | text101 |     1 | 1 |      21
+ 2 | text102 |     2 | 2 |      22
+ 3 | text103 |     3 | 3 |      23
+ 4 | text104 |     4 | 4 |      24
+ 5 | text105 |     5 | 5 |      25
+ 6 | text106 |     6 | 6 |      26
+ 7 | text107 |     7 | 7 |      27
+ 8 | text108 |     8 | 8 |      28
+ 9 | text109 |     9 | 9 |      29
+ 0 | text0   |     0 | 0 |      20
+ 1 | text1   |     1 | 1 |      21
+ 2 | text2   |     2 | 2 |      22
+ 3 | text3   |     3 | 3 |      23
+ 4 | text4   |     4 | 4 |      24
+ 5 | text5   |     5 | 5 |      25
+ 6 | text6   |     6 | 6 |      26
+ 7 | text7   |     7 | 7 |      27
+ 8 | text8   |     8 | 8 |      28
+ 9 | text9   |     9 | 9 |      29
+ 0 | text100 |     0 | 0 |      20
+ 1 | text101 |     1 | 1 |      21
+ 2 | text102 |     2 | 2 |      22
+ 3 | text103 |     3 | 3 |      23
+ 4 | text104 |     4 | 4 |      24
+ 5 | text105 |     5 | 5 |      25
+ 6 | text106 |     6 | 6 |      26
+ 7 | text107 |     7 | 7 |      27
+ 8 | text108 |     8 | 8 |      28
+ 9 | text109 |     9 | 9 |      29
+(40 rows)
+
+                                                                                                                                                                                                                 QUERY PLAN                                                                                                                                                                                                                 
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: with_test2.i, with_test2.t, with_test2.value, share0_ref3.i, share0_ref3.max
+   ->  Sequence
+         Output: with_test2.i, with_test2.t, with_test2.value, share0_ref3.i, share0_ref3.max
+         ->  Shared Scan (Producer; slice1; share0)
+               Output: share0_ref2.i, share0_ref2.max
+               ->  Finalize GroupAggregate
+                     Output: with_test1.i, max(with_test1.value)
+                     Group Key: with_test1.i
+                     ->  Sort
+                           Output: with_test1.i, (PARTIAL max(with_test1.value))
+                           Sort Key: with_test1.i
+                           ->  PX Hash 6:6  (slice2; segments: 6)
+                                 Output: with_test1.i, (PARTIAL max(with_test1.value))
+                                 Hash Key: with_test1.i
+                                 ->  Partial HashAggregate
+                                       Output: with_test1.i, PARTIAL max(with_test1.value)
+                                       Group Key: with_test1.i
+                                       ->  Partial Seq Scan on public.with_test1
+                                             Output: with_test1.i, with_test1.value
+         ->  Hash Join
+               Output: with_test2.i, with_test2.t, with_test2.value, share0_ref3.i, share0_ref3.max
+               Hash Cond: (with_test2.i = share0_ref3.i)
+               ->  PX Hash 6:6  (slice3; segments: 6)
+                     Output: with_test2.i, with_test2.t, with_test2.value
+                     Hash Key: with_test2.i
+                     ->  Partial Seq Scan on public.with_test2
+                           Output: with_test2.i, with_test2.t, with_test2.value
+                           Filter: (SubPlan 1)
+                           SubPlan 1
+                             ->  Result
+                                   Output: true
+                                   Filter: ((CASE WHEN (sum((CASE WHEN (with_test2.value >= share0_ref1.max) THEN 1 ELSE 0 END)) IS NULL) THEN true WHEN (sum((CASE WHEN (share0_ref1.max IS NULL) THEN 1 ELSE 0 END)) > '0'::bigint) THEN NULL::boolean WHEN (with_test2.value IS NULL) THEN NULL::boolean WHEN (sum((CASE WHEN (with_test2.value >= share0_ref1.max) THEN 1 ELSE 0 END)) = '0'::bigint) THEN true ELSE false END) = true)
+                                   ->  Aggregate
+                                         Output: CASE WHEN (sum((CASE WHEN (with_test2.value >= share0_ref1.max) THEN 1 ELSE 0 END)) IS NULL) THEN true WHEN (sum((CASE WHEN (share0_ref1.max IS NULL) THEN 1 ELSE 0 END)) > '0'::bigint) THEN NULL::boolean WHEN (with_test2.value IS NULL) THEN NULL::boolean WHEN (sum((CASE WHEN (with_test2.value >= share0_ref1.max) THEN 1 ELSE 0 END)) = '0'::bigint) THEN true ELSE false END
+                                         ->  Result
+                                               Output: CASE WHEN (with_test2.value >= share0_ref1.max) THEN 1 ELSE 0 END, CASE WHEN (share0_ref1.max IS NULL) THEN 1 ELSE 0 END
+                                               ->  Materialize
+                                                     Output: share0_ref1.max
+                                                     ->  PX Broadcast 6:6  (slice4; segments: 6)
+                                                           Output: share0_ref1.max
+                                                           ->  Result
+                                                                 Output: share0_ref1.max
+                                                                 ->  Shared Scan (Consumer; slice4; share0)
+                                                                       Output: share0_ref1.i, share0_ref1.max
+               ->  Hash
+                     Output: share0_ref3.i, share0_ref3.max
+                     ->  Shared Scan (Producer; slice1; share0)
+                           Output: share0_ref3.i, share0_ref3.max
+ Optimizer: PolarDB PX Optimizer
+(50 rows)
+
+select * from with_test2, (select i, max(value) as maximum from with_test1 group by i) as my_groupmax
+where with_test2.i = my_groupmax.i
+and value < all (select max(value) from with_test1 group by i);
+ i |    t    | value | i | maximum 
+---+---------+-------+---+---------
+ 0 | text0   |     0 | 0 |      20
+ 1 | text1   |     1 | 1 |      21
+ 2 | text2   |     2 | 2 |      22
+ 3 | text3   |     3 | 3 |      23
+ 4 | text4   |     4 | 4 |      24
+ 5 | text5   |     5 | 5 |      25
+ 6 | text6   |     6 | 6 |      26
+ 7 | text7   |     7 | 7 |      27
+ 8 | text8   |     8 | 8 |      28
+ 9 | text9   |     9 | 9 |      29
+ 0 | text100 |     0 | 0 |      20
+ 1 | text101 |     1 | 1 |      21
+ 2 | text102 |     2 | 2 |      22
+ 3 | text103 |     3 | 3 |      23
+ 4 | text104 |     4 | 4 |      24
+ 5 | text105 |     5 | 5 |      25
+ 6 | text106 |     6 | 6 |      26
+ 7 | text107 |     7 | 7 |      27
+ 8 | text108 |     8 | 8 |      28
+ 9 | text109 |     9 | 9 |      29
+ 0 | text0   |     0 | 0 |      20
+ 1 | text1   |     1 | 1 |      21
+ 2 | text2   |     2 | 2 |      22
+ 3 | text3   |     3 | 3 |      23
+ 4 | text4   |     4 | 4 |      24
+ 5 | text5   |     5 | 5 |      25
+ 6 | text6   |     6 | 6 |      26
+ 7 | text7   |     7 | 7 |      27
+ 8 | text8   |     8 | 8 |      28
+ 9 | text9   |     9 | 9 |      29
+ 0 | text100 |     0 | 0 |      20
+ 1 | text101 |     1 | 1 |      21
+ 2 | text102 |     2 | 2 |      22
+ 3 | text103 |     3 | 3 |      23
+ 4 | text104 |     4 | 4 |      24
+ 5 | text105 |     5 | 5 |      25
+ 6 | text106 |     6 | 6 |      26
+ 7 | text107 |     7 | 7 |      27
+ 8 | text108 |     8 | 8 |      28
+ 9 | text109 |     9 | 9 |      29
+(40 rows)
+
+                                                                                                                                                                                                                          QUERY PLAN                                                                                                                                                                                                                          
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: with_test2.i, with_test2.t, with_test2.value, with_test1_1.i, (max(with_test1_1.value))
+   ->  Hash Join
+         Output: with_test2.i, with_test2.t, with_test2.value, with_test1_1.i, (max(with_test1_1.value))
+         Hash Cond: (with_test2.i = with_test1_1.i)
+         ->  PX Hash 6:6  (slice2; segments: 6)
+               Output: with_test2.i, with_test2.t, with_test2.value
+               Hash Key: with_test2.i
+               ->  Partial Seq Scan on public.with_test2
+                     Output: with_test2.i, with_test2.t, with_test2.value
+                     Filter: (SubPlan 1)
+                     SubPlan 1
+                       ->  Result
+                             Output: true
+                             Filter: ((CASE WHEN (sum((CASE WHEN (with_test2.value >= (max(with_test1.value))) THEN 1 ELSE 0 END)) IS NULL) THEN true WHEN (sum((CASE WHEN ((max(with_test1.value)) IS NULL) THEN 1 ELSE 0 END)) > '0'::bigint) THEN NULL::boolean WHEN (with_test2.value IS NULL) THEN NULL::boolean WHEN (sum((CASE WHEN (with_test2.value >= (max(with_test1.value))) THEN 1 ELSE 0 END)) = '0'::bigint) THEN true ELSE false END) = true)
+                             ->  Aggregate
+                                   Output: CASE WHEN (sum((CASE WHEN (with_test2.value >= (max(with_test1.value))) THEN 1 ELSE 0 END)) IS NULL) THEN true WHEN (sum((CASE WHEN ((max(with_test1.value)) IS NULL) THEN 1 ELSE 0 END)) > '0'::bigint) THEN NULL::boolean WHEN (with_test2.value IS NULL) THEN NULL::boolean WHEN (sum((CASE WHEN (with_test2.value >= (max(with_test1.value))) THEN 1 ELSE 0 END)) = '0'::bigint) THEN true ELSE false END
+                                   ->  Result
+                                         Output: CASE WHEN (with_test2.value >= (max(with_test1.value))) THEN 1 ELSE 0 END, CASE WHEN ((max(with_test1.value)) IS NULL) THEN 1 ELSE 0 END
+                                         ->  Materialize
+                                               Output: (max(with_test1.value))
+                                               ->  PX Broadcast 6:6  (slice3; segments: 6)
+                                                     Output: (max(with_test1.value))
+                                                     ->  Finalize GroupAggregate
+                                                           Output: max(with_test1.value)
+                                                           Group Key: with_test1.i
+                                                           ->  Sort
+                                                                 Output: with_test1.i, (PARTIAL max(with_test1.value))
+                                                                 Sort Key: with_test1.i
+                                                                 ->  PX Hash 6:6  (slice4; segments: 6)
+                                                                       Output: with_test1.i, (PARTIAL max(with_test1.value))
+                                                                       Hash Key: with_test1.i
+                                                                       ->  Partial HashAggregate
+                                                                             Output: with_test1.i, PARTIAL max(with_test1.value)
+                                                                             Group Key: with_test1.i
+                                                                             ->  Partial Seq Scan on public.with_test1
+                                                                                   Output: with_test1.i, with_test1.value
+         ->  Hash
+               Output: (max(with_test1_1.value)), with_test1_1.i
+               ->  Finalize GroupAggregate
+                     Output: max(with_test1_1.value), with_test1_1.i
+                     Group Key: with_test1_1.i
+                     ->  Sort
+                           Output: with_test1_1.i, (PARTIAL max(with_test1_1.value))
+                           Sort Key: with_test1_1.i
+                           ->  PX Hash 6:6  (slice5; segments: 6)
+                                 Output: with_test1_1.i, (PARTIAL max(with_test1_1.value))
+                                 Hash Key: with_test1_1.i
+                                 ->  Partial HashAggregate
+                                       Output: with_test1_1.i, PARTIAL max(with_test1_1.value)
+                                       Group Key: with_test1_1.i
+                                       ->  Partial Seq Scan on public.with_test1 with_test1_1
+                                             Output: with_test1_1.i, with_test1_1.value
+ Optimizer: PolarDB PX Optimizer
+(54 rows)
+
+--end_equivalent
+--begin_equivalent
+with my_groupmax(i, maximum) as (select i, max(value) from with_test1 group by i)
+SELECT count(*) FROM my_groupmax WHERE maximum > (SELECT sum(maximum)/100 FROM my_groupmax);
+ count 
+-------
+    10
+(1 row)
+
+                                                 QUERY PLAN                                                 
+------------------------------------------------------------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: (count())
+   ->  Sequence
+         Output: (count())
+         ->  Shared Scan (Producer; slice1; share0)
+               Output: share0_ref1.i, share0_ref1.max
+               ->  Finalize GroupAggregate
+                     Output: with_test1.i, max(with_test1.value)
+                     Group Key: with_test1.i
+                     ->  Sort
+                           Output: with_test1.i, (PARTIAL max(with_test1.value))
+                           Sort Key: with_test1.i
+                           ->  PX Hash 6:6  (slice2; segments: 6)
+                                 Output: with_test1.i, (PARTIAL max(with_test1.value))
+                                 Hash Key: with_test1.i
+                                 ->  Partial HashAggregate
+                                       Output: with_test1.i, PARTIAL max(with_test1.value)
+                                       Group Key: with_test1.i
+                                       ->  Partial Seq Scan on public.with_test1
+                                             Output: with_test1.i, with_test1.value
+         ->  PX Hash 1:6  (slice3)
+               Output: (count())
+               ->  Finalize Aggregate
+                     Output: count()
+                     ->  PX Coordinator 6:1  (slice4; segments: 6)
+                           Output: (PARTIAL count())
+                           ->  Partial Aggregate
+                                 Output: PARTIAL count()
+                                 ->  Nested Loop
+                                       Join Filter: (share0_ref2.max > ((sum(share0_ref3.max) / 100)))
+                                       ->  PX Broadcast 1:6  (slice5)
+                                             Output: ((sum(share0_ref3.max) / 100))
+                                             ->  Finalize Aggregate
+                                                   Output: (sum(share0_ref3.max) / 100)
+                                                   ->  PX Coordinator 6:1  (slice6; segments: 6)
+                                                         Output: (PARTIAL sum(share0_ref3.max))
+                                                         ->  Partial Aggregate
+                                                               Output: PARTIAL sum(share0_ref3.max)
+                                                               ->  Shared Scan (Consumer; slice6; share0)
+                                                                     Output: share0_ref3.i, share0_ref3.max
+                                       ->  Shared Scan (Consumer; slice4; share0)
+                                             Output: share0_ref2.i, share0_ref2.max
+ Optimizer: PolarDB PX Optimizer
+(43 rows)
+
+select count(*) from (select i, max(value) as maximum from with_test1 group by i) as my_groupmax
+where maximum > (SELECT sum(maximum)/100 FROM (select i, max(value) as maximum from with_test1 group by i) as tmp);
+ count 
+-------
+    10
+(1 row)
+
+                                                         QUERY PLAN                                                          
+-----------------------------------------------------------------------------------------------------------------------------
+ Finalize Aggregate
+   Output: count()
+   ->  PX Coordinator 6:1  (slice1; segments: 6)
+         Output: (PARTIAL count())
+         ->  Partial Aggregate
+               Output: PARTIAL count()
+               ->  Nested Loop
+                     Join Filter: ((max(with_test1.value)) > ((sum((max(with_test1_1.value))) / 100)))
+                     ->  PX Broadcast 1:6  (slice3)
+                           Output: ((sum((max(with_test1_1.value))) / 100))
+                           ->  Finalize Aggregate
+                                 Output: (sum((max(with_test1_1.value))) / 100)
+                                 ->  PX Coordinator 6:1  (slice4; segments: 6)
+                                       Output: (PARTIAL sum((max(with_test1_1.value))))
+                                       ->  Partial Aggregate
+                                             Output: PARTIAL sum((max(with_test1_1.value)))
+                                             ->  Finalize GroupAggregate
+                                                   Output: max(with_test1_1.value), with_test1_1.i
+                                                   Group Key: with_test1_1.i
+                                                   ->  Sort
+                                                         Output: with_test1_1.i, (PARTIAL max(with_test1_1.value))
+                                                         Sort Key: with_test1_1.i
+                                                         ->  PX Hash 6:6  (slice5; segments: 6)
+                                                               Output: with_test1_1.i, (PARTIAL max(with_test1_1.value))
+                                                               Hash Key: with_test1_1.i
+                                                               ->  Partial HashAggregate
+                                                                     Output: with_test1_1.i, PARTIAL max(with_test1_1.value)
+                                                                     Group Key: with_test1_1.i
+                                                                     ->  Partial Seq Scan on public.with_test1 with_test1_1
+                                                                           Output: with_test1_1.i, with_test1_1.value
+                     ->  Finalize GroupAggregate
+                           Output: max(with_test1.value), with_test1.i
+                           Group Key: with_test1.i
+                           ->  Sort
+                                 Output: with_test1.i, (PARTIAL max(with_test1.value))
+                                 Sort Key: with_test1.i
+                                 ->  PX Hash 6:6  (slice2; segments: 6)
+                                       Output: with_test1.i, (PARTIAL max(with_test1.value))
+                                       Hash Key: with_test1.i
+                                       ->  Partial HashAggregate
+                                             Output: with_test1.i, PARTIAL max(with_test1.value)
+                                             Group Key: with_test1.i
+                                             ->  Partial Seq Scan on public.with_test1
+                                                   Output: with_test1.i, with_test1.value
+ Optimizer: PolarDB PX Optimizer
+(45 rows)
+
+--end_equivalent
+-- name resolution
+--begin_equivalent
+with my_max(maximum) as (select max(value) from with_test2)
+select * from with_test1, my_max
+where value < (with my_max(maximum) as (select max(i) from with_test1)
+               select * from my_max);
+ i |   t    | value | maximum 
+---+--------+-------+---------
+ 0 | text0  |     0 |     299
+ 1 | text1  |     1 |     299
+ 2 | text2  |     2 |     299
+ 3 | text3  |     3 |     299
+ 4 | text4  |     4 |     299
+ 5 | text5  |     5 |     299
+ 6 | text6  |     6 |     299
+ 7 | text7  |     7 |     299
+ 8 | text8  |     8 |     299
+ 0 | text10 |     0 |     299
+ 1 | text11 |     1 |     299
+ 2 | text12 |     2 |     299
+ 3 | text13 |     3 |     299
+ 4 | text14 |     4 |     299
+ 5 | text15 |     5 |     299
+ 6 | text16 |     6 |     299
+ 7 | text17 |     7 |     299
+ 8 | text18 |     8 |     299
+ 0 | text0  |     0 |     299
+ 1 | text1  |     1 |     299
+ 2 | text2  |     2 |     299
+ 3 | text3  |     3 |     299
+ 4 | text4  |     4 |     299
+ 5 | text5  |     5 |     299
+ 6 | text6  |     6 |     299
+ 7 | text7  |     7 |     299
+ 8 | text8  |     8 |     299
+ 0 | text10 |     0 |     299
+ 1 | text11 |     1 |     299
+ 2 | text12 |     2 |     299
+ 3 | text13 |     3 |     299
+ 4 | text14 |     4 |     299
+ 5 | text15 |     5 |     299
+ 6 | text16 |     6 |     299
+ 7 | text17 |     7 |     299
+ 8 | text18 |     8 |     299
+(36 rows)
+
+                                             QUERY PLAN                                              
+-----------------------------------------------------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: with_test1_1.i, with_test1_1.t, with_test1_1.value, (max(with_test2.value))
+   ->  Nested Loop
+         Output: with_test1_1.i, with_test1_1.t, with_test1_1.value, (max(with_test2.value))
+         Join Filter: true
+         ->  Result
+               Output: with_test1_1.i, with_test1_1.t, with_test1_1.value
+               Filter: (with_test1_1.value < (max(with_test1.i)))
+               ->  Nested Loop Left Join
+                     Output: (max(with_test1.i)), with_test1_1.i, with_test1_1.t, with_test1_1.value
+                     Join Filter: true
+                     ->  Partial Seq Scan on public.with_test1 with_test1_1
+                           Output: with_test1_1.i, with_test1_1.t, with_test1_1.value
+                     ->  Materialize
+                           Output: (max(with_test1.i))
+                           ->  PX Broadcast 1:6  (slice4)
+                                 Output: (max(with_test1.i))
+                                 ->  Finalize Aggregate
+                                       Output: max(with_test1.i)
+                                       ->  PX Coordinator 6:1  (slice5; segments: 6)
+                                             Output: (PARTIAL max(with_test1.i))
+                                             ->  Partial Aggregate
+                                                   Output: PARTIAL max(with_test1.i)
+                                                   ->  Partial Seq Scan on public.with_test1
+                                                         Output: with_test1.i
+         ->  Materialize
+               Output: (max(with_test2.value))
+               ->  PX Broadcast 1:6  (slice2)
+                     Output: (max(with_test2.value))
+                     ->  Finalize Aggregate
+                           Output: max(with_test2.value)
+                           ->  PX Coordinator 6:1  (slice3; segments: 6)
+                                 Output: (PARTIAL max(with_test2.value))
+                                 ->  Partial Aggregate
+                                       Output: PARTIAL max(with_test2.value)
+                                       ->  Partial Seq Scan on public.with_test2
+                                             Output: with_test2.value
+ Optimizer: PolarDB PX Optimizer
+(38 rows)
+
+select * from with_test1, (select max(value) as maximum from with_test2) as my_max
+where value < (select max(i) from with_test1);
+ i |   t    | value | maximum 
+---+--------+-------+---------
+ 0 | text0  |     0 |     299
+ 1 | text1  |     1 |     299
+ 2 | text2  |     2 |     299
+ 3 | text3  |     3 |     299
+ 4 | text4  |     4 |     299
+ 5 | text5  |     5 |     299
+ 6 | text6  |     6 |     299
+ 7 | text7  |     7 |     299
+ 8 | text8  |     8 |     299
+ 0 | text10 |     0 |     299
+ 1 | text11 |     1 |     299
+ 2 | text12 |     2 |     299
+ 3 | text13 |     3 |     299
+ 4 | text14 |     4 |     299
+ 5 | text15 |     5 |     299
+ 6 | text16 |     6 |     299
+ 7 | text17 |     7 |     299
+ 8 | text18 |     8 |     299
+ 0 | text0  |     0 |     299
+ 1 | text1  |     1 |     299
+ 2 | text2  |     2 |     299
+ 3 | text3  |     3 |     299
+ 4 | text4  |     4 |     299
+ 5 | text5  |     5 |     299
+ 6 | text6  |     6 |     299
+ 7 | text7  |     7 |     299
+ 8 | text8  |     8 |     299
+ 0 | text10 |     0 |     299
+ 1 | text11 |     1 |     299
+ 2 | text12 |     2 |     299
+ 3 | text13 |     3 |     299
+ 4 | text14 |     4 |     299
+ 5 | text15 |     5 |     299
+ 6 | text16 |     6 |     299
+ 7 | text17 |     7 |     299
+ 8 | text18 |     8 |     299
+(36 rows)
+
+                                          QUERY PLAN                                          
+----------------------------------------------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: with_test1.i, with_test1.t, with_test1.value, (max(with_test2.value))
+   ->  Nested Loop
+         Output: with_test1.i, with_test1.t, with_test1.value, (max(with_test2.value))
+         Join Filter: true
+         ->  Nested Loop
+               Output: with_test1.i, with_test1.t, with_test1.value
+               Join Filter: (with_test1.value < (max(with_test1_1.i)))
+               ->  PX Broadcast 1:6  (slice4)
+                     Output: (max(with_test1_1.i))
+                     ->  Finalize Aggregate
+                           Output: max(with_test1_1.i)
+                           ->  PX Coordinator 6:1  (slice5; segments: 6)
+                                 Output: (PARTIAL max(with_test1_1.i))
+                                 ->  Partial Aggregate
+                                       Output: PARTIAL max(with_test1_1.i)
+                                       ->  Partial Seq Scan on public.with_test1 with_test1_1
+                                             Output: with_test1_1.i
+               ->  Partial Seq Scan on public.with_test1
+                     Output: with_test1.i, with_test1.t, with_test1.value
+         ->  Materialize
+               Output: (max(with_test2.value))
+               ->  PX Broadcast 1:6  (slice2)
+                     Output: (max(with_test2.value))
+                     ->  Finalize Aggregate
+                           Output: max(with_test2.value)
+                           ->  PX Coordinator 6:1  (slice3; segments: 6)
+                                 Output: (PARTIAL max(with_test2.value))
+                                 ->  Partial Aggregate
+                                       Output: PARTIAL max(with_test2.value)
+                                       ->  Partial Seq Scan on public.with_test2
+                                             Output: with_test2.value
+ Optimizer: PolarDB PX Optimizer
+(33 rows)
+
+--end_equivalent
+-- INSERT
+insert into with_test2
+with my_sum(i, total) as (select i, sum(value) from with_test1 group by i)
+select i, i || '', total
+from my_sum;
+-- CREATE TABLE AS
+drop table if exists with_test3;
+NOTICE:  table "with_test3" does not exist, skipping
+create table with_test3 as
+with my_sum(i, total) as (select i, sum(value) from with_test1 group by i)
+select *
+from my_sum;
+-- view
+drop view if exists my_view;
+NOTICE:  view "my_view" does not exist, skipping
+create view my_view (total) as
+with my_sum(total) as (select sum(value) from with_test1)
+select *
+from my_sum;
+SELECT pg_get_viewdef('my_view'::regclass);
+                pg_get_viewdef                
+----------------------------------------------
+  WITH my_sum(total) AS (                    +
+          SELECT sum(with_test1.value) AS sum+
+            FROM with_test1                  +
+         )                                   +
+  SELECT my_sum.total                        +
+    FROM my_sum;
+(1 row)
+
+SELECT pg_get_viewdef('my_view'::regclass, true);
+                pg_get_viewdef                
+----------------------------------------------
+  WITH my_sum(total) AS (                    +
+          SELECT sum(with_test1.value) AS sum+
+            FROM with_test1                  +
+         )                                   +
+  SELECT my_sum.total                        +
+    FROM my_sum;
+(1 row)
+
+drop view if exists my_view;
+create view my_view(total) as
+with my_sum(total) as (
+     with my_group_sum(total) as (select sum(value) from with_test1 group by i)
+     select sum(total) from my_group_sum)
+select *
+from my_sum;
+SELECT pg_get_viewdef('my_view'::regclass);
+                    pg_get_viewdef                    
+------------------------------------------------------
+  WITH my_sum(total) AS (                            +
+          WITH my_group_sum(total) AS (              +
+                  SELECT sum(with_test1.value) AS sum+
+                    FROM with_test1                  +
+                   GROUP BY with_test1.i             +
+                 )                                   +
+          SELECT sum(my_group_sum.total) AS sum      +
+            FROM my_group_sum                        +
+         )                                           +
+  SELECT my_sum.total                                +
+    FROM my_sum;
+(1 row)
+
+SELECT pg_get_viewdef('my_view'::regclass, true);
+                    pg_get_viewdef                    
+------------------------------------------------------
+  WITH my_sum(total) AS (                            +
+          WITH my_group_sum(total) AS (              +
+                  SELECT sum(with_test1.value) AS sum+
+                    FROM with_test1                  +
+                   GROUP BY with_test1.i             +
+                 )                                   +
+          SELECT sum(my_group_sum.total) AS sum      +
+            FROM my_group_sum                        +
+         )                                           +
+  SELECT my_sum.total                                +
+    FROM my_sum;
+(1 row)
+
+drop view if exists my_view;
+create view my_view(i, total) as (
+    select i, sum(value) from with_test1 group by i);
+with my_sum(total) as (select sum(total) from my_view)
+select * from my_sum;
+ total 
+-------
+  1350
+(1 row)
+
+                                   QUERY PLAN                                    
+---------------------------------------------------------------------------------
+ Finalize Aggregate
+   Output: sum((sum(value)))
+   ->  PX Coordinator 6:1  (slice1; segments: 6)
+         Output: (PARTIAL sum((sum(value))))
+         ->  Partial Aggregate
+               Output: PARTIAL sum((sum(value)))
+               ->  Finalize GroupAggregate
+                     Output: sum(value), i
+                     Group Key: with_test1.i
+                     ->  Sort
+                           Output: i, (PARTIAL sum(value))
+                           Sort Key: with_test1.i
+                           ->  PX Hash 6:6  (slice2; segments: 6)
+                                 Output: i, (PARTIAL sum(value))
+                                 Hash Key: i
+                                 ->  Partial HashAggregate
+                                       Output: i, PARTIAL sum(value)
+                                       Group Key: with_test1.i
+                                       ->  Partial Seq Scan on public.with_test1
+                                             Output: i, value
+ Optimizer: PolarDB PX Optimizer
+(21 rows)
+
+-- WITH query not used in the main query
+--begin_equivalent
+with my_sum(total) as (select sum(value) from with_test1)
+select count(*) from with_test2;
+ count 
+-------
+  1010
+(1 row)
+
+                       QUERY PLAN                        
+---------------------------------------------------------
+ Finalize Aggregate
+   Output: count()
+   ->  PX Coordinator 6:1  (slice1; segments: 6)
+         Output: (PARTIAL count())
+         ->  Partial Aggregate
+               Output: PARTIAL count()
+               ->  Partial Seq Scan on public.with_test2
+ Optimizer: PolarDB PX Optimizer
+(8 rows)
+
+select count(*) from with_test2;
+ count 
+-------
+  1010
+(1 row)
+
+                       QUERY PLAN                        
+---------------------------------------------------------
+ Finalize Aggregate
+   Output: count()
+   ->  PX Coordinator 6:1  (slice1; segments: 6)
+         Output: (PARTIAL count())
+         ->  Partial Aggregate
+               Output: PARTIAL count()
+               ->  Partial Seq Scan on public.with_test2
+ Optimizer: PolarDB PX Optimizer
+(8 rows)
+
+--end_equivalent
+-- WITH used in CURSOR query
+begin;
+	declare c cursor for with my_sum(total) as (select sum(value) from with_test1 group by i) select * from my_sum order by 1;
+	fetch 10 from c;
+ total 
+-------
+    90
+   100
+   110
+   120
+   130
+   140
+   150
+   160
+   170
+   180
+(10 rows)
+
+	close c;
+end;
+-- Returning
+create temporary table y (i int);
+insert into y
+with t as (select i from with_test1)
+select i+20 from t returning *;
+ i  
+----
+ 20
+ 21
+ 22
+ 23
+ 24
+ 25
+ 26
+ 27
+ 28
+ 29
+ 20
+ 21
+ 22
+ 23
+ 24
+ 25
+ 26
+ 27
+ 28
+ 29
+ 20
+ 21
+ 22
+ 23
+ 24
+ 25
+ 26
+ 27
+ 28
+ 29
+ 20
+ 21
+ 22
+ 23
+ 24
+ 25
+ 26
+ 27
+ 28
+ 29
+ 20
+ 21
+ 22
+ 23
+ 24
+ 25
+ 26
+ 27
+ 28
+ 29
+ 20
+ 21
+ 22
+ 23
+ 24
+ 25
+ 26
+ 27
+ 28
+ 29
+ 20
+ 21
+ 22
+ 23
+ 24
+ 25
+ 26
+ 27
+ 28
+ 29
+ 20
+ 21
+ 22
+ 23
+ 24
+ 25
+ 26
+ 27
+ 28
+ 29
+ 20
+ 21
+ 22
+ 23
+ 24
+ 25
+ 26
+ 27
+ 28
+ 29
+ 20
+ 21
+ 22
+ 23
+ 24
+ 25
+ 26
+ 27
+ 28
+ 29
+(100 rows)
+
+select * from y;
+ i  
+----
+ 20
+ 21
+ 22
+ 23
+ 24
+ 25
+ 26
+ 27
+ 28
+ 29
+ 20
+ 21
+ 22
+ 23
+ 24
+ 25
+ 26
+ 27
+ 28
+ 29
+ 20
+ 21
+ 22
+ 23
+ 24
+ 25
+ 26
+ 27
+ 28
+ 29
+ 20
+ 21
+ 22
+ 23
+ 24
+ 25
+ 26
+ 27
+ 28
+ 29
+ 20
+ 21
+ 22
+ 23
+ 24
+ 25
+ 26
+ 27
+ 28
+ 29
+ 20
+ 21
+ 22
+ 23
+ 24
+ 25
+ 26
+ 27
+ 28
+ 29
+ 20
+ 21
+ 22
+ 23
+ 24
+ 25
+ 26
+ 27
+ 28
+ 29
+ 20
+ 21
+ 22
+ 23
+ 24
+ 25
+ 26
+ 27
+ 28
+ 29
+ 20
+ 21
+ 22
+ 23
+ 24
+ 25
+ 26
+ 27
+ 28
+ 29
+ 20
+ 21
+ 22
+ 23
+ 24
+ 25
+ 26
+ 27
+ 28
+ 29
+(100 rows)
+
+drop table y;
+-- WITH used in SETOP
+with my_sum(total) as (select sum(value) from with_test1)
+select * from my_sum
+union all
+select * from my_sum;
+ total 
+-------
+  1350
+  1350
+(2 rows)
+
+                             QUERY PLAN                              
+---------------------------------------------------------------------
+ Sequence
+   Output: share0_ref2.sum
+   ->  Shared Scan (Producer; slice0; share0)
+         Output: share0_ref1.sum
+         ->  Finalize Aggregate
+               Output: sum(with_test1.value)
+               ->  PX Coordinator 6:1  (slice1; segments: 6)
+                     Output: (PARTIAL sum(with_test1.value))
+                     ->  Partial Aggregate
+                           Output: PARTIAL sum(with_test1.value)
+                           ->  Partial Seq Scan on public.with_test1
+                                 Output: with_test1.value
+   ->  Append
+         ->  Shared Scan (Producer; slice0; share0)
+               Output: share0_ref2.sum
+         ->  Shared Scan (Producer; slice0; share0)
+               Output: share0_ref3.sum
+ Optimizer: PolarDB PX Optimizer
+(18 rows)
+
+-- ERROR cases
+-- duplicate CTE name
+with my_sum(total) as (select sum(value) from with_test1),
+     my_sum(group_total) as (select sum(value) from with_test1 group by i)
+select *
+from my_sum;
+ERROR:  WITH query name "my_sum" specified more than once
+LINE 2:      my_sum(group_total) as (select sum(value) from with_tes...
+             ^
+-- INTO clause
+with my_sum(total) as (select sum(value) from with_test1 into total_value)
+select *
+from my_sum;
+ERROR:  syntax error at or near "into"
+LINE 1: ..._sum(total) as (select sum(value) from with_test1 into total...
+                                                             ^
+-- name resolution
+select * from with_test1, my_max
+where value < (with my_max(maximum) as (select max(i) from with_test1)
+               select * from my_max);
+ERROR:  relation "my_max" does not exist
+LINE 1: select * from with_test1, my_max
+                                  ^
+with my_sum(total) as (select sum(total) from my_group_sum),
+     my_group_sum(i, total) as (select i, sum(total) from with_test1 group by i)
+select *
+from my_sum;
+ERROR:  relation "my_group_sum" does not exist
+LINE 1: with my_sum(total) as (select sum(total) from my_group_sum),
+                                                      ^
+DETAIL:  There is a WITH item named "my_group_sum", but it cannot be referenced from this part of the query.
+HINT:  Use WITH RECURSIVE, or re-order the WITH items to remove forward references.
+-- two WITH clauses
+with my_sum(total) as (select sum(total) from with_test1),
+with my_group_sum(i, total) as (select i, sum(total) from with_test1 group by i)
+select *
+from my_sum;
+ERROR:  syntax error at or near "with"
+LINE 2: with my_group_sum(i, total) as (select i, sum(total) from wi...
+        ^
+-- Test behavior with an unknown-type literal in the WITH
+WITH q AS (SELECT 'foo' AS x)
+SELECT x, x IS OF (unknown) as is_unknown, x IS OF (text) as is_text FROM q;
+  x  | is_unknown | is_text 
+-----+------------+---------
+ foo | f          | t
+(1 row)
+
+with cte(foo) as ( select 42 ) select * from ((select foo from cte)) q;
+ foo 
+-----
+  42
+(1 row)
+
+select ( with cte(foo) as ( values(i) )
+         select (select foo from cte) )
+from with_test1
+order by 1 limit 10;
+ foo 
+-----
+   0
+   0
+   0
+   0
+   0
+   0
+   0
+   0
+   0
+   0
+(10 rows)
+
+select ( with cte(foo) as ( values(i) )
+         values((select foo from cte)) )
+from with_test1
+order by 1 limit 10;
+ column1 
+---------
+       0
+       0
+       0
+       0
+       0
+       0
+       0
+       0
+       0
+       0
+(10 rows)
+
+-- WITH query using Window functions
+--begin_equivalent
+with my_rank as (select i, t, value, rank() over (order by value) from with_test1)
+select my_rank.* from with_test2, my_rank
+where with_test2.i = my_rank.i
+order by my_rank.i, my_rank.t, my_rank.value limit 100; -- order 1,2,3
+ i |   t    | value | rank 
+---+--------+-------+------
+ 0 | text0  |     0 |    1
+ 0 | text0  |     0 |    1
+ 0 | text0  |     0 |    1
+ 0 | text0  |     0 |    1
+ 0 | text0  |     0 |    1
+ 0 | text0  |     0 |    1
+ 0 | text0  |     0 |    1
+ 0 | text0  |     0 |    1
+ 0 | text0  |     0 |    1
+ 0 | text0  |     0 |    1
+ 0 | text0  |     0 |    1
+ 0 | text0  |     0 |    1
+ 0 | text0  |     0 |    1
+ 0 | text0  |     0 |    1
+ 0 | text0  |     0 |    1
+ 0 | text0  |     0 |    1
+ 0 | text0  |     0 |    1
+ 0 | text0  |     0 |    1
+ 0 | text0  |     0 |    1
+ 0 | text0  |     0 |    1
+ 0 | text0  |     0 |    1
+ 0 | text0  |     0 |    1
+ 0 | text0  |    10 |   41
+ 0 | text0  |    10 |   41
+ 0 | text0  |    10 |   41
+ 0 | text0  |    10 |   41
+ 0 | text0  |    10 |   41
+ 0 | text0  |    10 |   41
+ 0 | text0  |    10 |   41
+ 0 | text0  |    10 |   41
+ 0 | text0  |    10 |   41
+ 0 | text0  |    10 |   41
+ 0 | text0  |    10 |   41
+ 0 | text0  |    20 |   71
+ 0 | text0  |    20 |   71
+ 0 | text0  |    20 |   71
+ 0 | text0  |    20 |   71
+ 0 | text0  |    20 |   71
+ 0 | text0  |    20 |   71
+ 0 | text0  |    20 |   71
+ 0 | text0  |    20 |   71
+ 0 | text0  |    20 |   71
+ 0 | text0  |    20 |   71
+ 0 | text0  |    20 |   71
+ 0 | text0  |    20 |   71
+ 0 | text0  |    20 |   71
+ 0 | text0  |    20 |   71
+ 0 | text0  |    20 |   71
+ 0 | text0  |    20 |   71
+ 0 | text0  |    20 |   71
+ 0 | text0  |    20 |   71
+ 0 | text0  |    20 |   71
+ 0 | text0  |    20 |   71
+ 0 | text0  |    20 |   71
+ 0 | text0  |    20 |   71
+ 0 | text10 |     0 |    1
+ 0 | text10 |     0 |    1
+ 0 | text10 |     0 |    1
+ 0 | text10 |     0 |    1
+ 0 | text10 |     0 |    1
+ 0 | text10 |     0 |    1
+ 0 | text10 |     0 |    1
+ 0 | text10 |     0 |    1
+ 0 | text10 |     0 |    1
+ 0 | text10 |     0 |    1
+ 0 | text10 |     0 |    1
+ 0 | text10 |     0 |    1
+ 0 | text10 |     0 |    1
+ 0 | text10 |     0 |    1
+ 0 | text10 |     0 |    1
+ 0 | text10 |     0 |    1
+ 0 | text10 |     0 |    1
+ 0 | text10 |     0 |    1
+ 0 | text10 |     0 |    1
+ 0 | text10 |     0 |    1
+ 0 | text10 |     0 |    1
+ 0 | text10 |     0 |    1
+ 0 | text10 |    10 |   41
+ 0 | text10 |    10 |   41
+ 0 | text10 |    10 |   41
+ 0 | text10 |    10 |   41
+ 0 | text10 |    10 |   41
+ 0 | text10 |    10 |   41
+ 0 | text10 |    10 |   41
+ 0 | text10 |    10 |   41
+ 0 | text10 |    10 |   41
+ 0 | text10 |    10 |   41
+ 0 | text10 |    10 |   41
+ 0 | text10 |    10 |   41
+ 0 | text10 |    10 |   41
+ 0 | text10 |    10 |   41
+ 0 | text10 |    10 |   41
+ 0 | text10 |    10 |   41
+ 0 | text10 |    10 |   41
+ 0 | text10 |    10 |   41
+ 0 | text10 |    10 |   41
+ 0 | text10 |    10 |   41
+ 0 | text10 |    10 |   41
+ 0 | text10 |    10 |   41
+ 0 | text10 |    20 |   71
+(100 rows)
+
+                                                     QUERY PLAN                                                     
+--------------------------------------------------------------------------------------------------------------------
+ Sort
+   Output: with_test1.i, with_test1.t, with_test1.value, (rank() OVER (?))
+   Sort Key: with_test1.i, with_test1.t, with_test1.value
+   ->  Limit
+         Output: with_test1.i, with_test1.t, with_test1.value, (rank() OVER (?))
+         ->  PX Coordinator 6:1  (slice1; segments: 6)
+               Output: with_test1.i, with_test1.t, with_test1.value, (rank() OVER (?))
+               Merge Key: with_test1.i, with_test1.t, with_test1.value
+               ->  Limit
+                     Output: with_test1.i, with_test1.t, with_test1.value, (rank() OVER (?))
+                     ->  Sort
+                           Output: with_test1.i, with_test1.t, with_test1.value, (rank() OVER (?))
+                           Sort Key: with_test1.i, with_test1.t, with_test1.value
+                           ->  Hash Join
+                                 Output: with_test1.i, with_test1.t, with_test1.value, (rank() OVER (?))
+                                 Hash Cond: (with_test1.i = with_test2.i)
+                                 ->  PX Hash 1:6  (slice2)
+                                       Output: with_test1.i, with_test1.t, with_test1.value, (rank() OVER (?))
+                                       Hash Key: with_test1.i
+                                       ->  WindowAgg
+                                             Output: with_test1.i, with_test1.t, with_test1.value, rank() OVER (?)
+                                             ->  PX Coordinator 6:1  (slice3; segments: 6)
+                                                   Output: with_test1.i, with_test1.t, with_test1.value
+                                                   Merge Key: with_test1.value
+                                                   ->  Sort
+                                                         Output: with_test1.i, with_test1.t, with_test1.value
+                                                         Sort Key: with_test1.value
+                                                         ->  Partial Seq Scan on public.with_test1
+                                                               Output: with_test1.i, with_test1.t, with_test1.value
+                                 ->  Hash
+                                       Output: with_test2.i
+                                       ->  PX Hash 6:6  (slice4; segments: 6)
+                                             Output: with_test2.i
+                                             Hash Key: with_test2.i
+                                             ->  Partial Seq Scan on public.with_test2
+                                                   Output: with_test2.i
+ Optimizer: PolarDB PX Optimizer
+(37 rows)
+
+select my_rank.* from with_test2, (select i, t, value, rank() over (order by value) from with_test1) as my_rank
+where with_test2.i = my_rank.i
+order by my_rank.i, my_rank.t, my_rank.value limit 100; -- order 1,2,3
+ i |   t    | value | rank 
+---+--------+-------+------
+ 0 | text0  |     0 |    1
+ 0 | text0  |     0 |    1
+ 0 | text0  |     0 |    1
+ 0 | text0  |     0 |    1
+ 0 | text0  |     0 |    1
+ 0 | text0  |     0 |    1
+ 0 | text0  |     0 |    1
+ 0 | text0  |     0 |    1
+ 0 | text0  |     0 |    1
+ 0 | text0  |     0 |    1
+ 0 | text0  |     0 |    1
+ 0 | text0  |     0 |    1
+ 0 | text0  |     0 |    1
+ 0 | text0  |     0 |    1
+ 0 | text0  |     0 |    1
+ 0 | text0  |     0 |    1
+ 0 | text0  |     0 |    1
+ 0 | text0  |     0 |    1
+ 0 | text0  |     0 |    1
+ 0 | text0  |     0 |    1
+ 0 | text0  |     0 |    1
+ 0 | text0  |     0 |    1
+ 0 | text0  |    10 |   41
+ 0 | text0  |    10 |   41
+ 0 | text0  |    10 |   41
+ 0 | text0  |    10 |   41
+ 0 | text0  |    10 |   41
+ 0 | text0  |    10 |   41
+ 0 | text0  |    10 |   41
+ 0 | text0  |    10 |   41
+ 0 | text0  |    10 |   41
+ 0 | text0  |    10 |   41
+ 0 | text0  |    10 |   41
+ 0 | text0  |    20 |   71
+ 0 | text0  |    20 |   71
+ 0 | text0  |    20 |   71
+ 0 | text0  |    20 |   71
+ 0 | text0  |    20 |   71
+ 0 | text0  |    20 |   71
+ 0 | text0  |    20 |   71
+ 0 | text0  |    20 |   71
+ 0 | text0  |    20 |   71
+ 0 | text0  |    20 |   71
+ 0 | text0  |    20 |   71
+ 0 | text0  |    20 |   71
+ 0 | text0  |    20 |   71
+ 0 | text0  |    20 |   71
+ 0 | text0  |    20 |   71
+ 0 | text0  |    20 |   71
+ 0 | text0  |    20 |   71
+ 0 | text0  |    20 |   71
+ 0 | text0  |    20 |   71
+ 0 | text0  |    20 |   71
+ 0 | text0  |    20 |   71
+ 0 | text0  |    20 |   71
+ 0 | text10 |     0 |    1
+ 0 | text10 |     0 |    1
+ 0 | text10 |     0 |    1
+ 0 | text10 |     0 |    1
+ 0 | text10 |     0 |    1
+ 0 | text10 |     0 |    1
+ 0 | text10 |     0 |    1
+ 0 | text10 |     0 |    1
+ 0 | text10 |     0 |    1
+ 0 | text10 |     0 |    1
+ 0 | text10 |     0 |    1
+ 0 | text10 |     0 |    1
+ 0 | text10 |     0 |    1
+ 0 | text10 |     0 |    1
+ 0 | text10 |     0 |    1
+ 0 | text10 |     0 |    1
+ 0 | text10 |     0 |    1
+ 0 | text10 |     0 |    1
+ 0 | text10 |     0 |    1
+ 0 | text10 |     0 |    1
+ 0 | text10 |     0 |    1
+ 0 | text10 |     0 |    1
+ 0 | text10 |    10 |   41
+ 0 | text10 |    10 |   41
+ 0 | text10 |    10 |   41
+ 0 | text10 |    10 |   41
+ 0 | text10 |    10 |   41
+ 0 | text10 |    10 |   41
+ 0 | text10 |    10 |   41
+ 0 | text10 |    10 |   41
+ 0 | text10 |    10 |   41
+ 0 | text10 |    10 |   41
+ 0 | text10 |    10 |   41
+ 0 | text10 |    10 |   41
+ 0 | text10 |    10 |   41
+ 0 | text10 |    10 |   41
+ 0 | text10 |    10 |   41
+ 0 | text10 |    10 |   41
+ 0 | text10 |    10 |   41
+ 0 | text10 |    10 |   41
+ 0 | text10 |    10 |   41
+ 0 | text10 |    10 |   41
+ 0 | text10 |    10 |   41
+ 0 | text10 |    10 |   41
+ 0 | text10 |    20 |   71
+(100 rows)
+
+                                                  QUERY PLAN                                                  
+--------------------------------------------------------------------------------------------------------------
+ Limit
+   Output: with_test1.i, with_test1.t, with_test1.value, (rank() OVER (?))
+   ->  PX Coordinator 6:1  (slice1; segments: 6)
+         Output: with_test1.i, with_test1.t, with_test1.value, (rank() OVER (?))
+         Merge Key: with_test1.i, with_test1.t, with_test1.value
+         ->  Limit
+               Output: with_test1.i, with_test1.t, with_test1.value, (rank() OVER (?))
+               ->  Sort
+                     Output: with_test1.i, with_test1.t, with_test1.value, (rank() OVER (?))
+                     Sort Key: with_test1.i, with_test1.t, with_test1.value
+                     ->  Hash Join
+                           Output: with_test1.i, with_test1.t, with_test1.value, (rank() OVER (?))
+                           Hash Cond: (with_test1.i = with_test2.i)
+                           ->  PX Hash 1:6  (slice2)
+                                 Output: with_test1.i, with_test1.t, with_test1.value, (rank() OVER (?))
+                                 Hash Key: with_test1.i
+                                 ->  WindowAgg
+                                       Output: with_test1.i, with_test1.t, with_test1.value, rank() OVER (?)
+                                       ->  PX Coordinator 6:1  (slice3; segments: 6)
+                                             Output: with_test1.i, with_test1.t, with_test1.value
+                                             Merge Key: with_test1.value
+                                             ->  Sort
+                                                   Output: with_test1.i, with_test1.t, with_test1.value
+                                                   Sort Key: with_test1.value
+                                                   ->  Partial Seq Scan on public.with_test1
+                                                         Output: with_test1.i, with_test1.t, with_test1.value
+                           ->  Hash
+                                 Output: with_test2.i
+                                 ->  PX Hash 6:6  (slice4; segments: 6)
+                                       Output: with_test2.i
+                                       Hash Key: with_test2.i
+                                       ->  Partial Seq Scan on public.with_test2
+                                             Output: with_test2.i
+ Optimizer: PolarDB PX Optimizer
+(34 rows)
+
+--end_equivalent
+-- WITH query and CSQ
+--begin_equivalent
+with my_group_sum(i, total) as (select i, sum(value) from with_test1 group by i)
+select with_test2.* from with_test2
+where value < any (select total from my_group_sum where my_group_sum.i = with_test2.i);
+ i |    t    | value 
+---+---------+-------
+ 0 | text0   |     0
+ 1 | text1   |     1
+ 2 | text2   |     2
+ 3 | text3   |     3
+ 4 | text4   |     4
+ 5 | text5   |     5
+ 6 | text6   |     6
+ 7 | text7   |     7
+ 8 | text8   |     8
+ 9 | text9   |     9
+ 2 | text102 |   102
+ 3 | text103 |   103
+ 4 | text104 |   104
+ 5 | text105 |   105
+ 6 | text106 |   106
+ 7 | text107 |   107
+ 8 | text108 |   108
+ 9 | text109 |   109
+ 0 | text100 |     0
+ 1 | text101 |     1
+ 2 | text102 |     2
+ 3 | text103 |     3
+ 4 | text104 |     4
+ 5 | text105 |     5
+ 6 | text106 |     6
+ 7 | text107 |     7
+ 8 | text108 |     8
+ 9 | text109 |     9
+ 2 | text2   |   102
+ 3 | text3   |   103
+ 4 | text4   |   104
+ 5 | text5   |   105
+ 6 | text6   |   106
+ 7 | text7   |   107
+ 8 | text8   |   108
+ 9 | text9   |   109
+ 0 | text0   |     0
+ 1 | text1   |     1
+ 2 | text2   |     2
+ 3 | text3   |     3
+ 4 | text4   |     4
+ 5 | text5   |     5
+ 6 | text6   |     6
+ 7 | text7   |     7
+ 8 | text8   |     8
+ 9 | text9   |     9
+ 2 | text102 |   102
+ 3 | text103 |   103
+ 4 | text104 |   104
+ 5 | text105 |   105
+ 6 | text106 |   106
+ 7 | text107 |   107
+ 8 | text108 |   108
+ 9 | text109 |   109
+ 0 | text100 |     0
+ 1 | text101 |     1
+ 2 | text102 |     2
+ 3 | text103 |     3
+ 4 | text104 |     4
+ 5 | text105 |     5
+ 6 | text106 |     6
+ 7 | text107 |     7
+ 8 | text108 |     8
+ 9 | text109 |     9
+(64 rows)
+
+                                           QUERY PLAN                                            
+-------------------------------------------------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: with_test2.i, with_test2.t, with_test2.value
+   ->  Hash Semi Join
+         Output: with_test2.i, with_test2.t, with_test2.value
+         Hash Cond: (with_test2.i = with_test1.i)
+         Join Filter: (with_test2.value < (sum(with_test1.value)))
+         ->  Partial Seq Scan on public.with_test2
+               Output: with_test2.i, with_test2.t, with_test2.value
+         ->  Hash
+               Output: with_test1.i, (sum(with_test1.value))
+               ->  PX Broadcast 6:6  (slice2; segments: 6)
+                     Output: with_test1.i, (sum(with_test1.value))
+                     ->  Finalize GroupAggregate
+                           Output: with_test1.i, sum(with_test1.value)
+                           Group Key: with_test1.i
+                           ->  Sort
+                                 Output: with_test1.i, (PARTIAL sum(with_test1.value))
+                                 Sort Key: with_test1.i
+                                 ->  PX Hash 6:6  (slice3; segments: 6)
+                                       Output: with_test1.i, (PARTIAL sum(with_test1.value))
+                                       Hash Key: with_test1.i
+                                       ->  Partial HashAggregate
+                                             Output: with_test1.i, PARTIAL sum(with_test1.value)
+                                             Group Key: with_test1.i
+                                             ->  Partial Seq Scan on public.with_test1
+                                                   Output: with_test1.i, with_test1.value
+ Optimizer: PolarDB PX Optimizer
+(27 rows)
+
+select with_test2.* from with_test2
+where value < any (select total from (select i, sum(value) as total from with_test1 group by i) as tmp where tmp.i = with_test2.i);
+ i |    t    | value 
+---+---------+-------
+ 0 | text0   |     0
+ 1 | text1   |     1
+ 2 | text2   |     2
+ 3 | text3   |     3
+ 4 | text4   |     4
+ 5 | text5   |     5
+ 6 | text6   |     6
+ 7 | text7   |     7
+ 8 | text8   |     8
+ 9 | text9   |     9
+ 2 | text102 |   102
+ 3 | text103 |   103
+ 4 | text104 |   104
+ 5 | text105 |   105
+ 6 | text106 |   106
+ 7 | text107 |   107
+ 8 | text108 |   108
+ 9 | text109 |   109
+ 0 | text100 |     0
+ 1 | text101 |     1
+ 2 | text102 |     2
+ 3 | text103 |     3
+ 4 | text104 |     4
+ 5 | text105 |     5
+ 6 | text106 |     6
+ 7 | text107 |     7
+ 8 | text108 |     8
+ 9 | text109 |     9
+ 2 | text2   |   102
+ 3 | text3   |   103
+ 4 | text4   |   104
+ 5 | text5   |   105
+ 6 | text6   |   106
+ 7 | text7   |   107
+ 8 | text8   |   108
+ 9 | text9   |   109
+ 0 | text0   |     0
+ 1 | text1   |     1
+ 2 | text2   |     2
+ 3 | text3   |     3
+ 4 | text4   |     4
+ 5 | text5   |     5
+ 6 | text6   |     6
+ 7 | text7   |     7
+ 8 | text8   |     8
+ 9 | text9   |     9
+ 2 | text102 |   102
+ 3 | text103 |   103
+ 4 | text104 |   104
+ 5 | text105 |   105
+ 6 | text106 |   106
+ 7 | text107 |   107
+ 8 | text108 |   108
+ 9 | text109 |   109
+ 0 | text100 |     0
+ 1 | text101 |     1
+ 2 | text102 |     2
+ 3 | text103 |     3
+ 4 | text104 |     4
+ 5 | text105 |     5
+ 6 | text106 |     6
+ 7 | text107 |     7
+ 8 | text108 |     8
+ 9 | text109 |     9
+(64 rows)
+
+                                           QUERY PLAN                                            
+-------------------------------------------------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: with_test2.i, with_test2.t, with_test2.value
+   ->  Hash Semi Join
+         Output: with_test2.i, with_test2.t, with_test2.value
+         Hash Cond: (with_test2.i = with_test1.i)
+         Join Filter: (with_test2.value < (sum(with_test1.value)))
+         ->  Partial Seq Scan on public.with_test2
+               Output: with_test2.i, with_test2.t, with_test2.value
+         ->  Hash
+               Output: with_test1.i, (sum(with_test1.value))
+               ->  PX Broadcast 6:6  (slice2; segments: 6)
+                     Output: with_test1.i, (sum(with_test1.value))
+                     ->  Finalize GroupAggregate
+                           Output: with_test1.i, sum(with_test1.value)
+                           Group Key: with_test1.i
+                           ->  Sort
+                                 Output: with_test1.i, (PARTIAL sum(with_test1.value))
+                                 Sort Key: with_test1.i
+                                 ->  PX Hash 6:6  (slice3; segments: 6)
+                                       Output: with_test1.i, (PARTIAL sum(with_test1.value))
+                                       Hash Key: with_test1.i
+                                       ->  Partial HashAggregate
+                                             Output: with_test1.i, PARTIAL sum(with_test1.value)
+                                             Group Key: with_test1.i
+                                             ->  Partial Seq Scan on public.with_test1
+                                                   Output: with_test1.i, with_test1.value
+ Optimizer: PolarDB PX Optimizer
+(27 rows)
+
+--end_equivalent
+--begin_equivalent
+with my_group_sum(i, total) as (select i, sum(value) from with_test1 group by i)
+select with_test2.* from with_test2, my_group_sum
+where value < any (select total from my_group_sum where my_group_sum.i = with_test2.i)
+and with_test2.i = my_group_sum.i;
+ i |    t    | value 
+---+---------+-------
+ 0 | text0   |     0
+ 1 | text1   |     1
+ 2 | text2   |     2
+ 3 | text3   |     3
+ 4 | text4   |     4
+ 5 | text5   |     5
+ 6 | text6   |     6
+ 7 | text7   |     7
+ 8 | text8   |     8
+ 9 | text9   |     9
+ 2 | text102 |   102
+ 3 | text103 |   103
+ 4 | text104 |   104
+ 5 | text105 |   105
+ 6 | text106 |   106
+ 7 | text107 |   107
+ 8 | text108 |   108
+ 9 | text109 |   109
+ 0 | text100 |     0
+ 1 | text101 |     1
+ 2 | text102 |     2
+ 3 | text103 |     3
+ 4 | text104 |     4
+ 5 | text105 |     5
+ 6 | text106 |     6
+ 7 | text107 |     7
+ 8 | text108 |     8
+ 9 | text109 |     9
+ 2 | text2   |   102
+ 3 | text3   |   103
+ 4 | text4   |   104
+ 5 | text5   |   105
+ 6 | text6   |   106
+ 7 | text7   |   107
+ 8 | text8   |   108
+ 9 | text9   |   109
+ 0 | text0   |     0
+ 1 | text1   |     1
+ 2 | text2   |     2
+ 3 | text3   |     3
+ 4 | text4   |     4
+ 5 | text5   |     5
+ 6 | text6   |     6
+ 7 | text7   |     7
+ 8 | text8   |     8
+ 9 | text9   |     9
+ 2 | text102 |   102
+ 3 | text103 |   103
+ 4 | text104 |   104
+ 5 | text105 |   105
+ 6 | text106 |   106
+ 7 | text107 |   107
+ 8 | text108 |   108
+ 9 | text109 |   109
+ 0 | text100 |     0
+ 1 | text101 |     1
+ 2 | text102 |     2
+ 3 | text103 |     3
+ 4 | text104 |     4
+ 5 | text105 |     5
+ 6 | text106 |     6
+ 7 | text107 |     7
+ 8 | text108 |     8
+ 9 | text109 |     9
+(64 rows)
+
+                                        QUERY PLAN                                         
+-------------------------------------------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: with_test2.i, with_test2.t, with_test2.value
+   ->  Sequence
+         Output: with_test2.i, with_test2.t, with_test2.value
+         ->  Shared Scan (Producer; slice1; share0)
+               Output: share0_ref1.i, share0_ref1.sum
+               ->  Finalize GroupAggregate
+                     Output: with_test1.i, sum(with_test1.value)
+                     Group Key: with_test1.i
+                     ->  Sort
+                           Output: with_test1.i, (PARTIAL sum(with_test1.value))
+                           Sort Key: with_test1.i
+                           ->  PX Hash 6:6  (slice2; segments: 6)
+                                 Output: with_test1.i, (PARTIAL sum(with_test1.value))
+                                 Hash Key: with_test1.i
+                                 ->  Partial HashAggregate
+                                       Output: with_test1.i, PARTIAL sum(with_test1.value)
+                                       Group Key: with_test1.i
+                                       ->  Partial Seq Scan on public.with_test1
+                                             Output: with_test1.i, with_test1.value
+         ->  Hash Semi Join
+               Output: with_test2.i, with_test2.t, with_test2.value
+               Hash Cond: (with_test2.i = share0_ref2.i)
+               Join Filter: (with_test2.value < share0_ref2.sum)
+               ->  PX Hash 6:6  (slice3; segments: 6)
+                     Output: with_test2.i, with_test2.t, with_test2.value
+                     Hash Key: with_test2.i
+                     ->  Hash Join
+                           Output: with_test2.i, with_test2.t, with_test2.value
+                           Hash Cond: (with_test2.i = share0_ref3.i)
+                           ->  Partial Seq Scan on public.with_test2
+                                 Output: with_test2.i, with_test2.t, with_test2.value
+                           ->  Hash
+                                 Output: share0_ref3.i
+                                 ->  PX Broadcast 6:6  (slice4; segments: 6)
+                                       Output: share0_ref3.i
+                                       ->  Result
+                                             Output: share0_ref3.i
+                                             ->  Shared Scan (Consumer; slice4; share0)
+                                                   Output: share0_ref3.i, share0_ref3.sum
+               ->  Hash
+                     Output: share0_ref2.i, share0_ref2.sum
+                     ->  Shared Scan (Producer; slice1; share0)
+                           Output: share0_ref2.i, share0_ref2.sum
+ Optimizer: PolarDB PX Optimizer
+(45 rows)
+
+select with_test2.* from with_test2, (select i, sum(value) from with_test1 group by i) as my_group_sum
+where value < any (select total from (select i, sum(value) as total from with_test1 group by i) as tmp where tmp.i = with_test2.i)
+and with_test2.i = my_group_sum.i;
+ i |    t    | value 
+---+---------+-------
+ 0 | text0   |     0
+ 1 | text1   |     1
+ 2 | text2   |     2
+ 3 | text3   |     3
+ 4 | text4   |     4
+ 5 | text5   |     5
+ 6 | text6   |     6
+ 7 | text7   |     7
+ 8 | text8   |     8
+ 9 | text9   |     9
+ 2 | text102 |   102
+ 3 | text103 |   103
+ 4 | text104 |   104
+ 5 | text105 |   105
+ 6 | text106 |   106
+ 7 | text107 |   107
+ 8 | text108 |   108
+ 9 | text109 |   109
+ 0 | text100 |     0
+ 1 | text101 |     1
+ 2 | text102 |     2
+ 3 | text103 |     3
+ 4 | text104 |     4
+ 5 | text105 |     5
+ 6 | text106 |     6
+ 7 | text107 |     7
+ 8 | text108 |     8
+ 9 | text109 |     9
+ 2 | text2   |   102
+ 3 | text3   |   103
+ 4 | text4   |   104
+ 5 | text5   |   105
+ 6 | text6   |   106
+ 7 | text7   |   107
+ 8 | text8   |   108
+ 9 | text9   |   109
+ 0 | text0   |     0
+ 1 | text1   |     1
+ 2 | text2   |     2
+ 3 | text3   |     3
+ 4 | text4   |     4
+ 5 | text5   |     5
+ 6 | text6   |     6
+ 7 | text7   |     7
+ 8 | text8   |     8
+ 9 | text9   |     9
+ 2 | text102 |   102
+ 3 | text103 |   103
+ 4 | text104 |   104
+ 5 | text105 |   105
+ 6 | text106 |   106
+ 7 | text107 |   107
+ 8 | text108 |   108
+ 9 | text109 |   109
+ 0 | text100 |     0
+ 1 | text101 |     1
+ 2 | text102 |     2
+ 3 | text103 |     3
+ 4 | text104 |     4
+ 5 | text105 |     5
+ 6 | text106 |     6
+ 7 | text107 |     7
+ 8 | text108 |     8
+ 9 | text109 |     9
+(64 rows)
+
+                                               QUERY PLAN                                                
+---------------------------------------------------------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: with_test2.i, with_test2.t, with_test2.value
+   ->  Hash Semi Join
+         Output: with_test2.i, with_test2.t, with_test2.value
+         Hash Cond: (with_test2.i = with_test1_1.i)
+         Join Filter: (with_test2.value < (sum(with_test1_1.value)))
+         ->  PX Hash 6:6  (slice2; segments: 6)
+               Output: with_test2.i, with_test2.t, with_test2.value
+               Hash Key: with_test2.i
+               ->  Hash Join
+                     Output: with_test2.i, with_test2.t, with_test2.value
+                     Hash Cond: (with_test2.i = with_test1.i)
+                     ->  Partial Seq Scan on public.with_test2
+                           Output: with_test2.i, with_test2.t, with_test2.value
+                     ->  Hash
+                           Output: with_test1.i
+                           ->  PX Broadcast 6:6  (slice3; segments: 6)
+                                 Output: with_test1.i
+                                 ->  GroupAggregate
+                                       Output: with_test1.i
+                                       Group Key: with_test1.i
+                                       ->  Sort
+                                             Output: with_test1.i
+                                             Sort Key: with_test1.i
+                                             ->  PX Hash 6:6  (slice4; segments: 6)
+                                                   Output: with_test1.i
+                                                   Hash Key: with_test1.i
+                                                   ->  GroupAggregate
+                                                         Output: with_test1.i
+                                                         Group Key: with_test1.i
+                                                         ->  Sort
+                                                               Output: with_test1.i
+                                                               Sort Key: with_test1.i
+                                                               ->  Partial Seq Scan on public.with_test1
+                                                                     Output: with_test1.i
+         ->  Hash
+               Output: (sum(with_test1_1.value)), with_test1_1.i
+               ->  Finalize GroupAggregate
+                     Output: sum(with_test1_1.value), with_test1_1.i
+                     Group Key: with_test1_1.i
+                     ->  Sort
+                           Output: with_test1_1.i, (PARTIAL sum(with_test1_1.value))
+                           Sort Key: with_test1_1.i
+                           ->  PX Hash 6:6  (slice5; segments: 6)
+                                 Output: with_test1_1.i, (PARTIAL sum(with_test1_1.value))
+                                 Hash Key: with_test1_1.i
+                                 ->  Partial HashAggregate
+                                       Output: with_test1_1.i, PARTIAL sum(with_test1_1.value)
+                                       Group Key: with_test1_1.i
+                                       ->  Partial Seq Scan on public.with_test1 with_test1_1
+                                             Output: with_test1_1.i, with_test1_1.value
+ Optimizer: PolarDB PX Optimizer
+(52 rows)
+
+--end_equivalent
+--begin_equivalent
+with my_group_sum(i, total) as (select i, sum(value) from with_test1 group by i)
+select with_test2.* from with_test2
+where value < all (select total from my_group_sum where my_group_sum.i = with_test2.i)
+order by 1,2,3
+limit 60; --order 1,2,3
+ i |    t    | value 
+---+---------+-------
+ 0 | text0   |     0
+ 0 | text0   |     0
+ 0 | text100 |     0
+ 0 | text100 |     0
+ 1 | text1   |     1
+ 1 | text1   |     1
+ 1 | text101 |     1
+ 1 | text101 |     1
+ 2 | text102 |     2
+ 2 | text102 |     2
+ 2 | text102 |   102
+ 2 | text102 |   102
+ 2 | text2   |     2
+ 2 | text2   |     2
+ 2 | text2   |   102
+ 3 | text103 |     3
+ 3 | text103 |     3
+ 3 | text103 |   103
+ 3 | text103 |   103
+ 3 | text3   |     3
+ 3 | text3   |     3
+ 3 | text3   |   103
+ 4 | text104 |     4
+ 4 | text104 |     4
+ 4 | text104 |   104
+ 4 | text104 |   104
+ 4 | text4   |     4
+ 4 | text4   |     4
+ 4 | text4   |   104
+ 5 | text105 |     5
+ 5 | text105 |     5
+ 5 | text105 |   105
+ 5 | text105 |   105
+ 5 | text5   |     5
+ 5 | text5   |     5
+ 5 | text5   |   105
+ 6 | text106 |     6
+ 6 | text106 |     6
+ 6 | text106 |   106
+ 6 | text106 |   106
+ 6 | text6   |     6
+ 6 | text6   |     6
+ 6 | text6   |   106
+ 7 | text107 |     7
+ 7 | text107 |     7
+ 7 | text107 |   107
+ 7 | text107 |   107
+ 7 | text7   |     7
+ 7 | text7   |     7
+ 7 | text7   |   107
+ 8 | text108 |     8
+ 8 | text108 |     8
+ 8 | text108 |   108
+ 8 | text108 |   108
+ 8 | text8   |     8
+ 8 | text8   |     8
+ 8 | text8   |   108
+ 9 | text109 |     9
+ 9 | text109 |     9
+ 9 | text109 |   109
+(60 rows)
+
+                                                                                                                                                                                                                                QUERY PLAN                                                                                                                                                                                                                                
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Sort
+   Output: with_test2.i, with_test2.t, with_test2.value
+   Sort Key: with_test2.i, with_test2.t, with_test2.value
+   ->  Limit
+         Output: with_test2.i, with_test2.t, with_test2.value
+         ->  PX Coordinator 6:1  (slice1; segments: 6)
+               Output: with_test2.i, with_test2.t, with_test2.value
+               Merge Key: with_test2.i, with_test2.t, with_test2.value
+               ->  Limit
+                     Output: with_test2.i, with_test2.t, with_test2.value
+                     ->  Sort
+                           Output: with_test2.i, with_test2.t, with_test2.value
+                           Sort Key: with_test2.i, with_test2.t, with_test2.value
+                           ->  Partial Seq Scan on public.with_test2
+                                 Output: with_test2.i, with_test2.t, with_test2.value
+                                 Filter: (SubPlan 1)
+                                 SubPlan 1
+                                   ->  Result
+                                         Output: true
+                                         Filter: ((CASE WHEN (sum((CASE WHEN (with_test2.value >= (sum(with_test1.value))) THEN 1 ELSE 0 END)) IS NULL) THEN true WHEN (sum((CASE WHEN ((sum(with_test1.value)) IS NULL) THEN 1 ELSE 0 END)) > '0'::bigint) THEN NULL::boolean WHEN (with_test2.value IS NULL) THEN NULL::boolean WHEN (sum((CASE WHEN (with_test2.value >= (sum(with_test1.value))) THEN 1 ELSE 0 END)) = '0'::bigint) THEN true ELSE false END) = true)
+                                         ->  Aggregate
+                                               Output: CASE WHEN (sum((CASE WHEN (with_test2.value >= (sum(with_test1.value))) THEN 1 ELSE 0 END)) IS NULL) THEN true WHEN (sum((CASE WHEN ((sum(with_test1.value)) IS NULL) THEN 1 ELSE 0 END)) > '0'::bigint) THEN NULL::boolean WHEN (with_test2.value IS NULL) THEN NULL::boolean WHEN (sum((CASE WHEN (with_test2.value >= (sum(with_test1.value))) THEN 1 ELSE 0 END)) = '0'::bigint) THEN true ELSE false END
+                                               ->  Result
+                                                     Output: CASE WHEN (with_test2.value >= (sum(with_test1.value))) THEN 1 ELSE 0 END, CASE WHEN ((sum(with_test1.value)) IS NULL) THEN 1 ELSE 0 END
+                                                     Filter: (with_test1.i = with_test2.i)
+                                                     ->  Materialize
+                                                           Output: with_test1.i, (sum(with_test1.value))
+                                                           ->  PX Broadcast 6:6  (slice2; segments: 6)
+                                                                 Output: with_test1.i, (sum(with_test1.value))
+                                                                 ->  Finalize GroupAggregate
+                                                                       Output: with_test1.i, sum(with_test1.value)
+                                                                       Group Key: with_test1.i
+                                                                       ->  Sort
+                                                                             Output: with_test1.i, (PARTIAL sum(with_test1.value))
+                                                                             Sort Key: with_test1.i
+                                                                             ->  PX Hash 6:6  (slice3; segments: 6)
+                                                                                   Output: with_test1.i, (PARTIAL sum(with_test1.value))
+                                                                                   Hash Key: with_test1.i
+                                                                                   ->  Partial HashAggregate
+                                                                                         Output: with_test1.i, PARTIAL sum(with_test1.value)
+                                                                                         Group Key: with_test1.i
+                                                                                         ->  Partial Seq Scan on public.with_test1
+                                                                                               Output: with_test1.i, with_test1.value
+ Optimizer: PolarDB PX Optimizer
+(44 rows)
+
+select with_test2.* from with_test2
+where value < all (select total from (select i, sum(value) as total from with_test1 group by i) as tmp where tmp.i = with_test2.i)
+order by 1,2,3
+limit 60; --order 1,2,3
+ i |    t    | value 
+---+---------+-------
+ 0 | text0   |     0
+ 0 | text0   |     0
+ 0 | text100 |     0
+ 0 | text100 |     0
+ 1 | text1   |     1
+ 1 | text1   |     1
+ 1 | text101 |     1
+ 1 | text101 |     1
+ 2 | text102 |     2
+ 2 | text102 |     2
+ 2 | text102 |   102
+ 2 | text102 |   102
+ 2 | text2   |     2
+ 2 | text2   |     2
+ 2 | text2   |   102
+ 3 | text103 |     3
+ 3 | text103 |     3
+ 3 | text103 |   103
+ 3 | text103 |   103
+ 3 | text3   |     3
+ 3 | text3   |     3
+ 3 | text3   |   103
+ 4 | text104 |     4
+ 4 | text104 |     4
+ 4 | text104 |   104
+ 4 | text104 |   104
+ 4 | text4   |     4
+ 4 | text4   |     4
+ 4 | text4   |   104
+ 5 | text105 |     5
+ 5 | text105 |     5
+ 5 | text105 |   105
+ 5 | text105 |   105
+ 5 | text5   |     5
+ 5 | text5   |     5
+ 5 | text5   |   105
+ 6 | text106 |     6
+ 6 | text106 |     6
+ 6 | text106 |   106
+ 6 | text106 |   106
+ 6 | text6   |     6
+ 6 | text6   |     6
+ 6 | text6   |   106
+ 7 | text107 |     7
+ 7 | text107 |     7
+ 7 | text107 |   107
+ 7 | text107 |   107
+ 7 | text7   |     7
+ 7 | text7   |     7
+ 7 | text7   |   107
+ 8 | text108 |     8
+ 8 | text108 |     8
+ 8 | text108 |   108
+ 8 | text108 |   108
+ 8 | text8   |     8
+ 8 | text8   |     8
+ 8 | text8   |   108
+ 9 | text109 |     9
+ 9 | text109 |     9
+ 9 | text109 |   109
+(60 rows)
+
+                                                                                                                                                                                                                             QUERY PLAN                                                                                                                                                                                                                             
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Limit
+   Output: with_test2.i, with_test2.t, with_test2.value
+   ->  PX Coordinator 6:1  (slice1; segments: 6)
+         Output: with_test2.i, with_test2.t, with_test2.value
+         Merge Key: with_test2.i, with_test2.t, with_test2.value
+         ->  Limit
+               Output: with_test2.i, with_test2.t, with_test2.value
+               ->  Sort
+                     Output: with_test2.i, with_test2.t, with_test2.value
+                     Sort Key: with_test2.i, with_test2.t, with_test2.value
+                     ->  Partial Seq Scan on public.with_test2
+                           Output: with_test2.i, with_test2.t, with_test2.value
+                           Filter: (SubPlan 1)
+                           SubPlan 1
+                             ->  Result
+                                   Output: true
+                                   Filter: ((CASE WHEN (sum((CASE WHEN (with_test2.value >= (sum(with_test1.value))) THEN 1 ELSE 0 END)) IS NULL) THEN true WHEN (sum((CASE WHEN ((sum(with_test1.value)) IS NULL) THEN 1 ELSE 0 END)) > '0'::bigint) THEN NULL::boolean WHEN (with_test2.value IS NULL) THEN NULL::boolean WHEN (sum((CASE WHEN (with_test2.value >= (sum(with_test1.value))) THEN 1 ELSE 0 END)) = '0'::bigint) THEN true ELSE false END) = true)
+                                   ->  Aggregate
+                                         Output: CASE WHEN (sum((CASE WHEN (with_test2.value >= (sum(with_test1.value))) THEN 1 ELSE 0 END)) IS NULL) THEN true WHEN (sum((CASE WHEN ((sum(with_test1.value)) IS NULL) THEN 1 ELSE 0 END)) > '0'::bigint) THEN NULL::boolean WHEN (with_test2.value IS NULL) THEN NULL::boolean WHEN (sum((CASE WHEN (with_test2.value >= (sum(with_test1.value))) THEN 1 ELSE 0 END)) = '0'::bigint) THEN true ELSE false END
+                                         ->  Result
+                                               Output: CASE WHEN (with_test2.value >= (sum(with_test1.value))) THEN 1 ELSE 0 END, CASE WHEN ((sum(with_test1.value)) IS NULL) THEN 1 ELSE 0 END
+                                               Filter: (with_test1.i = with_test2.i)
+                                               ->  Materialize
+                                                     Output: with_test1.i, (sum(with_test1.value))
+                                                     ->  PX Broadcast 6:6  (slice2; segments: 6)
+                                                           Output: with_test1.i, (sum(with_test1.value))
+                                                           ->  Finalize GroupAggregate
+                                                                 Output: with_test1.i, sum(with_test1.value)
+                                                                 Group Key: with_test1.i
+                                                                 ->  Sort
+                                                                       Output: with_test1.i, (PARTIAL sum(with_test1.value))
+                                                                       Sort Key: with_test1.i
+                                                                       ->  PX Hash 6:6  (slice3; segments: 6)
+                                                                             Output: with_test1.i, (PARTIAL sum(with_test1.value))
+                                                                             Hash Key: with_test1.i
+                                                                             ->  Partial HashAggregate
+                                                                                   Output: with_test1.i, PARTIAL sum(with_test1.value)
+                                                                                   Group Key: with_test1.i
+                                                                                   ->  Partial Seq Scan on public.with_test1
+                                                                                         Output: with_test1.i, with_test1.value
+ Optimizer: PolarDB PX Optimizer
+(41 rows)
+
+--end_equivalent
+drop table if exists d;
+NOTICE:  table "d" does not exist, skipping
+drop table if exists b;
+NOTICE:  table "b" does not exist, skipping
+create table with_b (i integer);
+insert into with_b values (1), (2);
+--begin_equivalent
+with b1 as (select * from with_b) select * from (select * from b1 where b1.i =1) AS FOO, b1 FOO2;
+ i | i 
+---+---
+ 1 | 1
+ 1 | 2
+(2 rows)
+
+                              QUERY PLAN                              
+----------------------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: share0_ref3.i, share0_ref2.i
+   ->  Sequence
+         Output: share0_ref3.i, share0_ref2.i
+         ->  Shared Scan (Producer; slice1; share0)
+               Output: share0_ref1.i
+               ->  Partial Seq Scan on public.with_b
+                     Output: with_b.i
+         ->  Nested Loop
+               Output: share0_ref3.i, share0_ref2.i
+               Join Filter: true
+               ->  PX Broadcast 6:6  (slice2; segments: 6)
+                     Output: share0_ref3.i
+                     ->  Result
+                           Output: share0_ref3.i
+                           Filter: (share0_ref3.i = 1)
+                           ->  Shared Scan (Consumer; slice2; share0)
+                                 Output: share0_ref3.i
+               ->  Shared Scan (Producer; slice1; share0)
+                     Output: share0_ref2.i
+ Optimizer: PolarDB PX Optimizer
+(21 rows)
+
+select * from (select * from (select * from with_b) as b1 where b1.i = 1) AS FOO, (select * from with_b) as foo2;
+ i | i 
+---+---
+ 1 | 1
+ 1 | 2
+(2 rows)
+
+                          QUERY PLAN                          
+--------------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: with_b_1.i, with_b.i
+   ->  Nested Loop
+         Output: with_b_1.i, with_b.i
+         Join Filter: true
+         ->  PX Broadcast 6:6  (slice2; segments: 6)
+               Output: with_b_1.i
+               ->  Partial Seq Scan on public.with_b with_b_1
+                     Output: with_b_1.i
+                     Filter: (with_b_1.i = 1)
+         ->  Partial Seq Scan on public.with_b
+               Output: with_b.i
+ Optimizer: PolarDB PX Optimizer
+(13 rows)
+
+--end_equivalent
+-- qual push down test
+explain (costs off) with t as (select * from with_test1) select * from t where i = 10;
+           QUERY PLAN           
+--------------------------------
+ CTE Scan on t
+   Filter: (i = 10)
+   CTE t
+     ->  Seq Scan on with_test1
+(4 rows)
+
+-- Test to validate an old bug which caused incorrect results when a subquery
+-- in the WITH clause appears under a nested-loop join in the query plan when
+-- gp_cte_sharing was set to off. (MPP-17848)
+CREATE TABLE x (a integer);
+insert into x values(1), (2);
+CREATE TABLE y (m integer NOT NULL, n smallint);
+insert into y values(10, 1);
+insert into y values(20, 1);
+with yy as (
+   select m
+   from y,
+        (select 1 as p) iv
+   where n = iv.p
+)
+select * from x, yy;
+ a | m  
+---+----
+ 1 | 10
+ 2 | 10
+ 1 | 20
+ 2 | 20
+(4 rows)
+
+                               QUERY PLAN                                
+-------------------------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: x.a, y.m
+   ->  Nested Loop
+         Output: x.a, y.m
+         Join Filter: true
+         ->  PX Broadcast 6:6  (slice4; segments: 6)
+               Output: x.a
+               ->  Partial Seq Scan on public.x
+                     Output: x.a
+         ->  Materialize
+               Output: y.m
+               ->  PX Hash 1:6  (slice2)
+                     Output: y.m
+                     ->  Hash Join
+                           Output: y.m
+                           Hash Cond: ((y.n)::integer = (1))
+                           ->  PX Coordinator 6:1  (slice3; segments: 6)
+                                 Output: y.m, y.n
+                                 ->  Partial Seq Scan on public.y
+                                       Output: y.m, y.n
+                                       Filter: (y.n = 1)
+                           ->  Hash
+                                 Output: (1)
+                                 ->  Result
+                                       Output: (1)
+                                       Filter: ((1) = 1)
+                                       ->  Result
+                                             Output: 1
+ Optimizer: PolarDB PX Optimizer
+(29 rows)
+
+-- Check that WITH query is run to completion even if outer query isn't.
+-- This is a test which exists in the upstream 'with' test suite in a section
+-- which is currently under an ignore block. It has been copied here to avoid
+-- merge conflicts since enabling it in the upstream test suite would require
+-- altering the test output (as it depends on earlier tests which are failing
+-- in GPDB currently).
+DELETE FROM y;
+INSERT INTO y SELECT generate_series(1,15) m;
+WITH t AS (
+    UPDATE y SET m = m * 100 RETURNING *
+)
+SELECT m BETWEEN 100 AND 1500 FROM t LIMIT 1;
+ ?column? 
+----------
+ t
+(1 row)
+
+SELECT * FROM y;
+  m   | n 
+------+---
+  100 |  
+  200 |  
+  300 |  
+  400 |  
+  500 |  
+  600 |  
+  700 |  
+  800 |  
+  900 |  
+ 1000 |  
+ 1100 |  
+ 1200 |  
+ 1300 |  
+ 1400 |  
+ 1500 |  
+(15 rows)
+
+                QUERY PLAN                 
+-------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: m, n
+   ->  Partial Seq Scan on public.y
+         Output: m, n
+ Optimizer: PolarDB PX Optimizer
+(5 rows)
+
+-- Nested RECURSIVE queries with double self-referential joins are planned by
+-- joining two WorkTableScans, which GPDB cannot do yet. Ensure that we error
+-- out with a descriptive message.
+WITH RECURSIVE r1 AS (
+	SELECT 1 AS a
+	UNION ALL
+	(
+		WITH RECURSIVE r2 AS (
+			SELECT 2 AS b
+			UNION ALL
+			SELECT b FROM r1, r2
+		)
+		SELECT b FROM r2
+	)
+)
+SELECT * FROM r1 LIMIT 1;
+ a 
+---
+ 1
+(1 row)
+
+-- Another cross-slice ShareInputScan test. There is one producing slice,
+-- and two consumers in second slice. Make sure the Share Input Scan
+-- consumer slice doesn't prematurely notify the producer that it's done,
+-- when one of the Scans in the consumer slice finishes, but there are still
+-- Scans left in the same slice.
+explain (costs off)
+WITH cte AS (SELECT * FROM y)
+  -- This branch runs on different slice. It is the producer slice.
+  (SELECT DISTINCT 'a' as branch, n FROM cte)
+UNION ALL
+  -- This branch runs in the consumer slice. It contains a join. A join
+  -- causes the input to be squelched when it reaches the end.
+  (SELECT 'b', x.m FROM cte x, cte y WHERE x.m = y.m)
+UNION ALL
+  -- Sleep a bit between executing the previous slice and the next slice,
+  -- so that if the squelch from the join incorrectly sent a "done" message
+  -- to the producer slice, the producer has a chance to finish and remove
+  -- the tuplestore, before the next branch tries to open the shared
+  -- tuplestore again.
+  SELECT 'sleep', 1 where pg_sleep(1) is not null
+UNION ALL
+  -- Consumer, runs in same slice as the join above.
+  SELECT 'c', j FROM cte;
+ERROR:  column "j" does not exist
+LINE 18:   SELECT 'c', j FROM cte;
+                       ^
+WITH cte AS (SELECT * FROM y)
+  (SELECT DISTINCT 'a' as branch, n FROM cte)
+UNION ALL
+  (SELECT 'b', x.m FROM cte x, cte y WHERE x.m = y.m)
+UNION ALL
+  SELECT 'sleep', 1 where pg_sleep(1) is not null
+UNION ALL
+  SELECT 'c', n FROM cte;
+ branch |  n   
+--------+------
+ a      |     
+ b      |  100
+ b      |  200
+ b      |  300
+ b      |  400
+ b      |  500
+ b      |  600
+ b      |  700
+ b      |  800
+ b      |  900
+ b      | 1000
+ b      | 1100
+ b      | 1200
+ b      | 1300
+ b      | 1400
+ b      | 1500
+ sleep  |    1
+ c      |     
+ c      |     
+ c      |     
+ c      |     
+ c      |     
+ c      |     
+ c      |     
+ c      |     
+ c      |     
+ c      |     
+ c      |     
+ c      |     
+ c      |     
+ c      |     
+ c      |     
+(32 rows)
+

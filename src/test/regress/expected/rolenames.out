@@ -1,3 +1,10 @@
+alter system set polar_super_run_as_secdef = off;
+select pg_reload_conf();
+ pg_reload_conf 
+----------------
+ t
+(1 row)
+
 CREATE OR REPLACE FUNCTION chkrolattr()
  RETURNS TABLE ("role" name, rolekeyword text, canlogin bool, replication bool)
  AS $$
@@ -950,3 +957,10 @@ DROP SCHEMA test_roles_schema;
 DROP OWNED BY regress_testrol0, "Public", "current_user", regress_testrol1, regress_testrol2, regress_testrolx CASCADE;
 DROP ROLE regress_testrol0, regress_testrol1, regress_testrol2, regress_testrolx;
 DROP ROLE "Public", "None", "current_user", "session_user", "user";
+alter system set polar_super_run_as_secdef = on;
+select pg_reload_conf();
+ pg_reload_conf 
+----------------
+ t
+(1 row)
+

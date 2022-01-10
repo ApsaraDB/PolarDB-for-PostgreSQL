@@ -26,7 +26,11 @@
 #include "optimizer/paths.h"
 #include "optimizer/placeholder.h"
 #include "optimizer/planmain.h"
+#include "optimizer/cost.h"
+#include "px/px_vars.h"
 
+/* POLAR px */
+#include "utils/guc.h"
 
 /*
  * query_planner
@@ -270,4 +274,44 @@ query_planner(PlannerInfo *root, List *tlist,
 		elog(ERROR, "failed to construct the join relation");
 
 	return final_rel;
+}
+
+/* POLAR px*/
+/*
+ * Default configuration information
+ */
+PlannerConfig *DefaultPlannerConfig(void)
+{
+	PlannerConfig *c1 = (PlannerConfig *) palloc(sizeof(PlannerConfig));
+	c1->enable_sort = enable_sort;
+	c1->enable_hashagg = enable_hashagg;
+	c1->enable_groupagg = enable_groupagg;
+	c1->enable_nestloop = enable_nestloop;
+	c1->enable_mergejoin = enable_mergejoin;
+	c1->enable_hashjoin = enable_hashjoin;
+	c1->px_enable_hashjoin_size_heuristic = px_enable_hashjoin_size_heuristic;
+	c1->px_enable_predicate_propagation = px_enable_predicate_propagation;
+	c1->constraint_exclusion = constraint_exclusion;
+
+	c1->px_enable_minmax_optimization = px_enable_minmax_optimization;
+	c1->px_enable_multiphase_agg = px_enable_multiphase_agg;
+	c1->px_enable_preunique = px_enable_preunique;
+	c1->px_eager_preunique = px_eager_preunique;
+	c1->px_hashagg_streambottom = px_hashagg_streambottom;
+	c1->px_enable_agg_distinct = px_enable_agg_distinct;
+	c1->px_enable_dqa_pruning = px_enable_dqa_pruning;
+	c1->px_eager_dqa_pruning = px_eager_dqa_pruning;
+	c1->px_eager_one_phase_agg = px_eager_one_phase_agg;
+	c1->px_eager_two_phase_agg = px_eager_two_phase_agg;
+	c1->px_enable_sort_distinct = px_enable_sort_distinct;
+
+	c1->px_enable_direct_dispatch = px_enable_direct_dispatch;
+
+	c1->px_cte_sharing = px_cte_sharing;
+
+	c1->honor_order_by = true;
+
+	c1->is_under_subplan = false;
+
+	return c1;
 }

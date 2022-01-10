@@ -1,4 +1,4 @@
-CREATE EXTENSION test_logindex;
+CREATE EXTENSION IF NOT EXISTS test_logindex;
 SET client_min_messages TO 'error';
 CHECKPOINT;
 -- See README for explanation of arguments:

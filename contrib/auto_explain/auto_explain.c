@@ -19,6 +19,12 @@
 #include "executor/instrument.h"
 #include "jit/jit.h"
 #include "utils/guc.h"
+/* POLAR px */
+#include "portability/instr_time.h"
+#include "px/px_explain.h"             /* pxexplain_recvExecStats */
+#include "executor/execdesc.h"
+#include "px/px_disp.h"
+/* POALR end */
 
 PG_MODULE_MAGIC;
 
@@ -82,7 +88,7 @@ _PG_init(void)
 							&auto_explain_log_min_duration,
 							-1,
 							-1, INT_MAX,
-							PGC_SUSET,
+							PGC_USERSET,
 							GUC_UNIT_MS,
 							NULL,
 							NULL,
@@ -93,7 +99,7 @@ _PG_init(void)
 							 NULL,
 							 &auto_explain_log_analyze,
 							 false,
-							 PGC_SUSET,
+							 PGC_USERSET,
 							 0,
 							 NULL,
 							 NULL,
@@ -104,7 +110,7 @@ _PG_init(void)
 							 NULL,
 							 &auto_explain_log_verbose,
 							 false,
-							 PGC_SUSET,
+							 PGC_USERSET,
 							 0,
 							 NULL,
 							 NULL,
@@ -115,7 +121,7 @@ _PG_init(void)
 							 NULL,
 							 &auto_explain_log_buffers,
 							 false,
-							 PGC_SUSET,
+							 PGC_USERSET,
 							 0,
 							 NULL,
 							 NULL,
@@ -126,7 +132,7 @@ _PG_init(void)
 							 "This has no effect unless log_analyze is also set.",
 							 &auto_explain_log_triggers,
 							 false,
-							 PGC_SUSET,
+							 PGC_USERSET,
 							 0,
 							 NULL,
 							 NULL,
@@ -138,7 +144,7 @@ _PG_init(void)
 							 &auto_explain_log_format,
 							 EXPLAIN_FORMAT_TEXT,
 							 format_options,
-							 PGC_SUSET,
+							 PGC_USERSET,
 							 0,
 							 NULL,
 							 NULL,
@@ -149,7 +155,7 @@ _PG_init(void)
 							 NULL,
 							 &auto_explain_log_nested_statements,
 							 false,
-							 PGC_SUSET,
+							 PGC_USERSET,
 							 0,
 							 NULL,
 							 NULL,
@@ -160,7 +166,7 @@ _PG_init(void)
 							 NULL,
 							 &auto_explain_log_timing,
 							 true,
-							 PGC_SUSET,
+							 PGC_USERSET,
 							 0,
 							 NULL,
 							 NULL,
@@ -173,7 +179,7 @@ _PG_init(void)
 							 1.0,
 							 0.0,
 							 1.0,
-							 PGC_SUSET,
+							 PGC_USERSET,
 							 0,
 							 NULL,
 							 NULL,
@@ -211,6 +217,9 @@ _PG_fini(void)
 static void
 explain_ExecutorStart(QueryDesc *queryDesc, int eflags)
 {
+	/* POLAR px */
+	instr_time		starttime;
+	
 	/*
 	 * At the beginning of each top-level statement, decide whether we'll
 	 * sample this statement.  If nested-statement explaining is enabled,
@@ -241,6 +250,15 @@ explain_ExecutorStart(QueryDesc *queryDesc, int eflags)
 				queryDesc->instrument_options |= INSTRUMENT_ROWS;
 			if (auto_explain_log_buffers)
 				queryDesc->instrument_options |= INSTRUMENT_BUFFERS;
+			/* POLAR px */
+			if (queryDesc->plannedstmt->planGen == PLANGEN_PX)
+			{
+				queryDesc->instrument_options |= INSTRUMENT_PX;
+				INSTR_TIME_SET_CURRENT(starttime);
+				queryDesc->showstatctx = pxexplain_showExecStatsBegin(queryDesc,
+																   starttime);
+			}
+			/* POLAR end */
 		}
 	}
 
@@ -324,6 +342,11 @@ explain_ExecutorEnd(QueryDesc *queryDesc)
 	{
 		double		msec;
 
+		/* POLAR px : Wait for completion of all qExec processes. */
+		if (queryDesc->estate->dispatcherState && queryDesc->estate->dispatcherState->primaryResults)
+			pxdisp_checkDispatchResult(queryDesc->estate->dispatcherState, DISPATCH_WAIT_NONE);
+		/* POLAR end */
+		
 		/*
 		 * Make sure stats accumulation is done.  (Note: it's okay if several
 		 * levels of hook all do this.)
@@ -372,6 +395,7 @@ explain_ExecutorEnd(QueryDesc *queryDesc)
 			ereport(LOG,
 					(errmsg("duration: %.3f ms  plan:\n%s",
 							msec, es->str->data),
+					 polar_mark_slow_log(true),  /* POLAR */
 					 errhidestmt(true)));
 
 			pfree(es->str->data);

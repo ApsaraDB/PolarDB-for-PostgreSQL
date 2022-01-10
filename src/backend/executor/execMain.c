@@ -66,6 +66,20 @@
 #include "utils/snapmgr.h"
 #include "utils/tqual.h"
 
+/* POLAR px */
+#include "commands/tablespace.h"
+#include "executor/execUtils_px.h"
+#include "optimizer/planner.h"
+#include "storage/ipc.h"
+#include "px/ml_ipc.h"
+#include "px/px_disp_query.h"
+#include "px/px_llize.h"
+#include "px/px_motion.h"
+#include "px/px_timeout.h"
+#include "px/px_util.h"
+#include "px/px_vars.h"
+#include "px/px_explain.h"
+/* POLAR end */
 
 /* Hooks for plugins to get control in ExecutorStart/Run/Finish/End */
 ExecutorStart_hook_type ExecutorStart_hook = NULL;
@@ -75,6 +89,10 @@ ExecutorEnd_hook_type ExecutorEnd_hook = NULL;
 
 /* Hook for plugin to get control in ExecCheckRTPerms() */
 ExecutorCheckPerms_hook_type ExecutorCheckPerms_hook = NULL;
+
+/* POLAR px */
+ExecProcNode_hook_type ExecProcNode_hook = NULL;
+ExecEndNode_hook_type ExecEndNode_hook = NULL;
 
 /* decls for local routines only used within this module */
 static void InitPlan(QueryDesc *queryDesc, int eflags);
@@ -101,6 +119,16 @@ static char *ExecBuildSlotValueDescription(Oid reloid,
 							  int maxfieldlen);
 static void EvalPlanQualStart(EPQState *epqstate, EState *parentestate,
 				  Plan *planTree);
+
+
+/* POLAR px */
+static void standard_ExecutorStart_PX(QueryDesc *queryDesc, int eflags);
+static void standard_ExecutorStart_NonPX(QueryDesc *queryDesc, int eflags);
+static void standard_ExecutorRun_PX(QueryDesc *queryDesc,
+					 ScanDirection direction, uint64 count);
+static void standard_ExecutorRun_NonPX(QueryDesc *queryDesc,
+					 ScanDirection direction, uint64 count, bool execute_once);
+static void standard_ExecutorEnd_PX(QueryDesc *queryDesc);
 
 /*
  * Note that GetUpdatedColumns() also exists in commands/trigger.c.  There does
@@ -147,8 +175,32 @@ ExecutorStart(QueryDesc *queryDesc, int eflags)
 		standard_ExecutorStart(queryDesc, eflags);
 }
 
+/* POLAR px */
 void
 standard_ExecutorStart(QueryDesc *queryDesc, int eflags)
+{
+	bool old_px_is_executing = px_is_executing;
+
+	if (px_role != PX_ROLE_PX)
+		sql_trace_id.seq = (uint16)pg_atomic_add_fetch_u32(&ProcGlobal->sqlRequestCounter, 1);
+
+	SET_PX_EXECUTION_STATUS(should_px_executor(queryDesc));
+	if (px_is_executing)
+	{
+#ifdef FAULT_INJECTOR
+	INJECT_PX_HANG_FOR_SECOND("px_wait_lock_timeout", "", "test_table", 10);
+#endif
+		standard_ExecutorStart_PX(queryDesc, eflags);
+	}
+	else
+		standard_ExecutorStart_NonPX(queryDesc, eflags);
+
+	SET_PX_EXECUTION_STATUS(old_px_is_executing);
+	return;
+}
+
+void
+standard_ExecutorStart_NonPX(QueryDesc *queryDesc, int eflags)
 {
 	EState	   *estate;
 	MemoryContext oldcontext;
@@ -172,7 +224,9 @@ standard_ExecutorStart(QueryDesc *queryDesc, int eflags)
 	 * against performing unsafe operations in parallel mode, but this gives a
 	 * more user-friendly error message.
 	 */
-	if ((XactReadOnly || IsInParallelMode()) &&
+
+	if ((XactReadOnly || IsInParallelMode() ||
+		(!MyProc->issuper && polar_force_trans_ro_non_sup)) &&
 		!(eflags & EXEC_FLAG_EXPLAIN_ONLY))
 		ExecCheckXactReadOnly(queryDesc->plannedstmt);
 
@@ -311,6 +365,27 @@ void
 standard_ExecutorRun(QueryDesc *queryDesc,
 					 ScanDirection direction, uint64 count, bool execute_once)
 {
+	bool old_px_is_executing = px_is_executing;
+
+	SET_PX_EXECUTION_STATUS(should_px_executor(queryDesc));
+	if (px_is_executing)
+	{
+#ifdef FAULT_INJECTOR
+	INJECT_PX_HANG_FOR_SECOND("px_wait_lock_timeout", "", "test_table", 10);
+#endif
+		standard_ExecutorRun_PX(queryDesc, direction, count);
+	}
+	else
+		standard_ExecutorRun_NonPX(queryDesc, direction, count, execute_once);
+
+	SET_PX_EXECUTION_STATUS(old_px_is_executing);
+	return;
+}
+
+void
+standard_ExecutorRun_NonPX(QueryDesc *queryDesc, ScanDirection direction, 
+							uint64 count, bool execute_once)
+{
 	EState	   *estate;
 	CmdType		operation;
 	DestReceiver *dest;
@@ -383,6 +458,7 @@ standard_ExecutorRun(QueryDesc *queryDesc,
 
 	MemoryContextSwitchTo(oldcontext);
 }
+
 
 /* ----------------------------------------------------------------
  *		ExecutorFinish
@@ -488,6 +564,9 @@ standard_ExecutorEnd(QueryDesc *queryDesc)
 	Assert(estate->es_finished ||
 		   (estate->es_top_eflags & EXEC_FLAG_EXPLAIN_ONLY));
 
+	if (should_px_executor(queryDesc))
+		return standard_ExecutorEnd_PX(queryDesc);
+
 	/*
 	 * Switch into per-query memory context to run ExecEndPlan
 	 */
@@ -503,6 +582,10 @@ standard_ExecutorEnd(QueryDesc *queryDesc)
 	 * Must switch out of context before destroying it
 	 */
 	MemoryContextSwitchTo(oldcontext);
+
+	/* POLAR px */
+	queryDesc->es_processed = estate->es_processed;
+	/* POLAR end */
 
 	/*
 	 * Release EState and per-query memory context.  This should release
@@ -815,6 +898,19 @@ InitPlan(QueryDesc *queryDesc, int eflags)
 	ListCell   *l;
 	int			i;
 
+	/* POLAR px */
+	Plan		*start_plan_node = NULL;
+	bool		use_px = should_px_executor(queryDesc);
+
+	if (px_role == PX_ROLE_PX &&
+		px_is_executing &&
+		px_enable_check_csn &&
+		polar_csn_enable &&
+		(NULL == queryDesc ||
+		 NULL == queryDesc->snapshot || 
+		 !queryDesc->snapshot->polar_csn_xid_snapshot))
+			elog(ERROR, "it is not allowed when px/csn enabled, but polar_csn_xid_snapshot disabled");
+
 	/*
 	 * Do permissions checks
 	 */
@@ -1013,12 +1109,42 @@ InitPlan(QueryDesc *queryDesc, int eflags)
 	 * ExecInitSubPlan expects to be able to find these entries.
 	 */
 	Assert(estate->es_subplanstates == NIL);
+
+	/* POLAR px */
+	if (use_px)
+	{
+		start_plan_node = plannedstmt->planTree;
+		estate->currentSliceId = 0;
+		/*
+		* If eliminateAliens is true then we extract the local Motion node
+		* and subplans for our current slice. This enables us to call ExecInitNode
+		* for only a subset of the plan tree.
+		*/
+		if (estate->eliminateAliens)
+		{
+			Motion *m = findSenderMotion(plannedstmt, LocallyExecutingSliceIndex(estate));
+			/*
+			* We may not have any motion in the current slice, e.g., in insert query
+			* the root may not have any motion.
+			*/
+			if (NULL != m)
+			{
+				ExecSlice *sendSlice = &estate->es_sliceTable->slices[m->motionID];
+				start_plan_node = (Plan *) m;
+				estate->currentSliceId = sendSlice->parentIndex;
+			}
+		}
+	}
+
 	i = 1;						/* subplan indices count from 1 */
 	foreach(l, plannedstmt->subplans)
 	{
 		Plan	   *subplan = (Plan *) lfirst(l);
 		PlanState  *subplanstate;
 		int			sp_eflags;
+
+		/* POLAR px */
+		int			save_currentSliceId;
 
 		/*
 		 * A subplan will never need to do BACKWARD scan nor MARK/RESTORE. If
@@ -1030,7 +1156,18 @@ InitPlan(QueryDesc *queryDesc, int eflags)
 		if (bms_is_member(i, plannedstmt->rewindPlanIDs))
 			sp_eflags |= EXEC_FLAG_REWIND;
 
+		/* POLAR px */
+		save_currentSliceId = estate->currentSliceId;
+		if (use_px)
+		{
+			estate->currentSliceId = estate->es_plannedstmt->subplan_sliceIds[i - 1];
+			sp_eflags |= EXEC_FLAG_REWIND;
+		}
+
 		subplanstate = ExecInitNode(subplan, estate, sp_eflags);
+
+		/* POLAR px */
+		estate->currentSliceId = save_currentSliceId;
 
 		estate->es_subplanstates = lappend(estate->es_subplanstates,
 										   subplanstate);
@@ -1038,12 +1175,16 @@ InitPlan(QueryDesc *queryDesc, int eflags)
 		i++;
 	}
 
+	/* POLAR px */
+	if (use_px && px_role == PX_ROLE_PX && px_is_executing && queryDesc->ddesc)
+		ExtractParamsFromInitPlans(plannedstmt, plannedstmt->planTree, estate);
+
 	/*
 	 * Initialize the private state information for all the nodes in the query
 	 * tree.  This opens files, allocates storage and leaves us ready to start
 	 * processing tuples.
 	 */
-	planstate = ExecInitNode(plan, estate, eflags);
+	planstate = ExecInitNode((use_px ? start_plan_node : plan), estate, eflags);
 
 	/*
 	 * Get the tuple descriptor describing the type of tuples to return.
@@ -1346,6 +1487,9 @@ InitResultRelInfo(ResultRelInfo *resultRelInfo,
 	resultRelInfo->ri_projectReturning = NULL;
 	resultRelInfo->ri_onConflictArbiterIndexes = NIL;
 	resultRelInfo->ri_onConflict = NULL;
+	/* POLAR px */
+	resultRelInfo->ri_action_attno = InvalidAttrNumber;	
+	/* POLAR px */
 
 	/*
 	 * Partition constraint, which also includes the partition constraint of
@@ -3323,3 +3467,10 @@ EvalPlanQualEnd(EPQState *epqstate)
 	epqstate->planstate = NULL;
 	epqstate->origslot = NULL;
 }
+
+/*
+ * POLAR px
+ * 1. standard_ExecutorStart_PX
+ * 2. standard_ExecutorRun_PX
+ */
+#include "execMain_px.c"

@@ -75,6 +75,9 @@ typedef struct CommitTimestampEntry
 #define TransactionIdToCTsEntry(xid)	\
 	((xid) % (TransactionId) COMMIT_TS_XACTS_PER_PAGE)
 
+/* POLAR: Check whether commit_ts local file cache is enabled */
+#define POLAR_ENABLE_COMMIT_TS_LOCAL_CACHE() (polar_commit_ts_max_local_cache_segments > 0 && polar_enable_shared_storage_mode)
+
 /*
  * Link to shared-memory data structures for CommitTs control
  */
@@ -473,6 +476,17 @@ pg_last_committed_xact(PG_FUNCTION_ARGS)
 Size
 CommitTsShmemBuffers(void)
 {
+	if (polar_enable_shared_storage_mode)
+	{
+		/* POLAR: we can enlarge committs max size because we optimize clog search time complexity to O(1) */
+		int max_committs_slot_size = Max(4, NBuffers / 1024 * 8);
+		int committs_slot_size = Min(polar_committs_buffer_slot_size, max_committs_slot_size);
+
+		elog(LOG, "commit timestamp buffer max slot size is %d, and it will set to %d",
+				max_committs_slot_size, committs_slot_size);
+		return committs_slot_size;
+	}
+	
 	return Min(16, Max(4, NBuffers / 1024));
 }
 
@@ -482,8 +496,15 @@ CommitTsShmemBuffers(void)
 Size
 CommitTsShmemSize(void)
 {
-	return SimpleLruShmemSize(CommitTsShmemBuffers(), 0) +
+	Size sz;
+
+	sz = SimpleLruShmemSize(CommitTsShmemBuffers(), 0) +
 		sizeof(CommitTimestampShared);
+
+	if (POLAR_ENABLE_COMMIT_TS_LOCAL_CACHE())
+		sz = add_size(MAXALIGN(sz), polar_local_cache_shmem_size(polar_commit_ts_max_local_cache_segments));
+
+	return sz;
 }
 
 /*
@@ -499,11 +520,27 @@ CommitTsShmemInit(void)
 	/* POLAR: pg_commit_ts file in shared storage */
 	SimpleLruInit(CommitTsCtl, "commit_timestamp", CommitTsShmemBuffers(), 0,
 				  CommitTsControlLock, "pg_commit_ts",
-				  LWTRANCHE_COMMITTS_BUFFERS, true);
+				  LWTRANCHE_COMMITTS_BUFFERS,
+				  polar_slru_file_in_shared_storage(true));
 
 	commitTsShared = ShmemInitStruct("CommitTs shared",
 									 sizeof(CommitTimestampShared),
 									 &found);
+
+	if (POLAR_ENABLE_COMMIT_TS_LOCAL_CACHE())
+	{
+		uint32 		io_permission = POLAR_CACHE_LOCAL_FILE_READ | POLAR_CACHE_LOCAL_FILE_WRITE;
+		polar_local_cache cache;
+
+		if (!polar_in_replica_mode())
+			io_permission |= (POLAR_CACHE_SHARED_FILE_READ | POLAR_CACHE_SHARED_FILE_WRITE);
+
+		cache = polar_create_local_cache("commit_timestamp", "pg_commit_ts",
+				polar_commit_ts_max_local_cache_segments, (SLRU_PAGES_PER_SEGMENT * BLCKSZ),
+				LWTRANCHE_POLAR_COMMIT_TS_LOCAL_CACHE, io_permission, NULL);
+
+		polar_slru_reg_local_cache(CommitTsCtl, cache);
+	}
 
 	if (!IsUnderPostmaster)
 	{
@@ -513,6 +550,7 @@ CommitTsShmemInit(void)
 		TIMESTAMP_NOBEGIN(commitTsShared->dataLastCommit.time);
 		commitTsShared->dataLastCommit.nodeid = InvalidRepOriginId;
 		commitTsShared->commitTsActive = false;
+
 	}
 	else
 		Assert(found);
@@ -1032,4 +1070,19 @@ commit_ts_redo(XLogReaderState *record)
 	}
 	else
 		elog(PANIC, "commit_ts_redo: unknown op code %u", info);
+}
+
+
+/* POLAR: do online promote for commit_ts */
+void
+polar_promote_commit_ts(void)
+{
+	polar_slru_promote(CommitTsCtl);
+}
+
+/* POLAR: remove committs local cache file */
+void
+polar_remove_commit_ts_local_cache_file(void)
+{
+	polar_slru_remove_local_cache_file(CommitTsCtl);
 }

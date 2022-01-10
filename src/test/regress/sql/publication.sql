@@ -21,7 +21,7 @@ CREATE PUBLICATION testpub_xxx WITH (publish = 'cluster, vacuum');
 
 \dRp
 
-ALTER PUBLICATION testpub_default SET (publish = 'insert, update, delete');
+ALTER PUBLICATION testpub_default SET (publish = 'insert, update, delete, truncate');
 
 \dRp
 
@@ -47,6 +47,10 @@ SELECT pubname, puballtables FROM pg_publication WHERE pubname = 'testpub_forall
 \d+ testpub_tbl2
 \dRp+ testpub_foralltables
 
+SET polar_publish_via_partition_root = true;
+SELECT * FROM pg_publication_tables WHERE pubname = 'testpub_foralltables' and tablename = 'testpub_tbl2';
+RESET polar_publish_via_partition_root;
+
 DROP TABLE testpub_tbl2;
 DROP PUBLICATION testpub_foralltables;
 
@@ -59,6 +63,33 @@ CREATE PUBLICATION testpub4 FOR TABLE ONLY testpub_tbl3;
 
 DROP TABLE testpub_tbl3, testpub_tbl3a;
 DROP PUBLICATION testpub3, testpub4;
+
+-- Tests for partitioned tables
+SET client_min_messages = 'ERROR';
+CREATE PUBLICATION testpub_forparted;
+CREATE PUBLICATION testpub_forparted1;
+RESET client_min_messages;
+CREATE TABLE testpub_parted1 (LIKE testpub_parted);
+ALTER PUBLICATION testpub_forparted1 SET (publish='insert');
+-- works despite missing REPLICA IDENTITY, because updates are not replicated
+UPDATE testpub_parted1 SET a = 1;
+ALTER TABLE testpub_parted ATTACH PARTITION testpub_parted1 FOR VALUES IN (1);
+-- only parent is listed as being in publication, not the partition
+ALTER PUBLICATION testpub_forparted ADD TABLE testpub_parted;
+\dRp+ testpub_forparted
+SELECT * FROM pg_publication_tables;
+-- should now fail, because parent's publication replicates updates
+UPDATE testpub_parted1 SET a = 1;
+ALTER TABLE testpub_parted DETACH PARTITION testpub_parted1;
+-- works again, because parent's publication is no longer considered
+UPDATE testpub_parted1 SET a = 1;
+ALTER PUBLICATION testpub_forparted SET (publish = 'insert, update, delete, truncate');
+SET polar_publish_via_partition_root = true;
+\dRp+ testpub_forparted
+SELECT * FROM pg_publication_tables;
+RESET polar_publish_via_partition_root;
+DROP TABLE testpub_parted1;
+DROP PUBLICATION testpub_forparted, testpub_forparted1;
 
 -- fail - view
 CREATE PUBLICATION testpub_fortbl FOR TABLE testpub_view;

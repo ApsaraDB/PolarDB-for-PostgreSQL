@@ -17,6 +17,8 @@
  */
 #include "postgres.h"
 
+#include <unistd.h>
+
 #include "access/transam.h"
 #include "access/xlogrecord.h"
 #include "access/xlog_internal.h"
@@ -25,22 +27,37 @@
 #include "common/pg_lzcompress.h"
 #include "replication/origin.h"
 
-#include "miscadmin.h"
 #ifndef FRONTEND
-#include "access/polar_logindex.h"
-#include "access/polar_queue_manager.h"
-#include "storage/polar_xlogbuf.h"
 #include "utils/memutils.h"
 #endif
 
+/* POLAR */
+#include "miscadmin.h"
+/* No need include this file in client tools */
+#ifndef FRONTEND
+#include "access/xlog.h"
+#include "access/polar_logindex_redo.h"
+#include "common/file_perm.h"
+#include "replication/walreceiver.h"
+#include "storage/polar_xlogbuf.h"
+#include "utils/elog.h"
+#include "utils/guc.h"
+#endif
+#include "postmaster/startup.h"
+
 static bool ValidXLogRecordHeader(XLogReaderState *state, XLogRecPtr RecPtr,
 					  XLogRecPtr PrevRecPtr, XLogRecord *record, bool randAccess);
-static bool ValidXLogRecord(XLogReaderState *state, XLogRecord *record,
-				XLogRecPtr recptr);
 static int ReadPageInternal(XLogReaderState *state, XLogRecPtr pageptr,
 				 int reqLen);
 
 static void ResetDecoder(XLogReaderState *state);
+
+/* POLAR */
+#ifndef FRONTEND
+static int polar_read_xlog_page(XLogReaderState *state, char *buf, XLogRecPtr targetptr, int reqlen);
+static void polar_save_xlog_info(XLogReaderState *state, XLogRecord *record, XLogRecPtr recptr);
+#endif
+/* POLAR end */
 
 /* size of the buffer allocated for error message. */
 #define MAX_ERRORMSG_LEN 1000
@@ -288,6 +305,8 @@ XLogReadRecord(XLogReaderState *state, XLogRecPtr RecPtr, char **errormsg)
 	if (readOff < 0)
 		goto err;
 
+	gotlen = readOff - targetRecOff;
+
 	/*
 	 * ReadPageInternal always returns at least the page header, so we can
 	 * examine it now.
@@ -499,10 +518,16 @@ XLogReadRecord(XLogReaderState *state, XLogRecPtr RecPtr, char **errormsg)
 		state->EndRecPtr -= XLogSegmentOffset(state->EndRecPtr, state->wal_segment_size);
 	}
 
+	/* 
+	 * POLAR: remove xlog buffer when decode record error 
+	 * to avoid other process reading invalid xlog from invalid buffer 
+	 * it's ok to invalid read state too, so that it can read correct content from file
+	 * rather than from state buffer next time
+	 */
 	if (DecodeXLogRecord(state, record, errormsg))
 		return record;
 	else
-		return NULL;
+		goto err;
 
 err:
 
@@ -737,7 +762,7 @@ ValidXLogRecordHeader(XLogReaderState *state, XLogRecPtr RecPtr,
  * record's header, which means in particular that xl_tot_len is at least
  * SizeOfXlogRecord.
  */
-static bool
+bool
 ValidXLogRecord(XLogReaderState *state, XLogRecord *record, XLogRecPtr recptr)
 {
 	pg_crc32c	crc;
@@ -751,6 +776,16 @@ ValidXLogRecord(XLogReaderState *state, XLogRecord *record, XLogRecPtr recptr)
 
 	if (!EQ_CRC32C(record->xl_crc, crc))
 	{
+		/* POLAR: dump current xlogrecord if crc inconsistency occured in primary */
+		#ifndef FRONTEND
+		if (polar_enable_dump_incorrect_checksum_xlog && polar_in_master_mode())
+		{
+			polar_save_xlog_info(state, record, recptr);
+			elog(WARNING, "inconsistent xlog record crc checksum in record at %X/%X, xl_crc:%X, crc:%X", 
+							(uint32) (recptr >> 32), (uint32) recptr, record->xl_crc, crc);
+		}
+		#endif
+		/* POLAR end */
 		report_invalid_record(state,
 							  "incorrect resource manager data checksum in record at %X/%X",
 							  (uint32) (recptr >> 32), (uint32) recptr);
@@ -912,13 +947,6 @@ XLogReaderValidatePageHeader(XLogReaderState *state, XLogRecPtr recptr,
 	return true;
 }
 
-#ifdef FRONTEND
-/*
- * Functions that are currently not needed in the backend, but are better
- * implemented inside xlogreader.c because of the internal facilities available
- * here.
- */
-
 /*
  * Find the first record with an lsn >= RecPtr.
  *
@@ -1036,9 +1064,6 @@ out:
 
 	return found;
 }
-
-#endif							/* FRONTEND */
-
 
 /* ----------------------------------------
  * Functions for decoding the data and block references in a record.
@@ -1379,7 +1404,7 @@ DecodeXLogRecord(XLogReaderState *state, XLogRecord *record, char **errormsg)
 
 	/* POLAR: Decode VM page from heap log */
 #ifndef FRONTEND
-	if (polar_enable_redo_logindex)
+	if (polar_logindex_redo_instance)
 		polar_xlog_decode_data(state);
 #endif
 
@@ -1503,353 +1528,133 @@ RestoreBlockImage(XLogReaderState *record, uint8 block_id, char *page)
 	return true;
 }
 
+/* POLAR */
 #ifndef FRONTEND
-/*
- * POLAR: based on XLogReadRecord, attempt to read an XLOG record,
- * and store it to shared mem
- *
- * If RecPtr is valid, try to read a record at that position.  Otherwise
- * try to read a record just after the last one previously read.
- *
- * If the read_page callback fails to read the requested data, NULL is
- * returned.  The callback is expected to have reported the error; errormsg
- * is set to NULL.
- *
- * If the reading fails for some other reason, NULL is also returned, and
- * *errormsg is set to a string with details of the failure.
- *
- * The returned pointer (or *errormsg) points to an internal buffer that's
- * valid until the next call to XLogReadRecord.
- */
-XLogRecord *
-polar_xlog_read_record(XLogReaderState *state, XLogRecPtr RecPtr, char **errormsg)
+/* POLAR: read xlog record from wal segment file */
+static int
+polar_read_xlog_page(XLogReaderState *state, char *buf, XLogRecPtr targetptr, int reqlen)
 {
-	XLogRecord *record;
-	XLogRecPtr	targetPagePtr;
-	bool		randAccess;
-	uint32		len,
-				total_len = 0;
-	uint32		targetRecOff;
-	uint32		pageHeaderSize;
-	bool		gotheader;
-	int			readOff;
-	char		*xlog_record_buffer = NULL;
-	uint32		gotlen = 0;
+	int 	readfile = -1;
+	int		readlen = -1;
+	XLogSegNo readsegno = 0;
+	int		readoff = 0;
+	char	path[MAXPGPATH];
+	
+	Assert(state);
+	Assert(buf);
 
-	/*
-	 * randAccess indicates whether to verify the previous-record pointer of
-	 * the record we're reading.  We only do this if we're reading
-	 * sequentially, which is what we initially assume.
-	 */
-	randAccess = false;
-
-	/* reset error state */
-	*errormsg = NULL;
-	state->errormsg_buf[0] = '\0';
-
-	ResetDecoder(state);
-
-	if (RecPtr == InvalidXLogRecPtr)
+	XLByteToSeg(targetptr, readsegno, state->wal_segment_size);
+	XLogFilePath(path, state->readPageTLI, readsegno, state->wal_segment_size);
+	readfile = polar_open(path, O_RDONLY | PG_BINARY, true);
+	if (readfile < 0)
 	{
-		/* No explicit start point; read the record after the one we just read */
-		RecPtr = state->EndRecPtr;
-
-		if (state->ReadRecPtr == InvalidXLogRecPtr)
-			randAccess = true;
-
-		/*
-		 * RecPtr is pointing to end+1 of the previous WAL record.  If we're
-		 * at a page boundary, no more records can fit on the current page. We
-		 * must skip over the page header, but we can't do that until we've
-		 * read in the page, since the header size is variable.
-		 */
+		if (errno == ENOENT)
+			elog(LOG, "requested WAL segment file \"%s\" doesn't exist", path);
+		else
+			elog(LOG, "could not open WAL segment file \"%s\"",path);		
 	}
-	else
+	
+	readoff = XLogSegmentOffset(targetptr, wal_segment_size);
+	if (polar_lseek(readfile, (off_t) readoff, SEEK_SET) < 0)
 	{
-		/*
-		 * Caller supplied a position to start at.
-		 *
-		 * In this case, the passed-in record pointer should already be
-		 * pointing to a valid record starting position.
-		 */
-		Assert(XRecOffIsValid(RecPtr));
-		randAccess = true;
-	}
-
-	state->currRecPtr = RecPtr;
-
-	state->noPayload = false;
-
-	targetPagePtr = RecPtr - (RecPtr % XLOG_BLCKSZ);
-	targetRecOff = RecPtr % XLOG_BLCKSZ;
-
-	/*
-	 * Read the page containing the record into state->readBuf. Request enough
-	 * byte to cover the whole record header, or at least the part of it that
-	 * fits on the same page.
-	 */
-	readOff = ReadPageInternal(state,
-							   targetPagePtr,
-							   Min(targetRecOff + SizeOfXLogRecord, XLOG_BLCKSZ));
-	if (readOff < 0)
-		goto err;
-
-	gotlen = readOff - targetRecOff;
-
-	/*
-	 * ReadPageInternal always returns at least the page header, so we can
-	 * examine it now.
-	 */
-	pageHeaderSize = XLogPageHeaderSize((XLogPageHeader) state->readBuf);
-	if (targetRecOff == 0)
-	{
-		/*
-		 * At page start, so skip over page header.
-		 */
-		RecPtr += pageHeaderSize;
-		targetRecOff = pageHeaderSize;
-	}
-	else if (targetRecOff < pageHeaderSize)
-	{
-		report_invalid_record(state, "invalid record offset at %X/%X",
-							  (uint32) (RecPtr >> 32), (uint32) RecPtr);
+		elog(LOG, "could not seek in WAL segment file \"%s\"", path);
 		goto err;
 	}
 
-	if ((((XLogPageHeader) state->readBuf)->xlp_info & XLP_FIRST_IS_CONTRECORD) &&
-		targetRecOff == pageHeaderSize)
+	readlen = polar_read(readfile, buf, XLOG_BLCKSZ);
+	if (readlen != XLOG_BLCKSZ)
 	{
-		report_invalid_record(state, "contrecord is requested by %X/%X",
-							  (uint32) (RecPtr >> 32), (uint32) RecPtr);
+		readlen = -1;
+		elog(LOG, "Failed to read from WAL segment file \"%s\"", path);
+		goto err;
+	}
+	
+err:
+	if (readfile >= 0)
+		polar_close(readfile);
+	return readlen;
+}
+
+/* POLAR: save current xlog record info into file */
+static void
+polar_save_xlog_info(XLogReaderState *state, XLogRecord *record, XLogRecPtr recptr)
+{
+	char polar_xlog_record_file[MAXPGPATH];
+	char page_info[XLOG_BLCKSZ];
+	XLogRecPtr startpage, endpage;
+	int len = 0, off = 0;
+	int fd = -1, res = -1;
+
+	Assert(state);
+	Assert(record);
+	Assert(!XLogRecPtrIsInvalid(recptr));
+
+	/* read content from record, save xlog record into file */
+	snprintf(polar_xlog_record_file, MAXPGPATH, "%s.%d", "polar_incorrect_checksum_xlog", MyProcPid);
+	fd = open(polar_xlog_record_file, O_CREAT | O_WRONLY | PG_BINARY, pg_file_create_mode);
+	if (fd < 0)
+	{
+		elog(LOG, "Failed to create file \"%s\"", polar_xlog_record_file);
+		return;
+	}
+	/* save record lsn and wal_segment_size */
+	memset(page_info, 0, sizeof(page_info));
+	memcpy(page_info, &recptr, sizeof(XLogRecPtr));
+	memcpy(page_info + sizeof(XLogRecPtr), &state->wal_segment_size, sizeof(int));
+	if (write(fd, page_info, XLOG_BLCKSZ) != XLOG_BLCKSZ)
+	{
+		elog(LOG, "Failed to save current lsn and segment size into file \"%s\"", polar_xlog_record_file);
 		goto err;
 	}
 
-	/* ReadPageInternal has verified the page header */
-	Assert(pageHeaderSize <= readOff);
-
-	/*
-	 * Read the record length.
-	 *
-	 * NB: Even though we use an XLogRecord pointer here, the whole record
-	 * header might not fit on this page. xl_tot_len is the first field of the
-	 * struct, so it must be on this page (the records are MAXALIGNed), but we
-	 * cannot access any other fields until we've verified that we got the
-	 * whole header.
-	 */
-	record = (XLogRecord *) (state->readBuf + RecPtr % XLOG_BLCKSZ);
-	total_len = record->xl_tot_len;
-
-	/*
-	 * If the whole record header is on this page, validate it immediately.
-	 * Otherwise do just a basic sanity check on xl_tot_len, and validate the
-	 * rest of the header after reading it from the next page.  The xl_tot_len
-	 * check is necessary here to ensure that we enter the "Need to reassemble
-	 * record" code path below; otherwise we might fail to apply
-	 * ValidXLogRecordHeader at all.
-	 */
-	if (targetRecOff <= XLOG_BLCKSZ - SizeOfXLogRecord)
+	/* save memory xlogrecord into file */
+	if (write(fd, record, record->xl_tot_len) != record->xl_tot_len)
 	{
-		if (!ValidXLogRecordHeader(state, RecPtr, state->ReadRecPtr, record,
-								   randAccess))
+		elog(LOG, "Failed to save xlog record from memory into file \"%s\"", polar_xlog_record_file);
+		goto err;
+	}
+
+	/* write a zero page to split memory xlogrecord and disk xlogrecord */
+	len = record->xl_tot_len;
+	off = (len / XLOG_BLCKSZ + 2) * XLOG_BLCKSZ;
+	memset(page_info, 0, sizeof(page_info));
+	if (lseek(fd, off, SEEK_SET) != off)
+	{
+		elog(LOG, "Failed to seek in file \"%s\"", polar_xlog_record_file);
+		goto err;
+	}
+	if (write(fd, page_info, XLOG_BLCKSZ) != XLOG_BLCKSZ)
+	{
+		elog(LOG, "Failed to write zero page memory into file \"%s\"", polar_xlog_record_file);
+		goto err;
+	}
+
+	/* read content from disk, save xlog record into file */
+	startpage = recptr - (recptr % XLOG_BLCKSZ);
+	endpage = state->latestPagePtr;
+	while (startpage <= endpage)
+	{
+		int readlen = -1;
+		memset(page_info, 0, sizeof(page_info));
+		readlen = polar_read_xlog_page(state, page_info, startpage, XLOG_BLCKSZ);
+
+		if (readlen < 0)
 			goto err;
-		gotheader = true;
-	}
-	else
-	{
-		/* XXX: more validation should be done here */
-		if (total_len < SizeOfXLogRecord)
+		if (write(fd, page_info, XLOG_BLCKSZ) != XLOG_BLCKSZ)
 		{
-			report_invalid_record(state,
-								  "invalid record length at %X/%X: wanted %u, got %u",
-								  (uint32) (RecPtr >> 32), (uint32) RecPtr,
-								  (uint32) SizeOfXLogRecord, total_len);
+			elog(LOG, "Failed to write xlog page into file \"%s\"", polar_xlog_record_file);
 			goto err;
 		}
-		gotheader = false;
+		startpage += XLOG_BLCKSZ;
 	}
-
-	/*
-	 * Enlarge readRecordBuf as needed.
-	 */
-	if (total_len > state->readRecordBufSize &&
-		!allocate_recordbuf(state, total_len))
-	{
-		/* We treat this as a "bogus data" condition */
-		report_invalid_record(state, "record length %u at %X/%X too long",
-							total_len,
-							(uint32) (RecPtr >> 32), (uint32) RecPtr);
-		goto err;
-	}
-
-	xlog_record_buffer = state->readRecordBuf;
-
-	len = XLOG_BLCKSZ - RecPtr % XLOG_BLCKSZ;
-	if (total_len > len)
-	{
-		/* Need to reassemble record */
-		char	   *contdata;
-		XLogPageHeader pageHeader;
-		char	   *buffer;
-
-		/* Copy the first fragment of the record from the first page. */
-		memcpy(xlog_record_buffer,
-			   state->readBuf + RecPtr % XLOG_BLCKSZ, len);
-		buffer = xlog_record_buffer + len;
-		gotlen = len;
-
-		do
-		{
-			/* Calculate pointer to beginning of next page */
-			targetPagePtr += XLOG_BLCKSZ;
-
-			/* Wait for the next page to become available */
-			readOff = ReadPageInternal(state, targetPagePtr,
-									   Min(total_len - gotlen + SizeOfXLogShortPHD,
-										   XLOG_BLCKSZ));
-
-			if (readOff < 0)
-				goto err;
-
-			Assert(SizeOfXLogShortPHD <= readOff);
-
-			/* Check that the continuation on next page looks valid */
-			pageHeader = (XLogPageHeader) state->readBuf;
-			if (!(pageHeader->xlp_info & XLP_FIRST_IS_CONTRECORD))
-			{
-				report_invalid_record(state,
-									  "there is no contrecord flag at %X/%X",
-									  (uint32) (RecPtr >> 32), (uint32) RecPtr);
-				goto err;
-			}
-
-			/*
-			 * Cross-check that xlp_rem_len agrees with how much of the record
-			 * we expect there to be left.
-			 */
-			if (pageHeader->xlp_rem_len == 0 ||
-				total_len != (pageHeader->xlp_rem_len + gotlen))
-			{
-				report_invalid_record(state,
-									  "invalid contrecord length %u at %X/%X",
-									  pageHeader->xlp_rem_len,
-									  (uint32) (RecPtr >> 32), (uint32) RecPtr);
-				goto err;
-			}
-
-			/* Append the continuation from this page to the buffer */
-			pageHeaderSize = XLogPageHeaderSize(pageHeader);
-
-			if (readOff < pageHeaderSize)
-				readOff = ReadPageInternal(state, targetPagePtr,
-										   pageHeaderSize);
-
-			Assert(pageHeaderSize <= readOff);
-
-			contdata = (char *) state->readBuf + pageHeaderSize;
-			len = XLOG_BLCKSZ - pageHeaderSize;
-			if (pageHeader->xlp_rem_len < len)
-				len = pageHeader->xlp_rem_len;
-
-			if (readOff < pageHeaderSize + len)
-				readOff = ReadPageInternal(state, targetPagePtr,
-										   pageHeaderSize + len);
-
-			memcpy(buffer, (char *) contdata, len);
-			buffer += len;
-			gotlen += len;
-
-			/* If we just reassembled the record header, validate it. */
-			if (!gotheader)
-			{
-				record = (XLogRecord *) xlog_record_buffer;
-				if (!ValidXLogRecordHeader(state, RecPtr, state->ReadRecPtr,
-										   record, randAccess))
-					goto err;
-				gotheader = true;
-			}
-		} while (gotlen < total_len);
-
-		Assert(gotheader);
-
-		record = (XLogRecord *) xlog_record_buffer;
-		if (!ValidXLogRecord(state, record, RecPtr))
-			goto err;
-
-		pageHeaderSize = XLogPageHeaderSize((XLogPageHeader) state->readBuf);
-		state->ReadRecPtr = RecPtr;
-		state->EndRecPtr = targetPagePtr + pageHeaderSize
-			+ MAXALIGN(pageHeader->xlp_rem_len);
-	}
-	else
-	{
-		/* Wait for the record data to become available */
-		readOff = ReadPageInternal(state, targetPagePtr,
-								   Min(targetRecOff + total_len, XLOG_BLCKSZ));
-		if (readOff < 0)
-			goto err;
-
-		/* Record does not cross a page boundary */
-		if (!ValidXLogRecord(state, record, RecPtr))
-			goto err;
-
-		state->EndRecPtr = RecPtr + MAXALIGN(total_len);
-
-		state->ReadRecPtr = RecPtr;
-		memcpy(xlog_record_buffer, record, total_len);
-	}
-
-	/*
-	 * Special processing if it's an XLOG SWITCH record
-	 */
-	if (record->xl_rmid == RM_XLOG_ID &&
-		(record->xl_info & ~XLR_INFO_MASK) == XLOG_SWITCH)
-	{
-		/* Pretend it extends to end of segment */
-		state->EndRecPtr += state->wal_segment_size - 1;
-		state->EndRecPtr -= XLogSegmentOffset(state->EndRecPtr, state->wal_segment_size);
-	}
-
-	if (DecodeXLogRecord(state, record, errormsg))
-		return record;
-	else
-		return NULL;
+	res = 0;
 
 err:
-
-	/*
-	 * Invalidate the read state. We might read from a different source after
-	 * failure.
-	 */
-	XLogReaderInvalReadState(state);
-
-	/* POLAR: remove current record content from xlog buffer */
-	if (POLAR_ENABLE_XLOG_BUFFER())
-	{
-		uint32 len = (total_len == 0 ? 0 : gotlen + XLOG_BLCKSZ);
-		/*
-		 * POLAR: When ro is in recovery, pread blocks will be set to polar_read_ahead_xlog_num, we
-		 * need to remove extra polar_read_ahead_xlog_num buffers
-		 */
-		if (AmStartupProcess())
-			len += polar_read_ahead_xlog_num * XLOG_BLCKSZ;
-		polar_xlog_buffer_update(state->currRecPtr > 0 ? state->currRecPtr  - 1 : 0);
-		/* POLAR: If current record is cross block, we need to remove buffer of next page */
-		if ((state->currRecPtr + len) / XLOG_BLCKSZ != state->currRecPtr / XLOG_BLCKSZ)
-		{
-			/* POLAR: If len is max value of 32bit unsigned integer, we need offset can be larger than it. */
-			uint64 offset = XLOG_BLCKSZ;
-			while ((state->currRecPtr + offset) / XLOG_BLCKSZ <= (state->currRecPtr + len) / XLOG_BLCKSZ)
-			{
-				polar_xlog_buffer_remove(state->currRecPtr + offset);
-				offset += XLOG_BLCKSZ;
-			}
-		}
-	}
-	/* POLAR end */
-
-	if (state->errormsg_buf[0] != '\0')
-		*errormsg = state->errormsg_buf;
-
-	return NULL;
+	if (fd >= 0)
+		close(fd);
+	/* unlink polar_xlog_file if error */
+	if (res < 0)
+		unlink(polar_xlog_record_file);
 }
-#endif	/* FRONTEND */
+#endif
+/* POLAR end */

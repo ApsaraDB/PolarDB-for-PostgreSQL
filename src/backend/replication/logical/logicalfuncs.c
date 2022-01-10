@@ -256,6 +256,19 @@ pg_logical_slot_get_changes_guts(FunctionCallInfo fcinfo, bool confirm, bool bin
 									LogicalOutputPrepareWrite,
 									LogicalOutputWrite, NULL);
 
+		/*
+		 * After the sanity checks in CreateDecodingContext, make sure the
+		 * restart_lsn is valid.  Avoid "cannot get changes" wording in this
+		 * errmsg because that'd be confusingly ambiguous about no changes
+		 * being available.
+		 */
+		if (polar_enable_max_slot_wal_keep_size && XLogRecPtrIsInvalid(MyReplicationSlot->data.restart_lsn))
+			ereport(ERROR,
+					(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+					 errmsg("can no longer get changes from replication slot \"%s\"",
+							NameStr(*name)),
+					 errdetail("This slot has never previously reserved WAL, or has been invalidated.")));
+
 		MemoryContextSwitchTo(oldcontext);
 
 		/*

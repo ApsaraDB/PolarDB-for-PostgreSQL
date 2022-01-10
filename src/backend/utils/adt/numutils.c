@@ -412,3 +412,72 @@ pg_strtouint64(const char *str, char **endptr, int base)
 	return strtoul(str, endptr, base);
 #endif
 }
+
+/* POLAR: generic routine of convert string to uint64 */
+uint64
+polar_strtouint64(const char *s, int mode, const char *type, bool *success)
+{
+	uint64	cvt;
+	char   *endptr;
+	int		save_errno = errno;
+
+	if (*s == '\0')
+	{
+		ereport(mode,
+			(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
+				 errmsg("invalid input syntax for type %s: \"%s\"",
+						 type, s)));
+		goto polar_strtouint64_failed;
+	}
+	errno = 0;
+	cvt = pg_strtouint64(s, &endptr, 10);
+
+	switch (errno)
+	{
+		case EINVAL:
+			ereport(mode,
+				(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
+				 errmsg("invalid input syntax for type %s: \"%s\"",
+						 type, s)));
+			goto polar_strtouint64_failed;
+		case ERANGE:
+			ereport(mode,
+				(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
+				 errmsg("value \"%s\" is out of range for type %s",
+						 s, type)));
+			goto polar_strtouint64_failed;
+		default:
+			break;
+	}
+
+	if (endptr == s && *s != '\0')
+	{
+		ereport(mode,
+			(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
+			 errmsg("invalid input syntax for type %s: \"%s\"",
+					 type, s)));
+		goto polar_strtouint64_failed;
+	}
+
+	while (*endptr && isspace((unsigned char) *endptr))
+		endptr++;
+	if (*endptr)
+	{
+		ereport(mode,
+			(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
+			 errmsg("invalid input syntax for type %s: \"%s\"",
+					 type, s)));
+		goto polar_strtouint64_failed;
+	}
+
+	if (success)
+		*success = true;
+	errno = save_errno;
+	return cvt;
+
+polar_strtouint64_failed:
+	if (success)
+		*success = false;
+	errno = save_errno;
+	return 0;
+}

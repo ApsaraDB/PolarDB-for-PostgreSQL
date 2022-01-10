@@ -87,7 +87,7 @@ checktcp: all | temp-install
 	$(with_temp_install) ./pg_regress $(REGRESS_OPTS) --temp-instance=./tmp_check $(TEMP_CONF) --bindir= $(pg_regress_locale_flags) $(THREAD) --schedule=$(srcdir)/ecpg_schedule --host=localhost sql/twophase connect/test1
 
 installcheck: all
-	unset PGDATABASE && ./pg_regress $(REGRESS_OPTS) --bindir='$(bindir)' $(pg_regress_locale_flags) $(THREAD) --schedule=$(srcdir)/ecpg_schedule
+	./pg_regress $(REGRESS_OPTS) --bindir='$(bindir)' $(pg_regress_locale_flags) $(PG_REGRESS_PX_MODE) $(THREAD) --schedule=$(srcdir)/ecpg_schedule
 
 # Versions of the check tests that include the twophase commit test.
 # It only makes sense to run these if set up to use prepared transactions,

@@ -161,6 +161,9 @@ MultiExecPrivateHash(HashState *node)
 	 */
 	for (;;)
 	{
+		/* POLAR px */
+		bool hashkeys_null = false;
+
 		slot = ExecProcNode(outerNode);
 		if (TupIsNull(slot))
 			break;
@@ -168,7 +171,7 @@ MultiExecPrivateHash(HashState *node)
 		econtext->ecxt_innertuple = slot;
 		if (ExecHashGetHashValue(hashtable, econtext, hashkeys,
 								 false, hashtable->keepNulls,
-								 &hashvalue))
+								 &hashvalue, &hashkeys_null/* POLAR px */))
 		{
 			int			bucketNumber;
 
@@ -187,6 +190,18 @@ MultiExecPrivateHash(HashState *node)
 			}
 			hashtable->totalTuples += 1;
 		}
+
+		/* POLAR px */
+		if (hashkeys_null)
+		{
+			node->hs_hashkeys_null = true;
+			if (node->hs_quit_if_hashkeys_null)
+			{
+				ExecSquelchNode(outerNode);
+				return;
+			}
+		}
+		/* POLAR end */
 	}
 
 	/* resize the hash table if needed (NTUP_PER_BUCKET exceeded) */
@@ -278,13 +293,15 @@ MultiExecParallelHash(HashState *node)
 			ExecParallelHashTableSetCurrentBatch(hashtable, 0);
 			for (;;)
 			{
+				/* POLAR px */
+				bool	hashkeys_null = false;
 				slot = ExecProcNode(outerNode);
 				if (TupIsNull(slot))
 					break;
 				econtext->ecxt_innertuple = slot;
 				if (ExecHashGetHashValue(hashtable, econtext, hashkeys,
 										 false, hashtable->keepNulls,
-										 &hashvalue))
+										 &hashvalue, &hashkeys_null/* POLAR px */))
 					ExecParallelHashTableInsert(hashtable, slot, hashvalue);
 				hashtable->partialTuples++;
 			}
@@ -1142,7 +1159,7 @@ ExecParallelHashIncreaseNumBatches(HashJoinTable hashtable)
 					dtuples = (old_batch0->ntuples * 2.0) / new_nbatch;
 					dbuckets = ceil(dtuples / NTUP_PER_BUCKET);
 					dbuckets = Min(dbuckets,
-								   MaxAllocSize / sizeof(dsa_pointer_atomic));
+								   (double) (MaxAllocSize / sizeof(dsa_pointer_atomic)));
 					new_nbuckets = (int) dbuckets;
 					new_nbuckets = Max(new_nbuckets, 1024);
 					new_nbuckets = 1 << my_log2(new_nbuckets);
@@ -1766,6 +1783,7 @@ ExecParallelHashTableInsertCurrentBatch(HashJoinTable hashtable,
  * and stored at *hashvalue.  A false result means the tuple cannot match
  * because it contains a null attribute, and hence it should be discarded
  * immediately.  (If keep_nulls is true then false is never returned.)
+ * hashkeys_null indicates all the hashkeys are null.
  */
 bool
 ExecHashGetHashValue(HashJoinTable hashtable,
@@ -1773,13 +1791,19 @@ ExecHashGetHashValue(HashJoinTable hashtable,
 					 List *hashkeys,
 					 bool outer_tuple,
 					 bool keep_nulls,
-					 uint32 *hashvalue)
+					 uint32 *hashvalue,
+					 bool *hashkeys_null/* POLAR px */)
 {
 	uint32		hashkey = 0;
 	FmgrInfo   *hashfunctions;
 	ListCell   *hk;
 	int			i = 0;
 	MemoryContext oldContext;
+
+	/* POLAR px */
+	Assert(hashkeys_null);
+	(*hashkeys_null) = true;
+	/* POLAR end */
 
 	/*
 	 * We reset the eval context each time to reclaim any memory leaked in the
@@ -1837,6 +1861,9 @@ ExecHashGetHashValue(HashJoinTable hashtable,
 
 			hkey = DatumGetUInt32(FunctionCall1(&hashfunctions[i], keyval));
 			hashkey ^= hkey;
+
+			/* POLAR px */
+			*hashkeys_null = false;
 		}
 
 		i++;

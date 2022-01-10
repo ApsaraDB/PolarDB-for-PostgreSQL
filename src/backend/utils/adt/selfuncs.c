@@ -154,6 +154,14 @@
 #include "utils/varlena.h"
 
 
+/* POLAR csn */
+#include "storage/procarray.h"
+/* POLAR end */
+
+/* POLAR px */
+#include "px/px_util.h"
+/* POLAR end */
+
 /* Hooks for plugins to get control when we ask for stats */
 get_relation_stats_hook_type get_relation_stats_hook = NULL;
 get_index_stats_hook_type get_index_stats_hook = NULL;
@@ -197,8 +205,6 @@ static double convert_one_string_to_scalar(char *value,
 static double convert_one_bytea_to_scalar(unsigned char *value, int valuelen,
 							int rangelo, int rangehi);
 static char *convert_string_datum(Datum value, Oid typid, bool *failure);
-static double convert_timevalue_to_scalar(Datum value, Oid typid,
-							bool *failure);
 static void examine_simple_variable(PlannerInfo *root, Var *var,
 						VariableStatData *vardata);
 static bool get_variable_range(PlannerInfo *root, VariableStatData *vardata,
@@ -4595,7 +4601,7 @@ convert_one_bytea_to_scalar(unsigned char *value, int valuelen,
  * On failure (e.g., unsupported typid), set *failure to true;
  * otherwise, that variable is not changed.
  */
-static double
+double
 convert_timevalue_to_scalar(Datum value, Oid typid, bool *failure)
 {
 	switch (typid)
@@ -5415,6 +5421,13 @@ get_variable_numdistinct(VariableStatData *vardata, bool *isdefault)
 				case TableOidAttributeNumber:
 					stadistinct = 1.0;	/* only 1 value */
 					break;
+				case PxWorkerIdAttributeNumber: /* POLAR px */
+					stadistinct = getPxWorkerCount();
+					break;
+				case RootSelfItemPointerAttributeNumber: /* POLAR px */
+					stadistinct = 0.0;	/* means "unknown" */
+					break;
+				/* POLAR end */
 				default:
 					stadistinct = 0.0;	/* means "unknown" */
 					break;
@@ -5840,7 +5853,9 @@ get_actual_variable_endpoint(Relation heapRel,
 	 * or could even be NULL.  We avoid this hazard because we take the data
 	 * from the index entry not the heap.
 	 */
-	InitNonVacuumableSnapshot(SnapshotNonVacuumable, RecentGlobalXmin);
+
+	/* POLAR csn: get newest global xmin */
+	InitNonVacuumableSnapshot(SnapshotNonVacuumable, GetRecentGlobalXmin());
 
 	index_scan = index_beginscan(heapRel, indexRel,
 								 &SnapshotNonVacuumable,

@@ -17,6 +17,7 @@
 #include "access/xlog.h"
 #include "access/xlog_internal.h"
 #include "catalog/pg_control.h"
+#include "storage/bufpage.h"
 #include "utils/guc.h"
 #include "utils/timestamp.h"
 
@@ -146,6 +147,20 @@ xlog_desc(StringInfo buf, XLogReaderState *record)
 						 xlrec.ThisTimeLineID, xlrec.PrevTimeLineID,
 						 timestamptz_to_str(xlrec.end_time));
 	}
+	/* POLAR csnlog */
+	else if (info == XLOG_CSNLOG_ZEROPAGE)
+	{
+		int			pageno;
+		memcpy(&pageno, rec, sizeof(int));
+		appendStringInfo(buf, "zero page %d", pageno);
+	}
+	else if (info == XLOG_CSNLOG_TRUNCATE)
+	{
+		int			pageno;
+		memcpy(&pageno, rec, sizeof(int));
+		appendStringInfo(buf, "truncate page %d", pageno);
+	}
+	/* POLAR end */
 }
 
 const char *
@@ -191,8 +206,19 @@ xlog_identify(uint8 info)
 		case XLOG_FPI_FOR_HINT:
 			id = "FPI_FOR_HINT";
 			break;
+
 		case XLOG_FPSI:
 			id = "FPSI";
+			break;
+		/* POLAR csn */
+		case XLOG_CSNLOG_ZEROPAGE:
+			id = "ZERO_CSN_PAGE";
+			break;
+		case XLOG_CSNLOG_TRUNCATE:
+			id = "TRUNCATE_CSN_PAGE";
+			break;
+		/* POLAR end */
+
 		case XLOG_FPI_MULTI:
 			id = "FPI_MULTI";
 			break;

@@ -17,5 +17,6 @@ OBJS = autovacuum.o bgworker.o bgwriter.o checkpointer.o fork_process.o \
 
 # POLAR objects
 OBJS += polar_parallel_bgwriter.o
+OBJS += polar_wal_pipeliner.o
 
 include $(top_srcdir)/src/backend/common.mk

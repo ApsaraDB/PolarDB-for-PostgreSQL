@@ -16,7 +16,8 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  *
- * src/backend/access/logindex/polar_ringbuf.c
+ * IDENTIFICATION
+ *    src/backend/access/logindex/polar_ringbuf.c
  * ---------------------------------------------------------------------------------------
  */
 
@@ -53,17 +54,17 @@ static bool polar_ringbuf_update_pread(polar_ringbuf_t rbuf);
  * Initialize ring buffer from allocated memory.
  */
 polar_ringbuf_t
-polar_ringbuf_init(uint8 *data, size_t len, int tranche_id, const char *name)
+polar_ringbuf_init(uint8 *data, size_t len, int tranche_id, const char *trache_name)
 {
-	polar_ringbuf_t rbuf = (polar_ringbuf_t) data;
+	polar_ringbuf_t rbuf = (polar_ringbuf_t)data;
 
-	LWLockRegisterTranche(tranche_id, name);
+	LWLockRegisterTranche(tranche_id, trache_name);
 	LWLockInitialize(&rbuf->lock, tranche_id);
 
 	pg_atomic_init_u64(&rbuf->pread, 0);
 	pg_atomic_init_u64(&rbuf->pwrite, 0);
 
-	MemSet(rbuf->slot, 0, sizeof(polar_ringbuf_slot_t) * POLAR_RINGBUF_MAX_SLOT);
+	MemSet(rbuf->slot, 0, sizeof(polar_ringbuf_slot_t)*POLAR_RINGBUF_MAX_SLOT);
 
 	rbuf->size = len - offsetof(polar_ringbuf_data_t, data);
 	rbuf->occupied = 0;
@@ -77,11 +78,11 @@ bool
 polar_ringbuf_new_ref(polar_ringbuf_t rbuf, bool strong,
 					  polar_ringbuf_ref_t *ref, char *ref_name)
 {
-	int			i;
-	uint64		unoccupied;
-	bool		succeed = false;
+	int i;
+	uint64 unoccupied;
+	bool succeed = false;
 
-	elog(LOG, "create polar_xlog_queue for %s", ref_name);
+	elog(LOG, "create reference for %s", ref_name);
 
 	LWLockAcquire(&rbuf->lock, LW_EXCLUSIVE);
 	unoccupied = ~(rbuf->occupied);
@@ -128,7 +129,7 @@ polar_ringbuf_release_ref(polar_ringbuf_ref_t *ref)
 	polar_ringbuf_t rbuf = ref->rbuf;
 
 	if (rbuf == NULL)
-		return;
+		return ;
 
 	LWLockAcquire(&rbuf->lock, LW_EXCLUSIVE);
 
@@ -150,7 +151,7 @@ polar_ringbuf_release_ref(polar_ringbuf_ref_t *ref)
 static void
 polar_ringbuf_auto_release(int code, Datum arg)
 {
-	polar_ringbuf_ref_t *ref = (polar_ringbuf_ref_t *) arg;
+	polar_ringbuf_ref_t *ref = (polar_ringbuf_ref_t *)arg;
 
 	polar_ringbuf_release_ref(ref);
 }
@@ -162,7 +163,9 @@ polar_ringbuf_auto_release(int code, Datum arg)
 void
 polar_ringbuf_auto_release_ref(polar_ringbuf_ref_t *ref)
 {
-	before_shmem_exit(polar_ringbuf_auto_release, (Datum) ref);
+	/* check whether it is able to register a before_shmem_exit callback */
+	if (polar_check_before_shmem_exit(polar_ringbuf_auto_release, (Datum)ref, FALSE))
+		before_shmem_exit(polar_ringbuf_auto_release, (Datum)ref);
 }
 
 /*
@@ -171,12 +174,12 @@ polar_ringbuf_auto_release_ref(polar_ringbuf_ref_t *ref)
 bool
 polar_ringbuf_get_ref(polar_ringbuf_ref_t *ref)
 {
-	bool		got = false;
+	bool got = false;
 	polar_ringbuf_t rbuf = ref->rbuf;
 
 	/*
-	 * The strong reference property is changed in the same process, and it's
-	 * safe to use shared lock
+	 * The strong reference property is changed in the same process,
+	 * and it's safe to use shared lock
 	 */
 	LWLockAcquire(&rbuf->lock, LW_SHARED);
 
@@ -197,7 +200,7 @@ polar_ringbuf_get_ref(polar_ringbuf_ref_t *ref)
 bool
 polar_ringbuf_valid_ref(polar_ringbuf_ref_t *ref)
 {
-	bool		ret = false;
+	bool ret = false;
 
 	if (!ref || !ref->rbuf)
 		return ret;
@@ -217,12 +220,12 @@ polar_ringbuf_valid_ref(polar_ringbuf_ref_t *ref)
 bool
 polar_ringbuf_clear_ref(polar_ringbuf_ref_t *ref)
 {
-	bool		cleared = false;
+	bool cleared = false;
 	polar_ringbuf_t rbuf = ref->rbuf;
 
 	/*
-	 * The strong reference property is changed in the same process, and it's
-	 * safe to use shared lock
+	 * The strong reference property is changed in the same process,
+	 * and it's safe to use shared lock
 	 */
 	LWLockAcquire(&rbuf->lock, LW_SHARED);
 
@@ -245,11 +248,11 @@ ssize_t
 polar_ringbuf_read_next_pkt(polar_ringbuf_ref_t *ref,
 							int offset, uint8 *buf, size_t len)
 {
-	size_t		todo;
-	size_t		split;
-	size_t		pktlen;
+	size_t todo;
+	size_t split;
+	size_t pktlen;
 	polar_ringbuf_t rbuf = ref->rbuf;
-	size_t		idx = rbuf->slot[ref->slot].pread;
+	size_t idx = rbuf->slot[ref->slot].pread;
 
 	pktlen = polar_ringbuf_pkt_len(rbuf, idx);
 
@@ -283,9 +286,9 @@ polar_ringbuf_read_next_pkt(polar_ringbuf_ref_t *ref,
 ssize_t
 polar_ringbuf_pkt_write(polar_ringbuf_t rbuf, size_t idx, int offset, uint8 *buf, size_t len)
 {
-	size_t		todo;
-	size_t		split;
-	size_t		pktlen = polar_ringbuf_pkt_len(rbuf, idx);
+	size_t todo;
+	size_t split;
+	size_t pktlen = polar_ringbuf_pkt_len(rbuf, idx);
 
 	if (offset >= pktlen || (offset + len) > pktlen)
 		return -1;
@@ -313,11 +316,11 @@ polar_ringbuf_pkt_write(polar_ringbuf_t rbuf, size_t idx, int offset, uint8 *buf
 bool
 polar_ringbuf_update_pread(polar_ringbuf_t rbuf)
 {
-	int			i;
-	uint64		min_slot = POLAR_RINGBUF_MAX_SLOT;
-	uint64		min_visit = UINT64_MAX;
-	bool		updated = false;
-	uint64		occupied = rbuf->occupied;
+	int i;
+	uint64 min_slot = POLAR_RINGBUF_MAX_SLOT;
+	uint64 min_visit = UINT64_MAX;
+	bool   updated = false;
+	uint64 occupied = rbuf->occupied;
 
 	while (occupied)
 	{
@@ -350,8 +353,8 @@ void
 polar_ringbuf_update_ref(polar_ringbuf_ref_t *ref)
 {
 	polar_ringbuf_t rbuf = ref->rbuf;
-	size_t		idx = rbuf->slot[ref->slot].pread;
-	size_t		pktlen = polar_ringbuf_pkt_len(rbuf, idx);
+	size_t idx = rbuf->slot[ref->slot].pread;
+	size_t pktlen = polar_ringbuf_pkt_len(rbuf, idx);
 
 	LWLockAcquire(&rbuf->lock, LW_SHARED);
 	rbuf->slot[ref->slot].pread = (idx + POLAR_RINGBUF_PKTHDRSIZE + pktlen) % rbuf->size;
@@ -360,16 +363,16 @@ polar_ringbuf_update_ref(polar_ringbuf_ref_t *ref)
 }
 
 /*
- * No enough space to write and eliminate one weak reference with least read position
+ * No enouth space to write and eliminate one weak reference with least read position
  */
 static bool
 polar_ringbuf_evict_ref(polar_ringbuf_t rbuf)
 {
-	int			i;
-	bool		evicted = false;
-	uint8		min_slot = POLAR_RINGBUF_MAX_SLOT;
-	uint64		min_visit = UINT64_MAX;
-	uint64		occupied = rbuf->occupied;
+	int i;
+	bool evicted = false;
+	uint8 min_slot = POLAR_RINGBUF_MAX_SLOT;
+	uint64 min_visit = UINT64_MAX;
+	uint64 occupied = rbuf->occupied;
 
 	while (occupied)
 	{
@@ -377,7 +380,7 @@ polar_ringbuf_evict_ref(polar_ringbuf_t rbuf)
 		i--;
 
 		if (!rbuf->slot[i].strong
-			&& min_visit > rbuf->slot[i].visit)
+				&& min_visit > rbuf->slot[i].visit)
 		{
 			min_visit = rbuf->slot[i].visit;
 			min_slot = i;
@@ -387,7 +390,7 @@ polar_ringbuf_evict_ref(polar_ringbuf_t rbuf)
 	}
 
 	if (min_slot != POLAR_RINGBUF_MAX_SLOT
-		&& pg_atomic_read_u64(&rbuf->pread) == rbuf->slot[min_slot].pread)
+			&& pg_atomic_read_u64(&rbuf->pread) == rbuf->slot[min_slot].pread)
 	{
 		elog(LOG, "Polar evict slot=%d,name=%s which is weak reference", min_slot, rbuf->slot[min_slot].ref_name);
 		POLAR_BIT_RELEASE_OCCUPIED(rbuf->occupied, min_slot + 1);
@@ -415,7 +418,7 @@ polar_ringbuf_update_keep_data(polar_ringbuf_t rbuf)
 void
 polar_ringbuf_free_up(polar_ringbuf_t rbuf, size_t len, polar_interrupt_callback callback)
 {
-	bool		free_up = false;
+	bool free_up = false;
 
 	pgstat_report_wait_start(WAIT_EVENT_LOGINDEX_QUEUE_SPACE);
 
@@ -427,12 +430,12 @@ polar_ringbuf_free_up(polar_ringbuf_t rbuf, size_t len, polar_interrupt_callback
 		if (!free_up)
 		{
 			if (!polar_ringbuf_update_pread(rbuf)
-				&& !polar_ringbuf_evict_ref(rbuf))
+					&& !polar_ringbuf_evict_ref(rbuf))
 			{
 				/*
-				 * 1. Try to update reference's pread to get more space 2. Try
-				 * to evict weak reference 3. Otherwise wait for reference to
-				 * consume data
+				 * 1. Try to update reference's pread to get more space
+				 * 2. Try to evict weak reference
+				 * 3. Otherwise wait for reference to comsume data
 				 */
 				LWLockRelease(&rbuf->lock);
 				CHECK_FOR_INTERRUPTS();
@@ -450,4 +453,41 @@ polar_ringbuf_free_up(polar_ringbuf_t rbuf, size_t len, polar_interrupt_callback
 	while (!free_up);
 
 	pgstat_report_wait_end();
+}
+
+void
+polar_ringbuf_ref_keep_data(polar_ringbuf_ref_t *ref, float ratio)
+{
+	polar_ringbuf_t rbuf = ref->rbuf;
+	ssize_t keep_size = rbuf->size * ratio;
+	bool updated = false;
+
+	while (polar_ringbuf_avail(ref) > keep_size)
+	{
+		polar_ringbuf_update_ref(ref);
+		updated = true;
+	}
+
+	if (updated)
+		polar_ringbuf_update_keep_data(rbuf);
+}
+
+void
+polar_ringbuf_reset(polar_ringbuf_t rbuf)
+{
+	for (;;)
+	{
+		LWLockAcquire(&rbuf->lock, LW_EXCLUSIVE);
+
+		if (rbuf->occupied != 0)
+		{
+			LWLockRelease(&rbuf->lock);
+			continue;
+		}
+
+		pg_atomic_write_u64(&rbuf->pread, 0);
+		pg_atomic_write_u64(&rbuf->pwrite, 0);
+		LWLockRelease(&rbuf->lock);
+		break;
+	}
 }

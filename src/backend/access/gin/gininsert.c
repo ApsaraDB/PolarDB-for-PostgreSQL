@@ -327,8 +327,11 @@ ginbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 	OffsetNumber attnum;
 
 	if (RelationGetNumberOfBlocks(index) != 0)
+	{
+		polar_check_nblocks_consistent(index);
 		elog(ERROR, "index \"%s\" already contains data",
 			 RelationGetRelationName(index));
+	}
 
 	initGinState(&buildstate.ginstate, index);
 	buildstate.indtuples = 0;

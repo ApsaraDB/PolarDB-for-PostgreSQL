@@ -28,12 +28,22 @@
 #include "crosstabview.h"
 #include "fe_utils/mbprint.h"
 
+#include "libpq-int.h"
 
 static bool DescribeQuery(const char *query, double *elapsed_msec);
 static bool ExecQueryUsingCursor(const char *query, double *elapsed_msec);
 static bool command_no_begin(const char *query);
 static bool is_select_command(const char *query);
+static bool polar_is_px_select_command(const char *query);
+static bool polar_has_dml_command(const char *query);
+static int polar_contain_explain_query(const char *query);
+static int polar_contain_explain_analyze(const char *query);
+static int polar_contain_enable_px(const char *query);
 
+/* POLAR px */
+static void polar_check_explain_result(PGresult *results, bool *px_used, bool *need_print);
+static uint32 polar_murmurhash2(const void* key, int32_t len, uint32 seed);
+static uint32 polar_calc_result_hash(const PGresult *result, const printQueryOpt *opt);
 
 /*
  * openQueryOutputFile --- attempt to open a query output file
@@ -226,10 +236,28 @@ psql_error(const char *fmt,...)
 	if (pset.queryFout && pset.queryFout != stdout)
 		fflush(pset.queryFout);
 
+	/* POLAR: write to replica fout file */
+	if (pset.replicadb && pset.queryReplicaFout && pset.queryReplicaFout != stdout)
+		fflush(pset.queryReplicaFout);
+	/* POLAR end */
+
 	if (pset.inputfile)
 		fprintf(stderr, "%s:%s:" UINT64_FORMAT ": ", pset.progname, pset.inputfile, pset.lineno);
 	va_start(ap, fmt);
-	vfprintf(stderr, _(fmt), ap);
+
+	/* POLAR: write to replica fout file */
+	if (pset.queryFout && pset.queryFout ==  pset.queryReplicaFout)
+	{
+		if (pset.replicadb)
+		{
+			vfprintf(pset.queryReplicaFout, _(fmt), ap);
+		}
+	}
+	else
+	{
+		vfprintf(stderr, _(fmt), ap);
+	}
+
 	va_end(ap);
 }
 
@@ -1322,6 +1350,136 @@ PrintQueryResults(PGresult *results)
 	return success;
 }
 
+/* POLAR px */
+void 
+polar_check_explain_result(PGresult *results, bool *px_used, bool *need_print)
+{
+	int 	r,c;
+	bool 	is_px_used = false;
+	*px_used = false;
+	*need_print = false;
+	for (r = 0; r < results->ntups; r++)
+	{
+		for (c = 0; c < results->numAttributes; c++)
+		{
+			const char *cell = PQgetvalue(results, r, c);
+			if (!is_px_used && strstr(cell, "PX Coordinator") != NULL) 
+			{
+				is_px_used = true;
+				*px_used = true;
+				*need_print = true;
+				continue;
+			}
+
+			if (is_px_used && 
+				(*need_print) && 
+				(strstr(cell, "pg_temp_") != NULL 
+					|| strstr(cell, "pg_toast_temp_") != NULL
+					|| strstr(cell, "::oid") != NULL
+					|| (strstr(cell, "::timestamp") != NULL &&
+						strstr(cell, "00:00:00") == NULL &&
+						strstr(cell, ")::timestamp") == NULL)
+					|| strstr(cell, "::abstime") != NULL
+					|| strstr(cell, "using pg_oid_") != NULL
+					|| (strstr(cell, "Filter: ") != NULL && 
+						strstr(cell, "polar_px_workerid() = ") != NULL)
+				))
+			{
+				*need_print = false;
+				return ;
+			}
+		}
+	}
+}
+/*
+ * The MurmurHash 2 from Austin Appleby, faster and better mixed (but weaker
+ * crypto-wise with one pair of obvious differential) than both Lookup3 and
+ * SuperFastHash. Not-endian neutral for speed
+ */
+uint32 polar_murmurhash2(const void* key, int32_t len, uint32 seed)
+{
+  // 'm' and 'r' are mixing constants generated offline.
+  // They're not really 'magic', they just happen to work well.
+  const uint32 m = 0x5bd1e995;
+  const int32_t r = 24;
+
+  // Initialize the hash to a 'random' value
+  uint32 h = seed ^ len;
+
+  // Mix 4 bytes at a time into the hash
+  const unsigned char* data = (const unsigned char*)(key);
+
+  while (len >= 4) {
+    uint32 k =
+        ((uint32)data[0]) | (((uint32)data[1]) << 8) | (((uint32)data[2]) << 16) | (((uint32)data[3]) << 24);
+
+    k *= m;
+    k ^= k >> r;
+    k *= m;
+
+    h *= m;
+    h ^= k;
+
+    data += 4;
+    len -= 4;
+  }
+
+  // Handle the last few bytes of the input array
+  switch (len) {
+    case 3:
+      h ^= data[2] << 16;
+    case 2:
+      h ^= data[1] << 8;
+    case 1:
+      h ^= data[0];
+      h *= m;
+  };
+
+  // Do a few final mixes of the hash to ensure the last few
+  // bytes are well-incorporated.
+  h ^= h >> 13;
+  h *= m;
+  h ^= h >> 15;
+
+  return h;
+}
+
+uint32
+polar_calc_result_hash(const PGresult *result, const printQueryOpt *opt)
+{
+	printTableContent cont;
+	int			r,
+				c;
+	uint32		hash_result = 0;
+
+	printTableInit(&cont, &opt->topt, opt->title,
+				   PQnfields(result), PQntuples(result));
+
+	/* Assert caller supplied enough translate_columns[] entries */
+	Assert(opt->translate_columns == NULL ||
+		   opt->n_translate_columns >= cont.ncolumns);
+
+	/* set cells */
+	for (r = 0; r < cont.nrows; r++)
+	{
+		uint32		row_hash = 0;
+		for (c = 0; c < cont.ncolumns; c++)
+		{
+			char	   *cell;
+
+			if (PQgetisnull(result, r, c))
+				cell = opt->nullPrint ? opt->nullPrint : "";
+			else
+				cell = PQgetvalue(result, r, c);
+			row_hash = polar_murmurhash2((const unsigned char *) cell,
+										strlen(cell),
+										row_hash);
+		}
+		hash_result += row_hash;
+	}
+
+	return hash_result;
+}
 
 /*
  * SendQuery: send the query string to the backend
@@ -1345,12 +1503,34 @@ SendQuery(const char *query)
 	int			i;
 	bool		on_error_rollback_savepoint = false;
 	static bool on_error_rollback_warning = false;
-
+	static bool need_analyze = false;
+	static bool enable_px = false;
+	int			contain_result = 0;
+	
 	if (!pset.db)
 	{
 		psql_error("You are currently not connected to a database.\n");
 		goto sendquery_cleanup;
 	}
+
+	/* POALR px */
+	contain_result = polar_contain_explain_query(query);
+	if (contain_result != 0)
+		pset.explain_query = (1 == contain_result);
+
+	contain_result = polar_contain_explain_analyze(query);
+	if (contain_result != 0)
+		pset.explain_analyze = (1 == contain_result);
+
+	if (!need_analyze && 
+		(pset.explain_query || pset.explain_analyze) && 
+		polar_has_dml_command(query))
+		need_analyze = true;
+
+
+	contain_result = polar_contain_enable_px(query);
+	if (contain_result != 0)
+		enable_px = (1 == contain_result);
 
 	if (pset.singlestep)
 	{
@@ -1446,6 +1626,14 @@ SendQuery(const char *query)
 		instr_time	before,
 					after;
 
+		/* POLAR px */
+		ExecStatusType result_status;
+		ExecStatusType result_status_px;
+		uint32	result_hash = 0;
+		uint32	result_hash_px = 0;
+
+		pset.popt.sort_result = pset.sort_result;
+
 		if (pset.timing)
 			INSTR_TIME_SET_CURRENT(before);
 
@@ -1464,7 +1652,113 @@ SendQuery(const char *query)
 
 		/* but printing results isn't: */
 		if (OK && results)
+		{
 			OK = PrintQueryResults(results);
+
+			/* POALR px */
+			result_status = PQresultStatus(results);
+			if (pset.compare_px_result &&
+				polar_is_px_select_command(query) &&
+				(PGRES_EMPTY_QUERY == result_status || 
+				 PGRES_TUPLES_OK == result_status))
+			{
+				bool is_px_used = false;
+				bool need_print = false;
+				bool tmp_OK = false;
+				PGresult *tmp_results = NULL;
+				char *new_query;
+				Size  query_len = strlen(query) + 100;
+
+				result_hash = polar_calc_result_hash(results, &pset.popt);
+
+				if (!enable_px)
+				{
+					tmp_results = PQexec(pset.db, "SET polar_enable_px=1;");
+					PQclear(tmp_results);
+				}
+
+				if (need_analyze && 
+					(pset.explain_query || pset.explain_analyze))
+				{
+					tmp_results = PQexec(pset.db, "SET client_min_messages='FATAL';");
+					PQclear(tmp_results);
+
+					tmp_results = PQexec(pset.db, "ANALYZE");
+					PQclear(tmp_results);
+					need_analyze = false;
+
+					tmp_results = PQexec(pset.db, "RESET client_min_messages;");
+					PQclear(tmp_results);
+				}
+
+				new_query = (char*)malloc(query_len);
+				snprintf(new_query, query_len, "EXPLAIN (VERBOSE, COSTS OFF) %s", query);
+				tmp_results = PQexec(pset.db, new_query);
+				free(new_query);
+
+				tmp_OK = ProcessResult(&tmp_results);
+				if (tmp_OK && tmp_results)
+				{
+					pset.popt.sort_result = false;
+					polar_check_explain_result(tmp_results, &is_px_used, &need_print);
+					if (pset.explain_query && need_print)
+						PrintQueryResults(tmp_results);
+				}
+				else
+				{
+					printf(_("----COMPARE PX RESULT explain query failed\n"));
+				}
+				PQclear(tmp_results);
+
+				if (pset.explain_analyze)
+				{
+					new_query = (char*)malloc(query_len);
+					snprintf(new_query, query_len, "EXPLAIN (VERBOSE, COSTS OFF, TIMING OFF, SUMMARY OFF, ANALYZE) %s", query);
+					tmp_results = PQexec(pset.db, new_query);
+					free(new_query);
+
+					tmp_OK = ProcessResult(&tmp_results);
+					if (tmp_OK && tmp_results)
+					{
+						pset.popt.sort_result = false;
+						polar_check_explain_result(tmp_results, &is_px_used, &need_print);
+						if (need_print)
+							PrintQueryResults(tmp_results);
+					}
+					else
+					{
+						printf(_("----COMPARE PX RESULT explain analyze failed\n"));
+					}
+					PQclear(tmp_results);
+				}
+
+				if (is_px_used)
+				{
+					tmp_results = PQexec(pset.db, query);
+					result_status_px = PQresultStatus(tmp_results);
+					result_hash_px = polar_calc_result_hash(tmp_results, &pset.popt);
+					tmp_OK = ProcessResult(&tmp_results);
+
+					if (result_status_px != result_status)
+						printf(_("----COMPARE PX RESULT status not match(%d, %d)\n"), result_status_px, result_status);
+					if (result_hash_px != result_hash)
+						printf(_("----COMPARE PX RESULT hash not match\n"));
+
+					if (result_status_px != result_status || result_hash_px != result_hash)
+					{
+						pset.popt.sort_result = true;
+						PrintQueryResults(tmp_results);
+						PQclear(tmp_results);
+					}
+				}
+
+				if (!enable_px)
+				{
+					tmp_results = PQexec(pset.db, "SET polar_enable_px=0;");
+					PQclear(tmp_results);
+				}
+			}
+		}
 	}
 	else
 	{
@@ -2283,6 +2577,101 @@ is_select_command(const char *query)
 	return false;
 }
 
+/*
+ * Check whether the specified command is a SELECT (or CTE).
+ */
+static bool
+polar_is_px_select_command(const char *query)
+{
+	int			wordlen;
+
+	/*
+	 * First advance over any whitespace, comments and left parentheses.
+	 */
+	for (;;)
+	{
+		query = skip_white_space(query);
+		if (query[0] == '(')
+			query++;
+		else
+			break;
+	}
+
+	/*
+	 * Check word length (since "selectx" is not "select").
+	 */
+	wordlen = 0;
+	while (isalpha((unsigned char) query[wordlen]))
+		wordlen += PQmblen(&query[wordlen], pset.encoding);
+
+	if (!(wordlen == 6 && pg_strncasecmp(query, "select", 6) == 0) &&
+		!(wordlen == 4 && pg_strncasecmp(query, "with", 4) == 0))
+		return false;
+	
+	/* check with from */
+	if (NULL == strstr(query, "from") && 
+		NULL == strstr(query, "FROM"))
+		return false;
+
+	/* check with stdin */
+	if (NULL != strstr(query, "stdin") ||
+		NULL != strstr(query, "STDIN"))
+		return false;
+
+
+	return true;
+}
+
+/*
+ * Check whether the specified command is a insert/update/delete/copy
+ */
+static bool
+polar_has_dml_command(const char *query)
+{
+
+	if (NULL != strstr(query, "insert into") ||
+		NULL != strstr(query, "delete ") ||
+		NULL != strstr(query, "update ") ||
+		NULL != strstr(query, "copy ") ||
+		NULL != strstr(query, "INSERT INTO") ||
+		NULL != strstr(query, "DELETE ") ||
+		NULL != strstr(query, "UPDATE ") ||
+		NULL != strstr(query, "COPY ")
+		)
+		return true;
+
+	return false;
+}
+
+static int
+polar_contain_explain_query(const char *query)
+{
+	if (NULL != strstr(query, "--EXPLAIN_QUERY_BEGIN"))
+		return  1;
+	if (NULL != strstr(query, "--EXPLAIN_QUERY_END"))
+		return  -1;
+	return 0;
+}
+
+static int
+polar_contain_explain_analyze(const char *query)
+{
+	if (NULL != strstr(query, "--EXPLAIN_ANALYZE_BEGIN"))
+		return  1;
+	if (NULL != strstr(query, "--EXPLAIN_ANALYZE_END"))
+		return  -1;
+	return 0;
+}
+
+static int
+polar_contain_enable_px(const char *query)
+{
+	if (NULL != strstr(query, "--POLAR_ENABLE_PX"))
+		return  1;
+	if (NULL != strstr(query, "--POLAR_DISABLE_PX"))
+		return  -1;
+	return 0;
+}
 
 /*
  * Test if the current user is a database superuser.
@@ -2449,4 +2838,40 @@ bool
 recognized_connection_string(const char *connstr)
 {
 	return uri_prefix_length(connstr) != 0 || strchr(connstr, '=') != NULL;
+}
+
+/*
+ * polar_set_replica_fout
+ * -- handler for -o command line option and \o command
+ *
+ * On success, updates pset with the new output file and returns true.
+ * On failure, returns false without changing pset state.
+ */
+bool
+polar_set_replica_fout(const char *fname)
+{
+	FILE	   *fout;
+	bool		is_pipe;
+
+	/* First make sure we can open the new output file/pipe */
+	if (!openQueryOutputFile(fname, &fout, &is_pipe))
+		return false;
+
+	/* Close old file/pipe */
+	if (pset.queryReplicaFout && pset.queryReplicaFout != stdout && pset.queryReplicaFout != stderr)
+	{
+		if (pset.queryReplicaFoutPipe)
+			pclose(pset.queryReplicaFout);
+		else
+			fclose(pset.queryReplicaFout);
+	}
+
+	pset.queryReplicaFout = fout;
+	pset.queryReplicaFoutPipe = is_pipe;
+
+	/* Adjust SIGPIPE handling appropriately: ignore signal if is_pipe */
+	set_sigpipe_trap_state(is_pipe);
+	restore_sigpipe_trap();
+
+	return true;
 }

@@ -1,7 +1,6 @@
 /*-------------------------------------------------------------------------
  *
  * block_header_dump.c
- *  Implementation of block header dump.
  *
  * Copyright (c) 2020, Alibaba Group Holding Limited
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,7 +16,7 @@
  * limitations under the License.
  *
  * IDENTIFICATION
- *  src/bin/polar_tools/block_header_dump.c
+ *	  src/bin/polar_tools/block_header_dump.c
  *
  *-------------------------------------------------------------------------
  */

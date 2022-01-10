@@ -46,6 +46,8 @@
 #include "rewrite/rewriteManip.h"
 #include "utils/rel.h"
 
+/* POLAR */
+#include "utils/polar_sql_time_stat.h"
 
 /* Hook for plugins to get control at end of parse analysis */
 post_parse_analyze_hook_type post_parse_analyze_hook = NULL;
@@ -103,6 +105,9 @@ parse_analyze(RawStmt *parseTree, const char *sourceText,
 {
 	ParseState *pstate = make_parsestate(NULL);
 	Query	   *query;
+	
+	/* POLAR */
+	polar_sql_stat_set_time();
 
 	Assert(sourceText != NULL); /* required as of 8.4 */
 
@@ -120,6 +125,9 @@ parse_analyze(RawStmt *parseTree, const char *sourceText,
 
 	free_parsestate(pstate);
 
+	/* POLAR */
+	polar_sql_stat_record_time(SQL_ANALYZE);
+
 	return query;
 }
 
@@ -132,16 +140,19 @@ parse_analyze(RawStmt *parseTree, const char *sourceText,
  */
 Query *
 parse_analyze_varparams(RawStmt *parseTree, const char *sourceText,
-						Oid **paramTypes, int *numParams)
+						Oid **paramTypes, int **paramLocation, int *numParams)
 {
 	ParseState *pstate = make_parsestate(NULL);
 	Query	   *query;
+
+	/* POLAR */
+	polar_sql_stat_set_time();
 
 	Assert(sourceText != NULL); /* required as of 8.4 */
 
 	pstate->p_sourcetext = sourceText;
 
-	parse_variable_parameters(pstate, paramTypes, numParams);
+	parse_variable_parameters(pstate, paramTypes, paramLocation, numParams); /* POLAR: param location */
 
 	query = transformTopLevelStmt(pstate, parseTree);
 
@@ -152,6 +163,9 @@ parse_analyze_varparams(RawStmt *parseTree, const char *sourceText,
 		(*post_parse_analyze_hook) (pstate, query);
 
 	free_parsestate(pstate);
+
+	/* POLAR */
+	polar_sql_stat_record_time(SQL_ANALYZE);
 
 	return query;
 }

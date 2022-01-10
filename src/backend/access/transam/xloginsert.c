@@ -33,6 +33,8 @@
 #include "pg_trace.h"
 
 /* POLAR */
+#include "polar_flashback/polar_flashback_log.h"
+#include "storage/buf_internals.h"
 #include "storage/polar_bufmgr.h"
 
 /* Buffer size required to store a compressed version of backup block image */
@@ -118,7 +120,7 @@ static XLogRecData *XLogRecordAssemble(RmgrId rmid, uint8 info,
 				   XLogRecPtr RedoRecPtr, bool doPageWrites,
 				   XLogRecPtr *fpw_lsn);
 static bool XLogCompressBackupBlock(char *page, uint16 hole_offset,
-						uint16 hole_length, char *dest, uint16 *dlen);
+						uint16 hole_length, char *dest, uint16 *dlen, int32 extra_bytes_with_hole);
 
 /*
  * Begin constructing a WAL record. This must be called before the
@@ -133,7 +135,9 @@ XLogBeginInsert(void)
 
 	/* cross-check on whether we should be here or not */
 	if (!XLogInsertAllowed())
+	{
 		elog(ERROR, "cannot make new WAL entries during recovery");
+	}
 
 	if (begininsert_called)
 		elog(ERROR, "XLogBeginInsert was already called");
@@ -458,7 +462,7 @@ XLogInsert(RmgrId rmid, uint8 info)
 
 	do
 	{
-		XLogRecPtr	RedoRecPtr;
+		XLogRecPtr      RedoRecPtr;
 		bool		doPageWrites;
 		XLogRecPtr	fpw_lsn;
 		XLogRecData *rdt;
@@ -646,7 +650,7 @@ XLogRecordAssemble(RmgrId rmid, uint8 info,
 					XLogCompressBackupBlock(page, bimg.hole_offset,
 											cbimg.hole_length,
 											regbuf->compressed_page,
-											&compressed_len);
+											&compressed_len, SizeOfXLogRecordBlockCompressHeader);
 			}
 
 			/*
@@ -823,7 +827,7 @@ XLogRecordAssemble(RmgrId rmid, uint8 info,
  */
 static bool
 XLogCompressBackupBlock(char *page, uint16 hole_offset, uint16 hole_length,
-						char *dest, uint16 *dlen)
+						char *dest, uint16 *dlen, int32 extra_bytes_with_hole)
 {
 	int32		orig_len = BLCKSZ - hole_length;
 	int32		len;
@@ -844,7 +848,7 @@ XLogCompressBackupBlock(char *page, uint16 hole_offset, uint16 hole_length,
 		 * Extra data needs to be stored in WAL record for the compressed
 		 * version of block image if the hole exists.
 		 */
-		extra_bytes = SizeOfXLogRecordBlockCompressHeader;
+		extra_bytes = extra_bytes_with_hole;
 	}
 	else
 		source = page;
@@ -1201,4 +1205,62 @@ polar_reset_main_data(void)
 	mainrdata_len = 0;
 	mainrdata_head = NULL;
 	mainrdata_last = (XLogRecData *) &mainrdata_head;
+}
+
+/*
+ * POLAR: compress the block in log (xlog or flashback log).
+ * A external function of XLogCompressBackupBlock.
+ */
+bool
+polar_compress_block_in_log(char *page, uint16 hole_offset, uint16 hole_length,
+							char *dest, uint16 *dlen, uint32 extra_bytes_with_hole)
+{
+	return XLogCompressBackupBlock(page, hole_offset, hole_length,
+			dest, dlen, extra_bytes_with_hole);
+}
+
+/*
+ * POLAR: Insert the flashback log from WAL registered buffers.
+ *
+ * NB: Must call it after reserver the WAL space which means
+ * the relative changes of the data are done in database.
+ */
+void
+polar_flashback_log_insert_from_xlog(XLogRecPtr redo_lsn, uint8 xl_info)
+{
+	int			block_id;
+
+	for (block_id = 0; block_id < max_registered_block_id; block_id++)
+	{
+		registered_buffer *regbuf = &registered_buffers[block_id];
+
+		if (!regbuf->in_use)
+			continue;
+
+		/*
+		 * Determine if this block needs to be backed up.
+		 *
+		 * The REGBUF_NO_IMAGE but not REGBUF_WILL_INIT
+		 * will not insert flashback log.
+		 */
+		if ((regbuf->flags & REGBUF_NO_IMAGE) &&
+				!((regbuf->flags & ~(REGBUF_NO_IMAGE)) & REGBUF_WILL_INIT))
+			continue;
+		/*
+		 * We don't log the page registered by XLogRegisterBlock (log_newpage or
+		 * XLogSaveBufferForHint). The origin page before log_newpage is empty page,
+		 * so we don't need to log it. And the XLogSaveBufferForHint just update hint bit which
+		 * is non-critical, so we can use the full page in the WAL record as the origin page.
+		 * So we don't need to log them but we check them by polar_check_fpi_origin_page
+		 * when polar_flashback_log_debug is on.
+		 */
+		else if (!BufferIsValid(regbuf->buffer))
+		{
+			if (unlikely(polar_flashback_log_debug))
+				polar_check_fpi_origin_page(regbuf->rnode, regbuf->forkno, regbuf->block, xl_info);
+		}
+		else if (polar_is_flog_needed(flog_instance, polar_logindex_redo_instance,
+				regbuf->forkno, regbuf->page, true, redo_lsn, InvalidXLogRecPtr))
+				polar_flog_insert(flog_instance, regbuf->buffer, false, false);
+	}
 }

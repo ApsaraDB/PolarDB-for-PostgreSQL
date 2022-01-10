@@ -109,7 +109,8 @@
 
 /* POLAR */
 #include "storage/polar_fd.h"
-
+#include "access/polar_csnlog.h"
+/* POLAR end */
 
 /*
  * Directory where Two-phase commit files reside within PGDATA
@@ -457,6 +458,13 @@ MarkAsPreparingGuts(GlobalTransaction gxact, TransactionId xid, const char *gid,
 	PGXACT	   *pgxact;
 	int			i;
 
+	/* POALR */
+	if (strlen(gid) >= GIDSIZE)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("transaction identifier \"%s\" is too long",
+						gid)));
+
 	Assert(LWLockHeldByMeInMode(TwoPhaseStateLock, LW_EXCLUSIVE));
 
 	Assert(gxact != NULL);
@@ -489,6 +497,9 @@ MarkAsPreparingGuts(GlobalTransaction gxact, TransactionId xid, const char *gid,
 	/* subxid data must be filled later by GXactLoadSubxactData */
 	pgxact->overflowed = false;
 	pgxact->nxids = 0;
+
+	/* POLAR csn */
+	pgxact->polar_csn = InvalidCommitSeqNo;
 
 	gxact->prepared_at = prepared_at;
 	gxact->xid = xid;
@@ -593,7 +604,7 @@ LockGXact(const char *gid, Oid user)
 					 errmsg("prepared transaction with identifier \"%s\" is busy",
 							gid)));
 
-		if (user != gxact->owner && !superuser_arg(user))
+		if (user != gxact->owner && !superuser_arg(user) && !polar_superuser())
 			ereport(ERROR,
 					(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 					 errmsg("permission denied to finish prepared transaction"),
@@ -1468,7 +1479,7 @@ FinishPreparedTransaction(const char *gid, bool isCommit)
 	char	   *buf;
 	char	   *bufptr;
 	TwoPhaseFileHeader *hdr;
-	TransactionId latestXid;
+	TransactionId latestXid = InvalidTransactionId;
 	TransactionId *children;
 	RelFileNode *commitrels;
 	RelFileNode *abortrels;
@@ -1512,8 +1523,12 @@ FinishPreparedTransaction(const char *gid, bool isCommit)
 	invalmsgs = (SharedInvalidationMessage *) bufptr;
 	bufptr += MAXALIGN(hdr->ninvalmsgs * sizeof(SharedInvalidationMessage));
 
-	/* compute latestXid among all children */
-	latestXid = TransactionIdLatest(xid, hdr->nsubxacts, children);
+	/* POLAR csn snapshot latestCompletedXid is updated by TransactionIdCommitTree*/
+	if (!polar_csn_enable)
+	{
+		/* compute latestXid among all children */
+		latestXid = TransactionIdLatest(xid, hdr->nsubxacts, children);
+	}
 
 	/* Prevent cancel/die interrupt while cleaning up */
 	HOLD_INTERRUPTS();
@@ -2254,7 +2269,12 @@ ProcessTwoPhaseBuffer(TransactionId xid,
 		}
 
 		if (setParent)
-			SubTransSetParent(subxid, xid);
+		{
+			if (polar_csn_enable)
+				polar_csnlog_set_parent(subxid, xid);
+			else
+				SubTransSetParent(subxid, xid);
+		}
 	}
 
 	return buf;
@@ -2356,6 +2376,14 @@ RecordTransactionCommitPrepared(TransactionId xid,
 	 */
 	/* POLAR: Not ddl, disable standby lock */
 	SyncRepWaitForLSN(recptr, true, false);
+
+	/* See notes in RecordTransactionCommit */
+	if (polar_csn_enable)
+	{
+		START_CRIT_SECTION();
+		polar_xact_commit_tree_csn(xid, nchildren, children, InvalidXLogRecPtr);
+		END_CRIT_SECTION();
+	}
 }
 
 /*
@@ -2459,6 +2487,14 @@ PrepareRedoAdd(char *buf, XLogRecPtr start_lsn,
 				 errmsg("maximum number of prepared transactions reached"),
 				 errhint("Increase max_prepared_transactions (currently %d).",
 						 max_prepared_xacts)));
+
+	/* POALR */
+	if (strlen(gid) >= GIDSIZE)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("transaction identifier \"%s\" is too long",
+						gid)));
+
 	gxact = TwoPhaseState->freeGXacts;
 	TwoPhaseState->freeGXacts = gxact->next;
 
@@ -2534,3 +2570,4 @@ PrepareRedoRemove(TransactionId xid, bool giveWarning)
 
 	return;
 }
+

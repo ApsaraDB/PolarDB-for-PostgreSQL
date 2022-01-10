@@ -1,0 +1,62 @@
+--
+-- Test for facilities of security label
+--
+-- initial setups
+SET client_min_messages TO 'warning';
+DROP ROLE IF EXISTS regress_seclabel_user1;
+ERROR:  cannot execute DROP ROLE in a read-only transaction
+DROP ROLE IF EXISTS regress_seclabel_user2;
+ERROR:  cannot execute DROP ROLE in a read-only transaction
+RESET client_min_messages;
+CREATE USER regress_seclabel_user1 WITH CREATEROLE;
+ERROR:  cannot execute CREATE ROLE in a read-only transaction
+CREATE USER regress_seclabel_user2;
+ERROR:  cannot execute CREATE ROLE in a read-only transaction
+CREATE TABLE seclabel_tbl1 (a int, b text);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE seclabel_tbl2 (x int, y text);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE VIEW seclabel_view1 AS SELECT * FROM seclabel_tbl2;
+ERROR:  cannot execute CREATE VIEW in a read-only transaction
+CREATE FUNCTION seclabel_four() RETURNS integer AS $$SELECT 4$$ language sql;
+ERROR:  cannot execute CREATE FUNCTION in a read-only transaction
+CREATE DOMAIN seclabel_domain AS text;
+ERROR:  cannot execute CREATE DOMAIN in a read-only transaction
+ALTER TABLE seclabel_tbl1 OWNER TO regress_seclabel_user1;
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+ALTER TABLE seclabel_tbl2 OWNER TO regress_seclabel_user2;
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+--
+-- Test of SECURITY LABEL statement without a plugin
+--
+SECURITY LABEL ON TABLE seclabel_tbl1 IS 'classified';			-- fail
+ERROR:  cannot execute SECURITY LABEL in a read-only transaction
+SECURITY LABEL FOR 'dummy' ON TABLE seclabel_tbl1 IS 'classified';		-- fail
+ERROR:  cannot execute SECURITY LABEL in a read-only transaction
+SECURITY LABEL ON TABLE seclabel_tbl1 IS '...invalid label...';		-- fail
+ERROR:  cannot execute SECURITY LABEL in a read-only transaction
+SECURITY LABEL ON TABLE seclabel_tbl3 IS 'unclassified';			-- fail
+ERROR:  cannot execute SECURITY LABEL in a read-only transaction
+SECURITY LABEL ON ROLE regress_seclabel_user1 IS 'classified';			-- fail
+ERROR:  cannot execute SECURITY LABEL in a read-only transaction
+SECURITY LABEL FOR 'dummy' ON ROLE regress_seclabel_user1 IS 'classified';		-- fail
+ERROR:  cannot execute SECURITY LABEL in a read-only transaction
+SECURITY LABEL ON ROLE regress_seclabel_user1 IS '...invalid label...';		-- fail
+ERROR:  cannot execute SECURITY LABEL in a read-only transaction
+SECURITY LABEL ON ROLE regress_seclabel_user3 IS 'unclassified';			-- fail
+ERROR:  cannot execute SECURITY LABEL in a read-only transaction
+-- clean up objects
+DROP FUNCTION seclabel_four();
+ERROR:  cannot execute DROP FUNCTION in a read-only transaction
+DROP DOMAIN seclabel_domain;
+ERROR:  cannot execute DROP DOMAIN in a read-only transaction
+DROP VIEW seclabel_view1;
+ERROR:  cannot execute DROP VIEW in a read-only transaction
+DROP TABLE seclabel_tbl1;
+ERROR:  cannot execute DROP TABLE in a read-only transaction
+DROP TABLE seclabel_tbl2;
+ERROR:  cannot execute DROP TABLE in a read-only transaction
+DROP USER regress_seclabel_user1;
+ERROR:  cannot execute DROP ROLE in a read-only transaction
+DROP USER regress_seclabel_user2;
+ERROR:  cannot execute DROP ROLE in a read-only transaction

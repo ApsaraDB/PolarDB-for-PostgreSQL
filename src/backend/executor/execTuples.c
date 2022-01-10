@@ -91,10 +91,14 @@
 #include "utils/lsyscache.h"
 #include "utils/typcache.h"
 
+/* POLAR px*/
+#include "executor/tuptable.h"
+#include "px/px_vars.h"
 
 static TupleDesc ExecTypeFromTLInternal(List *targetList,
 					   bool hasoid, bool skipjunk);
 
+static void cleanup_slot(TupleTableSlot *slot);
 
 /* ----------------------------------------------------------------
  *				  tuple table create/delete functions
@@ -131,6 +135,7 @@ MakeTupleTableSlot(TupleDesc tupleDesc)
 	slot->tts_isempty = true;
 	slot->tts_shouldFree = false;
 	slot->tts_shouldFreeMin = false;
+	slot->tts_shouldFreeMem = false;
 	slot->tts_tuple = NULL;
 	slot->tts_fixedTupleDescriptor = tupleDesc != NULL;
 	slot->tts_tupleDescriptor = tupleDesc;
@@ -152,6 +157,9 @@ MakeTupleTableSlot(TupleDesc tupleDesc)
 			 + MAXALIGN(tupleDesc->natts * sizeof(Datum)));
 
 		PinTupleDesc(tupleDesc);
+
+		/* POLAR px */
+		slot->tts_mt_bind = create_memtuple_binding(tupleDesc);
 	}
 
 	return slot;
@@ -193,12 +201,8 @@ ExecResetTupleTable(List *tupleTable,	/* tuple table */
 		TupleTableSlot *slot = lfirst_node(TupleTableSlot, lc);
 
 		/* Always release resources and reset the slot to empty */
-		ExecClearTuple(slot);
-		if (slot->tts_tupleDescriptor)
-		{
-			ReleaseTupleDesc(slot->tts_tupleDescriptor);
-			slot->tts_tupleDescriptor = NULL;
-		}
+		/* POLAR px: call new func */
+		cleanup_slot(slot);
 
 		/* If shouldFree, release memory occupied by the slot itself */
 		if (shouldFree)
@@ -248,9 +252,7 @@ ExecDropSingleTupleTableSlot(TupleTableSlot *slot)
 {
 	/* This should match ExecResetTupleTable's processing of one slot */
 	Assert(IsA(slot, TupleTableSlot));
-	ExecClearTuple(slot);
-	if (slot->tts_tupleDescriptor)
-		ReleaseTupleDesc(slot->tts_tupleDescriptor);
+	cleanup_slot(slot);
 	if (!slot->tts_fixedTupleDescriptor)
 	{
 		if (slot->tts_values)
@@ -284,14 +286,12 @@ ExecSetSlotDescriptor(TupleTableSlot *slot, /* slot to change */
 	Assert(!slot->tts_fixedTupleDescriptor);
 
 	/* For safety, make sure slot is empty before changing it */
-	ExecClearTuple(slot);
+	cleanup_slot(slot);
 
 	/*
 	 * Release any old descriptor.  Also release old Datum/isnull arrays if
 	 * present (we don't bother to check if they could be re-used).
 	 */
-	if (slot->tts_tupleDescriptor)
-		ReleaseTupleDesc(slot->tts_tupleDescriptor);
 
 	if (slot->tts_values)
 		pfree(slot->tts_values);
@@ -304,14 +304,20 @@ ExecSetSlotDescriptor(TupleTableSlot *slot, /* slot to change */
 	slot->tts_tupleDescriptor = tupdesc;
 	PinTupleDesc(tupdesc);
 
-	/*
-	 * Allocate Datum/isnull arrays of the appropriate size.  These must have
-	 * the same lifetime as the slot, so allocate in the slot's own context.
-	 */
-	slot->tts_values = (Datum *)
-		MemoryContextAlloc(slot->tts_mcxt, tupdesc->natts * sizeof(Datum));
-	slot->tts_isnull = (bool *)
-		MemoryContextAlloc(slot->tts_mcxt, tupdesc->natts * sizeof(bool));
+	{
+		/*
+		 * POLAR px
+		 * Allocate Datum/isnull arrays of the appropriate size.  These must have
+		 * the same lifetime as the slot, so allocate in the slot's own context.
+		 */
+		MemoryContext oldcontext = MemoryContextSwitchTo(slot->tts_mcxt);
+
+		slot->tts_mt_bind = create_memtuple_binding(tupdesc);
+		slot->tts_values = (Datum *)palloc(tupdesc->natts * sizeof(Datum));
+		slot->tts_isnull = (bool *)palloc(tupdesc->natts * sizeof(bool));
+
+		MemoryContextSwitchTo(oldcontext);
+	}
 }
 
 /* --------------------------------
@@ -482,10 +488,11 @@ ExecClearTuple(TupleTableSlot *slot)	/* slot in which to store tuple */
 	/*
 	 * Free the old physical tuple if necessary.
 	 */
-	if (slot->tts_shouldFree)
-		heap_freetuple(slot->tts_tuple);
-	if (slot->tts_shouldFreeMin)
-		heap_free_minimal_tuple(slot->tts_mintuple);
+
+	/* POLAR px */
+	free_htuple(slot);
+	free_mintuple(slot);
+	free_memtuple(slot);
 
 	slot->tts_tuple = NULL;
 	slot->tts_mintuple = NULL;
@@ -594,6 +601,11 @@ ExecCopySlotTuple(TupleTableSlot *slot)
 	if (slot->tts_mintuple)
 		return heap_tuple_from_minimal_tuple(slot->tts_mintuple);
 
+	/* POLAR px */
+	if (slot->tts_memtuple)
+		slot_getallattrs(slot);
+
+
 	/*
 	 * Otherwise we need to build a tuple from the Datum array.
 	 */
@@ -633,6 +645,11 @@ ExecCopySlotMinimalTuple(TupleTableSlot *slot)
 		else
 			return minimal_tuple_from_heap_tuple(slot->tts_tuple);
 	}
+
+	/* POLAR px */
+	if (slot->tts_memtuple)
+		slot_getallattrs(slot);
+
 
 	/*
 	 * Otherwise we need to build a tuple from the Datum array.
@@ -1395,3 +1412,139 @@ end_tup_output(TupOutputState *tstate)
 	ExecDropSingleTupleTableSlot(tstate->slot);
 	pfree(tstate);
 }
+
+/* --------------------------------
+ *		POLAR px begin
+ * --------------------------------
+ */
+static void cleanup_slot(TupleTableSlot *slot)
+{
+	ExecClearTuple(slot);
+	if (slot->tts_mt_bind)
+	{
+		destroy_memtuple_binding(slot->tts_mt_bind);
+		slot->tts_mt_bind = NULL;
+	}
+
+	if (slot->tts_tupleDescriptor)
+	{
+		ReleaseTupleDesc(slot->tts_tupleDescriptor);
+		slot->tts_tupleDescriptor = NULL;
+	}
+}
+
+/* --------------------------------
+ *		ExecStoreMinimalTuple
+ *
+ *		Like ExecStoreTuple, but insert a "minimal" tuple into the slot.
+ *
+ * No 'buffer' parameter since minimal tuples are never stored in relations.
+ * --------------------------------
+ */
+TupleTableSlot *
+ExecStoreMemTuple(MemTuple mtup,
+				  TupleTableSlot *slot,
+				  bool shouldFree)
+{
+	/*
+	 * sanity checks
+	 */
+	Assert(mtup != NULL);
+	Assert(slot != NULL);
+	Assert(slot->tts_tupleDescriptor != NULL);
+
+	/*
+	 * Free any old physical tuple belonging to the slot.
+	 */
+	free_htuple(slot);
+	free_mintuple(slot);
+	free_memtuple(slot);
+
+	/*
+	 * Drop the pin on the referenced buffer, if there is one.
+	 */
+	if (BufferIsValid(slot->tts_buffer))
+		ReleaseBuffer(slot->tts_buffer);
+	slot->tts_buffer = InvalidBuffer;
+
+	/*
+	 * Store the new tuple into the specified slot.
+	 */
+	slot->tts_isempty = false;
+	slot->tts_shouldFreeMem = shouldFree;
+	slot->tts_memtuple = mtup;
+
+	/* Mark extracted state invalid */
+	slot->tts_nvalid = 0;
+
+	return slot;
+}
+
+GenericTuple
+ExecCopySlotGenericTuple(TupleTableSlot *slot)
+{
+	/*
+	 * sanity checks
+	 */
+	Assert(slot != NULL);
+	Assert(!slot->tts_isempty);
+
+	/*
+	 * If we have a physical tuple (either format) then just copy it.
+	 */
+	if (TTS_HAS_PHYSICAL_TUPLE(slot))
+		return (GenericTuple)heap_copytuple(slot->tts_tuple);
+	if (slot->tts_mintuple)
+		return (GenericTuple)heap_tuple_from_minimal_tuple(slot->tts_mintuple);
+	if (slot->tts_memtuple)
+		return (GenericTuple)mem_copytuple(slot->tts_memtuple);
+	/*
+	 * Otherwise we need to build a tuple from the Datum array.
+	 */
+	return (GenericTuple)heap_form_tuple(slot->tts_tupleDescriptor,
+										 slot->tts_values,
+										 slot->tts_isnull);
+}
+
+MemTuple
+ExecFetchSlotMemTuple(TupleTableSlot *slot)
+{
+	MemTuple newTuple;
+	uint32 tuplen;
+
+	Assert(!TupIsNull(slot));
+	Assert(slot->tts_mt_bind);
+
+	if(slot->tts_memtuple)
+		return slot->tts_memtuple;
+
+	slot_getallattrs(slot);
+
+	tuplen = slot->tts_mtup_buf_len;
+	newTuple = memtuple_form_to(slot->tts_mt_bind, slot_get_values(slot), slot_get_isnull(slot),
+								(MemTuple) slot->tts_mtup_buf, &tuplen, false);
+
+	if(!newTuple)
+	{
+		if(slot->tts_mtup_buf)
+			pfree(slot->tts_mtup_buf);
+
+		slot->tts_mtup_buf = MemoryContextAlloc(slot->tts_mcxt, tuplen);
+		slot->tts_mtup_buf_len = tuplen;
+
+		newTuple = memtuple_form_to(slot->tts_mt_bind, slot_get_values(slot), slot_get_isnull(slot),
+									(MemTuple) slot->tts_mtup_buf, &tuplen, false);
+	}
+
+	Assert(newTuple);
+	slot->tts_memtuple = newTuple;
+
+	return newTuple;
+}
+
+void
+ExecInitResultTupleSlot(EState *estate, PlanState *planstate)
+{
+	planstate->ps_ResultTupleSlot = ExecAllocTableSlot(&estate->es_tupleTable, NULL);
+}
+/* POLAR end */

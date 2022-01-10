@@ -1,0 +1,12 @@
+select pg_sleep(0.5);
+ pg_sleep 
+----------
+ 
+(1 row)
+
+select pg_reload_conf();
+ pg_reload_conf 
+----------------
+ t
+(1 row)
+

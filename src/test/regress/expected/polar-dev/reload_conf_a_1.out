@@ -1,0 +1,14 @@
+create role aone33896881 with login;
+\c regression aone33896881
+show polar_cluster_map;
+ polar_cluster_map 
+-------------------
+ 
+(1 row)
+
+select pg_sleep(1);
+ pg_sleep 
+----------
+ 
+(1 row)
+

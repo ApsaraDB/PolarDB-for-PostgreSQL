@@ -1,0 +1,78 @@
+--
+-- Test for plpgsql in parallel mode
+--
+drop table if exists px_plpgsql_table;
+NOTICE:  table "px_plpgsql_table" does not exist, skipping
+create table px_plpgsql_table (a int, b int);
+-- query in trigger will not px
+create or replace function px_trigger()
+  returns trigger language plpgsql as
+$$
+declare
+    x integer;
+    id integer;
+begin
+    -- select into x count(*) from px_plpgsql_table;
+    -- new.a = x;
+    select _px_worker_id, count(*) into id, x from px_plpgsql_table group by 1;
+    if id = -1 then
+        RAISE NOTICE 'trigger is not parallel';
+    end if;
+    return new;
+end;
+$$;
+create trigger px_trig after insert on px_plpgsql_table
+  for each row execute procedure px_trigger();
+insert into px_plpgsql_table values (1,1),(2,2),(3,3),(4,4);
+NOTICE:  trigger is not parallel
+NOTICE:  trigger is not parallel
+NOTICE:  trigger is not parallel
+NOTICE:  trigger is not parallel
+-- IMMUTABLE function will px
+create or replace function count_only() returns int as
+$$
+declare
+    x integer;
+    id integer;
+begin
+    select _px_worker_id, count(*) into id, x from px_plpgsql_table group by 1;
+    if id <> -1 then
+        RAISE NOTICE 'IMMUTABLE function is parallel';
+    end if;
+    return x;
+end
+$$
+language plpgsql 
+IMMUTABLE;
+select count_only();
+NOTICE:  IMMUTABLE function is parallel
+ count_only 
+------------
+          4
+(1 row)
+
+-- normal function will not px
+create or replace function both_rw() returns int as
+$$
+declare
+    x integer;
+    id integer;
+begin
+    insert into px_plpgsql_table values (5,5),(6,6);
+    select _px_worker_id, count(*) into id, x from px_plpgsql_table group by 1;
+    if id = -1 then
+        RAISE NOTICE 'NORMAL function is not parallel';
+    end if;
+    return x;
+end
+$$
+language plpgsql;
+select both_rw();
+NOTICE:  trigger is not parallel
+NOTICE:  trigger is not parallel
+NOTICE:  NORMAL function is not parallel
+ both_rw 
+---------
+       6
+(1 row)
+

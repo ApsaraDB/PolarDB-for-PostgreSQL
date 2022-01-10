@@ -29,6 +29,8 @@
 #include "utils/datum.h"
 #include "utils/rel.h"
 
+/* POLAR px */
+#include "px/px_gang.h"
 
 /*
  * Macros to simplify copying of different kinds of fields.  Use these
@@ -77,6 +79,7 @@
 static PlannedStmt *
 _copyPlannedStmt(const PlannedStmt *from)
 {
+	int i;
 	PlannedStmt *newnode = makeNode(PlannedStmt);
 
 	COPY_SCALAR_FIELD(commandType);
@@ -102,6 +105,29 @@ _copyPlannedStmt(const PlannedStmt *from)
 	COPY_NODE_FIELD(utilityStmt);
 	COPY_LOCATION_FIELD(stmt_location);
 	COPY_LOCATION_FIELD(stmt_len);
+
+	/* POLAR px */
+	COPY_SCALAR_FIELD(planGen);
+	COPY_SCALAR_FIELD(nParamExec);
+	/*
+	* POLAR px: copy slices filed if there is any.
+	*/
+	COPY_SCALAR_FIELD(numSlices);
+
+	if (from->numSlices > 0)
+		COPY_POINTER_FIELD(subplan_sliceIds, list_length(from->subplans) * sizeof(int));
+
+	newnode->slices = palloc(from->numSlices * sizeof(PlanSlice));
+	for (i = 0; i < from->numSlices; i++)
+	{
+		COPY_SCALAR_FIELD(slices[i].sliceIndex);
+		COPY_SCALAR_FIELD(slices[i].parentIndex);
+		COPY_SCALAR_FIELD(slices[i].gangType);
+		COPY_SCALAR_FIELD(slices[i].numsegments);
+		COPY_SCALAR_FIELD(slices[i].worker_idx);
+		COPY_SCALAR_FIELD(slices[i].directDispatch.isDirectDispatch);
+		COPY_NODE_FIELD(slices[i].directDispatch.contentIds);
+	}
 
 	return newnode;
 }
@@ -129,6 +155,9 @@ CopyPlanFields(const Plan *from, Plan *newnode)
 	COPY_NODE_FIELD(initPlan);
 	COPY_BITMAPSET_FIELD(extParam);
 	COPY_BITMAPSET_FIELD(allParam);
+
+	/* POLAR px */
+	COPY_SCALAR_FIELD(px_scan_partial);
 }
 
 /*
@@ -165,6 +194,14 @@ _copyResult(const Result *from)
 	 * copy remainder of node
 	 */
 	COPY_NODE_FIELD(resconstantqual);
+
+	/* POLAR px */
+	COPY_SCALAR_FIELD(numHashFilterCols);
+	if (from->numHashFilterCols > 0)
+	{
+		COPY_POINTER_FIELD(hashFilterColIdx, from->numHashFilterCols * sizeof(AttrNumber));
+		COPY_POINTER_FIELD(hashFilterFuncs, from->numHashFilterCols * sizeof(Oid));
+	}
 
 	return newnode;
 }
@@ -222,6 +259,9 @@ _copyModifyTable(const ModifyTable *from)
 	COPY_NODE_FIELD(onConflictWhere);
 	COPY_SCALAR_FIELD(exclRelRTI);
 	COPY_NODE_FIELD(exclRelTlist);
+	/* POLAR px */
+	COPY_NODE_FIELD(isSplitUpdates);
+	/* POLAR end */
 
 	return newnode;
 }
@@ -246,6 +286,20 @@ _copyAppend(const Append *from)
 	COPY_SCALAR_FIELD(first_partial_plan);
 	COPY_NODE_FIELD(partitioned_rels);
 	COPY_NODE_FIELD(part_prune_info);
+
+	/* POLAR px */
+	COPY_NODE_FIELD(join_prune_paramids);
+
+	return newnode;
+}
+
+/* POLAR px */
+static Sequence *
+_copySequence(const Sequence *from)
+{
+	Sequence *newnode = makeNode(Sequence);
+	CopyPlanFields((Plan *) from, (Plan *) newnode);
+	COPY_NODE_FIELD(subplans);
 
 	return newnode;
 }
@@ -810,6 +864,9 @@ CopyJoinFields(const Join *from, Join *newnode)
 	COPY_SCALAR_FIELD(jointype);
 	COPY_SCALAR_FIELD(inner_unique);
 	COPY_NODE_FIELD(joinqual);
+
+	/* POLAR px */
+	COPY_SCALAR_FIELD(prefetch_inner);
 }
 
 
@@ -904,6 +961,22 @@ _copyHashJoin(const HashJoin *from)
 	return newnode;
 }
 
+/* POLAR px */
+static ShareInputScan *
+_copyShareInputScan(const ShareInputScan *from)
+{
+	ShareInputScan *newnode = makeNode(ShareInputScan);
+
+	/* copy node superclass fields */
+	CopyPlanFields((Plan *) from, (Plan *) newnode);
+	COPY_SCALAR_FIELD(cross_slice);
+	COPY_SCALAR_FIELD(share_id);
+	COPY_SCALAR_FIELD(producer_slice_id);
+	COPY_SCALAR_FIELD(this_slice_id);
+	COPY_SCALAR_FIELD(nconsumers);
+
+	return newnode;
+}
 
 /*
  * _copyMaterial
@@ -917,6 +990,11 @@ _copyMaterial(const Material *from)
 	 * copy node superclass fields
 	 */
 	CopyPlanFields((const Plan *) from, (Plan *) newnode);
+
+	/* POLAR px */
+	COPY_SCALAR_FIELD(px_strict);
+	COPY_SCALAR_FIELD(px_shield_child_from_rescans);
+	/* POLAR end */
 
 	return newnode;
 }
@@ -984,6 +1062,9 @@ _copyAgg(const Agg *from)
 	COPY_BITMAPSET_FIELD(aggParams);
 	COPY_NODE_FIELD(groupingSets);
 	COPY_NODE_FIELD(chain);
+
+	/* POLAR px */
+	COPY_SCALAR_FIELD(streaming);
 
 	return newnode;
 }
@@ -1206,6 +1287,8 @@ _copyPartitionedRelPruneInfo(const PartitionedRelPruneInfo *from)
 	COPY_NODE_FIELD(initial_pruning_steps);
 	COPY_NODE_FIELD(exec_pruning_steps);
 
+	/* POLAR px */
+	COPY_POINTER_FIELD(relid_map, from->nparts * sizeof(Oid));
 	return newnode;
 }
 
@@ -1254,6 +1337,183 @@ _copyPlanInvalItem(const PlanInvalItem *from)
 
 	return newnode;
 }
+
+/* POLAR px */
+static QueryDispatchDesc *
+_copyQueryDispatchDesc(const QueryDispatchDesc *from)
+{
+	QueryDispatchDesc *newnode = makeNode(QueryDispatchDesc);
+
+	COPY_NODE_FIELD(sliceTable);
+	COPY_NODE_FIELD(oidAssignments);
+	COPY_NODE_FIELD(cursorPositions);
+	COPY_SCALAR_FIELD(useChangedAOOpts);
+
+	return newnode;
+}
+
+static PxProcess *
+_copyPxProcess(const PxProcess *from)
+{
+	PxProcess *newnode = makeNode(PxProcess);
+
+	COPY_STRING_FIELD(listenerAddr);
+	COPY_SCALAR_FIELD(listenerPort);
+	COPY_SCALAR_FIELD(pid);
+	COPY_SCALAR_FIELD(contentid);
+
+	/* POLAR px */
+	COPY_SCALAR_FIELD(contentCount);
+	COPY_SCALAR_FIELD(identifier);
+	COPY_SCALAR_FIELD(remotePort);
+	/* POLAR end */
+
+	return newnode;
+}
+
+static SliceTable *
+_copySliceTable(const SliceTable *from)
+{
+	int i;
+	SliceTable *newnode = makeNode(SliceTable);
+
+	COPY_SCALAR_FIELD(localSlice);
+	COPY_SCALAR_FIELD(numSlices);
+
+	newnode->slices = palloc0(from->numSlices * sizeof(ExecSlice));
+	for (i = 0; i < from->numSlices; i++)
+	{
+		COPY_SCALAR_FIELD(slices[i].sliceIndex);
+		COPY_SCALAR_FIELD(slices[i].rootIndex);
+		COPY_SCALAR_FIELD(slices[i].planNumSegments);
+		COPY_SCALAR_FIELD(slices[i].gangType);
+		COPY_NODE_FIELD(slices[i].segments);
+
+		newnode->slices[i].primaryGang = from->slices[i].primaryGang;
+		COPY_SCALAR_FIELD(slices[i].parentIndex);
+		COPY_NODE_FIELD(slices[i].children);
+		COPY_NODE_FIELD(slices[i].primaryProcesses);
+		COPY_BITMAPSET_FIELD(slices[i].processesMap);
+	}
+
+	COPY_SCALAR_FIELD(instrument_options);
+	COPY_SCALAR_FIELD(ic_instance_id);
+
+	return newnode;
+}
+
+/*
+ * _copyMotion
+ */
+static Motion *
+_copyMotion(const Motion *from)
+{
+	Motion	   *newnode = makeNode(Motion);
+
+	/*
+	 * copy node superclass fields
+	 */
+	CopyPlanFields((Plan *) from, (Plan *) newnode);
+
+	COPY_SCALAR_FIELD(sendSorted);
+	COPY_SCALAR_FIELD(motionID);
+
+	COPY_SCALAR_FIELD(motionType);
+
+	COPY_NODE_FIELD(hashExprs);
+	COPY_POINTER_FIELD(hashFuncs, list_length(from->hashExprs) * sizeof(Oid));
+
+	COPY_SCALAR_FIELD(numSortCols);
+	COPY_POINTER_FIELD(sortColIdx, from->numSortCols * sizeof(AttrNumber));
+	COPY_POINTER_FIELD(sortOperators, from->numSortCols * sizeof(Oid));
+	COPY_POINTER_FIELD(collations, from->numSortCols * sizeof(Oid));
+	COPY_POINTER_FIELD(nullsFirst, from->numSortCols * sizeof(bool));
+
+	COPY_SCALAR_FIELD(segidColIdx);
+
+	if (from->senderSliceInfo)
+	{
+		newnode->senderSliceInfo = palloc(sizeof(PlanSlice));
+		memcpy(newnode->senderSliceInfo, from->senderSliceInfo, sizeof(PlanSlice));
+	}
+
+	return newnode;
+}
+
+static Flow *
+_copyFlow(const Flow *from)
+{
+	Flow   *newnode = makeNode(Flow);
+
+	COPY_SCALAR_FIELD(flotype);
+	COPY_SCALAR_FIELD(worker_idx);
+	COPY_SCALAR_FIELD(numsegments);
+
+	return newnode;
+}
+
+/* POLAR px */
+
+/*
+ * _copySplitUpdate
+ */
+static SplitUpdate *
+_copySplitUpdate(const SplitUpdate *from)
+{
+	SplitUpdate *newnode = makeNode(SplitUpdate);
+
+	/*
+	 * copy node superclass fields
+	 */
+	CopyPlanFields((Plan *) from, (Plan *) newnode);
+
+	COPY_SCALAR_FIELD(actionColIdx);
+	COPY_SCALAR_FIELD(tupleoidColIdx);
+	COPY_NODE_FIELD(insertColIdx);
+	COPY_NODE_FIELD(deleteColIdx);
+
+	return newnode;
+}
+
+/*
+ * _copyPartitionSelector
+ */
+static PartitionSelector *
+_copyPartitionSelector(const PartitionSelector *from)
+{
+	PartitionSelector *newnode = makeNode(PartitionSelector);
+
+	/*
+	 * copy node superclass fields
+	 */
+	CopyPlanFields((Plan *) from, (Plan *) newnode);
+
+	COPY_SCALAR_FIELD(paramid);
+	COPY_NODE_FIELD(part_prune_info);
+
+	return newnode;
+}
+
+/*
+ * _copyAssertOp
+ */
+static AssertOp *
+_copyAssertOp(const AssertOp *from)
+{
+	AssertOp *newnode = makeNode(AssertOp);
+
+	/*
+	 * copy node superclass fields
+	 */
+	CopyPlanFields((Plan *) from, (Plan *) newnode);
+
+	COPY_SCALAR_FIELD(errcode);
+	COPY_NODE_FIELD(errmessage);
+
+	return newnode;
+}
+
+/* POLAR end */
 
 /* ****************************************************************
  *					   primnodes.h copy functions
@@ -1526,6 +1786,10 @@ _copyFuncExpr(const FuncExpr *from)
 	COPY_SCALAR_FIELD(inputcollid);
 	COPY_NODE_FIELD(args);
 	COPY_LOCATION_FIELD(location);
+
+	/* POLAR px */
+	COPY_SCALAR_FIELD(isGlobalFunc);
+	/* POLAR end */
 
 	return newnode;
 }
@@ -2539,6 +2803,7 @@ _copyCommonTableExpr(const CommonTableExpr *from)
 
 	COPY_STRING_FIELD(ctename);
 	COPY_NODE_FIELD(aliascolnames);
+	COPY_SCALAR_FIELD(ctematerialized);
 	COPY_NODE_FIELD(ctequery);
 	COPY_LOCATION_FIELD(location);
 	COPY_SCALAR_FIELD(cterecursive);
@@ -2965,6 +3230,16 @@ _copyXmlSerialize(const XmlSerialize *from)
 
 	return newnode;
 }
+
+/* POLAR px */
+static DMLActionExpr *
+_copyDMLActionExpr(const DMLActionExpr *from)
+{
+	DMLActionExpr *newnode = makeNode(DMLActionExpr);
+
+	return newnode;
+}
+/* POLAR end */
 
 static RoleSpec *
 _copyRoleSpec(const RoleSpec *from)
@@ -3917,12 +4192,35 @@ _copyReplicaIdentityStmt(const ReplicaIdentityStmt *from)
 	return newnode;
 }
 
+/*
+ * POLAR: DMA Command Statement 
+ */
+static PolarDMACommandStmt *
+_copyPolarDMACommandStmt(const PolarDMACommandStmt *from)
+{
+	PolarDMACommandStmt *newnode = makeNode(PolarDMACommandStmt);
+
+	COPY_SCALAR_FIELD(kind);
+	COPY_STRING_FIELD(node);
+	COPY_SCALAR_FIELD(weight);
+	COPY_SCALAR_FIELD(matchindex);
+	COPY_SCALAR_FIELD(purgeindex);
+	COPY_SCALAR_FIELD(clusterid);
+
+	return newnode;
+}
+/* POLAR end */
+
+
 static AlterSystemStmt *
 _copyAlterSystemStmt(const AlterSystemStmt *from)
 {
 	AlterSystemStmt *newnode = makeNode(AlterSystemStmt);
 
 	COPY_NODE_FIELD(setstmt);
+	/* POLAR: DMA Command Statement */
+	COPY_NODE_FIELD(dma_stmt);
+	/* POLAR end */
 
 	return newnode;
 }
@@ -4807,6 +5105,10 @@ copyObjectImpl(const void *from)
 		case T_RecursiveUnion:
 			retval = _copyRecursiveUnion(from);
 			break;
+		/* POLAR px */
+		case T_Sequence:
+			retval = _copySequence(from);
+			break;
 		case T_BitmapAnd:
 			retval = _copyBitmapAnd(from);
 			break;
@@ -4882,6 +5184,10 @@ copyObjectImpl(const void *from)
 		case T_HashJoin:
 			retval = _copyHashJoin(from);
 			break;
+		/* POLAR px */
+		case T_ShareInputScan:
+			retval = _copyShareInputScan(from);
+			break;
 		case T_Material:
 			retval = _copyMaterial(from);
 			break;
@@ -4933,6 +5239,11 @@ copyObjectImpl(const void *from)
 		case T_PlanInvalItem:
 			retval = _copyPlanInvalItem(from);
 			break;
+		/* POLAR px */
+		case T_AssertOp:
+			retval = _copyAssertOp(from);
+			break;
+		/* POLAR end */
 
 			/*
 			 * PRIMITIVE NODES
@@ -5342,6 +5653,9 @@ copyObjectImpl(const void *from)
 		case T_ReplicaIdentityStmt:
 			retval = _copyReplicaIdentityStmt(from);
 			break;
+		case T_PolarDMACommandStmt:
+			retval = _copyPolarDMACommandStmt(from);
+			break;
 		case T_AlterSystemStmt:
 			retval = _copyAlterSystemStmt(from);
 			break;
@@ -5653,6 +5967,33 @@ copyObjectImpl(const void *from)
 			retval = _copyForeignKeyCacheInfo(from);
 			break;
 
+		/* POLAR px */
+		case T_QueryDispatchDesc:
+			retval = _copyQueryDispatchDesc(from);
+			break;
+	    case T_Motion:
+			retval = _copyMotion(from);
+			break;
+	    case T_PxProcess:
+			retval = _copyPxProcess(from);
+			break;
+	    case T_SliceTable:
+			retval = _copySliceTable(from);
+			break;
+		case T_Flow:
+			retval = _copyFlow(from);
+			break;
+
+		/* POLAR px */
+		case T_SplitUpdate:
+			retval = _copySplitUpdate(from);
+			break;
+		case T_DMLActionExpr:
+			retval = _copyDMLActionExpr(from);
+			break;
+		case T_PartitionSelector:
+			retval = _copyPartitionSelector(from);
+			break;
 		default:
 			elog(ERROR, "unrecognized node type: %d", (int) nodeTag(from));
 			retval = 0;			/* keep compiler quiet */

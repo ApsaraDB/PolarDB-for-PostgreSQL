@@ -51,6 +51,10 @@
 #include "utils/syscache.h"
 #include "utils/snapmgr.h"
 
+/* POLAR */
+#include "utils/guc.h"
+#include "storage/polar_fd.h"
+#include "catalog/pg_inherits.h"
 
 /* GUC parameter */
 int			constraint_exclusion = CONSTRAINT_EXCLUSION_PARTITION;
@@ -395,7 +399,32 @@ get_relation_info(PlannerInfo *root, Oid relationObjectId, bool inhparent,
 			 */
 			if (info->indpred == NIL)
 			{
-				info->pages = RelationGetNumberOfBlocks(indexRelation);
+				/*
+				 * POLAR: Getting file status from shared storage is costly
+				 * try to use statistical values
+				 */
+				if (POLAR_FILE_IN_SHARED_STORAGE() && polar_use_statistical_relpages &&
+					indexRelation->rd_rel->relpages > 0)
+				{
+					info->pages = indexRelation->rd_rel->relpages;
+					if (polar_enable_debug)
+					{
+						BlockNumber tmp_pages = RelationGetNumberOfBlocks(indexRelation);
+						if (tmp_pages && info->pages &&
+							(tmp_pages/2 > info->pages ||
+							info->pages/2 > tmp_pages))
+						{
+							elog(WARNING, "relation %s difference between the statistical value %u and the real pages %u is too large",
+								RelationGetRelationName(indexRelation), info->pages, tmp_pages);
+						}
+					}
+				}
+				else
+				{
+					/* it has storage, ok to call the smgr */
+					info->pages = RelationGetNumberOfBlocks(indexRelation);
+				}
+
 				info->tuples = rel->tuples;
 			}
 			else
@@ -941,7 +970,7 @@ void
 estimate_rel_size(Relation rel, int32 *attr_widths,
 				  BlockNumber *pages, double *tuples, double *allvisfrac)
 {
-	BlockNumber curpages;
+	BlockNumber curpages = 0;
 	BlockNumber relpages;
 	double		reltuples;
 	BlockNumber relallvisible;
@@ -953,8 +982,32 @@ estimate_rel_size(Relation rel, int32 *attr_widths,
 		case RELKIND_INDEX:
 		case RELKIND_MATVIEW:
 		case RELKIND_TOASTVALUE:
-			/* it has storage, ok to call the smgr */
-			curpages = RelationGetNumberOfBlocks(rel);
+
+			/*
+			 * POLAR: Getting file status from shared storage is costly
+			 * try to use statistical values.
+			 */
+			if (POLAR_FILE_IN_SHARED_STORAGE() && polar_use_statistical_relpages &&
+				rel->rd_rel->relpages > 0)
+			{
+				curpages = rel->rd_rel->relpages;
+				if (polar_enable_debug)
+				{
+					BlockNumber tmp_pages = RelationGetNumberOfBlocks(rel);
+					if (tmp_pages && curpages &&
+						(tmp_pages/2 > curpages ||
+						curpages/2 > tmp_pages))
+					{
+						elog(WARNING, "relation %s difference between the statistical value %u and the real pages %u is too large",
+							RelationGetRelationName(rel), curpages, tmp_pages);
+					}
+				}
+			}
+			else
+			{
+				/* it has storage, ok to call the smgr */
+				curpages = RelationGetNumberOfBlocks(rel);
+			}
 
 			/*
 			 * HACK: if the relation has never yet been vacuumed, use a
@@ -2142,4 +2195,87 @@ set_baserel_partition_key_exprs(Relation relation,
 	 * match_expr_to_partition_keys().
 	 */
 	rel->nullable_partexprs = (List **) palloc0(sizeof(List *) * partnatts);
+}
+
+/*
+ * POLAR px
+ * px_estimate_rel_size - estimate # pages and # tuples in a table or index
+ *
+ * If attr_widths isn't NULL, it points to the zero-index entry of the
+ * relation's attr_width[] cache; we fill this in if we have need to compute
+ * the attribute widths for estimation purposes.
+ */
+void
+px_estimate_rel_size(RelOptInfo   *relOptInfo,
+                      Relation      rel,
+                      int32        *attr_widths,
+				      BlockNumber  *pages,
+                      double       *tuples,
+                      double       *allvisfrac)
+{
+	estimate_rel_size(rel, attr_widths, pages, tuples, allvisfrac);
+	return;
+}
+
+
+/*
+ * POLAR px
+ * Get the total size of a partitioned table, including all partitions.
+ *
+ * Only used with PXOPT, currently. This is slightly different from
+ * px_estimate_rel_size(), in that if the relation is a partitioned table
+ * (or general inherited table, but PXOPT doesn't deal with general general
+ * inheritance), this sums up the estimates from the child tables. Also, if
+ * px_optimizer_enable_relsize_collection is off, and none of the partitions have been
+ * analyzed, this returns 0 rather than the default constant estimate.
+ */
+double
+px_estimate_partitioned_numtuples(Relation rel)
+{
+	List	   *inheritors;
+	ListCell   *lc;
+	double		totaltuples;
+
+	if (rel->rd_rel->reltuples > 0)
+		return rel->rd_rel->reltuples;
+
+	inheritors = find_all_inheritors(RelationGetRelid(rel),
+									 AccessShareLock,
+									 NULL);
+	totaltuples = 0;
+	foreach(lc, inheritors)
+	{
+		Oid			childid = lfirst_oid(lc);
+		Relation	childrel;
+		double		childtuples;
+
+		if (childid != RelationGetRelid(rel))
+			childrel = polar_px_try_heap_open(childid, NoLock);
+		else
+			childrel = rel;
+
+		childtuples = childrel->rd_rel->reltuples;
+
+		if (px_enable_relsize_collection && childtuples == 0)
+		{
+			RelOptInfo *dummy_reloptinfo;
+			BlockNumber	numpages;
+			double		allvisfrac;
+
+			dummy_reloptinfo = makeNode(RelOptInfo);
+
+			px_estimate_rel_size(dummy_reloptinfo,
+								  childrel,
+								  NULL,
+								  &numpages,
+								  &childtuples,
+								  &allvisfrac);
+			pfree(dummy_reloptinfo);
+		}
+		totaltuples += childtuples;
+
+		if (childrel != rel)
+			heap_close(childrel, NoLock);
+	}
+	return totaltuples;
 }

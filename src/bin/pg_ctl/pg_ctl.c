@@ -101,6 +101,12 @@ static char pid_file[MAXPGPATH];
 static char backup_file[MAXPGPATH];
 static char promote_file[MAXPGPATH];
 
+/* POLAR: add force promote */
+static bool polar_force_promote = false;
+static char polar_force_promote_file[MAXPGPATH];
+static char polar_promote_not_allowed[MAXPGPATH];
+/* POLAR end */
+
 #ifdef WIN32
 static DWORD pgctl_start_type = SERVICE_AUTO_START;
 static SERVICE_STATUS status;
@@ -581,7 +587,10 @@ wait_for_postmaster(pgpid_t pm_pid, bool do_checkpoint)
 				char	   *pmstatus = optlines[LOCK_FILE_LINE_PM_STATUS - 1];
 
 				if (strcmp(pmstatus, PM_STATUS_READY) == 0 ||
-					strcmp(pmstatus, PM_STATUS_STANDBY) == 0)
+					strcmp(pmstatus, PM_STATUS_STANDBY) == 0 ||
+					/* POLAR: add terminal state DataMax */
+					strcmp(pmstatus, PM_STATUS_DATAMAX) == 0)
+					/* POLAR end */
 				{
 					/* postmaster is done starting up */
 					free_readfile(optlines);
@@ -1112,6 +1121,9 @@ do_promote(void)
 	 * checkpoint is still possible by writing a file called
 	 * "fallback_promote" instead of "promote"
 	 */
+	/* POLAR: force promote */
+	if (!polar_force_promote)
+	{
 	snprintf(promote_file, MAXPGPATH, "%s/promote", pg_data);
 
 	if ((prmfile = fopen(promote_file, "w")) == NULL)
@@ -1126,15 +1138,46 @@ do_promote(void)
 					 progname, promote_file, strerror(errno));
 		exit(1);
 	}
+	}
+	else
+	{
+		snprintf(polar_force_promote_file, MAXPGPATH, "%s/polar_force_promote", pg_data);
+
+		if ((prmfile = fopen(polar_force_promote_file, "w")) == NULL)
+		{
+			write_stderr(_("%s: could not create force promote signal file \"%s\": %s\n"),
+						 progname, polar_force_promote_file, strerror(errno));
+			exit(1);
+		}
+		if (fclose(prmfile))
+		{
+			write_stderr(_("%s: could not write force promote signal file \"%s\": %s\n"),
+						 progname, polar_force_promote_file, strerror(errno));
+			exit(1);
+		}
+	}
+	/* POLAR end */
 
 	sig = SIGUSR1;
 	if (kill((pid_t) pid, sig) != 0)
 	{
 		write_stderr(_("%s: could not send promote signal (PID: %ld): %s\n"),
 					 progname, pid, strerror(errno));
+		/* POLAR: normal promote */
+		if (!polar_force_promote)
+		{
 		if (unlink(promote_file) != 0)
 			write_stderr(_("%s: could not remove promote signal file \"%s\": %s\n"),
 						 progname, promote_file, strerror(errno));
+		}
+		else
+		{
+			/* POLAR: unlink force promote */
+			if (unlink(polar_force_promote_file) != 0)
+				write_stderr(_("%s: could not remove force promote signal file \"%s\": %s\n"),
+							 progname, polar_force_promote_file, strerror(errno));
+			/* POLAR end */
+		}
 		exit(1);
 	}
 
@@ -1150,6 +1193,17 @@ do_promote(void)
 			if (state == DB_IN_PRODUCTION)
 				break;
 
+			/* POLAR */
+			snprintf(polar_promote_not_allowed, MAXPGPATH, "%s/polar_promote_not_allowed", pg_data);
+			if (access(polar_promote_not_allowed, 0) == 0)
+			{
+				print_msg(_(" promote is not allowed, check log for more information\n"));
+				if (unlink(polar_promote_not_allowed) != 0)
+					write_stderr(_("%s: could not remove promote not allowed file \"%s\": %s\n"),
+								 progname, polar_promote_not_allowed, strerror(errno));		
+				break;
+			}		
+			/* POLAR end */
 			if (cnt % WAITS_PER_SEC == 0)
 				print_msg(".");
 			pg_usleep(USEC_PER_SEC / WAITS_PER_SEC);
@@ -1920,7 +1974,9 @@ do_help(void)
 			 "                  [-o OPTIONS] [-c]\n"), progname);
 	printf(_("  %s reload   [-D DATADIR] [-s]\n"), progname);
 	printf(_("  %s status   [-D DATADIR]\n"), progname);
-	printf(_("  %s promote  [-D DATADIR] [-W] [-t SECS] [-s]\n"), progname);
+	/* POLAR */
+	printf(_("  %s promote  [-D DATADIR] [-W] [-t SECS] [-s] [-f]\n"), progname);
+	/* POLAR end */
 	printf(_("  %s kill     SIGNALNAME PID\n"), progname);
 #ifdef WIN32
 	printf(_("  %s register [-D DATADIR] [-N SERVICENAME] [-U USERNAME] [-P PASSWORD]\n"
@@ -1959,6 +2015,9 @@ do_help(void)
 	printf(_("  fast        quit directly, with proper shutdown (default)\n"));
 	printf(_("  immediate   quit without complete shutdown; will lead to recovery on restart\n"));
 
+	/* POLAR */
+	printf(_("  -f, --force-promote    force promote without any constraints\n"));
+	/* POLAR end */
 	printf(_("\nAllowed signal names for kill:\n"));
 	printf("  ABRT HUP INT KILL QUIT TERM USR1 USR2\n");
 
@@ -2220,7 +2279,8 @@ main(int argc, char **argv)
 	/* process command-line options */
 	while (optind < argc)
 	{
-		while ((c = getopt_long(argc, argv, "cD:e:l:m:N:o:p:P:sS:t:U:wW",
+		/* POLAR: add force promote args */
+		while ((c = getopt_long(argc, argv, "cD:e:l:m:N:o:p:P:sS:t:U:wWf",
 								long_options, &option_index)) != -1)
 		{
 			switch (c)
@@ -2305,6 +2365,11 @@ main(int argc, char **argv)
 				case 'c':
 					allow_core_files = true;
 					break;
+				/* POLAR: force promote */
+				case 'f':
+					polar_force_promote = true;
+					break;
+				/* POLAR end */
 				default:
 					/* getopt_long already issued a suitable error message */
 					do_advice();

@@ -80,6 +80,9 @@
 #include "utils/relfilenodemap.h"
 #include "utils/tqual.h"
 
+/* POLAR */
+#include "storage/polar_fd.h"
+#include "utils/guc.h"
 
 /* entry for a hash table we use to map from xid to our transaction state */
 typedef struct ReorderBufferTXNByIdEnt
@@ -1171,7 +1174,7 @@ ReorderBufferIterTXNFinish(ReorderBuffer *rb,
 	for (off = 0; off < state->nr_txns; off++)
 	{
 		if (state->entries[off].fd != -1)
-			FileClose(state->entries[off].fd);
+			CloseTransientFile(state->entries[off].fd);
 	}
 
 	/* free memory we might have "leaked" in the last *Next call */
@@ -2291,8 +2294,7 @@ ReorderBufferSerializeTXN(ReorderBuffer *rb, ReorderBufferTXN *txn)
 										curOpenSegNo);
 
 			/* open segment, create it if necessary */
-			fd = OpenTransientFile(path,
-								   O_CREAT | O_WRONLY | O_APPEND | PG_BINARY, false);
+			fd = polar_open_transient_file(path, O_CREAT | O_WRONLY | O_APPEND | PG_BINARY);
 
 			if (fd < 0)
 				ereport(ERROR,
@@ -2485,7 +2487,7 @@ ReorderBufferSerializeChange(ReorderBuffer *rb, ReorderBufferTXN *txn,
 
 	errno = 0;
 	pgstat_report_wait_start(WAIT_EVENT_REORDER_BUFFER_WRITE);
-	if (write(fd, rb->outbuf, ondisk->size) != ondisk->size)
+	if (polar_write(fd, rb->outbuf, ondisk->size) != ondisk->size)
 	{
 		int			save_errno = errno;
 
@@ -2564,7 +2566,7 @@ ReorderBufferRestoreChanges(ReorderBuffer *rb, ReorderBufferTXN *txn,
 			ReorderBufferSerializedPath(path, MyReplicationSlot, txn->xid,
 										*segno);
 
-			*fd = PathNameOpenFile(path, O_RDONLY | PG_BINARY, false);
+			*fd = polar_open_transient_file(path, O_RDONLY | PG_BINARY);
 			if (*fd < 0 && errno == ENOENT)
 			{
 				*fd = -1;
@@ -2584,13 +2586,14 @@ ReorderBufferRestoreChanges(ReorderBuffer *rb, ReorderBufferTXN *txn,
 		 * end of this file.
 		 */
 		ReorderBufferSerializeReserve(rb, sizeof(ReorderBufferDiskChange));
-		readBytes = FileRead(*fd, rb->outbuf, sizeof(ReorderBufferDiskChange),
-							 WAIT_EVENT_REORDER_BUFFER_READ);
+		pgstat_report_wait_start(WAIT_EVENT_REORDER_BUFFER_READ);
+		readBytes = polar_read(*fd, rb->outbuf, sizeof(ReorderBufferDiskChange));
+		pgstat_report_wait_end();
 
 		/* eof */
 		if (readBytes == 0)
 		{
-			FileClose(*fd);
+			CloseTransientFile(*fd);
 			*fd = -1;
 			(*segno)++;
 			continue;
@@ -2612,10 +2615,10 @@ ReorderBufferRestoreChanges(ReorderBuffer *rb, ReorderBufferTXN *txn,
 									  sizeof(ReorderBufferDiskChange) + ondisk->size);
 		ondisk = (ReorderBufferDiskChange *) rb->outbuf;
 
-		readBytes = FileRead(*fd,
-							 rb->outbuf + sizeof(ReorderBufferDiskChange),
-							 ondisk->size - sizeof(ReorderBufferDiskChange),
-							 WAIT_EVENT_REORDER_BUFFER_READ);
+		pgstat_report_wait_start(WAIT_EVENT_REORDER_BUFFER_READ);
+		readBytes = polar_read(*fd, rb->outbuf + sizeof(ReorderBufferDiskChange),
+						 ondisk->size - sizeof(ReorderBufferDiskChange));
+		pgstat_report_wait_end();
 
 		if (readBytes < 0)
 			ereport(ERROR,
@@ -2809,7 +2812,7 @@ ReorderBufferRestoreCleanup(ReorderBuffer *rb, ReorderBufferTXN *txn)
 		char		path[MAXPGPATH];
 
 		ReorderBufferSerializedPath(path, MyReplicationSlot, txn->xid, cur);
-		if (unlink(path) != 0 && errno != ENOENT)
+		if (polar_unlink(path) != 0 && errno != ENOENT)
 			ereport(ERROR,
 					(errcode_for_file_access(),
 					 errmsg("could not remove file \"%s\": %m", path)));
@@ -2828,13 +2831,19 @@ ReorderBufferCleanupSerializedTXNs(const char *slotname)
 	struct stat statbuf;
 	char		path[MAXPGPATH * 2 + 12];
 
+	/* POLAR*/
+	char		tmp_path[MAXPGPATH * 2 + 12] = {0};
+	int 		slen = 0;
+
 	sprintf(path, "pg_replslot/%s", slotname);
+	if (POLAR_PERSIST_SPILL_FILE)
+		polar_make_file_path_level3(path, "pg_replslot", slotname);
 
 	/* we're only handling directories here, skip if it's not ours */
-	if (lstat(path, &statbuf) == 0 && !S_ISDIR(statbuf.st_mode))
+	if (polar_stat(path, &statbuf) == 0 && !S_ISDIR(statbuf.st_mode))
 		return;
 
-	spill_dir = AllocateDir(path, false);
+	spill_dir = polar_allocate_dir(path);
 	while ((spill_de = ReadDirExtended(spill_dir, path, INFO)) != NULL)
 	{
 		/* only look at names that can be ours */
@@ -2843,8 +2852,15 @@ ReorderBufferCleanupSerializedTXNs(const char *slotname)
 			snprintf(path, sizeof(path),
 					 "pg_replslot/%s/%s", slotname,
 					 spill_de->d_name);
+			if (POLAR_PERSIST_SPILL_FILE)
+			{
+				slen = strlen(path);
+				strncpy(tmp_path, path, slen);
+				tmp_path[slen] = '\0';
+				polar_make_file_path_level2(path, tmp_path);
+			}
 
-			if (unlink(path) != 0)
+			if (polar_unlink(path) != 0)
 				ereport(ERROR,
 						(errcode_for_file_access(),
 						 errmsg("could not remove file \"%s\" during removal of pg_replslot/%s/*.xid: %m",
@@ -2865,12 +2881,24 @@ ReorderBufferSerializedPath(char *path, ReplicationSlot *slot, TransactionId xid
 {
 	XLogRecPtr	recptr;
 
+	/* POLAR */
+	char		tmp_path[MAXPGPATH * 2 + 12] = {0};
+	int			slen = 0;
+
 	XLogSegNoOffsetToRecPtr(segno, 0, wal_segment_size, recptr);
 
 	snprintf(path, MAXPGPATH, "pg_replslot/%s/xid-%u-lsn-%X-%X.snap",
 			 NameStr(MyReplicationSlot->data.name),
 			 xid,
 			 (uint32) (recptr >> 32), (uint32) recptr);
+
+	if (POLAR_PERSIST_SPILL_FILE)
+	{
+		slen = strlen(path);
+		strncpy(tmp_path, path, slen);
+		tmp_path[slen] = '\0';
+		polar_make_file_path_level2(path, tmp_path);
+	}
 }
 
 /*
@@ -2883,8 +2911,15 @@ StartupReorderBuffer(void)
 	DIR		   *logical_dir;
 	struct dirent *logical_de;
 
-	logical_dir = AllocateDir("pg_replslot", false);
-	while ((logical_de = ReadDir(logical_dir, "pg_replslot")) != NULL)
+	/* POLAR*/
+	char		path[MAXPGPATH * 2 + 12] = {0};
+
+	sprintf(path, "%s", "pg_replslot");
+	if (POLAR_PERSIST_SPILL_FILE)
+		polar_make_file_path_level2(path, "pg_replslot");
+
+	logical_dir = polar_allocate_dir(path);
+	while ((logical_de = ReadDir(logical_dir, path)) != NULL)
 	{
 		if (strcmp(logical_de->d_name, ".") == 0 ||
 			strcmp(logical_de->d_name, "..") == 0)

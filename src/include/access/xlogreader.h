@@ -194,6 +194,7 @@ struct XLogReaderState
 
 	/* POLAR: Is this only have meta data? */
 	bool noPayload;
+
 	/*
 	 * POLAR: Save the length of record's XLogRecordHeader, XLogRecordBlockHeader, XLogOrigin and XLogRecordDataHaeder.
 	 * In order to reserve XLOG queue space to store logindex meta.
@@ -220,9 +221,7 @@ extern bool XLogReaderValidatePageHeader(XLogReaderState *state,
 /* Invalidate read state */
 extern void XLogReaderInvalReadState(XLogReaderState *state);
 
-#ifdef FRONTEND
 extern XLogRecPtr XLogFindNextRecord(XLogReaderState *state, XLogRecPtr RecPtr);
-#endif							/* FRONTEND */
 
 /* Functions for decoding an XLogRecord */
 
@@ -250,9 +249,11 @@ extern char *XLogRecGetBlockData(XLogReaderState *record, uint8 block_id, Size *
 extern bool XLogRecGetBlockTag(XLogReaderState *record, uint8 block_id,
 				   RelFileNode *rnode, ForkNumber *forknum,
 				   BlockNumber *blknum);
-extern void report_invalid_record(XLogReaderState *state, const char *fmt,...) pg_attribute_printf(2, 3);
-extern struct XLogRecord *polar_xlog_read_record(XLogReaderState *state,
-			XLogRecPtr RecPtr, char **errormsg);
+
+/* POLAR */
+extern bool ValidXLogRecord(XLogReaderState *state, XLogRecord *record,
+				XLogRecPtr recptr);
 extern bool allocate_recordbuf(XLogReaderState *state, uint32 reclength);
 
+extern void report_invalid_record(XLogReaderState *state, const char *fmt,...) pg_attribute_printf(2, 3);
 #endif							/* XLOGREADER_H */

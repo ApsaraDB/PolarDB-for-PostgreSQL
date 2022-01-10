@@ -17,6 +17,7 @@
 #include "catalog/pg_type.h"
 #include "funcapi.h"
 #include "miscadmin.h"
+#include "pgstat.h"
 #include "storage/predicate_internals.h"
 #include "utils/array.h"
 #include "utils/builtins.h"
@@ -308,8 +309,9 @@ pg_lock_status(PG_FUNCTION_ARGS)
 		}
 
 		values[10] = VXIDGetDatum(instance->backend, instance->lxid);
+		/* POLAR: return virtual pid if available */
 		if (instance->pid != 0)
-			values[11] = Int32GetDatum(instance->pid);
+			values[11] = Int32GetDatum(polar_pgstat_get_virtual_pid(instance->pid, false));
 		else
 			nulls[11] = true;
 		values[12] = CStringGetTextDatum(GetLockmodeName(instance->locktag.locktag_lockmethodid, mode));
@@ -373,8 +375,9 @@ pg_lock_status(PG_FUNCTION_ARGS)
 		/* lock holder */
 		values[10] = VXIDGetDatum(xact->vxid.backendId,
 								  xact->vxid.localTransactionId);
+		/* POLAR: return virtual pid if available */
 		if (xact->pid != 0)
-			values[11] = Int32GetDatum(xact->pid);
+			values[11] = Int32GetDatum(polar_pgstat_get_virtual_pid(xact->pid, false));
 		else
 			nulls[11] = true;
 

@@ -1,0 +1,8 @@
+CREATE EXTENSION polar_px; 
+ERROR:  extension "polar_px" already exists
+SELECT polar_px_workerid();
+ polar_px_workerid 
+-------------------
+                -1
+(1 row)
+

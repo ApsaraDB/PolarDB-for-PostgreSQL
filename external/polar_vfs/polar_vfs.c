@@ -1,9 +1,9 @@
 /*-------------------------------------------------------------------------
  *
  * polar_vfs.c
- *	  PolarDB Virtual file system code.
  *
  * Copyright (c) 2020, Alibaba Group Holding Limited
+ * 
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -32,7 +32,7 @@
 #include "miscadmin.h"
 #include "storage/backendid.h"
 #include "storage/ipc.h"
-#include "storage/polar_directio.h"
+#include "storage/pg_shmem.h"
 #include "storage/polar_fd.h"
 #include "storage/shmem.h"
 #include "storage/lwlock.h"
@@ -51,149 +51,160 @@
 #include <sys/time.h>
 #include <semaphore.h>
 #include <pthread.h>
-#ifdef USE_PFSD
 #include "pfsd_sdk.h"
-#include "storage/polar_pfsd.h"
-#endif
 
+/* POLAR */
+#include "polar_datamax/polar_datamax.h"
 #include "storage/polar_io_stat.h"
+#include "storage/polar_directio.h"
+#include "storage/polar_pfsd.h"
+/* POLAR END */
 
 PG_MODULE_MAGIC;
 
-typedef enum polardb_node_state
-{
-	unknown = -1,
-	readwrite = 0,
-	readonly,
-	standby
-}			polardb_node_state;
+/* polar wal pipeline */
+extern bool multi_thread_vfs;
+extern slock_t polar_wal_pipeline_vfs_lck;
 
-/* POLAR: Status at startup, determined from the configuration file recovery.conf */
-polardb_node_state polardb_start_state = unknown;
+typedef enum vfs_state
+{
+	init = 0,
+	mount_pfs_action,
+	remount_pfs_action,
+	mount_pfs_done,
+	umount_pfs,
+	mount_growfs,
+	action_fail
+} vfs_state;
+
+typedef struct vfs_mount_state
+{
+	LWLock	   *lock;					/* for concurrent access control */
+	vfs_state	action_state;			/* see enum vfs_state */
+	void		*cleanup_handle;		/* for pfs_mount_master_cleanup */
+	bool		do_force_mount;			/* force mount mode, see MNTFLG_PAXOS_BYFORCE */
+	int			mount_flag;				/* mount mode rw/ro */
+	int			res_growfs;				/* return value of pfs_mount_growfs */
+	char		errmsg[MAXPGPATH];		/* error message when mount/umount api */
+} vfs_mount_state;
+
+static vfs_mount_state *mount_state = NULL;
+
+static volatile sig_atomic_t got_sighup = false;
+static volatile sig_atomic_t got_sigterm = false;
+static volatile sig_atomic_t shutdown_requested = false;
 
 #define MIN_VFS_FD_DIR_SIZE		10
 
 #define VFD_CLOSED (-1)
-
-#define VFS_UNKNOWN_FILE -1
-enum VFS_KIND
-{
-	VFS_LOCAL_FILE = 0,
-#ifdef USE_PFSD
-	VFS_PFS_FILE,
-#endif
-	VFS_LOCAL_FILE_DIRECTIO,
-	VFS_KIND_MAX
-};
-
-#define	VFS_KIND_MAX_LEN	64
 
 /*
  * POLAR: polar_vfs_kind[*] must conform to a certain format:
  * [protocol]://
  * Finally, polar_datadir will look like the following format:
  * [protocol]://[path]
- *
+ * 
  * Notice: If you change the format of polar_vfs_kind[*], you must
  * modify the function polar_path_remove_protocol(...) in polar_fd.c.
  */
-static const char polar_vfs_kind[VFS_KIND_MAX][VFS_KIND_MAX_LEN] =
+static const char polar_vfs_kind[POLAR_VFS_KIND_SIZE][POLAR_VFS_PROTOCOL_MAX_LEN] =
 {
-	"file://", //VFS_LOCAL_FILE
-#ifdef USE_PFSD
-	"pfsd://", //VFS_PFS_FILE
-#endif
-	"file-dio://", //VFS_LOCAL_FILE_DIRECTIO
+	POLAR_VFS_PROTOCAL_LOCAL_BIO,	//POLAR_VFS_LOCAL_BIO
+	POLAR_VFS_PROTOCAL_PFS,			//POLAR_VFS_PFS
+	POLAR_VFS_PROTOCAL_LOCAL_DIO	//POLAR_VFS_LOCAL_DIO
 };
 
 typedef struct vfs_vfd
 {
-	int			fd;
-	int			kind;
-	int 		type; /* enum { data, xlog,clog }*/
-	int			next_free;
-	off_t		file_size;
-	char	   *file_name;
+	int				fd;
+	int				kind;
+	int 			type; /* enum { data, xlog,clog }*/
+	int				next_free;
+	off_t			file_size;
+	char			*file_name;
 } vfs_vfd;
 
-static vfs_vfd *vfs_vfd_cache = NULL;
-static size_t size_vfd_cache = 0;
-static int	num_open_file = 0;
+static vfs_vfd	*vfs_vfd_cache = NULL;
+static size_t	size_vfd_cache = 0;
+static int		num_open_file = 0;
 
 typedef struct
 {
-	int			kind;
-	DIR		   *dir;
+	int				kind;
+	DIR				*dir;
 } vfs_dir_desc;
 
 static int	num_vfs_dir_descs = 0;
 static int	max_vfs_dir_descs = 0;
 static vfs_dir_desc *vfs_dir_descs = NULL;
 
-static bool inited = false;
+static	bool	inited = false;
 static shmem_startup_hook_type prev_shmem_startup_hook = NULL;
-
 static polar_postmaster_child_init_register prev_polar_stat_hook = NULL;
 static instr_time	tmp_io_start;
 static instr_time	tmp_io_time;
+static instr_time 	vfs_start;
+static instr_time 	vfs_end;
 static int 		save_errno;
 
-static bool localfs_mode = false;
-static bool pfs_force_mount = true;
+static instr_time tmp_io_read_start;
+static instr_time tmp_io_read_time;
 
-/* POLAR: Switch to statistics of IO time consumption */
-static bool enable_io_time_stat = false;
-/* POLAR: end */
+Datum polar_vfs_mem_status(PG_FUNCTION_ARGS);
+PG_FUNCTION_INFO_V1(polar_vfs_mem_status);
 
-typedef void (*vfs_umount_type) (void);
-
-Datum		polar_vfs_disk_expansion(PG_FUNCTION_ARGS);
-
+Datum polar_vfs_disk_expansion(PG_FUNCTION_ARGS);
 PG_FUNCTION_INFO_V1(polar_vfs_disk_expansion);
 
-Datum		polar_libpfs_version(PG_FUNCTION_ARGS);
-
+Datum polar_libpfs_version(PG_FUNCTION_ARGS);
 PG_FUNCTION_INFO_V1(polar_libpfs_version);
 
 void		_PG_init(void);
 void		_PG_fini(void);
+void		polar_vfs_mount_main(Datum main_arg);
 
-static void vfs_startup(void);
+static void polar_vfs_shmem_startup(void);
+static void polar_vfs_shmem_shutdown(int code, Datum arg);
+static void polar_vfs_init(void);
+
 static bool is_db_in_replica_mode(bool *force_mount);
 static bool file_exists(const char *name);
 
 static void init_vfs_global(void);
 static bool init_vfs_function(void);
 
-static int	vfs_mount(void);
-static void vfs_umount(int code, Datum arg);
-static int	vfs_remount(void);
+static int vfs_env_init(void);
+static int vfs_env_destroy(void);
+static int vfs_mount(void);
+static int vfs_remount(void);
 
-static int	vfs_creat(const char *path, mode_t mode);
-static int	vfs_open(const char *path, int flags, mode_t mode);
-static int	vfs_close(int file);
+static int vfs_creat(const char *path, mode_t mode);
+static int vfs_open(const char *path, int flags, mode_t mode);
+static int vfs_close(int file);
 
 static ssize_t vfs_read(int file, void *buf, size_t len);
 static ssize_t vfs_write(int file, const void *buf, size_t len);
 static ssize_t vfs_pread(int file, void *buf, size_t len, off_t offset);
 static ssize_t vfs_pwrite(int file, const void *buf, size_t len, off_t offset);
 
-static int	vfs_stat(const char *path, struct stat *buf);
-static int	vfs_fstat(int file, struct stat *buf);
-static int	vfs_lstat(const char *path, struct stat *buf);
+static int vfs_stat(const char *path, struct stat *buf);
+static int vfs_fstat(int file, struct stat *buf);
+static int vfs_lstat(const char *path, struct stat *buf);
 static off_t vfs_lseek(int file, off_t offset, int whence);
-static int	vfs_access(const char *path, int mode);
+static off_t vfs_lseek_cache(int file, off_t offset, int whence);
+static int vfs_access(const char *path, int mode);
 
-static int	vfs_fsync(int file);
-static int	vfs_unlink(const char *fname);
-static int	vfs_rename(const char *oldfile, const char *newfile);
-static int	vfs_fallocate(int file, off_t offset, off_t len);
-static int	vfs_ftruncate(int file, off_t len);
+static int vfs_fsync(int file);
+static int vfs_unlink(const char *fname);
+static int vfs_rename(const char *oldfile, const char *newfile);
+static int vfs_fallocate(int file, off_t offset, off_t len);
+static int vfs_ftruncate(int file, off_t len);
+
 static DIR *vfs_opendir(const char *dirname);
 static struct dirent *vfs_readdir(DIR *dir);
-static int	vfs_closedir(DIR *dir);
-static int	vfs_mkdir(const char *path, mode_t mode);
-static int	vfs_rmdir(const char *path);
+static int vfs_closedir(DIR *dir);
+static int vfs_mkdir(const char *path, mode_t mode);
+static int vfs_rmdir(const char *path);
 
 static inline void vfs_free_vfd(int file);
 static inline File vfs_allocate_vfd(void);
@@ -201,6 +212,16 @@ static inline bool vfs_allocated_dir(void);
 static inline vfs_vfd *vfs_find_file(int file);
 static inline int vfs_file_type(const char *path);
 static inline int vfs_data_type(const char *path);
+static inline void vfs_timer_end(instr_time *time);
+
+static void polar_worker_sigterm_handler(SIGNAL_ARGS);
+static void polar_worker_sighup_handler(SIGNAL_ARGS);
+static void polar_request_shutdown_handler(SIGNAL_ARGS);
+static void polar_vfs_quickdie(SIGNAL_ARGS);
+static void polar_vfs_init_mem_and_lock(void);
+static void polar_set_vfs_state(vfs_mount_state *state, vfs_state vstate);
+static vfs_state polar_get_vfs_state(vfs_mount_state *state);
+
 static const vfs_mgr *vfs_get_mgr(const char *path);
 
 /* POLAR : IO statistics collection functions */
@@ -217,19 +238,27 @@ static inline void polar_vfs_timer_begin_iostat(void);
 static inline void polar_vfs_timer_end_iostat(instr_time *time, int kind);
 /* POLAR end */
 
-static inline const char *polar_vfs_file_type_and_path(const char *path, int *kind);
 
-static const vfs_mgr vfs[] =
+static inline void polar_vfs_timer_begin_read_iostat(void);
+static void polar_vfs_timer_end_read_iostat(ssize_t size);
+
+static inline const char *polar_vfs_file_type_and_path(const char *path, int *kind);
+static bool check_localfs_mode(bool *newval, void **extra, GucSource source);
+
+static void polar_update_global_io_read_stat(int64 delta_read_size, double delta_read_time);
+
+static const vfs_mgr vfs[] = 
 {
 	/*
-	 * POLAR: Local file system interface. It use original file system
-	 * interface.
+	 * POLAR: Local file system interface.
+	 * It use original file system interface.
 	 */
 	{
+		.vfs_env_init = NULL,
+		.vfs_env_destroy = NULL,
 		.vfs_mount = NULL,
-		.vfs_umount = NULL,
 		.vfs_remount = NULL,
-		.vfs_open = (vfs_open_type) open,
+		.vfs_open = (vfs_open_type)open,
 		.vfs_creat = creat,
 		.vfs_close = close,
 		.vfs_read = read,
@@ -240,6 +269,7 @@ static const vfs_mgr vfs[] =
 		.vfs_fstat = fstat,
 		.vfs_lstat = lstat,
 		.vfs_lseek = lseek,
+		.vfs_lseek_cache = lseek,
 		.vfs_access = access,
 		.vfs_fsync = pg_fsync,
 		.vfs_unlink = unlink,
@@ -253,15 +283,17 @@ static const vfs_mgr vfs[] =
 		.vfs_rmdir = rmdir,
 		.vfs_mgr_func = NULL
 	},
-#ifdef USE_PFSD
-
 	/*
-	 * POLAR: Pfsd file system interface. It use original pfsd's file access
-	 * interface.
+	 * POLAR: Pfsd file system interface.
+	 * It use original pfsd's file access interface.
+	 * We packaged (p)read/(p)write interface because of the upper
+	 * limit of content for one single pfsd_(p)read/pfsd_(p)write
+	 * should be under our control.
 	 */
 	{
+		.vfs_env_init = NULL,
+		.vfs_env_destroy = NULL,
 		.vfs_mount = NULL,
-		.vfs_umount = NULL,
 		.vfs_remount = NULL,
 		.vfs_open = pfsd_open,
 		.vfs_creat = pfsd_creat,
@@ -274,6 +306,7 @@ static const vfs_mgr vfs[] =
 		.vfs_fstat = pfsd_fstat,
 		.vfs_lstat = pfsd_stat,
 		.vfs_lseek = pfsd_lseek,
+		.vfs_lseek_cache = pfsd_lseek,
 		.vfs_access = pfsd_access,
 		.vfs_fsync = pfsd_fsync,
 		.vfs_unlink = pfsd_unlink,
@@ -287,17 +320,18 @@ static const vfs_mgr vfs[] =
 		.vfs_rmdir = pfsd_rmdir,
 		.vfs_mgr_func = NULL
 	},
-#endif
-
 	/*
-	 * POLAR: Local file system interface with O_DIRECT flag. It use original
-	 * file system interface to do other jobs except for open, (p)read and
-	 * (p)write. To make sure that O_DIRECT flag can work well, we packaged
-	 * open/(p)read/(p)write in order to make aligned buffer, aligned offset
-	 * and aligned length. Besides, the length of aligned buffer is the upper
-	 * limit of content for one single (p)read or (p)write.
+	 * POLAR: Local file system interface with O_DIRECT flag.
+	 * It use original file system interface to do other jobs
+	 * except for open, (p)read and (p)write. To make sure that
+	 * O_DIRECT flag can work well, we packaged open/(p)read/(p)write
+	 * in order to make aligned buffer, aligned offset and aligned length. 
+	 * Besides, the length of aligned buffer is the upper limit of content
+	 * for one single (p)read or (p)write.
 	 */
 	{
+		.vfs_env_init = NULL,
+		.vfs_env_destroy = NULL,
 		.vfs_mount = NULL,
 		.vfs_remount = NULL,
 		.vfs_open = (vfs_open_type) polar_directio_open,
@@ -311,6 +345,7 @@ static const vfs_mgr vfs[] =
 		.vfs_fstat = fstat,
 		.vfs_lstat = lstat,
 		.vfs_lseek = lseek,
+		.vfs_lseek_cache = lseek,
 		.vfs_access = access,
 		.vfs_fsync = pg_fsync,
 		.vfs_unlink = unlink,
@@ -328,8 +363,9 @@ static const vfs_mgr vfs[] =
 
 static const vfs_mgr vfs_interface =
 {
+	.vfs_env_init = vfs_env_init,
+	.vfs_env_destroy = vfs_env_destroy,
 	.vfs_mount = vfs_mount,
-	.vfs_umount = (vfs_umount_type) vfs_umount,
 	.vfs_remount = vfs_remount,
 	.vfs_open = vfs_open,
 	.vfs_creat = vfs_creat,
@@ -342,6 +378,7 @@ static const vfs_mgr vfs_interface =
 	.vfs_fstat = vfs_fstat,
 	.vfs_lstat = vfs_lstat,
 	.vfs_lseek = vfs_lseek,
+	.vfs_lseek_cache = vfs_lseek_cache,
 	.vfs_access = vfs_access,
 	.vfs_fsync = vfs_fsync,
 	.vfs_unlink = vfs_unlink,
@@ -356,37 +393,68 @@ static const vfs_mgr vfs_interface =
 	.vfs_mgr_func = vfs_get_mgr
 };
 
+static bool	localfs_mode = false;
+static bool	enable_file_size_cache = false;
+static bool	pfs_force_mount = true;
+static bool	enable_mount_vfs_in_subprocess = false;
+/* POLAR: Switch to statistics of IO time consumption */
+static bool enable_io_time_stat = false;
+/* POLAR: end */
+static bool polar_vfs_debug = false;
+
 void
 _PG_init(void)
 {
 	if (!process_shared_preload_libraries_in_progress)
 	{
-		elog(WARNING, "polar_vfs init in subbackend %d", (int) getpid());
+		elog(WARNING, "polar_vfs init in subbackend %d", (int)getpid());
 		return;
 	}
 
 	DefineCustomBoolVariable("polar_vfs.pfs_force_mount",
-							 "pfs force mount mode when ro switch rw",
-							 NULL,
-							 &pfs_force_mount,
-							 true,
-							 PGC_POSTMASTER,
-							 0,
-							 NULL,
-							 NULL,
-							 NULL);
+								"pfs force mount mode when ro switch rw",
+								NULL,
+								&pfs_force_mount,
+								true,
+								PGC_POSTMASTER,
+								0,
+								NULL,
+								NULL,
+								NULL);
 
-	DefineCustomBoolVariable("polar_vfs.localfs_mode",
-							 "localfs test mode",
+	DefineCustomBoolVariable("polar_vfs.enable_file_size_cache",
+  							 "enable file size cache",
+  							  NULL,
+  							  &enable_file_size_cache,
+  							  true,
+  							  PGC_POSTMASTER,
+  							  0,
+  							  NULL,
+  							  NULL,
+  							  NULL);
+
+	DefineCustomBoolVariable("polar_vfs.localfs_test_mode",
+							"enter localfs mode",
 							 NULL,
 							 &localfs_mode,
 							 false,
 							 PGC_POSTMASTER,
 							 0,
-							 NULL,
+							 check_localfs_mode,
 							 NULL,
 							 NULL);
-#ifdef USE_PFSD
+
+	DefineCustomBoolVariable("polar_vfs.localfs_mode",
+							"enter localfs mode",
+							 NULL,
+							 &localfs_mode,
+							 false,
+							 PGC_POSTMASTER,
+							 0,
+							 check_localfs_mode,
+							 NULL,
+							 NULL);
+
 	DefineCustomIntVariable("polar_vfs.max_pfsd_io_size",
 							"max pfsd io size",
 							NULL,
@@ -399,7 +467,6 @@ _PG_init(void)
 							NULL,
 							NULL,
 							NULL);
-#endif
 
 	/* This parameter is a switch that controls whether IO time statistics are turned on. */
 	DefineCustomBoolVariable("polar_vfs.enable_io_time_stat",
@@ -426,18 +493,30 @@ _PG_init(void)
 							NULL,
 							NULL);
 
-	elog(LOG, "polar_vfs loaded in postmaster %d", (int) getpid());
+	DefineCustomBoolVariable("polar_vfs.debug",
+							 "turn on debug switch or not",
+							 NULL,
+							 &polar_vfs_debug,
+							 false,
+							 PGC_POSTMASTER,
+							 0,
+							 NULL,
+							 NULL,
+							 NULL);
+
+	elog(LOG, "polar_vfs loaded in postmaster %d", (int)getpid());
 
 	init_vfs_global();
 	init_vfs_function();
 
 	EmitWarningsOnPlaceholders("polar_vfs");
+	RequestAddinShmemSpace(sizeof(vfs_mount_state));
+	RequestNamedLWLockTranche("polar_vfs", 1);
 
 	RequestAddinShmemSpace(mul_size(sizeof(POLAR_PROC_IO), PolarNumProcIOStatSlots));
-
+	
 	prev_shmem_startup_hook = shmem_startup_hook;
-	shmem_startup_hook = vfs_startup;
-
+	shmem_startup_hook = polar_vfs_shmem_startup;
 	/* registed a func to total io statistics before shmem exit*/
 	prev_polar_stat_hook = polar_stat_hook;
 	polar_stat_hook = polar_io_shmem_exit_cleanup;
@@ -453,16 +532,19 @@ _PG_fini(void)
 }
 
 static void
-vfs_startup(void)
+polar_vfs_shmem_startup(void)
 {
 	if (prev_shmem_startup_hook)
 		prev_shmem_startup_hook();
+	if (prev_polar_stat_hook)
+		prev_polar_stat_hook();
 
-	vfs_mount();
+	polar_vfs_init_mem_and_lock();
+	polar_vfs_init();
 	polar_io_stat_shmem_startup();
 
 	if (!IsUnderPostmaster)
-		on_shmem_exit(vfs_umount, (Datum) 0);
+		on_shmem_exit(polar_vfs_shmem_shutdown, (Datum) 0);
 
 	elog(LOG, "polar_vfs init done");
 
@@ -470,27 +552,18 @@ vfs_startup(void)
 }
 
 static void
-vfs_umount(int code, Datum arg)
+polar_vfs_shmem_shutdown(int code, Datum arg)
 {
-	if (code != STATUS_OK)
-		elog(WARNING, "subprocess exit abnormally");
-
-	if (localfs_mode)
-	{
-		elog(LOG, "vfs shutdown success");
-		inited = false;
-		return;
-	}
-
 	if (inited)
 	{
-#ifdef USE_PFSD
+		if (polar_in_error_handling_process || code != STATUS_OK)
+			elog(WARNING, "subprocess exit abnormally");
+
 		elog(LOG, "umount pfs %s", polar_disk_name);
 		if (pfsd_umount_force(polar_disk_name) < 0)
 			elog(ERROR, "can't umount PBD %s, id %d", polar_disk_name, polar_hostid);
 		else
 			elog(LOG, "umount PBD %s, id %d success", polar_disk_name, polar_hostid);
-#endif
 		inited = false;
 	}
 
@@ -500,60 +573,142 @@ vfs_umount(int code, Datum arg)
 Datum
 polar_vfs_disk_expansion(PG_FUNCTION_ARGS)
 {
-	char	   *expansion_disk_name = text_to_cstring(PG_GETARG_TEXT_PP(0));
+	char			*expansion_disk_name = text_to_cstring(PG_GETARG_TEXT_PP(0));
+	vfs_state		vstate;
+	vfs_mount_state	*m_state = mount_state;
+	int				rc;
 
 	if (strcmp(expansion_disk_name, polar_disk_name) != 0)
-		elog(ERROR, "expansion_disk_name %s is not equal with polar_disk_name %s, id %d",
-			 expansion_disk_name, polar_disk_name, polar_hostid);
-#ifdef USE_PFSD
-	if (pfsd_mount_growfs(expansion_disk_name) < 0)
-		elog(ERROR, "can't growfs PBD %s, id %d", expansion_disk_name, polar_hostid);
+		elog(ERROR, "expansion_disk_name %s is not equal with polar_disk_name %s, id %d", 
+			expansion_disk_name, polar_disk_name, polar_hostid);
 
-	PG_RETURN_BOOL(true);
-#else
-	PG_RETURN_BOOL(false);
-#endif
+	if (enable_mount_vfs_in_subprocess == false)
+	{
+		if (pfsd_mount_growfs(expansion_disk_name) < 0)
+			elog(ERROR, "can't growfs PBD %s, id %d", expansion_disk_name, polar_hostid);
+
+		PG_RETURN_BOOL(true);
+	}
+
+	if (m_state == NULL)
+		elog(ERROR, "m_state is null");
+
+	vstate = polar_get_vfs_state(m_state);
+	if (vstate == mount_growfs)
+		elog(ERROR, "pfs is expanding");
+	else if (vstate != mount_pfs_done)
+		elog(ERROR, "pfs state in %d, not ready", vstate);
+
+	polar_set_vfs_state(m_state, mount_growfs);
+	while(polar_get_vfs_state(m_state) == mount_growfs)
+	{
+		CHECK_FOR_INTERRUPTS();
+		pg_usleep(100000L);
+	}
+
+	rc = m_state->res_growfs;
+	m_state->res_growfs = 0;
+	if (rc < 0)
+		PG_RETURN_BOOL(false);
+	else
+		PG_RETURN_BOOL(true);
+}
+
+Datum
+polar_vfs_mem_status(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
+	TupleDesc	tupdesc;
+	Tuplestorestate *tupstore;
+	MemoryContext oldcontext;
+	HeapTuple	tuple;
+	Datum		values[5];
+	bool		isnull[5];
+	int64		total = 0;
+
+	if (rsinfo == NULL || !IsA(rsinfo, ReturnSetInfo))
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("set-valued function called in context that cannot accept a set")));
+	if (!(rsinfo->allowedModes & SFRM_Materialize))
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("materialize mode required, but it is not allowed in this context")));
+
+	rsinfo->returnMode = SFRM_Materialize;
+	rsinfo->setResult = NULL;
+	rsinfo->setDesc = NULL;
+
+	tupdesc = CreateTemplateTupleDesc(5, false);
+	TupleDescInitEntry(tupdesc, (AttrNumber) 1, "mem_type",
+						TEXTOID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) 2, "malloc_count",
+						INT8OID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) 3, "malloc_bytes",
+						INT8OID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) 4, "free_count",
+						INT8OID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) 5, "free_bytes",
+						INT8OID, -1, 0);
+
+	oldcontext = MemoryContextSwitchTo(
+							rsinfo->econtext->ecxt_per_query_memory);
+	tupstore = tuplestore_begin_heap(true, false, work_mem);
+	rsinfo->setResult = tupstore;
+	rsinfo->setDesc = tupdesc;
+	MemoryContextSwitchTo(oldcontext);
+
+	memset(isnull, false, sizeof(isnull));
+	memset(values, 0, sizeof(values));
+	values[0] = PointerGetDatum(cstring_to_text("total"));
+	values[1] = Int64GetDatum(0);
+	values[2] = Int64GetDatum(total);
+	values[3] = Int64GetDatum(0);
+	values[4] = Int64GetDatum(0);
+	tuple = heap_form_tuple(tupdesc, values, isnull);
+	tuplestore_puttuple(tupstore, tuple);
+
+	tuplestore_donestoring(tupstore);
+
+	return (Datum) 0;
 }
 
 /*
  * Init polar file system
  * create shared memory and mount file system
  */
-static int
-vfs_mount(void)
+static void
+polar_vfs_init(void)
 {
-	bool		do_force_mount = false;
-	char	   *mode;
-#ifdef USE_PFSD
-	int			flag;
-#endif
+	bool	do_force_mount = false;
+	char	*mode;
+	int		flag;
+	vfs_mount_state		*m_state = mount_state;
 
 	if (!polar_enable_shared_storage_mode)
-		return 1;
+		return;
 
 	if (is_db_in_replica_mode(&do_force_mount))
 	{
 		polar_mount_pfs_readonly_mode = true;
 		mode = "readonly";
-#ifdef USE_PFSD
 		flag = PFS_RD;
-#endif
 	}
 	else
 	{
 		polar_mount_pfs_readonly_mode = false;
 		mode = "readwrite";
-#ifdef USE_PFSD
 		flag = PFS_RDWR;
-#endif
 	}
+
+	elog(LOG, "Database will be in %s mode", mode);
 
 	if (localfs_mode)
 	{
 		if (!POLAR_DIECRTIO_IS_ALIGNED(polar_max_direct_io_size))
 			elog(FATAL, "polar_max_direct_io_size is not aligned!");
 		else if (polar_directio_buffer == NULL &&
-				 posix_memalign((void **) &polar_directio_buffer,
+				 posix_memalign((void **)&polar_directio_buffer,
 								POLAR_DIRECTIO_ALIGN_LEN,
 								polar_max_direct_io_size) != 0)
 		{
@@ -561,15 +716,12 @@ vfs_mount(void)
 		}
 		else
 		{
-			elog(LOG, "pfs in localfs test mode");
-			elog(LOG, "mount pfs %s %s mode success", polar_disk_name, mode);
+			elog(LOG, "pfs in localfs mode");
 			polar_vfs_switch = POLAR_VFS_SWITCH_PLUGIN;
-			inited = true;
-			return 0;
 		}
+		return;
 	}
 
-#ifdef USE_PFSD
 	if (do_force_mount)
 	{
 		flag |= MNTFLG_PAXOS_BYFORCE;
@@ -587,36 +739,34 @@ vfs_mount(void)
 	Assert(inited == false);
 
 	if (polar_storage_cluster_name)
-		elog(LOG, "init pg cluster %s", polar_storage_cluster_name);
+		elog(LOG, "init pangu cluster %s", polar_storage_cluster_name);
 
 	elog(LOG, "begin mount pfs name %s id %d pid %d backendid %d",
-		 polar_disk_name, polar_hostid, MyProcPid, MyBackendId);
+				polar_disk_name, polar_hostid, MyProcPid, MyBackendId);
 	if (pfsd_mount(polar_storage_cluster_name, polar_disk_name,
-				   polar_hostid, flag) < 0)
+				  polar_hostid, flag) < 0)
 		elog(ERROR, "can't mount PBD %s, id %d", polar_disk_name, polar_hostid);
 
+	if (do_force_mount)
+	{
+		Assert(polar_local_node_type == POLAR_MASTER);
+		/* after force mount, clean recovey.done */
+		unlink(RECOVERY_COMMAND_DONE);
+		elog(LOG, "removed file \"%s\"", RECOVERY_COMMAND_DONE);
+	}
+	polar_set_vfs_state(m_state, mount_pfs_done);
 	polar_vfs_switch = POLAR_VFS_SWITCH_PLUGIN;
 	inited = true;
 	elog(LOG, "mount pfs %s %s mode success", polar_disk_name, mode);
-#else
-	elog(ERROR, "PFSD is not support.");
-#endif
-
-	return 0;
 }
 
 /* When read polar_replica = on, we mount pfs use read only mode */
 static bool
 is_db_in_replica_mode(bool *force_mount)
 {
-#define RECOVERY_COMMAND_DONE	"recovery.done"
-
-	/*
-	 * POLAR: ro switch to rw found recovery.done, means we need do force
-	 * mount
-	 */
-	if ((polar_local_node_type == POLAR_MASTER) && pfs_force_mount &&
-		force_mount && file_exists(RECOVERY_COMMAND_DONE))
+	/* POLAR: ro switch to rw found recovery.done, means we need do force mount */
+	if ((polar_local_node_type == POLAR_MASTER) && pfs_force_mount && force_mount &&
+		file_exists(RECOVERY_COMMAND_DONE))
 		*force_mount = true;
 
 	return polar_local_node_type == POLAR_REPLICA;
@@ -642,8 +792,8 @@ init_vfs_global(void)
 
 	if (vfs_dir_descs == NULL)
 	{
-		vfs_dir_desc *new_descs;
-		int			new_max;
+		vfs_dir_desc	*new_descs;
+		int				new_max;
 
 		new_max = MIN_VFS_FD_DIR_SIZE;
 		new_descs = (vfs_dir_desc *) malloc(new_max * sizeof(vfs_dir_desc));
@@ -667,55 +817,111 @@ init_vfs_function(void)
 	if (polar_enable_shared_storage_mode == false)
 		return false;
 
+	if (polar_vfs[POLAR_VFS_SWITCH_PLUGIN].vfs_env_init != NULL)
+	{
+		elog(WARNING, "vfs some of vfs_fun pointer are not NULL");
+		return false;
+	}
+
 	polar_vfs[POLAR_VFS_SWITCH_PLUGIN] = vfs_interface;
 
 	return true;
 }
 
 static int
-vfs_remount(void)
+vfs_env_init(void)
 {
-#ifdef USE_PFSD
-	int			flag = 0;
-#endif
+	int index = polar_get_io_proc_index();
 
+	if (vfs[POLAR_VFS_PFS].vfs_env_init &&
+		localfs_mode == false)
+		vfs[POLAR_VFS_PFS].vfs_env_init();
+
+	memset(&vfs_start, 0, sizeof(vfs_start));
+	INSTR_TIME_SET_CURRENT(vfs_start);
+
+	if (enable_file_size_cache &&
+		AmStartupProcess() &&
+		(polar_local_node_type == POLAR_MASTER ||
+			polar_local_node_type == POLAR_STANDBY))
+		enable_file_size_cache = true;
+	else
+		enable_file_size_cache = false;
+
+	if (PolarIOStatArray && index > 0 && UsedShmemSegAddr != NULL)
+	{
+		PolarIOStatArray[index].pid = MyProcPid ;
+	}
+	
+	return 0;
+}
+
+static int
+vfs_env_destroy(void)
+{
+	if (vfs[POLAR_VFS_PFS].vfs_env_destroy &&
+		localfs_mode == false)
+		vfs[POLAR_VFS_PFS].vfs_env_destroy();
+
+	vfs_timer_end(&vfs_end);
+	if (enable_file_size_cache && AmStartupProcess())
+	{
+		elog(LOG, "startup process %d complete: cost %.3f s.",
+				(int)getpid(), INSTR_TIME_GET_DOUBLE(vfs_end));
+	}
+
+	return 0;
+}
+
+static int
+vfs_mount(void)
+{
 	if (localfs_mode)
 	{
 		elog(LOG, "pfs in localfs mode");
 		return 0;
 	}
 
-#ifdef USE_PFSD
+	return 0;
+}
+
+static int
+vfs_remount(void)
+{
+	int		flag;
+	if (localfs_mode)
+	{
+		elog(LOG, "pfs in localfs mode");
+		return 0;
+	}
+
 	polar_mount_pfs_readonly_mode = false;
 	flag = PFS_RDWR;
 
 	if (file_exists(RECOVERY_COMMAND_DONE))
-		flag |= PFS_PAXOS_BYFORCE;
+		flag |=PFS_PAXOS_BYFORCE;
 
 	elog(LOG, "begin remount pfs name %s id %d pid %d backendid %d flag=%x",
-		 polar_disk_name, polar_hostid, MyProcPid, MyBackendId, flag);
-
+				polar_disk_name, polar_hostid, MyProcPid, MyBackendId, flag);
 	if (pfsd_remount(polar_storage_cluster_name, polar_disk_name,
-					 polar_hostid, flag) < 0)
+				  polar_hostid, flag) < 0)
 		elog(ERROR, "can't mount PBD %s, id %d", polar_disk_name, polar_hostid);
 	/* after remount, clean recovey.done */
 	unlink(RECOVERY_COMMAND_DONE);
 	elog(LOG, "removed file \"%s\"", RECOVERY_COMMAND_DONE);
 	elog(LOG, "remount pfs %s readwrite mode success", polar_disk_name);
-#else
-	elog(ERROR, "PFSD is not support.");
-#endif
 	return 0;
 }
 
 static int
 vfs_creat(const char *path, mode_t mode)
 {
-	int			file = vfs_allocate_vfd();
-	vfs_vfd    *vfdP = &vfs_vfd_cache[file];
+	int		file = vfs_allocate_vfd();
 	const char *vfs_path;
+	vfs_vfd		*vfdP = &vfs_vfd_cache[file];
 
 	elog(LOG, "vfs creat file %s, fd %d file %d num open file %d", vfdP->file_name, vfdP->fd, file, num_open_file);
+
 	vfs_path = polar_vfs_file_type_and_path(path, &(vfdP->kind));
 	vfdP->type = vfs_data_type(path);
 	/*begin stat info for io, wait_time, wait_object*/
@@ -739,7 +945,7 @@ vfs_creat(const char *path, mode_t mode)
 	}
 
 	Assert(vfdP->file_name == NULL);
-	vfdP->file_name = strdup(path);
+	vfdP->file_name = strdup(path);	
 	vfdP->file_size = 0;
 	num_open_file++;
 
@@ -750,8 +956,8 @@ static int
 vfs_open(const char *path, int flags, mode_t mode)
 {
 	int			file = -1;
-	vfs_vfd    *vfdP = NULL;
-	const char *vfs_path;
+	vfs_vfd		*vfdP = NULL;
+	const char	*vfs_path;
 
 	if (path == NULL)
 		return -1;
@@ -759,6 +965,7 @@ vfs_open(const char *path, int flags, mode_t mode)
 	file = vfs_allocate_vfd();
 	vfdP = &vfs_vfd_cache[file];
 	elog(DEBUG1, "vfs open file %s num open file %d", path, num_open_file);
+	
 	vfs_path = polar_vfs_file_type_and_path(path, &(vfdP->kind));
 	vfdP->type = vfs_data_type(path);
 	/*begin stat info for io, wait_time, wait_object*/
@@ -772,18 +979,18 @@ vfs_open(const char *path, int flags, mode_t mode)
 	polar_stat_wait_obj_and_time_clear();
 	polar_stat_io_open_info(vfdP->kind,vfdP->type);
 	errno = save_errno;
+	/* end */
 	if (vfdP->fd < 0)
 	{
 		save_errno = errno;
-
 		pgstat_report_wait_end();
 		vfs_free_vfd(file);
 		errno = save_errno;
 		return -1;
 	}
-
+	pgstat_report_wait_end();
 	Assert(vfdP->file_name == NULL);
-	vfdP->file_name = strdup(path);
+	vfdP->file_name = strdup(path);	
 	vfdP->file_size = 0;
 	num_open_file++;
 
@@ -793,7 +1000,7 @@ vfs_open(const char *path, int flags, mode_t mode)
 static int
 vfs_close(int file)
 {
-	vfs_vfd    *vfdP = NULL;
+	vfs_vfd		*vfdP = NULL;
 
 	vfdP = vfs_find_file(file);
 	elog(DEBUG1, "vfs close file %s, fd %d file %d num open file %d", vfdP->file_name, vfdP->fd, file, num_open_file);
@@ -816,10 +1023,11 @@ vfs_close(int file)
 static ssize_t
 vfs_write(int file, const void *buf, size_t len)
 {
-	vfs_vfd    *vfdP = NULL;
+	vfs_vfd		*vfdP = NULL;
 	ssize_t		res = -1;
 
 	vfdP = vfs_find_file(file);
+
 	/*begin stat info for io, wait_time, wait_object*/
 	polar_vfs_timer_begin_iostat();
 	polar_stat_wait_obj_and_time_set(vfdP->fd, &tmp_io_start, PGPROC_WAIT_FD);
@@ -831,14 +1039,18 @@ vfs_write(int file, const void *buf, size_t len)
 	polar_stat_io_write_info(vfdP->kind, vfdP->type, res);
 	polar_stat_wait_obj_and_time_clear();
 	errno = save_errno;
+	/* end */
 
+	if (unlikely(polar_vfs_debug))
+		elog(LOG, "vfs_write file: %s, buf: 0x%lx, len: 0x%lx, kind: %d, type: %d",
+				  vfdP->file_name, (unsigned long)buf, len, vfdP->kind, vfdP->type);
 	return res;
 }
 
 static ssize_t
 vfs_read(int file, void *buf, size_t len)
 {
-	vfs_vfd    *vfdP = NULL;
+	vfs_vfd		*vfdP = NULL;
 	ssize_t		res = -1;
 
 	vfdP = vfs_find_file(file);
@@ -847,20 +1059,27 @@ vfs_read(int file, void *buf, size_t len)
 	polar_stat_wait_obj_and_time_set(vfdP->fd, &tmp_io_start, PGPROC_WAIT_FD);
 	/* end */
 	errno = 0;
+	/* POLAR: global io read throughtput timer begin */
+	polar_vfs_timer_begin_read_iostat();
 	res = vfs[vfdP->kind].vfs_read(vfdP->fd, buf, len);
+	/* POLAR: global io read throughtput timer end */
+	polar_vfs_timer_end_read_iostat(res);
 	/*end stat info for io, wait_time, wait_object*/
 	save_errno = errno;
 	polar_stat_io_read_info(vfdP->kind, vfdP->type, res);
 	polar_stat_wait_obj_and_time_clear();
 	errno = save_errno;
-	
+	/* end */
+	if (unlikely(polar_vfs_debug))
+		elog(LOG, "vfs_read file: %s, buf: 0x%lx, len: 0x%lx, kind: %d, type: %d",
+				  vfdP->file_name, (unsigned long)buf, len, vfdP->kind, vfdP->type);
 	return res;
 }
 
 static ssize_t
 vfs_pread(int file, void *buf, size_t len, off_t offset)
 {
-	vfs_vfd    *vfdP = NULL;
+	vfs_vfd		*vfdP = NULL;
 	ssize_t		res = -1;
 
 	vfdP = vfs_find_file(file);
@@ -869,21 +1088,28 @@ vfs_pread(int file, void *buf, size_t len, off_t offset)
 	polar_stat_wait_obj_and_time_set(vfdP->fd, &tmp_io_start, PGPROC_WAIT_FD);
 	/* end */
 	errno = 0;
+	/* POLAR: global io read throughtput timer begin */
+	polar_vfs_timer_begin_read_iostat();
 	res = vfs[vfdP->kind].vfs_pread(vfdP->fd, buf, len, offset);
+	/* POLAR: global io read throughtput timer end */
+	polar_vfs_timer_end_read_iostat(res);
 	/*end stat info for io, wait_time, wait_object*/
 	save_errno = errno;
 	polar_stat_io_read_info(vfdP->kind, vfdP->type, res);
 	polar_stat_wait_obj_and_time_clear();
 	errno = save_errno;
 	/* end */
+	if (unlikely(polar_vfs_debug))
+		elog(LOG, "vfs_pread file: %s, buf: 0x%lx, len: 0x%lx, offset: 0x%lx, kind: %d, type: %d",
+				  vfdP->file_name, (unsigned long)buf, len, offset, vfdP->kind, vfdP->type);
 	return res;
 }
 
 static ssize_t
 vfs_pwrite(int file, const void *buf, size_t len, off_t offset)
 {
-	vfs_vfd    *vfdP = NULL;
-	ssize_t		res = -1;
+	vfs_vfd		*vfdP = NULL;
+	ssize_t 	res = -1;
 
 	vfdP = vfs_find_file(file);
 	/*begin stat info for io, wait_time, wait_object*/
@@ -898,7 +1124,14 @@ vfs_pwrite(int file, const void *buf, size_t len, off_t offset)
 	polar_stat_wait_obj_and_time_clear();
 	errno = save_errno;
 	/* end */
+	if (enable_file_size_cache &&
+		res > 0 &&
+		vfdP->file_size < len + offset)
+		vfdP->file_size = len + offset;
 
+	if (unlikely(polar_vfs_debug))
+		elog(LOG, "vfs_pwrite file: %s, buf: 0x%lx, len: 0x%lx, offset: 0x%lx, kind: %d, type: %d",
+				  vfdP->file_name, (unsigned long)buf, len, offset, vfdP->kind, vfdP->type);
 	return res;
 }
 
@@ -907,7 +1140,7 @@ vfs_stat(const char *path, struct stat *buf)
 {
 	int			rc = -1;
 	int			kind = -1;
-	const char *vfs_path;
+	const char	*vfs_path;
 
 	if (path == NULL)
 		return -1;
@@ -921,7 +1154,7 @@ vfs_stat(const char *path, struct stat *buf)
 static int
 vfs_fstat(int file, struct stat *buf)
 {
-	vfs_vfd    *vfdP = NULL;
+	vfs_vfd		*vfdP = NULL;
 	int			rc = 0;
 
 	vfdP = vfs_find_file(file);
@@ -935,7 +1168,7 @@ vfs_lstat(const char *path, struct stat *buf)
 {
 	int			rc = -1;
 	int			kind = -1;
-	const char *vfs_path;
+	const char	*vfs_path;
 
 	if (path == NULL)
 		return -1;
@@ -949,9 +1182,8 @@ vfs_lstat(const char *path, struct stat *buf)
 static off_t
 vfs_lseek(int file, off_t offset, int whence)
 {
-	vfs_vfd    *vfdP = NULL;
+	vfs_vfd		*vfdP = NULL;
 	off_t		rc = 0;
-
 	vfdP = vfs_find_file(file);
 	/*begin stat info for io, wait_time, wait_object*/
 	polar_vfs_timer_begin_iostat();
@@ -965,6 +1197,30 @@ vfs_lseek(int file, off_t offset, int whence)
 	polar_stat_io_seek_info(vfdP->kind,vfdP->type);
 	polar_stat_wait_obj_and_time_clear();
 	errno = save_errno;
+	/* end */
+	if (enable_file_size_cache &&
+		whence == SEEK_END &&
+		rc > 0 &&
+		vfdP->file_size != rc)
+		vfdP->file_size = rc;
+
+	return rc;
+}
+
+static off_t
+vfs_lseek_cache(int file, off_t offset, int whence)
+{
+	vfs_vfd		*vfdP = NULL;
+	off_t		rc = 0;
+
+	vfdP = vfs_find_file(file);
+	if (enable_file_size_cache &&
+		vfdP->file_size != 0)
+	{
+		return vfdP->file_size;
+	}
+
+	rc = vfs_lseek(file, offset, whence);
 
 	return rc;
 }
@@ -972,9 +1228,9 @@ vfs_lseek(int file, off_t offset, int whence)
 int
 vfs_access(const char *path, int mode)
 {
-	int			rc = -1;
-	int			kind = -1;
-	const char *vfs_path;
+	int		rc = -1;
+	int		kind = -1;
+	const char	*vfs_path;
 
 	if (path == NULL)
 		return -1;
@@ -988,7 +1244,7 @@ vfs_access(const char *path, int mode)
 static int
 vfs_fsync(int file)
 {
-	vfs_vfd    *vfdP = NULL;
+	vfs_vfd		*vfdP = NULL;
 	int			rc = 0;
 
 	vfdP = vfs_find_file(file);
@@ -1003,16 +1259,15 @@ vfs_fsync(int file)
 	polar_stat_wait_obj_and_time_clear();
 	errno = save_errno;
 	/* end */
-
 	return rc;
 }
 
 static int
 vfs_unlink(const char *fname)
 {
-	int			rc = -1;
-	int			kind = -1;
-	const char *vfs_path;
+	int		rc = -1;
+	int		kind = -1;
+	const char	*vfs_path;
 
 	if (fname == NULL)
 		return -1;
@@ -1030,8 +1285,8 @@ vfs_rename(const char *oldfile, const char *newfile)
 	int			rc = -1;
 	int			kindold = -1;
 	int			kindnew = -1;
-	const char *vfs_old_path;
-	const char *vfs_new_path;
+	const char	*vfs_old_path;
+	const char	*vfs_new_path;
 
 	if (oldfile == NULL || newfile == NULL)
 		return -1;
@@ -1050,7 +1305,7 @@ vfs_rename(const char *oldfile, const char *newfile)
 static int
 vfs_fallocate(int file, off_t offset, off_t len)
 {
-	vfs_vfd    *vfdP = NULL;
+	vfs_vfd		*vfdP = NULL;
 	int			rc = 0;
 
 	vfdP = vfs_find_file(file);
@@ -1064,19 +1319,21 @@ vfs_fallocate(int file, off_t offset, off_t len)
 	polar_stat_io_falloc_info(vfdP->kind, vfdP->type);
 	errno = save_errno;
 	/* end */
-
 	return rc;
 }
 
 static int
 vfs_ftruncate(int file, off_t len)
 {
-	vfs_vfd    *vfdP = NULL;
+	vfs_vfd		*vfdP = NULL;
 	int			rc = 0;
 
 	vfdP = vfs_find_file(file);
 	elog(LOG, "vfs_ftruncate from %s", vfdP->file_name);
 	rc = vfs[vfdP->kind].vfs_ftruncate(vfdP->fd, len);
+
+	if (rc == 0 && enable_file_size_cache)
+		vfdP->file_size = len;
 
 	return rc;
 }
@@ -1086,7 +1343,7 @@ vfs_opendir(const char *dirname)
 {
 	DIR		   *dir = NULL;
 	int			kind = -1;
-	const char *vfs_path;
+	const char	*vfs_path;
 
 	if (dirname == NULL)
 		return NULL;
@@ -1102,7 +1359,6 @@ vfs_opendir(const char *dirname)
 	if (dir != NULL)
 	{
 		vfs_dir_desc *desc = &vfs_dir_descs[num_vfs_dir_descs];
-
 		desc->kind = kind;
 		desc->dir = dir;
 		num_vfs_dir_descs++;
@@ -1116,7 +1372,7 @@ vfs_opendir(const char *dirname)
 static struct dirent *
 vfs_readdir(DIR *dir)
 {
-	int			i;
+	int		i;
 
 	if (dir == NULL)
 		return NULL;
@@ -1137,8 +1393,8 @@ vfs_readdir(DIR *dir)
 static int
 vfs_closedir(DIR *dir)
 {
-	int			i;
-	int			result = -1;
+	int		i;
+	int		result = -1;
 
 	for (i = num_vfs_dir_descs; --i >= 0;)
 	{
@@ -1153,7 +1409,7 @@ vfs_closedir(DIR *dir)
 			if (i == num_vfs_dir_descs)
 			{
 				desc->dir = NULL;
-				desc->kind = VFS_UNKNOWN_FILE;
+				desc->kind = POLAR_VFS_UNKNOWN_FILE;
 			}
 			else
 			{
@@ -1174,14 +1430,13 @@ vfs_mkdir(const char *path, mode_t mode)
 {
 	int			rc = -1;
 	int			kind = -1;
-	const char *vfs_path;
+	const char	*vfs_path;
 
 	if (path == NULL)
 		return -1;
 
 	vfs_path = polar_vfs_file_type_and_path(path, &kind);
 	rc = vfs[kind].vfs_mkdir(vfs_path, mode);
-
 	return rc;
 }
 
@@ -1190,7 +1445,7 @@ vfs_rmdir(const char *path)
 {
 	int			rc = -1;
 	int			kind = -1;
-	const char *vfs_path;
+	const char	*vfs_path;
 
 	if (path == NULL)
 		return -1;
@@ -1209,14 +1464,13 @@ vfs_rmdir(const char *path)
 static inline const char *
 polar_vfs_file_type_and_path(const char *path, int *kind)
 {
-	int			i;
-	int			vfs_kind_len;
+	int i;
+	int vfs_kind_len;
 	const char *vfs_path = path;
-
-	*kind = VFS_UNKNOWN_FILE;
+	*kind = POLAR_VFS_UNKNOWN_FILE;
 	if (path != NULL)
 	{
-		for (i = 0; i < VFS_KIND_MAX; i++)
+		for (i = 0; i < POLAR_VFS_KIND_SIZE; i ++)
 		{
 			vfs_kind_len = strlen(polar_vfs_kind[i]);
 			if (strncmp(polar_vfs_kind[i], path, vfs_kind_len) == 0)
@@ -1227,7 +1481,7 @@ polar_vfs_file_type_and_path(const char *path, int *kind)
 			}
 		}
 	}
-	if (*kind == VFS_UNKNOWN_FILE)
+	if (*kind == POLAR_VFS_UNKNOWN_FILE)
 		*kind = vfs_file_type(path);
 	return vfs_path;
 }
@@ -1237,38 +1491,33 @@ static inline int
 vfs_file_type(const char *path)
 {
 	static int	polar_disk_strsize = 0;
-	int			strpathlen = 0;
+	int		strpathlen = 0;
 
 	if (localfs_mode)
-		return VFS_LOCAL_FILE;
+		return POLAR_VFS_LOCAL_BIO;
 
 	if (path == NULL)
-		return VFS_LOCAL_FILE;
+		return POLAR_VFS_LOCAL_BIO;
 
 	if (polar_disk_strsize == 0)
 		polar_disk_strsize = strlen(polar_disk_name);
 
 	strpathlen = strlen(path);
 	if (strpathlen <= 1)
-		return VFS_LOCAL_FILE;
+		return POLAR_VFS_LOCAL_BIO;
 
 	if (strpathlen < polar_disk_strsize + 1)
-		return VFS_LOCAL_FILE;
+		return POLAR_VFS_LOCAL_BIO;
 
 	if (path[0] != '/')
-		return VFS_LOCAL_FILE;
+		return POLAR_VFS_LOCAL_BIO;
 
 	if (strncmp(polar_disk_name, path + 1, polar_disk_strsize) == 0)
 	{
-#ifdef USE_PFSD
-		return VFS_PFS_FILE;
-#else
-		elog(LOG, "PFSD interface is not support.");
-		return VFS_UNKNOWN_FILE;
-#endif
+		return POLAR_VFS_PFS;
 	}
 
-	return VFS_LOCAL_FILE;
+	return POLAR_VFS_LOCAL_BIO;
 }
 
 /* Determine if the datatype is data ,xlog , clog ... and so on*/
@@ -1299,209 +1548,6 @@ vfs_data_type(const char *path)
 		return POLARIO_OTHER;
 }
 
-static inline void
-polar_vfs_timer_begin_iostat(void)
-{
-	if(enable_io_time_stat)
-		INSTR_TIME_SET_CURRENT(tmp_io_start);
-	else
-		INSTR_TIME_SET_ZERO(tmp_io_start);	
-}
-
-static inline void
-polar_vfs_timer_end_iostat(instr_time *time, int kind)
-{
-	if (!enable_io_time_stat)
-		return;
-
-	INSTR_TIME_SET_CURRENT(tmp_io_time);
-	INSTR_TIME_SUBTRACT(tmp_io_time, tmp_io_start);
-
-	if (INSTR_TIME_GET_DOUBLE(tmp_io_time) > 1000 )
-	{
-		elog(WARNING, "This io time took %lf seconds, which is abnormal and we will not count."
-				, INSTR_TIME_GET_DOUBLE(tmp_io_time));
-		return;
-	}
-
-	polar_set_distribution_interval(&tmp_io_time, kind);
-	if (time)
-		INSTR_TIME_ADD(*time, tmp_io_time);
-}
-
-/* As easy as understanding its function name */
-static void 
-polar_stat_io_open_info(int vfdkind, int vfdtype)
-{
-	if (PolarIOStatArray != NULL)
-	{
-		int index, loc;
-		index = polar_get_io_proc_index();
-		if (index < 0)
-			return;
-		loc = polario_kind_to_location(vfdkind);
-		if (loc < 0 || loc >= POLARIO_LOC_SIZE)
-		{
-			elog(WARNING, "polar io stat does not recognize that: kind = %d, loc = %d", vfdkind, loc);
-			return;
-		}
-		polar_vfs_timer_end_iostat(&PolarIOStatArray[index].polar_proc_io_stat_dist[vfdtype][loc].io_open_time, LATENCY_open);
-		PolarIOStatArray[index].polar_proc_io_stat_dist[vfdtype][loc].io_open_num++;
-		PolarIOStatArray[index].pid = MyProcPid ;
-	}
-}
-
-/* As easy as understanding its function name */
-static void
-polar_stat_io_close_info(int vfdkind, int vfdtype)
-{
-	if (PolarIOStatArray != NULL)
-	{
-		int index, loc;
-		index = polar_get_io_proc_index();
-		if (index < 0)
-			return;
-		loc = polario_kind_to_location(vfdkind);
-		if (loc < 0 || loc >= POLARIO_LOC_SIZE)
-			return;
-		PolarIOStatArray[index].polar_proc_io_stat_dist[vfdtype][loc].io_close_num++;
-	}
-}
-
-/* As easy as understanding its function name */
-static void
-polar_stat_io_read_info(int vfdkind, int vfdtype,ssize_t size)
-{
-	if (PolarIOStatArray != NULL)
-	{
-		int index, loc;
-		index = polar_get_io_proc_index();
-		if (index < 0)
-			return;
-		loc = polario_kind_to_location(vfdkind);
-		if (loc < 0 || loc >= POLARIO_LOC_SIZE)
-			return;
-		polar_vfs_timer_end_iostat(&PolarIOStatArray[index].polar_proc_io_stat_dist[vfdtype][loc].io_latency_read, LATENCY_read);
-		PolarIOStatArray[index].polar_proc_io_stat_dist[vfdtype][loc].io_number_read++;
-		PolarIOStatArray[index].polar_proc_io_stat_dist[vfdtype][loc].io_throughtput_read += size;
-	}
-}
-
-/* As easy as understanding its function name */
-static void
-polar_stat_io_write_info(int vfdkind, int vfdtype, ssize_t size)
-{
-	if (PolarIOStatArray != NULL)
-	{
-		int index, loc;
-		index = polar_get_io_proc_index();
-		if (index < 0)
-			return;
-		loc = polario_kind_to_location(vfdkind);
-		if (loc < 0 || loc >= POLARIO_LOC_SIZE)
-			return;
-		polar_vfs_timer_end_iostat(&PolarIOStatArray[index].polar_proc_io_stat_dist[vfdtype][loc].io_latency_write, LATENCY_write);
-		PolarIOStatArray[index].polar_proc_io_stat_dist[vfdtype][loc].io_number_write++;
-		PolarIOStatArray[index].polar_proc_io_stat_dist[vfdtype][loc].io_throughtput_write += size;
-	}
-}
-
-static void
-polar_stat_io_seek_info(int vfdkind, int vfdtype)
-{
-	if (PolarIOStatArray != NULL)
-	{
-		int index, loc;
-		index = polar_get_io_proc_index();
-		if (index < 0)
-			return;
-		loc = polario_kind_to_location(vfdkind);
-		if (loc < 0 || loc >= POLARIO_LOC_SIZE)
-			return;
-		polar_vfs_timer_end_iostat(&PolarIOStatArray[index].polar_proc_io_stat_dist[vfdtype][loc].io_seek_time, LATENCY_seek);
-		PolarIOStatArray[index].polar_proc_io_stat_dist[vfdtype][loc].io_seek_count++;
-	}
-}
-
-static void
-polar_stat_io_creat_info(int vfdkind, int vfdtype)
-{
-	if (PolarIOStatArray != NULL)
-	{
-		int index, loc;
-		index = polar_get_io_proc_index();
-		if (index < 0)
-			return;
-		loc = polario_kind_to_location(vfdkind);
-		if (loc < 0 || loc >= POLARIO_LOC_SIZE)
-			return;
-		polar_vfs_timer_end_iostat(&PolarIOStatArray[index].polar_proc_io_stat_dist[vfdtype][loc].io_creat_time, LATENCY_creat);
-		PolarIOStatArray[index].polar_proc_io_stat_dist[vfdtype][loc].io_creat_count++;
-	}
-}
-
-static void
-polar_stat_io_falloc_info(int vfdkind, int vfdtype)
-{
-	if (PolarIOStatArray != NULL)
-	{
-		int index, loc;
-		index = polar_get_io_proc_index();
-		if (index < 0)
-			return;
-		loc = polario_kind_to_location(vfdkind);
-		if (loc < 0 || loc >= POLARIO_LOC_SIZE)
-			return;
-		polar_vfs_timer_end_iostat(&PolarIOStatArray[index].polar_proc_io_stat_dist[vfdtype][loc].io_falloc_time, LATENCY_falloc);
-		PolarIOStatArray[index].polar_proc_io_stat_dist[vfdtype][loc].io_falloc_count++;
-	}
-}
-
-static void 
-polar_stat_io_fsync_info(int vfdkind, int vfdtype)
-{
-	if (PolarIOStatArray != NULL)
-	{
-		int index, loc;
-		index = polar_get_io_proc_index();
-		if (index < 0)
-			return;
-		loc = polario_kind_to_location(vfdkind);
-		if (loc < 0 || loc >= POLARIO_LOC_SIZE)
-			return;
-		polar_vfs_timer_end_iostat(&PolarIOStatArray[index].polar_proc_io_stat_dist[vfdtype][loc].io_fsync_time, LATENCY_fsync);
-		PolarIOStatArray[index].polar_proc_io_stat_dist[vfdtype][loc].io_fsync_count++;
-	}
-}
-
-static inline void
-polar_set_distribution_interval(instr_time *intervaltime, int kind)
-{
-	int index = polar_get_io_proc_index();
-	int 		interval;
-	uint64 		valus = 0;
-
-	if (index < 0)
-		return;
-
-	if(kind >= LATENCY_KIND_LEN)
-		return ;
-
-	valus = INSTR_TIME_GET_MICROSEC(*intervaltime);
-
-	if (valus < 1000)
-		interval =	valus/200;
-	else if (valus < 10000)
-		interval = LATENCY_10ms;
-	else if (valus < 100000)
-	 	interval = LATENCY_100ms;
-	else
-		interval = LATENCY_OUT;
-	
-	if (PolarIOStatArray)
-		PolarIOStatArray[index].num_latency_dist[kind][interval]++;
-}
-
 /* local file fd cache */
 static inline int
 vfs_allocate_vfd(void)
@@ -1513,10 +1559,14 @@ vfs_allocate_vfd(void)
 
 	Assert(size_vfd_cache > 0);
 
+	/* polar wal pipeline */
+	if (multi_thread_vfs)
+		SpinLockAcquire(&polar_wal_pipeline_vfs_lck);
+
 	if (vfs_vfd_cache[0].next_free == 0)
 	{
 		Size		new_cache_size = size_vfd_cache * 2;
-		vfs_vfd    *new_vfd_cache;
+		vfs_vfd		*new_vfd_cache;
 
 		if (new_cache_size < 32)
 			new_cache_size = 32;
@@ -1542,16 +1592,20 @@ vfs_allocate_vfd(void)
 	file = vfs_vfd_cache[0].next_free;
 	vfs_vfd_cache[0].next_free = vfs_vfd_cache[file].next_free;
 
+	/* polar wal pipeline */
+	if (multi_thread_vfs)
+		SpinLockRelease(&polar_wal_pipeline_vfs_lck);
+
 	return file;
 }
 
 static inline void
 vfs_free_vfd(int file)
 {
-	vfs_vfd    *vfdP = &vfs_vfd_cache[file];
+	vfs_vfd		   *vfdP = &vfs_vfd_cache[file];
 
 	elog(DEBUG1, "vfs_free_vfd: %d (%s)",
-		 file, vfdP->file_name ? vfdP->file_name : "");
+			   file, vfdP->file_name ? vfdP->file_name : "");
 
 	if (vfdP->file_name != NULL)
 	{
@@ -1559,17 +1613,25 @@ vfs_free_vfd(int file)
 		vfdP->file_name = NULL;
 	}
 
-	vfdP->kind = VFS_UNKNOWN_FILE;
+	/* polar wal pipeline */
+	if (multi_thread_vfs)
+		SpinLockAcquire(&polar_wal_pipeline_vfs_lck);
+
+	vfdP->kind = POLAR_VFS_UNKNOWN_FILE;
 	vfdP->file_size = 0;
 	vfdP->next_free = vfs_vfd_cache[0].next_free;
 	vfs_vfd_cache[0].next_free = file;
+
+	/* polar wal pipeline */
+	if (multi_thread_vfs)
+		SpinLockRelease(&polar_wal_pipeline_vfs_lck);
 }
 
 static inline bool
 vfs_allocated_dir(void)
 {
-	vfs_dir_desc *new_descs;
-	int			new_max;
+	vfs_dir_desc	*new_descs;
+	int				new_max;
 
 	if (num_vfs_dir_descs < max_vfs_dir_descs)
 		return true;
@@ -1580,7 +1642,7 @@ vfs_allocated_dir(void)
 	if (new_max > max_vfs_dir_descs)
 	{
 		new_descs = (vfs_dir_desc *) realloc(vfs_dir_descs,
-											 new_max * sizeof(vfs_dir_desc));
+											new_max * sizeof(vfs_dir_desc));
 		if (new_descs == NULL)
 			ereport(ERROR,
 					(errcode(ERRCODE_OUT_OF_MEMORY),
@@ -1602,19 +1664,68 @@ vfs_find_file(int file)
 	return &vfs_vfd_cache[file];
 }
 
+static inline void
+polar_vfs_timer_begin_iostat(void)
+{
+	if(enable_io_time_stat)
+		INSTR_TIME_SET_CURRENT(tmp_io_start);
+	else
+		INSTR_TIME_SET_ZERO(tmp_io_start);	
+}
+
+static inline void
+polar_vfs_timer_begin_read_iostat(void)
+{
+	if (PolarGlobalIOReadStats != NULL &&
+		PolarGlobalIOReadStats->count < polar_crash_recovery_rto_statistics_count)
+	{
+		INSTR_TIME_SET_CURRENT(tmp_io_read_start);
+	}
+}
+
+static inline void
+vfs_timer_end(instr_time *time)
+{
+	if (!enable_io_time_stat)
+		return;
+
+	INSTR_TIME_SET_CURRENT(tmp_io_time);
+	INSTR_TIME_SUBTRACT(tmp_io_time, vfs_start);
+
+	if (time)
+		INSTR_TIME_ADD(*time, tmp_io_time);
+}
+
+static inline void
+polar_vfs_timer_end_iostat(instr_time *time, int kind)
+{
+	if (!enable_io_time_stat)
+		return;
+
+	INSTR_TIME_SET_CURRENT(tmp_io_time);
+	INSTR_TIME_SUBTRACT(tmp_io_time, tmp_io_start);
+
+	if (INSTR_TIME_GET_DOUBLE(tmp_io_time) > 1000 )
+	{
+		elog(WARNING, "This io time took %lf seconds, which is abnormal and we will not count."
+				, INSTR_TIME_GET_DOUBLE(tmp_io_time));
+		return;
+	}
+
+	polar_set_distribution_interval(&tmp_io_time, kind);
+	if (time)
+		INSTR_TIME_ADD(*time, tmp_io_time);
+}
+
 Datum
 polar_libpfs_version(PG_FUNCTION_ARGS)
 {
-	char		libpfs_version[MAXPGPATH] = {0};
-#ifdef USE_PFSD
-	int64		version_num = pfsd_meta_version_get();
-	const char *version_str = pfsd_build_version_get();
+	int64 version_num = pfsd_meta_version_get();
+	const char	*version_str = pfsd_build_version_get();
+	char	libpfs_version[MAXPGPATH] = {0};
 
-	snprintf(libpfs_version, MAXPGPATH - 1, "%s version number " INT64_FORMAT "", version_str, version_num);
-#else
-	snprintf(libpfs_version, MAXPGPATH - 1, "PFSD is not support.");
-#endif
-	PG_RETURN_TEXT_P(cstring_to_text(libpfs_version));
+	snprintf(libpfs_version, MAXPGPATH-1, "%s version number "INT64_FORMAT"", version_str, version_num);
+        PG_RETURN_TEXT_P(cstring_to_text(libpfs_version));
 }
 
 static bool
@@ -1634,12 +1745,504 @@ file_exists(const char *name)
 	return false;
 }
 
-static const vfs_mgr *
+void
+polar_vfs_mount_main(Datum main_arg)
+{
+	vfs_mount_state		*m_state = mount_state;
+
+	/* Establish signal handlers; once that's done, unblock signals. */
+	pqsignal(SIGTERM, polar_worker_sigterm_handler);
+	pqsignal(SIGHUP, polar_worker_sighup_handler);
+	pqsignal(SIGUSR1, procsignal_sigusr1_handler);
+	pqsignal(SIGUSR2, polar_request_shutdown_handler);	/* request shutdown */
+	pqsignal(SIGQUIT, polar_vfs_quickdie);	/* hard crash time */
+
+	BackgroundWorkerUnblockSignals();
+
+	if (m_state == NULL)
+	{
+		elog(WARNING, "pfs share memory state abnormal");
+		proc_exit(1);
+	}
+
+	elog(LOG, "pfs mount process init done");
+
+	/* Periodically prealloc wal file until terminated. */
+	while (1)
+	{
+		int			rc;
+		vfs_state	vstate;
+
+		/* In case of a SIGHUP, just reload the configuration. */
+		if (got_sighup)
+		{
+			elog(LOG, "polar vfs process got sighup");
+			got_sighup = false;
+			ProcessConfigFile(PGC_SIGHUP);
+		}
+
+		if (got_sigterm)
+		{
+			elog(LOG, "polar vfs process got sigterm");
+			got_sigterm = false;
+		}
+
+		if(shutdown_requested)
+		{
+			elog(LOG, "polar vfs process got shutdown requested");
+			if (polar_get_vfs_state(m_state) == mount_pfs_done)
+			{
+				elog(LOG, "begin exec pfs_umount_in_subprocess in subprocess");
+				if (pfsd_umount_force(polar_disk_name) < 0)
+					elog(ERROR, "can't umount PBD %s, id %d", polar_disk_name, polar_hostid);
+				else
+					elog(LOG, "umount PBD %s, id %d in subprocess success", polar_disk_name, polar_hostid);
+			}
+
+			break;
+		}
+
+		vstate = polar_get_vfs_state(m_state);
+		if (vstate == mount_pfs_action)
+		{
+			int	mount_flag = m_state->mount_flag;
+			int	rc = pfsd_mount(polar_storage_cluster_name, polar_disk_name,
+							polar_hostid, mount_flag);
+			if (rc < 0)
+			{
+				snprintf(m_state->errmsg, MAXPGPATH, "can't mount PBD %s, id %d rc %d",
+							polar_disk_name, polar_hostid, rc);
+				polar_set_vfs_state(m_state, action_fail);
+
+				elog(WARNING, "mount pfs in subprocess faid, process exit");
+				proc_exit(1);
+			}
+			elog(LOG, "mount pfs in subprocess success");
+			polar_set_vfs_state(m_state, mount_pfs_done);
+		}
+		else if (vstate == remount_pfs_action)
+		{
+			int	mount_flag = m_state->mount_flag;
+			int	rc = pfsd_remount(polar_storage_cluster_name, polar_disk_name,
+							polar_hostid, mount_flag);
+			if (rc < 0)
+			{
+				snprintf(m_state->errmsg, MAXPGPATH, "can't remount PBD %s, id %d rc %d",
+							polar_disk_name, polar_hostid, rc);
+				polar_set_vfs_state(m_state, action_fail);
+				elog(WARNING, "remount pfs in subprocess faid, process exit");
+				proc_exit(1);
+			}
+			elog(LOG, "remount pfs in subprocess success");
+			polar_set_vfs_state(m_state, mount_pfs_done);
+		}
+		else if (vstate == mount_growfs)
+		{
+			rc = pfsd_mount_growfs(polar_disk_name);
+			if (rc < 0)
+				elog(WARNING, "can't growfs PBD %s, id %d", polar_disk_name, polar_hostid);
+
+			m_state->res_growfs = rc;
+			elog(LOG, "run pfs_mount_growfs done");
+			polar_set_vfs_state(m_state, mount_pfs_done);
+		}
+
+		/* Sleep until the next prealloc wal file time. */
+		rc = WaitLatch(&MyProc->procLatch,
+					   WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH,
+					   100L,
+					   PG_WAIT_EXTENSION);
+
+		/* Reset the latch, bail out if postmaster died, otherwise loop. */
+		ResetLatch(&MyProc->procLatch);
+		if (rc & WL_POSTMASTER_DEATH)
+			proc_exit(1);
+	}
+
+	elog(LOG, "pfs mount process %d exit", MyProcPid);
+
+	proc_exit(0);
+}
+
+/*
+ * Signal handler for SIGTERM
+ */
+static void
+polar_worker_sigterm_handler(SIGNAL_ARGS)
+{
+	int			save_errno = errno;
+
+	got_sigterm = true;
+
+	if (MyProc)
+		SetLatch(&MyProc->procLatch);
+
+	errno = save_errno;
+}
+
+/*
+ * Signal handler for SIGHUP
+ */
+static void
+polar_worker_sighup_handler(SIGNAL_ARGS)
+{
+	int			save_errno = errno;
+
+	got_sighup = true;
+
+	if (MyProc)
+		SetLatch(&MyProc->procLatch);
+
+	errno = save_errno;
+}
+
+static void
+polar_request_shutdown_handler(SIGNAL_ARGS)
+{
+	int			save_errno = errno;
+
+	shutdown_requested = true;
+	SetLatch(MyLatch);
+
+	errno = save_errno;
+}
+
+static void
+polar_vfs_quickdie(SIGNAL_ARGS)
+{
+	elog(WARNING, "polar vfs receive quickdie signal");
+	_exit(2);
+}
+
+static void
+polar_vfs_init_mem_and_lock(void)
+{
+	bool		found;
+
+	mount_state = NULL;
+
+	/*
+	 * Create or attach to the shared memory state, including hash table
+	 */
+	LWLockAcquire(AddinShmemInitLock, LW_EXCLUSIVE);
+
+	mount_state = ShmemInitStruct("polar_vfs",
+						   sizeof(vfs_mount_state),
+						   &found);
+
+	if (!found)
+	{
+		/* First time through ... */
+		memset(mount_state, 0, sizeof(vfs_mount_state));
+		mount_state->lock = &(GetNamedLWLockTranche("polar_vfs"))->lock;
+		elog(LOG, "init vfs_mount_state done");
+	}
+
+	LWLockRelease(AddinShmemInitLock);
+
+	return;
+}
+
+static vfs_state
+polar_get_vfs_state(vfs_mount_state *state)
+{
+	vfs_state	vstate;
+
+	if (state == NULL)
+		elog(ERROR, "state is null");
+
+	LWLockAcquire(state->lock, LW_SHARED);
+	vstate = state->action_state;
+	LWLockRelease(state->lock);
+
+	return vstate;
+}
+
+static void
+polar_set_vfs_state(vfs_mount_state *state, vfs_state vstate)
+{
+	if (state == NULL)
+		elog(ERROR, "state is null");
+
+	LWLockAcquire(state->lock, LW_EXCLUSIVE);
+	state->action_state = vstate;
+	LWLockRelease(state->lock);
+
+	return;
+}
+
+static const vfs_mgr* 
 vfs_get_mgr(const char *path)
 {
-	int			kind = VFS_LOCAL_FILE;
-
+	int kind = POLAR_VFS_LOCAL_BIO;
 	polar_vfs_file_type_and_path(path, &kind);
-
 	return &vfs[kind];
+}
+
+/* As easy as understanding its function name */
+static void 
+polar_stat_io_open_info(int vfdkind, int vfdtype)
+{
+	if (PolarIOStatArray != NULL &&
+		UsedShmemSegAddr != NULL)
+	{
+		int index, loc;
+		index = polar_get_io_proc_index();
+		if (index < 0)
+			return;
+		loc = polario_kind_to_location(vfdkind);
+		if (loc < 0 || loc >= POLARIO_LOC_SIZE)
+		{
+			elog(WARNING, "polar io stat does not recognize that: kind = %d, loc = %d", vfdkind, loc);
+			return;
+		}
+		polar_vfs_timer_end_iostat(&PolarIOStatArray[index].polar_proc_io_stat_dist[vfdtype][loc].io_open_time, LATENCY_open);
+		PolarIOStatArray[index].polar_proc_io_stat_dist[vfdtype][loc].io_open_num++;
+		PolarIOStatArray[index].pid = MyProcPid ;
+	}
+}
+
+/* As easy as understanding its function name */
+static void
+polar_stat_io_close_info(int vfdkind, int vfdtype)
+{
+	if (PolarIOStatArray != NULL &&
+		UsedShmemSegAddr != NULL)
+	{
+		int index, loc;
+		index = polar_get_io_proc_index();
+		if (index < 0)
+			return;
+		loc = polario_kind_to_location(vfdkind);
+		if (loc < 0 || loc >= POLARIO_LOC_SIZE)
+			return;
+		PolarIOStatArray[index].polar_proc_io_stat_dist[vfdtype][loc].io_close_num++;
+	}
+}
+
+/* As easy as understanding its function name */
+static void
+polar_stat_io_read_info(int vfdkind, int vfdtype,ssize_t size)
+{
+	if (PolarIOStatArray != NULL &&
+		UsedShmemSegAddr != NULL)
+	{
+		int index, loc;
+		index = polar_get_io_proc_index();
+		if (index < 0)
+			return;
+		loc = polario_kind_to_location(vfdkind);
+		if (loc < 0 || loc >= POLARIO_LOC_SIZE)
+			return;
+		polar_vfs_timer_end_iostat(&PolarIOStatArray[index].polar_proc_io_stat_dist[vfdtype][loc].io_latency_read, LATENCY_read);
+		PolarIOStatArray[index].polar_proc_io_stat_dist[vfdtype][loc].io_number_read++;
+		PolarIOStatArray[index].polar_proc_io_stat_dist[vfdtype][loc].io_throughtput_read += size;
+	}
+}
+
+/*
+ * POLAR: update global io read throughtput stat.
+ * It is not necessary to lock PolarGlobalIOReadStats.
+ */
+static void
+polar_update_global_io_read_stat(int64 delta_read_size, double delta_read_time)
+{
+	int i;
+	int min_i = 0;
+	int min_throughtput = INT_MAX;
+	int throughtput = 0;
+
+	throughtput = (int)((double)delta_read_size / delta_read_time);
+
+	/* update the max throughtput */
+	if (polar_io_read_throughtput_userset != 0)
+		PolarGlobalIOReadStats->max_throughtput = polar_io_read_throughtput_userset * 1024 * 1024; /* MB * 1024 * 1024 = B */
+	else if (throughtput > PolarGlobalIOReadStats->max_throughtput)
+		PolarGlobalIOReadStats->max_throughtput = throughtput;
+
+	/* find the min throughtput and update it */
+	for (i = 0; i < POLAR_PROC_GLOBAL_IO_READ_LEN; i++)
+	{
+		/* find an empty element, fill it and return */
+		if (PolarGlobalIOReadStats->io_read_throughtput[i] == 0)
+		{
+			PolarGlobalIOReadStats->io_read_throughtput[i] = throughtput;
+			return;
+		}
+		if (PolarGlobalIOReadStats->io_read_throughtput[i] < min_throughtput)
+		{
+			min_i = i;
+			min_throughtput = PolarGlobalIOReadStats->io_read_throughtput[i];
+		}
+	}
+
+	if (min_throughtput < throughtput)
+		PolarGlobalIOReadStats->io_read_throughtput[min_i] = throughtput;
+}
+
+/*
+ * POLAR: collect current io read throughtput info. When it reachs statistics period,
+ * update the io read stats.
+ */
+static void
+polar_vfs_timer_end_read_iostat(ssize_t size)
+{
+	/*
+	 * If the old lock value is 1, means there is another backend to update io read stat,
+	 * just return.
+	 */
+	if (pg_atomic_exchange_u32(&PolarGlobalIOReadStats->lock, 1) == 1)
+		return ;
+
+	if (PolarGlobalIOReadStats != NULL &&
+		PolarGlobalIOReadStats->count < polar_crash_recovery_rto_statistics_count)
+	{
+		INSTR_TIME_SET_CURRENT(tmp_io_read_time);
+		INSTR_TIME_SUBTRACT(tmp_io_read_time, tmp_io_read_start);
+		INSTR_TIME_ADD(PolarGlobalIOReadStats->delta_io_read_time, tmp_io_read_time);
+		PolarGlobalIOReadStats->delta_io_read_size += size;
+		if (PolarGlobalIOReadStats->count++ % POLAR_IO_READ_STATISTICS_TIMES == 0)
+		{
+			int64 tmp_delta_read_size = PolarGlobalIOReadStats->delta_io_read_size;
+			double tmp_delta_read_time = INSTR_TIME_GET_DOUBLE(PolarGlobalIOReadStats->delta_io_read_time);
+			PolarGlobalIOReadStats->io_read_size_avg = tmp_delta_read_size / POLAR_IO_READ_STATISTICS_TIMES;
+			PolarGlobalIOReadStats->io_read_time_avg = tmp_delta_read_time / POLAR_IO_READ_STATISTICS_TIMES;
+			polar_update_global_io_read_stat(tmp_delta_read_size, tmp_delta_read_time);
+			PolarGlobalIOReadStats->delta_io_read_size = 0;
+			INSTR_TIME_SET_ZERO(PolarGlobalIOReadStats->delta_io_read_time);
+		}
+	}
+
+	/* Reset the lock */
+	pg_atomic_exchange_u32(&PolarGlobalIOReadStats->lock, 0);
+}
+
+/* As easy as understanding its function name */
+static void
+polar_stat_io_write_info(int vfdkind, int vfdtype, ssize_t size)
+{
+	if (PolarIOStatArray != NULL &&
+		UsedShmemSegAddr != NULL)
+	{
+		int index, loc;
+		index = polar_get_io_proc_index();
+		if (index < 0)
+			return;
+		loc = polario_kind_to_location(vfdkind);
+		if (loc < 0 || loc >= POLARIO_LOC_SIZE)
+			return;
+		polar_vfs_timer_end_iostat(&PolarIOStatArray[index].polar_proc_io_stat_dist[vfdtype][loc].io_latency_write, LATENCY_write);
+		PolarIOStatArray[index].polar_proc_io_stat_dist[vfdtype][loc].io_number_write++;
+		PolarIOStatArray[index].polar_proc_io_stat_dist[vfdtype][loc].io_throughtput_write += size;
+	}
+}
+
+static void
+polar_stat_io_seek_info(int vfdkind, int vfdtype)
+{
+	if (PolarIOStatArray != NULL &&
+		UsedShmemSegAddr != NULL)
+	{
+		int index, loc;
+		index = polar_get_io_proc_index();
+		if (index < 0)
+			return;
+		loc = polario_kind_to_location(vfdkind);
+		if (loc < 0 || loc >= POLARIO_LOC_SIZE)
+			return;
+		polar_vfs_timer_end_iostat(&PolarIOStatArray[index].polar_proc_io_stat_dist[vfdtype][loc].io_seek_time, LATENCY_seek);
+		PolarIOStatArray[index].polar_proc_io_stat_dist[vfdtype][loc].io_seek_count++;
+	}
+}
+
+static void
+polar_stat_io_creat_info(int vfdkind, int vfdtype)
+{
+	if (PolarIOStatArray != NULL &&
+		UsedShmemSegAddr != NULL)
+	{
+		int index, loc;
+		index = polar_get_io_proc_index();
+		if (index < 0)
+			return;
+		loc = polario_kind_to_location(vfdkind);
+		if (loc < 0 || loc >= POLARIO_LOC_SIZE)
+			return;
+		polar_vfs_timer_end_iostat(&PolarIOStatArray[index].polar_proc_io_stat_dist[vfdtype][loc].io_creat_time, LATENCY_creat);
+		PolarIOStatArray[index].polar_proc_io_stat_dist[vfdtype][loc].io_creat_count++;
+	}
+}
+
+static void
+polar_stat_io_falloc_info(int vfdkind, int vfdtype)
+{
+	if (PolarIOStatArray != NULL &&
+		UsedShmemSegAddr != NULL)
+	{
+		int index, loc;
+		index = polar_get_io_proc_index();
+		if (index < 0)
+			return;
+		loc = polario_kind_to_location(vfdkind);
+		if (loc < 0 || loc >= POLARIO_LOC_SIZE)
+			return;
+		polar_vfs_timer_end_iostat(&PolarIOStatArray[index].polar_proc_io_stat_dist[vfdtype][loc].io_falloc_time, LATENCY_falloc);
+		PolarIOStatArray[index].polar_proc_io_stat_dist[vfdtype][loc].io_falloc_count++;
+	}
+}
+
+static void 
+polar_stat_io_fsync_info(int vfdkind, int vfdtype)
+{
+	if (PolarIOStatArray != NULL &&
+		UsedShmemSegAddr != NULL)
+	{
+		int index, loc;
+		index = polar_get_io_proc_index();
+		if (index < 0)
+			return;
+		loc = polario_kind_to_location(vfdkind);
+		if (loc < 0 || loc >= POLARIO_LOC_SIZE)
+			return;
+		polar_vfs_timer_end_iostat(&PolarIOStatArray[index].polar_proc_io_stat_dist[vfdtype][loc].io_fsync_time, LATENCY_fsync);
+		PolarIOStatArray[index].polar_proc_io_stat_dist[vfdtype][loc].io_fsync_count++;
+	}
+}
+
+static inline void
+polar_set_distribution_interval(instr_time *intervaltime, int kind)
+{
+	int index = polar_get_io_proc_index();
+	int 		interval;
+	uint64 		valus = 0;
+
+	if (UsedShmemSegAddr == NULL)
+		return;
+	if (index < 0)
+		return;
+
+	if(kind >= LATENCY_KIND_LEN)
+		return ;
+
+	valus = INSTR_TIME_GET_MICROSEC(*intervaltime);
+
+	if (valus < 1000)
+		interval =	valus/200;
+	else if (valus < 10000)
+		interval = LATENCY_10ms;
+	else if (valus < 100000)
+	 	interval = LATENCY_100ms;
+	else
+		interval = LATENCY_OUT;
+	
+	if (PolarIOStatArray)
+		PolarIOStatArray[index].num_latency_dist[kind][interval]++;
+}
+
+static bool
+check_localfs_mode(bool *newval, void **extra, GucSource source)
+{
+	if (localfs_mode && *newval == false)
+		*newval = true;
+	return true;
 }

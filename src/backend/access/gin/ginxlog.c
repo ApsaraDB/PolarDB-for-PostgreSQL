@@ -21,7 +21,7 @@
 
 static MemoryContext opCtx;		/* working memory for operations */
 
-static void
+void
 ginRedoClearIncompleteSplit(XLogReaderState *record, uint8 block_id)
 {
 	XLogRecPtr	lsn = record->EndRecPtr;
@@ -450,16 +450,19 @@ ginRedoSplit(XLogReaderState *record)
 	if (!isLeaf)
 		ginRedoClearIncompleteSplit(record, 3);
 
-	if (XLogReadBufferForRedo(record, 0, &lbuffer) != BLK_RESTORED)
-		elog(ERROR, "GIN split record did not contain a full-page image of left page");
+	/*
+	 * POLAR: The error message is triggered in XLogReadBufferForRedo function
+	 * when fail to restore full-page image.
+	 * Besides we will return BLK_DONE when page lsn is larger than current xlog
+	 * record lsn.
+	 */
+	XLogReadBufferForRedo(record, 0, &lbuffer);
 
-	if (XLogReadBufferForRedo(record, 1, &rbuffer) != BLK_RESTORED)
-		elog(ERROR, "GIN split record did not contain a full-page image of right page");
+	XLogReadBufferForRedo(record, 1, &rbuffer);
 
 	if (isRoot)
 	{
-		if (XLogReadBufferForRedo(record, 2, &rootbuf) != BLK_RESTORED)
-			elog(ERROR, "GIN split record did not contain a full-page image of root page");
+		XLogReadBufferForRedo(record, 2, &rootbuf);
 		UnlockReleaseBuffer(rootbuf);
 	}
 
@@ -530,6 +533,7 @@ ginRedoDeletePage(XLogReaderState *record)
 		GinPageGetOpaque(page)->rightlink = data->rightLink;
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(lbuffer);
+		polar_redo_set_buffer_oldest_lsn(lbuffer, record->ReadRecPtr);
 	}
 
 	if (XLogReadBufferForRedo(record, 0, &dbuffer) == BLK_NEEDS_REDO)
@@ -569,16 +573,6 @@ ginRedoDeletePage(XLogReaderState *record)
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(pbuffer);
 		polar_redo_set_buffer_oldest_lsn(pbuffer, record->ReadRecPtr);
-	}
-
-	if (XLogReadBufferForRedo(record, 2, &lbuffer) == BLK_NEEDS_REDO)
-	{
-		page = BufferGetPage(lbuffer);
-		Assert(GinPageIsData(page));
-		GinPageGetOpaque(page)->rightlink = data->rightLink;
-		PageSetLSN(page, lsn);
-		MarkBufferDirty(lbuffer);
-        polar_redo_set_buffer_oldest_lsn(lbuffer, record->ReadRecPtr);          
 	}
 
 	if (BufferIsValid(lbuffer))

@@ -60,5 +60,10 @@
   rolcreaterole => 'f', rolcreatedb => 'f', rolcanlogin => 'f',
   rolreplication => 'f', rolbypassrls => 'f', rolconnlimit => '-1',
   rolpassword => '_null_', rolvaliduntil => '_null_' },
+{ oid => '5500', oid_symbol => 'DEFAULT_ROLE_POLAR_SUPERSER',
+  rolname => 'pg_polar_superuser', rolsuper => 'f', rolinherit => 't',
+  rolcreaterole => 't', rolcreatedb => 't', rolcanlogin => 'f',
+  rolreplication => 't', rolbypassrls => 't', rolconnlimit => '-1',
+  rolpassword => '_null_', rolvaliduntil => '_null_' },
 
 ]

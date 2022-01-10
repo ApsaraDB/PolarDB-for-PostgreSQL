@@ -19,6 +19,9 @@
 
 extern TargetEntry *tlist_member(Expr *node, List *targetlist);
 extern TargetEntry *tlist_member_ignore_relabel(Expr *node, List *targetlist);
+/* POLAR px */
+extern List *tlist_members(Node *node, List *targetlist);
+/* POLAR end */
 
 extern List *add_to_flat_tlist(List *tlist, List *exprs);
 
@@ -51,6 +54,12 @@ extern Oid *extract_grouping_ops(List *groupClause);
 extern AttrNumber *extract_grouping_cols(List *groupClause, List *tlist);
 extern bool grouping_is_sortable(List *groupClause);
 extern bool grouping_is_hashable(List *groupClause);
+
+/* POLAR px */
+extern void polar_get_sortgroupclauses_tles(List *clauses, List *targetList,
+									  List **tles, List **sortops, List **eqops);
+
+extern Index maxSortGroupRef(List *targetlist, bool include_orderedagg);
 
 extern PathTarget *make_pathtarget_from_tlist(List *tlist);
 extern List *make_tlist_from_pathtarget(PathTarget *target);

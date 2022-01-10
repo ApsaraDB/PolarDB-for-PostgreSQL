@@ -80,7 +80,12 @@
 #include "storage/predicate.h"
 #include "utils/snapmgr.h"
 #include "utils/tqual.h"
+#include "px/px_gang.h"
 
+/* POLAR csn */
+#include "utils/guc.h"
+#include "storage/procarray.h"
+/* POLAR end */
 
 /* ----------------------------------------------------------------
  *					macros used in index_ routines
@@ -291,6 +296,7 @@ index_beginscan_internal(Relation indexRelation,
 	scan->parallel_scan = pscan;
 	scan->xs_temp_snap = temp_snap;
 
+	scan->px_scan = NULL;/* POLAR px */
 	return scan;
 }
 
@@ -530,8 +536,9 @@ index_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 	SCAN_CHECKS;
 	CHECK_SCAN_PROCEDURE(amgettuple);
 
-	Assert(TransactionIdIsValid(RecentGlobalXmin));
+	Assert(TransactionIdIsValid(GetRecentGlobalXmin()));
 
+rescan:
 	/*
 	 * The AM's amgettuple proc finds the next index entry matching the scan
 	 * keys, and puts the TID into scan->xs_ctup.t_self.  It should also set
@@ -554,6 +561,18 @@ index_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 		}
 		return NULL;
 	}
+
+	/*
+	 * POLAR: PX only get tuple belongs to this worker by page id.
+	 * if this page id belongs to other worker, rescan next one.
+	 */
+	if (scan->px_scan != NULL)
+	{
+		BlockNumber unitno = PXSCAN_BlockNum2UnitNum( ItemPointerGetBlockNumber(&scan->xs_ctup.t_self) );
+		if ((unitno % scan->px_scan->pxs_total_workers) != scan->px_scan->pxs_worker_id)
+			goto rescan;
+	}
+	/* POLAR end */
 
 	pgstat_count_index_tuples(scan->indexRelation, 1);
 
@@ -896,4 +915,16 @@ index_getprocinfo(Relation irel,
 	}
 
 	return locinfo;
+}
+
+/*
+ * index_initscan_px - init index scan for px
+ * init total workers and worker_id
+ * they are used for indexscan granule
+ */
+void
+index_initscan_px(IndexScanDesc scan)
+{
+	Assert(scan->parallel_scan == NULL);
+	scan->px_scan = CreatePXScanDesc();
 }

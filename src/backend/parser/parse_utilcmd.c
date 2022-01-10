@@ -70,6 +70,9 @@
 #include "utils/typcache.h"
 
 
+/* POLAR: mark I am creating rule which is used for filting unsafe functions */
+bool polar_creating_rule;
+
 /* State shared by transformCreateStmt and its subroutines */
 typedef struct
 {
@@ -2610,6 +2613,10 @@ transformRuleStmt(RuleStmt *stmt, const char *queryString,
 	RangeTblEntry *oldrte;
 	RangeTblEntry *newrte;
 
+	/* POLAR: mark I am creating rule which is used for filting unsafe functions */
+	polar_creating_rule = true;
+	/* POLAR end */
+
 	/*
 	 * To avoid deadlock, make sure the first thing we do is grab
 	 * AccessExclusiveLock on the target relation.  This will be needed by
@@ -2891,6 +2898,10 @@ transformRuleStmt(RuleStmt *stmt, const char *queryString,
 
 	/* Close relation, but keep the exclusive lock */
 	heap_close(rel, NoLock);
+
+	/* POLAR: clear polar_creating_rule flag */
+	polar_creating_rule = false;
+	/* POLAR end */
 }
 
 

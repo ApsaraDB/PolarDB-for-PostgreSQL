@@ -1,0 +1,237 @@
+------------------------------------------------------------------------
+--hash partition
+--Partition constraint: satisfies_hash_partition('16384'::oid, 3, 1, id)
+/*--EXPLAIN_QUERY_BEGIN*/
+drop table t1_hash cascade;
+CREATE TABLE t1_hash (id int8, value int) PARTITION BY HASH(id);
+CREATE TABLE t1_hash_p1 PARTITION OF t1_hash FOR VALUES WITH (modulus 2, remainder 0);
+CREATE TABLE t1_hash_p2 PARTITION OF t1_hash FOR VALUES WITH (modulus 2, remainder 1);
+INSERT INTO t1_hash VALUES (1,58), (2,60), (3,75), (4,90);
+select * from t1_hash where id =1;
+select * from t1_hash where id =1::int8;
+select * from t1_hash where id =1::int4;
+select * from t1_hash where id =1::int2;
+select * from t1_hash where id =1::real;
+select * from t1_hash where id =1::float4;
+select * from t1_hash where id =1::float8;
+select * from t1_hash where id =1::bool;
+select * from t1_hash where id =1::decimal;
+select * from t1_hash where id =1::numeric;
+select * from t1_hash where id =1::text;
+select * from t1_hash where id ='1';
+select * from t1_hash where id =1+1-1;
+
+
+drop table t1_hash cascade;
+CREATE TABLE t1_hash (id int4, value int) PARTITION BY HASH(id);
+CREATE TABLE t1_hash_p1 PARTITION OF t1_hash FOR VALUES WITH (modulus 2, remainder 0);
+CREATE TABLE t1_hash_p2 PARTITION OF t1_hash FOR VALUES WITH (modulus 2, remainder 1);
+INSERT INTO t1_hash VALUES (1,58), (2,60), (3,75), (4,90);
+select * from t1_hash where id =1;
+select * from t1_hash where id =1::bigint;
+select * from t1_hash where id =1::int4;
+select * from t1_hash where id =1::int2;
+select * from t1_hash where id =1::real;
+select * from t1_hash where id =1::float4;
+select * from t1_hash where id =1::float8;
+select * from t1_hash where id =1::bool;
+select * from t1_hash where id =1::decimal;
+select * from t1_hash where id =1::numeric;
+select * from t1_hash where id =1::text;
+select * from t1_hash where id ='1';
+select * from t1_hash where id =1+1-1;
+
+
+drop table t1_hash cascade;
+CREATE TABLE t1_hash (id int2, value int) PARTITION BY HASH(id);
+CREATE TABLE t1_hash_p1 PARTITION OF t1_hash FOR VALUES WITH (modulus 2, remainder 0);
+CREATE TABLE t1_hash_p2 PARTITION OF t1_hash FOR VALUES WITH (modulus 2, remainder 1);
+INSERT INTO t1_hash VALUES (1,58), (2,60), (3,75), (4,90);
+select * from t1_hash where id =1;
+select * from t1_hash where id =1::bigint;
+select * from t1_hash where id =1::int4;
+select * from t1_hash where id =1::int2;
+select * from t1_hash where id =1::real;
+select * from t1_hash where id =1::float4;
+select * from t1_hash where id =1::float8;
+select * from t1_hash where id =1::bool;
+select * from t1_hash where id =1::decimal;
+select * from t1_hash where id =1::numeric;
+select * from t1_hash where id =1::text;
+select * from t1_hash where id ='1';
+
+
+drop table t1_hash cascade;
+CREATE TABLE t1_hash (id real, value int) PARTITION BY HASH(id);
+CREATE TABLE t1_hash_p1 PARTITION OF t1_hash FOR VALUES WITH (modulus 2, remainder 0);
+CREATE TABLE t1_hash_p2 PARTITION OF t1_hash FOR VALUES WITH (modulus 2, remainder 1);
+INSERT INTO t1_hash VALUES (1,58), (2,60), (3,75), (4,90);
+select * from t1_hash where id =1;
+select * from t1_hash where id =1::bigint;
+select * from t1_hash where id =1::int4;
+select * from t1_hash where id =1::int2;
+select * from t1_hash where id =1::real;
+select * from t1_hash where id =1::float4;
+select * from t1_hash where id =1::float8;
+select * from t1_hash where id =1::bool;
+select * from t1_hash where id =1::decimal;
+select * from t1_hash where id =1::numeric;
+select * from t1_hash where id =1::text;
+select * from t1_hash where id ='1';
+select * from t1_hash where id =1+1-1;
+
+drop table t1_hash cascade;
+CREATE TABLE t1_hash (id float4, value int) PARTITION BY HASH(id);
+CREATE TABLE t1_hash_p1 PARTITION OF t1_hash FOR VALUES WITH (modulus 2, remainder 0);
+CREATE TABLE t1_hash_p2 PARTITION OF t1_hash FOR VALUES WITH (modulus 2, remainder 1);
+INSERT INTO t1_hash VALUES (1,58), (2,60), (3,75), (4,90);
+select * from t1_hash where id =1;
+select * from t1_hash where id =1::bigint;
+select * from t1_hash where id =1::int4;
+select * from t1_hash where id =1::int2;
+select * from t1_hash where id =1::real;
+select * from t1_hash where id =1::float4;
+select * from t1_hash where id =1::float8;
+select * from t1_hash where id =1::bool;
+select * from t1_hash where id =1::decimal;
+select * from t1_hash where id =1::numeric;
+select * from t1_hash where id =1::text;
+select * from t1_hash where id ='1';
+select * from t1_hash where id =1+1-1;
+
+drop table t1_hash cascade;
+CREATE TABLE t1_hash (id float8, value int) PARTITION BY HASH(id);
+CREATE TABLE t1_hash_p1 PARTITION OF t1_hash FOR VALUES WITH (modulus 2, remainder 0);
+CREATE TABLE t1_hash_p2 PARTITION OF t1_hash FOR VALUES WITH (modulus 2, remainder 1);
+INSERT INTO t1_hash VALUES (1,58), (2,60), (3,75), (4,90);
+select * from t1_hash where id =1;
+select * from t1_hash where id =1::bigint;
+select * from t1_hash where id =1::int4;
+select * from t1_hash where id =1::int2;
+select * from t1_hash where id =1::real;
+select * from t1_hash where id =1::float4;
+select * from t1_hash where id =1::float8;
+select * from t1_hash where id =1::bool;
+select * from t1_hash where id =1::decimal;
+select * from t1_hash where id =1::numeric;
+select * from t1_hash where id =1::text;
+select * from t1_hash where id ='1';
+select * from t1_hash where id =1+1-1;
+
+drop table t1_hash cascade;
+CREATE TABLE t1_hash (id bool, value int) PARTITION BY HASH(id);
+CREATE TABLE t1_hash_p1 PARTITION OF t1_hash FOR VALUES WITH (modulus 2, remainder 0);
+CREATE TABLE t1_hash_p2 PARTITION OF t1_hash FOR VALUES WITH (modulus 2, remainder 1);
+INSERT INTO t1_hash VALUES (1,58), (2,60), (3,75), (4,90);
+select * from t1_hash where id =1;
+select * from t1_hash where id =1::bigint;
+select * from t1_hash where id =1::int4;
+select * from t1_hash where id =1::int2;
+select * from t1_hash where id =1::real;
+select * from t1_hash where id =1::float4;
+select * from t1_hash where id =1::float8;
+select * from t1_hash where id =1::bool;
+select * from t1_hash where id =1::decimal;
+select * from t1_hash where id =1::numeric;
+select * from t1_hash where id =1::text;
+select * from t1_hash where id ='1';
+select * from t1_hash where id =1+1-1;
+
+
+drop table t1_hash cascade;
+CREATE TABLE t1_hash (id bool, value int) PARTITION BY HASH(id);
+CREATE TABLE t1_hash_p1 PARTITION OF t1_hash FOR VALUES WITH (modulus 2, remainder 0);
+CREATE TABLE t1_hash_p2 PARTITION OF t1_hash FOR VALUES WITH (modulus 2, remainder 1);
+INSERT INTO t1_hash VALUES (1,58), (2,60), (3,75), (4,90);
+select * from t1_hash where id =1;
+select * from t1_hash where id =1::bigint;
+select * from t1_hash where id =1::int4;
+select * from t1_hash where id =1::int2;
+select * from t1_hash where id =1::real;
+select * from t1_hash where id =1::float4;
+select * from t1_hash where id =1::float8;
+select * from t1_hash where id =1::bool;
+select * from t1_hash where id =1::decimal;
+select * from t1_hash where id =1::numeric;
+select * from t1_hash where id =1::text;
+select * from t1_hash where id ='1';
+select * from t1_hash where id =1+1-1;
+
+
+drop table t1_hash cascade;
+CREATE TABLE t1_hash (id decimal, value int) PARTITION BY HASH(id);
+CREATE TABLE t1_hash_p1 PARTITION OF t1_hash FOR VALUES WITH (modulus 2, remainder 0);
+CREATE TABLE t1_hash_p2 PARTITION OF t1_hash FOR VALUES WITH (modulus 2, remainder 1);
+INSERT INTO t1_hash VALUES (1,58), (2,60), (3,75), (4,90);
+select * from t1_hash where id =1;
+select * from t1_hash where id =1::bigint;
+select * from t1_hash where id =1::int4;
+select * from t1_hash where id =1::int2;
+select * from t1_hash where id =1::real;
+select * from t1_hash where id =1::float4;
+select * from t1_hash where id =1::float8;
+select * from t1_hash where id =1::bool;
+select * from t1_hash where id =1::decimal;
+select * from t1_hash where id =1::numeric;
+select * from t1_hash where id =1::text;
+select * from t1_hash where id ='1';
+
+drop table t1_hash cascade;
+CREATE TABLE t1_hash (id numeric, value int) PARTITION BY HASH(id);
+CREATE TABLE t1_hash_p1 PARTITION OF t1_hash FOR VALUES WITH (modulus 2, remainder 0);
+CREATE TABLE t1_hash_p2 PARTITION OF t1_hash FOR VALUES WITH (modulus 2, remainder 1);
+select * from t1_hash where id =1;
+select * from t1_hash where id =1::bigint;
+select * from t1_hash where id =1::int4;
+select * from t1_hash where id =1::int2;
+select * from t1_hash where id =1::real;
+select * from t1_hash where id =1::float4;
+select * from t1_hash where id =1::float8;
+select * from t1_hash where id =1::bool;
+select * from t1_hash where id =1::decimal;
+select * from t1_hash where id =1::numeric;
+select * from t1_hash where id =1::text;
+select * from t1_hash where id ='1';
+select * from t1_hash where id =1+1-1;
+
+drop table t1_hash cascade;
+CREATE TABLE t1_hash (id char(10), value int) PARTITION BY HASH(id);
+CREATE TABLE t1_hash_p1 PARTITION OF t1_hash FOR VALUES WITH (modulus 2, remainder 0);
+CREATE TABLE t1_hash_p2 PARTITION OF t1_hash FOR VALUES WITH (modulus 2, remainder 1);
+INSERT INTO t1_hash VALUES (1,58), (2,60), (3,75), (4,90);
+select * from t1_hash where id =1;
+select * from t1_hash where id =1::bigint;
+select * from t1_hash where id =1::int4;
+select * from t1_hash where id =1::int2;
+select * from t1_hash where id =1::real;
+select * from t1_hash where id =1::float4;
+select * from t1_hash where id =1::float8;
+select * from t1_hash where id =1::bool;
+select * from t1_hash where id =1::decimal;
+select * from t1_hash where id =1::numeric;
+select * from t1_hash where id =1::text;
+select * from t1_hash where id ='1';
+select * from t1_hash where id =1+1-1;
+
+drop table t1_hash cascade;
+CREATE TABLE t1_hash (id text, value int) PARTITION BY HASH(id);
+CREATE TABLE t1_hash_p1 PARTITION OF t1_hash FOR VALUES WITH (modulus 2, remainder 0);
+CREATE TABLE t1_hash_p2 PARTITION OF t1_hash FOR VALUES WITH (modulus 2, remainder 1);
+INSERT INTO t1_hash VALUES (1,58), (2,60), (3,75), (4,90);
+select * from t1_hash where id =1;
+select * from t1_hash where id =1::bigint;
+select * from t1_hash where id =1::int4;
+select * from t1_hash where id =1::int2;
+select * from t1_hash where id =1::real;
+select * from t1_hash where id =1::float4;
+select * from t1_hash where id =1::float8;
+select * from t1_hash where id =1::bool;
+select * from t1_hash where id =1::decimal;
+select * from t1_hash where id =1::numeric;
+select * from t1_hash where id =1::text;
+select * from t1_hash where id ='1';
+select * from t1_hash where id =1+1-1;
+
+
+set polar_px_enable_partition_hash=0;
+select * from t1_hash where id ='1';

@@ -93,6 +93,42 @@
 #define FirstBootstrapObjectId	10000
 #define FirstNormalObjectId		16384
 
+/* POLAR csn */
+#define POLAR_CSN_INPROGRESS	UINT64CONST(0x0)
+#define POLAR_CSN_ABORTED		UINT64CONST(0x1)
+/*
+ * An intermediate state that is used to set CSN
+ * atomically for a top level transaction and its subtransactions.
+ * High-level users should not see this value, see TransactionIdGetCommitSeqNo().
+ */
+#define POLAR_CSN_COMMITTING	UINT64CONST(0x2)
+
+/* 
+ * Specail CSN value for bootstrap xact and frozen xact, 
+ * must be less than POLAR_CSN_FIRST_NORMAL, then their 
+ * updates can be seen by other normal xacts.
+ */
+#define POLAR_CSN_FROZEN		UINT64CONST(0x3)
+
+/* First CSN value in normal mode */
+#define POLAR_CSN_FIRST_NORMAL  UINT64CONST(0x4)
+
+/* Max CSN value in normal mode */
+#define POLAR_CSN_MAX_NORMAL    ((UINT64CONST(1)<<63) - 1)
+
+/* valid value in CSN log */
+#define POLAR_CSN_IS_FROZEN(csn) ((csn) == POLAR_CSN_FROZEN)
+#define POLAR_CSN_IS_NORMAL(csn) ((csn) >= POLAR_CSN_FIRST_NORMAL)
+
+/* xact status in CSN log */
+#define POLAR_CSN_SUBTRANS_BIT		(UINT64CONST(1)<<63)
+#define POLAR_CSN_IS_SUBTRANS(csn) ((csn) & POLAR_CSN_SUBTRANS_BIT)
+#define POLAR_CSN_IS_INPROGRESS(csn) ((csn) == POLAR_CSN_INPROGRESS)
+#define POLAR_CSN_IS_ABORTED(csn) ((csn) == POLAR_CSN_ABORTED)
+#define POLAR_CSN_IS_COMMITTING(csn) ((csn) == POLAR_CSN_COMMITTING)
+#define POLAR_CSN_IS_COMMITTED(csn) ((csn) >= POLAR_CSN_FROZEN && !POLAR_CSN_IS_SUBTRANS(csn)) 
+/* POLAR end */
+
 /*
  * VariableCache is a data structure in shared memory that is used to track
  * OID and XID assignment state.  For largely historical reasons, there is
@@ -182,5 +218,23 @@ extern void SetTransactionIdLimit(TransactionId oldest_datfrozenxid,
 extern void AdvanceOldestClogXid(TransactionId oldest_datfrozenxid);
 extern bool ForceTransactionIdLimitUpdate(void);
 extern Oid	GetNewObjectId(void);
+
+/*
+ * POLAR: snapshot based Commit Sequence Number 
+ */
+typedef enum
+{
+  XID_COMMITTED,
+  XID_ABORTED,
+  XID_INPROGRESS
+} TransactionIdStatus;
+
+extern void polar_xact_commit_tree_csn(TransactionId xid, int nxids, 
+																			 TransactionId *xids, XLogRecPtr lsn);
+extern CommitSeqNo polar_xact_get_csn(TransactionId transactionId, 
+																			 CommitSeqNo snapCSN, bool committed);
+extern TransactionIdStatus polar_xact_get_status(TransactionId xid);
+
+/* POLAR end */
 
 #endif							/* TRAMSAM_H */

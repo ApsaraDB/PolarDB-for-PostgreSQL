@@ -35,6 +35,9 @@ extern HANDLE PostmasterHandle;
 #else
 extern int	postmaster_alive_fds[2];
 
+/* POLAR */
+#include <signal.h>
+
 /*
  * Constants that represent which of postmaster_alive_fds is held by
  * postmaster, and which is used in children to check for postmaster death.
@@ -43,6 +46,14 @@ extern int	postmaster_alive_fds[2];
 									 * postmaster death */
 #define POSTMASTER_FD_OWN		1	/* kept open by postmaster only */
 #endif
+
+/* POLAR px */
+#define POSTMASTER_IN_STARTUP_MSG "the database system is starting up"
+#define POSTMASTER_IN_RECOVERY_MSG "the database system is in recovery mode"
+#define POSTMASTER_IN_RECOVERY_DETAIL_MSG "last replayed record at"
+/* gpstate must be updated if this message changes */
+#define POSTMASTER_MIRROR_VERSION_DETAIL_MSG "- VERSION:"
+/* POLAR end */
 
 extern PGDLLIMPORT const char *progname;
 
@@ -73,5 +84,10 @@ extern void ShmemBackendArrayAllocation(void);
  * relevant GUC check hooks and in RegisterBackgroundWorker().
  */
 #define MAX_BACKENDS	0x3FFFF
+
+/* POLAR */
+extern volatile sig_atomic_t polar_in_error_handling_process;
+extern bool polar_have_crashed_worker(void);
+extern void polar_assign_enable_send_stop(bool newval, void *extra);
 
 #endif							/* _POSTMASTER_H */

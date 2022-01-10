@@ -30,47 +30,52 @@
 #include "storage/shmem.h"
 #include "utils/guc.h"
 
-extern int	polar_xlog_page_buffers;
+extern int polar_xlog_page_buffers;
 
-XLogBufferDescPadded *polar_xlog_buffer_descriptors = NULL;
-char	   *polar_xlog_buffers = NULL;
-LWLockMinimallyPadded *polar_xlog_buffer_lock_array = NULL;
+polar_xlog_buffer_ctl_t polar_xlog_buffer_ctl = NULL;
 
 void
 polar_init_xlog_buffer(void)
 {
-	bool		foundDesc,
-				foundBlock,
-				foundLock;
+	bool 	found,
+			foundDesc,
+			foundBlock,
+			foundLock;
 
-	Size		block_count = (Size) (polar_xlog_page_buffers * 1024 / (XLOG_BLCKSZ / 1024));
+	Size		block_count = (Size)(polar_xlog_page_buffers * 1024 / (XLOG_BLCKSZ / 1024));
 
-	polar_xlog_buffer_descriptors = (XLogBufferDescPadded *)
-		ShmemInitStruct(
-						"XLog Block Buffer Descriptor",
-						block_count * sizeof(XLogBufferDescPadded),
-						&foundDesc);
-	polar_xlog_buffers = (char *)
-		ShmemInitStruct(
-						"XLog Block Buffer",
-						block_count * XLOG_BLCKSZ,
-						&foundBlock);
-	polar_xlog_buffer_lock_array = (LWLockMinimallyPadded *)
-		ShmemInitStruct(
-						"XLog Block Buffer Lock",
-						block_count * sizeof(LWLockMinimallyPadded),
-						&foundLock);
+	polar_xlog_buffer_ctl = (polar_xlog_buffer_ctl_t)
+			ShmemInitStruct(
+					"XLog Block Buffer ctl", 
+					MAXALIGN(sizeof(polar_xlog_buffer_ctl_data_t)), 
+					&found);
+
+	polar_xlog_buffer_ctl->buffer_descriptors = (polar_xlog_buffer_desc_padded*)
+			ShmemInitStruct(
+					"XLog Block Buffer Descriptor",
+					block_count * sizeof(polar_xlog_buffer_desc_padded),
+					&foundDesc);
+	polar_xlog_buffer_ctl->buffers = (char *)
+			ShmemInitStruct(
+					"XLog Block Buffer",
+					block_count * XLOG_BLCKSZ,
+					&foundBlock);
+	 polar_xlog_buffer_ctl->buffer_lock_array = (LWLockMinimallyPadded *)
+			ShmemInitStruct(
+					"XLog Block Buffer Lock",
+					block_count * sizeof(LWLockMinimallyPadded),
+					&foundLock);
 	if (!IsUnderPostmaster)
 	{
-		int			i;
+		int i;
 
-		Assert(!foundDesc && !foundBlock && !foundLock);
+		Assert(!found && !foundDesc && !foundBlock && !foundLock);
 
 		LWLockRegisterTranche(LWTRANCHE_XLOG_BUFFER_CONTENT, "xlog_buffer_content");
 
 		for (i = 0; i < block_count; ++i)
 		{
-			XLogBufferDesc *buf = polar_get_xlog_buffer_desc(i);
+			polar_xlog_buffer_desc* buf = polar_get_xlog_buffer_desc(i);
 
 			buf->buf_id = i;
 			buf->start_lsn = InvalidXLogRecPtr;
@@ -79,17 +84,19 @@ polar_init_xlog_buffer(void)
 		}
 	}
 	else
-		Assert(!foundDesc && !foundBlock && !foundLock);
+		Assert(found && foundDesc && foundBlock && foundLock);
 }
 
 Size
 polar_xlog_buffer_shmem_size(void)
 {
-	Size		size = 0;
-	Size		block_count = (Size) (polar_xlog_page_buffers * 1024 / (XLOG_BLCKSZ / 1024));
+	Size	size = 0;
+	Size	block_count = (Size)(polar_xlog_page_buffers * 1024 / (XLOG_BLCKSZ / 1024));
 
+	/* size of xlog buffer ctl */
+	size = add_size(size, MAXALIGN(sizeof(polar_xlog_buffer_ctl_data_t)));
 	/* size of xlog block buffer descriptor */
-	size = add_size(size, mul_size(block_count, sizeof(XLogBufferDescPadded)));
+	size = add_size(size, mul_size(block_count, sizeof(polar_xlog_buffer_desc_padded)));
 	/* to allow aligning the above */
 	size = add_size(size, PG_CACHE_LINE_SIZE);
 
@@ -121,19 +128,19 @@ polar_xlog_buffer_lookup(XLogRecPtr lsn, int len, bool doEvict, bool doCount, in
 	static uint64 evict_count = 0;
 	static uint64 direct_io_count = 0;
 
-	XLogBufferDesc *buf;
+	polar_xlog_buffer_desc  *buf;
 
 	Assert(polar_xlog_offset_aligned(lsn));
 	Assert(len >= 0 && len <= XLOG_BLCKSZ);
 
-	/* Log hit ratio every 10w page lookup */
-	if (total_count % 100000 == 0 && total_count > 0)
-	{
+	/* Log hit ratio every 1000w page lookup */
+	if (total_count % 10000000 == 0 && total_count > 0)
+    {
 		ereport(LOG, (errmsg("XLog Buffer Hit Ratio: hit_count=%ld, evict=%ld, direct_io=%ld, total_count=%ld, "
-							 "hit_ratio=%f, evict_ratio=%f, direct_io_ratio=%f",
-							 hit_count, evict_count, direct_io_count, total_count,
-							 hit_count * 1.0 / total_count, evict_count * 1.0 / total_count, direct_io_count * 1.0 / total_count)));
-	}
+					"hit_ratio=%f, evict_ratio=%f, direct_io_ratio=%f",
+					hit_count, evict_count, direct_io_count, total_count,
+					hit_count * 1.0 /total_count, evict_count * 1.0 /total_count, direct_io_count * 1.0 /total_count)));
+    }
 
 	if (doCount)
 		total_count++;
@@ -192,25 +199,25 @@ polar_xlog_buffer_unlock(int buf_id)
 void
 polar_xlog_buffer_update(XLogRecPtr lsn)
 {
-	XLogRecPtr	page_off = lsn - (lsn % XLOG_BLCKSZ);
+	XLogRecPtr		page_off = lsn - (lsn % XLOG_BLCKSZ);
 	int			buf_id = polar_get_xlog_buffer_id(lsn);
-	XLogBufferDesc *buf = NULL;
+	polar_xlog_buffer_desc		*buf = NULL;
 
 	Assert(buf_id >= 0);
 
 	buf = polar_get_xlog_buffer_desc(buf_id);
 	polar_xlog_buffer_lock(buf_id, LW_EXCLUSIVE);
-
-	/*
-	 * Ensure page buffer the expected one. While stream replication broken,
-	 * xlog page may be read by twophase related logic. After startup replay
-	 * all xlog at local storage, it will invalidation xlog buffer data
-	 * related to last record. In some situation, this invalidation operation
-	 * may enlarge xlog buffer size at page without more data filled, so it
-	 * may cause zero data being read by other twophase related operation
-	 * which will print ERROR log when cannot read record. So we add the check
-	 * here to ensure updated lsn not larger than original buffer meta info,
-	 * because this update func is only used while meet invalid xlog record.
+	/* 
+	 * Ensure page buffer the expected one. 
+	 * While stream replication broken, xlog page may be read by twophase
+	 * related logic. After startup replay all xlog at local storage, it will
+	 * invalidation xlog buffer data related to last record. In some situation,
+	 * this invalidation operation may enlarge xlog buffer size at page without
+	 * more data filled, so it may cause zero data being read by other twophase
+	 * related operation which will print ERROR log when cannot read record.
+	 * So we add the check here to ensure updated lsn not larger than original
+	 * buffer meta info, because this update func is only used while meet invalid
+	 * xlog record.
 	 */
 	if (buf->start_lsn == page_off && buf->end_lsn > lsn)
 		buf->end_lsn = lsn;
@@ -225,9 +232,9 @@ polar_xlog_buffer_update(XLogRecPtr lsn)
 void
 polar_xlog_buffer_remove(XLogRecPtr lsn)
 {
-	XLogRecPtr	page_off = lsn - (lsn % XLOG_BLCKSZ);
+	XLogRecPtr		page_off = lsn - (lsn % XLOG_BLCKSZ);
 	int			buf_id = polar_get_xlog_buffer_id(lsn);
-	XLogBufferDesc *buf = NULL;
+	polar_xlog_buffer_desc		*buf = NULL;
 
 	Assert(buf_id >= 0);
 
@@ -251,7 +258,7 @@ polar_xlog_buffer_remove(XLogRecPtr lsn)
  * For now, if requested page is older than buffed page, it won't evict buffer.
  */
 bool
-polar_xlog_buffer_should_evict(XLogBufferDesc *buf, XLogRecPtr lsn, int len)
+polar_xlog_buffer_should_evict(polar_xlog_buffer_desc *buf, XLogRecPtr lsn, int len)
 {
 	/* If buffer valid size is smaller than current data, evict it.  */
 	if (buf->end_lsn >= lsn + len - 1)
@@ -259,3 +266,27 @@ polar_xlog_buffer_should_evict(XLogBufferDesc *buf, XLogRecPtr lsn, int len)
 
 	return true;
 }
+
+/*
+ * POLAR: Reset all xlog buffer.
+ */
+void
+polar_xlog_buffer_reset_all_buffer(void)
+{
+    Size    block_count = (Size)(polar_xlog_page_buffers * 1024 / (XLOG_BLCKSZ / 1024));
+    int buf_id = 0;
+    polar_xlog_buffer_desc  *buf = NULL;
+
+    if (!polar_enable_xlog_buffer)
+        return;
+
+    for (buf_id = 0; buf_id < block_count; ++buf_id)
+    {
+        buf = polar_get_xlog_buffer_desc(buf_id);
+        polar_xlog_buffer_lock(buf_id, LW_EXCLUSIVE);
+        buf->start_lsn = InvalidXLogRecPtr;
+        buf->end_lsn = InvalidXLogRecPtr;
+        polar_xlog_buffer_unlock(buf_id);
+    }
+}
+

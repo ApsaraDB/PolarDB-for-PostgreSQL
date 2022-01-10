@@ -24,12 +24,11 @@
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
 
-
+static bool planstate_walk_subplans(List *plans, bool (*walker) (),
+									void *context);
 static bool expression_returns_set_walker(Node *node, void *context);
 static int	leftmostLoc(int loc1, int loc2);
 static bool fix_opfuncids_walker(Node *node, void *context);
-static bool planstate_walk_subplans(List *plans, bool (*walker) (),
-									void *context);
 static bool planstate_walk_members(PlanState **planstates, int nplans,
 					   bool (*walker) (), void *context);
 
@@ -259,6 +258,11 @@ exprType(const Node *expr)
 		case T_PlaceHolderVar:
 			type = exprType((Node *) ((const PlaceHolderVar *) expr)->phexpr);
 			break;
+		/* POLAR px */
+		case T_DMLActionExpr:
+			type = INT4OID;
+			break;
+		/* POLAR end */
 		default:
 			elog(ERROR, "unrecognized node type: %d", (int) nodeTag(expr));
 			type = InvalidOid;	/* keep compiler quiet */
@@ -903,6 +907,11 @@ exprCollation(const Node *expr)
 		case T_PlaceHolderVar:
 			coll = exprCollation((Node *) ((const PlaceHolderVar *) expr)->phexpr);
 			break;
+		/* POLAR px */
+		case T_DMLActionExpr:
+			coll = InvalidOid;
+			break;
+		/* POLAR px */
 		default:
 			elog(ERROR, "unrecognized node type: %d", (int) nodeTag(expr));
 			coll = InvalidOid;	/* keep compiler quiet */
@@ -1864,6 +1873,16 @@ expression_tree_walker(Node *node,
 		case T_NextValueExpr:
 		case T_RangeTblRef:
 		case T_SortGroupClause:
+
+		/* POLAR px */
+		case T_DMLActionExpr:
+		case T_PartSelectedExpr:
+		case T_PartDefaultExpr:
+		case T_PartBoundExpr:
+		case T_PartBoundInclusionExpr:
+		case T_PartBoundOpenExpr:
+		case T_PartListRuleExpr:
+		case T_PartListNullTestExpr:
 			/* primitive node types with no expression subnodes */
 			break;
 		case T_WithCheckOption:
@@ -2229,6 +2248,10 @@ expression_tree_walker(Node *node,
 					return true;
 			}
 			break;
+
+		/* POLAR px */
+		case T_PartitionSelector:
+			break;
 		default:
 			elog(ERROR, "unrecognized node type: %d",
 				 (int) nodeTag(node));
@@ -2249,7 +2272,7 @@ expression_tree_walker(Node *node,
  * Some callers want to suppress visitation of certain items in the sub-Query,
  * typically because they need to process them specially, or don't actually
  * want to recurse into subqueries.  This is supported by the flags argument,
- * which is the bitwise OR of flag values to suppress visitation of
+ * which is the bitwise OR of flag values to add or suppress visitation of
  * indicated items.  (More flag bits may be added as needed.)
  */
 bool
@@ -2363,8 +2386,12 @@ range_table_walker(List *rtable,
 	{
 		RangeTblEntry *rte = (RangeTblEntry *) lfirst(rt);
 
-		/* For historical reasons, visiting RTEs is not the default */
-		if (flags & QTW_EXAMINE_RTES)
+		/*
+		 * Walkers might need to examine the RTE node itself either before or
+		 * after visiting its contents (or, conceivably, both).  Note that if
+		 * you specify neither flag, the walker won't visit the RTE at all.
+		 */
+		if (flags & QTW_EXAMINE_RTES_BEFORE)
 			if (walker(rte, context))
 				return true;
 
@@ -2374,6 +2401,8 @@ range_table_walker(List *rtable,
 				if (walker(rte->tablesample, context))
 					return true;
 				break;
+			/* POLAR px RTE_VOID */
+			case RTE_VOID:
 			case RTE_CTE:
 			case RTE_NAMEDTUPLESTORE:
 				/* nothing to do */
@@ -2396,6 +2425,13 @@ range_table_walker(List *rtable,
 				if (walker(rte->tablefunc, context))
 					return true;
 				break;
+			/* POLAR px */
+			case RTE_TABLEFUNCTION:
+				if (walker(rte->subquery, context))
+					return true;
+				if (walker(rte->functions, context))
+					return true;
+				break;
 			case RTE_VALUES:
 				if (walker(rte->values_lists, context))
 					return true;
@@ -2404,6 +2440,10 @@ range_table_walker(List *rtable,
 
 		if (walker(rte->securityQuals, context))
 			return true;
+
+		if (flags & QTW_EXAMINE_RTES_AFTER)
+			if (walker(rte, context))
+				return true;
 	}
 	return false;
 }
@@ -3115,6 +3155,15 @@ expression_tree_mutator(Node *node,
 				return (Node *) newnode;
 			}
 			break;
+		case T_DMLActionExpr:
+			{
+				DMLActionExpr *action_expr = (DMLActionExpr *) node;
+				DMLActionExpr *new_action_expr;
+
+				FLATCOPY(new_action_expr, action_expr, DMLActionExpr);
+				return (Node *)new_action_expr;
+			}
+			break;
 		default:
 			elog(ERROR, "unrecognized node type: %d",
 				 (int) nodeTag(node));
@@ -3256,6 +3305,8 @@ range_table_mutator(List *rtable,
 				/* we don't bother to copy eref, aliases, etc; OK? */
 				break;
 			case RTE_CTE:
+			/* POLAR px RTE_VOID */
+			case RTE_VOID:
 			case RTE_NAMEDTUPLESTORE:
 				/* nothing to do */
 				break;
@@ -3282,6 +3333,11 @@ range_table_mutator(List *rtable,
 				break;
 			case RTE_FUNCTION:
 				MUTATE(newrte->functions, rte->functions, List *);
+				break;
+			/* POLAR px */
+			case RTE_TABLEFUNCTION:
+				MUTATE(newrte->functions, rte->functions, List *);
+				MUTATE(newrte->subquery, rte->subquery, Query *);
 				break;
 			case RTE_TABLEFUNC:
 				MUTATE(newrte->tablefunc, rte->tablefunc, TableFunc *);
@@ -3882,6 +3938,13 @@ planstate_tree_walker(PlanState *planstate,
 		case T_BitmapOr:
 			if (planstate_walk_members(((BitmapOrState *) planstate)->bitmapplans,
 									   ((BitmapOrState *) planstate)->nplans,
+									   walker, context))
+				return true;
+			break;
+		/* POLAR px */
+		case T_Sequence:
+			if (planstate_walk_members(((SequenceState *) planstate)->subplans,
+									   ((SequenceState *) planstate)->numSubplans,
 									   walker, context))
 				return true;
 			break;

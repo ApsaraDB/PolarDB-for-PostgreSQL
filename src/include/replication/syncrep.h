@@ -27,6 +27,15 @@
 
 #define NUM_SYNC_REP_WAIT_MODE	3
 
+/* POLAR: Sync DDL */
+#define POLAR_SYNC_DDL_WAIT_APPLY 3
+
+/* POLAR: Priority Replication */
+#define POLAR_PRI_REP_WAIT_FLUSH 4
+
+#define POLAR_NUM_ALL_REP_WAIT_MODE	5
+/* POLAR: end */
+
 /* syncRepState */
 #define SYNC_REP_NOT_WAITING		0
 #define SYNC_REP_WAITING			1
@@ -101,6 +110,9 @@ extern List *SyncRepGetSyncStandbys(bool *am_sync);
 /* called by checkpointer */
 extern void SyncRepUpdateSyncStandbysDefined(void);
 
+/* POLAR: called by checkpointer */
+extern void polar_sync_rep_update_timeout_enabled_flag(void);
+
 /* GUC infrastructure */
 extern bool check_synchronous_standby_names(char **newval, void **extra, GucSource source);
 extern void assign_synchronous_standby_names(const char *newval, void *extra);
@@ -120,5 +132,13 @@ extern void syncrep_scanner_finish(void);
  * POLAR: called by wal sender & drop replication slot
  */
 extern bool polar_release_ddl_waiters(void);
+
+/* POLAR: export for priority replication */
+extern void SyncRepQueueInsert(int mode);
+extern void SyncRepCancelWait(void);
+extern int	SyncRepWakeQueue(bool all, int mode);
+#ifdef USE_ASSERT_CHECKING
+extern bool SyncRepQueueIsOrderedByLSN(int mode);
+#endif
 
 #endif							/* _SYNCREP_H */

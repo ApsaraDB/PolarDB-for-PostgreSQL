@@ -50,6 +50,11 @@
 #include "miscadmin.h"
 #include "utils/memutils.h"
 
+/* POLAR px */
+#include "px/px_vars.h"
+#include "px/px_hash.h"
+
+static bool TupleMatchesHashFilter(ResultState *node, TupleTableSlot *resultSlot);
 
 /* ----------------------------------------------------------------
  *		ExecResult(node)
@@ -71,6 +76,9 @@ ExecResult(PlanState *pstate)
 	TupleTableSlot *outerTupleSlot;
 	PlanState  *outerPlan;
 	ExprContext *econtext;
+
+	/* POLAR px */
+	TupleTableSlot *candidateOutputSlot;
 
 	CHECK_FOR_INTERRUPTS();
 
@@ -118,10 +126,26 @@ ExecResult(PlanState *pstate)
 				return NULL;
 
 			/*
+			 * POLAR px:
+			 * nodeResult may perform filtering just like 'group by having'
+			 * having clause performed in nodeResult not in nodeAgg
+			 * this while loop would perform more than one time
+			 * so econntext need reset every time.
+			 */
+			ResetExprContext(econtext);
+
+			/*
 			 * prepare to compute projection expressions, which will expect to
 			 * access the input tuples as varno OUTER.
 			 */
 			econtext->ecxt_outertuple = outerTupleSlot;
+
+			/**
+			 * POLAR px
+			 * Extract out qual in case result node is also performing filtering.
+			 */
+			if (node->ps.qual && !ExecQual(node->ps.qual, econtext))
+				continue;
 		}
 		else
 		{
@@ -132,11 +156,59 @@ ExecResult(PlanState *pstate)
 			node->rs_done = true;
 		}
 
+		/* POLAR px */
 		/* form the result tuple using ExecProject(), and return it */
-		return ExecProject(node->ps.ps_ProjInfo);
+		candidateOutputSlot = ExecProject(node->ps.ps_ProjInfo);
+
+		/*
+		 * If there was a GPDB hash filter, check that too. Note that
+		 * the hash filter is expressed in terms of *result* slot, so
+		 * we must do this after projecting.
+		 */
+		if (!TupleMatchesHashFilter(node, candidateOutputSlot))
+			continue;
+
+		return candidateOutputSlot;
 	}
 
 	return NULL;
+}
+
+
+/** POLAR px
+ * Returns true if tuple matches hash filter.
+ */
+static bool
+TupleMatchesHashFilter(ResultState *node, TupleTableSlot *resultSlot)
+{
+	Result	   *resultNode = (Result *)node->ps.plan;
+	bool		res = true;
+
+	Assert(resultNode);
+	Assert(!TupIsNull(resultSlot));
+
+	if (node->hashFilter)
+	{
+		int			i;
+		int			targetSeg;
+		pxhashinit(node->hashFilter);
+		for (i = 0; i < resultNode->numHashFilterCols; i++)
+		{
+			int			attnum = resultNode->hashFilterColIdx[i];
+			Datum		hAttr;
+			bool		isnull;
+
+			hAttr = slot_getattr(resultSlot, attnum, &isnull);
+
+			pxhash(node->hashFilter, i + 1, hAttr, isnull);
+		}
+
+		targetSeg = pxhashreduce(node->hashFilter);
+
+		res = (targetSeg == PxIdentity.workerid);
+	}
+
+	return res;
 }
 
 /* ----------------------------------------------------------------
@@ -227,6 +299,19 @@ ExecInitResult(Result *node, EState *estate, int eflags)
 		ExecInitQual(node->plan.qual, (PlanState *) resstate);
 	resstate->resconstantqual =
 		ExecInitQual((List *) node->resconstantqual, (PlanState *) resstate);
+
+	/* POLAR px
+	 * initialize hash filter
+	 */
+	if (node->numHashFilterCols > 0)
+	{
+		int			currentSliceId = estate->currentSliceId;
+		ExecSlice *currentSlice = &estate->es_sliceTable->slices[currentSliceId];
+
+		resstate->hashFilter = makePxHash(currentSlice->planNumSegments,
+										   node->numHashFilterCols,
+										   node->hashFilterFuncs);
+	}
 
 	return resstate;
 }

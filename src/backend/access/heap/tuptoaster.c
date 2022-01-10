@@ -959,7 +959,7 @@ toast_insert_or_update(Relation rel, HeapTuple newtup, HeapTuple oldtup,
 			if (toast_action[i] == 'p')
 				continue;
 			if (VARATT_IS_EXTERNAL(DatumGetPointer(toast_values[i])))
-				continue;		/* can't happen, toast_action would be 'p' */
+				continue;		/* can't happen, EXTERNAL only toast_action should be 'a' */
 			if (TupleDescAttr(tupleDesc, i)->attstorage != 'm')
 				continue;
 			if (toast_sizes[i] > biggest_size)
@@ -980,6 +980,7 @@ toast_insert_or_update(Relation rel, HeapTuple newtup, HeapTuple oldtup,
 		toast_action[i] = 'p';
 		toast_values[i] = toast_save_datum(rel, toast_values[i],
 										   toast_oldexternal[i], options);
+	
 		if (toast_free[i])
 			pfree(DatumGetPointer(old_value));
 		toast_free[i] = true;

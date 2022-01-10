@@ -1,0 +1,32 @@
+create extension polar_tde_utils;
+select polar_tde_update_kmgr_file('echo "adfadsfadssssssssfa123123123123123123123123123123123123111313126"');
+ polar_tde_update_kmgr_file 
+----------------------------
+ t
+(1 row)
+
+show polar_cluster_passphrase_command;
+                    polar_cluster_passphrase_command                     
+-------------------------------------------------------------------------
+ echo "adfadsfadssssssssfa123123123123123123123123123123123123111313126"
+(1 row)
+
+select polar_tde_update_kmgr_file('echo "adfadsfadssssssssfa123123123123123123123123123123123123111313123"');
+ polar_tde_update_kmgr_file 
+----------------------------
+ t
+(1 row)
+
+show polar_cluster_passphrase_command;
+                    polar_cluster_passphrase_command                     
+-------------------------------------------------------------------------
+ echo "adfadsfadssssssssfa123123123123123123123123123123123123111313123"
+(1 row)
+
+select kmgr_version_no from polar_tde_kmgr_info_view();
+ kmgr_version_no 
+-----------------
+       201912301
+(1 row)
+
+drop extension polar_tde_utils;

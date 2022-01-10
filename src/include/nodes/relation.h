@@ -20,7 +20,10 @@
 #include "nodes/params.h"
 #include "nodes/parsenodes.h"
 #include "storage/block.h"
-
+/* POLAR px */
+#include "nodes/px_plannerconfig.h"
+#include "nodes/plannodes.h"
+/* POLAR end */
 
 /*
  * Relids
@@ -81,6 +84,46 @@ typedef enum UpperRelationKind
 	UPPERREL_FINAL				/* result of any remaining top-level actions */
 	/* NB: UPPERREL_FINAL must be last enum entry; it's used to size arrays */
 } UpperRelationKind;
+
+/*
+ * POALR px
+ * ApplyShareInputContext is used in different stages of ShareInputScan
+ * processing. This is mostly used as working area during the stages, but
+ * some information is also carried through multiple stages.
+ */
+typedef struct ApplyShareInputContextPerShare
+{
+	int			producer_slice_id;
+	Bitmapset  *participant_slices;
+} ApplyShareInputContextPerShare;
+
+typedef struct ApplyShareInputContext
+{
+	/* curr_rtable is used by all stages when traversing into subqueries */
+	List	   *curr_rtable;
+
+	/*
+	 * Populated in dag_to_tree() (or collect_shareinput_producers() for ORCA),
+	 * used in replace_shareinput_targetlists()
+	 */
+	Plan	  **shared_plans;
+	int			shared_input_count;
+
+	/*
+	 * State for replace_shareinput_targetlists()
+	 */
+	int		   *share_refcounts;
+	int			share_refcounts_sz;		/* allocated sized of 'share_refcounts' */
+
+	/*
+	 * State for apply_sharinput_xslice() walkers.
+	 */
+	PlanSlice  *slices;			/* root->glob->slices */
+	List	   *motStack;		/* stack of motionIds leading to current node */
+	ApplyShareInputContextPerShare *shared_inputs; /* one for each share */
+	Bitmapset  *qdShares;		/* share_ids that are referenced from QD slices */
+
+} ApplyShareInputContext;
 
 /*
  * This enum identifies which type of relation is being planned through the
@@ -145,6 +188,19 @@ typedef struct PlannerGlobal
 	bool		parallelModeNeeded; /* parallel mode actually required? */
 
 	char		maxParallelHazard;	/* worst PROPARALLEL hazard level */
+
+	/* POLAR px */
+	int		   *subplan_sliceIds; /* Slice IDs for initplans */
+	int			nParamExec;		/* number of PARAM_EXEC Params used */
+	ApplyShareInputContext share;	/* workspace for GPDB plan sharing */
+
+	/*
+	 * POLAR px: Slice table, hold the final PlannedStmt
+	 */
+	int			numSlices;
+	struct PlanSlice *slices;
+
+	/* POLAR end */
 } PlannerGlobal;
 
 /* macro for fetching the Plan associated with a SubPlan node */
@@ -343,8 +399,65 @@ typedef struct PlannerInfo
 
 	/* Does this query modify any partition key columns? */
 	bool		partColsUpdated;
+
+	/* POLAR px */
+	List       *list_cteplaninfo; /* list of CtePlannerInfo, one for each CTE */
+	int			numMotions;
+
+	PlannerConfig *config;		/* Planner configuration */
+
+	/* POLAR end */
 } PlannerInfo;
 
+/*
+ * CtePlanInfo
+ *    Information for subplans that are associated with a CTE.
+ */
+typedef struct CtePlanInfo
+{
+	/*
+	 * A subplan, prepared for sharing among many CTE references by
+	 * prepare_plan_for_sharing(), that implements the CTE. NULL if the
+	 * CTE is not shared among references.
+	 */
+	Plan *shared_plan;
+
+	/*
+	 * The subroot corresponding to the subplan.
+	 */
+	PlannerInfo *subroot;
+} CtePlanInfo;
+
+/*----------
+ * DynamicScanInfo
+ *		Information about scans on partitioned tables.
+ *
+ * Scans on partitioned tables are expanded into Append paths early
+ * in the planning. For each such expansion, we create a DynamicScanInfo
+ * struct.
+ *----------
+ */
+typedef struct
+{
+	/*
+	 * The scans are numbered, so that a Partition Selector can
+	 * refer to the scan.
+	 */
+	int			dynamicScanId;
+
+	/* Parent relation this is for */
+	int			rtindex;
+	Oid			parentOid;
+
+	/* RTindexes of the leaf relations */
+	Relids		children;
+
+	/* Partitioning key information */
+	List	   *partKeyAttnos;
+
+	/* Set to true, if a PartitionSelector has been created for this scan */
+	bool		hasSelector;
+} DynamicScanInfo;
 
 /*
  * In places where it's known that simple_rte_array[] must have been prepared
@@ -354,6 +467,24 @@ typedef struct PlannerInfo
 #define planner_rt_fetch(rti, root) \
 	((root)->simple_rte_array ? (root)->simple_rte_array[rti] : \
 	 rt_fetch(rti, (root)->parse->rtable))
+
+/**
+ * Fetch the root (PlannerInfo) for a subplan
+ */
+static inline struct PlannerInfo *planner_subplan_get_root(struct PlannerInfo *root, SubPlan *subplan)
+{
+	return (PlannerInfo *) list_nth(root->glob->subroots, subplan->plan_id - 1);
+}
+
+/*
+ * Rewrite the Plan associated with a SubPlan node during planning.
+ */
+static inline void
+planner_subplan_put_plan(struct PlannerInfo *root, SubPlan *subplan, Plan *plan) 
+{
+	ListCell *cell = list_nth_cell(root->glob->subplans, subplan->plan_id-1);
+	cell->data.ptr_value = plan;
+}
 
 /*
  * If multiple relations are partitioned the same way, all such partitions
@@ -1730,6 +1861,9 @@ typedef struct ModifyTablePath
 	List	   *rowMarks;		/* PlanRowMarks (non-locking only) */
 	OnConflictExpr *onconflict; /* ON CONFLICT clause, or NULL */
 	int			epqParam;		/* ID of Param for EvalPlanQual re-eval */
+	/* POLAR px */
+	List	   *is_split_updates;
+	/* POLAR end */
 } ModifyTablePath;
 
 /*
@@ -2282,6 +2416,22 @@ typedef struct PlannerParamItem
 } PlannerParamItem;
 
 /*
+ * A Mapping created by the QC during data loading that maps a
+ * relation id to the segfile number that is should be inserting
+ * into (in cases of inserting into a partitioned table the QC
+ * assigns a segno for each possible partition child relation).
+ *
+ * It is a node because it needs to get serialized as a part of
+ * CopyStmt.
+ */
+typedef struct SegfileMapNode
+{
+	NodeTag 	type;
+	Oid			relid;
+	int			segno;
+} SegfileMapNode;
+
+/*
  * When making cost estimates for a SEMI/ANTI/inner_unique join, there are
  * some correction factors that are needed in both nestloop and hash joins
  * to account for the fact that the executor can stop scanning inner rows
@@ -2427,5 +2577,23 @@ typedef struct JoinCostWorkspace
 	int			numbatches;
 	double		inner_rows_total;
 } JoinCostWorkspace;
+
+/*
+ * PxMotionPath represents transmission of the child Path results
+ * from a set of sending processes to a set of receiving processes.
+ *
+ * Normally, the distribution is determined by the 'locus' of the path.
+ * However, if the distribution cannot be represented by a DistributionKeys,
+ * an alternative representation is to mark the locus as Strewn, and list
+ * the hash columns in 'policy'. In the normal case, 'policy' is not used.
+ */
+typedef struct PxMotionPath
+{
+	Path		path;
+    Path	   *subpath;
+	bool		is_explicit_motion;
+
+	PxPolicy   *policy;
+} PxMotionPath;
 
 #endif							/* RELATION_H */

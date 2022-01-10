@@ -39,6 +39,10 @@
 #include "utils/timestamp.h"
 #include "utils/tqual.h"
 
+/* POLAR */
+#include "utils/guc.h"
+#include "commands/extension.h"
+
 /* Potentially set by pg_upgrade_support functions */
 Oid			binary_upgrade_next_pg_authid_oid = InvalidOid;
 
@@ -108,6 +112,10 @@ CreateRole(ParseState *pstate, CreateRoleStmt *stmt)
 	DefElem    *dvalidUntil = NULL;
 	DefElem    *dbypassRLS = NULL;
 
+	/* POLAR */
+	bool		ispolar_super = false;	/* Make the user a polar superuser? */
+	DefElem    *dispolar_super = NULL;
+
 	/* The defaults can vary depending on the original statement type */
 	switch (stmt->stmt_type)
 	{
@@ -120,7 +128,6 @@ CreateRole(ParseState *pstate, CreateRoleStmt *stmt)
 		case ROLESTMT_GROUP:
 			break;
 	}
-
 	/* Extract options from the statement node tree */
 	foreach(option, stmt->options)
 	{
@@ -142,12 +149,21 @@ CreateRole(ParseState *pstate, CreateRoleStmt *stmt)
 		}
 		else if (strcmp(defel->defname, "superuser") == 0)
 		{
-			if (dissuper)
+			if (dissuper || dispolar_super)
 				ereport(ERROR,
 						(errcode(ERRCODE_SYNTAX_ERROR),
 						 errmsg("conflicting or redundant options"),
 						 parser_errposition(pstate, defel->location)));
 			dissuper = defel;
+		}
+		/* POLAR: polar superser */
+		else if (strcmp(defel->defname, "polar_superuser") == 0)
+		{
+			if (dispolar_super || dissuper)
+				ereport(ERROR,
+						(errcode(ERRCODE_SYNTAX_ERROR),
+						 errmsg("conflicting or redundant options")));
+			dispolar_super = defel;
 		}
 		else if (strcmp(defel->defname, "inherit") == 0)
 		{
@@ -257,6 +273,10 @@ CreateRole(ParseState *pstate, CreateRoleStmt *stmt)
 		password = strVal(dpassword->arg);
 	if (dissuper)
 		issuper = intVal(dissuper->arg) != 0;
+	/* POLAR */
+	if (dispolar_super)
+		ispolar_super = intVal(dispolar_super->arg) != 0;
+	/* POLAR end */
 	if (dinherit)
 		inherit = intVal(dinherit->arg) != 0;
 	if (dcreaterole)
@@ -286,13 +306,45 @@ CreateRole(ParseState *pstate, CreateRoleStmt *stmt)
 	if (dbypassRLS)
 		bypassrls = intVal(dbypassRLS->arg) != 0;
 
+	/* POLAR: check whether enable polar superuser or not */
+	if (!polar_enable_polar_superuser && ispolar_super)
+	{
+		ereport(ERROR,
+				(errcode(ERRCODE_SYNTAX_ERROR),
+				 errmsg("polar_superuser is not supported.")));
+	}
+
+	/* we can not both super and rds super */
+	Assert(issuper == false || ispolar_super == false);
+
 	/* Check some permissions first */
 	if (issuper)
 	{
-		if (!superuser())
+		if (polar_superuser())
+		{
+			ereport(WARNING,
+					(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+					 errmsg("a polar_superusers is created instead of superuser")));
+			/*
+			 * because I am not superser but am polar_superuser, so
+			 * I can create polar_superuser not superuser
+			 */
+			issuper = false;
+			ispolar_super = true;
+		}
+		else if (!superuser())
+		{
 			ereport(ERROR,
 					(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 					 errmsg("must be superuser to create superusers")));
+		}
+	}
+	else if (ispolar_super)
+	{
+		if (!superuser() && !polar_superuser())
+			ereport(ERROR,
+					(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+					 errmsg("must be superuser or polar_superuser to create polar_superusers")));
 	}
 	else if (isreplication)
 	{
@@ -410,7 +462,8 @@ CreateRole(ParseState *pstate, CreateRoleStmt *stmt)
 		{
 			/* Encrypt the password to the requested format. */
 			shadow_pass = encrypt_password(Password_encryption, stmt->role,
-										   password);
+										   password,
+										   (dissuper && intVal(dissuper->arg) != 0));
 			new_record[Anum_pg_authid_rolpassword - 1] =
 				CStringGetTextDatum(shadow_pass);
 		}
@@ -473,6 +526,13 @@ CreateRole(ParseState *pstate, CreateRoleStmt *stmt)
 			Oid			oldroleid = HeapTupleGetOid(oldroletup);
 			char	   *oldrolename = NameStr(oldroleform->rolname);
 
+			/* POLAR: do not allow user explict specify the pg_polar_superuser role in statement.*/
+        	        if (oldroleid == POLAR_SUPERUSER_OID)
+                                ereport(ERROR,
+                                        (errcode(ERRCODE_RESERVED_NAME),
+                                        errmsg("pg_polar_superuser role could not be used in statement."),
+                                        errdetail("pg_polar_superuser role is reserveed for system internal using only.")));
+
 			AddRoleMems(oldrolename, oldroleid,
 						thisrole_list,
 						thisrole_oidlist,
@@ -500,6 +560,26 @@ CreateRole(ParseState *pstate, CreateRoleStmt *stmt)
 	 * Close pg_authid, but keep lock till commit.
 	 */
 	heap_close(pg_authid_rel, NoLock);
+
+	/* POLAR: add comments for polar_superuser */
+	if (ispolar_super)
+	{
+		RoleSpec   *thisrole = makeNode(RoleSpec);
+		List       *thisrole_list = list_make1(thisrole);
+		List       *thisrole_oidlist = list_make1_oid(roleid);
+
+		thisrole->roletype = ROLESPEC_CSTRING;
+		thisrole->rolename = stmt->role;
+		thisrole->location = -1;
+
+		CreateSharedComments(roleid, AuthIdRelationId, _("polar_superuser"));
+		
+		/* Add the new user or roles as member of POLAR_SUPERUSER role. */
+		AddRoleMems(polar_superuser_name, POLAR_SUPERUSER_OID,
+								thisrole_list,
+								thisrole_oidlist,
+								GetUserId(), false);
+	}
 
 	return roleid;
 }
@@ -551,6 +631,10 @@ AlterRole(AlterRoleStmt *stmt)
 	DefElem    *dbypassRLS = NULL;
 	Oid			roleid;
 
+	/* POLAR */
+	int			ispolar_super = -1;	/* Make the user a polar_superuser? */
+	DefElem    *dispolar_super = NULL;
+
 	check_rolespec_name(stmt->role,
 						"Cannot alter reserved roles.");
 
@@ -569,11 +653,19 @@ AlterRole(AlterRoleStmt *stmt)
 		}
 		else if (strcmp(defel->defname, "superuser") == 0)
 		{
-			if (dissuper)
+			if (dissuper || dispolar_super)
 				ereport(ERROR,
 						(errcode(ERRCODE_SYNTAX_ERROR),
 						 errmsg("conflicting or redundant options")));
 			dissuper = defel;
+		}
+		else if (strcmp(defel->defname, "polar_superuser") == 0)
+		{
+			if (dispolar_super || dissuper)
+				ereport(ERROR,
+						(errcode(ERRCODE_SYNTAX_ERROR),
+						 errmsg("conflicting or redundant options")));
+			dispolar_super = defel;
 		}
 		else if (strcmp(defel->defname, "inherit") == 0)
 		{
@@ -657,6 +749,8 @@ AlterRole(AlterRoleStmt *stmt)
 		password = strVal(dpassword->arg);
 	if (dissuper)
 		issuper = intVal(dissuper->arg);
+	if (dispolar_super)
+		ispolar_super = intVal(dispolar_super->arg);
 	if (dinherit)
 		inherit = intVal(dinherit->arg);
 	if (dcreaterole)
@@ -699,10 +793,37 @@ AlterRole(AlterRoleStmt *stmt)
 	 */
 	if (authform->rolsuper || issuper >= 0)
 	{
-		if (!superuser())
+		if (ispolar_super == 0)
+			ereport(ERROR,
+					(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+					 errmsg("can not alter superuser to nopolar_superusers")));
+		else if (!authform->rolsuper && polar_superuser())
+		{
+			ereport(WARNING,
+					(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+					 errmsg("role is altered to polar_superusers instead of superuser")));
+			/*
+			 * because I am not superser but am polar_superuser, so
+			 * I can create polar_superuser not superuser
+			 */
+			if (issuper == 0)
+				ispolar_super = 0;
+			else
+				ispolar_super = 1;
+			issuper = -1;
+		}
+		else if (!superuser())
 			ereport(ERROR,
 					(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 					 errmsg("must be superuser to alter superusers")));
+	}
+	/* POLAR: we are alter polar superuser now */
+	else if (ispolar_super >= 0 || is_member_of_role(roleid, POLAR_SUPERUSER_OID))
+	{
+		if (!superuser() && !polar_superuser())
+			ereport(ERROR,
+					(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+					 errmsg("must be superuser or polar_superuser to alter polar_superusers")));
 	}
 	else if (authform->rolreplication || isreplication >= 0)
 	{
@@ -832,7 +953,8 @@ AlterRole(AlterRoleStmt *stmt)
 		{
 			/* Encrypt the password to the requested format. */
 			shadow_pass = encrypt_password(Password_encryption, rolename,
-										   password);
+										   password,
+										   (authform->rolsuper || issuper > 0));
 			new_record[Anum_pg_authid_rolpassword - 1] =
 				CStringGetTextDatum(shadow_pass);
 		}
@@ -863,6 +985,27 @@ AlterRole(AlterRoleStmt *stmt)
 
 	InvokeObjectPostAlterHook(AuthIdRelationId, roleid, 0);
 
+	if (!authform->rolsuper && ispolar_super > 0)
+	{
+		CreateSharedComments(roleid, AuthIdRelationId, _("polar_superuser"));
+
+		/* Add the new user or roles as member from POLAR_SUPERUSER role. */
+		AddRoleMems(polar_superuser_name, POLAR_SUPERUSER_OID,
+							list_make1(stmt->role),
+							list_make1_oid(roleid),
+							GetUserId(), false);
+	}
+	else if (!authform->rolsuper && ispolar_super == 0)
+	{
+		CreateSharedComments(roleid, AuthIdRelationId, NULL);
+
+		/* Del the new user or roles as member from POLAR_SUPERUSER role. */
+		DelRoleMems(polar_superuser_name, POLAR_SUPERUSER_OID,
+							list_make1(stmt->role),
+							list_make1_oid(roleid),
+							false);
+	}
+
 	ReleaseSysCache(tuple);
 	heap_freetuple(new_tuple);
 
@@ -874,13 +1017,29 @@ AlterRole(AlterRoleStmt *stmt)
 		CommandCounterIncrement();
 
 	if (stmt->action == +1)		/* add members to role */
+	{
+		/* Do not allow user explict specify the pg_polar_superuser role in statement.*/
+		if (roleid == POLAR_SUPERUSER_OID)
+				ereport(ERROR,
+					(errcode(ERRCODE_RESERVED_NAME),
+					errmsg("pg_polar_superuser role could not be used in statement."),
+					errdetail("pg_polar_superuser role is reserveed for system internal using only.")));
 		AddRoleMems(rolename, roleid,
 					rolemembers, roleSpecsToIds(rolemembers),
 					GetUserId(), false);
+	}
 	else if (stmt->action == -1)	/* drop members from role */
+	{
+		/* Do not allow user explict specify the pg_polar_superuser role in statement.*/
+		if (roleid == POLAR_SUPERUSER_OID)
+				ereport(ERROR,
+					(errcode(ERRCODE_RESERVED_NAME),
+					errmsg("pg_polar_superuser role could not be used in statement."),
+					errdetail("pg_polar_superuser role is reserveed for system internal using only.")));
 		DelRoleMems(rolename, roleid,
 					rolemembers, roleSpecsToIds(rolemembers),
 					false);
+	}
 
 	/*
 	 * Close pg_authid, but keep lock till commit.
@@ -959,7 +1118,7 @@ AlterRoleSet(AlterRoleSetStmt *stmt)
 	if (!stmt->role && !stmt->database)
 	{
 		/* Must be superuser to alter settings globally. */
-		if (!superuser())
+		if (!superuser() && !polar_superuser())
 			ereport(ERROR,
 					(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 					 errmsg("must be superuser to alter settings globally")));
@@ -1416,6 +1575,14 @@ roleSpecsToIds(List *memberNames)
 		Oid			roleid;
 
 		roleid = get_rolespec_oid(rolespec, false);
+		
+		/* Do not allow user explict specify the pg_polar_superuser role in statement.*/
+		if (roleid == POLAR_SUPERUSER_OID)
+				ereport(ERROR,
+					(errcode(ERRCODE_RESERVED_NAME),
+					errmsg("pg_polar_superuser role could not be used in statement."),
+					errdetail("pg_polar_superuser role is reserveed for system internal using only.")));
+		
 		result = lappend_oid(result, roleid);
 	}
 	return result;
@@ -1459,6 +1626,18 @@ AddRoleMems(const char *rolename, Oid roleid,
 			ereport(ERROR,
 					(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 					 errmsg("must be superuser to alter superusers")));
+	}
+	else if (rolename && IsReservedName(rolename))
+	{
+		if ((!superuser() && !polar_superuser())
+			|| (!superuser() && polar_superuser()
+				&& !polar_find_in_string_list(rolename, polar_internal_allowed_roles)))
+		{
+			ereport(ERROR,
+					(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+					 errmsg("must have admin option on role \"%s\"",
+							rolename)));
+		}
 	}
 	else
 	{
@@ -1603,6 +1782,18 @@ DelRoleMems(const char *rolename, Oid roleid,
 			ereport(ERROR,
 					(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 					 errmsg("must be superuser to alter superusers")));
+	}
+	else if (rolename && IsReservedName(rolename))
+	{
+		if ((!superuser() && !polar_superuser())
+			|| (!superuser() && polar_superuser()
+				&& !polar_find_in_string_list(rolename, polar_internal_allowed_roles)))
+		{
+			ereport(ERROR,
+					(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+					 errmsg("must have admin option on role \"%s\"",
+							rolename)));
+		}
 	}
 	else
 	{

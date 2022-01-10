@@ -1,0 +1,1202 @@
+-- Tests for old bugs related to OLAP queries.
+-- First create a schema to contain the test tables, and few common test
+-- tables that are shared by several test queries.
+/*--EXPLAIN_QUERY_BEGIN*/
+create schema bfv_olap;
+set search_path=bfv_olap;
+create table customer
+(
+  cn int not null,
+  cname text not null,
+  cloc text,
+  primary key (cn)
+) ;
+insert into customer values
+  ( 1, 'Macbeth', 'Inverness'),
+  ( 2, 'Duncan', 'Forres'),
+  ( 3, 'Lady Macbeth', 'Inverness'),
+  ( 4, 'Witches, Inc', 'Lonely Heath');
+create table vendor
+(
+  vn int not null,
+  vname text not null,
+  vloc text,
+  primary key (vn)
+) ;
+insert into vendor values
+  ( 10, 'Witches, Inc', 'Lonely Heath'),
+  ( 20, 'Lady Macbeth', 'Inverness'),
+  ( 30, 'Duncan', 'Forres'),
+  ( 40, 'Macbeth', 'Inverness'),
+  ( 50, 'Macduff', 'Fife');
+create table sale
+(
+  cn int not null,
+  vn int not null,
+  pn int not null,
+  dt date not null,
+  qty int not null,
+  prc float not null,
+  primary key (cn, vn, pn)
+) ;
+insert into sale values
+  ( 2, 40, 100, '1401-1-1', 1100, 2400),
+  ( 1, 10, 200, '1401-3-1', 1, 0),
+  ( 3, 40, 200, '1401-4-1', 1, 0),
+  ( 1, 20, 100, '1401-5-1', 1, 0),
+  ( 1, 30, 300, '1401-5-2', 1, 0),
+  ( 1, 50, 400, '1401-6-1', 1, 0),
+  ( 2, 50, 400, '1401-6-1', 1, 0),
+  ( 1, 30, 500, '1401-6-1', 12, 5),
+  ( 3, 30, 500, '1401-6-1', 12, 5),
+  ( 3, 30, 600, '1401-6-1', 12, 5),
+  ( 4, 40, 700, '1401-6-1', 1, 1),
+  ( 4, 40, 800, '1401-6-1', 1, 1);
+--
+-- Test case errors out when we define aggregates without combine functions
+-- and use it as an aggregate derived window function.
+--
+-- SETUP
+-- start_ignore
+drop table if exists toy;
+NOTICE:  table "toy" does not exist, skipping
+drop aggregate if exists mysum1(int4);
+NOTICE:  aggregate mysum1(int4) does not exist, skipping
+drop aggregate if exists mysum2(int4);
+NOTICE:  aggregate mysum2(int4) does not exist, skipping
+-- end_ignore
+create table toy(id,val) as select i,i from generate_series(1,5) i;
+create aggregate mysum1(int4) (sfunc = int4_sum, combinefunc=int8pl, stype=bigint);
+create aggregate mysum2(int4) (sfunc = int4_sum, stype=bigint);
+-- TEST
+select id, val, sum(val) over (w), mysum1(val) over (w), mysum2(val) over (w) from toy window w as (order by id rows 2 preceding);
+ERROR:  cannot copy window "w" because it has a frame clause
+LINE 1: select id, val, sum(val) over (w), mysum1(val) over (w), mys...
+                                      ^
+HINT:  Omit the parentheses in this OVER clause.
+-- CLEANUP
+-- start_ignore
+drop aggregate if exists mysum1(int4);
+drop aggregate if exists mysum2(int4);
+drop table if exists toy;
+-- end_ignore
+--
+-- Test case errors out when we define aggregates without preliminary functions and use it as an aggregate derived window function.
+--
+-- SETUP
+-- start_ignore
+drop type if exists ema_type cascade;
+NOTICE:  type "ema_type" does not exist, skipping
+drop function if exists ema_adv(t ema_type, v float, x float) cascade;
+NOTICE:  type "ema_type" does not exist, skipping
+drop function if exists ema_fin(t ema_type) cascade;
+NOTICE:  type "ema_type" does not exist, skipping
+drop aggregate if exists ema(float, float);
+NOTICE:  aggregate ema(pg_catalog.float8,pg_catalog.float8) does not exist, skipping
+drop table if exists ema_test cascade;
+NOTICE:  table "ema_test" does not exist, skipping
+-- end_ignore
+create type ema_type as (x float, e float);
+create function ema_adv(t ema_type, v float, x float)
+    returns ema_type
+    as $$
+        begin
+            if t.e is null then
+                t.e = v;
+                t.x = x;
+            else
+                if t.x != x then
+                    raise exception 'ema smoothing x may not vary';
+                end if;
+                t.e = t.e + (v - t.e) * t.x;
+            end if;
+            return t;
+        end;
+    $$ language plpgsql;
+create function ema_fin(t ema_type)
+    returns float
+    as $$
+       begin
+           return t.e;
+       end;
+    $$ language plpgsql;
+create aggregate ema(float, float) (
+    sfunc = ema_adv,
+    stype = ema_type,
+    finalfunc = ema_fin,
+    initcond = '(,)');
+create table ema_test (k int, v float ) ;
+insert into ema_test select i, 4*(i::float/20) + 10.0*(1+cos(radians(i*5))) from generate_series(0,19) i(i);
+-- TEST
+select k, v, ema(v, 0.9) over (order by k) from ema_test order by k;
+ k  |        v         |       ema        
+----+------------------+------------------
+  0 |               20 |               20
+  1 | 20.1619469809175 | 20.1457522828257
+  2 | 20.2480775301221 | 20.2378450053924
+  3 | 20.2592582628907 | 20.2571169371409
+  4 | 20.1969262078591 | 20.2029452807873
+  5 | 20.0630778703665 | 20.0770646114086
+  6 | 19.8602540378444 | 19.8819350952008
+  7 | 19.5915204428899 |  19.620561908121
+  8 | 19.2604444311898 | 19.2964561788829
+  9 | 18.8710678118655 | 18.9136066485672
+ 10 | 18.4278760968654 | 18.4764491520356
+ 11 | 17.9357643635105 |  17.989832842363
+ 12 |             17.4 | 17.4589832842363
+ 13 |  16.826182617407 | 16.8894626840899
+ 14 | 16.2202014332567 |   16.28712755834
+ 15 | 15.5881904510252 | 15.6580841617567
+ 16 | 14.9364817766693 |  15.008642015178
+ 17 | 14.2715574274766 | 14.3452658862467
+ 18 |             13.6 | 13.6745265886247
+ 19 | 12.9284425725234 | 13.0030509741335
+(20 rows)
+
+                        QUERY PLAN                        
+----------------------------------------------------------
+ WindowAgg
+   Output: k, v, ema(v, '0.9'::double precision) OVER (?)
+   ->  PX Coordinator 6:1  (slice1; segments: 6)
+         Output: k, v
+         Merge Key: k
+         ->  Sort
+               Output: k, v
+               Sort Key: ema_test.k
+               ->  Partial Seq Scan on bfv_olap.ema_test
+                     Output: k, v
+ Optimizer: PolarDB PX Optimizer
+(11 rows)
+
+select k, v, ema(v, 0.9) over (order by k rows between unbounded preceding and current row) from ema_test order by k;
+ k  |        v         |       ema        
+----+------------------+------------------
+  0 |               20 |               20
+  1 | 20.1619469809175 | 20.1457522828257
+  2 | 20.2480775301221 | 20.2378450053924
+  3 | 20.2592582628907 | 20.2571169371409
+  4 | 20.1969262078591 | 20.2029452807873
+  5 | 20.0630778703665 | 20.0770646114086
+  6 | 19.8602540378444 | 19.8819350952008
+  7 | 19.5915204428899 |  19.620561908121
+  8 | 19.2604444311898 | 19.2964561788829
+  9 | 18.8710678118655 | 18.9136066485672
+ 10 | 18.4278760968654 | 18.4764491520356
+ 11 | 17.9357643635105 |  17.989832842363
+ 12 |             17.4 | 17.4589832842363
+ 13 |  16.826182617407 | 16.8894626840899
+ 14 | 16.2202014332567 |   16.28712755834
+ 15 | 15.5881904510252 | 15.6580841617567
+ 16 | 14.9364817766693 |  15.008642015178
+ 17 | 14.2715574274766 | 14.3452658862467
+ 18 |             13.6 | 13.6745265886247
+ 19 | 12.9284425725234 | 13.0030509741335
+(20 rows)
+
+                        QUERY PLAN                        
+----------------------------------------------------------
+ WindowAgg
+   Output: k, v, ema(v, '0.9'::double precision) OVER (?)
+   ->  PX Coordinator 6:1  (slice1; segments: 6)
+         Output: k, v
+         Merge Key: k
+         ->  Sort
+               Output: k, v
+               Sort Key: ema_test.k
+               ->  Partial Seq Scan on bfv_olap.ema_test
+                     Output: k, v
+ Optimizer: PolarDB PX Optimizer
+(11 rows)
+
+-- CLEANUP
+-- start_ignore
+drop table if exists ema_test cascade;
+drop aggregate if exists ema(float, float);
+drop function if exists ema_fin(t ema_type) cascade;
+drop function if exists ema_adv(t ema_type, v float, x float) cascade;
+drop type if exists ema_type cascade;
+-- end_ignore
+--
+-- Test with/without group by
+--
+-- SETUP
+-- start_ignore
+DROP TABLE IF EXISTS r;
+NOTICE:  table "r" does not exist, skipping
+-- end_ignore
+CREATE TABLE r
+(
+    a INT NOT NULL, 
+    b INT, 
+    c CHARACTER VARYING(200),  
+    d NUMERIC(10,0), 
+    e DATE
+) ;
+ALTER TABLE r SET ;
+ERROR:  syntax error at or near ";"
+LINE 1: ALTER TABLE r SET ;
+                          ^
+ALTER TABLE r ADD CONSTRAINT PKEY PRIMARY KEY (b);
+--TEST
+SELECT MAX(a) AS m FROM r GROUP BY b ORDER BY m;
+ m 
+---
+(0 rows)
+
+                             QUERY PLAN                             
+--------------------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: (max(a))
+   Merge Key: (max(a))
+   ->  Result
+         Output: (max(a))
+         ->  Sort
+               Output: (max(a)), b
+               Sort Key: (max(r.a))
+               ->  GroupAggregate
+                     Output: max(a), b
+                     Group Key: r.b
+                     ->  Sort
+                           Output: a, b
+                           Sort Key: r.b
+                           ->  PX Hash 6:6  (slice2; segments: 6)
+                                 Output: a, b
+                                 Hash Key: b
+                                 ->  Partial Seq Scan on bfv_olap.r
+                                       Output: a, b
+ Optimizer: PolarDB PX Optimizer
+(20 rows)
+
+SELECT MAX(a) AS m FROM r GROUP BY a ORDER BY m;
+ m 
+---
+(0 rows)
+
+                             QUERY PLAN                             
+--------------------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: (max(a))
+   Merge Key: (max(a))
+   ->  Result
+         Output: (max(a))
+         ->  Sort
+               Output: (max(a)), a
+               Sort Key: (max(r.a))
+               ->  GroupAggregate
+                     Output: max(a), a
+                     Group Key: r.a
+                     ->  Sort
+                           Output: a
+                           Sort Key: r.a
+                           ->  PX Hash 6:6  (slice2; segments: 6)
+                                 Output: a
+                                 Hash Key: a
+                                 ->  Partial Seq Scan on bfv_olap.r
+                                       Output: a
+ Optimizer: PolarDB PX Optimizer
+(20 rows)
+
+SELECT MAX(a) AS m FROM r GROUP BY b;
+ m 
+---
+(0 rows)
+
+                       QUERY PLAN                       
+--------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: (max(a))
+   ->  GroupAggregate
+         Output: max(a)
+         Group Key: r.b
+         ->  Sort
+               Output: a, b
+               Sort Key: r.b
+               ->  PX Hash 6:6  (slice2; segments: 6)
+                     Output: a, b
+                     Hash Key: b
+                     ->  Partial Seq Scan on bfv_olap.r
+                           Output: a, b
+ Optimizer: PolarDB PX Optimizer
+(14 rows)
+
+-- ORDER BY clause includes some grouping column or not
+SELECT MAX(a) AS m FROM R GROUP BY b ORDER BY m,b;
+ m 
+---
+(0 rows)
+
+                             QUERY PLAN                             
+--------------------------------------------------------------------
+ Result
+   Output: (max(a))
+   ->  PX Coordinator 6:1  (slice1; segments: 6)
+         Output: (max(a)), b
+         Merge Key: (max(a)), b
+         ->  Sort
+               Output: (max(a)), b
+               Sort Key: (max(r.a)), r.b
+               ->  GroupAggregate
+                     Output: max(a), b
+                     Group Key: r.b
+                     ->  Sort
+                           Output: a, b
+                           Sort Key: r.b
+                           ->  PX Hash 6:6  (slice2; segments: 6)
+                                 Output: a, b
+                                 Hash Key: b
+                                 ->  Partial Seq Scan on bfv_olap.r
+                                       Output: a, b
+ Optimizer: PolarDB PX Optimizer
+(20 rows)
+
+SELECT MAX(a) AS m FROM R GROUP BY b,e ORDER BY m,b,e;
+ m 
+---
+(0 rows)
+
+                             QUERY PLAN                             
+--------------------------------------------------------------------
+ Result
+   Output: (max(a))
+   ->  PX Coordinator 6:1  (slice1; segments: 6)
+         Output: (max(a)), b, e
+         Merge Key: (max(a)), b, e
+         ->  Sort
+               Output: (max(a)), b, e
+               Sort Key: (max(r.a)), r.b, r.e
+               ->  GroupAggregate
+                     Output: max(a), b, e
+                     Group Key: r.b, r.e
+                     ->  Sort
+                           Output: a, b, e
+                           Sort Key: r.b, r.e
+                           ->  PX Hash 6:6  (slice2; segments: 6)
+                                 Output: a, b, e
+                                 Hash Key: b, e
+                                 ->  Partial Seq Scan on bfv_olap.r
+                                       Output: a, b, e
+ Optimizer: PolarDB PX Optimizer
+(20 rows)
+
+SELECT MAX(a) AS m FROM R GROUP BY b,e ORDER BY m;
+ m 
+---
+(0 rows)
+
+                             QUERY PLAN                             
+--------------------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: (max(a))
+   Merge Key: (max(a))
+   ->  Result
+         Output: (max(a))
+         ->  Sort
+               Output: (max(a)), b, e
+               Sort Key: (max(r.a))
+               ->  GroupAggregate
+                     Output: max(a), b, e
+                     Group Key: r.b, r.e
+                     ->  Sort
+                           Output: a, b, e
+                           Sort Key: r.b, r.e
+                           ->  PX Hash 6:6  (slice2; segments: 6)
+                                 Output: a, b, e
+                                 Hash Key: b, e
+                                 ->  Partial Seq Scan on bfv_olap.r
+                                       Output: a, b, e
+ Optimizer: PolarDB PX Optimizer
+(20 rows)
+
+-- ORDER BY 1 or more columns
+SELECT MAX(a),d,e AS m FROM r GROUP BY b,d,e ORDER BY m,e,d;
+ max | d | m 
+-----+---+---
+(0 rows)
+
+                             QUERY PLAN                             
+--------------------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: (max(a)), d, e
+   Merge Key: e, d
+   ->  Result
+         Output: (max(a)), d, e
+         ->  Sort
+               Output: (max(a)), d, e, b
+               Sort Key: r.e, r.d
+               ->  GroupAggregate
+                     Output: max(a), d, e, b
+                     Group Key: r.e, r.d, r.b
+                     ->  Sort
+                           Output: a, b, d, e
+                           Sort Key: r.e, r.d, r.b
+                           ->  PX Hash 6:6  (slice2; segments: 6)
+                                 Output: a, b, d, e
+                                 Hash Key: e, d, b
+                                 ->  Partial Seq Scan on bfv_olap.r
+                                       Output: a, b, d, e
+ Optimizer: PolarDB PX Optimizer
+(20 rows)
+
+SELECT MIN(a),d,e AS m FROM r GROUP BY b,e,d ORDER BY e,d;
+ min | d | m 
+-----+---+---
+(0 rows)
+
+                             QUERY PLAN                             
+--------------------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: (min(a)), d, e
+   Merge Key: e, d
+   ->  Result
+         Output: (min(a)), d, e
+         ->  Sort
+               Output: (min(a)), d, e, b
+               Sort Key: r.e, r.d
+               ->  GroupAggregate
+                     Output: min(a), d, e, b
+                     Group Key: r.e, r.d, r.b
+                     ->  Sort
+                           Output: a, b, d, e
+                           Sort Key: r.e, r.d, r.b
+                           ->  PX Hash 6:6  (slice2; segments: 6)
+                                 Output: a, b, d, e
+                                 Hash Key: e, d, b
+                                 ->  Partial Seq Scan on bfv_olap.r
+                                       Output: a, b, d, e
+ Optimizer: PolarDB PX Optimizer
+(20 rows)
+
+SELECT MAX(a) AS m FROM r GROUP BY b,c,d,e ORDER BY e,d;
+ m 
+---
+(0 rows)
+
+                                QUERY PLAN                                
+--------------------------------------------------------------------------
+ Result
+   Output: (max(a))
+   ->  PX Coordinator 6:1  (slice1; segments: 6)
+         Output: (max(a)), d, e
+         Merge Key: e, d
+         ->  Result
+               Output: (max(a)), d, e
+               ->  Sort
+                     Output: (max(a)), d, e, b, c
+                     Sort Key: r.e, r.d
+                     ->  GroupAggregate
+                           Output: max(a), d, e, b, c
+                           Group Key: r.e, r.d, r.b, r.c
+                           ->  Sort
+                                 Output: a, b, c, d, e
+                                 Sort Key: r.e, r.d, r.b, r.c
+                                 ->  PX Hash 6:6  (slice2; segments: 6)
+                                       Output: a, b, c, d, e
+                                       Hash Key: e, d, b, c
+                                       ->  Partial Seq Scan on bfv_olap.r
+                                             Output: a, b, c, d, e
+ Optimizer: PolarDB PX Optimizer
+(22 rows)
+
+SELECT MAX(a) AS m FROM r GROUP BY b,e ORDER BY e;
+ m 
+---
+(0 rows)
+
+                                QUERY PLAN                                
+--------------------------------------------------------------------------
+ Result
+   Output: (max(a))
+   ->  PX Coordinator 6:1  (slice1; segments: 6)
+         Output: (max(a)), e
+         Merge Key: e
+         ->  Result
+               Output: (max(a)), e
+               ->  Sort
+                     Output: (max(a)), e, b
+                     Sort Key: r.e
+                     ->  GroupAggregate
+                           Output: max(a), e, b
+                           Group Key: r.e, r.b
+                           ->  Sort
+                                 Output: a, b, e
+                                 Sort Key: r.e, r.b
+                                 ->  PX Hash 6:6  (slice2; segments: 6)
+                                       Output: a, b, e
+                                       Hash Key: e, b
+                                       ->  Partial Seq Scan on bfv_olap.r
+                                             Output: a, b, e
+ Optimizer: PolarDB PX Optimizer
+(22 rows)
+
+SELECT MAX(e) AS m FROM r GROUP BY b ORDER BY m;
+ m 
+---
+(0 rows)
+
+                             QUERY PLAN                             
+--------------------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: (max(e))
+   Merge Key: (max(e))
+   ->  Result
+         Output: (max(e))
+         ->  Sort
+               Output: (max(e)), b
+               Sort Key: (max(r.e))
+               ->  GroupAggregate
+                     Output: max(e), b
+                     Group Key: r.b
+                     ->  Sort
+                           Output: b, e
+                           Sort Key: r.b
+                           ->  PX Hash 6:6  (slice2; segments: 6)
+                                 Output: b, e
+                                 Hash Key: b
+                                 ->  Partial Seq Scan on bfv_olap.r
+                                       Output: b, e
+ Optimizer: PolarDB PX Optimizer
+(20 rows)
+
+-- CLEANUP
+-- start_ignore
+DROP TABLE IF EXISTS r;
+-- end_ignore
+--
+-- ORDER BY clause includes some grouping column or not
+--
+-- SETUP
+-- start_ignore
+DROP TABLE IF EXISTS dm_calendar;
+NOTICE:  table "dm_calendar" does not exist, skipping
+-- end_ignore
+CREATE TABLE dm_calendar (
+    calendar_id bigint NOT NULL,
+    date_name character varying(200),
+    date_name_cn character varying(200),
+    calendar_date date,
+    current_day numeric(10,0),
+    month_id numeric(10,0),
+    month_name character varying(200),
+    month_name_cn character varying(200),
+    month_name_short character varying(200),
+    month_name_short_cn character varying(200),
+    days_in_month numeric(10,0),
+    first_of_month numeric(10,0),
+    last_month_id numeric(10,0),
+    month_end numeric(10,0),
+    quarter_id numeric(10,0),
+    quarter_name character varying(200),
+    quarter_name_cn character varying(200),
+    quarter_name_short character varying(200),
+    quarter_name_short_cn character varying(200),
+    year_id numeric(10,0),
+    year_name character varying(200),
+    year_name_cn character varying(200),
+    description character varying(500),
+    create_date timestamp without time zone,
+    month_week_num character varying(100),
+    month_week_begin character varying(100),
+    month_week_end character varying(100),
+    half_year character varying(100),
+    weekend_flag character varying(100),
+    holidays_flag character varying(100),
+    workday_flag character varying(100),
+    month_number numeric(10,0)
+) ;
+ALTER TABLE ONLY dm_calendar ADD CONSTRAINT dm_calendar_pkey PRIMARY KEY (calendar_id);
+--TEST
+SELECT "year_id" as id , min("year_name") as a  from (select "year_id" as "year_id" , min("year_name") as "year_name" from  "dm_calendar" group by "year_id") "dm_calendar3" group by "year_id" order by a ASC ;
+ id | a 
+----+---
+(0 rows)
+
+                                  QUERY PLAN                                  
+------------------------------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: year_id, (min((min((year_name)::text))))
+   Merge Key: (min((min((year_name)::text))))
+   ->  Sort
+         Output: year_id, (min((min((year_name)::text))))
+         Sort Key: (min((min((dm_calendar.year_name)::text))))
+         ->  GroupAggregate
+               Output: year_id, min((min((year_name)::text)))
+               Group Key: dm_calendar.year_id
+               ->  GroupAggregate
+                     Output: min((year_name)::text), year_id
+                     Group Key: dm_calendar.year_id
+                     ->  Sort
+                           Output: year_id, year_name
+                           Sort Key: dm_calendar.year_id
+                           ->  PX Hash 6:6  (slice2; segments: 6)
+                                 Output: year_id, year_name
+                                 Hash Key: year_id
+                                 ->  Partial Seq Scan on bfv_olap.dm_calendar
+                                       Output: year_id, year_name
+ Optimizer: PolarDB PX Optimizer
+(21 rows)
+
+-- CLEANUP
+-- start_ignore
+DROP TABLE IF EXISTS dm_calendar;
+-- end_ignore
+--
+-- Test with/without group by with primary key as dist key
+--
+-- SETUP
+-- start_ignore
+drop table if exists t;
+NOTICE:  table "t" does not exist, skipping
+-- end_ignore
+create table t
+(
+    a int NOT NULL,
+    b int,
+    c character varying(200),
+    d numeric(10,0),
+    e date
+) ;
+alter table t ADD CONSTRAINT pkey primary key (b);
+-- TEST
+SELECT MAX(a) AS m FROM t GROUP BY b ORDER BY m;
+ m 
+---
+(0 rows)
+
+                             QUERY PLAN                             
+--------------------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: (max(a))
+   Merge Key: (max(a))
+   ->  Result
+         Output: (max(a))
+         ->  Sort
+               Output: (max(a)), b
+               Sort Key: (max(t.a))
+               ->  GroupAggregate
+                     Output: max(a), b
+                     Group Key: t.b
+                     ->  Sort
+                           Output: a, b
+                           Sort Key: t.b
+                           ->  PX Hash 6:6  (slice2; segments: 6)
+                                 Output: a, b
+                                 Hash Key: b
+                                 ->  Partial Seq Scan on bfv_olap.t
+                                       Output: a, b
+ Optimizer: PolarDB PX Optimizer
+(20 rows)
+
+-- CLEANUP
+-- start_ignore
+drop table if exists t;
+-- end_ignore
+--
+-- Passing through distribution matching type in default implementation
+--
+  
+-- TEST
+select cname,
+rank() over (partition by sale.cn order by vn)
+from sale, customer
+where sale.cn = customer.cn
+order by 1, 2;
+    cname     | rank 
+--------------+------
+ Duncan       |    1
+ Duncan       |    2
+ Lady Macbeth |    1
+ Lady Macbeth |    1
+ Lady Macbeth |    3
+ Macbeth      |    1
+ Macbeth      |    2
+ Macbeth      |    3
+ Macbeth      |    3
+ Macbeth      |    5
+ Witches, Inc |    1
+ Witches, Inc |    1
+(12 rows)
+
+                                          QUERY PLAN                                           
+-----------------------------------------------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: customer.cname, (rank() OVER (?))
+   Merge Key: customer.cname, (rank() OVER (?))
+   ->  Result
+         Output: customer.cname, (rank() OVER (?))
+         ->  Sort
+               Output: customer.cname, (rank() OVER (?)), sale.cn, sale.vn
+               Sort Key: customer.cname, (rank() OVER (?))
+               ->  WindowAgg
+                     Output: customer.cname, rank() OVER (?), sale.cn, sale.vn
+                     ->  Sort
+                           Output: sale.cn, sale.vn, customer.cname
+                           Sort Key: sale.cn, sale.vn
+                           ->  PX Hash 6:6  (slice2; segments: 6)
+                                 Output: sale.cn, sale.vn, customer.cname
+                                 Hash Key: sale.cn
+                                 ->  Nested Loop
+                                       Output: sale.cn, sale.vn, customer.cname
+                                       Join Filter: true
+                                       ->  PX Broadcast 6:6  (slice3; segments: 6)
+                                             Output: customer.cn, customer.cname
+                                             ->  Partial Seq Scan on bfv_olap.customer
+                                                   Output: customer.cn, customer.cname
+                                       ->  Partial Index Scan using sale_pkey on bfv_olap.sale
+                                             Output: sale.cn, sale.vn
+                                             Index Cond: (sale.cn = customer.cn)
+ Optimizer: PolarDB PX Optimizer
+(27 rows)
+
+--
+-- Optimizer query crashing for logical window with no window functions
+--
+-- SETUP
+create table mpp23240(a int, b int, c int, d int, e int, f int);
+-- TEST
+select a, b,
+       case 1
+        when 10 then
+          sum(c) over(partition by a)
+        when 20 then
+          sum(d) over(partition by a)
+        else
+          5
+       end as sum1
+from (select * from mpp23240 where f > 10) x;
+ a | b | sum1 
+---+---+------
+(0 rows)
+
+                    QUERY PLAN                     
+---------------------------------------------------
+ Result
+   Output: a, b, '5'::bigint
+   ->  PX Coordinator 6:1  (slice1; segments: 6)
+         Output: a, b
+         ->  Partial Seq Scan on bfv_olap.mpp23240
+               Output: a, b
+               Filter: (mpp23240.f > 10)
+ Optimizer: PolarDB PX Optimizer
+(8 rows)
+
+-- CLEANUP
+-- start_ignore
+drop table mpp23240;
+-- end_ignore
+--
+-- Test for the bug reported at https://github.com/greenplum-db/gpdb/issues/2236
+--
+create table test1 (x int, y int, z double precision);
+insert into test1 select a, b, a*10 + b from generate_series(1, 5) a, generate_series(1, 5) b;
+select sum(z) over (partition by x) as sumx, sum(z) over (partition by y) as sumy from test1;
+ sumx | sumy 
+------+------
+  215 |  155
+   65 |  155
+  265 |  155
+  115 |  155
+  165 |  155
+  215 |  160
+  165 |  160
+  115 |  160
+  265 |  160
+   65 |  160
+  165 |  165
+   65 |  165
+  115 |  165
+  215 |  165
+  265 |  165
+  265 |  170
+   65 |  170
+  215 |  170
+  165 |  170
+  115 |  170
+  165 |  175
+  215 |  175
+   65 |  175
+  265 |  175
+  115 |  175
+(25 rows)
+
+                                  QUERY PLAN                                  
+------------------------------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: (sum(z) OVER (?)), (sum(z) OVER (?))
+   ->  WindowAgg
+         Output: (sum(z) OVER (?)), sum(z) OVER (?)
+         ->  Sort
+               Output: y, z, (sum(z) OVER (?))
+               Sort Key: test1.y
+               ->  PX Hash 6:6  (slice2; segments: 6)
+                     Output: y, z, (sum(z) OVER (?))
+                     Hash Key: y
+                     ->  WindowAgg
+                           Output: y, z, sum(z) OVER (?)
+                           ->  Sort
+                                 Output: x, y, z
+                                 Sort Key: test1.x
+                                 ->  PX Hash 6:6  (slice3; segments: 6)
+                                       Output: x, y, z
+                                       Hash Key: x
+                                       ->  Partial Seq Scan on bfv_olap.test1
+                                             Output: x, y, z
+ Optimizer: PolarDB PX Optimizer
+(21 rows)
+
+drop table test1;
+--
+-- This failed at one point because of an over-zealous syntax check, with
+-- "window functions not allowed in WHERE clause" error.
+--
+select sum(g) from generate_series(1, 5) g
+where g in (
+  select rank() over (order by x) from generate_series(1,5) x
+);
+ sum 
+-----
+  15
+(1 row)
+
+--
+-- This caused a crash in ROLLUP planning at one point.
+--
+SELECT sale.vn
+FROM sale,vendor
+WHERE sale.vn=vendor.vn
+GROUP BY ROLLUP( (sale.dt,sale.cn),(sale.pn),(sale.vn));
+ vn 
+----
+   
+ 20
+ 50
+ 50
+ 30
+ 30
+ 40
+ 40
+ 10
+ 30
+ 40
+ 30
+ 40
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+(34 rows)
+
+SELECT DISTINCT sale.vn
+FROM sale,vendor
+WHERE sale.vn=vendor.vn
+GROUP BY ROLLUP( (sale.dt,sale.cn),(sale.pn),(sale.vn));
+ vn 
+----
+   
+ 30
+ 50
+ 40
+ 20
+ 10
+(6 rows)
+
+--
+-- Another ROLLUP query, that hit a bug in setting up the planner-generated
+-- subquery's targetlist. (https://github.com/greenplum-db/gpdb/issues/6754)
+--
+SELECT sale.vn, rank() over (partition by sale.vn)
+FROM vendor, sale
+WHERE sale.vn=vendor.vn
+GROUP BY ROLLUP( sale.vn);
+ vn | rank 
+----+------
+ 10 |    1
+ 20 |    1
+ 30 |    1
+ 40 |    1
+ 50 |    1
+    |    1
+(6 rows)
+
+--
+-- Test window function with constant PARTITION BY
+--
+CREATE TABLE testtab (a int4);
+insert into testtab values (1), (2);
+SELECT count(*) OVER (PARTITION BY 1) AS count FROM testtab;
+ count 
+-------
+     2
+     2
+(2 rows)
+
+                          QUERY PLAN                          
+--------------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: (count(*) OVER (?))
+   ->  WindowAgg
+         Output: count(*) OVER (?)
+         ->  Sort
+               Output: (1)
+               Sort Key: (1)
+               ->  PX Hash 6:6  (slice2; segments: 6)
+                     Output: (1)
+                     Hash Key: (1)
+                     ->  Partial Seq Scan on bfv_olap.testtab
+                           Output: 1
+ Optimizer: PolarDB PX Optimizer
+(13 rows)
+
+-- Another variant, where the PARTITION BY is not a literal, but the
+-- planner can deduce that it's a constant through equivalence classes.
+SELECT 1
+FROM (
+  SELECT a, count(*) OVER (PARTITION BY a) FROM (VALUES (1,1)) AS foo(a)
+) AS sup(c, d)
+WHERE c = 87 ;
+ ?column? 
+----------
+(0 rows)
+
+--
+-- This used to crash, and/or produce incorrect results. The culprit was that a Hash Agg
+-- was used, but the planner put a Gather Merge at the top, without a Sort, even though
+-- a Hash Agg doesn't preserve the sort order.
+--
+SELECT sale.qty
+FROM sale
+GROUP BY ROLLUP((qty)) order by 1;
+ qty  
+------
+    1
+   12
+ 1100
+     
+(4 rows)
+
+--
+-- Test two-stage aggregate with grouping sets and a HAVING clause
+--
+-- persuade planner to choose a two-stage plan.
+set polar_px_motion_cost_per_row TO 1000;
+select cn, sum(qty) from sale group by rollup(cn,vn) having sum(qty)=1;
+ cn | sum 
+----+-----
+  1 |   1
+  1 |   1
+  3 |   1
+  2 |   1
+  1 |   1
+(5 rows)
+
+-- same, but the HAVING clause matches a rolled up row.
+select cn, sum(qty) from sale group by rollup(cn,vn) having sum(qty)=1144;
+ cn | sum  
+----+------
+    | 1144
+(1 row)
+
+--
+-- Test a query with window function over an aggregate, and a subquery.
+--
+-- Github Issue https://github.com/greenplum-db/gpdb/issues/10143
+create table t1_github_issue_10143(
+  base_ym varchar(6),
+  code varchar(5),
+  name varchar(60)
+);
+create table t2_github_issue_10143(
+  base_ym varchar(6),
+  dong varchar(8),
+  code varchar(6),
+  salary numeric(18)
+);
+insert into t1_github_issue_10143 values ('a', 'acode', 'aname');
+insert into t2_github_issue_10143 values ('a', 'adong', 'acode', 1000);
+insert into t2_github_issue_10143 values ('b', 'bdong', 'bcode', 1100);
+set polar_px_optimizer_trace_fallback = on;
+explain (costs off) select (select name from t1_github_issue_10143 where code = a.code limit 1) as dongnm
+,sum(sum(a.salary)) over()
+from t2_github_issue_10143 a
+group by a.code;
+                       QUERY PLAN                        
+---------------------------------------------------------
+ WindowAgg
+   ->  HashAggregate
+         Group Key: a.code
+         ->  Seq Scan on t2_github_issue_10143 a
+   SubPlan 1
+     ->  Limit
+           ->  Seq Scan on t1_github_issue_10143
+                 Filter: ((code)::text = (a.code)::text)
+(8 rows)
+
+select (select name from t1_github_issue_10143 where code = a.code limit 1) as dongnm
+,sum(sum(a.salary)) over()
+from t2_github_issue_10143 a
+group by a.code;
+ dongnm | sum  
+--------+------
+ aname  | 2100
+        | 2100
+(2 rows)
+
+                                                  QUERY PLAN                                                   
+---------------------------------------------------------------------------------------------------------------
+ WindowAgg
+   Output: ((SubPlan 1)), sum((sum(t2_github_issue_10143.salary))) OVER (?)
+   ->  PX Coordinator 6:1  (slice1; segments: 6)
+         Output: (sum(t2_github_issue_10143.salary)), ((SubPlan 1))
+         ->  GroupAggregate
+               Output: sum(t2_github_issue_10143.salary), (SubPlan 1)
+               Group Key: t2_github_issue_10143.code
+               ->  Sort
+                     Output: t2_github_issue_10143.code, t2_github_issue_10143.salary
+                     Sort Key: t2_github_issue_10143.code
+                     ->  PX Hash 6:6  (slice2; segments: 6)
+                           Output: t2_github_issue_10143.code, t2_github_issue_10143.salary
+                           Hash Key: t2_github_issue_10143.code
+                           ->  Partial Seq Scan on bfv_olap.t2_github_issue_10143
+                                 Output: t2_github_issue_10143.code, t2_github_issue_10143.salary
+               SubPlan 1
+                 ->  Limit
+                       Output: t1_github_issue_10143.name
+                       ->  Result
+                             Output: t1_github_issue_10143.name
+                             Filter: ((t1_github_issue_10143.code)::text = (t2_github_issue_10143.code)::text)
+                             ->  Materialize
+                                   Output: t1_github_issue_10143.code, t1_github_issue_10143.name
+                                   ->  PX Broadcast 6:6  (slice3; segments: 6)
+                                         Output: t1_github_issue_10143.code, t1_github_issue_10143.name
+                                         ->  Partial Seq Scan on bfv_olap.t1_github_issue_10143
+                                               Output: t1_github_issue_10143.code, t1_github_issue_10143.name
+ Optimizer: PolarDB PX Optimizer
+(28 rows)
+
+select * from (select sum(a.salary) over(), count(*)
+               from t2_github_issue_10143 a
+               group by a.salary) T;
+ sum  | count 
+------+-------
+ 2100 |     1
+ 2100 |     1
+(2 rows)
+
+                                    QUERY PLAN                                    
+----------------------------------------------------------------------------------
+ WindowAgg
+   Output: sum(salary) OVER (?), (count())
+   ->  PX Coordinator 6:1  (slice1; segments: 6)
+         Output: salary, (count())
+         ->  GroupAggregate
+               Output: salary, count()
+               Group Key: t2_github_issue_10143.salary
+               ->  Sort
+                     Output: salary
+                     Sort Key: t2_github_issue_10143.salary
+                     ->  PX Hash 6:6  (slice2; segments: 6)
+                           Output: salary
+                           Hash Key: salary
+                           ->  Partial Seq Scan on bfv_olap.t2_github_issue_10143
+                                 Output: salary
+ Optimizer: PolarDB PX Optimizer
+(16 rows)
+
+-- this query currently falls back, needs to be fixed
+select (select rn from (select row_number() over () as rn, name
+                        from t1_github_issue_10143
+                        where code = a.code
+                        group by name) T
+       ) as dongnm
+,sum(sum(a.salary)) over()
+from t2_github_issue_10143 a
+group by a.code;
+ dongnm | sum  
+--------+------
+      1 | 2100
+        | 2100
+(2 rows)
+
+INFO:  PXOPT failed to produce a plan, falling back to planner
+DETAIL:  Query-to-DXL Translation: No variable entry found due to incorrect normalization of query
+with cte as (select row_number() over (order by code) as rn1, code
+             from t2_github_issue_10143
+             group by code)
+select row_number() over (order by name) as rn2, name
+from t1_github_issue_10143
+group by name
+union all
+select * from cte;
+ rn2 | name  
+-----+-------
+   1 | aname
+   1 | acode
+   2 | bcode
+(3 rows)
+
+                                          QUERY PLAN                                          
+----------------------------------------------------------------------------------------------
+ Append
+   ->  WindowAgg
+         Output: row_number() OVER (?), t1_github_issue_10143.name
+         ->  PX Coordinator 6:1  (slice1; segments: 6)
+               Output: t1_github_issue_10143.name
+               Merge Key: t1_github_issue_10143.name
+               ->  Sort
+                     Output: t1_github_issue_10143.name
+                     Sort Key: t1_github_issue_10143.name
+                     ->  GroupAggregate
+                           Output: t1_github_issue_10143.name
+                           Group Key: t1_github_issue_10143.name
+                           ->  Sort
+                                 Output: t1_github_issue_10143.name
+                                 Sort Key: t1_github_issue_10143.name
+                                 ->  PX Hash 6:6  (slice2; segments: 6)
+                                       Output: t1_github_issue_10143.name
+                                       Hash Key: t1_github_issue_10143.name
+                                       ->  Partial Seq Scan on bfv_olap.t1_github_issue_10143
+                                             Output: t1_github_issue_10143.name
+   ->  WindowAgg
+         Output: row_number() OVER (?), t2_github_issue_10143.code
+         ->  PX Coordinator 6:1  (slice3; segments: 6)
+               Output: t2_github_issue_10143.code
+               Merge Key: t2_github_issue_10143.code
+               ->  Sort
+                     Output: t2_github_issue_10143.code
+                     Sort Key: t2_github_issue_10143.code
+                     ->  GroupAggregate
+                           Output: t2_github_issue_10143.code
+                           Group Key: t2_github_issue_10143.code
+                           ->  Sort
+                                 Output: t2_github_issue_10143.code
+                                 Sort Key: t2_github_issue_10143.code
+                                 ->  PX Hash 6:6  (slice4; segments: 6)
+                                       Output: t2_github_issue_10143.code
+                                       Hash Key: t2_github_issue_10143.code
+                                       ->  Partial Seq Scan on bfv_olap.t2_github_issue_10143
+                                             Output: t2_github_issue_10143.code
+ Optimizer: PolarDB PX Optimizer
+(40 rows)
+
+reset polar_px_optimizer_trace_fallback;
+-- CLEANUP
+-- start_ignore
+set client_min_messages='warning';
+drop schema bfv_olap cascade;
+-- end_ignore

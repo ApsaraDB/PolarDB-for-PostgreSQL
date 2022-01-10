@@ -1,0 +1,935 @@
+--
+-- CREATE_TABLE
+--
+--
+-- CLASS DEFINITIONS
+--
+CREATE TABLE hobbies_r (
+	name		text,
+	person 		text
+);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE equipment_r (
+	name 		text,
+	hobby		text
+);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE onek (
+	unique1		int4,
+	unique2		int4,
+	two			int4,
+	four		int4,
+	ten			int4,
+	twenty		int4,
+	hundred		int4,
+	thousand	int4,
+	twothousand	int4,
+	fivethous	int4,
+	tenthous	int4,
+	odd			int4,
+	even		int4,
+	stringu1	name,
+	stringu2	name,
+	string4		name
+);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE tenk1 (
+	unique1		int4,
+	unique2		int4,
+	two			int4,
+	four		int4,
+	ten			int4,
+	twenty		int4,
+	hundred		int4,
+	thousand	int4,
+	twothousand	int4,
+	fivethous	int4,
+	tenthous	int4,
+	odd			int4,
+	even		int4,
+	stringu1	name,
+	stringu2	name,
+	string4		name
+) WITH OIDS;
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE tenk2 (
+	unique1 	int4,
+	unique2 	int4,
+	two 	 	int4,
+	four 		int4,
+	ten			int4,
+	twenty 		int4,
+	hundred 	int4,
+	thousand 	int4,
+	twothousand int4,
+	fivethous 	int4,
+	tenthous	int4,
+	odd			int4,
+	even		int4,
+	stringu1	name,
+	stringu2	name,
+	string4		name
+);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE person (
+	name 		text,
+	age			int4,
+	location 	point
+);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE emp (
+	salary 		int4,
+	manager 	name
+) INHERITS (person) WITH OIDS;
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE student (
+	gpa 		float8
+) INHERITS (person);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE stud_emp (
+	percent 	int4
+) INHERITS (emp, student);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE city (
+	name		name,
+	location 	box,
+	budget 		city_budget
+);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE dept (
+	dname		name,
+	mgrname 	text
+);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE slow_emp4000 (
+	home_base	 box
+);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE fast_emp4000 (
+	home_base	 box
+);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE road (
+	name		text,
+	thepath 	path
+);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE ihighway () INHERITS (road);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE shighway (
+	surface		text
+) INHERITS (road);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE real_city (
+	pop			int4,
+	cname		text,
+	outline 	path
+);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+--
+-- test the "star" operators a bit more thoroughly -- this time,
+-- throw in lots of NULL fields...
+--
+-- a is the type root
+-- b and c inherit from a (one-level single inheritance)
+-- d inherits from b and c (two-level multiple inheritance)
+-- e inherits from c (two-level single inheritance)
+-- f inherits from e (three-level single inheritance)
+--
+CREATE TABLE a_star (
+	class		char,
+	a 			int4
+);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE b_star (
+	b 			text
+) INHERITS (a_star);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE c_star (
+	c 			name
+) INHERITS (a_star);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE d_star (
+	d 			float8
+) INHERITS (b_star, c_star);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE e_star (
+	e 			int2
+) INHERITS (c_star);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE f_star (
+	f 			polygon
+) INHERITS (e_star);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE aggtest (
+	a 			int2,
+	b			float4
+);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE hash_i4_heap (
+	seqno 		int4,
+	random 		int4
+);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE hash_name_heap (
+	seqno 		int4,
+	random 		name
+);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE hash_txt_heap (
+	seqno 		int4,
+	random 		text
+);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE hash_f8_heap (
+	seqno		int4,
+	random 		float8
+);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+-- don't include the hash_ovfl_heap stuff in the distribution
+-- the data set is too large for what it's worth
+--
+-- CREATE TABLE hash_ovfl_heap (
+--	x			int4,
+--	y			int4
+-- );
+CREATE TABLE bt_i4_heap (
+	seqno 		int4,
+	random 		int4
+);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE bt_name_heap (
+	seqno 		name,
+	random 		int4
+);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE bt_txt_heap (
+	seqno 		text,
+	random 		int4
+);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE bt_f8_heap (
+	seqno 		float8,
+	random 		int4
+);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE array_op_test (
+	seqno		int4,
+	i			int4[],
+	t			text[]
+);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE array_index_op_test (
+	seqno		int4,
+	i			int4[],
+	t			text[]
+);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE testjsonb (
+       j jsonb
+);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE unknowntab (
+	u unknown    -- fail
+);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TYPE unknown_comptype AS (
+	u unknown    -- fail
+);
+ERROR:  cannot execute CREATE TYPE in a read-only transaction
+CREATE TABLE IF NOT EXISTS test_tsvector(
+	t text,
+	a tsvector
+);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE IF NOT EXISTS test_tsvector(
+	t text
+);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+-- invalid: non-lowercase quoted reloptions identifiers
+CREATE TABLE tas_case WITH ("Fillfactor" = 10) AS SELECT 1 a;
+ERROR:  cannot execute CREATE TABLE AS in a read-only transaction
+CREATE TABLE tas_case (a text) WITH ("Oids" = true);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE UNLOGGED TABLE unlogged1 (a int primary key);			-- OK
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TEMPORARY TABLE unlogged2 (a int primary key);			-- OK
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+SELECT relname, relkind, relpersistence FROM pg_class WHERE relname ~ '^unlogged\d' ORDER BY relname;
+    relname     | relkind | relpersistence 
+----------------+---------+----------------
+ unlogged1      | r       | p
+ unlogged1_pkey | i       | p
+ unlogged2      | r       | t
+ unlogged2_pkey | i       | t
+(4 rows)
+
+REINDEX INDEX unlogged1_pkey;
+ERROR:  cannot execute REINDEX during recovery
+REINDEX INDEX unlogged2_pkey;
+ERROR:  cannot execute REINDEX during recovery
+SELECT relname, relkind, relpersistence FROM pg_class WHERE relname ~ '^unlogged\d' ORDER BY relname;
+    relname     | relkind | relpersistence 
+----------------+---------+----------------
+ unlogged1      | r       | p
+ unlogged1_pkey | i       | p
+ unlogged2      | r       | t
+ unlogged2_pkey | i       | t
+(4 rows)
+
+DROP TABLE unlogged2;
+ERROR:  cannot execute DROP TABLE in a read-only transaction
+INSERT INTO unlogged1 VALUES (42);
+ERROR:  cannot execute INSERT in a read-only transaction
+CREATE UNLOGGED TABLE public.unlogged2 (a int primary key);		-- also OK
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE UNLOGGED TABLE pg_temp.unlogged3 (a int primary key);	-- not OK
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE pg_temp.implicitly_temp (a int primary key);		-- OK
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TEMP TABLE explicitly_temp (a int primary key);			-- also OK
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TEMP TABLE pg_temp.doubly_temp (a int primary key);		-- also OK
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TEMP TABLE public.temp_to_perm (a int primary key);		-- not OK
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+DROP TABLE unlogged1, public.unlogged2;
+ERROR:  cannot execute DROP TABLE in a read-only transaction
+CREATE TABLE as_select1 AS SELECT * FROM pg_class WHERE relkind = 'r';
+ERROR:  cannot execute CREATE TABLE AS in a read-only transaction
+CREATE TABLE as_select1 AS SELECT * FROM pg_class WHERE relkind = 'r';
+ERROR:  cannot execute CREATE TABLE AS in a read-only transaction
+CREATE TABLE IF NOT EXISTS as_select1 AS SELECT * FROM pg_class WHERE relkind = 'r';
+ERROR:  cannot execute CREATE TABLE AS in a read-only transaction
+DROP TABLE as_select1;
+ERROR:  cannot execute DROP TABLE in a read-only transaction
+-- create an extra wide table to test for issues related to that
+-- (temporarily hide query, to avoid the long CREATE TABLE stmt)
+\set ECHO none
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 ?column?                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ CREATE TABLE extra_wide_table(firstc text, c1 bool,c2 bool,c3 bool,c4 bool,c5 bool,c6 bool,c7 bool,c8 bool,c9 bool,c10 bool,c11 bool,c12 bool,c13 bool,c14 bool,c15 bool,c16 bool,c17 bool,c18 bool,c19 bool,c20 bool,c21 bool,c22 bool,c23 bool,c24 bool,c25 bool,c26 bool,c27 bool,c28 bool,c29 bool,c30 bool,c31 bool,c32 bool,c33 bool,c34 bool,c35 bool,c36 bool,c37 bool,c38 bool,c39 bool,c40 bool,c41 bool,c42 bool,c43 bool,c44 bool,c45 bool,c46 bool,c47 bool,c48 bool,c49 bool,c50 bool,c51 bool,c52 bool,c53 bool,c54 bool,c55 bool,c56 bool,c57 bool,c58 bool,c59 bool,c60 bool,c61 bool,c62 bool,c63 bool,c64 bool,c65 bool,c66 bool,c67 bool,c68 bool,c69 bool,c70 bool,c71 bool,c72 bool,c73 bool,c74 bool,c75 bool,c76 bool,c77 bool,c78 bool,c79 bool,c80 bool,c81 bool,c82 bool,c83 bool,c84 bool,c85 bool,c86 bool,c87 bool,c88 bool,c89 bool,c90 bool,c91 bool,c92 bool,c93 bool,c94 bool,c95 bool,c96 bool,c97 bool,c98 bool,c99 bool,c100 bool,c101 bool,c102 bool,c103 bool,c104 bool,c105 bool,c106 bool,c107 bool,c108 bool,c109 bool,c110 bool,c111 bool,c112 bool,c113 bool,c114 bool,c115 bool,c116 bool,c117 bool,c118 bool,c119 bool,c120 bool,c121 bool,c122 bool,c123 bool,c124 bool,c125 bool,c126 bool,c127 bool,c128 bool,c129 bool,c130 bool,c131 bool,c132 bool,c133 bool,c134 bool,c135 bool,c136 bool,c137 bool,c138 bool,c139 bool,c140 bool,c141 bool,c142 bool,c143 bool,c144 bool,c145 bool,c146 bool,c147 bool,c148 bool,c149 bool,c150 bool,c151 bool,c152 bool,c153 bool,c154 bool,c155 bool,c156 bool,c157 bool,c158 bool,c159 bool,c160 bool,c161 bool,c162 bool,c163 bool,c164 bool,c165 bool,c166 bool,c167 bool,c168 bool,c169 bool,c170 bool,c171 bool,c172 bool,c173 bool,c174 bool,c175 bool,c176 bool,c177 bool,c178 bool,c179 bool,c180 bool,c181 bool,c182 bool,c183 bool,c184 bool,c185 bool,c186 bool,c187 bool,c188 bool,c189 bool,c190 bool,c191 bool,c192 bool,c193 bool,c194 bool,c195 bool,c196 bool,c197 bool,c198 bool,c199 bool,c200 bool,c201 bool,c202 bool,c203 bool,c204 bool,c205 bool,c206 bool,c207 bool,c208 bool,c209 bool,c210 bool,c211 bool,c212 bool,c213 bool,c214 bool,c215 bool,c216 bool,c217 bool,c218 bool,c219 bool,c220 bool,c221 bool,c222 bool,c223 bool,c224 bool,c225 bool,c226 bool,c227 bool,c228 bool,c229 bool,c230 bool,c231 bool,c232 bool,c233 bool,c234 bool,c235 bool,c236 bool,c237 bool,c238 bool,c239 bool,c240 bool,c241 bool,c242 bool,c243 bool,c244 bool,c245 bool,c246 bool,c247 bool,c248 bool,c249 bool,c250 bool,c251 bool,c252 bool,c253 bool,c254 bool,c255 bool,c256 bool,c257 bool,c258 bool,c259 bool,c260 bool,c261 bool,c262 bool,c263 bool,c264 bool,c265 bool,c266 bool,c267 bool,c268 bool,c269 bool,c270 bool,c271 bool,c272 bool,c273 bool,c274 bool,c275 bool,c276 bool,c277 bool,c278 bool,c279 bool,c280 bool,c281 bool,c282 bool,c283 bool,c284 bool,c285 bool,c286 bool,c287 bool,c288 bool,c289 bool,c290 bool,c291 bool,c292 bool,c293 bool,c294 bool,c295 bool,c296 bool,c297 bool,c298 bool,c299 bool,c300 bool,c301 bool,c302 bool,c303 bool,c304 bool,c305 bool,c306 bool,c307 bool,c308 bool,c309 bool,c310 bool,c311 bool,c312 bool,c313 bool,c314 bool,c315 bool,c316 bool,c317 bool,c318 bool,c319 bool,c320 bool,c321 bool,c322 bool,c323 bool,c324 bool,c325 bool,c326 bool,c327 bool,c328 bool,c329 bool,c330 bool,c331 bool,c332 bool,c333 bool,c334 bool,c335 bool,c336 bool,c337 bool,c338 bool,c339 bool,c340 bool,c341 bool,c342 bool,c343 bool,c344 bool,c345 bool,c346 bool,c347 bool,c348 bool,c349 bool,c350 bool,c351 bool,c352 bool,c353 bool,c354 bool,c355 bool,c356 bool,c357 bool,c358 bool,c359 bool,c360 bool,c361 bool,c362 bool,c363 bool,c364 bool,c365 bool,c366 bool,c367 bool,c368 bool,c369 bool,c370 bool,c371 bool,c372 bool,c373 bool,c374 bool,c375 bool,c376 bool,c377 bool,c378 bool,c379 bool,c380 bool,c381 bool,c382 bool,c383 bool,c384 bool,c385 bool,c386 bool,c387 bool,c388 bool,c389 bool,c390 bool,c391 bool,c392 bool,c393 bool,c394 bool,c395 bool,c396 bool,c397 bool,c398 bool,c399 bool,c400 bool,c401 bool,c402 bool,c403 bool,c404 bool,c405 bool,c406 bool,c407 bool,c408 bool,c409 bool,c410 bool,c411 bool,c412 bool,c413 bool,c414 bool,c415 bool,c416 bool,c417 bool,c418 bool,c419 bool,c420 bool,c421 bool,c422 bool,c423 bool,c424 bool,c425 bool,c426 bool,c427 bool,c428 bool,c429 bool,c430 bool,c431 bool,c432 bool,c433 bool,c434 bool,c435 bool,c436 bool,c437 bool,c438 bool,c439 bool,c440 bool,c441 bool,c442 bool,c443 bool,c444 bool,c445 bool,c446 bool,c447 bool,c448 bool,c449 bool,c450 bool,c451 bool,c452 bool,c453 bool,c454 bool,c455 bool,c456 bool,c457 bool,c458 bool,c459 bool,c460 bool,c461 bool,c462 bool,c463 bool,c464 bool,c465 bool,c466 bool,c467 bool,c468 bool,c469 bool,c470 bool,c471 bool,c472 bool,c473 bool,c474 bool,c475 bool,c476 bool,c477 bool,c478 bool,c479 bool,c480 bool,c481 bool,c482 bool,c483 bool,c484 bool,c485 bool,c486 bool,c487 bool,c488 bool,c489 bool,c490 bool,c491 bool,c492 bool,c493 bool,c494 bool,c495 bool,c496 bool,c497 bool,c498 bool,c499 bool,c500 bool,c501 bool,c502 bool,c503 bool,c504 bool,c505 bool,c506 bool,c507 bool,c508 bool,c509 bool,c510 bool,c511 bool,c512 bool,c513 bool,c514 bool,c515 bool,c516 bool,c517 bool,c518 bool,c519 bool,c520 bool,c521 bool,c522 bool,c523 bool,c524 bool,c525 bool,c526 bool,c527 bool,c528 bool,c529 bool,c530 bool,c531 bool,c532 bool,c533 bool,c534 bool,c535 bool,c536 bool,c537 bool,c538 bool,c539 bool,c540 bool,c541 bool,c542 bool,c543 bool,c544 bool,c545 bool,c546 bool,c547 bool,c548 bool,c549 bool,c550 bool,c551 bool,c552 bool,c553 bool,c554 bool,c555 bool,c556 bool,c557 bool,c558 bool,c559 bool,c560 bool,c561 bool,c562 bool,c563 bool,c564 bool,c565 bool,c566 bool,c567 bool,c568 bool,c569 bool,c570 bool,c571 bool,c572 bool,c573 bool,c574 bool,c575 bool,c576 bool,c577 bool,c578 bool,c579 bool,c580 bool,c581 bool,c582 bool,c583 bool,c584 bool,c585 bool,c586 bool,c587 bool,c588 bool,c589 bool,c590 bool,c591 bool,c592 bool,c593 bool,c594 bool,c595 bool,c596 bool,c597 bool,c598 bool,c599 bool,c600 bool,c601 bool,c602 bool,c603 bool,c604 bool,c605 bool,c606 bool,c607 bool,c608 bool,c609 bool,c610 bool,c611 bool,c612 bool,c613 bool,c614 bool,c615 bool,c616 bool,c617 bool,c618 bool,c619 bool,c620 bool,c621 bool,c622 bool,c623 bool,c624 bool,c625 bool,c626 bool,c627 bool,c628 bool,c629 bool,c630 bool,c631 bool,c632 bool,c633 bool,c634 bool,c635 bool,c636 bool,c637 bool,c638 bool,c639 bool,c640 bool,c641 bool,c642 bool,c643 bool,c644 bool,c645 bool,c646 bool,c647 bool,c648 bool,c649 bool,c650 bool,c651 bool,c652 bool,c653 bool,c654 bool,c655 bool,c656 bool,c657 bool,c658 bool,c659 bool,c660 bool,c661 bool,c662 bool,c663 bool,c664 bool,c665 bool,c666 bool,c667 bool,c668 bool,c669 bool,c670 bool,c671 bool,c672 bool,c673 bool,c674 bool,c675 bool,c676 bool,c677 bool,c678 bool,c679 bool,c680 bool,c681 bool,c682 bool,c683 bool,c684 bool,c685 bool,c686 bool,c687 bool,c688 bool,c689 bool,c690 bool,c691 bool,c692 bool,c693 bool,c694 bool,c695 bool,c696 bool,c697 bool,c698 bool,c699 bool,c700 bool,c701 bool,c702 bool,c703 bool,c704 bool,c705 bool,c706 bool,c707 bool,c708 bool,c709 bool,c710 bool,c711 bool,c712 bool,c713 bool,c714 bool,c715 bool,c716 bool,c717 bool,c718 bool,c719 bool,c720 bool,c721 bool,c722 bool,c723 bool,c724 bool,c725 bool,c726 bool,c727 bool,c728 bool,c729 bool,c730 bool,c731 bool,c732 bool,c733 bool,c734 bool,c735 bool,c736 bool,c737 bool,c738 bool,c739 bool,c740 bool,c741 bool,c742 bool,c743 bool,c744 bool,c745 bool,c746 bool,c747 bool,c748 bool,c749 bool,c750 bool,c751 bool,c752 bool,c753 bool,c754 bool,c755 bool,c756 bool,c757 bool,c758 bool,c759 bool,c760 bool,c761 bool,c762 bool,c763 bool,c764 bool,c765 bool,c766 bool,c767 bool,c768 bool,c769 bool,c770 bool,c771 bool,c772 bool,c773 bool,c774 bool,c775 bool,c776 bool,c777 bool,c778 bool,c779 bool,c780 bool,c781 bool,c782 bool,c783 bool,c784 bool,c785 bool,c786 bool,c787 bool,c788 bool,c789 bool,c790 bool,c791 bool,c792 bool,c793 bool,c794 bool,c795 bool,c796 bool,c797 bool,c798 bool,c799 bool,c800 bool,c801 bool,c802 bool,c803 bool,c804 bool,c805 bool,c806 bool,c807 bool,c808 bool,c809 bool,c810 bool,c811 bool,c812 bool,c813 bool,c814 bool,c815 bool,c816 bool,c817 bool,c818 bool,c819 bool,c820 bool,c821 bool,c822 bool,c823 bool,c824 bool,c825 bool,c826 bool,c827 bool,c828 bool,c829 bool,c830 bool,c831 bool,c832 bool,c833 bool,c834 bool,c835 bool,c836 bool,c837 bool,c838 bool,c839 bool,c840 bool,c841 bool,c842 bool,c843 bool,c844 bool,c845 bool,c846 bool,c847 bool,c848 bool,c849 bool,c850 bool,c851 bool,c852 bool,c853 bool,c854 bool,c855 bool,c856 bool,c857 bool,c858 bool,c859 bool,c860 bool,c861 bool,c862 bool,c863 bool,c864 bool,c865 bool,c866 bool,c867 bool,c868 bool,c869 bool,c870 bool,c871 bool,c872 bool,c873 bool,c874 bool,c875 bool,c876 bool,c877 bool,c878 bool,c879 bool,c880 bool,c881 bool,c882 bool,c883 bool,c884 bool,c885 bool,c886 bool,c887 bool,c888 bool,c889 bool,c890 bool,c891 bool,c892 bool,c893 bool,c894 bool,c895 bool,c896 bool,c897 bool,c898 bool,c899 bool,c900 bool,c901 bool,c902 bool,c903 bool,c904 bool,c905 bool,c906 bool,c907 bool,c908 bool,c909 bool,c910 bool,c911 bool,c912 bool,c913 bool,c914 bool,c915 bool,c916 bool,c917 bool,c918 bool,c919 bool,c920 bool,c921 bool,c922 bool,c923 bool,c924 bool,c925 bool,c926 bool,c927 bool,c928 bool,c929 bool,c930 bool,c931 bool,c932 bool,c933 bool,c934 bool,c935 bool,c936 bool,c937 bool,c938 bool,c939 bool,c940 bool,c941 bool,c942 bool,c943 bool,c944 bool,c945 bool,c946 bool,c947 bool,c948 bool,c949 bool,c950 bool,c951 bool,c952 bool,c953 bool,c954 bool,c955 bool,c956 bool,c957 bool,c958 bool,c959 bool,c960 bool,c961 bool,c962 bool,c963 bool,c964 bool,c965 bool,c966 bool,c967 bool,c968 bool,c969 bool,c970 bool,c971 bool,c972 bool,c973 bool,c974 bool,c975 bool,c976 bool,c977 bool,c978 bool,c979 bool,c980 bool,c981 bool,c982 bool,c983 bool,c984 bool,c985 bool,c986 bool,c987 bool,c988 bool,c989 bool,c990 bool,c991 bool,c992 bool,c993 bool,c994 bool,c995 bool,c996 bool,c997 bool,c998 bool,c999 bool,c1000 bool,c1001 bool,c1002 bool,c1003 bool,c1004 bool,c1005 bool,c1006 bool,c1007 bool,c1008 bool,c1009 bool,c1010 bool,c1011 bool,c1012 bool,c1013 bool,c1014 bool,c1015 bool,c1016 bool,c1017 bool,c1018 bool,c1019 bool,c1020 bool,c1021 bool,c1022 bool,c1023 bool,c1024 bool,c1025 bool,c1026 bool,c1027 bool,c1028 bool,c1029 bool,c1030 bool,c1031 bool,c1032 bool,c1033 bool,c1034 bool,c1035 bool,c1036 bool,c1037 bool,c1038 bool,c1039 bool,c1040 bool,c1041 bool,c1042 bool,c1043 bool,c1044 bool,c1045 bool,c1046 bool,c1047 bool,c1048 bool,c1049 bool,c1050 bool,c1051 bool,c1052 bool,c1053 bool,c1054 bool,c1055 bool,c1056 bool,c1057 bool,c1058 bool,c1059 bool,c1060 bool,c1061 bool,c1062 bool,c1063 bool,c1064 bool,c1065 bool,c1066 bool,c1067 bool,c1068 bool,c1069 bool,c1070 bool,c1071 bool,c1072 bool,c1073 bool,c1074 bool,c1075 bool,c1076 bool,c1077 bool,c1078 bool,c1079 bool,c1080 bool,c1081 bool,c1082 bool,c1083 bool,c1084 bool,c1085 bool,c1086 bool,c1087 bool,c1088 bool,c1089 bool,c1090 bool,c1091 bool,c1092 bool,c1093 bool,c1094 bool,c1095 bool,c1096 bool,c1097 bool,c1098 bool,c1099 bool,c1100 bool, lastc text);
+(1 row)
+
+INSERT INTO extra_wide_table(firstc, lastc) VALUES('first col', 'last col');
+ERROR:  cannot execute INSERT in a read-only transaction
+SELECT firstc, lastc FROM extra_wide_table;
+  firstc   |  lastc   
+-----------+----------
+ first col | last col
+(1 row)
+
+-- check that the oid column is added before the primary key is checked
+CREATE TABLE oid_pk (f1 INT, PRIMARY KEY(oid)) WITH OIDS;
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+DROP TABLE oid_pk;
+ERROR:  cannot execute DROP TABLE in a read-only transaction
+--
+-- Partitioned tables
+--
+-- cannot combine INHERITS and PARTITION BY (although grammar allows)
+CREATE TABLE partitioned (
+	a int
+) INHERITS (some_table) PARTITION BY LIST (a);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+-- cannot use more than 1 column as partition key for list partitioned table
+CREATE TABLE partitioned (
+	a1 int,
+	a2 int
+) PARTITION BY LIST (a1, a2);	-- fail
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+-- unsupported constraint type for partitioned tables
+CREATE TABLE partitioned (
+	a int,
+	EXCLUDE USING gist (a WITH &&)
+) PARTITION BY RANGE (a);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+-- prevent using prohibited expressions in the key
+CREATE FUNCTION retset (a int) RETURNS SETOF int AS $$ SELECT 1; $$ LANGUAGE SQL IMMUTABLE;
+ERROR:  cannot execute CREATE FUNCTION in a read-only transaction
+CREATE TABLE partitioned (
+	a int
+) PARTITION BY RANGE (retset(a));
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+DROP FUNCTION retset(int);
+ERROR:  cannot execute DROP FUNCTION in a read-only transaction
+CREATE TABLE partitioned (
+	a int
+) PARTITION BY RANGE ((avg(a)));
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE partitioned (
+	a int,
+	b int
+) PARTITION BY RANGE ((avg(a) OVER (PARTITION BY b)));
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE partitioned (
+	a int
+) PARTITION BY LIST ((a LIKE (SELECT 1)));
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE partitioned (
+	a int
+) PARTITION BY RANGE (('a'));
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE FUNCTION const_func () RETURNS int AS $$ SELECT 1; $$ LANGUAGE SQL IMMUTABLE;
+ERROR:  cannot execute CREATE FUNCTION in a read-only transaction
+CREATE TABLE partitioned (
+	a int
+) PARTITION BY RANGE (const_func());
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+DROP FUNCTION const_func();
+ERROR:  cannot execute DROP FUNCTION in a read-only transaction
+-- only accept valid partitioning strategy
+CREATE TABLE partitioned (
+    a int
+) PARTITION BY MAGIC (a);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+-- specified column must be present in the table
+CREATE TABLE partitioned (
+	a int
+) PARTITION BY RANGE (b);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+-- cannot use system columns in partition key
+CREATE TABLE partitioned (
+	a int
+) PARTITION BY RANGE (xmin);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+-- functions in key must be immutable
+CREATE FUNCTION immut_func (a int) RETURNS int AS $$ SELECT a + random()::int; $$ LANGUAGE SQL;
+ERROR:  cannot execute CREATE FUNCTION in a read-only transaction
+CREATE TABLE partitioned (
+	a int
+) PARTITION BY RANGE (immut_func(a));
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+DROP FUNCTION immut_func(int);
+ERROR:  cannot execute DROP FUNCTION in a read-only transaction
+-- cannot contain whole-row references
+CREATE TABLE partitioned (
+	a	int
+) PARTITION BY RANGE ((partitioned));
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+-- prevent using columns of unsupported types in key (type must have a btree operator class)
+CREATE TABLE partitioned (
+	a point
+) PARTITION BY LIST (a);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE partitioned (
+	a point
+) PARTITION BY LIST (a point_ops);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE partitioned (
+	a point
+) PARTITION BY RANGE (a);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE partitioned (
+	a point
+) PARTITION BY RANGE (a point_ops);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+-- cannot add NO INHERIT constraints to partitioned tables
+CREATE TABLE partitioned (
+	a int,
+	CONSTRAINT check_a CHECK (a > 0) NO INHERIT
+) PARTITION BY RANGE (a);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+-- some checks after successful creation of a partitioned table
+CREATE FUNCTION plusone(a int) RETURNS INT AS $$ SELECT a+1; $$ LANGUAGE SQL;
+ERROR:  cannot execute CREATE FUNCTION in a read-only transaction
+CREATE TABLE partitioned (
+	a int,
+	b int,
+	c text,
+	d text
+) PARTITION BY RANGE (a oid_ops, plusone(b), c collate "default", d collate "C");
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+-- check relkind
+SELECT relkind FROM pg_class WHERE relname = 'partitioned';
+ relkind 
+---------
+ p
+(1 row)
+
+-- prevent a function referenced in partition key from being dropped
+DROP FUNCTION plusone(int);
+ERROR:  cannot execute DROP FUNCTION in a read-only transaction
+-- partitioned table cannot participate in regular inheritance
+CREATE TABLE partitioned2 (
+	a int,
+	b text
+) PARTITION BY RANGE ((a+1), substr(b, 1, 5));
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE fail () INHERITS (partitioned2);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+-- Partition key in describe output
+\d partitioned
+\d+ partitioned2
+INSERT INTO partitioned2 VALUES (1, 'hello');
+ERROR:  cannot execute INSERT in a read-only transaction
+CREATE TABLE part2_1 PARTITION OF partitioned2 FOR VALUES FROM (-1, 'aaaaa') TO (100, 'ccccc');
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+\d+ part2_1
+DROP TABLE partitioned, partitioned2;
+ERROR:  cannot execute DROP TABLE in a read-only transaction
+--
+-- Partitions
+--
+-- check partition bound syntax
+CREATE TABLE list_parted (
+	a int
+) PARTITION BY LIST (a);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+-- syntax allows only string literal, numeric literal and null to be
+-- specified for a partition bound value
+CREATE TABLE part_1 PARTITION OF list_parted FOR VALUES IN ('1');
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE part_2 PARTITION OF list_parted FOR VALUES IN (2);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE part_null PARTITION OF list_parted FOR VALUES IN (null);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE fail_part PARTITION OF list_parted FOR VALUES IN (int '1');
+ERROR:  syntax error at or near "int"
+LINE 1: ... fail_part PARTITION OF list_parted FOR VALUES IN (int '1');
+                                                              ^
+CREATE TABLE fail_part PARTITION OF list_parted FOR VALUES IN ('1'::int);
+ERROR:  syntax error at or near "::"
+LINE 1: ...fail_part PARTITION OF list_parted FOR VALUES IN ('1'::int);
+                                                                ^
+-- syntax does not allow empty list of values for list partitions
+CREATE TABLE fail_part PARTITION OF list_parted FOR VALUES IN ();
+ERROR:  syntax error at or near ")"
+LINE 1: ...E TABLE fail_part PARTITION OF list_parted FOR VALUES IN ();
+                                                                     ^
+-- trying to specify range for list partitioned table
+CREATE TABLE fail_part PARTITION OF list_parted FOR VALUES FROM (1) TO (2);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+-- trying to specify modulus and remainder for list partitioned table
+CREATE TABLE fail_part PARTITION OF list_parted FOR VALUES WITH (MODULUS 10, REMAINDER 1);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+-- check default partition cannot be created more than once
+CREATE TABLE part_default PARTITION OF list_parted DEFAULT;
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE fail_default_part PARTITION OF list_parted DEFAULT;
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+-- specified literal can't be cast to the partition column data type
+CREATE TABLE bools (
+	a bool
+) PARTITION BY LIST (a);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE bools_true PARTITION OF bools FOR VALUES IN (1);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+DROP TABLE bools;
+ERROR:  cannot execute DROP TABLE in a read-only transaction
+-- specified literal can be cast, but cast isn't immutable
+CREATE TABLE moneyp (
+	a money
+) PARTITION BY LIST (a);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE moneyp_10 PARTITION OF moneyp FOR VALUES IN (10);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE moneyp_10 PARTITION OF moneyp FOR VALUES IN ('10');
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+DROP TABLE moneyp;
+ERROR:  cannot execute DROP TABLE in a read-only transaction
+-- immutable cast should work, though
+CREATE TABLE bigintp (
+	a bigint
+) PARTITION BY LIST (a);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE bigintp_10 PARTITION OF bigintp FOR VALUES IN (10);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+-- fails due to overlap:
+CREATE TABLE bigintp_10_2 PARTITION OF bigintp FOR VALUES IN ('10');
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+DROP TABLE bigintp;
+ERROR:  cannot execute DROP TABLE in a read-only transaction
+CREATE TABLE range_parted (
+	a date
+) PARTITION BY RANGE (a);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+-- trying to specify list for range partitioned table
+CREATE TABLE fail_part PARTITION OF range_parted FOR VALUES IN ('a');
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+-- trying to specify modulus and remainder for range partitioned table
+CREATE TABLE fail_part PARTITION OF range_parted FOR VALUES WITH (MODULUS 10, REMAINDER 1);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+-- each of start and end bounds must have same number of values as the
+-- length of the partition key
+CREATE TABLE fail_part PARTITION OF range_parted FOR VALUES FROM ('a', 1) TO ('z');
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE fail_part PARTITION OF range_parted FOR VALUES FROM ('a') TO ('z', 1);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+-- cannot specify null values in range bounds
+CREATE TABLE fail_part PARTITION OF range_parted FOR VALUES FROM (null) TO (maxvalue);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+-- trying to specify modulus and remainder for range partitioned table
+CREATE TABLE fail_part PARTITION OF range_parted FOR VALUES WITH (MODULUS 10, REMAINDER 1);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+-- check partition bound syntax for the hash partition
+CREATE TABLE hash_parted (
+	a int
+) PARTITION BY HASH (a);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE hpart_1 PARTITION OF hash_parted FOR VALUES WITH (MODULUS 10, REMAINDER 0);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE hpart_2 PARTITION OF hash_parted FOR VALUES WITH (MODULUS 50, REMAINDER 1);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE hpart_3 PARTITION OF hash_parted FOR VALUES WITH (MODULUS 200, REMAINDER 2);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+-- modulus 25 is factor of modulus of 50 but 10 is not factor of 25.
+CREATE TABLE fail_part PARTITION OF hash_parted FOR VALUES WITH (MODULUS 25, REMAINDER 3);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+-- previous modulus 50 is factor of 150 but this modulus is not factor of next modulus 200.
+CREATE TABLE fail_part PARTITION OF hash_parted FOR VALUES WITH (MODULUS 150, REMAINDER 3);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+-- trying to specify range for the hash partitioned table
+CREATE TABLE fail_part PARTITION OF hash_parted FOR VALUES FROM ('a', 1) TO ('z');
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+-- trying to specify list value for the hash partitioned table
+CREATE TABLE fail_part PARTITION OF hash_parted FOR VALUES IN (1000);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+-- trying to create default partition for the hash partitioned table
+CREATE TABLE fail_default_part PARTITION OF hash_parted DEFAULT;
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+-- check if compatible with the specified parent
+-- cannot create as partition of a non-partitioned table
+CREATE TABLE unparted (
+	a int
+);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE fail_part PARTITION OF unparted FOR VALUES IN ('a');
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE fail_part PARTITION OF unparted FOR VALUES WITH (MODULUS 2, REMAINDER 1);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+DROP TABLE unparted;
+ERROR:  cannot execute DROP TABLE in a read-only transaction
+-- cannot create a permanent rel as partition of a temp rel
+CREATE TEMP TABLE temp_parted (
+	a int
+) PARTITION BY LIST (a);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE fail_part PARTITION OF temp_parted FOR VALUES IN ('a');
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+DROP TABLE temp_parted;
+ERROR:  cannot execute DROP TABLE in a read-only transaction
+-- cannot create a table with oids as partition of table without oids
+CREATE TABLE no_oids_parted (
+	a int
+) PARTITION BY RANGE (a) WITHOUT OIDS;
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE fail_part PARTITION OF no_oids_parted FOR VALUES FROM (1) TO (10) WITH OIDS;
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+DROP TABLE no_oids_parted;
+ERROR:  cannot execute DROP TABLE in a read-only transaction
+-- If the partitioned table has oids, then the partition must have them.
+-- If the WITHOUT OIDS option is specified for partition, it is overridden.
+CREATE TABLE oids_parted (
+	a int
+) PARTITION BY RANGE (a) WITH OIDS;
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE part_forced_oids PARTITION OF oids_parted FOR VALUES FROM (1) TO (10) WITHOUT OIDS;
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+\d+ part_forced_oids
+DROP TABLE oids_parted, part_forced_oids;
+ERROR:  cannot execute DROP TABLE in a read-only transaction
+-- check for partition bound overlap and other invalid specifications
+CREATE TABLE list_parted2 (
+	a varchar
+) PARTITION BY LIST (a);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE part_null_z PARTITION OF list_parted2 FOR VALUES IN (null, 'z');
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE part_ab PARTITION OF list_parted2 FOR VALUES IN ('a', 'b');
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE list_parted2_def PARTITION OF list_parted2 DEFAULT;
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE fail_part PARTITION OF list_parted2 FOR VALUES IN (null);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE fail_part PARTITION OF list_parted2 FOR VALUES IN ('b', 'c');
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+-- check default partition overlap
+INSERT INTO list_parted2 VALUES('X');
+ERROR:  cannot execute INSERT in a read-only transaction
+CREATE TABLE fail_part PARTITION OF list_parted2 FOR VALUES IN ('W', 'X', 'Y');
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE range_parted2 (
+	a int
+) PARTITION BY RANGE (a);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+-- trying to create range partition with empty range
+CREATE TABLE fail_part PARTITION OF range_parted2 FOR VALUES FROM (1) TO (0);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+-- note that the range '[1, 1)' has no elements
+CREATE TABLE fail_part PARTITION OF range_parted2 FOR VALUES FROM (1) TO (1);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE part0 PARTITION OF range_parted2 FOR VALUES FROM (minvalue) TO (1);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE fail_part PARTITION OF range_parted2 FOR VALUES FROM (minvalue) TO (2);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE part1 PARTITION OF range_parted2 FOR VALUES FROM (1) TO (10);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE fail_part PARTITION OF range_parted2 FOR VALUES FROM (9) TO (maxvalue);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE part2 PARTITION OF range_parted2 FOR VALUES FROM (20) TO (30);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE part3 PARTITION OF range_parted2 FOR VALUES FROM (30) TO (40);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE fail_part PARTITION OF range_parted2 FOR VALUES FROM (10) TO (30);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE fail_part PARTITION OF range_parted2 FOR VALUES FROM (10) TO (50);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+-- Create a default partition for range partitioned table
+CREATE TABLE range2_default PARTITION OF range_parted2 DEFAULT;
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+-- More than one default partition is not allowed, so this should give error
+CREATE TABLE fail_default_part PARTITION OF range_parted2 DEFAULT;
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+-- Check if the range for default partitions overlap
+INSERT INTO range_parted2 VALUES (85);
+ERROR:  cannot execute INSERT in a read-only transaction
+CREATE TABLE fail_part PARTITION OF range_parted2 FOR VALUES FROM (80) TO (90);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE part4 PARTITION OF range_parted2 FOR VALUES FROM (90) TO (100);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+-- now check for multi-column range partition key
+CREATE TABLE range_parted3 (
+	a int,
+	b int
+) PARTITION BY RANGE (a, (b+1));
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE part00 PARTITION OF range_parted3 FOR VALUES FROM (0, minvalue) TO (0, maxvalue);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE fail_part PARTITION OF range_parted3 FOR VALUES FROM (0, minvalue) TO (0, 1);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE part10 PARTITION OF range_parted3 FOR VALUES FROM (1, minvalue) TO (1, 1);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE part11 PARTITION OF range_parted3 FOR VALUES FROM (1, 1) TO (1, 10);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE part12 PARTITION OF range_parted3 FOR VALUES FROM (1, 10) TO (1, maxvalue);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE fail_part PARTITION OF range_parted3 FOR VALUES FROM (1, 10) TO (1, 20);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE range3_default PARTITION OF range_parted3 DEFAULT;
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+-- cannot create a partition that says column b is allowed to range
+-- from -infinity to +infinity, while there exist partitions that have
+-- more specific ranges
+CREATE TABLE fail_part PARTITION OF range_parted3 FOR VALUES FROM (1, minvalue) TO (1, maxvalue);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+-- check for partition bound overlap and other invalid specifications for the hash partition
+CREATE TABLE hash_parted2 (
+	a varchar
+) PARTITION BY HASH (a);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE h2part_1 PARTITION OF hash_parted2 FOR VALUES WITH (MODULUS 4, REMAINDER 2);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE h2part_2 PARTITION OF hash_parted2 FOR VALUES WITH (MODULUS 8, REMAINDER 0);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE h2part_3 PARTITION OF hash_parted2 FOR VALUES WITH (MODULUS 8, REMAINDER 4);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE h2part_4 PARTITION OF hash_parted2 FOR VALUES WITH (MODULUS 8, REMAINDER 5);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+-- overlap with part_4
+CREATE TABLE fail_part PARTITION OF hash_parted2 FOR VALUES WITH (MODULUS 2, REMAINDER 1);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+-- modulus must be greater than zero
+CREATE TABLE fail_part PARTITION OF hash_parted2 FOR VALUES WITH (MODULUS 0, REMAINDER 1);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+-- remainder must be greater than or equal to zero and less than modulus
+CREATE TABLE fail_part PARTITION OF hash_parted2 FOR VALUES WITH (MODULUS 8, REMAINDER 8);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+-- check schema propagation from parent
+CREATE TABLE parted (
+	a text,
+	b int NOT NULL DEFAULT 0,
+	CONSTRAINT check_a CHECK (length(a) > 0)
+) PARTITION BY LIST (a);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE part_a PARTITION OF parted FOR VALUES IN ('a');
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+-- only inherited attributes (never local ones)
+SELECT attname, attislocal, attinhcount FROM pg_attribute
+  WHERE attrelid = 'part_a'::regclass and attnum > 0
+  ORDER BY attnum;
+ attname | attislocal | attinhcount 
+---------+------------+-------------
+ a       | f          |           1
+ b       | f          |           1
+(2 rows)
+
+-- able to specify column default, column constraint, and table constraint
+-- first check the "column specified more than once" error
+CREATE TABLE part_b PARTITION OF parted (
+	b NOT NULL,
+	b DEFAULT 1,
+	b CHECK (b >= 0),
+	CONSTRAINT check_a CHECK (length(a) > 0)
+) FOR VALUES IN ('b');
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE part_b PARTITION OF parted (
+	b NOT NULL DEFAULT 1 CHECK (b >= 0),
+	CONSTRAINT check_a CHECK (length(a) > 0)
+) FOR VALUES IN ('b');
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+-- conislocal should be false for any merged constraints
+SELECT conislocal, coninhcount FROM pg_constraint WHERE conrelid = 'part_b'::regclass AND conname = 'check_a';
+ conislocal | coninhcount 
+------------+-------------
+ f          |           1
+(1 row)
+
+-- specify PARTITION BY for a partition
+CREATE TABLE fail_part_col_not_found PARTITION OF parted FOR VALUES IN ('c') PARTITION BY RANGE (c);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE part_c PARTITION OF parted (b WITH OPTIONS NOT NULL DEFAULT 0) FOR VALUES IN ('c') PARTITION BY RANGE ((b));
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+-- create a level-2 partition
+CREATE TABLE part_c_1_10 PARTITION OF part_c FOR VALUES FROM (1) TO (10);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+-- check that NOT NULL and default value are inherited correctly
+create table parted_notnull_inh_test (a int default 1, b int not null default 0) partition by list (a);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+create table parted_notnull_inh_test1 partition of parted_notnull_inh_test (a not null, b default 1) for values in (1);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+insert into parted_notnull_inh_test (b) values (null);
+ERROR:  cannot execute INSERT in a read-only transaction
+-- note that while b's default is overriden, a's default is preserved
+\d parted_notnull_inh_test1
+drop table parted_notnull_inh_test;
+ERROR:  cannot execute DROP TABLE in a read-only transaction
+-- check for a conflicting COLLATE clause
+create table parted_collate_must_match (a text collate "C", b text collate "C")
+  partition by range (a);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+-- on the partition key
+create table parted_collate_must_match1 partition of parted_collate_must_match
+  (a collate "POSIX") for values from ('a') to ('m');
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+-- on another column
+create table parted_collate_must_match2 partition of parted_collate_must_match
+  (b collate "POSIX") for values from ('m') to ('z');
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+drop table parted_collate_must_match;
+ERROR:  cannot execute DROP TABLE in a read-only transaction
+-- Partition bound in describe output
+\d+ part_b
+-- Both partition bound and partition key in describe output
+\d+ part_c
+-- a level-2 partition's constraint will include the parent's expressions
+\d+ part_c_1_10
+-- Show partition count in the parent's describe output
+-- Tempted to include \d+ output listing partitions with bound info but
+-- output could vary depending on the order in which partition oids are
+-- returned.
+\d parted
+\d hash_parted
+-- check that we get the expected partition constraints
+CREATE TABLE range_parted4 (a int, b int, c int) PARTITION BY RANGE (abs(a), abs(b), c);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE unbounded_range_part PARTITION OF range_parted4 FOR VALUES FROM (MINVALUE, MINVALUE, MINVALUE) TO (MAXVALUE, MAXVALUE, MAXVALUE);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+\d+ unbounded_range_part
+DROP TABLE unbounded_range_part;
+ERROR:  cannot execute DROP TABLE in a read-only transaction
+CREATE TABLE range_parted4_1 PARTITION OF range_parted4 FOR VALUES FROM (MINVALUE, MINVALUE, MINVALUE) TO (1, MAXVALUE, MAXVALUE);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+\d+ range_parted4_1
+CREATE TABLE range_parted4_2 PARTITION OF range_parted4 FOR VALUES FROM (3, 4, 5) TO (6, 7, MAXVALUE);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+\d+ range_parted4_2
+CREATE TABLE range_parted4_3 PARTITION OF range_parted4 FOR VALUES FROM (6, 8, MINVALUE) TO (9, MAXVALUE, MAXVALUE);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+\d+ range_parted4_3
+DROP TABLE range_parted4;
+ERROR:  cannot execute DROP TABLE in a read-only transaction
+-- user-defined operator class in partition key
+CREATE FUNCTION my_int4_sort(int4,int4) RETURNS int LANGUAGE sql
+  AS $$ SELECT CASE WHEN $1 = $2 THEN 0 WHEN $1 > $2 THEN 1 ELSE -1 END; $$;
+ERROR:  cannot execute CREATE FUNCTION in a read-only transaction
+CREATE OPERATOR CLASS test_int4_ops FOR TYPE int4 USING btree AS
+  OPERATOR 1 < (int4,int4), OPERATOR 2 <= (int4,int4),
+  OPERATOR 3 = (int4,int4), OPERATOR 4 >= (int4,int4),
+  OPERATOR 5 > (int4,int4), FUNCTION 1 my_int4_sort(int4,int4);
+ERROR:  cannot execute CREATE OPERATOR CLASS in a read-only transaction
+CREATE TABLE partkey_t (a int4) PARTITION BY RANGE (a test_int4_ops);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE partkey_t_1 PARTITION OF partkey_t FOR VALUES FROM (0) TO (1000);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+INSERT INTO partkey_t VALUES (100);
+ERROR:  cannot execute INSERT in a read-only transaction
+INSERT INTO partkey_t VALUES (200);
+ERROR:  cannot execute INSERT in a read-only transaction
+-- cleanup
+DROP TABLE parted, list_parted, range_parted, list_parted2, range_parted2, range_parted3;
+ERROR:  cannot execute DROP TABLE in a read-only transaction
+DROP TABLE partkey_t, hash_parted, hash_parted2;
+ERROR:  cannot execute DROP TABLE in a read-only transaction
+DROP OPERATOR CLASS test_int4_ops USING btree;
+ERROR:  cannot execute DROP OPERATOR CLASS in a read-only transaction
+DROP FUNCTION my_int4_sort(int4,int4);
+ERROR:  cannot execute DROP FUNCTION in a read-only transaction
+-- comments on partitioned tables columns
+CREATE TABLE parted_col_comment (a int, b text) PARTITION BY LIST (a);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+COMMENT ON TABLE parted_col_comment IS 'Am partitioned table';
+ERROR:  cannot execute COMMENT in a read-only transaction
+COMMENT ON COLUMN parted_col_comment.a IS 'Partition key';
+ERROR:  cannot execute COMMENT in a read-only transaction
+SELECT obj_description('parted_col_comment'::regclass);
+   obj_description    
+----------------------
+ Am partitioned table
+(1 row)
+
+\d+ parted_col_comment
+DROP TABLE parted_col_comment;
+ERROR:  cannot execute DROP TABLE in a read-only transaction
+-- list partitioning on array type column
+CREATE TABLE arrlp (a int[]) PARTITION BY LIST (a);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE arrlp12 PARTITION OF arrlp FOR VALUES IN ('{1}', '{2}');
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+\d+ arrlp12
+DROP TABLE arrlp;
+ERROR:  cannot execute DROP TABLE in a read-only transaction
+-- partition on boolean column
+create table boolspart (a bool) partition by list (a);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+create table boolspart_t partition of boolspart for values in (true);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+create table boolspart_f partition of boolspart for values in (false);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+\d+ boolspart
+drop table boolspart;
+ERROR:  cannot execute DROP TABLE in a read-only transaction
+-- partitions mixing temporary and permanent relations
+create table perm_parted (a int) partition by list (a);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+create temporary table temp_parted (a int) partition by list (a);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+create table perm_part partition of temp_parted default; -- error
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+create temp table temp_part partition of perm_parted default; -- error
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+create temp table temp_part partition of temp_parted default; -- ok
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+drop table perm_parted cascade;
+ERROR:  cannot execute DROP TABLE in a read-only transaction
+drop table temp_parted cascade;
+ERROR:  cannot execute DROP TABLE in a read-only transaction
+-- check that adding partitions to a table while it is being used is prevented
+create table tab_part_create (a int) partition by list (a);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+create or replace function func_part_create() returns trigger
+  language plpgsql as $$
+  begin
+    execute 'create table tab_part_create_1 partition of tab_part_create for values in (1)';
+    return null;
+  end $$;
+ERROR:  cannot execute CREATE FUNCTION in a read-only transaction
+create trigger trig_part_create before insert on tab_part_create
+  for each statement execute procedure func_part_create();
+ERROR:  cannot execute CREATE TRIGGER in a read-only transaction
+insert into tab_part_create values (1);
+ERROR:  cannot execute INSERT in a read-only transaction
+drop table tab_part_create;
+ERROR:  cannot execute DROP TABLE in a read-only transaction
+drop function func_part_create();
+ERROR:  cannot execute DROP FUNCTION in a read-only transaction

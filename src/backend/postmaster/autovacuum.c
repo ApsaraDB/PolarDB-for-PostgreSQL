@@ -98,6 +98,7 @@
 #include "utils/fmgrprotos.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
+#include "utils/polar_coredump.h"
 #include "utils/ps_status.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
@@ -470,6 +471,20 @@ AutoVacLauncherMain(int argc, char *argv[])
 	pqsignal(SIGUSR2, avl_sigusr2_handler);
 	pqsignal(SIGFPE, FloatExceptionHandler);
 	pqsignal(SIGCHLD, SIG_DFL);
+
+	/* POLAR : register for coredump print */
+#ifndef _WIN32
+#ifdef SIGILL
+	pqsignal(SIGILL, polar_program_error_handler);
+#endif
+#ifdef SIGSEGV
+	pqsignal(SIGSEGV, polar_program_error_handler);
+#endif
+#ifdef SIGBUS
+	pqsignal(SIGBUS, polar_program_error_handler);
+#endif
+#endif	/* _WIN32 */
+	/* POLAR: end */
 
 	/* Early initialization */
 	BaseInit();

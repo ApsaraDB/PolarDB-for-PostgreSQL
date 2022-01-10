@@ -18,6 +18,10 @@ fsync = on
 wal_log_hints = on
 max_prepared_transactions = 5
 autovacuum = off
+polar_enable_full_page_write_in_backup = on
+polar_enable_lazy_checkpoint_in_backup = off
+polar_enable_checkpoint_in_backup = on
+polar_enable_switch_wal_in_backup = on
 });
 
 # Create a master node and its standby, initializing both with some data

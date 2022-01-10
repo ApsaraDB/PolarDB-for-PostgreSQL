@@ -100,10 +100,6 @@ static bool announce_next_takeover = true;
 SyncRepConfigData *SyncRepConfig = NULL;
 static int	SyncRepWaitMode = SYNC_REP_NO_WAIT;
 
-static void SyncRepQueueInsert(int mode);
-static void SyncRepCancelWait(void);
-static int	SyncRepWakeQueue(bool all, int mode);
-
 static bool SyncRepGetSyncRecPtr(XLogRecPtr *writePtr,
 					 XLogRecPtr *flushPtr,
 					 XLogRecPtr *applyPtr,
@@ -125,12 +121,14 @@ static List *SyncRepGetSyncStandbysQuorum(bool *am_sync);
 static int	standby_priority_comparator(const void *a, const void *b);
 static int	cmp_lsn(const void *a, const void *b);
 
-#ifdef USE_ASSERT_CHECKING
-static bool SyncRepQueueIsOrderedByLSN(int mode);
-#endif
-
 /* POLAR */
 static bool polar_get_ddl_applyptr(XLogRecPtr *ddl_applyptr, bool *replica_slot_all_active);
+/* POLAR: handle the sync replication timeout */
+static void polar_sync_rep_update_timeout_flag(void);
+static bool polar_semi_sync_within_window(instr_time start_time, long timeout);
+static bool polar_semi_sync_within_observation_window(void);
+static bool polar_semi_sync_within_backoff_window(void);
+static void polar_semi_sync_set_backoff_window(void);
 
 /*
  * ===========================================================
@@ -162,36 +160,37 @@ SyncRepWaitForLSN(XLogRecPtr lsn, bool commit, bool polar_force_wait_apply)
 	const char *old_status;
 	int			mode;
 
-	/* POLAR: Define some variables to call polar_get_ddl_applyptr(). */
-	XLogRecPtr	ddl_applyptr = InvalidXLogRecPtr;
-	bool replica_slot_all_active = true;
-	bool replica_slot_exist;
+    /* POLAR: Define some variables to call polar_get_ddl_applyptr(). */
+    XLogRecPtr	ddl_applyptr = InvalidXLogRecPtr;
+    bool replica_slot_all_active = true;
+    bool replica_slot_exist;
+	instr_time	semi_sync_wait_start;
 
-	/* Cap the level for anything other than commit to remote flush only. */
+    /* Cap the level for anything other than commit to remote flush only. */
 	if (commit)
 		mode = SyncRepWaitMode;
 	else
 		mode = Min(SyncRepWaitMode, SYNC_REP_WAIT_FLUSH);
 
 	/*
-	 * POLAR: when enable polardb(rw+ro node on shared disk), ddl must be sync mode
+	 * POLAR: when enable polardb(rw+ro node on shared disk), ddl must be sync mode.
 	 * We use stream replication stanby lock for ddl sync.
 	 */
 	if (polar_enable_shared_storage_mode)
 	{
 		if (polar_force_wait_apply)
-			mode = SYNC_REP_WAIT_APPLY;
+			mode = POLAR_SYNC_DDL_WAIT_APPLY;
 		else if (polar_enable_transaction_sync_mode == false)
 			return;
 	}
 
-	/*
-	 * Fast exit if user has not requested sync replication.
-	 *
-	 * POLAR: When enable polar_enable_ddl_sync_mode, no need to exit.
-	 */
-	if (!SyncRepRequested() && !polar_force_wait_apply)
-		return;
+    /*
+     * Fast exit if user has not requested sync replication.
+     *
+     * POLAR: When enable polar_enable_ddl_sync_mode, no need to exit.
+     */
+    if (!SyncRepRequested() && !polar_force_wait_apply)
+        return;
 
 	Assert(SHMQueueIsDetached(&(MyProc->syncRepLinks)));
 	Assert(WalSndCtl != NULL);
@@ -199,26 +198,72 @@ SyncRepWaitForLSN(XLogRecPtr lsn, bool commit, bool polar_force_wait_apply)
 	LWLockAcquire(SyncRepLock, LW_EXCLUSIVE);
 	Assert(MyProc->syncRepState == SYNC_REP_NOT_WAITING);
 
-	/*
-	 * We don't wait for sync rep if WalSndCtl->sync_standbys_defined is not
-	 * set.  See SyncRepUpdateSyncStandbysDefined.
-	 *
-	 * Also check that the standby hasn't already replied. Unlikely race
-	 * condition but we'll be fetching that cache line anyway so it's likely
-	 * to be a low cost check.
-	 *
-	 * POLAR: When using ddl sync replica, WalSndCtl->sync_standbys_defined is
-	 * meaningless. When no replica slots exists, we don't enter waiting queue.
-	 */
-	replica_slot_exist = polar_get_ddl_applyptr(&ddl_applyptr,
-												&replica_slot_all_active);
-	if ((!WalSndCtl->sync_standbys_defined && !polar_force_wait_apply) ||
-		(polar_force_wait_apply && !replica_slot_exist) ||
-		(lsn <= WalSndCtl->lsn[mode]))
-	{
-		LWLockRelease(SyncRepLock);
-		return;
-	}
+    /*
+     * We don't wait for sync rep if WalSndCtl->sync_standbys_defined is not
+     * set.  See SyncRepUpdateSyncStandbysDefined.
+     *
+     * Also check that the standby hasn't already replied. Unlikely race
+     * condition but we'll be fetching that cache line anyway so it's likely
+     * to be a low cost check.
+     *
+     * POLAR: When using ddl sync replica, WalSndCtl->sync_standbys_defined is
+     * meaningless. When no replica slots exists, we don't enter waiting queue.
+	 * 
+	 * POLAR: When synchronous replication is timeout, the synchronous replication
+	 * change to asynchronous replication, skip the waiting.
+	 * But if the replication catch up, it's time to back to synchronous again.
+	 * 
+	 * POLAR: sync ddl shouldn't timeout
+     */
+    replica_slot_exist = polar_get_ddl_applyptr(&ddl_applyptr,
+            &replica_slot_all_active);
+    if ((!WalSndCtl->sync_standbys_defined && !polar_force_wait_apply) ||
+        (polar_force_wait_apply && !replica_slot_exist) ||
+        (lsn <= WalSndCtl->lsn[mode]) ||
+		(WalSndCtl->is_sync_replication_timeout && !polar_force_wait_apply))
+    {
+		/*
+		 * POLAR: The lag between the WalSndCtl lsn and myproc waitlsn is smaller than polar_sync_rep_timeout_break_lsn_lag,
+		 * so we think it's time to be synchronous again. However, this transaction is ignored.
+		 */
+		if(WalSndCtl->is_sync_replication_timeout && !polar_force_wait_apply &&
+		   lsn - WalSndCtl->lsn[mode] <= polar_sync_rep_timeout_break_lsn_lag)
+		{
+			/*
+			 * POLAR: Semi-synchronous replication optimization under network jitter.
+			 * If we are now in a backoff window, we should not back to wait for sync, we should keep async.
+			 * Otherwise, we back to wait for sync, and open an observation window.
+			 */
+			if (!polar_semi_sync_within_backoff_window())
+			{
+				WalSndCtl->is_sync_replication_timeout = false;
+				ereport(WARNING,
+						(errmsg("the timeout synchronous replication is back to wait for sync"),
+						 errdetail("The gap of lsn between synchronous replication and local is less than %d bytes, "
+						 		   "then the timeout synchronous replication will be synchronous again.",
+								   polar_sync_rep_timeout_break_lsn_lag)));
+
+				if (polar_enable_semi_sync_optimization)
+				{
+					/* POLAR: Set observation window */
+					INSTR_TIME_SET_CURRENT(WalSndCtl->polar_semi_sync_observation_window_start);
+					ereport(WARNING,
+							(errmsg("start a new %d s observation window.", polar_semi_sync_observation_window / 1000),
+							 errdetail("Currently restored temporarily, but need to open an observation window to "
+							 		   "observe if there will be network jitter problems, if there are problems "
+									   "during this period, the back-off time will be increased.")));
+				}
+			}
+			else
+			{
+				ereport(WARNING,
+						(errmsg("semi-sync optimization under network jitter, keep async since we are within a backoff window.")));
+			}
+		}
+
+        LWLockRelease(SyncRepLock);
+        return;
+    }
 
 	/*
 	 * Set our waitLSN so WALSender will know when to wake us, and add
@@ -249,7 +294,10 @@ SyncRepWaitForLSN(XLogRecPtr lsn, bool commit, bool polar_force_wait_apply)
 	 *
 	 * Each proc has its own wait latch, so we perform a normal latch
 	 * check/wait loop here.
+	 *
+	 * POLAR: extra timeout judgment is needed. See comment below.
 	 */
+	INSTR_TIME_SET_CURRENT(semi_sync_wait_start);
 	for (;;)
 	{
 		/* Must reset the latch before testing state. */
@@ -339,9 +387,45 @@ SyncRepWaitForLSN(XLogRecPtr lsn, bool commit, bool polar_force_wait_apply)
 		/*
 		 * Wait on latch.  Any condition that should wake us up will set the
 		 * latch, so no need for timeout.
+		 *
+		 * POLAR: If polar_sync_replication_timeout is larger than zero,
+		 * we will wait on latch with timeout.
+		 * When synchronous replication is timeout, wake up any wait currently in progress
+		 * and synchronous replication change to be asynchronous.
+		 * 
+		 * POLAR: sync ddl shouldn't timeout
 		 */
-		WaitLatch(MyLatch, WL_LATCH_SET | WL_POSTMASTER_DEATH, -1,
-				  WAIT_EVENT_SYNC_REP);
+		if (WalSndCtl->sync_replication_timeout_enabled && !polar_force_wait_apply)
+		{
+			int         rc;
+			bool		semi_sync_timeout = false;
+
+			rc = WaitLatch(MyLatch, WL_LATCH_SET | WL_POSTMASTER_DEATH | WL_TIMEOUT, polar_sync_replication_timeout,
+					  	   WAIT_EVENT_SYNC_REP);
+			/*
+			 * POLAR: MyLatch may be frequently set by the SIGALRM signal processing function,
+			 * so that we can never wait until the latch timeout event, and never get out of the loop.
+			 * So add an extra timeout judgment here.
+			 */
+			semi_sync_timeout = !polar_semi_sync_within_window(semi_sync_wait_start, polar_sync_replication_timeout);
+			if (rc == WL_TIMEOUT || semi_sync_timeout)
+			{
+				ereport(WARNING,
+						(errmsg("canceling wait for synchronous replication due to timeout"),
+						 errdetail("The transactions will be committed locally, but might not have been replicated to the standby "
+								 "until the gap of lsn between synchronous replication and local is less than %d bytes.",
+								 polar_sync_rep_timeout_break_lsn_lag)));
+				SyncRepCancelWait();
+				polar_sync_rep_update_timeout_flag();
+				polar_semi_sync_set_backoff_window();
+				break;
+			}
+		}
+		else
+		{
+			WaitLatch(MyLatch, WL_LATCH_SET | WL_POSTMASTER_DEATH, -1,
+					  WAIT_EVENT_SYNC_REP);
+		}
 	}
 
 	/*
@@ -371,12 +455,12 @@ SyncRepWaitForLSN(XLogRecPtr lsn, bool commit, bool polar_force_wait_apply)
  * Usually we will go at tail of queue, though it's possible that we arrive
  * here out of order, so start at tail and work back to insertion point.
  */
-static void
+void
 SyncRepQueueInsert(int mode)
 {
 	PGPROC	   *proc;
 
-	Assert(mode >= 0 && mode < NUM_SYNC_REP_WAIT_MODE);
+	Assert(mode >= 0 && mode < POLAR_NUM_ALL_REP_WAIT_MODE);
 	proc = (PGPROC *) SHMQueuePrev(&(WalSndCtl->SyncRepQueue[mode]),
 								   &(WalSndCtl->SyncRepQueue[mode]),
 								   offsetof(PGPROC, syncRepLinks));
@@ -404,7 +488,7 @@ SyncRepQueueInsert(int mode)
 /*
  * Acquire SyncRepLock and cancel any wait currently in progress.
  */
-static void
+void
 SyncRepCancelWait(void)
 {
 	LWLockAcquire(SyncRepLock, LW_EXCLUSIVE);
@@ -424,9 +508,11 @@ SyncRepCleanupAtProcExit(void)
 	if (!SHMQueueIsDetached(&(MyProc->syncRepLinks)))
 	{
 		LWLockAcquire(SyncRepLock, LW_EXCLUSIVE);
+
 		/* maybe we have just been removed, so recheck */
 		if (!SHMQueueIsDetached(&(MyProc->syncRepLinks)))
 			SHMQueueDelete(&(MyProc->syncRepLinks));
+
 		LWLockRelease(SyncRepLock);
 	}
 }
@@ -559,12 +645,7 @@ SyncRepReleaseWaiters(void)
 		numflush = SyncRepWakeQueue(false, SYNC_REP_WAIT_FLUSH);
 	}
 
-	/*
-	 * POLAR: When use DDL sync replica, don't call SyncRepWakeQueue to
-	 * wake apply queue.
-	 */
-	if (walsndctl->lsn[SYNC_REP_WAIT_APPLY] < applyPtr &&
-		!(polar_enable_ddl_sync_mode && polar_enable_shared_storage_mode))
+	if (walsndctl->lsn[SYNC_REP_WAIT_APPLY] < applyPtr)
 	{
 		walsndctl->lsn[SYNC_REP_WAIT_APPLY] = applyPtr;
 		numapply = SyncRepWakeQueue(false, SYNC_REP_WAIT_APPLY);
@@ -1196,7 +1277,7 @@ SyncRepGetStandbyPriority(void)
  *
  * Must hold SyncRepLock.
  */
-static int
+int
 SyncRepWakeQueue(bool all, int mode)
 {
 	volatile WalSndCtlData *walsndctl = WalSndCtl;
@@ -1204,7 +1285,7 @@ SyncRepWakeQueue(bool all, int mode)
 	PGPROC	   *thisproc = NULL;
 	int			numprocs = 0;
 
-	Assert(mode >= 0 && mode < NUM_SYNC_REP_WAIT_MODE);
+	Assert(mode >= 0 && mode < POLAR_NUM_ALL_REP_WAIT_MODE);
 	Assert(SyncRepQueueIsOrderedByLSN(mode));
 
 	proc = (PGPROC *) SHMQueueNext(&(WalSndCtl->SyncRepQueue[mode]),
@@ -1282,16 +1363,7 @@ SyncRepUpdateSyncStandbysDefined(void)
 		{
 			int			i;
 
-			/*
-			 * POLAR: When enable polar_enable_ddl_sync_mode, only wake write & flush queue
-			 * and leave apply queue to polar_release_ddl_waiters.
-			 */
-			int polar_num_sync_rep_wait_mode = NUM_SYNC_REP_WAIT_MODE;
-
-			if (polar_enable_ddl_sync_mode && polar_enable_shared_storage_mode)
-				polar_num_sync_rep_wait_mode--;
-
-			for (i = 0; i < polar_num_sync_rep_wait_mode; i++)
+			for (i = 0; i < NUM_SYNC_REP_WAIT_MODE; i++)
 				SyncRepWakeQueue(true, i);
 		}
 
@@ -1309,13 +1381,13 @@ SyncRepUpdateSyncStandbysDefined(void)
 }
 
 #ifdef USE_ASSERT_CHECKING
-static bool
+bool
 SyncRepQueueIsOrderedByLSN(int mode)
 {
 	PGPROC	   *proc = NULL;
 	XLogRecPtr	lastLSN;
 
-	Assert(mode >= 0 && mode < NUM_SYNC_REP_WAIT_MODE);
+	Assert(mode >= 0 && mode < POLAR_NUM_ALL_REP_WAIT_MODE);
 
 	lastLSN = 0;
 
@@ -1329,7 +1401,15 @@ SyncRepQueueIsOrderedByLSN(int mode)
 		 * Check the queue is ordered by LSN and that multiple procs don't
 		 * have matching LSNs
 		 */
-		if (proc->waitLSN <= lastLSN)
+		if ((mode < NUM_SYNC_REP_WAIT_MODE || mode == POLAR_SYNC_DDL_WAIT_APPLY) && 
+			proc->waitLSN <= lastLSN)
+			return false;
+
+		/*
+		 * POLAR: In priority replication, multiple walsender can wait for 
+		 * the same LSN.
+		 */
+		if (mode == POLAR_PRI_REP_WAIT_FLUSH && proc->waitLSN < lastLSN)
 			return false;
 
 		lastLSN = proc->waitLSN;
@@ -1441,74 +1521,74 @@ assign_synchronous_commit(int newval, void *extra)
 bool
 polar_release_ddl_waiters(void)
 {
-	volatile WalSndCtlData *walsndctl = WalSndCtl;
-	XLogRecPtr	ddl_applyptr = InvalidXLogRecPtr;
-	bool		replica_slot_exist = true;
-	bool		replica_slot_all_active = true;
-	int			ddl_numapply = 0;
+    volatile WalSndCtlData *walsndctl = WalSndCtl;
+    XLogRecPtr	ddl_applyptr = InvalidXLogRecPtr;
+    bool		replica_slot_exist = true;
+    bool        replica_slot_all_active = true;
+    int			ddl_numapply = 0;
 
-	if (!(polar_enable_ddl_sync_mode && polar_enable_shared_storage_mode))
-		return true;
+    if (!(polar_enable_ddl_sync_mode && polar_enable_shared_storage_mode))
+        return true;
 
-	LWLockAcquire(SyncRepLock, LW_EXCLUSIVE);
-	/*
-	 * No need to check whether we are a sync replica or not, just calculate
-	 * the apply synced positions among all replica(no standby).
-	 *
-	 * When no replica replication slot exists, replica_slot_exist is set to
-	 * false. Then it's futile for ddl backends to continue waiting, so we just
-	 * wake all backends.
-	 *
-	 * When some replica replication slots are inactive, replica_slot_all_active
-	 * is set to false. And we don't actually wake the ddl backend because some
-	 * slots may return to active. So we just skip the left procedure, waiting
-	 * for the next time to call this function.
-	 *
-	 * It's safe to check the current value without the lock, because it's only
-	 * ever updated by one process. But we must take the lock to change it.
-	 */
-	replica_slot_exist = polar_get_ddl_applyptr(&ddl_applyptr,
-												&replica_slot_all_active);
+    LWLockAcquire(SyncRepLock, LW_EXCLUSIVE);
+    /*
+     * No need to check whether we are a sync replica or not, just calculate
+     * the apply synced positions among all replica(no standby).
+     *
+     * When no replica replication slot exists, replica_slot_exist is set to
+     * false. Then it's futile for ddl backends to continue waiting, so we just
+     * wake all backends.
+     *
+     * When some replica replication slots are inactive, replica_slot_all_active
+     * is set to false. And we don't actually wake the ddl backend because some
+     * slots may return to active. So we just skip the left procedure, waiting
+     * for the next time to call this function.
+     *
+     * It's safe to check the current value without the lock, because it's only
+     * ever updated by one process. But we must take the lock to change it.
+     */
+    replica_slot_exist = polar_get_ddl_applyptr(&ddl_applyptr,
+            &replica_slot_all_active);
 
-	if (!replica_slot_exist)
-	{
-		SyncRepWakeQueue(true, SYNC_REP_WAIT_APPLY);
-		LWLockRelease(SyncRepLock);
-		return false;
-	}
+    if (!replica_slot_exist)
+    {
+        SyncRepWakeQueue(true, POLAR_SYNC_DDL_WAIT_APPLY);
+        LWLockRelease(SyncRepLock);
+        return false;
+    }
 
-	if (!replica_slot_all_active)
-	{
-		LWLockRelease(SyncRepLock);
-		return true;
-	}
+    if (!replica_slot_all_active)
+    {
+        LWLockRelease(SyncRepLock);
+        return true;
+    }
 
-	Assert(!XLogRecPtrIsInvalid(ddl_applyptr));
+    Assert(!XLogRecPtrIsInvalid(ddl_applyptr));
 
-	/*
-	 * Set the lsn first so that when we wake backends, they will release up to
-	 * this location.
-	 *
-	 * Wake apply queue. we can use SyncRepWakeQueue to wake apply queue.
-	 */
-	if (walsndctl->lsn[SYNC_REP_WAIT_APPLY] < ddl_applyptr)
-	{
-		walsndctl->lsn[SYNC_REP_WAIT_APPLY] = ddl_applyptr;
-		ddl_numapply = SyncRepWakeQueue(false, SYNC_REP_WAIT_APPLY);
-	}
+    /*
+     * Set the lsn first so that when we wake backends, they will release up to
+     * this location.
+     *
+     * Wake apply queue. we can use SyncRepWakeQueue to wake apply queue.
+     */
+    if (walsndctl->lsn[POLAR_SYNC_DDL_WAIT_APPLY] < ddl_applyptr)
+    {
+        walsndctl->lsn[POLAR_SYNC_DDL_WAIT_APPLY] = ddl_applyptr;
+        ddl_numapply = SyncRepWakeQueue(false, POLAR_SYNC_DDL_WAIT_APPLY);
+    }
 
-	LWLockRelease(SyncRepLock);
+    LWLockRelease(SyncRepLock);
 
-	/* Wake backends which waits for ddl sync replica successfully. */
-	if (ddl_numapply > 0)
-		ereport(LOG,
-				(errmsg("Acquire the smallest apply lsn among all replica and wake %d DDL waiting backends whose lsn are smaller than that.",
-						ddl_numapply)));
+    /* Wake backends which waits for ddl sync replica successfully. */
+    if (ddl_numapply > 0)
+        ereport(LOG,
+                (errmsg("Acquire the smallest apply lsn among all replica and wake %d DDL waiting backends whose lsn are smaller than that.",
+                        ddl_numapply)));
 
-	elog(DEBUG3, "ddl sync released %d procs up to apply %X/%X",
-		 ddl_numapply, (uint32) (ddl_applyptr >> 32), (uint32) ddl_applyptr);
+    elog(DEBUG3, "ddl sync released %d procs up to apply %X/%X",
+         ddl_numapply, (uint32) (ddl_applyptr >> 32), (uint32) ddl_applyptr);
 
-	return true;
+    return true;
 }
 
 
@@ -1529,15 +1609,15 @@ polar_release_ddl_waiters(void)
 static bool
 polar_get_ddl_applyptr(XLogRecPtr *ddl_applyptr, bool *replica_slot_all_active)
 {
-	bool		replica_slot_exist = false;
-	uint32 		slotno = 0;
+    bool        replica_slot_exist = false;
+    uint32 		slotno = 0;
 
-	/* Compute the oldest apply lsn among all replicas. */
-	LWLockAcquire(ReplicationSlotControlLock, LW_SHARED);
-	for (slotno = 0; slotno < max_replication_slots; slotno++)
-	{
-		ReplicationSlot *s = &ReplicationSlotCtl->replication_slots[slotno];
-		XLogRecPtr	apply_lsn;
+    /* Compute the oldest apply lsn among all replicas. */
+    LWLockAcquire(ReplicationSlotControlLock, LW_SHARED);
+    for (slotno = 0; slotno < max_replication_slots; slotno++)
+    {
+        ReplicationSlot *s = &ReplicationSlotCtl->replication_slots[slotno];
+        XLogRecPtr	apply_lsn;
 
 		/*
 		 * 1. The slot must exist(s->in_use != 0)
@@ -1557,21 +1637,132 @@ polar_get_ddl_applyptr(XLogRecPtr *ddl_applyptr, bool *replica_slot_all_active)
 		if (XLogRecPtrIsInvalid(apply_lsn))
 			continue;
 
-		replica_slot_exist = true;
+        replica_slot_exist = true;
 
-		/* Some replica slots are inactive. */
-		if (s->active_pid == 0)
+        /* Some replica slots are inactive. */
+        if (s->active_pid == 0)
+        {
+            *replica_slot_all_active = false;
+            ereport(LOG, (errmsg("Replica replication slot '%s' is inactive.", (char *) &s->data.name)));
+        }
+
+        if (!XLogRecPtrIsInvalid(apply_lsn) &&
+            (XLogRecPtrIsInvalid(*ddl_applyptr)
+             || *ddl_applyptr > apply_lsn))
+            *ddl_applyptr = apply_lsn;
+
+    }
+    LWLockRelease(ReplicationSlotControlLock);
+    return replica_slot_exist;
+}
+
+/*
+ * POLAR: Cancel any wait currently in progress due to timeout.
+ * The code is like SyncRepUpdateSyncStandbysDefined.
+ */
+static void
+polar_sync_rep_update_timeout_flag(void)
+{
+	int			i;
+	
+	LWLockAcquire(SyncRepLock, LW_EXCLUSIVE);
+	if (WalSndCtl->sync_replication_timeout_enabled)
+	{
+		WalSndCtl->is_sync_replication_timeout = true;
+		for (i = 0; i < NUM_SYNC_REP_WAIT_MODE; i++)
+			SyncRepWakeQueue(true, i);
+	}
+	LWLockRelease(SyncRepLock);
+}
+
+void
+polar_sync_rep_update_timeout_enabled_flag(void)
+{
+	bool		sync_replication_timeout_enabled = polar_sync_replication_timeout > 0;
+
+	if (sync_replication_timeout_enabled != WalSndCtl->sync_replication_timeout_enabled)
+	{
+		LWLockAcquire(SyncRepLock, LW_EXCLUSIVE);
+		WalSndCtl->sync_replication_timeout_enabled = sync_replication_timeout_enabled;
+		/*
+		 * When the polar_sync_replication_timeout is set to zero,
+	 	 * don't need to check for the timeout of synchronous replication.
+		 */
+		if (!WalSndCtl->sync_replication_timeout_enabled)
+			WalSndCtl->is_sync_replication_timeout = false;
+		LWLockRelease(SyncRepLock);
+	}
+}
+
+static bool
+polar_semi_sync_within_window(instr_time start_time, long timeout)
+{
+	instr_time	cur_time;
+
+	INSTR_TIME_SET_CURRENT(cur_time);
+	INSTR_TIME_SUBTRACT(cur_time, start_time);
+
+	return (long) INSTR_TIME_GET_MILLISEC(cur_time) <= timeout;
+
+}
+
+static bool
+polar_semi_sync_within_observation_window()
+{
+	if (!polar_enable_semi_sync_optimization)
+		return false;
+
+	return polar_semi_sync_within_window(WalSndCtl->polar_semi_sync_observation_window_start,
+										 Max(polar_semi_sync_observation_window, 
+										 	 2 * polar_sync_replication_timeout));
+}
+
+static bool
+polar_semi_sync_within_backoff_window()
+{
+	if (!polar_enable_semi_sync_optimization)
+		return false;
+
+	if (WalSndCtl->polar_semi_sync_backoff_window == 0)
+		return false;
+
+	return polar_semi_sync_within_window(WalSndCtl->polar_semi_sync_backoff_window_start,
+										 WalSndCtl->polar_semi_sync_backoff_window);
+}
+
+/*
+ * POLAR: Semi-synchronous replication optimization under network jitter.
+ * If we are now in an observation window, we should open or double the backoff window.
+ * Otherwise, reset the backoff window to 0. 
+ */
+static void
+polar_semi_sync_set_backoff_window()
+{
+	if (!polar_enable_semi_sync_optimization)
+		return;
+
+	LWLockAcquire(SyncRepLock, LW_EXCLUSIVE);
+
+	if (polar_semi_sync_within_observation_window())
+	{
+		if (WalSndCtl->polar_semi_sync_backoff_window == 0)
+			WalSndCtl->polar_semi_sync_backoff_window = polar_semi_sync_min_backoff_window;
+		else
 		{
-			*replica_slot_all_active = false;
-			ereport(LOG, (errmsg("Replica replication slot '%s' is inactive.", (char *) &s->data.name)));
+			if ((WalSndCtl->polar_semi_sync_backoff_window << 1) <= polar_semi_sync_max_backoff_window)
+				WalSndCtl->polar_semi_sync_backoff_window <<= 1;
 		}
 
-		if (!XLogRecPtrIsInvalid(apply_lsn) &&
-			(XLogRecPtrIsInvalid(*ddl_applyptr)
-			 || *ddl_applyptr > apply_lsn))
-			*ddl_applyptr = apply_lsn;
-
+		INSTR_TIME_SET_CURRENT(WalSndCtl->polar_semi_sync_backoff_window_start);
+		ereport(WARNING,
+				(errmsg("start a new %ld s backoff window.", WalSndCtl->polar_semi_sync_backoff_window / 1000)));
 	}
-	LWLockRelease(ReplicationSlotControlLock);
-	return replica_slot_exist;
+	else
+	{
+		WalSndCtl->polar_semi_sync_backoff_window = 0;
+		ereport(WARNING,
+				(errmsg("reset backoff window to 0.")));
+	}
+
+	LWLockRelease(SyncRepLock);
 }

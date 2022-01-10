@@ -81,6 +81,8 @@
  */
 #define POLAR_BUF_OLDEST_LSN_IS_FAKE		1
 #define POLAR_BUF_FIRST_TOUCHED_AFTER_COPY	(1U << 1)
+#define POLAR_BUF_UNRECOVERABLE             (1U << 2)
+#define POLAR_BUF_REUSED                    (1U << 3)
 
 /*
  * Buffer tag identifies which disk block the buffer contains.
@@ -117,10 +119,14 @@ typedef struct buftag
 	(a).blockNum = (xx_blockNum) \
 )
 
+/*
+ * POLAR: Compare blockNum first to save comparing time.
+ * It's high probability that blockNum is different.
+ */
 #define BUFFERTAGS_EQUAL(a,b) \
 ( \
-	RelFileNodeEquals((a).rnode, (b).rnode) && \
 	(a).blockNum == (b).blockNum && \
+	RelFileNodeEquals((a).rnode, (b).rnode) && \
 	(a).forkNum == (b).forkNum \
 )
 

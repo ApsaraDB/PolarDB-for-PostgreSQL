@@ -1,0 +1,202 @@
+--
+-- CREATE_TYPE
+--
+--
+-- Note: widget_in/out were created in create_function_1, without any
+-- prior shell-type creation.  These commands therefore complete a test
+-- of the "old style" approach of making the functions first.
+--
+CREATE TYPE widget (
+   internallength = 24,
+   input = widget_in,
+   output = widget_out,
+   typmod_in = numerictypmodin,
+   typmod_out = numerictypmodout,
+   alignment = double
+);
+ERROR:  cannot execute CREATE TYPE in a read-only transaction
+CREATE TYPE city_budget (
+   internallength = 16,
+   input = int44in,
+   output = int44out,
+   element = int4,
+   category = 'x',   -- just to verify the system will take it
+   preferred = true  -- ditto
+);
+ERROR:  cannot execute CREATE TYPE in a read-only transaction
+-- Test creation and destruction of shell types
+CREATE TYPE shell;
+ERROR:  cannot execute CREATE TYPE in a read-only transaction
+CREATE TYPE shell;   -- fail, type already present
+ERROR:  cannot execute CREATE TYPE in a read-only transaction
+DROP TYPE shell;
+ERROR:  cannot execute DROP TYPE in a read-only transaction
+DROP TYPE shell;     -- fail, type not exist
+ERROR:  cannot execute DROP TYPE in a read-only transaction
+-- also, let's leave one around for purposes of pg_dump testing
+CREATE TYPE myshell;
+ERROR:  cannot execute CREATE TYPE in a read-only transaction
+--
+-- Test type-related default values (broken in releases before PG 7.2)
+--
+-- This part of the test also exercises the "new style" approach of making
+-- a shell type and then filling it in.
+--
+CREATE TYPE int42;
+ERROR:  cannot execute CREATE TYPE in a read-only transaction
+CREATE TYPE text_w_default;
+ERROR:  cannot execute CREATE TYPE in a read-only transaction
+-- Make dummy I/O routines using the existing internal support for int4, text
+CREATE FUNCTION int42_in(cstring)
+   RETURNS int42
+   AS 'int4in'
+   LANGUAGE internal STRICT IMMUTABLE;
+ERROR:  cannot execute CREATE FUNCTION in a read-only transaction
+CREATE FUNCTION int42_out(int42)
+   RETURNS cstring
+   AS 'int4out'
+   LANGUAGE internal STRICT IMMUTABLE;
+ERROR:  cannot execute CREATE FUNCTION in a read-only transaction
+CREATE FUNCTION text_w_default_in(cstring)
+   RETURNS text_w_default
+   AS 'textin'
+   LANGUAGE internal STRICT IMMUTABLE;
+ERROR:  cannot execute CREATE FUNCTION in a read-only transaction
+CREATE FUNCTION text_w_default_out(text_w_default)
+   RETURNS cstring
+   AS 'textout'
+   LANGUAGE internal STRICT IMMUTABLE;
+ERROR:  cannot execute CREATE FUNCTION in a read-only transaction
+CREATE TYPE int42 (
+   internallength = 4,
+   input = int42_in,
+   output = int42_out,
+   alignment = int4,
+   default = 42,
+   passedbyvalue
+);
+ERROR:  cannot execute CREATE TYPE in a read-only transaction
+CREATE TYPE text_w_default (
+   internallength = variable,
+   input = text_w_default_in,
+   output = text_w_default_out,
+   alignment = int4,
+   default = 'zippo'
+);
+ERROR:  cannot execute CREATE TYPE in a read-only transaction
+CREATE TABLE default_test (f1 text_w_default, f2 int42);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+INSERT INTO default_test DEFAULT VALUES;
+ERROR:  cannot execute INSERT in a read-only transaction
+SELECT * FROM default_test;
+  f1   | f2 
+-------+----
+ zippo | 42
+(1 row)
+
+-- invalid: non-lowercase quoted identifiers
+CREATE TYPE case_int42 (
+	"Internallength" = 4,
+	"Input" = int42_in,
+	"Output" = int42_out,
+	"Alignment" = int4,
+	"Default" = 42,
+	"Passedbyvalue"
+);
+ERROR:  cannot execute CREATE TYPE in a read-only transaction
+-- Test stand-alone composite type
+CREATE TYPE default_test_row AS (f1 text_w_default, f2 int42);
+ERROR:  cannot execute CREATE TYPE in a read-only transaction
+CREATE FUNCTION get_default_test() RETURNS SETOF default_test_row AS '
+  SELECT * FROM default_test;
+' LANGUAGE SQL;
+ERROR:  cannot execute CREATE FUNCTION in a read-only transaction
+SELECT * FROM get_default_test();
+  f1   | f2 
+-------+----
+ zippo | 42
+(1 row)
+
+-- Test comments
+COMMENT ON TYPE bad IS 'bad comment';
+ERROR:  cannot execute COMMENT in a read-only transaction
+COMMENT ON TYPE default_test_row IS 'good comment';
+ERROR:  cannot execute COMMENT in a read-only transaction
+COMMENT ON TYPE default_test_row IS NULL;
+ERROR:  cannot execute COMMENT in a read-only transaction
+COMMENT ON COLUMN default_test_row.nope IS 'bad comment';
+ERROR:  cannot execute COMMENT in a read-only transaction
+COMMENT ON COLUMN default_test_row.f1 IS 'good comment';
+ERROR:  cannot execute COMMENT in a read-only transaction
+COMMENT ON COLUMN default_test_row.f1 IS NULL;
+ERROR:  cannot execute COMMENT in a read-only transaction
+-- Check shell type create for existing types
+CREATE TYPE text_w_default;		-- should fail
+ERROR:  cannot execute CREATE TYPE in a read-only transaction
+DROP TYPE default_test_row CASCADE;
+ERROR:  cannot execute DROP TYPE in a read-only transaction
+DROP TABLE default_test;
+ERROR:  cannot execute DROP TABLE in a read-only transaction
+-- Check type create with input/output incompatibility
+CREATE TYPE not_existing_type (INPUT = array_in,
+    OUTPUT = array_out,
+    ELEMENT = int,
+    INTERNALLENGTH = 32);
+ERROR:  cannot execute CREATE TYPE in a read-only transaction
+-- Check dependency transfer of opaque functions when creating a new type
+CREATE FUNCTION base_fn_in(cstring) RETURNS opaque AS 'boolin'
+    LANGUAGE internal IMMUTABLE STRICT;
+ERROR:  cannot execute CREATE FUNCTION in a read-only transaction
+CREATE FUNCTION base_fn_out(opaque) RETURNS opaque AS 'boolout'
+    LANGUAGE internal IMMUTABLE STRICT;
+ERROR:  cannot execute CREATE FUNCTION in a read-only transaction
+CREATE TYPE base_type(INPUT = base_fn_in, OUTPUT = base_fn_out);
+ERROR:  cannot execute CREATE TYPE in a read-only transaction
+DROP FUNCTION base_fn_in(cstring); -- error
+ERROR:  cannot execute DROP FUNCTION in a read-only transaction
+DROP FUNCTION base_fn_out(opaque); -- error
+ERROR:  cannot execute DROP FUNCTION in a read-only transaction
+DROP TYPE base_type; -- error
+ERROR:  cannot execute DROP TYPE in a read-only transaction
+DROP TYPE base_type CASCADE;
+ERROR:  cannot execute DROP TYPE in a read-only transaction
+-- Check usage of typmod with a user-defined type
+-- (we have borrowed numeric's typmod functions)
+CREATE TEMP TABLE mytab (foo widget(42,13,7));     -- should fail
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TEMP TABLE mytab (foo widget(42,13));
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+SELECT format_type(atttypid,atttypmod) FROM pg_attribute
+WHERE attrelid = 'mytab'::regclass AND attnum > 0;
+ERROR:  relation "mytab" does not exist
+LINE 2: WHERE attrelid = 'mytab'::regclass AND attnum > 0;
+                         ^
+-- might as well exercise the widget type while we're here
+INSERT INTO mytab VALUES ('(1,2,3)'), ('(-44,5.5,12)');
+ERROR:  relation "mytab" does not exist
+LINE 1: INSERT INTO mytab VALUES ('(1,2,3)'), ('(-44,5.5,12)');
+                    ^
+TABLE mytab;
+ERROR:  relation "mytab" does not exist
+LINE 1: TABLE mytab;
+              ^
+-- and test format_type() a bit more, too
+select format_type('varchar'::regtype, 42);
+      format_type      
+-----------------------
+ character varying(38)
+(1 row)
+
+select format_type('bpchar'::regtype, null);
+ format_type 
+-------------
+ character
+(1 row)
+
+-- this behavior difference is intentional
+select format_type('bpchar'::regtype, -1);
+ format_type 
+-------------
+ bpchar
+(1 row)
+

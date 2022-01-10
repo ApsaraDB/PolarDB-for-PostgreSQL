@@ -54,4 +54,12 @@ CATALOG(pg_authid,1260,AuthIdRelationId) BKI_SHARED_RELATION BKI_ROWTYPE_OID(284
  */
 typedef FormData_pg_authid *Form_pg_authid;
 
+/*
+ * POLAR: POLAR_SUPERUSER is the defoult role for only marking the user as polar_superuser kind user.
+ * So this POLAR_SUPERUSER is a key word and user could not create an same role or user with
+ * this word, even the with upper-case or lower-case. 
+ */
+#define POLAR_SUPERUSER_OID 5500 
+extern char            polar_superuser_name[20];
+
 #endif							/* PG_AUTHID_H */

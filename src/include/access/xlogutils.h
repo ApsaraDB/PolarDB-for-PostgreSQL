@@ -58,4 +58,8 @@ extern int read_local_xlog_page(XLogReaderState *state,
 extern void XLogReadDetermineTimeline(XLogReaderState *state,
 						  XLogRecPtr wantPage, uint32 wantLength);
 
+/* POLAR */
+extern void polar_xlog_read(char *buf, int segsize, TimeLineID tli, XLogRecPtr startptr, Size count);
+extern void polar_reset_xlog_source(void);
+/* POLAR end */
 #endif

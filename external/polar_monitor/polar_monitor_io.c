@@ -3,6 +3,21 @@
  * polar_io_view.c
  *    views of polardb io stat
  *
+ * Copyright (c) 2021, Alibaba Group Holding Limited
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * IDENTIFICATION
  *    external/polar_monitor/polar_monitor_io.c
  *-------------------------------------------------------------------------
  */
@@ -611,6 +626,98 @@ polar_io_latency_info(PG_FUNCTION_ARGS)
             tuplestore_putvalues(tupstore, tupdesc, values, nulls);
 		}
 	}
+	/* clean up and return the tuplestore */
+	tuplestore_donestoring(tupstore);
+
+	return (Datum) 0;
+}
+
+/* POLAR: io read info time */
+Datum
+polar_io_read_delta_info(PG_FUNCTION_ARGS)
+{
+#define IO_READ_DELTA_INFO_LEN 10
+	int i, j;
+	int cols = 1;
+	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
+	TupleDesc	tupdesc;
+	Tuplestorestate *tupstore;
+	MemoryContext per_query_ctx;
+	MemoryContext oldcontext;
+	Datum		values[IO_READ_DELTA_INFO_LEN];
+	bool		nulls[IO_READ_DELTA_INFO_LEN];
+	Datum top_throughtput[POLAR_PROC_GLOBAL_IO_READ_LEN];
+
+	/* check to see if caller supports us returning a tuplestore */
+	if (rsinfo == NULL || !IsA(rsinfo, ReturnSetInfo))
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("set-valued function called in context that cannot accept a set")));
+	if (!(rsinfo->allowedModes & SFRM_Materialize))
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("materialize mode required, but it is not " \
+						"allowed in this context")));
+
+	tupdesc = CreateTemplateTupleDesc(IO_READ_DELTA_INFO_LEN, false);
+	TupleDescInitEntry(tupdesc, (AttrNumber) cols++, "count",
+						INT4OID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) cols++, "force_delay_times",
+						INT8OID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) cols++, "less_than_delay_times",
+						INT8OID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) cols++, "more_than_delay_times",
+						INT8OID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) cols++, "read_size_avg",
+						INT8OID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) cols++, "read_time_avg",
+						FLOAT8OID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) cols++, "current_throughtput",
+						FLOAT8OID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) cols++, "max_throughtput",
+						INT8OID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) cols++, "user_set_throughtput",
+						BOOLOID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) cols++, "top_throughtput",
+						INT8ARRAYOID, -1, 0);
+
+	per_query_ctx = rsinfo->econtext->ecxt_per_query_memory;
+	oldcontext = MemoryContextSwitchTo(per_query_ctx);
+
+	tupstore = tuplestore_begin_heap(true, false, work_mem);
+	rsinfo->returnMode = SFRM_Materialize;
+	rsinfo->setResult = tupstore;
+	rsinfo->setDesc = tupdesc;
+
+	MemoryContextSwitchTo(oldcontext);
+
+	MemSet(values, 0, sizeof(Datum) * IO_READ_DELTA_INFO_LEN);
+	MemSet(nulls, 0, sizeof(bool) * IO_READ_DELTA_INFO_LEN);
+	MemSet(top_throughtput, 0, sizeof(Datum) * POLAR_PROC_GLOBAL_IO_READ_LEN);
+	i = 0;
+	values[i++] = Int32GetDatum(PolarGlobalIOReadStats->count);
+	values[i++] = UInt64GetDatum(PolarGlobalIOReadStats->force_delay);
+	values[i++] = UInt64GetDatum(PolarGlobalIOReadStats->less_than_delay);
+	values[i++] = UInt64GetDatum(PolarGlobalIOReadStats->more_than_delay);
+	values[i++] = UInt64GetDatum(PolarGlobalIOReadStats->io_read_size_avg);
+	values[i++] = Float8GetDatum(PolarGlobalIOReadStats->io_read_time_avg);
+	values[i++] = Float8GetDatum((double)PolarGlobalIOReadStats->io_read_size_avg / PolarGlobalIOReadStats->io_read_time_avg);
+	values[i++] = UInt64GetDatum(PolarGlobalIOReadStats->max_throughtput);
+	values[i++] = (polar_io_read_throughtput_userset > 0) ? true : false;
+
+	for (j = 0; j < POLAR_PROC_GLOBAL_IO_READ_LEN; j++)
+	{
+		if (PolarGlobalIOReadStats->io_read_throughtput[j] == 0)
+			break;
+		top_throughtput[j] = UInt64GetDatum(PolarGlobalIOReadStats->io_read_throughtput[j]);
+	}
+	values[i++] = PointerGetDatum(construct_array(top_throughtput,
+												  j,
+												  INT8OID,
+												  8, FLOAT8PASSBYVAL, 'd'));
+
+	tuplestore_putvalues(tupstore, tupdesc, values, nulls);
+
 	/* clean up and return the tuplestore */
 	tuplestore_donestoring(tupstore);
 

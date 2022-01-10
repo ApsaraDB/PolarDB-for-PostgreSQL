@@ -147,7 +147,7 @@ pgstatindex(PG_FUNCTION_ARGS)
 	Relation	rel;
 	RangeVar   *relrv;
 
-	if (!superuser())
+	if (!superuser() && !polar_superuser())
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 				 (errmsg("must be superuser to use pgstattuple functions"))));
@@ -189,7 +189,7 @@ pgstatindexbyid(PG_FUNCTION_ARGS)
 	Oid			relid = PG_GETARG_OID(0);
 	Relation	rel;
 
-	if (!superuser())
+	if (!superuser() && !polar_superuser())
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 				 (errmsg("must be superuser to use pgstattuple functions"))));
@@ -382,7 +382,7 @@ pg_relpages(PG_FUNCTION_ARGS)
 	Relation	rel;
 	RangeVar   *relrv;
 
-	if (!superuser())
+	if (!superuser() && !polar_superuser())
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 				 (errmsg("must be superuser to use pgstattuple functions"))));
@@ -434,7 +434,7 @@ pg_relpagesbyid(PG_FUNCTION_ARGS)
 	int64		relpages;
 	Relation	rel;
 
-	if (!superuser())
+	if (!superuser() && !polar_superuser())
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 				 (errmsg("must be superuser to use pgstattuple functions"))));
@@ -488,7 +488,7 @@ pgstatginindex(PG_FUNCTION_ARGS)
 {
 	Oid			relid = PG_GETARG_OID(0);
 
-	if (!superuser())
+	if (!superuser() && !polar_superuser())
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 				 (errmsg("must be superuser to use pgstattuple functions"))));

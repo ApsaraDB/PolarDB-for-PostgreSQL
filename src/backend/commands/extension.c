@@ -62,10 +62,16 @@
 #include "utils/tqual.h"
 #include "utils/varlena.h"
 
+/* POLAR */
+#include "utils/guc.h"
+
 
 /* Globally visible state variables */
 bool		creating_extension = false;
 Oid			CurrentExtensionObject = InvalidOid;
+
+/* POLAR: control if we treat the invoking user of CREATE/ALTER EXTENSION as super user */
+bool            polar_enable_promoting_privilege = true;
 
 /*
  * Internal data structure to hold the results of parsing a control file
@@ -297,6 +303,32 @@ check_valid_extension_name(const char *extensionname)
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 				 errmsg("invalid extension name: \"%s\"", extensionname),
 				 errdetail("Extension names must not contain directory separator characters.")));
+
+	/*
+	 * POLAR: for non-superuser, if polar_admin_super is set and valid, as well as that
+	 * polar_available_extensions is valid, check that, the extension is in the
+	 * allowed list.
+	 *
+	 * Note that, if polar_available_extensions is not set, we will not do this
+	 * check, meaning all extensions are allowed.
+	 */
+	if (!superuser() && (polar_available_extensions == NULL || /* Extensions in postgresql.conf */
+	    !polar_find_in_string_list(extensionname, polar_available_extensions))
+	    && (polar_internal_allowed_extensions == NULL || /* Extensions in internal binary */
+	    !polar_find_in_string_list(extensionname, polar_internal_allowed_extensions)))
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("invalid extension name: \"%s\"", extensionname),
+				 errdetail("Extension is not supported.")));
+
+	/* POLAR: check forbidden extensions list */
+	if (!superuser() && polar_forbidden_extensions != NULL && /* Forbidden extension */
+	    polar_find_in_string_list(extensionname, polar_forbidden_extensions))
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("invalid extension name: \"%s\"", extensionname),
+				 errdetail("Extension is not supported.")));
+
 }
 
 static void
@@ -798,23 +830,27 @@ execute_extension_script(Oid extensionOid, ExtensionControlFile *control,
 	 * Enforce superuser-ness if appropriate.  We postpone this check until
 	 * here so that the flag is correctly associated with the right script(s)
 	 * if it's set in secondary control files.
-	 */
-	if (control->superuser && !superuser())
+	 *
+	 * POLAR: only allow superuser and polar_superuser to create extension,
+ 	 */
+	if (control->superuser &&
+		!superuser() &&
+		!polar_superuser())
 	{
 		if (from_version == NULL)
 			ereport(ERROR,
 					(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 					 errmsg("permission denied to create extension \"%s\"",
 							control->name),
-					 errhint("Must be superuser to create this extension.")));
+					errhint("Must be superuser or user with all of polar_superuser to create this extension.")));
 		else
 			ereport(ERROR,
 					(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 					 errmsg("permission denied to update extension \"%s\"",
 							control->name),
-					 errhint("Must be superuser to update this extension.")));
+					errhint("Must be superuser or user with all of polar_superuser to create this extension.")));
 	}
-
+  
 	filename = get_extension_script_filename(control, from_version, version);
 
 	/*
@@ -1575,6 +1611,14 @@ get_required_extension(char *reqExtensionName,
 {
 	Oid			reqExtensionOid;
 
+	/* POLAR: make auto cascade if the extension in the
+	* polar_auto_cascade_extensions */
+	if (polar_find_in_string_list(extensionName, polar_auto_cascade_extensions))
+	{
+		cascade = true;
+	}
+	/* POLAR end */
+
 	reqExtensionOid = get_extension_oid(reqExtensionName, true);
 	if (!OidIsValid(reqExtensionOid))
 	{
@@ -1600,9 +1644,13 @@ get_required_extension(char *reqExtensionName,
 									reqExtensionName, extensionName)));
 			}
 
+			/* POLAR: if auto cascade extension, donot show install message */
+			if (!polar_find_in_string_list(extensionName, polar_auto_cascade_extensions))
+			{
 			ereport(NOTICE,
 					(errmsg("installing required extension \"%s\"",
 							reqExtensionName)));
+			}
 
 			/* Add current extension to list of parents to pass down. */
 			cascade_parents = lappend(list_copy(parents), extensionName);
@@ -3364,3 +3412,59 @@ read_whole_file(const char *filename, int *length)
 	buf[*length] = '\0';
 	return buf;
 }
+
+/*
+ * POLAR: Check if an item exists in a list
+ *
+ * 'itemname': name of item to find
+ * 'stringlist': a comma-separated list of items
+ *
+ * Note that, if either of itemname or stringlist is NULL or empty, false will
+ * be returned.
+ */
+bool
+polar_find_in_string_list(const char *itemname, const char *stringlist)
+{
+	bool		ret = false;
+	char	   *rawstring;
+	List	   *elemlist;
+	ListCell   *l;
+
+	if (stringlist == NULL || stringlist[0] == '\0' ||
+		itemname == NULL || itemname[0] == '\0')
+		/* no cover line */
+		return false;			/* nothing to do */
+
+	/* Need a modifiable copy of string */
+	rawstring = pstrdup(stringlist);
+
+	/* Parse string into list of identifiers */
+	if (!SplitIdentifierString(rawstring, ',', &elemlist))
+	{
+		/* no cover begin */
+		/* syntax error in list */
+		list_free(elemlist);
+		pfree(rawstring);
+		ereport(ERROR,
+				(errcode(ERRCODE_SYNTAX_ERROR),
+				 errmsg("invalid list syntax in parsing allowed extensions string \"%s\"",
+						rawstring)));
+		return false;
+		/* no cover end */
+	}
+
+	foreach(l, elemlist)
+	{
+		if (strcmp((char *) lfirst(l), itemname) == 0)
+		{
+			ret = true;
+			break;
+		}
+	}
+
+	pfree(rawstring);
+	list_free(elemlist);
+
+	return ret;
+}
+

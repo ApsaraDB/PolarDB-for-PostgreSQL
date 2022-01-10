@@ -108,7 +108,7 @@ GetSharedMemName(void)
  * shmem segment IDs are reasonably common.
  */
 bool
-PGSharedMemoryIsInUse(unsigned long id1, unsigned long id2)
+PGSharedMemoryIsInUse(unsigned long id1, unsigned long id2, PolarShmemType polar_shmem_type)
 {
 	char	   *szShareMem;
 	HANDLE		hmap;

@@ -31,6 +31,7 @@
 #include "catalog/pg_authid.h"
 #include "funcapi.h"
 #include "miscadmin.h"
+#include "pgstat.h"
 #include "storage/bufmgr.h"
 #include "storage/procarray.h"
 #include "utils/acl.h"
@@ -226,7 +227,7 @@ pgrowlocks(PG_FUNCTION_ARGS)
 						}
 						strcat(values[Atnum_modes], buf);
 						snprintf(buf, NCHARS, "%d",
-								 BackendXidGetPid(members[j].xid));
+								 polar_pgstat_get_virtual_pid(BackendXidGetPid(members[j].xid), false));
 						strcat(values[Atnum_pids], buf);
 
 						first = false;
@@ -273,7 +274,7 @@ pgrowlocks(PG_FUNCTION_ARGS)
 
 				values[Atnum_pids] = palloc(NCHARS * sizeof(char));
 				snprintf(values[Atnum_pids], NCHARS, "{%d}",
-						 BackendXidGetPid(xmax));
+						 polar_pgstat_get_virtual_pid(BackendXidGetPid(xmax), false));
 			}
 
 			LockBuffer(scan->rs_cbuf, BUFFER_LOCK_UNLOCK);

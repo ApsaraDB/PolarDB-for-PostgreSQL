@@ -18,7 +18,6 @@
 #include "nodes/nodes.h"
 #include "utils/fmgrprotos.h"
 
-
 /* bool.c */
 extern bool parse_bool(const char *value, bool *result);
 extern bool parse_bool_with_len(const char *value, size_t len, bool *result);
@@ -49,6 +48,9 @@ extern void pg_lltoa(int64 ll, char *a);
 extern char *pg_ltostr_zeropad(char *str, int32 value, int32 minwidth);
 extern char *pg_ltostr(char *str, int32 value);
 extern uint64 pg_strtouint64(const char *str, char **endptr, int base);
+/* POLAR */
+extern uint64 polar_strtouint64(const char *s, int mode, const char *type, bool *success);
+/* POLAR end */
 
 /* float.c */
 extern PGDLLIMPORT int extra_float_digits;

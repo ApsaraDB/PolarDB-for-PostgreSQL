@@ -192,6 +192,20 @@ typedef struct PortalData
 	/* Presentation data, primarily used by the pg_cursors system view */
 	TimestampTz creation_time;	/* time at which this portal was defined */
 	bool		visible;		/* include this portal in pg_cursors? */
+
+	/* POLAR px
+	 * if Resource Scheduling is enabled, we need to save the original
+	 * statement type, keep a unique id for name portals (i.e CURSORS) and
+	 * remember which queue wanted a lock on this portal.
+	 */
+	uint32		portalId;		/* id of this portal 0 for unnamed */
+	NodeTag	    sourceTag;		/* nodetag for the original query */
+	Oid			queueId;		/* Oid of queue locking this portal */
+	QueryDispatchDesc *ddesc;	/* extra info dispatched from QC to PXs */
+
+	/* MPP: is this portal a CURSOR, or protocol level portal? */
+	bool		is_extended_query; /* simple or extended query protocol? */
+	/* POALR end */
 }			PortalData;
 
 /*
@@ -227,6 +241,7 @@ extern Portal GetPortalByName(const char *name);
 extern void PortalDefineQuery(Portal portal,
 				  const char *prepStmtName,
 				  const char *sourceText,
+				  NodeTag	  sourceTag,/* POLAR px */
 				  const char *commandTag,
 				  List *stmts,
 				  CachedPlan *cplan);

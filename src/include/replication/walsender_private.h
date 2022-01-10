@@ -14,10 +14,21 @@
 
 #include "access/xlog.h"
 #include "nodes/nodes.h"
+#include "port/atomics.h"
 #include "replication/syncrep.h"
 #include "storage/latch.h"
 #include "storage/shmem.h"
 #include "storage/spin.h"
+
+/* POLAR */
+#include "portability/instr_time.h"
+
+/* POLAR */
+#define POLAR_RESET_WALSND_RECEIVE_PROMOTE() (pg_atomic_write_u32(&MyWalSnd->polar_walsender_receive_promote, 0))
+#define POLAR_SET_WALSND_RECEIVE_PROMOTE() (pg_atomic_write_u32(&MyWalSnd->polar_walsender_receive_promote, 1))
+#define POLAR_WALSND_RECEIVE_PROMOTE() (pg_atomic_read_u32(&MyWalSnd->polar_walsender_receive_promote) == 1)
+#define POLAR_WALSNDCTL_RECEIVE_PROMOTE_TRIGGER() (WalSndCtl->polar_receive_promote == 1)
+/* POLAR end */
 
 typedef enum WalSndState
 {
@@ -74,8 +85,19 @@ typedef struct WalSnd
 	 */
 	int			sync_standby_priority;
 
+	/* POLAR: mark current user is superuser or not */
+	bool			is_super;
+
 	/* POLAR: mark whether send to replica or not */
 	bool			to_replica;
+
+	/* POLAR: is priority replication standby, protected by SyncRepLock */
+	bool		is_high_priority_replication_standby;
+
+	bool		is_low_priority_replication_standby;
+
+	/* POLAR: mark whether received request about promote */
+	pg_atomic_uint32	polar_walsender_receive_promote;
 } WalSnd;
 
 extern WalSnd *MyWalSnd;
@@ -87,13 +109,13 @@ typedef struct
 	 * Synchronous replication queue with one queue per request type.
 	 * Protected by SyncRepLock.
 	 */
-	SHM_QUEUE	SyncRepQueue[NUM_SYNC_REP_WAIT_MODE];
+	SHM_QUEUE	SyncRepQueue[POLAR_NUM_ALL_REP_WAIT_MODE];
 
 	/*
 	 * Current location of the head of the queue. All waiters should have a
 	 * waitLSN that follows this value. Protected by SyncRepLock.
 	 */
-	XLogRecPtr	lsn[NUM_SYNC_REP_WAIT_MODE];
+	XLogRecPtr	lsn[POLAR_NUM_ALL_REP_WAIT_MODE];
 
 	/*
 	 * Are any sync standbys defined?  Waiting backends can't reload the
@@ -101,6 +123,37 @@ typedef struct
 	 * Protected by SyncRepLock.
 	 */
 	bool		sync_standbys_defined;
+
+	/* 
+	 * POLAR: Synchronous replication timeout enabled? Waiting backends 
+	 * can't reload the config file safely, so checkpointer updates this 
+	 * value as needed. Protected by SyncRepLock. 
+	 */
+	bool		sync_replication_timeout_enabled;
+
+	/*
+	 * POLAR: Is synchronous replication timeout? Protected by SyncRepLock.
+	 */
+	bool		is_sync_replication_timeout;
+
+	/* POLAR: Semi-synchronous optimization under network jitter */
+	long			polar_semi_sync_backoff_window;
+
+	instr_time		polar_semi_sync_backoff_window_start;
+
+	instr_time		polar_semi_sync_observation_window_start;
+
+	/* POLAR: priority replication. Protected by SyncRepLock.*/
+	int			priority_replication_mode;
+
+	bool		high_priority_replication_standbys_defined;
+
+	bool		low_priority_replication_standbys_defined;
+
+	bool		priority_replication_force_wait;
+
+	/* POLAR: set true when any walsender received promote request */
+	bool		polar_receive_promote;
 
 	WalSnd		walsnds[FLEXIBLE_ARRAY_MEMBER];
 } WalSndCtlData;

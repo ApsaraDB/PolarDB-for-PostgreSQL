@@ -62,10 +62,131 @@
 #include "utils/snapmgr.h"
 
 /* POLAR */
-#include "access/polar_logindex.h"
-#include "access/polar_logindex_internal.h"
+#include "access/polar_logindex_redo.h"
 #include "access/xlogdefs.h"
 #include "utils/guc.h"
+/* POLAR end */
+
+/* POLAR csn */
+#include "access/polar_csnlog.h"
+#include "access/polar_csn_mvcc_vars.h"
+/* POLAR end */
+
+/*
+ * polar replica multi version snapshot related structure
+ */
+
+/*
+ * BasedOn:	SnapshotData and ProcArrayStruct
+ * in replica mode, we can define database snapshot as below
+ * for conveniently processing multi version snapshots 
+ */
+typedef struct polar_replica_multi_version_snapshot_t
+{
+	/* 
+	 * Fields below are same meaning as in SnapshotData 
+	 */
+
+	TransactionId 	*xip;
+	TransactionId 	xmin;
+	TransactionId 	xmax;
+	uint32			xcnt;	
+	bool			overflowed;	
+
+	/* Fields below are same meaning as in ProcArrayStruct */
+
+	TransactionId 	replication_slot_xmin;
+	TransactionId 	replication_slot_catalog_xmin;
+} polar_replica_multi_version_snapshot_t;
+
+/*
+ *	we use slots to store multi version snapshots
+ *	allocated in share memory
+ */
+typedef struct polar_replica_multi_version_snapshot_store_t
+{
+	/* 
+	 * snapshot slot count
+	 * set from guc var polar_replica_multi_version_snapshot_slot_num,
+	 * range from 32 to 128, default is 32
+	 */
+	int            							slot_num;	
+
+	/*
+	 * snapshot set/get retry times
+	 * trylock access this number of slots before switch to old get snapshot logic
+	 * set from guc var polar_replica_multi_version_snapshot_retry_times,
+	 * range from 0 to INT_MAX, default is 3 
+	 */
+	int										retry_times;
+
+	/* 
+	 * lwlock per slot
+	 * both read and write need try lock in case of slot reuse 
+	 * start from 0
+	 * we want each lock fill entire cache line to avoid false sharing
+	 */	
+	LWLockPadded  							*slot_locks;	
+
+	/* 
+	 * slot array for multi version snapshot
+	 * start from 0
+	 */ 	
+	polar_replica_multi_version_snapshot_t	*slot_snapshots; 
+
+	/* 
+	 * current slot number for snapshot read
+	 * get by snapshot read backend; set by replica startup backend
+	 * -1(PG_UINT32_MAX) for invalid value 
+	 * initial value is -1
+	 */
+	pg_atomic_uint32    					curr_slot_idx;
+
+	/* 
+	 * next slot number for snapshot write
+	 * only set by replica startup backend
+	 * if slot not available, need retry
+	 * initial value is 0
+	 */
+	int            							next_slot_idx;
+
+	/* metric related fields */
+
+	/* 
+	 * write process can not lock acquire slot immediately,
+	 * maybe lots of readers preemptively run cpu or slot num should enlarge.
+	 * this metric indicate cpu time waste
+	 */
+	uint64_t								write_retried_times;
+
+	/* 
+	 * write process can not exclusive lock acquire slot immediately and has switched back
+	 * to single version snapshot get
+	 * this metric indicate ProcArrayLock wait cost
+	 */
+	uint64_t								write_switched_times;
+
+	/*
+	 * read process can not share lock acquire slot immediately or get invalid slot num,
+	 * maybe write process can not get cpu or get ProcArrayLock to make valid snapshot
+	 * this metric indicate cpu time waste
+	 * 
+	 * NB: need concurrent update
+	 */
+	pg_atomic_uint64								read_retried_times;
+
+	/*
+	 * read process can not share lock acquire slot immediately or get invalid slot num,
+	 * and has switched back to single version snapshot get
+	 * this metric indicate ProcArrayLock wait cost
+	 * 
+	 * NB: need concurrent update
+	 */
+	pg_atomic_uint64								read_switched_times;
+} polar_replica_multi_version_snapshot_store_t;
+
+/* multi version snapshots store must be global var */
+static polar_replica_multi_version_snapshot_store_t *polar_replica_multi_version_snapshot_store;
 
 /* Our shared memory area */
 typedef struct ProcArrayStruct
@@ -177,6 +298,29 @@ static inline void ProcArrayEndTransactionInternal(PGPROC *proc,
 								PGXACT *pgxact, TransactionId latestXid);
 static void ProcArrayGroupClearXid(PGPROC *proc, TransactionId latestXid);
 
+/* POLAR begin */
+static void polar_replica_multi_version_snapshot_store_shmem_init(void);
+static void polar_replica_multi_version_snapshot_set_snapshot(void);
+static bool polar_replica_multi_version_snapshot_get_snapshot(TransactionId *xip, int *count, bool *overflowed,
+				   								  	TransactionId *xmin, TransactionId *xmax, 
+												  	TransactionId *replication_slot_xmin, 
+												  	TransactionId *replication_slot_catalog_xmin);
+/* POLAR end */
+
+/* POLAR csn */
+static void AdvanceOldestActiveXidCSN(TransactionId myXid);
+static void resetGlobalXminCacheCSN(void);
+static Snapshot GetSnapshotDataCSN(Snapshot snapshot);
+static void ProcArrayEndTransactionCSN(PGPROC *proc);
+static void ProcArrayRemoveCSN(PGPROC *proc);
+/* POLAR end */
+
+static void resetGlobalXminCacheCSN(void)
+{
+	RecentGlobalXmin = InvalidTransactionId;
+	RecentGlobalDataXmin = InvalidTransactionId;
+}
+
 /*
  * Report shared-memory space needed by CreateSharedProcArray.
  */
@@ -216,6 +360,17 @@ ProcArrayShmemSize(void)
 						mul_size(sizeof(bool), TOTAL_MAX_CACHED_SUBXIDS));
 	}
 
+	/* 
+	 * We should allocate multi version snapshot memory whether or not we are in replica mode
+	 * because master may switch to replica.  
+	 * Max slot number is 128
+	 * size of polar_replica_multi_version_snapshot_t is 32+TOTAL_MAX_CACHED_SUBXIDS*4 bytes,
+	 * if MaxBackends is 1K and max_prepared_xacts is MaxBackends, the values is 32+130K*4 = 552KB
+	 * then max total shared memory size we may be waste is about 128*552KB = 70MB
+	 */
+	if (polar_replica_multi_version_snapshot_enable)
+		size = add_size(size, polar_replica_multi_version_snapshot_store_shmem_size());
+    
 	return size;
 }
 
@@ -271,6 +426,14 @@ CreateSharedProcArray(void)
 
 	/* Register and initialize fields of ProcLWLockTranche */
 	LWLockRegisterTranche(LWTRANCHE_PROC, "proc");
+
+	/*
+	 * Create or attach to the polar_replica_multi_version_snapshot_store_t structure.
+	 */
+	if (polar_replica_multi_version_snapshot_enable)
+	{
+		polar_replica_multi_version_snapshot_store_shmem_init();
+	}
 }
 
 /*
@@ -346,8 +509,11 @@ ProcArrayRemove(PGPROC *proc, TransactionId latestXid)
 		DisplayXidCache();
 #endif
 
-	LWLockAcquire(ProcArrayLock, LW_EXCLUSIVE);
+	if (polar_csn_enable)
+		return ProcArrayRemoveCSN(proc);
 
+	LWLockAcquire(ProcArrayLock, LW_EXCLUSIVE);
+	
 	if (TransactionIdIsValid(latestXid))
 	{
 		Assert(TransactionIdIsValid(allPgXact[proc->pgprocno].xid));
@@ -373,6 +539,7 @@ ProcArrayRemove(PGPROC *proc, TransactionId latestXid)
 			arrayP->pgprocnos[arrayP->numProcs - 1] = -1;	/* for debugging */
 			arrayP->numProcs--;
 			LWLockRelease(ProcArrayLock);
+
 			return;
 		}
 	}
@@ -383,6 +550,53 @@ ProcArrayRemove(PGPROC *proc, TransactionId latestXid)
 	elog(LOG, "failed to find proc %p in ProcArray", proc);
 }
 
+/*
+ * POLAR csn
+ * Like ProcArrayRemove, but we should also advance polar_oldest_active_xid
+ * and reset xmin like ProcArrayEndTransactionCSN
+ */
+static void
+ProcArrayRemoveCSN(PGPROC *proc)
+{
+	ProcArrayStruct *arrayP = procArray;
+	int			index;
+	PGXACT     *pgxact = &allPgXact[proc->pgprocno];
+	TransactionId myXid = pgxact->xid;
+
+	LWLockAcquire(ProcArrayLock, LW_EXCLUSIVE);
+
+	for (index = 0; index < arrayP->numProcs; index++)
+	{
+		if (arrayP->pgprocnos[index] == proc->pgprocno)
+		{
+			/* Keep the PGPROC array sorted. See notes above */
+			memmove(&arrayP->pgprocnos[index], &arrayP->pgprocnos[index + 1],
+					(arrayP->numProcs - index - 1) * sizeof(int));
+			arrayP->pgprocnos[arrayP->numProcs - 1] = -1;	/* for debugging */
+			arrayP->numProcs--;
+			LWLockRelease(ProcArrayLock);
+
+			/* 
+			 * If we were the oldest active XID, advance oldestXid. 
+			 * 2pc need this.
+			 */
+			if (TransactionIdIsValid(myXid))
+				AdvanceOldestActiveXidCSN(myXid);
+
+			/* Reset cached variables */
+			resetGlobalXminCacheCSN();
+
+			return;
+		}
+	}
+
+	/*no cover begin*/
+	/* Oops */
+	LWLockRelease(ProcArrayLock);
+
+	elog(LOG, "failed to find proc %p in ProcArray", proc);
+	/*no cover end*/
+}
 
 /*
  * ProcArrayEndTransaction -- mark a transaction as no longer running
@@ -401,6 +615,9 @@ void
 ProcArrayEndTransaction(PGPROC *proc, TransactionId latestXid)
 {
 	PGXACT	   *pgxact = &allPgXact[proc->pgprocno];
+
+	if (polar_csn_enable)
+		return ProcArrayEndTransactionCSN(proc);
 
 	if (TransactionIdIsValid(latestXid))
 	{
@@ -471,6 +688,55 @@ ProcArrayEndTransactionInternal(PGPROC *proc, PGXACT *pgxact,
 	if (TransactionIdPrecedes(ShmemVariableCache->latestCompletedXid,
 							  latestXid))
 		ShmemVariableCache->latestCompletedXid = latestXid;
+}
+
+static void
+ProcArrayEndTransactionCSN(PGPROC *proc)
+{
+	PGXACT	   *pgxact = &allPgXact[proc->pgprocno];
+	TransactionId myXid;
+
+	myXid = pgxact->xid;
+
+	/* A shared lock is enough to modify our own fields */
+	LWLockAcquire(ProcArrayLock, LW_SHARED);
+
+	pgxact->xid = InvalidTransactionId;
+	pgxact->polar_csn = InvalidCommitSeqNo;
+	proc->lxid = InvalidLocalTransactionId;
+	pgxact->xmin = InvalidTransactionId;
+	/* must be cleared with xid/xmin/polar_csn: */
+	pgxact->vacuumFlags &= ~PROC_VACUUM_STATE_MASK;
+	pgxact->delayChkpt = false; /* be sure this is cleared in abort */
+	proc->recoveryConflictPending = false;
+
+	/* Clear the subtransaction-XID cache too while holding the lock */
+	pgxact->nxids = 0;
+	pgxact->overflowed = false;
+	
+	LWLockRelease(ProcArrayLock);
+
+	/* If we were the oldest active XID, advance oldestXid */
+	if (TransactionIdIsValid(myXid))
+		AdvanceOldestActiveXidCSN(myXid);
+
+	/* Reset cached variables */
+	resetGlobalXminCacheCSN();
+}
+
+void
+ProcArrayResetXminCSN(PGPROC *proc, TransactionId new_xmin)
+{
+	PGXACT	   *pgxact = &allPgXact[proc->pgprocno];
+
+	/*
+	 * Note we can do this without locking because we assume that storing an Xid
+	 * is atomic.
+	 */
+	pgxact->xmin = new_xmin;
+
+	/* Reset cached variables */
+	resetGlobalXminCacheCSN();
 }
 
 /*
@@ -618,6 +884,7 @@ ProcArrayClearTransaction(PGPROC *proc)
 	 * ProcArray.
 	 */
 	pgxact->xid = InvalidTransactionId;
+	pgxact->polar_csn = InvalidCommitSeqNo;
 	proc->lxid = InvalidLocalTransactionId;
 	pgxact->xmin = InvalidTransactionId;
 	proc->recoveryConflictPending = false;
@@ -629,6 +896,17 @@ ProcArrayClearTransaction(PGPROC *proc)
 	/* Clear the subtransaction-XID cache too */
 	pgxact->nxids = 0;
 	pgxact->overflowed = false;
+
+	if (polar_csn_enable)
+	{
+		/*
+		 * We don't need to update oldestActiveXid, because the gxact entry in
+		 * the procarray is still running with the same XID.
+		 */
+
+		/* Reset cached variables */
+		resetGlobalXminCacheCSN();
+	}
 }
 
 /*
@@ -639,7 +917,7 @@ ProcArrayClearTransaction(PGPROC *proc)
  * while in recovery.
  */
 void
-ProcArrayInitRecovery(TransactionId initializedUptoXID)
+ProcArrayInitRecovery(TransactionId initializedUptoXID, TransactionId polar_oldest_active_xid)
 {
 	Assert(standbyState == STANDBY_INITIALIZED);
 	Assert(TransactionIdIsNormal(initializedUptoXID));
@@ -652,6 +930,12 @@ ProcArrayInitRecovery(TransactionId initializedUptoXID)
 	 */
 	latestObservedXid = initializedUptoXID;
 	TransactionIdRetreat(latestObservedXid);
+
+	if (polar_csn_enable)
+	{
+		/* also initialize oldestActiveXid */
+		pg_atomic_write_u32(&polar_shmem_csn_mvcc_var_cache->polar_oldest_active_xid, polar_oldest_active_xid);
+	}
 }
 
 /*
@@ -723,6 +1007,7 @@ ProcArrayApplyRecoveryInfo(RunningTransactions running)
 			 */
 			KnownAssignedXidsReset();
 			standbyState = STANDBY_INITIALIZED;
+			polar_set_hot_standby_state(STANDBY_INITIALIZED);
 		}
 		else
 		{
@@ -730,6 +1015,7 @@ ProcArrayApplyRecoveryInfo(RunningTransactions running)
 									  running->oldestRunningXid))
 			{
 				standbyState = STANDBY_SNAPSHOT_READY;
+				polar_set_hot_standby_state(STANDBY_SNAPSHOT_READY);
 				elog(trace_recovery(DEBUG1),
 					 "recovery snapshots are now enabled");
 			}
@@ -845,7 +1131,14 @@ ProcArrayApplyRecoveryInfo(RunningTransactions running)
 	TransactionIdAdvance(latestObservedXid);
 	while (TransactionIdPrecedes(latestObservedXid, running->nextXid))
 	{
-		ExtendSUBTRANS(latestObservedXid);
+		/*no cover begin*/
+		/* 
+		 * In polar csn, we need not extend csnlog here,
+		 * because csnlog write zero page wal log like clog
+		 */
+		if (!polar_csn_enable)
+			ExtendSUBTRANS(latestObservedXid);
+		/*no cover end*/
 		TransactionIdAdvance(latestObservedXid);
 	}
 	TransactionIdRetreat(latestObservedXid);	/* = running->nextXid - 1 */
@@ -867,6 +1160,7 @@ ProcArrayApplyRecoveryInfo(RunningTransactions running)
 	if (running->subxid_overflow)
 	{
 		standbyState = STANDBY_SNAPSHOT_PENDING;
+		polar_set_hot_standby_state(STANDBY_SNAPSHOT_PENDING);
 
 		standbySnapshotPendingXmin = latestObservedXid;
 		procArray->lastOverflowedXid = latestObservedXid;
@@ -874,17 +1168,18 @@ ProcArrayApplyRecoveryInfo(RunningTransactions running)
 	else
 	{
 		standbyState = STANDBY_SNAPSHOT_READY;
+		polar_set_hot_standby_state(STANDBY_SNAPSHOT_READY);
 
 		standbySnapshotPendingXmin = InvalidTransactionId;
 	}
-
+	
 	/*
-	 * If a transaction wrote a commit record in the gap between taking and
-	 * logging the snapshot then latestCompletedXid may already be higher than
-	 * the value from the snapshot, so check before we use the incoming value.
-	 */
+		* If a transaction wrote a commit record in the gap between taking and
+		* logging the snapshot then latestCompletedXid may already be higher than
+		* the value from the snapshot, so check before we use the incoming value.
+		*/
 	if (TransactionIdPrecedes(ShmemVariableCache->latestCompletedXid,
-							  running->latestCompletedXid))
+							running->latestCompletedXid))
 		ShmemVariableCache->latestCompletedXid = running->latestCompletedXid;
 
 	Assert(TransactionIdIsNormal(ShmemVariableCache->latestCompletedXid));
@@ -957,7 +1252,14 @@ ProcArrayApplyXidAssignment(TransactionId topxid,
 	 * have attempted to SubTransSetParent().
 	 */
 	for (i = 0; i < nsubxids; i++)
-		SubTransSetParent(subxids[i], topxid);
+	{
+		/*no cover begin*/
+		if (polar_csn_enable)
+			polar_csnlog_set_parent(subxids[i], topxid);
+		else
+			SubTransSetParent(subxids[i], topxid);
+		/*no cover end*/
+	}
 
 	/* KnownAssignedXids isn't maintained yet, so we're done for now */
 	if (standbyState == STANDBY_INITIALIZED)
@@ -1017,6 +1319,8 @@ TransactionIdIsInProgress(TransactionId xid)
 	TransactionId topxid;
 	int			i,
 				j;
+	/* POLAR csn */
+	TransactionId latestCompletedXid;
 
 	/*
 	 * Don't bother checking a transaction older than RecentXmin; it could not
@@ -1051,6 +1355,18 @@ TransactionIdIsInProgress(TransactionId xid)
 		return true;
 	}
 
+	/* POLAR csn */
+	if (polar_csn_enable)
+	{
+		/*
+		 * if xact is in progress, maybe the xact is inprogress before crash
+		 * recovery, check procArray again
+		 */
+		if (XID_INPROGRESS != polar_xact_get_status(xid))
+			return false;
+	}
+	/* POLAR end */
+
 	/*
 	 * If first time through, get workspace to remember main XIDs in. We
 	 * malloc it permanently to avoid repeated palloc/pfree overhead.
@@ -1077,7 +1393,14 @@ TransactionIdIsInProgress(TransactionId xid)
 	 * Now that we have the lock, we can check latestCompletedXid; if the
 	 * target Xid is after that, it's surely still running.
 	 */
-	if (TransactionIdPrecedes(ShmemVariableCache->latestCompletedXid, xid))
+	/*no cover begin*/
+	if (polar_csn_enable)
+		latestCompletedXid = pg_atomic_read_u32(&polar_shmem_csn_mvcc_var_cache->polar_latest_completed_xid);
+	else
+		latestCompletedXid = ShmemVariableCache->latestCompletedXid;
+	/*no cover end*/
+
+	if (TransactionIdPrecedes(latestCompletedXid, xid))
 	{
 		LWLockRelease(ProcArrayLock);
 		xc_by_latest_xid_inc();
@@ -1203,7 +1526,12 @@ TransactionIdIsInProgress(TransactionId xid)
 	 * is still running (or, more precisely, whether it was running when we
 	 * held ProcArrayLock).
 	 */
-	topxid = SubTransGetTopmostTransaction(xid);
+	/*no cover begin*/
+	if (polar_csn_enable)
+		topxid = polar_csnlog_get_top(xid);
+	else
+		topxid = SubTransGetTopmostTransaction(xid);
+	/*no cover end*/
 	Assert(TransactionIdIsValid(topxid));
 	if (!TransactionIdEquals(topxid, xid))
 	{
@@ -1224,6 +1552,9 @@ TransactionIdIsInProgress(TransactionId xid)
  * transactions, as well as transactions running on the master if we're in
  * hot standby.  Also, we ignore subtransactions since that's not needed
  * for current uses.
+ *
+ * POLAR csn
+ * Not used in csn
  */
 bool
 TransactionIdIsActive(TransactionId xid)
@@ -1269,6 +1600,179 @@ TransactionIdIsActive(TransactionId xid)
 	return result;
 }
 
+/*
+ * AdvanceOldestActiveXid --
+ *
+ * Advance oldestActiveXid. 'myXid' is the current value, and it's known to be
+ * finished now.
+ */
+static void
+AdvanceOldestActiveXidCSN(TransactionId myXid)
+{
+	TransactionId nextXid;
+	TransactionId xid;
+	TransactionId oldValue;
+
+	oldValue = pg_atomic_read_u32(&polar_shmem_csn_mvcc_var_cache->polar_oldest_active_xid);
+
+	/* Quick exit if we were not the oldest active XID. */
+	if (myXid != oldValue)
+		return;
+
+	xid = myXid;
+	TransactionIdAdvance(xid);
+
+	for (;;)
+	{
+		/*
+		 * Current nextXid is the upper bound, if there are no transactions
+		 * active at all.
+		 */
+		/* assume we can read nextXid atomically without holding XidGenlock. */
+		nextXid = ShmemVariableCache->nextXid;
+		/* Scan the CSN Log for the next active xid */
+		xid = polar_csnlog_get_next_active_xid(xid, nextXid);
+
+		if (xid == oldValue)
+		{
+			/* nothing more to do */
+			break;
+		}
+
+		/*
+		 * Update oldestActiveXid with that value.
+		 */
+
+		/*no cover begin*/
+		if (!pg_atomic_compare_exchange_u32(&polar_shmem_csn_mvcc_var_cache->polar_oldest_active_xid,
+											&oldValue,
+											xid))
+		{
+			/*
+			 * Someone beat us to it. This can happen if we hit the race
+			 * condition described below. That's OK. We're no longer the oldest active
+			 * XID in that case, so we're done.
+			 */
+			Assert(TransactionIdFollows(oldValue, myXid));
+			break;
+		}
+		/*no cover end*/
+
+		/*
+		 * We're not necessarily done yet. It's possible that the XID that we saw
+		 * as still running committed just before we updated oldestActiveXid.
+		 * She didn't see herself as the oldest transaction, so she wouldn't
+		 * update oldestActiveXid. Loop back to check the XID that we saw as
+		 * the oldest in-progress one is still in-progress, and if not, update
+		 * oldestActiveXid again, on behalf of that transaction.
+		 */
+		oldValue = xid;
+	}
+}
+
+/* Only used for test */
+void
+AdvanceOldestActiveXidCSNWrapper(TransactionId myXid)
+{
+	AdvanceOldestActiveXidCSN(myXid);
+}
+
+/*
+ * This is like GetOldestXmin(NULL, true), but can return slightly stale, cached value.
+ */
+TransactionId
+GetRecentGlobalXminCSN(void)
+{
+	TransactionId globalXmin;
+	ProcArrayStruct *arrayP = procArray;
+	int			index;
+	volatile TransactionId replication_slot_xmin = InvalidTransactionId;
+	volatile TransactionId replication_slot_catalog_xmin = InvalidTransactionId;
+
+	if (TransactionIdIsValid(RecentGlobalXmin))
+		return RecentGlobalXmin;
+
+	Assert(!TransactionIdIsValid(RecentGlobalDataXmin));
+
+	LWLockAcquire(ProcArrayLock, LW_SHARED);
+
+	/*
+	 * We initialize the MIN() calculation with oldestActiveXid. This
+	 * is a lower bound for the XIDs that might appear in the ProcArray later,
+	 * and so protects us against overestimating the result due to future
+	 * additions.
+	 */
+	globalXmin = pg_atomic_read_u32(&polar_shmem_csn_mvcc_var_cache->polar_oldest_active_xid);
+	Assert(TransactionIdIsNormal(globalXmin));
+
+	for (index = 0; index < arrayP->numProcs; index++)
+	{
+		int			pgprocno = arrayP->pgprocnos[index];
+		volatile PGXACT *pgxact = &allPgXact[pgprocno];
+		TransactionId xmin = pgxact->xmin;
+
+		/*
+		 * Backend is doing logical decoding which manages xmin separately,
+		 * check below.
+		 */
+		/*no cover begin*/
+		if (pgxact->vacuumFlags & PROC_IN_LOGICAL_DECODING)
+			continue;
+		/*no cover end*/
+
+		if (pgxact->vacuumFlags & PROC_IN_VACUUM)
+			continue;
+
+		/*
+		 * Consider the transaction's Xmin, if set.
+		 */
+		if (TransactionIdIsNormal(xmin) &&
+			NormalTransactionIdPrecedes(xmin, globalXmin))
+			globalXmin = xmin;
+	}
+
+	/* fetch into volatile var while ProcArrayLock is held */
+	replication_slot_xmin = procArray->replication_slot_xmin;
+	replication_slot_catalog_xmin = procArray->replication_slot_catalog_xmin;
+
+	LWLockRelease(ProcArrayLock);
+
+	/* Update cached variables */
+	RecentGlobalXmin = globalXmin - vacuum_defer_cleanup_age;
+	if (!TransactionIdIsNormal(RecentGlobalXmin))
+		RecentGlobalXmin = FirstNormalTransactionId;
+
+	/* Check whether there's a replication slot requiring an older xmin. */
+	if (TransactionIdIsValid(replication_slot_xmin) &&
+		NormalTransactionIdPrecedes(replication_slot_xmin, RecentGlobalXmin))
+		RecentGlobalXmin = replication_slot_xmin;
+
+	/* Non-catalog tables can be vacuumed if older than this xid */
+	RecentGlobalDataXmin = RecentGlobalXmin;
+
+	/*
+	 * Check whether there's a replication slot requiring an older catalog
+	 * xmin.
+	 */
+	if (TransactionIdIsNormal(replication_slot_catalog_xmin) &&
+		NormalTransactionIdPrecedes(replication_slot_catalog_xmin, RecentGlobalXmin))
+		RecentGlobalXmin = replication_slot_catalog_xmin;
+
+	return RecentGlobalXmin;
+}
+
+TransactionId
+GetRecentGlobalDataXminCSN(void)
+{
+	if (TransactionIdIsValid(RecentGlobalDataXmin))
+		return RecentGlobalDataXmin;
+
+	Assert(!TransactionIdIsValid(RecentGlobalXmin));
+	(void) GetRecentGlobalXminCSN();
+	Assert(TransactionIdIsValid(RecentGlobalDataXmin));
+
+	return RecentGlobalDataXmin;
+}
 
 /*
  * GetOldestXmin -- returns oldest transaction that was running
@@ -1352,10 +1856,18 @@ GetOldestXmin(Relation rel, int flags)
 	 * is a lower bound for the XIDs that might appear in the ProcArray later,
 	 * and so protects us against overestimating the result due to future
 	 * additions.
+	 *
+	 * POLAR csn
+	 * We use polar_oldest_active_xid in csn mode
 	 */
-	result = ShmemVariableCache->latestCompletedXid;
-	Assert(TransactionIdIsNormal(result));
-	TransactionIdAdvance(result);
+	if (polar_csn_enable)
+		result = pg_atomic_read_u32(&polar_shmem_csn_mvcc_var_cache->polar_oldest_active_xid);
+	else
+	{
+		result = ShmemVariableCache->latestCompletedXid;
+		Assert(TransactionIdIsNormal(result));
+		TransactionIdAdvance(result);
+	}
 
 	for (index = 0; index < arrayP->numProcs; index++)
 	{
@@ -1402,7 +1914,9 @@ GetOldestXmin(Relation rel, int flags)
 		 * Check to see whether KnownAssignedXids contains an xid value older
 		 * than the main procarray.
 		 */
-		TransactionId kaxmin = KnownAssignedXidsGetOldestXmin();
+		TransactionId kaxmin = InvalidTransactionId;
+		
+		kaxmin = KnownAssignedXidsGetOldestXmin();
 
 		LWLockRelease(ProcArrayLock);
 
@@ -1566,6 +2080,60 @@ GetSnapshotData(Snapshot snapshot)
 					 errmsg("out of memory")));
 	}
 
+	/* POLAR csn */
+	if (polar_csn_enable)
+		return GetSnapshotDataCSN(snapshot);
+
+	/*
+	 *	Rigth now, we only do multi version snapshot in polar replica mode
+	 */
+	if (polar_in_replica_mode() && polar_replica_multi_version_snapshot_enable) 
+	{ 	
+		bool succ;
+
+		succ = polar_replica_multi_version_snapshot_get_snapshot(snapshot->subxip, &subcount, &suboverflowed,
+			   													 &xmin, &xmax, 
+																 (TransactionId *)(&replication_slot_xmin), 
+																 (TransactionId *)(&replication_slot_catalog_xmin));
+		if (succ) 
+		{
+			/*
+			 * We must keep processing logic between ProcArrayLock acquire 
+			 * and release same as original standby code path
+			 */
+
+			/* 
+			 * code logic before original standby snapshot get
+			 */
+
+			/* 
+			 * We get xmin/xmax from snapshot store 
+			 * use xmax which value is latestCompletedXid+1 in some time point, 
+			 * not current latestCompletedXid, to init globalxmin 
+			 */
+			globalxmin = xmax;
+
+			/* We are in replica mode */
+			snapshot->takenDuringRecovery = true;
+
+			/* 
+			 * code logic after original standby snapshot get
+			 */
+
+			/* We can get/set MyPgXact->xmin atomically without ProcArrayLock */
+			if (!TransactionIdIsValid(MyPgXact->xmin))
+				MyPgXact->xmin = TransactionXmin = xmin;
+
+			/*
+			 * we already get replication_slot_xmin/replication_slot_catalog_xmin 
+			 * from snapshot store
+			 */
+
+			/* We use goto not if/else block to try to make POLAR code least overlapped with PG */
+			goto SNAPSHOT_GOTTEN;
+		}
+	}
+
 	/*
 	 * It is sufficient to get shared lock on ProcArrayLock, even if we are
 	 * going to set MyPgXact->xmin.
@@ -1725,6 +2293,8 @@ GetSnapshotData(Snapshot snapshot)
 
 	LWLockRelease(ProcArrayLock);
 
+SNAPSHOT_GOTTEN:
+
 	/*
 	 * Update globalxmin to include actual process xids.  This is a slightly
 	 * different way of computing it than GetOldestXmin uses, but should give
@@ -1796,6 +2366,158 @@ GetSnapshotData(Snapshot snapshot)
 	return snapshot;
 }
 
+static Snapshot
+GetSnapshotDataCSN(Snapshot snapshot)
+{
+	TransactionId xmin;
+	TransactionId xmax;
+	CommitSeqNo snapshotcsn;
+
+	Assert(snapshot != NULL);
+
+	/*
+	 * The ProcArrayLock is not needed here. We only set our xmin if
+	 * it's not already set. There are only a few functions that check
+	 * the xmin under exclusive ProcArrayLock:
+	 * 1) ProcArrayInstallRestored/ImportedXmin -- can only care about
+	 * our xmin long after it has been first set.
+	 * 2) ProcArrayEndTransaction is not called concurrently with
+	 * GetSnapshotData.
+	 */
+
+	/* Anything older than oldestActiveXid is surely finished by now. */
+	xmin = pg_atomic_read_u32(&polar_shmem_csn_mvcc_var_cache->polar_oldest_active_xid);
+	/* If no performance issue, we try best to maintain RecentXmin for xid based snapshot */
+	RecentXmin = xmin;
+
+	/* Announce my xmin, to hold back GlobalXmin. */
+	if (!TransactionIdIsValid(MyPgXact->xmin))
+	{
+		TransactionId oldest_active_xid;
+
+		MyPgXact->xmin = xmin;
+		TransactionXmin = xmin;
+
+		/*
+		 * Recheck, if oldestActiveXid advanced after we read it.
+		 *
+		 * This protects against a race condition with GetRecentGlobalXmin().
+		 * If a transaction ends runs GetRecentGlobalXmin(), just after we fetch
+		 * polar_oldest_active_xid, but before we set MyPgXact->xmin, it's possible
+		 * that GetRecentGlobalXmin() computed a new GlobalXmin that doesn't
+		 * cover the xmin that we got. To fix that, check polar_oldest_active_xid
+		 * again, after setting xmin. Redoing it once is enough, we don't need
+		 * to loop, because the (stale) xmin that we set prevents the same
+		 * race condition from advancing RecentGlobalXmin again.
+		 *
+		 * For a brief moment, we can have the situation that our xmin is
+		 * lower than RecentGlobalXmin, but it's OK because we don't use that xmin
+		 * until we've re-checked and corrected it if necessary.
+		 */
+
+		/*
+		 * memory barrier to make sure that setting the xmin in our PGPROC entry
+		 * is made visible to others, before the read below.
+		 */
+		pg_memory_barrier();
+
+		oldest_active_xid  = pg_atomic_read_u32(&polar_shmem_csn_mvcc_var_cache->polar_oldest_active_xid);
+		if (oldest_active_xid != xmin)
+		{
+			/*no cover begin*/
+			xmin = oldest_active_xid;
+
+			RecentXmin = xmin;
+			MyPgXact->xmin = xmin;
+			TransactionXmin = xmin;
+			/*no cover end*/
+		}
+	}
+
+	/*
+	 * Get the current snapshot CSN. This
+	 * serializes us with any concurrent commits.
+	 */
+	snapshotcsn = pg_atomic_read_u64(&polar_shmem_csn_mvcc_var_cache->polar_next_csn);
+	
+	/*
+	 * Also get xmax. It is always latestCompletedXid + 1.
+	 * Make sure to read it after CSN (see TransactionIdAsyncCommitTree())
+	 */
+	pg_read_barrier();
+	xmax = pg_atomic_read_u32(&polar_shmem_csn_mvcc_var_cache->polar_latest_completed_xid);
+	Assert(TransactionIdIsNormal(xmax));
+	TransactionIdAdvance(xmax);
+
+	snapshot->xmin = xmin;
+	snapshot->xmax = xmax;
+	snapshot->polar_snapshot_csn = snapshotcsn;
+	snapshot->polar_csn_xid_snapshot = false;
+	snapshot->xcnt = 0;
+	snapshot->subxcnt = 0;
+	snapshot->suboverflowed = false;
+	snapshot->curcid = GetCurrentCommandId(false);
+
+	/*
+	 * This is a new snapshot, so set both refcounts are zero, and mark it as
+	 * not copied in persistent memory.
+	 */
+	snapshot->active_count = 0;
+	snapshot->regd_count = 0;
+	snapshot->copied = false;
+
+	if (old_snapshot_threshold < 0)
+	{
+		/*
+		 * If not using "snapshot too old" feature, fill related fields with
+		 * dummy values that don't require any locking.
+		 */
+		snapshot->lsn = InvalidXLogRecPtr;
+		snapshot->whenTaken = 0;
+	}
+	else
+	{
+		/*
+		 * Capture the current time and WAL stream location in case this
+		 * snapshot becomes old enough to need to fall back on the special
+		 * "old snapshot" logic.
+		 */
+		snapshot->lsn = GetXLogInsertRecPtr();
+		snapshot->whenTaken = GetSnapshotCurrentTimestamp();
+		MaintainOldSnapshotTimeMapping(snapshot->whenTaken, xmin);
+	}
+
+	/* 
+	 * We get RecentGlobalXmin/RecentGlobalDataXmin lazily in polar csn.
+	 * In master mode, we reset it when end transaction;
+	 * In hot standby mode, wal replayed by startup backend, we has to reset
+	 * it when get snapshot,
+	 * because RecentGlobalXmin/RecentGlobalDataXmin are backend variables.
+	 */
+	if (RecoveryInProgress())
+		resetGlobalXminCacheCSN();
+
+	/* 
+	 * We need xid snapshot, should generate it from csn snapshot.
+	 * The logic is:
+	 * 1. Scan csnlog from xmin(inclusive) to xmax(exclusive)
+	 * 2. Add xids whose status are in_progress or committing or 
+	 *    committed csn >= snapshotcsn to xid array
+	 * Like hot standby, we don't know which xids are top-level and which are
+	 * subxacts. So we use subxip to store xids as more as possible. 
+	 */
+	if (polar_csn_xid_snapshot)
+	{
+		if (TransactionIdPrecedes(xmin, xmax))
+			polar_csnlog_get_running_xids(xmin, xmax, snapshotcsn, GetMaxSnapshotSubxidCount(),
+				&snapshot->subxcnt, snapshot->subxip, &snapshot->suboverflowed);
+
+		snapshot->polar_csn_xid_snapshot = true;
+	}
+
+	return snapshot;
+}
+
 /*
  * ProcArrayInstallImportedXmin -- install imported xmin into MyPgXact->xmin
  *
@@ -1819,7 +2541,10 @@ ProcArrayInstallImportedXmin(TransactionId xmin,
 		return false;
 
 	/* Get lock so source xact can't end while we're doing this */
-	LWLockAcquire(ProcArrayLock, LW_SHARED);
+	if (polar_csn_enable)
+		LWLockAcquire(ProcArrayLock, LW_EXCLUSIVE);	/* In csn mode, we should use exclusive lock */
+	else
+		LWLockAcquire(ProcArrayLock, LW_SHARED);
 
 	for (index = 0; index < arrayP->numProcs; index++)
 	{
@@ -1892,7 +2617,10 @@ ProcArrayInstallRestoredXmin(TransactionId xmin, PGPROC *proc)
 	Assert(proc != NULL);
 
 	/* Get lock so source xact can't end while we're doing this */
-	LWLockAcquire(ProcArrayLock, LW_SHARED);
+	if (polar_csn_enable)
+		LWLockAcquire(ProcArrayLock, LW_EXCLUSIVE);	/* In csn mode, we should use exclusive lock */
+	else
+		LWLockAcquire(ProcArrayLock, LW_SHARED);
 
 	pgxact = &allPgXact[proc->pgprocno];
 
@@ -1946,6 +2674,15 @@ ProcArrayInstallRestoredXmin(TransactionId xmin, PGPROC *proc)
  *
  * Note that if any transaction has overflowed its cached subtransactions
  * then there is no real need include any subtransactions.
+ * 
+ * POLAR csn
+ * We also aquire CommitSeqNoLock but the caller is responsible for
+ * releasing it. Acquiring CommitSeqNoLock ensures that no transactions commit 
+ * until the lock is released.
+ *
+ * When iterate ProcArray to find running xacts, we not only need check whether 
+ * PGXACT->xid is valid, but also need check whether PGXACT->polar_csn is valid.
+ * If both field valid, we should not add it to running xids list
  */
 RunningTransactions
 GetRunningTransactionData(void)
@@ -1962,6 +2699,9 @@ GetRunningTransactionData(void)
 	int			count;
 	int			subcount;
 	bool		suboverflowed;
+
+	/* POLAR csn */
+	CommitSeqNo currentSystemCsn pg_attribute_unused() = InvalidCommitSeqNo;
 
 	Assert(!RecoveryInProgress());
 
@@ -1992,16 +2732,71 @@ GetRunningTransactionData(void)
 	count = subcount = 0;
 	suboverflowed = false;
 
-	/*
-	 * Ensure that no xids enter or leave the procarray while we obtain
-	 * snapshot.
-	 */
-	LWLockAcquire(ProcArrayLock, LW_SHARED);
-	LWLockAcquire(XidGenLock, LW_SHARED);
+	if (polar_csn_enable)
+	{
+		/* 
+		 * ProcArrayEndTransaction hold share lock 
+		 * Ensure no xids leave ProcArray
+		 */
+		LWLockAcquire(ProcArrayLock, LW_EXCLUSIVE);
 
-	latestCompletedXid = ShmemVariableCache->latestCompletedXid;
+		/* 
+		 * GetNewTransactionId hold exclusive lock 
+		 * Ensure no xids enter ProcArray
+		 */
+		LWLockAcquire(XidGenLock, LW_SHARED);
 
-	oldestRunningXid = ShmemVariableCache->nextXid;
+		/* 
+		 * CommitTransaction hold share lock 
+		 * Ensure no xids commit csn and set csn in ProcArray
+		 */
+		LWLockAcquire(CommitSeqNoLock, LW_EXCLUSIVE);
+
+		/* 
+		 * When we get here, xacts in ProcArray should be in status
+		 * as below:
+		 * 1. active with valid xid
+		 * 2. aborted but with valid xid 
+		 * 3. committed but with valid xid and csn < current polar_next_csn
+		 * xacts satisfy to 1 or 2 are running xids;
+		 * xacts satisfy to 3 are not, because their csns are less than
+		 * current polar_next_csn, their update should be visible to
+		 * current xid snapshot
+		 */
+	}
+	else 
+	{
+		/*
+		* Ensure that no xids enter or leave the procarray while we obtain
+		* snapshot.
+		*/
+		LWLockAcquire(ProcArrayLock, LW_SHARED);
+		LWLockAcquire(XidGenLock, LW_SHARED);
+	}
+
+	if (polar_csn_enable)
+	{
+		/* 
+		 * POLAR csn
+		 * Order is not important here, because xacts can not commit now,
+		 * we just want to keep the order consistent with GetSnapshotData.
+		 *
+		 * oldestRunningXid can be computed by two ways:
+		 * 1. smallest xid in running xacts
+		 * 2. polar_oldest_active_xid
+		 * polar_oldest_active_xid may be less than smallest xid,
+		 * but for consistency, we use polar_oldest_active_xid
+		 */
+
+		oldestRunningXid = 	pg_atomic_read_u32(&polar_shmem_csn_mvcc_var_cache->polar_oldest_active_xid);
+		currentSystemCsn = pg_atomic_read_u64(&polar_shmem_csn_mvcc_var_cache->polar_next_csn);
+		latestCompletedXid = pg_atomic_read_u32(&polar_shmem_csn_mvcc_var_cache->polar_latest_completed_xid);
+	}
+	else
+	{
+		latestCompletedXid = ShmemVariableCache->latestCompletedXid;
+		oldestRunningXid = ShmemVariableCache->nextXid;
+	}
 
 	/*
 	 * Spin over procArray collecting all xids
@@ -2021,6 +2816,17 @@ GetRunningTransactionData(void)
 		 */
 		if (!TransactionIdIsValid(xid))
 			continue;
+
+		/* POLAR csn */
+		if (polar_csn_enable)
+		{
+			Assert(pgxact->polar_csn == InvalidCommitSeqNo || pgxact->polar_csn < currentSystemCsn);
+			if (pgxact->polar_csn != InvalidCommitSeqNo)
+			{
+				/* Committed xact can not be added to running xid list */
+				continue;
+			}
+		}
 
 		/*
 		 * Be careful not to exclude any xids before calculating the values of
@@ -2056,6 +2862,17 @@ GetRunningTransactionData(void)
 			volatile PGPROC *proc = &allProcs[pgprocno];
 			volatile PGXACT *pgxact = &allPgXact[pgprocno];
 			int			nxids;
+
+			/* POLAR csn */
+			if (polar_csn_enable)
+			{
+				Assert(pgxact->polar_csn == InvalidCommitSeqNo || pgxact->polar_csn < currentSystemCsn);
+				if (pgxact->polar_csn != InvalidCommitSeqNo)
+				{
+					/* Subxids belong to committed xact can not be added to running xid list either */
+					continue;
+				}
+			}
 
 			/*
 			 * Save subtransaction XIDs. Other backends can't add or remove
@@ -2117,6 +2934,9 @@ GetRunningTransactionData(void)
  * We don't worry about updating other counters, we want to keep this as
  * simple as possible and leave GetSnapshotData() as the primary code for
  * that bookkeeping.
+ * 
+ * POLAR
+ * We could just use return polar_shmem_csn_mvcc_var_cache->polar_oldest_active_xid. 
  */
 TransactionId
 GetOldestActiveTransactionId(void)
@@ -2126,6 +2946,9 @@ GetOldestActiveTransactionId(void)
 	int			index;
 
 	Assert(!RecoveryInProgress());
+
+	if (polar_csn_enable)
+		return pg_atomic_read_u32(&polar_shmem_csn_mvcc_var_cache->polar_oldest_active_xid);
 
 	/*
 	 * Read nextXid, as the upper bound of what's still active.
@@ -2223,6 +3046,15 @@ GetOldestSafeDecodingTransactionId(bool catalogOnly)
 							  oldestSafeXid))
 		oldestSafeXid = procArray->replication_slot_catalog_xmin;
 
+	if (polar_csn_enable)
+	{
+		/* 
+		* CommitTransaction hold share lock 
+		* Ensure no xids commit csn and set csn in ProcArray
+		*/
+		LWLockAcquire(CommitSeqNoLock, LW_EXCLUSIVE);
+	}
+
 	/*
 	 * If we're not in recovery, we walk over the procarray and collect the
 	 * lowest xid. Since we're called with ProcArrayLock held and have
@@ -2252,12 +3084,36 @@ GetOldestSafeDecodingTransactionId(bool catalogOnly)
 			if (!TransactionIdIsNormal(xid))
 				continue;
 
+			/* POLAR csn */
+			if (polar_csn_enable)
+			{
+				if (pgxact->polar_csn != InvalidCommitSeqNo)
+				{
+					/* Committed xact can not be active */
+					continue;
+				}
+			}
+
 			if (TransactionIdPrecedes(xid, oldestSafeXid))
 				oldestSafeXid = xid;
 		}
 	}
 
+	if (polar_csn_enable)
+	{
+		LWLockRelease(CommitSeqNoLock);
+	}
+
 	LWLockRelease(XidGenLock);
+
+	if (polar_csn_enable)
+	{
+		TransactionId oldest_active_xid;
+		oldest_active_xid = pg_atomic_read_u32(&polar_shmem_csn_mvcc_var_cache->polar_oldest_active_xid);
+		if (TransactionIdIsValid(oldest_active_xid) &&
+				TransactionIdPrecedes(oldest_active_xid, oldestSafeXid))
+			oldestSafeXid = oldest_active_xid;
+	}
 
 	return oldestSafeXid;
 }
@@ -3226,19 +4082,33 @@ RecordKnownAssignedTransactionIds(TransactionId xid)
 		 * This part has to be done regardless of standbyState since we
 		 * immediately start assigning subtransactions to their toplevel
 		 * transactions.
+		 * 
+		 * POLAR
+		 * In polar csn mode, we should extend csnlog instead of subtrans
 		 */
 		next_expected_xid = latestObservedXid;
 		while (TransactionIdPrecedes(next_expected_xid, xid))
 		{
 			TransactionIdAdvance(next_expected_xid);
-			ExtendSUBTRANS(next_expected_xid);
+			/* 
+			 * POLAR 
+			 * we maintain subtrans info in csnlog
+			 */
+			/*no cover begin*/
+			/* 
+		 	 * In polar csn, we need not extend csnlog here,
+		 	 * because csnlog write zero page wal log like clog
+		 	 */
+			if (!polar_csn_enable)
+				ExtendSUBTRANS(next_expected_xid);
+			/*no cover end*/
 		}
 		Assert(next_expected_xid == xid);
 
 		/*
-		 * If the KnownAssignedXids machinery isn't up yet, there's nothing
-		 * more to do since we don't track assigned xids yet.
-		 */
+		* If the KnownAssignedXids machinery isn't up yet, there's nothing
+		* more to do since we don't track assigned xids yet.
+		*/
 		if (standbyState <= STANDBY_INITIALIZED)
 		{
 			latestObservedXid = xid;
@@ -3246,8 +4116,8 @@ RecordKnownAssignedTransactionIds(TransactionId xid)
 		}
 
 		/*
-		 * Add (latestObservedXid, xid] onto the KnownAssignedXids array.
-		 */
+		* Add (latestObservedXid, xid] onto the KnownAssignedXids array.
+		*/
 		next_expected_xid = latestObservedXid;
 		TransactionIdAdvance(next_expected_xid);
 		KnownAssignedXidsAdd(next_expected_xid, xid, false);
@@ -3291,7 +4161,16 @@ ExpireTreeKnownAssignedTransactionIds(TransactionId xid, int nsubxids,
 							  max_xid))
 		ShmemVariableCache->latestCompletedXid = max_xid;
 
+	if (polar_in_replica_mode() && polar_replica_multi_version_snapshot_enable)
+		polar_replica_multi_version_snapshot_set_snapshot();
+
 	LWLockRelease(ProcArrayLock);
+
+	if (polar_csn_enable)
+	{
+		/* If we were the oldest active XID, advance oldestXid */
+		AdvanceOldestActiveXidCSN(xid);
+	}
 }
 
 /*
@@ -3316,6 +4195,13 @@ ExpireOldKnownAssignedTransactionIds(TransactionId xid)
 	LWLockAcquire(ProcArrayLock, LW_EXCLUSIVE);
 	KnownAssignedXidsRemovePreceding(xid);
 	LWLockRelease(ProcArrayLock);
+
+	/* advance oldestXid */
+	if (polar_csn_enable && 
+		TransactionIdFollows(xid, pg_atomic_read_u32(&polar_shmem_csn_mvcc_var_cache->polar_oldest_active_xid)))
+	{
+		pg_atomic_write_u32(&polar_shmem_csn_mvcc_var_cache->polar_oldest_active_xid, xid);
+	}
 }
 
 
@@ -3991,23 +4877,58 @@ KnownAssignedXidsReset(void)
 }
 
 /*
- * polar_get_min_read_lsn --- get minimum database backends polar_read_min_lsn
+ * polar_get_nosuper_and_super_conn_count ---count nosuper and super backends
+ * However,nosupercount and supercount maybe is incorrect, because we can alter
+ * superuser to nosuperuser, but we do not modify proc->issuper, so supercount is
+ * incorrect, but we do not alter role superuser to nosuperuser or alter nosuperuser
+ * to superuser in rds environment
  */
-XLogRecPtr
-polar_get_read_min_lsn(XLogRecPtr primary_consist_ptr)
+void
+polar_get_nosuper_and_super_conn_count(int *nosupercount, int *supercount)
 {
 	ProcArrayStruct *arrayP = procArray;
 	int			index;
-	XLogRecPtr		result = primary_consist_ptr;
-	XLogRecPtr  	last_replayed_lsn = InvalidXLogRecPtr;
-	XLogRecPtr      bg_replayed_lsn = InvalidXLogRecPtr;
-	XLogRecPtr  	last_checkpoint_redo_lsn = InvalidXLogRecPtr;
 
+	Assert(nosupercount != NULL && supercount != NULL);
+	*nosupercount = *supercount = 0;
 	LWLockAcquire(ProcArrayLock, LW_SHARED);
 
 	for (index = 0; index < arrayP->numProcs; index++)
 	{
 		int			pgprocno = arrayP->pgprocnos[index];
+		volatile PGPROC *proc = &allProcs[pgprocno];
+
+		/*
+		 * Do not count non-connection procs and prepared trans. See
+		 * InitProcGlobal() for meaning of offset in allProcs.arrayP->pgprocnos[]
+		 * is sorted by arrayP->pgprocnos inc, so we can break if arrayP->pgprocnos[index]
+		 * >= MaxConnections
+		 */
+		if (arrayP->pgprocnos[index] >= MaxConnections)
+			break;
+		if (proc->issuper)
+			(*supercount)++;
+		else
+			(*nosupercount)++;
+	}
+
+	LWLockRelease(ProcArrayLock);
+}
+
+/*
+ * POLAR: Return the minimum lsn that backends process are replaying
+ */
+XLogRecPtr
+polar_get_backend_min_replay_lsn(void)
+{
+	int i;
+	XLogRecPtr result = InvalidXLogRecPtr;
+	ProcArrayStruct *arrayP = procArray;
+
+	LWLockAcquire(ProcArrayLock, LW_SHARED);
+	for (i = 0; i < arrayP->numProcs; i++)
+	{
+		int			pgprocno = arrayP->pgprocnos[i];
 		volatile PGPROC *proc = &allProcs[pgprocno];
 		XLogRecPtr		read_min_lsn = InvalidXLogRecPtr;
 
@@ -4015,39 +4936,491 @@ polar_get_read_min_lsn(XLogRecPtr primary_consist_ptr)
 			continue;			/* do not count prepared xacts */
 
 		read_min_lsn = (XLogRecPtr) pg_atomic_read_u64(&(proc->polar_read_min_lsn));
-		if (!XLogRecPtrIsInvalid(read_min_lsn) && read_min_lsn < result)
+		if (XLogRecPtrIsInvalid(result) || 
+			(!XLogRecPtrIsInvalid(read_min_lsn) && read_min_lsn < result))
 			result = read_min_lsn;
+	}
+	LWLockRelease(ProcArrayLock);
+
+	return result;
+}
+
+/*
+ * polar_get_min_read_lsn --- get minimum database backends polar_read_min_lsn
+ */
+XLogRecPtr
+polar_get_read_min_lsn(XLogRecPtr primary_consist_ptr)
+{
+	XLogRecPtr		result = primary_consist_ptr;
+	XLogRecPtr      redo_min_lsn = polar_get_backend_min_replay_lsn();
+	XLogRecPtr  	last_replayed_lsn;
+
+	if (!XLogRecPtrIsInvalid(redo_min_lsn) && redo_min_lsn < result)
+		result = redo_min_lsn;
+
+	/* This replay lsn can avoid clearing last pending parsing redo log */
+	last_replayed_lsn = GetXLogReplayRecPtr(NULL);
+
+	/* Note: this can happen when last some logs don't be involved buffers */
+	if (!XLogRecPtrIsInvalid(result) &&
+			!XLogRecPtrIsInvalid(last_replayed_lsn) &&
+			last_replayed_lsn < result)
+		result = last_replayed_lsn;
+
+	redo_min_lsn = polar_logindex_redo_get_min_replay_from_lsn(polar_logindex_redo_instance, primary_consist_ptr);
+
+	if (!XLogRecPtrIsInvalid(redo_min_lsn) && redo_min_lsn < result)
+		result = redo_min_lsn;
+
+	return result;
+}
+
+/*
+ * polar replica multi version snapshot store shared memory size
+ * sizeof(polar_replica_multi_version_snapshot_store_t)+lwlock_array_size+
+ * snapshot_array_size
+ */
+Size
+polar_replica_multi_version_snapshot_store_shmem_size(void)
+{
+	Size	size;
+	Size 	lwlock_array_size;
+	Size 	snapshot_size;
+	Size 	snapshot_array_size;
+	
+	if (!polar_replica_multi_version_snapshot_enable)
+		return 0;
+
+	lwlock_array_size = mul_size(sizeof(LWLockPadded), polar_replica_multi_version_snapshot_slot_num);
+
+	/* in replica mode, active transaction list's max size is TOTAL_MAX_CACHED_SUBXIDS */
+	snapshot_size = add_size(sizeof(polar_replica_multi_version_snapshot_t), 
+							 mul_size(sizeof(TransactionId), GetMaxSnapshotSubxidCount()));
+	snapshot_array_size = mul_size(snapshot_size, polar_replica_multi_version_snapshot_slot_num);
+
+	size = sizeof(polar_replica_multi_version_snapshot_store_t);
+	size = add_size(size, lwlock_array_size);
+	size = add_size(size, snapshot_array_size);
+
+	return size;
+}
+
+/*
+ * Create or attach to the polar_replica_multi_version_snapshot_store_t structure.
+ */
+static void
+polar_replica_multi_version_snapshot_store_shmem_init(void)
+{
+	bool found = false;
+
+	polar_replica_multi_version_snapshot_store = (polar_replica_multi_version_snapshot_store_t *)
+		ShmemInitStruct("PolarReplicaMultiVersionSnapshotStore",
+						sizeof(polar_replica_multi_version_snapshot_store_t), &found);
+
+	if (!found)
+	{
+		polar_replica_multi_version_snapshot_store_t *store = polar_replica_multi_version_snapshot_store;
+		int slot_idx;
+
+		store->slot_locks = 
+			ShmemAlloc(mul_size(sizeof(LWLockPadded), polar_replica_multi_version_snapshot_slot_num));
+		LWLockRegisterTranche(LWTRANCHE_POLAR_REPLICA_MULTI_VERSION_SNAPSHOT_SLOT, "polar_replica_multi_version_snapshot_slot");
+		for (slot_idx = 0; slot_idx < polar_replica_multi_version_snapshot_slot_num; slot_idx++)
+		{
+			LWLockInitialize(&store->slot_locks[slot_idx].lock, 
+								LWTRANCHE_POLAR_REPLICA_MULTI_VERSION_SNAPSHOT_SLOT);
+		}
+
+		store->slot_snapshots = 
+			ShmemAlloc(mul_size(sizeof(polar_replica_multi_version_snapshot_t),
+								polar_replica_multi_version_snapshot_slot_num));
+		for (slot_idx = 0; slot_idx < polar_replica_multi_version_snapshot_slot_num; slot_idx++)
+		{
+			/* in replica mode, active transaction list's max size is TOTAL_MAX_CACHED_SUBXIDS */
+			store->slot_snapshots[slot_idx].xip =
+				ShmemAlloc(mul_size(sizeof(TransactionId), GetMaxSnapshotSubxidCount()));
+		}
+
+		store->slot_num = polar_replica_multi_version_snapshot_slot_num;
+		store->retry_times = polar_replica_multi_version_snapshot_retry_times;
+		pg_atomic_init_u32(&store->curr_slot_idx, PG_UINT32_MAX);
+		store->next_slot_idx = 0;
+		store->write_retried_times = 0;
+		store->write_switched_times = 0;
+		pg_atomic_init_u64(&store->read_retried_times, 0);
+		pg_atomic_init_u64(&store->read_switched_times, 0);
+	}
+}
+
+/*
+ * In replica mode, Called in GetSnapshotData
+ * When can not get snapshot in limited times(default is 3), return false
+ * and switch back to original GetSnapshotData logic
+ * ==SnapshotData related info==
+ * xip								IN
+ * count							OUT
+ * overflowed						OUT
+ * xmin								OUT
+ * xmax								OUT
+ * ==ProcArray related info==
+ * replication_slot_xmin			OUT
+ * replication_slot_catalog_xmin	OUT
+ */
+static bool 
+polar_replica_multi_version_snapshot_get_snapshot(TransactionId *xip, int *count, bool *overflowed,
+				   								  TransactionId *xmin, TransactionId *xmax, 
+												  TransactionId *replication_slot_xmin, 
+												  TransactionId *replication_slot_catalog_xmin)
+{
+	polar_replica_multi_version_snapshot_store_t *store = polar_replica_multi_version_snapshot_store;
+	int retry_times = store->retry_times;
+	
+	/* 
+	 * Each retry, we should read new curr_slot_idx from snapshot store 
+	 * try best to get new snapshot
+	 */
+	while (retry_times-- != 0)
+	{
+		uint32 curr_slot_idx = pg_atomic_read_u32(&store->curr_slot_idx);
+
+		/*
+		 * For now, curr_slot_idx equals PG_UINT32_MAX has two meanings:
+		 * 1. There is no item in multi version snapshot store yet, just go old way
+		 * 2. Startup backend has no slot to write, force reader swiching to old way
+		 * 
+		 * In case 1, reader have to pay for polar_replica_multi_version_snapshot_retry_times+1 
+		 * times atomic add, a little less efficiently but acceptable
+		 */
+		if (curr_slot_idx != PG_UINT32_MAX)
+		{
+			bool 			lock_succ;
+			LWLockPadded	*slot_lock;
+			polar_replica_multi_version_snapshot_t *slot_snapshot;
+
+			Assert(curr_slot_idx < store->slot_num);
+
+			slot_lock = &store->slot_locks[curr_slot_idx];
+			slot_snapshot = &store->slot_snapshots[curr_slot_idx];
+			lock_succ = LWLockConditionalAcquire(&slot_lock->lock, LW_SHARED);
+			if (lock_succ)
+			{
+				memcpy(xip, slot_snapshot->xip, sizeof(TransactionId)*slot_snapshot->xcnt);
+				*count = slot_snapshot->xcnt;
+				*overflowed = slot_snapshot->overflowed;
+				*xmin = slot_snapshot->xmin;
+				*xmax = slot_snapshot->xmax;
+				*replication_slot_xmin = slot_snapshot->replication_slot_xmin;
+				*replication_slot_catalog_xmin = slot_snapshot->replication_slot_catalog_xmin;
+				
+				LWLockRelease(&slot_lock->lock);
+
+				return true;
+			}
+		}
+			
+		/* 
+		 * Share lock failed because of write lock held, it is possible though not common,
+		 * just update metric and retry 
+		 */
+		pg_atomic_fetch_add_u64(&store->read_retried_times, 1);
+	}
+
+	/*
+	 * Retry times have reached, we have to fall back to single version mode.
+	 * This is not a common case buf possible, update metric and log it.
+	 * For performance issue, use DEBUG1.
+	 */
+
+	pg_atomic_fetch_add_u64(&store->read_switched_times, 1);
+
+	elog(DEBUG1, "reader has switched to single version snapshot get");
+
+	return false;
+}
+
+/*
+ *	In replica mode, called by startup backend
+ *	ProcArrayLock must be hold in exclusive mode 
+ */
+static void 
+polar_replica_multi_version_snapshot_set_snapshot(void)
+{
+	polar_replica_multi_version_snapshot_store_t *store = polar_replica_multi_version_snapshot_store;
+	int retry_times = store->retry_times;
+	
+	Assert(LWLockHeldByMeInMode(ProcArrayLock, LW_EXCLUSIVE));
+
+	while (retry_times-- != 0)
+	{
+		bool lock_succ;
+		int next_slot_idx = store->next_slot_idx;
+		LWLockPadded	*slot_lock = NULL;
+		polar_replica_multi_version_snapshot_t *slot_snapshot = NULL;
+		
+		Assert(next_slot_idx >= 0);
+		Assert(next_slot_idx < store->slot_num);
+
+		slot_lock = &store->slot_locks[next_slot_idx];
+		slot_snapshot = &store->slot_snapshots[next_slot_idx];
+		
+		/* 
+		 *	a simple next strategy
+		 *	just advance it
+		 */
+		store->next_slot_idx = (store->next_slot_idx+1) % store->slot_num;
+
+		lock_succ = LWLockConditionalAcquire(&slot_lock->lock, LW_EXCLUSIVE);
+		if (lock_succ)
+		{
+			int count = 0;
+			bool overflowed = false;
+			TransactionId xmin = InvalidTransactionId;
+			TransactionId xmax = InvalidTransactionId;
+			TransactionId replication_slot_xmin = procArray->replication_slot_xmin;
+			TransactionId replication_slot_catalog_xmin = procArray->replication_slot_catalog_xmin;
+			
+			xmax = ShmemVariableCache->latestCompletedXid;
+			Assert(TransactionIdIsNormal(xmax));
+			TransactionIdAdvance(xmax);
+			xmin = xmax;
+
+			count = KnownAssignedXidsGetAndSetXmin(slot_snapshot->xip, &xmin, xmax);
+
+			if (TransactionIdPrecedesOrEquals(xmin, procArray->lastOverflowedXid))
+				overflowed = true;
+
+			slot_snapshot->xcnt = count;
+			slot_snapshot->overflowed = overflowed;
+			slot_snapshot->xmin = xmin;
+			slot_snapshot->xmax = xmax;
+			slot_snapshot->replication_slot_xmin = replication_slot_xmin;
+			slot_snapshot->replication_slot_catalog_xmin = replication_slot_catalog_xmin;
+				
+			LWLockRelease(&slot_lock->lock);
+
+			pg_atomic_write_u32(&store->curr_slot_idx, next_slot_idx);
+
+			return;
+		}
+
+		/* 
+		 * Write lock failed because of share lock held, it is possible though not common,
+		 * just update metric and retry.
+		 * Only startup backend will update this metric, need not use atomic ops.
+		 */
+		store->write_retried_times++;
+	} 
+
+    /*
+	 * Retry times have reached, there is no available slot for write,
+     * we should let read backend go through the old way.
+	 * This is not a common case, update metric and log it.
+	 * For performance issue, use DEBUG1.
+	 */
+
+	pg_atomic_write_u32(&store->curr_slot_idx, PG_UINT32_MAX);
+	
+	store->write_switched_times++;
+
+	elog(DEBUG1, "No available slot to make multi version snapshot");
+}
+
+/* 
+ * replica multi version snapshot store get functions for dynamic view and test
+ */
+
+int
+polar_replica_multi_version_snapshot_get_slot_num(void)
+{
+	polar_replica_multi_version_snapshot_store_t *store = polar_replica_multi_version_snapshot_store;
+
+	if (store)
+		return store->slot_num;
+	else
+		return 0;
+}
+
+int
+polar_replica_multi_version_snapshot_get_retry_times(void)
+{
+	polar_replica_multi_version_snapshot_store_t *store = polar_replica_multi_version_snapshot_store;
+
+	if (store)
+		return store->retry_times;
+	else 
+		return 0;
+}
+
+uint32
+polar_replica_multi_version_snapshot_get_curr_slot_no(void)
+{
+	polar_replica_multi_version_snapshot_store_t *store = polar_replica_multi_version_snapshot_store;
+
+	if (store)
+		return pg_atomic_read_u32(&store->curr_slot_idx);
+	else
+		return 0;
+}
+
+int
+polar_replica_multi_version_snapshot_get_next_slot_no(void)
+{
+	polar_replica_multi_version_snapshot_store_t *store = polar_replica_multi_version_snapshot_store;
+
+	if (store)
+		return store->next_slot_idx;
+	else
+		return 0;
+}
+
+uint64
+polar_replica_multi_version_snapshot_get_read_retried_times(void)
+{
+	polar_replica_multi_version_snapshot_store_t *store = polar_replica_multi_version_snapshot_store;
+
+	if (store)
+		return pg_atomic_read_u64(&store->read_retried_times);
+	else
+		return 0;
+}
+
+uint64
+polar_replica_multi_version_snapshot_get_read_switched_times(void)
+{
+	polar_replica_multi_version_snapshot_store_t *store = polar_replica_multi_version_snapshot_store;
+
+	if (store)
+		return pg_atomic_read_u64(&store->read_switched_times);
+	else
+		return 0;
+}
+
+uint64
+polar_replica_multi_version_snapshot_get_write_retried_times(void)
+{
+	polar_replica_multi_version_snapshot_store_t *store = polar_replica_multi_version_snapshot_store;
+
+	if (store)
+		return store->write_retried_times;
+	else
+		return 0;
+}
+
+uint64
+polar_replica_multi_version_snapshot_get_write_switched_times(void)
+{
+	polar_replica_multi_version_snapshot_store_t *store = polar_replica_multi_version_snapshot_store;
+
+	if (store)
+		return store->write_switched_times;
+	else 
+		return 0;
+}
+
+/* POLAR test begin */
+
+/*
+ *	static func/proc wrapper
+ */
+
+void 
+polar_test_replica_multi_version_snapshot_set_snapshot(void)
+{
+	LWLockAcquire(ProcArrayLock, LW_EXCLUSIVE);
+	polar_replica_multi_version_snapshot_set_snapshot();
+	LWLockRelease(ProcArrayLock);
+}
+
+bool 
+polar_test_replica_multi_version_snapshot_get_snapshot(TransactionId *xip, int *count, bool *overflowed,
+				   								  	TransactionId *xmin, TransactionId *xmax, 
+												  	TransactionId *replication_slot_xmin, 
+												  	TransactionId *replication_slot_catalog_xmin)
+{
+	return polar_replica_multi_version_snapshot_get_snapshot(xip, count, overflowed, xmin,  xmax, 
+												  	replication_slot_xmin, 
+												  	replication_slot_catalog_xmin);
+}
+
+void
+polar_test_KnownAssignedXidsAdd(TransactionId from_xid, TransactionId to_xid)
+{
+	KnownAssignedXidsAdd(from_xid, to_xid, false);
+}
+
+void 
+polar_test_KnownAssignedXidsReset(void)
+{
+	KnownAssignedXidsReset();
+}
+
+void
+polar_test_set_curr_slot_num(int slot_num)
+{
+	polar_replica_multi_version_snapshot_store_t *store = polar_replica_multi_version_snapshot_store;
+
+	pg_atomic_write_u32(&store->curr_slot_idx, slot_num);
+}
+
+void
+polar_test_set_next_slot_num(int slot_num)
+{
+	polar_replica_multi_version_snapshot_store_t *store = polar_replica_multi_version_snapshot_store;
+
+	store->next_slot_idx = slot_num;
+}
+
+void
+polar_test_acquire_slot_lock(int slot_num, LWLockMode mode)
+{
+	polar_replica_multi_version_snapshot_store_t *store = polar_replica_multi_version_snapshot_store;
+	LWLockPadded *slot_lock = &store->slot_locks[slot_num];
+
+	LWLockAcquire(&slot_lock->lock, mode);
+}
+
+void
+polar_test_release_slot_lock(int slot_num)
+{
+	polar_replica_multi_version_snapshot_store_t *store = polar_replica_multi_version_snapshot_store;
+	LWLockPadded *slot_lock = &store->slot_locks[slot_num];
+
+	LWLockRelease(&slot_lock->lock);
+}
+
+void 
+polar_set_latestObservedXid(TransactionId latest_observed_xid)
+{
+	latestObservedXid = latest_observed_xid;
+}
+
+PGPROC *
+polar_search_proc(pid_t pid)
+{
+	int i;
+	PGPROC *proc = NULL;
+
+	LWLockAcquire(ProcArrayLock, LW_SHARED);
+
+	for (i = 0; i < ProcGlobal->allProcCount; i++)
+	{
+		if (ProcGlobal->allProcs[i].pid == pid)
+		{
+			proc = &ProcGlobal->allProcs[i];
+			break;
+		}
 	}
 
 	LWLockRelease(ProcArrayLock);
 
-	if (POLAR_ENABLE_FULLPAGE_SNAPSHOT())
-	{
-		/* This checkpoint lsn can avoid clear xlog when restore old fullpage */
-		last_checkpoint_redo_lsn = GetRedoRecPtr();
-		if (!XLogRecPtrIsInvalid(result) &&
-		    !XLogRecPtrIsInvalid(last_checkpoint_redo_lsn) &&
-		    last_checkpoint_redo_lsn < result)
-		{
-			result = last_checkpoint_redo_lsn;
-		}
-	}
-
-	/* This replay lsn can avoid clearing last pending parsing redo log */
-	last_replayed_lsn = GetXLogReplayRecPtr(NULL);
-	/* Note: this can happen when last some logs don't be involved buffers */
-	if (!XLogRecPtrIsInvalid(result) &&
-	    !XLogRecPtrIsInvalid(last_replayed_lsn) &&
-	    last_replayed_lsn < result)
-	{
-		result = last_replayed_lsn;
-	}
-	bg_replayed_lsn = InvalidXLogRecPtr;
-
-	bg_replayed_lsn = polar_bg_redo_get_replayed_lsn();
-	if (!XLogRecPtrIsInvalid(bg_replayed_lsn) && bg_replayed_lsn < result)
-		result = bg_replayed_lsn;
-
-
-	return result;
+	return proc;
 }
+
+/* Used for POLAR csn */
+TransactionId 
+polar_get_latestObservedXid(void)
+{
+	return latestObservedXid;
+}
+
+/* POLAR test end */

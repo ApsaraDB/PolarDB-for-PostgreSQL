@@ -21,6 +21,13 @@
 #include "miscadmin.h"
 #include "utils/tuplesort.h"
 
+/* POLAR px */
+#include "px/px_vars.h"
+/* POLAR end */
+
+/* POLAR px */
+static void ExecEagerFreeSort(SortState *node);
+/* POLAR end */
 
 /* ----------------------------------------------------------------
  *		ExecSort
@@ -152,6 +159,19 @@ ExecSort(PlanState *pstate)
 	(void) tuplesort_gettupleslot(tuplesortstate,
 								  ScanDirectionIsForward(dir),
 								  false, slot, NULL);
+
+	/*
+	 * POLAR px: clean up the node if the execution ends and no longer 
+	 *           rescaned. Also, we need to avoid non-px execution flow
+	 *           to step in, because delayEagerFree has no effect in
+	 *           non-px situation.
+	 */
+	if (px_is_executing && TupIsNull(slot) && !node->delayEagerFree)
+	{
+		ExecEagerFreeSort(node);
+	}
+	/* POLAR end */
+
 	return slot;
 }
 
@@ -204,9 +224,47 @@ ExecInitSort(Sort *node, EState *estate, int eflags)
 	 * We shield the child node from the need to support REWIND, BACKWARD, or
 	 * MARK/RESTORE.
 	 */
-	eflags &= ~(EXEC_FLAG_REWIND | EXEC_FLAG_BACKWARD | EXEC_FLAG_MARK);
+
+	/*
+	 * POLAR px: If eflag contains EXEC_FLAG_REWIND or EXEC_FLAG_BACKWARD or
+	 *           EXEC_FLAG_MARK, then this node is not eager free safe.
+	 */
+	sortstate->delayEagerFree = eflags & (EXEC_FLAG_REWIND |
+										  EXEC_FLAG_BACKWARD |
+										  EXEC_FLAG_MARK);
+	/* POLAR end */
+
+	/* POLAR px */
+	if (px_is_executing)
+	{
+		eflags &= ~(EXEC_FLAG_BACKWARD | EXEC_FLAG_MARK);
+
+		/*
+		 * If Sort does not have any external parameters, then it
+		 * can shield the child node from being rescanned as well, hence
+		 * we can clear the EXEC_FLAG_REWIND as well. If there are parameters,
+		 * don't clear the REWIND flag, as the child will be rewound.
+		 */
+		if (node->plan.allParam == NULL || node->plan.extParam == NULL)
+		{
+			eflags &= ~EXEC_FLAG_REWIND;
+		}
+	}
+	else
+		eflags &= ~(EXEC_FLAG_REWIND | EXEC_FLAG_BACKWARD | EXEC_FLAG_MARK);
+	/* POLAR end */
 
 	outerPlanState(sortstate) = ExecInitNode(outerPlan(node), estate, eflags);
+
+	/*
+	 * POLAR px: If the child node of a Sort is a Motion, then this
+	 *           Sort node is not eager free safe.
+	 */
+	if (IsA(outerPlan((Plan *)node), Motion))
+	{
+		sortstate->delayEagerFree = true;
+	}
+	/* POLAR end */
 
 	/*
 	 * Initialize scan slot and type.
@@ -427,3 +485,36 @@ ExecSortRetrieveInstrumentation(SortState *node)
 	memcpy(si, node->shared_info, size);
 	node->shared_info = si;
 }
+
+/* 
+ * POLAR px: ExecEagerFreeSort() does nearly the same as ExecEndSort(),
+ *           but ExecSquelchSort() will decide whether or not the node is
+ *           safe to eager free. It is safe ONLY IF delayEagerFree is false.
+ */
+static void
+ExecEagerFreeSort(SortState *node)
+{
+	/* clean out the tuple table */
+	ExecClearTuple(node->ss.ss_ScanTupleSlot);
+
+	/* must drop pointer to sort result tuple */
+	ExecClearTuple(node->ss.ps.ps_ResultTupleSlot);
+
+	if (node->tuplesortstate != NULL)
+	{
+		tuplesort_end((Tuplesortstate *) node->tuplesortstate);
+		node->tuplesortstate = NULL;
+	}
+}
+
+void
+ExecSquelchSort(SortState *node)
+{
+	/* safe to eager free */
+	if (!node->delayEagerFree)
+	{
+		ExecEagerFreeSort(node);
+		ExecSquelchNode(outerPlanState(node));
+	}
+}
+/* POLAR end */

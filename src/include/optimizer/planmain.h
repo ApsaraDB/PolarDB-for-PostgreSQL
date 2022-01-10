@@ -46,6 +46,13 @@ extern RelOptInfo *query_planner(PlannerInfo *root, List *tlist,
 extern void preprocess_minmax_aggregates(PlannerInfo *root, List *tlist);
 
 /*
+ * POLAR: prototypes for plan/polar_or_to_union_all.c
+ */
+extern List *polar_split_join_or_clauses(PlannerInfo *root);
+extern void polar_finish_union_or_paths(PlannerInfo *root, RelOptInfo *joinrel,
+					  List *union_or_subpaths);
+
+/*
  * prototypes for plan/createplan.c
  */
 extern Plan *create_plan(PlannerInfo *root, Path *best_path);
@@ -122,5 +129,7 @@ extern void extract_query_dependencies(Node *query,
 						   List **relationOids,
 						   List **invalItems,
 						   bool *hasRowSecurity);
+/* POLAR px */
+extern void polar_extract_plan_dependencies(PlannerInfo *root, Plan *plan);
 
 #endif							/* PLANMAIN_H */

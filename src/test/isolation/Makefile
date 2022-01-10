@@ -11,6 +11,11 @@ include $(top_builddir)/src/Makefile.global
 
 override CPPFLAGS := -I$(srcdir) -I$(libpq_srcdir) -I$(srcdir)/../regress $(CPPFLAGS)
 
+DMA_REGRESS_OPTS = 
+ifdef DMA_OPTS
+DMA_REGRESS_OPTS += --dma=$(DMA_OPTS)
+endif
+
 OBJS =  specparse.o isolationtester.o $(WIN32RES)
 
 all: isolationtester$(X) pg_isolation_regress$(X)
@@ -53,7 +58,7 @@ installcheck: all
 	$(pg_isolation_regress_installcheck) --schedule=$(srcdir)/isolation_schedule
 
 check: all
-	$(pg_isolation_regress_check) --schedule=$(srcdir)/isolation_schedule
+	$(pg_isolation_regress_check) $(DMA_REGRESS_OPTS) --schedule=$(srcdir)/isolation_schedule
 
 # Versions of the check tests that include the prepared_transactions test
 # It only makes sense to run these if set up to use prepared transactions,
@@ -63,4 +68,4 @@ installcheck-prepared-txns: all temp-install
 	$(pg_isolation_regress_installcheck) --schedule=$(srcdir)/isolation_schedule prepared-transactions
 
 check-prepared-txns: all temp-install
-	$(pg_isolation_regress_check) --schedule=$(srcdir)/isolation_schedule prepared-transactions
+	$(pg_isolation_regress_check) $(DMA_REGRESS_OPTS) --schedule=$(srcdir)/isolation_schedule prepared-transactions

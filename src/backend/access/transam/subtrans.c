@@ -151,7 +151,6 @@ SubTransGetParent(TransactionId xid)
 		if (!polar_slru_page_physical_exists(SubTransCtl, pageno))
 			return InvalidTransactionId;
 	}
-
 	/* lock is acquired by SimpleLruReadPage_ReadOnly */
 
 	slotno = SimpleLruReadPage_ReadOnly(SubTransCtl, pageno, xid);
@@ -215,7 +214,8 @@ SubTransGetTopmostTransaction(TransactionId xid)
 Size
 SUBTRANSShmemSize(void)
 {
-	return SimpleLruShmemSize(NUM_SUBTRANS_BUFFERS, 0);
+	/* POLAR: change size variable to guc */
+	return SimpleLruShmemSize(polar_subtrans_buffer_slot_size, 0);
 }
 
 void
@@ -223,7 +223,7 @@ SUBTRANSShmemInit(void)
 {
 	SubTransCtl->PagePrecedes = SubTransPagePrecedes;
 	/* POLAR: pg_subtrans file not in shared storage */
-	SimpleLruInit(SubTransCtl, "subtrans", NUM_SUBTRANS_BUFFERS, 0,
+	SimpleLruInit(SubTransCtl, "subtrans", polar_subtrans_buffer_slot_size, 0,
 				  SubtransControlLock, "pg_subtrans",
 				  LWTRANCHE_SUBTRANS_BUFFERS, false);
 	/* Override default assumption that writes should be fsync'd */

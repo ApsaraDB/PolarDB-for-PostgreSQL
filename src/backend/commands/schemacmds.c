@@ -372,7 +372,7 @@ AlterSchemaOwner_internal(HeapTuple tup, Relation rel, Oid newOwnerId)
 		AclResult	aclresult;
 
 		/* Otherwise, must be owner of the existing object */
-		if (!pg_namespace_ownercheck(HeapTupleGetOid(tup), GetUserId()))
+		if (!polar_pg_namespace_ownercheck(HeapTupleGetOid(tup), GetUserId()))
 			aclcheck_error(ACLCHECK_NOT_OWNER, OBJECT_SCHEMA,
 						   NameStr(nspForm->nspname));
 

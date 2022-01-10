@@ -1721,6 +1721,8 @@ expand_partitioned_rtentry(PlannerInfo *root, RangeTblEntry *parentrte,
 		Oid			childOID = partdesc->oids[i];
 		Relation	childrel;
 
+		CHECK_FOR_INTERRUPTS();
+
 		/* Open rel; we already have required locks */
 		childrel = heap_open(childOID, NoLock);
 

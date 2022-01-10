@@ -14,6 +14,10 @@
 #ifndef SYSATTR_H
 #define SYSATTR_H
 
+/* POLAR px */
+#include "postgres.h"
+
+#include "px/px_vars.h"
 
 /*
  * Attribute numbers for the system-defined attributes
@@ -25,6 +29,9 @@
 #define MaxTransactionIdAttributeNumber			(-5)
 #define MaxCommandIdAttributeNumber				(-6)
 #define TableOidAttributeNumber					(-7)
-#define FirstLowInvalidHeapAttributeNumber		(-8)
-
+/* POLAR px */
+#define PxWorkerIdAttributeNumber			    (-8)
+#define RootSelfItemPointerAttributeNumber      (-9)
+#define FirstLowInvalidHeapAttributeNumber      (-10)
+/* POLAR end */
 #endif							/* SYSATTR_H */

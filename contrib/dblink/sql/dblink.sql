@@ -1,5 +1,9 @@
 CREATE EXTENSION dblink;
 
+alter system set dblink.polar_auto_port_mapping=off;
+alter system set dblink.polar_connection_check=off;
+select pg_reload_conf();
+
 -- want context for notices
 \set SHOW_CONTEXT always
 
@@ -601,3 +605,7 @@ SELECT dblink_disconnect('myconn');
 RESET datestyle;
 RESET intervalstyle;
 RESET timezone;
+
+alter system reset dblink.polar_auto_port_mapping;
+alter system reset dblink.polar_connection_check;
+select pg_reload_conf();

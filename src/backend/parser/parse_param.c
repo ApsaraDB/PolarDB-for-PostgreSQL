@@ -32,6 +32,8 @@
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
 
+/* POLAR */
+#include "utils/guc.h"
 
 typedef struct FixedParamState
 {
@@ -48,6 +50,7 @@ typedef struct FixedParamState
 typedef struct VarParamState
 {
 	Oid		  **paramTypes;		/* array of parameter type OIDs */
+	int		  **paramLocation;	/* POLAR: param location */
 	int		   *numParams;		/* number of array entries */
 } VarParamState;
 
@@ -81,11 +84,12 @@ parse_fixed_parameters(ParseState *pstate,
  */
 void
 parse_variable_parameters(ParseState *pstate,
-						  Oid **paramTypes, int *numParams)
+						  Oid **paramTypes, int **paramLocation, int *numParams)
 {
 	VarParamState *parstate = palloc(sizeof(VarParamState));
 
 	parstate->paramTypes = paramTypes;
+	parstate->paramLocation = paramLocation; /* POLAR: param location */
 	parstate->numParams = numParams;
 	pstate->p_ref_hook_state = (void *) parstate;
 	pstate->p_paramref_hook = variable_paramref_hook;
@@ -153,7 +157,29 @@ variable_paramref_hook(ParseState *pstate, ParamRef *pref)
 		MemSet(*parstate->paramTypes + *parstate->numParams,
 			   0,
 			   (paramno - *parstate->numParams) * sizeof(Oid));
+
+		/* POLAR: param location */
+		if (polar_enable_audit_log_bind_sql_parameter_new)
+		{
+			/* Need to enlarge param array */
+			if (*parstate->paramLocation)
+				*parstate->paramLocation = (int *) repalloc(*parstate->paramLocation,
+														paramno * sizeof(int));
+			else
+				*parstate->paramLocation = (int *) palloc(paramno * sizeof(int));
+			/* Zero out the previously-unreferenced slots */
+			MemSet(*parstate->paramLocation + *parstate->numParams,
+				0,
+				(paramno - *parstate->numParams) * sizeof(int));
+		}
+
 		*parstate->numParams = paramno;
+	}
+
+	/* POLAR: param location */
+	if (polar_enable_audit_log_bind_sql_parameter_new) 
+	{
+		(*parstate->paramLocation)[paramno - 1] = pref->location;
 	}
 
 	/* Locate param's slot in array */

@@ -26,6 +26,20 @@
 
 #include "storage/dsm_impl.h"
 
+/* POLAR */
+#include "utils/hsearch.h"
+
+typedef enum PolarShmemType
+{
+	POLAR_SHMEM_NORMAL = 0,
+	POLAR_SHMEM_PERSISTED,
+	/* The number of shmem type, it is not a valid type. */
+	POLAR_SHMEM_NUM
+} PolarShmemType;
+
+#define polar_shmem_is_persisted(shmem_type) (shmem_type == POLAR_SHMEM_PERSISTED)
+#define polar_shmem_is_normal(shmem_type) (shmem_type == POLAR_SHMEM_NORMAL)
+
 typedef struct PGShmemHeader	/* standard header for all Postgres shmem */
 {
 	int32		magic;			/* magic # to identify Postgres segments */
@@ -39,6 +53,7 @@ typedef struct PGShmemHeader	/* standard header for all Postgres shmem */
 	dev_t		device;			/* device data directory is on */
 	ino_t		inode;			/* inode number of data directory */
 #endif
+	PolarShmemType	type;
 } PGShmemHeader;
 
 /* GUC variable */
@@ -54,11 +69,17 @@ typedef enum
 
 #ifndef WIN32
 extern unsigned long UsedShmemSegID;
+
+/* POLAR */
+extern unsigned long polar_used_shmem_seg_id;
 #else
 extern HANDLE UsedShmemSegID;
 extern void *ShmemProtectiveRegion;
 #endif
 extern void *UsedShmemSegAddr;
+
+/* POLAR */
+extern void	*polar_used_shmem_seg_addr;
 
 #ifdef EXEC_BACKEND
 extern void PGSharedMemoryReAttach(void);
@@ -66,8 +87,12 @@ extern void PGSharedMemoryNoReAttach(void);
 #endif
 
 extern PGShmemHeader *PGSharedMemoryCreate(Size size, int port,
-					 PGShmemHeader **shim);
+					 PGShmemHeader **shim, PolarShmemType polar_shmem_type);
 extern bool PGSharedMemoryIsInUse(unsigned long id1, unsigned long id2);
 extern void PGSharedMemoryDetach(void);
 
+/* POLAR */
+extern HTAB* polar_get_shmem_index(void);
+extern PGShmemHeader* polar_get_shmem_seg_hdr(void);
+extern bool polar_delete_shmem(int shmId);
 #endif							/* PG_SHMEM_H */

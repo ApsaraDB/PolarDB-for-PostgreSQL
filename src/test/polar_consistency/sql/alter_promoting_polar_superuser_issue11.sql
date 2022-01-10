@@ -1,0 +1,263 @@
+--
+-- Test for ALTER some_object {RENAME TO, OWNER TO, SET SCHEMA}
+--
+
+-- Clean up in case a prior regression run failed
+SET client_min_messages TO 'warning';
+
+DROP DATABASE IF EXISTS tmp233;
+DROP ROLE IF EXISTS regressioncleanupuser;
+DROP ROLE IF EXISTS regtest_alter_user1;
+DROP ROLE IF EXISTS regtest_alter_user2;
+DROP ROLE IF EXISTS regtest_alter_user3;
+DROP ROLE IF EXISTS regtest_alter_polar_superuser;
+
+RESET client_min_messages;
+
+CREATE DATABASE tmp233;
+create user regressioncleanupuser superuser;
+CREATE USER regtest_alter_user3 CREATEDB CREATEROLE;
+CREATE USER regtest_alter_user2 CREATEDB CREATEROLE;
+CREATE USER regtest_alter_user1 CREATEDB CREATEROLE;
+CREATE USER regtest_alter_polar_superuser polar_superuser;
+
+\c tmp233 regressioncleanupuser
+CREATE SCHEMA alt_nsp1;
+CREATE SCHEMA alt_nsp2;
+
+GRANT ALL ON SCHEMA alt_nsp1, alt_nsp2 TO public;
+
+SET search_path = alt_nsp1, alt_nsp2, public;
+-- superuser owner
+CREATE FUNCTION alt_func1_super(int) RETURNS int LANGUAGE sql
+  AS 'SELECT $1 + 1';
+CREATE FUNCTION alt_func2_super(int) RETURNS int LANGUAGE sql
+  AS 'SELECT $1 - 1';
+CREATE AGGREGATE alt_agg1_super (
+  sfunc1 = int4pl, basetype = int4, stype1 = int4, initcond = 0
+);
+CREATE AGGREGATE alt_agg2_super (
+  sfunc1 = int4mi, basetype = int4, stype1 = int4, initcond = 0
+);
+CREATE TABLE atl_table1_super(id int);
+
+-- change to polar_superuser
+\c tmp233 regtest_alter_polar_superuser
+
+SET search_path = alt_nsp1, alt_nsp2, public;
+-- can not alter superuser object
+ALTER FUNCTION alt_func1_super(int) RENAME TO alt_func3_super;  -- FIL
+ALTER FUNCTION alt_func3_super(int) OWNER TO regtest_alter_user2;  -- FIL
+ALTER FUNCTION alt_func2_super(int) OWNER TO regtest_alter_user2;  -- FIL
+ALTER FUNCTION alt_func2_super(int) OWNER TO regtest_alter_user3;  -- FIL
+ALTER FUNCTION alt_func2_super(int) SET SCHEMA alt_nsp2;  -- FIL
+ALTER TABLE atl_table1_super rename to atl_table2_super; -- FIL
+ALTER TABLE atl_table1_super OWNER TO regtest_alter_user2; -- FIL
+ALTER TABLE atl_table1_super SET SCHEMA alt_nsp2;  -- FIL
+
+--
+-- TABLE
+--
+SET SESSION AUTHORIZATION regtest_alter_user1;
+CREATE TABLE atl_table1(id int);
+CREATE TABLE atl_table2(id int);
+
+RESET SESSION AUTHORIZATION;
+show SESSION AUTHORIZATION;
+
+ALTER TABLE atl_table1 rename to atl_table2; -- OK
+ALTER TABLE atl_table1 OWNER TO regtest_alter_user2; -- OK
+ALTER TABLE atl_table1 SET SCHEMA alt_nsp2;  -- OK
+
+SET SESSION AUTHORIZATION regtest_alter_user1;
+ALTER TABLE atl_table1 rename to atl_table2; -- FIL
+ALTER TABLE atl_table1 OWNER TO regtest_alter_user3; -- FIL
+ALTER TABLE atl_table1 SET SCHEMA alt_nsp2;  -- FIL
+
+--
+-- DATABASE
+--
+SET SESSION AUTHORIZATION regtest_alter_user1;
+CREATE DATABASE atl_database1;
+
+RESET SESSION AUTHORIZATION;
+ALTER DATABASE atl_database1 rename to atl_database2; -- OK
+ALTER DATABASE atl_database2 rename to atl_database1; -- OK
+ALTER DATABASE atl_database1 OWNER TO regtest_alter_user2; -- OK
+
+SET SESSION AUTHORIZATION regtest_alter_user1;
+ALTER DATABASE atl_database1 rename to atl_database2; -- FIL
+ALTER DATABASE atl_database2 rename to atl_database1; -- FIL
+ALTER DATABASE atl_database1 OWNER TO regtest_alter_user3; -- FIL
+
+--
+-- Function and Aggregate
+--
+SET SESSION AUTHORIZATION regtest_alter_user1;
+CREATE FUNCTION alt_func1(int) RETURNS int LANGUAGE sql
+  AS 'SELECT $1 + 1';
+CREATE FUNCTION alt_func2(int) RETURNS int LANGUAGE sql
+  AS 'SELECT $1 - 1';
+CREATE AGGREGATE alt_agg1 (
+  sfunc1 = int4pl, basetype = int4, stype1 = int4, initcond = 0
+);
+CREATE AGGREGATE alt_agg2 (
+  sfunc1 = int4mi, basetype = int4, stype1 = int4, initcond = 0
+);
+
+-- change to polar_superuser, has permission
+RESET SESSION AUTHORIZATION;
+ALTER FUNCTION alt_func1(int) RENAME TO alt_func3;  -- OK
+ALTER FUNCTION alt_func3(int) RENAME TO alt_func1;  -- OK
+ALTER FUNCTION alt_func1(int) OWNER TO regtest_alter_user2;  -- OK
+ALTER FUNCTION alt_func2(int) OWNER TO regtest_alter_user2;  -- OK
+ALTER FUNCTION alt_func2(int) SET SCHEMA alt_nsp2;  -- OK
+ALTER FUNCTION alt_func1(int) SET SCHEMA alt_nsp2;  -- OK
+
+-- no perssion
+SET SESSION AUTHORIZATION regtest_alter_user1;
+ALTER FUNCTION alt_func1(int) RENAME TO alt_func3;  -- FIL
+ALTER FUNCTION alt_func1(int) OWNER TO regtest_alter_user3;  -- FIL
+ALTER FUNCTION alt_func2(int) OWNER TO regtest_alter_user3;  -- FIL
+ALTER FUNCTION alt_func2(int) SET SCHEMA alt_nsp2;  -- FIL
+
+RESET SESSION AUTHORIZATION;
+ALTER AGGREGATE alt_agg1(int) RENAME TO alt_agg2;   -- failed (name conflict)
+ALTER AGGREGATE alt_agg1(int) RENAME TO alt_agg3;   -- OK
+ALTER AGGREGATE alt_agg3(int) RENAME TO alt_agg1;   -- OK
+ALTER AGGREGATE alt_agg1(int) OWNER TO regtest_alter_user3;  -- OK
+ALTER AGGREGATE alt_agg2(int) OWNER TO regtest_alter_user3;  -- OK
+ALTER AGGREGATE alt_agg2(int) SET SCHEMA alt_nsp2;  -- OK
+ALTER AGGREGATE alt_agg1(int) SET SCHEMA alt_nsp2;  -- OK
+
+SET SESSION AUTHORIZATION regtest_alter_user1;
+ALTER AGGREGATE alt_agg1(int) RENAME TO alt_agg3;   -- FIL
+ALTER AGGREGATE alt_agg3(int) RENAME TO alt_agg1;   -- FIL
+ALTER AGGREGATE alt_agg1(int) OWNER TO regtest_alter_user2;  -- FIL
+ALTER AGGREGATE alt_agg2(int) OWNER TO regtest_alter_user2;  -- FIL
+ALTER AGGREGATE alt_agg2(int) SET SCHEMA alt_nsp2;  -- FIL
+
+RESET SESSION AUTHORIZATION;
+
+--
+-- We would test collations here, but it's not possible because the error
+-- messages tend to be nonportable.
+--
+
+--
+-- Conversion
+--
+SET SESSION AUTHORIZATION regtest_alter_user1;
+CREATE CONVERSION alt_conv1 FOR 'LATIN1' TO 'UTF8' FROM iso8859_1_to_utf8;
+CREATE CONVERSION alt_conv2 FOR 'LATIN1' TO 'UTF8' FROM iso8859_1_to_utf8;
+
+RESET SESSION AUTHORIZATION;
+ALTER CONVERSION alt_conv1 RENAME TO alt_conv3;  -- OK
+ALTER CONVERSION alt_conv3 RENAME TO alt_conv1;  -- OK
+ALTER CONVERSION alt_conv1 OWNER TO regtest_alter_user2;  -- OK
+ALTER CONVERSION alt_conv2 OWNER TO regtest_alter_user2;  -- OK
+ALTER CONVERSION alt_conv2 OWNER TO regtest_alter_user3;  -- OK
+ALTER CONVERSION alt_conv1 SET SCHEMA alt_nsp2;  -- OK
+ALTER CONVERSION alt_conv2 SET SCHEMA alt_nsp2;  -- OK
+
+SET SESSION AUTHORIZATION regtest_alter_user1;
+ALTER CONVERSION alt_conv1 RENAME TO alt_conv3;  -- FIL
+ALTER CONVERSION alt_conv2 OWNER TO regtest_alter_user3;  -- FIL
+ALTER CONVERSION alt_conv2 OWNER TO regtest_alter_user3;  -- FIL
+ALTER CONVERSION alt_conv2 SET SCHEMA alt_nsp2;  -- FIL
+
+RESET SESSION AUTHORIZATION;
+
+--
+-- Operator
+--
+SET SESSION AUTHORIZATION regtest_alter_user1;
+
+CREATE OPERATOR @-@ ( leftarg = int4, rightarg = int4, procedure = int4mi );
+CREATE OPERATOR @+@ ( leftarg = int4, rightarg = int4, procedure = int4pl );
+
+RESET SESSION AUTHORIZATION;
+ALTER OPERATOR @+@(int4, int4) OWNER TO regtest_alter_user2;  -- OK
+ALTER OPERATOR @+@(int4, int4) OWNER TO regtest_alter_user2;  -- OK
+ALTER OPERATOR @+@(int4, int4) SET SCHEMA alt_nsp2;           -- OK
+ALTER OPERATOR @-@(int4, int4) SET SCHEMA alt_nsp2;           -- OK
+
+-- Object owner has become regtest_alter_user2 and regtest_alter_user3
+SET SESSION AUTHORIZATION regtest_alter_user1;
+ALTER OPERATOR @+@(int4, int4) OWNER TO regtest_alter_user3;  -- FIL
+ALTER OPERATOR @+@(int4, int4) OWNER TO regtest_alter_user3;  -- FIL
+ALTER OPERATOR @-@(int4, int4) SET SCHEMA alt_nsp2;           -- FIL
+
+-- can't test this: the error message includes the raw oid of namespace
+-- ALTER OPERATOR @-@(int4, int4) SET SCHEMA alt_nsp2;   -- failed (name conflict)
+
+RESET SESSION AUTHORIZATION;
+
+--
+-- Text Search Dictionary
+--
+SET SESSION AUTHORIZATION regtest_alter_user1;
+CREATE TEXT SEARCH DICTIONARY alt_ts_dict1 (template=simple);
+CREATE TEXT SEARCH DICTIONARY alt_ts_dict2 (template=simple);
+
+RESET SESSION AUTHORIZATION;
+ALTER TEXT SEARCH DICTIONARY alt_ts_dict1 RENAME TO alt_ts_dict2;  -- failed (name conflict)
+ALTER TEXT SEARCH DICTIONARY alt_ts_dict1 RENAME TO alt_ts_dict3;  -- OK
+ALTER TEXT SEARCH DICTIONARY alt_ts_dict3 RENAME TO alt_ts_dict1;  -- OK
+ALTER TEXT SEARCH DICTIONARY alt_ts_dict1 OWNER TO regtest_alter_user2;  -- OK
+ALTER TEXT SEARCH DICTIONARY alt_ts_dict2 OWNER TO regtest_alter_user2;  -- OK
+ALTER TEXT SEARCH DICTIONARY alt_ts_dict1 SET SCHEMA alt_nsp2;  -- OK
+ALTER TEXT SEARCH DICTIONARY alt_ts_dict2 SET SCHEMA alt_nsp2;  -- OK
+
+SET SESSION AUTHORIZATION regtest_alter_user1;
+ALTER TEXT SEARCH DICTIONARY alt_ts_dict1 RENAME TO alt_ts_dict3;  -- OK
+ALTER TEXT SEARCH DICTIONARY alt_ts_dict1 OWNER TO regtest_alter_user3;  -- OK
+ALTER TEXT SEARCH DICTIONARY alt_ts_dict2 OWNER TO regtest_alter_user3;  -- OK
+ALTER TEXT SEARCH DICTIONARY alt_ts_dict2 SET SCHEMA alt_nsp2;  -- OK
+
+RESET SESSION AUTHORIZATION;
+
+--
+-- Text Search Configuration
+--
+SET SESSION AUTHORIZATION regtest_alter_user1;
+CREATE TEXT SEARCH CONFIGURATION alt_ts_conf1 (copy=english);
+CREATE TEXT SEARCH CONFIGURATION alt_ts_conf2 (copy=english);
+
+RESET SESSION AUTHORIZATION;
+ALTER TEXT SEARCH CONFIGURATION alt_ts_conf1 RENAME TO alt_ts_conf2;  -- failed (name conflict)
+ALTER TEXT SEARCH CONFIGURATION alt_ts_conf1 RENAME TO alt_ts_conf3;  -- OK
+ALTER TEXT SEARCH CONFIGURATION alt_ts_conf3 RENAME TO alt_ts_conf1;  -- OK
+ALTER TEXT SEARCH CONFIGURATION alt_ts_conf1 OWNER TO regtest_alter_user2;  -- OK
+ALTER TEXT SEARCH CONFIGURATION alt_ts_conf2 OWNER TO regtest_alter_user2;  -- OK
+ALTER TEXT SEARCH CONFIGURATION alt_ts_conf1 SET SCHEMA alt_nsp2;  -- OK
+ALTER TEXT SEARCH CONFIGURATION alt_ts_conf2 SET SCHEMA alt_nsp2;  -- OK
+
+SET SESSION AUTHORIZATION regtest_alter_user1;
+ALTER TEXT SEARCH CONFIGURATION alt_ts_conf1 RENAME TO alt_ts_conf2;  -- FIL
+ALTER TEXT SEARCH CONFIGURATION alt_ts_conf1 RENAME TO alt_ts_conf3;  -- FIL
+ALTER TEXT SEARCH CONFIGURATION alt_ts_conf1 OWNER TO regtest_alter_user3;  -- FIL
+ALTER TEXT SEARCH CONFIGURATION alt_ts_conf2 OWNER TO regtest_alter_user3;  -- FIL
+ALTER TEXT SEARCH CONFIGURATION alt_ts_conf2 SET SCHEMA alt_nsp2;  -- FIL
+
+RESET SESSION AUTHORIZATION;
+
+---
+--- Cleanup resources
+---
+\c tmp233 regressioncleanupuser
+
+SET search_path = alt_nsp1, alt_nsp2, public;
+SET client_min_messages TO 'warning';
+
+DROP DATABASE atl_database1;
+DROP SCHEMA alt_nsp1 CASCADE;
+DROP SCHEMA alt_nsp2 CASCADE;
+
+\c postgres regressioncleanupuser
+DROP DATABASE tmp233;
+
+DROP USER regtest_alter_user1;
+DROP USER regtest_alter_user2;
+DROP USER regtest_alter_user3;
+DROP USER regtest_alter_polar_superuser;

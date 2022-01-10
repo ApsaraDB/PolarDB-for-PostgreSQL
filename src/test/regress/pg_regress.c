@@ -94,6 +94,10 @@ static char *user = NULL;
 static _stringlist *extraroles = NULL;
 static char *config_auth_datadir = NULL;
 
+static bool dma_test = false;
+static bool dma_cluster = false;
+static int	dma_election_timeout = 60;
+
 /* internal variables */
 static const char *progname;
 static char *logfilename;
@@ -127,8 +131,11 @@ static void header(const char *fmt,...) pg_attribute_printf(1, 2);
 static void status(const char *fmt,...) pg_attribute_printf(1, 2);
 static void psql_command(const char *database, const char *query,...) pg_attribute_printf(2, 3);
 
+static void doputenv(const char *var, const char *val);
+
 /* POLAR */
 bool polar_is_enable = true;
+bool polar_enable_parallel_execution = false;
 
 /*
  * allow core files if possible.
@@ -259,13 +266,623 @@ status_end(void)
 		fprintf(logfile, "\n");
 }
 
+static void 
+polar_dma_create_pg_conf(char *node_name)
+{
+	FILE	   *pg_conf;
+	_stringlist *sl;
+	char		buf[MAXPGPATH * 4];
+
+	/*
+	 * Adjust the default postgresql.conf for regression testing. The user
+	 * can specify a file to be appended; in any case we expand logging
+	 * and set max_prepared_transactions to enable testing of prepared
+	 * xacts.  (Note: to reduce the probability of unexpected shmmax
+	 * failures, don't set max_prepared_transactions any higher than
+	 * actually needed by the prepared_xacts regression test.)
+	 */
+	snprintf(buf, sizeof(buf), "%s/%s/data/postgresql.conf", temp_instance, node_name);
+	pg_conf = fopen(buf, "a");
+	if (pg_conf == NULL)
+	{
+		fprintf(stderr, _("\n%s: could not open \"%s\" for adding extra config: %s\n"), progname, buf, strerror(errno));
+		exit(2);
+	}
+	fputs("\n# Configuration added by pg_regress\n\n", pg_conf);
+	fputs("log_autovacuum_min_duration = 0\n", pg_conf);
+	fputs("log_checkpoints = on\n", pg_conf);
+	fputs("log_line_prefix = '%m [%p] %q%a '\n", pg_conf);
+	fputs("log_lock_waits = on\n", pg_conf);
+	fputs("log_temp_files = 128kB\n", pg_conf);
+	fputs("max_prepared_transactions = 2\n", pg_conf);
+	fputs("polar_logindex_mem_size = 0\n", pg_conf);
+	fputs("polar_enable_copy_buffer = false\n", pg_conf);
+
+	for (sl = temp_configs; sl != NULL; sl = sl->next)
+	{
+		char	   *temp_config = sl->str;
+		FILE	   *extra_conf;
+		char		line_buf[1024];
+
+		extra_conf = fopen(temp_config, "r");
+		if (extra_conf == NULL)
+		{
+			fprintf(stderr, _("\n%s: could not open \"%s\" to read extra config: %s\n"), progname, temp_config, strerror(errno));
+			exit(2);
+		}
+		while (fgets(line_buf, sizeof(line_buf), extra_conf) != NULL)
+			fputs(line_buf, pg_conf);
+		fclose(extra_conf);
+	}
+
+	fclose(pg_conf);
+
+#ifdef ENABLE_SSPI
+
+	/*
+	 * Since we successfully used the same buffer for the much-longer
+	 * "initdb" command, this can't truncate.
+	 */
+	snprintf(buf, sizeof(buf), "%s/%s/data", temp_instance, node_name);
+	config_sspi_auth(buf);
+#elif !defined(HAVE_UNIX_SOCKETS)
+#error Platform has no means to secure the test installation.
+#endif
+}
+
+static void 
+polar_dma_create_recovery_conf(char *node_name)
+{
+	FILE	   	*recovery_conf;
+	char		buf[MAXPGPATH * 4];
+
+	snprintf(buf, sizeof(buf), "%s/%s/data/recovery.conf", temp_instance, node_name);
+	recovery_conf = fopen(buf, "a");
+	if (recovery_conf == NULL)
+	{
+		fprintf(stderr, _("\n%s: could not open \"%s\" for adding extra config: %s\n"), progname, buf, strerror(errno));
+		exit(2);
+	}
+	fputs("\n# Configuration added by pg_regress\n\n", recovery_conf);
+	fputs("polar_datamax_mode = standalone\n", recovery_conf);
+	fclose(recovery_conf);
+}
+
+
+static void 
+polar_dma_create_dma_conf(char *node_name, bool follower)
+{
+	FILE	   	*dma_conf;
+	char		buf[MAXPGPATH * 4];
+	const char	*username;
+	char		*errstr;
+
+	snprintf(buf, sizeof(buf), "%s/%s/data/polar_dma.conf", temp_instance, node_name);
+	dma_conf = fopen(buf, "a");
+	if (dma_conf == NULL)
+	{
+		fprintf(stderr, _("\n%s: could not open \"%s\" for adding extra config: %s\n"), progname, buf, strerror(errno));
+		exit(2);
+	}
+	fputs("\n# Configuration added by pg_regress\n\n", dma_conf);
+	fputs("polar_enable_dma= on\n", dma_conf);
+	if (follower)
+		fputs("polar_dma_delay_election= on\n", dma_conf);
+
+	if (user == NULL)
+	{
+		username = get_user_name(&errstr);
+		if (username == NULL)
+		{
+			fprintf(stderr, "%s: %s\n", progname, errstr);
+			exit(2);
+		}
+	}
+	else
+	{
+		username = user;
+	}
+	snprintf(buf, sizeof(buf), "polar_dma_repl_user= %s\n", username);
+	fputs(buf, dma_conf);
+
+	fclose(dma_conf);
+}
+
+static int 
+polar_dma_start_node(char *node_name, int node_port, bool follower)
+{
+	PID_TYPE current_postmaster_pid = INVALID_PID;
+	char		buf[MAXPGPATH * 4];
+	const char *env_wait;
+	int			wait_seconds;
+	int			i;
+
+	/*
+	 * Start the temp postmaster
+	 */
+	header(_("starting postmaster of %s on port %d"), node_name, node_port);
+	snprintf(buf, sizeof(buf),
+			"\"%s%spostgres\" -D \"%s/%s/data\" %s "
+			"-c \"listen_addresses=%s\" -k \"%s\" -p %d "
+			"> \"%s/log/%s/postmaster.log\" 2>&1",
+			bindir ? bindir : "",
+			bindir ? "/" : "",
+			temp_instance, node_name, debug ? " -d 5" : "",
+			hostname ? hostname : "localhost", sockdir ? sockdir : "",
+			node_port, outputdir, node_name);
+	fprintf(stdout, "================================================\n"
+			 		"cmd: %s\n"
+					"================================================\n", buf);
+	current_postmaster_pid = spawn_process(buf);
+	if (current_postmaster_pid == INVALID_PID)
+	{
+		fprintf(stderr, _("\n%s: could not spawn postmaster of %s: %s\n"),
+				progname, node_name, strerror(errno));
+		exit(2);
+	}
+
+	if (follower)
+	{
+		psql_command("postgres", "alter system dma add follower \'%s:%d\'", 
+				hostname ? hostname : "localhost", node_port);
+	}	
+
+	/*
+	 * Check if there is a postmaster running already.
+	 */
+	snprintf(buf, sizeof(buf),
+			"\"%s%spsql\" -X template1 -p %d <%s 2>%s",
+			bindir ? bindir : "",
+			bindir ? "/" : "",
+			node_port,
+			DEVNULL, DEVNULL);
+
+	/*
+	 * Wait till postmaster is able to accept connections; normally this
+	 * is only a second or so, but Cygwin is reportedly *much* slower, and
+	 * test builds using Valgrind or similar tools might be too.  Hence,
+	 * allow the default timeout of 60 seconds to be overridden from the
+	 * PGCTLTIMEOUT environment variable.
+	 */
+	env_wait = getenv("PGCTLTIMEOUT");
+	if (env_wait != NULL)
+	{
+		wait_seconds = atoi(env_wait);
+		if (wait_seconds <= 0)
+			wait_seconds = 60;
+	}
+	else
+		wait_seconds = 60;
+
+	for (i = 0; i < wait_seconds; i++)
+	{
+		/* Done if psql succeeds */
+		if (system(buf) == 0)
+			break;
+
+		/*
+		 * Fail immediately if postmaster has exited
+		 */
+#ifndef WIN32
+		if (waitpid(current_postmaster_pid, NULL, WNOHANG) == current_postmaster_pid)
+#else
+			if (WaitForSingleObject(current_postmaster_pid, 0) == WAIT_OBJECT_0)
+#endif
+			{
+				fprintf(stderr, _("\n%s: postmaster failed\nExamine %s/log/%s/postmaster.log for the reason\n"), progname, outputdir, node_name);
+				exit(2);
+			}
+
+		pg_usleep(1000000L);
+	}
+	if (i >= wait_seconds)
+	{
+		fprintf(stderr, _("\n%s: postmaster did not respond within %d seconds\nExamine %s/log/%s/postmaster.log for the reason\n"),
+				progname, wait_seconds, outputdir, node_name);
+
+		/*
+		 * If we get here, the postmaster is probably wedged somewhere in
+		 * startup.  Try to kill it ungracefully rather than leaving a
+		 * stuck postmaster that might interfere with subsequent test
+		 * attempts.
+		 */
+#ifndef WIN32
+		if (kill(current_postmaster_pid, SIGKILL) != 0 &&
+				errno != ESRCH)
+			fprintf(stderr, _("\n%s: could not kill failed postmaster: %s\n"),
+					progname, strerror(errno));
+#else
+		if (TerminateProcess(current_postmaster_pid, 255) == 0)
+			fprintf(stderr, _("\n%s: could not kill failed postmaster: error code %lu\n"),
+					progname, GetLastError());
+#endif
+
+		exit(2);
+	}
+
+#ifdef _WIN64
+	/* need a series of two casts to convert HANDLE without compiler warning */
+#define ULONGPID(x) (unsigned long) (unsigned long long) (x)
+#else
+#define ULONGPID(x) (unsigned long) (x)
+#endif
+	printf(_("%s running on port %d with PID %lu\n"),
+			node_name, port, ULONGPID(current_postmaster_pid));
+
+	return current_postmaster_pid;
+}
+
+static int
+polar_dma_init_node(char *node_name, int node_port, uint64 sys_identifier, bool logger)
+{
+	char		buf[MAXPGPATH * 4];
+	char		buf2[MAXPGPATH * 4];
+	int			i;
+
+	/* initdb */
+	header(_("initializing database system"));
+	snprintf(buf, sizeof(buf),
+			"\"%s%sinitdb\" -D \"%s/%s/data\" --no-clean -i %lu --no-sync%s%s > \"%s/log/initdb.log\" 2>&1",
+			bindir ? bindir : "",
+			bindir ? "/" : "",
+			temp_instance,
+			node_name,
+			sys_identifier,
+			debug ? " --debug" : "",
+			nolocale ? " --no-locale" : "",
+			outputdir);
+	fprintf(stdout, "================================================\n"
+			 		"cmd: %s\n"
+					"================================================\n", buf);
+	if (system(buf))
+	{
+		fprintf(stderr, _("\n%s: initdb failed\nExamine %s/log/%s/initdb.log for the reason.\nCommand was: %s\n"), progname, outputdir, node_name, buf);
+		exit(2);
+	}
+
+	polar_dma_create_pg_conf(node_name);
+	polar_dma_create_dma_conf(node_name, false);
+	if (logger)
+		polar_dma_create_recovery_conf(node_name);
+
+	/*
+	 * Check if there is a postmaster running already.
+	 */
+	snprintf(buf2, sizeof(buf2),
+			"\"%s%spsql\" -X template1 -p %d <%s 2>%s",
+			bindir ? bindir : "",
+			bindir ? "/" : "",
+			node_port,
+			DEVNULL, DEVNULL);
+
+
+	for (i = 0; i < 16; i++)
+	{
+		if (system(buf2) == 0)
+		{
+			char		s[16];
+
+			if (port_specified_by_user || i == 15)
+			{
+				fprintf(stderr, _("port %d apparently in use\n"), node_port);
+				if (!port_specified_by_user)
+					fprintf(stderr, _("%s: could not determine an available port\n"), progname);
+				fprintf(stderr, _("Specify an unused port using the --port option or shut down any conflicting PostgreSQL servers.\n"));
+				exit(2);
+			}
+
+			fprintf(stderr, _("port %d apparently in use, trying %d\n"), node_port, node_port + 1);
+			node_port++;
+			sprintf(s, "%d", node_port);
+			doputenv("PGPORT", s);
+		}
+		else
+			break;
+	}
+
+	/*
+	 * Start the temp postmaster
+	 */
+	header(_("init dma meta for node: %s"), node_name);
+	snprintf(buf, sizeof(buf),
+			"\"%s%spostgres\" -D \"%s/%s/data\" %s "
+			"-c \"listen_addresses=%s\" -k \"%s\" "
+			"-c \"polar_dma_init_meta=ON\" "
+			"-c \"%s=\"%s:%d%s\"\" "
+			"-p %d "
+			"> \"%s/log/%s/postmaster_init_meta.log\" 2>&1",
+			bindir ? bindir : "",
+			bindir ? "/" : "",
+			temp_instance, node_name, debug ? " -d 5" : "",
+			hostname ? hostname : "localhost", sockdir ? sockdir : "",
+			logger ? "polar_dma_learners_info" : "polar_dma_members_info",
+			hostname ? hostname : "localhost", node_port,
+			logger ? "" : "@1", node_port,
+			outputdir, node_name);
+	fprintf(stdout, "================================================\n"
+			 		"cmd: %s\n"
+					"================================================\n", buf);
+	if (system(buf))
+	{
+		fprintf(stderr, _("\n%s: could not init dma meta of %s: %s\n"),
+				progname, node_name, strerror(errno));
+		exit(2);
+	}
+	return node_port;
+}
+
+static int 
+polar_dma_build_node_from_backup(char *node_name, int start_port)
+{
+	char		buf[MAXPGPATH * 4];
+	char		buf2[MAXPGPATH * 4];
+	int			current_port = start_port;
+	int 		i;
+
+	/* polar_basebackup */
+	header(_("initializing cluster node: %s"), node_name);
+	snprintf(buf, sizeof(buf),
+			"\"%s%spolar_basebackup\" -D %s/%s/data -p %d > \"%s/log/%s/basebackup.log\" 2>&1",
+			bindir ? bindir : "",
+			bindir ? "/" : "",
+			temp_instance,
+			node_name,
+			port,
+			outputdir,
+			node_name);
+	fprintf(stdout, "================================================\n"
+			 		"cmd: %s\n"
+					"================================================\n", buf);
+	if (system(buf))
+	{
+		fprintf(stderr, _("\n%s: polar_basebackup failed\nExamine %s/log/%s/basebackup.log for the reason.\nCommand was: %s\n"), progname, outputdir, node_name, buf);
+		exit(2);
+	}
+
+	polar_dma_create_pg_conf(node_name);
+	polar_dma_create_dma_conf(node_name, true);
+
+	/*
+	 * Check if there is a postmaster running already.
+	 */
+	snprintf(buf2, sizeof(buf2),
+			"\"%s%spsql\" -X template1 -p %d <%s 2>%s",
+			bindir ? bindir : "",
+			bindir ? "/" : "",
+			current_port,
+			DEVNULL, DEVNULL);
+
+	for (i = 0; i < 16; i++)
+	{
+		if (current_port > 65535 - 10000)
+		{
+			fprintf(stderr, _("port %d beyond 55535"), port);
+			exit(2);
+		}
+		if (system(buf2) == 0)
+		{
+			char		s[16];
+
+			fprintf(stderr, _("port %d apparently in use, trying %d\n"), port, port + 1);
+			current_port++;
+			sprintf(s, "%d", current_port);
+			doputenv("PGPORT", s);
+		}
+		else
+			break;
+	}
+
+	/*
+	 * Start the temp postmaster
+	 */
+	header(_("init dma meta of %s"), node_name);
+	snprintf(buf, sizeof(buf),
+			"\"%s%spostgres\" -D \"%s/%s/data\" %s "
+			"-c \"listen_addresses=%s\" -k \"%s\" "
+			"-c \"polar_dma_init_meta=ON\" "
+			"-c \"polar_dma_learners_info=\"%s:%d\"\" "
+			"-p %d "
+			"> \"%s/log/%s/postmaster_init_meta.log\" 2>&1",
+			bindir ? bindir : "",
+			bindir ? "/" : "",
+			temp_instance, node_name, debug ? " -d 5" : "",
+			hostname ? hostname : "localhost", sockdir ? sockdir : "",
+			hostname ? hostname : "localhost", current_port, current_port,
+			outputdir, node_name);
+	fprintf(stdout, "================================================\n"
+			 		"cmd: %s\n"
+					"================================================\n", buf);
+	if (system(buf))
+	{
+		fprintf(stderr, _("\n%s: could not init dma meta of %s: %s\n"),
+				progname, node_name, strerror(errno));
+		exit(2);
+	}
+	return current_port;
+}
+
+static bool 
+wait_became_leader(char *node_name, int leader_port)
+{
+	char		buf[MAXPGPATH * 4];
+
+	/*
+	 * Check if there is a postmaster running already.
+	 */
+	snprintf(buf, sizeof(buf),
+			"\"%s%spsql\" -X postgres -p %d -c \"do \\$\\$ "
+			" DECLARE "
+			"   counter integer := %d; "
+			"	BEGIN "
+			"	  LOOP "
+			"     PERFORM 1 where pg_is_in_recovery() = false; "
+			"	  IF FOUND THEN "
+			"       RAISE NOTICE \'%s became leader\'; "
+			"		    EXIT; "
+			"	  END IF;"
+			"     PERFORM pg_sleep(1); "
+			"		  counter := counter - 1; "
+			"		  IF counter = 0 THEN "
+			" 		  RAISE EXCEPTION \'became leader timeout\'; "
+			"		    EXIT; "
+			"	    END IF; "
+			"	  END LOOP; "
+			" END\\$\\$;\" ",
+			bindir ? bindir : "",
+			bindir ? "/" : "",
+			leader_port,
+			dma_election_timeout, node_name);
+
+	fprintf(stdout, "================================================\n"
+			 		"cmd: %s\n"
+					"================================================\n", buf);
+
+	/* kill postmaster if psql failed */
+	if (system(buf) != 0)
+	{
+		return false;
+	}
+	return true;
+}
+
+static void 
+start_postmaster_cluster(void)
+{
+	char		buf[MAXPGPATH * 4];
+	int			port_f1, port_f2;
+	bool		suc;
+	uint64	sysidentifier;
+	struct 	timeval tv;
+
+	/*
+	 * Prepare the temp instance
+	 */
+
+	if (directory_exists(temp_instance))
+	{
+		header(_("removing existing temp instance"));
+		if (!rmtree(temp_instance, true))
+		{
+			fprintf(stderr, _("\n%s: could not remove temp instance \"%s\"\n"),
+					progname, temp_instance);
+			exit(2);
+		}
+	}
+
+	header(_("creating temporary instance"));
+
+	/* make the temp instance top directory */
+	make_directory(temp_instance);
+	snprintf(buf, sizeof(buf), "%s/node1", temp_instance);
+	make_directory(buf);
+	if (dma_cluster)
+	{
+		snprintf(buf, sizeof(buf), "%s/node2", temp_instance);
+		make_directory(buf);
+		snprintf(buf, sizeof(buf), "%s/node3", temp_instance);
+		make_directory(buf);
+	}
+
+	/* and a directory for log files */
+	snprintf(buf, sizeof(buf), "%s/log", outputdir);
+	if (!directory_exists(buf))
+		make_directory(buf);
+	snprintf(buf, sizeof(buf), "%s/log/node1", outputdir);
+	if (!directory_exists(buf))
+		make_directory(buf);
+	if (dma_cluster)
+	{
+		snprintf(buf, sizeof(buf), "%s/log/node2", outputdir);
+		if (!directory_exists(buf))
+			make_directory(buf);
+		snprintf(buf, sizeof(buf), "%s/log/node3", outputdir);
+		if (!directory_exists(buf))
+			make_directory(buf);
+	}
+
+	gettimeofday(&tv, NULL);
+	sysidentifier = ((uint64) tv.tv_sec) << 32;
+	sysidentifier |= ((uint64) tv.tv_usec) << 12;
+	sysidentifier |= getpid() & 0xFFF;
+
+	port = polar_dma_init_node("node1", port, sysidentifier, false);
+	postmaster_pid = polar_dma_start_node("node1", port, false);
+	suc = wait_became_leader("node1", port);
+	if (!suc)
+	{
+#ifndef WIN32
+		if (kill(postmaster_pid, SIGKILL) != 0 &&
+				errno != ESRCH)
+			fprintf(stderr, _("\n%s: could not kill failed postmaster: %s\n"),
+					progname, strerror(errno));
+#else
+		if (TerminateProcess(postmaster_pid, 255) == 0)
+			fprintf(stderr, _("\n%s: could not kill failed postmaster: error code %lu\n"),
+					progname, GetLastError());
+#endif
+	}
+
+	postmaster_running = true;
+
+	if (dma_cluster)
+	{
+		port_f1 = polar_dma_build_node_from_backup("node2", port+1);
+		polar_dma_start_node("node2", port_f1, true);
+		port_f2 = polar_dma_init_node("node3", port_f1+1, sysidentifier, true);
+		polar_dma_start_node("node3", port_f2, true);
+	}
+}
+
+static int 
+stop_postmaster_node(char *node_name)
+{
+	/* We use pg_ctl to issue the kill and wait for stop */
+	char		buf[MAXPGPATH * 2];
+	int			r;
+
+	/* On Windows, system() seems not to force fflush, so... */
+	fflush(stdout);
+	fflush(stderr);
+
+	snprintf(buf, sizeof(buf),
+			"\"%s%spg_ctl\" stop -D \"%s/%s/data\" -s",
+			bindir ? bindir : "",
+			bindir ? "/" : "",
+			temp_instance,
+			node_name);
+	r = system(buf);
+
+	return r;
+}
+
 /*
  * shut down temp postmaster
  */
 static void
 stop_postmaster(void)
 {
-	if (postmaster_running)
+	if (dma_test)
+	{
+		if (postmaster_running)
+		{
+			int			r1, r2 = 0, r3 = 0;
+			postmaster_running = false;
+			r1 = stop_postmaster_node("node1");
+			if (dma_cluster)
+			{
+				r2 = stop_postmaster_node("node2");
+				r3 = stop_postmaster_node("node3");
+			}	
+			if (r1 != 0 || r2 != 0 || r3 != 0)
+			{
+				fprintf(stderr, _("\n%s: could not stop postmaster: exit code was %d, %d, %d\n"),
+						progname, r1, r2, r3);
+				_exit(2);			/* not exit(), that could be recursive */
+			}
+			postmaster_running = false;
+		}
+	}
+	else if (postmaster_running)
 	{
 		/* We use pg_ctl to issue the kill and wait for stop */
 		char		buf[MAXPGPATH * 2];
@@ -538,11 +1155,22 @@ convert_sourcefiles_in(const char *source_subdir, const char *dest_dir, const ch
 
 		count++;
 
-		/* build the full actual paths to open */
-		snprintf(prefix, strlen(*name) - 6, "%s", *name);
-		snprintf(srcfile, MAXPGPATH, "%s/%s", indir, *name);
-		snprintf(destfile, MAXPGPATH, "%s/%s/%s.%s", dest_dir, dest_subdir,
-				 prefix, suffix);
+		/* POLAR */
+		if (strcmp(dest_subdir, "expected") == 0 && strlen(*name) >= 16 && strcmp(*name + strlen(*name) - 15, ".replica.source") == 0)
+		{
+			snprintf(prefix, strlen(*name) - 14, "%s", *name);
+			snprintf(srcfile, MAXPGPATH, "%s/%s", indir, *name);
+			snprintf(destfile, MAXPGPATH, "%s/%s/%s.out.replica", dest_dir, dest_subdir, prefix);
+		}
+		else
+		{
+			/* build the full actual paths to open */
+			snprintf(prefix, strlen(*name) - 6, "%s", *name);
+			snprintf(srcfile, MAXPGPATH, "%s/%s", indir, *name);
+			snprintf(destfile, MAXPGPATH, "%s/%s/%s.%s", dest_dir, dest_subdir,
+					 prefix, suffix);
+		}
+		/* POLAR end */
 
 		infile = fopen(srcfile, "r");
 		if (!infile)
@@ -1316,7 +1944,8 @@ run_diff(const char *cmd, const char *filename)
 	if (!WIFEXITED(r) || WEXITSTATUS(r) > 1)
 	{
 		fprintf(stderr, _("diff command failed with status %d: %s\n"), r, cmd);
-		exit(2);
+		/* POLAR px: Continue test if file not exist*/
+		/* exit(2);*/
 	}
 #ifdef WIN32
 
@@ -1488,7 +2117,7 @@ results_differ(const char *testname, const char *resultsfile, const char *defaul
  * Note: it's OK to scribble on the pids array, but not on the names array
  */
 static void
-wait_for_tests(PID_TYPE * pids, int *statuses, char **names, int num_tests)
+wait_for_tests(PID_TYPE * pids, int *statuses, char **names, struct timeval *endtimes, int num_tests)
 {
 	int			tests_left;
 	int			i;
@@ -1503,6 +2132,7 @@ wait_for_tests(PID_TYPE * pids, int *statuses, char **names, int num_tests)
 	while (tests_left > 0)
 	{
 		PID_TYPE	p;
+		struct timeval endtime;
 
 #ifndef WIN32
 		int			exit_status;
@@ -1531,6 +2161,8 @@ wait_for_tests(PID_TYPE * pids, int *statuses, char **names, int num_tests)
 		active_pids[r - WAIT_OBJECT_0] = active_pids[tests_left - 1];
 #endif							/* WIN32 */
 
+		gettimeofday(&endtime, NULL);
+
 		for (i = 0; i < num_tests; i++)
 		{
 			if (p == pids[i])
@@ -1541,6 +2173,8 @@ wait_for_tests(PID_TYPE * pids, int *statuses, char **names, int num_tests)
 #endif
 				pids[i] = INVALID_PID;
 				statuses[i] = (int) exit_status;
+				if (endtimes)
+					endtimes[i] = endtime;
 				if (names)
 					status(" %s", names[i]);
 				tests_left--;
@@ -1591,10 +2225,13 @@ run_schedule(const char *schedule, test_function tfunc)
 	_stringlist *tags[MAX_PARALLEL_TESTS];
 	PID_TYPE	pids[MAX_PARALLEL_TESTS];
 	int			statuses[MAX_PARALLEL_TESTS];
+	struct timeval endtimes[MAX_PARALLEL_TESTS];
 	_stringlist *ignorelist = NULL;
+
 	char		scbuf[1024];
 	FILE	   *scf;
 	int			line_num = 0;
+
 	/* POLAR */
 	_stringlist *polar_ignorelist = NULL;
 
@@ -1618,6 +2255,7 @@ run_schedule(const char *schedule, test_function tfunc)
 		int			num_tests;
 		bool		inword;
 		int			i;
+		struct timeval starttime;
 
 		line_num++;
 
@@ -1636,6 +2274,9 @@ run_schedule(const char *schedule, test_function tfunc)
 			while (*c && isspace((unsigned char) *c))
 				c++;
 			add_stringlist_item(&ignorelist, c);
+
+			/* POLAR */
+			ignore_count ++;
 
 			/*
 			 * Note: ignore: lines do not run the test, they just say that
@@ -1663,6 +2304,34 @@ run_schedule(const char *schedule, test_function tfunc)
 			if (polar_is_enable)
 				polar_ignore_count ++;
 			continue;
+		}
+		else if (strncmp(scbuf, "polar_px_ignore: ", 17) == 0)
+		{
+			if (polar_enable_parallel_execution)
+			{
+				c = scbuf + 17;
+				while (*c && isspace((unsigned char) *c))
+					c++;
+				add_stringlist_item(&polar_ignorelist, c);
+				polar_ignore_count ++;
+			}
+			continue;
+		}
+		else if (strncmp(scbuf, "cluster_ignore: ", 16) == 0)
+		{
+			if (dma_cluster)
+			{
+				c = scbuf + 16;
+				while (*c && isspace((unsigned char) *c))
+					c++;
+				add_stringlist_item(&ignorelist, c);
+				ignore_count ++;
+				continue;
+			}
+			else
+			{
+				test = scbuf + 16;
+			}
 		}
 		else
 		{
@@ -1713,11 +2382,13 @@ run_schedule(const char *schedule, test_function tfunc)
 			exit(2);
 		}
 
+		gettimeofday(&starttime, NULL);
+
 		if (num_tests == 1)
 		{
 			status(_("test %-28s ... "), tests[0]);
 			pids[0] = (tfunc) (tests[0], &resultfiles[0], &expectfiles[0], &tags[0]);
-			wait_for_tests(pids, statuses, NULL, 1);
+			wait_for_tests(pids, statuses, NULL, endtimes, 1);
 			/* status line is finished below */
 		}
 		else if (max_concurrent_tests > 0 && max_concurrent_tests < num_tests)
@@ -1737,13 +2408,15 @@ run_schedule(const char *schedule, test_function tfunc)
 				if (i - oldest >= max_connections)
 				{
 					wait_for_tests(pids + oldest, statuses + oldest,
-								   tests + oldest, i - oldest);
+								   tests + oldest, endtimes + oldest,
+								   i - oldest);
 					oldest = i;
 				}
 				pids[i] = (tfunc) (tests[i], &resultfiles[i], &expectfiles[i], &tags[i]);
 			}
 			wait_for_tests(pids + oldest, statuses + oldest,
-						   tests + oldest, i - oldest);
+						   tests + oldest, endtimes + oldest,
+						   i - oldest);
 			status_end();
 		}
 		else
@@ -1753,7 +2426,7 @@ run_schedule(const char *schedule, test_function tfunc)
 			{
 				pids[i] = (tfunc) (tests[i], &resultfiles[i], &expectfiles[i], &tags[i]);
 			}
-			wait_for_tests(pids, statuses, tests, num_tests);
+			wait_for_tests(pids, statuses, tests, endtimes, num_tests);
 			status_end();
 		}
 
@@ -1764,6 +2437,7 @@ run_schedule(const char *schedule, test_function tfunc)
 					   *el,
 					   *tl;
 			bool		differ = false;
+
 			/* POLAR */
 			bool polar_ignore = false;
 			/* POLAR end */
@@ -1784,10 +2458,14 @@ run_schedule(const char *schedule, test_function tfunc)
 				 tl = tl ? tl->next : NULL)
 			{
 				bool		newdiff;
+
+				/* POLAR */
+				char		polar_replicaoutfile[MAXPGPATH];
+				char		polar_replicaexpectfile[MAXPGPATH];
+
 				/* POLAR */
 				_stringlist *sl;
-
-				if (polar_is_enable)
+				if (polar_is_enable || dma_cluster || polar_enable_parallel_execution)
 				{
 					for (sl = polar_ignorelist; sl != NULL; sl = sl->next)
 					{
@@ -1801,13 +2479,30 @@ run_schedule(const char *schedule, test_function tfunc)
 				if (polar_ignore)
 					continue;
 				/* POLAR end */
-
+				
 				newdiff = results_differ(tests[i], rl->str, el->str);
 				if (newdiff && tl)
 				{
 					printf("%s ", tl->str);
 				}
 				differ |= newdiff;
+
+				/* POLAR: check replica out diff */
+				snprintf(polar_replicaoutfile, sizeof(polar_replicaoutfile), "%s.replica",
+						 rl->str);
+				snprintf(polar_replicaexpectfile, sizeof(polar_replicaexpectfile), "%s.replica",
+						 el->str);
+				/* we need check replica out file */
+				if (getenv("PGREPLICAHOST") && getenv("PGREPLICAPORT") && file_exists(polar_replicaexpectfile))
+				{
+					newdiff = results_differ(tests[i], polar_replicaoutfile, polar_replicaexpectfile);
+					if (newdiff && tl)
+					{
+						printf("%s.replica ", tl->str);
+					}
+					differ |= newdiff;
+				}
+				/* POLAR end */
 			}
 
 			if (differ)
@@ -1843,6 +2538,23 @@ run_schedule(const char *schedule, test_function tfunc)
 					status(_("ok"));
 				/* POLAR end */
 				success_count++;
+			}
+
+			/* Calculate time spent in test */
+			{
+				int diff_sec;
+				int diff_usec;
+
+				diff_sec = (int) (endtimes[i].tv_sec - starttime.tv_sec);
+				if (endtimes[i].tv_usec < starttime.tv_usec)
+				{
+					endtimes[i].tv_sec--;
+					endtimes[i].tv_usec += 1000000;
+				}
+				diff_sec = (int) (endtimes[i].tv_sec - starttime.tv_sec);
+				diff_usec = (int) (endtimes[i].tv_usec - starttime.tv_usec);
+
+				status(" (%d.%02d s)", diff_sec, diff_usec / 10000);
 			}
 
 			if (statuses[i] != 0)
@@ -1885,7 +2597,7 @@ run_single_test(const char *test, test_function tfunc)
 
 	status(_("test %-28s ... "), test);
 	pid = (tfunc) (test, &resultfiles, &expectfiles, &tags);
-	wait_for_tests(&pid, &exit_status, NULL, 1);
+	wait_for_tests(&pid, &exit_status, NULL, NULL, 1);
 
 	/*
 	 * Advance over all three lists simultaneously.
@@ -1901,12 +2613,33 @@ run_single_test(const char *test, test_function tfunc)
 	{
 		bool		newdiff;
 
+		/* POLAR */
+		char		polar_replicaoutfile[MAXPGPATH];
+		char		polar_replicaexpectfile[MAXPGPATH];
+
 		newdiff = results_differ(test, rl->str, el->str);
 		if (newdiff && tl)
 		{
 			printf("%s ", tl->str);
 		}
 		differ |= newdiff;
+
+		/* POLAR: check replica out diff */
+		snprintf(polar_replicaoutfile, sizeof(polar_replicaoutfile), "%s.replica",
+				 rl->str);
+		snprintf(polar_replicaexpectfile, sizeof(polar_replicaexpectfile), "%s.replica",
+				 el->str);
+		/* we need check replica out file */
+		if (getenv("PGREPLICAHOST") && getenv("PGREPLICAPORT") && file_exists(polar_replicaexpectfile))
+		{
+			newdiff = results_differ(test, polar_replicaoutfile, polar_replicaexpectfile);
+			if (newdiff && tl)
+			{
+				printf("%s.replica ", tl->str);
+			}
+			differ |= newdiff;
+		}
+		/* POLAR end */
 	}
 
 	if (differ)
@@ -2119,6 +2852,9 @@ regression_main(int argc, char *argv[], init_function ifunc, test_function tfunc
 		{"load-extension", required_argument, NULL, 22},
 		{"config-auth", required_argument, NULL, 24},
 		{"max-concurrent-tests", required_argument, NULL, 25},
+		{"polar-parallel-execution", no_argument, NULL, 26},
+		{"dma", required_argument, NULL, 2000},
+		{"dma-election-timeout", required_argument, NULL, 2001},
 		{NULL, 0, NULL, 0}
 	};
 
@@ -2194,6 +2930,9 @@ regression_main(int argc, char *argv[], init_function ifunc, test_function tfunc
 				break;
 			case 9:
 				temp_instance = make_absolute_path(optarg);
+				/* POLAR */
+				polar_is_enable = false;
+				/* POLAR end*/
 				break;
 			case 10:
 				nolocale = true;
@@ -2239,6 +2978,17 @@ regression_main(int argc, char *argv[], init_function ifunc, test_function tfunc
 			case 25:
 				max_concurrent_tests = atoi(optarg);
 				break;
+			case 26:
+				polar_enable_parallel_execution = true;
+				break;
+			case 2000:
+				dma_test = true;
+				if (strcmp(optarg, "cluster") == 0 || strcmp(optarg, "CLUSTER") == 0)
+					dma_cluster = true;
+				break;
+			case 2001:
+				dma_election_timeout = atoi(optarg);
+				break;
 			default:
 				/* getopt_long already emitted a complaint */
 				fprintf(stderr, _("\nTry \"%s -h\" for more information.\n"),
@@ -2273,7 +3023,7 @@ regression_main(int argc, char *argv[], init_function ifunc, test_function tfunc
 		 * systems; elsewhere, the use of a private socket directory already
 		 * prevents interference.
 		 */
-		port = 0xC000 | (PG_VERSION_NUM & 0x3FFF);
+		port = (0xC000 | (PG_VERSION_NUM & 0x3FFF)) - (dma_test ? 10000 : 0);
 
 	inputdir = make_absolute_path(inputdir);
 	outputdir = make_absolute_path(outputdir);
@@ -2290,7 +3040,11 @@ regression_main(int argc, char *argv[], init_function ifunc, test_function tfunc
 	unlimit_core_size();
 #endif
 
-	if (temp_instance)
+	if (dma_test && temp_instance)
+	{
+		start_postmaster_cluster();
+	}
+	else if (temp_instance)
 	{
 		FILE	   *pg_conf;
 		const char *env_wait;
@@ -2611,7 +3365,7 @@ regression_main(int argc, char *argv[], init_function ifunc, test_function tfunc
 				 fail_ignore_count);
 
 	putchar('\n');
-
+	
 	/* POLAR */
 	snprintf(polar_buf, sizeof(polar_buf),
 			_(" All %d tests, %d tests in ignore, %d tests in polar ignore. "),

@@ -115,6 +115,7 @@ double		cpu_index_tuple_cost = DEFAULT_CPU_INDEX_TUPLE_COST;
 double		cpu_operator_cost = DEFAULT_CPU_OPERATOR_COST;
 double		parallel_tuple_cost = DEFAULT_PARALLEL_TUPLE_COST;
 double		parallel_setup_cost = DEFAULT_PARALLEL_SETUP_COST;
+double      polar_stat_stale_cost = DEFAULT_CPU_TUPLE_COST;
 
 int			effective_cache_size = DEFAULT_EFFECTIVE_CACHE_SIZE;
 
@@ -129,6 +130,7 @@ bool		enable_bitmapscan = true;
 bool		enable_tidscan = true;
 bool		enable_sort = true;
 bool		enable_hashagg = true;
+bool		enable_groupagg = true;
 bool		enable_nestloop = true;
 bool		enable_material = true;
 bool		enable_mergejoin = true;
@@ -731,6 +733,14 @@ cost_index(IndexPath *path, PlannerInfo *root, double loop_count,
 	/* tlist eval costs are paid per output row, not per tuple scanned */
 	startup_cost += path->path.pathtarget->cost.startup;
 	cpu_run_cost += path->path.pathtarget->cost.per_tuple * path->path.rows;
+
+	/*
+	 * polar:
+	 * To make the planner more robust to handle some inaccurate statistics
+	 * issue, we will add a extra cost to qpquals so that the less qpquals
+	 * the lower cost it has.
+	 */
+    cpu_run_cost += polar_stat_stale_cost * list_length(qpquals);
 
 	/* Adjust costing for parallelism, if used. */
 	if (path->path.parallel_workers > 0)

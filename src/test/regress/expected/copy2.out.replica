@@ -1,0 +1,489 @@
+CREATE TEMP TABLE x (
+	a serial,
+	b int,
+	c text not null default 'stuff',
+	d text,
+	e text
+) WITH OIDS;
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE FUNCTION fn_x_before () RETURNS TRIGGER AS '
+  BEGIN
+		NEW.e := ''before trigger fired''::text;
+		return NEW;
+	END;
+' LANGUAGE plpgsql;
+ERROR:  cannot execute CREATE FUNCTION in a read-only transaction
+CREATE FUNCTION fn_x_after () RETURNS TRIGGER AS '
+  BEGIN
+		UPDATE x set e=''after trigger fired'' where c=''stuff'';
+		return NULL;
+	END;
+' LANGUAGE plpgsql;
+ERROR:  cannot execute CREATE FUNCTION in a read-only transaction
+CREATE TRIGGER trg_x_after AFTER INSERT ON x
+FOR EACH ROW EXECUTE PROCEDURE fn_x_after();
+ERROR:  cannot execute CREATE TRIGGER in a read-only transaction
+CREATE TRIGGER trg_x_before BEFORE INSERT ON x
+FOR EACH ROW EXECUTE PROCEDURE fn_x_before();
+ERROR:  cannot execute CREATE TRIGGER in a read-only transaction
+COPY x (a, b, c, d, e) from stdin;
+ERROR:  relation "x" does not exist
+COPY x (b, d) from stdin;
+ERROR:  relation "x" does not exist
+COPY x (b, d) from stdin;
+ERROR:  relation "x" does not exist
+COPY x (a, b, c, d, e) from stdin;
+ERROR:  relation "x" does not exist
+-- non-existent column in column list: should fail
+COPY x (xyz) from stdin;
+ERROR:  relation "x" does not exist
+-- too many columns in column list: should fail
+COPY x (a, b, c, d, e, d, c) from stdin;
+ERROR:  relation "x" does not exist
+-- missing data: should fail
+COPY x from stdin;
+ERROR:  relation "x" does not exist
+COPY x from stdin;
+ERROR:  relation "x" does not exist
+COPY x from stdin;
+ERROR:  relation "x" does not exist
+-- extra data: should fail
+COPY x from stdin;
+ERROR:  relation "x" does not exist
+-- various COPY options: delimiters, oids, NULL string, encoding
+COPY x (b, c, d, e) from stdin with oids delimiter ',' null 'x';
+ERROR:  relation "x" does not exist
+COPY x from stdin WITH DELIMITER AS ';' NULL AS '';
+ERROR:  relation "x" does not exist
+COPY x from stdin WITH DELIMITER AS ':' NULL AS E'\\X' ENCODING 'sql_ascii';
+ERROR:  relation "x" does not exist
+-- check results of copy in
+SELECT * FROM x;
+ERROR:  relation "x" does not exist
+LINE 1: SELECT * FROM x;
+                      ^
+-- COPY w/ oids on a table w/o oids should fail
+CREATE TABLE no_oids (
+	a	int,
+	b	int
+) WITHOUT OIDS;
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+INSERT INTO no_oids (a, b) VALUES (5, 10);
+ERROR:  cannot execute INSERT in a read-only transaction
+INSERT INTO no_oids (a, b) VALUES (20, 30);
+ERROR:  cannot execute INSERT in a read-only transaction
+-- should fail
+COPY no_oids FROM stdin WITH OIDS;
+ERROR:  cannot execute COPY FROM in a read-only transaction
+COPY no_oids TO stdout WITH OIDS;
+ERROR:  table "no_oids" does not have OIDs
+-- check copy out
+COPY x TO stdout;
+ERROR:  relation "x" does not exist
+COPY x (c, e) TO stdout;
+ERROR:  relation "x" does not exist
+COPY x (b, e) TO stdout WITH NULL 'I''m null';
+ERROR:  relation "x" does not exist
+CREATE TEMP TABLE y (
+	col1 text,
+	col2 text
+);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+INSERT INTO y VALUES ('Jackson, Sam', E'\\h');
+ERROR:  relation "y" does not exist
+LINE 1: INSERT INTO y VALUES ('Jackson, Sam', E'\\h');
+                    ^
+INSERT INTO y VALUES ('It is "perfect".',E'\t');
+ERROR:  relation "y" does not exist
+LINE 1: INSERT INTO y VALUES ('It is "perfect".',E'\t');
+                    ^
+INSERT INTO y VALUES ('', NULL);
+ERROR:  relation "y" does not exist
+LINE 1: INSERT INTO y VALUES ('', NULL);
+                    ^
+COPY y TO stdout WITH CSV;
+ERROR:  relation "y" does not exist
+COPY y TO stdout WITH CSV QUOTE '''' DELIMITER '|';
+ERROR:  relation "y" does not exist
+COPY y TO stdout WITH CSV FORCE QUOTE col2 ESCAPE E'\\' ENCODING 'sql_ascii';
+ERROR:  relation "y" does not exist
+COPY y TO stdout WITH CSV FORCE QUOTE *;
+ERROR:  relation "y" does not exist
+-- Repeat above tests with new 9.0 option syntax
+COPY y TO stdout (FORMAT CSV);
+ERROR:  relation "y" does not exist
+COPY y TO stdout (FORMAT CSV, QUOTE '''', DELIMITER '|');
+ERROR:  relation "y" does not exist
+COPY y TO stdout (FORMAT CSV, FORCE_QUOTE (col2), ESCAPE E'\\');
+ERROR:  relation "y" does not exist
+COPY y TO stdout (FORMAT CSV, FORCE_QUOTE *);
+ERROR:  relation "y" does not exist
+\copy y TO stdout (FORMAT CSV)
+\copy y TO stdout (FORMAT CSV, QUOTE '''', DELIMITER '|')
+\copy y TO stdout (FORMAT CSV, FORCE_QUOTE (col2), ESCAPE E'\\')
+\copy y TO stdout (FORMAT CSV, FORCE_QUOTE *)
+--test that we read consecutive LFs properly
+CREATE TEMP TABLE testnl (a int, b text, c int);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+COPY testnl FROM stdin CSV;
+ERROR:  relation "testnl" does not exist
+-- test end of copy marker
+CREATE TEMP TABLE testeoc (a text);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+COPY testeoc FROM stdin CSV;
+ERROR:  relation "testeoc" does not exist
+COPY testeoc TO stdout CSV;
+ERROR:  relation "testeoc" does not exist
+-- test handling of nonstandard null marker that violates escaping rules
+CREATE TEMP TABLE testnull(a int, b text);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+INSERT INTO testnull VALUES (1, E'\\0'), (NULL, NULL);
+ERROR:  relation "testnull" does not exist
+LINE 1: INSERT INTO testnull VALUES (1, E'\\0'), (NULL, NULL);
+                    ^
+COPY testnull TO stdout WITH NULL AS E'\\0';
+ERROR:  relation "testnull" does not exist
+COPY testnull FROM stdin WITH NULL AS E'\\0';
+ERROR:  relation "testnull" does not exist
+SELECT * FROM testnull;
+ERROR:  relation "testnull" does not exist
+LINE 1: SELECT * FROM testnull;
+                      ^
+BEGIN;
+CREATE TABLE vistest (LIKE testeoc);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+COPY vistest FROM stdin CSV;
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
+COMMIT;
+SELECT * FROM vistest;
+ a  
+----
+ a0
+ b
+(2 rows)
+
+BEGIN;
+TRUNCATE vistest;
+ERROR:  cannot execute TRUNCATE TABLE in a read-only transaction
+COPY vistest FROM stdin CSV;
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
+SELECT * FROM vistest;
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
+SAVEPOINT s1;
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
+TRUNCATE vistest;
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
+COPY vistest FROM stdin CSV;
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
+SELECT * FROM vistest;
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
+COMMIT;
+SELECT * FROM vistest;
+ a  
+----
+ d1
+ e
+(2 rows)
+
+BEGIN;
+TRUNCATE vistest;
+ERROR:  cannot execute TRUNCATE TABLE in a read-only transaction
+COPY vistest FROM stdin CSV FREEZE;
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
+SELECT * FROM vistest;
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
+SAVEPOINT s1;
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
+TRUNCATE vistest;
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
+COPY vistest FROM stdin CSV FREEZE;
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
+SELECT * FROM vistest;
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
+COMMIT;
+SELECT * FROM vistest;
+ a  
+----
+ d2
+ e
+(2 rows)
+
+BEGIN;
+TRUNCATE vistest;
+ERROR:  cannot execute TRUNCATE TABLE in a read-only transaction
+COPY vistest FROM stdin CSV FREEZE;
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
+SELECT * FROM vistest;
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
+COMMIT;
+TRUNCATE vistest;
+ERROR:  cannot execute TRUNCATE TABLE in a read-only transaction
+COPY vistest FROM stdin CSV FREEZE;
+ERROR:  cannot execute COPY FROM in a read-only transaction
+BEGIN;
+TRUNCATE vistest;
+ERROR:  cannot execute TRUNCATE TABLE in a read-only transaction
+SAVEPOINT s1;
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
+COPY vistest FROM stdin CSV FREEZE;
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
+COMMIT;
+BEGIN;
+INSERT INTO vistest VALUES ('z');
+ERROR:  cannot execute INSERT in a read-only transaction
+SAVEPOINT s1;
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
+TRUNCATE vistest;
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ROLLBACK TO SAVEPOINT s1;
+ERROR:  savepoint "s1" does not exist
+COPY vistest FROM stdin CSV FREEZE;
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
+COMMIT;
+CREATE FUNCTION truncate_in_subxact() RETURNS VOID AS
+$$
+BEGIN
+	TRUNCATE vistest;
+EXCEPTION
+  WHEN OTHERS THEN
+	INSERT INTO vistest VALUES ('subxact failure');
+END;
+$$ language plpgsql;
+ERROR:  cannot execute CREATE FUNCTION in a read-only transaction
+BEGIN;
+INSERT INTO vistest VALUES ('z');
+ERROR:  cannot execute INSERT in a read-only transaction
+SELECT truncate_in_subxact();
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
+COPY vistest FROM stdin CSV FREEZE;
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
+SELECT * FROM vistest;
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
+COMMIT;
+SELECT * FROM vistest;
+ a  
+----
+ d4
+ e
+(2 rows)
+
+-- Test FORCE_NOT_NULL and FORCE_NULL options
+CREATE TEMP TABLE forcetest (
+    a INT NOT NULL,
+    b TEXT NOT NULL,
+    c TEXT,
+    d TEXT,
+    e TEXT
+);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+\pset null NULL
+-- should succeed with no effect ("b" remains an empty string, "c" remains NULL)
+BEGIN;
+COPY forcetest (a, b, c) FROM STDIN WITH (FORMAT csv, FORCE_NOT_NULL(b), FORCE_NULL(c));
+ERROR:  relation "forcetest" does not exist
+COMMIT;
+SELECT b, c FROM forcetest WHERE a = 1;
+ERROR:  relation "forcetest" does not exist
+LINE 1: SELECT b, c FROM forcetest WHERE a = 1;
+                         ^
+-- should succeed, FORCE_NULL and FORCE_NOT_NULL can be both specified
+BEGIN;
+COPY forcetest (a, b, c, d) FROM STDIN WITH (FORMAT csv, FORCE_NOT_NULL(c,d), FORCE_NULL(c,d));
+ERROR:  relation "forcetest" does not exist
+COMMIT;
+SELECT c, d FROM forcetest WHERE a = 2;
+ERROR:  relation "forcetest" does not exist
+LINE 1: SELECT c, d FROM forcetest WHERE a = 2;
+                         ^
+-- should fail with not-null constraint violation
+BEGIN;
+COPY forcetest (a, b, c) FROM STDIN WITH (FORMAT csv, FORCE_NULL(b), FORCE_NOT_NULL(c));
+ERROR:  relation "forcetest" does not exist
+ROLLBACK;
+-- should fail with "not referenced by COPY" error
+BEGIN;
+COPY forcetest (d, e) FROM STDIN WITH (FORMAT csv, FORCE_NOT_NULL(b));
+ERROR:  relation "forcetest" does not exist
+ROLLBACK;
+-- should fail with "not referenced by COPY" error
+BEGIN;
+COPY forcetest (d, e) FROM STDIN WITH (FORMAT csv, FORCE_NULL(b));
+ERROR:  relation "forcetest" does not exist
+ROLLBACK;
+\pset null ''
+-- test case with whole-row Var in a check constraint
+create table check_con_tbl (f1 int);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+create function check_con_function(check_con_tbl) returns bool as $$
+begin
+  raise notice 'input = %', row_to_json($1);
+  return $1.f1 > 0;
+end $$ language plpgsql immutable;
+ERROR:  cannot execute CREATE FUNCTION in a read-only transaction
+alter table check_con_tbl add check (check_con_function(check_con_tbl.*));
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+\d+ check_con_tbl
+copy check_con_tbl from stdin;
+ERROR:  cannot execute COPY FROM in a read-only transaction
+copy check_con_tbl from stdin;
+ERROR:  cannot execute COPY FROM in a read-only transaction
+select * from check_con_tbl;
+ f1 
+----
+  1
+   
+(2 rows)
+
+-- test with RLS enabled.
+CREATE ROLE regress_rls_copy_user;
+ERROR:  cannot execute CREATE ROLE in a read-only transaction
+CREATE ROLE regress_rls_copy_user_colperms;
+ERROR:  cannot execute CREATE ROLE in a read-only transaction
+CREATE TABLE rls_t1 (a int, b int, c int);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+COPY rls_t1 (a, b, c) from stdin;
+ERROR:  cannot execute COPY FROM in a read-only transaction
+CREATE POLICY p1 ON rls_t1 FOR SELECT USING (a % 2 = 0);
+ERROR:  cannot acquire lock mode AccessExclusiveLock on database objects while recovery is in progress
+HINT:  Only RowExclusiveLock or less can be acquired on database objects during recovery.
+ALTER TABLE rls_t1 ENABLE ROW LEVEL SECURITY;
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+ALTER TABLE rls_t1 FORCE ROW LEVEL SECURITY;
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+GRANT SELECT ON TABLE rls_t1 TO regress_rls_copy_user;
+ERROR:  cannot execute GRANT in a read-only transaction
+GRANT SELECT (a, b) ON TABLE rls_t1 TO regress_rls_copy_user_colperms;
+ERROR:  cannot execute GRANT in a read-only transaction
+-- all columns
+COPY rls_t1 TO stdout;
+1	4	1
+2	3	2
+3	2	3
+4	1	4
+COPY rls_t1 (a, b, c) TO stdout;
+1	4	1
+2	3	2
+3	2	3
+4	1	4
+-- subset of columns
+COPY rls_t1 (a) TO stdout;
+1
+2
+3
+4
+COPY rls_t1 (a, b) TO stdout;
+1	4
+2	3
+3	2
+4	1
+-- column reordering
+COPY rls_t1 (b, a) TO stdout;
+4	1
+3	2
+2	3
+1	4
+SET SESSION AUTHORIZATION regress_rls_copy_user;
+-- all columns
+COPY rls_t1 TO stdout;
+2	3	2
+4	1	4
+COPY rls_t1 (a, b, c) TO stdout;
+2	3	2
+4	1	4
+-- subset of columns
+COPY rls_t1 (a) TO stdout;
+2
+4
+COPY rls_t1 (a, b) TO stdout;
+2	3
+4	1
+-- column reordering
+COPY rls_t1 (b, a) TO stdout;
+3	2
+1	4
+RESET SESSION AUTHORIZATION;
+SET SESSION AUTHORIZATION regress_rls_copy_user_colperms;
+-- attempt all columns (should fail)
+COPY rls_t1 TO stdout;
+ERROR:  permission denied for table rls_t1
+COPY rls_t1 (a, b, c) TO stdout;
+ERROR:  permission denied for table rls_t1
+-- try to copy column with no privileges (should fail)
+COPY rls_t1 (c) TO stdout;
+ERROR:  permission denied for table rls_t1
+-- subset of columns (should succeed)
+COPY rls_t1 (a) TO stdout;
+2
+4
+COPY rls_t1 (a, b) TO stdout;
+2	3
+4	1
+RESET SESSION AUTHORIZATION;
+-- test with INSTEAD OF INSERT trigger on a view
+CREATE TABLE instead_of_insert_tbl(id serial, name text);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE VIEW instead_of_insert_tbl_view AS SELECT ''::text AS str;
+ERROR:  cannot execute CREATE VIEW in a read-only transaction
+COPY instead_of_insert_tbl_view FROM stdin; -- fail
+ERROR:  cannot execute COPY FROM in a read-only transaction
+CREATE FUNCTION fun_instead_of_insert_tbl() RETURNS trigger AS $$
+BEGIN
+  INSERT INTO instead_of_insert_tbl (name) VALUES (NEW.str);
+  RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+ERROR:  cannot execute CREATE FUNCTION in a read-only transaction
+CREATE TRIGGER trig_instead_of_insert_tbl_view
+  INSTEAD OF INSERT ON instead_of_insert_tbl_view
+  FOR EACH ROW EXECUTE PROCEDURE fun_instead_of_insert_tbl();
+ERROR:  cannot execute CREATE TRIGGER in a read-only transaction
+COPY instead_of_insert_tbl_view FROM stdin;
+ERROR:  cannot execute COPY FROM in a read-only transaction
+SELECT * FROM instead_of_insert_tbl;
+ id | name  
+----+-------
+  1 | test1
+(1 row)
+
+-- Test of COPY optimization with view using INSTEAD OF INSERT
+-- trigger when relation is created in the same transaction as
+-- when COPY is executed.
+BEGIN;
+CREATE VIEW instead_of_insert_tbl_view_2 as select ''::text as str;
+ERROR:  cannot execute CREATE VIEW in a read-only transaction
+CREATE TRIGGER trig_instead_of_insert_tbl_view_2
+  INSTEAD OF INSERT ON instead_of_insert_tbl_view_2
+  FOR EACH ROW EXECUTE PROCEDURE fun_instead_of_insert_tbl();
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
+COPY instead_of_insert_tbl_view_2 FROM stdin;
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
+SELECT * FROM instead_of_insert_tbl;
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
+COMMIT;
+-- clean up
+DROP TABLE forcetest;
+ERROR:  cannot execute DROP TABLE in a read-only transaction
+DROP TABLE vistest;
+ERROR:  cannot execute DROP TABLE in a read-only transaction
+DROP FUNCTION truncate_in_subxact();
+ERROR:  cannot execute DROP FUNCTION in a read-only transaction
+DROP TABLE x, y;
+ERROR:  cannot execute DROP TABLE in a read-only transaction
+DROP TABLE rls_t1 CASCADE;
+ERROR:  cannot execute DROP TABLE in a read-only transaction
+DROP ROLE regress_rls_copy_user;
+ERROR:  cannot execute DROP ROLE in a read-only transaction
+DROP ROLE regress_rls_copy_user_colperms;
+ERROR:  cannot execute DROP ROLE in a read-only transaction
+DROP FUNCTION fn_x_before();
+ERROR:  cannot execute DROP FUNCTION in a read-only transaction
+DROP FUNCTION fn_x_after();
+ERROR:  cannot execute DROP FUNCTION in a read-only transaction
+DROP TABLE instead_of_insert_tbl;
+ERROR:  cannot execute DROP TABLE in a read-only transaction
+DROP VIEW instead_of_insert_tbl_view;
+ERROR:  cannot execute DROP VIEW in a read-only transaction
+DROP VIEW instead_of_insert_tbl_view_2;
+ERROR:  cannot execute DROP VIEW in a read-only transaction
+DROP FUNCTION fun_instead_of_insert_tbl();
+ERROR:  cannot execute DROP FUNCTION in a read-only transaction

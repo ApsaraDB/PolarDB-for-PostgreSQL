@@ -1,7 +1,7 @@
 /*-------------------------------------------------------------------------
  *
  * polar_logindex_internal.h
- *  Implementation of logindex's internal structures and functions.
+ *
  *
  * Copyright (c) 2020, Alibaba Group Holding Limited
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,7 +17,7 @@
  * limitations under the License.
  *
  * IDENTIFICATION
- *  src/include/access/polar_logindex.h
+ *    src/include/access/polar_logindex_internal.h
  *
  *-------------------------------------------------------------------------
  */
@@ -39,37 +39,18 @@
 #include "utils/palloc.h"
 #include "utils/pg_crc.h"
 
-
-/* POLAR: logindex snapshot type */
-typedef enum
-{
-	LOGINDEX_WAL_SNAPSHOT,
-	LOGINDEX_FULLPAGE_SNAPSHOT,
-	/* Maybe we have more type later */
-	LOGINDEX_SNAPSHOT_NUM
-} logindex_snapshot_type_t;
-
-struct log_index_snapshot_t;
-typedef struct log_index_snapshot_t *logindex_snapshot_t;
-extern struct log_index_snapshot_t *polar_logindex_snapshot[LOGINDEX_SNAPSHOT_NUM];
-
-extern int	polar_logindex_mem_tbl_size;
-
-#define POLAR_LOGINDEX_WAL_SNAPSHOT (polar_logindex_snapshot[LOGINDEX_WAL_SNAPSHOT])
-#define POLAR_LOGINDEX_FULLPAGE_SNAPSHOT (polar_logindex_snapshot[LOGINDEX_FULLPAGE_SNAPSHOT])
-
-#define LOG_INDEX_DIR                   "pg_logindex"
 #define LOG_INDEX_MAGIC                 (0xFDFE)
 #define LOG_INDEX_VERSION               (0x0002)
 
-#define POLAR_DATA_DIR() (POLAR_FILE_IN_SHARED_STORAGE() ? polar_datadir : DataDir)
-#define POLAR_FILE_PATH(path, orign) \
-	snprintf((path), MAXPGPATH, "%s/%s", POLAR_DATA_DIR(), (orign));
 
 #define LOG_INDEX_FILE_TABLE_NAME(path, seg) \
 	snprintf((path), MAXPGPATH, "%s/%s/%04lX.tbl", POLAR_DATA_DIR(), logindex_snapshot->dir, seg);
 
-#define LOG_INDEX_META_FILE (logindex_snapshot->meta_file_name)
+/* check polar_logindex_local_cache_scan_callback if modify name pattern */
+#define LOG_INDEX_LOCAL_CACHE_SEG_NAME(path, seg) \
+	sprintf((path), "%04lX.tbl", (seg));
+
+#define LOG_INDEX_META_FILE "log_index_meta"
 
 /* Define macro for const config value */
 #define LOG_INDEX_MEM_TBL_SEG_NUM           4096
@@ -96,10 +77,10 @@ extern int	polar_logindex_mem_tbl_size;
 #define LOG_INDEX_MEM_TBL_ACTIVE() (LOG_INDEX_MEM_TBL(LOG_INDEX_MEM_TBL_ACTIVE_ID))
 
 #define LOG_INDEX_MEM_TBL_NEXT_ID(id) \
-	(((id) == (logindex_snapshot->mem_tbl_size - 1)) ? 0 : ((id) + 1))
+	LOOP_NEXT_VALUE(id, logindex_snapshot->mem_tbl_size)
 
 #define LOG_INDEX_MEM_TBL_PREV_ID(id) \
-	(((id) == 0) ? (logindex_snapshot->mem_tbl_size - 1) : ((id) -1))
+	LOOP_PREV_VALUE(id, logindex_snapshot->mem_tbl_size)
 
 /* Define macro to get memory table */
 #define LOG_INDEX_MEM_TBL(t) &(logindex_snapshot->mem_table[(t)])
@@ -218,33 +199,18 @@ extern int	polar_logindex_mem_tbl_size;
 #define LOG_INDEX_MEM_TBL_STATE_FLUSHED     (0x04)
 
 /*
- * Use coalesced hashing to save mini transaction info
- * See https://en.wikipedia.org/wiki/Coalesced_hashing to get more detail about colesced hashing
- */
-#define MINI_TRANSACTION_HASH_SIZE   XLR_MAX_BLOCK_ID
-#define MINI_TRANSACTION_TABLE_SIZE  (XLR_MAX_BLOCK_ID + XLR_MAX_BLOCK_ID/5)
-#define MINI_TRANSACTION_HASH_PAGE(tag) \
-	(tag_hash(tag, sizeof(BufferTag)) % MINI_TRANSACTION_HASH_SIZE)
-
-/*
- * 1. One lwlock for mini_transaction_t
- * 2. The mini transaction table lock size is MINI_TRANSACTION_TABLE_SIZE
- * 3. Each memory table has one lwlock
- * 4. One lwlock for lru
- * 5. The hash lock size is LOG_INDEX_MEM_TBL_HASH_LOCK_NUM
- * 6. One lwlock for logindex meta io
+ * 1. Each memory table has one lwlock
+ * 2. One lwlock for lru
+ * 3. The hash lock size is LOG_INDEX_MEM_TBL_HASH_LOCK_NUM
+ * 4. One lwlock for logindex meta io
  */
 #define LOG_INDEX_LWLOCK_NUM(mem_tbl_size) \
-	(1 + \
-	 MINI_TRANSACTION_TABLE_SIZE + \
-	 mem_tbl_size + \
+	(mem_tbl_size + \
 	 1 + \
 	 LOG_INDEX_MEM_TBL_HASH_LOCK_NUM + \
 	 1)
 
-#define MINI_TRANSACTION_LOCK_OFFSET                0
-#define MINI_TRANSACTION_TABLE_LOCK_OFFSET          (MINI_TRANSACTION_LOCK_OFFSET + 1)
-#define LOG_INDEX_MEMTBL_LOCK_OFFSET                (MINI_TRANSACTION_TABLE_LOCK_OFFSET + MINI_TRANSACTION_TABLE_SIZE)
+#define LOG_INDEX_MEMTBL_LOCK_OFFSET                (0)
 #define LOG_INDEX_BLOOM_LRU_LOCK_OFFSET             (LOG_INDEX_MEMTBL_LOCK_OFFSET + logindex_snapshot->mem_tbl_size)
 #define LOG_INDEX_HASH_LOCK_OFFSET                  (LOG_INDEX_BLOOM_LRU_LOCK_OFFSET + 1)
 #define LOG_INDEX_IO_LOCK_OFFSET                    (LOG_INDEX_HASH_LOCK_OFFSET + LOG_INDEX_MEM_TBL_HASH_LOCK_NUM)
@@ -262,11 +228,6 @@ extern int	polar_logindex_mem_tbl_size;
 
 #define LOG_INDEX_HASH_LOCK(k)                      \
 	(&(logindex_snapshot->lwlock_array[((k) % LOG_INDEX_MEM_TBL_HASH_LOCK_NUM) + LOG_INDEX_HASH_LOCK_OFFSET].lock))
-
-#define MINI_TRANSACTION_LOCK           (&(POLAR_LOGINDEX_WAL_SNAPSHOT->lwlock_array[MINI_TRANSACTION_LOCK_OFFSET].lock))
-
-#define MINI_TRANSACTION_GET_TABLE_LOCK(k)          \
-	(&(POLAR_LOGINDEX_WAL_SNAPSHOT->lwlock_array[(k) + MINI_TRANSACTION_TABLE_LOCK_OFFSET].lock))
 
 #define LOG_INDEX_IO_LOCK                     \
 	(&(logindex_snapshot->lwlock_array[LOG_INDEX_IO_LOCK_OFFSET].lock))
@@ -292,8 +253,6 @@ extern int	polar_logindex_mem_tbl_size;
 	} \
 	while(0)
 
-#define LOG_INDEX_ONLY_IN_MEM (!polar_streaming_xlog_meta)
-
 #define LOG_INDEX_COPY_META(dst_meta)       \
 	do \
 	{ \
@@ -303,25 +262,6 @@ extern int	polar_logindex_mem_tbl_size;
 	} \
 	while(0)
 
-#define POLAR_ENABLE_FULLPAGE_SNAPSHOT() \
-	(polar_enable_fullpage_snapshot && polar_enable_redo_logindex && polar_streaming_xlog_meta)
-
-#define POLAR_PAGETAGS_EQUAL(a,b) \
-( \
-	RelFileNodeEquals((a).rnode, (b).rnode) && \
-	(a).blockNum == (b).blockNum && \
-	(a).forkNum == (b).forkNum \
-)
-
-typedef enum
-{
-	ITERATE_STATE_FORWARD,
-	ITERATE_STATE_BACKWARD,
-	ITERATE_STATE_FINISHED,
-	ITERATE_STATE_HOLLOW,
-	ITERATE_STATE_CORRUPTED
-} log_index_iter_state_t;
-
 /*
  * Use parallel array to save memory usage.
  * If define structure directly, lots of memory will be wasted by structure memory alignment
@@ -329,163 +269,156 @@ typedef enum
 
 typedef struct log_item_head_t
 {
-	log_seg_id_t head_seg;
-	log_seg_id_t next_item;
-	log_seg_id_t next_seg;
-	log_seg_id_t tail_seg;
-	BufferTag	tag;
-	uint8		number;
-	XLogRecPtr	prev_page_lsn;
-	uint32		suffix_lsn[LOG_INDEX_ITEM_HEAD_LSN_NUM];
+	log_seg_id_t        head_seg;
+	log_seg_id_t        next_item;
+	log_seg_id_t        next_seg;
+	log_seg_id_t        tail_seg;
+	BufferTag           tag;
+	uint8               number;
+	XLogRecPtr          prev_page_lsn;
+	uint32              suffix_lsn[LOG_INDEX_ITEM_HEAD_LSN_NUM];
 } log_item_head_t;
 
 typedef struct log_item_seg_t
 {
-	log_seg_id_t head_seg;
-	log_seg_id_t next_seg;
-	log_seg_id_t prev_seg;
-	uint8		number;
-	uint32		suffix_lsn[LOG_INDEX_ITEM_SEG_LSN_NUM];
+	log_seg_id_t        head_seg;
+	log_seg_id_t        next_seg;
+	log_seg_id_t        prev_seg;
+	uint8               number;
+	uint32              suffix_lsn[LOG_INDEX_ITEM_SEG_LSN_NUM];
 } log_item_seg_t;
 
 typedef union log_tbl_seg_t
 {
-	log_item_head_t item_head;
-	log_item_seg_t item_seg;
-	char		padding[LOG_INDEX_TBL_SEG_SIZE];
+	log_item_head_t     item_head;
+	log_item_seg_t      item_seg;
+	char                padding[LOG_INDEX_TBL_SEG_SIZE];
 } log_tbl_seg_t;
 
 typedef struct log_idx_table_data_t
 {
-	log_idx_table_id_t idx_table_id;
-	XLogRecPtr	min_lsn;
-	XLogRecPtr	max_lsn;
-	uint32		prefix_lsn;
-	pg_crc32	crc;
-	uint32		last_order;
-	uint16		idx_order[LOG_INDEX_MAX_ORDER_NUM];
-	log_seg_id_t hash[LOG_INDEX_MEM_TBL_HASH_NUM];
-	log_tbl_seg_t segment[LOG_INDEX_MEM_TBL_SEG_NUM];
+	log_idx_table_id_t  idx_table_id;
+	XLogRecPtr          min_lsn;
+	XLogRecPtr          max_lsn;
+	uint32              prefix_lsn;
+	pg_crc32            crc;
+	uint32              last_order;
+	uint16              idx_order[LOG_INDEX_MAX_ORDER_NUM];
+	log_seg_id_t        hash[LOG_INDEX_MEM_TBL_HASH_NUM];
+	log_tbl_seg_t       segment[LOG_INDEX_MEM_TBL_SEG_NUM];
 } log_idx_table_data_t;
 
 typedef struct log_mem_table_t
 {
-	log_seg_id_t free_head;
-	pg_atomic_uint32 state;
+	log_seg_id_t        free_head;
+	pg_atomic_uint32    state;
 	/* The following data will be saved to file */
-	log_idx_table_data_t data;
+	log_idx_table_data_t    data;
 } log_mem_table_t;
 
 typedef struct log_file_table_bloom_t
 {
-	log_idx_table_id_t idx_table_id;
-	XLogRecPtr	min_lsn;
-	XLogRecPtr	max_lsn;
-	uint32		buf_size;
-	pg_crc32	crc;
-	uint8		bloom_bytes[FLEXIBLE_ARRAY_MEMBER];
+	log_idx_table_id_t  idx_table_id;
+	XLogRecPtr          min_lsn;
+	XLogRecPtr          max_lsn;
+	uint32              buf_size;
+	pg_crc32            crc;
+	uint8               bloom_bytes[FLEXIBLE_ARRAY_MEMBER];
 } log_file_table_bloom_t;
 
 typedef struct log_index_file_segment_t
 {
-	uint64		segment_no;
-	XLogRecPtr	max_lsn;
-	log_idx_table_id_t max_idx_table_id;
-	log_idx_table_id_t min_idx_table_id;
+	uint64                      segment_no;
+	XLogRecPtr                  max_lsn;
+	log_idx_table_id_t          max_idx_table_id;
+	log_idx_table_id_t          min_idx_table_id;
 } log_index_file_segment_t;
 
 typedef struct log_index_meta_t
 {
-	uint32		magic;
-	uint32		version;
-	log_idx_table_id_t max_idx_table_id;
-	log_index_file_segment_t min_segment_info;
-	XLogRecPtr	start_lsn;
-	XLogRecPtr	max_lsn;
-	uint32		crc;
+	uint32                                      magic;
+	uint32                                      version;
+	log_idx_table_id_t                          max_idx_table_id;
+	log_index_file_segment_t                    min_segment_info;
+	XLogRecPtr                                  start_lsn;
+	XLogRecPtr                                  max_lsn;
+	uint32                                      crc;
 } log_index_meta_t;
 
-typedef struct mini_trans_info_t
+typedef struct log_index_promoted_info_t
 {
-	BufferTag	tag;
-	pg_atomic_uint32 refcount;
-	uint32		next;
-} mini_trans_info_t;
+	XLogRecPtr              old_rw_saved_max_lsn;       /* The max lsn saved to logindex table by old rw node */
+	log_idx_table_id_t      old_rw_saved_max_tid;       /* The max table id saved by old rw node */
+	XLogRecPtr              old_rw_max_inserted_lsn;    /* The max lsn generated by old rw node */
+	log_idx_table_id_t      old_rw_max_tid;             /* The max logindex tablei id generated by old rw node */
+} log_index_promoted_info_t;
 
-typedef struct mini_trans_t
-{
-	bool		started;
-	XLogRecPtr	lsn;
-
-	/*
-	 * Map to info array, if item of info array is in use then corresponding
-	 * bit is set in occupied
-	 */
-	uint64		occupied;
-	mini_trans_info_t info[MINI_TRANSACTION_TABLE_SIZE];
-} mini_trans_t;
-
-typedef struct log_table_cache_t
-{
-	log_idx_table_id_t min_idx_table_id;
-	log_idx_table_id_t max_idx_table_id;
-	char		data[LOG_INDEX_TABLE_CACHE_SIZE];
-} log_table_cache_t;
-
+#define LOG_INDEX_MAX_TRACHE    4
 typedef struct log_index_snapshot_t
 {
-	int			type;
-	MemoryContext mem_cxt;
-	LWLockMinimallyPadded *lwlock_array;
-	int			mem_tbl_size;
-	SlruCtlData bloom_ctl;
-	slock_t		lock;
-	char		dir[NAMEDATALEN];
-	char		meta_file_name[MAXPGPATH];
-	XLogRecPtr	max_lsn;
-	pg_atomic_uint32 state;
-	uint32		active_table;
-	log_idx_table_id_t max_idx_table_id;
-	log_index_meta_t meta;
-	uint64		max_allocated_seg_no;
-	mini_trans_t mini_transaction;
-	log_mem_table_t mem_table[FLEXIBLE_ARRAY_MEMBER];
+	LWLockMinimallyPadded      *lwlock_array;
+	int                         mem_tbl_size;
+	logindex_table_flushable    table_flushable;
+	void						*extra_data; /* Extra data for table_flushable to use. */
+	SlruCtlData                 bloom_ctl;
+	slock_t                     lock;
+	char                        dir[NAMEDATALEN];
+	XLogRecPtr                  max_lsn;
+	pg_atomic_uint32            state;
+	uint32                      active_table;
+	log_idx_table_id_t          max_idx_table_id;
+	log_index_promoted_info_t   promoted_info;
+	log_index_meta_t            meta;
+	uint64                      max_allocated_seg_no;
+	polar_local_cache           segment_cache;
+	struct Latch                *bg_worker_latch;
+	char                        trache_name[LOG_INDEX_MAX_TRACHE][NAMEDATALEN];
+	log_mem_table_t             mem_table[FLEXIBLE_ARRAY_MEMBER];
 } log_index_snapshot_t;
 
 #define LOG_INDEX_PAGE_STACK_ITEM_SIZE 64
 typedef struct log_index_page_lsn_t
 {
-	uint16		item_size;
-	uint16		iter_pos;
-	XLogRecPtr	lsn[LOG_INDEX_PAGE_STACK_ITEM_SIZE];
-	XLogRecPtr	prev_lsn;
-	struct log_index_page_lsn_t *next;
+	uint16                          item_size;
+	uint16                          iter_pos;
+	XLogRecPtr                      lsn[LOG_INDEX_PAGE_STACK_ITEM_SIZE];
+	XLogRecPtr                      prev_lsn;
+	struct log_index_page_lsn_t     *next;
 } log_index_page_lsn_t;
 
 typedef struct log_index_tbl_stack_lsn_t
 {
-	XLogRecPtr	full_page_lsn;
-	XLogRecPtr	prev_page_lsn;
-	struct log_index_page_lsn_t *head;
-	struct log_index_tbl_stack_lsn_t *next;
+	XLogRecPtr                          full_page_lsn;
+	XLogRecPtr                          prev_page_lsn;
+	struct log_index_page_lsn_t         *head;
+	struct log_index_tbl_stack_lsn_t    *next;
 } log_index_tbl_stack_lsn_t;
 
 typedef struct log_index_page_stack_lsn_t
 {
-	log_index_tbl_stack_lsn_t *head;
+	log_index_tbl_stack_lsn_t    *head;
 } log_index_page_stack_lsn_t;
+
+typedef struct log_table_cache_t
+{
+	char name[NAMEDATALEN];
+	log_idx_table_id_t min_idx_table_id;
+	log_idx_table_id_t max_idx_table_id;
+	char               data[LOG_INDEX_TABLE_CACHE_SIZE];
+} log_table_cache_t;
 
 typedef struct log_index_page_iter_data_t
 {
-	BufferTag	tag;
-	XLogRecPtr	min_lsn;
-	XLogRecPtr	max_lsn;
-	XLogRecPtr	iter_prev_lsn;
-	XLogRecPtr	iter_max_lsn;
-	log_index_page_stack_lsn_t lsn_stack;
-	uint32		key;
-	log_index_iter_state_t state;
-	log_index_lsn_t lsn_info;
+	BufferTag                       tag;
+	XLogRecPtr                      min_lsn;
+	XLogRecPtr                      max_lsn;
+	XLogRecPtr                      iter_prev_lsn;
+	XLogRecPtr                      iter_max_lsn;
+	log_idx_table_id_t              max_idx_table_id;
+	log_index_page_stack_lsn_t      lsn_stack;
+	uint32                          key;
+	log_index_iter_state_t          state;
+	log_index_lsn_t                 lsn_info;
 } log_index_page_iter_data_t;
 
 typedef enum
@@ -501,30 +434,20 @@ typedef enum
 
 typedef struct log_index_lsn_iter_data_t
 {
-	XLogRecPtr	start_lsn;
-	log_index_iter_state_t state;
-	log_idx_table_id_t idx_table_id;
-	uint32		idx;
-	BufferTag	tag;
-	log_index_lsn_t lsn_info;
-	log_idx_table_id_t last_search_tid;
+	XLogRecPtr              start_lsn;
+	log_index_iter_state_t  state;
+	log_idx_table_id_t      idx_table_id;
+	uint32                  idx;
+	BufferTag               tag;
+	log_index_lsn_t         lsn_info;
+	log_idx_table_id_t      last_search_tid;
 } log_index_lsn_iter_data_t;
 
-typedef struct log_index_redo_t
-{
-	const char *rm_name;
-	/* Used by master node to save logindex */
-	void		(*rm_polar_idx_save) (XLogReaderState *record);
-	/* Used by replica node to parse and save logindex */
-	bool		(*rm_polar_idx_parse) (XLogReaderState *record);
-	/* Used to replay XLOG */
-	XLogRedoAction (*rm_polar_idx_redo) (XLogReaderState *record, BufferTag *tag, Buffer *buffer);
-} log_index_redo_t;
 
 static inline pg_crc32
 log_index_calc_crc(unsigned char *data, size_t size)
 {
-	pg_crc32	crc;
+	pg_crc32    crc;
 
 	INIT_CRC32C(crc);
 
@@ -535,14 +458,14 @@ log_index_calc_crc(unsigned char *data, size_t size)
 	return crc;
 }
 
-extern log_table_cache_t logindex_table_cache[LOGINDEX_SNAPSHOT_NUM];
 extern log_item_head_t *log_index_tbl_find(BufferTag *tag, log_idx_table_data_t *table, uint32 key);
 extern void log_index_insert_lsn(logindex_snapshot_t logindex_snapshot, log_index_lsn_t *lsn_info, uint32 key);
 extern XLogRecPtr log_index_item_max_lsn(log_idx_table_data_t *table, log_item_head_t *item);
 extern pg_crc32 log_index_calc_crc(unsigned char *data, size_t size);
 
+extern void polar_log_index_write_meta(log_index_snapshot_t *logindex_snapshot, log_index_meta_t *meta, bool update);
 extern bool log_index_write_table(logindex_snapshot_t logindex_snapshot, log_mem_table_t *table);
-extern log_idx_table_data_t *log_index_read_table(logindex_snapshot_t logindex_snapshot, log_idx_table_id_t tid);
+extern log_idx_table_data_t *log_index_read_table(logindex_snapshot_t logindex_snapshot, log_idx_table_id_t tid, log_mem_table_t **mem_table);
 extern log_file_table_bloom_t *log_index_get_tbl_bloom(logindex_snapshot_t logindex_snapshot, log_idx_table_id_t tid);
 extern bool log_index_get_meta(logindex_snapshot_t logindex_snapshot, log_index_meta_t *meta);
 extern void log_index_force_save_table(logindex_snapshot_t logindex_snapshot, log_mem_table_t *table);
@@ -551,76 +474,28 @@ extern bool log_index_read_table_data(logindex_snapshot_t logindex_snapshot, log
 extern XLogRecPtr log_index_get_order_lsn(log_idx_table_data_t *table, uint32 order, log_index_lsn_t *lsn_info);
 extern void log_index_master_bg_write(logindex_snapshot_t logindex_snapshot);
 
-extern void polar_log_index_save_lsn(XLogReaderState *state);
-extern void polar_log_index_save_block(XLogReaderState *state, uint8 block_id);
+static inline log_item_head_t *
+log_index_item_head(log_idx_table_data_t *table, log_seg_id_t head)
+{
+	if (head > LOG_INDEX_MEM_TBL_SEG_NUM)
+	{
+		POLAR_LOG_LOGINDEX_TABLE_INFO(table);
+		elog(PANIC, "Incorrect head=%u to get logindex item head", head);
+	}
 
-extern polar_page_lock_t polar_log_index_mini_trans_key_lock(BufferTag *tag, uint32 key,
-															 LWLockMode mode, XLogRecPtr *lsn);
-extern XLogRecPtr polar_log_index_mini_trans_key_find(BufferTag *tag, uint32 key);
+	return LOG_INDEX_ITEM_HEAD(table, head);
+}
 
-extern polar_page_lock_t polar_log_index_mini_trans_cond_key_lock(BufferTag *tag, uint32 key,
-																  LWLockMode mode, XLogRecPtr *lsn);
 
-extern Buffer polar_log_index_parse(XLogReaderState *state, BufferTag *tag, bool get_cleanup_lock, polar_page_lock_t * page_lock);
+static inline log_item_seg_t *
+log_index_item_seg(log_idx_table_data_t *table, log_seg_id_t seg)
+{
+	if (seg > LOG_INDEX_MEM_TBL_SEG_NUM)
+	{
+		POLAR_LOG_LOGINDEX_TABLE_INFO(table);
+		elog(PANIC, "Incorrect seg=%u to get logindex segment", seg);
+	}
 
-extern Buffer polar_log_index_outdate_parse(XLogReaderState *state, BufferTag *tag, bool get_cleanup_lock, polar_page_lock_t * page_lock, bool vm_parse);
-
-extern void polar_log_index_redo_parse(XLogReaderState *state, uint8 block_id);
-extern void polar_log_index_cleanup_parse(XLogReaderState *state, uint8 block_id);
-extern bool polar_xlog_idx_parse(XLogReaderState *state);
-extern void polar_xlog_idx_save(XLogReaderState *state);
-extern XLogRedoAction polar_xlog_idx_redo(XLogReaderState *state, BufferTag *tag, Buffer *buffer);
-extern bool polar_heap2_idx_parse(XLogReaderState *state);
-extern void polar_heap2_idx_save(XLogReaderState *state);
-extern XLogRedoAction polar_heap2_idx_redo(XLogReaderState *state, BufferTag *tag, Buffer *buffer);
-extern bool polar_heap_idx_parse(XLogReaderState *state);
-extern void polar_heap_idx_save(XLogReaderState *state);
-extern XLogRedoAction polar_heap_idx_redo(XLogReaderState *state, BufferTag *tag, Buffer *buffer);
-extern bool polar_btree_idx_parse(XLogReaderState *state);
-extern void polar_btree_idx_save(XLogReaderState *state);
-extern XLogRedoAction polar_btree_idx_redo(XLogReaderState *state, BufferTag *tag, Buffer *buffer);
-extern bool polar_hash_idx_parse(XLogReaderState *state);
-extern void polar_hash_idx_save(XLogReaderState *state);
-extern XLogRedoAction polar_hash_idx_redo(XLogReaderState *state, BufferTag *tag, Buffer *buffer);
-
-extern bool polar_gin_idx_parse(XLogReaderState *state);
-extern void polar_gin_idx_save(XLogReaderState *state);
-extern XLogRedoAction polar_gin_idx_redo(XLogReaderState *state, BufferTag *tag, Buffer *buffer);
-extern bool polar_gist_idx_parse(XLogReaderState *state);
-extern void polar_gist_idx_save(XLogReaderState *state);
-extern XLogRedoAction polar_gist_idx_redo(XLogReaderState *state, BufferTag *tag, Buffer *buffer);
-extern bool polar_seq_idx_parse(XLogReaderState *state);
-extern void polar_seq_idx_save(XLogReaderState *state);
-extern XLogRedoAction polar_seq_idx_redo(XLogReaderState *state, BufferTag *tag, Buffer *buffer);
-extern bool polar_spg_idx_parse(XLogReaderState *state);
-extern void polar_spg_idx_save(XLogReaderState *state);
-extern XLogRedoAction polar_spg_idx_redo(XLogReaderState *state, BufferTag *tag, Buffer *buffer);
-extern bool polar_brin_idx_parse(XLogReaderState *state);
-extern void polar_brin_idx_save(XLogReaderState *state);
-extern XLogRedoAction polar_brin_idx_redo(XLogReaderState *state, BufferTag *tag, Buffer *buffer);
-extern bool polar_generic_idx_parse(XLogReaderState *state);
-extern void polar_generic_idx_save(XLogReaderState *state);
-extern XLogRedoAction polar_generic_idx_redo(XLogReaderState *state, BufferTag *tag, Buffer *buffer);
-extern XLogRecord *polar_log_index_read_xlog(XLogReaderState *state, XLogRecPtr lsn);
-
-#define POLAR_MINI_TRANS_REDO_PARSE(record, block_id, tag, lock, buf) \
-	do { \
-		POLAR_GET_LOG_TAG((record), (tag), (block_id)); \
-		lock = polar_log_index_mini_trans_lock(&(tag), LW_EXCLUSIVE, NULL); \
-		buf = polar_log_index_parse((record), &(tag), false, &(lock)); \
-	} while (0)
-
-#define POLAR_MINI_TRANS_CLEANUP_PARSE(record, block_id, tag, lock, buf) \
-	do { \
-		POLAR_GET_LOG_TAG((record), (tag), (block_id)); \
-		lock = polar_log_index_mini_trans_lock(&(tag), LW_EXCLUSIVE, NULL); \
-		buf = polar_log_index_parse((record), &(tag), true, &(lock)); \
-	} while (0)
-
-/*
- * POLAR: Return the newest byte position which all logindex info could be flushed before it.
- */
-#define POLAR_LOGINDEX_FLUSHABLE_LSN() \
-	(RecoveryInProgress() ? GetXLogReplayRecPtr(NULL) : GetFlushRecPtr())
-
+	return LOG_INDEX_ITEM_SEG(table, seg);
+}
 #endif

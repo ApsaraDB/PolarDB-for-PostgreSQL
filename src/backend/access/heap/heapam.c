@@ -81,7 +81,32 @@
 
 /* POLAR */
 #include "utils/guc.h"
+#include "px/px_adaptive_paging.h"
+#include "px/px_gang.h"
 
+#define PXScanNextPageSetFinish() 	\
+do {								\
+	*finished = true;				\
+	return InvalidBlockNumber;  	\
+} while(0)
+
+/* POLAR px */
+#ifdef HEAPDEBUGALL
+#define PX_HEAPDEBUG_1 \
+	elog(DEBUG5, "_px_scan_next_page, %s, worker_id: %d, total_workers: %d, total_unit: %d, scanned unit: %d, unitnum: %d", \
+		RelationGetRelationName(scan->rs_rd), \
+		px_scan->pxs_worker_id, px_scan->pxs_total_workers, \
+		px_scan->pxs_unit_count, px_scan->pxs_unit_processed, \
+		PXSCAN_BlockNum2UnitNum(page))
+#define PX_HEAPDEBUG_2 \
+	elog(DEBUG5, "px_paging: adaptive scan finish on worker: %d, table: %u", \
+				scan->px_scan->pxs_worker_id, scan->rs_rd->rd_id)
+#else
+#define PX_HEAPDEBUG_1
+#define PX_HEAPDEBUG_2
+#endif							/* !defined(HEAPDEBUGALL) */
+
+/* POLAR end */
 
 /* GUC variable */
 bool		synchronize_seqscans = true;
@@ -91,6 +116,7 @@ static HeapScanDesc heap_beginscan_internal(Relation relation,
 						Snapshot snapshot,
 						int nkeys, ScanKey key,
 						ParallelHeapScanDesc parallel_scan,
+						PXScanDesc px_scan,/* POLAR px */
 						bool allow_strat,
 						bool allow_sync,
 						bool allow_pagemode,
@@ -134,6 +160,20 @@ static XLogRecPtr log_heap_new_cid(Relation relation, HeapTuple tup);
 static HeapTuple ExtractReplicaIdentity(Relation rel, HeapTuple tup, bool key_modified,
 					   bool *copy);
 static bool ProjIndexIsUnchanged(Relation relation, HeapTuple oldtup, HeapTuple newtup);
+
+/* POLAR px */
+static BlockNumber px_non_adps_scan_next_page(HeapScanDesc scan, BlockNumber page,
+									ScanDirection dir, bool *finished);
+static BlockNumber px_adps_exec_init(HeapScanDesc scan, ScanDirection dir);
+static BlockNumber px_adps_next_page(HeapScanDesc scan, BlockNumber page,
+									ScanDirection dir, bool *finished);
+static BlockNumber px_scan_init(HeapScanDesc scan, ScanDirection dir);
+static BlockNumber px_scan_next_page(HeapScanDesc scan, BlockNumber page,
+									ScanDirection dir, bool *finished);
+static SeqscanPageResponse px_adps_get_adps_response(HeapScanDesc scan,
+													BlockNumber cur_blkno,
+													ScanDirection dir);
+/* POLAR end */
 
 
 /*
@@ -211,6 +251,14 @@ static const int MultiXactStatusLock[MaxMultiXactStatus + 1] =
 #define TUPLOCK_from_mxstatus(status) \
 			(MultiXactStatusLock[(status)])
 
+/* POLAR px: use adaptive scan or not */
+static inline bool
+px_adaptive_scan_work_or_not(HeapScanDesc scan)
+{
+	return (scan->px_scan->pxs_adaptive_scan &&
+		   !scan->px_scan->pxs_prefetch_inner_scan);
+}
+
 /* ----------------------------------------------------------------
  *						 heap support routines
  * ----------------------------------------------------------------
@@ -239,6 +287,10 @@ initscan(HeapScanDesc scan, ScanKey key, bool keep_startblock)
 	 */
 	if (scan->rs_parallel != NULL)
 		scan->rs_nblocks = scan->rs_parallel->phs_nblocks;
+	else if (polar_enabled_nblock_scan())
+		scan->rs_nblocks = polar_relation_get_cached_number_of_blocks(scan->rs_rd);
+	else if (scan->rs_bitmapscan && polar_enabled_nblock_bitmapscan())
+		scan->rs_nblocks = polar_relation_get_cached_number_of_blocks(scan->rs_rd);
 	else
 		scan->rs_nblocks = RelationGetNumberOfBlocks(scan->rs_rd);
 
@@ -276,6 +328,19 @@ initscan(HeapScanDesc scan, ScanKey key, bool keep_startblock)
 		scan->rs_strategy = NULL;
 	}
 
+	/* POLAR px scan init */
+	if (scan->px_scan != NULL)
+	{
+		BlockNumber unit_count = PXSCAN_BlockNum2UnitNum((scan->rs_nblocks + (PXSCAN_UNIT_SIZE - 1)));
+		scan->rs_syncscan = false;
+		scan->rs_startblock = 0;
+		scan->px_scan->pxs_unit_count = unit_count;
+		scan->px_scan->pxs_unit_processed = 0;
+		/* Adaptive paging needs all px workers */
+		if (!px_adaptive_scan_work_or_not(scan) && scan->px_scan->pxs_worker_id + 1 > unit_count)
+			scan->rs_nblocks = 0;
+	}
+	else 	/* POLAR end */
 	if (scan->rs_parallel != NULL)
 	{
 		/* For parallel scan, believe whatever ParallelHeapScanDesc says. */
@@ -380,8 +445,34 @@ heapgetpage(HeapScanDesc scan, BlockNumber page)
 	CHECK_FOR_INTERRUPTS();
 
 	/* read page using selected strategy */
-	scan->rs_cbuf = ReadBufferExtended(scan->rs_rd, MAIN_FORKNUM, page,
-									   RBM_NORMAL, scan->rs_strategy);
+	/*
+	 * POLAR: bulk read
+	 * Now only support forward direction heap scan.
+	 * 'page != scan->rs_startblock' OR use ps scan, skip bulk read for first page, 
+	 * it is optimization for case that
+	 * heap scan only needs to access the first page. Avoid pre-reading unnecessary pages.
+	 * For example, select *** limit 1.
+	 */
+	if (polar_bulk_read_size > 0 
+		&& ScanDirectionIsForward(scan->polar_scan_direction)
+		&& (page != scan->rs_startblock || scan->px_scan != NULL))
+	{
+		int polar_max_block_count = scan->rs_nblocks - page;
+		if (scan->rs_strategy != NULL)
+		{
+			polar_max_block_count = Min(polar_get_buffer_access_strategy_ring_size(scan->rs_strategy),
+										polar_max_block_count);
+		}
+		scan->rs_cbuf = polar_bulk_read_buffer_extended(scan->rs_rd, MAIN_FORKNUM, page,
+														RBM_NORMAL, scan->rs_strategy,
+														polar_max_block_count);
+	} /* POLAR end */
+	else
+	{
+		scan->rs_cbuf = ReadBufferExtended(scan->rs_rd, MAIN_FORKNUM, page,
+										   RBM_NORMAL, scan->rs_strategy);
+	}
+
 	scan->rs_cblock = page;
 
 	if (!scan->rs_pageatatime)
@@ -502,6 +593,10 @@ heapgettup(HeapScanDesc scan,
 	int			linesleft;
 	ItemId		lpp;
 
+	/* POLAR: bulk read */
+	scan->polar_scan_direction = dir;
+	/* POLAR end */
+
 	/*
 	 * calculate next starting lineoff, given scan direction
 	 */
@@ -518,6 +613,18 @@ heapgettup(HeapScanDesc scan,
 				tuple->t_data = NULL;
 				return;
 			}
+
+			/* POLAR: px_scan */
+			if (scan->px_scan != NULL)
+			{
+				page = px_scan_init(scan, dir);
+				if (page == InvalidBlockNumber)
+				{
+					scan->rs_nblocks = 0;
+					return;
+				}
+			}
+			else /* POLAR end */
 			if (scan->rs_parallel != NULL)
 			{
 				heap_parallelscan_startblock_init(scan);
@@ -579,6 +686,17 @@ heapgettup(HeapScanDesc scan,
 			 * forward scanners.
 			 */
 			scan->rs_syncscan = false;
+			/* POLAR PX */
+			if (scan->px_scan != NULL)
+			{
+				page = px_scan_init(scan, dir);
+				if (page == InvalidBlockNumber)
+				{
+					scan->rs_nblocks = 0;
+					return;
+				}
+			}
+			else /* POLAR end */
 			/* start from last page of the scan */
 			if (scan->rs_startblock > 0)
 				page = scan->rs_startblock - 1;
@@ -704,7 +822,10 @@ heapgettup(HeapScanDesc scan,
 		/*
 		 * advance to next/prior page and detect end of scan
 		 */
-		if (backward)
+		/* POLAR PX */
+		if (scan->px_scan != NULL)
+			page = px_scan_next_page(scan, page, dir, &finished);
+		else if (backward)
 		{
 			finished = (page == scan->rs_startblock) ||
 				(scan->rs_numblocks != InvalidBlockNumber ? --scan->rs_numblocks == 0 : false);
@@ -776,6 +897,185 @@ heapgettup(HeapScanDesc scan,
 	}
 }
 
+
+/*
+ * POLAR: px non-adaptive scann scan next page on shared storage.
+ */
+static BlockNumber
+px_non_adps_scan_next_page(HeapScanDesc scan, BlockNumber page, ScanDirection dir, bool *finished)
+{
+	PXUnitNumber oldIdx = PXSCAN_BlockNum2UnitNum(page);
+	PXScanDesc px_scan = scan->px_scan;
+	PXUnitNumber newIdx;
+	*finished = false;
+	Assert(oldIdx < px_scan->pxs_unit_count);
+
+	if (unlikely(polar_trace_heap_scan_flow))
+		PX_HEAPDEBUG_1;
+
+	if (ScanDirectionIsBackward(dir))
+	{
+		if (page == 0)
+			PXScanNextPageSetFinish();
+
+		newIdx = PXSCAN_BlockNum2UnitNum(page - 1);
+		if (oldIdx == newIdx)
+			return --page;
+
+		if (oldIdx < px_scan->pxs_total_workers)
+			PXScanNextPageSetFinish();
+
+		/* skip to prev pfs extent 4MB */
+		oldIdx -= px_scan->pxs_total_workers;
+		px_scan->pxs_unit_processed++;
+		return (PXSCAN_UnitNum2BlockNum(oldIdx + 1)) - 1;
+	}
+	else
+	{
+		newIdx = PXSCAN_BlockNum2UnitNum(page + 1);
+		if (oldIdx == newIdx)
+		{
+			++ page;
+			if (page >= scan->rs_nblocks)
+			{
+				PXScanNextPageSetFinish();
+			}
+			return page;
+		}
+
+		if (px_scan->pxs_unit_count - oldIdx <= px_scan->pxs_total_workers)
+			PXScanNextPageSetFinish();
+
+		/* skip to next pfs extent 4MB */
+		oldIdx += px_scan->pxs_total_workers;
+		px_scan->pxs_unit_processed++;
+		return PXSCAN_UnitNum2BlockNum(oldIdx);
+	}
+}
+
+static SeqscanPageResponse
+px_adps_get_adps_response(HeapScanDesc scan, BlockNumber cur_blkno, ScanDirection dir)
+{
+	SeqscanPageRequest seqReq;
+	memset(&seqReq, 0, sizeof(SeqscanPageRequest));
+	seqReq.table_oid = scan->rs_rd->rd_id;
+	seqReq.task_id = scan->px_scan->pxs_plan_id;
+	seqReq.direction = dir;
+	seqReq.page_count = scan->rs_nblocks;
+	seqReq.scan_start = scan->rs_startblock;
+	seqReq.scan_count = scan->rs_numblocks;
+	seqReq.current_page = cur_blkno;
+	seqReq.worker_id = scan->px_scan->pxs_worker_id;
+	seqReq.scan_round = scan->px_scan->pxs_scan_round;
+	return px_adps_request_scan_unit(&seqReq);
+}
+
+/*
+ * POLAR: px adaptive scan execute init.
+ */
+static BlockNumber
+px_adps_exec_init(HeapScanDesc scan, ScanDirection dir)
+{
+	BlockNumber page;
+	SeqscanPageResponse res;
+	scan->px_scan->pxs_scan_round++;
+	res = px_adps_get_adps_response(scan, InvalidBlockNumber, dir);
+	if (!res.success)
+	{
+		if (unlikely(polar_trace_heap_scan_flow))
+			PX_HEAPDEBUG_2;
+		return InvalidBlockNumber;
+	}
+	page = res.page_start;
+	scan->px_scan->pxs_fetch_end = res.page_end;
+	return page;
+}
+
+/*
+ * POLAR: px adaptive scan get next blkno.
+ */
+static BlockNumber
+px_adps_next_page(HeapScanDesc scan, BlockNumber page, ScanDirection dir, bool *finished)
+{
+	BlockNumber next = page;
+	SeqscanPageResponse res;
+	*finished = false;
+	/* Scan must move */
+	Assert(!ScanDirectionIsNoMovement(dir));
+	if (ScanDirectionIsForward(dir))
+	{
+		if (++next <= scan->px_scan->pxs_fetch_end)
+			return next;
+	}
+	else
+	{
+		if (--next >= scan->px_scan->pxs_fetch_end)
+			return next;
+	}
+
+	/* Fetch pages */
+	res = px_adps_get_adps_response(scan, page, dir);
+	if (!res.success)
+	{
+		if (unlikely(polar_trace_heap_scan_flow))
+			PX_HEAPDEBUG_2;
+		*finished = true;
+		next = InvalidBlockNumber;
+	}
+	else
+	{
+		next = res.page_start;
+		scan->px_scan->pxs_fetch_end = res.page_end;
+	}
+	return next;
+}
+
+
+/*
+ * POLAR: Px scan get next page. There are two ways to get next page, dynamic seq
+ * scan and static seq scan. The default way is static seq scan.
+ */
+static BlockNumber
+px_scan_next_page(HeapScanDesc scan, BlockNumber page, ScanDirection dir, bool *finished)
+{
+	if (scan->px_scan->pxs_adaptive_scan && !scan->px_scan->pxs_prefetch_inner_scan)
+		return px_adps_next_page(scan, page, dir, finished);
+	else
+		return px_non_adps_scan_next_page(scan, page, dir, finished);
+}
+
+/*
+ * POLAR: Px seq scan init. This function should be called before when the
+ * px seq scan is first inited.
+ */
+static BlockNumber
+px_scan_init(HeapScanDesc scan, ScanDirection dir)
+{
+	/* use adaptive scan */
+	BlockNumber page = InvalidBlockNumber;
+	if (px_adaptive_scan_work_or_not(scan))
+		page = px_adps_exec_init(scan, dir);
+	else
+	{
+		PXScanDesc px_scan = scan->px_scan;
+		if (ScanDirectionIsForward(dir))
+			page = PXSCAN_UnitNum2BlockNum(scan->px_scan->pxs_worker_id);
+		else if (ScanDirectionIsBackward(dir))
+		{
+			if (PXSCAN_FirstWorker(px_scan->pxs_worker_id))
+				page = scan->rs_nblocks - 1;
+			else
+			{
+				Assert((px_scan->pxs_unit_count - px_scan->pxs_worker_id) > 0);
+				page = (PXSCAN_UnitNum2BlockNum(px_scan->pxs_unit_count - px_scan->pxs_worker_id)) - 1;
+			}
+		}
+		else
+			elog(ERROR, "px scan direction is invalid");
+	}
+	return page;
+}
+
 /* ----------------
  *		heapgettup_pagemode - fetch next heap tuple in page-at-a-time mode
  *
@@ -806,6 +1106,10 @@ heapgettup_pagemode(HeapScanDesc scan,
 	int			linesleft;
 	ItemId		lpp;
 
+	/* POLAR: bulk read */
+	scan->polar_scan_direction = dir;
+	/* POLAR end */
+
 	/*
 	 * calculate next starting lineindex, given scan direction
 	 */
@@ -822,6 +1126,18 @@ heapgettup_pagemode(HeapScanDesc scan,
 				tuple->t_data = NULL;
 				return;
 			}
+
+			/* POLAR PX */
+			if (scan->px_scan != NULL)
+			{
+				page = px_scan_init(scan, dir);
+				if (page == InvalidBlockNumber)
+				{
+					scan->rs_nblocks = 0;
+					return;
+				}
+			}
+			else /* POALR end */
 			if (scan->rs_parallel != NULL)
 			{
 				heap_parallelscan_startblock_init(scan);
@@ -881,6 +1197,18 @@ heapgettup_pagemode(HeapScanDesc scan,
 			 */
 			scan->rs_syncscan = false;
 			/* start from last page of the scan */
+
+			/* POLAR PX */
+			if (scan->px_scan != NULL)
+			{
+				page = px_scan_init(scan, dir);
+				if (page == InvalidBlockNumber)
+				{
+					scan->rs_nblocks = 0;
+					return;
+				}
+			}
+			else /* POLAR end */
 			if (scan->rs_startblock > 0)
 				page = scan->rs_startblock - 1;
 			else
@@ -994,6 +1322,9 @@ heapgettup_pagemode(HeapScanDesc scan,
 		 * if we get here, it means we've exhausted the items on this page and
 		 * it's time to move to the next.
 		 */
+		if (scan->px_scan != NULL)
+			page = px_scan_next_page(scan, page, dir, &finished);
+		else /* POLAR end */
 		if (backward)
 		{
 			finished = (page == scan->rs_startblock) ||
@@ -1317,6 +1648,36 @@ heap_open(Oid relationId, LOCKMODE lockmode)
 }
 
 /* ----------------
+ *		polar_px_try_heap_open - open a heap relation by relation OID
+ *
+ *		As above, but relation return NULL for relation-not-found
+ * ----------------
+ */
+Relation
+polar_px_try_heap_open(Oid relationId, LOCKMODE lockmode)
+{
+	Relation	r;
+
+	r = try_relation_open(relationId, lockmode);
+
+	if (!RelationIsValid(r))
+		return NULL;
+
+	if (r->rd_rel->relkind == RELKIND_INDEX)
+		ereport(ERROR,
+				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
+				 errmsg("\"%s\" is an index",
+						RelationGetRelationName(r))));
+	else if (r->rd_rel->relkind == RELKIND_COMPOSITE_TYPE)
+		ereport(ERROR,
+				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
+				 errmsg("\"%s\" is a composite type",
+						RelationGetRelationName(r))));
+
+	return r;
+}
+
+/* ----------------
  *		heap_openrv - open a heap relation specified
  *		by a RangeVar node
  *
@@ -1408,7 +1769,7 @@ HeapScanDesc
 heap_beginscan(Relation relation, Snapshot snapshot,
 			   int nkeys, ScanKey key)
 {
-	return heap_beginscan_internal(relation, snapshot, nkeys, key, NULL,
+	return heap_beginscan_internal(relation, snapshot, nkeys, key, NULL, NULL,
 								   true, true, true, false, false, false);
 }
 
@@ -1418,7 +1779,7 @@ heap_beginscan_catalog(Relation relation, int nkeys, ScanKey key)
 	Oid			relid = RelationGetRelid(relation);
 	Snapshot	snapshot = RegisterSnapshot(GetCatalogSnapshot(relid));
 
-	return heap_beginscan_internal(relation, snapshot, nkeys, key, NULL,
+	return heap_beginscan_internal(relation, snapshot, nkeys, key, NULL, NULL,
 								   true, true, true, false, false, true);
 }
 
@@ -1427,7 +1788,7 @@ heap_beginscan_strat(Relation relation, Snapshot snapshot,
 					 int nkeys, ScanKey key,
 					 bool allow_strat, bool allow_sync)
 {
-	return heap_beginscan_internal(relation, snapshot, nkeys, key, NULL,
+	return heap_beginscan_internal(relation, snapshot, nkeys, key, NULL, NULL,
 								   allow_strat, allow_sync, true,
 								   false, false, false);
 }
@@ -1436,24 +1797,64 @@ HeapScanDesc
 heap_beginscan_bm(Relation relation, Snapshot snapshot,
 				  int nkeys, ScanKey key)
 {
-	return heap_beginscan_internal(relation, snapshot, nkeys, key, NULL,
+	return heap_beginscan_internal(relation, snapshot, nkeys, key, NULL, NULL,
 								   false, false, true, true, false, false);
 }
+
+/* POLAR px */
+HeapScanDesc
+heap_beginscan_bm_px(Relation relation, Snapshot snapshot,
+			   int nkeys, ScanKey key)
+{
+	return heap_beginscan_internal(relation, 
+								   snapshot, 
+								   nkeys, 
+								   key, 
+								   NULL/* pg parallel_scan */, 
+								   CreatePXScanDesc(),
+								   px_allow_strat_bitmapscan/* allow_strat */, 
+								   px_allow_sync_bitmapscan/* allow_sync */, 
+								   px_allow_pagemode_bitmapscan/* allow_pagemode */,
+								   true/* is_bitmapscan */, 
+								   false/* is_samplescan */, 
+								   false/* temp_snap */);
+}
+/* POLAR end */
 
 HeapScanDesc
 heap_beginscan_sampling(Relation relation, Snapshot snapshot,
 						int nkeys, ScanKey key,
 						bool allow_strat, bool allow_sync, bool allow_pagemode)
 {
-	return heap_beginscan_internal(relation, snapshot, nkeys, key, NULL,
+	return heap_beginscan_internal(relation, snapshot, nkeys, key, NULL, NULL,
 								   allow_strat, allow_sync, allow_pagemode,
 								   false, true, false);
 }
 
+HeapScanDesc
+heap_beginscan_px(Relation relation, Snapshot snapshot,
+			   int nkeys, ScanKey key)
+{
+	return heap_beginscan_internal(relation, 
+  								   snapshot, 
+  								   nkeys, 
+  								   key, 
+  								   NULL/* pg parallel_scan */, 
+  								   CreatePXScanDesc(), 
+  								   px_allow_strat_seqscan/* allow_strat */, 
+  								   px_allow_sync_seqscan/* allow_sync */, 
+  								   px_allow_pagemode_seqscan/* allow_pagemode */,
+  								   false/* is_bitmapscan */, 
+  								   false/* is_samplescan */, 
+  								   false/* temp_snap */);
+}
+
+/* use static inline for to many args */
 static HeapScanDesc
 heap_beginscan_internal(Relation relation, Snapshot snapshot,
 						int nkeys, ScanKey key,
 						ParallelHeapScanDesc parallel_scan,
+						PXScanDesc px_scan,
 						bool allow_strat,
 						bool allow_sync,
 						bool allow_pagemode,
@@ -1487,6 +1888,10 @@ heap_beginscan_internal(Relation relation, Snapshot snapshot,
 	scan->rs_allow_sync = allow_sync;
 	scan->rs_temp_snap = temp_snap;
 	scan->rs_parallel = parallel_scan;
+	scan->px_scan = px_scan;
+
+	/* only allow one at mostly */
+	Assert(!(px_scan && parallel_scan));
 
 	/*
 	 * we can use page-at-a-time mode if it's an MVCC-safe snapshot
@@ -1685,7 +2090,7 @@ heap_beginscan_parallel(Relation relation, ParallelHeapScanDesc parallel_scan)
 		snapshot = SnapshotAny;
 	}
 
-	return heap_beginscan_internal(relation, snapshot, 0, NULL, parallel_scan,
+	return heap_beginscan_internal(relation, snapshot, 0, NULL, parallel_scan, NULL,
 								   true, true, true, false, false,
 								   !parallel_scan->phs_snapshot_any);
 }
@@ -1840,7 +2245,8 @@ heap_getnext(HeapScanDesc scan, ScanDirection direction)
 {
 	/* Note: no locking manipulations needed */
 
-	HEAPDEBUG_1;				/* heap_getnext( info ) */
+	if (unlikely(polar_trace_heap_scan_flow))
+		HEAPDEBUG_1;				/* heap_getnext( info ) */
 
 	if (scan->rs_pageatatime)
 		heapgettup_pagemode(scan, direction,
@@ -1850,7 +2256,8 @@ heap_getnext(HeapScanDesc scan, ScanDirection direction)
 
 	if (scan->rs_ctup.t_data == NULL)
 	{
-		HEAPDEBUG_2;			/* heap_getnext returning EOS */
+		if (unlikely(polar_trace_heap_scan_flow))
+			HEAPDEBUG_2;			/* heap_getnext returning EOS */
 		return NULL;
 	}
 
@@ -1858,7 +2265,8 @@ heap_getnext(HeapScanDesc scan, ScanDirection direction)
 	 * if we get here it means we have a new current scan tuple, so point to
 	 * the proper return buffer and return the tuple.
 	 */
-	HEAPDEBUG_3;				/* heap_getnext returning tuple */
+	if (unlikely(polar_trace_heap_scan_flow))
+		HEAPDEBUG_3;				/* heap_getnext returning tuple */
 
 	pgstat_count_heap_getnext(scan->rs_rd);
 
@@ -2050,11 +2458,14 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 	bool		at_chain_start;
 	bool		valid;
 	bool		skip;
+	TransactionId recent_xmin;
 
 	/* If this is not the first call, previous call returned a (live!) tuple */
 	if (all_dead)
 		*all_dead = first_call;
 
+	/* POLAR csn: get newest global xmin */
+	recent_xmin = GetRecentGlobalXmin();
 	blkno = ItemPointerGetBlockNumber(tid);
 	offnum = ItemPointerGetOffsetNumber(tid);
 	at_chain_start = first_call;
@@ -2149,7 +2560,7 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 		 * planner's get_actual_variable_range() function to match.
 		 */
 		if (all_dead && *all_dead &&
-			!HeapTupleIsSurelyDead(heapTuple, RecentGlobalXmin))
+			!HeapTupleIsSurelyDead(heapTuple, recent_xmin))
 			*all_dead = false;
 
 		/*
@@ -2227,8 +2638,11 @@ heap_get_latest_tid(Relation relation,
 	 */
 	blk = ItemPointerGetBlockNumber(tid);
 	if (blk >= RelationGetNumberOfBlocks(relation))
+	{
+		polar_check_nblocks_consistent(relation);
 		elog(ERROR, "block number %u is out of range for relation \"%s\"",
 			 blk, RelationGetRelationName(relation));
+	}
 
 	/*
 	 * Loop to chase down t_ctid links.  At top of loop, ctid is the tuple we
@@ -2450,6 +2864,10 @@ heap_insert(Relation relation, HeapTuple tup, CommandId cid,
 	Buffer		buffer;
 	Buffer		vmbuffer = InvalidBuffer;
 	bool		all_visible_cleared = false;
+
+	/* Cheap, simplistic check that the tuple matches the rel's rowtype. */
+	Assert(HeapTupleHeaderGetNatts(tup->t_data) <=
+		   RelationGetNumberOfAttributes(relation));
 
 	/*
 	 * Fill in tuple header fields, assign an OID, and toast the tuple if
@@ -3564,6 +3982,10 @@ heap_update(Relation relation, ItemPointer otid, HeapTuple newtup,
 				infomask2_new_tuple;
 
 	Assert(ItemPointerIsValid(otid));
+
+	/* Cheap, simplistic check that the tuple matches the rel's rowtype. */
+	Assert(HeapTupleHeaderGetNatts(newtup->t_data) <=
+		   RelationGetNumberOfAttributes(relation));
 
 	/*
 	 * Forbid this during a parallel operation, lest it allocate a combocid.
@@ -8373,6 +8795,14 @@ heap_xlog_visible(XLogReaderState *record)
 		PageSetAllVisible(page);
 
 		MarkBufferDirty(buffer);
+
+		/*
+		 * POLAR: set page lsn, otherwise the page's latest lsn will not
+		 * equal to the reused buffer latest lsn, reused buffer check
+		 * will failed later.
+		 */
+		PageSetLSN(page, lsn);
+		polar_redo_set_buffer_oldest_lsn(buffer, record->ReadRecPtr);
 	}
 	else if (action == BLK_RESTORED)
 	{
@@ -8416,12 +8846,7 @@ heap_xlog_visible(XLogReaderState *record)
 	 * the visibility map bit does so before checking the page LSN, so any
 	 * bits that need to be cleared will still be cleared.
 	 */
-	if (polar_in_replica_mode())
-	{
-		if (unlikely(polar_enable_debug))
-			elog(LOG, "polardb replica skip setting of visibilitymap");
-	}
-	else if(XLogReadBufferForRedoExtended(record, 0, RBM_ZERO_ON_ERROR, false,
+	if (XLogReadBufferForRedoExtended(record, 0, RBM_ZERO_ON_ERROR, false,
 									  &vmbuffer) == BLK_NEEDS_REDO)
 	{
 		Page		vmpage = BufferGetPage(vmbuffer);
@@ -8566,12 +8991,7 @@ heap_xlog_delete(XLogReaderState *record)
 	 * The visibility map may need to be fixed even if the heap page is
 	 * already up-to-date.
 	 */
-	if (polar_in_replica_mode())
-	{
-		if (polar_enable_debug)
-			elog(LOG, "polardb replica skip visibilitymap opt");
-	}
-	else if(xlrec->flags & XLH_DELETE_ALL_VISIBLE_CLEARED)
+	if (xlrec->flags & XLH_DELETE_ALL_VISIBLE_CLEARED)
 	{
 		Relation	reln = CreateFakeRelcacheEntry(target_node);
 		Buffer		vmbuffer = InvalidBuffer;
@@ -8653,12 +9073,7 @@ heap_xlog_insert(XLogReaderState *record)
 	 * The visibility map may need to be fixed even if the heap page is
 	 * already up-to-date.
 	 */
-	if (polar_in_replica_mode())
-	{
-		if (polar_enable_debug)
-			elog(LOG, "polardb replica skip visibilitymap opt");
-	}
-	else if(xlrec->flags & XLH_INSERT_ALL_VISIBLE_CLEARED)
+	if (xlrec->flags & XLH_INSERT_ALL_VISIBLE_CLEARED)
 	{
 		Relation	reln = CreateFakeRelcacheEntry(target_node);
 		Buffer		vmbuffer = InvalidBuffer;
@@ -8779,12 +9194,7 @@ heap_xlog_multi_insert(XLogReaderState *record)
 	 * The visibility map may need to be fixed even if the heap page is
 	 * already up-to-date.
 	 */
-	if (polar_in_replica_mode())
-	{
-		if (polar_enable_debug)
-			elog(LOG, "polardb replica skip visibilitymap opt");
-	}
-	else if(xlrec->flags & XLH_INSERT_ALL_VISIBLE_CLEARED)
+	if (xlrec->flags & XLH_INSERT_ALL_VISIBLE_CLEARED)
 	{
 		Relation	reln = CreateFakeRelcacheEntry(rnode);
 		Buffer		vmbuffer = InvalidBuffer;
@@ -8940,12 +9350,7 @@ heap_xlog_update(XLogReaderState *record, bool hot_update)
 	 * The visibility map may need to be fixed even if the heap page is
 	 * already up-to-date.
 	 */
-	if (polar_in_replica_mode())
-	{
-		if (polar_enable_debug)
-			elog(LOG, "polardb replica skip visibilitymap opt");
-	}
-	else if(xlrec->flags & XLH_UPDATE_OLD_ALL_VISIBLE_CLEARED)
+	if (xlrec->flags & XLH_UPDATE_OLD_ALL_VISIBLE_CLEARED)
 	{
 		Relation	reln = CreateFakeRelcacheEntry(rnode);
 		Buffer		vmbuffer = InvalidBuffer;
@@ -9030,12 +9435,7 @@ heap_xlog_update(XLogReaderState *record, bool hot_update)
 	 * The visibility map may need to be fixed even if the heap page is
 	 * already up-to-date.
 	 */
-	if (polar_in_replica_mode())
-	{
-		if (polar_enable_debug)
-			elog(LOG, "polardb replica skip visibilitymap opt");
-	}
-	else if(xlrec->flags & XLH_UPDATE_NEW_ALL_VISIBLE_CLEARED)
+	if (xlrec->flags & XLH_UPDATE_NEW_ALL_VISIBLE_CLEARED)
 	{
 		Relation	reln = CreateFakeRelcacheEntry(rnode);
 		Buffer		vmbuffer = InvalidBuffer;
@@ -9227,12 +9627,7 @@ heap_xlog_lock(XLogReaderState *record)
 	 * The visibility map may need to be fixed even if the heap page is
 	 * already up-to-date.
 	 */
-	if (polar_in_replica_mode())
-	{
-		if (polar_enable_debug)
-			elog(LOG, "polardb replica skip visibilitymap opt");
-	}
-	else if(xlrec->flags & XLH_LOCK_ALL_FROZEN_CLEARED)
+	if (xlrec->flags & XLH_LOCK_ALL_FROZEN_CLEARED)
 	{
 		RelFileNode rnode;
 		Buffer		vmbuffer = InvalidBuffer;
@@ -9306,12 +9701,7 @@ heap_xlog_lock_updated(XLogReaderState *record)
 	 * The visibility map may need to be fixed even if the heap page is
 	 * already up-to-date.
 	 */
-	if (polar_in_replica_mode())
-	{
-		if (polar_enable_debug)
-			elog(LOG, "polardb replica skip visibilitymap opt");
-	}
-	else if(xlrec->flags & XLH_LOCK_ALL_FROZEN_CLEARED)
+	if (xlrec->flags & XLH_LOCK_ALL_FROZEN_CLEARED)
 	{
 		RelFileNode rnode;
 		Buffer		vmbuffer = InvalidBuffer;

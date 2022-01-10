@@ -37,6 +37,9 @@
 #include "storage/ipc.h"
 #include "storage/proc.h"
 
+/* POLAR */
+#include "libpq/polar_network_stats.h"
+
 
 char	   *ssl_cert_file;
 char	   *ssl_key_file;
@@ -161,6 +164,11 @@ retry:
 		waitfor = WL_SOCKET_READABLE;
 	}
 
+	/* POLAR */
+	if (n > 0)
+		polar_network_sendrecv_stat(POLAR_NETWORK_RECV_STAT, n);
+	/* POLAR end */
+
 	/* In blocking mode, wait until the socket is ready */
 	if (n < 0 && !port->noblock && (errno == EWOULDBLOCK || errno == EAGAIN))
 	{
@@ -168,10 +176,18 @@ retry:
 
 		Assert(waitfor);
 
+		/* POLAR: record block */
+		polar_network_block_start(POLAR_NETWORK_RECV_STAT);
+		/* POLAR end */
+
 		ModifyWaitEvent(FeBeWaitSet, 0, waitfor, NULL);
 
 		WaitEventSetWait(FeBeWaitSet, -1 /* no timeout */ , &event, 1,
 						 WAIT_EVENT_CLIENT_READ);
+
+		/* POLAR: record block */
+		polar_network_block_end(POLAR_NETWORK_RECV_STAT);
+		/* POLAR end */
 
 		/*
 		 * If the postmaster has died, it's not safe to continue running,
@@ -266,9 +282,17 @@ retry:
 		waitfor = WL_SOCKET_WRITEABLE;
 	}
 
+	/* POLAR */
+	if (n > 0)
+		polar_network_sendrecv_stat(POLAR_NETWORK_SEND_STAT, n);
+
 	if (n < 0 && !port->noblock && (errno == EWOULDBLOCK || errno == EAGAIN))
 	{
 		WaitEvent	event;
+		
+		/* POLAR: block time */
+		polar_network_block_start(POLAR_NETWORK_SEND_STAT);
+		/* POLAR end */
 
 		Assert(waitfor);
 
@@ -276,6 +300,10 @@ retry:
 
 		WaitEventSetWait(FeBeWaitSet, -1 /* no timeout */ , &event, 1,
 						 WAIT_EVENT_CLIENT_WRITE);
+
+		/* POLAR: send block time */
+		polar_network_block_end(POLAR_NETWORK_SEND_STAT);
+		/* POLAR end */
 
 		/* See comments in secure_read. */
 		if (event.events & WL_POSTMASTER_DEATH)

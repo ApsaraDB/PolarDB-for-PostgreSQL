@@ -70,6 +70,9 @@
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
 
+/* POLAR px*/
+#include "utils/guc.h"
+
 
 /*
  * We must skip "overhead" operations that involve database access when the
@@ -183,6 +186,7 @@ CreateCachedPlan(RawStmt *raw_parse_tree,
 	MemoryContextSetIdentifier(source_context, plansource->query_string);
 	plansource->commandTag = commandTag;
 	plansource->param_types = NULL;
+	plansource->param_location = NULL;	/* POLAR: param location */
 	plansource->num_params = 0;
 	plansource->parserSetup = NULL;
 	plansource->parserSetupArg = NULL;
@@ -208,6 +212,7 @@ CreateCachedPlan(RawStmt *raw_parse_tree,
 	plansource->generic_cost = -1;
 	plansource->total_custom_cost = 0;
 	plansource->num_custom_plans = 0;
+	plansource->planId = 0;
 
 	MemoryContextSwitchTo(oldcxt);
 
@@ -251,6 +256,7 @@ CreateOneShotCachedPlan(RawStmt *raw_parse_tree,
 	plansource->query_string = query_string;
 	plansource->commandTag = commandTag;
 	plansource->param_types = NULL;
+	plansource->param_location = NULL;	/* POLAR: param location */
 	plansource->num_params = 0;
 	plansource->parserSetup = NULL;
 	plansource->parserSetupArg = NULL;
@@ -327,6 +333,7 @@ CompleteCachedPlan(CachedPlanSource *plansource,
 				   List *querytree_list,
 				   MemoryContext querytree_context,
 				   Oid *param_types,
+				   int *param_location, /* POLAR: param location */
 				   int num_params,
 				   ParserSetupHook parserSetup,
 				   void *parserSetupArg,
@@ -407,9 +414,18 @@ CompleteCachedPlan(CachedPlanSource *plansource,
 	{
 		plansource->param_types = (Oid *) palloc(num_params * sizeof(Oid));
 		memcpy(plansource->param_types, param_types, num_params * sizeof(Oid));
+
+		/* POLAR: save the param location */
+		if (param_location) 
+		{
+			plansource->param_location = (int *) palloc(num_params * sizeof(int));
+			memcpy(plansource->param_location, param_location, num_params * sizeof(int));
+		}
 	}
-	else
+	else {
 		plansource->param_types = NULL;
+		plansource->param_location = NULL; /* POLAR: param location */
+	}
 	plansource->num_params = num_params;
 	plansource->parserSetup = parserSetup;
 	plansource->parserSetupArg = parserSetupArg;
@@ -1156,7 +1172,12 @@ GetCachedPlan(CachedPlanSource *plansource, ParamListInfo boundParams,
 
 	if (!customplan)
 	{
-		if (CheckCachedPlan(plansource))
+		/*
+		 * POLAR px: generic plan will create an px plan, it is not
+		 * expected.
+		 */
+		if (CheckCachedPlan(plansource) &&
+			(!polar_is_stmt_enable_px() || px_enable_plan_cache))
 		{
 			/* We want a generic plan, and we already have a valid one */
 			plan = plansource->gplan;

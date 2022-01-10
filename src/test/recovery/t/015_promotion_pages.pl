@@ -15,6 +15,10 @@ $alpha->init(allows_streaming => 1);
 # references.
 $alpha->append_conf("postgresql.conf", <<EOF);
 wal_log_hints = off
+polar_enable_full_page_write_in_backup = on
+polar_enable_lazy_checkpoint_in_backup = off
+polar_enable_checkpoint_in_backup = on
+polar_enable_switch_wal_in_backup = on
 EOF
 
 # Start the primary
@@ -70,6 +74,9 @@ $bravo->promote;
 $bravo->safe_psql('postgres', 'truncate test1');
 $bravo->safe_psql('postgres', 'vacuum verbose test1');
 $bravo->safe_psql('postgres', 'insert into test1 select generate_series(1,1000)');
+
+# POLAR: Xlog doesn't flush in time. Add checkpoint.
+$bravo->safe_psql('postgres', 'checkpoint');
 
 # Now crash-stop the promoted standby and restart.  This makes sure that
 # replay does not see invalid page references because of an invalid

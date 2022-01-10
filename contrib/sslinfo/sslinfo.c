@@ -43,7 +43,7 @@ PG_FUNCTION_INFO_V1(ssl_is_used);
 Datum
 ssl_is_used(PG_FUNCTION_ARGS)
 {
-	PG_RETURN_BOOL(MyProcPort->ssl_in_use);
+	PG_RETURN_BOOL(MyProcPort->polar_proxy ? MyProcPort->polar_proxy_ssl_in_use : MyProcPort->ssl_in_use);
 }
 
 
@@ -54,9 +54,14 @@ PG_FUNCTION_INFO_V1(ssl_version);
 Datum
 ssl_version(PG_FUNCTION_ARGS)
 {
-	if (MyProcPort->ssl == NULL)
+	if ((!MyProcPort->polar_proxy && (MyProcPort->ssl == NULL)) ||
+		(MyProcPort->polar_proxy && (!MyProcPort->polar_proxy_ssl_in_use || MyProcPort->polar_proxy_ssl_version == NULL))) 
 		PG_RETURN_NULL();
-	PG_RETURN_TEXT_P(cstring_to_text(SSL_get_version(MyProcPort->ssl)));
+
+	if (MyProcPort->polar_proxy)
+		PG_RETURN_TEXT_P(cstring_to_text(MyProcPort->polar_proxy_ssl_version));
+	else
+		PG_RETURN_TEXT_P(cstring_to_text(SSL_get_version(MyProcPort->ssl)));
 }
 
 
@@ -67,9 +72,14 @@ PG_FUNCTION_INFO_V1(ssl_cipher);
 Datum
 ssl_cipher(PG_FUNCTION_ARGS)
 {
-	if (MyProcPort->ssl == NULL)
+	if ((!MyProcPort->polar_proxy && MyProcPort->ssl == NULL) || 
+		(MyProcPort->polar_proxy && (!MyProcPort->polar_proxy_ssl_in_use || MyProcPort->polar_proxy_ssl_cipher_name == NULL)))
 		PG_RETURN_NULL();
-	PG_RETURN_TEXT_P(cstring_to_text(SSL_get_cipher(MyProcPort->ssl)));
+
+	if (MyProcPort->polar_proxy)
+		PG_RETURN_TEXT_P(cstring_to_text(MyProcPort->polar_proxy_ssl_cipher_name));
+	else
+		PG_RETURN_TEXT_P(cstring_to_text(SSL_get_cipher(MyProcPort->ssl)));
 }
 
 

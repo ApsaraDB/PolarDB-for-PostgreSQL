@@ -52,6 +52,7 @@
 
 #include "storage/s_lock.h"
 #include "port/atomics.h"
+#include "utils/guc.h"
 
 
 #define MIN_SPINS_PER_DELAY 10
@@ -65,6 +66,12 @@ slock_t		dummy_spinlock;
 
 static int	spins_per_delay = DEFAULT_SPINS_PER_DELAY;
 
+/* POLAR: relax strategies for cas spin */
+#ifdef POLAR_ARM_S_LOCK_RELAX
+int			polar_spin_nops = 0;
+int		   polar_spin_yield = 0;
+#endif
+/* POLAR end */
 
 /*
  * s_lock_stuck() - complain about a stuck spinlock
@@ -126,6 +133,11 @@ perform_spin_delay(SpinDelayStatus *status)
 {
 	/* CPU-specific delay each time through the loop */
 	SPIN_DELAY();
+	/* POLAR: nop for cpu relax */
+#ifdef POLAR_ARM_S_LOCK_RELAX
+	POLAR_S_NOP(status->polar_spin_nops);
+#endif
+	/* POLAR end */
 
 	/* Block the process every spins_per_delay tries */
 	if (++(status->spins) >= spins_per_delay)
@@ -152,6 +164,13 @@ perform_spin_delay(SpinDelayStatus *status)
 
 		status->spins = 0;
 	}
+
+	/* POLAR: yield for cpu relax */
+#ifdef POLAR_ARM_S_LOCK_RELAX
+	if (status->polar_spin_yield)
+		POLAR_S_YIELD();
+#endif
+	/* POLAR end */
 }
 
 /*
@@ -376,3 +395,94 @@ main()
 }
 
 #endif							/* S_LOCK_TEST */
+
+void
+polar_compute_tv_delay(struct timespec *tv, long us)
+{
+	clock_gettime(CLOCK_MONOTONIC, tv);
+	tv->tv_nsec += us * 1000;
+	while (tv->tv_nsec >= 1000000000)
+	{
+		tv->tv_sec++;
+		tv->tv_nsec -= 1000000000;
+	}
+}
+
+void
+polar_init_spin_delay_mt(polar_spin_delay_status_t *status, polar_wait_object_t *wait_obj, 
+						 int spins_per_delay, int timeout_us)
+{
+	status->wait_obj = wait_obj;
+	status->spins_per_delay = spins_per_delay;
+	status->timeout_us = timeout_us;
+	status->spins = -1;
+	status->cur_delay = -1;
+}
+
+polar_wait_result_t
+polar_perform_spin_delay_mt(polar_spin_delay_status_t *status, bool need_lock, bool need_wait)
+{
+	polar_wait_result_t wait_res = POLAR_WAIT_RES_SPIN;
+
+	/* CPU-specific delay each time through the loop */
+	SPIN_DELAY();
+
+	/* Block the process every spins_per_delay tries */
+	if (++(status->spins) >= status->spins_per_delay)
+	{
+		int res;
+		struct timespec tv = {0, 0};
+
+		if (!need_wait)
+		{
+			wait_res = POLAR_WAIT_RES_SPIN_OVER;
+			return wait_res;
+		}
+
+		if (status->cur_delay == -1) 
+			status->cur_delay = status->timeout_us;
+
+		if (status->cur_delay != 0) 
+			polar_compute_tv_delay(&tv, status->cur_delay);
+		
+		if (unlikely(need_lock))
+			pthread_mutex_lock(&status->wait_obj->mutex);
+
+		pg_atomic_fetch_add_u64(&status->wait_obj->stats.waiters, 1);
+
+		if (status->cur_delay != 0) 
+			res = pthread_cond_timedwait(&status->wait_obj->cond, &status->wait_obj->mutex, &tv);
+		else
+			res = pthread_cond_wait(&status->wait_obj->cond, &status->wait_obj->mutex);
+
+		pg_atomic_fetch_sub_u64(&status->wait_obj->stats.waiters, 1);
+
+		if (unlikely(need_lock))
+			pthread_mutex_unlock(&status->wait_obj->mutex);
+
+		if (res == ETIMEDOUT)
+		{
+			wait_res = POLAR_WAIT_RES_TIMEOUT;
+
+			status->cur_delay = Min((status->cur_delay * 2), POLAR_MAX_WAIT_TIMEOUT_USEC);
+
+			pg_atomic_fetch_add_u64(&status->wait_obj->stats.timeout_waits, 1);
+		}
+		else
+		{
+			wait_res = POLAR_WAIT_RES_WAKEUP;
+
+			pg_atomic_fetch_add_u64(&status->wait_obj->stats.wakeup_waits, 1);
+		}
+	}
+
+	return wait_res;
+}
+
+void
+polar_reset_spin_delay_mt(polar_spin_delay_status_t *status)
+{
+	status->spins = -1;
+	status->cur_delay = -1;
+}
+/* POLAR wal pipeline end */

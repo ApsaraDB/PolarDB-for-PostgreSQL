@@ -280,6 +280,9 @@ apw_load_buffers(void)
 	BlockInfoRecord *blkinfo;
 	dsm_segment *seg;
 
+	/* POALR */
+	int create_size;
+
 	/*
 	 * Skip the prewarm if the dump file is in use; otherwise, prevent any
 	 * other process from writing it while we're using it.
@@ -324,8 +327,16 @@ apw_load_buffers(void)
 				 errmsg("could not read from file \"%s\": %m",
 						AUTOPREWARM_FILE)));
 
+	/* POALR */
+	create_size = sizeof(BlockInfoRecord) * num_elements;
+	if (create_size < num_elements)
+			ereport(ERROR,
+					(errcode_for_file_access(),
+							errmsg("num_elements %d from from file \"%s\" is error: %m",
+									num_elements, AUTOPREWARM_FILE)));
+
 	/* Allocate a dynamic shared memory segment to store the record data. */
-	seg = dsm_create(sizeof(BlockInfoRecord) * num_elements, 0);
+	seg = dsm_create(create_size, 0);
 	blkinfo = (BlockInfoRecord *) dsm_segment_address(seg);
 
 	/* Read records, one per line. */

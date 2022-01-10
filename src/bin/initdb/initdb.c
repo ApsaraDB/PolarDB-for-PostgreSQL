@@ -113,6 +113,14 @@ static const char *const auth_methods_local[] = {
 	NULL
 };
 
+static const char *const encryption_ciphers[] = {
+	"none",
+	"aes-128",
+	"aes-256",
+	"sm4",
+	NULL
+};
+
 /*
  * these values are passed in by makefile defines
  */
@@ -144,7 +152,11 @@ static bool data_checksums = false;
 static char *xlog_dir = NULL;
 static char *str_wal_segment_size_mb = NULL;
 static int	wal_segment_size_mb;
-
+static char *enc_cipher = NULL;
+static char *cluster_passphrase = NULL;
+/* POLAR */
+static char *polar_system_identifier = NULL;
+/* POLAR end */
 
 /* internal vars */
 static const char *progname;
@@ -155,6 +167,7 @@ static char *shdesc_file;
 static char *hba_file;
 static char *ident_file;
 static char *conf_file;
+static char *polar_dma_file;
 static char *conversion_file;
 static char *dictionary_file;
 static char *info_schema_file;
@@ -202,6 +215,7 @@ static const char *backend_options = "--single -F -O -j -c search_path=pg_catalo
 static const char *const subdirs[] = {
 	"global",
 	"pg_wal/archive_status",
+	"pg_csnlog",
 	"pg_commit_ts",
 	"pg_dynshmem",
 	"pg_notify",
@@ -212,6 +226,9 @@ static const char *const subdirs[] = {
 	"pg_multixact",
 	"pg_multixact/members",
 	"pg_multixact/offsets",
+	"polar_dma",
+	"polar_dma/consensus_log",
+	"polar_dma/consensus_cc_log",
 	"base",
 	"base/1",
 	"pg_replslot",
@@ -221,7 +238,8 @@ static const char *const subdirs[] = {
 	"pg_xact",
 	"pg_logical",
 	"pg_logical/snapshots",
-	"pg_logical/mappings"
+	"pg_logical/mappings",
+	"pg_logindex"
 };
 
 
@@ -1228,6 +1246,21 @@ setup_config(void)
 								  "password_encryption = scram-sha-256");
 	}
 
+	if (cluster_passphrase)
+	{
+		int	passphrase_command_len = strlen(cluster_passphrase);
+		int passphrase_command_max_len = MAXPGPATH - strlen("polar_cluster_passphrase_command = ''");
+		if (passphrase_command_len > passphrase_command_max_len)
+		{
+			fprintf(stderr, _("polar_cluster_passphrase_command "
+					"could not larger than %d\n"), passphrase_command_max_len);
+			exit_nicely();
+		}
+		snprintf(repltok, sizeof(repltok), "polar_cluster_passphrase_command = '%s'",
+				 escape_quotes(cluster_passphrase));
+		conflines = replace_token(conflines, "#polar_cluster_passphrase_command = ''", repltok);
+	}
+
 	/*
 	 * If group access has been enabled for the cluster then it makes sense to
 	 * ensure that the log files also allow group access.  Otherwise a backup
@@ -1376,6 +1409,22 @@ setup_config(void)
 
 	free(conflines);
 
+	/* pg_dma.conf */
+
+	conflines = readfile(polar_dma_file);
+
+	snprintf(path, sizeof(path), "%s/polar_dma.conf", pg_data);
+
+	writefile(path, conflines);
+	if (chmod(path, pg_file_create_mode) != 0)
+	{
+		fprintf(stderr, _("%s: could not change permissions of \"%s\": %s\n"),
+				progname, path, strerror(errno));
+		exit_nicely();
+	}
+
+	free(conflines);
+
 	check_ok();
 }
 
@@ -1458,14 +1507,18 @@ bootstrap_template1(void)
 	/* Also ensure backend isn't confused by this environment var: */
 	unsetenv("PGCLIENTENCODING");
 
+	/* POLAR: add specific system identifier */
 	snprintf(cmd, sizeof(cmd),
-			 "\"%s\" --boot -x1 -X %u %s %s %s",
+			 "\"%s\" --boot -x1 -X %u %s %s %s %s %s %s %s",
 			 backend_exec,
 			 wal_segment_size_mb * (1024 * 1024),
 			 data_checksums ? "-k" : "",
+			 enc_cipher ? "-e" : "",
+			 enc_cipher ? enc_cipher : "",
 			 boot_options,
-			 debug ? "-d 5" : "");
-
+			 debug ? "-d 5" : "",
+			 polar_system_identifier ? "-i" : "",
+			 polar_system_identifier ? polar_system_identifier : "");
 
 	PG_CMD_OPEN;
 
@@ -2423,12 +2476,18 @@ usage(const char *progname)
 	printf(_("      --wal-segsize=SIZE    size of WAL segments, in megabytes\n"));
 	printf(_("\nLess commonly used options:\n"));
 	printf(_("  -d, --debug               generate lots of debugging output\n"));
+	printf(_("  -e  --enc-cipher=MODE     set encryption cipher for data encryption\n"));
+	printf(_("  -c  --cluster-passphrase-command=COMMAND\n"
+			 "                            set command to obtain passphrase for data encryption key\n"));
 	printf(_("  -k, --data-checksums      use data page checksums\n"));
 	printf(_("  -L DIRECTORY              where to find the input files\n"));
 	printf(_("  -n, --no-clean            do not clean up after errors\n"));
 	printf(_("  -N, --no-sync             do not wait for changes to be written safely to disk\n"));
 	printf(_("  -s, --show                show internal settings\n"));
 	printf(_("  -S, --sync-only           only sync data directory\n"));
+	/* POLAR */
+	printf(_("  -i, --system-identifier   specify system identifier\n"));
+	/* POLAR end */
 	printf(_("\nOther options:\n"));
 	printf(_("  -V, --version             output version information, then exit\n"));
 	printf(_("  -?, --help                show this help, then exit\n"));
@@ -2490,6 +2549,41 @@ check_need_password(const char *authmethodlocal, const char *authmethodhost)
 	}
 }
 
+static void
+check_encryption_cipher(const char *cipher, const char *passphrase,
+						const char *const *valid_ciphers)
+{
+	const char *const *p;
+
+	if (!cipher && !passphrase)
+		return;
+
+#ifndef USE_OPENSSL
+	fprintf(stderr, _("cluster encryption is not supported because OpenSSL is not supported by this build"));
+#endif
+
+	/* Check both options must be specified at the same time */
+	if (cipher && !passphrase)
+	{
+		fprintf(stderr, _("encryption passphrase command must be specified when encryption cipher is specified"));
+		exit(1);
+	}
+
+	if (!cipher && passphrase)
+	{
+		fprintf(stderr, _("encryption cipher must be specified when encryption passphrase command is specified"));
+		exit(1);
+	}
+
+	for (p = valid_ciphers; *p; p++)
+	{
+		if (strcmp(cipher, *p) == 0)
+			return;
+	}
+
+	fprintf(stderr, _("invalid encryption cipher \"%s\""), cipher);
+	exit(1);
+}
 
 void
 setup_pgdata(void)
@@ -2673,6 +2767,7 @@ setup_data_file_paths(void)
 	set_input(&hba_file, "pg_hba.conf.sample");
 	set_input(&ident_file, "pg_ident.conf.sample");
 	set_input(&conf_file, "postgresql.conf.sample");
+	set_input(&polar_dma_file, "polar_dma.conf.sample");
 	set_input(&conversion_file, "conversion_create.sql");
 	set_input(&dictionary_file, "snowball_create.sql");
 	set_input(&info_schema_file, "information_schema.sql");
@@ -2704,6 +2799,7 @@ setup_data_file_paths(void)
 	check_input(hba_file);
 	check_input(ident_file);
 	check_input(conf_file);
+	check_input(polar_dma_file);
 	check_input(conversion_file);
 	check_input(dictionary_file);
 	check_input(info_schema_file);
@@ -3121,6 +3217,11 @@ main(int argc, char *argv[])
 		{"data-checksums", no_argument, NULL, 'k'},
 		{"allow-group-access", no_argument, NULL, 'g'},
 		{"polar-no-polardb-admin", no_argument, NULL, 15},
+		{"enc-cipher", required_argument, NULL, 'e'},
+		{"cluster-passphrase-command", required_argument, NULL, 'c'},
+		/* POLAR: add specific system identifier option here */
+		{"system-indetifier", required_argument, NULL, 'i'},
+		/* POLAR end */
 		{NULL, 0, NULL, 0}
 	};
 
@@ -3162,7 +3263,7 @@ main(int argc, char *argv[])
 
 	/* process command-line options */
 
-	while ((c = getopt_long(argc, argv, "dD:E:kL:nNU:WA:sST:X:g", long_options, &option_index)) != -1)
+	while ((c = getopt_long(argc, argv, "c:dD:E:e:kL:nNU:WA:sST:X:gi:", long_options, &option_index)) != -1)
 	{
 		switch (c)
 		{
@@ -3244,6 +3345,12 @@ main(int argc, char *argv[])
 			case 9:
 				pwfilename = pg_strdup(optarg);
 				break;
+			case 'e':
+				enc_cipher = pg_strdup(optarg);
+				break;
+			case 'c':
+				cluster_passphrase = pg_strdup(optarg);
+				break;
 			case 's':
 				show_setting = true;
 				break;
@@ -3262,6 +3369,11 @@ main(int argc, char *argv[])
 			case 15:
 				polar_no_polardb_admin = true;
 				break;
+			/* POLAR */
+			case 'i':
+				polar_system_identifier = pg_strdup(optarg);
+				break;
+			/* POLAR end */
 			default:
 				/* getopt_long already emitted a complaint */
 				fprintf(stderr, _("Try \"%s --help\" for more information.\n"),
@@ -3323,6 +3435,8 @@ main(int argc, char *argv[])
 	check_authmethod_valid(authmethodhost, auth_methods_host, "host");
 
 	check_need_password(authmethodlocal, authmethodhost);
+
+	check_encryption_cipher(enc_cipher, cluster_passphrase, encryption_ciphers);
 
 	/* set wal segment size */
 	if (str_wal_segment_size_mb == NULL)
@@ -3386,6 +3500,11 @@ main(int argc, char *argv[])
 		printf(_("Data page checksums are enabled.\n"));
 	else
 		printf(_("Data page checksums are disabled.\n"));
+
+	if (enc_cipher)
+		printf(_("Data encryption using %s is enabled.\n"), enc_cipher);
+	else
+		printf(_("Data encryption is disabled.\n"));
 
 	if (pwprompt || pwfilename)
 		get_su_pwd();

@@ -67,6 +67,11 @@ typedef struct
 	List	   *active_fns;
 	Node	   *case_val;
 	bool		estimate;
+	/* POLAR px */
+	bool		recurse_queries; /* recurse into query structures */
+	bool		recurse_sublink_testexpr; /* recurse into sublink test expressions */
+	Size        max_size; /* max constant binary size in bytes, 0: no restrictions */
+	/* POLAR end */
 } eval_const_expressions_context;
 
 typedef struct
@@ -150,8 +155,6 @@ static Node *substitute_actual_parameters(Node *expr, int nargs, List *args,
 static Node *substitute_actual_parameters_mutator(Node *node,
 									 substitute_actual_parameters_context *context);
 static void sql_inline_error_callback(void *arg);
-static Expr *evaluate_expr(Expr *expr, Oid result_type, int32 result_typmod,
-			  Oid result_collation);
 static Query *substitute_actual_srf_parameters(Query *expr,
 								 int nargs, List *args);
 static Node *substitute_actual_srf_parameters_mutator(Node *node,
@@ -2530,6 +2533,12 @@ eval_const_expressions(PlannerInfo *root, Node *node)
 	context.active_fns = NIL;	/* nothing being recursively simplified */
 	context.case_val = NULL;	/* no CASE being examined */
 	context.estimate = false;	/* safe transformations only */
+
+	/* POLAR px */
+	context.recurse_queries = false;
+	context.recurse_sublink_testexpr = false;
+	context.max_size = 0;
+
 	return eval_const_expressions_mutator(node, &context);
 }
 
@@ -2561,6 +2570,12 @@ estimate_expression_value(PlannerInfo *root, Node *node)
 	context.active_fns = NIL;	/* nothing being recursively simplified */
 	context.case_val = NULL;	/* no CASE being examined */
 	context.estimate = true;	/* unsafe transformations OK */
+
+	/* POLAR px */
+	context.recurse_queries = false;
+	context.recurse_sublink_testexpr = false;
+	context.max_size = 0;
+
 	return eval_const_expressions_mutator(node, &context);
 }
 
@@ -2767,6 +2782,8 @@ eval_const_expressions_mutator(Node *node,
 				newexpr->inputcollid = expr->inputcollid;
 				newexpr->args = args;
 				newexpr->location = expr->location;
+				newexpr->isGlobalFunc = expr->isGlobalFunc;
+
 				return (Node *) newexpr;
 			}
 		case T_OpExpr:
@@ -3748,6 +3765,37 @@ eval_const_expressions_mutator(Node *node,
 			break;
 	}
 
+	/* POLAR px */
+	if (px_is_planning)
+	{
+		/* prevent recursion into sublinks */
+		if (IsA(node, SubLink) && !context->recurse_sublink_testexpr)
+		{
+			SubLink    *sublink = (SubLink *) node;
+			SubLink    *newnode = copyObject(sublink);
+
+			/*
+			* Also invoke the mutator on the sublink's Query node, so it
+			* can recurse into the sub-query if it wants to.
+			*/
+			newnode->subselect = (Node *) query_tree_mutator((Query *) sublink->subselect, eval_const_expressions_mutator, (void*) context, 0);
+			return (Node *) newnode;
+		}
+
+		/* recurse into query structure if requested */
+		if (IsA(node, Query) && context->recurse_queries)
+		{
+			return (Node *)
+						query_tree_mutator
+						(
+						(Query *) node,
+						eval_const_expressions_mutator,
+						(void *) context,
+						0);
+		}
+	}
+	/* POLAR end */
+
 	/*
 	 * For any node type not handled above, copy the node unchanged but
 	 * const-simplify its subexpressions.  This is the correct thing for node
@@ -4172,6 +4220,7 @@ simplify_function(Oid funcid, Oid result_type, int32 result_typmod,
 		fexpr.inputcollid = input_collid;
 		fexpr.args = args;
 		fexpr.location = -1;
+		fexpr.isGlobalFunc = false;
 
 		newexpr = (Expr *)
 			DatumGetPointer(OidFunctionCall1(func_form->protransform,
@@ -4640,6 +4689,7 @@ inline_function(Oid funcid, Oid result_type, Oid result_collid,
 	fexpr->inputcollid = input_collid;
 	fexpr->args = args;
 	fexpr->location = -1;
+	fexpr->isGlobalFunc = false;
 
 	pinfo = prepare_sql_fn_parse_info(func_tuple,
 									  (Node *) fexpr,
@@ -4929,7 +4979,7 @@ sql_inline_error_callback(void *arg)
  * We use the executor's routine ExecEvalExpr() to avoid duplication of
  * code and ensure we get the same result as the executor would get.
  */
-static Expr *
+Expr *
 evaluate_expr(Expr *expr, Oid result_type, int32 result_typmod,
 			  Oid result_collation)
 {
@@ -5408,3 +5458,6 @@ tlist_matches_coltypelist(List *tlist, List *coltypelist)
 
 	return true;
 }
+
+/* POLAR px */
+#include "clauses_px.c"

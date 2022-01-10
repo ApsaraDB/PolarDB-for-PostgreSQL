@@ -11,7 +11,15 @@ use Test::More tests => 12;
 
 my $node = get_new_node('main');
 
+# POLAR
+# Set polar_force_unlogged_to_logged_table=off
+# Unlogged table is not supported in POLARDB. In order to pass this
+# case, set the unlogged table flag to off to support unlogged table.
 $node->init;
+$node->append_conf(
+	'postgresql.conf', qq(
+	polar_force_unlogged_to_logged_table=off
+));
 $node->start;
 my $pgdata = $node->data_dir;
 

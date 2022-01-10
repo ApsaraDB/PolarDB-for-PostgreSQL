@@ -271,15 +271,15 @@ typedef enum pg_enc
 	PG_WIN1254,					/* windows-1254 */
 	PG_WIN1255,					/* windows-1255 */
 	PG_WIN1257,					/* windows-1257 */
+	PG_GBK,						/* GBK (Windows-936) (POLAR) */
+	PG_GB18030,					/* GB18030 (POLAR) */
 	PG_KOI8U,					/* KOI8-U */
 	/* PG_ENCODING_BE_LAST points to the above entry */
 
 	/* followings are for client encoding only */
 	PG_SJIS,					/* Shift JIS (Windows-932) */
 	PG_BIG5,					/* Big5 (Windows-950) */
-	PG_GBK,						/* GBK (Windows-936) */
 	PG_UHC,						/* UHC (Windows-949) */
-	PG_GB18030,					/* GB18030 */
 	PG_JOHAB,					/* EUC for Korean JOHAB */
 	PG_SHIFT_JIS_2004,			/* Shift-JIS-2004 */
 	_PG_LAST_ENCODING_			/* mark only */

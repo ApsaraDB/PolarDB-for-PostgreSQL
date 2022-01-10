@@ -42,6 +42,9 @@
 #include "utils/typcache.h"
 
 
+/* POLAR px */
+#include "access/px_btbuild.h"
+
 /*
  * We don't want to waste a lot of memory on an error queue which, most of
  * the time, will process only a handful of small messages.  However, it is
@@ -135,7 +138,12 @@ static const struct
 	},
 	{
 		"_bt_parallel_build_main", _bt_parallel_build_main
-	}
+	},
+	/* POLAR px */
+	{
+		"polar_px_bt_build_main", polar_px_bt_build_main
+	},
+	/* POLAR End*/
 };
 
 /* Private functions. */

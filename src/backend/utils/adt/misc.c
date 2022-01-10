@@ -217,10 +217,14 @@ current_query(PG_FUNCTION_ARGS)
 #define SIGNAL_BACKEND_ERROR 1
 #define SIGNAL_BACKEND_NOPERMISSION 2
 #define SIGNAL_BACKEND_NOSUPERUSER 3
+/* POLAR */
+#define SIGNAL_BACKEND_NOPOLARSUPERUSER 4
 static int
 pg_signal_backend(int pid, int sig)
 {
-	PGPROC	   *proc = BackendPidGetProc(pid);
+	/* POLAR: try to get real pid, the pid here might be a virtual pid */
+	int			real_pid = polar_pgstat_get_real_pid(pid, 0, false, false);
+	PGPROC	   *proc = BackendPidGetProc(real_pid);
 
 	/*
 	 * BackendPidGetProc returns NULL if the pid isn't valid; but by the time
@@ -244,6 +248,11 @@ pg_signal_backend(int pid, int sig)
 	/* Only allow superusers to signal superuser-owned backends. */
 	if (superuser_arg(proc->roleId) && !superuser())
 		return SIGNAL_BACKEND_NOSUPERUSER;
+		
+	/* POLAR: only allow superusers and polar_superuser to signal polar_superuser-owned backends. */
+	if (polar_superuser_arg(proc->roleId) && 
+		!(superuser() || polar_superuser()))
+		return SIGNAL_BACKEND_NOPOLARSUPERUSER;
 
 	/* Users can signal backends they have role membership in. */
 	if (!has_privs_of_role(GetUserId(), proc->roleId) &&
@@ -261,9 +270,9 @@ pg_signal_backend(int pid, int sig)
 
 	/* If we have setsid(), signal the backend's whole process group */
 #ifdef HAVE_SETSID
-	if (kill(-pid, sig))
+	if (kill(-real_pid, sig))
 #else
-	if (kill(pid, sig))
+	if (kill(real_pid, sig))
 #endif
 	{
 		/* Again, just a warning to allow loops */
@@ -443,6 +452,7 @@ pg_tablespace_databases(PG_FUNCTION_ARGS)
 							TABLESPACE_VERSION_DIRECTORY);
 
 	dirdesc = polar_allocate_dir(location);
+
 	if (!dirdesc)
 	{
 		/* the only expected error is ENOENT */
@@ -499,6 +509,13 @@ pg_tablespace_location(PG_FUNCTION_ARGS)
 	char		sourcepath[MAXPGPATH];
 	char		targetpath[MAXPGPATH];
 	int			rllen;
+
+	/*
+	 * POLAR: The user defined tablespace is not really created,
+	 * so it directly returns null
+	 */
+	if (polar_syntactically_compatible_tablespace_mode())
+		PG_RETURN_TEXT_P(cstring_to_text(""));
 
 	/*
 	 * It's useful to apply this function to pg_class.reltablespace, wherein

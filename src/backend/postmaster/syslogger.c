@@ -51,12 +51,18 @@
 #include "utils/ps_status.h"
 #include "utils/timestamp.h"
 
+/* POLAR */
+#include <sys/socket.h>
+#include "storage/fd.h"
+#include "utils/builtins.h"
+
 /*
  * We read() into a temp buffer twice as big as a chunk, so that any fragment
  * left after processing can be moved down to the front and we'll still have
  * room to read a full chunk.
  */
-#define READ_BUF_SIZE (2 * PIPE_CHUNK_SIZE)
+/* POLAR: enlarge this */
+#define READ_BUF_SIZE (200 * PIPE_CHUNK_SIZE)
 
 
 /*
@@ -76,6 +82,34 @@ int			Log_file_mode = S_IRUSR | S_IWUSR;
  */
 bool		am_syslogger = false;
 
+/* POLAR: public */
+int 		MyLoggerIndex = 0;
+bool        polar_enable_multi_syslogger = DEFAULT_MULTI_SYSLOGGER_FLAG;
+bool 		polar_enable_syslog_pipe_buffer	= true;
+bool 		polar_enable_syslog_file_buffer	= false;
+bool		polar_enable_error_to_audit_log = false;
+int 		polar_num_of_sysloggers = DEFAULT_SYSLOGGER_NUM;
+#define GET_LOG_CHANNEL_FD_WITH_INDEX(index, end) \
+	index ? syslogChannels[index][end] : syslogPipe[end]
+
+#define GET_LOG_CHANNEL_FD(end) \
+	GET_LOG_CHANNEL_FD_WITH_INDEX(MyLoggerIndex, end)
+
+#define SET_LOG_CHANNEL_FD_WITH_INDEX(index, end, fd)  	\
+	do {												\
+		if (index == 0)									\
+			syslogPipe[end] = fd;						\
+		else											\
+			syslogChannels[index][end] = fd;	\
+	} while (0)
+
+#define SET_LOG_CHANNEL_FD(end, fd) 	\
+	SET_LOG_CHANNEL_FD_WITH_INDEX(MyLoggerIndex, end, fd)
+
+#define FILE_BUF_MODE(file_type) \
+	((file_type == LOG_DESTINATION_POLAR_AUDITLOG && polar_enable_syslog_file_buffer) ? PG_IOFBF : PG_IOLBF)
+/* POLAR end */
+
 extern bool redirection_done;
 
 /*
@@ -89,6 +123,13 @@ static FILE *csvlogFile = NULL;
 NON_EXEC_STATIC pg_time_t first_syslogger_file_time = 0;
 static char *last_file_name = NULL;
 static char *last_csv_file_name = NULL;
+
+/* POLAR: private */
+static FILE *auditlogFile = NULL;
+static char *polar_last_audit_file_name = NULL;
+static FILE *slowlogFile = NULL;
+static char *polar_last_slowlog_file_name = NULL;
+/* POLAR end */
 
 /*
  * Buffers for saving partial messages from different backends.
@@ -117,6 +158,15 @@ int			syslogPipe[2] = {-1, -1};
 HANDLE		syslogPipe[2] = {0, 0};
 #endif
 
+/* POLAR */
+#ifndef WIN32
+bool        polar_syslog_channel_is_inited = false;
+int         syslogChannels[MAX_SYSLOGGER_NUM][2];
+#else
+HANDLE      syslogChannels[MAX_SYSLOGGER_NUM][2] = {0};
+#endif
+/* POLAR end */
+
 #ifdef WIN32
 static HANDLE threadHandle = 0;
 static CRITICAL_SECTION sysloggerSection;
@@ -137,8 +187,8 @@ static void syslogger_parseArgs(int argc, char *argv[]);
 NON_EXEC_STATIC void SysLoggerMain(int argc, char *argv[]) pg_attribute_noreturn();
 static void process_pipe_input(char *logbuffer, int *bytes_in_logbuffer);
 static void flush_pipe_input(char *logbuffer, int *bytes_in_logbuffer);
-static FILE *logfile_open(const char *filename, const char *mode,
-			 bool allow_errors);
+static FILE *logfile_open(const char *filename, const char *mode, 
+						bool allow_errors);
 
 #ifdef WIN32
 static unsigned int __stdcall pipeThread(void *arg);
@@ -146,10 +196,18 @@ static unsigned int __stdcall pipeThread(void *arg);
 static void logfile_rotate(bool time_based_rotation, int size_rotation_for);
 static char *logfile_getname(pg_time_t timestamp, const char *suffix);
 static void set_next_rotation_time(void);
+static void polar_remove_old_syslog_files(void);
+static void polar_remove_log_file(const char *path);
 static void sigHupHandler(SIGNAL_ARGS);
 static void sigUsr1Handler(SIGNAL_ARGS);
 static void update_metainfo_datafile(void);
 
+/* POLAR */
+static FILE *logfile_open_with_buffer_mode(const char *filename, const char *mode,
+			 bool allow_errors, int buffer_mode);
+static int get_dest_from_flag(char flag);
+static FILE *get_logfile_from_dest(int destination);
+/* POLAR end */
 
 /*
  * Main entry point for syslogger process
@@ -159,7 +217,8 @@ NON_EXEC_STATIC void
 SysLoggerMain(int argc, char *argv[])
 {
 #ifndef WIN32
-	char		logbuffer[READ_BUF_SIZE];
+	/* POLAR: allocate it on heap because we enlarge the READ_BUF_SIZE */
+	char		*logbuffer = malloc(READ_BUF_SIZE);
 	int			bytes_in_logbuffer = 0;
 #endif
 	char	   *currentLogDir;
@@ -167,15 +226,32 @@ SysLoggerMain(int argc, char *argv[])
 	int			currentLogRotationAge;
 	pg_time_t	now;
 
+	/* POLAR */
+	int 		i = 0;
+	int     	channel_fd;
+	int         wait_event_id = 0;
+	WaitEvent   event;
+	WaitEventSet *set = NULL;
+
+	char loggerIndexStr[5];
+	MyLoggerIndex = 0;
+
+	if (argc == 1)
+		MyLoggerIndex = *(int *)argv;
+
+	pg_ltoa(MyLoggerIndex, loggerIndexStr);
+	/* POLAR end */
+
 	now = MyStartTime;
 
 #ifdef EXEC_BACKEND
+	// TODO(wormhole.gl): argv
 	syslogger_parseArgs(argc, argv);
 #endif							/* EXEC_BACKEND */
 
 	am_syslogger = true;
 
-	init_ps_display("logger", "", "", "");
+	init_ps_display("logger", "", "", loggerIndexStr);
 
 	/*
 	 * If we restarted, our stderr is already redirected into our own input
@@ -225,13 +301,42 @@ SysLoggerMain(int argc, char *argv[])
 	 * case, the postmaster already did this.)
 	 */
 #ifndef WIN32
-	if (syslogPipe[1] >= 0)
-		close(syslogPipe[1]);
-	syslogPipe[1] = -1;
+	channel_fd = GET_LOG_CHANNEL_FD(1);
+	if (channel_fd >= 0)
+		close(channel_fd);
+	SET_LOG_CHANNEL_FD(1, -1);
+
+	/*
+	 * POLAR: here we close all other syslogger fds that do not need,
+	 * because we need catch file EOF when normal exit.
+	 *
+	 * If two processes have this socket open,
+	 * one can close it but the socket isn't considered closed by
+	 * the operating system because the other still has it open.
+	 * Until the other process closes the socket,
+	 * the process reading from the socket won't get an end-of-file.
+	 * This can lead to confusion and deadlock.
+	 */
+	for (i = 0; i < polar_num_of_sysloggers; i++)
+	{
+		if (i != MyLoggerIndex)
+		{
+			channel_fd = GET_LOG_CHANNEL_FD_WITH_INDEX(i, 0);
+			if (channel_fd >= 0)
+				close(channel_fd);
+			SET_LOG_CHANNEL_FD_WITH_INDEX(i, 0, -1);
+
+			channel_fd = GET_LOG_CHANNEL_FD_WITH_INDEX(i, 1);
+			if (channel_fd >= 0)
+				close(channel_fd);
+			SET_LOG_CHANNEL_FD_WITH_INDEX(i, 1, -1);
+		}
+	}
 #else
-	if (syslogPipe[1])
-		CloseHandle(syslogPipe[1]);
-	syslogPipe[1] = 0;
+	channel_fd = GET_LOG_CHANNEL_FD(1);
+	if (channel_fd >= 0)
+		CloseHandle(channel_fd);
+	SET_LOG_CHANNEL_FD(1, 0);
 #endif
 
 	/*
@@ -277,9 +382,15 @@ SysLoggerMain(int argc, char *argv[])
 	 * time because passing down just the pg_time_t is a lot cheaper than
 	 * passing a whole file path in the EXEC_BACKEND case.
 	 */
-	last_file_name = logfile_getname(first_syslogger_file_time, NULL);
+	last_file_name = logfile_getname(first_syslogger_file_time, SYSLOG_SUFFIX);
 	if (csvlogFile != NULL)
 		last_csv_file_name = logfile_getname(first_syslogger_file_time, ".csv");
+	/* POLAR */
+	if (auditlogFile != NULL)
+		polar_last_audit_file_name = logfile_getname(first_syslogger_file_time, AUDITLOG_SUFFIX);
+	if (slowlogFile != NULL)
+		polar_last_slowlog_file_name = logfile_getname(first_syslogger_file_time, SLOWLOG_SUFFIX);
+	/* POLAR end */
 
 	/* remember active logfile parameters */
 	currentLogDir = pstrdup(Log_directory);
@@ -296,6 +407,14 @@ SysLoggerMain(int argc, char *argv[])
 	 */
 	whereToSendOutput = DestNone;
 
+	/* POLAR: move create wait event out of loop begin */
+	set = CreateWaitEventSet(CurrentMemoryContext, 3);
+	AddWaitEventToSet(set, WL_LATCH_SET, PGINVALID_SOCKET,
+						MyLatch, NULL);
+	wait_event_id = AddWaitEventToSet(set, WL_SOCKET_READABLE, 
+								GET_LOG_CHANNEL_FD(0), NULL, NULL);
+	/* POLAR end */
+
 	/* main worker loop */
 	for (;;)
 	{
@@ -306,6 +425,7 @@ SysLoggerMain(int argc, char *argv[])
 
 #ifndef WIN32
 		int			rc;
+		int         ret;
 #endif
 
 		/* Clear any already-pending wakeups */
@@ -349,6 +469,16 @@ SysLoggerMain(int argc, char *argv[])
 			if (((Log_destination & LOG_DESTINATION_CSVLOG) != 0) !=
 				(csvlogFile != NULL))
 				rotation_requested = true;
+			
+			/* POLAR */
+			if (((Log_destination & LOG_DESTINATION_POLAR_AUDITLOG) != 0) !=
+				(auditlogFile != NULL))
+				rotation_requested = true;
+
+			if (((Log_destination & LOG_DESTINATION_POLAR_SLOWLOG) != 0) != 
+				(slowlogFile != NULL))
+				rotation_requested = true;
+			/* POLAR end */
 
 			/*
 			 * If rotation time parameter changed, reset next rotation time,
@@ -400,16 +530,36 @@ SysLoggerMain(int argc, char *argv[])
 				rotation_requested = true;
 				size_rotation_for |= LOG_DESTINATION_CSVLOG;
 			}
+			/* POLAR */
+			if (auditlogFile != NULL &&
+				ftell(auditlogFile) >= Log_RotationSize * 1024L)
+			{
+				rotation_requested = true;
+				size_rotation_for |= LOG_DESTINATION_POLAR_AUDITLOG;
+			}
+			if (slowlogFile != NULL &&
+				ftell(slowlogFile) >= Log_RotationSize * 1024L)
+			{
+				rotation_requested = true;
+				size_rotation_for |= LOG_DESTINATION_POLAR_SLOWLOG;
+			}
+			/* POLAR end */
 		}
 
 		if (rotation_requested)
 		{
+			// TODO(wormhole.gl): need to choose the proper logger carefully to do these works
+			/* POLAR: remove oldest log file, now every syslogger will do this work */
+			polar_remove_old_syslog_files();
+			/* POLAR end */
+
 			/*
 			 * Force rotation when both values are zero. It means the request
 			 * was sent by pg_rotate_logfile.
 			 */
 			if (!time_based_rotation && size_rotation_for == 0)
-				size_rotation_for = LOG_DESTINATION_STDERR | LOG_DESTINATION_CSVLOG;
+				size_rotation_for = LOG_DESTINATION_STDERR | LOG_DESTINATION_CSVLOG |
+									LOG_DESTINATION_POLAR_AUDITLOG | LOG_DESTINATION_POLAR_SLOWLOG;
 			logfile_rotate(time_based_rotation, size_rotation_for);
 		}
 
@@ -446,23 +596,28 @@ SysLoggerMain(int argc, char *argv[])
 			cur_flags = 0;
 		}
 
+		/* POLAR optimized */
+		ModifyWaitEvent(set, wait_event_id, WL_SOCKET_READABLE | cur_flags, NULL);
+
 		/*
 		 * Sleep until there's something to do
 		 */
 #ifndef WIN32
-		rc = WaitLatchOrSocket(MyLatch,
-							   WL_LATCH_SET | WL_SOCKET_READABLE | cur_flags,
-							   syslogPipe[0],
-							   cur_timeout,
-							   WAIT_EVENT_SYSLOGGER_MAIN);
+		ret = WaitEventSetWait(set, cur_timeout, &event, 1, WAIT_EVENT_SYSLOGGER_MAIN);
+
+		if (ret == 0)
+			rc = WL_TIMEOUT;
+		else
+			rc = event.events & (WL_LATCH_SET | WL_POSTMASTER_DEATH | WL_SOCKET_MASK);
 
 		if (rc & WL_SOCKET_READABLE)
 		{
 			int			bytesRead;
 
-			bytesRead = read(syslogPipe[0],
+			bytesRead = read(GET_LOG_CHANNEL_FD(0),
 							 logbuffer + bytes_in_logbuffer,
-							 sizeof(logbuffer) - bytes_in_logbuffer);
+							 READ_BUF_SIZE - bytes_in_logbuffer);
+
 			if (bytesRead < 0)
 			{
 				if (errno != EINTR)
@@ -489,8 +644,13 @@ SysLoggerMain(int argc, char *argv[])
 				/* if there's any data left then force it out now */
 				flush_pipe_input(logbuffer, &bytes_in_logbuffer);
 			}
+		} else if (rc & WL_TIMEOUT) {
+			/* if there's any data left then force it out now */
+			flush_syslogger_file(LOG_DESTINATION_POLAR_AUDITLOG);
 		}
+		/* POLAR end */
 #else							/* WIN32 */
+		// TODO(wormhole.gl): WIN32
 
 		/*
 		 * On Windows we leave it to a separate thread to transfer data and
@@ -530,13 +690,15 @@ SysLoggerMain(int argc, char *argv[])
 			proc_exit(0);
 		}
 	}
+
+	FreeWaitEventSet(set);
 }
 
 /*
  * Postmaster subroutine to start a syslogger subprocess.
  */
 int
-SysLogger_Start(void)
+SysLogger_Start(int loggerIndex)
 {
 	pid_t		sysloggerPid;
 	char	   *filename;
@@ -557,14 +719,35 @@ SysLogger_Start(void)
 	 * is a bit klugy but we have little choice.
 	 */
 #ifndef WIN32
-	if (syslogPipe[0] < 0)
+	if (!polar_syslog_channel_is_inited)
 	{
-		if (pipe(syslogPipe) < 0)
-			ereport(FATAL,
-					(errcode_for_socket_access(),
-					 (errmsg("could not create pipe for syslog: %m"))));
+		memset(syslogChannels, -1, MAX_SYSLOGGER_NUM * 2);
+		polar_syslog_channel_is_inited = true;
+	}
+
+	if (loggerIndex == 0)
+	{
+	    if (syslogPipe[0] < 0)
+	    {
+			if (pipe(syslogPipe) < 0)
+			// if (socketpair(AF_UNIX, SOCK_STREAM, 0, syslogPipe) < 0)
+	    		ereport(FATAL,
+	    				(errcode_for_socket_access(),
+	    				 (errmsg("could not create pipe for syslog: %m"))));
+	    }
+	}
+	else
+	{
+		if (syslogChannels[loggerIndex][0] < 0)
+		{
+			if (socketpair(AF_UNIX, SOCK_STREAM, 0, syslogChannels[loggerIndex]) < 0)
+				ereport(FATAL,
+						(errcode_for_socket_access(),
+						(errmsg("could not create channels for syslog: %m"))));
+		}
 	}
 #else
+	// TODO(wormhole.gl): for WIN32
 	if (!syslogPipe[0])
 	{
 		SECURITY_ATTRIBUTES sa;
@@ -599,7 +782,7 @@ SysLogger_Start(void)
 	 */
 	first_syslogger_file_time = time(NULL);
 
-	filename = logfile_getname(first_syslogger_file_time, NULL);
+	filename = logfile_getname(first_syslogger_file_time, SYSLOG_SUFFIX);
 
 	syslogFile = logfile_open(filename, "a", false);
 
@@ -618,6 +801,25 @@ SysLogger_Start(void)
 
 		pfree(filename);
 	}
+
+	/* POLAR */
+	if (Log_destination & LOG_DESTINATION_POLAR_AUDITLOG)
+	{
+		filename = logfile_getname(first_syslogger_file_time, AUDITLOG_SUFFIX);
+		auditlogFile = logfile_open_with_buffer_mode(filename, "a", false, 
+													 FILE_BUF_MODE(LOG_DESTINATION_POLAR_AUDITLOG));
+		pfree(filename);
+	}
+
+	if (Log_destination & LOG_DESTINATION_POLAR_SLOWLOG)
+	{
+		filename = logfile_getname(first_syslogger_file_time, SLOWLOG_SUFFIX);
+
+		slowlogFile = logfile_open(filename, "a", false);
+
+		pfree(filename);
+	}
+	/* POLAR end */
 
 #ifdef EXEC_BACKEND
 	switch ((sysloggerPid = syslogger_forkexec()))
@@ -643,7 +845,9 @@ SysLogger_Start(void)
 			PGSharedMemoryDetach();
 
 			/* do the work */
-			SysLoggerMain(0, NULL);
+			/* POLAR add one argv */
+			SysLoggerMain(1, (char **)&loggerIndex);
+			/* POLAR end */
 			break;
 #endif
 
@@ -668,19 +872,29 @@ SysLogger_Start(void)
 								 Log_directory)));
 
 #ifndef WIN32
-				fflush(stdout);
-				if (dup2(syslogPipe[1], fileno(stdout)) < 0)
-					ereport(FATAL,
-							(errcode_for_file_access(),
-							 errmsg("could not redirect stdout: %m")));
-				fflush(stderr);
-				if (dup2(syslogPipe[1], fileno(stderr)) < 0)
-					ereport(FATAL,
-							(errcode_for_file_access(),
-							 errmsg("could not redirect stderr: %m")));
-				/* Now we are done with the write end of the pipe. */
-				close(syslogPipe[1]);
-				syslogPipe[1] = -1;
+				if (loggerIndex == 0) 
+				{
+					fflush(stdout);
+					if (dup2(syslogPipe[1], fileno(stdout)) < 0)
+						ereport(FATAL,
+								(errcode_for_file_access(),
+								 errmsg("could not redirect stdout: %m")));
+					fflush(stderr);
+					if (dup2(syslogPipe[1], fileno(stderr)) < 0)
+						ereport(FATAL,
+								(errcode_for_file_access(),
+								 errmsg("could not redirect stderr: %m")));
+					/* Now we are done with the write end of the pipe. */
+					close(syslogPipe[1]);
+					syslogPipe[1] = -1;
+				} 
+				else
+				{
+					/* POLAR close index 1 */
+					close(syslogChannels[loggerIndex][1]);
+					syslogChannels[loggerIndex][1] = -1;
+					/* POLAR end */
+				}
 #else
 
 				/*
@@ -716,13 +930,24 @@ SysLogger_Start(void)
 				fclose(csvlogFile);
 				csvlogFile = NULL;
 			}
+			/* POLAR */
+			if (auditlogFile != NULL)
+			{
+				fclose(auditlogFile);
+				auditlogFile = NULL;
+			}
+			if (slowlogFile != NULL)
+			{
+				fclose(slowlogFile);
+				slowlogFile = NULL;
+			}
+			/* POLAR end */
 			return (int) sysloggerPid;
 	}
 
 	/* we should never reach here */
 	return 0;
 }
-
 
 #ifdef EXEC_BACKEND
 
@@ -881,12 +1106,15 @@ process_pipe_input(char *logbuffer, int *bytes_in_logbuffer)
 		int			chunklen;
 
 		/* Do we have a valid header? */
+		/* POLAR: p.len is only uint16, not do any sanity check */
 		memcpy(&p, cursor, offsetof(PipeProtoHeader, data));
 		if (p.nuls[0] == '\0' && p.nuls[1] == '\0' &&
-			p.len > 0 && p.len <= PIPE_MAX_PAYLOAD &&
+			p.len > 0 &&
 			p.pid != 0 &&
 			(p.is_last == 't' || p.is_last == 'f' ||
-			 p.is_last == 'T' || p.is_last == 'F'))
+			 p.is_last == 'T' || p.is_last == 'F' ||
+			 p.is_last == AUDITLOG_CHUNK || p.is_last == AUDITLOG_LAST_CHUNK ||
+			 p.is_last == SLOWLOG_CHUNK || p.is_last == SLOWLOG_LAST_CHUNK))
 		{
 			List	   *buffer_list;
 			ListCell   *cell;
@@ -900,8 +1128,7 @@ process_pipe_input(char *logbuffer, int *bytes_in_logbuffer)
 			if (count < chunklen)
 				break;
 
-			dest = (p.is_last == 'T' || p.is_last == 'F') ?
-				LOG_DESTINATION_CSVLOG : LOG_DESTINATION_STDERR;
+			dest = get_dest_from_flag(p.is_last);
 
 			/* Locate any existing buffer for this source pid */
 			buffer_list = buffer_lists[p.pid % NBUFFER_LISTS];
@@ -918,7 +1145,8 @@ process_pipe_input(char *logbuffer, int *bytes_in_logbuffer)
 					free_slot = buf;
 			}
 
-			if (p.is_last == 'f' || p.is_last == 'F')
+			if (p.is_last == 'f' || p.is_last == 'F' ||
+				p.is_last == AUDITLOG_CHUNK || p.is_last == SLOWLOG_CHUNK)
 			{
 				/*
 				 * Save a complete non-final chunk in a per-pid buffer
@@ -1023,6 +1251,19 @@ flush_pipe_input(char *logbuffer, int *bytes_in_logbuffer)
 {
 	int			i;
 
+	/* POLAR audit log: notice that audit log is never larger than one chunk */
+	if (MyLoggerIndex != 0)
+	{
+		if (*bytes_in_logbuffer > 0)
+			write_syslogger_file(logbuffer, *bytes_in_logbuffer,
+								 LOG_DESTINATION_POLAR_AUDITLOG);
+		flush_syslogger_file(LOG_DESTINATION_POLAR_AUDITLOG);
+		*bytes_in_logbuffer = 0;
+		return;
+	}
+	/* POLAR end */
+
+	// (TODO: wormhole.gl): It may write slow log into stderr...
 	/* Dump any incomplete protocol messages */
 	for (i = 0; i < NBUFFER_LISTS; i++)
 	{
@@ -1053,6 +1294,7 @@ flush_pipe_input(char *logbuffer, int *bytes_in_logbuffer)
 	if (*bytes_in_logbuffer > 0)
 		write_syslogger_file(logbuffer, *bytes_in_logbuffer,
 							 LOG_DESTINATION_STDERR);
+	flush_syslogger_file(LOG_DESTINATION_STDERR);
 	*bytes_in_logbuffer = 0;
 }
 
@@ -1087,8 +1329,7 @@ write_syslogger_file(const char *buffer, int count, int destination)
 	 * Think not to improve this by trying to open csvlogFile on-the-fly.  Any
 	 * failure in that would lead to recursion.
 	 */
-	logfile = (destination == LOG_DESTINATION_CSVLOG &&
-			   csvlogFile != NULL) ? csvlogFile : syslogFile;
+	logfile = get_logfile_from_dest(destination);
 
 	rc = fwrite(buffer, 1, count, logfile);
 
@@ -1232,6 +1473,10 @@ logfile_rotate(bool time_based_rotation, int size_rotation_for)
 {
 	char	   *filename;
 	char	   *csvfilename = NULL;
+	/* POLAR */
+	char       *auditfilename = NULL;
+	char       *slowlogfilename = NULL;
+	/* POLAR end */
 	pg_time_t	fntime;
 	FILE	   *fh;
 
@@ -1246,9 +1491,15 @@ logfile_rotate(bool time_based_rotation, int size_rotation_for)
 		fntime = next_rotation_time;
 	else
 		fntime = time(NULL);
-	filename = logfile_getname(fntime, NULL);
+	filename = logfile_getname(fntime, SYSLOG_SUFFIX);
 	if (Log_destination & LOG_DESTINATION_CSVLOG)
 		csvfilename = logfile_getname(fntime, ".csv");
+	/* POLAR */
+	if (Log_destination & LOG_DESTINATION_POLAR_AUDITLOG)
+		auditfilename = logfile_getname(fntime, AUDITLOG_SUFFIX);
+	if (Log_destination & LOG_DESTINATION_POLAR_SLOWLOG)
+		slowlogfilename = logfile_getname(fntime, SLOWLOG_SUFFIX);
+	/* POLAR end */
 
 	/*
 	 * Decide whether to overwrite or append.  We can overwrite if (a)
@@ -1360,6 +1611,132 @@ logfile_rotate(bool time_based_rotation, int size_rotation_for)
 		last_csv_file_name = NULL;
 	}
 
+	/* POLAR */
+	/*
+	 * Same as above, but for audit file.  Note that if LOG_DESTINATION_POLAR_AUDITLOG
+	 * was just turned on, we might have to open auditlogFile here though it was
+	 * not open before.  In such a case we'll append not overwrite (since
+	 * polar_last_audit_file_name will be NULL); that is consistent with the normal
+	 * rules since it's not a time-based rotation.
+	 */
+	if ((Log_destination & LOG_DESTINATION_POLAR_AUDITLOG) &&
+		(auditlogFile == NULL ||
+		 time_based_rotation || (size_rotation_for & LOG_DESTINATION_POLAR_AUDITLOG)))
+	{
+		if (Log_truncate_on_rotation && time_based_rotation &&
+			polar_last_audit_file_name != NULL &&
+			strcmp(auditfilename, polar_last_audit_file_name) != 0)
+			fh = logfile_open_with_buffer_mode(auditfilename, "w", true, 
+											   FILE_BUF_MODE(LOG_DESTINATION_POLAR_AUDITLOG));
+		else
+			fh = logfile_open_with_buffer_mode(auditfilename, "a", true, 
+											   FILE_BUF_MODE(LOG_DESTINATION_POLAR_AUDITLOG));
+
+		if (!fh)
+		{
+			/*
+			 * ENFILE/EMFILE are not too surprising on a busy system; just
+			 * keep using the old file till we manage to get a new one.
+			 * Otherwise, assume something's wrong with Log_directory and stop
+			 * trying to create files.
+			 */
+			if (errno != ENFILE && errno != EMFILE)
+			{
+				ereport(LOG,
+						(errmsg("disabling automatic rotation (use SIGHUP to re-enable)")));
+				rotation_disabled = true;
+			}
+
+			if (auditfilename)
+				pfree(auditfilename);
+			return;
+		}
+
+		if (auditlogFile != NULL)
+			fclose(auditlogFile);
+		auditlogFile = fh;
+
+		/* instead of pfree'ing filename, remember it for next time */
+		if (polar_last_audit_file_name != NULL)
+			pfree(polar_last_audit_file_name);
+		polar_last_audit_file_name = auditfilename;
+		auditfilename = NULL;
+	}
+	else if (!(Log_destination & LOG_DESTINATION_POLAR_AUDITLOG) &&
+			 auditlogFile != NULL)
+	{
+		/* AUDITLOG was just turned off, so close the old file */
+		fclose(auditlogFile);
+		auditlogFile = NULL;
+		if (polar_last_audit_file_name != NULL)
+			pfree(polar_last_audit_file_name);
+		polar_last_audit_file_name = NULL;
+	}
+
+	/*
+	 * Same as above, but for slowlog file.  Note that if LOG_DESTINATION_POLAR_SLOWLOG
+	 * was just turned on, we might have to open slowlogFile here though it was
+	 * not open before.  In such a case we'll append not overwrite (since
+	 * polar_last_slowlog_file_name will be NULL); that is consistent with the normal
+	 * rules since it's not a time-based rotation.
+	 */
+	if ((Log_destination & LOG_DESTINATION_POLAR_SLOWLOG) &&
+		(slowlogFile == NULL ||
+		 time_based_rotation || (size_rotation_for & LOG_DESTINATION_POLAR_SLOWLOG)))
+	{
+		if (Log_truncate_on_rotation && time_based_rotation &&
+			polar_last_slowlog_file_name != NULL &&
+			strcmp(slowlogfilename, polar_last_slowlog_file_name) != 0)
+			fh = logfile_open(slowlogfilename, "w", true);
+		else
+			fh = logfile_open(slowlogfilename, "a", true);
+
+		if (!fh)
+		{
+			/*
+			 * ENFILE/EMFILE are not too surprising on a busy system; just
+			 * keep using the old file till we manage to get a new one.
+			 * Otherwise, assume something's wrong with Log_directory and stop
+			 * trying to create files.
+			 */
+			if (errno != ENFILE && errno != EMFILE)
+			{
+				ereport(LOG,
+						(errmsg("disabling automatic rotation (use SIGHUP to re-enable)")));
+				rotation_disabled = true;
+			}
+
+			if (slowlogfilename)
+				pfree(slowlogfilename);
+			return;
+		}
+
+		if (slowlogFile != NULL)
+			fclose(slowlogFile);
+		slowlogFile = fh;
+
+		/* instead of pfree'ing filename, remember it for next time */
+		if (polar_last_slowlog_file_name != NULL)
+			pfree(polar_last_slowlog_file_name);
+		polar_last_slowlog_file_name = slowlogfilename;
+		slowlogfilename = NULL;
+	}
+	else if (!(Log_destination & LOG_DESTINATION_POLAR_SLOWLOG) &&
+			 slowlogFile != NULL)
+	{
+		/* SLOWLOG was just turned off, so close the old file */
+		fclose(slowlogFile);
+		slowlogFile = NULL;
+		if (polar_last_slowlog_file_name != NULL)
+			pfree(polar_last_slowlog_file_name);
+		polar_last_slowlog_file_name = NULL;
+	}
+	if (auditfilename)
+		pfree(auditfilename);
+	if (slowlogfilename)
+		pfree(slowlogfilename);
+	/* POLAR end */
+
 	if (filename)
 		pfree(filename);
 	if (csvfilename)
@@ -1384,6 +1761,7 @@ logfile_getname(pg_time_t timestamp, const char *suffix)
 {
 	char	   *filename;
 	int			len;
+	char        loggerIndexStr[10];
 
 	filename = palloc(MAXPGPATH);
 
@@ -1400,8 +1778,21 @@ logfile_getname(pg_time_t timestamp, const char *suffix)
 		len = strlen(filename);
 		if (len > 4 && (strcmp(filename + (len - 4), ".log") == 0))
 			len -= 4;
+
+		/* POLAR: add log index to log file name */
+		if (strcmp(suffix, AUDITLOG_SUFFIX) == 0)
+		{
+			snprintf(loggerIndexStr, 10, "_%d", MyLoggerIndex);
+			strlcpy(filename + len, loggerIndexStr, MAXPGPATH - len);
+			len = strlen(filename);
+		}
+		/* POLAR END */
+
 		strlcpy(filename + len, suffix, MAXPGPATH - len);
-	}
+	} 
+
+	len = strlen(filename);
+	filename[len] = '\0';
 
 	return filename;
 }
@@ -1450,8 +1841,15 @@ update_metainfo_datafile(void)
 	FILE	   *fh;
 	mode_t		oumask;
 
+	/* POLAR */
+	if (MyLoggerIndex != 0)
+		return;
+	/* POLAR end */
+
 	if (!(Log_destination & LOG_DESTINATION_STDERR) &&
-		!(Log_destination & LOG_DESTINATION_CSVLOG))
+		!(Log_destination & LOG_DESTINATION_CSVLOG) &&
+		!(Log_destination & LOG_DESTINATION_POLAR_AUDITLOG) &&
+		!(Log_destination & LOG_DESTINATION_POLAR_SLOWLOG))
 	{
 		if (unlink(LOG_METAINFO_DATAFILE) < 0 && errno != ENOENT)
 			ereport(LOG,
@@ -1509,6 +1907,34 @@ update_metainfo_datafile(void)
 			return;
 		}
 	}
+
+	/* POLAR */
+	if (polar_last_audit_file_name && (Log_destination & LOG_DESTINATION_POLAR_AUDITLOG))
+	{
+		if (fprintf(fh, "auditlog %s\n", polar_last_audit_file_name) < 0)
+		{
+			ereport(LOG,
+					(errcode_for_file_access(),
+					 errmsg("could not write file \"%s\": %m",
+							LOG_METAINFO_DATAFILE_TMP)));
+			fclose(fh);
+			return;
+		}
+	}
+
+	if (polar_last_slowlog_file_name && (Log_destination & LOG_DESTINATION_POLAR_SLOWLOG))
+	{
+		if (fprintf(fh, "slowlog %s\n", polar_last_slowlog_file_name) < 0)
+		{
+			ereport(LOG,
+					(errcode_for_file_access(),
+					 errmsg("could not write file \"%s\": %m",
+							LOG_METAINFO_DATAFILE_TMP)));
+			fclose(fh);
+			return;
+		}
+	}
+	/* POLAR end */
 	fclose(fh);
 
 	if (rename(LOG_METAINFO_DATAFILE_TMP, LOG_METAINFO_DATAFILE) != 0)
@@ -1546,3 +1972,266 @@ sigUsr1Handler(SIGNAL_ARGS)
 
 	errno = save_errno;
 }
+
+/*
+ * POLAR: remove oldest log file
+ *
+ * Remove oldest log file from log directory
+ */
+static void
+polar_remove_old_syslog_files()
+{
+	DIR		   *logdir;
+	struct dirent *logde;
+	char		oldest_path[MAXPGPATH];
+	char 		oldest_auditlog_path[MAXPGPATH];
+	char		oldest_slowlog_path[MAXPGPATH];
+	char		path[MAXPGPATH];
+	int			i = 0;
+	int			num_log_files = 0;
+	int 		num_auditlog_files = 0;
+	int 		num_slowlog_files = 0;
+	int			log_prefix_pos = 0;
+
+	/* if polar_max_log_files is disabled, we should skip it */
+	if (polar_max_log_files < 0 && 
+			polar_max_auditlog_files < 0 && polar_max_slowlog_files < 0)
+		return;
+
+	logdir = AllocateDir(Log_directory, false);
+	if (logdir == NULL)
+		ereport(ERROR,
+				(errcode_for_file_access(),
+				 errmsg("could not open error log directory \"%s\": %m",
+					 Log_directory)));
+
+	/* Get first '%' postion in log_filename, NB:this is a single line */
+	for (i = 0; Log_filename[i] != '\0' && Log_filename[i] != '%'; i++);
+	/* save first '%' postion */
+	log_prefix_pos = i;
+
+	/* Init our result path, mark it invalid */
+	oldest_path[0] = '\0';
+	oldest_auditlog_path[0] = '\0';
+	oldest_slowlog_path[0] = '\0';
+
+	while ((logde = ReadDir(logdir, Log_directory)) != NULL)
+	{
+		/* Skip special stuff */
+		if (strcmp(logde->d_name, ".") == 0 || strcmp(logde->d_name, "..") == 0)
+			continue;
+
+		/*
+		 * skip not pg log prefix file and choose minimum log file name.
+		 */
+		if (strncmp(logde->d_name, Log_filename, log_prefix_pos) == 0)
+		{
+			/* increase log file num */
+			if (strstr(logde->d_name, AUDITLOG_SUFFIX) != NULL)
+			{
+				/* audit log */
+				num_auditlog_files ++;
+				if (oldest_auditlog_path[0] == '\0' || 
+					strcmp(logde->d_name, oldest_auditlog_path) < 0)
+				{
+					/* save it */
+					strcpy(oldest_auditlog_path, logde->d_name);
+				}
+			}
+			else if (strstr(logde->d_name, SLOWLOG_SUFFIX) != NULL)
+			{
+				/* slow log */
+				num_slowlog_files ++;
+				if (oldest_slowlog_path[0] == '\0' || 
+					strcmp(logde->d_name, oldest_slowlog_path) < 0)
+				{
+					/* save it */
+					strcpy(oldest_slowlog_path, logde->d_name);
+				}
+			}
+			else
+			{
+				num_log_files ++;
+				if (oldest_path[0] == '\0' || strcmp(logde->d_name, oldest_path) < 0)
+				{
+					/* save it */
+					strcpy(oldest_path, logde->d_name);
+				}
+			}
+		}
+	}
+
+	if (num_auditlog_files <= polar_max_auditlog_files 
+		&& num_log_files <= polar_max_log_files
+		&& num_slowlog_files <= polar_max_slowlog_files)
+	{
+		FreeDir(logdir);
+		return;
+	}
+
+	if (polar_max_auditlog_files > 0 && num_auditlog_files > polar_max_auditlog_files)
+	{
+		memset(path, 0, MAXPGPATH);
+		snprintf(path, MAXPGPATH, "%s/%s", Log_directory, oldest_auditlog_path);
+		elog(DEBUG2, "attempting to remove oldest audit log file %s", path);
+		polar_remove_log_file(path);
+	}
+
+	if (polar_max_slowlog_files > 0 && num_slowlog_files > polar_max_slowlog_files)
+	{
+		memset(path, 0, MAXPGPATH);
+		snprintf(path, MAXPGPATH, "%s/%s", Log_directory, oldest_slowlog_path);
+		elog(DEBUG2, "attempting to remove oldest slow log file %s", path);
+		polar_remove_log_file(path);
+	}
+
+	if (polar_max_log_files > 0 && num_log_files > polar_max_log_files)
+	{
+		memset(path, 0, MAXPGPATH);
+		snprintf(path, MAXPGPATH, "%s/%s", Log_directory, oldest_path);
+		elog(DEBUG2, "attempting to remove oldest log file %s", path);
+		polar_remove_log_file(path);
+	}
+
+	FreeDir(logdir);
+	return;
+}
+
+/*
+ * remove file
+ */ 
+static void 
+polar_remove_log_file(const char *path)
+{
+	int rc;
+
+#ifdef WIN32
+	char newpath[MAXPGPATH];
+
+	/*
+	 * On Windows, if another process (e.g another backend)
+	 * holds the file open in FILE_SHARE_DELETE mode, unlink
+	 * will succeed, but the file will still show up in
+	 * directory listing until the last handle is closed. To
+	 * avoid confusing the lingering deleted file for a live
+	 * WAL file that needs to be archived, rename it before
+	 * deleting it.
+	 *
+	 * If another process holds the file open without
+	 * FILE_SHARE_DELETE flag, rename will fail. We'll try
+	 * again at the next checkpoint.
+	 */
+	snprintf(newpath, MAXPGPATH, "%s.deleted", path);
+	if (rename(path, newpath) != 0)
+	{
+		ereport(LOG,
+			(errcode_for_file_access(),
+			errmsg("could not rename old error log file \"%s\": %m",
+				path)));
+		return;
+	}
+	rc = unlink(newpath);
+#else
+	rc = unlink(path);
+#endif
+	if (rc != 0)
+	{
+		ereport(LOG,
+			(errcode_for_file_access(),
+			errmsg("could not remove old error log file \"%s\": %m",
+				path)));
+	}
+
+	return;
+}
+
+
+/* POLAR */
+/*
+ * flush log buffer
+ */
+void
+flush_syslogger_file(int destination) 
+{
+	FILE *logfile = get_logfile_from_dest(destination);
+	fflush(logfile);
+}
+
+/* Just a copy of logfile_open, add buffer_mode parameter */
+static FILE *
+logfile_open_with_buffer_mode(const char *filename, const char *mode, bool allow_errors,
+							  int buffer_mode)
+{
+	FILE	   *fh;
+	mode_t		oumask;
+
+	/*
+	 * Note we do not let Log_file_mode disable IWUSR, since we certainly want
+	 * to be able to write the files ourselves.
+	 */
+	oumask = umask((mode_t) ((~(Log_file_mode | S_IWUSR)) & (S_IRWXU | S_IRWXG | S_IRWXO)));
+	fh = fopen(filename, mode);
+	umask(oumask);
+
+	if (fh)
+	{
+		setvbuf(fh, NULL, buffer_mode, 0);
+
+#ifdef WIN32
+		/* use CRLF line endings on Windows */
+		_setmode(_fileno(fh), _O_TEXT);
+#endif
+	}
+	else
+	{
+		int			save_errno = errno;
+
+		ereport(allow_errors ? LOG : FATAL,
+				(errcode_for_file_access(),
+				 errmsg("could not open log file \"%s\": %m",
+						filename)));
+		errno = save_errno;
+	}
+
+	return fh;
+}
+
+/*
+ * get log destination from chunk meta
+ */
+static int 
+get_dest_from_flag(char flag) 
+{
+	switch(flag)
+	{
+		case 'T':
+		case 'F':
+			return LOG_DESTINATION_CSVLOG;
+		case AUDITLOG_CHUNK:
+		case AUDITLOG_LAST_CHUNK:
+			return LOG_DESTINATION_POLAR_AUDITLOG;
+		case SLOWLOG_CHUNK:
+		case SLOWLOG_LAST_CHUNK:
+			return LOG_DESTINATION_POLAR_SLOWLOG;
+		case 't':
+		case 'f':
+		default:
+			return LOG_DESTINATION_STDERR;
+	}
+}
+
+/*
+ * get logfile handler from destinaction
+ */
+static inline FILE *
+get_logfile_from_dest(int destination) 
+{
+	if (destination == LOG_DESTINATION_CSVLOG && csvlogFile != NULL)
+		return csvlogFile;
+	if (destination == LOG_DESTINATION_POLAR_AUDITLOG && auditlogFile != NULL)
+		return auditlogFile;
+	if (destination == LOG_DESTINATION_POLAR_SLOWLOG && slowlogFile != NULL)
+		return slowlogFile;
+	return syslogFile;
+}
+/* POLAR end */

@@ -57,18 +57,17 @@
 #include "storage/standby.h"
 #include "utils/guc.h"
 #include "utils/memutils.h"
+#include "utils/polar_coredump.h"
 #include "utils/resowner.h"
 #include "utils/timestamp.h"
 
 /* POLAR */
-#include "storage/polar_fd.h"
-
-/* POLAR */
-#include "access/polar_logindex.h"
-#include "access/polar_logindex_internal.h"
+#include "access/polar_logindex_redo.h"
 #include "postmaster/polar_parallel_bgwriter.h"
 #include "storage/polar_bufmgr.h"
+#include "storage/polar_fd.h"
 #include "storage/procarray.h"
+#include "utils/polar_local_cache.h"
 
 /*
  * GUC parameters
@@ -100,14 +99,12 @@ static XLogRecPtr last_snapshot_lsn = InvalidXLogRecPtr;
  */
 static volatile sig_atomic_t got_SIGHUP = false;
 static volatile sig_atomic_t shutdown_requested = false;
-
 /* Signal handlers */
 
 static void bg_quickdie(SIGNAL_ARGS);
 static void BgSigHupHandler(SIGNAL_ARGS);
 static void ReqShutdownHandler(SIGNAL_ARGS);
 static void bgwriter_sigusr1_handler(SIGNAL_ARGS);
-
 
 /*
  * Main entry point for bgwriter process
@@ -136,7 +133,6 @@ BackgroundWriterMain(void)
 	pqsignal(SIGALRM, SIG_IGN);
 	pqsignal(SIGPIPE, SIG_IGN);
 	pqsignal(SIGUSR1, bgwriter_sigusr1_handler);
-	pqsignal(SIGUSR2, SIG_IGN);
 
 	/*
 	 * Reset some signals that are accepted by postmaster but not here
@@ -146,6 +142,20 @@ BackgroundWriterMain(void)
 	pqsignal(SIGTTOU, SIG_DFL);
 	pqsignal(SIGCONT, SIG_DFL);
 	pqsignal(SIGWINCH, SIG_DFL);
+
+	/* POLAR : register for coredump print */
+#ifndef _WIN32
+#ifdef SIGILL
+	pqsignal(SIGILL, polar_program_error_handler);
+#endif
+#ifdef SIGSEGV
+	pqsignal(SIGSEGV, polar_program_error_handler);
+#endif
+#ifdef SIGBUS
+	pqsignal(SIGBUS, polar_program_error_handler);
+#endif
+#endif	/* _WIN32 */
+	/* POLAR: end */
 
 	/* We allow SIGQUIT (quickdie) at all times */
 	sigdelset(&BlockSig, SIGQUIT);
@@ -174,6 +184,10 @@ BackgroundWriterMain(void)
 	MemoryContextSwitchTo(bgwriter_context);
 
 	WritebackContextInit(&wb_context, &bgwriter_flush_after);
+
+	/* POLAR: empty trash dir for local cache */
+	if (!polar_local_cache_empty_trash())
+		elog(WARNING, "Failed to empty trash dir for local cache");
 
 	/*
 	 * If an exception is encountered, processing resumes here.
@@ -265,9 +279,8 @@ BackgroundWriterMain(void)
 	 */
 	for (;;)
 	{
-		bool		can_hibernate;
+		bool		can_hibernate = true;
 		int			rc;
-		bool        polar_replay_done = true;
 
 		/* Clear any already-pending wakeups */
 		ResetLatch(MyLatch);
@@ -286,33 +299,6 @@ BackgroundWriterMain(void)
 			ExitOnAnyError = true;
 			/* Normal exit from the bgwriter is here */
 			proc_exit(0);		/* done */
-		}
-
-		/*
-		 * POLAR: Flush log index memory table which is full
-		 */
-		if (polar_enable_redo_logindex
-				&& polar_log_index_check_state(POLAR_LOGINDEX_WAL_SNAPSHOT, POLAR_LOGINDEX_STATE_ADDING))
-		{
-			if (polar_streaming_xlog_meta)
-				polar_log_index_bg_write();
-			else
-			{
-				XLogRecPtr backend_min_lsn = InvalidXLogRecPtr;
-
-				backend_min_lsn = polar_get_read_min_lsn(polar_get_primary_consist_ptr());
-
-				polar_log_index_truncate_mem_table(backend_min_lsn);
-			}
-
-			/* POLAR: We need apply xlog in background while page outdate is enabled */
-			if (POLAR_ENABLE_PAGE_OUTDATE())
-			{
-				polar_replay_done = polar_log_index_apply_xlog_background();
-
-				/* POLAR: Shorten background apply interval */
-				can_hibernate = false;
-			}
 		}
 
 		/*
@@ -378,32 +364,26 @@ BackgroundWriterMain(void)
 				last_snapshot_ts = now;
 			}
 		}
-
+		
 		/*
 		 * POLAR: Check the parallel background writers, if some writers are
 		 * stopped, start some.
 		 */
 		polar_check_parallel_bgwriter_worker();
 
-		/* POLAR: If we have data in buffer to replay then will not sleep and continue to do job */
-		if (polar_replay_done)
-		{
-			/*
-			* Sleep until we are signaled or BgWriterDelay has elapsed.
-			*
-			* Note: the feedback control loop in BgBufferSync() expects that we
-			* will call it every BgWriterDelay msec.  While it's not critical for
-			* correctness that that be exact, the feedback loop might misbehave
-			* if we stray too far from that.  Hence, avoid loading this process
-			* down with latch events that are likely to happen frequently during
-			* normal operation.
-			*/
-			rc = WaitLatch(MyLatch,
-						   WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH,
-						   BgWriterDelay /* ms */ , WAIT_EVENT_BGWRITER_MAIN);
-		}
-		else
-			continue;
+		/*
+		 * Sleep until we are signaled or BgWriterDelay has elapsed.
+		 *
+		 * Note: the feedback control loop in BgBufferSync() expects that we
+		 * will call it every BgWriterDelay msec.  While it's not critical for
+		 * correctness that that be exact, the feedback loop might misbehave
+		 * if we stray too far from that.  Hence, avoid loading this process
+		 * down with latch events that are likely to happen frequently during
+		 * normal operation.
+		 */
+		rc = WaitLatch(MyLatch,
+					   WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH,
+					   BgWriterDelay /* ms */ , WAIT_EVENT_BGWRITER_MAIN);
 
 		/*
 		 * If no latch event and BgBufferSync says nothing's happening, extend

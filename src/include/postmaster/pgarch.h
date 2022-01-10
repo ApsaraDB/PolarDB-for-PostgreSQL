@@ -36,4 +36,8 @@ extern int	pgarch_start(void);
 extern void PgArchiverMain(int argc, char *argv[]) pg_attribute_noreturn();
 #endif
 
+/* POLAR */
+extern void polar_datamax_ArchiverCopyLoop(void);
+/* POLAR end */
+
 #endif							/* _PGARCH_H */

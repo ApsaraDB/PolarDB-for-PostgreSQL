@@ -19,12 +19,13 @@ all: pg_config.h pg_config_ext.h pg_config_os.h
 # Subdirectories containing installable headers
 SUBDIRS = access bootstrap catalog commands common datatype \
 	executor fe_utils foreign jit \
-	lib libpq mb nodes optimizer parser partitioning postmaster \
+	lib libpq mb nodes optimizer parser partitioning polar_dma postmaster \
 	regex replication rewrite \
 	statistics storage tcop snowball snowball/libstemmer tsearch \
 	tsearch/dicts utils port port/atomics port/win32 port/win32_msvc \
 	port/win32_msvc/sys port/win32/arpa port/win32/netinet \
-	port/win32/sys portability
+	port/win32/sys portability px px_optimizer_util polar_flashback
+
 
 # Install all headers
 install: all installdirs
@@ -50,6 +51,7 @@ install: all installdirs
 # We don't use INSTALL_DATA for performance reasons --- there are a lot of files
 # (in fact, we have to take some pains to avoid overlength shell commands here)
 	cp $(srcdir)/*.h '$(DESTDIR)$(includedir_server)'/
+	cp -fr $(srcdir)/px_optimizer_util '$(DESTDIR)$(includedir_server)'/
 	for dir in $(SUBDIRS); do \
 	  cp $(srcdir)/$$dir/*.h '$(DESTDIR)$(includedir_server)'/$$dir/ || exit; \
 	done

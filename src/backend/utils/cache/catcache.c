@@ -40,6 +40,9 @@
 #include "utils/syscache.h"
 #include "utils/tqual.h"
 
+/* POLAR px */
+#include "catalog/heap.h"
+
 
  /* #define CACHEDEBUG */	/* turns DEBUG elogs on */
 
@@ -103,7 +106,8 @@ static void CatalogCacheInitializeCache(CatCache *cache);
 static CatCTup *CatalogCacheCreateEntry(CatCache *cache, HeapTuple ntp,
 						Datum *arguments,
 						uint32 hashValue, Index hashIndex,
-						bool negative);
+						bool negative,
+						AttrNumber attno);
 
 static void CatCacheFreeKeys(TupleDesc tupdesc, int nkeys, int *attnos,
 				 Datum *keys);
@@ -1387,7 +1391,8 @@ SearchCatCacheMiss(CatCache *cache,
 	{
 		ct = CatalogCacheCreateEntry(cache, ntp, arguments,
 									 hashValue, hashIndex,
-									 false);
+									 false,
+									 FirstLowInvalidHeapAttributeNumber);
 		/* immediately set the refcount to 1 */
 		ResourceOwnerEnlargeCatCacheRefs(CurrentResourceOwner);
 		ct->refcount++;
@@ -1414,27 +1419,57 @@ SearchCatCacheMiss(CatCache *cache,
 		if (IsBootstrapProcessingMode())
 			return NULL;
 
-		ct = CatalogCacheCreateEntry(cache, NULL, arguments,
-									 hashValue, hashIndex,
-									 true);
+		/* POLAR px: handle _px_worker_id attribute */
+		if ((cache->id == ATTNUM && 
+				DatumGetInt16(arguments[1]) == PxWorkerIdAttributeNumber) ||
+			(cache->id == ATTNAME && 
+				(strcmp(DatumGetCString(arguments[1]), "_px_worker_id") == 0)))
+		{
+			ct = CatalogCacheCreateEntry(cache, NULL, arguments,
+										hashValue, hashIndex,
+										false,
+										PxWorkerIdAttributeNumber);
 
-		CACHE4_elog(DEBUG2, "SearchCatCache(%s): Contains %d/%d tuples",
-					cache->cc_relname, cache->cc_ntup, CacheHdr->ch_ntup);
-		CACHE3_elog(DEBUG2, "SearchCatCache(%s): put neg entry in bucket %d",
-					cache->cc_relname, hashIndex);
+			/* immediately set the refcount to 1 */
+			ResourceOwnerEnlargeCatCacheRefs(CurrentResourceOwner);
+			ct->refcount++;
+			ResourceOwnerRememberCatCacheRef(CurrentResourceOwner, &ct->tuple);
+		}
+		else if ((cache->id == ATTNUM && 
+					DatumGetInt16(arguments[1]) == RootSelfItemPointerAttributeNumber) ||
+				 (cache->id == ATTNAME && 
+					(strcmp(DatumGetCString(arguments[1]), "_root_ctid") == 0)))
+		{
+			ct = CatalogCacheCreateEntry(cache, NULL, arguments,
+										hashValue, hashIndex,
+										false,
+										RootSelfItemPointerAttributeNumber);
 
-		/*
-		 * We are not returning the negative entry to the caller, so leave its
-		 * refcount zero.
-		 */
+			/* immediately set the refcount to 1 */
+			ResourceOwnerEnlargeCatCacheRefs(CurrentResourceOwner);
+			ct->refcount++;
+			ResourceOwnerRememberCatCacheRef(CurrentResourceOwner, &ct->tuple);
+		}
+		else
+		{
+			ct = CatalogCacheCreateEntry(cache, NULL, arguments,
+										hashValue, hashIndex,
+										true,
+										FirstLowInvalidHeapAttributeNumber);
 
-		return NULL;
+			CACHE4_elog(DEBUG2, "SearchCatCache(%s): Contains %d/%d tuples",
+						cache->cc_relname, cache->cc_ntup, CacheHdr->ch_ntup);
+			CACHE3_elog(DEBUG2, "SearchCatCache(%s): put neg entry in bucket %d",
+						cache->cc_relname, hashIndex);
+
+			/*
+			* We are not returning the negative entry to the caller, so leave its
+			* refcount zero.
+			*/
+
+			return NULL;
+		}
 	}
-
-	CACHE4_elog(DEBUG2, "SearchCatCache(%s): Contains %d/%d tuples",
-				cache->cc_relname, cache->cc_ntup, CacheHdr->ch_ntup);
-	CACHE3_elog(DEBUG2, "SearchCatCache(%s): put in bucket %d",
-				cache->cc_relname, hashIndex);
 
 #ifdef CATCACHE_STATS
 	cache->cc_newloads++;
@@ -1701,7 +1736,8 @@ SearchCatCacheList(CatCache *cache,
 				/* We didn't find a usable entry, so make a new one */
 				ct = CatalogCacheCreateEntry(cache, ntp, arguments,
 											 hashValue, hashIndex,
-											 false);
+											 false,
+											 FirstLowInvalidHeapAttributeNumber);
 			}
 
 			/* Careful here: add entry to ctlist, then bump its refcount */
@@ -1822,30 +1858,49 @@ ReleaseCatCacheList(CatCList *list)
 static CatCTup *
 CatalogCacheCreateEntry(CatCache *cache, HeapTuple ntp, Datum *arguments,
 						uint32 hashValue, Index hashIndex,
-						bool negative)
+						bool negative, AttrNumber attno)
 {
 	CatCTup    *ct;
 	HeapTuple	dtp;
 	MemoryContext oldcxt;
 
 	/* negative entries have no tuple associated */
-	if (ntp)
+	if (ntp || !negative)
 	{
 		int			i;
 
-		Assert(!negative);
+		/* POLAR px: add _px_worker_id attribute */
+		if (!ntp)
+		{
+			Form_pg_attribute tmp_attribute;
+			Relation relation;
 
-		/*
-		 * If there are any out-of-line toasted fields in the tuple, expand
-		 * them in-line.  This saves cycles during later use of the catcache
-		 * entry, and also protects us against the possibility of the toast
-		 * tuples being freed before we attempt to fetch them, in case of
-		 * something using a slightly stale catcache entry.
-		 */
-		if (HeapTupleHasExternal(ntp))
-			dtp = toast_flatten_tuple(ntp, cache->cc_tupdesc);
+			Assert(attno > FirstLowInvalidHeapAttributeNumber && attno < 0);
+
+			tmp_attribute = SystemAttributeDefinition(attno, false);
+
+			relation = heap_open(cache->cc_reloid, AccessShareLock);;
+
+			dtp = heaptuple_from_pg_attribute(relation, tmp_attribute);
+
+			heap_close(relation, AccessShareLock);
+		}
 		else
-			dtp = ntp;
+		{
+			Assert(!negative);
+			/*
+			* If there are any out-of-line toasted fields in the tuple, expand
+			* them in-line.  This saves cycles during later use of the catcache
+			* entry, and also protects us against the possibility of the toast
+			* tuples being freed before we attempt to fetch them, in case of
+			* something using a slightly stale catcache entry.
+			*/
+			if (HeapTupleHasExternal(ntp))
+				dtp = toast_flatten_tuple(ntp, cache->cc_tupdesc);
+			else
+				dtp = ntp;
+		}
+
 
 		/* Allocate memory for CatCTup and the cached tuple in one go */
 		oldcxt = MemoryContextSwitchTo(CacheMemoryContext);
@@ -1863,7 +1918,8 @@ CatalogCacheCreateEntry(CatCache *cache, HeapTuple ntp, Datum *arguments,
 			   dtp->t_len);
 		MemoryContextSwitchTo(oldcxt);
 
-		if (dtp != ntp)
+		/* POLAR px: free dtp */
+		if ((ntp && dtp != ntp) || !ntp)
 			heap_freetuple(dtp);
 
 		/* extract keys - they'll point into the tuple if not by-value */

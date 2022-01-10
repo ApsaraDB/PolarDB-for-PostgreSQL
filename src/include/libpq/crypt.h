@@ -33,11 +33,11 @@ typedef enum PasswordType
 
 extern PasswordType get_password_type(const char *shadow_pass);
 extern char *encrypt_password(PasswordType target_type, const char *role,
-				 const char *password);
+				 const char *password, bool polar_role_is_super);
 
 extern char *get_role_password(const char *role, char **logdetail);
 
-extern int md5_crypt_verify(const char *role, const char *shadow_pass,
+extern int md5_crypt_verify(const char *role, const char *polar_shadow_pass,
 				 const char *client_pass, const char *md5_salt,
 				 int md5_salt_len, char **logdetail);
 extern int plain_crypt_verify(const char *role, const char *shadow_pass,

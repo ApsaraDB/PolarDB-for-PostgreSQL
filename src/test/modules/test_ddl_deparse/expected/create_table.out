@@ -139,6 +139,7 @@ NOTICE:  DDL test: type simple, tag CREATE INDEX
 CREATE UNLOGGED TABLE unlogged_table (
     id INT PRIMARY KEY
 );
+NOTICE:  change unlogged table to logged table,because unlogged table not supports Master-Slave mode
 NOTICE:  DDL test: type simple, tag CREATE TABLE
 NOTICE:  DDL test: type simple, tag CREATE INDEX
 CREATE TEMP TABLE temp_table (

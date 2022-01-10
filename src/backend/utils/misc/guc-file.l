@@ -1,6 +1,5 @@
 /* -*-pgsql-c-*- */
-/*
- * Scanner for the configuration file
+/* * Scanner for the configuration file
  *
  * Copyright (c) 2000-2018, PostgreSQL Global Development Group
  *
@@ -18,6 +17,9 @@
 #include "miscadmin.h"
 #include "storage/fd.h"
 #include "utils/guc.h"
+
+/* POLAR */
+#include "utils/guc_tables.h"
 
 
 /*
@@ -177,10 +179,14 @@ ProcessConfigFileInternal(GucContext context, bool applySettings, int elevel)
 			   *head,
 			   *tail;
 	int			i;
+	/* POLAR: used for delete item in linked list */
+	ConfigVariable *prev_item = NULL;
 
 	/* Parse the main config file into a list of option names and values */
 	ConfFileWithError = ConfigFileName;
-	head = tail = NULL;
+
+	head = NULL;
+	tail = NULL;
 
 	if (!ParseConfigFile(ConfigFileName, true,
 						 NULL, 0, 0, elevel,
@@ -199,6 +205,16 @@ ProcessConfigFileInternal(GucContext context, bool applySettings, int elevel)
 	 */
 	if (DataDir)
 	{
+		if (!ParseConfigFile(PolarDMAFileName, false,
+							 NULL, 0, 0, elevel,
+							 &head, &tail))
+		{
+			/* Syntax error(s) detected in the file, so bail out */
+			error = true;
+			ConfFileWithError = PolarDMAFileName;
+			goto bail_out;
+		}
+
 		if (!ParseConfigFile(PG_AUTOCONF_FILENAME, false,
 							 NULL, 0, 0, elevel,
 							 &head, &tail))
@@ -271,13 +287,41 @@ ProcessConfigFileInternal(GucContext context, bool applySettings, int elevel)
 	 * variable mentioned in the file; and we detect duplicate entries in the
 	 * file and mark the earlier occurrences as ignorable.
 	 */
-	for (item = head; item; item = item->next)
+	for (item = head; item;)
 	{
 		struct config_generic *record;
+		/* POLAR */
+		bool		is_polar_var = false;
+		char		*opt_name = NULL;
+		ConfigVariable *nextptr = item->next;
 
 		/* Ignore anything already marked as ignorable */
 		if (item->ignore)
 			continue;
+
+		/*
+		 * POLAR: if server can not process "polar_" var or "rds_" var config,
+		 * then delete it, we remove item from linked list
+		 * Note: special handle extension var like: polar_vfs.xxxx
+		 */
+		if (strncasecmp(item->name, "rds_", 4) == 0 &&
+		    strlen(item->name) > 4 && strchr(item->name, '.') == NULL)
+		{
+			is_polar_var = true;
+			/* Change rds_ to polar_ var */
+			opt_name = palloc(strlen(item->name) + 1 + 2);
+			strncpy(opt_name, "polar_", 6);
+			strncpy(opt_name + 6, item->name + 4, strlen(item->name) - 4);
+			opt_name[strlen(item->name) + 2] = '\0';
+			pfree(item->name);
+			item->name = opt_name;
+		}
+		else if (strncasecmp(item->name, "polar_", 6) == 0 &&
+			 strlen(item->name) > 6 && strchr(item->name, '.') == NULL)
+		{
+			is_polar_var = true;
+		}
+		/* POLAR end */
 
 		/*
 		 * Try to find the variable; but do not create a custom placeholder if
@@ -306,6 +350,27 @@ ProcessConfigFileInternal(GucContext context, bool applySettings, int elevel)
 			}
 			/* Now mark it as present in file */
 			record->status |= GUC_IS_IN_FILE;
+			/* we keep item, then do item->next */
+			prev_item = item;
+		}
+		/* POLAR: if we can not process it, then delete it */
+		else if (is_polar_var)
+		{
+			/* delete item which is first in linked list*/
+			if (prev_item == NULL)
+				head = nextptr;
+			else
+				prev_item->next = nextptr;
+			/* delete item which is last in linked list*/
+			if (nextptr == NULL)
+				tail = prev_item;
+			ereport(NOTICE,
+					(errcode(ERRCODE_UNDEFINED_OBJECT),
+					 errmsg("unrecognized configuration parameter \"%s\" or \"%s\" in file \"%s\" line %u",
+							item->name,item->name,
+							item->filename, item->sourceline)));
+			/* we delete item, so we must keep prev not change */
+			FreeConfigVariable(item);
 		}
 		else if (strchr(item->name, GUC_QUALIFIER_SEPARATOR) == NULL)
 		{
@@ -319,6 +384,13 @@ ProcessConfigFileInternal(GucContext context, bool applySettings, int elevel)
 			error = true;
 			ConfFileWithError = item->filename;
 		}
+		else
+		{
+			/* POLAR: we keep item, then do item->next */
+			prev_item = item;
+		}
+		/* POLAR: do next item */
+		item = nextptr;
 	}
 
 	/*
@@ -1221,4 +1293,176 @@ GUC_scanstr(const char *s)
 	newStr[--j] = '\0';
 
 	return newStr;
+}
+
+/*
+ * POLAR: process polar_node_static.conf file 
+ */
+void
+polar_process_polar_node_static_config(void)
+{
+	MemoryContext config_cxt;
+	MemoryContext caller_cxt;
+	/*
+	 * This function is usually called within a process-lifespan memory
+	 * context.  To ensure that any memory leaked during GUC processing does
+	 * not accumulate across repeated SIGHUP cycles, do the work in a private
+	 * context that we can free at exit.
+	 */
+	config_cxt = AllocSetContextCreate(CurrentMemoryContext,
+									   "config file processing",
+									   ALLOCSET_DEFAULT_SIZES);
+	caller_cxt = MemoryContextSwitchTo(config_cxt);
+
+	/*
+	 * Read and apply the config file.  We don't need to examine the result.
+	 */
+	if (!polar_process_polar_node_static_config_internal())
+	{
+		ereport(LOG,
+					(errcode(ERRCODE_UNDEFINED_OBJECT),
+					 errmsg("An exception occurred during the parsing of the %s file."
+					 ,PLOAR_NODE_CONF_FILENAME)));
+	}
+
+	/* Clean up */
+	MemoryContextSwitchTo(caller_cxt);
+	MemoryContextDelete(config_cxt);
+}
+
+/*
+ * POLAR: parse polar_node_static.conf and set guc arguments
+ */
+static bool
+polar_process_polar_node_static_config_internal(void)
+{
+	ConfigVariable *item,
+			   *head,
+			   *tail;
+	const char *preval;
+
+	head = NULL;
+	tail = NULL;
+
+	if (!ParseConfigFile(PLOAR_NODE_CONF_FILENAME, true,
+						 NULL, 0, 0, LOG,
+						 &head, &tail))
+	{
+		/* Syntax error(s) detected in the file, so bail out */
+		return false;
+	}
+	for (item = head; item; item = item->next)
+	{
+		struct config_generic *record;
+		int			scres;
+		char	   *pre_value = NULL;
+
+		record = find_option(item->name, false, LOG);
+		preval = GetConfigOption(item->name, true, false);
+		/* If option doesn't exist yet or is NULL, treat as empty string */
+		if (!preval)
+			preval = "";
+		/* must dup, else might have dangling pointer below */
+		pre_value = pstrdup(preval);
+		
+		if (record)
+		{
+			if (record->group != POLAR_NODE_STATIC)
+				ereport(WARNING,
+					(errcode(ERRCODE_UNDEFINED_OBJECT),
+					 errmsg(" unaccepted configuration parameter \"%s\"  in file \"%s\" line %u",
+							item->name, item->filename, item->sourceline)));
+
+			else if (record->context != PGC_POSTMASTER)
+				ereport(WARNING,
+					(errcode(ERRCODE_UNDEFINED_OBJECT),
+					 errmsg(" unaccepted configuration parameter \"%s\"  in file \"%s\" line %u, please ensure GucContext is PGC_POSTMASTER .",
+							item->name, item->filename, item->sourceline)));
+			else
+			{
+				scres = set_config_option(item->name, item->value, PGC_POSTMASTER, PGC_S_FILE,
+							 GUC_ACTION_SET, true, 0, false);
+				if (scres > 0)
+				{
+					if (strcmp(pre_value, item->value) != 0)
+						ereport(WARNING,
+							(errmsg("parameter \"%s\" value was \"%s\", but now this is \"%s\" in postgresql.conf. Please do not modify it.", 
+							item->name, item->value, pre_value)));
+					set_config_sourcefile(item->name, item->filename,
+								  item->sourceline);
+				}
+				else 
+				{
+					return false;
+				}
+			}
+		}
+		else
+		{
+			ereport(NOTICE,
+					(errcode(ERRCODE_UNDEFINED_OBJECT),
+					 errmsg("unrecognized configuration parameter \"%s\"  in file \"%s\" line %u",
+							item->name, item->filename, item->sourceline)));
+		}
+		if (pre_value)
+			pfree(pre_value);
+	}
+	return true;
+}
+
+/*
+ * POLAR: create polar_node_static.conf and write guc arguments
+ */
+void
+polar_create_polar_node_static_config(const char *confpath)
+{
+	char		line[MAXPGPATH] = {0};
+	FILE	   	*file = NULL;
+	char	  	*title[3];
+
+	struct config_generic **guc_vars;
+	int			numOpts, i;
+
+	title[0] = "# Do not edit this file manually! \n";
+	title[1] = "# It can only be set before the node is first start. \n\n";
+	guc_vars = get_guc_variables();
+	numOpts = GetNumConfigOptions();
+
+	if ((file = fopen(confpath, "w")) == NULL)
+	{
+		ereport(WARNING,
+				(errmsg("could not open file \"%s\" for writing: %s\n", confpath, strerror(errno))));
+		return;
+	}
+
+	if (fputs(title[0], file) < 0 || fputs(title[1], file) < 0)
+	{
+		ereport(WARNING,
+				(errmsg("could not write file \"%s\": %s\n", confpath, strerror(errno))));
+		return;
+	}
+
+	for (i = 0; i < numOpts; i++)
+	{
+		if (guc_vars[i]->group == POLAR_NODE_STATIC)
+		{
+           	MemSet(line, 0, MAXPGPATH);
+			snprintf(line, sizeof(line), guc_vars[i]->vartype == PGC_STRING 
+					? "%s = '%s' \n" : "%s = %s \n", guc_vars[i]->name, 
+					GetConfigOption(guc_vars[i]->name, true, false));
+					
+			if (fputs(line, file) < 0)
+			{
+				ereport(WARNING,
+						(errmsg("could not write file \"%s\": %s\n", confpath, strerror(errno))));
+				return;
+			}
+		}
+	}
+	if (fclose(file))
+	{
+		ereport(WARNING,
+				(errmsg("could not write file \"%s\": %s\n", confpath, strerror(errno))));
+		return;
+	}
 }

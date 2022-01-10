@@ -109,7 +109,8 @@ Datum
 transformGenericOptions(Oid catalogId,
 						Datum oldOptions,
 						List *options,
-						Oid fdwvalidator)
+						Oid fdwvalidator,
+						const char *fdwname)
 {
 	List	   *resultOptions = untransformRelOptions(oldOptions);
 	ListCell   *optcell;
@@ -618,7 +619,8 @@ CreateForeignDataWrapper(CreateFdwStmt *stmt)
 	fdwoptions = transformGenericOptions(ForeignDataWrapperRelationId,
 										 PointerGetDatum(NULL),
 										 stmt->options,
-										 fdwvalidator);
+										 fdwvalidator,
+										 stmt->fdwname);
 
 	if (PointerIsValid(DatumGetPointer(fdwoptions)))
 		values[Anum_pg_foreign_data_wrapper_fdwoptions - 1] = fdwoptions;
@@ -769,7 +771,8 @@ AlterForeignDataWrapper(AlterFdwStmt *stmt)
 		datum = transformGenericOptions(ForeignDataWrapperRelationId,
 										datum,
 										stmt->options,
-										fdwvalidator);
+										fdwvalidator,
+										stmt->fdwname);
 
 		if (PointerIsValid(DatumGetPointer(datum)))
 			repl_val[Anum_pg_foreign_data_wrapper_fdwoptions - 1] = datum;
@@ -941,7 +944,8 @@ CreateForeignServer(CreateForeignServerStmt *stmt)
 	srvoptions = transformGenericOptions(ForeignServerRelationId,
 										 PointerGetDatum(NULL),
 										 stmt->options,
-										 fdw->fdwvalidator);
+										 fdw->fdwvalidator,
+										 fdw->fdwname);
 
 	if (PointerIsValid(DatumGetPointer(srvoptions)))
 		values[Anum_pg_foreign_server_srvoptions - 1] = srvoptions;
@@ -1049,7 +1053,8 @@ AlterForeignServer(AlterForeignServerStmt *stmt)
 		datum = transformGenericOptions(ForeignServerRelationId,
 										datum,
 										stmt->options,
-										fdw->fdwvalidator);
+										fdw->fdwvalidator,
+										fdw->fdwname);
 
 		if (PointerIsValid(DatumGetPointer(datum)))
 			repl_val[Anum_pg_foreign_server_srvoptions - 1] = datum;
@@ -1202,7 +1207,8 @@ CreateUserMapping(CreateUserMappingStmt *stmt)
 	useoptions = transformGenericOptions(UserMappingRelationId,
 										 PointerGetDatum(NULL),
 										 stmt->options,
-										 fdw->fdwvalidator);
+										 fdw->fdwvalidator,
+										 fdw->fdwname);
 
 	if (PointerIsValid(DatumGetPointer(useoptions)))
 		values[Anum_pg_user_mapping_umoptions - 1] = useoptions;
@@ -1316,7 +1322,8 @@ AlterUserMapping(AlterUserMappingStmt *stmt)
 		datum = transformGenericOptions(UserMappingRelationId,
 										datum,
 										stmt->options,
-										fdw->fdwvalidator);
+										fdw->fdwvalidator,
+										fdw->fdwname);
 
 		if (PointerIsValid(DatumGetPointer(datum)))
 			repl_val[Anum_pg_user_mapping_umoptions - 1] = datum;
@@ -1497,7 +1504,8 @@ CreateForeignTable(CreateForeignTableStmt *stmt, Oid relid)
 	ftoptions = transformGenericOptions(ForeignTableRelationId,
 										PointerGetDatum(NULL),
 										stmt->options,
-										fdw->fdwvalidator);
+										fdw->fdwvalidator,
+										fdw->fdwname);
 
 	if (PointerIsValid(DatumGetPointer(ftoptions)))
 		values[Anum_pg_foreign_table_ftoptions - 1] = ftoptions;

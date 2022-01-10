@@ -21,6 +21,9 @@
 #include "access/tupdesc.h"
 #include "storage/spin.h"
 
+/* POLAR px */
+#include "utils/guc.h"
+
 /*
  * Shared state for parallel heap scan.
  *
@@ -42,6 +45,38 @@ typedef struct ParallelHeapScanDescData
 	bool		phs_snapshot_any;	/* SnapshotAny, not phs_snapshot_data? */
 	char		phs_snapshot_data[FLEXIBLE_ARRAY_MEMBER];
 } ParallelHeapScanDescData;
+
+
+/*  POLAR px
+ *  share storage extent size:
+ *  default is 4MB = 2^22 just like polarFS
+ * 	BLCKSZ = 8KB = 2^13
+ * 	PXSCAN_UNIT_BIT = 22 - 13 = 9
+ * 	one share storage extent contains 2^9 blocks
+ */
+ 
+#define PXSCAN_UNIT_BIT (px_scan_unit_bit)
+#define PXSCAN_UNIT_SIZE (px_scan_unit_size)
+#define PXSCAN_BlockNum2UnitNum(blockno) ((blockno) >>  PXSCAN_UNIT_BIT)
+#define PXSCAN_UnitNum2BlockNum(unitno) ((unitno) <<  PXSCAN_UNIT_BIT)
+#define PXSCAN_FirstWorker(workerid) ((workerid) == 0)
+typedef uint32 PXUnitNumber;
+
+typedef struct PXScanDescData
+{
+	int 		pxs_plan_id;		/* id for multi seqscan task */
+	int 		pxs_worker_id;		/* local segment index for current px workers */
+	int 		pxs_total_workers;	/* local segment total count for current px workers */
+	BlockNumber	pxs_fetch_end;		/* end page number of per fetch */
+	BlockNumber pxs_unit_processed;	/* unit(4M) processed count of current local segment */
+	BlockNumber pxs_unit_count;		/* total unit(4M) count need processed */
+	int64_t 	pxs_scan_round;		/* multi times scan */
+	bool		pxs_adaptive_scan;	/* adaptive scan */
+	bool		pxs_prefetch_inner_scan; /* current is a prefetch inner scan */
+} PXScanDescData;
+
+typedef PXScanDescData* PXScanDesc;
+/* POLAR end */
 
 typedef struct HeapScanDescData
 {
@@ -77,6 +112,13 @@ typedef struct HeapScanDescData
 	int			rs_cindex;		/* current tuple's index in vistuples */
 	int			rs_ntuples;		/* number of visible tuples on page */
 	OffsetNumber rs_vistuples[MaxHeapTuplesPerPage];	/* their offsets */
+
+	/* POLAR: scan direction value, for bulk read use */
+	ScanDirection polar_scan_direction;
+	
+	/* POLAR: parallel execution scan information*/
+	PXScanDesc px_scan;
+	/* POLAR end */
 }			HeapScanDescData;
 
 /*
@@ -139,6 +181,10 @@ typedef struct IndexScanDescData
 
 	/* parallel index scan information, in shared memory */
 	ParallelIndexScanDesc parallel_scan;
+
+	/* POALR px: scan desc */
+	PXScanDesc px_scan;
+	/* POLAR end */
 }			IndexScanDescData;
 
 /* Generic structure for parallel scans */

@@ -5382,6 +5382,11 @@ has_createrole_privilege(Oid roleid)
 	if (superuser_arg(roleid))
 		return true;
 
+	/* POLAR: polar_superusers have create role permission. */
+	if (polar_superuser_arg(roleid))
+		return true;
+	/* POLAR end */
+
 	utup = SearchSysCache1(AUTHOID, ObjectIdGetDatum(roleid));
 	if (HeapTupleIsValid(utup))
 	{
@@ -6051,4 +6056,56 @@ recordExtensionInitPrivWorker(Oid objoid, Oid classoid, int objsubid, Acl *new_a
 	CommandCounterIncrement();
 
 	heap_close(relation, RowExclusiveLock);
+}
+
+/*
+ * Ownership check for a namespace (specified by OID).
+ */
+bool
+polar_pg_namespace_ownercheck(Oid nsp_oid, Oid roleid)
+{
+	HeapTuple	tuple;
+	Oid			ownerId;
+
+	/* Superusers bypass all permission checking. */
+	if (superuser_arg(roleid))
+		return true;
+
+	tuple = SearchSysCache1(NAMESPACEOID, ObjectIdGetDatum(nsp_oid));
+	if (!HeapTupleIsValid(tuple))
+		ereport(ERROR,
+				(errcode(ERRCODE_UNDEFINED_SCHEMA),
+				 errmsg("schema with OID %u does not exist", nsp_oid)));
+
+	ownerId = ((Form_pg_namespace) GETSTRUCT(tuple))->nspowner;
+
+	ReleaseSysCache(tuple);
+
+	return has_privs_of_role(roleid, ownerId);
+}
+
+/*
+ * Ownership check for a database (specified by OID).
+ */
+bool
+polar_pg_database_ownercheck(Oid db_oid, Oid roleid)
+{
+	HeapTuple	tuple;
+	Oid			dba;
+
+	/* Superusers bypass all permission checking. */
+	if (superuser_arg(roleid))
+		return true;
+
+	tuple = SearchSysCache1(DATABASEOID, ObjectIdGetDatum(db_oid));
+	if (!HeapTupleIsValid(tuple))
+		ereport(ERROR,
+				(errcode(ERRCODE_UNDEFINED_DATABASE),
+				 errmsg("database with OID %u does not exist", db_oid)));
+
+	dba = ((Form_pg_database) GETSTRUCT(tuple))->datdba;
+
+	ReleaseSysCache(tuple);
+
+	return has_privs_of_role(roleid, dba);
 }

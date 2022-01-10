@@ -55,6 +55,12 @@ MainLoop(FILE *source)
 	bool		prev_cmd_interactive;
 	uint64		prev_lineno;
 
+	/* POLAR */
+	volatile PQExpBuffer polar_replica_query_buf; /* buffer for query being accumulated */
+	PGconn *tmpConn = NULL;
+	FILE *tmpFile = NULL;
+	bool	tmpQueryFoutPipe = false;
+
 	/* Save the prior command source */
 	prev_cmd_source = pset.cur_cmd_source;
 	prev_cmd_interactive = pset.cur_cmd_interactive;
@@ -73,6 +79,11 @@ MainLoop(FILE *source)
 	psql_scan_set_passthrough(scan_state, (void *) cond_stack);
 
 	query_buf = createPQExpBuffer();
+
+	/* POLAR */
+	polar_replica_query_buf = createPQExpBuffer();
+	/* POLAR end */
+
 	previous_buf = createPQExpBuffer();
 	history_buf = createPQExpBuffer();
 	if (PQExpBufferBroken(query_buf) ||
@@ -82,6 +93,14 @@ MainLoop(FILE *source)
 		psql_error("out of memory\n");
 		exit(EXIT_FAILURE);
 	}
+
+	/* POLAR: host env var is easy to use */
+	if (getenv("PGREPLICAHOST") && getenv("PGREPLICAPORT") && pset.queryReplicaFout == NULL)
+	{
+		fprintf(stderr, _("PGREPLICAHOST is set, but -O is not setted\n"));
+		exit(EXIT_FAILURE);
+	}
+	/* POLAR end */
 
 	/* main loop to get queries and execute them */
 	while (successResult == EXIT_SUCCESS)
@@ -348,6 +367,15 @@ MainLoop(FILE *source)
 		{
 			puts(line);
 			fflush(stdout);
+
+			/* POLAR: write to replica test out file */
+			if (pset.replicadb)
+			{
+				fputs(line, pset.queryReplicaFout);
+				fputs("\n", pset.queryReplicaFout);
+				fflush(pset.queryReplicaFout);
+			}
+			/* POLAR end */
 		}
 
 		/* insert newlines into query buffer between source lines */
@@ -426,7 +454,28 @@ MainLoop(FILE *source)
 				/* execute query unless we're in an inactive \if branch */
 				if (conditional_active(cond_stack))
 				{
+					/* POLAR: send to replica execute SQL */
+					if (pset.replicadb)
+					{
+						resetPQExpBuffer(polar_replica_query_buf);
+						appendBinaryPQExpBuffer(polar_replica_query_buf, query_buf->data, query_buf->len);
+					}
 					success = SendQuery(query_buf->data);
+					if (pset.replicadb)
+					{
+						tmpConn = pset.db;
+						tmpFile = pset.queryFout;
+						tmpQueryFoutPipe = pset.queryFoutPipe;
+						pset.db = pset.replicadb;
+						pset.queryFout = pset.queryReplicaFout;
+						pset.queryFoutPipe = pset.queryReplicaFoutPipe;
+						(void) SendQuery(polar_replica_query_buf->data);
+						pset.db = tmpConn;
+						pset.queryFout = tmpFile;
+						pset.queryFoutPipe = tmpQueryFoutPipe;
+					}
+					/* POLAR end */
+
 					slashCmdStatus = success ? PSQL_CMD_SEND : PSQL_CMD_ERROR;
 					pset.stmt_lineno = 1;
 
@@ -502,7 +551,27 @@ MainLoop(FILE *source)
 					/* should not see this in inactive branch */
 					Assert(conditional_active(cond_stack));
 
+					/* POLAR: send to replica execute SQL */
+					if (pset.replicadb)
+					{
+						resetPQExpBuffer(polar_replica_query_buf);
+						appendBinaryPQExpBuffer(polar_replica_query_buf, query_buf->data, query_buf->len);
+					}
 					success = SendQuery(query_buf->data);
+					if (pset.replicadb)
+					{
+						tmpConn = pset.db;
+						tmpFile = pset.queryFout;
+						tmpQueryFoutPipe = pset.queryFoutPipe;
+						pset.db = pset.replicadb;
+						pset.queryFout = pset.queryReplicaFout;
+						pset.queryFoutPipe = pset.queryReplicaFoutPipe;
+						(void) SendQuery(polar_replica_query_buf->data);
+						pset.db = tmpConn;
+						pset.queryFout = tmpFile;
+						pset.queryFoutPipe = tmpQueryFoutPipe;
+					}
+					/* POLAR end */
 
 					/* transfer query to previous_buf by pointer-swapping */
 					{
@@ -583,7 +652,27 @@ MainLoop(FILE *source)
 		/* execute query unless we're in an inactive \if branch */
 		if (conditional_active(cond_stack))
 		{
+			/* POLAR: send to replica execute SQL */
+			if (pset.replicadb)
+			{
+				resetPQExpBuffer(polar_replica_query_buf);
+				appendBinaryPQExpBuffer(polar_replica_query_buf, query_buf->data, query_buf->len);
+			}
 			success = SendQuery(query_buf->data);
+			if (pset.replicadb)
+			{
+				tmpConn = pset.db;
+				tmpFile = pset.queryFout;
+				tmpQueryFoutPipe = pset.queryFoutPipe;
+				pset.db = pset.replicadb;
+				pset.queryFout = pset.queryReplicaFout;
+				pset.queryFoutPipe = pset.queryReplicaFoutPipe;
+				(void) SendQuery(polar_replica_query_buf->data);
+				pset.db = tmpConn;
+				pset.queryFout = tmpFile;
+				pset.queryFoutPipe = tmpQueryFoutPipe;
+			}
+			/* POLAR end */
 		}
 		else
 		{

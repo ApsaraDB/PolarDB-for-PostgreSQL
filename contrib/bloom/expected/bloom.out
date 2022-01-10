@@ -144,6 +144,7 @@ CREATE UNLOGGED TABLE tstu (
 	i	int4,
 	t	text
 );
+NOTICE:  change unlogged table to logged table,because unlogged table not supports Master-Slave mode
 INSERT INTO tstu SELECT i%10, substr(md5(i::text), 1, 1) FROM generate_series(1,2000) i;
 CREATE INDEX bloomidxu ON tstu USING bloom (i, t) WITH (col2 = 4);
 SET enable_seqscan=off;

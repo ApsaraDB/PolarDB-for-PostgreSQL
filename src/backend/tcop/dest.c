@@ -41,6 +41,27 @@
 #include "libpq/pqformat.h"
 #include "utils/portal.h"
 
+/* POLAR */
+#include "access/xact.h"
+#include "access/xlog.h"
+#include "miscadmin.h"
+#include "pgstat.h"
+#include "storage/procarray.h"
+#include "utils/guc.h"
+/* POLAR end */
+
+/* POLAR px */
+#include "utils/snapmgr.h"
+#include "utils/builtins.h"
+#include "utils/guc.h"
+#include "px/px_vars.h"
+#include "px/px_gang.h"
+#include "px/px_snapshot.h"
+/* POLAR end */
+
+/* POLAR */
+extern void px_check_qc_connection_alive(void);
+#define SPIN_SLEEP_MSEC		10	/* 10ms */
 
 /* ----------------
  *		dummy DestReceiver functions
@@ -61,6 +82,81 @@ static void
 donothingCleanup(DestReceiver *self)
 {
 	/* this is used for both shutdown and destroy methods */
+}
+
+/* POLAR: send proxy info, including lsn and xact split info, also collects stats */
+static void
+polar_send_proxy_info(StringInfo buf)
+{
+	/* POLAR: send lsn to maxscale if needed */
+	if (MyProcPort->polar_send_lsn)
+	{
+		if (RecoveryInProgress())
+			pq_sendint64(buf, (uint64)GetXLogReplayRecPtr(NULL));
+		else
+			pq_sendint64(buf, (uint64)GetXLogInsertRecPtr());
+	}
+
+	if (unlikely(polar_enable_xact_split_debug) && !RecoveryInProgress())
+	{
+		char *xids = polar_xact_split_xact_info();
+
+		elog(LOG, "current xids : %s", xids);
+		elog(LOG, "current xact able to split: %s",
+					polar_xact_split_splittable() ? "Yes" : "No");
+
+		if (xids)
+			pfree(xids);
+	}
+
+	polar_stat_update_proxy_info(polar_stat_proxy->proxy_total);
+
+	/* POLAR: send xact split info to mxs if needed */
+	if (polar_enable_xact_split &&
+		XactIsoLevel == XACT_READ_COMMITTED &&
+		MyProcPort->polar_send_xact &&
+		!RecoveryInProgress())
+	{
+		if (polar_xact_split_splittable())
+		{
+			char *xids = polar_xact_split_xact_info();
+
+			if (xids != NULL)
+			{
+				/* POLAR: send xids info */
+				pq_sendbyte(buf, 'x');
+				pq_sendstring(buf, xids);
+				pfree(xids);
+			}
+			polar_stat_update_proxy_info(polar_stat_proxy->proxy_splittable);
+		}
+		else
+			polar_stat_update_proxy_info(polar_stat_proxy->proxy_unsplittable);
+
+		switch (polar_unable_to_split_reason)
+		{
+		case POLAR_UNSPLITTABLE_FOR_ERROR:
+			polar_stat_update_proxy_info(polar_stat_proxy->proxy_error);
+			break;
+		case POLAR_UNSPLITTABLE_FOR_LOCK:
+			polar_stat_update_proxy_info(polar_stat_proxy->proxy_lock);
+			break;
+		case POLAR_UNSPLITTABLE_FOR_COMBOCID:
+			polar_stat_update_proxy_info(polar_stat_proxy->proxy_combocid);
+			break;
+		case POLAR_UNSPLITTABLE_FOR_AUTOXACT:
+			polar_stat_update_proxy_info(polar_stat_proxy->proxy_autoxact);
+			break;
+		default:
+			break;
+		}
+	}
+	else
+		polar_stat_update_proxy_info(polar_stat_proxy->proxy_disablesplit);
+
+	if (RecoveryInProgress() && MyProcPort->polar_proxy)
+		polar_stat_update_ro_proxy_info();
+	polar_stat_need_update_proxy_info = false;
 }
 
 /* ----------------
@@ -251,6 +347,7 @@ ReadyForQuery(CommandDest dest)
 
 				pq_beginmessage(&buf, 'Z');
 				pq_sendbyte(&buf, TransactionBlockStatusCode());
+				polar_send_proxy_info(&buf);
 				pq_endmessage(&buf);
 			}
 			else
@@ -270,4 +367,88 @@ ReadyForQuery(CommandDest dest)
 		case DestTupleQueue:
 			break;
 	}
+}
+
+/* POLAR px */
+/*
+ * Send a px libpq message.
+ *
+ * This sends a message identical to that used when sending values of
+ * GUC_REPORT gucs to the client (see ReportGUCOption()). The motion
+ * listener port is sent as if there was a GUC called "px_listener_port".
+ */
+void
+sendPXDetails(void)
+{
+	StringInfoData msgbuf;
+	char		port_str[11];
+	Snapshot	xact_snap;
+	Snapshot	snap;
+	char	   *serialized_snap;
+	int			serialized_snap_size;
+	char	   *encoded_snap;
+	int 		retry_count = 0;
+
+	/* POLAR */
+	XLogRecPtr max_valid_lsn;
+
+	snprintf(port_str, sizeof(port_str), "%u", px_listener_port);
+
+	/*
+	 * POLAR: if px_enable_replay_wait is on, all the mpp queries in PXs should
+	 * wait for the wal replayed the QC query begin.
+	 */
+	if (XLogRecPtrIsInvalid(px_sql_wal_lsn) && polar_in_replica_mode())
+		elog(ERROR, "polardb px enabled, but current sql wal lsn is invalid");
+
+	while (cached_px_enable_replay_wait && !polar_is_master())
+	{
+		max_valid_lsn = GetXLogReplayRecPtr(NULL);
+		if (max_valid_lsn >= px_sql_wal_lsn)
+		{
+			elog((retry_count > 10000 ? LOG : DEBUG1), "before exec px query on node: px sessid %d, max valid lsn %lX, current sql wal lsn %lX, use time %dus", 
+				px_session_id, max_valid_lsn, 
+				px_sql_wal_lsn, retry_count * 100);
+			break;
+		}
+
+		pg_usleep(SPIN_SLEEP_MSEC * 10);
+		retry_count++;
+		px_check_qc_connection_alive();
+
+		/* large then 1s, print trace log every 1s */
+		if (retry_count > 10000 && retry_count % 10000 == 1)
+			elog(LOG, "before exec px query on node: px sessid %d, max valid lsn %lX, current sql wal lsn %lX, try time %dus", 
+				px_session_id, max_valid_lsn, px_sql_wal_lsn, retry_count * 100);
+	}
+
+	xact_snap = GetTransactionSnapshot();
+	Assert(xact_snap);
+
+	snap = palloc(sizeof(SnapshotData));
+	memcpy(snap, xact_snap, sizeof(SnapshotData));
+	pxsn_set_snapshot(snap);
+	serialized_snap = pxsn_get_serialized_snapshot();
+	serialized_snap_size = pxsn_get_serialized_snapshot_size();
+
+	encoded_snap = (char *) palloc(serialized_snap_size * 2 + 1);
+	hex_encode(serialized_snap, serialized_snap_size, encoded_snap);
+	encoded_snap[serialized_snap_size * 2] = '\0';
+
+	if (px_info_debug)
+		elog(LOG, "px_snapshot_encode: %d sendPXDetails: encoded_snap: %s", 
+			PxIdentity.dbid, encoded_snap);
+
+	pq_beginmessage(&msgbuf, 'S');
+	pq_sendstring(&msgbuf, "px_listener_port");
+	pq_sendstring(&msgbuf, port_str);
+	pq_endmessage(&msgbuf);
+
+	pq_beginmessage(&msgbuf, 'S');
+	pq_sendstring(&msgbuf, "snapshot");
+	pq_sendstring(&msgbuf, encoded_snap);
+	pq_endmessage(&msgbuf);
+
+	pxsn_set_snapshot(InvalidSnapshot);
+	pfree(encoded_snap);
 }

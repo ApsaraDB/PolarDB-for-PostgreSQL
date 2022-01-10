@@ -1,7 +1,7 @@
 /*-------------------------------------------------------------------------
  *
  * polar_logindex.c
- *  Implementation of wal logindex snapshot.
+ *   Implementation of parse xlog states and replay.
  *
  * Copyright (c) 2020, Alibaba Group Holding Limited
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,7 +17,7 @@
  * limitations under the License.
  *
  * IDENTIFICATION
- *  src/backend/access/logindex/polar_logindex.c
+ *    src/backend/access/logindex/polar_logindex.c
  *
  *-------------------------------------------------------------------------
  */
@@ -27,102 +27,44 @@
 #include <unistd.h>
 
 #include "access/hash.h"
-#include "access/polar_fullpage.h"
 #include "access/polar_logindex.h"
 #include "access/polar_logindex_internal.h"
 #include "access/slru.h"
 #include "access/transam.h"
-#include "access/xlog.h"
 #include "access/xlogdefs.h"
-#include "catalog/pg_control.h"
 #include "miscadmin.h"
-#include "pgstat.h"
 #include "port/atomics.h"
 #include "port/pg_crc32c.h"
 #include "postmaster/startup.h"
-#include "replication/walsender.h"
-#include "replication/walreceiver.h"
-#include "storage/block.h"
-#include "storage/fd.h"
-#include "storage/ipc.h"
-#include "storage/relfilenode.h"
-#include "utils/guc.h"
 #include "utils/hashutils.h"
 #include "utils/memutils.h"
 
-
-#define LOG_INDEX_IO_LOG_LEVEL LOG
-#define MEM_TBL_SIZE(type) ( (int) polar_logindex_mem_tbl_size * logindex_snapshot_mem_tbl_size_ratios[type])
-/* POLAR: only walwriter can flush active to avoid another process update active memtable */
-#define POLAR_ENABLE_FLUSH_ACTIVE_TABLE(logindex_snapshot) \
-	(AmWalWriterProcess() && polar_enable_flush_active_logindex_memtable && \
-	 logindex_snapshot->type == LOGINDEX_FULLPAGE_SNAPSHOT)
-#define POLAR_ENABLE_READ_ACTIVE_TABLE(logindex_snapshot) \
-	(polar_enable_flush_active_logindex_memtable && \
-	 logindex_snapshot->type == LOGINDEX_FULLPAGE_SNAPSHOT)
-/* POLAR: for DB upgrade, old version maybe don't has fullpage meta file */
-#define POLAR_SKIP_META_FILE_ERROR(logindex_snapshot) \
-	(polar_in_replica_mode() && logindex_snapshot->type == LOGINDEX_FULLPAGE_SNAPSHOT)
-
-extern int                      polar_logindex_mem_size;
-extern int                      polar_logindex_bloom_blocks;
 static log_index_io_err_t       logindex_io_err = 0;
 static int                      logindex_errno = 0;
-struct log_index_snapshot_t    *polar_logindex_snapshot[LOGINDEX_SNAPSHOT_NUM];
-int                             polar_logindex_mem_tbl_size = 0;
-log_table_cache_t               logindex_table_cache[LOGINDEX_SNAPSHOT_NUM] = {{0}, {0}};
 
-const char *const logindex_snapshot_shmem_names[] =
-{
-	"Log Index Snapshot", /* LOGINDEX_WAL_SNAPSHOT */
-	"Log Index Fullpage Snapshot", /* LOGINDEX_FULLPAGE_SNAPSHOT */
-	NULL
-};
-const char *const logindex_snapshot_locks_names[] =
-{
-	"Log Index Lock", /* LOGINDEX_WAL_SNAPSHOT */
-	"Log Index Fullpage Lock", /* LOGINDEX_FULLPAGE_SNAPSHOT */
-	NULL
-};
-const char *const logindex_snapshot_bloom_names[] =
-{
-	"logindex_bloom_lru", /* LOGINDEX_WAL_SNAPSHOT */
-	"fullpage_bloom_lru", /* LOGINDEX_FULLPAGE_SNAPSHOT */
-	NULL
-};
-
-const char *const logindex_snapshot_dirs[] =
-{
-	LOG_INDEX_DIR, /* LOGINDEX_WAL_SNAPSHOT */
-	POLAR_FULLPAGE_DIR, /* LOGINDEX_FULLPAGE_SNAPSHOT */
-	NULL
-};
-const char *const logindex_snapshot_meta_files[] =
-{
-	LOG_INDEX_DIR"/log_index_meta", /* LOGINDEX_WAL_SNAPSHOT */
-	POLAR_FULLPAGE_DIR"/log_index_meta", /* LOGINDEX_FULLPAGE_SNAPSHOT */
-	NULL
-};
-
-const double logindex_snapshot_mem_tbl_size_ratios[] =
-{
-	0.85, /* LOGINDEX_WAL_SNAPSHOT */
-	0.15, /* LOGINDEX_FULLPAGE_SNAPSHOT */
-	0
-};
-
-
-static void log_index_meta_file_auto_close(int code, Datum arg);
-static void log_index_write_meta(log_index_snapshot_t *logindex_snapshot, log_index_meta_t *meta, bool update);
-static void polar_logindex_snapshot_shmem_init(int type);
-static void polar_logindex_snapshot_remove(int type);
 static void log_index_insert_new_item(log_index_lsn_t *lsn_info, log_mem_table_t *table, uint32 key, log_seg_id_t new_item_id);
 static void log_index_insert_new_seg(log_mem_table_t *table, log_seg_id_t head, log_seg_id_t seg_id, log_index_lsn_t *lsn_info);
 
 bool
-polar_log_index_check_state(log_index_snapshot_t *logindex_snapshot, uint32 state)
+polar_logindex_check_state(log_index_snapshot_t *logindex_snapshot, uint32 state)
 {
 	return pg_atomic_read_u32(&logindex_snapshot->state) & state;
+}
+
+MemoryContext
+polar_logindex_memory_context(void)
+{
+	static MemoryContext context = NULL;
+
+	if (context == NULL)
+	{
+		context = AllocSetContextCreate(TopMemoryContext,
+										"logindex snapshot mem context",
+										ALLOCSET_DEFAULT_SIZES);
+		MemoryContextAllowInCriticalSection(context, true);
+	}
+
+	return context;
 }
 
 XLogRecPtr
@@ -133,104 +75,83 @@ log_index_item_max_lsn(log_idx_table_data_t *table, log_item_head_t *item)
 	if (item->head_seg == item->tail_seg)
 		return LOG_INDEX_SEG_MAX_LSN(table, item);
 
-	seg = LOG_INDEX_ITEM_SEG(table, item->tail_seg);
+	seg = log_index_item_seg(table, item->tail_seg);
 	Assert(seg != NULL);
 
 	return LOG_INDEX_SEG_MAX_LSN(table, seg);
 }
 
-void
-log_index_validate_dir(void)
-{
-	int i = 0;
-	struct stat stat_buf;
-	char path[MAXPGPATH];
-
-	/*
-	 * If it's shared storage and mount pfs as readonly mode then
-	 * we don't need to check pg_logindex directory.
-	 */
-	if (polar_enable_shared_storage_mode
-			&& polar_mount_pfs_readonly_mode)
-		return ;
-
-	/* Creating pg_logindex and polar_fullpage directory */
-	for (i = 0; i < LOGINDEX_SNAPSHOT_NUM; i++)
-	{
-		POLAR_FILE_PATH(path, polar_logindex_snapshot[i]->dir);
-
-		if (polar_stat(path, &stat_buf) == 0)
-		{
-			if (!S_ISDIR(stat_buf.st_mode))
-				ereport(FATAL,
-						(errmsg("required log index directory \"%s\" does not exist",
-								path)));
-		}
-		else
-		{
-			ereport(LOG,
-					(errmsg("creating missing log index directory \"%s\"",
-							path)));
-
-			if (polar_make_pg_directory(path) < 0)
-				ereport(FATAL,
-						(errmsg("could not create missing directory \"%s\": %m",
-								path)));
-		}
-	}
-}
-
 static Size
-log_index_mem_tbl_shmem_size(int type)
+log_index_mem_tbl_shmem_size(uint64 logindex_mem_tbl_size)
 {
 	Size size = offsetof(log_index_snapshot_t, mem_table);
-	size = add_size(size, mul_size(sizeof(log_mem_table_t), MEM_TBL_SIZE(type)));
+	size = add_size(size, mul_size(sizeof(log_mem_table_t), logindex_mem_tbl_size));
 
-	ereport(LOG, (errmsg("The total log index memory table size is %ld", size)));
+	size = MAXALIGN(size);
+
+	/* The number of logindex memory table is at least 3 */
+	if (logindex_mem_tbl_size < 3)
+		elog(FATAL, "The number=%ld of logindex memory table is less than 3", logindex_mem_tbl_size);
+	else
+		ereport(LOG, (errmsg("The total log index memory table size is %ld", size)));
 
 	return size;
 }
 
 static Size
-log_index_bloom_shmem_size(int type)
+log_index_bloom_shmem_size(int bloom_blocks)
 {
-	return SimpleLruShmemSize(polar_logindex_bloom_blocks, 0);
+	Size  size = SimpleLruShmemSize(bloom_blocks, 0);
+
+	return MAXALIGN(size);
 }
 
 static Size
-log_index_lwlock_shmem_size(int type)
+log_index_lwlock_shmem_size(uint64 logindex_mem_tbl_size)
 {
-	Size size = mul_size(sizeof(LWLockMinimallyPadded), LOG_INDEX_LWLOCK_NUM(MEM_TBL_SIZE(type)));
-	size = add_size(size, PG_CACHE_LINE_SIZE);
+	Size size = mul_size(sizeof(LWLockMinimallyPadded), LOG_INDEX_LWLOCK_NUM(logindex_mem_tbl_size));
 
-	return size;
+	return MAXALIGN(size);
 }
 
 Size
-polar_log_index_shmem_size(void)
+polar_logindex_shmem_size(uint64 logindex_mem_tbl_size, int bloom_blocks)
 {
 	Size size = 0;
-	int i = 0;
 
-	if (!polar_enable_redo_logindex)
-		return size;
+	size = add_size(size, log_index_mem_tbl_shmem_size(logindex_mem_tbl_size));
 
-	polar_logindex_mem_tbl_size = (polar_logindex_mem_size * 1024L * 1024L) / (sizeof(log_mem_table_t) + sizeof(LWLockMinimallyPadded));
+	size = add_size(size, log_index_bloom_shmem_size(bloom_blocks));
 
-	for (i = 0; i < LOGINDEX_SNAPSHOT_NUM; i++)
-		size = add_size(size, log_index_mem_tbl_shmem_size(i));
+	size = add_size(size, log_index_lwlock_shmem_size(logindex_mem_tbl_size));
 
-	for (i = 0; i < LOGINDEX_SNAPSHOT_NUM; i++)
-		size = add_size(size, log_index_bloom_shmem_size(i));
-
-	for (i = 0; i < LOGINDEX_SNAPSHOT_NUM; i++)
-		size = add_size(size, log_index_lwlock_shmem_size(i));
-
-	return size;
+	return CACHELINEALIGN(size);
 }
 
-static void
-log_index_flush_table(log_index_snapshot_t *logindex_snapshot, XLogRecPtr checkpoint_lsn)
+static bool
+log_index_table_saved_before_promote(log_index_snapshot_t *logindex_snapshot, log_mem_table_t *table)
+{
+	log_index_promoted_info_t *promoted_info = &logindex_snapshot->promoted_info;
+	bool saved = false;
+
+	if (unlikely(promoted_info->old_rw_saved_max_tid != LOG_INDEX_TABLE_INVALID_ID))
+	{
+		saved = LOG_INDEX_MEM_TBL_TID(table) <= promoted_info->old_rw_saved_max_tid;
+
+		if (LOG_INDEX_MEM_TBL_TID(table) == promoted_info->old_rw_saved_max_tid)
+		{
+			if (table->data.max_lsn != promoted_info->old_rw_saved_max_lsn)
+				elog(PANIC, "promote last table max_lsn=%lX, max lsn saved by old rw is %lX",
+					 table->data.max_lsn, promoted_info->old_rw_saved_max_lsn);
+		}
+
+	}
+
+	return saved;
+}
+
+static bool
+log_index_flush_table(log_index_snapshot_t *logindex_snapshot, XLogRecPtr checkpoint_lsn, bool flush_active)
 {
 	log_mem_table_t *table;
 	LWLock *lock;
@@ -239,6 +160,7 @@ log_index_flush_table(log_index_snapshot_t *logindex_snapshot, XLogRecPtr checkp
 	bool need_flush;
 	bool succeed = true;
 	int  flushed = 0;
+	bool write_done = false;
 	static XLogRecPtr last_flush_max_lsn = InvalidXLogRecPtr;
 
 	SpinLockAcquire(LOG_INDEX_SNAPSHOT_LOCK);
@@ -247,10 +169,13 @@ log_index_flush_table(log_index_snapshot_t *logindex_snapshot, XLogRecPtr checkp
 
 	do
 	{
+		log_idx_table_id_t tid = LOG_INDEX_TABLE_INVALID_ID;
+		XLogRecPtr table_min_lsn, table_max_lsn;
+
 		table = LOG_INDEX_MEM_TBL(mid);
 
 		if (LOG_INDEX_MEM_TBL_STATE(table) == LOG_INDEX_MEM_TBL_STATE_INACTIVE ||
-				(POLAR_ENABLE_FLUSH_ACTIVE_TABLE(logindex_snapshot) &&
+				(flush_active &&
 				 LOG_INDEX_MEM_TBL_STATE(table) == LOG_INDEX_MEM_TBL_STATE_ACTIVE &&
 				 !LOG_INDEX_MEM_TBL_IS_NEW(table)))
 		{
@@ -258,12 +183,13 @@ log_index_flush_table(log_index_snapshot_t *logindex_snapshot, XLogRecPtr checkp
 			LWLockAcquire(lock, LW_EXCLUSIVE);
 
 			/* Nothing to change since last flush table */
-			if (POLAR_ENABLE_FLUSH_ACTIVE_TABLE(logindex_snapshot) &&
+			if (flush_active &&
 					LOG_INDEX_MEM_TBL_STATE(table) == LOG_INDEX_MEM_TBL_STATE_ACTIVE &&
 					last_flush_max_lsn == table->data.max_lsn &&
 					!LOG_INDEX_MEM_TBL_IS_NEW(table))
 			{
 				LWLockRelease(lock);
+				write_done = true;
 				break;
 			}
 
@@ -274,10 +200,15 @@ log_index_flush_table(log_index_snapshot_t *logindex_snapshot, XLogRecPtr checkp
 			 */
 			if ((LOG_INDEX_MEM_TBL_STATE(table) == LOG_INDEX_MEM_TBL_STATE_INACTIVE ||
 					LOG_INDEX_MEM_TBL_STATE(table) == LOG_INDEX_MEM_TBL_STATE_ACTIVE)
-					&& ((POLAR_LOGINDEX_FLUSHABLE_LSN() > table->data.max_lsn) ||
-						(polar_logindex_unit_test == POLAR_LOGINDEX_MASTER_WRITE_TEST)))
+					&& logindex_snapshot->table_flushable(table, logindex_snapshot->extra_data))
 			{
-				succeed = polar_log_index_write_table(logindex_snapshot, table);
+				/*
+				 * After promoting don't write table which was flushed by previous rw node
+				 */
+				if (log_index_table_saved_before_promote(logindex_snapshot, table))
+					succeed = true;
+				else
+					succeed = log_index_write_table(logindex_snapshot, table);
 
 				if (succeed)
 				{
@@ -286,10 +217,17 @@ log_index_flush_table(log_index_snapshot_t *logindex_snapshot, XLogRecPtr checkp
 						LOG_INDEX_MEM_TBL_SET_STATE(table, LOG_INDEX_MEM_TBL_STATE_FLUSHED);
 
 					/* save last flush fullpage logindex max_lsn for active table */
-					if (POLAR_ENABLE_FLUSH_ACTIVE_TABLE(logindex_snapshot))
+					if (flush_active)
 						last_flush_max_lsn = table->data.max_lsn;
 
 					flushed++;
+					tid = LOG_INDEX_MEM_TBL_TID(table);
+					table_max_lsn = table->data.max_lsn;
+					table_min_lsn = table->data.min_lsn;
+
+					ereport(polar_trace_logindex(DEBUG4), (errmsg("flush logindex tid=%ld,min_lsn=%lX,max_lsn=%lX", tid, table_min_lsn, table_max_lsn),
+														   errhidestmt(true),
+														   errhidecontext(true)));
 				}
 			}
 
@@ -313,8 +251,7 @@ log_index_flush_table(log_index_snapshot_t *logindex_snapshot, XLogRecPtr checkp
 		{
 			if (XLogRecPtrIsInvalid(checkpoint_lsn))
 			{
-				need_flush = (flushed < polar_logindex_table_batch_size ||
-							  polar_get_consistent_lsn() > meta->max_lsn);
+				need_flush = flushed < polar_logindex_table_batch_size;
 			}
 			else
 			{
@@ -322,6 +259,8 @@ log_index_flush_table(log_index_snapshot_t *logindex_snapshot, XLogRecPtr checkp
 							  && !(checkpoint_lsn >= table->data.min_lsn && checkpoint_lsn <= table->data.max_lsn));
 			}
 		}
+		else
+			write_done = true;
 
 		mid = meta->max_idx_table_id;
 		SpinLockRelease(LOG_INDEX_SNAPSHOT_LOCK);
@@ -329,22 +268,30 @@ log_index_flush_table(log_index_snapshot_t *logindex_snapshot, XLogRecPtr checkp
 		mid %= logindex_snapshot->mem_tbl_size;
 	}
 	while (need_flush);
+
+	return write_done;
 }
 
-void
-log_index_master_bg_write(log_index_snapshot_t *logindex_snapshot)
+static bool
+log_index_rw_bg_write(log_index_snapshot_t *logindex_snapshot)
 {
-	log_index_flush_table(logindex_snapshot, InvalidXLogRecPtr);
+	return log_index_flush_table(logindex_snapshot, InvalidXLogRecPtr, false);
 }
 
 void
-polar_log_index_flush_table(log_index_snapshot_t *logindex_snapshot, XLogRecPtr checkpoint_lsn)
+polar_logindex_flush_table(logindex_snapshot_t logindex_snapshot, XLogRecPtr checkpoint_lsn)
 {
-	log_index_flush_table(logindex_snapshot, checkpoint_lsn);
+	log_index_flush_table(logindex_snapshot, checkpoint_lsn, false);
 }
 
 void
-polar_log_index_invalid_bloom_cache(log_index_snapshot_t *logindex_snapshot, log_idx_table_id_t tid)
+polar_logindex_flush_active_table(log_index_snapshot_t *logindex_snapshot)
+{
+	log_index_flush_table(logindex_snapshot, InvalidXLogRecPtr, true);
+}
+
+void
+polar_logindex_invalid_bloom_cache(log_index_snapshot_t *logindex_snapshot, log_idx_table_id_t tid)
 {
 	int pageno = LOG_INDEX_TBL_BLOOM_PAGE_NO(tid);
 
@@ -352,34 +299,59 @@ polar_log_index_invalid_bloom_cache(log_index_snapshot_t *logindex_snapshot, log
 }
 
 static void
-log_index_replica_bg_write(log_index_snapshot_t *logindex_snapshot)
+polar_logindex_local_cache_seg2str(char *seg_str, uint64 segno)
 {
+	LOG_INDEX_LOCAL_CACHE_SEG_NAME(seg_str, segno);
+}
+
+static bool
+polar_logindex_local_cache_scan_callback(polar_local_cache cache, char *cache_file, uint64 segno)
+{
+	uint64  cur_segno = 0;
+	char suffix[5] = {0};
+	polar_cache_io_error io_error;
+
+	if (sscanf(cache_file, "%016lX%4s", &cur_segno, suffix) == 2 && strcmp(suffix, ".tbl") == 0)
+	{
+		if (cur_segno > 0 && cur_segno < segno)
+		{
+			if (!polar_local_cache_remove(cache, cur_segno, &io_error))
+				polar_local_cache_report_error(cache, &io_error, LOG);
+		}
+	}
+
+	return true;
+}
+
+
+static void
+polar_logindex_truncate_local_cache(logindex_snapshot_t logindex_snapshot, uint64 segno)
+{
+	static uint64_t last_min_segno = 0;
+
+	if (segno != 0 && logindex_snapshot->segment_cache)
+	{
+		if (last_min_segno < segno)
+		{
+			polar_local_cache_scan(
+				logindex_snapshot->segment_cache,
+				polar_logindex_local_cache_scan_callback,
+				segno);
+			last_min_segno = segno;
+		}
+	}
+}
+
+static void
+log_index_update_ro_table_state(log_index_snapshot_t *logindex_snapshot, log_idx_table_id_t max_saved_tid)
+{
+	uint32 mid;
 	log_mem_table_t *table;
 	LWLock *lock;
-	uint32 mid;
-	log_index_meta_t *meta = &logindex_snapshot->meta;
 	bool need_flush = false;
-	log_idx_table_id_t max_tid, max_saved_tid = LOG_INDEX_TABLE_INVALID_ID;
-	static log_idx_table_id_t last_max_table_id = 0;
 
-	SpinLockAcquire(LOG_INDEX_SNAPSHOT_LOCK);
-	max_tid = logindex_snapshot->max_idx_table_id;
-	SpinLockRelease(LOG_INDEX_SNAPSHOT_LOCK);
-
-	/* If no new table is added then no table state need to update */
-	if (max_tid == last_max_table_id)
+	if (max_saved_tid == LOG_INDEX_TABLE_INVALID_ID)
 		return;
-
-	last_max_table_id = max_tid;
-
-	LWLockAcquire(LOG_INDEX_IO_LOCK, LW_EXCLUSIVE);
-
-	if (log_index_get_meta(logindex_snapshot, meta))
-		max_saved_tid = meta->max_idx_table_id;
-	else
-		elog(WARNING, "Failed to get logindex meta from storage");
-
-	LWLockRelease(LOG_INDEX_IO_LOCK);
 
 	mid = (max_saved_tid - 1) % logindex_snapshot->mem_tbl_size;
 
@@ -399,7 +371,7 @@ log_index_replica_bg_write(log_index_snapshot_t *logindex_snapshot)
 			if (LOG_INDEX_MEM_TBL_STATE(table) == LOG_INDEX_MEM_TBL_STATE_INACTIVE
 					&& LOG_INDEX_MEM_TBL_TID(table) <= max_saved_tid)
 			{
-				polar_log_index_invalid_bloom_cache(logindex_snapshot, LOG_INDEX_MEM_TBL_TID(table));
+				polar_logindex_invalid_bloom_cache(logindex_snapshot, LOG_INDEX_MEM_TBL_TID(table));
 				LOG_INDEX_MEM_TBL_SET_STATE(table, LOG_INDEX_MEM_TBL_STATE_FLUSHED);
 			}
 
@@ -411,18 +383,59 @@ log_index_replica_bg_write(log_index_snapshot_t *logindex_snapshot)
 	while (need_flush);
 }
 
-void
-polar_log_index_bg_write(void)
+static bool
+log_index_ro_bg_write(log_index_snapshot_t *logindex_snapshot)
 {
-	int i = 0;
+	log_index_meta_t *meta = &logindex_snapshot->meta;
+	log_idx_table_id_t max_tid, max_saved_tid = LOG_INDEX_TABLE_INVALID_ID;
+	static log_idx_table_id_t last_max_table_id = 0;
+	uint64 fresh_min_segno = 0;
 
-	for (i = 0; i < LOGINDEX_SNAPSHOT_NUM; i++)
+	SpinLockAcquire(LOG_INDEX_SNAPSHOT_LOCK);
+	max_tid = logindex_snapshot->max_idx_table_id;
+	SpinLockRelease(LOG_INDEX_SNAPSHOT_LOCK);
+
+	if (max_tid == last_max_table_id)
 	{
-		if (polar_in_replica_mode())
-			log_index_replica_bg_write(polar_logindex_snapshot[i]);
-		else
-			log_index_master_bg_write(polar_logindex_snapshot[i]);
+		/* Return true if no new table is added and no table state need to be updated */
+		return true;
 	}
+
+	last_max_table_id = max_tid;
+
+	LWLockAcquire(LOG_INDEX_IO_LOCK, LW_EXCLUSIVE);
+
+	if (log_index_get_meta(logindex_snapshot, meta))
+	{
+		max_saved_tid = meta->max_idx_table_id;
+		fresh_min_segno = meta->min_segment_info.segment_no;
+	}
+	else
+		elog(WARNING, "Failed to get logindex meta from storage");
+
+	LWLockRelease(LOG_INDEX_IO_LOCK);
+
+	log_index_update_ro_table_state(logindex_snapshot, max_saved_tid);
+	polar_logindex_truncate_local_cache(logindex_snapshot, fresh_min_segno);
+
+	/* Return true because we updated all table state which we can update */
+	return true;
+}
+
+bool
+polar_logindex_bg_write(logindex_snapshot_t logindex_snapshot)
+{
+	bool write_done = true;
+
+	if (likely(polar_logindex_check_state(logindex_snapshot, POLAR_LOGINDEX_STATE_ADDING)))
+	{
+		if (!polar_logindex_check_state(logindex_snapshot, POLAR_LOGINDEX_STATE_WRITABLE))
+			write_done &= log_index_ro_bg_write(logindex_snapshot);
+		else
+			write_done &= log_index_rw_bg_write(logindex_snapshot);
+	}
+
+	return write_done;
 }
 
 static void
@@ -436,39 +449,56 @@ log_index_init_lwlock(log_index_snapshot_t *logindex_snapshot, int offset, int s
 		LWLockInitialize(&(logindex_snapshot->lwlock_array[i].lock), tranche_id);
 }
 
-void
-polar_log_index_shmem_init(void)
+static void
+polar_logindex_snapshot_remove_data(logindex_snapshot_t logindex_snapshot)
 {
-	int         i = 0;
+	char path[MAXPGPATH] = {0};
 
-	if (!polar_enable_redo_logindex)
-		return ;
+	/* We cannot remove logindex files if it's not writable */
+	if (!polar_logindex_check_state(logindex_snapshot, POLAR_LOGINDEX_STATE_WRITABLE))
+		return;
 
-	for (i = 0; i < LOGINDEX_SNAPSHOT_NUM; i++)
-		polar_logindex_snapshot_shmem_init(i);
+	if (strlen(logindex_snapshot->dir) > 0)
+	{
+		POLAR_FILE_PATH(path, logindex_snapshot->dir);
+		rmtree(path, false);
+	}
+}
+
+static void
+logindex_snapshot_init_promoted_info(log_index_snapshot_t *logindex_snapshot)
+{
+	log_index_promoted_info_t *info = &logindex_snapshot->promoted_info;
+
+	info->old_rw_saved_max_lsn = InvalidXLogRecPtr;
+	info->old_rw_max_inserted_lsn = InvalidXLogRecPtr;
+	info->old_rw_max_tid = LOG_INDEX_TABLE_INVALID_ID;
+	info->old_rw_saved_max_tid = LOG_INDEX_TABLE_INVALID_ID;
 }
 
 static XLogRecPtr
-polar_log_index_snapshot_base_init(log_index_snapshot_t *logindex_snapshot, XLogRecPtr checkpoint_lsn, bool replica_mode)
+polar_logindex_snapshot_base_init(log_index_snapshot_t *logindex_snapshot, XLogRecPtr checkpoint_lsn)
 {
 	log_index_meta_t *meta = &logindex_snapshot->meta;
 	XLogRecPtr start_lsn = checkpoint_lsn;
 
-	Assert(!polar_log_index_check_state(logindex_snapshot, POLAR_LOGINDEX_STATE_INITIALIZED));
+	Assert(!polar_logindex_check_state(logindex_snapshot, POLAR_LOGINDEX_STATE_INITIALIZED));
+	Assert(!XLogRecPtrIsInvalid(checkpoint_lsn));
 
 	LWLockAcquire(LOG_INDEX_IO_LOCK, LW_EXCLUSIVE);
 
 	/*
 	 * Reset logindex when we can not get correct logindex meta from storage
 	 */
-	if (!polar_streaming_xlog_meta || !log_index_get_meta(logindex_snapshot, meta))
+	if (!log_index_get_meta(logindex_snapshot, meta))
 	{
-		polar_logindex_snapshot_remove(logindex_snapshot->type);
+		polar_logindex_snapshot_remove_data(logindex_snapshot);
 		MemSet(meta, 0, sizeof(log_index_meta_t));
 	}
 
 	POLAR_LOG_LOGINDEX_META_INFO(meta);
 
+	logindex_snapshot_init_promoted_info(logindex_snapshot);
 	logindex_snapshot->max_idx_table_id = meta->max_idx_table_id;
 	LOG_INDEX_MEM_TBL_ACTIVE_ID = meta->max_idx_table_id % logindex_snapshot->mem_tbl_size;
 
@@ -476,95 +506,88 @@ polar_log_index_snapshot_base_init(log_index_snapshot_t *logindex_snapshot, XLog
 	MemSet(logindex_snapshot->mem_table, 0,
 		   sizeof(log_mem_table_t) * logindex_snapshot->mem_tbl_size);
 
-	if (polar_streaming_xlog_meta)
-	{
-		if (!replica_mode)
-		{
-			/* POLAR: Init log_index_meta file for master and standby. */
-			if (XLogRecPtrIsInvalid(meta->start_lsn))
-			{
-				meta->start_lsn = checkpoint_lsn;
-				log_index_write_meta(logindex_snapshot, meta, false);
-			}
-		}
+	/*
+	 * If meta->start_lsn is invalid, we will not parse xlog and save it to logindex.
+	 * RO will check logindex meta again when parse checkpoint xlog.
+	 * RW will set logindex meta start lsn and save to storage when create new checkpoint.
+	 * This will make ro and rw to create logindex from the same checkpoint.
+	 */
 
-		if (!POLAR_SKIP_META_FILE_ERROR(logindex_snapshot) &&
-				meta->start_lsn == InvalidXLogRecPtr)
-			elog(FATAL, "Failed to get start_lsn of logindex for replica mode");
+	if (!XLogRecPtrIsInvalid(meta->start_lsn)
+			&& meta->start_lsn < checkpoint_lsn)
+		start_lsn = meta->start_lsn;
 
-		start_lsn = Min(meta->start_lsn, checkpoint_lsn);
+	/*
+	 * When we start to truncate lsn , latest_page_number may not be set up; insert a
+	 * suitable value to bypass the sanity test in SimpleLruTruncate.
+	 */
+	logindex_snapshot->bloom_ctl.shared->latest_page_number = UINT32_MAX;
 
-		/*
-		 * When we start to truncate lsn , latest_page_number may not be set up; insert a
-		 * suitable value to bypass the sanity test in SimpleLruTruncate.
-		 */
-		logindex_snapshot->bloom_ctl.shared->latest_page_number = UINT32_MAX;
+	LWLockRelease(LOG_INDEX_IO_LOCK);
 
-		LWLockRelease(LOG_INDEX_IO_LOCK);
-
-		/*
-		 * When initialize log index snapshot, we load max table id's data to memory.
-		 * When first insert lsn to memory table, need to check whether it already exists
-		 * in previous table
-		 */
-		if (!XLogRecPtrIsInvalid(checkpoint_lsn))
-			polar_load_logindex_snapshot_from_storage(logindex_snapshot, checkpoint_lsn, true);
-	}
-	else
-		LWLockRelease(LOG_INDEX_IO_LOCK);
+	/*
+	 * When initialize log index snapshot, we load max table id's data to memory.
+	 * When first insert lsn to memory table, need to check whether it already exists
+	 * in previous table
+	 */
+	polar_load_logindex_snapshot_from_storage(logindex_snapshot, checkpoint_lsn);
 
 	pg_atomic_fetch_or_u32(&logindex_snapshot->state, POLAR_LOGINDEX_STATE_INITIALIZED);
 
 	return start_lsn;
 }
 
-
 XLogRecPtr
-polar_log_index_snapshot_init(XLogRecPtr checkpoint_lsn, bool replica_mode)
+polar_logindex_snapshot_init(logindex_snapshot_t logindex_snapshot, XLogRecPtr checkpoint_lsn, bool read_only)
 {
-	int i = 0;
 	XLogRecPtr start_lsn = InvalidXLogRecPtr;
 
-	log_index_validate_dir();
-
-	for (i = 0; i < LOGINDEX_SNAPSHOT_NUM; i++)
+	if (!read_only)
 	{
-		XLogRecPtr res_lsn = InvalidXLogRecPtr;
-		res_lsn = polar_log_index_snapshot_base_init(polar_logindex_snapshot[i], checkpoint_lsn, replica_mode);
+		char dir[MAXPGPATH];
+		snprintf(dir, MAXPGPATH, "%s/%s", POLAR_DATA_DIR(), logindex_snapshot->dir);
+		polar_validate_dir(dir);
 
-		/*
-		 * We only care normal logindex snapshot start_lsn,
-		 * maybe fullpage snapshot is too old!
-		 */
-		if (polar_logindex_snapshot[i]->type == LOGINDEX_WAL_SNAPSHOT)
-			start_lsn = res_lsn;
+		pg_atomic_fetch_or_u32(&logindex_snapshot->state, POLAR_LOGINDEX_STATE_WRITABLE);
 	}
 
-	ereport(LOG, (errmsg("Init log index snapshot succeed")));
+	start_lsn = polar_logindex_snapshot_base_init(logindex_snapshot, checkpoint_lsn);
+
+	ereport(LOG, (errmsg("Init %s succeed", logindex_snapshot->dir)));
 
 	return start_lsn;
 }
 
 
 static void
-log_index_init_lwlock_array(log_index_snapshot_t *logindex_snapshot)
+log_index_init_lwlock_array(log_index_snapshot_t *logindex_snapshot, const char *name, int tranche_id_begin, int tranche_id_end)
 {
+	int i = 0;
+	int tranche_id = tranche_id_begin;
+
 	Assert(logindex_snapshot->mem_tbl_size > 0);
-	log_index_init_lwlock(logindex_snapshot, MINI_TRANSACTION_LOCK_OFFSET, 1,
-						  LWTRANCHE_LOGINDEX_MINI_TRANSACTION, "logindex_mini_transaction");
-	log_index_init_lwlock(logindex_snapshot, MINI_TRANSACTION_TABLE_LOCK_OFFSET, MINI_TRANSACTION_TABLE_SIZE,
-						  LWTRANCHE_LOGINDEX_MINI_TRANSACTION_TBL, "logindex_mini_transaction_tbl");
-
+	/*
+	 * The tranche id defined for logindex must map the following call sequence.
+	 * See the definition of LWTRANCE_WAL_LOGINDEX_BEGIN and LWTRANCHE_WAL_LOGINDEX_END as example
+	 */
+	snprintf(logindex_snapshot->trache_name[i], NAMEDATALEN, " %s_mem", name);
 	log_index_init_lwlock(logindex_snapshot, LOG_INDEX_MEMTBL_LOCK_OFFSET, logindex_snapshot->mem_tbl_size,
-						  LWTRANCHE_LOGINDEX_MEM_TBL, "logindex_mem_tbl");
+						  tranche_id++, logindex_snapshot->trache_name[i]);
 
-	log_index_init_lwlock(logindex_snapshot, LOG_INDEX_BLOOM_LRU_LOCK_OFFSET, 1,
-						  LWTRANCHE_LOGINDEX_BLOOM_LRU, "logindex_bloom_lru");
-
+	snprintf(logindex_snapshot->trache_name[++i], NAMEDATALEN, " %s_hash", name);
 	log_index_init_lwlock(logindex_snapshot, LOG_INDEX_HASH_LOCK_OFFSET, LOG_INDEX_MEM_TBL_HASH_LOCK_NUM,
-						  LWTRANCHE_LOGINDEX_HASH_LOCK, "logindex_hash_lock");
+						  tranche_id++, logindex_snapshot->trache_name[i]);
+
+	snprintf(logindex_snapshot->trache_name[++i], NAMEDATALEN, " %s_io", name);
 	log_index_init_lwlock(logindex_snapshot, LOG_INDEX_IO_LOCK_OFFSET, 1,
-						  LWTRANCHE_LOGINDEX_IO, "logindex_io");
+						  tranche_id++, logindex_snapshot->trache_name[i]);
+
+	snprintf(logindex_snapshot->trache_name[++i], NAMEDATALEN, " %s_bloom", name);
+	log_index_init_lwlock(logindex_snapshot, LOG_INDEX_BLOOM_LRU_LOCK_OFFSET, 1,
+						  tranche_id, logindex_snapshot->trache_name[i]);
+
+	Assert(tranche_id == tranche_id_end);
+	Assert((i + 1) == LOG_INDEX_MAX_TRACHE);
 }
 
 static bool
@@ -573,18 +596,21 @@ log_index_page_precedes(int page1, int page2)
 	return page1 < page2;
 }
 
-static void
-polar_logindex_snapshot_shmem_init(int type)
+logindex_snapshot_t
+polar_logindex_snapshot_shmem_init(const char *name, uint64 logindex_mem_tbl_size, int bloom_blocks, int tranche_id_begin, int tranche_id_end,
+								   logindex_table_flushable table_flushable, void *extra_data)
 {
-	log_index_snapshot_t *logindex_snapshot = NULL;
+#define LOGINDEX_SNAPSHOT_SUFFIX "_snapshot"
+#define LOGINDEX_LOCK_SUFFIX "_lock"
+#define LOGINDEX_BLOOM_SUFFIX "_bloom"
+
+	logindex_snapshot_t logindex_snapshot = NULL;
 	bool        found_snapshot;
 	bool        found_locks;
 	Size        size;
+	char        item_name[POLAR_MAX_SHMEM_NAME];
 
-	if (!polar_enable_redo_logindex)
-		return ;
-
-	size = log_index_mem_tbl_shmem_size(type);
+	size = log_index_mem_tbl_shmem_size(logindex_mem_tbl_size);
 
 	StaticAssertStmt(sizeof(log_item_head_t) == LOG_INDEX_TBL_SEG_SIZE,
 					 "log_item_head_t size is not same as LOG_INDEX_MEM_TBL_SEG_SIZE");
@@ -594,52 +620,52 @@ polar_logindex_snapshot_shmem_init(int type)
 	StaticAssertStmt(LOG_INDEX_FILE_TBL_BLOOM_SIZE > sizeof(log_file_table_bloom_t),
 					 "LOG_INDEX_FILE_TBL_BLOOM_SIZE is not enough for log_file_table_bloom_t");
 
-	StaticAssertStmt(MINI_TRANSACTION_TABLE_SIZE <= sizeof(uint64_t) * CHAR_BIT,
-					 "MINI_TRANSACTION_TABLE_SIZE is larger than 64bit");
+	snprintf(item_name, POLAR_MAX_SHMEM_NAME, "%s%s", name, LOGINDEX_SNAPSHOT_SUFFIX);
 
-	polar_logindex_snapshot[type] = (log_index_snapshot_t *)
-									ShmemInitStruct(logindex_snapshot_shmem_names[type],
-													size, &found_snapshot);
-	logindex_snapshot = polar_logindex_snapshot[type];
-
+	logindex_snapshot = (logindex_snapshot_t)
+						ShmemInitStruct(item_name, size, &found_snapshot);
 	Assert(logindex_snapshot != NULL);
+
+	snprintf(item_name, POLAR_MAX_SHMEM_NAME, "%s%s", name, LOGINDEX_LOCK_SUFFIX);
 
 	/* Align lwlocks to cacheline boundary */
 	logindex_snapshot->lwlock_array = (LWLockMinimallyPadded *)
-									  ShmemInitStruct(logindex_snapshot_locks_names[type], log_index_lwlock_shmem_size(type),
+									  ShmemInitStruct(item_name, log_index_lwlock_shmem_size(logindex_mem_tbl_size),
 													  &found_locks);
 
 	if (!IsUnderPostmaster)
 	{
 		Assert(!found_snapshot && !found_locks);
-		logindex_snapshot->type = type;
-		logindex_snapshot->mem_tbl_size = MEM_TBL_SIZE(type);
+		logindex_snapshot->mem_tbl_size = logindex_mem_tbl_size;
 
-		logindex_snapshot->mem_cxt = AllocSetContextCreate(TopMemoryContext,
-														   "logindex snapshot mem context",
-														   ALLOCSET_DEFAULT_SIZES);
 		pg_atomic_init_u32(&logindex_snapshot->state, 0);
 
-		log_index_init_lwlock_array(logindex_snapshot);
-
-		MemSet(&logindex_snapshot->mini_transaction, 0, sizeof(mini_trans_t));
-		logindex_snapshot->mini_transaction.lsn = InvalidXLogRecPtr;
+		log_index_init_lwlock_array(logindex_snapshot, name, tranche_id_begin, tranche_id_end);
 
 		logindex_snapshot->max_allocated_seg_no = 0;
+		logindex_snapshot->table_flushable = table_flushable;
+		logindex_snapshot->extra_data = extra_data;
 
 		SpinLockInit(LOG_INDEX_SNAPSHOT_LOCK);
 
-		StrNCpy(logindex_snapshot->dir, logindex_snapshot_dirs[type], NAMEDATALEN);
-		StrNCpy(logindex_snapshot->meta_file_name, logindex_snapshot_meta_files[type], MAXPGPATH);
+		StrNCpy(logindex_snapshot->dir, name, NAMEDATALEN);
+		logindex_snapshot->segment_cache = NULL;
 	}
 	else
 		Assert(found_snapshot && found_locks);
 
 	logindex_snapshot->bloom_ctl.PagePrecedes = log_index_page_precedes;
-	SimpleLruInit(&logindex_snapshot->bloom_ctl, logindex_snapshot_bloom_names[type],
-				  polar_logindex_bloom_blocks, 0,
-				  LOG_INDEX_BLOOM_LRU_LOCK, logindex_snapshot_dirs[type],
-				  LWTRANCHE_LOGINDEX_BLOOM_LRU, true);
+	snprintf(item_name, POLAR_MAX_SHMEM_NAME, " %s%s", name, LOGINDEX_BLOOM_SUFFIX);
+
+	/*
+	 * Notice: When define tranche id for logindex, the last one is used for logindex bloom.
+	 * See the definition between LWTRANCE_WAL_LOGINDEX_BEGIN and LWTRANCE_WAL_LOGINDEX_END
+	 */
+	SimpleLruInit(&logindex_snapshot->bloom_ctl, item_name,
+				  bloom_blocks, 0,
+				  LOG_INDEX_BLOOM_LRU_LOCK, name,
+				  tranche_id_end, true);
+	return logindex_snapshot;
 }
 
 static bool
@@ -667,40 +693,26 @@ log_index_data_compatible(log_index_meta_t *meta)
 	}
 }
 
-static void
-log_index_meta_file_auto_close(int code, Datum arg)
-{
-	File fd = (File) arg;
-	Assert(fd >= 0);
-	FileClose(fd);
-}
-
 bool
 log_index_get_meta(log_index_snapshot_t *logindex_snapshot, log_index_meta_t *meta)
 {
-	/* fd is static variable, we want to open file only once */
-	static File fd[LOGINDEX_SNAPSHOT_NUM] = {-1, -1};
 	int         r;
 	char        meta_path[MAXPGPATH];
 	pg_crc32    crc;
-	int         type = logindex_snapshot->type;
+	int fd;
 
 	MemSet(meta, 0, sizeof(log_index_meta_t));
 
-	snprintf(meta_path, MAXPGPATH, "%s/%s", POLAR_DATA_DIR(), LOG_INDEX_META_FILE);
+	snprintf(meta_path, MAXPGPATH, "%s/%s/%s", POLAR_DATA_DIR(), logindex_snapshot->dir, LOG_INDEX_META_FILE);
 
-	if (fd[type] < 0)
-	{
-		if ((fd[type] = PathNameOpenFile(meta_path, O_RDONLY | PG_BINARY, true)) < 0)
-			return false;
+	if ((fd = PathNameOpenFile(meta_path, O_RDONLY | PG_BINARY, true)) < 0)
+		return false;
 
-		Assert(fd[type] >= 0);
-		/* Register function to close meta file, we only open meta file once */
-		before_shmem_exit(log_index_meta_file_auto_close, (Datum) fd[type]);
-	}
 
-	r = polar_file_pread(fd[type], (char *)meta, sizeof(log_index_meta_t), 0, WAIT_EVENT_LOGINDEX_META_READ);
+	r = polar_file_pread(fd, (char *)meta, sizeof(log_index_meta_t), 0, WAIT_EVENT_LOGINDEX_META_READ);
 	logindex_errno = errno;
+
+	FileClose(fd);
 
 	if (r != sizeof(log_index_meta_t))
 	{
@@ -751,9 +763,8 @@ log_index_get_meta(log_index_snapshot_t *logindex_snapshot, log_index_meta_t *me
 }
 
 XLogRecPtr
-polar_log_index_start_lsn(void)
+polar_logindex_start_lsn(logindex_snapshot_t logindex_snapshot)
 {
-	log_index_snapshot_t *logindex_snapshot = POLAR_LOGINDEX_WAL_SNAPSHOT;
 	XLogRecPtr start_lsn = InvalidXLogRecPtr;
 
 	if (logindex_snapshot != NULL)
@@ -766,16 +777,15 @@ polar_log_index_start_lsn(void)
 	return start_lsn;
 }
 
-static void
-log_index_write_meta(log_index_snapshot_t *logindex_snapshot, log_index_meta_t *meta, bool update)
+void
+polar_log_index_write_meta(log_index_snapshot_t *logindex_snapshot, log_index_meta_t *meta, bool update)
 {
 	File         fd;
 	char         meta_path[MAXPGPATH];
 	int          flag = O_RDWR | PG_BINARY;
+	int          save_errno;
 
-	log_index_validate_dir();
-
-	snprintf(meta_path, MAXPGPATH, "%s/%s", POLAR_DATA_DIR(), LOG_INDEX_META_FILE);
+	snprintf(meta_path, MAXPGPATH, "%s/%s/%s", POLAR_DATA_DIR(), logindex_snapshot->dir, LOG_INDEX_META_FILE);
 
 	if (meta->max_lsn != InvalidXLogRecPtr)
 		meta->start_lsn = meta->max_lsn;
@@ -790,10 +800,9 @@ log_index_write_meta(log_index_snapshot_t *logindex_snapshot, log_index_meta_t *
 
 	if ((fd = PathNameOpenFile(meta_path, flag, true)) == -1)
 	{
+		save_errno = errno;
 		POLAR_LOG_LOGINDEX_META_INFO(meta);
-		ereport(PANIC,
-				(errcode_for_file_access(),
-				 errmsg("could not open file \"%s\": %m", meta_path)));
+		ereport(PANIC, (errmsg("could not open file \"%s\": \"%s\"", meta_path, strerror(save_errno))));
 	}
 
 	if (FileWrite(fd, (char *)meta, sizeof(log_index_meta_t), WAIT_EVENT_LOGINDEX_META_WRITE)
@@ -803,18 +812,16 @@ log_index_write_meta(log_index_snapshot_t *logindex_snapshot, log_index_meta_t *
 		if (errno == 0)
 			errno = ENOSPC;
 
+		save_errno = errno;
 		POLAR_LOG_LOGINDEX_META_INFO(meta);
-		ereport(PANIC,
-				(errcode_for_file_access(),
-				 errmsg("could not write file \"%s\": %m", meta_path)));
+		ereport(PANIC, (errmsg("could not write file \"%s\": \"%s\"", meta_path, strerror(save_errno))));
 	}
 
 	if (FileSync(fd, WAIT_EVENT_LOGINDEX_META_FLUSH) != 0)
 	{
+		save_errno = errno;
 		POLAR_LOG_LOGINDEX_META_INFO(meta);
-		ereport(PANIC,
-				(errcode_for_file_access(),
-				 errmsg("could not flush file \"%s\": %m", meta_path)));
+		ereport(PANIC, (errmsg("could not flush file \"%s\": \"%s\"", meta_path, strerror(save_errno))));
 	}
 
 	FileClose(fd);
@@ -838,7 +845,7 @@ log_index_force_save_table(log_index_snapshot_t *logindex_snapshot, log_mem_tabl
 		force_table = tid;
 	}
 
-	if (polar_enable_shared_storage_mode && polar_mount_pfs_readonly_mode)
+	if (!polar_logindex_check_state(logindex_snapshot, POLAR_LOGINDEX_STATE_WRITABLE))
 	{
 		log_idx_table_id_t max_tid;
 
@@ -853,23 +860,34 @@ log_index_force_save_table(log_index_snapshot_t *logindex_snapshot, log_mem_tabl
 
 		if (max_tid >= LOG_INDEX_MEM_TBL_TID(table))
 		{
-			polar_log_index_invalid_bloom_cache(logindex_snapshot, LOG_INDEX_MEM_TBL_TID(table));
+			polar_logindex_invalid_bloom_cache(logindex_snapshot, LOG_INDEX_MEM_TBL_TID(table));
 			LOG_INDEX_MEM_TBL_SET_STATE(table, LOG_INDEX_MEM_TBL_STATE_FLUSHED);
 		}
 	}
 	else
 	{
-		if (POLAR_LOGINDEX_FLUSHABLE_LSN() > table->data.max_lsn)
+		if (logindex_snapshot->table_flushable(table, logindex_snapshot->extra_data))
 		{
-			if (polar_log_index_write_table(logindex_snapshot, table))
+			bool succeed = false;
+
+			if (log_index_table_saved_before_promote(logindex_snapshot, table))
+			{
+				succeed = true;
 				LOG_INDEX_MEM_TBL_SET_STATE(table, LOG_INDEX_MEM_TBL_STATE_FLUSHED);
-			else
+			}
+			else if (log_index_write_table(logindex_snapshot, table))
+				succeed = true;
+
+			if (!succeed)
 			{
 				POLAR_LOG_LOGINDEX_META_INFO(meta);
 				elog(FATAL, "Failed to save logindex table, table id=%ld", LOG_INDEX_MEM_TBL_TID(table));
 			}
 		}
 	}
+
+	/* Notify background process to flush logindex table */
+	NOTIFY_LOGINDEX_BG_WORKER(logindex_snapshot->bg_worker_latch);
 }
 
 static void
@@ -892,8 +910,7 @@ log_index_wait_active(log_index_snapshot_t *logindex_snapshot, log_mem_table_t *
 		 * We only save table to storage when polar_streaming_xlog_meta is true.
 		 * If the table we are waiting is inactive then force to save it in this process.
 		 */
-		if (LOG_INDEX_MEM_TBL_STATE(table) == LOG_INDEX_MEM_TBL_STATE_INACTIVE
-				&& polar_streaming_xlog_meta)
+		if (LOG_INDEX_MEM_TBL_STATE(table) == LOG_INDEX_MEM_TBL_STATE_INACTIVE)
 			log_index_force_save_table(logindex_snapshot, table);
 
 		if (LOG_INDEX_MEM_TBL_STATE(table) == LOG_INDEX_MEM_TBL_STATE_FLUSHED)
@@ -909,18 +926,14 @@ log_index_wait_active(log_index_snapshot_t *logindex_snapshot, log_mem_table_t *
 		LWLockRelease(lock);
 
 		if (end)
-		{
-			pg_atomic_fetch_and_u32(&logindex_snapshot->state, ~POLAR_LOGINDEX_STATE_WAITING);
 			break;
-		}
-
-		pg_atomic_fetch_or_u32(&logindex_snapshot->state, POLAR_LOGINDEX_STATE_WAITING);
-		pg_usleep(10);
 
 		if (InRecovery)
 			HandleStartupProcInterrupts();
 		else
 			CHECK_FOR_INTERRUPTS();
+
+		pg_usleep(10);
 	}
 }
 
@@ -931,13 +944,13 @@ log_index_mem_tbl_exists_page(BufferTag *tag,
 	log_seg_id_t    exists = LOG_INDEX_TBL_SLOT_VALUE(table, key);
 	log_item_head_t *item;
 
-	item = LOG_INDEX_ITEM_HEAD(table, exists);
+	item = log_index_item_head(table, exists);
 
 	while (item != NULL &&
 			!BUFFERTAGS_EQUAL(item->tag, *tag))
 	{
 		exists = item->next_item;
-		item = LOG_INDEX_ITEM_HEAD(table, exists);
+		item = log_index_item_head(table, exists);
 	}
 
 	return exists;
@@ -951,7 +964,7 @@ log_index_mem_seg_full(log_mem_table_t *table, log_seg_id_t head)
 
 	Assert(head != LOG_INDEX_TBL_INVALID_SEG);
 
-	item = LOG_INDEX_ITEM_HEAD(&table->data, head);
+	item = log_index_item_head(&table->data, head);
 
 	if (item->tail_seg == head)
 	{
@@ -960,7 +973,7 @@ log_index_mem_seg_full(log_mem_table_t *table, log_seg_id_t head)
 	}
 	else
 	{
-		seg = LOG_INDEX_ITEM_SEG(&table->data, item->tail_seg);
+		seg = log_index_item_seg(&table->data, item->tail_seg);
 		Assert(seg != NULL);
 
 		if (seg->number == LOG_INDEX_ITEM_SEG_LSN_NUM)
@@ -975,8 +988,11 @@ log_index_insert_new_item(log_index_lsn_t *lsn_info,
 						  log_mem_table_t *table, uint32 key,
 						  log_seg_id_t new_item_id)
 {
-	log_item_head_t *new_item = LOG_INDEX_ITEM_HEAD(&table->data, new_item_id);
-	log_seg_id_t   *slot = LOG_INDEX_TBL_SLOT(&table->data, key);
+	log_item_head_t *new_item = log_index_item_head(&table->data, new_item_id);
+	log_seg_id_t   *slot;
+
+	Assert(key < LOG_INDEX_MEM_TBL_HASH_NUM);
+	slot = LOG_INDEX_TBL_SLOT(&table->data, key);
 
 	new_item->head_seg = new_item_id;
 	new_item->next_item = LOG_INDEX_TBL_INVALID_SEG;
@@ -1000,8 +1016,8 @@ static void
 log_index_insert_new_seg(log_mem_table_t *table, log_seg_id_t head,
 						 log_seg_id_t seg_id, log_index_lsn_t *lsn_info)
 {
-	log_item_head_t *item = LOG_INDEX_ITEM_HEAD(&table->data, head);
-	log_item_seg_t *seg = LOG_INDEX_ITEM_SEG(&table->data, seg_id);
+	log_item_head_t *item = log_index_item_head(&table->data, head);
+	log_item_seg_t *seg = log_index_item_seg(&table->data, seg_id);
 
 	seg->head_seg = head;
 
@@ -1009,7 +1025,7 @@ log_index_insert_new_seg(log_mem_table_t *table, log_seg_id_t head,
 		item->next_seg = seg_id;
 	else
 	{
-		log_item_seg_t *pre_seg = LOG_INDEX_ITEM_SEG(&table->data, item->tail_seg);
+		log_item_seg_t *pre_seg = log_index_item_seg(&table->data, item->tail_seg);
 
 		if (pre_seg == NULL)
 		{
@@ -1038,7 +1054,7 @@ log_index_append_lsn(log_mem_table_t *table, log_seg_id_t head, log_index_lsn_t 
 
 	Assert(head != LOG_INDEX_TBL_INVALID_SEG);
 
-	item = LOG_INDEX_ITEM_HEAD(&table->data, head);
+	item = log_index_item_head(&table->data, head);
 
 	if (item->tail_seg == head)
 	{
@@ -1049,7 +1065,7 @@ log_index_append_lsn(log_mem_table_t *table, log_seg_id_t head, log_index_lsn_t 
 	}
 	else
 	{
-		seg = LOG_INDEX_ITEM_SEG(&table->data, item->tail_seg);
+		seg = log_index_item_seg(&table->data, item->tail_seg);
 		Assert(seg != NULL);
 		Assert(seg->number < LOG_INDEX_ITEM_SEG_LSN_NUM);
 		idx = seg->number;
@@ -1086,9 +1102,8 @@ log_index_next_free_seg(log_index_snapshot_t *logindex_snapshot, XLogRecPtr lsn,
 				LOG_INDEX_MEM_TBL_SET_PREFIX_LSN(active, lsn);
 				dst = LOG_INDEX_MEM_TBL_UPDATE_FREE_HEAD(active);
 			}
-
-			if (LOG_INDEX_MEM_TBL_FULL(active) ||
-					!LOG_INDEX_SAME_TABLE_LSN_PREFIX(&active->data, lsn))
+			else if (LOG_INDEX_MEM_TBL_FULL(active) ||
+					 !LOG_INDEX_SAME_TABLE_LSN_PREFIX(&active->data, lsn))
 			{
 				LOG_INDEX_MEM_TBL_SET_STATE(active, LOG_INDEX_MEM_TBL_STATE_INACTIVE);
 				next_mem_id = LOG_INDEX_MEM_TBL_NEXT_ID(LOG_INDEX_MEM_TBL_ACTIVE_ID);
@@ -1105,7 +1120,7 @@ log_index_next_free_seg(log_index_snapshot_t *logindex_snapshot, XLogRecPtr lsn,
 			active = LOG_INDEX_MEM_TBL(next_mem_id);
 			*active_table = active;
 
-			polar_try_to_wake_bgwriter();
+			NOTIFY_LOGINDEX_BG_WORKER(logindex_snapshot->bg_worker_latch);
 		}
 
 		pgstat_report_wait_start(WAIT_EVENT_LOGINDEX_WAIT_ACTIVE);
@@ -1152,8 +1167,8 @@ log_index_get_tbl_bloom(log_index_snapshot_t *logindex_snapshot, log_idx_table_i
 
 	int slot;
 
-	slot = SimpleLruReadPage(&logindex_snapshot->bloom_ctl, pageno, false,
-							 InvalidTransactionId);
+	slot = SimpleLruReadPage_ReadOnly(&logindex_snapshot->bloom_ctl, pageno,
+									  InvalidTransactionId);
 
 	return (log_file_table_bloom_t *)(shared->page_buffer[slot] + offset);
 }
@@ -1174,7 +1189,7 @@ log_index_calc_bloom(log_mem_table_t *table, log_file_table_bloom_t *bloom)
 
 		if (id != LOG_INDEX_TBL_INVALID_SEG)
 		{
-			log_item_head_t *item = LOG_INDEX_ITEM_HEAD(&table->data, id);
+			log_item_head_t *item = log_index_item_head(&table->data, id);
 
 			while (item != NULL)
 			{
@@ -1184,7 +1199,7 @@ log_index_calc_bloom(log_mem_table_t *table, log_file_table_bloom_t *bloom)
 					Min(bloom->min_lsn, LOG_INDEX_SEG_MIN_LSN(&table->data, item));
 				bloom_add_element(filter, (unsigned char *) & (item->tag),
 								  sizeof(BufferTag));
-				item = LOG_INDEX_ITEM_HEAD(&table->data, item->next_item);
+				item = log_index_item_head(&table->data, item->next_item);
 			}
 		}
 	}
@@ -1195,7 +1210,7 @@ log_index_save_table(log_index_snapshot_t *logindex_snapshot, log_idx_table_data
 {
 	int ret = -1;
 	uint64 segno = LOG_INDEX_FILE_TABLE_SEGMENT_NO(table->idx_table_id);
-	int offset = LOG_INDEX_FILE_TABLE_SEGMENT_OFFSET(table->idx_table_id);
+	off_t offset = LOG_INDEX_FILE_TABLE_SEGMENT_OFFSET(table->idx_table_id);
 	char        path[MAXPGPATH];
 
 	table->min_lsn = bloom->min_lsn;
@@ -1204,7 +1219,7 @@ log_index_save_table(log_index_snapshot_t *logindex_snapshot, log_idx_table_data
 	table->crc = 0;
 	table->crc = log_index_calc_crc((unsigned char *)table, sizeof(log_idx_table_data_t));
 
-	ret = FileWrite(fd, (char *)table, sizeof(*table), WAIT_EVENT_LOGINDEX_TBL_WRITE);
+	ret = polar_file_pwrite(fd, (char *)table, sizeof(*table), offset, WAIT_EVENT_LOGINDEX_TBL_WRITE);
 
 	if (ret != sizeof(*table))
 	{
@@ -1212,9 +1227,8 @@ log_index_save_table(log_index_snapshot_t *logindex_snapshot, log_idx_table_data
 		logindex_io_err = LOG_INDEX_WRITE_FAILED;
 
 		LOG_INDEX_FILE_TABLE_NAME(path, segno);
-		ereport(LOG_INDEX_IO_LOG_LEVEL,
-				(errcode_for_file_access(),
-				 errmsg("Could not write whole table to file \"%s\" at offset %u, write size %d, errno %d",
+		ereport(LOG,
+				(errmsg("Could not write whole table to file \"%s\" at offset %lu, write size %d, errno %d",
 						path, offset, ret, logindex_errno)));
 		return false;
 	}
@@ -1223,10 +1237,14 @@ log_index_save_table(log_index_snapshot_t *logindex_snapshot, log_idx_table_data
 
 	if (ret != 0)
 	{
+		logindex_errno = errno;
+		logindex_io_err = LOG_INDEX_FSYNC_FAILED;
+
 		LOG_INDEX_FILE_TABLE_NAME(path, segno);
 		ereport(LOG,
-				(errcode_for_file_access(),
-				 errmsg("Could not fsync file \"%s\", return code %d", path, ret)));
+				(errmsg("Could not fsync file \"%s\", errno %d", path, logindex_errno)));
+
+		return false;
 	}
 
 	return true;
@@ -1271,11 +1289,11 @@ log_index_save_bloom(log_index_snapshot_t *logindex_snapshot, log_idx_table_id_t
 static int
 log_index_open_table_file(log_index_snapshot_t *logindex_snapshot, log_idx_table_id_t tid, bool readonly, int elevel)
 {
-	uint64 segno = LOG_INDEX_FILE_TABLE_SEGMENT_NO(tid);
-	int offset = LOG_INDEX_FILE_TABLE_SEGMENT_OFFSET(tid);
 	char        path[MAXPGPATH];
 	File fd;
 	int flag;
+	uint64 segno = LOG_INDEX_FILE_TABLE_SEGMENT_NO(tid);
+	off_t offset = LOG_INDEX_FILE_TABLE_SEGMENT_OFFSET(tid);
 
 	LOG_INDEX_FILE_TABLE_NAME(path, segno);
 
@@ -1297,21 +1315,7 @@ log_index_open_table_file(log_index_snapshot_t *logindex_snapshot, log_idx_table
 		logindex_errno = errno;
 
 		ereport(elevel,
-				(errcode_for_file_access(),
-				 errmsg("Could not open file \"%s\", errno %d", path, logindex_errno)));
-		return -1;
-	}
-
-	if ((offset > 0) && (FileSeek(fd, (off_t) offset, SEEK_SET) < 0))
-	{
-		logindex_io_err = LOG_INDEX_SEEK_FAILED;
-		logindex_errno = errno;
-		FileClose(fd);
-
-		ereport(elevel,
-				(errcode_for_file_access(),
-				 errmsg("Could not seek in file \"%s\" to offset %u, errno %d",
-						path, offset, logindex_errno)));
+				(errmsg("Could not open file \"%s\", errno %d", path, logindex_errno)));
 		return -1;
 	}
 
@@ -1324,8 +1328,8 @@ log_index_read_table_data(log_index_snapshot_t *logindex_snapshot, log_idx_table
 	File fd;
 	pg_crc32 crc;
 	int bytes;
-	uint64 segno = LOG_INDEX_FILE_TABLE_SEGMENT_NO(table->idx_table_id);
-	int offset = LOG_INDEX_FILE_TABLE_SEGMENT_OFFSET(table->idx_table_id);
+	uint64 segno = LOG_INDEX_FILE_TABLE_SEGMENT_NO(tid);
+	off_t offset = LOG_INDEX_FILE_TABLE_SEGMENT_OFFSET(tid);
 	static char        path[MAXPGPATH];
 
 	fd = log_index_open_table_file(logindex_snapshot, tid, true, elevel);
@@ -1333,7 +1337,7 @@ log_index_read_table_data(log_index_snapshot_t *logindex_snapshot, log_idx_table
 	if (fd < 0)
 		return false;
 
-	bytes = FileRead(fd, (char *)table, sizeof(log_idx_table_data_t), WAIT_EVENT_LOGINDEX_TBL_READ);
+	bytes = polar_file_pread(fd, (char *)table, sizeof(log_idx_table_data_t), offset, WAIT_EVENT_LOGINDEX_TBL_READ);
 
 	if (bytes != sizeof(log_idx_table_data_t))
 	{
@@ -1343,8 +1347,7 @@ log_index_read_table_data(log_index_snapshot_t *logindex_snapshot, log_idx_table
 
 		LOG_INDEX_FILE_TABLE_NAME(path, segno);
 		ereport(elevel,
-				(errcode_for_file_access(),
-				 errmsg("Could not read whole table from file \"%s\" at offset %u, read size %d, errno %d",
+				(errmsg("Could not read whole table from file \"%s\" at offset %lu, read size %d, errno %d",
 						path, offset, bytes, logindex_errno)));
 		return false;
 	}
@@ -1360,7 +1363,7 @@ log_index_read_table_data(log_index_snapshot_t *logindex_snapshot, log_idx_table
 
 		LOG_INDEX_FILE_TABLE_NAME(path, segno);
 		ereport(elevel,
-				(errmsg("The crc32 check failed in file \"%s\" at offset %u, result crc %u, expected crc %u",
+				(errmsg("The crc32 check failed in file \"%s\" at offset %lu, result crc %u, expected crc %u",
 						path, offset, crc, table->crc)));
 		return false;
 	}
@@ -1376,7 +1379,7 @@ log_index_write_table_data(log_index_snapshot_t *logindex_snapshot, log_mem_tabl
 	log_file_table_bloom_t *bloom;
 	log_idx_table_id_t tid = table->data.idx_table_id;
 
-	fd = log_index_open_table_file(logindex_snapshot, tid, false, LOG_INDEX_IO_LOG_LEVEL);
+	fd = log_index_open_table_file(logindex_snapshot, tid, false, polar_trace_logindex(DEBUG4));
 
 	if (fd < 0)
 		return ret;
@@ -1413,52 +1416,52 @@ log_index_report_io_error(log_index_snapshot_t *logindex_snapshot, log_idx_table
 		case LOG_INDEX_OPEN_FAILED:
 			ereport(FATAL,
 					(errcode_for_file_access(),
-					 errmsg("Could not open file \"%s\"", path)));
+					 errmsg("Could not open file \"%s\" for tid=%ld", path, tid)));
 			break;
 
 		case LOG_INDEX_SEEK_FAILED:
 			ereport(FATAL,
 					(errcode_for_file_access(),
-					 errmsg("Could not seek in file \"%s\" to offset %u",
-							path, offset)));
+					 errmsg("Could not seek in file \"%s\" to offset %u for tid=%ld",
+							path, offset, tid)));
 			break;
 
 		case LOG_INDEX_READ_FAILED:
 			ereport(FATAL,
 					(errcode_for_file_access(),
-					 errmsg("Could not read from file \"%s\" at offset %u",
-							path, offset)));
+					 errmsg("Could not read from file \"%s\" at offset %u for tid=%ld",
+							path, offset, tid)));
 			break;
 
 		case LOG_INDEX_WRITE_FAILED:
 			ereport(FATAL,
 					(errcode_for_file_access(),
-					 errmsg("Could not write to file \"%s\" at offset %u",
-							path, offset)));
+					 errmsg("Could not write to file \"%s\" at offset %u for tid=%ld",
+							path, offset, tid)));
 			break;
 
 		case LOG_INDEX_FSYNC_FAILED:
 			ereport(FATAL,
 					(errcode_for_file_access(),
-					 errmsg("Could not fsync file \"%s\"", path)));
+					 errmsg("Could not fsync file \"%s\" for tid=%ld", path, tid)));
 			break;
 
 		case LOG_INDEX_CLOSE_FAILED:
 			ereport(FATAL,
 					(errcode_for_file_access(),
-					 errmsg("Could not close file \"%s\"", path)));
+					 errmsg("Could not close file \"%s\" for tid=%ld", path, tid)));
 			break;
 
 		case LOG_INDEX_CRC_FAILED:
 			ereport(FATAL,
-					(errmsg("The crc32 check failed in file \"%s\" at offset %u",
-							path, offset)));
+					(errmsg("The crc32 check failed in file \"%s\" at offset %u for tid=%ld",
+							path, offset, tid)));
 			break;
 
 		default:
 			/* can't get here, we trust */
-			elog(PANIC, "unrecognized LogIndex error cause: %d",
-				 (int) logindex_io_err);
+			elog(PANIC, "unrecognized LogIndex error cause: %d for tid=%ld",
+				 (int) logindex_io_err, tid);
 			break;
 	}
 }
@@ -1466,51 +1469,74 @@ log_index_report_io_error(log_index_snapshot_t *logindex_snapshot, log_idx_table
 static bool
 log_index_read_seg_file(log_index_snapshot_t *logindex_snapshot, log_table_cache_t *cache, uint64 segno)
 {
-	char   path[MAXPGPATH];
-	File fd;
 	int bytes;
 	int i;
 	log_index_meta_t meta;
+	uint64_t delta_table;
+
 	log_idx_table_data_t *table_data;
 
 	LOG_INDEX_COPY_META(&meta);
 	cache->min_idx_table_id = LOG_INDEX_TABLE_INVALID_ID;
 	cache->max_idx_table_id = LOG_INDEX_TABLE_INVALID_ID;
 
-	LOG_INDEX_FILE_TABLE_NAME(path, segno);
-	fd = PathNameOpenFile(path, O_RDONLY | PG_BINARY, true);
+	delta_table = (meta.max_idx_table_id >= (segno * LOG_INDEX_TABLE_NUM_PER_FILE)) ?
+				  meta.max_idx_table_id - (segno * LOG_INDEX_TABLE_NUM_PER_FILE) : 0;
 
-	if (fd < 0)
+	if (logindex_snapshot->segment_cache && delta_table >= LOG_INDEX_TABLE_NUM_PER_FILE)
 	{
-		/*no cover begin*/
-		logindex_io_err = LOG_INDEX_OPEN_FAILED;
-		logindex_errno = errno;
+		polar_cache_io_error io_error;
 
-		ereport(LOG_INDEX_IO_LOG_LEVEL,
-				(errcode_for_file_access(),
-					errmsg("Could not open file \"%s\", errno %d", path, logindex_errno)));
-		return false;
-		/*no cover end*/
+		if (!polar_local_cache_read(
+					logindex_snapshot->segment_cache, segno, 0,
+					cache->data, LOG_INDEX_TABLE_CACHE_SIZE, &io_error))
+		{
+			/*no cover begin*/
+			logindex_io_err = LOG_INDEX_READ_FAILED;
+			logindex_errno = io_error.save_errno;
+			polar_local_cache_report_error(logindex_snapshot->segment_cache, &io_error, LOG);
+			return false;
+			/*no cover end*/
+		}
+
+		bytes = LOG_INDEX_TABLE_CACHE_SIZE;
 	}
-
-	bytes = FileRead(fd, cache->data, LOG_INDEX_TABLE_CACHE_SIZE, WAIT_EVENT_LOGINDEX_TBL_READ);
-
-	if (bytes < sizeof(log_idx_table_data_t))
+	else
 	{
-		/*no cover begin*/
-		logindex_io_err = LOG_INDEX_READ_FAILED;
-		logindex_errno = errno;
+		char   path[MAXPGPATH];
+		File fd;
+
+		LOG_INDEX_FILE_TABLE_NAME(path, segno);
+		fd = PathNameOpenFile(path, O_RDONLY | PG_BINARY, true);
+
+		if (fd < 0)
+		{
+			/*no cover begin*/
+			logindex_io_err = LOG_INDEX_OPEN_FAILED;
+			logindex_errno = errno;
+
+			ereport(LOG, (errmsg("Could not open file \"%s\", errno %d", path, logindex_errno)));
+			return false;
+			/*no cover end*/
+		}
+
+		bytes = FileRead(fd, cache->data, LOG_INDEX_TABLE_CACHE_SIZE, WAIT_EVENT_LOGINDEX_TBL_READ);
+
+		if (bytes < sizeof(log_idx_table_data_t))
+		{
+			/*no cover begin*/
+			logindex_io_err = LOG_INDEX_READ_FAILED;
+			logindex_errno = errno;
+			FileClose(fd);
+
+			ereport(LOG, (errmsg("Could not read whole table from file \"%s\" at offset 0, read size %d, errno %d",
+								 path, bytes, logindex_errno)));
+			return false;
+			/*no cover end*/
+		}
+
 		FileClose(fd);
-
-		ereport(LOG_INDEX_IO_LOG_LEVEL,
-				(errcode_for_file_access(),
-					errmsg("Could not read whole table from file \"%s\" at offset 0, read size %d, errno %d",
-						path, bytes, logindex_errno)));
-		return false;
-		/*no cover end*/
 	}
-
-	FileClose(fd);
 
 	/* segno start from 0, while log_index_table_id_t start from 1 */
 	cache->min_idx_table_id = segno * LOG_INDEX_TABLE_NUM_PER_FILE + 1;
@@ -1518,8 +1544,9 @@ log_index_read_seg_file(log_index_snapshot_t *logindex_snapshot, log_table_cache
 
 	if (table_data->idx_table_id != cache->min_idx_table_id || cache->min_idx_table_id > meta.max_idx_table_id)
 	{
+		elog(WARNING, "Read unexpected logindex segment=%ld file, min_id=%ld, max_id=%ld, tid=%ld",
+			 segno, cache->min_idx_table_id, meta.max_idx_table_id, table_data->idx_table_id);
 		cache->min_idx_table_id = LOG_INDEX_TABLE_INVALID_ID;
-		elog(WARNING, "Read unexpected logindex segment=%ld file", segno);
 		return false;
 	}
 
@@ -1546,23 +1573,63 @@ log_index_read_seg_file(log_index_snapshot_t *logindex_snapshot, log_table_cache
 	return true;
 }
 
+
+/*
+ * Read logindex table base on tid and return the table content.
+ * If the return table content is from the logindex memory table,
+ * then the output param *mem_table point to the table in logindex memory table, otherwise *mem_table is NULL.
+ */
 log_idx_table_data_t *
-log_index_read_table(log_index_snapshot_t *logindex_snapshot, log_idx_table_id_t tid)
+log_index_read_table(logindex_snapshot_t logindex_snapshot, log_idx_table_id_t tid, log_mem_table_t **mem_table)
 {
-	if (tid < logindex_table_cache[logindex_snapshot->type].min_idx_table_id || tid > logindex_table_cache[logindex_snapshot->type].max_idx_table_id)
+	static log_table_cache_t table_cache;
+	int mid = (tid - 1) % logindex_snapshot->mem_tbl_size;
+	log_mem_table_t *table = LOG_INDEX_MEM_TBL(mid);
+	LWLock *table_lock = LOG_INDEX_MEM_TBL_LOCK(table);
+	log_idx_table_data_t    *data;
+
+	*mem_table = NULL;
+
+	/* Return table if it's already in shared memory */
+	if (LWLockConditionalAcquire(table_lock, LW_SHARED))
 	{
-		if (!log_index_read_seg_file(logindex_snapshot, &logindex_table_cache[logindex_snapshot->type], LOG_INDEX_FILE_TABLE_SEGMENT_NO(tid)))
+		if ((LOG_INDEX_MEM_TBL_STATE(table) == LOG_INDEX_MEM_TBL_STATE_FLUSHED) && (tid == LOG_INDEX_MEM_TBL_TID(table)))
+		{
+			*mem_table = table;
+			return &table->data;
+		}
+
+		LWLockRelease(table_lock);
+	}
+
+	if ((strcmp(table_cache.name, logindex_snapshot->dir) != 0) ||
+			tid < table_cache.min_idx_table_id || tid > table_cache.max_idx_table_id)
+	{
+		if (!log_index_read_seg_file(logindex_snapshot, &table_cache, LOG_INDEX_FILE_TABLE_SEGMENT_NO(tid)))
 		{
 			log_index_report_io_error(logindex_snapshot, tid);
 			return NULL;
 		}
+
+		strcpy(table_cache.name, logindex_snapshot->dir);
 	}
 
-	if (tid < logindex_table_cache[logindex_snapshot->type].min_idx_table_id || tid > logindex_table_cache[logindex_snapshot->type].max_idx_table_id)
+	if (tid < table_cache.min_idx_table_id || tid > table_cache.max_idx_table_id)
 		elog(PANIC, "Failed to read tid = %ld, while min_tid = %ld and max_tid = %ld",
-			 tid, logindex_table_cache[logindex_snapshot->type].min_idx_table_id, logindex_table_cache[logindex_snapshot->type].max_idx_table_id);
+			 tid, table_cache.min_idx_table_id, table_cache.max_idx_table_id);
 
-	return LOG_INDEX_GET_CACHE_TABLE(&logindex_table_cache[logindex_snapshot->type], tid);
+	data = LOG_INDEX_GET_CACHE_TABLE(&table_cache, tid);
+
+	/* Replace the table with the same position in shared memory and its state is FLUSHED */
+	if (LWLockConditionalAcquire(table_lock, LW_EXCLUSIVE))
+	{
+		if (LOG_INDEX_MEM_TBL_STATE(table) == LOG_INDEX_MEM_TBL_STATE_FLUSHED && tid != LOG_INDEX_MEM_TBL_TID(table))
+			memcpy(&table->data, data, sizeof(log_idx_table_data_t));
+
+		LWLockRelease(table_lock);
+	}
+
+	return data;
 }
 
 bool
@@ -1573,6 +1640,7 @@ log_index_write_table(log_index_snapshot_t *logindex_snapshot, log_mem_table_t *
 	log_idx_table_id_t tid;
 	log_index_meta_t *meta = &logindex_snapshot->meta;
 	log_index_file_segment_t *min_seg = &meta->min_segment_info;
+	MemoryContext  oldcontext = MemoryContextSwitchTo(polar_logindex_memory_context()) ;
 
 	tid = LOG_INDEX_MEM_TBL_TID(table);
 
@@ -1586,8 +1654,7 @@ log_index_write_table(log_index_snapshot_t *logindex_snapshot, log_mem_table_t *
 		if (!log_index_write_table_data(logindex_snapshot, table))
 			log_index_report_io_error(logindex_snapshot, LOG_INDEX_MEM_TBL_TID(table));
 		/* We don't update meta when flush active memtable */
-		else if (polar_logindex_unit_test == 0 &&
-				 LOG_INDEX_MEM_TBL_STATE(table) == LOG_INDEX_MEM_TBL_STATE_ACTIVE)
+		else if (LOG_INDEX_MEM_TBL_STATE(table) == LOG_INDEX_MEM_TBL_STATE_ACTIVE)
 		{
 			/* Flush active memtable, nothing to do */
 			succeed = true;
@@ -1611,46 +1678,18 @@ log_index_write_table(log_index_snapshot_t *logindex_snapshot, log_mem_table_t *
 				min_seg->min_idx_table_id = min_seg->segment_no * LOG_INDEX_TABLE_NUM_PER_FILE + 1;
 			}
 
-			log_index_write_meta(logindex_snapshot, meta, true);
+			polar_log_index_write_meta(logindex_snapshot, meta, true);
 
 			succeed = true;
+			LOG_INDEX_MEM_TBL_SET_STATE(table, LOG_INDEX_MEM_TBL_STATE_FLUSHED);
 		}
 	}
 
 	LWLockRelease(LOG_INDEX_IO_LOCK);
+
+	MemoryContextSwitchTo(oldcontext);
+
 	return succeed;
-}
-
-bool
-polar_log_index_truncate_mem_table(XLogRecPtr lsn)
-{
-	int k = 0;
-
-	for (k = 0; k < LOGINDEX_SNAPSHOT_NUM; k++)
-	{
-		log_index_snapshot_t *logindex_snapshot = polar_logindex_snapshot[k];
-		int i;
-		log_mem_table_t *table;
-		LWLock *lock;
-
-		for (i = 0; i < logindex_snapshot->mem_tbl_size; i++)
-		{
-			table = LOG_INDEX_MEM_TBL(i);
-			lock = LOG_INDEX_MEM_TBL_LOCK(table);
-
-			LWLockAcquire(lock, LW_EXCLUSIVE);
-
-			if (LOG_INDEX_MEM_TBL_STATE(table) == LOG_INDEX_MEM_TBL_STATE_INACTIVE)
-			{
-				if (lsn > table->data.max_lsn)
-					LOG_INDEX_MEM_TBL_SET_STATE(table, LOG_INDEX_MEM_TBL_STATE_FLUSHED);
-			}
-
-			LWLockRelease(lock);
-		}
-	}
-
-	return true;
 }
 
 static void
@@ -1672,7 +1711,7 @@ log_index_update_min_segment(log_index_snapshot_t *logindex_snapshot)
 		log_idx_table_data_t *table = palloc(sizeof(log_idx_table_data_t));
 		min_seg->max_idx_table_id = (min_seg->segment_no + 1) * LOG_INDEX_TABLE_NUM_PER_FILE;
 
-		if (log_index_read_table_data(logindex_snapshot, table, min_seg->max_idx_table_id, LOG_INDEX_IO_LOG_LEVEL) == false)
+		if (log_index_read_table_data(logindex_snapshot, table, min_seg->max_idx_table_id, polar_trace_logindex(DEBUG4)) == false)
 		{
 			POLAR_LOG_LOGINDEX_META_INFO(meta);
 			ereport(PANIC,
@@ -1686,7 +1725,7 @@ log_index_update_min_segment(log_index_snapshot_t *logindex_snapshot)
 	}
 
 
-	log_index_write_meta(logindex_snapshot, &logindex_snapshot->meta, true);
+	polar_log_index_write_meta(logindex_snapshot, &logindex_snapshot->meta, true);
 }
 
 static bool
@@ -1778,24 +1817,19 @@ log_index_truncate(log_index_snapshot_t *logindex_snapshot, XLogRecPtr lsn)
 }
 
 void
-polar_log_index_truncate(log_index_snapshot_t *logindex_snapshot, XLogRecPtr lsn)
+polar_logindex_truncate(log_index_snapshot_t *logindex_snapshot, XLogRecPtr lsn)
 {
-	MemoryContext oldcontext = MemoryContextSwitchTo(logindex_snapshot->mem_cxt);
+	if (!XLogRecPtrIsInvalid(lsn))
+	{
+		MemoryContext oldcontext = MemoryContextSwitchTo(polar_logindex_memory_context());
 
-	while (log_index_truncate(logindex_snapshot, lsn))
-		;
+		while (log_index_truncate(logindex_snapshot, lsn))
+			;
 
-	MemoryContextSwitchTo(oldcontext);
-}
+		MemoryContextSwitchTo(oldcontext);
 
-bool
-polar_log_index_write_table(log_index_snapshot_t *logindex_snapshot, struct log_mem_table_t *table)
-{
-	MemoryContext  oldcontext = MemoryContextSwitchTo(logindex_snapshot->mem_cxt) ;
-	bool succeed = log_index_write_table(logindex_snapshot, table);
-	MemoryContextSwitchTo(oldcontext);
-
-	return succeed;
+		elog(LOG, "Truncate logindex %s from lsn=%lX", logindex_snapshot->dir, lsn);
+	}
 }
 
 static bool
@@ -1815,6 +1849,8 @@ log_index_exists_in_saved_table(log_index_snapshot_t *logindex_snapshot, log_ind
 
 	if (LOG_INDEX_MEM_TBL_STATE(table) != LOG_INDEX_MEM_TBL_STATE_FLUSHED)
 		return false;
+
+	CLEAR_BUFFERTAG(tag);
 
 	saved_lsn.tag = &tag;
 
@@ -1858,7 +1894,7 @@ log_index_insert_lsn(log_index_snapshot_t *logindex_snapshot, log_index_lsn_t *l
 
 		LWLockAcquire(LOG_INDEX_HASH_LOCK(key), LW_EXCLUSIVE);
 		idx = log_index_append_lsn(active, head, lsn_info);
-		item = LOG_INDEX_ITEM_HEAD(&active->data, head);
+		item = log_index_item_head(&active->data, head);
 		LOG_INDEX_MEM_TBL_ADD_ORDER(&active->data, item->tail_seg, idx);
 		LWLockRelease(LOG_INDEX_HASH_LOCK(key));
 	}
@@ -1890,7 +1926,7 @@ log_index_insert_lsn(log_index_snapshot_t *logindex_snapshot, log_index_lsn_t *l
 }
 
 void
-polar_log_index_add_lsn(log_index_snapshot_t *logindex_snapshot, BufferTag *tag, XLogRecPtr prev, XLogRecPtr lsn)
+polar_logindex_add_lsn(log_index_snapshot_t *logindex_snapshot, BufferTag *tag, XLogRecPtr prev, XLogRecPtr lsn)
 {
 	uint32      key = LOG_INDEX_MEM_TBL_HASH_PAGE(tag);
 	log_index_meta_t *meta = NULL;
@@ -1905,21 +1941,12 @@ polar_log_index_add_lsn(log_index_snapshot_t *logindex_snapshot, BufferTag *tag,
 	lsn_info.lsn = lsn;
 	lsn_info.prev_lsn = prev;
 
-	if (polar_enable_debug)
+	if (unlikely(!polar_logindex_check_state(logindex_snapshot, POLAR_LOGINDEX_STATE_ADDING)))
 	{
-		elog(LOG, "%s LOGINDEX TYPE:%d %X/%X, ([%u, %u, %u]), %u, %u", __func__,
-			 logindex_snapshot->type,
-			 (uint32)(lsn >> 32), (uint32)lsn,
-			 tag->rnode.spcNode,
-			 tag->rnode.dbNode,
-			 tag->rnode.relNode,
-			 tag->forkNum,
-			 tag->blockNum);
-	}
+		/* Insert logindex from meta->start_lsn, so We don't save logindex which lsn is less then meta->start_lsn */
+		if (lsn < meta->start_lsn)
+			return;
 
-
-	if (!polar_log_index_check_state(logindex_snapshot, POLAR_LOGINDEX_STATE_ADDING))
-	{
 		/*
 		 * If log index initialization is not finished
 		 * we don't save lsn if it's less than max saved lsn,
@@ -1941,10 +1968,28 @@ polar_log_index_add_lsn(log_index_snapshot_t *logindex_snapshot, BufferTag *tag,
 		 * then we can save lsn to logindex memory table
 		 */
 		pg_atomic_fetch_or_u32(&logindex_snapshot->state, POLAR_LOGINDEX_STATE_ADDING);
-		elog(LOG, "log index is insert from %lx", lsn);
+		elog(LOG, "%s log index is insert from %lx", logindex_snapshot->dir, lsn);
 	}
 
 	log_index_insert_lsn(logindex_snapshot, &lsn_info, key);
+
+	if (unlikely(polar_trace_logindex_messages <= DEBUG4))
+	{
+		log_mem_table_t *active = LOG_INDEX_MEM_TBL_ACTIVE();
+		uint32 last_order = active->data.last_order;
+
+		ereport(LOG, (errmsg("%s add %lX, t=%ld, o=%d, i=%d, f=%d, s=%d " POLAR_LOG_BUFFER_TAG_FORMAT,
+							 logindex_snapshot->dir,
+							 lsn,
+							 active->data.idx_table_id,
+							 last_order,
+							 active->data.idx_order[last_order - 1],
+							 active->free_head,
+							 pg_atomic_read_u32(&active->state),
+							 POLAR_LOG_BUFFER_TAG(tag)),
+					  errhidestmt(true),
+					  errhidecontext(true)));
+	}
 }
 
 log_item_head_t *
@@ -1956,77 +2001,14 @@ log_index_tbl_find(BufferTag *tag,
 	Assert(table != NULL);
 
 	item_id = log_index_mem_tbl_exists_page(tag, table, key);
-	return LOG_INDEX_ITEM_HEAD(table, item_id);
-}
-
-/*
- * POLAR: we cannot use logindex_snapshot to generate path, maybe in hashtable mode
- * can enter this function
- */
-static void
-polar_logindex_snapshot_remove(int type)
-{
-	char path[MAXPGPATH] = {0};
-
-	/* replica cannot remove file from storage */
-	if (polar_enable_shared_storage_mode && polar_mount_pfs_readonly_mode)
-		return;
-
-	POLAR_FILE_PATH(path, logindex_snapshot_dirs[type]);
-	rmtree(path, false);
-}
-
-void
-polar_log_index_remove_all(void)
-{
-	int i = 0;
-
-	/* replica cannot remove file from storage */
-	if (polar_enable_shared_storage_mode && polar_mount_pfs_readonly_mode)
-		return;
-
-	for (i = 0; i < LOGINDEX_SNAPSHOT_NUM; i++)
-		polar_logindex_snapshot_remove(i);
-}
-
-void
-polar_log_index_truncate_lsn(void)
-{
-	XLogRecPtr min_lsn = polar_calc_min_used_lsn();
-
-	if (!XLogRecPtrIsInvalid(min_lsn))
-	{
-		int i = 0;
-		elog(LOG, "%s min_lsn=%lX", __func__, min_lsn);
-
-		for (i = 0; i < LOGINDEX_SNAPSHOT_NUM; i++)
-			polar_log_index_truncate(polar_logindex_snapshot[i], min_lsn);
-	}
-}
-
-void
-polar_log_index_trigger_bgwriter(XLogRecPtr lsn)
-{
-	static XLogRecPtr last_trigger_lsn = InvalidXLogRecPtr;
-
-	Assert(lsn > last_trigger_lsn);
-
-	/*
-	 * Assume worst logindex compression ratio is 1:2, if new lsn value minus last trigger lsn
-	 * is larger than two memory table size then we wake up background process to
-	 * truncate logindex table
-	 */
-	if (lsn - last_trigger_lsn > 2 * sizeof(log_mem_table_t))
-	{
-		polar_try_to_wake_bgwriter();
-		last_trigger_lsn = lsn;
-	}
+	return log_index_item_head(table, item_id);
 }
 
 XLogRecPtr
 polar_get_logindex_snapshot_max_lsn(log_index_snapshot_t *logindex_snapshot)
 {
 	XLogRecPtr  max_lsn = InvalidXLogRecPtr;
+
 	SpinLockAcquire(LOG_INDEX_SNAPSHOT_LOCK);
 	max_lsn = logindex_snapshot->max_lsn;
 	SpinLockRelease(LOG_INDEX_SNAPSHOT_LOCK);
@@ -2037,7 +2019,7 @@ polar_get_logindex_snapshot_max_lsn(log_index_snapshot_t *logindex_snapshot)
  * POLAR: load flushed/active tables from storages
  */
 void
-polar_load_logindex_snapshot_from_storage(log_index_snapshot_t *logindex_snapshot, XLogRecPtr start_lsn, bool is_init)
+polar_load_logindex_snapshot_from_storage(log_index_snapshot_t *logindex_snapshot, XLogRecPtr start_lsn)
 {
 	log_index_meta_t *meta = &logindex_snapshot->meta;
 	log_idx_table_id_t new_max_idx_table_id = LOG_INDEX_TABLE_INVALID_ID;
@@ -2046,6 +2028,7 @@ polar_load_logindex_snapshot_from_storage(log_index_snapshot_t *logindex_snapsho
 	static log_idx_table_data_t table;
 	int mid = 0;
 	log_idx_table_id_t tid = 0, min_tid = 0;
+	uint32 state = pg_atomic_read_u32(&logindex_snapshot->state);
 
 	/*
 	 * If it's RW node, we only load tables whose min_lsn is less than start_lsn.
@@ -2055,19 +2038,16 @@ polar_load_logindex_snapshot_from_storage(log_index_snapshot_t *logindex_snapsho
 	 * If it's ro node, we will load all saved table from max_idx_table_id to memory table.
 	 * It's optimization for the following page iterator, saving time to load table from storage.
 	 */
-	Assert(is_init || XLogRecPtrIsInvalid(start_lsn));
 
 	LWLockAcquire(LOG_INDEX_IO_LOCK, LW_EXCLUSIVE);
 
 	if (log_index_get_meta(logindex_snapshot, meta))
 		new_max_idx_table_id = meta->max_idx_table_id;
-	else
-		elog(WARNING, "Failed to get logindex meta from storage");
 
 	LWLockRelease(LOG_INDEX_IO_LOCK);
 
 	/* No table in storage */
-	if (meta->max_idx_table_id == LOG_INDEX_TABLE_INVALID_ID)
+	if (new_max_idx_table_id == LOG_INDEX_TABLE_INVALID_ID)
 		return;
 
 	/*
@@ -2075,8 +2055,10 @@ polar_load_logindex_snapshot_from_storage(log_index_snapshot_t *logindex_snapsho
 	 * we cannot load all tables, because memtable is limited, so we should
 	 * calculate min table to load
 	 */
-	if (is_init)
+	if (!(state & POLAR_LOGINDEX_STATE_INITIALIZED))
 	{
+		Assert(!XLogRecPtrIsInvalid(start_lsn));
+
 		/* we load at most mem_tbl_size tables */
 		if (new_max_idx_table_id > logindex_snapshot->mem_tbl_size)
 			min_tid = Max(new_max_idx_table_id - logindex_snapshot->mem_tbl_size + 1,
@@ -2090,8 +2072,6 @@ polar_load_logindex_snapshot_from_storage(log_index_snapshot_t *logindex_snapsho
 	}
 	else
 	{
-		Assert(POLAR_ENABLE_READ_ACTIVE_TABLE(logindex_snapshot));
-
 		/*
 		 * When db start, there is no table to load, so active table_id is
 		 * still invalid, at this situation, we should assign tid to active
@@ -2125,7 +2105,7 @@ polar_load_logindex_snapshot_from_storage(log_index_snapshot_t *logindex_snapsho
 			memcpy(&mem_tbl->data, &table, sizeof(log_idx_table_data_t));
 			LOG_INDEX_MEM_TBL_SET_STATE(mem_tbl, LOG_INDEX_MEM_TBL_STATE_FLUSHED);
 			LOG_INDEX_MEM_TBL_FREE_HEAD(mem_tbl) = LOG_INDEX_MEM_TBL_SEG_NUM;
-			polar_log_index_invalid_bloom_cache(logindex_snapshot, tid);
+			polar_logindex_invalid_bloom_cache(logindex_snapshot, tid);
 			LWLockRelease(LOG_INDEX_MEM_TBL_LOCK(mem_tbl));
 
 			Assert(table.idx_table_id == tid);
@@ -2141,7 +2121,6 @@ polar_load_logindex_snapshot_from_storage(log_index_snapshot_t *logindex_snapsho
 		LOG_INDEX_MEM_TBL_ACTIVE_ID = (new_max_idx_table_id - 1) % logindex_snapshot->mem_tbl_size;
 		active = LOG_INDEX_MEM_TBL_ACTIVE();
 		logindex_snapshot->max_idx_table_id = new_max_idx_table_id;
-		Assert(!is_init || meta->max_lsn == active->data.max_lsn);
 		logindex_snapshot->max_lsn = active->data.max_lsn;
 		/* Switch to the new active table */
 		LOG_INDEX_MEM_TBL_ACTIVE_ID = new_max_idx_table_id % logindex_snapshot->mem_tbl_size;
@@ -2152,8 +2131,11 @@ polar_load_logindex_snapshot_from_storage(log_index_snapshot_t *logindex_snapsho
 		log_index_wait_active(logindex_snapshot, active, InvalidXLogRecPtr);
 	}
 
-	/* For normal wal logindex snapshot, we don't need read active table */
-	if (!POLAR_ENABLE_READ_ACTIVE_TABLE(logindex_snapshot))
+	/*
+	 * If logindex is initialized we will try to read active table data from storage.
+	 * When we flush active table data to storage we will not update logindex meta
+	 */
+	if (!(state & POLAR_LOGINDEX_STATE_INITIALIZED))
 		return;
 
 	Assert(active->data.idx_table_id != LOG_INDEX_TABLE_INVALID_ID);
@@ -2162,7 +2144,7 @@ polar_load_logindex_snapshot_from_storage(log_index_snapshot_t *logindex_snapsho
 	 * Read active mem table, maybe table has been reused, so must make sure
 	 * table.idx_table_id == read_idx_table_id
 	 */
-	if (log_index_read_table_data(logindex_snapshot, &table, LOG_INDEX_MEM_TBL_TID(active), DEBUG1) &&
+	if (log_index_read_table_data(logindex_snapshot, &table, LOG_INDEX_MEM_TBL_TID(active), polar_trace_logindex(DEBUG4)) &&
 			table.idx_table_id == LOG_INDEX_MEM_TBL_TID(active))
 	{
 		/* Table data in storage is fresh */
@@ -2182,7 +2164,7 @@ polar_load_logindex_snapshot_from_storage(log_index_snapshot_t *logindex_snapsho
 		/* When we read active memtable from storage, maybe free_head is too old */
 		while (!LOG_INDEX_MEM_TBL_FULL(active))
 		{
-			log_item_head_t *item = LOG_INDEX_ITEM_HEAD(&active->data, LOG_INDEX_MEM_TBL_FREE_HEAD(active));
+			log_item_head_t *item = log_index_item_head(&active->data, LOG_INDEX_MEM_TBL_FREE_HEAD(active));
 
 			if (item == NULL || item->head_seg == LOG_INDEX_TBL_INVALID_SEG)
 				break;
@@ -2190,4 +2172,191 @@ polar_load_logindex_snapshot_from_storage(log_index_snapshot_t *logindex_snapsho
 			LOG_INDEX_MEM_TBL_UPDATE_FREE_HEAD(active);
 		}
 	}
+}
+
+
+uint64
+polar_logindex_mem_tbl_size(logindex_snapshot_t logindex_snapshot)
+{
+	return logindex_snapshot != NULL ? logindex_snapshot->mem_tbl_size : 0;
+}
+
+uint64
+polar_logindex_used_mem_tbl_size(logindex_snapshot_t logindex_snapshot)
+{
+	log_idx_table_id_t mem_tbl_size = 0;
+
+	if (logindex_snapshot != NULL)
+	{
+		LWLockAcquire(LOG_INDEX_IO_LOCK, LW_SHARED);
+		SpinLockAcquire(LOG_INDEX_SNAPSHOT_LOCK);
+		mem_tbl_size = logindex_snapshot->max_idx_table_id -
+					   logindex_snapshot->meta.max_idx_table_id;
+		SpinLockRelease(LOG_INDEX_SNAPSHOT_LOCK);
+		LWLockRelease(LOG_INDEX_IO_LOCK);
+	}
+
+	return mem_tbl_size;
+}
+
+uint64
+polar_logindex_convert_mem_tbl_size(uint64 mem_size)
+{
+	return (mem_size * 1024L * 1024L) / (sizeof(log_mem_table_t) + sizeof(LWLockMinimallyPadded));
+}
+
+const char *
+polar_get_logindex_snapshot_dir(logindex_snapshot_t logindex_snapshot)
+{
+	return logindex_snapshot->dir;
+}
+
+XLogRecPtr
+polar_get_logindex_snapshot_storage_min_lsn(logindex_snapshot_t logindex_snapshot)
+{
+	log_index_meta_t            *meta = &logindex_snapshot->meta;
+	log_index_file_segment_t    *min_seg = &meta->min_segment_info;
+	log_idx_table_data_t *table = NULL;
+	XLogRecPtr min_lsn = InvalidXLogRecPtr;
+
+	table = palloc(sizeof(log_idx_table_data_t));
+
+	LWLockAcquire(LOG_INDEX_IO_LOCK, LW_SHARED);
+
+	if (min_seg->min_idx_table_id != LOG_INDEX_TABLE_INVALID_ID)
+	{
+		if (log_index_read_table_data(logindex_snapshot, table, min_seg->min_idx_table_id, LOG) == false)
+		{
+			POLAR_LOG_LOGINDEX_META_INFO(meta);
+			ereport(PANIC,
+					(errmsg("Failed to read log index which tid=%ld when truncate logindex",
+							min_seg->min_idx_table_id)));
+		}
+
+		min_lsn = table->min_lsn;
+	}
+
+	LWLockRelease(LOG_INDEX_IO_LOCK);
+	pfree(table);
+
+	return min_lsn;
+}
+
+void
+polar_logindex_online_promote(logindex_snapshot_t logindex_snapshot)
+{
+	log_index_meta_t *meta = &logindex_snapshot->meta;
+	SlruShared shared = logindex_snapshot->bloom_ctl.shared;
+	log_index_promoted_info_t *promoted_info = &logindex_snapshot->promoted_info;
+	log_idx_table_id_t max_saved_tid = LOG_INDEX_TABLE_INVALID_ID;
+
+	LWLockAcquire(LOG_INDEX_IO_LOCK, LW_EXCLUSIVE);
+
+	if (log_index_get_meta(logindex_snapshot, meta))
+	{
+		promoted_info->old_rw_saved_max_lsn = meta->max_lsn;
+		promoted_info->old_rw_saved_max_tid = meta->max_idx_table_id;
+		promoted_info->old_rw_max_tid = meta->max_idx_table_id;
+
+		max_saved_tid = meta->max_idx_table_id;
+	}
+	else
+		elog(FATAL, "Failed to read logindex meta from shared storage");
+
+	shared->polar_ro_promoting = true;
+	pg_atomic_fetch_or_u32(&logindex_snapshot->state, POLAR_LOGINDEX_STATE_WRITABLE);
+	LWLockRelease(LOG_INDEX_IO_LOCK);
+
+	/* Force to update logindex table which is inactive to be flushed */
+	log_index_update_ro_table_state(logindex_snapshot, max_saved_tid);
+
+	elog(LOG, "Logindex %s is promoted", logindex_snapshot->dir);
+	POLAR_LOG_LOGINDEX_META_INFO(meta);
+}
+
+XLogRecPtr
+polar_logindex_check_valid_start_lsn(logindex_snapshot_t logindex_snapshot)
+{
+	log_index_meta_t *meta = &logindex_snapshot->meta;
+	XLogRecPtr start_lsn = InvalidXLogRecPtr;
+
+	LWLockAcquire(LOG_INDEX_IO_LOCK, LW_EXCLUSIVE);
+
+	if (!XLogRecPtrIsInvalid(meta->start_lsn))
+		start_lsn = meta->start_lsn;
+	else if (InRecovery && reachedConsistency)
+	{
+		/*
+		 * When reach consistency in replica node, read meta from storage is meta start lsn is invalid
+		 */
+		if (!polar_logindex_check_state(logindex_snapshot, POLAR_LOGINDEX_STATE_WRITABLE))
+		{
+			if (log_index_get_meta(logindex_snapshot, meta))
+				start_lsn = meta->start_lsn;
+			else
+				elog(FATAL, "Failed to read logindex meta from shared storage");
+		}
+	}
+
+	LWLockRelease(LOG_INDEX_IO_LOCK);
+
+	return start_lsn;
+}
+
+void
+polar_logindex_set_start_lsn(logindex_snapshot_t logindex_snapshot, XLogRecPtr start_lsn)
+{
+	log_index_meta_t *meta = &logindex_snapshot->meta;
+
+	Assert(!XLogRecPtrIsInvalid(start_lsn));
+
+	LWLockAcquire(LOG_INDEX_IO_LOCK, LW_EXCLUSIVE);
+	meta->start_lsn = start_lsn;
+	polar_log_index_write_meta(logindex_snapshot, meta, false);
+	LWLockRelease(LOG_INDEX_IO_LOCK);
+}
+
+XLogRecPtr
+polar_logindex_mem_table_max_lsn(struct log_mem_table_t *table)
+{
+	return table->data.max_lsn;
+}
+
+void
+polar_logindex_create_local_cache(logindex_snapshot_t logindex_snapshot, const char *cache_name, uint32 max_segments)
+{
+	uint32 io_permission = POLAR_CACHE_LOCAL_FILE_READ | POLAR_CACHE_LOCAL_FILE_WRITE |
+						   POLAR_CACHE_SHARED_FILE_READ;
+
+	logindex_snapshot->segment_cache = polar_create_local_cache(cache_name, logindex_snapshot->dir,
+																max_segments, LOG_INDEX_TABLE_NUM_PER_FILE * sizeof(log_idx_table_data_t),
+																LWTRANCHE_POLAR_LOGINDEX_LOCAL_CACHE, io_permission, polar_logindex_local_cache_seg2str);
+	/* POLAR: remove local cache file after create local cache */
+	if (logindex_snapshot->segment_cache)
+		polar_local_cache_move_trash(logindex_snapshot->segment_cache->dir_name);
+}
+
+void
+polar_logindex_set_writer_latch(logindex_snapshot_t logindex_snapshot, struct Latch *latch)
+{
+	logindex_snapshot->bg_worker_latch = latch;
+}
+
+int
+polar_trace_logindex(int trace_level)
+{
+	if (trace_level < LOG &&
+			trace_level >= polar_trace_logindex_messages)
+		return LOG;
+
+	return trace_level;
+}
+
+void
+polar_logindex_update_promoted_info(logindex_snapshot_t logindex_snapshot, XLogRecPtr last_replayed_lsn)
+{
+	log_index_promoted_info_t *info = &logindex_snapshot->promoted_info;
+
+	info->old_rw_max_inserted_lsn = last_replayed_lsn;
+	info->old_rw_max_tid = logindex_snapshot->max_idx_table_id;
 }

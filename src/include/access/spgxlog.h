@@ -248,10 +248,10 @@ typedef struct spgxlogVacuumRedirect
 	OffsetNumber offsets[FLEXIBLE_ARRAY_MEMBER];
 } spgxlogVacuumRedirect;
 
-#define SizeOfSpgxlogVacuumRedirect offsetof(spgxlogVacuumRedirect, offsets)
-
 /* POLAR: for code compile */
 struct SpGistState;
+
+#define SizeOfSpgxlogVacuumRedirect offsetof(spgxlogVacuumRedirect, offsets)
 
 extern void spg_redo(XLogReaderState *record);
 extern void spg_desc(StringInfo buf, XLogReaderState *record);

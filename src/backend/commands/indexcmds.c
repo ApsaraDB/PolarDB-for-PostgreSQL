@@ -64,6 +64,8 @@
 #include "utils/syscache.h"
 #include "utils/tqual.h"
 
+/* POLAR px */
+#include "access/px_btbuild.h"
 
 /* non-export function prototypes */
 static void CheckPredicate(Expr *predicate);
@@ -1172,6 +1174,16 @@ DefineIndex(Oid relationId,
 		}
 
 		/*
+		 * POLAR: update reloption 'px_build' in pg_class for partitioned
+		 * table before returning, from 'on' to 'finish'.
+		 */
+		indexRelation = index_open(indexRelationId, lockmode);
+		if (PX_ENABLE_BTBUILD(indexRelation))
+			polar_px_btbuild_update_pg_class(rel, indexRelation);
+		index_close(indexRelation, lockmode);
+		/* POLAR end */
+
+		/*
 		 * Indexes on partitioned tables are not themselves built, so we're
 		 * done here.
 		 */
@@ -1426,6 +1438,13 @@ DefineIndex(Oid relationId,
 	 * Index can now be marked valid -- update its pg_index entry
 	 */
 	index_set_state_flags(indexRelationId, INDEX_CREATE_SET_VALID);
+
+	/*
+	 * POLAR: For px btbuild concurrently, update px_build reloption
+	 * until the index is built successfully.
+	 */
+	if (PX_ENABLE_BTBUILD(indexRelation))
+		polar_px_btbuild_update_pg_class(rel, indexRelation);
 
 	/*
 	 * The pg_index update will cause backends (including this one) to update

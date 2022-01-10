@@ -449,9 +449,12 @@ libpqrcv_startstreaming(WalReceiverConn *conn,
 		  * Howerver, onpolardb will not send the xlog in walsender,
 		  * just send two xlog lsn contains consist lsn and flush lsn of primary.
 		  */
-		 if (options->polar_replica)
-			appendStringInfo(&cmd, " ONPOLARDB");
+		appendStringInfo(&cmd, " POLAR_VERSION %s", STR(POLAR_STREAM_REPLICATION_VERSION));
+	 	appendStringInfo(&cmd, " POLAR_REPL_MODE \"%s\"", 
+			 	polar_replication_mode_str(options->polar_repl_mode));
 	}
+
+	elog(LOG, "start_replication cmd: %s", cmd.data);
 
 	/* Start streaming. */
 	res = libpqrcv_PQexec(conn->streamConn, cmd.data);

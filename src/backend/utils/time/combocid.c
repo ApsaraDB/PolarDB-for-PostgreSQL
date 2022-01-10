@@ -49,6 +49,7 @@
 #include "utils/hsearch.h"
 #include "utils/memutils.h"
 
+#include "pgstat.h"
 
 /* Hash table to lookup combo cids by cmin and cmax */
 static HTAB *comboHash = NULL;
@@ -208,6 +209,9 @@ GetComboCommandId(CommandId cmin, CommandId cmax)
 	ComboCidKeyData key;
 	ComboCidEntry entry;
 	bool		found;
+
+	/* POLAR: split xact: use combocid, mark this xact unsplittable */
+	polar_xact_split_mark_unsplittable(POLAR_UNSPLITTABLE_FOR_COMBOCID);
 
 	/*
 	 * Create the hash table and array the first time we need to use combo

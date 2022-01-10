@@ -78,6 +78,9 @@
 #include "utils/memutils.h"
 #include "utils/ps_status.h"
 
+/* POLAR */
+#include "utils/polar_backtrace.h"
+#include "utils/timestamp.h"
 
 /* In this module, access gettext() via err_gettext() */
 #undef _
@@ -90,6 +93,9 @@ ErrorContextCallback *error_context_stack = NULL;
 sigjmp_buf *PG_exception_stack = NULL;
 
 extern bool redirection_done;
+
+/* polar wal pipelien */
+extern bool multi_thread_elog;
 
 /*
  * Hook for intercepting messages before they are sent to the server log.
@@ -107,6 +113,12 @@ int			Log_destination = LOG_DESTINATION_STDERR;
 char	   *Log_destination_string = NULL;
 bool		syslog_sequence_numbers = true;
 bool		syslog_split_messages = true;
+/* POLAR */
+#define LOG_CHANNEL_WRITE_BUFFER_SIZE 128 * 1024 /* 128k */
+int polar_auditlog_max_query_length = POLAR_DEFAULT_MAX_AUDIT_LOG_LEN;
+int polar_audit_log_flush_timeout = 0;
+/* POLAR end */
+
 
 #ifdef HAVE_SYSLOG
 
@@ -184,6 +196,26 @@ static const char *error_severity(int elevel);
 static void append_with_tabs(StringInfo buf, const char *str);
 static bool is_log_level_output(int elevel, int log_min_level);
 
+/* POLAR*/
+static char *log_channel_write_buffer = NULL;
+static int log_channel_write_buffer_pos = 0;
+static bool is_polar_audit_log_writing = false;
+/* POLAR end */
+
+/* POLAR */
+#define MAX_AUDIT_LOG_LEN 2048 /* 2k */
+
+static void polar_append_with_tabs_n(StringInfo buf, const char *str, int len);
+static int     polar_str_find_passwd(const char *str);
+static void polar_shrink_audit_log(StringInfo buf, int prev_buf_pos);
+static void polar_write_channel(PipeProtoChunk *chunk_buf, int len);
+static void polar_write_pipe_chunks(char *data, int len, int dest);
+static void polar_construct_pipechunk_header(PipeProtoChunk *p, int len, int dest);
+static void polar_construct_logdata_postprocess(StringInfoData *logbuf, ErrorData *edata);
+static int polar_log_dest(ErrorData *edata);
+static char polar_chunk_identity(int dest, bool end);
+/* POLAR end */
+
 
 /*
  * in_error_recursion_trouble --- are we at risk of infinite error recursion?
@@ -217,7 +249,6 @@ err_gettext(const char *str)
 #endif
 }
 
-
 /*
  * errstart --- begin an error-reporting cycle
  *
@@ -237,6 +268,16 @@ errstart(int elevel, const char *filename, int lineno,
 	bool		output_to_server;
 	bool		output_to_client = false;
 	int			i;
+
+	/*
+	 * In polar wal pipeline, we can not use elog
+	 */
+	if (multi_thread_elog)
+	{	
+		if (elevel >= ERROR)
+			abort();
+		return false;
+	}
 
 	/*
 	 * Check some cases in which we want to promote an error into a more
@@ -427,6 +468,10 @@ errfinish(int dummy,...)
 	 */
 	oldcontext = MemoryContextSwitchTo(ErrorContext);
 
+	/* POLAR: save stack according to info level */
+	if (polar_save_stack_info_level && elevel >= polar_save_stack_info_level)
+		set_backtrace(edata, 2);
+
 	/*
 	 * Call any context callback functions.  Errors occurring in callback
 	 * functions will be treated as recursive errors --- this ensures we will
@@ -491,6 +536,10 @@ errfinish(int dummy,...)
 		pfree(edata->hint);
 	if (edata->context)
 		pfree(edata->context);
+	/* POLAR */
+	if (edata->backtrace)
+		pfree(edata->backtrace);
+	/* POLAR end */
 	if (edata->schema_name)
 		pfree(edata->schema_name);
 	if (edata->table_name)
@@ -809,6 +858,35 @@ errmsg(const char *fmt,...)
 	return 0;					/* return value does not matter */
 }
 
+/*
+ * POLAR: this fucntion is from PG13.
+ * Compute backtrace data and add it to the supplied ErrorData.  num_skip
+ * specifies how many inner frames to skip.  Use this to avoid showing the
+ * internal backtrace support functions in the backtrace.  This requires that
+ * this and related functions are not inlined.
+ */
+void
+set_backtrace(ErrorData *edata, int num_skip)
+{
+	void	   *buf[100] = {0};
+	int			nframes = 0;
+	int			i = 0;
+	char	  **strfrms;
+
+	StringInfoData errtrace;
+	initStringInfo(&errtrace);
+
+	nframes = backtrace(buf, lengthof(buf));
+	strfrms = backtrace_symbols(buf, nframes);
+	if (strfrms == NULL)
+		return;
+
+	for (i = num_skip; i < nframes; i++)
+		appendStringInfo(&errtrace, "\n%s", strfrms[i]);
+	free(strfrms);
+
+	edata->backtrace = errtrace.data;
+}
 
 /*
  * errmsg_internal --- add a primary error message text to the current error
@@ -1297,6 +1375,12 @@ elog_start(const char *filename, int lineno, const char *funcname)
 {
 	ErrorData  *edata;
 
+	/*
+	 * In polar wal pipeline, we can not use elog
+	 */
+	if (multi_thread_elog)
+		return;
+
 	/* Make sure that memory context initialization has finished */
 	if (ErrorContext == NULL)
 	{
@@ -1345,8 +1429,20 @@ elog_start(const char *filename, int lineno, const char *funcname)
 void
 elog_finish(int elevel, const char *fmt,...)
 {
-	ErrorData  *edata = &errordata[errordata_stack_depth];
+	ErrorData  *edata;
 	MemoryContext oldcontext;
+
+	/*
+	 * In polar wal pipeline, we can not use elog
+	 */
+	if (multi_thread_elog)
+	{
+		if (elevel >= ERROR)
+			abort();
+		return;
+	}
+
+	edata = &errordata[errordata_stack_depth];
 
 	CHECK_STACK_DEPTH();
 
@@ -1520,6 +1616,10 @@ CopyErrorData(void)
 		newedata->hint = pstrdup(newedata->hint);
 	if (newedata->context)
 		newedata->context = pstrdup(newedata->context);
+	/* POLAR */
+	if (newedata->backtrace)
+		newedata->backtrace = pstrdup(newedata->backtrace);
+	/* POLAR end */
 	if (newedata->schema_name)
 		newedata->schema_name = pstrdup(newedata->schema_name);
 	if (newedata->table_name)
@@ -1558,6 +1658,10 @@ FreeErrorData(ErrorData *edata)
 		pfree(edata->hint);
 	if (edata->context)
 		pfree(edata->context);
+	/* POLAR */
+	if (edata->backtrace)
+		pfree(edata->backtrace);
+	/* POLAR end */
 	if (edata->schema_name)
 		pfree(edata->schema_name);
 	if (edata->table_name)
@@ -1633,6 +1737,10 @@ ThrowErrorData(ErrorData *edata)
 		newedata->hint = pstrdup(edata->hint);
 	if (edata->context)
 		newedata->context = pstrdup(edata->context);
+	/* POLAR */
+	if (edata->backtrace)
+		newedata->backtrace = pstrdup(edata->backtrace);
+	/* POLAR end */
 	/* assume message_id is not available */
 	if (edata->schema_name)
 		newedata->schema_name = pstrdup(edata->schema_name);
@@ -1700,6 +1808,10 @@ ReThrowError(ErrorData *edata)
 		newedata->hint = pstrdup(newedata->hint);
 	if (newedata->context)
 		newedata->context = pstrdup(newedata->context);
+	/* POLAR */
+	if (newedata->backtrace)
+		newedata->backtrace = pstrdup(newedata->backtrace);
+	/* POLAR end */
 	if (newedata->schema_name)
 		newedata->schema_name = pstrdup(newedata->schema_name);
 	if (newedata->table_name)
@@ -2458,6 +2570,58 @@ log_line_prefix(StringInfo buf, ErrorData *edata)
 				else
 					appendStringInfoString(buf, formatted_log_time);
 				break;
+			/* POLAR: new format for polar */
+			case 'S':
+				if (edata->is_audit_log || edata->is_slow_log)
+				{
+					if (padding != 0)
+						appendStringInfo(buf, "%*lld", padding, (long long) polar_audit_log.select_row_count);
+					else
+						appendStringInfo(buf, "%lld", (long long) polar_audit_log.select_row_count);
+				}
+				else if (padding != 0)
+					appendStringInfoSpaces(buf,
+										   padding > 0 ? padding : -padding);
+				break;
+			case 'U':
+				if (edata->is_audit_log || edata->is_slow_log)
+				{
+					if (padding != 0)
+						appendStringInfo(buf, "%*lld", padding, (long long) polar_audit_log.update_row_count);
+					else
+						appendStringInfo(buf, "%lld", (long long) polar_audit_log.update_row_count);
+				}
+				else if (padding != 0)
+					appendStringInfoSpaces(buf,
+										   padding > 0 ? padding : -padding);
+				break;
+			case 'E':
+				if (edata->is_audit_log || edata->is_slow_log)
+				{
+					if (padding != 0)
+						appendStringInfo(buf, "%*lld", padding, (long long) polar_get_audit_log_row_count());
+					else
+						appendStringInfo(buf, "%lld", (long long) polar_get_audit_log_row_count());
+				}
+				else if (padding != 0)
+					appendStringInfoSpaces(buf,
+										   padding > 0 ? padding : -padding);
+				break;
+			case 'T':
+				if (edata->is_audit_log || edata->is_slow_log)
+				{
+					if (padding != 0)
+						appendStringInfo(buf, "%*lld", padding, (long long) (GetCurrentTimestamp()
+								- GetCurrentStatementStartTimestamp()));
+					else
+						appendStringInfo(buf, "%lld", (long long) (GetCurrentTimestamp()
+								- GetCurrentStatementStartTimestamp()));
+				}
+				else if (padding != 0)
+					appendStringInfoSpaces(buf,
+										   padding > 0 ? padding : -padding);
+				break;
+			/* POLAR end */
 			case 't':
 				{
 					pg_time_t	stamp_time = (pg_time_t) time(NULL);
@@ -2653,6 +2817,9 @@ write_csvlog(ErrorData *edata)
 	/* has counter been reset in current process? */
 	static int	log_my_pid = 0;
 
+	/* POLAR */
+	int prev_buf_pos = 0;
+
 	/*
 	 * This is one of the few places where we'd rather not inherit a static
 	 * variable's value from the postmaster.  But since we will, reset it when
@@ -2823,6 +2990,7 @@ write_csvlog(ErrorData *edata)
 	if (application_name)
 		appendCSVLiteral(&buf, application_name);
 
+	polar_shrink_audit_log(&buf, prev_buf_pos);
 	appendStringInfoChar(&buf, '\n');
 
 	/* If in the syslogger process, try to write messages direct to file */
@@ -2854,7 +3022,6 @@ unpack_sql_state(int sql_state)
 	return buf;
 }
 
-
 /*
  * Write error report to server's log
  */
@@ -2862,6 +3029,10 @@ static void
 send_message_to_server_log(ErrorData *edata)
 {
 	StringInfoData buf;
+
+	/* POLAR */
+	int		prev_buf_pos = 0;
+	int		msg_unmasked_len = -1;
 
 	initStringInfo(&buf);
 
@@ -2875,7 +3046,15 @@ send_message_to_server_log(ErrorData *edata)
 		appendStringInfo(&buf, "%s: ", unpack_sql_state(edata->sqlerrcode));
 
 	if (edata->message)
-		append_with_tabs(&buf, edata->message);
+	{
+		if (edata->needs_mask || (edata->elevel != LOG && edata->elevel != FATAL))
+			msg_unmasked_len = polar_str_find_passwd(edata->message);
+
+		if (msg_unmasked_len >= 0)
+			polar_append_with_tabs_n(&buf, edata->message, msg_unmasked_len);
+		else
+			append_with_tabs(&buf, edata->message);
+	}
 	else
 		append_with_tabs(&buf, _("missing error text"));
 
@@ -2886,43 +3065,55 @@ send_message_to_server_log(ErrorData *edata)
 		appendStringInfo(&buf, _(" at character %d"),
 						 edata->internalpos);
 
+	polar_shrink_audit_log(&buf, prev_buf_pos);
+
 	appendStringInfoChar(&buf, '\n');
 
 	if (Log_error_verbosity >= PGERROR_DEFAULT)
 	{
 		if (edata->detail_log)
 		{
+			prev_buf_pos = buf.len;
 			log_line_prefix(&buf, edata);
 			appendStringInfoString(&buf, _("DETAIL:  "));
 			append_with_tabs(&buf, edata->detail_log);
+			polar_shrink_audit_log(&buf, prev_buf_pos);
 			appendStringInfoChar(&buf, '\n');
 		}
 		else if (edata->detail)
 		{
+			prev_buf_pos = buf.len;
 			log_line_prefix(&buf, edata);
 			appendStringInfoString(&buf, _("DETAIL:  "));
 			append_with_tabs(&buf, edata->detail);
+			polar_shrink_audit_log(&buf, prev_buf_pos);
 			appendStringInfoChar(&buf, '\n');
 		}
 		if (edata->hint)
 		{
+			prev_buf_pos = buf.len;
 			log_line_prefix(&buf, edata);
 			appendStringInfoString(&buf, _("HINT:  "));
 			append_with_tabs(&buf, edata->hint);
+			polar_shrink_audit_log(&buf, prev_buf_pos);
 			appendStringInfoChar(&buf, '\n');
 		}
 		if (edata->internalquery)
 		{
+			prev_buf_pos = buf.len;
 			log_line_prefix(&buf, edata);
 			appendStringInfoString(&buf, _("QUERY:  "));
 			append_with_tabs(&buf, edata->internalquery);
+			polar_shrink_audit_log(&buf, prev_buf_pos);
 			appendStringInfoChar(&buf, '\n');
 		}
 		if (edata->context && !edata->hide_ctx)
 		{
+			prev_buf_pos = buf.len;
 			log_line_prefix(&buf, edata);
 			appendStringInfoString(&buf, _("CONTEXT:  "));
 			append_with_tabs(&buf, edata->context);
+			polar_shrink_audit_log(&buf, prev_buf_pos);
 			appendStringInfoChar(&buf, '\n');
 		}
 		if (Log_error_verbosity >= PGERROR_VERBOSE)
@@ -2942,6 +3133,15 @@ send_message_to_server_log(ErrorData *edata)
 								 edata->filename, edata->lineno);
 			}
 		}
+		/* POLAR */
+		if (edata->backtrace)
+		{
+			log_line_prefix(&buf, edata);
+			appendStringInfoString(&buf, _("BACKTRACE:  "));
+			append_with_tabs(&buf, edata->backtrace);
+			appendStringInfoChar(&buf, '\n');
+		}
+		/* POLAR end */
 	}
 
 	/*
@@ -2951,10 +3151,59 @@ send_message_to_server_log(ErrorData *edata)
 		debug_query_string != NULL &&
 		!edata->hide_stmt)
 	{
+		int			sql_unmasked_len = -1;
+
+		prev_buf_pos = buf.len;
 		log_line_prefix(&buf, edata);
 		appendStringInfoString(&buf, _("STATEMENT:  "));
-		append_with_tabs(&buf, debug_query_string);
+
+		sql_unmasked_len = polar_str_find_passwd(debug_query_string);
+
+		if (sql_unmasked_len >= 0)
+			polar_append_with_tabs_n(&buf, debug_query_string, sql_unmasked_len);
+		else
+			append_with_tabs(&buf, debug_query_string);
+
+		polar_shrink_audit_log(&buf, prev_buf_pos);
 		appendStringInfoChar(&buf, '\n');
+
+		/* Log another copy of query string for SQL auditing */		
+		if (polar_enable_multi_syslogger)
+		{
+			/* POLAR: Print error sql to audit log */
+			if (log_statement != LOGSTMT_NONE &&
+				polar_enable_error_to_audit_log && 
+				edata->elevel >= ERROR &&
+				errordata_stack_depth == 0)
+			{
+				ErrorData new_edata;
+				MemSet(&new_edata, 0, sizeof(ErrorData));
+				new_edata.elevel = LOG;
+				new_edata.is_audit_log = true;
+				new_edata.hide_stmt = true;
+				new_edata.output_to_server = true;
+				new_edata.message = NULL;
+				new_edata.needs_mask = false;
+				new_edata.sqlerrcode = edata->sqlerrcode;
+				polar_audit_log.query_string = debug_query_string;
+
+				polar_write_audit_log(&new_edata, "statement: %s", debug_query_string);
+			}
+		}
+		else
+		{
+			prev_buf_pos = buf.len;
+			log_line_prefix(&buf, edata);
+			appendStringInfoString(&buf, _("LOG:  statement: "));
+
+			if (sql_unmasked_len >= 0)
+				polar_append_with_tabs_n(&buf, debug_query_string, sql_unmasked_len);
+			else
+				append_with_tabs(&buf, debug_query_string);
+
+			polar_shrink_audit_log(&buf, prev_buf_pos);
+			appendStringInfoChar(&buf, '\n');
+		}
 	}
 
 #ifdef HAVE_SYSLOG
@@ -3014,7 +3263,7 @@ send_message_to_server_log(ErrorData *edata)
 		 * Otherwise, just do a vanilla write to stderr.
 		 */
 		if (redirection_done && !am_syslogger)
-			write_pipe_chunks(buf.data, buf.len, LOG_DESTINATION_STDERR);
+			polar_write_pipe_chunks(buf.data, buf.len, polar_log_dest(edata));  /* POLAR */
 #ifdef WIN32
 
 		/*
@@ -3116,7 +3365,6 @@ write_pipe_chunks(char *data, int len, int dest)
 	rc = write(fd, &p, PIPE_HEADER_SIZE + len);
 	(void) rc;
 }
-
 
 /*
  * Append a text string to the error report being built for the client.
@@ -3659,7 +3907,6 @@ append_with_tabs(StringInfo buf, const char *str)
 	}
 }
 
-
 /*
  * Write errors to stderr (or by equal means when stderr is
  * not available). Used before ereport/elog can be used
@@ -3755,4 +4002,513 @@ trace_recovery(int trace_level)
 		return LOG;
 
 	return trace_level;
+}
+
+/*
+ *  POLAR: truncate rds audit log, make it not more than 2k
+ */
+void
+polar_shrink_audit_log(StringInfo buf, int prev_buf_pos)
+{
+	/*
+	 * if log length > polar_auditlog_max_query_length, we will truncate it, we just set data[polar_auditlog_max_query_length-1]='\0'
+	 * we must keep a char for '\n', so buf->len is polar_auditlog_max_query_length-1
+	 */
+	if (buf->len - prev_buf_pos >= polar_auditlog_max_query_length)
+	{
+		buf->len = prev_buf_pos + polar_auditlog_max_query_length - 1;
+	}
+}
+
+/*
+ *	polar_append_with_tabs_n
+ *
+ *	Append the string to the StringInfo buffer, inserting a tab after any
+ *	newline.
+ */
+static void
+polar_append_with_tabs_n(StringInfo buf, const char *str, int len)
+{
+	char		ch;
+
+	while ((ch = *str++) != '\0' && len > 0)
+	{
+		appendStringInfoCharMacro(buf, ch);
+		if (ch == '\n')
+			appendStringInfoCharMacro(buf, '\t');
+
+		len--;
+	}
+}
+
+/* POLAR: find password string from str */
+inline static int
+polar_str_find_passwd(const char *str)
+{
+	char *p = strcasestr(str, "password");
+	return (p == NULL) ? strlen(str) : p - str;
+}
+
+/*
+ * polar_mark_audit_log --- mark rds audit log
+ *
+ * This should be called if we want print audit log statement.
+ */
+int
+polar_mark_audit_log(bool is_audit_log)
+{
+	ErrorData  *edata = &errordata[errordata_stack_depth];
+
+	/* we don't bother incrementing recursion_depth */
+	CHECK_STACK_DEPTH();
+
+	edata->is_audit_log = is_audit_log;
+
+	return 0;					/* return value does not matter */
+}
+
+/*
+ * polar_mark_slow_log --- mark rds slow log
+ *
+ * This should be called if we want print slow log statement.
+ */
+int
+polar_mark_slow_log(bool is_slow_log)
+{
+	ErrorData  *edata = &errordata[errordata_stack_depth];
+
+	/* we don't bother incrementing recursion_depth */
+	CHECK_STACK_DEPTH();
+
+	edata->is_slow_log = is_slow_log;
+
+	return 0;					/* return value does not matter */
+}
+
+/*
+ * polar_mark_needs_mask --- mark rds audit log
+ *
+ * This should be called if we want print audit log statement.
+ */
+int
+polar_mark_needs_mask(bool needs_mask)
+{
+	ErrorData  *edata = &errordata[errordata_stack_depth];
+
+	/* we don't bother incrementing recursion_depth */
+	CHECK_STACK_DEPTH();
+
+	edata->needs_mask = needs_mask;
+
+	return 0;					/* return value does not matter */
+}
+
+/* 
+ * polar find log destination according to edata
+ */
+inline static int
+polar_log_dest(ErrorData *edata)
+{
+	int dest;
+	if (edata->is_slow_log)
+		dest = LOG_DESTINATION_POLAR_SLOWLOG;
+	else if (edata->is_audit_log)
+		dest = LOG_DESTINATION_POLAR_AUDITLOG;
+	else
+		dest = LOG_DESTINATION_STDERR;
+	return dest;
+}
+
+/*
+ * polar set chunk meta according to log destination
+ */
+static char
+polar_chunk_identity(int dest, bool end)
+{
+	char idch;
+
+	switch (dest)
+	{
+		case LOG_DESTINATION_POLAR_AUDITLOG:
+			idch = end ? AUDITLOG_LAST_CHUNK : AUDITLOG_CHUNK;
+			break;
+		case LOG_DESTINATION_POLAR_SLOWLOG:
+			idch = end ? SLOWLOG_LAST_CHUNK : SLOWLOG_CHUNK;
+			break;
+		case LOG_DESTINATION_CSVLOG:
+			idch = end ? 'T' : 'F';
+			break;
+		case LOG_DESTINATION_STDERR:
+		default:
+			idch = end ? 't' : 'f';
+	}
+
+	return idch;
+}
+
+/*
+ * polar build pipe chunk header
+ */
+static void 
+polar_construct_pipechunk_header(PipeProtoChunk *p, int len, int dest)
+{
+	p->proto.nuls[0] = p->proto.nuls[1] = '\0';
+	p->proto.pid = MyProcPid;
+
+	switch (dest)
+	{
+		case LOG_DESTINATION_POLAR_AUDITLOG:
+			p->proto.is_last = AUDITLOG_LAST_CHUNK;
+			break;
+		case LOG_DESTINATION_POLAR_SLOWLOG:
+			p->proto.is_last = SLOWLOG_LAST_CHUNK;
+			break;
+		default:
+			p->proto.is_last = 'f';
+			break;
+	}
+
+	p->proto.len = len;
+}
+
+/*
+ * Construct log data in logbuf, similar to what EmitErrorReport() do,
+ * but we simplify the whole procedure just for audit log
+ * 
+ * NOTE(wormhole.gl): lost nearly 10% performance in this code block.
+ */
+#ifndef POLAR_CONSTRUCT_LOGDATA
+#define POLAR_CONSTRUCT_LOGDATA(logbuf, edata)					\
+{																\
+	log_line_prefix(logbuf, edata); 							\
+	appendStringInfo(logbuf, "LOG:  "); 						\
+	for (;;)													\
+	{															\
+		va_list args;											\
+		int needed = 0;											\
+		va_start(args, fmt);									\
+		needed = appendStringInfoVA(logbuf, fmt, args);			\
+		va_end(args);											\
+		if (needed == 0)										\
+			break;												\
+		enlargeStringInfo(logbuf, needed);						\
+	}           												\
+}
+#endif
+
+/*
+ *  deal with the log data after building it
+ */
+static void
+polar_construct_logdata_postprocess(StringInfoData *logbuf, ErrorData *edata)
+{
+	// strip password
+	if (edata->needs_mask)
+		logbuf->len = polar_str_find_passwd(logbuf->data);
+
+	if (!logbuf->data)
+	{
+		// NOTE(wormhole.gl): We believe this would not overflow
+		append_with_tabs(logbuf, _("missing error text"));
+	}
+	else
+	{
+		// NOTE(wormhole.gl): make sure logbuf length is not larger than PIPE_MAX_PAYLOAD
+		polar_shrink_audit_log(logbuf, 0);
+	}
+
+	appendStringInfoChar(logbuf, '\n');
+}
+
+#define LOGBUF_MIN_LEN(a, b) ((a) < (b) ? (a) : (b))
+
+/* POLAR: flush audit log interface */
+void
+polar_audit_log_flush(void)
+{
+	Assert(log_channel_write_buffer != NULL);
+	/* do not flush when polar audit log is writing */
+	if (is_polar_audit_log_writing)
+	{
+		return;
+	}
+
+	polar_write_channel((PipeProtoChunk *)log_channel_write_buffer, 
+					log_channel_write_buffer_pos);
+	log_channel_write_buffer_pos = 0;
+}
+
+/* POLAR: return log_channel_write_buffer status */
+bool
+polar_audit_log_buffer_is_null(void)
+{
+	return log_channel_write_buffer == NULL;
+}
+
+/*
+ * Bypass elog framework for reducing buffer copy
+ * You can only use this interface for audit log or slow log now.
+ */
+void
+polar_write_audit_log(ErrorData *edata, const char *fmt, ...) 
+{
+	int dest;
+	char *logbuf_base = NULL;
+	int logbuf_len = 0;
+
+	StringInfoData logbuf;
+
+	if (am_syslogger)
+		return;
+
+	is_polar_audit_log_writing = true;
+
+	initStringInfo(&logbuf);
+	// enlargeStringInfo(&logbuf, 4096)
+
+	// initialize log_channel_write_buffer
+	if (log_channel_write_buffer == NULL) {
+		log_channel_write_buffer = malloc(LOG_CHANNEL_WRITE_BUFFER_SIZE);
+		memset(log_channel_write_buffer, 0, LOG_CHANNEL_WRITE_BUFFER_SIZE);
+		log_channel_write_buffer_pos = 0;
+	}
+
+	logbuf_base = log_channel_write_buffer + log_channel_write_buffer_pos;
+
+	// build log message
+	POLAR_CONSTRUCT_LOGDATA(&logbuf, edata);
+	polar_construct_logdata_postprocess(&logbuf, edata);
+
+	// Not efficiency but safe
+	logbuf_len = LOGBUF_MIN_LEN(logbuf.len, LOG_CHANNEL_WRITE_BUFFER_SIZE - PIPE_HEADER_SIZE - log_channel_write_buffer_pos);
+	memcpy(logbuf_base + PIPE_HEADER_SIZE, logbuf.data, logbuf_len);
+
+	// build pipechunk header
+	dest = polar_log_dest(edata);
+	polar_construct_pipechunk_header((PipeProtoChunk *)logbuf_base, logbuf_len, dest);
+
+	logbuf_len = logbuf_len + PIPE_HEADER_SIZE;
+
+	// sink log
+	switch (dest) 
+	{
+		case LOG_DESTINATION_POLAR_AUDITLOG:
+			log_channel_write_buffer_pos += logbuf_len;
+			if (polar_enable_syslog_pipe_buffer && 
+				log_channel_write_buffer_pos < LOG_CHANNEL_WRITE_BUFFER_SIZE / 2)
+				break;
+			polar_write_channel((PipeProtoChunk *)log_channel_write_buffer, 
+								log_channel_write_buffer_pos);
+			log_channel_write_buffer_pos = 0;
+			polar_last_audit_log_flush_time = GetCurrentTimestamp();
+			break;
+		case LOG_DESTINATION_POLAR_SLOWLOG:
+		default:
+			polar_write_channel((PipeProtoChunk *)logbuf_base, logbuf_len);
+			break;
+	}
+
+	pfree(logbuf.data);
+
+	is_polar_audit_log_writing = false;
+}
+
+/*
+ * just a copy of write_pipe_chunks, replace write() to polar_write_channel
+ * compatibility for the original pg codes
+ */
+static void
+polar_write_pipe_chunks(char *data, int len, int dest)
+{
+	PipeProtoChunk p;
+
+	Assert(len > 0);
+
+	p.proto.nuls[0] = p.proto.nuls[1] = '\0';
+	p.proto.pid = MyProcPid;
+
+	/* write all but the last chunk */
+	while (len > PIPE_MAX_PAYLOAD)
+	{
+		p.proto.is_last = polar_chunk_identity(dest, false);
+		p.proto.len = PIPE_MAX_PAYLOAD;
+		memcpy(p.proto.data, data, PIPE_MAX_PAYLOAD);
+		polar_write_channel(&p, PIPE_HEADER_SIZE + PIPE_MAX_PAYLOAD);
+		data += PIPE_MAX_PAYLOAD;
+		len -= PIPE_MAX_PAYLOAD;
+	}
+
+	/* write the last chunk */
+	p.proto.is_last = polar_chunk_identity(dest, true);
+	p.proto.len = len;
+	memcpy(p.proto.data, data, len);
+	polar_write_channel(&p, PIPE_HEADER_SIZE + len);
+}
+
+/*
+ * write to channel(original is pipe, now it's socketpair)
+ * now we write error log, slow log to channel 0, write audit log to the other channels
+ */
+static void
+polar_write_channel(PipeProtoChunk *chunk_buf, int len) 
+{
+	int rc;
+	int channel_index = 0;
+
+	// Now we only try to write audit log into multi sys logger 
+	if (polar_enable_multi_syslogger && polar_num_of_sysloggers > 1)
+	{
+		if (chunk_buf->proto.is_last == AUDITLOG_LAST_CHUNK || 
+			chunk_buf->proto.is_last == AUDITLOG_CHUNK)
+			channel_index = MyProcPid % (polar_num_of_sysloggers - 1) + 1;
+	}
+
+	if (channel_index == 0)
+	{
+		pgstat_report_wait_start(WAIT_EVENT_SYSLOG_PIPE_WRITE);
+		rc = write(fileno(stderr), chunk_buf, len);
+		pgstat_report_wait_end();
+	}
+	else
+	{
+		if (Logging_collector)
+		{
+			LWLockAcquire(&SysLoggerWriterLWLockArray[channel_index].lock, LW_EXCLUSIVE);
+			rc = write(syslogChannels[channel_index][1], chunk_buf, len);
+			LWLockRelease(&SysLoggerWriterLWLockArray[channel_index].lock);
+		}
+	}
+
+	(void)rc;
+}
+
+/*
+ * POLAR px
+ * Convert SQLSTATE string to compact error code (ERRCODE_xxx).
+ */
+int
+px_sqlstate_to_errcode(const char *sqlstate)
+{
+	return MAKE_SQLSTATE(sqlstate[0], sqlstate[1], sqlstate[2],
+						 sqlstate[3], sqlstate[4]);
+}
+
+/*
+ * POLAR px
+ * Return the SQLSTATE code for the error currently being handled, or 0.
+ *
+ * This is only intended for use in error handlers.
+ */
+int
+px_elog_geterrcode(void)
+{
+	return (errordata_stack_depth < 0)
+				? 0
+				: errordata[errordata_stack_depth].sqlerrcode;
+}
+
+/*
+ * POLAR px
+ * Note: A pointer is returned.  Make a copy of the message
+ * before re-throwing or flushing the error state.
+ */
+char*
+elog_message(void)
+{
+	return (errordata_stack_depth < 0)
+		? NULL
+		: errordata[errordata_stack_depth].message;
+}
+
+/*
+ * POLAR px
+ * px_elog_internalerror -- report an internal error
+ *
+ * Does not return; exits via longjmp to PG_CATCH error handler.
+ */
+void
+px_elog_internalerror(const char *filename, int lineno, const char *funcname)
+{
+	/*
+	 * Also, why aren't we allowing for a specific err message to be passed in?
+	 */
+	if (errstart(ERROR, filename, lineno, funcname,TEXTDOMAIN))
+	{
+		errfinish(errcode(ERRCODE_INTERNAL_ERROR),
+				  errmsg("Unexpected internal error"));
+	}
+	/* not reached */
+	abort();
+}
+
+/*
+ * POLAR px
+ * Finish constructing an error like errfinish(), but instead of throwing it,
+ * return it to the caller as a palloc'd ErrorData object.
+ */
+ErrorData *
+px_errfinish_and_return(int dummy pg_attribute_unused(),...)
+{
+	ErrorData  *edata = &errordata[errordata_stack_depth];
+	ErrorData  *edata_copy;
+	ErrorContextCallback *econtext;
+	MemoryContext oldcontext;
+	int			saved_errno;
+
+	recursion_depth++;
+	CHECK_STACK_DEPTH();
+	saved_errno = edata->saved_errno;
+
+	/*
+	 * Do processing in ErrorContext, which we hope has enough reserved space
+	 * to report an error.
+	 */
+	oldcontext = MemoryContextSwitchTo(ErrorContext);
+
+	/*
+	 * Call any context callback functions.  Errors occurring in callback
+	 * functions will be treated as recursive errors --- this ensures we will
+	 * avoid infinite recursion (see errstart).
+	 */
+	for (econtext = error_context_stack;
+		 econtext != NULL;
+		 econtext = econtext->previous)
+		(*econtext->callback) (econtext->arg);
+
+	MemoryContextSwitchTo(oldcontext);
+
+	edata_copy = CopyErrorData();
+
+	/* Now free up subsidiary data attached to stack entry, and release it */
+	if (edata->message)
+		pfree(edata->message);
+	if (edata->detail)
+		pfree(edata->detail);
+	if (edata->detail_log)
+		pfree(edata->detail_log);
+	if (edata->hint)
+		pfree(edata->hint);
+	if (edata->context)
+		pfree(edata->context);
+	if (edata->schema_name)
+		pfree(edata->schema_name);
+	if (edata->table_name)
+		pfree(edata->table_name);
+	if (edata->column_name)
+		pfree(edata->column_name);
+	if (edata->datatype_name)
+		pfree(edata->datatype_name);
+	if (edata->constraint_name)
+		pfree(edata->constraint_name);
+	if (edata->internalquery)
+		pfree(edata->internalquery);
+
+	errordata_stack_depth--;
+
+	/* Exit error-handling context */
+	recursion_depth--;
+
+	errno = saved_errno;
+
+	return edata_copy;
 }

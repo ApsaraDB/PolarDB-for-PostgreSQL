@@ -1,5 +1,5 @@
 # polar_monitor extension
-comment = 'monitor functions for polardb'
-default_version = '1.0'
+comment = 'examine the polardb information'
+default_version = '1.2'
 module_pathname = '$libdir/polar_monitor'
 relocatable = true

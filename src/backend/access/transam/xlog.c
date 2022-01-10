@@ -36,6 +36,7 @@
 #include "access/xloginsert.h"
 #include "access/xlogreader.h"
 #include "access/xlogutils.h"
+#include "bootstrap/bootstrap.h"
 #include "catalog/catversion.h"
 #include "catalog/pg_control.h"
 #include "catalog/pg_database.h"
@@ -54,10 +55,13 @@
 #include "replication/walreceiver.h"
 #include "replication/walsender.h"
 #include "storage/bufmgr.h"
+#include "storage/encryption.h"
 #include "storage/fd.h"
 #include "storage/ipc.h"
+#include "storage/kmgr.h"
 #include "storage/large_object.h"
 #include "storage/latch.h"
+#include "storage/pg_shmem.h"
 #include "storage/pmsignal.h"
 #include "storage/predicate.h"
 #include "storage/proc.h"
@@ -77,20 +81,46 @@
 #include "pg_trace.h"
 
 /* POLAR */
+#include "access/heapam_xlog.h"
+#include "access/polar_logindex_redo.h"
 #include "access/polar_async_ddl_lock_replay.h"
-#include "storage/polar_bufmgr.h"
+#include "access/polar_csn_mvcc_vars.h"
+#include "access/polar_csnlog.h"
+#include "commands/dbcommands_xlog.h"
+#include "commands/tablespace.h"
+#include "access/polar_logindex_redo.h"
+#include "access/polar_checkpoint_ringbuf.h"
 #include "storage/polar_fd.h"
 #include "storage/polar_flushlist.h"
+#include "storage/polar_io_stat.h"
+#include "storage/polar_pbp.h"
 #include "storage/polar_xlogbuf.h"
-#include "access/polar_fullpage.h"
-#include "access/polar_logindex.h"
-#include "access/polar_logindex_internal.h"
-#include "access/polar_queue_manager.h"
+#include "storage/polar_io_fencing.h"
+#include "polar_datamax/polar_datamax.h"
+#include "portability/instr_time.h"
+#include "utils/polar_backtrace.h"
+#include "utils/polar_local_cache.h"
+#include "utils/timestamp.h"
+#include "polar_dma/polar_dma.h"
+#include "utils/faultinjector.h"
+#include "polar_flashback/polar_flashback_point.h"
+/* POLAR end */
+
+#ifdef ENABLE_THREAD_SAFETY
+/* Use platform-dependent pthread capability */
+#include <pthread.h>
+#endif
 
 extern uint32 bootstrap_data_checksum_version;
+extern uint32 bootstrap_data_encryption_cipher;
 
 /* POLAR */
 extern int BgWriterDelay;
+
+/* File path names (all relative to $PGDATA) */
+#define RECOVERY_COMMAND_FILE	"recovery.conf"
+#define PROMOTE_SIGNAL_FILE		"promote"
+#define FALLBACK_PROMOTE_SIGNAL_FILE "fallback_promote"
 
 /*
  * POLAR: For crash recovery, StartupProcess will read emtry buffers, drop them
@@ -98,13 +128,6 @@ extern int BgWriterDelay;
  */
 #define POLAR_REMOVE_EMPTY_PREAD_XLOG_BUFFER() \
 	(POLAR_ENABLE_XLOG_BUFFER() && AmStartupProcess())
-
-/* File path names (all relative to $PGDATA) */
-#define RECOVERY_COMMAND_FILE	"recovery.conf"
-#define RECOVERY_COMMAND_DONE	"recovery.done"
-#define PROMOTE_SIGNAL_FILE		"promote"
-#define FALLBACK_PROMOTE_SIGNAL_FILE "fallback_promote"
-
 
 /* User-settable parameters */
 int			max_wal_size_mb = 1024; /* 1 GB */
@@ -120,12 +143,15 @@ bool		wal_log_hints = false;
 bool		wal_compression = false;
 char	   *wal_consistency_checking_string = NULL;
 bool	   *wal_consistency_checking = NULL;
+bool		wal_recycle = true;
 bool		log_checkpoints = false;
 int			sync_method = DEFAULT_SYNC_METHOD;
 int			wal_level = WAL_LEVEL_MINIMAL;
 int			CommitDelay = 0;	/* precommit delay in microseconds */
 int			CommitSiblings = 5; /* # concurrent xacts needed to sleep */
 int			wal_retrieve_retry_interval = 5000;
+bool		polar_enable_max_slot_wal_keep_size = false;
+int			max_slot_wal_keep_size_mb = -1;
 
 #ifdef WAL_DEBUG
 bool		XLOG_DEBUG = false;
@@ -138,7 +164,8 @@ int			wal_segment_size = DEFAULT_XLOG_SEG_SIZE;
  * to happen concurrently, but adds some CPU overhead to flushing the WAL,
  * which needs to iterate all the locks.
  */
-#define NUM_XLOGINSERT_LOCKS  8
+/* POLAR */
+int		polar_wal_buffer_insert_locks = DEFAULT_XLOG_INSERT_LOCKS;
 
 /*
  * Max distance from last checkpoint, before triggering a new xlog-based
@@ -296,6 +323,19 @@ static bool StandbyModeRequested = false;
 static char *PrimaryConnInfo = NULL;
 static char *PrimarySlotName = NULL;
 static char *TriggerFile = NULL;
+
+/* POLAR: replication control based on consensus */
+static bool becameLeader = false;
+static XLogRecPtr consensusCommittedUpto = 0;
+static XLogRecPtr consensusReadableUpto = 0;
+static uint64 consensusTerm = 0;
+static uint64 consensusLogTerm = 0;
+static XLogRecPtr consensusLogUpto = 0;
+static TimeLineID consensusLogTLI = 0;
+static XLogRecPtr consensusReceivedUpto = 0;
+static TimeLineID consensusReceivedTLI = 0;
+// recovery target timeline from consensus protocol
+static bool consensusRecoveryLatestTimeline = false;
 
 /* are we currently in standby mode? */
 bool		StandbyMode = false;
@@ -504,6 +544,76 @@ typedef union WALInsertLockPadded
 	char		pad[PG_CACHE_LINE_SIZE];
 } WALInsertLockPadded;
 
+/* PolarDB wal pipeline begin */
+
+#include "postmaster/polar_wal_pipeliner.h"	
+
+typedef enum polar_wal_pipeline_unflushed_xlog_type_t
+{	
+	UNFLUSHED_XLOG_SLOT_TYPE_ADD,
+	UNFLUSHED_XLOG_SLOT_TYPE_DEL
+} polar_wal_pipeline_unflushed_xlog_type_t;
+
+typedef struct polar_wal_pipeline_unflushed_xlog_t
+{
+	int		   		fd;			/* xlog file handle */
+	XLogSegNo  		seg_no;		/* xlog file segment number */
+	XLogRecPtr 		end_lsn;	/* xlog file segment max lsn */
+	bool	   		need_close;	/* whether to close */
+} polar_wal_pipeline_unflushed_xlog_t;
+
+typedef struct polar_wal_pipeline_unflushed_xlog_slot_t
+{
+	volatile bool 				in_use;		/* slot whether in use */
+	polar_wal_pipeline_unflushed_xlog_t   	file_node;	/* xlog file node */
+} polar_wal_pipeline_unflushed_xlog_slot_t;
+
+typedef struct polar_wal_pipeline_unflushed_xlog_buffer_t
+{
+	pg_atomic_uint64 					add_slot_no;
+	pg_atomic_uint64 					del_slot_no;
+	polar_wal_pipeline_unflushed_xlog_slot_t 	 	*unflushed_xlog_slots;
+} polar_wal_pipeline_unflushed_xlog_buffer_t;
+
+typedef polar_wait_object_t polar_wal_pipeline_flush_event_t;
+
+typedef struct polar_wal_pipeline_commit_wait_buffer_t
+{
+	int slot_count;
+	int slot_size;
+	polar_wal_pipeline_flush_event_t *flush_event_slots;
+} polar_wal_pipeline_commit_wait_buffer_t;
+
+typedef struct polar_wal_pipeline_recent_written_position_buffer_t
+{
+	/* We must use physical position not logical lsn */
+	pg_atomic_uint64 ready_write_position;
+	pg_atomic_uint64 *recent_written_position_slots;
+} polar_wal_pipeline_recent_written_position_buffer_t;
+
+static void polar_wal_pipeline_stats_init(polar_wal_pipeline_stats_t *stats);
+static void polar_wait_obj_stats_init(polar_wait_object_stats_t *stats);
+static void polar_wait_obj_init(polar_wait_object_t *wait_obj, 
+	pthread_mutexattr_t *mutex_attr, pthread_condattr_t *cond_attr);
+static bool polar_wal_pipeline_recent_written_advance(void);
+static bool polar_wal_pipeline_recent_written_has_space(XLogRecPtr write_lsn);
+static void polar_wal_pipeline_unflushed_xlog_append(int fd, XLogSegNo seg_no, XLogRecPtr end_lsn, bool need_close);
+static polar_wal_pipeline_unflushed_xlog_slot_t * 
+	polar_wal_pipeline_get_curr_unflushed_xlog_slot(polar_wal_pipeline_unflushed_xlog_type_t slot_type);
+static polar_wal_pipeline_unflushed_xlog_slot_t * 
+	polar_wal_pipeline_get_next_unflushed_xlog_slot(polar_wal_pipeline_unflushed_xlog_type_t slot_type);
+static void polar_wal_pipeline_advance_unflushed_xlog_slot_no(polar_wal_pipeline_unflushed_xlog_type_t slot_type);
+static void polar_wal_pipeline_flush_internal(void);
+static polar_wal_pipeline_flush_event_t * polar_wal_pipeline_flush_event_get_slot(int slot_no);
+
+static XLogRecPtr polar_get_checkpoint_ptr_nolock(void);
+static XLogRecPtr polar_get_xlog_insert_rec_ptr_nolock(void);
+
+extern polar_wal_pipeline_stats_t * polar_wal_pipeline_get_stats(void);
+extern polar_wait_object_t * polar_wal_pipeline_get_worker_wait_obj(int thread_no);
+
+/* PolarDB wal pipeline end */
+
 /*
  * State of an exclusive backup, necessary to control concurrent activities
  * across sessions when working on exclusive backups.
@@ -590,6 +700,20 @@ typedef struct XLogCtlInsert
 	 */
 	WALInsertLockPadded *WALInsertLocks;
 } XLogCtlInsert;
+
+
+/*
+ * Shared state data for Postmaster state change.
+ */
+typedef struct PMConsensStateData {
+	char leaderAddr[NI_MAXHOST];
+	int leaderPort;
+	uint64 term;
+	uint64 xlogTerm;
+	XLogRecPtr xlogUpto;
+	TimeLineID xlogTLI;
+	int state;
+} PMConsensStateData;
 
 /*
  * Total shared-memory state for XLOG.
@@ -729,31 +853,89 @@ typedef struct XLogCtlData
 	slock_t		info_lck;		/* locks shared variables shown above */
 
 	/* POLAR */
-	/* Oldest lsn applied by any slot */
-	XLogRecPtr	replication_slot_oldest_applied_lsn;
 
+	/* Oldest LSN applied by any slot */
+	XLogRecPtr	replication_slot_oldest_applied_lsn;
 	/* Oldest lock LSN applied by any slot */
 	XLogRecPtr	replication_slot_oldest_lock_lsn;
-
-	/* All pages which latest_lsn <= consistent_lsn have been flushed to storage. */
+	/*
+	 * Latest LSN flushed, all pages which latest_lsn <= consistent_lsn have
+	 * been flushed to disk.
+	 */
 	XLogRecPtr	consistent_lsn;
 	/* Record polar node type */
 	PolarNodeType polar_node_type;
-	/*
-	 * polar_fpsn_wakeup_latch is used to wake up the fullpage snapshot process to
-	 * continue WAL replay, if it is waiting for WAL to arrive or failover trigger
-	 * file to appear.
-	 */
-	Latch		polar_fpsn_wakeup_latch;
-	/*
-	 * POLAR: The max lsn value that replayed by background process
-	 */
-	XLogRecPtr  bg_replayed_lsn;
-	/*
-	 * POLAR: Record the start position of the last replayed xlog
-	 */
-	XLogRecPtr  lastReplayedReadRecPtr;
+
+	/* POLAR: put standbyState into shared memory */
+	HotStandbyState		polar_hot_standby_state;
+
+	/* POLAR: Protected by info_lck */
+	XLogRecPtr	ConsensusCommit;			/* last byte + 1 consensus committed */
 	/* POLAR end */
+
+	/*
+	 * POLAR: state change info for PostMaster, Protected by pm_state_lck.
+	 */
+	bool	pmInStateChange; /* set by Consensus main thread and reset by PostMaster */
+	PMConsensStateData	pmState; /* just modified by Consensus main thread */
+	slock_t		pm_state_lck;		/* locks shared variables shown above */
+
+	/*
+	 * POLAR: state change for StartupProcess, modified by PostMaster
+	 * Protected by info_lck.
+	 */
+	char		PrimaryConnInfoStr[MAXCONNINFO];
+	uint64  consensusTerm;
+	uint64  consensusLogTerm;
+	XLogRecPtr consensusLogUpto;
+	TimeLineID consensusLogTLI;
+	bool  	becameLeader;
+	bool  	inLeaderState;
+	slock_t	consens_state_lck;		/* locks shared variables shown above */
+
+	/* 
+	 * polar wal pipeline 
+	 */
+
+	/* Used for polar wal pipeline thread */
+	polar_wait_object_t										*polar_wal_pipeline_wait_objs;
+
+	/* Used for pipeline commit/notify */
+	polar_wal_pipeline_commit_wait_buffer_t					polar_wal_pipeline_commit_wait_buffer;
+	
+	/* Used for pipeline advance continuous written lsn */
+	polar_wal_pipeline_recent_written_position_buffer_t 	polar_wal_pipeline_recent_written_position_buffer;
+
+	/* Used for pipeline write/flush xlog file */
+	polar_wal_pipeline_unflushed_xlog_buffer_t  			polar_wal_pipeline_unflushed_xlog_buffer;
+
+	/* Every notify worker should has its own last notify lsn */
+	XLogRecPtr 												polar_wal_pipeline_last_notify_lsn[POLAR_WAL_PIPELINE_NOTIFY_WORKER_NUM_MAX];
+
+	/* Used for pipeline statistics */
+	polar_wal_pipeline_stats_t								polar_wal_pipeline_stats;
+	
+	/* POLAR: lock to prevent getting wal being removed */
+	LWLock polar_initial_datamax_lock;
+
+	/* POLAR: replica node update transation status files via redo rather than copy from shared storage when start */
+	bool	polar_replica_update_dirs_by_redo;
+
+	/* POLAR: Used for polar IO fencing */
+	polar_io_fencing_t polar_io_fencing;
+
+	/*
+	 * POLAR:
+	 * During parallel replay, we keep an ring of latest checkpoints. When
+	 * creating a restart point, we choose the latest checkpoint whose redo is
+	 * just less than polar_logindex_redo_instance->bg_replayed_lsn.
+	 *
+	 * If there is no checkpoint before bg_replayed_lsn, we will skip the
+	 * creating restart point procedure.
+	 *
+	 * Protected by polar_checkpoint_ringbuf->lock.
+	 */
+	polar_checkpoint_ringbuf_t polar_checkpoint_ringbuf;
 } XLogCtlData;
 
 static XLogCtlData *XLogCtl = NULL;
@@ -804,6 +986,11 @@ static int	UsableBytesInSegment;
  * See discussion above.
  */
 static XLogwrtResult LogwrtResult = {0, 0};
+
+/*
+ * POLAR: Private, possibly out-of-date copy of shared ConsensusCommit 
+ */
+static XLogRecPtr	ConsensusCommit; /* last byte + 1 consensus committed */
 
 /*
  * Codes indicating where we got a WAL file from during recovery, or where
@@ -923,7 +1110,6 @@ static void LocalSetXLogInsertAllowed(void);
 static void CreateEndOfRecoveryRecord(void);
 static void CheckPointGuts(XLogRecPtr checkPointRedo, int flags);
 static void KeepLogSeg(XLogRecPtr recptr, XLogSegNo *logSegNo);
-static XLogRecPtr XLogGetReplicationSlotMinimumLSN(void);
 
 static void AdvanceXLInsertBuffer(XLogRecPtr upto, bool opportunistic);
 static bool XLogCheckpointNeeded(XLogSegNo new_segno);
@@ -973,7 +1159,7 @@ static void rm_redo_error_callback(void *arg);
 static void CopyXLogRecordToWAL(int write_len, bool isLogSwitch,
 					XLogRecData *rdata,
 					XLogRecPtr StartPos, XLogRecPtr EndPos);
-static void ReserveXLogInsertLocation(int size, XLogRecPtr *StartPos,
+static void ReserveXLogInsertLocation(XLogRecData *rdata, int size, XLogRecPtr *StartPos,
 						  XLogRecPtr *EndPos, XLogRecPtr *PrevPtr, uint32 RbufLen, size_t *RbufPos);
 static bool ReserveXLogSwitch(XLogRecPtr *StartPos, XLogRecPtr *EndPos,
 				  XLogRecPtr *PrevPtr, uint32 RbufLen, size_t *RbufPos);
@@ -992,16 +1178,35 @@ static void WALInsertLockUpdateInsertingAt(XLogRecPtr insertingAt);
 /* POLAR */
 static void polar_postmaster_reset_local_variables(void);
 static bool polar_should_check_checkpoint(void);
-static bool polar_is_checkpoint_legal(XLogRecPtr check_point_lsn);
+static bool polar_is_checkpoint_legal(XLogRecPtr redo);
 static void polar_wait_consistent_lsn(XLogRecPtr redo, int flags);
 static void polar_flush_buffer_for_shutdown(XLogRecPtr redo, int flags);
 static void polar_accept_signal_for_checkpoint(int flags);
 static void polar_try_to_wake_walreceiver(XLogRecPtr RecPtr, bool fetching_ckpt, XLogRecPtr tliRecPtr);
-static void polar_remove_empty_pread_xlog_buffer(XLogRecPtr targetPagePtr);
-static int  polar_pread_xlog_page_with_xlog_buffer(TimeLineID *prev_timeline,
-												   XLogRecPtr target_page_ptr,
-												   int64 ahead_size, char *readBuf);
 static int  polar_pread_xlog_page(TimeLineID *prev_timeline, XLogRecPtr targetPagePtr, char *readBuf);
+static int  polar_pread_xlog_page_with_xlog_buffer(
+		TimeLineID *prev_timeline, XLogRecPtr target_page_ptr, int64 ahead_size, char *readBuf);
+static void polar_remove_empty_pread_xlog_buffer(XLogRecPtr targetPagePtr);
+static void polar_request_last_restartpoint(void);
+static XLogReaderState * polar_reset_xlogreader(XLogReaderState *xlogreader, XLogPageReadPrivate *private);
+static void polar_exit_archive_recovery(void);
+
+static bool polar_check_recovery_state_change(void);
+static bool polar_check_and_switch_recovery_state(bool *leaderSwitch, bool *logSwitch);
+static bool polar_dma_check_local_recovery(XLogRecPtr RecPtr);
+static bool polar_dma_recovery_wait_commit(XLogRecPtr RecPtr);
+static bool polar_dma_xlog_commit(XLogRecPtr record);
+static int polar_dma_xlog_file_read_any(XLogSegNo segno, int emode, TimeLineID tli, int source);
+static bool polar_dma_need_file_switch(XLogRecPtr tliRecPtr, bool fetching_ckpt, XLogRecPtr RecPtr);
+static bool polar_dma_beyond_consensus_log(XLogRecPtr RecPtr);
+static void polar_dma_xlog_truncate(XLogRecPtr resetPtr, TimeLineID tli, int elevel);
+
+static void polar_clean_smgr_cache_if_needed(XLogReaderState *xlogreader);
+static void polar_smgr_drop_all_sr(XLogReaderState *xlogreader);
+static void polar_update_controlfile_minrecoverypoint(XLogRecPtr min_recovery_point, TimeLineID min_recovery_point_tli);
+
+static void polar_update_curFileTLI(XLogRecPtr ptr);
+/* POLAR end */
 
 /*
  * Insert an XLOG record represented by an already-constructed chain of data
@@ -1046,22 +1251,28 @@ XLogInsertRecord(XLogRecData *rdata,
 	bool		prevDoPageWrites = doPageWrites;
 
 	/* POLAR: The reserved start point from rbuf */
-	size_t     	RbufPos = -1;
+	size_t		RbufPos = 0;
 	/* POLAR: The reserved length for rbuf */
 	uint32		RbufLen = 0;
-
+	/* POLAR: The flashback point lsn */
+	XLogRecPtr	fbpoint_lsn = InvalidXLogRecPtr;
+	/* POLAR: The flashback log enable? */
+	bool		flashback_log_enable = polar_is_flog_enabled(flog_instance);
 
 	/* we assume that all of the record header is in the first chunk */
 	Assert(rdata->len >= SizeOfXLogRecord);
 
 	/* POLAR: Calc length to reserve from xlog queue */
-	if (polar_streaming_xlog_meta)
+	if (POLAR_LOGINDEX_ENABLE_XLOG_QUEUE())
 		RbufLen = polar_xlog_reserve_size(rdata);
 	/* Polar end */
 
 	/* cross-check on whether we should be here or not */
 	if (!XLogInsertAllowed())
+	{
 		elog(ERROR, "cannot make new WAL entries during recovery");
+	}
+
 
 	/*----------
 	 *
@@ -1081,7 +1292,7 @@ XLogInsertRecord(XLogRecData *rdata,
 	 * inserter acquires an insertion lock. In addition to just indicating that
 	 * an insertion is in progress, the lock tells others how far the inserter
 	 * has progressed. There is a small fixed number of insertion locks,
-	 * determined by NUM_XLOGINSERT_LOCKS. When an inserter crosses a page
+	 * determined by polar_wal_buffer_insert_locks. When an inserter crosses a page
 	 * boundary, it updates the value stored in the lock to the how far it has
 	 * inserted, to allow the previous buffer to be flushed.
 	 *
@@ -1124,6 +1335,9 @@ XLogInsertRecord(XLogRecData *rdata,
 	}
 	doPageWrites = (Insert->fullPageWrites || Insert->forcePageWrites);
 
+	if (flashback_log_enable)
+		fbpoint_lsn = polar_get_curr_fbpoint_lsn(flog_instance->buf_ctl);
+
 	if (doPageWrites &&
 		(!prevDoPageWrites ||
 		 (fpw_lsn != InvalidXLogRecPtr && fpw_lsn <= RedoRecPtr)))
@@ -1145,7 +1359,7 @@ XLogInsertRecord(XLogRecData *rdata,
 		inserted = ReserveXLogSwitch(&StartPos, &EndPos, &rechdr->xl_prev, RbufLen, &RbufPos);
 	else
 	{
-		ReserveXLogInsertLocation(rechdr->xl_tot_len, &StartPos, &EndPos,
+		ReserveXLogInsertLocation(rdata, rechdr->xl_tot_len, &StartPos, &EndPos,
 								  &rechdr->xl_prev, RbufLen, &RbufPos);
 		inserted = true;
 	}
@@ -1199,22 +1413,27 @@ XLogInsertRecord(XLogRecData *rdata,
 	/* POLAR: must be inside CRIT_SECTION.
 	 * Hold off signal to avoid mess up queue data.
 	 */
-	if (inserted && polar_streaming_xlog_meta)
+	if (inserted && POLAR_LOGINDEX_ENABLE_XLOG_QUEUE())
 	{
-		Assert(RbufPos >= 0);
-
-		if (polar_xlog_send_queue_push(RbufPos, rdata, RbufLen, EndPos, EndPos - StartPos)
+		if (polar_xlog_send_queue_push(polar_logindex_redo_instance->xlog_queue,
+									   RbufPos, rdata, RbufLen, EndPos,
+									   EndPos - StartPos)
 			&& ProcGlobal->walwriterLatch != NULL)
 		{
 			SetLatch(ProcGlobal->walwriterLatch);
-			if (polar_enable_debug)
+			if (unlikely(polar_enable_debug))
 			{
 				ereport(LOG, (errmsg("%s push %X/%X to queue", __func__,
 							(uint32) (EndPos >> 32),
 							(uint32) EndPos)));
 			}
+
+			/* In polar wal pipeline mode, should wakeup wal pipeliner */
+			if (POLAR_WAL_PIPELINER_READY())
+				polar_wal_pipeliner_wakeup();
 		}
 	}
+
 
 	END_CRIT_SECTION();
 
@@ -1229,6 +1448,7 @@ XLogInsertRecord(XLogRecData *rdata,
 			XLogCtl->LogwrtRqst.Write = EndPos;
 		/* update local result copy while I have the chance */
 		LogwrtResult = XLogCtl->LogwrtResult;
+		ConsensusCommit = XLogCtl->ConsensusCommit;
 		SpinLockRelease(&XLogCtl->info_lck);
 	}
 
@@ -1318,6 +1538,15 @@ XLogInsertRecord(XLogRecData *rdata,
 	ProcLastRecPtr = StartPos;
 	XactLastRecEnd = EndPos;
 
+	/* POLAR: Insert the flashback log after everything is ok */
+	if (flashback_log_enable && inserted)
+	{
+		XLogRecord *rechdr = (XLogRecord *) rdata->data;
+		uint8 info = rechdr->xl_info & ~XLR_INFO_MASK;
+
+		polar_flashback_log_insert_from_xlog(fbpoint_lsn, info);
+	}
+
 	return EndPos;
 }
 
@@ -1336,7 +1565,7 @@ XLogInsertRecord(XLogRecData *rdata,
  * where we actually copy the record to the reserved space.
  */
 static void
-ReserveXLogInsertLocation(int size, XLogRecPtr *StartPos, XLogRecPtr *EndPos,
+ReserveXLogInsertLocation(XLogRecData *rdata, int size, XLogRecPtr *StartPos, XLogRecPtr *EndPos,
 						  XLogRecPtr *PrevPtr, uint32 RbufLen, size_t *RbufPos)
 {
 	XLogCtlInsert *Insert = &XLogCtl->Insert;
@@ -1344,7 +1573,7 @@ ReserveXLogInsertLocation(int size, XLogRecPtr *StartPos, XLogRecPtr *EndPos,
 	uint64		endbytepos;
 	uint64		prevbytepos;
 	/* POLAR: check polar xlog quueue is enabled */
-	bool        polar_xlog = POLAR_XLOG_QUEUE_ENABLE();
+	bool        polar_xlog = POLAR_LOGINDEX_ENABLE_XLOG_QUEUE();
 
 	size = MAXALIGN(size);
 
@@ -1361,31 +1590,31 @@ ReserveXLogInsertLocation(int size, XLogRecPtr *StartPos, XLogRecPtr *EndPos,
 	 * because the usable byte position doesn't include any headers, reserving
 	 * X bytes from WAL is almost as simple as "CurrBytePos += X".
 	 */
+
 	for (;;)
 	{
 		SpinLockAcquire(&Insert->insertpos_lck);
-		if (polar_xlog)
+		if (likely(polar_xlog))
 		{
-			if(!POLAR_XLOG_QUEUE_FREE_SIZE(RbufLen))
+			if(!POLAR_XLOG_QUEUE_FREE_SIZE(polar_logindex_redo_instance->xlog_queue, RbufLen))
 			{
 				SpinLockRelease(&Insert->insertpos_lck);
-				POLAR_XLOG_QUEUE_FREE_UP(RbufLen);
+				POLAR_XLOG_QUEUE_FREE_UP(polar_logindex_redo_instance->xlog_queue, RbufLen);;
 				continue;
 			}
-			*RbufPos = POLAR_XLOG_QUEUE_RESERVE(RbufLen);
+			*RbufPos = POLAR_XLOG_QUEUE_RESERVE(polar_logindex_redo_instance->xlog_queue, RbufLen);
 		}
 		startbytepos = Insert->CurrBytePos;
 		endbytepos = startbytepos + size;
 		prevbytepos = Insert->PrevBytePos;
 		Insert->CurrBytePos = endbytepos;
 		Insert->PrevBytePos = startbytepos;
-
 		SpinLockRelease(&Insert->insertpos_lck);
 		break;
 	}
 
-	if (polar_xlog)
-		POLAR_XLOG_QUEUE_SET_PKT_LEN(*RbufPos, RbufLen);
+	if (likely(polar_xlog))
+		POLAR_XLOG_QUEUE_SET_PKT_LEN(polar_logindex_redo_instance->xlog_queue, *RbufPos, RbufLen);
 
 	*StartPos = XLogBytePosToRecPtr(startbytepos);
 	*EndPos = XLogBytePosToEndRecPtr(endbytepos);
@@ -1420,7 +1649,7 @@ ReserveXLogSwitch(XLogRecPtr *StartPos, XLogRecPtr *EndPos, XLogRecPtr *PrevPtr,
 	XLogRecPtr	ptr;
 	uint32		segleft;
 	/* POLAR: check polar xlog quueue is enabled */
-	bool        polar_xlog = POLAR_XLOG_QUEUE_ENABLE();
+	bool        polar_xlog = POLAR_LOGINDEX_ENABLE_XLOG_QUEUE();
 
 	/*
 	 * These calculations are a bit heavy-weight to be done while holding a
@@ -1442,15 +1671,15 @@ ReserveXLogSwitch(XLogRecPtr *StartPos, XLogRecPtr *EndPos, XLogRecPtr *PrevPtr,
 			return false;
 		}
 
-		if (polar_xlog)
+		if (likely(polar_xlog))
 		{
-			if(!POLAR_XLOG_QUEUE_FREE_SIZE(RbufLen))
+			if(!POLAR_XLOG_QUEUE_FREE_SIZE(polar_logindex_redo_instance->xlog_queue, RbufLen))
 			{
 				SpinLockRelease(&Insert->insertpos_lck);
-				POLAR_XLOG_QUEUE_FREE_UP(RbufLen);
+				POLAR_XLOG_QUEUE_FREE_UP(polar_logindex_redo_instance->xlog_queue, RbufLen);
 				continue;
 			}
-			*RbufPos = POLAR_XLOG_QUEUE_RESERVE(RbufLen);
+			*RbufPos = POLAR_XLOG_QUEUE_RESERVE(polar_logindex_redo_instance->xlog_queue, RbufLen);
 		}
 
 		endbytepos = startbytepos + size;
@@ -1473,8 +1702,8 @@ ReserveXLogSwitch(XLogRecPtr *StartPos, XLogRecPtr *EndPos, XLogRecPtr *PrevPtr,
 		break;
 	}
 
-	if (polar_xlog)
-		POLAR_XLOG_QUEUE_SET_PKT_LEN(*RbufPos, RbufLen);
+	if (likely(polar_xlog))
+		POLAR_XLOG_QUEUE_SET_PKT_LEN(polar_logindex_redo_instance->xlog_queue, *RbufPos, RbufLen);
 
 	*PrevPtr = XLogBytePosToRecPtr(prevbytepos);
 
@@ -1636,6 +1865,13 @@ CopyXLogRecordToWAL(int write_len, bool isLogSwitch, XLogRecData *rdata,
 			 */
 			Assert(CurrPos % XLOG_BLCKSZ >= SizeOfXLogShortPHD || freespace == 0);
 			memcpy(currpos, rdata_data, freespace);
+
+			if (POLAR_WAL_PIPELINER_READY())
+			{
+				if (freespace != 0)
+					polar_wal_pipeline_recent_written_add_link(CurrPos, CurrPos + freespace);
+			}
+
 			rdata_data += freespace;
 			rdata_len -= freespace;
 			written += freespace;
@@ -1671,6 +1907,13 @@ CopyXLogRecordToWAL(int write_len, bool isLogSwitch, XLogRecData *rdata,
 
 		Assert(CurrPos % XLOG_BLCKSZ >= SizeOfXLogShortPHD || rdata_len == 0);
 		memcpy(currpos, rdata_data, rdata_len);
+
+		if (POLAR_WAL_PIPELINER_READY())
+		{
+			if (rdata_len != 0)
+				polar_wal_pipeline_recent_written_add_link(CurrPos, CurrPos + rdata_len);
+		}
+
 		currpos += rdata_len;
 		CurrPos += rdata_len;
 		freespace -= rdata_len;
@@ -1692,6 +1935,12 @@ CopyXLogRecordToWAL(int write_len, bool isLogSwitch, XLogRecData *rdata,
 
 		/* Assert that we did reserve the right amount of space */
 		Assert(XLogSegmentOffset(EndPos, wal_segment_size) == 0);
+
+		if (POLAR_WAL_PIPELINER_READY())
+		{
+			if (freespace != 0)
+				polar_wal_pipeline_recent_written_add_link(CurrPos, CurrPos + freespace);
+		}
 
 		/* Use up all the remaining space on the current page */
 		CurrPos += freespace;
@@ -1726,11 +1975,20 @@ CopyXLogRecordToWAL(int write_len, bool isLogSwitch, XLogRecData *rdata,
 			currpos = GetXLogBuffer(CurrPos);
 			MemSet(currpos, 0, SizeOfXLogShortPHD);
 
+			if (POLAR_WAL_PIPELINER_READY())
+				polar_wal_pipeline_recent_written_add_link(CurrPos, CurrPos + XLOG_BLCKSZ);
+
 			CurrPos += XLOG_BLCKSZ;
 		}
 	}
 	else
 	{
+		if (POLAR_WAL_PIPELINER_READY())
+		{
+			if (CurrPos != EndPos)
+				polar_wal_pipeline_recent_written_add_link(CurrPos, EndPos);
+		}
+
 		/* Align the end position, so that the next record starts aligned */
 		CurrPos = MAXALIGN64(CurrPos);
 	}
@@ -1761,7 +2019,7 @@ WALInsertLockAcquire(void)
 	static int	lockToTry = -1;
 
 	if (lockToTry == -1)
-		lockToTry = MyProc->pgprocno % NUM_XLOGINSERT_LOCKS;
+		lockToTry = MyProc->pgprocno % polar_wal_buffer_insert_locks;
 	MyLockNo = lockToTry;
 
 	/*
@@ -1779,7 +2037,7 @@ WALInsertLockAcquire(void)
 		 * than locks, it still helps to distribute the inserters evenly
 		 * across the locks.
 		 */
-		lockToTry = (lockToTry + 1) % NUM_XLOGINSERT_LOCKS;
+		lockToTry = (lockToTry + 1) % polar_wal_buffer_insert_locks;
 	}
 }
 
@@ -1797,7 +2055,7 @@ WALInsertLockAcquireExclusive(void)
 	 * indicator is set to 0xFFFFFFFFFFFFFFFF, which is higher than any real
 	 * XLogRecPtr value, to make sure that no-one blocks waiting on those.
 	 */
-	for (i = 0; i < NUM_XLOGINSERT_LOCKS - 1; i++)
+	for (i = 0; i < polar_wal_buffer_insert_locks - 1; i++)
 	{
 		LWLockAcquire(&WALInsertLocks[i].l.lock, LW_EXCLUSIVE);
 		LWLockUpdateVar(&WALInsertLocks[i].l.lock,
@@ -1823,7 +2081,7 @@ WALInsertLockRelease(void)
 	{
 		int			i;
 
-		for (i = 0; i < NUM_XLOGINSERT_LOCKS; i++)
+		for (i = 0; i < polar_wal_buffer_insert_locks; i++)
 			LWLockReleaseClearVar(&WALInsertLocks[i].l.lock,
 								  &WALInsertLocks[i].l.insertingAt,
 								  0);
@@ -1851,8 +2109,8 @@ WALInsertLockUpdateInsertingAt(XLogRecPtr insertingAt)
 		 * We use the last lock to mark our actual position, see comments in
 		 * WALInsertLockAcquireExclusive.
 		 */
-		LWLockUpdateVar(&WALInsertLocks[NUM_XLOGINSERT_LOCKS - 1].l.lock,
-						&WALInsertLocks[NUM_XLOGINSERT_LOCKS - 1].l.insertingAt,
+		LWLockUpdateVar(&WALInsertLocks[polar_wal_buffer_insert_locks - 1].l.lock,
+						&WALInsertLocks[polar_wal_buffer_insert_locks - 1].l.insertingAt,
 						insertingAt);
 	}
 	else
@@ -1919,7 +2177,7 @@ WaitXLogInsertionsToFinish(XLogRecPtr upto)
 	 * out for any insertion that's still in progress.
 	 */
 	finishedUpto = reservedUpto;
-	for (i = 0; i < NUM_XLOGINSERT_LOCKS; i++)
+	for (i = 0; i < polar_wal_buffer_insert_locks; i++)
 	{
 		XLogRecPtr	insertingat = InvalidXLogRecPtr;
 
@@ -2254,6 +2512,7 @@ AdvanceXLInsertBuffer(XLogRecPtr upto, bool opportunistic)
 			if (XLogCtl->LogwrtRqst.Write < OldPageRqstPtr)
 				XLogCtl->LogwrtRqst.Write = OldPageRqstPtr;
 			LogwrtResult = XLogCtl->LogwrtResult;
+			ConsensusCommit = XLogCtl->ConsensusCommit;
 			SpinLockRelease(&XLogCtl->info_lck);
 
 			/*
@@ -2270,26 +2529,32 @@ AdvanceXLInsertBuffer(XLogRecPtr upto, bool opportunistic)
 				 */
 				LWLockRelease(WALBufMappingLock);
 
-				WaitXLogInsertionsToFinish(OldPageRqstPtr);
-
-				LWLockAcquire(WALWriteLock, LW_EXCLUSIVE);
-
-				LogwrtResult = XLogCtl->LogwrtResult;
-				if (LogwrtResult.Write >= OldPageRqstPtr)
-				{
-					/* OK, someone wrote it already */
-					LWLockRelease(WALWriteLock);
-				}
+				if (POLAR_WAL_PIPELINER_READY())
+					polar_wal_pipeline_commit_wait(OldPageRqstPtr);
 				else
 				{
-					/* Have to write it ourselves */
-					TRACE_POSTGRESQL_WAL_BUFFER_WRITE_DIRTY_START();
-					WriteRqst.Write = OldPageRqstPtr;
-					WriteRqst.Flush = 0;
-					XLogWrite(WriteRqst, false);
-					LWLockRelease(WALWriteLock);
-					TRACE_POSTGRESQL_WAL_BUFFER_WRITE_DIRTY_DONE();
+					WaitXLogInsertionsToFinish(OldPageRqstPtr);
+
+					LWLockAcquire(WALWriteLock, LW_EXCLUSIVE);
+
+					LogwrtResult = XLogCtl->LogwrtResult;
+					if (LogwrtResult.Write >= OldPageRqstPtr)
+					{
+						/* OK, someone wrote it already */
+						LWLockRelease(WALWriteLock);
+					}
+					else
+					{
+						/* Have to write it ourselves */
+						TRACE_POSTGRESQL_WAL_BUFFER_WRITE_DIRTY_START();
+						WriteRqst.Write = OldPageRqstPtr;
+						WriteRqst.Flush = 0;
+						XLogWrite(WriteRqst, false);
+						LWLockRelease(WALWriteLock);
+						TRACE_POSTGRESQL_WAL_BUFFER_WRITE_DIRTY_DONE();
+					}
 				}
+
 				/* Re-acquire WALBufMappingLock and retry */
 				LWLockAcquire(WALBufMappingLock, LW_EXCLUSIVE);
 				continue;
@@ -2513,7 +2778,7 @@ XLogWrite(XLogwrtRqst WriteRqst, bool flexible)
 	int			npages;
 	int			startidx;
 	uint32		startoffset;
-	bool		polar_use_pwrite = POLAR_ENABLE_PWRITE();
+	bool		polar_async_pwrite = POLAR_ENABLE_PWRITE();
 
 	/* We should always be inside a critical section here */
 	Assert(CritSectionCount > 0);
@@ -2521,7 +2786,8 @@ XLogWrite(XLogwrtRqst WriteRqst, bool flexible)
 	/*
 	 * Update local LogwrtResult (caller probably did this already, but...)
 	 */
-	LogwrtResult = XLogCtl->LogwrtResult;
+	if (!POLAR_WAL_PIPELINER_READY())
+		LogwrtResult = XLogCtl->LogwrtResult;
 
 	/*
 	 * Since successive pages in the xlog cache are consecutively allocated,
@@ -2571,7 +2837,10 @@ XLogWrite(XLogwrtRqst WriteRqst, bool flexible)
 			 */
 			Assert(npages == 0);
 			if (openLogFile >= 0)
-				XLogFileClose();
+			{
+				if (!POLAR_WAL_PIPELINER_READY())
+					XLogFileClose();
+			}
 			XLByteToPrevSeg(LogwrtResult.Write, openLogSegNo,
 							wal_segment_size);
 
@@ -2624,7 +2893,7 @@ XLogWrite(XLogwrtRqst WriteRqst, bool flexible)
 			if (openLogOff != startoffset)
 			{
 				/* POLAR: use pwrite to replace lseek + write */
-				if (polar_use_pwrite == false)
+				if (polar_async_pwrite == false)
 				{
 					if (polar_lseek(openLogFile, (off_t) startoffset, SEEK_SET) < 0)
 						ereport(PANIC,
@@ -2644,7 +2913,7 @@ XLogWrite(XLogwrtRqst WriteRqst, bool flexible)
 			{
 				errno = 0;
 				/* POLAR: use pwrite to replace lseek + write */
-				if (polar_use_pwrite)
+				if (polar_async_pwrite)
 				{
 					pgstat_report_wait_start(WAIT_EVENT_WAL_PWRITE);
 					written = polar_pwrite(openLogFile, from, nleft, startoffset);
@@ -2690,31 +2959,39 @@ XLogWrite(XLogwrtRqst WriteRqst, bool flexible)
 			 */
 			if (finishing_seg)
 			{
-				issue_xlog_fsync(openLogFile, openLogSegNo);
-
-				/* signal that we need to wakeup walsenders later */
-				WalSndWakeupRequest();
-
-				LogwrtResult.Flush = LogwrtResult.Write;	/* end of page */
-
-				if (XLogArchivingActive())
-					XLogArchiveNotifySeg(openLogSegNo);
-
-				XLogCtl->lastSegSwitchTime = (pg_time_t) time(NULL);
-				XLogCtl->lastSegSwitchLSN = LogwrtResult.Flush;
-
-				/*
-				 * Request a checkpoint if we've consumed too much xlog since
-				 * the last one.  For speed, we first check using the local
-				 * copy of RedoRecPtr, which might be out of date; if it looks
-				 * like a checkpoint is needed, forcibly update RedoRecPtr and
-				 * recheck.
-				 */
-				if (IsUnderPostmaster && XLogCheckpointNeeded(openLogSegNo))
+				if (POLAR_WAL_PIPELINER_READY())
 				{
-					(void) GetRedoRecPtr();
-					if (XLogCheckpointNeeded(openLogSegNo))
-						RequestCheckpoint(CHECKPOINT_CAUSE_XLOG);
+					polar_wal_pipeline_unflushed_xlog_append(openLogFile, openLogSegNo, LogwrtResult.Write, true);
+					LogwrtResult.Flush = LogwrtResult.Write;
+				}
+				else
+				{
+					issue_xlog_fsync(openLogFile, openLogSegNo);
+
+					/* signal that we need to wakeup walsenders later */
+					WalSndWakeupRequest();
+
+					LogwrtResult.Flush = LogwrtResult.Write;	/* end of page */
+
+					if (XLogArchivingActive())
+						XLogArchiveNotifySeg(openLogSegNo);
+
+					XLogCtl->lastSegSwitchTime = (pg_time_t) time(NULL);
+					XLogCtl->lastSegSwitchLSN = LogwrtResult.Flush;
+
+					/*
+					* Request a checkpoint if we've consumed too much xlog since
+					* the last one.  For speed, we first check using the local
+					* copy of RedoRecPtr, which might be out of date; if it looks
+					* like a checkpoint is needed, forcibly update RedoRecPtr and
+					* recheck.
+					*/
+					if (IsUnderPostmaster && XLogCheckpointNeeded(openLogSegNo))
+					{
+						(void) GetRedoRecPtr();
+						if (XLogCheckpointNeeded(openLogSegNo))
+							RequestCheckpoint(CHECKPOINT_CAUSE_XLOG);
+					}
 				}
 			}
 		}
@@ -2752,7 +3029,10 @@ XLogWrite(XLogwrtRqst WriteRqst, bool flexible)
 			if (openLogFile >= 0 &&
 				!XLByteInPrevSeg(LogwrtResult.Write, openLogSegNo,
 								 wal_segment_size))
-				XLogFileClose();
+			{
+				if (!POLAR_WAL_PIPELINER_READY())
+					XLogFileClose();
+			}
 			if (openLogFile < 0)
 			{
 				XLByteToPrevSeg(LogwrtResult.Write, openLogSegNo,
@@ -2761,7 +3041,10 @@ XLogWrite(XLogwrtRqst WriteRqst, bool flexible)
 				openLogOff = 0;
 			}
 
-			issue_xlog_fsync(openLogFile, openLogSegNo);
+			if (POLAR_WAL_PIPELINER_READY())
+				polar_wal_pipeline_unflushed_xlog_append(openLogFile, openLogSegNo, LogwrtResult.Write, false);
+			else
+				issue_xlog_fsync(openLogFile, openLogSegNo);
 		}
 
 		/* signal that we need to wakeup walsenders later */
@@ -2777,6 +3060,7 @@ XLogWrite(XLogwrtRqst WriteRqst, bool flexible)
 	 * 'result' values.  This is not absolutely essential, but it saves some
 	 * code in a couple of places.
 	 */
+	if (!POLAR_WAL_PIPELINER_READY())
 	{
 		SpinLockAcquire(&XLogCtl->info_lck);
 		XLogCtl->LogwrtResult = LogwrtResult;
@@ -2784,6 +3068,14 @@ XLogWrite(XLogwrtRqst WriteRqst, bool flexible)
 			XLogCtl->LogwrtRqst.Write = LogwrtResult.Write;
 		if (XLogCtl->LogwrtRqst.Flush < LogwrtResult.Flush)
 			XLogCtl->LogwrtRqst.Flush = LogwrtResult.Flush;
+		SpinLockRelease(&XLogCtl->info_lck);
+	}
+    else
+	{
+		SpinLockAcquire(&XLogCtl->info_lck);
+		XLogCtl->LogwrtResult.Write = LogwrtResult.Write;
+		if (XLogCtl->LogwrtRqst.Write < LogwrtResult.Write)
+			XLogCtl->LogwrtRqst.Write = LogwrtResult.Write;
 		SpinLockRelease(&XLogCtl->info_lck);
 	}
 }
@@ -2801,6 +3093,7 @@ XLogSetAsyncXactLSN(XLogRecPtr asyncXactLSN)
 
 	SpinLockAcquire(&XLogCtl->info_lck);
 	LogwrtResult = XLogCtl->LogwrtResult;
+	ConsensusCommit = XLogCtl->ConsensusCommit;
 	sleeping = XLogCtl->WalWriterSleeping;
 	if (XLogCtl->asyncXactLSN < asyncXactLSN)
 		XLogCtl->asyncXactLSN = asyncXactLSN;
@@ -2828,6 +3121,10 @@ XLogSetAsyncXactLSN(XLogRecPtr asyncXactLSN)
 	 */
 	if (ProcGlobal->walwriterLatch)
 		SetLatch(ProcGlobal->walwriterLatch);
+
+	/* In polar wal pipeline mode, should wakeup wal pipeliner */
+	if (POLAR_WAL_PIPELINER_READY())
+		polar_wal_pipeliner_wakeup();
 }
 
 /*
@@ -2847,7 +3144,7 @@ XLogSetReplicationSlotMinimumLSN(XLogRecPtr lsn)
  * Return the oldest LSN we must retain to satisfy the needs of some
  * replication slot.
  */
-static XLogRecPtr
+XLogRecPtr
 XLogGetReplicationSlotMinimumLSN(void)
 {
 	XLogRecPtr	retval;
@@ -2976,7 +3273,15 @@ XLogFlush(XLogRecPtr record)
 
 	/* Quick exit if already known flushed */
 	if (record <= LogwrtResult.Flush)
+	{
+		if (polar_is_dma_data_node())
+		{
+			ConsensusSetXLogFlushedLSN(record, ThisTimeLineID, false);
+			if (!polar_dma_async_commit)
+				polar_dma_xlog_commit(record);
+		}
 		return;
+	}
 
 #ifdef WAL_DEBUG
 	if (XLOG_DEBUG)
@@ -3012,77 +3317,84 @@ XLogFlush(XLogRecPtr record)
 		if (WriteRqstPtr < XLogCtl->LogwrtRqst.Write)
 			WriteRqstPtr = XLogCtl->LogwrtRqst.Write;
 		LogwrtResult = XLogCtl->LogwrtResult;
+		ConsensusCommit = XLogCtl->ConsensusCommit;
 		SpinLockRelease(&XLogCtl->info_lck);
 
 		/* done already? */
 		if (record <= LogwrtResult.Flush)
 			break;
 
-		/*
-		 * Before actually performing the write, wait for all in-flight
-		 * insertions to the pages we're about to write to finish.
-		 */
-		insertpos = WaitXLogInsertionsToFinish(WriteRqstPtr);
-
-		/*
-		 * Try to get the write lock. If we can't get it immediately, wait
-		 * until it's released, and recheck if we still need to do the flush
-		 * or if the backend that held the lock did it for us already. This
-		 * helps to maintain a good rate of group committing when the system
-		 * is bottlenecked by the speed of fsyncing.
-		 */
-		if (!LWLockAcquireOrWait(WALWriteLock, LW_EXCLUSIVE))
+		if (POLAR_WAL_PIPELINER_READY())
+			polar_wal_pipeline_commit_wait(WriteRqstPtr);
+		else
 		{
 			/*
-			 * The lock is now free, but we didn't acquire it yet. Before we
-			 * do, loop back to check if someone else flushed the record for
-			 * us already.
+			 * Before actually performing the write, wait for all in-flight
+			 * insertions to the pages we're about to write to finish.
 			 */
-			continue;
-		}
+			insertpos = WaitXLogInsertionsToFinish(WriteRqstPtr);
 
-		/* Got the lock; recheck whether request is satisfied */
-		LogwrtResult = XLogCtl->LogwrtResult;
-		if (record <= LogwrtResult.Flush)
-		{
+			/*
+			 * Try to get the write lock. If we can't get it immediately, wait
+			 * until it's released, and recheck if we still need to do the flush
+			 * or if the backend that held the lock did it for us already. This
+			 * helps to maintain a good rate of group committing when the system
+			 * is bottlenecked by the speed of fsyncing.
+			 */
+			if (!LWLockAcquireOrWait(WALWriteLock, LW_EXCLUSIVE))
+			{
+				/*
+				 * The lock is now free, but we didn't acquire it yet. Before we
+				 * do, loop back to check if someone else flushed the record for
+				 * us already.
+				 */
+				continue;
+			}
+
+			/* Got the lock; recheck whether request is satisfied */
+			LogwrtResult = XLogCtl->LogwrtResult;
+			if (record <= LogwrtResult.Flush)
+			{
+				LWLockRelease(WALWriteLock);
+				break;
+			}
+
+			/*
+			 * Sleep before flush! By adding a delay here, we may give further
+			 * backends the opportunity to join the backlog of group commit
+			 * followers; this can significantly improve transaction throughput,
+			 * at the risk of increasing transaction latency.
+			 *
+			 * We do not sleep if enableFsync is not turned on, nor if there are
+			 * fewer than CommitSiblings other backends with active transactions.
+			 */
+			if (CommitDelay > 0 && enableFsync &&
+				MinimumActiveBackends(CommitSiblings))
+			{
+				pg_usleep(CommitDelay);
+
+				/*
+				 * Re-check how far we can now flush the WAL. It's generally not
+				 * safe to call WaitXLogInsertionsToFinish while holding
+				 * WALWriteLock, because an in-progress insertion might need to
+				 * also grab WALWriteLock to make progress. But we know that all
+				 * the insertions up to insertpos have already finished, because
+				 * that's what the earlier WaitXLogInsertionsToFinish() returned.
+				 * We're only calling it again to allow insertpos to be moved
+				 * further forward, not to actually wait for anyone.
+				 */
+				insertpos = WaitXLogInsertionsToFinish(insertpos);
+			}
+
+			/* try to write/flush later additions to XLOG as well */
+			WriteRqst.Write = insertpos;
+			WriteRqst.Flush = insertpos;
+
+			XLogWrite(WriteRqst, false);
+
 			LWLockRelease(WALWriteLock);
-			break;
 		}
-
-		/*
-		 * Sleep before flush! By adding a delay here, we may give further
-		 * backends the opportunity to join the backlog of group commit
-		 * followers; this can significantly improve transaction throughput,
-		 * at the risk of increasing transaction latency.
-		 *
-		 * We do not sleep if enableFsync is not turned on, nor if there are
-		 * fewer than CommitSiblings other backends with active transactions.
-		 */
-		if (CommitDelay > 0 && enableFsync &&
-			MinimumActiveBackends(CommitSiblings))
-		{
-			pg_usleep(CommitDelay);
-
-			/*
-			 * Re-check how far we can now flush the WAL. It's generally not
-			 * safe to call WaitXLogInsertionsToFinish while holding
-			 * WALWriteLock, because an in-progress insertion might need to
-			 * also grab WALWriteLock to make progress. But we know that all
-			 * the insertions up to insertpos have already finished, because
-			 * that's what the earlier WaitXLogInsertionsToFinish() returned.
-			 * We're only calling it again to allow insertpos to be moved
-			 * further forward, not to actually wait for anyone.
-			 */
-			insertpos = WaitXLogInsertionsToFinish(insertpos);
-		}
-
-		/* try to write/flush later additions to XLOG as well */
-		WriteRqst.Write = insertpos;
-		WriteRqst.Flush = insertpos;
-
-		XLogWrite(WriteRqst, false);
-
-		LWLockRelease(WALWriteLock);
+		
 		/* done */
 		break;
 	}
@@ -3091,6 +3403,13 @@ XLogFlush(XLogRecPtr record)
 
 	/* wake up walsenders now that we've released heavily contended locks */
 	WalSndWakeupProcessRequests();
+
+	if (polar_is_dma_data_node())
+	{
+		ConsensusSetXLogFlushedLSN(record, ThisTimeLineID, false);
+		if (!polar_dma_async_commit)
+			polar_dma_xlog_commit(record);
+	}
 
 	/*
 	 * If we still haven't flushed to the request point then we have a
@@ -3114,10 +3433,17 @@ XLogFlush(XLogRecPtr record)
 	 * force a restart for a bad LSN on a data page.
 	 */
 	if (LogwrtResult.Flush < record)
+	{
 		elog(ERROR,
 			 "xlog flush request %X/%X is not satisfied --- flushed only to %X/%X",
 			 (uint32) (record >> 32), (uint32) record,
 			 (uint32) (LogwrtResult.Flush >> 32), (uint32) LogwrtResult.Flush);
+	
+	}
+
+	/* POLAR: record last flush_lsn for persisted buffer pool when reuse buffer */
+	polar_buffer_pool_ctl_set_last_flush_lsn(LogwrtResult.Flush);
+	/* POLAR end */
 }
 
 /*
@@ -3152,6 +3478,8 @@ XLogBackgroundFlush(void)
 	static TimestampTz lastflush;
 	TimestampTz now;
 	int			flushbytes;
+	static XLogRecPtr lastInsertRecPtr = InvalidXLogRecPtr;
+	XLogRecPtr InsertRecPtr = InvalidXLogRecPtr;
 
 	/* XLOG doesn't need flushing during recovery */
 	if (RecoveryInProgress())
@@ -3161,7 +3489,15 @@ XLogBackgroundFlush(void)
 	SpinLockAcquire(&XLogCtl->info_lck);
 	LogwrtResult = XLogCtl->LogwrtResult;
 	WriteRqst = XLogCtl->LogwrtRqst;
+	ConsensusCommit = XLogCtl->ConsensusCommit;
 	SpinLockRelease(&XLogCtl->info_lck);
+
+	if (polar_is_dma_data_node())
+	{
+		InsertRecPtr = polar_get_faked_latest_lsn();
+		if (lastInsertRecPtr == InvalidXLogRecPtr)
+			lastInsertRecPtr = InsertRecPtr;
+	}
 
 	/* back off to last completed page boundary */
 	WriteRqst.Write -= WriteRqst.Write % XLOG_BLCKSZ;
@@ -3238,20 +3574,28 @@ XLogBackgroundFlush(void)
 			 (uint32) (LogwrtResult.Flush >> 32), (uint32) LogwrtResult.Flush);
 #endif
 
-	START_CRIT_SECTION();
-
-	/* now wait for any in-progress insertions to finish and get write lock */
-	WaitXLogInsertionsToFinish(WriteRqst.Write);
-	LWLockAcquire(WALWriteLock, LW_EXCLUSIVE);
-	LogwrtResult = XLogCtl->LogwrtResult;
-	if (WriteRqst.Write > LogwrtResult.Write ||
-		WriteRqst.Flush > LogwrtResult.Flush)
+	if (POLAR_WAL_PIPELINER_READY())
 	{
-		XLogWrite(WriteRqst, flexible);
+		if (WriteRqst.Write > LogwrtResult.Write || WriteRqst.Flush > LogwrtResult.Flush)
+			polar_wal_pipeline_commit_wait(WriteRqst.Flush);
 	}
-	LWLockRelease(WALWriteLock);
+	else
+	{
+		START_CRIT_SECTION();
 
-	END_CRIT_SECTION();
+		/* now wait for any in-progress insertions to finish and get write lock */
+		WaitXLogInsertionsToFinish(WriteRqst.Write);
+		LWLockAcquire(WALWriteLock, LW_EXCLUSIVE);
+		LogwrtResult = XLogCtl->LogwrtResult;
+		if (WriteRqst.Write > LogwrtResult.Write ||
+			WriteRqst.Flush > LogwrtResult.Flush)
+		{
+			XLogWrite(WriteRqst, flexible);
+		}
+		LWLockRelease(WALWriteLock);
+
+		END_CRIT_SECTION();
+	}
 
 	/* wake up walsenders now that we've released heavily contended locks */
 	WalSndWakeupProcessRequests();
@@ -3261,6 +3605,22 @@ XLogBackgroundFlush(void)
 	 * as many of the no-longer-needed WAL buffers for future use as we can.
 	 */
 	AdvanceXLInsertBuffer(InvalidXLogRecPtr, true);
+
+	if (polar_is_dma_data_node() && LogwrtResult.Flush >= lastInsertRecPtr)
+	{
+		if (LogwrtResult.Flush >= InsertRecPtr)
+			lastInsertRecPtr = InsertRecPtr;
+
+		ConsensusSetXLogFlushedLSN(lastInsertRecPtr, ThisTimeLineID, false);
+
+		if (lastInsertRecPtr > ConsensusCommit)
+			ConsensusWakeupCommit(lastInsertRecPtr);
+
+		if (lastInsertRecPtr >= InsertRecPtr)
+			lastInsertRecPtr = InvalidXLogRecPtr;
+		else
+			lastInsertRecPtr = InsertRecPtr;
+	}
 
 	/*
 	 * If we determined that we need to write data, but somebody else
@@ -3327,17 +3687,32 @@ XLogNeedsFlush(XLogRecPtr record)
 	}
 
 	/* Quick exit if already known flushed */
-	if (record <= LogwrtResult.Flush)
+	if (polar_is_dma_data_node() && !polar_dma_async_commit)
+	{
+		if (record <= ConsensusCommit)
+			return false;
+	}
+	else if (record <= LogwrtResult.Flush)
+	{
 		return false;
+	}
 
 	/* read LogwrtResult and update local state */
 	SpinLockAcquire(&XLogCtl->info_lck);
 	LogwrtResult = XLogCtl->LogwrtResult;
+	ConsensusCommit = XLogCtl->ConsensusCommit;
 	SpinLockRelease(&XLogCtl->info_lck);
 
 	/* check again */
-	if (record <= LogwrtResult.Flush)
+	if (polar_is_dma_data_node() && !polar_dma_async_commit)
+	{
+		if (record <= ConsensusCommit)
+			return false;
+	}
+	else if (record <= LogwrtResult.Flush)
+	{
 		return false;
+	}
 
 	return true;
 }
@@ -3373,6 +3748,9 @@ XLogFileInit(XLogSegNo logsegno, bool *use_existent, bool use_lock)
 	int			fd;
 	int			nbytes;
 	char		polar_tmppath[MAXPGPATH];
+	instr_time	polar_wal_init_start;
+	instr_time	polar_wal_init_end;
+	bool		polar_fallocate_walfile = polar_enable_fallocate_walfile;
 
 	XLogFilePath(path, ThisTimeLineID, logsegno, wal_segment_size);
 
@@ -3381,7 +3759,7 @@ XLogFileInit(XLogSegNo logsegno, bool *use_existent, bool use_lock)
 	 */
 	if (*use_existent)
 	{
-		fd = BasicOpenFile(path, O_RDWR | PG_BINARY | get_sync_bit(sync_method), true);
+		fd = BasicOpenFile(polar_path_remove_protocol(path), O_RDWR | PG_BINARY | get_sync_bit(sync_method), true);
 		if (fd < 0)
 		{
 			if (errno != ENOENT)
@@ -3401,7 +3779,8 @@ XLogFileInit(XLogSegNo logsegno, bool *use_existent, bool use_lock)
 	 */
 	elog(DEBUG2, "creating and filling new WAL file");
 
-	snprintf(polar_tmppath, MAXPGPATH, XLOGDIR "/xlogtemp.%d", (int) getpid());
+	snprintf(polar_tmppath, MAXPGPATH, "%s/xlogtemp.%d", POLAR_DATAMAX_WAL_PATH, (int) getpid());
+
 	polar_make_file_path_level2(tmppath, polar_tmppath);
 	polar_unlink(tmppath);
 
@@ -3412,6 +3791,9 @@ XLogFileInit(XLogSegNo logsegno, bool *use_existent, bool use_lock)
 				(errcode_for_file_access(),
 				 errmsg("could not create file \"%s\": %m", tmppath)));
 
+	if (IsUnderPostmaster)
+		INSTR_TIME_SET_CURRENT(polar_wal_init_start);
+
 	/*
 	 * Zero-fill the file.  We have to do this the hard way to ensure that all
 	 * the file space has really been allocated --- on platforms that allow
@@ -3421,44 +3803,76 @@ XLogFileInit(XLogSegNo logsegno, bool *use_existent, bool use_lock)
 	 * fdatasync(2) or O_DSYNC will be sufficient to sync future writes to the
 	 * log file.
 	 */
-	memset(zbuffer.data, 0, XLOG_BLCKSZ);
-	for (nbytes = 0; nbytes < wal_segment_size; nbytes += XLOG_BLCKSZ)
+
+	/* 
+	 * POLAR: File allocate, juse change file metadata once.
+	 * drop file when it is failed in case of endless empty file. 
+	 */
+	if(polar_fallocate_walfile &&
+		polar_fallocate(fd, 0, wal_segment_size) != 0)
 	{
-		errno = 0;
-		pgstat_report_wait_start(WAIT_EVENT_WAL_INIT_WRITE);
-		if ((int) polar_write(fd, zbuffer.data, XLOG_BLCKSZ) != (int) XLOG_BLCKSZ)
+		/* no coverage begin */
+		polar_close(fd);
+		polar_unlink(tmppath);
+		/* no coverage end */
+		elog(ERROR, "polar_fallocate fail in XLogFileInit");
+	}
+
+	if (IsUnderPostmaster && polar_fallocate_walfile)
+	{
+		INSTR_TIME_SET_CURRENT(polar_wal_init_end);
+		INSTR_TIME_SUBTRACT(polar_wal_init_end, polar_wal_init_start);
+		elog(LOG, "done fallocate tmp WAL file %s time=%.3f s",
+					tmppath,
+					INSTR_TIME_GET_MILLISEC(polar_wal_init_end) / 1000);
+	}
+
+	if (polar_fallocate_walfile && polar_skip_fill_walfile_zero_page)
+		elog(LOG, "polardb skip fill wal file %s zero page", tmppath);
+	else if (POLAR_FILE_IN_SHARED_STORAGE())
+		polar_fill_segment_file_zero(fd, tmppath, wal_segment_size,
+				WAIT_EVENT_WAL_INIT_WRITE, WAIT_EVENT_WAL_INIT_SYNC, "WAL");
+	else
+	{
+		memset(zbuffer.data, 0, XLOG_BLCKSZ);
+		for (nbytes = 0; nbytes < wal_segment_size; nbytes += XLOG_BLCKSZ)
 		{
-			int			save_errno = errno;
-
-			/*
-			 * If we fail to make the file, delete it to release disk space
-			 */
-			polar_unlink(tmppath);
-
+			errno = 0;
+			pgstat_report_wait_start(WAIT_EVENT_WAL_INIT_WRITE);
+			if ((int) polar_write(fd, zbuffer.data, XLOG_BLCKSZ) != (int) XLOG_BLCKSZ)
+			{
+				int 		save_errno = errno;
+	
+				/*
+				 * If we fail to make the file, delete it to release disk space
+				 */
+				polar_unlink(tmppath);
+	
+				polar_close(fd);
+	
+				/* if write didn't set errno, assume problem is no disk space */
+				errno = save_errno ? save_errno : ENOSPC;
+	
+				ereport(ERROR,
+						(errcode_for_file_access(),
+						 errmsg("could not write to file \"%s\": %m", tmppath)));
+			}
+			pgstat_report_wait_end();
+		}
+	
+		pgstat_report_wait_start(WAIT_EVENT_WAL_INIT_SYNC);
+		if (polar_fsync(fd) != 0)
+		{
+			int 		save_errno = errno;
+	
 			polar_close(fd);
-
-			/* if write didn't set errno, assume problem is no disk space */
-			errno = save_errno ? save_errno : ENOSPC;
-
+			errno = save_errno;
 			ereport(ERROR,
 					(errcode_for_file_access(),
-					 errmsg("could not write to file \"%s\": %m", tmppath)));
+					 errmsg("could not fsync file \"%s\": %m", tmppath)));
 		}
 		pgstat_report_wait_end();
 	}
-
-	pgstat_report_wait_start(WAIT_EVENT_WAL_INIT_SYNC);
-	if (polar_fsync(fd) != 0)
-	{
-		int			save_errno = errno;
-
-		polar_close(fd);
-		errno = save_errno;
-		ereport(ERROR,
-				(errcode_for_file_access(),
-				 errmsg("could not fsync file \"%s\": %m", tmppath)));
-	}
-	pgstat_report_wait_end();
 
 	if (polar_close(fd))
 		ereport(ERROR,
@@ -3501,7 +3915,7 @@ XLogFileInit(XLogSegNo logsegno, bool *use_existent, bool use_lock)
 	*use_existent = false;
 
 	/* Now open original target segment (might not be file I just made) */
-	fd = BasicOpenFile(path, O_RDWR | PG_BINARY | get_sync_bit(sync_method), true);
+	fd = BasicOpenFile(polar_path_remove_protocol(path), O_RDWR | PG_BINARY | get_sync_bit(sync_method), true);
 	if (fd < 0)
 		ereport(ERROR,
 				(errcode_for_file_access(),
@@ -3531,13 +3945,16 @@ static void
 XLogFileCopy(XLogSegNo destsegno, TimeLineID srcTLI, XLogSegNo srcsegno,
 			 int upto)
 {
+#define	POLAR_XLOG_SIZE_1MB		1024 * 1024
+	char	   *polar_zbuffer;
+
 	char		path[MAXPGPATH];
 	char		tmppath[MAXPGPATH];
-	PGAlignedXLogBlock buffer;
 	int			srcfd;
 	int			fd;
 	int			nbytes;
 	char		polar_tmppath[MAXPGPATH];
+	char		*polar_aligned_zbuffer;
 
 	/*
 	 * Open the source file
@@ -3563,10 +3980,12 @@ XLogFileCopy(XLogSegNo destsegno, TimeLineID srcTLI, XLogSegNo srcsegno,
 				(errcode_for_file_access(),
 				 errmsg("could not create file \"%s\": %m", tmppath)));
 
+	polar_zbuffer = palloc0(POLAR_BUFFER_EXTEND_SIZE(POLAR_XLOG_SIZE_1MB));
+	polar_aligned_zbuffer = (char *) POLAR_BUFFER_ALIGN(polar_zbuffer);
 	/*
 	 * Do the data copying.
 	 */
-	for (nbytes = 0; nbytes < wal_segment_size; nbytes += sizeof(buffer))
+	for (nbytes = 0; nbytes < wal_segment_size; nbytes += POLAR_XLOG_SIZE_1MB)
 	{
 		int			nread;
 
@@ -3576,17 +3995,18 @@ XLogFileCopy(XLogSegNo destsegno, TimeLineID srcTLI, XLogSegNo srcsegno,
 		 * The part that is not read from the source file is filled with
 		 * zeros.
 		 */
-		if (nread < sizeof(buffer))
-			memset(buffer.data, 0, sizeof(buffer));
+		if (nread < POLAR_XLOG_SIZE_1MB)
+			memset(polar_aligned_zbuffer, 0, POLAR_XLOG_SIZE_1MB);
 
 		if (nread > 0)
 		{
-			if (nread > sizeof(buffer))
-				nread = sizeof(buffer);
+			if (nread > POLAR_XLOG_SIZE_1MB)
+				nread = POLAR_XLOG_SIZE_1MB;
 			errno = 0;
 			pgstat_report_wait_start(WAIT_EVENT_WAL_COPY_READ);
-			if (polar_read(srcfd, buffer.data, nread) != nread)
+			if (polar_read(srcfd, polar_aligned_zbuffer, nread) != nread)
 			{
+				pfree(polar_zbuffer);
 				if (errno != 0)
 					ereport(ERROR,
 							(errcode_for_file_access(),
@@ -3601,10 +4021,11 @@ XLogFileCopy(XLogSegNo destsegno, TimeLineID srcTLI, XLogSegNo srcsegno,
 		}
 		errno = 0;
 		pgstat_report_wait_start(WAIT_EVENT_WAL_COPY_WRITE);
-		if ((int) polar_write(fd, buffer.data, sizeof(buffer)) != (int) sizeof(buffer))
+		if ((int) polar_write(fd, polar_aligned_zbuffer, POLAR_XLOG_SIZE_1MB) != (int) POLAR_XLOG_SIZE_1MB)
 		{
 			int			save_errno = errno;
 
+			pfree(polar_zbuffer);
 			/*
 			 * If we fail to make the file, delete it to release disk space
 			 */
@@ -3619,8 +4040,9 @@ XLogFileCopy(XLogSegNo destsegno, TimeLineID srcTLI, XLogSegNo srcsegno,
 		pgstat_report_wait_end();
 	}
 
-	pgstat_report_wait_start(WAIT_EVENT_WAL_COPY_SYNC);
+	pfree(polar_zbuffer);
 
+	pgstat_report_wait_start(WAIT_EVENT_WAL_COPY_SYNC);
 	if (polar_fsync(fd) != 0)
 		ereport(data_sync_elevel(ERROR),
 				(errcode_for_file_access(),
@@ -3736,7 +4158,7 @@ XLogFileOpen(XLogSegNo segno)
 
 	XLogFilePath(path, ThisTimeLineID, segno, wal_segment_size);
 
-	fd = BasicOpenFile(path, O_RDWR | PG_BINARY | get_sync_bit(sync_method), true);
+	fd = BasicOpenFile(polar_path_remove_protocol(path), O_RDWR | PG_BINARY | get_sync_bit(sync_method), true);
 	if (fd < 0)
 		ereport(PANIC,
 				(errcode_for_file_access(),
@@ -3802,7 +4224,7 @@ XLogFileRead(XLogSegNo segno, int emode, TimeLineID tli,
 		snprintf(path, MAXPGPATH, XLOGDIR "/%s", xlogfname);
 	}
 
-	fd = BasicOpenFile(path, O_RDONLY | PG_BINARY, true);
+	fd = BasicOpenFile(polar_path_remove_protocol(path), O_RDONLY | PG_BINARY, true);
 	if (fd >= 0)
 	{
 		/* Success! */
@@ -4081,19 +4503,31 @@ RemoveOldXlogFiles(XLogSegNo segno, XLogRecPtr lastredoptr, XLogRecPtr endptr)
 	struct dirent *xlde;
 	char		lastoff[MAXFNAMELEN];
 	char		polar_path[MAXPGPATH];
+	/* POLAR: parameter segno is the last_segno to remove, add 1 to get the last_segno to retain */
+	XLogSegNo	polar_tmp_segno = segno + 1;
 
 	if (polar_in_replica_mode())
 		return;
 
-	/* POLAR: Truncate logindex before removing wal files */
-	if (polar_enable_redo_logindex && polar_streaming_xlog_meta)
-		polar_log_index_truncate_lsn();
-
-	/* POLAR: remove old fullpage files after truncate logindex */
-	if (POLAR_ENABLE_FULLPAGE_SNAPSHOT())
-		polar_remove_old_fullpage_files();
-
 	polar_make_file_path_level2(polar_path, XLOGDIR);
+
+	/* 
+	 * POLAR: get polar_initial_datamax_lock to avoid getting the wal being removed while setting datamax restart_lsn 
+	 * and caculate the retained last_segno again after we acquired the lwlock
+	 * so that we can use the restart_lsn we set for initial datamax
+	 * avoid removing wal greater than restart_lsn we just set
+	 */
+	LWLockAcquire(&XLogCtl->polar_initial_datamax_lock, LW_EXCLUSIVE);
+	/*  
+	 * POLAR: if the last_segno that we need to retain changed, exit this removal process
+	 * wait wal removal until next checkpoint time 
+	 */
+	KeepLogSeg(endptr, &polar_tmp_segno);
+	if (polar_tmp_segno != (segno + 1))
+	{
+		LWLockRelease(&XLogCtl->polar_initial_datamax_lock);
+		return;
+	}
 
 	/*
 	 * Construct a filename of the last segment to be kept. The timeline ID
@@ -4135,6 +4569,7 @@ RemoveOldXlogFiles(XLogSegNo segno, XLogRecPtr lastredoptr, XLogRecPtr endptr)
 			}
 		}
 	}
+	LWLockRelease(&XLogCtl->polar_initial_datamax_lock);
 
 	FreeDir(xldir);
 }
@@ -4163,7 +4598,10 @@ RemoveNonParentXlogFiles(XLogRecPtr switchpoint, TimeLineID newTLI)
 	XLogSegNo	endLogSegNo;
 	char		polar_path[MAXPGPATH];
 
-	polar_make_file_path_level2(polar_path, XLOGDIR);
+	if(!polar_is_datamax_mode)
+		polar_make_file_path_level2(polar_path, XLOGDIR);
+	else
+		polar_make_file_path_level2(polar_path, POLAR_DATAMAX_WAL_DIR);
 
 	XLByteToPrevSeg(switchpoint, endLogSegNo, wal_segment_size);
 
@@ -4225,23 +4663,35 @@ RemoveXlogFile(const char *segname, XLogRecPtr lastredoptr, XLogRecPtr endptr)
 	XLogSegNo	endlogSegNo;
 	XLogSegNo	recycleSegNo;
 
-	/*
-	 * Initialize info about where to try to recycle to.
-	 */
-	XLByteToSeg(endptr, endlogSegNo, wal_segment_size);
-	if (lastredoptr == InvalidXLogRecPtr)
-		recycleSegNo = endlogSegNo + 10;
+	if (wal_recycle)
+	{
+		/*
+		* Initialize info about where to try to recycle to.
+		*/
+		XLByteToSeg(endptr, endlogSegNo, wal_segment_size);
+		if (lastredoptr == InvalidXLogRecPtr)
+			recycleSegNo = endlogSegNo + 10;
+		else
+			recycleSegNo = XLOGfileslop(lastredoptr);
+	}
 	else
-		recycleSegNo = XLOGfileslop(lastredoptr);
+	{
+		recycleSegNo = 0;		/* keep compiler quiet */
+	}
 
-	polar_make_file_path_level3(path, XLOGDIR, (char *)segname);
+	if(!polar_is_datamax_mode)
+		polar_make_file_path_level3(path, XLOGDIR, (char *)segname);
+	else
+		polar_make_file_path_level3(path, POLAR_DATAMAX_WAL_DIR, (char *)segname);
 
 	/*
 	 * Before deleting the file, see if it can be recycled as a future log
 	 * segment. Only recycle normal files, pg_standby for example can create
 	 * symbolic links pointing to a separate archive directory.
 	 */
-	if (endlogSegNo <= recycleSegNo &&
+	if (!polar_is_datamax_mode && 
+		wal_recycle &&
+	  endlogSegNo <= recycleSegNo &&
 		polar_lstat(path, &statbuf) == 0 && S_ISREG(statbuf.st_mode) &&
 		InstallXLogFileSegment(&endlogSegNo, path,
 							   true, recycleSegNo, true))
@@ -4360,10 +4810,14 @@ CleanupBackupHistory(void)
 	DIR		   *xldir;
 	struct dirent *xlde;
 	char		path[MAXPGPATH + sizeof(XLOGDIR)];
+	char		polar_dir_path[MAXPGPATH] = "";
 
-	xldir = AllocateDir(XLOGDIR, false);
+	/* POLAR: this folder is under polar_datadir/ */
+	polar_make_file_path_level2(polar_dir_path, XLOGDIR);
 
-	while ((xlde = ReadDir(xldir, XLOGDIR)) != NULL)
+	xldir = polar_allocate_dir(polar_dir_path);
+
+	while ((xlde = ReadDir(xldir, polar_dir_path)) != NULL)
 	{
 		if (IsBackupHistoryFileName(xlde->d_name))
 		{
@@ -4371,8 +4825,9 @@ CleanupBackupHistory(void)
 			{
 				elog(DEBUG2, "removing WAL backup history file \"%s\"",
 					 xlde->d_name);
-				snprintf(path, sizeof(path), XLOGDIR "/%s", xlde->d_name);
-				unlink(path);
+				/* POLAR: these files are under polar_datadir/pg_wal/ */
+				polar_make_file_path_level3(path, XLOGDIR, xlde->d_name);
+				polar_unlink(path);
 				XLogArchiveCleanup(xlde->d_name);
 			}
 		}
@@ -4411,15 +4866,15 @@ ReadRecord(XLogReaderState *xlogreader, XLogRecPtr RecPtr, int emode,
 
 	for (;;)
 	{
-		char	   *errormsg;
+		char	   *errormsg = NULL;
 
 		/* POLAR: read xlog and put them on shared memory */
-		if (polar_in_replica_mode())
+		if (polar_in_replica_mode() && StandbyMode)
 		{
-			if (polar_enable_redo_logindex && polar_streaming_xlog_meta && reachedConsistency)
-				record = polar_xlog_recv_queue_pop(xlogreader, RecPtr, &errormsg);
+			if (reachedConsistency && POLAR_LOGINDEX_ENABLE_XLOG_QUEUE())
+				record = polar_xlog_recv_queue_pop(polar_logindex_redo_instance->xlog_queue, xlogreader, RecPtr, &errormsg);
 			else
-				record = polar_xlog_read_record(xlogreader, RecPtr, &errormsg);
+				record = XLogReadRecord(xlogreader, RecPtr, &errormsg);
 		}
 		else
 			record = XLogReadRecord(xlogreader, RecPtr, &errormsg);
@@ -4501,6 +4956,8 @@ ReadRecord(XLogReaderState *xlogreader, XLogRecPtr RecPtr, int emode,
 				if (StandbyModeRequested)
 					StandbyMode = true;
 
+				if (!polar_is_dma_data_node())
+				{
 				/* initialize minRecoveryPoint to this record */
 				LWLockAcquire(ControlFileLock, LW_EXCLUSIVE);
 				ControlFile->state = DB_IN_ARCHIVE_RECOVERY;
@@ -4531,6 +4988,7 @@ ReadRecord(XLogReaderState *xlogreader, XLogRecPtr RecPtr, int emode,
 				SpinLockRelease(&XLogCtl->info_lck);
 
 				LWLockRelease(ControlFileLock);
+				}
 
 				CheckRecoveryConsistency();
 
@@ -4545,7 +5003,14 @@ ReadRecord(XLogReaderState *xlogreader, XLogRecPtr RecPtr, int emode,
 			}
 
 			/* In standby mode, loop back to retry. Otherwise, give up. */
-			if (StandbyMode && !CheckForStandbyTrigger())
+			if (polar_is_dma_data_node())
+			{
+				if (!becameLeader)
+					continue;
+				else
+					return NULL;
+			}
+			else if (StandbyMode && !CheckForStandbyTrigger() && !polar_is_datamax())
 				continue;
 			else
 				return NULL;
@@ -4612,7 +5077,7 @@ rescanLatestTimeLine(void)
 	 * next timeline was forked off from it *after* the current recovery
 	 * location.
 	 */
-	if (currentTle->end < EndRecPtr)
+	if (!polar_is_datamax_mode && currentTle->end < EndRecPtr)
 	{
 		ereport(LOG,
 				(errmsg("new timeline %u forked off current database system timeline %u before current recovery point %X/%X",
@@ -4746,18 +5211,224 @@ WriteControlFile(void)
 				 errmsg("could not close control file: %m")));
 }
 
-static void
-ReadControlFile(void)
+/* POLAR: BasedOn ReadControlFile function */
+bool
+polar_read_control_file(char *polar_ctl_file_path, ControlFileData *polar_control_file_buffer, int error_level, int *saved_errno)
 {
 	pg_crc32c	crc;
 	int			fd;
-	static char wal_segsz_str[20];
 	int			r;
-	char		polar_ctl_file[MAXPGPATH];
 	int			readflag = PG_BINARY;
+
+	if (polar_ctl_file_path == NULL)
+		elog(FATAL, "pg_control file path is NULL");
+	if (polar_control_file_buffer == NULL)
+		elog(FATAL, "pg_control data buffer is NULL");
+	if (saved_errno == NULL)
+		elog(FATAL, "saved errno is NULL");
 
 	/* POLAR: read controlfile only need O_RDONLY */
 	readflag |= O_RDONLY;
+	
+	/* POLAR: open control file based on given path */
+	fd = BasicOpenFile(polar_ctl_file_path, readflag, true);
+	if (fd < 0)
+	{
+		if (errno == ENOENT)
+		{
+			*saved_errno = errno;
+			/* POLAR: report error message based on given error_level */
+			ereport(error_level,
+					(errcode_for_file_access(),
+				 	errmsg("control file \"%s\" not exist: %m",
+							polar_ctl_file_path)));
+			return false;
+		}
+		else
+		{
+			ereport(PANIC,
+				(errcode_for_file_access(),
+				 errmsg("could not open control file \"%s\": %m",
+						 polar_ctl_file_path)));
+		}
+	}
+
+	pgstat_report_wait_start(WAIT_EVENT_CONTROL_FILE_READ);
+	r = polar_read(fd, polar_control_file_buffer, sizeof(ControlFileData));
+	if (r != sizeof(ControlFileData))
+	{
+		if (r < 0)
+			ereport(PANIC,
+					(errcode_for_file_access(),
+					 errmsg("could not read from control file \"%s\": %m", 
+					 		 polar_ctl_file_path)));
+		else
+			ereport(PANIC,
+					(errmsg("could not read from control file \"%s\": read %d bytes, expected %d", 
+					 		 polar_ctl_file_path, r, (int) sizeof(ControlFileData))));
+	}
+	pgstat_report_wait_end();
+
+	polar_close(fd);
+
+	elog(LOG, "polardb read control file \"%s\" success", polar_ctl_file_path);
+
+	/*
+	 * Check for expected pg_control format version.  If this is wrong, the
+	 * CRC check will likely fail because we'll be checking the wrong number
+	 * of bytes.  Complaining about wrong version will probably be more
+	 * enlightening than complaining about wrong CRC.
+	 */
+
+	if (polar_control_file_buffer->pg_control_version != PG_CONTROL_VERSION && polar_control_file_buffer->pg_control_version % 65536 == 0 && polar_control_file_buffer->pg_control_version / 65536 != 0)
+		ereport(FATAL,
+				(errmsg("database files are incompatible with server"),
+				 errdetail("The database cluster was initialized with PG_CONTROL_VERSION %d (0x%08x),"
+						   " but the server was compiled with PG_CONTROL_VERSION %d (0x%08x).",
+						   polar_control_file_buffer->pg_control_version, polar_control_file_buffer->pg_control_version,
+						   PG_CONTROL_VERSION, PG_CONTROL_VERSION),
+				 errhint("This could be a problem of mismatched byte ordering.  It looks like you need to initdb.")));
+
+	if (polar_control_file_buffer->pg_control_version != PG_CONTROL_VERSION)
+		ereport(FATAL,
+				(errmsg("database files are incompatible with server"),
+				 errdetail("The database cluster was initialized with PG_CONTROL_VERSION %d,"
+						   " but the server was compiled with PG_CONTROL_VERSION %d.",
+						   polar_control_file_buffer->pg_control_version, PG_CONTROL_VERSION),
+				 errhint("It looks like you need to initdb.")));
+
+	/* Now check the CRC. */
+	INIT_CRC32C(crc);
+	COMP_CRC32C(crc,
+				(char *) polar_control_file_buffer,
+				offsetof(ControlFileData, crc));
+	FIN_CRC32C(crc);
+
+	if (!EQ_CRC32C(crc, polar_control_file_buffer->crc))
+		ereport(FATAL,
+				(errmsg("incorrect checksum in control file")));
+
+	/*
+	 * Do compatibility checking immediately.  If the database isn't
+	 * compatible with the backend executable, we want to abort before we can
+	 * possibly do any damage.
+	 */
+	if (polar_control_file_buffer->catalog_version_no != CATALOG_VERSION_NO)
+		ereport(FATAL,
+				(errmsg("database files are incompatible with server"),
+				 errdetail("The database cluster was initialized with CATALOG_VERSION_NO %d,"
+						   " but the server was compiled with CATALOG_VERSION_NO %d.",
+						   polar_control_file_buffer->catalog_version_no, CATALOG_VERSION_NO),
+				 errhint("It looks like you need to initdb.")));
+	if (polar_control_file_buffer->maxAlign != MAXIMUM_ALIGNOF)
+		ereport(FATAL,
+				(errmsg("database files are incompatible with server"),
+				 errdetail("The database cluster was initialized with MAXALIGN %d,"
+						   " but the server was compiled with MAXALIGN %d.",
+						   polar_control_file_buffer->maxAlign, MAXIMUM_ALIGNOF),
+				 errhint("It looks like you need to initdb.")));
+	if (polar_control_file_buffer->floatFormat != FLOATFORMAT_VALUE)
+		ereport(FATAL,
+				(errmsg("database files are incompatible with server"),
+				 errdetail("The database cluster appears to use a different floating-point number format than the server executable."),
+				 errhint("It looks like you need to initdb.")));
+	if (polar_control_file_buffer->blcksz != BLCKSZ)
+		ereport(FATAL,
+				(errmsg("database files are incompatible with server"),
+				 errdetail("The database cluster was initialized with BLCKSZ %d,"
+						   " but the server was compiled with BLCKSZ %d.",
+						   polar_control_file_buffer->blcksz, BLCKSZ),
+				 errhint("It looks like you need to recompile or initdb.")));
+	if (polar_control_file_buffer->relseg_size != RELSEG_SIZE)
+		ereport(FATAL,
+				(errmsg("database files are incompatible with server"),
+				 errdetail("The database cluster was initialized with RELSEG_SIZE %d,"
+						   " but the server was compiled with RELSEG_SIZE %d.",
+						   polar_control_file_buffer->relseg_size, RELSEG_SIZE),
+				 errhint("It looks like you need to recompile or initdb.")));
+	if (polar_control_file_buffer->xlog_blcksz != XLOG_BLCKSZ)
+		ereport(FATAL,
+				(errmsg("database files are incompatible with server"),
+				 errdetail("The database cluster was initialized with XLOG_BLCKSZ %d,"
+						   " but the server was compiled with XLOG_BLCKSZ %d.",
+						   polar_control_file_buffer->xlog_blcksz, XLOG_BLCKSZ),
+				 errhint("It looks like you need to recompile or initdb.")));
+	if (polar_control_file_buffer->nameDataLen != NAMEDATALEN)
+		ereport(FATAL,
+				(errmsg("database files are incompatible with server"),
+				 errdetail("The database cluster was initialized with NAMEDATALEN %d,"
+						   " but the server was compiled with NAMEDATALEN %d.",
+						   polar_control_file_buffer->nameDataLen, NAMEDATALEN),
+				 errhint("It looks like you need to recompile or initdb.")));
+	if (polar_control_file_buffer->indexMaxKeys != INDEX_MAX_KEYS)
+		ereport(FATAL,
+				(errmsg("database files are incompatible with server"),
+				 errdetail("The database cluster was initialized with INDEX_MAX_KEYS %d,"
+						   " but the server was compiled with INDEX_MAX_KEYS %d.",
+						   polar_control_file_buffer->indexMaxKeys, INDEX_MAX_KEYS),
+				 errhint("It looks like you need to recompile or initdb.")));
+	if (polar_control_file_buffer->toast_max_chunk_size != TOAST_MAX_CHUNK_SIZE)
+		ereport(FATAL,
+				(errmsg("database files are incompatible with server"),
+				 errdetail("The database cluster was initialized with TOAST_MAX_CHUNK_SIZE %d,"
+						   " but the server was compiled with TOAST_MAX_CHUNK_SIZE %d.",
+						   polar_control_file_buffer->toast_max_chunk_size, (int) TOAST_MAX_CHUNK_SIZE),
+				 errhint("It looks like you need to recompile or initdb.")));
+	if (polar_control_file_buffer->loblksize != LOBLKSIZE)
+		ereport(FATAL,
+				(errmsg("database files are incompatible with server"),
+				 errdetail("The database cluster was initialized with LOBLKSIZE %d,"
+						   " but the server was compiled with LOBLKSIZE %d.",
+						   polar_control_file_buffer->loblksize, (int) LOBLKSIZE),
+				 errhint("It looks like you need to recompile or initdb.")));
+
+#ifdef USE_FLOAT4_BYVAL
+	if (polar_control_file_buffer->float4ByVal != true)
+		ereport(FATAL,
+				(errmsg("database files are incompatible with server"),
+				 errdetail("The database cluster was initialized without USE_FLOAT4_BYVAL"
+						   " but the server was compiled with USE_FLOAT4_BYVAL."),
+				 errhint("It looks like you need to recompile or initdb.")));
+#else
+	if (polar_control_file_buffer->float4ByVal != false)
+		ereport(FATAL,
+				(errmsg("database files are incompatible with server"),
+				 errdetail("The database cluster was initialized with USE_FLOAT4_BYVAL"
+						   " but the server was compiled without USE_FLOAT4_BYVAL."),
+				 errhint("It looks like you need to recompile or initdb.")));
+#endif
+
+#ifdef USE_FLOAT8_BYVAL
+	if (polar_control_file_buffer->float8ByVal != true)
+		ereport(FATAL,
+				(errmsg("database files are incompatible with server"),
+				 errdetail("The database cluster was initialized without USE_FLOAT8_BYVAL"
+						   " but the server was compiled with USE_FLOAT8_BYVAL."),
+				 errhint("It looks like you need to recompile or initdb.")));
+#else
+	if (polar_control_file_buffer->float8ByVal != false)
+		ereport(FATAL,
+				(errmsg("database files are incompatible with server"),
+				 errdetail("The database cluster was initialized with USE_FLOAT8_BYVAL"
+						   " but the server was compiled without USE_FLOAT8_BYVAL."),
+				 errhint("It looks like you need to recompile or initdb.")));
+#endif
+
+	if (!IsValidWalSegSize(polar_control_file_buffer->xlog_seg_size))
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						errmsg_plural("WAL segment size must be a power of two between 1 MB and 1 GB, but the control file specifies %d byte",
+									  "WAL segment size must be a power of two between 1 MB and 1 GB, but the control file specifies %d bytes",
+									  polar_control_file_buffer->xlog_seg_size,
+									  polar_control_file_buffer->xlog_seg_size)));
+	return true;
+}
+
+static void
+ReadControlFile(void)
+{
+	static char wal_segsz_str[20];
+	char		polar_ctl_file[MAXPGPATH];
+	int			saved_errno;
 
 	/*
 	 * POLAR: When pg start, in the postmaster,
@@ -4767,188 +5438,21 @@ ReadControlFile(void)
 	if (polar_enable_shared_storage_mode &&
 		polar_vfs_switch == POLAR_VFS_SWITCH_LOCAL)
 	{
-		elog(WARNING, "skip read controlfile when polar vfs not ready.");
+		elog(WARNING, "polardb skip readControlfile");
 		return;
 	}
 
-	polar_make_file_path_level2(polar_ctl_file, XLOG_CONTROL_FILE);
-
-	fd = BasicOpenFile(polar_ctl_file, readflag, true);
-	if (fd < 0)
-		ereport(PANIC,
-				(errcode_for_file_access(),
-				 errmsg("could not open control file \"%s\": %m",
-						XLOG_CONTROL_FILE)));
-
-	pgstat_report_wait_start(WAIT_EVENT_CONTROL_FILE_READ);
-	r = polar_read(fd, ControlFile, sizeof(ControlFileData));
-	if (r != sizeof(ControlFileData))
-	{
-		if (r < 0)
-			ereport(PANIC,
-					(errcode_for_file_access(),
-					 errmsg("could not read from control file: %m")));
-		else
-			ereport(PANIC,
-					(errmsg("could not read from control file: read %d bytes, expected %d", r, (int) sizeof(ControlFileData))));
-	}
-	pgstat_report_wait_end();
-
-	polar_close(fd);
-
-	if (polar_enable_shared_storage_mode)
-		elog(LOG, "polardb load controlfile success");
-
-	/*
-	 * Check for expected pg_control format version.  If this is wrong, the
-	 * CRC check will likely fail because we'll be checking the wrong number
-	 * of bytes.  Complaining about wrong version will probably be more
-	 * enlightening than complaining about wrong CRC.
-	 */
-
-	if (ControlFile->pg_control_version != PG_CONTROL_VERSION && ControlFile->pg_control_version % 65536 == 0 && ControlFile->pg_control_version / 65536 != 0)
-		ereport(FATAL,
-				(errmsg("database files are incompatible with server"),
-				 errdetail("The database cluster was initialized with PG_CONTROL_VERSION %d (0x%08x),"
-						   " but the server was compiled with PG_CONTROL_VERSION %d (0x%08x).",
-						   ControlFile->pg_control_version, ControlFile->pg_control_version,
-						   PG_CONTROL_VERSION, PG_CONTROL_VERSION),
-				 errhint("This could be a problem of mismatched byte ordering.  It looks like you need to initdb.")));
-
-	if (ControlFile->pg_control_version != PG_CONTROL_VERSION)
-		ereport(FATAL,
-				(errmsg("database files are incompatible with server"),
-				 errdetail("The database cluster was initialized with PG_CONTROL_VERSION %d,"
-						   " but the server was compiled with PG_CONTROL_VERSION %d.",
-						   ControlFile->pg_control_version, PG_CONTROL_VERSION),
-				 errhint("It looks like you need to initdb.")));
-
-	/* Now check the CRC. */
-	INIT_CRC32C(crc);
-	COMP_CRC32C(crc,
-				(char *) ControlFile,
-				offsetof(ControlFileData, crc));
-	FIN_CRC32C(crc);
-
-	if (!EQ_CRC32C(crc, ControlFile->crc))
-		ereport(FATAL,
-				(errmsg("incorrect checksum in control file")));
-
-	/*
-	 * Do compatibility checking immediately.  If the database isn't
-	 * compatible with the backend executable, we want to abort before we can
-	 * possibly do any damage.
-	 */
-	if (ControlFile->catalog_version_no != CATALOG_VERSION_NO)
-		ereport(FATAL,
-				(errmsg("database files are incompatible with server"),
-				 errdetail("The database cluster was initialized with CATALOG_VERSION_NO %d,"
-						   " but the server was compiled with CATALOG_VERSION_NO %d.",
-						   ControlFile->catalog_version_no, CATALOG_VERSION_NO),
-				 errhint("It looks like you need to initdb.")));
-	if (ControlFile->maxAlign != MAXIMUM_ALIGNOF)
-		ereport(FATAL,
-				(errmsg("database files are incompatible with server"),
-				 errdetail("The database cluster was initialized with MAXALIGN %d,"
-						   " but the server was compiled with MAXALIGN %d.",
-						   ControlFile->maxAlign, MAXIMUM_ALIGNOF),
-				 errhint("It looks like you need to initdb.")));
-	if (ControlFile->floatFormat != FLOATFORMAT_VALUE)
-		ereport(FATAL,
-				(errmsg("database files are incompatible with server"),
-				 errdetail("The database cluster appears to use a different floating-point number format than the server executable."),
-				 errhint("It looks like you need to initdb.")));
-	if (ControlFile->blcksz != BLCKSZ)
-		ereport(FATAL,
-				(errmsg("database files are incompatible with server"),
-				 errdetail("The database cluster was initialized with BLCKSZ %d,"
-						   " but the server was compiled with BLCKSZ %d.",
-						   ControlFile->blcksz, BLCKSZ),
-				 errhint("It looks like you need to recompile or initdb.")));
-	if (ControlFile->relseg_size != RELSEG_SIZE)
-		ereport(FATAL,
-				(errmsg("database files are incompatible with server"),
-				 errdetail("The database cluster was initialized with RELSEG_SIZE %d,"
-						   " but the server was compiled with RELSEG_SIZE %d.",
-						   ControlFile->relseg_size, RELSEG_SIZE),
-				 errhint("It looks like you need to recompile or initdb.")));
-	if (ControlFile->xlog_blcksz != XLOG_BLCKSZ)
-		ereport(FATAL,
-				(errmsg("database files are incompatible with server"),
-				 errdetail("The database cluster was initialized with XLOG_BLCKSZ %d,"
-						   " but the server was compiled with XLOG_BLCKSZ %d.",
-						   ControlFile->xlog_blcksz, XLOG_BLCKSZ),
-				 errhint("It looks like you need to recompile or initdb.")));
-	if (ControlFile->nameDataLen != NAMEDATALEN)
-		ereport(FATAL,
-				(errmsg("database files are incompatible with server"),
-				 errdetail("The database cluster was initialized with NAMEDATALEN %d,"
-						   " but the server was compiled with NAMEDATALEN %d.",
-						   ControlFile->nameDataLen, NAMEDATALEN),
-				 errhint("It looks like you need to recompile or initdb.")));
-	if (ControlFile->indexMaxKeys != INDEX_MAX_KEYS)
-		ereport(FATAL,
-				(errmsg("database files are incompatible with server"),
-				 errdetail("The database cluster was initialized with INDEX_MAX_KEYS %d,"
-						   " but the server was compiled with INDEX_MAX_KEYS %d.",
-						   ControlFile->indexMaxKeys, INDEX_MAX_KEYS),
-				 errhint("It looks like you need to recompile or initdb.")));
-	if (ControlFile->toast_max_chunk_size != TOAST_MAX_CHUNK_SIZE)
-		ereport(FATAL,
-				(errmsg("database files are incompatible with server"),
-				 errdetail("The database cluster was initialized with TOAST_MAX_CHUNK_SIZE %d,"
-						   " but the server was compiled with TOAST_MAX_CHUNK_SIZE %d.",
-						   ControlFile->toast_max_chunk_size, (int) TOAST_MAX_CHUNK_SIZE),
-				 errhint("It looks like you need to recompile or initdb.")));
-	if (ControlFile->loblksize != LOBLKSIZE)
-		ereport(FATAL,
-				(errmsg("database files are incompatible with server"),
-				 errdetail("The database cluster was initialized with LOBLKSIZE %d,"
-						   " but the server was compiled with LOBLKSIZE %d.",
-						   ControlFile->loblksize, (int) LOBLKSIZE),
-				 errhint("It looks like you need to recompile or initdb.")));
-
-#ifdef USE_FLOAT4_BYVAL
-	if (ControlFile->float4ByVal != true)
-		ereport(FATAL,
-				(errmsg("database files are incompatible with server"),
-				 errdetail("The database cluster was initialized without USE_FLOAT4_BYVAL"
-						   " but the server was compiled with USE_FLOAT4_BYVAL."),
-				 errhint("It looks like you need to recompile or initdb.")));
-#else
-	if (ControlFile->float4ByVal != false)
-		ereport(FATAL,
-				(errmsg("database files are incompatible with server"),
-				 errdetail("The database cluster was initialized with USE_FLOAT4_BYVAL"
-						   " but the server was compiled without USE_FLOAT4_BYVAL."),
-				 errhint("It looks like you need to recompile or initdb.")));
-#endif
-
-#ifdef USE_FLOAT8_BYVAL
-	if (ControlFile->float8ByVal != true)
-		ereport(FATAL,
-				(errmsg("database files are incompatible with server"),
-				 errdetail("The database cluster was initialized without USE_FLOAT8_BYVAL"
-						   " but the server was compiled with USE_FLOAT8_BYVAL."),
-				 errhint("It looks like you need to recompile or initdb.")));
-#else
-	if (ControlFile->float8ByVal != false)
-		ereport(FATAL,
-				(errmsg("database files are incompatible with server"),
-				 errdetail("The database cluster was initialized with USE_FLOAT8_BYVAL"
-						   " but the server was compiled without USE_FLOAT8_BYVAL."),
-				 errhint("It looks like you need to recompile or initdb.")));
-#endif
+	/* POLAR: read local pg_control file when in replica mode */
+	if (polar_in_replica_mode())
+		snprintf(polar_ctl_file, MAXPGPATH, "%s", XLOG_CONTROL_FILE);
+	else
+		polar_make_file_path_level2(polar_ctl_file, XLOG_CONTROL_FILE);
+	
+	/* POLAR: read and check control file */
+	if (polar_read_control_file(polar_ctl_file, ControlFile, PANIC, &saved_errno))
+		elog(LOG, "polardb load and check controlfile success");
 
 	wal_segment_size = ControlFile->xlog_seg_size;
-
-	if (!IsValidWalSegSize(wal_segment_size))
-		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-						errmsg_plural("WAL segment size must be a power of two between 1 MB and 1 GB, but the control file specifies %d byte",
-									  "WAL segment size must be a power of two between 1 MB and 1 GB, but the control file specifies %d bytes",
-									  wal_segment_size,
-									  wal_segment_size)));
-
 	snprintf(wal_segsz_str, sizeof(wal_segsz_str), "%d", wal_segment_size);
 	SetConfigOption("wal_segment_size", wal_segsz_str, PGC_INTERNAL,
 					PGC_S_OVERRIDE);
@@ -4978,15 +5482,7 @@ UpdateControlFile(void)
 {
 	int			fd;
 	char		polar_file_path[MAXPGPATH];
-
-	/* POLAR: replica mode not allow any data to shared storage */
-	if (polar_in_replica_mode())
-	{
-		elog(LOG, "polardb replica mode, skip update controlfile");
-		return;
-	}
-	else if (polar_enable_shared_storage_mode)
-		elog(LOG, "polardb update controlfile");
+	bool 		polar_double_write = false;
 
 	INIT_CRC32C(ControlFile->crc);
 	COMP_CRC32C(ControlFile->crc,
@@ -4994,7 +5490,24 @@ UpdateControlFile(void)
 				offsetof(ControlFileData, crc));
 	FIN_CRC32C(ControlFile->crc);
 
-	polar_make_file_path_level2(polar_file_path, XLOG_CONTROL_FILE);
+	if (polar_in_replica_mode())
+		snprintf(polar_file_path, MAXPGPATH, "%s", XLOG_CONTROL_FILE);
+	else
+	{
+		/* POLAR: FATAL after detection of double write in one shared storage. */
+		if (polar_enable_io_fencing &&
+			POLAR_IO_FENCING_GET_STATE(&XLogCtl->polar_io_fencing) == POLAR_IO_FENCING_WAIT)
+		{
+			elog(LOG, "state is %d", ControlFile->state);
+			POLAR_IO_FENCING_WAIT_FOR(&XLogCtl->polar_io_fencing);
+			POLAR_IO_FENCING_SET_STATE(&XLogCtl->polar_io_fencing, POLAR_IO_FENCING_NORMAL);
+		}
+		polar_check_double_write();
+		polar_make_file_path_level2(polar_file_path, XLOG_CONTROL_FILE);
+		polar_double_write = polar_is_standby();
+	}
+
+write_control_file:
 	fd = BasicOpenFile(polar_file_path,
 						   O_RDWR | PG_BINARY, true);
 	if (fd < 0)
@@ -5027,6 +5540,13 @@ UpdateControlFile(void)
 		ereport(PANIC,
 				(errcode_for_file_access(),
 				 errmsg("could not close control file: %m")));
+
+	if (polar_double_write)
+	{
+		snprintf(polar_file_path, MAXPGPATH, "%s", XLOG_CONTROL_FILE);
+		polar_double_write = false;
+		goto write_control_file;
+	}
 }
 
 /*
@@ -5188,7 +5708,7 @@ XLOGShmemSize(void)
 	size = sizeof(XLogCtlData);
 
 	/* WAL insertion locks, plus alignment */
-	size = add_size(size, mul_size(sizeof(WALInsertLockPadded), NUM_XLOGINSERT_LOCKS + 1));
+	size = add_size(size, mul_size(sizeof(WALInsertLockPadded), polar_wal_buffer_insert_locks + 1));
 	/* xlblocks array */
 	size = add_size(size, mul_size(sizeof(XLogRecPtr), XLOGbuffers));
 	/* extra alignment padding for XLOG I/O buffers */
@@ -5202,6 +5722,40 @@ XLOGShmemSize(void)
 	 * routine again below to compute the actual allocation size.
 	 */
 
+	/* 
+	 * POLAR wal pipeline
+	 */
+	if (POLAR_WAL_PIPELINER_ENABLE())
+	{
+		/*
+		 *	Mutex access of wait object need lock page in OS kernel,
+		 *	we should try to align with OS page, or else we may 
+		 *  get severely page lock contend, which will raise cpu iowait
+		 */
+		if (polar_wal_pipeline_wait_object_align)
+		{
+			int align_size;
+			if (huge_pages == HUGE_PAGES_ON)
+				align_size = OS_HUGE_PAGE_SIZE;
+			else
+				align_size = OS_DEFAULT_PAGE_SIZE;
+			
+			/* extra alignment padding */
+			size = add_size(size, align_size);
+
+			size = add_size(size, mul_size(TYPEALIGN(align_size, sizeof(polar_wait_object_t)), POLAR_WAL_PIPELINE_MAX_THREAD_NUM));
+			size = add_size(size, mul_size(TYPEALIGN(align_size, sizeof(polar_wal_pipeline_flush_event_t)), polar_wal_pipeline_flush_event_array_size));
+		} 
+		else
+		{
+			size = add_size(size, mul_size(sizeof(polar_wait_object_t), POLAR_WAL_PIPELINE_MAX_THREAD_NUM));
+			size = add_size(size, mul_size(sizeof(polar_wal_pipeline_flush_event_t), polar_wal_pipeline_flush_event_array_size));
+		}
+		
+		size = add_size(size, mul_size(sizeof(polar_wal_pipeline_unflushed_xlog_slot_t), polar_wal_pipeline_unflushed_xlog_array_size));
+		size = add_size(size, mul_size(sizeof(pg_atomic_uint64), polar_wal_pipeline_recent_written_array_size));
+	}
+
 	return size;
 }
 
@@ -5213,6 +5767,8 @@ XLOGShmemInit(void)
 	char	   *allocptr;
 	int			i;
 	ControlFileData *localControlFile;
+	/* POLAR */
+	int			polar_lock_tranche;
 
 #ifdef WAL_DEBUG
 
@@ -5235,6 +5791,7 @@ XLOGShmemInit(void)
 		ShmemInitStruct("XLOG Ctl", XLOGShmemSize(), &foundXLog);
 
 	localControlFile = ControlFile;
+
 	ControlFile = (ControlFileData *)
 		ShmemInitStruct("Control File", sizeof(ControlFileData), &foundCFile);
 
@@ -5260,11 +5817,15 @@ XLOGShmemInit(void)
 	 * So, we check and load it.
 	 */
 	if (POLAR_FILE_IN_SHARED_STORAGE())
-		elog(LOG, "PolarDB delay load controlfile");
+		elog(LOG, "polardb delay load controlfile");
 
 	/*
 	 * Already have read control file locally, unless in bootstrap mode. Move
 	 * contents into shared memory.
+	 */
+	/*
+	 * POLAR: not read controlfile in LocalProcessControlFile,
+	 * but init memory here
 	 */
 	if (localControlFile)
 	{
@@ -5292,10 +5853,10 @@ XLOGShmemInit(void)
 		((uintptr_t) allocptr) % sizeof(WALInsertLockPadded);
 	WALInsertLocks = XLogCtl->Insert.WALInsertLocks =
 		(WALInsertLockPadded *) allocptr;
-	allocptr += sizeof(WALInsertLockPadded) * NUM_XLOGINSERT_LOCKS;
+	allocptr += sizeof(WALInsertLockPadded) * polar_wal_buffer_insert_locks;
 
 	LWLockRegisterTranche(LWTRANCHE_WAL_INSERT, "wal_insert");
-	for (i = 0; i < NUM_XLOGINSERT_LOCKS; i++)
+	for (i = 0; i < polar_wal_buffer_insert_locks; i++)
 	{
 		LWLockInitialize(&WALInsertLocks[i].l.lock, LWTRANCHE_WAL_INSERT);
 		WALInsertLocks[i].l.insertingAt = InvalidXLogRecPtr;
@@ -5310,6 +5871,7 @@ XLOGShmemInit(void)
 	allocptr = (char *) TYPEALIGN(XLOG_BLCKSZ, allocptr);
 	XLogCtl->pages = allocptr;
 	memset(XLogCtl->pages, 0, (Size) XLOG_BLCKSZ * XLOGbuffers);
+	allocptr += (Size) XLOG_BLCKSZ * XLOGbuffers;
 
 	/*
 	 * Do basic initialization of XLogCtl shared data. (StartupXLOG will fill
@@ -5319,6 +5881,7 @@ XLOGShmemInit(void)
 	XLogCtl->SharedRecoveryState = RECOVERY_STATE_CRASH;
 	XLogCtl->SharedHotStandbyActive = false;
 	XLogCtl->WalWriterSleeping = false;
+
 
 	/*
 	 * POLAR: When some processes die, forced entry recovery mode and start the startup process
@@ -5330,11 +5893,129 @@ XLOGShmemInit(void)
 	/* POLAR: Init node type. */
 	polar_set_node_type(polar_local_node_type);
 
+	/* POLAR: Init hot_standby_state, same as standbyState */
+	XLogCtl->polar_hot_standby_state = STANDBY_DISABLED;
+
+	/* POLAR: Init replica_update_dirs_by_redo flag */
+	XLogCtl->polar_replica_update_dirs_by_redo = false;
+
+	/* POLAR: Init initial_datamax_lock */
+	polar_lock_tranche = LWLockNewTrancheId();
+	LWLockRegisterTranche(polar_lock_tranche, "initial datamax lock");
+	LWLockInitialize(&XLogCtl->polar_initial_datamax_lock, polar_lock_tranche);
+
 	SpinLockInit(&XLogCtl->Insert.insertpos_lck);
 	SpinLockInit(&XLogCtl->info_lck);
 	SpinLockInit(&XLogCtl->ulsn_lck);
 	InitSharedLatch(&XLogCtl->recoveryWakeupLatch);
-	InitSharedLatch(&XLogCtl->polar_fpsn_wakeup_latch);
+
+	/* 
+	 * POLAR wal pipeline
+	 */
+	if (POLAR_WAL_PIPELINER_ENABLE())
+	{
+		int i;
+		int ret;
+		pthread_mutexattr_t mutex_attr;
+		pthread_condattr_t cond_attr; 
+
+		ret = pthread_mutexattr_init(&mutex_attr);
+		if (ret != 0)
+			elog(ERROR, "pthread mutex attribute init failed, errno is %d", ret);
+		ret = pthread_mutexattr_setpshared(&mutex_attr, PTHREAD_PROCESS_SHARED); 
+		if (ret != 0)
+			elog(ERROR, "pthread mutex attribute setpshared failed, errno is %d", ret);   
+	
+		ret = pthread_condattr_init(&cond_attr);
+		if (ret != 0)
+			elog(ERROR, "pthread condition attribute init failed, errno is %d", ret);		
+		ret = pthread_condattr_setpshared(&cond_attr, PTHREAD_PROCESS_SHARED);
+		if (ret != 0)
+			elog(ERROR, "pthread condition attribute setpshared failed, errno is %d", ret);
+		ret = pthread_condattr_setclock(&cond_attr, CLOCK_MONOTONIC);
+		if (ret != 0)
+			elog(ERROR, "pthread condition attribute setclock failed, errno is %d", ret);
+
+		if (polar_wal_pipeline_wait_object_align)
+		{
+			if (huge_pages == HUGE_PAGES_ON)
+				allocptr = (char *)TYPEALIGN(OS_HUGE_PAGE_SIZE, allocptr);
+			else
+				allocptr = (char *)TYPEALIGN(OS_DEFAULT_PAGE_SIZE, allocptr);
+		}
+
+		/* 
+		 * wait object init 
+		 */
+
+		XLogCtl->polar_wal_pipeline_wait_objs = (polar_wait_object_t *)allocptr;
+
+		for (i = 0; i < POLAR_WAL_PIPELINE_MAX_THREAD_NUM; i++)
+			polar_wait_obj_init(polar_wal_pipeline_get_worker_wait_obj(i), &mutex_attr, &cond_attr);
+
+		if (polar_wal_pipeline_wait_object_align)
+		{
+			if (huge_pages == HUGE_PAGES_ON)
+				allocptr += OS_HUGE_PAGE_SIZE * POLAR_WAL_PIPELINE_MAX_THREAD_NUM;
+			else
+				allocptr += OS_DEFAULT_PAGE_SIZE * POLAR_WAL_PIPELINE_MAX_THREAD_NUM;
+		}
+		else
+			allocptr += sizeof(polar_wait_object_t) * POLAR_WAL_PIPELINE_MAX_THREAD_NUM;
+
+		/* 
+		 * commit wait buffer init
+		 */
+
+		XLogCtl->polar_wal_pipeline_commit_wait_buffer.slot_count = polar_wal_pipeline_flush_event_array_size;
+		XLogCtl->polar_wal_pipeline_commit_wait_buffer.slot_size = polar_wal_pipeline_flush_event_slot_size;
+		XLogCtl->polar_wal_pipeline_commit_wait_buffer.flush_event_slots = (polar_wal_pipeline_flush_event_t *)allocptr;
+		
+		for (i = 0; i < polar_wal_pipeline_flush_event_array_size; i++)
+			polar_wait_obj_init(polar_wal_pipeline_flush_event_get_slot(i), &mutex_attr, &cond_attr);
+		
+		if (polar_wal_pipeline_wait_object_align)
+		{
+			if (huge_pages == HUGE_PAGES_ON)
+				allocptr += OS_HUGE_PAGE_SIZE * polar_wal_pipeline_flush_event_array_size;
+			else
+				allocptr += OS_DEFAULT_PAGE_SIZE * polar_wal_pipeline_flush_event_array_size;
+		}
+		else
+			allocptr += (Size) polar_wal_pipeline_flush_event_array_size * sizeof(polar_wal_pipeline_flush_event_t);
+		
+		/* 
+		 * recent written position buffer init
+		 */
+
+		XLogCtl->polar_wal_pipeline_recent_written_position_buffer.recent_written_position_slots = (pg_atomic_uint64 *)allocptr;
+		pg_atomic_init_u64(&XLogCtl->polar_wal_pipeline_recent_written_position_buffer.ready_write_position, 0);
+		for (i = 0; i < polar_wal_pipeline_recent_written_array_size; i++)
+			pg_atomic_init_u64(&XLogCtl->polar_wal_pipeline_recent_written_position_buffer.recent_written_position_slots[i], 0);
+		allocptr += (Size) polar_wal_pipeline_recent_written_array_size * sizeof(pg_atomic_uint64);
+
+		/* 
+		 * unflushed xlog buffer init 
+		 */
+
+		XLogCtl->polar_wal_pipeline_unflushed_xlog_buffer.unflushed_xlog_slots = (polar_wal_pipeline_unflushed_xlog_slot_t *)allocptr;
+		pg_atomic_init_u64(&XLogCtl->polar_wal_pipeline_unflushed_xlog_buffer.add_slot_no, 0);
+		pg_atomic_init_u64(&XLogCtl->polar_wal_pipeline_unflushed_xlog_buffer.del_slot_no, 0);
+		for (i = 0; i < polar_wal_pipeline_unflushed_xlog_array_size; i++)
+			XLogCtl->polar_wal_pipeline_unflushed_xlog_buffer.unflushed_xlog_slots[i].in_use = false;
+
+		/*
+		 * wal pipeline stats init
+		 */
+
+		polar_wal_pipeline_stats_init(&XLogCtl->polar_wal_pipeline_stats);
+	}
+
+	if (polar_in_standby_mode() && polar_enable_parallel_replay_standby_mode)
+		polar_checkpoint_ringbuf_init(&XLogCtl->polar_checkpoint_ringbuf);
+
+	/* POLAR: reset polar I/O fencing state. */
+	POLAR_IO_FENCING_RESET_STATE(&XLogCtl->polar_io_fencing);
 }
 
 /*
@@ -5355,6 +6036,8 @@ BootStrapXLOG(void)
 	char		mock_auth_nonce[MOCK_AUTH_NONCE_LEN];
 	struct timeval tv;
 	pg_crc32c	crc;
+	/* POLAR csn */
+	TransactionId latestCompletedXid;
 
 	/*
 	 * Select a hopefully-unique system identifier code for this installation.
@@ -5368,10 +6051,20 @@ BootStrapXLOG(void)
 	 * determine the initialization time of the installation, which could
 	 * perhaps be useful sometimes.
 	 */
-	gettimeofday(&tv, NULL);
-	sysidentifier = ((uint64) tv.tv_sec) << 32;
-	sysidentifier |= ((uint64) tv.tv_usec) << 12;
-	sysidentifier |= getpid() & 0xFFF;
+	/* 
+	 * POLAR: if no sysidentifier specified, initial in origin way 
+	 * otherwise use specific system identifier
+	 */
+	if (!polar_sysidentifier)
+	{
+		gettimeofday(&tv, NULL);
+		sysidentifier = ((uint64) tv.tv_sec) << 32;
+		sysidentifier |= ((uint64) tv.tv_usec) << 12;
+		sysidentifier |= getpid() & 0xFFF;
+	}
+	else
+		sysidentifier = polar_sysidentifier;
+	/* POLAR end */
 
 	/*
 	 * Generate a random nonce. This is used for authentication requests that
@@ -5420,6 +6113,15 @@ BootStrapXLOG(void)
 	ShmemVariableCache->nextXid = checkPoint.nextXid;
 	ShmemVariableCache->nextOid = checkPoint.nextOid;
 	ShmemVariableCache->oidCount = 0;
+
+	/* POLAR csn */
+	pg_atomic_write_u64(&polar_shmem_csn_mvcc_var_cache->polar_next_csn, POLAR_CSN_FIRST_NORMAL);
+	latestCompletedXid = checkPoint.nextXid;
+	TransactionIdRetreat(latestCompletedXid);
+	pg_atomic_write_u32(&polar_shmem_csn_mvcc_var_cache->polar_latest_completed_xid, latestCompletedXid);
+	pg_atomic_write_u32(&polar_shmem_csn_mvcc_var_cache->polar_oldest_active_xid, checkPoint.nextXid);
+	/* POLAR end */
+
 	MultiXactSetNextMXact(checkPoint.nextMulti, checkPoint.nextMultiOffset);
 	AdvanceOldestClogXid(checkPoint.oldestXid);
 	SetTransactionIdLimit(checkPoint.oldestXid, checkPoint.oldestXidDB);
@@ -5521,6 +6223,9 @@ BootStrapXLOG(void)
 	BootStrapCommitTs();
 	BootStrapSUBTRANS();
 	BootStrapMultiXact();
+	BootStrapKmgr(bootstrap_data_encryption_cipher);
+	/* POLAR csn */
+	polar_csnlog_bootstrap();
 
 	pfree(buffer);
 
@@ -5752,13 +6457,16 @@ readRecoveryCommandFile(void)
 		}
 		else if (strcmp(item->name, "standby_mode") == 0)
 		{
-			if (!parse_bool(item->value, &StandbyModeRequested))
-				ereport(ERROR,
-						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-						 errmsg("parameter \"%s\" requires a Boolean value",
-								"standby_mode")));
-			ereport(DEBUG2,
-					(errmsg_internal("standby_mode = '%s'", item->value)));
+			if (!polar_enable_dma)
+			{
+				if (!parse_bool(item->value, &StandbyModeRequested))
+					ereport(ERROR,
+							(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+							 errmsg("parameter \"%s\" requires a Boolean value",
+								 "standby_mode")));
+				ereport(DEBUG2,
+						(errmsg_internal("standby_mode = '%s'", item->value)));
+			}
 		}
 		else if (strcmp(item->name, "polar_replica") == 0)
 		{
@@ -5773,30 +6481,39 @@ readRecoveryCommandFile(void)
 					(errmsg_internal("replica_mode = '%s'", item->value)));
 
 			/* POLAR: replica mode base on standby mode, just can not write shared storage */
-			if (polar_replica)
+			if (polar_replica && !polar_enable_dma)
 				StandbyModeRequested = true;
 		}
 		else if (strcmp(item->name, "primary_conninfo") == 0)
 		{
-			PrimaryConnInfo = pstrdup(item->value);
-			ereport(DEBUG2,
-					(errmsg_internal("primary_conninfo = '%s'",
-									 PrimaryConnInfo)));
+			if (!polar_enable_dma)
+			{
+				PrimaryConnInfo = pstrdup(item->value);
+				ereport(DEBUG2,
+						(errmsg_internal("primary_conninfo = '%s'",
+										 PrimaryConnInfo)));
+			}
 		}
 		else if (strcmp(item->name, "primary_slot_name") == 0)
 		{
-			ReplicationSlotValidateName(item->value, ERROR);
-			PrimarySlotName = pstrdup(item->value);
-			ereport(DEBUG2,
-					(errmsg_internal("primary_slot_name = '%s'",
-									 PrimarySlotName)));
+			if (!polar_enable_dma)
+			{
+				ReplicationSlotValidateName(item->value, ERROR);
+				PrimarySlotName = pstrdup(item->value);
+				ereport(DEBUG2,
+						(errmsg_internal("primary_slot_name = '%s'",
+														 PrimarySlotName)));
+			}
 		}
 		else if (strcmp(item->name, "trigger_file") == 0)
 		{
-			TriggerFile = pstrdup(item->value);
-			ereport(DEBUG2,
-					(errmsg_internal("trigger_file = '%s'",
-									 TriggerFile)));
+			if (!polar_enable_dma)
+			{
+				TriggerFile = pstrdup(item->value);
+				ereport(DEBUG2,
+						(errmsg_internal("trigger_file = '%s'",
+														 TriggerFile)));
+			}
 		}
 		else if (strcmp(item->name, "recovery_min_apply_delay") == 0)
 		{
@@ -5812,6 +6529,17 @@ readRecoveryCommandFile(void)
 			ereport(DEBUG2,
 					(errmsg_internal("recovery_min_apply_delay = '%s'", item->value)));
 		}
+		/* POLAR: datamax related config item */
+		else if (strcmp(item->name, "polar_datamax_mode") == 0)
+		{
+			if (strcmp(item->value, "standalone") == 0)
+					polar_datamax_mode_requested = true;
+			else
+					ereport(FATAL, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+									errmsg("parameter \"%s\" has unknown value: %s",
+											"polar_datamax_mode", item->value)));
+		}
+		/* POLAR end */
 		else
 			ereport(FATAL,
 					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
@@ -5822,9 +6550,10 @@ readRecoveryCommandFile(void)
 	/*
 	 * Check for compulsory parameters
 	 */
-	if (StandbyModeRequested)
+	/* POLAR: DataMax mode need conninfo, too */
+	if (StandbyModeRequested || polar_datamax_mode_requested)
 	{
-		if (PrimaryConnInfo == NULL && recoveryRestoreCommand == NULL)
+		if (!polar_enable_dma && PrimaryConnInfo == NULL && recoveryRestoreCommand == NULL)
 			ereport(WARNING,
 					(errmsg("recovery command file \"%s\" specified neither primary_conninfo nor restore_command",
 							RECOVERY_COMMAND_FILE),
@@ -5832,7 +6561,7 @@ readRecoveryCommandFile(void)
 	}
 	else
 	{
-		if (recoveryRestoreCommand == NULL)
+		if (!polar_enable_dma && recoveryRestoreCommand == NULL)
 			ereport(FATAL,
 					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 					 errmsg("recovery command file \"%s\" must specify restore_command when standby mode is not enabled",
@@ -5886,6 +6615,11 @@ readRecoveryCommandFile(void)
 			recoveryTargetTLI = findNewestTimeLine(recoveryTargetTLI);
 			recoveryTargetIsLatest = true;
 		}
+	}
+	else if (polar_is_dma_data_node())
+	{
+		recoveryTargetTLI = findNewestTimeLine(recoveryTargetTLI);
+		consensusRecoveryLatestTimeline = true;
 	}
 
 	FreeConfigVariables(head);
@@ -5981,7 +6715,7 @@ exitArchiveRecovery(TimeLineID endTLI, XLogRecPtr endOfLog)
 	 * re-enter archive recovery mode in a subsequent crash.
 	 */
 	unlink(RECOVERY_COMMAND_DONE);
-	durable_rename(RECOVERY_COMMAND_FILE, RECOVERY_COMMAND_DONE, FATAL, false);
+	durable_rename(RECOVERY_COMMAND_FILE, RECOVERY_COMMAND_DONE, INFO, false);
 
 	ereport(LOG,
 			(errmsg("archive recovery complete")));
@@ -6435,7 +7169,12 @@ recoveryApplyDelay(XLogReaderState *record)
 		/* might change the trigger file's location */
 		HandleStartupProcInterrupts();
 
-		if (CheckForStandbyTrigger())
+		if (polar_is_dma_data_node())
+		{
+			if (!becameLeader)
+				break;
+		}
+		else if (CheckForStandbyTrigger())
 			break;
 
 		/*
@@ -6629,10 +7368,17 @@ StartupXLOG(void)
 	XLogPageReadPrivate private;
 	bool		fast_promoted = false;
 	struct stat st;
-	XLogRecPtr  polar_logindex_start_lsn = InvalidXLogRecPtr,
-				polar_logindex_mini_trans_lsn,
-				polar_redo_start_lsn,
-				polar_xlog_read_from;
+	XLogRecPtr  logindex_mini_trans_lsn,
+				redo_start_lsn,
+				xlog_read_from;
+	bool 		enable_logindex_online_promote = POLAR_LOGINDEX_ENABLE_ONLINE_PROMOTE();
+	bool 		enable_logindex_online_promote_standby = POLAR_ENABLE_PARALLEL_REPLAY_STANDBY_MODE();
+	/* POLAR csn */
+	TransactionId latestCompletedXid;
+
+	/* POLAR */
+	XLogRecPtr	EndOfCheckPoint;
+	bool		polar_lazy_end_of_recovery_checkpoint = false;
 
 	/*
 	 * Verify XLOG status looks valid.
@@ -6688,6 +7434,10 @@ StartupXLOG(void)
 	 */
 	ValidateXLOGDirectoryStructure();
 
+	polar_csnlog_validate_dir();
+	if (!polar_csn_enable)
+		polar_csnlog_remove_all();
+
 	/*
 	 * If we previously crashed, there might be data which we had written,
 	 * intending to fsync it, but which we had not actually fsync'd yet.
@@ -6699,6 +7449,14 @@ StartupXLOG(void)
 	if (ControlFile->state != DB_SHUTDOWNED &&
 		ControlFile->state != DB_SHUTDOWNED_IN_RECOVERY)
 		SyncDataDirectory();
+
+	/* 
+	 * POLAR: set minRecoveryPoint of Controlfile as invalid 
+	 * when there is no need for replica to copy files from shared storage
+	 * so that replica node can reach consistency after having replayed all wal of primary
+	 */
+	if (polar_in_replica_mode() && polar_replica_update_dirs_by_redo())
+		polar_update_controlfile_minrecoverypoint(InvalidXLogRecPtr, 0);
 
 	/*
 	 * Initialize on the assumption we want to recover to the latest timeline
@@ -6715,6 +7473,17 @@ StartupXLOG(void)
 	 * recovery
 	 */
 	readRecoveryCommandFile();
+
+	if (polar_is_dma_data_node())
+	{
+		StandbyModeRequested = true;
+		if (!ArchiveRecoveryRequested)
+		{
+			ArchiveRecoveryRequested = true;
+			recoveryTargetTLI = findNewestTimeLine(recoveryTargetTLI);
+			consensusRecoveryLatestTimeline = true;
+		}
+	}
 
 	/*
 	 * Save archive_cleanup_command in shared memory so that other processes
@@ -6808,6 +7577,9 @@ StartupXLOG(void)
 					(errmsg("checkpoint record is at %X/%X",
 							(uint32) (checkPointLoc >> 32), (uint32) checkPointLoc)));
 			InRecovery = true;	/* force recovery even if SHUTDOWNED */
+
+			/* POLAR DMA */
+			EndOfCheckPoint = EndRecPtr;
 
 			/*
 			 * Make sure that REDO location exists. This may not be the case
@@ -6944,9 +7716,24 @@ StartupXLOG(void)
 			ereport(PANIC,
 					(errmsg("could not locate a valid checkpoint record")));
 		}
-		memcpy(&checkPoint, XLogRecGetData(xlogreader), sizeof(CheckPoint));
+
+		/*
+		 * POLAR: God bless us will never set polar_force_change_checkpoint to be true.
+		 * During development I found a bug that page whose LSN is smaller than checkPoint.redo
+		 * is not flushed to the storage, and it crashed during recovery.
+		 * In order to recovery from this case, we need to use polar_tools to change pg_control file
+		 * and set a new redo position in this file.
+		 */
+		if (polar_force_change_checkpoint)
+			checkPoint = ControlFile->checkPointCopy;
+		else
+			memcpy(&checkPoint, XLogRecGetData(xlogreader), sizeof(CheckPoint));
 		wasShutdown = ((record->xl_info & ~XLR_INFO_MASK) == XLOG_CHECKPOINT_SHUTDOWN);
+		/* POLAR DMA */
+		EndOfCheckPoint = EndRecPtr;
 	}
+
+	redo_start_lsn = checkPoint.redo;
 
 	/*
 	 * Clear out any old relcache cache files.  This is *necessary* if we do
@@ -7006,6 +7793,12 @@ StartupXLOG(void)
 
 	LastRec = RecPtr = checkPointLoc;
 
+	if (polar_is_dma_data_node())
+	{
+		ConsensusSetXLogFlushedLSN(EndOfCheckPoint, checkPoint.ThisTimeLineID, true);
+		ConsensusSetSyncedLSN(EndOfCheckPoint, checkPoint.ThisTimeLineID);
+	}
+
 	ereport(DEBUG1,
 			(errmsg_internal("redo record is at %X/%X; shutdown %s",
 							 (uint32) (checkPoint.redo >> 32), (uint32) checkPoint.redo,
@@ -7046,6 +7839,17 @@ StartupXLOG(void)
 
 	/* POLAR */
 	XLogCtl->replication_slot_oldest_applied_lsn = InvalidXLogRecPtr;
+
+	/* POLAR csn */
+	pg_atomic_write_u64(&polar_shmem_csn_mvcc_var_cache->polar_next_csn, POLAR_CSN_FIRST_NORMAL);
+	latestCompletedXid = checkPoint.nextXid;
+	TransactionIdRetreat(latestCompletedXid);
+	pg_atomic_write_u32(&polar_shmem_csn_mvcc_var_cache->polar_latest_completed_xid, latestCompletedXid);
+	pg_atomic_write_u32(&polar_shmem_csn_mvcc_var_cache->polar_oldest_active_xid, checkPoint.nextXid);
+	/* POLAR end */
+
+	/* Startup all about flashback log */
+	polar_startup_flog(&checkPoint, flog_instance);
 
 	/*
 	 * Initialize replication slots, before there's a chance to remove
@@ -7149,17 +7953,18 @@ StartupXLOG(void)
 		InRecovery = true;
 	}
 
-	/* POLAR: If logindex is disabled or only enable logindex in replica, we remove all logindex data if we can write storage */
-	if ((!polar_enable_redo_logindex || !polar_streaming_xlog_meta) && !polar_in_replica_mode())
-	{
-		polar_log_index_remove_all();
-	}
+	/* POLAR: If logindex is disabled or only enalbe logindex in replica, we remove all logindex data if we can write storage */
+	if (!polar_logindex_redo_instance && !polar_in_replica_mode())
+		polar_logindex_remove_all();
 
 	/* REDO */
 	/* POLAR: force recovery due to enable logindex in master and replica mode */
-	if (InRecovery || (polar_enable_redo_logindex && polar_streaming_xlog_meta))
+	if (InRecovery || polar_logindex_redo_instance)
 	{
 		int			rmid;
+
+		/* POLAR: init buffer pool check */
+		polar_check_buffer_pool_consistency_init();
 
 		/*
 		 * Update pg_control to show that we are recovering and to show the
@@ -7333,7 +8138,7 @@ StartupXLOG(void)
 			Assert(TransactionIdIsValid(oldestActiveXID));
 
 			/* Tell procarray about the range of xids it has to deal with */
-			ProcArrayInitRecovery(ShmemVariableCache->nextXid);
+			ProcArrayInitRecovery(ShmemVariableCache->nextXid, oldestActiveXID);
 
 			/*
 			 * Startup commit log and subtrans only.  MultiXact and commit
@@ -7341,7 +8146,14 @@ StartupXLOG(void)
 			 * maintained during recovery and need not be started yet.
 			 */
 			StartupCLOG();
-			StartupSUBTRANS(oldestActiveXID);
+			if (polar_csn_enable)
+			{
+				polar_csnlog_startup(oldestActiveXID);
+			}
+			else
+			{
+				StartupSUBTRANS(oldestActiveXID);
+			}
 
 			/*
 			 * If we're beginning at a shutdown checkpoint, we know that
@@ -7417,8 +8229,14 @@ StartupXLOG(void)
 		 * After this point, we can no longer assume that we're the only
 		 * process in addition to postmaster!  Also, fsync requests are
 		 * subsequently to be handled by the checkpointer, not locally.
+		 *
+		 * POLAR: we launch checkpointer and bgwriter now, it's different
+		 * from the origin behaviour, but we don't perform restartpoints
+		 * for simply, we just want bgwriter to flush dirty pages as soon
+		 * as possible to avoid last end of crash checkpoint too slow.
 		 */
-		if (ArchiveRecoveryRequested && IsUnderPostmaster)
+		if ((polar_enable_early_launch_checkpointer || ArchiveRecoveryRequested) &&
+			IsUnderPostmaster)
 		{
 			PublishStartupProcessInformation();
 			SetForwardFsyncRequests();
@@ -7430,7 +8248,7 @@ StartupXLOG(void)
 		 * POLAR: If logindex is enabled in ro and rw node, we may change start point to read xlog,
 		 * so we will not check consistency.
 		 */
-		if (!(polar_enable_redo_logindex && polar_streaming_xlog_meta))
+		if (!polar_logindex_redo_instance)
 		{
 			/*
 			 * Allow read-only connections immediately if we're consistent
@@ -7439,6 +8257,7 @@ StartupXLOG(void)
 			CheckRecoveryConsistency();
 		}
 
+
 		/*
 		 * Find the first record that logically follows the checkpoint --- it
 		 * might physically precede it, though.
@@ -7446,28 +8265,26 @@ StartupXLOG(void)
 		if (checkPoint.redo < RecPtr)
 		{
 			/* POLAR: The valid lsn of log index start from check point */
-			polar_redo_start_lsn = checkPoint.redo;
+			redo_start_lsn = checkPoint.redo;
 
 			 /*
 			  * POLAR: Init log index snapshot structure.
+			  *
+			  * Changing the xlog_read_from may lead to changing the TLI we read
+			  * from, so we update curFileTLI after change xlog_read_from. 
 			  */
-			if (polar_enable_redo_logindex)
-			{
-				polar_logindex_start_lsn = polar_log_index_snapshot_init(polar_redo_start_lsn, polar_in_replica_mode());
-				elog(LOG, "polar logindex change from %lx to %lx", polar_redo_start_lsn, polar_logindex_start_lsn);
-			}
-
-			polar_xlog_read_from = XLogRecPtrIsInvalid(polar_logindex_start_lsn) ? polar_redo_start_lsn : polar_logindex_start_lsn;
+			xlog_read_from = polar_logindex_redo_init(polar_logindex_redo_instance, redo_start_lsn, polar_in_replica_mode());
+			polar_update_curFileTLI(xlog_read_from);
 
 			/*
 			 * POLAR : If start point to read xlog is not changed, then
 			 * allow read-only connections immediately if we're consistent already.
 			 */
-			if (polar_xlog_read_from == polar_redo_start_lsn)
+			if (xlog_read_from == redo_start_lsn)
 				CheckRecoveryConsistency();
 
 			/* back up to find the record */
-			record = ReadRecord(xlogreader, polar_xlog_read_from, PANIC, false);
+			record = ReadRecord(xlogreader, xlog_read_from, PANIC, false);
 		}
 		else
 		{
@@ -7477,18 +8294,17 @@ StartupXLOG(void)
 						(errmsg("invalid redo in checkpoint record")));
 
 			/* POLAR: The valid lsn of log index start from next record after CheckPoint */
-			polar_redo_start_lsn = xlogreader->EndRecPtr;
+			redo_start_lsn = xlogreader->EndRecPtr;
 
 			 /*
 			  * POLAR: Init log index snapshot structure.
+			  *
+			  * Changing the xlog_read_from may lead to changing the TLI we read
+			  * from, so we update curFileTLI after change xlog_read_from. 
 			  */
-			if (polar_enable_redo_logindex)
-			{
-				polar_logindex_start_lsn = polar_log_index_snapshot_init(polar_redo_start_lsn, polar_in_replica_mode());
-				elog(LOG, "polar logindex change from %lx to %lx", polar_redo_start_lsn, polar_logindex_start_lsn);
-			}
+			xlog_read_from = polar_logindex_redo_init(polar_logindex_redo_instance, redo_start_lsn, polar_in_replica_mode());
+			polar_update_curFileTLI(xlog_read_from);
 
-			polar_xlog_read_from = XLogRecPtrIsInvalid(polar_logindex_start_lsn) ? polar_redo_start_lsn : polar_logindex_start_lsn;
 			/*
 			 * POLAR: The old xlog segment file is renamed for use, it will contain old xlog data.
 			 * If we pass valid xlog record position to read then it can't exactly verify the prev-link,
@@ -7497,7 +8313,7 @@ StartupXLOG(void)
 			 * So we force to pass InvalidXLogRecPtr to read, it will read from xlogreader->EndRecPtr
 			 * and check read record's prev-link is xlogreader->ReadRecPtr.
 			 */
-			if (polar_xlog_read_from == xlogreader->EndRecPtr)
+			if (xlog_read_from == xlogreader->EndRecPtr)
 			{
 				/* 
 				 * POLAR: If in the situation where shutdown checkpoint is the last record of WAL,
@@ -7506,17 +8322,21 @@ StartupXLOG(void)
 				 * even we match all consistency conditions.
 				 */
 				CheckRecoveryConsistency();
-				polar_xlog_read_from = InvalidXLogRecPtr;
+				xlog_read_from = InvalidXLogRecPtr;
 			}
 
 			/* just have to read next record after CheckPoint */
-			record = ReadRecord(xlogreader, polar_xlog_read_from, LOG, false);
+			record = ReadRecord(xlogreader, xlog_read_from, LOG, false);
+
 		}
 
 		if (record != NULL)
 		{
 			ErrorContextCallback errcallback;
 			TimestampTz xtime;
+
+			/* POLAR */
+			TimestampTz	last_handle_interrupts_time = GetCurrentTimestamp();
 
 			/* POLAR: Launch async ddl lock replay worker if enabled */
 			polar_launch_async_ddl_lock_replay_workers();
@@ -7534,6 +8354,9 @@ StartupXLOG(void)
 			do
 			{
 				bool		switchedTLI = false;
+
+				/* POLAR */
+				TimestampTz	current_time = GetCurrentTimestamp();
 
 #ifdef WAL_DEBUG
 				if (XLOG_DEBUG ||
@@ -7554,8 +8377,15 @@ StartupXLOG(void)
 				}
 #endif
 
-				/* Handle interrupt signals of startup process */
-				HandleStartupProcInterrupts();
+				/* POLAR: avoid calling HandleStartupProcInterrupts too much */
+				if (TimestampDifferenceExceeds(last_handle_interrupts_time, current_time, 5))
+				{
+					/* Handle interrupt signals of startup process */
+					HandleStartupProcInterrupts();
+					/* POLAR: every 5 ms call this */
+					last_handle_interrupts_time = current_time;
+				}
+				/* POLAR end */
 
 				/*
 				 * Pause WAL replay, if requested by a hot-standby session via
@@ -7635,7 +8465,7 @@ StartupXLOG(void)
 				 * via rm_redo and don't care about timeline here either.
 				 */
 				if (record->xl_rmid == RM_XLOG_ID &&
-					xlogreader->ReadRecPtr >= polar_redo_start_lsn)
+					xlogreader->ReadRecPtr >= redo_start_lsn)
 				{
 					TimeLineID	newTLI = ThisTimeLineID;
 					TimeLineID	prevTLI = ThisTimeLineID;
@@ -7687,16 +8517,16 @@ StartupXLOG(void)
 				 */
 				if (standbyState >= STANDBY_INITIALIZED &&
 					TransactionIdIsValid(record->xl_xid) &&
-					xlogreader->ReadRecPtr >= polar_redo_start_lsn)
+					xlogreader->ReadRecPtr >= redo_start_lsn)
 					RecordKnownAssignedTransactionIds(record->xl_xid);
 
 				/*
 				 * POLAR: 1. Hook redo function. If it's handled by rm_polar_idx_redo function
 				 * rm_redo will not be called.
-				 * 2. polar_logindex_mini_trans_lsn is output parameters.After we call polar_log_index_parse_xlog
-				 * if polar_logindex_mini_trans_lsn is valid which means we parse xlog during a mini transaction.
+				 * 2. logindex_mini_trans_lsn is output parameters.After we call polar_log_index_parse_xlog
+				 * if logindex_mini_trans_lsn is valid which means we parse xlog during a mini transaction.
 				 */
-				polar_logindex_mini_trans_lsn = InvalidXLogRecPtr;
+				logindex_mini_trans_lsn = InvalidXLogRecPtr;
 
 				/*
 				 * POLAR: if this record related to a lock in getting, means it
@@ -7715,22 +8545,21 @@ StartupXLOG(void)
 					}
 				}
 
+				/* POLAR: clean smgr shared cache for replica */
+				if (polar_enabled_nblock_cache())
+					polar_clean_smgr_cache_if_needed(xlogreader);
+
 				/* Now apply the WAL record itself */
-				if (!polar_log_index_parse_xlog(record->xl_rmid, xlogreader, polar_redo_start_lsn, &polar_logindex_mini_trans_lsn))
+				if (!polar_logindex_parse_xlog(polar_logindex_redo_instance, record->xl_rmid,
+							xlogreader, redo_start_lsn, &logindex_mini_trans_lsn))
 					RmgrTable[record->xl_rmid].rm_redo(xlogreader);
 
 				/*
 				 * POLAR: keep some memory of polar_xlog_queue and push record meta into polar_xlog_queue.
 				 */
-				if (polar_enable_standby_xlog_meta &&
-					!polar_in_replica_mode() &&
-					standbyState != STANDBY_DISABLED &&
-					POLAR_XLOG_QUEUE_ENABLE())
-				{
-					polar_standby_xlog_send_queue_push(xlogreader);
-				}
+				if (polar_is_standby() && reachedConsistency && POLAR_LOGINDEX_ENABLE_XLOG_QUEUE())
+					polar_standby_xlog_send_queue_push(polar_logindex_redo_instance->xlog_queue, xlogreader);
 				/* POLAR end */
-
 				/*
 				 * After redo, check whether the backup pages associated with
 				 * the WAL record are consistent with the existing pages. This
@@ -7744,6 +8573,12 @@ StartupXLOG(void)
 				error_context_stack = errcallback.previous;
 
 				/*
+				 * POLAR: Update last replayed read record position after this record
+				 * has been successfully replayed
+				 */
+				polar_set_last_replayed_read_ptr(polar_logindex_redo_instance, ReadRecPtr);
+
+				/*
 				 * Update lastReplayedEndRecPtr after this record has been
 				 * successfully replayed.
 				 */
@@ -7751,17 +8586,15 @@ StartupXLOG(void)
 				XLogCtl->lastReplayedEndRecPtr = EndRecPtr;
 				XLogCtl->lastReplayedTLI = ThisTimeLineID;
 				SpinLockRelease(&XLogCtl->info_lck);
-
 				/* POLAR: update async ddl replay ptr */
 				if (polar_allow_async_ddl_lock_replay())
 					polar_async_update_last_ptr();
-
 				/*
-				 * POLAR: If polar_logindex_mini_trans_lsn is valid which means we parse xlog during a mini transaction.
+				 * POLAR: If logindex_mini_trans_lsn is valid which means we parse xlog during a mini transaction.
 				 * And now we finish parsing the xlog record and end this mini transaction.
 				 */
-				if (polar_logindex_mini_trans_lsn != InvalidXLogRecPtr)
-					polar_log_index_mini_trans_end(polar_logindex_mini_trans_lsn);
+				if (logindex_mini_trans_lsn != InvalidXLogRecPtr)
+					polar_logindex_mini_trans_end(polar_logindex_redo_instance->mini_trans,  logindex_mini_trans_lsn);
 
 				/*
 				 * If rm_redo called XLogRequestWalReceiverReply, then we wake
@@ -7778,8 +8611,12 @@ StartupXLOG(void)
 				LastRec = ReadRecPtr;
 
 				/* Allow read-only connections if we're consistent now */
-				CheckRecoveryConsistency();
-
+				/* POLAR: When enable logindex it may change replay from xlog which lsn is smaller than redo_start_lsn
+				 * so we have to check consistency when xlog record lsn is larger or equal to previous redo_start_lsn.
+				 * Otherwise we may reach unexpected consistency
+				 */
+				if (EndRecPtr >= redo_start_lsn)
+					CheckRecoveryConsistency();
 				/* Is this a timeline switch? */
 				if (switchedTLI)
 				{
@@ -7806,7 +8643,7 @@ StartupXLOG(void)
 				}
 
 				/* POLAR: wait util startup delay master lag, just for debug test */
-				if (polar_startup_replay_delay_size > 0)
+				if (unlikely(polar_startup_replay_delay_size > 0))
 				{
 					while(GetWalRcvWriteRecPtr(NULL, NULL) < EndRecPtr +
 						polar_startup_replay_delay_size * 1024 * 1024L)
@@ -7826,7 +8663,7 @@ StartupXLOG(void)
 			 * end of main redo apply loop
 			 */
 
-			/* POLAR: stop wal prefetch worker */
+			/* POLAR: stop async ddl lock replay worker */
 			polar_stop_async_ddl_lock_replay_workers();
 			/* POLAR end */
 
@@ -7835,6 +8672,18 @@ StartupXLOG(void)
 				if (!reachedConsistency)
 					ereport(FATAL,
 							(errmsg("requested recovery stop point is before consistent recovery point")));
+
+				/* POLAR: in DMA mode, recovery stop point must after consensus log point */
+				if (polar_is_dma_data_node() &&
+						((recoveryStopAfter && 
+							!polar_dma_beyond_consensus_log(EndRecPtr)) ||
+						 (!recoveryStopAfter && 
+							!polar_dma_beyond_consensus_log(LastRec))))
+				{
+					ereport(FATAL,
+							(errmsg("requested recovery stop point is before consensus log point")));
+				}
+				/* POLAR end */
 
 				/*
 				 * This is the last point where we can restart recovery with a
@@ -7888,7 +8737,25 @@ StartupXLOG(void)
 			ereport(LOG,
 					(errmsg("redo is not required")));
 		}
+
+		/*
+		 * POLAR: if in master mode, force check whether some unexpected reused
+		 * buffer left when finishing redo, but for standby/archive mode, only
+		 * can check at CheckRecoveryConsistency()
+		 */
+		if (!ArchiveRecoveryRequested)
+			polar_check_buffer_pool_consistency();
+		/* POLAR end */
 	}
+
+	/* POLAR: If DataMax mode, we need enter datamax main here */
+	if (polar_is_datamax())
+	{
+		polar_datamax_main();
+		/* do as StartupProcessMain do  */
+		proc_exit(0);
+	}
+	/* POLAR end */
 
 	/*
 	 * Kill WAL receiver, if it's still running, before we continue to write
@@ -7906,6 +8773,22 @@ StartupXLOG(void)
 	 */
 	if (InRecovery)
 		ResetUnloggedRelations(UNLOGGED_RELATION_INIT);
+
+	if (InRecovery && fast_promote && enable_logindex_online_promote)
+	{
+		elog(LOG, "Before online promote last_replayed_end=%lX", GetXLogReplayRecPtr(NULL));
+		/*
+		 * POLAR: There's no dirty page in ro mode, so restartpoint should be finished quickly.
+		 * Request to create restartpoint if ro does not create for rw last checkpoint
+		 */
+		polar_request_last_restartpoint();
+
+		/*
+		 * POLAR: Wait background process stop replay.It must be called before DisownLatch(&XLogCtl->recoveryWakeupLatch).
+		 * Otherwise we can not wait in this function
+		 */
+		polar_wait_logindex_bg_stop_replay(polar_logindex_redo_instance, &XLogCtl->recoveryWakeupLatch);
+	}
 
 	/*
 	 * We don't need the latch anymore. It's not strictly necessary to disown
@@ -7926,11 +8809,28 @@ StartupXLOG(void)
 	StandbyMode = false;
 
 	/*
+	 * POLAR: When read xlog from xlog queue, not all members of XLogReaderState are set
+	 * so we have to create a new xlogreader and force it to read last record from storage
+	 */
+	if (fast_promote && enable_logindex_online_promote)
+	{
+		elog(LOG, "Last record before online promote is %lX, currentSource=%d", LastRec, currentSource);
+		xlogreader = polar_reset_xlogreader(xlogreader, &private);
+	}
+
+	/*
 	 * Re-fetch the last valid or last applied record, so we can identify the
 	 * exact endpoint of what we consider the valid portion of WAL.
 	 */
 	record = ReadRecord(xlogreader, LastRec, PANIC, false);
 	EndOfLog = EndRecPtr;
+
+	/* 
+	 * POLAR: record EndOfLog when polar_enable_promote_wait_for_walreceive_done = on
+	 * used to verify whether standby has received all wal
+	 */
+	if (polar_enable_promote_wait_for_walreceive_done && fast_promote)
+		elog(LOG,"Last record before promote standby is %lX", EndOfLog);
 
 	/*
 	 * EndOfLogTLI is the TLI in the filename of the XLOG segment containing
@@ -7998,54 +8898,64 @@ StartupXLOG(void)
 	 *
 	 * In a normal crash recovery, we can just extend the timeline we were in.
 	 */
+	/*
+	 * POLAR: The data won't be lost when stored in shared disk, so we will not change timeline when promote replica to rw
+	 */
 	PrevTimeLineID = ThisTimeLineID;
 	if (ArchiveRecoveryRequested)
 	{
-		char		reason[200];
-		char		recoveryPath[MAXPGPATH];
-
-		Assert(InArchiveRecovery);
-
-		ThisTimeLineID = findNewestTimeLine(recoveryTargetTLI) + 1;
-		ereport(LOG,
-				(errmsg("selected new timeline ID: %u", ThisTimeLineID)));
-
-		/*
-		 * Create a comment for the history file to explain why and where
-		 * timeline changed.
-		 */
-		if (recoveryTarget == RECOVERY_TARGET_XID)
-			snprintf(reason, sizeof(reason),
-					 "%s transaction %u",
-					 recoveryStopAfter ? "after" : "before",
-					 recoveryStopXid);
-		else if (recoveryTarget == RECOVERY_TARGET_TIME)
-			snprintf(reason, sizeof(reason),
-					 "%s %s\n",
-					 recoveryStopAfter ? "after" : "before",
-					 timestamptz_to_str(recoveryStopTime));
-		else if (recoveryTarget == RECOVERY_TARGET_LSN)
-			snprintf(reason, sizeof(reason),
-					 "%s LSN %X/%X\n",
-					 recoveryStopAfter ? "after" : "before",
-					 (uint32) (recoveryStopLSN >> 32),
-					 (uint32) recoveryStopLSN);
-		else if (recoveryTarget == RECOVERY_TARGET_NAME)
-			snprintf(reason, sizeof(reason),
-					 "at restore point \"%s\"",
-					 recoveryStopName);
-		else if (recoveryTarget == RECOVERY_TARGET_IMMEDIATE)
-			snprintf(reason, sizeof(reason), "reached consistency");
+		if (fast_promote && enable_logindex_online_promote)
+		{
+			elog(LOG, "Before online promote EndOfLog=%lX", EndOfLog);
+			polar_exit_archive_recovery();
+		}
 		else
-			snprintf(reason, sizeof(reason), "no recovery target specified");
+		{
+			char		reason[200];
+			char		recoveryPath[MAXPGPATH];
 
-		/*
-		 * We are now done reading the old WAL.  Turn off archive fetching if
-		 * it was active, and make a writable copy of the last WAL segment.
-		 * (Note that we also have a copy of the last block of the old WAL in
-		 * readBuf; we will use that below.)
-		 */
-		exitArchiveRecovery(EndOfLogTLI, EndOfLog);
+			Assert(InArchiveRecovery);
+
+			ThisTimeLineID = findNewestTimeLine(recoveryTargetTLI) + 1;
+			ereport(LOG,
+					(errmsg("selected new timeline ID: %u", ThisTimeLineID)));
+
+			/*
+			 * Create a comment for the history file to explain why and where
+			 * timeline changed.
+			 */
+			if (recoveryTarget == RECOVERY_TARGET_XID)
+				snprintf(reason, sizeof(reason),
+						 "%s transaction %u",
+						 recoveryStopAfter ? "after" : "before",
+						 recoveryStopXid);
+			else if (recoveryTarget == RECOVERY_TARGET_TIME)
+				snprintf(reason, sizeof(reason),
+						 "%s %s\n",
+						 recoveryStopAfter ? "after" : "before",
+						 timestamptz_to_str(recoveryStopTime));
+			else if (recoveryTarget == RECOVERY_TARGET_LSN)
+				snprintf(reason, sizeof(reason),
+						 "%s LSN %X/%X\n",
+						 recoveryStopAfter ? "after" : "before",
+						 (uint32) (recoveryStopLSN >> 32),
+						 (uint32) recoveryStopLSN);
+			else if (recoveryTarget == RECOVERY_TARGET_NAME)
+				snprintf(reason, sizeof(reason),
+						 "at restore point \"%s\"",
+						 recoveryStopName);
+			else if (recoveryTarget == RECOVERY_TARGET_IMMEDIATE)
+				snprintf(reason, sizeof(reason), "reached consistency");
+			else
+				snprintf(reason, sizeof(reason), "no recovery target specified");
+
+			/*
+			 * We are now done reading the old WAL.  Turn off archive fetching if
+			 * it was active, and make a writable copy of the last WAL segment.
+			 * (Note that we also have a copy of the last block of the old WAL in
+			 * readBuf; we will use that below.)
+			 */
+			exitArchiveRecovery(EndOfLogTLI, EndOfLog);
 
 		/*
 		 * Write the timeline history file, and have it archived. After this
@@ -8070,6 +8980,7 @@ StartupXLOG(void)
 		/* Get rid of any remaining recovered timeline-history file, too */
 		snprintf(recoveryPath, MAXPGPATH, XLOGDIR "/RECOVERYHISTORY");
 		unlink(recoveryPath);	/* ignore any error */
+		}
 	}
 
 	/* Save the selected TimeLineID in shared memory, too */
@@ -8128,6 +9039,9 @@ StartupXLOG(void)
 	XLogCtl->LogwrtRqst.Write = EndOfLog;
 	XLogCtl->LogwrtRqst.Flush = EndOfLog;
 
+	if (polar_is_dma_data_node())
+		ConsensusSetXLogFlushedLSN(EndOfLog, EndOfLogTLI, true);	
+
 	/*
 	 * Update full_page_writes in shared memory and write an XLOG_FPW_CHANGE
 	 * record before resource manager writes cleanup WAL records or checkpoint
@@ -8140,6 +9054,16 @@ StartupXLOG(void)
 
 	if (InRecovery)
 	{
+		/*
+		 * POLAR: check whether support lazy end-of-recovery checkpoint, if yes,
+		 * we will ignore the end-of-recovery checkpoint, and create a lazy
+		 * online checkpoint at the end.
+		 */
+		if (!ArchiveRecoveryRequested &&
+			polar_lazy_end_of_recovery_checkpoint_enabled() &&
+			!fast_promoted && !bgwriterLaunched)
+			polar_lazy_end_of_recovery_checkpoint = true;
+
 		/*
 		 * Perform a checkpoint to update all our recovery activity to disk.
 		 *
@@ -8181,15 +9105,16 @@ StartupXLOG(void)
 					 * checkpoint later anyway, just for safety.
 					 */
 					CreateEndOfRecoveryRecord();
-				}
+				} else if (enable_logindex_online_promote)
+					elog(FATAL, "Failed to read last checkpoint in online promote, checkPointLoc=%lX", checkPointLoc);
 			}
 
-			if (!fast_promoted)
+			if (!fast_promoted && !polar_lazy_end_of_recovery_checkpoint)
 				RequestCheckpoint(CHECKPOINT_END_OF_RECOVERY |
 								  CHECKPOINT_IMMEDIATE |
 								  CHECKPOINT_WAIT);
 		}
-		else
+		else if (!polar_lazy_end_of_recovery_checkpoint)
 			CreateCheckPoint(CHECKPOINT_END_OF_RECOVERY | CHECKPOINT_IMMEDIATE);
 
 		/*
@@ -8201,8 +9126,17 @@ StartupXLOG(void)
 								   true);
 	}
 
-	if (ArchiveRecoveryRequested)
+	/* POLAR: We don't change timeline when do logindex online promote */
+	if (ArchiveRecoveryRequested && !(fast_promote && enable_logindex_online_promote))
 	{
+		/* POLAR: if in dma mode, nofity history file ready after consensus committed. */
+		if (polar_is_dma_data_node() && XLogArchivingActive())
+		{
+			char		histfname[MAXFNAMELEN];
+			TLHistoryFileName(histfname, ThisTimeLineID);
+			XLogArchiveNotify(histfname);
+		}
+
 		/*
 		 * We switched to a new timeline. Clean up segments on the old
 		 * timeline.
@@ -8259,17 +9193,26 @@ StartupXLOG(void)
 				char		partialpath[MAXPGPATH];
 
 				XLogFilePath(origpath, EndOfLogTLI, endLogSegNo, wal_segment_size);
-				snprintf(partialfname, MAXFNAMELEN, "%s.partial", origfname);
-				snprintf(partialpath, MAXPGPATH, "%s.partial", origpath);
 
-				/*
-				 * Make sure there's no .done or .ready file for the .partial
-				 * file.
-				 */
-				XLogArchiveCleanup(partialfname);
+				/* POLAR: in DMA mode, the history must be complete. */
+				if (polar_is_dma_data_node())
+				{
+					XLogArchiveNotify(origfname);
+				}
+				else
+				{
+					snprintf(partialfname, MAXFNAMELEN, "%s.partial", origfname);
+					snprintf(partialpath, MAXPGPATH, "%s.partial", origpath);
 
-				polar_durable_rename(origpath, partialpath, ERROR);
-				XLogArchiveNotify(partialfname);
+					/*
+					 * Make sure there's no .done or .ready file for the .partial
+					 * file.
+					 */
+					XLogArchiveCleanup(partialfname);
+
+					polar_durable_rename(origpath, partialpath, ERROR);
+					XLogArchiveNotify(partialfname);
+				}
 			}
 		}
 	}
@@ -8289,10 +9232,22 @@ StartupXLOG(void)
 	XLogCtl->lastSegSwitchLSN = EndOfLog;
 
 	/* also initialize latestCompletedXid, to nextXid - 1 */
-	LWLockAcquire(ProcArrayLock, LW_EXCLUSIVE);
-	ShmemVariableCache->latestCompletedXid = ShmemVariableCache->nextXid;
-	TransactionIdRetreat(ShmemVariableCache->latestCompletedXid);
-	LWLockRelease(ProcArrayLock);
+	if (polar_csn_enable)
+	{
+		latestCompletedXid = ShmemVariableCache->nextXid;
+		TransactionIdRetreat(latestCompletedXid);
+		pg_atomic_write_u32(&polar_shmem_csn_mvcc_var_cache->polar_latest_completed_xid,
+							latestCompletedXid);
+		pg_atomic_write_u32(&polar_shmem_csn_mvcc_var_cache->polar_oldest_active_xid,
+							oldestActiveXID);
+	}
+	else
+	{
+		LWLockAcquire(ProcArrayLock, LW_EXCLUSIVE);
+		ShmemVariableCache->latestCompletedXid = ShmemVariableCache->nextXid;
+		TransactionIdRetreat(ShmemVariableCache->latestCompletedXid);
+		LWLockRelease(ProcArrayLock);
+	}
 
 	/*
 	 * Start up the commit log and subtrans, if not already done for hot
@@ -8301,8 +9256,24 @@ StartupXLOG(void)
 	if (standbyState == STANDBY_DISABLED)
 	{
 		StartupCLOG();
-		StartupSUBTRANS(oldestActiveXID);
+		if (polar_csn_enable)
+		{
+			polar_csnlog_startup(oldestActiveXID);
+		}
+		else
+		{
+			StartupSUBTRANS(oldestActiveXID);
+		}
 	}
+
+	if (fast_promoted)
+	{
+		if (enable_logindex_online_promote)
+			polar_online_promote_data(polar_logindex_redo_instance, oldestActiveXID);
+		else if (enable_logindex_online_promote_standby)
+			polar_standby_promote_data(polar_logindex_redo_instance);
+	}
+
 
 	/*
 	 * Perform end of recovery actions for any SLRUs that need it.
@@ -8357,9 +9328,35 @@ StartupXLOG(void)
 	 * conditions concerning visibility of other recent updates to shared
 	 * memory.
 	 */
+
+	/* 
+	 * POLAR:  When node type is replica, we will update control file in local file system.
+	 * We must set control file state to DB_IN_PRODUCTION before set node type to be POLAR_MASTER,
+	 * because pg_ctl will check promote state from control file in local file system.
+	 * But when do online promote we have to set XLogCtl->SharedRecoveryState = RECOVERY_STATE_DONE after
+	 * set node type bo be POLAR_MASTER.Otherwise the other processes like checkpointer will get false from function
+	 * RecoveryInProgress(), but see the node type as replica, which will cause data corrupted.
+	 */
 	LWLockAcquire(ControlFileLock, LW_EXCLUSIVE);
 	ControlFile->state = DB_IN_PRODUCTION;
 	ControlFile->time = (pg_time_t) time(NULL);
+
+	if (fast_promoted)
+	{
+		if (polar_enable_dma || enable_logindex_online_promote || enable_logindex_online_promote_standby)
+		{
+			/* POLAR: crash recovery or recovery after becoming leader in DMA mode 
+			 * should always recover to the end of WAL*/
+			ControlFile->minRecoveryPoint = InvalidXLogRecPtr;
+			ControlFile->minRecoveryPointTLI = 0;
+		}
+		/* POLAR: save control file to local file system */
+		UpdateControlFile();
+		/* POLAR: Set node type to be master */
+		polar_set_node_type(POLAR_MASTER);
+		/* POLAR: Set polar_hot_standby_state to be STANDBY_DISABLED */
+		polar_set_hot_standby_state(STANDBY_DISABLED);
+	}
 
 	SpinLockAcquire(&XLogCtl->info_lck);
 	XLogCtl->SharedRecoveryState = RECOVERY_STATE_DONE;
@@ -8368,23 +9365,55 @@ StartupXLOG(void)
 	UpdateControlFile();
 	LWLockRelease(ControlFileLock);
 
-	/* POLAR: set max_fullpage_no after startup work */
-	polar_logindex_calc_max_fullpage_no(POLAR_LOGINDEX_FULLPAGE_SNAPSHOT);
-
 	/*
 	 * If there were cascading standby servers connected to us, nudge any wal
 	 * sender processes to notice that we've been promoted.
 	 */
 	WalSndWakeup();
 
-	/*
-	 * If this was a fast promotion, request an (online) checkpoint now. This
-	 * isn't required for consistency, but the last restartpoint might be far
-	 * back, and in case of a crash, recovering from it might take a longer
-	 * than is appropriate now that we're not in standby mode anymore.
-	 */
 	if (fast_promoted)
-		RequestCheckpoint(CHECKPOINT_FORCE);
+	{
+		if (enable_logindex_online_promote)
+		{
+			/* Start up the flashback log before reset background replayed lsn */
+			polar_startup_flog(&ControlFile->checkPointCopy, flog_instance);
+			/* POLAR: Wake up background process to start marking buffer dirty from replayed lsn */
+			polar_reset_bg_replayed_lsn(polar_logindex_redo_instance);
+		}
+		else if (enable_logindex_online_promote_standby)
+		{
+			polar_set_bg_redo_state(polar_logindex_redo_instance, POLAR_BG_ONLINE_PROMOTE);
+		}
+		else
+		{
+			/*
+			 * If this was a fast promotion, request an (online) checkpoint now. This
+			 * isn't required for consistency, but the last restartpoint might be far
+			 * back, and in case of a crash, recovering from it might take a longer
+			 * than is appropriate now that we're not in standby mode anymore.
+			 */
+			RequestCheckpoint(CHECKPOINT_FORCE);
+		}
+
+		/* POLAR: remove POLAR_REPLICA_BOOTED_FILE when replica node is promoted */
+		if (!polar_in_replica_mode())
+			polar_remove_replica_booted_file();
+	}
+
+	if (polar_logindex_redo_instance)
+	{
+		/* POLAR: Set valid information for logindex redo after we parsed all xlog */
+		polar_logindex_redo_set_valid_info(polar_logindex_redo_instance, EndOfLog);
+		polar_logindex_calc_max_fullpage_no(polar_logindex_redo_instance->fullpage_ctl);
+	}
+
+	/* POLAR: create a lazy end-of-recovery checkpoint. */
+	if (polar_lazy_end_of_recovery_checkpoint)
+	{
+		elog(LOG, "Create a lazy online checkpoint for end-of-recovery.");
+		CreateCheckPoint(
+			CHECKPOINT_IMMEDIATE | CHECKPOINT_WAIT | CHECKPOINT_LAZY);
+	}
 }
 
 /*
@@ -8457,24 +9486,37 @@ CheckRecoveryConsistency(void)
 		 */
 		XLogCheckInvalidPages();
 
+		/*
+		 * POLAR: if in master mode, force check whether some unexpected reused
+		 * buffer left when finishing redo, but for standby/archive mode, only
+		 * can check at CheckRecoveryConsistency()
+		 */
+		if (ArchiveRecoveryRequested)
+			polar_check_buffer_pool_consistency();
+		/* POLAR end */
+
 		reachedConsistency = true;
 		ereport(LOG,
 				(errmsg("consistent recovery state reached at %X/%X",
 						(uint32) (lastReplayedEndRecPtr >> 32),
 						(uint32) lastReplayedEndRecPtr)));
-		/* POLAR: Init background replay start lsn */
-		SpinLockAcquire(&XLogCtl->info_lck);
-		XLogCtl->lastReplayedReadRecPtr = ReadRecPtr;
-		XLogCtl->bg_replayed_lsn = EndRecPtr;
-		SpinLockRelease(&XLogCtl->info_lck);
+
 		/*
 		 * POLAR: Set consistent lsn with last checkpoint redo ptr to avoid going through
-		 * all logindex file when consisten ptr is InvalidXLogRecPtr. While going through
+		 * all logindex file when consistent ptr is InvalidXLogRecPtr. While going through
 		 * all logindex table file, we may meet file-not-exist error.
 		 */
-		polar_set_primary_consistent_lsn(polar_get_last_checkpoint_redo_ptr());
-		elog(LOG, "After reached consistency %lx,%lx", ReadRecPtr, EndRecPtr);
+		if (polar_in_replica_mode())
+		{
+			XLogRecPtr redo_rec_ptr;
+			TimeLineID redo_tli;
+
+			GetOldestRestartPoint(&redo_rec_ptr, &redo_tli);
+			polar_set_primary_consistent_lsn(redo_rec_ptr);
+		}
 		/* POLAR end */
+
+		elog(LOG, "After reached consistency %lx,%lx", ReadRecPtr, EndRecPtr);
 	}
 
 	/*
@@ -8494,6 +9536,9 @@ CheckRecoveryConsistency(void)
 		LocalHotStandbyActive = true;
 
 		SendPostmasterSignal(PMSIGNAL_BEGIN_HOT_STANDBY);
+
+		/* POLAR: Wakeup bgwriter and polar_worker to do replay */
+		polar_logindex_wakeup_bg_replay(polar_logindex_redo_instance, ReadRecPtr, EndRecPtr);
 	}
 }
 
@@ -8635,6 +9680,13 @@ XLogInsertAllowed(void)
 	 */
 	if (RecoveryInProgress())
 		return false;
+
+	/*
+	 * In wal pipeline mode,
+	 * we should wait for wal pipeliner ready before write wal log
+	 */
+	if (POLAR_WAL_PIPELINER_ENABLE())
+		while (!POLAR_WAL_PIPELINER_READY());
 
 	/*
 	 * On exit from recovery, reset to "unconditionally true", since there is
@@ -8880,7 +9932,7 @@ GetLastImportantRecPtr(void)
 	XLogRecPtr	res = InvalidXLogRecPtr;
 	int			i;
 
-	for (i = 0; i < NUM_XLOGINSERT_LOCKS; i++)
+	for (i = 0; i < polar_wal_buffer_insert_locks; i++)
 	{
 		XLogRecPtr	last_important;
 
@@ -8992,6 +10044,8 @@ ShutdownXLOG(int code, Datum arg)
 	ShutdownCommitTs();
 	ShutdownSUBTRANS();
 	ShutdownMultiXact();
+	/* POLAR csn */
+	polar_csnlog_shutdown();
 }
 
 /*
@@ -9000,7 +10054,7 @@ ShutdownXLOG(int code, Datum arg)
 static void
 LogCheckpointStart(int flags, bool restartpoint)
 {
-	elog(LOG, "%s starting:%s%s%s%s%s%s%s%s%s",
+	elog(LOG, "%s starting:%s%s%s%s%s%s%s%s%s%s",
 		 restartpoint ? "restartpoint" : "checkpoint",
 		 (flags & CHECKPOINT_IS_SHUTDOWN) ? " shutdown" : "",
 		 (flags & CHECKPOINT_END_OF_RECOVERY) ? " end-of-recovery" : "",
@@ -9010,7 +10064,8 @@ LogCheckpointStart(int flags, bool restartpoint)
 		 (flags & CHECKPOINT_CAUSE_XLOG) ? " xlog" : "",
 		 (flags & CHECKPOINT_CAUSE_TIME) ? " time" : "",
 		 (flags & CHECKPOINT_FLUSH_ALL) ? " flush-all" : "",
-		 (flags & CHECKPOINT_LAZY) ? " lazy" : "");
+		 (flags & CHECKPOINT_LAZY) ? " lazy" : "",
+		 (flags & CHECKPOINT_FLASHBACK) ? " flashback" : "");
 }
 
 /*
@@ -9182,6 +10237,24 @@ CreateCheckPoint(int flags)
 	XLogRecPtr	polar_last_lsn;
 	bool		polar_is_lazy;
 	XLogRecPtr 	polar_lazy_redo = InvalidXLogRecPtr;
+	/* POLAR csn */
+	TransactionId oldest_active_xid = InvalidTransactionId;
+
+	/* POLAR: The flashback log ptr of the checkpoint start */
+	polar_flog_rec_ptr flog_ptr_ckp_start = POLAR_INVALID_FLOG_REC_PTR;
+	bool		is_flashback_point = false;
+	bool		is_online_promote = false;
+
+	/*
+	 * POLAR: Don't do checkpoint during online promote when background process
+	 * hasn't start to replay. Otherwise we may set polar_max_valid_lsn() as consistent lsn,
+	 * and later we set polar_online_promote_fake_oldest_lsn() as consistent lsn, which
+	 * is smaller than previous set
+	 */
+	if (polar_get_bg_redo_state(polar_logindex_redo_instance) == POLAR_BG_WAITING_RESET)
+		return;
+
+	is_online_promote = (polar_get_bg_redo_state(polar_logindex_redo_instance) == POLAR_BG_ONLINE_PROMOTE);
 
 	/*
 	 * An end-of-recovery checkpoint is really a shutdown checkpoint, just
@@ -9191,6 +10264,11 @@ CreateCheckPoint(int flags)
 		shutdown = true;
 	else
 		shutdown = false;
+
+#ifdef FAULT_INJECTOR
+	if (SIMPLE_FAULT_INJECTOR("checkpoint") == FaultInjectorTypeSkip)
+		return;
+#endif
 
 	/* sanity check */
 	if (RecoveryInProgress() && (flags & CHECKPOINT_END_OF_RECOVERY) == 0)
@@ -9224,13 +10302,18 @@ CreateCheckPoint(int flags)
 	MemSet(&CheckpointStats, 0, sizeof(CheckpointStats));
 	CheckpointStats.ckpt_start_t = GetCurrentTimestamp();
 
+	/* POLAR: Is a flashback point? */
+	is_flashback_point = !is_online_promote &&
+			polar_is_flashback_point(flog_instance, GetXLogInsertRecPtr(),
+					InvalidXLogRecPtr, &flags, false);
+
 	/*
 	 * Use a critical section to force system panic if we have trouble.
 	 */
 	START_CRIT_SECTION();
 
 	/* POLAR: check whether we can use lazy checkpoint. */
-	polar_is_lazy = polar_check_lazy_checkpoint(shutdown, &flags, &polar_lazy_redo);
+	polar_is_lazy = !is_flashback_point && polar_check_lazy_checkpoint(shutdown, &flags, &polar_lazy_redo);
 
 	if (shutdown)
 	{
@@ -9263,6 +10346,24 @@ CreateCheckPoint(int flags)
 		checkPoint.oldestActiveXid = InvalidTransactionId;
 
 	/*
+	 * POLAR csn
+	 * Record polar_oldest_active_xid before checkpoint redo point,
+	 * we should make sure truncate csnlog with xid before redo point.
+	 */
+	if (polar_csn_enable)
+		oldest_active_xid = pg_atomic_read_u32(&polar_shmem_csn_mvcc_var_cache->polar_oldest_active_xid);
+
+	/*
+	 * POLAR: get current flashback log ptr of the flashback point begining.
+	 *
+	 * NB: We don't need a precise value, but a little earlier value.
+	 * When we search a right flashback log in logindex, sometime we will get
+	 * two right flashback log.
+	 */
+	if (is_flashback_point)
+		flog_ptr_ckp_start = polar_get_flog_write_result(flog_instance->buf_ctl);
+
+	/*
 	 * Get location of last important record before acquiring insert locks (as
 	 * GetLastImportantRecPtr() also locks WAL locks).
 	 */
@@ -9289,6 +10390,7 @@ CreateCheckPoint(int flags)
 	/* POLAR: use lazy redo lsn as the checkpoint redo. */
 	if (polar_is_lazy)
 	{
+		Assert(!is_flashback_point);
 		Assert(!shutdown);
 		Assert(flags & CHECKPOINT_LAZY);
 		Assert(!XLogRecPtrIsInvalid(polar_lazy_redo));
@@ -9348,6 +10450,10 @@ CreateCheckPoint(int flags)
 			curInsert += SizeOfXLogShortPHD;
 	}
 	checkPoint.redo = curInsert;
+
+	/* POLAR: We must set flashback point info in here to avoid to any origin page lost */
+	if (is_flashback_point)
+		polar_set_fbpoint_wal_info(flog_instance->buf_ctl, checkPoint.redo, checkPoint.time, InvalidXLogRecPtr, false);
 
 	/*
 	 * Here we update the shared RedoRecPtr for future XLogInsert calls; this
@@ -9502,6 +10608,9 @@ CreateCheckPoint(int flags)
 
 	XLogFlush(recptr);
 
+	if (polar_is_dma_data_node() && !ConsensusCheckpoint())
+		ereport(PANIC, (errmsg("consensus checkpoint failed")));
+
 	/*
 	 * We mustn't write any new WAL after a shutdown checkpoint, or it will be
 	 * overwritten at next startup.  No-one should even try, this just allows
@@ -9569,6 +10678,18 @@ CreateCheckPoint(int flags)
 	END_CRIT_SECTION();
 
 	/*
+	 * POLAR: Do something after the flashback point is done:
+	 * 1. Flush the flashback data.
+	 * 2. remove the old flashback data.
+	 */
+	if (is_flashback_point)
+		polar_flog_do_fbpoint(flog_instance, flog_ptr_ckp_start, shutdown);
+
+	/* POLAR: record checkpoint ptr when checkpoint finished */
+	polar_buffer_pool_ctl_set_last_checkpoint_lsn(ControlFile->checkPoint);
+	/* POLAR end */
+
+	/*
 	 * Let smgr do post-checkpoint cleanup (eg, deleting old files).
 	 */
 	smgrpostckpt();
@@ -9580,12 +10701,16 @@ CreateCheckPoint(int flags)
 	if (PriorRedoPtr != InvalidXLogRecPtr)
 		UpdateCheckPointDistanceEstimate(RedoRecPtr - PriorRedoPtr);
 
+	/* POLAR: Truncate logindex before removing wal files. Files may saved in local file system, like relation size cache. */
+	polar_logindex_remove_old_files(polar_logindex_redo_instance);
+
 	/*
 	 * Delete old log files, those no longer needed for last checkpoint to
 	 * prevent the disk holding the xlog from growing full.
 	 */
 	XLByteToSeg(RedoRecPtr, _logSegNo, wal_segment_size);
 	KeepLogSeg(recptr, &_logSegNo);
+	InvalidateObsoleteReplicationSlots(_logSegNo);
 	_logSegNo--;
 	RemoveOldXlogFiles(_logSegNo, RedoRecPtr, recptr);
 
@@ -9602,9 +10727,36 @@ CreateCheckPoint(int flags)
 	 * attempt to reference any pg_subtrans entry older than that (see Asserts
 	 * in subtrans.c).  During recovery, though, we mustn't do this because
 	 * StartupSUBTRANS hasn't been called yet.
+	 *
+	 * POLAR csn
+	 * CSNLog is larger than Clog in disk size, we want to truncate csnlog
+	 * as soon as possible.
+	 * Clog truncate in vacuum frozen time, but we want CSNLog truncate in
+	 * checkpoint time
 	 */
 	if (!RecoveryInProgress())
-		TruncateSUBTRANS(GetOldestXmin(NULL, PROCARRAY_FLAGS_DEFAULT));
+	{
+		if (polar_csn_enable)
+		{
+			/* 
+			 * We try to truncate csnlog to reduce csnlog space, but
+		 	 * when it's shutdown checkpoint, we can't truncate csnlog,
+		 	 * because csnlog truncate need write wal
+		 	 */
+			if (!shutdown)
+			{
+				TransactionId truncate_xid = GetOldestXmin(NULL, PROCARRAY_FLAGS_DEFAULT);
+			
+				/* Make sure truncate csnlog with xid less than polar_oldest_active_xid at redo point */
+				if (TransactionIdPrecedes(oldest_active_xid, truncate_xid))
+					truncate_xid = oldest_active_xid;
+
+				polar_csnlog_truncate(truncate_xid);
+			}
+		}
+		else
+			TruncateSUBTRANS(GetOldestXmin(NULL, PROCARRAY_FLAGS_DEFAULT));
+	}
 
 	/* Real work is done, but log and update stats before releasing lock. */
 	LogCheckpointEnd(false);
@@ -9679,21 +10831,19 @@ CreateEndOfRecoveryRecord(void)
 static void
 CheckPointGuts(XLogRecPtr checkPointRedo, int flags)
 {
-	int i;
 	/* in shared storage */
 	/*
-	 * POLAR: Flush logindex table which is INACTIVE and table's max lsn is
+	 * POLAR: Flush logindex table which table's max lsn is
 	 * smaller than checkpoint
 	 */
-	if (polar_enable_redo_logindex && polar_streaming_xlog_meta
-			&& polar_should_check_checkpoint())
-	{
-		for (i = 0; i < LOGINDEX_SNAPSHOT_NUM; i++)
-			polar_log_index_flush_table(polar_logindex_snapshot[i], checkPointRedo);
-	}
+	polar_logindex_redo_flush_data(polar_logindex_redo_instance, checkPointRedo);
 
 	CheckPointCLOG();
 	CheckPointCommitTs();
+	if (polar_csn_enable)
+		polar_csnlog_checkpoint();
+	else
+		CheckPointSUBTRANS();
 	CheckPointMultiXact();
 
 	/* in local disk */
@@ -9750,6 +10900,14 @@ RecoveryRestartPoint(const CheckPoint *checkPoint)
 	XLogCtl->lastCheckPointEndPtr = EndRecPtr;
 	XLogCtl->lastCheckPoint = *checkPoint;
 	SpinLockRelease(&XLogCtl->info_lck);
+
+	if (POLAR_IN_PARALLEL_REPLAY_STANDBY_MODE(polar_logindex_redo_instance))
+	{
+		XLogRecPtr replayed = polar_bg_redo_get_replayed_lsn(polar_logindex_redo_instance);
+
+		polar_checkpoint_ringbuf_shrink(&XLogCtl->polar_checkpoint_ringbuf, replayed);
+		polar_checkpoint_ringbuf_insert(&XLogCtl->polar_checkpoint_ringbuf, ReadRecPtr, EndRecPtr, checkPoint);
+	}
 }
 
 /*
@@ -9776,6 +10934,32 @@ CreateRestartPoint(int flags)
 	XLogRecPtr	endptr;
 	XLogSegNo	_logSegNo;
 	TimestampTz xtime;
+	/* POLAR: dma */
+	bool controlFileUpdated = false;
+
+	/* POLAR: The flashback log ptr of the checkpoint start */
+	polar_flog_rec_ptr flog_ptr_ckp_start = POLAR_INVALID_FLOG_REC_PTR;
+	bool		is_flashback_point = false;
+	pg_time_t	flashback_point_time;
+	bool		is_shutdown = flags & CHECKPOINT_IS_SHUTDOWN;
+	XLogRecPtr bg_replayed_lsn = InvalidXLogRecPtr;
+
+	bg_replayed_lsn = polar_bg_redo_get_replayed_lsn(polar_logindex_redo_instance);
+	/* POLAR: Is it a flashback point? */
+	is_flashback_point = polar_is_flashback_point(flog_instance,
+			polar_get_replay_end_rec_ptr(&replayTLI), bg_replayed_lsn,
+			&flags, true);
+
+	flashback_point_time = (pg_time_t) time(NULL);
+	/*
+	 * POLAR: get current flashback log ptr of the flashback point begining.
+	 *
+	 * NB: We don't need a precise value, but a little earlier value.
+	 * When we search a right flashback log in logindex, sometime we will get
+	 * two right flashback log.
+	 */
+	if (is_flashback_point)
+		flog_ptr_ckp_start = polar_get_flog_write_result(flog_instance->buf_ctl);
 
 	/*
 	 * Acquire CheckpointLock to ensure only one restartpoint or checkpoint
@@ -9784,11 +10968,37 @@ CreateRestartPoint(int flags)
 	LWLockAcquire(CheckpointLock, LW_EXCLUSIVE);
 
 	/* Get a local copy of the last safe checkpoint record. */
-	SpinLockAcquire(&XLogCtl->info_lck);
-	lastCheckPointRecPtr = XLogCtl->lastCheckPointRecPtr;
-	lastCheckPointEndPtr = XLogCtl->lastCheckPointEndPtr;
-	lastCheckPoint = XLogCtl->lastCheckPoint;
-	SpinLockRelease(&XLogCtl->info_lck);
+	if (POLAR_IN_PARALLEL_REPLAY_STANDBY_MODE(polar_logindex_redo_instance)) {
+		polar_checkpoint_ringbuf_shrink(&XLogCtl->polar_checkpoint_ringbuf, bg_replayed_lsn);
+		polar_checkpoint_ringbuf_front(&XLogCtl->polar_checkpoint_ringbuf, 
+                                       &lastCheckPointRecPtr,
+                                       &lastCheckPointEndPtr,
+                                       &lastCheckPoint);
+
+		elog(polar_trace_logindex(DEBUG3), "%s get checkpoint, redo: %lX, bg_replayed_lsn: %lX",
+			 __func__, lastCheckPoint.redo, bg_replayed_lsn);
+	}
+	else
+	{
+		SpinLockAcquire(&XLogCtl->info_lck);
+		lastCheckPointRecPtr = XLogCtl->lastCheckPointRecPtr;
+		lastCheckPointEndPtr = XLogCtl->lastCheckPointEndPtr;
+		lastCheckPoint = XLogCtl->lastCheckPoint;
+		SpinLockRelease(&XLogCtl->info_lck);
+	}
+
+	/*
+	 * POLAR: Set the flashback point lsn to replayEndRecPtr.
+	 *
+	 * NB: Must hold the XLogCtl->info_lck to protect XLogCtl->replayEndRecPtr
+	 * not change.
+	 */
+	if (is_flashback_point)
+	{
+		SpinLockAcquire(&XLogCtl->info_lck);
+		polar_set_fbpoint_wal_info(flog_instance->buf_ctl, XLogCtl->replayEndRecPtr, flashback_point_time, bg_replayed_lsn, true);
+		SpinLockRelease(&XLogCtl->info_lck);
+	}
 
 	/*
 	 * Check that we're still in recovery mode. It's ok if we exit recovery
@@ -9801,6 +11011,24 @@ CreateRestartPoint(int flags)
 		LWLockRelease(CheckpointLock);
 		return false;
 	}
+
+	/*
+	 * POLAR: we disable restartpoint when polardb rw node is in
+	 * crash recovery mod, including standby
+	 * Although we perform restartpoint, it's ok, but we want to
+	 * simply crash recovery
+	 *
+	 * Restartpoint is useless in DataMax mode.
+	 */
+	else if ((POLAR_IS_MASTER_IN_RECOVERY_OR_STANDBY || polar_is_datamax()) &&
+		 !HotStandbyActive())
+	{
+		ereport(LOG,
+				(errmsg("skipping restartpoint, rw/standby is in crash recovery mode now")));
+		LWLockRelease(CheckpointLock);
+		return false;
+	}
+	/* POLAR end */
 
 	/*
 	 * If the last checkpoint record we've replayed is already our last
@@ -9825,13 +11053,20 @@ CreateRestartPoint(int flags)
 						(uint32) lastCheckPoint.redo)));
 
 		UpdateMinRecoveryPoint(InvalidXLogRecPtr, true);
-		if (flags & CHECKPOINT_IS_SHUTDOWN)
+		if (is_shutdown)
 		{
 			LWLockAcquire(ControlFileLock, LW_EXCLUSIVE);
 			ControlFile->state = DB_SHUTDOWNED_IN_RECOVERY;
 			ControlFile->time = (pg_time_t) time(NULL);
 			UpdateControlFile();
 			LWLockRelease(ControlFileLock);
+
+			/*
+			 * When hot standby is shutdown in this case, do the shutdown checkpoint
+			 * things about flashback log.
+			 */
+			if (is_flashback_point)
+				polar_flog_do_fbpoint(flog_instance, flog_ptr_ckp_start, true);
 		}
 		LWLockRelease(CheckpointLock);
 		return false;
@@ -9914,12 +11149,31 @@ CreateRestartPoint(int flags)
 			minRecoveryPoint = ControlFile->minRecoveryPoint;
 			minRecoveryPointTLI = ControlFile->minRecoveryPointTLI;
 		}
-		if (flags & CHECKPOINT_IS_SHUTDOWN)
+		if (is_shutdown)
 			ControlFile->state = DB_SHUTDOWNED_IN_RECOVERY;
 		UpdateControlFile();
+
+		/* 
+		 * POLAR: ignore remove xlogs if not update pg_control, otherwise 
+		 * the checkpint record of pg_control may be not exists 
+		 */
+		if (polar_enable_dma)
+			controlFileUpdated = true;
 	}
 	LWLockRelease(ControlFileLock);
 
+	/*
+	 * POLAR: Do something after the flashback point is done:
+	 * 1. Flush the flashback data.
+	 * 2. remove the old flashback data.
+	 */
+	if (is_flashback_point)
+		polar_flog_do_fbpoint(flog_instance, flog_ptr_ckp_start, is_shutdown);
+
+	/* POLAR: record checkpoint ptr when checkpoint finished */
+	polar_buffer_pool_ctl_set_last_checkpoint_lsn(ControlFile->checkPoint);
+	/* POLAR end */
+ 
 	/*
 	 * Update the average distance between checkpoints/restartpoints if the
 	 * prior checkpoint exists.
@@ -9931,7 +11185,11 @@ CreateRestartPoint(int flags)
 	 * Delete old log files, those no longer needed for last restartpoint to
 	 * prevent the disk holding the xlog from growing full.
 	 */
-	XLByteToSeg(RedoRecPtr, _logSegNo, wal_segment_size);
+	if (!polar_enable_dma || controlFileUpdated)
+		XLByteToSeg(RedoRecPtr, _logSegNo, wal_segment_size);
+
+	/* POLAR: Truncate logindex before removing wal files. Files may saved in local file system, like relation size cache. */
+	polar_logindex_remove_old_files(polar_logindex_redo_instance);
 
 	/*
 	 * Retreat _logSegNo using the current end of xlog replayed or received,
@@ -9940,8 +11198,12 @@ CreateRestartPoint(int flags)
 	receivePtr = GetWalRcvWriteRecPtr(NULL, NULL);
 	replayPtr = GetXLogReplayRecPtr(&replayTLI);
 	endptr = (receivePtr < replayPtr) ? replayPtr : receivePtr;
-	KeepLogSeg(endptr, &_logSegNo);
-	_logSegNo--;
+	if (!polar_enable_dma || controlFileUpdated)
+	{
+		KeepLogSeg(endptr, &_logSegNo);
+		InvalidateObsoleteReplicationSlots(_logSegNo);
+		_logSegNo--;
+	}
 
 	/*
 	 * Try to recycle segments on a useful timeline. If we've been promoted
@@ -9959,7 +11221,8 @@ CreateRestartPoint(int flags)
 	if (RecoveryInProgress())
 		ThisTimeLineID = replayTLI;
 
-	RemoveOldXlogFiles(_logSegNo, RedoRecPtr, endptr);
+	if (!polar_enable_dma || controlFileUpdated)
+		RemoveOldXlogFiles(_logSegNo, RedoRecPtr, endptr);
 
 	/*
 	 * Make more log segments if needed.  (Do this after recycling old log
@@ -9982,9 +11245,16 @@ CreateRestartPoint(int flags)
 	 * attempt to reference any pg_subtrans entry older than that (see Asserts
 	 * in subtrans.c).  When hot standby is disabled, though, we mustn't do
 	 * this because StartupSUBTRANS hasn't been called yet.
+	 *
+	 * POLAR csn
+	 * We write truncate wal log like clog, so need not truncate csnlog in
+	 * hot standby.
 	 */
 	if (EnableHotStandby)
-		TruncateSUBTRANS(GetOldestXmin(NULL, PROCARRAY_FLAGS_DEFAULT));
+	{
+		if (!polar_csn_enable)
+			TruncateSUBTRANS(GetOldestXmin(NULL, PROCARRAY_FLAGS_DEFAULT));
+	}
 
 	/* Real work is done, but log and update before releasing lock. */
 	LogCheckpointEnd(true);
@@ -10010,62 +11280,96 @@ CreateRestartPoint(int flags)
 }
 
 /*
- * Retreat *logSegNo to the last segment that we need to retain because of
- * either wal_keep_segments or replication slots.
+ * Polar: Retreat *logSegNo to the last segment that we need to retain because of
+ * wal_keep_segments and replication slots(max_slot_wal_keep_size) and 
+ * logindex and dma.
  *
- * This is calculated by subtracting wal_keep_segments from the given xlog
- * location, recptr and by making sure that that result is below the
- * requirement of replication slots.
+ * The max_slot_wal_keep_size (replication slots) are to count the number of 
+ * wal files that need to be trimmed, so put them in the front. The wal_keep_segments 
+ * and logindex and dma need to count the number of wal files to keep, so put them back.
  */
 static void
 KeepLogSeg(XLogRecPtr recptr, XLogSegNo *logSegNo)
 {
+	XLogSegNo	currSegNo;
 	XLogSegNo	segno;
 	XLogRecPtr	keep;
 
-	XLByteToSeg(recptr, segno, wal_segment_size);
-	keep = XLogGetReplicationSlotMinimumLSN();
+	XLByteToSeg(recptr, currSegNo, wal_segment_size);
+	segno = currSegNo;
 
-	/*
-	 * POLAR: When logindex is enabled in order to keep consistent data in rw and ro
-	 * nodes, we will not remove xlog files which lsn is larger than logindex start lsn
-	 */
-	if (polar_enable_redo_logindex && polar_streaming_xlog_meta)
+	/* compute limit for replication slot */
+	keep = XLogGetReplicationSlotMinimumLSN();
+	if (keep != InvalidXLogRecPtr)
 	{
-		XLogRecPtr logindex_start_lsn = polar_log_index_start_lsn();
-		/*
-		 * POLAR: If ReplicationSlotMinimumLSN is InvalidXLogRecPtr but logindex meta start lsn not,
-		 * we also need to keep wal log after it.
-		 */
-		if (!XLogRecPtrIsInvalid(logindex_start_lsn) &&
-				(XLogRecPtrIsInvalid(keep) || keep > logindex_start_lsn))
+		XLByteToSeg(keep, segno, wal_segment_size);
+
+		/* compute limit for max_slot_wal_keep_size */
+		if (polar_enable_max_slot_wal_keep_size && max_slot_wal_keep_size_mb >= 0)
 		{
-			elog(LOG, "logindex change keep lsn from %lX to %lX", keep, logindex_start_lsn);
-			keep = logindex_start_lsn;
+			uint64		slot_keep_segs;
+
+			slot_keep_segs =
+				ConvertToXSegs(max_slot_wal_keep_size_mb, wal_segment_size);
+
+			if (currSegNo - segno > slot_keep_segs)
+				segno = currSegNo - slot_keep_segs;
 		}
 	}
 
 	/* compute limit for wal_keep_segments first */
 	if (wal_keep_segments > 0)
 	{
-		/* avoid underflow, don't go below 1 */
-		if (segno <= wal_keep_segments)
-			segno = 1;
-		else
-			segno = segno - wal_keep_segments;
+		if (currSegNo - segno < wal_keep_segments)
+		{
+			/* avoid underflow, don't go below 1 */
+			if (currSegNo <= wal_keep_segments)
+				segno = 1;
+			else
+				segno = currSegNo - wal_keep_segments;
+		}
 	}
 
-	/* then check whether slots limit removal further */
-	if (max_replication_slots > 0 && keep != InvalidXLogRecPtr)
+	/* compute limit for logindex redo */
+	if (polar_logindex_redo_instance)
 	{
-		XLogSegNo	slotSegNo;
+		keep = polar_calc_min_used_lsn(false);
 
-		XLByteToSeg(keep, slotSegNo, wal_segment_size);
+		if (keep != InvalidXLogRecPtr)
+		{
+			XLogSegNo	slotSegNo;
 
-		if (slotSegNo <= 0)
+			XLByteToSeg(keep, slotSegNo, wal_segment_size);
+
+			if (slotSegNo <= 0)
+				segno = 1;
+			else if (slotSegNo < segno)
+				segno = slotSegNo;
+		}
+	}
+
+	/* compute limit for dma */
+	if (polar_is_dma_data_node())
+	{
+		XLogRecPtr consensus_keep  = ConsensusGetPurgeLSN();
+		if (consensus_keep != InvalidXLogRecPtr)
+		{
+			XLogSegNo	slotSegNo;
+
+			XLByteToSeg(consensus_keep, slotSegNo, wal_segment_size);
+
+			if (slotSegNo <= 0)
+				segno = 1;
+			else if (slotSegNo < segno)
+				segno = slotSegNo;
+
+			ereport(LOG,
+					(errmsg("purged consensus all matched's segno: %lu", segno)));
+		}
+		else
+		{
 			segno = 1;
-		else if (slotSegNo < segno)
-			segno = slotSegNo;
+		}
 	}
 
 	/* don't delete WAL segments newer than the calculated segment */
@@ -10565,12 +11869,19 @@ xlog_redo(XLogReaderState *record)
 		 * XLOG_FPI and XLOG_FPI_FOR_HINT records, they use a different info
 		 * code just to distinguish them for statistics purposes.
 		 */
+
+		/*
+		 * POLAR: The error message is triggered in XLogReadBufferForRedo function
+		 * when fail to restore full-page image.
+		 * Besides we will return BLK_DONE when page lsn is larger than current xlog
+		 * record lsn.
+		 */
 		for (block_id = 0; block_id <= record->max_block_id; block_id++)
 		{
 			Buffer		buffer;
 
-			if (XLogReadBufferForRedo(record, block_id, &buffer) != BLK_RESTORED)
-				elog(ERROR, "unexpected XLogReadBufferForRedo result when restoring backup block");
+			XLogReadBufferForRedo(record, block_id, &buffer);
+
 			UnlockReleaseBuffer(buffer);
 		}
 	}
@@ -10672,13 +11983,26 @@ xlog_redo(XLogReaderState *record)
 		lastFullPageWrites = fpw;
 	}
 	/* POLAR: for fullpage snapshot */
-	else if (info == XLOG_FPSI)
+	else if (info == XLOG_FPSI && POLAR_LOGINDEX_ENABLE_FULLPAGE())
 	{
 		uint64	fullpage_no = 0;
 		/* get fullpage_no from record */
 		memcpy(&fullpage_no, XLogRecGetData(record), sizeof(uint64));
 		/* Update max_fullpage_no */
-		polar_update_max_fullpage_no(fullpage_no);
+		polar_update_max_fullpage_no(polar_logindex_redo_instance->fullpage_ctl, fullpage_no);
+	}
+	/* POLAR csnlog */
+	else if (polar_csn_enable && info == XLOG_CSNLOG_ZEROPAGE)
+	{
+		int			pageno;
+		memcpy(&pageno, XLogRecGetData(record), sizeof(int));
+		polar_csnlog_zero_page_redo(pageno);
+	}
+	else if (polar_csn_enable && info == XLOG_CSNLOG_TRUNCATE)
+	{
+		int			pageno;
+		memcpy(&pageno, XLogRecGetData(record), sizeof(int));
+		polar_csnlog_truncate_redo(pageno);
 	}
 	/* POLAR end */
 }
@@ -10849,7 +12173,7 @@ issue_xlog_fsync(int fd, XLogSegNo segno)
 	/* POLAR: use fsync to make sure data flush to disk */
 	if (POLAR_FILE_IN_SHARED_STORAGE())
 	{
-		polar_fsync(fd);
+		(void) polar_fsync(fd);
 		return;
 	}
 
@@ -10956,7 +12280,35 @@ do_pg_start_backup(const char *backupidstr, bool fast, TimeLineID *starttli_p,
 	char		xlogfilename[MAXFNAMELEN];
 	XLogSegNo	_logSegNo;
 	struct stat stat_buf;
-	FILE	   *fp;
+
+	/* POLAR */
+	int			fd = 0;
+	int			flags = 0;
+	char		labelfile_path[MAXPGPATH] = "";
+	char		tblspcmapfile_path[MAXPGPATH] = "";
+
+	elog(LOG, "POLAR: begin pg_start_backup: checkpoint: %s, "
+				"lazy checkpoint: %s, fullpage write: %s, switch wal: %s",
+				polar_enable_checkpoint_in_backup ? "true" : "false",
+				polar_enable_lazy_checkpoint_in_backup ? "true" : "false",
+				polar_enable_full_page_write_in_backup ? "true" : "false",
+				polar_enable_switch_wal_in_backup ? "true" : "false");
+
+	if (!POLAR_FILE_IN_SHARED_STORAGE())
+	{
+		polar_make_file_path_level2(labelfile_path, BACKUP_LABEL_FILE);
+		polar_make_file_path_level2(tblspcmapfile_path, TABLESPACE_MAP);
+	}
+	else if (exclusive)
+	{
+		polar_make_file_path_level2(labelfile_path, POLAR_EXCLUSIVE_BACKUP_LABEL_FILE);
+		polar_make_file_path_level2(tblspcmapfile_path, POLAR_EXCLUSIVE_TABLESPACE_MAP);
+	}
+	else
+	{
+		polar_make_file_path_level2(labelfile_path, POLAR_NON_EXCLUSIVE_BACKUP_LABEL_FILE);
+		polar_make_file_path_level2(tblspcmapfile_path, POLAR_NON_EXCLUSIVE_TABLESPACE_MAP);
+	}
 
 	backup_started_in_recovery = RecoveryInProgress();
 
@@ -11026,7 +12378,9 @@ do_pg_start_backup(const char *backupidstr, bool fast, TimeLineID *starttli_p,
 	}
 	else
 		XLogCtl->Insert.nonExclusiveBackups++;
-	XLogCtl->Insert.forcePageWrites = true;
+	/* POLAR: do full-page write if polar_enable_full_page_write_in_backup */
+	if (polar_enable_full_page_write_in_backup)
+		XLogCtl->Insert.forcePageWrites = true;
 	WALInsertLockRelease();
 
 	/* Ensure we release forcePageWrites if fail below */
@@ -11060,7 +12414,8 @@ do_pg_start_backup(const char *backupidstr, bool fast, TimeLineID *starttli_p,
 		 * the backup taken during recovery is not available for the special
 		 * recovery case described above.
 		 */
-		if (!backup_started_in_recovery)
+		/* POLAR: do switch xlog if polar_enable_switch_wal_in_backup */
+		if (!backup_started_in_recovery && polar_enable_switch_wal_in_backup)
 			RequestXLogSwitch(false);
 
 		do
@@ -11085,8 +12440,16 @@ do_pg_start_backup(const char *backupidstr, bool fast, TimeLineID *starttli_p,
 			 * We use CHECKPOINT_IMMEDIATE only if requested by user (via
 			 * passing fast = true).  Otherwise this can take awhile.
 			 */
-			RequestCheckpoint(CHECKPOINT_FORCE | CHECKPOINT_WAIT |
-							  (fast ? CHECKPOINT_IMMEDIATE : 0));
+			/* POLAR: do checkpoint if polar_enable_checkpoint_in_backup */
+			if (polar_enable_checkpoint_in_backup)
+			{
+				/* POLAR: request lazy checkpoint if enable polar_enable_lazy_checkpoint_in_backup */
+				flags = CHECKPOINT_FORCE | CHECKPOINT_WAIT | (fast ? CHECKPOINT_IMMEDIATE : 0);
+				if (polar_enable_lazy_checkpoint_in_backup && polar_lazy_checkpoint_enabled())
+					RequestCheckpoint(flags | CHECKPOINT_LAZY);
+				else
+					RequestCheckpoint(flags);
+			}
 
 			/*
 			 * Now we need to fetch the checkpoint record location, and also
@@ -11152,7 +12515,7 @@ do_pg_start_backup(const char *backupidstr, bool fast, TimeLineID *starttli_p,
 				gotUniqueStartpoint = true;
 			}
 			WALInsertLockRelease();
-		} while (!gotUniqueStartpoint);
+		} while (!gotUniqueStartpoint && polar_enable_checkpoint_in_backup);
 
 		XLByteToSeg(startpoint, _logSegNo, wal_segment_size);
 		XLogFileName(xlogfilename, starttli, _logSegNo, wal_segment_size);
@@ -11231,6 +12594,7 @@ do_pg_start_backup(const char *backupidstr, bool fast, TimeLineID *starttli_p,
 			ti->path = pstrdup(buflinkpath.data);
 			ti->rpath = relpath ? pstrdup(relpath) : NULL;
 			ti->size = infotbssize ? sendTablespace(fullpath, true) : -1;
+			ti->polar_shared = POLAR_FILE_IN_SHARED_STORAGE();
 
 			if (tablespaces)
 				*tablespaces = lappend(*tablespaces, ti);
@@ -11278,7 +12642,8 @@ do_pg_start_backup(const char *backupidstr, bool fast, TimeLineID *starttli_p,
 		/*
 		 * Okay, write the file, or return its contents to caller.
 		 */
-		if (exclusive)
+		/* POLAR: write the lablefile in exclusive or (non-exclusive and not-replica) mode */
+		if (exclusive || (!exclusive && POLAR_FILE_IN_SHARED_STORAGE() && !polar_in_replica_mode() ))
 		{
 			/*
 			 * Check for existing backup label --- implies a backup is already
@@ -11286,80 +12651,68 @@ do_pg_start_backup(const char *backupidstr, bool fast, TimeLineID *starttli_p,
 			 * above, maybe it would be OK to just unlink any such label
 			 * file?)
 			 */
-			if (stat(BACKUP_LABEL_FILE, &stat_buf) != 0)
+			if (polar_stat(labelfile_path, &stat_buf) != 0)
 			{
 				if (errno != ENOENT)
 					ereport(ERROR,
 							(errcode_for_file_access(),
 							 errmsg("could not stat file \"%s\": %m",
-									BACKUP_LABEL_FILE)));
+									labelfile_path)));
 			}
 			else
-				ereport(ERROR,
+				/* POLAR: overwrite labelfile, rather than ERROR, for in backup already checked before */
+				ereport(WARNING,
 						(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-						 errmsg("a backup is already in progress"),
-						 errhint("If you're sure there is no backup in progress, remove file \"%s\" and try again.",
-								 BACKUP_LABEL_FILE)));
+						 errmsg("a labelfile \"%s\" is already on disk", labelfile_path),
+						 errhint("POLAR: we overwrite it")));
 
-			fp = AllocateFile(BACKUP_LABEL_FILE, "w");
+			fd = polar_open_transient_file(labelfile_path, O_WRONLY | O_CREAT | O_TRUNC);
 
-			if (!fp)
+			if (fd < 0)
 				ereport(ERROR,
 						(errcode_for_file_access(),
 						 errmsg("could not create file \"%s\": %m",
-								BACKUP_LABEL_FILE)));
-			if (fwrite(labelfile->data, labelfile->len, 1, fp) != 1 ||
-				fflush(fp) != 0 ||
-				pg_fsync(fileno(fp)) != 0 ||
-				ferror(fp) ||
-				FreeFile(fp))
+								labelfile_path)));
+			if (polar_write(fd, labelfile->data, labelfile->len) != labelfile->len ||
+				polar_fsync(fd) != 0 ||
+				CloseTransientFile(fd) !=0)
 				ereport(ERROR,
 						(errcode_for_file_access(),
 						 errmsg("could not write file \"%s\": %m",
-								BACKUP_LABEL_FILE)));
-			/* Allocated locally for exclusive backups, so free separately */
-			pfree(labelfile->data);
-			pfree(labelfile);
+								labelfile_path)));
 
 			/* Write backup tablespace_map file. */
 			if (tblspcmapfile->len > 0)
 			{
-				if (stat(TABLESPACE_MAP, &stat_buf) != 0)
+				if (polar_stat(tblspcmapfile_path, &stat_buf) != 0)
 				{
 					if (errno != ENOENT)
 						ereport(ERROR,
 								(errcode_for_file_access(),
 								 errmsg("could not stat file \"%s\": %m",
-										TABLESPACE_MAP)));
+										tblspcmapfile_path)));
 				}
 				else
-					ereport(ERROR,
+					/* POLAR: overwrite tblspcmapfile, rather than ERROR, for in backup already checked before */
+					ereport(WARNING,
 							(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-							 errmsg("a backup is already in progress"),
-							 errhint("If you're sure there is no backup in progress, remove file \"%s\" and try again.",
-									 TABLESPACE_MAP)));
+							 errmsg("a tblspcmapfile \"%s\" is already on disk", tblspcmapfile_path),
+							 errhint("POLAR: we overwrite it")));
+				fd = polar_open_transient_file(tblspcmapfile_path, O_WRONLY | O_CREAT | O_TRUNC);
 
-				fp = AllocateFile(TABLESPACE_MAP, "w");
-
-				if (!fp)
+				if (fd < 0)
 					ereport(ERROR,
 							(errcode_for_file_access(),
 							 errmsg("could not create file \"%s\": %m",
-									TABLESPACE_MAP)));
-				if (fwrite(tblspcmapfile->data, tblspcmapfile->len, 1, fp) != 1 ||
-					fflush(fp) != 0 ||
-					pg_fsync(fileno(fp)) != 0 ||
-					ferror(fp) ||
-					FreeFile(fp))
+									tblspcmapfile_path)));
+				if (polar_write(fd, tblspcmapfile->data, tblspcmapfile->len) != tblspcmapfile->len ||
+					polar_fsync(fd) != 0 ||
+					CloseTransientFile(fd) != 0)
 					ereport(ERROR,
 							(errcode_for_file_access(),
 							 errmsg("could not write file \"%s\": %m",
-									TABLESPACE_MAP)));
+									tblspcmapfile_path)));
 			}
-
-			/* Allocated locally for exclusive backups, so free separately */
-			pfree(tblspcmapfile->data);
-			pfree(tblspcmapfile);
 		}
 	}
 	PG_END_ENSURE_ERROR_CLEANUP(pg_start_backup_callback, (Datum) BoolGetDatum(exclusive));
@@ -11383,6 +12736,18 @@ do_pg_start_backup(const char *backupidstr, bool fast, TimeLineID *starttli_p,
 	}
 	else
 		sessionBackupState = SESSION_BACKUP_NON_EXCLUSIVE;
+
+	/* POLAR: log some infomation, and move pfree to the end */
+	elog(LOG, "POLAR: finish pg_start_backup, labelfile:\n%s", labelfile->data);
+
+	/* Allocated locally for exclusive backups, so free separately */
+	if (exclusive)
+	{
+		pfree(labelfile->data);
+		pfree(labelfile);
+		pfree(tblspcmapfile->data);
+		pfree(tblspcmapfile);
+	}
 
 	/*
 	 * We're done.  As a convenience, return the starting WAL location.
@@ -11476,8 +12841,6 @@ do_pg_stop_backup(char *labelfile, bool waitforarchive, TimeLineID *stoptli_p)
 	char		histfilename[MAXFNAMELEN];
 	char		backupfrom[20];
 	XLogSegNo	_logSegNo;
-	FILE	   *lfp;
-	FILE	   *fp;
 	char		ch;
 	int			seconds_before_warning;
 	int			waits = 0;
@@ -11486,6 +12849,35 @@ do_pg_stop_backup(char *labelfile, bool waitforarchive, TimeLineID *stoptli_p)
 	char	   *ptr;
 	uint32		hi,
 				lo;
+
+	/* POLAR */
+	int			fd = 0;
+	StringInfo	historyfile = makeStringInfo();
+	char		labelfile_path[MAXPGPATH] = "";
+	char		tblspcmapfile_path[MAXPGPATH] = "";
+
+	elog(LOG, "POLAR: begin pg_stop_backup: checkpoint: %s, "
+				"lazy checkpoint: %s, fullpage write: %s, switch wal: %s",
+				polar_enable_checkpoint_in_backup ? "true" : "false",
+				polar_enable_lazy_checkpoint_in_backup ? "true" : "false",
+				polar_enable_full_page_write_in_backup ? "true" : "false",
+				polar_enable_switch_wal_in_backup ? "true" : "false");
+
+	if (!POLAR_FILE_IN_SHARED_STORAGE())
+	{
+		polar_make_file_path_level2(labelfile_path, BACKUP_LABEL_FILE);
+		polar_make_file_path_level2(tblspcmapfile_path, TABLESPACE_MAP);
+	}
+	else if (exclusive)
+	{
+		polar_make_file_path_level2(labelfile_path, POLAR_EXCLUSIVE_BACKUP_LABEL_FILE);
+		polar_make_file_path_level2(tblspcmapfile_path, POLAR_EXCLUSIVE_TABLESPACE_MAP);
+	}
+	else
+	{
+		polar_make_file_path_level2(labelfile_path, POLAR_NON_EXCLUSIVE_BACKUP_LABEL_FILE);
+		polar_make_file_path_level2(tblspcmapfile_path, POLAR_NON_EXCLUSIVE_TABLESPACE_MAP);
+	}
 
 	backup_started_in_recovery = RecoveryInProgress();
 
@@ -11538,46 +12930,46 @@ do_pg_stop_backup(char *labelfile, bool waitforarchive, TimeLineID *stoptli_p)
 			struct stat statbuf;
 			int			r;
 
-			if (stat(BACKUP_LABEL_FILE, &statbuf))
+			if (polar_stat(labelfile_path, &statbuf))
 			{
 				/* should not happen per the upper checks */
 				if (errno != ENOENT)
 					ereport(ERROR,
 							(errcode_for_file_access(),
 							 errmsg("could not stat file \"%s\": %m",
-									BACKUP_LABEL_FILE)));
+									labelfile_path)));
 				ereport(ERROR,
 						(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 						 errmsg("a backup is not in progress")));
 			}
 
-			lfp = AllocateFile(BACKUP_LABEL_FILE, "r");
-			if (!lfp)
+			fd = polar_open_transient_file(labelfile_path, O_RDONLY);
+			if (fd < 0)
 			{
 				ereport(ERROR,
 						(errcode_for_file_access(),
 						 errmsg("could not read file \"%s\": %m",
-								BACKUP_LABEL_FILE)));
+								labelfile_path)));
 			}
 			labelfile = palloc(statbuf.st_size + 1);
-			r = fread(labelfile, statbuf.st_size, 1, lfp);
+			r = polar_read(fd, labelfile, statbuf.st_size);
 			labelfile[statbuf.st_size] = '\0';
 
 			/*
 			 * Close and remove the backup label file
 			 */
-			if (r != 1 || ferror(lfp) || FreeFile(lfp))
+			if (r != statbuf.st_size || CloseTransientFile(fd) != 0)
 				ereport(ERROR,
 						(errcode_for_file_access(),
 						 errmsg("could not read file \"%s\": %m",
-								BACKUP_LABEL_FILE)));
-			durable_unlink(BACKUP_LABEL_FILE, ERROR);
+								labelfile_path)));
+			durable_unlink(labelfile_path, ERROR);
 
 			/*
 			 * Remove tablespace_map file if present, it is created only if
 			 * there are tablespaces.
 			 */
-			durable_unlink(TABLESPACE_MAP, DEBUG1);
+			durable_unlink(tblspcmapfile_path, DEBUG1);
 		}
 		PG_END_ENSURE_ERROR_CLEANUP(pg_stop_backup_callback, (Datum) BoolGetDatum(exclusive));
 	}
@@ -11634,7 +13026,7 @@ do_pg_stop_backup(char *labelfile, bool waitforarchive, TimeLineID *stoptli_p)
 			   &ch) != 4 || ch != '\n')
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-				 errmsg("invalid data in file \"%s\"", BACKUP_LABEL_FILE)));
+				 errmsg("invalid data in file \"%s\"", labelfile_path)));
 	startpoint = ((uint64) hi) << 32 | lo;
 	remaining = strchr(labelfile, '\n') + 1;	/* %n is not portable enough */
 
@@ -11647,7 +13039,7 @@ do_pg_stop_backup(char *labelfile, bool waitforarchive, TimeLineID *stoptli_p)
 	if (!ptr || sscanf(ptr, "BACKUP FROM: %19s\n", backupfrom) != 1)
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-				 errmsg("invalid data in file \"%s\"", BACKUP_LABEL_FILE)));
+				 errmsg("invalid data in file \"%s\"", labelfile_path)));
 	if (strcmp(backupfrom, "standby") == 0 && !backup_started_in_recovery)
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
@@ -11726,7 +13118,9 @@ do_pg_stop_backup(char *labelfile, bool waitforarchive, TimeLineID *stoptli_p)
 		 * Force a switch to a new xlog segment file, so that the backup is
 		 * valid as soon as archiver moves out the current segment file.
 		 */
-		RequestXLogSwitch(false);
+		/* POLAR: do switch xlog if polar_enable_switch_wal_in_backup */
+		if (polar_enable_switch_wal_in_backup)
+			RequestXLogSwitch(false);
 
 		XLByteToPrevSeg(stoppoint, _logSegNo, wal_segment_size);
 		XLogFileName(stopxlogfilename, stoptli, _logSegNo, wal_segment_size);
@@ -11740,32 +13134,37 @@ do_pg_stop_backup(char *labelfile, bool waitforarchive, TimeLineID *stoptli_p)
 		/*
 		 * Write the backup history file
 		 */
-		XLByteToSeg(startpoint, _logSegNo, wal_segment_size);
-		BackupHistoryFilePath(histfilepath, stoptli, _logSegNo,
-							  startpoint, wal_segment_size);
-		fp = AllocateFile(histfilepath, "w");
-		if (!fp)
-			ereport(ERROR,
-					(errcode_for_file_access(),
-					 errmsg("could not create file \"%s\": %m",
-							histfilepath)));
-		fprintf(fp, "START WAL LOCATION: %X/%X (file %s)\n",
-				(uint32) (startpoint >> 32), (uint32) startpoint, startxlogfilename);
-		fprintf(fp, "STOP WAL LOCATION: %X/%X (file %s)\n",
-				(uint32) (stoppoint >> 32), (uint32) stoppoint, stopxlogfilename);
-
 		/*
-		 * Transfer remaining lines including label and start timeline to
-		 * history file.
+		 * POLAR: don't create this file in shared mode, but for safety, we can still
+		 * reenable it by set polar_enable_create_backup_history_file_in_backup = on.
 		 */
-		fprintf(fp, "%s", remaining);
-		fprintf(fp, "STOP TIME: %s\n", strfbuf);
-		fprintf(fp, "STOP TIMELINE: %u\n", stoptli);
-		if (fflush(fp) || ferror(fp) || FreeFile(fp))
-			ereport(ERROR,
-					(errcode_for_file_access(),
-					 errmsg("could not write file \"%s\": %m",
-							histfilepath)));
+		if (!POLAR_FILE_IN_SHARED_STORAGE() || polar_enable_create_backup_history_file_in_backup)
+		{
+			XLByteToSeg(startpoint, _logSegNo, wal_segment_size);
+			BackupHistoryFilePath(histfilepath, stoptli, _logSegNo,
+								startpoint, wal_segment_size);
+			fd = polar_open_transient_file(histfilepath, O_WRONLY | O_CREAT);
+			if (fd < 0)
+				ereport(ERROR,
+						(errcode_for_file_access(),
+						errmsg("could not create file \"%s\": %m",
+								histfilepath)));
+			appendStringInfo(historyfile, "START WAL LOCATION: %X/%X (file %s)\n",
+							(uint32) (startpoint >> 32), (uint32) startpoint, startxlogfilename);
+			appendStringInfo(historyfile, "STOP WAL LOCATION: %X/%X (file %s)\n",
+							(uint32) (stoppoint >> 32), (uint32) stoppoint, stopxlogfilename);
+			appendStringInfo(historyfile, "%s", remaining);
+			appendStringInfo(historyfile, "STOP TIME: %s\n", strfbuf);
+			appendStringInfo(historyfile, "STOP TIMELINE: %u\n", stoptli);
+
+			if (polar_write(fd, historyfile->data, historyfile->len) != historyfile->len ||
+				polar_fsync(fd) != 0 ||
+				CloseTransientFile(fd) !=0)
+				ereport(ERROR,
+						(errcode_for_file_access(),
+						errmsg("could not write file \"%s\": %m",
+								histfilepath)));
+		}
 
 		/*
 		 * Clean out any no-longer-needed history files.  As a side effect,
@@ -11797,7 +13196,7 @@ do_pg_stop_backup(char *labelfile, bool waitforarchive, TimeLineID *stoptli_p)
 	 * clue in anyone who might be doing this interactively.
 	 */
 
-	if (waitforarchive &&
+	if (polar_enable_switch_wal_in_backup && waitforarchive &&
 		((!backup_started_in_recovery && XLogArchivingActive()) ||
 		 (backup_started_in_recovery && XLogArchivingAlways())))
 	{
@@ -11840,9 +13239,19 @@ do_pg_stop_backup(char *labelfile, bool waitforarchive, TimeLineID *stoptli_p)
 		ereport(NOTICE,
 				(errmsg("pg_stop_backup complete, all required WAL segments have been archived")));
 	}
+	else if (!polar_enable_switch_wal_in_backup && waitforarchive)
+		ereport(WARNING,
+				(errmsg("polar_enable_switch_wal_in_backup is off, last WAL may be missing. Please ensure polar_enable_switch_wal_in_backup is set correctly")));
 	else if (waitforarchive)
 		ereport(NOTICE,
 				(errmsg("WAL archiving is not enabled; you must ensure that all required WAL segments are copied through other means to complete the backup")));
+
+	if (!backup_started_in_recovery)
+	{
+		elog(LOG, "POLAR: finish pg_stop_backup");
+		pfree(historyfile->data);
+		pfree(historyfile);
+	}
 
 	/*
 	 * We're done.  As a convenience, return the ending WAL location.
@@ -11964,6 +13373,23 @@ GetXLogInsertRecPtr(void)
 	current_bytepos = Insert->CurrBytePos;
 	SpinLockRelease(&Insert->insertpos_lck);
 
+	return XLogBytePosToRecPtr(current_bytepos);
+}
+
+static XLogRecPtr
+polar_get_checkpoint_ptr_nolock(void)
+{
+	XLogRecPtr	checkpointloc;
+	checkpointloc = ControlFile->checkPoint;
+	return checkpointloc;
+}
+
+static XLogRecPtr
+polar_get_xlog_insert_rec_ptr_nolock(void)
+{
+	XLogCtlInsert *Insert = &XLogCtl->Insert;
+	uint64		current_bytepos;
+	current_bytepos = Insert->CurrBytePos;
 	return XLogBytePosToRecPtr(current_bytepos);
 }
 
@@ -12221,11 +13647,19 @@ rm_redo_error_callback(void *arg)
 		initStringInfo(&buf);
 		xlog_outdesc(&buf, record);
 
-		/* translator: %s is a WAL record description */
-		errcontext("WAL redo at %X/%X for %s",
-				(uint32) (record->ReadRecPtr >> 32),
-				(uint32) record->ReadRecPtr,
-				buf.data);
+		/*
+		 * POLAR: Print simple message in log because of the long data
+		 * errcontext(): %s is a WAL record description
+		 */
+		if (polar_enable_simply_redo_error_log)
+			errcontext("WAL redo at %X/%X",
+					  (uint32) (record->ReadRecPtr >> 32),
+					  (uint32) record->ReadRecPtr);
+		else
+			errcontext("WAL redo at %X/%X for %s",
+					  (uint32) (record->ReadRecPtr >> 32),
+					  (uint32) record->ReadRecPtr,
+					  buf.data);
 
 		pfree(buf.data);
 	}
@@ -12339,15 +13773,16 @@ static int
 XLogPageRead(XLogReaderState *xlogreader, XLogRecPtr targetPagePtr, int reqLen,
 			 XLogRecPtr targetRecPtr, char *readBuf, TimeLineID *readTLI)
 {
+	static TimeLineID	prev_timeline = 0;
+
 	XLogPageReadPrivate *private =
 	(XLogPageReadPrivate *) xlogreader->private_data;
 	int			emode = private->emode;
 	uint32		targetPageOff;
 	XLogSegNo	targetSegNo PG_USED_FOR_ASSERTS_ONLY;
 	int			polar_read_rc = -1;
-	bool		polar_found = false;
-	int			polar_bufid = -1;
-	static TimeLineID polar_prev_timeline = 0;
+	bool			found = false;
+	int			buf_id = -1;
 
 	XLByteToSeg(targetPagePtr, targetSegNo, wal_segment_size);
 	targetPageOff = XLogSegmentOffset(targetPagePtr, wal_segment_size);
@@ -12381,9 +13816,22 @@ XLogPageRead(XLogReaderState *xlogreader, XLogRecPtr targetPagePtr, int reqLen,
 	XLByteToSeg(targetPagePtr, readSegNo, wal_segment_size);
 
 retry:
+	/*
+	 * POLAR: update receivedUpto in polardb. Because of logindex, the readSource
+	 * in RW and RO startup will not be set XLOG_FROM_STREAM. Xlog pread depends
+	 * on receivedUpto, so we should update it manually.
+	 */
+	if (POLAR_LOGINDEX_ENABLE_XLOG_QUEUE() &&
+			AmStartupProcess() && receivedUpto < targetPagePtr + reqLen &&
+			polar_in_replica_mode())
+		receivedUpto = GetWalRcvWriteRecPtr(NULL, &receiveTLI);
+
 	/* See if we need to retrieve more data */
 	if (readFile < 0 ||
-		(readSource == XLOG_FROM_STREAM &&
+		(polar_is_dma_data_node() &&
+		 consensusReadableUpto < targetPagePtr + reqLen) ||
+		(!polar_is_dma_data_node() && 
+		 readSource == XLOG_FROM_STREAM &&
 		 receivedUpto < targetPagePtr + reqLen))
 	{
 		if (!WaitForWALToBecomeAvailable(targetPagePtr + reqLen,
@@ -12402,16 +13850,6 @@ retry:
 	}
 
 	/*
-	 * POLAR: update receivedUpto in polardb. Because of logindex, the readSource
-	 * in RW and RO startup will not be set XLOG_FROM_STREAM. Xlog pread depends
-	 * on receivedUpto, so we should update it manually.
-	 */
-	if (polar_enable_redo_logindex && polar_enable_xlog_buffer &&
-	    AmStartupProcess() && receivedUpto < targetPagePtr + reqLen &&
-		polar_in_replica_mode())
-		receivedUpto = GetWalRcvWriteRecPtr(NULL, NULL);
-
-	/*
 	 * At this point, we have the right segment open and if we're streaming we
 	 * know the requested record is in it.
 	 */
@@ -12423,7 +13861,17 @@ retry:
 	 * requested record has been received, but this is for the benefit of
 	 * future calls, to allow quick exit at the top of this function.
 	 */
-	if (readSource == XLOG_FROM_STREAM)
+	if (polar_is_dma_data_node())
+	{
+
+		if (XLogRecPtrIsInvalid(consensusReadableUpto))
+			readLen = XLOG_BLCKSZ;
+		else if (((targetPagePtr) / XLOG_BLCKSZ) != (consensusReadableUpto / XLOG_BLCKSZ))
+			readLen = XLOG_BLCKSZ;
+		else
+			readLen = XLogSegmentOffset(consensusReadableUpto, wal_segment_size) - targetPageOff;
+	}
+	else if (readSource == XLOG_FROM_STREAM)
 	{
 		if (((targetPagePtr) / XLOG_BLCKSZ) != (receivedUpto / XLOG_BLCKSZ))
 			readLen = XLOG_BLCKSZ;
@@ -12438,39 +13886,39 @@ retry:
 	readOff = targetPageOff;
 
 	/* POLAR: In master mode, we won't use xlog buffer for now. */
-	if (POLAR_ENABLE_XLOG_BUFFER() && ThisTimeLineID == polar_prev_timeline)
+	if (POLAR_ENABLE_XLOG_BUFFER() && ThisTimeLineID == prev_timeline)
 	{
-		polar_found = polar_xlog_buffer_lookup(targetPagePtr, readLen, false, true, &polar_bufid);
-		if (polar_found)
+		found = polar_xlog_buffer_lookup(targetPagePtr, readLen, false, true, &buf_id);
+		if (found)
 		{
-			memcpy(readBuf, polar_get_xlog_buffer(polar_bufid), readLen);
+			memcpy(readBuf, polar_get_xlog_buffer(buf_id), readLen);
 			polar_read_rc = readLen;
 		}
-		if (polar_bufid >= 0)
-			polar_xlog_buffer_unlock(polar_bufid);
+		if (buf_id >= 0)
+			polar_xlog_buffer_unlock(buf_id);
 	}
 
-	if (!polar_found)
+	if (!found)
 	{
-		/* POLAR: use pread replace lseek + read */
+		/* POLAR: replace lseek + read with pread */
 		if (POLAR_ENABLE_PREAD())
 		{
-			pgstat_report_wait_start(WAIT_EVENT_WAL_PREAD);
-			polar_read_rc = polar_pread_xlog_page(&polar_prev_timeline, targetPagePtr, readBuf);
+			polar_read_rc = polar_pread_xlog_page(&prev_timeline, targetPagePtr, readBuf);
 		}
 		else
 		{
-			if (polar_lseek(readFile, (off_t) readOff, SEEK_SET) < 0)
+			if (polar_lseek(readFile, (off_t) readOff, SEEK_SET) < 0) 
 			{
-				char		fname[MAXFNAMELEN];
-				int			save_errno = errno;
+				char fname[MAXFNAMELEN] = {0};
+				int save_errno = errno;
 
 				XLogFileName(fname, curFileTLI, readSegNo, wal_segment_size);
 				errno = save_errno;
 				ereport(emode_for_corrupt_record(emode, targetPagePtr + reqLen),
 						(errcode_for_file_access(),
-						errmsg("could not seek in log segment %s to offset %u: %m",
-								fname, readOff)));
+								errmsg("could not seek in log segment %s to offset %u: %m",
+									   fname, readOff)));
+
 				goto next_record_is_invalid;
 			}
 
@@ -12479,7 +13927,7 @@ retry:
 		}
 	}
 
-	if (polar_read_rc != XLOG_BLCKSZ)
+	if (!found && polar_read_rc != XLOG_BLCKSZ)
 	{
 		char		fname[MAXFNAMELEN];
 		int			save_errno = errno;
@@ -12489,8 +13937,8 @@ retry:
 		errno = save_errno;
 		ereport(emode_for_corrupt_record(emode, targetPagePtr + reqLen),
 				(errcode_for_file_access(),
-				 errmsg("could not read from log segment %s, offset %u: %m",
-						fname, readOff)));
+				 errmsg("could not read from log segment %s, offset %u, polar_read_rc: %u: %m",
+						fname, readOff, polar_read_rc)));
 		goto next_record_is_invalid;
 	}
 	pgstat_report_wait_end();
@@ -12592,9 +14040,6 @@ WaitForWALToBecomeAvailable(XLogRecPtr RecPtr, bool randAccess,
 	static TimestampTz last_fail_time = 0;
 	TimestampTz now;
 	bool		streaming_reply_sent = false;
-	/* POLAR */
-	bool		polar_run_walreceiver_always = polar_enable_run_walreceiver_always && polar_in_replica_mode();
-	/* POLAR end */
 
 	/*-------
 	 * Standby mode is implemented by a state machine:
@@ -12654,7 +14099,15 @@ WaitForWALToBecomeAvailable(XLogRecPtr RecPtr, bool randAccess,
 					 * trigger file, we still finish replaying as much as we
 					 * can from archive and pg_wal before failover.
 					 */
-					if (StandbyMode && CheckForStandbyTrigger())
+					if (polar_is_dma_data_node())
+					{
+						if (becameLeader)
+						{
+							ShutdownWalRcv();
+							return false;
+						}
+					}
+					else if (StandbyMode && CheckForStandbyTrigger())
 					{
 						ShutdownWalRcv();
 						return false;
@@ -12690,14 +14143,44 @@ WaitForWALToBecomeAvailable(XLogRecPtr RecPtr, bool randAccess,
 						XLogRecPtr	ptr;
 						TimeLineID	tli;
 
-						if (fetching_ckpt)
+						if (polar_is_dma_data_node())
+						{
+							if (fetching_ckpt)
+								ereport(FATAL,
+										(errmsg("could not locate required checkpoint record from local WAL Files")));
+
+							ptr = consensusReceivedUpto > RecPtr ? consensusReceivedUpto : RecPtr; 
+							tli = tliOfPointInHistory(consensusReceivedUpto > tliRecPtr ?
+									consensusReceivedUpto : tliRecPtr, expectedTLEs);
+							/* timeline switched, recieve from the switch point. */
+							if (consensusReceivedTLI > 0 && tli > consensusReceivedTLI)
+							{
+								ptr = tliSwitchPoint(consensusReceivedTLI, expectedTLEs, NULL);	
+								/* the recieved point overtake the end point of last received timeline */
+								if (consensusReceivedUpto > ptr)
+								{
+									polar_dma_xlog_truncate(ptr, consensusReceivedTLI, ERROR);
+									ConsensusSetXLogFlushedLSN(ptr, consensusReceivedTLI, true);
+									consensusReceivedUpto = ptr;
+									ereport(DEBUG2, 
+											(errmsg("consensus recieved reset to %X/%X timeline %u", 
+															(uint32) (consensusReceivedUpto >> 32), (uint32)consensusReceivedUpto,
+															consensusReceivedTLI)));
+								}
+							}
+						}
+						else if (fetching_ckpt)
 						{
 							ptr = RedoStartLSN;
 							tli = ControlFile->checkPointCopy.ThisTimeLineID;
 						}
 						else
 						{
-							ptr = RecPtr;
+							/* POLAR: set startpoint as the record begin position when in replica mode */
+							if (polar_in_replica_mode())
+								ptr = tliRecPtr;
+							else
+								ptr = RecPtr;
 
 							/*
 							 * Use the record begin position to determine the
@@ -12711,9 +14194,10 @@ WaitForWALToBecomeAvailable(XLogRecPtr RecPtr, bool randAccess,
 									 (uint32) tliRecPtr,
 									 tli, curFileTLI);
 						}
+
 						curFileTLI = tli;
 						RequestXLogStreaming(tli, ptr, PrimaryConnInfo,
-											 PrimarySlotName);
+											 polar_is_dma_data_node() ? polar_dma_repl_slot_name : PrimarySlotName);
 						receivedUpto = 0;
 					}
 
@@ -12756,11 +14240,31 @@ WaitForWALToBecomeAvailable(XLogRecPtr RecPtr, bool randAccess,
 					if (WalRcvStreaming())
 						ShutdownWalRcv();
 
+					if (polar_is_dma_data_node())
+					{
+						XLogRecPtr	latestChunkStart;
+
+						receivedUpto = GetWalRcvWriteRecPtr(&latestChunkStart, &receiveTLI);
+						/* Advance received point, including LSN and timeline */
+						if (receivedUpto > consensusReceivedUpto || receiveTLI > consensusReceivedTLI)
+						{
+							if (receivedUpto > consensusReceivedUpto)
+								consensusReceivedUpto = receivedUpto;
+							if (receiveTLI > consensusReceivedTLI)
+								consensusReceivedTLI = receiveTLI;
+							ereport(DEBUG2, 
+									(errmsg("consensus recieved up to %X/%X timeline %u", 
+													(uint32) (consensusReceivedUpto >> 32), (uint32)consensusReceivedUpto,
+													consensusReceivedTLI)));
+						}
+					}
+
 					/*
 					 * Before we sleep, re-scan for possible new timelines if
 					 * we were requested to recover to the latest timeline.
 					 */
-					if (recoveryTargetIsLatest)
+					if ((polar_is_dma_data_node() && consensusRecoveryLatestTimeline) 
+							|| recoveryTargetIsLatest)
 					{
 						if (rescanLatestTimeLine())
 						{
@@ -12789,20 +14293,10 @@ WaitForWALToBecomeAvailable(XLogRecPtr RecPtr, bool randAccess,
 						wait_time = wal_retrieve_retry_interval -
 							(secs * 1000 + usecs / 1000);
 
-						if (AmStartupProcess())
-						{
-							WaitLatch(&XLogCtl->recoveryWakeupLatch,
-									  WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH,
-									  wait_time, WAIT_EVENT_RECOVERY_WAL_STREAM);
-							ResetLatch(&XLogCtl->recoveryWakeupLatch);
-						}
-						else
-						{
-							WaitLatch(&XLogCtl->polar_fpsn_wakeup_latch,
-									  WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH,
-									  wait_time, WAIT_EVENT_RECOVERY_WAL_STREAM);
-							ResetLatch(&XLogCtl->polar_fpsn_wakeup_latch);
-						}
+						WaitLatch(&XLogCtl->recoveryWakeupLatch,
+								  WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH,
+								  wait_time, WAIT_EVENT_RECOVERY_WAL_STREAM);
+						ResetLatch(&XLogCtl->recoveryWakeupLatch);
 						now = GetCurrentTimestamp();
 					}
 					last_fail_time = now;
@@ -12829,15 +14323,6 @@ WaitForWALToBecomeAvailable(XLogRecPtr RecPtr, bool randAccess,
 				 xlogSourceNames[oldSource], xlogSourceNames[currentSource],
 				 lastSourceFailed ? "failure" : "success");
 
-		/* POLAR: If flag is set, we will pull or keep walreceiver up in WAL/ARCHIVE mode. */
-		if ((currentSource == XLOG_FROM_ARCHIVE ||
-			currentSource == XLOG_FROM_PG_WAL) &&
-			polar_run_walreceiver_always && !WalRcvStreaming())
-		{
-			polar_try_to_wake_walreceiver(RecPtr, fetching_ckpt, tliRecPtr);
-		}
-		/* POLAR end */
-
 		/*
 		 * We've now handled possible failure. Try to read from the chosen
 		 * source.
@@ -12848,12 +14333,24 @@ WaitForWALToBecomeAvailable(XLogRecPtr RecPtr, bool randAccess,
 		{
 			case XLOG_FROM_ARCHIVE:
 			case XLOG_FROM_PG_WAL:
-				/*
-				 * WAL receiver must not be running when reading WAL from
-				 * archive or pg_wal.
-				 */
-				if (!polar_in_replica_mode())
+				if (polar_is_dma_data_node())
+				{
 					Assert(!WalRcvStreaming());
+
+					if (fetching_ckpt || polar_dma_check_local_recovery(RecPtr))
+					{
+						if (!polar_dma_need_file_switch(tliRecPtr, fetching_ckpt, RecPtr))
+						{
+							readSource = currentSource;
+							XLogReceiptSource = currentSource;
+							return true;	
+						}
+					}
+					else
+					{
+						lastSourceFailed = true;
+					}
+				}
 
 				/* Close any old file we might have open. */
 				if (readFile >= 0)
@@ -12865,13 +14362,35 @@ WaitForWALToBecomeAvailable(XLogRecPtr RecPtr, bool randAccess,
 				if (randAccess)
 					curFileTLI = 0;
 
+				if (polar_is_dma_data_node() && lastSourceFailed)
+				{
+					break;
+				}
+
 				/*
 				 * Try to restore the file from archive, or read an existing
 				 * file from pg_wal.
 				 */
+				if (polar_is_dma_data_node())
+				{
+					TimeLineID tli;
+
+					if (!expectedTLEs)
+						expectedTLEs = readTimeLineHistory(recoveryTargetTLI);
+
+					/* In DMA mode, we will read history timeline xlog files. find the
+					 * real timeline xlog files, the new timeline xlog may be recieving */
+					tli = tliOfPointInHistory(tliRecPtr, expectedTLEs);
+
+					readFile = polar_dma_xlog_file_read_any(readSegNo, LOG, 
+							tli, XLOG_FROM_ANY);
+				}
+				else
+				{
 				readFile = XLogFileReadAnyTLI(readSegNo, DEBUG2,
 											  currentSource == XLOG_FROM_ARCHIVE ? XLOG_FROM_ANY :
 											  currentSource);
+				}
 				if (readFile >= 0)
 					return true;	/* success! */
 
@@ -12896,7 +14415,6 @@ WaitForWALToBecomeAvailable(XLogRecPtr RecPtr, bool randAccess,
 					 */
 					if (!WalRcvStreaming())
 					{
-						lastSourceFailed = true;
 						/* 
 						 * POLAR: If primary node crash while replica node is still running, 
 						 * replica node will hold advancing xlog. Because last old record 
@@ -12907,13 +14425,19 @@ WaitForWALToBecomeAvailable(XLogRecPtr RecPtr, bool randAccess,
 						 * While primary node crashes, stream replication will be dropped 
 						 * and Walreceiver will be closed, so we do the check here. If this 
 						 * Walreceiver close is unexpected, the upper caller XLogPageRead 
-						 * will return -1 which make XLogReadRecord or polar_xlog_read_record 
-						 * return NULL and record reading will be retried in replica node.
+						 * will return -1 which make XLogReadRecord return NULL and 
+						 * record reading will be retried in replica node.
 						 */
 						if (polar_in_replica_mode())
+						{
+							lastSourceFailed = true;
 							return false;
-						else
+						}
+						else 
+						{
+							lastSourceFailed = true;
 							break;
+						}
 					}
 
 					/*
@@ -12928,14 +14452,37 @@ WaitForWALToBecomeAvailable(XLogRecPtr RecPtr, bool randAccess,
 					 * XLogReceiptTime will not advance, so the grace time
 					 * allotted to conflicting queries will decrease.
 					 */
-					if (RecPtr < receivedUpto)
+					if (!polar_is_dma_data_node() && RecPtr < receivedUpto)
 						havedata = true;
 					else
 					{
 						XLogRecPtr	latestChunkStart;
+						bool received = false;
 
 						receivedUpto = GetWalRcvWriteRecPtr(&latestChunkStart, &receiveTLI);
-						if (RecPtr < receivedUpto && receiveTLI == curFileTLI)
+
+						/* Advance received point, including LSN and timeline */
+						if (polar_is_dma_data_node() && 
+								(receivedUpto > consensusReceivedUpto || receiveTLI > consensusReceivedTLI))
+						{
+							if (receivedUpto > consensusReceivedUpto)
+								consensusReceivedUpto = receivedUpto;
+							if (receiveTLI > consensusReceivedTLI)
+								consensusReceivedTLI = receiveTLI;
+							received = true;
+
+							ereport(DEBUG2, 
+									(errmsg("consensus recieved up to %X/%X timeline %u", 
+													(uint32) (consensusReceivedUpto >> 32), (uint32)consensusReceivedUpto,
+													consensusReceivedTLI)));
+
+							if (recoveryTargetTLI < consensusReceivedTLI)
+								rescanLatestTimeLine();
+						}
+
+						if (!polar_is_dma_data_node() && 
+								RecPtr < receivedUpto && 
+								receiveTLI == curFileTLI)
 						{
 							havedata = true;
 							if (latestChunkStart <= RecPtr)
@@ -12944,11 +14491,40 @@ WaitForWALToBecomeAvailable(XLogRecPtr RecPtr, bool randAccess,
 								SetCurrentChunkStartTime(XLogReceiptTime);
 							}
 						}
+						else if (polar_is_dma_data_node() && 
+								RecPtr < consensusReceivedUpto &&
+								receiveTLI <= consensusReceivedTLI)
+						{
+							havedata = true;
+
+							if (received && latestChunkStart <= RecPtr)
+							{
+								XLogReceiptTime = GetCurrentTimestamp();
+								SetCurrentChunkStartTime(XLogReceiptTime);
+							}
+							/* POLAR: if standby replay delay too much, 
+							 * XLogReceiptTime will not advance */
+							else if (consensusReceivedUpto - RecPtr < 
+									polar_dma_max_standby_wait_delay_size_mb * 1024UL * 1024UL)
+							{
+								XLogReceiptTime = GetCurrentTimestamp();
+							}
+						}
 						else
 							havedata = false;
 					}
 					if (havedata)
 					{
+						if (polar_is_dma_data_node())
+						{
+							if(!polar_dma_recovery_wait_commit(RecPtr))
+							{
+								lastSourceFailed = true;
+								break;
+							}
+							(void) polar_dma_need_file_switch(tliRecPtr, false, RecPtr);
+						}
+
 						/*
 						 * Great, streamed far enough.  Open the file if it's
 						 * not open already.  Also read the timeline history
@@ -12960,11 +14536,22 @@ WaitForWALToBecomeAvailable(XLogRecPtr RecPtr, bool randAccess,
 						 */
 						if (readFile < 0)
 						{
+							TimeLineID	tli;
 							if (!expectedTLEs)
 								expectedTLEs = readTimeLineHistory(receiveTLI);
-							readFile = XLogFileRead(readSegNo, PANIC,
-													receiveTLI,
-													XLOG_FROM_STREAM, false);
+							if (polar_is_dma_data_node())
+							{
+								tli = tliOfPointInHistory(tliRecPtr, expectedTLEs);
+								readFile = XLogFileRead(readSegNo, PANIC,
+										tli,
+										XLOG_FROM_STREAM, false);
+							}
+							else
+							{
+								readFile = XLogFileRead(readSegNo, PANIC,
+										receiveTLI,
+										XLOG_FROM_STREAM, false);
+							}
 							Assert(readFile >= 0);
 						}
 						else
@@ -12981,7 +14568,15 @@ WaitForWALToBecomeAvailable(XLogRecPtr RecPtr, bool randAccess,
 					 * Data not here yet. Check for trigger, then wait for
 					 * walreceiver to wake us up when new WAL arrives.
 					 */
-					if (CheckForStandbyTrigger())
+					if (polar_is_dma_data_node())
+					{
+						if (polar_check_recovery_state_change())
+						{
+							lastSourceFailed = true;
+							break;
+						}
+					}
+					else if (CheckForStandbyTrigger())
 					{
 						/*
 						 * Note that we don't "return false" immediately here.
@@ -13089,28 +14684,45 @@ CheckForStandbyTrigger(void)
 		 * it should create a full checkpoint before starting up (fallback
 		 * mode). Fast promotion takes precedence.
 		 */
-		if (stat(PROMOTE_SIGNAL_FILE, &stat_buf) == 0)
+		/* POLAR: force promote */
+		if (stat(POLAR_FORCE_PROMOTE_SIGNAL_FILE, &stat_buf) == 0)
 		{
-			unlink(PROMOTE_SIGNAL_FILE);
-			unlink(FALLBACK_PROMOTE_SIGNAL_FILE);
+			unlink(POLAR_FORCE_PROMOTE_SIGNAL_FILE);
 			fast_promote = true;
+			ereport(LOG, (errmsg("received force promote request")));
+			
+			ResetPromoteTriggered();
+			triggered = true;
+			return true;
 		}
-		else if (stat(FALLBACK_PROMOTE_SIGNAL_FILE, &stat_buf) == 0)
+		/* POLAR: normal promote,promote is executed until all wal have been received */
+		else if (polar_is_promote_ready())
 		{
-			unlink(FALLBACK_PROMOTE_SIGNAL_FILE);
-			fast_promote = false;
+			if (stat(PROMOTE_SIGNAL_FILE, &stat_buf) == 0)
+			{
+				unlink(PROMOTE_SIGNAL_FILE);
+				unlink(FALLBACK_PROMOTE_SIGNAL_FILE);
+				fast_promote = true;
+			}
+			else if (stat(FALLBACK_PROMOTE_SIGNAL_FILE, &stat_buf) == 0)
+			{
+				unlink(FALLBACK_PROMOTE_SIGNAL_FILE);
+				fast_promote = false;
+			}
+
+			ereport(LOG, (errmsg("received promote request")));
+
+			ResetPromoteTriggered();
+			triggered = true;
+			return true;
 		}
-
-		ereport(LOG, (errmsg("received promote request")));
-
-		ResetPromoteTriggered();
-		triggered = true;
-		return true;
+		/* POLAR end */
 	}
 
 	if (TriggerFile == NULL)
 		return false;
 
+	/* POLAR: promote with trigger file, treat as force promote */
 	if (stat(TriggerFile, &stat_buf) == 0)
 	{
 		ereport(LOG,
@@ -13148,8 +14760,10 @@ CheckPromoteSignal(void)
 {
 	struct stat stat_buf;
 
+	/* POLAR: add force promote */
 	if (stat(PROMOTE_SIGNAL_FILE, &stat_buf) == 0 ||
-		stat(FALLBACK_PROMOTE_SIGNAL_FILE, &stat_buf) == 0)
+		stat(FALLBACK_PROMOTE_SIGNAL_FILE, &stat_buf) == 0 ||
+		stat(POLAR_FORCE_PROMOTE_SIGNAL_FILE, &stat_buf) == 0)
 		return true;
 
 	return false;
@@ -13163,7 +14777,6 @@ void
 WakeupRecovery(void)
 {
 	SetLatch(&XLogCtl->recoveryWakeupLatch);
-	SetLatch(&XLogCtl->polar_fpsn_wakeup_latch);
 }
 
 /*
@@ -13186,8 +14799,8 @@ XLogRequestWalReceiverReply(void)
 	doRequestWalReceiverReply = true;
 }
 
-/* 
- * POLAR: polardb ro mode 
+/*
+ * POLAR: polardb ro mode
  * include
  * 1 mount remote filesystem with readonly mode
  * 2 only allow read data and wal, not allow write any data to remote file system
@@ -13196,7 +14809,8 @@ XLogRequestWalReceiverReply(void)
 bool
 polar_in_replica_mode(void)
 {
-	return (polar_enable_shared_storage_mode && polar_node_type() == POLAR_REPLICA);
+	return (polar_enable_shared_storage_mode &&
+		polar_node_type() == POLAR_REPLICA);
 }
 
 /* POLAR: reset postmaster local variable before start startup process */
@@ -13208,13 +14822,6 @@ polar_postmaster_reset_local_variables(void)
 		elog(DEBUG1, "LocalRecoveryInProgress is false, reset it");
 		LocalRecoveryInProgress = true;
 	}
-}
-
-void
-polar_load_and_check_controlfile(void)
-{
-	elog(LOG, "load controlfile in postmaster");
-	ReadControlFile();
 }
 
 XLogRecPtr
@@ -13234,7 +14841,7 @@ polar_get_oldest_lock_lsn(void)
 void
 polar_set_oldest_applied_lsn(XLogRecPtr oldest_apply_lsn, XLogRecPtr oldest_lock_lsn)
 {
-	if (!polar_enable_shared_storage_mode)
+	if (unlikely(!polar_enable_shared_storage_mode))
 		return;
 
 	elog(DEBUG1, "Set oldest apply lsn %X/%X ",
@@ -13242,6 +14849,9 @@ polar_set_oldest_applied_lsn(XLogRecPtr oldest_apply_lsn, XLogRecPtr oldest_lock
 
 	elog(DEBUG1, "Set oldest lock lsn %X/%X ",
 		 (uint32) (oldest_lock_lsn >> 32), (uint32) oldest_lock_lsn);
+
+	if (unlikely(XLogRecPtrIsInvalid(oldest_apply_lsn)))
+		POLAR_LOG_BACKTRACE();
 
 	SpinLockAcquire(&XLogCtl->info_lck);
 	if (oldest_apply_lsn > XLogCtl->replication_slot_oldest_applied_lsn ||
@@ -13278,13 +14888,11 @@ polar_set_consistent_lsn(XLogRecPtr consistent_lsn)
 	bool		updated = false;
 	XLogRecPtr  cur_consistent_lsn;
 
-	/* For replica or master/standby in recovery, we don't set the consistent lsn. */
-	if (polar_in_replica_mode() ||
-		polar_is_master_in_recovery() ||
-		polar_is_standby_in_recovery())
+	/* For replica or master in recovery, we don't set the consistent lsn. */
+	if (polar_in_replica_mode() || polar_is_master_in_recovery())
 	{
 		elog(DEBUG1,
-			 "replica or master/standby in recovery do not set consistent lsn.");
+			 "replica or master in recovery do not set consistent lsn.");
 		return;
 	}
 
@@ -13325,11 +14933,10 @@ polar_set_consistent_lsn(XLogRecPtr consistent_lsn)
  * that is not in recovery or standby should check it.
  */
 static bool
-polar_should_check_checkpoint(void)
+polar_should_check_checkpoint()
 {
-	return ((polar_enable_shared_storage_mode && !RecoveryInProgress() &&
-			polar_is_master()) || polar_is_standby()) &&
-			polar_flush_list_enabled();
+	return (polar_enable_shared_storage_mode && !RecoveryInProgress() &&
+		polar_is_master()) || polar_is_standby();
 }
 
 /* Check whether current checkpoint is allowed. */
@@ -13367,7 +14974,25 @@ polar_is_checkpoint_legal(XLogRecPtr redo)
 }
 
 /*
- * POLAR: Tell bgwriter to flush buffer, and wait the consistent lsn greater than the
+ * POLAR: get startup replay end ptr including replaying now
+ */
+XLogRecPtr
+polar_get_replay_end_rec_ptr(TimeLineID *replayTLI)
+{
+	XLogRecPtr	recptr;
+	TimeLineID	tli;
+
+	SpinLockAcquire(&XLogCtl->info_lck);
+	recptr = XLogCtl->replayEndRecPtr;
+	tli = XLogCtl->replayEndTLI;
+	SpinLockRelease(&XLogCtl->info_lck);
+
+	if (replayTLI)
+		*replayTLI = tli;
+	return recptr;
+}
+/*
+ * Tell bgwriter to flush buffer, and wait the consistent lsn greater than the
  * consistent lsn. If we accept a force flush signal, just force flush.
  */
 static void
@@ -13391,12 +15016,27 @@ polar_wait_consistent_lsn(XLogRecPtr redo, int flags)
 			break;
 		}
 
-
-		pg_usleep(polar_check_checkpoint_legal_interval * 1000000L);
+		pg_usleep(polar_check_checkpoint_legal_interval * 1000L);
 	}
 
 	if (receive_shut_down)
 		polar_flush_buffer_for_shutdown(redo, flags);
+}
+
+
+void
+polar_wait_primary_xlog_message(XLogReaderState *state)
+{
+	if (state != NULL && !WalRcvStreaming())
+		polar_try_to_wake_walreceiver(state->currRecPtr, false, state->currRecPtr);
+
+	WaitLatch(&XLogCtl->recoveryWakeupLatch,
+		  WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH,
+		  1000L, WAIT_EVENT_RECOVERY_WAL_STREAM);
+	ResetLatch(&XLogCtl->recoveryWakeupLatch);
+
+	/* Handle interrupts of startup process */
+	HandleStartupProcInterrupts();
 }
 
 /*
@@ -13426,6 +15066,13 @@ polar_flush_buffer_for_shutdown(XLogRecPtr redo, int flags)
 		polar_accept_signal_for_checkpoint(flags);
 		pg_usleep(BgWriterDelay * 1000L);
 	}
+}
+
+void
+polar_set_read_and_end_rec_ptr(XLogRecPtr read_rec_ptr, XLogRecPtr end_rec_ptr)
+{
+	ReadRecPtr = read_rec_ptr;
+	EndRecPtr = end_rec_ptr;
 }
 
 /*
@@ -13461,149 +15108,6 @@ polar_get_faked_latest_lsn(void)
 	SpinLockRelease(&insert->insertpos_lck);
 
 	return XLogBytePosToEndRecPtr(bytepos);
-}
-
-void
-polar_set_node_type(PolarNodeType node_type)
-{
-	pg_atomic_write_u32((pg_atomic_uint32 *)&XLogCtl->polar_node_type, node_type);
-}
-
-PolarNodeType
-polar_node_type(void)
-{
-	return XLogCtl
-	       ? pg_atomic_read_u32((pg_atomic_uint32 *) &XLogCtl->polar_node_type)
-	       : polar_node_type_by_file();
-}
-
-/*
- * POLAR: judge node type is master or not, no matter whether polar_enable_shared_storage_mode
- * is true.
- *
- * Note that if current node is not a master, this function will call the
- * polar_node_type that will access the XLogCtl. So if the XLogCtl has not been
- * initialed, for example the process is in reaper, please DO NOT call this
- * function. It might be a good idea to use the polar_local_node_type.
- */
-bool
-polar_in_master_mode(void)
-{
-	/*
-	 * If call this method, we must be a polardb node and the node type must
-	 * NOT be unknown.
-	 */
-	Assert(polar_enable_shared_storage_mode);
-	Assert(polar_local_node_type != POLAR_UNKNOWN);
-
-	/*
-	 * For master, we can use local polar node type, because it would not be
-	 * changed after start.
-	 */
-	if (polar_local_node_type == POLAR_MASTER)
-		return true;
-
-	/*
-	 * If replica promote to master, we should update the type to master in
-	 * shared memory. So if local node type is not master, we should check its
-	 * value in shared memory, if it is promoted recently, it's time to record
-	 * the latest node type to local.
-	 */
-	if (polar_node_type() == POLAR_MASTER)
-	{
-		polar_local_node_type = POLAR_MASTER;
-		return true;
-	}
-
-	return false;
-}
-
-bool
-polar_is_master(void)
-{
-	/* If call this method, we must be a polardb node */
-	Assert(polar_enable_shared_storage_mode);
-	return polar_in_master_mode();
-}
-
-XLogRecPtr
-polar_calc_min_used_lsn(void)
-{
-	XLogRecPtr min_lsn;
-
-	if (!XLogCtl)
-		return InvalidXLogRecPtr;
-
-	SpinLockAcquire(&XLogCtl->info_lck);
-	/* POLAR: replicationSlotMinLSN will be invalid when no replication slots are used. */
-	if (XLogRecPtrIsInvalid(XLogCtl->replicationSlotMinLSN))
-		min_lsn = XLogCtl->RedoRecPtr;
-	else
-		min_lsn = Min(XLogCtl->replicationSlotMinLSN, XLogCtl->RedoRecPtr);
-	SpinLockRelease(&XLogCtl->info_lck);
-
-	return min_lsn;
-}
-
-void
-polar_set_read_and_end_rec_ptr(XLogRecPtr read_rec_ptr, XLogRecPtr end_rec_ptr)
-{
-	ReadRecPtr = read_rec_ptr;
-	EndRecPtr = end_rec_ptr;
-}
-
-void
-polar_update_receipt_time(void)
-{
-	XLogReceiptTime = GetCurrentTimestamp();
-	SetCurrentChunkStartTime(XLogReceiptTime);
-}
-
-/*
- * POLAR: the same as polar_wait_primary_xlog_message, but don't
- * wakeup walreceive
- */
-void
-polar_fullpage_bgworker_wait_primary_xlog_message(XLogReaderState *state)
-{
-	WaitLatch(&XLogCtl->polar_fpsn_wakeup_latch,
-		  WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH,
-		  1000L, WAIT_EVENT_RECOVERY_WAL_STREAM);
-	ResetLatch(&XLogCtl->polar_fpsn_wakeup_latch);
-
-	/* Handle interrupts of startup process */
-	HandleStartupProcInterrupts();
-}
-
-void
-polar_wait_primary_xlog_message(XLogReaderState *state)
-{
-	if (state != NULL && !WalRcvStreaming())
-		polar_try_to_wake_walreceiver(state->currRecPtr, false, state->currRecPtr);
-
-	WaitLatch(&XLogCtl->recoveryWakeupLatch,
-		  WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH,
-		  1000L, WAIT_EVENT_RECOVERY_WAL_STREAM);
-	ResetLatch(&XLogCtl->recoveryWakeupLatch);
-
-	/* Handle interrupts of startup process */
-	HandleStartupProcInterrupts();
-}
-
-void 
-polar_keep_wal_receiver_up(XLogReaderState *state)
-{
-	/* POLAR: to ensure walreceiver stopped, we use WalRcvRunning to check. */
-	if (reachedConsistency && !WalRcvRunning() && polar_in_replica_mode())
-	{
-		polar_try_to_wake_walreceiver(state->currRecPtr, false, state->currRecPtr);
-		/*
-		 * POLAR:We've now handled possible failure. Try to read from the streaming
-		 * source.
-		 */
-		currentSource = XLOG_FROM_STREAM;
-		lastSourceFailed = false;
-	}
 }
 
 /*
@@ -13645,154 +15149,6 @@ polar_try_to_wake_walreceiver(XLogRecPtr RecPtr, bool fetching_ckpt, XLogRecPtr 
 		receivedUpto = 0;
 	}
  
-}
-
-/*
- * POLAR: disown fpsn_wakeup_latch hook function for polar worker
- */
-static void
-polar_disown_fpsn_wakeup_latch(int code, Datum arg)
-{
-	DisownLatch(&XLogCtl->polar_fpsn_wakeup_latch);
-}
-
-/*
- * POLAR: polar worker replay fullpage wal record, only replica
- * can do this
- */
-void
-polar_bgworker_fullpage_snapshot_replay_main(void)
-{
-	XLogReaderState *xlogreader;
-	XLogPageReadPrivate private;
-	XLogRecPtr  redo_start_lsn;
-	XLogRecord *record;
-	int		rmid = 0;
-	char	   *errormsg = NULL;
-
-	/* wait util reach consistency mode */
-	while (!HotStandbyActive())
-	{
-		pg_usleep(1000 * 1000L);
-		continue;
-	}
-
-	/* Set latch for fullpage snapshot read xlog queue */
-	OwnLatch(&XLogCtl->polar_fpsn_wakeup_latch);
-
-	on_shmem_exit(polar_disown_fpsn_wakeup_latch, (Datum) 0);
-
-	/* Set up XLOG reader facility */
-	MemSet(&private, 0, sizeof(XLogPageReadPrivate));
-	xlogreader = XLogReaderAllocate(wal_segment_size, &XLogPageRead, &private);
-	/*no cover begin*/
-	if (!xlogreader)
-		ereport(ERROR,
-				(errcode(ERRCODE_OUT_OF_MEMORY),
-				 errmsg("out of memory"),
-				 errdetail("Failed while allocating a WAL reading processor.")));
-	/*no cover end*/
-
-	/* Initialize resource managers */
-	for (rmid = 0; rmid <= RM_MAX_ID; rmid++)
-	{
-		if (RmgrTable[rmid].rm_startup != NULL)
-			RmgrTable[rmid].rm_startup();
-	}
-
-	redo_start_lsn = GetXLogReplayRecPtr(&ThisTimeLineID);
-	recoveryTargetTLI = ThisTimeLineID;
-
-	ereport(LOG,
-		(errmsg("fullpage snapshot redo start at %X/%X",
-			(uint32) (redo_start_lsn >> 32), (uint32) redo_start_lsn)));
-
-	/* redo_start_lsn could be the border of xlog segment or block. */
-	if (redo_start_lsn % wal_segment_size == 0)
-		redo_start_lsn += SizeOfXLogLongPHD;
-	else if (redo_start_lsn % XLOG_BLCKSZ == 0)
-		redo_start_lsn += SizeOfXLogShortPHD;
-
-	record = XLogReadRecord(xlogreader, redo_start_lsn, &errormsg);
-
-	for(;;)
-	{
-		/* POLAR: once replica promotes to master, stop replaying right now */
-		if (!RecoveryInProgress())
-			break;
-
-		/*
-		 * check for any other interesting events that happened while we
-		 * slept.
-		 */
-		if (ConfigReloadPending)
-		{
-			ConfigReloadPending = false;
-			ProcessConfigFile(PGC_SIGHUP);
-		}
-
-		if (record == NULL)
-		{
-			if (readFile >= 0)
-			{
-				polar_close(readFile);
-				readFile = -1;
-			}
-		}
-		/*
-		 * Check page TLI is one of the expected values.
-		 */
-		else if (!tliInHistory(xlogreader->latestPageTLI, expectedTLEs))
-		{
-			/*no cover begin*/
-			char		fname[MAXFNAMELEN] = {0};
-			XLogSegNo	segno = 0;
-			int32		offset = 0;
-
-			XLByteToSeg(xlogreader->latestPagePtr, segno, wal_segment_size);
-			offset = XLogSegmentOffset(xlogreader->latestPagePtr,
-									   wal_segment_size);
-			XLogFileName(fname, xlogreader->readPageTLI, segno,
-						 wal_segment_size);
-			elog(ERROR, "unexpected timeline ID %u in log segment %s, offset %u",
-							xlogreader->latestPageTLI,
-							fname,
-							offset);
-			/*no cover end*/
-		}
-		else if (record->xl_rmid == RM_XLOG_ID && record->xl_info == XLOG_FPSI)
-		{
-			BufferTag tag;
-			POLAR_GET_LOG_TAG(xlogreader, tag, 0);
-			POLAR_LOG_INDEX_ADD_LSN(xlogreader, &tag);
-		}
-
-		record = polar_fullpage_bgworker_xlog_recv_queue_pop(POLAR_LOGINDEX_FULLPAGE_SNAPSHOT, xlogreader, &errormsg);
-
-		if (record == NULL)
-		{
-			/* No valid record available from this source */
-			lastSourceFailed = true;
-
-			/* loop back to retry */
-			continue;
-		}
-	}
-
-	/*no cover begin*/
-	pg_usleep(10000 * 1000L);
-
-	/* Allow resource managers to do any required cleanup. */
-	for (rmid = 0; rmid <= RM_MAX_ID; rmid++)
-	{
-		if (RmgrTable[rmid].rm_cleanup != NULL)
-			RmgrTable[rmid].rm_cleanup();
-	}
-
-	ereport(LOG,
-		(errmsg("fullpage snapshot redo done at %X/%X",
-			(uint32) (xlogreader->ReadRecPtr >> 32), (uint32) xlogreader->ReadRecPtr)));
-	/*no cover end*/
 }
 
 /*
@@ -13861,10 +15217,11 @@ polar_pread_xlog_page_with_xlog_buffer(
 		int64 ahead_size, 
 		char *readBuf)
 {
-	static char read_ahead_xlog_buffer[XLOG_BLCKSZ * MAX_READ_AHEAD_XLOGS];
-
+	/* POLAR: add one more XLOG_BLCKSZ room to make buffer aligned for directio. */
+	static char aligned_read_ahead_xlog_buffer[POLAR_BUFFER_EXTEND_SIZE(XLOG_BLCKSZ * MAX_READ_AHEAD_XLOGS)];
 	int	polar_read_rc = -1;
 	int	buf_id = -1;
+	char *read_ahead_xlog_buffer = (char *) POLAR_BUFFER_ALIGN(aligned_read_ahead_xlog_buffer);
 
 	Assert(ahead_size > 0);
 	Assert(receivedUpto >= 0);
@@ -13923,6 +15280,183 @@ polar_pread_xlog_page_with_xlog_buffer(
 	return polar_read_rc;
 }
 
+void
+polar_load_and_check_controlfile(void)
+{
+	ReadControlFile();
+}
+
+XLogRecPtr
+polar_calc_min_used_lsn(bool is_contain_replication_slot)
+{
+	XLogRecPtr min_lsn;
+	XLogRecPtr logindex_start_lsn;
+
+	if (!XLogCtl || !polar_logindex_redo_instance)
+		return InvalidXLogRecPtr;
+
+	logindex_start_lsn = polar_logindex_redo_start_lsn(polar_logindex_redo_instance);
+
+	SpinLockAcquire(&XLogCtl->info_lck);
+	/* POLAR: replicationSlotMinLSN will be invalid when no replication slots are used. */
+	if (XLogRecPtrIsInvalid(XLogCtl->replicationSlotMinLSN) || !is_contain_replication_slot)
+		min_lsn = XLogCtl->RedoRecPtr;
+	else
+		min_lsn = Min(XLogCtl->replicationSlotMinLSN, XLogCtl->RedoRecPtr);
+
+	if (polar_bg_redo_state_is_parallel(polar_logindex_redo_instance))
+	{
+		XLogRecPtr bg_replayed_lsn = polar_bg_redo_get_replayed_lsn(polar_logindex_redo_instance);
+		Assert(!XLogRecPtrIsInvalid(bg_replayed_lsn));
+		min_lsn = Min(min_lsn, bg_replayed_lsn);
+	}
+	SpinLockRelease(&XLogCtl->info_lck);
+
+	if (!XLogRecPtrIsInvalid(logindex_start_lsn))
+		min_lsn = Min(min_lsn, logindex_start_lsn);
+
+	/* Keep the wal for flashback */
+	if (polar_is_flog_enabled(flog_instance))
+		polar_flog_get_keep_wal_lsn(flog_instance->buf_ctl, &min_lsn);
+
+	return min_lsn;
+}
+
+void
+polar_update_receipt_time(void)
+{
+	XLogReceiptTime = GetCurrentTimestamp();
+	SetCurrentChunkStartTime(XLogReceiptTime);
+}
+
+void
+polar_set_receipt_time(TimestampTz rtime)
+{
+	XLogReceiptTime = rtime;
+}
+
+void 
+polar_keep_wal_receiver_up(XLogRecPtr lsn)
+{
+	/* POLAR: to ensure walreceiver stopped, we use WalRcvRunning to check. */
+	if (reachedConsistency && !WalRcvRunning() && polar_in_replica_mode())
+	{
+		polar_try_to_wake_walreceiver(lsn, false, lsn);
+		/*
+		 * POLAR:We've now handled possible failure. Try to read from the streaming
+		 * source.
+		 */
+		currentSource = XLOG_FROM_STREAM;
+		lastSourceFailed = false;
+	}
+}
+
+void
+polar_set_node_type(PolarNodeType node_type)
+{
+	pg_atomic_write_u32((pg_atomic_uint32 *)&XLogCtl->polar_node_type, node_type);
+}
+
+PolarNodeType
+polar_node_type(void)
+{
+	return XLogCtl
+	       ? pg_atomic_read_u32((pg_atomic_uint32 *) &XLogCtl->polar_node_type)
+	       : polar_node_type_by_file();
+}
+
+/*
+ * POLAR: judge node type is master or not, no matter whether polar_enable_shared_storage_mode
+ * is true.
+ *
+ * Note that if current node is not a master, this function will call the
+ * polar_node_type that will access the XLogCtl. So if the XLogCtl has not been
+ * initialed, for example the process is in reaper, please DO NOT call this
+ * function. It might be a good idea to use the polar_local_node_type.
+ */
+bool
+polar_in_master_mode(void)
+{
+	/* the node type must not be unknown */
+	Assert(polar_local_node_type != POLAR_UNKNOWN);
+
+	/*
+	 * For master, we can use local polar node type, because it would not be
+	 * changed after start.
+	 */
+	if (polar_local_node_type == POLAR_MASTER)
+		return true;
+
+	/*
+	 * If replica promote to master, we should update the type to master in
+	 * shared memory. So if local node type is not master, we should check its
+	 * value in shared memory, if it is promoted recently, it's time to record
+	 * the latest node type to local.
+	 */
+	if (polar_node_type() == POLAR_MASTER)
+	{
+		polar_local_node_type = POLAR_MASTER;
+		return true;
+	}
+
+	return false;
+}
+
+bool
+polar_is_master(void)
+{
+	/* If call this method, we must be a polardb node */
+	Assert(polar_enable_shared_storage_mode);
+	return polar_in_master_mode();
+}
+
+bool
+polar_is_dma_data_node(void)
+{
+	/*
+	 * For DMA logger, local polar node type would not be changed after start.
+	 */
+	return polar_enable_dma && polar_local_node_type != POLAR_STANDALONE_DATAMAX;
+}
+
+bool
+polar_is_dma_logger_node(void)
+{
+	/*
+	 * For DMA logger, local polar node type would not be changed after start.
+	 */
+	return polar_enable_dma && polar_local_node_type == POLAR_STANDALONE_DATAMAX;
+}
+
+/* POLAR: get the distance between consistent_lsn and oldest_lsn */
+int64
+polar_get_diff_consistent_oldest_lsn(void)
+{
+	XLogRecPtr cosistent_recptr = polar_get_consistent_lsn();
+	XLogRecPtr oldest_applied_recptr = polar_get_oldest_applied_lsn();
+	return oldest_applied_recptr - cosistent_recptr;
+}
+
+/* POLAR: get the distance between checkpoint_lsn and insert_recptr */
+XLogRecPtr
+polar_get_diff_checkpoint_flush_lsn(void)
+{
+	XLogRecPtr checkpoint_recptr = polar_get_checkpoint_ptr_nolock();
+	XLogRecPtr insert_recptr = polar_get_xlog_insert_rec_ptr_nolock();
+
+	return (XLogRecPtrIsInvalid(checkpoint_recptr) || XLogRecPtrIsInvalid(insert_recptr)) ?
+			InvalidXLogRecPtr : (insert_recptr - checkpoint_recptr);
+}
+
+/*
+ * POLAR: ControlFile is a static variable, we use extern function to get it
+ */
+ControlFileData*
+polar_get_control_file(void)
+{
+	return ControlFile;
+}
+
 /*
  * POLAR: For crash recovery, there will be some emtry xlog buffers because of pread page.
  * It is necessary to remove them if XLogPageRead gets them. The number of pread xlog buffers
@@ -13942,91 +15476,120 @@ polar_remove_empty_pread_xlog_buffer(XLogRecPtr targetPagePtr)
 }
 
 /*
- * POLAR: get startup replay end ptr including replaying now
+ * POLAR: Wait for checkpointer process to create the last restartpoint
  */
-XLogRecPtr
-polar_get_replay_end_rec_ptr(TimeLineID *replayTLI)
+static void
+polar_request_last_restartpoint(void)
 {
-	XLogRecPtr	recptr;
-	TimeLineID	tli;
+	CheckPoint last_checkpoint;
+	bool request;
 
 	SpinLockAcquire(&XLogCtl->info_lck);
-	recptr = XLogCtl->replayEndRecPtr;
-	tli = XLogCtl->replayEndTLI;
+	last_checkpoint = XLogCtl->lastCheckPoint;
 	SpinLockRelease(&XLogCtl->info_lck);
 
-	if (replayTLI)
-		*replayTLI = tli;
-	return recptr;
+	LWLockAcquire(ControlFileLock, LW_SHARED);
+	request = ControlFile->checkPointCopy.redo < last_checkpoint.redo;
+	LWLockRelease(ControlFileLock);
+
+	if (request)
+		RequestCheckpoint(CHECKPOINT_IMMEDIATE | CHECKPOINT_WAIT);
 }
 
-/*
- * POLAR: Set background replayed lsn.
- */
 void
-polar_bg_redo_set_replayed_lsn(XLogRecPtr lsn)
+polar_reset_xlog_source(void)
 {
-	if (XLogCtl)
+	if (readFile >= 0)
 	{
-		SpinLockAcquire(&XLogCtl->info_lck);
-		XLogCtl->bg_replayed_lsn = lsn;
-		SpinLockRelease(&XLogCtl->info_lck);
-	}
-}
-
-/*
- * POLAR: Get background replayed lsn.
- */
-XLogRecPtr
-polar_bg_redo_get_replayed_lsn(void)
-{
-	XLogRecPtr lsn = InvalidXLogRecPtr;
-
-	if (XLogCtl)
-	{
-		SpinLockAcquire(&XLogCtl->info_lck);
-		lsn = XLogCtl->bg_replayed_lsn;
-		SpinLockRelease(&XLogCtl->info_lck);
+		polar_close(readFile);
+		readFile = -1;
 	}
 
-	return lsn;
-}
-
-XLogRecPtr
-polar_get_last_checkpoint_redo_ptr(void)
-{
-	XLogRecPtr	recptr;
-
-	SpinLockAcquire(&XLogCtl->info_lck);
-	recptr = XLogCtl->lastCheckPoint.redo;
-	SpinLockRelease(&XLogCtl->info_lck);
-
-	return recptr;
+	lastSourceFailed = false;
+	readSource = 0;
+	currentSource = 0;
 }
 
 /*
- * POLAR: Handle walreceiver die unexpectedly.
- *
- * This func is designed for pulling up walreceiver while xlog buffer full in which
- * StartUp will be blocked in polar_xlog_read_record and can't call
- * WaitForWALToBecomeAvailable to do this pulling up.
- * */
-void
-polar_handle_walreceiver_die(XLogRecPtr pagePtr, XLogRecPtr recPtr)
+ * POLAR: 1. Reset xlogreader because it may read xlog meta from xlog queue and not all members of XLogReaderState are
+ * set when read from xlog queue
+ * 2. Reset xlog buffer
+ */
+static XLogReaderState *
+polar_reset_xlogreader(XLogReaderState *xlogreader, XLogPageReadPrivate *private)
 {
-	if (!StandbyMode)
-		return;
+	XLogReaderState *newreader;
 
-	if (currentSource != XLOG_FROM_STREAM)
-		return;
+	XLogReaderFree(xlogreader);
+	xlogreader = NULL;
 
-	if (WalRcvStreaming())
-		return;
+	MemSet(private, 0, sizeof(XLogPageReadPrivate));
 
-	ereport(WARNING, (errmsg("walreceiver die accidentally, current lsn %X/%X at page %X/%X",
-							 (uint32)(recPtr >> 32), (uint32)(recPtr), (uint32)(pagePtr >> 32), (uint32)(pagePtr))));
+	newreader = XLogReaderAllocate(wal_segment_size, &XLogPageRead, private);
+	if (!newreader)
+		ereport(ERROR,
+			(errcode(ERRCODE_OUT_OF_MEMORY),
+			 errmsg("out of memory"),
+			 errdetail("Failed while allocating a WAL reading processor.")));
 
-	polar_try_to_wake_walreceiver(pagePtr, false, recPtr);
+	newreader->system_identifier = ControlFile->system_identifier;
+	polar_reset_xlog_source();
+	polar_xlog_buffer_reset_all_buffer();
+
+	return newreader;
+}
+
+static void
+polar_exit_archive_recovery(void)
+{
+	/*
+	 * We are no longer in archive recovery state.
+	 */
+	InArchiveRecovery = false;
+
+	/*
+	 * Update min recovery point one last time.
+	 */
+	UpdateMinRecoveryPoint(InvalidXLogRecPtr, true);
+
+	/*
+	 * If the ending log segment is still open, close it (to avoid problems on
+	 * Windows with trying to rename or delete an open file).
+	 */
+	if (readFile >= 0)
+	{
+		polar_close(readFile);
+		readFile = -1;
+	}
+
+	/*
+	 * Rename the config file out of the way, so that we don't accidentally
+	 * re-enter archive recovery mode in a subsequent crash.
+	 */
+	unlink(RECOVERY_COMMAND_DONE);
+	durable_rename(RECOVERY_COMMAND_FILE, RECOVERY_COMMAND_DONE, INFO, false);
+
+	ereport(LOG,
+			(errmsg("replica logindex archive recovery complete")));
+}
+
+/*
+ * POLAR: interface to set and get hot_standby_state.
+ */
+void
+polar_set_hot_standby_state(HotStandbyState state)
+{
+	if (UsedShmemSegAddr != NULL && XLogCtl != NULL)
+		XLogCtl->polar_hot_standby_state = state;
+}
+
+HotStandbyState
+polar_get_hot_standby_state(void)
+{
+	if (UsedShmemSegAddr != NULL && XLogCtl != NULL)
+		return XLogCtl->polar_hot_standby_state;
+	else
+		return STANDBY_DISABLED;
 }
 
 /*
@@ -14051,8 +15614,2041 @@ polar_async_update_last_ptr(void)
 	}
 }
 
-void
-polar_set_receipt_time(TimestampTz rtime)
+/*
+ * Test whether XLOG data has been commit up to (at least) the given position. 
+ *
+ * if became leader or leader switch or XLOG term switch. advance the recovery's
+ * state machine, and return false.
+ */
+static bool 
+polar_dma_check_local_recovery(XLogRecPtr RecPtr)
 {
-	XLogReceiptTime = rtime;
+	bool leader_switch = false;
+	bool log_switch = false;
+	bool success = true;
+	bool first_leader = false;
+	
+	if (XLogRecPtrIsInvalid(ConsensusGetSyncedLSN()))
+		return true;
+
+	/* advance committedUpto */
+	if (!becameLeader && consensusCommittedUpto < RecPtr)
+	{
+		consensusCommittedUpto = ConsensusGetSyncedLSN();
+		ereport(LOG, (errmsg("consensus committed LSN advanced, term %ld, timeline: %u, LSN: %X/%X", 
+						consensusLogTerm, ThisTimeLineID, 
+						(uint32) (consensusCommittedUpto >> 32), (uint32) consensusCommittedUpto)));
+	}
+				
+	while (!becameLeader)
+	{
+		if (polar_check_and_switch_recovery_state(&leader_switch, &log_switch))
+		{
+			ereport(WARNING, 
+					(errmsg("consensus became leader, term %ld, consensus log at %X/%X "
+									"timeline %u. recieved at %X/%X timeline %u", 
+									consensusTerm, 
+								  (uint32) (consensusLogUpto >> 32), (uint32)consensusLogUpto, 
+									consensusLogTLI,
+								  (uint32) (consensusReceivedUpto >> 32), (uint32)consensusReceivedUpto,
+									consensusReceivedTLI)));
+
+			if (consensusReceivedUpto == 0)
+				first_leader = true;
+
+			consensusReceivedUpto = consensusLogUpto;	
+			consensusReceivedTLI = consensusLogTLI;
+			break;
+		}
+
+		/* if consensus leader changed or log mismatch, restart replication */
+		if (leader_switch)
+		{
+			ereport(WARNING, 
+					(errmsg("consensus leader changed or log mismatch, term %ld, log term %ld, "
+									"divergence at %X/%X timeline %u, recieved at %X/%X timeline %u", 
+							consensusTerm, consensusLogTerm, 
+							(uint32) (consensusLogUpto >> 32), (uint32)consensusLogUpto, 
+							consensusLogTLI,
+						 	(uint32) (consensusReceivedUpto >> 32), (uint32)consensusReceivedUpto,
+							consensusReceivedTLI)));
+
+			/* If leader changed, shutdown wal receiver */
+			if (WalRcvRunning())
+				ShutdownWalRcv();
+
+			if (consensusReceivedUpto == 0)
+				first_leader = true;
+
+			if (consensusReceivedUpto == 0 || 
+					(log_switch && consensusReceivedUpto > consensusLogUpto))
+			{
+				polar_dma_xlog_truncate(consensusLogUpto, consensusLogTLI, ERROR);
+				consensusReceivedUpto = consensusLogUpto;	
+				consensusReceivedTLI = consensusLogTLI;
+			}
+			success = false;
+			break;
+		}
+
+		/* if consensus log start appending, switch to WAL_STREAM */
+		if (consensusTerm > 0)
+		{
+			ereport(LOG, (errmsg("start appending consensus log, switch to WAL_STREAM"
+							", term %ld, recieved at %X/%X timeline %u", consensusLogTerm,
+							(uint32) (consensusReceivedUpto >> 32), (uint32) consensusReceivedUpto,
+							consensusReceivedTLI)));
+
+			success = false;
+			break;
+		}
+
+		/* wait consensus intialize finished */
+		if (consensusCommittedUpto < RecPtr && ConsensusWaitForLSN(RecPtr, false))
+		{
+			uint64 last_committed = ConsensusGetSyncedLSN();
+			if (last_committed > consensusCommittedUpto)
+			{
+				consensusCommittedUpto = last_committed;
+				ereport(LOG, (errmsg("consensus committed LSN advanced, term %ld, log "
+								"term %ld, LSN: %X/%X", consensusTerm, consensusLogTerm, 
+								(uint32) (consensusCommittedUpto >> 32), 
+								(uint32) consensusCommittedUpto)));
+			}
+		}
+
+		HandleStartupProcInterrupts();
+	}
+
+	/* First time to get or became leader. initialize minRecoveryPoint to committed ptr */
+	if (first_leader)
+	{
+		XLogRecPtr committed_lsn;
+		TimeLineID committed_tli;
+
+		if (!InArchiveRecovery)
+			InArchiveRecovery = true;
+
+		if (!StandbyMode)
+			StandbyMode = true;
+
+		ConsensusGetSyncedLSNAndTLI(&committed_lsn, &committed_tli);
+
+		LWLockAcquire(ControlFileLock, LW_EXCLUSIVE);
+
+		/* If not became leader, enter archive recovery status */
+		if (leader_switch)
+			ControlFile->state = DB_IN_ARCHIVE_RECOVERY;
+
+		if (ControlFile->minRecoveryPoint == InvalidXLogRecPtr ||
+				ControlFile->minRecoveryPoint > committed_lsn)
+		{
+			ControlFile->minRecoveryPoint = committed_lsn;
+			ControlFile->minRecoveryPointTLI = committed_tli;
+		}
+		/* update local copy */
+		minRecoveryPoint = ControlFile->minRecoveryPoint;
+		minRecoveryPointTLI = ControlFile->minRecoveryPointTLI;
+
+		/*
+		 * The startup process can update its local copy of
+		 * minRecoveryPoint from this point.
+		 */
+		updateMinRecoveryPoint = true;
+
+		UpdateControlFile();
+
+		/*
+		 * We update SharedRecoveryState while holding the lock on
+		 * ControlFileLock so both states are consistent in shared
+		 * memory.
+		 */
+		if (leader_switch)
+		{
+			SpinLockAcquire(&XLogCtl->info_lck);
+			XLogCtl->SharedRecoveryState = RECOVERY_STATE_ARCHIVE;
+			SpinLockRelease(&XLogCtl->info_lck);
+		}
+
+		LWLockRelease(ControlFileLock);
+
+		CheckRecoveryConsistency();
+
+		ereport(LOG, (errmsg("consensus reset minRecoveryPoint, timeline: %u, LSN: %X/%X", 
+						minRecoveryPointTLI, 
+						(uint32) (minRecoveryPoint >> 32), (uint32) minRecoveryPoint)));
+	}
+
+	if (becameLeader)
+	{
+		if (consensusLogUpto > RecPtr)
+		{
+			if (consensusCommittedUpto < RecPtr && ConsensusWaitForLSN(RecPtr, true))
+			{
+				uint64 last_committed = ConsensusGetSyncedLSN();
+				if (last_committed > consensusCommittedUpto)
+				{
+					consensusCommittedUpto = last_committed;
+					ereport(LOG, (errmsg("consensus committed LSN advanced, term %ld, log "
+									"term %ld, LSN: %X/%X", consensusTerm, consensusLogTerm, 
+									(uint32) (consensusCommittedUpto >> 32), 
+									(uint32) consensusCommittedUpto)));
+				}
+			}
+		}
+		else if (XLogRecPtrIsInvalid(ControlFile->backupStartPoint) &&
+				!ControlFile->backupEndRequired &&
+				consensusRecoveryLatestTimeline && 
+				recoveryTarget == RECOVERY_TARGET_UNSET)
+		{
+			success = false;
+		}
+	}
+
+	return success;
 }
+
+/*
+ * Ensure that all XLOG data through the given position is committed. 
+ * if became leader or leader switch or XLOG term switch, return false.
+ */
+static bool
+polar_dma_recovery_wait_commit(XLogRecPtr RecPtr)
+{
+	uint64 	last_committed;
+	bool 		success = true;
+
+	/*
+	 * After log term switched. only if swith to XLOG_FROM_ARCHIVE immediate.
+	 * local xlog term can switch timely, and then new leader can upgrade
+	 */
+	if (polar_check_recovery_state_change())
+	{
+		ereport(WARNING, (errmsg("Consensus recovery state machine move off from "
+						"streaming source for reason of state change "
+						"term %ld, LSN: %X/%X", 
+						consensusLogTerm, (uint32) (RecPtr >> 32), (uint32) RecPtr)));
+		return false;
+	}
+
+	/* 
+	 * Wait committed LSN arrived, if became leader 
+	 * or log term switched, swith to XLOG_FROM_ARCHIVE 
+	 */
+	while (consensusCommittedUpto <= RecPtr)
+	{
+		if (!ConsensusWaitForLSN(RecPtr, false))
+		{
+			if (polar_check_recovery_state_change() || !WalRcvStreaming())
+			{
+				ereport(WARNING, (errmsg("ConsensusWaitForLSN failed for reason of state change "
+								"or wal reciever shutdown,"
+								"	term %ld, LSN: %X/%X", 
+								consensusLogTerm, (uint32) (RecPtr >> 32), (uint32) RecPtr)));
+				success = false;
+				break;
+			}
+		}
+		else
+		{
+			last_committed = ConsensusGetSyncedLSN();
+			if (last_committed > consensusCommittedUpto)
+			{
+				consensusCommittedUpto = last_committed;
+				ereport(LOG, (errmsg("committed LSN advanced, term %ld, LSN: %X/%X", 
+								consensusLogTerm, (uint32) (consensusCommittedUpto >> 32), 
+								(uint32) consensusCommittedUpto)));
+			}
+		}
+	}
+
+	return success;
+}
+
+bool
+polar_check_pm_in_state_change(void)
+{
+	SpinLockAcquire(&XLogCtl->pm_state_lck);
+	if (XLogCtl->pmInStateChange)
+	{
+		SpinLockRelease(&XLogCtl->pm_state_lck);
+		/* signal postmaster by the way */
+		kill(PostmasterPid, SIGUSR1);
+		return true;
+	}
+	SpinLockRelease(&XLogCtl->pm_state_lck);
+	return false;
+}
+
+/*
+ * Check to sess if consensus state has changed.
+ * Before postmaster handled the previous signal, consensus state
+ * change will be ignored. Should be called by Consens Serviece
+ */
+void 
+polar_signal_pm_state_change(int state,
+					const char *leaderAddr, int leaderPort, uint64 term, 
+					uint64 nextAppendTerm, uint32 tli, uint64 logUpto)
+{
+	bool inStateChange = false;
+	PMSignalReason reason = 0;
+
+	Assert(!XLogCtl->pmInStateChange);
+
+	if (XLogCtl->pmState.state == CONSENSUS_STATE_LEADER &&
+			state != CONSENSUS_STATE_LEADER)
+	{
+		reason = PMSIGNAL_CONSENS_DOWNGRADE;
+		inStateChange = true;
+	}
+	else if (XLogCtl->pmState.state == CONSENSUS_STATE_LEADER &&
+			state == CONSENSUS_STATE_LEADER && 
+			XLogCtl->pmState.term != term)
+	{
+		reason = PMSIGNAL_CONSENS_LEADER_RESUME;
+		inStateChange = true;
+	}
+	else if ((XLogCtl->pmState.state == CONSENSUS_STATE_FOLLOWER ||
+				XLogCtl->pmState.state == CONSENSUS_STATE_DOWN) &&
+			state == CONSENSUS_STATE_LEADER)
+	{
+		reason = PMSIGNAL_CONSENS_UPGRADE;
+		inStateChange = true;
+	}
+	else if ((XLogCtl->pmState.state == CONSENSUS_STATE_FOLLOWER ||
+				XLogCtl->pmState.state == CONSENSUS_STATE_DOWN) &&
+			state == CONSENSUS_STATE_FOLLOWER)
+	{
+		reason = PMSIGNAL_CONSENS_LEADER_CHANGE;
+		inStateChange = true;
+	}
+
+	if (inStateChange)
+	{
+		SpinLockAcquire(&XLogCtl->pm_state_lck);
+		if (reason == PMSIGNAL_CONSENS_LEADER_CHANGE ||
+				reason == PMSIGNAL_CONSENS_DOWNGRADE)
+		{
+			strlcpy(XLogCtl->pmState.leaderAddr, leaderAddr, NI_MAXHOST);
+			XLogCtl->pmState.leaderPort = leaderPort;
+		}
+		XLogCtl->pmState.state = state;
+		XLogCtl->pmState.term = term;
+		XLogCtl->pmState.xlogTerm = nextAppendTerm;
+		XLogCtl->pmState.xlogUpto = logUpto;
+		XLogCtl->pmState.xlogTLI = tli;
+		XLogCtl->pmInStateChange = true;
+		SpinLockRelease(&XLogCtl->pm_state_lck);
+
+		ereport(WARNING,
+				(errmsg("polar_signal_pm_state_change, signal Postmaster for reason: %d, "
+								"logTerm: %ld, logUpto: %X/%X", reason, nextAppendTerm, 
+									 (uint32) (logUpto >> 32), (uint32) logUpto)));
+
+		SendPostmasterSignal(reason);
+	}
+}
+
+void
+polar_signal_recovery_state_change(bool newLeader, bool resumeLeader)
+{
+	SpinLockAcquire(&XLogCtl->consens_state_lck);
+
+	if (resumeLeader && XLogCtl->inLeaderState)
+	{
+		ConsensusSetXLogTerm(XLogCtl->pmState.xlogTerm);	
+	}
+	else if (newLeader || resumeLeader)
+	{
+		XLogCtl->becameLeader = true;
+		XLogCtl->consensusTerm = XLogCtl->pmState.term;
+		XLogCtl->consensusLogTerm = XLogCtl->pmState.xlogTerm;
+		XLogCtl->consensusLogUpto = XLogCtl->pmState.xlogUpto;
+		XLogCtl->consensusLogTLI = XLogCtl->pmState.xlogTLI;
+		WakeupRecovery();
+	}
+	else
+	{
+		bool with_user_name = (polar_dma_repl_user != NULL && polar_dma_repl_user[0] != '\0');
+		bool with_passwd = (polar_dma_repl_password != NULL && polar_dma_repl_password[0] != '\0');
+		bool with_application_name = (polar_dma_repl_app_name != NULL && polar_dma_repl_app_name[0] != '\0');
+
+		XLogCtl->becameLeader = false;
+		XLogCtl->consensusTerm = XLogCtl->pmState.term;
+		XLogCtl->consensusLogTerm = XLogCtl->pmState.xlogTerm;
+		XLogCtl->consensusLogUpto = XLogCtl->pmState.xlogUpto;
+		XLogCtl->consensusLogTLI = XLogCtl->pmState.xlogTLI;
+		snprintf(XLogCtl->PrimaryConnInfoStr, MAXCONNINFO, "host=%s port=%d %s%s %s%s %s%s ",
+				XLogCtl->pmState.leaderAddr,
+				XLogCtl->pmState.leaderPort,
+			  with_user_name ? "user=" : "",	with_user_name ? polar_dma_repl_user : "",	
+			  with_passwd ? "password=" : "",	with_passwd ? polar_dma_repl_password : "",
+			  with_application_name ? "application_name=" : "",	with_application_name ? polar_dma_repl_app_name : "");
+		WakeupRecovery();
+	}
+	SpinLockRelease(&XLogCtl->consens_state_lck);
+
+	SpinLockAcquire(&XLogCtl->pm_state_lck);
+	XLogCtl->pmInStateChange = false;
+	SpinLockRelease(&XLogCtl->pm_state_lck);
+}
+
+/*
+ * Check to see whether became Leader
+ */
+static bool
+polar_check_recovery_state_change(void)
+{
+	bool    became_leader;
+	uint64  consens_term;
+	uint64  consens_log_term;
+	XLogRecPtr consens_up_to;
+
+	SpinLockAcquire(&XLogCtl->consens_state_lck);
+	became_leader = XLogCtl->becameLeader;
+	consens_term = XLogCtl->consensusTerm;
+	consens_log_term = XLogCtl->consensusLogTerm;
+	consens_up_to = XLogCtl->consensusLogUpto; 
+	SpinLockRelease(&XLogCtl->consens_state_lck);
+
+	if (became_leader)
+		return true;
+	else if (consensusTerm != consens_term)
+		return true;
+	else if (consensusLogTerm == 0 && consens_log_term > 0)
+		return true;
+	else if (consensusLogTerm != consens_log_term)
+	{
+		if (consens_up_to < consensusLogUpto)
+		{
+			return true;
+		}
+		consensusLogTerm = consens_log_term;
+		ConsensusSetXLogTerm(consens_log_term);	
+	}
+	return false;
+}
+
+/*
+ * Check to see whether became Leader, only called by StartupProcess
+ */
+static bool
+polar_check_and_switch_recovery_state(bool *leaderSwitch, bool *logSwitch)
+{
+	bool new_leader = false;
+
+	*leaderSwitch = false;
+	*logSwitch = false;
+
+	SpinLockAcquire(&XLogCtl->consens_state_lck);
+
+	if (XLogCtl->becameLeader && becameLeader)
+	{
+		/* Do nothing */
+	}
+	else if (XLogCtl->becameLeader && !becameLeader)
+	{
+		becameLeader = XLogCtl->becameLeader;
+		consensusTerm = XLogCtl->consensusTerm;
+		consensusLogTerm = XLogCtl->consensusLogTerm;
+		consensusLogUpto = XLogCtl->consensusLogUpto;
+		consensusLogTLI = XLogCtl->consensusLogTLI;
+		PrimaryConnInfo = NULL;
+
+		if ((consensusRecoveryLatestTimeline || recoveryTargetIsLatest) && 
+				recoveryTarget == RECOVERY_TARGET_UNSET)
+			fast_promote = true;
+
+		ConsensusSetXLogFlushedLSN(XLogCtl->consensusLogUpto, XLogCtl->consensusLogTLI, true);	
+		ConsensusSetXLogTerm(XLogCtl->consensusLogTerm);	
+
+		XLogCtl->inLeaderState = true;
+
+		new_leader = true;
+	}
+	else if (consensusTerm != XLogCtl->consensusTerm)
+	{
+		becameLeader = XLogCtl->becameLeader;
+		consensusTerm = XLogCtl->consensusTerm;
+		consensusLogUpto = XLogCtl->consensusLogUpto;
+		consensusLogTLI = XLogCtl->consensusLogTLI;
+		PrimaryConnInfo = XLogCtl->PrimaryConnInfoStr;
+		*leaderSwitch = true;
+
+		if (consensusLogTerm != XLogCtl->consensusLogTerm)
+		{
+			consensusLogTerm = XLogCtl->consensusLogTerm;
+			ConsensusSetXLogFlushedLSN(XLogCtl->consensusLogUpto, XLogCtl->consensusLogTLI, true);	
+			ConsensusSetXLogTerm(XLogCtl->consensusLogTerm);	
+			*logSwitch = true;
+		}
+
+		XLogCtl->inLeaderState = false;
+	}
+	else if (consensusLogTerm != XLogCtl->consensusLogTerm)
+	{
+		becameLeader = XLogCtl->becameLeader;
+
+		/* divergence point go backward after repaired consensus log */
+		if (consensusLogUpto == 0 ||
+				XLogCtl->consensusLogUpto < consensusLogUpto)
+		{
+			consensusLogUpto = XLogCtl->consensusLogUpto;
+			consensusLogTLI = XLogCtl->consensusLogTLI;
+			PrimaryConnInfo = XLogCtl->PrimaryConnInfoStr;
+			*leaderSwitch = true;
+			*logSwitch = true;
+			ConsensusSetXLogFlushedLSN(XLogCtl->consensusLogUpto, XLogCtl->consensusLogTLI, true);	
+		}
+		consensusLogTerm = XLogCtl->consensusLogTerm;
+		ConsensusSetXLogTerm(XLogCtl->consensusLogTerm);	
+
+		XLogCtl->inLeaderState = false;
+	}
+
+	SpinLockRelease(&XLogCtl->consens_state_lck);
+
+	return new_leader;
+}
+
+/*
+ * Ensure that all XLOG data through the given position is committed by consensus.
+ */
+static bool
+polar_dma_xlog_commit(XLogRecPtr record)
+{
+	bool success = true;
+	SpinLockAcquire(&XLogCtl->info_lck);
+	ConsensusCommit = XLogCtl->ConsensusCommit;
+	SpinLockRelease(&XLogCtl->info_lck);
+
+	if (record <= ConsensusCommit)
+	{
+		return true;
+	}
+
+	START_CRIT_SECTION();
+	success = ConsensusWaitForLSN(record, true);
+	END_CRIT_SECTION();
+
+	if (success)
+	{
+		ereport(DEBUG5, (errmsg("polar_dma_xlog_commit committed, LSN: %X/%X", 
+						(uint32) (record >> 32),
+						(uint32) record)));
+	}
+	else
+	{
+		/*
+		 * If a wait for consensus commit is pending, we can neither
+		 * acknowledge the commit nor raise ERROR or FATAL. And also, 
+		 * we can neither abort xact or clean up the state. So in this 
+		 * case we issue a WARNING and exit immediately.
+		 */
+		ereport(WARNING, (errmsg("polar consensus commit failed, LSN: %X/%X", 
+						(uint32) (record >> 32),
+						(uint32) record)));
+		_exit(1);
+	}
+
+
+	ConsensusCommit = record;
+
+	SpinLockAcquire(&XLogCtl->info_lck);
+	if (XLogCtl->ConsensusCommit < ConsensusCommit)
+		XLogCtl->ConsensusCommit = ConsensusCommit;
+	SpinLockRelease(&XLogCtl->info_lck);
+
+	return true;
+}
+
+void 
+polar_update_last_removed_ptr(char *filename)
+{
+	UpdateLastRemovedPtr(filename);
+}
+
+static int
+polar_dma_xlog_file_read_any(XLogSegNo segno, int emode, TimeLineID tli, int source)
+{
+	char		path[MAXPGPATH];
+	int			fd;
+
+	if (source == XLOG_FROM_ANY || source == XLOG_FROM_ARCHIVE)
+	{
+		fd = XLogFileRead(segno, emode, tli, XLOG_FROM_ARCHIVE, true);
+		if (fd != -1)
+		{
+			elog(DEBUG1, "got WAL segment from archive");
+			return fd;
+		}
+	}
+
+	if (source == XLOG_FROM_ANY || source == XLOG_FROM_PG_WAL)
+	{
+		fd = XLogFileRead(segno, emode, tli, XLOG_FROM_PG_WAL, true);
+		if (fd != -1)
+		{
+			return fd;
+		}
+	}
+
+	/* Couldn't find it.  For simplicity, complain about front timeline */
+	XLogFilePath(path, tli, segno, wal_segment_size);
+	errno = ENOENT;
+	ereport(emode,
+			(errcode_for_file_access(),
+			 errmsg("could not open file \"%s\": %m", path)));
+	return -1;
+}
+
+static bool
+polar_dma_need_file_switch(XLogRecPtr tliRecPtr, bool fetching_ckpt, XLogRecPtr RecPtr)
+{
+	TimeLineID tli;
+	XLogRecPtr new_readable_upto;
+
+	if (!expectedTLEs)
+		expectedTLEs = readTimeLineHistory(recoveryTargetTLI);
+
+	tli = tliOfPointInHistory(tliRecPtr, expectedTLEs);
+	
+	if (consensusCommittedUpto == 0)
+	{
+		consensusCommittedUpto = ConsensusGetSyncedLSN();
+		ereport(LOG, (errmsg("consensus committed LSN advanced, LSN: %X/%X",
+						(uint32) (consensusCommittedUpto >> 32), (uint32) consensusCommittedUpto)));
+	}
+
+	/* Fetch checkpoint record, just advance to end of it */
+	if (fetching_ckpt)
+	{
+		new_readable_upto = RecPtr;
+	}
+	/* Fetch for PITR or complete recovery.
+	 * advance to latest point of current timeline */
+	else if (becameLeader &&
+			(!consensusRecoveryLatestTimeline ||
+			 recoveryTarget != RECOVERY_TARGET_UNSET))
+	{
+		if (tli < recoveryTargetTLI)
+			new_readable_upto = tliSwitchPoint(tli, expectedTLEs, NULL);	
+		else
+			new_readable_upto = InvalidXLogRecPtr;
+	}
+	/* Fetch historic timeline record.
+	 * advance to end of this timeline or commit point*/
+	else if (consensusCommittedUpto > 0 && tli < recoveryTargetTLI)
+	{
+		XLogRecPtr switchUpto = tliSwitchPoint(tli, expectedTLEs, NULL);	
+		new_readable_upto = switchUpto > consensusCommittedUpto ? 
+			consensusCommittedUpto : switchUpto;
+	}
+	/* Fetch for backup recovery.
+	 * advance to the end of request point at least */
+	else if (becameLeader &&
+			(!XLogRecPtrIsInvalid(ControlFile->backupStartPoint) ||
+			 ControlFile->backupEndRequired))
+	{
+		new_readable_upto = RecPtr > consensusCommittedUpto ? 
+			RecPtr : consensusCommittedUpto;
+	}
+	/* Normal fetch, advance to commit point */
+	else
+	{
+		new_readable_upto = consensusCommittedUpto;
+	}
+
+	if (XLogRecPtrIsInvalid(new_readable_upto))
+	{
+		consensusReadableUpto = InvalidXLogRecPtr;
+		ereport(INFO, (errmsg("consensus readable LSN to latest for PITR "
+						"or complete recovery")));
+	}
+	else if (new_readable_upto > consensusReadableUpto)
+	{
+		/* Advance readable LSN. But less than one segment */
+		if (!XLogRecPtrIsInvalid(consensusReadableUpto) && 
+				consensusReadableUpto + wal_segment_size < new_readable_upto)
+			consensusReadableUpto = (consensusReadableUpto / wal_segment_size + 1) * wal_segment_size;
+		else
+			consensusReadableUpto = new_readable_upto;
+		ereport(INFO, (errmsg("consensus readable LSN advanced, LSN: %X/%X",
+						(uint32) (consensusReadableUpto >> 32), (uint32) consensusReadableUpto)));
+	}
+
+	if (readFile < 0)
+		return true;
+
+	if (tli == curFileTLI)
+		return false;
+
+	polar_close(readFile);
+	readFile = -1;
+	curFileTLI = 0;
+	return true;
+}
+
+/* POLAR wal pipeline begin */
+
+static void polar_wal_pipeline_stats_init(polar_wal_pipeline_stats_t *stats)
+{
+	pg_atomic_init_u64(&stats->total_user_group_commits, 0);
+	pg_atomic_init_u64(&stats->total_user_spin_commits, 0);
+	pg_atomic_init_u64(&stats->total_user_timeout_commits, 0);
+	pg_atomic_init_u64(&stats->total_user_wakeup_commits, 0);
+	pg_atomic_init_u64(&stats->total_user_miss_timeouts, 0);
+	pg_atomic_init_u64(&stats->total_user_miss_wakeups, 0);
+	pg_atomic_init_u64(&stats->total_advance_callups, 0);
+	pg_atomic_init_u64(&stats->total_advances, 0);
+	pg_atomic_init_u64(&stats->total_write_callups, 0);
+	pg_atomic_init_u64(&stats->total_writes, 0);
+	pg_atomic_init_u64(&stats->unflushed_xlog_slot_waits, 0);
+	pg_atomic_init_u64(&stats->total_flush_callups, 0);
+	pg_atomic_init_u64(&stats->total_flushes, 0);
+	pg_atomic_init_u64(&stats->total_flush_merges, 0);
+	pg_atomic_init_u64(&stats->total_notify_callups, 0);
+	pg_atomic_init_u64(&stats->total_notifies, 0);
+	pg_atomic_init_u64(&stats->total_notified_users, 0);
+}
+
+static void polar_wait_obj_stats_init(polar_wait_object_stats_t *stats)
+{
+	pg_atomic_init_u64(&stats->waiters, 0);
+	pg_atomic_init_u64(&stats->timeout_waits, 0);
+	pg_atomic_init_u64(&stats->wakeup_waits, 0);
+}
+
+static void polar_wait_obj_init(polar_wait_object_t *wait_obj, 
+								pthread_mutexattr_t *mutex_attr, pthread_condattr_t *cond_attr)
+{
+	int ret;
+
+	ret = pthread_mutex_init(&wait_obj->mutex, mutex_attr);
+	if (ret != 0)
+		elog(ERROR, "pthread mutext init failed, errno is %d", ret);
+	ret = pthread_cond_init(&wait_obj->cond, cond_attr);
+	if (ret != 0)
+		elog(ERROR, "pthread condition init failed, errno is %d", ret);
+	polar_wait_obj_stats_init(&wait_obj->stats);
+}					
+
+static int 
+polar_wal_pipeline_flush_event_get_slot_no(XLogRecPtr flush_lsn)
+{
+	/* 
+	 * flush_lsn-1 means when lsn is on boundary, we should return previous slot,
+	 * because flush_lsn is at the end of wal record
+	 */
+	return (flush_lsn-1) / polar_wal_pipeline_flush_event_slot_size & (polar_wal_pipeline_flush_event_array_size-1);
+}
+
+/*
+ * wait XLogCtl->recoveryWakeupLatch to be set
+ */
+int
+polar_wait_recovery_wakeup(int wakeEvents, long timeout, uint32 wait_event_info)
+{
+	int rc = WaitLatch(&XLogCtl->recoveryWakeupLatch, wakeEvents, 
+			timeout, wait_event_info);
+
+	ResetLatch(&XLogCtl->recoveryWakeupLatch);
+
+	return rc;
+}
+
+/*
+ * Switch logger status by consensus status and return whether to start replicaiton
+ *
+ * If became leader or leader switch or XLOG term switch, advance the recovery's
+ * state machine. 
+ *
+ */
+bool 
+polar_dma_check_logger_status(char **primaryConnInfo,
+		XLogRecPtr *receivedUpto,
+		TimeLineID *receivedTLI,
+		bool *requestNextTLI)
+{
+	bool leader_switch = false;
+	bool log_switch = false;
+	bool start_repl = false;
+
+	elog(DEBUG5, "consensus check logger status");
+	
+	if (polar_check_and_switch_recovery_state(&leader_switch, &log_switch))
+	{
+		/* If consensus became leader. shutdown wal receiver */
+		if (WalRcvRunning())
+			ShutdownWalRcv();
+
+		ereport(WARNING, 
+				(errmsg("consensus became leader, term %ld, purged at %X/%X timeline %u", 
+								consensusTerm, 
+								(uint32) (consensusLogUpto >> 32), (uint32)consensusLogUpto, consensusLogTLI)));
+
+		/* Reset expectedTLEs to NULL after became leader firstly */
+		if (*receivedTLI == 0)
+		{
+			list_free_deep(expectedTLEs);
+			expectedTLEs = NULL;
+		}
+
+		*receivedUpto = consensusLogUpto;	
+		*receivedTLI = consensusLogTLI;
+		recoveryTargetTLI = consensusLogTLI;
+		*primaryConnInfo = NULL;
+	}
+	else if (leader_switch)
+	{
+		/* If consensus leader changed or log mismatch, shutdown wal receiver and fetch from new leader */
+		if (WalRcvRunning())
+			ShutdownWalRcv();
+
+		/* Reset expectedTLEs to NULL after leader changed firstly */
+		if (*receivedTLI == 0)
+		{
+			list_free_deep(expectedTLEs);
+			expectedTLEs = NULL;
+		}
+
+		if (log_switch || *receivedUpto == 0)
+		{
+			ereport(WARNING, 
+					(errmsg("consensus leader changed or log mismatch, term %ld, "
+							"log term %ld, divergence at %X/%X timeline %u", 
+							consensusTerm, consensusLogTerm, 
+							(uint32) (consensusLogUpto >> 32), (uint32)consensusLogUpto, consensusLogTLI)));
+
+			/* Ignore errors if WAL files not exist */
+			polar_dma_xlog_truncate(consensusLogUpto, consensusLogTLI, LOG);
+
+			/* Fetch from consensus log point */
+			*receivedUpto = consensusLogUpto;	
+			*receivedTLI = consensusLogTLI;
+			recoveryTargetTLI = consensusLogTLI;
+		}
+		else
+		{
+			/* Advance latest received point before restart stream replication */
+			XLogRecPtr latestReceivedUpto = InvalidXLogRecPtr;
+			TimeLineID  latestReceivedTLI;
+			XLogRecPtr latestChunkStart;
+			latestReceivedUpto = GetWalRcvWriteRecPtr(&latestChunkStart, &latestReceivedTLI);
+			if (latestReceivedUpto > *receivedUpto || latestReceivedTLI > *receivedTLI)
+			{
+				if (latestReceivedUpto > *receivedUpto)
+					*receivedUpto = latestReceivedUpto;
+				if (latestReceivedTLI > *receivedTLI)
+					*receivedTLI = latestReceivedTLI;
+				ereport(DEBUG2, 
+						(errmsg("consensus recieved up to %X/%X timeline %u", 
+										(uint32) (latestReceivedUpto >> 32), (uint32)latestReceivedUpto,
+										latestReceivedTLI)));
+			}
+			ereport(WARNING, 
+					(errmsg("consensus leader changed, term %ld, log term %ld, "
+							"recieved up to %X/%X timeline %u", 
+							consensusTerm, consensusLogTerm, 
+							(uint32) (*receivedUpto >> 32), (uint32)*receivedUpto, *receivedTLI)));
+		}
+		*primaryConnInfo = PrimaryConnInfo;
+		start_repl = true;
+	}
+	else if (*primaryConnInfo != NULL && !WalRcvStreaming())
+	{
+		/* If replication stopped, start it from latest received point */
+		XLogRecPtr latestReceivedUpto = InvalidXLogRecPtr;
+		TimeLineID latestReceivedTLI;
+		XLogRecPtr latestChunkStart;
+		TimeLineID tli;
+		XLogRecPtr ptr;
+
+		/* Advance latest received point before restart stream replication */
+		latestReceivedUpto = GetWalRcvWriteRecPtr(&latestChunkStart, &latestReceivedTLI);
+		if (latestReceivedUpto > *receivedUpto || latestReceivedTLI > *receivedTLI)
+		{
+			if (latestReceivedUpto > *receivedUpto)
+				*receivedUpto = latestReceivedUpto;
+			if (latestReceivedTLI > *receivedTLI)
+				*receivedTLI = latestReceivedTLI;
+			ereport(DEBUG2, 
+					(errmsg("consensus recieved up to %X/%X timeline %u", 
+									(uint32) (latestReceivedUpto >> 32), (uint32)latestReceivedUpto,
+									latestReceivedTLI)));
+		}
+
+		if (*receivedUpto > 0)
+		{
+			/* Re-scan for possible new timelines */
+			if (!expectedTLEs)
+				expectedTLEs = readTimeLineHistory(recoveryTargetTLI);
+			rescanLatestTimeLine();
+			tli = tliOfPointInHistory(*receivedUpto, expectedTLEs);
+
+			/* If timeline switched, recieve from switchpoint, because the 
+			 * received point of last timeline from  may beyond the end */
+			if (*receivedTLI > 0 && tli > *receivedTLI)
+			{
+				ptr = tliSwitchPoint(*receivedTLI, expectedTLEs, NULL);	
+				/* the recieved point overtake the end point of last received timeline */
+				if (*receivedUpto > ptr)
+				{
+					/* Ignore errors if WAL files not exist */
+					polar_dma_xlog_truncate(ptr, *receivedTLI, LOG);
+					ConsensusSetXLogFlushedLSN(ptr, *receivedTLI, true);
+					*receivedUpto = ptr;
+					ereport(LOG, 
+							(errmsg("consensus recieved reset to %X/%X timeline %u", 
+										(uint32) (ptr >> 32), (uint32)ptr, tli-1)));
+				}
+				*requestNextTLI = true;
+			}
+			else
+			{
+				*receivedTLI = tli;
+			}
+		}
+
+		start_repl = true;
+	}
+
+	return start_repl;
+}
+
+/* 
+ * truncate the xlog when it's beyond consensus point.
+ */
+static void
+polar_dma_xlog_truncate(XLogRecPtr resetPtr, TimeLineID resetTLI, int elevel)
+{
+	char			path[MAXPGPATH];
+	XLogSegNo segno;
+	int				startoff;
+	int				writebytes;
+	int				byteswritten;
+	int				fd;
+
+	ereport(LOG, 
+			(errmsg("consensus truncate WAL to %X/%X, timeline %u. "
+							"current received at %X/%X timeline %u", 
+					(uint32) (resetPtr >> 32), (uint32)resetPtr, resetTLI, 
+					(uint32) (consensusReceivedUpto >> 32), (uint32)consensusReceivedUpto,
+					consensusReceivedTLI)));
+
+	XLByteToSeg(resetPtr, segno, wal_segment_size);
+
+	startoff = XLogSegmentOffset(resetPtr, wal_segment_size);
+
+	if (startoff % XLOG_BLCKSZ != 0)
+		writebytes = startoff % XLOG_BLCKSZ;
+	else if (startoff % wal_segment_size != 0)
+		writebytes = XLOG_BLCKSZ;
+	else
+		writebytes = 0;
+
+	if (writebytes > 0)
+	{
+		PGAlignedXLogBlock buffer;
+		XLogFilePath(path, resetTLI, segno, wal_segment_size);
+
+		fd = BasicOpenFile(path, O_RDWR | PG_BINARY, true);
+		if (fd < 0)
+		{
+			ereport(elevel,
+					(errcode_for_file_access(),
+					 errmsg("could not open write-ahead log file \"%s\": %m", path)));
+			return;
+		}
+
+		if (polar_lseek(fd, (off_t) startoff, SEEK_SET) < 0)
+		{
+			ereport(elevel,
+					(errcode_for_file_access(),
+					 errmsg("could not seek in log segment %s to offset %u: %m",
+						 path, startoff)));
+			polar_close(fd);
+			return;
+		}
+
+		memset(buffer.data, 0, XLOG_BLCKSZ);
+		byteswritten = polar_write(fd, buffer.data, writebytes);
+		if (byteswritten <= 0)
+		{
+			ereport(ERROR,
+					(errcode_for_file_access(),
+					 errmsg("could not write to log segment %s "
+						 "at offset %u, length %lu: %m",
+						 path, startoff, (unsigned long) writebytes)));
+		}
+
+		issue_xlog_fsync(fd, segno);
+
+		if (polar_close(fd) != 0)
+			ereport(ERROR,
+					(errcode_for_file_access(),
+					 errmsg("could not close log segment %s: %m",
+						 path)));
+	}
+
+	RemoveNonParentXlogFiles(resetPtr, resetTLI+1);
+}
+
+static polar_wal_pipeline_flush_event_t *
+polar_wal_pipeline_flush_event_get_slot(int slot_no)
+{
+	if (likely(polar_wal_pipeline_wait_object_align))
+	{
+		if (likely(huge_pages == HUGE_PAGES_ON))
+			return (polar_wal_pipeline_flush_event_t *)((char *)XLogCtl->polar_wal_pipeline_commit_wait_buffer.flush_event_slots + slot_no * TYPEALIGN(OS_HUGE_PAGE_SIZE, sizeof(polar_wal_pipeline_flush_event_t)));
+		else
+			return (polar_wal_pipeline_flush_event_t *)((char *)XLogCtl->polar_wal_pipeline_commit_wait_buffer.flush_event_slots + slot_no * TYPEALIGN(OS_DEFAULT_PAGE_SIZE, sizeof(polar_wal_pipeline_flush_event_t)));	
+	}
+	else
+		return (polar_wal_pipeline_flush_event_t *)((char *)XLogCtl->polar_wal_pipeline_commit_wait_buffer.flush_event_slots + slot_no * sizeof(polar_wal_pipeline_flush_event_t));
+}
+
+void
+polar_wal_pipeline_commit_wait(XLogRecPtr flush_lsn)
+{
+	polar_wait_result_t wait_res = POLAR_WAIT_RES_SPIN;
+	polar_spin_delay_status_t status;
+	int slot_no = polar_wal_pipeline_flush_event_get_slot_no(flush_lsn);
+
+	if (flush_lsn <= LogwrtResult.Flush)
+	{
+		pg_atomic_fetch_add_u64(&XLogCtl->polar_wal_pipeline_stats.total_user_group_commits, 1);
+
+		return;
+	}
+
+	if (CommitDelay > 0 && enableFsync && MinimumActiveBackends(CommitSiblings))
+		pg_usleep(CommitDelay);
+
+	SpinLockAcquire(&XLogCtl->info_lck);
+	if (XLogCtl->LogwrtRqst.Write < flush_lsn)
+		XLogCtl->LogwrtRqst.Write = flush_lsn;
+	if (XLogCtl->LogwrtRqst.Flush < flush_lsn)
+		XLogCtl->LogwrtRqst.Flush = flush_lsn;
+	LogwrtResult = XLogCtl->LogwrtResult;
+	SpinLockRelease(&XLogCtl->info_lck);
+
+	if (flush_lsn <= LogwrtResult.Flush)
+	{
+		pg_atomic_fetch_add_u64(&XLogCtl->polar_wal_pipeline_stats.total_user_group_commits, 1);
+
+		return;
+	}
+
+	polar_wal_pipeliner_wakeup();
+
+	/*
+	 * Begin spin and wait
+	 */
+
+	polar_init_spin_delay_mt(&status, polar_wal_pipeline_flush_event_get_slot(slot_no),
+							  polar_wal_pipeline_commit_wait_spin_delay, polar_wal_pipeline_commit_wait_timeout);
+	pgstat_report_wait_start(WAIT_EVENT_WAL_PIPELINE_COMMIT_WAIT);
+
+	/* First spin */
+	while(flush_lsn > LogwrtResult.Flush)
+	{
+		wait_res = polar_perform_spin_delay_mt(&status, false, false);
+		if (wait_res == POLAR_WAIT_RES_SPIN_OVER)
+			break;
+
+		/* 
+		 * We must update LogwrtResult.Flush,
+		 * because caller may use LogwrtResult to recheck the while condition 
+		 */
+		LogwrtResult.Flush = *(volatile XLogRecPtr *)(&XLogCtl->LogwrtResult.Flush);
+	}
+
+	/* Then wait */
+	if (wait_res == POLAR_WAIT_RES_SPIN_OVER)
+	{
+		pthread_mutex_lock(&status.wait_obj->mutex);
+		while(flush_lsn > LogwrtResult.Flush)
+		{
+			if (wait_res == POLAR_WAIT_RES_TIMEOUT)
+				pg_atomic_fetch_add_u64(&XLogCtl->polar_wal_pipeline_stats.total_user_miss_timeouts, 1);
+			else if (wait_res == POLAR_WAIT_RES_WAKEUP)
+				pg_atomic_fetch_add_u64(&XLogCtl->polar_wal_pipeline_stats.total_user_miss_wakeups, 1);
+
+			wait_res = polar_perform_spin_delay_mt(&status, false, true);
+
+			/* 
+			* We must update LogwrtResult.Flush,
+			* because caller may use LogwrtResult to recheck the while condition 
+			*/
+			LogwrtResult.Flush = *(volatile XLogRecPtr *)(&XLogCtl->LogwrtResult.Flush);
+		}
+		pthread_mutex_unlock(&status.wait_obj->mutex);
+	}
+	pgstat_report_wait_end();
+
+	/* Update stats */
+	if (wait_res == POLAR_WAIT_RES_SPIN)
+		pg_atomic_fetch_add_u64(&XLogCtl->polar_wal_pipeline_stats.total_user_spin_commits, 1);
+	else if (wait_res == POLAR_WAIT_RES_TIMEOUT)
+		pg_atomic_fetch_add_u64(&XLogCtl->polar_wal_pipeline_stats.total_user_timeout_commits, 1);
+	else
+		pg_atomic_fetch_add_u64(&XLogCtl->polar_wal_pipeline_stats.total_user_wakeup_commits, 1);
+}
+
+void polar_wal_pipeline_set_last_notify_lsn(int thread_no, XLogRecPtr last_notify_lsn)
+{
+	XLogCtl->polar_wal_pipeline_last_notify_lsn[thread_no] = last_notify_lsn;
+}
+
+void 
+polar_wal_pipeline_set_ready_write_lsn(XLogRecPtr ready_write_lsn)
+{
+	pg_atomic_write_u64(&XLogCtl->polar_wal_pipeline_recent_written_position_buffer.ready_write_position, XLogRecPtrToBytePos(ready_write_lsn));
+}
+
+XLogRecPtr
+polar_wal_pipeline_get_ready_write_lsn(void)
+{
+	return XLogBytePosToEndRecPtr(pg_atomic_read_u64(&XLogCtl->polar_wal_pipeline_recent_written_position_buffer.ready_write_position));
+}
+
+static uint32
+polar_wal_pipeline_get_recent_written_slot(uint64 write_pos)
+{
+	return write_pos & (polar_wal_pipeline_recent_written_array_size - 1);
+}
+
+static bool
+polar_wal_pipeline_recent_written_has_space(XLogRecPtr start_lsn)
+{
+	uint64 ready_write_position = pg_atomic_read_u64(&XLogCtl->polar_wal_pipeline_recent_written_position_buffer.ready_write_position);
+	
+	return ready_write_position + polar_wal_pipeline_recent_written_array_size > XLogRecPtrToBytePos(start_lsn);
+}
+
+void
+polar_wal_pipeline_recent_written_add_link(XLogRecPtr start_lsn, XLogRecPtr end_lsn)
+{
+	int slot_no;
+
+	pgstat_report_wait_start(WAIT_EVENT_WAL_PIPELINE_WAIT_RECENT_WRITTEN_SPACE);
+	while (!polar_wal_pipeline_recent_written_has_space(start_lsn))
+		pg_usleep(polar_wal_pipeline_wait_timeout);
+	pgstat_report_wait_end();
+
+	slot_no = polar_wal_pipeline_get_recent_written_slot(XLogRecPtrToBytePos(start_lsn));
+
+	pg_atomic_write_u64(&XLogCtl->polar_wal_pipeline_recent_written_position_buffer.recent_written_position_slots[slot_no], 
+		XLogRecPtrToBytePos(end_lsn) - XLogRecPtrToBytePos(start_lsn));
+}
+
+static bool
+polar_wal_pipeline_recent_written_advance(void)
+{
+	uint64 old_pos;
+	uint64 tail_pos;
+	
+	old_pos = tail_pos = pg_atomic_read_u64(&XLogCtl->polar_wal_pipeline_recent_written_position_buffer.ready_write_position);
+
+	while (true)
+	{
+		/*
+		* Get current link and the next-offet and check next value is whether non-zero
+		* value. 0 means the log buffer is a hole (not filling completely)
+		*/
+		int slot_no = polar_wal_pipeline_get_recent_written_slot(tail_pos);
+
+		uint64 distance = pg_atomic_read_u64(&XLogCtl->polar_wal_pipeline_recent_written_position_buffer.recent_written_position_slots[slot_no]);
+
+		uint64 next = tail_pos + distance;
+
+		if (distance == 0)
+			break;
+
+		/*
+		* Clear the link mark whos log buffer has been copied done
+		*/
+		pg_atomic_write_u64(&XLogCtl->polar_wal_pipeline_recent_written_position_buffer.recent_written_position_slots[slot_no], 0);
+		
+		tail_pos = next;
+
+		/* 
+		 * No more than polar_wal_pipeline_advance_worker_write_max_size per advance
+		 * 0 means no limit
+		 */
+		if (polar_wal_pipeline_advance_worker_write_max_size !=0
+			&& tail_pos - old_pos > polar_wal_pipeline_advance_worker_write_max_size)
+			break;
+	}
+
+	if (tail_pos > old_pos)
+	{
+		pg_atomic_write_u64(&XLogCtl->polar_wal_pipeline_recent_written_position_buffer.ready_write_position, tail_pos);
+
+		return true;
+	}
+
+	return false;
+}
+
+uint64
+polar_wal_pipeline_get_unflushed_xlog_add_slot_no(void)
+{
+	return pg_atomic_read_u64(&XLogCtl->polar_wal_pipeline_unflushed_xlog_buffer.add_slot_no);
+}
+
+uint64
+polar_wal_pipeline_get_unflushed_xlog_del_slot_no(void)
+{
+	return pg_atomic_read_u64(&XLogCtl->polar_wal_pipeline_unflushed_xlog_buffer.del_slot_no);
+}
+
+static void
+polar_wal_pipeline_advance_unflushed_xlog_slot_no(polar_wal_pipeline_unflushed_xlog_type_t slot_type)
+{
+	if (slot_type == UNFLUSHED_XLOG_SLOT_TYPE_ADD)
+		pg_atomic_fetch_add_u64(&XLogCtl->polar_wal_pipeline_unflushed_xlog_buffer.add_slot_no, 1);
+	else
+		pg_atomic_fetch_add_u64(&XLogCtl->polar_wal_pipeline_unflushed_xlog_buffer.del_slot_no, 1);
+}
+
+static polar_wal_pipeline_unflushed_xlog_slot_t *
+polar_wal_pipeline_get_curr_unflushed_xlog_slot(polar_wal_pipeline_unflushed_xlog_type_t slot_type)
+{
+	uint64 slot_no;
+
+	if (slot_type == UNFLUSHED_XLOG_SLOT_TYPE_ADD)
+		slot_no = polar_wal_pipeline_get_unflushed_xlog_add_slot_no();
+	else
+		slot_no = polar_wal_pipeline_get_unflushed_xlog_del_slot_no();
+
+	slot_no = slot_no % polar_wal_pipeline_unflushed_xlog_array_size;
+	
+	return &XLogCtl->polar_wal_pipeline_unflushed_xlog_buffer.unflushed_xlog_slots[slot_no];
+}
+
+static polar_wal_pipeline_unflushed_xlog_slot_t *
+polar_wal_pipeline_get_next_unflushed_xlog_slot(polar_wal_pipeline_unflushed_xlog_type_t slot_type)
+{
+	polar_wal_pipeline_advance_unflushed_xlog_slot_no(slot_type);
+
+	return polar_wal_pipeline_get_curr_unflushed_xlog_slot(slot_type);
+}
+
+static void 
+polar_wal_pipeline_unflushed_xlog_append(int fd, XLogSegNo seg_no, XLogRecPtr end_lsn, bool need_close)
+{
+	polar_wal_pipeline_unflushed_xlog_slot_t *slot = polar_wal_pipeline_get_curr_unflushed_xlog_slot(UNFLUSHED_XLOG_SLOT_TYPE_ADD);
+	polar_wal_pipeline_unflushed_xlog_t *file = &slot->file_node;
+
+	pgstat_report_wait_start(WAIT_EVENT_WAL_PIPELINE_WAIT_UNFLUSHED_XLOG_SLOT);
+	while (slot->in_use)
+	{
+		pg_usleep(polar_wal_pipeline_wait_timeout);
+		pg_atomic_fetch_add_u64(&XLogCtl->polar_wal_pipeline_stats.unflushed_xlog_slot_waits, 1);
+	}
+	pgstat_report_wait_end();
+
+	file->fd = fd;
+	file->seg_no = seg_no;
+	file->end_lsn = end_lsn;
+	file->need_close = need_close;
+
+	/* in_use should be last assigned */
+	pg_write_barrier();
+
+	slot->in_use = true;
+
+	polar_wal_pipeline_advance_unflushed_xlog_slot_no(UNFLUSHED_XLOG_SLOT_TYPE_ADD);
+}
+
+/*
+ * Replacing XLogFileClose
+ * use parameters instead of global variables
+ * openLogFile and openLogSegNo.
+ * 
+ * In polar wal pipeline:
+ * write worker is responsible for open xlog file
+ * flush worker is responsible for fsync and close xlog file
+ */
+static void
+polar_wal_pipeline_xlog_close(int fd, XLogSegNo seg_no)
+{
+	Assert(fd >= 0);
+
+	/*
+	 * WAL segment files will not be re-read in normal operation, so we advise
+	 * the OS to release any cached pages.  But do not do so if WAL archiving
+	 * or streaming is active, because archiver and walsender process could
+	 * use the cache to read the WAL segment.
+	 */
+#if defined(USE_POSIX_FADVISE) && defined(POSIX_FADV_DONTNEED)
+	/* POLAR: libpfs not support posix_fadvise */
+	if (!XLogIsNeeded() && !POLAR_FILE_IN_SHARED_STORAGE())
+		(void) posix_fadvise(fd, 0, 0, POSIX_FADV_DONTNEED);
+#endif
+
+	if (polar_close(fd))
+		ereport(PANIC,
+				(errcode_for_file_access(),
+				 errmsg("could not close log file %s: %m",
+						XLogFileNameP(ThisTimeLineID, seg_no))));
+}
+
+/* 
+ * Called by advance worker thread in polar wal pipeliner process.
+ * 
+ * In polar wal pipeline mode, used to advance max be-written lsn in wal buffer.
+ */
+bool
+polar_wal_pipeline_advance(int ident)
+{
+	/* No need to work in standby mode */
+	if (RecoveryInProgress())
+		return false;
+	
+	pg_atomic_fetch_add_u64(&XLogCtl->polar_wal_pipeline_stats.total_advance_callups, 1);
+
+	if (!polar_wal_pipeline_recent_written_advance())
+		return false;
+
+	pg_atomic_fetch_add_u64(&XLogCtl->polar_wal_pipeline_stats.total_advances, 1);
+
+	return true;
+}
+
+/*
+ * Replacing: XLogWrite
+ * 
+ * Called by write worker thread in polar wal pipeliner process.
+ * 
+ * In polar wal pipeline mode, used to write wal from wal buffer to OS cache.
+ */
+bool
+polar_wal_pipeline_write(int ident)
+{
+	XLogwrtRqst		write_rqst;
+	XLogRecPtr 		ready_write_lsn;
+	
+	/* No need to work in standby mode */
+	if (RecoveryInProgress())
+		return false;
+
+	pg_atomic_fetch_add_u64(&XLogCtl->polar_wal_pipeline_stats.total_write_callups, 1);
+
+	write_rqst.Write = *(volatile XLogRecPtr *)(&XLogCtl->LogwrtRqst.Write);
+	write_rqst.Flush = *(volatile XLogRecPtr *)(&XLogCtl->LogwrtRqst.Flush);
+
+	LogwrtResult.Write = *(volatile XLogRecPtr *)(&XLogCtl->LogwrtResult.Write);
+	
+	ready_write_lsn = polar_wal_pipeline_get_ready_write_lsn();
+
+	write_rqst.Write = Min(write_rqst.Write, ready_write_lsn);
+	write_rqst.Flush = Min(write_rqst.Flush, ready_write_lsn);
+
+	if (LogwrtResult.Write >= write_rqst.Write && LogwrtResult.Flush >= write_rqst.Flush)
+		return false;
+
+	pg_atomic_fetch_add_u64(&XLogCtl->polar_wal_pipeline_stats.total_writes, 1);
+
+	XLogWrite(write_rqst, false);
+
+	if (polar_wal_pipeline_mode <= 3)
+	{
+		polar_wal_pipeline_wakeup_notifier();
+		WalSndWakeupProcessRequests();
+	}
+
+	return true;
+}
+
+/* 
+ * Do flush work
+ * Try best to merge flush request before issue flush 
+ */
+static void
+polar_wal_pipeline_flush_internal(void)
+{
+	polar_wal_pipeline_unflushed_xlog_slot_t 	*curr_del_slot = polar_wal_pipeline_get_curr_unflushed_xlog_slot(UNFLUSHED_XLOG_SLOT_TYPE_DEL);
+	polar_wal_pipeline_unflushed_xlog_t 		*curr_del_file = &curr_del_slot->file_node;
+
+	/* No del slot to process, just return */
+	if (!curr_del_slot->in_use)
+		return;
+
+	while (true)
+	{
+		polar_wal_pipeline_unflushed_xlog_slot_t 	*next_del_slot = polar_wal_pipeline_get_next_unflushed_xlog_slot(UNFLUSHED_XLOG_SLOT_TYPE_DEL);
+		polar_wal_pipeline_unflushed_xlog_t 		*next_del_file =  &next_del_slot->file_node;
+		bool do_file_flush = false;
+		bool do_file_close = false;
+		bool stop_loop = false;
+
+		if (!next_del_slot->in_use)
+		{
+			if (!curr_del_file->need_close)
+				do_file_flush = true;
+			else
+			{
+				do_file_flush = true;
+				do_file_close = true;
+			}
+
+			stop_loop = true;
+		}
+		else
+		{
+			if (curr_del_file->fd != next_del_file->fd)
+			{
+				do_file_flush = true;
+				do_file_close = true;
+			}
+			else if (next_del_file->need_close)
+				do_file_flush = true;
+			else 
+			{
+				/* Can be merged, just update stat */
+				pg_atomic_fetch_add_u64(&XLogCtl->polar_wal_pipeline_stats.total_flush_merges, 1);
+			}
+		}
+
+		if (do_file_flush)
+		{
+			issue_xlog_fsync(curr_del_file->fd, curr_del_file->seg_no);
+
+			SpinLockAcquire(&XLogCtl->info_lck);
+			XLogCtl->LogwrtResult.Flush = curr_del_file->end_lsn;
+			if (XLogCtl->LogwrtRqst.Flush < curr_del_file->end_lsn)
+				XLogCtl->LogwrtRqst.Flush = curr_del_file->end_lsn;
+			SpinLockRelease(&XLogCtl->info_lck);
+
+			/* signal that we need to wakeup walsenders later */
+			WalSndWakeupRequest();
+		}
+		
+		if (do_file_close)
+		{
+			if (XLogArchivingActive())
+				XLogArchiveNotifySeg(curr_del_file->seg_no);
+
+			/*
+			* Request a checkpoint if we've consumed too much xlog since
+			* the last one.  For speed, we first check using the local
+			* copy of RedoRecPtr, which might be out of date; if it looks
+			* like a checkpoint is needed, forcibly update RedoRecPtr and
+			* recheck.
+			*/
+			if (IsUnderPostmaster && XLogCheckpointNeeded(curr_del_file->seg_no))
+			{
+				(void) GetRedoRecPtr();
+				if (XLogCheckpointNeeded(curr_del_file->seg_no))
+					RequestCheckpoint(CHECKPOINT_CAUSE_XLOG);
+			}
+
+			polar_wal_pipeline_xlog_close(curr_del_file->fd, curr_del_file->seg_no);
+		}
+
+		curr_del_slot->in_use = false;
+
+		curr_del_slot = next_del_slot;
+		curr_del_file = next_del_file;
+
+		if (stop_loop)
+			break;
+	}
+}
+
+/*
+ * Replacing: XLogWrite
+ * 
+ * Called by flush worker thread in polar wal pipeliner process.
+ * 
+ * In polar wal pipeline mode, used to flush wal from os cache to disk.
+ */
+bool 
+polar_wal_pipeline_flush(int ident)
+{
+	XLogwrtResult write_result;
+
+	/* No need to work in standby mode */
+	if (RecoveryInProgress())
+		return false;
+
+	pg_atomic_fetch_add_u64(&XLogCtl->polar_wal_pipeline_stats.total_flush_callups, 1);
+
+	write_result.Write = *(volatile XLogRecPtr *)(&XLogCtl->LogwrtResult.Write);
+	write_result.Flush = *(volatile XLogRecPtr *)(&XLogCtl->LogwrtResult.Flush);
+
+	if (write_result.Flush >= write_result.Write)
+		return false;
+
+	pg_atomic_fetch_add_u64(&XLogCtl->polar_wal_pipeline_stats.total_flushes, 1);
+
+	polar_wal_pipeline_flush_internal();
+
+	polar_wal_pipeline_wakeup_notifier();
+
+	WalSndWakeupProcessRequests();
+
+	return true;
+}
+
+/*
+ * Called by notify worker thread in polar wal pipeliner process.
+ * 
+ * In polar wal pipeline mode, used to notify backend whose wait lsn 
+ * less than current flush lsn.
+ */
+bool
+polar_wal_pipeline_notify(int ident)
+{
+	XLogRecPtr start_lsn = XLogCtl->polar_wal_pipeline_last_notify_lsn[ident];
+	XLogRecPtr end_lsn = *(volatile XLogRecPtr *)(&XLogCtl->LogwrtResult.Flush);
+	XLogRecPtr aligned_end_lsn;
+	uint64 notified_users = 0;
+	uint64 total_notified_users;
+	polar_wait_object_t *wait_obj;
+
+	/* No need to work in standby mode */
+	if (RecoveryInProgress())
+		return false;
+
+	pg_atomic_fetch_add_u64(&XLogCtl->polar_wal_pipeline_stats.total_notify_callups, 1);
+
+	if (start_lsn == end_lsn)
+		return false;
+
+	pg_atomic_fetch_add_u64(&XLogCtl->polar_wal_pipeline_stats.total_notifies, 1);
+
+	/* Up align to slot boundary */
+	aligned_end_lsn = (end_lsn+polar_wal_pipeline_flush_event_slot_size-1) & ~(polar_wal_pipeline_flush_event_slot_size-1);
+	while (start_lsn <= aligned_end_lsn)
+	{
+		int slot = polar_wal_pipeline_flush_event_get_slot_no(start_lsn);
+		if ((slot % polar_wal_pipeline_notify_worker_num) == ident)
+		{
+			polar_wal_pipeline_flush_event_t *flush_event = polar_wal_pipeline_flush_event_get_slot(slot);
+
+			pthread_mutex_lock(&flush_event->mutex);
+
+			pthread_cond_broadcast(&flush_event->cond);
+
+			notified_users += pg_atomic_read_u64(&flush_event->stats.waiters);
+
+			pthread_mutex_unlock(&flush_event->mutex);
+		}
+	
+		start_lsn += polar_wal_pipeline_flush_event_slot_size;
+	}
+
+	polar_wal_pipeline_set_last_notify_lsn(ident, end_lsn);
+
+	/*
+	 * Update stats, use first notify thread's mutex to synchronize notify threads
+	 */
+	wait_obj = polar_wal_pipeline_get_worker_wait_obj(NOTIFY_WORKER_THREAD_NO);
+
+	pthread_mutex_lock(&wait_obj->mutex);
+
+	total_notified_users = pg_atomic_read_u64(&XLogCtl->polar_wal_pipeline_stats.total_notified_users);
+
+	pg_atomic_write_u64(&XLogCtl->polar_wal_pipeline_stats.total_notified_users, total_notified_users + notified_users);
+
+	pthread_mutex_unlock(&wait_obj->mutex);
+
+	return true;
+}
+
+/* 
+ * Added for polar wal pipeline stats info
+ */
+
+/* Max LSN already reserved fro insert */
+XLogRecPtr
+polar_wal_pipeline_get_current_insert_lsn(void)
+{
+	return XLogBytePosToEndRecPtr(XLogCtl->Insert.CurrBytePos);
+}
+
+/* 
+ * Max continuous wal content already write to wal buffer
+ */
+XLogRecPtr
+polar_wal_pipeline_get_continuous_insert_lsn(void)
+{
+	return	polar_wal_pipeline_get_ready_write_lsn();
+}
+
+/* Max LSN already write to OS cache */
+XLogRecPtr
+polar_wal_pipeline_get_write_lsn(void)
+{
+	return XLogCtl->LogwrtResult.Write;
+}
+
+/* Max LSN already flushed to disk */
+XLogRecPtr
+polar_wal_pipeline_get_flush_lsn(void)
+{
+	return XLogCtl->LogwrtResult.Flush;
+}
+
+XLogRecPtr
+polar_wal_pipeline_get_last_notify_lsn(int ident)
+{
+	return XLogCtl->polar_wal_pipeline_last_notify_lsn[ident];
+}
+
+polar_wal_pipeline_stats_t * 
+polar_wal_pipeline_get_stats(void)
+{
+	return &XLogCtl->polar_wal_pipeline_stats;
+}
+
+polar_wait_object_t * 
+polar_wal_pipeline_get_worker_wait_obj(int thread_no)
+{
+	if (likely(polar_wal_pipeline_wait_object_align))
+	{
+		if (likely(huge_pages == HUGE_PAGES_ON))
+			return (polar_wait_object_t *)((char *)XLogCtl->polar_wal_pipeline_wait_objs + thread_no * TYPEALIGN(OS_HUGE_PAGE_SIZE, sizeof(polar_wait_object_t)));
+		else
+			return (polar_wait_object_t *)((char *)XLogCtl->polar_wal_pipeline_wait_objs + thread_no * TYPEALIGN(OS_DEFAULT_PAGE_SIZE, sizeof(polar_wait_object_t)));
+	}
+	else
+		return (polar_wait_object_t *)((char *)XLogCtl->polar_wal_pipeline_wait_objs + thread_no * sizeof(polar_wait_object_t));
+
+}
+
+void 
+polar_wal_pipeline_stats_reset(void)
+{
+	int i;
+
+	for (i = 0; i < polar_wal_pipeline_flush_event_array_size; i++)
+	{
+		polar_wal_pipeline_flush_event_t *flush_event = polar_wal_pipeline_flush_event_get_slot(i);
+
+		polar_wait_obj_stats_init(&flush_event->stats);
+	}
+
+	for (i = 0; i < POLAR_WAL_PIPELINE_MAX_THREAD_NUM; i++)
+	{
+		polar_wait_object_t *wait_obj = polar_wal_pipeline_get_worker_wait_obj(i);
+
+		polar_wait_obj_stats_init(&wait_obj->stats);
+	}
+
+	polar_wal_pipeline_stats_init(&XLogCtl->polar_wal_pipeline_stats);
+}
+
+/* 
+ *	Only for poalr wal pipeline test 
+ */
+void
+polar_wal_pipeline_set_local_recovery_mode(bool mode)
+{
+	LocalRecoveryInProgress = mode;
+}
+
+/* POLAR wal pipeline END */
+
+/* POLAR: get the end of the last record */
+XLogRecPtr
+polar_get_last_valid_lsn(void)
+{
+	XLogRecPtr polar_last_valid_lsn = InvalidXLogRecPtr;
+
+	/* get last valid lsn from meta when in datamax mode */
+	if (polar_is_datamax())
+		polar_last_valid_lsn = polar_datamax_get_last_valid_received_lsn(polar_datamax_ctl, NULL);
+	else if (polar_in_master_mode())
+	{
+		XLogCtlInsert *Insert = &XLogCtl->Insert;
+		SpinLockAcquire(&Insert->insertpos_lck);
+		polar_last_valid_lsn = XLogBytePosToEndRecPtr(Insert->CurrBytePos);
+		SpinLockRelease(&Insert->insertpos_lck);
+	}
+	/* standby mode */
+	else
+		polar_last_valid_lsn = GetXLogReplayRecPtr(NULL);
+	
+	return polar_last_valid_lsn;
+}
+
+/*
+ * POLAR: set the initial restart_lsn of datamax replication slot.
+ *
+ * It is used while establishing initial replication from Datamax. 
+ * To ensure the wal data in datamax is not less than that in primary,
+ * replication should start at the smallest lsn in primary.
+ */
+XLogRecPtr
+polar_set_initial_datamax_restart_lsn(ReplicationSlot *slot)
+{
+	XLogRecPtr	restart_lsn;
+	XLogSegNo 	last_removed_segno;
+
+	/* get lwlock to avoid getting the xlog file being removed by checkpoint at the same time */
+	LWLockAcquire(&XLogCtl->polar_initial_datamax_lock, LW_SHARED);
+	last_removed_segno = XLogGetLastRemovedSegno();
+
+	if (last_removed_segno != 0)
+		XLogSegNoOffsetToRecPtr(last_removed_segno + 1, 0, wal_segment_size, restart_lsn);
+	else
+		restart_lsn = polar_get_smallest_walfile_lsn();
+
+	/* set slot restart_lsn to prevent further wal removal */
+	if (slot != NULL)
+	{
+		SpinLockAcquire(&slot->mutex);
+		slot->data.restart_lsn = restart_lsn;
+		SpinLockRelease(&slot->mutex);
+	}
+	ReplicationSlotsComputeRequiredLSN();
+	/* release lwlock after having set restart_lsn, so that it can be used while removing old xlog files */
+	LWLockRelease(&XLogCtl->polar_initial_datamax_lock);
+
+	return restart_lsn;
+}
+/* POLAR end */
+
+static void
+polar_smgr_drop_all_sr(XLogReaderState *xlogreader)
+{
+	int block_id;
+	RelFileNodeBackend rnode;
+
+	for (block_id = 0; block_id <= XLR_MAX_BLOCK_ID; block_id++)
+	{
+		if (!xlogreader->blocks[block_id].in_use)
+			break;
+
+		/* no temp relation in recovery, so drop relation for backend -1 */
+		memcpy(&rnode.node, &xlogreader->blocks[block_id].rnode, sizeof(RelFileNode));
+		rnode.backend = -1;
+		smgr_drop_sr(&rnode);
+	}
+}
+
+/*
+ * POLAR: if or not to clean smgr shared cache.
+ * this function is used to clean relica block cache. We can optimizer
+ * function.
+ * If current is replica and we can get the real rnode and forknum, then
+ * we judge if it is a new page of insert, update, hot update, multi insert
+ * on heap page. For non-heap, we don't do the optimizer now, just clean
+ * the block cache.
+ * polar_nblocks_cache_clean requires a SMgrRelation for the first parameter.
+ * RelFileNode address is also the SMgrRelation address, so translate it 
+ * to SMgrRelation.
+ */
+static void
+polar_clean_smgr_cache_if_needed(XLogReaderState *xlogreader)
+{
+	uint8 info;
+	RmgrId rmid;
+
+	/*
+	 * For master or standby node, just return. For replica node but
+	 * disable polar_enable_replica_use_smgr_cache, just return.
+	 */
+	if (!polar_in_replica_mode() ||
+		(polar_in_replica_mode() && !polar_enable_replica_use_smgr_cache))
+		return;
+
+	info = XLogRecGetInfo(xlogreader) & ~XLR_INFO_MASK;
+	rmid = XLogRecGetRmid(xlogreader);
+	switch (rmid)
+	{
+		case RM_HEAP_ID:
+		{
+			switch (info)
+			{
+				case XLOG_HEAP_INSERT:
+					break;
+
+				case XLOG_HEAP_UPDATE:
+					break;
+
+				case XLOG_HEAP_HOT_UPDATE:
+					break;
+
+				default:
+					polar_smgr_drop_all_sr(xlogreader);
+					break;
+			}
+			break;
+		}
+
+		case RM_HEAP2_ID:
+		{
+			switch (info)
+			{
+				case XLOG_HEAP2_MULTI_INSERT:
+					break;
+
+				default:
+					polar_smgr_drop_all_sr(xlogreader);
+					break;
+			}
+			break;
+		}
+
+		case RM_DBASE_ID:
+		{
+			xl_dbase_drop_rec *xlrec;
+			switch (info)
+			{
+				case XLOG_DBASE_DROP:
+					xlrec = (xl_dbase_drop_rec *) XLogRecGetData(xlogreader);
+					polar_dropdb_smgr_shared_relation_pool(xlrec->db_id);
+					break;
+
+				default:
+					break;
+			}
+			break;
+		}
+
+		default:
+			polar_smgr_drop_all_sr(xlogreader);
+			break;
+	}
+}
+
+/*
+ * Report availability of WAL for the given target LSN
+ *		(typically a slot's restart_lsn)
+ *
+ * Returns one of the following enum values:
+ *
+ * * WALAVAIL_RESERVED means targetLSN is available and it is in the range of
+ *   max_wal_size.
+ *
+ * * WALAVAIL_EXTENDED means it is still available by preserving extra
+ *   segments beyond max_wal_size. If max_slot_wal_keep_size is smaller
+ *   than max_wal_size, this state is not returned.
+ *
+ * * WALAVAIL_UNRESERVED means it is being lost and the next checkpoint will
+ *   remove reserved segments. The walsender using this slot may return to the
+ *   above.
+ *
+ * * WALAVAIL_REMOVED means it has been removed. A replication stream on
+ *   a slot with this LSN cannot continue after a restart.
+ *
+ * * WALAVAIL_INVALID_LSN means the slot hasn't been set to reserve WAL.
+ */
+WALAvailability
+GetWALAvailability(XLogRecPtr targetLSN)
+{
+	XLogRecPtr	currpos;		/* current write LSN */
+	XLogSegNo	currSeg;		/* segid of currpos */
+	XLogSegNo	targetSeg;		/* segid of targetLSN */
+	XLogSegNo	oldestSeg;		/* actual oldest segid */
+	XLogSegNo	oldestSegMaxWalSize;	/* oldest segid kept by max_wal_size */
+	XLogSegNo	oldestSlotSeg;	/* oldest segid kept by slot */
+	uint64		keepSegs;
+
+	/*
+	 * slot does not reserve WAL. Either deactivated, or has never been active
+	 */
+	if (XLogRecPtrIsInvalid(targetLSN))
+		return WALAVAIL_INVALID_LSN;
+
+	/*
+	 * Calculate the oldest segment currently reserved by all slots,
+	 * considering wal_keep_segments and max_slot_wal_keep_size.  Initialize
+	 * oldestSlotSeg to the current segment.
+	 */
+	currpos = GetXLogWriteRecPtr();
+	XLByteToSeg(currpos, oldestSlotSeg, wal_segment_size);
+	KeepLogSeg(currpos, &oldestSlotSeg);
+
+	/*
+	 * Find the oldest extant segment file. We get 1 until checkpoint removes
+	 * the first WAL segment file since startup, which causes the status being
+	 * wrong under certain abnormal conditions but that doesn't actually harm.
+	 */
+	oldestSeg = XLogGetLastRemovedSegno() + 1;
+
+	/* calculate oldest segment by max_wal_size */
+	XLByteToSeg(currpos, currSeg, wal_segment_size);
+	keepSegs = ConvertToXSegs(max_wal_size_mb, wal_segment_size) + 1;
+
+	if (currSeg > keepSegs)
+		oldestSegMaxWalSize = currSeg - keepSegs;
+	else
+		oldestSegMaxWalSize = 1;
+
+	/* the segment we care about */
+	XLByteToSeg(targetLSN, targetSeg, wal_segment_size);
+
+	/*
+	 * No point in returning reserved or extended status values if the
+	 * targetSeg is known to be lost.
+	 */
+	if (targetSeg >= oldestSlotSeg)
+	{
+		/* show "reserved" when targetSeg is within max_wal_size */
+		if (targetSeg >= oldestSegMaxWalSize)
+			return WALAVAIL_RESERVED;
+
+		/* being retained by slots exceeding max_wal_size */
+		return WALAVAIL_EXTENDED;
+	}
+
+	/* WAL segments are no longer retained but haven't been removed yet */
+	if (targetSeg >= oldestSeg)
+		return WALAVAIL_UNRESERVED;
+
+	/* Definitely lost */
+	return WALAVAIL_REMOVED;
+}
+
+/* POLAR: set value of polar_replica_update_dirs_by_redo */
+void
+polar_set_replica_update_dirs_by_redo(bool value)
+{
+	XLogCtl->polar_replica_update_dirs_by_redo = value;
+}
+
+/* POLAR: return value of polar_replica_update_dirs_by_redo */
+bool
+polar_replica_update_dirs_by_redo(void)
+{
+	return XLogCtl->polar_replica_update_dirs_by_redo;
+}
+
+/* POLAR: update minRecoveryPoint and minRecoveryPointTLI of controlfile */
+static void
+polar_update_controlfile_minrecoverypoint(XLogRecPtr min_recovery_point, TimeLineID min_recovery_point_tli)
+{
+	XLogRecPtr	polar_min_point;
+	TimeLineID	polar_min_point_tli;
+
+	Assert(ControlFile != NULL);
+	LWLockAcquire(ControlFileLock, LW_SHARED);
+	polar_min_point = ControlFile->minRecoveryPoint;
+	polar_min_point_tli = ControlFile->minRecoveryPointTLI;
+	LWLockRelease(ControlFileLock);
+
+	/* update when minRecoveryPoint or minRecoveryPointTLI is not equal to the parameters */
+	if (polar_min_point != min_recovery_point || polar_min_point_tli != min_recovery_point_tli)
+	{
+		LWLockAcquire(ControlFileLock, LW_EXCLUSIVE);
+		ControlFile->minRecoveryPoint = min_recovery_point;
+		ControlFile->minRecoveryPointTLI = min_recovery_point_tli;
+		UpdateControlFile();
+		LWLockRelease(ControlFileLock);
+	}
+}
+
+void
+polar_fill_segment_file_zero(int fd, char *tmppath, int segment_size,
+		uint32 init_write_event_info, uint32 init_fsync_event_info,
+		const char *log_file_info)
+{
+#define	POALR_FILL_ZERO_EACH_SIZE		1024 * 1024
+
+	/* POLAR: change palloc0 to static array to avoid memory allocations assert within a critical section */
+	static char data[POALR_FILL_ZERO_EACH_SIZE];
+
+	int		nbytes = 0;
+	instr_time	polar_init_start;
+	instr_time	polar_init_end;
+
+	if (IsUnderPostmaster)
+		INSTR_TIME_SET_CURRENT(polar_init_start);
+
+	MemSet(data, 0, sizeof(data));
+	for (nbytes = 0; nbytes < segment_size; nbytes += POALR_FILL_ZERO_EACH_SIZE)
+	{
+		int 	rc = 0;
+
+		errno = 0;
+		pgstat_report_wait_start(init_write_event_info);
+		if (POLAR_ENABLE_PWRITE())
+			rc = (int)polar_pwrite(fd, data, POALR_FILL_ZERO_EACH_SIZE, nbytes);
+		else
+			/*no cover line*/
+			rc = (int)polar_write(fd, data, POALR_FILL_ZERO_EACH_SIZE);
+
+		if (rc != POALR_FILL_ZERO_EACH_SIZE)
+		{
+			/*no cover begin*/
+			int 		save_errno = errno;
+
+			/*
+			 * If we fail to make the file, delete it to release disk space
+			 */
+			polar_unlink(tmppath);
+
+			polar_close(fd);
+
+			/* if write didn't set errno, assume problem is no disk space */
+			errno = save_errno ? save_errno : ENOSPC;
+
+			ereport(ERROR,
+					(errcode_for_file_access(),
+					 errmsg("could not write to file \"%s\": %m", tmppath)));
+			/*no cover end*/
+		}
+		pgstat_report_wait_end();
+	}
+
+	pgstat_report_wait_start(init_fsync_event_info);
+	if (polar_fsync(fd) != 0)
+	{
+		/*no cover begin*/
+		int 		save_errno = errno;
+
+		polar_close(fd);
+		errno = save_errno;
+		ereport(ERROR,
+				(errcode_for_file_access(),
+				 errmsg("could not fsync file \"%s\": %m", tmppath)));
+		/*no cover end*/
+	}
+
+	pgstat_report_wait_end();
+
+	if (IsUnderPostmaster)
+	{
+		INSTR_TIME_SET_CURRENT(polar_init_end);
+		INSTR_TIME_SUBTRACT(polar_init_end, polar_init_start);
+		elog(LOG, "done creating and filling tmp %s file %s time=%.3f s",
+				log_file_info, tmppath, INSTR_TIME_GET_MILLISEC(polar_init_end) / 1000);
+	}
+
+	return;
+}
+
+/* check the record ptr beyond the point of consensus log 
+ * For PITR, the recovery stop point must after the consensus log point
+ */
+static bool
+polar_dma_beyond_consensus_log(XLogRecPtr RecPtr)
+{
+	return (becameLeader && RecPtr > consensusReceivedUpto);
+}
+
+polar_io_fencing_t * 
+polar_io_fencing_get_instance(void)
+{
+	return &XLogCtl->polar_io_fencing;
+}
+
+
+/* POLAR: update curFileTLI according to recptr that needs to be read */
+static void
+polar_update_curFileTLI(XLogRecPtr ptr)
+{
+	TimeLineID old = curFileTLI;
+	curFileTLI = tliOfPointInHistory(ptr, readTimeLineHistory(curFileTLI));
+
+	if (old != curFileTLI)
+		elog(LOG, "%s: change curFileTLI from %d to %d", __func__, old, curFileTLI);
+}
+/* POLAR end */

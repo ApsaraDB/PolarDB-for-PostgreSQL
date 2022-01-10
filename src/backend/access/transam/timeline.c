@@ -42,6 +42,7 @@
 #include "storage/fd.h"
 
 /* POLAR */
+#include "polar_datamax/polar_datamax.h"
 #include "utils/guc.h"
 #include "storage/polar_fd.h"
 
@@ -81,11 +82,12 @@ readTimeLineHistory(TimeLineID targetTLI)
 	List	   *result;
 	char		path[MAXPGPATH];
 	char		histfname[MAXFNAMELEN];
-	FILE	   *fd;
+	char		fline[MAXPGPATH];
 	TimeLineHistoryEntry *entry;
 	TimeLineID	lasttli = 0;
 	XLogRecPtr	prevend;
 	bool		fromArchive = false;
+	int 		fd;
 
 	/* Timeline 1 does not have a history file, so no need to check */
 	if (targetTLI == 1)
@@ -96,7 +98,13 @@ readTimeLineHistory(TimeLineID targetTLI)
 		return list_make1(entry);
 	}
 
-	if (ArchiveRecoveryRequested)
+	/* 
+	 * POLAR: we need to test whether it's DataMax now to skip some restore 
+	 * operation which DataMax doesn't need to care. See detail in comments
+	 * of existsTimeLineHistory.
+	 */
+	if (ArchiveRecoveryRequested && !polar_is_datamax())
+	/* POLAR end */
 	{
 		TLHistoryFileName(histfname, targetTLI);
 		fromArchive =
@@ -105,8 +113,8 @@ readTimeLineHistory(TimeLineID targetTLI)
 	else
 		TLHistoryFilePath(path, targetTLI);
 
-	fd = AllocateFile(path, "r");
-	if (fd == NULL)
+	fd = polar_open_transient_file(path, O_RDONLY);
+	if (fd < 0)
 	{
 		if (errno != ENOENT)
 			ereport(FATAL,
@@ -125,28 +133,13 @@ readTimeLineHistory(TimeLineID targetTLI)
 	 * Parse the file...
 	 */
 	prevend = InvalidXLogRecPtr;
-	for (;;)
+	while (polar_read_line(fd, fline, sizeof(fline)) > 0)
 	{
-		char		fline[MAXPGPATH];
-		char	   *res;
 		char	   *ptr;
 		TimeLineID	tli;
 		uint32		switchpoint_hi;
 		uint32		switchpoint_lo;
 		int			nfields;
-
-		pgstat_report_wait_start(WAIT_EVENT_TIMELINE_HISTORY_READ);
-		res = fgets(fline, sizeof(fline), fd);
-		pgstat_report_wait_end();
-		if (res == NULL)
-		{
-			if (ferror(fd))
-				ereport(ERROR,
-						(errcode_for_file_access(),
-						 errmsg("could not read file \"%s\": %m", path)));
-
-			break;
-		}
 
 		/* skip leading whitespace and check for # comment */
 		for (ptr = fline; *ptr; ptr++)
@@ -190,7 +183,7 @@ readTimeLineHistory(TimeLineID targetTLI)
 		/* we ignore the remainder of each line */
 	}
 
-	FreeFile(fd);
+	CloseTransientFile(fd);
 
 	if (result && targetTLI <= lasttli)
 		ereport(FATAL,
@@ -226,13 +219,20 @@ existsTimeLineHistory(TimeLineID probeTLI)
 {
 	char		path[MAXPGPATH];
 	char		histfname[MAXFNAMELEN];
-	FILE	   *fd;
+	int			fd = 0;
 
 	/* Timeline 1 does not have a history file, so no need to check */
 	if (probeTLI == 1)
 		return false;
 
-	if (ArchiveRecoveryRequested)
+	/* 
+	 * POLAR: In DataMax mode, we reuse startup as main process and it may do 
+	 * something what startup do, so we don't want to change global variable.
+	 * As a result, we need to test whether it's DataMax now to skip some restore 
+	 * operation which DataMax doesn't need to care.
+	 */
+	if (ArchiveRecoveryRequested && !polar_is_datamax())
+	/* POLAR end */
 	{
 		TLHistoryFileName(histfname, probeTLI);
 		RestoreArchivedFile(path, histfname, "RECOVERYHISTORY", 0, false);
@@ -240,10 +240,10 @@ existsTimeLineHistory(TimeLineID probeTLI)
 	else
 		TLHistoryFilePath(path, probeTLI);
 
-	fd = AllocateFile(path, "r");
-	if (fd != NULL)
+	fd = BasicOpenFile(path, O_RDONLY, true);
+	if (fd >= 0)
 	{
-		FreeFile(fd);
+		polar_close(fd);
 		return true;
 	}
 	else
@@ -335,7 +335,13 @@ writeTimeLineHistory(TimeLineID newTLI, TimeLineID parentTLI,
 	/*
 	 * If a history file exists for the parent, copy it verbatim
 	 */
-	if (ArchiveRecoveryRequested)
+	/* 
+	 * POLAR: we need to test whether it's DataMax now to skip some restore 
+	 * operation which DataMax doesn't need to care. See detail in comments
+	 * of existsTimeLineHistory.
+	 */
+	if (ArchiveRecoveryRequested && !polar_is_datamax())
+	/* POLAR end */
 	{
 		TLHistoryFileName(histfname, parentTLI);
 		RestoreArchivedFile(path, histfname, "RECOVERYHISTORY", 0, false);
@@ -408,7 +414,6 @@ writeTimeLineHistory(TimeLineID newTLI, TimeLineID parentTLI,
 	nbytes = strlen(buffer);
 	errno = 0;
 	pgstat_report_wait_start(WAIT_EVENT_TIMELINE_HISTORY_WRITE);
-
 	if ((int) polar_write(fd, buffer, nbytes) != nbytes)
 	{
 		int			save_errno = errno;
@@ -427,7 +432,6 @@ writeTimeLineHistory(TimeLineID newTLI, TimeLineID parentTLI,
 	pgstat_report_wait_end();
 
 	pgstat_report_wait_start(WAIT_EVENT_TIMELINE_HISTORY_SYNC);
-
 	if (polar_fsync(fd) != 0)
 		ereport(data_sync_elevel(ERROR),
 				(errcode_for_file_access(),
@@ -451,8 +455,9 @@ writeTimeLineHistory(TimeLineID newTLI, TimeLineID parentTLI,
 	 */
 	durable_link_or_rename(tmppath, path, ERROR);
 
-	/* The history file can be archived immediately. */
-	if (XLogArchivingActive())
+	/* POLAR: if in dma mode, nofity wal file ready after consensus commit. 
+	 * The history file can be archived immediately. */
+	if (!polar_enable_dma && XLogArchivingActive())
 	{
 		TLHistoryFileName(histfname, newTLI);
 		XLogArchiveNotify(histfname);
@@ -477,7 +482,10 @@ writeTimeLineHistoryFile(TimeLineID tli, char *content, int size)
 	/*
 	 * Write into a temp file name.
 	 */
-	snprintf(polar_subtmppath, MAXPGPATH, XLOGDIR "/xlogtemp.%d", (int) getpid());
+	/* POLAR: adapt datamax mode */
+	snprintf(polar_subtmppath, MAXPGPATH, "%s/xlogtemp.%d", POLAR_DATAMAX_WAL_PATH, (int) getpid());
+	/* POLAR end */
+
 	polar_make_file_path_level2(tmppath, polar_subtmppath);
 	polar_unlink(tmppath);
 
@@ -508,7 +516,6 @@ writeTimeLineHistoryFile(TimeLineID tli, char *content, int size)
 	pgstat_report_wait_end();
 
 	pgstat_report_wait_start(WAIT_EVENT_TIMELINE_HISTORY_FILE_SYNC);
-
 	if (polar_fsync(fd) != 0)
 		ereport(data_sync_elevel(ERROR),
 				(errcode_for_file_access(),

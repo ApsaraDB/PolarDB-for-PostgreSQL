@@ -431,7 +431,7 @@ StreamLog(void)
 	stream.do_sync = do_sync;
 	stream.mark_done = false;
 	stream.walmethod = CreateWalDirectoryMethod(basedir, compresslevel,
-												stream.do_sync);
+												stream.do_sync, false);
 	stream.partial_suffix = ".partial";
 	stream.replication_slot = replication_slot;
 

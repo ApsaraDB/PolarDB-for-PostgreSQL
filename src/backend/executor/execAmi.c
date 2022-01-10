@@ -61,6 +61,13 @@
 #include "utils/rel.h"
 #include "utils/syscache.h"
 
+/* POLAR px */
+#include "executor/nodeAssertOp.h"
+#include "executor/nodeMotion_px.h"
+#include "executor/nodeSequence.h"
+#include "executor/nodeShareInputScan.h"
+#include "executor/nodePartitionSelector.h"
+/* POLAR end */
 
 static bool IndexSupportsBackwardScan(Oid indexid);
 
@@ -78,6 +85,9 @@ ExecReScan(PlanState *node)
 	/* If collecting timing stats, update them */
 	if (node->instrument)
 		InstrEndLoop(node->instrument);
+
+	/* POALR px: no longer squelched */
+	node->squelched = false;
 
 	/*
 	 * If we have changed parameters, propagate that info.
@@ -101,6 +111,14 @@ ExecReScan(PlanState *node)
 			SubPlanState *sstate = (SubPlanState *) lfirst(l);
 			PlanState  *splan = sstate->planstate;
 
+			/*
+			 *  POLAR px: If 'splan' is NULL, then InitPlan() thought it was "alien".  We
+			 * should not get here then, but let's sanity check.
+			 */
+			if (splan == NULL)
+				elog(ERROR, "subplan not initialized in this slice");
+
+
 			if (splan->plan->extParam != NULL)	/* don't care about child
 												 * local Params */
 				UpdateChangedParamSet(splan, node->chgParam);
@@ -111,6 +129,13 @@ ExecReScan(PlanState *node)
 		{
 			SubPlanState *sstate = (SubPlanState *) lfirst(l);
 			PlanState  *splan = sstate->planstate;
+
+			/*
+			 * POLAR px: If 'splan' is NULL, then InitPlan() thought it was "alien".  We
+			 * should not get here then, but let's sanity check.
+			 */
+			if (splan == NULL)
+				elog(ERROR, "subplan not initialized in this slice");
 
 			if (splan->plan->extParam != NULL)
 				UpdateChangedParamSet(splan, node->chgParam);
@@ -152,6 +177,12 @@ ExecReScan(PlanState *node)
 		case T_RecursiveUnionState:
 			ExecReScanRecursiveUnion((RecursiveUnionState *) node);
 			break;
+
+		/* POLAR px */
+		case T_AssertOpState:
+			ExecReScanAssertOp((AssertOpState *) node);
+			break;
+		/* POLAR end */
 
 		case T_BitmapAndState:
 			ExecReScanBitmapAnd((BitmapAndState *) node);
@@ -199,6 +230,11 @@ ExecReScan(PlanState *node)
 
 		case T_SubqueryScanState:
 			ExecReScanSubqueryScan((SubqueryScanState *) node);
+			break;
+
+		/* POLAR px */
+		case T_SequenceState:
+			ExecReScanSequence((SequenceState *) node);
 			break;
 
 		case T_FunctionScanState:
@@ -283,6 +319,21 @@ ExecReScan(PlanState *node)
 
 		case T_LimitState:
 			ExecReScanLimit((LimitState *) node);
+			break;
+
+		/* POLAR px */
+		case T_MotionState:
+			ExecReScanMotion((MotionState *) node);
+			break;
+
+		/* POLAR px */
+		case T_ShareInputScanState:
+			ExecReScanShareInputScan((ShareInputScanState *) node);
+			break;
+
+		/* POLAR px */
+		case T_PartitionSelectorState:
+			ExecReScanPartitionSelector((PartitionSelectorState *) node);
 			break;
 
 		default:
@@ -415,6 +466,8 @@ ExecSupportsMarkRestore(Path *pathnode)
 		case T_IndexOnlyScan:
 		case T_Material:
 		case T_Sort:
+		/* POLAR px */
+		case T_ShareInputScan:
 			return true;
 
 		case T_CustomScan:
@@ -509,6 +562,10 @@ ExecSupportsBackwardScan(Plan *node)
 		case T_SubqueryScan:
 			return ExecSupportsBackwardScan(((SubqueryScan *) node)->subplan);
 
+		/* POLAR px */
+		case T_ShareInputScan:
+			return true;
+
 		case T_CustomScan:
 			{
 				uint32		flags = ((CustomScan *) node)->flags;
@@ -585,6 +642,8 @@ ExecMaterializesOutput(NodeTag plantype)
 		case T_NamedTuplestoreScan:
 		case T_WorkTableScan:
 		case T_Sort:
+		/* POLAR px */
+		case T_ShareInputScan:
 			return true;
 
 		default:

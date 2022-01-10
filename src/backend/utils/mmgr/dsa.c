@@ -1528,8 +1528,8 @@ static bool
 ensure_active_superblock(dsa_area *area, dsa_area_pool *pool,
 						 int size_class)
 {
-	dsa_pointer span_pointer;
-	dsa_pointer start_pointer;
+	dsa_pointer span_pointer = InvalidDsaPointer;
+	dsa_pointer start_pointer = InvalidDsaPointer;
 	size_t		obsize = dsa_size_classes[size_class];
 	size_t		nmax;
 	int			fclass;

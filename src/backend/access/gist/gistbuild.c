@@ -156,8 +156,11 @@ gistbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 	 * not the case, big trouble's what we have.
 	 */
 	if (RelationGetNumberOfBlocks(index) != 0)
+	{
+		polar_check_nblocks_consistent(index);
 		elog(ERROR, "index \"%s\" already contains data",
 			 RelationGetRelationName(index));
+	}
 
 	/* no locking is needed */
 	buildstate.giststate = initGISTstate(index);

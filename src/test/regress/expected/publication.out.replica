@@ -1,0 +1,177 @@
+--
+-- PUBLICATION
+--
+CREATE ROLE regress_publication_user LOGIN SUPERUSER;
+ERROR:  cannot execute CREATE ROLE in a read-only transaction
+CREATE ROLE regress_publication_user2;
+ERROR:  cannot execute CREATE ROLE in a read-only transaction
+CREATE ROLE regress_publication_user_dummy LOGIN NOSUPERUSER;
+ERROR:  cannot execute CREATE ROLE in a read-only transaction
+SET SESSION AUTHORIZATION 'regress_publication_user';
+CREATE PUBLICATION testpub_default;
+ERROR:  cannot execute CREATE PUBLICATION in a read-only transaction
+COMMENT ON PUBLICATION testpub_default IS 'test publication';
+ERROR:  cannot execute COMMENT in a read-only transaction
+SELECT obj_description(p.oid, 'pg_publication') FROM pg_publication p;
+ obj_description  
+------------------
+ test publication
+(1 row)
+
+CREATE PUBLICATION testpib_ins_trunct WITH (publish = insert);
+ERROR:  cannot execute CREATE PUBLICATION in a read-only transaction
+ALTER PUBLICATION testpub_default SET (publish = update);
+ERROR:  cannot execute ALTER PUBLICATION in a read-only transaction
+-- error cases
+CREATE PUBLICATION testpub_xxx WITH (foo);
+ERROR:  cannot execute CREATE PUBLICATION in a read-only transaction
+CREATE PUBLICATION testpub_xxx WITH (publish = 'cluster, vacuum');
+ERROR:  cannot execute CREATE PUBLICATION in a read-only transaction
+\dRp
+ALTER PUBLICATION testpub_default SET (publish = 'insert, update, delete');
+ERROR:  cannot execute ALTER PUBLICATION in a read-only transaction
+\dRp
+--- adding tables
+CREATE SCHEMA pub_test;
+ERROR:  cannot execute CREATE SCHEMA in a read-only transaction
+CREATE TABLE testpub_tbl1 (id serial primary key, data text);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE pub_test.testpub_nopk (foo int, bar int);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE VIEW testpub_view AS SELECT 1;
+ERROR:  cannot execute CREATE VIEW in a read-only transaction
+CREATE TABLE testpub_parted (a int) PARTITION BY LIST (a);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE PUBLICATION testpub_foralltables FOR ALL TABLES WITH (publish = 'insert');
+ERROR:  cannot execute CREATE PUBLICATION in a read-only transaction
+ALTER PUBLICATION testpub_foralltables SET (publish = 'insert, update');
+ERROR:  cannot execute ALTER PUBLICATION in a read-only transaction
+CREATE TABLE testpub_tbl2 (id serial primary key, data text);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+-- fail - can't add to for all tables publication
+ALTER PUBLICATION testpub_foralltables ADD TABLE testpub_tbl2;
+ERROR:  cannot execute ALTER PUBLICATION in a read-only transaction
+-- fail - can't drop from all tables publication
+ALTER PUBLICATION testpub_foralltables DROP TABLE testpub_tbl2;
+ERROR:  cannot execute ALTER PUBLICATION in a read-only transaction
+-- fail - can't add to for all tables publication
+ALTER PUBLICATION testpub_foralltables SET TABLE pub_test.testpub_nopk;
+ERROR:  cannot execute ALTER PUBLICATION in a read-only transaction
+SELECT pubname, puballtables FROM pg_publication WHERE pubname = 'testpub_foralltables';
+       pubname        | puballtables 
+----------------------+--------------
+ testpub_foralltables | t
+(1 row)
+
+\d+ testpub_tbl2
+\dRp+ testpub_foralltables
+DROP TABLE testpub_tbl2;
+ERROR:  cannot execute DROP TABLE in a read-only transaction
+DROP PUBLICATION testpub_foralltables;
+ERROR:  cannot execute DROP PUBLICATION in a read-only transaction
+CREATE TABLE testpub_tbl3 (a int);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE testpub_tbl3a (b text) INHERITS (testpub_tbl3);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE PUBLICATION testpub3 FOR TABLE testpub_tbl3;
+ERROR:  cannot execute CREATE PUBLICATION in a read-only transaction
+CREATE PUBLICATION testpub4 FOR TABLE ONLY testpub_tbl3;
+ERROR:  cannot execute CREATE PUBLICATION in a read-only transaction
+\dRp+ testpub3
+\dRp+ testpub4
+DROP TABLE testpub_tbl3, testpub_tbl3a;
+ERROR:  cannot execute DROP TABLE in a read-only transaction
+DROP PUBLICATION testpub3, testpub4;
+ERROR:  cannot execute DROP PUBLICATION in a read-only transaction
+-- fail - view
+CREATE PUBLICATION testpub_fortbl FOR TABLE testpub_view;
+ERROR:  cannot execute CREATE PUBLICATION in a read-only transaction
+CREATE PUBLICATION testpub_fortbl FOR TABLE testpub_tbl1, pub_test.testpub_nopk;
+ERROR:  cannot execute CREATE PUBLICATION in a read-only transaction
+-- fail - already added
+ALTER PUBLICATION testpub_fortbl ADD TABLE testpub_tbl1;
+ERROR:  cannot execute ALTER PUBLICATION in a read-only transaction
+-- fail - already added
+CREATE PUBLICATION testpub_fortbl FOR TABLE testpub_tbl1;
+ERROR:  cannot execute CREATE PUBLICATION in a read-only transaction
+\dRp+ testpub_fortbl
+-- fail - view
+ALTER PUBLICATION testpub_default ADD TABLE testpub_view;
+ERROR:  cannot execute ALTER PUBLICATION in a read-only transaction
+-- fail - partitioned table
+ALTER PUBLICATION testpub_fortbl ADD TABLE testpub_parted;
+ERROR:  cannot execute ALTER PUBLICATION in a read-only transaction
+ALTER PUBLICATION testpub_default ADD TABLE testpub_tbl1;
+ERROR:  cannot execute ALTER PUBLICATION in a read-only transaction
+ALTER PUBLICATION testpub_default SET TABLE testpub_tbl1;
+ERROR:  cannot execute ALTER PUBLICATION in a read-only transaction
+ALTER PUBLICATION testpub_default ADD TABLE pub_test.testpub_nopk;
+ERROR:  cannot execute ALTER PUBLICATION in a read-only transaction
+ALTER PUBLICATION testpib_ins_trunct ADD TABLE pub_test.testpub_nopk, testpub_tbl1;
+ERROR:  cannot execute ALTER PUBLICATION in a read-only transaction
+\d+ pub_test.testpub_nopk
+\d+ testpub_tbl1
+\dRp+ testpub_default
+ALTER PUBLICATION testpub_default DROP TABLE testpub_tbl1, pub_test.testpub_nopk;
+ERROR:  cannot execute ALTER PUBLICATION in a read-only transaction
+-- fail - nonexistent
+ALTER PUBLICATION testpub_default DROP TABLE pub_test.testpub_nopk;
+ERROR:  cannot execute ALTER PUBLICATION in a read-only transaction
+\d+ testpub_tbl1
+-- permissions
+SET ROLE regress_publication_user2;
+CREATE PUBLICATION testpub2;  -- fail
+ERROR:  cannot execute CREATE PUBLICATION in a read-only transaction
+SET ROLE regress_publication_user;
+GRANT CREATE ON DATABASE regression TO regress_publication_user2;
+ERROR:  cannot execute GRANT in a read-only transaction
+SET ROLE regress_publication_user2;
+CREATE PUBLICATION testpub2;  -- ok
+ERROR:  cannot execute CREATE PUBLICATION in a read-only transaction
+ALTER PUBLICATION testpub2 ADD TABLE testpub_tbl1;  -- fail
+ERROR:  cannot execute ALTER PUBLICATION in a read-only transaction
+SET ROLE regress_publication_user;
+GRANT regress_publication_user TO regress_publication_user2;
+ERROR:  cannot execute GRANT ROLE in a read-only transaction
+SET ROLE regress_publication_user2;
+ALTER PUBLICATION testpub2 ADD TABLE testpub_tbl1;  -- ok
+ERROR:  cannot execute ALTER PUBLICATION in a read-only transaction
+DROP PUBLICATION testpub2;
+ERROR:  cannot execute DROP PUBLICATION in a read-only transaction
+SET ROLE regress_publication_user;
+REVOKE CREATE ON DATABASE regression FROM regress_publication_user2;
+ERROR:  cannot execute REVOKE in a read-only transaction
+DROP TABLE testpub_parted;
+ERROR:  cannot execute DROP TABLE in a read-only transaction
+DROP VIEW testpub_view;
+ERROR:  cannot execute DROP VIEW in a read-only transaction
+DROP TABLE testpub_tbl1;
+ERROR:  cannot execute DROP TABLE in a read-only transaction
+\dRp+ testpub_default
+-- fail - must be owner of publication
+SET ROLE regress_publication_user_dummy;
+ALTER PUBLICATION testpub_default RENAME TO testpub_dummy;
+ERROR:  cannot execute ALTER PUBLICATION in a read-only transaction
+RESET ROLE;
+ALTER PUBLICATION testpub_default RENAME TO testpub_foo;
+ERROR:  cannot execute ALTER PUBLICATION in a read-only transaction
+\dRp testpub_foo
+-- rename back to keep the rest simple
+ALTER PUBLICATION testpub_foo RENAME TO testpub_default;
+ERROR:  cannot execute ALTER PUBLICATION in a read-only transaction
+ALTER PUBLICATION testpub_default OWNER TO regress_publication_user2;
+ERROR:  cannot execute ALTER PUBLICATION in a read-only transaction
+\dRp testpub_default
+DROP PUBLICATION testpub_default;
+ERROR:  cannot execute DROP PUBLICATION in a read-only transaction
+DROP PUBLICATION testpib_ins_trunct;
+ERROR:  cannot execute DROP PUBLICATION in a read-only transaction
+DROP PUBLICATION testpub_fortbl;
+ERROR:  cannot execute DROP PUBLICATION in a read-only transaction
+DROP SCHEMA pub_test CASCADE;
+ERROR:  cannot execute DROP SCHEMA in a read-only transaction
+RESET SESSION AUTHORIZATION;
+DROP ROLE regress_publication_user, regress_publication_user2;
+ERROR:  cannot execute DROP ROLE in a read-only transaction
+DROP ROLE regress_publication_user_dummy;
+ERROR:  cannot execute DROP ROLE in a read-only transaction

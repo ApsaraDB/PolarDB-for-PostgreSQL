@@ -1,9 +1,9 @@
 /*-------------------------------------------------------------------------
  *
  * polar_pfsd.c
- *  Implementation of PFSD VFS interface.
  *
  * Copyright (c) 2020, Alibaba Group Holding Limited
+ * 
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -17,7 +17,7 @@
  * limitations under the License.
  *
  * IDENTIFICATION
- *  external/polar_vfs/polar_pfsd.c
+ *	  external/polar_vfs/polar_pfsd.c
  *
  *-------------------------------------------------------------------------
  */
@@ -37,19 +37,19 @@
 #include "storage/polar_pfsd.h"
 /* POLAR END */
 
-int			max_pfsd_io_size = PFSD_DEFAULT_MAX_IOSIZE;
+int max_pfsd_io_size = PFSD_DEFAULT_MAX_IOSIZE;
 
 ssize_t
 polar_pfsd_write(int fd, const void *buf, size_t len)
 {
-	ssize_t		res = -1;
-	char	   *from;
-	ssize_t		nleft;
-	ssize_t		writesize;
-	ssize_t		count = 0;
+	ssize_t     res = -1;
+	char        *from;
+	ssize_t     nleft;
+	ssize_t     writesize;
+	ssize_t     count = 0;
 
 	nleft = len;
-	from = (char *) buf;
+	from = (char *)buf;
 
 	while (nleft > 0)
 	{
@@ -75,11 +75,11 @@ polar_pfsd_write(int fd, const void *buf, size_t len)
 ssize_t
 polar_pfsd_read(int fd, void *buf, size_t len)
 {
-	ssize_t		res = -1;
-	ssize_t		iolen = 0;
-	ssize_t		nleft = len;
-	char	   *from = (char *) buf;
-	ssize_t		count = 0;
+	ssize_t     res = -1;
+	ssize_t     iolen = 0;
+	ssize_t     nleft = len;
+	char        *from = (char *)buf;
+	ssize_t     count = 0;
 
 	while (nleft > 0)
 	{
@@ -105,12 +105,12 @@ polar_pfsd_read(int fd, void *buf, size_t len)
 ssize_t
 polar_pfsd_pread(int fd, void *buf, size_t len, off_t offset)
 {
-	ssize_t		res = -1;
-	ssize_t		iolen = 0;
-	off_t		off = offset;
-	ssize_t		nleft = len;
-	char	   *from = (char *) buf;
-	ssize_t		count = 0;
+	ssize_t     res = -1;
+	ssize_t     iolen = 0;
+	off_t       off = offset;
+	ssize_t     nleft = len;
+	char        *from = (char *)buf;
+	ssize_t     count = 0;
 
 	while (nleft > 0)
 	{
@@ -137,15 +137,15 @@ polar_pfsd_pread(int fd, void *buf, size_t len, off_t offset)
 ssize_t
 polar_pfsd_pwrite(int fd, const void *buf, size_t len, off_t offset)
 {
-	char	   *from;
-	ssize_t		nleft;
-	off_t		startoffset;
-	ssize_t		writesize;
-	ssize_t		res = -1;
-	ssize_t		count = 0;
+	char        *from;
+	ssize_t     nleft;
+	off_t       startoffset;
+	ssize_t     writesize;
+	ssize_t     res = -1;
+	ssize_t     count = 0;
 
 	nleft = len;
-	from = (char *) buf;
+	from = (char *)buf;
 	startoffset = offset;
 
 	while (nleft > 0)

@@ -60,6 +60,12 @@ extern PGDLLIMPORT MemoryContext MessageContext;
 extern PGDLLIMPORT MemoryContext TopTransactionContext;
 extern PGDLLIMPORT MemoryContext CurTransactionContext;
 
+/* POLAR px */
+extern PGDLLIMPORT MemoryContext px_DispatcherContext;
+extern PGDLLIMPORT MemoryContext px_InterconnectContext;
+extern PGDLLIMPORT MemoryContext px_OptimizerMemoryContext;
+/* POLAR end */
+
 /* This is a transient link to the active portal's memory context: */
 extern PGDLLIMPORT MemoryContext PortalContext;
 
@@ -82,6 +88,7 @@ extern void MemoryContextSetParent(MemoryContext context,
 extern Size GetMemoryChunkSpace(void *pointer);
 extern MemoryContext MemoryContextGetParent(MemoryContext context);
 extern bool MemoryContextIsEmpty(MemoryContext context);
+extern Size MemoryContextMemAllocated(MemoryContext context, bool recurse);
 extern void MemoryContextStats(MemoryContext context);
 extern void MemoryContextStatsDetail(MemoryContext context, int max_children);
 extern void MemoryContextAllowInCriticalSection(MemoryContext context,

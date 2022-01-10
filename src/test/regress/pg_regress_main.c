@@ -22,6 +22,7 @@
 
 /* POLAR */
 extern bool polar_is_enable;
+extern bool polar_enable_parallel_execution;
 
 /*
  * start a psql test process for specified file (including redirection),
@@ -41,6 +42,10 @@ psql_start_test(const char *testname,
 	size_t		offset = 0;
 	char	   *appnameenv;
 
+	/* POLAR */
+	char		polar_replicaoutfile[MAXPGPATH];
+	char 		polar_expectfile[MAXPGPATH];
+
 	/*
 	 * Look for files in the output dir first, consistent with a vpath search.
 	 * This is mainly to create more reasonable error messages if the file is
@@ -56,11 +61,30 @@ psql_start_test(const char *testname,
 	snprintf(outfile, sizeof(outfile), "%s/results/%s.out",
 			 outputdir, testname);
 
-	snprintf(expectfile, sizeof(expectfile), "%s/expected/%s.out",
+	/* POLAR */
+	snprintf(polar_replicaoutfile, sizeof(polar_replicaoutfile), "%s/results/%s.out.replica",
 			 outputdir, testname);
-	if (!file_exists(expectfile))
+	/* POLAR end */
+
+	/* POLAR */
+	if (!polar_enable_parallel_execution)
+		snprintf(polar_expectfile, sizeof(polar_expectfile), "%s/expected/polardb_%s.out",
+				outputdir, testname);
+	else
+		snprintf(polar_expectfile, sizeof(polar_expectfile), "%s/px_expected/%s.out",
+				outputdir, testname);
+
+	if (polar_is_enable && file_exists(polar_expectfile))
+		snprintf(expectfile, sizeof(expectfile), "%s", polar_expectfile);
+	else
+	{
 		snprintf(expectfile, sizeof(expectfile), "%s/expected/%s.out",
-				 inputdir, testname);
+				outputdir, testname);
+		if (!file_exists(expectfile))
+			snprintf(expectfile, sizeof(expectfile), "%s/expected/%s.out",
+					inputdir, testname);
+	}
+	/* POLAR end */
 
 	add_stringlist_item(resultfiles, outfile);
 	add_stringlist_item(expectfiles, expectfile);
@@ -76,10 +100,13 @@ psql_start_test(const char *testname,
 		}
 	}
 
+	/* POLAR */
 	offset += snprintf(psql_cmd + offset, sizeof(psql_cmd) - offset,
-					   "\"%s%spsql\" -X -a -q -d \"%s\" < \"%s\" > \"%s\" 2>&1",
+					   "\"%s%spsql\" -X -a -q %s -O \"%s\" -d \"%s\" < \"%s\" > \"%s\" 2>&1",
 					   bindir ? bindir : "",
 					   bindir ? "/" : "",
+					   polar_enable_parallel_execution ? " --set=COMPARE_PX_RESULT=on" : "",
+					   polar_replicaoutfile,
 					   dblist->str,
 					   infile,
 					   outfile);

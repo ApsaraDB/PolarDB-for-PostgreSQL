@@ -1,5 +1,7 @@
-#!/bin/bash
+#!/bin/sh
+# 
 # Copyright (c) 2020, Alibaba Group Holding Limited
+# 
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
@@ -11,128 +13,188 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+# 
 
 set -x
-set -e
-set -o pipefail
 
-##################### Function Defination Start #####################
-function usage() {
-  cat <<EOF
-This script is to be used to compile PG core source code (PG engine code without files within contrib and external)
-It can be called with following options:
+##################### PHASE 1: set up parameter #####################
+usage () {
+cat <<EOF
+
+  This script is to be used to compile PG core source code (PG engine code without files within contrib and external)
+  It can be called with following options:
   --basedir=<temp dir for PG installation>, specifies which dir to install PG to, note this dir would be cleaned up before being used
   --datadir=<temp dir for databases>], specifies which dir to store database cluster, note this dir would be cleaned up before being used
+  --conf=<file path for postgresql.conf>, specifies the configure file to use
   --user=<user to start PG>, specifies which user to run PG as
   --port=<port to run PG on>, specifies which port to run PG on
   --debug=[on|off], specifies whether to compile PG with debug mode (affecting gcc flags)
   -c,--coverage, specifies whether to build PG with coverage option
   --nc,--nocompile, prevents re-compilation, re-installation, and re-initialization
-  --noinit, prevents creating primary, replica and standby instances
-  -t,-r,--regress, runs regression test after compilation and installation
+  -t,-r,--regress, runs regression test after compilation and installation.
+  -m --minimal compile with minimal extention set
   --withrep init the database with a hot standby replica
   --withstandby init the database with a hot standby replica
-  --with-pfsd, compile polar_vfs with PFSD support
-  --polar_rep_port=<port to run PG rep on>, specifies which port to run PG replica on
-  --polar_standby_port=<port to run PG standby on>, specifies which port to run PG standby on
+  --pg_bld_rep_port=<port to run PG rep on>, specifies which port to run PG replica on
+  --pg_bld_standby_port=<port to run PG standby on>, specifies which port to run PG standby on
   --repdir=<temp dir for databases>], specifies which dir to store replica data, note this dir would be cleaned up before being used
-  --standbydir=<temp dir for databases>], specifies which dir to store standby data, note this dir would be cleaned up before being used
-  -e,--extension, run extension test after compilation and installation
-  --tap, configure with --enable-tap-tests option
-  -r-external, runs external test after compilation and installation
-  -r-contrib, runs contrib test after compilation and installation
-  -r-pl, runs pl test after compilation and installation
-  -r-quick|-t-quick, run test with quick mode
-  --repnum=<number of replicas>, specifies how many replicas to be deployed 
-  --repport=<port to run PG on>, specifies which port to run PG replica on. If there are multiple replicas, this is apply for the first replica
-  --standbyport=<port to run PG on>, specifies which port to run PG standby on
+  --storage=localfs, specify storage type
+  -e,--extension, run extension test
+  --tde, TDE enable
+  --dma, DMA enable
+  --fault-injector, faultinjector enable
+  --without-fbl, run without flashback log
+  --extra-conf, add an extra conf file
 
-Please lookup the following secion to find the default values for above options.
+  Please lookup the following secion to find the default values for above options.
 
-Typical command patterns to kick off this script:
+  Typical command patterns to kick off this script:
 
-1) To just cleanup, re-compile, re-install and get PG restart:
+  1) To just cleanup, re-compile, re-install and get PG restart:
   polardb_build.sh
-2) To run all steps included 1), as well as run the ALL regression test cases:
+  2) To run all steps included 1), as well as run the ALL regression test cases:
   polardb_build.sh -t
-3) To cleanup and re-compile with code coverage option:
+  3) To cleanup and re-compile with code coverage option:
   polardb_build.sh -c
-4) To run the tests besides 3).
+  4) To run the tests besides 3).
   polardb_build.sh -c -t
-5) To run with specific port, user
-  polardb_build.sh --port=5501 --user=pg001
-6) To run with a replica
+  5) To run with specific port, user, and/or configuration file
+  polardb_build.sh --port=5501 --user=pg001 --conf=/root/data/postgresql.conf
+  6) To run on local pfs
+  polardb_build.sh --storage=localfs
+  7) To run with a replica (it also works with --storage=localfs)
   polardb_build.sh --withrep
-7) To run with a standby
+  8) To run with a standby (it also works with --storage=localfs)
   polardb_build.sh --withstandby
-8) To run all the tests (make check)(include src/test,src/pl,src/interfaces/ecpg,contrib,external)
+  9) To run all the tests (make check)(include src/test,src/pl,src/interfaces/ecpg,contrib,external)
   polardb_build.sh -r-check-all
-9) To run all the tests (make installcheck)(include src/test,src/pl,src/interfaces/ecpg,contrib,external)
+  10) To run all the tests (make installcheck)(include src/test,src/pl,src/interfaces/ecpg,contrib,external)
   polardb_build.sh -r-installcheck-all
+
 EOF
 
-  exit 0
+  exit 0;
 }
 
-function su_eval() {
-  if [[ -z $su_str ]]; then
+su_eval() {
+  if [[ -z $su_str ]];
+  then
     eval "$1"
   else
     eval "$su_str \"$1\" "
   fi
 }
 
+function del_cov() {
+  su_eval "$pg_bld_basedir/bin/pg_ctl -D $pg_bld_master_dir restart -w -c -o '-p $pg_bld_port'"
+  if [[ $withrep == "yes" ]];
+  then
+    for i in $(seq 1 $repnum)
+    do
+      if [[ $repnum == "1" ]];
+      then
+        pg_bld_replica_dir_n=${pg_bld_replica_dir}
+      else
+        pg_bld_replica_dir_n=${pg_bld_replica_dir}${i}
+      fi
+      pg_bld_rep_port_n=$(($pg_bld_rep_port+$i-1))
+      su_eval "$pg_bld_basedir/bin/pg_ctl -D $pg_bld_replica_dir_n restart -w -c -o '-p $pg_bld_rep_port_n'"
+    done
+  fi
+  if [[ $withstandby == "yes" ]];
+  then
+    su_eval "$pg_bld_basedir/bin/pg_ctl -D $pg_bld_standby_dir restart -w -c -o '-p $pg_bld_standby_port'"
+  fi
+
+  make coverage-html -j`getconf _NPROCESSORS_ONLN` > /dev/null
+  perl delta_coverage.pl -p $prev_commit
+
+  cd coverage
+  sed -i -E "s/Line Coverage/Line Coverage\/<a href=\"delta_coverage.txt\">Delta Coverage<\/a>/" index.html
+  sed -i -E "s/Line Coverage/Line Coverage\/<a href=\"delta_coverage.txt\">Delta Coverage<\/a>/" index-sort-l.html
+  cd ..
+
+}
+
+function px_init() {
+  echo "################################ px_init ################################"
+  echo "polar_enable_px=0" >> $pg_bld_master_dir/postgresql.conf
+  echo "polar_px_enable_check_workers=0" >> $pg_bld_master_dir/postgresql.conf
+  echo "polar_px_enable_replay_wait=1" >> $pg_bld_master_dir/postgresql.conf
+  echo "polar_px_dop_per_node=3" >> $pg_bld_master_dir/postgresql.conf
+  echo "polar_px_max_workers_number=0" >> $pg_bld_master_dir/postgresql.conf
+  echo "polar_px_enable_cte_shared_scan=1" >> $pg_bld_master_dir/postgresql.conf
+  echo "polar_px_enable_partition=1" >> $pg_bld_master_dir/postgresql.conf
+  echo "polar_px_enable_left_index_nestloop_join=1" >> $pg_bld_master_dir/postgresql.conf
+  echo "polar_px_wait_lock_timeout=1800000" >> $pg_bld_master_dir/postgresql.conf
+  echo "polar_px_enable_partitionwise_join=1" >> $pg_bld_master_dir/postgresql.conf
+  echo "polar_px_optimizer_multilevel_partitioning=1" >> $pg_bld_master_dir/postgresql.conf
+  echo "polar_px_max_slices=1000000" >> $pg_bld_master_dir/postgresql.conf
+  echo "polar_px_enable_adps=1" >> $pg_bld_master_dir/postgresql.conf
+  echo "polar_px_enable_adps_explain_analyze=1" >> $pg_bld_master_dir/postgresql.conf
+  echo "polar_trace_heap_scan_flow=1" >> $pg_bld_master_dir/postgresql.conf
+  echo "polar_px_enable_spi_read_all_namespaces=1" >> $pg_bld_master_dir/postgresql.conf
+  su_eval "$pg_bld_basedir/bin/pg_ctl -D $pg_bld_master_dir reload"
+}
+
 function check_core() {
-  polar_primary_dir_n=${polar_primary_dir}
-  corefile=$(find ${polar_primary_dir_n} -name core.*)
-  if [[ -n $corefile ]]; then
-    echo "find core in primary" >>testlog
+  pg_bld_master_dir_n=${pg_bld_master_dir}
+  corefile=`find ${pg_bld_master_dir_n} -name core.*`
+  if [[ -n $corefile ]];
+  then
+    echo "find core in master" >> testlog
     exit
   fi
 
-  if [[ $withrep == "yes" ]]; then
-    for i in $(seq 1 $repnum); do
-      polar_replica_dir_n=${polar_replica_dir}${i}
-      corefile=$(find ${polar_replica_dir_n} -name core.*)
-      if [[ -n $corefile ]]; then
-        echo "find core in replica" >>testlog
-        exit
+  if [[ $withrep == "yes" ]];
+  then
+    for i in $(seq 1 $repnum)
+    do
+      if [[ $repnum == "1" ]];
+      then
+        pg_bld_replica_dir_n=${pg_bld_replica_dir}
+        corefile=`find ${pg_bld_replica_dir_n} -name core.*`
+        if [[ -n $corefile ]];
+        then
+          echo "find core in replica" >> testlog
+          exit
+        fi
+      else
+        pg_bld_replica_dir_n=${pg_bld_replica_dir}${i}
+        corefile=`find ${pg_bld_replica_dir_n} -name core.*`
+        if [[ -n $corefile ]];
+        then
+          echo "find core in replica" >> testlog
+          exit
+        fi
       fi
     done
-  fi
-
-  if [[ $withstandby == "yes" ]]; then
-    corefile=$(find ${polar_standby_dir} -name core.*)
-    if [[ -n $corefile ]]; then
-      echo "find core in standby" >>testlog
-      exit
-    fi
   fi
 }
 
 function check_failed_case() {
-  set +e
-  failcases=$(grep "\.\. FAILED" testlog | head -n 1)
-  failcases=$(grep "\.\. Failed" testlog | head -n 1)$failcases
-  failcases=$(grep "CMake Error at" testlog | head -n 1)$failcases
-  failcases=$(grep "could not connect to server" testlog | head -n 1)$failcases
-  failcases=$(grep "terminating connection due to administrator command" testlog | head -n 1)$failcases
-  failcases=$(grep "FAIL" testlog | head -n 1)$failcases
-  failcases=$(grep "Dubious, test returned 255" testlog | head -n 1)$failcases
-  failcases=$(grep "FATAL" testlog | head -n 1)$failcases
-  failcases=$(grep "Error 2" testlog | head -n 1)$failcases
+  failcases=`grep "\.\. FAILED"  testlog | head -n 1`
+  failcases=`grep "\.\. Failed"  testlog | head -n 1`$failcases
+  failcases=`grep "CMake Error at" testlog| head -n 1`$failcases
+  failcases=`grep "could not connect to server" testlog | head -n 1`$failcases
+  failcases=`grep "terminating connection due to administrator command" testlog | head -n 1`$failcases
+  failcases=`grep "FAIL" testlog | head -n 1`$failcases
+  failcases=`grep "Dubious, test returned 255" testlog | head -n 1`$failcases
+  failcases=`grep "FATAL" testlog | head -n 1`$failcases
+  failcases=`grep "Error 2" testlog | head -n 1`$failcases
 
   check_core
 
-  if [[ -n $failcases ]]; then
+  if [[ -n $failcases ]];
+  then
     echo ""
     echo ""
     echo "============================"
     echo "Suspected failing records:"
     echo "============================"
     echo ""
-    grep "\.\. FAILED" testlog
-    grep "\.\. Failed" testlog
+    grep "\.\. FAILED"  testlog
+    grep "\.\. Failed"  testlog
     grep "CMake Error at" testlog
     grep "could not connect to server" testlog
     grep "terminating connection due to administrator command" testlog
@@ -147,462 +209,54 @@ function check_failed_case() {
     echo "==========================="
     echo ""
   fi
-  set -e
 }
 
-function polar_stop_database() {
-  su_eval "$polar_basedir/bin/pg_ctl -D $1 stop -m i || true"
-}
-
-function polar_reset_dir() {
-  # cleanup dirs and PG process
-  polar_stop_database $polar_primary_dir
-  for replica_dir in `ls $polar_prefix | grep 'tmp_replica_dir_polardb_pg_1100_bld'`
-  do
-    polar_stop_database $polar_prefix/$replica_dir
-  done
-  polar_stop_database $polar_standby_dir
-
-  # must clean before dir remove, some module depend on base_dir/bin/pg_config
-  if [[ $noclean == "no" ]] && [[ -d $polar_basedir/bin ]]; then
-    make distclean > /dev/null || true
-  fi
-
-  mkdir -p $polar_basedir
-  mkdir -p $polar_primary_dir
-  mkdir -p $polar_data_dir
-
-  if [[ $normbasedir == "no" ]] && [[ -n $polar_basedir ]] && [[ -d $polar_basedir/bin ]]; then
-    rm -fr $polar_basedir/*
-  fi
-
-  # cleanup datadir only if it is not specified explicitly by user (so a default trival one)
-  if [[ $data_dir_specified == "no" ]] && [[ -n $polar_primary_dir ]]; then
-    rm -fr $polar_primary_dir/*
-    rm -fr $polar_data_dir/*
-    need_initdb=yes
-  fi
-}
-
-function polar_set_env() {
-  gcc_opt_level_flag=
-
-  if [[ $with_pfsd == "yes" ]]; then
-    configure_flag="$configure_flag --with-pfsd"
-  fi
-
-  if [[ $debug_mode == "on" ]]; then
-    gcc_opt_level_flag="-ggdb -O0 -g3 -fno-omit-frame-pointer "
-    configure_flag="$configure_flag --enable-debug --enable-cassert --enable-tap-tests"
-    export COPT="-Werror"
-  else
-    gcc_opt_level_flag=" -O3 "
-  fi
-
-  if [[ $coverage == "on" ]]; then
-    configure_flag="$configure_flag --enable-coverage"
-  fi
-
-  if [[ $tap_tests == "on" ]]; then
-    configure_flag="$configure_flag --enable-tap-tests"
-  fi
-
-  if [[ -z $conf_file ]]; then
-    if [[ -f "./src/backend/utils/misc/postgresql.conf.regress" ]]; then
-      conf_file="./src/backend/utils/misc/postgresql.conf.regress"
-    else
-      conf_file="./src/backend/utils/misc/postgresql.conf.sample"
-    fi
-  fi
-
-  # setup env
-  export PGPORT=$polar_port
-  export PGUSER=postgres
-  export PGHOST=localhost
-  export PGDATABASE=postgres
-
-  export CFLAGS=" $gcc_opt_level_flag -g -I/usr/include/et -DLINUX_OOM_SCORE_ADJ=0 -DLINUX_OOM_ADJ=0 -DMAP_HUGETLB=0x40000 -pipe -Wall -fexceptions -fstack-protector-strong --param=ssp-buffer-size=4 -grecord-gcc-switches -mtune=generic"
-  export CXXFLAGS=" $gcc_opt_level_flag -g -I/usr/include/et  -pipe -Wall -fexceptions -fstack-protector-strong --param=ssp-buffer-size=4 -grecord-gcc-switches -mtune=generic"
-  export LDFLAGS=" -Wl,-rpath,'\$\$ORIGIN/../lib' "
-
-  # to get rid of postgis db creation error
-  export LANG=en_US.UTF-8
-
-  # need to set LD_LIBRARY_PATH for ecpg test cases to link correct libraries when compiled and run by its pg_regress
-  export LD_LIBRARY_PATH=$polar_basedir/lib:$LD_LIBRARY_PATH
-
-  # may be needed by some module Makefile to get the correct pg_config
-  export PATH=$polar_basedir/bin:$PATH
-
-  target_list="$target_list contrib"
-}
-
-function polar_compile_and_install() {
-  if [[ $nocompile == "off" ]]; then
-    ./configure --prefix=$polar_basedir --with-pgport=$polar_port $configure_flag
-    for target in $target_list; do
-      make -j$(getconf _NPROCESSORS_ONLN) -C $target >/dev/null
-      make install -C $target >/dev/null
-    done
-  fi
-}
-
-function polar_test_non_polar() {
-  if [[ $make_check_world == "on" ]]; then
-    unset COPT
-    su_eval "make check-world PG_TEST_EXTRA='kerberos ldap ssl' 2>&1" | tee -a testlog
-    su_eval "make -C src/test/regress polar-check 2>&1" | tee -a testlog
-    check_failed_case "check-world"
-  fi
-
-  if [[ $regress_test == "on" ]]; then
-    su_eval "make -C src/test/regress polar-check 2>&1" | tee -a testlog
-    if [ -e ./src/test/regress/regression.diffs ]; then
-      cat ./src/test/regress/regression.diffs
-      exit 1
-    fi
-  fi
-}
-
-common_configs="polar_enable_shared_storage_mode = on
-polar_hostid = 1
-max_connections = 1000
-logging_collector = on
-log_line_prefix='%p\t%r\t%u\t%m\t'
-log_directory = 'pg_log'
-shared_buffers = 2GB
-synchronous_commit = off
-full_page_writes = off
-autovacuum_naptime = 10min
-max_worker_processes = 32
-oss_fdw.polar_enable_oss_endpoint_mapping = off
-max_wal_size = 16GB
-min_wal_size = 4GB
-polar_vfs.localfs_mode = on
-polar_enable_shared_storage_mode = on
-polar_check_checkpoint_legal_interval = 1
-listen_addresses = '*'
-shared_preload_libraries = '\$libdir/polar_vfs,\$libdir/polar_worker'"
-
-function polar_init_primary() {
-  if [[ $need_initdb == "yes" ]]; then
-    su_eval "$polar_basedir/bin/initdb -k -U $pg_db_user -D $polar_primary_dir"
-
-    disk_name=$(echo $polar_data_dir | cut -d '/' -f2)
-
-    # common configs
-    echo "$common_configs" >> $polar_primary_dir/postgresql.conf
-    echo "polar_disk_name = '${disk_name}'" >> $polar_primary_dir/postgresql.conf
-    echo "polar_datadir = 'file-dio://${polar_data_dir}'" >> $polar_primary_dir/postgresql.conf
-
-    su_eval "$polar_basedir/bin/polar-initdb.sh ${polar_primary_dir}/ ${polar_data_dir}/ localfs"
-  fi
-
-  echo "port = ${polar_port}" >>$polar_primary_dir/postgresql.conf
-  echo "polar_hostid = 1" >>$polar_primary_dir/postgresql.conf
-  echo "full_page_writes = off" >>$polar_primary_dir/postgresql.conf
-}
-
-function polar_init_replicas() {
-  # init the config of the replica
-  if [[ $withrep == "yes" ]]; then
-    if [[ $rep_dir_specified == "no" ]]; then
-      polar_replica_dir_source=$polar_primary_dir
-    else
-      polar_replica_dir_source=$polar_replica_dir
-    fi
-
-    # create replicas
-    synchronous_standby_names=''
-    if [ $repnum -ge 1 ]; then
-      for i in $(seq 1 $repnum); do
-        polar_replica_dir_n=${polar_replica_dir}${i}
-        rm -fr $polar_replica_dir_n
-        cp -frp $polar_replica_dir_source $polar_replica_dir_n
-        polar_rep_port_n=$(($polar_rep_port + $i - 1))
-
-        echo "port = $polar_rep_port_n" >>$polar_replica_dir_n/postgresql.conf
-        echo "polar_hostid = $((1+$i))" >>$polar_replica_dir_n/postgresql.conf
-
-        rm -f $polar_replica_dir_n/recovery.conf
-        name="replica$i"
-        echo "primary_conninfo = 'host=localhost port=$polar_port user=$pg_db_user dbname=postgres application_name=replica${i}'" >>$polar_replica_dir_n/recovery.conf
-        echo "polar_replica = 'on'" >>$polar_replica_dir_n/recovery.conf
-        echo "recovery_target_timeline = 'latest'" >>$polar_replica_dir_n/recovery.conf
-        echo "primary_slot_name = '$name'" >>$polar_replica_dir_n/recovery.conf
-
-        if [ -z $synchronous_standby_names ]; then
-            synchronous_standby_names="$name"
-        else
-            synchronous_standby_names="$synchronous_standby_names,$name"
-        fi
-      done
-    fi
-
-    echo "synchronous_standby_names='$synchronous_standby_names'" >>$polar_primary_dir/postgresql.conf
-  fi
-}
-
-function polar_init_standby() {
-  if [[ $withstandby == "yes" ]]; then
-    if [[ $standby_dir_specified == "no" ]] && [[ -n $polar_standby_dir ]]; then
-      # init the dir of standby
-      rm -fr $polar_standby_dir
-
-      cp -frp $polar_primary_dir $polar_standby_dir
-
-      standby_hostid=2
-      if [[ $withrep == "yes" ]]; then
-        standby_hostid=$(($standby_hostid + $repnum))
-      fi
-      echo "port = $polar_standby_port"     >>$polar_standby_dir/postgresql.conf
-      echo "polar_hostid = $standby_hostid" >>$polar_standby_dir/postgresql.conf
-
-      echo "primary_conninfo = 'host=localhost port=$polar_port user=$pg_db_user dbname=postgres application_name=standby1'" >>$polar_standby_dir/recovery.conf
-      echo "standby_mode = 'on'" >>$polar_standby_dir/recovery.conf
-      echo "recovery_target_timeline = 'latest'" >>$polar_standby_dir/recovery.conf
-      echo "primary_slot_name = 'standby1'" >>$polar_standby_dir/recovery.conf
-    fi
-
-    # init the data dir of standby
-    rm -fr $polar_standby_data_dir
-    cp -frp $polar_data_dir $polar_standby_data_dir
-    sed -i -E "s/${polar_data_dir//\//\\/}/${polar_standby_data_dir//\//\\/}/" $polar_standby_dir/postgresql.conf
-  fi
-}
-
-function polar_init() {
-  polar_init_primary
-
-  polar_init_replicas
-
-  polar_init_standby
-}
-
-function polar_start() {
-  # start primary
-  su_eval "$polar_basedir/bin/pg_ctl -D $polar_primary_dir start -w -c"
-
-  # start replicas and create slots
-  if [[ $withrep == "yes" ]]; then
-    for i in $(seq 1 $repnum); do
-      polar_replica_dir_n=${polar_replica_dir}${i}
-      su_eval "env $polar_basedir/bin/psql -h 127.0.0.1 -d postgres -p $polar_port -U $pg_db_user -c \"SELECT * FROM pg_create_physical_replication_slot('replica${i}')\""
-      su_eval "$polar_basedir/bin/pg_ctl -D $polar_replica_dir_n start -w -c"
-    done
-  fi
-
-  # start standby and create slot
-  if [[ $withstandby == "yes" ]]; then
-    su_eval "env $polar_basedir/bin/psql -h 127.0.0.1 -d postgres -p $polar_port -U $pg_db_user -c \"SELECT * FROM pg_create_physical_replication_slot('standby1')\""
-    su_eval "$polar_basedir/bin/pg_ctl -D $polar_standby_dir start -w -c -o '-p $polar_standby_port'"
-  fi
-
-  echo "Following command can be used to connect to PG:"
-  echo ""
-  echo $polar_basedir/bin/psql -h 127.0.0.1 -d postgres -U $pg_db_user -p $polar_port
-  echo $polar_basedir/bin/psql -h 127.0.0.1 -d postgres -U $pg_db_user -p $polar_rep_port
-  echo $polar_basedir/bin/psql -h 127.0.0.1 -d postgres -U $pg_db_user -p $polar_standby_port
-  echo ""
-}
-
-function polar_test_regress() {
-  if [[ $regress_test == "on" ]] && [[ $regress_test_quick == "off" ]]; then
-    # some cases describe using "polar-ignore" when "make polar-installcheck", for polar model
-    su_eval "make installcheck PG_TEST_EXTRA='kerberos ldap ssl' 2>&1" | tee -a testlog
-
-    if [ -e ./src/test/regress/regression.diffs ]; then
-      cat ./src/test/regress/regression.diffs
-    fi
-
-    su_eval "make -C src/test/regress polar-installcheck 2>&1" | tee -a testlog
-
-    if [ -e ./src/test/regress/regression.diffs ]; then
-      cat ./src/test/regress/regression.diffs
-      exit 1
-    fi
-  fi
-}
-
-function polar_test_extension_contrib() {
-  if [[ $contrib_test == "on" ]]; then
-    # make installcheck the extensions
-    echo "============================"
-    echo "Check the contrib extensions:"
-    echo "============================"
-    su_eval "make -C contrib installcheck 2>&1 " | tee -a testlog
-  fi
-}
-
-function polar_test_extension_pl() {
-  if [[ $pl_test == "on" ]]; then
-    echo "============================"
-    echo "Check the pl extensions:"
-    echo "============================"
-    su_eval "make -C src/pl installcheck 2>&1 " | tee -a testlog
-  fi
-
-}
-
-function polar_test_extension_external() {
-  if [[ $external_test == "on" ]]; then
-    echo "============================"
-    echo "Check the external extensions:"
-    echo "============================"
-    su_eval "make -C external installcheck 2>&1 " | tee -a testlog
-  fi
-}
-
-function polar_test_extension() {
-  if [[ $extension_test == "on" ]]; then
-    polar_test_extension_contrib
-
-    polar_test_extension_pl
-
-    polar_test_extension_external
-
-    check_failed_case "extension_test"
-  fi
-}
-
-function polar_test_installcheck() {
-  if [[ $make_installcheck_world == "on" ]] && [[ $regress_test_quick == "off" ]]; then
-    export PGHOST=/tmp
-    su_eval "make installcheck-world PG_TEST_EXTRA='kerberos ldap ssl' 2>&1" | tee -a testlog
-    su_eval "make -C src/test/regress polar-installcheck 2>&1" | tee -a testlog
-    check_failed_case "installcheck-world"
-    unset PGHOST
-  fi
-}
-
-function polar_test() {
-  polar_test_regress
-
-  polar_test_extension
-
-  polar_test_installcheck
-}
-###################### Function Defination End ######################
-
-##################### Variable Defination Start #####################
-data_dir_specified=no
-rep_dir_specified=no
-standby_dir_specified=no
-withrep=no
-withstandby=no
-need_initdb=no
-noclean=no
-normbasedir=no
-noinit=no
-repnum=1
-su_str=
-
-target_list=". external"
-
-polar_prefix=$HOME
-polar_basedir=$polar_prefix/tmp_basedir_polardb_pg_1100_bld
-polar_data_dir=$polar_prefix/tmp_datadir_polardb_pg_1100_bld
-polar_primary_dir=$polar_prefix/tmp_primary_dir_polardb_pg_1100_bld
-polar_replica_dir=$polar_prefix/tmp_replica_dir_polardb_pg_1100_bld
-polar_standby_dir=$polar_prefix/tmp_standby_dir_polardb_pg_1100_bld
-polar_standby_data_dir=$polar_prefix/tmp_standby_datadir_polardb_pg_1100_bld
-
-polar_user=$(whoami)
-polar_port=5432
-polar_rep_port=5433
-polar_standby_port=5434
-polar_standby_port_specified=no
+pg_bld_prefix=$HOME
+pg_bld_basedir=$pg_bld_prefix/tmp_basedir_polardb_pg_1100_bld
+pg_bld_data_dir=$pg_bld_prefix/tmp_datadir_polardb_pg_1100_bld
+pg_bld_master_dir=$pg_bld_prefix/tmp_master_dir_polardb_pg_1100_bld
+pg_bld_replica_dir=$pg_bld_prefix/tmp_replica_dir_polardb_pg_1100_bld
+pg_bld_standby_dir=$pg_bld_prefix/tmp_standby_dir_polardb_pg_1100_bld
+pg_bld_standby_data_dir=$pg_bld_prefix/tmp_standby_datadir_polardb_pg_1100_bld
+
+pg_bld_user=`whoami`
+pg_bld_port=5432
+pg_bld_rep_port=5433
+pg_bld_standby_port=5434
 pg_db_user=postgres
+current_branch=`git rev-parse --abbrev-ref HEAD`
+if [[ $current_branch == "HEAD" ]];
+then
+  current_branch=`git rev-parse HEAD~0`
+fi
+prev_commit=`git rev-parse HEAD~1`
+next_commit=`git rev-parse HEAD~0`
 nocompile=off
 debug_mode=on
 coverage=off
 regress_test=off
+regress_test_ng=off
+
+px_debug_mode=off
+
 regress_test_quick=off
+
 make_installcheck_world=off
 make_check_world=off
+minimal_compile=off
+static_check=off
 tap_tests=off
-##################### Variable Defination End #######################
+delta_cov=off
+enable_asan=off
+tde=off
+dma=off
+fault_injector=off
+enable_flashback_log=on
 
-##################### PHASE 1: set up parameter #####################
-for arg; do
-  # the parameter after "=", or the whole $arg if no match
-  val=$(echo "$arg" | sed -e 's;^--[^=]*=;;')
 
-  #
-  # Note we use eval for dir assignment to expand ~
-  #
-  case "$arg" in
-  --basedir=*) eval polar_basedir="$val" ;;
-  --datadir=*)
-    eval polar_primary_dir="$val"
-    data_dir_specified=yes
-    ;;
-  --repdir=*)
-    eval polar_replica_dir="$val"
-    rep_dir_specified=yes
-    ;;
-  --standbydir=*)
-    eval polar_standby_dir="$val"
-    standby_dir_specified=yes
-    ;;
-  --user=*) polar_user="$val" ;;
-  --port=*) polar_port="$val" ;;
-  -h | --help) usage ;;
-  --nc | --nocompile) nocompile=on ;;
-  --debug=*) debug_mode="$val" ;;
-  --withrep*) withrep=yes ;;
-  --withstandby*) withstandby=yes ;;
-  --with-pfsd*) with_pfsd=yes ;;
-  -c | --coverage)
-    debug_mode=on
-    coverage=on
-    ;;
-  -r | -t | --regress)
-    regress_test=on
-    ;;
-  -r-check-all)
-    make_check_world=on
-    tap_tests=on
-    ;;
-  -r-installcheck-all)
-    make_installcheck_world=on
-    tap_tests=on
-    ;;
-  --noclean) noclean=yes ;;         #do not make distclean
-  --normbasedir) normbasedir=yes ;; #do not remove data and base dirs
-  --noinit) noinit=yes ;;         #do not build instances
-  -e | --extension)
-    extension_test=on
-    ;;
-  --tap) tap_tests=on ;;
-  -r-external)
-    external_test=on
-    ;;
-  -r-contrib)
-    contrib_test=on
-    ;;
-  -r-pl)
-    pl_test=on
-    ;;
-  -r-quick | -t-quick)
-    regress_test_quick=on
-    ;;
-  --repnum*) repnum="$val" ;;
-  --repport=*) polar_rep_port="$val" ;;
-  --standbyport=*)
-    polar_standby_port="$val"
-    polar_standby_port_specified=yes
-    ;;
-  *)
-    echo "wrong options : $arg"
-    exit 1
-    ;;
-  esac
-done
+enc_func="aes-256"
 
-if [[ $withrep == "yes" ]] && [[ $polar_standby_port_specified == "no" ]]; then
-  polar_standby_port=$(($polar_standby_port + $repnum - 1))
-fi
+SRCDIR=`pwd`                    # 源码文件目录
 
 # unset PG* envs
 unset PGPORT
@@ -611,25 +265,692 @@ unset PGHOST
 unset PGDATABASE
 unset PGUSER
 
-####### PHASE 2: cleanup dir and env, and set new dir and env #######
-polar_reset_dir
-polar_set_env
+function set_env() {
+  export PGPORT=$pg_bld_port
+  export PGUSER=postgres
+  export PGHOST=$pg_bld_master_dir
+  export PGDATABASE=postgres
+}
 
-#################### PHASE 3: compile and install ###################
-polar_compile_and_install
+# is data dir path specified by user
+data_dir_specified=no
+rep_dir_specified=no
+standby_dir_specified=no
+withrep=no
+withstandby=no
+need_initdb=no
+need_initrep=no
+noclean=no
+normbasedir=no
+withpx=no
+initpx=no
+repnum=1
 
-############# PHASE 4 Test: run test cases in non-polar #############
-polar_test_non_polar
+for arg do
+  # the parameter after "=", or the whole $arg if no match
+  val=`echo "$arg" | sed -e 's;^--[^=]*=;;'`
 
-###################### PHASE 5: init and start ######################
-if [[ $noinit == "no" ]]; then
-  polar_init
-  polar_start
+  #
+  # Note we use eval for dir assignment to expand ~
+  #
+  case "$arg" in
+    --basedir=*)                eval pg_bld_basedir="$val" ;;
+    --datadir=*)                eval pg_bld_master_dir="$val"; data_dir_specified=yes ;;
+    --repdir=*)                 eval pg_bld_replica_dir="$val"; rep_dir_specified=yes ;;
+    --standbydir=*)             eval pg_bld_standby_dir="$val"; standby_dir_specified=yes ;;
+    --user=*)                   pg_bld_user="$val" ;;
+    --port=*)                   pg_bld_port="$val" ;;
+    --repport=*)                pg_bld_rep_port="$val" ;;
+    --standbyport=*)            pg_bld_standby_port="$val" ;;
+    -h|--help)                  usage ;;
+    --nc|--nocompile)           nocompile=on ;;
+    --debug=*)                  debug_mode="$val" ;;
+    --px-debug=*)               px_debug_mode="$val" ;;
+    --prev_commit=*)            prev_commit="$val" ;;
+    --next_commit=*)            next_commit="$val" ;;
+    --withrep*)                 withrep=yes ;;
+    --withstandby*)             withstandby=yes ;;
+    --withpx*)                  withpx=yes ;;
+    --initpx*)                  withpx=yes;
+                                initpx=yes ;;
+    --repnum*)                  repnum="$val" ;;
+    -c|--coverage)              debug_mode=on;
+                                coverage=on
+                                ;;
+    -r|-t|--regress)            regress_test=on
+                                ;;
+    -r-ng)                      regress_test_ng=on
+                                tap_tests=on
+                                ;;
+    -r-quick|-t-quick)          regress_test_quick=on
+                                ;;
+    -r-px)                      regress_test=on;
+                                withpx=yes;
+                                initpx=yes
+                                ;;
+    -r-check-all)               make_check_world=on;
+                                tap_tests=on
+                                ;;
+    -r-installcheck-all)        make_installcheck_world=on;
+                                tap_tests=on
+                                ;;
+    --noclean)                  noclean=yes ;; #do not make distclean
+    --normbasedir)              normbasedir=yes ;; #do not remove data and base dirs
+    -m|--minimal)               minimal_compile=on ;;
+    --storage=*)                storage="$val" ;;  #default localfs, don't delete it for habit
+    --tap)                      tap_tests=on;;
+    --delta_coverage)           delta_coverage=on
+                                ;;
+    -e|--extension)             extension_test=on
+                                ;;
+    -r-external)                external_test=on
+                                ;;
+    -r-contrib)                 contrib_test=on
+                                ;;
+    -r-pl)                      pl_test=on
+                                ;;
+    --asan)                     enable_asan=on;;
+    --tde)                      tde=on
+                                ;;
+    --enc=*)                    eval enc_func="$val" #default aes-256 ,support aes-256、aes-128、sm4
+                                ;;
+    --dma)                      dma=on
+                                ;;
+    --fault-injector)           fault_injector=on
+                                ;;
+    --without-fbl)              enable_flashback_log=off
+                                ;;
+    --extra-conf=*)             extra_conf="$val"
+                                ;;
+    *)                          echo "wrong options : $arg";
+                                exit 1
+                                ;;
+  esac
+done
+
+set_env
+
+if [[ $delta_coverage == "on" ]];
+then
+  del_cov;
+  exit;
 fi
 
-#################### PHASE 6 Test: test for polar ###################
-polar_test
+su_str=
+if [[ "$EUID" == 0 ]];
+then
+  echo "Running with user $pg_bld_user!"
+  su_str="su $pg_bld_user -c "
+fi
 
-echo "polardb build done"
+if [[ $withpx == "yes" ]];
+then
+  echo "################################ build with px ################################"
+  configure_flag="$configure_flag --enable-polar-px"
+  withrep="yes"
+  if [[ $repnum == "1" ]];
+  then
+    repnum=2
+  fi
+fi
 
+if [[ $initpx == "yes" ]];
+then
+  export PG_REGRESS_PX_MODE="--polar-parallel-execution --load-extension=polar_px"
+fi
+
+
+####### PHASE 2: cleanup dir and env, and set new dir and env #######
+# stop server maybe failed, just ignore
+set +e
+
+# cleanup dirs and PG process
+su_eval "$pg_bld_basedir/bin/pg_ctl -D $pg_bld_master_dir stop -m i"
+su_eval "$pg_bld_basedir/bin/pg_ctl -D $pg_bld_replica_dir stop -m i"
+su_eval "$pg_bld_basedir/bin/pg_ctl -D $pg_bld_standby_dir stop -m i"
+
+# reset
+set -e
+
+# must clean before dir remove, some module depend on base_dir/bin/pg_config
+if [[ $noclean == "no" ]] && [[ -d $pg_bld_basedir/bin ]];
+then
+  make distclean > /dev/null || true
+fi
+
+mkdir -p $pg_bld_basedir
+mkdir -p $pg_bld_master_dir
+mkdir -p $pg_bld_replica_dir
+mkdir -p $pg_bld_data_dir
+
+if [[ $normbasedir == "no" ]] && [[ -n $pg_bld_basedir ]] && [[ -d $pg_bld_basedir/bin ]];
+then
+  rm -fr $pg_bld_basedir/*
+fi
+
+# cleanup datadir only if it is not specified explicitly by user (so a default trival one)
+if [[ $data_dir_specified == "no" ]] && [[ -n $pg_bld_master_dir ]];
+then
+  rm -fr $pg_bld_master_dir/*
+  rm -fr $pg_bld_data_dir/*
+  need_initdb=yes
+fi
+
+gcc_opt_level_flag=
+asan_opt_flag=
+common_configure_flag="--disable-rpath --with-system-tzdata=/usr/share/zoneinfo --with-openssl --with-libxml --with-readline --with-icu --with-uuid=e2fs --with-wal-blocksize=16 --with-segsize=128 --with-includes=/usr/local/openssl/include --enable-thread-safety --enable-nls --with-libxslt"
+tde_initdb_args=" "
+
+if [[ $debug_mode == "on" ]];
+then
+  gcc_opt_level_flag="-ggdb -O0 -g3 -fno-omit-frame-pointer "
+  configure_flag="$configure_flag --enable-debug --enable-cassert --enable-tap-tests --enable-polar-inject-tests"
+  export COPT="-Werror"
+else
+  gcc_opt_level_flag=" -O3 "
+  if [[ $withpx == "yes" ]];
+  then
+    gcc_opt_level_flag+=" -Wp,-D_FORTIFY_SOURCE=2 "
+  fi
+fi
+
+if [[ $px_debug_mode == "on" ]];
+then
+  debug_flag_in_config+=" --enable-gpos-debug "
+fi
+
+if [[ $enable_asan == "on" ]];
+then
+    asan_opt_flag=" -fsanitize=address -fno-omit-frame-pointer "
+    #Asan core file is huge (>15T), so we do not allow coredump.
+    export ASAN_OPTIONS="alloc_dealloc_mismatch=0:"
+fi
+
+if [[ $coverage == "on" ]];
+then
+  configure_flag="$configure_flag --enable-coverage"
+fi
+
+if [[ $tap_tests == "on" ]];
+then
+  configure_flag="$configure_flag --enable-tap-tests"
+fi
+
+if [[ $fault_injector == "on" ]]
+then
+  configure_flag="$configure_flag --enable-inject-faults"
+fi
+
+if [[ -z $conf_file ]];
+then
+  if [[ -f "./src/backend/utils/misc/postgresql.conf.regress" ]];
+  then
+    conf_file="./src/backend/utils/misc/postgresql.conf.regress"
+  else
+    conf_file="./src/backend/utils/misc/postgresql.conf.sample"
+  fi
+fi
+
+# setup env
+export CFLAGS=" $gcc_opt_level_flag -g -I/usr/include/et -DLINUX_OOM_SCORE_ADJ=0 -DLINUX_OOM_ADJ=0 -DMAP_HUGETLB=0x40000 -pipe -Wall -fexceptions -fstack-protector-strong --param=ssp-buffer-size=4 -grecord-gcc-switches -m64 -mtune=generic $asan_opt_flag "
+export CXXFLAGS=" $gcc_opt_level_flag -g -I/usr/include/et  -pipe -Wall -fexceptions -fstack-protector-strong --param=ssp-buffer-size=4 -grecord-gcc-switches -m64 -mtune=generic $asan_opt_flag "
+export LDFLAGS=" -Wl,-rpath,'\$\$ORIGIN/../lib' "
+export OPENSSL_ROOT_DIR=/usr/local/openssl
+export OPENSSL_LIBRARIES=/usr/local/openssl/lib/
+
+# to get rid of postgis db creation error
+export LANG=en_US.UTF-8
+
+# need to set LD_LIBRARY_PATH for ecpg test cases to link correct libraries when compiled and run by its pg_regress
+export LD_LIBRARY_PATH=$pg_bld_basedir/lib:$LD_LIBRARY_PATH
+
+# may be needed by some module Makefile to get the correct pg_config
+export PATH=$pg_bld_basedir/bin:$PATH
+
+target_list=". external"
+
+# Note: do not include --with-include or --with-libraries options which can cause linking of /usr/lib64 pg libs
+if [[ $minimal_compile = "off" ]];
+then
+  configure_flag="$configure_flag --with-tclconfig=/usr/lib64 --with-perl --with-python --with-tcl --with-pam --with-gssapi --with-ldap --with-llvm"
+  target_list="$target_list contrib"
+else
+  configure_flag="$configure_flag --enable-polar-minimal"
+fi
+
+#################### PHASE 3: compile and install ###################
+if [[ $nocompile == "off" ]];
+then
+  ./configure --prefix=$pg_bld_basedir --with-pgport=$pg_bld_port $common_configure_flag $configure_flag
+
+  current_path=$PWD
+  cd src/backend/polar_dma/libconsensus/polar_wrapper
+  if [[ $debug_mode == "on" ]]; then
+    bash ./build.sh -r -c ON -t debug
+  else
+    bash ./build.sh -r -c ON -t release
+  fi
+  cd $current_path
+
+  for target in $target_list
+  do
+    make -j`getconf _NPROCESSORS_ONLN` -C $target > /dev/null
+    make install -C $target > /dev/null
+  done
+fi ##nocoimpile == off
+
+dma_regress_opt=
+if [[ $dma == "on" ]];
+then
+  dma_regress_opt="DMA_OPTS=cluster"
+fi
+
+###################### PHASE 4 Test: run test cases in non-polar  ######################
+if [[ $make_check_world == "on" ]];
+then
+  unset COPT
+
+  su_eval "make $dma_regress_opt check-world PG_TEST_EXTRA='kerberos ldap ssl' 2>&1" | tee -a testlog
+  su_eval "make $dma_regress_opt polar-check 2>&1" | tee -a testlog
+  check_failed_case "check-world"
+fi
+
+if [[ $regress_test == "on" ]] && [[ $initpx != "yes" ]];
+then
+  su_eval "make $dma_regress_opt polar-check 2>&1" | tee -a testlog
+  if [ -e ./src/test/regress/regression.diffs ]
+  then
+    cat ./src/test/regress/regression.diffs
+    exit 1
+  fi
+fi
+
+###################### PHASE 5: init and start ######################
+# to protect us from running from wrong dir, use ../polardb_pg etc. here
+if [[ "$EUID" == 0 ]];
+then
+  chown -R $pg_bld_user ../polardb_pg
+  chown -R $pg_bld_user $pg_bld_basedir
+  chown -R $pg_bld_user $pg_bld_master_dir
+fi
+
+if [[ $tde == "on" ]];
+then
+    tde_initdb_args="--cluster-passphrase-command 'echo \"adfadsfadssssssssfa123123123123123123123123123123123123111313123\"' -e $enc_func"
+fi
+
+if [[ $need_initdb == "yes" ]];
+then
+  su_eval "$pg_bld_basedir/bin/initdb -k -U $pg_db_user -D $pg_bld_master_dir $tde_initdb_args"
+
+  # common configs
+  echo "polar_enable_shared_storage_mode = on
+        polar_hostid = 1
+        max_connections = 100
+        polar_wal_pipeline_enable = true
+        polar_create_table_with_full_replica_identity = off
+        logging_collector = on
+        log_directory = 'pg_log'
+
+        unix_socket_directories='.'
+        shared_buffers = 128MB
+        synchronous_commit = on
+        full_page_writes = off
+        #random_page_cost = 1.1
+        autovacuum_naptime = 10min
+        max_worker_processes = 32
+        polar_use_statistical_relpages = off
+        polar_enable_persisted_buffer_pool = off
+        polar_nblocks_cache_mode = 'all'
+        polar_enable_replica_use_smgr_cache = on
+        polar_enable_standby_use_smgr_cache = on" >> $pg_bld_master_dir/postgresql.conf
+
+  if [[ $enable_flashback_log == "on" ]];
+  then
+  echo "polar_enable_flashback_log = on" >> $pg_bld_master_dir/postgresql.conf
+  fi
+
+  echo "max_wal_size = 16GB
+        min_wal_size = 4GB" >> $pg_bld_master_dir/postgresql.conf
+
+  disk_name=`echo $pg_bld_data_dir | cut -d '/' -f2`
+
+  if [[ $withpx == "yes" ]];
+  then
+    sed -i 's/127.0.0.1\/32/0.0.0.0\/0/g' $pg_bld_master_dir/pg_hba.conf
+  fi
+
+  echo "polar_vfs.localfs_mode = true
+  polar_enable_localfs_test_mode = on
+  polar_enable_shared_storage_mode = on
+  listen_addresses = '*'
+  polar_disk_name = '${disk_name}'
+  polar_datadir = 'file-dio://${pg_bld_data_dir}'" >> $pg_bld_master_dir/postgresql.conf
+
+  echo "shared_preload_libraries = '\$libdir/polar_px,\$libdir/polar_vfs,\$libdir/polar_worker,\$libdir/pg_stat_statements,\$libdir/auth_delay,\$libdir/auto_explain,\$libdir/polar_monitor_preload,\$libdir/polar_stat_sql'" >> $pg_bld_master_dir/postgresql.conf
+
+  su_eval "sh $pg_bld_basedir/bin/polar-initdb.sh ${pg_bld_master_dir}/ ${pg_bld_data_dir}/ localfs"
+
+  if [[ $dma == "on" ]];
+  then
+    echo "polar_logindex_mem_size = 0
+          polar_enable_flashback_log = off" >> $pg_bld_master_dir/postgresql.conf
+    echo "polar_enable_dma = on
+          polar_dma_repl_user = $pg_db_user" >> $pg_bld_master_dir/polar_dma.conf
+    su_eval "$pg_bld_basedir/bin/postgres -D $pg_bld_master_dir -p $pg_bld_port -c polar_dma_init_meta=ON -c polar_dma_members_info=\"localhost:$pg_bld_port@1\""
+  fi
+fi
+
+# init the config of the replica
+if [[ $rep_dir_specified == "no" ]] && [[ -n $pg_bld_replica_dir ]] && [[ $withrep == "yes" ]];
+then
+  rm -fr $pg_bld_replica_dir
+
+  cp -frp $pg_bld_master_dir $pg_bld_replica_dir
+
+  echo "polar_hostid = 2" >> $pg_bld_replica_dir/postgresql.conf
+  echo "synchronous_standby_names='replica1'" >> $pg_bld_master_dir/postgresql.conf
+
+  echo "primary_conninfo = 'host=localhost port=$pg_bld_port user=$pg_db_user dbname=postgres application_name=replica1'" >> $pg_bld_replica_dir/recovery.conf
+  echo "polar_replica = on" >> $pg_bld_replica_dir/recovery.conf
+  echo "recovery_target_timeline = 'latest'" >> $pg_bld_replica_dir/recovery.conf
+  echo "primary_slot_name = 'replica1'" >> $pg_bld_replica_dir/recovery.conf
+
+  if [[ -n $extra_conf ]];
+  then
+    if [[ -f $extra_conf ]];
+    then
+      cat $extra_conf >> $pg_bld_replica_dir/postgresql.conf
+      echo >> $pg_bld_replica_dir/postgresql.conf
+    else
+      echo "invalid extra conf file : $extra_conf";
+      exit 1
+    fi
+  fi
+
+fi
+
+# init the config of the standby
+if [[ $standby_dir_specified == "no" ]] && [[ -n $pg_bld_standby_dir ]] && [[ $withstandby == "yes" ]];
+then
+  rm -fr $pg_bld_standby_dir
+
+  cp -frp $pg_bld_master_dir $pg_bld_standby_dir
+
+  echo "polar_hostid = 3" >> $pg_bld_standby_dir/postgresql.conf
+
+  if [[ $enable_flashback_log == "on" ]];
+  then
+  echo "polar_enable_flashback_log = on
+      polar_enable_lazy_checkpoint = off" >> $pg_bld_standby_dir/postgresql.conf
+  fi
+
+  echo "primary_conninfo = 'host=localhost port=$pg_bld_port user=$pg_db_user dbname=postgres application_name=standby1'" >> $pg_bld_standby_dir/recovery.conf
+  echo "standby_mode = on" >> $pg_bld_standby_dir/recovery.conf
+  echo "recovery_target_timeline = 'latest'" >> $pg_bld_standby_dir/recovery.conf
+  echo "primary_slot_name = 'standby1'" >> $pg_bld_standby_dir/recovery.conf
+
+  if [[ -n $extra_conf ]];
+  then
+    if [[ -f $extra_conf ]];
+    then
+      cat $extra_conf >> $pg_bld_standby_dir/postgresql.conf
+      echo >> $pg_bld_standby_dir/postgresql.conf
+    else
+      echo "invalid extra conf file : $extra_conf";
+      exit 1
+    fi
+  fi
+  
+fi
+
+# start master
+echo "port = ${pg_bld_port}
+      polar_hostid = 100
+      full_page_writes = off" >> $pg_bld_master_dir/postgresql.conf
+polar_cluster_map=""
+
+su_eval "$pg_bld_basedir/bin/pg_ctl -D $pg_bld_master_dir start -w -c"
+
+# create a replication_slot and start
+if [[ $withrep == "yes" ]];
+then
+  for i in $(seq 1 $repnum)
+  do
+    if [[ $repnum == "1" ]];
+    then
+      pg_bld_replica_dir_n=${pg_bld_replica_dir}
+    else
+      pg_bld_replica_dir_n=${pg_bld_replica_dir}${i}
+      su_eval "$pg_bld_basedir/bin/pg_ctl -D $pg_bld_replica_dir_n stop -m i || true"
+      rm -fr $pg_bld_replica_dir_n
+      cp -frp $pg_bld_replica_dir $pg_bld_replica_dir_n
+    fi
+    pg_bld_rep_port_n=$(($pg_bld_rep_port+$i-1))
+    echo "port = $pg_bld_rep_port_n
+          polar_hostid = $i" >> $pg_bld_replica_dir_n/postgresql.conf
+
+    if [[ -n $extra_conf ]];
+    then
+      if [[ -f $extra_conf ]];
+      then
+        if [[ $pg_bld_replica_dir_n != ${pg_bld_replica_dir} ]]
+        then
+          cat $extra_conf >> $pg_bld_replica_dir_n/postgresql.conf
+          echo >> $pg_bld_replica_dir_n/postgresql.conf
+        fi
+      else
+        echo "invalid extra conf file : $extra_conf";
+        exit 1
+      fi
+    fi
+
+    echo "primary_conninfo = 'host=localhost port=$pg_bld_port user=$pg_db_user dbname=postgres application_name=replica${i}'" >> $pg_bld_replica_dir_n/recovery.conf
+    echo "primary_slot_name = 'replica${i}'" >> $pg_bld_replica_dir_n/recovery.conf
+    # su_eval "env $pg_bld_basedir/bin/psql -h 127.0.0.1 -d postgres -U $pg_db_user -c \"SELECT * FROM pg_create_physical_replication_slot('replica${i}')\""
+    su_eval "$pg_bld_basedir/bin/pg_ctl -D $pg_bld_replica_dir_n start -w -c"
+    polar_cluster_map=$polar_cluster_map",node$i|127.0.0.1|$pg_bld_rep_port_n"
+  done
+  polar_cluster_map=${polar_cluster_map: 1}
+fi
+
+if [[ $dma == "on" ]];
+then
+  while true
+  do
+    $pg_bld_basedir/bin/psql -h 127.0.0.1 -U $pg_db_user -p $pg_bld_port -d postgres -c "do \$\$
+     DECLARE
+       counter integer := 60;
+     BEGIN
+       LOOP
+         PERFORM 1 where pg_is_in_recovery() = false;
+         IF FOUND THEN
+           RAISE NOTICE 'became leader';
+           EXIT;
+         END IF;
+         PERFORM pg_sleep(1);
+         counter := counter - 1;
+         IF counter = 0 THEN
+           RAISE EXCEPTION 'became leader timeout';
+           EXIT;
+         END IF;
+       END LOOP;
+     END\$\$;"
+    if [ $? -eq 0 ]; then
+       break;
+    else
+       echo "retry in 1 second .........."
+       sleep 1
+    fi
+  done
+fi
+
+echo polar_cluster_map=\'$polar_cluster_map\' >> $pg_bld_master_dir/postgresql.conf
+
+if [[ -n $extra_conf ]];
+then
+  if [[ -f $extra_conf ]];
+  then
+    cat $extra_conf >> $pg_bld_master_dir/postgresql.conf
+    echo >> $pg_bld_master_dir/postgresql.conf
+  else
+    echo "invalid extra conf file : $extra_conf";
+    exit 1
+  fi
+fi
+
+su_eval "$pg_bld_basedir/bin/pg_ctl -D $pg_bld_master_dir reload"
+
+# create a replication_slot and user $pg_bld_user
+if [[ $withrep == "yes" ]];
+then
+  for i in $(seq 1 $repnum)
+  do
+    su_eval "env $pg_bld_basedir/bin/psql -h 127.0.0.1 -d postgres -p $pg_bld_port -U $pg_db_user -c \"SELECT * FROM pg_create_physical_replication_slot('replica${i}')\""
+    sleep 2
+  done
+fi
+
+# build standby data dir, then start standby
+if [[ $withstandby == "yes" ]];
+then
+  su_eval "env  $pg_bld_basedir/bin/psql -h 127.0.0.1 -d postgres -p $pg_bld_port -U $pg_db_user -c \"SELECT * FROM pg_create_physical_replication_slot('standby1')\""
+  sleep 2
+          rm -fr $pg_bld_standby_data_dir
+          cp -frp $pg_bld_data_dir $pg_bld_standby_data_dir
+          sed -i -E "s/${pg_bld_data_dir//\//\\/}/${pg_bld_standby_data_dir//\//\\/}/" $pg_bld_standby_dir/postgresql.conf
+  su_eval "$pg_bld_basedir/bin/pg_ctl -D $pg_bld_standby_dir start -w -c -o '-p $pg_bld_standby_port'"
+fi
+
+echo "Following command can be used to connect to PG:"
+echo ""
+echo su $pg_bld_user -c \"$pg_bld_basedir/bin/psql -h 127.0.0.1 -d -p $pg_bld_replica_dir postgres \"
+echo su $pg_bld_user -c \"$pg_bld_basedir/bin/psql -h 127.0.0.1 -d -p $pg_bld_rep_port postgres \"
+echo su $pg_bld_user -c \"$pg_bld_basedir/bin/psql -h 127.0.0.1 -d -p $pg_bld_standby_port postgres \"
+echo ""
+
+######################### PHASE 6 Test: test for polar ###########################
+if [[ $initpx == "yes" ]];
+then
+  px_init
+fi
+
+if [[ $regress_test == "on" ]] && [[ $regress_test_quick == "off" ]];
+then
+
+  # some cases describe using "polar-ignore" when "make polar-installcheck", for polar model
+  su_eval "make installcheck 2>&1" | tee -a testlog
+
+  if [ -e ./src/test/regress/regression.diffs ]
+  then
+    cat ./src/test/regress/regression.diffs
+    cp -frp ./src/test/regress/regression.diffs  ./src/test/regress/regression_installcheck.diffs
+  fi
+
+  if [[ $initpx == "yes" ]];
+  then
+    su_eval "make polar-installcheck-px 2>&1" | tee -a testlog
+  else
+    su_eval "make polar-installcheck 2>&1" | tee -a testlog
+  fi
+
+  if [ -e ./src/test/regress/regression.diffs ]
+  then
+    cat ./src/test/regress/regression.diffs
+    cp -frp ./src/test/regress/regression.diffs   ./src/test/regress/regression_polar.diffs
+  fi
+
+  if [[ -e ./src/test/regress/regression_installcheck.diffs ]] || [[ -e ./src/test/regress/regression_polar.diffs ]]
+  then
+    exit 1
+  fi
+
+fi
+
+if [[ $extension_test == "on" ]];
+then
+  if [[ $contrib_test == "on" ]];
+  then
+    # make installcheck the extensions
+    set +x
+    echo "============================"
+    echo "Check the contrib extensions:"
+    echo "============================"
+    supported_extensions=`su_eval "$pg_bld_basedir/bin/psql -h 127.0.0.1 -d postgres -U $pg_db_user -c 'show polar_supported_extensions;' -t"`
+    extension_arr=(${supported_extensions//+/ })
+    contrib_extension_array=`ls contrib/`
+    for i in ${extension_arr[@]};
+    do
+    if [[ $i =~ plperl || $i =~ plpgsql || $i =~ pltcl ]] ; then
+      echo "extensions $i in src/pl has checked already."
+    elif [[ $i =~ citext || $i =~ btree_gin || $i =~ btree_gist ]] ; then
+      : # intentionally empty statement
+      su_eval "make -C contrib/$i installcheck 2>&1 " | tee -a testlog
+    elif [[ "${contrib_extension_array[@]}" =~ $i ]] ; then
+      su_eval "make -C contrib/$i installcheck 2>&1 " | tee -a testlog
+    elif [[ $i =~ "uuid-ossp" ]] ; then
+      su_eval "make -C contrib/uuid-ossp installcheck 2>&1 " | tee -a testlog
+    fi
+    done
+    set -x
+  fi
+
+  if [[ $pl_test == "on" ]];
+  then
+    set +x
+    echo "============================"
+    echo "Check the pl extensions:"
+    echo "============================"
+    : # intentionally empty statement
+    su_eval "make -C src/pl installcheck 2>&1 " | tee -a testlog
+    set -x
+  fi
+
+  if [[ $external_test == "on" ]];
+  then
+    set +x
+    echo "============================"
+    echo "Check the external extensions:"
+    echo "============================"
+    su_eval "make -C external installcheck 2>&1 " | tee -a testlog
+    set -x
+  fi
+
+  check_failed_case
+fi
+
+if [[ $coverage == "on" ]];
+then
+  del_cov
+fi
+
+if [[ $make_installcheck_world == "on" ]] && [[ $regress_test_quick == "off" ]];
+then
+  export PGHOST=$pg_bld_master_dir
+  su_eval "make installcheck-world PG_TEST_EXTRA='kerberos ldap ssl' 2>&1" | tee -a testlog
+  su_eval "make polar-installcheck 2>&1" | tee -a testlog
+  check_failed_case "installcheck-world"
+  unset PGHOST
+fi
+
+if [[ $regress_test_ng == "on" ]]
+then
+  echo "regress_test_ng begin"
+  if [[ $regress_test_quick == "off" ]];
+  then
+    su_eval "make -C src/test installcheck 2>&1" | tee -a testlog
+    su_eval "make -C src/test/regress polar-installcheck 2>&1" | tee -a testlog
+    check_failed_case
+  else
+    killall postgres || true
+    killall polar-postgres || true
+    unset COPT
+    su_eval "make $dma_regress_opt -C src/test check 2>&1" | tee -a testlog
+    su_eval "make $dma_regress_opt -C src/test/regress polar-check 2>&1" | tee -a testlog
+    check_failed_case
+  fi
+  echo "regress_test_ng end"
+fi
+
+echo "rds build done"
 exit 0

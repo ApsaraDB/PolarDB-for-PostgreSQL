@@ -298,4 +298,6 @@ extern void shdepDropOwned(List *relids, DropBehavior behavior);
 
 extern void shdepReassignOwned(List *relids, Oid newrole);
 
+void polar_find_report_dependentobjects(ObjectAddresses *Objects);
+
 #endif							/* DEPENDENCY_H */

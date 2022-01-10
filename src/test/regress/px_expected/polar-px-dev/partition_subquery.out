@@ -1,0 +1,41 @@
+/*--EXPLAIN_QUERY_BEGIN*/
+CREATE SCHEMA partition_subquery;
+SET SEARCH_PATH=partition_subquery;
+-- Given a partition table
+CREATE TABLE pt1(id int) PARTITION BY RANGE (id);
+CREATE TABLE pt1_1 PARTITION of pt1 default;
+-- When I run a query, outermost query, and it is selecting FROM a subquery
+-- And that subquery, subquery 1, contains another subquery, subquery 2
+-- And the outermost query aggregates over a column from an inherited table
+-- And the subquery 1 is prevented from being pulled up into a join
+SELECT id FROM (
+	SELECT id, sum(id) OVER() as sum_id FROM (
+		SELECT id FROM pt1
+	) as sq1
+) as sq2 GROUP BY id;
+ id 
+----
+(0 rows)
+
+                                 QUERY PLAN                                 
+----------------------------------------------------------------------------
+ GroupAggregate
+   Output: pt1_1.id
+   Group Key: pt1_1.id
+   ->  Sort
+         Output: (sum(pt1_1.id) OVER (?)), pt1_1.id
+         Sort Key: pt1_1.id
+         ->  WindowAgg
+               Output: sum(pt1_1.id) OVER (?), pt1_1.id
+               ->  PX Coordinator 6:1  (slice1; segments: 6)
+                     Output: pt1_1.id
+                     ->  Append
+                           ->  Partial Seq Scan on partition_subquery.pt1_1
+                                 Output: pt1_1.id
+ Optimizer: PolarDB PX Optimizer
+(14 rows)
+
+-- Then, the query executes successfully
+--start_ignore
+DROP TABLE IF EXISTS pt1;
+--end_ignore

@@ -51,6 +51,8 @@
 
 #include "plpgsql.h"
 
+/* POLAR px */
+#include "px/px_snapshot.h"
 
 typedef struct
 {
@@ -1938,6 +1940,23 @@ exec_stmt(PLpgSQL_execstate *estate, PLpgSQL_stmt *stmt)
 
 	CHECK_FOR_INTERRUPTS();
 
+	/* POLAR px: Check that all the queries are safe to execute on PX. */
+	if (px_role == PX_ROLE_PX && px_is_executing)
+	{
+		switch (stmt->cmd_type)
+		{
+			case PLPGSQL_STMT_COMMIT:
+			case PLPGSQL_STMT_ROLLBACK:
+			{
+				ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					errmsg("function cannot execute on a PX slice because it issues a non-SELECT statement")));
+			}
+			default:
+				break;
+		}
+	}
+
 	switch (stmt->cmd_type)
 	{
 		case PLPGSQL_STMT_BLOCK:
@@ -2118,6 +2137,11 @@ exec_stmt_call(PLpgSQL_execstate *estate, PLpgSQL_stmt_call *stmt)
 		SPIPlanPtr	plan = expr->plan;
 		ParamListInfo paramLI;
 
+		/* POLAR px */
+		Snapshot	px_snapshot = ((px_role == PX_ROLE_PX && px_is_executing)
+									? RestoreSnapshot(pxsn_get_serialized_snapshot_data())
+									: InvalidSnapshot);
+
 		if (plan == NULL)
 		{
 
@@ -2263,7 +2287,10 @@ exec_stmt_call(PLpgSQL_execstate *estate, PLpgSQL_stmt_call *stmt)
 		 */
 		if (!estate->readonly_func)
 		{
-			PushActiveSnapshot(GetTransactionSnapshot());
+			/* should use given px_snapshot when in px*/
+			PushActiveSnapshot((px_role == PX_ROLE_PX && px_is_executing)
+								? px_snapshot
+								: GetTransactionSnapshot());
 			pushed_active_snap = true;
 		}
 
@@ -6067,6 +6094,10 @@ exec_eval_simple_expr(PLpgSQL_execstate *estate,
 	CachedPlan *cplan;
 	void	   *save_setup_arg;
 	MemoryContext oldcontext;
+	/* POLAR px */
+	Snapshot	px_snapshot = ((px_role == PX_ROLE_PX && px_is_executing)
+								? RestoreSnapshot(pxsn_get_serialized_snapshot_data())
+								: InvalidSnapshot);
 
 	/*
 	 * Forget it if expression wasn't simple before.
@@ -6145,7 +6176,10 @@ exec_eval_simple_expr(PLpgSQL_execstate *estate,
 	if (!estate->readonly_func)
 	{
 		CommandCounterIncrement();
-		PushActiveSnapshot(GetTransactionSnapshot());
+		/* should use given px_snapshot when in px*/
+		PushActiveSnapshot((px_role == PX_ROLE_PX && px_is_executing)
+							? px_snapshot
+							: GetTransactionSnapshot());
 	}
 
 	/*
@@ -7814,6 +7848,13 @@ exec_simple_check_plan(PLpgSQL_execstate *estate, PLpgSQL_expr *expr)
 	if (list_length(plansources) != 1)
 		return;
 	plansource = (CachedPlanSource *) linitial(plansources);
+
+	/* POLAR px: allow read-only stmt*/
+	if (estate->func->fn_readonly)
+	{
+		if (px_enable_plpgsql)
+			plansource->cursor_options |= CURSOR_OPT_PX_OK;
+	}
 
 	/*
 	 * 1. There must be one single querytree.

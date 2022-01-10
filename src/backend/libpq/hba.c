@@ -726,8 +726,10 @@ check_hostname(hbaPort *port, const char *hostname)
 		return false;
 
 	/* If we already verified the forward lookup, we're done */
+	/* POLAR: Proxy connection cannot be authorized by hostname rules */
 	if (port->remote_hostname_resolv == +1)
-		return true;
+		return (port->polar_proxy ? false : true);
+	/* POLAR end */
 
 	/* Lookup IP from host name and check against original IP */
 	ret = getaddrinfo(port->remote_hostname, NULL, NULL, &gai_result);
@@ -776,6 +778,23 @@ check_hostname(hbaPort *port, const char *hostname)
 
 	port->remote_hostname_resolv = found ? +1 : -1;
 
+	/* POLAR: If proxy connection, hostname verification is disabled */
+	if (port->polar_proxy)
+	{
+		/*
+		 * POLAR: Check HOSTNAME_LOOKUP_DETAIL in auth.c. If proxy connection, 
+		 * we cannot get real hostname of client, so we set hostname resolve status 
+		 * to 'Cannot translate IP address' (from HOSTNAME_LOOKUP_DETAIL).
+		 */
+		if (port->remote_hostname_resolv == +1)
+		{
+			port->remote_hostname_resolv = -2;
+			port->remote_hostname_errcode = EAI_NONAME;
+		}
+		return false;
+	}
+	/* POLAR end */
+
 	return found;
 }
 
@@ -823,7 +842,7 @@ check_network_callback(struct sockaddr *addr, struct sockaddr *netmask,
 /*
  * Use pg_foreach_ifaddr to check a samehost or samenet match
  */
-static bool
+bool
 check_same_host_or_net(SockAddr *raddr, IPCompareMethod method)
 {
 	check_network_data cn;
@@ -2017,6 +2036,90 @@ parse_hba_auth_opt(char *name, char *val, HbaLine *hbaline,
 	return true;
 }
 
+/* 
+ * POLAR: Check hba for proxy origin info.
+ *
+ * If polar_proxy is true and some hba line matched, return HbaLine pointer, otherwise return NULL.
+ */
+static HbaLine*
+polar_check_proxy_hba(hbaPort *port)
+{
+	Oid			roleid;
+	ListCell   *line;
+	HbaLine    *hba;
+
+	if (!port->polar_proxy)
+		return NULL;
+
+	/* Get the target role's OID.  Note we do not error out for bad role. */
+	roleid = get_role_oid(port->user_name, true);
+
+	foreach(line, parsed_hba_lines)
+	{
+		hba = (HbaLine *) lfirst(line);
+
+		/* Check connection type */
+		if (hba->conntype == ctLocal)
+		{
+			if (!IS_AF_UNIX(port->polar_origin_addr.addr.ss_family))
+				continue;
+		}
+		else
+		{
+			if (IS_AF_UNIX(port->polar_origin_addr.addr.ss_family))
+				continue;
+
+			/* Check SSL state */
+			if (port->polar_proxy_ssl_in_use)
+			{
+				/* Connection is SSL, match both "host" and "hostssl" */
+				if (hba->conntype == ctHostNoSSL)
+					continue;
+			}
+			else
+			{
+				/* Connection is not SSL, match both "host" and "hostnossl" */
+				if (hba->conntype == ctHostSSL)
+					continue;
+			}
+
+			/* Check IP address */
+			switch (hba->ip_cmp_method)
+			{
+				case ipCmpMask:
+					if (!check_ip(&port->polar_origin_addr,
+						  	(struct sockaddr *) &hba->addr,
+						  	(struct sockaddr *) &hba->mask))
+						continue;
+					break;
+				case ipCmpAll:
+					break;
+				case ipCmpSameHost:
+				case ipCmpSameNet:
+					if (!check_same_host_or_net(&port->polar_origin_addr,
+									hba->ip_cmp_method))
+						continue;
+					break;
+				default:
+					/* shouldn't get here, but deem it no-match if so */
+					continue;
+			}
+		}						/* != ctLocal */
+
+		/* Check database and role */
+		if (!check_db(port->database_name, port->user_name, roleid,
+					  hba->databases))
+			continue;
+
+		if (!check_role(port->user_name, roleid, hba->roles))
+			continue;
+		/* Found a record that matched! */
+		return hba;
+	}
+
+	return NULL;
+}
+
 /*
  *	Scan the pre-parsed hba file, looking for a match to the port's connection
  *	request.
@@ -2099,6 +2202,17 @@ check_hba(hbaPort *port)
 
 		if (!check_role(port->user_name, roleid, hba->roles))
 			continue;
+
+		/* POLAR: Check original ip */
+		if (port->polar_proxy)
+		{
+			hba = polar_check_proxy_hba(port);
+			if (hba == NULL)
+			{
+				continue;	
+			}
+		}
+		/* POLAR end */
 
 		/* Found a record that matched! */
 		port->hba = hba;

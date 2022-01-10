@@ -246,9 +246,11 @@ CREATE TABLE testschema.tablespace_acl (c int);
 CREATE INDEX k ON testschema.tablespace_acl (c) TABLESPACE regress_tblspace;
 ALTER TABLE testschema.tablespace_acl OWNER TO regress_tablespace_user2;
 SET SESSION ROLE regress_tablespace_user2;
-CREATE TABLE tablespace_table (i int) TABLESPACE regress_tblspace; -- fail
-ERROR:  permission denied for tablespace regress_tblspace
+CREATE TABLE tablespace_table (i int) TABLESPACE regress_tblspace;
+NOTICE:  User defined tablespace is not supported, The tablespace set by the user will be ignored
+DROP TABLE tablespace_table;
 ALTER TABLE testschema.tablespace_acl ALTER c TYPE bigint;
+NOTICE:  User defined tablespace is not supported, The tablespace set by the user will be ignored
 RESET ROLE;
 ALTER TABLESPACE regress_tblspace RENAME TO regress_tblspace_renamed;
 ALTER TABLE ALL IN TABLESPACE regress_tblspace_renamed SET TABLESPACE pg_default;

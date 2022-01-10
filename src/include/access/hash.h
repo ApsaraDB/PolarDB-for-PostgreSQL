@@ -355,6 +355,13 @@ typedef HashMetaPageData *HashMetaPage;
 #define HASHEXTENDED_PROC		2
 #define HASHNProcs				2
 
+/*	POLAR px
+ *	When a new operator class is declared, we require that the user supply
+ *	us with an amproc procudure for hashing a key of the new type.
+ *	Since we only have one such proc in amproc, it's number 1.
+ */
+#define HASHPROC				1
+/* POLAR end */
 
 /* public routines */
 

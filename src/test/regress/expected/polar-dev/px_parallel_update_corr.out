@@ -1,0 +1,605 @@
+-- config
+/*--POLAR_ENABLE_PX*/
+set polar_enable_px = 1;
+set polar_px_optimizer_enable_dml_constraints = 1;
+set polar_px_enable_update = 1;
+-- polar_px_update_dop_num = 1
+set polar_px_update_dop_num = 1;
+\i sql/polar-dev/px_parallel_update_init_corr.sql
+-- create normal table
+drop table if exists px_parallel_corr_update_t1 cascade;
+psql:sql/polar-dev/px_parallel_update_init_corr.sql:2: NOTICE:  table "px_parallel_corr_update_t1" does not exist, skipping
+CREATE TABLE px_parallel_corr_update_t1 (c1 int, c2 int) ;
+insert into px_parallel_corr_update_t1 select generate_series(1,100),generate_series(1,100);
+drop table if exists px_parallel_corr_update_t2 cascade;
+psql:sql/polar-dev/px_parallel_update_init_corr.sql:6: NOTICE:  table "px_parallel_corr_update_t2" does not exist, skipping
+CREATE TABLE px_parallel_corr_update_t2 (c1 int, c2 int) ;
+insert into px_parallel_corr_update_t2 select generate_series(1,100),generate_series(1,100);
+drop table if exists px_parallel_corr_update_t3 cascade;
+psql:sql/polar-dev/px_parallel_update_init_corr.sql:10: NOTICE:  table "px_parallel_corr_update_t3" does not exist, skipping
+CREATE TABLE px_parallel_corr_update_t3 (c1 int, c2 int) ;
+insert into px_parallel_corr_update_t3 select generate_series(1,1000),generate_series(1,1000);
+select count(*) from px_parallel_corr_update_t1;
+ count 
+-------
+   100
+(1 row)
+
+select count(*) from px_parallel_corr_update_t2;
+ count 
+-------
+   100
+(1 row)
+
+------------------------------------------------------------------------
+--range partition
+--Partition constraint: ((x IS NOT NULL) AND (x >= 10) AND (x < 20))
+drop table if exists px_parallel_corr_update_t1_range cascade;
+psql:sql/polar-dev/px_parallel_update_init_corr.sql:21: NOTICE:  table "px_parallel_corr_update_t1_range" does not exist, skipping
+CREATE TABLE px_parallel_corr_update_t1_range(id int, value int) PARTITION BY RANGE(id);
+CREATE TABLE px_parallel_corr_update_t1_range_p1 PARTITION OF px_parallel_corr_update_t1_range FOR VALUES FROM (1) TO (10000);
+CREATE TABLE px_parallel_corr_update_t1_range_p2 PARTITION OF px_parallel_corr_update_t1_range FOR VALUES FROM (10000) TO (20000);
+CREATE TABLE px_parallel_corr_update_t1_range_p3 PARTITION OF px_parallel_corr_update_t1_range DEFAULT;
+insert into px_parallel_corr_update_t1_range select generate_series(1,30000, 2);
+-- Index Test Init
+drop table if exists px_parallel_corr_update_t4 cascade;
+psql:sql/polar-dev/px_parallel_update_init_corr.sql:30: NOTICE:  table "px_parallel_corr_update_t4" does not exist, skipping
+CREATE TABLE px_parallel_corr_update_t4 (c1 int, c2 int) ;
+insert into px_parallel_corr_update_t4 select generate_series(1,1000),generate_series(1,1000);
+CREATE INDEX t_index_plan_corr on px_parallel_corr_update_t4(c1);
+drop table if exists px_parallel_corr_update_t10 cascade;
+psql:sql/polar-dev/px_parallel_update_init_corr.sql:38: NOTICE:  table "px_parallel_corr_update_t10" does not exist, skipping
+CREATE TABLE px_parallel_corr_update_t10(
+   ID INT PRIMARY KEY     NOT NULL,
+   NAME           TEXT    NOT NULL
+);
+insert into px_parallel_corr_update_t10 select generate_series(1,1000), 'hello';
+drop table if exists px_parallel_corr_update_audit cascade;
+psql:sql/polar-dev/px_parallel_update_init_corr.sql:46: NOTICE:  table "px_parallel_corr_update_audit" does not exist, skipping
+CREATE TABLE px_parallel_corr_update_audit(
+   EMP_ID INT NOT NULL,
+   ENTRY_DATE TEXT NOT NULL
+);
+insert into px_parallel_corr_update_audit select generate_series(1,1000), 'world';
+CREATE OR REPLACE FUNCTION auditlogfunc_corr() RETURNS TRIGGER AS $example_table$
+   BEGIN
+      UPDATE px_parallel_corr_update_audit set EMP_ID=new.ID, ENTRY_DATE='xxxx';
+      RETURN NEW;
+   END;
+$example_table$ LANGUAGE plpgsql;
+CREATE TRIGGER px_parallel_corr_update_trigger AFTER UPDATE ON px_parallel_corr_update_t10 FOR EACH ROW EXECUTE PROCEDURE auditlogfunc_corr();
+-- Create Updatable View
+drop table if exists px_parallel_corr_update_t11 cascade;
+psql:sql/polar-dev/px_parallel_update_init_corr.sql:64: NOTICE:  table "px_parallel_corr_update_t11" does not exist, skipping
+CREATE TABLE px_parallel_corr_update_t11 (c1 int, c2 int, c3 int) ;
+insert into px_parallel_corr_update_t11 select generate_series(1,1000), generate_series(1,1000), generate_series(1,1000);
+CREATE VIEW px_parallel_corr_update_view AS select
+c1,
+c2,
+c3
+from px_parallel_corr_update_t11
+where c1 < 200;
+-- Create with CTE
+drop table if exists px_parallel_corr_update_t12 cascade;
+psql:sql/polar-dev/px_parallel_update_init_corr.sql:76: NOTICE:  table "px_parallel_corr_update_t12" does not exist, skipping
+CREATE TABLE px_parallel_corr_update_t12 (c1 int, c2 int, c3 int) ;
+insert into px_parallel_corr_update_t12 select generate_series(1,1000), generate_series(1,1000), generate_series(1,1000);
+drop table if exists px_parallel_corr_update_t13 cascade;
+psql:sql/polar-dev/px_parallel_update_init_corr.sql:79: NOTICE:  table "px_parallel_corr_update_t13" does not exist, skipping
+CREATE TABLE px_parallel_corr_update_t13 (c1 int, c2 int, c3 int) ;
+insert into px_parallel_corr_update_t13 select generate_series(1,1000), generate_series(1,1000), generate_series(1,1000);
+ANALYZE;
+\i sql/polar-dev/px_parallel_update_base_corr.sql
+-- Update without subplan
+update px_parallel_corr_update_t1 set c1 = 3;
+update px_parallel_corr_update_t2 set c1 = 4;
+select max(c1) from px_parallel_corr_update_t1;
+ max 
+-----
+   3
+(1 row)
+
+select max(c1) from px_parallel_corr_update_t2;
+ max 
+-----
+   4
+(1 row)
+
+-- Update with subplan
+update px_parallel_corr_update_t3 set c2=(select MAX(c2) from px_parallel_corr_update_t1);
+update px_parallel_corr_update_t3 set c1=(select AVG(c2) from px_parallel_corr_update_t2);
+select AVG(c1) from px_parallel_corr_update_t3;
+         avg         
+---------------------
+ 51.0000000000000000
+(1 row)
+
+select AVG(c2) from px_parallel_corr_update_t3;
+         avg          
+----------------------
+ 100.0000000000000000
+(1 row)
+
+-- Update vector
+update px_parallel_corr_update_t3 set c1=10, c2=(select MAX(c2) from px_parallel_corr_update_t2);
+select AVG(c1) + MAX(c2) from px_parallel_corr_update_t3;
+       ?column?       
+----------------------
+ 110.0000000000000000
+(1 row)
+
+-- Update Partition Table, should be fallback
+update px_parallel_corr_update_t1_range set id = 3;
+update px_parallel_corr_update_t1_range set id =(select max(c2) from px_parallel_corr_update_t2);
+update px_parallel_corr_update_t1_range set id =(select max(c2) from px_parallel_corr_update_t2), value = 5;
+select max(id), max(value) from px_parallel_corr_update_t1_range;
+ max | max 
+-----+-----
+ 100 |   5
+(1 row)
+
+-- Update With Index
+update px_parallel_corr_update_t3 set c2 = (select min(c1) from px_parallel_corr_update_t4);
+update px_parallel_corr_update_t4 set c1 = 5;
+select * from px_parallel_corr_update_t4 where c1 <> 5;
+ c1 | c2 
+----+----
+(0 rows)
+
+-- Update with TRIGGER
+update px_parallel_corr_update_t10 set NAME='123456';
+select * from px_parallel_corr_update_t10 order by ID limit 1;
+ id |  name  
+----+--------
+  1 | 123456
+(1 row)
+
+select * from px_parallel_corr_update_audit order by EMP_ID limit 1;
+ emp_id | entry_date 
+--------+------------
+   1000 | xxxx
+(1 row)
+
+-- Update with VIEW
+update px_parallel_corr_update_view set c2 = -100, c3 = 100;
+select * from px_parallel_corr_update_view order by c1 ASC limit 10;
+ c1 |  c2  | c3  
+----+------+-----
+  1 | -100 | 100
+  2 | -100 | 100
+  3 | -100 | 100
+  4 | -100 | 100
+  5 | -100 | 100
+  6 | -100 | 100
+  7 | -100 | 100
+  8 | -100 | 100
+  9 | -100 | 100
+ 10 | -100 | 100
+(10 rows)
+
+select * from px_parallel_corr_update_t11 order by c1 ASC limit 10;
+ c1 |  c2  | c3  
+----+------+-----
+  1 | -100 | 100
+  2 | -100 | 100
+  3 | -100 | 100
+  4 | -100 | 100
+  5 | -100 | 100
+  6 | -100 | 100
+  7 | -100 | 100
+  8 | -100 | 100
+  9 | -100 | 100
+ 10 | -100 | 100
+(10 rows)
+
+-- Update with CTE
+WITH update_move_rows_corr AS (
+   update px_parallel_corr_update_t12 set c1=3 RETURNING *
+)
+update px_parallel_corr_update_t13 set c1=(select count(*) from update_move_rows_corr);
+select max(c1) from px_parallel_corr_update_t13;
+ max  
+------
+ 1000
+(1 row)
+
+select max(c1) from px_parallel_corr_update_t12;
+ max 
+-----
+   3
+(1 row)
+
+-- polar_px_update_dop_num = 6
+set polar_px_update_dop_num = 6;
+\i sql/polar-dev/px_parallel_update_init_corr.sql
+-- create normal table
+drop table if exists px_parallel_corr_update_t1 cascade;
+CREATE TABLE px_parallel_corr_update_t1 (c1 int, c2 int) ;
+insert into px_parallel_corr_update_t1 select generate_series(1,100),generate_series(1,100);
+drop table if exists px_parallel_corr_update_t2 cascade;
+CREATE TABLE px_parallel_corr_update_t2 (c1 int, c2 int) ;
+insert into px_parallel_corr_update_t2 select generate_series(1,100),generate_series(1,100);
+drop table if exists px_parallel_corr_update_t3 cascade;
+CREATE TABLE px_parallel_corr_update_t3 (c1 int, c2 int) ;
+insert into px_parallel_corr_update_t3 select generate_series(1,1000),generate_series(1,1000);
+select count(*) from px_parallel_corr_update_t1;
+ count 
+-------
+   100
+(1 row)
+
+select count(*) from px_parallel_corr_update_t2;
+ count 
+-------
+   100
+(1 row)
+
+------------------------------------------------------------------------
+--range partition
+--Partition constraint: ((x IS NOT NULL) AND (x >= 10) AND (x < 20))
+drop table if exists px_parallel_corr_update_t1_range cascade;
+CREATE TABLE px_parallel_corr_update_t1_range(id int, value int) PARTITION BY RANGE(id);
+CREATE TABLE px_parallel_corr_update_t1_range_p1 PARTITION OF px_parallel_corr_update_t1_range FOR VALUES FROM (1) TO (10000);
+CREATE TABLE px_parallel_corr_update_t1_range_p2 PARTITION OF px_parallel_corr_update_t1_range FOR VALUES FROM (10000) TO (20000);
+CREATE TABLE px_parallel_corr_update_t1_range_p3 PARTITION OF px_parallel_corr_update_t1_range DEFAULT;
+insert into px_parallel_corr_update_t1_range select generate_series(1,30000, 2);
+-- Index Test Init
+drop table if exists px_parallel_corr_update_t4 cascade;
+CREATE TABLE px_parallel_corr_update_t4 (c1 int, c2 int) ;
+insert into px_parallel_corr_update_t4 select generate_series(1,1000),generate_series(1,1000);
+CREATE INDEX t_index_plan_corr on px_parallel_corr_update_t4(c1);
+drop table if exists px_parallel_corr_update_t10 cascade;
+CREATE TABLE px_parallel_corr_update_t10(
+   ID INT PRIMARY KEY     NOT NULL,
+   NAME           TEXT    NOT NULL
+);
+insert into px_parallel_corr_update_t10 select generate_series(1,1000), 'hello';
+drop table if exists px_parallel_corr_update_audit cascade;
+CREATE TABLE px_parallel_corr_update_audit(
+   EMP_ID INT NOT NULL,
+   ENTRY_DATE TEXT NOT NULL
+);
+insert into px_parallel_corr_update_audit select generate_series(1,1000), 'world';
+CREATE OR REPLACE FUNCTION auditlogfunc_corr() RETURNS TRIGGER AS $example_table$
+   BEGIN
+      UPDATE px_parallel_corr_update_audit set EMP_ID=new.ID, ENTRY_DATE='xxxx';
+      RETURN NEW;
+   END;
+$example_table$ LANGUAGE plpgsql;
+CREATE TRIGGER px_parallel_corr_update_trigger AFTER UPDATE ON px_parallel_corr_update_t10 FOR EACH ROW EXECUTE PROCEDURE auditlogfunc_corr();
+-- Create Updatable View
+drop table if exists px_parallel_corr_update_t11 cascade;
+psql:sql/polar-dev/px_parallel_update_init_corr.sql:64: NOTICE:  drop cascades to view px_parallel_corr_update_view
+CREATE TABLE px_parallel_corr_update_t11 (c1 int, c2 int, c3 int) ;
+insert into px_parallel_corr_update_t11 select generate_series(1,1000), generate_series(1,1000), generate_series(1,1000);
+CREATE VIEW px_parallel_corr_update_view AS select
+c1,
+c2,
+c3
+from px_parallel_corr_update_t11
+where c1 < 200;
+-- Create with CTE
+drop table if exists px_parallel_corr_update_t12 cascade;
+CREATE TABLE px_parallel_corr_update_t12 (c1 int, c2 int, c3 int) ;
+insert into px_parallel_corr_update_t12 select generate_series(1,1000), generate_series(1,1000), generate_series(1,1000);
+drop table if exists px_parallel_corr_update_t13 cascade;
+CREATE TABLE px_parallel_corr_update_t13 (c1 int, c2 int, c3 int) ;
+insert into px_parallel_corr_update_t13 select generate_series(1,1000), generate_series(1,1000), generate_series(1,1000);
+ANALYZE;
+\i sql/polar-dev/px_parallel_update_base_corr.sql
+-- Update without subplan
+update px_parallel_corr_update_t1 set c1 = 3;
+update px_parallel_corr_update_t2 set c1 = 4;
+select max(c1) from px_parallel_corr_update_t1;
+ max 
+-----
+   3
+(1 row)
+
+select max(c1) from px_parallel_corr_update_t2;
+ max 
+-----
+   4
+(1 row)
+
+-- Update with subplan
+update px_parallel_corr_update_t3 set c2=(select MAX(c2) from px_parallel_corr_update_t1);
+update px_parallel_corr_update_t3 set c1=(select AVG(c2) from px_parallel_corr_update_t2);
+select AVG(c1) from px_parallel_corr_update_t3;
+         avg         
+---------------------
+ 51.0000000000000000
+(1 row)
+
+select AVG(c2) from px_parallel_corr_update_t3;
+         avg          
+----------------------
+ 100.0000000000000000
+(1 row)
+
+-- Update vector
+update px_parallel_corr_update_t3 set c1=10, c2=(select MAX(c2) from px_parallel_corr_update_t2);
+select AVG(c1) + MAX(c2) from px_parallel_corr_update_t3;
+       ?column?       
+----------------------
+ 110.0000000000000000
+(1 row)
+
+-- Update Partition Table, should be fallback
+update px_parallel_corr_update_t1_range set id = 3;
+update px_parallel_corr_update_t1_range set id =(select max(c2) from px_parallel_corr_update_t2);
+update px_parallel_corr_update_t1_range set id =(select max(c2) from px_parallel_corr_update_t2), value = 5;
+select max(id), max(value) from px_parallel_corr_update_t1_range;
+ max | max 
+-----+-----
+ 100 |   5
+(1 row)
+
+-- Update With Index
+update px_parallel_corr_update_t3 set c2 = (select min(c1) from px_parallel_corr_update_t4);
+update px_parallel_corr_update_t4 set c1 = 5;
+select * from px_parallel_corr_update_t4 where c1 <> 5;
+ c1 | c2 
+----+----
+(0 rows)
+
+-- Update with TRIGGER
+update px_parallel_corr_update_t10 set NAME='123456';
+select * from px_parallel_corr_update_t10 order by ID limit 1;
+ id |  name  
+----+--------
+  1 | 123456
+(1 row)
+
+select * from px_parallel_corr_update_audit order by EMP_ID limit 1;
+ emp_id | entry_date 
+--------+------------
+   1000 | xxxx
+(1 row)
+
+-- Update with VIEW
+update px_parallel_corr_update_view set c2 = -100, c3 = 100;
+select * from px_parallel_corr_update_view order by c1 ASC limit 10;
+ c1 |  c2  | c3  
+----+------+-----
+  1 | -100 | 100
+  2 | -100 | 100
+  3 | -100 | 100
+  4 | -100 | 100
+  5 | -100 | 100
+  6 | -100 | 100
+  7 | -100 | 100
+  8 | -100 | 100
+  9 | -100 | 100
+ 10 | -100 | 100
+(10 rows)
+
+select * from px_parallel_corr_update_t11 order by c1 ASC limit 10;
+ c1 |  c2  | c3  
+----+------+-----
+  1 | -100 | 100
+  2 | -100 | 100
+  3 | -100 | 100
+  4 | -100 | 100
+  5 | -100 | 100
+  6 | -100 | 100
+  7 | -100 | 100
+  8 | -100 | 100
+  9 | -100 | 100
+ 10 | -100 | 100
+(10 rows)
+
+-- Update with CTE
+WITH update_move_rows_corr AS (
+   update px_parallel_corr_update_t12 set c1=3 RETURNING *
+)
+update px_parallel_corr_update_t13 set c1=(select count(*) from update_move_rows_corr);
+select max(c1) from px_parallel_corr_update_t13;
+ max  
+------
+ 1000
+(1 row)
+
+select max(c1) from px_parallel_corr_update_t12;
+ max 
+-----
+   3
+(1 row)
+
+-- polar_px_update_dop_num = 9
+set polar_px_update_dop_num = 9;
+\i sql/polar-dev/px_parallel_update_init_corr.sql
+-- create normal table
+drop table if exists px_parallel_corr_update_t1 cascade;
+CREATE TABLE px_parallel_corr_update_t1 (c1 int, c2 int) ;
+insert into px_parallel_corr_update_t1 select generate_series(1,100),generate_series(1,100);
+drop table if exists px_parallel_corr_update_t2 cascade;
+CREATE TABLE px_parallel_corr_update_t2 (c1 int, c2 int) ;
+insert into px_parallel_corr_update_t2 select generate_series(1,100),generate_series(1,100);
+drop table if exists px_parallel_corr_update_t3 cascade;
+CREATE TABLE px_parallel_corr_update_t3 (c1 int, c2 int) ;
+insert into px_parallel_corr_update_t3 select generate_series(1,1000),generate_series(1,1000);
+select count(*) from px_parallel_corr_update_t1;
+ count 
+-------
+   100
+(1 row)
+
+select count(*) from px_parallel_corr_update_t2;
+ count 
+-------
+   100
+(1 row)
+
+------------------------------------------------------------------------
+--range partition
+--Partition constraint: ((x IS NOT NULL) AND (x >= 10) AND (x < 20))
+drop table if exists px_parallel_corr_update_t1_range cascade;
+CREATE TABLE px_parallel_corr_update_t1_range(id int, value int) PARTITION BY RANGE(id);
+CREATE TABLE px_parallel_corr_update_t1_range_p1 PARTITION OF px_parallel_corr_update_t1_range FOR VALUES FROM (1) TO (10000);
+CREATE TABLE px_parallel_corr_update_t1_range_p2 PARTITION OF px_parallel_corr_update_t1_range FOR VALUES FROM (10000) TO (20000);
+CREATE TABLE px_parallel_corr_update_t1_range_p3 PARTITION OF px_parallel_corr_update_t1_range DEFAULT;
+insert into px_parallel_corr_update_t1_range select generate_series(1,30000, 2);
+-- Index Test Init
+drop table if exists px_parallel_corr_update_t4 cascade;
+CREATE TABLE px_parallel_corr_update_t4 (c1 int, c2 int) ;
+insert into px_parallel_corr_update_t4 select generate_series(1,1000),generate_series(1,1000);
+CREATE INDEX t_index_plan_corr on px_parallel_corr_update_t4(c1);
+drop table if exists px_parallel_corr_update_t10 cascade;
+CREATE TABLE px_parallel_corr_update_t10(
+   ID INT PRIMARY KEY     NOT NULL,
+   NAME           TEXT    NOT NULL
+);
+insert into px_parallel_corr_update_t10 select generate_series(1,1000), 'hello';
+drop table if exists px_parallel_corr_update_audit cascade;
+CREATE TABLE px_parallel_corr_update_audit(
+   EMP_ID INT NOT NULL,
+   ENTRY_DATE TEXT NOT NULL
+);
+insert into px_parallel_corr_update_audit select generate_series(1,1000), 'world';
+CREATE OR REPLACE FUNCTION auditlogfunc_corr() RETURNS TRIGGER AS $example_table$
+   BEGIN
+      UPDATE px_parallel_corr_update_audit set EMP_ID=new.ID, ENTRY_DATE='xxxx';
+      RETURN NEW;
+   END;
+$example_table$ LANGUAGE plpgsql;
+CREATE TRIGGER px_parallel_corr_update_trigger AFTER UPDATE ON px_parallel_corr_update_t10 FOR EACH ROW EXECUTE PROCEDURE auditlogfunc_corr();
+-- Create Updatable View
+drop table if exists px_parallel_corr_update_t11 cascade;
+psql:sql/polar-dev/px_parallel_update_init_corr.sql:64: NOTICE:  drop cascades to view px_parallel_corr_update_view
+CREATE TABLE px_parallel_corr_update_t11 (c1 int, c2 int, c3 int) ;
+insert into px_parallel_corr_update_t11 select generate_series(1,1000), generate_series(1,1000), generate_series(1,1000);
+CREATE VIEW px_parallel_corr_update_view AS select
+c1,
+c2,
+c3
+from px_parallel_corr_update_t11
+where c1 < 200;
+-- Create with CTE
+drop table if exists px_parallel_corr_update_t12 cascade;
+CREATE TABLE px_parallel_corr_update_t12 (c1 int, c2 int, c3 int) ;
+insert into px_parallel_corr_update_t12 select generate_series(1,1000), generate_series(1,1000), generate_series(1,1000);
+drop table if exists px_parallel_corr_update_t13 cascade;
+CREATE TABLE px_parallel_corr_update_t13 (c1 int, c2 int, c3 int) ;
+insert into px_parallel_corr_update_t13 select generate_series(1,1000), generate_series(1,1000), generate_series(1,1000);
+ANALYZE;
+\i sql/polar-dev/px_parallel_update_base_corr.sql
+-- Update without subplan
+update px_parallel_corr_update_t1 set c1 = 3;
+update px_parallel_corr_update_t2 set c1 = 4;
+select max(c1) from px_parallel_corr_update_t1;
+ max 
+-----
+   3
+(1 row)
+
+select max(c1) from px_parallel_corr_update_t2;
+ max 
+-----
+   4
+(1 row)
+
+-- Update with subplan
+update px_parallel_corr_update_t3 set c2=(select MAX(c2) from px_parallel_corr_update_t1);
+update px_parallel_corr_update_t3 set c1=(select AVG(c2) from px_parallel_corr_update_t2);
+select AVG(c1) from px_parallel_corr_update_t3;
+         avg         
+---------------------
+ 51.0000000000000000
+(1 row)
+
+select AVG(c2) from px_parallel_corr_update_t3;
+         avg          
+----------------------
+ 100.0000000000000000
+(1 row)
+
+-- Update vector
+update px_parallel_corr_update_t3 set c1=10, c2=(select MAX(c2) from px_parallel_corr_update_t2);
+select AVG(c1) + MAX(c2) from px_parallel_corr_update_t3;
+       ?column?       
+----------------------
+ 110.0000000000000000
+(1 row)
+
+-- Update Partition Table, should be fallback
+update px_parallel_corr_update_t1_range set id = 3;
+update px_parallel_corr_update_t1_range set id =(select max(c2) from px_parallel_corr_update_t2);
+update px_parallel_corr_update_t1_range set id =(select max(c2) from px_parallel_corr_update_t2), value = 5;
+select max(id), max(value) from px_parallel_corr_update_t1_range;
+ max | max 
+-----+-----
+ 100 |   5
+(1 row)
+
+-- Update With Index
+update px_parallel_corr_update_t3 set c2 = (select min(c1) from px_parallel_corr_update_t4);
+update px_parallel_corr_update_t4 set c1 = 5;
+select * from px_parallel_corr_update_t4 where c1 <> 5;
+ c1 | c2 
+----+----
+(0 rows)
+
+-- Update with TRIGGER
+update px_parallel_corr_update_t10 set NAME='123456';
+select * from px_parallel_corr_update_t10 order by ID limit 1;
+ id |  name  
+----+--------
+  1 | 123456
+(1 row)
+
+select * from px_parallel_corr_update_audit order by EMP_ID limit 1;
+ emp_id | entry_date 
+--------+------------
+   1000 | xxxx
+(1 row)
+
+-- Update with VIEW
+update px_parallel_corr_update_view set c2 = -100, c3 = 100;
+select * from px_parallel_corr_update_view order by c1 ASC limit 10;
+ c1 |  c2  | c3  
+----+------+-----
+  1 | -100 | 100
+  2 | -100 | 100
+  3 | -100 | 100
+  4 | -100 | 100
+  5 | -100 | 100
+  6 | -100 | 100
+  7 | -100 | 100
+  8 | -100 | 100
+  9 | -100 | 100
+ 10 | -100 | 100
+(10 rows)
+
+select * from px_parallel_corr_update_t11 order by c1 ASC limit 10;
+ c1 |  c2  | c3  
+----+------+-----
+  1 | -100 | 100
+  2 | -100 | 100
+  3 | -100 | 100
+  4 | -100 | 100
+  5 | -100 | 100
+  6 | -100 | 100
+  7 | -100 | 100
+  8 | -100 | 100
+  9 | -100 | 100
+ 10 | -100 | 100
+(10 rows)
+
+-- Update with CTE
+WITH update_move_rows_corr AS (
+   update px_parallel_corr_update_t12 set c1=3 RETURNING *
+)
+update px_parallel_corr_update_t13 set c1=(select count(*) from update_move_rows_corr);
+select max(c1) from px_parallel_corr_update_t13;
+ max  
+------
+ 1000
+(1 row)
+
+select max(c1) from px_parallel_corr_update_t12;
+ max 
+-----
+   3
+(1 row)
+

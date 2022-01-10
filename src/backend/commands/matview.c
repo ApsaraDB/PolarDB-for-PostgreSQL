@@ -43,6 +43,9 @@
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
 
+/* POLAR csn */
+#include "storage/procarray.h"
+/* POLAR end */
 
 typedef struct
 {
@@ -843,12 +846,20 @@ refresh_by_match_merge(Oid matviewOid, Oid tempOid, Oid relowner,
  * Swap the physical files of the target and transient tables, then rebuild
  * the target's indexes and throw away the transient table.  Security context
  * swapping is handled by the called function, so it is not needed here.
+ * 
+ * POLAR csn
+ * We nolonger maintain RecentXmin in csn mode, get newest value by func 
+ * call.
  */
 static void
 refresh_by_heap_swap(Oid matviewOid, Oid OIDNewHeap, char relpersistence)
 {
-	finish_heap_swap(matviewOid, OIDNewHeap, false, false, true, true,
-					 RecentXmin, ReadNextMultiXactId(), relpersistence);
+	if (polar_csn_enable)
+		finish_heap_swap(matviewOid, OIDNewHeap, false, false, true, true,
+						GetOldestActiveTransactionId(), ReadNextMultiXactId(), relpersistence);
+	else
+		finish_heap_swap(matviewOid, OIDNewHeap, false, false, true, true,
+						RecentXmin, ReadNextMultiXactId(), relpersistence);
 }
 
 /*

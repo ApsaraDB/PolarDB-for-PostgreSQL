@@ -1,0 +1,62 @@
+-- This is a normal process
+CREATE EXTENSION test_cancel_key;
+select pg_sleep(1); -- 1.0s
+ pg_sleep 
+----------
+ 
+(1 row)
+
+select pid from pg_stat_activity where pid = 0; -- None (b is unset and will return real pid)
+ pid 
+-----
+(0 rows)
+
+select pid from pg_stat_activity where pid > 10000000 order by pid; -- 10000009
+   pid    
+----------
+ 10000009
+(1 row)
+
+select pg_sleep(1.5); -- 2.5s
+ pg_sleep 
+----------
+ 
+(1 row)
+
+select pid from pg_stat_activity where pid = 0; -- None
+ pid 
+-----
+(0 rows)
+
+select pid from pg_stat_activity where pid > 10000000 order by pid; -- 10000001 and 10000009
+   pid    
+----------
+ 10000001
+ 10000009
+(2 rows)
+
+select pid from pg_locks where pid = 0; -- for coverage test
+ pid 
+-----
+(0 rows)
+
+select pg_sleep(2); -- 3.5s
+ pg_sleep 
+----------
+ 
+(1 row)
+
+select pg_cancel_backend(10000009); -- kill c
+ pg_cancel_backend 
+-------------------
+ t
+(1 row)
+
+select pg_cancel_backend(10000099); -- no such process
+WARNING:  PID 10000099 is not a PostgreSQL server process
+ pg_cancel_backend 
+-------------------
+ f
+(1 row)
+
+DROP EXTENSION test_cancel_key;

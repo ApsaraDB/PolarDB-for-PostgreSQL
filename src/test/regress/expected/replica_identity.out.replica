@@ -1,0 +1,150 @@
+CREATE TABLE test_replica_identity (
+       id serial primary key,
+       keya text not null,
+       keyb text not null,
+       nonkey text,
+       CONSTRAINT test_replica_identity_unique_defer UNIQUE (keya, keyb) DEFERRABLE,
+       CONSTRAINT test_replica_identity_unique_nondefer UNIQUE (keya, keyb)
+) WITH OIDS;
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE test_replica_identity_othertable (id serial primary key);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE INDEX test_replica_identity_keyab ON test_replica_identity (keya, keyb);
+ERROR:  cannot execute CREATE INDEX in a read-only transaction
+CREATE UNIQUE INDEX test_replica_identity_keyab_key ON test_replica_identity (keya, keyb);
+ERROR:  cannot execute CREATE INDEX in a read-only transaction
+CREATE UNIQUE INDEX test_replica_identity_oid_idx ON test_replica_identity (oid);
+ERROR:  cannot execute CREATE INDEX in a read-only transaction
+CREATE UNIQUE INDEX test_replica_identity_nonkey ON test_replica_identity (keya, nonkey);
+ERROR:  cannot execute CREATE INDEX in a read-only transaction
+CREATE INDEX test_replica_identity_hash ON test_replica_identity USING hash (nonkey);
+ERROR:  cannot execute CREATE INDEX in a read-only transaction
+CREATE UNIQUE INDEX test_replica_identity_expr ON test_replica_identity (keya, keyb, (3));
+ERROR:  cannot execute CREATE INDEX in a read-only transaction
+CREATE UNIQUE INDEX test_replica_identity_partial ON test_replica_identity (keya, keyb) WHERE keyb != '3';
+ERROR:  cannot execute CREATE INDEX in a read-only transaction
+-- default is 'd'/DEFAULT for user created tables
+SELECT relreplident FROM pg_class WHERE oid = 'test_replica_identity'::regclass;
+ relreplident 
+--------------
+ d
+(1 row)
+
+-- but 'none' for system tables
+SELECT relreplident FROM pg_class WHERE oid = 'pg_class'::regclass;
+ relreplident 
+--------------
+ n
+(1 row)
+
+SELECT relreplident FROM pg_class WHERE oid = 'pg_constraint'::regclass;
+ relreplident 
+--------------
+ n
+(1 row)
+
+----
+-- Make sure we detect ineligible indexes
+----
+-- fail, not unique
+ALTER TABLE test_replica_identity REPLICA IDENTITY USING INDEX test_replica_identity_keyab;
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+-- fail, not a candidate key, nullable column
+ALTER TABLE test_replica_identity REPLICA IDENTITY USING INDEX test_replica_identity_nonkey;
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+-- fail, hash indexes cannot do uniqueness
+ALTER TABLE test_replica_identity REPLICA IDENTITY USING INDEX test_replica_identity_hash;
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+-- fail, expression index
+ALTER TABLE test_replica_identity REPLICA IDENTITY USING INDEX test_replica_identity_expr;
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+-- fail, partial index
+ALTER TABLE test_replica_identity REPLICA IDENTITY USING INDEX test_replica_identity_partial;
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+-- fail, not our index
+ALTER TABLE test_replica_identity REPLICA IDENTITY USING INDEX test_replica_identity_othertable_pkey;
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+-- fail, deferrable
+ALTER TABLE test_replica_identity REPLICA IDENTITY USING INDEX test_replica_identity_unique_defer;
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+SELECT relreplident FROM pg_class WHERE oid = 'test_replica_identity'::regclass;
+ relreplident 
+--------------
+ d
+(1 row)
+
+----
+-- Make sure index cases succeed
+----
+-- succeed, primary key
+ALTER TABLE test_replica_identity REPLICA IDENTITY USING INDEX test_replica_identity_pkey;
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+SELECT relreplident FROM pg_class WHERE oid = 'test_replica_identity'::regclass;
+ relreplident 
+--------------
+ i
+(1 row)
+
+\d test_replica_identity
+-- succeed, oid unique index
+ALTER TABLE test_replica_identity REPLICA IDENTITY USING INDEX test_replica_identity_oid_idx;
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+-- succeed, nondeferrable unique constraint over nonnullable cols
+ALTER TABLE test_replica_identity REPLICA IDENTITY USING INDEX test_replica_identity_unique_nondefer;
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+-- succeed unique index over nonnullable cols
+ALTER TABLE test_replica_identity REPLICA IDENTITY USING INDEX test_replica_identity_keyab_key;
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+ALTER TABLE test_replica_identity REPLICA IDENTITY USING INDEX test_replica_identity_keyab_key;
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+SELECT relreplident FROM pg_class WHERE oid = 'test_replica_identity'::regclass;
+ relreplident 
+--------------
+ i
+(1 row)
+
+\d test_replica_identity
+SELECT count(*) FROM pg_index WHERE indrelid = 'test_replica_identity'::regclass AND indisreplident;
+ count 
+-------
+     1
+(1 row)
+
+----
+-- Make sure non index cases work
+----
+ALTER TABLE test_replica_identity REPLICA IDENTITY DEFAULT;
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+SELECT relreplident FROM pg_class WHERE oid = 'test_replica_identity'::regclass;
+ relreplident 
+--------------
+ d
+(1 row)
+
+SELECT count(*) FROM pg_index WHERE indrelid = 'test_replica_identity'::regclass AND indisreplident;
+ count 
+-------
+     0
+(1 row)
+
+ALTER TABLE test_replica_identity REPLICA IDENTITY FULL;
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+SELECT relreplident FROM pg_class WHERE oid = 'test_replica_identity'::regclass;
+ relreplident 
+--------------
+ f
+(1 row)
+
+\d+ test_replica_identity
+ALTER TABLE test_replica_identity REPLICA IDENTITY NOTHING;
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+SELECT relreplident FROM pg_class WHERE oid = 'test_replica_identity'::regclass;
+ relreplident 
+--------------
+ n
+(1 row)
+
+DROP TABLE test_replica_identity;
+ERROR:  cannot execute DROP TABLE in a read-only transaction
+DROP TABLE test_replica_identity_othertable;
+ERROR:  cannot execute DROP TABLE in a read-only transaction

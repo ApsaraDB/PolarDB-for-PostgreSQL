@@ -1,0 +1,7 @@
+CREATE EXTENSION test_multi_version_snapshot;
+SELECT test_multi_version_snapshot();
+ test_multi_version_snapshot 
+-----------------------------
+ 
+(1 row)
+

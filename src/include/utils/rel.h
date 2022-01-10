@@ -93,6 +93,11 @@ typedef struct RelationData
 	RuleLock   *rd_rules;		/* rewrite rules */
 	MemoryContext rd_rulescxt;	/* private memory cxt for rd_rules, if any */
 	TriggerDesc *trigdesc;		/* Trigger info, or NULL if rel has none */
+
+	/* POLAR px */
+	struct PxPolicy *rd_pxpolicy; /* Partitioning info if distributed rel */
+	/* POLAR end */
+
 	/* use "struct" here to avoid needing to include rowsecurity.h: */
 	struct RowSecurityDesc *rd_rsdesc;	/* row security policies, or NULL */
 
@@ -273,6 +278,10 @@ typedef struct StdRdOptions
 	AutoVacOpts autovacuum;		/* autovacuum-related options */
 	bool		user_catalog_table; /* use as an additional catalog relation */
 	int			parallel_workers;	/* max number of parallel workers */
+	/* POLAR px */
+	int			px_workers;
+	int			px_bt_build_offset;
+	/* POLAR end */
 } StdRdOptions;
 
 #define HEAP_MIN_FILLFACTOR			10
@@ -327,7 +336,6 @@ typedef struct StdRdOptions
 #define RelationGetParallelWorkers(relation, defaultpw) \
 	((relation)->rd_options ? \
 	 ((StdRdOptions *) (relation)->rd_options)->parallel_workers : (defaultpw))
-
 
 /*
  * ViewOptions
@@ -421,6 +429,12 @@ typedef struct ViewOptions
  *		Returns the total number of attributes in a relation.
  */
 #define RelationGetNumberOfAttributes(relation) ((relation)->rd_rel->relnatts)
+
+/*
+ * RelationGetDescr
+ *		Returns tuple descriptor for a relation.
+ */
+#define RelationGetDescr(relation) ((relation)->rd_att)
 
 /*
  * IndexRelationGetNumberOfAttributes

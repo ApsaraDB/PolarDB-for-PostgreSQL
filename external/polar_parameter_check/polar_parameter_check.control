@@ -1,0 +1,4 @@
+comment = 'kernel extension for parameter validation'
+default_version = '1.0'
+module_pathname = '$libdir/polar_parameter_check'
+relocatable = true

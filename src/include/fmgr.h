@@ -737,6 +737,10 @@ typedef void (*fmgr_hook_type) (FmgrHookEventType event,
 extern PGDLLIMPORT needs_fmgr_hook_type needs_fmgr_hook;
 extern PGDLLIMPORT fmgr_hook_type fmgr_hook;
 
+/* POLAR: the same to above fmgr_info_cxt, we used for client_encoding security definer */
+extern void polar_fmgr_info_cxt_w_trans_state(Oid functionId, FmgrInfo *finfo,
+			  MemoryContext mcxt, bool polar_call_context_in_trans_state);
+
 #define FmgrHookIsNeeded(fn_oid)							\
 	(!needs_fmgr_hook ? false : (*needs_fmgr_hook)(fn_oid))
 

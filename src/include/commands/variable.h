@@ -37,4 +37,8 @@ extern bool check_role(char **newval, void **extra, GucSource source);
 extern void assign_role(const char *newval, void *extra);
 extern const char *show_role(void);
 
+/* POLAR */
+extern TransactionId polar_str_to_xid(const char * s, int mode, bool *success);
+/* POLAR end */
+
 #endif							/* VARIABLE_H */

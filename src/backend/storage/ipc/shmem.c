@@ -72,6 +72,11 @@
 #include "storage/shmem.h"
 #include "storage/spin.h"
 
+/* POLAR */
+#include "storage/polar_shmem.h"
+/* POLAR csn */
+#include "access/polar_csn_mvcc_vars.h"
+/* POLAR end */
 
 /* shared memory global variables */
 
@@ -144,6 +149,9 @@ InitShmemAllocation(void)
 	ShmemVariableCache = (VariableCache)
 		ShmemAlloc(sizeof(*ShmemVariableCache));
 	memset(ShmemVariableCache, 0, sizeof(*ShmemVariableCache));
+
+	/* POLAR csn */
+	polar_csn_mvcc_var_cache_shmem_init();
 }
 
 /*
@@ -374,6 +382,9 @@ ShmemInitStruct(const char *name, Size size, bool *foundPtr)
 	ShmemIndexEnt *result;
 	void	   *structPtr;
 
+	if (polar_persisted_buffer_pool_enabled(name))
+		return polar_shmem_init_struct(name, size, foundPtr);
+
 	LWLockAcquire(ShmemIndexLock, LW_EXCLUSIVE);
 
 	if (!ShmemIndex)
@@ -503,3 +514,17 @@ mul_size(Size s1, Size s2)
 				 errmsg("requested shared memory size overflows size_t")));
 	return result;
 }
+
+/* POLAR */
+HTAB*
+polar_get_shmem_index(void)
+{
+	return ShmemIndex; 
+}
+
+PGShmemHeader*
+polar_get_shmem_seg_hdr(void)
+{
+	return ShmemSegHdr;
+}
+/* POLAR end*/

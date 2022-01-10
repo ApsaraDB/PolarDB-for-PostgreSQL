@@ -1492,7 +1492,10 @@ selectDumpableTable(TableInfo *tbinfo, Archive *fout)
 												   tbinfo->dobj.catId.oid) ?
 			DUMP_COMPONENT_ALL : DUMP_COMPONENT_NONE;
 	else
+	{
+		Assert(tbinfo->dobj.namespace != NULL);
 		tbinfo->dobj.dump = tbinfo->dobj.namespace->dobj.dump_contains;
+	}
 
 	/*
 	 * In any case, a table can be excluded by an exclusion switch
@@ -16145,7 +16148,7 @@ dumpTableSchema(Archive *fout, TableInfo *tbinfo)
 					default:
 						storage = NULL;
 				}
-
+				
 				/*
 				 * Only dump the statement if it's a storage type we recognize
 				 */

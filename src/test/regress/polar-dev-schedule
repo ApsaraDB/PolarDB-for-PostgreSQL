@@ -3,6 +3,22 @@
 #
 # Polar cases should be added in this file
 # ----------
-
+polar_ignore: polar-dev/px_parallel_dml_error
+cluster_ignore: polar-dev/polar_temp_table_file_in_local_storage
+test: polar-dev/polar_create_publication_for_all_tables
 test: polar-dev/polar_parallel_bgwriter
-test: polar-dev/polar_release_date
+test: polar-dev/polar_tde_encryption_settings
+test: polar-dev/polar_index_bulk_extend_for_coverage
+test: polar-dev/polar_version
+test: polar-dev/polar_superuser_create_event_trigger
+test: polar-dev/polar_covered_index
+test: polar-dev/polar_full_replica_identity
+test: polar-dev/polar_or_to_union_all
+test: polar-dev/reload_conf_a polar-dev/reload_conf_b
+test: polar-dev/polar_operator_level_memory_limit
+test: polar-dev/px_parallel_dml_correct
+test: polar-dev/px_parallel_dml_error
+test: polar-dev/px_parallel_update_corr
+test: polar-dev/polar_superuser_enable_disable_sys_trigger
+test: polar-dev/polar_flashback_drop
+test: polar-dev/polar_support_gbk_encoding

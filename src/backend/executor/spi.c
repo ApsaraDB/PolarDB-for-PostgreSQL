@@ -35,6 +35,10 @@
 #include "utils/syscache.h"
 #include "utils/typcache.h"
 
+/* POLAR px */
+#include "executor/functions.h"
+#include "px/px_vars.h"
+#include "px/px_snapshot.h"
 
 /*
  * These global variables are part of the API for various SPI functions
@@ -637,6 +641,13 @@ SPIPlanPtr
 SPI_prepare(const char *src, int nargs, Oid *argtypes)
 {
 	return SPI_prepare_cursor(src, nargs, argtypes, 0);
+}
+
+/* POLAR px */
+SPIPlanPtr
+SPI_prepare_px(const char *src, int nargs, Oid *argtypes)
+{
+	return SPI_prepare_cursor(src, nargs, argtypes, CURSOR_OPT_PX_OK | CURSOR_OPT_PX_FORCE);
 }
 
 SPIPlanPtr
@@ -1375,6 +1386,7 @@ SPI_cursor_open_internal(const char *name, SPIPlanPtr plan,
 	PortalDefineQuery(portal,
 					  NULL,		/* no statement name */
 					  query_string,
+					  T_Invalid,/* POLAR px */
 					  plansource->commandTag,
 					  stmt_list,
 					  cplan);
@@ -1394,6 +1406,11 @@ SPI_cursor_open_internal(const char *name, SPIPlanPtr plan,
 		else
 			portal->cursorOptions |= CURSOR_OPT_NO_SCROLL;
 	}
+
+	/*
+	 * POLAR px
+	 */
+	portal->is_extended_query = true;
 
 	/*
 	 * Disallow SCROLL with SELECT FOR UPDATE.  This is not redundant with the
@@ -1450,7 +1467,10 @@ SPI_cursor_open_internal(const char *name, SPIPlanPtr plan,
 	else
 	{
 		CommandCounterIncrement();
-		snapshot = GetTransactionSnapshot();
+		/* POLAR px */
+		snapshot = ((PX_ROLE_PX == px_role && px_is_executing)
+					? RestoreSnapshot(pxsn_get_serialized_snapshot_data())
+					: GetTransactionSnapshot());
 	}
 
 	/*
@@ -1468,7 +1488,12 @@ SPI_cursor_open_internal(const char *name, SPIPlanPtr plan,
 	/*
 	 * Start portal execution.
 	 */
-	PortalStart(portal, paramLI, 0, snapshot);
+	PortalStart(portal, 
+				paramLI, 
+				0, 
+				snapshot, 
+				NULL/* POALR px */
+				);
 
 	Assert(portal->strategy != PORTAL_MULTI_QUERY);
 
@@ -1966,6 +1991,7 @@ _SPI_prepare_plan(const char *src, SPIPlanPtr plan)
 						   stmt_list,
 						   NULL,
 						   plan->argtypes,
+						   NULL,	/* POLAR: param location */
 						   plan->nargs,
 						   plan->parserSetup,
 						   plan->parserSetupArg,
@@ -2162,11 +2188,23 @@ _SPI_execute_plan(SPIPlanPtr plan, ParamListInfo paramLI,
 												   _SPI_current->queryEnv);
 			}
 
+			/* POLAR px: Check that all the queries are safe to execute on PX. */
+			if (PX_ROLE_PX == px_role && px_is_executing)
+			{
+				ListCell *lc;
+				foreach (lc, stmt_list)
+				{
+					Query *query = (Query *) lfirst(lc);
+					querytree_safe_for_px((Node *) query);
+				}
+			}
+
 			/* Finish filling in the CachedPlanSource */
 			CompleteCachedPlan(plansource,
 							   stmt_list,
 							   NULL,
 							   plan->argtypes,
+							   NULL,	/* POLAR: param location */
 							   plan->nargs,
 							   plan->parserSetup,
 							   plan->parserSetupArg,

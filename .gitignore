@@ -31,7 +31,14 @@ win32ver.rc
 *.exe
 lib*dll.def
 lib*.pc
-
+cscope.*
+compile_commands.json
+tags
+*.po
+*.lo
+.vscode/*
+.vstags
+*.swp
 # Local excludes in root directory
 /GNUmakefile
 /config.cache
@@ -42,3 +49,6 @@ lib*.pc
 /Debug/
 /Release/
 /tmp_install/
+node_modules
+.temp
+.cache

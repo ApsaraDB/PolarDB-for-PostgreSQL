@@ -1,7 +1,7 @@
 # src/test/modules/test_polar_directio/Makefile
 
 MODULE_big = test_directio
-OBJS = test_directio.o polar_directio.o $(WIN32RES)
+OBJS = test_directio.o $(WIN32RES)
 PGFILEDESC = "test_directio - test code for polar (p)read or (p)write with PG_O_DIRECT feature"
 
 EXTENSION = test_directio

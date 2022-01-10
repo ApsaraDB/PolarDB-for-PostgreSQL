@@ -32,6 +32,9 @@
 #include "utils/syscache.h"
 #include "utils/tqual.h"
 
+/** POLARDB Px: partition px */
+#include "utils/lsyscache.h"
+
 /*
  * Entry of a hash table used in find_all_inheritors. See below.
  */
@@ -70,7 +73,9 @@ find_inheritance_children(Oid parentrelId, LOCKMODE lockmode)
 	 * Can skip the scan if pg_class shows the relation has never had a
 	 * subclass.
 	 */
-	if (!has_subclass(parentrelId))
+	if (!has_subclass(parentrelId) &&
+		/** POLARDB Px: get child-partition idx */
+		get_rel_relkind(parentrelId) != RELKIND_PARTITIONED_INDEX)
 		return NIL;
 
 	/*

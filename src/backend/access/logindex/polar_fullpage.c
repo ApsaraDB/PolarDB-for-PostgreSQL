@@ -1,7 +1,7 @@
 /*-------------------------------------------------------------------------
  *
  * polar_fullpage.c
- *  Implementation of fullpage logindex snapshot.
+ *    
  *
  * Copyright (c) 2020, Alibaba Group Holding Limited
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,8 +17,7 @@
  * limitations under the License.
  *
  * IDENTIFICATION
- *  src/backend/access/logindex/polar_fullpage.c
- *
+ *           src/backend/access/logindex/polar_fullpage.c
  *-------------------------------------------------------------------------
  */
 #include "postgres.h"
@@ -28,24 +27,24 @@
 #include "miscadmin.h"
 
 #include "access/polar_logindex.h"
-#include "access/polar_logindex_internal.h"
 #include "access/polar_fullpage.h"
 #include "access/xlog_internal.h"
-#include "access/xlog.h"
 #include "catalog/pg_control.h"
+#include "replication/walreceiver.h"
+#include "storage/buf_internals.h"
+#include "storage/ipc.h"
 #include "storage/polar_fd.h"
 #include "utils/guc.h"
 #include "utils/memutils.h"
+#include "utils/timestamp.h"
 
-static int	open_fullpage_file = -1;
+static bool polar_fullpage_online_promote = false;
+
+static int open_fullpage_file = -1;
 static uint64 open_fullpage_file_seg_no = -1;
 
-static polar_fullpage_ctl_t *polar_fullpage_ctl = NULL;
-
-
-static void remove_old_fullpage_files(log_index_snapshot_t *logindex_snapshot);
-static uint64 polar_xlog_read_fullpage_no(log_index_snapshot_t *logindex_snapshot, XLogRecPtr lsn);
-
+static void remove_old_fullpage_files(polar_fullpage_ctl_t ctl);
+static uint64 polar_xlog_read_fullpage_no(logindex_snapshot_t logindex_snapshot, XLogRecPtr lsn);
 
 /*
  * Initialization of shared memory for fullpage control
@@ -53,34 +52,50 @@ static uint64 polar_xlog_read_fullpage_no(log_index_snapshot_t *logindex_snapsho
 Size
 polar_fullpage_shmem_size(void)
 {
-	/* polar_fullpage_ctl_t */
-	return sizeof(polar_fullpage_ctl_t);
+	return CACHELINEALIGN(sizeof(polar_fullpage_ctl_data_t));
 }
 
-void
-polar_fullpage_shmem_init(void)
+polar_fullpage_ctl_t
+polar_fullpage_shmem_init(const char *name, polar_ringbuf_t queue, logindex_snapshot_t logindex_snapshot)
 {
-	bool		found_fullpage_ctl = false;
+#define FULLPAGE_SUFFIX "_fp_ctl"
+	bool    found = false;
+	polar_fullpage_ctl_t ctl;
+	char        item_name[POLAR_MAX_SHMEM_NAME];
 
-	polar_fullpage_ctl = (polar_fullpage_ctl_t *)
-		ShmemInitStruct("Fullpage Ctl", polar_fullpage_shmem_size(), &found_fullpage_ctl);
+	snprintf(item_name, POLAR_MAX_SHMEM_NAME, "%s%s", name, FULLPAGE_SUFFIX);
+
+	ctl = (polar_fullpage_ctl_t)
+		  ShmemInitStruct(item_name, polar_fullpage_shmem_size(), &found);
 
 	if (!IsUnderPostmaster)
 	{
-		Assert(!found_fullpage_ctl);
-		memset(polar_fullpage_ctl, 0, sizeof(polar_fullpage_ctl_t));
+		Assert(!found);
+		memset(ctl, 0, sizeof(polar_fullpage_ctl_data_t));
 
-		pg_atomic_init_u64(&polar_fullpage_ctl->max_fullpage_no, 0);
+		pg_atomic_init_u64(&ctl->max_fullpage_no, 0);
 
 		/* Init fullpage lock */
 		LWLockRegisterTranche(LWTRANCHE_FULLPAGE_FILE, "fullpage_file_lock");
-		LWLockInitialize(&polar_fullpage_ctl->file_lock.lock, LWTRANCHE_FULLPAGE_FILE);
-		LWLockRegisterTranche(LWTRANCHE_FULLPAGE_WRITE, "fullpage_write_lock");
-		LWLockInitialize(&polar_fullpage_ctl->write_lock.lock, LWTRANCHE_FULLPAGE_WRITE);
+		LWLockInitialize(&ctl->file_lock.lock, LWTRANCHE_FULLPAGE_FILE);
+		StrNCpy(ctl->name, name, MAX_FULLPAGE_DIR_NAME_LEN);
+		pg_atomic_init_u32(&ctl->procno, INVALID_PGPROCNO);
 
+		ctl->logindex_snapshot = logindex_snapshot;
+		ctl->queue = queue;
+
+		/* Validate that dir to save fullpage files is created */
+		if (!polar_in_replica_mode())
+		{
+			char dir[MAXPGPATH];
+			snprintf(dir, MAXPGPATH, "%s/%s", POLAR_DATA_DIR(), ctl->name);
+			polar_validate_dir(dir);
+		}
 	}
 	else
-		Assert(found_fullpage_ctl);
+		Assert(found);
+
+	return ctl;
 }
 
 /*
@@ -90,27 +105,26 @@ polar_fullpage_shmem_init(void)
  * reset fullpage_no to 0
  */
 void
-polar_logindex_calc_max_fullpage_no(log_index_snapshot_t *logindex_snapshot)
+polar_logindex_calc_max_fullpage_no(polar_fullpage_ctl_t ctl)
 {
-	char		path[MAXPGPATH] = {0};
-	uint64		fullpage_no = 0;
+	char        path[MAXPGPATH] = {0};
+	uint64      fullpage_no = 0;
 	struct stat statbuf;
-	XLogSegNo	xlog_seg_no = 0;
-	XLogRecPtr	lsn = InvalidXLogRecPtr;
+	XLogSegNo   xlog_seg_no = 0;
+	XLogRecPtr lsn = InvalidXLogRecPtr;
 
-	if (!POLAR_ENABLE_FULLPAGE_SNAPSHOT())
+	/* set max_fullpage_no when logindex snapshot state is writable */
+	if (!ctl || !polar_logindex_check_state(ctl->logindex_snapshot, POLAR_LOGINDEX_STATE_WRITABLE))
 		return;
 
 	/* if max_fullpage_no has been set, nothing to do */
-	if (pg_atomic_read_u64(&polar_fullpage_ctl->max_fullpage_no) > 0)
+	if (pg_atomic_read_u64(&ctl->max_fullpage_no) > 0)
 	{
-		elog(LOG, "redo done at max_fullpage_no = %ld", pg_atomic_read_u64(&polar_fullpage_ctl->max_fullpage_no));
+		elog(LOG, "redo done at max_fullpage_no = %ld", pg_atomic_read_u64(&ctl->max_fullpage_no));
 		return;
 	}
 
-	LWLockAcquire(LOG_INDEX_IO_LOCK, LW_EXCLUSIVE);
-	lsn = logindex_snapshot->max_lsn;
-	LWLockRelease(LOG_INDEX_IO_LOCK);
+	lsn = polar_get_logindex_snapshot_max_lsn(ctl->logindex_snapshot);
 
 	if (XLogRecPtrIsInvalid(lsn))
 		return;
@@ -122,16 +136,16 @@ polar_logindex_calc_max_fullpage_no(log_index_snapshot_t *logindex_snapshot)
 	/* wal file has been removed olready, we cannot get fullpage_no by lsn */
 	if (polar_lstat(path, &statbuf) < 0)
 	{
-		pg_atomic_write_u64(&polar_fullpage_ctl->max_fullpage_no, 0);
+		pg_atomic_write_u64(&ctl->max_fullpage_no, 0);
 		return;
 	}
 	else
 	{
-		fullpage_no = polar_xlog_read_fullpage_no(logindex_snapshot, lsn);
-		pg_atomic_write_u64(&polar_fullpage_ctl->max_fullpage_no, fullpage_no);
+		fullpage_no = polar_xlog_read_fullpage_no(ctl->logindex_snapshot, lsn);
+		pg_atomic_write_u64(&ctl->max_fullpage_no, fullpage_no);
 	}
 
-	elog(LOG, "redo done at max_fullpage_no = %ld", pg_atomic_read_u64(&polar_fullpage_ctl->max_fullpage_no));
+	elog(LOG, "redo done at max_fullpage_no = %ld", pg_atomic_read_u64(&ctl->max_fullpage_no));
 }
 
 /*
@@ -139,27 +153,27 @@ polar_logindex_calc_max_fullpage_no(log_index_snapshot_t *logindex_snapshot)
  * keep the same order with wal lsn, so last fullpage_no must be max_fullpage_no
  */
 void
-polar_update_max_fullpage_no(uint64 fullpage_no)
+polar_update_max_fullpage_no(polar_fullpage_ctl_t ctl, uint64 fullpage_no)
 {
-	pg_atomic_write_u64(&polar_fullpage_ctl->max_fullpage_no, fullpage_no);
+	pg_atomic_write_u64(&ctl->max_fullpage_no, fullpage_no);
 }
 
 /*
  * Install a new FULLPAGE segment file as a current or future log segment.
  */
 static bool
-install_fullpage_file_segment(log_index_snapshot_t *logindex_snapshot, uint64 *seg_no,
+install_fullpage_file_segment(polar_fullpage_ctl_t ctl, uint64 *seg_no,
 							  const char *tmppath, uint64 max_segno)
 {
-	char		path[MAXPGPATH];
+	char        path[MAXPGPATH];
 	struct stat stat_buf;
 
-	FULLPAGE_SEG_FILE_NAME(path, *seg_no);
+	FULLPAGE_SEG_FILE_NAME(ctl, path, *seg_no);
 
 	/*
 	 * We want to be sure that only one process does this at a time.
 	 */
-	LWLockAcquire(LOG_INDEX_FULLPAGE_FILE_LOCK, LW_EXCLUSIVE);
+	LWLockAcquire(LOG_INDEX_FULLPAGE_FILE_LOCK(ctl), LW_EXCLUSIVE);
 
 	/* Find a free slot to put it in */
 	while (polar_stat(path, &stat_buf) == 0)
@@ -167,12 +181,12 @@ install_fullpage_file_segment(log_index_snapshot_t *logindex_snapshot, uint64 *s
 		if ((*seg_no) >= max_segno)
 		{
 			/* Failed to find a free slot within specified range */
-			LWLockRelease(LOG_INDEX_FULLPAGE_FILE_LOCK);
+			LWLockRelease(LOG_INDEX_FULLPAGE_FILE_LOCK(ctl));
 			return false;
 		}
 
 		(*seg_no)++;
-		FULLPAGE_SEG_FILE_NAME(path, *seg_no);
+		FULLPAGE_SEG_FILE_NAME(ctl, path, *seg_no);
 	}
 
 	/*
@@ -181,12 +195,12 @@ install_fullpage_file_segment(log_index_snapshot_t *logindex_snapshot, uint64 *s
 	 */
 	if (durable_link_or_rename(tmppath, path, LOG) != 0)
 	{
-		LWLockRelease(LOG_INDEX_FULLPAGE_FILE_LOCK);
+		LWLockRelease(LOG_INDEX_FULLPAGE_FILE_LOCK(ctl));
 		/* durable_link_or_rename already emitted log message */
 		return false;
 	}
 
-	LWLockRelease(LOG_INDEX_FULLPAGE_FILE_LOCK);
+	LWLockRelease(LOG_INDEX_FULLPAGE_FILE_LOCK(ctl));
 
 	return true;
 }
@@ -195,30 +209,25 @@ static void
 fill_fullpage_file_zero_pages(int fd, char *tmppath)
 {
 #define ONE_MB (1024 * 1024L)
-	typedef union PGAlignedFullpageBlock
-	{
-		char		data[ONE_MB];
-		double		force_align_d;
-		int64		force_align_i64;
-	} PGAlignedFullpageBlock;
+	char        *data;
+	char	*aligned_data;
+	int     nbytes = 0;
 
-	PGAlignedFullpageBlock polar_zbuffer;
-	int			nbytes = 0;
-
-	memset(polar_zbuffer.data, 0, ONE_MB);
+	data = palloc0(POLAR_BUFFER_EXTEND_SIZE(ONE_MB));
+	aligned_data = (char *) POLAR_BUFFER_ALIGN(data);
 
 	pgstat_report_wait_start(WAIT_EVENT_FULLPAGE_FILE_INIT_WRITE);
 
 	for (nbytes = 0; nbytes < FULLPAGE_SEGMENT_SIZE; nbytes += ONE_MB)
 	{
-		int			rc = 0;
+		int     rc = 0;
 
 		errno = 0;
-		rc = (int) polar_pwrite(fd, polar_zbuffer.data, ONE_MB, nbytes);
+		rc = (int) polar_pwrite(fd, aligned_data, ONE_MB, nbytes);
 
 		if (rc != ONE_MB)
 		{
-			int			save_errno = errno;
+			int         save_errno = errno;
 
 			/*
 			 * If we fail to make the file, delete it to release disk space
@@ -230,6 +239,7 @@ fill_fullpage_file_zero_pages(int fd, char *tmppath)
 			/* if write didn't set errno, assume problem is no disk space */
 			errno = save_errno ? save_errno : ENOSPC;
 
+			pfree(data);
 			ereport(ERROR,
 					(errcode_for_file_access(),
 					 errmsg("could not write to file \"%s\": %m", tmppath)));
@@ -238,9 +248,11 @@ fill_fullpage_file_zero_pages(int fd, char *tmppath)
 
 	pgstat_report_wait_end();
 
+	pfree(data);
+
 	if (polar_fsync(fd) != 0)
 	{
-		int			save_errno = errno;
+		int         save_errno = errno;
 
 		polar_close(fd);
 		errno = save_errno;
@@ -256,20 +268,19 @@ fill_fullpage_file_zero_pages(int fd, char *tmppath)
  * Create a new FULLPAGE file segment, or open a pre-existing one.
  */
 int
-polar_fullpage_file_init(log_index_snapshot_t *logindex_snapshot, uint64 fullpage_no)
+polar_fullpage_file_init(polar_fullpage_ctl_t ctl, uint64 fullpage_no)
 {
-	char		path[MAXPGPATH];
-	char		tmppath[MAXPGPATH];
-	uint64		installed_segno;
-	uint64		max_segno;
-	int			fd;
-	char		polar_tmppath[MAXPGPATH];
+	char        path[MAXPGPATH];
+	char        tmppath[MAXPGPATH];
+	uint64  installed_segno;
+	uint64  max_segno;
+	int         fd;
+	char        polar_tmppath[MAXPGPATH];
 
-	FULLPAGE_FILE_NAME(path, fullpage_no);
+	FULLPAGE_FILE_NAME(ctl, path, fullpage_no);
 
 	/*
-	 * Try to use existent file (polar worker maker may have created it
-	 * already)
+	 * Try to use existent file (polar worker maker may have created it already)
 	 */
 
 	fd = BasicOpenFile(path, O_RDWR | PG_BINARY | get_sync_bit(sync_method), true);
@@ -292,7 +303,7 @@ polar_fullpage_file_init(log_index_snapshot_t *logindex_snapshot, uint64 fullpag
 	 */
 	elog(LOG, "creating and filling new FULLPAGE file");
 
-	snprintf(polar_tmppath, MAXPGPATH, POLAR_FULLPAGE_DIR "/fullpagetemp.%d", (int) getpid());
+	snprintf(polar_tmppath, MAXPGPATH, "%s/fullpagetemp.%d", ctl->name, (int) getpid());
 	polar_make_file_path_level2(tmppath, polar_tmppath);
 	polar_unlink(tmppath);
 
@@ -327,12 +338,12 @@ polar_fullpage_file_init(log_index_snapshot_t *logindex_snapshot, uint64 fullpag
 
 	max_segno = FULLPAGE_FILE_SEG_NO(fullpage_no) + polar_fullpage_keep_segments;
 
-	if (!install_fullpage_file_segment(logindex_snapshot, &installed_segno, tmppath, max_segno))
+	if (!install_fullpage_file_segment(ctl, &installed_segno, tmppath, max_segno))
 	{
 		/*
-		 * No need for any more future segments, or
-		 * install_fullpage_file_segment() failed to rename the file into
-		 * place. If the rename failed, opening the file below will fail.
+		 * No need for any more future segments, or install_fullpage_file_segment()
+		 * failed to rename the file into place. If the rename failed, opening
+		 * the file below will fail.
 		 */
 		polar_unlink(tmppath);
 	}
@@ -356,104 +367,103 @@ polar_fullpage_file_init(log_index_snapshot_t *logindex_snapshot, uint64 fullpag
  *
  */
 static int
-fullpage_file_open(log_index_snapshot_t *logindex_snapshot, uint64 fullpage_no)
+fullpage_file_open(polar_fullpage_ctl_t ctl, uint64 fullpage_no)
 {
-	char		path[MAXPGPATH];
-	int			fd;
+	char        path[MAXPGPATH];
+	int         fd;
 
-	FULLPAGE_FILE_NAME(path, fullpage_no);
+	FULLPAGE_FILE_NAME(ctl, path, fullpage_no);
 
 	fd = BasicOpenFile(path, O_RDWR | PG_BINARY, true);
 
 	if (fd >= 0)
 		return fd;
 
-	if (errno != ENOENT)		/* unexpected failure? */
+	if (errno != ENOENT) /* unexpected failure? */
 		ereport(PANIC,
 				(errcode_for_file_access(),
 				 errmsg("could not open file \"%s\": %m", path)));
 
-	return polar_fullpage_file_init(logindex_snapshot, fullpage_no);
+	return polar_fullpage_file_init(ctl, fullpage_no);
 }
 
-uint64
-polar_log_fullpage_begin(void)
+static uint64
+polar_log_fullpage_begin(polar_fullpage_ctl_t ctl)
 {
 	/*
 	 * fullpage_no must keep the same order with lsn.
 	 */
-	LWLockAcquire(LOG_INDEX_FULLPAGE_FILE_LOCK, LW_EXCLUSIVE);
+	LWLockAcquire(LOG_INDEX_FULLPAGE_FILE_LOCK(ctl), LW_EXCLUSIVE);
 
-	return pg_atomic_fetch_add_u64(&polar_fullpage_ctl->max_fullpage_no, 1);
+	return pg_atomic_fetch_add_u64(&ctl->max_fullpage_no, 1);
 }
 
-void
-polar_log_fullpage_end(void)
+static void
+polar_log_fullpage_end(polar_fullpage_ctl_t ctl)
 {
-	LWLockRelease(LOG_INDEX_FULLPAGE_FILE_LOCK);
+	LWLockRelease(LOG_INDEX_FULLPAGE_FILE_LOCK(ctl));
 }
 
 /*
  * POLAR: write old version page to fullpage file
  */
-void
-polar_write_fullpage(Page page, uint64 fullpage_no)
+static void
+polar_write_fullpage(polar_fullpage_ctl_t ctl, Page page, uint64 fullpage_no)
 {
 	if (open_fullpage_file < 0)
 	{
-		open_fullpage_file = fullpage_file_open(POLAR_LOGINDEX_FULLPAGE_SNAPSHOT, fullpage_no);
+		open_fullpage_file = fullpage_file_open(ctl, fullpage_no);
 		open_fullpage_file_seg_no = FULLPAGE_FILE_SEG_NO(fullpage_no);
 	}
 	else if (open_fullpage_file_seg_no != FULLPAGE_FILE_SEG_NO(fullpage_no))
 	{
 		polar_close(open_fullpage_file);
-		open_fullpage_file = fullpage_file_open(POLAR_LOGINDEX_FULLPAGE_SNAPSHOT, fullpage_no);
+		open_fullpage_file = fullpage_file_open(ctl, fullpage_no);
 		open_fullpage_file_seg_no = FULLPAGE_FILE_SEG_NO(fullpage_no);
 	}
 
-	polar_pwrite(open_fullpage_file, (void *) page, BLCKSZ, FULLPAGE_FILE_OFFSET(fullpage_no));
+	polar_pwrite(open_fullpage_file, (void *)page, BLCKSZ, FULLPAGE_FILE_OFFSET(fullpage_no));
 }
 
 /*
  * POLAR: read old version page from fullpage file
  */
 void
-polar_read_fullpage(Page page, uint64 fullpage_no)
+polar_read_fullpage(polar_fullpage_ctl_t ctl, Page page, uint64 fullpage_no)
 {
 	if (open_fullpage_file < 0)
 	{
-		open_fullpage_file = fullpage_file_open(POLAR_LOGINDEX_FULLPAGE_SNAPSHOT, fullpage_no);
+		open_fullpage_file = fullpage_file_open(ctl, fullpage_no);
 		open_fullpage_file_seg_no = FULLPAGE_FILE_SEG_NO(fullpage_no);
 	}
 	else if (open_fullpage_file_seg_no != FULLPAGE_FILE_SEG_NO(fullpage_no))
 	{
 		polar_close(open_fullpage_file);
-		open_fullpage_file = fullpage_file_open(POLAR_LOGINDEX_FULLPAGE_SNAPSHOT, fullpage_no);
+		open_fullpage_file = fullpage_file_open(ctl, fullpage_no);
 		open_fullpage_file_seg_no = FULLPAGE_FILE_SEG_NO(fullpage_no);
 	}
 
-	polar_pread(open_fullpage_file, (void *) page, BLCKSZ, FULLPAGE_FILE_OFFSET(fullpage_no));
+	polar_pread(open_fullpage_file, (void *)page, BLCKSZ, FULLPAGE_FILE_OFFSET(fullpage_no));
 }
 
 /*
  * Preallocate fullpage files
  */
 void
-polar_prealloc_fullpage_files(void)
+polar_prealloc_fullpage_files(polar_fullpage_ctl_t ctl)
 {
-	log_index_snapshot_t *logindex_snapshot = POLAR_LOGINDEX_FULLPAGE_SNAPSHOT;
-	uint64		max_fullpage_no = 0;
-	int			file = 0;
-	int			count = 0;
+	uint64      max_fullpage_no = 0;
+	int     file = 0;
+	int     count = 0;
 
-	if (!POLAR_ENABLE_FULLPAGE_SNAPSHOT())
-		return;
+	if (!ctl)
+		return ;
 
-	max_fullpage_no = pg_atomic_read_u64(&polar_fullpage_ctl->max_fullpage_no);
+	max_fullpage_no = pg_atomic_read_u64(&ctl->max_fullpage_no);
 
 	while (count < 3)
 	{
-		file = polar_fullpage_file_init(logindex_snapshot, max_fullpage_no);
+		file = polar_fullpage_file_init(ctl, max_fullpage_no);
 		polar_close(file);
 		max_fullpage_no += FULLPAGE_NUM_PER_FILE;
 		count++;
@@ -465,20 +475,20 @@ polar_prealloc_fullpage_files(void)
  * Recycle or remove a fullpage file that's no longer needed.
  */
 void
-polar_remove_old_fullpage_file(log_index_snapshot_t *logindex_snapshot, const char *segname, uint64 min_fullpage_seg_no)
+polar_remove_old_fullpage_file(polar_fullpage_ctl_t ctl, const char *segname, uint64 min_fullpage_seg_no)
 {
 	struct stat statbuf;
-	uint64		end_fullpage_seg_no = FULLPAGE_FILE_SEG_NO(pg_atomic_read_u64(&polar_fullpage_ctl->max_fullpage_no));
-	uint64		recycle_seg_no = min_fullpage_seg_no + polar_fullpage_keep_segments;
+	uint64 end_fullpage_seg_no = FULLPAGE_FILE_SEG_NO(pg_atomic_read_u64(&ctl->max_fullpage_no));
+	uint64 recycle_seg_no = min_fullpage_seg_no + polar_fullpage_keep_segments;
 
 	/*
-	 * Before deleting the file, see if it can be recycled as a future
-	 * fullpage segment.
+	 * Before deleting the file, see if it can be recycled as a future fullpage
+	 * segment.
 	 */
 	if (end_fullpage_seg_no <= recycle_seg_no &&
-		polar_lstat(segname, &statbuf) == 0 && S_ISREG(statbuf.st_mode) &&
-		install_fullpage_file_segment(logindex_snapshot, &end_fullpage_seg_no, segname,
-									  recycle_seg_no))
+			polar_lstat(segname, &statbuf) == 0 && S_ISREG(statbuf.st_mode) &&
+			install_fullpage_file_segment(ctl, &end_fullpage_seg_no, segname,
+										  recycle_seg_no))
 	{
 		/* POLAR: force log */
 		ereport(LOG,
@@ -488,7 +498,7 @@ polar_remove_old_fullpage_file(log_index_snapshot_t *logindex_snapshot, const ch
 	else
 	{
 		/* No need for any more future segments... */
-		int			rc;
+		int         rc;
 
 		/* POLAR: force log */
 		ereport(LOG,
@@ -510,21 +520,19 @@ polar_remove_old_fullpage_file(log_index_snapshot_t *logindex_snapshot, const ch
  * It's a extern function
  */
 void
-polar_remove_old_fullpage_files(void)
+polar_remove_old_fullpage_files(polar_fullpage_ctl_t ctl, XLogRecPtr min_lsn)
 {
-	int			i = 0;
-
-	for (i = 0; i < LOGINDEX_SNAPSHOT_NUM; i++)
-		remove_old_fullpage_files(polar_logindex_snapshot[i]);
+	polar_logindex_truncate(ctl->logindex_snapshot, min_lsn);
+	remove_old_fullpage_files(ctl);
 }
 
 static uint64
-polar_xlog_read_fullpage_no(log_index_snapshot_t *logindex_snapshot, XLogRecPtr lsn)
+polar_xlog_read_fullpage_no(logindex_snapshot_t logindex_snapshot, XLogRecPtr lsn)
 {
 	XLogRecord *record;
 	XLogReaderState *xlogreader;
-	char	   *errormsg;
-	uint64		fullpage_no = 0;
+	char       *errormsg;
+	uint64  fullpage_no = 0;
 
 	xlogreader = XLogReaderAllocate(wal_segment_size, &read_local_xlog_page,
 									NULL);
@@ -541,15 +549,15 @@ polar_xlog_read_fullpage_no(log_index_snapshot_t *logindex_snapshot, XLogRecPtr 
 		ereport(ERROR,
 				(errcode_for_file_access(),
 				 errmsg("could not read fullpage wal state from WAL at %X/%X",
-						(uint32) (lsn >> 32),
+						(uint32)(lsn >> 32),
 						(uint32) lsn)));
 
 	if (XLogRecGetRmid(xlogreader) != RM_XLOG_ID ||
-		(XLogRecGetInfo(xlogreader) & ~XLR_INFO_MASK) != XLOG_FPSI)
+			(XLogRecGetInfo(xlogreader) & ~XLR_INFO_MASK) != XLOG_FPSI)
 		ereport(ERROR,
 				(errcode_for_file_access(),
 				 errmsg("expected fullpage wal state data is not present in WAL at %X/%X",
-						(uint32) (lsn >> 32),
+						(uint32)(lsn >> 32),
 						(uint32) lsn)));
 
 	/* get fullpage_no from record */
@@ -562,49 +570,19 @@ polar_xlog_read_fullpage_no(log_index_snapshot_t *logindex_snapshot, XLogRecPtr 
  * Recycle or remove all fullpage files older to passed segno.
  */
 static void
-remove_old_fullpage_files(log_index_snapshot_t *logindex_snapshot)
+remove_old_fullpage_files(polar_fullpage_ctl_t ctl)
 {
-	log_index_meta_t *meta = &logindex_snapshot->meta;
-	log_index_file_segment_t *min_seg = &meta->min_segment_info;
-	log_idx_table_data_t *table = NULL;
-	char		path[MAXPGPATH] = {0};
-	uint64		min_fullpage_seg_no = 0;
-	uint64		fullpage_no = 0;
+	char        path[MAXPGPATH] = {0};
+	uint64      min_fullpage_seg_no = 0;
+	uint64      fullpage_no = 0;
 	struct stat statbuf;
-	XLogSegNo	xlog_seg_no = 0;
-	XLogRecPtr	min_lsn = InvalidXLogRecPtr;
+	XLogSegNo   xlog_seg_no = 0;
+	XLogRecPtr  min_lsn = InvalidXLogRecPtr;
 
 	if (polar_in_replica_mode())
 		return;
 
-	if (logindex_snapshot != POLAR_LOGINDEX_FULLPAGE_SNAPSHOT)
-		return;
-
-	LWLockAcquire(LOG_INDEX_IO_LOCK, LW_EXCLUSIVE);
-
-	if (meta->crc == 0 || XLogRecPtrIsInvalid(meta->max_lsn)
-		|| XLogRecPtrIsInvalid(min_seg->max_lsn)
-		|| min_seg->min_idx_table_id == LOG_INDEX_TABLE_INVALID_ID
-		|| min_seg->max_idx_table_id == LOG_INDEX_TABLE_INVALID_ID)
-	{
-		LWLockRelease(LOG_INDEX_IO_LOCK);
-		return;
-	}
-
-	LWLockRelease(LOG_INDEX_IO_LOCK);
-
-	table = palloc(sizeof(log_idx_table_data_t));
-
-	if (log_index_read_table_data(logindex_snapshot, table, min_seg->min_idx_table_id, LOG) == false)
-	{
-		POLAR_LOG_LOGINDEX_META_INFO(meta);
-		ereport(PANIC,
-				(errmsg("Failed to read log index which tid=%ld when truncate logindex",
-						min_seg->min_idx_table_id)));
-	}
-	min_lsn = table->min_lsn;
-
-	pfree(table);
+	min_lsn = polar_get_logindex_snapshot_storage_min_lsn(ctl->logindex_snapshot);
 
 	/* check wal file is exist or not */
 	XLByteToSeg(min_lsn, xlog_seg_no, wal_segment_size);
@@ -614,7 +592,7 @@ remove_old_fullpage_files(log_index_snapshot_t *logindex_snapshot)
 	if (polar_lstat(path, &statbuf) < 0)
 		return;
 
-	fullpage_no = polar_xlog_read_fullpage_no(logindex_snapshot, min_lsn);
+	fullpage_no = polar_xlog_read_fullpage_no(ctl->logindex_snapshot, min_lsn);
 	min_fullpage_seg_no = FULLPAGE_FILE_SEG_NO(fullpage_no);
 
 	while (min_fullpage_seg_no > 0)
@@ -622,7 +600,7 @@ remove_old_fullpage_files(log_index_snapshot_t *logindex_snapshot)
 		/* Must remove segments older than min_fullpage_seg_no */
 		min_fullpage_seg_no--;
 
-		FULLPAGE_SEG_FILE_NAME(path, min_fullpage_seg_no);
+		FULLPAGE_SEG_FILE_NAME(ctl, path, min_fullpage_seg_no);
 
 		/* File has been removed already */
 		if (polar_lstat(path, &statbuf) < 0)
@@ -630,7 +608,7 @@ remove_old_fullpage_files(log_index_snapshot_t *logindex_snapshot)
 
 		elog(LOG, "attempting to remove FULLPAGE segments older than log file %s",
 			 path);
-		polar_remove_old_fullpage_file(logindex_snapshot, path, min_fullpage_seg_no);
+		polar_remove_old_fullpage_file(ctl, path, min_fullpage_seg_no);
 	}
 }
 
@@ -639,16 +617,16 @@ remove_old_fullpage_files(log_index_snapshot_t *logindex_snapshot)
  * responsible for writing the page to disk after calling this routine.
  */
 XLogRecPtr
-polar_log_fullpage_snapshot_image(Buffer buffer, XLogRecPtr oldest_apply_lsn)
+polar_log_fullpage_snapshot_image(polar_fullpage_ctl_t ctl, Buffer buffer, XLogRecPtr oldest_apply_lsn)
 {
 	SMgrRelation smgr = NULL;
-	int			flags;
+	int         flags;
 	RelFileNode rnode;
-	ForkNumber	forkNum;
+	ForkNumber  forkNum;
 	BlockNumber blkno;
-	XLogRecPtr	recptr;
+	XLogRecPtr  recptr;
 	BufferDesc *buf_hdr = GetBufferDescriptor(buffer - 1);
-	uint64		fullpage_no = 0;
+	uint64      fullpage_no = 0;
 	static char *fullpage = NULL;
 
 	/*
@@ -664,12 +642,13 @@ polar_log_fullpage_snapshot_image(Buffer buffer, XLogRecPtr oldest_apply_lsn)
 	BufferGetTag(buffer, &rnode, &forkNum, &blkno);
 
 	/*
-	 * If we have copy buffer, and copy buffer can be flushed, just treat copy
-	 * buffer as fullpage, so we can avoid reading older page from storage
+	 * If we have copy buffer, and copy buffer can be flushed,
+	 * just treat copy buffer as fullpage, so we can avoid reading
+	 * older page from storage
 	 */
 	if (buf_hdr->copy_buffer &&
-		polar_copy_buffer_get_lsn(buf_hdr->copy_buffer) <= oldest_apply_lsn)
-		memcpy(fullpage, (char *) CopyBufHdrGetBlock(buf_hdr->copy_buffer), BLCKSZ);
+			polar_copy_buffer_get_lsn(buf_hdr->copy_buffer) <= oldest_apply_lsn)
+		memcpy(fullpage, (char *)CopyBufHdrGetBlock(buf_hdr->copy_buffer), BLCKSZ);
 	else
 	{
 		/* Find smgr relation for buffer */
@@ -678,7 +657,7 @@ polar_log_fullpage_snapshot_image(Buffer buffer, XLogRecPtr oldest_apply_lsn)
 		smgrread(smgr, forkNum, blkno, (char *) fullpage);
 
 		/* check for garbage data, decrypt page if it has beed encrypted */
-		if (!PageIsVerified((Page) fullpage, forkNum))
+		if (!PageIsVerified((Page) fullpage, forkNum, blkno, smgr))
 		{
 			ereport(ERROR,
 					(errcode(ERRCODE_DATA_CORRUPTED),
@@ -689,23 +668,244 @@ polar_log_fullpage_snapshot_image(Buffer buffer, XLogRecPtr oldest_apply_lsn)
 	}
 
 	/*
-	 * POLAR: get fullpage write lock, only one process can write fullpage wal
-	 * record at the same time, we expected that fullpage_no keep the same
-	 * order with lsn, it's used for easily cleaning fullpage file NOTE: we
-	 * assume that XLogInsert is more faster then smgrread and
-	 * polar_write_fullpage
+	 * POLAR: get fullpage write lock, only one process can
+	 * write fullpage wal record at the same time, we expected
+	 * that fullpage_no keep the same order with lsn, it's used
+	 * for easily cleaning fullpage file
+	 * NOTE: we assume that XLogInsert is more faster then smgrread
+	 * and polar_write_fullpage
 	 */
-	fullpage_no = polar_log_fullpage_begin();
+	fullpage_no = polar_log_fullpage_begin(ctl);
 
 	XLogBeginInsert();
 	XLogRegisterBuffer(0, buffer, flags);
-	XLogRegisterData((char *) (&fullpage_no), sizeof(uint64));
+	XLogRegisterData((char *)(&fullpage_no), sizeof(uint64));
 
 	recptr = XLogInsert(RM_XLOG_ID, XLOG_FPSI);
 
 	/* POLAR: release fullpage write lock */
-	polar_log_fullpage_end();
+	polar_log_fullpage_end(ctl);
 
-	polar_write_fullpage(fullpage, fullpage_no);
+	polar_write_fullpage(ctl, fullpage, fullpage_no);
 	return recptr;
 }
+
+/*
+ * POLAR: this function is only used for polar worker pop record from queue
+ */
+static XLogRecord *
+polar_fullpage_bgworker_xlog_recv_queue_pop(polar_fullpage_ctl_t ctl, polar_ringbuf_ref_t *ref,
+											XLogReaderState *state, char **errormsg)
+{
+	XLogRecord *record = NULL;
+	uint32 pktlen = 0;
+	uint32 xlog_len;
+	uint32 data_len;
+	XLogRecPtr read_rec_ptr, end_rec_ptr;
+	bool pop_storage;
+
+	*errormsg = NULL;
+	state->errormsg_buf[0] = '\0';
+
+	if (XLogRecPtrIsInvalid(state->EndRecPtr))
+	{
+		state->EndRecPtr = GetXLogReplayRecPtr(&ThisTimeLineID);
+		elog(LOG, "Fullpage redo start from %lX", state->EndRecPtr);
+	}
+
+	state->currRecPtr = state->EndRecPtr;
+
+	do
+	{
+		ssize_t offset = 0;
+		uint8  pkt_type = POLAR_RINGBUF_PKT_INVALID_TYPE;
+		record = NULL;
+		pop_storage = false;
+
+		if (polar_ringbuf_avail(ref) > 0)
+			pkt_type = polar_ringbuf_next_ready_pkt(ref, &pktlen);
+
+		switch (pkt_type)
+		{
+			case POLAR_RINGBUF_PKT_WAL_META:
+			{
+				POLAR_COPY_QUEUE_CONTENT(ref, offset, &end_rec_ptr, sizeof(XLogRecPtr));
+				POLAR_COPY_QUEUE_CONTENT(ref, offset, &xlog_len, sizeof(uint32));
+				read_rec_ptr = end_rec_ptr - xlog_len;
+				data_len = pktlen - POLAR_XLOG_HEAD_SIZE;
+
+				if (data_len > state->readRecordBufSize)
+					allocate_recordbuf(state, data_len);
+
+				POLAR_COPY_QUEUE_CONTENT(ref, offset, state->readRecordBuf, data_len);
+
+				polar_ringbuf_update_ref(ref);
+
+				state->readLen = data_len;
+				state->EndRecPtr = end_rec_ptr;
+				state->ReadRecPtr = read_rec_ptr;
+				state->noPayload = true;
+				record = (XLogRecord *)state->readRecordBuf;
+				polar_xlog_queue_decode(state, record, false, errormsg);
+				break;
+			}
+
+			case POLAR_RINGBUF_PKT_WAL_STORAGE_BEGIN:
+			{
+				polar_ringbuf_update_ref(ref);
+				pop_storage = true;
+				break;
+			}
+
+			default:
+				break;
+		}
+	}
+	while ((record && (state->ReadRecPtr <= polar_get_logindex_snapshot_max_lsn(ctl->logindex_snapshot)
+					   || state->ReadRecPtr < state->currRecPtr)) || pop_storage);
+
+	return record;
+}
+
+/*
+ * POLAR: polar worker replay fullpage wal record, only replica
+ * can do this
+ */
+void
+polar_bgworker_fullpage_snapshot_replay(polar_fullpage_ctl_t ctl)
+{
+	XLogRecord *record;
+	char       *errormsg = NULL;
+	TimestampTz last_load_logindex_time = 0;
+	static polar_ringbuf_ref_t ref = { .slot = -1} ;
+	static XLogReaderState *xlogreader = NULL;
+
+	/* wait util reach consistency mode */
+	if (!HotStandbyActive())
+		return;
+
+	if (unlikely(ref.slot == -1))
+	{
+		if (polar_fullpage_online_promote)
+			return;
+
+		POLAR_XLOG_QUEUE_NEW_REF(&ref, ctl->queue, true, "polar_fullpage_xlog_queue");
+	}
+
+	/* Set up XLOG reader facility */
+	if (!xlogreader)
+		xlogreader = XLogReaderAllocate(wal_segment_size, NULL, NULL);
+
+	/*no cover begin*/
+	if (!xlogreader)
+		ereport(ERROR,
+				(errcode(ERRCODE_OUT_OF_MEMORY),
+				 errmsg("out of memory"),
+				 errdetail("Failed while allocating a WAL reading processor.")));
+
+	/*no cover end*/
+
+	for (;;)
+	{
+
+		record = polar_fullpage_bgworker_xlog_recv_queue_pop(ctl, &ref, xlogreader, &errormsg);
+
+		if (record && record->xl_rmid == RM_XLOG_ID && record->xl_info == XLOG_FPSI)
+		{
+			BufferTag tag;
+			POLAR_GET_LOG_TAG(xlogreader, tag, 0);
+			POLAR_LOG_INDEX_ADD_LSN(ctl->logindex_snapshot, xlogreader, &tag);
+		}
+
+		if (record == NULL)
+		{
+			TimestampTz now = GetCurrentTimestamp();
+			XLogRecPtr last_replay_end_ptr = GetXLogReplayRecPtr(NULL);
+
+			CHECK_FOR_INTERRUPTS();
+
+			if (polar_fullpage_get_online_promote())
+			{
+				polar_ringbuf_release_ref(&ref);
+				ref.slot = -1;
+				break;
+			}
+
+			if (errormsg != NULL)
+			{
+				elog(WARNING, "Failed to read xlog for fullpage, errmsg=%s", errormsg);
+				break;
+			}
+
+			/*
+			 * We load logindex from storage in following cases:
+			 * 1. read from file instead of queue
+			 * 2. wal receiver hang or lost for a long time(1s?)
+			 * 3. periodly load logindex from storage(1s)
+			 */
+			if (TimestampDifferenceExceeds(
+						polar_get_walrcv_last_msg_receipt_time(), now, 1000) ||
+					TimestampDifferenceExceeds(
+						last_load_logindex_time, now, 1000))
+			{
+				last_load_logindex_time = now;
+				polar_load_logindex_snapshot_from_storage(ctl->logindex_snapshot, InvalidXLogRecPtr);
+			}
+
+			/*
+			 * POLAR: when read from wal file instead of queue maybe very slow.
+			 * we use replay_lsn for polar worker catch up with starup replay
+			 * when replay fullpage wal, because polar worker don't need to
+			 * replay wal lsn less then replay_lsn, the future page fullpage
+			 * snapshot wal lsn must be bigger then replay_lsn
+			 */
+
+			if (xlogreader->EndRecPtr < last_replay_end_ptr)
+				xlogreader->EndRecPtr = last_replay_end_ptr;
+
+			break;
+		}
+	}
+}
+
+void
+polar_fullpage_bgworker_wait_notify(polar_fullpage_ctl_t ctl)
+{
+	if (ctl)
+		pg_atomic_write_u32(&ctl->procno, MyProc->pgprocno);
+}
+
+void
+polar_fullpage_bgworker_wakeup(polar_fullpage_ctl_t ctl)
+{
+	int procno;
+
+	if (ctl)
+	{
+		procno = pg_atomic_read_u32(&ctl->procno);
+
+		if (procno != INVALID_PGPROCNO)
+		{
+			pg_atomic_write_u32(&ctl->procno, INVALID_PGPROCNO);
+			/*
+			 * Not acquiring ProcArrayLock here which is slightly icky. It's
+			 * actually fine because procLatch isn't ever freed, so we just can
+			 * potentially set the wrong process' (or no process') latch.
+			 */
+			SetLatch(&ProcGlobal->allProcs[procno].procLatch);
+		}
+	}
+}
+
+void
+polar_fullpage_set_online_promote(bool online_promote)
+{
+	polar_fullpage_online_promote = online_promote;
+}
+
+bool
+polar_fullpage_get_online_promote(void)
+{
+	return polar_fullpage_online_promote;
+}
+

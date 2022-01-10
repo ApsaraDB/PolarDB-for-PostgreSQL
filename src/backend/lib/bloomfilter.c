@@ -240,7 +240,9 @@ my_bloom_power(uint64 target_bitset_bits)
 static int
 optimal_k(uint64 bitset_bits, int64 total_elems)
 {
-	int			k = rint(log(2.0) * bitset_bits / total_elems);
+	int			k = 0;
+	Assert(total_elems != 0);
+	k = rint(log(2.0) * bitset_bits / total_elems);
 
 	return Max(1, Min(k, MAX_HASH_FUNCS));
 }
@@ -335,3 +337,4 @@ bloom_init_struct(uint8 *bloom_buf, size_t bloom_buf_size,
 
 	return filter;
 }
+

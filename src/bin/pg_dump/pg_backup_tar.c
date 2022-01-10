@@ -867,13 +867,13 @@ _CloseArchive(ArchiveHandle *AH)
 		 */
 		th = tarOpen(AH, "restore.sql", 'w');
 
-		tarPrintf(AH, th, "--\n"
-				  "-- NOTE:\n"
-				  "--\n"
-				  "-- File paths need to be edited. Search for $$PATH$$ and\n"
-				  "-- replace it with the path to the directory containing\n"
-				  "-- the extracted data files.\n"
-				  "--\n");
+		(void) tarPrintf(AH, th, "--\n"
+						 "-- NOTE:\n"
+						 "--\n"
+						 "-- File paths need to be edited. Search for $$PATH$$ and\n"
+						 "-- replace it with the path to the directory containing\n"
+						 "-- the extracted data files.\n"
+						 "--\n");
 
 		AH->CustomOutPtr = _scriptOut;
 
@@ -1232,8 +1232,8 @@ _tarGetHeader(ArchiveHandle *AH, TAR_MEMBER *th)
 	lclContext *ctx = (lclContext *) AH->formatData;
 	char		h[512];
 	char		tag[100 + 1];
-	int			sum,
-				chk;
+	int			sum = 0,
+				chk = 0;
 	pgoff_t		len;
 	pgoff_t		hPos;
 	bool		gotBlock = false;

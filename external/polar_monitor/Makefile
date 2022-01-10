@@ -1,13 +1,19 @@
 # external/polar_monitor/Makefile
 
 MODULE_big = polar_monitor
-OBJS = polar_monitor.o polar_monitor_buf.o polar_monitor_async_ddl_lock_replay.o $(WIN32RES)
-OBJS += procstat.o
-OBJS += polar_monitor_io.o
+OBJS = polar_monitor.o polar_monitor_buf.o procstat.o polar_monitor_io.o $(WIN32RES)
+OBJS += polar_monitor_csnlog.o
+OBJS += polar_monitor_shmem.o
+OBJS += polar_monitor_async_ddl_lock_replay.o
+OBJS += polar_monitor_cgroup.o
+OBJS += polar_monitor_dma.o
+OBJS += polar_monitor_datamax.o
+OBJS += polar_monitor_flashback_log.o
+OBJS += polar_monitor_proxy.o
 
 EXTENSION = polar_monitor
-DATA = polar_monitor--1.0.sql
-PGFILEDESC = "polar_monitor - monitoring of polardb information in real-time"
+DATA = polar_monitor--1.0--1.1.sql polar_monitor--1.1--1.2.sql polar_monitor--1.2.sql
+PGFILEDESC = "polar_monitor - monitoring of polar db information in real-time"
 REGRESS = polar_monitor
 NO_CHECK = 1
 

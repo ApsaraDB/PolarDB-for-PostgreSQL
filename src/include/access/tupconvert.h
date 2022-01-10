@@ -41,6 +41,7 @@ extern TupleConversionMap *convert_tuples_by_name(TupleDesc indesc,
 extern AttrNumber *convert_tuples_by_name_map(TupleDesc indesc,
 						   TupleDesc outdesc,
 						   const char *msg);
+extern HeapTuple execute_attr_map_tuple(HeapTuple tuple, TupleConversionMap *map);
 
 extern HeapTuple do_convert_tuple(HeapTuple tuple, TupleConversionMap *map);
 

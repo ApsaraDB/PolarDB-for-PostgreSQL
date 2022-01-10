@@ -11,6 +11,7 @@ program_options_handling_ok('clusterdb');
 
 my $node = get_new_node('main');
 $node->init;
+$node->append_conf('postgresql.conf', 'polar_enable_multi_syslogger = off');
 $node->start;
 
 $node->issues_sql_like(

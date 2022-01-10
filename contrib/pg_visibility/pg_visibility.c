@@ -21,6 +21,9 @@
 #include "storage/smgr.h"
 #include "utils/rel.h"
 
+/* POLAR */
+#include "replication/syncrep.h"
+
 PG_MODULE_MAGIC;
 
 typedef struct vbits
@@ -395,6 +398,7 @@ pg_truncate_visibility_map(PG_FUNCTION_ARGS)
 	if (RelationNeedsWAL(rel))
 	{
 		xl_smgr_truncate xlrec;
+		XLogRecPtr lsn;
 
 		xlrec.blkno = 0;
 		xlrec.rnode = rel->rd_node;
@@ -403,7 +407,13 @@ pg_truncate_visibility_map(PG_FUNCTION_ARGS)
 		XLogBeginInsert();
 		XLogRegisterData((char *) &xlrec, sizeof(xlrec));
 
-		XLogInsert(RM_SMGR_ID, XLOG_SMGR_TRUNCATE | XLR_SPECIAL_REL_UPDATE);
+		lsn = XLogInsert(RM_SMGR_ID, XLOG_SMGR_TRUNCATE | XLR_SPECIAL_REL_UPDATE);
+		/*
+		 * POLAR: If ro is preloading blocks, then we have to wait for this xlog to be replayed by ro.
+		 * Otherwise ro may try to preload block which is truncated.
+		 */
+		XLogFlush(lsn);
+		SyncRepWaitForLSN(lsn, false, true);
 	}
 
 	/*

@@ -45,13 +45,19 @@ typedef FormData_pg_sequence_data *Form_pg_sequence_data;
 /* XLOG stuff */
 #define XLOG_SEQ_LOG			0x00
 
+/* POLAR px */
+#define SEQ_NEXTVAL_FALSE			'f'
+#define SEQ_NEXTVAL_TRUE			't'
+#define SEQ_NEXTVAL_QUERY_RESPONSE	'?'
+/* POLAR end */
+
 typedef struct xl_seq_rec
 {
 	RelFileNode node;
 	/* SEQUENCE TUPLE DATA FOLLOWS AT THE END */
 } xl_seq_rec;
 
-/* POLAR: move definations to header. */
+/* POLAR: change static to extern */
 
 /*
  * The "special area" of a sequence's buffer page looks like this.
@@ -66,6 +72,10 @@ typedef struct sequence_magic
 extern int64 nextval_internal(Oid relid, bool check_permissions);
 extern Datum nextval(PG_FUNCTION_ARGS);
 extern List *sequence_options(Oid relid);
+
+/* POLAR px */
+extern void nextval_qc(Oid relid, int64 *plast, int64 *pcached, int64  *pincrement, bool *poverflow);
+/* POLAR end */
 
 extern ObjectAddress DefineSequence(ParseState *pstate, CreateSeqStmt *stmt);
 extern ObjectAddress AlterSequence(ParseState *pstate, AlterSeqStmt *stmt);

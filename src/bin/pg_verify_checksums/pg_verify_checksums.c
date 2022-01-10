@@ -76,6 +76,16 @@ static const struct exclude_list_item skip[] = {
 #ifdef EXEC_BACKEND
 	{"config_exec_params", true},
 #endif
+
+	/* POLAR: Do not checksum for sqlprotect's files */
+	{"polar_sqlprotect.stat", false},
+	{"polar_sqlprotect.query", false},
+	{"polar_sqlprotect.qtxt", false},
+	{"polar_sql_protect_roles", false},
+	{"polar_sql_protect_rels", false},
+	{"polar_sql_protect_stats", false},
+	/* POLAR end */
+
 	{NULL, false}
 };
 
