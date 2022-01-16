@@ -545,6 +545,8 @@ then
   dma_regress_opt="DMA_OPTS=cluster"
 fi
 
+sudo sh -c "echo 3 > /proc/sys/vm/drop_caches"
+
 ###################### PHASE 4 Test: run test cases in non-polar  ######################
 if [[ $make_check_world == "on" ]];
 then
