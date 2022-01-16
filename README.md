@@ -4,6 +4,8 @@
 
 # PolarDB for PostgreSQL
 
+## English | [简体中文](README-CN.md)
+
 **A cloud-native database service independently developed by Alibaba Cloud**
 
 [![official](https://img.shields.io/badge/official%20site-blueviolet?style=for-the-badge&logo=alibabacloud)](https://developer.aliyun.com/topic/polardb-for-pg)
@@ -15,7 +17,6 @@
 [![github-stars](https://img.shields.io/github/stars/ApsaraDB/PolarDB-for-PostgreSQL?style=for-the-badge&logo=github)](https://github.com/ApsaraDB/PolarDB-for-PostgreSQL/stargazers)
 [![github-contributors](https://img.shields.io/github/contributors/ApsaraDB/PolarDB-for-PostgreSQL?style=for-the-badge&logo=github)](https://github.com/ApsaraDB/PolarDB-for-PostgreSQL/graphs/contributors)
 
-English | [简体中文](README-CN.md)
 
 </div>
 
@@ -37,11 +38,11 @@ PolarDB PostgreSQL (hereafter simplified as PolarDB) is a cloud native database 
 
 PolarDB provides a wide range of innovative multi-model database capabilities to help you process, analyze, and search for different types of data, such as spatio-temporal, geographic information system (GIS), image, vector, and graph data.
 
-Besides the **Shared-Storage** architecture mentioned above, PolarDB also supports depolyments in **Shared-Nothing** architecture. For more details, refer to [README](https://github.com/ApsaraDB/PolarDB-for-PostgreSQL/blob/distributed/README.md) in the **distributed** branch.
 
 ## Branch Introduction
 
-The default branch of PolarDB switched to `main` on 20210901, which supports compute-storage-separation architecture. The `POLARDB_11_STABLE` is the stable branch which is based on PostgreSQL 11.9. The original `master` branch in the past has been switched to `distributed` branch, which supports distributed architecture of PolarDB.
+The `POLARDB_11_STABLE` is stable branch which is based on PostgreSQL 11.9. It supports compute-storage separation architecture. The `distributed` branch, which supports distributed architecture.
+
 
 ## Architecture and Roadmap
 

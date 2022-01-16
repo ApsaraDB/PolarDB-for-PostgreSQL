@@ -4,6 +4,8 @@
 
 # PolarDB for PostgreSQL
 
+## [English](README.md) | 简体中文
+
 **阿里云自主研发的云原生数据库产品**
 
 [![official](https://img.shields.io/badge/官方网站-blueviolet?style=for-the-badge&logo=alibabacloud)](https://developer.aliyun.com/topic/polardb-for-pg)
@@ -15,7 +17,6 @@
 [![github-stars](https://img.shields.io/github/stars/ApsaraDB/PolarDB-for-PostgreSQL?style=for-the-badge&logo=github)](https://github.com/ApsaraDB/PolarDB-for-PostgreSQL/stargazers)
 [![github-contributors](https://img.shields.io/github/contributors/ApsaraDB/PolarDB-for-PostgreSQL?style=for-the-badge&logo=github)](https://github.com/ApsaraDB/PolarDB-for-PostgreSQL/graphs/contributors)
 
-[English](README.md) | 简体中文
 
 </div>
 
@@ -37,11 +38,9 @@ PolarDB PostgreSQL（下文简称为 PolarDB）是一款阿里云自主研发的
 
 PolarDB 还支持时空、GIS、图像、向量、搜索、图谱等多模创新特性，应对企业对数据处理日新月异的需求。
 
-另外，除了上述 Shared-Storage 云原生的模式，PolarDB 还支持以 Shared-Nothing 模式部署，详见 **distribute** 分支的 [README](https://github.com/ApsaraDB/PolarDB-for-PostgreSQL/blob/distributed/README.md)。
-
 ## 分支说明
 
-PolarDB 的默认分支为 `main` 分支，支持存储计算分离的形态。分布式形态由 `distribute` 分支支持（对应之前的 `master` 分支）。
+`POLARDB_11_STABLE` 为稳定分支，持存储计算分离的云原生形态。 `distribute` 分支支持分布式形态。
 
 ## 产品架构和版本规划
 
