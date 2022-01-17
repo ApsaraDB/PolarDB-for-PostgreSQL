@@ -6,7 +6,7 @@
 
 推荐基于 Docker 来编译源码。如果已经有 Docker 或标准 CentOS7 请跳过该步骤。
 
-1. macOS：[安装 Docker](https://docs.docker.com/desktop/mac/install/)（建议将内存调整为4GB）
+1. macOS：[安装 Docker](https://docs.docker.com/desktop/mac/install/)（建议将内存调整为 4GB）
 2. Linux 主机 / 虚拟机：请参考特定发行版安装 Docker 的步骤
 
 ## 2. 下载 PolarDB 源代码
@@ -198,8 +198,6 @@ source /etc/bashrc
 以下操作均在容器内执行，且以 **普通用户 `postgres`** 完成实例的编译和搭建。
 :::
 
-
-
 ### 本地单节点实例
 
 - 1 个主节点（端口为 5432）
@@ -208,13 +206,13 @@ source /etc/bashrc
 ./polardb_build.sh
 ```
 
-### psql连接数据库
+psql 连接数据库：
 
 ```bash
 $HOME/tmp_basedir_polardb_pg_1100_bld/bin/psql -h127.0.0.1 -p5432
 ```
 
-**至此，您已经成功编译源码并运行PolarDB。**
+**至此，您已经成功编译源码并运行 PolarDB。**
 
 ### 本地多节点实例
 

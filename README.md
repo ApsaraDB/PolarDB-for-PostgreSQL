@@ -4,12 +4,13 @@
 
 # PolarDB for PostgreSQL
 
-## English | [简体中文](README-CN.md)
-
 **A cloud-native database service independently developed by Alibaba Cloud**
+
+#### English | [简体中文](README-CN.md)
 
 [![official](https://img.shields.io/badge/official%20site-blueviolet?style=for-the-badge&logo=alibabacloud)](https://developer.aliyun.com/topic/polardb-for-pg)
 
+[![github-actions](https://img.shields.io/github/workflow/status/ApsaraDB/PolarDB-for-PostgreSQL/polardb-regression-testing/POLARDB_11_DEV?style=for-the-badge&logo=githubactions)](https://github.com/ApsaraDB/PolarDB-for-PostgreSQL/actions/workflows/build-and-test.yml)
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue?style=for-the-badge&logo=apache)](LICENSE)
 [![github-issues](https://img.shields.io/github/issues/ApsaraDB/PolarDB-for-PostgreSQL?style=for-the-badge&logo=github)](https://GitHub.com/ApsaraDB/PolarDB-for-PostgreSQL/issues)
 [![github-pullrequest](https://img.shields.io/github/issues-pr/ApsaraDB/PolarDB-for-PostgreSQL?style=for-the-badge&logo=github)](https://GitHub.com/ApsaraDB/PolarDB-for-PostgreSQL/pulls)
@@ -24,7 +25,7 @@
 
 ![arch.png](docs/imgs/1_polardb_architecture.png)
 
-PolarDB PostgreSQL (hereafter simplified as PolarDB) is a cloud native database service independently developed by Alibaba Cloud. This service is 100% compatible with PostgreSQL and uses a shared-storage-based architecture in which computing is decoupled from storage. This service features flexible scalability, millisecond-level latency and hybrid transactional/analytical processing (HTAP) capabilities.
+PolarDB for PostgreSQL (hereafter simplified as PolarDB) is a cloud native database service independently developed by Alibaba Cloud. This service is 100% compatible with PostgreSQL and uses a shared-storage-based architecture in which computing is decoupled from storage. This service features flexible scalability, millisecond-level latency and hybrid transactional/analytical processing (HTAP) capabilities.
 
 1. Flexible scalability: You can use the service to scale out a compute cluster or a storage cluster based on your business requirements.
    - If the computing power is insufficient, you can scale out only the compute cluster.
