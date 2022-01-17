@@ -1,6 +1,6 @@
 ---
 home: true
-title: PolarDB for PostgreSQL
+title: Documentation
 heroImage: /images/polardb.png
 actions:
   - text: Getting Started

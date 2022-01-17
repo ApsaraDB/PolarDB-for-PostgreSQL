@@ -7,7 +7,7 @@ module.exports = {
 
   base: "/PolarDB-for-PostgreSQL/",
 
-  head: [["link", { rel: "icon", href: "/favicon.ico" }]],
+  head: [["link", { rel: "icon", href: "./favicon.ico" }]],
 
   locales: {
     "/": {
