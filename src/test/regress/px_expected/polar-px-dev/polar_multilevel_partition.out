@@ -6,7 +6,9 @@ select 'partition by range' as current_query;
  partition by range
 (1 row)
 
+SET client_min_messages TO 'warning';
 DROP TABLE IF EXISTS sales cascade;
+RESET client_min_messages;
 CREATE OR REPLACE FUNCTION create_huge_partitions()
 RETURNS VOID AS $$
 DECLARE

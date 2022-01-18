@@ -1,6 +1,6 @@
 ---
 home: true
-title: PolarDB for PostgreSQL
+title: 文档
 heroImage: /images/polardb.png
 actions:
   - text: 快速上手

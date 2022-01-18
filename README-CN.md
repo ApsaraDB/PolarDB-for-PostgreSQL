@@ -4,12 +4,13 @@
 
 # PolarDB for PostgreSQL
 
-## [English](README.md) | 简体中文
-
 **阿里云自主研发的云原生数据库产品**
+
+#### [English](README.md) | 简体中文
 
 [![official](https://img.shields.io/badge/官方网站-blueviolet?style=for-the-badge&logo=alibabacloud)](https://developer.aliyun.com/topic/polardb-for-pg)
 
+[![github-actions](https://img.shields.io/github/workflow/status/ApsaraDB/PolarDB-for-PostgreSQL/polardb-regression-testing/POLARDB_11_DEV?style=for-the-badge&logo=githubactions)](https://github.com/ApsaraDB/PolarDB-for-PostgreSQL/actions/workflows/build-and-test.yml)
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue?style=for-the-badge&logo=apache)](LICENSE)
 [![github-issues](https://img.shields.io/github/issues/ApsaraDB/PolarDB-for-PostgreSQL?style=for-the-badge&logo=github)](https://GitHub.com/ApsaraDB/PolarDB-for-PostgreSQL/issues)
 [![github-pullrequest](https://img.shields.io/github/issues-pr/ApsaraDB/PolarDB-for-PostgreSQL?style=for-the-badge&logo=github)](https://GitHub.com/ApsaraDB/PolarDB-for-PostgreSQL/pulls)
@@ -20,11 +21,11 @@
 
 </div>
 
-## 什么是 PolarDB PostgreSQL
+## 什么是 PolarDB for PostgreSQL
 
 ![arch.png](docs/zh/imgs/1_polardb_architecture.png)
 
-PolarDB PostgreSQL（下文简称为 PolarDB）是一款阿里云自主研发的云原生数据库产品，100% 兼容 PostgreSQL，采用基于 Shared-Storage 的存储计算分离架构，具有极致弹性、毫秒级延迟、HTAP 的能力。
+PolarDB for PostgreSQL（下文简称为 PolarDB）是一款阿里云自主研发的云原生数据库产品，100% 兼容 PostgreSQL，采用基于 Shared-Storage 的存储计算分离架构，具有极致弹性、毫秒级延迟、HTAP 的能力。
 
 1. 极致弹性：存储与计算能力均可独立地横向扩展。
    - 当计算能力不够时，可以单独扩展计算集群，数据无需复制。
