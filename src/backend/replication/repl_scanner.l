@@ -104,10 +104,12 @@ LOGICAL				{ return K_LOGICAL; }
 SLOT				{ return K_SLOT; }
 TEMPORARY			{ return K_TEMPORARY; }
 ONPOLARDB			{ return K_ONPOLARDB; }
+POLAR_VERSION			{ return K_POLAR_VERSION; }
 EXPORT_SNAPSHOT		{ return K_EXPORT_SNAPSHOT; }
 NOEXPORT_SNAPSHOT	{ return K_NOEXPORT_SNAPSHOT; }
 USE_SNAPSHOT		{ return K_USE_SNAPSHOT; }
 WAIT				{ return K_WAIT; }
+POLAR_REPL_MODE			{ return K_POLAR_REPL_MODE; }
 
 ","				{ return ','; }
 ";"				{ return ';'; }

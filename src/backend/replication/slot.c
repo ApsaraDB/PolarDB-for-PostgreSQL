@@ -51,7 +51,12 @@
 #include "utils/builtins.h"
 
 /* POLAR */
+#include "access/polar_logindex_redo.h"
+#include "polar_datamax/polar_datamax.h"
 #include "replication/syncrep.h"
+#include "storage/polar_fd.h"
+#include "utils/guc.h"
+/* POLAR end */
 
 /*
  * Replication slot on-disk data structure.
@@ -89,8 +94,34 @@ typedef struct ReplicationSlotOnDisk
 #define ReplicationSlotOnDiskV2Size \
 	sizeof(ReplicationSlotOnDisk) - ReplicationSlotOnDiskConstantSize
 
+/* POLAR */
+/* size of the part covered by the checksum */
+#define SnapBuildOnDiskChecksummedVersion2Size \
+	offsetof(ReplicationSlotOnDisk, slotdata) + offsetof(ReplicationSlotPersistentData, polar_replica_apply_lsn) - SnapBuildOnDiskNotChecksummedSize
+/* size of the slot data that is version dependent */
+#define ReplicationSlotOnDiskV2Version2Size \
+	offsetof(ReplicationSlotOnDisk, slotdata) + offsetof(ReplicationSlotPersistentData, polar_replica_apply_lsn) - ReplicationSlotOnDiskConstantSize
+
+#define ReplicationSlotPersistentDataVersion2Size \
+	offsetof(ReplicationSlotPersistentData, polar_replica_apply_lsn)
+
+/* size of the part covered by the checksum */
+#define SnapBuildOnDiskChecksummedVersion3Size \
+	offsetof(ReplicationSlotOnDisk, slotdata) + offsetof(ReplicationSlotPersistentData, polar_invalidated_at) - SnapBuildOnDiskNotChecksummedSize
+/* size of the slot data that is version dependent */
+#define ReplicationSlotOnDiskV2Version3Size \
+	offsetof(ReplicationSlotOnDisk, slotdata) + offsetof(ReplicationSlotPersistentData, polar_invalidated_at) - ReplicationSlotOnDiskConstantSize
+
+#define ReplicationSlotPersistentDataVersion3Size \
+	offsetof(ReplicationSlotPersistentData, polar_invalidated_at)
+/* POLAR end */
+
 #define SLOT_MAGIC		0x1051CA1	/* format identifier */
 #define SLOT_VERSION	2		/* version for new files */
+/* POLAR */
+#define POLAR_SLOT_VERSION_V2	10002	/* version for polar customized file */
+#define POLAR_SLOT_VERSION_V3	10003
+/* POLAR end */
 
 /* Control array for replication slot management */
 ReplicationSlotCtlData *ReplicationSlotCtl = NULL;
@@ -101,14 +132,18 @@ ReplicationSlot *MyReplicationSlot = NULL;
 /* GUCs */
 int			max_replication_slots = 0;	/* the maximum number of replication
 										 * slots */
+/* POLAR */
 
 static void ReplicationSlotDropAcquired(void);
 static void ReplicationSlotDropPtr(ReplicationSlot *slot);
 
 /* internal persistency functions */
-static void RestoreSlotFromDisk(const char *name);
+static void RestoreSlotFromDisk(const char *name, bool polar_vfs);
 static void CreateSlotOnDisk(ReplicationSlot *slot);
 static void SaveSlotToPath(ReplicationSlot *slot, const char *path, int elevel);
+
+/* POLAR */
+static void polar_restore_all_slots_from_dir(char *replslot_dir, bool load_from_vfs);
 
 /*
  * Report shared-memory space needed by ReplicationSlotShmemInit.
@@ -226,6 +261,9 @@ ReplicationSlotCreate(const char *name, bool db_specific,
 {
 	ReplicationSlot *slot = NULL;
 	int			i;
+	/* POLAR: count the available slots */
+	int polar_replication_slots_available = 0;
+	/* POLAR: end */
 
 	Assert(MyReplicationSlot == NULL);
 
@@ -256,6 +294,10 @@ ReplicationSlotCreate(const char *name, bool db_specific,
 					 errmsg("replication slot \"%s\" already exists", name)));
 		if (!s->in_use && slot == NULL)
 			slot = s;
+		/* POLAR: count the used slots */
+		if (!s->in_use)
+			polar_replication_slots_available++;
+		/* POLAR: end */
 	}
 	LWLockRelease(ReplicationSlotControlLock);
 
@@ -265,6 +307,37 @@ ReplicationSlotCreate(const char *name, bool db_specific,
 				(errcode(ERRCODE_CONFIGURATION_LIMIT_EXCEEDED),
 				 errmsg("all replication slots are in use"),
 				 errhint("Free one or increase max_replication_slots.")));
+
+	/* POALR: limit slots use of non_super users */
+	if (polar_repl_slots_reserved_for_superuser >= 0 &&
+			polar_replication_slots_available <= polar_repl_slots_reserved_for_superuser &&
+			!MyProc->issuper)
+	{
+		slot = NULL;
+		ereport(ERROR,
+				(errcode(ERRCODE_CONFIGURATION_LIMIT_EXCEEDED),
+				 errmsg("replication slots of non_super users reach upper limit, current polar_replication_slots_available: %d, polar_repl_slots_reserved_for_superuser %d", polar_replication_slots_available, polar_repl_slots_reserved_for_superuser)));
+	}
+	/* POLAR: end */
+
+	/* POLAR: RO store replication slot on local disk, but couldn't check same slot name on RW which store on polarstore */
+	if (polar_enable_persisted_physical_slot && !db_specific)
+	{
+		char		path[MAXPGPATH];
+		struct stat st;
+		char 		replslot_dir[MAXPGPATH] = {0};
+
+		polar_make_file_path_level2(replslot_dir, "pg_replslot");
+		snprintf(path, MAXPGPATH, "%s/%s", replslot_dir, name);
+
+		if (polar_stat(path, &st) == 0 && S_ISDIR(st.st_mode))
+		{
+			ereport(ERROR,
+					(errcode(ERRCODE_DUPLICATE_OBJECT),
+					 errmsg("replication slot \"%s\" already exists on RW", name)));
+		}
+	}
+	/* POLAR: end */
 
 	/*
 	 * Since this slot is not in use, nobody should be looking at any part of
@@ -313,6 +386,10 @@ ReplicationSlotCreate(const char *name, bool db_specific,
 	slot->active_pid = MyProcPid;
 	SpinLockRelease(&slot->mutex);
 	MyReplicationSlot = slot;
+
+	/* POLAR */
+	slot->polar_replica_lock_lsn = InvalidXLogRecPtr;
+	/* POLAR end */
 
 	LWLockRelease(ReplicationSlotControlLock);
 
@@ -555,6 +632,10 @@ ReplicationSlotDropPtr(ReplicationSlot *slot)
 	char		path[MAXPGPATH];
 	char		tmppath[MAXPGPATH];
 
+	/* POLAR */
+	char		replslot_dir[MAXPGPATH] = {0};
+	char		local_slot_path[MAXPGPATH] = {0};
+
 	/*
 	 * If some other backend ran this code concurrently with us, we might try
 	 * to delete a slot with a certain name while someone else was trying to
@@ -563,8 +644,13 @@ ReplicationSlotDropPtr(ReplicationSlot *slot)
 	LWLockAcquire(ReplicationSlotAllocationLock, LW_EXCLUSIVE);
 
 	/* Generate pathnames. */
-	sprintf(path, "pg_replslot/%s", NameStr(slot->data.name));
-	sprintf(tmppath, "pg_replslot/%s.tmp", NameStr(slot->data.name));
+	snprintf(replslot_dir, MAXPGPATH, "%s", "pg_replslot");
+	if (POLAR_PERSIST_LOGICAL_SLOT(slot) || POLAR_PERSIST_PHYSICAL_SLOT_FOR_ONLINE_PROMOTE(slot))
+		polar_make_file_path_level2(replslot_dir, "pg_replslot");
+
+	snprintf(path, MAXPGPATH, "%s/%s", replslot_dir, NameStr(slot->data.name));
+	snprintf(tmppath, MAXPGPATH, "%s/%s.tmp", replslot_dir, NameStr(slot->data.name));
+	snprintf(local_slot_path, MAXPGPATH, "%s/%s", "pg_replslot", NameStr(slot->data.name));
 
 	/*
 	 * Rename the slot directory on disk, so that we'll no longer recognize
@@ -573,7 +659,7 @@ ReplicationSlotDropPtr(ReplicationSlot *slot)
 	 * temporary slot, we better never fail hard as the caller won't expect
 	 * the slot to survive and this might get called during error handling.
 	 */
-	if (rename(path, tmppath) == 0)
+	if (polar_rename(path, tmppath) == 0)
 	{
 		/*
 		 * We need to fsync() the directory we just renamed and its parent to
@@ -584,8 +670,8 @@ ReplicationSlotDropPtr(ReplicationSlot *slot)
 		 * restart.
 		 */
 		START_CRIT_SECTION();
-		fsync_fname(tmppath, true, false);
-		fsync_fname("pg_replslot", true, false);
+		fsync_fname(tmppath, true, true);
+		fsync_fname(replslot_dir, true, true);
 		END_CRIT_SECTION();
 	}
 	else
@@ -627,6 +713,15 @@ ReplicationSlotDropPtr(ReplicationSlot *slot)
 	ReplicationSlotsComputeRequiredXmin(false);
 	ReplicationSlotsComputeRequiredLSN();
 
+	/* POLAR: remove local slot path which may store spilled files*/
+	if (POLAR_PERSIST_LOGICAL_SLOT(slot))
+	{
+		if (!rmtree(local_slot_path, true))
+			ereport(WARNING,
+					(errcode_for_file_access(),
+					 errmsg("could not remove directory \"%s\" for spill file", local_slot_path)));
+	}
+
 	/*
 	 * If removing the directory fails, the worst thing that will happen is
 	 * that the user won't be able to create a new slot with the same name
@@ -651,10 +746,10 @@ ReplicationSlotDropPtr(ReplicationSlot *slot)
 	 * dropping slot. When none of slots is defined, polar_release_ddl_waiters
 	 * will wake the whole apply queue.
 	 */
-	if (!polar_release_ddl_waiters())
-	{
-		ereport(LOG, (errmsg("No replica replication slot exists, so we wake all backend.")));
-	}
+    if (!polar_release_ddl_waiters())
+    {
+        ereport(LOG, (errmsg("No replica replication slot exists, so we wake all backend.")));
+    }
 }
 
 /*
@@ -669,6 +764,9 @@ ReplicationSlotSave(void)
 	Assert(MyReplicationSlot != NULL);
 
 	sprintf(path, "pg_replslot/%s", NameStr(MyReplicationSlot->data.name));
+	if (POLAR_PERSIST_LOGICAL_SLOT(MyReplicationSlot) ||
+			POLAR_PERSIST_PHYSICAL_SLOT_FOR_ONLINE_PROMOTE(MyReplicationSlot))
+		polar_make_file_path_level3(path, "pg_replslot", NameStr(MyReplicationSlot->data.name));
 	SaveSlotToPath(MyReplicationSlot, path, ERROR);
 }
 
@@ -777,18 +875,29 @@ ReplicationSlotsComputeRequiredLSN(void)
 	{
 		ReplicationSlot *s = &ReplicationSlotCtl->replication_slots[i];
 		XLogRecPtr	restart_lsn;
+		XLogRecPtr 	replay_lsn;
 
 		if (!s->in_use)
 			continue;
 
 		SpinLockAcquire(&s->mutex);
 		restart_lsn = s->data.restart_lsn;
+		/* POLAR: Add replayed lsn compare */
+		replay_lsn = s->data.polar_replica_apply_lsn;
+		/* POLAR end */
 		SpinLockRelease(&s->mutex);
 
 		if (restart_lsn != InvalidXLogRecPtr &&
 			(min_required == InvalidXLogRecPtr ||
 			 restart_lsn < min_required))
 			min_required = restart_lsn;
+
+		/* POLAR: Add replayed lsn compare */
+		if (replay_lsn != InvalidXLogRecPtr &&
+			(min_required == InvalidXLogRecPtr ||
+			 replay_lsn < min_required))
+			min_required = replay_lsn;
+		/* POLAR end */
 	}
 	LWLockRelease(ReplicationSlotControlLock);
 
@@ -1062,7 +1171,14 @@ ReplicationSlotReserveWal(void)
 		}
 		else
 		{
-			restart_lsn = GetRedoRecPtr();
+			/* 
+			 * POLAR: set restart lsn as the min received lsn when current node is datamax
+			 * so that we can send wal as much as possible 
+			 */ 
+			if (!polar_is_datamax())
+				restart_lsn = GetRedoRecPtr();
+			else
+				restart_lsn = polar_datamax_get_min_received_lsn(polar_datamax_ctl, NULL);
 			SpinLockAcquire(&slot->mutex);
 			slot->data.restart_lsn = restart_lsn;
 			SpinLockRelease(&slot->mutex);
@@ -1116,6 +1232,9 @@ CheckPointReplicationSlots(void)
 
 		/* save the slot to disk, locking is handled in SaveSlotToPath() */
 		sprintf(path, "pg_replslot/%s", NameStr(s->data.name));
+		if (POLAR_PERSIST_LOGICAL_SLOT(s) || POLAR_PERSIST_PHYSICAL_SLOT_FOR_ONLINE_PROMOTE(s))
+			polar_make_file_path_level3(path, "pg_replslot", NameStr(s->data.name));
+
 		SaveSlotToPath(s, path, LOG);
 	}
 	LWLockRelease(ReplicationSlotAllocationLock);
@@ -1128,46 +1247,43 @@ CheckPointReplicationSlots(void)
 void
 StartupReplicationSlots(void)
 {
-	DIR		   *replication_dir;
-	struct dirent *replication_de;
+	/* POLAR */
+	char		polar_replslot_dir[MAXPGPATH] = {0};
+	struct stat stat_buf;
 
 	elog(DEBUG1, "starting up replication slots");
 
-	/* restore all slots by iterating over all on-disk entries */
-	replication_dir = AllocateDir("pg_replslot", false);
-	while ((replication_de = ReadDir(replication_dir, "pg_replslot")) != NULL)
+	if (POLAR_RESTORE_PERSISTED_LOGICAL_SLOT || POLAR_RESTORE_PERSISTED_PHYSICAL_SLOT_FOR_ONLINE_PROMOTE)
 	{
-		struct stat statbuf;
-		char		path[MAXPGPATH + 12];
-
-		if (strcmp(replication_de->d_name, ".") == 0 ||
-			strcmp(replication_de->d_name, "..") == 0)
-			continue;
-
-		snprintf(path, sizeof(path), "pg_replslot/%s", replication_de->d_name);
-
-		/* we're only creating directories here, skip if it's not our's */
-		if (lstat(path, &statbuf) == 0 && !S_ISDIR(statbuf.st_mode))
-			continue;
-
-		/* we crashed while a slot was being setup or deleted, clean up */
-		if (pg_str_endswith(replication_de->d_name, ".tmp"))
+		elog(LOG, "enable persisted slot, read slot from polarstore.");
+		polar_make_file_path_level2(polar_replslot_dir, "pg_replslot");
+		if (polar_stat(polar_replslot_dir, &stat_buf) == 0)
 		{
-			if (!rmtree(path, true))
-			{
-				ereport(WARNING,
-						(errcode_for_file_access(),
-						 errmsg("could not remove directory \"%s\"", path)));
-				continue;
-			}
-			fsync_fname("pg_replslot", true, false);
-			continue;
+			/* Check for weird cases where it exists but isn't a directory */
+			if (!S_ISDIR(stat_buf.st_mode))
+				ereport(FATAL,
+						(errmsg("required pg_replslot directory \"%s\" does not exists",
+								polar_replslot_dir)));
 		}
-
-		/* looks like a slot in a normal state, restore */
-		RestoreSlotFromDisk(replication_de->d_name);
+		else
+		{
+			ereport(LOG,
+					(errmsg("creating missing pg_replslot directory \"%s\"", polar_replslot_dir)));
+			if (polar_make_pg_directory(polar_replslot_dir) < 0)
+				ereport(FATAL,
+						(errmsg("could not create missing directory \"%s\": %m",
+								polar_replslot_dir)));
+		}
 	}
-	FreeDir(replication_dir);
+
+	/* 
+	 * POLAR: We have moved the previous restore logic to 
+	 * the polar_restore_all_slots_from_dir function,
+	 * because we may have to restore slots from both local disk and polarstore.
+	 */
+	polar_restore_all_slots_from_dir("pg_replslot", false);
+	if (POLAR_RESTORE_PERSISTED_LOGICAL_SLOT || POLAR_RESTORE_PERSISTED_PHYSICAL_SLOT_FOR_ONLINE_PROMOTE)
+		polar_restore_all_slots_from_dir(polar_replslot_dir, true);
 
 	/* currently no slots exist, we're done. */
 	if (max_replication_slots <= 0)
@@ -1192,14 +1308,24 @@ CreateSlotOnDisk(ReplicationSlot *slot)
 	char		path[MAXPGPATH];
 	struct stat st;
 
+	/* POLAR */
+	char 		replslot_dir[MAXPGPATH] = {0};
+	char		local_slot_path[MAXPGPATH] = {0};
+	struct stat st2;
+
 	/*
 	 * No need to take out the io_in_progress_lock, nobody else can see this
 	 * slot yet, so nobody else will write. We're reusing SaveSlotToPath which
 	 * takes out the lock, if we'd take the lock here, we'd deadlock.
 	 */
 
-	sprintf(path, "pg_replslot/%s", NameStr(slot->data.name));
-	sprintf(tmppath, "pg_replslot/%s.tmp", NameStr(slot->data.name));
+	snprintf(replslot_dir, MAXPGPATH, "%s", "pg_replslot");
+	if (POLAR_PERSIST_LOGICAL_SLOT(slot) || POLAR_PERSIST_PHYSICAL_SLOT_FOR_ONLINE_PROMOTE(slot))
+		polar_make_file_path_level2(replslot_dir, "pg_replslot");
+
+	snprintf(path, MAXPGPATH, "%s/%s", replslot_dir, NameStr(slot->data.name));
+	snprintf(tmppath, MAXPGPATH, "%s/%s.tmp", replslot_dir, NameStr(slot->data.name));
+	snprintf(local_slot_path, MAXPGPATH, "%s/%s", "pg_replslot", NameStr(slot->data.name));
 
 	/*
 	 * It's just barely possible that some previous effort to create or drop a
@@ -1208,23 +1334,40 @@ CreateSlotOnDisk(ReplicationSlot *slot)
 	 * out at the MakePGDirectory() below, so we don't bother checking
 	 * success.
 	 */
-	if (stat(tmppath, &st) == 0 && S_ISDIR(st.st_mode))
+	if (polar_stat(tmppath, &st) == 0 && S_ISDIR(st.st_mode))
+	{
+		if (POLAR_PERSIST_LOGICAL_SLOT(slot))
+		{
+			if (polar_stat(local_slot_path, &st2) == 0 && S_ISDIR(st2.st_mode))
+				rmtree(local_slot_path, true);
+		}
 		rmtree(tmppath, true);
+	}
 
 	/* Create and fsync the temporary slot directory. */
-	if (MakePGDirectory(tmppath, false) < 0)
+	if (polar_make_pg_directory(tmppath) < 0)
 		ereport(ERROR,
 				(errcode_for_file_access(),
 				 errmsg("could not create directory \"%s\": %m",
 						tmppath)));
-	fsync_fname(tmppath, true, false);
+	fsync_fname(tmppath, true, true);
+
+	/* POLAR: create slot directory on local disk for spilled files if need*/
+	if (POLAR_PERSIST_LOGICAL_SLOT(slot))
+	{
+		if (polar_make_pg_directory(local_slot_path) < 0)
+			ereport(ERROR,
+					(errcode_for_file_access(),
+					 errmsg("could not create directory \"%s\" for spill file: %m", local_slot_path)));
+		fsync_fname(local_slot_path, true, true);
+	}
 
 	/* Write the actual state file. */
 	slot->dirty = true;			/* signal that we really need to write */
 	SaveSlotToPath(slot, tmppath, ERROR);
 
 	/* Rename the directory into place. */
-	if (rename(tmppath, path) != 0)
+	if (polar_rename(tmppath, path) != 0)
 		ereport(ERROR,
 				(errcode_for_file_access(),
 				 errmsg("could not rename file \"%s\" to \"%s\": %m",
@@ -1237,8 +1380,8 @@ CreateSlotOnDisk(ReplicationSlot *slot)
 	 */
 	START_CRIT_SECTION();
 
-	fsync_fname(path, true, false);
-	fsync_fname("pg_replslot", true, false);
+	fsync_fname(path, true, true);
+	fsync_fname(replslot_dir, true, true);
 
 	END_CRIT_SECTION();
 }
@@ -1254,6 +1397,10 @@ SaveSlotToPath(ReplicationSlot *slot, const char *dir, int elevel)
 	int			fd;
 	ReplicationSlotOnDisk cp;
 	bool		was_dirty;
+	size_t		snap_build_ondisk_checksummed_size;
+
+	/* POLAR */
+	char		replslot_dir[MAXPGPATH] = {0};
 
 	/* first check whether there's something to write out */
 	SpinLockAcquire(&slot->mutex);
@@ -1273,7 +1420,7 @@ SaveSlotToPath(ReplicationSlot *slot, const char *dir, int elevel)
 	sprintf(tmppath, "%s/state.tmp", dir);
 	sprintf(path, "%s/state", dir);
 
-	fd = OpenTransientFile(tmppath, O_CREAT | O_EXCL | O_WRONLY | PG_BINARY, false);
+	fd = polar_open_transient_file(tmppath, O_CREAT | O_EXCL | O_WRONLY | PG_BINARY);
 	if (fd < 0)
 	{
 		/*
@@ -1295,8 +1442,20 @@ SaveSlotToPath(ReplicationSlot *slot, const char *dir, int elevel)
 
 	cp.magic = SLOT_MAGIC;
 	INIT_CRC32C(cp.checksum);
-	cp.version = SLOT_VERSION;
-	cp.length = ReplicationSlotOnDiskV2Size;
+	/* POLAR */
+	if (!polar_enable_max_slot_wal_keep_size)
+	{
+		cp.version = POLAR_SLOT_VERSION_V2;
+		cp.length = ReplicationSlotOnDiskV2Version3Size;
+		snap_build_ondisk_checksummed_size = SnapBuildOnDiskChecksummedVersion3Size;
+	}
+	else
+	{
+		cp.version = POLAR_SLOT_VERSION_V3;
+		cp.length = ReplicationSlotOnDiskV2Size;
+		snap_build_ondisk_checksummed_size = SnapBuildOnDiskChecksummedSize;
+	}
+	/* POLAR end */
 
 	SpinLockAcquire(&slot->mutex);
 
@@ -1306,12 +1465,12 @@ SaveSlotToPath(ReplicationSlot *slot, const char *dir, int elevel)
 
 	COMP_CRC32C(cp.checksum,
 				(char *) (&cp) + SnapBuildOnDiskNotChecksummedSize,
-				SnapBuildOnDiskChecksummedSize);
+				snap_build_ondisk_checksummed_size);
 	FIN_CRC32C(cp.checksum);
 
 	errno = 0;
 	pgstat_report_wait_start(WAIT_EVENT_REPLICATION_SLOT_WRITE);
-	if ((write(fd, &cp, sizeof(cp))) != sizeof(cp))
+	if ((polar_write(fd, &cp, sizeof(cp))) != sizeof(cp))
 	{
 		int			save_errno = errno;
 
@@ -1331,7 +1490,7 @@ SaveSlotToPath(ReplicationSlot *slot, const char *dir, int elevel)
 
 	/* fsync the temporary file */
 	pgstat_report_wait_start(WAIT_EVENT_REPLICATION_SLOT_SYNC);
-	if (pg_fsync(fd) != 0)
+	if (polar_fsync(fd) != 0)
 	{
 		int			save_errno = errno;
 
@@ -1350,7 +1509,7 @@ SaveSlotToPath(ReplicationSlot *slot, const char *dir, int elevel)
 	CloseTransientFile(fd);
 
 	/* rename to permanent file, fsync file and directory */
-	if (rename(tmppath, path) != 0)
+	if (polar_rename(tmppath, path) != 0)
 	{
 		int			save_errno = errno;
 
@@ -1366,9 +1525,13 @@ SaveSlotToPath(ReplicationSlot *slot, const char *dir, int elevel)
 	/* Check CreateSlot() for the reasoning of using a crit. section. */
 	START_CRIT_SECTION();
 
-	fsync_fname(path, false, false);
-	fsync_fname(dir, true, false);
-	fsync_fname("pg_replslot", true, false);
+	fsync_fname(path, false, true);
+	fsync_fname(dir, true, true);
+
+	snprintf(replslot_dir, MAXPGPATH, "%s", "pg_replslot");
+	if (POLAR_PERSIST_LOGICAL_SLOT(slot) || POLAR_PERSIST_PHYSICAL_SLOT_FOR_ONLINE_PROMOTE(slot))
+		polar_make_file_path_level2(replslot_dir, "pg_replslot");
+	fsync_fname(replslot_dir, true, true);
 
 	END_CRIT_SECTION();
 
@@ -1388,7 +1551,7 @@ SaveSlotToPath(ReplicationSlot *slot, const char *dir, int elevel)
  * Load a single slot from disk into memory.
  */
 static void
-RestoreSlotFromDisk(const char *name)
+RestoreSlotFromDisk(const char *name, bool polar_vfs)
 {
 	ReplicationSlotOnDisk cp;
 	int			i;
@@ -1399,21 +1562,43 @@ RestoreSlotFromDisk(const char *name)
 	int			readBytes;
 	pg_crc32c	checksum;
 
+	/* POLAR */
+	size_t		snap_build_ondisk_checksummed_size;
+	size_t		replication_slot_ondisk_size;
+	size_t		replication_slot_persistent_data_size;
+	char 		replslot_dir[MAXPGPATH] = {0};
+	char		polar_replslot_dir[MAXPGPATH] = {0};
+	char		polar_slotdir[MAXPGPATH + 12] = {0};
+	char		polar_path[MAXPGPATH + 22] = {0};
+	char		local_slot_path[MAXPGPATH] = {0};
+	struct stat st;
+
 	/* no need to lock here, no concurrent access allowed yet */
 
 	/* delete temp file if it exists */
-	sprintf(slotdir, "pg_replslot/%s", name);
+	snprintf(replslot_dir, MAXPGPATH, "%s", "pg_replslot");
+	if (polar_vfs)
+		polar_make_file_path_level2(replslot_dir, "pg_replslot");
+
+	sprintf(slotdir, "%s/%s", replslot_dir, name);
 	sprintf(path, "%s/state.tmp", slotdir);
-	if (unlink(path) < 0 && errno != ENOENT)
+	sprintf(local_slot_path, "%s/%s", "pg_replslot", name);
+	if (polar_unlink(path) < 0 && errno != ENOENT)
 		ereport(PANIC,
 				(errcode_for_file_access(),
 				 errmsg("could not remove file \"%s\": %m", path)));
 
 	sprintf(path, "%s/state", slotdir);
 
+	if (polar_stat(path, &st) < 0 && errno == ENOENT)
+	{
+		elog(LOG, "Did not find stat file: %s, skip this slot.", path);
+		return;
+	}
+
 	elog(DEBUG1, "restoring replication slot from \"%s\"", path);
 
-	fd = OpenTransientFile(path, O_RDWR | PG_BINARY, false);
+	fd = polar_open_transient_file(path, O_RDWR | PG_BINARY);
 
 	/*
 	 * We do not need to handle this as we are rename()ing the directory into
@@ -1429,7 +1614,7 @@ RestoreSlotFromDisk(const char *name)
 	 * while it wasn't synced yet and we shouldn't continue on that basis.
 	 */
 	pgstat_report_wait_start(WAIT_EVENT_REPLICATION_SLOT_RESTORE_SYNC);
-	if (pg_fsync(fd) != 0)
+	if (polar_fsync(fd) != 0)
 	{
 		int			save_errno = errno;
 
@@ -1444,12 +1629,12 @@ RestoreSlotFromDisk(const char *name)
 
 	/* Also sync the parent directory */
 	START_CRIT_SECTION();
-	fsync_fname(slotdir, true, false);
+	fsync_fname(slotdir, true, true);
 	END_CRIT_SECTION();
 
 	/* read part of statefile that's guaranteed to be version independent */
 	pgstat_report_wait_start(WAIT_EVENT_REPLICATION_SLOT_READ);
-	readBytes = read(fd, &cp, ReplicationSlotOnDiskConstantSize);
+	readBytes = polar_read(fd, &cp, ReplicationSlotOnDiskConstantSize);
 	pgstat_report_wait_end();
 	if (readBytes != ReplicationSlotOnDiskConstantSize)
 	{
@@ -1472,14 +1657,38 @@ RestoreSlotFromDisk(const char *name)
 						path, cp.magic, SLOT_MAGIC)));
 
 	/* verify version */
-	if (cp.version != SLOT_VERSION)
+	/* POLAR: Judge polar customized version number also */
+	if (cp.version != SLOT_VERSION && 
+		cp.version != POLAR_SLOT_VERSION_V2 && 
+		cp.version != POLAR_SLOT_VERSION_V3)
 		ereport(PANIC,
 				(errcode_for_file_access(),
 				 errmsg("replication slot file \"%s\" has unsupported version %u",
 						path, cp.version)));
 
+	/* POLAR: Set size variable */
+	if (cp.version == SLOT_VERSION)
+	{
+		snap_build_ondisk_checksummed_size = SnapBuildOnDiskChecksummedVersion2Size;
+		replication_slot_ondisk_size = ReplicationSlotOnDiskV2Version2Size;
+		replication_slot_persistent_data_size = ReplicationSlotPersistentDataVersion2Size;
+	}
+	else if (cp.version == POLAR_SLOT_VERSION_V2)
+	{
+		snap_build_ondisk_checksummed_size = SnapBuildOnDiskChecksummedVersion3Size;
+		replication_slot_ondisk_size = ReplicationSlotOnDiskV2Version3Size;
+		replication_slot_persistent_data_size = ReplicationSlotPersistentDataVersion3Size;
+	}
+	else
+	{
+		snap_build_ondisk_checksummed_size = SnapBuildOnDiskChecksummedSize;
+		replication_slot_ondisk_size = ReplicationSlotOnDiskV2Size;
+		replication_slot_persistent_data_size = sizeof(ReplicationSlotPersistentData);
+	}
+	/* POLAR end */
+
 	/* boundary check on length */
-	if (cp.length != ReplicationSlotOnDiskV2Size)
+	if (cp.length != replication_slot_ondisk_size)
 		ereport(PANIC,
 				(errcode_for_file_access(),
 				 errmsg("replication slot file \"%s\" has corrupted length %u",
@@ -1487,9 +1696,9 @@ RestoreSlotFromDisk(const char *name)
 
 	/* Now that we know the size, read the entire file */
 	pgstat_report_wait_start(WAIT_EVENT_REPLICATION_SLOT_READ);
-	readBytes = read(fd,
-					 (char *) &cp + ReplicationSlotOnDiskConstantSize,
-					 cp.length);
+	readBytes = polar_read(fd,
+						   (char *) &cp + ReplicationSlotOnDiskConstantSize,
+						   cp.length);
 	pgstat_report_wait_end();
 	if (readBytes != cp.length)
 	{
@@ -1509,7 +1718,7 @@ RestoreSlotFromDisk(const char *name)
 	INIT_CRC32C(checksum);
 	COMP_CRC32C(checksum,
 				(char *) &cp + SnapBuildOnDiskNotChecksummedSize,
-				SnapBuildOnDiskChecksummedSize);
+				snap_build_ondisk_checksummed_size);
 	FIN_CRC32C(checksum);
 
 	if (!EQ_CRC32C(checksum, cp.checksum))
@@ -1529,7 +1738,7 @@ RestoreSlotFromDisk(const char *name)
 					(errcode_for_file_access(),
 					 errmsg("could not remove directory \"%s\"", slotdir)));
 		}
-		fsync_fname("pg_replslot", true, false);
+		fsync_fname(replslot_dir, true, true);
 		return;
 	}
 
@@ -1558,6 +1767,89 @@ RestoreSlotFromDisk(const char *name)
 						NameStr(cp.slotdata.name)),
 				 errhint("Change wal_level to be replica or higher.")));
 
+	/*
+	 * POLAR: rw read logical replication slot from local disk,
+	 * we should move the slot to polarstore
+	 */
+	if (!polar_vfs && ((cp.slotdata.database != InvalidOid && POLAR_RESTORE_PERSISTED_LOGICAL_SLOT) ||
+			(cp.slotdata.database == InvalidOid && POLAR_RESTORE_PERSISTED_PHYSICAL_SLOT_FOR_ONLINE_PROMOTE)))
+	{
+		polar_make_file_path_level2(polar_replslot_dir, "pg_replslot");
+		sprintf(polar_slotdir, "%s/%s", polar_replslot_dir, name);
+		sprintf(polar_path, "%s/state", polar_slotdir);
+
+		if (polar_stat(polar_slotdir, &st) == 0 && S_ISDIR(st.st_mode))
+			rmtree(polar_slotdir, true);
+
+		if (polar_make_pg_directory(polar_slotdir) < 0)
+			ereport(ERROR,
+					(errcode_for_file_access(),
+					 errmsg("could not create directory \"%s\": %m", polar_slotdir)));
+		fsync_fname(polar_slotdir, true, true);
+
+		fd = polar_open_transient_file(polar_path, O_CREAT | O_EXCL | O_WRONLY | PG_BINARY);
+
+		if (fd < 0)
+		{
+			ereport(ERROR,
+					(errcode_for_file_access(),
+					 errmsg("could not create file \"%s\": %m", polar_path)));
+		}
+
+		pgstat_report_wait_start(WAIT_EVENT_REPLICATION_SLOT_WRITE);
+		if (polar_write(fd, &cp, sizeof(cp)) != sizeof(cp))
+		{
+			int 		save_errno = errno;
+
+			pgstat_report_wait_end();
+			CloseTransientFile(fd);
+
+			/* if write didn't set errno, assume problem is no disk space */
+			errno = save_errno ? save_errno : ENOSPC;
+			ereport(ERROR,
+					(errcode_for_file_access(),
+					 errmsg("could not write to file \"%s\": %m", polar_path)));
+		}
+		pgstat_report_wait_end();
+		
+		pgstat_report_wait_start(WAIT_EVENT_REPLICATION_SLOT_SYNC);
+		if (polar_fsync(fd) != 0)
+		{
+			int			save_errno = errno;
+
+			pgstat_report_wait_end();
+			CloseTransientFile(fd);
+			errno = save_errno;
+			ereport(ERROR,
+					(errcode_for_file_access(),
+					 errmsg("could not fsync file \"%s\": %m", polar_path)));
+		}
+		pgstat_report_wait_end();
+		CloseTransientFile(fd);
+
+		if (!rmtree(slotdir, true))
+		{
+			ereport(ERROR,
+					(errcode_for_file_access(),
+					 errmsg("could not remove directory \"%s\"", slotdir)));
+		}
+		fsync_fname(replslot_dir, true, true);
+		return;
+	}
+
+	/* POLAR: restoring a logical slot, and we want to store spill file on local disk */
+	if (polar_vfs && cp.slotdata.database != InvalidOid)
+	{
+		if (polar_stat(local_slot_path, &st) < 0 && errno == ENOENT)
+		{
+			if (polar_make_pg_directory(local_slot_path) < 0)
+				ereport(ERROR,
+						(errcode_for_file_access(),
+						 errmsg("could not create directory \"%s\" for spill file: %m", local_slot_path)));
+			fsync_fname(local_slot_path, true, true);
+		}
+	}
+
 	/* nothing can be active yet, don't lock anything */
 	for (i = 0; i < max_replication_slots; i++)
 	{
@@ -1568,9 +1860,26 @@ RestoreSlotFromDisk(const char *name)
 		if (slot->in_use)
 			continue;
 
+		/* POLAR: Compatible code for polar customized slot version */
 		/* restore the entire set of persistent data */
 		memcpy(&slot->data, &cp.slotdata,
-			   sizeof(ReplicationSlotPersistentData));
+			replication_slot_persistent_data_size);
+		if (cp.version == SLOT_VERSION)
+		{
+			slot->data.polar_replica_apply_lsn = InvalidXLogRecPtr;
+			slot->data.polar_invalidated_at = InvalidXLogRecPtr;
+		}
+		else if (cp.version == POLAR_SLOT_VERSION_V2)
+		{
+			slot->data.polar_invalidated_at = InvalidXLogRecPtr;
+		}
+
+		ereport(LOG, (errmsg("restore slot %s with version %d, replay_lsn is %X/%X, restart_lsn is %X/%X",
+				cp.slotdata.name.data, cp.version,
+				(uint32)(slot->data.polar_replica_apply_lsn >> 32), (uint32)(slot->data.polar_replica_apply_lsn),
+
+				(uint32)(slot->data.restart_lsn >> 32), (uint32)(slot->data.restart_lsn))));
+		/* POLAR end */
 
 		/* initialize in memory state */
 		slot->effective_xmin = cp.slotdata.xmin;
@@ -1627,7 +1936,358 @@ polar_compute_and_set_oldest_apply_lsn(void)
 				|| oldest_lock_lsn > lock_lsn))
 			oldest_lock_lsn = lock_lsn;
 	}
+
 	LWLockRelease(ReplicationSlotControlLock);
 
 	polar_set_oldest_applied_lsn(oldest_apply_lsn, oldest_lock_lsn);
+}
+
+/*
+ * POLAR: restore all slots from replslot_dir
+ * This part of the code is extracted from StartupReplicationSlots 
+ */
+static void
+polar_restore_all_slots_from_dir(char *replslot_dir, bool load_from_vfs)
+{
+	DIR		   *replication_dir;
+	struct dirent *replication_de;
+
+	/* restore all slots by iterating over all on-disk entries */
+	replication_dir = polar_allocate_dir(replslot_dir);
+	while ((replication_de = ReadDir(replication_dir, replslot_dir)) != NULL)
+	{
+		struct stat statbuf;
+		char		path[MAXPGPATH + 12];
+
+		if (strcmp(replication_de->d_name, ".") == 0 ||
+			strcmp(replication_de->d_name, "..") == 0)
+			continue;
+
+		snprintf(path, sizeof(path), "%s/%s", replslot_dir, replication_de->d_name);
+
+		/* we're only creating directories here, skip if it's not our's */
+		if (polar_lstat(path, &statbuf) == 0 && !S_ISDIR(statbuf.st_mode))
+			continue;
+
+		/* we crashed while a slot was being setup or deleted, clean up */
+		if (pg_str_endswith(replication_de->d_name, ".tmp"))
+		{
+			if (!rmtree(path, true))
+			{
+				ereport(WARNING,
+						(errcode_for_file_access(),
+						errmsg("could not remove directory \"%s\"", path)));
+				continue;
+			}
+			fsync_fname(replslot_dir, true, true);
+			continue;
+		}
+
+		/* looks like a slot in a normal state, restore */
+		RestoreSlotFromDisk(replication_de->d_name, load_from_vfs);
+	}
+	FreeDir(replication_dir);
+}
+
+void
+polar_reload_replication_slots_from_shared_storage(void)
+{
+	/* POLAR */
+	char		polar_replslot_dir[MAXPGPATH] = {0};
+	struct stat stat_buf;
+
+	if (polar_enable_persisted_physical_slot)
+	{
+		ereport(LOG, (errmsg("enable persisted physical slot, reload slot from polarstore.")));
+	}
+	else
+	{
+		ereport(LOG, (errmsg("disable persisted slot.")));
+		return;
+	}
+
+	polar_make_file_path_level2(polar_replslot_dir, "pg_replslot");
+	if (polar_stat(polar_replslot_dir, &stat_buf) == 0)
+	{
+		/* Check for weird cases where it exists but isn't a directory */
+		if (!S_ISDIR(stat_buf.st_mode))
+			ereport(FATAL,
+					(errmsg("required pg_replslot directory \"%s\" does not exists",
+							polar_replslot_dir)));
+	}
+	else
+	{
+		ereport(LOG,
+				(errmsg("creating missing pg_replslot directory \"%s\"", polar_replslot_dir)));
+		if (polar_make_pg_directory(polar_replslot_dir) < 0)
+			ereport(FATAL,
+					(errmsg("could not create missing directory \"%s\": %m",
+							polar_replslot_dir)));
+	}
+
+	LWLockAcquire(ReplicationSlotAllocationLock, LW_EXCLUSIVE);
+
+	polar_restore_all_slots_from_dir(polar_replslot_dir, true);
+
+	LWLockRelease(ReplicationSlotAllocationLock);
+
+	/* currently no slots exist, we're done. */
+	if (max_replication_slots <= 0)
+	{
+		elog(LOG, "Before online promote max_replication_slots=%d", max_replication_slots);
+		return;
+	}
+
+	/* Now that we have recovered all the data, compute replication xmin */
+	ReplicationSlotsComputeRequiredXmin(false);
+	ReplicationSlotsComputeRequiredLSN();
+	polar_compute_and_set_oldest_apply_lsn();
+
+	elog(LOG, "Before online promote oldest_applied_lsn=%lX", polar_get_oldest_applied_lsn());
+}
+
+/*
+ * Mark the specified slot as used by this process.
+ *
+ * Only one of slot and name can be specified.
+ * If slot == NULL, search for the slot with the given name.
+ *
+ * See comments about the return value in ReplicationSlotAcquire().
+ */
+static int
+ReplicationSlotAcquireInternal(ReplicationSlot *slot, const char *name,
+							   SlotAcquireBehavior behavior)
+{
+	ReplicationSlot *s;
+	int			active_pid;
+
+	AssertArg((slot == NULL) ^ (name == NULL));
+
+retry:
+	Assert(MyReplicationSlot == NULL);
+
+	LWLockAcquire(ReplicationSlotControlLock, LW_SHARED);
+
+	/*
+	 * Search for the slot with the specified name if the slot to acquire is
+	 * not given. If the slot is not found, we either return -1 or error out.
+	 */
+	s = slot ? slot : SearchNamedReplicationSlot(name);
+	if (s == NULL || !s->in_use)
+	{
+		LWLockRelease(ReplicationSlotControlLock);
+
+		if (behavior == SAB_Inquire)
+			return -1;
+		ereport(ERROR,
+				(errcode(ERRCODE_UNDEFINED_OBJECT),
+				 errmsg("replication slot \"%s\" does not exist",
+						name ? name : NameStr(slot->data.name))));
+	}
+
+	/*
+	 * This is the slot we want; check if it's active under some other
+	 * process.  In single user mode, we don't need this check.
+	 */
+	if (IsUnderPostmaster)
+	{
+		/*
+		 * Get ready to sleep on the slot in case it is active if SAB_Block.
+		 * (We may end up not sleeping, but we don't want to do this while
+		 * holding the spinlock.)
+		 */
+		if (behavior == SAB_Block)
+			ConditionVariablePrepareToSleep(&s->active_cv);
+
+		SpinLockAcquire(&s->mutex);
+		if (s->active_pid == 0)
+			s->active_pid = MyProcPid;
+		active_pid = s->active_pid;
+		SpinLockRelease(&s->mutex);
+	}
+	else
+		active_pid = MyProcPid;
+	LWLockRelease(ReplicationSlotControlLock);
+
+	/*
+	 * If we found the slot but it's already active in another process, we
+	 * either error out, return the PID of the owning process, or retry
+	 * after a short wait, as caller specified.
+	 */
+	if (active_pid != MyProcPid)
+	{
+		if (behavior == SAB_Error)
+			ereport(ERROR,
+					(errcode(ERRCODE_OBJECT_IN_USE),
+					 errmsg("replication slot \"%s\" is active for PID %d",
+							NameStr(s->data.name), active_pid)));
+		else if (behavior == SAB_Inquire)
+			return active_pid;
+
+		/* Wait here until we get signaled, and then restart */
+		ConditionVariableSleep(&s->active_cv,
+							   WAIT_EVENT_REPLICATION_SLOT_DROP);
+		ConditionVariableCancelSleep();
+		goto retry;
+	}
+	else if (behavior == SAB_Block)
+		ConditionVariableCancelSleep();	/* no sleep needed after all */
+
+	/* Let everybody know we've modified this slot */
+	ConditionVariableBroadcast(&s->active_cv);
+
+	/* We made this slot active, so it's ours now. */
+	MyReplicationSlot = s;
+
+	/* success */
+	return 0;
+}
+
+/*
+ * Mark any slot that points to an LSN older than the given segment
+ * as invalid; it requires WAL that's about to be removed.
+ *
+ * NB - this runs as part of checkpoint, so avoid raising errors if possible.
+ */
+void
+InvalidateObsoleteReplicationSlots(XLogSegNo oldestSegno)
+{
+	XLogRecPtr	oldestLSN;
+	int			i;
+
+	if (!polar_enable_max_slot_wal_keep_size)
+		return;
+
+	XLogSegNoOffsetToRecPtr(oldestSegno, 0, wal_segment_size, oldestLSN);
+
+restart:
+	LWLockAcquire(ReplicationSlotControlLock, LW_SHARED);
+	for (i = 0; i < max_replication_slots; i++)
+	{
+		ReplicationSlot *s = &ReplicationSlotCtl->replication_slots[i];
+		XLogRecPtr	restart_lsn = InvalidXLogRecPtr;
+		NameData	slotname;
+		int		wspid;
+		int		last_signaled_pid = 0;
+
+		if (!s->in_use)
+			continue;
+
+		SpinLockAcquire(&s->mutex);
+		slotname = s->data.name;
+		restart_lsn = s->data.restart_lsn;
+		SpinLockRelease(&s->mutex);
+
+		if (XLogRecPtrIsInvalid(restart_lsn) || restart_lsn >= oldestLSN)
+			continue;
+		LWLockRelease(ReplicationSlotControlLock);
+		CHECK_FOR_INTERRUPTS();
+
+		/* Get ready to sleep on the slot in case it is active */
+		ConditionVariablePrepareToSleep(&s->active_cv);
+
+		for (;;)
+		{
+			/*
+			 * Try to mark this slot as used by this process.
+			 *
+			 * Note that ReplicationSlotAcquireInternal(SAB_Inquire)
+			 * should not cancel the prepared condition variable
+			 * if this slot is active in other process. Because in this case
+			 * we have to wait on that CV for the process owning
+			 * the slot to be terminated, later.
+			 */
+			wspid = ReplicationSlotAcquireInternal(s, NULL, SAB_Inquire);
+
+			/*
+			 * Exit the loop if we successfully acquired the slot or
+			 * the slot was dropped during waiting for the owning process
+			 * to be terminated. For example, the latter case is likely to
+			 * happen when the slot is temporary because it's automatically
+			 * dropped by the termination of the owning process.
+			 */
+			if (wspid <= 0)
+				break;
+
+			/*
+			 * Signal to terminate the process that owns the slot.
+			 *
+			 * There is the race condition where other process may own
+			 * the slot after the process using it was terminated and before
+			 * this process owns it. To handle this case, we signal again
+			 * if the PID of the owning process is changed than the last.
+			 *
+			 * XXX This logic assumes that the same PID is not reused
+			 * very quickly.
+			 */
+			if (last_signaled_pid != wspid)
+			{
+				ereport(LOG,
+						(errmsg("terminating process %d because replication slot \"%s\" is too far behind",
+								wspid, NameStr(slotname))));
+				(void) kill(wspid, SIGTERM);
+				last_signaled_pid = wspid;
+			}
+
+			ConditionVariableTimedSleep(&s->active_cv, 10,
+										WAIT_EVENT_REPLICATION_SLOT_DROP);
+		}
+		ConditionVariableCancelSleep();
+
+		/*
+		 * Do nothing here and start from scratch if the slot has
+		 * already been dropped.
+		 */
+		if (wspid == -1)
+			goto restart;
+
+		ereport(LOG,
+				(errmsg("invalidating slot \"%s\" because its restart_lsn %X/%X exceeds max_slot_wal_keep_size",
+						NameStr(slotname),
+						LSN_FORMAT_ARGS(restart_lsn))));
+
+		SpinLockAcquire(&s->mutex);
+		s->data.polar_invalidated_at = s->data.restart_lsn;
+		s->data.restart_lsn = InvalidXLogRecPtr;
+		SpinLockRelease(&s->mutex);
+
+		/* Make sure the invalidated state persists across server restart */
+		ReplicationSlotMarkDirty();
+		ReplicationSlotSave();
+		ReplicationSlotRelease();
+
+		/* if we did anything, start from scratch */
+		goto restart;
+	}
+	LWLockRelease(ReplicationSlotControlLock);
+}
+
+/*
+ * Search for the named replication slot.
+ *
+ * Return the replication slot if found, otherwise NULL.
+ *
+ * The caller must hold ReplicationSlotControlLock in shared mode.
+ */
+ReplicationSlot *
+SearchNamedReplicationSlot(const char *name)
+{
+	int			i;
+	ReplicationSlot	*slot = NULL;
+
+	Assert(LWLockHeldByMeInMode(ReplicationSlotControlLock,
+								LW_SHARED));
+
+	for (i = 0; i < max_replication_slots; i++)
+	{
+		ReplicationSlot *s = &ReplicationSlotCtl->replication_slots[i];
+
+		if (s->in_use && strcmp(name, NameStr(s->data.name)) == 0)
+		{
+			slot = s;
+			break;
+		}
+	}
+
+	return slot;
 }

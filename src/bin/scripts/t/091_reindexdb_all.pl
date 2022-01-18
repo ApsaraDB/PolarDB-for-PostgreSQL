@@ -6,6 +6,7 @@ use Test::More tests => 2;
 
 my $node = get_new_node('main');
 $node->init;
+$node->append_conf('postgresql.conf', 'polar_enable_multi_syslogger = off');
 $node->start;
 
 $ENV{PGOPTIONS} = '--client-min-messages=WARNING';

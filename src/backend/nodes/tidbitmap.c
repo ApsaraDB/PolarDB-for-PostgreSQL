@@ -456,7 +456,8 @@ tbm_add_page(TIDBitmap *tbm, BlockNumber pageno)
 void
 tbm_union(TIDBitmap *a, const TIDBitmap *b)
 {
-	Assert(!a->iterating);
+	Assert(a->iterating == TBM_NOT_ITERATING);
+
 	/* Nothing to do if b is empty */
 	if (b->nentries == 0)
 		return;
@@ -1559,3 +1560,4 @@ tbm_calculate_entries(double maxbytes)
 
 	return nbuckets;
 }
+

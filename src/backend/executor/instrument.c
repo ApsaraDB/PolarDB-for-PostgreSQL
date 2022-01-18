@@ -33,17 +33,36 @@ InstrAlloc(int n, int instrument_options)
 
 	/* initialize all fields to zeroes, then modify as needed */
 	instr = palloc0(n * sizeof(Instrumentation));
-	if (instrument_options & (INSTRUMENT_BUFFERS | INSTRUMENT_TIMER))
+	if (instrument_options & (INSTRUMENT_BUFFERS | INSTRUMENT_TIMER 
+								| INSTRUMENT_OPERATION/* POLAR px */))
 	{
 		bool		need_buffers = (instrument_options & INSTRUMENT_BUFFERS) != 0;
 		bool		need_timer = (instrument_options & INSTRUMENT_TIMER) != 0;
 		int			i;
 
+		/* POLAR px */
+		bool need_operation = (instrument_options & INSTRUMENT_OPERATION) != 0;
+
 		for (i = 0; i < n; i++)
 		{
 			instr[i].need_bufusage = need_buffers;
 			instr[i].need_timer = need_timer;
+
+			/* POLAR px */
+			instr[i].need_operation = need_operation;
 		}
+
+		/* POLAR px */
+		if (need_operation) 
+		{
+			instr_time	curr_time;
+			double double_curr_time;
+			INSTR_TIME_SET_CURRENT(curr_time);
+			double_curr_time = INSTR_TIME_GET_DOUBLE(curr_time);
+			for (i = 0; i < n; i++)
+				instr[i].open_time = double_curr_time;
+		}
+		/* POLAR end*/
 	}
 
 	return instr;
@@ -56,6 +75,17 @@ InstrInit(Instrumentation *instr, int instrument_options)
 	memset(instr, 0, sizeof(Instrumentation));
 	instr->need_bufusage = (instrument_options & INSTRUMENT_BUFFERS) != 0;
 	instr->need_timer = (instrument_options & INSTRUMENT_TIMER) != 0;
+
+	/* POLAR px */
+	instr->need_operation = (instrument_options & INSTRUMENT_OPERATION) != 0;
+
+	if (instr->need_operation) 
+	{
+		instr_time	curr_time;
+		INSTR_TIME_SET_CURRENT(curr_time);
+		instr->open_time = INSTR_TIME_GET_DOUBLE(curr_time);
+	}
+	/* POLAR end */
 }
 
 /* Entry to a plan node */
@@ -96,6 +126,27 @@ InstrStopNode(Instrumentation *instr, double nTuples)
 		INSTR_TIME_SET_ZERO(instr->starttime);
 	}
 
+	/* POLAR px */
+	if (instr->need_operation 
+		&& nTuples > 0
+		&& (NULL== instr->sampling_period 
+			|| 0 == (int64)instr->tuplecount % *instr->sampling_period)) 
+	{
+		if (!instr->need_timer) 
+			INSTR_TIME_SET_CURRENT(endtime);
+		if (instr->running) 
+		{
+			instr->last_change_time = INSTR_TIME_GET_DOUBLE(endtime);
+		}
+		else 
+		{
+			instr->rescan_calls += (instr->last_change_time != 0);
+			instr->first_change_time = INSTR_TIME_GET_DOUBLE(endtime);;
+			instr->last_change_time = instr->first_change_time;
+		}
+	}
+	/* POLAR end */
+
 	/* Add delta of buffer usage since entry to node's totals */
 	if (instr->need_bufusage)
 		BufferUsageAccumDiff(&instr->bufusage,
@@ -106,8 +157,24 @@ InstrStopNode(Instrumentation *instr, double nTuples)
 	{
 		instr->running = true;
 		instr->firsttuple = INSTR_TIME_GET_DOUBLE(instr->counter);
+		/* POLAR px : save this start time as the first start */
+		instr->firststart = instr->starttime;
+		/* POLAR end */
 	}
 }
+
+/* POLAR px: Finish a run cycle for a plan node */
+void
+InstrEndNode(Instrumentation *instr)
+{
+	if (instr->need_operation) 
+	{
+		instr_time	curr_time;
+		INSTR_TIME_SET_CURRENT(curr_time);
+		instr->close_time = INSTR_TIME_GET_DOUBLE(curr_time);
+	}
+}
+/* POLAR end */
 
 /* Finish a run cycle for a plan node */
 void

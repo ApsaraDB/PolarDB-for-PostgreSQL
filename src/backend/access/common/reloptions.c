@@ -37,6 +37,15 @@
 #include "utils/memutils.h"
 #include "utils/rel.h"
 
+/* POLAR */
+#include "access/heapam.h"
+#include "catalog/partition.h"
+/* POLAR end */
+
+/* POLAR px */
+static void polar_px_btbuild_option(const char *value);
+/* POLAR end */
+
 /*
  * Contents of pg_class.reloptions
  *
@@ -349,6 +358,17 @@ static relopt_int intRelOpts[] =
 		-1, 0, 1024
 	},
 
+	/* polar px table dop */
+	{
+		{
+			"px_workers",
+			"Set POLAR px on. px_workers is the number of parallel nodes",
+			RELOPT_KIND_HEAP | RELOPT_KIND_PARTITIONED,
+			ShareUpdateExclusiveLock
+		},
+		0, -1, 1024
+	},
+
 	/* list terminator */
 	{{NULL}}
 };
@@ -446,6 +466,18 @@ static relopt_string stringRelOpts[] =
 		0,
 		true,
 		validateWithCheckOption,
+		NULL
+	},
+	{
+		{
+			"px_build",
+			"Btree index build using PX",
+			RELOPT_KIND_BTREE,
+			ShareUpdateExclusiveLock
+		},
+		0,
+		true,
+		polar_px_btbuild_option,
 		NULL
 	},
 	/* list terminator */
@@ -1389,7 +1421,14 @@ default_reloptions(Datum reloptions, bool validate, relopt_kind kind)
 		{"parallel_workers", RELOPT_TYPE_INT,
 		offsetof(StdRdOptions, parallel_workers)},
 		{"vacuum_cleanup_index_scale_factor", RELOPT_TYPE_REAL,
-		offsetof(StdRdOptions, vacuum_cleanup_index_scale_factor)}
+		offsetof(StdRdOptions, vacuum_cleanup_index_scale_factor)},
+
+		/* POLAR PX: table dop */
+		{"px_workers", RELOPT_TYPE_INT, 
+		offsetof(StdRdOptions, px_workers)},
+		/* POLAR PX: btree index build use px */
+		{"px_build", RELOPT_TYPE_STRING,
+		offsetof(StdRdOptions, px_bt_build_offset)}
 	};
 
 	options = parseRelOptions(reloptions, validate, kind, &numoptions);
@@ -1627,3 +1666,64 @@ AlterTableGetRelOptionsLockLevel(List *defList)
 
 	return lockmode;
 }
+
+/* POLAR px */
+static void
+polar_px_btbuild_option(const char *value)
+{
+	if (!px_enable_btbuild)
+	{
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("px_build is not supported, please set polar_px_enable_btbuild=on")));
+	}
+
+	if (value == NULL ||
+		(strcmp(value, "on") != 0 &&
+		 strcmp(value, "off") != 0 &&
+		 strcmp(value, "finish") != 0))
+	{
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("invalid value for \"px_build\" option"),
+				 errdetail("Valid values are \"on\", and \"off\".")));
+	}
+}
+
+/*
+ * POLAR px: return the reloptions 'px_workers' of a relation, if set;
+ *           return 0 if not set.
+ *           If the relation is partitioned, then return the minimum
+ *           'px_workers' among all descendant partitions recursively.
+ */
+int
+polar_relation_get_parallel_query_nodes(Relation rel, LOCKMODE lockmode)
+{
+	int				min_px_workers = 0;
+	StdRdOptions	*rel_options = (StdRdOptions *) rel->rd_options;
+
+	if (rel_options)
+		min_px_workers = rel_options->px_workers;
+
+	/* the relation is a partitioned table */
+	if (unlikely(rel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE))
+	{
+		PartitionDesc	part_desc = RelationGetPartitionDesc(rel);
+		int				nparts = part_desc->nparts;
+		int				i;
+		int				child_px_workers;
+		Relation		child_rel;
+
+		/* iterate over sub-partitions to check the minimum px_workers */
+		for (i = 0; i < nparts; i++)
+		{
+			child_rel = heap_open(part_desc->oids[i], lockmode);
+			child_px_workers = polar_relation_get_parallel_query_nodes(child_rel, lockmode);
+			min_px_workers = Min(min_px_workers, child_px_workers);
+			heap_close(child_rel, lockmode);
+		}
+	}
+
+	return min_px_workers;
+}
+/* POLAR end */

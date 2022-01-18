@@ -4590,6 +4590,16 @@ set_deparse_planstate(deparse_namespace *dpns, PlanState *ps)
 	 */
 	if (IsA(ps, AppendState))
 		dpns->outer_planstate = ((AppendState *) ps)->appendplans[0];
+	else if (IsA(ps, SequenceState))
+		/*
+		 * POLAR px
+		 * A Sequence node returns tuples from the *last* child node only.
+		 * The other subplans can even have a different, incompatible tuple
+		 * descriptor. A typical case is to have a PartitionSelector node
+		 * as the first subplan, and the Dynamic Table Scan as the second
+		 * subplan.
+		 */
+		dpns->outer_planstate = ((SequenceState *) ps)->subplans[1];
 	else if (IsA(ps, MergeAppendState))
 		dpns->outer_planstate = ((MergeAppendState *) ps)->mergeplans[0];
 	else if (IsA(ps, ModifyTableState))
@@ -4615,6 +4625,14 @@ set_deparse_planstate(deparse_namespace *dpns, PlanState *ps)
 		dpns->inner_planstate = ((SubqueryScanState *) ps)->subplan;
 	else if (IsA(ps, CteScanState))
 		dpns->inner_planstate = ((CteScanState *) ps)->cteplanstate;
+	else if (IsA(ps, SequenceState))
+		/*
+		 * POLAR px
+		 * Set the inner_plan to a sequences first child only if it is a
+		 * partition selector. This is a specific fix to enable Explain’s of
+		 * query plans that have a Partition Selector
+		 */
+		dpns->inner_planstate = ((SequenceState *) ps)->subplans[0];
 	else if (IsA(ps, ModifyTableState))
 		dpns->inner_planstate = ps;
 	else
@@ -5162,7 +5180,19 @@ get_with_clause(Query *query, deparse_context *context)
 			}
 			appendStringInfoChar(buf, ')');
 		}
-		appendStringInfoString(buf, " AS (");
+		appendStringInfoString(buf, " AS ");
+		switch (cte->ctematerialized)
+		{
+			case CTEMaterializeDefault:
+				break;
+			case CTEMaterializeAlways:
+				appendStringInfoString(buf, "MATERIALIZED ");
+				break;
+			case CTEMaterializeNever:
+				appendStringInfoString(buf, "NOT MATERIALIZED ");
+				break;
+		}
+		appendStringInfoChar(buf, '(');
 		if (PRETTY_INDENT(context))
 			appendContextKeyword(context, "", 0, 0, 0);
 		get_query_def((Query *) cte->ctequery, buf, context->namespaces, NULL,
@@ -7114,6 +7144,9 @@ get_name_for_var_field(Var *var, int fieldno,
 			break;
 		case RTE_FUNCTION:
 		case RTE_TABLEFUNC:
+		/* POLAR px */
+		case RTE_TABLEFUNCTION:
+		/* POLAR end */
 
 			/*
 			 * We couldn't get here unless a function is declared with one of
@@ -7216,6 +7249,11 @@ get_name_for_var_field(Var *var, int fieldno,
 				}
 			}
 			break;
+		/* POLAR px */
+		case RTE_VOID:
+			/* No references should exist to a deleted RTE. */
+			break;
+		/* POLAR end */
 	}
 
 	/*
@@ -8942,7 +8980,11 @@ get_rule_expr(Node *node, deparse_context *context,
 		case T_TableFunc:
 			get_tablefunc((TableFunc *) node, context, showimplicit);
 			break;
-
+		/* POLAR px */
+		case T_DMLActionExpr:
+			appendStringInfo(buf, "DMLAction");
+			break;
+		/* POLAR end */
 		default:
 			elog(ERROR, "unrecognized node type: %d", (int) nodeTag(node));
 			break;
@@ -9157,16 +9199,30 @@ get_func_expr(FuncExpr *expr, deparse_context *context,
 		nargs++;
 	}
 
-	appendStringInfo(buf, "%s(",
-					 generate_function_name(funcoid, nargs,
-											argnames, argtypes,
-											expr->funcvariadic,
-											&use_variadic,
-											context->special_exprkind));
+	if (expr->isGlobalFunc) 
+	{
+          appendStringInfo(buf, "%s('%s'",
+                   		POLAR_GLOBAL_FUNCTION, 
+						generate_function_name(funcoid, nargs,
+												argnames, argtypes,
+												expr->funcvariadic,
+												&use_variadic,
+												context->special_exprkind));
+	}
+	else
+	{
+		appendStringInfo(buf, "%s(",
+						generate_function_name(funcoid, nargs,
+												argnames, argtypes,
+												expr->funcvariadic,
+												&use_variadic,
+												context->special_exprkind));
+	}
+
 	nargs = 0;
 	foreach(l, expr->args)
 	{
-		if (nargs++ > 0)
+		if (nargs++ > 0 || expr->isGlobalFunc)
 			appendStringInfoString(buf, ", ");
 		if (use_variadic && lnext(l) == NULL)
 			appendStringInfoString(buf, "VARIADIC ");
@@ -9980,7 +10036,7 @@ get_from_clause_item(Node *jtnode, Query *query, deparse_context *context)
 				/* Normal relation RTE */
 				appendStringInfo(buf, "%s%s",
 								 only_marker(rte),
-								 generate_relation_name(rte->relid,
+								 generate_relation_name(rte->relid,	
 														context->namespaces));
 				break;
 			case RTE_SUBQUERY:

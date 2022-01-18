@@ -1,0 +1,1387 @@
+--
+-- Test foreign-data wrapper and server management.
+--
+-- Clean up in case a prior regression run failed
+-- Suppress NOTICE messages when roles don't exist
+SET client_min_messages TO 'warning';
+DROP ROLE IF EXISTS regress_foreign_data_user, regress_test_role, regress_test_role2, regress_test_role_super, regress_test_indirect, regress_unprivileged_role;
+ERROR:  cannot execute DROP ROLE in a read-only transaction
+RESET client_min_messages;
+CREATE ROLE regress_foreign_data_user LOGIN SUPERUSER;
+ERROR:  cannot execute CREATE ROLE in a read-only transaction
+SET SESSION AUTHORIZATION 'regress_foreign_data_user';
+CREATE ROLE regress_test_role;
+ERROR:  cannot execute CREATE ROLE in a read-only transaction
+CREATE ROLE regress_test_role2;
+ERROR:  cannot execute CREATE ROLE in a read-only transaction
+CREATE ROLE regress_test_role_super SUPERUSER;
+ERROR:  cannot execute CREATE ROLE in a read-only transaction
+CREATE ROLE regress_test_indirect;
+ERROR:  cannot execute CREATE ROLE in a read-only transaction
+CREATE ROLE regress_unprivileged_role;
+ERROR:  cannot execute CREATE ROLE in a read-only transaction
+CREATE FOREIGN DATA WRAPPER dummy;
+ERROR:  cannot execute CREATE FOREIGN DATA WRAPPER in a read-only transaction
+COMMENT ON FOREIGN DATA WRAPPER dummy IS 'useless';
+ERROR:  cannot execute COMMENT in a read-only transaction
+CREATE FOREIGN DATA WRAPPER postgresql VALIDATOR postgresql_fdw_validator;
+ERROR:  cannot execute CREATE FOREIGN DATA WRAPPER in a read-only transaction
+-- At this point we should have 2 built-in wrappers and no servers.
+SELECT fdwname, fdwhandler::regproc, fdwvalidator::regproc, fdwoptions FROM pg_foreign_data_wrapper ORDER BY 1, 2, 3;
+  fdwname   | fdwhandler |       fdwvalidator       | fdwoptions 
+------------+------------+--------------------------+------------
+ dummy      | -          | -                        | 
+ postgresql | -          | postgresql_fdw_validator | 
+(2 rows)
+
+SELECT srvname, srvoptions FROM pg_foreign_server;
+ srvname | srvoptions 
+---------+------------
+(0 rows)
+
+SELECT * FROM pg_user_mapping;
+ umuser | umserver | umoptions 
+--------+----------+-----------
+(0 rows)
+
+-- CREATE FOREIGN DATA WRAPPER
+CREATE FOREIGN DATA WRAPPER foo VALIDATOR bar;            -- ERROR
+ERROR:  cannot execute CREATE FOREIGN DATA WRAPPER in a read-only transaction
+CREATE FOREIGN DATA WRAPPER foo;
+ERROR:  cannot execute CREATE FOREIGN DATA WRAPPER in a read-only transaction
+\dew
+CREATE FOREIGN DATA WRAPPER foo; -- duplicate
+ERROR:  cannot execute CREATE FOREIGN DATA WRAPPER in a read-only transaction
+DROP FOREIGN DATA WRAPPER foo;
+ERROR:  cannot execute DROP FOREIGN DATA WRAPPER in a read-only transaction
+CREATE FOREIGN DATA WRAPPER foo OPTIONS (testing '1');
+ERROR:  cannot execute CREATE FOREIGN DATA WRAPPER in a read-only transaction
+\dew+
+DROP FOREIGN DATA WRAPPER foo;
+ERROR:  cannot execute DROP FOREIGN DATA WRAPPER in a read-only transaction
+CREATE FOREIGN DATA WRAPPER foo OPTIONS (testing '1', testing '2');   -- ERROR
+ERROR:  cannot execute CREATE FOREIGN DATA WRAPPER in a read-only transaction
+CREATE FOREIGN DATA WRAPPER foo OPTIONS (testing '1', another '2');
+ERROR:  cannot execute CREATE FOREIGN DATA WRAPPER in a read-only transaction
+\dew+
+DROP FOREIGN DATA WRAPPER foo;
+ERROR:  cannot execute DROP FOREIGN DATA WRAPPER in a read-only transaction
+SET ROLE regress_test_role;
+CREATE FOREIGN DATA WRAPPER foo; -- ERROR
+ERROR:  cannot execute CREATE FOREIGN DATA WRAPPER in a read-only transaction
+RESET ROLE;
+CREATE FOREIGN DATA WRAPPER foo VALIDATOR postgresql_fdw_validator;
+ERROR:  cannot execute CREATE FOREIGN DATA WRAPPER in a read-only transaction
+\dew+
+-- HANDLER related checks
+CREATE FUNCTION invalid_fdw_handler() RETURNS int LANGUAGE SQL AS 'SELECT 1;';
+ERROR:  cannot execute CREATE FUNCTION in a read-only transaction
+CREATE FOREIGN DATA WRAPPER test_fdw HANDLER invalid_fdw_handler;  -- ERROR
+ERROR:  cannot execute CREATE FOREIGN DATA WRAPPER in a read-only transaction
+CREATE FOREIGN DATA WRAPPER test_fdw HANDLER test_fdw_handler HANDLER invalid_fdw_handler;  -- ERROR
+ERROR:  cannot execute CREATE FOREIGN DATA WRAPPER in a read-only transaction
+CREATE FOREIGN DATA WRAPPER test_fdw HANDLER test_fdw_handler;
+ERROR:  cannot execute CREATE FOREIGN DATA WRAPPER in a read-only transaction
+DROP FOREIGN DATA WRAPPER test_fdw;
+ERROR:  cannot execute DROP FOREIGN DATA WRAPPER in a read-only transaction
+-- ALTER FOREIGN DATA WRAPPER
+ALTER FOREIGN DATA WRAPPER foo;                             -- ERROR
+ERROR:  syntax error at or near ";"
+LINE 1: ALTER FOREIGN DATA WRAPPER foo;
+                                      ^
+ALTER FOREIGN DATA WRAPPER foo VALIDATOR bar;               -- ERROR
+ERROR:  cannot execute ALTER FOREIGN DATA WRAPPER in a read-only transaction
+ALTER FOREIGN DATA WRAPPER foo NO VALIDATOR;
+ERROR:  cannot execute ALTER FOREIGN DATA WRAPPER in a read-only transaction
+\dew+
+ALTER FOREIGN DATA WRAPPER foo OPTIONS (a '1', b '2');
+ERROR:  cannot execute ALTER FOREIGN DATA WRAPPER in a read-only transaction
+ALTER FOREIGN DATA WRAPPER foo OPTIONS (SET c '4');         -- ERROR
+ERROR:  cannot execute ALTER FOREIGN DATA WRAPPER in a read-only transaction
+ALTER FOREIGN DATA WRAPPER foo OPTIONS (DROP c);            -- ERROR
+ERROR:  cannot execute ALTER FOREIGN DATA WRAPPER in a read-only transaction
+ALTER FOREIGN DATA WRAPPER foo OPTIONS (ADD x '1', DROP x);
+ERROR:  cannot execute ALTER FOREIGN DATA WRAPPER in a read-only transaction
+\dew+
+ALTER FOREIGN DATA WRAPPER foo OPTIONS (DROP a, SET b '3', ADD c '4');
+ERROR:  cannot execute ALTER FOREIGN DATA WRAPPER in a read-only transaction
+\dew+
+ALTER FOREIGN DATA WRAPPER foo OPTIONS (a '2');
+ERROR:  cannot execute ALTER FOREIGN DATA WRAPPER in a read-only transaction
+ALTER FOREIGN DATA WRAPPER foo OPTIONS (b '4');             -- ERROR
+ERROR:  cannot execute ALTER FOREIGN DATA WRAPPER in a read-only transaction
+\dew+
+SET ROLE regress_test_role;
+ALTER FOREIGN DATA WRAPPER foo OPTIONS (ADD d '5');         -- ERROR
+ERROR:  cannot execute ALTER FOREIGN DATA WRAPPER in a read-only transaction
+SET ROLE regress_test_role_super;
+ALTER FOREIGN DATA WRAPPER foo OPTIONS (ADD d '5');
+ERROR:  cannot execute ALTER FOREIGN DATA WRAPPER in a read-only transaction
+\dew+
+ALTER FOREIGN DATA WRAPPER foo OWNER TO regress_test_role;  -- ERROR
+ERROR:  cannot execute ALTER FOREIGN DATA WRAPPER in a read-only transaction
+ALTER FOREIGN DATA WRAPPER foo OWNER TO regress_test_role_super;
+ERROR:  cannot execute ALTER FOREIGN DATA WRAPPER in a read-only transaction
+ALTER ROLE regress_test_role_super NOSUPERUSER;
+ERROR:  cannot execute ALTER ROLE in a read-only transaction
+SET ROLE regress_test_role_super;
+ALTER FOREIGN DATA WRAPPER foo OPTIONS (ADD e '6');         -- ERROR
+ERROR:  cannot execute ALTER FOREIGN DATA WRAPPER in a read-only transaction
+RESET ROLE;
+\dew+
+ALTER FOREIGN DATA WRAPPER foo RENAME TO foo1;
+ERROR:  cannot execute ALTER FOREIGN DATA WRAPPER in a read-only transaction
+\dew+
+ALTER FOREIGN DATA WRAPPER foo1 RENAME TO foo;
+ERROR:  cannot execute ALTER FOREIGN DATA WRAPPER in a read-only transaction
+-- HANDLER related checks
+ALTER FOREIGN DATA WRAPPER foo HANDLER invalid_fdw_handler;  -- ERROR
+ERROR:  cannot execute ALTER FOREIGN DATA WRAPPER in a read-only transaction
+ALTER FOREIGN DATA WRAPPER foo HANDLER test_fdw_handler HANDLER anything;  -- ERROR
+ERROR:  cannot execute ALTER FOREIGN DATA WRAPPER in a read-only transaction
+ALTER FOREIGN DATA WRAPPER foo HANDLER test_fdw_handler;
+ERROR:  cannot execute ALTER FOREIGN DATA WRAPPER in a read-only transaction
+DROP FUNCTION invalid_fdw_handler();
+ERROR:  cannot execute DROP FUNCTION in a read-only transaction
+-- DROP FOREIGN DATA WRAPPER
+DROP FOREIGN DATA WRAPPER nonexistent;                      -- ERROR
+ERROR:  cannot execute DROP FOREIGN DATA WRAPPER in a read-only transaction
+DROP FOREIGN DATA WRAPPER IF EXISTS nonexistent;
+ERROR:  cannot execute DROP FOREIGN DATA WRAPPER in a read-only transaction
+\dew+
+DROP ROLE regress_test_role_super;                          -- ERROR
+ERROR:  cannot execute DROP ROLE in a read-only transaction
+SET ROLE regress_test_role_super;
+DROP FOREIGN DATA WRAPPER foo;
+ERROR:  cannot execute DROP FOREIGN DATA WRAPPER in a read-only transaction
+RESET ROLE;
+DROP ROLE regress_test_role_super;
+ERROR:  cannot execute DROP ROLE in a read-only transaction
+\dew+
+CREATE FOREIGN DATA WRAPPER foo;
+ERROR:  cannot execute CREATE FOREIGN DATA WRAPPER in a read-only transaction
+CREATE SERVER s1 FOREIGN DATA WRAPPER foo;
+ERROR:  cannot execute CREATE SERVER in a read-only transaction
+COMMENT ON SERVER s1 IS 'foreign server';
+ERROR:  cannot execute COMMENT in a read-only transaction
+CREATE USER MAPPING FOR current_user SERVER s1;
+ERROR:  cannot execute CREATE USER MAPPING in a read-only transaction
+CREATE USER MAPPING FOR current_user SERVER s1;				-- ERROR
+ERROR:  cannot execute CREATE USER MAPPING in a read-only transaction
+CREATE USER MAPPING IF NOT EXISTS FOR current_user SERVER s1; -- NOTICE
+ERROR:  cannot execute CREATE USER MAPPING in a read-only transaction
+\dew+
+\des+
+\deu+
+DROP FOREIGN DATA WRAPPER foo;                              -- ERROR
+ERROR:  cannot execute DROP FOREIGN DATA WRAPPER in a read-only transaction
+SET ROLE regress_test_role;
+DROP FOREIGN DATA WRAPPER foo CASCADE;                      -- ERROR
+ERROR:  cannot execute DROP FOREIGN DATA WRAPPER in a read-only transaction
+RESET ROLE;
+DROP FOREIGN DATA WRAPPER foo CASCADE;
+ERROR:  cannot execute DROP FOREIGN DATA WRAPPER in a read-only transaction
+\dew+
+\des+
+\deu+
+-- exercise CREATE SERVER
+CREATE SERVER s1 FOREIGN DATA WRAPPER foo;                  -- ERROR
+ERROR:  cannot execute CREATE SERVER in a read-only transaction
+CREATE FOREIGN DATA WRAPPER foo OPTIONS ("test wrapper" 'true');
+ERROR:  cannot execute CREATE FOREIGN DATA WRAPPER in a read-only transaction
+CREATE SERVER s1 FOREIGN DATA WRAPPER foo;
+ERROR:  cannot execute CREATE SERVER in a read-only transaction
+CREATE SERVER s1 FOREIGN DATA WRAPPER foo;                  -- ERROR
+ERROR:  cannot execute CREATE SERVER in a read-only transaction
+CREATE SERVER IF NOT EXISTS s1 FOREIGN DATA WRAPPER foo;	-- No ERROR, just NOTICE
+ERROR:  cannot execute CREATE SERVER in a read-only transaction
+CREATE SERVER s2 FOREIGN DATA WRAPPER foo OPTIONS (host 'a', dbname 'b');
+ERROR:  cannot execute CREATE SERVER in a read-only transaction
+CREATE SERVER s3 TYPE 'oracle' FOREIGN DATA WRAPPER foo;
+ERROR:  cannot execute CREATE SERVER in a read-only transaction
+CREATE SERVER s4 TYPE 'oracle' FOREIGN DATA WRAPPER foo OPTIONS (host 'a', dbname 'b');
+ERROR:  cannot execute CREATE SERVER in a read-only transaction
+CREATE SERVER s5 VERSION '15.0' FOREIGN DATA WRAPPER foo;
+ERROR:  cannot execute CREATE SERVER in a read-only transaction
+CREATE SERVER s6 VERSION '16.0' FOREIGN DATA WRAPPER foo OPTIONS (host 'a', dbname 'b');
+ERROR:  cannot execute CREATE SERVER in a read-only transaction
+CREATE SERVER s7 TYPE 'oracle' VERSION '17.0' FOREIGN DATA WRAPPER foo OPTIONS (host 'a', dbname 'b');
+ERROR:  cannot execute CREATE SERVER in a read-only transaction
+CREATE SERVER s8 FOREIGN DATA WRAPPER postgresql OPTIONS (foo '1'); -- ERROR
+ERROR:  cannot execute CREATE SERVER in a read-only transaction
+CREATE SERVER s8 FOREIGN DATA WRAPPER postgresql OPTIONS (host 'localhost', dbname 's8db');
+ERROR:  cannot execute CREATE SERVER in a read-only transaction
+\des+
+SET ROLE regress_test_role;
+CREATE SERVER t1 FOREIGN DATA WRAPPER foo;                 -- ERROR: no usage on FDW
+ERROR:  cannot execute CREATE SERVER in a read-only transaction
+RESET ROLE;
+GRANT USAGE ON FOREIGN DATA WRAPPER foo TO regress_test_role;
+ERROR:  cannot execute GRANT in a read-only transaction
+SET ROLE regress_test_role;
+CREATE SERVER t1 FOREIGN DATA WRAPPER foo;
+ERROR:  cannot execute CREATE SERVER in a read-only transaction
+RESET ROLE;
+\des+
+REVOKE USAGE ON FOREIGN DATA WRAPPER foo FROM regress_test_role;
+ERROR:  cannot execute REVOKE in a read-only transaction
+GRANT USAGE ON FOREIGN DATA WRAPPER foo TO regress_test_indirect;
+ERROR:  cannot execute GRANT in a read-only transaction
+SET ROLE regress_test_role;
+CREATE SERVER t2 FOREIGN DATA WRAPPER foo;                 -- ERROR
+ERROR:  cannot execute CREATE SERVER in a read-only transaction
+RESET ROLE;
+GRANT regress_test_indirect TO regress_test_role;
+ERROR:  cannot execute GRANT ROLE in a read-only transaction
+SET ROLE regress_test_role;
+CREATE SERVER t2 FOREIGN DATA WRAPPER foo;
+ERROR:  cannot execute CREATE SERVER in a read-only transaction
+\des+
+RESET ROLE;
+REVOKE regress_test_indirect FROM regress_test_role;
+ERROR:  cannot execute REVOKE ROLE in a read-only transaction
+-- ALTER SERVER
+ALTER SERVER s0;                                            -- ERROR
+ERROR:  syntax error at or near ";"
+LINE 1: ALTER SERVER s0;
+                       ^
+ALTER SERVER s0 OPTIONS (a '1');                            -- ERROR
+ERROR:  cannot execute ALTER SERVER in a read-only transaction
+ALTER SERVER s1 VERSION '1.0' OPTIONS (servername 's1');
+ERROR:  cannot execute ALTER SERVER in a read-only transaction
+ALTER SERVER s2 VERSION '1.1';
+ERROR:  cannot execute ALTER SERVER in a read-only transaction
+ALTER SERVER s3 OPTIONS ("tns name" 'orcl', port '1521');
+ERROR:  cannot execute ALTER SERVER in a read-only transaction
+GRANT USAGE ON FOREIGN SERVER s1 TO regress_test_role;
+ERROR:  cannot execute GRANT in a read-only transaction
+GRANT USAGE ON FOREIGN SERVER s6 TO regress_test_role2 WITH GRANT OPTION;
+ERROR:  cannot execute GRANT in a read-only transaction
+\des+
+SET ROLE regress_test_role;
+ALTER SERVER s1 VERSION '1.1';                              -- ERROR
+ERROR:  cannot execute ALTER SERVER in a read-only transaction
+ALTER SERVER s1 OWNER TO regress_test_role;                 -- ERROR
+ERROR:  cannot execute ALTER SERVER in a read-only transaction
+RESET ROLE;
+ALTER SERVER s1 OWNER TO regress_test_role;
+ERROR:  cannot execute ALTER SERVER in a read-only transaction
+GRANT regress_test_role2 TO regress_test_role;
+ERROR:  cannot execute GRANT ROLE in a read-only transaction
+SET ROLE regress_test_role;
+ALTER SERVER s1 VERSION '1.1';
+ERROR:  cannot execute ALTER SERVER in a read-only transaction
+ALTER SERVER s1 OWNER TO regress_test_role2;                -- ERROR
+ERROR:  cannot execute ALTER SERVER in a read-only transaction
+RESET ROLE;
+ALTER SERVER s8 OPTIONS (foo '1');                          -- ERROR option validation
+ERROR:  cannot execute ALTER SERVER in a read-only transaction
+ALTER SERVER s8 OPTIONS (connect_timeout '30', SET dbname 'db1', DROP host);
+ERROR:  cannot execute ALTER SERVER in a read-only transaction
+SET ROLE regress_test_role;
+ALTER SERVER s1 OWNER TO regress_test_indirect;             -- ERROR
+ERROR:  cannot execute ALTER SERVER in a read-only transaction
+RESET ROLE;
+GRANT regress_test_indirect TO regress_test_role;
+ERROR:  cannot execute GRANT ROLE in a read-only transaction
+SET ROLE regress_test_role;
+ALTER SERVER s1 OWNER TO regress_test_indirect;
+ERROR:  cannot execute ALTER SERVER in a read-only transaction
+RESET ROLE;
+GRANT USAGE ON FOREIGN DATA WRAPPER foo TO regress_test_indirect;
+ERROR:  cannot execute GRANT in a read-only transaction
+SET ROLE regress_test_role;
+ALTER SERVER s1 OWNER TO regress_test_indirect;
+ERROR:  cannot execute ALTER SERVER in a read-only transaction
+RESET ROLE;
+DROP ROLE regress_test_indirect;                            -- ERROR
+ERROR:  cannot execute DROP ROLE in a read-only transaction
+\des+
+ALTER SERVER s8 RENAME to s8new;
+ERROR:  cannot execute ALTER SERVER in a read-only transaction
+\des+
+ALTER SERVER s8new RENAME to s8;
+ERROR:  cannot execute ALTER SERVER in a read-only transaction
+-- DROP SERVER
+DROP SERVER nonexistent;                                    -- ERROR
+ERROR:  cannot execute DROP SERVER in a read-only transaction
+DROP SERVER IF EXISTS nonexistent;
+ERROR:  cannot execute DROP SERVER in a read-only transaction
+\des
+SET ROLE regress_test_role;
+DROP SERVER s2;                                             -- ERROR
+ERROR:  cannot execute DROP SERVER in a read-only transaction
+DROP SERVER s1;
+ERROR:  cannot execute DROP SERVER in a read-only transaction
+RESET ROLE;
+\des
+ALTER SERVER s2 OWNER TO regress_test_role;
+ERROR:  cannot execute ALTER SERVER in a read-only transaction
+SET ROLE regress_test_role;
+DROP SERVER s2;
+ERROR:  cannot execute DROP SERVER in a read-only transaction
+RESET ROLE;
+\des
+CREATE USER MAPPING FOR current_user SERVER s3;
+ERROR:  cannot execute CREATE USER MAPPING in a read-only transaction
+\deu
+DROP SERVER s3;                                             -- ERROR
+ERROR:  cannot execute DROP SERVER in a read-only transaction
+DROP SERVER s3 CASCADE;
+ERROR:  cannot execute DROP SERVER in a read-only transaction
+\des
+\deu
+-- CREATE USER MAPPING
+CREATE USER MAPPING FOR regress_test_missing_role SERVER s1;  -- ERROR
+ERROR:  cannot execute CREATE USER MAPPING in a read-only transaction
+CREATE USER MAPPING FOR current_user SERVER s1;             -- ERROR
+ERROR:  cannot execute CREATE USER MAPPING in a read-only transaction
+CREATE USER MAPPING FOR current_user SERVER s4;
+ERROR:  cannot execute CREATE USER MAPPING in a read-only transaction
+CREATE USER MAPPING FOR user SERVER s4;                     -- ERROR duplicate
+ERROR:  cannot execute CREATE USER MAPPING in a read-only transaction
+CREATE USER MAPPING FOR public SERVER s4 OPTIONS ("this mapping" 'is public');
+ERROR:  cannot execute CREATE USER MAPPING in a read-only transaction
+CREATE USER MAPPING FOR user SERVER s8 OPTIONS (username 'test', password 'secret');    -- ERROR
+ERROR:  cannot execute CREATE USER MAPPING in a read-only transaction
+CREATE USER MAPPING FOR user SERVER s8 OPTIONS (user 'test', password 'secret');
+ERROR:  cannot execute CREATE USER MAPPING in a read-only transaction
+ALTER SERVER s5 OWNER TO regress_test_role;
+ERROR:  cannot execute ALTER SERVER in a read-only transaction
+ALTER SERVER s6 OWNER TO regress_test_indirect;
+ERROR:  cannot execute ALTER SERVER in a read-only transaction
+SET ROLE regress_test_role;
+CREATE USER MAPPING FOR current_user SERVER s5;
+ERROR:  cannot execute CREATE USER MAPPING in a read-only transaction
+CREATE USER MAPPING FOR current_user SERVER s6 OPTIONS (username 'test');
+ERROR:  cannot execute CREATE USER MAPPING in a read-only transaction
+CREATE USER MAPPING FOR current_user SERVER s7;             -- ERROR
+ERROR:  cannot execute CREATE USER MAPPING in a read-only transaction
+CREATE USER MAPPING FOR public SERVER s8;                   -- ERROR
+ERROR:  cannot execute CREATE USER MAPPING in a read-only transaction
+RESET ROLE;
+ALTER SERVER t1 OWNER TO regress_test_indirect;
+ERROR:  cannot execute ALTER SERVER in a read-only transaction
+SET ROLE regress_test_role;
+CREATE USER MAPPING FOR current_user SERVER t1 OPTIONS (username 'bob', password 'boo');
+ERROR:  cannot execute CREATE USER MAPPING in a read-only transaction
+CREATE USER MAPPING FOR public SERVER t1;
+ERROR:  cannot execute CREATE USER MAPPING in a read-only transaction
+RESET ROLE;
+\deu
+-- ALTER USER MAPPING
+ALTER USER MAPPING FOR regress_test_missing_role SERVER s4 OPTIONS (gotcha 'true'); -- ERROR
+ERROR:  cannot execute ALTER USER MAPPING in a read-only transaction
+ALTER USER MAPPING FOR user SERVER ss4 OPTIONS (gotcha 'true'); -- ERROR
+ERROR:  cannot execute ALTER USER MAPPING in a read-only transaction
+ALTER USER MAPPING FOR public SERVER s5 OPTIONS (gotcha 'true');            -- ERROR
+ERROR:  cannot execute ALTER USER MAPPING in a read-only transaction
+ALTER USER MAPPING FOR current_user SERVER s8 OPTIONS (username 'test');    -- ERROR
+ERROR:  cannot execute ALTER USER MAPPING in a read-only transaction
+ALTER USER MAPPING FOR current_user SERVER s8 OPTIONS (DROP user, SET password 'public');
+ERROR:  cannot execute ALTER USER MAPPING in a read-only transaction
+SET ROLE regress_test_role;
+ALTER USER MAPPING FOR current_user SERVER s5 OPTIONS (ADD modified '1');
+ERROR:  cannot execute ALTER USER MAPPING in a read-only transaction
+ALTER USER MAPPING FOR public SERVER s4 OPTIONS (ADD modified '1'); -- ERROR
+ERROR:  cannot execute ALTER USER MAPPING in a read-only transaction
+ALTER USER MAPPING FOR public SERVER t1 OPTIONS (ADD modified '1');
+ERROR:  cannot execute ALTER USER MAPPING in a read-only transaction
+RESET ROLE;
+\deu+
+-- DROP USER MAPPING
+DROP USER MAPPING FOR regress_test_missing_role SERVER s4;  -- ERROR
+ERROR:  cannot execute DROP USER MAPPING in a read-only transaction
+DROP USER MAPPING FOR user SERVER ss4;
+ERROR:  cannot execute DROP USER MAPPING in a read-only transaction
+DROP USER MAPPING FOR public SERVER s7;                     -- ERROR
+ERROR:  cannot execute DROP USER MAPPING in a read-only transaction
+DROP USER MAPPING IF EXISTS FOR regress_test_missing_role SERVER s4;
+ERROR:  cannot execute DROP USER MAPPING in a read-only transaction
+DROP USER MAPPING IF EXISTS FOR user SERVER ss4;
+ERROR:  cannot execute DROP USER MAPPING in a read-only transaction
+DROP USER MAPPING IF EXISTS FOR public SERVER s7;
+ERROR:  cannot execute DROP USER MAPPING in a read-only transaction
+CREATE USER MAPPING FOR public SERVER s8;
+ERROR:  cannot execute CREATE USER MAPPING in a read-only transaction
+SET ROLE regress_test_role;
+DROP USER MAPPING FOR public SERVER s8;                     -- ERROR
+ERROR:  cannot execute DROP USER MAPPING in a read-only transaction
+RESET ROLE;
+DROP SERVER s7;
+ERROR:  cannot execute DROP SERVER in a read-only transaction
+\deu
+-- CREATE FOREIGN TABLE
+CREATE SCHEMA foreign_schema;
+ERROR:  cannot execute CREATE SCHEMA in a read-only transaction
+CREATE SERVER s0 FOREIGN DATA WRAPPER dummy;
+ERROR:  cannot execute CREATE SERVER in a read-only transaction
+CREATE FOREIGN TABLE ft1 ();                                    -- ERROR
+ERROR:  syntax error at or near ";"
+LINE 1: CREATE FOREIGN TABLE ft1 ();
+                                   ^
+CREATE FOREIGN TABLE ft1 () SERVER no_server;                   -- ERROR
+ERROR:  cannot execute CREATE FOREIGN TABLE in a read-only transaction
+CREATE FOREIGN TABLE ft1 () SERVER s0 WITH OIDS;                -- ERROR
+ERROR:  syntax error at or near "WITH"
+LINE 1: CREATE FOREIGN TABLE ft1 () SERVER s0 WITH OIDS;
+                                              ^
+CREATE FOREIGN TABLE ft1 (
+	c1 integer OPTIONS ("param 1" 'val1') PRIMARY KEY,
+	c2 text OPTIONS (param2 'val2', param3 'val3'),
+	c3 date
+) SERVER s0 OPTIONS (delimiter ',', quote '"', "be quoted" 'value'); -- ERROR
+ERROR:  cannot execute CREATE FOREIGN TABLE in a read-only transaction
+CREATE TABLE ref_table (id integer PRIMARY KEY);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE FOREIGN TABLE ft1 (
+	c1 integer OPTIONS ("param 1" 'val1') REFERENCES ref_table (id),
+	c2 text OPTIONS (param2 'val2', param3 'val3'),
+	c3 date
+) SERVER s0 OPTIONS (delimiter ',', quote '"', "be quoted" 'value'); -- ERROR
+ERROR:  cannot execute CREATE FOREIGN TABLE in a read-only transaction
+DROP TABLE ref_table;
+ERROR:  cannot execute DROP TABLE in a read-only transaction
+CREATE FOREIGN TABLE ft1 (
+	c1 integer OPTIONS ("param 1" 'val1') NOT NULL,
+	c2 text OPTIONS (param2 'val2', param3 'val3'),
+	c3 date,
+	UNIQUE (c3)
+) SERVER s0 OPTIONS (delimiter ',', quote '"', "be quoted" 'value'); -- ERROR
+ERROR:  cannot execute CREATE FOREIGN TABLE in a read-only transaction
+CREATE FOREIGN TABLE ft1 (
+	c1 integer OPTIONS ("param 1" 'val1') NOT NULL,
+	c2 text OPTIONS (param2 'val2', param3 'val3') CHECK (c2 <> ''),
+	c3 date,
+	CHECK (c3 BETWEEN '1994-01-01'::date AND '1994-01-31'::date)
+) SERVER s0 OPTIONS (delimiter ',', quote '"', "be quoted" 'value');
+ERROR:  cannot execute CREATE FOREIGN TABLE in a read-only transaction
+COMMENT ON FOREIGN TABLE ft1 IS 'ft1';
+ERROR:  cannot execute COMMENT in a read-only transaction
+COMMENT ON COLUMN ft1.c1 IS 'ft1.c1';
+ERROR:  cannot execute COMMENT in a read-only transaction
+\d+ ft1
+\det+
+CREATE INDEX id_ft1_c2 ON ft1 (c2);                             -- ERROR
+ERROR:  cannot execute CREATE INDEX in a read-only transaction
+SELECT * FROM ft1;                                              -- ERROR
+ERROR:  foreign-data wrapper "dummy" has no handler
+EXPLAIN SELECT * FROM ft1;                                      -- ERROR
+ERROR:  foreign-data wrapper "dummy" has no handler
+CREATE TABLE lt1 (a INT) PARTITION BY RANGE (a);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE FOREIGN TABLE ft_part1
+  PARTITION OF lt1 FOR VALUES FROM (0) TO (1000) SERVER s0;
+ERROR:  cannot execute CREATE FOREIGN TABLE in a read-only transaction
+CREATE INDEX ON lt1 (a);                                        -- ERROR
+ERROR:  cannot execute CREATE INDEX in a read-only transaction
+DROP TABLE lt1;
+ERROR:  cannot execute DROP TABLE in a read-only transaction
+-- ALTER FOREIGN TABLE
+COMMENT ON FOREIGN TABLE ft1 IS 'foreign table';
+ERROR:  cannot execute COMMENT in a read-only transaction
+COMMENT ON FOREIGN TABLE ft1 IS NULL;
+ERROR:  cannot execute COMMENT in a read-only transaction
+COMMENT ON COLUMN ft1.c1 IS 'foreign column';
+ERROR:  cannot execute COMMENT in a read-only transaction
+COMMENT ON COLUMN ft1.c1 IS NULL;
+ERROR:  cannot execute COMMENT in a read-only transaction
+ALTER FOREIGN TABLE ft1 ADD COLUMN c4 integer;
+ERROR:  cannot execute ALTER FOREIGN TABLE in a read-only transaction
+ALTER FOREIGN TABLE ft1 ADD COLUMN c5 integer DEFAULT 0;
+ERROR:  cannot execute ALTER FOREIGN TABLE in a read-only transaction
+ALTER FOREIGN TABLE ft1 ADD COLUMN c6 integer;
+ERROR:  cannot execute ALTER FOREIGN TABLE in a read-only transaction
+ALTER FOREIGN TABLE ft1 ADD COLUMN c7 integer NOT NULL;
+ERROR:  cannot execute ALTER FOREIGN TABLE in a read-only transaction
+ALTER FOREIGN TABLE ft1 ADD COLUMN c8 integer;
+ERROR:  cannot execute ALTER FOREIGN TABLE in a read-only transaction
+ALTER FOREIGN TABLE ft1 ADD COLUMN c9 integer;
+ERROR:  cannot execute ALTER FOREIGN TABLE in a read-only transaction
+ALTER FOREIGN TABLE ft1 ADD COLUMN c10 integer OPTIONS (p1 'v1');
+ERROR:  cannot execute ALTER FOREIGN TABLE in a read-only transaction
+ALTER FOREIGN TABLE ft1 ALTER COLUMN c4 SET DEFAULT 0;
+ERROR:  cannot execute ALTER FOREIGN TABLE in a read-only transaction
+ALTER FOREIGN TABLE ft1 ALTER COLUMN c5 DROP DEFAULT;
+ERROR:  cannot execute ALTER FOREIGN TABLE in a read-only transaction
+ALTER FOREIGN TABLE ft1 ALTER COLUMN c6 SET NOT NULL;
+ERROR:  cannot execute ALTER FOREIGN TABLE in a read-only transaction
+ALTER FOREIGN TABLE ft1 ALTER COLUMN c7 DROP NOT NULL;
+ERROR:  cannot execute ALTER FOREIGN TABLE in a read-only transaction
+ALTER FOREIGN TABLE ft1 ALTER COLUMN c8 TYPE char(10) USING '0'; -- ERROR
+ERROR:  cannot execute ALTER FOREIGN TABLE in a read-only transaction
+ALTER FOREIGN TABLE ft1 ALTER COLUMN c8 TYPE char(10);
+ERROR:  cannot execute ALTER FOREIGN TABLE in a read-only transaction
+ALTER FOREIGN TABLE ft1 ALTER COLUMN c8 SET DATA TYPE text;
+ERROR:  cannot execute ALTER FOREIGN TABLE in a read-only transaction
+ALTER FOREIGN TABLE ft1 ALTER COLUMN xmin OPTIONS (ADD p1 'v1'); -- ERROR
+ERROR:  cannot execute ALTER FOREIGN TABLE in a read-only transaction
+ALTER FOREIGN TABLE ft1 ALTER COLUMN c7 OPTIONS (ADD p1 'v1', ADD p2 'v2'),
+                        ALTER COLUMN c8 OPTIONS (ADD p1 'v1', ADD p2 'v2');
+ERROR:  cannot execute ALTER FOREIGN TABLE in a read-only transaction
+ALTER FOREIGN TABLE ft1 ALTER COLUMN c8 OPTIONS (SET p2 'V2', DROP p1);
+ERROR:  cannot execute ALTER FOREIGN TABLE in a read-only transaction
+ALTER FOREIGN TABLE ft1 ALTER COLUMN c1 SET STATISTICS 10000;
+ERROR:  cannot execute ALTER FOREIGN TABLE in a read-only transaction
+ALTER FOREIGN TABLE ft1 ALTER COLUMN c1 SET (n_distinct = 100);
+ERROR:  cannot execute ALTER FOREIGN TABLE in a read-only transaction
+ALTER FOREIGN TABLE ft1 ALTER COLUMN c8 SET STATISTICS -1;
+ERROR:  cannot execute ALTER FOREIGN TABLE in a read-only transaction
+ALTER FOREIGN TABLE ft1 ALTER COLUMN c8 SET STORAGE PLAIN;
+ERROR:  cannot execute ALTER FOREIGN TABLE in a read-only transaction
+\d+ ft1
+-- can't change the column type if it's used elsewhere
+CREATE TABLE use_ft1_column_type (x ft1);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+ALTER FOREIGN TABLE ft1 ALTER COLUMN c8 SET DATA TYPE integer;	-- ERROR
+ERROR:  cannot execute ALTER FOREIGN TABLE in a read-only transaction
+DROP TABLE use_ft1_column_type;
+ERROR:  cannot execute DROP TABLE in a read-only transaction
+ALTER FOREIGN TABLE ft1 ADD PRIMARY KEY (c7);                   -- ERROR
+ERROR:  cannot execute ALTER FOREIGN TABLE in a read-only transaction
+ALTER FOREIGN TABLE ft1 ADD CONSTRAINT ft1_c9_check CHECK (c9 < 0) NOT VALID;
+ERROR:  cannot execute ALTER FOREIGN TABLE in a read-only transaction
+ALTER FOREIGN TABLE ft1 ALTER CONSTRAINT ft1_c9_check DEFERRABLE; -- ERROR
+ERROR:  cannot execute ALTER FOREIGN TABLE in a read-only transaction
+ALTER FOREIGN TABLE ft1 DROP CONSTRAINT ft1_c9_check;
+ERROR:  cannot execute ALTER FOREIGN TABLE in a read-only transaction
+ALTER FOREIGN TABLE ft1 DROP CONSTRAINT no_const;               -- ERROR
+ERROR:  cannot execute ALTER FOREIGN TABLE in a read-only transaction
+ALTER FOREIGN TABLE ft1 DROP CONSTRAINT IF EXISTS no_const;
+ERROR:  cannot execute ALTER FOREIGN TABLE in a read-only transaction
+ALTER FOREIGN TABLE ft1 SET WITH OIDS;
+ERROR:  cannot execute ALTER FOREIGN TABLE in a read-only transaction
+ALTER FOREIGN TABLE ft1 OWNER TO regress_test_role;
+ERROR:  cannot execute ALTER FOREIGN TABLE in a read-only transaction
+ALTER FOREIGN TABLE ft1 OPTIONS (DROP delimiter, SET quote '~', ADD escape '@');
+ERROR:  cannot execute ALTER FOREIGN TABLE in a read-only transaction
+ALTER FOREIGN TABLE ft1 DROP COLUMN no_column;                  -- ERROR
+ERROR:  cannot execute ALTER FOREIGN TABLE in a read-only transaction
+ALTER FOREIGN TABLE ft1 DROP COLUMN IF EXISTS no_column;
+ERROR:  cannot execute ALTER FOREIGN TABLE in a read-only transaction
+ALTER FOREIGN TABLE ft1 DROP COLUMN c9;
+ERROR:  cannot execute ALTER FOREIGN TABLE in a read-only transaction
+ALTER FOREIGN TABLE ft1 SET SCHEMA foreign_schema;
+ERROR:  cannot execute ALTER FOREIGN TABLE in a read-only transaction
+ALTER FOREIGN TABLE ft1 SET TABLESPACE ts;                      -- ERROR
+ERROR:  cannot execute ALTER FOREIGN TABLE in a read-only transaction
+ALTER FOREIGN TABLE foreign_schema.ft1 RENAME c1 TO foreign_column_1;
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+ALTER FOREIGN TABLE foreign_schema.ft1 RENAME TO foreign_table_1;
+ERROR:  cannot execute ALTER FOREIGN TABLE in a read-only transaction
+\d foreign_schema.foreign_table_1
+-- alter noexisting table
+ALTER FOREIGN TABLE IF EXISTS doesnt_exist_ft1 ADD COLUMN c4 integer;
+ERROR:  cannot execute ALTER FOREIGN TABLE in a read-only transaction
+ALTER FOREIGN TABLE IF EXISTS doesnt_exist_ft1 ADD COLUMN c6 integer;
+ERROR:  cannot execute ALTER FOREIGN TABLE in a read-only transaction
+ALTER FOREIGN TABLE IF EXISTS doesnt_exist_ft1 ADD COLUMN c7 integer NOT NULL;
+ERROR:  cannot execute ALTER FOREIGN TABLE in a read-only transaction
+ALTER FOREIGN TABLE IF EXISTS doesnt_exist_ft1 ADD COLUMN c8 integer;
+ERROR:  cannot execute ALTER FOREIGN TABLE in a read-only transaction
+ALTER FOREIGN TABLE IF EXISTS doesnt_exist_ft1 ADD COLUMN c9 integer;
+ERROR:  cannot execute ALTER FOREIGN TABLE in a read-only transaction
+ALTER FOREIGN TABLE IF EXISTS doesnt_exist_ft1 ADD COLUMN c10 integer OPTIONS (p1 'v1');
+ERROR:  cannot execute ALTER FOREIGN TABLE in a read-only transaction
+ALTER FOREIGN TABLE IF EXISTS doesnt_exist_ft1 ALTER COLUMN c6 SET NOT NULL;
+ERROR:  cannot execute ALTER FOREIGN TABLE in a read-only transaction
+ALTER FOREIGN TABLE IF EXISTS doesnt_exist_ft1 ALTER COLUMN c7 DROP NOT NULL;
+ERROR:  cannot execute ALTER FOREIGN TABLE in a read-only transaction
+ALTER FOREIGN TABLE IF EXISTS doesnt_exist_ft1 ALTER COLUMN c8 TYPE char(10);
+ERROR:  cannot execute ALTER FOREIGN TABLE in a read-only transaction
+ALTER FOREIGN TABLE IF EXISTS doesnt_exist_ft1 ALTER COLUMN c8 SET DATA TYPE text;
+ERROR:  cannot execute ALTER FOREIGN TABLE in a read-only transaction
+ALTER FOREIGN TABLE IF EXISTS doesnt_exist_ft1 ALTER COLUMN c7 OPTIONS (ADD p1 'v1', ADD p2 'v2'),
+                        ALTER COLUMN c8 OPTIONS (ADD p1 'v1', ADD p2 'v2');
+ERROR:  cannot execute ALTER FOREIGN TABLE in a read-only transaction
+ALTER FOREIGN TABLE IF EXISTS doesnt_exist_ft1 ALTER COLUMN c8 OPTIONS (SET p2 'V2', DROP p1);
+ERROR:  cannot execute ALTER FOREIGN TABLE in a read-only transaction
+ALTER FOREIGN TABLE IF EXISTS doesnt_exist_ft1 DROP CONSTRAINT IF EXISTS no_const;
+ERROR:  cannot execute ALTER FOREIGN TABLE in a read-only transaction
+ALTER FOREIGN TABLE IF EXISTS doesnt_exist_ft1 DROP CONSTRAINT ft1_c1_check;
+ERROR:  cannot execute ALTER FOREIGN TABLE in a read-only transaction
+ALTER FOREIGN TABLE IF EXISTS doesnt_exist_ft1 OWNER TO regress_test_role;
+ERROR:  cannot execute ALTER FOREIGN TABLE in a read-only transaction
+ALTER FOREIGN TABLE IF EXISTS doesnt_exist_ft1 OPTIONS (DROP delimiter, SET quote '~', ADD escape '@');
+ERROR:  cannot execute ALTER FOREIGN TABLE in a read-only transaction
+ALTER FOREIGN TABLE IF EXISTS doesnt_exist_ft1 DROP COLUMN IF EXISTS no_column;
+ERROR:  cannot execute ALTER FOREIGN TABLE in a read-only transaction
+ALTER FOREIGN TABLE IF EXISTS doesnt_exist_ft1 DROP COLUMN c9;
+ERROR:  cannot execute ALTER FOREIGN TABLE in a read-only transaction
+ALTER FOREIGN TABLE IF EXISTS doesnt_exist_ft1 SET SCHEMA foreign_schema;
+ERROR:  cannot execute ALTER FOREIGN TABLE in a read-only transaction
+ALTER FOREIGN TABLE IF EXISTS doesnt_exist_ft1 RENAME c1 TO foreign_column_1;
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+ALTER FOREIGN TABLE IF EXISTS doesnt_exist_ft1 RENAME TO foreign_table_1;
+ERROR:  cannot execute ALTER FOREIGN TABLE in a read-only transaction
+-- Information schema
+SELECT * FROM information_schema.foreign_data_wrappers ORDER BY 1, 2;
+ foreign_data_wrapper_catalog | foreign_data_wrapper_name | authorization_identifier  | library_name | foreign_data_wrapper_language 
+------------------------------+---------------------------+---------------------------+--------------+-------------------------------
+ regression                   | dummy                     | regress_foreign_data_user |              | c
+ regression                   | foo                       | regress_foreign_data_user |              | c
+ regression                   | postgresql                | regress_foreign_data_user |              | c
+(3 rows)
+
+SELECT * FROM information_schema.foreign_data_wrapper_options ORDER BY 1, 2, 3;
+ foreign_data_wrapper_catalog | foreign_data_wrapper_name | option_name  | option_value 
+------------------------------+---------------------------+--------------+--------------
+ regression                   | foo                       | test wrapper | true
+(1 row)
+
+SELECT * FROM information_schema.foreign_servers ORDER BY 1, 2;
+ foreign_server_catalog | foreign_server_name | foreign_data_wrapper_catalog | foreign_data_wrapper_name | foreign_server_type | foreign_server_version | authorization_identifier  
+------------------------+---------------------+------------------------------+---------------------------+---------------------+------------------------+---------------------------
+ regression             | s0                  | regression                   | dummy                     |                     |                        | regress_foreign_data_user
+ regression             | s4                  | regression                   | foo                       | oracle              |                        | regress_foreign_data_user
+ regression             | s5                  | regression                   | foo                       |                     | 15.0                   | regress_test_role
+ regression             | s6                  | regression                   | foo                       |                     | 16.0                   | regress_test_indirect
+ regression             | s8                  | regression                   | postgresql                |                     |                        | regress_foreign_data_user
+ regression             | t1                  | regression                   | foo                       |                     |                        | regress_test_indirect
+ regression             | t2                  | regression                   | foo                       |                     |                        | regress_test_role
+(7 rows)
+
+SELECT * FROM information_schema.foreign_server_options ORDER BY 1, 2, 3;
+ foreign_server_catalog | foreign_server_name |   option_name   | option_value 
+------------------------+---------------------+-----------------+--------------
+ regression             | s4                  | dbname          | b
+ regression             | s4                  | host            | a
+ regression             | s6                  | dbname          | b
+ regression             | s6                  | host            | a
+ regression             | s8                  | connect_timeout | 30
+ regression             | s8                  | dbname          | db1
+(6 rows)
+
+SELECT * FROM information_schema.user_mappings ORDER BY lower(authorization_identifier), 2, 3;
+ authorization_identifier  | foreign_server_catalog | foreign_server_name 
+---------------------------+------------------------+---------------------
+ PUBLIC                    | regression             | s4
+ PUBLIC                    | regression             | s8
+ PUBLIC                    | regression             | t1
+ regress_foreign_data_user | regression             | s4
+ regress_foreign_data_user | regression             | s8
+ regress_test_role         | regression             | s5
+ regress_test_role         | regression             | s6
+ regress_test_role         | regression             | t1
+(8 rows)
+
+SELECT * FROM information_schema.user_mapping_options ORDER BY lower(authorization_identifier), 2, 3, 4;
+ authorization_identifier  | foreign_server_catalog | foreign_server_name | option_name  | option_value 
+---------------------------+------------------------+---------------------+--------------+--------------
+ PUBLIC                    | regression             | s4                  | this mapping | is public
+ PUBLIC                    | regression             | t1                  | modified     | 1
+ regress_foreign_data_user | regression             | s8                  | password     | public
+ regress_test_role         | regression             | s5                  | modified     | 1
+ regress_test_role         | regression             | s6                  | username     | test
+ regress_test_role         | regression             | t1                  | password     | boo
+ regress_test_role         | regression             | t1                  | username     | bob
+(7 rows)
+
+SELECT * FROM information_schema.usage_privileges WHERE object_type LIKE 'FOREIGN%' AND object_name IN ('s6', 'foo') ORDER BY 1, 2, 3, 4, 5;
+          grantor          |          grantee          | object_catalog | object_schema | object_name |     object_type      | privilege_type | is_grantable 
+---------------------------+---------------------------+----------------+---------------+-------------+----------------------+----------------+--------------
+ regress_foreign_data_user | regress_foreign_data_user | regression     |               | foo         | FOREIGN DATA WRAPPER | USAGE          | YES
+ regress_foreign_data_user | regress_test_indirect     | regression     |               | foo         | FOREIGN DATA WRAPPER | USAGE          | NO
+ regress_test_indirect     | regress_test_indirect     | regression     |               | s6          | FOREIGN SERVER       | USAGE          | YES
+ regress_test_indirect     | regress_test_role2        | regression     |               | s6          | FOREIGN SERVER       | USAGE          | YES
+(4 rows)
+
+SELECT * FROM information_schema.role_usage_grants WHERE object_type LIKE 'FOREIGN%' AND object_name IN ('s6', 'foo') ORDER BY 1, 2, 3, 4, 5;
+          grantor          |          grantee          | object_catalog | object_schema | object_name |     object_type      | privilege_type | is_grantable 
+---------------------------+---------------------------+----------------+---------------+-------------+----------------------+----------------+--------------
+ regress_foreign_data_user | regress_foreign_data_user | regression     |               | foo         | FOREIGN DATA WRAPPER | USAGE          | YES
+ regress_foreign_data_user | regress_test_indirect     | regression     |               | foo         | FOREIGN DATA WRAPPER | USAGE          | NO
+ regress_test_indirect     | regress_test_indirect     | regression     |               | s6          | FOREIGN SERVER       | USAGE          | YES
+ regress_test_indirect     | regress_test_role2        | regression     |               | s6          | FOREIGN SERVER       | USAGE          | YES
+(4 rows)
+
+SELECT * FROM information_schema.foreign_tables ORDER BY 1, 2, 3;
+ foreign_table_catalog | foreign_table_schema | foreign_table_name | foreign_server_catalog | foreign_server_name 
+-----------------------+----------------------+--------------------+------------------------+---------------------
+ regression            | foreign_schema       | foreign_table_1    | regression             | s0
+(1 row)
+
+SELECT * FROM information_schema.foreign_table_options ORDER BY 1, 2, 3, 4;
+ foreign_table_catalog | foreign_table_schema | foreign_table_name | option_name | option_value 
+-----------------------+----------------------+--------------------+-------------+--------------
+ regression            | foreign_schema       | foreign_table_1    | be quoted   | value
+ regression            | foreign_schema       | foreign_table_1    | escape      | @
+ regression            | foreign_schema       | foreign_table_1    | quote       | ~
+(3 rows)
+
+SET ROLE regress_test_role;
+SELECT * FROM information_schema.user_mapping_options ORDER BY 1, 2, 3, 4;
+ authorization_identifier | foreign_server_catalog | foreign_server_name | option_name | option_value 
+--------------------------+------------------------+---------------------+-------------+--------------
+ PUBLIC                   | regression             | t1                  | modified    | 1
+ regress_test_role        | regression             | s5                  | modified    | 1
+ regress_test_role        | regression             | s6                  | username    | test
+ regress_test_role        | regression             | t1                  | password    | boo
+ regress_test_role        | regression             | t1                  | username    | bob
+(5 rows)
+
+SELECT * FROM information_schema.usage_privileges WHERE object_type LIKE 'FOREIGN%' AND object_name IN ('s6', 'foo') ORDER BY 1, 2, 3, 4, 5;
+          grantor          |        grantee        | object_catalog | object_schema | object_name |     object_type      | privilege_type | is_grantable 
+---------------------------+-----------------------+----------------+---------------+-------------+----------------------+----------------+--------------
+ regress_foreign_data_user | regress_test_indirect | regression     |               | foo         | FOREIGN DATA WRAPPER | USAGE          | NO
+ regress_test_indirect     | regress_test_indirect | regression     |               | s6          | FOREIGN SERVER       | USAGE          | YES
+ regress_test_indirect     | regress_test_role2    | regression     |               | s6          | FOREIGN SERVER       | USAGE          | YES
+(3 rows)
+
+SELECT * FROM information_schema.role_usage_grants WHERE object_type LIKE 'FOREIGN%' AND object_name IN ('s6', 'foo') ORDER BY 1, 2, 3, 4, 5;
+          grantor          |        grantee        | object_catalog | object_schema | object_name |     object_type      | privilege_type | is_grantable 
+---------------------------+-----------------------+----------------+---------------+-------------+----------------------+----------------+--------------
+ regress_foreign_data_user | regress_test_indirect | regression     |               | foo         | FOREIGN DATA WRAPPER | USAGE          | NO
+ regress_test_indirect     | regress_test_indirect | regression     |               | s6          | FOREIGN SERVER       | USAGE          | YES
+ regress_test_indirect     | regress_test_role2    | regression     |               | s6          | FOREIGN SERVER       | USAGE          | YES
+(3 rows)
+
+DROP USER MAPPING FOR current_user SERVER t1;
+ERROR:  cannot execute DROP USER MAPPING in a read-only transaction
+SET ROLE regress_test_role2;
+SELECT * FROM information_schema.user_mapping_options ORDER BY 1, 2, 3, 4;
+ authorization_identifier | foreign_server_catalog | foreign_server_name | option_name | option_value 
+--------------------------+------------------------+---------------------+-------------+--------------
+ regress_test_role        | regression             | s6                  | username    | 
+(1 row)
+
+RESET ROLE;
+-- has_foreign_data_wrapper_privilege
+SELECT has_foreign_data_wrapper_privilege('regress_test_role',
+    (SELECT oid FROM pg_foreign_data_wrapper WHERE fdwname='foo'), 'USAGE');
+ has_foreign_data_wrapper_privilege 
+------------------------------------
+ t
+(1 row)
+
+SELECT has_foreign_data_wrapper_privilege('regress_test_role', 'foo', 'USAGE');
+ has_foreign_data_wrapper_privilege 
+------------------------------------
+ t
+(1 row)
+
+SELECT has_foreign_data_wrapper_privilege(
+    (SELECT oid FROM pg_roles WHERE rolname='regress_test_role'),
+    (SELECT oid FROM pg_foreign_data_wrapper WHERE fdwname='foo'), 'USAGE');
+ has_foreign_data_wrapper_privilege 
+------------------------------------
+ t
+(1 row)
+
+SELECT has_foreign_data_wrapper_privilege(
+    (SELECT oid FROM pg_foreign_data_wrapper WHERE fdwname='foo'), 'USAGE');
+ has_foreign_data_wrapper_privilege 
+------------------------------------
+ t
+(1 row)
+
+SELECT has_foreign_data_wrapper_privilege(
+    (SELECT oid FROM pg_roles WHERE rolname='regress_test_role'), 'foo', 'USAGE');
+ has_foreign_data_wrapper_privilege 
+------------------------------------
+ t
+(1 row)
+
+SELECT has_foreign_data_wrapper_privilege('foo', 'USAGE');
+ has_foreign_data_wrapper_privilege 
+------------------------------------
+ t
+(1 row)
+
+GRANT USAGE ON FOREIGN DATA WRAPPER foo TO regress_test_role;
+ERROR:  cannot execute GRANT in a read-only transaction
+SELECT has_foreign_data_wrapper_privilege('regress_test_role', 'foo', 'USAGE');
+ has_foreign_data_wrapper_privilege 
+------------------------------------
+ t
+(1 row)
+
+-- has_server_privilege
+SELECT has_server_privilege('regress_test_role',
+    (SELECT oid FROM pg_foreign_server WHERE srvname='s8'), 'USAGE');
+ has_server_privilege 
+----------------------
+ f
+(1 row)
+
+SELECT has_server_privilege('regress_test_role', 's8', 'USAGE');
+ has_server_privilege 
+----------------------
+ f
+(1 row)
+
+SELECT has_server_privilege(
+    (SELECT oid FROM pg_roles WHERE rolname='regress_test_role'),
+    (SELECT oid FROM pg_foreign_server WHERE srvname='s8'), 'USAGE');
+ has_server_privilege 
+----------------------
+ f
+(1 row)
+
+SELECT has_server_privilege(
+    (SELECT oid FROM pg_foreign_server WHERE srvname='s8'), 'USAGE');
+ has_server_privilege 
+----------------------
+ t
+(1 row)
+
+SELECT has_server_privilege(
+    (SELECT oid FROM pg_roles WHERE rolname='regress_test_role'), 's8', 'USAGE');
+ has_server_privilege 
+----------------------
+ f
+(1 row)
+
+SELECT has_server_privilege('s8', 'USAGE');
+ has_server_privilege 
+----------------------
+ t
+(1 row)
+
+GRANT USAGE ON FOREIGN SERVER s8 TO regress_test_role;
+ERROR:  cannot execute GRANT in a read-only transaction
+SELECT has_server_privilege('regress_test_role', 's8', 'USAGE');
+ has_server_privilege 
+----------------------
+ t
+(1 row)
+
+REVOKE USAGE ON FOREIGN SERVER s8 FROM regress_test_role;
+ERROR:  cannot execute REVOKE in a read-only transaction
+GRANT USAGE ON FOREIGN SERVER s4 TO regress_test_role;
+ERROR:  cannot execute GRANT in a read-only transaction
+DROP USER MAPPING FOR public SERVER s4;
+ERROR:  cannot execute DROP USER MAPPING in a read-only transaction
+ALTER SERVER s6 OPTIONS (DROP host, DROP dbname);
+ERROR:  cannot execute ALTER SERVER in a read-only transaction
+ALTER USER MAPPING FOR regress_test_role SERVER s6 OPTIONS (DROP username);
+ERROR:  cannot execute ALTER USER MAPPING in a read-only transaction
+ALTER FOREIGN DATA WRAPPER foo VALIDATOR postgresql_fdw_validator;
+ERROR:  cannot execute ALTER FOREIGN DATA WRAPPER in a read-only transaction
+-- Privileges
+SET ROLE regress_unprivileged_role;
+CREATE FOREIGN DATA WRAPPER foobar;                             -- ERROR
+ERROR:  cannot execute CREATE FOREIGN DATA WRAPPER in a read-only transaction
+ALTER FOREIGN DATA WRAPPER foo OPTIONS (gotcha 'true');         -- ERROR
+ERROR:  cannot execute ALTER FOREIGN DATA WRAPPER in a read-only transaction
+ALTER FOREIGN DATA WRAPPER foo OWNER TO regress_unprivileged_role; -- ERROR
+ERROR:  cannot execute ALTER FOREIGN DATA WRAPPER in a read-only transaction
+DROP FOREIGN DATA WRAPPER foo;                                  -- ERROR
+ERROR:  cannot execute DROP FOREIGN DATA WRAPPER in a read-only transaction
+GRANT USAGE ON FOREIGN DATA WRAPPER foo TO regress_test_role;   -- ERROR
+ERROR:  cannot execute GRANT in a read-only transaction
+CREATE SERVER s9 FOREIGN DATA WRAPPER foo;                      -- ERROR
+ERROR:  cannot execute CREATE SERVER in a read-only transaction
+ALTER SERVER s4 VERSION '0.5';                                  -- ERROR
+ERROR:  cannot execute ALTER SERVER in a read-only transaction
+ALTER SERVER s4 OWNER TO regress_unprivileged_role;             -- ERROR
+ERROR:  cannot execute ALTER SERVER in a read-only transaction
+DROP SERVER s4;                                                 -- ERROR
+ERROR:  cannot execute DROP SERVER in a read-only transaction
+GRANT USAGE ON FOREIGN SERVER s4 TO regress_test_role;          -- ERROR
+ERROR:  cannot execute GRANT in a read-only transaction
+CREATE USER MAPPING FOR public SERVER s4;                       -- ERROR
+ERROR:  cannot execute CREATE USER MAPPING in a read-only transaction
+ALTER USER MAPPING FOR regress_test_role SERVER s6 OPTIONS (gotcha 'true'); -- ERROR
+ERROR:  cannot execute ALTER USER MAPPING in a read-only transaction
+DROP USER MAPPING FOR regress_test_role SERVER s6;              -- ERROR
+ERROR:  cannot execute DROP USER MAPPING in a read-only transaction
+RESET ROLE;
+GRANT USAGE ON FOREIGN DATA WRAPPER postgresql TO regress_unprivileged_role;
+ERROR:  cannot execute GRANT in a read-only transaction
+GRANT USAGE ON FOREIGN DATA WRAPPER foo TO regress_unprivileged_role WITH GRANT OPTION;
+ERROR:  cannot execute GRANT in a read-only transaction
+SET ROLE regress_unprivileged_role;
+CREATE FOREIGN DATA WRAPPER foobar;                             -- ERROR
+ERROR:  cannot execute CREATE FOREIGN DATA WRAPPER in a read-only transaction
+ALTER FOREIGN DATA WRAPPER foo OPTIONS (gotcha 'true');         -- ERROR
+ERROR:  cannot execute ALTER FOREIGN DATA WRAPPER in a read-only transaction
+DROP FOREIGN DATA WRAPPER foo;                                  -- ERROR
+ERROR:  cannot execute DROP FOREIGN DATA WRAPPER in a read-only transaction
+GRANT USAGE ON FOREIGN DATA WRAPPER postgresql TO regress_test_role; -- WARNING
+ERROR:  cannot execute GRANT in a read-only transaction
+GRANT USAGE ON FOREIGN DATA WRAPPER foo TO regress_test_role;
+ERROR:  cannot execute GRANT in a read-only transaction
+CREATE SERVER s9 FOREIGN DATA WRAPPER postgresql;
+ERROR:  cannot execute CREATE SERVER in a read-only transaction
+ALTER SERVER s6 VERSION '0.5';                                  -- ERROR
+ERROR:  cannot execute ALTER SERVER in a read-only transaction
+DROP SERVER s6;                                                 -- ERROR
+ERROR:  cannot execute DROP SERVER in a read-only transaction
+GRANT USAGE ON FOREIGN SERVER s6 TO regress_test_role;          -- ERROR
+ERROR:  cannot execute GRANT in a read-only transaction
+GRANT USAGE ON FOREIGN SERVER s9 TO regress_test_role;
+ERROR:  cannot execute GRANT in a read-only transaction
+CREATE USER MAPPING FOR public SERVER s6;                       -- ERROR
+ERROR:  cannot execute CREATE USER MAPPING in a read-only transaction
+CREATE USER MAPPING FOR public SERVER s9;
+ERROR:  cannot execute CREATE USER MAPPING in a read-only transaction
+ALTER USER MAPPING FOR regress_test_role SERVER s6 OPTIONS (gotcha 'true'); -- ERROR
+ERROR:  cannot execute ALTER USER MAPPING in a read-only transaction
+DROP USER MAPPING FOR regress_test_role SERVER s6;              -- ERROR
+ERROR:  cannot execute DROP USER MAPPING in a read-only transaction
+RESET ROLE;
+REVOKE USAGE ON FOREIGN DATA WRAPPER foo FROM regress_unprivileged_role; -- ERROR
+ERROR:  cannot execute REVOKE in a read-only transaction
+REVOKE USAGE ON FOREIGN DATA WRAPPER foo FROM regress_unprivileged_role CASCADE;
+ERROR:  cannot execute REVOKE in a read-only transaction
+SET ROLE regress_unprivileged_role;
+GRANT USAGE ON FOREIGN DATA WRAPPER foo TO regress_test_role;   -- ERROR
+ERROR:  cannot execute GRANT in a read-only transaction
+CREATE SERVER s10 FOREIGN DATA WRAPPER foo;                     -- ERROR
+ERROR:  cannot execute CREATE SERVER in a read-only transaction
+ALTER SERVER s9 VERSION '1.1';
+ERROR:  cannot execute ALTER SERVER in a read-only transaction
+GRANT USAGE ON FOREIGN SERVER s9 TO regress_test_role;
+ERROR:  cannot execute GRANT in a read-only transaction
+CREATE USER MAPPING FOR current_user SERVER s9;
+ERROR:  cannot execute CREATE USER MAPPING in a read-only transaction
+-- We use terse mode to avoid ordering issues in cascade detail output.
+\set VERBOSITY terse
+DROP SERVER s9 CASCADE;
+ERROR:  cannot execute DROP SERVER in a read-only transaction
+\set VERBOSITY default
+RESET ROLE;
+CREATE SERVER s9 FOREIGN DATA WRAPPER foo;
+ERROR:  cannot execute CREATE SERVER in a read-only transaction
+GRANT USAGE ON FOREIGN SERVER s9 TO regress_unprivileged_role;
+ERROR:  cannot execute GRANT in a read-only transaction
+SET ROLE regress_unprivileged_role;
+ALTER SERVER s9 VERSION '1.2';                                  -- ERROR
+ERROR:  cannot execute ALTER SERVER in a read-only transaction
+GRANT USAGE ON FOREIGN SERVER s9 TO regress_test_role;          -- WARNING
+ERROR:  cannot execute GRANT in a read-only transaction
+CREATE USER MAPPING FOR current_user SERVER s9;
+ERROR:  cannot execute CREATE USER MAPPING in a read-only transaction
+DROP SERVER s9 CASCADE;                                         -- ERROR
+ERROR:  cannot execute DROP SERVER in a read-only transaction
+-- Check visibility of user mapping data
+SET ROLE regress_test_role;
+CREATE SERVER s10 FOREIGN DATA WRAPPER foo;
+ERROR:  cannot execute CREATE SERVER in a read-only transaction
+CREATE USER MAPPING FOR public SERVER s10 OPTIONS (user 'secret');
+ERROR:  cannot execute CREATE USER MAPPING in a read-only transaction
+CREATE USER MAPPING FOR regress_unprivileged_role SERVER s10 OPTIONS (user 'secret');
+ERROR:  cannot execute CREATE USER MAPPING in a read-only transaction
+-- owner of server can see some option fields
+\deu+
+RESET ROLE;
+-- superuser can see all option fields
+\deu+
+-- unprivileged user cannot see any option field
+SET ROLE regress_unprivileged_role;
+\deu+
+RESET ROLE;
+\set VERBOSITY terse
+DROP SERVER s10 CASCADE;
+ERROR:  cannot execute DROP SERVER in a read-only transaction
+\set VERBOSITY default
+-- Triggers
+CREATE FUNCTION dummy_trigger() RETURNS TRIGGER AS $$
+  BEGIN
+    RETURN NULL;
+  END
+$$ language plpgsql;
+ERROR:  cannot execute CREATE FUNCTION in a read-only transaction
+CREATE TRIGGER trigtest_before_stmt BEFORE INSERT OR UPDATE OR DELETE
+ON foreign_schema.foreign_table_1
+FOR EACH STATEMENT
+EXECUTE PROCEDURE dummy_trigger();
+ERROR:  cannot execute CREATE TRIGGER in a read-only transaction
+CREATE TRIGGER trigtest_after_stmt AFTER INSERT OR UPDATE OR DELETE
+ON foreign_schema.foreign_table_1
+FOR EACH STATEMENT
+EXECUTE PROCEDURE dummy_trigger();
+ERROR:  cannot execute CREATE TRIGGER in a read-only transaction
+CREATE TRIGGER trigtest_after_stmt_tt AFTER INSERT OR UPDATE OR DELETE -- ERROR
+ON foreign_schema.foreign_table_1
+REFERENCING NEW TABLE AS new_table
+FOR EACH STATEMENT
+EXECUTE PROCEDURE dummy_trigger();
+ERROR:  cannot execute CREATE TRIGGER in a read-only transaction
+CREATE TRIGGER trigtest_before_row BEFORE INSERT OR UPDATE OR DELETE
+ON foreign_schema.foreign_table_1
+FOR EACH ROW
+EXECUTE PROCEDURE dummy_trigger();
+ERROR:  cannot execute CREATE TRIGGER in a read-only transaction
+CREATE TRIGGER trigtest_after_row AFTER INSERT OR UPDATE OR DELETE
+ON foreign_schema.foreign_table_1
+FOR EACH ROW
+EXECUTE PROCEDURE dummy_trigger();
+ERROR:  cannot execute CREATE TRIGGER in a read-only transaction
+CREATE CONSTRAINT TRIGGER trigtest_constraint AFTER INSERT OR UPDATE OR DELETE
+ON foreign_schema.foreign_table_1
+FOR EACH ROW
+EXECUTE PROCEDURE dummy_trigger();
+ERROR:  cannot execute CREATE TRIGGER in a read-only transaction
+ALTER FOREIGN TABLE foreign_schema.foreign_table_1
+	DISABLE TRIGGER trigtest_before_stmt;
+ERROR:  cannot execute ALTER FOREIGN TABLE in a read-only transaction
+ALTER FOREIGN TABLE foreign_schema.foreign_table_1
+	ENABLE TRIGGER trigtest_before_stmt;
+ERROR:  cannot execute ALTER FOREIGN TABLE in a read-only transaction
+DROP TRIGGER trigtest_before_stmt ON foreign_schema.foreign_table_1;
+ERROR:  cannot execute DROP TRIGGER in a read-only transaction
+DROP TRIGGER trigtest_before_row ON foreign_schema.foreign_table_1;
+ERROR:  cannot execute DROP TRIGGER in a read-only transaction
+DROP TRIGGER trigtest_after_stmt ON foreign_schema.foreign_table_1;
+ERROR:  cannot execute DROP TRIGGER in a read-only transaction
+DROP TRIGGER trigtest_after_row ON foreign_schema.foreign_table_1;
+ERROR:  cannot execute DROP TRIGGER in a read-only transaction
+DROP FUNCTION dummy_trigger();
+ERROR:  cannot execute DROP FUNCTION in a read-only transaction
+-- Table inheritance
+CREATE TABLE fd_pt1 (
+	c1 integer NOT NULL,
+	c2 text,
+	c3 date
+);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE FOREIGN TABLE ft2 () INHERITS (fd_pt1)
+  SERVER s0 OPTIONS (delimiter ',', quote '"', "be quoted" 'value');
+ERROR:  cannot execute CREATE FOREIGN TABLE in a read-only transaction
+\d+ fd_pt1
+\d+ ft2
+DROP FOREIGN TABLE ft2;
+ERROR:  cannot execute DROP FOREIGN TABLE in a read-only transaction
+\d+ fd_pt1
+CREATE FOREIGN TABLE ft2 (
+	c1 integer NOT NULL,
+	c2 text,
+	c3 date
+) SERVER s0 OPTIONS (delimiter ',', quote '"', "be quoted" 'value');
+ERROR:  cannot execute CREATE FOREIGN TABLE in a read-only transaction
+\d+ ft2
+ALTER FOREIGN TABLE ft2 INHERIT fd_pt1;
+ERROR:  cannot execute ALTER FOREIGN TABLE in a read-only transaction
+\d+ fd_pt1
+\d+ ft2
+CREATE TABLE ct3() INHERITS(ft2);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE FOREIGN TABLE ft3 (
+	c1 integer NOT NULL,
+	c2 text,
+	c3 date
+) INHERITS(ft2)
+  SERVER s0;
+ERROR:  cannot execute CREATE FOREIGN TABLE in a read-only transaction
+\d+ ft2
+\d+ ct3
+\d+ ft3
+-- add attributes recursively
+ALTER TABLE fd_pt1 ADD COLUMN c4 integer;
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+ALTER TABLE fd_pt1 ADD COLUMN c5 integer DEFAULT 0;
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+ALTER TABLE fd_pt1 ADD COLUMN c6 integer;
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+ALTER TABLE fd_pt1 ADD COLUMN c7 integer NOT NULL;
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+ALTER TABLE fd_pt1 ADD COLUMN c8 integer;
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+\d+ fd_pt1
+\d+ ft2
+\d+ ct3
+\d+ ft3
+-- alter attributes recursively
+ALTER TABLE fd_pt1 ALTER COLUMN c4 SET DEFAULT 0;
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+ALTER TABLE fd_pt1 ALTER COLUMN c5 DROP DEFAULT;
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+ALTER TABLE fd_pt1 ALTER COLUMN c6 SET NOT NULL;
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+ALTER TABLE fd_pt1 ALTER COLUMN c7 DROP NOT NULL;
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+ALTER TABLE fd_pt1 ALTER COLUMN c8 TYPE char(10) USING '0';        -- ERROR
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+ALTER TABLE fd_pt1 ALTER COLUMN c8 TYPE char(10);
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+ALTER TABLE fd_pt1 ALTER COLUMN c8 SET DATA TYPE text;
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+ALTER TABLE fd_pt1 ALTER COLUMN c1 SET STATISTICS 10000;
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+ALTER TABLE fd_pt1 ALTER COLUMN c1 SET (n_distinct = 100);
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+ALTER TABLE fd_pt1 ALTER COLUMN c8 SET STATISTICS -1;
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+ALTER TABLE fd_pt1 ALTER COLUMN c8 SET STORAGE EXTERNAL;
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+\d+ fd_pt1
+\d+ ft2
+-- drop attributes recursively
+ALTER TABLE fd_pt1 DROP COLUMN c4;
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+ALTER TABLE fd_pt1 DROP COLUMN c5;
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+ALTER TABLE fd_pt1 DROP COLUMN c6;
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+ALTER TABLE fd_pt1 DROP COLUMN c7;
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+ALTER TABLE fd_pt1 DROP COLUMN c8;
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+\d+ fd_pt1
+\d+ ft2
+-- add constraints recursively
+ALTER TABLE fd_pt1 ADD CONSTRAINT fd_pt1chk1 CHECK (c1 > 0) NO INHERIT;
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+ALTER TABLE fd_pt1 ADD CONSTRAINT fd_pt1chk2 CHECK (c2 <> '');
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+-- connoinherit should be true for NO INHERIT constraint
+SELECT relname, conname, contype, conislocal, coninhcount, connoinherit
+  FROM pg_class AS pc JOIN pg_constraint AS pgc ON (conrelid = pc.oid)
+  WHERE pc.relname = 'fd_pt1'
+  ORDER BY 1,2;
+ relname |  conname   | contype | conislocal | coninhcount | connoinherit 
+---------+------------+---------+------------+-------------+--------------
+ fd_pt1  | fd_pt1chk1 | c       | t          |           0 | t
+ fd_pt1  | fd_pt1chk2 | c       | t          |           0 | f
+(2 rows)
+
+-- child does not inherit NO INHERIT constraints
+\d+ fd_pt1
+\d+ ft2
+\set VERBOSITY terse
+DROP FOREIGN TABLE ft2; -- ERROR
+ERROR:  cannot execute DROP FOREIGN TABLE in a read-only transaction
+DROP FOREIGN TABLE ft2 CASCADE;
+ERROR:  cannot execute DROP FOREIGN TABLE in a read-only transaction
+\set VERBOSITY default
+CREATE FOREIGN TABLE ft2 (
+	c1 integer NOT NULL,
+	c2 text,
+	c3 date
+) SERVER s0 OPTIONS (delimiter ',', quote '"', "be quoted" 'value');
+ERROR:  cannot execute CREATE FOREIGN TABLE in a read-only transaction
+-- child must have parent's INHERIT constraints
+ALTER FOREIGN TABLE ft2 INHERIT fd_pt1;                            -- ERROR
+ERROR:  cannot execute ALTER FOREIGN TABLE in a read-only transaction
+ALTER FOREIGN TABLE ft2 ADD CONSTRAINT fd_pt1chk2 CHECK (c2 <> '');
+ERROR:  cannot execute ALTER FOREIGN TABLE in a read-only transaction
+ALTER FOREIGN TABLE ft2 INHERIT fd_pt1;
+ERROR:  cannot execute ALTER FOREIGN TABLE in a read-only transaction
+-- child does not inherit NO INHERIT constraints
+\d+ fd_pt1
+\d+ ft2
+-- drop constraints recursively
+ALTER TABLE fd_pt1 DROP CONSTRAINT fd_pt1chk1 CASCADE;
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+ALTER TABLE fd_pt1 DROP CONSTRAINT fd_pt1chk2 CASCADE;
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+-- NOT VALID case
+INSERT INTO fd_pt1 VALUES (1, 'fd_pt1'::text, '1994-01-01'::date);
+ERROR:  cannot execute INSERT in a read-only transaction
+ALTER TABLE fd_pt1 ADD CONSTRAINT fd_pt1chk3 CHECK (c2 <> '') NOT VALID;
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+\d+ fd_pt1
+\d+ ft2
+-- VALIDATE CONSTRAINT need do nothing on foreign tables
+ALTER TABLE fd_pt1 VALIDATE CONSTRAINT fd_pt1chk3;
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+\d+ fd_pt1
+\d+ ft2
+-- OID system column
+ALTER TABLE fd_pt1 SET WITH OIDS;
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+\d+ fd_pt1
+\d+ ft2
+ALTER TABLE ft2 SET WITHOUT OIDS;  -- ERROR
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+ALTER TABLE fd_pt1 SET WITHOUT OIDS;
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+\d+ fd_pt1
+\d+ ft2
+-- changes name of an attribute recursively
+ALTER TABLE fd_pt1 RENAME COLUMN c1 TO f1;
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+ALTER TABLE fd_pt1 RENAME COLUMN c2 TO f2;
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+ALTER TABLE fd_pt1 RENAME COLUMN c3 TO f3;
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+-- changes name of a constraint recursively
+ALTER TABLE fd_pt1 RENAME CONSTRAINT fd_pt1chk3 TO f2_check;
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+\d+ fd_pt1
+\d+ ft2
+-- TRUNCATE doesn't work on foreign tables, either directly or recursively
+TRUNCATE ft2;  -- ERROR
+ERROR:  cannot execute TRUNCATE TABLE in a read-only transaction
+TRUNCATE fd_pt1;  -- ERROR
+ERROR:  cannot execute TRUNCATE TABLE in a read-only transaction
+DROP TABLE fd_pt1 CASCADE;
+ERROR:  cannot execute DROP TABLE in a read-only transaction
+-- IMPORT FOREIGN SCHEMA
+IMPORT FOREIGN SCHEMA s1 FROM SERVER s9 INTO public; -- ERROR
+ERROR:  cannot execute IMPORT FOREIGN SCHEMA in a read-only transaction
+IMPORT FOREIGN SCHEMA s1 LIMIT TO (t1) FROM SERVER s9 INTO public; --ERROR
+ERROR:  cannot execute IMPORT FOREIGN SCHEMA in a read-only transaction
+IMPORT FOREIGN SCHEMA s1 EXCEPT (t1) FROM SERVER s9 INTO public; -- ERROR
+ERROR:  cannot execute IMPORT FOREIGN SCHEMA in a read-only transaction
+IMPORT FOREIGN SCHEMA s1 EXCEPT (t1, t2) FROM SERVER s9 INTO public
+OPTIONS (option1 'value1', option2 'value2'); -- ERROR
+ERROR:  cannot execute IMPORT FOREIGN SCHEMA in a read-only transaction
+-- DROP FOREIGN TABLE
+DROP FOREIGN TABLE no_table;                                    -- ERROR
+ERROR:  cannot execute DROP FOREIGN TABLE in a read-only transaction
+DROP FOREIGN TABLE IF EXISTS no_table;
+ERROR:  cannot execute DROP FOREIGN TABLE in a read-only transaction
+DROP FOREIGN TABLE foreign_schema.foreign_table_1;
+ERROR:  cannot execute DROP FOREIGN TABLE in a read-only transaction
+-- REASSIGN OWNED/DROP OWNED of foreign objects
+REASSIGN OWNED BY regress_test_role TO regress_test_role2;
+ERROR:  cannot execute REASSIGN OWNED in a read-only transaction
+DROP OWNED BY regress_test_role2;
+ERROR:  cannot execute DROP OWNED in a read-only transaction
+DROP OWNED BY regress_test_role2 CASCADE;
+ERROR:  cannot execute DROP OWNED in a read-only transaction
+-- Foreign partition DDL stuff
+CREATE TABLE fd_pt2 (
+	c1 integer NOT NULL,
+	c2 text,
+	c3 date
+) PARTITION BY LIST (c1);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE FOREIGN TABLE fd_pt2_1 PARTITION OF fd_pt2 FOR VALUES IN (1)
+  SERVER s0 OPTIONS (delimiter ',', quote '"', "be quoted" 'value');
+ERROR:  cannot execute CREATE FOREIGN TABLE in a read-only transaction
+\d+ fd_pt2
+\d+ fd_pt2_1
+-- partition cannot have additional columns
+DROP FOREIGN TABLE fd_pt2_1;
+ERROR:  cannot execute DROP FOREIGN TABLE in a read-only transaction
+CREATE FOREIGN TABLE fd_pt2_1 (
+	c1 integer NOT NULL,
+	c2 text,
+	c3 date,
+	c4 char
+) SERVER s0 OPTIONS (delimiter ',', quote '"', "be quoted" 'value');
+ERROR:  cannot execute CREATE FOREIGN TABLE in a read-only transaction
+\d+ fd_pt2_1
+ALTER TABLE fd_pt2 ATTACH PARTITION fd_pt2_1 FOR VALUES IN (1);       -- ERROR
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+DROP FOREIGN TABLE fd_pt2_1;
+ERROR:  cannot execute DROP FOREIGN TABLE in a read-only transaction
+\d+ fd_pt2
+CREATE FOREIGN TABLE fd_pt2_1 (
+	c1 integer NOT NULL,
+	c2 text,
+	c3 date
+) SERVER s0 OPTIONS (delimiter ',', quote '"', "be quoted" 'value');
+ERROR:  cannot execute CREATE FOREIGN TABLE in a read-only transaction
+\d+ fd_pt2_1
+-- no attach partition validation occurs for foreign tables
+ALTER TABLE fd_pt2 ATTACH PARTITION fd_pt2_1 FOR VALUES IN (1);
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+\d+ fd_pt2
+\d+ fd_pt2_1
+-- cannot add column to a partition
+ALTER TABLE fd_pt2_1 ADD c4 char;
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+-- ok to have a partition's own constraints though
+ALTER TABLE fd_pt2_1 ALTER c3 SET NOT NULL;
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+ALTER TABLE fd_pt2_1 ADD CONSTRAINT p21chk CHECK (c2 <> '');
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+\d+ fd_pt2
+\d+ fd_pt2_1
+-- cannot drop inherited NOT NULL constraint from a partition
+ALTER TABLE fd_pt2_1 ALTER c1 DROP NOT NULL;
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+-- partition must have parent's constraints
+ALTER TABLE fd_pt2 DETACH PARTITION fd_pt2_1;
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+ALTER TABLE fd_pt2 ALTER c2 SET NOT NULL;
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+\d+ fd_pt2
+\d+ fd_pt2_1
+ALTER TABLE fd_pt2 ATTACH PARTITION fd_pt2_1 FOR VALUES IN (1);       -- ERROR
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+ALTER FOREIGN TABLE fd_pt2_1 ALTER c2 SET NOT NULL;
+ERROR:  cannot execute ALTER FOREIGN TABLE in a read-only transaction
+ALTER TABLE fd_pt2 ATTACH PARTITION fd_pt2_1 FOR VALUES IN (1);
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+ALTER TABLE fd_pt2 DETACH PARTITION fd_pt2_1;
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+ALTER TABLE fd_pt2 ADD CONSTRAINT fd_pt2chk1 CHECK (c1 > 0);
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+\d+ fd_pt2
+\d+ fd_pt2_1
+ALTER TABLE fd_pt2 ATTACH PARTITION fd_pt2_1 FOR VALUES IN (1);       -- ERROR
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+ALTER FOREIGN TABLE fd_pt2_1 ADD CONSTRAINT fd_pt2chk1 CHECK (c1 > 0);
+ERROR:  cannot execute ALTER FOREIGN TABLE in a read-only transaction
+ALTER TABLE fd_pt2 ATTACH PARTITION fd_pt2_1 FOR VALUES IN (1);
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+-- TRUNCATE doesn't work on foreign tables, either directly or recursively
+TRUNCATE fd_pt2_1;  -- ERROR
+ERROR:  cannot execute TRUNCATE TABLE in a read-only transaction
+TRUNCATE fd_pt2;  -- ERROR
+ERROR:  cannot execute TRUNCATE TABLE in a read-only transaction
+DROP FOREIGN TABLE fd_pt2_1;
+ERROR:  cannot execute DROP FOREIGN TABLE in a read-only transaction
+DROP TABLE fd_pt2;
+ERROR:  cannot execute DROP TABLE in a read-only transaction
+-- foreign table cannot be part of partition tree made of temporary
+-- relations.
+CREATE TEMP TABLE temp_parted (a int) PARTITION BY LIST (a);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE FOREIGN TABLE foreign_part PARTITION OF temp_parted DEFAULT
+  SERVER s0;  -- ERROR
+ERROR:  cannot execute CREATE FOREIGN TABLE in a read-only transaction
+CREATE FOREIGN TABLE foreign_part (a int) SERVER s0;
+ERROR:  cannot execute CREATE FOREIGN TABLE in a read-only transaction
+ALTER TABLE temp_parted ATTACH PARTITION foreign_part DEFAULT;  -- ERROR
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+DROP FOREIGN TABLE foreign_part;
+ERROR:  cannot execute DROP FOREIGN TABLE in a read-only transaction
+DROP TABLE temp_parted;
+ERROR:  cannot execute DROP TABLE in a read-only transaction
+-- Cleanup
+DROP SCHEMA foreign_schema CASCADE;
+ERROR:  cannot execute DROP SCHEMA in a read-only transaction
+DROP ROLE regress_test_role;                                -- ERROR
+ERROR:  cannot execute DROP ROLE in a read-only transaction
+DROP SERVER t1 CASCADE;
+ERROR:  cannot execute DROP SERVER in a read-only transaction
+DROP USER MAPPING FOR regress_test_role SERVER s6;
+ERROR:  cannot execute DROP USER MAPPING in a read-only transaction
+\set VERBOSITY terse
+DROP FOREIGN DATA WRAPPER foo CASCADE;
+ERROR:  cannot execute DROP FOREIGN DATA WRAPPER in a read-only transaction
+DROP SERVER s8 CASCADE;
+ERROR:  cannot execute DROP SERVER in a read-only transaction
+\set VERBOSITY default
+DROP ROLE regress_test_indirect;
+ERROR:  cannot execute DROP ROLE in a read-only transaction
+DROP ROLE regress_test_role;
+ERROR:  cannot execute DROP ROLE in a read-only transaction
+DROP ROLE regress_unprivileged_role;                        -- ERROR
+ERROR:  cannot execute DROP ROLE in a read-only transaction
+REVOKE ALL ON FOREIGN DATA WRAPPER postgresql FROM regress_unprivileged_role;
+ERROR:  cannot execute REVOKE in a read-only transaction
+DROP ROLE regress_unprivileged_role;
+ERROR:  cannot execute DROP ROLE in a read-only transaction
+DROP ROLE regress_test_role2;
+ERROR:  cannot execute DROP ROLE in a read-only transaction
+DROP FOREIGN DATA WRAPPER postgresql CASCADE;
+ERROR:  cannot execute DROP FOREIGN DATA WRAPPER in a read-only transaction
+DROP FOREIGN DATA WRAPPER dummy CASCADE;
+ERROR:  cannot execute DROP FOREIGN DATA WRAPPER in a read-only transaction
+\c
+DROP ROLE regress_foreign_data_user;
+ERROR:  cannot execute DROP ROLE in a read-only transaction
+-- At this point we should have no wrappers, no servers, and no mappings.
+SELECT fdwname, fdwhandler, fdwvalidator, fdwoptions FROM pg_foreign_data_wrapper;
+ fdwname | fdwhandler | fdwvalidator | fdwoptions 
+---------+------------+--------------+------------
+(0 rows)
+
+SELECT srvname, srvoptions FROM pg_foreign_server;
+ srvname | srvoptions 
+---------+------------
+(0 rows)
+
+SELECT * FROM pg_user_mapping;
+ umuser | umserver | umoptions 
+--------+----------+-----------
+(0 rows)
+

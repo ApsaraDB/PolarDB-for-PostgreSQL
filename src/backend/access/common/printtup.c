@@ -423,7 +423,7 @@ printtup(TupleTableSlot *slot, DestReceiver *self)
 		 * testing new C functions.
 		 */
 		if (thisState->typisvarlena)
-			VALGRIND_CHECK_MEM_IS_DEFINED(DatumGetPointer(attr),
+			MEMDEBUG_CHECK_MEM_IS_DEFINED(DatumGetPointer(attr),
 										  VARSIZE_ANY(attr));
 
 		if (thisState->format == 0)

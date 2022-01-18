@@ -28,6 +28,7 @@ standard_initdb() {
 	then
 		cat "$TEMP_CONFIG" >> "$PGDATA/postgresql.conf"
 	fi
+	echo "polar_create_table_with_full_replica_identity=false" >> "$PGDATA/postgresql.conf"
 	../../test/regress/pg_regress --config-auth "$PGDATA"
 }
 

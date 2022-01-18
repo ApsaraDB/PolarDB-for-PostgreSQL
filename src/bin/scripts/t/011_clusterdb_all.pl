@@ -7,6 +7,7 @@ use Test::More tests => 2;
 
 my $node = get_new_node('main');
 $node->init;
+$node->append_conf('postgresql.conf', 'polar_enable_multi_syslogger = off');
 $node->start;
 
 # clusterdb -a is not compatible with -d, hence enforce environment variable

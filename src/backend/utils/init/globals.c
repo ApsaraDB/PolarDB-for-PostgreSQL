@@ -29,10 +29,13 @@ ProtocolVersion FrontendProtocol;
 
 volatile bool InterruptPending = false;
 volatile bool QueryCancelPending = false;
+volatile bool QueryFinishPending = false; /* POLAR px */
 volatile bool ProcDiePending = false;
 volatile bool ClientConnectionLost = false;
 volatile bool IdleInTransactionSessionTimeoutPending = false;
 volatile sig_atomic_t ConfigReloadPending = false;
+volatile sig_atomic_t LogCurrentPlanPending = false;    /* POLAR: log query */
+volatile bool MemoryContextDumpPending = false;
 volatile uint32 InterruptHoldoffCount = 0;
 volatile uint32 QueryCancelHoldoffCount = 0;
 volatile uint32 CritSectionCount = 0;
@@ -129,9 +132,12 @@ int			max_parallel_maintenance_workers = 2;
  */
 int			NBuffers = 1000;
 int			MaxConnections = 90;
-int			max_worker_processes = 8;
+int			max_worker_processes = 16;
 int			max_parallel_workers = 8;
 int			MaxBackends = 0;
+
+/* POLAR */
+int			MaxNormalBackends = 0;
 
 int			VacuumCostPageHit = 1;	/* GUC parameters for vacuum */
 int			VacuumCostPageMiss = 10;

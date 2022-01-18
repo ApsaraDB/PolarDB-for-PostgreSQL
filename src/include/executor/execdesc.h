@@ -17,8 +17,8 @@
 
 #include "nodes/execnodes.h"
 #include "tcop/dest.h"
-
-
+#include "executor/execdesc_px.h"
+#include "executor/polar_exec_procnode.h"
 /* ----------------
  *		query descriptor:
  *
@@ -48,11 +48,30 @@ typedef struct QueryDesc
 	EState	   *estate;			/* executor's query-wide state */
 	PlanState  *planstate;		/* tree of per-plan-node state */
 
+	/* POLAR px */
+	bool		extended_query;   /* simple or extended query protocol? */
+	char		*portal_name;	/* NULL for unnamed portal */
+	/* POLAR end */
+
 	/* This field is set by ExecutorRun */
 	bool		already_executed;	/* true if previously executed */
 
 	/* This is always set NULL by the core system, but plugins can change it */
 	struct Instrumentation *totaltime;	/* total time spent in ExecutorRun */
+
+	/* POLAR px */
+	QueryDispatchDesc *ddesc;
+	struct PxExplain_ShowStatCtx  *showstatctx;
+	/* POLAR end */
+
+	/* POLAR */ 
+	const char *prepStmtName;       /* source prepared statement (NULL if none) */
+	PolarStatSqlCollector *polar_sql_info;
+
+	/* POLAR end */
+	/* This value is set by ExecutorEnd */
+	uint64		es_processed;	/* # of tuples processed for ProcessQuery(DML) */
+	/* POLAR px */
 } QueryDesc;
 
 /* in pquery.c */

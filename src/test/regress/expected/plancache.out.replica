@@ -1,0 +1,239 @@
+--
+-- Tests to exercise the plan caching/invalidation mechanism
+--
+CREATE TEMP TABLE pcachetest AS SELECT * FROM int8_tbl;
+ERROR:  cannot execute CREATE TABLE AS in a read-only transaction
+-- create and use a cached plan
+PREPARE prepstmt AS SELECT * FROM pcachetest;
+ERROR:  relation "pcachetest" does not exist
+LINE 1: PREPARE prepstmt AS SELECT * FROM pcachetest;
+                                          ^
+EXECUTE prepstmt;
+ERROR:  prepared statement "prepstmt" does not exist
+-- and one with parameters
+PREPARE prepstmt2(bigint) AS SELECT * FROM pcachetest WHERE q1 = $1;
+ERROR:  relation "pcachetest" does not exist
+LINE 1: PREPARE prepstmt2(bigint) AS SELECT * FROM pcachetest WHERE ...
+                                                   ^
+EXECUTE prepstmt2(123);
+ERROR:  prepared statement "prepstmt2" does not exist
+-- invalidate the plans and see what happens
+DROP TABLE pcachetest;
+ERROR:  cannot execute DROP TABLE in a read-only transaction
+EXECUTE prepstmt;
+ERROR:  prepared statement "prepstmt" does not exist
+EXECUTE prepstmt2(123);
+ERROR:  prepared statement "prepstmt2" does not exist
+-- recreate the temp table (this demonstrates that the raw plan is
+-- purely textual and doesn't depend on OIDs, for instance)
+CREATE TEMP TABLE pcachetest AS SELECT * FROM int8_tbl ORDER BY 2;
+ERROR:  cannot execute CREATE TABLE AS in a read-only transaction
+EXECUTE prepstmt;
+ERROR:  prepared statement "prepstmt" does not exist
+EXECUTE prepstmt2(123);
+ERROR:  prepared statement "prepstmt2" does not exist
+-- prepared statements should prevent change in output tupdesc,
+-- since clients probably aren't expecting that to change on the fly
+ALTER TABLE pcachetest ADD COLUMN q3 bigint;
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+EXECUTE prepstmt;
+ERROR:  prepared statement "prepstmt" does not exist
+EXECUTE prepstmt2(123);
+ERROR:  prepared statement "prepstmt2" does not exist
+-- but we're nice guys and will let you undo your mistake
+ALTER TABLE pcachetest DROP COLUMN q3;
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+EXECUTE prepstmt;
+ERROR:  prepared statement "prepstmt" does not exist
+EXECUTE prepstmt2(123);
+ERROR:  prepared statement "prepstmt2" does not exist
+-- Try it with a view, which isn't directly used in the resulting plan
+-- but should trigger invalidation anyway
+CREATE TEMP VIEW pcacheview AS
+  SELECT * FROM pcachetest;
+ERROR:  cannot execute CREATE VIEW in a read-only transaction
+PREPARE vprep AS SELECT * FROM pcacheview;
+ERROR:  relation "pcacheview" does not exist
+LINE 1: PREPARE vprep AS SELECT * FROM pcacheview;
+                                       ^
+EXECUTE vprep;
+ERROR:  prepared statement "vprep" does not exist
+CREATE OR REPLACE TEMP VIEW pcacheview AS
+  SELECT q1, q2/2 AS q2 FROM pcachetest;
+ERROR:  cannot execute CREATE VIEW in a read-only transaction
+EXECUTE vprep;
+ERROR:  prepared statement "vprep" does not exist
+-- Check basic SPI plan invalidation
+create function cache_test(int) returns int as $$
+declare total int;
+begin
+	create temp table t1(f1 int);
+	insert into t1 values($1);
+	insert into t1 values(11);
+	insert into t1 values(12);
+	insert into t1 values(13);
+	select sum(f1) into total from t1;
+	drop table t1;
+	return total;
+end
+$$ language plpgsql;
+ERROR:  cannot execute CREATE FUNCTION in a read-only transaction
+select cache_test(1);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CONTEXT:  SQL statement "create temp table t1(f1 int)"
+PL/pgSQL function cache_test(integer) line 4 at SQL statement
+select cache_test(2);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CONTEXT:  SQL statement "create temp table t1(f1 int)"
+PL/pgSQL function cache_test(integer) line 4 at SQL statement
+select cache_test(3);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CONTEXT:  SQL statement "create temp table t1(f1 int)"
+PL/pgSQL function cache_test(integer) line 4 at SQL statement
+-- Check invalidation of plpgsql "simple expression"
+create temp view v1 as
+  select 2+2 as f1;
+ERROR:  cannot execute CREATE VIEW in a read-only transaction
+create function cache_test_2() returns int as $$
+begin
+	return f1 from v1;
+end$$ language plpgsql;
+ERROR:  cannot execute CREATE FUNCTION in a read-only transaction
+select cache_test_2();
+ERROR:  relation "v1" does not exist
+LINE 1: SELECT f1 from v1
+                       ^
+QUERY:  SELECT f1 from v1
+CONTEXT:  PL/pgSQL function cache_test_2() line 3 at RETURN
+create or replace temp view v1 as
+  select 2+2+4 as f1;
+ERROR:  cannot execute CREATE VIEW in a read-only transaction
+select cache_test_2();
+ERROR:  relation "v1" does not exist
+LINE 1: SELECT f1 from v1
+                       ^
+QUERY:  SELECT f1 from v1
+CONTEXT:  PL/pgSQL function cache_test_2() line 3 at RETURN
+create or replace temp view v1 as
+  select 2+2+4+(select max(unique1) from tenk1) as f1;
+ERROR:  cannot execute CREATE VIEW in a read-only transaction
+select cache_test_2();
+ERROR:  relation "v1" does not exist
+LINE 1: SELECT f1 from v1
+                       ^
+QUERY:  SELECT f1 from v1
+CONTEXT:  PL/pgSQL function cache_test_2() line 3 at RETURN
+--- Check that change of search_path is honored when re-using cached plan
+create schema s1
+  create table abc (f1 int);
+ERROR:  cannot execute CREATE SCHEMA in a read-only transaction
+create schema s2
+  create table abc (f1 int);
+ERROR:  cannot execute CREATE SCHEMA in a read-only transaction
+insert into s1.abc values(123);
+ERROR:  cannot execute INSERT in a read-only transaction
+insert into s2.abc values(456);
+ERROR:  cannot execute INSERT in a read-only transaction
+set search_path = s1;
+prepare p1 as select f1 from abc;
+execute p1;
+ f1  
+-----
+ 123
+(1 row)
+
+set search_path = s2;
+select f1 from abc;
+ f1  
+-----
+ 456
+(1 row)
+
+execute p1;
+ f1  
+-----
+ 456
+(1 row)
+
+alter table s1.abc add column f2 float8;   -- force replan
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+execute p1;
+ f1  
+-----
+ 456
+(1 row)
+
+drop schema s1 cascade;
+ERROR:  cannot execute DROP SCHEMA in a read-only transaction
+drop schema s2 cascade;
+ERROR:  cannot execute DROP SCHEMA in a read-only transaction
+reset search_path;
+-- Check that invalidation deals with regclass constants
+create temp sequence seq;
+ERROR:  cannot execute CREATE SEQUENCE in a read-only transaction
+prepare p2 as select nextval('seq');
+ERROR:  relation "seq" does not exist
+LINE 1: prepare p2 as select nextval('seq');
+                                     ^
+execute p2;
+ERROR:  prepared statement "p2" does not exist
+drop sequence seq;
+ERROR:  cannot execute DROP SEQUENCE in a read-only transaction
+create temp sequence seq;
+ERROR:  cannot execute CREATE SEQUENCE in a read-only transaction
+execute p2;
+ERROR:  prepared statement "p2" does not exist
+-- Check DDL via SPI, immediately followed by SPI plan re-use
+-- (bug in original coding)
+create function cachebug() returns void as $$
+declare r int;
+begin
+  drop table if exists temptable cascade;
+  create temp table temptable as select * from generate_series(1,3) as f1;
+  create temp view vv as select * from temptable;
+  for r in select * from vv loop
+    raise notice '%', r;
+  end loop;
+end$$ language plpgsql;
+ERROR:  cannot execute CREATE FUNCTION in a read-only transaction
+select cachebug();
+ERROR:  cannot execute DROP TABLE in a read-only transaction
+CONTEXT:  SQL statement "drop table if exists temptable cascade"
+PL/pgSQL function cachebug() line 4 at SQL statement
+select cachebug();
+ERROR:  cannot execute DROP TABLE in a read-only transaction
+CONTEXT:  SQL statement "drop table if exists temptable cascade"
+PL/pgSQL function cachebug() line 4 at SQL statement
+-- Check that addition or removal of any partition is correctly dealt with by
+-- default partition table when it is being used in prepared statement.
+create table pc_list_parted (a int) partition by list(a);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+create table pc_list_part_null partition of pc_list_parted for values in (null);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+create table pc_list_part_1 partition of pc_list_parted for values in (1);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+create table pc_list_part_def partition of pc_list_parted default;
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+prepare pstmt_def_insert (int) as insert into pc_list_part_def values($1);
+-- should fail
+execute pstmt_def_insert(null);
+ERROR:  cannot execute INSERT in a read-only transaction
+execute pstmt_def_insert(1);
+ERROR:  cannot execute INSERT in a read-only transaction
+create table pc_list_part_2 partition of pc_list_parted for values in (2);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+execute pstmt_def_insert(2);
+ERROR:  cannot execute INSERT in a read-only transaction
+alter table pc_list_parted detach partition pc_list_part_null;
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+-- should be ok
+execute pstmt_def_insert(null);
+ERROR:  cannot execute INSERT in a read-only transaction
+drop table pc_list_part_1;
+ERROR:  cannot execute DROP TABLE in a read-only transaction
+-- should be ok
+execute pstmt_def_insert(1);
+ERROR:  cannot execute INSERT in a read-only transaction
+drop table pc_list_parted, pc_list_part_null;
+ERROR:  cannot execute DROP TABLE in a read-only transaction
+deallocate pstmt_def_insert;

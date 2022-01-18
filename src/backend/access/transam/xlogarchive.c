@@ -30,8 +30,11 @@
 #include "storage/pmsignal.h"
 
 /* POLAR */
+#include "polar_datamax/polar_datamax.h"
 #include "utils/guc.h"
 #include "storage/polar_fd.h"
+#include "polar_dma/polar_dma.h"
+/* POLAR end */
 
 static int polar_touch_file(char *filename);
 
@@ -69,6 +72,9 @@ RestoreArchivedFile(char *path, const char *xlogfname,
 	XLogSegNo	restartSegNo;
 	XLogRecPtr	restartRedoPtr;
 	TimeLineID	restartTli;
+	/* POLAR: copy of xlogpath after removing polar_vfs protocol. */
+	const char *polar_xlog_path;
+	/* POLAR end */
 
 	/* In standby mode, restore_command might not be supplied */
 	if (recoveryRestoreCommand == NULL)
@@ -164,7 +170,10 @@ RestoreArchivedFile(char *path, const char *xlogfname,
 				case 'p':
 					/* %p: relative path of target file */
 					sp++;
-					StrNCpy(dp, xlogpath, endp - dp);
+					/* POLAR: remove polar_vfs protocol from xlogpath. */
+					polar_xlog_path = polar_path_remove_protocol(xlogpath);
+					StrNCpy(dp, polar_xlog_path, endp - dp);
+					/* POLAR end */
 					make_native_path(dp);
 					dp += strlen(dp);
 					break;
@@ -312,7 +321,7 @@ not_available:
 	 * In many recovery scenarios we expect this to fail also, but if so that
 	 * just means we've reached the end of WAL.
 	 */
-	snprintf(path, MAXPGPATH, XLOGDIR "/%s", xlogfname);
+	polar_make_file_path_level3(path, XLOGDIR, xlogfname);
 	return false;
 }
 
@@ -515,6 +524,20 @@ XLogArchiveNotify(const char *xlog)
 	/* insert an otherwise empty file called <XLOG>.ready */
 	StatusFilePath(archiveStatusPath, xlog, ".ready");
 
+	if (polar_enable_dma)
+	{
+		char		archiveLocalReady[MAXPGPATH];
+		struct stat stat_buf;
+
+		/* If .local exists, rename it to .ready */
+		StatusFilePath(archiveLocalReady, xlog, ".local");
+		if (polar_stat(archiveLocalReady, &stat_buf) == 0)
+		{
+			(void) polar_durable_rename(archiveLocalReady, archiveStatusPath, WARNING);
+			return;
+		}
+	}
+
 	/* POLAR: libpfs does not support fopen fclose, use pfs_creat */
 	if (POLAR_FILE_IN_SHARED_STORAGE())
 	{
@@ -543,7 +566,8 @@ XLogArchiveNotify(const char *xlog)
 	}
 
 	/* Notify archiver that it's got something to do */
-	if (IsUnderPostmaster)
+	/* POLAR: No need to notify archiver in datamax mode */
+	if (IsUnderPostmaster && !polar_is_datamax_mode)
 		SendPostmasterSignal(PMSIGNAL_WAKEN_ARCHIVER);
 }
 
@@ -556,7 +580,13 @@ XLogArchiveNotifySeg(XLogSegNo segno)
 	char		xlog[MAXFNAMELEN];
 
 	XLogFileName(xlog, ThisTimeLineID, segno, wal_segment_size);
-	XLogArchiveNotify(xlog);
+
+	/* POLAR: in dma mode, rename to .local firstly, 
+	 * rename it to .ready by archiver after consensus commit */
+	if (polar_enable_dma)
+		polar_dma_xlog_archive_notify(xlog, true);
+	else
+		XLogArchiveNotify(xlog);
 }
 
 /*
@@ -578,6 +608,24 @@ XLogArchiveForceDone(const char *xlog)
 	StatusFilePath(archiveDone, xlog, ".done");
 	if (polar_stat(archiveDone, &stat_buf) == 0)
 		return;
+
+	/* POLAR: in DMA mode, delete .paxos if exists. rename .local to .done if exists*/
+	if (polar_enable_dma)
+	{
+		StatusFilePath(archiveReady, xlog, ".paxos");
+		if (polar_stat(archiveReady, &stat_buf) == 0)
+		{
+			polar_unlink(archiveReady);
+		}
+
+		StatusFilePath(archiveReady, xlog, ".local");
+		if (polar_stat(archiveReady, &stat_buf) == 0)
+		{
+			(void) polar_durable_rename(archiveReady, archiveDone, WARNING);
+			return;
+		}
+	}
+	/* POLAR end */
 
 	/* If .ready exists, rename it to .done */
 	StatusFilePath(archiveReady, xlog, ".ready");
@@ -635,18 +683,44 @@ XLogArchiveCheckDone(const char *xlog)
 {
 	char		archiveStatusPath[MAXPGPATH];
 	struct stat stat_buf;
+	bool		inRecovery = RecoveryInProgress();
 
 	/* The file is always deletable if archive_mode is "off". */
 	if (!XLogArchivingActive())
 		return true;
 
-	/*
-	 * During archive recovery, the file is deletable if archive_mode is not
-	 * "always".
+	/* 
+	 * POLAR :  We use a conservative approach and set a switch to avoid that
+	 * my modified kernel brings some unacceptable effects.
 	 */
-	if (!XLogArchivingAlways() &&
-		GetRecoveryState() == RECOVERY_STATE_ARCHIVE)
-		return true;
+	if (polar_enable_shared_storage_mode && polar_enable_keep_wal_ready_file)
+	{
+		/* POLAR :  This is the new feature 
+		 * POLAR : We don't allow it to delete the .ready file under the InRecovery mode
+		 * XLogArchivingActive() is equivalent to ((XLogArchivingActive() && !inRecovery) ||
+		 * (XLogArchivingActive() && inRecovery))
+		 */
+		if (!XLogArchivingActive())
+			return true;
+		/* 
+		 * POLAR: XLogArchivingAlways() is allowed in datamax mode
+		 * use polar_is_datamax_mode directly rather than polar_is_datamax() here,
+		 * because polar_is_datamax() need to access XLogCtl in shared memory,
+		 * and original archive process have detached shared memory 
+		 */
+		if ( XLogArchivingAlways() && !polar_is_datamax_mode)
+			elog(WARNING, "archive_mode = always is not expect on polardb.");
+	}
+	else
+	{
+		/*
+		 * During archive recovery, the file is deletable if archive_mode is not
+		 * "always".
+		 */
+		if (!XLogArchivingAlways() &&
+			GetRecoveryState() == RECOVERY_STATE_ARCHIVE)
+			return true;
+	}
 
 	/*
 	 * At this point of the logic, note that we are either a primary with
@@ -659,6 +733,15 @@ XLogArchiveCheckDone(const char *xlog)
 	if (polar_stat(archiveStatusPath, &stat_buf) == 0)
 		return true;
 
+	/* POLAR: in dma mode, check for ready.local --- this means archiver is still busy with it */
+	if (polar_enable_dma)
+	{
+		StatusFilePath(archiveStatusPath, xlog, ".local");
+		if (polar_stat(archiveStatusPath, &stat_buf) == 0)
+			return false;
+	}
+	/* POLAR: end */
+
 	/* check for .ready --- this means archiver is still busy with it */
 	StatusFilePath(archiveStatusPath, xlog, ".ready");
 	if (polar_stat(archiveStatusPath, &stat_buf) == 0)
@@ -669,9 +752,27 @@ XLogArchiveCheckDone(const char *xlog)
 	if (polar_stat(archiveStatusPath, &stat_buf) == 0)
 		return true;
 
-	/* Retry creation of the .ready file */
-	XLogArchiveNotify(xlog);
-	return false;
+	/* POLAR : Retry creation of the .ready file if that is needed */
+	if (polar_enable_shared_storage_mode && polar_enable_keep_wal_ready_file)
+	{
+		/*
+		 * POLAR :  In InRecovery mode, if archive_mode is not always, 
+		 * we are no longer generating .ready files.
+		 */
+		if ((XLogArchivingActive() && !inRecovery) ||
+			(XLogArchivingAlways() && inRecovery))
+		{
+			XLogArchiveNotify(xlog);
+			return false;
+		}
+		return true;
+	}
+	else
+	{
+		/* This is the old feature */
+		XLogArchiveNotify(xlog);
+		return false;
+	}
 }
 
 /*
@@ -694,6 +795,15 @@ XLogArchiveIsBusy(const char *xlog)
 	StatusFilePath(archiveStatusPath, xlog, ".done");
 	if (polar_stat(archiveStatusPath, &stat_buf) == 0)
 		return false;
+
+	/* POLAR: check for .local --- this means archiver is still busy with it */
+	if (polar_enable_dma)
+	{
+		StatusFilePath(archiveStatusPath, xlog, ".local");
+		if (polar_stat(archiveStatusPath, &stat_buf) == 0)
+			return true;
+	}
+	/* POLAR end */
 
 	/* check for .ready --- this means archiver is still busy with it */
 	StatusFilePath(archiveStatusPath, xlog, ".ready");
@@ -740,6 +850,15 @@ XLogArchiveIsReadyOrDone(const char *xlog)
 	if (polar_stat(archiveStatusPath, &stat_buf) == 0)
 		return true;
 
+	/* POLAR: check for .local --- this means archiver is still busy with it */
+	if (polar_enable_dma)
+	{
+		StatusFilePath(archiveStatusPath, xlog, ".local");
+		if (polar_stat(archiveStatusPath, &stat_buf) == 0)
+			return true;
+	}
+	/* POLAR end */
+
 	/* check for .ready --- this means archiver is still busy with it */
 	StatusFilePath(archiveStatusPath, xlog, ".ready");
 	if (polar_stat(archiveStatusPath, &stat_buf) == 0)
@@ -764,6 +883,15 @@ XLogArchiveIsReady(const char *xlog)
 {
 	char		archiveStatusPath[MAXPGPATH];
 	struct stat stat_buf;
+
+	/* POLAR: in dma mode, check .local file firstly */
+	if (polar_enable_dma)
+	{
+		StatusFilePath(archiveStatusPath, xlog, ".local");
+		if (polar_stat(archiveStatusPath, &stat_buf) == 0)
+			return true;
+	}
+	/* POLAR: end */
 
 	StatusFilePath(archiveStatusPath, xlog, ".ready");
 	if (polar_stat(archiveStatusPath, &stat_buf) == 0)
@@ -791,18 +919,29 @@ XLogArchiveCleanup(const char *xlog)
 	StatusFilePath(archiveStatusPath, xlog, ".ready");
 	polar_unlink(archiveStatusPath);
 	/* should we complain about failure? */
+
+	/* POLAR: Remove the .local file if present --- normally it shouldn't be */
+	if (polar_enable_dma)
+	{
+		StatusFilePath(archiveStatusPath, xlog, ".local");
+		polar_unlink(archiveStatusPath);
+		StatusFilePath(archiveStatusPath, xlog, ".paxos");
+		polar_unlink(archiveStatusPath);
+	}
+	/* should we complain about failure? */
+	/* POLAR: end */
 }
 
 /*
  * POLAR: touch empty file
- * polarfs does NOT support fopen/fclose£¬we have to use polar_creat
+ * polarfs does NOT support fopen/fclose we have to use polar_creat
  */
 static int
 polar_touch_file(char *filename)
 {
 	int polar_file;
 
-	polar_file = polar_creat(filename, 0);
+	polar_file = polar_creat(filename, 0600);
 	if (polar_file < 0)
 	{
 		ereport(LOG,
@@ -822,5 +961,61 @@ polar_touch_file(char *filename)
 	}
 
 	return 0;
+}
+
+/*
+ * polar_dma_xlog_archive_notify_local 
+ *
+ * Create an archive notification file
+ *
+ * In DMA mode, The name of the notification file is the message that will be 
+ * picked up by the archiver, e.g. we write 0000000100000001000000C6.local
+ * and the archiver then rename it to .ready if all record consensus commit
+ * and the archiver then archive XLOGDIR/0000000100000001000000C6,
+ * then when complete, rename it to 0000000100000001000000C6.done
+ */
+void
+polar_dma_xlog_archive_notify(const char *xlog, bool local)
+{
+	char		archiveStatusPath[MAXPGPATH];
+	FILE	   *fd;
+
+	/* POLAR: if ready or done, ignore it */
+	if (local && XLogArchiveIsReadyOrDone(xlog))
+		return;
+
+	/* insert an otherwise empty file called <XLOG>.local or <XLOG>.paxos*/
+	StatusFilePath(archiveStatusPath, xlog, local ? ".local" : ".paxos");
+
+	/* POLAR: libpfs does not support fopen fclose, use pfs_creat */
+	if (POLAR_FILE_IN_SHARED_STORAGE())
+	{
+		if (polar_touch_file(archiveStatusPath) != 0)
+			return;
+	}
+	else
+	{
+		fd = AllocateFile(archiveStatusPath, "w");
+		if (fd == NULL)
+		{
+			ereport(LOG,
+					(errcode_for_file_access(),
+					 errmsg("could not create archive status file \"%s\": %m",
+							archiveStatusPath)));
+			return;
+		}
+		if (FreeFile(fd))
+		{
+			ereport(LOG,
+					(errcode_for_file_access(),
+					 errmsg("could not write archive status file \"%s\": %m",
+							archiveStatusPath)));
+			return;
+		}
+	}
+
+	/* Notify archiver that it's got something to do */
+	if (IsUnderPostmaster)
+		SendPostmasterSignal(PMSIGNAL_WAKEN_ARCHIVER);
 }
 

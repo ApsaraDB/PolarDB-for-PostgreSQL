@@ -1016,6 +1016,77 @@ pg_big5_dsplen(const unsigned char *s)
 }
 
 /*
+ * POLAR: support gbk encoding
+ */
+static int
+polar_gbk2wchar_with_len(const unsigned char *from, pg_wchar *to, int len)
+{
+	int			cnt = 0;
+
+	/* loop until the end */
+	while (len > 0 && *from)
+	{
+		if (len >= 2 && IS_HIGHBIT_SET(*from))
+		{
+			/* first case, it is a valid Chinese word with 2 bytes */
+			*to = (*from++) << 8;
+			*to |= *from++;
+			len -= 2;
+		}
+		else
+		{
+			/* second case, it is a ASCII code with 1 bytes */
+			*to = *from++;
+			len--;
+		}
+
+		/* move forward and update cnt */
+		to++;
+		cnt++;
+	}
+
+	/* set the last word with zero */
+	*to = 0;
+	return cnt;
+}
+
+/*
+ * POLAR: support gbk encoding
+ * the fucntion is part of pg_wchar2euc_with_len 
+ * when max encoding length is 2 
+ */
+static int 
+polar_wchar2gbk_with_len(const pg_wchar* from, unsigned char* to, int len)
+{
+	int			cnt = 0;
+
+	/* loop until the end */
+	while (len > 0 && *from)
+	{
+		unsigned char c;
+
+		/* only possible for 2 bytes or 1 byte */
+		if ((c = (*from >> 8)))
+		{
+			*to++ = c;
+			*to++ = *from & 0xff;
+			cnt += 2;
+		}
+		else
+		{
+			*to++ = *from;
+			cnt++;
+		}
+		from++;
+		len--;
+	}
+
+	/* set the last word with zero */
+	*to = 0;
+	return cnt;
+}
+
+/*
  * GBK
  */
 static int
@@ -1067,6 +1138,53 @@ pg_uhc_dsplen(const unsigned char *s)
 	else
 		len = pg_ascii_dsplen(s);	/* should be ASCII */
 	return len;
+}
+
+/*
+ * POLAR: support gb18030 encoding
+ */
+static int
+polar_gb18030_2_wchar_with_len(const unsigned char *from, pg_wchar *to, int len)
+{
+	int			cnt = 0;
+
+	/* loop until the end */
+	while (len > 0 && *from)
+	{
+		if (len >= 2 && IS_HIGHBIT_SET(*from))
+		{
+			if (len >= 4 && *(from + 1) >= 0x30 && *(from + 1) <= 0x39)
+			{
+				/* first case, it is a valid Chinese word with 4 bytes */
+				*to = (*from++) << 24;
+				*to |= (*from++) << 16;
+				*to |= (*from++) << 8;
+				*to |= *from++;
+				len -= 4;
+			}
+			else
+			{
+				/* second case, it is a valid Chinese word with 2 bytes */
+				*to = (*from++) << 8;
+				*to |= *from++;
+				len -= 2;
+			}
+		}
+		else
+		{
+			/* third case, it is a ASCII code with 1 bytes */
+			*to = *from++;
+			len--;
+		}
+
+		/* move forward and update cnt */
+		to++;
+		cnt++;
+	}
+
+	/* set the last word with zero */
+	*to = 0;
+	return cnt;
 }
 
 /*
@@ -1761,12 +1879,12 @@ const pg_wchar_tbl pg_wchar_table[] = {
 	{pg_latin12wchar_with_len, pg_wchar2single_with_len, pg_latin1_mblen, pg_latin1_dsplen, pg_latin1_verifier, 1}, /* PG_WIN1254 */
 	{pg_latin12wchar_with_len, pg_wchar2single_with_len, pg_latin1_mblen, pg_latin1_dsplen, pg_latin1_verifier, 1}, /* PG_WIN1255 */
 	{pg_latin12wchar_with_len, pg_wchar2single_with_len, pg_latin1_mblen, pg_latin1_dsplen, pg_latin1_verifier, 1}, /* PG_WIN1257 */
+	{polar_gbk2wchar_with_len, polar_wchar2gbk_with_len, pg_gbk_mblen, pg_gbk_dsplen, pg_gbk_verifier, 2},	/* PG_GBK (POLAR) */
+	{polar_gb18030_2_wchar_with_len, pg_wchar2euc_with_len, pg_gb18030_mblen, pg_gb18030_dsplen, pg_gb18030_verifier, 4},	/* PG_GB18030 (POLAR) */
 	{pg_latin12wchar_with_len, pg_wchar2single_with_len, pg_latin1_mblen, pg_latin1_dsplen, pg_latin1_verifier, 1}, /* PG_KOI8U */
 	{0, 0, pg_sjis_mblen, pg_sjis_dsplen, pg_sjis_verifier, 2}, /* PG_SJIS */
 	{0, 0, pg_big5_mblen, pg_big5_dsplen, pg_big5_verifier, 2}, /* PG_BIG5 */
-	{0, 0, pg_gbk_mblen, pg_gbk_dsplen, pg_gbk_verifier, 2},	/* PG_GBK */
 	{0, 0, pg_uhc_mblen, pg_uhc_dsplen, pg_uhc_verifier, 2},	/* PG_UHC */
-	{0, 0, pg_gb18030_mblen, pg_gb18030_dsplen, pg_gb18030_verifier, 4},	/* PG_GB18030 */
 	{0, 0, pg_johab_mblen, pg_johab_dsplen, pg_johab_verifier, 3},	/* PG_JOHAB */
 	{0, 0, pg_sjis_mblen, pg_sjis_dsplen, pg_sjis_verifier, 2}	/* PG_SHIFT_JIS_2004 */
 };

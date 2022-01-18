@@ -41,6 +41,9 @@
 #include "utils/pidfile.h"
 
 
+/* POLAR */
+#include "storage/polar_shmem.h"
+
 /*
  * As of PostgreSQL 9.3, we normally allocate only a very small amount of
  * System V shared memory, and only for the purposes of providing an
@@ -95,18 +98,27 @@ typedef enum
 unsigned long UsedShmemSegID = 0;
 void	   *UsedShmemSegAddr = NULL;
 
+/* POLAR */
+unsigned long polar_used_shmem_seg_id = 0;
+void 	   *polar_used_shmem_seg_addr = NULL;
+bool		polar_shmem_reused = false;
+/* POLAR end */
+
 #ifdef USE_ANONYMOUS_SHMEM
 static Size AnonymousShmemSize;
 static void *AnonymousShmem = NULL;
 #endif
 
-static void *InternalIpcMemoryCreate(IpcMemoryKey memKey, Size size);
+static void *InternalIpcMemoryCreate(IpcMemoryKey memKey, Size size, PolarShmemType polar_shmem_type);
 static void IpcMemoryDetach(int status, Datum shmaddr);
 static void IpcMemoryDelete(int status, Datum shmId);
 static IpcMemoryState PGSharedMemoryAttach(IpcMemoryId shmId,
-					 void *attachAt,
+					void *attachAt,
 					 PGShmemHeader **addr);
 
+/* POLAR */
+static bool polar_shmem_can_be_reused(PGShmemHeader *hdr, Size size, IpcMemoryKey key, IpcMemoryId id);
+static int polar_get_shmget_flags(PolarShmemType type);
 
 /*
  *	InternalIpcMemoryCreate(memKey, size)
@@ -121,11 +133,14 @@ static IpcMemoryState PGSharedMemoryAttach(IpcMemoryId shmId,
  * print out an error and abort.  Other types of errors are not recoverable.
  */
 static void *
-InternalIpcMemoryCreate(IpcMemoryKey memKey, Size size)
+InternalIpcMemoryCreate(IpcMemoryKey memKey, Size size, PolarShmemType polar_shmem_type)
 {
 	IpcMemoryId shmid;
 	void	   *requestedAddress = NULL;
 	void	   *memAddress;
+
+	/* POLAR */
+	int 		polar_shmget_flags = 0;
 
 	/*
 	 * Normally we just pass requestedAddress = NULL to shmat(), allowing the
@@ -146,7 +161,10 @@ InternalIpcMemoryCreate(IpcMemoryKey memKey, Size size)
 	}
 #endif
 
-	shmid = shmget(memKey, size, IPC_CREAT | IPC_EXCL | IPCProtection);
+	/* POLAR */
+	polar_shmget_flags = polar_get_shmget_flags(polar_shmem_type);
+	shmid = shmget(memKey, size, IPC_CREAT | IPC_EXCL | IPCProtection |
+		polar_shmget_flags);
 
 	if (shmid < 0)
 	{
@@ -176,7 +194,8 @@ InternalIpcMemoryCreate(IpcMemoryKey memKey, Size size)
 		 */
 		if (shmget_errno == EINVAL)
 		{
-			shmid = shmget(memKey, 0, IPC_CREAT | IPC_EXCL | IPCProtection);
+			shmid = shmget(memKey, 0, IPC_CREAT | IPC_EXCL | IPCProtection |
+				polar_shmget_flags);
 
 			if (shmid < 0)
 			{
@@ -217,7 +236,7 @@ InternalIpcMemoryCreate(IpcMemoryKey memKey, Size size)
 				(errmsg("could not create shared memory segment: %m"),
 				 errdetail("Failed system call was shmget(key=%lu, size=%zu, 0%o).",
 						   (unsigned long) memKey, size,
-						   IPC_CREAT | IPC_EXCL | IPCProtection),
+						   IPC_CREAT | IPC_EXCL | IPCProtection | polar_shmget_flags),
 				 (shmget_errno == EINVAL) ?
 				 errhint("This error usually means that PostgreSQL's request for a shared memory "
 						 "segment exceeded your kernel's SHMMAX parameter, or possibly that "
@@ -242,7 +261,8 @@ InternalIpcMemoryCreate(IpcMemoryKey memKey, Size size)
 	}
 
 	/* Register on-exit routine to delete the new segment */
-	on_shmem_exit(IpcMemoryDelete, Int32GetDatum(shmid));
+	if (polar_shmem_is_normal(polar_shmem_type))
+		on_shmem_exit(IpcMemoryDelete, Int32GetDatum(shmid));
 
 	/* OK, should be able to attach to the segment */
 	memAddress = shmat(shmid, requestedAddress, PG_SHMAT_FLAGS);
@@ -255,10 +275,17 @@ InternalIpcMemoryCreate(IpcMemoryKey memKey, Size size)
 	on_shmem_exit(IpcMemoryDetach, PointerGetDatum(memAddress));
 
 	/*
+	 * POLAR: Store polar shmem key and ID in separate file.
+	 */
+	if (polar_shmem_is_persisted(polar_shmem_type))
+		polar_write_shmem_info_to_file((unsigned long) memKey, (unsigned long) shmid);
+
+	/*
 	 * Store shmem key and ID in data directory lockfile.  Format to try to
 	 * keep it the same length always (trailing junk in the lockfile won't
 	 * hurt, but might confuse humans).
 	 */
+	else
 	{
 		char		line[64];
 
@@ -338,7 +365,7 @@ PGSharedMemoryIsInUse(unsigned long id1, unsigned long id2)
  */
 static IpcMemoryState
 PGSharedMemoryAttach(IpcMemoryId shmId,
-					 void *attachAt,
+					void *attachAt,
 					 PGShmemHeader **addr)
 {
 	struct shmid_ds shmStat;
@@ -628,7 +655,7 @@ AnonymousShmemDetach(int status, Datum arg)
  */
 PGShmemHeader *
 PGSharedMemoryCreate(Size size, int port,
-					 PGShmemHeader **shim)
+					 PGShmemHeader **shim, PolarShmemType polar_shmem_type)
 {
 	IpcMemoryKey NextShmemSegID;
 	void	   *memAddress;
@@ -647,18 +674,27 @@ PGSharedMemoryCreate(Size size, int port,
 	/* Room for a header? */
 	Assert(size > MAXALIGN(sizeof(PGShmemHeader)));
 
+	/* POLAR: for polar reused shared memory, do not use anonymous. */
+	if (polar_shmem_is_persisted(polar_shmem_type))
+	{
+		sysvsize = size;
+		polar_used_shmem_seg_addr = NULL;
+	}
+	else
+	{
 #ifdef USE_ANONYMOUS_SHMEM
-	AnonymousShmem = CreateAnonymousSegment(&size);
-	AnonymousShmemSize = size;
+		AnonymousShmem     = CreateAnonymousSegment(&size);
+		AnonymousShmemSize = size;
 
-	/* Register on-exit routine to unmap the anonymous segment */
-	on_shmem_exit(AnonymousShmemDetach, (Datum) 0);
+		/* Register on-exit routine to unmap the anonymous segment */
+		on_shmem_exit(AnonymousShmemDetach, (Datum) 0);
 
-	/* Now we need only allocate a minimal-sized SysV shmem block. */
-	sysvsize = sizeof(PGShmemHeader);
+		/* Now we need only allocate a minimal-sized SysV shmem block. */
+		sysvsize = sizeof(PGShmemHeader);
 #else
-	sysvsize = size;
+		sysvsize = size;
 #endif
+	}
 
 	/*
 	 * Loop till we find a free IPC key.  Trust CreateDataDirLockFile() to
@@ -675,7 +711,7 @@ PGSharedMemoryCreate(Size size, int port,
 		IpcMemoryState state;
 
 		/* Try to create new segment */
-		memAddress = InternalIpcMemoryCreate(NextShmemSegID, sysvsize);
+		memAddress = InternalIpcMemoryCreate(NextShmemSegID, sysvsize, polar_shmem_type);
 		if (memAddress)
 			break;				/* successful create and attach */
 
@@ -698,14 +734,35 @@ PGSharedMemoryCreate(Size size, int port,
 		switch (state)
 		{
 			case SHMSTATE_ANALYSIS_FAILURE:
-			case SHMSTATE_ATTACHED:
 				ereport(FATAL,
-						(errcode(ERRCODE_LOCK_FILE_EXISTS),
-						 errmsg("pre-existing shared memory block (key %lu, ID %lu) is still in use",
-								(unsigned long) NextShmemSegID,
-								(unsigned long) shmid),
-						 errhint("Terminate any old server processes associated with data directory \"%s\".",
-								 DataDir)));
+					(errcode(ERRCODE_LOCK_FILE_EXISTS),
+					 errmsg("pre-existing shared memory block (key %lu, ID %lu) is still in use",
+							(unsigned long) NextShmemSegID,
+							(unsigned long) shmid),
+					 errhint("Terminate any old server processes associated with data directory \"%s\".",
+							 DataDir)));
+				break;
+			case SHMSTATE_ATTACHED:
+				/*
+				 * POLAR: The oldhdr is a normal shared memory created by current
+				 * process recently, do not release it, just try next segment id.
+				 */
+				if (polar_shmem_is_persisted(polar_shmem_type) &&
+					polar_shmem_is_normal(oldhdr->type) &&
+					oldhdr->creatorPID == getpid())
+				{
+					NextShmemSegID++;
+					break;
+				}
+				/* POLAR end */
+
+				ereport(FATAL,
+					(errcode(ERRCODE_LOCK_FILE_EXISTS),
+					 errmsg("pre-existing shared memory block (key %lu, ID %lu) is still in use",
+							(unsigned long) NextShmemSegID,
+							(unsigned long) shmid),
+					 errhint("Terminate any old server processes associated with data directory \"%s\".",
+							 DataDir)));
 				break;
 			case SHMSTATE_ENOENT:
 
@@ -723,6 +780,20 @@ PGSharedMemoryCreate(Size size, int port,
 				NextShmemSegID++;
 				break;
 			case SHMSTATE_UNATTACHED:
+				/* POLAR: It is a persisted shared memory, we try to reuse it. */
+				if (polar_shmem_is_persisted(polar_shmem_type) &&
+					polar_shmem_is_persisted(oldhdr->type) &&
+					polar_shmem_can_be_reused(oldhdr, sysvsize, NextShmemSegID, shmid))
+				{
+					polar_shmem_reused = true;
+					oldhdr->freeoffset = CACHELINEALIGN(sizeof(PGShmemHeader));
+					polar_used_shmem_seg_addr = oldhdr;
+					polar_used_shmem_seg_id = (unsigned long) NextShmemSegID;
+					/* Register the detach function */
+					on_shmem_exit(IpcMemoryDetach, PointerGetDatum(oldhdr));
+					return oldhdr;
+				}
+				/* POLAR end */
 
 				/*
 				 * The segment pertains to DataDir, and every process that had
@@ -765,6 +836,19 @@ PGSharedMemoryCreate(Size size, int port,
 	 */
 	hdr->totalsize = size;
 	hdr->freeoffset = MAXALIGN(sizeof(PGShmemHeader));
+
+	/* POLAR: set shared memory type. */
+	hdr->type = POLAR_SHMEM_NORMAL;
+	if (polar_shmem_is_persisted(polar_shmem_type))
+	{
+		Assert(shim == NULL);
+		hdr->type = POLAR_SHMEM_PERSISTED;
+		hdr->freeoffset = CACHELINEALIGN(sizeof(PGShmemHeader));
+		polar_used_shmem_seg_addr = memAddress;
+		polar_used_shmem_seg_id = (unsigned long) NextShmemSegID;
+		return hdr;
+	}
+
 	*shim = hdr;
 
 	/* Save info for possible future use */
@@ -905,4 +989,105 @@ PGSharedMemoryDetach(void)
 		AnonymousShmem = NULL;
 	}
 #endif
+
+	/* POLAR */
+	if (polar_used_shmem_seg_addr != NULL)
+	{
+		if ((shmdt(polar_used_shmem_seg_addr) < 0)
+#if defined(EXEC_BACKEND) && defined(__CYGWIN__)
+			/* Work-around for cygipc exec bug */
+			&& shmdt(NULL) < 0
+#endif
+		)
+		elog(LOG, "shmdt(%p) failed: %m", polar_used_shmem_seg_addr);
+		polar_used_shmem_seg_addr = NULL;
+	}
+}
+
+static bool
+polar_shmem_can_be_reused(PGShmemHeader *hdr, Size size, IpcMemoryKey key, IpcMemoryId id)
+{
+	struct stat statbuf;
+	unsigned long key_in_file = 0, id_in_file = 0;
+
+	if (!polar_shmem_is_persisted(hdr->type) || hdr->totalsize != size)
+	{
+		ereport(LOG,
+				(errmsg(
+					"could not reuse persisted shared memory, expected totalsize is %zu, actual type is %d, totalsize is %zu",
+					size, hdr->type, hdr->totalsize)));
+		return false;
+	}
+
+	/* Check the data directory ID info. */
+	if (stat(DataDir, &statbuf) < 0)
+		ereport(FATAL,
+				(errcode_for_file_access(),
+					errmsg("could not stat data directory \"%s\": %m",
+						   DataDir)));
+	if (hdr->device != statbuf.st_dev || hdr->inode != statbuf.st_ino)
+	{
+		ereport(LOG,
+				(errmsg(
+					"could not reuse persisted shared memory, expected device is %ld, inode is %ld, actual device is %ld, inode is %ld",
+					statbuf.st_dev, statbuf.st_ino, hdr->device, hdr->inode)));
+		return false;
+	}
+
+	polar_read_shmem_info_from_file(&key_in_file, &id_in_file, false);
+	if (key != key_in_file || id != id_in_file)
+	{
+		ereport(LOG,
+				(errmsg(
+					"could not reuse persisted shared memory, shmem key is %lu, id is %lu, key in file is %lu, id in file is %lu",
+					(unsigned long) key, (unsigned long) id,
+					(unsigned long) key_in_file, (unsigned long) id_in_file)));
+		return false;
+	}
+
+	ereport(LOG,
+			(errmsg("reuse persisted shared memory, key:%lu, id:%lu",
+					key_in_file, id_in_file)));
+	return true;
+}
+
+static int
+polar_get_shmget_flags(PolarShmemType type)
+{
+	int	shmget_flags = 0;
+
+	if (polar_shmem_is_normal(type))
+		return shmget_flags;
+
+	/* For shmget, we do not use new macro, also use MAP_HUGETLB. */
+#ifndef MAP_HUGETLB
+	/* PGSharedMemoryCreate should have dealt with this case */
+	Assert(huge_pages != HUGE_PAGES_ON);
+#else
+	/*
+	 * For polardb, we only use huge page when huge_pages is HUGE_PAGES_ON,
+	 * if it is HUGE_PAGES_TRY, we just do not try to use huge page.
+	 */
+	if (huge_pages == HUGE_PAGES_ON)
+		shmget_flags = SHM_HUGETLB;
+#endif
+	return shmget_flags;
+}
+
+bool
+polar_delete_shmem(IpcMemoryId shmId)
+{
+	if (shmctl(shmId, IPC_RMID, NULL) < 0)
+	{
+		/* already been deleted. */
+		if (errno == EIDRM || errno == EINVAL)
+			return true;
+		else
+		{
+			elog(LOG, "shmctl(%d, %d, 0) failed: %m", shmId, IPC_RMID);
+			return false;
+		}
+	}
+
+	return true;
 }

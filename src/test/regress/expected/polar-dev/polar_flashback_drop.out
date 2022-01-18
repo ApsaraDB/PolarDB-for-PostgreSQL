@@ -1,0 +1,321 @@
+SET polar_enable_flashback_drop=on;
+SET client_min_messages = error;
+--create table 
+CREATE TABLE part(id INT PRIMARY KEY,name TEXT);
+DO $$
+BEGIN
+FOR i IN 1..10 LOOP
+    INSERT INTO part VALUES(i,'polar');
+END LOOP;
+END;$$;
+CREATE TABLE employee(id INT PRIMARY KEY   NOT NULL,name TEXT);
+DO $$
+BEGIN
+FOR i IN 11..20 LOOP
+    INSERT INTO employee VALUES(i,'cc');
+END LOOP;
+END;$$;
+--create new schema
+CREATE SCHEMA schematest;
+SET search_path TO schematest;
+CREATE TABLE part_1(id INT PRIMARY KEY,name TEXT);
+DO $$
+BEGIN
+FOR i IN 21..30 LOOP
+    INSERT INTO part_1 VALUES(i,'postgre');
+END LOOP;
+END;$$;
+CREATE TABLE employee_1(id INT PRIMARY KEY   NOT NULL,name TEXT);
+DO $$
+BEGIN
+FOR i IN 31..40 LOOP
+    INSERT INTO employee_1 VALUES(i,'lu');
+END LOOP;
+END;$$;
+SET search_path TO public;
+--drop table
+DROP TABLE part;
+DROP TABLE IF EXISTS employee;
+DROP TABLE schematest.part_1;--drop table in schematest
+DROP TABLE noexist;--drop no exist table
+ERROR:  table "noexist" does not exist
+SELECT * FROM part;
+ERROR:  relation "part" does not exist
+LINE 1: SELECT * FROM part;
+                      ^
+SELECT * FROM employee;
+ERROR:  relation "employee" does not exist
+LINE 1: SELECT * FROM employee;
+                      ^
+--set into schema schema_test
+SET search_path TO schematest;
+DROP TABLE IF EXISTS employee_1;
+SELECT * FROM part_1;
+ERROR:  relation "part_1" does not exist
+LINE 1: SELECT * FROM part_1;
+                      ^
+SELECT * FROM employee_1;
+ERROR:  relation "employee_1" does not exist
+LINE 1: SELECT * FROM employee_1;
+                      ^
+FLASHBACK TABLE part TO BEFORE DROP;--fail
+ERROR:  relation "part" do not exist in recyclebin 
+FLASHBACK TABLE public.part TO BEFORE DROP;--success
+--success
+FLASHBACK TABLE part_1 TO BEFORE DROP;
+FLASHBACK TABLE employee_1 TO BEFORE DROP RENAME TO employee_2;--rename
+SELECT * FROM part;
+ id | name  
+----+-------
+  1 | polar
+  2 | polar
+  3 | polar
+  4 | polar
+  5 | polar
+  6 | polar
+  7 | polar
+  8 | polar
+  9 | polar
+ 10 | polar
+(10 rows)
+
+SELECT * FROM part_1;
+ id |  name   
+----+---------
+ 21 | postgre
+ 22 | postgre
+ 23 | postgre
+ 24 | postgre
+ 25 | postgre
+ 26 | postgre
+ 27 | postgre
+ 28 | postgre
+ 29 | postgre
+ 30 | postgre
+(10 rows)
+
+SELECT * FROM employee_2;
+ id | name 
+----+------
+ 31 | lu
+ 32 | lu
+ 33 | lu
+ 34 | lu
+ 35 | lu
+ 36 | lu
+ 37 | lu
+ 38 | lu
+ 39 | lu
+ 40 | lu
+(10 rows)
+
+--drop purge
+DROP TABLE employee_2 PURGE;
+FLASHBACK TABLE employee_2 TO BEFORE DROP;--fail
+ERROR:  relation "employee_2" do not exist in recyclebin 
+--check data completeness
+SELECT count(*) FROM part;
+ count 
+-------
+    10
+(1 row)
+
+SELECT count(*) FROM part_1; --10
+ count 
+-------
+    10
+(1 row)
+
+DROP TABLE part PURGE;
+DROP TABLE part_1;
+SET search_path TO public;
+--drop recyclebin table belong to other schema
+PURGE TABLE part_1; --fail
+ERROR:  relation "part_1" do not exist in recyclebin 
+PURGE TABLE schematest.part_1,employee;--fail
+ERROR:  purge do not support multi table
+PURGE TABLE schematest.part_1;
+--drop recyclebin table directly
+DO $$
+DECLARE 
+   table_nm varchar(100);
+BEGIN 
+    SELECT into table_nm ('drop table ' || 'recyclebin.'|| table_name) from information_schema.tables where table_schema='recyclebin';
+    execute table_nm;
+END;$$;
+FLASHBACK TABLE employee TO BEFORE DROP;--fail
+ERROR:  relation "employee" do not exist in recyclebin 
+--clean up recyclebin
+PURGE recyclebin;
+--check recyclebin
+SHOW recyclebin;
+ table_catalog | table_name | table_type 
+---------------+------------+------------
+(0 rows)
+
+--
+DROP TABLE recyclebin.test1;
+ERROR:  table "test1" does not exist
+FLASHBACK TABLE recyclebin.test2 TO BEFORE DROP;
+ERROR:  can not flashback table in recyclebin
+--test flashback/purge order
+CREATE TABLE order_test(i INT);
+INSERT INTO order_test VALUES(2);
+DROP TABLE order_test;
+CREATE TABLE order_test(i INT);
+INSERT INTO order_test VALUES(1);
+DROP TABLE order_test;
+CREATE TABLE order_test(i INT);
+INSERT INTO order_test VALUES(3);
+DROP TABLE order_test;
+FLASHBACK TABLE order_test TO BEFORE DROP;
+SELECT * FROM order_test;--3
+ i 
+---
+ 3
+(1 row)
+
+FLASHBACK TABLE order_test TO BEFORE DROP RENAME TO order_test_1;
+SELECT * FROM order_test_1;--1
+ i 
+---
+ 1
+(1 row)
+
+FLASHBACK TABLE order_test TO BEFORE DROP RENAME TO order_test_2;
+SELECT * FROM order_test_2;--2
+ i 
+---
+ 2
+(1 row)
+
+DROP TABLE order_test,order_test_1,order_test_2 PURGE;
+--purge order
+CREATE TABLE order_test(i INT);
+INSERT INTO order_test VALUES(2);
+DROP TABLE order_test;
+CREATE TABLE order_test(i INT);
+INSERT INTO order_test VALUES(1);
+DROP TABLE order_test;
+CREATE TABLE order_test(i INT);
+INSERT INTO order_test VALUES(3);
+DROP TABLE order_test;
+PURGE TABLE order_test;
+FLASHBACK TABLE order_test TO BEFORE DROP;
+SELECT * FROM order_test;--3
+ i 
+---
+ 3
+(1 row)
+
+FLASHBACK TABLE order_test TO BEFORE DROP RENAME TO order_test_1;
+SELECT * FROM order_test_1;--1
+ i 
+---
+ 1
+(1 row)
+
+DROP TABLE order_test;
+ALTER TABLE order_test_1 RENAME TO order_test;
+DROP TABLE order_test;
+PURGE TABLE order_test;
+FLASHBACK TABLE order_test TO BEFORE DROP;
+SELECT * FROM order_test;--1
+ i 
+---
+ 1
+(1 row)
+
+DROP TABLE order_test PURGE;
+--test depend table
+CREATE TABLE a_f(a int);
+CREATE TABLE b_s(b int) INHERITS (a_f);
+DROP TABLE a_f;
+ERROR:  cannot drop table a_f because other objects depend on it
+DETAIL:  table b_s depends on table a_f
+HINT:  Use DROP ... CASCADE to drop the dependent objects too.
+DROP TABLE a_f CASCADE;
+--test temp table
+CREATE TEMP TABLE test(id INT,txt TEXT);
+DROP TABLE test; 
+SHOW recyclebin;
+ table_catalog | table_name | table_type 
+---------------+------------+------------
+(0 rows)
+
+--test role authority
+CREATE USER user1;
+CREATE USER user2;
+SET SESSION ROLE user1;
+CREATE TABLE test(id INT,txt TEXT);
+DROP TABLE test;
+SET SESSION ROLE user2;
+FLASHBACK TABLE test TO BEFORE DROP;
+ERROR:  relation "test" do not exist in recyclebin 
+PURGE recyclebin;--fail Permission denied
+ERROR:  only superuser can purge recyclebin
+SET SESSION ROLE postgres;
+PURGE TABLE test;
+PURGE recyclebin;
+DROP ROLE user1;
+DROP ROLE user2;
+--test transaction
+CREATE TABLE tran_test(id INT);
+INSERT INTO tran_test VALUES(1);
+BEGIN;
+DROP TABLE tran_test;
+ABORT;
+SHOW recyclebin;
+ table_catalog | table_name | table_type 
+---------------+------------+------------
+(0 rows)
+
+SELECT * FROM tran_test;
+ id 
+----
+  1
+(1 row)
+
+DROP TABLE tran_test PURGE;
+--create partition table
+CREATE TABLE orders (
+    id serial,
+    user_id int4,
+    create_time timestamp(0) 
+) PARTITION BY RANGE(create_time);
+CREATE TABLE orders_history PARTITION OF orders FOR VALUES FROM ('2000-01-01') TO ('2020-03-01');
+CREATE TABLE orders_202003 PARTITION OF orders FOR VALUES FROM ('2020-03-01') TO ('2020-04-01');
+CREATE TABLE orders_202004 PARTITION OF orders FOR VALUES FROM ('2020-04-01') TO ('2020-05-01');
+CREATE TABLE orders_202005 PARTITION OF orders FOR VALUES FROM ('2020-05-01') TO ('2020-06-01');
+CREATE TABLE orders_202006 PARTITION OF orders FOR VALUES FROM ('2020-06-01') TO ('2020-07-01');
+INSERT INTO orders (user_id, create_time) select 1000, generate_series('2020-01-01'::date, '2020-05-31'::date, '1 minute');
+-- test partion table
+SELECT count(*) FROM orders_202003;
+ count 
+-------
+ 44580
+(1 row)
+
+DROP TABLE orders_202003;
+FLASHBACK TABLE orders_202003 TO BEFORE DROP;--fail
+ERROR:  relation "orders_202003" do not exist in recyclebin 
+--test father table
+SELECT count(*) FROM orders;
+ count  
+--------
+ 172801
+(1 row)
+
+DROP TABLE orders;
+FLASHBACK TABLE orders TO BEFORE DROP;--fail
+ERROR:  relation "orders" do not exist in recyclebin 
+DROP TABLE test;--no table
+ERROR:  table "test" does not exist
+SET polar_enable_flashback_drop = off;
+SET client_min_messages = notice;
+CREATE TABLE ll(i INT);
+DROP TABLE ll PURGE;
+ERROR:  flashback_table function is not turned on
+FLASHBACK TABLE ll TO BEFORE DROP;
+ERROR:  flashback_table function is not turned on
+DROP TABLE ll;

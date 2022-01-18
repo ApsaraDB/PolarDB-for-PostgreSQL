@@ -5199,7 +5199,9 @@ transform_jsonb_string_values(Jsonb *jsonb, void *action_state,
 			out = transform_action(action_state, v.val.string.val, v.val.string.len);
 			v.val.string.val = VARDATA_ANY(out);
 			v.val.string.len = VARSIZE_ANY_EXHDR(out);
-			res = pushJsonbValue(&st, type, type < WJB_BEGIN_ARRAY ? &v : NULL);
+			/* POLAR: type will alwaly be smaller than WJB_BEGIN_ARRAY in this case */
+			res = pushJsonbValue(&st, type, &v);
+			/* POLAR end */
 		}
 		else
 		{

@@ -54,7 +54,6 @@ static bool static_std_strings = false;
 static PGEvent *dupEvents(PGEvent *events, int count);
 static bool pqAddTuple(PGresult *res, PGresAttValue *tup,
 		   const char **errmsgp);
-static bool PQsendQueryStart(PGconn *conn);
 static int PQsendQueryGuts(PGconn *conn,
 				const char *command,
 				const char *stmtName,
@@ -166,6 +165,10 @@ PQmakeEmptyPGresult(PGconn *conn, ExecStatusType status)
 	result->curBlock = NULL;
 	result->curOffset = 0;
 	result->spaceLeft = 0;
+	/* POLAR px */
+	result->pxstats = NULL;
+	result->numRejected = 0;
+	result->numCompleted = 0;
 
 	if (conn)
 	{
@@ -1410,9 +1413,10 @@ PQsendQueryPrepared(PGconn *conn,
 }
 
 /*
+ * POLAR px: change the function to non-static
  * Common startup code for PQsendQuery and sibling routines
  */
-static bool
+bool
 PQsendQueryStart(PGconn *conn)
 {
 	if (!conn)

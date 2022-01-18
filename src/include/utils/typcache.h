@@ -164,6 +164,12 @@ typedef struct DomainConstraintRef
 
 typedef struct SharedRecordTypmodRegistry SharedRecordTypmodRegistry;
 
+/* POLAR px */
+extern int32 NextRecordTypmod;
+
+extern List *build_tuple_node_list(int start);
+/* POLAR end */
+
 extern TypeCacheEntry *lookup_type_cache(Oid type_id, int flags);
 
 extern void InitDomainConstraintRef(Oid type_id, DomainConstraintRef *ref,

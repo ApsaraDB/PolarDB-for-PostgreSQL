@@ -18,6 +18,10 @@
 #include "access/tupdesc.h"
 #include "storage/buf.h"
 
+/* POLAR px */
+#include "access/memtup_px.h"
+/* POLAR end */
+
 /*----------
  * The executor stores tuples in a "tuple table" which is a List of
  * independent TupleTableSlots.  There are several cases we need to handle:
@@ -135,6 +139,16 @@ typedef struct TupleTableSlot
 #define FIELDNO_TUPLETABLESLOT_OFF 14
 	uint32		tts_off;		/* saved state for slot_deform_tuple */
 	bool		tts_fixedTupleDescriptor;	/* descriptor can't be changed */
+
+	/* POLAR px: Mem tuple stuff */
+	bool		tts_shouldFreeMem; /* should pfree tts_tuple? */
+	MemTuple tts_memtuple;
+	void 	*tts_mtup_buf;
+	uint32  tts_mtup_buf_len;
+	ItemPointerData tts_synthetic_ctid;	/* needed if memtuple is stored on disk */
+
+	MemTupleBinding *tts_mt_bind;		/* mem tuple's binding */
+	/* POLAR end */
 } TupleTableSlot;
 
 #define TTS_HAS_PHYSICAL_TUPLE(slot)  \
@@ -172,6 +186,24 @@ extern HeapTuple ExecMaterializeSlot(TupleTableSlot *slot);
 extern TupleTableSlot *ExecCopySlot(TupleTableSlot *dstslot,
 			 TupleTableSlot *srcslot);
 
+/* POLAR px */
+extern TupleTableSlot *ExecStoreMemTuple(MemTuple tuple,
+									  TupleTableSlot *slot,
+									  bool shouldFree);
+extern MemTuple ExecFetchSlotMemTuple(TupleTableSlot *slot);
+extern GenericTuple ExecCopySlotGenericTuple(TupleTableSlot *slot);
+
+static inline GenericTuple
+ExecFetchSlotGenericTuple(TupleTableSlot *slot)
+{
+	Assert(!TupIsNull(slot));
+	if (slot->tts_memtuple == NULL && slot->tts_tuple != NULL)
+		return (GenericTuple) slot->tts_tuple;
+
+	return (GenericTuple) ExecFetchSlotMemTuple(slot);
+}
+/* POLAR end */
+
 /* in access/common/heaptuple.c */
 extern Datum slot_getattr(TupleTableSlot *slot, int attnum, bool *isnull);
 extern void slot_getallattrs(TupleTableSlot *slot);
@@ -180,5 +212,65 @@ extern bool slot_attisnull(TupleTableSlot *slot, int attnum);
 extern bool slot_getsysattr(TupleTableSlot *slot, int attnum,
 				Datum *value, bool *isnull);
 extern void slot_getmissingattrs(TupleTableSlot *slot, int startAttNum, int lastAttNum);
+
+/* POLAR px */
+static inline Datum *slot_get_values(TupleTableSlot *slot)
+{
+	return slot->tts_values;
+}
+
+static inline bool *slot_get_isnull(TupleTableSlot *slot)
+{
+	return slot->tts_isnull;
+}
+
+static inline void
+free_memtuple(TupleTableSlot *slot)
+{
+	if (slot->tts_shouldFreeMem)
+	{
+		if(slot->tts_memtuple && slot->tts_memtuple != slot->tts_mtup_buf)
+		{
+			slot->tts_shouldFreeMem = false;
+			pfree(slot->tts_memtuple);
+		}
+	}
+	slot->tts_memtuple = NULL;
+}
+
+static inline void
+free_mintuple(TupleTableSlot *slot)
+{
+	if (slot->tts_shouldFreeMin && slot->tts_mintuple)
+		pfree(slot->tts_mintuple);
+	slot->tts_shouldFreeMin = false;
+	slot->tts_mintuple = NULL;
+}
+
+static inline void
+free_htuple(TupleTableSlot *slot)
+{
+	if (slot->tts_shouldFree && slot->tts_tuple)
+		pfree(slot->tts_tuple);
+	slot->tts_shouldFree = false;
+	slot->tts_tuple = NULL;
+}
+
+static inline bool
+tup_has_memtuple(TupleTableSlot *slot)
+{
+	Assert(slot);
+	return slot->tts_memtuple != NULL;
+}
+
+static inline TupleTableSlot *
+ExecStoreGenericTuple(GenericTuple tup, TupleTableSlot *slot, bool shouldFree)
+{
+	if (is_memtuple(tup))
+		return ExecStoreMemTuple((MemTuple) tup, slot, shouldFree);
+
+	return ExecStoreTuple((HeapTuple) tup, slot, InvalidBuffer, shouldFree);
+}
+/* POLAR end */
 
 #endif							/* TUPTABLE_H */

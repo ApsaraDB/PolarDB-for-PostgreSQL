@@ -116,6 +116,41 @@ fsync_pgdata(const char *pg_data,
 }
 
 /*
+ * In Polar, the pg_wal dir is not exist.
+ */
+void
+polar_fsync_pgdata(const char *pg_data,
+			 const char *progname,
+			 int serverVersion)
+{
+	char		pg_tblspc[MAXPGPATH];
+
+	/* handle renaming of pg_xlog to pg_wal in post-10 clusters */
+	snprintf(pg_tblspc, MAXPGPATH, "%s/pg_tblspc", pg_data);
+
+	/*
+	 * If possible, hint to the kernel that we're soon going to fsync the data
+	 * directory and its contents.
+	 */
+#ifdef PG_FLUSH_DATA_WORKS
+	walkdir(pg_data, pre_sync_fname, false, progname);
+	walkdir(pg_tblspc, pre_sync_fname, true, progname);
+#endif
+
+	/*
+	 * Now we do the fsync()s in the same order.
+	 *
+	 * The main call ignores symlinks, so in addition to specially processing
+	 * pg_wal if it's a symlink, pg_tblspc has to be visited separately with
+	 * process_symlinks = true.  Note that if there are any plain directories
+	 * in pg_tblspc, they'll get fsync'd twice.  That's not an expected case
+	 * so we don't worry about optimizing it.
+	 */
+	walkdir(pg_data, fsync_fname, false, progname);
+	walkdir(pg_tblspc, fsync_fname, true, progname);
+}
+
+/*
  * Issue fsync recursively on the given directory and all its contents.
  *
  * This is a convenient wrapper on top of walkdir().

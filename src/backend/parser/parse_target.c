@@ -398,6 +398,8 @@ markTargetListOrigin(ParseState *pstate, TargetEntry *tle,
 		case RTE_VALUES:
 		case RTE_TABLEFUNC:
 		case RTE_NAMEDTUPLESTORE:
+		case RTE_TABLEFUNCTION:/* POLAR px */
+		case RTE_VOID:
 			/* not a simple relation, leave it unmarked */
 			break;
 		case RTE_CTE:
@@ -1577,6 +1579,7 @@ expandRecordVariable(ParseState *pstate, Var *var, int levelsup)
 				return expandRecordVariable(pstate, (Var *) expr, netlevelsup);
 			/* else fall through to inspect the expression */
 			break;
+		case RTE_TABLEFUNCTION:/* POLAR px */
 		case RTE_FUNCTION:
 
 			/*
@@ -1627,6 +1630,9 @@ expandRecordVariable(ParseState *pstate, Var *var, int levelsup)
 				}
 				/* else fall through to inspect the expression */
 			}
+			break;
+		case RTE_VOID:/* POLAR px */
+			Insist(0);
 			break;
 	}
 
@@ -1812,6 +1818,7 @@ FigureColnameInternal(Node *node, char **name)
 				case ANY_SUBLINK:
 				case ROWCOMPARE_SUBLINK:
 				case CTE_SUBLINK:
+				case NOT_EXISTS_SUBLINK:
 					break;
 			}
 			break;

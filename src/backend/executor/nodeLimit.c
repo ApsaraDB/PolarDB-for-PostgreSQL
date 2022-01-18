@@ -25,7 +25,9 @@
 #include "executor/nodeLimit.h"
 #include "miscadmin.h"
 #include "nodes/nodeFuncs.h"
-
+/* POLAR px */
+#include "px/px_vars.h"
+/* POLAR end */
 static void recompute_limits(LimitState *node);
 static int64 compute_tuples_needed(LimitState *node);
 
@@ -37,10 +39,15 @@ static int64 compute_tuples_needed(LimitState *node);
  *		filtering on the stream of tuples returned by a subplan.
  * ----------------------------------------------------------------
  */
-static TupleTableSlot *			/* return: a tuple or NULL */
-ExecLimit(PlanState *pstate)
+/*
+ * POLAR px: this is the original ExecLimit(). Now we refactor this
+ *           routine as a part of new ExecLimit(). We want to deal
+ *           with the situation when this routine returns NULL tuple
+ *           in new ExecLimit() below.
+ */
+static TupleTableSlot *				/* return: a tuple or NULL */
+ExecLimit_guts(LimitState *node)
 {
-	LimitState *node = castNode(LimitState, pstate);
 	ScanDirection direction;
 	TupleTableSlot *slot;
 	PlanState  *outerPlan;
@@ -232,6 +239,33 @@ ExecLimit(PlanState *pstate)
 
 	return slot;
 }
+
+/*
+ * POLAR px: Add squelch support for Limit node - tell the downstream node
+ *           to stop executing if no more tuples are needed at this layer.
+ */
+static TupleTableSlot *
+ExecLimit(PlanState *node)
+{
+	TupleTableSlot *result;
+
+	result = ExecLimit_guts((LimitState *) node);
+
+	/*
+	 * We'll read no more tuples from inner subtree. Tell source PX workers
+	 * not to clog up the pipeline with our never-to-be-consumed data.
+	 * 
+	 * (Squelch is needed only if PX is executing.)
+	 */
+	if (px_is_executing && TupIsNull(result) &&
+		ScanDirectionIsForward(node->state->es_direction))
+	{
+		ExecSquelchNode(node);
+	}
+
+	return result;
+}
+/* POLAR end */
 
 /*
  * Evaluate the limit/offset expressions --- done at startup or rescan.

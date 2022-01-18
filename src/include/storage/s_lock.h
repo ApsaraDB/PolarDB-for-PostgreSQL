@@ -324,9 +324,51 @@ tas(volatile slock_t *lock)
 #ifdef HAVE_GCC__SYNC_INT32_TAS
 #define HAS_TEST_AND_SET
 
-#define TAS(lock) tas(lock)
-
 typedef int slock_t;
+
+#ifdef POLAR_USE_CAS
+
+#define TAS(lock) polar_cas(lock)
+
+/*
+ * POLAR: extended asm for compare-and-swap on arm,
+ * avoid exclusive store if lock is hold by others.
+ */
+static __inline__ int
+polar_cas(volatile slock_t *lock)
+{
+	register slock_t expected = 0, desired = 1;
+	__asm__ __volatile__(
+		"0:						\n"
+		"	ldaxr	%w0,%1		\n"
+		"	cbnz	%w0,1f		\n"
+		"	stxr	%w0,%w2,%1	\n"
+		"	cbnz	%w0,0b		\n"
+		"	b		2f			\n"
+		"1:						\n"
+		"	clrex				\n"
+		"2:						\n"
+:		"+r"(expected), "+Q"(*lock)
+:		"r"(desired)
+:		"memory", "cc");
+    return (int) expected;
+}
+
+#define S_UNLOCK(lock) polar_s_unlock(lock)
+static __inline__ void
+polar_s_unlock(volatile slock_t *lock)
+{
+	__asm__ __volatile__(
+		"	stlr	wzr,%0	\n"
+:		"=Q"(*lock)
+:
+:		"memory", "cc");
+}
+/* POLAR end */
+
+#else	/* CAS */
+
+#define TAS(lock) tas(lock)
 
 static __inline__ int
 tas(volatile slock_t *lock)
@@ -335,6 +377,43 @@ tas(volatile slock_t *lock)
 }
 
 #define S_UNLOCK(lock) __sync_lock_release(lock)
+
+#endif	/* TAS or TAS compile with lse */
+
+/*
+ * POLAR: perform cpu relax.
+ */
+#define POLAR_ARM_S_LOCK_RELAX
+extern PGDLLIMPORT int polar_spin_yield;
+#define POLAR_S_YIELD() polar_s_yield()
+
+static __inline__ void
+polar_s_yield(void)
+{
+	__asm__ __volatile__("yield" ::: "memory");
+}
+
+extern PGDLLIMPORT int polar_spin_nops;
+#define POLAR_S_NOP(n) polar_s_nop(n)
+
+static __inline__ void
+polar_s_nop(int n)
+{
+	__asm__ __volatile__(
+		"	cmp		%w0,#1		\n"
+		"	b.lt	1f			\n"
+		"	add		%w0,%w0,#1	\n"
+		"0:						\n"
+		"	nop					\n"
+		"	subs	%w0,%w0,#1	\n"
+		"	cmp		%w0,#1		\n"
+		"	b.gt	0b			\n"
+		"1:						\n"
+:		"+r"(n)
+:
+:		"memory", "cc");
+}
+/* POLAR end */
 
 #endif	 /* HAVE_GCC__SYNC_INT32_TAS */
 #endif	 /* __arm__ || __arm || __aarch64__ || __aarch64 */
@@ -1026,6 +1105,17 @@ typedef struct
 	const char *file;
 	int			line;
 	const char *func;
+
+	/*
+	 * POLAR: parameters for cpu relax
+	 * Put cpu relax parameters in SpinDelayStatus to prevent intensive
+	 * memory loads.
+	 */
+#ifdef POLAR_ARM_S_LOCK_RELAX
+	int			polar_spin_nops;
+	int			polar_spin_yield;
+#endif
+	/* POLAR end */
 } SpinDelayStatus;
 
 static inline void
@@ -1038,10 +1128,66 @@ init_spin_delay(SpinDelayStatus *status,
 	status->file = file;
 	status->line = line;
 	status->func = func;
+
+	/*
+	 * POLAR: init parameters for cpu relax
+	 */
+#ifdef POLAR_ARM_S_LOCK_RELAX
+	status->polar_spin_nops = polar_spin_nops;
+	status->polar_spin_yield = polar_spin_yield;
+#endif
+	/* POLAR end */
 }
 
 #define init_local_spin_delay(status) init_spin_delay(status, __FILE__, __LINE__, PG_FUNCNAME_MACRO)
 void perform_spin_delay(SpinDelayStatus *status);
 void finish_spin_delay(SpinDelayStatus *status);
 
+/* POLAR wal pipeline begin */
+
+#include <pthread.h>
+#include "port/atomics.h"
+
+typedef enum polar_wait_result_t
+{
+	POLAR_WAIT_RES_SPIN,
+	POLAR_WAIT_RES_SPIN_OVER,
+	POLAR_WAIT_RES_TIMEOUT,
+	POLAR_WAIT_RES_WAKEUP
+} polar_wait_result_t;
+
+typedef struct polar_wait_object_stats_t
+{
+	pg_atomic_uint64 	waiters;
+	pg_atomic_uint64	timeout_waits;
+	pg_atomic_uint64	wakeup_waits;
+} polar_wait_object_stats_t;
+
+typedef struct polar_wait_object_t
+{
+	pthread_mutex_t mutex;
+	pthread_cond_t cond; 
+	polar_wait_object_stats_t stats;
+} polar_wait_object_t;
+
+/*
+ * Support for spin delay which is used in polar wal pipeline
+ */
+typedef struct polar_spin_delay_status_t
+{
+	polar_wait_object_t *wait_obj;
+	int			spins_per_delay;
+	int			timeout_us;
+	int			spins;
+	int			cur_delay;
+} polar_spin_delay_status_t;
+
+void
+polar_init_spin_delay_mt(polar_spin_delay_status_t *status, polar_wait_object_t *wait_obj,
+						 int spins_per_delay, int timeout_us);
+int polar_get_spins_per_delay(void);
+void polar_compute_tv_delay(struct timespec *tv, long us);
+polar_wait_result_t polar_perform_spin_delay_mt(polar_spin_delay_status_t *status, bool need_lock, bool need_wait);
+void polar_reset_spin_delay_mt(polar_spin_delay_status_t *status);
+/* POLAR wal pipeline end */
 #endif	 /* S_LOCK_H */

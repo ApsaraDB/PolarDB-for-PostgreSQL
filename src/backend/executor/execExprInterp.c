@@ -76,6 +76,8 @@
 #include "utils/typcache.h"
 #include "utils/xml.h"
 
+#include "access/htup_details.h"
+#include "access/sysattr.h"
 
 /*
  * Use computed-goto-based opcode dispatch when computed gotos are available.
@@ -497,11 +499,28 @@ ExecInterpExpr(ExprState *state, ExprContext *econtext, bool *isnull)
 			Assert(innerslot->tts_tuple != NULL);
 			Assert(innerslot->tts_tuple != &(innerslot->tts_minhdr));
 
+			/*
+			 * POLAR: We just deal with select _root_ctid here. For other scenes, we use
+			 * heap_getsysattr to get _root_ctid.
+			 * heap_getsysattr can not get the slot->tts_buffer and econtext. We use
+			 * polar_get_root_ctid directly here, so that some extra io will not be
+			 * happened in ReadBuffer_common.
+			 */
+			if (attnum == RootSelfItemPointerAttributeNumber)
+			{
+				Assert(innerslot->tts_tuple);
+				op->resnull = false;
+				d = polar_get_root_ctid(innerslot->tts_tuple, innerslot->tts_buffer, econtext);
+				*op->resvalue = d;
+			}
 			/* heap_getsysattr has sufficient defenses against bad attnums */
-			d = heap_getsysattr(innerslot->tts_tuple, attnum,
-								innerslot->tts_tupleDescriptor,
-								op->resnull);
-			*op->resvalue = d;
+			else
+			{
+				d = heap_getsysattr(innerslot->tts_tuple, attnum,
+									innerslot->tts_tupleDescriptor,
+									op->resnull);
+				*op->resvalue = d;
+			}
 
 			EEO_NEXT();
 		}
@@ -515,11 +534,28 @@ ExecInterpExpr(ExprState *state, ExprContext *econtext, bool *isnull)
 			Assert(outerslot->tts_tuple != NULL);
 			Assert(outerslot->tts_tuple != &(outerslot->tts_minhdr));
 
+			/*
+			 * POLAR: We just deal with select _root_ctid here. For other scenes, we use
+			 * heap_getsysattr to get _root_ctid.
+			 * heap_getsysattr can not get the slot->tts_buffer and econtext. We use
+			 * polar_get_root_ctid directly here, so that some extra io will not be
+			 * happened in ReadBuffer_common.
+			 */
+			if (attnum == RootSelfItemPointerAttributeNumber)
+			{
+				Assert(outerslot->tts_tuple);
+				op->resnull = false;
+				d = polar_get_root_ctid(outerslot->tts_tuple, outerslot->tts_buffer, econtext);
+				*op->resvalue = d;
+			}
 			/* heap_getsysattr has sufficient defenses against bad attnums */
-			d = heap_getsysattr(outerslot->tts_tuple, attnum,
-								outerslot->tts_tupleDescriptor,
-								op->resnull);
-			*op->resvalue = d;
+			else
+			{
+				d = heap_getsysattr(outerslot->tts_tuple, attnum,
+									outerslot->tts_tupleDescriptor,
+									op->resnull);
+				*op->resvalue = d;
+			}
 
 			EEO_NEXT();
 		}
@@ -533,11 +569,28 @@ ExecInterpExpr(ExprState *state, ExprContext *econtext, bool *isnull)
 			Assert(scanslot->tts_tuple != NULL);
 			Assert(scanslot->tts_tuple != &(scanslot->tts_minhdr));
 
+			/*
+			 * POLAR: We just deal with select _root_ctid here. For other scenes, we use
+			 * heap_getsysattr to get _root_ctid.
+			 * heap_getsysattr can not get the slot->tts_buffer and econtext. We use
+			 * polar_get_root_ctid directly here, so that some extra io will not be
+			 * happened in ReadBuffer_common.
+			 */
+			if (attnum == RootSelfItemPointerAttributeNumber)
+			{
+				Assert(scanslot->tts_tuple);
+				op->resnull = false;
+				d = polar_get_root_ctid(scanslot->tts_tuple, scanslot->tts_buffer, econtext);
+				*op->resvalue = d;
+			}
 			/* heap_getsysattr has sufficient defenses against bad attnums */
-			d = heap_getsysattr(scanslot->tts_tuple, attnum,
+			else
+			{
+				d = heap_getsysattr(scanslot->tts_tuple, attnum,
 								scanslot->tts_tupleDescriptor,
 								op->resnull);
-			*op->resvalue = d;
+				*op->resvalue = d;
+			}
 
 			EEO_NEXT();
 		}
@@ -560,6 +613,7 @@ ExecInterpExpr(ExprState *state, ExprContext *econtext, bool *isnull)
 			 * care of at compilation time.  But see EEOP_INNER_VAR comments.
 			 */
 			Assert(attnum >= 0 && attnum < innerslot->tts_nvalid);
+			Assert(resultnum >= 0 && resultnum < resultslot->tts_tupleDescriptor->natts);
 			resultslot->tts_values[resultnum] = innerslot->tts_values[attnum];
 			resultslot->tts_isnull[resultnum] = innerslot->tts_isnull[attnum];
 
@@ -576,6 +630,7 @@ ExecInterpExpr(ExprState *state, ExprContext *econtext, bool *isnull)
 			 * care of at compilation time.  But see EEOP_INNER_VAR comments.
 			 */
 			Assert(attnum >= 0 && attnum < outerslot->tts_nvalid);
+			Assert(resultnum >= 0 && resultnum < resultslot->tts_tupleDescriptor->natts);
 			resultslot->tts_values[resultnum] = outerslot->tts_values[attnum];
 			resultslot->tts_isnull[resultnum] = outerslot->tts_isnull[attnum];
 
@@ -592,6 +647,7 @@ ExecInterpExpr(ExprState *state, ExprContext *econtext, bool *isnull)
 			 * care of at compilation time.  But see EEOP_INNER_VAR comments.
 			 */
 			Assert(attnum >= 0 && attnum < scanslot->tts_nvalid);
+			Assert(resultnum >= 0 && resultnum < resultslot->tts_tupleDescriptor->natts);
 			resultslot->tts_values[resultnum] = scanslot->tts_values[attnum];
 			resultslot->tts_isnull[resultnum] = scanslot->tts_isnull[attnum];
 
@@ -602,6 +658,7 @@ ExecInterpExpr(ExprState *state, ExprContext *econtext, bool *isnull)
 		{
 			int			resultnum = op->d.assign_tmp.resultnum;
 
+			Assert(resultnum >= 0 && resultnum < resultslot->tts_tupleDescriptor->natts);
 			resultslot->tts_values[resultnum] = state->resvalue;
 			resultslot->tts_isnull[resultnum] = state->resnull;
 
@@ -612,6 +669,7 @@ ExecInterpExpr(ExprState *state, ExprContext *econtext, bool *isnull)
 		{
 			int			resultnum = op->d.assign_tmp.resultnum;
 
+			Assert(resultnum >= 0 && resultnum < resultslot->tts_tupleDescriptor->natts);
 			resultslot->tts_isnull[resultnum] = state->resnull;
 			if (!resultslot->tts_isnull[resultnum])
 				resultslot->tts_values[resultnum] =
@@ -676,6 +734,7 @@ ExecInterpExpr(ExprState *state, ExprContext *econtext, bool *isnull)
 			}
 			fcinfo->isnull = false;
 			d = op->d.func.fn_addr(fcinfo);
+
 			*op->resvalue = d;
 			*op->resnull = fcinfo->isnull;
 
@@ -2024,8 +2083,10 @@ ExecJustAssignInnerVar(ExprState *state, ExprContext *econtext, bool *isnull)
 	 *
 	 * Since we use slot_getattr(), we don't need to implement the FETCHSOME
 	 * step explicitly, and we also needn't Assert that the attnum is in range
-	 * --- slot_getattr() will take care of any problems.
+	 * --- slot_getattr() will take care of any problems.  Nonetheless, check
+	 * that resultnum is in range.
 	 */
+	Assert(resultnum >= 0 && resultnum < outslot->tts_tupleDescriptor->natts);
 	outslot->tts_values[resultnum] =
 		slot_getattr(inslot, attnum, &outslot->tts_isnull[resultnum]);
 	return 0;
@@ -2042,6 +2103,7 @@ ExecJustAssignOuterVar(ExprState *state, ExprContext *econtext, bool *isnull)
 	TupleTableSlot *outslot = state->resultslot;
 
 	/* See comments in ExecJustAssignInnerVar */
+	Assert(resultnum >= 0 && resultnum < outslot->tts_tupleDescriptor->natts);
 	outslot->tts_values[resultnum] =
 		slot_getattr(inslot, attnum, &outslot->tts_isnull[resultnum]);
 	return 0;
@@ -2058,6 +2120,7 @@ ExecJustAssignScanVar(ExprState *state, ExprContext *econtext, bool *isnull)
 	TupleTableSlot *outslot = state->resultslot;
 
 	/* See comments in ExecJustAssignInnerVar */
+	Assert(resultnum >= 0 && resultnum < outslot->tts_tupleDescriptor->natts);
 	outslot->tts_values[resultnum] =
 		slot_getattr(inslot, attnum, &outslot->tts_isnull[resultnum]);
 	return 0;
@@ -2681,6 +2744,10 @@ ExecEvalArrayExpr(ExprState *state, ExprEvalStep *op)
 			dims[i] = elem_dims[i - 1];
 			lbs[i] = elem_lbs[i - 1];
 		}
+
+		/* check for subscript overflow */
+		(void) ArrayGetNItems(ndims, dims);
+		ArrayCheckBounds(ndims, dims, lbs);
 
 		if (havenulls)
 		{

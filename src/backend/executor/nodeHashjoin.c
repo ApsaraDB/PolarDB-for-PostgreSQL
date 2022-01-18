@@ -147,6 +147,9 @@ static bool ExecHashJoinNewBatch(HashJoinState *hjstate);
 static bool ExecParallelHashJoinNewBatch(HashJoinState *hjstate);
 static void ExecParallelHashJoinPartitionOuter(HashJoinState *node);
 
+/* POLAR px */
+static bool polar_isNotDistinctJoin(List *qualList);
+
 
 /* ----------------------------------------------------------------
  *		ExecHashJoinImpl
@@ -175,6 +178,9 @@ ExecHashJoinImpl(PlanState *pstate, bool parallel)
 	uint32		hashvalue;
 	int			batchno;
 	ParallelHashJoinState *parallel_state;
+
+	/* POLAR px */
+	bool keepNulls = false;
 
 	/*
 	 * get information from HashJoin node
@@ -215,62 +221,78 @@ ExecHashJoinImpl(PlanState *pstate, bool parallel)
 				 */
 				Assert(hashtable == NULL);
 
-				/*
-				 * If the outer relation is completely empty, and it's not
-				 * right/full join, we can quit without building the hash
-				 * table.  However, for an inner join it is only a win to
-				 * check this when the outer relation's startup cost is less
-				 * than the projected cost of building the hash table.
-				 * Otherwise it's best to build the hash table first and see
-				 * if the inner relation is empty.  (When it's a left join, we
-				 * should always make this check, since we aren't going to be
-				 * able to skip the join on the strength of an empty inner
-				 * relation anyway.)
-				 *
-				 * If we are rescanning the join, we make use of information
-				 * gained on the previous scan: don't bother to try the
-				 * prefetch if the previous scan found the outer relation
-				 * nonempty. This is not 100% reliable since with new
-				 * parameters the outer relation might yield different
-				 * results, but it's a good heuristic.
-				 *
-				 * The only way to make the check is to try to fetch a tuple
-				 * from the outer plan node.  If we succeed, we have to stash
-				 * it away for later consumption by ExecHashJoinOuterGetTuple.
-				 */
-				if (HJ_FILL_INNER(node))
-				{
-					/* no chance to not build the hash table */
-					node->hj_FirstOuterTupleSlot = NULL;
-				}
-				else if (parallel)
+				if(!node->prefetch_inner)
 				{
 					/*
-					 * The empty-outer optimization is not implemented for
-					 * shared hash tables, because no one participant can
-					 * determine that there are no outer tuples, and it's not
-					 * yet clear that it's worth the synchronization overhead
-					 * of reaching consensus to figure that out.  So we have
-					 * to build the hash table.
+					* If the outer relation is completely empty, and it's not
+					* right/full join, we can quit without building the hash
+					* table.  However, for an inner join it is only a win to
+					* check this when the outer relation's startup cost is less
+					* than the projected cost of building the hash table.
+					* Otherwise it's best to build the hash table first and see
+					* if the inner relation is empty.  (When it's a left join, we
+					* should always make this check, since we aren't going to be
+					* able to skip the join on the strength of an empty inner
+					* relation anyway.)
+					*
+					* If we are rescanning the join, we make use of information
+					* gained on the previous scan: don't bother to try the
+					* prefetch if the previous scan found the outer relation
+					* nonempty. This is not 100% reliable since with new
+					* parameters the outer relation might yield different
+					* results, but it's a good heuristic.
+					*
+					* The only way to make the check is to try to fetch a tuple
+					* from the outer plan node.  If we succeed, we have to stash
+					* it away for later consumption by ExecHashJoinOuterGetTuple.
+					*/
+					if (HJ_FILL_INNER(node))
+					{
+						/* no chance to not build the hash table */
+						node->hj_FirstOuterTupleSlot = NULL;
+					}
+					else if (parallel)
+					{
+						/*
+						* The empty-outer optimization is not implemented for
+						* shared hash tables, because no one participant can
+						* determine that there are no outer tuples, and it's not
+						* yet clear that it's worth the synchronization overhead
+						* of reaching consensus to figure that out.  So we have
+						* to build the hash table.
+						*/
+						node->hj_FirstOuterTupleSlot = NULL;
+					}
+					else if (HJ_FILL_OUTER(node) ||
+							(outerNode->plan->startup_cost < hashNode->ps.plan->total_cost &&
+							!node->hj_OuterNotEmpty))
+					{
+						node->hj_FirstOuterTupleSlot = ExecProcNode(outerNode);
+						if (TupIsNull(node->hj_FirstOuterTupleSlot))
+						{
+							node->hj_OuterNotEmpty = false;
+							return NULL;
+						}
+						else
+							node->hj_OuterNotEmpty = true;
+					}
+					else
+						node->hj_FirstOuterTupleSlot = NULL;
+				}
+				else
+				{
+					/*
+					 * POLAR px: do prefetch_inner
+					 * first outer tuple would be null
 					 */
 					node->hj_FirstOuterTupleSlot = NULL;
 				}
-				else if (HJ_FILL_OUTER(node) ||
-						 (outerNode->plan->startup_cost < hashNode->ps.plan->total_cost &&
-						  !node->hj_OuterNotEmpty))
-				{
-					node->hj_FirstOuterTupleSlot = ExecProcNode(outerNode);
-					if (TupIsNull(node->hj_FirstOuterTupleSlot))
-					{
-						node->hj_OuterNotEmpty = false;
-						return NULL;
-					}
-					else
-						node->hj_OuterNotEmpty = true;
-				}
-				else
-					node->hj_FirstOuterTupleSlot = NULL;
 
+				/* POALR px
+				 * hashNode->hs_keepnull is required to support using IS NOT DISTINCT FROM as hash condition
+				 * For example, in PXOPT, `explain SELECT t2.a FROM t2 INTERSECT (SELECT t1.a FROM t1);`
+				 */
+				keepNulls = HJ_FILL_INNER(node) || hashNode->hs_keepnull;
 				/*
 				 * Create the hash table.  If using Parallel Hash, then
 				 * whoever gets here first will create the hash table and any
@@ -278,8 +300,14 @@ ExecHashJoinImpl(PlanState *pstate, bool parallel)
 				 */
 				hashtable = ExecHashTableCreate(hashNode,
 												node->hj_HashOperators,
-												HJ_FILL_INNER(node));
+												keepNulls);
 				node->hj_HashTable = hashtable;
+
+				/* POLAR px
+				 * Only if doing a LASJ_NOTIN join, we want to quit as soon as we find
+				 * a NULL key on the inner side
+				 */
+				hashNode->hs_quit_if_hashkeys_null = (node->js.jointype == JOIN_LASJ_NOTIN);
 
 				/*
 				 * Execute the Hash node, to build the hash table.  If using
@@ -289,6 +317,12 @@ ExecHashJoinImpl(PlanState *pstate, bool parallel)
 				hashNode->hashtable = hashtable;
 				(void) MultiExecProcNode((PlanState *) hashNode);
 
+				/* POLAR px
+				 * If LASJ_NOTIN and a null was found on the inner side, then clean out.
+				 */
+				if (node->js.jointype == JOIN_LASJ_NOTIN && hashNode->hs_hashkeys_null)
+					return NULL;
+
 				/*
 				 * If the inner relation is completely empty, and we're not
 				 * doing a left outer join, we can quit without scanning the
@@ -296,6 +330,13 @@ ExecHashJoinImpl(PlanState *pstate, bool parallel)
 				 */
 				if (hashtable->totalTuples == 0 && !HJ_FILL_OUTER(node))
 					return NULL;
+
+				/* POALR px
+				 * We just scanned the entire inner side and built the hashtable
+				 * (and its overflow batches). Check here and remember if the inner
+				 * side is empty.
+				 */
+				node->hj_InnerEmpty = (hashtable->totalTuples == 0);
 
 				/*
 				 * need to remember whether nbatch has increased since we
@@ -409,6 +450,20 @@ ExecHashJoinImpl(PlanState *pstate, bool parallel)
 				/* FALL THRU */
 
 			case HJ_SCAN_BUCKET:
+				/* POLAR px
+				 * OPT-3325: Handle NULLs in the outer side of LASJ_NOTIN
+				 *  - if tuple is NULL and inner is not empty, drop outer tuple
+				 *  - if tuple is NULL and inner is empty, keep going as we'll
+				 *    find no match for this tuple in the inner side
+				 */
+				if (node->js.jointype == JOIN_LASJ_NOTIN &&
+					!node->hj_InnerEmpty &&
+					polar_isJoinExprNull(node->hj_OuterHashKeys, econtext))
+				{
+					node->hj_MatchedOuter = true;
+					node->hj_JoinState = HJ_NEED_NEW_OUTER;
+					continue;
+				}
 
 				/*
 				 * Scan the selected hash bucket for matches to current outer
@@ -469,7 +524,8 @@ ExecHashJoinImpl(PlanState *pstate, bool parallel)
 					}
 
 					/* In an antijoin, we never return a matched tuple */
-					if (node->js.jointype == JOIN_ANTI)
+					if (node->js.jointype == JOIN_ANTI ||
+						node->js.jointype == JOIN_LASJ_NOTIN/* POLAR px */)
 					{
 						node->hj_JoinState = HJ_NEED_NEW_OUTER;
 						continue;
@@ -644,6 +700,19 @@ ExecInitHashJoin(HashJoin *node, EState *estate, int eflags)
 	 */
 	ExecAssignExprContext(estate, &hjstate->js.ps);
 
+	/* POALR px */
+	if (JOIN_LASJ_NOTIN == node->join.jointype && node->hashqualclauses != NIL)
+	{
+		/* PX: This must be an IS NOT DISTINCT join!  */
+		Assert(polar_isNotDistinctJoin(node->hashqualclauses));
+		hjstate->hj_nonequijoin = true;
+	}
+	else
+		hjstate->hj_nonequijoin = false;
+
+	/* POLAR px: prefetch_inner prevent deadlock */
+	hjstate->prefetch_inner = node->join.prefetch_inner;
+
 	/*
 	 * initialize child nodes
 	 *
@@ -658,6 +727,9 @@ ExecInitHashJoin(HashJoin *node, EState *estate, int eflags)
 	outerDesc = ExecGetResultType(outerPlanState(hjstate));
 	innerPlanState(hjstate) = ExecInitNode((Plan *) hashNode, estate, eflags);
 	innerDesc = ExecGetResultType(innerPlanState(hjstate));
+
+	/* POALR px */
+	((HashState *) innerPlanState(hjstate))->hs_keepnull = hjstate->hj_nonequijoin;
 
 	/*
 	 * Initialize result slot, type and projection.
@@ -684,6 +756,7 @@ ExecInitHashJoin(HashJoin *node, EState *estate, int eflags)
 			break;
 		case JOIN_LEFT:
 		case JOIN_ANTI:
+		case JOIN_LASJ_NOTIN:/* POLAR px */
 			hjstate->hj_NullInnerTupleSlot =
 				ExecInitNullTupleSlot(estate, innerDesc);
 			break;
@@ -846,12 +919,17 @@ ExecHashJoinOuterGetTuple(PlanState *outerNode,
 			 */
 			ExprContext *econtext = hjstate->js.ps.ps_ExprContext;
 
+			/* POLAR px */
+			bool hashkeys_null = false;
+			bool keep_nulls = HJ_FILL_OUTER(hjstate) ||
+							hjstate->hj_nonequijoin;
 			econtext->ecxt_outertuple = slot;
 			if (ExecHashGetHashValue(hashtable, econtext,
 									 hjstate->hj_OuterHashKeys,
 									 true,	/* outer tuple */
-									 HJ_FILL_OUTER(hjstate),
-									 hashvalue))
+									 keep_nulls,
+									 hashvalue,
+									 &hashkeys_null/* POLAR px */))
 			{
 				/* remember outer relation is not empty for possible rescan */
 				hjstate->hj_OuterNotEmpty = true;
@@ -914,12 +992,17 @@ ExecParallelHashJoinOuterGetTuple(PlanState *outerNode,
 		{
 			ExprContext *econtext = hjstate->js.ps.ps_ExprContext;
 
+			/* POLAR px */
+			bool hashkeys_null = false;
+			bool keep_nulls = HJ_FILL_OUTER(hjstate) ||
+							hjstate->hj_nonequijoin;
 			econtext->ecxt_outertuple = slot;
 			if (ExecHashGetHashValue(hashtable, econtext,
 									 hjstate->hj_OuterHashKeys,
 									 true,	/* outer tuple */
-									 HJ_FILL_OUTER(hjstate),
-									 hashvalue))
+									 keep_nulls,
+									 hashvalue,
+									 &hashkeys_null))
 				return slot;
 
 			/*
@@ -1405,15 +1488,22 @@ ExecParallelHashJoinPartitionOuter(HashJoinState *hjstate)
 	/* Execute outer plan, writing all tuples to shared tuplestores. */
 	for (;;)
 	{
+		/* POLAR px */
+		bool		hashkeys_null = false;
+		bool 		keep_nulls = false;
+
 		slot = ExecProcNode(outerState);
 		if (TupIsNull(slot))
 			break;
+		keep_nulls = HJ_FILL_OUTER(hjstate) || 
+					hjstate->hj_nonequijoin;
 		econtext->ecxt_outertuple = slot;
 		if (ExecHashGetHashValue(hashtable, econtext,
 								 hjstate->hj_OuterHashKeys,
 								 true,	/* outer tuple */
-								 HJ_FILL_OUTER(hjstate),
-								 &hashvalue))
+								 keep_nulls,
+								 &hashvalue,
+								 &hashkeys_null))
 		{
 			int			batchno;
 			int			bucketno;
@@ -1546,4 +1636,32 @@ ExecHashJoinInitializeWorker(HashJoinState *state,
 	hashNode->parallel_state = pstate;
 
 	ExecSetExecProcNode(&state->js.ps, ExecParallelHashJoin);
+}
+
+/* Is this an IS-NOT-DISTINCT-join qual list (as opposed the an equijoin)?
+ *
+ * XXX We perform an abbreviated test based on the assumptions that 
+ *     these are the only possibilities and that all conjuncts are 
+ *     alike in this regard.
+ */
+pg_attribute_unused()
+bool
+polar_isNotDistinctJoin(List *qualList)
+{
+	ListCell   *lc;
+
+	foreach(lc, qualList)
+	{
+		BoolExpr   *bex = (BoolExpr *) lfirst(lc);
+		DistinctExpr *dex;
+
+		if (IsA(bex, BoolExpr) &&bex->boolop == NOT_EXPR)
+		{
+			dex = (DistinctExpr *) linitial(bex->args);
+
+			if (IsA(dex, DistinctExpr))
+				return true;	/* We assume the rest follow suit! */
+		}
+	}
+	return false;
 }

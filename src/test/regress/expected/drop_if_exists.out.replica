@@ -1,0 +1,332 @@
+--
+-- IF EXISTS tests
+--
+-- table (will be really dropped at the end)
+DROP TABLE test_exists;
+ERROR:  cannot execute DROP TABLE in a read-only transaction
+DROP TABLE IF EXISTS test_exists;
+ERROR:  cannot execute DROP TABLE in a read-only transaction
+CREATE TABLE test_exists (a int, b text);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+-- view
+DROP VIEW test_view_exists;
+ERROR:  cannot execute DROP VIEW in a read-only transaction
+DROP VIEW IF EXISTS test_view_exists;
+ERROR:  cannot execute DROP VIEW in a read-only transaction
+CREATE VIEW test_view_exists AS select * from test_exists;
+ERROR:  cannot execute CREATE VIEW in a read-only transaction
+DROP VIEW IF EXISTS test_view_exists;
+ERROR:  cannot execute DROP VIEW in a read-only transaction
+DROP VIEW test_view_exists;
+ERROR:  cannot execute DROP VIEW in a read-only transaction
+-- index
+DROP INDEX test_index_exists;
+ERROR:  cannot execute DROP INDEX in a read-only transaction
+DROP INDEX IF EXISTS test_index_exists;
+ERROR:  cannot execute DROP INDEX in a read-only transaction
+CREATE INDEX test_index_exists on test_exists(a);
+ERROR:  cannot execute CREATE INDEX in a read-only transaction
+DROP INDEX IF EXISTS test_index_exists;
+ERROR:  cannot execute DROP INDEX in a read-only transaction
+DROP INDEX test_index_exists;
+ERROR:  cannot execute DROP INDEX in a read-only transaction
+-- sequence
+DROP SEQUENCE test_sequence_exists;
+ERROR:  cannot execute DROP SEQUENCE in a read-only transaction
+DROP SEQUENCE IF EXISTS test_sequence_exists;
+ERROR:  cannot execute DROP SEQUENCE in a read-only transaction
+CREATE SEQUENCE test_sequence_exists;
+ERROR:  cannot execute CREATE SEQUENCE in a read-only transaction
+DROP SEQUENCE IF EXISTS test_sequence_exists;
+ERROR:  cannot execute DROP SEQUENCE in a read-only transaction
+DROP SEQUENCE test_sequence_exists;
+ERROR:  cannot execute DROP SEQUENCE in a read-only transaction
+-- schema
+DROP SCHEMA test_schema_exists;
+ERROR:  cannot execute DROP SCHEMA in a read-only transaction
+DROP SCHEMA IF EXISTS test_schema_exists;
+ERROR:  cannot execute DROP SCHEMA in a read-only transaction
+CREATE SCHEMA test_schema_exists;
+ERROR:  cannot execute CREATE SCHEMA in a read-only transaction
+DROP SCHEMA IF EXISTS test_schema_exists;
+ERROR:  cannot execute DROP SCHEMA in a read-only transaction
+DROP SCHEMA test_schema_exists;
+ERROR:  cannot execute DROP SCHEMA in a read-only transaction
+-- type
+DROP TYPE test_type_exists;
+ERROR:  cannot execute DROP TYPE in a read-only transaction
+DROP TYPE IF EXISTS test_type_exists;
+ERROR:  cannot execute DROP TYPE in a read-only transaction
+CREATE type test_type_exists as (a int, b text);
+ERROR:  cannot execute CREATE TYPE in a read-only transaction
+DROP TYPE IF EXISTS test_type_exists;
+ERROR:  cannot execute DROP TYPE in a read-only transaction
+DROP TYPE test_type_exists;
+ERROR:  cannot execute DROP TYPE in a read-only transaction
+-- domain
+DROP DOMAIN test_domain_exists;
+ERROR:  cannot execute DROP DOMAIN in a read-only transaction
+DROP DOMAIN IF EXISTS test_domain_exists;
+ERROR:  cannot execute DROP DOMAIN in a read-only transaction
+CREATE domain test_domain_exists as int not null check (value > 0);
+ERROR:  cannot execute CREATE DOMAIN in a read-only transaction
+DROP DOMAIN IF EXISTS test_domain_exists;
+ERROR:  cannot execute DROP DOMAIN in a read-only transaction
+DROP DOMAIN test_domain_exists;
+ERROR:  cannot execute DROP DOMAIN in a read-only transaction
+---
+--- role/user/group
+---
+CREATE USER regress_test_u1;
+ERROR:  cannot execute CREATE ROLE in a read-only transaction
+CREATE ROLE regress_test_r1;
+ERROR:  cannot execute CREATE ROLE in a read-only transaction
+CREATE GROUP regress_test_g1;
+ERROR:  cannot execute CREATE ROLE in a read-only transaction
+DROP USER regress_test_u2;
+ERROR:  cannot execute DROP ROLE in a read-only transaction
+DROP USER IF EXISTS regress_test_u1, regress_test_u2;
+ERROR:  cannot execute DROP ROLE in a read-only transaction
+DROP USER regress_test_u1;
+ERROR:  cannot execute DROP ROLE in a read-only transaction
+DROP ROLE regress_test_r2;
+ERROR:  cannot execute DROP ROLE in a read-only transaction
+DROP ROLE IF EXISTS regress_test_r1, regress_test_r2;
+ERROR:  cannot execute DROP ROLE in a read-only transaction
+DROP ROLE regress_test_r1;
+ERROR:  cannot execute DROP ROLE in a read-only transaction
+DROP GROUP regress_test_g2;
+ERROR:  cannot execute DROP ROLE in a read-only transaction
+DROP GROUP IF EXISTS regress_test_g1, regress_test_g2;
+ERROR:  cannot execute DROP ROLE in a read-only transaction
+DROP GROUP regress_test_g1;
+ERROR:  cannot execute DROP ROLE in a read-only transaction
+-- collation
+DROP COLLATION IF EXISTS test_collation_exists;
+ERROR:  cannot execute DROP COLLATION in a read-only transaction
+-- conversion
+DROP CONVERSION test_conversion_exists;
+ERROR:  cannot execute DROP CONVERSION in a read-only transaction
+DROP CONVERSION IF EXISTS test_conversion_exists;
+ERROR:  cannot execute DROP CONVERSION in a read-only transaction
+CREATE CONVERSION test_conversion_exists
+    FOR 'LATIN1' TO 'UTF8' FROM iso8859_1_to_utf8;
+ERROR:  cannot execute CREATE CONVERSION in a read-only transaction
+DROP CONVERSION test_conversion_exists;
+ERROR:  cannot execute DROP CONVERSION in a read-only transaction
+-- text search parser
+DROP TEXT SEARCH PARSER test_tsparser_exists;
+ERROR:  cannot execute DROP TEXT SEARCH PARSER in a read-only transaction
+DROP TEXT SEARCH PARSER IF EXISTS test_tsparser_exists;
+ERROR:  cannot execute DROP TEXT SEARCH PARSER in a read-only transaction
+-- text search dictionary
+DROP TEXT SEARCH DICTIONARY test_tsdict_exists;
+ERROR:  cannot execute DROP TEXT SEARCH DICTIONARY in a read-only transaction
+DROP TEXT SEARCH DICTIONARY IF EXISTS test_tsdict_exists;
+ERROR:  cannot execute DROP TEXT SEARCH DICTIONARY in a read-only transaction
+CREATE TEXT SEARCH DICTIONARY test_tsdict_exists (
+        Template=ispell,
+        DictFile=ispell_sample,
+        AffFile=ispell_sample
+);
+ERROR:  cannot execute CREATE TEXT SEARCH DICTIONARY in a read-only transaction
+DROP TEXT SEARCH DICTIONARY test_tsdict_exists;
+ERROR:  cannot execute DROP TEXT SEARCH DICTIONARY in a read-only transaction
+-- test search template
+DROP TEXT SEARCH TEMPLATE test_tstemplate_exists;
+ERROR:  cannot execute DROP TEXT SEARCH TEMPLATE in a read-only transaction
+DROP TEXT SEARCH TEMPLATE IF EXISTS test_tstemplate_exists;
+ERROR:  cannot execute DROP TEXT SEARCH TEMPLATE in a read-only transaction
+-- text search configuration
+DROP TEXT SEARCH CONFIGURATION test_tsconfig_exists;
+ERROR:  cannot execute DROP TEXT SEARCH CONFIGURATION in a read-only transaction
+DROP TEXT SEARCH CONFIGURATION IF EXISTS test_tsconfig_exists;
+ERROR:  cannot execute DROP TEXT SEARCH CONFIGURATION in a read-only transaction
+CREATE TEXT SEARCH CONFIGURATION test_tsconfig_exists (COPY=english);
+ERROR:  cannot execute CREATE TEXT SEARCH CONFIGURATION in a read-only transaction
+DROP TEXT SEARCH CONFIGURATION test_tsconfig_exists;
+ERROR:  cannot execute DROP TEXT SEARCH CONFIGURATION in a read-only transaction
+-- extension
+DROP EXTENSION test_extension_exists;
+ERROR:  cannot execute DROP EXTENSION in a read-only transaction
+DROP EXTENSION IF EXISTS test_extension_exists;
+ERROR:  cannot execute DROP EXTENSION in a read-only transaction
+-- functions
+DROP FUNCTION test_function_exists();
+ERROR:  cannot execute DROP FUNCTION in a read-only transaction
+DROP FUNCTION IF EXISTS test_function_exists();
+ERROR:  cannot execute DROP FUNCTION in a read-only transaction
+DROP FUNCTION test_function_exists(int, text, int[]);
+ERROR:  cannot execute DROP FUNCTION in a read-only transaction
+DROP FUNCTION IF EXISTS test_function_exists(int, text, int[]);
+ERROR:  cannot execute DROP FUNCTION in a read-only transaction
+-- aggregate
+DROP AGGREGATE test_aggregate_exists(*);
+ERROR:  cannot execute DROP AGGREGATE in a read-only transaction
+DROP AGGREGATE IF EXISTS test_aggregate_exists(*);
+ERROR:  cannot execute DROP AGGREGATE in a read-only transaction
+DROP AGGREGATE test_aggregate_exists(int);
+ERROR:  cannot execute DROP AGGREGATE in a read-only transaction
+DROP AGGREGATE IF EXISTS test_aggregate_exists(int);
+ERROR:  cannot execute DROP AGGREGATE in a read-only transaction
+-- operator
+DROP OPERATOR @#@ (int, int);
+ERROR:  cannot execute DROP OPERATOR in a read-only transaction
+DROP OPERATOR IF EXISTS @#@ (int, int);
+ERROR:  cannot execute DROP OPERATOR in a read-only transaction
+CREATE OPERATOR @#@
+        (leftarg = int8, rightarg = int8, procedure = int8xor);
+ERROR:  cannot execute CREATE OPERATOR in a read-only transaction
+DROP OPERATOR @#@ (int8, int8);
+ERROR:  cannot execute DROP OPERATOR in a read-only transaction
+-- language
+DROP LANGUAGE test_language_exists;
+ERROR:  cannot execute DROP LANGUAGE in a read-only transaction
+DROP LANGUAGE IF EXISTS test_language_exists;
+ERROR:  cannot execute DROP LANGUAGE in a read-only transaction
+-- cast
+DROP CAST (text AS text);
+ERROR:  cannot execute DROP CAST in a read-only transaction
+DROP CAST IF EXISTS (text AS text);
+ERROR:  cannot execute DROP CAST in a read-only transaction
+-- trigger
+DROP TRIGGER test_trigger_exists ON test_exists;
+ERROR:  cannot execute DROP TRIGGER in a read-only transaction
+DROP TRIGGER IF EXISTS test_trigger_exists ON test_exists;
+ERROR:  cannot execute DROP TRIGGER in a read-only transaction
+DROP TRIGGER test_trigger_exists ON no_such_table;
+ERROR:  cannot execute DROP TRIGGER in a read-only transaction
+DROP TRIGGER IF EXISTS test_trigger_exists ON no_such_table;
+ERROR:  cannot execute DROP TRIGGER in a read-only transaction
+DROP TRIGGER test_trigger_exists ON no_such_schema.no_such_table;
+ERROR:  cannot execute DROP TRIGGER in a read-only transaction
+DROP TRIGGER IF EXISTS test_trigger_exists ON no_such_schema.no_such_table;
+ERROR:  cannot execute DROP TRIGGER in a read-only transaction
+CREATE TRIGGER test_trigger_exists
+    BEFORE UPDATE ON test_exists
+    FOR EACH ROW EXECUTE PROCEDURE suppress_redundant_updates_trigger();
+ERROR:  cannot execute CREATE TRIGGER in a read-only transaction
+DROP TRIGGER test_trigger_exists ON test_exists;
+ERROR:  cannot execute DROP TRIGGER in a read-only transaction
+-- rule
+DROP RULE test_rule_exists ON test_exists;
+ERROR:  cannot execute DROP RULE in a read-only transaction
+DROP RULE IF EXISTS test_rule_exists ON test_exists;
+ERROR:  cannot execute DROP RULE in a read-only transaction
+DROP RULE test_rule_exists ON no_such_table;
+ERROR:  cannot execute DROP RULE in a read-only transaction
+DROP RULE IF EXISTS test_rule_exists ON no_such_table;
+ERROR:  cannot execute DROP RULE in a read-only transaction
+DROP RULE test_rule_exists ON no_such_schema.no_such_table;
+ERROR:  cannot execute DROP RULE in a read-only transaction
+DROP RULE IF EXISTS test_rule_exists ON no_such_schema.no_such_table;
+ERROR:  cannot execute DROP RULE in a read-only transaction
+CREATE RULE test_rule_exists AS ON INSERT TO test_exists
+    DO INSTEAD
+    INSERT INTO test_exists VALUES (NEW.a, NEW.b || NEW.a::text);
+ERROR:  cannot execute CREATE RULE in a read-only transaction
+DROP RULE test_rule_exists ON test_exists;
+ERROR:  cannot execute DROP RULE in a read-only transaction
+-- foreign data wrapper
+DROP FOREIGN DATA WRAPPER test_fdw_exists;
+ERROR:  cannot execute DROP FOREIGN DATA WRAPPER in a read-only transaction
+DROP FOREIGN DATA WRAPPER IF EXISTS test_fdw_exists;
+ERROR:  cannot execute DROP FOREIGN DATA WRAPPER in a read-only transaction
+-- foreign server
+DROP SERVER test_server_exists;
+ERROR:  cannot execute DROP SERVER in a read-only transaction
+DROP SERVER IF EXISTS test_server_exists;
+ERROR:  cannot execute DROP SERVER in a read-only transaction
+-- operator class
+DROP OPERATOR CLASS test_operator_class USING btree;
+ERROR:  cannot execute DROP OPERATOR CLASS in a read-only transaction
+DROP OPERATOR CLASS IF EXISTS test_operator_class USING btree;
+ERROR:  cannot execute DROP OPERATOR CLASS in a read-only transaction
+DROP OPERATOR CLASS test_operator_class USING no_such_am;
+ERROR:  cannot execute DROP OPERATOR CLASS in a read-only transaction
+DROP OPERATOR CLASS IF EXISTS test_operator_class USING no_such_am;
+ERROR:  cannot execute DROP OPERATOR CLASS in a read-only transaction
+-- operator family
+DROP OPERATOR FAMILY test_operator_family USING btree;
+ERROR:  cannot execute DROP OPERATOR FAMILY in a read-only transaction
+DROP OPERATOR FAMILY IF EXISTS test_operator_family USING btree;
+ERROR:  cannot execute DROP OPERATOR FAMILY in a read-only transaction
+DROP OPERATOR FAMILY test_operator_family USING no_such_am;
+ERROR:  cannot execute DROP OPERATOR FAMILY in a read-only transaction
+DROP OPERATOR FAMILY IF EXISTS test_operator_family USING no_such_am;
+ERROR:  cannot execute DROP OPERATOR FAMILY in a read-only transaction
+-- access method
+DROP ACCESS METHOD no_such_am;
+ERROR:  cannot execute DROP ACCESS METHOD in a read-only transaction
+DROP ACCESS METHOD IF EXISTS no_such_am;
+ERROR:  cannot execute DROP ACCESS METHOD in a read-only transaction
+-- drop the table
+DROP TABLE IF EXISTS test_exists;
+ERROR:  cannot execute DROP TABLE in a read-only transaction
+DROP TABLE test_exists;
+ERROR:  cannot execute DROP TABLE in a read-only transaction
+-- be tolerant with missing schemas, types, etc
+DROP AGGREGATE IF EXISTS no_such_schema.foo(int);
+ERROR:  cannot execute DROP AGGREGATE in a read-only transaction
+DROP AGGREGATE IF EXISTS foo(no_such_type);
+ERROR:  cannot execute DROP AGGREGATE in a read-only transaction
+DROP AGGREGATE IF EXISTS foo(no_such_schema.no_such_type);
+ERROR:  cannot execute DROP AGGREGATE in a read-only transaction
+DROP CAST IF EXISTS (INTEGER AS no_such_type2);
+ERROR:  cannot execute DROP CAST in a read-only transaction
+DROP CAST IF EXISTS (no_such_type1 AS INTEGER);
+ERROR:  cannot execute DROP CAST in a read-only transaction
+DROP CAST IF EXISTS (INTEGER AS no_such_schema.bar);
+ERROR:  cannot execute DROP CAST in a read-only transaction
+DROP CAST IF EXISTS (no_such_schema.foo AS INTEGER);
+ERROR:  cannot execute DROP CAST in a read-only transaction
+DROP COLLATION IF EXISTS no_such_schema.foo;
+ERROR:  cannot execute DROP COLLATION in a read-only transaction
+DROP CONVERSION IF EXISTS no_such_schema.foo;
+ERROR:  cannot execute DROP CONVERSION in a read-only transaction
+DROP DOMAIN IF EXISTS no_such_schema.foo;
+ERROR:  cannot execute DROP DOMAIN in a read-only transaction
+DROP FOREIGN TABLE IF EXISTS no_such_schema.foo;
+ERROR:  cannot execute DROP FOREIGN TABLE in a read-only transaction
+DROP FUNCTION IF EXISTS no_such_schema.foo();
+ERROR:  cannot execute DROP FUNCTION in a read-only transaction
+DROP FUNCTION IF EXISTS foo(no_such_type);
+ERROR:  cannot execute DROP FUNCTION in a read-only transaction
+DROP FUNCTION IF EXISTS foo(no_such_schema.no_such_type);
+ERROR:  cannot execute DROP FUNCTION in a read-only transaction
+DROP INDEX IF EXISTS no_such_schema.foo;
+ERROR:  cannot execute DROP INDEX in a read-only transaction
+DROP MATERIALIZED VIEW IF EXISTS no_such_schema.foo;
+ERROR:  cannot execute DROP MATERIALIZED VIEW in a read-only transaction
+DROP OPERATOR IF EXISTS no_such_schema.+ (int, int);
+ERROR:  cannot execute DROP OPERATOR in a read-only transaction
+DROP OPERATOR IF EXISTS + (no_such_type, no_such_type);
+ERROR:  cannot execute DROP OPERATOR in a read-only transaction
+DROP OPERATOR IF EXISTS + (no_such_schema.no_such_type, no_such_schema.no_such_type);
+ERROR:  cannot execute DROP OPERATOR in a read-only transaction
+DROP OPERATOR IF EXISTS # (NONE, no_such_schema.no_such_type);
+ERROR:  cannot execute DROP OPERATOR in a read-only transaction
+DROP OPERATOR CLASS IF EXISTS no_such_schema.widget_ops USING btree;
+ERROR:  cannot execute DROP OPERATOR CLASS in a read-only transaction
+DROP OPERATOR FAMILY IF EXISTS no_such_schema.float_ops USING btree;
+ERROR:  cannot execute DROP OPERATOR FAMILY in a read-only transaction
+DROP RULE IF EXISTS foo ON no_such_schema.bar;
+ERROR:  cannot execute DROP RULE in a read-only transaction
+DROP SEQUENCE IF EXISTS no_such_schema.foo;
+ERROR:  cannot execute DROP SEQUENCE in a read-only transaction
+DROP TABLE IF EXISTS no_such_schema.foo;
+ERROR:  cannot execute DROP TABLE in a read-only transaction
+DROP TEXT SEARCH CONFIGURATION IF EXISTS no_such_schema.foo;
+ERROR:  cannot execute DROP TEXT SEARCH CONFIGURATION in a read-only transaction
+DROP TEXT SEARCH DICTIONARY IF EXISTS no_such_schema.foo;
+ERROR:  cannot execute DROP TEXT SEARCH DICTIONARY in a read-only transaction
+DROP TEXT SEARCH PARSER IF EXISTS no_such_schema.foo;
+ERROR:  cannot execute DROP TEXT SEARCH PARSER in a read-only transaction
+DROP TEXT SEARCH TEMPLATE IF EXISTS no_such_schema.foo;
+ERROR:  cannot execute DROP TEXT SEARCH TEMPLATE in a read-only transaction
+DROP TRIGGER IF EXISTS foo ON no_such_schema.bar;
+ERROR:  cannot execute DROP TRIGGER in a read-only transaction
+DROP TYPE IF EXISTS no_such_schema.foo;
+ERROR:  cannot execute DROP TYPE in a read-only transaction
+DROP VIEW IF EXISTS no_such_schema.foo;
+ERROR:  cannot execute DROP VIEW in a read-only transaction

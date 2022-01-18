@@ -3873,6 +3873,8 @@ psql_completion(const char *text, int start, int end)
 			COMPLETE_WITH_LIST_CS3("on", "off", "interactive");
 		else if (TailMatchesCS1("SHOW_CONTEXT"))
 			COMPLETE_WITH_LIST_CS3("never", "errors", "always");
+		else if (TailMatchesCS1("SORT_RESULT"))
+			COMPLETE_WITH_LIST_CS2("off", "on");
 		else if (TailMatchesCS1("VERBOSITY"))
 			COMPLETE_WITH_LIST_CS3("default", "verbose", "terse");
 	}

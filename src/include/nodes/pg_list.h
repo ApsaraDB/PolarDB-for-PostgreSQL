@@ -169,6 +169,13 @@ list_length(const List *l)
 #define for_each_cell(cell, initcell)	\
 	for ((cell) = (initcell); (cell) != NULL; (cell) = lnext(cell))
 
+/* POLAR px */
+#define foreach_with_count(cell, list, counter) \
+	for ((cell) = list_head(list), (counter) = 0; \
+	     (cell) != NULL; \
+	     (cell) = lnext(cell), ++(counter))
+/* POLAR end */
+
 /*
  * forboth -
  *	  a convenience macro for advancing through two linked lists

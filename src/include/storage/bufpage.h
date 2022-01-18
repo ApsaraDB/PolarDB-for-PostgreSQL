@@ -15,6 +15,7 @@
 #define BUFPAGE_H
 
 #include "access/xlogdefs.h"
+#include "common/relpath.h"
 #include "storage/block.h"
 #include "storage/item.h"
 #include "storage/off.h"
@@ -161,6 +162,9 @@ typedef struct PageHeaderData
 
 typedef PageHeaderData *PageHeader;
 
+#define PageEncryptOffset		offsetof(PageHeaderData, pd_linp)
+#define SizeOfPageEncryption	(BLCKSZ - PageEncryptOffset)
+
 /*
  * pd_flags contains the following flag bits.  Undefined bits are initialized
  * to zero and may be used in the future.
@@ -177,8 +181,9 @@ typedef PageHeaderData *PageHeader;
 #define PD_PAGE_FULL		0x0002	/* not enough free space for new tuple? */
 #define PD_ALL_VISIBLE		0x0004	/* all tuples on page are visible to
 									 * everyone */
+#define PD_IS_ENCRYPTED		0x8000	/* Is a encrypted page? */
 
-#define PD_VALID_FLAG_BITS	0x0007	/* OR of all valid pd_flags bits */
+#define PD_VALID_FLAG_BITS	0x8007	/* OR of all valid pd_flags bits */
 
 /*
  * Page layout version number 0 is for pre-7.3 Postgres releases.
@@ -385,6 +390,12 @@ PageValidateSpecialPointer(Page page)
 #define PageClearAllVisible(page) \
 	(((PageHeader) (page))->pd_flags &= ~PD_ALL_VISIBLE)
 
+/* POLAR: page is encrypted flag */
+#define PageIsEncrypted(page) (((PageHeader) (page))->pd_flags & PD_IS_ENCRYPTED)
+#define PageSetEncrypted(page) \
+	(((PageHeader) (page))->pd_flags |= PD_IS_ENCRYPTED)
+/* POLAR: END */
+
 #define PageIsPrunable(page, oldestxmin) \
 ( \
 	AssertMacro(TransactionIdIsNormal(oldestxmin)), \
@@ -415,7 +426,7 @@ do { \
 						((is_heap) ? PAI_IS_HEAP : 0))
 
 extern void PageInit(Page page, Size pageSize, Size specialSize);
-extern bool PageIsVerified(Page page, BlockNumber blkno);
+extern bool PageIsVerified(Page page, ForkNumber forknum, BlockNumber blkno, void *smgr);
 extern OffsetNumber PageAddItemExtended(Page page, Item item, Size size,
 					OffsetNumber offsetNumber, int flags);
 extern Page PageGetTempPage(Page page);
@@ -434,5 +445,12 @@ extern bool PageIndexTupleOverwrite(Page page, OffsetNumber offnum,
 						Item newtup, Size newsize);
 extern char *PageSetChecksumCopy(Page page, BlockNumber blkno);
 extern void PageSetChecksumInplace(Page page, BlockNumber blkno);
+extern char *PageEncryptCopy(Page page, ForkNumber forknum, BlockNumber blkno);
+extern void PageEncryptInplace(Page page, ForkNumber forknum, BlockNumber blkno);
+extern void PageDecryptInplace(Page page, ForkNumber forknum, BlockNumber blkno, void *smgr);
+
+/* POALR */
+extern bool polar_page_is_just_inited(Page page);
+/* POALR end */
 
 #endif							/* BUFPAGE_H */

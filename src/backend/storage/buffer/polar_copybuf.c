@@ -1,9 +1,10 @@
 /*-------------------------------------------------------------------------
  *
  * polar_copybuf.c
- *  Basic copy buffer manager.
+ *	  Basic copy buffer manager.
  *
- * Copyright (c) 2018, Alibaba Group Holding Limited
+ * Copyright (c) 2021, Alibaba Group Holding Limited
+ *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -14,21 +15,23 @@
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
- * limitations under the License.*
+ * limitations under the License.
+ *
  *
  * IDENTIFICATION
- *  src/backend/storage/buffer/polar_copybuf.c
+ *	  src/backend/storage/buffer/polar_copybuf.c
  *
  *-------------------------------------------------------------------------
  */
+#include "polar_flashback/polar_flashback_log.h"
 #include "storage/polar_copybuf.h"
 #include "storage/polar_bufmgr.h"
 #include "storage/polar_flushlist.h"
 #include "utils/guc.h"
 
-CopyBufferControl *polar_copy_buffer_ctl;
+CopyBufferControl    *polar_copy_buffer_ctl;
 CopyBufferDescPadded *polar_copy_buffer_descriptors;
-char	   *polar_copy_buffer_blocks;
+char                 *polar_copy_buffer_blocks;
 
 extern XLogRecPtr GetXLogInsertRecPtr(void);
 extern void XLogFlush(XLogRecPtr record);
@@ -57,13 +60,18 @@ polar_init_copy_buffer_pool(void)
 
 	/* Align descriptors to a cacheline boundary. */
 	polar_copy_buffer_descriptors = (CopyBufferDescPadded *)
-		ShmemInitStruct("Copy Buffer Descriptors",
-						polar_copy_buffers * sizeof(CopyBufferDescPadded),
-						&found_copy_descs);
+									ShmemInitStruct("Copy Buffer Descriptors",
+											polar_copy_buffers * sizeof(CopyBufferDescPadded),
+											&found_copy_descs);
 
 	polar_copy_buffer_blocks = (char *)
-		ShmemInitStruct("Copy Buffer Blocks",
-						polar_copy_buffers * (Size) BLCKSZ, &found_copy_bufs);
+							   ShmemInitStruct("Copy Buffer Blocks",
+											   polar_enable_buffer_alignment ?
+											   	POLAR_BUFFER_EXTEND_SIZE(polar_copy_buffers * (Size) BLCKSZ) :
+												polar_copy_buffers * (Size) BLCKSZ,
+											   &found_copy_bufs);
+	if (polar_enable_buffer_alignment)
+		polar_copy_buffer_blocks = (char *) POLAR_BUFFER_ALIGN(polar_copy_buffer_blocks);
 
 	if (found_copy_bufs || found_copy_descs)
 	{
@@ -106,11 +114,11 @@ polar_init_copy_buffer_pool(void)
 static void
 init_copy_buffer_ctl(bool init)
 {
-	bool		found;
+	bool        found;
 
 	polar_copy_buffer_ctl = (CopyBufferControl *)
-		ShmemInitStruct("Copy Buffer Status",
-						sizeof(CopyBufferControl), &found);
+							ShmemInitStruct("Copy Buffer Status",
+											sizeof(CopyBufferControl), &found);
 
 	if (!found)
 	{
@@ -141,7 +149,7 @@ init_copy_buffer_ctl(bool init)
 Size
 polar_copy_buffer_shmem_size(void)
 {
-	Size		size = 0;
+	Size        size = 0;
 
 	if (!polar_copy_buffer_enabled())
 		return size;
@@ -151,6 +159,9 @@ polar_copy_buffer_shmem_size(void)
 	/* to allow aligning buffer descriptors */
 	size = add_size(size, PG_CACHE_LINE_SIZE);
 
+	/* POLAR: extra alignment padding for data I/O buffers */
+	if (polar_enable_buffer_alignment)
+		size = POLAR_BUFFER_EXTEND_SIZE(size);
 	/* size of data pages */
 	size = add_size(size, mul_size(polar_copy_buffers, BLCKSZ));
 
@@ -170,9 +181,13 @@ polar_buffer_copy_if_needed(BufferDesc *buf, XLogRecPtr oldest_apply_lsn)
 	Assert(polar_copy_buffer_enabled());
 
 	if (copy_buffer_alloc(buf, oldest_apply_lsn))
+	{
 		pg_atomic_add_fetch_u64(&polar_copy_buffer_ctl->copied_count, 1);
+	}
 	else
+	{
 		pg_atomic_add_fetch_u64(&polar_copy_buffer_ctl->unavailable_count, 1);
+	}
 }
 
 /* Check if the buffer is satisfied to allocate a copy buffer. */
@@ -181,10 +196,10 @@ polar_buffer_copy_is_satisfied(BufferDesc *buf,
 							   XLogRecPtr oldest_apply_lsn,
 							   bool check_io)
 {
-	uint32		buf_state;
-	uint32		lsn_lag_with_cons_lsn;
-	XLogRecPtr	oldest_lsn;
-	bool		is_dirty;
+	uint32     buf_state;
+	uint32     lsn_lag_with_cons_lsn;
+	XLogRecPtr oldest_lsn;
+	bool       is_dirty;
 
 	if (!polar_copy_buffer_enabled())
 		return false;
@@ -221,25 +236,25 @@ polar_buffer_copy_is_satisfied(BufferDesc *buf,
 			 buf->tag.rnode.relNode,
 			 buf->tag.blockNum,
 			 buf->tag.forkNum,
-			 is_dirty, ((PageHeader) BufferGetPage(buf->buf_id + 1))->pd_flags);
+			 is_dirty, ((PageHeader)BufferGetPage(buf->buf_id + 1))->pd_flags);
 
 		/* If buffer oldest lsn is invalid, it must be not in the flushlist */
-		Assert(buf->flush_next == POLAR_FLUSHNEXT_NOT_IN_LIST);
-		Assert(buf->flush_prev == POLAR_FLUSHNEXT_NOT_IN_LIST);
+		//Assert(buf->flush_next == POLAR_FLUSHNEXT_NOT_IN_LIST);
+		//Assert(buf->flush_prev == POLAR_FLUSHNEXT_NOT_IN_LIST);
 		return false;
 	}
 
 	if (!(buf_state & BM_PERMANENT) ||
-		(check_io && (buf_state & BM_IO_IN_PROGRESS)))
+			(check_io && (buf_state & BM_IO_IN_PROGRESS)))
 		return false;
 
 	lsn_lag_with_cons_lsn = oldest_lsn - polar_get_consistent_lsn();
 
 	if ((buf->recently_modified_count > polar_buffer_copy_min_modified_count &&
-		 lsn_lag_with_cons_lsn <
-		 polar_buffer_copy_lsn_lag_with_cons_lsn * 1024 * 1024) ||
 		lsn_lag_with_cons_lsn <
-		polar_buffer_copy_lsn_lag_with_cons_lsn * 1024 * 1024 / 2)
+			polar_buffer_copy_lsn_lag_with_cons_lsn * 1024 * 1024) ||
+		lsn_lag_with_cons_lsn <
+			polar_buffer_copy_lsn_lag_with_cons_lsn * 1024 * 1024 / 2)
 		return true;
 
 	return false;
@@ -249,8 +264,8 @@ static bool
 copy_buffer_alloc(BufferDesc *buf, XLogRecPtr oldest_apply_lsn)
 {
 	CopyBufferDesc *cbuf;
-	uint32		buf_state;
-	XLogRecPtr	consistent_lsn;
+	uint32         buf_state;
+	XLogRecPtr     consistent_lsn;
 
 	/* Before copy, lock the buffer using io_in_progress lock like FlushBuffer */
 	if (!start_copy_buffer_io(buf, true))
@@ -265,7 +280,7 @@ copy_buffer_alloc(BufferDesc *buf, XLogRecPtr oldest_apply_lsn)
 
 	consistent_lsn = polar_get_consistent_lsn();
 
-	if (unlikely(polar_enable_debug))
+	if (polar_enable_debug)
 	{
 		elog(DEBUG1,
 			 "Copy page ([%u,%u,%u], %u), page latest lsn %X/%X, page oldest lsn %X/%X, consistent lsn %X/%X",
@@ -286,11 +301,19 @@ copy_buffer_alloc(BufferDesc *buf, XLogRecPtr oldest_apply_lsn)
 
 	if (polar_copy_buffer_ctl->first_free_buffer < 0)
 	{
+		static TimestampTz last_log_time = 0;
+
 		SpinLockRelease(&polar_copy_buffer_ctl->copy_buffer_ctl_lock);
 		TerminateBufferIO(buf, false, 0);
 		pg_atomic_fetch_add_u64(&polar_copy_buffer_ctl->full_count, 1);
 
-		elog(WARNING, "Copy buffer pool is full, pool size is %d", polar_copy_buffers);
+		/* Do not log frequently, every 1s log one */
+		if (TimestampDifferenceExceeds(last_log_time, GetCurrentTimestamp(), 1000))
+		{
+			elog(WARNING, "Copy buffer pool is full, pool size is %d",
+				 polar_copy_buffers);
+			last_log_time = GetCurrentTimestamp();
+		}
 
 		return false;
 	}
@@ -304,8 +327,8 @@ copy_buffer_alloc(BufferDesc *buf, XLogRecPtr oldest_apply_lsn)
 	cbuf->free_next = FREENEXT_NOT_IN_LIST;
 
 	/*
-	 * Release the lock so someone else can access the freelist while we check
-	 * out this buffer.
+	 * Release the lock so someone else can access the freelist while
+	 * we check out this buffer.
 	 */
 	SpinLockRelease(&polar_copy_buffer_ctl->copy_buffer_ctl_lock);
 
@@ -318,7 +341,7 @@ copy_buffer_alloc(BufferDesc *buf, XLogRecPtr oldest_apply_lsn)
 	pg_atomic_write_u64((pg_atomic_uint64 *) &cbuf->oldest_lsn,
 						buf->oldest_lsn);
 	pg_atomic_write_u32((pg_atomic_uint32 *) &cbuf->origin_buffer,
-						(uint32) BufferDescriptorGetBuffer(buf));
+					   (uint32) BufferDescriptorGetBuffer(buf));
 	cbuf->state = POLAR_COPY_BUFFER_USED;
 
 	buf_state = LockBufHdr(buf);
@@ -338,72 +361,74 @@ copy_buffer_alloc(BufferDesc *buf, XLogRecPtr oldest_apply_lsn)
 void
 polar_free_copy_buffer(BufferDesc *buf)
 {
-	uint32		buf_state;
+	uint32         buf_state;
 	CopyBufferDesc *cbuf = buf->copy_buffer;
 
-	if (cbuf == NULL)
-		return;
-
-	if (unlikely(polar_enable_debug))
+	if (cbuf)
 	{
-		elog(DEBUG1,
-			 "Free copy buffer ([%u,%u,%u], %u), cbuf oldest lsn %X/%X, latest lsn %X/%X, is_flushed %d",
-			 buf->tag.rnode.spcNode,
-			 buf->tag.rnode.dbNode,
-			 buf->tag.rnode.relNode,
-			 buf->tag.blockNum,
-			 (uint32) (cbuf->oldest_lsn >> 32),
-			 (uint32) cbuf->oldest_lsn,
-			 (uint32) (polar_copy_buffer_get_lsn(cbuf) >> 32),
-			 (uint32) polar_copy_buffer_get_lsn(cbuf),
-			 cbuf->is_flushed);
+		if (polar_enable_debug)
+		{
+			elog(DEBUG1,
+				 "Free copy buffer ([%u,%u,%u], %u), cbuf oldest lsn %X/%X, latest lsn %X/%X, is_flushed %d",
+				 buf->tag.rnode.spcNode,
+				 buf->tag.rnode.dbNode,
+				 buf->tag.rnode.relNode,
+				 buf->tag.blockNum,
+				 (uint32) (cbuf->oldest_lsn >> 32),
+				 (uint32) cbuf->oldest_lsn,
+				 (uint32) (polar_copy_buffer_get_lsn(cbuf) >> 32),
+				 (uint32) polar_copy_buffer_get_lsn(cbuf),
+				 cbuf->is_flushed);
+		}
+
+		/* First reset it */
+		buf_state = LockBufHdr(buf);
+		buf->copy_buffer = NULL;
+		buf->polar_flags &= ~POLAR_BUF_FIRST_TOUCHED_AFTER_COPY;
+		UnlockBufHdr(buf, buf_state);
+
+		pg_atomic_fetch_add_u64(&polar_copy_buffer_ctl->release_count, 1);
+		if (cbuf->is_flushed)
+			pg_atomic_fetch_add_u64(&polar_copy_buffer_ctl->flushed_count, 1);
+
+		CLEAR_BUFFERTAG(cbuf->tag);
+		pg_atomic_write_u32((pg_atomic_uint32 *) &cbuf->origin_buffer, 0);
+		pg_atomic_write_u32(&cbuf->pass_count, 0);
+		pg_atomic_write_u64((pg_atomic_uint64 *) &cbuf->oldest_lsn, InvalidXLogRecPtr);
+		cbuf->state = POLAR_COPY_BUFFER_UNUSED;
+		cbuf->is_flushed = false;
+
+		/* Then put into the freelist */
+		SpinLockAcquire(&polar_copy_buffer_ctl->copy_buffer_ctl_lock);
+
+		Assert(cbuf->free_next == FREENEXT_NOT_IN_LIST);
+
+		cbuf->free_next = polar_copy_buffer_ctl->first_free_buffer;
+		if (cbuf->free_next < 0)
+			polar_copy_buffer_ctl->last_free_buffer = cbuf->buf_id;
+		polar_copy_buffer_ctl->first_free_buffer = cbuf->buf_id;
+		SpinLockRelease(&polar_copy_buffer_ctl->copy_buffer_ctl_lock);
 	}
 
-	/* First reset it */
-	buf_state = LockBufHdr(buf);
-	buf->copy_buffer = NULL;
-	buf->polar_flags &= ~POLAR_BUF_FIRST_TOUCHED_AFTER_COPY;
-	UnlockBufHdr(buf, buf_state);
-
-	pg_atomic_fetch_add_u64(&polar_copy_buffer_ctl->release_count, 1);
-	if (cbuf->is_flushed)
-		pg_atomic_fetch_add_u64(&polar_copy_buffer_ctl->flushed_count, 1);
-
-	CLEAR_BUFFERTAG(cbuf->tag);
-	pg_atomic_write_u32((pg_atomic_uint32 *) &cbuf->origin_buffer, 0);
-	pg_atomic_write_u32(&cbuf->pass_count, 0);
-	pg_atomic_write_u64((pg_atomic_uint64 *) &cbuf->oldest_lsn, InvalidXLogRecPtr);
-	cbuf->state = POLAR_COPY_BUFFER_UNUSED;
-	cbuf->is_flushed = false;
-
-	/* Then put into the freelist */
-	SpinLockAcquire(&polar_copy_buffer_ctl->copy_buffer_ctl_lock);
-
-	Assert(cbuf->free_next == FREENEXT_NOT_IN_LIST);
-
-	cbuf->free_next = polar_copy_buffer_ctl->first_free_buffer;
-	if (cbuf->free_next < 0)
-		polar_copy_buffer_ctl->last_free_buffer = cbuf->buf_id;
-	polar_copy_buffer_ctl->first_free_buffer = cbuf->buf_id;
-	SpinLockRelease(&polar_copy_buffer_ctl->copy_buffer_ctl_lock);
+	return;
 }
 
 /* Like FlushBuffer, flush a copy buffer. */
 void
 polar_flush_copy_buffer(BufferDesc *buf, SMgrRelation reln)
 {
-	XLogRecPtr	latest_lsn;
-	XLogRecPtr	oldest_apply_lsn;
-	Block		buf_block;
-	uint32		buf_state;
+	XLogRecPtr     latest_lsn;
+	XLogRecPtr     oldest_apply_lsn;
+	Block          buf_block;
+	uint32         buf_state;
 	CopyBufferDesc *cbuf;
 
 	Assert(polar_copy_buffer_enabled());
 
 	/*
 	 * Acquire the buffer's io_in_progress lock.  If start_copy_buffer_io
-	 * returns false, then someone else flushed the buffer before we could, so
-	 * we need not do anything.
+	 * returns false, then someone else flushed the buffer before we could,
+	 * so we need not do anything.
 	 */
 	if (!start_copy_buffer_io(buf, false))
 		return;
@@ -412,8 +437,8 @@ polar_flush_copy_buffer(BufferDesc *buf, SMgrRelation reln)
 	Assert(cbuf);
 
 	/*
-	 * Double check. The copy buffer may have been replaced by others, its
-	 * latest lsn may be greater than oldest apply lsn.
+	 * Double check. The copy buffer may have been replaced by others,
+	 * its latest lsn may be greater than oldest apply lsn.
 	 */
 	oldest_apply_lsn = polar_get_oldest_applied_lsn();
 	if (!polar_buffer_can_be_flushed(buf, oldest_apply_lsn, true))
@@ -464,19 +489,24 @@ polar_flush_copy_buffer(BufferDesc *buf, SMgrRelation reln)
 	buf_state = LockBufHdr(buf);
 	UnlockBufHdr(buf, buf_state);
 	if (buf_state & BM_PERMANENT)
+	{
 		XLogFlush(latest_lsn);
+		polar_flush_buf_flog_rec(buf, flog_instance, false);
+	}
 
 	/*
-	 * Now it's safe to write copy buffer to disk. Note that no one else
-	 * should have been able to write it while we were busy with log flushing
-	 * because we have the io_in_progress lock.
+	 * Now it's safe to write copy buffer to disk. Note that no one else should
+	 * have been able to write it while we were busy with log flushing because
+	 * we have the io_in_progress lock.
 	 */
 	buf_block = CopyBufHdrGetBlock(cbuf);
 
+	PageEncryptInplace((Page) buf_block, buf->tag.forkNum, buf->tag.blockNum);
+
 	/*
 	 * For copy buffer, only call the PageSetChecksumInplace instead of
-	 * PageSetChecksumCopy for buffer, no other process can be modifying this
-	 * copy buffer.
+	 * PageSetChecksumCopy for buffer, no other process can be modifying
+	 * this copy buffer.
 	 */
 	PageSetChecksumInplace((Page) buf_block, buf->tag.blockNum);
 
@@ -495,8 +525,8 @@ polar_flush_copy_buffer(BufferDesc *buf, SMgrRelation reln)
 	polar_free_copy_buffer(buf);
 
 	/*
-	 * For copy buffer, do not mark the original buffer as clean and end the
-	 * io_in_progress state.
+	 * For copy buffer, do not mark the original buffer as clean and
+	 * end the io_in_progress state.
 	 */
 	TerminateBufferIO(buf, false, 0);
 }
@@ -514,10 +544,10 @@ start_copy_buffer_io(BufferDesc *buf, bool for_input)
 XLogRecPtr
 polar_copy_buffers_get_oldest_lsn(void)
 {
-	int			i;
+	int            i;
 	CopyBufferDesc *cbuf;
-	XLogRecPtr	cur_lsn;
-	XLogRecPtr	res = InvalidXLogRecPtr;
+	XLogRecPtr     cur_lsn;
+	XLogRecPtr     res = InvalidXLogRecPtr;
 
 	if (!polar_copy_buffer_enabled())
 		return res;

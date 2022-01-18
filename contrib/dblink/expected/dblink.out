@@ -1,4 +1,12 @@
 CREATE EXTENSION dblink;
+alter system set dblink.polar_auto_port_mapping=off;
+alter system set dblink.polar_connection_check=off;
+select pg_reload_conf();
+ pg_reload_conf 
+----------------
+ t
+(1 row)
+
 -- want context for notices
 \set SHOW_CONTEXT always
 CREATE TABLE foo(f1 int, f2 text, f3 text[], primary key (f1,f2));
@@ -879,7 +887,7 @@ $d$;
 CREATE USER MAPPING FOR public SERVER fdtest
   OPTIONS (server 'localhost');  -- fail, can't specify server here
 ERROR:  invalid option "server"
-HINT:  Valid options in this context are: user, password
+HINT:  Valid options in this context are: user, password, encrypted_password
 CREATE USER MAPPING FOR public SERVER fdtest OPTIONS (user :'USER');
 GRANT USAGE ON FOREIGN SERVER fdtest TO regress_dblink_user;
 GRANT EXECUTE ON FUNCTION dblink_connect_u(text, text) TO regress_dblink_user;
@@ -1179,3 +1187,11 @@ SELECT dblink_disconnect('myconn');
 RESET datestyle;
 RESET intervalstyle;
 RESET timezone;
+alter system reset dblink.polar_auto_port_mapping;
+alter system reset dblink.polar_connection_check;
+select pg_reload_conf();
+ pg_reload_conf 
+----------------
+ t
+(1 row)
+

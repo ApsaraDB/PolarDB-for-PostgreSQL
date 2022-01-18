@@ -1,0 +1,4 @@
+comment = 'Test code for checkpoint ringbuf'
+module_pathname = '$libdir/test_checkpoint_ringbuf'
+default_version = '1.0'
+relocatable = true

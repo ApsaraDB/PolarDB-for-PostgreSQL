@@ -361,6 +361,32 @@ InitializeTimeouts(void)
 	pqsignal(SIGALRM, handle_sig_alarm);
 }
 
+/* POLAR: Use pqsignal_with_sigsets api to disable some signal. */
+void
+InitializeTimeouts_with_sigsets(int signum1, int signum2)
+{
+	int			i;
+
+	/* Initialize, or re-initialize, all local state */
+	disable_alarm();
+
+	num_active_timeouts = 0;
+
+	for (i = 0; i < MAX_TIMEOUTS; i++)
+	{
+		all_timeouts[i].index = i;
+		all_timeouts[i].indicator = false;
+		all_timeouts[i].timeout_handler = NULL;
+		all_timeouts[i].start_time = 0;
+		all_timeouts[i].fin_time = 0;
+	}
+
+	all_timeouts_initialized = true;
+
+	/* Now establish the signal handler */
+	pqsignal_with_sigsets(SIGALRM, handle_sig_alarm, signum1, signum2);
+}
+
 /*
  * Register a timeout reason
  *

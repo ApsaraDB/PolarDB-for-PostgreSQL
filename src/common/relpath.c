@@ -23,11 +23,13 @@
 #include "storage/backendid.h"
 
 /* POLAR */
+#include "polar_dma/polar_dma.h"
 #include "storage/polar_fd.h"
 
 /* POLAR */
 extern bool		polar_enable_shared_storage_mode;
 extern char		*polar_datadir;
+extern bool		polar_temp_relation_file_in_shared_storage;
 
 /*
  * Lookup table of fork name by fork number.
@@ -211,7 +213,22 @@ GetRelationPath(Oid dbNode, Oid spcNode, Oid relNode,
 	}
 
 #ifndef FRONTEND
-	if(POLAR_FILE_IN_SHARED_STORAGE())
+	/*
+	 * POLAR: In DMA mode, user tablespace data must be in the local directory.
+	 * Also, polar_enable_shared_storage_mode is true in DMA mode, 
+	 * So we added judgment here.
+	 */
+	if (polar_enable_dma &&
+		spcNode != GLOBALTABLESPACE_OID &&
+		spcNode != DEFAULTTABLESPACE_OID)
+		return path;
+	/*
+	 * POLAR: normal relation file will be stored in shared storage.
+	 * Temp relation file will be stored in local storage if the
+	 * polar_temp_relation_file_in_shared_storage is off.
+	 */
+	if (POLAR_TEMP_TABLE_FILE_IN_SHARED_STORAGE(backendId) ||
+		POLAR_NORMAL_TABLE_FILE_IN_SHARED_STORAGE(backendId))
 	{
 		char *polar_path = psprintf("%s/%s", polar_datadir, path);
 		pfree(path);
@@ -244,3 +261,4 @@ polar_get_database_path(Oid dbNode, Oid spcNode)
 
 	return path;
 }
+

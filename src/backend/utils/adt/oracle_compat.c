@@ -781,11 +781,9 @@ translate(PG_FUNCTION_ARGS)
 			/* substitute */
 			char	   *p = to_ptr;
 
-			for (i = 0; i < from_index; i++)
+			for (i = 0; i < from_index && p < (to_ptr + tolen); i++)
 			{
 				p += pg_mblen(p);
-				if (p >= (to_ptr + tolen))
-					break;
 			}
 			if (p < (to_ptr + tolen))
 			{

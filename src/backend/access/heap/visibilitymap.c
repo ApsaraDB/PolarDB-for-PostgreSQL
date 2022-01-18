@@ -96,7 +96,7 @@
 
 
 /* POLAR */
-#include "access/polar_logindex.h"
+#include "access/polar_logindex_redo.h"
 #include "storage/polar_bufmgr.h"
 
 /* tables for fast counting of set bits for visible and frozen */
@@ -388,6 +388,7 @@ visibilitymap_get_status(Relation rel, BlockNumber heapBlk, Buffer *buf)
 	uint8		mapOffset = HEAPBLK_TO_OFFSET(heapBlk);
 	char	   *map;
 	uint8		result;
+	bool       enable_outdate = POLAR_LOGINDEX_ENABLE_PAGE_OUTDATE();
 
 #ifdef TRACE_VISIBILITYMAP
 	elog(DEBUG1, "vm_get_status %s %d", RelationGetRelationName(rel), heapBlk);
@@ -410,10 +411,17 @@ visibilitymap_get_status(Relation rel, BlockNumber heapBlk, Buffer *buf)
 			return false;
 	}
 
-	/* POLAR: replica only use vm buffer which lsn is less than replay lsn */
-	if (polar_in_replica_mode() &&
+	/* POLAR: replica or online promoting only use vm buffer which lsn is less than replay lsn */
+	if ((polar_in_replica_mode() || polar_bg_redo_state_is_parallel(polar_logindex_redo_instance)) &&
 		PageGetLSN(BufferGetPage(*buf)) > GetXLogReplayRecPtr(NULL))
 		return false;
+
+	/*
+	 * POLAR: If we enable page outdate, we have to call LockBuffer to do page replay,
+	 * otherwise we could get inconsistent date.
+	 */
+	if (enable_outdate)
+		LockBuffer(*buf, BUFFER_LOCK_SHARE);
 
 	map = PageGetContents(BufferGetPage(*buf));
 
@@ -423,6 +431,10 @@ visibilitymap_get_status(Relation rel, BlockNumber heapBlk, Buffer *buf)
 	 * about that.
 	 */
 	result = ((map[mapByte] >> mapOffset) & VISIBILITYMAP_VALID_BITS);
+
+	if (enable_outdate)
+		LockBuffer(*buf, BUFFER_LOCK_UNLOCK);
+
 	return result;
 }
 

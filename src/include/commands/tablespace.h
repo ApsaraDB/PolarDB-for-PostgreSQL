@@ -47,7 +47,8 @@ extern void DropTableSpace(DropTableSpaceStmt *stmt);
 extern ObjectAddress RenameTableSpace(const char *oldname, const char *newname);
 extern Oid	AlterTableSpaceOptions(AlterTableSpaceOptionsStmt *stmt);
 
-extern void TablespaceCreateDbspace(Oid spcNode, Oid dbNode, bool isRedo);
+/* POLAR: update polar_is_temp_table */
+extern void TablespaceCreateDbspace(Oid spcNode, Oid dbNode, bool isRedo, bool polar_is_temp_table);
 
 extern Oid	GetDefaultTablespace(char relpersistence);
 

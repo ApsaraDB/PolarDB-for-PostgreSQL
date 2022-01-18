@@ -59,9 +59,11 @@
 #include "storage/spin.h"
 #include "utils/guc.h"
 #include "utils/memutils.h"
+#include "utils/polar_coredump.h"
 #include "utils/resowner.h"
 
-/* POLAR */
+/* POLAR: */
+#include "replication/polar_priority_replication.h"
 #include "storage/polar_fd.h"
 #include "storage/polar_bufmgr.h"
 
@@ -227,6 +229,20 @@ CheckpointerMain(void)
 
 	/* We allow SIGQUIT (quickdie) at all times */
 	sigdelset(&BlockSig, SIGQUIT);
+
+	/* POLAR : register for coredump print */
+#ifndef _WIN32
+#ifdef SIGILL
+	pqsignal(SIGILL, polar_program_error_handler);
+#endif
+#ifdef SIGSEGV
+	pqsignal(SIGSEGV, polar_program_error_handler);
+#endif
+#ifdef SIGBUS
+	pqsignal(SIGBUS, polar_program_error_handler);
+#endif
+#endif	/* _WIN32 */
+	/* POLAR: end */
 
 	/*
 	 * Initialize so that first time-driven event happens at the correct time.
@@ -1318,8 +1334,7 @@ AbsorbFsyncRequests(void)
 	CheckpointerRequest *request;
 	int			n;
 
-	if (!(AmCheckpointerProcess() ||
-		(AmPolarBackgroundWriterProcess())))
+	if (!AmCheckpointerProcess())
 		return;
 
 	LWLockAcquire(CheckpointerCommLock, LW_EXCLUSIVE);
@@ -1380,6 +1395,20 @@ UpdateSharedMemoryConfig(void)
 {
 	/* update global shmem state for sync rep */
 	SyncRepUpdateSyncStandbysDefined();
+
+	/* POLAR: update global shmem state for sync rep timeout */
+	polar_sync_rep_update_timeout_enabled_flag();
+
+	/* POLAR: update global shmem state for priority replication */
+	polar_priority_replication_update_priority_replication_force_wait();
+	polar_priority_replication_update_high_priority_replication_standbys_defined();
+	polar_priority_replication_update_low_priority_replication_standbys_defined();
+	polar_priority_replication_update_priority_replication_mode();
+
+	/* 
+	 * POLAR: This function must be at the end of priority replication update function call.
+	 */
+	polar_priority_replication_update_walsender_type();
 
 	/*
 	 * If full_page_writes has been changed by SIGHUP, we update it in shared
@@ -1442,4 +1471,3 @@ polar_checkpointer_recv_shutdown_requested(void)
 {
 	return shutdown_requested;
 }
-/* POLAR end */

@@ -323,12 +323,14 @@ SlabReset(MemoryContext context)
 #endif
 			free(block);
 			slab->nblocks--;
+			context->mem_allocated -= slab->blockSize;
 		}
 	}
 
 	slab->minFreeChunks = 0;
 
 	Assert(slab->nblocks == 0);
+	Assert(context->mem_allocated == 0);
 }
 
 /*
@@ -406,6 +408,7 @@ SlabAlloc(MemoryContext context, Size size)
 
 		slab->minFreeChunks = slab->chunksPerBlock;
 		slab->nblocks += 1;
+		context->mem_allocated += slab->blockSize;
 	}
 
 	/* grab the block from the freelist (even the new block is there) */
@@ -438,7 +441,7 @@ SlabAlloc(MemoryContext context, Size size)
 	 * Remove the chunk from the freelist head. The index of the next free
 	 * chunk is stored in the chunk itself.
 	 */
-	VALGRIND_MAKE_MEM_DEFINED(SlabChunkGetPointer(chunk), sizeof(int32));
+	MEMDEBUG_MAKE_MEM_DEFINED(SlabChunkGetPointer(chunk), sizeof(int32));
 	block->firstFreeChunk = *(int32 *) SlabChunkGetPointer(chunk);
 
 	Assert(block->firstFreeChunk >= 0);
@@ -476,7 +479,7 @@ SlabAlloc(MemoryContext context, Size size)
 		slab->minFreeChunks = 0;
 
 	/* Prepare to initialize the chunk header. */
-	VALGRIND_MAKE_MEM_UNDEFINED(chunk, sizeof(SlabChunk));
+	MEMDEBUG_MAKE_MEM_UNDEFINED(chunk, sizeof(SlabChunk));
 
 	chunk->block = block;
 	chunk->slab = slab;
@@ -486,7 +489,7 @@ SlabAlloc(MemoryContext context, Size size)
 	if (slab->chunkSize < (slab->fullChunkSize - sizeof(SlabChunk)))
 	{
 		set_sentinel(SlabChunkGetPointer(chunk), size);
-		VALGRIND_MAKE_MEM_NOACCESS(((char *) chunk) +
+		MEMDEBUG_MAKE_MEM_NOACCESS(((char *) chunk) +
 								   sizeof(SlabChunk) + slab->chunkSize,
 								   slab->fullChunkSize -
 								   (slab->chunkSize + sizeof(SlabChunk)));
@@ -498,6 +501,9 @@ SlabAlloc(MemoryContext context, Size size)
 #endif
 
 	SlabAllocInfo(slab, chunk);
+
+	Assert(slab->nblocks * slab->blockSize == context->mem_allocated);
+
 	return SlabChunkGetPointer(chunk);
 }
 
@@ -540,6 +546,12 @@ SlabFree(MemoryContext context, void *pointer)
 			 slab->chunkSize - sizeof(int32));
 #endif
 
+#if defined(__SANITIZE_ADDRESS__)
+	/* POLAR: Mark freed memory noaccess explicitly. */
+	MEMDEBUG_MAKE_MEM_NOACCESS((char *) pointer + sizeof(int32),
+			slab->chunkSize - sizeof(int32));
+#endif
+
 	/* remove the block from a freelist */
 	dlist_delete(&block->node);
 
@@ -573,11 +585,13 @@ SlabFree(MemoryContext context, void *pointer)
 	{
 		free(block);
 		slab->nblocks--;
+		context->mem_allocated -= slab->blockSize;
 	}
 	else
 		dlist_push_head(&slab->freelist[block->nfree], &block->node);
 
 	Assert(slab->nblocks >= 0);
+	Assert(slab->nblocks * slab->blockSize == context->mem_allocated);
 }
 
 /*
@@ -759,7 +773,7 @@ SlabCheck(MemoryContext context)
 
 				/* read index of the next free chunk */
 				chunk = SlabBlockGetChunk(slab, block, idx);
-				VALGRIND_MAKE_MEM_DEFINED(SlabChunkGetPointer(chunk), sizeof(int32));
+				MEMDEBUG_MAKE_MEM_DEFINED(SlabChunkGetPointer(chunk), sizeof(int32));
 				idx = *(int32 *) SlabChunkGetPointer(chunk);
 			}
 
@@ -796,6 +810,8 @@ SlabCheck(MemoryContext context)
 					 name, block->nfree, block, nfree);
 		}
 	}
+
+	Assert(slab->nblocks * slab->blockSize == context->mem_allocated);
 }
 
 #endif							/* MEMORY_CONTEXT_CHECKING */

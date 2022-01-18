@@ -101,6 +101,10 @@
 #include "utils/tqual.h"
 #include "utils/typcache.h"
 
+/* POLAR */
+#include "utils/guc.h"
+#include "storage/procarray.h"
+/* POLAR end */
 
 /*
  * ON COMMIT action list
@@ -502,6 +506,13 @@ static void validatePartitionedIndex(Relation partedIdx, Relation partedTbl);
 static void refuseDupeIndexAttach(Relation parentIdx, Relation partIdx,
 					  Relation partitionTbl);
 
+/* POLAR */
+List *recursive_relopts = NIL;	/* List of reloptions to be set
+								 * recursively for partitioned tables. 
+								 * Resides in TopMemoryContext. */
+
+void polar_px_btbuild_update_pg_class(Relation heap, Relation index);
+/* POLAR end */
 
 /* ----------------------------------------------------------------
  *		DefineRelation
@@ -550,6 +561,21 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 	 * parser should have done this already).
 	 */
 	StrNCpy(relname, stmt->relation->relname, NAMEDATALEN);
+
+	/*
+	 * POLAR: change unlogged table to logged table, because unlogged table not support
+	 * Master-Slave mode, it does not write xlog, we must do it before create table.
+	 * we do it in DefineRelation() because not only create unlogged table but also
+	 * select into XXX unlogged table, but they all call DefineRelation() function.
+	 */
+	if (polar_force_unlogged_to_logged_table &&
+			stmt->relation->relpersistence == RELPERSISTENCE_UNLOGGED)
+	{
+		stmt->relation->relpersistence = RELPERSISTENCE_PERMANENT;
+		elog(NOTICE, "change unlogged table to logged table,"
+				"because unlogged table not supports Master-Slave mode");
+	}
+	/* POLAR end */
 
 	/*
 	 * Check consistency of arguments
@@ -1650,7 +1676,7 @@ ExecuteTruncateGuts(List *explicit_rels, List *relids, List *relids_logged,
 			 * deletion at commit.
 			 */
 			RelationSetNewRelfilenode(rel, rel->rd_rel->relpersistence,
-									  RecentXmin, minmulti);
+									RecentXmin, minmulti);
 			if (rel->rd_rel->relpersistence == RELPERSISTENCE_UNLOGGED)
 				heap_create_init_fork(rel);
 
@@ -1664,10 +1690,9 @@ ExecuteTruncateGuts(List *explicit_rels, List *relids, List *relids_logged,
 			{
 				Relation	toastrel = relation_open(toast_relid,
 													 AccessExclusiveLock);
-
 				RelationSetNewRelfilenode(toastrel,
-										  toastrel->rd_rel->relpersistence,
-										  RecentXmin, minmulti);
+										toastrel->rd_rel->relpersistence,
+										RecentXmin, minmulti);
 				if (toastrel->rd_rel->relpersistence == RELPERSISTENCE_UNLOGGED)
 					heap_create_init_fork(toastrel);
 				heap_close(toastrel, NoLock);
@@ -4534,11 +4559,11 @@ ATRewriteTables(AlterTableStmt *parsetree, List **wqueue, LOCKMODE lockmode)
 			 * interest in letting this code work on system catalogs.
 			 */
 			finish_heap_swap(tab->relid, OIDNewHeap,
-							 false, false, true,
-							 !OidIsValid(tab->newTableSpace),
-							 RecentXmin,
-							 ReadNextMultiXactId(),
-							 persistence);
+							false, false, true,
+							!OidIsValid(tab->newTableSpace),
+							RecentXmin,
+							ReadNextMultiXactId(),
+							persistence);
 		}
 		else
 		{
@@ -10506,7 +10531,8 @@ ATExecAlterColumnGenericOptions(Relation rel,
 	datum = transformGenericOptions(AttributeRelationId,
 									datum,
 									options,
-									fdw->fdwvalidator);
+									fdw->fdwvalidator,
+									fdw->fdwname);
 
 	if (PointerIsValid(DatumGetPointer(datum)))
 		repl_val[Anum_pg_attribute_attfdwoptions - 1] = datum;
@@ -11474,10 +11500,61 @@ ATExecSetRelOptions(Relation rel, List *defList, AlterTableType operation,
 	/* Validate */
 	switch (rel->rd_rel->relkind)
 	{
+		/*
+		 * POLAR: recurse for all sub-partitions, if rel is a partitioned
+		 * table, and the reloption should be set recursively.
+		 */
+		case RELKIND_PARTITIONED_TABLE:
+			{
+				List		*recurse_def_list = NIL;
+				ListCell	*def_cell;
+				ListCell	*relopt_cell;
+
+				/* 
+				 * POLAR: build a new def list for sub-partitions,
+				 *        containing only those to be set recursively.
+				 */
+				foreach (def_cell, defList)
+				{
+					DefElem		*def = (DefElem *) lfirst(def_cell);
+
+					foreach (relopt_cell, recursive_relopts)
+					{
+						const char	*recurse_opt = (const char *)
+														lfirst(relopt_cell);
+						if (!strcmp(def->defname, recurse_opt))
+						{
+							recurse_def_list = lappend(recurse_def_list, def);
+							break;
+						}
+					}
+				}
+
+				/* recursively update reloptions of sub-partitions, if any */
+				if (recurse_def_list != NIL)
+				{
+					PartitionDesc	part_desc = RelationGetPartitionDesc(rel);
+					Relation		child_rel;
+					int				nparts = part_desc->nparts;
+					int				i;
+
+					for (i = 0; i < nparts; i++)
+					{
+						child_rel = heap_open(part_desc->oids[i], lockmode);
+						ATExecSetRelOptions(child_rel, recurse_def_list,
+											operation, lockmode);
+						heap_close(child_rel, lockmode);
+					}
+
+					list_free(recurse_def_list);
+				}
+
+				/* Fall to RELKIND_RELATION for partitioned table, don't break. */
+			}
+		/* POLAR end */
 		case RELKIND_RELATION:
 		case RELKIND_TOASTVALUE:
 		case RELKIND_MATVIEW:
-		case RELKIND_PARTITIONED_TABLE:
 			(void) heap_reloptions(rel->rd_rel->relkind, newOptions, true);
 			break;
 		case RELKIND_VIEW:
@@ -12057,7 +12134,7 @@ copy_relation_data(SMgrRelation src, SMgrRelation dst,
 
 		smgrread(src, forkNum, blkno, buf.data);
 
-		if (!PageIsVerified(page, blkno))
+		if (!PageIsVerified(page, forkNum, blkno, src))
 			ereport(ERROR,
 					(errcode(ERRCODE_DATA_CORRUPTED),
 					 errmsg("invalid page in block %u of relation %s",
@@ -12074,6 +12151,7 @@ copy_relation_data(SMgrRelation src, SMgrRelation dst,
 		if (use_wal)
 			log_newpage(&dst->smgr_rnode.node, forkNum, blkno, page, false);
 
+		PageEncryptInplace(page, forkNum, blkno);
 		PageSetChecksumInplace(page, blkno);
 
 		/*
@@ -13473,7 +13551,8 @@ ATExecGenericOptions(Relation rel, List *options)
 	datum = transformGenericOptions(ForeignTableRelationId,
 									datum,
 									options,
-									fdw->fdwvalidator);
+									fdw->fdwvalidator,
+									fdw->fdwname);
 
 	if (PointerIsValid(DatumGetPointer(datum)))
 		repl_val[Anum_pg_foreign_table_ftoptions - 1] = datum;
@@ -16121,4 +16200,22 @@ validatePartitionedIndex(Relation partedIdx, Relation partedTbl)
 		relation_close(parentIdx, AccessExclusiveLock);
 		relation_close(parentTbl, AccessExclusiveLock);
 	}
+}
+
+/*
+ * Update pg_class for 'px_build' reloptions from 'on' to 'finish'.
+ */
+void
+polar_px_btbuild_update_pg_class(Relation heap, Relation index)
+{
+	List *options = NIL;
+	DefElem *opt;
+	opt = makeNode(DefElem);
+	opt->type = T_DefElem;
+	opt->defnamespace = NULL;
+	opt->defname = "px_build";
+	opt->defaction = DEFELEM_SET;
+	opt->arg = (Node *)makeString("finish");
+	options = lappend(options, opt);
+	ATExecSetRelOptions(index, options, AT_SetRelOptions, ShareUpdateExclusiveLock);
 }

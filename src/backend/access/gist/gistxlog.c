@@ -70,7 +70,7 @@ gistRedoClearFollowRight(XLogReaderState *record, uint8 block_id)
  * tuples being deleted. See also btree_xlog_delete_get_latestRemovedXid,
  * on which this function is based.
  */
-static TransactionId
+TransactionId
 gistRedoPageUpdateRecordGetLatestRemovedXid(XLogReaderState *record)
 {
 	gistxlogPageUpdate *xlrec = (gistxlogPageUpdate *) XLogRecGetData(record);

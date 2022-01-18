@@ -65,7 +65,6 @@ static inline void BitmapPrefetch(BitmapHeapScanState *node,
 static bool BitmapShouldInitializeSharedState(
 								  ParallelBitmapHeapState *pstate);
 
-
 /* ----------------------------------------------------------------
  *		BitmapHeapNext
  *
@@ -235,21 +234,43 @@ BitmapHeapNext(BitmapHeapScanState *node)
 								VM_ALL_VISIBLE(node->ss.ss_currentRelation,
 											   tbmres->blockno,
 											   &node->vmbuffer));
-
-			if (node->skip_fetch)
+			/* POLAR px : do not scan other's page/tuples */
+			if (NULL == scan->px_scan)
 			{
-				/*
-				 * The number of tuples on this page is put into
-				 * scan->rs_ntuples; note we don't fill scan->rs_vistuples.
-				 */
-				scan->rs_ntuples = tbmres->ntuples;
+				if (node->skip_fetch)
+				{
+					/*
+					* The number of tuples on this page is put into
+					* scan->rs_ntuples; note we don't fill scan->rs_vistuples.
+					*/
+					scan->rs_ntuples = tbmres->ntuples;
+				}
+				else
+				{
+					/*
+				 	* Fetch the current heap page and identify candidate tuples.
+				 	*/
+					bitgetpage(scan, tbmres);
+				}
 			}
 			else
 			{
-				/*
-				 * Fetch the current heap page and identify candidate tuples.
-				 */
-				bitgetpage(scan, tbmres);
+				BlockNumber unitno = PXSCAN_BlockNum2UnitNum(tbmres->blockno);
+				if ((unitno % scan->px_scan->pxs_total_workers) != scan->px_scan->pxs_worker_id)
+				{
+					scan->rs_ntuples = 0;
+				}
+				else
+				{
+					if (node->skip_fetch)
+					{
+						scan->rs_ntuples = tbmres->ntuples;
+					}
+					else
+					{
+						bitgetpage(scan, tbmres);
+					}	
+				}
 			}
 
 			if (tbmres->ntuples >= 0)
@@ -963,10 +984,25 @@ ExecInitBitmapHeapScan(BitmapHeapScan *node, EState *estate, int eflags)
 	 * Even though we aren't going to do a conventional seqscan, it is useful
 	 * to create a HeapScanDesc --- most of the fields in it are usable.
 	 */
-	scanstate->ss.ss_currentScanDesc = heap_beginscan_bm(currentRelation,
+	/* POLAR px */
+	if (px_role == PX_ROLE_PX &&
+		px_is_executing &&
+		scanstate->ss.ps.plan->px_scan_partial)
+	{
+		scanstate->ss.ss_currentScanDesc = heap_beginscan_bm_px(currentRelation,
 														 estate->es_snapshot,
 														 0,
 														 NULL);
+	}
+	else
+	{
+		scanstate->ss.ss_currentScanDesc = heap_beginscan_bm(currentRelation,
+														 estate->es_snapshot,
+														 0,
+														 NULL);
+	}
+	/* POLAR end */
+	
 
 	/*
 	 * all done.

@@ -122,6 +122,13 @@ typedef XLogLongPageHeaderData *XLogLongPageHeader;
 	logSegNo = ((xlrp) - 1) / (wal_segsz_bytes)
 
 /*
+ * Convert values of GUCs measured in megabytes to equiv. segment count.
+ * Rounds down.
+ */
+#define XLogMBVarToSegs(mbvar, wal_segsz_bytes) \
+	((mbvar) / ((wal_segsz_bytes) / (1024 * 1024)))
+
+/*
  * Is an XLogRecPtr within a particular XLOG segment?
  *
  * For XLByteInSeg, do the computation at face value.  For XLByteInPrevSeg,
@@ -316,6 +323,10 @@ extern bool XLogArchiveIsReady(const char *xlog);
 extern bool XLogArchiveIsReadyOrDone(const char *xlog);
 extern void XLogArchiveCleanup(const char *xlog);
 
+/* POLAR: DMA */
+extern void polar_dma_xlog_archive_notify(const char *xlog, bool local);
+/* POLAR end */
+
 /* POLAR: FRONTEND use macro definition (old way), BACKEND(normal mode or polardb mode) use function define */
 #ifndef FRONTEND
 extern void polar_backup_history_file_path(char *path, TimeLineID tli, XLogSegNo logSegNo, XLogRecPtr startpoint, int wal_segsz_bytes);
@@ -331,7 +342,6 @@ extern void polar_reset_main_data(void);
 #define TLHistoryFilePath(a,b)				polar_tl_history_file_path(a,b)
 #define StatusFilePath(a,b,c)				polar_status_file_path(a,b,c)
 #define BackupHistoryFilePath(a,b,c,d,e)	polar_backup_history_file_path(a,b,c,d,e)
-
 #else
 #define XLogFilePath(path, tli, logSegNo, wal_segsz_bytes)	\
 	snprintf(path, MAXPGPATH, XLOGDIR "/%08X%08X%08X", tli,	\

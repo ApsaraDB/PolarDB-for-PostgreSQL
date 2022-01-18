@@ -26,4 +26,8 @@ extern void ClientAuthentication(Port *port);
 typedef void (*ClientAuthentication_hook_type) (Port *, int);
 extern PGDLLIMPORT ClientAuthentication_hook_type ClientAuthentication_hook;
 
+/* POALR px */
+extern void FakeClientAuthentication(Port *port);
+/* POALR end */
+
 #endif							/* AUTH_H */

@@ -365,8 +365,10 @@ hash_xlog_split_allocate_page(XLogReaderState *record)
 
 	/* replay the record for new bucket */
 	newbuf = XLogInitBufferForRedo(record, 1);
+
 	_hash_initbuf(newbuf, xlrec->new_bucket, xlrec->new_bucket,
 				  xlrec->new_bucket_flag, true);
+
 	if (!IsBufferCleanupOK(newbuf))
 		elog(PANIC, "hash_xlog_split_allocate_page: failed to acquire cleanup lock");
 	MarkBufferDirty(newbuf);
@@ -448,8 +450,13 @@ hash_xlog_split_page(XLogReaderState *record)
 {
 	Buffer		buf;
 
-	if (XLogReadBufferForRedo(record, 0, &buf) != BLK_RESTORED)
-		elog(ERROR, "Hash split record did not contain a full-page image");
+	/*
+	 * POLAR: The error message is triggered in XLogReadBufferForRedo function
+	 * when fail to restore full-page image.
+	 * Besides we will return BLK_DONE when page lsn is larger than current xlog
+	 * record lsn.
+	 */
+	XLogReadBufferForRedo(record, 0, &buf);
 
 	UnlockReleaseBuffer(buf);
 }

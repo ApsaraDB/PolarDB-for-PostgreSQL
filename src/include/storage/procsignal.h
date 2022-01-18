@@ -42,6 +42,13 @@ typedef enum
 	PROCSIG_RECOVERY_CONFLICT_BUFFERPIN,
 	PROCSIG_RECOVERY_CONFLICT_STARTUP_DEADLOCK,
 
+	/* POLAR */
+	POLAR_PROCSIG_BACKEND_MEMORY_CONTEXT,
+
+	POLAR_HEAP_PROFILE_DUMP,
+
+	PROCSIG_LOG_CURRENT_PLAN, 	/* Polar: ask backend to log the plan of current query */
+
 	NUM_PROCSIGNALS				/* Must be last! */
 } ProcSignalReason;
 
@@ -56,5 +63,8 @@ extern int SendProcSignal(pid_t pid, ProcSignalReason reason,
 			   BackendId backendId);
 
 extern void procsignal_sigusr1_handler(SIGNAL_ARGS);
+
+/* POLAR: CheckProcSignal for POLAR */
+extern bool polar_check_proc_signal(ProcSignalReason reason);
 
 #endif							/* PROCSIGNAL_H */

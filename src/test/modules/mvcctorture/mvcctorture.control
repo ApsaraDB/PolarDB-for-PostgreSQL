@@ -1,0 +1,5 @@
+# mvcctorture extension
+comment = 'populate a table with a mix of different XIDs'
+default_version = '1.0'
+module_pathname = '$libdir/mvcctorture'
+relocatable = true

@@ -1,0 +1,98 @@
+create extension if not exists test_px;
+drop table if exists t;
+CREATE TABLE t (id int) PARTITION BY RANGE (id);
+CREATE TABLE t_0 PARTITION OF t FOR VALUES FROM (     0) TO (100000);
+CREATE TABLE t_1 PARTITION OF t FOR VALUES FROM (100000) TO (200000);
+CREATE TABLE t_2 PARTITION OF t FOR VALUES FROM (200000) TO (300000);
+CREATE TABLE t_3 PARTITION OF t FOR VALUES FROM (300000) TO (400000);
+CREATE TABLE t_4 PARTITION OF t FOR VALUES FROM (400000) TO (500001);
+insert into t select generate_series(0, 500000);
+create index on t(id);
+-- rel oid
+select test_px_partition_is_partition_rel('t'::regclass::oid);
+ test_px_partition_is_partition_rel 
+------------------------------------
+ t
+(1 row)
+
+select test_px_partition_is_partition_index('t'::regclass::oid);
+ test_px_partition_is_partition_index 
+--------------------------------------
+ f
+(1 row)
+
+select test_px_partition_child_index('t'::regclass::oid);
+     test_px_partition_child_index     
+---------------------------------------
+ {16573, 16576, 16579, 16582, 16585, }
+(1 row)
+
+-- index oid
+select test_px_partition_is_partition_rel('t_id_idx'::regclass::oid);
+ test_px_partition_is_partition_rel 
+------------------------------------
+ f
+(1 row)
+
+select test_px_partition_is_partition_index('t_id_idx'::regclass::oid);
+ test_px_partition_is_partition_index 
+--------------------------------------
+ t
+(1 row)
+
+select test_px_partition_child_index('t_id_idx'::regclass::oid);
+     test_px_partition_child_index     
+---------------------------------------
+ {16589, 16590, 16591, 16592, 16593, }
+(1 row)
+
+-- sub rel
+select test_px_partition_is_partition_rel('t_0'::regclass::oid);
+ test_px_partition_is_partition_rel 
+------------------------------------
+ f
+(1 row)
+
+select test_px_partition_is_partition_index('t_0'::regclass::oid);
+ test_px_partition_is_partition_index 
+--------------------------------------
+ f
+(1 row)
+
+select test_px_partition_child_index('t_0'::regclass::oid);
+ test_px_partition_child_index 
+-------------------------------
+ {}
+(1 row)
+
+-- sub index
+select test_px_partition_is_partition_rel('t_0_id_idx'::regclass::oid);
+ test_px_partition_is_partition_rel 
+------------------------------------
+ f
+(1 row)
+
+select test_px_partition_is_partition_index('t_0_id_idx'::regclass::oid);
+ test_px_partition_is_partition_index 
+--------------------------------------
+ f
+(1 row)
+
+select test_px_partition_child_index('t_0_id_idx'::regclass::oid);
+ test_px_partition_child_index 
+-------------------------------
+ {}
+(1 row)
+
+-- close polar_px_enable_partition
+set polar_px_enable_partition = 0;
+explain select * from t where id < 100;
+                                     QUERY PLAN                                      
+-------------------------------------------------------------------------------------
+ Append  (cost=626.62..1652.95 rows=33333 width=4)
+   ->  Bitmap Heap Scan on t_0  (cost=626.62..1486.29 rows=33333 width=4)
+         Recheck Cond: (id < 100)
+         ->  Bitmap Index Scan on t_0_id_idx  (cost=0.00..618.29 rows=33333 width=0)
+               Index Cond: (id < 100)
+(5 rows)
+

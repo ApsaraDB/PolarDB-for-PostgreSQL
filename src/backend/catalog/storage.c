@@ -31,6 +31,12 @@
 #include "utils/memutils.h"
 #include "utils/rel.h"
 
+/* POLAR */
+#include "access/polar_rel_size_cache.h"
+#include "miscadmin.h"
+#include "replication/syncrep.h"
+#include "utils/guc.h"
+
 /*
  * We keep a list of all relations (represented as RelFileNode values)
  * that have been created or deleted in the current transaction.  When
@@ -227,6 +233,9 @@ RelationTruncate(Relation rel, BlockNumber nblocks)
 {
 	bool		fsm;
 	bool		vm;
+	/* POLAR: If this flag is true,we will disable cancel query*/
+	bool        disable_cancel_query = false;
+	int i;
 
 	/* Open it at the smgr level if not already done */
 	RelationOpenSmgr(rel);
@@ -237,6 +246,8 @@ RelationTruncate(Relation rel, BlockNumber nblocks)
 	rel->rd_smgr->smgr_targblock = InvalidBlockNumber;
 	rel->rd_smgr->smgr_fsm_nblocks = InvalidBlockNumber;
 	rel->rd_smgr->smgr_vm_nblocks = InvalidBlockNumber;
+	for (i = 0; i <= MAX_FORKNUM; ++i)
+		rel->rd_smgr->smgr_cached_nblocks[i] = InvalidBlockNumber;
 
 	/* Truncate the FSM first if it exists */
 	fsm = smgrexists(rel->rd_smgr, FSM_FORKNUM);
@@ -265,6 +276,17 @@ RelationTruncate(Relation rel, BlockNumber nblocks)
 		XLogRecPtr	lsn;
 		xl_smgr_truncate xlrec;
 
+		/*
+		 * POLAR: Disable cancel query during writing truacte XLOG and truncating.
+		 * If standby receive truncate log but master failed to trucate file,
+		 * standby will crash when master write to these blocks which truncated in standby node.
+		 */
+		if (polar_hold_truncate_interrupt)
+		{
+			disable_cancel_query = true;
+			HOLD_INTERRUPTS();
+		}
+
 		xlrec.blkno = nblocks;
 		xlrec.rnode = rel->rd_node;
 		xlrec.flags = SMGR_TRUNCATE_ALL;
@@ -275,19 +297,39 @@ RelationTruncate(Relation rel, BlockNumber nblocks)
 		lsn = XLogInsert(RM_SMGR_ID,
 						 XLOG_SMGR_TRUNCATE | XLR_SPECIAL_REL_UPDATE);
 
-		/*
-		 * Flush, because otherwise the truncation of the main relation might
-		 * hit the disk before the WAL record, and the truncation of the FSM
-		 * or visibility map. If we crashed during that window, we'd be left
-		 * with a truncated heap, but the FSM or visibility map would still
-		 * contain entries for the non-existent heap pages.
-		 */
-		if (fsm || vm)
+		if (polar_enable_ro_prewarm)
+		{
+			/*
+			 * POLAR: If ro is preloading blocks, it will replay all blocks. If the block will be truncated, then we have to wait for this xlog to be replayed by ro.
+			 * Otherwise ro may try to preload block from storage which is truncated.
+			 * When ro prewarm is not enabled, then ro will only replay block in buffer pool, so we don't need to wait for this xlog record to be replayed.
+			 */
 			XLogFlush(lsn);
+			SyncRepWaitForLSN(lsn, false, true);
+		}
+		else
+		{
+			/*
+			 * Flush, because otherwise the truncation of the main relation might
+			 * hit the disk before the WAL record, and the truncation of the FSM
+			 * or visibility map. If we crashed during that window, we'd be left
+			 * with a truncated heap, but the FSM or visibility map would still
+			 * contain entries for the non-existent heap pages.
+			 */
+			if (fsm || vm)
+				XLogFlush(lsn);
+		}
 	}
 
 	/* Do the real work */
 	smgrtruncate(rel->rd_smgr, MAIN_FORKNUM, nblocks);
+
+	/* POLAR: Resume to enable cancel query */
+	if (disable_cancel_query)
+	{
+		RESUME_INTERRUPTS();
+		CHECK_FOR_INTERRUPTS();
+	}
 }
 
 /*
@@ -481,10 +523,6 @@ smgr_redo(XLogReaderState *record)
 	/* Backup blocks are not used in smgr records */
 	Assert(!XLogRecHasAnyBlockRefs(record));
 
-	/* POLAR: replica mode cannot create/truncate file */
-	if (polar_in_replica_mode())
-		return;
-
 	if (info == XLOG_SMGR_CREATE)
 	{
 		xl_smgr_create *xlrec = (xl_smgr_create *) XLogRecGetData(record);
@@ -529,9 +567,9 @@ smgr_redo(XLogReaderState *record)
 		if ((xlrec->flags & SMGR_TRUNCATE_HEAP) != 0)
 		{
 			smgrtruncate(reln, MAIN_FORKNUM, xlrec->blkno);
-
 			/* Also tell xlogutils.c about it */
 			XLogTruncateRelation(xlrec->rnode, MAIN_FORKNUM, xlrec->blkno);
+
 		}
 
 		/* Truncate FSM and VM too */
@@ -540,6 +578,7 @@ smgr_redo(XLogReaderState *record)
 		if ((xlrec->flags & SMGR_TRUNCATE_FSM) != 0 &&
 			smgrexists(reln, FSM_FORKNUM))
 			FreeSpaceMapTruncateRel(rel, xlrec->blkno);
+
 		if ((xlrec->flags & SMGR_TRUNCATE_VM) != 0 &&
 			smgrexists(reln, VISIBILITYMAP_FORKNUM))
 			visibilitymap_truncate(rel, xlrec->blkno);

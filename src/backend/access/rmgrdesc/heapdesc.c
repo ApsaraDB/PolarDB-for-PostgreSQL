@@ -42,12 +42,19 @@ heap_desc(StringInfo buf, XLogReaderState *record)
 	{
 		xl_heap_insert *xlrec = (xl_heap_insert *) rec;
 
+		/* POLAR BEGIN: Add flags descriptor */
+		if (xlrec->flags & XLH_INSERT_ALL_VISIBLE_CLEARED)
+			appendStringInfo(buf, "cleared ");
+		/* POLAR END */
 		appendStringInfo(buf, "off %u", xlrec->offnum);
 	}
 	else if (info == XLOG_HEAP_DELETE)
 	{
 		xl_heap_delete *xlrec = (xl_heap_delete *) rec;
-
+		/* POLAR BEGIN: Add flags descriptor */
+		if (xlrec->flags & XLH_DELETE_ALL_VISIBLE_CLEARED)
+			appendStringInfo(buf, "cleared ");
+		/* POLAR END */
 		appendStringInfo(buf, "off %u ", xlrec->offnum);
 		out_infobits(buf, xlrec->infobits_set);
 	}
@@ -55,25 +62,39 @@ heap_desc(StringInfo buf, XLogReaderState *record)
 	{
 		xl_heap_update *xlrec = (xl_heap_update *) rec;
 
+		/* POLAR BEGIN: Add flags descriptor */
+		if (xlrec->flags & XLH_UPDATE_OLD_ALL_VISIBLE_CLEARED)
+			appendStringInfo(buf, "old_cleared ");
 		appendStringInfo(buf, "off %u xmax %u ",
 						 xlrec->old_offnum,
 						 xlrec->old_xmax);
 		out_infobits(buf, xlrec->old_infobits_set);
-		appendStringInfo(buf, "; new off %u xmax %u",
+		appendStringInfo(buf, "; ");
+		if (xlrec->flags & XLH_UPDATE_NEW_ALL_VISIBLE_CLEARED)
+			appendStringInfo(buf, "new_cleared ");
+		appendStringInfo(buf, "new off %u xmax %u",
 						 xlrec->new_offnum,
 						 xlrec->new_xmax);
+		/* POLAR END */
 	}
 	else if (info == XLOG_HEAP_HOT_UPDATE)
 	{
 		xl_heap_update *xlrec = (xl_heap_update *) rec;
 
+		/* POLAR BEGIN: Add flags descriptor */
+		if (xlrec->flags & XLH_UPDATE_OLD_ALL_VISIBLE_CLEARED)
+			appendStringInfo(buf, "old_cleared ");
 		appendStringInfo(buf, "off %u xmax %u ",
 						 xlrec->old_offnum,
 						 xlrec->old_xmax);
 		out_infobits(buf, xlrec->old_infobits_set);
-		appendStringInfo(buf, "; new off %u xmax %u",
+		appendStringInfo(buf, "; ");
+		if (xlrec->flags & XLH_UPDATE_NEW_ALL_VISIBLE_CLEARED)
+			appendStringInfo(buf, "new_cleared ");
+		appendStringInfo(buf, "new off %u xmax %u",
 						 xlrec->new_offnum,
 						 xlrec->new_xmax);
+		/* POLAR END */
 	}
 	else if (info == XLOG_HEAP_TRUNCATE)
 	{
@@ -146,12 +167,20 @@ heap2_desc(StringInfo buf, XLogReaderState *record)
 	{
 		xl_heap_multi_insert *xlrec = (xl_heap_multi_insert *) rec;
 
+		/* POLAR BEGIN: Add flags descriptor */
+		if (xlrec->flags & XLH_INSERT_ALL_VISIBLE_CLEARED)
+			appendStringInfo(buf, "cleared ");
+		/* POLAR END */
 		appendStringInfo(buf, "%d tuples", xlrec->ntuples);
 	}
 	else if (info == XLOG_HEAP2_LOCK_UPDATED)
 	{
 		xl_heap_lock_updated *xlrec = (xl_heap_lock_updated *) rec;
 
+		/* POLAR BEGIN: Add flags descriptor */
+		if (xlrec->flags & XLH_LOCK_ALL_FROZEN_CLEARED)
+			appendStringInfo(buf, "cleared");
+		/* POLAR END */
 		appendStringInfo(buf, "off %u: xmax %u: flags %u ",
 						 xlrec->offnum, xlrec->xmax, xlrec->flags);
 		out_infobits(buf, xlrec->infobits_set);

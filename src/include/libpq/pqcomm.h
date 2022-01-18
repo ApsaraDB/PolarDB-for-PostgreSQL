@@ -204,4 +204,8 @@ typedef struct CancelRequestPacket
  */
 #define NEGOTIATE_SSL_CODE PG_PROTOCOL(1234,5679)
 
+/* POLAR px */
+#define PXCONN_TYPE "pxconntype"
+/* POLAR end */
+
 #endif							/* PQCOMM_H */

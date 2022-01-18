@@ -14,6 +14,29 @@
 #ifndef TUPMACS_H
 #define TUPMACS_H
 
+/* POLAR px */
+#include "catalog/pg_type.h"
+#include "access/transam.h"
+/* POLAR end */
+
+/* POLAR px
+ * Determine if a datum of type oid can be stored in short varlena format.
+ * The caller must've checked that it's a pass-by-reference type.
+ */
+static inline bool
+value_type_could_short(Pointer ptr, Oid typid)
+{
+	return (!VARATT_IS_EXTERNAL(ptr) 
+			&& (VARATT_IS_SHORT(ptr) 
+				|| (VARATT_CAN_MAKE_SHORT(ptr) 
+					&& typid != INT2VECTOROID 
+					&& typid != OIDVECTOROID 
+					&& typid < FirstNormalObjectId
+					)
+				)
+			);
+}
+/* POLAR end */
 
 /*
  * check to see if the ATT'th bit of an array of 8-bit bytes is set.

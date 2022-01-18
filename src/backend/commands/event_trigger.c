@@ -181,12 +181,12 @@ CreateEventTrigger(CreateEventTrigStmt *stmt)
 	 * this, but there are obvious privilege escalation risks which would have
 	 * to somehow be plugged first.
 	 */
-	if (!superuser())
+	if (!superuser() && !polar_superuser())
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 				 errmsg("permission denied to create event trigger \"%s\"",
 						stmt->trigname),
-				 errhint("Must be superuser to create an event trigger.")));
+				 errhint("Must be superuser or polar_superuser to create an event trigger.")));
 
 	/* Validate event name. */
 	if (strcmp(stmt->eventname, "ddl_command_start") != 0 &&
@@ -238,6 +238,11 @@ CreateEventTrigger(CreateEventTrigStmt *stmt)
 
 	/* Find and validate the trigger function. */
 	funcoid = LookupFuncName(stmt->funcname, 0, fargtypes, false);
+	/* POLAR: we check privileges for event trigger funcion */
+	if (pg_proc_aclcheck(funcoid, GetUserId(), ACL_EXECUTE) != ACLCHECK_OK)
+		aclcheck_error(ACLCHECK_NO_PRIV, OBJECT_FUNCTION,
+					   get_func_name(funcoid));
+	/* POLAR END */
 	funcrettype = get_func_rettype(funcoid);
 	if (funcrettype != EVTTRIGGEROID)
 		ereport(ERROR,
@@ -613,13 +618,13 @@ AlterEventTriggerOwner_internal(Relation rel, HeapTuple tup, Oid newOwnerId)
 		aclcheck_error(ACLCHECK_NOT_OWNER, OBJECT_EVENT_TRIGGER,
 					   NameStr(form->evtname));
 
-	/* New owner must be a superuser */
-	if (!superuser_arg(newOwnerId))
+	/* New owner must be a superuser or polar_superuser */
+	if (!superuser_arg(newOwnerId) && !polar_superuser_arg(newOwnerId))
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 				 errmsg("permission denied to change owner of event trigger \"%s\"",
 						NameStr(form->evtname)),
-				 errhint("The owner of an event trigger must be a superuser.")));
+				 errhint("The owner of an event trigger must be a superuser or polar_superuser.")));
 
 	form->evtowner = newOwnerId;
 	CatalogTupleUpdate(rel, &tup->t_self, tup);
@@ -660,6 +665,19 @@ get_event_trigger_oid(const char *trigname, bool missing_ok)
 static bool
 filter_event_trigger(const char **tag, EventTriggerCacheItem *item)
 {
+	/*
+	 * POLAR: If the current user is superuser, we filter out these functions that do not belong to superuser.
+	 * You can control this behavior by controlling guc parameter polar_super_trigger_all_event.
+	 */
+	if (!polar_super_call_all_trigger_event && superuser() && !superuser_arg(item->polar_evtowner))
+	{
+		ereport(WARNING,
+				(errcode(ERRCODE_WARNING),
+				 errmsg("superuser don't call function \"%s\" .", get_func_name(item->fnoid)),
+				 errhint("It's filtered , you can trigger them by set polar_super_trigger_all_event = true")));
+		return false;
+	}
+	/* POLAR END */
 	/*
 	 * Filter by session replication role, knowing that we never see disabled
 	 * items down here.

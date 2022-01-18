@@ -23,6 +23,10 @@ extern void ExecSortMarkPos(SortState *node);
 extern void ExecSortRestrPos(SortState *node);
 extern void ExecReScanSort(SortState *node);
 
+/* POLAR px */
+extern void ExecSquelchSort(SortState *node);
+/* POLAR end */
+
 /* parallel instrumentation support */
 extern void ExecSortEstimate(SortState *node, ParallelContext *pcxt);
 extern void ExecSortInitializeDSM(SortState *node, ParallelContext *pcxt);

@@ -1,0 +1,9 @@
+tmp_check
+result
+sql/constraints.sql
+sql/copy.sql
+sql/create_function_1.sql
+sql/create_function_2.sql
+sql/largeobject.sql
+sql/misc.sql
+sql/tablespace.sql

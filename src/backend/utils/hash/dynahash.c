@@ -91,6 +91,11 @@
 #include "utils/dynahash.h"
 #include "utils/memutils.h"
 
+/* POLAR */
+#include "miscadmin.h"
+#include "access/xlog.h"
+#include "postmaster/startup.h"
+
 
 /*
  * Constants
@@ -1062,7 +1067,7 @@ hash_search_with_hash_value(HTAB *hashp,
 				if (hashp->isshared)
 					ereport(ERROR,
 							(errcode(ERRCODE_OUT_OF_MEMORY),
-							 errmsg("out of shared memory")));
+								errmsg("out of shared memory")));
 				else
 					ereport(ERROR,
 							(errcode(ERRCODE_OUT_OF_MEMORY),

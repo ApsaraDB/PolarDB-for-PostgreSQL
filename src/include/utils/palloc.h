@@ -133,4 +133,7 @@ extern char *pchomp(const char *in);
 extern char *psprintf(const char *fmt,...) pg_attribute_printf(1, 2);
 extern size_t pvsnprintf(char *buf, size_t len, const char *fmt, va_list args) pg_attribute_printf(3, 0);
 
+/* POLAR: palloc in the critial section */
+extern void *polar_palloc_in_crit(Size size);
+extern void *polar_palloc_extended_in_crit(Size size, int flags);
 #endif							/* PALLOC_H */

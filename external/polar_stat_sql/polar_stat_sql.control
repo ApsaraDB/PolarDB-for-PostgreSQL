@@ -1,0 +1,7 @@
+# polar_stat_sql extension
+comment = 'Kernel statistics gathering, and sql plan nodes information gathering'
+default_version = '1.3'
+requires = 'pg_stat_statements'
+module_pathname = '$libdir/polar_stat_sql'
+relocatable = true
+

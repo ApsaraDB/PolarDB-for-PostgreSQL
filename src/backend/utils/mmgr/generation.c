@@ -297,6 +297,8 @@ GenerationReset(MemoryContext context)
 
 		dlist_delete(miter.cur);
 
+		context->mem_allocated -= block->blksize;
+
 #ifdef CLOBBER_FREED_MEMORY
 		wipe_mem(block, block->blksize);
 #endif
@@ -352,6 +354,8 @@ GenerationAlloc(MemoryContext context, Size size)
 		if (block == NULL)
 			return NULL;
 
+		context->mem_allocated += blksize;
+
 		/* block with a single (used) chunk */
 		block->blksize = blksize;
 		block->nchunks = 1;
@@ -382,11 +386,11 @@ GenerationAlloc(MemoryContext context, Size size)
 		GenerationAllocInfo(set, chunk);
 
 		/* Ensure any padding bytes are marked NOACCESS. */
-		VALGRIND_MAKE_MEM_NOACCESS((char *) GenerationChunkGetPointer(chunk) + size,
+		MEMDEBUG_MAKE_MEM_NOACCESS((char *) GenerationChunkGetPointer(chunk) + size,
 								   chunk_size - size);
 
 		/* Disallow external access to private part of chunk header. */
-		VALGRIND_MAKE_MEM_NOACCESS(chunk, GENERATIONCHUNK_PRIVATE_LEN);
+		MEMDEBUG_MAKE_MEM_NOACCESS(chunk, GENERATIONCHUNK_PRIVATE_LEN);
 
 		return GenerationChunkGetPointer(chunk);
 	}
@@ -407,6 +411,8 @@ GenerationAlloc(MemoryContext context, Size size)
 		if (block == NULL)
 			return NULL;
 
+		context->mem_allocated += blksize;
+
 		block->blksize = blksize;
 		block->nchunks = 0;
 		block->nfree = 0;
@@ -415,7 +421,7 @@ GenerationAlloc(MemoryContext context, Size size)
 		block->endptr = ((char *) block) + blksize;
 
 		/* Mark unallocated space NOACCESS. */
-		VALGRIND_MAKE_MEM_NOACCESS(block->freeptr,
+		MEMDEBUG_MAKE_MEM_NOACCESS(block->freeptr,
 								   blksize - Generation_BLOCKHDRSZ);
 
 		/* add it to the doubly-linked list of blocks */
@@ -432,7 +438,7 @@ GenerationAlloc(MemoryContext context, Size size)
 	chunk = (GenerationChunk *) block->freeptr;
 
 	/* Prepare to initialize the chunk header. */
-	VALGRIND_MAKE_MEM_UNDEFINED(chunk, Generation_CHUNKHDRSZ);
+	MEMDEBUG_MAKE_MEM_UNDEFINED(chunk, Generation_CHUNKHDRSZ);
 
 	block->nchunks += 1;
 	block->freeptr += (Generation_CHUNKHDRSZ + chunk_size);
@@ -457,11 +463,11 @@ GenerationAlloc(MemoryContext context, Size size)
 	GenerationAllocInfo(set, chunk);
 
 	/* Ensure any padding bytes are marked NOACCESS. */
-	VALGRIND_MAKE_MEM_NOACCESS((char *) GenerationChunkGetPointer(chunk) + size,
+	MEMDEBUG_MAKE_MEM_NOACCESS((char *) GenerationChunkGetPointer(chunk) + size,
 							   chunk_size - size);
 
 	/* Disallow external access to private part of chunk header. */
-	VALGRIND_MAKE_MEM_NOACCESS(chunk, GENERATIONCHUNK_PRIVATE_LEN);
+	MEMDEBUG_MAKE_MEM_NOACCESS(chunk, GENERATIONCHUNK_PRIVATE_LEN);
 
 	return GenerationChunkGetPointer(chunk);
 }
@@ -479,7 +485,7 @@ GenerationFree(MemoryContext context, void *pointer)
 	GenerationBlock *block;
 
 	/* Allow access to private part of chunk header. */
-	VALGRIND_MAKE_MEM_DEFINED(chunk, GENERATIONCHUNK_PRIVATE_LEN);
+	MEMDEBUG_MAKE_MEM_DEFINED(chunk, GENERATIONCHUNK_PRIVATE_LEN);
 
 	block = chunk->block;
 
@@ -493,6 +499,11 @@ GenerationFree(MemoryContext context, void *pointer)
 
 #ifdef CLOBBER_FREED_MEMORY
 	wipe_mem(pointer, chunk->size);
+#endif
+
+#if defined(__SANITIZE_ADDRESS__)
+	/* POLAR: Mark freed memory noaccess explicitly. */
+	MEMDEBUG_MAKE_MEM_NOACCESS(pointer, chunk->size);
 #endif
 
 	/* Reset context to NULL in freed chunks */
@@ -522,6 +533,7 @@ GenerationFree(MemoryContext context, void *pointer)
 	if (set->block == block)
 		set->block = NULL;
 
+	context->mem_allocated -= block->blksize;
 	free(block);
 }
 
@@ -540,7 +552,7 @@ GenerationRealloc(MemoryContext context, void *pointer, Size size)
 	Size		oldsize;
 
 	/* Allow access to private part of chunk header. */
-	VALGRIND_MAKE_MEM_DEFINED(chunk, GENERATIONCHUNK_PRIVATE_LEN);
+	MEMDEBUG_MAKE_MEM_DEFINED(chunk, GENERATIONCHUNK_PRIVATE_LEN);
 
 	oldsize = chunk->size;
 
@@ -581,10 +593,10 @@ GenerationRealloc(MemoryContext context, void *pointer, Size size)
 		 * Otherwise, mark the obsolete part NOACCESS.
 		 */
 		if (size > oldrequest)
-			VALGRIND_MAKE_MEM_UNDEFINED((char *) pointer + oldrequest,
+			MEMDEBUG_MAKE_MEM_UNDEFINED((char *) pointer + oldrequest,
 										size - oldrequest);
 		else
-			VALGRIND_MAKE_MEM_NOACCESS((char *) pointer + size,
+			MEMDEBUG_MAKE_MEM_NOACCESS((char *) pointer + size,
 									   oldsize - size);
 
 		/* set mark to catch clobber of "unused" space */
@@ -597,12 +609,12 @@ GenerationRealloc(MemoryContext context, void *pointer, Size size)
 		 * the old request or shrinking it, so we conservatively mark the
 		 * entire new allocation DEFINED.
 		 */
-		VALGRIND_MAKE_MEM_NOACCESS(pointer, oldsize);
-		VALGRIND_MAKE_MEM_DEFINED(pointer, size);
+		MEMDEBUG_MAKE_MEM_NOACCESS(pointer, oldsize);
+		MEMDEBUG_MAKE_MEM_DEFINED(pointer, size);
 #endif
 
 		/* Disallow external access to private part of chunk header. */
-		VALGRIND_MAKE_MEM_NOACCESS(chunk, GENERATIONCHUNK_PRIVATE_LEN);
+		MEMDEBUG_MAKE_MEM_NOACCESS(chunk, GENERATIONCHUNK_PRIVATE_LEN);
 
 		return pointer;
 	}
@@ -614,7 +626,7 @@ GenerationRealloc(MemoryContext context, void *pointer, Size size)
 	if (newPointer == NULL)
 	{
 		/* Disallow external access to private part of chunk header. */
-		VALGRIND_MAKE_MEM_NOACCESS(chunk, GENERATIONCHUNK_PRIVATE_LEN);
+		MEMDEBUG_MAKE_MEM_NOACCESS(chunk, GENERATIONCHUNK_PRIVATE_LEN);
 		return NULL;
 	}
 
@@ -626,11 +638,11 @@ GenerationRealloc(MemoryContext context, void *pointer, Size size)
 	 * defined to avoid errors as we copy the currently-NOACCESS trailing
 	 * bytes.
 	 */
-	VALGRIND_MAKE_MEM_UNDEFINED(newPointer, size);
+	MEMDEBUG_MAKE_MEM_UNDEFINED(newPointer, size);
 #ifdef MEMORY_CONTEXT_CHECKING
 	oldsize = chunk->requested_size;
 #else
-	VALGRIND_MAKE_MEM_DEFINED(pointer, oldsize);
+	MEMDEBUG_MAKE_MEM_DEFINED(pointer, oldsize);
 #endif
 
 	/* transfer existing data (certain to fit) */
@@ -653,9 +665,9 @@ GenerationGetChunkSpace(MemoryContext context, void *pointer)
 	GenerationChunk *chunk = GenerationPointerGetChunk(pointer);
 	Size		result;
 
-	VALGRIND_MAKE_MEM_DEFINED(chunk, GENERATIONCHUNK_PRIVATE_LEN);
+	MEMDEBUG_MAKE_MEM_DEFINED(chunk, GENERATIONCHUNK_PRIVATE_LEN);
 	result = chunk->size + Generation_CHUNKHDRSZ;
-	VALGRIND_MAKE_MEM_NOACCESS(chunk, GENERATIONCHUNK_PRIVATE_LEN);
+	MEMDEBUG_MAKE_MEM_NOACCESS(chunk, GENERATIONCHUNK_PRIVATE_LEN);
 	return result;
 }
 
@@ -746,6 +758,7 @@ GenerationCheck(MemoryContext context)
 	GenerationContext *gen = (GenerationContext *) context;
 	const char *name = context->name;
 	dlist_iter	iter;
+	Size		total_allocated = 0;
 
 	/* walk all blocks in this context */
 	dlist_foreach(iter, &gen->blocks)
@@ -754,6 +767,8 @@ GenerationCheck(MemoryContext context)
 		int			nfree,
 					nchunks;
 		char	   *ptr;
+
+		total_allocated += block->blksize;
 
 		/*
 		 * nfree > nchunks is surely wrong, and we don't expect to see
@@ -773,7 +788,7 @@ GenerationCheck(MemoryContext context)
 			GenerationChunk *chunk = (GenerationChunk *) ptr;
 
 			/* Allow access to private part of chunk header. */
-			VALGRIND_MAKE_MEM_DEFINED(chunk, GENERATIONCHUNK_PRIVATE_LEN);
+			MEMDEBUG_MAKE_MEM_DEFINED(chunk, GENERATIONCHUNK_PRIVATE_LEN);
 
 			/* move to the next chunk */
 			ptr += (chunk->size + Generation_CHUNKHDRSZ);
@@ -818,7 +833,7 @@ GenerationCheck(MemoryContext context)
 			 * of chunk header.
 			 */
 			if (chunk->context != NULL)
-				VALGRIND_MAKE_MEM_NOACCESS(chunk, GENERATIONCHUNK_PRIVATE_LEN);
+				MEMDEBUG_MAKE_MEM_NOACCESS(chunk, GENERATIONCHUNK_PRIVATE_LEN);
 		}
 
 		/*
@@ -833,6 +848,8 @@ GenerationCheck(MemoryContext context)
 			elog(WARNING, "problem in Generation %s: number of free chunks %d in block %p does not match header %d",
 				 name, nfree, block, block->nfree);
 	}
+
+	Assert(total_allocated == context->mem_allocated);
 }
 
 #endif							/* MEMORY_CONTEXT_CHECKING */

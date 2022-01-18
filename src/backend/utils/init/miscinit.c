@@ -53,10 +53,22 @@
 #include "utils/varlena.h"
 
 /* POLAR */
+#include "access/clog.h"
+#include "access/commit_ts.h"
+#include "access/multixact.h"
+#include "access/polar_csnlog.h"
 #include "access/xlog.h"
+#include "access/xlog_internal.h"
+#include "catalog/pg_control.h"
 #include "storage/polar_fd.h"
+#include "utils/polar_local_cache.h"
 
 #define DIRECTORY_LOCK_FILE		"postmaster.pid"
+
+/* POLAR */
+#define POLAR_SHMEM_FILE		"polar_shmem"
+#define polar_shmem_file_exists(status) \
+	(status == SHMEM_FILE_INVALID || status == SHMEM_FILE_SHM_NOT_IN_USE)
 
 ProcessingMode Mode = InitProcessing;
 
@@ -64,6 +76,11 @@ ProcessingMode Mode = InitProcessing;
 static List *lock_files = NIL;
 
 static Latch LocalLatchData;
+
+/* POLAR */
+static void polar_remove_old_shmem_info_file(void);
+static PolarShmemFileStatus polar_shmem_file_status(unsigned long *key, unsigned long *id);
+static void polar_remove_local_cache(void);
 
 /* ----------------------------------------------------------------
  *		ignoring system indexes support stuff
@@ -292,6 +309,12 @@ InitPostmasterChild(void)
 	/* We don't want the postmaster's proc_exit() handlers */
 	on_exit_reset();
 
+	/*
+	 * POLAR: pfs tls init when subprocess forked
+	 * we need set cleanup function.
+	 */
+	polar_register_tls_cleanup();
+
 	/* Initialize process-local latch support */
 	InitializeLatchSupport();
 	MyLatch = &LocalLatchData;
@@ -428,7 +451,7 @@ GetSessionUserId(void)
 }
 
 
-static void
+void
 SetSessionUserId(Oid userid, bool is_superuser)
 {
 	AssertState(SecurityRestrictionContext == 0);
@@ -632,6 +655,10 @@ InitializeSessionUserId(const char *rolename, Oid roleid)
 	/* (We assume this is an atomic store so no lock is needed) */
 	MyProc->roleId = roleid;
 
+	/* POLAR: mark role is superuser? */
+	MyProc->issuper = rform->rolsuper;
+	/* POLAR end */
+
 	/*
 	 * These next checks are not enforced when in standalone mode, so that
 	 * there is a way to recover from sillinesses like "UPDATE pg_authid SET
@@ -719,8 +746,11 @@ SetSessionAuthorization(Oid userid, bool is_superuser)
 	/* Must have authenticated already, else can't make permission check */
 	AssertState(OidIsValid(AuthenticatedUserId));
 
+	/* POLAR: polar_superuser is allowed change session auth id who is not superuser */
 	if (userid != AuthenticatedUserId &&
-		!AuthenticatedUserIsSuperuser)
+		!AuthenticatedUserIsSuperuser &&
+		!(polar_superuser_arg(AuthenticatedUserId) &&
+		polar_has_more_privs_than_role(AuthenticatedUserId, userid)))
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 				 errmsg("permission denied to set session authorization")));
@@ -1180,6 +1210,8 @@ void
 CreateDataDirLockFile(bool amPostmaster)
 {
 	CreateLockFile(DIRECTORY_LOCK_FILE, amPostmaster, "", true, DataDir);
+
+	polar_create_shmem_info_file(amPostmaster);
 }
 
 /*
@@ -1528,6 +1560,9 @@ char	   *local_preload_libraries_string = NULL;
 /* Flag telling that we are loading shared_preload_libraries */
 bool		process_shared_preload_libraries_in_progress = false;
 
+/* POLAR: used for shared libraries update when binary upgrade */
+char *polar_internal_shared_preload_libraries = NULL;
+
 /*
  * load the shared libraries listed in 'libraries'
  *
@@ -1590,6 +1625,19 @@ void
 process_shared_preload_libraries(void)
 {
 	process_shared_preload_libraries_in_progress = true;
+
+	/*
+	 * POLAR: we load the internal libraries with high priority, if
+	 * the internal libraries have presented in shared_preload_libraries,
+	 * it doesn't matter, it allows to call load_libraries with the same
+	 * library many times, load_libraries will skip to load a library
+	 * which has been loaded already
+	 */
+	load_libraries(polar_internal_shared_preload_libraries,
+				   "polar_internal_shared_preload_libraries",
+				   false);
+	/* POLAR end */
+
 	load_libraries(shared_preload_libraries_string,
 				   "shared_preload_libraries",
 				   false);
@@ -1633,6 +1681,7 @@ polar_set_database_path(const char *path)
 	Assert(!polar_database_path);
 	polar_database_path = MemoryContextStrdup(TopMemoryContext, path);
 }
+
 
 /*
  * Remove all subdirectories and files in a directory
@@ -1686,36 +1735,130 @@ polar_remove_file_in_dir(const char *dirname)
 	FreeDir(dir);
 }
 
+/*
+ * POLAR: judge whether the gap between replica's latest redoPtr and master's latest redoPtr exceeds the size specified
+ * return true when 1)the gap exceeds the size, 2)local pg_control file doesn't exists, 3) redoPtr of master < redoPtr of replica
+ * return false when the gap is within the size
+ */
+bool
+polar_replica_behind_exceed_size(uint64 size)
+{
+	char	polar_control_file_path[MAXPGPATH];
+	ControlFileData *controlfile = NULL;
+	XLogRecPtr	local_redo = InvalidXLogRecPtr;
+	XLogRecPtr  shared_redo = InvalidXLogRecPtr;
+	int			saved_errno;
+	bool		result;
+
+	if (!polar_enable_shared_storage_mode || !polar_in_replica_mode())
+		return false;
+	
+	controlfile = palloc(sizeof(ControlFileData));
+
+	/* POLAR: open and check local pg_control file */
+	snprintf(polar_control_file_path, MAXPGPATH, "%s", XLOG_CONTROL_FILE);
+	result = polar_read_control_file(polar_control_file_path, controlfile, LOG, &saved_errno);
+
+	/* POLAR: return true when local pg_control file doesn't exist, need to copy it from shared storage */
+	if (result == false)
+	{
+		if (saved_errno == ENOENT)
+		{
+			pfree(controlfile);
+			return true;
+		}
+	}
+	else
+	{
+		/* POLAR: get redoPtr of local pg_control file */
+		local_redo = controlfile->checkPointCopy.redo;
+	}
+
+	/* POLAR: open and check pg_control file in shared storage */
+	MemSet(controlfile, 0, sizeof(ControlFileData));
+	polar_make_file_path_level2(polar_control_file_path, XLOG_CONTROL_FILE);
+	if (polar_read_control_file(polar_control_file_path, controlfile, PANIC, &saved_errno))
+	{
+		/* POLAR: get redoPtr of shared pg_control file */
+		shared_redo = controlfile->checkPointCopy.redo;
+	}
+	pfree(controlfile);
+	elog(LOG, "shared_redo:%lX, local_redo:%lX", shared_redo, local_redo);
+
+	/* POLAR: shared_redo maybe smaller than local_redo when in backup and recovery scene, need to copy it from shared storage */
+	if (shared_redo < local_redo)
+	{
+		elog(LOG, "redoPtr of pg_control in shared storage is smaller than that in local");
+		return true;
+	}
+	return (shared_redo - local_redo > size);
+}
+
+/*
+ * POLAR: judge whether it is needed for replica to copy base dirs and other trans status log files 
+ * from shared storage to local, only do the copy process when this func return true
+ * return true when: 
+ * 1) first boot after initdb or demote from a primary
+ * 2) polar_replica_redo_gap_limit is 0, which means the judgement is disabled
+ * 3) the gap between replica's latest redoPtr and master's latest redoPtr exceeds the size specified
+ */
+bool
+polar_need_copy_local_dir_for_replica(void)
+{
+	char	   path[MAXPGPATH];
+	struct stat stat;
+
+	if (!polar_enable_shared_storage_mode || !polar_in_replica_mode())
+		return false;
+		
+	/* 
+	 * POLAR: return true when POLAR_REPLICA_BOOTED_FILE doesn't exist regardless of the redoptr gap
+	 * which indicates it is the first time for replica node to boot after initdb or demote from a primary
+	 * and create POLAR_REPLICA_BOOTED_FILE file after copy process is executed successfully
+	 * so that next time we could judge whether to execute copy process depend on the redoptr gap
+	 */
+	snprintf((path), MAXPGPATH, "%s/%s", DataDir, POLAR_REPLICA_BOOTED_FILE);
+	if (polar_stat(path, &stat) != 0)
+	{
+		/* POLAR: set replica_update_dirs_by_redo as FALSE, which means we need update dirs by copy */
+		polar_set_replica_update_dirs_by_redo(FALSE);
+		return true;
+	}
+
+	/* 
+	 * POLAR: return true when 1)polar_replica_redo_gap_limit is 0, which means the comparison is disabled
+	 * 2) the gap exceeds polar_replica_redo_gap_limit, polar_replica_redo_gap_limit unit is KB
+	 */
+	if (polar_replica_redo_gap_limit == 0 || polar_replica_behind_exceed_size(polar_replica_redo_gap_limit * 1024))
+	{
+		/* 
+		 * POLAR: set replica_update_dirs_by_redo as FALSE
+		 * so that startup process can copy local dirs for replica after postmaster process 
+		 * copy pg_control file form shared storage to local, otherwise startup process will skip the copy process
+		 * because the gap is 0 after pg_control file is copied
+		 */
+		polar_set_replica_update_dirs_by_redo(FALSE);
+		return true;
+	}
+	polar_set_replica_update_dirs_by_redo(TRUE);
+	return false;
+}
+
+/*
+ * POLAR: copy base dirs and other trans status log files from shared storage to local for replica
+ * called by startup process
+ */ 
 void
 polar_copy_dirs_from_shared_storage_to_local(void)
 {
-	char	   *dirs_to_copy[] = {"pg_twophase", "pg_xact", "pg_commit_ts", "pg_multixact", NULL};
-	char	   *global = "global";
+	char	   *dirs_to_copy[] = {"pg_csnlog", "pg_twophase", "pg_xact", "pg_commit_ts", "pg_multixact", NULL};
 	char	   *base = "base";
-	char	   *control = "pg_control";
 	char	  **cur_dir = dirs_to_copy;
 	char        ss_path[MAXPGPATH * 2];
 	char        to_path[MAXPGPATH * 2];
 	DIR		   *dir;
 	struct dirent *de;
 	int         read_dir_err;
-
-	/* For global directory, if exists, clean it and copy the pg_control file */
-	if (mkdir(global, S_IRWXU) != 0)
-	{
-		if (EEXIST == errno)
-			polar_remove_file_in_dir(global);
-		else
-			ereport(ERROR,
-			        (errcode_for_file_access(),
-				        errmsg("could not create directory \"%s\": %m", global)));
-	}
-
-	/* Copy the pg_control file */
-	snprintf(to_path, sizeof(to_path), "%s/%s", global, control);
-	polar_make_file_path_level2(ss_path, to_path);
-
-	polar_copy_file(ss_path, to_path, false);
 
 	/* For base directory, copy the new files from shared storage */
 	if (mkdir(base, S_IRWXU) != 0 && EEXIST != errno)
@@ -1787,25 +1930,399 @@ read_dir_failed:
 	/* Copy other trans status log files */
 	while (*cur_dir != NULL)
 	{
+		bool skip_open_dir_err = false;
+
+		/* 
+		 * POLAR csn
+		 * When hot upgrade to csn version, old rw instance has no csnlog directory,
+		 * we set skip_dir_err to true when copy csnlog in replica mode
+	     */
+		if (strncmp(*cur_dir, "pg_csnlog", 9) == 0)
+			skip_open_dir_err = true;
+
 		/* Copy files from shared storage to local. */
 		polar_make_file_path_level2(ss_path, *cur_dir);
-		polar_copydir(ss_path, *cur_dir, true, true, true);
+		polar_copydir(ss_path, *cur_dir, true, true, true, skip_open_dir_err);
 		cur_dir++;
+	}
+
+	/* 
+	 * POLAR: create the polar_replica_booted file after copy process is done successfully
+	 * so that we can copy relevant dirs at next boot time if the previous copy process failed
+	 */
+	polar_create_replica_booted_file();
+	
+}
+
+/*
+ * POLAR: Initialize the local directories
+ * for primary and standby, remove local cache file
+ * for replica, if replica doesn't update local dirs by redo, which occurs when 
+ * 1) the gap between replica's latest redoPtr and vmaster's latest redoPtr exceeds polar_replica_redo_gap_limit
+ * 2) replica node is newly created or demoted from a master node
+ * then remove local cache file and copy them from shared storage to local, execute this copy process 
+ * in startup process so that postmaster can respond to the detection of cm timely
+ */
+void
+polar_init_local_dir(void)
+{
+	if (IsUnderPostmaster && polar_enable_shared_storage_mode)
+	{
+		if (!polar_replica_update_dirs_by_redo())
+		{
+			polar_remove_local_cache();
+			if (polar_in_replica_mode())
+			{
+				elog(LOG,"copy dirs from shared storage to local for replica");
+				polar_copy_dirs_from_shared_storage_to_local();
+			}
+		}
 	}
 }
 
 /*
- * Initialize the local directories for replica, copy some directories
- * from shared storage to local.
+ * POLAR: copy pg_control file from shared storage to local for replica or standby
+ * for standby, maintain local copy of control file to ensure promote
+ * can be triggered successfully.
+ */
+void polar_copy_pg_control_from_shared_storage_to_local(void)
+{
+	char	   *global = "global";
+	char	   *control = "pg_control";
+	char        ss_path[MAXPGPATH * 2];
+	char        to_path[MAXPGPATH * 2];
+
+	/* For global directory, if exists, clean it and copy the pg_control file */
+	if (mkdir(global, S_IRWXU) != 0)
+	{
+		if (EEXIST == errno)
+			polar_remove_file_in_dir(global);
+		else
+			ereport(ERROR,
+				(errcode_for_file_access(),
+				errmsg("could not create directory \"%s\": %m", global)));
+	}
+
+	/* Copy the pg_control file */
+	snprintf(to_path, sizeof(to_path), "%s/%s", global, control);
+	polar_make_file_path_level2(ss_path, to_path);
+
+	polar_copy_file(ss_path, to_path, false);
+}
+
+/*
+ * POLAR: Initialize the local global directories for replica or standby node
+ * copy pg_control file from shared storage to local, called by postmaster
+ * 
+ * for replica, only copy when 1)the gap between replica's latest redoPtr and 
+ * master's latest redoPtr exceeds polar_replica_redo_gap_limit
+ * 2) replica node is newly created or demoted from a master node
  */
 void
-polar_init_local_dir_for_replica(void)
+polar_init_global_dir_for_replica_or_standby(void)
 {
 	if (!IsUnderPostmaster
 		&& polar_enable_shared_storage_mode
-		&& polar_in_replica_mode()
-		&& (!polar_startup_from_local_data_file))
+		&& ((polar_in_replica_mode() && polar_need_copy_local_dir_for_replica())
+			 || polar_is_standby()))
 	{
-		polar_copy_dirs_from_shared_storage_to_local();
+		elog(LOG,"copy pg_control file from shared storage to local");
+		polar_copy_pg_control_from_shared_storage_to_local();
 	}
+}
+
+/* 
+ * POLAR: create the POLAR_REPLICA_BOOTED_FILE file so that we could judge whether to execute copy dirs process 
+ * depend on the redoptr gap next time when replica starts
+ */
+void
+polar_create_replica_booted_file()
+{
+	struct stat stat;
+	char	   path[MAXPGPATH];
+	int		   fd;
+
+	snprintf((path), MAXPGPATH, "%s/%s", DataDir, POLAR_REPLICA_BOOTED_FILE);
+	if (polar_stat(path, &stat) != 0)
+	{
+		fd = polar_open_transient_file(path, O_RDWR | O_CREAT | O_EXCL | PG_BINARY);
+		if (fd < 0)
+			ereport(WARNING,
+					(errcode_for_file_access(),
+						errmsg("could not create file \"%s\": %m, local dir initialization will be executed next time when replica start regardless of the redoptr gap ",
+						path)));
+		else
+		{
+			CloseTransientFile(fd);
+			elog(LOG, "create file \"%s\"", POLAR_REPLICA_BOOTED_FILE);
+		}
+	}
+}
+
+/*
+ * POLAR: detele POLAR_REPLICA_BOOTED_FILE if current node is not replica 
+ * so that we can execute local dir initilization when master demote to a replica
+ */
+void
+polar_remove_replica_booted_file()
+{
+	struct stat stat;
+	char	   path[MAXPGPATH];
+
+	snprintf((path), MAXPGPATH, "%s/%s", DataDir, POLAR_REPLICA_BOOTED_FILE);
+	if (polar_stat(path, &stat) == 0)
+	{
+		if (polar_unlink(path) != 0)
+			ereport(FATAL,
+					(errcode_for_file_access(),
+						errmsg("could not remove file \"%s\": %m", path)));
+		else
+			elog(LOG, "remove file \"%s\"", POLAR_REPLICA_BOOTED_FILE);	
+	}
+}
+
+/*
+ * POLAR: Create file to store polar persisted shared memory key and ID,
+ * like CreateLockFile.
+ */
+void
+polar_create_shmem_info_file(bool am_postmaster)
+{
+	int		fd;
+	int		ntries;
+	unsigned long key = 0, id = 0;
+	PolarShmemFileStatus status;
+
+	if (!am_postmaster)
+		return;
+
+	if (!polar_enable_persisted_buffer_pool)
+	{
+		polar_remove_old_shmem_info_file();
+		return;
+	}
+
+	for (ntries = 0;; ntries++)
+	{
+		fd = open(POLAR_SHMEM_FILE, O_RDWR | O_CREAT | O_EXCL, pg_file_create_mode);
+		if (fd >= 0)
+			break;
+
+		/* Couldn't create the shmem file. Probably it already exists. */
+		if ((errno != EEXIST && errno != EACCES) || ntries > 100)
+			ereport(FATAL,
+					(errcode_for_file_access(), errmsg(
+						"could not create polar persisted shmem file \"%s\": %m",
+						POLAR_SHMEM_FILE)));
+
+		status = polar_shmem_file_status(&key, &id);
+		if (status == SHMEM_FILE_NOT_EXIST)
+			continue;
+
+		if (status == SHMEM_FILE_SHM_IN_USE)
+			elog(FATAL,
+				 "pre-existing polar shared memory block (key %lu, ID %lu) is still in use.",
+				 key, id);
+
+		if (polar_shmem_file_exists(status))
+		{
+			elog(LOG,
+				 "polar shmem file %s (key %lu, ID %lu) already exists, try to reuse it.",
+				 POLAR_SHMEM_FILE, key, id);
+			break;
+		}
+	}
+
+	/*
+	 * We do not unlink the lock file(s) at proc_exit. So do not add this file
+	 * to lock_files.
+	 */
+}
+
+/*
+ * POLAR: Store polar shmem key and ID in a separate file. We will check it
+ * when reuse the shared memory. We always cover the old content.
+ */
+void
+polar_write_shmem_info_to_file(unsigned long key, unsigned long id)
+{
+	int		fd;
+	int		len;
+	char	str[64];
+
+	sprintf(str, "%9lu %9lu\n", key, id);
+	len = strlen(str);
+
+	fd = open(POLAR_SHMEM_FILE, O_RDWR | PG_BINARY, 0);
+	if (fd < 0)
+	{
+		ereport(FATAL,
+				(errcode_for_file_access(), errmsg(
+					"could not open polar shmem file \"%s\": %m",
+					POLAR_SHMEM_FILE)));
+	}
+
+	errno = 0;
+	if (lseek(fd, (off_t)0, SEEK_SET) != 0 ||
+		(int) write(fd, str, len) != len)
+	{
+		/* if write didn't set errno, assume problem is no disk space */
+		if (errno == 0)
+			errno = ENOSPC;
+		close(fd);
+		ereport(FATAL,
+				(errcode_for_file_access(), errmsg(
+					"could not write to polar shmem file \"%s\": %m",
+					POLAR_SHMEM_FILE)));
+	}
+
+	if (pg_fsync(fd) != 0)
+	{
+		ereport(FATAL,
+				(errcode_for_file_access(), errmsg(
+					"could not writer to polar shmem file \"%s\": %m",
+					POLAR_SHMEM_FILE)));
+	}
+
+	if (close(fd) != 0)
+	{
+		ereport(FATAL,
+				(errcode_for_file_access(), errmsg(
+					"could not write to polar shmem file \"%s\": %m",
+					POLAR_SHMEM_FILE)));
+	}
+
+	elog(LOG, "Write polar shmem info (key %lu, ID %lu) to file.", key, id);
+}
+
+/*
+ * POLAR: Read shmem key and ID from the file. If skip_enoent is true, we return
+ * false when the file does not exist.
+ */
+PolarShmemFileStatus
+polar_read_shmem_info_from_file(unsigned long *key,
+								unsigned long *id,
+								bool skip_enoent)
+{
+	int		fd;
+	int		len;
+	char	buffer[MAXPGPATH * 2 + 256];
+
+	fd = open(POLAR_SHMEM_FILE, O_RDONLY, pg_file_create_mode);
+	if (fd < 0)
+	{
+		if (errno == ENOENT && skip_enoent)
+			return SHMEM_FILE_NOT_EXIST;
+		else
+		{
+			ereport(FATAL,
+					(errcode_for_file_access(), errmsg(
+						"could not open polar shmem file \"%s\": %m",
+						POLAR_SHMEM_FILE)));
+		}
+	}
+
+	if ((len = read(fd, buffer, sizeof(buffer) - 1)) < 0)
+		ereport(FATAL,
+				(errcode_for_file_access(), errmsg(
+					"count not read polar shmem file \"%s\": %m",
+					POLAR_SHMEM_FILE)));
+
+	if (close(fd) != 0)
+	{
+		ereport(FATAL,
+				(errcode_for_file_access(), errmsg(
+					"could not read from polar shmem file \"%s\": %m",
+					POLAR_SHMEM_FILE)));
+	}
+
+	if (sscanf(buffer, "%lu %lu", key, id) == 2)
+		return SHMEM_FILE_VALID;
+	else
+		return SHMEM_FILE_INVALID;
+}
+
+static PolarShmemFileStatus
+polar_shmem_file_status(unsigned long *key, unsigned long *id)
+{
+	PolarShmemFileStatus status = polar_read_shmem_info_from_file(key, id, true);
+	if (status != SHMEM_FILE_VALID)
+		return status;
+
+	/*
+	 * POLAR: Already read valid shared memory key and ID from file, now
+	 * check if it can be reused.
+	 */
+	if (PGSharedMemoryIsInUse(*key, *id))
+		return SHMEM_FILE_SHM_IN_USE;
+	else
+		return SHMEM_FILE_SHM_NOT_IN_USE;
+}
+
+/*
+ * check if polar shmem info file exists, if yes, try to delete the
+ * shared memory.
+ */
+static void
+polar_remove_old_shmem_info_file(void)
+{
+	PolarShmemFileStatus status;
+	unsigned long key = 0, id = 0;
+
+	status = polar_shmem_file_status(&key, &id);
+	if (status == SHMEM_FILE_NOT_EXIST)
+		return;
+
+	if (status == SHMEM_FILE_SHM_IN_USE)
+		elog(FATAL,
+			 "pre-existing polar shared memory block (key %lu, ID %lu) is still in use.",
+			 key, id);
+
+	if (polar_shmem_file_exists(status))
+	{
+		/* Delete shared memory and delete file. */
+		if (polar_delete_shmem(id))
+		{
+			if (unlink(POLAR_SHMEM_FILE) < 0)
+				ereport(FATAL,
+						(errcode_for_file_access(),
+							errmsg("could not remove old shmem file \"%s\": %m",
+								   POLAR_SHMEM_FILE),
+							errhint(
+								"The file seems accidentally left over, but "
+								"it could not be removed. Please remove the file "
+								"by hand and try again.")));
+
+			elog(LOG,
+				 "Delete polar persisted shared memory (key %lu, ID %lu) and remove old polar shmem info file.",
+				 key, id);
+		}
+		else
+		{
+			elog(FATAL,
+				 "polar shared memory can not be deleted. Please delete it by hand and try again. key %lu ID %lu",
+				 key, id);
+		}
+	}
+}
+
+/*
+ * POLAR px
+ * get AuthenticatedUserIsSuperuser
+ */
+bool
+px_authenticated_user_is_superuser(void)
+{
+	AssertState(OidIsValid(AuthenticatedUserId));
+	return AuthenticatedUserIsSuperuser;
+}
+
+/* POLAR: remove local cache */
+static void
+polar_remove_local_cache(void)
+{
+	polar_remove_clog_local_cache_file();
+	polar_remove_commit_ts_local_cache_file();
+	polar_remove_multixcat_local_cache_file();
+	polar_remove_csnlog_local_cache_file();
 }

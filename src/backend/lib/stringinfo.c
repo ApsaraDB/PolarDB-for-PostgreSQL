@@ -53,6 +53,23 @@ initStringInfo(StringInfo str)
 }
 
 /*
+ * POLAR px
+ * initStringInfoOfSize
+ *
+ * Initialize a StringInfoData struct with data buffer of 'size' bytes
+ */
+void
+initStringInfoOfSize(StringInfo str, int size)
+{
+
+	str->data = (char *) palloc(size);
+	str->maxlen = size;
+	str->len = 0;
+	str->data[0] = '\0';
+	str->cursor = 0;
+}
+
+/*
  * resetStringInfo
  *
  * Reset the StringInfo: the data buffer remains valid, but its
@@ -305,4 +322,31 @@ enlargeStringInfo(StringInfo str, int needed)
 	str->data = (char *) repalloc(str->data, newlen);
 
 	str->maxlen = newlen;
+}
+
+/*
+ * POLAR px
+ * appendBinaryStringInfoPX
+ *
+ * Append arbitrary binary data to a StringInfo, allocating more space
+ * if necessary. Ensures that a trailing null byte is present.
+ */
+void
+appendBinaryStringInfoPX(StringInfo str, const void *data, int datalen)
+{
+	Assert(str != NULL);
+
+	/* Make more room if needed */
+	enlargeStringInfo(str, datalen);
+
+	/* OK, append the data */
+	memcpy(str->data + str->len, data, datalen);
+	str->len += datalen;
+
+	/*
+	 * Keep a trailing null in place, even though it's probably useless for
+	 * binary data.  (Some callers are dealing with text but call this because
+	 * their input isn't null-terminated.)
+	 */
+	str->data[str->len] = '\0';
 }

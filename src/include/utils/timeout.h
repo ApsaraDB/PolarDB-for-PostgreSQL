@@ -68,6 +68,9 @@ typedef struct
 
 /* timeout setup */
 extern void InitializeTimeouts(void);
+
+/* POLAR */
+extern void InitializeTimeouts_with_sigsets(int signum1, int signum2);
 extern TimeoutId RegisterTimeout(TimeoutId id, timeout_handler_proc handler);
 extern void reschedule_timeouts(void);
 

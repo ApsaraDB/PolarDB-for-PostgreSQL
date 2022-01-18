@@ -28,6 +28,12 @@
 #include "nodes/value.h"
 #include "partitioning/partdefs.h"
 
+/* POLAR px */
+#include "catalog/px_policy.h"
+/* POLAR end */
+
+
+typedef struct PartitionNode PartitionNode; /* see relation.h */
 
 typedef enum OverridingKind
 {
@@ -93,6 +99,15 @@ typedef uint32 AclMode;			/* a bitmask of privilege bits */
 /*****************************************************************************
  *	Query Tree
  *****************************************************************************/
+
+/* POLAR px */
+typedef uint8 ParentStmtType;
+
+#define PARENTSTMTTYPE_NONE	0
+#define PARENTSTMTTYPE_CTAS	1
+#define PARENTSTMTTYPE_COPY	2
+#define PARENTSTMTTYPE_REFRESH_MATVIEW	3
+/* POLAR end */
 
 /*
  * Query -
@@ -180,6 +195,14 @@ typedef struct Query
 	 */
 	int			stmt_location;	/* start location, or -1 if unknown */
 	int			stmt_len;		/* length in bytes; 0 means "rest of string" */
+
+	/* 
+	 *  POLAR px
+	 * Used to indicate this query is part of CTAS or COPY so that its plan
+	 * would always be dispatched in parallel.
+	 */
+	ParentStmtType	parentStmtType;
+	/* POLAR end */
 } Query;
 
 
@@ -952,7 +975,10 @@ typedef enum RTEKind
 	RTE_TABLEFUNC,				/* TableFunc(.., column list) */
 	RTE_VALUES,					/* VALUES (<exprlist>), (<exprlist>), ... */
 	RTE_CTE,					/* common table expr (WITH list element) */
-	RTE_NAMEDTUPLESTORE			/* tuplestore, e.g. for AFTER triggers */
+	RTE_NAMEDTUPLESTORE,		/* tuplestore, e.g. for AFTER triggers */
+
+	RTE_VOID,                   /* PX: deleted RTE */
+	RTE_TABLEFUNCTION,          /* PX: Functions over multiset input */
 } RTEKind;
 
 typedef struct RangeTblEntry
@@ -1075,6 +1101,12 @@ typedef struct RangeTblEntry
 	Bitmapset  *insertedCols;	/* columns needing INSERT permission */
 	Bitmapset  *updatedCols;	/* columns needing UPDATE permission */
 	List	   *securityQuals;	/* security barrier quals to apply, if any */
+
+	/* POLAR px */
+	List	   *values_collations;		/* OID list of column collation OIDs */
+	List	   *ctecoltypes;			/* OID list of column type OIDs */
+	List	   *ctecoltypmods;			/* integer list of column typmods */
+	List	   *ctecolcollations;		/* OID list of column collation OIDs */
 } RangeTblEntry;
 
 /*
@@ -1389,11 +1421,19 @@ typedef struct OnConflictClause
  *
  * We don't currently support the SEARCH or CYCLE clause.
  */
+typedef enum CTEMaterialize
+{
+	CTEMaterializeDefault,		/* no option specified */
+	CTEMaterializeAlways,		/* MATERIALIZED */
+	CTEMaterializeNever			/* NOT MATERIALIZED */
+} CTEMaterialize;
+
 typedef struct CommonTableExpr
 {
 	NodeTag		type;
 	char	   *ctename;		/* query name (never qualified) */
 	List	   *aliascolnames;	/* optional list of column names */
+	CTEMaterialize ctematerialized; /* is this an optimization fence? */
 	/* SelectStmt/InsertStmt/etc before parse analysis, Query afterwards: */
 	Node	   *ctequery;		/* the CTE's subquery */
 	int			location;		/* token location, or -1 if unknown */
@@ -1816,7 +1856,6 @@ typedef struct AlterTableCmd	/* one subcommand of an ALTER TABLE */
 	DropBehavior behavior;		/* RESTRICT or CASCADE for DROP cases */
 	bool		missing_ok;		/* skip error if missing? */
 } AlterTableCmd;
-
 
 /* ----------------------
  * Alter Collation
@@ -2596,6 +2635,10 @@ typedef struct DropStmt
 	DropBehavior behavior;		/* RESTRICT or CASCADE behavior */
 	bool		missing_ok;		/* skip error if object is missing? */
 	bool		concurrent;		/* drop index concurrently? */
+	bool		opt_flashback;
+	bool		ispurge;		
+	bool		purge_drop;		
+	bool		clean_up;		
 } DropStmt;
 
 /* ----------------------
@@ -2653,6 +2696,13 @@ typedef struct SecLabelStmt
 #define CURSOR_OPT_GENERIC_PLAN 0x0040	/* force use of generic plan */
 #define CURSOR_OPT_CUSTOM_PLAN	0x0080	/* force use of custom plan */
 #define CURSOR_OPT_PARALLEL_OK	0x0100	/* parallel mode OK */
+
+/*
+ * POLAR px: this is a new option for POLAR px. Only if set this option,
+ * the cursor could have a chance to get plan tree from PXOPT.
+ */
+#define CURSOR_OPT_PX_OK 0x0200 /* POLAR Parallel Execution */
+#define CURSOR_OPT_PX_FORCE 0x0400 /* Force to generate a PX plan */
 
 typedef struct DeclareCursorStmt
 {
@@ -2878,6 +2928,8 @@ typedef struct AlterObjectSchemaStmt
 	Node	   *object;			/* in case it's some other object */
 	char	   *newschema;		/* the new schema */
 	bool		missing_ok;		/* skip error if missing? */
+	bool		is_flashback;
+	char	   *newtablename;
 } AlterObjectSchemaStmt;
 
 /* ----------------------
@@ -3100,6 +3152,34 @@ typedef struct DropdbStmt
 	bool		missing_ok;		/* skip error if db is missing? */
 } DropdbStmt;
 
+typedef enum
+{
+	CC_ADD_FOLLOWER,
+	CC_DROP_FOLLOWER,
+	CC_ADD_LEARNER,
+	CC_DROP_LEARNER,
+	CC_TRANSFER_LEADER,
+	CC_REQUEST_VOTE,
+	CC_CHANGE_LEARNER_TO_FOLLOWER,
+	CC_CHANGE_FOLLOWER_TO_LEARNER,
+	CC_CHANGE_WEIGHT_CONFIG,
+	CC_CHANGE_MATCH_INDEX,
+	CC_FORCE_SIGNLE_MODE,
+	CC_PURGE_LOGS,
+	CC_FORCE_PURGE_LOGS,
+	CC_CHANGE_CLUSTER_ID
+} DMACommandKind;
+
+typedef struct PolarDMACommandStmt {
+	NodeTag	type;
+	DMACommandKind kind;
+	char *node;
+	int	weight;
+	uint64 matchindex;
+	uint64 purgeindex;
+	uint64 clusterid;
+} PolarDMACommandStmt;
+
 /* ----------------------
  *		Alter System Statement
  * ----------------------
@@ -3108,6 +3188,7 @@ typedef struct AlterSystemStmt
 {
 	NodeTag		type;
 	VariableSetStmt *setstmt;	/* SET subcommand */
+	PolarDMACommandStmt *dma_stmt;	/* Consensus subcommand */
 } AlterSystemStmt;
 
 /* ----------------------

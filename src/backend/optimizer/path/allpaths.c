@@ -678,6 +678,20 @@ set_rel_consider_parallel(PlannerInfo *root, RelOptInfo *rel,
 			 * infrastructure to support that.
 			 */
 			return;
+		/*
+		 * POLAR px: add case RTE_TABLEFUNCTION and RTE_VOID to ignore warning.
+		 */
+		case RTE_TABLEFUNCTION:
+			/* Check for parallel-restricted functions. */
+			if (!is_parallel_safe(root, (Node *) rte->functions))
+				return;
+			break;
+		case RTE_VOID:
+			/*
+			 * Not sure if parallelizing a "no-op" void RTE makes sense, but
+			 * it's no reason to disable parallelization.
+			 */
+			break;
 	}
 
 	/*

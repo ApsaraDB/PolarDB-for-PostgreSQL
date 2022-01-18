@@ -16,7 +16,8 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  *
- * src/backend/access/logindex/polar_queue_manager.c
+ * IDENTIFICATION
+ *    src/backend/access/logindex/polar_queue_manager.c
  *
  *-------------------------------------------------------------------------
  */
@@ -37,12 +38,12 @@
 #include "access/hash_xlog.h"
 #include "access/heapam_xlog.h"
 #include "access/nbtxlog.h"
-#include "access/polar_logindex.h"
-#include "access/polar_logindex_internal.h"
 #include "access/polar_queue_manager.h"
+#include "access/polar_ringbuf.h"
 #include "access/spgxlog.h"
 #include "access/visibilitymap.h"
 #include "access/xlog.h"
+#include "access/xlog_internal.h"
 #include "access/xloginsert.h"
 #include "catalog/pg_control.h"
 #include "miscadmin.h"
@@ -50,38 +51,34 @@
 #include "replication/walreceiver.h"
 #include "storage/shmem.h"
 #include "utils/guc.h"
+#include "utils/ps_status.h"
 
 typedef uint32 main_data_len_t;
-typedef uint8 block_id_t;
+typedef uint8  block_id_t;
 #define POLAR_MAIN_DATA_LEN(len) (sizeof(block_id_t) + sizeof(main_data_len_t) + (len))
 
-polar_ringbuf_t polar_xlog_queue;
-static bool polar_pop_xlog_queue = true;
-
-static bool polar_xlog_recv_queue_check(XLogReaderState *state);
+extern int       polar_xlog_queue_buffers;
+static bool   xlog_queue_catch_up = false;
 
 Size
-polar_xlog_queue_size(void)
+polar_xlog_queue_size(int size_MB)
 {
-	Size		size = 0;
-
-	if (!polar_streaming_xlog_meta)
-		return size;
+	Size size = 0;
 
 	/* xlog queue size */
-	size = add_size(size, polar_xlog_queue_buffers * 1024L * 1024L);
+	size = add_size(size, size_MB * 1024L * 1024L);
 	return size;
 }
 
 bool
 polar_xlog_remove_payload(XLogRecord *record)
 {
-	RmgrId		rmid = record->xl_rmid;
-	uint8		info;
+	RmgrId rmid = record->xl_rmid;
+	uint8 info;
 
 	if (rmid == RM_HEAP_ID || rmid == RM_HEAP2_ID || rmid == RM_BTREE_ID || rmid == RM_HASH_ID
-		|| rmid == RM_GIN_ID || rmid == RM_GIST_ID || rmid == RM_SEQ_ID
-		|| rmid == RM_SPGIST_ID || rmid == RM_BRIN_ID || rmid == RM_GENERIC_ID)
+			|| rmid == RM_GIN_ID || rmid == RM_GIST_ID || rmid == RM_SEQ_ID
+			|| rmid == RM_SPGIST_ID || rmid == RM_BRIN_ID || rmid == RM_GENERIC_ID)
 		return true;
 
 	if (rmid != RM_XLOG_ID)
@@ -90,8 +87,8 @@ polar_xlog_remove_payload(XLogRecord *record)
 	info = record->xl_info & ~XLR_INFO_MASK;
 
 	if (info != XLOG_FPI &&
-		info != XLOG_FPI_FOR_HINT &&
-		info != XLOG_FPSI)
+			info != XLOG_FPI_FOR_HINT &&
+			info != XLOG_FPSI)
 		return false;
 
 	return true;
@@ -100,7 +97,7 @@ polar_xlog_remove_payload(XLogRecord *record)
 static inline Size
 polar_reserve_main_data_size()
 {
-	Size		size = polar_get_main_data_len();
+	Size size = polar_get_main_data_len();
 
 	return POLAR_MAIN_DATA_LEN(size);
 }
@@ -110,7 +107,7 @@ polar_reserve_xlog_data_size(uint8 info)
 {
 	switch (info)
 	{
-			/* fullpage_no */
+		/* fullpage_no */
 		case XLOG_FPSI:
 			return POLAR_MAIN_DATA_LEN(sizeof(uint64));
 
@@ -188,10 +185,7 @@ polar_reserve_gist_data_size(uint8 info)
 	if (info != XLOG_GIST_PAGE_UPDATE)
 		return 0;
 
-	/*
-	 * Flollowing function gistXLogUpdate to reserve size for
-	 * gistxlogPageUpdate
-	 */
+	/* Flollowing function gistXLogUpdate to reserve size for gistxlogPageUpdate*/
 	if (rdata->next == NULL || rdata->next->len == 0)
 		return 0;
 
@@ -236,7 +230,7 @@ static Size
 polar_reserve_data_size(XLogRecData *rdata)
 {
 	XLogRecord *rechdr = (XLogRecord *) rdata->data;
-	uint8		info = rechdr->xl_info & ~XLR_INFO_MASK;
+	uint8 info = rechdr->xl_info & ~XLR_INFO_MASK;
 
 	switch (rechdr->xl_rmid)
 	{
@@ -272,87 +266,86 @@ Size
 polar_xlog_reserve_size(XLogRecData *rdata)
 {
 	XLogRecord *rechdr = (XLogRecord *) rdata->data;
-	Size		len = polar_xlog_remove_payload(rechdr) ?
-	rdata->len : rechdr->xl_tot_len;
-
+	Size len = polar_xlog_remove_payload(rechdr) ?
+			   rdata->len : rechdr->xl_tot_len;
 	len += polar_reserve_data_size(rdata);
 	return len;
 }
 
-void
-polar_xlog_queue_init(void)
+polar_ringbuf_t
+polar_xlog_queue_init(const char *name, int tranche_id, int size_MB)
 {
-	bool		found;
-	Size		size;
-	uint8	   *data;
+	bool found;
+	uint8 *data;
+	Size size;
+	polar_ringbuf_t queue = NULL;
 
 	StaticAssertStmt(POLAR_RINGBUF_MAX_SLOT <= sizeof(uint64) * CHAR_BIT,
 					 "POLAR_RINGBUF_MAX_SLOT is larger than 64");
 
-	if (!polar_streaming_xlog_meta)
-		return;
+	size = polar_xlog_queue_size(size_MB);
+	data = (uint8 *)ShmemInitStruct(name, size, &found);
 
-	size = polar_xlog_queue_size();
-	data = (uint8 *) ShmemInitStruct("XLOG queue buffer",
-									 size, &found);
-
-	if (!found)
+	if (!IsUnderPostmaster)
 	{
+		Assert(!found);
 		MemSet(data, 0, size);
-		polar_xlog_queue = polar_ringbuf_init(data, size,
-											  LWTRANCHE_POLAR_XLOG_QUEUE,
-											  "polar_xlog_queue");
+		queue = polar_ringbuf_init(data, size, tranche_id, name);
 	}
+	else
+		Assert(found);
+
+	return queue;
 }
 
-#define POLAR_WRITE_MAIN_DATA(dlen, rbuf_pos, offset) \
+#define POLAR_WRITE_MAIN_DATA(queue, dlen, rbuf_pos, offset) \
 	do { \
 		uint8 block_id = XLR_BLOCK_ID_POLAR_EXTRA; \
 		XLogRecData *main_data = polar_get_main_data_head(); \
 		uint8 *data = (uint8 *)(main_data->data); \
 		main_data_len_t data_len = dlen; \
-		if (rbuf_pos < 0 || rbuf_pos >= polar_xlog_queue->size) \
+		if (rbuf_pos < 0 || rbuf_pos >= queue->size) \
 			ereport(PANIC, (errmsg("rbuf_pos=%lu is incorrect for xlog queue, queue size is %lu", \
-								   rbuf_pos, polar_xlog_queue->size))); \
-		len = polar_ringbuf_pkt_write(polar_xlog_queue, rbuf_pos, \
+								   rbuf_pos, queue->size))); \
+		len = polar_ringbuf_pkt_write(queue, rbuf_pos, \
 									  offset, (uint8 *)(&block_id), sizeof(block_id_t)); \
-		len += polar_ringbuf_pkt_write(polar_xlog_queue, rbuf_pos, \
+		len += polar_ringbuf_pkt_write(queue, rbuf_pos, \
 									   offset+len, (uint8 *)(&data_len), sizeof(data_len)); \
-		len += polar_ringbuf_pkt_write(polar_xlog_queue, rbuf_pos, \
+		len += polar_ringbuf_pkt_write(queue, rbuf_pos, \
 									   offset+len, (uint8 *)(data), data_len); \
 	} while (0)
 
 static int
-polar_xlog_push_heap_data(size_t rbuf_pos, int offset, uint8 info)
+polar_xlog_push_heap_data(polar_ringbuf_t queue, size_t rbuf_pos, int offset, uint8 info)
 {
-	int			len = 0;
+	int len = 0;
 
 	switch (info & XLOG_HEAP_OPMASK)
 	{
 		case XLOG_HEAP_INSERT:
-			{
-				POLAR_WRITE_MAIN_DATA(SizeOfHeapInsert, rbuf_pos, offset);
-				break;
-			}
+		{
+			POLAR_WRITE_MAIN_DATA(queue, SizeOfHeapInsert, rbuf_pos, offset);
+			break;
+		}
 
 		case XLOG_HEAP_DELETE:
-			{
-				POLAR_WRITE_MAIN_DATA(SizeOfHeapDelete, rbuf_pos, offset);
-				break;
-			}
+		{
+			POLAR_WRITE_MAIN_DATA(queue, SizeOfHeapDelete, rbuf_pos, offset);
+			break;
+		}
 
 		case XLOG_HEAP_UPDATE:
 		case XLOG_HEAP_HOT_UPDATE:
-			{
-				POLAR_WRITE_MAIN_DATA(SizeOfHeapUpdate, rbuf_pos, offset);
-				break;
-			}
+		{
+			POLAR_WRITE_MAIN_DATA(queue, SizeOfHeapUpdate, rbuf_pos, offset);
+			break;
+		}
 
 		case XLOG_HEAP_LOCK:
-			{
-				POLAR_WRITE_MAIN_DATA(SizeOfHeapLock, rbuf_pos, offset);
-				break;
-			}
+		{
+			POLAR_WRITE_MAIN_DATA(queue, SizeOfHeapLock, rbuf_pos, offset);
+			break;
+		}
 
 		default:
 			break;
@@ -362,53 +355,53 @@ polar_xlog_push_heap_data(size_t rbuf_pos, int offset, uint8 info)
 }
 
 static int
-polar_xlog_push_heap2_data(size_t rbuf_pos, int offset, uint8 info)
+polar_xlog_push_heap2_data(polar_ringbuf_t queue, size_t rbuf_pos, int offset, uint8 info)
 {
-	int			len = 0;
+	int len = 0;
 
 	switch (info & XLOG_HEAP_OPMASK)
 	{
 		case XLOG_HEAP2_CLEAN:
-			{
-				POLAR_WRITE_MAIN_DATA(SizeOfHeapClean, rbuf_pos, offset);
-				break;
-			}
+		{
+			POLAR_WRITE_MAIN_DATA(queue, SizeOfHeapClean, rbuf_pos, offset);
+			break;
+		}
 
 		case XLOG_HEAP2_FREEZE_PAGE:
-			{
-				POLAR_WRITE_MAIN_DATA(SizeOfHeapFreezePage, rbuf_pos, offset);
-				break;
-			}
+		{
+			POLAR_WRITE_MAIN_DATA(queue, SizeOfHeapFreezePage, rbuf_pos, offset);
+			break;
+		}
 
 		case XLOG_HEAP2_CLEANUP_INFO:
-			{
-				POLAR_WRITE_MAIN_DATA(SizeOfHeapCleanupInfo, rbuf_pos, offset);
-				break;
-			}
+		{
+			POLAR_WRITE_MAIN_DATA(queue, SizeOfHeapCleanupInfo, rbuf_pos, offset);
+			break;
+		}
 
 		case XLOG_HEAP2_VISIBLE:
-			{
-				POLAR_WRITE_MAIN_DATA(SizeOfHeapVisible, rbuf_pos, offset);
-				break;
-			}
+		{
+			POLAR_WRITE_MAIN_DATA(queue, SizeOfHeapVisible, rbuf_pos, offset);
+			break;
+		}
 
 		case XLOG_HEAP2_MULTI_INSERT:
-			{
-				POLAR_WRITE_MAIN_DATA(SizeOfHeapMultiInsert, rbuf_pos, offset);
-				break;
-			}
+		{
+			POLAR_WRITE_MAIN_DATA(queue, SizeOfHeapMultiInsert, rbuf_pos, offset);
+			break;
+		}
 
 		case XLOG_HEAP2_LOCK_UPDATED:
-			{
-				POLAR_WRITE_MAIN_DATA(SizeOfHeapLockUpdated, rbuf_pos, offset);
-				break;
-			}
+		{
+			POLAR_WRITE_MAIN_DATA(queue, SizeOfHeapLockUpdated, rbuf_pos, offset);
+			break;
+		}
 
 		case XLOG_HEAP2_REWRITE:
-			{
-				POLAR_WRITE_MAIN_DATA(sizeof(xl_heap_rewrite_mapping), rbuf_pos, offset);
-				break;
-			}
+		{
+			POLAR_WRITE_MAIN_DATA(queue, sizeof(xl_heap_rewrite_mapping), rbuf_pos, offset);
+			break;
+		}
 
 		default:
 			break;
@@ -418,27 +411,27 @@ polar_xlog_push_heap2_data(size_t rbuf_pos, int offset, uint8 info)
 }
 
 static int
-polar_push_main_data(size_t rbuf_pos, int offset)
+polar_push_main_data(polar_ringbuf_t queue, size_t rbuf_pos, int offset)
 {
-	int			len = 0;
+	int len = 0;
 	const main_data_len_t data_len = polar_reserve_main_data_size();
-	uint8		block_id = XLR_BLOCK_ID_POLAR_EXTRA;
+	uint8 block_id = XLR_BLOCK_ID_POLAR_EXTRA;
 	XLogRecData *rdata = polar_get_main_data_head();
 
-	if (rbuf_pos >= polar_xlog_queue->size)
+	if (rbuf_pos >= queue->size)
 		ereport(PANIC, (errmsg("rbuf_pos=%ld is incorrect for xlog queue, xlog_queue_size=%ld",
-							   rbuf_pos, polar_xlog_queue->size)));
+							   rbuf_pos, queue->size)));
 
-	len = polar_ringbuf_pkt_write(polar_xlog_queue, rbuf_pos,
-								  offset, (uint8 *) (&block_id), sizeof(block_id));
+	len = polar_ringbuf_pkt_write(queue, rbuf_pos,
+								  offset, (uint8 *)(&block_id), sizeof(block_id));
 
-	len += polar_ringbuf_pkt_write(polar_xlog_queue, rbuf_pos,
-								   offset + len, (uint8 *) (&data_len), sizeof(data_len));
+	len += polar_ringbuf_pkt_write(queue, rbuf_pos,
+								   offset + len, (uint8 *)(&data_len), sizeof(data_len));
 
 	while (len < data_len)
 	{
-		len += polar_ringbuf_pkt_write(polar_xlog_queue, rbuf_pos,
-									   offset + len, (uint8 *) (rdata->data), rdata->len);
+		len += polar_ringbuf_pkt_write(queue, rbuf_pos,
+									   offset + len, (uint8 *)(rdata->data), rdata->len);
 		rdata = rdata->next;
 	}
 
@@ -446,40 +439,37 @@ polar_push_main_data(size_t rbuf_pos, int offset)
 }
 
 static int
-polar_xlog_push_gist_data(size_t rbuf_pos, int offset, uint8 info)
+polar_xlog_push_gist_data(polar_ringbuf_t queue, size_t rbuf_pos, int offset, uint8 info)
 {
 	XLogRecData *rdata = polar_get_main_data_head();
 
 	if (info != XLOG_GIST_PAGE_UPDATE)
 		return 0;
 
-	/*
-	 * Following function gistXLogUpdate to reserve size for
-	 * gistxlogPageUpdate
-	 */
+	/* Following function gistXLogUpdate to reserve size for gistxlogPageUpdate */
 	if (rdata->next == NULL || rdata->next->len == 0)
 		return 0;
 
-	return polar_push_main_data(rbuf_pos, offset);
+	return polar_push_main_data(queue, rbuf_pos, offset);
 }
 
 static int
-polar_xlog_push_hash_data(size_t rbuf_pos, int offset, uint8 info)
+polar_xlog_push_hash_data(polar_ringbuf_t queue, size_t rbuf_pos, int offset, uint8 info)
 {
 	if (info != XLOG_HASH_VACUUM_ONE_PAGE)
 		return 0;
 
-	return polar_push_main_data(rbuf_pos, offset);
+	return polar_push_main_data(queue, rbuf_pos, offset);
 }
 
 static int
-polar_xlog_push_btree_data(size_t rbuf_pos, int offset, uint8 info)
+polar_xlog_push_btree_data(polar_ringbuf_t queue, size_t rbuf_pos, int offset, uint8 info)
 {
 	switch (info)
 	{
 		case XLOG_BTREE_DELETE:
 		case XLOG_BTREE_REUSE_PAGE:
-			return polar_push_main_data(rbuf_pos, offset);
+			return polar_push_main_data(queue, rbuf_pos, offset);
 
 		default:
 			break;
@@ -489,66 +479,66 @@ polar_xlog_push_btree_data(size_t rbuf_pos, int offset, uint8 info)
 }
 
 static int
-polar_xlog_push_spg_data(size_t rbuf_pos, int offset, uint8 info)
+polar_xlog_push_spg_data(polar_ringbuf_t queue, size_t rbuf_pos, int offset, uint8 info)
 {
-	int			len = 0;
+	int len = 0;
 
 	if (info != XLOG_SPGIST_VACUUM_REDIRECT)
 		return len;
 
-	POLAR_WRITE_MAIN_DATA(SizeOfSpgxlogVacuumRedirect, rbuf_pos, offset);
+	POLAR_WRITE_MAIN_DATA(queue, SizeOfSpgxlogVacuumRedirect, rbuf_pos, offset);
 
 	return len;
 }
 
 static int
-polar_xlog_push_xlog_data(size_t rbuf_pos, int offset, uint8 info)
+polar_xlog_push_xlog_data(polar_ringbuf_t queue, size_t rbuf_pos, int offset, uint8 info)
 {
-	int			len = 0;
+	int len = 0;
 
 	if (info != XLOG_FPSI)
 		return len;
 
-	POLAR_WRITE_MAIN_DATA(sizeof(uint64), rbuf_pos, offset);
+	POLAR_WRITE_MAIN_DATA(queue, sizeof(uint64), rbuf_pos, offset);
 
 	return len;
 }
 
 static int
-polar_xlog_send_queue_push_data(size_t rbuf_pos, int offset, struct XLogRecData *rdata)
+polar_xlog_send_queue_push_data(polar_ringbuf_t queue, size_t rbuf_pos, int offset, struct XLogRecData *rdata)
 {
 	XLogRecord *rechdr = (XLogRecord *) rdata->data;
-	uint8		info = rechdr->xl_info & ~XLR_INFO_MASK;
-	int			len = 0;
+	uint8 info = rechdr->xl_info & ~XLR_INFO_MASK;
+	int len = 0;
 
 	switch (rechdr->xl_rmid)
 	{
 		case RM_HEAP_ID:
-			len = polar_xlog_push_heap_data(rbuf_pos, offset, info);
+			len = polar_xlog_push_heap_data(queue, rbuf_pos, offset, info);
 			break;
 
 		case RM_HEAP2_ID:
-			len = polar_xlog_push_heap2_data(rbuf_pos, offset, info);
+			len = polar_xlog_push_heap2_data(queue, rbuf_pos, offset, info);
 			break;
 
 		case RM_GIST_ID:
-			len = polar_xlog_push_gist_data(rbuf_pos, offset, info);
+			len = polar_xlog_push_gist_data(queue, rbuf_pos, offset, info);
 			break;
 
 		case RM_HASH_ID:
-			len = polar_xlog_push_hash_data(rbuf_pos, offset, info);
+			len = polar_xlog_push_hash_data(queue, rbuf_pos, offset, info);
 			break;
 
 		case RM_BTREE_ID:
-			len = polar_xlog_push_btree_data(rbuf_pos, offset, info);
+			len = polar_xlog_push_btree_data(queue, rbuf_pos, offset, info);
 			break;
 
 		case RM_SPGIST_ID:
-			len = polar_xlog_push_spg_data(rbuf_pos, offset, info);
+			len = polar_xlog_push_spg_data(queue, rbuf_pos, offset, info);
 			break;
 
 		case RM_XLOG_ID:
-			len = polar_xlog_push_xlog_data(rbuf_pos, offset, info);
+			len = polar_xlog_push_xlog_data(queue, rbuf_pos, offset, info);
 			break;
 
 		default:
@@ -559,31 +549,28 @@ polar_xlog_send_queue_push_data(size_t rbuf_pos, int offset, struct XLogRecData 
 }
 
 bool
-polar_xlog_send_queue_push(size_t rbuf_pos, XLogRecData *record, int copy_len,
+polar_xlog_send_queue_push(polar_ringbuf_t queue, size_t rbuf_pos, XLogRecData *record, int copy_len,
 						   XLogRecPtr end_lsn, uint32 xlog_len)
 {
-	int			offset = 0;
-	Size		data_size = polar_reserve_data_size(record);
+	int offset = 0;
+	Size data_size = polar_reserve_data_size(record);
 	XLogRecData *rdata = record;
 
-	if (!POLAR_XLOG_QUEUE_ENABLE())
-		return false;
-
-	if (rbuf_pos >= polar_xlog_queue->size)
+	if (rbuf_pos >= queue->size)
 		ereport(PANIC, (errmsg("rbuf_pos=%ld is incorrect for xlog queue, xlog_queu_size=%ld",
-							   rbuf_pos, polar_xlog_queue->size)));
+							   rbuf_pos, queue->size)));
 
-	offset += polar_ringbuf_pkt_write(polar_xlog_queue, rbuf_pos,
-									  offset, (uint8 *) &end_lsn, sizeof(end_lsn));
-	offset += polar_ringbuf_pkt_write(polar_xlog_queue, rbuf_pos,
-									  offset, (uint8 *) &xlog_len, sizeof(xlog_len));
+	offset += polar_ringbuf_pkt_write(queue, rbuf_pos,
+									  offset, (uint8 *)&end_lsn, sizeof(end_lsn));
+	offset += polar_ringbuf_pkt_write(queue, rbuf_pos,
+									  offset, (uint8 *)&xlog_len, sizeof(xlog_len));
 
 	while ((copy_len - data_size > 0) && rdata)
 	{
 		/* POLAR: In case, rdata->len is bigger than (copy_len - data_size). */
-		ssize_t		write_len = Min(copy_len - data_size, rdata->len);
-		ssize_t		copy_size = polar_ringbuf_pkt_write(polar_xlog_queue, rbuf_pos,
-														offset, (uint8 *) (rdata->data), write_len);
+		ssize_t write_len = Min(copy_len - data_size, rdata->len);
+		ssize_t copy_size = polar_ringbuf_pkt_write(queue, rbuf_pos,
+													offset, (uint8 *)(rdata->data), write_len);
 
 		if (copy_size != write_len)
 			elog(PANIC, "Failed to write packet to ringbuf, rbuf_pos=%lu, offset=%d, copy_size=%ld, rdata_len=%u",
@@ -594,7 +581,7 @@ polar_xlog_send_queue_push(size_t rbuf_pos, XLogRecData *record, int copy_len,
 		rdata = rdata->next;
 	}
 
-	copy_len -= polar_xlog_send_queue_push_data(rbuf_pos, offset, record);
+	copy_len -= polar_xlog_send_queue_push_data(queue, rbuf_pos, offset, record);
 
 	if (copy_len != 0)
 	{
@@ -602,10 +589,10 @@ polar_xlog_send_queue_push(size_t rbuf_pos, XLogRecData *record, int copy_len,
 			 rbuf_pos, offset, copy_len);
 	}
 
-	polar_ringbuf_set_pkt_flag(polar_xlog_queue, rbuf_pos, POLAR_RINGBUF_PKT_WAL_META | POLAR_RINGBUF_PKT_READY);
+	polar_ringbuf_set_pkt_flag(queue, rbuf_pos, POLAR_RINGBUF_PKT_WAL_META | POLAR_RINGBUF_PKT_READY);
 
-	if (polar_enable_debug)
-		elog(LOG, "%s lsn=%x/%x", __func__, (uint32) ((end_lsn - xlog_len) >> 32), (uint32) (end_lsn - xlog_len));
+	if (unlikely(polar_enable_debug))
+		elog(LOG, "%s lsn=%x/%x", __func__, (uint32)((end_lsn - xlog_len) >> 32), (uint32)(end_lsn - xlog_len));
 
 	return true;
 }
@@ -615,56 +602,41 @@ polar_xlog_send_queue_push(size_t rbuf_pos, XLogRecData *record, int copy_len,
  * The caller must make sure that polar_xlog_queue is enable.
  */
 void
-polar_standby_xlog_send_queue_push(XLogReaderState *xlogreader)
+polar_standby_xlog_send_queue_push(polar_ringbuf_t queue, XLogReaderState *xlogreader)
 {
-	XLogRecPtr	StartPos = xlogreader->ReadRecPtr;
-	XLogRecPtr	EndPos = xlogreader->EndRecPtr;
-	ssize_t		RbufPos = -1;
-	Size		RbufLen = 0;
+	XLogRecPtr  StartPos = xlogreader->ReadRecPtr;
+	XLogRecPtr  EndPos = xlogreader->EndRecPtr;
+	ssize_t     RbufPos = -1;
+	Size        RbufLen = 0;
 	XLogRecData rdata =
 	{
 		.next = NULL,
 		.data = xlogreader->readRecordBuf,
-		.len = xlogreader->polar_logindex_meta_size
+		.len  = xlogreader->polar_logindex_meta_size
 	};
-	static polar_ringbuf_ref_t polar_data_ref = {.slot = -1};
 
-	/* POLAR: Init send queue reference in standby. */
-	if (unlikely(polar_data_ref.slot == -1))
-	{
-		MemSet(&polar_data_ref, 0, sizeof(polar_ringbuf_ref_t));
-
-		if (!POLAR_XLOG_QUEUE_NEW_REF(&polar_data_ref, true, "xlog_queue_data_keep"))
-		{
-			POLAR_LOG_XLOG_RECORD_INFO(xlogreader);
-			elog(PANIC, "Failed to create send queue reference");
-		}
-
-		polar_ringbuf_auto_release_ref(&polar_data_ref);
-	}
-	else
-		polar_xlog_send_queue_keep_data(&polar_data_ref);
+	polar_xlog_send_queue_keep_data(queue);
 
 	/* POLAR END */
 	polar_set_main_data(xlogreader->main_data, xlogreader->main_data_len);
 	RbufLen = polar_xlog_reserve_size(&rdata);
 
-	if (!POLAR_XLOG_QUEUE_FREE_SIZE(RbufLen))
-		POLAR_XLOG_QUEUE_FREE_UP(RbufLen);
+	if (!POLAR_XLOG_QUEUE_FREE_SIZE(queue, RbufLen))
+		POLAR_XLOG_QUEUE_FREE_UP(queue, RbufLen);
 
-	RbufPos = POLAR_XLOG_QUEUE_RESERVE(RbufLen);
-	POLAR_XLOG_QUEUE_SET_PKT_LEN(RbufPos, RbufLen);
+	RbufPos = POLAR_XLOG_QUEUE_RESERVE(queue, RbufLen);
+	POLAR_XLOG_QUEUE_SET_PKT_LEN(queue, RbufPos, RbufLen);
 	/* POLAR: Make rdata contain the whole xlog. */
 	rdata.len = EndPos - StartPos;
 
-	if (polar_xlog_send_queue_push(RbufPos, &rdata, RbufLen, EndPos, EndPos - StartPos))
+	if (polar_xlog_send_queue_push(queue, RbufPos, &rdata, RbufLen, EndPos, EndPos - StartPos))
 	{
 		WalSndWakeup();
 
-		if (polar_enable_debug)
+		if (unlikely(polar_enable_debug))
 		{
 			ereport(LOG, (errmsg("%s push %X/%X to queue", __func__,
-								 (uint32) (EndPos >> 32),
+								 (uint32)(EndPos >> 32),
 								 (uint32) EndPos)));
 		}
 	}
@@ -675,14 +647,14 @@ polar_standby_xlog_send_queue_push(XLogReaderState *xlogreader)
 XLogRecPtr
 polar_xlog_send_queue_next_lsn(polar_ringbuf_ref_t *ref, size_t *len)
 {
-	XLogRecPtr	lsn = InvalidXLogRecPtr;
-	uint32		pktlen = 0;
+	XLogRecPtr  lsn = InvalidXLogRecPtr;
+	uint32      pktlen = 0;
 
 	if (polar_ringbuf_avail(ref) > 0
-		&& polar_ringbuf_next_ready_pkt(ref, &pktlen) != POLAR_RINGBUF_PKT_INVALID_TYPE)
+			&& polar_ringbuf_next_ready_pkt(ref, &pktlen) != POLAR_RINGBUF_PKT_INVALID_TYPE)
 	{
 		Assert(pktlen > sizeof(XLogRecPtr));
-		polar_ringbuf_read_next_pkt(ref, 0, (uint8 *) &lsn, sizeof(XLogRecPtr));
+		polar_ringbuf_read_next_pkt(ref, 0, (uint8 *)&lsn, sizeof(XLogRecPtr));
 
 		if (len != NULL)
 			*len = pktlen;
@@ -692,38 +664,37 @@ polar_xlog_send_queue_next_lsn(polar_ringbuf_ref_t *ref, size_t *len)
 }
 
 ssize_t
-polar_xlog_send_queue_pop(polar_ringbuf_ref_t *ref,
-						  uint8 *data, size_t size, XLogRecPtr *max_lsn)
+polar_xlog_send_queue_raw_data_pop(polar_ringbuf_ref_t *ref,
+								   uint8 *data, size_t size, XLogRecPtr *max_lsn)
 {
-	uint32		pktlen;
-	ssize_t		copy_size = 0;
-	size_t		free_size = size;
-	XLogRecPtr	lsn = InvalidXLogRecPtr;
+	uint32 pktlen;
+	ssize_t copy_size = 0;
+	size_t  free_size = size;
+	XLogRecPtr lsn = InvalidXLogRecPtr;
 
 	while (polar_ringbuf_avail(ref) > 0
-		   && polar_ringbuf_next_ready_pkt(ref, &pktlen) != POLAR_RINGBUF_PKT_INVALID_TYPE)
+			&& polar_ringbuf_next_ready_pkt(ref, &pktlen) != POLAR_RINGBUF_PKT_INVALID_TYPE)
 	{
-		ssize_t		len;
+		ssize_t len;
 
 		/*
-		 * When walreceiver decode data from queue, it read pktlen first and
-		 * then read packet data, so free space must be large enough to
-		 * include uint32 which save pktlen and data which size is pktlen.
+		 * When walreceiver decode data from queue, it read pktlen first and then read packet data,
+		 * so free space must be large enough to include uint32 which save pktlen and data which size is
+		 * pktlen.
 		 */
 		if (pktlen + sizeof(uint32) > free_size)
 			break;
 
-		polar_ringbuf_read_next_pkt(ref, 0, (uint8 *) &lsn, sizeof(XLogRecPtr));
+		polar_ringbuf_read_next_pkt(ref, 0, (uint8 *)&lsn, sizeof(XLogRecPtr));
 
 		/*
 		 * Pop XLOG which is already been written out and flushed to disk.
-		 * It's unsafe to send XLOG that is not securely down to disk on the
-		 * master: if the master crashes and restarts, replica must not hava
-		 * applied any XLOG that got lost on the master. Note: We record end
-		 * position of XLOG in the queue
+		 * It's unsafe to send XLOG that is not securely down to disk on the master:
+		 * if the master crashes and restarts, replica must not hava applied any XLOG
+		 * that got lost on the master.
+		 * Note: We record end position of XLOG in the queue
 		 *
-		 * POLAR: Flush lsn is not updated in recovery mode, especially for
-		 * replica and standby.
+		 * POLAR: Flush lsn is not updated in recovery mode, especially for replica and standby.
 		 */
 		if (lsn > POLAR_LOGINDEX_FLUSHABLE_LSN())
 			break;
@@ -734,13 +705,12 @@ polar_xlog_send_queue_pop(polar_ringbuf_ref_t *ref,
 		len += polar_ringbuf_read_next_pkt(ref, 0, data, pktlen);
 		Assert(len == pktlen + sizeof(uint32));
 
-		if (polar_enable_debug)
+		if (unlikely(polar_enable_debug))
 		{
-			uint32		xlog_len;
-
+			uint32 xlog_len;
 			memcpy(&xlog_len, data + sizeof(lsn), sizeof(xlog_len));
 
-			elog(LOG, "%s lsn=%x/%x", __func__, (uint32) ((lsn - xlog_len) >> 32), (uint32) (lsn - xlog_len));
+			elog(LOG, "%s lsn=%x/%x", __func__, (uint32)((lsn - xlog_len) >> 32), (uint32)(lsn - xlog_len));
 		}
 
 		data += pktlen;
@@ -755,46 +725,42 @@ polar_xlog_send_queue_pop(polar_ringbuf_ref_t *ref,
 	return copy_size;
 }
 
-/* TODO: recheck logical */
+//TODO: recheck logical
 bool
 polar_xlog_send_queue_check(polar_ringbuf_ref_t *ref, XLogRecPtr start_point)
 {
-	uint32		pktlen;
-	XLogRecPtr	lsn = InvalidXLogRecPtr;
-	uint32		lsn_len = 0;
-	bool		ret = false;
+	uint32 pktlen;
+	XLogRecPtr lsn = InvalidXLogRecPtr;
+	uint32     lsn_len = 0;
+	bool       ret = false;
 
 	if (start_point == InvalidXLogRecPtr)
 		return true;
 
 	/*
-	 * 1. If it's weak reference, try to promote to strong reference 2. If
-	 * reference is evicted, then create a new weak reference and promote new
-	 * weak reference to strong reference.
+	 * 1. If it's weak reference, try to promote to strong reference
+	 * 2. If reference is evicted, then create a new weak reference and promote new weak reference to strong reference.
 	 */
 	while (!ref->strong && !polar_ringbuf_get_ref(ref))
-	{
-		if (!POLAR_XLOG_QUEUE_NEW_REF(ref, false, ref->ref_name))
-			elog(PANIC, "Failed to create send queue reference for %s", ref->ref_name);
-	}
+		POLAR_XLOG_QUEUE_NEW_REF(ref, ref->rbuf, false, ref->ref_name);
 
 	do
 	{
-		XLogRecPtr	start_lsn;
-		int			type;
+		XLogRecPtr start_lsn;
+		int type;
 
 		if (polar_ringbuf_avail(ref) <= 0
-			|| ((type = polar_ringbuf_next_ready_pkt(ref, &pktlen)) == POLAR_RINGBUF_PKT_INVALID_TYPE))
+				|| ((type = polar_ringbuf_next_ready_pkt(ref, &pktlen)) == POLAR_RINGBUF_PKT_INVALID_TYPE))
 			break;
 
 		if (type == POLAR_RINGBUF_PKT_WAL_META)
 		{
-			if (polar_ringbuf_read_next_pkt(ref, 0, (uint8 *) &lsn, sizeof(XLogRecPtr))
-				!= sizeof(XLogRecPtr))
+			if (polar_ringbuf_read_next_pkt(ref, 0, (uint8 *)&lsn, sizeof(XLogRecPtr))
+					!= sizeof(XLogRecPtr))
 				elog(PANIC, "Failed to read LSN from ringbuf for ref %s", ref->ref_name);
 
-			if (polar_ringbuf_read_next_pkt(ref, sizeof(XLogRecPtr), (uint8 *) &lsn_len, sizeof(uint32))
-				!= sizeof(uint32))
+			if (polar_ringbuf_read_next_pkt(ref, sizeof(XLogRecPtr), (uint8 *)&lsn_len, sizeof(uint32))
+					!= sizeof(uint32))
 				elog(PANIC, "Failed to read lsn_len from ringbuf for ref %s", ref->ref_name);
 
 			start_lsn = lsn - lsn_len;
@@ -819,29 +785,97 @@ polar_xlog_send_queue_check(polar_ringbuf_ref_t *ref, XLogRecPtr start_point)
 	return ret;
 }
 
-static XLogRecord *
-polar_xlog_queue_ref_pop(polar_ringbuf_ref_t *ref, XLogReaderState *state, bool decode_payload, char **errormsg)
+static void
+polar_xlog_queue_update_reader(XLogReaderState *state, XLogRecPtr read_rec_ptr, XLogRecPtr end_rec_ptr, uint32 data_len)
 {
-#define COPY_QUEUE_CONTENT(_dst, _size) \
-	do {\
-		ssize_t len = polar_ringbuf_read_next_pkt(ref, offset, \
-												  (uint8*)(_dst), (_size)); \
-		if(len != (_size)) \
-		{ \
-			ereport(PANIC, (errmsg("polar: Failed to read from xlog recv queue for ref %s from offset %ld and size %ld, the return value is %ld", \
-								   (ref)->ref_name, offset, (long)(_size), len))); \
-		} \
-		offset += len; \
-	} while (0)
+	XLogRecPtr read_page_ptr = read_rec_ptr - (read_rec_ptr % XLOG_BLCKSZ);
+	XLogRecPtr end_page_ptr = end_rec_ptr - (end_rec_ptr % XLOG_BLCKSZ);
+	XLogSegNo  target_seg_no;
+	uint32 target_page_off;
 
-	uint32		pktlen = 0;
-	uint32		xlog_len;
-	uint32		data_len;
-	XLogRecPtr	read_rec_ptr,
-				end_rec_ptr;
+	state->readLen = data_len;
+	state->EndRecPtr = end_rec_ptr;
+	state->ReadRecPtr = read_rec_ptr;
+	state->noPayload = true;
+
+	if (read_page_ptr != end_page_ptr)
+	{
+		XLByteToSeg(end_page_ptr, target_seg_no, state->wal_segment_size);
+		target_page_off = 0;
+	}
+	else
+	{
+		XLByteToSeg(read_page_ptr, target_seg_no, state->wal_segment_size);
+		target_page_off = XLogSegmentOffset(read_page_ptr, state->wal_segment_size);
+	}
+
+	state->readSegNo = target_seg_no;
+	state->readOff = target_page_off;
+	state->latestPagePtr = end_page_ptr;
+}
+
+static XLogRecPtr
+polar_xlog_queue_remove_outdate(polar_ringbuf_ref_t *ref, XLogReaderState *state)
+{
+	uint32 pktlen = 0;
+	ssize_t offset;
+	uint32 xlog_len;
+	XLogRecPtr read_rec_ptr, end_rec_ptr;
+
+	do
+	{
+		offset = 0;
+		POLAR_COPY_QUEUE_CONTENT(ref, offset, &end_rec_ptr, sizeof(XLogRecPtr));
+		POLAR_COPY_QUEUE_CONTENT(ref, offset, &xlog_len, sizeof(uint32));
+		read_rec_ptr = end_rec_ptr - xlog_len;
+
+		if (read_rec_ptr < state->EndRecPtr)
+			polar_ringbuf_update_ref(ref);
+		else
+			break;
+	}
+	while (polar_ringbuf_avail(ref) > 0 &&
+			polar_ringbuf_next_ready_pkt(ref, &pktlen) == POLAR_RINGBUF_PKT_WAL_META);
+
+	return read_rec_ptr;
+}
+
+static XLogRecord *
+polar_xlog_queue_pop_record(polar_ringbuf_ref_t *ref, uint32 pktlen, XLogReaderState *state, bool decode_payload, char **errormsg)
+{
+	uint32 xlog_len;
+	uint32 data_len;
+	XLogRecPtr read_rec_ptr, end_rec_ptr;
+	ssize_t offset = 0;
 	XLogRecord *record = NULL;
-	ssize_t		offset = 0;
-	uint8		pkt_type = POLAR_RINGBUF_PKT_INVALID_TYPE;
+
+	POLAR_COPY_QUEUE_CONTENT(ref, offset, &end_rec_ptr, sizeof(XLogRecPtr));
+	POLAR_COPY_QUEUE_CONTENT(ref, offset, &xlog_len, sizeof(uint32));
+	read_rec_ptr = end_rec_ptr - xlog_len;
+	data_len = pktlen - POLAR_XLOG_HEAD_SIZE;
+
+	if (data_len > state->readRecordBufSize)
+		allocate_recordbuf(state, data_len);
+
+	POLAR_COPY_QUEUE_CONTENT(ref, offset, state->readRecordBuf, data_len);
+
+	polar_ringbuf_update_ref(ref);
+
+	record = (XLogRecord *)state->readRecordBuf;
+
+	polar_xlog_queue_update_reader(state, read_rec_ptr, end_rec_ptr, data_len);
+	polar_xlog_queue_decode(state, record, decode_payload, errormsg);
+
+	return record;
+}
+
+static XLogRecord *
+polar_xlog_queue_ref_pop(polar_ringbuf_ref_t *ref, XLogReaderState *state,
+						 bool decode_payload, char **errormsg)
+{
+	uint32 pktlen = 0;
+	XLogRecord *record = NULL;
+	uint8  pkt_type = POLAR_RINGBUF_PKT_INVALID_TYPE;
 
 	if (polar_ringbuf_avail(ref) > 0)
 		pkt_type = polar_ringbuf_next_ready_pkt(ref, &pktlen);
@@ -849,75 +883,55 @@ polar_xlog_queue_ref_pop(polar_ringbuf_ref_t *ref, XLogReaderState *state, bool 
 	switch (pkt_type)
 	{
 		case POLAR_RINGBUF_PKT_WAL_META:
+		{
+			if (unlikely(!xlog_queue_catch_up))
 			{
-				COPY_QUEUE_CONTENT(&end_rec_ptr, sizeof(XLogRecPtr));
-				COPY_QUEUE_CONTENT(&xlog_len, sizeof(uint32));
-				read_rec_ptr = end_rec_ptr - xlog_len;
+				XLogRecPtr catch_up_ptr = polar_xlog_queue_remove_outdate(ref, state);
+				record = XLogReadRecord(state, InvalidXLogRecPtr, errormsg);
 
-				if (read_rec_ptr > state->EndRecPtr && !polar_pop_xlog_queue)
+				/* The record in queue is same as the record read from file */
+				if (record && state->ReadRecPtr == catch_up_ptr)
 				{
-					record = XLogReadRecord(state, InvalidXLogRecPtr, errormsg);
-
-					/*
-					 * The record in queue is same as the record read from
-					 * file
-					 */
-					if (state->ReadRecPtr == read_rec_ptr)
-					{
-						polar_ringbuf_update_ref(ref);
-						polar_pop_xlog_queue = true;
-					}
-				}
-				else
-				{
-					data_len = pktlen - POLAR_XLOG_HEAD_SIZE;
-
-					if (data_len > state->readRecordBufSize)
-						allocate_recordbuf(state, data_len);
-
-					COPY_QUEUE_CONTENT(state->readRecordBuf, data_len);
-
 					polar_ringbuf_update_ref(ref);
-
-					state->readLen = data_len;
-					state->EndRecPtr = end_rec_ptr;
-					state->ReadRecPtr = read_rec_ptr;
-					state->noPayload = true;
-					record = (XLogRecord *) state->readRecordBuf;
-					polar_xlog_queue_decode(state, record, decode_payload, errormsg);
-
-					if (!polar_pop_xlog_queue)
-						elog(LOG, "Polar: switch xlog record source from file to queue");
-
-					polar_pop_xlog_queue = true;
+					xlog_queue_catch_up = true;
+					elog(LOG, "Polar: switch xlog record source from file to queue when catch_up_ptr=%lX", catch_up_ptr);
 				}
-
-				break;
 			}
+			else
+				record = polar_xlog_queue_pop_record(ref, pktlen, state, decode_payload, errormsg);
+
+			break;
+		}
 
 		case POLAR_RINGBUF_PKT_WAL_STORAGE_BEGIN:
+		{
+			polar_reset_xlog_source();
+			record = XLogReadRecord(state, InvalidXLogRecPtr, errormsg);
+			polar_ringbuf_update_ref(ref);
+
+			if (xlog_queue_catch_up)
 			{
-				record = XLogReadRecord(state, InvalidXLogRecPtr, errormsg);
-				polar_ringbuf_update_ref(ref);
-				polar_pop_xlog_queue = false;
+				xlog_queue_catch_up = false;
 				elog(LOG, "Polar: switch xlog record source from queue to file");
-				break;
 			}
+
+			break;
+		}
 
 		case POLAR_RINGBUF_PKT_INVALID_TYPE:
-			{
-				if (!polar_pop_xlog_queue)
-					record = XLogReadRecord(state, InvalidXLogRecPtr, errormsg);
+		{
+			if (!xlog_queue_catch_up)
+				record = XLogReadRecord(state, InvalidXLogRecPtr, errormsg);
 
-				break;
-			}
+			break;
+		}
 
 		default:
 			elog(PANIC, "Polar: Invalid xlog queue pkt type %d", pkt_type);
 	}
 
-	if (polar_enable_debug)
-		elog(LOG, "%s lsn=%x/%x", __func__, (uint32) (state->ReadRecPtr >> 32), (uint32) state->ReadRecPtr);
+	if (unlikely(polar_enable_debug))
+		elog(LOG, "%s lsn=%x/%x", __func__, (uint32)(state->ReadRecPtr >> 32), (uint32)state->ReadRecPtr);
 
 	return record;
 }
@@ -934,7 +948,7 @@ polar_reset_blk(DecodedBkpBlock *blk)
 static void
 polar_reset_decoder(XLogReaderState *state)
 {
-	int			block_id;
+	int         block_id;
 
 	state->decoded_record = NULL;
 
@@ -949,8 +963,7 @@ polar_reset_decoder(XLogReaderState *state)
 static void
 polar_heap_save_vm_block(XLogReaderState *state, uint8 block_id, uint8 vm_block_id)
 {
-	DecodedBkpBlock *blk,
-			   *vm_blk;
+	DecodedBkpBlock *blk, *vm_blk;
 
 	Assert(block_id <= XLR_MAX_BLOCK_ID);
 	blk = &state->blocks[block_id];
@@ -971,9 +984,8 @@ polar_heap_save_vm_block(XLogReaderState *state, uint8 block_id, uint8 vm_block_
 static void
 polar_heap_update_save_vm_logindex(XLogReaderState *state, bool hotupdate)
 {
-	BlockNumber blkno_old,
-				blkno_new;
-	xl_heap_update *xlrec = (xl_heap_update *) (state->main_data);
+	BlockNumber blkno_old, blkno_new;
+	xl_heap_update *xlrec = (xl_heap_update *)(state->main_data);
 
 	Assert(state->blocks[0].in_use);
 	blkno_new = state->blocks[0].blkno;
@@ -1006,29 +1018,29 @@ static void
 polar_xlog_queue_decode_heap(XLogReaderState *state)
 {
 	XLogRecord *rechdr = state->decoded_record;
-	uint8		info = rechdr->xl_info & ~XLR_INFO_MASK;
+	uint8 info = rechdr->xl_info & ~XLR_INFO_MASK;
 
 	switch (info & XLOG_HEAP_OPMASK)
 	{
 		case XLOG_HEAP_INSERT:
-			{
-				xl_heap_insert *xlrec = (xl_heap_insert *) (state->main_data);
+		{
+			xl_heap_insert *xlrec = (xl_heap_insert *)(state->main_data);
 
-				if (xlrec->flags & XLH_INSERT_ALL_VISIBLE_CLEARED)
-					polar_heap_save_vm_block(state, 0, 1);
+			if (xlrec->flags & XLH_INSERT_ALL_VISIBLE_CLEARED)
+				polar_heap_save_vm_block(state, 0, 1);
 
-				break;
-			}
+			break;
+		}
 
 		case XLOG_HEAP_DELETE:
-			{
-				xl_heap_delete *xlrec = (xl_heap_delete *) (state->main_data);
+		{
+			xl_heap_delete *xlrec = (xl_heap_delete *)(state->main_data);
 
-				if (xlrec->flags & XLH_DELETE_ALL_VISIBLE_CLEARED)
-					polar_heap_save_vm_block(state, 0, 1);
+			if (xlrec->flags & XLH_DELETE_ALL_VISIBLE_CLEARED)
+				polar_heap_save_vm_block(state, 0, 1);
 
-				break;
-			}
+			break;
+		}
 
 		case XLOG_HEAP_UPDATE:
 			polar_heap_update_save_vm_logindex(state, false);
@@ -1039,14 +1051,14 @@ polar_xlog_queue_decode_heap(XLogReaderState *state)
 			break;
 
 		case XLOG_HEAP_LOCK:
-			{
-				xl_heap_lock *xlrec = (xl_heap_lock *) (state->main_data);
+		{
+			xl_heap_lock *xlrec = (xl_heap_lock *)(state->main_data);
 
-				if (xlrec->flags & XLH_LOCK_ALL_FROZEN_CLEARED)
-					polar_heap_save_vm_block(state, 0, 1);
+			if (xlrec->flags & XLH_LOCK_ALL_FROZEN_CLEARED)
+				polar_heap_save_vm_block(state, 0, 1);
 
-				break;
-			}
+			break;
+		}
 	}
 }
 
@@ -1054,29 +1066,29 @@ static void
 polar_xlog_queue_decode_heap2(XLogReaderState *state)
 {
 	XLogRecord *rechdr = state->decoded_record;
-	uint8		info = rechdr->xl_info & ~XLR_INFO_MASK;
+	uint8 info = rechdr->xl_info & ~XLR_INFO_MASK;
 
 	switch (info & XLOG_HEAP_OPMASK)
 	{
 		case XLOG_HEAP2_MULTI_INSERT:
-			{
-				xl_heap_multi_insert *xlrec = (xl_heap_multi_insert *) (state->main_data);
+		{
+			xl_heap_multi_insert *xlrec = (xl_heap_multi_insert *)(state->main_data);
 
-				if (xlrec->flags & XLH_INSERT_ALL_VISIBLE_CLEARED)
-					polar_heap_save_vm_block(state, 0, 1);
+			if (xlrec->flags & XLH_INSERT_ALL_VISIBLE_CLEARED)
+				polar_heap_save_vm_block(state, 0, 1);
 
-				break;
-			}
+			break;
+		}
 
 		case XLOG_HEAP2_LOCK_UPDATED:
-			{
-				xl_heap_lock_updated *xlrec = (xl_heap_lock_updated *) (state->main_data);
+		{
+			xl_heap_lock_updated *xlrec = (xl_heap_lock_updated *)(state->main_data);
 
-				if (xlrec->flags & XLH_LOCK_ALL_FROZEN_CLEARED)
-					polar_heap_save_vm_block(state, 0, 1);
+			if (xlrec->flags & XLH_LOCK_ALL_FROZEN_CLEARED)
+				polar_heap_save_vm_block(state, 0, 1);
 
-				break;
-			}
+			break;
+		}
 
 		default:
 			break;
@@ -1118,10 +1130,10 @@ polar_xlog_queue_decode(XLogReaderState *state, XLogRecord *record, bool decode_
 		offset += (_size); \
 	} while (0)
 
-	uint8		block_id;
-	ssize_t		offset = 0;
-	RelFileNode *rnode = NULL;
-	char	   *ptr = (char *) record;
+	uint8  block_id;
+	ssize_t offset = 0;
+	RelFileNode     *rnode = NULL;
+	char *ptr = (char *)record;
 
 	polar_reset_decoder(state);
 	offset += SizeOfXLogRecord;
@@ -1138,22 +1150,19 @@ polar_xlog_queue_decode(XLogReaderState *state, XLogRecord *record, bool decode_
 
 			if (block_id == XLR_BLOCK_ID_DATA_SHORT)
 			{
-				uint8		data_len;
-
+				uint8 data_len;
 				COPY_CONTENT(&data_len, sizeof(uint8));
 				continue;
 			}
 			else if (block_id == XLR_BLOCK_ID_DATA_LONG)
 			{
-				uint32		data_len;
-
+				uint32 data_len;
 				COPY_CONTENT(&data_len, sizeof(uint32));
 				continue;
 			}
 			else if (block_id == XLR_BLOCK_ID_ORIGIN)
 			{
 				RepOriginId id;
-
 				COPY_CONTENT(&id, sizeof(RepOriginId));
 				continue;
 			}
@@ -1179,7 +1188,7 @@ polar_xlog_queue_decode(XLogReaderState *state, XLogRecord *record, bool decode_
 					memcpy(state->main_data, ptr + offset, data_len);
 					offset += data_len;
 
-					if (polar_enable_debug)
+					if (unlikely(polar_enable_debug))
 					{
 						ereport(LOG, (errmsg("rmid=%d info=%d main_data_len=%d",
 											 record->xl_rmid, record->xl_info,
@@ -1195,8 +1204,8 @@ polar_xlog_queue_decode(XLogReaderState *state, XLogRecord *record, bool decode_
 				report_invalid_record(state,
 									  "polar: xlog queue out-of-order block_id %u and %X/%X",
 									  block_id,
-									  (uint32) (state->ReadRecPtr >> 32),
-									  (uint32) (state->ReadRecPtr));
+									  (uint32)(state->ReadRecPtr >> 32),
+									  (uint32)(state->ReadRecPtr));
 				goto err;
 			}
 
@@ -1219,8 +1228,8 @@ polar_xlog_queue_decode(XLogReaderState *state, XLogRecord *record, bool decode_
 				report_invalid_record(state,
 									  "polar: xlog queue BKPBLOCK_HAS_DATA set, but no data included at block_id %u and %X/%X",
 									  block_id,
-									  (uint32) (state->ReadRecPtr >> 32),
-									  (uint32) (state->ReadRecPtr));
+									  (uint32)(state->ReadRecPtr >> 32),
+									  (uint32)(state->ReadRecPtr));
 				goto err;
 			}
 
@@ -1229,8 +1238,8 @@ polar_xlog_queue_decode(XLogReaderState *state, XLogRecord *record, bool decode_
 				report_invalid_record(state,
 									  "polar: xlog queue BKPBLOCK_HAS_DATA not set, but data len is %d included at block_id %u and %X/%X",
 									  blk->data_len, block_id,
-									  (uint32) (state->ReadRecPtr >> 32),
-									  (uint32) (state->ReadRecPtr));
+									  (uint32)(state->ReadRecPtr >> 32),
+									  (uint32)(state->ReadRecPtr));
 				goto err;
 			}
 
@@ -1257,9 +1266,9 @@ polar_xlog_queue_decode(XLogReaderState *state, XLogRecord *record, bool decode_
 				 * bimg_len < BLCKSZ if the HAS_HOLE flag is set.
 				 */
 				if ((blk->bimg_info & BKPIMAGE_HAS_HOLE) &&
-					(blk->hole_offset == 0 ||
-					 blk->hole_length == 0 ||
-					 blk->bimg_len == BLCKSZ))
+						(blk->hole_offset == 0 ||
+						 blk->hole_length == 0 ||
+						 blk->bimg_len == BLCKSZ))
 				{
 
 					report_invalid_record(state,
@@ -1268,8 +1277,8 @@ polar_xlog_queue_decode(XLogReaderState *state, XLogRecord *record, bool decode_
 										  (unsigned int) blk->hole_length,
 										  (unsigned int) blk->bimg_len,
 										  block_id,
-										  (uint32) (state->ReadRecPtr >> 32),
-										  (uint32) (state->ReadRecPtr));
+										  (uint32)(state->ReadRecPtr >> 32),
+										  (uint32)(state->ReadRecPtr));
 					goto err;
 				}
 
@@ -1279,15 +1288,15 @@ polar_xlog_queue_decode(XLogReaderState *state, XLogRecord *record, bool decode_
 				 */
 
 				if (!(blk->bimg_info & BKPIMAGE_HAS_HOLE) &&
-					(blk->hole_offset != 0 || blk->hole_length != 0))
+						(blk->hole_offset != 0 || blk->hole_length != 0))
 				{
 					report_invalid_record(state,
 										  "polar: xlog queue BKPIMAGE_HAS_HOLE not set, but hole offset %u length %u at block_id %u and %X/%X",
 										  (unsigned int) blk->hole_offset,
 										  (unsigned int) blk->hole_length,
 										  block_id,
-										  (uint32) (state->ReadRecPtr >> 32),
-										  (uint32) (state->ReadRecPtr));
+										  (uint32)(state->ReadRecPtr >> 32),
+										  (uint32)(state->ReadRecPtr));
 					goto err;
 				}
 
@@ -1296,14 +1305,14 @@ polar_xlog_queue_decode(XLogReaderState *state, XLogRecord *record, bool decode_
 				 * flag is set.
 				 */
 				if ((blk->bimg_info & BKPIMAGE_IS_COMPRESSED) &&
-					blk->bimg_len == BLCKSZ)
+						blk->bimg_len == BLCKSZ)
 				{
 					report_invalid_record(state,
 										  "polar: xlog queue BKPIMAGE_IS_COMPRESSED set , but block image length %u at block_id %u and %X/%X",
 										  (unsigned int) blk->bimg_len,
 										  block_id,
-										  (uint32) (state->ReadRecPtr >> 32),
-										  (uint32) (state->ReadRecPtr));
+										  (uint32)(state->ReadRecPtr >> 32),
+										  (uint32)(state->ReadRecPtr));
 					goto err;
 				}
 
@@ -1312,15 +1321,15 @@ polar_xlog_queue_decode(XLogReaderState *state, XLogRecord *record, bool decode_
 				 * IS_COMPRESSED flag is set.
 				 */
 				if (!(blk->bimg_info & BKPIMAGE_HAS_HOLE) &&
-					!(blk->bimg_info & BKPIMAGE_IS_COMPRESSED) &&
-					blk->bimg_len != BLCKSZ)
+						!(blk->bimg_info & BKPIMAGE_IS_COMPRESSED) &&
+						blk->bimg_len != BLCKSZ)
 				{
 					report_invalid_record(state,
 										  "polar: xlog queue neither BKPIMAGE_HAS_HOLE nor BKPIMAGE_IS_COMPRESSED set, but block image length is %u at block_id %u and %X/%X",
 										  (unsigned int) blk->data_len,
 										  block_id,
-										  (uint32) (state->ReadRecPtr >> 32),
-										  (uint32) (state->ReadRecPtr));
+										  (uint32)(state->ReadRecPtr >> 32),
+										  (uint32)(state->ReadRecPtr));
 					goto err;
 				}
 			}
@@ -1337,8 +1346,8 @@ polar_xlog_queue_decode(XLogReaderState *state, XLogRecord *record, bool decode_
 					report_invalid_record(state,
 										  "polar: xlog queue BKPBLOCK_SAME_REL set but no previous rel at block_id %u and %X/%X",
 										  block_id,
-										  (uint32) (state->ReadRecPtr >> 32),
-										  (uint32) (state->ReadRecPtr));
+										  (uint32)(state->ReadRecPtr >> 32),
+										  (uint32)(state->ReadRecPtr));
 					goto err;
 				}
 
@@ -1363,36 +1372,39 @@ err:
 	return false;
 }
 
-void
-polar_xlog_send_queue_save(polar_ringbuf_ref_t *ref)
+XLogRecord *
+polar_xlog_send_queue_record_pop(polar_ringbuf_t queue, XLogReaderState *state)
 {
-	uint32		pktlen;
-	XLogRecord *record;
-	uint8		pkt_type;
-	char	   *errormsg = NULL;
-	static XLogReaderState *state = NULL;
+	uint32 pktlen;
+	XLogRecord *record = NULL;
+	uint8 pkt_type;
+	char *errormsg = NULL;
+	static polar_ringbuf_ref_t ref = { .slot = -1};
 
-	if (state == NULL)
-		state = XLogReaderAllocate(wal_segment_size, NULL, NULL);
-
-	while (polar_ringbuf_avail(ref) > 0
-		   && (pkt_type = polar_ringbuf_next_ready_pkt(ref, &pktlen)) != POLAR_RINGBUF_PKT_INVALID_TYPE)
+	if (unlikely(ref.slot == -1))
 	{
-		XLogRecPtr	lsn = InvalidXLogRecPtr;
+		POLAR_XLOG_QUEUE_NEW_REF(&ref, queue, true, "rw_xlog_queue_record_pop");
+		xlog_queue_catch_up = true;
+	}
+
+	if (polar_ringbuf_avail(&ref) > 0
+			&& (pkt_type = polar_ringbuf_next_ready_pkt(&ref, &pktlen)) != POLAR_RINGBUF_PKT_INVALID_TYPE)
+	{
+		XLogRecPtr lsn = InvalidXLogRecPtr;
 
 		if (pkt_type != POLAR_RINGBUF_PKT_WAL_META)
 		{
 			elog(PANIC, "For xlog send queue there should be only WAL META, but we got %d from ref %s",
-				 pkt_type, ref->ref_name);
+				 pkt_type, ref.ref_name);
 		}
 
-		polar_ringbuf_read_next_pkt(ref, 0, (uint8 *) &lsn, sizeof(XLogRecPtr));
+		polar_ringbuf_read_next_pkt(&ref, 0, (uint8 *)&lsn, sizeof(XLogRecPtr));
 
 		/* Master save logindex when xlog is flushed */
 		if (lsn > GetFlushRecPtr())
-			break;
+			return NULL;
 
-		record = polar_xlog_queue_ref_pop(ref, state, false, &errormsg);
+		record = polar_xlog_queue_ref_pop(&ref, state, false, &errormsg);
 
 		if (record == NULL)
 		{
@@ -1400,102 +1412,100 @@ polar_xlog_send_queue_save(polar_ringbuf_ref_t *ref)
 				elog(WARNING, "Got errormsg when pop xlog queue: %s", errormsg);
 
 			POLAR_LOG_XLOG_RECORD_INFO(state);
-			elog(PANIC, "Failed to pop record from xlog queue from ref %s", ref->ref_name);
+			elog(PANIC, "Failed to pop record from xlog queue from ref %s", ref.ref_name);
 		}
-
-		if (polar_xlog_remove_payload(record))
-			polar_log_index_save_lsn(state);
 	}
+
+	return record;
 }
 
-void
-polar_xlog_send_queue_keep_data(polar_ringbuf_ref_t *ref)
-{
-	polar_ringbuf_t rbuf = ref->rbuf;
-	ssize_t		keep_size = rbuf->size * 2 / 3;
-	bool		updated = false;
+static polar_ringbuf_ref_t polar_data_ref = { .slot = -1 };
 
-	while (polar_ringbuf_avail(ref) > keep_size)
+void
+polar_xlog_send_queue_keep_data(polar_ringbuf_t queue)
+{
+	if (unlikely(polar_data_ref.slot == -1))
+		POLAR_XLOG_QUEUE_NEW_REF(&polar_data_ref, queue, true, "xlog_queue_data_keep");
+	else
 	{
-		polar_ringbuf_update_ref(ref);
-		updated = true;
+		Assert(polar_data_ref.rbuf == queue);
+		polar_ringbuf_ref_keep_data(&polar_data_ref, POLAR_XLOG_QUEUE_DATA_KEEP_RATIO);
 	}
-
-	if (updated)
-		polar_ringbuf_update_keep_data(rbuf);
 }
 
 void
-polar_xlog_recv_queue_push_storage_begin(polar_interrupt_callback callback)
+polar_xlog_send_queue_release_data_ref(void)
 {
-	ssize_t		idx;
+	if (polar_data_ref.slot != -1)
+		polar_ringbuf_release_ref(&polar_data_ref);
+}
 
-	while (polar_ringbuf_free_size(polar_xlog_queue) < POLAR_RINGBUF_PKTHDRSIZE)
-		polar_ringbuf_free_up(polar_xlog_queue, POLAR_RINGBUF_PKTHDRSIZE, callback);
+void
+polar_xlog_recv_queue_push_storage_begin(polar_ringbuf_t queue, polar_interrupt_callback callback)
+{
+	size_t idx;
 
-	idx = polar_ringbuf_pkt_reserve(polar_xlog_queue, POLAR_RINGBUF_PKTHDRSIZE);
+	while (polar_ringbuf_free_size(queue) < POLAR_RINGBUF_PKTHDRSIZE)
+		polar_ringbuf_free_up(queue, POLAR_RINGBUF_PKTHDRSIZE, callback);
+
+	idx = polar_ringbuf_pkt_reserve(queue, POLAR_RINGBUF_PKTHDRSIZE);
 
 	if (idx < 0)
 		ereport(PANIC, (errmsg("Failed to reserve space from xlog recv queue for storage packet")));
 
-	polar_ringbuf_set_pkt_length(polar_xlog_queue, idx, 0);
+	polar_ringbuf_set_pkt_length(queue, idx, 0);
 
-	polar_ringbuf_set_pkt_flag(polar_xlog_queue, idx, POLAR_RINGBUF_PKT_WAL_STORAGE_BEGIN | POLAR_RINGBUF_PKT_READY);
+	polar_ringbuf_set_pkt_flag(queue, idx, POLAR_RINGBUF_PKT_WAL_STORAGE_BEGIN | POLAR_RINGBUF_PKT_READY);
 
 }
 
 bool
-polar_xlog_recv_queue_push(char *buf, size_t len, polar_interrupt_callback callback)
+polar_xlog_recv_queue_push(polar_ringbuf_t queue, char *buf, size_t len, polar_interrupt_callback callback)
 {
-	ssize_t		idx;
-	ssize_t		copy_len = 0;
-
-	if (!polar_streaming_xlog_meta)
-		return false;
+	size_t idx;
+	ssize_t copy_len = 0;
 
 	do
 	{
-		uint32		pktlen;
-		uint32		write_len;
+		uint32 pktlen;
+		uint32 write_len;
 
 		memcpy(&pktlen, buf, sizeof(uint32));
 		buf += sizeof(uint32);
 		copy_len += sizeof(uint32);
 
-		while (polar_ringbuf_free_size(polar_xlog_queue) < POLAR_RINGBUF_PKT_SIZE(pktlen))
-			polar_ringbuf_free_up(polar_xlog_queue, POLAR_RINGBUF_PKT_SIZE(pktlen), callback);
+		while (polar_ringbuf_free_size(queue) < POLAR_RINGBUF_PKT_SIZE(pktlen))
+			polar_ringbuf_free_up(queue, POLAR_RINGBUF_PKT_SIZE(pktlen), callback);
 
-		idx = polar_ringbuf_pkt_reserve(polar_xlog_queue, POLAR_RINGBUF_PKT_SIZE(pktlen));
+		idx = polar_ringbuf_pkt_reserve(queue, POLAR_RINGBUF_PKT_SIZE(pktlen));
 
-		if (idx < 0 || idx >= polar_xlog_queue->size)
+		if (idx < 0 || idx >= queue->size)
 		{
 			ereport(PANIC, (errmsg("Failed to reserve space from xlog recv queue, idx=%ld, queue size=%ld",
-								   idx, polar_xlog_queue->size)));
+								   idx, queue->size)));
 		}
 
-		polar_ringbuf_set_pkt_length(polar_xlog_queue, idx, pktlen);
+		polar_ringbuf_set_pkt_length(queue, idx, pktlen);
 
-		write_len = polar_ringbuf_pkt_write(polar_xlog_queue, idx, 0, (uint8 *) buf, pktlen);
+		write_len = polar_ringbuf_pkt_write(queue, idx, 0, (uint8 *)buf, pktlen);
 
 		if (write_len != pktlen)
 		{
 			ereport(PANIC, (errmsg("Failed to copy xlog recv queue, idx=%ld, queue size=%ld, pktlen=%d and write_len=%d",
-								   idx, polar_xlog_queue->size, pktlen, write_len)));
+								   idx, queue->size, pktlen, write_len)));
 		}
 
-		polar_ringbuf_set_pkt_flag(polar_xlog_queue, idx, POLAR_RINGBUF_PKT_WAL_META | POLAR_RINGBUF_PKT_READY);
+		polar_ringbuf_set_pkt_flag(queue, idx, POLAR_RINGBUF_PKT_WAL_META | POLAR_RINGBUF_PKT_READY);
 
-		if (polar_enable_debug)
+		if (unlikely(polar_enable_debug))
 		{
-			XLogRecPtr	lsn;
-			uint32		xlog_len;
+			XLogRecPtr lsn;
+			uint32  xlog_len;
 
 			memcpy(&lsn, buf, sizeof(lsn));
 			memcpy(&xlog_len, buf + sizeof(lsn), sizeof(xlog_len));
 
-			if (polar_enable_debug)
-				elog(LOG, "%s lsn=%x/%x", __func__, (uint32) ((lsn - xlog_len) >> 32), (uint32) (lsn - xlog_len));
-
+			elog(LOG, "%s lsn=%x/%x", __func__, (uint32)((lsn - xlog_len) >> 32), (uint32)(lsn - xlog_len));
 		}
 
 		buf += write_len;
@@ -1507,7 +1517,7 @@ polar_xlog_recv_queue_push(char *buf, size_t len, polar_interrupt_callback callb
 	if (copy_len != len)
 	{
 		ereport(PANIC, (errmsg("Failed to copy xlog recv queue, idx=%ld, queue size=%ld, len=%ld and copy_len=%ld",
-							   idx, polar_xlog_queue->size, len, copy_len)));
+							   idx, queue->size, len, copy_len)));
 	}
 
 	return true;
@@ -1520,127 +1530,37 @@ polar_xlog_recv_queue_check(XLogReaderState *state)
 		return true;
 
 	if (state->currRecPtr % state->wal_segment_size == 0 &&
-		(state->ReadRecPtr - state->currRecPtr) == SizeOfXLogLongPHD)
+			(state->ReadRecPtr - state->currRecPtr) == SizeOfXLogLongPHD)
 		return true;
 
 	if (state->currRecPtr % XLOG_BLCKSZ == 0 &&
-		(state->ReadRecPtr - state->currRecPtr) == SizeOfXLogShortPHD)
+			(state->ReadRecPtr - state->currRecPtr) == SizeOfXLogShortPHD)
 		return true;
 
 	return false;
 }
 
-/*
- * POLAR: this function is only used for polar worker pop record from queue
- */
 XLogRecord *
-polar_fullpage_bgworker_xlog_recv_queue_pop(log_index_snapshot_t *logindex_snapshot, XLogReaderState *state, char **errormsg)
+polar_xlog_recv_queue_pop(polar_ringbuf_t queue, XLogReaderState *state, XLogRecPtr RecPtr, char **errormsg)
 {
 	XLogRecord *record;
-	static TimestampTz last_load_logindex_time = 0;
-	static polar_ringbuf_ref_t ref = {.slot = -1};
+	XLogRecPtr err_lsn = InvalidXLogRecPtr;
+	bool streaming_reply_sent = false;
+	static polar_ringbuf_ref_t ref = { .slot = -1} ;
+	static XLogSegNo last_read_segno = 0;
+	char xlogfname[MAXFNAMELEN];
+	char activitymsg[MAXFNAMELEN + 16];
 
 	if (unlikely(ref.slot == -1))
 	{
-		if (!polar_ringbuf_new_ref(polar_xlog_queue, true, &ref, "fullpage_recv_queue_ref"))
+		if (!polar_ringbuf_new_ref(queue, true, &ref, "recv_queue_ref"))
 		{
 			POLAR_LOG_XLOG_RECORD_INFO(state);
 			ereport(PANIC, (errmsg("Failed to get ref from xlog recv queue")));
 		}
 
 		polar_ringbuf_auto_release_ref(&ref);
-	}
-
-	*errormsg = NULL;
-	state->errormsg_buf[0] = '\0';
-
-	/*
-	 * POLAR: when read from wal file instead of queue maybe very slow. we use
-	 * replay_lsn for polar worker catch up with starup replay when replay
-	 * fullpage wal, because polar worker don't need to replay wal lsn less
-	 * then replay_lsn, the future page fullpage snapshot wal lsn must be
-	 * bigger then replay_lsn
-	 */
-	if (!polar_pop_xlog_queue)
-	{
-		XLogRecPtr	last_replay_end_ptr = GetXLogReplayRecPtr(NULL);
-
-		if (state->EndRecPtr < last_replay_end_ptr)
-			state->EndRecPtr = last_replay_end_ptr;
-	}
-
-	state->currRecPtr = state->EndRecPtr;
-
-	/*
-	 * POLAR: maybe fullpage logindex is ahead of queue record lsn, so we need
-	 * skip these outdate records, because we load logindex from storage which
-	 * master has flush active table
-	 */
-	while ((record = polar_xlog_queue_ref_pop(&ref, state, true, errormsg)) == NULL ||
-		   (state->ReadRecPtr <= logindex_snapshot->max_lsn))
-	{
-		if (record == NULL)
-		{
-			TimestampTz now = GetCurrentTimestamp();
-
-			/* Handle interrupts of startup process */
-			HandleStartupProcInterrupts();
-
-			if (*errormsg != NULL)
-				break;
-
-			/*
-			 * We load logindex from storage in following cases: 1. read from
-			 * file instead of queue 2. wal receiver hang or lost for a long
-			 * time(1s?) 3. periodly load logindex from storage(1s)
-			 */
-			if (!polar_pop_xlog_queue ||
-				TimestampDifferenceExceeds(
-										   polar_get_walrcv_last_msg_receipt_time(), now, 1000) ||
-				TimestampDifferenceExceeds(
-										   last_load_logindex_time, now, 1000))
-			{
-				last_load_logindex_time = now;
-				polar_load_logindex_snapshot_from_storage(logindex_snapshot, InvalidXLogRecPtr, false);
-			}
-
-			/*
-			 * POLAR: when read from wal file, try to update EndRecPtr, maybe
-			 * read file very slow
-			 */
-			if (!polar_pop_xlog_queue)
-			{
-				XLogRecPtr	last_replay_end_ptr = GetXLogReplayRecPtr(NULL);
-
-				if (state->EndRecPtr < last_replay_end_ptr)
-					state->EndRecPtr = last_replay_end_ptr;
-
-				state->currRecPtr = state->EndRecPtr;
-			}
-
-			polar_fullpage_bgworker_wait_primary_xlog_message(state);
-		}
-	}
-
-	return record;
-}
-
-XLogRecord *
-polar_xlog_recv_queue_pop(XLogReaderState *state, XLogRecPtr RecPtr, char **errormsg)
-{
-	XLogRecord *record;
-	bool		streaming_reply_sent = false;
-	static polar_ringbuf_ref_t ref = {.slot = -1};
-
-	if (unlikely(ref.slot == -1))
-	{
-		if (!polar_ringbuf_new_ref(polar_xlog_queue, true, &ref, "recv_queue_ref"))
-		{
-			POLAR_LOG_XLOG_RECORD_INFO(state);
-			ereport(PANIC, (errmsg("Failed to get ref from xlog recv queue")));
-		}
-
-		polar_ringbuf_auto_release_ref(&ref);
+		xlog_queue_catch_up = false;
 	}
 
 	*errormsg = NULL;
@@ -1652,13 +1572,14 @@ polar_xlog_recv_queue_pop(XLogReaderState *state, XLogRecPtr RecPtr, char **erro
 	state->currRecPtr = RecPtr;
 
 	while ((record = polar_xlog_queue_ref_pop(&ref, state, true, errormsg)) == NULL ||
-		   (state->ReadRecPtr < state->currRecPtr))
+			(state->ReadRecPtr < state->currRecPtr))
 	{
 		/*
-		 * Since we have replayed everything we have received so far and are
-		 * about to start waiting for more WAL, let's tell the upstream server
-		 * our replay location now so that pg_stat_replication doesn't show
-		 * stale information.
+		 * Since we have replayed everything we have received so
+		 * far and are about to start waiting for more WAL, let's
+		 * tell the upstream server our replay location now so
+		 * that pg_stat_replication doesn't show stale
+		 * information.
 		 */
 
 		if (!streaming_reply_sent)
@@ -1672,22 +1593,38 @@ polar_xlog_recv_queue_pop(XLogReaderState *state, XLogRecPtr RecPtr, char **erro
 			/* Handle interrupts of startup process */
 			HandleStartupProcInterrupts();
 
-			if (!WalRcvStreaming())
+			if (CheckForStandbyTrigger())
 			{
-				if (CheckForStandbyTrigger())
-					break;
-				else
+				if (xlog_queue_catch_up)
 				{
-					/*
-					 * POLAR: In shared storage, we need wal receiver to
-					 * communicate with rw node, so keep it up.
-					 */
-					polar_keep_wal_receiver_up(state);
+					/* Force to read from wal file to check we read all xlog record if we read from xlog queue previously*/
+					polar_xlog_recv_queue_push_storage_begin(queue, NULL);
+					continue;
 				}
+
+				polar_ringbuf_release_ref(&ref);
+				ref.slot = -1;
+				break;
+			}
+			else if (!WalRcvStreaming())
+			{
+				/* POLAR: In shared storage, we need wal receiver to communicate with rw node, so keep it up. */
+				polar_keep_wal_receiver_up(state->currRecPtr);
+			}
+			else
+			{
+				/*
+				 * POLAR: If wal streaming is running either null from xlog queue or read from file means
+				 * we can get new xlog record from xlog queue in the next step
+				 */
+				xlog_queue_catch_up = true;
 			}
 
-			if (*errormsg != NULL)
-				break;
+			if (*errormsg && state->EndRecPtr != err_lsn)
+			{
+				err_lsn = state->EndRecPtr;
+				elog(WARNING, "Get error xlog, lsn=%lX errormsg=%s", err_lsn, *errormsg);
+			}
 
 			polar_wait_primary_xlog_message(state);
 		}
@@ -1704,12 +1641,18 @@ polar_xlog_recv_queue_pop(XLogReaderState *state, XLogRecPtr RecPtr, char **erro
 		polar_update_receipt_time();
 		polar_set_read_and_end_rec_ptr(state->ReadRecPtr, state->EndRecPtr);
 
-		/*
-		 * POLAR: In shared storage, we need wal receiver to communicate with
-		 * rw node, so keep it up.
-		 */
-		if (!polar_pop_xlog_queue)
-			polar_keep_wal_receiver_up(state);
+		/* POLAR: In shared storage, we need wal receiver to communicate with rw node, so keep it up. */
+		if (!xlog_queue_catch_up)
+			polar_keep_wal_receiver_up(state->EndRecPtr);
+
+		/* POLAR: If last read segment number is updated, so report it in PS display inside startup process. */
+		if (AmStartupProcess() && state->readSegNo != last_read_segno)
+		{
+			XLogFileName(xlogfname, state->readPageTLI, state->readSegNo, wal_segment_size);
+			snprintf(activitymsg, sizeof(activitymsg), "recovering %s", xlogfname);
+			set_ps_display(activitymsg, false);
+			last_read_segno = state->readSegNo;
+		}
 	}
 
 	return record;

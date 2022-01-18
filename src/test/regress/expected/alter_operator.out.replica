@@ -1,0 +1,153 @@
+CREATE FUNCTION alter_op_test_fn(boolean, boolean)
+RETURNS boolean AS $$ SELECT NULL::BOOLEAN; $$ LANGUAGE sql IMMUTABLE;
+ERROR:  cannot execute CREATE FUNCTION in a read-only transaction
+CREATE FUNCTION customcontsel(internal, oid, internal, integer)
+RETURNS float8 AS 'contsel' LANGUAGE internal STABLE STRICT;
+ERROR:  cannot execute CREATE FUNCTION in a read-only transaction
+CREATE OPERATOR === (
+    LEFTARG = boolean,
+    RIGHTARG = boolean,
+    PROCEDURE = alter_op_test_fn,
+    COMMUTATOR = ===,
+    NEGATOR = !==,
+    RESTRICT = customcontsel,
+    JOIN = contjoinsel,
+    HASHES, MERGES
+);
+ERROR:  cannot execute CREATE OPERATOR in a read-only transaction
+SELECT pg_describe_object(refclassid,refobjid,refobjsubid) as ref, deptype
+FROM pg_depend
+WHERE classid = 'pg_operator'::regclass AND
+      objid = '===(bool,bool)'::regoperator
+ORDER BY 1;
+                          ref                          | deptype 
+-------------------------------------------------------+---------
+ function alter_op_test_fn(boolean,boolean)            | n
+ function customcontsel(internal,oid,internal,integer) | n
+ schema public                                         | n
+(3 rows)
+
+--
+-- Reset and set params
+--
+ALTER OPERATOR === (boolean, boolean) SET (RESTRICT = NONE);
+ERROR:  cannot execute ALTER OPERATOR in a read-only transaction
+ALTER OPERATOR === (boolean, boolean) SET (JOIN = NONE);
+ERROR:  cannot execute ALTER OPERATOR in a read-only transaction
+SELECT oprrest, oprjoin FROM pg_operator WHERE oprname = '==='
+  AND oprleft = 'boolean'::regtype AND oprright = 'boolean'::regtype;
+ oprrest | oprjoin 
+---------+---------
+ -       | -
+(1 row)
+
+SELECT pg_describe_object(refclassid,refobjid,refobjsubid) as ref, deptype
+FROM pg_depend
+WHERE classid = 'pg_operator'::regclass AND
+      objid = '===(bool,bool)'::regoperator
+ORDER BY 1;
+                    ref                     | deptype 
+--------------------------------------------+---------
+ function alter_op_test_fn(boolean,boolean) | n
+ schema public                              | n
+(2 rows)
+
+ALTER OPERATOR === (boolean, boolean) SET (RESTRICT = contsel);
+ERROR:  cannot execute ALTER OPERATOR in a read-only transaction
+ALTER OPERATOR === (boolean, boolean) SET (JOIN = contjoinsel);
+ERROR:  cannot execute ALTER OPERATOR in a read-only transaction
+SELECT oprrest, oprjoin FROM pg_operator WHERE oprname = '==='
+  AND oprleft = 'boolean'::regtype AND oprright = 'boolean'::regtype;
+ oprrest |   oprjoin   
+---------+-------------
+ contsel | contjoinsel
+(1 row)
+
+SELECT pg_describe_object(refclassid,refobjid,refobjsubid) as ref, deptype
+FROM pg_depend
+WHERE classid = 'pg_operator'::regclass AND
+      objid = '===(bool,bool)'::regoperator
+ORDER BY 1;
+                    ref                     | deptype 
+--------------------------------------------+---------
+ function alter_op_test_fn(boolean,boolean) | n
+ schema public                              | n
+(2 rows)
+
+ALTER OPERATOR === (boolean, boolean) SET (RESTRICT = NONE, JOIN = NONE);
+ERROR:  cannot execute ALTER OPERATOR in a read-only transaction
+SELECT oprrest, oprjoin FROM pg_operator WHERE oprname = '==='
+  AND oprleft = 'boolean'::regtype AND oprright = 'boolean'::regtype;
+ oprrest | oprjoin 
+---------+---------
+ -       | -
+(1 row)
+
+SELECT pg_describe_object(refclassid,refobjid,refobjsubid) as ref, deptype
+FROM pg_depend
+WHERE classid = 'pg_operator'::regclass AND
+      objid = '===(bool,bool)'::regoperator
+ORDER BY 1;
+                    ref                     | deptype 
+--------------------------------------------+---------
+ function alter_op_test_fn(boolean,boolean) | n
+ schema public                              | n
+(2 rows)
+
+ALTER OPERATOR === (boolean, boolean) SET (RESTRICT = customcontsel, JOIN = contjoinsel);
+ERROR:  cannot execute ALTER OPERATOR in a read-only transaction
+SELECT oprrest, oprjoin FROM pg_operator WHERE oprname = '==='
+  AND oprleft = 'boolean'::regtype AND oprright = 'boolean'::regtype;
+    oprrest    |   oprjoin   
+---------------+-------------
+ customcontsel | contjoinsel
+(1 row)
+
+SELECT pg_describe_object(refclassid,refobjid,refobjsubid) as ref, deptype
+FROM pg_depend
+WHERE classid = 'pg_operator'::regclass AND
+      objid = '===(bool,bool)'::regoperator
+ORDER BY 1;
+                          ref                          | deptype 
+-------------------------------------------------------+---------
+ function alter_op_test_fn(boolean,boolean)            | n
+ function customcontsel(internal,oid,internal,integer) | n
+ schema public                                         | n
+(3 rows)
+
+--
+-- Test invalid options.
+--
+ALTER OPERATOR === (boolean, boolean) SET (COMMUTATOR = ====);
+ERROR:  cannot execute ALTER OPERATOR in a read-only transaction
+ALTER OPERATOR === (boolean, boolean) SET (NEGATOR = ====);
+ERROR:  cannot execute ALTER OPERATOR in a read-only transaction
+ALTER OPERATOR === (boolean, boolean) SET (RESTRICT = non_existent_func);
+ERROR:  cannot execute ALTER OPERATOR in a read-only transaction
+ALTER OPERATOR === (boolean, boolean) SET (JOIN = non_existent_func);
+ERROR:  cannot execute ALTER OPERATOR in a read-only transaction
+ALTER OPERATOR === (boolean, boolean) SET (COMMUTATOR = !==);
+ERROR:  cannot execute ALTER OPERATOR in a read-only transaction
+ALTER OPERATOR === (boolean, boolean) SET (NEGATOR = !==);
+ERROR:  cannot execute ALTER OPERATOR in a read-only transaction
+-- invalid: non-lowercase quoted identifiers
+ALTER OPERATOR & (bit, bit) SET ("Restrict" = _int_contsel, "Join" = _int_contjoinsel);
+ERROR:  cannot execute ALTER OPERATOR in a read-only transaction
+--
+-- Test permission check. Must be owner to ALTER OPERATOR.
+--
+CREATE USER regress_alter_op_user;
+ERROR:  cannot execute CREATE ROLE in a read-only transaction
+SET SESSION AUTHORIZATION regress_alter_op_user;
+ALTER OPERATOR === (boolean, boolean) SET (RESTRICT = NONE);
+ERROR:  cannot execute ALTER OPERATOR in a read-only transaction
+-- Clean up
+RESET SESSION AUTHORIZATION;
+DROP USER regress_alter_op_user;
+ERROR:  cannot execute DROP ROLE in a read-only transaction
+DROP OPERATOR === (boolean, boolean);
+ERROR:  cannot execute DROP OPERATOR in a read-only transaction
+DROP FUNCTION customcontsel(internal, oid, internal, integer);
+ERROR:  cannot execute DROP FUNCTION in a read-only transaction
+DROP FUNCTION alter_op_test_fn(boolean, boolean);
+ERROR:  cannot execute DROP FUNCTION in a read-only transaction

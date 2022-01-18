@@ -1,0 +1,799 @@
+-- config
+/*--POLAR_ENABLE_PX*/
+set polar_enable_px = 1;
+set polar_px_optimizer_enable_dml_constraints = 1;
+set polar_px_enable_delete = 1;
+-- polar_px_delete_dop_num = 1
+set polar_px_delete_dop_num = 1;
+\i sql/polar-dev/px_parallel_delete_init_corr.sql
+-- create normal table
+drop table if exists px_parallel_delete_corr_t1 cascade;
+psql:sql/polar-dev/px_parallel_delete_init_corr.sql:2: NOTICE:  table "px_parallel_delete_corr_t1" does not exist, skipping
+CREATE TABLE px_parallel_delete_corr_t1 (c1 int, c2 int) ;
+insert into px_parallel_delete_corr_t1 select generate_series(1,100),generate_series(1,100);
+drop table if exists px_parallel_delete_corr_t2 cascade;
+psql:sql/polar-dev/px_parallel_delete_init_corr.sql:6: NOTICE:  table "px_parallel_delete_corr_t2" does not exist, skipping
+CREATE TABLE px_parallel_delete_corr_t2 (c1 int, c2 int) ;
+insert into px_parallel_delete_corr_t2 select generate_series(1,100),generate_series(1,100);
+drop table if exists px_parallel_delete_corr_t3 cascade;
+psql:sql/polar-dev/px_parallel_delete_init_corr.sql:10: NOTICE:  table "px_parallel_delete_corr_t3" does not exist, skipping
+CREATE TABLE px_parallel_delete_corr_t3 (c1 int, c2 int) ;
+insert into px_parallel_delete_corr_t3 select generate_series(1,1000),generate_series(1,1000);
+select count(*) from px_parallel_delete_corr_t1;
+ count 
+-------
+   100
+(1 row)
+
+select count(*) from px_parallel_delete_corr_t2;
+ count 
+-------
+   100
+(1 row)
+
+------------------------------------------------------------------------
+--range partition
+--Partition constraint: ((x IS NOT NULL) AND (x >= 10) AND (x < 20))
+drop table if exists px_parallel_delete_corr_t1_range cascade;
+psql:sql/polar-dev/px_parallel_delete_init_corr.sql:22: NOTICE:  table "px_parallel_delete_corr_t1_range" does not exist, skipping
+CREATE TABLE px_parallel_delete_corr_t1_range(id int, value int) PARTITION BY RANGE(id);
+CREATE TABLE px_parallel_delete_corr_t1_range_p1 PARTITION OF px_parallel_delete_corr_t1_range FOR VALUES FROM (1) TO (10000);
+CREATE TABLE px_parallel_delete_corr_t1_range_p2 PARTITION OF px_parallel_delete_corr_t1_range FOR VALUES FROM (10000) TO (20000);
+CREATE TABLE px_parallel_delete_corr_t1_range_p3 PARTITION OF px_parallel_delete_corr_t1_range DEFAULT;
+insert into px_parallel_delete_corr_t1_range select generate_series(1,30000, 2);
+-- Hash partition table
+drop table if exists px_parallel_delete_corr_t0_hash cascade;
+psql:sql/polar-dev/px_parallel_delete_init_corr.sql:30: NOTICE:  table "px_parallel_delete_corr_t0_hash" does not exist, skipping
+CREATE TABLE px_parallel_delete_corr_t0_hash (id int, value int) PARTITION BY HASH(id);
+CREATE TABLE px_parallel_delete_corr_t0_hash_p1 PARTITION OF px_parallel_delete_corr_t0_hash FOR VALUES WITH (modulus 3, remainder 0);
+CREATE TABLE px_parallel_delete_corr_t0_hash_p2 PARTITION OF px_parallel_delete_corr_t0_hash FOR VALUES WITH (modulus 3, remainder 1);
+CREATE TABLE px_parallel_delete_corr_t0_hash_p3 PARTITION OF px_parallel_delete_corr_t0_hash FOR VALUES WITH (modulus 3, remainder 2);
+insert into px_parallel_delete_corr_t0_hash select generate_series(1,30000),generate_series(1,30000);
+-- List partition table
+drop table if exists px_parallel_delete_corr_t2_list cascade;
+psql:sql/polar-dev/px_parallel_delete_init_corr.sql:38: NOTICE:  table "px_parallel_delete_corr_t2_list" does not exist, skipping
+create table px_parallel_delete_corr_t2_list(job character varying(30), pvalue int) partition by list (job);
+CREATE TABLE px_parallel_delete_corr_t2_list_p1 PARTITION OF px_parallel_delete_corr_t2_list FOR VALUES IN ('student');
+CREATE TABLE px_parallel_delete_corr_t2_list_p2 PARTITION OF px_parallel_delete_corr_t2_list FOR VALUES IN ('teacher');
+CREATE TABLE px_parallel_delete_corr_t2_list_p3 PARTITION OF px_parallel_delete_corr_t2_list DEFAULT;
+insert into px_parallel_delete_corr_t2_list select 'student',generate_series(1,10000);
+insert into px_parallel_delete_corr_t2_list select 'teacher',generate_series(10000,20000);
+insert into px_parallel_delete_corr_t2_list select 'other',generate_series(20000,30000);
+-- Index Test Init
+drop table if exists px_parallel_delete_corr_t4 cascade;
+psql:sql/polar-dev/px_parallel_delete_init_corr.sql:49: NOTICE:  table "px_parallel_delete_corr_t4" does not exist, skipping
+CREATE TABLE px_parallel_delete_corr_t4 (c1 int, c2 int) ;
+insert into px_parallel_delete_corr_t4 select generate_series(1,1000),generate_series(1,1000);
+CREATE INDEX t_index_delete_corr_plan on px_parallel_delete_corr_t4(c1);
+-- Constrain Test Init
+drop table if exists px_parallel_delete_corr_t5 cascade;
+psql:sql/polar-dev/px_parallel_delete_init_corr.sql:56: NOTICE:  table "px_parallel_delete_corr_t5" does not exist, skipping
+CREATE TABLE px_parallel_delete_corr_t5 (c1 int, c2 int not NULL);
+drop table if exists px_parallel_delete_corr_t6 cascade;
+psql:sql/polar-dev/px_parallel_delete_init_corr.sql:58: NOTICE:  table "px_parallel_delete_corr_t6" does not exist, skipping
+CREATE TABLE px_parallel_delete_corr_t6 (c1 int, c2 int);
+drop table if exists px_parallel_delete_corr_t7 cascade;
+psql:sql/polar-dev/px_parallel_delete_init_corr.sql:62: NOTICE:  table "px_parallel_delete_corr_t7" does not exist, skipping
+CREATE TABLE px_parallel_delete_corr_t7 (c1 int, c2 int CHECK (c2 < 1000));
+drop table if exists px_parallel_delete_corr_t10 cascade;
+psql:sql/polar-dev/px_parallel_delete_init_corr.sql:65: NOTICE:  table "px_parallel_delete_corr_t10" does not exist, skipping
+CREATE TABLE px_parallel_delete_corr_t10(
+   ID INT PRIMARY KEY     NOT NULL,
+   NAME           TEXT    NOT NULL
+);
+insert into px_parallel_delete_corr_t10 select generate_series(1,1000), 'hello';
+drop table if exists px_parallel_delete_corr_audit cascade;
+psql:sql/polar-dev/px_parallel_delete_init_corr.sql:73: NOTICE:  table "px_parallel_delete_corr_audit" does not exist, skipping
+CREATE TABLE px_parallel_delete_corr_audit(
+   EMP_ID INT NOT NULL,
+   ENTRY_DATE TEXT NOT NULL
+);
+insert into px_parallel_delete_corr_audit select generate_series(1,1000), 'world';
+-- Create Updatable View
+drop table if exists px_parallel_delete_corr_t11 cascade;
+psql:sql/polar-dev/px_parallel_delete_init_corr.sql:81: NOTICE:  table "px_parallel_delete_corr_t11" does not exist, skipping
+CREATE TABLE px_parallel_delete_corr_t11 (c1 int, c2 int, c3 int) ;
+insert into px_parallel_delete_corr_t11 select generate_series(1,1000), generate_series(1,1000), generate_series(1,1000);
+CREATE VIEW px_parallel_delete_corr_view AS select
+c1,
+c2,
+c3
+from px_parallel_delete_corr_t11
+where c1 < 200;
+-- Create with CTE
+drop table if exists px_parallel_delete_corr_t12 cascade;
+psql:sql/polar-dev/px_parallel_delete_init_corr.sql:93: NOTICE:  table "px_parallel_delete_corr_t12" does not exist, skipping
+CREATE TABLE px_parallel_delete_corr_t12 (c1 int, c2 int, c3 int) ;
+insert into px_parallel_delete_corr_t12 select generate_series(1,1000), generate_series(1,1000), generate_series(1,1000);
+drop table if exists px_parallel_delete_corr_t13 cascade;
+psql:sql/polar-dev/px_parallel_delete_init_corr.sql:96: NOTICE:  table "px_parallel_delete_corr_t13" does not exist, skipping
+CREATE TABLE px_parallel_delete_corr_t13 (c1 int, c2 int, c3 int) ;
+insert into px_parallel_delete_corr_t13 select generate_series(1,1000), generate_series(1,1000), generate_series(1,1000);
+-- Delete twice
+drop table if exists px_parallel_delete_corr_t14 cascade;
+psql:sql/polar-dev/px_parallel_delete_init_corr.sql:101: NOTICE:  table "px_parallel_delete_corr_t14" does not exist, skipping
+CREATE TABLE px_parallel_delete_corr_t14 (c1 int, c2 int);
+insert into px_parallel_delete_corr_t14 VALUES(1,1),(1,1);
+drop table if exists px_parallel_delete_corr_t15 cascade;
+psql:sql/polar-dev/px_parallel_delete_init_corr.sql:104: NOTICE:  table "px_parallel_delete_corr_t15" does not exist, skipping
+CREATE TABLE px_parallel_delete_corr_t15 (c1 int, c2 int);
+insert into px_parallel_delete_corr_t15 select generate_series(1,1000), generate_series(1,1000);
+update px_parallel_delete_corr_t15 set c1=1;
+-- Delete with trigger
+drop table if exists px_parallel_delete_corr_t16 cascade;
+psql:sql/polar-dev/px_parallel_delete_init_corr.sql:111: NOTICE:  table "px_parallel_delete_corr_t16" does not exist, skipping
+CREATE TABLE px_parallel_delete_corr_t16(c1 int, c2 int);
+insert into px_parallel_delete_corr_t16 select generate_series(1,1000),generate_series(1,1000);
+drop table if exists px_parallel_delete_corr_audit cascade;
+CREATE TABLE px_parallel_delete_corr_audit(
+   EMP_ID INT NOT NULL,
+   ENTRY_DATE TEXT NOT NULL
+);
+insert into px_parallel_delete_corr_audit select generate_series(1,1000), 'world';
+CREATE OR REPLACE FUNCTION auditlogfunc_delete_corr() RETURNS TRIGGER AS $example_table$
+   BEGIN
+      DELETE FROM px_parallel_delete_corr_audit where EMP_ID < 20;
+      RETURN NEW;
+   END;
+$example_table$ LANGUAGE plpgsql;
+CREATE TRIGGER px_parallel_delete_corr_trigger AFTER DELETE ON px_parallel_delete_corr_t16 FOR EACH STATEMENT EXECUTE PROCEDURE auditlogfunc_delete_corr();
+ANALYZE;
+\i sql/polar-dev/px_parallel_delete_base_corr.sql
+-- Delete without subplan
+delete from px_parallel_delete_corr_t1 where c1 < 30;
+select count(*) from px_parallel_delete_corr_t1;
+ count 
+-------
+    71
+(1 row)
+
+delete from px_parallel_delete_corr_t1 where c1 > 970;
+select count(*) from px_parallel_delete_corr_t1;
+ count 
+-------
+    71
+(1 row)
+
+-- Delete with subplan
+delete from px_parallel_delete_corr_t2 where c1 in (select c1 from px_parallel_delete_corr_t1 where c1 < 50);
+select count(*) from px_parallel_delete_corr_t2;
+ count 
+-------
+    80
+(1 row)
+
+delete from px_parallel_delete_corr_t2 where c1 in (select c1 from px_parallel_delete_corr_t1 where c1 > 970);
+select count(*) from px_parallel_delete_corr_t2;
+ count 
+-------
+    80
+(1 row)
+
+-- Delete Partitiion Table, should be fallback
+delete from px_parallel_delete_corr_t1_range where id < 50;
+select count(*) from px_parallel_delete_corr_t1_range;
+ count 
+-------
+ 14975
+(1 row)
+
+delete from px_parallel_delete_corr_t1_range where id in (select c1 from px_parallel_delete_corr_t3 where c1 > 960);
+select count(*) from px_parallel_delete_corr_t1_range;
+ count 
+-------
+ 14955
+(1 row)
+
+-- select Range Partition Table, use PX
+delete from px_parallel_delete_corr_t3 where c1 in (select id from px_parallel_delete_corr_t1_range where id > 900);
+select count(*) from px_parallel_delete_corr_t3;
+ count 
+-------
+   970
+(1 row)
+
+-- select Hash Partition Table, use PX
+delete from px_parallel_delete_corr_t3 where c1 in (select id from px_parallel_delete_corr_t0_hash where id > 800);
+select count(*) from px_parallel_delete_corr_t3;
+ count 
+-------
+   800
+(1 row)
+
+-- select List Partition Table, use PX
+delete from px_parallel_delete_corr_t3 where c1 in (select pvalue from px_parallel_delete_corr_t2_list where job = 'student');
+select count(*) from px_parallel_delete_corr_t3;
+ count 
+-------
+     0
+(1 row)
+
+-- Delete With Index
+delete from px_parallel_delete_corr_t4 where c1 < 50;
+select count(*) from px_parallel_delete_corr_t4;
+ count 
+-------
+   951
+(1 row)
+
+delete from px_parallel_delete_corr_t4 where c1 in (select c1 from px_parallel_delete_corr_t15 where c1 > 960);
+select count(*) from px_parallel_delete_corr_t4;
+ count 
+-------
+   951
+(1 row)
+
+-- Delete with CTE
+WITH delete_move_rows AS (
+    delete from px_parallel_delete_corr_t12 where c1 < 30 RETURNING c2
+)
+delete from px_parallel_delete_corr_t13 where c1 in (select c1 from delete_move_rows);
+-- Delete with VIEW
+delete from px_parallel_delete_corr_view;
+select count(*) from px_parallel_delete_corr_t11;
+ count 
+-------
+   801
+(1 row)
+
+select count(*) from px_parallel_delete_corr_t11;
+ count 
+-------
+   801
+(1 row)
+
+-- Delete twice case
+delete from px_parallel_delete_corr_t14 where c2 in (select c1 from px_parallel_delete_corr_t15);
+select count(*) from px_parallel_delete_corr_t14;
+ count 
+-------
+     0
+(1 row)
+
+-- Delete with returning
+delete from px_parallel_delete_corr_t15 where c2 < 10 returning *;
+ c1 | c2 
+----+----
+  1 |  1
+  1 |  2
+  1 |  3
+  1 |  4
+  1 |  5
+  1 |  6
+  1 |  7
+  1 |  8
+  1 |  9
+(9 rows)
+
+-- Delete with trigger
+delete from px_parallel_delete_corr_t16 where c1 < 50;
+select count(*) from px_parallel_delete_corr_t16;
+ count 
+-------
+   951
+(1 row)
+
+select count(*) from px_parallel_delete_corr_audit;
+ count 
+-------
+   981
+(1 row)
+
+-- polar_px_delete_dop_num = 6
+set polar_px_delete_dop_num = 6;
+\i sql/polar-dev/px_parallel_delete_init_corr.sql
+-- create normal table
+drop table if exists px_parallel_delete_corr_t1 cascade;
+CREATE TABLE px_parallel_delete_corr_t1 (c1 int, c2 int) ;
+insert into px_parallel_delete_corr_t1 select generate_series(1,100),generate_series(1,100);
+drop table if exists px_parallel_delete_corr_t2 cascade;
+CREATE TABLE px_parallel_delete_corr_t2 (c1 int, c2 int) ;
+insert into px_parallel_delete_corr_t2 select generate_series(1,100),generate_series(1,100);
+drop table if exists px_parallel_delete_corr_t3 cascade;
+CREATE TABLE px_parallel_delete_corr_t3 (c1 int, c2 int) ;
+insert into px_parallel_delete_corr_t3 select generate_series(1,1000),generate_series(1,1000);
+select count(*) from px_parallel_delete_corr_t1;
+ count 
+-------
+   100
+(1 row)
+
+select count(*) from px_parallel_delete_corr_t2;
+ count 
+-------
+   100
+(1 row)
+
+------------------------------------------------------------------------
+--range partition
+--Partition constraint: ((x IS NOT NULL) AND (x >= 10) AND (x < 20))
+drop table if exists px_parallel_delete_corr_t1_range cascade;
+CREATE TABLE px_parallel_delete_corr_t1_range(id int, value int) PARTITION BY RANGE(id);
+CREATE TABLE px_parallel_delete_corr_t1_range_p1 PARTITION OF px_parallel_delete_corr_t1_range FOR VALUES FROM (1) TO (10000);
+CREATE TABLE px_parallel_delete_corr_t1_range_p2 PARTITION OF px_parallel_delete_corr_t1_range FOR VALUES FROM (10000) TO (20000);
+CREATE TABLE px_parallel_delete_corr_t1_range_p3 PARTITION OF px_parallel_delete_corr_t1_range DEFAULT;
+insert into px_parallel_delete_corr_t1_range select generate_series(1,30000, 2);
+-- Hash partition table
+drop table if exists px_parallel_delete_corr_t0_hash cascade;
+CREATE TABLE px_parallel_delete_corr_t0_hash (id int, value int) PARTITION BY HASH(id);
+CREATE TABLE px_parallel_delete_corr_t0_hash_p1 PARTITION OF px_parallel_delete_corr_t0_hash FOR VALUES WITH (modulus 3, remainder 0);
+CREATE TABLE px_parallel_delete_corr_t0_hash_p2 PARTITION OF px_parallel_delete_corr_t0_hash FOR VALUES WITH (modulus 3, remainder 1);
+CREATE TABLE px_parallel_delete_corr_t0_hash_p3 PARTITION OF px_parallel_delete_corr_t0_hash FOR VALUES WITH (modulus 3, remainder 2);
+insert into px_parallel_delete_corr_t0_hash select generate_series(1,30000),generate_series(1,30000);
+-- List partition table
+drop table if exists px_parallel_delete_corr_t2_list cascade;
+create table px_parallel_delete_corr_t2_list(job character varying(30), pvalue int) partition by list (job);
+CREATE TABLE px_parallel_delete_corr_t2_list_p1 PARTITION OF px_parallel_delete_corr_t2_list FOR VALUES IN ('student');
+CREATE TABLE px_parallel_delete_corr_t2_list_p2 PARTITION OF px_parallel_delete_corr_t2_list FOR VALUES IN ('teacher');
+CREATE TABLE px_parallel_delete_corr_t2_list_p3 PARTITION OF px_parallel_delete_corr_t2_list DEFAULT;
+insert into px_parallel_delete_corr_t2_list select 'student',generate_series(1,10000);
+insert into px_parallel_delete_corr_t2_list select 'teacher',generate_series(10000,20000);
+insert into px_parallel_delete_corr_t2_list select 'other',generate_series(20000,30000);
+-- Index Test Init
+drop table if exists px_parallel_delete_corr_t4 cascade;
+CREATE TABLE px_parallel_delete_corr_t4 (c1 int, c2 int) ;
+insert into px_parallel_delete_corr_t4 select generate_series(1,1000),generate_series(1,1000);
+CREATE INDEX t_index_delete_corr_plan on px_parallel_delete_corr_t4(c1);
+-- Constrain Test Init
+drop table if exists px_parallel_delete_corr_t5 cascade;
+CREATE TABLE px_parallel_delete_corr_t5 (c1 int, c2 int not NULL);
+drop table if exists px_parallel_delete_corr_t6 cascade;
+CREATE TABLE px_parallel_delete_corr_t6 (c1 int, c2 int);
+drop table if exists px_parallel_delete_corr_t7 cascade;
+CREATE TABLE px_parallel_delete_corr_t7 (c1 int, c2 int CHECK (c2 < 1000));
+drop table if exists px_parallel_delete_corr_t10 cascade;
+CREATE TABLE px_parallel_delete_corr_t10(
+   ID INT PRIMARY KEY     NOT NULL,
+   NAME           TEXT    NOT NULL
+);
+insert into px_parallel_delete_corr_t10 select generate_series(1,1000), 'hello';
+drop table if exists px_parallel_delete_corr_audit cascade;
+CREATE TABLE px_parallel_delete_corr_audit(
+   EMP_ID INT NOT NULL,
+   ENTRY_DATE TEXT NOT NULL
+);
+insert into px_parallel_delete_corr_audit select generate_series(1,1000), 'world';
+-- Create Updatable View
+drop table if exists px_parallel_delete_corr_t11 cascade;
+psql:sql/polar-dev/px_parallel_delete_init_corr.sql:81: NOTICE:  drop cascades to view px_parallel_delete_corr_view
+CREATE TABLE px_parallel_delete_corr_t11 (c1 int, c2 int, c3 int) ;
+insert into px_parallel_delete_corr_t11 select generate_series(1,1000), generate_series(1,1000), generate_series(1,1000);
+CREATE VIEW px_parallel_delete_corr_view AS select
+c1,
+c2,
+c3
+from px_parallel_delete_corr_t11
+where c1 < 200;
+-- Create with CTE
+drop table if exists px_parallel_delete_corr_t12 cascade;
+CREATE TABLE px_parallel_delete_corr_t12 (c1 int, c2 int, c3 int) ;
+insert into px_parallel_delete_corr_t12 select generate_series(1,1000), generate_series(1,1000), generate_series(1,1000);
+drop table if exists px_parallel_delete_corr_t13 cascade;
+CREATE TABLE px_parallel_delete_corr_t13 (c1 int, c2 int, c3 int) ;
+insert into px_parallel_delete_corr_t13 select generate_series(1,1000), generate_series(1,1000), generate_series(1,1000);
+-- Delete twice
+drop table if exists px_parallel_delete_corr_t14 cascade;
+CREATE TABLE px_parallel_delete_corr_t14 (c1 int, c2 int);
+insert into px_parallel_delete_corr_t14 VALUES(1,1),(1,1);
+drop table if exists px_parallel_delete_corr_t15 cascade;
+CREATE TABLE px_parallel_delete_corr_t15 (c1 int, c2 int);
+insert into px_parallel_delete_corr_t15 select generate_series(1,1000), generate_series(1,1000);
+update px_parallel_delete_corr_t15 set c1=1;
+-- Delete with trigger
+drop table if exists px_parallel_delete_corr_t16 cascade;
+CREATE TABLE px_parallel_delete_corr_t16(c1 int, c2 int);
+insert into px_parallel_delete_corr_t16 select generate_series(1,1000),generate_series(1,1000);
+drop table if exists px_parallel_delete_corr_audit cascade;
+CREATE TABLE px_parallel_delete_corr_audit(
+   EMP_ID INT NOT NULL,
+   ENTRY_DATE TEXT NOT NULL
+);
+insert into px_parallel_delete_corr_audit select generate_series(1,1000), 'world';
+CREATE OR REPLACE FUNCTION auditlogfunc_delete_corr() RETURNS TRIGGER AS $example_table$
+   BEGIN
+      DELETE FROM px_parallel_delete_corr_audit where EMP_ID < 20;
+      RETURN NEW;
+   END;
+$example_table$ LANGUAGE plpgsql;
+CREATE TRIGGER px_parallel_delete_corr_trigger AFTER DELETE ON px_parallel_delete_corr_t16 FOR EACH STATEMENT EXECUTE PROCEDURE auditlogfunc_delete_corr();
+ANALYZE;
+\i sql/polar-dev/px_parallel_delete_base_corr.sql
+-- Delete without subplan
+delete from px_parallel_delete_corr_t1 where c1 < 30;
+select count(*) from px_parallel_delete_corr_t1;
+ count 
+-------
+    71
+(1 row)
+
+delete from px_parallel_delete_corr_t1 where c1 > 970;
+select count(*) from px_parallel_delete_corr_t1;
+ count 
+-------
+    71
+(1 row)
+
+-- Delete with subplan
+delete from px_parallel_delete_corr_t2 where c1 in (select c1 from px_parallel_delete_corr_t1 where c1 < 50);
+select count(*) from px_parallel_delete_corr_t2;
+ count 
+-------
+    80
+(1 row)
+
+delete from px_parallel_delete_corr_t2 where c1 in (select c1 from px_parallel_delete_corr_t1 where c1 > 970);
+select count(*) from px_parallel_delete_corr_t2;
+ count 
+-------
+    80
+(1 row)
+
+-- Delete Partitiion Table, should be fallback
+delete from px_parallel_delete_corr_t1_range where id < 50;
+select count(*) from px_parallel_delete_corr_t1_range;
+ count 
+-------
+ 14975
+(1 row)
+
+delete from px_parallel_delete_corr_t1_range where id in (select c1 from px_parallel_delete_corr_t3 where c1 > 960);
+select count(*) from px_parallel_delete_corr_t1_range;
+ count 
+-------
+ 14955
+(1 row)
+
+-- select Range Partition Table, use PX
+delete from px_parallel_delete_corr_t3 where c1 in (select id from px_parallel_delete_corr_t1_range where id > 900);
+select count(*) from px_parallel_delete_corr_t3;
+ count 
+-------
+   970
+(1 row)
+
+-- select Hash Partition Table, use PX
+delete from px_parallel_delete_corr_t3 where c1 in (select id from px_parallel_delete_corr_t0_hash where id > 800);
+select count(*) from px_parallel_delete_corr_t3;
+ count 
+-------
+   800
+(1 row)
+
+-- select List Partition Table, use PX
+delete from px_parallel_delete_corr_t3 where c1 in (select pvalue from px_parallel_delete_corr_t2_list where job = 'student');
+select count(*) from px_parallel_delete_corr_t3;
+ count 
+-------
+     0
+(1 row)
+
+-- Delete With Index
+delete from px_parallel_delete_corr_t4 where c1 < 50;
+select count(*) from px_parallel_delete_corr_t4;
+ count 
+-------
+   951
+(1 row)
+
+delete from px_parallel_delete_corr_t4 where c1 in (select c1 from px_parallel_delete_corr_t15 where c1 > 960);
+select count(*) from px_parallel_delete_corr_t4;
+ count 
+-------
+   951
+(1 row)
+
+-- Delete with CTE
+WITH delete_move_rows AS (
+    delete from px_parallel_delete_corr_t12 where c1 < 30 RETURNING c2
+)
+delete from px_parallel_delete_corr_t13 where c1 in (select c1 from delete_move_rows);
+-- Delete with VIEW
+delete from px_parallel_delete_corr_view;
+select count(*) from px_parallel_delete_corr_t11;
+ count 
+-------
+   801
+(1 row)
+
+select count(*) from px_parallel_delete_corr_t11;
+ count 
+-------
+   801
+(1 row)
+
+-- Delete twice case
+delete from px_parallel_delete_corr_t14 where c2 in (select c1 from px_parallel_delete_corr_t15);
+select count(*) from px_parallel_delete_corr_t14;
+ count 
+-------
+     0
+(1 row)
+
+-- Delete with returning
+delete from px_parallel_delete_corr_t15 where c2 < 10 returning *;
+ c1 | c2 
+----+----
+  1 |  1
+  1 |  2
+  1 |  3
+  1 |  4
+  1 |  5
+  1 |  6
+  1 |  7
+  1 |  8
+  1 |  9
+(9 rows)
+
+-- Delete with trigger
+delete from px_parallel_delete_corr_t16 where c1 < 50;
+select count(*) from px_parallel_delete_corr_t16;
+ count 
+-------
+   951
+(1 row)
+
+select count(*) from px_parallel_delete_corr_audit;
+ count 
+-------
+   981
+(1 row)
+
+-- polar_px_delete_dop_num = 9
+set polar_px_delete_dop_num = 9;
+\i sql/polar-dev/px_parallel_delete_init_corr.sql
+-- create normal table
+drop table if exists px_parallel_delete_corr_t1 cascade;
+CREATE TABLE px_parallel_delete_corr_t1 (c1 int, c2 int) ;
+insert into px_parallel_delete_corr_t1 select generate_series(1,100),generate_series(1,100);
+drop table if exists px_parallel_delete_corr_t2 cascade;
+CREATE TABLE px_parallel_delete_corr_t2 (c1 int, c2 int) ;
+insert into px_parallel_delete_corr_t2 select generate_series(1,100),generate_series(1,100);
+drop table if exists px_parallel_delete_corr_t3 cascade;
+CREATE TABLE px_parallel_delete_corr_t3 (c1 int, c2 int) ;
+insert into px_parallel_delete_corr_t3 select generate_series(1,1000),generate_series(1,1000);
+select count(*) from px_parallel_delete_corr_t1;
+ count 
+-------
+   100
+(1 row)
+
+select count(*) from px_parallel_delete_corr_t2;
+ count 
+-------
+   100
+(1 row)
+
+------------------------------------------------------------------------
+--range partition
+--Partition constraint: ((x IS NOT NULL) AND (x >= 10) AND (x < 20))
+drop table if exists px_parallel_delete_corr_t1_range cascade;
+CREATE TABLE px_parallel_delete_corr_t1_range(id int, value int) PARTITION BY RANGE(id);
+CREATE TABLE px_parallel_delete_corr_t1_range_p1 PARTITION OF px_parallel_delete_corr_t1_range FOR VALUES FROM (1) TO (10000);
+CREATE TABLE px_parallel_delete_corr_t1_range_p2 PARTITION OF px_parallel_delete_corr_t1_range FOR VALUES FROM (10000) TO (20000);
+CREATE TABLE px_parallel_delete_corr_t1_range_p3 PARTITION OF px_parallel_delete_corr_t1_range DEFAULT;
+insert into px_parallel_delete_corr_t1_range select generate_series(1,30000, 2);
+-- Hash partition table
+drop table if exists px_parallel_delete_corr_t0_hash cascade;
+CREATE TABLE px_parallel_delete_corr_t0_hash (id int, value int) PARTITION BY HASH(id);
+CREATE TABLE px_parallel_delete_corr_t0_hash_p1 PARTITION OF px_parallel_delete_corr_t0_hash FOR VALUES WITH (modulus 3, remainder 0);
+CREATE TABLE px_parallel_delete_corr_t0_hash_p2 PARTITION OF px_parallel_delete_corr_t0_hash FOR VALUES WITH (modulus 3, remainder 1);
+CREATE TABLE px_parallel_delete_corr_t0_hash_p3 PARTITION OF px_parallel_delete_corr_t0_hash FOR VALUES WITH (modulus 3, remainder 2);
+insert into px_parallel_delete_corr_t0_hash select generate_series(1,30000),generate_series(1,30000);
+-- List partition table
+drop table if exists px_parallel_delete_corr_t2_list cascade;
+create table px_parallel_delete_corr_t2_list(job character varying(30), pvalue int) partition by list (job);
+CREATE TABLE px_parallel_delete_corr_t2_list_p1 PARTITION OF px_parallel_delete_corr_t2_list FOR VALUES IN ('student');
+CREATE TABLE px_parallel_delete_corr_t2_list_p2 PARTITION OF px_parallel_delete_corr_t2_list FOR VALUES IN ('teacher');
+CREATE TABLE px_parallel_delete_corr_t2_list_p3 PARTITION OF px_parallel_delete_corr_t2_list DEFAULT;
+insert into px_parallel_delete_corr_t2_list select 'student',generate_series(1,10000);
+insert into px_parallel_delete_corr_t2_list select 'teacher',generate_series(10000,20000);
+insert into px_parallel_delete_corr_t2_list select 'other',generate_series(20000,30000);
+-- Index Test Init
+drop table if exists px_parallel_delete_corr_t4 cascade;
+CREATE TABLE px_parallel_delete_corr_t4 (c1 int, c2 int) ;
+insert into px_parallel_delete_corr_t4 select generate_series(1,1000),generate_series(1,1000);
+CREATE INDEX t_index_delete_corr_plan on px_parallel_delete_corr_t4(c1);
+-- Constrain Test Init
+drop table if exists px_parallel_delete_corr_t5 cascade;
+CREATE TABLE px_parallel_delete_corr_t5 (c1 int, c2 int not NULL);
+drop table if exists px_parallel_delete_corr_t6 cascade;
+CREATE TABLE px_parallel_delete_corr_t6 (c1 int, c2 int);
+drop table if exists px_parallel_delete_corr_t7 cascade;
+CREATE TABLE px_parallel_delete_corr_t7 (c1 int, c2 int CHECK (c2 < 1000));
+drop table if exists px_parallel_delete_corr_t10 cascade;
+CREATE TABLE px_parallel_delete_corr_t10(
+   ID INT PRIMARY KEY     NOT NULL,
+   NAME           TEXT    NOT NULL
+);
+insert into px_parallel_delete_corr_t10 select generate_series(1,1000), 'hello';
+drop table if exists px_parallel_delete_corr_audit cascade;
+CREATE TABLE px_parallel_delete_corr_audit(
+   EMP_ID INT NOT NULL,
+   ENTRY_DATE TEXT NOT NULL
+);
+insert into px_parallel_delete_corr_audit select generate_series(1,1000), 'world';
+-- Create Updatable View
+drop table if exists px_parallel_delete_corr_t11 cascade;
+psql:sql/polar-dev/px_parallel_delete_init_corr.sql:81: NOTICE:  drop cascades to view px_parallel_delete_corr_view
+CREATE TABLE px_parallel_delete_corr_t11 (c1 int, c2 int, c3 int) ;
+insert into px_parallel_delete_corr_t11 select generate_series(1,1000), generate_series(1,1000), generate_series(1,1000);
+CREATE VIEW px_parallel_delete_corr_view AS select
+c1,
+c2,
+c3
+from px_parallel_delete_corr_t11
+where c1 < 200;
+-- Create with CTE
+drop table if exists px_parallel_delete_corr_t12 cascade;
+CREATE TABLE px_parallel_delete_corr_t12 (c1 int, c2 int, c3 int) ;
+insert into px_parallel_delete_corr_t12 select generate_series(1,1000), generate_series(1,1000), generate_series(1,1000);
+drop table if exists px_parallel_delete_corr_t13 cascade;
+CREATE TABLE px_parallel_delete_corr_t13 (c1 int, c2 int, c3 int) ;
+insert into px_parallel_delete_corr_t13 select generate_series(1,1000), generate_series(1,1000), generate_series(1,1000);
+-- Delete twice
+drop table if exists px_parallel_delete_corr_t14 cascade;
+CREATE TABLE px_parallel_delete_corr_t14 (c1 int, c2 int);
+insert into px_parallel_delete_corr_t14 VALUES(1,1),(1,1);
+drop table if exists px_parallel_delete_corr_t15 cascade;
+CREATE TABLE px_parallel_delete_corr_t15 (c1 int, c2 int);
+insert into px_parallel_delete_corr_t15 select generate_series(1,1000), generate_series(1,1000);
+update px_parallel_delete_corr_t15 set c1=1;
+-- Delete with trigger
+drop table if exists px_parallel_delete_corr_t16 cascade;
+CREATE TABLE px_parallel_delete_corr_t16(c1 int, c2 int);
+insert into px_parallel_delete_corr_t16 select generate_series(1,1000),generate_series(1,1000);
+drop table if exists px_parallel_delete_corr_audit cascade;
+CREATE TABLE px_parallel_delete_corr_audit(
+   EMP_ID INT NOT NULL,
+   ENTRY_DATE TEXT NOT NULL
+);
+insert into px_parallel_delete_corr_audit select generate_series(1,1000), 'world';
+CREATE OR REPLACE FUNCTION auditlogfunc_delete_corr() RETURNS TRIGGER AS $example_table$
+   BEGIN
+      DELETE FROM px_parallel_delete_corr_audit where EMP_ID < 20;
+      RETURN NEW;
+   END;
+$example_table$ LANGUAGE plpgsql;
+CREATE TRIGGER px_parallel_delete_corr_trigger AFTER DELETE ON px_parallel_delete_corr_t16 FOR EACH STATEMENT EXECUTE PROCEDURE auditlogfunc_delete_corr();
+ANALYZE;
+\i sql/polar-dev/px_parallel_delete_base_corr.sql
+-- Delete without subplan
+delete from px_parallel_delete_corr_t1 where c1 < 30;
+select count(*) from px_parallel_delete_corr_t1;
+ count 
+-------
+    71
+(1 row)
+
+delete from px_parallel_delete_corr_t1 where c1 > 970;
+select count(*) from px_parallel_delete_corr_t1;
+ count 
+-------
+    71
+(1 row)
+
+-- Delete with subplan
+delete from px_parallel_delete_corr_t2 where c1 in (select c1 from px_parallel_delete_corr_t1 where c1 < 50);
+select count(*) from px_parallel_delete_corr_t2;
+ count 
+-------
+    80
+(1 row)
+
+delete from px_parallel_delete_corr_t2 where c1 in (select c1 from px_parallel_delete_corr_t1 where c1 > 970);
+select count(*) from px_parallel_delete_corr_t2;
+ count 
+-------
+    80
+(1 row)
+
+-- Delete Partitiion Table, should be fallback
+delete from px_parallel_delete_corr_t1_range where id < 50;
+select count(*) from px_parallel_delete_corr_t1_range;
+ count 
+-------
+ 14975
+(1 row)
+
+delete from px_parallel_delete_corr_t1_range where id in (select c1 from px_parallel_delete_corr_t3 where c1 > 960);
+select count(*) from px_parallel_delete_corr_t1_range;
+ count 
+-------
+ 14955
+(1 row)
+
+-- select Range Partition Table, use PX
+delete from px_parallel_delete_corr_t3 where c1 in (select id from px_parallel_delete_corr_t1_range where id > 900);
+select count(*) from px_parallel_delete_corr_t3;
+ count 
+-------
+   970
+(1 row)
+
+-- select Hash Partition Table, use PX
+delete from px_parallel_delete_corr_t3 where c1 in (select id from px_parallel_delete_corr_t0_hash where id > 800);
+select count(*) from px_parallel_delete_corr_t3;
+ count 
+-------
+   800
+(1 row)
+
+-- select List Partition Table, use PX
+delete from px_parallel_delete_corr_t3 where c1 in (select pvalue from px_parallel_delete_corr_t2_list where job = 'student');
+select count(*) from px_parallel_delete_corr_t3;
+ count 
+-------
+     0
+(1 row)
+
+-- Delete With Index
+delete from px_parallel_delete_corr_t4 where c1 < 50;
+select count(*) from px_parallel_delete_corr_t4;
+ count 
+-------
+   951
+(1 row)
+
+delete from px_parallel_delete_corr_t4 where c1 in (select c1 from px_parallel_delete_corr_t15 where c1 > 960);
+select count(*) from px_parallel_delete_corr_t4;
+ count 
+-------
+   951
+(1 row)
+
+-- Delete with CTE
+WITH delete_move_rows AS (
+    delete from px_parallel_delete_corr_t12 where c1 < 30 RETURNING c2
+)
+delete from px_parallel_delete_corr_t13 where c1 in (select c1 from delete_move_rows);
+-- Delete with VIEW
+delete from px_parallel_delete_corr_view;
+select count(*) from px_parallel_delete_corr_t11;
+ count 
+-------
+   801
+(1 row)
+
+select count(*) from px_parallel_delete_corr_t11;
+ count 
+-------
+   801
+(1 row)
+
+-- Delete twice case
+delete from px_parallel_delete_corr_t14 where c2 in (select c1 from px_parallel_delete_corr_t15);
+select count(*) from px_parallel_delete_corr_t14;
+ count 
+-------
+     0
+(1 row)
+
+-- Delete with returning
+delete from px_parallel_delete_corr_t15 where c2 < 10 returning *;
+ c1 | c2 
+----+----
+  1 |  1
+  1 |  2
+  1 |  3
+  1 |  4
+  1 |  5
+  1 |  6
+  1 |  7
+  1 |  8
+  1 |  9
+(9 rows)
+
+-- Delete with trigger
+delete from px_parallel_delete_corr_t16 where c1 < 50;
+select count(*) from px_parallel_delete_corr_t16;
+ count 
+-------
+   951
+(1 row)
+
+select count(*) from px_parallel_delete_corr_audit;
+ count 
+-------
+   981
+(1 row)
+

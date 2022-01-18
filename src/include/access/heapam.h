@@ -95,6 +95,9 @@ extern Relation heap_openrv(const RangeVar *relation, LOCKMODE lockmode);
 extern Relation heap_openrv_extended(const RangeVar *relation,
 					 LOCKMODE lockmode, bool missing_ok);
 
+/* POLAR px */
+extern Relation polar_px_try_heap_open(Oid relationId, LOCKMODE lockmode);
+
 #define heap_close(r,l)  relation_close(r,l)
 
 /* struct definitions appear in relscan.h */
@@ -119,6 +122,13 @@ extern HeapScanDesc heap_beginscan_bm(Relation relation, Snapshot snapshot,
 extern HeapScanDesc heap_beginscan_sampling(Relation relation,
 						Snapshot snapshot, int nkeys, ScanKey key,
 						bool allow_strat, bool allow_sync, bool allow_pagemode);
+/* POLAR px */
+extern HeapScanDesc heap_beginscan_bm_px(Relation relation, Snapshot snapshot,
+				  int nkeys, ScanKey key);
+extern HeapScanDesc heap_beginscan_px(Relation relation, Snapshot snapshot,
+			   						  int nkeys, ScanKey key);
+/* POLAR end */
+										 
 extern void heap_setscanlimits(HeapScanDesc scan, BlockNumber startBlk,
 				   BlockNumber endBlk);
 extern void heapgetpage(HeapScanDesc scan, BlockNumber page);

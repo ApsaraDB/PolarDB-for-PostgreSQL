@@ -122,4 +122,8 @@ extern int check_usermap(const char *usermap_name,
 			  bool case_sensitive);
 extern bool pg_isblank(const char c);
 
+/* POALR px */
+extern bool check_same_host_or_net(SockAddr *raddr, IPCompareMethod method);
+/* POALR end */
+
 #endif							/* HBA_H */

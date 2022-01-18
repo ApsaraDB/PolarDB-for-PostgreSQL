@@ -11,6 +11,9 @@
 subdir = src/backend/commands
 top_builddir = ../../..
 include $(top_builddir)/src/Makefile.global
+override CPPFLAGS := -I$(libpq_srcdir) $(CPPFLAGS)
+
+explain.o: explain_px.c
 
 OBJS = amcmds.o aggregatecmds.o alter.o analyze.o async.o cluster.o comment.o \
 	collationcmds.o constraint.o conversioncmds.o copy.o createas.o \

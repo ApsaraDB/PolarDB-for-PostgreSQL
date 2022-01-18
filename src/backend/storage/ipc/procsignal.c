@@ -231,6 +231,12 @@ SendProcSignal(pid_t pid, ProcSignalReason reason, BackendId backendId)
 	return -1;
 }
 
+/* POLAR: CheckProcSignal for POLAR */
+bool polar_check_proc_signal(ProcSignalReason reason)
+{
+	return CheckProcSignal(reason);
+}
+
 /*
  * CheckProcSignal - check to see if a particular reason has been
  * signaled, and clear the signal flag.  Should be called after receiving
@@ -291,6 +297,17 @@ procsignal_sigusr1_handler(SIGNAL_ARGS)
 
 	if (CheckProcSignal(PROCSIG_RECOVERY_CONFLICT_BUFFERPIN))
 		RecoveryConflictInterrupt(PROCSIG_RECOVERY_CONFLICT_BUFFERPIN);
+
+	if (polar_monitor_hook && CheckProcSignal(PROCSIG_LOG_CURRENT_PLAN))
+		polar_monitor_hook(POLAR_SET_LOGGING_PLAN_OF_RUNNING_QUERY);
+
+	/* POLAR: backend receives this signal to write the memory context in shared memory */
+	if (polar_monitor_hook)
+		polar_monitor_hook(POLAR_SET_SIGNAL_MCTX);
+
+	/* POLAR: backend receives this signal to dump the heap profile files */
+	if (polar_heap_profile_hook && CheckProcSignal(POLAR_HEAP_PROFILE_DUMP))
+		polar_heap_profile_hook();
 
 	SetLatch(MyLatch);
 

@@ -1,0 +1,55 @@
+--
+-- Drop existing table
+--
+/*--EXPLAIN_QUERY_BEGIN*/
+DROP TABLE IF EXISTS foo;
+NOTICE:  table "foo" does not exist, skipping
+--
+-- Create new table foo
+--
+CREATE TABLE foo(type INTEGER, prod VARCHAR, quantity NUMERIC);
+--
+-- Insert some values
+--
+INSERT INTO foo VALUES
+  (1, 'Table', 100),
+  (2, 'Chair', 250),
+  (3, 'Bed', 300);
+--
+-- Select query with grouping sets
+--
+explain (costs off) select type, prod, sum(quantity) s_quant
+FROM
+(
+  SELECT type, prod, quantity
+  FROM foo F1
+  LIMIT 3
+) F2 GROUP BY GROUPING SETS((type, prod), (prod)) ORDER BY type, s_quant;
+               QUERY PLAN                
+-----------------------------------------
+ Sort
+   Sort Key: f1.type, (sum(f1.quantity))
+   ->  HashAggregate
+         Hash Key: f1.prod, f1.type
+         Hash Key: f1.prod
+         ->  Limit
+               ->  Seq Scan on foo f1
+(7 rows)
+
+SELECT type, prod, sum(quantity) s_quant
+FROM
+(
+  SELECT type, prod, quantity
+  FROM foo F1
+  LIMIT 3
+) F2 GROUP BY GROUPING SETS((type, prod), (prod)) ORDER BY type, s_quant;
+ type | prod  | s_quant 
+------+-------+---------
+    1 | Table |     100
+    2 | Chair |     250
+    3 | Bed   |     300
+      | Table |     100
+      | Chair |     250
+      | Bed   |     300
+(6 rows)
+

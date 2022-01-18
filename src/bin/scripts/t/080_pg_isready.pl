@@ -13,6 +13,7 @@ command_fails(['pg_isready'], 'fails with no server running');
 
 my $node = get_new_node('main');
 $node->init;
+$node->append_conf('postgresql.conf', 'polar_enable_multi_syslogger = off');
 $node->start;
 
 # use a long timeout for the benefit of very slow buildfarm machines

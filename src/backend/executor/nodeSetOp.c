@@ -48,6 +48,7 @@
 #include "executor/executor.h"
 #include "executor/nodeSetOp.h"
 #include "miscadmin.h"
+#include "utils/guc.h"
 #include "utils/memutils.h"
 
 
@@ -408,6 +409,7 @@ setop_fill_hash_table(SetOpState *setopstate)
 			if (entry)
 				advance_counts((SetOpStatePerGroup) entry->additional, flag);
 		}
+		polar_check_hash_table_size(polar_max_setop_mem, "SetOp", setopstate->hashtable, NULL);
 
 		/* Must reset expression context after each hashtable lookup */
 		ResetExprContext(econtext);

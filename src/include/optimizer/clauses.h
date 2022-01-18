@@ -20,6 +20,11 @@
 #define is_opclause(clause)		((clause) != NULL && IsA(clause, OpExpr))
 #define is_funcclause(clause)	((clause) != NULL && IsA(clause, FuncExpr))
 
+// POLAR px: max size of a folded constant when optimizing queries in Orca
+// Note: this is to prevent OOM issues when trying to serialize very large constants
+// Current limit: 100KB
+#define PXOPT_MAX_FOLDED_CONSTANT_SIZE (100*1024)
+
 typedef struct
 {
 	int			numWindowFuncs; /* total number of WindowFuncs found */
@@ -88,4 +93,13 @@ extern Query *inline_set_returning_function(PlannerInfo *root,
 extern List *expand_function_arguments(List *args, Oid result_type,
 						  HeapTuple func_tuple);
 
+/* POLAR px */
+extern Query *fold_constants(PlannerInfo *root, Query *q,
+				ParamListInfo boundParams, Size max_size);
+extern Expr *evaluate_expr(Expr *expr, Oid result_type,
+				int32 result_typmod,
+				Oid result_collation);
+extern Expr *transform_array_Const_to_ArrayExpr(Const *c);
+extern Query *flatten_join_alias_var_optimizer(Query *query, int queryLevel);
+/* POLAR end */
 #endif							/* CLAUSES_H */

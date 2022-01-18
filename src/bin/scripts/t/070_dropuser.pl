@@ -11,6 +11,7 @@ program_options_handling_ok('dropuser');
 
 my $node = get_new_node('main');
 $node->init;
+$node->append_conf('postgresql.conf', 'polar_enable_multi_syslogger = off');
 $node->start;
 
 $node->safe_psql('postgres', 'CREATE ROLE regress_foobar1');

@@ -105,9 +105,13 @@ PerformCursorOpen(DeclareCursorStmt *cstmt, ParamListInfo params,
 	PortalDefineQuery(portal,
 					  NULL,
 					  queryString,
+					  T_Invalid,/* POLAR px */
 					  "SELECT", /* cursor's query is always a SELECT */
 					  list_make1(plan),
 					  NULL);
+
+	/* POLAR px */
+	portal->is_extended_query = true; /* cursors run in extended query mode */
 
 	/*----------
 	 * Also copy the outer portal's parameter list into the inner portal's
@@ -143,7 +147,11 @@ PerformCursorOpen(DeclareCursorStmt *cstmt, ParamListInfo params,
 	/*
 	 * Start execution, inserting parameters if any.
 	 */
-	PortalStart(portal, params, 0, GetActiveSnapshot());
+	PortalStart(portal, 
+				params, 
+				0, 
+				GetActiveSnapshot(), 
+				NULL/* POALR px */);
 
 	Assert(portal->strategy == PORTAL_ONE_SELECT);
 

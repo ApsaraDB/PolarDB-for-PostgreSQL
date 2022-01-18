@@ -17,7 +17,10 @@ OBJS = clog.o commit_ts.o generic_xlog.o multixact.o parallel.o rmgr.o slru.o \
 	xact.o xlog.o xlogarchive.o xlogfuncs.o \
 	xloginsert.o xlogreader.o xlogutils.o
 
-OBJS += polar_async_ddl_lock_replay.o
+# POLAR OBJECTS
+OBJS += polar_csnlog.o polar_csn_mvcc_vars.o polar_async_ddl_lock_replay.o \
+	polar_checkpoint_ringbuf.o
+# POLAR end
 
 include $(top_srcdir)/src/backend/common.mk
 

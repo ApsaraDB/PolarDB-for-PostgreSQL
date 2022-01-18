@@ -406,6 +406,10 @@ helpVariables(unsigned short int pager)
 					  "    single-step mode (same as -s option)\n"));
 	fprintf(output, _("  SQLSTATE\n"
 					  "    SQLSTATE of last query, or \"00000\" if no error\n"));
+	fprintf(output, _("  SORT_RESULT\n"
+					  "    if set, sort result asc for query result)\n"));
+	fprintf(output, _("  COMPARE_PX_RESULT\n"
+					  "    if set, compare result between px and non-px)\n"));
 	fprintf(output, _("  USER\n"
 					  "    the currently connected database user\n"));
 	fprintf(output, _("  VERBOSITY\n"

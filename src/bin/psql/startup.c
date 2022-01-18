@@ -129,7 +129,10 @@ main(int argc, char *argv[])
 	setDecimalLocale();
 	pset.encoding = PQenv2encoding();
 	pset.queryFout = stdout;
+	pset.queryReplicaFout = NULL;
 	pset.queryFoutPipe = false;
+	/* POLAR */
+	pset.queryReplicaFoutPipe = false;
 	pset.copyStream = NULL;
 	pset.last_error_result = NULL;
 	pset.cur_cmd_source = stdin;
@@ -242,6 +245,33 @@ main(int argc, char *argv[])
 
 		new_pass = false;
 		pset.db = PQconnectdbParams(keywords, values, true);
+
+		/* POLAR: connect to replica */
+		keywords[0] = "host";
+		values[0] = getenv("PGREPLICAHOST") ? strdup(getenv("PGREPLICAHOST")) : NULL;
+		keywords[1] = "port";
+		values[1] = getenv("PGREPLICAPORT") ? strdup(getenv("PGREPLICAPORT")) : NULL;
+		keywords[2] = "user";
+		values[2] = options.username;
+		keywords[3] = "password";
+		values[3] = have_password ? password : NULL;
+		keywords[4] = "dbname"; /* see do_connect() */
+		values[4] = (options.list_dbs && options.dbname == NULL) ?
+			"postgres" : options.dbname;
+		keywords[5] = "fallback_application_name";
+		values[5] = pset.progname;
+		keywords[6] = "client_encoding";
+		values[6] = (pset.notty || getenv("PGCLIENTENCODING")) ? NULL : "auto";
+		keywords[7] = NULL;
+		values[7] = NULL;
+
+		new_pass = false;
+		if (getenv("PGREPLICAHOST") && getenv("PGREPLICAPORT"))
+			pset.replicadb = PQconnectdbParams(keywords, values, true);
+		else
+			pset.replicadb = NULL;
+		/* POLAR end */
+
 		free(keywords);
 		free(values);
 
@@ -282,6 +312,8 @@ main(int argc, char *argv[])
 	setup_cancel_handler();
 
 	PQsetNoticeProcessor(pset.db, NoticeProcessor, NULL);
+	/* POLAR: as the above */
+	PQsetNoticeProcessor(pset.replicadb, NoticeProcessor, NULL);
 
 	SyncVariables();
 
@@ -450,6 +482,8 @@ parse_psql_options(int argc, char *argv[], struct adhoc_opts *options)
 		{"no-readline", no_argument, NULL, 'n'},
 		{"single-transaction", no_argument, NULL, '1'},
 		{"output", required_argument, NULL, 'o'},
+		/* POLAR */
+		{"replicaoutput", required_argument, NULL, 'O'},
 		{"port", required_argument, NULL, 'p'},
 		{"pset", required_argument, NULL, 'P'},
 		{"quiet", no_argument, NULL, 'q'},
@@ -476,7 +510,7 @@ parse_psql_options(int argc, char *argv[], struct adhoc_opts *options)
 
 	memset(options, 0, sizeof *options);
 
-	while ((c = getopt_long(argc, argv, "aAbc:d:eEf:F:h:HlL:no:p:P:qR:sStT:U:v:VwWxXz?01",
+	while ((c = getopt_long(argc, argv, "aAbc:d:eEf:F:h:HlL:no:O:p:P:qR:sStT:U:v:VwWxXz?01",
 							long_options, &optindex)) != -1)
 	{
 		switch (c)
@@ -537,6 +571,12 @@ parse_psql_options(int argc, char *argv[], struct adhoc_opts *options)
 				if (!setQFout(optarg))
 					exit(EXIT_FAILURE);
 				break;
+			/* POLAR: replica out file */
+			case 'O':
+				if (!polar_set_replica_fout(optarg))
+					exit(EXIT_FAILURE);
+				break;
+			/* POLAR end */
 			case 'p':
 				options->port = pg_strdup(optarg);
 				break;
@@ -1124,6 +1164,39 @@ show_context_hook(const char *newval)
 	return true;
 }
 
+/* POLAR px */
+static bool
+sort_result_hook(const char *newval)
+{
+	bool		on_off;
+	Assert(newval != NULL);		/* else substitute hook messed up */
+
+	if (ParseVariableBool(newval, NULL, &on_off))
+		pset.sort_result = on_off;
+	else
+	{
+		PsqlVarEnumError("SORT_RESULT", newval, "off, on");
+		return false;
+	}
+	return true;
+}
+
+/* POLAR px */
+static bool
+compare_result_px_hook(const char *newval)
+{
+	bool		on_off;
+	Assert(newval != NULL);		/* else substitute hook messed up */
+
+	if (ParseVariableBool(newval, NULL, &on_off))
+		pset.compare_px_result = on_off;
+	else
+	{
+		PsqlVarEnumError("COMPARE_PX_RESULT", newval, "off, on");
+		return false;
+	}
+	return true;
+}
 
 static void
 EstablishVariableSpace(void)
@@ -1187,4 +1260,12 @@ EstablishVariableSpace(void)
 	SetVariableHooks(pset.vars, "SHOW_CONTEXT",
 					 show_context_substitute_hook,
 					 show_context_hook);
+	SetVariableHooks(pset.vars, "SORT_RESULT",
+					 bool_substitute_hook,
+					 sort_result_hook);
+	SetVariableHooks(pset.vars, "COMPARE_PX_RESULT",
+					 bool_substitute_hook,
+					 compare_result_px_hook);
+	pset.explain_query = false;
+	pset.explain_analyze = false;
 }

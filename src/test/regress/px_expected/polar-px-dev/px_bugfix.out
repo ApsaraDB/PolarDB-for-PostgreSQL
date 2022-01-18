@@ -1,0 +1,582 @@
+--bug px insert oid table
+-- config
+/*--POLAR_ENABLE_PX*/
+/*--EXPLAIN_QUERY_BEGIN*/
+set polar_enable_px = 1;
+set polar_px_enable_insert_select = 1;
+set polar_px_optimizer_enable_dml_constraints = 1;
+set polar_px_enable_insert_order_sensitive = 0;
+CREATE TABLE t1_withoids (
+    c1 integer,
+    c2 integer
+) with oids;
+CREATE TABLE t1_withoutoids (
+    c1 integer,
+    c2 integer
+) without oids;
+CREATE TABLE t2_withoids (
+    pk numeric(10,0) NOT NULL,
+    varchar_test character varying(255) DEFAULT NULL::character varying,
+    integer_test integer,
+    char_test character varying(255) DEFAULT NULL::character varying,
+    tinyint_test integer,
+    tinyint_1bit_test integer,
+    smallint_test integer,
+    mediumint_test integer,
+    bigint_test numeric(10,0) DEFAULT NULL::numeric,
+    double_test double precision,
+    decimal_test numeric(10,0) DEFAULT NULL::numeric,
+    date_test timestamp(6) without time zone DEFAULT NULL::timestamp without time zone,
+    time_test timestamp(6) without time zone DEFAULT NULL::timestamp without time zone,
+    datetime_test timestamp(6) without time zone DEFAULT NULL::timestamp without time zone,
+    timestamp_test timestamp(6) without time zone DEFAULT NULL::timestamp without time zone,
+    year_test integer
+) with oids;
+CREATE TABLE t2_withoutoids (
+    pk numeric(10,0) NOT NULL,
+    varchar_test character varying(255) DEFAULT NULL::character varying,
+    integer_test integer,
+    char_test character varying(255) DEFAULT NULL::character varying,
+    tinyint_test integer,
+    tinyint_1bit_test integer,
+    smallint_test integer,
+    mediumint_test integer,
+    bigint_test numeric(10,0) DEFAULT NULL::numeric,
+    double_test double precision,
+    decimal_test numeric(10,0) DEFAULT NULL::numeric,
+    date_test timestamp(6) without time zone DEFAULT NULL::timestamp without time zone,
+    time_test timestamp(6) without time zone DEFAULT NULL::timestamp without time zone,
+    datetime_test timestamp(6) without time zone DEFAULT NULL::timestamp without time zone,
+    timestamp_test timestamp(6) without time zone DEFAULT NULL::timestamp without time zone,
+    year_test integer
+) without oids;
+--
+-- Data for Name: select_one; Type: TABLE DATA; Schema: public; Owner: zx_test
+--
+COPY t2_withoids (pk, varchar_test, integer_test, char_test, tinyint_test, tinyint_1bit_test, smallint_test, mediumint_test, bigint_test, double_test, decimal_test, date_test, time_test, datetime_test, timestamp_test, year_test) FROM stdin;
+COPY t2_withoutoids (pk, varchar_test, integer_test, char_test, tinyint_test, tinyint_1bit_test, smallint_test, mediumint_test, bigint_test, double_test, decimal_test, date_test, time_test, datetime_test, timestamp_test, year_test) FROM stdin;
+explain (verbose, costs off)
+insert into t1_withoids  select integer_test, tinyint_test from t2_withoids order by integer_test desc,tinyint_test;
+                                    QUERY PLAN                                     
+-----------------------------------------------------------------------------------
+ Insert on public.t1_withoids
+   ->  Result
+         Output: t2_withoids.integer_test, t2_withoids.tinyint_test
+         ->  PX Hash 6:6  (slice1; segments: 6)
+               Output: t2_withoids.integer_test, t2_withoids.tinyint_test, (1)
+               ->  Partial Seq Scan on public.t2_withoids
+                     Output: t2_withoids.integer_test, t2_withoids.tinyint_test, 1
+ Optimizer: PolarDB PX Optimizer
+(8 rows)
+
+insert into t1_withoids  select integer_test, tinyint_test from t2_withoids order by integer_test desc,tinyint_test;
+select * from t1_withoids order by c1, c2;
+ c1 | c2 
+----+----
+ 12 | 14
+ 13 | 15
+ 14 | 16
+ 15 | 17
+ 16 | 18
+ 17 | 19
+ 18 | 20
+ 19 | 21
+ 20 | 22
+ 21 | 23
+ 22 | 24
+ 23 | 25
+ 24 | 26
+ 25 | 27
+ 26 | 28
+ 27 | 29
+ 28 | 30
+ 29 | 31
+ 30 | 32
+ 31 | 33
+ 32 | 34
+(21 rows)
+
+                     QUERY PLAN                     
+----------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: c1, c2
+   Merge Key: c1, c2
+   ->  Sort
+         Output: c1, c2
+         Sort Key: t1_withoids.c1, t1_withoids.c2
+         ->  Partial Seq Scan on public.t1_withoids
+               Output: c1, c2
+ Optimizer: PolarDB PX Optimizer
+(9 rows)
+
+truncate t1_withoids;
+explain (verbose, costs off)
+insert into t1_withoids  select integer_test, tinyint_test from t2_withoutoids order by integer_test desc,tinyint_test;
+                                       QUERY PLAN                                        
+-----------------------------------------------------------------------------------------
+ Insert on public.t1_withoids
+   ->  Result
+         Output: t2_withoutoids.integer_test, t2_withoutoids.tinyint_test
+         ->  PX Hash 6:6  (slice1; segments: 6)
+               Output: t2_withoutoids.integer_test, t2_withoutoids.tinyint_test, (1)
+               ->  Partial Seq Scan on public.t2_withoutoids
+                     Output: t2_withoutoids.integer_test, t2_withoutoids.tinyint_test, 1
+ Optimizer: PolarDB PX Optimizer
+(8 rows)
+
+insert into t1_withoids  select integer_test, tinyint_test from t2_withoutoids order by integer_test desc,tinyint_test;
+select * from t1_withoids order by c1, c2;
+ c1 | c2 
+----+----
+ 12 | 14
+ 13 | 15
+ 14 | 16
+ 15 | 17
+ 16 | 18
+ 17 | 19
+ 18 | 20
+ 19 | 21
+ 20 | 22
+ 21 | 23
+ 22 | 24
+ 23 | 25
+ 24 | 26
+ 25 | 27
+ 26 | 28
+ 27 | 29
+ 28 | 30
+ 29 | 31
+ 30 | 32
+ 31 | 33
+ 32 | 34
+(21 rows)
+
+                     QUERY PLAN                     
+----------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: c1, c2
+   Merge Key: c1, c2
+   ->  Sort
+         Output: c1, c2
+         Sort Key: t1_withoids.c1, t1_withoids.c2
+         ->  Partial Seq Scan on public.t1_withoids
+               Output: c1, c2
+ Optimizer: PolarDB PX Optimizer
+(9 rows)
+
+truncate t1_withoutoids;
+explain (verbose, costs off)
+insert into t1_withoutoids  select integer_test, tinyint_test from t2_withoids order by integer_test desc,tinyint_test;
+                                    QUERY PLAN                                     
+-----------------------------------------------------------------------------------
+ Insert on public.t1_withoutoids
+   ->  Result
+         Output: t2_withoids.integer_test, t2_withoids.tinyint_test
+         ->  PX Hash 6:6  (slice1; segments: 6)
+               Output: t2_withoids.integer_test, t2_withoids.tinyint_test, (1)
+               ->  Partial Seq Scan on public.t2_withoids
+                     Output: t2_withoids.integer_test, t2_withoids.tinyint_test, 1
+ Optimizer: PolarDB PX Optimizer
+(8 rows)
+
+insert into t1_withoutoids  select integer_test, tinyint_test from t2_withoids order by integer_test desc,tinyint_test;
+select * from t1_withoutoids order by c1, c2;
+ c1 | c2 
+----+----
+ 12 | 14
+ 13 | 15
+ 14 | 16
+ 15 | 17
+ 16 | 18
+ 17 | 19
+ 18 | 20
+ 19 | 21
+ 20 | 22
+ 21 | 23
+ 22 | 24
+ 23 | 25
+ 24 | 26
+ 25 | 27
+ 26 | 28
+ 27 | 29
+ 28 | 30
+ 29 | 31
+ 30 | 32
+ 31 | 33
+ 32 | 34
+(21 rows)
+
+                       QUERY PLAN                       
+--------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: c1, c2
+   Merge Key: c1, c2
+   ->  Sort
+         Output: c1, c2
+         Sort Key: t1_withoutoids.c1, t1_withoutoids.c2
+         ->  Partial Seq Scan on public.t1_withoutoids
+               Output: c1, c2
+ Optimizer: PolarDB PX Optimizer
+(9 rows)
+
+truncate t1_withoutoids;
+explain (verbose, costs off)
+insert into t1_withoutoids  select integer_test, tinyint_test from t2_withoutoids order by integer_test desc,tinyint_test;
+                                       QUERY PLAN                                        
+-----------------------------------------------------------------------------------------
+ Insert on public.t1_withoutoids
+   ->  Result
+         Output: t2_withoutoids.integer_test, t2_withoutoids.tinyint_test
+         ->  PX Hash 6:6  (slice1; segments: 6)
+               Output: t2_withoutoids.integer_test, t2_withoutoids.tinyint_test, (1)
+               ->  Partial Seq Scan on public.t2_withoutoids
+                     Output: t2_withoutoids.integer_test, t2_withoutoids.tinyint_test, 1
+ Optimizer: PolarDB PX Optimizer
+(8 rows)
+
+insert into t1_withoutoids  select integer_test, tinyint_test from t2_withoutoids order by integer_test desc,tinyint_test;
+select * from t1_withoutoids order by c1, c2;
+ c1 | c2 
+----+----
+ 12 | 14
+ 13 | 15
+ 14 | 16
+ 15 | 17
+ 16 | 18
+ 17 | 19
+ 18 | 20
+ 19 | 21
+ 20 | 22
+ 21 | 23
+ 22 | 24
+ 23 | 25
+ 24 | 26
+ 25 | 27
+ 26 | 28
+ 27 | 29
+ 28 | 30
+ 29 | 31
+ 30 | 32
+ 31 | 33
+ 32 | 34
+(21 rows)
+
+                       QUERY PLAN                       
+--------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: c1, c2
+   Merge Key: c1, c2
+   ->  Sort
+         Output: c1, c2
+         Sort Key: t1_withoutoids.c1, t1_withoutoids.c2
+         ->  Partial Seq Scan on public.t1_withoutoids
+               Output: c1, c2
+ Optimizer: PolarDB PX Optimizer
+(9 rows)
+
+--bug px use single worker
+SET default_with_oids = true;
+CREATE TABLE public.select_hash2_tb_part_9 (
+    pk numeric(5,0) DEFAULT NULL::numeric NOT NULL,
+    varchar2_test character varying(100) DEFAULT NULL::character varying,
+    nvarchar2_test character varying(100) DEFAULT NULL::character varying,
+    number_test numeric(10,2) DEFAULT NULL::numeric,
+    smallint_test numeric(5,0) DEFAULT NULL::numeric,
+    integer_test integer,
+    decimal_test numeric(10,2) DEFAULT NULL::numeric,
+    float_test numeric(10,2) DEFAULT NULL::numeric,
+    double_test double precision,
+    timestamp_test timestamp(6) without time zone DEFAULT NULL::timestamp without time zone,
+    char_size_test character(100) DEFAULT NULL::bpchar,
+    nchar_test character(10) DEFAULT NULL::bpchar
+);
+COPY public.select_hash2_tb_part_9 (pk, varchar2_test, nvarchar2_test, number_test, smallint_test, integer_test, decimal_test, float_test, double_test, timestamp_test, char_size_test, nchar_test) FROM stdin;
+set polar_px_dop_per_node=1;
+SELECT DATE '2001-09-28' + 90, SUM(number_test) OVER (PARTITION BY float_test ) AS ratio FROM select_hash2_tb_part_9 WHERE 89 NOT IN (1, 2, 34) ORDER BY char_size_test limit 10;
+  ?column?  | ratio  
+------------+--------
+ 12-27-2001 |  22.02
+ 12-27-2001 |  16.92
+ 12-27-2001 |  22.02
+ 12-27-2001 |   4.50
+ 12-27-2001 |  13.56
+ 12-27-2001 | 361.84
+ 12-27-2001 | 361.84
+ 12-27-2001 |  14.04
+ 12-27-2001 |  41.04
+ 12-27-2001 | 361.84
+(10 rows)
+
+                                             QUERY PLAN                                              
+-----------------------------------------------------------------------------------------------------
+ Result
+   Output: ('12-27-2001'::date), (sum(number_test) OVER (?))
+   ->  Limit
+         Output: ('12-27-2001'::date), (sum(number_test) OVER (?)), char_size_test
+         ->  PX Coordinator 1:1  (slice1; segments: 1)
+               Output: ('12-27-2001'::date), (sum(number_test) OVER (?)), char_size_test
+               Merge Key: char_size_test
+               ->  Limit
+                     Output: ('12-27-2001'::date), (sum(number_test) OVER (?)), char_size_test
+                     ->  Result
+                           Output: '12-27-2001'::date, (sum(number_test) OVER (?)), char_size_test
+                           ->  Sort
+                                 Output: (sum(number_test) OVER (?)), float_test, char_size_test
+                                 Sort Key: select_hash2_tb_part_9.char_size_test
+                                 ->  WindowAgg
+                                       Output: sum(number_test) OVER (?), float_test, char_size_test
+                                       ->  Sort
+                                             Output: number_test, float_test, char_size_test
+                                             Sort Key: select_hash2_tb_part_9.float_test
+                                             ->  Full Seq Scan on public.select_hash2_tb_part_9
+                                                   Output: number_test, float_test, char_size_test
+ Optimizer: PolarDB PX Optimizer
+(22 rows)
+
+----COMPARE PX RESULT hash not match
+  ?column?  | ratio  
+------------+--------
+ 12-27-2001 |  13.56
+ 12-27-2001 |  14.04
+ 12-27-2001 |  14.04
+ 12-27-2001 |  16.92
+ 12-27-2001 |  22.02
+ 12-27-2001 |  22.02
+ 12-27-2001 | 361.84
+ 12-27-2001 | 361.84
+ 12-27-2001 |   4.50
+ 12-27-2001 |   4.50
+(10 rows)
+
+--- bug share scan
+SET default_with_oids = true;
+drop table student;
+ERROR:  table "student" does not exist
+CREATE TABLE student (
+    id numeric(10,0) NOT NULL,
+    name character varying(255) DEFAULT NULL::character varying,
+    unit integer NOT NULL,
+    second_partition_cloumn_name character varying(10) DEFAULT NULL::character varying
+);
+INSERT INTO student VALUES (1, 'student_1', 1, NULL);
+INSERT INTO student VALUES (1, 'student_1', 2, NULL);
+INSERT INTO student VALUES (1, 'student_1', 3, NULL);
+INSERT INTO student VALUES (1, 'student_1', 4, NULL);
+INSERT INTO student VALUES (1, 'student_1', 5, NULL);
+INSERT INTO student VALUES (1, 'student_1', 6, NULL);
+INSERT INTO student VALUES (2, 'student_2', 1, NULL);
+INSERT INTO student VALUES (2, 'student_2', 2, NULL);
+INSERT INTO student VALUES (2, 'student_2', 3, NULL);
+INSERT INTO student VALUES (2, 'student_2', 4, NULL);
+INSERT INTO student VALUES (2, 'student_2', 5, NULL);
+INSERT INTO student VALUES (2, 'student_2', 6, NULL);
+INSERT INTO student VALUES (3, 'student_3', 1, NULL);
+INSERT INTO student VALUES (3, 'student_3', 2, NULL);
+INSERT INTO student VALUES (3, 'student_3', 3, NULL);
+INSERT INTO student VALUES (3, 'student_3', 4, NULL);
+INSERT INTO student VALUES (3, 'student_3', 5, NULL);
+INSERT INTO student VALUES (3, 'student_3', 6, NULL);
+INSERT INTO student VALUES (4, 'student_4', 1, NULL);
+INSERT INTO student VALUES (4, 'student_4', 2, NULL);
+INSERT INTO student VALUES (4, 'student_4', 3, NULL);
+INSERT INTO student VALUES (4, 'student_4', 4, NULL);
+INSERT INTO student VALUES (4, 'student_4', 5, NULL);
+INSERT INTO student VALUES (4, 'student_4', 6, NULL);
+INSERT INTO student VALUES (5, 'student_5', 1, NULL);
+INSERT INTO student VALUES (5, 'student_5', 2, NULL);
+INSERT INTO student VALUES (5, 'student_5', 3, NULL);
+INSERT INTO student VALUES (5, 'student_5', 4, NULL);
+INSERT INTO student VALUES (5, 'student_5', 5, NULL);
+INSERT INTO student VALUES (5, 'student_5', 6, NULL);
+INSERT INTO student VALUES (6, 'student_6', 1, NULL);
+INSERT INTO student VALUES (6, 'student_6', 2, NULL);
+INSERT INTO student VALUES (6, 'student_6', 3, NULL);
+INSERT INTO student VALUES (6, 'student_6', 4, NULL);
+INSERT INTO student VALUES (6, 'student_6', 5, NULL);
+INSERT INTO student VALUES (6, 'student_6', 6, NULL);
+INSERT INTO student VALUES (7, 'student_7', 1, NULL);
+INSERT INTO student VALUES (7, 'student_7', 2, NULL);
+INSERT INTO student VALUES (7, 'student_7', 3, NULL);
+INSERT INTO student VALUES (7, 'student_7', 4, NULL);
+INSERT INTO student VALUES (7, 'student_7', 5, NULL);
+INSERT INTO student VALUES (7, 'student_7', 6, NULL);
+INSERT INTO student VALUES (8, 'student_8', 1, NULL);
+INSERT INTO student VALUES (8, 'student_8', 2, NULL);
+INSERT INTO student VALUES (8, 'student_8', 3, NULL);
+INSERT INTO student VALUES (8, 'student_8', 4, NULL);
+INSERT INTO student VALUES (8, 'student_8', 5, NULL);
+INSERT INTO student VALUES (8, 'student_8', 6, NULL);
+INSERT INTO student VALUES (9, 'student_9', 1, NULL);
+INSERT INTO student VALUES (9, 'student_9', 2, NULL);
+INSERT INTO student VALUES (9, 'student_9', 3, NULL);
+INSERT INTO student VALUES (9, 'student_9', 4, NULL);
+INSERT INTO student VALUES (9, 'student_9', 5, NULL);
+INSERT INTO student VALUES (9, 'student_9', 6, NULL);
+--
+-- Name: pg_oid_690920_index; Type: INDEX; Schema:  Owner: zx_test
+--
+CREATE UNIQUE INDEX pg_oid_690920_index ON student USING btree (oid);
+drop table student_hobby;
+ERROR:  table "student_hobby" does not exist
+CREATE TABLE student_hobby (
+    id numeric(10,0) DEFAULT NULL::numeric,
+    sid numeric(10,0) NOT NULL,
+    unit integer NOT NULL,
+    coid character varying(1) NOT NULL
+);
+INSERT INTO student_hobby VALUES (1, 1, 1, 'A');
+INSERT INTO student_hobby VALUES (2, 1, 1, 'B');
+INSERT INTO student_hobby VALUES (3, 1, 2, 'A');
+INSERT INTO student_hobby VALUES (4, 1, 2, 'B');
+INSERT INTO student_hobby VALUES (5, 2, 2, 'A');
+INSERT INTO student_hobby VALUES (6, 2, 5, 'a');
+INSERT INTO student_hobby VALUES (7, 3, 4, 'b');
+INSERT INTO student_hobby VALUES (8, 3, 5, 'C');
+--
+-- Name: pg_oid_691526_index; Type: INDEX; Schema:  Owner: zx_test
+--
+CREATE UNIQUE INDEX pg_oid_691526_index ON student_hobby USING btree (oid);
+drop table community;
+ERROR:  table "community" does not exist
+CREATE TABLE community (
+    id numeric(10,0) DEFAULT NULL::numeric,
+    coid character varying(1) DEFAULT NULL::character varying,
+    coname character varying(2000) NOT NULL,
+    co_status character varying(1) DEFAULT NULL::character varying
+);
+INSERT INTO community VALUES (2, 'A', 'ABC2DEF g', 'O');
+INSERT INTO community VALUES (1, 'a', 'abcdef g', 'I');
+INSERT INTO community VALUES (4, 'B', 'BCD2EF g', 'O');
+INSERT INTO community VALUES (3, 'b', 'bidef g', 'I');
+INSERT INTO community VALUES (5, NULL, 'cde2 hh', 'O');
+INSERT INTO community VALUES (6, 'C', 'CDEF g', NULL);
+ALTER TABLE ONLY community ADD CONSTRAINT community_pkey PRIMARY KEY (coname);
+CREATE UNIQUE INDEX pg_oid_402684_index ON community USING btree (oid);
+drop table community_part;
+ERROR:  table "community_part" does not exist
+CREATE TABLE community_part (
+    id numeric(10,0) DEFAULT NULL::numeric,
+    coid character varying(1) DEFAULT NULL::character varying,
+    coname character varying(2000) NOT NULL,
+    co_status character varying(1) DEFAULT NULL::character varying
+) partition by hash(id);
+CREATE TABLE community_part0 PARTITION OF community_part FOR VALUES WITH (modulus 2, remainder 0);
+CREATE TABLE community_part1 PARTITION OF community_part FOR VALUES WITH (modulus 2, remainder 1);
+INSERT INTO community_part VALUES (2, 'A', 'ABC2DEF g', 'O');
+INSERT INTO community_part VALUES (1, 'a', 'abcdef g', 'I');
+INSERT INTO community_part VALUES (4, 'B', 'BCD2EF g', 'O');
+INSERT INTO community_part VALUES (3, 'b', 'bidef g', 'I');
+INSERT INTO community_part VALUES (5, NULL, 'cde2 hh', 'O');
+INSERT INTO community_part VALUES (6, 'C', 'CDEF g', NULL);
+--
+-- Name: community community_pkey; Type: CONSTRAINT; Schema:  Owner: zx_test
+--
+select tmp.name,tmp.unit ,c.coname from (select a.name, a.id, a.unit,b.coid from student a join student_hobby b on a.id=b.sid and a.unit = b.unit) tmp right outer join community c on tmp.coid=c.coid order by 1,2,3;
+   name    | unit |  coname   
+-----------+------+-----------
+ student_1 |    1 | ABC2DEF g
+ student_1 |    1 | BCD2EF g
+ student_1 |    2 | ABC2DEF g
+ student_1 |    2 | BCD2EF g
+ student_2 |    2 | ABC2DEF g
+ student_2 |    5 | abcdef g
+ student_3 |    4 | bidef g
+ student_3 |    5 | CDEF g
+           |      | cde2 hh
+(9 rows)
+
+                                                   QUERY PLAN                                                    
+-----------------------------------------------------------------------------------------------------------------
+ PX Coordinator 2:1  (slice1; segments: 2)
+   Output: student.name, student.unit, community.coname
+   Merge Key: student.name, student.unit, community.coname
+   ->  Sort
+         Output: student.name, student.unit, community.coname
+         Sort Key: student.name, student.unit, community.coname
+         ->  Hash Right Join
+               Output: student.name, student.unit, community.coname
+               Hash Cond: ((student_hobby.coid)::text = (community.coid)::text)
+               ->  PX Hash 2:2  (slice2; segments: 2)
+                     Output: student.name, student.unit, student_hobby.coid
+                     Hash Key: student_hobby.coid
+                     ->  Hash Join
+                           Output: student.name, student.unit, student_hobby.coid
+                           Hash Cond: ((student.id = student_hobby.sid) AND (student.unit = student_hobby.unit))
+                           ->  PX Hash 2:2  (slice3; segments: 2)
+                                 Output: student.id, student.name, student.unit
+                                 Hash Key: student.id, student.unit
+                                 ->  Partial Seq Scan on public.student
+                                       Output: student.id, student.name, student.unit
+                           ->  Hash
+                                 Output: student_hobby.sid, student_hobby.unit, student_hobby.coid
+                                 ->  PX Hash 2:2  (slice4; segments: 2)
+                                       Output: student_hobby.sid, student_hobby.unit, student_hobby.coid
+                                       Hash Key: student_hobby.sid, student_hobby.unit
+                                       ->  Partial Seq Scan on public.student_hobby
+                                             Output: student_hobby.sid, student_hobby.unit, student_hobby.coid
+               ->  Hash
+                     Output: community.coid, community.coname
+                     ->  PX Hash 2:2  (slice5; segments: 2)
+                           Output: community.coid, community.coname
+                           Hash Key: community.coid
+                           ->  Partial Seq Scan on public.community
+                                 Output: community.coid, community.coname
+ Optimizer: PolarDB PX Optimizer
+(35 rows)
+
+select tmp.name,tmp.unit ,c.coname from (select a.name, a.id, a.unit,b.coid from student a join student_hobby b on a.id=b.sid and a.unit = b.unit) tmp right outer join community_part c on tmp.coid=c.coid order by 1,2,3;
+   name    | unit |  coname   
+-----------+------+-----------
+ student_1 |    1 | ABC2DEF g
+ student_1 |    1 | BCD2EF g
+ student_1 |    2 | ABC2DEF g
+ student_1 |    2 | BCD2EF g
+ student_2 |    2 | ABC2DEF g
+ student_2 |    5 | abcdef g
+ student_3 |    4 | bidef g
+ student_3 |    5 | CDEF g
+           |      | cde2 hh
+(9 rows)
+
+                                                   QUERY PLAN                                                    
+-----------------------------------------------------------------------------------------------------------------
+ PX Coordinator 2:1  (slice1; segments: 2)
+   Output: student.name, student.unit, community_part0.coname
+   Merge Key: student.name, student.unit, community_part0.coname
+   ->  Sort
+         Output: student.name, student.unit, community_part0.coname
+         Sort Key: student.name, student.unit, community_part0.coname
+         ->  Hash Right Join
+               Output: student.name, student.unit, community_part0.coname
+               Hash Cond: ((student_hobby.coid)::text = (community_part0.coid)::text)
+               ->  PX Hash 2:2  (slice2; segments: 2)
+                     Output: student.name, student.unit, student_hobby.coid
+                     Hash Key: student_hobby.coid
+                     ->  Hash Join
+                           Output: student.name, student.unit, student_hobby.coid
+                           Hash Cond: ((student.id = student_hobby.sid) AND (student.unit = student_hobby.unit))
+                           ->  PX Hash 2:2  (slice3; segments: 2)
+                                 Output: student.id, student.name, student.unit
+                                 Hash Key: student.id, student.unit
+                                 ->  Partial Seq Scan on public.student
+                                       Output: student.id, student.name, student.unit
+                           ->  Hash
+                                 Output: student_hobby.sid, student_hobby.unit, student_hobby.coid
+                                 ->  PX Hash 2:2  (slice4; segments: 2)
+                                       Output: student_hobby.sid, student_hobby.unit, student_hobby.coid
+                                       Hash Key: student_hobby.sid, student_hobby.unit
+                                       ->  Partial Seq Scan on public.student_hobby
+                                             Output: student_hobby.sid, student_hobby.unit, student_hobby.coid
+               ->  Hash
+                     Output: community_part0.coid, community_part0.coname
+                     ->  PX Hash 2:2  (slice5; segments: 2)
+                           Output: community_part0.coid, community_part0.coname
+                           Hash Key: community_part0.coid
+                           ->  Append
+                                 ->  Partial Seq Scan on public.community_part0
+                                       Output: community_part0.coid, community_part0.coname
+                                 ->  Partial Seq Scan on public.community_part1
+                                       Output: community_part1.coid, community_part1.coname
+ Optimizer: PolarDB PX Optimizer
+(38 rows)
+

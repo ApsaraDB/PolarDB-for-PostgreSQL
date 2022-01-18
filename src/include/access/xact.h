@@ -61,6 +61,10 @@ extern bool XactReadOnly;
 extern bool DefaultXactDeferrable;
 extern bool XactDeferrable;
 
+/* POLAR */
+extern XLogRecPtr	polar_xact_split_wait_lsn;
+/* POLAR end */
+
 typedef enum
 {
 	SYNCHRONOUS_COMMIT_OFF,		/* asynchronous commit */
@@ -435,5 +439,17 @@ extern void ParseAbortRecord(uint8 info, xl_xact_abort *xlrec, xl_xact_parsed_ab
 extern void EnterParallelMode(void);
 extern void ExitParallelMode(void);
 extern bool IsInParallelMode(void);
+
+/* POLAR */
+extern void polar_xact_split_refresh_xact_state(void);
+extern char *polar_xact_split_xact_info(void);
+extern void polar_xact_split_mark_unsplittable(uint8 reason);
+extern bool polar_xact_split_splittable(void);
+extern bool polar_is_split_xact(void);
+extern void polar_stat_update_ro_proxy_info(void);
+#ifdef POLAR_INJECT_TESTS
+extern void test_single_polar_xact_split_mock(char *guc_xids, int *xact_state_xids);
+#endif
+/* POLAR end */
 
 #endif							/* XACT_H */

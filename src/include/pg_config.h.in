@@ -61,6 +61,9 @@
    (--enable-thread-safety) */
 #undef ENABLE_THREAD_SAFETY
 
+/* Define to 1 to build with fault injector. (--enable-inject-faults) */
+#undef FAULT_INJECTOR
+
 /* Define to nothing if C supports flexible array members, and to 1 if it does
    not. That way, with a declaration like `struct s { int n; double
    d[FLEXIBLE_ARRAY_MEMBER]; };', the struct hack can be used with pre-C99
@@ -412,6 +415,12 @@
 
 /* Define to 1 if you have the `OPENSSL_init_ssl' function. */
 #undef HAVE_OPENSSL_INIT_SSL
+
+/* Define to 1 if you have the `OPENSSL_init_crypto' function. */
+#undef HAVE_OPENSSL_INIT_CRYPTO
+
+/* Define to 1 if you have the <openssl/kdf.h> header file. */
+#undef HAVE_OPENSSL_KDF
 
 /* Define to 1 if you have the <ossp/uuid.h> header file. */
 #undef HAVE_OSSP_UUID_H
@@ -818,6 +827,12 @@
 /* PostgreSQL version as a number */
 #undef PG_VERSION_NUM
 
+/* POLARDB px version as a str */
+#undef PX_VERSION_STR
+
+/* POLARDB px version as a number */
+#undef PX_VERSION_NUMBER
+
 /* A string containing the version number, platform, and C compiler */
 #undef PG_VERSION_STR
 
@@ -917,11 +932,11 @@
 /* Define to use OpenSSL for random number generation */
 #undef USE_OPENSSL_RANDOM
 
+/* Define to 1 to build with PX optimizer. (--enable-polar-px) */
+#undef USE_PX
+
 /* Define to 1 to build with PAM support. (--with-pam) */
 #undef USE_PAM
-
-/* Define to 1 to build with PFSD support. (--with-pfsd) */
-#undef USE_PFSD
 
 /* Use replacement snprintf() functions. */
 #undef USE_REPL_SNPRINTF
@@ -1026,3 +1041,15 @@
 /* Define to the type of an unsigned integer type wide enough to hold a
    pointer, if such a type exists, and if the system does not define it. */
 #undef uintptr_t
+
+/* Define to 1 to compile with minimal mode. (--enable-polar-minimal) */
+#undef POLAR_MINIMAL
+
+/* Define to 1 to compile with polar tests. (--enable-polar-inject-tests) */
+#undef POLAR_INJECT_TESTS
+
+/* Define to 1 to build ORCA in debug (GPOS_DEBUG=1) */
+#undef GPOS_DEBUG
+
+/* POLAR: Define to 1 if use cas. */
+#undef POLAR_USE_CAS

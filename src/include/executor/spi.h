@@ -101,6 +101,10 @@ extern int SPI_execute_with_args(const char *src,
 					  Datum *Values, const char *Nulls,
 					  bool read_only, long tcount);
 extern SPIPlanPtr SPI_prepare(const char *src, int nargs, Oid *argtypes);
+
+/* POLAR px */
+extern SPIPlanPtr SPI_prepare_px(const char *src, int nargs, Oid *argtypes);
+
 extern SPIPlanPtr SPI_prepare_cursor(const char *src, int nargs, Oid *argtypes,
 				   int cursorOptions);
 extern SPIPlanPtr SPI_prepare_params(const char *src,

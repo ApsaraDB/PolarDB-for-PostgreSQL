@@ -162,6 +162,18 @@ CreateExecutorState(void)
 	estate->es_jit_flags = 0;
 	estate->es_jit = NULL;
 
+	/* POLAR px */
+	estate->es_sliceTable = NULL;
+	estate->interconnect_context = NULL;
+	estate->motionlayer_context = NULL;
+	estate->es_interconnect_is_setup = false;
+	estate->active_recv_id = -1;
+	estate->es_got_eos = false;
+	estate->cancelUnfinished = false;
+	estate->dispatcherState = NULL;
+	estate->currentSliceId = 0;
+	estate->eliminateAliens = false;
+
 	/*
 	 * Return the executor state structure
 	 */
@@ -274,6 +286,9 @@ CreateExprContext(EState *estate)
 
 	econtext->ecxt_callbacks = NULL;
 
+	memset(econtext->cached_root_offsets, 0, sizeof(econtext->cached_root_offsets));
+	econtext->cached_blkno = InvalidBlockNumber;
+
 	/*
 	 * Link the ExprContext into the EState to ensure it is shut down when the
 	 * EState is freed.  Because we use lcons(), shutdowns will occur in
@@ -377,6 +392,7 @@ FreeExprContext(ExprContext *econtext, bool isCommit)
 	if (estate)
 		estate->es_exprcontexts = list_delete_ptr(estate->es_exprcontexts,
 												  econtext);
+
 	/* And delete the ExprContext node */
 	pfree(econtext);
 }
@@ -484,7 +500,12 @@ void
 ExecConditionalAssignProjectionInfo(PlanState *planstate, TupleDesc inputDesc,
 									Index varno)
 {
-	if (tlist_matches_tupdesc(planstate,
+	/* 
+	 * TODO: PX BUG!! px should not try tlist_matches_tupdesc way,
+	 * it will core in somewhere 
+	 * */
+	if (!px_is_executing &&
+		tlist_matches_tupdesc(planstate,
 							  planstate->plan->targetlist,
 							  varno,
 							  inputDesc))

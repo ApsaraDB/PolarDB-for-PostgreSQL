@@ -1,0 +1,18 @@
+-- test case for polar_internal_allowed_roles
+CREATE ROLE polaruser_test_copy LOGIN POLAR_SUPERUSER;
+SET SESSION AUTHORIZATION 'polaruser_test_copy';
+CREATE TEMP TABLE t
+(
+  a INT
+);
+-- error
+COPY t FROM PROGRAM 'cat no_such_file';
+ERROR:  must be superuser or a member of the pg_execute_server_program role to COPY to or from an external program
+HINT:  Anyone can COPY to stdout or from stdin. psql's \copy command also works for anyone.
+-- error
+COPY t FROM 'log/no_such_file';
+ERROR:  must be superuser or a member of the pg_read_server_files role to COPY from a file
+HINT:  Anyone can COPY to stdout or from stdin. psql's \copy command also works for anyone.
+DROP TABLE t;
+RESET SESSION AUTHORIZATION;
+DROP ROLE polaruser_test_copy;

@@ -46,6 +46,12 @@
 #ifndef C_H
 #define C_H
 
+/* POLAR px */
+#ifdef __cplusplus
+extern "C" {
+#endif
+/* POLAR end */
+
 #include "postgres_ext.h"
 
 /* Must undef pg_config_ext.h symbols before including pg_config.h */
@@ -73,6 +79,7 @@
 #include <fcntl.h>				/* ensure O_BINARY is available */
 #endif
 #include <locale.h>
+#include <execinfo.h> /* POLAR px */
 #ifdef ENABLE_NLS
 #include <libintl.h>
 #endif
@@ -286,6 +293,15 @@ typedef char bool;
 #endif
 #endif							/* not C++ */
 
+/* POLAR px, which exists in gpdb */
+#ifndef TRUE
+#define TRUE	1
+#endif
+
+#ifndef FALSE
+#define FALSE	0
+#endif
+/* POLAR end */
 
 /* ----------------------------------------------------------------
  *				Section 3:	standard system types
@@ -485,10 +501,28 @@ typedef TransactionId MultiXactId;
 
 typedef uint32 MultiXactOffset;
 
+/* POLAR px */
+typedef int32  PxWorkerId;					/* PX: type of _px_worker_id system col */
+typedef uint32 DistributedTransactionId;
+#define InvalidDistributedTransactionId	((DistributedTransactionId) 0)
+#define FirstDistributedTransactionId	((DistributedTransactionId) 1)
+#define LastDistributedTransactionId	((DistributedTransactionId) 0xffffffff)
+/* POLAR end */
+
 typedef uint32 CommandId;
 
 #define FirstCommandId	((CommandId) 0)
 #define InvalidCommandId	(~(CommandId)0)
+
+/*
+ * POLAR
+ * 64 bit commit sequence number
+ */
+typedef uint64 CommitSeqNo;
+
+#define InvalidCommitSeqNo		((CommitSeqNo) -1)
+
+/* POLAR end */
 
 /*
  * Array indexing support
@@ -703,6 +737,9 @@ typedef NameData *Name;
 #define AssertPointerAlignment(ptr, bndr)	((void)true)
 #define Trap(condition, errorType)	((void)true)
 #define TrapMacro(condition, errorType) (true)
+/* POLAR px */
+#define AssertImply(condition1, condition2)	((void)true)
+/* POLAR end */
 
 #elif defined(FRONTEND)
 
@@ -712,6 +749,7 @@ typedef NameData *Name;
 #define AssertArg(condition) assert(condition)
 #define AssertState(condition) assert(condition)
 #define AssertPointerAlignment(ptr, bndr)	((void)true)
+
 
 #else							/* USE_ASSERT_CHECKING && !FRONTEND */
 
@@ -724,7 +762,7 @@ typedef NameData *Name;
 		if (condition) \
 			ExceptionalCondition(CppAsString(condition), (errorType), \
 								 __FILE__, __LINE__); \
-	} while (0)
+    } while (0)
 
 /*
  *	TrapMacro is the same as Trap but it's intended for use in macros:
@@ -749,6 +787,11 @@ typedef NameData *Name;
 
 #define AssertState(condition) \
 		Trap(!(condition), "BadState")
+
+/* POLAR px */
+#define AssertImply(cond1, cond2) \
+	Trap(!(!(cond1) || (cond2)), "AssertImply failed")
+/* POLAR end */
 
 /*
  * Check that `ptr' is `bndr' aligned.
@@ -1234,5 +1277,11 @@ extern unsigned long long strtoull(const char *str, char **endptr, int base);
 
 /* /port compatibility functions */
 #include "port.h"
+
+/* POLAR px */
+#ifdef __cplusplus
+}   /* extern "C" */
+#endif
+/* POLAR end */
 
 #endif							/* C_H */

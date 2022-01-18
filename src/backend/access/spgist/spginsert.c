@@ -81,8 +81,11 @@ spgbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 				nullbuffer;
 
 	if (RelationGetNumberOfBlocks(index) != 0)
+	{
+		polar_check_nblocks_consistent(index);
 		elog(ERROR, "index \"%s\" already contains data",
 			 RelationGetRelationName(index));
+	}
 
 	/*
 	 * Initialize the meta page and root pages
@@ -176,6 +179,7 @@ spgbuildempty(Relation index)
 	 * of their existing content when the corresponding create records are
 	 * replayed.
 	 */
+	PageEncryptInplace(page, INIT_FORKNUM, SPGIST_METAPAGE_BLKNO);
 	PageSetChecksumInplace(page, SPGIST_METAPAGE_BLKNO);
 	smgrwrite(index->rd_smgr, INIT_FORKNUM, SPGIST_METAPAGE_BLKNO,
 			  (char *) page, true);
@@ -185,6 +189,7 @@ spgbuildempty(Relation index)
 	/* Likewise for the root page. */
 	SpGistInitPage(page, SPGIST_LEAF);
 
+	PageEncryptInplace(page, INIT_FORKNUM, SPGIST_ROOT_BLKNO);
 	PageSetChecksumInplace(page, SPGIST_ROOT_BLKNO);
 	smgrwrite(index->rd_smgr, INIT_FORKNUM, SPGIST_ROOT_BLKNO,
 			  (char *) page, true);
@@ -194,6 +199,7 @@ spgbuildempty(Relation index)
 	/* Likewise for the null-tuples root page. */
 	SpGistInitPage(page, SPGIST_LEAF | SPGIST_NULLS);
 
+	PageEncryptInplace(page, INIT_FORKNUM, SPGIST_NULL_BLKNO);
 	PageSetChecksumInplace(page, SPGIST_NULL_BLKNO);
 	smgrwrite(index->rd_smgr, INIT_FORKNUM, SPGIST_NULL_BLKNO,
 			  (char *) page, true);

@@ -46,6 +46,17 @@
 #include "utils/syscache.h"
 #include "utils/typcache.h"
 
+/* POLAR px */
+#include "access/sysattr.h"
+#include "catalog/heap.h"
+/* POLAR end */
+
+/* DML_Support */
+#include "commands/trigger.h"
+#include "access/heapam.h"
+#include "catalog/pg_trigger.h"
+/* DML_Support end */
+
 /* Hook for plugins to get control in get_attavgwidth() */
 get_attavgwidth_hook_type get_attavgwidth_hook = NULL;
 
@@ -923,6 +934,18 @@ get_atttypetypmodcoll(Oid relid, AttrNumber attnum,
 	HeapTuple	tp;
 	Form_pg_attribute att_tup;
 
+	/* POLAR px: Get type for sysattr even if relid is no good (e.g. SubqueryScan) */
+	if (attnum < 0 &&
+		attnum > FirstLowInvalidHeapAttributeNumber)
+	{
+		att_tup = SystemAttributeDefinition(attnum, true);
+		*typid = att_tup->atttypid;
+		*typmod = att_tup->atttypmod;
+		*collid = att_tup->attcollation;
+		return;
+	}
+	/* POALR end */
+
 	tp = SearchSysCache2(ATTNUM,
 						 ObjectIdGetDatum(relid),
 						 Int16GetDatum(attnum));
@@ -1387,12 +1410,197 @@ get_oprjoin(Oid opno)
 
 /*				---------- FUNCTION CACHE ----------					 */
 
+/* Does table have update triggers? */
+bool
+has_update_triggers(Oid relid)
+{
+	Relation	relation;
+	bool		result = false;
+
+	/* Assume the caller already holds a suitable lock. */
+	relation = heap_open(relid, NoLock);
+
+	if (relation->rd_rel->relhastriggers)
+	{
+		bool	found = false;
+
+		if (relation->trigdesc == NULL)
+			RelationBuildTriggers(relation);
+
+		if (relation->trigdesc)
+		{
+			int i = 0;
+			for (i = 0; i < relation->trigdesc->numtriggers && !found; i++)
+			{
+				Trigger trigger = relation->trigdesc->triggers[i];
+				found = trigger_enabled(trigger.tgoid) &&
+					(get_trigger_type(trigger.tgoid) & TRIGGER_TYPE_UPDATE) == TRIGGER_TYPE_UPDATE;
+				if (found)
+					break;
+			}
+		}
+
+		/* GPDB_96_MERGE_FIXME: Why is this not allowed? */
+		if (found || polar_child_triggers(relation->rd_id, TRIGGER_TYPE_UPDATE))
+			result = true;
+	}
+	heap_close(relation, NoLock);
+
+	return result;
+}
+
 /*
- * get_func_name
- *	  returns the name of the function with the given funcid
- *
- * Note: returns a palloc'd copy of the string, or NULL if no such function.
+ * get_trigger_type
+ *		Given trigger id, return the trigger's type
  */
+int32
+get_trigger_type(Oid triggerid)
+{
+	Relation	rel;
+	HeapTuple	tp;
+	int32		result = -1;
+	ScanKeyData	scankey;
+	SysScanDesc sscan;
+
+	/* POLAR px */
+	/* ObjectIdAttributeNumber as other systable_beginscan called */
+	ScanKeyInit(&scankey, ObjectIdAttributeNumber,
+				BTEqualStrategyNumber, F_OIDEQ,
+				ObjectIdGetDatum(triggerid));
+	/* POLAR px */
+	rel = heap_open(TriggerRelationId, AccessShareLock);
+	sscan = systable_beginscan(rel, TriggerOidIndexId, true,
+							   NULL, 1, &scankey);
+
+	tp = systable_getnext(sscan);
+	if (!HeapTupleIsValid(tp))
+		elog(ERROR, "cache lookup failed for trigger %u", triggerid);
+
+	result = ((Form_pg_trigger) GETSTRUCT(tp))->tgtype;
+
+	systable_endscan(sscan);
+	heap_close(rel, AccessShareLock);
+
+	return result;
+}
+
+/*
+ * trigger_enabled
+ *		Given trigger id, return the trigger's enabled flag
+ */
+bool
+trigger_enabled(Oid triggerid)
+{
+	Relation	rel;
+	HeapTuple	tp;
+	bool		result;
+	ScanKeyData	scankey;
+	SysScanDesc sscan;
+	char tgenabled;
+
+	/* Polar PX */
+	/* ObjectIdAttributeNumber as other systable_beginscan called */
+	ScanKeyInit(&scankey, ObjectIdAttributeNumber,
+				BTEqualStrategyNumber, F_OIDEQ,
+				ObjectIdGetDatum(triggerid));
+	/* Polar PX */
+	rel = heap_open(TriggerRelationId, AccessShareLock);
+	sscan = systable_beginscan(rel, TriggerOidIndexId, true,
+							   NULL, 1, &scankey);
+
+	tp = systable_getnext(sscan);
+	if (!HeapTupleIsValid(tp))
+		elog(ERROR, "cache lookup failed for trigger %u", triggerid);
+
+	tgenabled = ((Form_pg_trigger) GETSTRUCT(tp))->tgenabled;
+	switch (tgenabled)
+	{
+		case TRIGGER_FIRES_ON_ORIGIN:
+			/* fallthrough */
+			/*
+			 * FIXME: we should probably return false when
+			 * SessionReplicationRole isn't SESSION_REPLICATION_ROLE_ORIGIN,
+			 * but does that means we'll also have to flush ORCA's metadata
+			 * cache on every assignment of session_replication_role?
+			 */
+		case TRIGGER_FIRES_ALWAYS:
+			result = true;
+			break;
+		case TRIGGER_FIRES_ON_REPLICA:
+		case TRIGGER_DISABLED:
+			result = false;
+			break;
+		default:
+			elog(ERROR, "Unknown trigger type: %c", tgenabled);
+	}
+
+	systable_endscan(sscan);
+	heap_close(rel, AccessShareLock);
+
+	return result;
+}
+
+/*
+ *  child_triggers
+ *  Return true if the table is partitioned and any of the child partitions
+ *  have a trigger of the given type.
+ */
+bool
+polar_child_triggers(Oid relationId, int32 triggerType)
+{
+/* GPDB_12_MERGE_FIXME */
+	return false;
+#if 0
+	Assert(InvalidOid != relationId);
+	if (PART_STATUS_NONE == rel_part_status(relationId))
+	{
+		/* not a partitioned table */
+		return false;
+	}
+
+	List *childOids = find_all_inheritors(relationId, NoLock, NULL);
+	ListCell *lc;
+
+	bool found = false;
+	foreach (lc, childOids)
+	{
+		Oid oidChild = lfirst_oid(lc);
+		Relation relChild = RelationIdGetRelation(oidChild);
+		Assert(NULL != relChild);
+
+		if (relChild->rd_rel->relhastriggers && NULL == relChild->trigdesc)
+		{
+			RelationBuildTriggers(relChild);
+			if (NULL == relChild->trigdesc)
+			{
+				relChild->rd_rel->relhastriggers = false;
+			}
+		}
+
+		if (relChild->rd_rel->relhastriggers)
+		{
+			for (int i = 0; i < relChild->trigdesc->numtriggers && !found; i++)
+			{
+				Trigger trigger = relChild->trigdesc->triggers[i];
+				found = trigger_enabled(trigger.tgoid) &&
+						(get_trigger_type(trigger.tgoid) & triggerType) == triggerType;
+			}
+		}
+
+		RelationClose(relChild);
+		if (found)
+		{
+			break;
+		}
+	}
+
+	list_free(childOids);
+	
+	/* no child triggers matching the given type */
+	return found;
+#endif
+}
+
 char *
 get_func_name(Oid funcid)
 {

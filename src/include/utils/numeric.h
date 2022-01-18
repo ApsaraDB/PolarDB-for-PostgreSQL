@@ -61,4 +61,8 @@ int32		numeric_maximum_size(int32 typmod);
 extern char *numeric_out_sci(Numeric num, int scale);
 extern char *numeric_normalize(Numeric num);
 
+/* POLAR px */
+extern double	numeric_to_double_no_overflow(Numeric num);
+/* POLAR end */
+
 #endif							/* _PG_NUMERIC_H_ */

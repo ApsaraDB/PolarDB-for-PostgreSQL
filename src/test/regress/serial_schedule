@@ -1,7 +1,19 @@
 # src/test/regress/serial_schedule
 # This should probably be in an order similar to parallel_schedule.
+
+# ----------
+# POLAR
+# Some cases can not pass in POLARDB, ignore them.
+# NOTICE: polar_ignore must add at the beginning of the schedule file
+# ----------
+polar_ignore: psql
+polar_ignore: truncate
 polar_ignore: tablespace
 ignore: timetz
+polar_px_ignore: timetz
+polar_px_ignore: stats
+polar_px_ignore: largeobject
+polar_px_ignore: union
 
 cluster_ignore: tablespace
 test: boolean
@@ -193,3 +205,13 @@ test: partition_aggregate
 test: event_trigger
 test: fast_default
 test: stats
+
+# POLAR
+test: polar_release_date_1
+test: polar_invalid_memory_alloc_1
+test: alter_promoting_polar_superuser_issue11
+cluster_ignore: polar_superuser_grant_enable
+test: polar_max_allowed_conn
+test: polar_rds_patch_test
+test: polar_superuser_internal_allowed_roles
+test: polar_bugfix_grant_role

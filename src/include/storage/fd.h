@@ -151,6 +151,7 @@ extern int data_sync_elevel(int elevel);
 extern int polar_file_pwrite(File file, char *buffer, int amount, off_t offset, uint32 wait_event_info);
 extern int polar_file_pread(File file, char *buffer, int amount, off_t offset, uint32 wait_event_info);
 extern int BasicOpenFileForConfigFile(const char *fileName, int fileFlags);
+extern off_t polar_file_seek_end(File file);
 
 extern File polar_path_name_open_file(const char *fileName, int fileFlags);
 extern int polar_open_transient_file(const char *fileName, int fileFlags);

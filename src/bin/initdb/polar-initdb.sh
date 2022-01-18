@@ -1,16 +1,4 @@
 #!/bin/bash
-# Copyright (c) 2020, Alibaba Group Holding Limited
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 # arg1 is local_data, arg2 is polar_data, arg3 is cluster_name or flag "localfs" to use localfs mode
 # local_data and polar_data must be full path
@@ -193,6 +181,8 @@ pfs_cp_dir ${local_data}/pg_twophase ${polar_data} ${cluster_name}
 pfs_cp_dir ${local_data}/pg_xact ${polar_data} ${cluster_name}
 pfs_cp_dir ${local_data}/pg_commit_ts ${polar_data} ${cluster_name}
 pfs_cp_dir ${local_data}/pg_multixact ${polar_data} ${cluster_name}
+pfs_cp_dir ${local_data}/pg_csnlog ${polar_data} ${cluster_name}
+pfs_cp_dir ${local_data}/polar_dma ${polar_data} ${cluster_name}
 
 # do delete data
 FileList=`ls ${local_data}/base/ 2>/dev/null`
@@ -209,6 +199,8 @@ rm_dir ${local_data}pg_twophase
 rm_dir ${local_data}pg_xact
 rm_dir ${local_data}pg_commit_ts
 rm_dir ${local_data}pg_multixact
+rm_dir ${local_data}pg_csnlog
+rm_dir ${local_data}polar_dma
 
 if [ ! -d "${local_data}pg_tblspc" ]; then
         echo "${polar_data}pg_tblspc not a folder"

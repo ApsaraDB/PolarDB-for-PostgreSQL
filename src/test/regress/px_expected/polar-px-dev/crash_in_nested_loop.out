@@ -1,0 +1,69 @@
+--
+-- This test ensures that PolarDB don't crash under certain condition.
+--
+/*--EXPLAIN_QUERY_BEGIN*/
+CREATE TABLE INT8_TBL (q1 int8, q2 int8);
+INSERT INTO INT8_TBL VALUES ('123 ', '456');
+INSERT INTO INT8_TBL VALUES ('123 ', '4567890123456789');
+INSERT INTO INT8_TBL VALUES ('4567890123456789', '123');
+INSERT INTO INT8_TBL VALUES (+4567890123456789, '4567890123456789');
+INSERT INTO INT8_TBL VALUES ('+4567890123456789', '-4567890123456789');
+CREATE TABLE tenk1 (unique1 int4, unique2 int4) WITH OIDS;
+INSERT INTO tenk1 VALUES (1, 456);
+INSERT INTO tenk1 VALUES (123, 456);
+INSERT INTO tenk1 VALUES (456789, 456789);
+SELECT qq, unique1 FROM
+  (SELECT COALESCE(q1, 0) AS qq FROM int8_tbl a) AS ss1
+  FULL OUTER JOIN
+  (SELECT COALESCE(q2, -1) AS qq FROM int8_tbl b) AS ss2
+  USING (qq)
+  INNER JOIN tenk1 c ON qq = unique2 ORDER BY unique1;
+ qq  | unique1 
+-----+---------
+ 456 |       1
+ 456 |     123
+(2 rows)
+
+                                                                                                QUERY PLAN                                                                                                
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: (COALESCE((COALESCE(int8_tbl.q1, '0'::bigint)), (COALESCE(int8_tbl_1.q2, '-1'::bigint)))), tenk1.unique1
+   Merge Key: tenk1.unique1
+   ->  Result
+         Output: COALESCE((COALESCE(int8_tbl.q1, '0'::bigint)), (COALESCE(int8_tbl_1.q2, '-1'::bigint))), tenk1.unique1
+         ->  Sort
+               Output: (COALESCE(int8_tbl.q1, '0'::bigint)), (COALESCE(int8_tbl_1.q2, '-1'::bigint)), tenk1.unique1
+               Sort Key: tenk1.unique1
+               ->  Hash Join
+                     Output: (COALESCE(int8_tbl.q1, '0'::bigint)), (COALESCE(int8_tbl_1.q2, '-1'::bigint)), tenk1.unique1
+                     Hash Cond: ((COALESCE((COALESCE(int8_tbl.q1, '0'::bigint)), (COALESCE(int8_tbl_1.q2, '-1'::bigint)))) = (tenk1.unique2)::bigint)
+                     ->  Merge Full Join
+                           Output: COALESCE((COALESCE(int8_tbl.q1, '0'::bigint)), (COALESCE(int8_tbl_1.q2, '-1'::bigint))), (COALESCE(int8_tbl.q1, '0'::bigint)), (COALESCE(int8_tbl_1.q2, '-1'::bigint))
+                           Merge Cond: ((COALESCE(int8_tbl.q1, '0'::bigint)) = (COALESCE(int8_tbl_1.q2, '-1'::bigint)))
+                           ->  Sort
+                                 Output: (COALESCE(int8_tbl.q1, '0'::bigint))
+                                 Sort Key: (COALESCE(int8_tbl.q1, '0'::bigint))
+                                 ->  PX Hash 6:6  (slice2; segments: 6)
+                                       Output: (COALESCE(int8_tbl.q1, '0'::bigint))
+                                       Hash Key: (COALESCE(int8_tbl.q1, '0'::bigint))
+                                       ->  Partial Seq Scan on public.int8_tbl
+                                             Output: COALESCE(int8_tbl.q1, '0'::bigint)
+                           ->  Sort
+                                 Output: (COALESCE(int8_tbl_1.q2, '-1'::bigint))
+                                 Sort Key: (COALESCE(int8_tbl_1.q2, '-1'::bigint))
+                                 ->  PX Hash 6:6  (slice3; segments: 6)
+                                       Output: (COALESCE(int8_tbl_1.q2, '-1'::bigint))
+                                       Hash Key: (COALESCE(int8_tbl_1.q2, '-1'::bigint))
+                                       ->  Partial Seq Scan on public.int8_tbl int8_tbl_1
+                                             Output: COALESCE(int8_tbl_1.q2, '-1'::bigint)
+                     ->  Hash
+                           Output: tenk1.unique1, tenk1.unique2
+                           ->  PX Broadcast 6:6  (slice4; segments: 6)
+                                 Output: tenk1.unique1, tenk1.unique2
+                                 ->  Partial Seq Scan on public.tenk1
+                                       Output: tenk1.unique1, tenk1.unique2
+ Optimizer: PolarDB PX Optimizer
+(37 rows)
+
+DROP TABLE INT8_TBL;
+DROP TABLE tenk1;

@@ -210,4 +210,8 @@ extern HeapTuple systable_getnext_ordered(SysScanDesc sysscan,
 						 ScanDirection direction);
 extern void systable_endscan_ordered(SysScanDesc sysscan);
 
+/* POLAR px */
+void index_initscan_px(IndexScanDesc scan);
+/* POLAR end */
+
 #endif							/* GENAM_H */

@@ -1162,9 +1162,9 @@ LruDelete(File file)
 
 	if (rc)
 	{
-		elog(LOG, "could not close file \"%s\": %m", vfdP->fileName);
+		elog(vfdP->fdstate & FD_TEMP_FILE_LIMIT ? LOG : data_sync_elevel(LOG),
+                         "could not close file \"%s\": %m", vfdP->fileName);
 	}
-
 	vfdP->fd = VFD_CLOSED;
 	--nfile;
 
@@ -1896,7 +1896,6 @@ FileClose(File file)
 			 * We may need to panic on failure to close non-temporary files;
 			 * see LruDelete.
 			 */
-
 			elog(vfdP->fdstate & FD_TEMP_FILE_LIMIT ? LOG : data_sync_elevel(LOG),
 				"could not close file \"%s\": %m", vfdP->fileName);
 		}
@@ -2038,7 +2037,10 @@ FileWriteback(File file, off_t offset, off_t nbytes, uint32 wait_event_info)
 
 	pgstat_report_wait_start(wait_event_info);
 	if (polar_enable_shared_storage_mode)
-		polar_fsync(VfdCache[file].fd);
+	{
+		returnCode = polar_fsync(VfdCache[file].fd);
+		Assert(returnCode >= 0);
+	}
 	else
 		pg_flush_data(VfdCache[file].fd, offset, nbytes);
 	pgstat_report_wait_end();
@@ -3826,7 +3828,33 @@ fsync_parent_path(const char *fname, int elevel, bool polar_vfs)
 int
 MakePGDirectory(const char *directoryName, bool polar_vfs)
 {
-	return mkdir(directoryName, pg_dir_create_mode);
+	if (polar_vfs)
+		return polar_mkdir(directoryName, pg_dir_create_mode);
+	else
+		return mkdir(directoryName, pg_dir_create_mode);
+}
+
+/*
+ * Return the passed-in error level, or PANIC if data_sync_retry is off.
+ *
+ * Failure to fsync any data file is cause for immediate panic, unless
+ * data_sync_retry is enabled.  Data may have been written to the operating
+ * system and removed from our buffer pool already, and if we are running on
+ * an operating system that forgets dirty data on write-back failure, there
+ * may be only one copy of the data remaining: in the WAL.  A later attempt to
+ * fsync again might falsely report success.  Therefore we must not allow any
+ * further checkpoints to be attempted.  data_sync_retry can in theory be
+ * enabled on systems known not to drop dirty buffered data on write-back
+ * failure (with the likely outcome that checkpoints will continue to fail
+ * until the underlying problem is fixed).
+ *
+ * Any code that reports a failure from fsync() or related functions should
+ * filter the error level with this function.
+ */
+int
+data_sync_elevel(int elevel)
+{
+	return data_sync_retry ? elevel : PANIC;
 }
 
 /* POLAR */
@@ -3919,7 +3947,19 @@ polar_file_pread(File file, char *buffer, int amount, off_t offset, uint32 wait_
 
 retry:
 	pgstat_report_wait_start(wait_event_info);
-	returnCode = polar_pread(vfdP->fd, buffer, amount, offset);
+	if (POLAR_ENABLE_PREAD())
+		returnCode = polar_pread(vfdP->fd, buffer, amount, offset);
+	else
+	{
+		if (polar_lseek(vfdP->fd, offset, SEEK_SET) != offset)
+			ereport(ERROR,
+					(errcode_for_file_access(),
+					 errmsg("could not seek to offset %lu in file \"%s\": %m",
+							offset, FilePathName(vfdP->fd))));
+
+		returnCode = polar_read(vfdP->fd, buffer, amount);
+	}
+
 	pgstat_report_wait_end();
 
 	if (returnCode >= 0)
@@ -3998,25 +4038,27 @@ polar_durable_rename(const char *oldfile, const char *newfile, int elevel)
 	return durable_rename(oldfile, newfile, elevel, true);
 }
 
-/*
- * Return the passed-in error level, or PANIC if data_sync_retry is off.
- *
- * Failure to fsync any data file is cause for immediate panic, unless
- * data_sync_retry is enabled.  Data may have been written to the operating
- * system and removed from our buffer pool already, and if we are running on
- * an operating system that forgets dirty data on write-back failure, there
- * may be only one copy of the data remaining: in the WAL.  A later attempt to
- * fsync again might falsely report success.  Therefore we must not allow any
- * further checkpoints to be attempted.  data_sync_retry can in theory be
- * enabled on systems known not to drop dirty buffered data on write-back
- * failure (with the likely outcome that checkpoints will continue to fail
- * until the underlying problem is fixed).
- *
- * Any code that reports a failure from fsync() or related functions should
- * filter the error level with this function.
- */
-int
-data_sync_elevel(int elevel)
+off_t
+polar_file_seek_end(File file)
 {
-	return data_sync_retry ? elevel : PANIC;
+	Vfd		   *vfdP;
+
+	Assert(FileIsValid(file));
+
+	DO_DB(elog(LOG, "polar_file_seek_end: %d (%s) " INT64_FORMAT "",
+			   file, VfdCache[file].fileName,
+			   (int64) VfdCache[file].seekPos));
+
+	vfdP = &VfdCache[file];
+
+	if (FileIsNotOpen(file))
+	{
+		if (FileAccess(file) < 0)
+			return (off_t) -1;
+	}
+
+	Assert(vfdP->polar_vfs);
+
+	return polar_lseek_cache(vfdP->fd, 0L, SEEK_END);
 }
+

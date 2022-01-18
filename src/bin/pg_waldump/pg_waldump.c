@@ -29,6 +29,17 @@ static const char *progname;
 
 static int	WalSegSz;
 
+/* POLAR */
+typedef struct polar_xlog_dump_private
+{
+	char 		*path;
+	XLogRecPtr	cur_lsn;
+	int 		total_len;
+	int			file_size;
+	int			wal_segment_size;
+} polar_xlog_dump_private;
+/* POLAR end */
+
 typedef struct XLogDumpPrivate
 {
 	TimeLineID	timeline;
@@ -791,6 +802,283 @@ XLogDumpDisplayStats(XLogDumpConfig *config, XLogDumpStats *stats)
 		   total_len, "[100%]");
 }
 
+/* POLAR */
+static void
+polar_print_buf(char *buf, int size)
+{
+	int i = 0;
+
+	Assert(buf);
+	for(i = 0; i < size; i++)
+	{
+		fprintf(stderr, _("0x%02x "), (unsigned char) buf[i]);
+		if ((i + 1) % 16 == 0)
+			fprintf(stderr, _("\n"));
+	}
+	fprintf(stderr, _("\n"));
+}
+
+/* read page content from polar_xlog_file */
+static int
+polar_read_xlog_page(char *path, char *buf, Size off)
+{
+	int fd = -1;
+	int readlen = -1;
+
+	Assert(path);
+	Assert(buf);
+	Assert((off % XLOG_BLCKSZ) == 0);
+
+	fd = open(path, O_RDONLY | PG_BINARY, 0);
+	if (fd < 0)
+		fatal_error("failed to open file \"%s\"", path);
+	if (lseek(fd, off, SEEK_SET) < 0)
+	{
+		close(fd);
+		fatal_error("failed to seek in file \"%s\"", path);
+	}
+	readlen = read(fd, buf, XLOG_BLCKSZ);
+	if (readlen != XLOG_BLCKSZ)
+	{
+		readlen = -1;
+		close(fd);
+		fatal_error("failed to read file \"%s\"", path);
+	}
+	if (fd >= 0)
+		close(fd);
+	return readlen;
+}
+
+/* callback of readpagefunc of xlogreader */
+static int
+polar_read_page(XLogReaderState *state, XLogRecPtr targetpage, int reqlen,
+				XLogRecPtr targetptr, char *readbuf, TimeLineID *curtli)
+{
+	polar_xlog_dump_private *private = state->private_data;
+	XLogRecPtr curlsn = private->cur_lsn;
+	int total_len = private->total_len;
+	int offset;
+
+	XLogRecPtr startpage = curlsn - (curlsn % XLOG_BLCKSZ);
+	
+	/* polar_xlog_file only save content from startpage to endpage of curlsn */
+	if (targetpage < startpage)
+	{
+		fprintf(stderr, _("no content before %X/%X"), (uint32) (targetpage >> 32), (uint32) targetpage);
+		return -1;
+	}
+
+	/* get the actual offset in polar_xlog_file */
+	offset = (total_len / XLOG_BLCKSZ + 3) * XLOG_BLCKSZ + targetpage - startpage;
+	/* read content from polar_xlog_file */
+	return polar_read_xlog_page(private->path, readbuf, offset);
+}
+
+static void
+polar_read_private_data(char *path, polar_xlog_dump_private *private_data)
+{
+	struct  stat  stat_info;
+	char  	*page_info = NULL;
+
+	memset(private_data, 0, sizeof(polar_xlog_dump_private));
+	private_data->path = path;
+
+	/* get size of polar_xlog_file */
+	if (stat(path, &stat_info) < 0)
+		fatal_error("could not stat file \"%s\"", path);
+	private_data->file_size = stat_info.st_size;
+
+	/* read current lsn and wal_segment_size */
+	page_info = (char *)palloc0(XLOG_BLCKSZ);
+	if (!page_info)
+		fatal_error("failed to allocate memory");
+	if (polar_read_xlog_page(path, page_info, 0) < 0)
+	{
+		pfree(page_info);
+		fatal_error("failed to read from file \"%s\"", path);
+	}
+	memcpy(&private_data->cur_lsn, page_info, sizeof(XLogRecPtr));
+	memcpy(&private_data->wal_segment_size, page_info + sizeof(XLogRecPtr), sizeof(int));
+
+	pfree(page_info);
+	return;	
+}
+
+static void
+polar_read_memory_xlog(char **mem_record, polar_xlog_dump_private *private_data)
+{
+	char *page_info = NULL, *zero_page = NULL;
+	int offset = XLOG_BLCKSZ;
+	int read_len = 0, total_len = 0;
+	int res = -1;
+
+	page_info = (char *)palloc0(XLOG_BLCKSZ);
+	if (!page_info)
+		fatal_error("failed to allocate memory");
+
+	if (polar_read_xlog_page(private_data->path, page_info, offset) < 0)
+	{
+		fprintf(stderr, _("failed to read from file \"%s\"\n"), private_data->path);
+		goto err;
+	}
+	private_data->total_len = ((XLogRecord *)page_info)->xl_tot_len;
+	fprintf(stderr, _("current lsn: %X/%X, total_len: %d\n"), 
+			(uint32) (private_data->cur_lsn >> 32), (uint32) private_data->cur_lsn, private_data->total_len);
+
+	read_len = 0;
+	total_len = private_data->total_len;
+	*mem_record = palloc(total_len);
+	if (!*mem_record)
+	{
+		fprintf(stderr, _("failed to allocate memory\n"));
+		goto err;
+	}
+	while( total_len > 0)
+	{
+		int copylen = total_len > XLOG_BLCKSZ ? XLOG_BLCKSZ : total_len;
+		memcpy(*mem_record + read_len, page_info, copylen);
+		total_len -= copylen;
+		read_len += copylen;
+		offset += XLOG_BLCKSZ;
+		if (polar_read_xlog_page(private_data->path, page_info, offset) < 0)
+		{
+			fprintf(stderr, _("failed to read from file \"%s\"\n"), private_data->path);
+			goto err;
+		}
+	}
+
+	/* check the last page is zero page */
+	zero_page = palloc(XLOG_BLCKSZ);
+	if (!zero_page)
+	{
+		fprintf(stderr, _("failed to allocate memory\n"));
+		goto err;
+	}
+	memset(zero_page, 0, XLOG_BLCKSZ);
+	if (memcmp(zero_page, page_info, XLOG_BLCKSZ))
+	{
+		fprintf(stderr, _("content in file \"%s\" is not matched\n"), private_data->path);
+		goto err;
+	}
+	res = 0;		
+
+err:
+	if (page_info)
+		pfree(page_info);
+	if (zero_page)
+		pfree(zero_page);
+	if (res < 0)
+	{
+		pfree(*mem_record);
+		exit(EXIT_FAILURE);
+	}
+}
+
+/* dump polar_xlog_file */
+static int
+polar_dump_xlog_file(char *path, XLogDumpConfig *config)
+{
+	polar_xlog_dump_private private;
+	XLogReaderState *xlogreader_state = NULL;
+	XLogRecord *mem_record = NULL;
+	XLogRecord *disk_record = NULL;
+	XLogRecPtr start_pageptr;
+	XLogSegNo	readsegno;
+	char	*errormsg = NULL;
+	int		fd = -1;
+	int 	res = EXIT_FAILURE;
+
+	/* validate path */
+	fd = open(path, O_RDONLY | PG_BINARY, 0);
+	if (fd < 0)
+		fatal_error("could not open file \"%s\"", path);
+	close(fd);
+
+	/* set private data */
+	polar_read_private_data(path, &private);
+
+	/* read memory xlog record */
+	polar_read_memory_xlog((char **)&mem_record, &private);
+
+	/* allocate xlogreader state to get disk xlogrecord */ 
+	xlogreader_state = XLogReaderAllocate(private.wal_segment_size, polar_read_page, &private);
+	if (!xlogreader_state)
+	{
+		fprintf(stderr, _("failed to allocate xlogreader, out of memory\n"));
+		goto err;
+	}
+	xlogreader_state->ReadRecPtr = private.cur_lsn;
+	
+	/* set state->readsegno to avoid reading the first page of a segment, which may not exist in the file */
+	start_pageptr = private.cur_lsn - (private.cur_lsn % XLOG_BLCKSZ);
+	XLByteToSeg(start_pageptr, readsegno, private.wal_segment_size);
+	xlogreader_state->readSegNo = readsegno;
+
+	/* read and dump disk xlogrecord */
+	disk_record = XLogReadRecord(xlogreader_state, private.cur_lsn, &errormsg);
+	/* decode success */
+	if (disk_record)
+	{
+		fprintf(stderr, _("dump display the disk xlog record:\n"));
+		XLogDumpDisplayRecord(config, xlogreader_state);
+	}
+	else
+	{
+		/* decode fail, disk_record must be in state->readRecordBuf or state->readBuf */
+		int size = (private.total_len / XLOG_BLCKSZ + 3) * XLOG_BLCKSZ;
+		if (errormsg)
+			fprintf(stderr, _("error in read disk record from file \"%s\": %s\n"), path, errormsg);
+		
+		Assert(private.file_size > size);
+		/* disk record crossed pages */
+		if (private.file_size - size > XLOG_BLCKSZ)
+			disk_record = (XLogRecord *) xlogreader_state->readRecordBuf;
+		else
+			disk_record = (XLogRecord *)(xlogreader_state->readBuf + private.cur_lsn % XLOG_BLCKSZ);
+	}
+	
+	/* compare disk_record and memory_record */
+	if (memcmp(mem_record, disk_record, private.total_len))
+	{
+		/* Valid memory xlog record if it's different from disk xlog record */
+		if (ValidXLogRecord(xlogreader_state, mem_record, private.cur_lsn))
+		{
+			errormsg = NULL;
+			if (DecodeXLogRecord(xlogreader_state, mem_record, &errormsg))
+			{
+				/* decode success */
+				fprintf(stderr, _("dump display the memory xlog record:\n"));
+				XLogDumpDisplayRecord(config, xlogreader_state);
+			} 
+			else if (errormsg)
+				fprintf(stderr, _("error in decode memory xlog record: %s\n"), errormsg);
+		}
+		else
+			fprintf(stderr, _("error in validate memory wal record: %s\n"), xlogreader_state->errormsg_buf);
+		
+		/* print disk xlog record */
+		fprintf(stderr, _("xlog record in disk is different from that in memory\n"));
+		fprintf(stderr, _("disk xlog record is: \n"));
+		polar_print_buf((char *)disk_record, private.total_len);
+	}
+	else
+		fprintf(stderr,_("xlog record in disk is the same as that in memory\n"));
+	
+	/* print mem xlog record */
+	fprintf(stderr, _("memory xlog record is: \n"));
+	polar_print_buf((char *)mem_record, private.total_len);
+
+	res = EXIT_SUCCESS;
+
+err:
+	if (xlogreader_state)	
+		XLogReaderFree(xlogreader_state);
+	if (mem_record)
+		pfree(mem_record);
+	return res;
+}
+/* POLAR end */
+
 static void
 usage(void)
 {
@@ -815,6 +1103,9 @@ usage(void)
 	printf(_("  -x, --xid=XID          only show records with transaction ID XID\n"));
 	printf(_("  -z, --stats[=record]   show statistics instead of records\n"
 			 "                         (optionally, show per-record statistics)\n"));
+	/* POLAR: dump polar_xlog_info file */
+	printf(_("  -d, --dump-file=file   dump polar_xlog_info file\n"));
+	/* POLAR end */
 	printf(_("  -?, --help             show this help, then exit\n"));
 }
 
@@ -830,6 +1121,9 @@ main(int argc, char **argv)
 	XLogRecord *record;
 	XLogRecPtr	first_record;
 	char	   *errormsg;
+	/* POLAR */
+	char	*polar_xlog_file = NULL;
+	/* POLAR end */
 
 	static struct option long_options[] = {
 		{"bkp-details", no_argument, NULL, 'b'},
@@ -844,6 +1138,9 @@ main(int argc, char **argv)
 		{"xid", required_argument, NULL, 'x'},
 		{"version", no_argument, NULL, 'V'},
 		{"stats", optional_argument, NULL, 'z'},
+		/* POLAR */
+		{"dump-file", optional_argument, NULL, 'd'},
+		/* POLAR end */
 		{NULL, 0, NULL, 0}
 	};
 
@@ -878,7 +1175,7 @@ main(int argc, char **argv)
 		goto bad_argument;
 	}
 
-	while ((option = getopt_long(argc, argv, "be:?fn:p:r:s:t:Vx:z",
+	while ((option = getopt_long(argc, argv, "be:?fn:p:r:s:t:Vx:zd:",
 								 long_options, &optindex)) != -1)
 	{
 		switch (option)
@@ -986,6 +1283,11 @@ main(int argc, char **argv)
 					}
 				}
 				break;
+			/* POLAR */
+			case 'd':
+				polar_xlog_file = pg_strdup(optarg);
+				break;
+			/* POLAR end */
 			default:
 				goto bad_argument;
 		}
@@ -998,6 +1300,15 @@ main(int argc, char **argv)
 				progname, argv[optind + 2]);
 		goto bad_argument;
 	}
+
+	/* POLAR: dump polar_xlog_file */
+	if (polar_xlog_file != NULL)
+	{
+		int ret = -1;
+		ret = polar_dump_xlog_file(polar_xlog_file, &config);
+		return ret;
+	}
+	/* POLAR end */
 
 	if (private.inpath != NULL)
 	{
@@ -1187,7 +1498,6 @@ main(int argc, char **argv)
 					errormsg);
 
 	XLogReaderFree(xlogreader_state);
-
 	return EXIT_SUCCESS;
 
 bad_argument:

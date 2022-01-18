@@ -91,6 +91,10 @@ extern void InsertPgAttributeTuple(Relation pg_attribute_rel,
 					   Form_pg_attribute new_attribute,
 					   CatalogIndexState indstate);
 
+/* POLAR px */
+extern HeapTuple heaptuple_from_pg_attribute(Relation pg_attribute_rel,
+					Form_pg_attribute new_attribute);
+
 extern void InsertPgClassTuple(Relation pg_class_desc,
 				   Relation new_rel_desc,
 				   Oid new_rel_oid,

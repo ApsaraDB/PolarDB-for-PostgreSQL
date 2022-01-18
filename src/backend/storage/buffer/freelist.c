@@ -20,6 +20,9 @@
 #include "storage/bufmgr.h"
 #include "storage/proc.h"
 
+/* POLAR */
+extern int polar_ring_buffer_vacuum;
+
 #define INT_ACCESS_ONCE(var)	((int)(*((volatile int *)&(var))))
 
 
@@ -196,6 +199,9 @@ have_free_buffer()
  *
  *	To ensure that no one else can pin the buffer before we do, we must
  *	return the buffer with the buffer header spinlock still held.
+ *
+ *  POLAR: if reading bulk non-frist page and most buffers are pinned, return NULL
+ *  instead of log(error).
  */
 BufferDesc *
 StrategyGetBuffer(BufferAccessStrategy strategy, uint32 *buf_state)
@@ -313,7 +319,14 @@ StrategyGetBuffer(BufferAccessStrategy strategy, uint32 *buf_state)
 	}
 
 	/* Nothing on the freelist, so run the "clock sweep" algorithm */
-	trycounter = NBuffers;
+
+	/* POLAR: bulk read, alloc not-first page, if failed just ok, so trycounter is smaller. */
+	if (polar_bulk_io_is_in_progress && polar_bulk_io_in_progress_count > 0)
+		trycounter = NBuffers/5;
+	else
+		trycounter = NBuffers;
+	/* POLAR end */
+
 	for (;;)
 	{
 		buf = GetBufferDescriptor(ClockSweepTick());
@@ -330,7 +343,12 @@ StrategyGetBuffer(BufferAccessStrategy strategy, uint32 *buf_state)
 			{
 				local_buf_state -= BUF_USAGECOUNT_ONE;
 
-				trycounter = NBuffers;
+				/* POLAR: bulk read, alloc not-first page, if failed just ok, so trycounter is smaller. */
+				if (polar_bulk_io_is_in_progress && polar_bulk_io_in_progress_count > 0)
+					trycounter = NBuffers/5;
+				else
+					trycounter = NBuffers;
+				/* POLAR: end */
 			}
 			else
 			{
@@ -351,6 +369,12 @@ StrategyGetBuffer(BufferAccessStrategy strategy, uint32 *buf_state)
 			 * infinite loop.
 			 */
 			UnlockBufHdr(buf, local_buf_state);
+
+			/* POLAR: bulk read, alloc not-first page, if failed just ok, return NULL. */
+			if (polar_bulk_io_is_in_progress && polar_bulk_io_in_progress_count > 0)
+				return NULL;
+			/* POLAR end */
+
 			elog(ERROR, "no unpinned buffers available");
 		}
 		UnlockBufHdr(buf, local_buf_state);
@@ -563,7 +587,7 @@ GetAccessStrategy(BufferAccessStrategyType btype)
 			ring_size = 16 * 1024 * 1024 / BLCKSZ;
 			break;
 		case BAS_VACUUM:
-			ring_size = 256 * 1024 / BLCKSZ;
+			ring_size = polar_ring_buffer_vacuum * 1024 * 1024 / BLCKSZ;
 			break;
 
 		default:
@@ -722,3 +746,22 @@ polar_try_to_wake_bgwriter(void)
 	}
 }
 /* POLAR end */
+
+/* POLAR: bulk read */
+int
+polar_get_buffer_access_strategy_ring_size(BufferAccessStrategy strategy)
+{
+	return strategy->ring_size;
+}
+/* POLAR end */
+
+/*
+ * POLAR: set StrategyControl first free buffer
+ */
+void
+polar_strategy_set_first_free_buffer(int buf_id)
+{
+	SpinLockAcquire(&StrategyControl->buffer_strategy_lock);
+	StrategyControl->firstFreeBuffer = buf_id;
+	SpinLockRelease(&StrategyControl->buffer_strategy_lock);
+}

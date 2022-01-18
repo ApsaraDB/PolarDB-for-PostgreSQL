@@ -26,6 +26,14 @@
 #include "miscadmin.h"
 #include "utils/memutils.h"
 
+/* POLAR px */
+#include "executor/execUtils_px.h"
+#include "utils/lsyscache.h"
+#include "px/px_vars.h"
+
+/* POLAR px */
+static void polar_splitJoinQualExpr(List *joinqual, List **inner_join_keys_p, List **outer_join_keys_p);
+static void polar_extractFuncExprArgs(Expr *clause, List **lclauses, List **rclauses);
 
 /* ----------------------------------------------------------------
  *		ExecNestLoop(node)
@@ -90,6 +98,77 @@ ExecNestLoop(PlanState *pstate)
 	 * storage allocated in the previous tuple cycle.
 	 */
 	ResetExprContext(econtext);
+
+	/*
+	 * MPP-4165: My fix for MPP-3300 was correct in that we avoided
+	 * the *deadlock* but had very unexpected (and painful)
+	 * performance characteristics: we basically de-pipeline and
+	 * de-parallelize execution of any query which has motion below
+	 * us.
+	 *
+	 * So now prefetch_inner is set (see createplan.c) if we have *any* motion
+	 * below us. If we don't have any motion, it doesn't matter.
+	 *
+	 * See motion_sanity_walker() for details on how a deadlock may occur.
+	 */
+	if (node->prefetch_inner)
+	{
+		px_prefetch_inner_executing = true;
+
+		/*
+		 * Prefetch inner is Greenplum specific behavior.
+		 * However, inner plan may depend on outer plan as
+		 * outerParams. If so, we have to fake those params
+		 * to avoid null pointer reference issue. And because
+		 * of the nestParams, those inner results prefetched
+		 * will be discarded (following code will rescan inner,
+		 * even if inner's top is material node because of chgParam
+		 * it will be re-executed too) that it is safe to fake
+		 * nestParams here. The target is to materialize motion scan.
+		 */
+		if (nl->nestParams)
+		{
+			EState	   *estate = node->js.ps.state;
+
+			econtext->ecxt_outertuple = ExecInitNullTupleSlot(estate,
+				ExecGetResultType(outerPlan));
+			polar_fake_outer_params(&(node->js));
+		}
+		innerTupleSlot = ExecProcNode(innerPlan);
+		econtext->ecxt_innertuple = innerTupleSlot;
+
+		if (TupIsNull(innerTupleSlot))
+		{
+			/*
+			 * Finished one complete scan of the inner side. Mark it here
+			 * so that we don't keep checking for inner nulls at subsequent
+			 * iterations.
+			 */
+			node->nl_innerSideScanned = true;
+		}
+
+		if ((node->js.jointype == JOIN_LASJ_NOTIN) &&
+			!node->nl_innerSideScanned &&
+			node->nl_InnerJoinKeys &&
+			polar_isJoinExprNull(node->nl_InnerJoinKeys, econtext))
+		{
+			/*
+			 * If LASJ_NOTIN and a null was found on the inner side, all tuples
+			 * We'll read no more from either inner or outer subtree. To keep our
+			 * in outer sider will be treated as "not in" tuples in inner side.
+			 */
+			ENL1_printf("Found NULL tuple on the inner side, clean out");
+
+			px_prefetch_inner_executing = false;
+			return NULL;
+		}
+
+		ExecReScan(innerPlan);
+		ResetExprContext(econtext);
+
+		px_prefetch_inner_executing = false;
+		node->prefetch_inner = false;
+	}
 
 	/*
 	 * Ok, everything is setup for the join so now loop until we return a
@@ -166,9 +245,17 @@ ExecNestLoop(PlanState *pstate)
 
 			node->nl_NeedNewOuter = true;
 
+			/* POLAR px
+			 * Finished one complete scan of the inner side. Mark it here
+			 * so that we don't keep checking for inner nulls at subsequent
+			 * iterations.
+			 */
+			node->nl_innerSideScanned = true;
+
 			if (!node->nl_MatchedOuter &&
 				(node->js.jointype == JOIN_LEFT ||
-				 node->js.jointype == JOIN_ANTI))
+				 node->js.jointype == JOIN_ANTI ||
+				 node->js.jointype == JOIN_LASJ_NOTIN/* POLAR px */))
 			{
 				/*
 				 * We are doing an outer join and there were no join matches
@@ -201,6 +288,21 @@ ExecNestLoop(PlanState *pstate)
 			continue;
 		}
 
+		/* POLAR px */
+		if ((node->js.jointype == JOIN_LASJ_NOTIN) &&
+			(!node->nl_innerSideScanned) &&
+			(node->nl_InnerJoinKeys && polar_isJoinExprNull(node->nl_InnerJoinKeys, econtext)))
+		{
+			/*
+			 * If LASJ_NOTIN and a null was found on the inner side, all tuples
+			 * We'll read no more from either inner or outer subtree. To keep our
+			 * in outer sider will be treated as "not in" tuples in inner side.
+			 */
+			ENL1_printf("Found NULL tuple on the inner side, clean out");
+			return NULL;
+		}
+
+
 		/*
 		 * at this point we have a new pair of inner and outer tuples so we
 		 * test the inner and outer tuples to see if they satisfy the node's
@@ -211,12 +313,15 @@ ExecNestLoop(PlanState *pstate)
 		 */
 		ENL1_printf("testing qualification");
 
-		if (ExecQual(joinqual, econtext))
+		/* POLAR px */
+		if((node->js.jointype == JOIN_LASJ_NOTIN && ExecCheck(joinqual, econtext)) ||
+			(node->js.jointype != JOIN_LASJ_NOTIN && ExecQual(joinqual, econtext)))
 		{
 			node->nl_MatchedOuter = true;
 
 			/* In an antijoin, we never return a matched tuple */
-			if (node->js.jointype == JOIN_ANTI)
+			if (node->js.jointype == JOIN_ANTI ||
+				node->js.jointype == JOIN_LASJ_NOTIN /* POLAR px */)
 			{
 				node->nl_NeedNewOuter = true;
 				continue;		/* return to top of loop */
@@ -278,6 +383,8 @@ ExecInitNestLoop(NestLoop *node, EState *estate, int eflags)
 	nlstate->js.ps.state = estate;
 	nlstate->js.ps.ExecProcNode = ExecNestLoop;
 
+	nlstate->prefetch_inner = node->join.prefetch_inner;
+
 	/*
 	 * Miscellaneous initialization
 	 *
@@ -294,12 +401,36 @@ ExecInitNestLoop(NestLoop *node, EState *estate, int eflags)
 	 * inner child, because it will always be rescanned with fresh parameter
 	 * values.
 	 */
-	outerPlanState(nlstate) = ExecInitNode(outerPlan(node), estate, eflags);
+
+	/*
+	 * XXX ftian: Because share input need to make the whole thing into a tree,
+	 * we can put the underlying share only under one shareinputscan.  During execution,
+	 * we need the shareinput node that has underlying subtree be inited/executed first.
+	 * This means,
+	 * 	1. Init and first ExecProcNode call must be in the same order
+	 *	2. Init order above is the same as the tree walking order in cdbmutate.c
+	 * For nest loop join, it is more strange than others.  Depends on prefetch_inner,
+	 * the execution order may change.  Handle this correctly here.
+	 *
+	 * Until we find a better way to handle the dependency of ShareInputScan on
+	 * execution order, this is pretty much what we have to deal with.
+	 */
 	if (node->nestParams == NIL)
 		eflags |= EXEC_FLAG_REWIND;
 	else
 		eflags &= ~EXEC_FLAG_REWIND;
-	innerPlanState(nlstate) = ExecInitNode(innerPlan(node), estate, eflags);
+
+	/* POLAR px */
+	if (nlstate->prefetch_inner)
+	{
+		innerPlanState(nlstate) = ExecInitNode(innerPlan(node), estate, eflags);
+		outerPlanState(nlstate) = ExecInitNode(outerPlan(node), estate, eflags);
+	}
+	else
+	{
+		outerPlanState(nlstate) = ExecInitNode(outerPlan(node), estate, eflags);
+		innerPlanState(nlstate) = ExecInitNode(innerPlan(node), estate, eflags);
+	}
 
 	/*
 	 * Initialize result slot, type and projection.
@@ -313,8 +444,55 @@ ExecInitNestLoop(NestLoop *node, EState *estate, int eflags)
 	nlstate->js.ps.qual =
 		ExecInitQual(node->join.plan.qual, (PlanState *) nlstate);
 	nlstate->js.jointype = node->join.jointype;
-	nlstate->js.joinqual =
-		ExecInitQual(node->join.joinqual, (PlanState *) nlstate);
+
+	/* POLAR px */
+	if (node->join.jointype == JOIN_LASJ_NOTIN)
+	{
+		List	   *inner_join_keys;
+		List	   *outer_join_keys;
+		ListCell   *lc;
+
+		/* not initialized yet */
+		Assert(nlstate->nl_InnerJoinKeys == NIL);
+		Assert(nlstate->nl_OuterJoinKeys == NIL);
+
+		polar_splitJoinQualExpr(node->join.joinqual,
+						  &inner_join_keys,
+						  &outer_join_keys);
+		foreach(lc, inner_join_keys)
+		{
+			Expr	   *expr = (Expr *) lfirst(lc);
+			ExprState  *exprstate;
+
+			exprstate = ExecInitExpr(expr, (PlanState *) nlstate);
+
+			nlstate->nl_InnerJoinKeys = lappend(nlstate->nl_InnerJoinKeys,
+												exprstate);
+		}
+		foreach(lc, outer_join_keys)
+		{
+			Expr	   *expr = (Expr *) lfirst(lc);
+			ExprState  *exprstate;
+
+			exprstate = ExecInitExpr(expr, (PlanState *) nlstate);
+
+			nlstate->nl_OuterJoinKeys = lappend(nlstate->nl_OuterJoinKeys,
+												exprstate);
+		}
+
+		/*
+		 * For LASJ_NOTIN, when we evaluate the join condition, we want to
+		 * return true when one of the conditions is NULL, so we exclude
+		 * that tuple from the output.
+		 */
+		nlstate->js.joinqual =
+			ExecInitCheck(node->join.joinqual, (PlanState *) nlstate);
+	}
+	else
+	{
+		nlstate->js.joinqual =
+			ExecInitQual(node->join.joinqual, (PlanState *) nlstate);
+	}
 
 	/*
 	 * detect whether we need only consider the first matching inner tuple
@@ -330,6 +508,7 @@ ExecInitNestLoop(NestLoop *node, EState *estate, int eflags)
 			break;
 		case JOIN_LEFT:
 		case JOIN_ANTI:
+		case JOIN_LASJ_NOTIN:/* POLAR px */
 			nlstate->nl_NullInnerTupleSlot =
 				ExecInitNullTupleSlot(estate,
 									  ExecGetResultType(innerPlanState(nlstate)));
@@ -407,4 +586,120 @@ ExecReScanNestLoop(NestLoopState *node)
 
 	node->nl_NeedNewOuter = true;
 	node->nl_MatchedOuter = false;
+	node->nl_innerSideScanned = false;
+}
+
+
+/* ----------------------------------------------------------------
+ * polar_splitJoinQualExpr
+ *
+ * Deconstruct the join clauses into outer and inner argument values, so
+ * that we can evaluate those subexpressions separately. Note: for constant
+ * expression we don't need to split (MPP-21294). However, if constant expressions
+ * have peer splittable expressions we *do* split those.
+ *
+ * This is used for NOTIN joins, as we need to look for NULLs on both
+ * inner and outer side.
+ *
+ * XXX: This would be more appropriate in the planner.
+ * ----------------------------------------------------------------
+ */
+static void
+polar_splitJoinQualExpr(List *joinqual, List **inner_join_keys_p, List **outer_join_keys_p)
+{
+	List *lclauses = NIL;
+	List *rclauses = NIL;
+	ListCell   *lc;
+
+	foreach(lc, joinqual)
+	{
+		Expr	   *expr = (Expr *) lfirst(lc);
+
+		switch (expr->type)
+		{
+			case T_FuncExpr:
+			case T_OpExpr:
+				polar_extractFuncExprArgs(expr, &lclauses, &rclauses);
+				break;
+
+			case T_BoolExpr:
+				{
+					BoolExpr   *bexpr = (BoolExpr *) expr;
+					ListCell   *argslc;
+
+					foreach(argslc, bexpr->args)
+					{
+						polar_extractFuncExprArgs(lfirst(argslc), &lclauses, &rclauses);
+					}
+				}
+				break;
+
+			case T_Const:
+				/*
+				 * Constant expressions do not need to be splitted into left and
+				 * right as they don't need to be considered for NULL value special
+				 * cases
+				 */
+				break;
+
+			default:
+				elog(ERROR, "unexpected expression type in NestLoopJoin qual");
+		}
+	}
+
+	*inner_join_keys_p = rclauses;
+	*outer_join_keys_p = lclauses;
+}
+
+
+
+/* ----------------------------------------------------------------
+ * polar_extractFuncExprArgs
+ *
+ * Extract the arguments of a FuncExpr or an OpExpr and append them into two
+ * given lists:
+ *   - lclauses for the left side of the expression,
+ *   - rclauses for the right side
+ *
+ * This function is only used for LASJ. Once we find a NULL from inner side, we
+ * can skip the join and just return an empty set as result. This is only true
+ * if the equality operator is strict, that is, if a tuple from inner side is
+ * NULL then the equality operator returns NULL.
+ *
+ * If the number of arguments is not two, we just return leaving lclauses and
+ * rclauses remaining NULL. In this case, the LASJ join would be actually
+ * performed.
+ * ----------------------------------------------------------------
+ */
+static void
+polar_extractFuncExprArgs(Expr *clause, List **lclauses, List **rclauses)
+{
+	if (IsA(clause, OpExpr))
+	{
+		OpExpr	   *opexpr = (OpExpr *) clause;
+
+		if (list_length(opexpr->args) != 2)
+			return;
+
+		if (!op_strict(opexpr->opno))
+			return;
+
+		*lclauses = lappend(*lclauses, linitial(opexpr->args));
+		*rclauses = lappend(*rclauses, lsecond(opexpr->args));
+	}
+	else if (IsA(clause, FuncExpr))
+	{
+		FuncExpr   *fexpr = (FuncExpr *) clause;
+
+		if (list_length(fexpr->args) != 2)
+			return;
+
+		if (!func_strict(fexpr->funcid))
+			return;
+
+		*lclauses = lappend(*lclauses, linitial(fexpr->args));
+		*rclauses = lappend(*rclauses, lsecond(fexpr->args));
+	}
+	else
+		elog(ERROR, "unexpected join qual in JOIN_LASJ_NOTIN join");
 }

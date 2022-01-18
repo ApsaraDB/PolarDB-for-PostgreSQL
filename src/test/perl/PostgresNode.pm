@@ -103,12 +103,15 @@ use TestLib ();
 use Time::HiRes qw(usleep);
 use Scalar::Util qw(blessed);
 
+use Expect;
+
 our @EXPORT = qw(
   get_new_node
   get_free_port
 );
 
 our ($use_tcp, $test_localhost, $test_pghost, $last_host_assigned,
+	$testname, $polar_datadir,
 	$last_port_assigned, @all_nodes, $died);
 
 # For backward compatibility only.
@@ -118,6 +121,8 @@ if ($Config{osname} eq 'msys')
 	$vfs_path = `cd / && pwd -W`;
 	chomp $vfs_path;
 }
+
+our ($polar_hostid, $polar_repli_logindex, $polar_master_logindex, $polar_standby_logindex, $polar_standby_no_logindex);
 
 INIT
 {
@@ -130,9 +135,45 @@ INIT
 	$test_pghost        = $use_tcp ? $test_localhost : TestLib::tempdir_short;
 	$ENV{PGHOST}        = $test_pghost;
 	$ENV{PGDATABASE}    = 'postgres';
+	$ENV{PGUSER} = 'postgres';
+
+	$testname = basename($0);
+	$testname =~ s/\.[^.]+$//;
 
 	# Tracking of last port value assigned to accelerate free port lookup.
 	$last_port_assigned = int(rand() * 16384) + 49152;
+
+	$polar_hostid=0;
+
+$polar_standby_no_logindex =<<"standby_no_logindex";
+	polar_logindex_mem_size=0
+	shared_buffers = 512MB
+
+standby_no_logindex
+
+	$polar_repli_logindex=<<"repli_logindex";
+	shared_buffers = 512MB
+	polar_logindex_mem_size=128MB
+	polar_xlog_queue_buffers=256MB
+	polar_xlog_page_buffers=128MB
+
+repli_logindex
+
+	$polar_master_logindex=<<"master_logindex";
+	shared_buffers = 512MB
+	polar_logindex_mem_size=128MB
+	polar_xlog_queue_buffers=256MB
+	polar_xlog_page_buffers=128MB
+
+master_logindex
+
+$polar_standby_logindex=<<"standby_logindex";
+	shared_buffers = 512MB
+	polar_logindex_mem_size=128MB
+	polar_xlog_queue_buffers=256MB
+	polar_xlog_page_buffers=128MB
+
+standby_logindex
 }
 
 =pod
@@ -153,26 +194,35 @@ of finding port numbers, registering instances for cleanup, etc.
 sub new
 {
 	my ($class, $name, $pghost, $pgport) = @_;
-	my $testname = basename($0);
-	$testname =~ s/\.[^.]+$//;
 	my $self = {
 		_port    => $pgport,
 		_host    => $pghost,
 		_basedir => "$TestLib::tmp_check/t_${testname}_${name}_data",
 		_name    => $name,
+		_testname => $testname,
 		_logfile_generation => 0,
 		_logfile_base       => "$TestLib::log_path/${testname}_${name}",
-		_logfile            => "$TestLib::log_path/${testname}_${name}.log"
+		_logfile => "$TestLib::log_path/${testname}_${name}.log",
+		_valgrind_log => "$TestLib::tmp_check/valgrind",
+		_psql	=> undef,
+		_polar_root_node	=> undef,
+		_polar_node_type => "master",
+		_polar_datadir => "$TestLib::tmp_check/t_${testname}_polar_data",
 	};
 
 	bless $self, $class;
 	mkdir $self->{_basedir}
 	  or
 	  BAIL_OUT("could not create data directory \"$self->{_basedir}\": $!");
+
 	$self->dump_info;
+
+	$self->{_polar_root_node} = $self;
+	$ENV{'polar_datadir'} = $self->polar_get_datadir;
 
 	return $self;
 }
+
 
 =pod
 
@@ -189,6 +239,36 @@ sub port
 {
 	my ($self) = @_;
 	return $self->{_port};
+}
+
+sub get_psql
+{
+	my ($self) = @_;
+	return $self->{_psql};
+}
+
+sub set_psql
+{
+	my ($self, $psql) = @_;
+	$self->{_psql} = $psql;
+}
+
+sub polar_set_root_node
+{
+	my ($self, $root_node) = @_;
+	$self->{_polar_root_node} = $root_node;
+}
+
+sub polar_get_root_node
+{
+	my ($self) = @_;
+	return $self->{_polar_root_node};
+}
+
+sub polar_get_node_type
+{
+	my ($self) = @_;
+	return $self->{_polar_node_type};
 }
 
 =pod
@@ -234,6 +314,20 @@ sub name
 {
 	my ($self) = @_;
 	return $self->{_name};
+}
+
+=pod
+
+=item $node->polar_set_name($name)
+
+POLAR: Create a new name for this node.
+
+=cut
+
+sub polar_set_name
+{
+	my ($self, $name) = @_;
+	$self->{_name} = $name;
 }
 
 =pod
@@ -406,6 +500,418 @@ sub set_replication_conf
 
 =pod
 
+=item $node->polar_master_init(...)
+
+Initialize a new master node on polar for testing.
+
+=cut
+
+sub polar_shared_storage_init
+{
+	my ($self) = @_;
+	my $pgdata = $self->data_dir;
+	my $port = $self->port;
+	my $polar_datadir = $self->polar_get_datadir;
+
+	mkdir $polar_datadir
+	  or
+	BAIL_OUT("could not create polar data directory $polar_datadir");
+	TestLib::system_or_bail('polar-initdb.sh', "$pgdata/",
+		"$polar_datadir/", 'localfs');
+
+	$ENV{'polar_datadir'} = $polar_datadir;
+
+  	return;
+}
+
+=pod
+=item $node->polar_crate_slot
+=cut
+sub polar_create_slot
+{
+	my ($self, $slot) = @_;
+
+	$self->psql('postgres', "SELECT * FROM pg_create_physical_replication_slot('$slot')",
+		extra_params => ['-U', 'postgres']);
+}
+
+=pod
+
+=item $node->polar_drop_slot
+
+=cut
+
+sub polar_drop_slot
+{
+	my ($self, $slot) = @_;
+
+	$self->psql('postgres', "SELECT pg_drop_replication_slot('$slot')",
+		extra_params => ['-U', 'postgres']);
+}
+
+=pod
+=item $node->polar_drop_all_slots
+=cut
+
+sub polar_drop_all_slots
+{
+	my ($self) = @_;
+	my $slots = $self->safe_psql('postgres', qq[select slot_name from pg_replication_slots;]);
+	foreach my $slot (split('\n', $slots))
+	{
+		print "standby delete slot [".$slot."]\n";
+		$self->polar_drop_slot($slot);
+	}
+}
+
+=pod
+
+=item $node->polar_set_recovery
+
+=cut
+
+sub polar_set_recovery
+{
+	my ($self, $root_node) = @_;
+	$self->{_polar_node_type} = "replica";
+	$self->{_polar_root_node} = $root_node;
+	print "polar_set_recovery set node(".$self->port.") root_node(".$root_node->port.")\n";
+	my $root_host = $root_node->host;
+	my $root_port = $root_node->port;
+	my $pgdata = $self->data_dir;
+
+	open my $conf, '>>', "$pgdata/recovery.conf";
+
+	print $conf "primary_conninfo='host=$root_host port=$root_port user=postgres dbname=postgres application_name=".$self->name."'\n";
+	print $conf "polar_replica=on\n";
+	print $conf "recovery_target_timeline='latest'\n";
+	print $conf "primary_slot_name='".$self->name."'\n";
+
+	close $conf;
+	my $polar_datadir = $self->polar_get_datadir;
+	print "before set, polar_datadir = $polar_datadir\n";
+	$polar_datadir = $root_node->polar_get_datadir;
+	print "after set, polar_datadir = $polar_datadir\n";
+	$self->append_conf('postgresql.conf', "polar_datadir=\'file-dio://$polar_datadir\'");
+	$self->polar_set_datadir($polar_datadir);
+}
+
+=pod
+=item $node->polar_standby_set_recovery
+=cut
+
+sub polar_standby_set_recovery
+{
+	my ($self, $root_node) = @_;
+	$self->{_polar_node_type} = "standby";
+	$self->{_polar_root_node} = $root_node;
+	print "polar_standby_set_recovery set node(".$self->port.") root_node(".$root_node->port.")\n";
+	my $root_host = $root_node->host;
+	my $root_port = $root_node->port;
+	my $pgdata = $self->data_dir;
+	open my $conf, '>>', "$pgdata/recovery.conf";
+	print $conf "primary_conninfo='host=$root_host port=$root_port user=postgres dbname=postgres application_name=".$self->name."'\n";
+	print $conf "standby_mode=on\n";
+	print $conf "recovery_target_timeline='latest'\n";
+	print $conf "primary_slot_name='".$self->name."'\n";
+	close $conf;
+}
+
+=pod
+=item $node->polar_datamax_set_recovery(root_node)
+=cut
+
+sub polar_datamax_set_recovery
+{
+	my ($self, $root_node) = @_;
+	$self->{_polar_node_type} = "datamax";
+	$self->{_polar_root_node} = $root_node;
+	print "polar_datamax_set_recovery set node(".$self->port.") root_node(".$root_node->port.")\n";
+	my $root_host = $root_node->host;
+	my $root_port = $root_node->port;
+	my $pgdata = $self->data_dir;
+	open my $conf, '>>', "$pgdata/recovery.conf";
+	print $conf "primary_conninfo='host=$root_host port=$root_port user=postgres dbname=postgres application_name=".$self->name."'\n";
+	print $conf "polar_datamax_mode = standalone\n";
+	print $conf "recovery_target_timeline='latest'\n";
+	print $conf "primary_slot_name='".$self->name."'\n";
+	close $conf;
+}
+
+=pod
+
+=item $node->polar_drop_recovery
+
+After recovery file was deleted, we think this node is going to be 'master' node.
+
+=cut
+
+sub polar_drop_recovery
+{
+	my ($self) = @_;
+	print "drop recovery file for node(".$self->port."), root_node is (".$self->polar_get_root_node->port.")\n";
+	$self->{_polar_node_type} = "master";
+	$self->{_polar_root_node} = $self;
+	my $pgdata = $self->data_dir;
+	TestLib::system_or_bail('rm', '-f',"$pgdata/recovery.conf");
+	TestLib::system_or_bail('rm', '-f',"$pgdata/recovery.done");
+	TestLib::system_or_bail('rm', '-f',"$pgdata/polar_node_static.conf");
+}
+
+=pod
+=item $node->polar_standby_build_data
+=cut
+sub polar_standby_build_data
+{
+	my ($self) = @_;
+	my $root_node = $self->polar_get_root_node;
+	my $src_polar_datadir = $root_node->polar_get_datadir;
+	my $dst_polar_datadir = $src_polar_datadir.'_'.$self->name;
+	if ($src_polar_datadir ne $dst_polar_datadir)
+	{
+		if ($root_node->polar_postmaster_is_alive)
+		{
+			# polar_basebackup build standby's data when root_node is alive.
+			my $temp_datadir = $self->data_dir."_tmp";
+			TestLib::system_or_bail('polar_basebackup', '-h', $root_node->host, '-p', $root_node->port,
+									'-U', 'postgres', "--polardata=$dst_polar_datadir", "-D", $temp_datadir);
+			TestLib::system_or_bail('rm', '-rf', $temp_datadir);
+		}
+		else
+		{
+			TestLib::system_or_bail('cp', '-frp', "$src_polar_datadir", "$dst_polar_datadir");
+		}
+		$self->append_conf('postgresql.conf', "polar_datadir=\'file-dio://$dst_polar_datadir\'");
+		$self->polar_set_datadir($dst_polar_datadir);
+		print "Building standby datadir ($dst_polar_datadir) from master datadir ($src_polar_datadir).";
+	}
+	else
+	{
+		die "Can not build standby datadir ($dst_polar_datadir) from master datadir ($src_polar_datadir).";
+	}
+	return;
+}
+
+=pod
+=item $node->polar_get_datadir
+=cut
+sub polar_get_datadir
+{
+	my ($self) = @_;
+	return $self->{_polar_datadir};
+}
+
+=pod
+=item $node->polar_set_datadir
+=cut
+sub polar_set_datadir
+{
+	my ($self, $polar_datadir) = @_;
+	$self->{_polar_datadir} = $polar_datadir;
+	$ENV{'polar_datadir'} = $polar_datadir;
+}
+
+=pod
+=item $node->polar_get_system_identifier
+=cut
+sub polar_get_system_identifier
+{
+	my ($self) = @_;
+	my $polar_datadir = $self->polar_get_datadir;
+	my $system_identifier = readpipe("pg_controldata -D $polar_datadir | grep 'system identifier' | cut -d ':' -f 2");
+	print "get system_identifier: $system_identifier\n";
+	return $system_identifier;
+}
+
+=pod
+=item $node->polar_get_redo_location($data_dir)
+=cut
+sub polar_get_redo_location
+{
+	my($self, $datadir) = @_;
+	my $name = $self->name;
+	my $redoptr = readpipe("pg_controldata -D $datadir | grep 'REDO location' | cut -d ':' -f 2");
+	print "get $name redo location: $redoptr";
+	chomp($redoptr);
+	return $redoptr;
+}
+
+=pod
+
+=item $node->polar_init(...)
+
+Initialize a new cluster base on polar for testing.
+
+=cut
+
+sub polar_init
+{
+	my ($self, $is_master, $mode) = @_;
+
+	my $host   = $self->host;
+	my %modes = (
+		'polar_default' => '',
+		'polar_repli_logindex' => $polar_repli_logindex,
+		'polar_master_logindex' => $polar_master_logindex,
+		'polar_standby_logindex' => $polar_standby_logindex,
+		'polar_standby_no_logindex' => $polar_standby_no_logindex,
+	);
+	
+	my $port = $self->port;
+	my $pgdata = $self->data_dir;
+	my $polar_datadir = $self->polar_get_datadir;
+
+	$mode = '<undef>' if !defined($mode);
+	croak "unknown mode for 'postgres.conf': '$mode', valid modes are "
+	  . join(', ', keys %modes)
+	  if !defined($modes{$mode});
+
+	TestLib::system_or_bail('initdb', '-k', '-U', 'postgres', '-D', $pgdata);
+	$polar_hostid++;
+
+	open my $conf, '>>', "$pgdata/postgresql.conf";
+
+	my $default_conf =<<"default_conf";
+
+	# Added by PostgresNode.pm for polar test case
+	polar_enable_shared_storage_mode = on
+	polar_hostid = $polar_hostid
+	port=$port
+	max_connections=100
+	shared_buffers=5GB
+	synchronous_commit=off
+	full_page_writes=off
+	max_wal_size=16GB
+	min_wal_size=4GB
+	autovacuum_naptime = 10min
+	polar_vfs.localfs_mode = true
+	shared_preload_libraries = '\$libdir/polar_vfs,\$libdir/polar_worker'
+	polar_disk_name='tap_test'
+	polar_datadir='file-dio://$polar_datadir'
+	$modes{$mode}
+	wal_level = replica
+	hot_standby=on
+	hot_standby_feedback=on
+	polar_standby_feedback=on
+	logging_collector=on
+	max_worker_processes=32
+	max_prepared_transactions=10
+	polar_csn_enable=on
+
+default_conf
+
+	print $conf $default_conf;
+
+	if ($TestLib::windows_os)
+	{
+		print $conf "listen_addresses = '$host'\n";
+	}
+	else
+	{
+		print $conf "unix_socket_directories = '$host'\n";
+		print $conf "listen_addresses = ''\n";
+	}
+
+	close $conf;
+
+	chmod($self->group_access ? 0640 : 0600, "$pgdata/postgresql.conf")
+	  or die("unable to set permissions for $pgdata/postgresql.conf");
+	
+  	$self->polar_shared_storage_init if $is_master;
+
+	return;
+}
+
+=pod
+=item $node->polar_init_datamax(...)
+initialize datamax node
+=cut
+
+sub polar_init_datamax
+{
+	my ($self, $primary_system_identifier, $mode) = @_;
+	
+	# set polar datamax datadir
+	my $name = $self->name;
+	my $polar_datamax_datadir = "$TestLib::tmp_check/t_${testname}_polar_${name}_data";
+	$self->polar_set_datadir($polar_datamax_datadir);
+
+	my $host   = $self->host;
+	my %modes = (
+		'polar_default' => '',
+		'polar_repli_logindex' => $polar_repli_logindex,
+		'polar_master_logindex' => $polar_master_logindex,
+		'polar_standby_logindex' => $polar_standby_logindex,
+		'polar_standby_no_logindex' => $polar_standby_no_logindex,
+	);
+	
+	my $port = $self->port;
+	my $pgdata = $self->data_dir;
+	my $polar_datadir = $self->polar_get_datadir;
+
+	$mode = '<undef>' if !defined($mode);
+	croak "unknown mode for 'postgres.conf': '$mode', valid modes are "
+	  . join(', ', keys %modes)
+	  if !defined($modes{$mode});
+
+	TestLib::system_or_bail('initdb', '-k', '-U', 'postgres', '-D', $pgdata, '-i', $primary_system_identifier);
+	$polar_hostid++;
+
+	open my $conf, '>>', "$pgdata/postgresql.conf";
+
+	my $default_conf =<<"default_conf";
+
+	# Added by PostgresNode.pm for polar test case
+	polar_enable_shared_storage_mode = on
+	polar_hostid = $polar_hostid
+	port=$port
+	max_connections=100
+	shared_buffers=5GB
+	synchronous_commit=off
+	full_page_writes=off
+	max_wal_size=16GB
+	min_wal_size=4GB
+	autovacuum_naptime = 10min
+	polar_vfs.localfs_test_mode = true
+	shared_preload_libraries = '\$libdir/polar_vfs,\$libdir/polar_worker'
+	polar_disk_name='tap_test'
+	polar_datadir='file-dio://$polar_datadir'
+	$modes{$mode}
+	wal_level = replica
+	hot_standby=on
+	hot_standby_feedback=on
+	polar_standby_feedback=on
+	logging_collector=on
+	max_worker_processes=32
+	max_prepared_transactions=10
+
+default_conf
+
+	print $conf $default_conf;
+
+	if ($TestLib::windows_os)
+	{
+		print $conf "listen_addresses = '$host'\n";
+	}
+	else
+	{
+		print $conf "unix_socket_directories = '$host'\n";
+		print $conf "listen_addresses = ''\n";
+	}
+
+	close $conf;
+
+	chmod($self->group_access ? 0640 : 0600, "$pgdata/postgresql.conf")
+	  or die("unable to set permissions for $pgdata/postgresql.conf");
+	
+  	$self->polar_shared_storage_init;
+
+	return;
+}
+
+
+=pod
+
 =item $node->init(...)
 
 Initialize a new cluster for testing.
@@ -438,12 +944,24 @@ sub init
 
 	$params{allows_streaming} = 0 unless defined $params{allows_streaming};
 	$params{has_archiving}    = 0 unless defined $params{has_archiving};
+  $params{enable_encryption} = 0 unless defined $params{enable_encryption};
+  $params{enable_flashback_log} = 0 unless defined $params{enable_flashback_log};
 
 	mkdir $self->backup_dir;
 	mkdir $self->archive_dir;
 
-	TestLib::system_or_bail('initdb', '-D', $pgdata, '-A', 'trust', '-N',
-		@{ $params{extra} });
+	if ($params{enable_encryption})
+	{
+		TestLib::system_or_bail('initdb', '-D', $pgdata, '-A', 'trust', '-N',
+								'--cluster-passphrase-command', 'echo "adfadsfadssssssssfa12312312312312312312312%p123"',
+								'-e', 'aes-256',
+								@{ $params{extra} });
+	}
+	else
+	{
+		TestLib::system_or_bail('initdb', '-D', $pgdata, '-A', 'trust', '-N',
+								@{ $params{extra} });
+	}
 	TestLib::system_or_bail($ENV{PG_REGRESS}, '--config-auth', $pgdata,
 		@{ $params{auth_extra} });
 
@@ -455,6 +973,11 @@ sub init
 	print $conf "log_statement = all\n";
 	print $conf "log_replication_commands = on\n";
 	print $conf "wal_retrieve_retry_interval = '500ms'\n";
+	print $conf "max_worker_processes = 32\n";
+
+	# If we create a no-polar standby node, polar_standby_feedback
+	# should be set to true because of connections on standby.
+	print $conf "polar_standby_feedback = on\n";
 
 	# If a setting tends to affect whether tests pass or fail, print it after
 	# TEMP_CONFIG.  Otherwise, print it before TEMP_CONFIG, thereby permitting
@@ -479,16 +1002,29 @@ sub init
 		}
 		print $conf "max_wal_senders = 5\n";
 		print $conf "max_replication_slots = 5\n";
-		print $conf "max_wal_size = 128MB\n";
+		print $conf "polar_enable_shared_storage_mode=off\n";
+		# if polar_enable_shared_storage_mode is off, polar_dropdb_write_wal_before_rm_file 
+		# should be off too, otherwise no drop db wal will be recorded.
+		print $conf "polar_dropdb_write_wal_before_rm_file=off\n";
+		print $conf "max_wal_size = 2GB\n";
 		print $conf "shared_buffers = 1MB\n";
 		print $conf "wal_log_hints = on\n";
 		print $conf "hot_standby = on\n";
 		print $conf "max_connections = 10\n";
+		print $conf "polar_wal_snd_reserved_for_superuser = -1\n";
+		print $conf "polar_enable_persisted_logical_slot = off\n";
+		print $conf "polar_enable_persisted_physical_slot = off\n";
 	}
 	else
 	{
 		print $conf "wal_level = minimal\n";
 		print $conf "max_wal_senders = 0\n";
+	}
+
+	if ($params{enable_flashback_log})
+	{
+		print $conf "polar_enable_flashback_log = on\n";
+		print $conf "polar_enable_lazy_checkpoint = off\n";
 	}
 
 	print $conf "port = $port\n";
@@ -558,10 +1094,23 @@ sub backup
 	my $backup_path = $self->backup_dir . '/' . $backup_name;
 	my $name        = $self->name;
 
-	print "# Taking pg_basebackup $backup_name from node \"$name\"\n";
-	TestLib::system_or_bail('pg_basebackup', '-D', $backup_path, '-h',
+	print "# Taking polar_basebackup $backup_name from node \"$name\"\n";
+	TestLib::system_or_bail('polar_basebackup', '-D', $backup_path, '-h',
 		$self->host, '-p', $self->port, '--no-sync');
 	print "# Backup finished\n";
+	return;
+}
+
+sub polar_backup
+{
+	my ($self, $backup_name, $polardata) = @_;
+	my $backup_path = $self->backup_dir . '/' . $backup_name;
+	my $name        = $self->name;
+
+	print "# Taking polar_basebackup $backup_name from node \"$name\"\n";
+	TestLib::system_or_bail('polar_basebackup', '-D', $backup_path, '-h',
+		$self->host, '-p', $self->port, '--no-sync', '--polardata='.$polardata, '-v');
+	print "# Polar backup finished\n";
 	return;
 }
 
@@ -757,10 +1306,27 @@ sub start
 	my $port   = $self->port;
 	my $pgdata = $self->data_dir;
 	my $name   = $self->name;
+	$params{use_valgrind} = 0 unless defined $params{use_valgrind};
+
 	BAIL_OUT("node \"$name\" is already running") if defined $self->{_pid};
 	print("### Starting node \"$name\"\n");
-	my $ret = TestLib::system_log('pg_ctl', '-D', $self->data_dir, '-l',
-		$self->logfile, 'start');
+	my $ret;
+
+	if ($params{use_valgrind})
+	{
+		my $valgrind_log = $self->{_valgrind_log};
+		mkdir $valgrind_log;
+
+		$ret = TestLib::system_log('valgrind', '--leak-check=full', '--gen-suppressions=all',
+		   '--suppressions=../../../src/tools/valgrind.supp', '--time-stamp=yes',
+		   "--log-file=$valgrind_log/%p.log", '--trace-children=yes',
+		   'pg_ctl', '-D', $self->data_dir, '-l', $self->logfile, 'start', '-w', '-c');
+	}
+	else
+	{
+		$ret = TestLib::system_log('pg_ctl', '-D', $self->data_dir, '-l',
+			$self->logfile, 'start', '-w', '-c');
+	}
 
 	if ($ret != 0)
 	{
@@ -868,6 +1434,35 @@ sub restart
 
 =pod
 
+=item $node->restart_no_check()
+=cut
+
+sub restart_no_check
+{
+	my ($self) = @_;
+
+	my $port    = $self->port;
+	my $pgdata  = $self->data_dir;
+	my $logfile = $self->logfile;
+	my $name    = $self->name;
+	print "### Restarting node \"$name\"\n";
+
+	my $ret = TestLib::system_log('pg_ctl', '-D', $pgdata, '-l', $logfile,
+		'restart');
+
+	if ($ret != 0)
+	{
+		print "# pg_ctl start failed; logfile:\n";
+		print TestLib::slurp_file($self->logfile);
+	}
+
+	$self->_update_pid(1);
+
+	return $ret;
+}
+
+=pod
+
 =item $node->promote()
 
 Wrapper for pg_ctl promote
@@ -884,7 +1479,245 @@ sub promote
 	print "### Promoting node \"$name\"\n";
 	TestLib::system_or_bail('pg_ctl', '-D', $pgdata, '-l', $logfile,
 		'promote');
+	$self->{_polar_node_type} = "master";
+	$self->{_polar_root_node} = $self;
 	return;
+}
+
+=pod
+
+=item $node->promote_async()
+
+Wrapper for pg_ctl promote in async mode
+
+=cut
+
+sub promote_async
+{
+	my ($self)  = @_;
+	my $port    = $self->port;
+	my $pgdata  = $self->data_dir;
+	my $logfile = $self->logfile;
+	my $name    = $self->name;
+	print "### Promoting node \"$name\"\n";
+	system("pg_ctl promote -D $pgdata -l $logfile &");
+	$self->{_polar_node_type} = "master";
+	$self->{_polar_root_node} = $self;
+	return;
+}
+
+=pod
+=item $node->promote_constraint(force_promote)
+only set root_node and node_type when promote success
+=cut
+
+sub promote_constraint
+{
+	my ($self, $force) = @_;
+	my $pgdata  = $self->data_dir;
+	my $logfile = $self->logfile;
+	my $name    = $self->name; 
+	print "### Promoting node \"$name\"\n";
+	my $ret;
+	if ($force == 0)
+	{
+		$ret = system("pg_ctl -D $pgdata -l $logfile promote");
+	}
+	# force promote
+	else
+	{
+		$ret = system("pg_ctl -D $pgdata -l $logfile promote -f");
+	}
+
+	# set node_type and root_node when promote success
+	if ($ret == 0)
+	{
+		$self->{_polar_node_type} = "master";
+		$self->{_polar_root_node} = $self;
+	}
+	return $ret;
+}
+
+=pod
+=item $node->pgbench_test(...)
+=cut
+sub pgbench_test
+{
+	my ($self, $init_flag, $init_data, $client_num, $job_num, $test_time, $async_flag) = @_;
+	my $host 	= $self->host;
+	my $port    = $self->port;
+	my $name	= $self->name;
+	my $ret		= 0;
+	print "### Pgbench test on node \"$name\"\n";
+	# init database when init_flag = 1
+	if ($init_flag == 1)
+	{
+		$ret = system("pgbench -n -i -s $init_data -h $host -p $port -U postgres");
+	}
+	if ($ret == 0)
+	{
+		# do pgbench_test in async mode
+		if ($async_flag == 1)
+		{
+			$ret = system("pgbench -n -M prepared -r -c $client_num -j $job_num -T $test_time -h $host -p $port -b tpcb-like -U postgres &");	
+		}
+		else
+		{
+			$ret = system("pgbench -n -M prepared -r -c $client_num -j $job_num -T $test_time -h $host -p $port -b tpcb-like -U postgres");
+		}
+	}
+	return $ret;
+}
+
+=pod
+
+=item $node->
+=pod
+
+=item $node->kill()
+
+POLAR: Wrapper for $node->kill9()
+
+We should wait for at least 10 seconds after send KILL signal to
+postmaster. Because the backend child process may be trapped in
+function backend_read_statsfile which would wait for response of
+dead stat collector process at most PGSTAT_MAX_WAIT_TIME milliseconds.
+
+=cut
+
+sub kill
+{
+	my ($self)  = @_;
+	$self->kill9;
+	# POLAR: wait for previous postmaster to die.
+	usleep(20000_000);
+	return;
+}
+
+=pod
+
+=item $node->find_child(process_name)
+POLAR: Find child process base on process name
+
+=cut
+
+sub find_child
+{
+	my ($self, $process_name) = @_;
+	my $pid=0;
+	my @childs=`ps -o pid,cmd --ppid $self->{_pid}` or die "can't run ps! $! \n";
+
+	foreach my $child (@childs)
+	{
+		$child =~ s/^\s+|\s+$//g;
+		my $pos = index($child, $process_name);
+		if ($pos > 0)
+		{
+			$pos = index($child, ' ');
+			$pid = substr($child, 0, $pos);
+			$pid =~ s/^\s+|\s+$//g;
+			print "### Killing child process \"$pid\", \"$child\" using signal 9\n";
+			last;
+		}
+	}
+
+	return $pid;
+}
+
+=pod
+
+=item $node->kill_child(process_name)
+POLAR: Kill child process base on process name
+
+=cut
+
+sub kill_child
+{
+	my ($self, $process_name) = @_;
+	my $pid = $self->find_child($process_name);
+
+	#TestLib::system_or_bail('pg_ctl', 'kill', 'KILL', $pid);
+	TestLib::system_or_bail('kill', '-9', $pid);
+}
+
+=pod
+
+=item $node->stop_child(process_name)
+POLAR: stop child process base on process name
+
+=cut
+
+sub stop_child
+{
+	my ($self, $process_name) = @_;
+	my $pid = $self->find_child($process_name);
+
+	TestLib::system_or_bail('kill', '-19', $pid);
+}
+
+=pod
+
+=item $node->resume_child(process_name)
+POLAR: resume child process base on process name
+
+=cut
+
+sub resume_child
+{
+	my ($self, $process_name) = @_;
+	my $pid = $self->find_child($process_name);
+
+	TestLib::system_or_bail('kill', '-18', $pid);
+}
+
+=pod
+=item $node->wait_walstreaming_establish_timeout(timeout)
+wait for walstreaming establish during timeout
+=cut
+ 
+sub wait_walstreaming_establish_timeout
+{
+	my ($self, $timeout) = @_;
+	my $walstream_state = "";
+	my $walreceiver_pid = 0;
+	my $root_node = $self->polar_get_root_node;
+	my $name = $self->name;
+	my $i = 0;
+	for($i = 0; $i < $timeout && $walreceiver_pid == 0; $i = $i + 1)
+	{
+		$walstream_state = $root_node->safe_psql('postgres',
+		qq[select state from pg_stat_replication where application_name = '$name';]);
+		if ($walstream_state eq "streaming")
+		{
+			$walreceiver_pid = $self->find_child('walreceiver');
+		}
+		sleep 1;
+	}
+	print "walreceiver_pid: $walreceiver_pid\n";
+	if ($walreceiver_pid == 0)
+	{
+		print "wal streaming haven't been established after $timeout secs\n";
+	}	
+	return $walreceiver_pid;
+}
+
+=pod
+
+=item $node->polar_postmaster_is_alive()
+
+=cut
+
+sub polar_postmaster_is_alive
+{
+	my ($self) = @_;
+	if (defined $self->{_pid})
+	{
+		return 1;
+	}
+	else
+	{
+		return 0;
+	}
 }
 
 # Internal routine to enable streaming replication on a standby node.
@@ -987,6 +1820,33 @@ sub _update_pid
 	# Complain if we expected to find a pidfile.
 	BAIL_OUT("postmaster.pid unexpectedly not present") if $is_running;
 	return;
+}
+
+=pod
+# get the value of specific variable via gdb postmaster
+=item $node->polar_get_variable_value
+=cut
+
+sub polar_get_variable_value
+{
+    my ($self, $variable) = @_;
+	my $pid = $self->{_pid};
+    my $value = -1;
+    my $command = "gdb -p $pid -ex 'set confirm off' -ex 'p $variable' -ex 'quit'";
+    my $output = readpipe($command);
+	print "gdb output:$output\n";
+    my @result = split('\n', $output);
+    my $str = "\$1";
+    foreach my $i (@result)  
+    { 
+        if (index($i, $str) != -1)
+        {
+            $value = (split(" ", $i))[2];
+            print "value: $value\n";
+            return $value;
+        }
+    }
+    return $value;
 }
 
 =pod
@@ -1163,7 +2023,13 @@ sub can_bind
 # order, later when the File::Temp objects are destroyed.
 END
 {
-
+	if ($ENV{'whoami'} and ($ENV{'whoami'} ne 'parent'))
+	{
+		return $?;
+	}
+	my $polar_datadir = $ENV{'polar_datadir'};
+	TestLib::system_or_bail('pg_verify_checksums', '-D', $polar_datadir)
+	  if ($polar_datadir && -e `printf $polar_datadir`);
 	# take care not to change the script's exit value
 	my $exit_code = $?;
 
@@ -1177,7 +2043,6 @@ END
 		# clean basedir on clean test invocation
 		$node->clean_node if $exit_code == 0 && TestLib::all_tests_passing();
 	}
-
 	$? = $exit_code;
 }
 
@@ -1210,6 +2075,8 @@ sub clean_node
 	my $self = shift;
 
 	rmtree $self->{_basedir} unless defined $self->{_pid};
+	rmtree $self->{_polar_datadir}
+		unless (defined $self->{_pid} || $self->polar_get_node_type eq 'replica');
 	return;
 }
 
@@ -1230,7 +2097,6 @@ sub safe_psql
 	my ($self, $dbname, $sql, %params) = @_;
 
 	my ($stdout, $stderr);
-
 	my $ret = $self->psql(
 		$dbname, $sql,
 		%params,
@@ -1376,6 +2242,9 @@ sub psql
 	$$stderr = "" if ref($stderr);
 
 	my $ret;
+	my $h;
+	#try 5 more times after expected error happends.
+	my $try_after_expected_error = 5;
 
 	# Run psql and capture any possible exceptions.  If the exception is
 	# because of a timeout and the caller requested to handle that, just return
@@ -1383,7 +2252,7 @@ sub psql
 	#
 	# For background, see
 	# https://metacpan.org/pod/release/ETHER/Try-Tiny-0.24/lib/Try/Tiny.pm
-	do
+	try_after_error: do
 	{
 		local $@;
 		eval {
@@ -1395,6 +2264,15 @@ sub psql
 			IPC::Run::run @ipcrun_opts;
 			$ret = $?;
 		};
+		# try after expected error happends.
+		if ($try_after_expected_error > 0 &&
+			defined $$stderr &&
+			$$stderr =~ m/WARNING:\s+page\s+verification\s+failed.*\n*.*invalid.*page.*in.*block/i)
+		{
+			print "expected error: $$stderr\n";
+			$try_after_expected_error -= 1;
+			goto try_after_error;
+		}
 		my $exc_save = $@;
 		if ($exc_save)
 		{
@@ -1472,8 +2350,160 @@ sub psql
 }
 
 =pod
+	create psql command stored in $sql.
+=cut
 
-=item $node->poll_query_until($dbname, $query [, $expected ])
+sub sql_cmd
+{
+	my ($self, $opts, $dbname, $sql, %params) = @_;
+
+	my $stdout            = $params{stdout};
+	my $stderr            = $params{stderr};
+	my $timeout           = undef;
+	my $timeout_exception = 'psql timed out';
+	my @psql_params =
+	  ('psql', '-XAtq', '-d', $self->connstr($dbname), '-f', '-');
+
+	# If the caller wants an array and hasn't passed stdout/stderr
+	# references, allocate temporary ones to capture them so we
+	# can return them. Otherwise we won't redirect them at all.
+	if (wantarray)
+	{
+		if (!defined($stdout))
+		{
+			my $temp_stdout = "";
+			$stdout = \$temp_stdout;
+		}
+		if (!defined($stderr))
+		{
+			my $temp_stderr = "";
+			$stderr = \$temp_stderr;
+		}
+	}
+
+	$params{on_error_stop} = 1 unless defined $params{on_error_stop};
+	$params{on_error_die}  = 0 unless defined $params{on_error_die};
+
+	push @psql_params, '-v', 'ON_ERROR_STOP=1' if $params{on_error_stop};
+	push @psql_params, @{ $params{extra_params} }
+	  if defined $params{extra_params};
+
+	$timeout =
+	  IPC::Run::timeout($params{timeout}, exception => $timeout_exception)
+	  if (defined($params{timeout}));
+
+	${ $params{timed_out} } = 0 if defined $params{timed_out};
+
+	# IPC::Run would otherwise append to existing contents:
+	$$stdout = "" if ref($stdout);
+	$$stderr = "" if ref($stderr);
+
+	@$opts = (\@psql_params, '<', \$sql);
+	push @$opts, '>',  $stdout if defined $stdout;
+	push @$opts, '2>', $stderr if defined $stderr;
+	push @$opts, $timeout if defined $timeout;
+
+	if (defined $$stdout)
+	{
+		chomp $$stdout;
+		$$stdout =~ s/\r//g if $TestLib::windows_os;
+	}
+
+	if (defined $$stderr)
+	{
+		chomp $$stderr;
+		$$stderr =~ s/\r//g if $TestLib::windows_os;
+	}
+
+}
+
+=pod
+	connect postgresql server via psql
+=cut
+
+sub psql_connect
+{
+	my ($self, $database, $timeout) = @_;
+	my $host = $self->host;
+	my $port = $self->port;
+	my $cmd = "psql -XAtq --set=SORT_RESULT=on -h ".$host." -p ".$port." -d ".$database;
+	my $psql = Expect->new();
+	$psql->log_stdout(0);
+	$psql->spawn($cmd) or die "psql can not connect to postgresql server.\n";
+	$psql->expect($timeout, $database) or die "timeout!\n";
+	if ($psql->match)
+	{
+		print "psql connect SUCC!\n";
+		$psql->send_slow(0, "\\pset pager 0\n");
+		$psql->clear_accum();
+		return $psql;
+	}
+	return undef;
+}
+
+=pod
+	execute SQLs via psql.
+=cut
+
+sub psql_execute
+{
+	my($self, $sql, $timeout, $psql) = @_;
+	$psql->clear_accum();
+	my $file = "/tmp/$$.sql";
+	open(my $INPUT, "+>$file") or return "file $file open failed!";
+	my $append = ";\\echo One-Job-Done-for-CDC.\n";
+	$sql = $sql.$append;
+	print $INPUT $sql;
+	close($INPUT);
+	my $filter = qr/\nOne-Job-Done-for-CDC\.\s/;
+	my $output = "";
+	my $execute_sql = "\\i $file;\n";
+	$psql->send($execute_sql);
+	$psql->expect($timeout, -re=>$filter) or return "Timeout!";
+	if ($psql->match)
+	{
+		$output .= $psql->before.$psql->match;
+	}
+	$psql->clear_accum();
+	my @output_array = split(//, $output);
+	$output = "";
+	foreach my $i (0..$#output_array)
+	{
+		if ($output_array[$i] eq "\n" or ($output_array[$i] ge "\x20" and $output_array[$i] le "\x7E"))
+		{
+			$output .= $output_array[$i];
+		}
+	}
+	unlink($file);
+	my $start = rindex($output, $execute_sql);
+	my $length = length($output);
+	if ($start < 0 or $start >= $length)
+	{
+		return "\n";
+	}
+	else
+	{
+		return substr($output, $start, $length)."\n";
+	}
+}
+=pod
+	disconnect postgresql server
+=cut
+
+sub psql_close
+{
+	my ($self, $psql) = @_;
+	if ($psql)
+	{
+		$psql->send("\\q\n");
+		$psql->soft_close();
+	}
+	print "psql close SUCC!\n";
+}
+
+=pod
+
+=item $node->poll_query_until($dbname, $query [, $expected, $max_attempts])
 
 Run B<$query> repeatedly, until it returns the B<$expected> result
 ('t', or SQL boolean true, by default).
@@ -1485,15 +2515,14 @@ Returns 1 if successful, 0 if timed out.
 
 sub poll_query_until
 {
-	my ($self, $dbname, $query, $expected) = @_;
+	my ($self, $dbname, $query, $expected, $max_attempts) = @_;
 
 	$expected = 't' unless defined($expected);    # default value
+	$max_attempts = defined($max_attempts) ? $max_attempts * 10 : 180 * 10;
 
 	my $cmd = [ 'psql', '-XAt', '-c', $query, '-d', $self->connstr($dbname) ];
 	my ($stdout, $stderr);
-	my $max_attempts = 180 * 10;
 	my $attempts     = 0;
-
 	while ($attempts < $max_attempts)
 	{
 		my $result = IPC::Run::run $cmd, '>', \$stdout, '2>', \$stderr;
@@ -1697,7 +2726,48 @@ sub lsn
 
 =pod
 
-=item $node->wait_for_catchup(standby_name, mode, target_lsn)
+=item $node->wait_for_startup($wait_timeout, $readonly)
+Wait for the node finish startup process and enter pm_run state
+
+=cut
+
+sub polar_wait_for_startup
+{
+	my ($self, $wait_timeout, $readonly) = @_;
+	$readonly = defined($readonly) ? $readonly : 1;
+	my $result = 0;
+	my ($stdout, $stderr);
+	for (my $i = 0; $i < $wait_timeout && $result != 1; $i = $i + 1)
+	{
+		if ($readonly == 1)
+		{
+			$self->psql('postgres', qq[SELECT 1], 
+					 stdout        => \$result,
+					 on_error_die  => 0, on_error_stop => 0);
+		}
+		else
+		{
+			$result = $self->psql('postgres', qq[CREATE VIEW test_view AS SELECT 1],
+					 stdout	=> \$stdout, stderr => \$stderr,
+					 on_error_die  => 0, on_error_stop => 0);
+			print "result: $result, stderr:$stderr\n";
+			$result = (($result == 0 && $stderr eq "")? 1 : -1);
+		}
+		sleep 1;
+	}
+	if ($result == 1 && $readonly != 1)
+	{
+		$self->psql('postgres', qq[DROP VIEW test_view],
+					 stdout => \$stdout, stderr => \$stderr,
+				     on_error_die  => 0, on_error_stop => 1);
+	}
+	print "startup result: $result\n";
+	return $result;
+}
+
+=pod
+
+=item $node->wait_for_catchup(standby_name, mode, target_lsn, $return_failed, $expected_res, $timeout))
 
 Wait for the node with application_name standby_name (usually from node->name,
 also works for logical subscriptions)
@@ -1715,14 +2785,21 @@ Requires that the 'postgres' db exists and is accessible.
 target_lsn may be any arbitrary lsn, but is typically $master_node->lsn('insert').
 If omitted, pg_current_wal_lsn() is used.
 
+$expected_res is the expected result of the query, default t
+
+$timeout set the timeout of poll_query_until function
+
 This is not a test. It die()s on failure.
 
 =cut
 
 sub wait_for_catchup
 {
-	my ($self, $standby_name, $mode, $target_lsn) = @_;
+	my ($self, $standby_name, $mode, $target_lsn, $return_failed, $expected_res, $timeout) = @_;
+	$return_failed ||= 0;
 	$mode = defined($mode) ? $mode : 'replay';
+	$expected_res = 't' unless defined($expected_res);    # default value
+	$timeout = defined($timeout) ? $timeout : 180; #default value, the same as poll_query_until
 	my %valid_modes =
 	  ('sent' => 1, 'write' => 1, 'flush' => 1, 'replay' => 1);
 	croak "unknown mode $mode for 'wait_for_catchup', valid modes are "
@@ -1751,10 +2828,20 @@ sub wait_for_catchup
 	  . $self->name . "\n";
 	my $query =
 	  qq[SELECT $lsn_expr <= ${mode}_lsn AND state = 'streaming' FROM pg_catalog.pg_stat_replication WHERE application_name = '$standby_name';];
-	$self->poll_query_until('postgres', $query)
-	  or croak "timed out waiting for catchup";
+	if (!$self->poll_query_until('postgres', $query, $expected_res, $timeout))
+	{
+		if (!$return_failed)
+		{
+			croak "timed out waiting for catchup";
+		}
+		else
+		{
+			print "timed out waiting for catchup\n";
+			return 0;
+		}
+	}
 	print "done\n";
-	return;
+	return 1;
 }
 
 =pod

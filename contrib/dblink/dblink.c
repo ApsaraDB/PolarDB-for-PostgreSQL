@@ -124,6 +124,11 @@ static bool is_valid_dblink_option(const PQconninfoOption *options,
 static int	applyRemoteGucs(PGconn *conn);
 static void restoreLocalGucs(int nestlevel);
 
+/* POLAR */
+void	_PG_init(void);
+static	PGconn *polar_dblink_port_mapping(const char *connstr);
+/* POLAR end*/
+
 /* Global */
 static remoteConn *pconn = NULL;
 static HTAB *remoteConnHash = NULL;
@@ -143,6 +148,37 @@ typedef struct remoteConnHashEnt
 
 /* initial number of connection hashes */
 #define NUMCONN 16
+
+extern PGDLLIMPORT int	PostPortNumber;
+static bool polar_auto_port_mapping = false;
+static bool polar_connection_check = false;
+
+/*
+ * Module load callback
+ */
+void _PG_init(void)
+{
+	DefineCustomBoolVariable("dblink.polar_auto_port_mapping",
+							 "auto mapping port to local instance.",
+							 NULL,
+							 &polar_auto_port_mapping,
+							 false,
+							 PGC_USERSET,
+							 0,
+							 NULL,
+							 NULL,
+							 NULL);
+	DefineCustomBoolVariable("dblink.polar_connection_check",
+							 "polardb connection check",
+							 NULL,
+							 &polar_connection_check,
+							 false,
+							 PGC_USERSET,
+							 0,
+							 NULL,
+							 NULL,
+							 NULL);
+}
 
 static char *
 xpstrdup(const char *in)
@@ -200,7 +236,7 @@ dblink_get_conn(char *conname_or_str,
 		if (connstr == NULL)
 			connstr = conname_or_str;
 		dblink_connstr_check(connstr);
-		conn = PQconnectdb(connstr);
+		conn = polar_dblink_port_mapping(connstr);
 		if (PQstatus(conn) == CONNECTION_BAD)
 		{
 			char	   *msg = pchomp(PQerrorMessage(conn));
@@ -287,7 +323,7 @@ dblink_connect(PG_FUNCTION_ARGS)
 
 	/* check password in connection string if not superuser */
 	dblink_connstr_check(connstr);
-	conn = PQconnectdb(connstr);
+	conn = polar_dblink_port_mapping(connstr);
 
 	if (PQstatus(conn) == CONNECTION_BAD)
 	{
@@ -3076,4 +3112,105 @@ restoreLocalGucs(int nestlevel)
 	/* Do nothing if no new nestlevel was created */
 	if (nestlevel > 0)
 		AtEOXact_GUC(true, nestlevel);
+}
+
+/*
+ * PLOAR: Forbidden to connect to other instances
+ */
+static PGconn *
+polar_dblink_port_mapping(const char *connstr)
+{
+	char *err_msg = NULL;
+	PQconninfoOption *conn_opts = NULL;
+	PQconninfoOption *conn_opt = NULL;
+	int argcount = 0;
+	const char **keywords = NULL;
+	const char **values = NULL;
+	int i = 0;
+	char tmp_port_str[NI_MAXSERV];
+	PGconn *conn = NULL;
+	bool has_port = false, has_host = false, has_slash = false;
+
+	conn_opts = PQconninfoParse(connstr, &err_msg);
+	if (conn_opts == NULL)
+	{
+		/*
+		 * Call PQconnectdb to let the caller check then raise error messages.
+		 * This is to avoid mistches in regression cases.
+		 */
+		return PQconnectdb(connstr);
+	}
+
+	for (conn_opt = conn_opts; conn_opt->keyword != NULL; conn_opt++)
+	{
+		if (conn_opt->val != NULL && conn_opt->val[0] != '\0')
+			argcount++;
+	}
+
+	keywords = palloc0((argcount + 3) * sizeof(*keywords));
+	values = palloc0((argcount + 3) * sizeof(*values));
+
+	for (conn_opt = conn_opts; conn_opt->keyword != NULL; conn_opt++)
+	{
+		if (conn_opt->val != NULL && conn_opt->val[0] != '\0')
+		{
+			if (strcmp(conn_opt->keyword, "port") == 0)
+			{
+				has_port = true;
+				if(conn_opt->val[0]=='/')
+				{
+					has_slash = true;
+				}
+				if (polar_connection_check)
+				{
+					elog(ERROR, "only connections to self instance are supported, please do not specify the port parameter");
+				}
+			}
+			else if (strcmp(conn_opt->keyword, "host") == 0 || strcmp(conn_opt->keyword, "hostaddr") == 0)
+			{
+				has_host = true;
+
+				if (polar_connection_check)
+				{
+					elog(ERROR, "only connections to self instance are supported, please do not specify the host or hostaddr parameters");
+				}
+			}
+
+			keywords[i] = conn_opt->keyword;
+			values[i] = conn_opt->val;
+			i++;
+		}
+	}
+
+	if (polar_auto_port_mapping && has_port && !has_host)
+	{
+		elog(ERROR, "connections to localhost with specified port number is not allowed. Please do NOT specify the port.");
+	}
+	if (polar_auto_port_mapping && has_host && has_slash)
+	{
+		elog(ERROR, "connections to localhost with Unix-domain communication is not allowed. \
+				Please do NOT used the directory for unix-domian socket.");
+	}
+
+	/* Apply mapping only when there is no port nor host specified */
+	if (polar_auto_port_mapping && !has_port && !has_host)
+	{
+		snprintf(tmp_port_str, NI_MAXSERV, "%d", PostPortNumber);
+		keywords[i] = "port";
+		values[i] = tmp_port_str;
+		i++;
+		keywords[i] = "host";
+		values[i] = "127.0.0.1";
+		i++;
+		keywords[i] = NULL;
+		values[i] = NULL;
+	}
+
+	conn = PQconnectdbParams(keywords, values, true);
+
+	pfree(values);
+	pfree(keywords);
+	PQconninfoFree(conn_opts);
+
+	return conn;
 }

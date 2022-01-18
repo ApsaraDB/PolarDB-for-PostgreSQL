@@ -39,6 +39,10 @@
 #include "parser/parser.h"		/* only needed for GUC variables */
 #include "parser/scansup.h"
 #include "mb/pg_wchar.h"
+
+/* POLAR */
+#include "utils/memutils.h"
+#include "utils/guc.h"
 }
 
 %{
@@ -1210,6 +1214,10 @@ addlit(char *ytext, int yleng, core_yyscan_t yyscanner)
 		{
 			yyextra->literalalloc *= 2;
 		} while ((yyextra->literallen + yleng) >= yyextra->literalalloc);
+		/* POLAR: if need < 1G-1 and >= 512M, then we alloc 1G-1 */
+		if (polar_allow_huge_alloc && yyextra->literalalloc > MaxAllocSize && (yyextra->literallen + yleng) < MaxAllocSize)
+			yyextra->literalalloc = MaxAllocSize;
+		/* POLAR end */
 		yyextra->literalbuf = (char *) repalloc(yyextra->literalbuf,
 												yyextra->literalalloc);
 	}
@@ -1226,6 +1234,10 @@ addlitchar(unsigned char ychar, core_yyscan_t yyscanner)
 	if ((yyextra->literallen + 1) >= yyextra->literalalloc)
 	{
 		yyextra->literalalloc *= 2;
+		/* POLAR: if need < 1G-1 and >= 512M, then we alloc 1G-1 */
+		if (polar_allow_huge_alloc && yyextra->literalalloc > MaxAllocSize && (yyextra->literallen + 1) < MaxAllocSize)
+			yyextra->literalalloc = MaxAllocSize;
+		/* POLAR end */
 		yyextra->literalbuf = (char *) repalloc(yyextra->literalbuf,
 												yyextra->literalalloc);
 	}

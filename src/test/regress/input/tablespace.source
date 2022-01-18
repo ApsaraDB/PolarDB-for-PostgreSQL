@@ -130,7 +130,8 @@ CREATE INDEX k ON testschema.tablespace_acl (c) TABLESPACE regress_tblspace;
 ALTER TABLE testschema.tablespace_acl OWNER TO regress_tablespace_user2;
 
 SET SESSION ROLE regress_tablespace_user2;
-CREATE TABLE tablespace_table (i int) TABLESPACE regress_tblspace; -- fail
+CREATE TABLE tablespace_table (i int) TABLESPACE regress_tblspace;
+DROP TABLE tablespace_table;
 ALTER TABLE testschema.tablespace_acl ALTER c TYPE bigint;
 RESET ROLE;
 

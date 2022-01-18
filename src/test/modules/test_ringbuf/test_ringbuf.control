@@ -1,4 +1,0 @@
-comment = 'Test code for ringbuf'
-default_version = '1.0'
-module_pathname = '$libdir/test_ringbuf'
-relocatable = true

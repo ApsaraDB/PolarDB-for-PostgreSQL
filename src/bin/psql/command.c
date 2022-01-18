@@ -258,6 +258,12 @@ HandleSlashCmds(PsqlScanState scan_state,
 	/* some commands write to queryFout, so make sure output is sent */
 	fflush(pset.queryFout);
 
+	/* POLAR: psql write replica fout file too */
+	if (pset.replicadb && pset.queryReplicaFout)
+		/* some commands write to queryReplicaFout, so make sure output is sent */
+		fflush(pset.queryReplicaFout);
+	/* POLAR end */
+
 	return status;
 }
 
@@ -2859,6 +2865,9 @@ do_connect(enum trivalue reuse_previous_specification,
 	bool		reuse_previous;
 	PQExpBufferData connstr;
 
+	/* POLAR */
+	PGconn	   *n_conn_replica = NULL;
+
 	if (!o_conn && (!dbname || !user || !host || !port))
 	{
 		/*
@@ -2998,6 +3007,44 @@ do_connect(enum trivalue reuse_previous_specification,
 
 		n_conn = PQconnectdbParams(keywords, values, true);
 
+		/* POLAR: support psql connect replica too */
+		paramnum = -1;
+		keywords[++paramnum] = "host";
+		values[paramnum] = getenv("PGREPLICAHOST") ? strdup(getenv("PGREPLICAHOST")) : NULL;
+		keywords[++paramnum] = "port";
+		values[paramnum] = getenv("PGREPLICAPORT") ? strdup(getenv("PGREPLICAPORT")) : NULL;
+		keywords[++paramnum] = "user";
+		values[paramnum] = user;
+
+		/*
+		 * Position in the array matters when the dbname is a connection
+		 * string, because settings in a connection string override earlier
+		 * array entries only.  Thus, user= in the connection string always
+		 * takes effect, but client_encoding= often will not.
+		 *
+		 * If you change this code, also change the initial-connection code in
+		 * main().  For no good reason, a connection string password= takes
+		 * precedence in main() but not here.
+		 */
+		keywords[++paramnum] = "dbname";
+		values[paramnum] = dbname;
+		keywords[++paramnum] = "password";
+		values[paramnum] = password;
+		keywords[++paramnum] = "fallback_application_name";
+		values[paramnum] = pset.progname;
+		keywords[++paramnum] = "client_encoding";
+		values[paramnum] = (pset.notty || getenv("PGCLIENTENCODING")) ? NULL : "auto";
+
+		/* add array terminator */
+		keywords[++paramnum] = NULL;
+		values[paramnum] = NULL;
+
+		if (getenv("PGREPLICAHOST") && getenv("PGREPLICAPORT"))
+			n_conn_replica = PQconnectdbParams(keywords, values, true);
+		else
+			n_conn_replica = NULL;
+		/* POLAR end */
+
 		pg_free(keywords);
 		pg_free(values);
 
@@ -3066,7 +3113,11 @@ do_connect(enum trivalue reuse_previous_specification,
 	 * sync with CheckConnection().
 	 */
 	PQsetNoticeProcessor(n_conn, NoticeProcessor, NULL);
+	/* POLAR: the same as above */
+	PQsetNoticeProcessor(n_conn_replica, NoticeProcessor, NULL);
 	pset.db = n_conn;
+	/* POLAR: the same as above */
+	pset.replicadb = n_conn_replica;
 	SyncVariables();
 	connection_warnings(false); /* Must be after SyncVariables */
 

@@ -70,7 +70,7 @@ extern uint8 visibilitymap_get_status(Relation rel, BlockNumber heapBlk, Buffer 
 extern void visibilitymap_count(Relation rel, BlockNumber *all_visible, BlockNumber *all_frozen);
 extern void visibilitymap_truncate(Relation rel, BlockNumber nheapblocks);
 
-/* POLAR */
+/* POLAR: polar_visibilitymap.c functions */
 extern void polar_visibilitymap_set(BlockNumber heapBlk, Buffer vmBuf, uint8 flags);
 
 #endif							/* VISIBILITYMAP_H */

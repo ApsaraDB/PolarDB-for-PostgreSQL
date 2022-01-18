@@ -2,13 +2,92 @@
 --
 --setup
 create extension polar_monitor;
--- buffer monitor
-select COUNT(*) >= 0 AS result from polar_normal_buffercache;
+create user polar_monitor password 'test';
+create table polar_monitor(pass varchar);
+insert into polar_monitor select rolpassword from pg_authid where rolname='polar_monitor';
+drop user polar_monitor;
+create user polar_monitor with superuser password 'test';
+drop user polar_monitor;
+drop table polar_monitor;
+-- test polar multi version snapshot store dynamic view
+select count(*) from polar_multi_version_snapshot_store_info;
+ count 
+-------
+     1
+(1 row)
+
+-- slru stat
+SELECT DISTINCT is_equal_result FROM (SELECT slots_number = (valid_pages + empty_pages + reading_pages + writing_pages) is_equal_result FROM polar_stat_slru()) t;
+ is_equal_result 
+-----------------
+ t
+(1 row)
+
+SELECT COUNT(*) >= 9 FROM polar_stat_slru();
+ ?column? 
+----------
+ t
+(1 row)
+
+select polar_used_logindex_fullpage_snapshot_mem_tbl_size() >= 0 as result;
  result 
 --------
  t
 (1 row)
 
+-- test polar_stat_shmem
+SELECT COUNT(*) > 10 AS result FROM polar_stat_shmem;
+ result 
+--------
+ t
+(1 row)
+
+-- test polar_stat_shmem_total_size
+SELECT COUNT(*) > 0 AS result FROM polar_stat_shmem_total_size;
+ result 
+--------
+ t
+(1 row)
+
+-- polar_stat_activity
+select a = b is_equal from (select
+(select count(*) from polar_stat_activity) a,
+(select count(*) from pg_stat_activity) b
+) c;
+ is_equal 
+----------
+ t
+(1 row)
+
+-- polar_stat_io_info
+select count(*)>6 from polar_stat_io_info;
+ ?column? 
+----------
+ t
+(1 row)
+
+-- polar_stat_io_latency
+select count(*) from polar_stat_io_latency;
+ count 
+-------
+     7
+(1 row)
+
+-- check polar dynamic bgworker
+SELECT COUNT(*) = 1 FROM polar_stat_activity WHERE backend_type='polar worker process';
+ ?column? 
+----------
+ t
+(1 row)
+
+-- check polar stat activity_rt
+select COUNT(*) >= 7 AS backends from polar_stat_activity_rt;
+ backends 
+----------
+ t
+(1 row)
+
+-- buffer monitor
 select COUNT(*) >= 0 AS result from polar_copy_buffercache;
  result 
 --------
@@ -25,6 +104,51 @@ select COUNT(polar_cbuf()) >= 0 As result;
  result 
 --------
  t
+(1 row)
+
+-- check stat cgroup
+select COUNT(*)  >= 0 AS result from polar_stat_cgroup;
+ result 
+--------
+ t
+(1 row)
+
+select COUNT(*)  >= 0 AS result from polar_cgroup_quota;
+ result 
+--------
+ t
+(1 row)
+
+-- check polar wal pipeline view
+select COUNT(*)  >= 0 AS result from polar_wal_pipeline_info;
+ result 
+--------
+ t
+(1 row)
+
+select COUNT(*)  >= 0 AS result from polar_wal_pipeline_stats;
+ result 
+--------
+ t
+(1 row)
+
+-- check polar proxy info view
+select count(*) = 11 from polar_stat_proxy_info;
+ ?column? 
+----------
+ t
+(1 row)
+
+select count(*) = 11 from polar_stat_proxy_info_rt;
+ ?column? 
+----------
+ t
+(1 row)
+
+select count(*) = 0 from polar_stat_reset_proxy_info();
+ ?column? 
+----------
+ f
 (1 row)
 
 --cleanup

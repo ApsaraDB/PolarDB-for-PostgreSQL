@@ -1,0 +1,144 @@
+CREATE EXTENSION polar_monitor;
+CREATE EXTENSION test_xact_split;
+create table tmp(id int);
+select test_xact_split_mock_ro();
+ test_xact_split_mock_ro 
+-------------------------
+ 
+(1 row)
+
+SELECT test_xact_split();
+INFO:  invalid input syntax for type xid: ""
+INFO:  invalid input syntax for type xid: "a"
+INFO:  value "4294967296" is out of range for type xid
+INFO:  value "4294967296" is out of range for type xid
+INFO:  value "18446744073709551615" is out of range for type xid
+INFO:  value "18446744073709551616" is out of range for type xid
+INFO:  invalid input syntax for type xid: "1 1"
+INFO:  invalid input syntax for type xid: "1	1"
+INFO:  value "-1" is out of range for type xid
+INFO:  value "-2" is out of range for type xid
+INFO:  value "-3" is out of range for type xid
+INFO:  invalid input syntax for type xid: "--1"
+INFO:  invalid input syntax for type xid: "1-"
+INFO:  invalid input syntax for type xid: "1--"
+INFO:  invalid input syntax for type xid: "-1-"
+INFO:  invalid input syntax for type xid: "a"
+INFO:  invalid input syntax for type xid: "aa"
+INFO:  invalid input syntax for type xid: "1a"
+INFO:  invalid input syntax for type xid: "a1"
+INFO:  invalid input syntax for type xid: "1a1"
+INFO:  invalid input syntax for type xid: "a1a"
+ test_xact_split 
+-----------------
+ 
+(1 row)
+
+begin;
+set polar_xact_split_xids = '1,100';
+reset polar_xact_split_xids;
+select * from tmp; /* should report ERROR */
+ERROR:  polar_xact_split_xids is incorrectly reset
+end;
+select test_xact_split_reset_mock();
+ test_xact_split_reset_mock 
+----------------------------
+ 
+(1 row)
+
+create table t(id int);
+begin;
+lock table t;
+select splittable from polar_stat_xact_split_info();
+ splittable 
+------------
+ f
+(1 row)
+
+end;
+select splittable from polar_stat_xact_split_info();
+ splittable 
+------------
+ t
+(1 row)
+
+begin;
+lock table t;
+savepoint a;
+select splittable from polar_stat_xact_split_info();
+ splittable 
+------------
+ f
+(1 row)
+
+insert into t select 1;
+select splittable from polar_stat_xact_split_info();
+ splittable 
+------------
+ f
+(1 row)
+
+savepoint b;
+select splittable from polar_stat_xact_split_info();
+ splittable 
+------------
+ f
+(1 row)
+
+rollback to savepoint a;
+select splittable from polar_stat_xact_split_info();
+ splittable 
+------------
+ f
+(1 row)
+
+end;
+select splittable from polar_stat_xact_split_info();
+ splittable 
+------------
+ t
+(1 row)
+
+begin;
+insert into t select 1;
+select splittable from polar_stat_xact_split_info();
+ splittable 
+------------
+ t
+(1 row)
+
+savepoint a;
+select splittable from polar_stat_xact_split_info();
+ splittable 
+------------
+ t
+(1 row)
+
+lock table t;
+select splittable from polar_stat_xact_split_info();
+ splittable 
+------------
+ f
+(1 row)
+
+savepoint b;
+select splittable from polar_stat_xact_split_info();
+ splittable 
+------------
+ f
+(1 row)
+
+rollback to savepoint a;
+select splittable from polar_stat_xact_split_info();
+ splittable 
+------------
+ f
+(1 row)
+
+end;
+select splittable from polar_stat_xact_split_info();
+ splittable 
+------------
+ t
+(1 row)
+

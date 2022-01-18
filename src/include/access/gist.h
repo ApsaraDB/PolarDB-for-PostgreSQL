@@ -36,6 +36,8 @@
 #define GIST_FETCH_PROC					9
 #define GISTNProcs					9
 
+
+
 /*
  * Page opaque data in a GiST index page.
  */

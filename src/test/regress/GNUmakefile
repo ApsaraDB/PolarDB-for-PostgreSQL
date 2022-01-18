@@ -23,6 +23,11 @@ ifdef MAX_CONNECTIONS
 MAXCONNOPT += --max-connections=$(MAX_CONNECTIONS)
 endif
 
+DMA_REGRESS_OPTS = 
+ifdef DMA_OPTS
+DMA_REGRESS_OPTS += --dma=$(DMA_OPTS)
+endif
+
 # stuff to pass into build of pg_regress
 EXTRADEFS = '-DHOST_TUPLE="$(host_tuple)"' \
 	'-DSHELLPROG="$(SHELL)"' \
@@ -126,10 +131,12 @@ tablespace-setup:
 ## Run tests
 ##
 
-REGRESS_OPTS = --dlpath=. --max-concurrent-tests=20 $(EXTRA_REGRESS_OPTS)
+REGRESS_OPTS = --dlpath=. --max-concurrent-tests=20 $(DMA_REGRESS_OPTS) $(EXTRA_REGRESS_OPTS)
 
 check: all tablespace-setup
-	$(pg_regress_check) $(REGRESS_OPTS) --schedule=$(srcdir)/parallel_schedule $(MAXCONNOPT) $(EXTRA_TESTS)
+	echo polar_create_table_with_full_replica_identity=false > temp_config
+	$(pg_regress_check) $(REGRESS_OPTS) --temp-config=temp_config --schedule=$(srcdir)/parallel_schedule $(MAXCONNOPT) $(EXTRA_TESTS)
+	rm -f temp_config
 
 # POLAR check
 polar-check: all tablespace-setup temp-install check
@@ -140,11 +147,38 @@ check-tests: all tablespace-setup | temp-install
 	$(pg_regress_check) $(REGRESS_OPTS) $(MAXCONNOPT) $(TESTS) $(EXTRA_TESTS)
 
 installcheck: all tablespace-setup
-	$(pg_regress_installcheck) $(REGRESS_OPTS) --schedule=$(srcdir)/serial_schedule $(EXTRA_TESTS)
+	echo polar_create_table_with_full_replica_identity=false > temp_config
+	$(pg_regress_installcheck) $(REGRESS_OPTS) --temp-config=temp_config --schedule=$(srcdir)/serial_schedule $(EXTRA_TESTS)
+	rm -f temp_config
 
+# like installcheck, but use polar-dev-schedule
 polar-installcheck: all tablespace-setup temp-install
 	$(PERL) $(srcdir)/cpdirstructure.pl
-	PATH="$(bindir):$$PATH" $(pg_regress_installcheck) $(REGRESS_OPTS) --schedule=$(srcdir)/polar-dev-schedule $(EXTRA_TESTS)
+	echo polar_create_table_with_full_replica_identity=false > temp_config
+	PATH="$(bindir):$$PATH" $(pg_regress_installcheck) $(REGRESS_OPTS) --temp-config=temp_config --schedule=$(srcdir)/polar-dev-schedule $(EXTRA_TESTS)
+	rm -f temp_config
+
+# like installcheck, but use polar-dev-schedule and polar-px-dev-schedule in px mode
+polar-installcheck-px: export PG_REGRESS_PX_MODE=--polar-parallel-execution --load-extension=polar_px
+polar-installcheck-px: all tablespace-setup temp-install
+	$(PERL) $(srcdir)/cpdirstructure.pl
+	echo polar_create_table_with_full_replica_identity=false > temp_config
+	PATH="$(bindir):$$PATH" $(pg_regress_installcheck) $(REGRESS_OPTS) --temp-config=temp_config --schedule=$(srcdir)/polar-dev-schedule --schedule=$(srcdir)/polar-px-dev-schedule $(EXTRA_TESTS) 
+	rm -f temp_config
+
+
+quick-installcheck: all tablespace-setup temp-install
+	$(PERL) $(srcdir)/cpdirstructure.pl
+	echo polar_create_table_with_full_replica_identity=false > temp_config
+	PATH="$(bindir):$$PATH" $(pg_regress_installcheck) $(REGRESS_OPTS) --temp-config=temp_config --schedule=$(SCHEDULE) $(EXTRA_TESTS) 
+	rm -f temp_config
+
+quick-installcheck-px: export PG_REGRESS_PX_MODE=--polar-parallel-execution --load-extension=polar_px
+quick-installcheck-px: all tablespace-setup temp-install
+	$(PERL) $(srcdir)/cpdirstructure.pl
+	echo polar_create_table_with_full_replica_identity=false > temp_config
+	PATH="$(bindir):$$PATH" $(pg_regress_installcheck) $(REGRESS_OPTS) --temp-config=temp_config --schedule=$(SCHEDULE) $(EXTRA_TESTS) 
+	rm -f temp_config
 
 installcheck-parallel: all tablespace-setup
 	$(pg_regress_installcheck) $(REGRESS_OPTS) --schedule=$(srcdir)/parallel_schedule $(MAXCONNOPT) $(EXTRA_TESTS)

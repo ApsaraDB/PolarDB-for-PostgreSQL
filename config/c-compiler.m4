@@ -701,3 +701,25 @@ if test x"$Ac_cachevar" = x"yes"; then
 fi
 undefine([Ac_cachevar])dnl
 ])# PGAC_ARMV8_CRC32C_INTRINSICS
+
+# POLAR_AC_ARMV8_LSE
+# -------------------------
+# Check if the compiler supports the LSE instructions
+AC_DEFUN([POLAR_AC_ARMV8_LSE],
+[define([Ac_cachevar], [AS_TR_SH([polar_ac_cv_armv8_lse_$1])])dnl
+AC_CACHE_CHECK([for builtin __sync int32 locking functions with CFLAGS=$1], [Ac_cachevar],
+[polar_ac_save_CFLAGS=$CFLAGS
+CFLAGS="$polar_ac_save_CFLAGS $1"
+AC_LINK_IFELSE([AC_LANG_PROGRAM([],
+  [int lock = 0;
+   __sync_lock_test_and_set(&lock, 1);
+   __sync_lock_release(&lock);])],
+  [Ac_cachevar="yes"],
+  [Ac_cachevar="no"])
+CFLAGS="$polar_ac_save_CFLAGS"])
+if test x"$Ac_cachevar" = x"yes"; then
+  POLAR_CFLAGS_ARMV8_LSE="$1"
+  polar_ac_armv8_lse=yes
+fi
+undefine([Ac_cachevar])dnl
+])# POLAR_AC_ARMV8_LSE

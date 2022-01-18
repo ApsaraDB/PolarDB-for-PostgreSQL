@@ -236,4 +236,6 @@ extern Size toast_datum_size(Datum value);
  */
 extern Oid	toast_get_valid_index(Oid toastoid, LOCKMODE lock);
 
+
+
 #endif							/* TUPTOASTER_H */

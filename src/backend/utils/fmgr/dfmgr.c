@@ -23,6 +23,9 @@
 #include "utils/dynamic_loader.h"
 #include "utils/hsearch.h"
 
+/* POLAR */
+#include "utils/guc.h"
+
 
 /* signatures for PostgreSQL-specific library init/fini functions */
 typedef void (*PG_init_t) (void);
@@ -196,10 +199,20 @@ internal_load_library(const char *libname)
 		 * Check for same files - different paths (ie, symlink or link)
 		 */
 		if (stat(libname, &stat_buf) == -1)
-			ereport(ERROR,
+		{
+			int error_level = ERROR;
+			
+			/* POLAR: don't ERROR for shared preload libraries */
+			if (process_shared_preload_libraries_in_progress &&
+				polar_suppress_preload_error && errno == ENOENT)
+				error_level = WARNING;
+
+			ereport(error_level,
 					(errcode_for_file_access(),
 					 errmsg("could not access file \"%s\": %m",
 							libname)));
+			return NULL;
+		}
 
 		for (file_scanner = file_list;
 			 file_scanner != NULL &&

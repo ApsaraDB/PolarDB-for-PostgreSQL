@@ -3385,6 +3385,7 @@ ALTER TABLE old_system_table DROP COLUMN othercol;
 DROP TABLE old_system_table;
 -- set logged
 CREATE UNLOGGED TABLE unlogged1(f1 SERIAL PRIMARY KEY, f2 TEXT);
+NOTICE:  change unlogged table to logged table,because unlogged table not supports Master-Slave mode
 -- check relpersistence of an unlogged table
 SELECT relname, relkind, relpersistence FROM pg_class WHERE relname ~ '^unlogged1'
 UNION ALL
@@ -3394,18 +3395,19 @@ SELECT 'toast index', ri.relkind, ri.relpersistence FROM pg_class r join pg_clas
 ORDER BY relname;
      relname      | relkind | relpersistence 
 ------------------+---------+----------------
- toast index      | i       | u
- toast table      | t       | u
- unlogged1        | r       | u
+ toast index      | i       | p
+ toast table      | t       | p
+ unlogged1        | r       | p
  unlogged1_f1_seq | S       | p
- unlogged1_pkey   | i       | u
+ unlogged1_pkey   | i       | p
 (5 rows)
 
 CREATE UNLOGGED TABLE unlogged2(f1 SERIAL PRIMARY KEY, f2 INTEGER REFERENCES unlogged1); -- foreign key
+NOTICE:  change unlogged table to logged table,because unlogged table not supports Master-Slave mode
 CREATE UNLOGGED TABLE unlogged3(f1 SERIAL PRIMARY KEY, f2 INTEGER REFERENCES unlogged3); -- self-referencing foreign key
+NOTICE:  change unlogged table to logged table,because unlogged table not supports Master-Slave mode
 ALTER TABLE unlogged3 SET LOGGED; -- skip self-referencing foreign key
 ALTER TABLE unlogged2 SET LOGGED; -- fails because a foreign key to an unlogged table exists
-ERROR:  could not change table "unlogged2" to logged because it references unlogged table "unlogged1"
 ALTER TABLE unlogged1 SET LOGGED;
 -- check relpersistence of an unlogged table after changing to permanent
 SELECT relname, relkind, relpersistence FROM pg_class WHERE relname ~ '^unlogged1'

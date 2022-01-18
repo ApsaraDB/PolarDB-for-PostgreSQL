@@ -3306,6 +3306,10 @@ if ($collation_check_stderr !~ /ERROR: /)
 # Create a second database for certain tests to work against
 $node->psql('postgres', 'create database regress_pg_dump_test;');
 
+# turn off polar_force_unlogged_to_logged_table
+$node->psql('postgres', 'alter system set polar_force_unlogged_to_logged_table TO off;select pg_reload_conf();');
+sleep 2;
+
 # Start with number of command_fails_like()*2 tests below (each
 # command_fails_like is actually 2 tests)
 my $num_tests = 12;

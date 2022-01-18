@@ -16,12 +16,14 @@
 
 #include "access/clog.h"
 #include "access/xlogdefs.h"
+#include "access/polar_csn_mvcc_vars.h"
 #include "lib/ilist.h"
-#include "portability/instr_time.h"
 #include "storage/latch.h"
 #include "storage/lock.h"
 #include "storage/pg_sema.h"
 #include "storage/proclist_types.h"
+#include "portability/instr_time.h"
+#include "polar_dma/polar_dma.h"
 
 /*
  * Each backend advertises up to PGPROC_MAX_CACHED_SUBXIDS TransactionIds
@@ -119,6 +121,9 @@ struct PGPROC
 	Oid			databaseId;		/* OID of database this backend is using */
 	Oid			roleId;			/* OID of role using this backend */
 
+	/* POLAR: role is superuser? */
+	bool		issuper;
+
 	Oid			tempNamespaceId;	/* OID of temp schema this backend is
 									 * using */
 
@@ -156,6 +161,17 @@ struct PGPROC
 	XLogRecPtr	waitLSN;		/* waiting for this LSN or higher */
 	int			syncRepState;	/* wait state for sync rep */
 	SHM_QUEUE	syncRepLinks;	/* list link if process is in syncrep queue */
+
+	/*
+	 * POLAR: Info used for waiting for consensus to synchronize our XLog Flush 
+	 * point or consensus command.
+	 */
+	ConsensusProcInfo consensusInfo;
+
+
+	/* POLAR: record min lsn when reading in case that replica clear xlog buffer */
+	pg_atomic_uint64	polar_read_min_lsn;
+	/* POLAR end */
 
 	/*
 	 * All PROCLOCK objects for locks held or awaited by this backend are
@@ -213,16 +229,35 @@ struct PGPROC
 	dlist_head	lockGroupMembers;	/* list of members, if I'm a leader */
 	dlist_node	lockGroupLink;	/* my member link, if I'm a member */
 
-	/* POLAR: record min lsn when reading in case that replica clear xlog buffer */
-	pg_atomic_uint64	polar_read_min_lsn;
+	/* POLAR px */
+	pg_atomic_flag	polar_px_is_executing;		/* whether this process is executing PX? */
 	/* POLAR end */
+
 };
 
 /* NOTE: "typedef struct PGPROC PGPROC" appears in storage/lock.h. */
 
+/* POLAR: We need to remember read min lsn before read from storage to prevent
+ * bgwriter clean hashtable and logindex
+ */
+#define POLAR_SET_BACKEND_READ_MIN_LSN(lsn) \
+	do { \
+		if (MyProc) \
+			pg_atomic_write_u64(&(MyProc->polar_read_min_lsn), (lsn)); \
+	} while (0)
+
+/* POLAR: Reset read min lsn */
+#define POLAR_RESET_BACKEND_READ_MIN_LSN() \
+	do { \
+		if (MyProc) \
+			pg_atomic_write_u64(&(MyProc->polar_read_min_lsn), InvalidXLogRecPtr); \
+	} while(0)
 
 extern PGDLLIMPORT PGPROC *MyProc;
 extern PGDLLIMPORT struct PGXACT *MyPgXact;
+
+/* POALR px: Special for PX reader gangs */
+extern PGDLLIMPORT PGPROC *lockHolderProcPtr;
 
 /*
  * Prior to PostgreSQL 9.2, the fields below were stored as part of the
@@ -242,6 +277,15 @@ typedef struct PGXACT
 								 * starting our xact, excluding LAZY VACUUM:
 								 * vacuum must not remove tuples deleted by
 								 * xid >= xmin ! */
+
+	/* 
+	 * POLAR csn 
+	 * When transaction committing, record commit csn in PGXACT with CommitSeqNoLock hold.
+	 * For now, only used in GetRunningTransactionData to iterate ProcArray and filter out
+	 * committed xacts in active xacts list.
+	 * If committed, value is csn, else InvalidTransactionId.
+	 */
+	CommitSeqNo polar_csn; 
 
 	uint8		vacuumFlags;	/* vacuum-related flags, see above */
 	bool		overflowed;
@@ -283,6 +327,15 @@ typedef struct PROC_HDR
 	int			startupProcPid;
 	/* Buffer id of the buffer that Startup process waits for pin on, or -1 */
 	int			startupBufferPinWaitBufId;
+	
+	/* POLAR px */
+    /* Counter for assigning serial numbers to processes */
+    pg_atomic_uint32	pxSessionCounter;
+	pg_atomic_uint32	pxWorkerCounter;
+	pg_atomic_uint32	sqlRequestCounter;
+
+	/* POLAR wal_pipeliner process's latch */
+	Latch	   	* volatile polar_wal_pipeliner_latch;
 } PROC_HDR;
 
 extern PGDLLIMPORT PROC_HDR *ProcGlobal;
@@ -299,8 +352,14 @@ extern PGPROC *PreparedXactProcs;
  * Background writer, checkpointer and WAL writer run during normal operation.
  * Startup process and WAL receiver also consume 2 slots, but WAL writer is
  * launched only after startup has exited, so we only need 4 slots.
+ * 
+ * POLAR wal pipeline
+ * add a new wal pipeline process
+ *
+ * POLAR flashback log
+ * add flashback log background inserter and writer.
  */
-#define NUM_AUXILIARY_PROCS		4
+#define NUM_AUXILIARY_PROCS		8
 
 /* configurable options */
 extern PGDLLIMPORT int DeadlockTimeout;
@@ -342,19 +401,5 @@ extern PGPROC *AuxiliaryPidGetProc(int pid);
 
 extern void BecomeLockGroupLeader(void);
 extern bool BecomeLockGroupMember(PGPROC *leader, int pid);
-
-/* POLAR: We need to remember read min lsn before read from storage to prevent
- * bgwriter clean hashtable and logindex
- */
-#define POLAR_SET_BACKEND_READ_MIN_LSN(lsn) \
-	pg_atomic_write_u64(&(MyProc->polar_read_min_lsn), (lsn))
-
-/* POLAR: Reset read min lsn */
-#define POLAR_RESET_BACKEND_READ_MIN_LSN() \
-	do { \
-		if (MyProc) \
-			pg_atomic_write_u64(&(MyProc->polar_read_min_lsn), InvalidXLogRecPtr); \
-	} while(0)
-/* POLAR ends */
 
 #endif							/* PROC_H */

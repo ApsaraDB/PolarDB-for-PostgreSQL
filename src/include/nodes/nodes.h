@@ -44,6 +44,9 @@ typedef enum NodeTag
 	 */
 	T_Plan,
 	T_Result,
+	/* POLAR px */
+	T_Plan_Start = T_Result,
+	/* POLAR end */
 	T_ProjectSet,
 	T_ModifyTable,
 	T_Append,
@@ -84,6 +87,23 @@ typedef enum NodeTag
 	T_SetOp,
 	T_LockRows,
 	T_Limit,
+	/* POLAR px */
+	T_Sequence,
+	T_DynamicSeqScan,
+	T_ExternalScan,
+	T_DynamicIndexScan,
+	T_DynamicBitmapIndexScan,
+	T_DynamicBitmapHeapScan,
+	T_Motion,
+	T_ShareInputScan,
+	T_Repeat,
+	T_SplitUpdate,
+	T_RowTrigger,
+	T_AssertOp,
+	T_PartitionSelector,
+	T_Plan_End,
+	/* POLAR end */
+
 	/* these aren't subclasses of Plan: */
 	T_NestLoopParam,
 	T_PlanRowMark,
@@ -505,7 +525,54 @@ typedef enum NodeTag
 	T_IndexAmRoutine,			/* in access/amapi.h */
 	T_TsmRoutine,				/* in access/tsmapi.h */
 	T_ForeignKeyCacheInfo,		/* in utils/rel.h */
-	T_CallContext				/* in nodes/parsenodes.h */
+	T_CallContext,				/* in nodes/parsenodes.h */
+
+	/* POLAR: DMA Command */
+	T_PolarDMACommandStmt,
+	/* POLAR end */
+
+	/* POLAR px */
+	T_PartitionBy,
+	T_PartitionRangeItem,
+	T_PartitionValuesSpec,
+	T_AlterPartitionId,
+	T_AlterPartitionCmd,
+	T_InheritPartitionCmd,
+	T_CreateFileSpaceStmt,
+	T_FileSpaceEntry,
+	T_DropFileSpaceStmt,
+	T_TableValueExpr,
+	T_DenyLoginInterval,
+	T_DenyLoginPoint,
+	T_AlterTypeStmt,
+	T_ExpandStmtSpec,
+	T_AOVacuumPhaseConfig,
+	T_MotionState,
+	T_TupleDescNode,
+	T_SerializedParamExternData,
+	T_PxProcess,
+	T_SliceTable,
+	T_CursorPosInfo,
+	T_QueryDispatchDesc,
+	T_Flow,
+	T_GroupId,
+	T_DMLActionExpr,
+	T_PartSelectedExpr,
+	T_PartDefaultExpr,
+	T_PartBoundExpr,
+	T_PartBoundInclusionExpr,
+	T_PartBoundOpenExpr,
+	T_PartListRuleExpr,
+	T_PartListNullTestExpr,
+	T_PxExplain_StatHdr,             /* in px_explain.c */
+	T_PxPolicy,	/* in catalog/px_policy.h */
+	T_SequenceState,
+	T_ShareInputScanState,
+	T_PartitionSelectorState,
+	T_AssertOpState,
+	/* POLAR px */
+	T_SplitUpdateState
+	/* POLAR end */
 } NodeTag;
 
 /*
@@ -619,13 +686,21 @@ extern Oid *readOidCols(int numCols);
 extern int16 *readAttrNumberCols(int numCols);
 
 /*
+ * nodes/outfast.c. This special version of nodeToString is only used by serializeNode.
+ * It's a quick hack that allocates 8K buffer for StringInfo struct through initStringIinfoSizeOf
+ */
+extern char *nodeToBinaryStringFast(void *obj, int *length);
+
+extern Node *readNodeFromBinaryString(const char *str, int len);
+
+/*
  * nodes/copyfuncs.c
  */
 extern void *copyObjectImpl(const void *obj);
 
 /* cast result back to argument type, if supported by compiler */
 #ifdef HAVE_TYPEOF
-#define copyObject(obj) ((typeof(obj)) copyObjectImpl(obj))
+#define copyObject(obj) ((__typeof__(obj)) copyObjectImpl(obj))
 #else
 #define copyObject(obj) copyObjectImpl(obj)
 #endif
@@ -706,11 +781,11 @@ typedef enum JoinType
 	 * by the executor (nor, indeed, by most of the planner).
 	 */
 	JOIN_UNIQUE_OUTER,			/* LHS path must be made unique */
-	JOIN_UNIQUE_INNER			/* RHS path must be made unique */
+	JOIN_UNIQUE_INNER,			/* RHS path must be made unique */
 
-	/*
-	 * We might need additional join types someday.
-	 */
+	JOIN_LASJ_NOTIN,			/* Left Anti Semi Join with Not-In semantics:		*/
+								/*   If any NULL values are produced by inner side,  */
+								/*   return no join results. Otherwise, same as LASJ */
 } JoinType;
 
 /*
@@ -733,6 +808,21 @@ typedef enum JoinType
 	   (1 << JOIN_FULL) | \
 	   (1 << JOIN_RIGHT) | \
 	   (1 << JOIN_ANTI))) != 0)
+
+/*
+ * DispatchMethod - PX dispatch method.
+ *
+ * There are currently three possibilties, an initial value of undetermined,
+ * and a value for each of the ways the dispatch code implements.
+ */
+typedef enum DispatchMethod
+{
+	DISPATCH_UNDETERMINED = 0,	/* Used prior to determination. */
+	DISPATCH_SEQUENTIAL,		/* Dispatch on entry postgres process only. */
+	DISPATCH_PARALLEL			/* Dispatch on query executor and entry processes. */
+
+} DispatchMethod;
+
 
 /*
  * AggStrategy -

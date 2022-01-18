@@ -3,7 +3,6 @@
  * polar_spgxlog_idx.c
  *    WAL redo parse logic for spg index.
  *
- *
  * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  * Portions Copyright (c) 2021, Alibaba Group Holding limited
@@ -15,8 +14,7 @@
 #include "postgres.h"
 
 #include "access/bufmask.h"
-#include "access/polar_logindex.h"
-#include "access/polar_logindex_internal.h"
+#include "access/polar_logindex_redo.h"
 #include "access/spgxlog.h"
 #include "access/spgist_private.h"
 #include "access/transam.h"
@@ -25,80 +23,80 @@
 #include "access/xlog_internal.h"
 #include "storage/buf_internals.h"
 #include "storage/standby.h"
+#include "utils/memutils.h"
 
 static void
-polar_spg_redo_add_node_save(XLogReaderState *record)
+polar_spg_redo_add_node_save(polar_logindex_redo_ctl_t instance, XLogReaderState *record)
 {
 	if (!XLogRecHasBlockRef(record, 1))
-		polar_log_index_save_block(record, 0);
+		polar_logindex_save_block(instance, record, 0);
 	else
 	{
-		polar_log_index_save_block(record, 1);
-		polar_log_index_save_block(record, 0);
+		polar_logindex_save_block(instance, record, 1);
+		polar_logindex_save_block(instance, record, 0);
 
 		if (XLogRecHasBlockRef(record, 2))
-			polar_log_index_save_block(record, 2);
+			polar_logindex_save_block(instance, record, 2);
 	}
 }
 
 static void
-polar_spg_redo_add_node_parse(XLogReaderState *record)
+polar_spg_redo_add_node_parse(polar_logindex_redo_ctl_t instance, XLogReaderState *record)
 {
 	if (!XLogRecHasBlockRef(record, 1))
-		polar_log_index_redo_parse(record, 0);
+		polar_logindex_redo_parse(instance, record, 0);
 	else
 	{
-		polar_log_index_redo_parse(record, 1);
-		polar_log_index_redo_parse(record, 0);
+		polar_logindex_redo_parse(instance, record, 1);
+		polar_logindex_redo_parse(instance, record, 0);
 
 		/*
 		 * Update parent downlink (if we didn't do it as part of the source or
 		 * destination page update already).
 		 */
 		if (XLogRecHasBlockRef(record, 2))
-			polar_log_index_redo_parse(record, 2);
+			polar_logindex_redo_parse(instance, record, 2);
 	}
 }
 
 static void
-polar_spg_redo_pick_split_save(XLogReaderState *record)
+polar_spg_redo_pick_split_save(polar_logindex_redo_ctl_t instance, XLogReaderState *record)
 {
 	if (XLogRecHasBlockRef(record, 0))
-		polar_log_index_save_block(record, 0);
+		polar_logindex_save_block(instance, record, 0);
 
 	if (XLogRecHasBlockRef(record, 1))
-		polar_log_index_save_block(record, 1);
+		polar_logindex_save_block(instance, record, 1);
 
-	polar_log_index_save_block(record, 2);
+	polar_logindex_save_block(instance, record, 2);
 
 	if (XLogRecHasBlockRef(record, 3))
-		polar_log_index_save_block(record, 3);
+		polar_logindex_save_block(instance, record, 3);
 }
 
 static void
-polar_spg_redo_pick_split_parse(XLogReaderState *record)
+polar_spg_redo_pick_split_parse(polar_logindex_redo_ctl_t instance, XLogReaderState *record)
 {
-	BufferTag	src_tag,
-				dst_tag;
+	BufferTag src_tag, dst_tag;
 	polar_page_lock_t src_lock = POLAR_INVALID_PAGE_LOCK,
-				dst_lock = POLAR_INVALID_PAGE_LOCK;
-	Buffer		src_buf = InvalidBuffer,
-				dst_buf = InvalidBuffer;
+					  dst_lock = POLAR_INVALID_PAGE_LOCK;
+	Buffer    src_buf = InvalidBuffer,
+			  dst_buf = InvalidBuffer;
 
 	if (XLogRecHasBlockRef(record, 0))
-		POLAR_MINI_TRANS_REDO_PARSE(record, 0, src_tag, src_lock, src_buf);
+		POLAR_MINI_TRANS_REDO_PARSE(instance, record, 0, src_tag, src_lock, src_buf);
 
 	if (XLogRecHasBlockRef(record, 1))
-		POLAR_MINI_TRANS_REDO_PARSE(record, 1, dst_tag, dst_lock, dst_buf);
+		POLAR_MINI_TRANS_REDO_PARSE(instance, record, 1, dst_tag, dst_lock, dst_buf);
 
-	polar_log_index_redo_parse(record, 2);
+	polar_logindex_redo_parse(instance, record, 2);
 
 	if (XLogRecHasBlockRef(record, 0))
 	{
 		if (BufferIsValid(src_buf))
 			UnlockReleaseBuffer(src_buf);
 
-		polar_log_index_mini_trans_unlock(src_lock);
+		polar_logindex_mini_trans_unlock(instance->mini_trans, src_lock);
 	}
 
 	if (XLogRecHasBlockRef(record, 1))
@@ -106,15 +104,15 @@ polar_spg_redo_pick_split_parse(XLogReaderState *record)
 		if (BufferIsValid(dst_buf))
 			UnlockReleaseBuffer(dst_buf);
 
-		polar_log_index_mini_trans_unlock(dst_lock);
+		polar_logindex_mini_trans_unlock(instance->mini_trans, dst_lock);
 	}
 
 	if (XLogRecHasBlockRef(record, 3))
-		polar_log_index_redo_parse(record, 3);
+		polar_logindex_redo_parse(instance, record, 3);
 }
 
 static void
-polar_spg_redo_vacuum_parse(XLogReaderState *record)
+polar_spg_redo_vacuum_parse(polar_logindex_redo_ctl_t instance, XLogReaderState *record)
 {
 	/*
 	 * If any redirection tuples are being removed, make sure there are no
@@ -123,7 +121,7 @@ polar_spg_redo_vacuum_parse(XLogReaderState *record)
 	if (polar_enable_resolve_conflict && reachedConsistency && InHotStandby)
 	{
 		spgxlogVacuumRedirect *xldata =
-		(spgxlogVacuumRedirect *) XLogRecGetData(record);
+			(spgxlogVacuumRedirect *) XLogRecGetData(record);
 
 		if (TransactionIdIsValid(xldata->newestRedirectXid))
 		{
@@ -135,16 +133,15 @@ polar_spg_redo_vacuum_parse(XLogReaderState *record)
 		}
 	}
 
-	polar_log_index_redo_parse(record, 0);
+	polar_logindex_redo_parse(instance, record, 0);
 }
 
 static XLogRedoAction
 polar_spg_redo_create_index(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 {
-	XLogRecPtr	lsn = record->EndRecPtr;
-	Page		page;
-	BufferTag	meta_tag,
-				leaf_tag;
+	XLogRecPtr  lsn = record->EndRecPtr;
+	Page        page;
+	BufferTag   meta_tag, leaf_tag;
 
 	POLAR_GET_LOG_TAG(record, meta_tag, 0);
 
@@ -191,15 +188,14 @@ polar_spg_redo_create_index(XLogReaderState *record, BufferTag *tag, Buffer *buf
 static XLogRedoAction
 polar_spg_redo_add_leaf(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 {
-	XLogRecPtr	lsn = record->EndRecPtr;
-	char	   *ptr = XLogRecGetData(record);
+	XLogRecPtr  lsn = record->EndRecPtr;
+	char       *ptr = XLogRecGetData(record);
 	spgxlogAddLeaf *xldata = (spgxlogAddLeaf *) ptr;
-	char	   *leafTuple;
+	char       *leafTuple;
 	SpGistLeafTupleData leafTupleHdr;
-	Page		page;
+	Page        page;
 	XLogRedoAction action = BLK_NOTFOUND;
-	BufferTag	leaf_tag,
-				parent_tag;
+	BufferTag   leaf_tag, parent_tag;
 
 	ptr += sizeof(spgxlogAddLeaf);
 	leafTuple = ptr;
@@ -211,9 +207,9 @@ polar_spg_redo_add_leaf(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 	if (BUFFERTAGS_EQUAL(*tag, leaf_tag))
 	{
 		/*
-		 * In normal operation we would have both current and parent pages
-		 * locked simultaneously; but in WAL replay it should be safe to
-		 * update the leaf page before updating the parent.
+		 * In normal operation we would have both current and parent pages locked
+		 * simultaneously; but in WAL replay it should be safe to update the leaf
+		 * page before updating the parent.
 		 */
 		if (xldata->newPage)
 		{
@@ -301,21 +297,19 @@ polar_spg_redo_add_leaf(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 }
 
 static XLogRedoAction
-polar_spg_redo_move_leafs(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
+polar_spg_redo_move_leafs(XLogReaderState *record, BufferTag  *tag, Buffer *buffer)
 {
-	XLogRecPtr	lsn = record->EndRecPtr;
-	char	   *ptr = XLogRecGetData(record);
+	XLogRecPtr  lsn = record->EndRecPtr;
+	char       *ptr = XLogRecGetData(record);
 	spgxlogMoveLeafs *xldata = (spgxlogMoveLeafs *) ptr;
 	XLogRedoAction action = BLK_NOTFOUND;
 	SpGistState state;
 	OffsetNumber *toDelete;
 	OffsetNumber *toInsert;
-	int			nInsert;
-	Page		page;
+	int         nInsert;
+	Page        page;
 	BlockNumber blknoDst;
-	BufferTag	leaf_tag,
-				src_tag,
-				parent_tag;
+	BufferTag   leaf_tag, src_tag, parent_tag;
 
 	XLogRecGetBlockTag(record, 1, NULL, NULL, &blknoDst);
 
@@ -335,10 +329,9 @@ polar_spg_redo_move_leafs(XLogReaderState *record, BufferTag *tag, Buffer *buffe
 	if (BUFFERTAGS_EQUAL(*tag, leaf_tag))
 	{
 		/*
-		 * In normal operation we would have all three pages (source, dest,
-		 * and parent) locked simultaneously; but in WAL replay it should be
-		 * safe to update them one at a time, as long as we do it in the right
-		 * order.
+		 * In normal operation we would have all three pages (source, dest, and
+		 * parent) locked simultaneously; but in WAL replay it should be safe to
+		 * update them one at a time, as long as we do it in the right order.
 		 */
 
 		/* Insert tuples on the dest page (do first, so redirect is valid) */
@@ -354,13 +347,13 @@ polar_spg_redo_move_leafs(XLogReaderState *record, BufferTag *tag, Buffer *buffe
 
 		if (action == BLK_NEEDS_REDO)
 		{
-			int			i;
+			int         i;
 
 			page = BufferGetPage(*buffer);
 
 			for (i = 0; i < nInsert; i++)
 			{
-				char	   *leafTuple;
+				char       *leafTuple;
 				SpGistLeafTupleData leafTupleHdr;
 
 				/*
@@ -434,16 +427,15 @@ polar_spg_redo_move_leafs(XLogReaderState *record, BufferTag *tag, Buffer *buffe
 static XLogRedoAction
 polar_spg_redo_add_node(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 {
-	XLogRecPtr	lsn = record->EndRecPtr;
-	char	   *ptr = XLogRecGetData(record);
+	XLogRecPtr  lsn = record->EndRecPtr;
+	char       *ptr = XLogRecGetData(record);
 	spgxlogAddNode *xldata = (spgxlogAddNode *) ptr;
 	XLogRedoAction action = BLK_NOTFOUND;
-	char	   *innerTuple;
+	char       *innerTuple;
 	SpGistInnerTupleData innerTupleHdr;
 	SpGistState state;
-	Page		page;
-	BufferTag	old_tag,
-				new_tag;
+	Page        page;
+	BufferTag   old_tag, new_tag;
 
 	ptr += sizeof(spgxlogAddNode);
 	innerTuple = ptr;
@@ -541,10 +533,7 @@ polar_spg_redo_add_node(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 		{
 			action = POLAR_READ_BUFFER_FOR_REDO(record, 0, buffer);
 
-			/*
-			 * Delete old tuple, replacing it with redirect or placeholder
-			 * tuple
-			 */
+			/* Delete old tuple, replacing it with redirect or placeholder tuple */
 			if (action == BLK_NEEDS_REDO)
 			{
 				SpGistDeadTuple dt;
@@ -602,8 +591,7 @@ polar_spg_redo_add_node(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 		 */
 		if (xldata->parentBlk == 2)
 		{
-			BufferTag	parent_tag;
-
+			BufferTag parent_tag;
 			POLAR_GET_LOG_TAG(record, parent_tag, 2);
 
 			if (BUFFERTAGS_EQUAL(*tag, parent_tag))
@@ -634,17 +622,16 @@ polar_spg_redo_add_node(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 static XLogRedoAction
 polar_spg_redo_split_tuple(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 {
-	XLogRecPtr	lsn = record->EndRecPtr;
-	char	   *ptr = XLogRecGetData(record);
+	XLogRecPtr  lsn = record->EndRecPtr;
+	char       *ptr = XLogRecGetData(record);
 	spgxlogSplitTuple *xldata = (spgxlogSplitTuple *) ptr;
 	XLogRedoAction action = BLK_NOTFOUND;
-	char	   *prefixTuple;
+	char       *prefixTuple;
 	SpGistInnerTupleData prefixTupleHdr;
-	char	   *postfixTuple;
+	char       *postfixTuple;
 	SpGistInnerTupleData postfixTupleHdr;
-	Page		page;
-	BufferTag	update_tag,
-				orig_tag;
+	Page        page;
+	BufferTag   update_tag, orig_tag;
 
 	ptr += sizeof(spgxlogSplitTuple);
 	prefixTuple = ptr;
@@ -728,25 +715,22 @@ polar_spg_redo_split_tuple(XLogReaderState *record, BufferTag *tag, Buffer *buff
 static XLogRedoAction
 polar_spg_redo_pick_split(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 {
-	XLogRecPtr	lsn = record->EndRecPtr;
-	char	   *ptr = XLogRecGetData(record);
+	XLogRecPtr  lsn = record->EndRecPtr;
+	char       *ptr = XLogRecGetData(record);
 	spgxlogPickSplit *xldata = (spgxlogPickSplit *) ptr;
 	XLogRedoAction action = BLK_NOTFOUND;
-	char	   *innerTuple;
+	char       *innerTuple;
 	SpGistInnerTupleData innerTupleHdr;
 	SpGistState state;
 	OffsetNumber *toDelete;
 	OffsetNumber *toInsert;
-	uint8	   *leafPageSelect;
-	Page		srcPage = NULL;
-	Page		destPage = NULL;
-	Page		page = NULL;
-	int			i;
+	uint8      *leafPageSelect;
+	Page        srcPage = NULL;
+	Page        destPage = NULL;
+	Page        page = NULL;
+	int         i;
 	BlockNumber blknoInner;
-	BufferTag	src_tag,
-				dst_tag,
-				inner_tag,
-				parent_tag;
+	BufferTag   src_tag, dst_tag, inner_tag, parent_tag;
 
 	XLogRecGetBlockTag(record, 2, NULL, NULL, &blknoInner);
 
@@ -777,10 +761,7 @@ polar_spg_redo_pick_split(XLogReaderState *record, BufferTag *tag, Buffer *buffe
 
 			if (xldata->isRootSplit)
 			{
-				/*
-				 * when splitting root, we touch it only in the guise of new
-				 * inner
-				 */
+				/* when splitting root, we touch it only in the guise of new inner */
 				srcPage = NULL;
 			}
 			else if (xldata->initSrc)
@@ -797,10 +778,10 @@ polar_spg_redo_pick_split(XLogReaderState *record, BufferTag *tag, Buffer *buffe
 			else
 			{
 				/*
-				 * Delete the specified tuples from source page.  (In case
-				 * we're in Hot Standby, we need to hold lock on the page till
-				 * we're done inserting leaf tuples and the new inner tuple,
-				 * else the added redirect tuple will be a dangling link.)
+				 * Delete the specified tuples from source page.  (In case we're in
+				 * Hot Standby, we need to hold lock on the page till we're done
+				 * inserting leaf tuples and the new inner tuple, else the added
+				 * redirect tuple will be a dangling link.)
 				 */
 				srcPage = NULL;
 				action = POLAR_READ_BUFFER_FOR_REDO(record, 0, buffer);
@@ -810,9 +791,9 @@ polar_spg_redo_pick_split(XLogReaderState *record, BufferTag *tag, Buffer *buffe
 					srcPage = BufferGetPage(*buffer);
 
 					/*
-					 * We have it a bit easier here than in doPickSplit(),
-					 * because we know the inner tuple's location already, so
-					 * we can inject the correct redirection tuple now.
+					 * We have it a bit easier here than in doPickSplit(), because we
+					 * know the inner tuple's location already, so we can inject the
+					 * correct redirection tuple now.
 					 */
 					if (!state.isBuild)
 						spgPageIndexMultiDelete(&state, srcPage,
@@ -859,15 +840,14 @@ polar_spg_redo_pick_split(XLogReaderState *record, BufferTag *tag, Buffer *buffe
 			{
 				/*
 				 * We could probably release the page lock immediately in the
-				 * full-page-image case, but for safety let's hold it till
-				 * later.
+				 * full-page-image case, but for safety let's hold it till later.
 				 */
 				action = POLAR_READ_BUFFER_FOR_REDO(record, 1, buffer);
 
 				if (action == BLK_NEEDS_REDO)
 					destPage = (Page) BufferGetPage(*buffer);
 				else
-					destPage = NULL;	/* don't do any page updates */
+					destPage = NULL;    /* don't do any page updates */
 			}
 		}
 	}
@@ -877,13 +857,10 @@ polar_spg_redo_pick_split(XLogReaderState *record, BufferTag *tag, Buffer *buffe
 		/* restore leaf tuples to src and/or dest page */
 		for (i = 0; i < xldata->nInsert; i++)
 		{
-			char	   *leafTuple;
+			char       *leafTuple;
 			SpGistLeafTupleData leafTupleHdr;
 
-			/*
-			 * the tuples are not aligned, so must copy to access the size
-			 * field.
-			 */
+			/* the tuples are not aligned, so must copy to access the size field. */
 			leafTuple = ptr;
 			memcpy(&leafTupleHdr, leafTuple, sizeof(SpGistLeafTupleData));
 			ptr += leafTupleHdr.size;
@@ -891,7 +868,7 @@ polar_spg_redo_pick_split(XLogReaderState *record, BufferTag *tag, Buffer *buffe
 			page = leafPageSelect[i] ? destPage : srcPage;
 
 			if (page == NULL)
-				continue;		/* no need to touch this page */
+				continue;           /* no need to touch this page */
 
 			addOrReplaceTuple(page, (Item) leafTuple, leafTupleHdr.size,
 							  toInsert[i]);
@@ -975,8 +952,8 @@ polar_spg_redo_pick_split(XLogReaderState *record, BufferTag *tag, Buffer *buffe
 static XLogRedoAction
 polar_spg_redo_vacuum_leaf(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 {
-	XLogRecPtr	lsn = record->EndRecPtr;
-	char	   *ptr = XLogRecGetData(record);
+	XLogRecPtr  lsn = record->EndRecPtr;
+	char       *ptr = XLogRecGetData(record);
 	spgxlogVacuumLeaf *xldata = (spgxlogVacuumLeaf *) ptr;
 	XLogRedoAction action = BLK_NOTFOUND;
 	OffsetNumber *toDead;
@@ -986,9 +963,9 @@ polar_spg_redo_vacuum_leaf(XLogReaderState *record, BufferTag *tag, Buffer *buff
 	OffsetNumber *chainSrc;
 	OffsetNumber *chainDest;
 	SpGistState state;
-	Page		page;
-	int			i;
-	BufferTag	vacuum_tag;
+	Page        page;
+	int         i;
+	BufferTag  vacuum_tag;
 
 	POLAR_GET_LOG_TAG(record, vacuum_tag, 0);
 
@@ -1031,9 +1008,9 @@ polar_spg_redo_vacuum_leaf(XLogReaderState *record, BufferTag *tag, Buffer *buff
 		/* see comments in vacuumLeafPage() */
 		for (i = 0; i < xldata->nMove; i++)
 		{
-			ItemId		idSrc = PageGetItemId(page, moveSrc[i]);
-			ItemId		idDest = PageGetItemId(page, moveDest[i]);
-			ItemIdData	tmp;
+			ItemId      idSrc = PageGetItemId(page, moveSrc[i]);
+			ItemId      idDest = PageGetItemId(page, moveDest[i]);
+			ItemIdData  tmp;
 
 			tmp = *idSrc;
 			*idSrc = *idDest;
@@ -1065,13 +1042,13 @@ polar_spg_redo_vacuum_leaf(XLogReaderState *record, BufferTag *tag, Buffer *buff
 static XLogRedoAction
 polar_spg_redo_vacuum_root(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 {
-	XLogRecPtr	lsn = record->EndRecPtr;
-	char	   *ptr = XLogRecGetData(record);
+	XLogRecPtr  lsn = record->EndRecPtr;
+	char       *ptr = XLogRecGetData(record);
 	spgxlogVacuumRoot *xldata = (spgxlogVacuumRoot *) ptr;
-	XLogRedoAction action = BLK_NOTFOUND;
+	XLogRedoAction  action = BLK_NOTFOUND;
 	OffsetNumber *toDelete;
-	Page		page;
-	BufferTag	del_tag;
+	Page        page;
+	BufferTag   del_tag;
 
 	POLAR_GET_LOG_TAG(record, del_tag, 0);
 
@@ -1098,12 +1075,12 @@ polar_spg_redo_vacuum_root(XLogReaderState *record, BufferTag *tag, Buffer *buff
 static XLogRedoAction
 polar_spg_redo_vacuum_redirect(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 {
-	XLogRecPtr	lsn = record->EndRecPtr;
-	char	   *ptr = XLogRecGetData(record);
+	XLogRecPtr  lsn = record->EndRecPtr;
+	char       *ptr = XLogRecGetData(record);
 	spgxlogVacuumRedirect *xldata = (spgxlogVacuumRedirect *) ptr;
 	XLogRedoAction action = BLK_NOTFOUND;
 	OffsetNumber *itemToPlaceholder;
-	BufferTag	vacuum_tag;
+	BufferTag   vacuum_tag;
 
 	POLAR_GET_LOG_TAG(record, vacuum_tag, 0);
 
@@ -1116,9 +1093,9 @@ polar_spg_redo_vacuum_redirect(XLogReaderState *record, BufferTag *tag, Buffer *
 
 	if (action == BLK_NEEDS_REDO)
 	{
-		Page		page = BufferGetPage(*buffer);
+		Page        page = BufferGetPage(*buffer);
 		SpGistPageOpaque opaque = SpGistPageGetOpaque(page);
-		int			i;
+		int         i;
 
 		/* Convert redirect pointers to plain placeholders */
 		for (i = 0; i < xldata->nToPlaceholder; i++)
@@ -1139,7 +1116,7 @@ polar_spg_redo_vacuum_redirect(XLogReaderState *record, BufferTag *tag, Buffer *
 		/* Remove placeholder tuples at end of page */
 		if (xldata->firstPlaceholder != InvalidOffsetNumber)
 		{
-			int			max = PageGetMaxOffsetNumber(page);
+			int         max = PageGetMaxOffsetNumber(page);
 			OffsetNumber *toDelete;
 
 			toDelete = palloc(sizeof(OffsetNumber) * max);
@@ -1164,51 +1141,51 @@ polar_spg_redo_vacuum_redirect(XLogReaderState *record, BufferTag *tag, Buffer *
 }
 
 void
-polar_spg_idx_save(XLogReaderState *record)
+polar_spg_idx_save(polar_logindex_redo_ctl_t instance, XLogReaderState *record)
 {
-	uint8		info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
+	uint8       info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
 
 	switch (info)
 	{
 		case XLOG_SPGIST_CREATE_INDEX:
-			polar_log_index_save_block(record, 0);
-			polar_log_index_save_block(record, 1);
-			polar_log_index_save_block(record, 2);
+			polar_logindex_save_block(instance, record, 0);
+			polar_logindex_save_block(instance, record, 1);
+			polar_logindex_save_block(instance, record, 2);
 			break;
 
 		case XLOG_SPGIST_ADD_LEAF:
-			polar_log_index_save_block(record, 0);
+			polar_logindex_save_block(instance, record, 0);
 
 			if (XLogRecHasBlockRef(record, 1))
-				polar_log_index_save_block(record, 1);
+				polar_logindex_save_block(instance, record, 1);
 
 			break;
 
 		case XLOG_SPGIST_MOVE_LEAFS:
-			polar_log_index_save_block(record, 1);
-			polar_log_index_save_block(record, 0);
-			polar_log_index_save_block(record, 2);
+			polar_logindex_save_block(instance, record, 1);
+			polar_logindex_save_block(instance, record, 0);
+			polar_logindex_save_block(instance, record, 2);
 			break;
 
 		case XLOG_SPGIST_ADD_NODE:
-			polar_spg_redo_add_node_save(record);
+			polar_spg_redo_add_node_save(instance, record);
 			break;
 
 		case XLOG_SPGIST_SPLIT_TUPLE:
 			if (XLogRecHasBlockRef(record, 1))
-				polar_log_index_save_block(record, 1);
+				polar_logindex_save_block(instance, record, 1);
 
-			polar_log_index_save_block(record, 0);
+			polar_logindex_save_block(instance, record, 0);
 			break;
 
 		case XLOG_SPGIST_PICKSPLIT:
-			polar_spg_redo_pick_split_save(record);
+			polar_spg_redo_pick_split_save(instance, record);
 			break;
 
 		case XLOG_SPGIST_VACUUM_LEAF:
 		case XLOG_SPGIST_VACUUM_ROOT:
 		case XLOG_SPGIST_VACUUM_REDIRECT:
-			polar_log_index_save_block(record, 0);
+			polar_logindex_save_block(instance, record, 0);
 			break;
 
 		default:
@@ -1218,54 +1195,54 @@ polar_spg_idx_save(XLogReaderState *record)
 }
 
 bool
-polar_spg_idx_parse(XLogReaderState *record)
+polar_spg_idx_parse(polar_logindex_redo_ctl_t instance, XLogReaderState *record)
 {
-	uint8		info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
+	uint8       info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
 
 	switch (info)
 	{
 		case XLOG_SPGIST_CREATE_INDEX:
-			polar_log_index_redo_parse(record, 0);
-			polar_log_index_redo_parse(record, 1);
-			polar_log_index_redo_parse(record, 2);
+			polar_logindex_redo_parse(instance, record, 0);
+			polar_logindex_redo_parse(instance, record, 1);
+			polar_logindex_redo_parse(instance, record, 2);
 			break;
 
 		case XLOG_SPGIST_ADD_LEAF:
-			polar_log_index_redo_parse(record, 0);
+			polar_logindex_redo_parse(instance, record, 0);
 
 			if (XLogRecHasBlockRef(record, 1))
-				polar_log_index_redo_parse(record, 1);
+				polar_logindex_redo_parse(instance, record, 1);
 
 			break;
 
 		case XLOG_SPGIST_MOVE_LEAFS:
-			polar_log_index_redo_parse(record, 1);
-			polar_log_index_redo_parse(record, 0);
-			polar_log_index_redo_parse(record, 2);
+			polar_logindex_redo_parse(instance, record, 1);
+			polar_logindex_redo_parse(instance, record, 0);
+			polar_logindex_redo_parse(instance, record, 2);
 			break;
 
 		case XLOG_SPGIST_ADD_NODE:
-			polar_spg_redo_add_node_parse(record);
+			polar_spg_redo_add_node_parse(instance, record);
 			break;
 
 		case XLOG_SPGIST_SPLIT_TUPLE:
 			if (XLogRecHasBlockRef(record, 1))
-				polar_log_index_redo_parse(record, 1);
+				polar_logindex_redo_parse(instance, record, 1);
 
-			polar_log_index_redo_parse(record, 0);
+			polar_logindex_redo_parse(instance, record, 0);
 			break;
 
 		case XLOG_SPGIST_PICKSPLIT:
-			polar_spg_redo_pick_split_parse(record);
+			polar_spg_redo_pick_split_parse(instance, record);
 			break;
 
 		case XLOG_SPGIST_VACUUM_LEAF:
 		case XLOG_SPGIST_VACUUM_ROOT:
-			polar_log_index_redo_parse(record, 0);
+			polar_logindex_redo_parse(instance, record, 0);
 			break;
 
 		case XLOG_SPGIST_VACUUM_REDIRECT:
-			polar_spg_redo_vacuum_parse(record);
+			polar_spg_redo_vacuum_parse(instance, record);
 			break;
 
 		default:
@@ -1277,43 +1254,77 @@ polar_spg_idx_parse(XLogReaderState *record)
 }
 
 XLogRedoAction
-polar_spg_idx_redo(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
+polar_spg_idx_redo(polar_logindex_redo_ctl_t instance, XLogReaderState *record,  BufferTag *tag, Buffer *buffer)
 {
-	uint8		info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
+	uint8       info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
+	XLogRedoAction action = BLK_NOTFOUND;
+	MemoryContext old_ctx, redo_ctx;
+
+	redo_ctx = polar_get_redo_context();
+	old_ctx = MemoryContextSwitchTo(redo_ctx);
 
 	switch (info)
 	{
 		case XLOG_SPGIST_CREATE_INDEX:
-			return polar_spg_redo_create_index(record, tag, buffer);
+		{
+			action = polar_spg_redo_create_index(record, tag, buffer);
+			break;
+		}
 
 		case XLOG_SPGIST_ADD_LEAF:
-			return polar_spg_redo_add_leaf(record, tag, buffer);
+		{
+			action = polar_spg_redo_add_leaf(record, tag, buffer);
+			break;
+		}
 
 		case XLOG_SPGIST_MOVE_LEAFS:
-			return polar_spg_redo_move_leafs(record, tag, buffer);
+		{
+			action = polar_spg_redo_move_leafs(record, tag, buffer);
+			break;
+		}
 
 		case XLOG_SPGIST_ADD_NODE:
-			return polar_spg_redo_add_node(record, tag, buffer);
+		{
+			action = polar_spg_redo_add_node(record, tag, buffer);
+			break;
+		}
 
 		case XLOG_SPGIST_SPLIT_TUPLE:
-			return polar_spg_redo_split_tuple(record, tag, buffer);
+		{
+			action = polar_spg_redo_split_tuple(record, tag, buffer);
+			break;
+		}
 
 		case XLOG_SPGIST_PICKSPLIT:
-			return polar_spg_redo_pick_split(record, tag, buffer);
+		{
+			action = polar_spg_redo_pick_split(record, tag, buffer);
+			break;
+		}
 
 		case XLOG_SPGIST_VACUUM_LEAF:
-			return polar_spg_redo_vacuum_leaf(record, tag, buffer);
+		{
+			action = polar_spg_redo_vacuum_leaf(record, tag, buffer);
+			break;
+		}
 
 		case XLOG_SPGIST_VACUUM_ROOT:
-			return polar_spg_redo_vacuum_root(record, tag, buffer);
+		{
+			action = polar_spg_redo_vacuum_root(record, tag, buffer);
+			break;
+		}
 
 		case XLOG_SPGIST_VACUUM_REDIRECT:
-			return polar_spg_redo_vacuum_redirect(record, tag, buffer);
+		{
+			action = polar_spg_redo_vacuum_redirect(record, tag, buffer);
+			break;
+		}
 
 		default:
 			elog(PANIC, "polar_spg_idx_redo: unknown op code %u", info);
 			break;
 	}
 
-	return BLK_NOTFOUND;
+	MemoryContextSwitchTo(old_ctx);
+	MemoryContextReset(redo_ctx);
+	return action;
 }

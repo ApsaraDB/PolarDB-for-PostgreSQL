@@ -355,7 +355,7 @@ AddCatcacheInvalidationMessage(InvalidationListHeader *hdr,
 	 * another process has written since, filling the previously uninitialized
 	 * bytes
 	 */
-	VALGRIND_MAKE_MEM_DEFINED(&msg, sizeof(msg));
+	MEMDEBUG_MAKE_MEM_DEFINED(&msg, sizeof(msg));
 
 	AddInvalidationMessage(&hdr->cclist, &msg);
 }
@@ -373,7 +373,7 @@ AddCatalogInvalidationMessage(InvalidationListHeader *hdr,
 	msg.cat.dbId = dbId;
 	msg.cat.catId = catId;
 	/* check AddCatcacheInvalidationMessage() for an explanation */
-	VALGRIND_MAKE_MEM_DEFINED(&msg, sizeof(msg));
+	MEMDEBUG_MAKE_MEM_DEFINED(&msg, sizeof(msg));
 
 	AddInvalidationMessage(&hdr->cclist, &msg);
 }
@@ -403,7 +403,7 @@ AddRelcacheInvalidationMessage(InvalidationListHeader *hdr,
 	msg.rc.dbId = dbId;
 	msg.rc.relId = relId;
 	/* check AddCatcacheInvalidationMessage() for an explanation */
-	VALGRIND_MAKE_MEM_DEFINED(&msg, sizeof(msg));
+	MEMDEBUG_MAKE_MEM_DEFINED(&msg, sizeof(msg));
 
 	AddInvalidationMessage(&hdr->rclist, &msg);
 }
@@ -429,7 +429,7 @@ AddSnapshotInvalidationMessage(InvalidationListHeader *hdr,
 	msg.sn.dbId = dbId;
 	msg.sn.relId = relId;
 	/* check AddCatcacheInvalidationMessage() for an explanation */
-	VALGRIND_MAKE_MEM_DEFINED(&msg, sizeof(msg));
+	MEMDEBUG_MAKE_MEM_DEFINED(&msg, sizeof(msg));
 
 	AddInvalidationMessage(&hdr->rclist, &msg);
 }
@@ -1375,7 +1375,7 @@ CacheInvalidateSmgr(RelFileNodeBackend rnode)
 	msg.sm.backend_lo = rnode.backend & 0xffff;
 	msg.sm.rnode = rnode.node;
 	/* check AddCatcacheInvalidationMessage() for an explanation */
-	VALGRIND_MAKE_MEM_DEFINED(&msg, sizeof(msg));
+	MEMDEBUG_MAKE_MEM_DEFINED(&msg, sizeof(msg));
 
 	SendSharedInvalidMessages(&msg, 1);
 }
@@ -1403,7 +1403,7 @@ CacheInvalidateRelmap(Oid databaseId)
 	msg.rm.id = SHAREDINVALRELMAP_ID;
 	msg.rm.dbId = databaseId;
 	/* check AddCatcacheInvalidationMessage() for an explanation */
-	VALGRIND_MAKE_MEM_DEFINED(&msg, sizeof(msg));
+	MEMDEBUG_MAKE_MEM_DEFINED(&msg, sizeof(msg));
 
 	SendSharedInvalidMessages(&msg, 1);
 }

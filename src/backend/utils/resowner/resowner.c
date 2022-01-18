@@ -1301,3 +1301,30 @@ ResourceOwnerForgetJIT(ResourceOwner owner, Datum handle)
 		elog(ERROR, "JIT context %p is not owned by resource owner %s",
 			 DatumGetPointer(handle), owner->name);
 }
+
+/*
+ * POLAR px: walk through a resource owner and it's childrens
+ */
+void
+PxResourceOwnerWalker(ResourceOwner owner, ResourceWalkerCallback callback)
+{
+	ResourceOwner child;
+
+	if (!owner)
+		return;
+
+	(*callback)(owner);
+
+	/* Recurse to handle descendants */
+	for (child = owner->firstchild; child != NULL; child = child->nextchild)
+		PxResourceOwnerWalker(child, callback);
+}
+
+const char *
+polar_get_resourceowner_name(ResourceOwner owner)
+{
+	if (!owner)
+		return NULL;
+
+	return owner->name ? owner->name : "";
+}

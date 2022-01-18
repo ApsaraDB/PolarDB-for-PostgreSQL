@@ -26,6 +26,7 @@
 #include "tcop/utility.h"
 #include "utils/lsyscache.h"
 #include "utils/syscache.h"
+#include "optimizer/px_walkers.h" /* POLAR px */
 
 
 typedef struct
@@ -66,6 +67,14 @@ typedef struct
 	Index		newvarno;
 	int			rtoffset;
 } fix_upper_expr_context;
+
+/* POLAR px */
+typedef struct
+{
+	PlannerInfo *root;
+	plan_tree_base_prefix base;
+} polar_extract_plan_dependencies_context;
+/* POLAR end */
 
 /*
  * Check if a Const node is a regclass value.  We accept plain OID too,
@@ -140,6 +149,9 @@ static List *set_returning_clause_references(PlannerInfo *root,
 								int rtoffset);
 static bool extract_query_dependencies_walker(Node *node,
 								  PlannerInfo *context);
+/* POLAR px */
+static bool polar_extract_plan_dependencies_walker(Node *node,
+					polar_extract_plan_dependencies_context *context);
 
 /*****************************************************************************
  *
@@ -341,7 +353,7 @@ flatten_unplanned_rtes(PlannerGlobal *glob, RangeTblEntry *rte)
 	(void) query_tree_walker(rte->subquery,
 							 flatten_rtes_walker,
 							 (void *) glob,
-							 QTW_EXAMINE_RTES);
+							 QTW_EXAMINE_RTES_BEFORE);
 }
 
 static bool
@@ -364,7 +376,7 @@ flatten_rtes_walker(Node *node, PlannerGlobal *glob)
 		return query_tree_walker((Query *) node,
 								 flatten_rtes_walker,
 								 (void *) glob,
-								 QTW_EXAMINE_RTES);
+								 QTW_EXAMINE_RTES_BEFORE);
 	}
 	return expression_tree_walker(node, flatten_rtes_walker,
 								  (void *) glob);
@@ -2651,4 +2663,45 @@ extract_query_dependencies_walker(Node *node, PlannerInfo *context)
 	}
 	return expression_tree_walker(node, extract_query_dependencies_walker,
 								  (void *) context);
+}
+
+/*
+ * POLAR px
+ * polar_extract_plan_dependencies()
+ *		Given a fully built Plan tree, extract their dependencies just as
+ *		set_plan_references_ would have done.
+ *
+ * This is used to extract dependencies from a plan that has been created
+ * by PXOPT (set_plan_references() does this usually, but PXOPT doesn't use
+ * it). This adds the new entries directly to PlannerGlobal.relationOids
+ * and invalItems.
+ *
+ * Note: This recurses into SubPlans. You better still call this for
+ * every subplan in a overall plan, to make sure you capture dependencies
+ * from subplans that are not referenced from the main plan, because
+ * changes to the relations in eliminated subplans might require
+ * re-planning, too. (XXX: it would be better to not recurse into SubPlans
+ * here, as that's a waste of time.)
+ */
+void
+polar_extract_plan_dependencies(PlannerInfo *root, Plan *plan)
+{
+	polar_extract_plan_dependencies_context context;
+
+	context.base.node = (Node *) (root->glob);
+	context.root = root;
+
+	(void) polar_extract_plan_dependencies_walker((Node *) plan, &context);
+}
+
+static bool
+polar_extract_plan_dependencies_walker(Node *node, polar_extract_plan_dependencies_context *context)
+{
+	if (node == NULL)
+		return false;
+	/* Extract function dependencies and check for regclass Consts */
+	fix_expr_common(context->root, node);
+
+	return plan_tree_walker(node, polar_extract_plan_dependencies_walker,
+							(void *) context, true);
 }

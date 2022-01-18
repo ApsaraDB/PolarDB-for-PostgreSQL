@@ -1,9 +1,11 @@
 /*-------------------------------------------------------------------------
  *
  * polar_copybuf.h
- *  Basic copy buffer manager data types.
+ *	  Basic copy buffer manager data types.
  *
- * Copyright (c) 2018, Alibaba Group Holding Limited
+ *
+ * Copyright (c) 2021, Alibaba Group Holding Limited
+ *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -14,13 +16,14 @@
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
- * limitations under the License.*
+ * limitations under the License.
  *
  * IDENTIFICATION
- *  src/include/storage/polar_copybuf.h
+ *      src/include/storage/polar_copybuf.h
  *
  *-------------------------------------------------------------------------
  */
+
 #ifndef POLAR_COPYBUF_H
 #define POLAR_COPYBUF_H
 
@@ -31,8 +34,8 @@
 
 enum CopyBufferState
 {
-	POLAR_COPY_BUFFER_UNUSED = 0,	/* The copy buffer is still free */
-	POLAR_COPY_BUFFER_USED		/* The copy buffer is used to store data */
+	POLAR_COPY_BUFFER_UNUSED = 0, /* The copy buffer is still free */
+	POLAR_COPY_BUFFER_USED        /* The copy buffer is used to store data */
 };
 
 /*
@@ -43,30 +46,29 @@ enum CopyBufferState
  */
 typedef struct CopyBufferDesc
 {
-	BufferTag	tag;			/* ID of page contained in copy buffer */
-	int			buf_id;			/* copy buffer's index number (from 0) */
+	BufferTag   tag;                /* ID of page contained in copy buffer */
+	int         buf_id;             /* copy buffer's index number (from 0) */
 
-	int			free_next;		/* link in freelist chain */
-	XLogRecPtr	oldest_lsn;		/* the first lsn which marked this buffer
-								 * dirty */
-	uint32		origin_buffer;	/* pointer for its original buffer ID (Buffer) */
+	int         free_next;          /* link in freelist chain */
+	XLogRecPtr  oldest_lsn;    		/* the first lsn which marked this buffer dirty */
+	uint32  	origin_buffer;      /* pointer for its original buffer ID (Buffer) */
 
-	enum CopyBufferState state; /* indicate if the copy page is used or not */
+	enum CopyBufferState state;     /* indicate if the copy page is used or not */
 
 	/*
-	 * Number of times this copy buffer was evaluated for flushing but it
-	 * can't be flushed because the LSN constraint is not met.
+	 * Number of times this copy buffer was evaluated for flushing but it can't
+	 * be flushed because the LSN constraint is not met.
 	 */
 	pg_atomic_uint32 pass_count;
-	bool		is_flushed;
+	bool			 is_flushed;
 } CopyBufferDesc;
 
 #define COPYBUFFERDESC_PAD_TO_SIZE	(SIZEOF_VOID_P == 8 ? 64 : 1)
 
 typedef union CopyBufferDescPadded
 {
-	CopyBufferDesc copy_buf_desc;
-	char		pad[COPYBUFFERDESC_PAD_TO_SIZE];
+	CopyBufferDesc	copy_buf_desc;
+	char			pad[COPYBUFFERDESC_PAD_TO_SIZE];
 } CopyBufferDescPadded;
 
 #define CopyBufHdrGetBlock(copy_buf_hdr) \
@@ -92,20 +94,20 @@ typedef struct CopyBufferControl
 	/* Spinlock: protects the values below */
 	slock_t		copy_buffer_ctl_lock;
 
-	int			first_free_buffer;	/* Head of list of unused copy buffers */
-	int			last_free_buffer;	/* Tail of list of unused copy buffers */
+	int			first_free_buffer;   /* Head of list of unused copy buffers */
+	int			last_free_buffer;    /* Tail of list of unused copy buffers */
 
 	/* Statistic info */
-	pg_atomic_uint64 flushed_count;
-	pg_atomic_uint64 release_count;
-	pg_atomic_uint64 copied_count;
-	pg_atomic_uint64 unavailable_count;
-	pg_atomic_uint64 full_count;
+	pg_atomic_uint64	flushed_count;
+	pg_atomic_uint64	release_count;
+	pg_atomic_uint64	copied_count;
+	pg_atomic_uint64	unavailable_count;
+	pg_atomic_uint64	full_count;
 } CopyBufferControl;
 
-extern CopyBufferControl *polar_copy_buffer_ctl;
+extern CopyBufferControl 	*polar_copy_buffer_ctl;
 extern CopyBufferDescPadded *polar_copy_buffer_descriptors;
-extern char *polar_copy_buffer_blocks;
+extern char                 *polar_copy_buffer_blocks;
 
 extern void polar_init_copy_buffer_pool(void);
 extern Size polar_copy_buffer_shmem_size(void);

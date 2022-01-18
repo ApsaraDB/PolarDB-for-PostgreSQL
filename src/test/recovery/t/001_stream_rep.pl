@@ -11,8 +11,6 @@ my $node_master = get_new_node('master');
 # and it needs proper authentication configuration.
 $node_master->init(allows_streaming => 1,
 	auth_extra => ['--create-role', 'repl_role']);
-$node_master->append_conf('postgresql.conf', "polar_enable_redo_logindex=off");
-$node_master->append_conf('postgresql.conf', "polar_streaming_xlog_meta=off");
 $node_master->start;
 my $backup_name = 'my_backup';
 
@@ -375,6 +373,7 @@ chomp($phys_restart_lsn_post);
 ok(($phys_restart_lsn_pre cmp $phys_restart_lsn_post) == 0,
 	"physical slot advance persists across restarts");
 
+$node_master->restart;
 # Check if the previous segment gets correctly recycled after the
 # server stopped cleanly, causing a shutdown checkpoint to be generated.
 my $master_data = $node_master->data_dir;

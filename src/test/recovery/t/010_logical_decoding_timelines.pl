@@ -41,6 +41,10 @@ max_wal_senders = 2
 log_min_messages = 'debug2'
 hot_standby_feedback = on
 wal_receiver_status_interval = 1
+polar_enable_full_page_write_in_backup = on
+polar_enable_lazy_checkpoint_in_backup = off
+polar_enable_checkpoint_in_backup = on
+polar_enable_switch_wal_in_backup = on
 ]);
 $node_master->dump_info;
 $node_master->start;

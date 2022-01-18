@@ -29,6 +29,10 @@ OBJS = execAmi.o execCurrent.o execExpr.o execExprInterp.o \
        nodeCtescan.o nodeNamedtuplestorescan.o nodeWorktablescan.o \
        nodeGroup.o nodeSubplan.o nodeSubqueryscan.o nodeTidscan.o \
        nodeForeignscan.o nodeWindowAgg.o tstoreReceiver.o tqueue.o spi.o \
-       nodeTableFuncscan.o
+       nodeMotion_px.o execUtils_px.o execAmi_px.o \
+       nodeSequence.o nodeShareInputScan.o \
+       nodeTableFuncscan.o polar_exec_procnode.o nodePartitionSelector.o \
+       nodeAssertOp.o \
+       nodeSplitUpdate.o
 
 include $(top_srcdir)/src/backend/common.mk

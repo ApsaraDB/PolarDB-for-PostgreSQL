@@ -1,0 +1,12 @@
+CREATE EXTENSION test_px;
+CHECKPOINT;
+-- See README for explanation of arguments:
+BEGIN;
+SET TRANSACTION ISOLATION LEVEL SERIALIZABLE, READ ONLY, DEFERRABLE;
+SELECT test_px();
+ test_px 
+---------
+ 
+(1 row)
+
+ABORT;

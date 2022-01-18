@@ -1,0 +1,41 @@
+-- Test access privileges
+--
+-- Clean up in case a prior regression run failed
+-- Suppress NOTICE messages when users/groups don't exist
+SET client_min_messages TO 'panic';
+DROP ROLE IF EXISTS regressionuser1;
+DROP ROLE IF EXISTS regressionuser2;
+RESET client_min_messages;
+--setup
+create user regressionuser1;
+create user regressionuser2;
+alter role regressionuser1 password 'yyy';
+alter role regressionuser2 password 'xxx';
+--test begins
+set polar_max_non_super_conns=100;
+ERROR:  parameter "polar_max_non_super_conns" cannot be changed now
+set polar_max_non_super_conns=1;
+ERROR:  parameter "polar_max_non_super_conns" cannot be changed now
+set polar_max_non_super_conns=-1;
+ERROR:  parameter "polar_max_non_super_conns" cannot be changed now
+--error
+alter system set polar_max_normal_backends_factor=2.1;
+ERROR:  2.1 is outside the valid range for parameter "polar_max_normal_backends_factor" (0 .. 2)
+alter system set polar_max_normal_backends_factor=-1;
+ERROR:  -1 is outside the valid range for parameter "polar_max_normal_backends_factor" (0 .. 2)
+--ok
+alter system set polar_max_normal_backends_factor=0;
+alter system set polar_max_normal_backends_factor=2.0;
+alter system set polar_max_normal_backends_factor=1.2;
+alter system reset polar_max_normal_backends_factor;
+show polar_max_normal_backends_factor;
+ polar_max_normal_backends_factor 
+----------------------------------
+ 1.2
+(1 row)
+
+--cleanup
+SET client_min_messages TO 'warning';
+DROP ROLE IF EXISTS regressionuser1;
+DROP ROLE IF EXISTS regressionuser2;
+RESET client_min_messages;

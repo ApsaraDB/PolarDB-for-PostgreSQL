@@ -1,6 +1,6 @@
 /*-------------------------------------------------------------------------
  *
- * polar_brin_generic_idx.c
+ * polar_generic_xlog_idx.c
  *    WAL redo parse logic for generic index.
  *
  * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
@@ -15,29 +15,28 @@
 
 #include "access/bufmask.h"
 #include "access/generic_xlog.h"
-#include "access/polar_logindex.h"
-#include "access/polar_logindex_internal.h"
+#include "access/polar_logindex_redo.h"
 #include "access/xlogutils.h"
 #include "access/xlog_internal.h"
 #include "storage/buf_internals.h"
 
 void
-polar_generic_idx_save(XLogReaderState *record)
+polar_generic_idx_save(polar_logindex_redo_ctl_t instance, XLogReaderState *record)
 {
-	int			block_id;
+	int block_id;
 
 	for (block_id = 0; block_id <= MAX_GENERIC_XLOG_PAGES; block_id++)
 	{
 		if (XLogRecHasBlockRef(record, block_id))
-			polar_log_index_save_block(record, block_id);
+			polar_logindex_save_block(instance, record, block_id);
 	}
 }
 
 bool
-polar_generic_idx_parse(XLogReaderState *record)
+polar_generic_idx_parse(polar_logindex_redo_ctl_t instance, XLogReaderState *record)
 {
-	int			block_id;
-	Buffer		buffers[MAX_GENERIC_XLOG_PAGES];
+	int block_id;
+	Buffer buffers[MAX_GENERIC_XLOG_PAGES];
 	polar_page_lock_t page_lock[MAX_GENERIC_XLOG_PAGES];
 
 	/* Protect limited size of buffers[] array */
@@ -45,7 +44,7 @@ polar_generic_idx_parse(XLogReaderState *record)
 
 	for (block_id = 0; block_id <= record->max_block_id; block_id++)
 	{
-		BufferTag	tag;
+		BufferTag tag;
 
 		if (!XLogRecHasBlockRef(record, block_id))
 		{
@@ -54,7 +53,7 @@ polar_generic_idx_parse(XLogReaderState *record)
 			continue;
 		}
 
-		POLAR_MINI_TRANS_REDO_PARSE(record, block_id, tag, page_lock[block_id], buffers[block_id]);
+		POLAR_MINI_TRANS_REDO_PARSE(instance, record, block_id, tag, page_lock[block_id], buffers[block_id]);
 	}
 
 	for (block_id = 0; block_id <= record->max_block_id; block_id++)
@@ -64,7 +63,7 @@ polar_generic_idx_parse(XLogReaderState *record)
 			if (BufferIsValid(buffers[block_id]))
 				UnlockReleaseBuffer(buffers[block_id]);
 
-			polar_log_index_mini_trans_unlock(page_lock[block_id]);
+			polar_logindex_mini_trans_unlock(instance->mini_trans, page_lock[block_id]);
 		}
 	}
 
@@ -72,18 +71,18 @@ polar_generic_idx_parse(XLogReaderState *record)
 }
 
 XLogRedoAction
-polar_generic_idx_redo(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
+polar_generic_idx_redo(polar_logindex_redo_ctl_t instance, XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 {
-	int			block_id;
+	int block_id;
 	XLogRedoAction action = BLK_NOTFOUND;
-	XLogRecPtr	lsn = record->EndRecPtr;
+	XLogRecPtr  lsn = record->EndRecPtr;
 
 	/* Protect limited size of buffers[] array */
 	Assert(record->max_block_id < MAX_GENERIC_XLOG_PAGES);
 
 	for (block_id = 0; block_id <= record->max_block_id; block_id++)
 	{
-		BufferTag	page_tag;
+		BufferTag page_tag;
 
 		if (!XLogRecHasBlockRef(record, block_id))
 			continue;
@@ -97,10 +96,10 @@ polar_generic_idx_redo(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 			/* Apply redo to given block if needed */
 			if (action == BLK_NEEDS_REDO)
 			{
-				Page		page;
-				PageHeader	pageHeader;
-				char	   *blockDelta;
-				Size		blockDeltaSize;
+				Page        page;
+				PageHeader  pageHeader;
+				char       *blockDelta;
+				Size        blockDeltaSize;
 
 				page = BufferGetPage(*buffer);
 				blockDelta = XLogRecGetBlockData(record, block_id, &blockDeltaSize);
@@ -109,8 +108,8 @@ polar_generic_idx_redo(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 				/*
 				 * Since the delta contains no information about what's in the
 				 * "hole" between pd_lower and pd_upper, set that to zero to
-				 * ensure we produce the same page state that application of
-				 * the logged action by GenericXLogFinish did.
+				 * ensure we produce the same page state that application of the
+				 * logged action by GenericXLogFinish did.
 				 */
 				pageHeader = (PageHeader) page;
 				memset(page + pageHeader->pd_lower, 0,
@@ -125,3 +124,4 @@ polar_generic_idx_redo(XLogReaderState *record, BufferTag *tag, Buffer *buffer)
 
 	return action;
 }
+

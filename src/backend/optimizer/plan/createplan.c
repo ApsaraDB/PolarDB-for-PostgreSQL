@@ -6434,6 +6434,10 @@ make_modifytable(PlannerInfo *root,
 	node->rowMarks = rowMarks;
 	node->epqParam = epqParam;
 
+	/* POLAR px */
+	node->isSplitUpdates = NIL;
+	/* POLAR end */
+
 	/*
 	 * For each result relation that is a foreign table, allow the FDW to
 	 * construct private plan data, and accumulate it all into a list.
@@ -6527,6 +6531,10 @@ is_projection_capable_path(Path *path)
 		case T_ModifyTable:
 		case T_MergeAppend:
 		case T_RecursiveUnion:
+		/* POLAR px */
+		case T_Motion:
+		case T_ShareInputScan:
+		case T_PartitionSelector:
 			return false;
 		case T_Append:
 
@@ -6572,6 +6580,11 @@ is_projection_capable_plan(Plan *plan)
 		case T_Append:
 		case T_MergeAppend:
 		case T_RecursiveUnion:
+		/* POLAR px */
+		case T_Motion:
+		case T_ShareInputScan:
+		case T_Sequence:
+		case T_PartitionSelector:
 			return false;
 		case T_ProjectSet:
 

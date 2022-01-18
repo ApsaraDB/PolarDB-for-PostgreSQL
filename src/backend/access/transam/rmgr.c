@@ -29,8 +29,11 @@
 #include "storage/standby.h"
 #include "utils/relmapper.h"
 
+/* POLAR */
+#include "access/polar_logindex_redo.h"
+
 /* must be kept in sync with RmgrData definition in xlog_internal.h */
-#define PG_RMGR(symname,name,redo, polar_idx_save, polar_idx_parse, polar_idx_redo, polar_redo, desc,identify,startup,cleanup,mask) \
+#define PG_RMGR(symname,name,redo,polar_idx_save, polar_idx_parse, polar_idx_redo, desc,identify,startup,cleanup,mask) \
 	{ name, redo, desc, identify, startup, cleanup, mask },
 
 const RmgrData RmgrTable[RM_MAX_ID + 1] = {

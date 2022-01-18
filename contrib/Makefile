@@ -86,6 +86,12 @@ else
 ALWAYS_SUBDIRS += hstore_plpython jsonb_plpython ltree_plpython
 endif
 
+ifeq ($(enable_inject_faults),yes)
+SUBDIRS += faultinjector
+else
+ALWAYS_SUBDIRS += faultinjector
+endif
+
 # Missing:
 #		start-scripts	\ (does not have a makefile)
 

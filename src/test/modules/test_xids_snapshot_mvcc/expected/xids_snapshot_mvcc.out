@@ -1,0 +1,141 @@
+Parsed test spec with 3 sessions
+
+starting permutation: s1_update1 s2_select s1_commit s2_select s2_select
+step s1_update1: UPDATE xids_snapshot SET c2 = 1001 WHERE c1 = 1;
+step s2_select: SELECT c2 FROM xids_snapshot WHERE c1 = 1;
+c2             
+
+1              
+step s1_commit: COMMIT;
+step s2_select: SELECT c2 FROM xids_snapshot WHERE c1 = 1;
+c2             
+
+1001           
+step s2_select: SELECT c2 FROM xids_snapshot WHERE c1 = 1;
+c2             
+
+1001           
+
+starting permutation: s1_update1 s2_select s1_abort s2_select
+step s1_update1: UPDATE xids_snapshot SET c2 = 1001 WHERE c1 = 1;
+step s2_select: SELECT c2 FROM xids_snapshot WHERE c1 = 1;
+c2             
+
+1              
+step s1_abort: ROLLBACK;
+step s2_select: SELECT c2 FROM xids_snapshot WHERE c1 = 1;
+c2             
+
+1              
+
+starting permutation: s1_update1 s1_sp s1_update2 s1_sp_commit s2_select s1_commit s2_select s2_select
+step s1_update1: UPDATE xids_snapshot SET c2 = 1001 WHERE c1 = 1;
+step s1_sp: SAVEPOINT sp_xids_snapshot;
+step s1_update2: UPDATE xids_snapshot SET c2 = 1002 WHERE c1 = 1;
+step s1_sp_commit: RELEASE SAVEPOINT sp_xids_snapshot;
+step s2_select: SELECT c2 FROM xids_snapshot WHERE c1 = 1;
+c2             
+
+1              
+step s1_commit: COMMIT;
+step s2_select: SELECT c2 FROM xids_snapshot WHERE c1 = 1;
+c2             
+
+1002           
+step s2_select: SELECT c2 FROM xids_snapshot WHERE c1 = 1;
+c2             
+
+1002           
+
+starting permutation: s1_update1 s1_sp s1_update2 s1_sp_commit s2_select s1_abort s2_select
+step s1_update1: UPDATE xids_snapshot SET c2 = 1001 WHERE c1 = 1;
+step s1_sp: SAVEPOINT sp_xids_snapshot;
+step s1_update2: UPDATE xids_snapshot SET c2 = 1002 WHERE c1 = 1;
+step s1_sp_commit: RELEASE SAVEPOINT sp_xids_snapshot;
+step s2_select: SELECT c2 FROM xids_snapshot WHERE c1 = 1;
+c2             
+
+1              
+step s1_abort: ROLLBACK;
+step s2_select: SELECT c2 FROM xids_snapshot WHERE c1 = 1;
+c2             
+
+1              
+
+starting permutation: s1_update1 s1_sp s1_update2 s1_sp_rollback s2_select s1_commit s2_select s2_select
+step s1_update1: UPDATE xids_snapshot SET c2 = 1001 WHERE c1 = 1;
+step s1_sp: SAVEPOINT sp_xids_snapshot;
+step s1_update2: UPDATE xids_snapshot SET c2 = 1002 WHERE c1 = 1;
+step s1_sp_rollback: ROLLBACK TO SAVEPOINT sp_xids_snapshot;
+step s2_select: SELECT c2 FROM xids_snapshot WHERE c1 = 1;
+c2             
+
+1              
+step s1_commit: COMMIT;
+step s2_select: SELECT c2 FROM xids_snapshot WHERE c1 = 1;
+c2             
+
+1001           
+step s2_select: SELECT c2 FROM xids_snapshot WHERE c1 = 1;
+c2             
+
+1001           
+
+starting permutation: s1_update1 s1_sp s1_update2 s1_sp_rollback s2_select s1_abort s2_select
+step s1_update1: UPDATE xids_snapshot SET c2 = 1001 WHERE c1 = 1;
+step s1_sp: SAVEPOINT sp_xids_snapshot;
+step s1_update2: UPDATE xids_snapshot SET c2 = 1002 WHERE c1 = 1;
+step s1_sp_rollback: ROLLBACK TO SAVEPOINT sp_xids_snapshot;
+step s2_select: SELECT c2 FROM xids_snapshot WHERE c1 = 1;
+c2             
+
+1              
+step s1_abort: ROLLBACK;
+step s2_select: SELECT c2 FROM xids_snapshot WHERE c1 = 1;
+c2             
+
+1              
+
+starting permutation: s1_update1 s3_begin s3_lock s2_select s1_commit s2_select s3_commit s2_select
+step s1_update1: UPDATE xids_snapshot SET c2 = 1001 WHERE c1 = 1;
+step s3_begin: BEGIN;
+step s3_lock: select c2 FROM xids_snapshot WHERE c1 = 1 FOR KEY SHARE;
+c2             
+
+1              
+step s2_select: SELECT c2 FROM xids_snapshot WHERE c1 = 1;
+c2             
+
+1              
+step s1_commit: COMMIT;
+step s2_select: SELECT c2 FROM xids_snapshot WHERE c1 = 1;
+c2             
+
+1001           
+step s3_commit: COMMIT;
+step s2_select: SELECT c2 FROM xids_snapshot WHERE c1 = 1;
+c2             
+
+1001           
+
+starting permutation: s1_update1 s3_begin s3_lock s2_select s1_abort s2_select s3_commit s2_select
+step s1_update1: UPDATE xids_snapshot SET c2 = 1001 WHERE c1 = 1;
+step s3_begin: BEGIN;
+step s3_lock: select c2 FROM xids_snapshot WHERE c1 = 1 FOR KEY SHARE;
+c2             
+
+1              
+step s2_select: SELECT c2 FROM xids_snapshot WHERE c1 = 1;
+c2             
+
+1              
+step s1_abort: ROLLBACK;
+step s2_select: SELECT c2 FROM xids_snapshot WHERE c1 = 1;
+c2             
+
+1              
+step s3_commit: COMMIT;
+step s2_select: SELECT c2 FROM xids_snapshot WHERE c1 = 1;
+c2             
+
+1              

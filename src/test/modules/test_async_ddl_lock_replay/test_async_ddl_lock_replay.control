@@ -1,0 +1,4 @@
+comment = 'Test code for async ddl lock replay feature'
+default_version = '1.0'
+module_pathname = '$libdir/test_async_ddl_lock_replay'
+relocatable = true

@@ -18,7 +18,7 @@ ignore: timetz
 # run tablespace by itself, and first, because it forces a checkpoint;
 # we'd prefer not to have checkpoints later in the tests because that
 # interferes with crash-recovery testing.
-polar_ignore: tablespace
+cluster_ignore: tablespace
 
 # ----------
 # The first group of parallel tests
@@ -135,3 +135,12 @@ test: fast_default
 
 # run stats by itself because its delay may be insufficient under heavy load
 test: stats
+
+# POLAR test
+test: polar_release_date_1
+test: polar_invalid_memory_alloc_1
+test: alter_promoting_polar_superuser_issue11
+cluster_ignore: polar_superuser_grant_enable
+test: polar_rds_patch_test
+test: polar_superuser_internal_allowed_roles
+test: polar_bugfix_grant_role

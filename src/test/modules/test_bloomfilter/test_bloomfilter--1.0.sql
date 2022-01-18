@@ -9,3 +9,10 @@ CREATE FUNCTION test_bloomfilter(power integer,
     tests integer DEFAULT 1)
 RETURNS pg_catalog.void STRICT
 AS 'MODULE_PATHNAME' LANGUAGE C;
+
+CREATE FUNCTION test_bloomfilter_buf(nelements bigint,
+	seed integer DEFAULT -1,
+	tests integer DEFAULT 1)
+RETURNS pg_catalog.void STRICT
+AS 'MODULE_PATHNAME' LANGUAGE C;
+

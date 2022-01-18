@@ -39,6 +39,9 @@
 #include "utils/syscache.h"
 #include "utils/varlena.h"
 
+/* POLAR */
+#include "utils/guc.h"
+#include "commands/extension.h"
 
 typedef struct
 {
@@ -4907,6 +4910,10 @@ roles_is_member_of(Oid roleid)
 bool
 has_privs_of_role(Oid member, Oid role)
 {
+	/* POLAR */
+	List *list_membership_roles;     /* Used to store role list to which the member belong. */
+	char *rolename;
+	
 	/* Fast path for simple case */
 	if (member == role)
 		return true;
@@ -4914,6 +4921,23 @@ has_privs_of_role(Oid member, Oid role)
 	/* Superusers have every privilege, so are part of every role */
 	if (superuser_arg(member))
 		return true;
+
+	/* POLAR: check role is member of polar_superuser */
+	list_membership_roles = roles_is_member_of(member);
+
+	/*if role is not superuser, polar superuser has privs of role in polar_internal_allowed_roles */
+	rolename = GetUserNameFromId(role, true);
+	if (list_member_oid(list_membership_roles, POLAR_SUPERUSER_OID) && !superuser_arg(role)
+		&& (rolename == NULL || !IsReservedName(rolename) 
+			|| polar_find_in_string_list(rolename, polar_internal_allowed_roles)))
+	{
+		if (rolename)
+			pfree(rolename);
+		return true;
+	}
+	if (rolename)
+		pfree(rolename);
+	/* POLAR end */
 
 	/*
 	 * Find all the roles that member has the privileges of, including
@@ -4931,6 +4955,10 @@ has_privs_of_role(Oid member, Oid role)
 bool
 is_member_of_role(Oid member, Oid role)
 {
+	/* POLAR */
+	List *list_membership_roles;     /* Used to store role list to which the member belong. */
+	char *rolename;
+	
 	/* Fast path for simple case */
 	if (member == role)
 		return true;
@@ -4939,11 +4967,28 @@ is_member_of_role(Oid member, Oid role)
 	if (superuser_arg(member))
 		return true;
 
+	/* POLAR: check role is member of polar_superuser */
+	list_membership_roles = roles_is_member_of(member);
+
+	/*if role is not superuser, polar superuser has privs of role in polar_internal_allowed_roles */
+	rolename = GetUserNameFromId(role, true);
+	if (list_member_oid(list_membership_roles, POLAR_SUPERUSER_OID) && !superuser_arg(role)
+		&& (rolename == NULL || !IsReservedName(rolename) 
+			|| polar_find_in_string_list(rolename, polar_internal_allowed_roles)))
+	{
+		if (rolename)
+			pfree(rolename);
+		return true;
+	}
+	if (rolename)
+		pfree(rolename);
+	/* POLAR end */
+
 	/*
 	 * Find all the roles that member is a member of, including multi-level
 	 * recursion, then see if target role is any one of them.
 	 */
-	return list_member_oid(roles_is_member_of(member), role);
+	return list_member_oid(list_membership_roles, role);
 }
 
 /*
@@ -4992,9 +5037,25 @@ is_admin_of_role(Oid member, Oid role)
 	bool		result = false;
 	List	   *roles_list;
 	ListCell   *l;
+	/* POLAR */
+	char 	   *rolename;
 
 	if (superuser_arg(member))
 		return true;
+
+	/* POLAR: if role is not superuser, polar superuser has privs of role in polar_internal_allowed_roles */
+	rolename = GetUserNameFromId(role, true);
+	if (list_member_oid(roles_is_member_of(member), POLAR_SUPERUSER_OID) && !superuser_arg(role)
+		&& (rolename == NULL || !IsReservedName(rolename) 
+			|| polar_find_in_string_list(rolename, polar_internal_allowed_roles)))
+	{
+		if (rolename)
+			pfree(rolename);
+		return true;
+	}
+	if (rolename)
+		pfree(rolename);
+	/* POLAR end */
 
 	if (member == role)
 
@@ -5127,8 +5188,15 @@ select_best_grantor(Oid roleId, AclMode privileges,
 	 * roleId is the owner it's easy.  Also, if roleId is a superuser it's
 	 * easy: superusers are implicitly members of every role, so they act as
 	 * the object owner.
+	 * 
+	 * POLAR: here, when doing the grant statment, polar_superuser kind role or user can 
+	 * directly grant privilege of objects that are ownned by common user. But 
+	 * when the owner of object is superuser, the polar_superuser role or user 
+	 * should have explict privilege granted before it could grant the privilege
+	 * to other user.
 	 */
-	if (roleId == ownerId || superuser_arg(roleId))
+	if (roleId == ownerId || superuser_arg(roleId) || 
+	    (polar_superuser_arg(roleId) && polar_has_more_privs_than_role(roleId, ownerId)))
 	{
 		*grantorId = ownerId;
 		*grantOptions = needed_goptions;

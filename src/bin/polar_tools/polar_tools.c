@@ -1,7 +1,6 @@
 /*-------------------------------------------------------------------------
  *
  * polar_tools.c
- *  Implementation of polardb's tool.
  *
  * Copyright (c) 2020, Alibaba Group Holding Limited
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,7 +16,7 @@
  * limitations under the License.
  *
  * IDENTIFICATION
- *  src/bin/polar_tools/polar_tools.c
+ *	  src/bin/polar_tools/polar_tools.c
  *
  *-------------------------------------------------------------------------
  */
@@ -33,6 +32,12 @@ usage(void)
 	printf("logindex-bloom\n");
 	printf("logindex-table\n");
 	printf("logindex-page\n");
+	printf("dma-meta\n");
+	printf("dma-log\n");
+	printf("datamax-meta\n");
+	printf("datamax-get-wal\n");
+	printf("flashback-log-control\n");
+	printf("flashback-log-file\n");
 }
 
 int
@@ -56,6 +61,18 @@ main(int argc, char **argv)
 		return logindex_table_main(--argc, ++argv);
 	else if (strcmp(argv[1], "logindex-page") == 0)
 		return logindex_page_main(--argc, ++argv);
+	else if (strcmp(argv[1], "dma-meta") == 0)
+		return dma_meta_main(--argc, ++argv);
+	else if (strcmp(argv[1], "dma-log") == 0)
+		return dma_log_main(--argc, ++argv);
+	else if (strcmp(argv[1], "datamax-meta") == 0)
+		return datamax_meta_main(--argc, ++argv);
+	else if (strcmp(argv[1], "datamax-get-wal") == 0)
+		return datamax_get_wal_main(--argc, ++argv);
+	else if (strcmp(argv[1], "flashback-log-control") == 0)
+		return flashback_log_control_dump_main(--argc, ++argv);
+	else if (strcmp(argv[1], "flashback-log-file") == 0)
+		return flashback_log_file_dump_main(--argc, ++argv);
 	else
 		usage();
 

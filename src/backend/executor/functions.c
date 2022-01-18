@@ -34,6 +34,9 @@
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
 
+/* POLAR px */
+#include "px/px_snapshot.h"
+
 
 /*
  * Specialized DestReceiver for collecting query output in a SQL function
@@ -504,9 +507,14 @@ init_execution_state(List *queryTree_list,
 				stmt->stmt_len = queryTree->stmt_len;
 			}
 			else
-				stmt = pg_plan_query(queryTree,
-									 CURSOR_OPT_PARALLEL_OK,
-									 NULL);
+			{
+
+				/* POLAR px: PX for procedure */
+				int cursor_options = CURSOR_OPT_PARALLEL_OK;
+				if (px_enable_procedure)
+					cursor_options |= CURSOR_OPT_PX_OK;
+				stmt = pg_plan_query(queryTree, cursor_options, NULL);
+			}
 
 			/*
 			 * Precheck all commands for validity in a function.  This should
@@ -1007,6 +1015,11 @@ fmgr_sql(PG_FUNCTION_ARGS)
 	List	   *eslist;
 	ListCell   *eslc;
 
+	/* POLAR px */
+	Snapshot	px_snapshot = ((PX_ROLE_PX == px_role && px_is_executing)
+								? RestoreSnapshot(pxsn_get_serialized_snapshot_data())
+								: InvalidSnapshot);
+
 	/*
 	 * Setup error traceback support for ereport()
 	 */
@@ -1145,7 +1158,10 @@ fmgr_sql(PG_FUNCTION_ARGS)
 				CommandCounterIncrement();
 				if (!pushed_snapshot)
 				{
-					PushActiveSnapshot(GetTransactionSnapshot());
+					/* should use given px_snapshot when in px*/
+					PushActiveSnapshot((PX_ROLE_PX == px_role && px_is_executing)
+										? px_snapshot
+										: GetTransactionSnapshot());
 					pushed_snapshot = true;
 				}
 				else

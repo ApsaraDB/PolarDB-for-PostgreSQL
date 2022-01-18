@@ -27,6 +27,12 @@
 #include "utils/pg_lsn.h"
 #include "utils/timestamp.h"
 
+/* POLAR */
+#include "utils/guc.h"
+#include "storage/polar_fd.h"
+
+static ControlFileData *polar_get_controlfile(const char *DataDir, const char *progname, bool *crc_ok_p);
+
 Datum
 pg_control_system(PG_FUNCTION_ARGS)
 {
@@ -53,7 +59,10 @@ pg_control_system(PG_FUNCTION_ARGS)
 	tupdesc = BlessTupleDesc(tupdesc);
 
 	/* read the control file */
-	ControlFile = get_controlfile(DataDir, NULL, &crc_ok);
+	if (polar_enable_shared_storage_mode)
+		ControlFile = polar_get_controlfile(polar_datadir, NULL, &crc_ok);
+	else
+		ControlFile = get_controlfile(DataDir, NULL, &crc_ok);
 	if (!crc_ok)
 		ereport(ERROR,
 				(errmsg("calculated CRC checksum does not match value stored in file")));
@@ -131,7 +140,10 @@ pg_control_checkpoint(PG_FUNCTION_ARGS)
 	tupdesc = BlessTupleDesc(tupdesc);
 
 	/* Read the control file. */
-	ControlFile = get_controlfile(DataDir, NULL, &crc_ok);
+	if (polar_enable_shared_storage_mode)
+		ControlFile = polar_get_controlfile(polar_datadir, NULL, &crc_ok);
+	else
+		ControlFile = get_controlfile(DataDir, NULL, &crc_ok);
 	if (!crc_ok)
 		ereport(ERROR,
 				(errmsg("calculated CRC checksum does not match value stored in file")));
@@ -235,7 +247,10 @@ pg_control_recovery(PG_FUNCTION_ARGS)
 	tupdesc = BlessTupleDesc(tupdesc);
 
 	/* read the control file */
-	ControlFile = get_controlfile(DataDir, NULL, &crc_ok);
+	if (polar_enable_shared_storage_mode)
+		ControlFile = polar_get_controlfile(polar_datadir, NULL, &crc_ok);
+	else
+		ControlFile = get_controlfile(DataDir, NULL, &crc_ok);
 	if (!crc_ok)
 		ereport(ERROR,
 				(errmsg("calculated CRC checksum does not match value stored in file")));
@@ -302,7 +317,10 @@ pg_control_init(PG_FUNCTION_ARGS)
 	tupdesc = BlessTupleDesc(tupdesc);
 
 	/* read the control file */
-	ControlFile = get_controlfile(DataDir, NULL, &crc_ok);
+	if (polar_enable_shared_storage_mode)
+		ControlFile = polar_get_controlfile(polar_datadir, NULL, &crc_ok);
+	else
+		ControlFile = get_controlfile(DataDir, NULL, &crc_ok);
 	if (!crc_ok)
 		ereport(ERROR,
 				(errmsg("calculated CRC checksum does not match value stored in file")));
@@ -346,4 +364,55 @@ pg_control_init(PG_FUNCTION_ARGS)
 	htup = heap_form_tuple(tupdesc, values, nulls);
 
 	PG_RETURN_DATUM(HeapTupleGetDatum(htup));
+}
+
+static ControlFileData *
+polar_get_controlfile(const char *DataDir, const char *progname, bool *crc_ok_p)
+{
+	ControlFileData *ControlFile;
+	int			fd;
+	char		ControlFilePath[MAXPGPATH];
+	pg_crc32c	crc;
+	int			r;
+
+	AssertArg(crc_ok_p);
+
+	ControlFile = palloc(sizeof(ControlFileData));
+	snprintf(ControlFilePath, MAXPGPATH, "%s/global/pg_control", DataDir);
+
+	if ((fd = polar_open(ControlFilePath, O_RDONLY | PG_BINARY, 0)) == -1)
+		ereport(ERROR,
+				(errcode_for_file_access(),
+				 errmsg("could not open file \"%s\" for reading: %m",
+						ControlFilePath)));
+
+	r = polar_read(fd, ControlFile, sizeof(ControlFileData));
+	if (r != sizeof(ControlFileData))
+	{
+		if (r < 0)
+			ereport(ERROR,
+					(errcode_for_file_access(),
+					 errmsg("could not read file \"%s\": %m", ControlFilePath)));
+		else
+			ereport(ERROR,
+					(errmsg("could not read file \"%s\": read %d of %d",
+							ControlFilePath, r, (int) sizeof(ControlFileData))));
+	}
+
+	polar_close(fd);
+
+	/* Check the CRC. */
+	INIT_CRC32C(crc);
+	COMP_CRC32C(crc,
+				(char *) ControlFile,
+				offsetof(ControlFileData, crc));
+	FIN_CRC32C(crc);
+
+	*crc_ok_p = EQ_CRC32C(crc, ControlFile->crc);
+
+	/* Make sure the control file is valid byte order. */
+	if (ControlFile->pg_control_version % 65536 == 0 &&
+		ControlFile->pg_control_version / 65536 != 0)
+		elog(ERROR, _("byte ordering mismatch"));
+	return ControlFile;
 }

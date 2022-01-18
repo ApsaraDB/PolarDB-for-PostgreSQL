@@ -218,7 +218,7 @@ calculate_tablespace_size(Oid tblspcOid)
 			strcmp(direntry->d_name, "..") == 0)
 			continue;
 
-		snprintf(polar_tmp_path, sizeof(polar_tmp_path), "%s/%s", tblspcPath, direntry->d_name);
+		snprintf(polar_tmp_path, sizeof(pathname), "%s/%s", tblspcPath, direntry->d_name);
 		snprintf(pathname, sizeof(pathname), "%s/%s", polar_full_path, direntry->d_name);
 		if (polar_stat(pathname, &fst) < 0)
 		{

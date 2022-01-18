@@ -26,6 +26,9 @@
 #include "storage/proc.h"
 #include "utils/syscache.h"
 
+/* POLAR csn */
+#include "access/polar_csnlog.h"
+/* POLAR end */
 
 /* Number of OIDs to prefetch (preallocate) per XLOG write */
 #define VAR_OID_PREFETCH		8192
@@ -48,6 +51,15 @@ TransactionId
 GetNewTransactionId(bool isSubXact)
 {
 	TransactionId xid;
+
+	/*
+	 * POLAR: xact split
+	 * Avoid write in transaction during xact split. For the xact-split's mock
+	 * transaction is read-only.
+	 */
+	if (unlikely(polar_is_split_xact()))
+		elog(ERROR, "cannot assign TransactionIds during a xact-split transaction");
+	/* POLAR end */
 
 	/*
 	 * Workers synchronize transaction state at the beginning of each parallel
@@ -169,8 +181,12 @@ GetNewTransactionId(bool isSubXact)
 	 * Extend pg_subtrans and pg_commit_ts too.
 	 */
 	ExtendCLOG(xid);
+	if (polar_csn_enable)
+		polar_csnlog_extend(xid, true);
+	else
+		ExtendSUBTRANS(xid);
 	ExtendCommitTs(xid);
-	ExtendSUBTRANS(xid);
+	
 
 	/*
 	 * Now advance the nextXid counter.  This must not happen until after we

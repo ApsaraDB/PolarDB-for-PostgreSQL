@@ -45,7 +45,10 @@
 
 /* POLAR */
 #include "utils/guc.h"
+#include "utils/polar_local_cache.h"
 #include "storage/polar_fd.h"
+#include "utils/guc.h"
+/* POLAR end */
 
 /*
  * Defines for CLOG page sizes.  A page is the same BLCKSZ as is used
@@ -84,6 +87,9 @@
  */
 #define THRESHOLD_SUBTRANS_CLOG_OPT	5
 
+/* POLAR: Check whether clog local file cache is enabled */
+#define POLAR_ENABLE_CLOG_LOCAL_CACHE() (polar_clog_max_local_cache_segments > 0 && polar_enable_shared_storage_mode)
+
 /*
  * Link to shared-memory data structures for CLOG control
  */
@@ -111,6 +117,13 @@ static void TransactionIdSetPageStatusInternal(TransactionId xid, int nsubxids,
 								   TransactionId *subxids, XidStatus status,
 								   XLogRecPtr lsn, int pageno);
 
+/* POLAR csn */
+
+static void
+TransactionIdSetTreeStatusCSN(TransactionId xid, int nsubxids,
+						      TransactionId *subxids, XidStatus status, XLogRecPtr lsn);
+
+/* POLAR end */
 
 /*
  * TransactionIdSetTreeStatus
@@ -172,6 +185,12 @@ TransactionIdSetTreeStatus(TransactionId xid, int nsubxids,
 
 	Assert(status == TRANSACTION_STATUS_COMMITTED ||
 		   status == TRANSACTION_STATUS_ABORTED);
+
+	/* POLAR csn */
+	if (polar_csn_enable)
+	{
+		return TransactionIdSetTreeStatusCSN(xid, nsubxids, subxids, status, lsn);
+	}
 
 	/*
 	 * See how many subxids, if any, are on the same page as the parent, if
@@ -288,11 +307,11 @@ TransactionIdSetPageStatus(TransactionId xid, int nsubxids,
 	 * updates; a single leader process will perform transaction status
 	 * updates for multiple backends so that the number of times
 	 * CLogControlLock needs to be acquired is reduced.
-	 *
+	 * 
 	 * For this optimization to be safe, the XID in MyPgXact and the subxids
 	 * in MyProc must be the same as the ones for which we're setting the
 	 * status.  Check that this is the case.
-	 *
+	 * 
 	 * For this optimization to be efficient, we shouldn't have too many
 	 * sub-XIDs and all of the XIDs for which we're adjusting clog should be
 	 * on the same page.  Check those conditions, too.
@@ -370,18 +389,25 @@ TransactionIdSetPageStatusInternal(TransactionId xid, int nsubxids,
 	 * If we are updating commits on the page with the top-level xid that
 	 * could break atomicity, so we subcommit the subxids first before we mark
 	 * the top-level commit.
+	 * 
+	 * POLAR
+	 * In polar csn, we do not need clog TRANSACTION_STATUS_SUB_COMMITTED status
+	 * any more, because visibility check moved to csnlog
 	 */
 	if (TransactionIdIsValid(xid))
 	{
-		/* Subtransactions first, if needed ... */
-		if (status == TRANSACTION_STATUS_COMMITTED)
+		if (!polar_csn_enable)
 		{
-			for (i = 0; i < nsubxids; i++)
+			/* Subtransactions first, if needed ... */
+			if (status == TRANSACTION_STATUS_COMMITTED)
 			{
-				Assert(ClogCtl->shared->page_number[slotno] == TransactionIdToPage(subxids[i]));
-				TransactionIdSetStatusBit(subxids[i],
-										  TRANSACTION_STATUS_SUB_COMMITTED,
-										  lsn, slotno);
+				for (i = 0; i < nsubxids; i++)
+				{
+					Assert(ClogCtl->shared->page_number[slotno] == TransactionIdToPage(subxids[i]));
+					TransactionIdSetStatusBit(subxids[i],
+											TRANSACTION_STATUS_SUB_COMMITTED,
+											lsn, slotno);
+				}
 			}
 		}
 
@@ -681,9 +707,12 @@ CLOGShmemBuffers(void)
 {
 	if (polar_enable_shared_storage_mode)
 	{
-		int clog_slot_size = Min(polar_clog_slot_size, Max(4, NBuffers / 512));
+		/* POLAR: we can enlarge clog max size because we optimize clog search time complexity to O(1) */
+		int max_clog_slot_size = Max(4, NBuffers / 512 * 8);
+		int clog_slot_size = Min(polar_clog_slot_size, max_clog_slot_size);
 
-		elog (LOG, "clog slot size set to %d", clog_slot_size);
+		elog (LOG, "clog buffer max slot size is %d, and it will be set to %d",
+				max_clog_slot_size, clog_slot_size);
 		return clog_slot_size;
 	}
 	else
@@ -696,7 +725,14 @@ CLOGShmemBuffers(void)
 Size
 CLOGShmemSize(void)
 {
-	return SimpleLruShmemSize(CLOGShmemBuffers(), CLOG_LSNS_PER_PAGE);
+	Size sz;
+	sz = SimpleLruShmemSize(CLOGShmemBuffers(), CLOG_LSNS_PER_PAGE);
+
+	/* POLAR: Add size for local cache segments */
+	if (POLAR_ENABLE_CLOG_LOCAL_CACHE())
+		sz = add_size(MAXALIGN(sz), polar_local_cache_shmem_size(polar_clog_max_local_cache_segments));
+
+	return sz;
 }
 
 void
@@ -705,7 +741,24 @@ CLOGShmemInit(void)
 	ClogCtl->PagePrecedes = CLOGPagePrecedes;
 	/* POLAR: pg_xact file in shared storage */
 	SimpleLruInit(ClogCtl, "clog", CLOGShmemBuffers(), CLOG_LSNS_PER_PAGE,
-				  CLogControlLock, "pg_xact", LWTRANCHE_CLOG_BUFFERS, true);
+				  CLogControlLock, "pg_xact", LWTRANCHE_CLOG_BUFFERS,
+				  polar_slru_file_in_shared_storage(true));
+
+	/* POLAR: Create local segment file cache manager */
+	if (POLAR_ENABLE_CLOG_LOCAL_CACHE())
+	{
+		uint32 io_permission = POLAR_CACHE_LOCAL_FILE_READ | POLAR_CACHE_LOCAL_FILE_WRITE;
+		polar_local_cache cache;
+
+		if (!polar_in_replica_mode())
+			io_permission |= (POLAR_CACHE_SHARED_FILE_READ | POLAR_CACHE_SHARED_FILE_WRITE);
+
+		cache = polar_create_local_cache("clog", "pg_xact",
+			polar_clog_max_local_cache_segments, (SLRU_PAGES_PER_SEGMENT * BLCKSZ), LWTRANCHE_POLAR_CLOG_LOCAL_CACHE,
+			io_permission, NULL);
+
+		polar_slru_reg_local_cache(ClogCtl, cache);
+	}
 }
 
 /*
@@ -1052,4 +1105,74 @@ clog_redo(XLogReaderState *record)
 	}
 	else
 		elog(PANIC, "clog_redo: unknown op code %u", info);
+}
+
+void
+polar_promote_clog(void)
+{
+	polar_slru_promote(ClogCtl);
+}
+
+/* POLAR csn */
+
+/* 
+ * The atomicity is limited by whether all the subxids are in the same CLOG
+ * page as xid.  If they all are, then the lock will be grabbed only once,
+ * and the status will be set to committed directly.  Otherwise there is
+ * a window that the parent will be seen as committed, while (some of) the
+ * children are still seen as in-progress. That's OK with polar csn,
+ * as visibility checking code will not rely on the CLOG for recent
+ * transactions (CSNLOG will be used instead).
+ */
+static void
+TransactionIdSetTreeStatusCSN(TransactionId xid, int nsubxids,
+						      TransactionId *subxids, XidStatus status, XLogRecPtr lsn)
+{
+	TransactionId topXid;
+	int			pageno;
+	int			i;
+	int			offset;
+
+	Assert(status == TRANSACTION_STATUS_COMMITTED ||
+		   status == TRANSACTION_STATUS_ABORTED);
+
+	/*
+	 * Update the clog page-by-page. On first iteration, we will set the
+	 * status of the top-XID, and any subtransactions on the same page.
+	 */
+	pageno = TransactionIdToPage(xid);	/* get page of parent */
+	topXid = xid;
+	offset = 0;
+	i = 0;
+	for (;;)
+	{
+		int			num_on_page = 0;
+
+		while (i < nsubxids && TransactionIdToPage(subxids[i]) == pageno)
+		{
+			num_on_page++;
+			i++;
+		}
+
+		TransactionIdSetPageStatus(topXid,
+						  		   num_on_page, subxids + offset,
+						  		   status, lsn, pageno,
+						  		   nsubxids == num_on_page);
+
+		if (i == nsubxids)
+			break;
+
+		offset = i;
+		pageno = TransactionIdToPage(subxids[offset]);
+		topXid = InvalidTransactionId;
+	}
+}
+
+/* POLAR end */
+
+/* POLAR: remove clog local cache file */
+void
+polar_remove_clog_local_cache_file(void)
+{
+	polar_slru_remove_local_cache_file(ClogCtl);
 }

@@ -27,6 +27,11 @@
 #include "utils/rel.h"
 #include "utils/tqual.h"
 
+/* POLAR csn */
+#include "utils/guc.h"
+#include "storage/procarray.h"
+/* POLAR end */
+
 /* Working data for heap_page_prune and subroutines */
 typedef struct
 {
@@ -98,14 +103,15 @@ heap_page_prune_opt(Relation relation, Buffer buffer)
 	 * consumed between this point and acquiring the lock).  This allows us to
 	 * save significant overhead in the case where the page is found not to be
 	 * prunable.
+	 *
+	 * POLAR csn: get newest global xmin 
 	 */
 	if (IsCatalogRelation(relation) ||
 		RelationIsAccessibleInLogicalDecoding(relation))
-		OldestXmin = RecentGlobalXmin;
+		OldestXmin = GetRecentGlobalXmin();
 	else
-		OldestXmin =
-			TransactionIdLimitedForOldSnapshots(RecentGlobalDataXmin,
-												relation);
+		OldestXmin = TransactionIdLimitedForOldSnapshots(GetRecentGlobalDataXmin(),
+													relation);
 
 	Assert(TransactionIdIsValid(OldestXmin));
 

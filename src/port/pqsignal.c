@@ -58,6 +58,31 @@ pqsignal(int signo, pqsigfunc func)
 #endif
 }
 
+/* POLAR: Use pqsignal_with_sigsets api to disable some signal. */
+pqsigfunc
+pqsignal_with_sigsets(int signo, pqsigfunc func, int signum1, int signum2)
+{
+#ifndef WIN32
+	struct sigaction act,
+				oact;
+
+	act.sa_handler = func;
+	sigemptyset(&act.sa_mask);
+	act.sa_flags = SA_RESTART;
+	sigaddset(&act.sa_mask, signum1);
+	sigaddset(&act.sa_mask, signum2);
+#ifdef SA_NOCLDSTOP
+	if (signo == SIGCHLD)
+		act.sa_flags |= SA_NOCLDSTOP;
+#endif
+	if (sigaction(signo, &act, &oact) < 0)
+		return SIG_ERR;
+	return oact.sa_handler;
+#else							/* WIN32 */
+	return signal(signo, func);
+#endif
+}
+
 /*
  * Set up a signal handler, without SA_RESTART, for signal "signo"
  *

@@ -401,8 +401,12 @@ endif
 ifndef NO_INSTALLCHECK
 installcheck: submake $(REGRESS_PREP)
 	$(pg_regress_installcheck) $(REGRESS_OPTS) $(REGRESS)
-endif
+else
+installcheck:
+	@echo '"$(MAKE) installcheck" is not supported.'
+endif # NO_INSTALLCHECK
 
+ifndef NO_CHECK
 ifdef PGXS
 check:
 	@echo '"$(MAKE) check" is not supported.'
@@ -411,6 +415,10 @@ else
 check: submake $(REGRESS_PREP)
 	$(pg_regress_check) $(REGRESS_OPTS) $(REGRESS)
 endif
+else
+check:
+	@echo '"$(MAKE) check" is not supported.'
+endif # NO_CHECK
 endif # REGRESS
 
 ifndef NO_TEMP_INSTALL

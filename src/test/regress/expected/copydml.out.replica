@@ -1,0 +1,138 @@
+--
+-- Test cases for COPY (INSERT/UPDATE/DELETE) TO
+--
+create table copydml_test (id serial, t text);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+insert into copydml_test (t) values ('a');
+ERROR:  cannot execute INSERT in a read-only transaction
+insert into copydml_test (t) values ('b');
+ERROR:  cannot execute INSERT in a read-only transaction
+insert into copydml_test (t) values ('c');
+ERROR:  cannot execute INSERT in a read-only transaction
+insert into copydml_test (t) values ('d');
+ERROR:  cannot execute INSERT in a read-only transaction
+insert into copydml_test (t) values ('e');
+ERROR:  cannot execute INSERT in a read-only transaction
+--
+-- Test COPY (insert/update/delete ...)
+--
+copy (insert into copydml_test (t) values ('f') returning id) to stdout;
+ERROR:  cannot execute INSERT in a read-only transaction
+copy (update copydml_test set t = 'g' where t = 'f' returning id) to stdout;
+ERROR:  cannot execute UPDATE in a read-only transaction
+copy (delete from copydml_test where t = 'g' returning id) to stdout;
+ERROR:  cannot execute DELETE in a read-only transaction
+--
+-- Test \copy (insert/update/delete ...)
+--
+\copy (insert into copydml_test (t) values ('f') returning id) to stdout;
+\copy (update copydml_test set t = 'g' where t = 'f' returning id) to stdout;
+\copy (delete from copydml_test where t = 'g' returning id) to stdout;
+-- Error cases
+copy (insert into copydml_test default values) to stdout;
+ERROR:  COPY query must have a RETURNING clause
+copy (update copydml_test set t = 'g') to stdout;
+ERROR:  COPY query must have a RETURNING clause
+copy (delete from copydml_test) to stdout;
+ERROR:  COPY query must have a RETURNING clause
+create rule qqq as on insert to copydml_test do instead nothing;
+ERROR:  cannot execute CREATE RULE in a read-only transaction
+copy (insert into copydml_test default values) to stdout;
+ERROR:  DO INSTEAD NOTHING rules are not supported for COPY
+drop rule qqq on copydml_test;
+ERROR:  cannot execute DROP RULE in a read-only transaction
+create rule qqq as on insert to copydml_test do also delete from copydml_test;
+ERROR:  cannot execute CREATE RULE in a read-only transaction
+copy (insert into copydml_test default values) to stdout;
+ERROR:  DO ALSO rules are not supported for the COPY
+drop rule qqq on copydml_test;
+ERROR:  cannot execute DROP RULE in a read-only transaction
+create rule qqq as on insert to copydml_test do instead (delete from copydml_test; delete from copydml_test);
+ERROR:  cannot execute CREATE RULE in a read-only transaction
+copy (insert into copydml_test default values) to stdout;
+ERROR:  multi-statement DO INSTEAD rules are not supported for COPY
+drop rule qqq on copydml_test;
+ERROR:  cannot execute DROP RULE in a read-only transaction
+create rule qqq as on insert to copydml_test where new.t <> 'f' do instead delete from copydml_test;
+ERROR:  cannot execute CREATE RULE in a read-only transaction
+copy (insert into copydml_test default values) to stdout;
+ERROR:  conditional DO INSTEAD rules are not supported for COPY
+drop rule qqq on copydml_test;
+ERROR:  cannot execute DROP RULE in a read-only transaction
+create rule qqq as on update to copydml_test do instead nothing;
+ERROR:  cannot execute CREATE RULE in a read-only transaction
+copy (update copydml_test set t = 'f') to stdout;
+ERROR:  DO INSTEAD NOTHING rules are not supported for COPY
+drop rule qqq on copydml_test;
+ERROR:  cannot execute DROP RULE in a read-only transaction
+create rule qqq as on update to copydml_test do also delete from copydml_test;
+ERROR:  cannot execute CREATE RULE in a read-only transaction
+copy (update copydml_test set t = 'f') to stdout;
+ERROR:  DO ALSO rules are not supported for the COPY
+drop rule qqq on copydml_test;
+ERROR:  cannot execute DROP RULE in a read-only transaction
+create rule qqq as on update to copydml_test do instead (delete from copydml_test; delete from copydml_test);
+ERROR:  cannot execute CREATE RULE in a read-only transaction
+copy (update copydml_test set t = 'f') to stdout;
+ERROR:  multi-statement DO INSTEAD rules are not supported for COPY
+drop rule qqq on copydml_test;
+ERROR:  cannot execute DROP RULE in a read-only transaction
+create rule qqq as on update to copydml_test where new.t <> 'f' do instead delete from copydml_test;
+ERROR:  cannot execute CREATE RULE in a read-only transaction
+copy (update copydml_test set t = 'f') to stdout;
+ERROR:  conditional DO INSTEAD rules are not supported for COPY
+drop rule qqq on copydml_test;
+ERROR:  cannot execute DROP RULE in a read-only transaction
+create rule qqq as on delete to copydml_test do instead nothing;
+ERROR:  cannot execute CREATE RULE in a read-only transaction
+copy (delete from copydml_test) to stdout;
+ERROR:  DO INSTEAD NOTHING rules are not supported for COPY
+drop rule qqq on copydml_test;
+ERROR:  cannot execute DROP RULE in a read-only transaction
+create rule qqq as on delete to copydml_test do also insert into copydml_test default values;
+ERROR:  cannot execute CREATE RULE in a read-only transaction
+copy (delete from copydml_test) to stdout;
+ERROR:  DO ALSO rules are not supported for the COPY
+drop rule qqq on copydml_test;
+ERROR:  cannot execute DROP RULE in a read-only transaction
+create rule qqq as on delete to copydml_test do instead (insert into copydml_test default values; insert into copydml_test default values);
+ERROR:  cannot execute CREATE RULE in a read-only transaction
+copy (delete from copydml_test) to stdout;
+ERROR:  multi-statement DO INSTEAD rules are not supported for COPY
+drop rule qqq on copydml_test;
+ERROR:  cannot execute DROP RULE in a read-only transaction
+create rule qqq as on delete to copydml_test where old.t <> 'f' do instead insert into copydml_test default values;
+ERROR:  cannot execute CREATE RULE in a read-only transaction
+copy (delete from copydml_test) to stdout;
+ERROR:  conditional DO INSTEAD rules are not supported for COPY
+drop rule qqq on copydml_test;
+ERROR:  cannot execute DROP RULE in a read-only transaction
+-- triggers
+create function qqq_trig() returns trigger as $$
+begin
+if tg_op in ('INSERT', 'UPDATE') then
+    raise notice '% %', tg_op, new.id;
+    return new;
+else
+    raise notice '% %', tg_op, old.id;
+    return old;
+end if;
+end
+$$ language plpgsql;
+ERROR:  cannot execute CREATE FUNCTION in a read-only transaction
+create trigger qqqbef before insert or update or delete on copydml_test
+    for each row execute procedure qqq_trig();
+ERROR:  cannot execute CREATE TRIGGER in a read-only transaction
+create trigger qqqaf after insert or update or delete on copydml_test
+    for each row execute procedure qqq_trig();
+ERROR:  cannot execute CREATE TRIGGER in a read-only transaction
+copy (insert into copydml_test (t) values ('f') returning id) to stdout;
+ERROR:  cannot execute INSERT in a read-only transaction
+copy (update copydml_test set t = 'g' where t = 'f' returning id) to stdout;
+ERROR:  cannot execute UPDATE in a read-only transaction
+copy (delete from copydml_test where t = 'g' returning id) to stdout;
+ERROR:  cannot execute DELETE in a read-only transaction
+drop table copydml_test;
+ERROR:  cannot execute DROP TABLE in a read-only transaction
+drop function qqq_trig();
+ERROR:  cannot execute DROP FUNCTION in a read-only transaction

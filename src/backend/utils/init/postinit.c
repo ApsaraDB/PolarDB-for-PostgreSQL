@@ -63,7 +63,16 @@
 #include "utils/tqual.h"
 
 /* POLAR */
+#include "postmaster/syslogger.h"
 #include "storage/polar_fd.h"
+#include "polar_dma/polar_dma.h"
+#include <math.h>
+
+/* POLAR px */
+#include "px/px_timeout.h"
+#include "px/px_util.h"
+#include "px/px_vars.h"
+/* POLAR end */
 
 static HeapTuple GetDatabaseTuple(const char *dbname);
 static HeapTuple GetDatabaseTupleByOid(Oid dboid);
@@ -78,6 +87,10 @@ static bool ThereIsAtLeastOneRole(void);
 static void process_startup_options(Port *port, bool am_superuser);
 static void process_settings(Oid databaseid, Oid roleid);
 
+#ifdef USE_PX
+extern void InitPXOPT();
+extern void TerminatePXOPT();
+#endif
 
 /*** InitPostgres support ***/
 
@@ -279,6 +292,15 @@ PerformAuthentication(Port *port)
 				ereport(LOG,
 						(errmsg("connection authorized: user=%s database=%s",
 								port->user_name, port->database_name)));
+
+			if (polar_enable_multi_syslogger)
+			{
+				ErrorData edata;
+				POLAR_ERROR_DATA_INIT_FOR_AUDITLOG(edata);
+				polar_write_audit_log(&edata,
+						"connection authorized: user=%s database=%s",
+								port->user_name, port->database_name);
+			}
 		}
 	}
 
@@ -511,6 +533,10 @@ InitializeMaxBackends(void)
 	MaxBackends = MaxConnections + autovacuum_max_workers + 1 +
 		max_worker_processes;
 
+	/* POLAR px */
+	MaxNormalBackends
+		= (int)floor(polar_max_normal_backends_factor * MaxConnections);
+
 	/* internal error because the values were all checked previously */
 	if (MaxBackends > MAX_BACKENDS)
 		elog(ERROR, "too many backends configured");
@@ -574,6 +600,9 @@ InitPostgres(const char *in_dbname, Oid dboid, const char *username,
 	char	   *fullpath;
 	char		dbname[NAMEDATALEN];
 
+	/* POLAR */
+	int		nosupercount = 0, supercount = 0;
+
 	elog(DEBUG3, "InitPostgres");
 
 	/*
@@ -582,6 +611,18 @@ InitPostgres(const char *in_dbname, Oid dboid, const char *username,
 	 * Once I have done this, I am visible to other backends!
 	 */
 	InitProcessPhase2();
+
+
+#ifdef USE_PX
+	/* Initialize PXOPT */
+	px_OptimizerMemoryContext = AllocSetContextCreate(TopMemoryContext,
+												   "PXOPT Top-level Memory Context",
+												   ALLOCSET_DEFAULT_MINSIZE,
+												   ALLOCSET_DEFAULT_INITSIZE,
+												   ALLOCSET_DEFAULT_MAXSIZE);
+
+	InitPXOPT();
+#endif
 
 	/*
 	 * Initialize my entry in the shared-invalidation manager's array of
@@ -610,6 +651,12 @@ InitPostgres(const char *in_dbname, Oid dboid, const char *username,
 		RegisterTimeout(LOCK_TIMEOUT, LockTimeoutHandler);
 		RegisterTimeout(IDLE_IN_TRANSACTION_SESSION_TIMEOUT,
 						IdleInTransactionSessionTimeoutHandler);
+
+		/* POLAR px: register wait lock timer and get a valid timeout id. */
+		px_wait_lock_timer_id = RegisterTimeout(USER_TIMEOUT,
+												px_wait_lock_timeout_handler);
+		Assert(IS_VALID_TIMER_ID(px_wait_lock_timer_id));
+		/* POLAR end */
 	}
 
 	/*
@@ -632,11 +679,14 @@ InitPostgres(const char *in_dbname, Oid dboid, const char *username,
 	}
 	else
 	{
+
 		/*
 		 * We are either a bootstrap process or a standalone backend. Either
 		 * way, start up the XLOG machinery, and register to have it closed
 		 * down at exit.
+		 * POLAR: disable consensus
 		 */
+		polar_enable_dma = false;
 		StartupXLOG();
 		on_shmem_exit(ShutdownXLOG, 0);
 	}
@@ -757,7 +807,7 @@ InitPostgres(const char *in_dbname, Oid dboid, const char *username,
 	 * If we're trying to shut down, only superusers can connect, and new
 	 * replication connections are not allowed.
 	 */
-	if ((!am_superuser || am_walsender) &&
+	if ((!polar_enable_dma && (!am_superuser || am_walsender)) &&
 		MyProcPort != NULL &&
 		MyProcPort->canAcceptConnections == CAC_WAITBACKUP)
 	{
@@ -782,17 +832,55 @@ InitPostgres(const char *in_dbname, Oid dboid, const char *username,
 	}
 
 	/*
-	 * The last few connection slots are reserved for superusers.  Although
-	 * replication connections currently require superuser privileges, we
-	 * don't allow them to consume the reserved slots, which are intended for
-	 * interactive use.
+	 * The last few connections slots are reserved for superusers and replication
+	 * connections. Whenever connections is replication connections or superuser,
+	 * we all allow connection. But in official design, they refuse replication
+	 * connections where it is up to superuser_reserved_connections.
 	 */
-	if ((!am_superuser || am_walsender) &&
+	if (!am_superuser &&
 		ReservedBackends > 0 &&
 		!HaveNFreeProcs(ReservedBackends))
 		ereport(FATAL,
 				(errcode(ERRCODE_TOO_MANY_CONNECTIONS),
 				 errmsg("remaining connection slots are reserved for non-replication superuser connections")));
+
+	/* POLAR: we can get all user num and superuser num in one scan procarray*/
+	polar_get_nosuper_and_super_conn_count(&nosupercount, &supercount);
+	/*
+	 * POLAR: for all user(not including walsender and superuser), check if all connections exceeded
+	 * polar_max_non_super_conns. Note We do not restrict walsender any more,we must keep slave
+	 * alive
+	 */
+	if (!am_superuser && polar_max_non_super_conns >= 0 &&
+		polar_max_non_super_conns < nosupercount)
+		ereport(FATAL,
+				(errcode(ERRCODE_TOO_MANY_CONNECTIONS),
+				 errmsg("Sorry, too many clients already")));
+	/*
+	 * POLAR: for super(not including walsenders), check if all connections exceeded
+	 * polar_max_super_conns. Note We do not restrict walsender any more,we must
+	 * keep slave alive
+	 */
+	if (am_superuser && !am_walsender && polar_max_super_conns >= 0 &&
+		polar_max_super_conns < supercount)
+		ereport(FATAL,
+				(errcode(ERRCODE_TOO_MANY_CONNECTIONS),
+				 errmsg("Sorry, number of superuser connections has exceeded polar_max_super_conns:%d", polar_max_super_conns)));
+
+	/*
+	 * POLAR: reserve connections for polar_superuser, when the connection counts
+	 * exceeded polar_reserve_polar_super_conns, new connections are fobidden. Note that
+	 * the priority of superuser is higher than poalr_super_user, the limit is only
+	 * valid for normal users.
+	 */
+	if (!polar_superuser() && !am_superuser && !am_walsender &&
+		polar_max_non_super_conns >= 0 && polar_reserved_polar_super_conns >= 0 &&
+		nosupercount + polar_reserved_polar_super_conns > polar_max_non_super_conns)
+		ereport(FATAL,
+				(errcode(ERRCODE_TOO_MANY_CONNECTIONS),
+				 errmsg("Sorry, number of normal user connections (%d) plus polar super user connections (%d) have exceeded limits",
+				 nosupercount, polar_reserved_polar_super_conns)));
+	/* POLAR end */
 
 	/* Check replication permissions needed for walsender processes. */
 	if (am_walsender)
@@ -1163,7 +1251,17 @@ process_settings(Oid databaseid, Oid roleid)
 	ApplySetting(snapshot, databaseid, roleid, relsetting, PGC_S_DATABASE_USER);
 	ApplySetting(snapshot, InvalidOid, roleid, relsetting, PGC_S_USER);
 	ApplySetting(snapshot, databaseid, InvalidOid, relsetting, PGC_S_DATABASE);
-	ApplySetting(snapshot, InvalidOid, InvalidOid, relsetting, PGC_S_GLOBAL);
+
+	/*
+	 * POLAR: if indicated, disable global settings for super users. Since we have
+	 * allowed non-super users to set global settings which include
+	 * search_patch/client_encoding/etc that could have impact on super user's
+	 * session, we have to disable applying global settings (set by ALTER ROLE
+	 * ALL SET ....) for super users
+	 */
+	if (!MyProc->issuper || polar_apply_global_guc_for_super)
+		ApplySetting(snapshot, InvalidOid, InvalidOid, relsetting, PGC_S_GLOBAL);
+	/* POLAR end */
 
 	UnregisterSnapshot(snapshot);
 	heap_close(relsetting, AccessShareLock);
@@ -1184,6 +1282,13 @@ ShutdownPostgres(int code, Datum arg)
 {
 	/* Make sure we've killed any active transaction */
 	AbortOutOfAnyTransaction();
+
+#ifdef USE_PX
+	TerminatePXOPT();
+
+	if (px_OptimizerMemoryContext != NULL)
+		MemoryContextDelete(px_OptimizerMemoryContext);
+#endif
 
 	/*
 	 * User locks are not released by transaction end, so be sure to release
@@ -1255,4 +1360,56 @@ ThereIsAtLeastOneRole(void)
 	heap_close(pg_authid_rel, AccessShareLock);
 
 	return result;
+}
+
+/*
+ * POLAR: 
+ * 	  Initialization for making polar dynamic bgworker visible 
+ * 		in pg_stat_activity and polar_stat_activity
+ *    Then how other backends implement this?
+ *    	* client backends: InitPostgres()
+ *    	* static bg worker: also InitPostgres()
+ *    	* Auxiliary proc: in AuxiliaryProcessMain
+ * 	  
+ *    So we need to borrow codes from InitPostgres/AuxiliaryProcessMain and 
+ * 		we'd better minimize this work for not involving additional initialization
+ * 		and reducing the side effects.
+ */
+void
+polar_init_dynamic_bgworker_in_backends(void)
+{
+	bool		bootstrap = IsBootstrapProcessingMode();
+
+	/* 
+	 * POLAR: Add PGPROC struct to the ProcArray 
+	 *  we do this to show myself activity in pg_stat_activity
+	 * 
+	 *  but now it would cause standby panic when btree_xlog_delete_get_latestRemovedXid
+	 *  because CountDBBackends > 0
+	 */
+	// InitProcessPhase2();
+
+	/* POLAR: Get MyBackendId */
+	MyBackendId = InvalidBackendId;
+
+	SharedInvalBackendInit(false);
+
+	if (MyBackendId > MaxBackends || MyBackendId <= 0)
+		elog(FATAL, "bad backend ID: %d", MyBackendId);
+
+	/* POLAR: Now that we have a BackendId, we can participate in ProcSignal */
+	ProcSignalInit(MyBackendId);
+
+	/* POLAR: Initialize stats collection */
+	if (!bootstrap)
+		pgstat_initialize();
+
+	before_shmem_exit(ShutdownPostgres, 0);
+
+	/* POLAR: init session user id because we are B_BG_WORKER */
+	InitializeSessionUserIdStandalone();
+
+	pgstat_bestart();
+
+	SetProcessingMode(NormalProcessing);
 }

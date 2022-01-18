@@ -24,6 +24,11 @@
 #include "storage/lmgr.h"
 #include "storage/smgr.h"
 
+/* POLAR */
+#include "utils/guc.h"
+
+static Buffer polar_relation_add_extra_blocks_and_return_last_buffer(Relation relation, BulkInsertState bistate);
+/* POLAR end */
 
 /*
  * RelationPutHeapTuple - place tuple at specified page
@@ -323,11 +328,20 @@ RelationGetBufferForTuple(Relation relation, Size len,
 	BlockNumber targetBlock,
 				otherBlock;
 	bool		needLock;
+	int			bulk_extend_size = polar_bulk_extend_size;
 
 	len = MAXALIGN(len);		/* be conservative */
 
 	/* Bulk insert is not supported for updates, only inserts. */
 	Assert(otherBuffer == InvalidBuffer || !bistate);
+
+	/*
+	 * POLAR: when enable preallocate_file,
+	 * use fsm record blocks => if preallocate_file is enabled,
+	 * use fsm record blocks
+	 */
+	if (polar_enable_shared_storage_mode && bulk_extend_size > 0)
+		use_fsm = true;
 
 	/*
 	 * If we're gonna fail for oversize tuple, do it right away
@@ -557,8 +571,12 @@ loop:
 				goto loop;
 			}
 
-			/* Time to bulk-extend. */
-			RelationAddExtraBlocks(relation, bistate);
+			/* POLAR: If we don't need file prealloc, use origin normal method */
+			if (!(polar_enable_shared_storage_mode && bulk_extend_size > 0))
+			{
+				/* Time to bulk-extend. */
+				RelationAddExtraBlocks(relation, bistate);
+			}
 		}
 	}
 
@@ -571,7 +589,11 @@ loop:
 	 * it worth keeping an accurate file length in shared memory someplace,
 	 * rather than relying on the kernel to do it for us?
 	 */
-	buffer = ReadBufferBI(relation, P_NEW, bistate);
+	/* POLAR: preallocate multiple block and only use one block */
+	if (polar_enable_shared_storage_mode && bulk_extend_size > 0)
+		buffer = polar_relation_add_extra_blocks_and_return_last_buffer(relation, bistate);
+	else
+		buffer = ReadBufferBI(relation, P_NEW, bistate);
 
 	/*
 	 * We can be certain that locking the otherBuffer first is OK, since it
@@ -626,4 +648,163 @@ loop:
 	RelationSetTargetBlock(relation, BufferGetBlockNumber(buffer));
 
 	return buffer;
+}
+
+/*
+ * POLAR:
+ * polar_relation_add_extra_blocks_and_return_last_buffer - Extend a relation by multiple blocks
+ * to avoid future contention on the relation extension lock and expensive pfs extend operation.
+ *
+ * If bistate isn't NULL, bistate->current_buf is assigned to last buffer alloced.
+ *
+ * Returns: the last buffer alloced is returned, which is zero-page and has been pinned.
+ *          The other alloced buffer is initialized、marked dirty、added to fsm for later use.
+ *          Does not return on error --- elog's instead.
+ *
+ * Assume when this function is called, that reln has been opened already and
+ * relation extension lock has been acquired if relation is not local.
+ */
+static Buffer
+polar_relation_add_extra_blocks_and_return_last_buffer(Relation relation, BulkInsertState bistate)
+{
+	BlockNumber first_block_num_extended = InvalidBlockNumber;
+	int			block_count = 0;
+	Buffer	    last_buffer = InvalidBuffer;
+	Buffer      *buffers = NULL;
+	int         index = 0;
+	char        *bulk_buf_block = NULL;
+	BufferAccessStrategy strategy = NULL;
+
+	if (bistate != NULL)
+	{
+		strategy = bistate->strategy;
+		if (bistate->current_buf != InvalidBuffer)
+		{
+			/* because this function just extend rel, drop the old buffer */
+			ReleaseBuffer(bistate->current_buf);
+			bistate->current_buf = InvalidBuffer;
+		}
+	}
+
+	/* Open it at the smgr level if not already done */
+	RelationOpenSmgr(relation);
+
+	PG_TRY();
+	{
+		/* init bulk extend backend-local-variable */
+		polar_smgr_init_bulk_extend(relation->rd_smgr, MAIN_FORKNUM);
+
+		first_block_num_extended = relation->rd_smgr->polar_nblocks_faked_for_bulk_extend[MAIN_FORKNUM];
+		block_count = Min(polar_bulk_extend_size, (BlockNumber) RELSEG_SIZE - (first_block_num_extended % ((BlockNumber) RELSEG_SIZE)));
+		if (block_count < 1)
+			block_count = 1;
+
+		/* avoid small table bloat */
+		if (first_block_num_extended < polar_min_bulk_extend_table_size)
+			block_count = 1;
+
+		bulk_buf_block = (char*)palloc0(block_count * BLCKSZ);
+		buffers = (Buffer*)palloc(block_count * sizeof(Buffer));
+
+		for (index = 0; index < block_count; index++)
+		{
+			/*
+			 * Extend by one page.  This should generally match the main-line
+			 * extension code in RelationGetBufferForTuple, except that we hold
+			 * the relation extension lock throughout.
+			 */
+			buffers[index] = ReadBufferExtended(relation, MAIN_FORKNUM, P_NEW, RBM_NORMAL, strategy);
+		}
+	}
+	PG_CATCH();
+	{
+		/* error recovery, very important, reset bulk extend backend-local-variable */
+		if (relation->rd_smgr != NULL)
+		{
+			polar_smgr_clear_bulk_extend(relation->rd_smgr, MAIN_FORKNUM);
+		}
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	/* reset bulk extend backend-local-variable */
+	polar_smgr_clear_bulk_extend(relation->rd_smgr, MAIN_FORKNUM);
+
+	/* bulk extend polar_store */
+	smgrextendbatch(relation->rd_smgr, MAIN_FORKNUM, first_block_num_extended, block_count, bulk_buf_block, false);
+	pfree(bulk_buf_block);
+
+	/*
+	 * Until here, all alloced buffer are zero page(BM_VALID, non-BM_DIRTY). It is safe.
+	 * 1. They are not initialized, still zero-page.
+	 *      a. Only the caller of P_NEW and Vacuum have obligation and the right
+	 *         to initialize a page.
+	 *      b. Other backend would't initialize them.
+	 *      c. Before relation extension lock are freed, Vacuum can't initialize them.
+	 *         When Vacuum initializes a zero-page, it will acquire relation extension lock,
+	 *         and then recheck if-zero-page.
+	 * 2. They could't be inserted tuple to.
+	 *      a. Because PageGetFreeSpace(page) of zero-page is 0.
+	 * 3. Full Table Scan is OK.
+	 *      a. Because PageGetMaxOffsetNumber(page) of zero-page is 0.
+	 * 4. They are pinned, can't be evicted.
+	 */
+
+	/* process left (block_count-1) blocks, skip last block*/
+	block_count--;
+	for(index = 0; index < block_count; index++)
+	{
+		Buffer		buffer;
+		Page		page;
+		Size		freespace;
+
+		buffer = buffers[index];
+		LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
+		page = BufferGetPage(buffer);
+		if (!PageIsNew(page))
+			elog(ERROR, "page %u of relation \"%s\" should be empty but is not",
+				 BufferGetBlockNumber(buffer),
+				 RelationGetRelationName(relation));
+
+		PageInit(page, BufferGetPageSize(buffer), 0);
+
+		/*
+		 * We mark all the new buffers dirty, but do nothing to write them
+		 * out; they'll probably get used soon, and even if they are not, a
+		 * crash will leave an okay all-zeroes page on disk.
+		 */
+		MarkBufferDirty(buffer);
+
+		/* we'll need this info below */
+		Assert((first_block_num_extended + index) == BufferGetBlockNumber(buffer));
+		freespace = PageGetHeapFreeSpace(page);
+
+		UnlockReleaseBuffer(buffer);
+
+		/*
+		 * Immediately update the bottom level of the FSM.  This has a good
+		 * chance of making this page visible to other concurrently inserting
+		 * backends, and we want that to happen without delay.
+		 */
+		RecordPageWithFreeSpace(relation, first_block_num_extended + index, freespace);
+	}
+	/*
+	 * Updating the upper levels of the free space map is too expensive to do
+	 * for every block, but it's worth doing once at the end to make sure that
+	 * subsequent insertion activity sees all of those nifty free pages we
+	 * just inserted. skip last block.
+	 */
+	if (block_count > 0)
+		FreeSpaceMapVacuumRange(relation, first_block_num_extended, first_block_num_extended + block_count);
+
+	/* last block */
+	last_buffer = buffers[block_count];
+	/* Save the selected block as target for future inserts */
+	if (bistate != NULL)
+	{
+		IncrBufferRefCount(last_buffer);
+		bistate->current_buf = last_buffer;
+	}
+	pfree(buffers);
+	return last_buffer;
 }

@@ -33,6 +33,11 @@
 #include "storage/predicate.h"
 #include "utils/snapmgr.h"
 
+/* POLAR */
+#include "utils/guc.h"
+#include "storage/procarray.h"
+/* POLAR end */
+
 static bool _bt_mark_page_halfdead(Relation rel, Buffer leafbuf, BTStack stack);
 static bool _bt_unlink_halfdead_page(Relation rel, Buffer leafbuf,
 						 BlockNumber scanblkno, bool *rightsib_empty,
@@ -42,6 +47,9 @@ static bool _bt_lock_branch_parent(Relation rel, BlockNumber child,
 					   BlockNumber *target, BlockNumber *rightsib);
 static void _bt_log_reuse_page(Relation rel, BlockNumber blkno,
 				   TransactionId latestRemovedXid);
+
+#define POLAR_ENABLE_INDEX_BULK_EXTEND() \
+	(polar_enable_shared_storage_mode && polar_index_bulk_extend_size)
 
 /*
  *	_bt_initmetapage() -- Fill a page buffer with a correct metapage image
@@ -791,7 +799,14 @@ _bt_getbuf(Relation rel, BlockNumber blkno, int access)
 		if (needLock)
 			LockRelationForExtension(rel, ExclusiveLock);
 
-		buf = ReadBuffer(rel, P_NEW);
+		/*
+		 * POLAR: if polar_index_bulk_extend_size > 0, use index bulk extend
+		 * instead of extend one page
+		 */
+		if (POLAR_ENABLE_INDEX_BULK_EXTEND())
+			buf = polar_index_add_extra_blocks_and_return_last_buffer(rel, P_NEW);
+		else
+			buf = ReadBuffer(rel, P_NEW);
 
 		/* Acquire buffer lock on new page */
 		LockBuffer(buf, BT_WRITE);
@@ -878,6 +893,8 @@ bool
 _bt_page_recyclable(Page page)
 {
 	BTPageOpaque opaque;
+	/* POLAR csn */
+	TransactionId tmpRecentGlobalXmin;
 
 	/*
 	 * It's possible to find an all-zeroes page in an index --- for example, a
@@ -893,8 +910,12 @@ _bt_page_recyclable(Page page)
 	 * interested in it.
 	 */
 	opaque = (BTPageOpaque) PageGetSpecialPointer(page);
+
+	/* POLAR csn: get newest global xmin */
+	tmpRecentGlobalXmin = GetRecentGlobalXmin();
+
 	if (P_ISDELETED(opaque) &&
-		TransactionIdPrecedes(opaque->btpo.xact, RecentGlobalXmin))
+		TransactionIdPrecedes(opaque->btpo.xact, tmpRecentGlobalXmin))
 		return true;
 	return false;
 }

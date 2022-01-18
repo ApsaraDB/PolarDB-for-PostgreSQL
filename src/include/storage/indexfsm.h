@@ -17,10 +17,18 @@
 #include "storage/block.h"
 #include "utils/relcache.h"
 
+/* POLAR */
+#include "storage/buf.h"
+#include "storage/smgr.h"
+
 extern BlockNumber GetFreeIndexPage(Relation rel);
 extern void RecordFreeIndexPage(Relation rel, BlockNumber page);
 extern void RecordUsedIndexPage(Relation rel, BlockNumber page);
 
 extern void IndexFreeSpaceMapVacuum(Relation rel);
+
+/* POLAR */
+extern Buffer polar_index_add_extra_blocks_and_return_last_buffer(Relation reln, BlockNumber blockNum);
+
 
 #endif							/* INDEXFSM_H_ */

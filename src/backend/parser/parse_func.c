@@ -34,6 +34,11 @@
 #include "utils/lsyscache.h"
 #include "utils/syscache.h"
 
+/* POLAR */
+#include "miscadmin.h"
+#include "parser/parse_utilcmd.h"
+#include "utils/guc.h"
+
 
 static void unify_hypothetical_args(ParseState *pstate,
 						List *fargs, int numAggregatedArgs,
@@ -203,6 +208,20 @@ ParseFuncOrColumn(ParseState *pstate, List *funcname, List *fargs,
 		first_arg = linitial(fargs);
 		Assert(first_arg != NULL);
 	}
+
+	/*
+ 	 * POLAR: When creating rule, no-super user can put system functions into
+ 	 * rule view, so when superuser select this rule view, that will execute
+ 	 * system functions, it is unsafe, so we must filter so functions.
+ 	 */
+	if (polar_creating_rule && !superuser() && polar_check_is_forbidden_funcs(funcname))
+		ereport(ERROR,
+				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+				 errmsg("permission denied for function %s during creating rule",
+					 func_signature_string(funcname, nargs,
+						 							argnames,
+													actual_arg_types))));
+	/* POLAR end */
 
 	/*
 	 * Decide whether it's legitimate to consider the construct to be a column

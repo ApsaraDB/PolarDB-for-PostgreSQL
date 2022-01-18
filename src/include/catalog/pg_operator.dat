@@ -802,6 +802,7 @@
   oprcom => '<>(name,name)', oprnegate => '=(name,name)', oprcode => 'namene',
   oprrest => 'neqsel', oprjoin => 'neqjoinsel' },
 { oid => '654', descr => 'concatenate',
+  oid_symbol => 'TEXT_CONCAT_OP_OID',
   oprname => '||', oprleft => 'text', oprright => 'text', oprresult => 'text',
   oprcode => 'textcat' },
 

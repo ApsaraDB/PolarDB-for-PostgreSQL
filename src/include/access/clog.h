@@ -14,12 +14,21 @@
 #include "access/xlogreader.h"
 #include "lib/stringinfo.h"
 
+/* POLAR */
+#ifndef FRONTEND
+#include "utils/polar_local_cache.h"
+#endif
+
 /*
  * Possible transaction statuses --- note that all-zeroes is the initial
  * state.
  *
  * A "subcommitted" transaction is a committed subtransaction whose parent
  * hasn't committed or aborted yet.
+ * 
+ * POLAR
+ * We don't have TRANSACTION_STATUS_SUB_COMMITTED anymore, but accept
+ * them in existing clog, if we've been pg_upgraded from an older version.
  */
 typedef int XidStatus;
 
@@ -57,5 +66,12 @@ extern void TruncateCLOG(TransactionId oldestXact, Oid oldestxid_datoid);
 extern void clog_redo(XLogReaderState *record);
 extern void clog_desc(StringInfo buf, XLogReaderState *record);
 extern const char *clog_identify(uint8 info);
+
+#ifndef FRONTEND
+/* POLAR: do online promote for clog */
+extern void polar_promote_clog(void);
+/* POLAR: remove clog local cache file */
+extern void polar_remove_clog_local_cache_file(void);
+#endif
 
 #endif							/* CLOG_H */

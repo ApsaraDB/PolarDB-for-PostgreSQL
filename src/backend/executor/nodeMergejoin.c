@@ -1584,6 +1584,9 @@ ExecInitMergeJoin(MergeJoin *node, EState *estate, int eflags)
 						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 						 errmsg("FULL JOIN is only supported with merge-joinable join conditions")));
 			break;
+		case JOIN_LASJ_NOTIN:/* POLAR px */
+			elog(ERROR, "join type not supported");
+			break;
 		default:
 			elog(ERROR, "unrecognized join type: %d",
 				 (int) node->join.jointype);

@@ -30,6 +30,7 @@
 #include <termios.h>
 #endif
 
+#include "libpq-int.h"
 #include "fe_utils/print.h"
 
 #include "catalog/pg_type_d.h"
@@ -3298,6 +3299,66 @@ printTable(const printTableContent *cont,
 		ClosePager(fout);
 }
 
+/* POLAR px */
+static int polar_pgresattvalue_cmp_func(PGresAttValue *lvalue, PGresAttValue *rvalue);
+static int polar_pgresult_cmp_func(const void *lrow, const void *rrow, void *column_size);
+static void polar_pqSortresult(const PGresult *res, int tup_num, int field_num);
+
+int
+polar_pgresattvalue_cmp_func(PGresAttValue *lvalue, PGresAttValue *rvalue)
+{
+	int result = 0;
+	if (NULL_LEN == lvalue->len || NULL_LEN == rvalue->len)
+	{
+		result = (lvalue->len == rvalue->len 
+				  ? 0 
+				  : (lvalue->len < rvalue->len ? -1 : 1));
+	}
+	else
+	{
+		int min_len = (lvalue->len < rvalue->len ? lvalue->len : rvalue->len);
+		result = memcmp(lvalue->value, rvalue->value, min_len);
+		if (result == 0 && lvalue->len != rvalue->len)
+		{
+			result = (lvalue->len < rvalue->len ? -1 : 1);
+		}
+	}
+	return result;
+}
+
+int
+polar_pgresult_cmp_func(const void *lrow, const void *rrow, void *column_size)
+{
+	PGresAttValue	*lrow_array = *(PGresAttValue *const *)lrow;
+	PGresAttValue	*rrow_array = *(PGresAttValue *const *)rrow;
+	int				array_size = *(int *)column_size;
+	int 			result = 0;
+	int 			i;
+	for (i = 0; i < array_size; ++i)
+	{
+		result = polar_pgresattvalue_cmp_func(lrow_array + i, rrow_array + i);
+		if (0 != result) {
+			break;
+		}
+	}
+	return result;
+}
+
+/*
+ * polar_pqSortresult:
+ *	quick sort result
+ */
+void
+polar_pqSortresult(const PGresult *res, int tup_num, int field_num)
+{
+	qsort_r(res->tuples, 
+			tup_num, 
+			sizeof(res->tuples[0]), 
+			polar_pgresult_cmp_func, 
+			&field_num
+			);
+}
+
 /*
  * Use this to print query results
  *
@@ -3332,6 +3393,10 @@ printQuery(const PGresult *result, const printQueryOpt *opt,
 							opt->translate_header,
 							column_type_alignment(PQftype(result, i)));
 	}
+
+	/* POLAR px */
+	if (opt->sort_result && cont.nrows > 1)
+		polar_pqSortresult(result, cont.nrows, cont.ncolumns);
 
 	/* set cells */
 	for (r = 0; r < cont.nrows; r++)

@@ -73,6 +73,10 @@
 #include "utils/sortsupport.h"
 #include "utils/tuplesort.h"
 
+/* POLAR px */
+#include "access/px_btbuild.h"
+#include "utils/guc.h"
+#include <sys/time.h>
 
 /* Magic numbers for parallel state sharing */
 #define PARALLEL_KEY_BTREE_SHARED		UINT64CONST(0xA000000000000001)
@@ -223,6 +227,7 @@ typedef struct BTBuildState
 	 * BTBuildState.  Workers have their own spool and spool2, though.)
 	 */
 	BTLeader   *btleader;
+	PxLeaderstate *pxleader;
 } BTBuildState;
 
 /*
@@ -260,8 +265,18 @@ typedef struct BTWriteState
 	BlockNumber btws_pages_alloced; /* # pages allocated */
 	BlockNumber btws_pages_written; /* # pages written out */
 	Page		btws_zeropage;	/* workspace for filling zeroes */
-} BTWriteState;
 
+	/*
+	 * POLAR: bulk extend index file.
+	 * polar_index_create_bulk_extend_size_copy is a copy of polar_index_create_bulk_extend_size,
+	 * to avoid the impact of polar_index_create_bulk_extend_size realtime modifications.
+	 */
+	int  polar_index_create_bulk_extend_size_copy;
+	PxLeaderstate *pxleader;
+	PxIndexPageBuffer *px_index_buffer;
+	/* POLAR end */
+
+} BTWriteState;
 
 static double _bt_spools_heapscan(Relation heap, Relation index,
 					BTBuildState *buildstate, IndexInfo *indexInfo);
@@ -292,6 +307,14 @@ static void _bt_parallel_scan_and_sort(BTSpool *btspool, BTSpool *btspool2,
 						   BTShared *btshared, Sharedsort *sharedsort,
 						   Sharedsort *sharedsort2, int sortmem);
 
+/* POLAR */
+extern bool polar_temp_relation_file_in_shared_storage;
+static bool polar_bt_check_bulk_extend(BTWriteState *wstate);
+/* POLAR end */
+
+#ifdef USE_PX
+#include "px_btbuild.c"
+#endif
 
 /*
  *	btbuild() -- build a new btree index.
@@ -302,12 +325,18 @@ btbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 	IndexBuildResult *result;
 	BTBuildState buildstate;
 	double		reltuples;
+	struct timeval tv1, tv2, tv3;
+
+	if (PX_ENABLE_BTBUILD(index))
+		return pxbuild(heap, index, indexInfo);
 
 #ifdef BTREE_BUILD_STATS
 	if (log_btree_build_stats)
 		ResetUsage();
 #endif							/* BTREE_BUILD_STATS */
 
+	if (unlikely(polar_enable_debug))
+		gettimeofday(&tv1, NULL);
 	buildstate.isunique = indexInfo->ii_Unique;
 	buildstate.havedead = false;
 	buildstate.heap = heap;
@@ -321,17 +350,26 @@ btbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 	 * not the case, big trouble's what we have.
 	 */
 	if (RelationGetNumberOfBlocks(index) != 0)
+	{
+		polar_check_nblocks_consistent(index);
 		elog(ERROR, "index \"%s\" already contains data",
 			 RelationGetRelationName(index));
+	}
 
 	reltuples = _bt_spools_heapscan(heap, index, &buildstate, indexInfo);
 
+	if (unlikely(polar_enable_debug))
+		gettimeofday(&tv2, NULL);
 	/*
 	 * Finish the build by (1) completing the sort of the spool file, (2)
 	 * inserting the sorted tuples into btree pages and (3) building the upper
 	 * levels.  Finally, it may also be necessary to end use of parallelism.
 	 */
 	_bt_leafbuild(buildstate.spool, buildstate.spool2);
+
+	if (unlikely(polar_enable_debug))
+		gettimeofday(&tv3, NULL);
+
 	_bt_spooldestroy(buildstate.spool);
 	if (buildstate.spool2)
 		_bt_spooldestroy(buildstate.spool2);
@@ -342,7 +380,10 @@ btbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 
 	result->heap_tuples = reltuples;
 	result->index_tuples = buildstate.indtuples;
-
+	
+	if (unlikely(polar_enable_debug))
+		elog(INFO, "btbuild spool heapscan time: %ldms, leafbuild time: %ldms", 
+			TvDiff(tv2, tv1), TvDiff(tv3, tv2));
 #ifdef BTREE_BUILD_STATS
 	if (log_btree_build_stats)
 	{
@@ -545,7 +586,40 @@ _bt_leafbuild(BTSpool *btspool, BTSpool *btspool2)
 	wstate.btws_pages_written = 0;
 	wstate.btws_zeropage = NULL;	/* until needed */
 
+	/*
+	 * POALR: bulk extend index file. For temp table in local storage, no need
+	 * to use bulk extend.
+	 */
+	if (POLAR_TEMP_TABLE_FILE_IN_LOCAL_STORAGE(wstate.index->rd_backend))
+		wstate.polar_index_create_bulk_extend_size_copy = 0;
+	else
+		wstate.polar_index_create_bulk_extend_size_copy = polar_index_create_bulk_extend_size;
+	wstate.px_index_buffer = NULL;
+
 	_bt_load(&wstate, btspool, btspool2);
+
+	/*
+	 * POLAR: Manually free memory of `wstate.btws_zeropage' beforehand,
+	 * instead of automatically freeing memory via memcontext.
+	 *
+	 * `wstate' is a local variable of function _bt_leafbuild(),
+	 * which would be destructed when _bt_leafbuild() finished.
+	 * So it's safe to manually free memory of `wstate.btws_zeropage' here.
+	 *
+	 * Why this is needed? Avoid OOM.
+	 * For example, polar_index_create_bulk_extend_size = 512, `wstate.btws_zeropage' will be 4MB.
+	 * The OOM case is truncating a partitioning table with huge number of sub-partitioning.
+	 * Huge number of indexes would be reindexed in one transaction.
+	 * Every index has its own `wstate.btws_zeropage' memory in the only one transaction,
+	 * If we don't manually free memory of `wstate.btws_zeropage' here,
+	 * huge number of `wstate.btws_zeropage's would leed to OOM.
+	 */
+	if (wstate.btws_zeropage != NULL)
+	{
+		pfree(wstate.btws_zeropage);
+		wstate.btws_zeropage = NULL;
+	}
+	/* POLAR: end */
 }
 
 /*
@@ -610,6 +684,13 @@ _bt_blnewpage(uint32 level)
 static void
 _bt_blwritepage(BTWriteState *wstate, Page page, BlockNumber blkno)
 {
+	/* POLAR: Use bulk write for px btbuild */
+	if (PX_ENABLE_BULK_WRITE(wstate->index))
+	{
+		_bt_px_blwritepage(wstate, page, blkno);
+		return ;
+	}
+
 	/* Ensure rd_smgr is open (could have been closed by relcache flush!) */
 	RelationOpenSmgr(wstate->index);
 
@@ -629,15 +710,43 @@ _bt_blwritepage(BTWriteState *wstate, Page page, BlockNumber blkno)
 	 */
 	while (blkno > wstate->btws_pages_written)
 	{
-		if (!wstate->btws_zeropage)
-			wstate->btws_zeropage = (Page) palloc0(BLCKSZ);
-		/* don't set checksum for all-zero page */
-		smgrextend(wstate->index->rd_smgr, MAIN_FORKNUM,
-				   wstate->btws_pages_written++,
-				   (char *) wstate->btws_zeropage,
-				   true);
+		/*
+		 * POLAR: bulk extend index relation in "create index", not "insert a index tuple".
+		 * Extra zero-page are safe.
+		 * In "create index", index_create(). Before it finished, it can't be accessed by other backend.
+		 *    1. For a index relation, only one backend writes the index relation, even in parallel index build.
+		 *    2. Logical nblocks is controlled by wstate->btws_pages_alloced, not file lseek.
+		 *    3. zero-page will be overwrite by smgrwrite().
+		 *    4. When index_create() finished, small amount of last zero pages will be truncated.
+		 */
+		if (polar_enable_shared_storage_mode && wstate->polar_index_create_bulk_extend_size_copy > 0)
+		{
+			int polar_block_count = Min(wstate->polar_index_create_bulk_extend_size_copy, (BlockNumber) RELSEG_SIZE - (blkno % ((BlockNumber) RELSEG_SIZE)));
+			if (polar_block_count < 0)
+				polar_block_count = 1;
+			/*
+			 * btws_zeropage has fixed size wstate->polar_index_create_bulk_extend_size_copy.
+			 * polar_block_count <= wstate->polar_index_create_bulk_extend_size_copy.
+			 */
+			if (!wstate->btws_zeropage)
+				wstate->btws_zeropage = (Page) palloc0(BLCKSZ * wstate->polar_index_create_bulk_extend_size_copy);
+
+			smgrextendbatch(wstate->index->rd_smgr, MAIN_FORKNUM, blkno, polar_block_count, (char *)wstate->btws_zeropage, true);
+			wstate->btws_pages_written += polar_block_count;
+		} /* POLAR end */
+		else
+		{
+			if (!wstate->btws_zeropage)
+				wstate->btws_zeropage = (Page) palloc0(BLCKSZ);
+			/* don't set checksum for all-zero page */
+			smgrextend(wstate->index->rd_smgr, MAIN_FORKNUM,
+					   wstate->btws_pages_written++,
+					   (char *) wstate->btws_zeropage,
+					   true);
+		}
 	}
 
+	PageEncryptInplace(page, MAIN_FORKNUM, blkno);
 	PageSetChecksumInplace(page, blkno);
 
 	/*
@@ -646,10 +755,42 @@ _bt_blwritepage(BTWriteState *wstate, Page page, BlockNumber blkno)
 	 */
 	if (blkno == wstate->btws_pages_written)
 	{
-		/* extending the file... */
-		smgrextend(wstate->index->rd_smgr, MAIN_FORKNUM, blkno,
-				   (char *) page, true);
-		wstate->btws_pages_written++;
+		/*
+		 * POLAR: bulk extend index relation in "create index", not "insert a index tuple".
+		 * Extra zero-page are safe.
+		 * In "create index", index_create(). Before it finished, it can't be accessed by other backend.
+		 *    1. For a index relation, only one backend writes the index relation, even in parallel index build.
+		 *    2. Logical nblocks is controlled by wstate->btws_pages_alloced, not file lseek.
+		 *    3. zero-page will be overwrite by smgrwrite().
+		 *    4. When index_create() finished, small amount of last zero pages will be truncated.
+		 */
+		if (polar_enable_shared_storage_mode && wstate->polar_index_create_bulk_extend_size_copy > 0)
+		{
+			int polar_block_count = Min(wstate->polar_index_create_bulk_extend_size_copy, (BlockNumber) RELSEG_SIZE - (blkno % ((BlockNumber) RELSEG_SIZE)));
+			if (polar_block_count < 0)
+				polar_block_count = 1;
+
+			/*
+			 * btws_zeropage has fixed size wstate->polar_index_create_bulk_extend_size_copy.
+			 * polar_block_count <= wstate->polar_index_create_bulk_extend_size_copy.
+			 */
+			if (!wstate->btws_zeropage)
+				wstate->btws_zeropage = (Page) palloc0(BLCKSZ * wstate->polar_index_create_bulk_extend_size_copy);
+
+			/* first page hold blkno's content */
+			memcpy((char *)wstate->btws_zeropage, (char *)page, BLCKSZ);
+			smgrextendbatch(wstate->index->rd_smgr, MAIN_FORKNUM, blkno, polar_block_count, (char *)wstate->btws_zeropage, true);
+			/* important, recovery  wstate->btws_zeropage first page to zero page*/
+			memset(wstate->btws_zeropage, 0, BLCKSZ);
+			wstate->btws_pages_written += polar_block_count;
+		} /* POLAR end */
+		else
+		{
+			/* extending the file... */
+			smgrextend(wstate->index->rd_smgr, MAIN_FORKNUM, blkno,
+					   (char *) page, true);
+			wstate->btws_pages_written++;
+		}
 	}
 	else
 	{
@@ -1061,6 +1202,11 @@ _bt_uppershutdown(BTWriteState *wstate, BTPageState *state)
 	metapage = (Page) palloc(BLCKSZ);
 	_bt_initmetapage(metapage, rootblkno, rootlevel);
 	_bt_blwritepage(wstate, metapage, BTREE_METAPAGE);
+
+	if (PX_ENABLE_BULK_WRITE(wstate->index))
+	{
+		_bt_px_flush_blpage(wstate);
+	}
 }
 
 /*
@@ -1178,14 +1324,28 @@ _bt_load(BTWriteState *wstate, BTSpool *btspool, BTSpool *btspool2)
 	else
 	{
 		/* merge is unnecessary */
-		while ((itup = tuplesort_getindextuple(btspool->sortstate,
-											   true)) != NULL)
+		if (PX_ENABLE_BTBUILD(wstate->index))
 		{
-			/* When we see first tuple, create first index page */
-			if (state == NULL)
-				state = _bt_pagestate(wstate, 0);
+			while ((itup = _bt_consume_pxleader(wstate->pxleader)) != NULL)
+			{
+				/* When we see first tuple, create first index page */
+				if (state == NULL)
+					state = _bt_pagestate(wstate, 0);
 
-			_bt_buildadd(wstate, state, itup);
+				_bt_buildadd(wstate, state, itup);
+			}
+		}
+		else
+		{
+			while ((itup = tuplesort_getindextuple(btspool->sortstate,
+											   true)) != NULL)
+			{
+				/* When we see first tuple, create first index page */
+				if (state == NULL)
+					state = _bt_pagestate(wstate, 0);
+
+				_bt_buildadd(wstate, state, itup);
+			}
 		}
 	}
 
@@ -1211,6 +1371,18 @@ _bt_load(BTWriteState *wstate, BTSpool *btspool, BTSpool *btspool2)
 	{
 		RelationOpenSmgr(wstate->index);
 		smgrimmedsync(wstate->index->rd_smgr, MAIN_FORKNUM);
+	}
+
+	/* POLAR: bulk extend index file, truncate amount of zero page at the end of file */
+	if (polar_enable_shared_storage_mode && wstate->polar_index_create_bulk_extend_size_copy > 0)
+	{
+		if (wstate->btws_pages_alloced < wstate->btws_pages_written)
+		{
+			RelationOpenSmgr(wstate->index);
+			Assert(polar_bt_check_bulk_extend(wstate) == true);
+			/* POLAR: no need to drop shared buffer here because _bt_load no use shared buffer for wstate->index->rd_smgr */
+			polar_smgrtruncate_no_drop_buffer(wstate->index->rd_smgr, MAIN_FORKNUM, wstate->btws_pages_alloced);
+		}
 	}
 }
 
@@ -1764,3 +1936,39 @@ _bt_parallel_scan_and_sort(BTSpool *btspool, BTSpool *btspool2,
 	if (btspool2)
 		tuplesort_end(btspool2->sortstate);
 }
+
+
+/*
+ * POLAR: check if page content is expected.
+ * return false means something error, true OK.
+ */
+pg_attribute_unused()
+static bool
+polar_bt_check_bulk_extend(BTWriteState *wstate)
+{
+	char* bufBlock = palloc0(BLCKSZ);
+
+	RelationOpenSmgr(wstate->index);
+	/* wstate->btws_pages_alloced always >= 1 */
+	smgrread(wstate->index->rd_smgr, MAIN_FORKNUM, wstate->btws_pages_alloced - 1, bufBlock);
+	if (PageIsNew(bufBlock) == true)
+	{
+		pfree(bufBlock);
+		return false;
+	}
+
+	if (wstate->btws_pages_alloced < wstate->btws_pages_written)
+	{
+		memset(bufBlock, 0, BLCKSZ);
+		smgrread(wstate->index->rd_smgr, MAIN_FORKNUM, wstate->btws_pages_alloced, bufBlock);
+		if (PageIsNew(bufBlock) == false)
+		{
+			pfree(bufBlock);
+			return false;
+		}
+	}
+	pfree(bufBlock);
+	return true;
+}
+
+/* POLAR end */

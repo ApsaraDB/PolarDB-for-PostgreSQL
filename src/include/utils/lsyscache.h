@@ -17,6 +17,11 @@
 #include "access/htup.h"
 #include "nodes/pg_list.h"
 
+/* POLAR px */
+#include "parser/parse_coerce.h"
+#include "utils/relcache.h"
+/* POLAR end */
+
 /* Result list element for get_op_btree_interpretation */
 typedef struct OpBtreeInterpretation
 {
@@ -34,6 +39,18 @@ typedef enum IOFuncSelector
 	IOFunc_receive,
 	IOFunc_send
 } IOFuncSelector;
+
+/* POLAR px: comparison types */
+typedef enum CmpType
+{
+	CmptEq,		/* equality */
+	CmptNEq,	/* inequality */
+	CmptLT, 	/* less than */
+	CmptLEq,	/* less or equal to */
+	CmptGT,		/* greater than */
+	CmptGEq, 	/* greater or equal to */
+	CmptOther	/* other operator */
+} CmpType;
 
 /* Flag bits for get_attstatsslot */
 #define ATTSTATSSLOT_VALUES		0x01
@@ -77,6 +94,11 @@ extern Oid	get_ordering_op_for_equality_op(Oid opno, bool use_lhs_type);
 extern List *get_mergejoin_opfamilies(Oid opno);
 extern bool get_compatible_hash_operators(Oid opno,
 							  Oid *lhs_opno, Oid *rhs_opno);
+/* POLAR px */
+extern Oid polar_get_compatible_hash_opfamily(Oid opno);
+extern Oid polar_get_compatible_legacy_hash_opfamily(Oid opno);
+extern Oid polar_get_compatible_legacy_hash_opfamily(Oid opno);
+
 extern bool get_op_hash_functions(Oid opno,
 					  RegProcedure *lhs_procno, RegProcedure *rhs_procno);
 extern List *get_op_btree_interpretation(Oid opno);
@@ -107,6 +129,9 @@ extern Oid	get_commutator(Oid opno);
 extern Oid	get_negator(Oid opno);
 extern RegProcedure get_oprrest(Oid opno);
 extern RegProcedure get_oprjoin(Oid opno);
+extern bool has_update_triggers(Oid relid);
+extern int32 get_trigger_type(Oid triggerid);
+extern bool trigger_enabled(Oid triggerid);
 extern char *get_func_name(Oid funcid);
 extern Oid	get_func_namespace(Oid funcid);
 extern Oid	get_func_rettype(Oid funcid);
@@ -180,6 +205,48 @@ extern Oid	get_range_subtype(Oid rangeOid);
 extern Oid	get_range_collation(Oid rangeOid);
 extern bool	get_index_isreplident(Oid index_oid);
 extern bool get_index_isclustered(Oid index_oid);
+
+/* POLAR px */
+extern char px_func_data_access(Oid funcid);
+extern char px_func_exec_location(Oid funcid);
+extern bool px_relation_exists(Oid oid);
+extern bool px_index_exists(Oid oid);
+extern bool px_type_exists(Oid oid);
+extern bool px_function_exists(Oid oid);
+extern bool px_operator_exists(Oid oid);
+extern bool px_aggregate_exists(Oid oid);
+extern Oid	px_get_aggregate(const char *aggname, Oid oidType);
+extern bool px_is_agg_ordered(Oid aggid);
+extern bool px_is_agg_partial_capable(Oid aggid);
+extern Oid	px_get_agg_transtype(Oid aggid);
+extern List *px_get_relation_keys(Oid relid);
+extern HeapTuple px_get_att_stats(Oid relid, AttrNumber attnum);
+extern List *px_get_func_output_arg_types(Oid funcid);
+extern List *px_get_func_arg_types(Oid funcid);
+extern char *px_get_type_name(Oid oid);
+extern bool px_trigger_exists(Oid oid);
+
+extern bool px_check_constraint_exists(Oid oidCheckconstraint);
+extern List *px_get_check_constraint_oids(Oid relid);
+extern char *px_get_check_constraint_name(Oid oidCheckconstraint);
+extern Node *px_get_check_constraint_expr_tree(Oid oidCheckconstraint);
+extern Oid	px_get_check_constraint_relid(Oid oidCheckconstraint);
+
+extern bool px_has_subclass_slow(Oid relationId);
+extern bool px_child_distribution_mismatch(Relation rel);
+extern bool polar_child_triggers(Oid relationId, int32 triggerType);
+
+extern bool px_get_cast_func_external(Oid oidSrc, Oid oidDest, bool *is_binary_coercible, Oid *oidCastFunc, CoercionPathType *pathtype);
+extern Oid	px_get_comparison_operator(Oid oidLeft, Oid oidRight, CmpType cmpt);
+extern CmpType px_get_comparison_type(Oid oidOp);
+
+extern List *px_get_operator_opfamilies(Oid opno);
+extern List *px_get_index_opfamilies(Oid oidIndex);
+
+extern void px_pfree_ptr_array(char **ptrarray, int nelements);
+extern bool px_relation_is_partitioned(Oid oid);
+extern bool px_index_is_partitioned(Oid relid);
+/* POLAR end */
 
 #define type_is_array(typid)  (get_element_type(typid) != InvalidOid)
 /* type_is_array_domain accepts both plain arrays and domains over arrays */

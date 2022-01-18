@@ -84,6 +84,7 @@ typedef struct CachedPlanSource
 	const char *query_string;	/* source text of query */
 	const char *commandTag;		/* command tag (a constant!), or NULL */
 	Oid		   *param_types;	/* array of parameter type OIDs, or NULL */
+	int		   *param_location;	/* POLAR: array of parameter location, or NULL */
 	int			num_params;		/* length of param_types array */
 	ParserSetupHook parserSetup;	/* alternative parameter spec method */
 	void	   *parserSetupArg;
@@ -115,6 +116,7 @@ typedef struct CachedPlanSource
 	double		generic_cost;	/* cost of generic plan, or -1 if not known */
 	double		total_custom_cost;	/* total cost of custom plans so far */
 	int			num_custom_plans;	/* number of plans included in total */
+	Oid 		planId;
 } CachedPlanSource;
 
 /*
@@ -157,6 +159,7 @@ extern void CompleteCachedPlan(CachedPlanSource *plansource,
 				   List *querytree_list,
 				   MemoryContext querytree_context,
 				   Oid *param_types,
+				   int *param_location, /* POLAR: param location */
 				   int num_params,
 				   ParserSetupHook parserSetup,
 				   void *parserSetupArg,

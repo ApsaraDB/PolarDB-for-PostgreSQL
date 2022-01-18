@@ -40,6 +40,8 @@
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
 
+/* POLAR */
+#include "utils/polar_sql_time_stat.h"
 
 /* We use a list of these to detect recursion in RewriteQuery */
 typedef struct rewrite_event
@@ -3892,6 +3894,9 @@ QueryRewrite(Query *parsetree)
 	bool		foundOriginalQuery;
 	Query	   *lastInstead;
 
+	/* POLAR */
+	polar_sql_stat_set_time();
+
 	/*
 	 * This function is only applied to top-level original queries
 	 */
@@ -3969,6 +3974,9 @@ QueryRewrite(Query *parsetree)
 
 	if (!foundOriginalQuery && lastInstead != NULL)
 		lastInstead->canSetTag = true;
+
+	/* POLAR */
+	polar_sql_stat_record_time(QUERY_REWRITE);
 
 	return results;
 }

@@ -1,0 +1,55 @@
+-- Test access privileges
+--
+-- Clean up in case a prior regression run failed
+-- Suppress NOTICE messages when users/groups don't exist
+SET client_min_messages TO 'panic';
+DROP ROLE IF EXISTS regressioncleanupuser;
+DROP ROLE IF EXISTS regressionuser1;
+DROP ROLE IF EXISTS regressionuser2;
+DROP ROLE IF EXISTS regressionuser3;
+RESET client_min_messages;
+--setup
+create user regressioncleanupuser superuser;
+create user regressionuser1;
+create user regressionuser2;
+create user regressionuser3;
+alter role regressionuser1 password 'yyy';
+alter role regressionuser2 password 'xxx';
+--we can not show, because different versions may have different results 
+--show polar_version;
+set polar_version="2.0.0";
+ERROR:  parameter "polar_version" cannot be changed
+--show polar_version;
+reset all;
+--show polar_version;
+reset polar_version;
+ERROR:  parameter "polar_version" cannot be changed
+--show polar_version;
+-- check polar_version format x.y.y
+select split_part(setting, '.', 1)::int >= 0 from pg_settings where name = 'polar_version';
+ ?column? 
+----------
+ t
+(1 row)
+
+select split_part(setting, '.', 2)::int >= 0 from pg_settings where name = 'polar_version';
+ ?column? 
+----------
+ t
+(1 row)
+
+select split_part(setting, '.', 3)::int >= 0 from pg_settings where name = 'polar_version';
+ ?column? 
+----------
+ t
+(1 row)
+
+select split_part(setting, '.', 4)::int >= 0 from pg_settings where name = 'polar_version';
+ERROR:  invalid input syntax for integer: ""
+--cleanup
+\c - regressioncleanupuser
+SET client_min_messages TO 'warning';
+DROP ROLE IF EXISTS regressionuser1;
+DROP ROLE IF EXISTS regressionuser2;
+DROP ROLE IF EXISTS regressionuser3;
+RESET client_min_messages;

@@ -1,0 +1,583 @@
+-- create extension
+SET client_min_messages TO 'error'; 
+DROP EXTENSION IF EXISTS polar_parameter_check;
+RESET client_min_messages;
+CREATE EXTENSION polar_parameter_check;
+-- name check
+-- positive case
+select * from polar_parameter_name_check('enable_hashjoin');
+ parameter_valid 
+-----------------
+ t
+(1 row)
+
+select * from polar_parameter_name_check('max_connections');
+ parameter_valid 
+-----------------
+ t
+(1 row)
+
+select * from polar_parameter_name_check('synchronous_standby_names');
+ parameter_valid 
+-----------------
+ t
+(1 row)
+
+select * from polar_parameter_name_check('wal_level');
+ parameter_valid 
+-----------------
+ t
+(1 row)
+
+-- negetive case
+select * from polar_parameter_name_check('.');
+ parameter_valid 
+-----------------
+ f
+(1 row)
+
+select * from polar_parameter_name_check('xxxx');
+ parameter_valid 
+-----------------
+ f
+(1 row)
+
+select * from polar_parameter_name_check('0');
+ parameter_valid 
+-----------------
+ f
+(1 row)
+
+select * from polar_parameter_name_check('');
+ parameter_valid 
+-----------------
+ f
+(1 row)
+
+select * from polar_parameter_name_check(NULL);
+ parameter_valid 
+-----------------
+ f
+(1 row)
+
+-- value check
+-- test grammar valid case
+-- 1. PGC_BOOL
+-- positive case
+select * from polar_parameter_value_check('enable_hashjoin', 'true');
+ parameter_valid 
+-----------------
+ t
+(1 row)
+
+select * from polar_parameter_value_check('enable_hashjoin', 'false');
+ parameter_valid 
+-----------------
+ t
+(1 row)
+
+select * from polar_parameter_value_check('enable_hashjoin', '1');
+ parameter_valid 
+-----------------
+ t
+(1 row)
+
+select * from polar_parameter_value_check('enable_hashjoin', '0');
+ parameter_valid 
+-----------------
+ t
+(1 row)
+
+select * from polar_parameter_value_check('enable_hashjoin', 'on');
+ parameter_valid 
+-----------------
+ t
+(1 row)
+
+select * from polar_parameter_value_check('enable_hashjoin', 'off');
+ parameter_valid 
+-----------------
+ t
+(1 row)
+
+-- negetive case
+select * from polar_parameter_value_check('enable_hashjoin', 'xx');
+WARNING:  parameter "enable_hashjoin" requires a Boolean value
+ parameter_valid 
+-----------------
+ f
+(1 row)
+
+select * from polar_parameter_value_check('enable_hashjoin', '2');
+WARNING:  parameter "enable_hashjoin" requires a Boolean value
+ parameter_valid 
+-----------------
+ f
+(1 row)
+
+select * from polar_parameter_value_check('enable_hashjoin', '..');
+WARNING:  parameter "enable_hashjoin" requires a Boolean value
+ parameter_valid 
+-----------------
+ f
+(1 row)
+
+select * from polar_parameter_value_check('enable_hashjoin', '-1');
+WARNING:  parameter "enable_hashjoin" requires a Boolean value
+ parameter_valid 
+-----------------
+ f
+(1 row)
+
+-- 2. PGC_INT
+-- positive case
+select * from polar_parameter_value_check('max_connections', '1');
+ parameter_valid 
+-----------------
+ t
+(1 row)
+
+select * from polar_parameter_value_check('max_connections', '2');
+ parameter_valid 
+-----------------
+ t
+(1 row)
+
+select * from polar_parameter_value_check('max_connections', '10');
+ parameter_valid 
+-----------------
+ t
+(1 row)
+
+select * from polar_parameter_value_check('max_connections', '100');
+ parameter_valid 
+-----------------
+ t
+(1 row)
+
+select * from polar_parameter_value_check('max_connections', '100000');
+ parameter_valid 
+-----------------
+ t
+(1 row)
+
+-- negetive case
+select * from polar_parameter_value_check('max_connections', '0');
+WARNING:  0 is outside the valid range for parameter "max_connections" (1 .. 262143)
+ parameter_valid 
+-----------------
+ f
+(1 row)
+
+select * from polar_parameter_value_check('max_connections', '9999999');
+WARNING:  9999999 is outside the valid range for parameter "max_connections" (1 .. 262143)
+ parameter_valid 
+-----------------
+ f
+(1 row)
+
+select * from polar_parameter_value_check('max_connections', '-1');
+WARNING:  -1 is outside the valid range for parameter "max_connections" (1 .. 262143)
+ parameter_valid 
+-----------------
+ f
+(1 row)
+
+select * from polar_parameter_value_check('max_connections', 'xx');
+WARNING:  invalid value for parameter "max_connections": "xx"
+ parameter_valid 
+-----------------
+ f
+(1 row)
+
+-- 3. PGC_REAL
+-- positive case
+select * from polar_parameter_value_check('jit_above_cost', '1.0');
+ parameter_valid 
+-----------------
+ t
+(1 row)
+
+select * from polar_parameter_value_check('jit_above_cost', '3.14');
+ parameter_valid 
+-----------------
+ t
+(1 row)
+
+select * from polar_parameter_value_check('jit_above_cost', '1');
+ parameter_valid 
+-----------------
+ t
+(1 row)
+
+select * from polar_parameter_value_check('jit_above_cost', '20.9');
+ parameter_valid 
+-----------------
+ t
+(1 row)
+
+-- negetive case
+select * from polar_parameter_value_check('jit_above_cost', 'xx');
+WARNING:  parameter "jit_above_cost" requires a numeric value
+ parameter_valid 
+-----------------
+ f
+(1 row)
+
+select * from polar_parameter_value_check('jit_above_cost', 'test_case');
+WARNING:  parameter "jit_above_cost" requires a numeric value
+ parameter_valid 
+-----------------
+ f
+(1 row)
+
+-- 4. PGC_STRING
+-- positive case
+select * from polar_parameter_value_check('synchronous_standby_names', 'xxx');
+ parameter_valid 
+-----------------
+ t
+(1 row)
+
+select * from polar_parameter_value_check('synchronous_standby_names', '123');
+ parameter_valid 
+-----------------
+ t
+(1 row)
+
+select * from polar_parameter_value_check('synchronous_standby_names', '_standby');
+ parameter_valid 
+-----------------
+ t
+(1 row)
+
+select * from polar_parameter_value_check('synchronous_standby_names', 'WhUhKhSn');
+ parameter_valid 
+-----------------
+ t
+(1 row)
+
+select * from polar_parameter_value_check('log_line_prefix', '%m [%p]');
+ parameter_valid 
+-----------------
+ t
+(1 row)
+
+select * from polar_parameter_value_check('log_line_prefix', 'xxxxx');
+ parameter_valid 
+-----------------
+ t
+(1 row)
+
+select * from polar_parameter_value_check('log_line_prefix', '%s');
+ parameter_valid 
+-----------------
+ t
+(1 row)
+
+select * from polar_parameter_value_check('TimeZone', 'GMT');
+ parameter_valid 
+-----------------
+ t
+(1 row)
+
+select * from polar_parameter_value_check('TimeZone', 'America/Atikokan');
+ parameter_valid 
+-----------------
+ t
+(1 row)
+
+select * from polar_parameter_value_check('TimeZone', 'Europe/Dublin');
+ parameter_valid 
+-----------------
+ t
+(1 row)
+
+select * from polar_parameter_value_check('TimeZone', 'Asia/Jerusalem');
+ parameter_valid 
+-----------------
+ t
+(1 row)
+
+-- negetive case
+select * from polar_parameter_value_check('TimeZone', 'xxxx');
+WARNING:  invalid value for parameter "TimeZone": "xxxx"
+ parameter_valid 
+-----------------
+ f
+(1 row)
+
+select * from polar_parameter_value_check('TimeZone', 'beijing');
+WARNING:  invalid value for parameter "TimeZone": "beijing"
+ parameter_valid 
+-----------------
+ f
+(1 row)
+
+select * from polar_parameter_value_check('TimeZone', '090909');
+WARNING:  invalid value for parameter "TimeZone": "090909"
+DETAIL:  UTC timezone offset is out of range.
+ parameter_valid 
+-----------------
+ f
+(1 row)
+
+-- 5. PGC_ENUM
+-- positive case
+select * from polar_parameter_value_check('backslash_quote', 'safe_encoding');
+ parameter_valid 
+-----------------
+ t
+(1 row)
+
+select * from polar_parameter_value_check('backslash_quote', 'on');
+ parameter_valid 
+-----------------
+ t
+(1 row)
+
+select * from polar_parameter_value_check('backslash_quote', 'off');
+ parameter_valid 
+-----------------
+ t
+(1 row)
+
+select * from polar_parameter_value_check('backslash_quote', 'true');
+ parameter_valid 
+-----------------
+ t
+(1 row)
+
+select * from polar_parameter_value_check('backslash_quote', 'false');
+ parameter_valid 
+-----------------
+ t
+(1 row)
+
+-- negetive case
+select * from polar_parameter_value_check('backslash_quote', '2');
+WARNING:  invalid value for parameter "backslash_quote": "2"
+HINT:  Available values: safe_encoding, on, off.
+ parameter_valid 
+-----------------
+ f
+(1 row)
+
+select * from polar_parameter_value_check('backslash_quote', 'xx');
+WARNING:  invalid value for parameter "backslash_quote": "xx"
+HINT:  Available values: safe_encoding, on, off.
+ parameter_valid 
+-----------------
+ f
+(1 row)
+
+select * from polar_parameter_value_check('backslash_quote', '234');
+WARNING:  invalid value for parameter "backslash_quote": "234"
+HINT:  Available values: safe_encoding, on, off.
+ parameter_valid 
+-----------------
+ f
+(1 row)
+
+select * from polar_parameter_value_check('backslash_quote', '.');
+WARNING:  invalid value for parameter "backslash_quote": "."
+HINT:  Available values: safe_encoding, on, off.
+ parameter_valid 
+-----------------
+ f
+(1 row)
+
+select * from polar_parameter_value_check('backslash_quote', 'yueo');
+WARNING:  invalid value for parameter "backslash_quote": "yueo"
+HINT:  Available values: safe_encoding, on, off.
+ parameter_valid 
+-----------------
+ f
+(1 row)
+
+-- positive case
+select * from polar_parameter_value_check('wal_level', 'minimal');
+ parameter_valid 
+-----------------
+ t
+(1 row)
+
+select * from polar_parameter_value_check('wal_level', 'replica');
+ parameter_valid 
+-----------------
+ t
+(1 row)
+
+select * from polar_parameter_value_check('wal_level', 'archive');
+ parameter_valid 
+-----------------
+ t
+(1 row)
+
+select * from polar_parameter_value_check('wal_level', 'hot_standby');
+ parameter_valid 
+-----------------
+ t
+(1 row)
+
+select * from polar_parameter_value_check('wal_level', 'logical');
+ parameter_valid 
+-----------------
+ t
+(1 row)
+
+-- negetive case
+select * from polar_parameter_value_check('wal_level', '0');
+WARNING:  invalid value for parameter "wal_level": "0"
+HINT:  Available values: minimal, replica, logical.
+ parameter_valid 
+-----------------
+ f
+(1 row)
+
+select * from polar_parameter_value_check('wal_level', 'x');
+WARNING:  invalid value for parameter "wal_level": "x"
+HINT:  Available values: minimal, replica, logical.
+ parameter_valid 
+-----------------
+ f
+(1 row)
+
+select * from polar_parameter_value_check('wal_level', '234');
+WARNING:  invalid value for parameter "wal_level": "234"
+HINT:  Available values: minimal, replica, logical.
+ parameter_valid 
+-----------------
+ f
+(1 row)
+
+select * from polar_parameter_value_check('wal_level', '.');
+WARNING:  invalid value for parameter "wal_level": "."
+HINT:  Available values: minimal, replica, logical.
+ parameter_valid 
+-----------------
+ f
+(1 row)
+
+select * from polar_parameter_value_check('wal_level', 'yueo');
+WARNING:  invalid value for parameter "wal_level": "yueo"
+HINT:  Available values: minimal, replica, logical.
+ parameter_valid 
+-----------------
+ f
+(1 row)
+
+-- 6. nonexistent variable
+select * from polar_parameter_value_check('abc', 'true');
+ERROR:  unrecognized configuration parameter "abc"
+select * from polar_parameter_value_check('123', 'false');
+ERROR:  unrecognized configuration parameter "123"
+-- test poar_ or rds_ case
+select * from polar_parameter_value_check('max_connections', '1');
+ parameter_valid 
+-----------------
+ t
+(1 row)
+
+select * from polar_parameter_value_check('polar_max_connections', '1');
+ parameter_valid 
+-----------------
+ t
+(1 row)
+
+select * from polar_parameter_value_check('rds_max_connections', '1');
+ parameter_valid 
+-----------------
+ t
+(1 row)
+
+select * from polar_parameter_value_check('max_connections', '9999');
+ parameter_valid 
+-----------------
+ t
+(1 row)
+
+select * from polar_parameter_value_check('polar_max_connections', '9999');
+ parameter_valid 
+-----------------
+ t
+(1 row)
+
+select * from polar_parameter_value_check('rds_max_connections', '9999');
+ parameter_valid 
+-----------------
+ t
+(1 row)
+
+select * from polar_parameter_value_check('max_connections', '1000000000');
+WARNING:  1000000000 is outside the valid range for parameter "max_connections" (1 .. 262143)
+ parameter_valid 
+-----------------
+ f
+(1 row)
+
+select * from polar_parameter_value_check('polar_max_connections', '1000000000');
+WARNING:  1000000000 is outside the valid range for parameter "polar_max_connections" (1 .. 262143)
+ parameter_valid 
+-----------------
+ f
+(1 row)
+
+select * from polar_parameter_value_check('rds_max_connections', '1000000000');
+WARNING:  1000000000 is outside the valid range for parameter "rds_max_connections" (1 .. 262143)
+ parameter_valid 
+-----------------
+ f
+(1 row)
+
+-- test grammar invalid case
+select * from polar_parameter_value_check('max_connections', 1111);
+ERROR:  function polar_parameter_value_check(unknown, integer) does not exist
+LINE 1: select * from polar_parameter_value_check('max_connections',...
+                      ^
+HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
+select * from polar_parameter_value_check('max_connections', 123);
+ERROR:  function polar_parameter_value_check(unknown, integer) does not exist
+LINE 1: select * from polar_parameter_value_check('max_connections',...
+                      ^
+HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
+select * from polar_parameter_value_check(123, 'xx');
+ERROR:  function polar_parameter_value_check(integer, unknown) does not exist
+LINE 1: select * from polar_parameter_value_check(123, 'xx');
+                      ^
+HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
+select * from polar_parameter_value_check(123, 123);
+ERROR:  function polar_parameter_value_check(integer, integer) does not exist
+LINE 1: select * from polar_parameter_value_check(123, 123);
+                      ^
+HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
+-- test special case
+select * from polar_parameter_value_check('max_connections', NULL);
+ parameter_valid 
+-----------------
+ f
+(1 row)
+
+select * from polar_parameter_value_check(NULL, NULL);
+ parameter_valid 
+-----------------
+ f
+(1 row)
+
+select * from polar_parameter_value_check(NULL, '1');
+ parameter_valid 
+-----------------
+ f
+(1 row)
+
+select * from polar_parameter_value_check('max_connections', '');
+WARNING:  invalid value for parameter "max_connections": ""
+ parameter_valid 
+-----------------
+ f
+(1 row)
+
+select * from polar_parameter_value_check('', '1');
+ERROR:  unrecognized configuration parameter ""
+select * from polar_parameter_value_check('', '');
+ERROR:  unrecognized configuration parameter ""

@@ -27,7 +27,6 @@
 #include "settings.h"
 #include "variables.h"
 
-
 static bool describeOneTableDetails(const char *schemaname,
 						const char *relationname,
 						const char *oid,
@@ -2021,7 +2020,8 @@ describeOneTableDetails(const char *schemaname,
 									  (storage[0] == 'm' ? "main" :
 									   (storage[0] == 'x' ? "extended" :
 										(storage[0] == 'e' ? "external" :
-										 "???")))),
+										(storage[0] == 's' ? "simple" :
+										"???"))))), 	
 							  false, false);
 		}
 

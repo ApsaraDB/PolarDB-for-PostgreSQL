@@ -27,7 +27,8 @@
 #include "utils/memutils.h"
 #include "utils/snapmgr.h"
 
-
+/* POLAR */
+#include "utils/polar_sql_time_stat.h"
 /*
  * ActivePortal is the currently executing Portal (the most closely nested,
  * if there are several).
@@ -35,12 +36,13 @@
 Portal		ActivePortal = NULL;
 
 
-static void ProcessQuery(PlannedStmt *plan,
+static void ProcessQuery(Portal portal ,PlannedStmt *plan,
 			 const char *sourceText,
 			 ParamListInfo params,
 			 QueryEnvironment *queryEnv,
 			 DestReceiver *dest,
-			 char *completionTag);
+			 char *completionTag,
+			 const char *prepStmtName);
 static void FillPortalStore(Portal portal, bool isTopLevel);
 static uint64 RunFromStore(Portal portal, ScanDirection direction, uint64 count,
 			 DestReceiver *dest);
@@ -95,6 +97,15 @@ CreateQueryDesc(PlannedStmt *plannedstmt,
 	/* not yet executed */
 	qd->already_executed = false;
 
+	/* POLAR px */
+	qd->extended_query = false; /* default value */
+	qd->portal_name = NULL;
+	qd->ddesc = NULL;
+
+	/* POLAR */
+	qd->prepStmtName = NULL;
+	qd->polar_sql_info = NULL;
+	/* POLAR end */
 	return qd;
 }
 
@@ -134,14 +145,19 @@ FreeQueryDesc(QueryDesc *qdesc)
  * error; otherwise the executor's memory usage will be leaked.
  */
 static void
-ProcessQuery(PlannedStmt *plan,
+ProcessQuery(Portal portal, /* Polar PX */
+			 PlannedStmt *plan,
 			 const char *sourceText,
 			 ParamListInfo params,
 			 QueryEnvironment *queryEnv,
 			 DestReceiver *dest,
-			 char *completionTag)
+			 char *completionTag,
+			 const char *prepStmtName)
 {
+	Oid			lastOid;
 	QueryDesc  *queryDesc;
+
+	Assert(portal);
 
 	/*
 	 * Create the QueryDesc object
@@ -149,6 +165,18 @@ ProcessQuery(PlannedStmt *plan,
 	queryDesc = CreateQueryDesc(plan, sourceText,
 								GetActiveSnapshot(), InvalidSnapshot,
 								dest, params, queryEnv, 0);
+
+
+	/* Polar PX */
+	queryDesc->ddesc = portal->ddesc;
+	portal->status = PORTAL_ACTIVE;
+	/* Polar PX end */
+
+	/* POLAR */
+	queryDesc->prepStmtName = prepStmtName;
+	lastOid = InvalidOid;
+	/* POLAR end */
+
 
 	/*
 	 * Call ExecutorStart to prepare the plan for execution
@@ -160,50 +188,61 @@ ProcessQuery(PlannedStmt *plan,
 	 */
 	ExecutorRun(queryDesc, ForwardScanDirection, 0L, true);
 
-	/*
-	 * Build command completion status string, if caller wants one.
-	 */
-	if (completionTag)
+	/* Updatethe es_processed */
+	if (completionTag && CMD_INSERT == queryDesc->operation
+		&& 1 == queryDesc->estate->es_processed)
 	{
-		Oid			lastOid;
-
-		switch (queryDesc->operation)
-		{
-			case CMD_SELECT:
-				snprintf(completionTag, COMPLETION_TAG_BUFSIZE,
-						 "SELECT " UINT64_FORMAT,
-						 queryDesc->estate->es_processed);
-				break;
-			case CMD_INSERT:
-				if (queryDesc->estate->es_processed == 1)
-					lastOid = queryDesc->estate->es_lastoid;
-				else
-					lastOid = InvalidOid;
-				snprintf(completionTag, COMPLETION_TAG_BUFSIZE,
-						 "INSERT %u " UINT64_FORMAT,
-						 lastOid, queryDesc->estate->es_processed);
-				break;
-			case CMD_UPDATE:
-				snprintf(completionTag, COMPLETION_TAG_BUFSIZE,
-						 "UPDATE " UINT64_FORMAT,
-						 queryDesc->estate->es_processed);
-				break;
-			case CMD_DELETE:
-				snprintf(completionTag, COMPLETION_TAG_BUFSIZE,
-						 "DELETE " UINT64_FORMAT,
-						 queryDesc->estate->es_processed);
-				break;
-			default:
-				strcpy(completionTag, "???");
-				break;
-		}
+		lastOid = queryDesc->estate->es_lastoid;
 	}
+
 
 	/*
 	 * Now, we close down all the scans and free allocated resources.
 	 */
 	ExecutorFinish(queryDesc);
 	ExecutorEnd(queryDesc);
+
+	/* POLAR px */
+	if (completionTag)
+	{
+
+		switch (queryDesc->operation)
+		{
+			case CMD_SELECT:
+				snprintf(completionTag, COMPLETION_TAG_BUFSIZE,
+						 "SELECT " UINT64_FORMAT,
+						 queryDesc->es_processed);
+				/* POLAR */
+				polar_audit_log.select_row_count += queryDesc->es_processed;
+				break;
+			case CMD_INSERT:
+				snprintf(completionTag, COMPLETION_TAG_BUFSIZE,
+						 "INSERT %u " UINT64_FORMAT,
+						 lastOid, queryDesc->es_processed);
+				break;
+			case CMD_UPDATE:
+				snprintf(completionTag, COMPLETION_TAG_BUFSIZE,
+						 "UPDATE " UINT64_FORMAT,
+						 queryDesc->es_processed);
+				/* POLAR */
+				polar_audit_log.update_row_count += queryDesc->es_processed;
+				break;
+			case CMD_DELETE:
+				snprintf(completionTag, COMPLETION_TAG_BUFSIZE,
+						 "DELETE " UINT64_FORMAT,
+						 queryDesc->es_processed);
+				/* POLAR */
+				polar_audit_log.delete_row_count += queryDesc->es_processed;
+				break;
+			default:
+				strcpy(completionTag, "???");
+				/* POLAR */
+				polar_audit_log.examined_row_count += queryDesc->es_processed;
+				break;
+		}
+	}
+	/* POLAR end */
+
 
 	FreeQueryDesc(queryDesc);
 }
@@ -442,8 +481,12 @@ FetchStatementTargetList(Node *stmt)
  * tupdesc (if any) is known.
  */
 void
-PortalStart(Portal portal, ParamListInfo params,
-			int eflags, Snapshot snapshot)
+PortalStart(Portal portal, 
+			ParamListInfo params,
+			int eflags, 
+			Snapshot snapshot,
+			QueryDispatchDesc *ddesc/* POALR px */
+			)
 {
 	Portal		saveActivePortal;
 	ResourceOwner saveResourceOwner;
@@ -454,6 +497,8 @@ PortalStart(Portal portal, ParamListInfo params,
 
 	AssertArg(PortalIsValid(portal));
 	AssertState(portal->status == PORTAL_DEFINED);
+
+	portal->ddesc = ddesc;
 
 	/*
 	 * Set up global portal context pointers.
@@ -503,6 +548,23 @@ PortalStart(Portal portal, ParamListInfo params,
 											params,
 											portal->queryEnv,
 											0);
+
+				/* POLAR */ 
+				queryDesc->prepStmtName = portal->prepStmtName;
+				/* POLAR end */
+
+				queryDesc->ddesc = ddesc;
+
+				/* 
+				 * let queryDesc know that it is running a query in stages
+				 * (cursor or bind/execute path ) so that it could do the right
+				 * cleanup in ExecutorEnd.
+				 */
+				if (portal->is_extended_query)
+				{
+					queryDesc->extended_query = true;
+					queryDesc->portal_name = (portal->name ? pstrdup(portal->name) : (char *) NULL);
+				}
 
 				/*
 				 * If it's a scrollable cursor, executor needs to support
@@ -701,6 +763,9 @@ PortalRun(Portal portal, long count, bool isTopLevel, bool run_once,
 
 	AssertArg(PortalIsValid(portal));
 
+	/* POLAR */
+	polar_sql_stat_set_time();
+
 	TRACE_POSTGRESQL_QUERY_EXECUTE_START();
 
 	/* Initialize completion tag to empty string */
@@ -771,6 +836,9 @@ PortalRun(Portal portal, long count, bool isTopLevel, bool run_once,
 				 * Now fetch desired portion of results.
 				 */
 				nprocessed = PortalRunSelect(portal, true, count, dest);
+
+				/* POLAR */
+				polar_audit_log.select_row_count += nprocessed;
 
 				/*
 				 * If the portal result contains a command tag and the caller
@@ -849,7 +917,7 @@ PortalRun(Portal portal, long count, bool isTopLevel, bool run_once,
 		ShowUsage("EXECUTOR STATISTICS");
 
 	TRACE_POSTGRESQL_QUERY_EXECUTE_DONE();
-
+	
 	return result;
 }
 
@@ -1283,20 +1351,22 @@ PortalRunMulti(Portal portal,
 			if (pstmt->canSetTag)
 			{
 				/* statement can set tag string */
-				ProcessQuery(pstmt,
+				ProcessQuery(portal, pstmt,
 							 portal->sourceText,
 							 portal->portalParams,
 							 portal->queryEnv,
-							 dest, completionTag);
+							 dest, completionTag,
+							 portal->prepStmtName);
 			}
 			else
 			{
 				/* stmt added by rewrite cannot set tag */
-				ProcessQuery(pstmt,
+				ProcessQuery(portal ,pstmt,
 							 portal->sourceText,
 							 portal->portalParams,
 							 portal->queryEnv,
-							 altdest, NULL);
+							 altdest, NULL,
+							 portal->prepStmtName);
 			}
 
 			if (log_executor_stats)

@@ -26,6 +26,7 @@
 #include "utils/memutils.h"
 #include "utils/rel.h"
 
+
 /*
  * gistkillitems() -- set LP_DEAD state for items an indexscan caller has
  * told us were killed.
@@ -136,7 +137,7 @@ gistindex_keytest(IndexScanDesc scan,
 	int			keySize = scan->numberOfKeys;
 	IndexOrderByDistance *distance_p;
 	Relation	r = scan->indexRelation;
-
+    
 	*recheck_p = false;
 	*recheck_distances_p = false;
 
@@ -218,17 +219,18 @@ gistindex_keytest(IndexScanDesc scan,
 			 * in case the Consistent function forgets to set it.
 			 */
 			recheck = true;
+            
+            test = FunctionCall5Coll(&key->sk_func,
+									key->sk_collation,
+									PointerGetDatum(&de),
+									key->sk_argument,
+									Int16GetDatum(key->sk_strategy),
+									ObjectIdGetDatum(key->sk_subtype),
+									PointerGetDatum(&recheck));
 
-			test = FunctionCall5Coll(&key->sk_func,
-									 key->sk_collation,
-									 PointerGetDatum(&de),
-									 key->sk_argument,
-									 Int16GetDatum(key->sk_strategy),
-									 ObjectIdGetDatum(key->sk_subtype),
-									 PointerGetDatum(&recheck));
-
-			if (!DatumGetBool(test))
-				return false;
+            if (!DatumGetBool(test))		
+				return false;    
+            
 			*recheck_p |= recheck;
 		}
 
@@ -300,7 +302,7 @@ gistindex_keytest(IndexScanDesc scan,
 		keySize--;
 	}
 
-	return true;
+    return true;
 }
 
 /*
@@ -422,7 +424,7 @@ gistScanPage(IndexScanDesc scan, GISTSearchItem *pageItem,
 		oldcxt = MemoryContextSwitchTo(so->giststate->tempCxt);
 
 		match = gistindex_keytest(scan, it, page, i,
-								  &recheck, &recheck_distances);
+								&recheck, &recheck_distances);
 
 		MemoryContextSwitchTo(oldcxt);
 		MemoryContextReset(so->giststate->tempCxt);
@@ -502,6 +504,7 @@ gistScanPage(IndexScanDesc scan, GISTSearchItem *pageItem,
 				 * atomically.
 				 */
 				item->data.parentlsn = BufferGetLSNAtomic(buffer);
+
 			}
 
 			/* Insert it into the queue using new distance data */
@@ -658,6 +661,7 @@ gistgettuple(IndexScanDesc scan, ScanDirection dir)
 
 		fakeItem.blkno = GIST_ROOT_BLKNO;
 		memset(&fakeItem.data.parentlsn, 0, sizeof(GistNSN));
+
 		gistScanPage(scan, &fakeItem, NULL, NULL, NULL);
 	}
 
@@ -728,6 +732,7 @@ gistgettuple(IndexScanDesc scan, ScanDirection dir)
 					so->killedItems[so->numKilled++] =
 						so->pageData[so->curPageData - 1].offnum;
 			}
+
 			/* find and process the next index page */
 			do
 			{
@@ -739,7 +744,9 @@ gistgettuple(IndexScanDesc scan, ScanDirection dir)
 				item = getNextGISTSearchItem(so);
 
 				if (!item)
+				{
 					return false;
+				}
 
 				CHECK_FOR_INTERRUPTS();
 
@@ -783,6 +790,7 @@ gistgetbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 
 	fakeItem.blkno = GIST_ROOT_BLKNO;
 	memset(&fakeItem.data.parentlsn, 0, sizeof(GistNSN));
+
 	gistScanPage(scan, &fakeItem, NULL, tbm, &ntids);
 
 	/*

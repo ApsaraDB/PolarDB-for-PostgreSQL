@@ -45,6 +45,13 @@ typedef struct ExplainState
 	List	   *rtable_names;	/* alias names for RTEs */
 	List	   *deparse_cxt;	/* context list for deparsing expressions */
 	Bitmapset  *printed_subplans;	/* ids of SubPlans we've printed */
+
+	/* POLAR px */
+	bool		dxl;
+	bool		slicetable;
+	struct PxExplain_ShowStatCtx  *showstatctx;    /* EXPLAIN ANALYZE info */
+	ExecSlice  *currentSlice;
+	/* POLAR end */
 } ExplainState;
 
 /* Hook for plugins to get control in ExplainOneQuery() */

@@ -169,7 +169,7 @@ pgstattuple(PG_FUNCTION_ARGS)
 	RangeVar   *relrv;
 	Relation	rel;
 
-	if (!superuser())
+	if (!superuser() && !polar_superuser())
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 				 (errmsg("must be superuser to use pgstattuple functions"))));
@@ -209,7 +209,7 @@ pgstattuplebyid(PG_FUNCTION_ARGS)
 	Oid			relid = PG_GETARG_OID(0);
 	Relation	rel;
 
-	if (!superuser())
+	if (!superuser() && !polar_superuser())
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 				 (errmsg("must be superuser to use pgstattuple functions"))));

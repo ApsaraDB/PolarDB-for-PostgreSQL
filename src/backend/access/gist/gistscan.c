@@ -22,7 +22,6 @@
 #include "utils/memutils.h"
 #include "utils/rel.h"
 
-
 /*
  * Pairing heap comparison function for the GISTSearchItem queue
  */
@@ -110,7 +109,7 @@ gistbeginscan(Relation r, int nkeys, int norderbys)
 	so->numKilled = 0;
 	so->curBlkno = InvalidBlockNumber;
 	so->curPageLSN = InvalidXLogRecPtr;
-
+	
 	scan->opaque = so;
 
 	/*

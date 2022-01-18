@@ -39,6 +39,11 @@
 #include "utils/backend_random.h"
 #include "utils/timestamp.h"
 
+/* POLAR px */
+#include "px/px_gang.h"
+#include "px/px_vars.h"
+extern bool px_reject_internal_tcp_conn;
+/* POLAR end */
 
 /*----------------------------------------------------------------
  * Global authentication functions
@@ -339,6 +344,113 @@ auth_failed(Port *port, int status, char *logdetail)
 	/* doesn't return */
 }
 
+/* POLAR px */
+/*
+ * Special client authentication for QC to PX connections. This is run at the
+ * PX. This is non-trivial because a PX some times runs at the master (i.e., an
+ * entry-DB for things like master only tables).
+ */
+static int
+internal_client_authentication(Port *port)
+{
+	/*
+	 * POLAR px: for PX, just fake client authentication.
+	 */
+	if (px_role == PX_ROLE_QC && IS_QUERY_DISPATCHER())
+	{
+		/* 
+		 * The entry-DB (or PX at the master) case.
+		 *
+		 * The goal here is to block network connection from out of
+		 * master to master db with magic bit packet.
+		 * So, only when it comes from the same host, the connection
+		 * is authenticated, if this connection is TCP/UDP. We
+		 * don't assume the connection is via unix domain socket,
+		 * but if it comes, just authenticate it. We'll need to
+		 * verify user on UDS case, but for now we don't do too much
+		 * for the goal described above.
+		 */
+		if(port->raddr.addr.ss_family == AF_INET
+#ifdef HAVE_IPV6
+				|| port->raddr.addr.ss_family == AF_INET6
+#endif   /* HAVE_IPV6 */
+			   )
+		{
+			if (check_same_host_or_net(&port->raddr, ipCmpSameHost) &&
+				!px_reject_internal_tcp_conn)
+			{
+				elog(LOG, "received same host internal TCP connection");
+				FakeClientAuthentication(port);
+			}
+			else
+			{
+				/* Security violation? */
+				elog(LOG, "rejecting TCP connection to master using internal"
+					 "connection protocol");
+				return false;
+			}
+			return true;
+		}
+#ifdef HAVE_UNIX_SOCKETS
+		else if (port->raddr.addr.ss_family == AF_UNIX)
+		{
+			/* 
+			 * Internal connection via a domain socket -- use ident
+			 */
+			struct passwd *pw;
+
+			pw = getpwuid(geteuid());
+			if (pw == NULL)
+			{
+				elog(LOG, "invalid effective UID %d ", geteuid());
+				return false;
+			}
+
+			if (px_reject_internal_tcp_conn && !auth_peer(port))
+				return false;
+			else
+			{
+				FakeClientAuthentication(port);
+				return true;
+			}
+		}
+#endif   /* HAVE_UNIX_SOCKETS */
+		else
+		{
+			/* Security violation? */
+			elog(LOG, "next rejecting TCP connection to master using internal"
+				 "connection protocol");
+			return false;
+		}
+	}
+	else
+	{
+		if (px_auth_systemid != GetSystemIdentifier())
+		{
+			elog(LOG, "rejecting TCP connection to master using internal"
+				"connection protocol");
+			return false;
+		}
+		/* We're on an actual segment host */	
+		FakeClientAuthentication(port);
+	}
+
+	return true;
+}
+
+/* POLAR px */
+static bool
+is_internal_px_conn(Port *port)
+{
+	/*
+	 * This is an internal connection if major version is three and we've set
+	 * the upper bits to 7.
+	 */
+	if (PG_PROTOCOL_MAJOR(port->proto) >= 3)
+		return true;
+	else
+		return false;
+}
 
 /*
  * Client authentication starts here.  If there is an error, this
@@ -349,6 +461,20 @@ ClientAuthentication(Port *port)
 {
 	int			status = STATUS_ERROR;
 	char	   *logdetail = NULL;
+
+	/*
+	 * If this is a QC to PX connection, we might be able to short circuit
+	 * client authentication.
+	 */
+	if (px_role == PX_ROLE_PX)
+	{
+		if (is_internal_px_conn(port))
+		{
+			if (internal_client_authentication(port))
+				return;
+		}
+		/* Else, try the normal authentication */
+	}
 
 	/*
 	 * Get the authentication method to use for this frontend/database
@@ -404,8 +530,14 @@ ClientAuthentication(Port *port)
 			 */
 			{
 				char		hostinfo[NI_MAXHOST];
+				SockAddr 	real_sock;
 
-				pg_getnameinfo_all(&port->raddr.addr, port->raddr.salen,
+				if (port->polar_proxy)
+					real_sock = port->polar_origin_addr;
+				else
+					real_sock = port->raddr;
+
+				pg_getnameinfo_all(&real_sock.addr, real_sock.salen,
 								   hostinfo, sizeof(hostinfo),
 								   NULL, 0,
 								   NI_NUMERICHOST);
@@ -457,8 +589,14 @@ ClientAuthentication(Port *port)
 			 */
 			{
 				char		hostinfo[NI_MAXHOST];
+				SockAddr 	real_sock;
 
-				pg_getnameinfo_all(&port->raddr.addr, port->raddr.salen,
+				if (port->polar_proxy)
+					real_sock = port->polar_origin_addr;
+				else
+					real_sock = port->raddr;
+
+				pg_getnameinfo_all(&real_sock.addr, real_sock.salen,
 								   hostinfo, sizeof(hostinfo),
 								   NULL, 0,
 								   NI_NUMERICHOST);
@@ -610,6 +748,11 @@ ClientAuthentication(Port *port)
 		auth_failed(port, status, logdetail);
 }
 
+void
+FakeClientAuthentication(Port *port)
+{
+	sendAuthRequest(port, AUTH_REQ_OK, NULL, 0);
+}
 
 /*
  * Send an authentication request packet to the frontend.
@@ -1834,7 +1977,7 @@ interpret_ident_response(const char *ident_response,
 static int
 ident_inet(hbaPort *port)
 {
-	const SockAddr remote_addr = port->raddr;
+	const SockAddr remote_addr = (port->polar_proxy ? port->polar_origin_addr : port->raddr);
 	const SockAddr local_addr = port->laddr;
 	char		ident_user[IDENT_USERNAME_MAX + 1];
 	pgsocket	sock_fd = PGINVALID_SOCKET; /* for talking to Ident server */

@@ -36,6 +36,7 @@
 #include "miscadmin.h"
 #include "optimizer/clauses.h"
 #include "utils/array.h"
+#include "utils/guc.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 
@@ -318,7 +319,7 @@ ExecScanSubPlan(SubPlanState *node,
 	 * that we produce a zero-element array if no tuples are produced (this is
 	 * a change from pre-8.3 behavior of returning NULL).
 	 */
-	result = BoolGetDatum(subLinkType == ALL_SUBLINK);
+	result = BoolGetDatum(subLinkType == ALL_SUBLINK || subLinkType == NOT_EXISTS_SUBLINK);
 	*isNull = false;
 
 	for (slot = ExecProcNode(planstate);
@@ -331,10 +332,14 @@ ExecScanSubPlan(SubPlanState *node,
 		int			col;
 		ListCell   *plst;
 
-		if (subLinkType == EXISTS_SUBLINK)
+		if (subLinkType == EXISTS_SUBLINK || subLinkType == NOT_EXISTS_SUBLINK)
 		{
+			bool val = true;
 			found = true;
-			result = BoolGetDatum(true);
+			if (subLinkType == NOT_EXISTS_SUBLINK)
+				val = false;
+
+			result = BoolGetDatum(val);
 			break;
 		}
 
@@ -602,6 +607,7 @@ buildSubPlanHash(SubPlanState *node, ExprContext *econtext)
 			(void) LookupTupleHashEntry(node->hashnulls, slot, &isnew);
 			node->havenullrows = true;
 		}
+		polar_check_hash_table_size(polar_max_subplan_mem, "Subplan", node->hashtable, node->hashnulls, NULL);
 
 		/*
 		 * Reset innerecontext after each inner tuple to free any memory used
@@ -1104,14 +1110,19 @@ ExecSetParamPlan(SubPlanState *node, ExprContext *econtext)
 		TupleDesc	tdesc = slot->tts_tupleDescriptor;
 		int			i = 1;
 
-		if (subLinkType == EXISTS_SUBLINK)
+		if (subLinkType == EXISTS_SUBLINK || subLinkType == NOT_EXISTS_SUBLINK)
 		{
 			/* There can be only one setParam... */
 			int			paramid = linitial_int(subplan->setParam);
 			ParamExecData *prm = &(econtext->ecxt_param_exec_vals[paramid]);
 
 			prm->execPlan = NULL;
-			prm->value = BoolGetDatum(true);
+
+			if (subLinkType == NOT_EXISTS_SUBLINK)
+				prm->value = BoolGetDatum(false);
+			else
+				prm->value = BoolGetDatum(true);
+
 			prm->isnull = false;
 			found = true;
 			break;
@@ -1189,14 +1200,19 @@ ExecSetParamPlan(SubPlanState *node, ExprContext *econtext)
 	}
 	else if (!found)
 	{
-		if (subLinkType == EXISTS_SUBLINK)
+		if (subLinkType == EXISTS_SUBLINK || subLinkType == NOT_EXISTS_SUBLINK)
 		{
 			/* There can be only one setParam... */
 			int			paramid = linitial_int(subplan->setParam);
 			ParamExecData *prm = &(econtext->ecxt_param_exec_vals[paramid]);
 
 			prm->execPlan = NULL;
-			prm->value = BoolGetDatum(false);
+
+			if (subLinkType == NOT_EXISTS_SUBLINK)
+				prm->value = BoolGetDatum(true);
+			else
+				prm->value = BoolGetDatum(false);
+
 			prm->isnull = false;
 		}
 		else

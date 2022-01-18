@@ -1,0 +1,110 @@
+set polar_max_hashagg_mem=128;
+set polar_max_setop_mem=128;
+set polar_max_subplan_mem=128;
+set polar_max_recursiveunion_mem=128;
+-- HashAgg
+explain select count(*) from (select s from generate_series(1, 1000) s group by s) g;
+                                      QUERY PLAN                                      
+--------------------------------------------------------------------------------------
+ Aggregate  (cost=17.00..17.01 rows=1 width=8)
+   ->  HashAggregate  (cost=12.50..14.50 rows=200 width=4)
+         Group Key: s.s
+         ->  Function Scan on generate_series s  (cost=0.00..10.00 rows=1000 width=4)
+(4 rows)
+
+select count(*) from (select s from generate_series(1, 1000) s group by s) g;
+ERROR:  out of memory
+DETAIL:  Too much memory usage in HashAggregation, max: 128 kB, please adjust polar_max_hashagg_mem to enlarge memory limit
+set polar_max_hashagg_mem=1024;
+select count(*) from (select s from generate_series(1, 1000) s group by s) g;
+ count 
+-------
+  1000
+(1 row)
+
+-- 0 means no limit
+set polar_max_hashagg_mem=0;
+select count(*) from (select s from generate_series(1, 1000) s group by s) g;
+ count 
+-------
+  1000
+(1 row)
+
+-- SetOp
+explain select generate_series(1,1000) except select generate_series(1,1000);
+                                   QUERY PLAN                                    
+---------------------------------------------------------------------------------
+ HashSetOp Except  (cost=0.00..45.03 rows=1000 width=8)
+   ->  Append  (cost=0.00..40.03 rows=2000 width=8)
+         ->  Subquery Scan on "*SELECT* 1"  (cost=0.00..15.02 rows=1000 width=8)
+               ->  ProjectSet  (cost=0.00..5.02 rows=1000 width=4)
+                     ->  Result  (cost=0.00..0.01 rows=1 width=0)
+         ->  Subquery Scan on "*SELECT* 2"  (cost=0.00..15.02 rows=1000 width=8)
+               ->  ProjectSet  (cost=0.00..5.02 rows=1000 width=4)
+                     ->  Result  (cost=0.00..0.01 rows=1 width=0)
+(8 rows)
+
+select generate_series(1,1000) except select generate_series(1,1000);
+ERROR:  out of memory
+DETAIL:  Too much memory usage in SetOp, max: 128 kB, please adjust polar_max_setop_mem to enlarge memory limit
+set polar_max_setop_mem=1024;
+select generate_series(1,1000) except select generate_series(1,1000);
+ generate_series 
+-----------------
+(0 rows)
+
+-- Subplan
+explain select * from generate_series(1,1001) as s where s not in (select * from generate_series(1,1000));
+                                   QUERY PLAN                                   
+--------------------------------------------------------------------------------
+ Function Scan on generate_series s  (cost=12.50..25.00 rows=500 width=4)
+   Filter: (NOT (hashed SubPlan 1))
+   SubPlan 1
+     ->  Function Scan on generate_series  (cost=0.00..10.00 rows=1000 width=4)
+(4 rows)
+
+select * from generate_series(1,1001) as s where s not in (select * from generate_series(1,1000));
+ERROR:  out of memory
+DETAIL:  Too much memory usage in Subplan, max: 128 kB, please adjust polar_max_subplan_mem to enlarge memory limit
+set polar_max_subplan_mem=1024;
+select * from generate_series(1,1001) as s where s not in (select * from generate_series(1,1000));
+  s   
+------
+ 1001
+(1 row)
+
+-- RecursiveUnion
+explain with recursive x(a) as
+(select 1 as a
+union
+select a + 1 from x where a < 2000)
+select count(*) from x;
+                               QUERY PLAN                                
+-------------------------------------------------------------------------
+ Aggregate  (cost=3.65..3.66 rows=1 width=8)
+   CTE x
+     ->  Recursive Union  (cost=0.00..2.95 rows=31 width=4)
+           ->  Result  (cost=0.00..0.01 rows=1 width=4)
+           ->  WorkTable Scan on x x_1  (cost=0.00..0.23 rows=3 width=4)
+                 Filter: (a < 2000)
+   ->  CTE Scan on x  (cost=0.00..0.62 rows=31 width=0)
+(7 rows)
+
+with recursive x(a) as
+(select 1 as a
+union
+select a + 1 from x where a < 2000)
+select count(*) from x;
+ERROR:  out of memory
+DETAIL:  Too much memory usage in RecursiveUnion, max: 128 kB, please adjust polar_max_recursiveunion_mem to enlarge memory limit
+set polar_max_recursiveunion_mem=1024;
+with recursive x(a) as
+(select 1 as a
+union
+select a + 1 from x where a < 2000)
+select count(*) from x;
+ count 
+-------
+  2000
+(1 row)
+

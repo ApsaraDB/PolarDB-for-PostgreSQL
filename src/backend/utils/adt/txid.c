@@ -33,7 +33,12 @@
 #include "utils/builtins.h"
 #include "utils/memutils.h"
 #include "utils/snapmgr.h"
+#include "utils/guc.h"
 
+/* POLAR csn */
+#include "utils/tqual.h"
+#include "utils/snapshot.h"
+/* POLAR end */
 
 /* txid will be signed int8 in database, so must limit to 63 bits */
 #define MAX_TXID   ((uint64) PG_INT64_MAX)
@@ -67,6 +72,12 @@ typedef struct
 	txid		xmin;
 	txid		xmax;
 	/* in-progress txids, xmin <= xip[i] < xmax: */
+	/* 
+	 * POLAR csn
+	 * To make txid_snapshot storage compatible, we should store csn in xip
+	 * and store an invalid xid in front of csn to differentiate csn snapshot
+	 * with xid snapshot
+	 */
 	txid		xip[FLEXIBLE_ARRAY_MEMBER];
 } TxidSnapshot;
 
@@ -357,6 +368,8 @@ parse_snapshot(const char *str)
 	const char *str_start = str;
 	const char *endp;
 	StringInfo	buf;
+	/* POLAR csn */
+	bool first_val = true;
 
 	xmin = str2txid(str, &endp);
 	if (*endp != ':')
@@ -382,6 +395,19 @@ parse_snapshot(const char *str)
 		val = str2txid(str, &endp);
 		str = endp;
 
+		if (polar_csn_enable && first_val && !TransactionIdIsValid(val))
+		{
+			buf_add_txid(buf, val);
+			if (*str == ',')
+				str++;
+			else if (*str != '\0')
+				goto bad_format;
+			buf_add_txid(buf, str2txid(str, &endp));
+			str = endp;
+			if (*str != '\0')
+				goto bad_format;
+		}
+
 		/* require the input to be in order */
 		if (val < xmin || val >= xmax || val < last_val)
 			goto bad_format;
@@ -390,6 +416,8 @@ parse_snapshot(const char *str)
 		if (val != last_val)
 			buf_add_txid(buf, val);
 		last_val = val;
+
+		first_val = false;
 
 		if (*str == ',')
 			str++;
@@ -406,6 +434,57 @@ bad_format:
 					"txid_snapshot", str_start)));
 	return NULL;				/* keep compiler quiet */
 }
+
+/* POLAR csn */
+extern bool is_csn_snapshot(const TxidSnapshot *snap);
+
+bool
+is_csn_snapshot(const TxidSnapshot *snap)
+{
+	bool ret;
+
+	Assert(PointerIsValid(snap));
+
+	if (snap->nxip == 2 && !TransactionIdIsValid(snap->xip[0]))
+		ret = true;
+	else
+		ret = false;
+	
+	return ret;
+}
+
+extern CommitSeqNo txid_snapshot_get_csn(const TxidSnapshot *snap);
+
+CommitSeqNo
+txid_snapshot_get_csn(const TxidSnapshot *snap)
+{
+	Assert(is_csn_snapshot(snap));
+
+	return snap->xip[1];
+}
+
+/*
+ * check txid visibility.
+ */
+static bool
+is_visible_txid_csn(txid value, const TxidSnapshot *snap)
+{
+	if (value < snap->xmin)
+		return true;
+	else if (value >= snap->xmax)
+		return false;
+	else
+	{
+		SnapshotData snap_data;
+
+		snap_data.xmin = snap->xmin;
+		snap_data.xmax = snap->xmax;
+		snap_data.polar_snapshot_csn = txid_snapshot_get_csn(snap);
+
+		return XidInMVCCSnapshot(value, &snap_data);
+	}
+}
+/* POLAR end */
 
 /*
  * Public functions.
@@ -488,32 +567,45 @@ txid_current_snapshot(PG_FUNCTION_ARGS)
 
 	load_xid_epoch(&state);
 
-	/*
-	 * Compile-time limits on the procarray (MAX_BACKENDS processes plus
-	 * MAX_BACKENDS prepared transactions) guarantee nxip won't be too large.
-	 */
-	StaticAssertStmt(MAX_BACKENDS * 2 <= TXID_SNAPSHOT_MAX_NXIP,
-					 "possible overflow in txid_current_snapshot()");
-
 	/* allocate */
-	nxip = cur->xcnt;
+	if (polar_csn_enable)
+		nxip = 2;
+	else
+	{
+		/*
+	 	 * Compile-time limits on the procarray (MAX_BACKENDS processes plus
+	 	 * MAX_BACKENDS prepared transactions) guarantee nxip won't be too large.
+	 	 */
+		StaticAssertStmt(MAX_BACKENDS * 2 <= TXID_SNAPSHOT_MAX_NXIP,
+					 	"possible overflow in txid_current_snapshot()");
+		nxip = cur->xcnt;
+	}
 	snap = palloc(TXID_SNAPSHOT_SIZE(nxip));
 
 	/* fill */
 	snap->xmin = convert_xid(cur->xmin, &state);
 	snap->xmax = convert_xid(cur->xmax, &state);
 	snap->nxip = nxip;
-	for (i = 0; i < nxip; i++)
-		snap->xip[i] = convert_xid(cur->xip[i], &state);
+	if (polar_csn_enable)
+	{
+		snap->xip[0] = InvalidTransactionId;
+		snap->xip[1] = cur->polar_snapshot_csn;
+	}
+	else
+	{
+	
+		for (i = 0; i < nxip; i++)
+			snap->xip[i] = convert_xid(cur->xip[i], &state);
 
-	/*
-	 * We want them guaranteed to be in ascending order.  This also removes
-	 * any duplicate xids.  Normally, an XID can only be assigned to one
-	 * backend, but when preparing a transaction for two-phase commit, there
-	 * is a transient state when both the original backend and the dummy
-	 * PGPROC entry reserved for the prepared transaction hold the same XID.
-	 */
-	sort_snapshot(snap);
+		/*
+		* We want them guaranteed to be in ascending order.  This also removes
+		* any duplicate xids.  Normally, an XID can only be assigned to one
+		* backend, but when preparing a transaction for two-phase commit, there
+		* is a transient state when both the original backend and the dummy
+		* PGPROC entry reserved for the prepared transaction hold the same XID.
+		*/
+		sort_snapshot(snap);
+	}
 
 	/* set size after sorting, because it may have removed duplicate xips */
 	SET_VARSIZE(snap, TXID_SNAPSHOT_SIZE(snap->nxip));
@@ -600,6 +692,13 @@ txid_snapshot_recv(PG_FUNCTION_ARGS)
 	{
 		txid		cur = pq_getmsgint64(buf);
 
+		if (polar_csn_enable && i == 0 && nxip == 2 && !TransactionIdIsValid(cur))
+		{
+			snap->xip[0] = cur;
+			snap->xip[1] = pq_getmsgint64(buf);
+			break;
+		}
+			
 		if (cur < last || cur < xmin || cur >= xmax)
 			goto bad_format;
 
@@ -659,7 +758,10 @@ txid_visible_in_snapshot(PG_FUNCTION_ARGS)
 	txid		value = PG_GETARG_INT64(0);
 	TxidSnapshot *snap = (TxidSnapshot *) PG_GETARG_VARLENA_P(1);
 
-	PG_RETURN_BOOL(is_visible_txid(value, snap));
+	if (is_csn_snapshot(snap))
+		PG_RETURN_BOOL(is_visible_txid_csn(value, snap));
+	else
+		PG_RETURN_BOOL(is_visible_txid(value, snap));
 }
 
 /*

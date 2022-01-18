@@ -1,0 +1,297 @@
+-- default for superuser is false
+CREATE ROLE regress_test_def_superuser;
+ERROR:  cannot execute CREATE ROLE in a read-only transaction
+SELECT * FROM pg_authid WHERE rolname = 'regress_test_def_superuser';
+          rolname           | rolsuper | rolinherit | rolcreaterole | rolcreatedb | rolcanlogin | rolreplication | rolbypassrls | rolconnlimit | rolpassword | rolvaliduntil 
+----------------------------+----------+------------+---------------+-------------+-------------+----------------+--------------+--------------+-------------+---------------
+ regress_test_def_superuser | f        | t          | f             | f           | f           | f              | f            |           -1 |             | 
+(1 row)
+
+CREATE ROLE regress_test_superuser WITH SUPERUSER;
+ERROR:  cannot execute CREATE ROLE in a read-only transaction
+SELECT * FROM pg_authid WHERE rolname = 'regress_test_superuser';
+        rolname         | rolsuper | rolinherit | rolcreaterole | rolcreatedb | rolcanlogin | rolreplication | rolbypassrls | rolconnlimit | rolpassword | rolvaliduntil 
+------------------------+----------+------------+---------------+-------------+-------------+----------------+--------------+--------------+-------------+---------------
+ regress_test_superuser | t        | t          | f             | f           | f           | f              | f            |           -1 |             | 
+(1 row)
+
+ALTER ROLE regress_test_superuser WITH NOSUPERUSER;
+ERROR:  cannot execute ALTER ROLE in a read-only transaction
+SELECT * FROM pg_authid WHERE rolname = 'regress_test_superuser';
+        rolname         | rolsuper | rolinherit | rolcreaterole | rolcreatedb | rolcanlogin | rolreplication | rolbypassrls | rolconnlimit | rolpassword | rolvaliduntil 
+------------------------+----------+------------+---------------+-------------+-------------+----------------+--------------+--------------+-------------+---------------
+ regress_test_superuser | f        | t          | f             | f           | f           | f              | f            |           -1 |             | 
+(1 row)
+
+ALTER ROLE regress_test_superuser WITH SUPERUSER;
+ERROR:  cannot execute ALTER ROLE in a read-only transaction
+SELECT * FROM pg_authid WHERE rolname = 'regress_test_superuser';
+        rolname         | rolsuper | rolinherit | rolcreaterole | rolcreatedb | rolcanlogin | rolreplication | rolbypassrls | rolconnlimit | rolpassword | rolvaliduntil 
+------------------------+----------+------------+---------------+-------------+-------------+----------------+--------------+--------------+-------------+---------------
+ regress_test_superuser | t        | t          | f             | f           | f           | f              | f            |           -1 |             | 
+(1 row)
+
+-- default for inherit is true
+CREATE ROLE regress_test_def_inherit;
+ERROR:  cannot execute CREATE ROLE in a read-only transaction
+SELECT * FROM pg_authid WHERE rolname = 'regress_test_def_inherit';
+         rolname          | rolsuper | rolinherit | rolcreaterole | rolcreatedb | rolcanlogin | rolreplication | rolbypassrls | rolconnlimit | rolpassword | rolvaliduntil 
+--------------------------+----------+------------+---------------+-------------+-------------+----------------+--------------+--------------+-------------+---------------
+ regress_test_def_inherit | f        | t          | f             | f           | f           | f              | f            |           -1 |             | 
+(1 row)
+
+CREATE ROLE regress_test_inherit WITH NOINHERIT;
+ERROR:  cannot execute CREATE ROLE in a read-only transaction
+SELECT * FROM pg_authid WHERE rolname = 'regress_test_inherit';
+       rolname        | rolsuper | rolinherit | rolcreaterole | rolcreatedb | rolcanlogin | rolreplication | rolbypassrls | rolconnlimit | rolpassword | rolvaliduntil 
+----------------------+----------+------------+---------------+-------------+-------------+----------------+--------------+--------------+-------------+---------------
+ regress_test_inherit | f        | f          | f             | f           | f           | f              | f            |           -1 |             | 
+(1 row)
+
+ALTER ROLE regress_test_inherit WITH INHERIT;
+ERROR:  cannot execute ALTER ROLE in a read-only transaction
+SELECT * FROM pg_authid WHERE rolname = 'regress_test_inherit';
+       rolname        | rolsuper | rolinherit | rolcreaterole | rolcreatedb | rolcanlogin | rolreplication | rolbypassrls | rolconnlimit | rolpassword | rolvaliduntil 
+----------------------+----------+------------+---------------+-------------+-------------+----------------+--------------+--------------+-------------+---------------
+ regress_test_inherit | f        | t          | f             | f           | f           | f              | f            |           -1 |             | 
+(1 row)
+
+ALTER ROLE regress_test_inherit WITH NOINHERIT;
+ERROR:  cannot execute ALTER ROLE in a read-only transaction
+SELECT * FROM pg_authid WHERE rolname = 'regress_test_inherit';
+       rolname        | rolsuper | rolinherit | rolcreaterole | rolcreatedb | rolcanlogin | rolreplication | rolbypassrls | rolconnlimit | rolpassword | rolvaliduntil 
+----------------------+----------+------------+---------------+-------------+-------------+----------------+--------------+--------------+-------------+---------------
+ regress_test_inherit | f        | f          | f             | f           | f           | f              | f            |           -1 |             | 
+(1 row)
+
+-- default for create role is false
+CREATE ROLE regress_test_def_createrole;
+ERROR:  cannot execute CREATE ROLE in a read-only transaction
+SELECT * FROM pg_authid WHERE rolname = 'regress_test_def_createrole';
+           rolname           | rolsuper | rolinherit | rolcreaterole | rolcreatedb | rolcanlogin | rolreplication | rolbypassrls | rolconnlimit | rolpassword | rolvaliduntil 
+-----------------------------+----------+------------+---------------+-------------+-------------+----------------+--------------+--------------+-------------+---------------
+ regress_test_def_createrole | f        | t          | f             | f           | f           | f              | f            |           -1 |             | 
+(1 row)
+
+CREATE ROLE regress_test_createrole WITH CREATEROLE;
+ERROR:  cannot execute CREATE ROLE in a read-only transaction
+SELECT * FROM pg_authid WHERE rolname = 'regress_test_createrole';
+         rolname         | rolsuper | rolinherit | rolcreaterole | rolcreatedb | rolcanlogin | rolreplication | rolbypassrls | rolconnlimit | rolpassword | rolvaliduntil 
+-------------------------+----------+------------+---------------+-------------+-------------+----------------+--------------+--------------+-------------+---------------
+ regress_test_createrole | f        | t          | t             | f           | f           | f              | f            |           -1 |             | 
+(1 row)
+
+ALTER ROLE regress_test_createrole WITH NOCREATEROLE;
+ERROR:  cannot execute ALTER ROLE in a read-only transaction
+SELECT * FROM pg_authid WHERE rolname = 'regress_test_createrole';
+         rolname         | rolsuper | rolinherit | rolcreaterole | rolcreatedb | rolcanlogin | rolreplication | rolbypassrls | rolconnlimit | rolpassword | rolvaliduntil 
+-------------------------+----------+------------+---------------+-------------+-------------+----------------+--------------+--------------+-------------+---------------
+ regress_test_createrole | f        | t          | f             | f           | f           | f              | f            |           -1 |             | 
+(1 row)
+
+ALTER ROLE regress_test_createrole WITH CREATEROLE;
+ERROR:  cannot execute ALTER ROLE in a read-only transaction
+SELECT * FROM pg_authid WHERE rolname = 'regress_test_createrole';
+         rolname         | rolsuper | rolinherit | rolcreaterole | rolcreatedb | rolcanlogin | rolreplication | rolbypassrls | rolconnlimit | rolpassword | rolvaliduntil 
+-------------------------+----------+------------+---------------+-------------+-------------+----------------+--------------+--------------+-------------+---------------
+ regress_test_createrole | f        | t          | t             | f           | f           | f              | f            |           -1 |             | 
+(1 row)
+
+-- default for create database is false
+CREATE ROLE regress_test_def_createdb;
+ERROR:  cannot execute CREATE ROLE in a read-only transaction
+SELECT * FROM pg_authid WHERE rolname = 'regress_test_def_createdb';
+          rolname          | rolsuper | rolinherit | rolcreaterole | rolcreatedb | rolcanlogin | rolreplication | rolbypassrls | rolconnlimit | rolpassword | rolvaliduntil 
+---------------------------+----------+------------+---------------+-------------+-------------+----------------+--------------+--------------+-------------+---------------
+ regress_test_def_createdb | f        | t          | f             | f           | f           | f              | f            |           -1 |             | 
+(1 row)
+
+CREATE ROLE regress_test_createdb WITH CREATEDB;
+ERROR:  cannot execute CREATE ROLE in a read-only transaction
+SELECT * FROM pg_authid WHERE rolname = 'regress_test_createdb';
+        rolname        | rolsuper | rolinherit | rolcreaterole | rolcreatedb | rolcanlogin | rolreplication | rolbypassrls | rolconnlimit | rolpassword | rolvaliduntil 
+-----------------------+----------+------------+---------------+-------------+-------------+----------------+--------------+--------------+-------------+---------------
+ regress_test_createdb | f        | t          | f             | t           | f           | f              | f            |           -1 |             | 
+(1 row)
+
+ALTER ROLE regress_test_createdb WITH NOCREATEDB;
+ERROR:  cannot execute ALTER ROLE in a read-only transaction
+SELECT * FROM pg_authid WHERE rolname = 'regress_test_createdb';
+        rolname        | rolsuper | rolinherit | rolcreaterole | rolcreatedb | rolcanlogin | rolreplication | rolbypassrls | rolconnlimit | rolpassword | rolvaliduntil 
+-----------------------+----------+------------+---------------+-------------+-------------+----------------+--------------+--------------+-------------+---------------
+ regress_test_createdb | f        | t          | f             | f           | f           | f              | f            |           -1 |             | 
+(1 row)
+
+ALTER ROLE regress_test_createdb WITH CREATEDB;
+ERROR:  cannot execute ALTER ROLE in a read-only transaction
+SELECT * FROM pg_authid WHERE rolname = 'regress_test_createdb';
+        rolname        | rolsuper | rolinherit | rolcreaterole | rolcreatedb | rolcanlogin | rolreplication | rolbypassrls | rolconnlimit | rolpassword | rolvaliduntil 
+-----------------------+----------+------------+---------------+-------------+-------------+----------------+--------------+--------------+-------------+---------------
+ regress_test_createdb | f        | t          | f             | t           | f           | f              | f            |           -1 |             | 
+(1 row)
+
+-- default for can login is false for role
+CREATE ROLE regress_test_def_role_canlogin;
+ERROR:  cannot execute CREATE ROLE in a read-only transaction
+SELECT * FROM pg_authid WHERE rolname = 'regress_test_def_role_canlogin';
+            rolname             | rolsuper | rolinherit | rolcreaterole | rolcreatedb | rolcanlogin | rolreplication | rolbypassrls | rolconnlimit | rolpassword | rolvaliduntil 
+--------------------------------+----------+------------+---------------+-------------+-------------+----------------+--------------+--------------+-------------+---------------
+ regress_test_def_role_canlogin | f        | t          | f             | f           | f           | f              | f            |           -1 |             | 
+(1 row)
+
+CREATE ROLE regress_test_role_canlogin WITH LOGIN;
+ERROR:  cannot execute CREATE ROLE in a read-only transaction
+SELECT * FROM pg_authid WHERE rolname = 'regress_test_role_canlogin';
+          rolname           | rolsuper | rolinherit | rolcreaterole | rolcreatedb | rolcanlogin | rolreplication | rolbypassrls | rolconnlimit | rolpassword | rolvaliduntil 
+----------------------------+----------+------------+---------------+-------------+-------------+----------------+--------------+--------------+-------------+---------------
+ regress_test_role_canlogin | f        | t          | f             | f           | t           | f              | f            |           -1 |             | 
+(1 row)
+
+ALTER ROLE regress_test_role_canlogin WITH NOLOGIN;
+ERROR:  cannot execute ALTER ROLE in a read-only transaction
+SELECT * FROM pg_authid WHERE rolname = 'regress_test_role_canlogin';
+          rolname           | rolsuper | rolinherit | rolcreaterole | rolcreatedb | rolcanlogin | rolreplication | rolbypassrls | rolconnlimit | rolpassword | rolvaliduntil 
+----------------------------+----------+------------+---------------+-------------+-------------+----------------+--------------+--------------+-------------+---------------
+ regress_test_role_canlogin | f        | t          | f             | f           | f           | f              | f            |           -1 |             | 
+(1 row)
+
+ALTER ROLE regress_test_role_canlogin WITH LOGIN;
+ERROR:  cannot execute ALTER ROLE in a read-only transaction
+SELECT * FROM pg_authid WHERE rolname = 'regress_test_role_canlogin';
+          rolname           | rolsuper | rolinherit | rolcreaterole | rolcreatedb | rolcanlogin | rolreplication | rolbypassrls | rolconnlimit | rolpassword | rolvaliduntil 
+----------------------------+----------+------------+---------------+-------------+-------------+----------------+--------------+--------------+-------------+---------------
+ regress_test_role_canlogin | f        | t          | f             | f           | t           | f              | f            |           -1 |             | 
+(1 row)
+
+-- default for can login is true for user
+CREATE USER regress_test_def_user_canlogin;
+ERROR:  cannot execute CREATE ROLE in a read-only transaction
+SELECT * FROM pg_authid WHERE rolname = 'regress_test_def_user_canlogin';
+            rolname             | rolsuper | rolinherit | rolcreaterole | rolcreatedb | rolcanlogin | rolreplication | rolbypassrls | rolconnlimit | rolpassword | rolvaliduntil 
+--------------------------------+----------+------------+---------------+-------------+-------------+----------------+--------------+--------------+-------------+---------------
+ regress_test_def_user_canlogin | f        | t          | f             | f           | t           | f              | f            |           -1 |             | 
+(1 row)
+
+CREATE USER regress_test_user_canlogin WITH NOLOGIN;
+ERROR:  cannot execute CREATE ROLE in a read-only transaction
+SELECT * FROM pg_authid WHERE rolname = 'regress_test_user_canlogin';
+          rolname           | rolsuper | rolinherit | rolcreaterole | rolcreatedb | rolcanlogin | rolreplication | rolbypassrls | rolconnlimit | rolpassword | rolvaliduntil 
+----------------------------+----------+------------+---------------+-------------+-------------+----------------+--------------+--------------+-------------+---------------
+ regress_test_user_canlogin | f        | t          | f             | f           | f           | f              | f            |           -1 |             | 
+(1 row)
+
+ALTER USER regress_test_user_canlogin WITH LOGIN;
+ERROR:  cannot execute ALTER ROLE in a read-only transaction
+SELECT * FROM pg_authid WHERE rolname = 'regress_test_user_canlogin';
+          rolname           | rolsuper | rolinherit | rolcreaterole | rolcreatedb | rolcanlogin | rolreplication | rolbypassrls | rolconnlimit | rolpassword | rolvaliduntil 
+----------------------------+----------+------------+---------------+-------------+-------------+----------------+--------------+--------------+-------------+---------------
+ regress_test_user_canlogin | f        | t          | f             | f           | t           | f              | f            |           -1 |             | 
+(1 row)
+
+ALTER USER regress_test_user_canlogin WITH NOLOGIN;
+ERROR:  cannot execute ALTER ROLE in a read-only transaction
+SELECT * FROM pg_authid WHERE rolname = 'regress_test_user_canlogin';
+          rolname           | rolsuper | rolinherit | rolcreaterole | rolcreatedb | rolcanlogin | rolreplication | rolbypassrls | rolconnlimit | rolpassword | rolvaliduntil 
+----------------------------+----------+------------+---------------+-------------+-------------+----------------+--------------+--------------+-------------+---------------
+ regress_test_user_canlogin | f        | t          | f             | f           | f           | f              | f            |           -1 |             | 
+(1 row)
+
+-- default for replication is false
+CREATE ROLE regress_test_def_replication;
+ERROR:  cannot execute CREATE ROLE in a read-only transaction
+SELECT * FROM pg_authid WHERE rolname = 'regress_test_def_replication';
+           rolname            | rolsuper | rolinherit | rolcreaterole | rolcreatedb | rolcanlogin | rolreplication | rolbypassrls | rolconnlimit | rolpassword | rolvaliduntil 
+------------------------------+----------+------------+---------------+-------------+-------------+----------------+--------------+--------------+-------------+---------------
+ regress_test_def_replication | f        | t          | f             | f           | f           | f              | f            |           -1 |             | 
+(1 row)
+
+CREATE ROLE regress_test_replication WITH REPLICATION;
+ERROR:  cannot execute CREATE ROLE in a read-only transaction
+SELECT * FROM pg_authid WHERE rolname = 'regress_test_replication';
+         rolname          | rolsuper | rolinherit | rolcreaterole | rolcreatedb | rolcanlogin | rolreplication | rolbypassrls | rolconnlimit | rolpassword | rolvaliduntil 
+--------------------------+----------+------------+---------------+-------------+-------------+----------------+--------------+--------------+-------------+---------------
+ regress_test_replication | f        | t          | f             | f           | f           | t              | f            |           -1 |             | 
+(1 row)
+
+ALTER ROLE regress_test_replication WITH NOREPLICATION;
+ERROR:  cannot execute ALTER ROLE in a read-only transaction
+SELECT * FROM pg_authid WHERE rolname = 'regress_test_replication';
+         rolname          | rolsuper | rolinherit | rolcreaterole | rolcreatedb | rolcanlogin | rolreplication | rolbypassrls | rolconnlimit | rolpassword | rolvaliduntil 
+--------------------------+----------+------------+---------------+-------------+-------------+----------------+--------------+--------------+-------------+---------------
+ regress_test_replication | f        | t          | f             | f           | f           | f              | f            |           -1 |             | 
+(1 row)
+
+ALTER ROLE regress_test_replication WITH REPLICATION;
+ERROR:  cannot execute ALTER ROLE in a read-only transaction
+SELECT * FROM pg_authid WHERE rolname = 'regress_test_replication';
+         rolname          | rolsuper | rolinherit | rolcreaterole | rolcreatedb | rolcanlogin | rolreplication | rolbypassrls | rolconnlimit | rolpassword | rolvaliduntil 
+--------------------------+----------+------------+---------------+-------------+-------------+----------------+--------------+--------------+-------------+---------------
+ regress_test_replication | f        | t          | f             | f           | f           | t              | f            |           -1 |             | 
+(1 row)
+
+-- default for bypassrls is false
+CREATE ROLE regress_test_def_bypassrls;
+ERROR:  cannot execute CREATE ROLE in a read-only transaction
+SELECT * FROM pg_authid WHERE rolname = 'regress_test_def_bypassrls';
+          rolname           | rolsuper | rolinherit | rolcreaterole | rolcreatedb | rolcanlogin | rolreplication | rolbypassrls | rolconnlimit | rolpassword | rolvaliduntil 
+----------------------------+----------+------------+---------------+-------------+-------------+----------------+--------------+--------------+-------------+---------------
+ regress_test_def_bypassrls | f        | t          | f             | f           | f           | f              | f            |           -1 |             | 
+(1 row)
+
+CREATE ROLE regress_test_bypassrls WITH BYPASSRLS;
+ERROR:  cannot execute CREATE ROLE in a read-only transaction
+SELECT * FROM pg_authid WHERE rolname = 'regress_test_bypassrls';
+        rolname         | rolsuper | rolinherit | rolcreaterole | rolcreatedb | rolcanlogin | rolreplication | rolbypassrls | rolconnlimit | rolpassword | rolvaliduntil 
+------------------------+----------+------------+---------------+-------------+-------------+----------------+--------------+--------------+-------------+---------------
+ regress_test_bypassrls | f        | t          | f             | f           | f           | f              | t            |           -1 |             | 
+(1 row)
+
+ALTER ROLE regress_test_bypassrls WITH NOBYPASSRLS;
+ERROR:  cannot execute ALTER ROLE in a read-only transaction
+SELECT * FROM pg_authid WHERE rolname = 'regress_test_bypassrls';
+        rolname         | rolsuper | rolinherit | rolcreaterole | rolcreatedb | rolcanlogin | rolreplication | rolbypassrls | rolconnlimit | rolpassword | rolvaliduntil 
+------------------------+----------+------------+---------------+-------------+-------------+----------------+--------------+--------------+-------------+---------------
+ regress_test_bypassrls | f        | t          | f             | f           | f           | f              | f            |           -1 |             | 
+(1 row)
+
+ALTER ROLE regress_test_bypassrls WITH BYPASSRLS;
+ERROR:  cannot execute ALTER ROLE in a read-only transaction
+SELECT * FROM pg_authid WHERE rolname = 'regress_test_bypassrls';
+        rolname         | rolsuper | rolinherit | rolcreaterole | rolcreatedb | rolcanlogin | rolreplication | rolbypassrls | rolconnlimit | rolpassword | rolvaliduntil 
+------------------------+----------+------------+---------------+-------------+-------------+----------------+--------------+--------------+-------------+---------------
+ regress_test_bypassrls | f        | t          | f             | f           | f           | f              | t            |           -1 |             | 
+(1 row)
+
+-- clean up roles
+DROP ROLE regress_test_def_superuser;
+ERROR:  cannot execute DROP ROLE in a read-only transaction
+DROP ROLE regress_test_superuser;
+ERROR:  cannot execute DROP ROLE in a read-only transaction
+DROP ROLE regress_test_def_inherit;
+ERROR:  cannot execute DROP ROLE in a read-only transaction
+DROP ROLE regress_test_inherit;
+ERROR:  cannot execute DROP ROLE in a read-only transaction
+DROP ROLE regress_test_def_createrole;
+ERROR:  cannot execute DROP ROLE in a read-only transaction
+DROP ROLE regress_test_createrole;
+ERROR:  cannot execute DROP ROLE in a read-only transaction
+DROP ROLE regress_test_def_createdb;
+ERROR:  cannot execute DROP ROLE in a read-only transaction
+DROP ROLE regress_test_createdb;
+ERROR:  cannot execute DROP ROLE in a read-only transaction
+DROP ROLE regress_test_def_role_canlogin;
+ERROR:  cannot execute DROP ROLE in a read-only transaction
+DROP ROLE regress_test_role_canlogin;
+ERROR:  cannot execute DROP ROLE in a read-only transaction
+DROP USER regress_test_def_user_canlogin;
+ERROR:  cannot execute DROP ROLE in a read-only transaction
+DROP USER regress_test_user_canlogin;
+ERROR:  cannot execute DROP ROLE in a read-only transaction
+DROP ROLE regress_test_def_replication;
+ERROR:  cannot execute DROP ROLE in a read-only transaction
+DROP ROLE regress_test_replication;
+ERROR:  cannot execute DROP ROLE in a read-only transaction
+DROP ROLE regress_test_def_bypassrls;
+ERROR:  cannot execute DROP ROLE in a read-only transaction
+DROP ROLE regress_test_bypassrls;
+ERROR:  cannot execute DROP ROLE in a read-only transaction

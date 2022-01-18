@@ -1,0 +1,199 @@
+--
+-- PX ignore function
+--
+show polar_enable_px;
+ polar_enable_px 
+-----------------
+ on
+(1 row)
+
+show polar_px_ignore_function;
+   polar_px_ignore_function    
+-------------------------------
+ 1574,1575,1576,1765,3078,4032
+(1 row)
+
+create sequence polar_px_testseq;
+create table px_test(id int);
+insert into px_test values(generate_series(1,10000));
+analyze px_test;
+select nextval('polar_px_testseq');
+ nextval 
+---------
+       1
+(1 row)
+
+set polar_enable_px = on;
+reset polar_px_ignore_function;
+explain select count(*) from px_test where currval('polar_px_testseq') = 1;
+                           QUERY PLAN                           
+----------------------------------------------------------------
+ Aggregate  (cost=195.12..195.13 rows=1 width=8)
+   ->  Seq Scan on px_test  (cost=0.00..195.00 rows=50 width=0)
+         Filter: (currval('polar_px_testseq'::regclass) = 1)
+(3 rows)
+
+select count(*) from px_test where currval('polar_px_testseq') = 1;
+ count 
+-------
+ 10000
+(1 row)
+
+explain select nextval('polar_px_testseq'), id from px_test order by id limit 10;
+                                  QUERY PLAN                                   
+-------------------------------------------------------------------------------
+ Limit  (cost=361.10..361.25 rows=10 width=12)
+   ->  Result  (cost=361.10..511.10 rows=10000 width=12)
+         ->  Sort  (cost=361.10..386.10 rows=10000 width=4)
+               Sort Key: id
+               ->  Seq Scan on px_test  (cost=0.00..145.00 rows=10000 width=4)
+(5 rows)
+
+select nextval('polar_px_testseq'), id from px_test order by id limit 10;
+ nextval | id 
+---------+----
+       2 |  1
+       3 |  2
+       4 |  3
+       5 |  4
+       6 |  5
+       7 |  6
+       8 |  7
+       9 |  8
+      10 |  9
+      11 | 10
+(10 rows)
+
+set polar_enable_px = on;
+set polar_px_ignore_function='';
+explain select count(*) from px_test where currval('polar_px_testseq') = 1;
+                                      QUERY PLAN                                      
+--------------------------------------------------------------------------------------
+ Finalize Aggregate  (cost=0.00..431.03 rows=1 width=8)
+   ->  PX Coordinator 6:1  (slice1; segments: 6)  (cost=0.00..431.03 rows=1 width=8)
+         ->  Partial Aggregate  (cost=0.00..431.03 rows=1 width=8)
+               ->  Partial Seq Scan on px_test  (cost=0.00..431.03 rows=1667 width=1)
+                     Filter: (currval('polar_px_testseq'::regclass) = 1)
+ Optimizer: PolarDB PX Optimizer
+(6 rows)
+
+select count(*) from px_test where currval('polar_px_testseq') = 1;
+                               QUERY PLAN                                
+-------------------------------------------------------------------------
+ Finalize Aggregate
+   Output: count()
+   ->  PX Coordinator 6:1  (slice1; segments: 6)
+         Output: (PARTIAL count())
+         ->  Partial Aggregate
+               Output: PARTIAL count()
+               ->  Partial Seq Scan on public.px_test
+                     Filter: (currval('polar_px_testseq'::regclass) = 1)
+ Optimizer: PolarDB PX Optimizer
+(9 rows)
+
+ERROR:  currval of sequence "polar_px_testseq" is not yet defined in this session
+explain select nextval('polar_px_testseq'), id from px_test order by id limit 10;
+                                            QUERY PLAN                                            
+--------------------------------------------------------------------------------------------------
+ Limit  (cost=0.00..431.47 rows=10 width=12)
+   ->  PX Coordinator 6:1  (slice1; segments: 6)  (cost=0.00..431.47 rows=10 width=12)
+         Merge Key: id
+         ->  Limit  (cost=0.00..431.47 rows=2 width=12)
+               ->  Result  (cost=0.00..431.47 rows=1667 width=12)
+                     ->  Sort  (cost=0.00..431.45 rows=1667 width=4)
+                           Sort Key: id
+                           ->  Partial Seq Scan on px_test  (cost=0.00..431.03 rows=1667 width=4)
+ Optimizer: PolarDB PX Optimizer
+(9 rows)
+
+select nextval('polar_px_testseq'), id from px_test order by id limit 10;
+                              QUERY PLAN                               
+-----------------------------------------------------------------------
+ Limit
+   Output: (nextval('polar_px_testseq'::regclass)), id
+   ->  PX Coordinator 6:1  (slice1; segments: 6)
+         Output: (nextval('polar_px_testseq'::regclass)), id
+         Merge Key: id
+         ->  Limit
+               Output: (nextval('polar_px_testseq'::regclass)), id
+               ->  Result
+                     Output: nextval('polar_px_testseq'::regclass), id
+                     ->  Sort
+                           Output: id
+                           Sort Key: px_test.id
+                           ->  Partial Seq Scan on public.px_test
+                                 Output: id
+ Optimizer: PolarDB PX Optimizer
+(15 rows)
+
+ERROR:  cannot execute nextval() in a read-only transaction
+set polar_enable_px = off;
+explain select count(*) from px_test where currval('polar_px_testseq') = 1;
+                           QUERY PLAN                           
+----------------------------------------------------------------
+ Aggregate  (cost=195.12..195.13 rows=1 width=8)
+   ->  Seq Scan on px_test  (cost=0.00..195.00 rows=50 width=0)
+         Filter: (currval('polar_px_testseq'::regclass) = 1)
+(3 rows)
+
+select count(*) from px_test where currval('polar_px_testseq') = 1;
+ count 
+-------
+     0
+(1 row)
+
+explain select nextval('polar_px_testseq'), id from px_test order by id limit 10;
+                                  QUERY PLAN                                   
+-------------------------------------------------------------------------------
+ Limit  (cost=361.10..361.25 rows=10 width=12)
+   ->  Result  (cost=361.10..511.10 rows=10000 width=12)
+         ->  Sort  (cost=361.10..386.10 rows=10000 width=4)
+               Sort Key: id
+               ->  Seq Scan on px_test  (cost=0.00..145.00 rows=10000 width=4)
+(5 rows)
+
+select nextval('polar_px_testseq'), id from px_test order by id limit 10;
+ nextval | id 
+---------+----
+      12 |  1
+      13 |  2
+      14 |  3
+      15 |  4
+      16 |  5
+      17 |  6
+      18 |  7
+      19 |  8
+      20 |  9
+      21 | 10
+(10 rows)
+
+reset polar_px_ignore_function;
+reset polar_enable_px;
+set polar_px_ignore_function='12345,54221';
+show polar_px_ignore_function;
+ polar_px_ignore_function 
+--------------------------
+ 12345,54221
+(1 row)
+
+set polar_px_ignore_function='12345, 54321';
+show polar_px_ignore_function;
+ polar_px_ignore_function 
+--------------------------
+ 12345, 54321
+(1 row)
+
+set polar_px_ignore_function='abcd';
+ERROR:  invalid value for parameter "polar_px_ignore_function": "abcd"
+DETAIL:  polar px ignore function list is invalid, func1,func2,func3, ...
+set polar_px_ignore_function='$%^&';
+ERROR:  invalid value for parameter "polar_px_ignore_function": "$%^&"
+DETAIL:  polar px ignore function list is invalid, func1,func2,func3, ...
+set polar_px_ignore_function='12345,abcd';
+ERROR:  invalid value for parameter "polar_px_ignore_function": "12345,abcd"
+DETAIL:  polar px ignore function list is invalid, func1,func2,func3, ...
+set polar_px_ignore_function='12345,-54221';
+ERROR:  invalid value for parameter "polar_px_ignore_function": "12345,-54221"
+DETAIL:  polar px ignore function list is invalid, func1,func2,func3, ...
+reset polar_enable_px;
+reset polar_px_ignore_function;

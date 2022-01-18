@@ -622,6 +622,15 @@ SnapBuildInitialSnapshot(SnapBuild *builder)
 	snap->xcnt = newxcnt;
 	snap->xip = newxip;
 
+	/* 
+	 * In csn mode, we treat this snapshot as csn xid snapshot
+	 */
+	if (polar_csn_enable)
+	{
+		snap->polar_snapshot_csn = InvalidCommitSeqNo;
+		snap->polar_csn_xid_snapshot = true;
+	}
+
 	return snap;
 }
 

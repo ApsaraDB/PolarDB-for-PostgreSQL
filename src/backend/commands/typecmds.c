@@ -69,7 +69,6 @@
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
 
-
 /* result structure for get_rels_with_domain() */
 typedef struct
 {

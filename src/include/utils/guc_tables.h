@@ -87,6 +87,7 @@ enum config_group
 	STATS,
 	STATS_MONITORING,
 	STATS_COLLECTOR,
+	ENCRYPTION,
 	AUTOVACUUM,
 	CLIENT_CONN,
 	CLIENT_CONN_STATEMENT,
@@ -100,7 +101,12 @@ enum config_group
 	ERROR_HANDLING_OPTIONS,
 	PRESET_OPTIONS,
 	CUSTOM_OPTIONS,
-	DEVELOPER_OPTIONS
+	DEVELOPER_OPTIONS,
+	POLAR_NODE_STATIC,
+	/* POLAR px */
+	PX_WORKER_IDENTITY,
+	PX_ARRAY_TUNING
+	/* POLAR end */
 };
 
 /*
@@ -255,6 +261,18 @@ extern const char *const config_group_names[];
 extern const char *const config_type_names[];
 extern const char *const GucContext_Names[];
 extern const char *const GucSource_Names[];
+
+/* POLAR px */
+extern struct config_bool ConfigureNamesBool_px[];
+extern struct config_int ConfigureNamesInt_px[];
+extern struct config_enum ConfigureNamesEnum_px[];
+extern struct config_real ConfigureNamesReal_px[];
+extern struct config_string ConfigureNamesString_px[];
+extern struct config_enum ConfigureNamesEnum_dq[];
+
+extern int px_get_num_guc_variables(void);
+extern void px_assign_sync_flag(struct config_generic **guc_variables, int size, bool predefine);
+/* POLAR end */
 
 /* get the current set of variables */
 extern struct config_generic **get_guc_variables(void);

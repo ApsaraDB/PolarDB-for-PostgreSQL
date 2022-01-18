@@ -22,6 +22,7 @@ my $dbname4 = generate_ascii_string(193, 255);
 
 my $node = get_new_node('main');
 $node->init(extra => [ '--locale=C', '--encoding=LATIN1' ]);
+$node->append_conf('postgresql.conf', 'polar_enable_multi_syslogger = off');
 $node->start;
 
 foreach my $dbname ($dbname1, $dbname2, $dbname3, $dbname4, 'CamelCase')

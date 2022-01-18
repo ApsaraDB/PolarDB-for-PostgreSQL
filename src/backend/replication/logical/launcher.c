@@ -50,6 +50,7 @@
 
 #include "utils/memutils.h"
 #include "utils/pg_lsn.h"
+#include "utils/polar_coredump.h"
 #include "utils/ps_status.h"
 #include "utils/timeout.h"
 #include "utils/snapmgr.h"
@@ -86,6 +87,7 @@ typedef struct StopWorkersData
 	struct StopWorkersData *parent; /* This need not be an immediate
 									 * subtransaction parent */
 } StopWorkersData;
+
 
 /*
  * Stack of StopWorkersData elements. Each stack element contains the workers
@@ -305,6 +307,9 @@ logicalrep_worker_launch(Oid dbid, Oid subid, const char *subname, Oid userid,
 	LogicalRepWorker *worker = NULL;
 	int			nsyncworkers;
 	TimestampTz now;
+	/* POLAR: count replication workers available */
+	int polar_logical_repworker_available = 0;
+	/* POLAR: end */
 
 	ereport(DEBUG1,
 			(errmsg("starting logical replication worker for subscription \"%s\"",
@@ -335,6 +340,16 @@ retry:
 			break;
 		}
 	}
+
+	/* POLAR: count replication workers available */
+	for (i = 0; i < max_logical_replication_workers; i++)
+	{
+		LogicalRepWorker *w = &LogicalRepCtx->workers[i];
+
+		if (!w->in_use)
+			polar_logical_repworker_available++;
+	}
+	/* POLAR: end */
 
 	nsyncworkers = logicalrep_sync_worker_count(subid);
 
@@ -398,6 +413,24 @@ retry:
 				 errhint("You might need to increase max_logical_replication_workers.")));
 		return;
 	}
+
+	/*
+	 * POLAR: limit the maximum num of replication workers request by
+	 * non-super users
+	 */
+	if (polar_logical_repl_workers_reserved_for_superuser >= 0 &&
+		polar_logical_repworker_available <= polar_logical_repl_workers_reserved_for_superuser &&
+		!MyProc->issuper)
+	{
+		LWLockRelease(LogicalRepWorkerLock);
+		ereport(WARNING,
+				(errcode(ERRCODE_CONFIGURATION_LIMIT_EXCEEDED),
+				 errmsg("out of logical replication worker slots requested by non_super users"
+				 "current polar_logical_repworker_available :%d, polar_logical_repl_workers_reserved_for_superuser:"
+				 " %d", polar_logical_repworker_available, polar_logical_repl_workers_reserved_for_superuser)));
+		return;
+	}
+	/* POLAR: end */
 
 	/* Prepare the worker slot. */
 	worker->launch_time = now;
@@ -995,6 +1028,21 @@ ApplyLauncherMain(Datum main_arg)
 	/* Establish signal handlers. */
 	pqsignal(SIGHUP, logicalrep_launcher_sighup);
 	pqsignal(SIGTERM, die);
+
+	/* POLAR : register for coredump print */
+#ifndef _WIN32
+#ifdef SIGILL
+	pqsignal(SIGILL, polar_program_error_handler);
+#endif
+#ifdef SIGSEGV
+	pqsignal(SIGSEGV, polar_program_error_handler);
+#endif
+#ifdef SIGBUS
+	pqsignal(SIGBUS, polar_program_error_handler);
+#endif
+#endif	/* _WIN32 */
+	/* POLAR: end */
+
 	BackgroundWorkerUnblockSignals();
 
 	/*

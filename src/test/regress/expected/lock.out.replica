@@ -1,0 +1,190 @@
+--
+-- Test the LOCK statement
+--
+-- Setup
+CREATE SCHEMA lock_schema1;
+ERROR:  cannot execute CREATE SCHEMA in a read-only transaction
+SET search_path = lock_schema1;
+CREATE TABLE lock_tbl1 (a BIGINT);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE lock_tbl1a (a BIGINT);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE VIEW lock_view1 AS SELECT * FROM lock_tbl1;
+ERROR:  cannot execute CREATE VIEW in a read-only transaction
+CREATE VIEW lock_view2(a,b) AS SELECT * FROM lock_tbl1, lock_tbl1a;
+ERROR:  cannot execute CREATE VIEW in a read-only transaction
+CREATE VIEW lock_view3 AS SELECT * from lock_view2;
+ERROR:  cannot execute CREATE VIEW in a read-only transaction
+CREATE VIEW lock_view4 AS SELECT (select a from lock_tbl1a limit 1) from lock_tbl1;
+ERROR:  cannot execute CREATE VIEW in a read-only transaction
+CREATE VIEW lock_view5 AS SELECT * from lock_tbl1 where a in (select * from lock_tbl1a);
+ERROR:  cannot execute CREATE VIEW in a read-only transaction
+CREATE VIEW lock_view6 AS SELECT * from (select * from lock_tbl1) sub;
+ERROR:  cannot execute CREATE VIEW in a read-only transaction
+CREATE ROLE regress_rol_lock1;
+ERROR:  cannot execute CREATE ROLE in a read-only transaction
+ALTER ROLE regress_rol_lock1 SET search_path = lock_schema1;
+ERROR:  cannot execute ALTER ROLE in a read-only transaction
+GRANT USAGE ON SCHEMA lock_schema1 TO regress_rol_lock1;
+ERROR:  cannot execute GRANT in a read-only transaction
+-- Try all valid lock options; also try omitting the optional TABLE keyword.
+BEGIN TRANSACTION;
+LOCK TABLE lock_tbl1 IN ACCESS SHARE MODE;
+LOCK lock_tbl1 IN ROW SHARE MODE;
+LOCK TABLE lock_tbl1 IN ROW EXCLUSIVE MODE;
+LOCK TABLE lock_tbl1 IN SHARE UPDATE EXCLUSIVE MODE;
+ERROR:  cannot execute LOCK TABLE during recovery
+LOCK TABLE lock_tbl1 IN SHARE MODE;
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
+LOCK lock_tbl1 IN SHARE ROW EXCLUSIVE MODE;
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
+LOCK TABLE lock_tbl1 IN EXCLUSIVE MODE;
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
+LOCK TABLE lock_tbl1 IN ACCESS EXCLUSIVE MODE;
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ROLLBACK;
+-- Try using NOWAIT along with valid options.
+BEGIN TRANSACTION;
+LOCK TABLE lock_tbl1 IN ACCESS SHARE MODE NOWAIT;
+ERROR:  could not obtain lock on relation "lock_tbl1"
+LOCK TABLE lock_tbl1 IN ROW SHARE MODE NOWAIT;
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
+LOCK TABLE lock_tbl1 IN ROW EXCLUSIVE MODE NOWAIT;
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
+LOCK TABLE lock_tbl1 IN SHARE UPDATE EXCLUSIVE MODE NOWAIT;
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
+LOCK TABLE lock_tbl1 IN SHARE MODE NOWAIT;
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
+LOCK TABLE lock_tbl1 IN SHARE ROW EXCLUSIVE MODE NOWAIT;
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
+LOCK TABLE lock_tbl1 IN EXCLUSIVE MODE NOWAIT;
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
+LOCK TABLE lock_tbl1 IN ACCESS EXCLUSIVE MODE NOWAIT;
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ROLLBACK;
+-- Verify that we can lock views.
+BEGIN TRANSACTION;
+LOCK TABLE lock_view1 IN EXCLUSIVE MODE;
+ERROR:  cannot execute LOCK TABLE during recovery
+-- lock_view1 and lock_tbl1 are locked.
+select relname from pg_locks l, pg_class c
+ where l.relation = c.oid and relname like '%lock_%' and mode = 'ExclusiveLock'
+ order by relname;
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ROLLBACK;
+BEGIN TRANSACTION;
+LOCK TABLE lock_view2 IN EXCLUSIVE MODE;
+ERROR:  cannot execute LOCK TABLE during recovery
+-- lock_view1, lock_tbl1, and lock_tbl1a are locked.
+select relname from pg_locks l, pg_class c
+ where l.relation = c.oid and relname like '%lock_%' and mode = 'ExclusiveLock'
+ order by relname;
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ROLLBACK;
+BEGIN TRANSACTION;
+LOCK TABLE lock_view3 IN EXCLUSIVE MODE;
+ERROR:  cannot execute LOCK TABLE during recovery
+-- lock_view3, lock_view2, lock_tbl1, and lock_tbl1a are locked recursively.
+select relname from pg_locks l, pg_class c
+ where l.relation = c.oid and relname like '%lock_%' and mode = 'ExclusiveLock'
+ order by relname;
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ROLLBACK;
+BEGIN TRANSACTION;
+LOCK TABLE lock_view4 IN EXCLUSIVE MODE;
+ERROR:  cannot execute LOCK TABLE during recovery
+-- lock_view4, lock_tbl1, and lock_tbl1a are locked.
+select relname from pg_locks l, pg_class c
+ where l.relation = c.oid and relname like '%lock_%' and mode = 'ExclusiveLock'
+ order by relname;
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ROLLBACK;
+BEGIN TRANSACTION;
+LOCK TABLE lock_view5 IN EXCLUSIVE MODE;
+ERROR:  cannot execute LOCK TABLE during recovery
+-- lock_view5, lock_tbl1, and lock_tbl1a are locked.
+select relname from pg_locks l, pg_class c
+ where l.relation = c.oid and relname like '%lock_%' and mode = 'ExclusiveLock'
+ order by relname;
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ROLLBACK;
+BEGIN TRANSACTION;
+LOCK TABLE lock_view6 IN EXCLUSIVE MODE;
+ERROR:  cannot execute LOCK TABLE during recovery
+-- lock_view6 an lock_tbl1 are locked.
+select relname from pg_locks l, pg_class c
+ where l.relation = c.oid and relname like '%lock_%' and mode = 'ExclusiveLock'
+ order by relname;
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ROLLBACK;
+-- detecting infinite recursions in view definitions
+CREATE OR REPLACE VIEW lock_view2 AS SELECT * from lock_view3;
+ERROR:  cannot execute CREATE VIEW in a read-only transaction
+BEGIN TRANSACTION;
+LOCK TABLE lock_view2 IN EXCLUSIVE MODE;
+ERROR:  cannot execute LOCK TABLE during recovery
+ROLLBACK;
+CREATE VIEW lock_view7 AS SELECT * from lock_view2;
+ERROR:  cannot execute CREATE VIEW in a read-only transaction
+BEGIN TRANSACTION;
+LOCK TABLE lock_view7 IN EXCLUSIVE MODE;
+ERROR:  cannot execute LOCK TABLE during recovery
+ROLLBACK;
+-- Verify that we can lock a table with inheritance children.
+CREATE TABLE lock_tbl2 (b BIGINT) INHERITS (lock_tbl1);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE lock_tbl3 () INHERITS (lock_tbl2);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+BEGIN TRANSACTION;
+LOCK TABLE lock_tbl1 * IN ACCESS EXCLUSIVE MODE;
+ERROR:  cannot execute LOCK TABLE during recovery
+ROLLBACK;
+-- Verify that we can't lock a child table just because we have permission
+-- on the parent, but that we can lock the parent only.
+GRANT UPDATE ON TABLE lock_tbl1 TO regress_rol_lock1;
+ERROR:  cannot execute GRANT in a read-only transaction
+SET ROLE regress_rol_lock1;
+BEGIN;
+LOCK TABLE lock_tbl1 * IN ACCESS EXCLUSIVE MODE;
+ERROR:  cannot execute LOCK TABLE during recovery
+ROLLBACK;
+BEGIN;
+LOCK TABLE ONLY lock_tbl1;
+ERROR:  cannot execute LOCK TABLE during recovery
+ROLLBACK;
+RESET ROLE;
+--
+-- Clean up
+--
+DROP VIEW lock_view7;
+ERROR:  cannot execute DROP VIEW in a read-only transaction
+DROP VIEW lock_view6;
+ERROR:  cannot execute DROP VIEW in a read-only transaction
+DROP VIEW lock_view5;
+ERROR:  cannot execute DROP VIEW in a read-only transaction
+DROP VIEW lock_view4;
+ERROR:  cannot execute DROP VIEW in a read-only transaction
+DROP VIEW lock_view3 CASCADE;
+ERROR:  cannot execute DROP VIEW in a read-only transaction
+DROP VIEW lock_view1;
+ERROR:  cannot execute DROP VIEW in a read-only transaction
+DROP TABLE lock_tbl3;
+ERROR:  cannot execute DROP TABLE in a read-only transaction
+DROP TABLE lock_tbl2;
+ERROR:  cannot execute DROP TABLE in a read-only transaction
+DROP TABLE lock_tbl1;
+ERROR:  cannot execute DROP TABLE in a read-only transaction
+DROP TABLE lock_tbl1a;
+ERROR:  cannot execute DROP TABLE in a read-only transaction
+DROP SCHEMA lock_schema1 CASCADE;
+ERROR:  cannot execute DROP SCHEMA in a read-only transaction
+DROP ROLE regress_rol_lock1;
+ERROR:  cannot execute DROP ROLE in a read-only transaction
+-- atomic ops tests
+RESET search_path;
+SELECT test_atomic_ops();
+ test_atomic_ops 
+-----------------
+ t
+(1 row)
+

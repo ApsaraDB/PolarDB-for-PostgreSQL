@@ -1,9 +1,9 @@
 /*-------------------------------------------------------------------------
  *
  * polar_logindex.h
- *  Implementation of wal logindex snapshot.
  *
- * Copyright (c) 2020, Alibaba Group Holding Limited
+ *
+  * Copyright (c) 2020, Alibaba Group Holding Limited
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -17,7 +17,7 @@
  * limitations under the License.
  *
  * IDENTIFICATION
- *  src/include/access/polar_logindex.h
+ *    src/include/access/polar_logindex.h
  *
  *-------------------------------------------------------------------------
  */
@@ -34,84 +34,102 @@
 #include "storage/relfilenode.h"
 #include "utils/guc.h"
 
-typedef uint16 log_seg_id_t;
-typedef uint64 log_idx_table_id_t;
-typedef uint64 log_range_id_t;
-typedef uint32 polar_page_lock_t;
+typedef uint16  log_seg_id_t;
+typedef uint64  log_idx_table_id_t;
+typedef uint64  log_range_id_t;
 
 #define LOG_INDEX_SUPPORT_NO_PREVIOUS_LSN
-#define POLAR_INVALID_PAGE_LOCK 0
+#define POLAR_MAX_SHMEM_NAME (128)
+
+#define POLAR_DATA_DIR() (POLAR_FILE_IN_SHARED_STORAGE() ? polar_datadir : DataDir)
+
+#define POLAR_FILE_PATH(path, orign) \
+	snprintf((path), MAXPGPATH, "%s/%s", POLAR_DATA_DIR(), (orign));
 
 struct log_mem_table_t;
 struct log_index_iter_data_t;
-typedef struct log_index_snapshot_t *logindex_snapshot_t;
-typedef struct log_index_page_iter_data_t *log_index_page_iter_t;
-typedef struct log_index_lsn_iter_data_t *log_index_lsn_iter_t;
+typedef struct log_index_snapshot_t             *logindex_snapshot_t;
+typedef struct log_index_page_iter_data_t       *log_index_page_iter_t;
+typedef struct log_index_lsn_iter_data_t        *log_index_lsn_iter_t;
+
+typedef bool (*logindex_table_flushable)(struct log_mem_table_t *, void *data);
 
 typedef struct log_index_lsn_t
 {
-	BufferTag  *tag;
-	XLogRecPtr	lsn;
-	XLogRecPtr	prev_lsn;
+	BufferTag           *tag;
+	XLogRecPtr          lsn;
+	XLogRecPtr          prev_lsn;
 } log_index_lsn_t;
 
-
-typedef struct xlog_bg_redo_state_t
+typedef enum
 {
-	log_index_lsn_iter_t log_index_iter;	/* record iterator */
-	log_index_lsn_t *log_index_page;	/* current iterator page */
-	XLogReaderState *state;
-} xlog_bg_redo_state_t;
+	ITERATE_STATE_FORWARD,
+	ITERATE_STATE_BACKWARD,
+	ITERATE_STATE_FINISHED,
+	ITERATE_STATE_HOLLOW,
+	ITERATE_STATE_CORRUPTED
+} log_index_iter_state_t;
 
-/* User-settable parameters */
-extern int	polar_log_index_bloom_buffers;
+extern Size polar_logindex_shmem_size(uint64 logindex_mem_tbl_size, int bloom_blocks);
 
+extern logindex_snapshot_t polar_logindex_snapshot_shmem_init(const char *name, uint64 logindex_mem_tbl_size,
+															  int bloom_blocks, int tranche_id_begin, int tranche_id_end, logindex_table_flushable table_flushable, void *extra_data);
 
-extern Size polar_log_index_shmem_size(void);
+extern uint64 polar_logindex_convert_mem_tbl_size(uint64 mem_size);
+extern void polar_logindex_create_local_cache(logindex_snapshot_t logindex_snapshot, const char *cache_name, uint32 max_segments);
 
-extern void polar_log_index_shmem_init(void);
-extern XLogRecPtr polar_log_index_snapshot_init(XLogRecPtr checkpoint_lsn, bool replica_mode);
-extern void polar_log_index_add_lsn(logindex_snapshot_t logindex_snapshot, BufferTag *tag, XLogRecPtr prev, XLogRecPtr lsn);
-extern bool polar_log_index_write_table(logindex_snapshot_t logindex_snapshot, struct log_mem_table_t *table);
-extern void polar_log_index_bg_write(void);
-extern bool polar_log_index_truncate_mem_table(XLogRecPtr lsn);
-extern void polar_log_index_remove_all(void);
-extern XLogRecPtr polar_log_index_start_lsn(void);
+extern MemoryContext polar_logindex_memory_context(void);
+extern uint64 polar_logindex_mem_tbl_size(logindex_snapshot_t logindex_snapshot);
+extern uint64 polar_logindex_used_mem_tbl_size(logindex_snapshot_t logindex_snapshot);
+extern void polar_logindex_set_start_lsn(logindex_snapshot_t logindex_snapshot, XLogRecPtr start_lsn);
+extern XLogRecPtr polar_logindex_snapshot_init(logindex_snapshot_t logindex_snapshot, XLogRecPtr checkpoint_lsn, bool read_only);
+extern void polar_logindex_add_lsn(logindex_snapshot_t logindex_snapshot, BufferTag *tag, XLogRecPtr prev, XLogRecPtr lsn);
+extern bool polar_logindex_write_table(logindex_snapshot_t logindex_snapshot, struct log_mem_table_t *table);
+extern bool polar_logindex_bg_write(logindex_snapshot_t logindex_snapshot);
+extern XLogRecPtr polar_logindex_start_lsn(logindex_snapshot_t logindex_snapshot);
 
-extern log_index_page_iter_t polar_log_index_create_page_iterator(logindex_snapshot_t logindex_snapshot, BufferTag *tag, XLogRecPtr min_lsn, XLogRecPtr max_lsn);
-extern void polar_log_index_release_page_iterator(log_index_page_iter_t iter);
-extern void polar_log_index_abort_page_iterator(void);
-extern log_index_lsn_t *polar_log_index_page_iterator_next(log_index_page_iter_t iter);
-extern bool polar_log_index_page_iterator_end(log_index_page_iter_t iter);
+extern log_index_page_iter_t polar_logindex_create_page_iterator(logindex_snapshot_t logindex_snapshot, BufferTag *tag, XLogRecPtr min_lsn, XLogRecPtr max_lsn, bool before_promote);
+extern void polar_logindex_release_page_iterator(log_index_page_iter_t iter);
+extern log_index_lsn_t *polar_logindex_page_iterator_next(log_index_page_iter_t iter);
+extern bool polar_logindex_page_iterator_end(log_index_page_iter_t iter);
+extern log_index_iter_state_t polar_logindex_page_iterator_state(log_index_page_iter_t iter);
+extern XLogRecPtr polar_logindex_page_iterator_max_lsn(log_index_page_iter_t iter);
+extern XLogRecPtr polar_logindex_page_iterator_min_lsn(log_index_page_iter_t iter);
+extern BufferTag  *polar_logindex_page_iterator_buf_tag(log_index_page_iter_t iter);
 
-extern log_index_lsn_iter_t polar_log_index_create_lsn_iterator(logindex_snapshot_t logindex_snapshot, XLogRecPtr lsn);
-extern void polar_log_index_release_lsn_iterator(log_index_lsn_iter_t iter);
-extern log_index_lsn_t *polar_log_index_lsn_iterator_next(logindex_snapshot_t logindex_snapshot, log_index_lsn_iter_t iter);
+extern log_index_lsn_iter_t polar_logindex_create_lsn_iterator(logindex_snapshot_t logindex_snapshot, XLogRecPtr lsn);
+extern void polar_logindex_release_lsn_iterator(log_index_lsn_iter_t iter);
+extern log_index_lsn_t *polar_logindex_lsn_iterator_next(logindex_snapshot_t logindex_snapshot, log_index_lsn_iter_t iter);
 
-extern int	polar_log_index_mini_trans_start(XLogRecPtr lsn);
-extern int	polar_log_index_mini_trans_end(XLogRecPtr lsn);
-extern void polar_log_index_abort_mini_transaction(void);
+extern void polar_logindex_truncate(logindex_snapshot_t logindex_snapshot, XLogRecPtr lsn);
+extern bool polar_logindex_check_state(logindex_snapshot_t logindex_snapshot, uint32 state);
 
-extern void polar_log_index_abort_replaying_buffer(void);
+/*
+ * POLAR: Return the newest byte position which all logindex info could be flushed before it.
+ */
+#define POLAR_LOGINDEX_FLUSHABLE_LSN() \
+	(RecoveryInProgress() ? GetXLogReplayRecPtr(NULL) : GetFlushRecPtr())
 
-extern polar_page_lock_t polar_log_index_mini_trans_lock(BufferTag *tag, LWLockMode mode, XLogRecPtr *lsn);
-extern polar_page_lock_t polar_log_index_mini_trans_cond_lock(BufferTag *tag, LWLockMode mode, XLogRecPtr *lsn);
-extern void polar_log_index_mini_trans_unlock(polar_page_lock_t lock);
-extern XLogRecPtr polar_log_index_mini_trans_find(BufferTag *tag);
+#define POLAR_LOGINDEX_MASTER_WRITE_TEST (1 << 0)
+#define POLAR_LOGINDEX_REPLICA_WRITE_TEST (1 << 1)
+#define POLAR_LOGINDEX_WRITE_MASK (POLAR_LOGINDEX_MASTER_WRITE_TEST | POLAR_LOGINDEX_REPLICA_WRITE_TEST)
 
-extern void polar_log_index_truncate(logindex_snapshot_t logindex_snapshot, XLogRecPtr lsn);
-extern bool polar_log_index_check_state(logindex_snapshot_t logindex_snapshot, uint32 state);
+#define POLAR_UPDATE_BACKEND_LSN_INTERVAL (1 * 1000)
 
-#define POLAR_LOGINDEX_FULLPAGE_SNAPSHOT_WORKER() (!AmStartupProcess())
+/* define logindex_snapshot bit state */
+#define POLAR_LOGINDEX_STATE_INITIALIZED    (1U << 0)  /* The logindex snapshot is initialized */
+#define POLAR_LOGINDEX_STATE_ADDING         (1U << 1)  /* Finish checking saved lsn, and it's ready to add new lsn */
+#define POLAR_LOGINDEX_STATE_WRITABLE       (1U << 2)  /* It's enabled to write table to shared storage */
 
-#define POLAR_LOG_INDEX_ADD_LSN(state, tag) \
+#define LOOP_NEXT_VALUE(id, size) \
+	(((id) == ((size) - 1)) ? 0 : ((id) + 1))
+
+#define LOOP_PREV_VALUE(id, size) \
+	(((id) == 0) ? ((size) - 1) : ((id) -1))
+
+#define POLAR_LOG_INDEX_ADD_LSN(logindex_snapshot, state, tag) \
 	do { \
-		if (POLAR_LOGINDEX_FULLPAGE_SNAPSHOT_WORKER() && \
-			(XLogRecGetRmid(state) == RM_XLOG_ID && \
-			(XLogRecGetInfo(state) & ~XLR_INFO_MASK) == XLOG_FPSI)) \
-			polar_log_index_add_lsn(POLAR_LOGINDEX_FULLPAGE_SNAPSHOT, (tag), InvalidXLogRecPtr, (state)->ReadRecPtr); \
-		else \
-			polar_log_index_add_lsn(POLAR_LOGINDEX_WAL_SNAPSHOT, (tag), InvalidXLogRecPtr, (state)->ReadRecPtr); \
+		polar_logindex_add_lsn((logindex_snapshot), (tag), InvalidXLogRecPtr, (state)->ReadRecPtr); \
 	} while (0)
 
 #define POLAR_GET_LOG_TAG(state, tag, block_id) \
@@ -125,90 +143,28 @@ extern bool polar_log_index_check_state(logindex_snapshot_t logindex_snapshot, u
 		INIT_BUFFERTAG(tag, rnode, forknum, blkno); \
 	} while (0)
 
-#define POLAR_READ_MODE(buffer) (BufferIsValid(buffer) ? RBM_NORMAL_VALID : RBM_NORMAL)
-
-#define POLAR_READ_BUFFER_FOR_REDO(record, block_id, buffer) \
-	XLogReadBufferForRedoExtended((record), (block_id),\
-								  POLAR_READ_MODE(*(buffer)), false, (buffer))
-
-#define POLAR_INIT_BUFFER_FOR_REDO(record, block_id, buffer) \
+#define NOTIFY_LOGINDEX_BG_WORKER(latch) \
 	do { \
-		*(buffer) = (!BufferIsValid(*buffer)) ? XLogInitBufferForRedo(record, block_id) : *(buffer); \
+		if (latch) \
+			SetLatch(latch); \
 	} while (0)
 
-#define POLAR_LOGINDEX_MASTER_WRITE_TEST (1 << 0)
-#define POLAR_LOGINDEX_REPLICA_WRITE_TEST (1 << 1)
-#define POLAR_LOGINDEX_WRITE_MASK (POLAR_LOGINDEX_MASTER_WRITE_TEST | POLAR_LOGINDEX_REPLICA_WRITE_TEST)
+extern void polar_logindex_flush_table(logindex_snapshot_t logindex_snapshot, XLogRecPtr checkpoint_lsn);
+extern void polar_logindex_flush_active_table(logindex_snapshot_t logindex_snapshot);
+extern XLogRecPtr polar_logindex_mem_table_max_lsn(struct log_mem_table_t *table);
 
-#define POLAR_ENABLE_PAGE_OUTDATE() (polar_in_replica_mode() && polar_enable_redo_logindex && polar_enable_page_outdate)
-#define POLAR_UPDATE_BACKEND_LSN_INTERVAL (1 * 1000)
-
-/* define logindex_snapshot bit state */
-#define POLAR_LOGINDEX_STATE_INITIALIZED (1U << 0)	/* The logindex snapshot
-													 * is initialized */
-#define POLAR_LOGINDEX_STATE_ADDING      (1U << 1)	/* Finish checking saved
-													 * lsn, and it's ready to
-													 * add new lsn */
-#define POLAR_LOGINDEX_STATE_WAITING     (1U << 2)	/* Wait for new active
-													 * table */
-
-extern bool polar_log_index_parse_xlog(RmgrId rmid, XLogReaderState *state, XLogRecPtr redo_start_lsn, XLogRecPtr *mini_trans_lsn);
-
-extern void polar_log_index_apply_buffer(Buffer *buffer, XLogRecPtr start_lsn, polar_page_lock_t page_lock);
-extern void polar_log_index_lock_apply_buffer(Buffer *buffer);
-extern void polar_log_index_lock_apply_page_from(XLogRecPtr start_lsn, BufferTag *tag, Buffer *buffer);
-extern bool polar_log_index_restore_fullpage_snapshot_if_needed(BufferTag *tag, Buffer *buffer);
-
-extern void polar_log_index_apply_one_record(XLogReaderState *state, BufferTag *tag, Buffer *buffer);
-
-extern void polar_log_index_truncate_lsn(void);
-extern void polar_log_index_flush_table(logindex_snapshot_t logindex_snapshot, XLogRecPtr checkpoint_lsn);
-
-extern bool polar_enable_logindex_parse(void);
-extern void polar_log_index_trigger_bgwriter(XLogRecPtr lsn);
-extern void log_index_validate_dir(void);
-
-extern void polar_bg_redo_init_replayed_lsn(XLogRecPtr lsn);
-extern XLogRecPtr polar_bg_redo_get_replayed_lsn(void);
-extern void polar_bg_redo_mark_logindex_ready(void);
-extern bool polar_log_index_apply_xlog_background(void);
-extern XLogRecPtr polar_max_xlog_rec_ptr(XLogRecPtr a, XLogRecPtr b);
-extern XLogRecPtr polar_min_xlog_rec_ptr(XLogRecPtr a, XLogRecPtr b);
-extern void polar_log_page_iter_context(void);
 extern XLogRecPtr polar_get_logindex_snapshot_max_lsn(logindex_snapshot_t logindex_snapshot);
-extern void polar_load_logindex_snapshot_from_storage(logindex_snapshot_t logindex_snapshot, XLogRecPtr start_lsn, bool is_init);
-extern void polar_log_index_invalid_bloom_cache(logindex_snapshot_t logindex_snapshot, log_idx_table_id_t tid);
+/* Read logindex meta and get min lsn of logindex tables which are flushed to the storage */
+extern XLogRecPtr polar_get_logindex_snapshot_storage_min_lsn(logindex_snapshot_t logindex_snapshot);
 
-/*
- * POLAR: Flags for buffer redo state
- */
-#define POLAR_REDO_LOCKED               (1U << 1)	/* redo state is locked */
-#define POLAR_REDO_READ_IO_END          (1U << 2)	/* Finish to read buffer
-													 * content from storage */
-#define POLAR_REDO_REPLAYING            (1U << 3)	/* It's replaying buffer
-													 * content */
-#define POLAR_REDO_OUTDATE              (1U << 4)	/* The buffer content is
-													 * outdated */
+extern const char *polar_get_logindex_snapshot_dir(logindex_snapshot_t logindex_snapshot);
 
-/*
- * Functions for acquiring/releasing a shared buffer redo state's spinlock.
- */
-extern uint32 polar_lock_redo_state(BufferDesc *desc);
-inline static void
-polar_unlock_redo_state(BufferDesc *desc, uint32 state)
-{
-	do
-	{
-		pg_write_barrier();
-		pg_atomic_write_u32(&(desc->polar_redo_state), state & (~POLAR_REDO_LOCKED));
-	}
-	while (0);
-}
+extern void polar_load_logindex_snapshot_from_storage(logindex_snapshot_t logindex_snapshot, XLogRecPtr start_lsn);
+extern void polar_logindex_invalid_bloom_cache(logindex_snapshot_t logindex_snapshot, log_idx_table_id_t tid);
 
-inline static bool
-polar_redo_check_state(BufferDesc *desc, uint32 state)
-{
-	pg_read_barrier();
-	return pg_atomic_read_u32(&(desc->polar_redo_state)) & state;
-}
+extern void polar_logindex_set_writer_latch(logindex_snapshot_t logindex_snapshot, struct Latch *latch);
+extern void polar_logindex_online_promote(logindex_snapshot_t logindex_snapshot);
+extern XLogRecPtr polar_logindex_check_valid_start_lsn(logindex_snapshot_t logindex_snapshot);
+extern int polar_trace_logindex(int trace_level);
+extern void polar_logindex_update_promoted_info(logindex_snapshot_t logindex_snapshot, XLogRecPtr last_replayed_lsn);
 #endif

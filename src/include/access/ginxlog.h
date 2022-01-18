@@ -231,6 +231,7 @@ extern void gin_mask(char *pagedata, BlockNumber blkno);
 /* POLAR: change static to extern */
 extern void ginRedoInsertData(Buffer buffer, bool isLeaf, BlockNumber rightblkno, void *rdata);
 extern void ginRedoInsertEntry(Buffer buffer, bool isLeaf, BlockNumber rightblkno, void *rdata);
+extern void ginRedoClearIncompleteSplit(XLogReaderState *record, uint8 block_id);
 extern void ginRedoRecompress(Page page, ginxlogRecompressDataLeaf *data);
 
 #endif							/* GINXLOG_H */

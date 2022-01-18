@@ -16,6 +16,8 @@
 
 #include "parser/parse_node.h"
 
+/* POLAR */
+extern bool polar_creating_rule;
 
 extern List *transformCreateStmt(CreateStmt *stmt, const char *queryString);
 extern List *transformAlterTableStmt(Oid relid, AlterTableStmt *stmt,

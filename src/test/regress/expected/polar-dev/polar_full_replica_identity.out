@@ -1,0 +1,92 @@
+CREATE SCHEMA IF NOT EXISTS polar_replica;
+set search_path=polar_replica,sys;
+alter system set polar_create_table_with_full_replica_identity = off;
+select pg_reload_conf();
+ pg_reload_conf 
+----------------
+ t
+(1 row)
+
+select pg_sleep(2);
+ pg_sleep 
+----------
+ 
+(1 row)
+
+show polar_create_table_with_full_replica_identity;
+ polar_create_table_with_full_replica_identity 
+-----------------------------------------------
+ off
+(1 row)
+
+create table t_a(a int, b int);
+create table t_b(a int primary key, b int);
+\d+ t_a
+                                Table "polar_replica.t_a"
+ Column |  Type   | Collation | Nullable | Default | Storage | Stats target | Description 
+--------+---------+-----------+----------+---------+---------+--------------+-------------
+ a      | integer |           |          |         | plain   |              | 
+ b      | integer |           |          |         | plain   |              | 
+
+\d+ t_b
+                                Table "polar_replica.t_b"
+ Column |  Type   | Collation | Nullable | Default | Storage | Stats target | Description 
+--------+---------+-----------+----------+---------+---------+--------------+-------------
+ a      | integer |           | not null |         | plain   |              | 
+ b      | integer |           |          |         | plain   |              | 
+Indexes:
+    "t_b_pkey" PRIMARY KEY, btree (a)
+
+alter system set polar_create_table_with_full_replica_identity = on;
+select pg_reload_conf();
+ pg_reload_conf 
+----------------
+ t
+(1 row)
+
+select pg_sleep(2);
+ pg_sleep 
+----------
+ 
+(1 row)
+
+show polar_create_table_with_full_replica_identity;
+ polar_create_table_with_full_replica_identity 
+-----------------------------------------------
+ on
+(1 row)
+
+create table t_c(a int, b int);
+create table t_d(a int primary key, b int);
+\d+ t_c
+                                Table "polar_replica.t_c"
+ Column |  Type   | Collation | Nullable | Default | Storage | Stats target | Description 
+--------+---------+-----------+----------+---------+---------+--------------+-------------
+ a      | integer |           |          |         | plain   |              | 
+ b      | integer |           |          |         | plain   |              | 
+Replica Identity: FULL
+
+\d+ t_d
+                                Table "polar_replica.t_d"
+ Column |  Type   | Collation | Nullable | Default | Storage | Stats target | Description 
+--------+---------+-----------+----------+---------+---------+--------------+-------------
+ a      | integer |           | not null |         | plain   |              | 
+ b      | integer |           |          |         | plain   |              | 
+Indexes:
+    "t_d_pkey" PRIMARY KEY, btree (a)
+Replica Identity: FULL
+
+alter system reset polar_create_table_with_full_replica_identity;
+select pg_reload_conf();
+ pg_reload_conf 
+----------------
+ t
+(1 row)
+
+reset search_path;
+drop schema polar_replica cascade;
+NOTICE:  drop cascades to 4 other objects
+DETAIL:  drop cascades to table polar_replica.t_a
+drop cascades to table polar_replica.t_b
+drop cascades to table polar_replica.t_c
+drop cascades to table polar_replica.t_d

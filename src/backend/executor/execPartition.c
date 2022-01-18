@@ -630,11 +630,11 @@ ExecInitPartitionInfo(ModifyTableState *mtstate,
 				leaf_part_rri->ri_onConflict = resultRelInfo->ri_onConflict;
 			else
 			{
+				OnConflictSetState *onconfl = makeNode(OnConflictSetState);
 				List	   *onconflset;
-				TupleDesc	tupDesc;
 				bool		found_whole_row;
 
-				leaf_part_rri->ri_onConflict = makeNode(OnConflictSetState);
+				leaf_part_rri->ri_onConflict = onconfl;
 
 				/*
 				 * Translate expressions in onConflictSet to account for
@@ -643,7 +643,7 @@ ExecInitPartitionInfo(ModifyTableState *mtstate,
 				 * pseudo-relation (INNER_VAR), and second to handle the main
 				 * target relation (firstVarno).
 				 */
-				onconflset = (List *) copyObject((Node *) node->onConflictSet);
+				onconflset = copyObject(node->onConflictSet);
 				if (part_attnos == NULL)
 					part_attnos =
 						convert_tuples_by_name_map(RelationGetDescr(partrel),
@@ -666,7 +666,7 @@ ExecInitPartitionInfo(ModifyTableState *mtstate,
 										&found_whole_row);
 				/* We ignore the value of found_whole_row. */
 
-				/* Finally, adjust this tlist to match the partition. */
+				/* Finally, reorder the tlist to match the partition. */
 				onconflset = adjust_partition_tlist(onconflset, map);
 
 				/*
@@ -676,13 +676,12 @@ ExecInitPartitionInfo(ModifyTableState *mtstate,
 				 * partition that's tupdesc-equal to the partitioned table;
 				 * partitions of different tupdescs must generate their own.
 				 */
-				tupDesc = ExecTypeFromTL(onconflset, partrelDesc->tdhasoid);
-				ExecSetSlotDescriptor(mtstate->mt_conflproj, tupDesc);
-				leaf_part_rri->ri_onConflict->oc_ProjInfo =
-					ExecBuildProjectionInfo(onconflset, econtext,
-											mtstate->mt_conflproj,
-											&mtstate->ps, partrelDesc);
-				leaf_part_rri->ri_onConflict->oc_ProjTupdesc = tupDesc;
+				ExecSetSlotDescriptor(mtstate->mt_conflproj, partrelDesc);
+				onconfl->oc_ProjInfo =
+					ExecBuildProjectionInfoExt(onconflset, econtext,
+											   mtstate->mt_conflproj, false,
+											   &mtstate->ps, partrelDesc);
+				onconfl->oc_ProjTupdesc = partrelDesc;
 
 				/*
 				 * If there is a WHERE clause, initialize state where it will
@@ -711,7 +710,7 @@ ExecInitPartitionInfo(ModifyTableState *mtstate,
 											RelationGetForm(partrel)->reltype,
 											&found_whole_row);
 					/* We ignore the value of found_whole_row. */
-					leaf_part_rri->ri_onConflict->oc_WhereClause =
+					onconfl->oc_WhereClause =
 						ExecInitQual((List *) clause, &mtstate->ps);
 				}
 			}
@@ -1052,6 +1051,10 @@ get_partition_dispatch_recurse(Relation rel, Relation parent,
 	{
 		Oid			partrelid = partdesc->oids[i];
 
+		/* POLAR */
+		CHECK_FOR_INTERRUPTS();
+		/* POLAR end */
+
 		if (get_rel_relkind(partrelid) != RELKIND_PARTITIONED_TABLE)
 		{
 			*leaf_part_oids = lappend_oid(*leaf_part_oids, partrelid);
@@ -1334,18 +1337,15 @@ ExecBuildSlotPartitionKeyDescription(Relation rel,
 
 /*
  * adjust_partition_tlist
- *		Adjust the targetlist entries for a given partition to account for
- *		attribute differences between parent and the partition
+ *		Re-order the targetlist entries for a given partition to account for
+ *		column position differences between the parent and the partition.
  *
- * The expressions have already been fixed, but here we fix the list to make
- * target resnos match the partition's attribute numbers.  This results in a
- * copy of the original target list in which the entries appear in resno
- * order, including both the existing entries (that may have their resno
- * changed in-place) and the newly added entries for columns that don't exist
- * in the parent.
+ * The expressions have already been fixed, but we must now re-order the
+ * entries in case the partition has different column order, and possibly
+ * add or remove dummy entries for dropped columns.
  *
- * Scribbles on the input tlist, so callers must make sure to make a copy
- * before passing it to us.
+ * Although a new List is returned, this feels free to scribble on resno
+ * fields of the given tlist, so that should be a working copy.
  */
 static List *
 adjust_partition_tlist(List *tlist, TupleConversionMap *map)
@@ -1354,31 +1354,35 @@ adjust_partition_tlist(List *tlist, TupleConversionMap *map)
 	TupleDesc	tupdesc = map->outdesc;
 	AttrNumber *attrMap = map->attrMap;
 	AttrNumber	attrno;
+	ListCell   *lc;
 
 	for (attrno = 1; attrno <= tupdesc->natts; attrno++)
 	{
 		Form_pg_attribute att_tup = TupleDescAttr(tupdesc, attrno - 1);
+		AttrNumber	parentattrno = attrMap[attrno - 1];
 		TargetEntry *tle;
 
-		if (attrMap[attrno - 1] != InvalidAttrNumber)
+		if (parentattrno != InvalidAttrNumber)
 		{
-			Assert(!att_tup->attisdropped);
-
 			/*
 			 * Use the corresponding entry from the parent's tlist, adjusting
-			 * the resno the match the partition's attno.
+			 * the resno to match the partition's attno.
 			 */
-			tle = (TargetEntry *) list_nth(tlist, attrMap[attrno - 1] - 1);
+			Assert(!att_tup->attisdropped);
+			tle = (TargetEntry *) list_nth(tlist, parentattrno - 1);
+			Assert(!tle->resjunk);
+			Assert(tle->resno == parentattrno);
 			tle->resno = attrno;
 		}
 		else
 		{
-			Const	   *expr;
-
 			/*
 			 * For a dropped attribute in the partition, generate a dummy
-			 * entry with resno matching the partition's attno.
+			 * entry with resno matching the partition's attno.  This should
+			 * match what expand_targetlist() does.
 			 */
+			Const	   *expr;
+
 			Assert(att_tup->attisdropped);
 			expr = makeConst(INT4OID,
 							 -1,
@@ -1394,6 +1398,18 @@ adjust_partition_tlist(List *tlist, TupleConversionMap *map)
 		}
 
 		new_tlist = lappend(new_tlist, tle);
+	}
+
+	/* Finally, attach any resjunk entries to the end of the new tlist */
+	foreach(lc, tlist)
+	{
+		TargetEntry *tle = (TargetEntry *) lfirst(lc);
+
+		if (tle->resjunk)
+		{
+			tle->resno = list_length(new_tlist) + 1;
+			new_tlist = lappend(new_tlist, tle);
+		}
 	}
 
 	return new_tlist;
@@ -1529,19 +1545,90 @@ ExecCreatePartitionPruneState(PlanState *planstate,
 		{
 			PartitionedRelPruneInfo *pinfo = lfirst_node(PartitionedRelPruneInfo, lc2);
 			PartitionedRelPruningData *pprune = &prunedata->partrelprunedata[j];
+			Relation	partrel;
+			PartitionDesc partdesc;
+
+			/* POLAR px */
+			/*
+			 * We can rely on the copies of the partitioned table's partition
+			 * key and partition descriptor appearing in its relcache entry,
+			 * because that entry will be held open and locked for the
+			 * duration of this executor run.
+			 */
+			partrel = relation_open(pinfo->reloid, NoLock);
+			partdesc = RelationGetPartitionDesc(partrel);
 
 			/*
-			 * We must copy the subplan_map rather than pointing directly to
-			 * the plan's version, as we may end up making modifications to it
-			 * later.
+			 * Initialize the subplan_map and subpart_map.  Since detaching a
+			 * partition requires AccessExclusiveLock, no partitions can have
+			 * disappeared, nor can the bounds for any partition have changed.
+			 * However, new partitions may have been added.
 			 */
-			pprune->nparts = pinfo->nparts;
-			pprune->subplan_map = palloc(sizeof(int) * pinfo->nparts);
-			memcpy(pprune->subplan_map, pinfo->subplan_map,
-				   sizeof(int) * pinfo->nparts);
+			Assert(partdesc->nparts >= pinfo->nparts);
+			pprune->nparts = partdesc->nparts;
+			pprune->subplan_map = palloc0(sizeof(int) * partdesc->nparts);
+			if (partdesc->nparts == pinfo->nparts)
+			{
+				/*
+				 * There are no new partitions, so this is simple.	We can
+				 * simply point to the subpart_map from the plan, but we must
+				 * copy the subplan_map since we may change it later.
+				 */
+				pprune->subpart_map = pinfo->subpart_map;
+				memcpy(pprune->subplan_map, pinfo->subplan_map,
+					   sizeof(int) * pinfo->nparts);
 
-			/* We can use the subpart_map verbatim, since we never modify it */
-			pprune->subpart_map = pinfo->subpart_map;
+				/*
+				 * Double-check that the list of unpruned relations has not
+				 * changed.  (Pruned partitions are not in relid_map[].)
+				 */
+#ifdef USE_ASSERT_CHECKING
+				{
+					int k;
+					for (k = 0; k < pinfo->nparts; k++)
+					{
+						Assert(partdesc->oids[k] == pinfo->relid_map[k] ||
+							   pinfo->subplan_map[k] == -1);
+					}
+				}
+#endif
+			}
+			else
+			{
+/*no cover begin*/
+				int 	pd_idx = 0;
+				int 	pp_idx;
+
+				/*
+				 * Some new partitions have appeared since plan time, and
+				 * those are reflected in our PartitionDesc but were not
+				 * present in the one used to construct subplan_map and
+				 * subpart_map.  So we must construct new and longer arrays
+				 * where the partitions that were originally present map to the
+				 * same place, and any added indexes map to -1, as if the
+				 * new partitions had been pruned.
+				 */
+				pprune->subpart_map = palloc(sizeof(int) * partdesc->nparts);
+				for (pp_idx = 0; pp_idx < partdesc->nparts; ++pp_idx)
+				{
+					if (pinfo->relid_map[pd_idx] != partdesc->oids[pp_idx])
+					{
+						pprune->subplan_map[pp_idx] = -1;
+						pprune->subpart_map[pp_idx] = -1;
+					}
+					else
+					{
+						pprune->subplan_map[pp_idx] =
+							pinfo->subplan_map[pd_idx];
+						pprune->subpart_map[pp_idx] =
+							pinfo->subpart_map[pd_idx++];
+					}
+				}
+				Assert(pd_idx == pinfo->nparts);
+/*no cover end*/
+			}
+			relation_close(partrel, NoLock);
+			/* POLAR end */
 
 			/* present_parts is also subject to later modification */
 			pprune->present_parts = bms_copy(pinfo->present_parts);
@@ -1855,18 +1942,98 @@ ExecFindInitialMatchingSubPlans(PartitionPruneState *prunestate, int nsubplans)
 }
 
 /*
+ * Like ExecFindMatchingSubPlans, but adds the matching partitions
+ * to an existing Bitmapset.
+ */
+Bitmapset *
+ExecAddMatchingSubPlans(PartitionPruneState *prunestate, Bitmapset *result)
+{
+	Bitmapset *thisresult;
+
+	/* GPDB_12_MERGE_FIXME: Currently, this just calls
+	 * ExecFindMatchingSubPlans() and adds the new result to
+	 * the passed-in Bitmapset. That's a bit inefficient.
+	 */
+	thisresult = ExecFindMatchingSubPlans(prunestate, NULL, -1, NIL);
+
+	result = bms_add_members(result, thisresult);
+
+	bms_free(thisresult);
+
+	return result;
+}
+
+/*
  * ExecFindMatchingSubPlans
  *		Determine which subplans match the pruning steps detailed in
  *		'prunestate' for the current comparison expression values.
  *
  * Here we assume we may evaluate PARAM_EXEC Params.
- */
+  * GPDB: 'join_prune_paramids' can contain a list of PARAM_EXEC Param IDs
+ * containing results that were computed earlier by PartitionSelector
+ * nodes.
+*/
 Bitmapset *
-ExecFindMatchingSubPlans(PartitionPruneState *prunestate)
+ExecFindMatchingSubPlans(PartitionPruneState *prunestate,
+						 EState *estate,
+						 int nplans, List *join_prune_paramids)
 {
 	Bitmapset  *result = NULL;
 	MemoryContext oldcontext;
 	int			i;
+
+	/* POLAR px */
+	Bitmapset  *join_selected = NULL;
+
+	if (join_prune_paramids)
+	{
+		ListCell   *lc;
+
+		join_selected = bms_add_range(join_selected, 0, nplans - 1);
+
+		foreach (lc, join_prune_paramids)
+		{
+			int			paramid = lfirst_int(lc);
+			ParamExecData *param;
+			PartitionSelectorState *psstate;
+
+			param = &(estate->es_param_exec_vals[paramid]);
+			Assert(param->execPlan == NULL);
+			Assert(!param->isnull);
+			psstate = (PartitionSelectorState *) DatumGetPointer(param->value);
+
+			if (psstate == NULL)
+			{
+				/*
+				 * The planner should have ensured that the Partition Selector
+				 * is fully executed before the Append.
+				 */
+				elog(WARNING, "partition selector was not fully executed");
+			}
+			else
+			{
+				Assert(IsA(psstate, PartitionSelectorState));
+
+				join_selected = bms_intersect(join_selected,
+											  psstate->part_prune_result);
+			}
+		}
+
+
+		if (!prunestate)
+		{
+			/* rely entirely on partition selectors */
+			return join_selected;
+		}
+	}
+
+	/*
+	 * If !do_exec_prune, we've got problems because
+	 * ExecFindInitialMatchingSubPlans will not have bothered to update
+	 * prunestate for whatever pruning it did.
+	 */
+	Assert(prunestate->do_exec_prune);
+	/* POLAR end */
 
 	/*
 	 * Switch to a temp context to avoid leaking memory in the executor's
@@ -1900,6 +2067,12 @@ ExecFindMatchingSubPlans(PartitionPruneState *prunestate)
 
 	/* Add in any subplans that partition pruning didn't account for */
 	result = bms_add_members(result, prunestate->other_subplans);
+
+	/* POLAR px */
+	if (join_prune_paramids)
+	{
+		result = bms_intersect(result, join_selected);
+	}
 
 	MemoryContextReset(prunestate->prune_context);
 

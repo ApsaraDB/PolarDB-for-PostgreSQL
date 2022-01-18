@@ -170,6 +170,12 @@ dsm_impl_op(dsm_op op, dsm_handle handle, Size request_size,
 	Assert((op != DSM_OP_CREATE && op != DSM_OP_ATTACH) ||
 		   (*mapped_address == NULL && *mapped_size == 0));
 
+	if (polar_enable_operator_mem_limit && (op == DSM_OP_CREATE || op == DSM_OP_RESIZE) &&
+		request_size != 0 && polar_max_dsm_request_size != 0 &&
+		request_size > polar_max_dsm_request_size)
+		elog(ERROR, "Requesting too much memory in DSM, max: %d kB, consider adjust %s to enlarge memory limit", 
+					 polar_max_dsm_request_size, "polar_max_dsm_request_size");
+
 	switch (dynamic_shared_memory_type)
 	{
 #ifdef USE_DSM_POSIX

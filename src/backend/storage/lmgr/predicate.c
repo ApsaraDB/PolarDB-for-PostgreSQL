@@ -204,6 +204,12 @@
 #include "utils/snapmgr.h"
 #include "utils/tqual.h"
 
+/* POLAR */
+#include "utils/guc.h"
+#include "access/polar_csnlog.h"
+#include "utils/guc.h"
+/* POLAR end */
+
 /* Uncomment the next line to test the graceful degradation code. */
 /* #define TEST_OLDSERXID */
 
@@ -803,7 +809,7 @@ OldSerXidInit(void)
 	OldSerXidSlruCtl->PagePrecedes = OldSerXidPagePrecedesLogically;
 	/* POLAR: pg_serial file not in shared storage */
 	SimpleLruInit(OldSerXidSlruCtl, "oldserxid",
-				  NUM_OLDSERXID_BUFFERS, 0, OldSerXidLock, "pg_serial",
+				  polar_oldserxid_buffer_slot_size, 0, OldSerXidLock, "pg_serial",
 				  LWTRANCHE_OLDSERXID_BUFFERS, false);
 	/* Override default assumption that writes should be fsync'd */
 	OldSerXidSlruCtl->do_fsync = false;
@@ -1306,7 +1312,9 @@ PredicateLockShmemSize(void)
 
 	/* Shared memory structures for SLRU tracking of old committed xids. */
 	size = add_size(size, sizeof(OldSerXidControlData));
-	size = add_size(size, SimpleLruShmemSize(NUM_OLDSERXID_BUFFERS, 0));
+
+	/* POLAR: change size variable to guc */
+	size = add_size(size, SimpleLruShmemSize(polar_oldserxid_buffer_slot_size, 0));
 
 	return size;
 }
@@ -2518,7 +2526,12 @@ PredicateLockTuple(Relation relation, HeapTuple tuple, Snapshot snapshot)
 		{
 			if (TransactionIdFollowsOrEquals(targetxmin, TransactionXmin))
 			{
-				TransactionId xid = SubTransGetTopmostTransaction(targetxmin);
+				TransactionId xid; 
+				
+				if (polar_csn_enable)
+					xid = polar_csnlog_get_top(targetxmin);
+				else
+					xid = SubTransGetTopmostTransaction(targetxmin);
 
 				if (TransactionIdEquals(xid, myxid))
 				{
@@ -3870,10 +3883,23 @@ XidIsConcurrent(TransactionId xid)
 	if (TransactionIdFollowsOrEquals(xid, snap->xmax))
 		return true;
 
-	for (i = 0; i < snap->xcnt; i++)
+	if (polar_csn_enable)
 	{
-		if (xid == snap->xip[i])
+		XLogRecPtr csn = polar_xact_get_csn(xid, snap->polar_snapshot_csn, false);
+
+		if (POLAR_CSN_IS_INPROGRESS(csn))
 			return true;
+
+		if (POLAR_CSN_IS_COMMITTED(csn))
+			return csn >= snap->polar_snapshot_csn;
+	}
+	else
+	{
+		for (i = 0; i < snap->xcnt; i++)
+		{
+			if (xid == snap->xip[i])
+				return true;
+		}
 	}
 
 	return false;
@@ -3985,7 +4011,8 @@ CheckForSerializableConflictOut(bool visible, Relation relation,
 	 */
 	if (TransactionIdEquals(xid, GetTopTransactionIdIfAny()))
 		return;
-	xid = SubTransGetTopmostTransaction(xid);
+
+	xid = polar_csn_enable ? polar_csnlog_get_top(xid) : SubTransGetTopmostTransaction(xid);
 	if (TransactionIdPrecedes(xid, TransactionXmin))
 		return;
 	if (TransactionIdEquals(xid, GetTopTransactionIdIfAny()))

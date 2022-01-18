@@ -20,6 +20,9 @@
 #include "access/transam.h"
 #include "storage/bufpage.h"
 
+/* POLAR px */
+#include "executor/tuptable.h"
+
 /*
  * MaxTupleAttributeNumber limits the number of (user) columns in a tuple.
  * The key limit on this value is that the size of the fixed overhead for
@@ -804,6 +807,15 @@ extern Datum nocachegetattr(HeapTuple tup, int attnum,
 			   TupleDesc att);
 extern Datum heap_getsysattr(HeapTuple tup, int attnum, TupleDesc tupleDesc,
 				bool *isnull);
+
+/* POLAR px: used in slot_getattr()*/
+extern Datum mem_getsysattr(TupleTableSlot *slot, int attnum, TupleDesc tupleDesc,
+				bool *isnull);
+/* POLAR end*/
+
+/* POLAR */
+extern Datum polar_get_root_ctid(HeapTuple tuple, Buffer buffer, struct ExprContext *econtext);
+
 extern Datum getmissingattr(TupleDesc tupleDesc,
 			   int attnum, bool *isnull);
 extern HeapTuple heap_copytuple(HeapTuple tuple);

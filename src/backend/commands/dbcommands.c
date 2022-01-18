@@ -64,7 +64,7 @@
 #include "utils/tqual.h"
 
 /* POLAR */
-#include "common/file_perm.h"
+#include "access/polar_logindex_redo.h"
 #include "replication/syncrep.h"
 #include "storage/polar_fd.h"
 #include "utils/guc.h"
@@ -350,7 +350,7 @@ createdb(ParseState *pstate, const CreatedbStmt *stmt)
 	 */
 	if (!src_istemplate)
 	{
-		if (!pg_database_ownercheck(src_dboid, GetUserId()))
+		if (!polar_pg_database_ownercheck(src_dboid, GetUserId()))
 			ereport(ERROR,
 					(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 					 errmsg("permission denied to copy database \"%s\"",
@@ -428,12 +428,30 @@ createdb(ParseState *pstate, const CreatedbStmt *stmt)
 
 		tablespacename = defGetString(dtablespacename);
 		dst_deftablespace = get_tablespace_oid(tablespacename, false);
-		/* check permissions */
-		aclresult = pg_tablespace_aclcheck(dst_deftablespace, GetUserId(),
-										   ACL_CREATE);
-		if (aclresult != ACLCHECK_OK)
-			aclcheck_error(aclresult, OBJECT_TABLESPACE,
-						   tablespacename);
+
+		/*
+		 * POLAR: previously,a create database statement with any tablespace clause is
+		 * not allowed for non-superuser, even when the specified tablespace is
+		 * pg_default. For compatibility with some software, we need loose that
+		 * restriction and allow creating database with pg_default specified.
+		 * We do this by checking if the specified tablespace is the same as
+		 * the template database's tablespace (which should be pg_default).
+		 * Note: In case when the template database is NOT pg_default, following
+		 * statement is allowed (assume templatexxx tablespace is AA and not
+		 * pg_default): create database xxx tablespace AA template templatexxx;
+		 * But following statement is not allowed: create database xxx
+		 * tablespace pg_default template templatexxx;
+		 */
+		if (dst_deftablespace != src_deftablespace)
+		{
+			/* check permissions */
+			aclresult = pg_tablespace_aclcheck(dst_deftablespace, GetUserId(),
+											   ACL_CREATE);
+			if (aclresult != ACLCHECK_OK)
+				aclcheck_error(aclresult, OBJECT_TABLESPACE,
+							   tablespacename);
+		}
+		/* POLAR end */
 
 		/* pg_global must never be the default tablespace */
 		if (dst_deftablespace == GLOBALTABLESPACE_OID)
@@ -614,6 +632,7 @@ createdb(ParseState *pstate, const CreatedbStmt *stmt)
 				continue;
 
 			srcpath = polar_get_database_path(src_dboid, srctablespace);
+	
 			if (polar_stat(srcpath, &st) < 0 || !S_ISDIR(st.st_mode) ||
 				directory_is_empty(srcpath))
 			{
@@ -640,7 +659,7 @@ createdb(ParseState *pstate, const CreatedbStmt *stmt)
 				char	   *polar_dstpath = NULL;
 
 				polar_dstpath = polar_get_database_path(dboid, dsttablespace);
-				polar_copydir(srcpath, polar_dstpath, false, false, false);
+				polar_copydir(srcpath, polar_dstpath, false, false, false, false);
 
 				/* POLAR: Also need create local dir for cache file */ 
 				if (mkdir(dstpath, S_IRWXU) != 0)
@@ -665,6 +684,7 @@ createdb(ParseState *pstate, const CreatedbStmt *stmt)
 
 				(void) XLogInsert(RM_DBASE_ID,
 								  XLOG_DBASE_CREATE | XLR_SPECIAL_REL_UPDATE);
+				POLAR_RECORD_DB_STATE(xlrec.tablespace_id, xlrec.db_id, POLAR_DB_NEW);
 			}
 		}
 		heap_endscan(scan);
@@ -960,6 +980,10 @@ dropdb(const char *dbname, bool missing_ok)
 	 */
 	DropDatabaseBuffers(db_id);
 
+	/* POLAR: Drop smgr shared relation pool */
+	if (polar_enabled_nblock_cache())
+		polar_dropdb_smgr_shared_relation_pool(db_id);
+
 	/*
 	 * Tell the stats collector to forget it immediately, too.
 	 */
@@ -1161,6 +1185,20 @@ movedb(const char *dbname, const char *tblspcname)
 	dst_tblspcoid = get_tablespace_oid(tblspcname, false);
 
 	/*
+	 * POLAR: no-op if same tablespace, we do not check permission if
+	 * same tablespace, so alter database xxx set tablespace
+	 * to pg_default can succeed
+	 */
+	if (src_tblspcoid == dst_tblspcoid)
+	{
+		heap_close(pgdbrel, NoLock);
+		UnlockSharedObjectForSession(DatabaseRelationId, db_id, 0,
+									 AccessExclusiveLock);
+		return;
+	}
+	/* POLAR end */
+
+	/*
 	 * Permission checks
 	 */
 	aclresult = pg_tablespace_aclcheck(dst_tblspcoid, GetUserId(),
@@ -1176,17 +1214,6 @@ movedb(const char *dbname, const char *tblspcname)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 				 errmsg("pg_global cannot be used as default tablespace")));
-
-	/*
-	 * No-op if same tablespace
-	 */
-	if (src_tblspcoid == dst_tblspcoid)
-	{
-		heap_close(pgdbrel, NoLock);
-		UnlockSharedObjectForSession(DatabaseRelationId, db_id, 0,
-									 AccessExclusiveLock);
-		return;
-	}
 
 	/*
 	 * Check for other backends in the target database.  (Because we hold the
@@ -1292,7 +1319,7 @@ movedb(const char *dbname, const char *tblspcname)
 		 */
 		if (POLAR_FILE_IN_SHARED_STORAGE())
 		{
-			polar_copydir(src_dbpath, polar_dst_dbpath, false, false, false);
+			polar_copydir(src_dbpath, polar_dst_dbpath, false, false, false, false);
 
 			/* POLAR: create local dir for cache file */
 			if (mkdir(dst_dbpath, S_IRWXU) != 0)
@@ -1319,6 +1346,8 @@ movedb(const char *dbname, const char *tblspcname)
 
 			(void) XLogInsert(RM_DBASE_ID,
 							  XLOG_DBASE_CREATE | XLR_SPECIAL_REL_UPDATE);
+
+			POLAR_RECORD_DB_STATE(xlrec.tablespace_id, xlrec.db_id, POLAR_DB_NEW);
 		}
 
 		/*
@@ -1416,6 +1445,8 @@ movedb(const char *dbname, const char *tblspcname)
 
 		(void) XLogInsert(RM_DBASE_ID,
 						  XLOG_DBASE_DROP | XLR_SPECIAL_REL_UPDATE);
+
+		POLAR_RECORD_DB_STATE(xlrec.tablespace_id, xlrec.db_id, POLAR_DB_DROPED);
 	}
 
 	/* Now it's safe to release the database lock */
@@ -1699,7 +1730,7 @@ AlterDatabaseOwner(const char *dbname, Oid newOwnerId)
 		HeapTuple	newtuple;
 
 		/* Otherwise, must be owner of the existing object */
-		if (!pg_database_ownercheck(HeapTupleGetOid(tuple), GetUserId()))
+		if (!polar_pg_database_ownercheck(HeapTupleGetOid(tuple), GetUserId()))
 			aclcheck_error(ACLCHECK_NOT_OWNER, OBJECT_DATABASE,
 						   dbname);
 
@@ -1906,6 +1937,11 @@ have_createdb_privilege(void)
 	if (superuser())
 		return true;
 
+	/* POLAR: polar_superusers have create database permission. */
+	if (polar_superuser())
+		return true;
+	/* POLAR end */
+
 	utup = SearchSysCache1(AUTHOID, ObjectIdGetDatum(GetUserId()));
 	if (HeapTupleIsValid(utup))
 	{
@@ -1994,6 +2030,7 @@ remove_dbtablespaces(Oid db_id)
 
 			(void) XLogInsert(RM_DBASE_ID,
 							  XLOG_DBASE_DROP | XLR_SPECIAL_REL_UPDATE);
+			POLAR_RECORD_DB_STATE(xlrec.tablespace_id, xlrec.db_id, POLAR_DB_DROPED);
 		}
 
 		if (dstpath)
@@ -2210,20 +2247,23 @@ dbase_redo(XLogReaderState *record)
 		 *
 		 * We don't need to copy subdirectories
 		 */
-		polar_copydir(src_path, dst_path, false, false, false);
-
+		polar_copydir(src_path, dst_path, false, false, false, false);
+		
 		if (!polar_in_replica_mode())
 		{
 			dst_path = GetDatabasePath(xlrec->db_id, xlrec->tablespace_id, false);
 			if (lstat(dst_path, &st) < 0)
 			{
-				/* POLAR: Also need create local dir for cache file */
-				if (mkdir(dst_path, pg_dir_create_mode) != 0)
+				/* POLAR: Also need create local dir for cache file */ 
+				if (mkdir(dst_path, S_IRWXU) != 0)
 					ereport(ERROR,
-							(errcode_for_file_access(),
-							errmsg("could not create directory \"%s\": %m", dst_path)));
+					(errcode_for_file_access(),
+					errmsg("could not create directory \"%s\": %m", dst_path)));
 			}
 		}
+
+		/* POLAR: record db state to relation size cache */
+		POLAR_RECORD_DB_STATE(xlrec->tablespace_id, xlrec->db_id, POLAR_DB_NEW);
 	}
 	else if (info == XLOG_DBASE_DROP)
 	{
@@ -2254,8 +2294,15 @@ dbase_redo(XLogReaderState *record)
 		/* Drop any database-specific replication slots */
 		ReplicationSlotsDropDBSlots(xlrec->db_id);
 
+		/* POLAR: record db state to relation size cache before dropping buffers */
+		POLAR_RECORD_DB_STATE(xlrec->tablespace_id, xlrec->db_id, POLAR_DB_DROPED);
+
 		/* Drop pages for this database that are in the shared buffer cache */
 		DropDatabaseBuffers(xlrec->db_id);
+
+		/* POLAR: Drop smgr shared relation pool for standby */
+		if (polar_enabled_nblock_cache())
+			polar_dropdb_smgr_shared_relation_pool(xlrec->db_id);
 
 		/* Also, clean out any fsync requests that might be pending in md.c */
 		ForgetDatabaseFsyncRequests(xlrec->db_id);
@@ -2272,7 +2319,7 @@ dbase_redo(XLogReaderState *record)
 		if (!polar_in_replica_mode())
 		{
 			dst_path = GetDatabasePath(xlrec->db_id, xlrec->tablespace_id, false);
-			/* POLAR: Also need remove local dir */
+			/* POLAR: Also need remove local dir */ 
 			if (!rmtree(dst_path, true))
 				ereport(WARNING,
 						(errmsg("some useless files may be left behind in old database directory \"%s\"",
@@ -2298,8 +2345,8 @@ dbase_redo(XLogReaderState *record)
 static void
 polar_sync_dropdb_wal(Oid db_id)
 {
-	xl_dbase_drop_rec	xlrec;
-	XLogRecPtr			polar_recptr;
+	xl_dbase_drop_rec xlrec;
+	XLogRecPtr        polar_recptr;
 
 	/* Read the guc to a local copy, in case it gets changed by conf reload */
 	local_dropdb_write_wal_beforehand = polar_dropdb_write_wal_beforehand;
@@ -2315,6 +2362,8 @@ polar_sync_dropdb_wal(Oid db_id)
 
 	polar_recptr = XLogInsert(RM_DBASE_ID,
 							  XLOG_DBASE_DROP | XLR_SPECIAL_REL_UPDATE);
+
+	POLAR_RECORD_DB_STATE(xlrec.tablespace_id, xlrec.db_id, POLAR_DB_DROPED);
 
 	/* POLAR: sync ddl, enable standby lock, wait all ro node reply this log */
 	if (polar_enable_ddl_sync_mode)

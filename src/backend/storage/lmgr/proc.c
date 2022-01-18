@@ -54,7 +54,15 @@
 #include "storage/spin.h"
 #include "utils/timeout.h"
 #include "utils/timestamp.h"
+/* POLAR */
+#include "replication/walsender.h"
+#include "polar_dma/polar_dma.h"
 
+/* POLAR px */
+#include "px/px_timeout.h"
+#include "px/px_vars.h"
+#include "access/hash.h"
+#include "postmaster/postmaster.h"
 
 /* GUC variables */
 int			DeadlockTimeout = 1000;
@@ -93,6 +101,9 @@ static void RemoveProcFromArray(int code, Datum arg);
 static void ProcKill(int code, Datum arg);
 static void AuxiliaryProcKill(int code, Datum arg);
 static void CheckDeadLock(void);
+
+/* POLAR px */
+static void	InitTraceId(const uint32 ip_hash, const uint16 port);
 
 
 /*
@@ -187,6 +198,14 @@ InitProcGlobal(void)
 	ProcGlobal->checkpointerLatch = NULL;
 	pg_atomic_init_u32(&ProcGlobal->procArrayGroupFirst, INVALID_PGPROCNO);
 	pg_atomic_init_u32(&ProcGlobal->clogGroupFirst, INVALID_PGPROCNO);
+
+	/* POLAR px */
+	pg_atomic_init_u32(&ProcGlobal->pxSessionCounter, 0);
+	pg_atomic_init_u32(&ProcGlobal->pxWorkerCounter, 0);
+	pg_atomic_init_u32(&ProcGlobal->sqlRequestCounter, 0);
+
+	/* POLAR wal pipeline */
+	ProcGlobal->polar_wal_pipeliner_latch = NULL;
 
 	/*
 	 * Create and initialize all the PGPROC structures we'll need.  There are
@@ -288,6 +307,15 @@ InitProcGlobal(void)
 	SpinLockInit(ProcStructLock);
 }
 
+/* POLAR px */
+static
+void InitTraceId(const uint32 ip_hash, const uint16 port)
+{
+	sql_trace_id.ip_hash = ip_hash;
+	sql_trace_id.port = port;
+	sql_trace_id.seq = 0;
+}
+
 /*
  * InitProcess -- initialize a per-process data structure for this backend
  */
@@ -295,6 +323,8 @@ void
 InitProcess(void)
 {
 	PGPROC	   *volatile *procgloballist;
+	int 		pxLocalSessionId;  	/* this backend's PGPROC serial num */
+	uint32 		ip_hash = 0;
 
 	/*
 	 * ProcGlobal should be set up already (if we are a backend, we inherit
@@ -345,6 +375,12 @@ InitProcess(void)
 				(errcode(ERRCODE_TOO_MANY_CONNECTIONS),
 				 errmsg("sorry, too many clients already")));
 	}
+
+#ifdef LOCK_DEBUG
+	/* POLAR: PGPROC is part of PROCLOCK, we print MyProc previous pid to validate it's cleared */
+	elog(LOG, "Alloc PRPROC %p for pid %d, and it's used by previous pid %d", MyProc, MyProcPid, MyProc->pid);
+#endif
+
 	MyPgXact = &ProcGlobal->allPgXact[MyProc->pgprocno];
 
 	/*
@@ -373,6 +409,7 @@ InitProcess(void)
 	MyProc->fpLocalTransactionId = InvalidLocalTransactionId;
 	MyPgXact->xid = InvalidTransactionId;
 	MyPgXact->xmin = InvalidTransactionId;
+	MyPgXact->polar_csn = InvalidCommitSeqNo;
 	MyProc->pid = MyProcPid;
 	/* backendId, databaseId and roleId will be filled in later */
 	MyProc->backendId = InvalidBackendId;
@@ -389,6 +426,36 @@ InitProcess(void)
 	MyProc->lwWaitMode = 0;
 	MyProc->waitLock = NULL;
 	MyProc->waitProcLock = NULL;
+
+	/*
+	 * POLAR px: initialize the PX execution status.
+	 *           It is set to false by default.
+	 */
+	pg_atomic_init_flag(&MyProc->polar_px_is_executing);
+	if (px_role == PX_ROLE_PX)
+		pg_atomic_test_set_flag(&MyProc->polar_px_is_executing); /* set to true */
+	/* POLAR end */
+
+	/* POLAR px */
+	ip_hash = DatumGetUInt32(hash_any(
+		(const unsigned char *)ListenAddresses, strlen(ListenAddresses)));
+	InitTraceId(ip_hash, (uint16)PostPortNumber);
+
+    pxLocalSessionId = pg_atomic_add_fetch_u32(&ProcGlobal->pxSessionCounter, 1);
+
+    /*
+	 * POLAR px
+	 * A nonzero px_session_id uniquely identifies an PX client session
+	 * over the lifetime of the entry postmaster process. A qDisp passes
+	 * its px_session_id down to all of its qExecs. If this is a qExec,
+	 * we have already received the px_session_id from the qDisp.
+	 */
+	if (px_role == PX_ROLE_QC && px_session_id == InvalidPxSessionId)
+        px_session_id = pxLocalSessionId;
+
+    elog(DEBUG1,"InitProcess(): px_session_id %d, px_role %d",px_session_id, px_role);
+	/* POLAR end */
+
 #ifdef USE_ASSERT_CHECKING
 	{
 		int			i;
@@ -405,6 +472,15 @@ InitProcess(void)
 	MyProc->syncRepState = SYNC_REP_NOT_WAITING;
 	SHMQueueElemInit(&(MyProc->syncRepLinks));
 
+	/* POLAR: Initialize fields for read view min lsn*/
+	pg_atomic_init_u64(&MyProc->polar_read_min_lsn, InvalidXLogRecPtr);
+
+	/* Initialize fields for consensus rep */
+	if (polar_enable_dma)
+	{
+		ConsensusProcInit(&MyProc->consensusInfo);
+	}
+
 	/* Initialize fields for group XID clearing. */
 	MyProc->procArrayGroupMember = false;
 	MyProc->procArrayGroupMemberXid = InvalidTransactionId;
@@ -415,7 +491,17 @@ InitProcess(void)
 	Assert(dlist_is_empty(&MyProc->lockGroupMembers));
 
 	/* Initialize wait event information. */
-	MyProc->wait_event_info = 0;
+	{
+		int 	i;
+		MyProc->wait_event_info = 0;
+		for (i = 0; i < PGPROC_WAIT_STACK_LEN; i++)
+		{
+			MyProc->wait_object[i] = PGPROC_INVAILD_WAIT_OBJ;
+			MyProc->wait_type[i] = PGPROC_INVAILD_WAIT_OBJ;
+			INSTR_TIME_SET_ZERO(MyProc->wait_time[i]);
+		}
+		MyProc->cur_wait_stack_index = PGPROC_INVAILD_WAIT_OBJ;
+	}
 
 	/* Initialize fields for group transaction status update. */
 	MyProc->clogGroupMember = false;
@@ -451,6 +537,9 @@ InitProcess(void)
 	 */
 	InitLWLockAccess();
 	InitDeadLockChecking();
+
+	/* POLAR: init lock state */
+	polar_init_lock_access();
 }
 
 /*
@@ -557,6 +646,7 @@ InitAuxiliaryProcess(void)
 	MyProc->fpLocalTransactionId = InvalidLocalTransactionId;
 	MyPgXact->xid = InvalidTransactionId;
 	MyPgXact->xmin = InvalidTransactionId;
+	MyPgXact->polar_csn = InvalidCommitSeqNo;
 	MyProc->backendId = InvalidBackendId;
 	MyProc->databaseId = InvalidOid;
 	MyProc->roleId = InvalidOid;
@@ -568,6 +658,18 @@ InitAuxiliaryProcess(void)
 	MyProc->lwWaitMode = 0;
 	MyProc->waitLock = NULL;
 	MyProc->waitProcLock = NULL;
+	/* Initialize wait event information. */
+	{
+		int 	i;
+		for (i = 0; i < PGPROC_WAIT_STACK_LEN; i++)
+		{
+			MyProc->wait_object[i] = PGPROC_INVAILD_WAIT_OBJ;
+			MyProc->wait_type[i] = PGPROC_INVAILD_WAIT_OBJ;
+			INSTR_TIME_SET_ZERO(MyProc->wait_time[i]);
+		}
+		MyProc->cur_wait_stack_index = PGPROC_INVAILD_WAIT_OBJ;
+	}
+
 #ifdef USE_ASSERT_CHECKING
 	{
 		int			i;
@@ -577,6 +679,12 @@ InitAuxiliaryProcess(void)
 			Assert(SHMQueueEmpty(&(MyProc->myProcLocks[i])));
 	}
 #endif
+
+	/* Initialize fields for consensus rep */
+	if (polar_enable_dma)
+	{
+		ConsensusProcInit(&MyProc->consensusInfo);
+	}
 
 	/*
 	 * Acquire ownership of the PGPROC's latch, so that we can use WaitLatch
@@ -1213,6 +1321,10 @@ ProcSleep(LOCALLOCK *locallock, LockMethod lockMethodTable)
 	deadlock_state = DS_NOT_YET_CHECKED;
 	got_deadlock_timeout = false;
 
+	/* POLAR px: reset the PX wait lock timeout flag. */
+	px_wait_lock_alert = false;
+	/* POLAR end */
+
 	/*
 	 * Set timer so we can wake up after awhile and check for a deadlock. If a
 	 * deadlock is detected, the handler sets MyProc->waitStatus =
@@ -1244,6 +1356,12 @@ ProcSleep(LOCALLOCK *locallock, LockMethod lockMethodTable)
 		}
 		else
 			enable_timeout_after(DEADLOCK_TIMEOUT, DeadlockTimeout);
+
+		/* POLAR px: enable timer if timeout interval is specified by GUC. */
+		if (px_wait_lock_timeout > 0)
+			enable_timeout_after(px_wait_lock_timer_id,
+								 px_wait_lock_timeout);
+		/* POLAR end */
 	}
 
 	/*
@@ -1272,6 +1390,15 @@ ProcSleep(LOCALLOCK *locallock, LockMethod lockMethodTable)
 			WaitLatch(MyLatch, WL_LATCH_SET, 0,
 					  PG_WAIT_LOCK | locallock->tag.lock.locktag_type);
 			ResetLatch(MyLatch);
+
+			/* POLAR px: handle the wait lock timeout. */
+			if (px_wait_lock_alert)
+			{
+				px_cancel_wait_lock();
+				px_wait_lock_alert = false;
+			}
+			/* POLAR end */
+
 			/* check for deadlocks first, as that's probably log-worthy */
 			if (got_deadlock_timeout)
 			{
@@ -1531,6 +1658,11 @@ ProcSleep(LOCALLOCK *locallock, LockMethod lockMethodTable)
 		}
 		else
 			disable_timeout(DEADLOCK_TIMEOUT, false);
+
+		/* POLAR px: disable the wait lock timer. */
+		if (px_wait_lock_timeout > 0)
+			disable_timeout(px_wait_lock_timer_id, false);
+		/* POLAR end */
 	}
 
 	/*

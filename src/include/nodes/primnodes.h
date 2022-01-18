@@ -118,6 +118,28 @@ typedef struct IntoClause
 	bool		skipData;		/* true for WITH NO DATA */
 } IntoClause;
 
+/* POLAR px */
+typedef struct CopyIntoClause
+{
+	NodeTag		type;
+
+	List	   *attlist;		/* List of column names (as Strings), or NIL
+								 * for all columns */
+	bool		is_program;		/* is 'filename' a program to popen? */
+	char	   *filename;		/* filename, or NULL for STDIN/STDOUT */
+	List	   *options;		/* List of DefElem nodes */
+	List	   *ao_segnos;		/* AO segno map */
+} CopyIntoClause;
+
+typedef struct RefreshClause
+{
+	NodeTag		type;
+
+	bool		concurrent;		/* allow concurrent access? */
+	bool		skipData;
+	RangeVar   *relation;		/* relation to insert into */
+} RefreshClause;
+/* POLAR end */
 
 /* ----------------------------------------------------------------
  *					node types for executable expressions
@@ -365,6 +387,10 @@ typedef struct WindowFunc
 	bool		winstar;		/* true if argument list was really '*' */
 	bool		winagg;			/* is function a simple aggregate? */
 	int			location;		/* token location, or -1 if unknown */
+
+	/* POLAR px */
+	bool		windistinct;	/* TRUE if it's agg(DISTINCT ...) */
+	/* POLAR end */
 } WindowFunc;
 
 /* ----------------
@@ -459,6 +485,12 @@ typedef struct FuncExpr
 	Oid			inputcollid;	/* OID of collation that function should use */
 	List	   *args;			/* arguments to the function */
 	int			location;		/* token location, or -1 if unknown */
+
+	/* POLAR px */
+	/* Valid for base-relations, true if polar_global_function
+	 * pseudo-function was specified as modifier in FROM-clause
+	 */
+	bool		isGlobalFunc;
 } FuncExpr;
 
 /*
@@ -627,7 +659,12 @@ typedef enum SubLinkType
 	EXPR_SUBLINK,
 	MULTIEXPR_SUBLINK,
 	ARRAY_SUBLINK,
-	CTE_SUBLINK					/* for SubPlans only */
+	CTE_SUBLINK,					/* for SubPlans only */
+
+	/* POLAR px */
+	NOT_EXISTS_SUBLINK /* GPORCA uses NOT_EXIST_SUBLINK to implement correlated left anti semijoin. */
+	/* POLAR end */
+
 } SubLinkType;
 
 
@@ -714,6 +751,12 @@ typedef struct SubPlan
 	/* Estimated execution costs: */
 	Cost		startup_cost;	/* one-time setup cost */
 	Cost		per_call_cost;	/* cost for each subplan evaluation */
+
+	/* POLAR px */
+	List	   *extParam;		/* indices of input Params from ancestor plan */
+	bool		is_initplan;	/* PX: Is the subplan implemented as an initplan? */
+	bool		is_multirow;	/* PX: May the subplan return more than */
+	/* POLAR end */
 } SubPlan;
 
 /*
@@ -841,6 +884,11 @@ typedef struct ArrayCoerceExpr
 	Expr	   *arg;			/* input expression (yields an array) */
 	Expr	   *elemexpr;		/* expression representing per-element work */
 	Oid			resulttype;		/* output type of coercion (an array type) */
+
+	/* TODO */
+	Oid			elemfuncid;		/* OID of element coercion function, or 0 */
+	bool		isExplicit;		/* conversion semantics flag to pass to func */
+
 	int32		resulttypmod;	/* output typmod (also element typmod) */
 	Oid			resultcollid;	/* OID of collation, or InvalidOid if none */
 	CoercionForm coerceformat;	/* how to display this node */
@@ -1299,6 +1347,10 @@ typedef struct CurrentOfExpr
 	Index		cvarno;			/* RT index of target relation */
 	char	   *cursor_name;	/* name of referenced cursor, or NULL */
 	int			cursor_param;	/* refcursor parameter number, or 0 */
+
+	/* POLAR px */
+	Oid			target_relid;	/* OID of original target relation, */
+	/* POLAR end */
 } CurrentOfExpr;
 
 /*
@@ -1520,5 +1572,103 @@ typedef struct OnConflictExpr
 	int			exclRelIndex;	/* RT index of 'excluded' relation */
 	List	   *exclRelTlist;	/* tlist of the EXCLUDED pseudo relation */
 } OnConflictExpr;
+
+/*
+ * DMLActionExpr
+ *
+ * Represents the expression which introduces the action in a SplitUpdate statement
+ */
+typedef struct DMLActionExpr
+{
+	Expr        xpr;
+} DMLActionExpr;
+
+/*
+ * PartSelectedExpr
+ *
+ * Returns true, if the PartitionSelector has selected this partition.
+ */
+typedef struct PartSelectedExpr
+{
+	Expr		xpr;
+	int			dynamicScanId;
+	Oid			partOid;
+} PartSelectedExpr;
+
+/*
+ * PartDefaultExpr
+ * Represents the expression which determines whether this a part is a default part
+ */
+typedef struct PartDefaultExpr
+{
+	Expr		xpr;
+	int 		level;			/* partitioning level */
+} PartDefaultExpr;
+
+/*
+ * PartBoundExpr
+ * Represents the expression which holds a part boundary in a PartitionSelector operator
+ */
+typedef struct PartBoundExpr
+{
+	Expr		xpr;
+	int 		level;			/* partitioning level */
+	Oid 		boundType;		/* the return type of this boundary - same as part key */
+	bool 		isLowerBound;	/* lower (min) or upper (max) bound */
+} PartBoundExpr;
+
+/*
+ * PartBoundInclusionExpr
+ * Represents the expression which determines whether a part boundary is inclusive or not
+ * in a PartitionSelector operator
+ */
+typedef struct PartBoundInclusionExpr
+{
+	Expr		xpr;
+	int			level;			/* partitioning level */
+	bool		isLowerBound;	/* lower (min) or upper (max) bound */
+} PartBoundInclusionExpr;
+
+/*
+ * PartBoundOpenExpr
+ * Represents the expression which determines whether a part boundary is open (unbounded) or not
+ * in a PartitionSelector operator
+ */
+typedef struct PartBoundOpenExpr
+{
+	Expr		xpr;
+	int		level;			/* partitioning level */
+	bool		isLowerBound;	/* lower (min) or upper (max) bound */
+} PartBoundOpenExpr;
+
+/*
+ * PartListRuleExpr
+ * Represents the expression that converts the current rule for
+ * level "level" to a list of constants. It only appears in
+ * levelExpressions (which is non-equality predicates) for
+ * the partition selector.
+ */
+typedef struct PartListRuleExpr
+{
+	Expr		xpr;
+	int			level;			/* partitioning level */
+	Oid 		resulttype;		/* the result type of expr - array type of part key */
+	Oid 		elementtype; 	/* the element type of partition list values */
+} PartListRuleExpr;
+
+/*
+ * PartListNullTestExpr
+ *
+ * Represents whether the list values of a partition for the specified level
+ * contains NULL or not, if nulltesttype is IS_NULL.
+ *
+ * NOTE: This expr only works for list partition.
+ */
+typedef struct PartListNullTestExpr
+{
+	Expr		xpr;
+	int			level;			/* partitioning level */
+	NullTestType nulltesttype;	/* IS NULL, IS NOT NULL */
+} PartListNullTestExpr;
 
 #endif							/* PRIMNODES_H */

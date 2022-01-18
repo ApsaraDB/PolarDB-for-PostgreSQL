@@ -18,9 +18,9 @@
 #include "portability/instr_time.h"
 #include "postmaster/pgarch.h"
 #include "storage/proc.h"
-#include "utils/guc.h"
 #include "utils/hsearch.h"
 #include "utils/relcache.h"
+#include "utils/guc.h"
 
 
 /* ----------
@@ -33,6 +33,11 @@
 
 /* Default directory to store temporary statistics data in */
 #define PG_STAT_TMP_DIR		"pg_stat_tmp"
+
+/* POLARDB Proxy base virtual pid */
+#define POLAR_BASE_VIRTUAL_PID		10000000
+#define POLAR_IS_VIRTUAL_PID(pid)	(pid > POLAR_BASE_VIRTUAL_PID && pid < 2 * POLAR_BASE_VIRTUAL_PID)
+#define POLAR_IS_REAL_PID(pid)	(pid > 0 && pid < POLAR_BASE_VIRTUAL_PID)
 
 /* Values for track_functions GUC variable --- order is significant! */
 typedef enum TrackFunctionsLevel
@@ -65,7 +70,9 @@ typedef enum StatMsgType
 	PGSTAT_MTYPE_FUNCPURGE,
 	PGSTAT_MTYPE_RECOVERYCONFLICT,
 	PGSTAT_MTYPE_TEMPFILE,
-	PGSTAT_MTYPE_DEADLOCK
+	PGSTAT_MTYPE_DEADLOCK,
+	/* POLAR */
+	POLAR_PGSTAT_MTYPE_DELAY_DML
 } StatMsgType;
 
 /* ----------
@@ -114,6 +121,15 @@ typedef struct PgStat_TableCounts
 
 	PgStat_Counter t_blocks_fetched;
 	PgStat_Counter t_blocks_hit;
+
+	/* POLAR: bulk read stats */
+	/* all bulk read calls count */
+	PgStat_Counter polar_t_bulk_read_calls;
+	/* bulk read calls times which has IO read */
+	PgStat_Counter polar_t_bulk_read_calls_IO;
+	/* bulk read calls, IO read blocks counts */
+	PgStat_Counter polar_t_bulk_read_blocks_IO;
+	/* POLAR: end */
 } PgStat_TableCounts;
 
 /* Possible targets for resetting cluster-wide shared values */
@@ -447,6 +463,13 @@ typedef struct PgStat_MsgTempFile
 	size_t		m_filesize;
 } PgStat_MsgTempFile;
 
+
+typedef struct PolarStat_MsgDelayDml
+{
+	PgStat_MsgHdr m_hdr;
+	Oid			m_databaseid;
+} PolarStat_MsgDelayDml;
+
 /* ----------
  * PgStat_FunctionCounts	The actual per-function counts kept by a backend
  *
@@ -567,7 +590,7 @@ typedef union PgStat_Msg
  * ------------------------------------------------------------
  */
 
-#define PGSTAT_FILE_FORMAT_ID	0x01A5BC9D
+#define PGSTAT_FILE_FORMAT_ID	0x11A5BC9E
 
 /* ----------
  * PgStat_StatDBEntry			The collector's data per database
@@ -599,6 +622,18 @@ typedef struct PgStat_StatDBEntry
 
 	TimestampTz stat_reset_timestamp;
 	TimestampTz stats_timestamp;	/* time of db stats file update */
+
+	/* POLAR: bulk read stats */
+	/* all bulk read calls count */
+	PgStat_Counter polar_n_bulk_read_calls;
+	/* bulk read calls times which has IO read */
+	PgStat_Counter polar_n_bulk_read_calls_IO;
+	/* bulk read calls, IO read blocks counts */
+	PgStat_Counter polar_n_bulk_read_blocks_IO;
+	/* POLAR: end */
+
+	/* POLAR: delay dml stats */
+	PgStat_Counter polar_delay_dml_count;
 
 	/*
 	 * tables and functions must be last in the struct, because we don't write
@@ -642,6 +677,15 @@ typedef struct PgStat_StatTabEntry
 	PgStat_Counter analyze_count;
 	TimestampTz autovac_analyze_timestamp;	/* autovacuum initiated */
 	PgStat_Counter autovac_analyze_count;
+
+	/* POLAR: bulk read stats */
+	/* all bulk read calls count */
+	PgStat_Counter polar_bulk_read_calls;
+	/* bulk read calls times which has IO read */
+	PgStat_Counter polar_bulk_read_calls_IO;
+	/* bulk read calls, IO read blocks counts */
+	PgStat_Counter polar_bulk_read_blocks_IO;
+	/* POLAR: end */
 } PgStat_StatTabEntry;
 
 
@@ -711,7 +755,12 @@ typedef enum BackendType
 	B_STARTUP,
 	B_WAL_RECEIVER,
 	B_WAL_SENDER,
-	B_WAL_WRITER
+	B_WAL_WRITER,
+	B_CONSENSUS,
+	B_POLAR_WAL_PIPELINER,
+	B_BG_LOGINDEX,
+	B_BG_FLOG_INSERTER,
+	B_BG_FLOG_WRITER
 } BackendType;
 
 
@@ -769,7 +818,17 @@ typedef enum
 	WAIT_EVENT_WAL_RECEIVER_MAIN,
 	WAIT_EVENT_WAL_SENDER_MAIN,
 	WAIT_EVENT_WAL_WRITER_MAIN,
-	WAIT_EVENT_ASYNC_DDL_LOCK_REPLAY_MAIN
+	/* POLAR */
+	WAIT_EVENT_DELAY_DML,
+	WAIT_EVENT_ASYNC_REDO_MAIN,
+	WAIT_EVENT_ASYNC_DDL_LOCK_REPLAY_MAIN,
+	WAIT_EVENT_CONSENSUS_MAIN,
+	WAIT_EVENT_DATAMAX_MAIN,
+	WAIT_EVENT_LOGINDEX_BG_MAIN,
+	WAIT_EVENT_POLAR_SUB_TASK_MAIN,
+	WAIT_EVENT_FLOG_WRITE_BG_MAIN,
+	WAIT_EVENT_FLOG_INSERT_BG_MAIN
+	/* POLAR end */
 } WaitEventActivity;
 
 /* ----------
@@ -789,7 +848,11 @@ typedef enum
 	WAIT_EVENT_SSL_OPEN_SERVER,
 	WAIT_EVENT_WAL_RECEIVER_WAIT_START,
 	WAIT_EVENT_WAL_SENDER_WAIT_WAL,
-	WAIT_EVENT_WAL_SENDER_WRITE_DATA
+	WAIT_EVENT_WAL_SENDER_WRITE_DATA,
+
+	/* POLAR px */
+	WAIT_EVENT_PX_MOTION_WAIT_RECV
+	/* POLAR end */
 } WaitEventClient;
 
 /* ----------
@@ -834,7 +897,13 @@ typedef enum
 	WAIT_EVENT_REPLICATION_ORIGIN_DROP,
 	WAIT_EVENT_REPLICATION_SLOT_DROP,
 	WAIT_EVENT_SAFE_SNAPSHOT,
-	WAIT_EVENT_SYNC_REP
+	WAIT_EVENT_SMGR_DROP_SYNC,
+	WAIT_EVENT_SYNC_REP,
+	WAIT_EVENT_CONSENSUS_COMMIT,
+	WAIT_EVENT_CONSENSUS,
+	/* POLAR wal pipeline */
+	WAIT_EVENT_WAL_PIPELINE_WAIT_RECENT_WRITTEN_SPACE,
+	WAIT_EVENT_WAL_PIPELINE_WAIT_UNFLUSHED_XLOG_SLOT
 } WaitEventIPC;
 
 /* ----------
@@ -876,6 +945,9 @@ typedef enum
 	WAIT_EVENT_DATA_FILE_TRUNCATE,
 	WAIT_EVENT_DATA_FILE_WRITE,
 	WAIT_EVENT_DSM_FILL_ZERO_WRITE,
+	WAIT_EVENT_KMGR_FILE_READ,
+	WAIT_EVENT_KMGR_FILE_SYNC,
+	WAIT_EVENT_KMGR_FILE_WRITE,
 	WAIT_EVENT_LOCK_FILE_ADDTODATADIR_READ,
 	WAIT_EVENT_LOCK_FILE_ADDTODATADIR_SYNC,
 	WAIT_EVENT_LOCK_FILE_ADDTODATADIR_WRITE,
@@ -942,9 +1014,47 @@ typedef enum
 	WAIT_EVENT_LOGINDEX_WAIT_ACTIVE,
 	WAIT_EVENT_LOGINDEX_TBL_FLUSH,
 	WAIT_EVENT_LOGINDEX_QUEUE_SPACE,
+	WAIT_EVENT_REL_SIZE_CACHE_WRITE,
+	WAIT_EVENT_REL_SIZE_CACHE_READ,
 	WAIT_EVENT_FULLPAGE_FILE_INIT_WRITE,
 	WAIT_EVENT_LOGINDEX_WAIT_FULLPAGE,
+	/* POLAR: Wait Events - syslog pipe write */
+	WAIT_EVENT_SYSLOG_PIPE_WRITE,
+	WAIT_EVENT_SYSLOG_CHANNEL_WRITE,
+	/* POLAR: Wait Events - local cache */
+	WAIT_EVENT_CACHE_LOCAL_OPEN,
+	WAIT_EVENT_CACHE_LOCAL_READ,
+	WAIT_EVENT_CACHE_LOCAL_WRITE,
+	WAIT_EVENT_CACHE_LOCAL_LSEEK,
+	WAIT_EVENT_CACHE_LOCAL_UNLINK,
+	WAIT_EVENT_CACHE_LOCAL_SYNC,
+	WAIT_EVENT_CACHE_LOCAL_STAT,
+	WAIT_EVENT_CACHE_SHARED_OPEN,
+	WAIT_EVENT_CACHE_SHARED_READ,
+	WAIT_EVENT_CACHE_SHARED_WRITE,
+	WAIT_EVENT_CACHE_SHARED_LSEEK,
+	WAIT_EVENT_CACHE_SHARED_UNLINK,
+	WAIT_EVENT_CACHE_SHARED_SYNC,
+	WAIT_EVENT_CACHE_SHARED_STAT,
+	/* POLAR: Wait Events - datamax */
+	WAIT_EVENT_DATAMAX_META_READ,
+	WAIT_EVENT_DATAMAX_META_WRITE,
+	/* POLAR: Wait Events - flashback log */
+	WAIT_EVENT_FLASHBACK_LOG_CTL_FILE_WRITE,
+	WAIT_EVENT_FLASHBACK_LOG_CTL_FILE_READ,
+	WAIT_EVENT_FLASHBACK_LOG_CTL_FILE_SYNC,
+	WAIT_EVENT_FLASHBACK_LOG_INIT_WRITE,
+	WAIT_EVENT_FLASHBACK_LOG_INIT_SYNC,
+	WAIT_EVENT_FLASHBACK_LOG_WRITE,
+	WAIT_EVENT_FLASHBACK_LOG_READ,
+	WAIT_EVENT_FLASHBACK_LOG_HISTORY_FILE_WRITE,
+	WAIT_EVENT_FLASHBACK_LOG_HISTORY_FILE_READ,
+	WAIT_EVENT_FLASHBACK_LOG_HISTORY_FILE_SYNC,
+	WAIT_EVENT_FLASHBACK_LOG_BUF_READY,
+	WAIT_EVENT_FLASHBACK_LOG_INSERT,
 	/* POLAR end */
+	/* POLAR wal pipeline */
+	WAIT_EVENT_WAL_PIPELINE_COMMIT_WAIT
 } WaitEventIO;
 
 /* ----------
@@ -1064,12 +1174,26 @@ typedef struct PgBackendStatus
 	Oid			st_progress_command_target;
 	int64		st_progress_param[PGSTAT_NUM_PROGRESS_PARAM];
 
+	/* POLAR: Origin host/port while proxy exists in front of PG, otherwise they are NULL. */
+	bool 		polar_st_proxy;
+	SockAddr 	polar_st_origin_addr;
+
+	bool		polar_proxy_ssl_in_use;
+	char		polar_proxy_ssl_cipher_name[NAMEDATALEN];
+	char		polar_proxy_ssl_version[NAMEDATALEN];
+
+	int32		polar_st_cancel_key;
+	int			polar_st_virtual_pid;
+
+	/* POLAR end */
+
 	/* POLAR: this backend index in backend array */
 	int 		backendid;
 	/* POLAR end */
 
 	/* POLAR: queryid of  the current backend */
 	int64 		queryid;
+	/* POLAR end */
 } PgBackendStatus;
 
 /*
@@ -1186,6 +1310,38 @@ typedef struct PgStat_FunctionCallUsage
 	/* system clock as of function start */
 	instr_time	f_start;
 } PgStat_FunctionCallUsage;
+
+/* ----------
+ * PolarStat_Proxy
+ *
+ * Stats for proxy, including reason and count.
+ * ----------
+ */
+/* Unsplittable reasons, none means splittable */
+typedef enum polar_unsplittable_reason_t
+{
+	POLAR_UNSPLITTABLE_FOR_NONE,
+	POLAR_UNSPLITTABLE_FOR_ERROR,
+	POLAR_UNSPLITTABLE_FOR_LOCK,
+	POLAR_UNSPLITTABLE_FOR_COMBOCID,
+	POLAR_UNSPLITTABLE_FOR_AUTOXACT,
+} polar_unsplittable_reason_t;
+
+/* Global stats for proxy, not atomic variables but that's fine */
+typedef struct PolarStat_Proxy
+{
+	uint64	proxy_total;  			/* Total count of SQL */
+	uint64	proxy_splittable;		/* Total count of splittable SQL */
+	uint64	proxy_disablesplit;		/* Total count of disablesplit SQL */
+	uint64	proxy_unsplittable;		/* Total count of unsplittable SQL */
+	uint64	proxy_error;			/* Total count of unsplittable for error SQL */
+	uint64	proxy_lock;				/* Total count of unsplittable for lock SQL */
+	uint64	proxy_combocid;			/* Total count of unsplittable for combocid SQL */
+	uint64	proxy_autoxact;			/* Total count of unsplittable for autoxact SQL */
+	uint64	proxy_implicit;			/* Total count of proxy implicit xact SQL */
+	uint64	proxy_readbeforewrite;	/* Total count of proxy readbeforewrite SQL */
+	uint64	proxy_readafterwrite;	/* Total count of proxy readafterwrite SQL */
+} PolarStat_Proxy;
 
 
 /* ----------
@@ -1311,30 +1467,6 @@ pgstat_report_wait_start(uint32 wait_event_info)
 	proc->wait_event_info = wait_event_info;
 }
 
-/* ----------
- * pgstat_report_wait_end() -
- *
- *	Called to report end of a wait.
- *
- * NB: this *must* be able to survive being called before MyProc has been
- * initialized.
- * ----------
- */
-static inline void
-pgstat_report_wait_end(void)
-{
-	volatile PGPROC *proc = MyProc;
-
-	if (!pgstat_track_activities || !proc)
-		return;
-
-	/*
-	 * Since this is a four-byte field which is always read and written as
-	 * four-bytes, updates are atomic.
-	 */
-	proc->wait_event_info = 0;
-}
-
 /* 
  * POLAR: stat wait_object and wait_time start
  */
@@ -1349,7 +1481,7 @@ polar_stat_wait_obj_and_time_set(int id, const instr_time *start_time, const int
 
 	MyProc->cur_wait_stack_index++;
 	/* push stack if not overflow */
-	if (MyProc->cur_wait_stack_index < PGPROC_WAIT_STACK_LEN)
+	if (MyProc->cur_wait_stack_index > -1 && MyProc->cur_wait_stack_index < PGPROC_WAIT_STACK_LEN)
 	{
 		/*
 	 	 * POLAR:  We do not use pid 0 because it belongs to the root process. 
@@ -1384,6 +1516,33 @@ polar_stat_wait_obj_and_time_clear(void)
 		
 	}
 	MyProc->cur_wait_stack_index--;
+}
+/* 
+ * POLAR: stat wait_object and wait_time end
+ */
+
+/* ----------
+ * pgstat_report_wait_end() -
+ *
+ *	Called to report end of a wait.
+ *
+ * NB: this *must* be able to survive being called before MyProc has been
+ * initialized.
+ * ----------
+ */
+static inline void
+pgstat_report_wait_end(void)
+{
+	volatile PGPROC *proc = MyProc;
+
+	if (!pgstat_track_activities || !proc)
+		return;
+
+	/*
+	 * Since this is a four-byte field which is always read and written as
+	 * four-bytes, updates are atomic.
+	 */
+	proc->wait_event_info = 0;
 }
 
 /* nontransactional event counts are simple enough to inline */
@@ -1428,6 +1587,24 @@ polar_stat_wait_obj_and_time_clear(void)
 #define pgstat_count_buffer_write_time(n)							\
 	(pgStatBlockWriteTime += (n))
 
+/* POLAR: bulk read stats */
+#define polar_pgstat_count_bulk_read_calls(rel)                             \
+	do {															        \
+		if ((rel)->pgstat_info != NULL)								        \
+			(rel)->pgstat_info->t_counts.polar_t_bulk_read_calls++;			\
+	} while (0)
+#define polar_pgstat_count_bulk_read_calls_IO(rel)                              \
+	do {															            \
+		if ((rel)->pgstat_info != NULL)								            \
+			(rel)->pgstat_info->t_counts.polar_t_bulk_read_calls_IO++;			\
+	} while (0)
+#define polar_pgstat_count_bulk_read_blocks_IO(rel, n)				        	\
+	do {															            \
+		if ((rel)->pgstat_info != NULL)								            \
+		  (rel)->pgstat_info->t_counts.polar_t_bulk_read_blocks_IO += (n);      \
+	} while (0)
+/* POLAR: end */
+
 extern void pgstat_count_heap_insert(Relation rel, PgStat_Counter n);
 extern void pgstat_count_heap_update(Relation rel, bool hot);
 extern void pgstat_count_heap_delete(Relation rel);
@@ -1453,12 +1630,6 @@ extern void pgstat_twophase_postabort(TransactionId xid, uint16 info,
 extern void pgstat_send_archiver(const char *xlog, bool failed);
 extern void pgstat_send_bgwriter(void);
 
-typedef void (*polar_postmaster_child_init_register) (void);
-extern polar_postmaster_child_init_register polar_stat_hook;
-
-/* POLAR */
-extern void polar_report_queryid(int64 queryid);
-
 /* ----------
  * Support functions for the SQL-callable functions to
  * generate the pgstat* views.
@@ -1472,5 +1643,35 @@ extern PgStat_StatFuncEntry *pgstat_fetch_stat_funcentry(Oid funcid);
 extern int	pgstat_fetch_stat_numbackends(void);
 extern PgStat_ArchiverStats *pgstat_fetch_stat_archiver(void);
 extern PgStat_GlobalStats *pgstat_fetch_global(void);
+
+/* POLAR */
+extern PgStat_Counter polar_get_audit_log_row_count(void);
+extern PgStat_Counter polar_delay_dml_count;
+extern void polar_update_delay_dml_count(void);
+
+extern int polar_pgstat_get_virtual_pid(int real_pid, bool force);
+extern int polar_pgstat_get_virtual_pid_by_beentry(PgBackendStatus *beentry);
+extern int polar_pgstat_get_real_pid(int virtual_pid, int32 cancel_key, bool auth_cancel_key, bool force);
+extern void polar_pgstat_set_virtual_pid(int virtual_pid);
+extern void polar_pgstat_set_cancel_key(int32 cancel_key);
+extern void polar_pgstat_set_proxy_mode(bool mode);
+extern void polar_enable_proxy_for_unit_test(bool enable);
+typedef void (*polar_postmaster_child_init_register) (void);
+extern polar_postmaster_child_init_register polar_stat_hook;
+
+/* POLAR: parse attrs for priority replication */
+extern bool polar_walsender_parse_attrs(int pid, bool *is_high_pri, bool *is_low_pri);
+extern bool polar_walsender_parse_my_attrs(bool *is_high_pri, bool *is_low_pri);
+
+/* POLAR */
+extern void polar_report_queryid(int64 queryid);
+
+/* POLAR: proxy stats */
+extern PolarStat_Proxy *polar_stat_proxy;
+extern bool polar_stat_need_update_proxy_info;
+extern polar_unsplittable_reason_t polar_unable_to_split_reason;
+#define polar_stat_update_proxy_info(variable) \
+{if (polar_stat_need_update_proxy_info) {(variable)++;}}
+/* POLAR: end */
 
 #endif							/* PGSTAT_H */

@@ -116,8 +116,11 @@ hashbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 	 * not the case, big trouble's what we have.
 	 */
 	if (RelationGetNumberOfBlocks(index) != 0)
+	{
+		polar_check_nblocks_consistent(index);
 		elog(ERROR, "index \"%s\" already contains data",
 			 RelationGetRelationName(index));
+	}
 
 	/* Estimate the number of rows currently present in the table */
 	estimate_rel_size(heap, NULL, &relpages, &reltuples, &allvisfrac);

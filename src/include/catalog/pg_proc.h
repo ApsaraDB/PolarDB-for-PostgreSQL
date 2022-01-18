@@ -23,6 +23,11 @@
 #include "catalog/objectaddress.h"
 #include "nodes/pg_list.h"
 
+/* POLAR px */
+/* must referenced to pg_proc.dat */
+#define COUNT_ANY_OID 2147
+/* POLAR end */
+
 /* ----------------
  *		pg_proc definition.  cpp turns this into
  *		typedef struct FormData_pg_proc
@@ -172,6 +177,15 @@ typedef FormData_pg_proc *Form_pg_proc;
 #define PROARGMODE_INOUT	'b'
 #define PROARGMODE_VARIADIC 'v'
 #define PROARGMODE_TABLE	't'
+
+/*
+ * POLAR px
+ * Symbolic values for prodataaccess column: these provide a hint regarding
+ * what kind of statements are included in the function.
+ */
+#define PRODATAACCESS_NONE		'n'
+#define PRODATAACCESS_ANY		'a'
+/* POLAR end */
 
 #endif							/* EXPOSE_TO_CLIENT_CODE */
 

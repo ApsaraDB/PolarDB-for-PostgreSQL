@@ -52,6 +52,8 @@
 #include "utils/syscache.h"
 #include "utils/tqual.h"
 
+/* POLAR */
+#include "storage/procarray.h"
 
 /*
  * GUC parameters
@@ -1454,7 +1456,7 @@ vacuum_rel(Oid relid, RangeVar *relation, int options, VacuumParams *params)
 	 * Note we choose to treat permissions failure as a WARNING and keep
 	 * trying to vacuum the rest of the DB --- is this appropriate?
 	 */
-	if (!(pg_class_ownercheck(RelationGetRelid(onerel), GetUserId()) ||
+	if (!(polar_superuser() || pg_class_ownercheck(RelationGetRelid(onerel), GetUserId()) ||
 		  (pg_database_ownercheck(MyDatabaseId, GetUserId()) && !onerel->rd_rel->relisshared)))
 	{
 		if (onerel->rd_rel->relisshared)

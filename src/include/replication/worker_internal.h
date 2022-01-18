@@ -92,4 +92,8 @@ am_tablesync_worker(void)
 	return OidIsValid(MyLogicalRepWorker->relid);
 }
 
+/* POLAR: the num of replication workers reserved for super users */
+extern int polar_logical_repl_workers_reserved_for_superuser;
+/* POLAR: end */
+
 #endif							/* WORKER_INTERNAL_H */

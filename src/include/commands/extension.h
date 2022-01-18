@@ -30,6 +30,8 @@
 extern PGDLLIMPORT bool creating_extension;
 extern PGDLLIMPORT Oid CurrentExtensionObject;
 
+/* POLAR */
+extern bool polar_enable_promoting_privilege;
 
 extern ObjectAddress CreateExtension(ParseState *pstate, CreateExtensionStmt *stmt);
 
@@ -53,4 +55,7 @@ extern ObjectAddress AlterExtensionNamespace(const char *extensionName, const ch
 
 extern void AlterExtensionOwner_oid(Oid extensionOid, Oid newOwnerId);
 
-#endif							/* EXTENSION_H */
+/* POLAR */
+extern bool polar_find_in_string_list(const char *itemname, const char *stringlist);
+
+#endif   /* EXTENSION_H */

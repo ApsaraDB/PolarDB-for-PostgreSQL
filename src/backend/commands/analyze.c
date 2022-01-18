@@ -198,7 +198,7 @@ analyze_rel(Oid relid, RangeVar *relation, int options,
 	/*
 	 * Check permissions --- this should match vacuum's check!
 	 */
-	if (!(pg_class_ownercheck(RelationGetRelid(onerel), GetUserId()) ||
+	if (!(polar_superuser() ||pg_class_ownercheck(RelationGetRelid(onerel), GetUserId()) ||
 		  (pg_database_ownercheck(MyDatabaseId, GetUserId()) && !onerel->rd_rel->relisshared)))
 	{
 		/* No need for a WARNING if we already complained during VACUUM */

@@ -25,6 +25,7 @@
 #include "utils/inval.h"
 #include "utils/memutils.h"
 #include "utils/syscache.h"
+#include "utils/guc.h"
 
 
 /*
@@ -91,7 +92,42 @@ static bool pgfdw_exec_cleanup_query(PGconn *conn, const char *query,
 						 bool ignore_errors);
 static bool pgfdw_get_cleanup_result(PGconn *conn, TimestampTz endtime,
 						 PGresult **result);
+/* POLAR */
+static void polar_conn_opt_parse(const char **keyword, const char **value, char **freeptr);
+void		_PG_init(void);
 
+static bool polar_auto_port_mapping = false;
+static bool polar_connection_check = false;
+extern PGDLLIMPORT int	PostPortNumber;
+/* POLAR end */
+
+/*
+ * declare guc paramters
+ */
+void
+_PG_init(void)
+{
+	DefineCustomBoolVariable("postgres_fdw.polar_auto_port_mapping",
+							 "auto mapping port to local instance.",
+							 NULL,
+							 &polar_auto_port_mapping,
+							 false,
+							 PGC_SUSET,
+							 0,
+							 NULL,
+							 NULL,
+							 NULL);
+	DefineCustomBoolVariable("postgres_fdw.polar_connection_check",
+							 "rds connection check",
+							 NULL,
+							 &polar_connection_check,
+							 false,
+							 PGC_SUSET,
+							 0,
+							 NULL,
+							 NULL,
+							 NULL);
+}
 
 /*
  * Get a PGconn which can be used to execute queries on the remote PostgreSQL
@@ -222,6 +258,7 @@ static PGconn *
 connect_pg_server(ForeignServer *server, UserMapping *user)
 {
 	PGconn	   *volatile conn = NULL;
+	char	*freeptr = NULL;
 
 	/*
 	 * Use PG_TRY block to ensure closing connection on error.
@@ -238,7 +275,7 @@ connect_pg_server(ForeignServer *server, UserMapping *user)
 		 * which case we'll just waste a few array slots.)  Add 3 extra slots
 		 * for fallback_application_name, client_encoding, end marker.
 		 */
-		n = list_length(server->options) + list_length(user->options) + 3;
+		n = list_length(server->options) + list_length(user->options) + 5;
 		keywords = (const char **) palloc(n * sizeof(char *));
 		values = (const char **) palloc(n * sizeof(char *));
 
@@ -259,6 +296,8 @@ connect_pg_server(ForeignServer *server, UserMapping *user)
 		n++;
 
 		keywords[n] = values[n] = NULL;
+
+		polar_conn_opt_parse(keywords, values, &freeptr);
 
 		/* verify connection parameters and make connection */
 		check_conn_params(keywords, values, user);
@@ -286,6 +325,10 @@ connect_pg_server(ForeignServer *server, UserMapping *user)
 		/* Prepare new session for use */
 		configure_remote_session(conn);
 
+		if (freeptr)
+		{
+			pfree(freeptr);
+		}
 		pfree(keywords);
 		pfree(values);
 	}
@@ -1192,4 +1235,62 @@ exit:	;
 	else
 		*result = last_res;
 	return timed_out;
+}
+
+/*
+ *  POLAR: Forbidden to connect to other instances
+ */
+static void
+polar_conn_opt_parse(const char **keyword, const char **value, char **freeptr)
+{
+	int 	i = 0;
+	char	tmp_port_str[NI_MAXSERV];
+	bool 	has_port = false, has_host = false;
+
+	*freeptr = NULL;
+
+	for (i = 0; keyword[i] != NULL; i++)
+	{
+		const char *kw = keyword[i];
+		const char *val = value[i];
+
+		if (val == NULL)
+		{
+			continue;
+		}
+
+		if (pg_strcasecmp(kw, "port") == 0)
+		{
+			if (polar_connection_check)
+			{
+				elog(ERROR, "only connections to self instance are supported, please do not specify the port parameter");
+			}
+
+			has_port = true;
+		}
+		else if (pg_strcasecmp(kw, "host") == 0 || pg_strcasecmp(kw, "hostaddr") == 0)
+		{
+			if (polar_connection_check)
+			{
+				elog(ERROR, "only connections to self instance are supported, please do not specify the host or hostaddr parameters");
+			}
+			
+			has_host = true;
+		}
+	}
+
+	if (polar_auto_port_mapping && !has_port && !has_host)
+	{
+		snprintf(tmp_port_str, NI_MAXSERV, "%d", PostPortNumber);
+		keyword[i] = "port";
+		value[i] = *freeptr = pstrdup(tmp_port_str);
+		i++;
+		keyword[i] = "host";
+		value[i] = "127.0.0.1";
+		i++;
+		keyword[i] = NULL;
+		value[i] = NULL;
+	}
+
+	return;
 }

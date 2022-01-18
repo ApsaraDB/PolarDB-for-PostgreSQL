@@ -64,6 +64,7 @@ PrepareQuery(PrepareStmt *stmt, const char *queryString,
 	Query	   *query;
 	List	   *query_list;
 	int			i;
+	int		   *paramLocation = NULL; /* POLAR: parameter location */
 
 	/*
 	 * Disallow empty-string statement name (conflicts with protocol-level
@@ -120,13 +121,20 @@ PrepareQuery(PrepareStmt *stmt, const char *queryString,
 		}
 	}
 
+	/* POLAR: parameter location */
+	if (polar_enable_audit_log_bind_sql_parameter_new && nargs)
+	{
+		/* POLAR: alloc memory for parameter location */
+		paramLocation = (int *) palloc0(nargs * sizeof(int)); 
+	}
+
 	/*
 	 * Analyze the statement using these parameter types (any parameters
 	 * passed in from above us will not be visible to it), allowing
 	 * information about unknown parameters to be deduced from context.
 	 */
 	query = parse_analyze_varparams(rawstmt, queryString,
-									&argtypes, &nargs);
+									&argtypes, &paramLocation, &nargs);
 
 	/*
 	 * Check that all parameter types were determined.
@@ -168,6 +176,7 @@ PrepareQuery(PrepareStmt *stmt, const char *queryString,
 					   query_list,
 					   NULL,
 					   argtypes,
+					   NULL,	/* POLAR: param location */
 					   nargs,
 					   NULL,
 					   NULL,
@@ -243,6 +252,11 @@ ExecuteQuery(ExecuteStmt *stmt, IntoClause *intoClause,
 									   entry->plansource->query_string);
 
 	/* Replan if needed, and increment plan refcount for portal */
+	/*
+	 * POLAR px: does not support create table as ... execute
+	 */
+	if (px_enable_prepare_statement && !intoClause)
+		entry->plansource->cursor_options |= CURSOR_OPT_PX_OK;
 	cplan = GetCachedPlan(entry->plansource, paramLI, false, NULL);
 	plan_list = cplan->stmt_list;
 
@@ -292,6 +306,7 @@ ExecuteQuery(ExecuteStmt *stmt, IntoClause *intoClause,
 	PortalDefineQuery(portal,
 					  NULL,
 					  query_string,
+					  T_Invalid,/* POLAR px */
 					  entry->plansource->commandTag,
 					  plan_list,
 					  cplan);
@@ -299,7 +314,12 @@ ExecuteQuery(ExecuteStmt *stmt, IntoClause *intoClause,
 	/*
 	 * Run the portal as appropriate.
 	 */
-	PortalStart(portal, paramLI, eflags, GetActiveSnapshot());
+	PortalStart(portal, 
+				paramLI, 
+				eflags, 
+				GetActiveSnapshot(), 
+				NULL/* POALR px */
+				);
 
 	(void) PortalRun(portal, count, false, true, dest, dest, completionTag);
 
@@ -670,6 +690,11 @@ ExplainExecuteQuery(ExecuteStmt *execstmt, IntoClause *into, ExplainState *es,
 	}
 
 	/* Replan if needed, and acquire a transient refcount */
+	/*
+	 * POLAR px: does not support create table as ... execute
+	 */
+	if (px_enable_prepare_statement && !into)
+		entry->plansource->cursor_options |= CURSOR_OPT_PX_OK;
 	cplan = GetCachedPlan(entry->plansource, paramLI, true, queryEnv);
 
 	INSTR_TIME_SET_CURRENT(planduration);

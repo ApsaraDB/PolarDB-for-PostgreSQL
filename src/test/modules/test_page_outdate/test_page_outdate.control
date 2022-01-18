@@ -1,4 +1,0 @@
-comment = 'Test code for page outdate feature'
-default_version = '1.0'
-module_pathname = '$libdir/test_page_outdate'
-relocatable = true

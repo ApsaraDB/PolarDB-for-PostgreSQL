@@ -55,15 +55,25 @@
 /* Ignore both vacuum and analyze backends */
 #define		PROCARRAY_FLAGS_VACUUM_ANALYZE	PROCARRAY_FLAGS_DEFAULT | PROCARRAY_VACUUM_FLAG | PROCARRAY_ANALYZE_FLAG
 
+/* POLAR csn */
+/*  
+ * In csn mode, RecentGlobalXmin/RecentGlobalDataXmin maybe very old, 
+ * we should call func to get newest value.
+ */
+#define 	GetRecentGlobalXmin() (polar_csn_enable ? GetRecentGlobalXminCSN() : RecentGlobalXmin)
+#define 	GetRecentGlobalDataXmin() (polar_csn_enable ? GetRecentGlobalDataXminCSN() : RecentGlobalDataXmin)
+/* POLAR end */
+
 extern Size ProcArrayShmemSize(void);
 extern void CreateSharedProcArray(void);
 extern void ProcArrayAdd(PGPROC *proc);
 extern void ProcArrayRemove(PGPROC *proc, TransactionId latestXid);
 
+/* POLAR csn */
 extern void ProcArrayEndTransaction(PGPROC *proc, TransactionId latestXid);
 extern void ProcArrayClearTransaction(PGPROC *proc);
 
-extern void ProcArrayInitRecovery(TransactionId initializedUptoXID);
+extern void ProcArrayInitRecovery(TransactionId initializedUptoXID, TransactionId polar_oldest_active_xid);
 extern void ProcArrayApplyRecoveryInfo(RunningTransactions running);
 extern void ProcArrayApplyXidAssignment(TransactionId topxid,
 							int nsubxids, TransactionId *subxids);
@@ -125,6 +135,42 @@ extern void ProcArrayGetReplicationSlotXmin(TransactionId *xmin,
 								TransactionId *catalog_xmin);
 
 /* POLAR */
+extern void polar_get_nosuper_and_super_conn_count(int *nosupercount, int *supercount);
 extern XLogRecPtr polar_get_read_min_lsn(XLogRecPtr primary_consist_ptr);
+extern XLogRecPtr polar_get_backend_min_replay_lsn(void);
+extern PGPROC* polar_search_proc(pid_t pid);
+
+/* replica multi version snapshot related get functions */
+extern Size polar_replica_multi_version_snapshot_store_shmem_size(void);
+extern int polar_replica_multi_version_snapshot_get_slot_num(void);
+extern int polar_replica_multi_version_snapshot_get_retry_times(void);
+extern uint32 polar_replica_multi_version_snapshot_get_curr_slot_no(void);
+extern int polar_replica_multi_version_snapshot_get_next_slot_no(void);
+extern uint64 polar_replica_multi_version_snapshot_get_read_retried_times(void);
+extern uint64 polar_replica_multi_version_snapshot_get_read_switched_times(void);
+extern uint64 polar_replica_multi_version_snapshot_get_write_retried_times(void);
+extern uint64 polar_replica_multi_version_snapshot_get_write_switched_times(void);
+/* replica multi version snapshot related test functions */
+extern void polar_test_replica_multi_version_snapshot_set_snapshot(void);
+extern bool polar_test_replica_multi_version_snapshot_get_snapshot(TransactionId *xip, int *count, bool *overflowed,
+		TransactionId *xmin, TransactionId *xmax,
+		TransactionId *replication_slot_xmin,
+		TransactionId *replication_slot_catalog_xmin);
+extern void polar_test_KnownAssignedXidsAdd(TransactionId from_xid, TransactionId to_xid);
+extern void polar_test_KnownAssignedXidsReset(void);
+extern void polar_test_set_curr_slot_num(int slot_num);
+extern void polar_test_set_next_slot_num(int slot_num);
+extern void polar_test_acquire_slot_lock(int slot_num, LWLockMode mode);
+extern void polar_test_release_slot_lock(int slot_num);
+/* POLAR end */
+
+/* POLAR csn */
+extern TransactionId GetRecentGlobalXminCSN(void);
+extern TransactionId GetRecentGlobalDataXminCSN(void);
+extern void ProcArrayResetXminCSN(PGPROC *proc, TransactionId new_xmin);
+extern void AdvanceOldestActiveXidCSNWrapper(TransactionId myXid);
+extern void polar_set_latestObservedXid(TransactionId latest_observed_xid);
+extern TransactionId polar_get_latestObservedXid(void);
+/* POLAR end */
 
 #endif							/* PROCARRAY_H */

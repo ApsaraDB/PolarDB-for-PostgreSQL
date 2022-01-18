@@ -22,6 +22,9 @@
 #endif
 
 #ifndef WIN32
+
+static pid_t polar_fetch_tpid(pid_t pid);
+
 /*
  * Wrapper for fork(). Return values are the same as those for fork():
  * -1 if the fork failed, 0 in the child process, and the PID of the
@@ -114,8 +117,47 @@ fork_process(void)
 		RAND_cleanup();
 #endif
 	}
+	else if(result > 0)
+	{
+		pid_t polar_tpid = polar_fetch_tpid(result);
+		if (polar_tpid >= 0)
+			ereport(LOG, (errmsg("forked new process, pid is %d, true pid is %d", result, polar_tpid)));
+	}
 
 	return result;
+}
+
+/*
+ * POLAR: fetch pid from file /proc/[pid]/sched.
+ * The pattern of first line in sched is as follows:
+ *    "process_name (tpid, #threads: integer)"
+ * The tpid is just what we need.
+ * The process_name's limit length is 16 bytes and pid is usually lower than
+ * 65536 in linux. So it's enough to set POLAR_PROC_MAX_LEN to 64.
+ * So does the sched's path.
+ *
+ * -1 if fetch work failed, otherwise tpid will be returned.
+ */
+static pid_t
+polar_fetch_tpid(pid_t pid)
+{
+#define POLAR_PROC_MAX_LEN 63
+#define STRINGIFY_HELPER(X) #X
+#define STRINGIFY(X) STRINGIFY_HELPER(X)
+	char sched[POLAR_PROC_MAX_LEN + 1] = {0x0};
+	char buf[POLAR_PROC_MAX_LEN + 1] = {0x0};
+	FILE *fp;
+	pid_t tpid = -1;
+	snprintf(sched, POLAR_PROC_MAX_LEN, "/proc/%d/sched", pid);
+	if (!(fp = fopen(sched, "r")))
+	{
+		ereport(WARNING, (errmsg("failed to open file %s\n", sched)));
+		return tpid;
+	}
+	else if (fscanf(fp, "%"STRINGIFY(POLAR_PROC_MAX_LEN)"[^0-9]%d", buf, &tpid) != 2)
+		ereport(WARNING, (errmsg("failed to read pid from file %s\n", sched)));
+	fclose(fp);
+	return tpid;
 }
 
 #endif							/* ! WIN32 */

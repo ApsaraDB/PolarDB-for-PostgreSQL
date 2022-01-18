@@ -53,6 +53,12 @@ chomp($xid);
 is($node->safe_psql('postgres', qq[SELECT txid_status('$xid');]),
 	'in progress', 'own xid is in-progres');
 
+
+# POLAR
+# When stop immediate, the xlog does not be flushed in time, sleep to wait
+# the xlog flushs.
+sleep(1);
+
 # Crash and restart the postmaster
 $node->stop('immediate');
 $node->start;

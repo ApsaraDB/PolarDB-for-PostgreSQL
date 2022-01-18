@@ -33,6 +33,16 @@ extern List *infer_arbiter_indexes(PlannerInfo *root);
 extern void estimate_rel_size(Relation rel, int32 *attr_widths,
 				  BlockNumber *pages, double *tuples, double *allvisfrac);
 
+/* POLAR px */
+extern void px_estimate_rel_size(RelOptInfo   *relOptInfo,
+								  Relation      rel,
+								  int32        *attr_widths,
+								  BlockNumber  *pages,
+								  double       *tuples,
+								  double       *allvisfrac);
+extern double px_estimate_partitioned_numtuples(Relation rel);
+/* POLAR end */
+
 extern int32 get_relation_data_width(Oid relid, int32 *attr_widths);
 
 extern bool relation_excluded_by_constraints(PlannerInfo *root,

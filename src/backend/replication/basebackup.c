@@ -42,6 +42,9 @@
 #include "utils/relcache.h"
 #include "utils/timestamp.h"
 
+/* POLAR */
+#include "postmaster/syslogger.h"
+#include "storage/polar_fd.h"
 
 typedef struct
 {
@@ -56,9 +59,12 @@ typedef struct
 
 
 static int64 sendDir(const char *path, int basepathlen, bool sizeonly,
-		List *tablespaces, bool sendtblspclinks);
+		List *tablespaces, bool sendtblspclinks, bool is_pfs, bool senddmafiles);
 static bool sendFile(const char *readfilename, const char *tarfilename,
 		 struct stat *statbuf, bool missing_ok);
+static bool
+sendPolarFile(const char *readfilename, const char *tarfilename, struct stat *statbuf,
+		 bool missing_ok);
 static void sendFileWithContent(const char *filename, const char *content);
 static int64 _tarWriteHeader(const char *filename, const char *linktarget,
 				struct stat *statbuf, bool sizeonly);
@@ -71,7 +77,7 @@ static void parse_basebackup_options(List *options, basebackup_options *opt);
 static void SendXlogRecPtrResult(XLogRecPtr ptr, TimeLineID tli);
 static int	compareWalFileNames(const void *a, const void *b);
 static void throttle(size_t increment);
-static bool is_checksummed_file(const char *fullpath, const char *filename);
+static bool is_checksummed_file(const char *fullpath, const char *filename, bool is_pfs);
 
 /* Was the backup currently in-progress initiated in recovery mode? */
 static bool backup_started_in_recovery = false;
@@ -83,6 +89,7 @@ static char *statrelpath = NULL;
  * Size of each block sent into the tar stream for larger files.
  */
 #define TAR_SEND_SIZE 32768
+#define POLAR_TAR_SEND_SIZE (TAR_SEND_SIZE * 64)
 
 /*
  * How frequently to throttle, as a fraction of the specified rate-second.
@@ -176,6 +183,9 @@ static const char *excludeDirContents[] =
 	/* Contents zeroed on startup, see StartupSUBTRANS(). */
 	"pg_subtrans",
 
+	/* POLAR: excluede pg_logindex, new backup will rebuild it's own logindex */
+	"pg_logindex",
+
 	/* end of list */
 	NULL
 };
@@ -209,6 +219,10 @@ static const struct exclude_list_item excludeFiles[] =
 	{"postmaster.pid", false},
 	{"postmaster.opts", false},
 
+	/* POLAR */
+	{"polar_node_static.conf", false},
+	/* POLAR end */
+
 	/* end of list */
 	{NULL, false}
 };
@@ -227,6 +241,16 @@ static const struct exclude_list_item noChecksumFiles[] = {
 #ifdef EXEC_BACKEND
 	{"config_exec_params", true},
 #endif
+
+	/* POLAR: Do not checksum for sqlprotect's files */
+	{"polar_sqlprotect.stat", false},
+	{"polar_sqlprotect.query", false},
+	{"polar_sqlprotect.qtxt", false},
+	{"polar_sql_protect_roles", false},
+	{"polar_sql_protect_rels", false},
+	{"polar_sql_protect_stats", false},
+	/* POLAR end */
+
 	{NULL, false}
 };
 
@@ -246,6 +270,7 @@ perform_base_backup(basebackup_options *opt)
 	StringInfo	tblspc_map_file = NULL;
 	int			datadirpathlen;
 	List	   *tablespaces = NIL;
+	char		polar_full_path[MAXPGPATH];
 
 	datadirpathlen = strlen(DataDir);
 
@@ -271,7 +296,8 @@ perform_base_backup(basebackup_options *opt)
 	PG_ENSURE_ERROR_CLEANUP(do_pg_abort_backup, BoolGetDatum(false));
 	{
 		ListCell   *lc;
-		tablespaceinfo *ti;
+		tablespaceinfo *tibase;
+		tablespaceinfo *tidata;
 
 		SendXlogRecPtrResult(startptr, starttli);
 
@@ -288,9 +314,20 @@ perform_base_backup(basebackup_options *opt)
 			statrelpath = pgstat_stat_directory;
 
 		/* Add a node for the base directory at the end */
-		ti = palloc0(sizeof(tablespaceinfo));
-		ti->size = opt->progress ? sendDir(".", 1, true, tablespaces, true) : -1;
-		tablespaces = lappend(tablespaces, ti);
+		tibase = palloc0(sizeof(tablespaceinfo));
+		tibase->size = opt->progress ? sendDir(".", 1, true, tablespaces, true, false, true) : -1;
+		tibase->polar_shared = false;
+		tablespaces = lappend(tablespaces, tibase);
+
+		/* if in polar, we need to send data dir */
+		if (POLAR_FILE_IN_SHARED_STORAGE())
+		{
+			tidata = palloc0(sizeof(tablespaceinfo));
+			tidata->size = opt->progress ? sendDir(polar_datadir, strlen(polar_datadir), 
+					true, tablespaces, true, true, true) : -1;
+			tidata->polar_shared = true;
+			tablespaces = lappend(tablespaces, tidata);
+		}
 
 		/* Send tablespace header */
 		SendBackupHeader(tablespaces);
@@ -335,28 +372,97 @@ perform_base_backup(basebackup_options *opt)
 			{
 				struct stat statbuf;
 
-				/* In the main tar, include the backup_label first... */
-				sendFileWithContent(BACKUP_LABEL_FILE, labelfile->data);
-
-				/*
-				 * Send tablespace_map file if required and then the bulk of
-				 * the files.
-				 */
-				if (tblspc_map_file && opt->sendtblspcmapfile)
+				if (ti->polar_shared)
 				{
-					sendFileWithContent(TABLESPACE_MAP, tblspc_map_file->data);
-					sendDir(".", 1, false, tablespaces, false);
+					sendDir(polar_datadir, strlen(polar_datadir), false, tablespaces, true, 
+							ti->polar_shared, !polar_enable_dma);
+
+					/* ... and pg_control after everything else. */
+					polar_make_file_path_level2(polar_full_path, XLOG_CONTROL_FILE);
+					if (polar_stat(polar_full_path, &statbuf) != 0)
+						ereport(ERROR,
+								(errcode_for_file_access(),
+								 errmsg("could not stat control file \"%s\": %m",
+										XLOG_CONTROL_FILE)));
+					sendPolarFile(polar_full_path, XLOG_CONTROL_FILE, &statbuf, false);
+
+					/* POLAR: backup polar_dma after pg_control */
+					if (polar_enable_dma)
+					{
+						polar_make_file_path_level2(polar_full_path, "polar_dma/consensus_meta");
+						if (polar_stat(polar_full_path, &statbuf) != 0)
+							ereport(ERROR,
+									(errcode_for_file_access(),
+									 errmsg("could not stat consensus meta file \"%s\": %m",
+										 "polar_dma/consensus_meta")));
+						sendPolarFile(polar_full_path, "polar_dma/consensus_meta", &statbuf, false);
+
+						polar_make_file_path_level2(polar_full_path, "polar_dma/consensus_log");
+						sendDir(polar_full_path, strlen(polar_datadir), false, NIL, false, 
+								ti->polar_shared, true);
+
+						polar_make_file_path_level2(polar_full_path, "polar_dma/consensus_cc_log");
+						sendDir(polar_full_path, strlen(polar_datadir), false, NIL, false, 
+								ti->polar_shared, true);
+					}
+					/* POLAR end */
 				}
 				else
-					sendDir(".", 1, false, tablespaces, true);
+				{
+					
+					if (POLAR_FILE_IN_SHARED_STORAGE())
+					{
+						/* In the main tar, include the backup_label first... */
+						sendFileWithContent(BACKUP_LABEL_FILE, labelfile->data);
 
-				/* ... and pg_control after everything else. */
-				if (lstat(XLOG_CONTROL_FILE, &statbuf) != 0)
-					ereport(ERROR,
-							(errcode_for_file_access(),
-							 errmsg("could not stat control file \"%s\": %m",
-									XLOG_CONTROL_FILE)));
-				sendFile(XLOG_CONTROL_FILE, XLOG_CONTROL_FILE, &statbuf, false);
+						if (tblspc_map_file && opt->sendtblspcmapfile)
+						{
+							sendFileWithContent(TABLESPACE_MAP, tblspc_map_file->data);
+							sendDir(".", 1, false, tablespaces, false, ti->polar_shared, false);
+						}
+						else
+							sendDir(".", 1, false, tablespaces, true, ti->polar_shared, false);
+					}
+					else
+					{
+						/* In the main tar, include the backup_label first... */
+						sendFileWithContent(BACKUP_LABEL_FILE, labelfile->data);
+
+						/*
+						* Send tablespace_map file if required and then the bulk of
+						* the files.
+						*/
+						if (tblspc_map_file && opt->sendtblspcmapfile)
+						{
+							sendFileWithContent(TABLESPACE_MAP, tblspc_map_file->data);
+							sendDir(".", 1, false, tablespaces, false, ti->polar_shared, !polar_enable_dma);
+						}
+						else
+							sendDir(".", 1, false, tablespaces, true, ti->polar_shared, !polar_enable_dma);
+
+						/* ... and pg_control after everything else. */
+						if (lstat(XLOG_CONTROL_FILE, &statbuf) != 0)
+							ereport(ERROR,
+									(errcode_for_file_access(),
+									errmsg("could not stat control file \"%s\": %m",
+											XLOG_CONTROL_FILE)));
+						sendFile(XLOG_CONTROL_FILE, XLOG_CONTROL_FILE, &statbuf, false);
+
+						/* POLAR: backup polar_dma after pg_control */
+						if (polar_enable_dma)
+						{
+							if (lstat("polar_dma/consensus_meta", &statbuf) != 0)
+								ereport(ERROR,
+										(errcode_for_file_access(),
+										 errmsg("could not stat control file \"%s\": %m",
+											 "polar_dma/consensus_meta")));
+							sendFile("polar_dma/consensus_meta", "polar_dma/consensus_meta", &statbuf, false);
+							sendDir("./polar_dma/consensus_log", 1, false, NIL, false, ti->polar_shared, true);
+							sendDir("./polar_dma/consensus_cc_log", 1, false, NIL, false, ti->polar_shared, true);
+						}
+						/* POLAR end */
+					}
+				}
 			}
 			else
 				sendTablespace(ti->path, false);
@@ -369,7 +475,10 @@ perform_base_backup(basebackup_options *opt)
 			 */
 			if (opt->includewal && ti->path == NULL)
 			{
-				Assert(lnext(lc) == NULL);
+				if (POLAR_FILE_IN_SHARED_STORAGE() && !ti->polar_shared)
+					pq_putemptymessage('c');	/* CopyDone */
+				else
+					Assert(lnext(lc) == NULL);
 			}
 			else
 				pq_putemptymessage('c');	/* CopyDone */
@@ -387,6 +496,7 @@ perform_base_backup(basebackup_options *opt)
 		 * required WAL files to it.
 		 */
 		char		pathbuf[MAXPGPATH];
+		char		polar_full_path[MAXPGPATH];
 		XLogSegNo	segno;
 		XLogSegNo	startsegno;
 		XLogSegNo	endsegno;
@@ -417,8 +527,9 @@ perform_base_backup(basebackup_options *opt)
 		XLByteToPrevSeg(endptr, endsegno, wal_segment_size);
 		XLogFileName(lastoff, ThisTimeLineID, endsegno, wal_segment_size);
 
-		dir = AllocateDir("pg_wal", false);
-		while ((de = ReadDir(dir, "pg_wal")) != NULL)
+		polar_make_file_path_level2(polar_full_path, "pg_wal");
+		dir = AllocateDir(polar_full_path, POLAR_FILE_IN_SHARED_STORAGE());
+		while ((de = ReadDir(dir, polar_full_path)) != NULL)
 		{
 			/* Does it look like a WAL segment, and is it in the range? */
 			if (IsXLogFileName(de->d_name) &&
@@ -505,16 +616,16 @@ perform_base_backup(basebackup_options *opt)
 		/* Ok, we have everything we need. Send the WAL files. */
 		for (i = 0; i < nWalFiles; i++)
 		{
-			FILE	   *fp;
+			int			fd;
 			char		buf[TAR_SEND_SIZE];
 			size_t		cnt;
 			pgoff_t		len = 0;
 
 			snprintf(pathbuf, MAXPGPATH, XLOGDIR "/%s", walFiles[i]);
+			polar_make_file_path_level3(polar_full_path, "pg_wal", walFiles[i]);
 			XLogFromFileName(walFiles[i], &tli, &segno, wal_segment_size);
 
-			fp = AllocateFile(pathbuf, "rb");
-			if (fp == NULL)
+			if ((fd = polar_open(polar_full_path, O_RDONLY | PG_BINARY, 0)) == -1)
 			{
 				int			save_errno = errno;
 
@@ -528,14 +639,14 @@ perform_base_backup(basebackup_options *opt)
 				errno = save_errno;
 				ereport(ERROR,
 						(errcode_for_file_access(),
-						 errmsg("could not open file \"%s\": %m", pathbuf)));
+						 errmsg("could not open file \"%s\": %m", polar_full_path)));
 			}
 
-			if (fstat(fileno(fp), &statbuf) != 0)
+			if (polar_stat(polar_full_path, &statbuf) != 0)
 				ereport(ERROR,
 						(errcode_for_file_access(),
 						 errmsg("could not stat file \"%s\": %m",
-								pathbuf)));
+								polar_full_path)));
 			if (statbuf.st_size != wal_segment_size)
 			{
 				CheckXLogRemoved(segno, tli);
@@ -547,9 +658,8 @@ perform_base_backup(basebackup_options *opt)
 			/* send the WAL file itself */
 			_tarWriteHeader(pathbuf, NULL, &statbuf, false);
 
-			while ((cnt = fread(buf, 1,
-								Min(sizeof(buf), wal_segment_size - len),
-								fp)) > 0)
+			while ((cnt = polar_read(fd, buf,
+							Min(sizeof(buf), wal_segment_size - len))) > 0)
 			{
 				CheckXLogRemoved(segno, tli);
 				/* Send the chunk as a CopyData message */
@@ -564,8 +674,6 @@ perform_base_backup(basebackup_options *opt)
 					break;
 			}
 
-			CHECK_FREAD_ERROR(fp, pathbuf);
-
 			if (len != wal_segment_size)
 			{
 				CheckXLogRemoved(segno, tli);
@@ -576,7 +684,7 @@ perform_base_backup(basebackup_options *opt)
 
 			/* wal_segment_size is a multiple of 512, so no need for padding */
 
-			FreeFile(fp);
+			polar_close(fd);
 
 			/*
 			 * Mark file as archived, otherwise files can get archived again
@@ -584,7 +692,7 @@ perform_base_backup(basebackup_options *opt)
 			 * walreceiver.c always doing an XLogArchiveForceDone() after a
 			 * complete segment.
 			 */
-			StatusFilePath(pathbuf, walFiles[i], ".done");
+			snprintf(pathbuf, MAXPGPATH, XLOGDIR "/archive_status/%s%s", walFiles[i], ".done");
 			sendFileWithContent(pathbuf, "");
 		}
 
@@ -602,16 +710,20 @@ perform_base_backup(basebackup_options *opt)
 			char	   *fname = lfirst(lc);
 
 			snprintf(pathbuf, MAXPGPATH, XLOGDIR "/%s", fname);
+			polar_make_file_path_level3(polar_full_path, "pg_wal", fname);
 
-			if (lstat(pathbuf, &statbuf) != 0)
+			if (polar_lstat(polar_full_path, &statbuf) != 0)
 				ereport(ERROR,
 						(errcode_for_file_access(),
 						 errmsg("could not stat file \"%s\": %m", pathbuf)));
 
-			sendFile(pathbuf, pathbuf, &statbuf, false);
+			if (POLAR_FILE_IN_SHARED_STORAGE())
+				sendPolarFile(polar_full_path, pathbuf, &statbuf, false);
+			else
+				sendFile(polar_full_path, pathbuf, &statbuf, false);
 
 			/* unconditionally mark file as archived */
-			StatusFilePath(pathbuf, fname, ".done");
+			snprintf(pathbuf, MAXPGPATH, XLOGDIR "/archive_status/%s%s", fname, ".done");
 			sendFileWithContent(pathbuf, "");
 		}
 
@@ -776,7 +888,6 @@ SendBaseBackup(BaseBackupCmd *cmd)
 	basebackup_options opt;
 
 	parse_basebackup_options(cmd->options, &opt);
-
 	WalSndSetState(WALSNDSTATE_BACKUP);
 
 	if (update_process_title)
@@ -809,7 +920,7 @@ SendBackupHeader(List *tablespaces)
 
 	/* Construct and send the directory information */
 	pq_beginmessage(&buf, 'T'); /* RowDescription */
-	pq_sendint16(&buf, 3);		/* 3 fields */
+	pq_sendint16(&buf, 4);		/* 4 fields */
 
 	/* First field - spcoid */
 	pq_sendstring(&buf, "spcoid");
@@ -837,6 +948,15 @@ SendBackupHeader(List *tablespaces)
 	pq_sendint16(&buf, 8);
 	pq_sendint32(&buf, 0);
 	pq_sendint16(&buf, 0);
+
+	/* Third field - shared_storage */
+	pq_sendstring(&buf, "shared_storage");
+	pq_sendint32(&buf, 0);
+	pq_sendint16(&buf, 0);
+	pq_sendint32(&buf, INT2OID);
+	pq_sendint16(&buf, 2);
+	pq_sendint32(&buf, 0);
+	pq_sendint16(&buf, 0);
 	pq_endmessage(&buf);
 
 	foreach(lc, tablespaces)
@@ -845,7 +965,7 @@ SendBackupHeader(List *tablespaces)
 
 		/* Send one datarow message */
 		pq_beginmessage(&buf, 'D');
-		pq_sendint16(&buf, 3);	/* number of columns */
+		pq_sendint16(&buf, 4);	/* number of columns */
 		if (ti->path == NULL)
 		{
 			pq_sendint32(&buf, -1); /* Length = -1 ==> NULL */
@@ -868,6 +988,16 @@ SendBackupHeader(List *tablespaces)
 		else
 			pq_sendint32(&buf, -1); /* NULL */
 
+		if (ti->polar_shared)
+		{
+			pq_sendint32(&buf, 1);
+			pq_sendbytes(&buf, "1", 1);
+		}
+		else
+		{
+			pq_sendint32(&buf, -1); /* Length = -1 ==> NULL */
+		}
+		
 		pq_endmessage(&buf);
 	}
 
@@ -1015,7 +1145,7 @@ sendTablespace(char *path, bool sizeonly)
 						   sizeonly);
 
 	/* Send all the files in the tablespace version directory */
-	size += sendDir(pathbuf, strlen(path), sizeonly, NIL, true);
+	size += sendDir(pathbuf, strlen(path), sizeonly, NIL, true, POLAR_FILE_IN_SHARED_STORAGE(), false);
 
 	return size;
 }
@@ -1034,11 +1164,12 @@ sendTablespace(char *path, bool sizeonly)
  */
 static int64
 sendDir(const char *path, int basepathlen, bool sizeonly, List *tablespaces,
-		bool sendtblspclinks)
+		bool sendtblspclinks, bool is_pfs, bool senddmafiles)
 {
 	DIR		   *dir;
 	struct dirent *de;
 	char		pathbuf[MAXPGPATH * 2];
+	char		pathbuf2[MAXPGPATH * 2];
 	struct stat statbuf;
 	int64		size = 0;
 	const char *lastDir;		/* Split last dir from parent path. */
@@ -1064,7 +1195,8 @@ sendDir(const char *path, int basepathlen, bool sizeonly, List *tablespaces,
 		 * Mark path as a database directory if the parent path is either
 		 * $PGDATA/base or a tablespace version path.
 		 */
-		if (strncmp(path, "./base", parentPathLen) == 0 ||
+		snprintf(pathbuf2, sizeof(pathbuf2), "%s/base", is_pfs ? polar_datadir : ".");
+		if (strncmp(path, pathbuf2, parentPathLen) == 0 ||
 			(parentPathLen >= (sizeof(TABLESPACE_VERSION_DIRECTORY) - 1) &&
 			 strncmp(lastDir - (sizeof(TABLESPACE_VERSION_DIRECTORY) - 1),
 					 TABLESPACE_VERSION_DIRECTORY,
@@ -1072,7 +1204,7 @@ sendDir(const char *path, int basepathlen, bool sizeonly, List *tablespaces,
 			isDbDir = true;
 	}
 
-	dir = AllocateDir(path, false);
+	dir = AllocateDir(path, is_pfs);
 	while ((de = ReadDir(dir, path)) != NULL)
 	{
 		int			excludeIdx;
@@ -1170,10 +1302,32 @@ sendDir(const char *path, int basepathlen, bool sizeonly, List *tablespaces,
 		snprintf(pathbuf, sizeof(pathbuf), "%s/%s", path, de->d_name);
 
 		/* Skip pg_control here to back up it last */
-		if (strcmp(pathbuf, "./global/pg_control") == 0)
+		snprintf(pathbuf2, sizeof(pathbuf2), "%s/global/pg_control", is_pfs ? polar_datadir : ".");
+		if (strcmp(pathbuf, pathbuf2) == 0)
 			continue;
 
-		if (lstat(pathbuf, &statbuf) != 0)
+		/*
+		 * POLAR: for security, we skip transmission of
+		 * pg_log/recovery.conf/pg_stat_statements files.
+		 */
+		snprintf(pathbuf2, MAXPGPATH, "%s/%s", is_pfs ? polar_datadir : ".", Log_directory);
+		if (strcmp(pathbuf, pathbuf2) == 0)
+			continue;
+
+		snprintf(pathbuf2, MAXPGPATH, "%s/%s", is_pfs ? polar_datadir : ".", RECOVERY_COMMAND_DONE);
+		if (strcmp(pathbuf, pathbuf2) == 0)
+			continue;
+
+		snprintf(pathbuf2, MAXPGPATH, "%s/pg_stat/pg_stat_statements.stat", is_pfs ? polar_datadir : ".");
+		if (strcmp(pathbuf, pathbuf2) == 0)
+			continue;
+
+		snprintf(pathbuf2, MAXPGPATH, "%s/pg_stat_tmp/pgss_query_texts.stat", is_pfs ? polar_datadir : ".");
+		if (strcmp(pathbuf,	pathbuf2) == 0)
+			continue;
+		/* POLAR end */
+
+		if (polar_lstat(pathbuf, &statbuf) != 0)
 		{
 			if (errno != ENOENT)
 				ereport(ERROR,
@@ -1198,6 +1352,25 @@ sendDir(const char *path, int basepathlen, bool sizeonly, List *tablespaces,
 			}
 		}
 
+		/* POLAR: ignore polar_datadir inside data_directory when is_pfs is false. */
+		if (!excludeFound && !is_pfs && POLAR_FILE_IN_SHARED_STORAGE())
+		{
+			char full_dir[MAXPGPATH];
+			char *tmp_dir, *tmp_polar_datadir;
+			snprintf(full_dir, MAXPGPATH, "%s/%s", path, de->d_name);
+			tmp_dir = realpath(full_dir, NULL);
+			tmp_polar_datadir = realpath(polar_path_remove_protocol(polar_datadir), NULL);
+			if (tmp_dir != NULL &&
+				tmp_polar_datadir != NULL &&
+				strcmp(tmp_polar_datadir, tmp_dir) == 0)
+				excludeFound = true;
+			if (tmp_dir)
+				free(tmp_dir);
+			if (tmp_polar_datadir)
+				free(tmp_polar_datadir);
+		}
+		/* POLAR end */
+
 		if (excludeFound)
 			continue;
 
@@ -1217,7 +1390,8 @@ sendDir(const char *path, int basepathlen, bool sizeonly, List *tablespaces,
 		 * WAL archive anyway. But include it as an empty directory anyway, so
 		 * we get permissions right.
 		 */
-		if (strcmp(pathbuf, "./pg_wal") == 0)
+		snprintf(pathbuf2, MAXPGPATH, "%s/pg_wal", is_pfs ? polar_datadir : ".");
+		if (strcmp(pathbuf, pathbuf2) == 0)
 		{
 			/* If pg_wal is a symlink, write it as a directory anyway */
 			size += _tarWriteDir(pathbuf, basepathlen, &statbuf, sizeonly);
@@ -1232,8 +1406,23 @@ sendDir(const char *path, int basepathlen, bool sizeonly, List *tablespaces,
 			continue;			/* don't recurse into pg_wal */
 		}
 
+		/* Skip polar_dma meta file if not required */
+		snprintf(pathbuf2, sizeof(pathbuf2), "%s/polar_dma/consensus_meta", path);
+		if (strcmp(pathbuf, pathbuf2) == 0 && !senddmafiles)
+			continue;
+
+		/* Skip polar_dma log files if not required */
+		snprintf(pathbuf2, sizeof(pathbuf2), "%s/polar_dma/consensus", path);
+		if (strncmp(pathbuf, pathbuf2, strlen(pathbuf2)) == 0 && !senddmafiles)
+		{
+			/* don't recurse into polar_dma/consensus_log & consensus_cc_log */
+			size += _tarWriteDir(pathbuf, basepathlen, &statbuf, sizeonly);
+			continue; 
+		}
+
 		/* Allow symbolic links in pg_tblspc only */
-		if (strcmp(path, "./pg_tblspc") == 0 &&
+		snprintf(pathbuf2, MAXPGPATH, "%s/pg_tblspc", is_pfs ? polar_datadir : ".");
+		if (strcmp(path, pathbuf2) == 0 && !is_pfs &&
 #ifndef WIN32
 			S_ISLNK(statbuf.st_mode)
 #else
@@ -1310,19 +1499,26 @@ sendDir(const char *path, int basepathlen, bool sizeonly, List *tablespaces,
 			/*
 			 * skip sending directories inside pg_tblspc, if not required.
 			 */
-			if (strcmp(pathbuf, "./pg_tblspc") == 0 && !sendtblspclinks)
+			snprintf(pathbuf2, MAXPGPATH, "%s/pg_tblspc", is_pfs ? polar_datadir : ".");
+			if (strcmp(pathbuf, pathbuf2) == 0 && !sendtblspclinks)
 				skip_this_dir = true;
 
 			if (!skip_this_dir)
-				size += sendDir(pathbuf, basepathlen, sizeonly, tablespaces, sendtblspclinks);
+				size += sendDir(pathbuf, basepathlen, sizeonly, tablespaces, sendtblspclinks, is_pfs, senddmafiles);
 		}
 		else if (S_ISREG(statbuf.st_mode))
 		{
 			bool		sent = false;
 
 			if (!sizeonly)
-				sent = sendFile(pathbuf, pathbuf + basepathlen + 1, &statbuf,
+			{
+				if (is_pfs)
+					sent = sendPolarFile(pathbuf, pathbuf + basepathlen + 1, &statbuf,
 								true);
+				else
+					sent = sendFile(pathbuf, pathbuf + basepathlen + 1, &statbuf,
+								true);
+			}
 
 			if (sent || sizeonly)
 			{
@@ -1346,12 +1542,21 @@ sendDir(const char *path, int basepathlen, bool sizeonly, List *tablespaces,
  * are some files that are explicitly excluded.
  */
 static bool
-is_checksummed_file(const char *fullpath, const char *filename)
+is_checksummed_file(const char *fullpath, const char *filename, bool is_pfs)
 {
+	bool 	checkdir = false;
+	int 	polardatalen = strlen(polar_datadir);
+
+	if (is_pfs)
+		checkdir = strncmp(fullpath + polardatalen, "/global", 7) == 0 ||
+					strncmp(fullpath + polardatalen, "/base", 5) == 0;
+	else
+		checkdir = strncmp(fullpath, "./global/", 9) == 0 ||
+					strncmp(fullpath, "./base/", 7) == 0 ||
+					strncmp(fullpath, "/", 1) == 0;	
+
 	/* Check that the file is in a tablespace */
-	if (strncmp(fullpath, "./global/", 9) == 0 ||
-		strncmp(fullpath, "./base/", 7) == 0 ||
-		strncmp(fullpath, "/", 1) == 0)
+	if (checkdir)
 	{
 		int			excludeIdx;
 
@@ -1431,7 +1636,7 @@ sendFile(const char *readfilename, const char *tarfilename, struct stat *statbuf
 		 */
 		filename = last_dir_separator(readfilename) + 1;
 
-		if (is_checksummed_file(readfilename, filename))
+		if (is_checksummed_file(readfilename, filename, false))
 		{
 			verify_checksum = true;
 
@@ -1629,6 +1834,238 @@ sendFile(const char *readfilename, const char *tarfilename, struct stat *statbuf
 	return true;
 }
 
+/*
+ * Given the member, write the TAR header & send the file.
+ *
+ * If 'missing_ok' is true, will not throw an error if the file is not found.
+ *
+ * Returns true if the file was successfully sent, false if 'missing_ok',
+ * and the file did not exist.
+ */
+static bool
+sendPolarFile(const char *readfilename, const char *tarfilename, struct stat *statbuf,
+		 bool missing_ok)
+{
+	int	   		fd = -1;
+	BlockNumber blkno = 0;
+	bool		block_retry = false;
+	char		buf[POLAR_TAR_SEND_SIZE];
+	uint16		checksum;
+	int			checksum_failures = 0;
+	off_t		cnt;
+	int			i;
+	pgoff_t		len = 0;
+	char	   *page;
+	size_t		pad;
+	PageHeader	phdr;
+	int			segmentno = 0;
+	char	   *segmentpath;
+	bool		verify_checksum = false;
+
+	if ((fd = polar_open(readfilename, O_RDONLY | PG_BINARY, 0)) == -1)
+	{
+		if (errno == ENOENT && missing_ok)
+			return false;
+		ereport(ERROR,
+				(errcode_for_file_access(),
+				 errmsg("could not open file \"%s\": %m", readfilename)));
+	}
+
+	_tarWriteHeader(tarfilename, NULL, statbuf, false);
+
+	if (!noverify_checksums && DataChecksumsEnabled())
+	{
+		char	   *filename;
+
+		/*
+		 * Get the filename (excluding path).  As last_dir_separator()
+		 * includes the last directory separator, we chop that off by
+		 * incrementing the pointer.
+		 */
+		filename = last_dir_separator(readfilename) + 1;
+
+		if (is_checksummed_file(readfilename, filename, true))
+		{
+			verify_checksum = true;
+
+			/*
+			 * Cut off at the segment boundary (".") to get the segment number
+			 * in order to mix it into the checksum.
+			 */
+			segmentpath = strstr(filename, ".");
+			if (segmentpath != NULL)
+			{
+				segmentno = atoi(segmentpath + 1);
+				if (segmentno == 0)
+					ereport(ERROR,
+							(errmsg("invalid segment number %d in file \"%s\"",
+									segmentno, filename)));
+			}
+		}
+	}
+
+	;
+	while ((cnt = polar_read(fd, buf, Min(sizeof(buf), statbuf->st_size - len))) > 0)
+	{
+		/*
+		 * The checksums are verified at block level, so we iterate over the
+		 * buffer in chunks of BLCKSZ, after making sure that
+		 * POLAR_TAR_SEND_SIZE/buf is divisible by BLCKSZ and we read a multiple of
+		 * BLCKSZ bytes.
+		 */
+		Assert(POLAR_TAR_SEND_SIZE % BLCKSZ == 0);
+
+		if (verify_checksum && (cnt % BLCKSZ != 0))
+		{
+			ereport(WARNING,
+					(errmsg("cannot verify checksum in file \"%s\", block "
+							"%d: read buffer size %d and page size %d "
+							"differ",
+							readfilename, blkno, (int) cnt, BLCKSZ)));
+			verify_checksum = false;
+		}
+
+		if (verify_checksum)
+		{
+			for (i = 0; i < cnt / BLCKSZ; i++)
+			{
+				page = buf + BLCKSZ * i;
+
+				/*
+				 * Only check pages which have not been modified since the
+				 * start of the base backup. Otherwise, they might have been
+				 * written only halfway and the checksum would not be valid.
+				 * However, replaying WAL would reinstate the correct page in
+				 * this case. We also skip completely new pages, since they
+				 * don't have a checksum yet.
+				 */
+				if (!PageIsNew(page) && PageGetLSN(page) < startptr)
+				{
+					checksum = pg_checksum_page((char *) page, blkno + segmentno * RELSEG_SIZE);
+					phdr = (PageHeader) page;
+					if (phdr->pd_checksum != checksum)
+					{
+						/*
+						 * Retry the block on the first failure.  It's
+						 * possible that we read the first 4K page of the
+						 * block just before postgres updated the entire block
+						 * so it ends up looking torn to us.  We only need to
+						 * retry once because the LSN should be updated to
+						 * something we can ignore on the next pass.  If the
+						 * error happens again then it is a true validation
+						 * failure.
+						 */
+						if (block_retry == false)
+						{
+							/* Reread the failed block */
+							if (polar_lseek(fd, -(cnt - BLCKSZ * i), SEEK_CUR) == -1)
+							{
+								ereport(ERROR,
+										(errcode_for_file_access(),
+										 errmsg("could not lseek in file \"%s\": %m",
+												readfilename)));
+							}
+
+							if (polar_read(fd, buf + BLCKSZ * i, BLCKSZ) != BLCKSZ)
+							{
+								ereport(ERROR,
+										(errcode_for_file_access(),
+										 errmsg("could not reread block %d of file \"%s\": %m",
+												blkno, readfilename)));
+							}
+
+							if (polar_lseek(fd, cnt - BLCKSZ * i - BLCKSZ, SEEK_CUR) == -1)
+							{
+								ereport(ERROR,
+										(errcode_for_file_access(),
+										 errmsg("could not fseek in file \"%s\": %m",
+												readfilename)));
+							}
+
+							/* Set flag so we know a retry was attempted */
+							block_retry = true;
+
+							/* Reset loop to validate the block again */
+							i--;
+							continue;
+						}
+
+						checksum_failures++;
+
+						if (checksum_failures <= 5)
+							ereport(WARNING,
+									(errmsg("checksum verification failed in "
+											"file \"%s\", block %d: calculated "
+											"%X but expected %X",
+											readfilename, blkno, checksum,
+											phdr->pd_checksum)));
+						if (checksum_failures == 5)
+							ereport(WARNING,
+									(errmsg("further checksum verification "
+											"failures in file \"%s\" will not "
+											"be reported", readfilename)));
+					}
+				}
+				block_retry = false;
+				blkno++;
+			}
+		}
+
+		/* Send the chunk as a CopyData message */
+		if (pq_putmessage('d', buf, cnt))
+			ereport(ERROR,
+					(errmsg("base backup could not send data, aborting backup")));
+
+		len += cnt;
+		throttle(cnt);
+
+		if (len >= statbuf->st_size)
+		{
+			/*
+			 * Reached end of file. The file could be longer, if it was
+			 * extended while we were sending it, but for a base backup we can
+			 * ignore such extended data. It will be restored from WAL.
+			 */
+			break;
+		}
+	}
+
+	/* If the file was truncated while we were sending it, pad it with zeros */
+	if (len < statbuf->st_size)
+	{
+		MemSet(buf, 0, sizeof(buf));
+		while (len < statbuf->st_size)
+		{
+			cnt = Min(sizeof(buf), statbuf->st_size - len);
+			pq_putmessage('d', buf, cnt);
+			len += cnt;
+			throttle(cnt);
+		}
+	}
+
+	/*
+	 * Pad to 512 byte boundary, per tar format requirements. (This small
+	 * piece of data is probably not worth throttling.)
+	 */
+	pad = ((len + 511) & ~511) - len;
+	if (pad > 0)
+	{
+		MemSet(buf, 0, pad);
+		pq_putmessage('d', buf, pad);
+	}
+
+	polar_close(fd);
+
+	if (checksum_failures > 1)
+	{
+		ereport(WARNING,
+				(errmsg("file \"%s\" has a total of %d checksum verification "
+						"failures", readfilename, checksum_failures)));
+	}
+	total_checksum_failures += checksum_failures;
+
+	return true;
+}
 
 static int64
 _tarWriteHeader(const char *filename, const char *linktarget,

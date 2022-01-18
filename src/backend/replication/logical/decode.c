@@ -201,6 +201,8 @@ DecodeXLogOp(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 		case XLOG_FPI:
 		/* POLAR: for fullpage snapshot */
 		case XLOG_FPSI:
+		case XLOG_CSNLOG_ZEROPAGE:
+		case XLOG_CSNLOG_TRUNCATE:
 		/* POLAR end */
 		case XLOG_FPI_MULTI:
 			break;

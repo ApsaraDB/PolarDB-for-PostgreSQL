@@ -159,4 +159,5 @@ extern void RestoreReindexState(void *reindexstate);
 
 extern void IndexSetParentIndex(Relation idx, Oid parentOid);
 
+extern Datum polar_get_root_ctid(HeapTuple tuple, Buffer buffer, ExprContext *econtext);
 #endif							/* INDEX_H */

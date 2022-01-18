@@ -24,12 +24,15 @@
 #include "pgtar.h"
 #include "common/file_perm.h"
 #include "common/file_utils.h"
+#include "common/polar_fs_fe.h"
 
 #include "receivelog.h"
 #include "streamutil.h"
 
 /* Size of zlib buffer for .tar.gz */
 #define ZLIB_OUT_SIZE 4096
+
+static bool polar_is_write_pfs = false;
 
 /*-------------------------------------------------------------------------
  * WalDirectoryMethod - write wal to a directory looking like pg_wal
@@ -90,7 +93,7 @@ dir_open_for_write(const char *pathname, const char *temp_suffix, size_t pad_to_
 	 * does not do any system calls to fsync() to make changes permanent on
 	 * disk.
 	 */
-	fd = open(tmppath, O_WRONLY | O_CREAT | PG_BINARY, pg_file_create_mode);
+	fd = polar_open(tmppath, O_WRONLY | O_CREAT | PG_BINARY, pg_file_create_mode, polar_is_write_pfs);
 	if (fd < 0)
 		return NULL;
 
@@ -116,28 +119,54 @@ dir_open_for_write(const char *pathname, const char *temp_suffix, size_t pad_to_
 	/* Do pre-padding on non-compressed files */
 	if (pad_to_size && dir_data->compression == 0)
 	{
-		PGAlignedXLogBlock zerobuf;
-		int			bytes;
-
-		memset(zerobuf.data, 0, XLOG_BLCKSZ);
-		for (bytes = 0; bytes < pad_to_size; bytes += XLOG_BLCKSZ)
+		if (polar_is_write_pfs)
 		{
-			errno = 0;
-			if (write(fd, zerobuf.data, XLOG_BLCKSZ) != XLOG_BLCKSZ)
+			PolarAlignedXLogBlock zerobuf;
+			int			bytes;
+
+			memset(zerobuf.data, 0,	MAX_SEND_SIZE);
+			for (bytes = 0; bytes < pad_to_size; bytes += MAX_SEND_SIZE)
 			{
-				int			save_errno = errno;
+				errno = 0;
+				if (polar_write(fd, zerobuf.data,	MAX_SEND_SIZE, polar_is_write_pfs) != MAX_SEND_SIZE)
+				{
+					int			save_errno = errno;
 
-				close(fd);
+					polar_close(fd, polar_is_write_pfs);
 
-				/*
-				 * If write didn't set errno, assume problem is no disk space.
-				 */
-				errno = save_errno ? save_errno : ENOSPC;
-				return NULL;
+					/*
+						* If write didn't set errno, assume problem is no disk space.
+						*/
+					errno = save_errno ? save_errno : ENOSPC;
+					return NULL;
+				}
+			}
+		}
+		else
+		{
+			PGAlignedXLogBlock zerobuf;
+			int			bytes;
+
+			memset(zerobuf.data, 0, XLOG_BLCKSZ);
+			for (bytes = 0; bytes < pad_to_size; bytes += XLOG_BLCKSZ)
+			{
+				errno = 0;
+				if (polar_write(fd, zerobuf.data, XLOG_BLCKSZ, polar_is_write_pfs) != XLOG_BLCKSZ)
+				{
+					int			save_errno = errno;
+
+					polar_close(fd, polar_is_write_pfs);
+
+					/*
+					* If write didn't set errno, assume problem is no disk space.
+					*/
+					errno = save_errno ? save_errno : ENOSPC;
+					return NULL;
+				}
 			}
 		}
 
-		if (lseek(fd, 0, SEEK_SET) != 0)
+		if (polar_lseek(fd, 0, SEEK_SET, polar_is_write_pfs) != 0)
 		{
 			int			save_errno = errno;
 
@@ -155,8 +184,8 @@ dir_open_for_write(const char *pathname, const char *temp_suffix, size_t pad_to_
 	 */
 	if (dir_data->sync)
 	{
-		if (fsync_fname(tmppath, false, progname) != 0 ||
-			fsync_parent_path(tmppath, progname) != 0)
+		if (polar_fsync_fname(tmppath, false, progname, polar_is_write_pfs) != 0 ||
+			polar_fsync_parent_path(tmppath, progname, polar_is_write_pfs) != 0)
 		{
 #ifdef HAVE_LIBZ
 			if (dir_data->compression > 0)
@@ -196,7 +225,7 @@ dir_write(Walfile f, const void *buf, size_t count)
 		r = (ssize_t) gzwrite(df->gzfp, buf, count);
 	else
 #endif
-		r = write(df->fd, buf, count);
+		r = polar_write(df->fd, buf, count, polar_is_write_pfs);
 	if (r > 0)
 		df->currpos += r;
 	return r;
@@ -226,7 +255,7 @@ dir_close(Walfile f, WalCloseMethod method)
 		r = gzclose(df->gzfp);
 	else
 #endif
-		r = close(df->fd);
+		r = polar_close(df->fd, polar_is_write_pfs);
 
 	if (r == 0)
 	{
@@ -244,7 +273,7 @@ dir_close(Walfile f, WalCloseMethod method)
 			snprintf(tmppath2, sizeof(tmppath2), "%s/%s%s",
 					 dir_data->basedir, df->pathname,
 					 dir_data->compression > 0 ? ".gz" : "");
-			r = durable_rename(tmppath, tmppath2, progname);
+			r = polar_durable_rename(tmppath, tmppath2, progname, polar_is_write_pfs);
 		}
 		else if (method == CLOSE_UNLINK)
 		{
@@ -253,7 +282,7 @@ dir_close(Walfile f, WalCloseMethod method)
 					 dir_data->basedir, df->pathname,
 					 dir_data->compression > 0 ? ".gz" : "",
 					 df->temp_suffix ? df->temp_suffix : "");
-			r = unlink(tmppath);
+			r = polar_unlink(tmppath, polar_is_write_pfs);
 		}
 		else
 		{
@@ -264,9 +293,9 @@ dir_close(Walfile f, WalCloseMethod method)
 			 */
 			if (dir_data->sync)
 			{
-				r = fsync_fname(df->fullpath, false, progname);
+				r = polar_fsync_fname(df->fullpath, false, progname, polar_is_write_pfs);
 				if (r == 0)
-					r = fsync_parent_path(df->fullpath, progname);
+					r = polar_fsync_parent_path(df->fullpath, progname, polar_is_write_pfs);
 			}
 		}
 	}
@@ -296,7 +325,7 @@ dir_sync(Walfile f)
 	}
 #endif
 
-	return fsync(((DirectoryMethodFile *) f)->fd);
+	return polar_fsync(((DirectoryMethodFile *) f)->fd, polar_is_write_pfs);
 }
 
 static ssize_t
@@ -308,7 +337,7 @@ dir_get_file_size(const char *pathname)
 	snprintf(tmppath, sizeof(tmppath), "%s/%s",
 			 dir_data->basedir, pathname);
 
-	if (stat(tmppath, &statbuf) != 0)
+	if (polar_stat(tmppath, &statbuf, polar_is_write_pfs) != 0)
 		return -1;
 
 	return statbuf.st_size;
@@ -323,10 +352,10 @@ dir_existsfile(const char *pathname)
 	snprintf(tmppath, sizeof(tmppath), "%s/%s",
 			 dir_data->basedir, pathname);
 
-	fd = open(tmppath, O_RDONLY | PG_BINARY, 0);
+	fd = polar_open(tmppath, O_RDONLY | PG_BINARY, 0, polar_is_write_pfs);
 	if (fd < 0)
 		return false;
-	close(fd);
+	polar_close(fd, polar_is_write_pfs);
 	return true;
 }
 
@@ -339,7 +368,7 @@ dir_finish(void)
 		 * Files are fsynced when they are closed, but we need to fsync the
 		 * directory entry here as well.
 		 */
-		if (fsync_fname(dir_data->basedir, true, progname) != 0)
+		if (polar_fsync_fname(dir_data->basedir, true, progname, polar_is_write_pfs) != 0)
 			return false;
 	}
 	return true;
@@ -347,10 +376,11 @@ dir_finish(void)
 
 
 WalWriteMethod *
-CreateWalDirectoryMethod(const char *basedir, int compression, bool sync)
+CreateWalDirectoryMethod(const char *basedir, int compression, bool sync, bool is_pfs)
 {
 	WalWriteMethod *method;
 
+	polar_is_write_pfs = is_pfs;
 	method = pg_malloc0(sizeof(WalWriteMethod));
 	method->open_for_write = dir_open_for_write;
 	method->write = dir_write;

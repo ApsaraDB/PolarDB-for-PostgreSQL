@@ -61,4 +61,9 @@ extern XLogRecPtr XLogSaveBufferForHint(Buffer buffer, bool buffer_std);
 
 extern void InitXLogInsert(void);
 
+/* POLAR: Gist sort*/
+extern bool polar_compress_block_in_log(char *page, uint16 hole_offset, uint16 hole_length,
+							char *dest, uint16 *dlen, uint32 extra_bytes_with_hole);
+extern void polar_flashback_log_insert_from_xlog(XLogRecPtr redo_lsn, uint8 xl_info);
+/* POLAR End*/
 #endif							/* XLOGINSERT_H */

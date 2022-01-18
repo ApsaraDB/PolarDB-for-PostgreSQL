@@ -2,7 +2,7 @@
  *
  * polar_bitpos.h
  *   Macro to get bit pos from uin64
- *
+ * 
  * Copyright (c) 2020, Alibaba Group Holding Limited
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,9 +16,9 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  *
+ *
  * src/include/utils/polar_bitpos.h
  *
- * Copyright (c) 2019, Alibaba.inc
  *-------------------------------------------------------------------------
  */
 #ifndef POLAR_BITPOS_H

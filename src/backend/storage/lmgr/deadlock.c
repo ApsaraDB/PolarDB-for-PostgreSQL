@@ -1111,13 +1111,14 @@ DeadLockReport(void)
 		if (i > 0)
 			appendStringInfoChar(&clientbuf, '\n');
 
+		/* POLAR: return virtual pid if available */
 		appendStringInfo(&clientbuf,
 						 _("Process %d waits for %s on %s; blocked by process %d."),
-						 info->pid,
+						 polar_pgstat_get_virtual_pid(info->pid, false),
 						 GetLockmodeName(info->locktag.locktag_lockmethodid,
 										 info->lockmode),
 						 locktagbuf.data,
-						 nextpid);
+						 polar_pgstat_get_virtual_pid(nextpid, false));
 	}
 
 	/* Duplicate all the above for the server ... */
@@ -1130,9 +1131,10 @@ DeadLockReport(void)
 
 		appendStringInfoChar(&logbuf, '\n');
 
+		/* POLAR: return virtual pid if available */
 		appendStringInfo(&logbuf,
 						 _("Process %d: %s"),
-						 info->pid,
+						 polar_pgstat_get_virtual_pid(info->pid, false),
 						 pgstat_get_backend_current_activity(info->pid, false));
 	}
 

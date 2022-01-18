@@ -64,6 +64,11 @@ typedef struct SnapshotData
 	 * the effects of all older XIDs except those listed in the snapshot. xmin
 	 * is stored as an optimization to avoid needing to search the XID arrays
 	 * for most tuples.
+	 * 
+	 * POLAR
+	 * An MVCC snapshot can see the effects of those XIDs that committed
+	 * before snapshot csn. xmin and xmax are stored as an optimization, to
+	 * avoid checking the xmin/xmax commit csn for most tuples.
 	 */
 	TransactionId xmin;			/* all XID < xmin are visible to me */
 	TransactionId xmax;			/* all XID >= xmax are invisible to me */
@@ -75,6 +80,9 @@ typedef struct SnapshotData
 	 * it contains *committed* transactions between xmin and xmax.
 	 *
 	 * note: all ids in xip[] satisfy xmin <= xip[i] < xmax
+	 * 
+	 * POLAR
+	 * These fields not needed in polar csn mode
 	 */
 	TransactionId *xip;
 	uint32		xcnt;			/* # of xact ids in xip[] */
@@ -87,10 +95,30 @@ typedef struct SnapshotData
 	 *
 	 * note: all ids in subxip[] are >= xmin, but we don't bother filtering
 	 * out any that are >= xmax
+	 * 
+	 * POLAR
+	 * Used only in a historic MVCC snapshot, used in logical decoding.
+	 * subxip contains *all* xids assigned to the replayed transaction,
+	 * including the toplevel xid. 
 	 */
 	TransactionId *subxip;
 	int32		subxcnt;		/* # of xact ids in subxip[] */
 	bool		suboverflowed;	/* has the subxip array overflowed? */
+
+	/* POLAR csn */
+
+	/*
+	 * This snapshot can see the effects of all transactions with CSN <
+	 * polar_snapshot_csn.
+	 */
+	CommitSeqNo	polar_snapshot_csn;
+
+	/*
+	 * Wether a xid snapshot generated from csn snapshot
+	 */
+	bool        polar_csn_xid_snapshot;
+
+    /* POLAR end */
 
 	bool		takenDuringRecovery;	/* recovery-shaped snapshot? */
 	bool		copied;			/* false if it's a static snapshot */

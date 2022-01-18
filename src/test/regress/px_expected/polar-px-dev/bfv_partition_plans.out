@@ -1,0 +1,2013 @@
+-- start_matchsubs
+-- m/((Mon|Tue|Wed|Thu|Fri|Sat|Sun) (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) (0[1-9]|[12][0-9]|3[01]) ([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](.[0-9]+)? (?!0000)[0-9]{4}.*)+(['"])/
+-- s/((Mon|Tue|Wed|Thu|Fri|Sat|Sun) (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) (0[1-9]|[12][0-9]|3[01]) ([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](.[0-9]+)? (?!0000)[0-9]{4}.*)+(['"])/xxx xx xx xx:xx:xx xxxx"/
+-- end_matchsubs
+/*--EXPLAIN_QUERY_BEGIN*/
+create schema bfv_partition_plans;
+set search_path=bfv_partition_plans;
+--
+-- Initial setup for all the partitioning test for this suite
+--
+-- start_ignore
+CREATE LANGUAGE plpythonu;
+ERROR:  language "plpythonu" already exists
+-- end_ignore
+create or replace function count_operator(query text, operator text) returns int as
+$$
+rv = plpy.execute('EXPLAIN ' + query)
+search_text = operator
+result = 0
+for i in range(len(rv)):
+    cur_line = rv[i]['QUERY PLAN']
+    if search_text.lower() in cur_line.lower():
+        result = result+1
+return result
+$$
+language plpython3u;
+ERROR:  language "plpython3u" does not exist
+HINT:  Use CREATE EXTENSION to load the language into the database.
+create or replace function find_operator(query text, operator_name text) returns text as
+$$
+rv = plpy.execute('EXPLAIN ' + query)
+search_text = operator_name
+result = ['false']
+for i in range(len(rv)):
+    cur_line = rv[i]['QUERY PLAN']
+    if search_text.lower() in cur_line.lower():
+        result = ['true']
+        break
+return result
+$$
+language plpython3u;
+ERROR:  language "plpython3u" does not exist
+HINT:  Use CREATE EXTENSION to load the language into the database.
+-- Test UPDATE that moves row from one partition to another. The partitioning
+-- key is also the distribution key in this case.
+create table mpp3061 (i int) partition by range(i);
+CREATE TABLE mpp3061_1 PARTITION of mpp3061 for values from (1) to (2);
+CREATE TABLE mpp3061_2 PARTITION of mpp3061 for values from (2) to (3);
+CREATE TABLE mpp3061_3 PARTITION of mpp3061 for values from (3) to (4);
+CREATE TABLE mpp3061_4 PARTITION of mpp3061 for values from (4) to (5);
+insert into mpp3061 values(1);
+update mpp3061 set i = 2 where i = 1;
+select tableoid::regclass, * from mpp3061 where i = 2;
+ tableoid  | i 
+-----------+---
+ mpp3061_2 | 2
+(1 row)
+
+                             QUERY PLAN                              
+---------------------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: ((mpp3061_2.tableoid)::regclass), mpp3061_2.i
+   ->  Result
+         Output: mpp3061_2.tableoid, mpp3061_2.i
+         ->  Append
+               ->  Partial Seq Scan on bfv_partition_plans.mpp3061_2
+                     Output: mpp3061_2.i, mpp3061_2.tableoid
+                     Filter: (mpp3061_2.i = 2)
+ Optimizer: PolarDB PX Optimizer
+(9 rows)
+
+drop table mpp3061;
+--
+-- Tests if it produces SIGSEGV from "select from partition_table group by rollup or cube function"
+--
+-- SETUP
+create table mpp7980
+(
+ month_id date,
+ bill_stmt_id  character varying(30),
+ cust_type     character varying(10),
+ subscription_status      character varying(30),
+ voice_call_min           numeric(15,2),
+ minute_per_call          numeric(15,2),
+ subscription_id          character varying(15)
+)
+  PARTITION BY RANGE(month_id);
+CREATE TABLE mpp7980_1 PARTITION of mpp7980 for values from ('2009-02-01') to ('2009-03-01');
+CREATE TABLE mpp7980_2 PARTITION of mpp7980 for values from ('2009-03-01') to ('2009-04-01');
+CREATE TABLE mpp7980_3 PARTITION of mpp7980 for values from ('2009-04-01') to ('2009-05-01');
+CREATE TABLE mpp7980_4 PARTITION of mpp7980 for values from ('2009-05-01') to ('2009-06-01');
+CREATE TABLE mpp7980_5 PARTITION of mpp7980 for values from ('2009-06-01') to ('2009-07-01');
+CREATE TABLE mpp7980_6 PARTITION of mpp7980 for values from ('2009-07-01') to ('2009-08-01');
+-- TEST
+select count_operator('select cust_type, subscription_status,count(distinct subscription_id),sum(voice_call_min),sum(minute_per_call) from mpp7980 where month_id =E''2009-04-01'' group by rollup(1,2);','SIGSEGV');
+ERROR:  function count_operator(unknown, unknown) does not exist
+LINE 1: select count_operator('select cust_type, subscription_status...
+               ^
+HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
+insert into mpp7980 values('2009-04-01','xyz','zyz','1',1,1,'1');
+insert into mpp7980 values('2009-04-01','zxyz','zyz','2',2,1,'1');
+insert into mpp7980 values('2009-03-03','xyz','zyz','4',1,3,'1');
+select cust_type, subscription_status,count(distinct subscription_id),sum(voice_call_min),sum(minute_per_call) from mpp7980 where month_id ='2009-04-01' group by rollup(1,2);
+ cust_type | subscription_status | count | sum  | sum  
+-----------+---------------------+-------+------+------
+ zyz       | 1                   |     1 | 1.00 | 1.00
+ zyz       | 2                   |     1 | 2.00 | 1.00
+ zyz       |                     |     1 | 3.00 | 2.00
+           |                     |     1 | 3.00 | 2.00
+(4 rows)
+
+-- CLEANUP
+drop table mpp7980;
+-- ************ORCA ENABLED**********
+--
+-- MPP-23195
+--
+-- SETUP
+-- start_ignore
+set polar_px_optimizer_enable_bitmapscan=on;
+set polar_px_optimizer_enable_indexjoin=on;
+drop table if exists mpp23195_t1;
+NOTICE:  table "mpp23195_t1" does not exist, skipping
+drop table if exists mpp23195_t2;
+NOTICE:  table "mpp23195_t2" does not exist, skipping
+-- end_ignore
+create table mpp23195_t1 (i int) partition by range(i);
+CREATE TABLE mpp23195_t1_1 PARTITION of mpp23195_t1 for values from (1) to (10);
+CREATE TABLE mpp23195_t1_2 PARTITION of mpp23195_t1 for values from (10) to (20);
+create index index_mpp23195_t1_i on mpp23195_t1(i);
+create table mpp23195_t2(i int);
+insert into mpp23195_t1 values (generate_series(1,19));
+insert into mpp23195_t2 values (1);
+-- TEST
+select find_operator('select * from mpp23195_t1,mpp23195_t2 where mpp23195_t1.i < mpp23195_t2.i;', 'Dynamic Index Scan');
+ERROR:  function find_operator(unknown, unknown) does not exist
+LINE 1: select find_operator('select * from mpp23195_t1,mpp23195_t2 ...
+               ^
+HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
+select * from mpp23195_t1,mpp23195_t2 where mpp23195_t1.i < mpp23195_t2.i;
+ i | i 
+---+---
+(0 rows)
+
+                                             QUERY PLAN                                              
+-----------------------------------------------------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: mpp23195_t1_1.i, mpp23195_t2.i
+   ->  Nested Loop
+         Output: mpp23195_t1_1.i, mpp23195_t2.i
+         Join Filter: true
+         ->  PX Broadcast 6:6  (slice2; segments: 6)
+               Output: mpp23195_t2.i
+               ->  Partial Seq Scan on bfv_partition_plans.mpp23195_t2
+                     Output: mpp23195_t2.i
+         ->  Append
+               ->  Partial Index Scan using mpp23195_t1_1_i_idx on bfv_partition_plans.mpp23195_t1_1
+                     Output: mpp23195_t1_1.i
+                     Index Cond: (mpp23195_t1_1.i < mpp23195_t2.i)
+               ->  Partial Index Scan using mpp23195_t1_2_i_idx on bfv_partition_plans.mpp23195_t1_2
+                     Output: mpp23195_t1_2.i
+                     Index Cond: (mpp23195_t1_2.i < mpp23195_t2.i)
+ Optimizer: PolarDB PX Optimizer
+(17 rows)
+
+-- CLEANUP
+-- start_ignore
+drop table if exists mpp23195_t1;
+drop table if exists mpp23195_t2;
+set polar_px_optimizer_enable_bitmapscan=off;
+set polar_px_optimizer_enable_indexjoin=off;
+-- end_ignore
+--
+-- Check we have Dynamic Index Scan operator and check we have Nest loop operator
+--
+-- SETUP
+-- start_ignore
+drop table if exists mpp21834_t1;
+NOTICE:  table "mpp21834_t1" does not exist, skipping
+drop table if exists mpp21834_t2;
+NOTICE:  table "mpp21834_t2" does not exist, skipping
+-- end_ignore
+create table mpp21834_t1 (i int, j int) partition by range(i);
+CREATE TABLE mpp21834_t1_1 PARTITION of mpp21834_t1 for values from (1) to (10);
+CREATE TABLE mpp21834_t1_2 PARTITION of mpp21834_t1 for values from (10) to (20);
+create index index_1 on mpp21834_t1(i);
+create index index_2 on mpp21834_t1(j);
+create table mpp21834_t2(i int, j int);
+-- TEST
+set polar_px_optimizer_enable_hashjoin = off;
+select find_operator('analyze select * from mpp21834_t2,mpp21834_t1 where mpp21834_t2.i < mpp21834_t1.i;','Dynamic Index Scan');
+ERROR:  function find_operator(unknown, unknown) does not exist
+LINE 1: select find_operator('analyze select * from mpp21834_t2,mpp2...
+               ^
+HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
+select find_operator('analyze select * from mpp21834_t2,mpp21834_t1 where mpp21834_t2.i < mpp21834_t1.i;','Nested Loop');
+ERROR:  function find_operator(unknown, unknown) does not exist
+LINE 1: select find_operator('analyze select * from mpp21834_t2,mpp2...
+               ^
+HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
+-- CLEANUP
+drop index index_2;
+drop index index_1;
+drop table if exists mpp21834_t2;
+drop table if exists mpp21834_t1;
+reset polar_px_optimizer_enable_hashjoin;
+--
+-- A rescanning of DTS with its own partition selector (under sequence node)
+--
+-- SETUP
+-- start_ignore
+set polar_px_optimizer_enable_broadcast_nestloop_outer_child=on;
+drop table if exists mpp23288;
+NOTICE:  table "mpp23288" does not exist, skipping
+-- end_ignore
+create table mpp23288(a int, b int) 
+  partition by range (a);
+CREATE TABLE mpp23288_1 PARTITION of mpp23288 for values from (1) to (5);
+CREATE TABLE mpp23288_2 PARTITION of mpp23288 for values from (5) to (10);
+CREATE TABLE mpp23288_3 PARTITION of mpp23288 for values from (10) to (21);
+insert into mpp23288(a) select generate_series(1,20);
+analyze mpp23288;
+-- TEST
+select count_operator('select t2.a, t1.a from mpp23288 as t1 join mpp23288 as t2 on (t1.a < t2.a and t2.a =10) order by t2.a, t1.a;','Dynamic Seq Scan');
+ERROR:  function count_operator(unknown, unknown) does not exist
+LINE 1: select count_operator('select t2.a, t1.a from mpp23288 as t1...
+               ^
+HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
+select t2.a, t1.a from mpp23288 as t1 join mpp23288 as t2 on (t1.a < t2.a and t2.a =10) order by t2.a, t1.a;
+ a  | a 
+----+---
+ 10 | 1
+ 10 | 2
+ 10 | 3
+ 10 | 4
+ 10 | 5
+ 10 | 6
+ 10 | 7
+ 10 | 8
+ 10 | 9
+(9 rows)
+
+                                          QUERY PLAN                                           
+-----------------------------------------------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: mpp23288_3_1.a, mpp23288_1.a
+   Merge Key: mpp23288_3_1.a, mpp23288_1.a
+   ->  Sort
+         Output: mpp23288_3_1.a, mpp23288_1.a
+         Sort Key: mpp23288_3_1.a, mpp23288_1.a
+         ->  Nested Loop
+               Output: mpp23288_3_1.a, mpp23288_1.a
+               Join Filter: (mpp23288_1.a < mpp23288_3_1.a)
+               ->  PX Broadcast 6:6  (slice2; segments: 6)
+                     Output: mpp23288_3_1.a
+                     ->  Append
+                           ->  Partial Seq Scan on bfv_partition_plans.mpp23288_3 mpp23288_3_1
+                                 Output: mpp23288_3_1.a
+                                 Filter: (mpp23288_3_1.a = 10)
+               ->  Append
+                     ->  Partial Seq Scan on bfv_partition_plans.mpp23288_1
+                           Output: mpp23288_1.a
+                     ->  Partial Seq Scan on bfv_partition_plans.mpp23288_2
+                           Output: mpp23288_2.a
+                     ->  Partial Seq Scan on bfv_partition_plans.mpp23288_3
+                           Output: mpp23288_3.a
+ Optimizer: PolarDB PX Optimizer
+(23 rows)
+
+select count_operator('select t2.a, t1.a from mpp23288 as t1 join mpp23288 as t2 on (t1.a < t2.a and (t2.a = 10 or t2.a = 5 or t2.a = 12)) order by t2.a, t1.a;','Dynamic Seq Scan');
+ERROR:  function count_operator(unknown, unknown) does not exist
+LINE 1: select count_operator('select t2.a, t1.a from mpp23288 as t1...
+               ^
+HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
+select t2.a, t1.a from mpp23288 as t1 join mpp23288 as t2 on (t1.a < t2.a and (t2.a = 10 or t2.a = 5 or t2.a = 12)) order by t2.a, t1.a;
+ a  | a  
+----+----
+  5 |  1
+  5 |  2
+  5 |  3
+  5 |  4
+ 10 |  1
+ 10 |  2
+ 10 |  3
+ 10 |  4
+ 10 |  5
+ 10 |  6
+ 10 |  7
+ 10 |  8
+ 10 |  9
+ 12 |  1
+ 12 |  2
+ 12 |  3
+ 12 |  4
+ 12 |  5
+ 12 |  6
+ 12 |  7
+ 12 |  8
+ 12 |  9
+ 12 | 10
+ 12 | 11
+(24 rows)
+
+                                                    QUERY PLAN                                                    
+------------------------------------------------------------------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: mpp23288_2.a, mpp23288_1.a
+   Merge Key: mpp23288_2.a, mpp23288_1.a
+   ->  Sort
+         Output: mpp23288_2.a, mpp23288_1.a
+         Sort Key: mpp23288_2.a, mpp23288_1.a
+         ->  Nested Loop
+               Output: mpp23288_2.a, mpp23288_1.a
+               Join Filter: (mpp23288_1.a < mpp23288_2.a)
+               ->  Append
+                     ->  Partial Seq Scan on bfv_partition_plans.mpp23288_1
+                           Output: mpp23288_1.a
+                     ->  Partial Seq Scan on bfv_partition_plans.mpp23288_2 mpp23288_2_1
+                           Output: mpp23288_2_1.a
+                     ->  Partial Seq Scan on bfv_partition_plans.mpp23288_3 mpp23288_3_1
+                           Output: mpp23288_3_1.a
+               ->  Materialize
+                     Output: mpp23288_2.a
+                     ->  PX Broadcast 6:6  (slice2; segments: 6)
+                           Output: mpp23288_2.a
+                           ->  Append
+                                 ->  Partial Seq Scan on bfv_partition_plans.mpp23288_2
+                                       Output: mpp23288_2.a
+                                       Filter: ((mpp23288_2.a = 10) OR (mpp23288_2.a = 5) OR (mpp23288_2.a = 12))
+                                 ->  Partial Seq Scan on bfv_partition_plans.mpp23288_3
+                                       Output: mpp23288_3.a
+                                       Filter: ((mpp23288_3.a = 10) OR (mpp23288_3.a = 5) OR (mpp23288_3.a = 12))
+ Optimizer: PolarDB PX Optimizer
+(28 rows)
+
+select count_operator('select t2.a, t1.a from mpp23288 as t1 join mpp23288 as t2 on t1.a < t2.a and t2.a = 1 or t2.a < 10 order by t2.a, t1.a;','Dynamic Seq Scan');
+ERROR:  function count_operator(unknown, unknown) does not exist
+LINE 1: select count_operator('select t2.a, t1.a from mpp23288 as t1...
+               ^
+HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
+select t2.a, t1.a from mpp23288 as t1 join mpp23288 as t2 on t1.a < t2.a and t2.a = 1 or t2.a < 10 order by t2.a, t1.a;
+ a | a  
+---+----
+ 1 |  1
+ 1 |  2
+ 1 |  3
+ 1 |  4
+ 1 |  5
+ 1 |  6
+ 1 |  7
+ 1 |  8
+ 1 |  9
+ 1 | 10
+ 1 | 11
+ 1 | 12
+ 1 | 13
+ 1 | 14
+ 1 | 15
+ 1 | 16
+ 1 | 17
+ 1 | 18
+ 1 | 19
+ 1 | 20
+ 2 |  1
+ 2 |  2
+ 2 |  3
+ 2 |  4
+ 2 |  5
+ 2 |  6
+ 2 |  7
+ 2 |  8
+ 2 |  9
+ 2 | 10
+ 2 | 11
+ 2 | 12
+ 2 | 13
+ 2 | 14
+ 2 | 15
+ 2 | 16
+ 2 | 17
+ 2 | 18
+ 2 | 19
+ 2 | 20
+ 3 |  1
+ 3 |  2
+ 3 |  3
+ 3 |  4
+ 3 |  5
+ 3 |  6
+ 3 |  7
+ 3 |  8
+ 3 |  9
+ 3 | 10
+ 3 | 11
+ 3 | 12
+ 3 | 13
+ 3 | 14
+ 3 | 15
+ 3 | 16
+ 3 | 17
+ 3 | 18
+ 3 | 19
+ 3 | 20
+ 4 |  1
+ 4 |  2
+ 4 |  3
+ 4 |  4
+ 4 |  5
+ 4 |  6
+ 4 |  7
+ 4 |  8
+ 4 |  9
+ 4 | 10
+ 4 | 11
+ 4 | 12
+ 4 | 13
+ 4 | 14
+ 4 | 15
+ 4 | 16
+ 4 | 17
+ 4 | 18
+ 4 | 19
+ 4 | 20
+ 5 |  1
+ 5 |  2
+ 5 |  3
+ 5 |  4
+ 5 |  5
+ 5 |  6
+ 5 |  7
+ 5 |  8
+ 5 |  9
+ 5 | 10
+ 5 | 11
+ 5 | 12
+ 5 | 13
+ 5 | 14
+ 5 | 15
+ 5 | 16
+ 5 | 17
+ 5 | 18
+ 5 | 19
+ 5 | 20
+ 6 |  1
+ 6 |  2
+ 6 |  3
+ 6 |  4
+ 6 |  5
+ 6 |  6
+ 6 |  7
+ 6 |  8
+ 6 |  9
+ 6 | 10
+ 6 | 11
+ 6 | 12
+ 6 | 13
+ 6 | 14
+ 6 | 15
+ 6 | 16
+ 6 | 17
+ 6 | 18
+ 6 | 19
+ 6 | 20
+ 7 |  1
+ 7 |  2
+ 7 |  3
+ 7 |  4
+ 7 |  5
+ 7 |  6
+ 7 |  7
+ 7 |  8
+ 7 |  9
+ 7 | 10
+ 7 | 11
+ 7 | 12
+ 7 | 13
+ 7 | 14
+ 7 | 15
+ 7 | 16
+ 7 | 17
+ 7 | 18
+ 7 | 19
+ 7 | 20
+ 8 |  1
+ 8 |  2
+ 8 |  3
+ 8 |  4
+ 8 |  5
+ 8 |  6
+ 8 |  7
+ 8 |  8
+ 8 |  9
+ 8 | 10
+ 8 | 11
+ 8 | 12
+ 8 | 13
+ 8 | 14
+ 8 | 15
+ 8 | 16
+ 8 | 17
+ 8 | 18
+ 8 | 19
+ 8 | 20
+ 9 |  1
+ 9 |  2
+ 9 |  3
+ 9 |  4
+ 9 |  5
+ 9 |  6
+ 9 |  7
+ 9 |  8
+ 9 |  9
+ 9 | 10
+ 9 | 11
+ 9 | 12
+ 9 | 13
+ 9 | 14
+ 9 | 15
+ 9 | 16
+ 9 | 17
+ 9 | 18
+ 9 | 19
+ 9 | 20
+(180 rows)
+
+                                                  QUERY PLAN                                                  
+--------------------------------------------------------------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: mpp23288_1.a, mpp23288_1_1.a
+   Merge Key: mpp23288_1.a, mpp23288_1_1.a
+   ->  Sort
+         Output: mpp23288_1.a, mpp23288_1_1.a
+         Sort Key: mpp23288_1.a, mpp23288_1_1.a
+         ->  Nested Loop
+               Output: mpp23288_1.a, mpp23288_1_1.a
+               Join Filter: (((mpp23288_1_1.a < mpp23288_1.a) AND (mpp23288_1.a = 1)) OR (mpp23288_1.a < 10))
+               ->  Append
+                     ->  Partial Seq Scan on bfv_partition_plans.mpp23288_1 mpp23288_1_1
+                           Output: mpp23288_1_1.a
+                     ->  Partial Seq Scan on bfv_partition_plans.mpp23288_2 mpp23288_2_1
+                           Output: mpp23288_2_1.a
+                     ->  Partial Seq Scan on bfv_partition_plans.mpp23288_3
+                           Output: mpp23288_3.a
+               ->  Materialize
+                     Output: mpp23288_1.a
+                     ->  PX Broadcast 6:6  (slice2; segments: 6)
+                           Output: mpp23288_1.a
+                           ->  Append
+                                 ->  Partial Seq Scan on bfv_partition_plans.mpp23288_1
+                                       Output: mpp23288_1.a
+                                       Filter: ((mpp23288_1.a = 1) OR (mpp23288_1.a < 10))
+                                 ->  Partial Seq Scan on bfv_partition_plans.mpp23288_2
+                                       Output: mpp23288_2.a
+                                       Filter: ((mpp23288_2.a = 1) OR (mpp23288_2.a < 10))
+ Optimizer: PolarDB PX Optimizer
+(28 rows)
+
+-- CLEANUP
+-- start_ignore
+drop table if exists mpp23288;
+set polar_px_optimizer_enable_broadcast_nestloop_outer_child=off;
+-- end_ignore
+--
+-- Tests if DynamicIndexScan sets tuple descriptor of the planstate->ps_ResultTupleSlot
+--
+-- SETUP
+-- start_ignore
+drop table if exists mpp24151_t;
+NOTICE:  table "mpp24151_t" does not exist, skipping
+drop table if exists mpp24151_pt;
+NOTICE:  table "mpp24151_pt" does not exist, skipping
+-- end_ignore
+create table mpp24151_t(dist int, tid int, t1 text, t2 text);
+create table mpp24151_pt(dist int, pt1 text, pt2 text, pt3 text, ptid int) 
+PARTITION BY RANGE(ptid); 
+CREATE TABLE mpp24151_pt_1 PARTITION of mpp24151_pt for values from (0) to (1);
+CREATE TABLE mpp24151_pt_2 PARTITION of mpp24151_pt for values from (1) to (2);
+CREATE TABLE mpp24151_pt_3 PARTITION of mpp24151_pt for values from (2) to (3);
+CREATE TABLE mpp24151_pt_4 PARTITION of mpp24151_pt for values from (3) to (4);
+CREATE TABLE mpp24151_pt_5 PARTITION of mpp24151_pt for values from (4) to (5);
+CREATE TABLE mpp24151_pt_6 PARTITION of mpp24151_pt default;
+create index mpp24151_pt1_idx on mpp24151_pt using btree (pt1);
+create index mpp24151_ptid_idx on mpp24151_pt using btree (ptid);
+insert into mpp24151_pt select i, 'hello' || 0, 'world', 'drop this', i % 6 from generate_series(0,100)i;
+insert into mpp24151_pt select i, 'hello' || i, 'world', 'drop this', i % 6 from generate_series(0,200000)i;
+insert into mpp24151_t select i, i % 6, 'hello' || i, 'bar' from generate_series(0,10)i;
+analyze mpp24151_pt;
+analyze mpp24151_t;
+-- TEST
+set polar_px_optimizer_enable_dynamictablescan = off;
+-- GPDB_12_MERGE_FIXME: With the big refactoring t how Partition Selectors are
+-- implemented during the v12 merge, I'm not sure if this test is testing anything
+-- useful anymore. And/or it redundant with the tests in 'dpe'?
+select count_operator('select * from mpp24151_t, mpp24151_pt where tid = ptid and pt1 = E''hello0'';','->  Partition Selector');
+ERROR:  function count_operator(unknown, unknown) does not exist
+LINE 1: select count_operator('select * from mpp24151_t, mpp24151_pt...
+               ^
+HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
+select * from mpp24151_t, mpp24151_pt where tid = ptid and pt1 = 'hello0';
+ dist | tid |   t1    | t2  | dist |  pt1   |  pt2  |    pt3    | ptid 
+------+-----+---------+-----+------+--------+-------+-----------+------
+    6 |   0 | hello6  | bar |    0 | hello0 | world | drop this |    0
+    0 |   0 | hello0  | bar |    0 | hello0 | world | drop this |    0
+    6 |   0 | hello6  | bar |    6 | hello0 | world | drop this |    0
+    0 |   0 | hello0  | bar |    6 | hello0 | world | drop this |    0
+    6 |   0 | hello6  | bar |   12 | hello0 | world | drop this |    0
+    0 |   0 | hello0  | bar |   12 | hello0 | world | drop this |    0
+    6 |   0 | hello6  | bar |   18 | hello0 | world | drop this |    0
+    0 |   0 | hello0  | bar |   18 | hello0 | world | drop this |    0
+    6 |   0 | hello6  | bar |   24 | hello0 | world | drop this |    0
+    0 |   0 | hello0  | bar |   24 | hello0 | world | drop this |    0
+    6 |   0 | hello6  | bar |   30 | hello0 | world | drop this |    0
+    0 |   0 | hello0  | bar |   30 | hello0 | world | drop this |    0
+    6 |   0 | hello6  | bar |   36 | hello0 | world | drop this |    0
+    0 |   0 | hello0  | bar |   36 | hello0 | world | drop this |    0
+    6 |   0 | hello6  | bar |   42 | hello0 | world | drop this |    0
+    0 |   0 | hello0  | bar |   42 | hello0 | world | drop this |    0
+    6 |   0 | hello6  | bar |   48 | hello0 | world | drop this |    0
+    0 |   0 | hello0  | bar |   48 | hello0 | world | drop this |    0
+    6 |   0 | hello6  | bar |   54 | hello0 | world | drop this |    0
+    0 |   0 | hello0  | bar |   54 | hello0 | world | drop this |    0
+    6 |   0 | hello6  | bar |   60 | hello0 | world | drop this |    0
+    0 |   0 | hello0  | bar |   60 | hello0 | world | drop this |    0
+    6 |   0 | hello6  | bar |   66 | hello0 | world | drop this |    0
+    0 |   0 | hello0  | bar |   66 | hello0 | world | drop this |    0
+    6 |   0 | hello6  | bar |   72 | hello0 | world | drop this |    0
+    0 |   0 | hello0  | bar |   72 | hello0 | world | drop this |    0
+    6 |   0 | hello6  | bar |   78 | hello0 | world | drop this |    0
+    0 |   0 | hello0  | bar |   78 | hello0 | world | drop this |    0
+    6 |   0 | hello6  | bar |   84 | hello0 | world | drop this |    0
+    0 |   0 | hello0  | bar |   84 | hello0 | world | drop this |    0
+    6 |   0 | hello6  | bar |   90 | hello0 | world | drop this |    0
+    0 |   0 | hello0  | bar |   90 | hello0 | world | drop this |    0
+    6 |   0 | hello6  | bar |   96 | hello0 | world | drop this |    0
+    0 |   0 | hello0  | bar |   96 | hello0 | world | drop this |    0
+    6 |   0 | hello6  | bar |    0 | hello0 | world | drop this |    0
+    0 |   0 | hello0  | bar |    0 | hello0 | world | drop this |    0
+    7 |   1 | hello7  | bar |    1 | hello0 | world | drop this |    1
+    1 |   1 | hello1  | bar |    1 | hello0 | world | drop this |    1
+    7 |   1 | hello7  | bar |    7 | hello0 | world | drop this |    1
+    1 |   1 | hello1  | bar |    7 | hello0 | world | drop this |    1
+    7 |   1 | hello7  | bar |   13 | hello0 | world | drop this |    1
+    1 |   1 | hello1  | bar |   13 | hello0 | world | drop this |    1
+    7 |   1 | hello7  | bar |   19 | hello0 | world | drop this |    1
+    1 |   1 | hello1  | bar |   19 | hello0 | world | drop this |    1
+    7 |   1 | hello7  | bar |   25 | hello0 | world | drop this |    1
+    1 |   1 | hello1  | bar |   25 | hello0 | world | drop this |    1
+    7 |   1 | hello7  | bar |   31 | hello0 | world | drop this |    1
+    1 |   1 | hello1  | bar |   31 | hello0 | world | drop this |    1
+    7 |   1 | hello7  | bar |   37 | hello0 | world | drop this |    1
+    1 |   1 | hello1  | bar |   37 | hello0 | world | drop this |    1
+    7 |   1 | hello7  | bar |   43 | hello0 | world | drop this |    1
+    1 |   1 | hello1  | bar |   43 | hello0 | world | drop this |    1
+    7 |   1 | hello7  | bar |   49 | hello0 | world | drop this |    1
+    1 |   1 | hello1  | bar |   49 | hello0 | world | drop this |    1
+    7 |   1 | hello7  | bar |   55 | hello0 | world | drop this |    1
+    1 |   1 | hello1  | bar |   55 | hello0 | world | drop this |    1
+    7 |   1 | hello7  | bar |   61 | hello0 | world | drop this |    1
+    1 |   1 | hello1  | bar |   61 | hello0 | world | drop this |    1
+    7 |   1 | hello7  | bar |   67 | hello0 | world | drop this |    1
+    1 |   1 | hello1  | bar |   67 | hello0 | world | drop this |    1
+    7 |   1 | hello7  | bar |   73 | hello0 | world | drop this |    1
+    1 |   1 | hello1  | bar |   73 | hello0 | world | drop this |    1
+    7 |   1 | hello7  | bar |   79 | hello0 | world | drop this |    1
+    1 |   1 | hello1  | bar |   79 | hello0 | world | drop this |    1
+    7 |   1 | hello7  | bar |   85 | hello0 | world | drop this |    1
+    1 |   1 | hello1  | bar |   85 | hello0 | world | drop this |    1
+    7 |   1 | hello7  | bar |   91 | hello0 | world | drop this |    1
+    1 |   1 | hello1  | bar |   91 | hello0 | world | drop this |    1
+    7 |   1 | hello7  | bar |   97 | hello0 | world | drop this |    1
+    1 |   1 | hello1  | bar |   97 | hello0 | world | drop this |    1
+    8 |   2 | hello8  | bar |    2 | hello0 | world | drop this |    2
+    2 |   2 | hello2  | bar |    2 | hello0 | world | drop this |    2
+    8 |   2 | hello8  | bar |    8 | hello0 | world | drop this |    2
+    2 |   2 | hello2  | bar |    8 | hello0 | world | drop this |    2
+    8 |   2 | hello8  | bar |   14 | hello0 | world | drop this |    2
+    2 |   2 | hello2  | bar |   14 | hello0 | world | drop this |    2
+    8 |   2 | hello8  | bar |   20 | hello0 | world | drop this |    2
+    2 |   2 | hello2  | bar |   20 | hello0 | world | drop this |    2
+    8 |   2 | hello8  | bar |   26 | hello0 | world | drop this |    2
+    2 |   2 | hello2  | bar |   26 | hello0 | world | drop this |    2
+    8 |   2 | hello8  | bar |   32 | hello0 | world | drop this |    2
+    2 |   2 | hello2  | bar |   32 | hello0 | world | drop this |    2
+    8 |   2 | hello8  | bar |   38 | hello0 | world | drop this |    2
+    2 |   2 | hello2  | bar |   38 | hello0 | world | drop this |    2
+    8 |   2 | hello8  | bar |   44 | hello0 | world | drop this |    2
+    2 |   2 | hello2  | bar |   44 | hello0 | world | drop this |    2
+    8 |   2 | hello8  | bar |   50 | hello0 | world | drop this |    2
+    2 |   2 | hello2  | bar |   50 | hello0 | world | drop this |    2
+    8 |   2 | hello8  | bar |   56 | hello0 | world | drop this |    2
+    2 |   2 | hello2  | bar |   56 | hello0 | world | drop this |    2
+    8 |   2 | hello8  | bar |   62 | hello0 | world | drop this |    2
+    2 |   2 | hello2  | bar |   62 | hello0 | world | drop this |    2
+    8 |   2 | hello8  | bar |   68 | hello0 | world | drop this |    2
+    2 |   2 | hello2  | bar |   68 | hello0 | world | drop this |    2
+    8 |   2 | hello8  | bar |   74 | hello0 | world | drop this |    2
+    2 |   2 | hello2  | bar |   74 | hello0 | world | drop this |    2
+    8 |   2 | hello8  | bar |   80 | hello0 | world | drop this |    2
+    2 |   2 | hello2  | bar |   80 | hello0 | world | drop this |    2
+    8 |   2 | hello8  | bar |   86 | hello0 | world | drop this |    2
+    2 |   2 | hello2  | bar |   86 | hello0 | world | drop this |    2
+    8 |   2 | hello8  | bar |   92 | hello0 | world | drop this |    2
+    2 |   2 | hello2  | bar |   92 | hello0 | world | drop this |    2
+    8 |   2 | hello8  | bar |   98 | hello0 | world | drop this |    2
+    2 |   2 | hello2  | bar |   98 | hello0 | world | drop this |    2
+    9 |   3 | hello9  | bar |    3 | hello0 | world | drop this |    3
+    3 |   3 | hello3  | bar |    3 | hello0 | world | drop this |    3
+    9 |   3 | hello9  | bar |    9 | hello0 | world | drop this |    3
+    3 |   3 | hello3  | bar |    9 | hello0 | world | drop this |    3
+    9 |   3 | hello9  | bar |   15 | hello0 | world | drop this |    3
+    3 |   3 | hello3  | bar |   15 | hello0 | world | drop this |    3
+    9 |   3 | hello9  | bar |   21 | hello0 | world | drop this |    3
+    3 |   3 | hello3  | bar |   21 | hello0 | world | drop this |    3
+    9 |   3 | hello9  | bar |   27 | hello0 | world | drop this |    3
+    3 |   3 | hello3  | bar |   27 | hello0 | world | drop this |    3
+    9 |   3 | hello9  | bar |   33 | hello0 | world | drop this |    3
+    3 |   3 | hello3  | bar |   33 | hello0 | world | drop this |    3
+    9 |   3 | hello9  | bar |   39 | hello0 | world | drop this |    3
+    3 |   3 | hello3  | bar |   39 | hello0 | world | drop this |    3
+    9 |   3 | hello9  | bar |   45 | hello0 | world | drop this |    3
+    3 |   3 | hello3  | bar |   45 | hello0 | world | drop this |    3
+    9 |   3 | hello9  | bar |   51 | hello0 | world | drop this |    3
+    3 |   3 | hello3  | bar |   51 | hello0 | world | drop this |    3
+    9 |   3 | hello9  | bar |   57 | hello0 | world | drop this |    3
+    3 |   3 | hello3  | bar |   57 | hello0 | world | drop this |    3
+    9 |   3 | hello9  | bar |   63 | hello0 | world | drop this |    3
+    3 |   3 | hello3  | bar |   63 | hello0 | world | drop this |    3
+    9 |   3 | hello9  | bar |   69 | hello0 | world | drop this |    3
+    3 |   3 | hello3  | bar |   69 | hello0 | world | drop this |    3
+    9 |   3 | hello9  | bar |   75 | hello0 | world | drop this |    3
+    3 |   3 | hello3  | bar |   75 | hello0 | world | drop this |    3
+    9 |   3 | hello9  | bar |   81 | hello0 | world | drop this |    3
+    3 |   3 | hello3  | bar |   81 | hello0 | world | drop this |    3
+    9 |   3 | hello9  | bar |   87 | hello0 | world | drop this |    3
+    3 |   3 | hello3  | bar |   87 | hello0 | world | drop this |    3
+    9 |   3 | hello9  | bar |   93 | hello0 | world | drop this |    3
+    3 |   3 | hello3  | bar |   93 | hello0 | world | drop this |    3
+    9 |   3 | hello9  | bar |   99 | hello0 | world | drop this |    3
+    3 |   3 | hello3  | bar |   99 | hello0 | world | drop this |    3
+   10 |   4 | hello10 | bar |    4 | hello0 | world | drop this |    4
+    4 |   4 | hello4  | bar |    4 | hello0 | world | drop this |    4
+   10 |   4 | hello10 | bar |   10 | hello0 | world | drop this |    4
+    4 |   4 | hello4  | bar |   10 | hello0 | world | drop this |    4
+   10 |   4 | hello10 | bar |   16 | hello0 | world | drop this |    4
+    4 |   4 | hello4  | bar |   16 | hello0 | world | drop this |    4
+   10 |   4 | hello10 | bar |   22 | hello0 | world | drop this |    4
+    4 |   4 | hello4  | bar |   22 | hello0 | world | drop this |    4
+   10 |   4 | hello10 | bar |   28 | hello0 | world | drop this |    4
+    4 |   4 | hello4  | bar |   28 | hello0 | world | drop this |    4
+   10 |   4 | hello10 | bar |   34 | hello0 | world | drop this |    4
+    4 |   4 | hello4  | bar |   34 | hello0 | world | drop this |    4
+   10 |   4 | hello10 | bar |   40 | hello0 | world | drop this |    4
+    4 |   4 | hello4  | bar |   40 | hello0 | world | drop this |    4
+   10 |   4 | hello10 | bar |   46 | hello0 | world | drop this |    4
+    4 |   4 | hello4  | bar |   46 | hello0 | world | drop this |    4
+   10 |   4 | hello10 | bar |   52 | hello0 | world | drop this |    4
+    4 |   4 | hello4  | bar |   52 | hello0 | world | drop this |    4
+   10 |   4 | hello10 | bar |   58 | hello0 | world | drop this |    4
+    4 |   4 | hello4  | bar |   58 | hello0 | world | drop this |    4
+   10 |   4 | hello10 | bar |   64 | hello0 | world | drop this |    4
+    4 |   4 | hello4  | bar |   64 | hello0 | world | drop this |    4
+   10 |   4 | hello10 | bar |   70 | hello0 | world | drop this |    4
+    4 |   4 | hello4  | bar |   70 | hello0 | world | drop this |    4
+   10 |   4 | hello10 | bar |   76 | hello0 | world | drop this |    4
+    4 |   4 | hello4  | bar |   76 | hello0 | world | drop this |    4
+   10 |   4 | hello10 | bar |   82 | hello0 | world | drop this |    4
+    4 |   4 | hello4  | bar |   82 | hello0 | world | drop this |    4
+   10 |   4 | hello10 | bar |   88 | hello0 | world | drop this |    4
+    4 |   4 | hello4  | bar |   88 | hello0 | world | drop this |    4
+   10 |   4 | hello10 | bar |   94 | hello0 | world | drop this |    4
+    4 |   4 | hello4  | bar |   94 | hello0 | world | drop this |    4
+   10 |   4 | hello10 | bar |  100 | hello0 | world | drop this |    4
+    4 |   4 | hello4  | bar |  100 | hello0 | world | drop this |    4
+    5 |   5 | hello5  | bar |    5 | hello0 | world | drop this |    5
+    5 |   5 | hello5  | bar |   11 | hello0 | world | drop this |    5
+    5 |   5 | hello5  | bar |   17 | hello0 | world | drop this |    5
+    5 |   5 | hello5  | bar |   23 | hello0 | world | drop this |    5
+    5 |   5 | hello5  | bar |   29 | hello0 | world | drop this |    5
+    5 |   5 | hello5  | bar |   35 | hello0 | world | drop this |    5
+    5 |   5 | hello5  | bar |   41 | hello0 | world | drop this |    5
+    5 |   5 | hello5  | bar |   47 | hello0 | world | drop this |    5
+    5 |   5 | hello5  | bar |   53 | hello0 | world | drop this |    5
+    5 |   5 | hello5  | bar |   59 | hello0 | world | drop this |    5
+    5 |   5 | hello5  | bar |   65 | hello0 | world | drop this |    5
+    5 |   5 | hello5  | bar |   71 | hello0 | world | drop this |    5
+    5 |   5 | hello5  | bar |   77 | hello0 | world | drop this |    5
+    5 |   5 | hello5  | bar |   83 | hello0 | world | drop this |    5
+    5 |   5 | hello5  | bar |   89 | hello0 | world | drop this |    5
+    5 |   5 | hello5  | bar |   95 | hello0 | world | drop this |    5
+(188 rows)
+
+                                                                                   QUERY PLAN                                                                                   
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: mpp24151_t.dist, mpp24151_t.tid, mpp24151_t.t1, mpp24151_t.t2, mpp24151_pt_1.dist, mpp24151_pt_1.pt1, mpp24151_pt_1.pt2, mpp24151_pt_1.pt3, mpp24151_pt_1.ptid
+   ->  Hash Join
+         Output: mpp24151_t.dist, mpp24151_t.tid, mpp24151_t.t1, mpp24151_t.t2, mpp24151_pt_1.dist, mpp24151_pt_1.pt1, mpp24151_pt_1.pt2, mpp24151_pt_1.pt3, mpp24151_pt_1.ptid
+         Hash Cond: (mpp24151_t.tid = mpp24151_pt_1.ptid)
+         ->  PX Hash 6:6  (slice2; segments: 6)
+               Output: mpp24151_t.dist, mpp24151_t.tid, mpp24151_t.t1, mpp24151_t.t2
+               Hash Key: mpp24151_t.tid
+               ->  Partial Seq Scan on bfv_partition_plans.mpp24151_t
+                     Output: mpp24151_t.dist, mpp24151_t.tid, mpp24151_t.t1, mpp24151_t.t2
+         ->  Hash
+               Output: mpp24151_pt_1.dist, mpp24151_pt_1.pt1, mpp24151_pt_1.pt2, mpp24151_pt_1.pt3, mpp24151_pt_1.ptid
+               ->  PX Hash 6:6  (slice3; segments: 6)
+                     Output: mpp24151_pt_1.dist, mpp24151_pt_1.pt1, mpp24151_pt_1.pt2, mpp24151_pt_1.pt3, mpp24151_pt_1.ptid
+                     Hash Key: mpp24151_pt_1.ptid
+                     ->  Append
+                           ->  Partial Index Scan using mpp24151_pt_1_pt1_idx on bfv_partition_plans.mpp24151_pt_1
+                                 Output: mpp24151_pt_1.dist, mpp24151_pt_1.pt1, mpp24151_pt_1.pt2, mpp24151_pt_1.pt3, mpp24151_pt_1.ptid
+                                 Index Cond: (mpp24151_pt_1.pt1 = 'hello0'::text)
+                           ->  Partial Index Scan using mpp24151_pt_2_pt1_idx on bfv_partition_plans.mpp24151_pt_2
+                                 Output: mpp24151_pt_2.dist, mpp24151_pt_2.pt1, mpp24151_pt_2.pt2, mpp24151_pt_2.pt3, mpp24151_pt_2.ptid
+                                 Index Cond: (mpp24151_pt_2.pt1 = 'hello0'::text)
+                           ->  Partial Index Scan using mpp24151_pt_3_pt1_idx on bfv_partition_plans.mpp24151_pt_3
+                                 Output: mpp24151_pt_3.dist, mpp24151_pt_3.pt1, mpp24151_pt_3.pt2, mpp24151_pt_3.pt3, mpp24151_pt_3.ptid
+                                 Index Cond: (mpp24151_pt_3.pt1 = 'hello0'::text)
+                           ->  Partial Index Scan using mpp24151_pt_4_pt1_idx on bfv_partition_plans.mpp24151_pt_4
+                                 Output: mpp24151_pt_4.dist, mpp24151_pt_4.pt1, mpp24151_pt_4.pt2, mpp24151_pt_4.pt3, mpp24151_pt_4.ptid
+                                 Index Cond: (mpp24151_pt_4.pt1 = 'hello0'::text)
+                           ->  Partial Index Scan using mpp24151_pt_5_pt1_idx on bfv_partition_plans.mpp24151_pt_5
+                                 Output: mpp24151_pt_5.dist, mpp24151_pt_5.pt1, mpp24151_pt_5.pt2, mpp24151_pt_5.pt3, mpp24151_pt_5.ptid
+                                 Index Cond: (mpp24151_pt_5.pt1 = 'hello0'::text)
+                           ->  Partial Index Scan using mpp24151_pt_6_pt1_idx on bfv_partition_plans.mpp24151_pt_6
+                                 Output: mpp24151_pt_6.dist, mpp24151_pt_6.pt1, mpp24151_pt_6.pt2, mpp24151_pt_6.pt3, mpp24151_pt_6.ptid
+                                 Index Cond: (mpp24151_pt_6.pt1 = 'hello0'::text)
+ Optimizer: PolarDB PX Optimizer
+(35 rows)
+
+-- CLEANUP
+drop index mpp24151_pt1_idx;
+drop index mpp24151_ptid_idx;
+drop table if exists mpp24151_t;
+drop table if exists mpp24151_pt;
+reset polar_px_optimizer_enable_dynamictablescan;
+--
+-- No DPE (Dynamic Partition Elimination) on second child of a union under a join
+--
+-- SETUP
+-- start_ignore
+drop table if exists t;
+NOTICE:  table "t" does not exist, skipping
+drop table if exists p1;
+NOTICE:  table "p1" does not exist, skipping
+drop table if exists p2;
+NOTICE:  table "p2" does not exist, skipping
+drop table if exists p3;
+NOTICE:  table "p3" does not exist, skipping
+drop table if exists p;
+NOTICE:  table "p" does not exist, skipping
+-- end_ignore
+create table p1 (a int, b int) partition by range(b);
+CREATE TABLE p1_1 PARTITION of p1 for values from (1) to (21);
+CREATE TABLE p1_2 PARTITION of p1 for values from (21) to (41);
+CREATE TABLE p1_3 PARTITION of p1 for values from (41) to (61);
+CREATE TABLE p1_4 PARTITION of p1 for values from (61) to (81);
+CREATE TABLE p1_5 PARTITION of p1 for values from (81) to (101);
+create table p2 (a int, b int) partition by range(b);
+CREATE TABLE p2_1 PARTITION of p2 for values from (1) to (21);
+CREATE TABLE p2_2 PARTITION of p2 for values from (21) to (41);
+CREATE TABLE p2_3 PARTITION of p2 for values from (41) to (61);
+CREATE TABLE p2_4 PARTITION of p2 for values from (61) to (81);
+CREATE TABLE p2_5 PARTITION of p2 for values from (81) to (101);
+create table p3 (a int, b int) partition by range(b);
+CREATE TABLE p3_1 PARTITION of p3 for values from (1) to (21);
+CREATE TABLE p3_2 PARTITION of p3 for values from (21) to (41);
+CREATE TABLE p3_3 PARTITION of p3 for values from (41) to (61);
+CREATE TABLE p3_4 PARTITION of p3 for values from (61) to (81);
+CREATE TABLE p3_5 PARTITION of p3 for values from (81) to (101);
+create table p (a int, b int);
+create table t(a int, b int);
+insert into t select g, g*10 from generate_series(1,100) g;
+insert into p1 select g, g%99 +1 from generate_series(1,10000) g;
+insert into p2 select g, g%99 +1 from generate_series(1,10000) g;
+insert into p3 select g, g%99 +1 from generate_series(1,10000) g;
+insert into p select g, g%99 +1 from generate_series(1,10000) g;
+analyze t;
+analyze p1;
+analyze p2;
+analyze p3;
+analyze p;
+-- TEST
+select count_operator('select * from (select * from p1 union all select * from p2) as p_all, t where p_all.b=t.b;','Partition Selector');
+ERROR:  function count_operator(unknown, unknown) does not exist
+LINE 1: select count_operator('select * from (select * from p1 union...
+               ^
+HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
+select count_operator('select * from (select * from p1 union select * from p2) as p_all, t where p_all.b=t.b;','Partition Selector');
+ERROR:  function count_operator(unknown, unknown) does not exist
+LINE 1: select count_operator('select * from (select * from p1 union...
+               ^
+HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
+select count_operator('select * from (select * from p1 except all select * from p2) as p_all, t where p_all.b=t.b;','Partition Selector');
+ERROR:  function count_operator(unknown, unknown) does not exist
+LINE 1: select count_operator('select * from (select * from p1 excep...
+               ^
+HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
+select count_operator('select * from (select * from p1 except select * from p2) as p_all, t where p_all.b=t.b;','Partition Selector');
+ERROR:  function count_operator(unknown, unknown) does not exist
+LINE 1: select count_operator('select * from (select * from p1 excep...
+               ^
+HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
+select count_operator('select * from (select * from p1 intersect all select * from p2) as p_all, t where p_all.b=t.b;','Partition Selector');
+ERROR:  function count_operator(unknown, unknown) does not exist
+LINE 1: select count_operator('select * from (select * from p1 inter...
+               ^
+HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
+select count_operator('select * from (select * from p1 union select * from p2 union all select * from p3) as p_all, t where p_all.b=t.b;','Partition Selector');
+ERROR:  function count_operator(unknown, unknown) does not exist
+LINE 1: select count_operator('select * from (select * from p1 union...
+               ^
+HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
+select count_operator('select * from (select * from p1 union select * from p2 union all select * from p) as p_all, t where p_all.b=t.b;','Partition Selector');
+ERROR:  function count_operator(unknown, unknown) does not exist
+LINE 1: select count_operator('select * from (select * from p1 union...
+               ^
+HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
+select count_operator('select * from (select * from p1 union select * from p union all select * from p2) as p_all, t where p_all.b=t.b;','Partition Selector');
+ERROR:  function count_operator(unknown, unknown) does not exist
+LINE 1: select count_operator('select * from (select * from p1 union...
+               ^
+HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
+select count_operator('select * from (select * from p1 union select * from p2 intersect all select * from p3) as p_all, t where p_all.b=t.b;','Partition Selector');
+ERROR:  function count_operator(unknown, unknown) does not exist
+LINE 1: select count_operator('select * from (select * from p1 union...
+               ^
+HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
+select count_operator('select * from (select * from p1 union select * from p intersect all select * from p2) as p_all, t where p_all.b=t.b;','Partition Selector');
+ERROR:  function count_operator(unknown, unknown) does not exist
+LINE 1: select count_operator('select * from (select * from p1 union...
+               ^
+HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
+-- CLEANUP
+-- start_ignore
+drop table t;
+drop table p1;
+drop table p2;
+drop table p3;
+drop table p;
+-- end_ignore
+--
+-- Gracefully handle NULL partition set from BitmapTableScan, DynamicTableScan and DynamicIndexScan
+--
+-- SETUP
+-- start_ignore
+drop table if exists dts;
+NOTICE:  table "dts" does not exist, skipping
+drop table if exists dis;
+NOTICE:  table "dis" does not exist, skipping
+drop table if exists dbs;
+NOTICE:  table "dbs" does not exist, skipping
+-- end_ignore
+create table dts(c1 int, c2 int) partition by range(c2);
+CREATE TABLE dts_1 PARTITION of dts for values from (1) to (2);
+CREATE TABLE dts_2 PARTITION of dts for values from (2) to (3);
+CREATE TABLE dts_3 PARTITION of dts for values from (3) to (4);
+CREATE TABLE dts_4 PARTITION of dts for values from (4) to (5);
+CREATE TABLE dts_5 PARTITION of dts for values from (5) to (6);
+CREATE TABLE dts_6 PARTITION of dts for values from (6) to (7);
+CREATE TABLE dts_7 PARTITION of dts for values from (7) to (8);
+CREATE TABLE dts_8 PARTITION of dts for values from (8) to (9);
+CREATE TABLE dts_9 PARTITION of dts for values from (9) to (10);
+CREATE TABLE dts_10 PARTITION of dts for values from (10) to (11);
+create table dis(c1 int, c2 int, c3 int) partition by range(c2);
+CREATE TABLE dis_1 PARTITION of dis for values from (1) to (2);
+CREATE TABLE dis_2 PARTITION of dis for values from (2) to (3);
+CREATE TABLE dis_3 PARTITION of dis for values from (3) to (4);
+CREATE TABLE dis_4 PARTITION of dis for values from (4) to (5);
+CREATE TABLE dis_5 PARTITION of dis for values from (5) to (6);
+CREATE TABLE dis_6 PARTITION of dis for values from (6) to (7);
+CREATE TABLE dis_7 PARTITION of dis for values from (7) to (8);
+CREATE TABLE dis_8 PARTITION of dis for values from (8) to (9);
+CREATE TABLE dis_9 PARTITION of dis for values from (9) to (10);
+CREATE TABLE dis_10 PARTITION of dis for values from (10) to (11);
+create index dis_index on dis(c3);
+CREATE TABLE dbs(c1 int, c2 int, c3 int) partition by range(c2);
+CREATE TABLE dbs_1 PARTITION of dbs for values from (1) to (2);
+CREATE TABLE dbs_2 PARTITION of dbs for values from (2) to (3);
+CREATE TABLE dbs_3 PARTITION of dbs for values from (3) to (4);
+CREATE TABLE dbs_4 PARTITION of dbs for values from (4) to (5);
+CREATE TABLE dbs_5 PARTITION of dbs for values from (5) to (6);
+CREATE TABLE dbs_6 PARTITION of dbs for values from (6) to (7);
+CREATE TABLE dbs_7 PARTITION of dbs for values from (7) to (8);
+CREATE TABLE dbs_8 PARTITION of dbs for values from (8) to (9);
+CREATE TABLE dbs_9 PARTITION of dbs for values from (9) to (10);
+CREATE TABLE dbs_10 PARTITION of dbs for values from (10) to (11);
+create index dbs_index on dbs using bitmap(c3);
+ERROR:  access method "bitmap" does not exist
+-- TEST
+select find_operator('(select * from dts where c2 = 1) union (select * from dts where c2 = 2) union (select * from dts where c2 = 3) union (select * from dts where c2 = 4) union (select * from dts where c2 = 5) union (select * from dts where c2 = 6) union (select * from dts where c2 = 7) union (select * from dts where c2 = 8) union (select * from dts where c2 = 9) union (select * from dts where c2 = 10);', 'Dynamic Seq Scan');
+ERROR:  function find_operator(unknown, unknown) does not exist
+LINE 1: select find_operator('(select * from dts where c2 = 1) union...
+               ^
+HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
+(select * from dts where c2 = 1) union
+(select * from dts where c2 = 2) union
+(select * from dts where c2 = 3) union
+(select * from dts where c2 = 4) union
+(select * from dts where c2 = 5) union
+(select * from dts where c2 = 6) union
+(select * from dts where c2 = 7) union
+(select * from dts where c2 = 8) union
+(select * from dts where c2 = 9) union
+(select * from dts where c2 = 10);
+ c1 | c2 
+----+----
+(0 rows)
+
+                                     QUERY PLAN                                     
+------------------------------------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: dts_1.c1, dts_1.c2
+   ->  GroupAggregate
+         Output: dts_1.c1, dts_1.c2
+         Group Key: dts_1.c1, dts_1.c2
+         ->  Sort
+               Output: dts_1.c1, dts_1.c2
+               Sort Key: dts_1.c1, dts_1.c2
+               ->  PX Hash 6:6  (slice2; segments: 6)
+                     Output: dts_1.c1, dts_1.c2
+                     Hash Key: dts_1.c1, dts_1.c2
+                     ->  Append
+                           ->  Append
+                                 ->  Partial Seq Scan on bfv_partition_plans.dts_1
+                                       Output: dts_1.c1, dts_1.c2
+                                       Filter: (dts_1.c2 = 1)
+                           ->  Append
+                                 ->  Partial Seq Scan on bfv_partition_plans.dts_2
+                                       Output: dts_2.c1, dts_2.c2
+                                       Filter: (dts_2.c2 = 2)
+                           ->  Append
+                                 ->  Partial Seq Scan on bfv_partition_plans.dts_3
+                                       Output: dts_3.c1, dts_3.c2
+                                       Filter: (dts_3.c2 = 3)
+                           ->  Append
+                                 ->  Partial Seq Scan on bfv_partition_plans.dts_4
+                                       Output: dts_4.c1, dts_4.c2
+                                       Filter: (dts_4.c2 = 4)
+                           ->  Append
+                                 ->  Partial Seq Scan on bfv_partition_plans.dts_5
+                                       Output: dts_5.c1, dts_5.c2
+                                       Filter: (dts_5.c2 = 5)
+                           ->  Append
+                                 ->  Partial Seq Scan on bfv_partition_plans.dts_6
+                                       Output: dts_6.c1, dts_6.c2
+                                       Filter: (dts_6.c2 = 6)
+                           ->  Append
+                                 ->  Partial Seq Scan on bfv_partition_plans.dts_7
+                                       Output: dts_7.c1, dts_7.c2
+                                       Filter: (dts_7.c2 = 7)
+                           ->  Append
+                                 ->  Partial Seq Scan on bfv_partition_plans.dts_8
+                                       Output: dts_8.c1, dts_8.c2
+                                       Filter: (dts_8.c2 = 8)
+                           ->  Append
+                                 ->  Partial Seq Scan on bfv_partition_plans.dts_9
+                                       Output: dts_9.c1, dts_9.c2
+                                       Filter: (dts_9.c2 = 9)
+                           ->  Append
+                                 ->  Partial Seq Scan on bfv_partition_plans.dts_10
+                                       Output: dts_10.c1, dts_10.c2
+                                       Filter: (dts_10.c2 = 10)
+ Optimizer: PolarDB PX Optimizer
+(53 rows)
+
+set polar_px_optimizer_enable_dynamictablescan = off;
+select find_operator('(select * from dis where c3 = 1) union (select * from dis where c3 = 2) union (select * from dis where c3 = 3) union (select * from dis where c3 = 4) union (select * from dis where c3 = 5) union (select * from dis where c3 = 6) union (select * from dis where c3 = 7) union (select * from dis where c3 = 8) union (select * from dis where c3 = 9) union (select * from dis where c3 = 10);', 'Dynamic Index Scan');
+ERROR:  function find_operator(unknown, unknown) does not exist
+LINE 1: select find_operator('(select * from dis where c3 = 1) union...
+               ^
+HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
+(select * from dis where c3 = 1) union
+(select * from dis where c3 = 2) union
+(select * from dis where c3 = 3) union
+(select * from dis where c3 = 4) union
+(select * from dis where c3 = 5) union
+(select * from dis where c3 = 6) union
+(select * from dis where c3 = 7) union
+(select * from dis where c3 = 8) union
+(select * from dis where c3 = 9) union
+(select * from dis where c3 = 10);
+ c1 | c2 | c3 
+----+----+----
+(0 rows)
+
+                                                    QUERY PLAN                                                     
+-------------------------------------------------------------------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: dis_1.c1, dis_1.c2, dis_1.c3
+   ->  GroupAggregate
+         Output: dis_1.c1, dis_1.c2, dis_1.c3
+         Group Key: dis_1.c1, dis_1.c2, dis_1.c3
+         ->  Sort
+               Output: dis_1.c1, dis_1.c2, dis_1.c3
+               Sort Key: dis_1.c1, dis_1.c2, dis_1.c3
+               ->  PX Hash 6:6  (slice2; segments: 6)
+                     Output: dis_1.c1, dis_1.c2, dis_1.c3
+                     Hash Key: dis_1.c1, dis_1.c2, dis_1.c3
+                     ->  Append
+                           ->  Append
+                                 ->  Partial Index Scan using dis_1_c3_idx on bfv_partition_plans.dis_1
+                                       Output: dis_1.c1, dis_1.c2, dis_1.c3
+                                       Index Cond: (dis_1.c3 = 1)
+                                 ->  Partial Index Scan using dis_2_c3_idx on bfv_partition_plans.dis_2
+                                       Output: dis_2.c1, dis_2.c2, dis_2.c3
+                                       Index Cond: (dis_2.c3 = 1)
+                                 ->  Partial Index Scan using dis_3_c3_idx on bfv_partition_plans.dis_3
+                                       Output: dis_3.c1, dis_3.c2, dis_3.c3
+                                       Index Cond: (dis_3.c3 = 1)
+                                 ->  Partial Index Scan using dis_4_c3_idx on bfv_partition_plans.dis_4
+                                       Output: dis_4.c1, dis_4.c2, dis_4.c3
+                                       Index Cond: (dis_4.c3 = 1)
+                                 ->  Partial Index Scan using dis_5_c3_idx on bfv_partition_plans.dis_5
+                                       Output: dis_5.c1, dis_5.c2, dis_5.c3
+                                       Index Cond: (dis_5.c3 = 1)
+                                 ->  Partial Index Scan using dis_6_c3_idx on bfv_partition_plans.dis_6
+                                       Output: dis_6.c1, dis_6.c2, dis_6.c3
+                                       Index Cond: (dis_6.c3 = 1)
+                                 ->  Partial Index Scan using dis_7_c3_idx on bfv_partition_plans.dis_7
+                                       Output: dis_7.c1, dis_7.c2, dis_7.c3
+                                       Index Cond: (dis_7.c3 = 1)
+                                 ->  Partial Index Scan using dis_8_c3_idx on bfv_partition_plans.dis_8
+                                       Output: dis_8.c1, dis_8.c2, dis_8.c3
+                                       Index Cond: (dis_8.c3 = 1)
+                                 ->  Partial Index Scan using dis_9_c3_idx on bfv_partition_plans.dis_9
+                                       Output: dis_9.c1, dis_9.c2, dis_9.c3
+                                       Index Cond: (dis_9.c3 = 1)
+                                 ->  Partial Index Scan using dis_10_c3_idx on bfv_partition_plans.dis_10
+                                       Output: dis_10.c1, dis_10.c2, dis_10.c3
+                                       Index Cond: (dis_10.c3 = 1)
+                           ->  Append
+                                 ->  Partial Index Scan using dis_1_c3_idx on bfv_partition_plans.dis_1 dis_1_1
+                                       Output: dis_1_1.c1, dis_1_1.c2, dis_1_1.c3
+                                       Index Cond: (dis_1_1.c3 = 2)
+                                 ->  Partial Index Scan using dis_2_c3_idx on bfv_partition_plans.dis_2 dis_2_1
+                                       Output: dis_2_1.c1, dis_2_1.c2, dis_2_1.c3
+                                       Index Cond: (dis_2_1.c3 = 2)
+                                 ->  Partial Index Scan using dis_3_c3_idx on bfv_partition_plans.dis_3 dis_3_1
+                                       Output: dis_3_1.c1, dis_3_1.c2, dis_3_1.c3
+                                       Index Cond: (dis_3_1.c3 = 2)
+                                 ->  Partial Index Scan using dis_4_c3_idx on bfv_partition_plans.dis_4 dis_4_1
+                                       Output: dis_4_1.c1, dis_4_1.c2, dis_4_1.c3
+                                       Index Cond: (dis_4_1.c3 = 2)
+                                 ->  Partial Index Scan using dis_5_c3_idx on bfv_partition_plans.dis_5 dis_5_1
+                                       Output: dis_5_1.c1, dis_5_1.c2, dis_5_1.c3
+                                       Index Cond: (dis_5_1.c3 = 2)
+                                 ->  Partial Index Scan using dis_6_c3_idx on bfv_partition_plans.dis_6 dis_6_1
+                                       Output: dis_6_1.c1, dis_6_1.c2, dis_6_1.c3
+                                       Index Cond: (dis_6_1.c3 = 2)
+                                 ->  Partial Index Scan using dis_7_c3_idx on bfv_partition_plans.dis_7 dis_7_1
+                                       Output: dis_7_1.c1, dis_7_1.c2, dis_7_1.c3
+                                       Index Cond: (dis_7_1.c3 = 2)
+                                 ->  Partial Index Scan using dis_8_c3_idx on bfv_partition_plans.dis_8 dis_8_1
+                                       Output: dis_8_1.c1, dis_8_1.c2, dis_8_1.c3
+                                       Index Cond: (dis_8_1.c3 = 2)
+                                 ->  Partial Index Scan using dis_9_c3_idx on bfv_partition_plans.dis_9 dis_9_1
+                                       Output: dis_9_1.c1, dis_9_1.c2, dis_9_1.c3
+                                       Index Cond: (dis_9_1.c3 = 2)
+                                 ->  Partial Index Scan using dis_10_c3_idx on bfv_partition_plans.dis_10 dis_10_1
+                                       Output: dis_10_1.c1, dis_10_1.c2, dis_10_1.c3
+                                       Index Cond: (dis_10_1.c3 = 2)
+                           ->  Append
+                                 ->  Partial Index Scan using dis_1_c3_idx on bfv_partition_plans.dis_1 dis_1_2
+                                       Output: dis_1_2.c1, dis_1_2.c2, dis_1_2.c3
+                                       Index Cond: (dis_1_2.c3 = 3)
+                                 ->  Partial Index Scan using dis_2_c3_idx on bfv_partition_plans.dis_2 dis_2_2
+                                       Output: dis_2_2.c1, dis_2_2.c2, dis_2_2.c3
+                                       Index Cond: (dis_2_2.c3 = 3)
+                                 ->  Partial Index Scan using dis_3_c3_idx on bfv_partition_plans.dis_3 dis_3_2
+                                       Output: dis_3_2.c1, dis_3_2.c2, dis_3_2.c3
+                                       Index Cond: (dis_3_2.c3 = 3)
+                                 ->  Partial Index Scan using dis_4_c3_idx on bfv_partition_plans.dis_4 dis_4_2
+                                       Output: dis_4_2.c1, dis_4_2.c2, dis_4_2.c3
+                                       Index Cond: (dis_4_2.c3 = 3)
+                                 ->  Partial Index Scan using dis_5_c3_idx on bfv_partition_plans.dis_5 dis_5_2
+                                       Output: dis_5_2.c1, dis_5_2.c2, dis_5_2.c3
+                                       Index Cond: (dis_5_2.c3 = 3)
+                                 ->  Partial Index Scan using dis_6_c3_idx on bfv_partition_plans.dis_6 dis_6_2
+                                       Output: dis_6_2.c1, dis_6_2.c2, dis_6_2.c3
+                                       Index Cond: (dis_6_2.c3 = 3)
+                                 ->  Partial Index Scan using dis_7_c3_idx on bfv_partition_plans.dis_7 dis_7_2
+                                       Output: dis_7_2.c1, dis_7_2.c2, dis_7_2.c3
+                                       Index Cond: (dis_7_2.c3 = 3)
+                                 ->  Partial Index Scan using dis_8_c3_idx on bfv_partition_plans.dis_8 dis_8_2
+                                       Output: dis_8_2.c1, dis_8_2.c2, dis_8_2.c3
+                                       Index Cond: (dis_8_2.c3 = 3)
+                                 ->  Partial Index Scan using dis_9_c3_idx on bfv_partition_plans.dis_9 dis_9_2
+                                       Output: dis_9_2.c1, dis_9_2.c2, dis_9_2.c3
+                                       Index Cond: (dis_9_2.c3 = 3)
+                                 ->  Partial Index Scan using dis_10_c3_idx on bfv_partition_plans.dis_10 dis_10_2
+                                       Output: dis_10_2.c1, dis_10_2.c2, dis_10_2.c3
+                                       Index Cond: (dis_10_2.c3 = 3)
+                           ->  Append
+                                 ->  Partial Index Scan using dis_1_c3_idx on bfv_partition_plans.dis_1 dis_1_3
+                                       Output: dis_1_3.c1, dis_1_3.c2, dis_1_3.c3
+                                       Index Cond: (dis_1_3.c3 = 4)
+                                 ->  Partial Index Scan using dis_2_c3_idx on bfv_partition_plans.dis_2 dis_2_3
+                                       Output: dis_2_3.c1, dis_2_3.c2, dis_2_3.c3
+                                       Index Cond: (dis_2_3.c3 = 4)
+                                 ->  Partial Index Scan using dis_3_c3_idx on bfv_partition_plans.dis_3 dis_3_3
+                                       Output: dis_3_3.c1, dis_3_3.c2, dis_3_3.c3
+                                       Index Cond: (dis_3_3.c3 = 4)
+                                 ->  Partial Index Scan using dis_4_c3_idx on bfv_partition_plans.dis_4 dis_4_3
+                                       Output: dis_4_3.c1, dis_4_3.c2, dis_4_3.c3
+                                       Index Cond: (dis_4_3.c3 = 4)
+                                 ->  Partial Index Scan using dis_5_c3_idx on bfv_partition_plans.dis_5 dis_5_3
+                                       Output: dis_5_3.c1, dis_5_3.c2, dis_5_3.c3
+                                       Index Cond: (dis_5_3.c3 = 4)
+                                 ->  Partial Index Scan using dis_6_c3_idx on bfv_partition_plans.dis_6 dis_6_3
+                                       Output: dis_6_3.c1, dis_6_3.c2, dis_6_3.c3
+                                       Index Cond: (dis_6_3.c3 = 4)
+                                 ->  Partial Index Scan using dis_7_c3_idx on bfv_partition_plans.dis_7 dis_7_3
+                                       Output: dis_7_3.c1, dis_7_3.c2, dis_7_3.c3
+                                       Index Cond: (dis_7_3.c3 = 4)
+                                 ->  Partial Index Scan using dis_8_c3_idx on bfv_partition_plans.dis_8 dis_8_3
+                                       Output: dis_8_3.c1, dis_8_3.c2, dis_8_3.c3
+                                       Index Cond: (dis_8_3.c3 = 4)
+                                 ->  Partial Index Scan using dis_9_c3_idx on bfv_partition_plans.dis_9 dis_9_3
+                                       Output: dis_9_3.c1, dis_9_3.c2, dis_9_3.c3
+                                       Index Cond: (dis_9_3.c3 = 4)
+                                 ->  Partial Index Scan using dis_10_c3_idx on bfv_partition_plans.dis_10 dis_10_3
+                                       Output: dis_10_3.c1, dis_10_3.c2, dis_10_3.c3
+                                       Index Cond: (dis_10_3.c3 = 4)
+                           ->  Append
+                                 ->  Partial Index Scan using dis_1_c3_idx on bfv_partition_plans.dis_1 dis_1_4
+                                       Output: dis_1_4.c1, dis_1_4.c2, dis_1_4.c3
+                                       Index Cond: (dis_1_4.c3 = 5)
+                                 ->  Partial Index Scan using dis_2_c3_idx on bfv_partition_plans.dis_2 dis_2_4
+                                       Output: dis_2_4.c1, dis_2_4.c2, dis_2_4.c3
+                                       Index Cond: (dis_2_4.c3 = 5)
+                                 ->  Partial Index Scan using dis_3_c3_idx on bfv_partition_plans.dis_3 dis_3_4
+                                       Output: dis_3_4.c1, dis_3_4.c2, dis_3_4.c3
+                                       Index Cond: (dis_3_4.c3 = 5)
+                                 ->  Partial Index Scan using dis_4_c3_idx on bfv_partition_plans.dis_4 dis_4_4
+                                       Output: dis_4_4.c1, dis_4_4.c2, dis_4_4.c3
+                                       Index Cond: (dis_4_4.c3 = 5)
+                                 ->  Partial Index Scan using dis_5_c3_idx on bfv_partition_plans.dis_5 dis_5_4
+                                       Output: dis_5_4.c1, dis_5_4.c2, dis_5_4.c3
+                                       Index Cond: (dis_5_4.c3 = 5)
+                                 ->  Partial Index Scan using dis_6_c3_idx on bfv_partition_plans.dis_6 dis_6_4
+                                       Output: dis_6_4.c1, dis_6_4.c2, dis_6_4.c3
+                                       Index Cond: (dis_6_4.c3 = 5)
+                                 ->  Partial Index Scan using dis_7_c3_idx on bfv_partition_plans.dis_7 dis_7_4
+                                       Output: dis_7_4.c1, dis_7_4.c2, dis_7_4.c3
+                                       Index Cond: (dis_7_4.c3 = 5)
+                                 ->  Partial Index Scan using dis_8_c3_idx on bfv_partition_plans.dis_8 dis_8_4
+                                       Output: dis_8_4.c1, dis_8_4.c2, dis_8_4.c3
+                                       Index Cond: (dis_8_4.c3 = 5)
+                                 ->  Partial Index Scan using dis_9_c3_idx on bfv_partition_plans.dis_9 dis_9_4
+                                       Output: dis_9_4.c1, dis_9_4.c2, dis_9_4.c3
+                                       Index Cond: (dis_9_4.c3 = 5)
+                                 ->  Partial Index Scan using dis_10_c3_idx on bfv_partition_plans.dis_10 dis_10_4
+                                       Output: dis_10_4.c1, dis_10_4.c2, dis_10_4.c3
+                                       Index Cond: (dis_10_4.c3 = 5)
+                           ->  Append
+                                 ->  Partial Index Scan using dis_1_c3_idx on bfv_partition_plans.dis_1 dis_1_5
+                                       Output: dis_1_5.c1, dis_1_5.c2, dis_1_5.c3
+                                       Index Cond: (dis_1_5.c3 = 6)
+                                 ->  Partial Index Scan using dis_2_c3_idx on bfv_partition_plans.dis_2 dis_2_5
+                                       Output: dis_2_5.c1, dis_2_5.c2, dis_2_5.c3
+                                       Index Cond: (dis_2_5.c3 = 6)
+                                 ->  Partial Index Scan using dis_3_c3_idx on bfv_partition_plans.dis_3 dis_3_5
+                                       Output: dis_3_5.c1, dis_3_5.c2, dis_3_5.c3
+                                       Index Cond: (dis_3_5.c3 = 6)
+                                 ->  Partial Index Scan using dis_4_c3_idx on bfv_partition_plans.dis_4 dis_4_5
+                                       Output: dis_4_5.c1, dis_4_5.c2, dis_4_5.c3
+                                       Index Cond: (dis_4_5.c3 = 6)
+                                 ->  Partial Index Scan using dis_5_c3_idx on bfv_partition_plans.dis_5 dis_5_5
+                                       Output: dis_5_5.c1, dis_5_5.c2, dis_5_5.c3
+                                       Index Cond: (dis_5_5.c3 = 6)
+                                 ->  Partial Index Scan using dis_6_c3_idx on bfv_partition_plans.dis_6 dis_6_5
+                                       Output: dis_6_5.c1, dis_6_5.c2, dis_6_5.c3
+                                       Index Cond: (dis_6_5.c3 = 6)
+                                 ->  Partial Index Scan using dis_7_c3_idx on bfv_partition_plans.dis_7 dis_7_5
+                                       Output: dis_7_5.c1, dis_7_5.c2, dis_7_5.c3
+                                       Index Cond: (dis_7_5.c3 = 6)
+                                 ->  Partial Index Scan using dis_8_c3_idx on bfv_partition_plans.dis_8 dis_8_5
+                                       Output: dis_8_5.c1, dis_8_5.c2, dis_8_5.c3
+                                       Index Cond: (dis_8_5.c3 = 6)
+                                 ->  Partial Index Scan using dis_9_c3_idx on bfv_partition_plans.dis_9 dis_9_5
+                                       Output: dis_9_5.c1, dis_9_5.c2, dis_9_5.c3
+                                       Index Cond: (dis_9_5.c3 = 6)
+                                 ->  Partial Index Scan using dis_10_c3_idx on bfv_partition_plans.dis_10 dis_10_5
+                                       Output: dis_10_5.c1, dis_10_5.c2, dis_10_5.c3
+                                       Index Cond: (dis_10_5.c3 = 6)
+                           ->  Append
+                                 ->  Partial Index Scan using dis_1_c3_idx on bfv_partition_plans.dis_1 dis_1_6
+                                       Output: dis_1_6.c1, dis_1_6.c2, dis_1_6.c3
+                                       Index Cond: (dis_1_6.c3 = 7)
+                                 ->  Partial Index Scan using dis_2_c3_idx on bfv_partition_plans.dis_2 dis_2_6
+                                       Output: dis_2_6.c1, dis_2_6.c2, dis_2_6.c3
+                                       Index Cond: (dis_2_6.c3 = 7)
+                                 ->  Partial Index Scan using dis_3_c3_idx on bfv_partition_plans.dis_3 dis_3_6
+                                       Output: dis_3_6.c1, dis_3_6.c2, dis_3_6.c3
+                                       Index Cond: (dis_3_6.c3 = 7)
+                                 ->  Partial Index Scan using dis_4_c3_idx on bfv_partition_plans.dis_4 dis_4_6
+                                       Output: dis_4_6.c1, dis_4_6.c2, dis_4_6.c3
+                                       Index Cond: (dis_4_6.c3 = 7)
+                                 ->  Partial Index Scan using dis_5_c3_idx on bfv_partition_plans.dis_5 dis_5_6
+                                       Output: dis_5_6.c1, dis_5_6.c2, dis_5_6.c3
+                                       Index Cond: (dis_5_6.c3 = 7)
+                                 ->  Partial Index Scan using dis_6_c3_idx on bfv_partition_plans.dis_6 dis_6_6
+                                       Output: dis_6_6.c1, dis_6_6.c2, dis_6_6.c3
+                                       Index Cond: (dis_6_6.c3 = 7)
+                                 ->  Partial Index Scan using dis_7_c3_idx on bfv_partition_plans.dis_7 dis_7_6
+                                       Output: dis_7_6.c1, dis_7_6.c2, dis_7_6.c3
+                                       Index Cond: (dis_7_6.c3 = 7)
+                                 ->  Partial Index Scan using dis_8_c3_idx on bfv_partition_plans.dis_8 dis_8_6
+                                       Output: dis_8_6.c1, dis_8_6.c2, dis_8_6.c3
+                                       Index Cond: (dis_8_6.c3 = 7)
+                                 ->  Partial Index Scan using dis_9_c3_idx on bfv_partition_plans.dis_9 dis_9_6
+                                       Output: dis_9_6.c1, dis_9_6.c2, dis_9_6.c3
+                                       Index Cond: (dis_9_6.c3 = 7)
+                                 ->  Partial Index Scan using dis_10_c3_idx on bfv_partition_plans.dis_10 dis_10_6
+                                       Output: dis_10_6.c1, dis_10_6.c2, dis_10_6.c3
+                                       Index Cond: (dis_10_6.c3 = 7)
+                           ->  Append
+                                 ->  Partial Index Scan using dis_1_c3_idx on bfv_partition_plans.dis_1 dis_1_7
+                                       Output: dis_1_7.c1, dis_1_7.c2, dis_1_7.c3
+                                       Index Cond: (dis_1_7.c3 = 8)
+                                 ->  Partial Index Scan using dis_2_c3_idx on bfv_partition_plans.dis_2 dis_2_7
+                                       Output: dis_2_7.c1, dis_2_7.c2, dis_2_7.c3
+                                       Index Cond: (dis_2_7.c3 = 8)
+                                 ->  Partial Index Scan using dis_3_c3_idx on bfv_partition_plans.dis_3 dis_3_7
+                                       Output: dis_3_7.c1, dis_3_7.c2, dis_3_7.c3
+                                       Index Cond: (dis_3_7.c3 = 8)
+                                 ->  Partial Index Scan using dis_4_c3_idx on bfv_partition_plans.dis_4 dis_4_7
+                                       Output: dis_4_7.c1, dis_4_7.c2, dis_4_7.c3
+                                       Index Cond: (dis_4_7.c3 = 8)
+                                 ->  Partial Index Scan using dis_5_c3_idx on bfv_partition_plans.dis_5 dis_5_7
+                                       Output: dis_5_7.c1, dis_5_7.c2, dis_5_7.c3
+                                       Index Cond: (dis_5_7.c3 = 8)
+                                 ->  Partial Index Scan using dis_6_c3_idx on bfv_partition_plans.dis_6 dis_6_7
+                                       Output: dis_6_7.c1, dis_6_7.c2, dis_6_7.c3
+                                       Index Cond: (dis_6_7.c3 = 8)
+                                 ->  Partial Index Scan using dis_7_c3_idx on bfv_partition_plans.dis_7 dis_7_7
+                                       Output: dis_7_7.c1, dis_7_7.c2, dis_7_7.c3
+                                       Index Cond: (dis_7_7.c3 = 8)
+                                 ->  Partial Index Scan using dis_8_c3_idx on bfv_partition_plans.dis_8 dis_8_7
+                                       Output: dis_8_7.c1, dis_8_7.c2, dis_8_7.c3
+                                       Index Cond: (dis_8_7.c3 = 8)
+                                 ->  Partial Index Scan using dis_9_c3_idx on bfv_partition_plans.dis_9 dis_9_7
+                                       Output: dis_9_7.c1, dis_9_7.c2, dis_9_7.c3
+                                       Index Cond: (dis_9_7.c3 = 8)
+                                 ->  Partial Index Scan using dis_10_c3_idx on bfv_partition_plans.dis_10 dis_10_7
+                                       Output: dis_10_7.c1, dis_10_7.c2, dis_10_7.c3
+                                       Index Cond: (dis_10_7.c3 = 8)
+                           ->  Append
+                                 ->  Partial Index Scan using dis_1_c3_idx on bfv_partition_plans.dis_1 dis_1_8
+                                       Output: dis_1_8.c1, dis_1_8.c2, dis_1_8.c3
+                                       Index Cond: (dis_1_8.c3 = 9)
+                                 ->  Partial Index Scan using dis_2_c3_idx on bfv_partition_plans.dis_2 dis_2_8
+                                       Output: dis_2_8.c1, dis_2_8.c2, dis_2_8.c3
+                                       Index Cond: (dis_2_8.c3 = 9)
+                                 ->  Partial Index Scan using dis_3_c3_idx on bfv_partition_plans.dis_3 dis_3_8
+                                       Output: dis_3_8.c1, dis_3_8.c2, dis_3_8.c3
+                                       Index Cond: (dis_3_8.c3 = 9)
+                                 ->  Partial Index Scan using dis_4_c3_idx on bfv_partition_plans.dis_4 dis_4_8
+                                       Output: dis_4_8.c1, dis_4_8.c2, dis_4_8.c3
+                                       Index Cond: (dis_4_8.c3 = 9)
+                                 ->  Partial Index Scan using dis_5_c3_idx on bfv_partition_plans.dis_5 dis_5_8
+                                       Output: dis_5_8.c1, dis_5_8.c2, dis_5_8.c3
+                                       Index Cond: (dis_5_8.c3 = 9)
+                                 ->  Partial Index Scan using dis_6_c3_idx on bfv_partition_plans.dis_6 dis_6_8
+                                       Output: dis_6_8.c1, dis_6_8.c2, dis_6_8.c3
+                                       Index Cond: (dis_6_8.c3 = 9)
+                                 ->  Partial Index Scan using dis_7_c3_idx on bfv_partition_plans.dis_7 dis_7_8
+                                       Output: dis_7_8.c1, dis_7_8.c2, dis_7_8.c3
+                                       Index Cond: (dis_7_8.c3 = 9)
+                                 ->  Partial Index Scan using dis_8_c3_idx on bfv_partition_plans.dis_8 dis_8_8
+                                       Output: dis_8_8.c1, dis_8_8.c2, dis_8_8.c3
+                                       Index Cond: (dis_8_8.c3 = 9)
+                                 ->  Partial Index Scan using dis_9_c3_idx on bfv_partition_plans.dis_9 dis_9_8
+                                       Output: dis_9_8.c1, dis_9_8.c2, dis_9_8.c3
+                                       Index Cond: (dis_9_8.c3 = 9)
+                                 ->  Partial Index Scan using dis_10_c3_idx on bfv_partition_plans.dis_10 dis_10_8
+                                       Output: dis_10_8.c1, dis_10_8.c2, dis_10_8.c3
+                                       Index Cond: (dis_10_8.c3 = 9)
+                           ->  Append
+                                 ->  Partial Index Scan using dis_1_c3_idx on bfv_partition_plans.dis_1 dis_1_9
+                                       Output: dis_1_9.c1, dis_1_9.c2, dis_1_9.c3
+                                       Index Cond: (dis_1_9.c3 = 10)
+                                 ->  Partial Index Scan using dis_2_c3_idx on bfv_partition_plans.dis_2 dis_2_9
+                                       Output: dis_2_9.c1, dis_2_9.c2, dis_2_9.c3
+                                       Index Cond: (dis_2_9.c3 = 10)
+                                 ->  Partial Index Scan using dis_3_c3_idx on bfv_partition_plans.dis_3 dis_3_9
+                                       Output: dis_3_9.c1, dis_3_9.c2, dis_3_9.c3
+                                       Index Cond: (dis_3_9.c3 = 10)
+                                 ->  Partial Index Scan using dis_4_c3_idx on bfv_partition_plans.dis_4 dis_4_9
+                                       Output: dis_4_9.c1, dis_4_9.c2, dis_4_9.c3
+                                       Index Cond: (dis_4_9.c3 = 10)
+                                 ->  Partial Index Scan using dis_5_c3_idx on bfv_partition_plans.dis_5 dis_5_9
+                                       Output: dis_5_9.c1, dis_5_9.c2, dis_5_9.c3
+                                       Index Cond: (dis_5_9.c3 = 10)
+                                 ->  Partial Index Scan using dis_6_c3_idx on bfv_partition_plans.dis_6 dis_6_9
+                                       Output: dis_6_9.c1, dis_6_9.c2, dis_6_9.c3
+                                       Index Cond: (dis_6_9.c3 = 10)
+                                 ->  Partial Index Scan using dis_7_c3_idx on bfv_partition_plans.dis_7 dis_7_9
+                                       Output: dis_7_9.c1, dis_7_9.c2, dis_7_9.c3
+                                       Index Cond: (dis_7_9.c3 = 10)
+                                 ->  Partial Index Scan using dis_8_c3_idx on bfv_partition_plans.dis_8 dis_8_9
+                                       Output: dis_8_9.c1, dis_8_9.c2, dis_8_9.c3
+                                       Index Cond: (dis_8_9.c3 = 10)
+                                 ->  Partial Index Scan using dis_9_c3_idx on bfv_partition_plans.dis_9 dis_9_9
+                                       Output: dis_9_9.c1, dis_9_9.c2, dis_9_9.c3
+                                       Index Cond: (dis_9_9.c3 = 10)
+                                 ->  Partial Index Scan using dis_10_c3_idx on bfv_partition_plans.dis_10 dis_10_9
+                                       Output: dis_10_9.c1, dis_10_9.c2, dis_10_9.c3
+                                       Index Cond: (dis_10_9.c3 = 10)
+ Optimizer: PolarDB PX Optimizer
+(323 rows)
+
+select find_operator('select * from dbs where c2= 15 and c3 = 5;', 'Bitmap Heap Scan');
+ERROR:  function find_operator(unknown, unknown) does not exist
+LINE 1: select find_operator('select * from dbs where c2= 15 and c3 ...
+               ^
+HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
+select * from dbs where c2= 15 and c3 = 5;
+ c1 | c2 | c3 
+----+----+----
+(0 rows)
+
+-- CLEANUP
+drop index dbs_index;
+ERROR:  index "dbs_index" does not exist
+drop table if exists dbs;
+drop index dis_index;
+drop table if exists dis;
+drop table if exists dts;
+reset polar_px_optimizer_enable_dynamictablescan;
+--
+-- Partition elimination for heterogenous DynamicIndexScans
+--
+-- SETUP
+-- start_ignore
+drop table if exists pp;
+NOTICE:  table "pp" does not exist, skipping
+drop index if exists pp_1_prt_1_idx;
+NOTICE:  index "pp_1_prt_1_idx" does not exist, skipping
+drop index if exists pp_rest_1_idx;
+NOTICE:  index "pp_rest_1_idx" does not exist, skipping
+drop index if exists pp_rest_2_idx;
+NOTICE:  index "pp_rest_2_idx" does not exist, skipping
+set polar_px_optimizer_segments=2;
+set polar_px_optimizer_partition_selection_log=on;
+-- end_ignore
+create table pp(a int, b int, c int) partition by range(b);
+CREATE TABLE pp_1_prt_1 PARTITION of pp for values from (1) to (5);
+CREATE TABLE pp_1_prt_2 PARTITION of pp for values from (5) to (10);
+CREATE TABLE pp_1_prt_3 PARTITION of pp for values from (10) to (15);
+insert into pp values (1,1,2),(2,6,2), (3,11,2);
+-- Heterogeneous Index on the partition table
+create index pp_1_prt_1_idx on pp_1_prt_1(c);
+-- Create other indexes so that we can automate the repro for MPP-21069 by disabling tablescan
+create index pp_rest_1_idx on pp_1_prt_2(c,a);
+create index pp_rest_2_idx on pp_1_prt_3(c,a);
+-- TEST
+set polar_px_optimizer_enable_dynamictablescan = off;
+select * from pp where b=2 and c=2;
+ a | b | c 
+---+---+---
+(0 rows)
+
+select count_operator('select * from pp where b=2 and c=2;','Partition Selector');
+ERROR:  function count_operator(unknown, unknown) does not exist
+LINE 1: select count_operator('select * from pp where b=2 and c=2;',...
+               ^
+HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
+-- CLEANUP
+-- start_ignore
+drop index if exists pp_rest_2_idx;
+drop index if exists pp_rest_1_idx;
+drop index if exists pp_1_prt_1_idx;
+drop table if exists pp;
+reset polar_px_optimizer_enable_dynamictablescan;
+reset polar_px_optimizer_segments;
+set polar_px_optimizer_partition_selection_log=off;
+-- end_ignore
+--
+-- Partition elimination with implicit CAST on the partitioning key
+--
+-- SETUP
+-- start_ignore
+set polar_px_optimizer_segments=2;
+set polar_px_optimizer_partition_selection_log=on;
+DROP TABLE IF EXISTS ds_4;
+NOTICE:  table "ds_4" does not exist, skipping
+-- end_ignore
+CREATE TABLE ds_4
+(
+  month_id character varying(6),
+  cust_group_acc numeric(10),
+  mobile_no character varying(10)
+)
+PARTITION BY LIST(month_id);
+CREATE TABLE ds_4_1 PARTITION OF ds_4 FOR VALUES IN ('200800');
+CREATE TABLE ds_4_2 PARTITION OF ds_4 FOR VALUES IN ('200801');
+CREATE TABLE ds_4_3 PARTITION OF ds_4 FOR VALUES IN ('200802');
+CREATE TABLE ds_4_4 PARTITION OF ds_4 FOR VALUES IN ('200803');
+-- TEST
+select * from ds_4 where month_id = '200800';
+ month_id | cust_group_acc | mobile_no 
+----------+----------------+-----------
+(0 rows)
+
+                                   QUERY PLAN                                   
+--------------------------------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: ds_4_1.month_id, ds_4_1.cust_group_acc, ds_4_1.mobile_no
+   ->  Append
+         ->  Partial Seq Scan on bfv_partition_plans.ds_4_1
+               Output: ds_4_1.month_id, ds_4_1.cust_group_acc, ds_4_1.mobile_no
+               Filter: ((ds_4_1.month_id)::text = '200800'::text)
+ Optimizer: PolarDB PX Optimizer
+(7 rows)
+
+select count_operator('select * from ds_4 where month_id = E''200800'';','Partition Selector');
+ERROR:  function count_operator(unknown, unknown) does not exist
+LINE 1: select count_operator('select * from ds_4 where month_id = E...
+               ^
+HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
+select * from ds_4 where month_id > '200800';
+ month_id | cust_group_acc | mobile_no 
+----------+----------------+-----------
+(0 rows)
+
+                                   QUERY PLAN                                   
+--------------------------------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: ds_4_2.month_id, ds_4_2.cust_group_acc, ds_4_2.mobile_no
+   ->  Append
+         ->  Partial Seq Scan on bfv_partition_plans.ds_4_2
+               Output: ds_4_2.month_id, ds_4_2.cust_group_acc, ds_4_2.mobile_no
+               Filter: ((ds_4_2.month_id)::text > '200800'::text)
+         ->  Partial Seq Scan on bfv_partition_plans.ds_4_3
+               Output: ds_4_3.month_id, ds_4_3.cust_group_acc, ds_4_3.mobile_no
+               Filter: ((ds_4_3.month_id)::text > '200800'::text)
+         ->  Partial Seq Scan on bfv_partition_plans.ds_4_4
+               Output: ds_4_4.month_id, ds_4_4.cust_group_acc, ds_4_4.mobile_no
+               Filter: ((ds_4_4.month_id)::text > '200800'::text)
+ Optimizer: PolarDB PX Optimizer
+(13 rows)
+
+select count_operator('select * from ds_4 where month_id > E''200800'';','Partition Selector');
+ERROR:  function count_operator(unknown, unknown) does not exist
+LINE 1: select count_operator('select * from ds_4 where month_id > E...
+               ^
+HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
+select * from ds_4 where month_id <= '200800';
+ month_id | cust_group_acc | mobile_no 
+----------+----------------+-----------
+(0 rows)
+
+                                   QUERY PLAN                                   
+--------------------------------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: ds_4_1.month_id, ds_4_1.cust_group_acc, ds_4_1.mobile_no
+   ->  Append
+         ->  Partial Seq Scan on bfv_partition_plans.ds_4_1
+               Output: ds_4_1.month_id, ds_4_1.cust_group_acc, ds_4_1.mobile_no
+               Filter: ((ds_4_1.month_id)::text <= '200800'::text)
+ Optimizer: PolarDB PX Optimizer
+(7 rows)
+
+select count_operator('select * from ds_4 where month_id <= E''200800'';','Partition Selector');
+ERROR:  function count_operator(unknown, unknown) does not exist
+LINE 1: select count_operator('select * from ds_4 where month_id <= ...
+               ^
+HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
+select * from ds_4 a1,ds_4 a2 where a1.month_id = a2.month_id and a1.month_id > '200800';
+ month_id | cust_group_acc | mobile_no | month_id | cust_group_acc | mobile_no 
+----------+----------------+-----------+----------+----------------+-----------
+(0 rows)
+
+                                                                QUERY PLAN                                                                
+------------------------------------------------------------------------------------------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: ds_4_2.month_id, ds_4_2.cust_group_acc, ds_4_2.mobile_no, ds_4_2_1.month_id, ds_4_2_1.cust_group_acc, ds_4_2_1.mobile_no
+   ->  Hash Join
+         Output: ds_4_2.month_id, ds_4_2.cust_group_acc, ds_4_2.mobile_no, ds_4_2_1.month_id, ds_4_2_1.cust_group_acc, ds_4_2_1.mobile_no
+         Hash Cond: ((ds_4_2.month_id)::text = (ds_4_2_1.month_id)::text)
+         ->  Append
+               Partition Selectors: $0
+               ->  Partial Seq Scan on bfv_partition_plans.ds_4_2
+                     Output: ds_4_2.month_id, ds_4_2.cust_group_acc, ds_4_2.mobile_no
+                     Filter: ((ds_4_2.month_id)::text > '200800'::text)
+               ->  Partial Seq Scan on bfv_partition_plans.ds_4_3
+                     Output: ds_4_3.month_id, ds_4_3.cust_group_acc, ds_4_3.mobile_no
+                     Filter: ((ds_4_3.month_id)::text > '200800'::text)
+               ->  Partial Seq Scan on bfv_partition_plans.ds_4_4
+                     Output: ds_4_4.month_id, ds_4_4.cust_group_acc, ds_4_4.mobile_no
+                     Filter: ((ds_4_4.month_id)::text > '200800'::text)
+         ->  Hash
+               Output: ds_4_2_1.month_id, ds_4_2_1.cust_group_acc, ds_4_2_1.mobile_no
+               ->  Partition Selector (selector id: $0)
+                     Output: ds_4_2_1.month_id, ds_4_2_1.cust_group_acc, ds_4_2_1.mobile_no
+                     ->  PX Broadcast 6:6  (slice2; segments: 6)
+                           Output: ds_4_2_1.month_id, ds_4_2_1.cust_group_acc, ds_4_2_1.mobile_no
+                           ->  Append
+                                 ->  Partial Seq Scan on bfv_partition_plans.ds_4_2 ds_4_2_1
+                                       Output: ds_4_2_1.month_id, ds_4_2_1.cust_group_acc, ds_4_2_1.mobile_no
+                                       Filter: ((ds_4_2_1.month_id)::text > '200800'::text)
+                                 ->  Partial Seq Scan on bfv_partition_plans.ds_4_3 ds_4_3_1
+                                       Output: ds_4_3_1.month_id, ds_4_3_1.cust_group_acc, ds_4_3_1.mobile_no
+                                       Filter: ((ds_4_3_1.month_id)::text > '200800'::text)
+                                 ->  Partial Seq Scan on bfv_partition_plans.ds_4_4 ds_4_4_1
+                                       Output: ds_4_4_1.month_id, ds_4_4_1.cust_group_acc, ds_4_4_1.mobile_no
+                                       Filter: ((ds_4_4_1.month_id)::text > '200800'::text)
+ Optimizer: PolarDB PX Optimizer
+(33 rows)
+
+select count_operator('select * from ds_4 a1,ds_4 a2 where a1.month_id = a2.month_id and a1.month_id > E''200800'';','Partition Selector');
+ERROR:  function count_operator(unknown, unknown) does not exist
+LINE 1: select count_operator('select * from ds_4 a1,ds_4 a2 where a...
+               ^
+HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
+-- CLEANUP
+-- start_ignore
+DROP TABLE IF EXISTS ds_4;
+set polar_px_optimizer_partition_selection_log=off;
+reset polar_px_optimizer_segments;
+-- end_ignore
+--
+-- Test a hash agg that has a Sequence + Partition Selector below it.
+--
+-- SETUP
+-- start_ignore
+DROP TABLE IF EXISTS bar;
+NOTICE:  table "bar" does not exist, skipping
+-- end_ignore
+CREATE TABLE bar (b int, c int)
+PARTITION BY RANGE (b);
+CREATE TABLE bar_1 PARTITION of bar for values from (0) to (10);
+CREATE TABLE bar_2 PARTITION of bar for values from (10) to (20);
+INSERT INTO bar SELECT g % 20, g % 20 from generate_series(1, 1000) g;
+ANALYZE bar;
+SELECT b FROM bar GROUP BY b;
+ b  
+----
+ 11
+  8
+ 19
+  4
+  0
+ 14
+  3
+ 17
+ 13
+ 10
+  9
+  7
+  1
+  5
+ 18
+  2
+ 16
+ 15
+  6
+ 12
+(20 rows)
+
+                                    QUERY PLAN                                     
+-----------------------------------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: bar_1.b
+   ->  GroupAggregate
+         Output: bar_1.b
+         Group Key: bar_1.b
+         ->  Sort
+               Output: bar_1.b
+               Sort Key: bar_1.b
+               ->  PX Hash 6:6  (slice2; segments: 6)
+                     Output: bar_1.b
+                     Hash Key: bar_1.b
+                     ->  HashAggregate
+                           Output: bar_1.b
+                           Group Key: bar_1.b
+                           ->  Append
+                                 ->  Partial Seq Scan on bfv_partition_plans.bar_1
+                                       Output: bar_1.b
+                                 ->  Partial Seq Scan on bfv_partition_plans.bar_2
+                                       Output: bar_2.b
+ Optimizer: PolarDB PX Optimizer
+(20 rows)
+
+explain (costs off) select b FROM bar GROUP BY b;
+          QUERY PLAN           
+-------------------------------
+ HashAggregate
+   Group Key: bar_1.b
+   ->  Append
+         ->  Seq Scan on bar_1
+         ->  Seq Scan on bar_2
+(5 rows)
+
+-- CLEANUP
+DROP TABLE IF EXISTS foo;
+NOTICE:  table "foo" does not exist, skipping
+DROP TABLE IF EXISTS bar;
+-- Partitioned tables with default partitions and indexes on all parts,
+-- queries on them with a predicate on index column must not consider the scan
+-- as partial and should not fallback.
+CREATE TABLE part_tbl
+(
+	time_client_key numeric(16,0) NOT NULL,
+	ngin_service_key numeric NOT NULL,
+	profile_key numeric NOT NULL
+)
+PARTITION BY RANGE(time_client_key);
+CREATE TABLE part_tbl_1 PARTITION of part_tbl for values from (2015111000) to (2015111100);
+INSERT INTO part_tbl VALUES (2015111000, 479534741, 99999999);
+INSERT INTO part_tbl VALUES (2015111000, 479534742, 99999999);
+CREATE INDEX part_tbl_idx 
+ON part_tbl(profile_key);
+-- start_ignore
+analyze part_tbl;
+-- end_ignore
+explain (costs off) select * FROM part_tbl WHERE profile_key = 99999999;
+                     QUERY PLAN                      
+-----------------------------------------------------
+ Append
+   ->  Seq Scan on part_tbl_1
+         Filter: (profile_key = '99999999'::numeric)
+(3 rows)
+
+SELECT * FROM part_tbl WHERE profile_key = 99999999;
+ time_client_key | ngin_service_key | profile_key 
+-----------------+------------------+-------------
+      2015111000 |        479534741 |    99999999
+      2015111000 |        479534742 |    99999999
+(2 rows)
+
+                                            QUERY PLAN                                             
+---------------------------------------------------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: time_client_key, ngin_service_key, profile_key
+   ->  Append
+         ->  Partial Index Scan using part_tbl_1_profile_key_idx on bfv_partition_plans.part_tbl_1
+               Output: time_client_key, ngin_service_key, profile_key
+               Index Cond: (part_tbl_1.profile_key = '99999999'::numeric)
+ Optimizer: PolarDB PX Optimizer
+(7 rows)
+
+DROP TABLE part_tbl;
+--
+-- Test partition elimination, MPP-7891
+--
+-- cleanup
+-- start_ignore
+drop table if exists r_part;
+NOTICE:  table "r_part" does not exist, skipping
+drop table if exists r_co;
+NOTICE:  table "r_co" does not exist, skipping
+deallocate f1;
+ERROR:  prepared statement "f1" does not exist
+deallocate f2;
+ERROR:  prepared statement "f2" does not exist
+deallocate f3;
+ERROR:  prepared statement "f3" does not exist
+-- end_ignore
+create table r_part(a int, b int) partition by range(a);
+CREATE TABLE r_part_1 PARTITION of r_part for values from (1) to (2);
+CREATE TABLE r_part_2 PARTITION of r_part for values from (2) to (3);
+CREATE TABLE r_part_3 PARTITION of r_part for values from (3) to (4);
+CREATE TABLE r_part_4 PARTITION of r_part for values from (4) to (5);
+CREATE TABLE r_part_5 PARTITION of r_part for values from (5) to (6);
+CREATE TABLE r_part_6 PARTITION of r_part for values from (6) to (7);
+CREATE TABLE r_part_7 PARTITION of r_part for values from (7) to (8);
+CREATE TABLE r_part_8 PARTITION of r_part for values from (8) to (9);
+CREATE TABLE r_part_9 PARTITION of r_part for values from (9) to (10);
+insert into r_part values (1,1), (2,2), (3,3), (4,4), (5,5), (6,6), (7,7), (8,8);
+-- following tests rely on the data distribution, verify them
+select * from r_part order by a,b;
+ a | b 
+---+---
+ 1 | 1
+ 2 | 2
+ 3 | 3
+ 4 | 4
+ 5 | 5
+ 6 | 6
+ 7 | 7
+ 8 | 8
+(8 rows)
+
+                             QUERY PLAN                             
+--------------------------------------------------------------------
+ PX Coordinator 6:1  (slice1; segments: 6)
+   Output: r_part_1.a, r_part_1.b
+   Merge Key: r_part_1.a, r_part_1.b
+   ->  Sort
+         Output: r_part_1.a, r_part_1.b
+         Sort Key: r_part_1.a, r_part_1.b
+         ->  Append
+               ->  Partial Seq Scan on bfv_partition_plans.r_part_1
+                     Output: r_part_1.a, r_part_1.b
+               ->  Partial Seq Scan on bfv_partition_plans.r_part_2
+                     Output: r_part_2.a, r_part_2.b
+               ->  Partial Seq Scan on bfv_partition_plans.r_part_3
+                     Output: r_part_3.a, r_part_3.b
+               ->  Partial Seq Scan on bfv_partition_plans.r_part_4
+                     Output: r_part_4.a, r_part_4.b
+               ->  Partial Seq Scan on bfv_partition_plans.r_part_5
+                     Output: r_part_5.a, r_part_5.b
+               ->  Partial Seq Scan on bfv_partition_plans.r_part_6
+                     Output: r_part_6.a, r_part_6.b
+               ->  Partial Seq Scan on bfv_partition_plans.r_part_7
+                     Output: r_part_7.a, r_part_7.b
+               ->  Partial Seq Scan on bfv_partition_plans.r_part_8
+                     Output: r_part_8.a, r_part_8.b
+               ->  Partial Seq Scan on bfv_partition_plans.r_part_9
+                     Output: r_part_9.a, r_part_9.b
+ Optimizer: PolarDB PX Optimizer
+(26 rows)
+
+analyze r_part;
+explain (costs off) select * from r_part r1, r_part r2 where r1.a=1; -- should eliminate partitions in the r1 copy of r_part
+              QUERY PLAN               
+---------------------------------------
+ Nested Loop
+   ->  Append
+         ->  Seq Scan on r_part_1 r1
+               Filter: (a = 1)
+   ->  Append
+         ->  Seq Scan on r_part_1 r2
+         ->  Seq Scan on r_part_2 r2_1
+         ->  Seq Scan on r_part_3 r2_2
+         ->  Seq Scan on r_part_4 r2_3
+         ->  Seq Scan on r_part_5 r2_4
+         ->  Seq Scan on r_part_6 r2_5
+         ->  Seq Scan on r_part_7 r2_6
+         ->  Seq Scan on r_part_8 r2_7
+         ->  Seq Scan on r_part_9 r2_8
+(14 rows)
+
+-- the numbers in the filter should be both on segment 0
+explain (costs off) select * from r_part where a in (7,8); -- should eliminate partitions
+                   QUERY PLAN                   
+------------------------------------------------
+ Append
+   ->  Seq Scan on r_part_7
+         Filter: (a = ANY ('{7,8}'::integer[]))
+   ->  Seq Scan on r_part_8
+         Filter: (a = ANY ('{7,8}'::integer[]))
+(5 rows)
+
+-- Test partition elimination in prepared statements
+prepare f1(int) as select * from r_part where a = 1 order by a,b; 
+prepare f2(int) as select * from r_part where a = $1 order by a,b;
+execute f1(1); 
+ a | b 
+---+---
+ 1 | 1
+(1 row)
+
+execute f2(1); 
+ a | b 
+---+---
+ 1 | 1
+(1 row)
+
+execute f2(2); 
+ a | b 
+---+---
+ 2 | 2
+(1 row)
+
+explain (costs off) select * from r_part where a = 1 order by a,b; -- should eliminate partitions
+            QUERY PLAN            
+----------------------------------
+ Sort
+   Sort Key: r_part_1.b
+   ->  Append
+         ->  Seq Scan on r_part_1
+               Filter: (a = 1)
+(5 rows)
+
+--force_explain
+explain execute f1(1); -- should eliminate partitions 
+                             QUERY PLAN                             
+--------------------------------------------------------------------
+ Sort  (cost=1.03..1.03 rows=1 width=8)
+   Sort Key: r_part_1.b
+   ->  Append  (cost=0.00..1.02 rows=1 width=8)
+         ->  Seq Scan on r_part_1  (cost=0.00..1.01 rows=1 width=8)
+               Filter: (a = 1)
+(5 rows)
+
+--force_explain
+explain execute f2(2); -- should eliminate partitions
+                             QUERY PLAN                             
+--------------------------------------------------------------------
+ Sort  (cost=1.03..1.03 rows=1 width=8)
+   Sort Key: r_part_2.b
+   ->  Append  (cost=0.00..1.02 rows=1 width=8)
+         ->  Seq Scan on r_part_2  (cost=0.00..1.01 rows=1 width=8)
+               Filter: (a = 2)
+(5 rows)
+
+-- test partition elimination in prepared statements on CO tables
+--force_explain
+explain execute f3(2); -- should eliminate partitions
+ERROR:  prepared statement "f3" does not exist
+-- start_ignore
+drop table r_part;
+drop table r_co;
+ERROR:  table "r_co" does not exist
+deallocate f1;
+deallocate f2;
+deallocate f3;
+ERROR:  prepared statement "f3" does not exist
+-- end_ignore
+--
+-- Test partition elimination, MPP-7891
+--
+-- start_ignore
+drop table if exists fact;
+NOTICE:  table "fact" does not exist, skipping
+deallocate f1;
+ERROR:  prepared statement "f1" does not exist
+create table fact(x int, dd date, dt text) 
+partition by range (dd);
+CREATE TABLE fact_1 PARTITION of fact for values from ('2008-01-01') to ('2108-01-01');
+CREATE TABLE fact_2 PARTITION of fact for values from ('2108-01-01') to ('2208-01-01');
+CREATE TABLE fact_3 PARTITION of fact for values from ('2208-01-01') to ('2308-01-01');
+CREATE TABLE fact_4 PARTITION of fact for values from ('2308-01-01') to ('2320-01-01');
+-- end_ignore
+analyze fact;
+select '2009-01-02'::date = to_date('2009-01-02','YYYY-MM-DD'); -- ensure that both are in fact equal
+ ?column? 
+----------
+ t
+(1 row)
+
+explain (costs off) select * from fact where dd < '2009-01-02'::date; -- partitions eliminated
+                QUERY PLAN                 
+-------------------------------------------
+ Append
+   ->  Seq Scan on fact_1
+         Filter: (dd < '01-02-2009'::date)
+(3 rows)
+
+explain (costs off) select * from fact where dd < to_date('2009-01-02','YYYY-MM-DD'); -- partitions eliminated
+                               QUERY PLAN                               
+------------------------------------------------------------------------
+ Append
+   Subplans Removed: 3
+   ->  Seq Scan on fact_1
+         Filter: (dd < to_date('2009-01-02'::text, 'YYYY-MM-DD'::text))
+(4 rows)
+
+explain (costs off) select * from fact where dd < current_date; --partitions eliminated
+             QUERY PLAN              
+-------------------------------------
+ Append
+   Subplans Removed: 3
+   ->  Seq Scan on fact_1
+         Filter: (dd < CURRENT_DATE)
+(4 rows)
+
+-- Test partition elimination in prepared statements
+prepare f1(date) as select * from fact where dd < $1;
+-- force_explain
+explain execute f1('2009-01-02'::date); -- should eliminate partitions
+                           QUERY PLAN                           
+----------------------------------------------------------------
+ Append  (cost=0.00..27.00 rows=400 width=40)
+   ->  Seq Scan on fact_1  (cost=0.00..25.00 rows=400 width=40)
+         Filter: (dd < '01-02-2009'::date)
+(3 rows)
+
+-- force_explain
+explain execute f1(to_date('2009-01-02', 'YYYY-MM-DD')); -- should eliminate partitions
+                           QUERY PLAN                           
+----------------------------------------------------------------
+ Append  (cost=0.00..27.00 rows=400 width=40)
+   ->  Seq Scan on fact_1  (cost=0.00..25.00 rows=400 width=40)
+         Filter: (dd < '01-02-2009'::date)
+(3 rows)
+
+-- start_ignore
+drop table fact;
+deallocate f1;
+-- end_ignore
+-- MPP-6247
+-- Delete Using on partitioned table causes repetitive scans on using table	
+create table mpp6247_foo ( c1 int, dt date ) 
+ partition by range (dt);
+CREATE TABLE mpp6247_foo_1 PARTITION of mpp6247_foo for values from ('2009-05-01') to ('2009-05-02');
+CREATE TABLE mpp6247_foo_2 PARTITION of mpp6247_foo for values from ('2009-05-02') to ('2009-05-03');
+CREATE TABLE mpp6247_foo_3 PARTITION of mpp6247_foo for values from ('2009-05-03') to ('2009-05-04');
+CREATE TABLE mpp6247_foo_4 PARTITION of mpp6247_foo for values from ('2009-05-04') to ('2009-05-05');
+CREATE TABLE mpp6247_foo_5 PARTITION of mpp6247_foo for values from ('2009-05-05') to ('2009-05-06');
+CREATE TABLE mpp6247_foo_6 PARTITION of mpp6247_foo for values from ('2009-05-06') to ('2009-05-07');
+CREATE TABLE mpp6247_foo_7 PARTITION of mpp6247_foo for values from ('2009-05-07') to ('2009-05-08');
+CREATE TABLE mpp6247_foo_8 PARTITION of mpp6247_foo for values from ('2009-05-08') to ('2009-05-09');
+CREATE TABLE mpp6247_foo_9 PARTITION of mpp6247_foo for values from ('2009-05-09') to ('2009-05-10');
+CREATE TABLE mpp6247_foo_10 PARTITION of mpp6247_foo for values from ('2009-05-10') to ('2009-05-11');
+create table mpp6247_bar (like mpp6247_foo);
+-- EXPECT: Single HJ after partition elimination instead of sequence of HJ under Append
+select count_operator('delete from mpp6247_foo using mpp6247_bar where mpp6247_foo.c1 = mpp6247_bar.c1 and mpp6247_foo.dt = ''2009-05-03''', 'Hash Join');
+ERROR:  function count_operator(unknown, unknown) does not exist
+LINE 1: select count_operator('delete from mpp6247_foo using mpp6247...
+               ^
+HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
+drop table mpp6247_bar;
+drop table mpp6247_foo;
+-- CLEANUP
+-- start_ignore
+set client_min_messages='warning';
+drop schema if exists bfv_partition_plans cascade;
+-- end_ignore

@@ -47,10 +47,13 @@
 #include "storage/pg_shmem.h"
 #include "storage/pmsignal.h"
 #include "utils/guc.h"
+#include "utils/polar_coredump.h"
 #include "utils/ps_status.h"
 
 /* POLAR */
+#include "polar_datamax/polar_datamax.h"
 #include "storage/polar_fd.h"
+/* POLAR end */
 
 /* ----------
  * Timer definitions.
@@ -233,6 +236,21 @@ PgArchiverMain(int argc, char *argv[])
 	pqsignal(SIGTTOU, SIG_DFL);
 	pqsignal(SIGCONT, SIG_DFL);
 	pqsignal(SIGWINCH, SIG_DFL);
+
+	/* POLAR : register for coredump print */
+#ifndef _WIN32
+#ifdef SIGILL
+	pqsignal(SIGILL, polar_program_error_handler);
+#endif
+#ifdef SIGSEGV
+	pqsignal(SIGSEGV, polar_program_error_handler);
+#endif
+#ifdef SIGBUS
+	pqsignal(SIGBUS, polar_program_error_handler);
+#endif
+#endif	/* _WIN32 */
+	/* POLAR: end */
+
 	PG_SETMASK(&UnBlockSig);
 
 	/*
@@ -510,8 +528,23 @@ pgarch_archiveXlog(char *xlog)
 	char	   *endp;
 	const char *sp;
 	int			rc;
+	/* POLAR */
+	const char *polar_path;
+	/* POLAR end */
 
-	snprintf(pathname, MAXPGPATH, XLOGDIR "/%s", xlog);
+	/*
+	 * POLAR: datamax xlog is stored in polar_datamax/pg_wal
+	 * use polar_is_datamax_mode directly rather than polar_is_datamax() here,
+	 * because polar_is_datamax() need to access XLogCtl in shared memory,
+	 * and original archive process have detached shared memory 
+	 */
+	if(!polar_is_datamax_mode)
+		polar_make_file_path_level3(pathname, XLOGDIR, xlog);
+	else
+		polar_make_file_path_level3(pathname, POLAR_DATAMAX_WAL_DIR, xlog);
+	/* remove datadir protocol of pathname */
+	polar_path = polar_path_remove_protocol(pathname);
+	/* POLAR end */
 
 	/*
 	 * construct the command to be executed
@@ -529,7 +562,7 @@ pgarch_archiveXlog(char *xlog)
 				case 'p':
 					/* %p: relative path of source file */
 					sp++;
-					strlcpy(dp, pathname, endp - dp);
+					strlcpy(dp, polar_path, endp - dp);
 					make_native_path(dp);
 					dp += strlen(dp);
 					break;
@@ -663,10 +696,23 @@ pgarch_readyXlog(char *xlog)
 	DIR		   *rldir;
 	struct dirent *rlde;
 	bool		found = false;
-	char		polar_path[MAXPGPATH];
 	bool		historyFound = false;
+	char		polar_path[MAXPGPATH];
+	XLogSegNo	committed_segno = 0;
+	TimeLineID committed_tli = 0;
+	
 
-	snprintf(XLogArchiveStatusDir, MAXPGPATH, XLOGDIR "/archive_status");
+	/*
+	 * POLAR: datamax archive_status is stored in polar_datamax/pg_wal/archive_status
+	 * use polar_is_datamax_mode directly rather than polar_is_datamax() here,
+	 * because polar_is_datamax() need to access XLogCtl in shared memory,
+	 * and original archive process have detached shared memory
+	 */
+	if(!polar_is_datamax_mode)
+		snprintf(XLogArchiveStatusDir, MAXPGPATH, XLOGDIR "/archive_status");
+	else
+		snprintf(XLogArchiveStatusDir, MAXPGPATH, POLAR_DATAMAX_WAL_DIR "/archive_status");
+	/* POLAR end */
 
 	polar_make_file_path_level2(polar_path, XLogArchiveStatusDir);
 	rldir = polar_allocate_dir(polar_path);
@@ -686,13 +732,55 @@ pgarch_readyXlog(char *xlog)
 		if (strspn(rlde->d_name, VALID_XFN_CHARS) < basenamelen)
 			continue;
 
-		/* Ignore anything not suffixed with .ready */
-		if (strcmp(rlde->d_name + basenamelen, ".ready") != 0)
-			continue;
+		if (polar_enable_dma && strcmp(rlde->d_name + basenamelen, ".local") == 0)
+		{
+			uint32 tli;
+			XLogSegNo segno;
+			char rloglocal[MAXPGPATH];
+			char rlogready[MAXPGPATH];
 
-		/* Truncate off the .ready */
-		memcpy(basename, rlde->d_name, basenamelen);
-		basename[basenamelen] = '\0';
+			XLogFromFileName(rlde->d_name, &tli, &segno, wal_segment_size);
+			if (committed_tli >= tli && committed_segno >= segno)
+				continue;
+
+			memcpy(basename, rlde->d_name, basenamelen);
+			basename[basenamelen] = '\0';
+			StatusFilePath(rloglocal, basename, ".local");
+			StatusFilePath(rlogready, basename, ".ready");
+			(void) polar_durable_rename(rloglocal, rlogready, WARNING);
+		}
+		else if (polar_enable_dma && strcmp(rlde->d_name + basenamelen, ".paxos") == 0)
+		{
+			uint32 tli;
+			XLogSegNo segno;
+			char rlogpaxos[MAXPGPATH];
+
+			/* Advance committed tli and segno*/
+			XLogFromFileName(rlde->d_name + basenamelen, &tli, &segno, wal_segment_size);
+			if (committed_tli == 0 || committed_tli < tli || committed_segno < segno)
+			{
+				committed_tli = tli;
+				committed_segno = segno;
+			}
+
+			/* Remove the .paxos file */
+			memcpy(basename, rlde->d_name, basenamelen);
+			basename[basenamelen] = '\0';
+			StatusFilePath(rlogpaxos, basename, ".paxos");
+			polar_unlink(rlogpaxos);
+
+			continue;
+		}
+		else
+		{
+			/* Ignore anything not suffixed with .ready */
+			if (strcmp(rlde->d_name + basenamelen, ".ready") != 0)
+				continue;
+
+			/* Truncate off the .ready */
+			memcpy(basename, rlde->d_name, basenamelen);
+			basename[basenamelen] = '\0';
+		}
 
 		/* Is this a history file? */
 		ishistory = IsTLHistoryFileName(basename);
@@ -740,3 +828,13 @@ pgarch_archiveDone(char *xlog)
 	StatusFilePath(rlogdone, xlog, ".done");
 	(void) polar_durable_rename(rlogready, rlogdone, WARNING);
 }
+
+/* POLAR: datamax archive */
+void
+polar_datamax_ArchiverCopyLoop(void)
+{
+	if(!polar_is_datamax_mode)
+		return;
+	pgarch_ArchiverCopyLoop();
+}
+/* POLAR end */

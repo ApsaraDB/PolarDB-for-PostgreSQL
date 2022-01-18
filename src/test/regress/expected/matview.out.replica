@@ -1,0 +1,527 @@
+-- create a table to use as a basis for views and materialized views in various combinations
+CREATE TABLE mvtest_t (id int NOT NULL PRIMARY KEY, type text NOT NULL, amt numeric NOT NULL);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+INSERT INTO mvtest_t VALUES
+  (1, 'x', 2),
+  (2, 'x', 3),
+  (3, 'y', 5),
+  (4, 'y', 7),
+  (5, 'z', 11);
+ERROR:  cannot execute INSERT in a read-only transaction
+-- we want a view based on the table, too, since views present additional challenges
+CREATE VIEW mvtest_tv AS SELECT type, sum(amt) AS totamt FROM mvtest_t GROUP BY type;
+ERROR:  cannot execute CREATE VIEW in a read-only transaction
+SELECT * FROM mvtest_tv ORDER BY type;
+ type | totamt 
+------+--------
+ x    |      5
+ y    |     12
+ z    |     11
+(3 rows)
+
+-- create a materialized view with no data, and confirm correct behavior
+EXPLAIN (costs off)
+  CREATE MATERIALIZED VIEW mvtest_tm AS SELECT type, sum(amt) AS totamt FROM mvtest_t GROUP BY type WITH NO DATA;
+         QUERY PLAN         
+----------------------------
+ HashAggregate
+   Group Key: type
+   ->  Seq Scan on mvtest_t
+(3 rows)
+
+CREATE MATERIALIZED VIEW mvtest_tm AS SELECT type, sum(amt) AS totamt FROM mvtest_t GROUP BY type WITH NO DATA;
+ERROR:  cannot execute CREATE MATERIALIZED VIEW in a read-only transaction
+SELECT relispopulated FROM pg_class WHERE oid = 'mvtest_tm'::regclass;
+ relispopulated 
+----------------
+ f
+(1 row)
+
+SELECT * FROM mvtest_tm ORDER BY type;
+ERROR:  materialized view "mvtest_tm" has not been populated
+HINT:  Use the REFRESH MATERIALIZED VIEW command.
+REFRESH MATERIALIZED VIEW mvtest_tm;
+ERROR:  cannot execute REFRESH MATERIALIZED VIEW in a read-only transaction
+SELECT relispopulated FROM pg_class WHERE oid = 'mvtest_tm'::regclass;
+ relispopulated 
+----------------
+ t
+(1 row)
+
+CREATE UNIQUE INDEX mvtest_tm_type ON mvtest_tm (type);
+ERROR:  cannot execute CREATE INDEX in a read-only transaction
+SELECT * FROM mvtest_tm ORDER BY type;
+ type | totamt 
+------+--------
+ x    |      5
+ y    |     12
+ z    |     11
+(3 rows)
+
+-- create various views
+EXPLAIN (costs off)
+  CREATE MATERIALIZED VIEW mvtest_tvm AS SELECT * FROM mvtest_tv ORDER BY type;
+            QUERY PLAN            
+----------------------------------
+ Sort
+   Sort Key: mvtest_t.type
+   ->  HashAggregate
+         Group Key: mvtest_t.type
+         ->  Seq Scan on mvtest_t
+(5 rows)
+
+CREATE MATERIALIZED VIEW mvtest_tvm AS SELECT * FROM mvtest_tv ORDER BY type;
+ERROR:  cannot execute CREATE MATERIALIZED VIEW in a read-only transaction
+SELECT * FROM mvtest_tvm;
+ type | totamt 
+------+--------
+ x    |      5
+ y    |     12
+ z    |     11
+(3 rows)
+
+CREATE MATERIALIZED VIEW mvtest_tmm AS SELECT sum(totamt) AS grandtot FROM mvtest_tm;
+ERROR:  cannot execute CREATE MATERIALIZED VIEW in a read-only transaction
+CREATE MATERIALIZED VIEW mvtest_tvmm AS SELECT sum(totamt) AS grandtot FROM mvtest_tvm;
+ERROR:  cannot execute CREATE MATERIALIZED VIEW in a read-only transaction
+CREATE UNIQUE INDEX mvtest_tvmm_expr ON mvtest_tvmm ((grandtot > 0));
+ERROR:  cannot execute CREATE INDEX in a read-only transaction
+CREATE UNIQUE INDEX mvtest_tvmm_pred ON mvtest_tvmm (grandtot) WHERE grandtot < 0;
+ERROR:  cannot execute CREATE INDEX in a read-only transaction
+CREATE VIEW mvtest_tvv AS SELECT sum(totamt) AS grandtot FROM mvtest_tv;
+ERROR:  cannot execute CREATE VIEW in a read-only transaction
+EXPLAIN (costs off)
+  CREATE MATERIALIZED VIEW mvtest_tvvm AS SELECT * FROM mvtest_tvv;
+            QUERY PLAN            
+----------------------------------
+ Aggregate
+   ->  HashAggregate
+         Group Key: mvtest_t.type
+         ->  Seq Scan on mvtest_t
+(4 rows)
+
+CREATE MATERIALIZED VIEW mvtest_tvvm AS SELECT * FROM mvtest_tvv;
+ERROR:  cannot execute CREATE MATERIALIZED VIEW in a read-only transaction
+CREATE VIEW mvtest_tvvmv AS SELECT * FROM mvtest_tvvm;
+ERROR:  cannot execute CREATE VIEW in a read-only transaction
+CREATE MATERIALIZED VIEW mvtest_bb AS SELECT * FROM mvtest_tvvmv;
+ERROR:  cannot execute CREATE MATERIALIZED VIEW in a read-only transaction
+CREATE INDEX mvtest_aa ON mvtest_bb (grandtot);
+ERROR:  cannot execute CREATE INDEX in a read-only transaction
+-- check that plans seem reasonable
+\d+ mvtest_tvm
+\d+ mvtest_tvm
+\d+ mvtest_tvvm
+\d+ mvtest_bb
+-- test schema behavior
+CREATE SCHEMA mvtest_mvschema;
+ERROR:  cannot execute CREATE SCHEMA in a read-only transaction
+ALTER MATERIALIZED VIEW mvtest_tvm SET SCHEMA mvtest_mvschema;
+ERROR:  cannot execute ALTER MATERIALIZED VIEW in a read-only transaction
+\d+ mvtest_tvm
+\d+ mvtest_tvmm
+SET search_path = mvtest_mvschema, public;
+\d+ mvtest_tvm
+-- modify the underlying table data
+INSERT INTO mvtest_t VALUES (6, 'z', 13);
+ERROR:  cannot execute INSERT in a read-only transaction
+-- confirm pre- and post-refresh contents of fairly simple materialized views
+SELECT * FROM mvtest_tm ORDER BY type;
+ type | totamt 
+------+--------
+ x    |      5
+ y    |     12
+ z    |     11
+(3 rows)
+
+SELECT * FROM mvtest_tvm ORDER BY type;
+ type | totamt 
+------+--------
+ x    |      5
+ y    |     12
+ z    |     11
+(3 rows)
+
+REFRESH MATERIALIZED VIEW CONCURRENTLY mvtest_tm;
+ERROR:  cannot execute REFRESH MATERIALIZED VIEW in a read-only transaction
+REFRESH MATERIALIZED VIEW mvtest_tvm;
+ERROR:  cannot execute REFRESH MATERIALIZED VIEW in a read-only transaction
+SELECT * FROM mvtest_tm ORDER BY type;
+ type | totamt 
+------+--------
+ x    |      5
+ y    |     12
+ z    |     24
+(3 rows)
+
+SELECT * FROM mvtest_tvm ORDER BY type;
+ type | totamt 
+------+--------
+ x    |      5
+ y    |     12
+ z    |     24
+(3 rows)
+
+RESET search_path;
+-- confirm pre- and post-refresh contents of nested materialized views
+EXPLAIN (costs off)
+  SELECT * FROM mvtest_tmm;
+       QUERY PLAN       
+------------------------
+ Seq Scan on mvtest_tmm
+(1 row)
+
+EXPLAIN (costs off)
+  SELECT * FROM mvtest_tvmm;
+       QUERY PLAN        
+-------------------------
+ Seq Scan on mvtest_tvmm
+(1 row)
+
+EXPLAIN (costs off)
+  SELECT * FROM mvtest_tvvm;
+       QUERY PLAN        
+-------------------------
+ Seq Scan on mvtest_tvvm
+(1 row)
+
+SELECT * FROM mvtest_tmm;
+ grandtot 
+----------
+       28
+(1 row)
+
+SELECT * FROM mvtest_tvmm;
+ grandtot 
+----------
+       28
+(1 row)
+
+SELECT * FROM mvtest_tvvm;
+ grandtot 
+----------
+       28
+(1 row)
+
+REFRESH MATERIALIZED VIEW mvtest_tmm;
+ERROR:  cannot execute REFRESH MATERIALIZED VIEW in a read-only transaction
+REFRESH MATERIALIZED VIEW CONCURRENTLY mvtest_tvmm;
+ERROR:  cannot execute REFRESH MATERIALIZED VIEW in a read-only transaction
+REFRESH MATERIALIZED VIEW mvtest_tvmm;
+ERROR:  cannot execute REFRESH MATERIALIZED VIEW in a read-only transaction
+REFRESH MATERIALIZED VIEW mvtest_tvvm;
+ERROR:  cannot execute REFRESH MATERIALIZED VIEW in a read-only transaction
+EXPLAIN (costs off)
+  SELECT * FROM mvtest_tmm;
+       QUERY PLAN       
+------------------------
+ Seq Scan on mvtest_tmm
+(1 row)
+
+EXPLAIN (costs off)
+  SELECT * FROM mvtest_tvmm;
+       QUERY PLAN        
+-------------------------
+ Seq Scan on mvtest_tvmm
+(1 row)
+
+EXPLAIN (costs off)
+  SELECT * FROM mvtest_tvvm;
+       QUERY PLAN        
+-------------------------
+ Seq Scan on mvtest_tvvm
+(1 row)
+
+SELECT * FROM mvtest_tmm;
+ grandtot 
+----------
+       41
+(1 row)
+
+SELECT * FROM mvtest_tvmm;
+ grandtot 
+----------
+       41
+(1 row)
+
+SELECT * FROM mvtest_tvvm;
+ grandtot 
+----------
+       41
+(1 row)
+
+-- test diemv when the mv does not exist
+DROP MATERIALIZED VIEW IF EXISTS no_such_mv;
+ERROR:  cannot execute DROP MATERIALIZED VIEW in a read-only transaction
+-- make sure invalid combination of options is prohibited
+REFRESH MATERIALIZED VIEW CONCURRENTLY mvtest_tvmm WITH NO DATA;
+ERROR:  cannot execute REFRESH MATERIALIZED VIEW in a read-only transaction
+-- no tuple locks on materialized views
+SELECT * FROM mvtest_tvvm FOR SHARE;
+ERROR:  cannot execute SELECT FOR SHARE in a read-only transaction
+-- test join of mv and view
+SELECT type, m.totamt AS mtot, v.totamt AS vtot FROM mvtest_tm m LEFT JOIN mvtest_tv v USING (type) ORDER BY type;
+ type | mtot | vtot 
+------+------+------
+ x    |    5 |    5
+ y    |   12 |   12
+ z    |   24 |   24
+(3 rows)
+
+-- make sure that dependencies are reported properly when they block the drop
+DROP TABLE mvtest_t;
+ERROR:  cannot execute DROP TABLE in a read-only transaction
+-- make sure dependencies are dropped and reported
+-- and make sure that transactional behavior is correct on rollback
+-- incidentally leaving some interesting materialized views for pg_dump testing
+BEGIN;
+DROP TABLE mvtest_t CASCADE;
+ERROR:  cannot execute DROP TABLE in a read-only transaction
+ROLLBACK;
+-- some additional tests not using base tables
+CREATE VIEW mvtest_vt1 AS SELECT 1 moo;
+ERROR:  cannot execute CREATE VIEW in a read-only transaction
+CREATE VIEW mvtest_vt2 AS SELECT moo, 2*moo FROM mvtest_vt1 UNION ALL SELECT moo, 3*moo FROM mvtest_vt1;
+ERROR:  cannot execute CREATE VIEW in a read-only transaction
+\d+ mvtest_vt2
+CREATE MATERIALIZED VIEW mv_test2 AS SELECT moo, 2*moo FROM mvtest_vt2 UNION ALL SELECT moo, 3*moo FROM mvtest_vt2;
+ERROR:  cannot execute CREATE MATERIALIZED VIEW in a read-only transaction
+\d+ mv_test2
+CREATE MATERIALIZED VIEW mv_test3 AS SELECT * FROM mv_test2 WHERE moo = 12345;
+ERROR:  cannot execute CREATE MATERIALIZED VIEW in a read-only transaction
+SELECT relispopulated FROM pg_class WHERE oid = 'mv_test3'::regclass;
+ relispopulated 
+----------------
+ t
+(1 row)
+
+DROP VIEW mvtest_vt1 CASCADE;
+ERROR:  cannot execute DROP VIEW in a read-only transaction
+-- test that duplicate values on unique index prevent refresh
+CREATE TABLE mvtest_foo(a, b) AS VALUES(1, 10);
+ERROR:  cannot execute CREATE TABLE AS in a read-only transaction
+CREATE MATERIALIZED VIEW mvtest_mv AS SELECT * FROM mvtest_foo;
+ERROR:  cannot execute CREATE MATERIALIZED VIEW in a read-only transaction
+CREATE UNIQUE INDEX ON mvtest_mv(a);
+ERROR:  cannot execute CREATE INDEX in a read-only transaction
+INSERT INTO mvtest_foo SELECT * FROM mvtest_foo;
+ERROR:  cannot execute INSERT in a read-only transaction
+REFRESH MATERIALIZED VIEW mvtest_mv;
+ERROR:  cannot execute REFRESH MATERIALIZED VIEW in a read-only transaction
+REFRESH MATERIALIZED VIEW CONCURRENTLY mvtest_mv;
+ERROR:  cannot execute REFRESH MATERIALIZED VIEW in a read-only transaction
+DROP TABLE mvtest_foo CASCADE;
+ERROR:  cannot execute DROP TABLE in a read-only transaction
+-- make sure that all columns covered by unique indexes works
+CREATE TABLE mvtest_foo(a, b, c) AS VALUES(1, 2, 3);
+ERROR:  cannot execute CREATE TABLE AS in a read-only transaction
+CREATE MATERIALIZED VIEW mvtest_mv AS SELECT * FROM mvtest_foo;
+ERROR:  cannot execute CREATE MATERIALIZED VIEW in a read-only transaction
+CREATE UNIQUE INDEX ON mvtest_mv (a);
+ERROR:  cannot execute CREATE INDEX in a read-only transaction
+CREATE UNIQUE INDEX ON mvtest_mv (b);
+ERROR:  cannot execute CREATE INDEX in a read-only transaction
+CREATE UNIQUE INDEX on mvtest_mv (c);
+ERROR:  cannot execute CREATE INDEX in a read-only transaction
+INSERT INTO mvtest_foo VALUES(2, 3, 4);
+ERROR:  cannot execute INSERT in a read-only transaction
+INSERT INTO mvtest_foo VALUES(3, 4, 5);
+ERROR:  cannot execute INSERT in a read-only transaction
+REFRESH MATERIALIZED VIEW mvtest_mv;
+ERROR:  cannot execute REFRESH MATERIALIZED VIEW in a read-only transaction
+REFRESH MATERIALIZED VIEW CONCURRENTLY mvtest_mv;
+ERROR:  cannot execute REFRESH MATERIALIZED VIEW in a read-only transaction
+DROP TABLE mvtest_foo CASCADE;
+ERROR:  cannot execute DROP TABLE in a read-only transaction
+-- allow subquery to reference unpopulated matview if WITH NO DATA is specified
+CREATE MATERIALIZED VIEW mvtest_mv1 AS SELECT 1 AS col1 WITH NO DATA;
+ERROR:  cannot execute CREATE MATERIALIZED VIEW in a read-only transaction
+CREATE MATERIALIZED VIEW mvtest_mv2 AS SELECT * FROM mvtest_mv1
+  WHERE col1 = (SELECT LEAST(col1) FROM mvtest_mv1) WITH NO DATA;
+ERROR:  cannot execute CREATE MATERIALIZED VIEW in a read-only transaction
+DROP MATERIALIZED VIEW mvtest_mv1 CASCADE;
+ERROR:  cannot execute DROP MATERIALIZED VIEW in a read-only transaction
+-- make sure that types with unusual equality tests work
+CREATE TABLE mvtest_boxes (id serial primary key, b box);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+INSERT INTO mvtest_boxes (b) VALUES
+  ('(32,32),(31,31)'),
+  ('(2.0000004,2.0000004),(1,1)'),
+  ('(1.9999996,1.9999996),(1,1)');
+ERROR:  cannot execute INSERT in a read-only transaction
+CREATE MATERIALIZED VIEW mvtest_boxmv AS SELECT * FROM mvtest_boxes;
+ERROR:  cannot execute CREATE MATERIALIZED VIEW in a read-only transaction
+CREATE UNIQUE INDEX mvtest_boxmv_id ON mvtest_boxmv (id);
+ERROR:  cannot execute CREATE INDEX in a read-only transaction
+UPDATE mvtest_boxes SET b = '(2,2),(1,1)' WHERE id = 2;
+ERROR:  cannot execute UPDATE in a read-only transaction
+REFRESH MATERIALIZED VIEW CONCURRENTLY mvtest_boxmv;
+ERROR:  cannot execute REFRESH MATERIALIZED VIEW in a read-only transaction
+SELECT * FROM mvtest_boxmv ORDER BY id;
+ id |              b              
+----+-----------------------------
+  1 | (32,32),(31,31)
+  2 | (2,2),(1,1)
+  3 | (1.9999996,1.9999996),(1,1)
+(3 rows)
+
+DROP TABLE mvtest_boxes CASCADE;
+ERROR:  cannot execute DROP TABLE in a read-only transaction
+-- make sure that column names are handled correctly
+CREATE TABLE mvtest_v (i int, j int);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE MATERIALIZED VIEW mvtest_mv_v (ii, jj, kk) AS SELECT i, j FROM mvtest_v; -- error
+ERROR:  cannot execute CREATE MATERIALIZED VIEW in a read-only transaction
+CREATE MATERIALIZED VIEW mvtest_mv_v (ii, jj) AS SELECT i, j FROM mvtest_v; -- ok
+ERROR:  cannot execute CREATE MATERIALIZED VIEW in a read-only transaction
+CREATE MATERIALIZED VIEW mvtest_mv_v_2 (ii) AS SELECT i, j FROM mvtest_v; -- ok
+ERROR:  cannot execute CREATE MATERIALIZED VIEW in a read-only transaction
+CREATE MATERIALIZED VIEW mvtest_mv_v_3 (ii, jj, kk) AS SELECT i, j FROM mvtest_v WITH NO DATA; -- error
+ERROR:  cannot execute CREATE MATERIALIZED VIEW in a read-only transaction
+CREATE MATERIALIZED VIEW mvtest_mv_v_3 (ii, jj) AS SELECT i, j FROM mvtest_v WITH NO DATA; -- ok
+ERROR:  cannot execute CREATE MATERIALIZED VIEW in a read-only transaction
+CREATE MATERIALIZED VIEW mvtest_mv_v_4 (ii) AS SELECT i, j FROM mvtest_v WITH NO DATA; -- ok
+ERROR:  cannot execute CREATE MATERIALIZED VIEW in a read-only transaction
+ALTER TABLE mvtest_v RENAME COLUMN i TO x;
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+INSERT INTO mvtest_v values (1, 2);
+ERROR:  cannot execute INSERT in a read-only transaction
+CREATE UNIQUE INDEX mvtest_mv_v_ii ON mvtest_mv_v (ii);
+ERROR:  cannot execute CREATE INDEX in a read-only transaction
+REFRESH MATERIALIZED VIEW mvtest_mv_v;
+ERROR:  cannot execute REFRESH MATERIALIZED VIEW in a read-only transaction
+UPDATE mvtest_v SET j = 3 WHERE x = 1;
+ERROR:  cannot execute UPDATE in a read-only transaction
+REFRESH MATERIALIZED VIEW CONCURRENTLY mvtest_mv_v;
+ERROR:  cannot execute REFRESH MATERIALIZED VIEW in a read-only transaction
+REFRESH MATERIALIZED VIEW mvtest_mv_v_2;
+ERROR:  cannot execute REFRESH MATERIALIZED VIEW in a read-only transaction
+REFRESH MATERIALIZED VIEW mvtest_mv_v_3;
+ERROR:  cannot execute REFRESH MATERIALIZED VIEW in a read-only transaction
+REFRESH MATERIALIZED VIEW mvtest_mv_v_4;
+ERROR:  cannot execute REFRESH MATERIALIZED VIEW in a read-only transaction
+SELECT * FROM mvtest_v;
+ x | j 
+---+---
+ 1 | 3
+(1 row)
+
+SELECT * FROM mvtest_mv_v;
+ ii | jj 
+----+----
+  1 |  3
+(1 row)
+
+SELECT * FROM mvtest_mv_v_2;
+ ii | j 
+----+---
+  1 | 3
+(1 row)
+
+SELECT * FROM mvtest_mv_v_3;
+ ii | jj 
+----+----
+  1 |  3
+(1 row)
+
+SELECT * FROM mvtest_mv_v_4;
+ ii | j 
+----+---
+  1 | 3
+(1 row)
+
+DROP TABLE mvtest_v CASCADE;
+ERROR:  cannot execute DROP TABLE in a read-only transaction
+-- Check that unknown literals are converted to "text" in CREATE MATVIEW,
+-- so that we don't end up with unknown-type columns.
+CREATE MATERIALIZED VIEW mv_unspecified_types AS
+  SELECT 42 as i, 42.5 as num, 'foo' as u, 'foo'::unknown as u2, null as n;
+ERROR:  cannot execute CREATE MATERIALIZED VIEW in a read-only transaction
+\d+ mv_unspecified_types
+SELECT * FROM mv_unspecified_types;
+ i  | num  |  u  | u2  | n 
+----+------+-----+-----+---
+ 42 | 42.5 | foo | foo | 
+(1 row)
+
+DROP MATERIALIZED VIEW mv_unspecified_types;
+ERROR:  cannot execute DROP MATERIALIZED VIEW in a read-only transaction
+-- make sure that create WITH NO DATA does not plan the query (bug #13907)
+create materialized view mvtest_error as select 1/0 as x;  -- fail
+ERROR:  cannot execute CREATE MATERIALIZED VIEW in a read-only transaction
+create materialized view mvtest_error as select 1/0 as x with no data;
+ERROR:  cannot execute CREATE MATERIALIZED VIEW in a read-only transaction
+refresh materialized view mvtest_error;  -- fail here
+ERROR:  cannot execute REFRESH MATERIALIZED VIEW in a read-only transaction
+drop materialized view mvtest_error;
+ERROR:  cannot execute DROP MATERIALIZED VIEW in a read-only transaction
+-- make sure that matview rows can be referenced as source rows (bug #9398)
+CREATE TABLE mvtest_v AS SELECT generate_series(1,10) AS a;
+ERROR:  cannot execute CREATE TABLE AS in a read-only transaction
+CREATE MATERIALIZED VIEW mvtest_mv_v AS SELECT a FROM mvtest_v WHERE a <= 5;
+ERROR:  cannot execute CREATE MATERIALIZED VIEW in a read-only transaction
+DELETE FROM mvtest_v WHERE EXISTS ( SELECT * FROM mvtest_mv_v WHERE mvtest_mv_v.a = mvtest_v.a );
+ERROR:  cannot execute DELETE in a read-only transaction
+SELECT * FROM mvtest_v;
+ a  
+----
+  6
+  7
+  8
+  9
+ 10
+(5 rows)
+
+SELECT * FROM mvtest_mv_v;
+ a 
+---
+ 1
+ 2
+ 3
+ 4
+ 5
+(5 rows)
+
+DROP TABLE mvtest_v CASCADE;
+ERROR:  cannot execute DROP TABLE in a read-only transaction
+-- make sure running as superuser works when MV owned by another role (bug #11208)
+CREATE ROLE regress_user_mvtest;
+ERROR:  cannot execute CREATE ROLE in a read-only transaction
+SET ROLE regress_user_mvtest;
+CREATE TABLE mvtest_foo_data AS SELECT i, md5(random()::text)
+  FROM generate_series(1, 10) i;
+ERROR:  cannot execute CREATE TABLE AS in a read-only transaction
+CREATE MATERIALIZED VIEW mvtest_mv_foo AS SELECT * FROM mvtest_foo_data;
+ERROR:  cannot execute CREATE MATERIALIZED VIEW in a read-only transaction
+CREATE MATERIALIZED VIEW mvtest_mv_foo AS SELECT * FROM mvtest_foo_data;
+ERROR:  cannot execute CREATE MATERIALIZED VIEW in a read-only transaction
+CREATE MATERIALIZED VIEW IF NOT EXISTS mvtest_mv_foo AS SELECT * FROM mvtest_foo_data;
+ERROR:  cannot execute CREATE MATERIALIZED VIEW in a read-only transaction
+CREATE UNIQUE INDEX ON mvtest_mv_foo (i);
+ERROR:  cannot execute CREATE INDEX in a read-only transaction
+RESET ROLE;
+REFRESH MATERIALIZED VIEW mvtest_mv_foo;
+ERROR:  cannot execute REFRESH MATERIALIZED VIEW in a read-only transaction
+REFRESH MATERIALIZED VIEW CONCURRENTLY mvtest_mv_foo;
+ERROR:  cannot execute REFRESH MATERIALIZED VIEW in a read-only transaction
+DROP OWNED BY regress_user_mvtest CASCADE;
+ERROR:  cannot execute DROP OWNED in a read-only transaction
+DROP ROLE regress_user_mvtest;
+ERROR:  cannot execute DROP ROLE in a read-only transaction
+-- make sure that create WITH NO DATA works via SPI
+BEGIN;
+CREATE FUNCTION mvtest_func()
+  RETURNS void AS $$
+BEGIN
+  CREATE MATERIALIZED VIEW mvtest1 AS SELECT 1 AS x;
+  CREATE MATERIALIZED VIEW mvtest2 AS SELECT 1 AS x WITH NO DATA;
+END;
+$$ LANGUAGE plpgsql;
+ERROR:  cannot execute CREATE FUNCTION in a read-only transaction
+SELECT mvtest_func();
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
+SELECT * FROM mvtest1;
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
+SELECT * FROM mvtest2;
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ROLLBACK;
