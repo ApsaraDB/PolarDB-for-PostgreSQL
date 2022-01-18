@@ -3,8 +3,26 @@ name: polardb-regression-testing
 on:
   push:
     branches: [ POLARDB_11_DEV, POLARDB_11_STABLE ]
+    paths:
+      - '.github/workflows/regression-test.yml'
+      - 'config/**'
+      - 'contrib/**'
+      - 'external/**'
+      - 'src/**'
+      - 'configure*'
+      - 'polardb_build.sh'
   pull_request:
     branches: [ POLARDB_11_DEV, POLARDB_11_STABLE ]
+    paths:
+      - '.github/workflows/regression-test.yml'
+      - 'config/**'
+      - 'contrib/**'
+      - 'external/**'
+      - 'src/**'
+      - 'configure*'
+      - 'polardb_build.sh'
+  # trigger testing manually
+  workflow_dispatch:
 
 jobs:
   build:
