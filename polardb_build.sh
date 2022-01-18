@@ -44,6 +44,7 @@ cat <<EOF
   --dma, DMA enable
   --fault-injector, faultinjector enable
   --without-fbl, run without flashback log
+  --witharm, build on ARM platform
   --extra-conf, add an extra conf file
 
   Please lookup the following secion to find the default values for above options.
@@ -285,6 +286,7 @@ normbasedir=no
 withpx=no
 initpx=no
 repnum=1
+witharm=no
 
 for arg do
   # the parameter after "=", or the whole $arg if no match
@@ -361,6 +363,8 @@ for arg do
     --without-fbl)              enable_flashback_log=off
                                 ;;
     --extra-conf=*)             extra_conf="$val"
+                                ;;
+    --witharm)                  witharm=yes
                                 ;;
     *)                          echo "wrong options : $arg";
                                 exit 1
@@ -492,8 +496,8 @@ then
 fi
 
 # setup env
-export CFLAGS=" $gcc_opt_level_flag -g -I/usr/include/et -DLINUX_OOM_SCORE_ADJ=0 -DLINUX_OOM_ADJ=0 -DMAP_HUGETLB=0x40000 -pipe -Wall -fexceptions -fstack-protector-strong --param=ssp-buffer-size=4 -grecord-gcc-switches -m64 -mtune=generic $asan_opt_flag "
-export CXXFLAGS=" $gcc_opt_level_flag -g -I/usr/include/et  -pipe -Wall -fexceptions -fstack-protector-strong --param=ssp-buffer-size=4 -grecord-gcc-switches -m64 -mtune=generic $asan_opt_flag "
+export CFLAGS=" $gcc_opt_level_flag -g -I/usr/include/et -DLINUX_OOM_SCORE_ADJ=0 -DLINUX_OOM_ADJ=0 -DMAP_HUGETLB=0x40000 -pipe -Wall -fexceptions -fstack-protector-strong --param=ssp-buffer-size=4 -grecord-gcc-switches -mtune=generic $asan_opt_flag "
+export CXXFLAGS=" $gcc_opt_level_flag -g -I/usr/include/et  -pipe -Wall -fexceptions -fstack-protector-strong --param=ssp-buffer-size=4 -grecord-gcc-switches -mtune=generic $asan_opt_flag "
 export LDFLAGS=" -Wl,-rpath,'\$\$ORIGIN/../lib' "
 export OPENSSL_ROOT_DIR=/usr/local/openssl
 export OPENSSL_LIBRARIES=/usr/local/openssl/lib/
@@ -516,6 +520,14 @@ then
   target_list="$target_list contrib"
 else
   configure_flag="$configure_flag --enable-polar-minimal"
+fi
+
+if [[ $witharm == "yes" ]];
+then
+  configure_flag="$configure_flag --enable-polar-arm"
+else
+  CFLAGS=" $CFLAGS -m64 "
+  CXXFLAGS=" $CXXFLAGS -m64 "
 fi
 
 #################### PHASE 3: compile and install ###################
