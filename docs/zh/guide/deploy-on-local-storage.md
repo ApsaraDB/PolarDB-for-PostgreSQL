@@ -1,19 +1,25 @@
-# 实例部署：基于单机（macOS / Linux）
+# 实例部署：基于单机本地存储
 
-我们提供了快速部署步骤，用于编译 PolarDB 源码并在本地启动一写多读实例。
+我们提供了快速部署步骤，用于编译 PolarDB 源码并在本地存储上启动一写多读实例。
+
+推荐在 Docker 中编译源码。
 
 ## 1. 安装 Docker
 
-推荐基于 Docker 来编译源码。如果已经有 Docker 或标准 CentOS7 请跳过该步骤。
+如果已有 Docker 或标准 CentOS7，请跳过该步骤。不同操作系统的安装方式：
 
-1. macOS：[安装 Docker](https://docs.docker.com/desktop/mac/install/)（建议将内存调整为 4GB）
-2. Linux 主机 / 虚拟机：请参考特定发行版安装 Docker 的步骤
+- macOS（支持 M1 芯片）：[在 Mac 上安装 Docker Desktop](https://docs.docker.com/desktop/mac/install/)，并建议将内存调整为 4GB
+- Ubuntu：[在 Ubuntu 上安装 Docker Engine](https://docs.docker.com/engine/install/ubuntu/)
+- Debian：[在 Debian 上安装 Docker Engine](https://docs.docker.com/engine/install/debian/)
+- CentOS：[在 CentOS 上安装 Docker Engine](https://docs.docker.com/engine/install/centos/)
+- RHEL：[在 RHEL 上安装 Docker Engine](https://docs.docker.com/engine/install/rhel/)
+- Fedora：[在 Fedora 上安装 Docker Engine](https://docs.docker.com/engine/install/fedora/)
 
 ## 2. 下载 PolarDB 源代码
 
 从 PolarDB for PostgreSQL [GitHub 仓库](https://github.com/ApsaraDB/PolarDB-for-PostgreSQL) 的稳定分支 `POLARDB_11_STABLE` 下载源码。
 
-```bash
+```bash:no-line-numbers
 git clone -b POLARDB_11_STABLE git@github.com:ApsaraDB/PolarDB-for-PostgreSQL.git
 ```
 
@@ -21,12 +27,12 @@ git clone -b POLARDB_11_STABLE git@github.com:ApsaraDB/PolarDB-for-PostgreSQL.gi
 
 我们提供两种方式助您完成开发环境的准备，只需选择其中一种即可：
 
-- [基于 CentOS 7 的开发镜像（推荐方式）](./deploy-on-local-storage.md#方式-1-基于-centos7-的开发镜像-docker)：迅速完成单机 3 节点环境准备，适合快速尝鲜
+- [基于 CentOS 7 的 Docker 开发镜像（推荐方式）](./deploy-on-local-storage.md#方式-1-基于-centos7-的-docker-开发镜像)：迅速完成单机 3 节点环境准备，适合快速尝鲜
 - [基于 CentOS 7 标准系统（从零开始）](./deploy-on-local-storage.md#方式-2-基于-centos7-操作系统从零开始)：适合具有更多定制需求的开发人员或 DBA，适用于：
   - 干净的 CentOS 7 物理机/虚拟机
   - 干净的 `centos:centos7` 镜像容器
 
-### 方式 1：基于 CentOS7 的开发镜像（Docker）
+### 方式 1：基于 CentOS7 的 Docker 开发镜像
 
 我们提供了下面的 Dockerfile，可以在安装 Docker 的主机上基于 CentOS 7 官方镜像 `centos:centos7` 直接构建出一个安装完所有开发和运行时依赖的镜像：
 
@@ -129,17 +135,17 @@ USER $USER_NAME
 
 :::
 
-将上述内容复制到一个文件内（假设文件名为 `polardb_dockerfile`）后，使用如下命令构建镜像：
+将上述内容复制到一个文件内（假设文件名为 `Dockerfile-PolarDB`）后，使用如下命令构建镜像：
 
-```bash
+```bash:no-line-numbers
 docker build --network=host \
     -t <your_name>:polardb_centos7 \
-    -f polardb_dockerfile .
+    -f Dockerfile-PolarDB .
 ```
 
 镜像构建过程中已经创建了一个 `postgres:postgres` 用户。基于该镜像运行容器将直接使用这个用户：
 
-```bash
+```bash:no-line-numbers
 docker run -it -v <src_to_polardb>:/home/postgres/PolarDB-for-PostgreSQL \
     --cap-add=SYS_PTRACE --privileged=true \
     --name <container_name> \
@@ -148,14 +154,14 @@ docker run -it -v <src_to_polardb>:/home/postgres/PolarDB-for-PostgreSQL \
 
 容器启动后，后续直接连接到正在运行的容器中：
 
-```bash
+```bash:no-line-numbers
 docker exec -it --env COLUMNS=`tput cols` --env LINES=`tput lines` \
     <container_name> bash
 ```
 
 在容器内运行以下命令为用户 `postgres` 获取源代码目录权限：
 
-```bash
+```bash:no-line-numbers
 sudo chmod -R a+wr PolarDB-for-PostgreSQL
 sudo chown -R postgres:postgres PolarDB-for-PostgreSQL
 ```
@@ -202,13 +208,28 @@ source /etc/bashrc
 
 - 1 个主节点（端口为 5432）
 
-```bash
+<CodeGroup>
+  <CodeGroupItem title="x86_64">
+
+```bash:no-line-numbers
 ./polardb_build.sh
 ```
 
+  </CodeGroupItem>
+
+  <CodeGroupItem title="Apple M1 / ARM">
+
+```bash:no-line-numbers
+./polardb_build.sh --witharm
+```
+
+  </CodeGroupItem>
+
+</CodeGroup>
+
 psql 连接数据库：
 
-```bash
+```bash:no-line-numbers
 $HOME/tmp_basedir_polardb_pg_1100_bld/bin/psql -h127.0.0.1 -p5432
 ```
 
@@ -219,9 +240,24 @@ $HOME/tmp_basedir_polardb_pg_1100_bld/bin/psql -h127.0.0.1 -p5432
 - 1 个主节点（端口为 5432）
 - 1 个只读节点（端口为 5433）
 
-```bash
+<CodeGroup>
+  <CodeGroupItem title="x86_64">
+
+```bash:no-line-numbers
 ./polardb_build.sh --withrep --repnum=1
 ```
+
+  </CodeGroupItem>
+
+  <CodeGroupItem title="Apple M1 / ARM">
+
+```bash:no-line-numbers
+./polardb_build.sh --witharm --withrep --repnum=1
+```
+
+  </CodeGroupItem>
+
+</CodeGroup>
 
 ### 本地多节点带备库实例
 
@@ -229,18 +265,48 @@ $HOME/tmp_basedir_polardb_pg_1100_bld/bin/psql -h127.0.0.1 -p5432
 - 1 个只读节点（端口为 5433）
 - 1 个备库节点（端口为 5434）
 
-```bash
+<CodeGroup>
+  <CodeGroupItem title="x86_64">
+
+```bash:no-line-numbers
 ./polardb_build.sh --withrep --repnum=1 --withstandby
 ```
+
+  </CodeGroupItem>
+
+  <CodeGroupItem title="Apple M1 / ARM">
+
+```bash:no-line-numbers
+./polardb_build.sh --witharm --withrep --repnum=1 --withstandby
+```
+
+  </CodeGroupItem>
+
+</CodeGroup>
 
 ### 本地多节点 HTAP 实例
 
 - 1 个主节点（端口为 5432）
 - 2 个只读节点（端口为 5433、5434）
 
-```bash
+<CodeGroup>
+  <CodeGroupItem title="x86_64">
+
+```bash:no-line-numbers
 ./polardb_build.sh --initpx
 ```
+
+  </CodeGroupItem>
+
+  <CodeGroupItem title="Apple M1 / ARM">
+
+```bash:no-line-numbers
+./polardb_build.sh --witharm --initpx
+```
+
+  </CodeGroupItem>
+
+</CodeGroup>
 
 ## 5. 检查和测试
 
@@ -263,12 +329,42 @@ $HOME/tmp_basedir_polardb_pg_1100_bld/bin/psql \
 
 普通实例回归测试：
 
-```bash
+<CodeGroup>
+  <CodeGroupItem title="x86_64">
+
+```bash:no-line-numbers
 ./polardb_build.sh --withrep -r -e -r-external -r-contrib -r-pl --tde
 ```
 
+  </CodeGroupItem>
+
+  <CodeGroupItem title="Apple M1 / ARM">
+
+```bash:no-line-numbers
+./polardb_build.sh --witharm --withrep -r -e -r-external -r-contrib -r-pl --tde
+```
+
+  </CodeGroupItem>
+
+</CodeGroup>
+
 HTAP 实例回归测试：
 
-```bash
+<CodeGroup>
+  <CodeGroupItem title="x86_64">
+
+```bash:no-line-numbers
 ./polardb_build.sh -r-px -e -r-external -r-contrib -r-pl --tde
 ```
+
+  </CodeGroupItem>
+
+  <CodeGroupItem title="Apple M1 / ARM">
+
+```bash:no-line-numbers
+./polardb_build.sh --witharm -r-px -e -r-external -r-contrib -r-pl --tde
+```
+
+  </CodeGroupItem>
+
+</CodeGroup>

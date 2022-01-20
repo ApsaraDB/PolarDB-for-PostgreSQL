@@ -18,7 +18,6 @@
 [![github-stars](https://img.shields.io/github/stars/ApsaraDB/PolarDB-for-PostgreSQL?style=for-the-badge&logo=github)](https://github.com/ApsaraDB/PolarDB-for-PostgreSQL/stargazers)
 [![github-contributors](https://img.shields.io/github/contributors/ApsaraDB/PolarDB-for-PostgreSQL?style=for-the-badge&logo=github)](https://github.com/ApsaraDB/PolarDB-for-PostgreSQL/graphs/contributors)
 
-
 </div>
 
 ## 什么是 PolarDB for PostgreSQL
@@ -53,7 +52,7 @@ PolarDB 采用了基于 Shared-Storage 的存储计算分离架构。数据库�
 
 ## 快速入门
 
-请移步在线文档中的 [快速入门指南](https://apsaradb.github.io/PolarDB-for-PostgreSQL/zh/guide/)。推荐使用基于单机存储的部署方式和 [CentOS 7 开发镜像 + Docker](https://apsaradb.github.io/PolarDB-for-PostgreSQL/zh/guide/deploy-on-local-storage.html#方式-1-基于-centos7-的开发镜像-docker) 快速尝鲜 PolarDB for PostgreSQL。
+请移步在线文档中的 [快速入门指南](https://apsaradb.github.io/PolarDB-for-PostgreSQL/zh/guide/)。推荐使用 [基于单机存储的部署方式和 Docker + CentOS 7 开发镜像](https://apsaradb.github.io/PolarDB-for-PostgreSQL/zh/guide/deploy-on-local-storage.html#方式-1-基于-centos7-的-docker-开发镜像) 快速尝鲜 PolarDB for PostgreSQL。
 
 ## 文档
 
@@ -102,7 +101,8 @@ npm run docs:dev
 
 ## Software License
 
-PolarDB code is released under the Apache License (Version 2.0), developed based on the PostgreSQL which is released under the PostgreSQL License. This product contains various third-party components under other open source licenses. 
+PolarDB code is released under the Apache License (Version 2.0), developed based on the PostgreSQL which is released under the PostgreSQL License. This product contains various third-party components under other open source licenses.
+
 See the [LICENSE](./LICENSE) and [NOTICE](./NOTICE) file for more information.
 
 ## 致谢

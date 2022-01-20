@@ -28,9 +28,11 @@ The availability of PolarDB with compute-storage separation is significantly imp
 ## Version 4.0
 
 Version 4.0 can meet your growing business requirements in hybrid transaction/analytical processing (HTAP) scenarios. Version 4.0 is based on the shared storage-based massively parallel processing (MPP) architecture, which allows PolarDB to fully utilize the CPU, memory, and I/O resources of multiple read-only nodes.
+
 Test results show that the performance of a PolarDB cluster linearly increases as you increase the number of cores from 1 to 256.
 
 ## Version 5.0
 
 In earlier versions, each PolarDB cluster consists of one primary node that processes both read requests and write requests and one or more read-only nodes that process only read requests. You can increase the read capability of a PolarDB cluster by creating more read-only nodes. However, you cannot increase the writing capability because each PolarDB cluster consists of only one primary node.
+
 Version 5.0 uses the shared-nothing architecture together with the shared-everything architecture. This allows multiple compute nodes to process write requests.
