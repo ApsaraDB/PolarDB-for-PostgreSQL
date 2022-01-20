@@ -27,10 +27,12 @@ PolarDB PostgreSQL 将持续发布对用户有价值的功能。当前我们计�
 
 ## PolarDB PostgreSQL 4.0 版本
 
-为了满足日益增多的 HTAP 混合负载需求，4.0 版本将发布基于 Shared-Storage 架构的分布式并行执行引擎，充分发挥多个只读节点的 CPU/MEM/IO 资源。  
+为了满足日益增多的 HTAP 混合负载需求，4.0 版本将发布基于 Shared-Storage 架构的分布式并行执行引擎，充分发挥多个只读节点的 CPU/MEM/IO 资源。
+
 经测试，在计算集群逐步扩展到 256 核时，性能仍然能够线性提升。
 
 ## PolarDB PostgreSQL 5.0 版本
 
 基于存储计算分离的一写多读架构中，读能力能够弹性的扩展，但是写入能力仍然只能在单个节点上执行。  
+
 5.0 版本将发布 Share-Nothing On Share-Everything 架构，结合 PolarDB 的分布式版本和 PolarDB 集中式版本的架构优势，使得多个节点都能够写入。

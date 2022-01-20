@@ -18,7 +18,6 @@
 [![github-stars](https://img.shields.io/github/stars/ApsaraDB/PolarDB-for-PostgreSQL?style=for-the-badge&logo=github)](https://github.com/ApsaraDB/PolarDB-for-PostgreSQL/stargazers)
 [![github-contributors](https://img.shields.io/github/contributors/ApsaraDB/PolarDB-for-PostgreSQL?style=for-the-badge&logo=github)](https://github.com/ApsaraDB/PolarDB-for-PostgreSQL/graphs/contributors)
 
-
 </div>
 
 ## Overview
@@ -39,11 +38,9 @@ PolarDB for PostgreSQL (hereafter simplified as PolarDB) is a cloud native datab
 
 PolarDB provides a wide range of innovative multi-model database capabilities to help you process, analyze, and search for different types of data, such as spatio-temporal, geographic information system (GIS), image, vector, and graph data.
 
-
 ## Branch Introduction
 
 The `POLARDB_11_STABLE` is stable branch which is based on PostgreSQL 11.9. It supports compute-storage separation architecture. The `distributed` branch, which supports distributed architecture.
-
 
 ## Architecture and Roadmap
 
@@ -55,8 +52,7 @@ For more information, see [Architecture](https://apsaradb.github.io/PolarDB-for-
 
 ## Quick Start with PolarDB
 
-Please refer to [Getting Started](https://apsaradb.github.io/PolarDB-for-PostgreSQL/guide/) on documentation website.
-推荐使用基于单机存储的部署方式和 [CentOS 7 开发镜像 + Docker](https://apsaradb.github.io/PolarDB-for-PostgreSQL/zh/guide/deploy-on-local-storage.html#%E6%96%B9%E5%BC%8F1-%E5%9F%BA%E4%BA%8Ecentos7%E7%9A%84%E5%BC%80%E5%8F%91%E9%95%9C%E5%83%8F-docker) 快速尝鲜 PolarDB for PostgreSQL。
+Please refer to [Getting Started](https://apsaradb.github.io/PolarDB-for-PostgreSQL/guide/) on documentation website. We recommand [deploying on local storage with Docker and development image](https://apsaradb.github.io/PolarDB-for-PostgreSQL/guide/deploy-on-local-storage.html#方式-1-基于-centos7-的-docker-开发镜像) for fast tasting PolarDB for PostgreSQL.
 
 ## Documentation
 
@@ -68,7 +64,8 @@ You are welcome to make contributions to PolarDB. We appreciate all the contribu
 
 ## Software License
 
-PolarDB code is released under the Apache License (Version 2.0), developed based on the PostgreSQL which is released under the PostgreSQL License. This product contains various third-party components under other open source licenses. 
+PolarDB code is released under the Apache License (Version 2.0), developed based on the PostgreSQL which is released under the PostgreSQL License. This product contains various third-party components under other open source licenses.
+
 See the [LICENSE](./LICENSE) and [NOTICE](./NOTICE) file for more information.
 
 ## Acknowledgments
