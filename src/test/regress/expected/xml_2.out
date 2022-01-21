@@ -1029,21 +1029,16 @@ INSERT INTO xmldata VALUES('<ROWS>
   <REGION_ID>3</REGION_ID>
 </ROW>
 <ROW id="3">
-  <COUNTRY_ID>HK</COUNTRY_ID>
-  <COUNTRY_NAME>HongKong</COUNTRY_NAME>
-  <REGION_ID>3</REGION_ID>
-</ROW>
-<ROW id="4">
   <COUNTRY_ID>IN</COUNTRY_ID>
   <COUNTRY_NAME>India</COUNTRY_NAME>
   <REGION_ID>3</REGION_ID>
 </ROW>
-<ROW id="5">
+<ROW id="4">
   <COUNTRY_ID>JP</COUNTRY_ID>
   <COUNTRY_NAME>Japan</COUNTRY_NAME>
   <REGION_ID>3</REGION_ID><PREMIER_NAME>Sinzo Abe</PREMIER_NAME>
 </ROW>
-<ROW id="6">
+<ROW id="5">
   <COUNTRY_ID>SG</COUNTRY_ID>
   <COUNTRY_NAME>Singapore</COUNTRY_NAME>
   <REGION_ID>3</REGION_ID><SIZE unit="km">791</SIZE>
@@ -1066,11 +1061,10 @@ SELECT  xmltable.*
 ----+-----+--------------+------------+-----------+------+------+---------------
   1 |   1 | Australia    | AU         |         3 |      |      | not specified
   2 |   2 | China        | CN         |         3 |      |      | not specified
-  3 |   3 | HongKong     | HK         |         3 |      |      | not specified
-  4 |   4 | India        | IN         |         3 |      |      | not specified
-  5 |   5 | Japan        | JP         |         3 |      |      | Sinzo Abe
-  6 |   6 | Singapore    | SG         |         3 |  791 | km   | not specified
-(6 rows)
+  3 |   3 | India        | IN         |         3 |      |      | not specified
+  4 |   4 | Japan        | JP         |         3 |      |      | Sinzo Abe
+  5 |   5 | Singapore    | SG         |         3 |  791 | km   | not specified
+(5 rows)
 
 CREATE VIEW xmltableview1 AS SELECT  xmltable.*
    FROM (SELECT data FROM xmldata) x,
@@ -1089,11 +1083,10 @@ SELECT * FROM xmltableview1;
 ----+-----+--------------+------------+-----------+------+------+---------------
   1 |   1 | Australia    | AU         |         3 |      |      | not specified
   2 |   2 | China        | CN         |         3 |      |      | not specified
-  3 |   3 | HongKong     | HK         |         3 |      |      | not specified
-  4 |   4 | India        | IN         |         3 |      |      | not specified
-  5 |   5 | Japan        | JP         |         3 |      |      | Sinzo Abe
-  6 |   6 | Singapore    | SG         |         3 |  791 | km   | not specified
-(6 rows)
+  3 |   3 | India        | IN         |         3 |      |      | not specified
+  4 |   4 | Japan        | JP         |         3 |      |      | Sinzo Abe
+  5 |   5 | Singapore    | SG         |         3 |  791 | km   | not specified
+(5 rows)
 
 \sv xmltableview1
 CREATE OR REPLACE VIEW public.xmltableview1 AS
@@ -1176,11 +1169,10 @@ EXECUTE pp;
 ----+-----+--------------+------------+-----------+------+------+---------------
   1 |   1 | Australia    | AU         |         3 |      |      | not specified
   2 |   2 | China        | CN         |         3 |      |      | not specified
-  3 |   3 | HongKong     | HK         |         3 |      |      | not specified
-  4 |   4 | India        | IN         |         3 |      |      | not specified
-  5 |   5 | Japan        | JP         |         3 |      |      | Sinzo Abe
-  6 |   6 | Singapore    | SG         |         3 |  791 | km   | not specified
-(6 rows)
+  3 |   3 | India        | IN         |         3 |      |      | not specified
+  4 |   4 | Japan        | JP         |         3 |      |      | Sinzo Abe
+  5 |   5 | Singapore    | SG         |         3 |  791 | km   | not specified
+(5 rows)
 
 SELECT xmltable.* FROM xmldata, LATERAL xmltable('/ROWS/ROW[COUNTRY_NAME="Japan" or COUNTRY_NAME="India"]' PASSING data COLUMNS "COUNTRY_NAME" text, "REGION_ID" int);
  COUNTRY_NAME | REGION_ID 
@@ -1199,15 +1191,15 @@ SELECT xmltable.* FROM xmldata, LATERAL xmltable('/ROWS/ROW[COUNTRY_NAME="Japan"
 SELECT xmltable.* FROM xmldata, LATERAL xmltable('/ROWS/ROW[COUNTRY_NAME="Japan" or COUNTRY_NAME="India"]' PASSING data COLUMNS id int PATH '@id', "COUNTRY_NAME" text, "REGION_ID" int);
  id | COUNTRY_NAME | REGION_ID 
 ----+--------------+-----------
-  4 | India        |         3
-  5 | Japan        |         3
+  3 | India        |         3
+  4 | Japan        |         3
 (2 rows)
 
 SELECT xmltable.* FROM xmldata, LATERAL xmltable('/ROWS/ROW[COUNTRY_NAME="Japan" or COUNTRY_NAME="India"]' PASSING data COLUMNS id int PATH '@id');
  id 
 ----
+  3
   4
-  5
 (2 rows)
 
 SELECT xmltable.* FROM xmldata, LATERAL xmltable('/ROWS/ROW[COUNTRY_NAME="Japan" or COUNTRY_NAME="India"]' PASSING data COLUMNS id FOR ORDINALITY);
@@ -1220,12 +1212,12 @@ SELECT xmltable.* FROM xmldata, LATERAL xmltable('/ROWS/ROW[COUNTRY_NAME="Japan"
 SELECT xmltable.* FROM xmldata, LATERAL xmltable('/ROWS/ROW[COUNTRY_NAME="Japan" or COUNTRY_NAME="India"]' PASSING data COLUMNS id int PATH '@id', "COUNTRY_NAME" text, "REGION_ID" int, rawdata xml PATH '.');
  id | COUNTRY_NAME | REGION_ID |                             rawdata                              
 ----+--------------+-----------+------------------------------------------------------------------
-  4 | India        |         3 | <ROW id="4">                                                    +
+  3 | India        |         3 | <ROW id="3">                                                    +
     |              |           |   <COUNTRY_ID>IN</COUNTRY_ID>                                   +
     |              |           |   <COUNTRY_NAME>India</COUNTRY_NAME>                            +
     |              |           |   <REGION_ID>3</REGION_ID>                                      +
     |              |           | </ROW>
-  5 | Japan        |         3 | <ROW id="5">                                                    +
+  4 | Japan        |         3 | <ROW id="4">                                                    +
     |              |           |   <COUNTRY_ID>JP</COUNTRY_ID>                                   +
     |              |           |   <COUNTRY_NAME>Japan</COUNTRY_NAME>                            +
     |              |           |   <REGION_ID>3</REGION_ID><PREMIER_NAME>Sinzo Abe</PREMIER_NAME>+
@@ -1235,8 +1227,8 @@ SELECT xmltable.* FROM xmldata, LATERAL xmltable('/ROWS/ROW[COUNTRY_NAME="Japan"
 SELECT xmltable.* FROM xmldata, LATERAL xmltable('/ROWS/ROW[COUNTRY_NAME="Japan" or COUNTRY_NAME="India"]' PASSING data COLUMNS id int PATH '@id', "COUNTRY_NAME" text, "REGION_ID" int, rawdata xml PATH './*');
  id | COUNTRY_NAME | REGION_ID |                                                           rawdata                                                           
 ----+--------------+-----------+-----------------------------------------------------------------------------------------------------------------------------
-  4 | India        |         3 | <COUNTRY_ID>IN</COUNTRY_ID><COUNTRY_NAME>India</COUNTRY_NAME><REGION_ID>3</REGION_ID>
-  5 | Japan        |         3 | <COUNTRY_ID>JP</COUNTRY_ID><COUNTRY_NAME>Japan</COUNTRY_NAME><REGION_ID>3</REGION_ID><PREMIER_NAME>Sinzo Abe</PREMIER_NAME>
+  3 | India        |         3 | <COUNTRY_ID>IN</COUNTRY_ID><COUNTRY_NAME>India</COUNTRY_NAME><REGION_ID>3</REGION_ID>
+  4 | Japan        |         3 | <COUNTRY_ID>JP</COUNTRY_ID><COUNTRY_NAME>Japan</COUNTRY_NAME><REGION_ID>3</REGION_ID><PREMIER_NAME>Sinzo Abe</PREMIER_NAME>
 (2 rows)
 
 SELECT * FROM xmltable('/root' passing '<root><element>a1a<!-- aaaa -->a2a<?aaaaa?> <!--z-->  bbbb<x>xxx</x>cccc</element></root>' COLUMNS element text);
@@ -1367,16 +1359,15 @@ SELECT  xmltable.*
 ----+-----+----------------+------------+-----------+------+------+---------------
   1 |   1 | Australia      | AU         |         3 |      |      | not specified
   2 |   2 | China          | CN         |         3 |      |      | not specified
-  3 |   3 | HongKong       | HK         |         3 |      |      | not specified
-  4 |   4 | India          | IN         |         3 |      |      | not specified
-  5 |   5 | Japan          | JP         |         3 |      |      | Sinzo Abe
-  6 |   6 | Singapore      | SG         |         3 |  791 | km   | not specified
+  3 |   3 | India          | IN         |         3 |      |      | not specified
+  4 |   4 | Japan          | JP         |         3 |      |      | Sinzo Abe
+  5 |   5 | Singapore      | SG         |         3 |  791 | km   | not specified
  10 |   1 | Czech Republic | CZ         |         2 |      |      | Milos Zeman
  11 |   2 | Germany        | DE         |         2 |      |      | not specified
  12 |   3 | France         | FR         |         2 |      |      | not specified
  20 |   1 | Egypt          | EG         |         1 |      |      | not specified
  21 |   2 | Sudan          | SD         |         1 |      |      | not specified
-(11 rows)
+(10 rows)
 
 SELECT  xmltable.*
    FROM (SELECT data FROM xmldata) x,
