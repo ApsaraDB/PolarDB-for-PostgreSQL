@@ -1001,7 +1001,6 @@ COPY city (id, name, countrycode, district, population) FROM stdin;
 934	San Pedro Sula	HND	Cortes	383900
 935	La Ceiba	HND	Atlantida	89200
 936	Kowloon and New Kowloon	HKG	Kowloon and New Kowl	1987996
-937	Victoria	HKG	Hongkong	1312637
 938	Longyearbyen	SJM	Lansimaa	1438
 939	Jakarta	IDN	Jakarta Raya	9604900
 940	Surabaya	IDN	East Java	2663820

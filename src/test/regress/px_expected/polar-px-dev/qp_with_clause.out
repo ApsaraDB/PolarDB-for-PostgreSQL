@@ -166,7 +166,6 @@ order by capitals.code,countrylanguage.language;
  GTM  |  922 | Ciudad de Guatemala               | GTM         | Spanish          | t          |       64.7
  GUM  |  921 | Agaaa                             | GUM         | Chamorro         | t          |       29.6
  GUM  |  921 | Agaaa                             | GUM         | English          | t          |       37.5
- HKG  |  937 | Victoria                          | HKG         | English          | t          |        2.2
  HND  |  933 | Tegucigalpa                       | HND         | Spanish          | t          |       97.2
  HRV  | 2409 | Zagreb                            | HRV         | Serbo-Croatian   | t          |       95.9
  HTI  |  929 | Port-au-Prince                    | HTI         | French           | t          |          0
@@ -317,7 +316,7 @@ order by capitals.code,countrylanguage.language;
  ZAF  |  716 | Pretoria                          | ZAF         | Xhosa            | t          |       17.7
  ZAF  |  716 | Pretoria                          | ZAF         | Zulu             | t          |       22.7
  ZWE  | 4068 | Harare                            | ZWE         | English          | t          |        2.2
-(237 rows)
+(236 rows)
 
                                                                                  QUERY PLAN                                                                                  
 -----------------------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -2227,7 +2226,6 @@ select * from capitals;
  GUY  |  928 | Georgetown
  HTI  |  929 | Port-au-Prince
  HND  |  933 | Tegucigalpa
- HKG  |  937 | Victoria
  SJM  |  938 | Longyearbyen
  IDN  |  939 | Jakarta
  IND  | 1109 | New Delhi
@@ -2391,7 +2389,7 @@ select * from capitals;
  VIR  | 4067 | Charlotte Amalie
  ZWE  | 4068 | Harare
  PSE  | 4074 | Gaza
-(232 rows)
+(231 rows)
 
                                        QUERY PLAN                                       
 ----------------------------------------------------------------------------------------
@@ -2524,7 +2522,6 @@ order by capitals.code,countrylanguage.language;
  GTM  |  922 | Ciudad de Guatemala               | GTM         | Spanish          | t          |       64.7
  GUM  |  921 | Agaaa                             | GUM         | Chamorro         | t          |       29.6
  GUM  |  921 | Agaaa                             | GUM         | English          | t          |       37.5
- HKG  |  937 | Victoria                          | HKG         | English          | t          |        2.2
  HND  |  933 | Tegucigalpa                       | HND         | Spanish          | t          |       97.2
  HRV  | 2409 | Zagreb                            | HRV         | Serbo-Croatian   | t          |       95.9
  HTI  |  929 | Port-au-Prince                    | HTI         | French           | t          |          0
@@ -2675,7 +2672,7 @@ order by capitals.code,countrylanguage.language;
  ZAF  |  716 | Pretoria                          | ZAF         | Xhosa            | t          |       17.7
  ZAF  |  716 | Pretoria                          | ZAF         | Zulu             | t          |       22.7
  ZWE  | 4068 | Harare                            | ZWE         | English          | t          |        2.2
-(237 rows)
+(236 rows)
 
                                                                                  QUERY PLAN                                                                                  
 -----------------------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -3876,7 +3873,7 @@ order by FOO1.lang_cnt,FOO1.identifier;
       494 |       10 | British Islands
       159 |       48 | Baltic Countries
      1295 |      161 | Nordic Countries
-    50176 |      264 | Eastern Asia
+    50096 |      224 | Eastern Asia
      9414 |      369 | Western Europe
     11880 |      450 | Southern Europe
     32900 |      610 | Eastern Europe
@@ -4189,7 +4186,6 @@ order by capitals.code,countrylanguage.language;
  GTM  |  922 | Ciudad de Guatemala               | GTM         | Spanish          | t          |       64.7
  GUM  |  921 | Agaaa                             | GUM         | Chamorro         | t          |       29.6
  GUM  |  921 | Agaaa                             | GUM         | English          | t          |       37.5
- HKG  |  937 | Victoria                          | HKG         | English          | t          |        2.2
  HND  |  933 | Tegucigalpa                       | HND         | Spanish          | t          |       97.2
  HRV  | 2409 | Zagreb                            | HRV         | Serbo-Croatian   | t          |       95.9
  HTI  |  929 | Port-au-Prince                    | HTI         | French           | t          |          0
@@ -4340,7 +4336,7 @@ order by capitals.code,countrylanguage.language;
  ZAF  |  716 | Pretoria                          | ZAF         | Xhosa            | t          |       17.7
  ZAF  |  716 | Pretoria                          | ZAF         | Zulu             | t          |       22.7
  ZWE  | 4068 | Harare                            | ZWE         | English          | t          |        2.2
-(237 rows)
+(236 rows)
 
                                                                                  QUERY PLAN                                                                                  
 -----------------------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -5541,7 +5537,7 @@ order by FOO1.lang_cnt,FOO1.identifier;
       494 |       10 | British Islands
       159 |       48 | Baltic Countries
      1295 |      161 | Nordic Countries
-    50176 |      264 | Eastern Asia
+    50096 |      224 | Eastern Asia
      9414 |      369 | Western Europe
     11880 |      450 | Southern Europe
     32900 |      610 | Eastern Europe
@@ -6530,9 +6526,9 @@ order by OUTERMOST_FOO.region,bad_headofstates.headofstate LIMIT 40;
   5982809.523809523810 | Eastern Africa            | Pierre Buyoya
   5982809.523809523810 | Eastern Africa            | Pierre Buyoya
   5982809.523809523810 | Eastern Africa            | Robert G. Mugabe
- 34288500.000000000000 | Eastern Asia              | Akihito
- 34288500.000000000000 | Eastern Asia              | Chen Shui-bian
- 34288500.000000000000 | Eastern Asia              | Jiang Zemin
+ 39789800.000000000000 | Eastern Asia              | Akihito
+ 39789800.000000000000 | Eastern Asia              | Chen Shui-bian
+ 39789800.000000000000 | Eastern Asia              | Jiang Zemin
 (40 rows)
 
                                                                                                QUERY PLAN                                                                                                
@@ -6759,10 +6755,10 @@ order by FOO.country;
                                  ->  HashAggregate
                                        Output: sum(share0_ref4.district_pop), sum(share0_ref4.num_cities), share0_ref4.name, city_3.name, city_3.population, sum(share0_ref4.district_pop), sum(share0_ref4.district_pop), sum(share0_ref4.num_cities)
                                        Group Key: share0_ref4.name, city_3.name, city_3.population
-                                       ->  Append
-                                             ->  PX Hash 6:6  (slice6; segments: 6)
-                                                   Output: share0_ref4.district_pop, share0_ref4.num_cities, share0_ref4.name, city_3.name, city_3.population
-                                                   Hash Key: share0_ref4.name, city_3.name, city_3.population
+                                       ->  PX Hash 6:6  (slice6; segments: 6)
+                                             Output: share0_ref4.district_pop, share0_ref4.num_cities, share0_ref4.name, city_3.name, city_3.population
+                                             Hash Key: share0_ref4.name, city_3.name, city_3.population
+                                             ->  Append
                                                    ->  Nested Loop
                                                          Output: share0_ref4.district_pop, share0_ref4.num_cities, share0_ref4.name, city_3.name, city_3.population
                                                          Join Filter: (city_3.population > (min(share0_ref6.district_pop)))
@@ -6835,21 +6831,18 @@ order by FOO.country;
                                                                                                    Hash Key: country_1.capital
                                                                                                    ->  Partial Seq Scan on qp_with_clause.country country_1
                                                                                                          Output: country_1.code, country_1.capital
-                                             ->  PX Hash 6:6  (slice16; segments: 6)
-                                                   Output: share0_ref7.district_pop, share0_ref7.num_cities, share0_ref7.name, city_5.name, city_5.population
-                                                   Hash Key: share0_ref7.name, city_5.name, city_5.population
                                                    ->  Nested Loop
                                                          Output: share0_ref7.district_pop, share0_ref7.num_cities, share0_ref7.name, city_5.name, city_5.population
                                                          Join Filter: (city_5.population > (min(share0_ref9.district_pop)))
-                                                         ->  PX Broadcast 1:6  (slice24)
+                                                         ->  PX Broadcast 1:6  (slice23)
                                                                Output: (min(share0_ref9.district_pop))
                                                                ->  Finalize Aggregate
                                                                      Output: min(share0_ref9.district_pop)
-                                                                     ->  PX Coordinator 6:1  (slice25; segments: 6)
+                                                                     ->  PX Coordinator 6:1  (slice24; segments: 6)
                                                                            Output: (PARTIAL min(share0_ref9.district_pop))
                                                                            ->  Partial Aggregate
                                                                                  Output: PARTIAL min(share0_ref9.district_pop)
-                                                                                 ->  Shared Scan (Consumer; slice25; share0)
+                                                                                 ->  Shared Scan (Consumer; slice24; share0)
                                                                                        Output: share0_ref9.district_pop, share0_ref9.num_cities, share0_ref9.district, share0_ref9.countrycode, share0_ref9.name
                                                          ->  Sort
                                                                Output: share0_ref7.district_pop, share0_ref7.num_cities, share0_ref7.district, share0_ref7.name, city_5.name, city_5.population
@@ -6860,27 +6853,27 @@ order by FOO.country;
                                                                      ->  Nested Loop
                                                                            Output: share0_ref7.district_pop, share0_ref7.num_cities, share0_ref7.district, share0_ref7.countrycode, share0_ref7.name
                                                                            Join Filter: ((share0_ref7.district_pop)::numeric >= (avg(share0_ref8.district_pop)))
-                                                                           ->  PX Broadcast 1:6  (slice17)
+                                                                           ->  PX Broadcast 1:6  (slice16)
                                                                                  Output: (avg(share0_ref8.district_pop))
                                                                                  ->  Finalize Aggregate
                                                                                        Output: avg(share0_ref8.district_pop)
-                                                                                       ->  PX Coordinator 6:1  (slice18; segments: 6)
+                                                                                       ->  PX Coordinator 6:1  (slice17; segments: 6)
                                                                                              Output: (PARTIAL avg(share0_ref8.district_pop))
                                                                                              ->  Partial Aggregate
                                                                                                    Output: PARTIAL avg(share0_ref8.district_pop)
                                                                                                    ->  Hash Semi Join
                                                                                                          Output: share0_ref8.district_pop
                                                                                                          Hash Cond: (share0_ref8.district = city_4.district)
-                                                                                                         ->  PX Hash 6:6  (slice19; segments: 6)
+                                                                                                         ->  PX Hash 6:6  (slice18; segments: 6)
                                                                                                                Output: share0_ref8.district_pop, share0_ref8.district
                                                                                                                Hash Key: share0_ref8.district
                                                                                                                ->  Result
                                                                                                                      Output: share0_ref8.district_pop, share0_ref8.district
-                                                                                                                     ->  Shared Scan (Consumer; slice19; share0)
+                                                                                                                     ->  Shared Scan (Consumer; slice18; share0)
                                                                                                                            Output: share0_ref8.district_pop, share0_ref8.num_cities, share0_ref8.district, share0_ref8.countrycode, share0_ref8.name
                                                                                                          ->  Hash
                                                                                                                Output: city_4.district
-                                                                                                               ->  PX Hash 6:6  (slice20; segments: 6)
+                                                                                                               ->  PX Hash 6:6  (slice19; segments: 6)
                                                                                                                      Output: city_4.district
                                                                                                                      Hash Key: city_4.district
                                                                                                                      ->  Partial Seq Scan on qp_with_clause.city city_4
@@ -6888,43 +6881,40 @@ order by FOO.country;
                                                                                                                            Filter: (city_4.countrycode = 'IND'::bpchar)
                                                                            ->  Materialize
                                                                                  Output: share0_ref7.district_pop, share0_ref7.num_cities, share0_ref7.district, share0_ref7.countrycode, share0_ref7.name
-                                                                                 ->  Shared Scan (Consumer; slice16; share0)
+                                                                                 ->  Shared Scan (Consumer; slice6; share0)
                                                                                        Output: share0_ref7.district_pop, share0_ref7.num_cities, share0_ref7.district, share0_ref7.countrycode, share0_ref7.name
                                                                      ->  Hash
                                                                            Output: country_2.code, city_5.name, city_5.population
-                                                                           ->  PX Hash 6:6  (slice21; segments: 6)
+                                                                           ->  PX Hash 6:6  (slice20; segments: 6)
                                                                                  Output: country_2.code, city_5.name, city_5.population
                                                                                  Hash Key: country_2.code
                                                                                  ->  Hash Join
                                                                                        Output: country_2.code, city_5.name, city_5.population
                                                                                        Hash Cond: (city_5.id = country_2.capital)
-                                                                                       ->  PX Hash 6:6  (slice22; segments: 6)
+                                                                                       ->  PX Hash 6:6  (slice21; segments: 6)
                                                                                              Output: city_5.id, city_5.name, city_5.population
                                                                                              Hash Key: city_5.id
                                                                                              ->  Partial Seq Scan on qp_with_clause.city city_5
                                                                                                    Output: city_5.id, city_5.name, city_5.population
                                                                                        ->  Hash
                                                                                              Output: country_2.code, country_2.capital
-                                                                                             ->  PX Hash 6:6  (slice23; segments: 6)
+                                                                                             ->  PX Hash 6:6  (slice22; segments: 6)
                                                                                                    Output: country_2.code, country_2.capital
                                                                                                    Hash Key: country_2.capital
                                                                                                    ->  Partial Seq Scan on qp_with_clause.country country_2
                                                                                                          Output: country_2.code, country_2.capital
-                                             ->  PX Hash 6:6  (slice26; segments: 6)
-                                                   Output: share0_ref10.district_pop, share0_ref10.num_cities, share0_ref10.name, city_7.name, city_7.population
-                                                   Hash Key: share0_ref10.name, city_7.name, city_7.population
                                                    ->  Nested Loop
                                                          Output: share0_ref10.district_pop, share0_ref10.num_cities, share0_ref10.name, city_7.name, city_7.population
                                                          Join Filter: (city_7.population > (min(share0_ref12.district_pop)))
-                                                         ->  PX Broadcast 1:6  (slice34)
+                                                         ->  PX Broadcast 1:6  (slice32)
                                                                Output: (min(share0_ref12.district_pop))
                                                                ->  Finalize Aggregate
                                                                      Output: min(share0_ref12.district_pop)
-                                                                     ->  PX Coordinator 6:1  (slice35; segments: 6)
+                                                                     ->  PX Coordinator 6:1  (slice33; segments: 6)
                                                                            Output: (PARTIAL min(share0_ref12.district_pop))
                                                                            ->  Partial Aggregate
                                                                                  Output: PARTIAL min(share0_ref12.district_pop)
-                                                                                 ->  Shared Scan (Consumer; slice35; share0)
+                                                                                 ->  Shared Scan (Consumer; slice33; share0)
                                                                                        Output: share0_ref12.district_pop, share0_ref12.num_cities, share0_ref12.district, share0_ref12.countrycode, share0_ref12.name
                                                          ->  Sort
                                                                Output: share0_ref10.district_pop, share0_ref10.num_cities, share0_ref10.district, share0_ref10.name, city_7.name, city_7.population
@@ -6935,27 +6925,27 @@ order by FOO.country;
                                                                      ->  Nested Loop
                                                                            Output: share0_ref10.district_pop, share0_ref10.num_cities, share0_ref10.district, share0_ref10.countrycode, share0_ref10.name
                                                                            Join Filter: ((share0_ref10.district_pop)::numeric >= (avg(share0_ref11.district_pop)))
-                                                                           ->  PX Broadcast 1:6  (slice27)
+                                                                           ->  PX Broadcast 1:6  (slice25)
                                                                                  Output: (avg(share0_ref11.district_pop))
                                                                                  ->  Finalize Aggregate
                                                                                        Output: avg(share0_ref11.district_pop)
-                                                                                       ->  PX Coordinator 6:1  (slice28; segments: 6)
+                                                                                       ->  PX Coordinator 6:1  (slice26; segments: 6)
                                                                                              Output: (PARTIAL avg(share0_ref11.district_pop))
                                                                                              ->  Partial Aggregate
                                                                                                    Output: PARTIAL avg(share0_ref11.district_pop)
                                                                                                    ->  Hash Semi Join
                                                                                                          Output: share0_ref11.district_pop
                                                                                                          Hash Cond: (share0_ref11.district = city_6.district)
-                                                                                                         ->  PX Hash 6:6  (slice29; segments: 6)
+                                                                                                         ->  PX Hash 6:6  (slice27; segments: 6)
                                                                                                                Output: share0_ref11.district_pop, share0_ref11.district
                                                                                                                Hash Key: share0_ref11.district
                                                                                                                ->  Result
                                                                                                                      Output: share0_ref11.district_pop, share0_ref11.district
-                                                                                                                     ->  Shared Scan (Consumer; slice29; share0)
+                                                                                                                     ->  Shared Scan (Consumer; slice27; share0)
                                                                                                                            Output: share0_ref11.district_pop, share0_ref11.num_cities, share0_ref11.district, share0_ref11.countrycode, share0_ref11.name
                                                                                                          ->  Hash
                                                                                                                Output: city_6.district
-                                                                                                               ->  PX Hash 6:6  (slice30; segments: 6)
+                                                                                                               ->  PX Hash 6:6  (slice28; segments: 6)
                                                                                                                      Output: city_6.district
                                                                                                                      Hash Key: city_6.district
                                                                                                                      ->  Partial Seq Scan on qp_with_clause.city city_6
@@ -6963,24 +6953,24 @@ order by FOO.country;
                                                                                                                            Filter: (city_6.countrycode = 'CHN'::bpchar)
                                                                            ->  Materialize
                                                                                  Output: share0_ref10.district_pop, share0_ref10.num_cities, share0_ref10.district, share0_ref10.countrycode, share0_ref10.name
-                                                                                 ->  Shared Scan (Consumer; slice26; share0)
+                                                                                 ->  Shared Scan (Consumer; slice6; share0)
                                                                                        Output: share0_ref10.district_pop, share0_ref10.num_cities, share0_ref10.district, share0_ref10.countrycode, share0_ref10.name
                                                                      ->  Hash
                                                                            Output: country_3.code, city_7.name, city_7.population
-                                                                           ->  PX Hash 6:6  (slice31; segments: 6)
+                                                                           ->  PX Hash 6:6  (slice29; segments: 6)
                                                                                  Output: country_3.code, city_7.name, city_7.population
                                                                                  Hash Key: country_3.code
                                                                                  ->  Hash Join
                                                                                        Output: country_3.code, city_7.name, city_7.population
                                                                                        Hash Cond: (city_7.id = country_3.capital)
-                                                                                       ->  PX Hash 6:6  (slice32; segments: 6)
+                                                                                       ->  PX Hash 6:6  (slice30; segments: 6)
                                                                                              Output: city_7.id, city_7.name, city_7.population
                                                                                              Hash Key: city_7.id
                                                                                              ->  Partial Seq Scan on qp_with_clause.city city_7
                                                                                                    Output: city_7.id, city_7.name, city_7.population
                                                                                        ->  Hash
                                                                                              Output: country_3.code, country_3.capital
-                                                                                             ->  PX Hash 6:6  (slice33; segments: 6)
+                                                                                             ->  PX Hash 6:6  (slice31; segments: 6)
                                                                                                    Output: country_3.code, country_3.capital
                                                                                                    Hash Key: country_3.capital
                                                                                                    ->  Partial Seq Scan on qp_with_clause.country country_3
@@ -6988,22 +6978,22 @@ order by FOO.country;
                                  SubPlan 1
                                    ->  Materialize
                                          Output: (avg(share0_ref1.district_pop))
-                                         ->  PX Broadcast 1:6  (slice36)
+                                         ->  PX Broadcast 1:6  (slice34)
                                                Output: (avg(share0_ref1.district_pop))
                                                ->  Finalize Aggregate
                                                      Output: avg(share0_ref1.district_pop)
-                                                     ->  PX Coordinator 6:1  (slice37; segments: 6)
+                                                     ->  PX Coordinator 6:1  (slice35; segments: 6)
                                                            Output: (PARTIAL avg(share0_ref1.district_pop))
                                                            ->  Partial Aggregate
                                                                  Output: PARTIAL avg(share0_ref1.district_pop)
                                                                  ->  Hash Semi Join
                                                                        Output: share0_ref1.district_pop
                                                                        Hash Cond: (share0_ref1.district = city_8.district)
-                                                                       ->  Shared Scan (Consumer; slice37; share0)
+                                                                       ->  Shared Scan (Consumer; slice35; share0)
                                                                              Output: share0_ref1.district_pop, share0_ref1.num_cities, share0_ref1.district, share0_ref1.countrycode, share0_ref1.name
                                                                        ->  Hash
                                                                              Output: city_8.district
-                                                                             ->  PX Broadcast 6:6  (slice38; segments: 6)
+                                                                             ->  PX Broadcast 6:6  (slice36; segments: 6)
                                                                                    Output: city_8.district
                                                                                    ->  Partial Seq Scan on qp_with_clause.city city_8
                                                                                          Output: city_8.district
@@ -7011,34 +7001,34 @@ order by FOO.country;
                            SubPlan 2
                              ->  Materialize
                                    Output: (avg(share0_ref2.district_pop))
-                                   ->  PX Broadcast 1:6  (slice39)
+                                   ->  PX Broadcast 1:6  (slice37)
                                          Output: (avg(share0_ref2.district_pop))
                                          ->  Finalize Aggregate
                                                Output: avg(share0_ref2.district_pop)
-                                               ->  PX Coordinator 6:1  (slice40; segments: 6)
+                                               ->  PX Coordinator 6:1  (slice38; segments: 6)
                                                      Output: (PARTIAL avg(share0_ref2.district_pop))
                                                      ->  Partial Aggregate
                                                            Output: PARTIAL avg(share0_ref2.district_pop)
                                                            ->  Hash Semi Join
                                                                  Output: share0_ref2.district_pop
                                                                  Hash Cond: (share0_ref2.district = city_9.district)
-                                                                 ->  PX Hash 6:6  (slice41; segments: 6)
+                                                                 ->  PX Hash 6:6  (slice39; segments: 6)
                                                                        Output: share0_ref2.district_pop, share0_ref2.district
                                                                        Hash Key: share0_ref2.district
                                                                        ->  Result
                                                                              Output: share0_ref2.district_pop, share0_ref2.district
-                                                                             ->  Shared Scan (Consumer; slice41; share0)
+                                                                             ->  Shared Scan (Consumer; slice39; share0)
                                                                                    Output: share0_ref2.district_pop, share0_ref2.num_cities, share0_ref2.district, share0_ref2.countrycode, share0_ref2.name
                                                                  ->  Hash
                                                                        Output: city_9.district
-                                                                       ->  PX Hash 6:6  (slice42; segments: 6)
+                                                                       ->  PX Hash 6:6  (slice40; segments: 6)
                                                                              Output: city_9.district
                                                                              Hash Key: city_9.district
                                                                              ->  Partial Seq Scan on qp_with_clause.city city_9
                                                                                    Output: city_9.district
                                                                                    Filter: ((city_9.countrycode = 'USA'::bpchar) OR (city_9.countrycode = 'IND'::bpchar) OR (city_9.countrycode = 'CHN'::bpchar))
  Optimizer: PolarDB PX Optimizer
-(334 rows)
+(328 rows)
 
 -- query8 Use CTE in the select list and the from clause
 with official_languages as
@@ -7445,7 +7435,6 @@ order by capitals.code,countrylanguage.language;
  GTM  |  922 | Ciudad de Guatemala               | GTM         | Spanish          | t          |       64.7
  GUM  |  921 | Agaaa                             | GUM         | Chamorro         | t          |       29.6
  GUM  |  921 | Agaaa                             | GUM         | English          | t          |       37.5
- HKG  |  937 | Victoria                          | HKG         | English          | t          |        2.2
  HND  |  933 | Tegucigalpa                       | HND         | Spanish          | t          |       97.2
  HRV  | 2409 | Zagreb                            | HRV         | Serbo-Croatian   | t          |       95.9
  HTI  |  929 | Port-au-Prince                    | HTI         | French           | t          |          0
@@ -7596,7 +7585,7 @@ order by capitals.code,countrylanguage.language;
  ZAF  |  716 | Pretoria                          | ZAF         | Xhosa            | t          |       17.7
  ZAF  |  716 | Pretoria                          | ZAF         | Zulu             | t          |       22.7
  ZWE  | 4068 | Harare                            | ZWE         | English          | t          |        2.2
-(237 rows)
+(236 rows)
 
                                                                                  QUERY PLAN                                                                                  
 -----------------------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -8805,7 +8794,7 @@ order by FOO1.lang_cnt,FOO1.identifier;
       494 |       10 | British Islands
       159 |       48 | Baltic Countries
      1295 |      161 | Nordic Countries
-    50176 |      264 | Eastern Asia
+    50096 |      224 | Eastern Asia
      9414 |      369 | Western Europe
     11880 |      450 | Southern Europe
     32900 |      610 | Eastern Europe
@@ -9141,7 +9130,6 @@ order by capitals.code,countrylanguage.language;
  GTM  |  922 | Ciudad de Guatemala               | GTM         | Spanish          | t          |       64.7
  GUM  |  921 | Agaaa                             | GUM         | Chamorro         | t          |       29.6
  GUM  |  921 | Agaaa                             | GUM         | English          | t          |       37.5
- HKG  |  937 | Victoria                          | HKG         | English          | t          |        2.2
  HND  |  933 | Tegucigalpa                       | HND         | Spanish          | t          |       97.2
  HRV  | 2409 | Zagreb                            | HRV         | Serbo-Croatian   | t          |       95.9
  HTI  |  929 | Port-au-Prince                    | HTI         | French           | t          |          0
@@ -9292,7 +9280,7 @@ order by capitals.code,countrylanguage.language;
  ZAF  |  716 | Pretoria                          | ZAF         | Xhosa            | t          |       17.7
  ZAF  |  716 | Pretoria                          | ZAF         | Zulu             | t          |       22.7
  ZWE  | 4068 | Harare                            | ZWE         | English          | t          |        2.2
-(237 rows)
+(236 rows)
 
                                                                                  QUERY PLAN                                                                                  
 -----------------------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -10376,7 +10364,7 @@ order by FOO1.lang_cnt,FOO1.identifier;
       494 |       10 | British Islands
       159 |       48 | Baltic Countries
      1295 |      161 | Nordic Countries
-    50176 |      264 | Eastern Asia
+    50096 |      224 | Eastern Asia
      9414 |      369 | Western Europe
     11880 |      450 | Southern Europe
     32900 |      610 | Eastern Europe
@@ -10689,7 +10677,6 @@ order by capitals.code,countrylanguage.language;
  GTM  |  922 | Ciudad de Guatemala               | GTM         | Spanish          | t          |       64.7
  GUM  |  921 | Agaaa                             | GUM         | Chamorro         | t          |       29.6
  GUM  |  921 | Agaaa                             | GUM         | English          | t          |       37.5
- HKG  |  937 | Victoria                          | HKG         | English          | t          |        2.2
  HND  |  933 | Tegucigalpa                       | HND         | Spanish          | t          |       97.2
  HRV  | 2409 | Zagreb                            | HRV         | Serbo-Croatian   | t          |       95.9
  HTI  |  929 | Port-au-Prince                    | HTI         | French           | t          |          0
@@ -10840,7 +10827,7 @@ order by capitals.code,countrylanguage.language;
  ZAF  |  716 | Pretoria                          | ZAF         | Xhosa            | t          |       17.7
  ZAF  |  716 | Pretoria                          | ZAF         | Zulu             | t          |       22.7
  ZWE  | 4068 | Harare                            | ZWE         | English          | t          |        2.2
-(237 rows)
+(236 rows)
 
                                                                                  QUERY PLAN                                                                                  
 -----------------------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -12041,7 +12028,7 @@ order by FOO1.lang_cnt,FOO1.identifier;
       494 |       10 | British Islands
       159 |       48 | Baltic Countries
      1295 |      161 | Nordic Countries
-    50176 |      264 | Eastern Asia
+    50096 |      224 | Eastern Asia
      9414 |      369 | Western Europe
     11880 |      450 | Southern Europe
     32900 |      610 | Eastern Europe
@@ -13816,7 +13803,7 @@ order by FOO1.lang_cnt,FOO1.identifier;
       494 |       10 | British Islands
       159 |       48 | Baltic Countries
      1295 |      161 | Nordic Countries
-    50176 |      264 | Eastern Asia
+    50096 |      224 | Eastern Asia
      9414 |      369 | Western Europe
     11880 |      450 | Southern Europe
     32900 |      610 | Eastern Europe
@@ -15302,9 +15289,9 @@ select * from bad_headofstates order by region,headofstate;
   5982809.523809523810 | Eastern Africa            | Pierre Buyoya
   5982809.523809523810 | Eastern Africa            | Pierre Buyoya
   5982809.523809523810 | Eastern Africa            | Robert G. Mugabe
- 34288500.000000000000 | Eastern Asia              | Akihito
- 34288500.000000000000 | Eastern Asia              | Chen Shui-bian
- 34288500.000000000000 | Eastern Asia              | Jiang Zemin
+ 39789800.000000000000 | Eastern Asia              | Akihito
+ 39789800.000000000000 | Eastern Asia              | Chen Shui-bian
+ 39789800.000000000000 | Eastern Asia              | Jiang Zemin
 (40 rows)
 
                                QUERY PLAN                                
@@ -15420,12 +15407,12 @@ select * from bad_headofstates order by region,headofstate;
   5982809.523809523810 | Eastern Africa            | Pierre Buyoya
   5982809.523809523810 | Eastern Africa            | Robert G. Mugabe
   5982809.523809523810 | Eastern Africa            | Robert G. Mugabe
- 34288500.000000000000 | Eastern Asia              | Akihito
- 34288500.000000000000 | Eastern Asia              | Akihito
- 34288500.000000000000 | Eastern Asia              | Chen Shui-bian
- 34288500.000000000000 | Eastern Asia              | Chen Shui-bian
- 34288500.000000000000 | Eastern Asia              | Jiang Zemin
- 34288500.000000000000 | Eastern Asia              | Jiang Zemin
+ 39789800.000000000000 | Eastern Asia              | Akihito
+ 39789800.000000000000 | Eastern Asia              | Akihito
+ 39789800.000000000000 | Eastern Asia              | Chen Shui-bian
+ 39789800.000000000000 | Eastern Asia              | Chen Shui-bian
+ 39789800.000000000000 | Eastern Asia              | Jiang Zemin
+ 39789800.000000000000 | Eastern Asia              | Jiang Zemin
 (80 rows)
 
                                QUERY PLAN                                
@@ -15545,12 +15532,12 @@ select * from bad_headofstates order by avg,region,headofstate;
   5982809.523809523810 | Eastern Africa            | Robert G. Mugabe
   7651000.000000000000 | Central Africa            | Idriss Deby
   7651000.000000000000 | Central Africa            | Idriss Deby
- 34288500.000000000000 | Eastern Asia              | Akihito
- 34288500.000000000000 | Eastern Asia              | Akihito
- 34288500.000000000000 | Eastern Asia              | Chen Shui-bian
- 34288500.000000000000 | Eastern Asia              | Chen Shui-bian
- 34288500.000000000000 | Eastern Asia              | Jiang Zemin
- 34288500.000000000000 | Eastern Asia              | Jiang Zemin
+ 39789800.000000000000 | Eastern Asia              | Akihito
+ 39789800.000000000000 | Eastern Asia              | Akihito
+ 39789800.000000000000 | Eastern Asia              | Chen Shui-bian
+ 39789800.000000000000 | Eastern Asia              | Chen Shui-bian
+ 39789800.000000000000 | Eastern Asia              | Jiang Zemin
+ 39789800.000000000000 | Eastern Asia              | Jiang Zemin
 (80 rows)
 
                                           QUERY PLAN                                           
@@ -15633,12 +15620,12 @@ select * from bad_headofstates order by region,headofstate;
   5982809.523809523810 | Eastern Africa            | Pierre Buyoya
   5982809.523809523810 | Eastern Africa            | Robert G. Mugabe
   5982809.523809523810 | Eastern Africa            | Robert G. Mugabe
- 34288500.000000000000 | Eastern Asia              | Akihito
- 34288500.000000000000 | Eastern Asia              | Akihito
- 34288500.000000000000 | Eastern Asia              | Chen Shui-bian
- 34288500.000000000000 | Eastern Asia              | Chen Shui-bian
- 34288500.000000000000 | Eastern Asia              | Jiang Zemin
- 34288500.000000000000 | Eastern Asia              | Jiang Zemin
+ 39789800.000000000000 | Eastern Asia              | Akihito
+ 39789800.000000000000 | Eastern Asia              | Akihito
+ 39789800.000000000000 | Eastern Asia              | Chen Shui-bian
+ 39789800.000000000000 | Eastern Asia              | Chen Shui-bian
+ 39789800.000000000000 | Eastern Asia              | Jiang Zemin
+ 39789800.000000000000 | Eastern Asia              | Jiang Zemin
 (44 rows)
 
                                QUERY PLAN                                
@@ -15691,12 +15678,12 @@ select * from bad_headofstates order by region,headofstate;
   4550620.000000000000 | Australia and New Zealand | Elisabeth II
   4550620.000000000000 | Australia and New Zealand | Elisabeth II
   4550620.000000000000 | Australia and New Zealand | Elisabeth II
- 34288500.000000000000 | Eastern Asia              | Akihito
- 34288500.000000000000 | Eastern Asia              | Akihito
- 34288500.000000000000 | Eastern Asia              | Chen Shui-bian
- 34288500.000000000000 | Eastern Asia              | Chen Shui-bian
- 34288500.000000000000 | Eastern Asia              | Jiang Zemin
- 34288500.000000000000 | Eastern Asia              | Jiang Zemin
+ 39789800.000000000000 | Eastern Asia              | Akihito
+ 39789800.000000000000 | Eastern Asia              | Akihito
+ 39789800.000000000000 | Eastern Asia              | Chen Shui-bian
+ 39789800.000000000000 | Eastern Asia              | Chen Shui-bian
+ 39789800.000000000000 | Eastern Asia              | Jiang Zemin
+ 39789800.000000000000 | Eastern Asia              | Jiang Zemin
 (16 rows)
 
                                QUERY PLAN                                
