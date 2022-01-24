@@ -16,7 +16,7 @@ select * from polar_global_function('getrngfunc2');
 
 drop table t1;
 create table t1 (c1  int, c2 varchar(20));
-insert into t1 values(1,'BeiJing'),(2,'NewYork'),(3,'Hong kong'),(4,'ShaingHai');
+insert into t1 values(1,'BeiJing'),(2,'NewYork'),(3,'ShaingHai');
 
 create or replace function getTable1() returns setof t1 as 
 $$
