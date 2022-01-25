@@ -1001,7 +1001,6 @@ COPY city (id, name, countrycode, district, population) FROM stdin;
 934	San Pedro Sula	HND	Cortes	383900
 935	La Ceiba	HND	Atlantida	89200
 936	Kowloon and New Kowloon	HKG	Kowloon and New Kowl	1987996
-937	Victoria	HKG	Hongkong	1312637
 938	Longyearbyen	SJM	Lansimaa	1438
 939	Jakarta	IDN	Jakarta Raya	9604900
 940	Surabaya	IDN	East Java	2663820
@@ -4220,7 +4219,6 @@ GNB	Guinea-Bissau	Africa	Western Africa	36125	1974	1213000	49	293.00	272.00	Guin
 GUY	Guyana	South America	South America	214969	1966	861000	64	722.00	743.00	Guyana	Republic	Bharrat Jagdeo	928	GY
 HTI	Haiti	North America	Caribbean	27750	1804	8222000	49.200001	3459.00	3107.00	Haiti/Dayti	Republic	Jean-Bertrand Aristide	929	HT
 HND	Honduras	North America	Central America	112088	1838	6485000	69.900002	5333.00	4697.00	Honduras	Republic	Carlos Roberto Flores Facusse	933	HN
-HKG	Hong Kong	Asia	Eastern Asia	1075		6782000	79.5	166448.00	173610.00	Xianggang/Hong Kong	Special Administrative Region of China	Jiang Zemin	937	HK
 SJM	Svalbard and Jan Mayen	Europe	Nordic Countries	62422		3200		0.00		Svalbard og Jan Mayen	Dependent Territory of Norway	Harald V	938	SJ
 IDN	Indonesia	Asia	Southeast Asia	1904569	1945	212107000	68	84982.00	215002.00	Indonesia	Republic	Abdurrahman Wahid	939	ID
 IND	India	Asia	Southern and Central Asia	3287263	1947	1013662000	62.5	447114.00	430572.00	Bharat/India	Federal Republic	Kocheril Raman Narayanan	1109	IN
@@ -4350,7 +4348,6 @@ SWZ	Swaziland	Africa	Southern Africa	17364	1968	1008000	40.400002	1206.00	1312.0
 CHE	Switzerland	Europe	Western Europe	41284	1499	7160400	79.599998	264478.00	256092.00	Schweiz/Suisse/Svizzera/Svizra	Federation	Adolf Ogi	3248	CH
 SYR	Syria	Asia	Middle East	185180	1941	16125000	68.5	65984.00	64926.00	Suriya	Republic	Bashar al-Assad	3250	SY
 TJK	Tajikistan	Asia	Southern and Central Asia	143100	1991	6188000	64.099998	1990.00	1056.00	Tocikiston	Republic	Emomali Rahmonov	3261	TJ
-TWN	Taiwan	Asia	Eastern Asia	36188	1945	22256000	76.400002	256254.00	263451.00	Teai-wan	Republic	Chen Shui-bian	3263	TW
 TZA	Tanzania	Africa	Eastern Africa	883749	1961	33517000	52.299999	8005.00	7388.00	Tanzania	Republic	Benjamin William Mkapa	3306	TZ
 DNK	Denmark	Europe	Nordic Countries	43094	800	5330000	76.5	174099.00	169264.00	Danmark	Constitutional Monarchy	Margrethe II	3315	DK
 THA	Thailand	Asia	Southeast Asia	513115	1350	61399000	68.599998	116416.00	153907.00	Prathet Thai	Constitutional Monarchy	Bhumibol Adulyadej	3320	TH
