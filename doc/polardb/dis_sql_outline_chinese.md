@@ -72,13 +72,13 @@
 
 支持通过设置配置文件，然后通过工具pgxc_ctl 实现快速部署集群。
 
-pgxc_ctl -c polarx.conf init all //初始化并启动集群
+    pgxc_ctl -c polarx.conf init all //初始化并启动集群
 
-pgxc_ctl -c polarx.conf clean all // 关停并清理集群
+    pgxc_ctl -c polarx.conf clean all // 关停并清理集群
 
-pgxc_ctl -c polarx.conf start all // 启动集群
+    pgxc_ctl -c polarx.conf start all // 启动集群
 
-pgxc_ctl -c polarx.conf stop all //关停集群
+    pgxc_ctl -c polarx.conf stop all //关停集群
 
 #### 手动部署集群
 
