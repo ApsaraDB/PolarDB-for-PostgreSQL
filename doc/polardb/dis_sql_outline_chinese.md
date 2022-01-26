@@ -119,9 +119,9 @@ DN2:
 
 ##### 修改 pg_hba.conf
 
-host    all             all             127.0.0.1/32            trust
+    host    all             all             127.0.0.1/32            trust
 
-host    all             all             ::1/128                 trust
+    host    all             all             ::1/128                 trust
 
 
 ##### 创建集群节点信息
@@ -168,37 +168,37 @@ DN2 节点：
 
 #### 常用命令
 
-select * from pg_foreign_server; // 查看节点信息。
+    select * from pg_foreign_server; // 查看节点信息。
 
-select * from pg_foreign_table; // 查看分布表信息。
+    select * from pg_foreign_table; // 查看分布表信息。
 
-create table polarx_test(id int , name text);
+    create table polarx_test(id int , name text);
 
-支持原生建表方式建立分布式表，默认从第一个列尝试建立hash 分布表，如果所有列都不可以建立，则最后建立roundrobin 分布表。
+    支持原生建表方式建立分布式表，默认从第一个列尝试建立hash 分布表，如果所有列都不可以建立，则最后建立roundrobin 分布表。
 
-create table polarx_test(id int , name text) distribute by hash(id);
+    create table polarx_test(id int , name text) distribute by hash(id);
 
-显式指定分布方式和分布键建立hash分布表，数据根据id计算hash值，然后根据hash值对节点数取余进行分布。
+    显式指定分布方式和分布键建立hash分布表，数据根据id计算hash值，然后根据hash值对节点数取余进行分布。
 
-create table polarx_test(id int, name text) distribute by modulo(id);
+    create table polarx_test(id int, name text) distribute by modulo(id);
 
-显式建立modulo分布表, 根据id对节点数取余进行分布。
+    显式建立modulo分布表, 根据id对节点数取余进行分布。
 
-create table polarx_test(id int, name text) distribute by roundrobin;
+    create table polarx_test(id int, name text) distribute by roundrobin;
 
-显式建立roundrobin 分布表，数据按节点顺序依次分布。
+    显式建立roundrobin 分布表，数据按节点顺序依次分布。
 
-create table polarx_test(id int, name text) distribute by replication;
+    create table polarx_test(id int, name text) distribute by replication;
 
-显式建立复制表，复制表将在每个DN上有完整的数据。
+    显式建立复制表，复制表将在每个DN上有完整的数据。
 
-execute direct on (datanode1m) "select * from polarx_text;";
+    execute direct on (datanode1m) "select * from polarx_text;";
 
-通过Coordinator节点 直接在对应Datanode上执行语句。
+    通过Coordinator节点 直接在对应Datanode上执行语句。
 
-drop table polarx_test;
+    drop table polarx_test;
 
-删除一张表。
+    删除一张表。
 
 ___
 
