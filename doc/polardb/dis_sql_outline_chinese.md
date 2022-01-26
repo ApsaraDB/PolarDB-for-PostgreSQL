@@ -127,6 +127,7 @@ host    all             all             ::1/128                 trust
 ##### 创建集群节点信息
 
 CN 节点：
+
     CREATE EXTENSION polarx;
 
     CREATE SERVER coord1m TYPE 'C' FOREIGN DATA WRAPPER polarx OPTIONS (host 'localhost', port '20015', nodeis_primary 'false', nodeis_preferred 'false', node_cluster_name 'cluster_server', nodeis_local 'true', node_id '1');
