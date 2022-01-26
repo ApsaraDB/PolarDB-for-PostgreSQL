@@ -84,54 +84,88 @@ pgxc_ctl -c polarx.conf stop all //关停集群
 
 这里以一个CN节点和两个DN节点的集群举例：
 
-#####修改postgresql.conf
+##### 修改postgresql.conf
 
 CN/DN:
+
     shared_preload_libraries = 'polarx'
+
     listen_addresses = '*'
+
     max_pool_size = 100
+
     max_connections = 300
+
     max_prepared_transactions = 10000
+
 CN:
+
     port = 20015
+
     pooler_port = 21015
+
 DN1:
+
     port = 20018
+
     pooler_port = 21018   
+
 DN2:
+
     port = 20019
+
     pooler_port = 21019
 
-#####修改 pg_hba.conf
+
+##### 修改 pg_hba.conf
 
 host    all             all             127.0.0.1/32            trust
+
 host    all             all             ::1/128                 trust
 
-#####创建集群节点信息
+
+##### 创建集群节点信息
 
 CN 节点：
     CREATE EXTENSION polarx;
+
     CREATE SERVER coord1m TYPE 'C' FOREIGN DATA WRAPPER polarx OPTIONS (host 'localhost', port '20015', nodeis_primary 'false', nodeis_preferred 'false', node_cluster_name 'cluster_server', nodeis_local 'true', node_id '1');
+
     CREATE SERVER datanode1m TYPE 'D' FOREIGN DATA WRAPPER polarx OPTIONS (host 'localhost', port '20018', nodeis_primary 'false', nodeis_preferred 'false', node_cluster_name 'cluster_server', nodeis_local 'false', node_id '2');
+
     CREATE SERVER datanode2m TYPE 'D' FOREIGN DATA WRAPPER polarx OPTIONS (host 'localhost', port '20019', nodeis_primary 'false', nodeis_preferred 'false', node_cluster_name 'cluster_server', nodeis_local 'false', node_id '3');
+
     CREATE SERVER cluster_server FOREIGN DATA WRAPPER polarx;
+
 
 DN1 节点:
+
     CREATE EXTENSION polarx;
+
     CREATE SERVER coord1m TYPE 'C' FOREIGN DATA WRAPPER polarx OPTIONS (host 'localhost', port '20015', nodeis_primary 'false', nodeis_preferred 'false', node_cluster_name 'cluster_server', nodeis_local 'false', node_id '1');
+
     CREATE SERVER datanode1m TYPE 'D' FOREIGN DATA WRAPPER polarx OPTIONS (host 'localhost', port '20018', nodeis_primary 'false', nodeis_preferred 'false', node_cluster_name 'cluster_server', nodeis_local 'true', node_id '2');
+
     CREATE SERVER datanode2m TYPE 'D' FOREIGN DATA WRAPPER polarx OPTIONS (host 'localhost', port '20019', nodeis_primary 'false', nodeis_preferred 'false', node_cluster_name 'cluster_server', nodeis_local 'false', node_id '3');
+
     CREATE SERVER cluster_server FOREIGN DATA WRAPPER polarx;
+
 
 DN2 节点：
+
     CREATE EXTENSION polarx;
+
     CREATE SERVER coord1m TYPE 'C' FOREIGN DATA WRAPPER polarx OPTIONS (host 'localhost', port '20015', nodeis_primary 'false', nodeis_preferred 'false', node_cluster_name 'cluster_server', nodeis_local 'false', node_id '1');
+
     CREATE SERVER datanode1m TYPE 'D' FOREIGN DATA WRAPPER polarx OPTIONS (host 'localhost', port '20018', nodeis_primary 'false', nodeis_preferred 'false', node_cluster_name 'cluster_server', nodeis_local 'false', node_id '2');
+
     CREATE SERVER datanode2m TYPE 'D' FOREIGN DATA WRAPPER polarx OPTIONS (host 'localhost', port '20019', nodeis_primary 'false', nodeis_preferred 'false', node_cluster_name 'cluster_server', nodeis_local 'true', node_id '3');
+
     CREATE SERVER cluster_server FOREIGN DATA WRAPPER polarx;
 
 
-####常用命令
+
+#### 常用命令
 
 select * from pg_foreign_server; // 查看节点信息。
 
