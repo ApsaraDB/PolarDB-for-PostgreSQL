@@ -57,11 +57,11 @@ typedef struct
 	int			m_cnt;
 	pthread_mutex_t m_mutex;
 	pthread_cond_t m_cond;
-}			ThreadSema;
+}			ThreadSemaRec;
 
-extern void ThreadSemaInit(ThreadSema * sema, int32 init);
-extern void ThreadSemaDown(ThreadSema * sema);
-extern void ThreadSemaUp(ThreadSema * sema);
+extern void ThreadSemaRecInitRec(ThreadSemaRec * sema, int32 init);
+extern void ThreadSemaRecDownRec(ThreadSemaRec * sema);
+extern void ThreadSemaRecUpRec(ThreadSemaRec * sema);
 
 
 typedef struct
@@ -71,18 +71,18 @@ typedef struct
 	slock_t		m_lock;
 	volatile uint32 m_Head;
 	volatile uint32 m_Tail;
-}			PGPipe;
-extern PGPipe * CreatePipe(uint32 size);
-extern void DestoryPipe(PGPipe * pPipe);
-extern void *PipeGet(PGPipe * pPipe);
-extern int	PipePut(PGPipe * pPipe, void *p);
-extern bool PipeIsFull(PGPipe * pPipe);
-extern bool IsEmpty(PGPipe * pPipe);
-extern int	PipeLength(PGPipe * pPipe);
+}			PGPipeRec;
+extern PGPipeRec * CreatePipeRec(uint32 size);
+extern void DestoryPipeRec(PGPipeRec * pPipe);
+extern void *PipeGetRec(PGPipeRec * pPipe);
+extern int	PipePutRec(PGPipeRec * pPipe, void *p);
+extern bool PipeIsFullRec(PGPipeRec * pPipe);
+extern bool IsEmptyRec(PGPipeRec * pPipe);
+extern int	PipeLengthRec(PGPipeRec * pPipe);
 
-extern int32 CreateThread(void *(*f) (void *), void *arg, int32 mode);
-extern void ThreadMutexInit(pthread_mutex_t *mutex);
-extern void ThreadMutexLock(pthread_mutex_t *mutex);
-extern void ThreadMutexUnlock(pthread_mutex_t *mutex);
+extern int32 CreateThreadRec(void *(*f) (void *), void *arg, int32 mode);
+extern void ThreadMutexInitRec(pthread_mutex_t *mutex);
+extern void ThreadMutexLockRec(pthread_mutex_t *mutex);
+extern void ThreadMutexUnlockRec(pthread_mutex_t *mutex);
 
 #endif

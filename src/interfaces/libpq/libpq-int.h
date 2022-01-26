@@ -208,6 +208,9 @@ struct pg_result
 	PGresult_data *curBlock;	/* most recently allocated block */
 	int			curOffset;		/* start offset of free space in block */
 	int			spaceLeft;		/* number of free bytes remaining in block */
+	#ifdef POLARDB_X
+    uint32        report_commandid;
+	#endif
 };
 
 /* PGAsyncStatusType defines the state of the query-execution state machine */
@@ -588,6 +591,11 @@ extern void pqSaveParameterStatus(PGconn *conn, const char *name,
 					  const char *value);
 extern int	pqRowProcessor(PGconn *conn, const char **errmsgp);
 extern void pqHandleSendFailure(PGconn *conn);
+#ifdef POLARDB_X
+/* Timed get result. */
+extern PGresult *PQgetResultTimed(PGconn *conn, time_t finish_time);
+extern uint32   PQresultCommandId(const PGresult *res);
+#endif
 
 /* === in fe-protocol2.c === */
 

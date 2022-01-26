@@ -336,16 +336,19 @@
  * All code on parallel recovery logic should be wrapped with
  * the following MACRO.
  */
-
 #define ENABLE_PARALLEL_RECOVERY
+#define POLARDB_X
 /*
  * All code on remote fetching recovery is wrapped with
  * the ENABLE_REMOTE_RECOVERY MACRO.
  */
 #define ENABLE_REMOTE_RECOVERY
-
+/* POLARX_TODO is used to comment code temporary unused or needed to be think over */
+#define POLARX_TODO
 /*
  * All code on remote fetching recovery is wrapped with
  * the ENABLE_ONLINE_MIGRATION MACRO.
  */
 #define ENABLE_ONLINE_MIGRATION
+
+#define POLARDBX_TWO_PHASE_TESTS

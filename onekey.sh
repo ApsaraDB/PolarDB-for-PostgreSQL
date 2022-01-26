@@ -3,6 +3,10 @@
 echo "This script uses default configuration to compile PolarDB, to deploy binary, "
 echo "and to start a cluster of three nodes including a leader, 2 follower. "
 echo "   all:   one key for full environment build, include build source code, deploy"
+echo "          a 2c2d(2 coordinator nodes & 2 datanodes) cluster."
+echo "   dispaxos:  one key for full environment build, include build source code, deploy"
+echo "          and setup 2c2d & each datanode having 3-node paxos environment."
+echo "   standalone:   one key for full environment build, include build source code, deploy"
 echo "          and setup 3 node paxos environment by default configure."
 echo "   build:   configure the build with performance optimzation"
 echo "             with assertion enabled, and then build"
@@ -36,6 +40,26 @@ CMD=()
 PGXC_CTL=$PGBIN/pgxc_ctl
 
 if [[ "$BLD_OPT" == "all" ]]; then
+    sh ./build.sh
+    mkdir -p $HOME/polardb
+    touch $HOME/polardb/polardb_paxos.conf
+    $PGXC_CTL -c $HOME/polardb/polardb_paxos.conf prepare distributed
+    $PGXC_CTL -c $HOME/polardb/polardb_paxos.conf deploy all
+    $PGXC_CTL -c $HOME/polardb/polardb_paxos.conf clean all
+    $PGXC_CTL -c $HOME/polardb/polardb_paxos.conf init all
+#    $PGXC_CTL -c $HOME/polardb/polardb_paxos.conf deploy cm
+    $PGXC_CTL -c $HOME/polardb/polardb_paxos.conf monitor all
+elif [[ "$BLD_OPT" == "dispaxos" ]]; then
+    sh ./build.sh
+    mkdir -p $HOME/polardb
+    touch $HOME/polardb/polardb_paxos.conf
+    $PGXC_CTL -c $HOME/polardb/polardb_paxos.conf prepare dispaxos
+    $PGXC_CTL -c $HOME/polardb/polardb_paxos.conf deploy all
+    $PGXC_CTL -c $HOME/polardb/polardb_paxos.conf clean all
+    $PGXC_CTL -c $HOME/polardb/polardb_paxos.conf init all
+#    $PGXC_CTL -c $HOME/polardb/polardb_paxos.conf deploy cm
+    $PGXC_CTL -c $HOME/polardb/polardb_paxos.conf monitor all
+elif [[ "$BLD_OPT" == "standalone" ]]; then
     sh ./build.sh
     mkdir -p $HOME/polardb
     touch $HOME/polardb/polardb_paxos.conf

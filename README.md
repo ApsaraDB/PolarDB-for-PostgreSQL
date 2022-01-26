@@ -48,7 +48,7 @@ psql -d postgres -U postgres -h localhost -p 10001
 docker exec -it polardb /bin/bash
 ```
 
-### Previous Preparation
+### Prerequisites
 
 * download source code from https://github.com/alibaba/PolarDB-for-PostgreSQL
 
@@ -75,16 +75,30 @@ source ~/.bashrc
 ```
 
 ### Fast Deployment(One-Key for all)
-This script uses default configuration to compile PolarDB, to deploy binary, and to start a cluster of three nodes, including a leader and two followers.
-before call this script, please check "environment variables, dependent packages, authorized key" at "Previous Preparation" first.
+This script uses default configuration to compile PolarDB, to deploy binary, and to start a cluster
 
-* run onekey.sh script
+* including three nodes: a leader and two followers.
+
+```bash
+./onekey.sh standalone
+```
+
+* including four nodes: two coordinator nodes and two data nodes (2c2d without replicas)
 
 ```bash
 ./onekey.sh all
 ```
 
-* check running processes (1 leader, 2 follower), their replica roles and status
+* including eight nodes: two coordinator nodes and two data nodes; each data node has two replicas
+
+```bash
+./onekey.sh dispaxos
+```
+
+Before calling this script, set up environment variables, dependent packages, and authorized key correctly. 
+
+
+* At standalone mode, check running processes (1 leader, 2 follower), their replica roles and status
 
 ```bash
 ps -ef|grep polardb
@@ -92,6 +106,11 @@ psql -p 10001 -d postgres -c "select * from pg_stat_replication;"
 psql -p 10001 -d postgres -c "select * from polar_dma_cluster_status;"
 ```
 
+* For other modes, we can use the following command to check status.
+
+```bash
+pgxc_ctl monitor -c $HOME/polardb/polardb_paxos.conf monitor all
+```
 
 ### Deployment from Source Code
 
@@ -105,10 +124,22 @@ You can just call build script to build. If you get errors, please reference [de
 ./build.sh
 ```
 
-* generate default configure file
+* generate default configure file (for standalone or single-primary-database mode)
 
 ```bash
 pgxc_ctl -c $HOME/polardb/polardb_paxos.conf prepare standalone
+```
+
+for distributed mode (2c2d)
+
+```bash
+pgxc_ctl -c $HOME/polardb/polardb_paxos.conf prepare distributed
+```
+
+for distributed mode with replicas (2c2d with replicas)
+
+```bash
+pgxc_ctl -c $HOME/polardb/polardb_paxos.conf prepare dispaxos
 ```
 
 * deploy binary file
@@ -125,7 +156,7 @@ pgxc_ctl -c $HOME/polardb/polardb_paxos.conf init all
 pgxc_ctl -c $HOME/polardb/polardb_paxos.conf monitor all
 ```
 
-* install dependent packages for cluster management
+* install dependent packages for cluster management (only works for standalone mode)
 
 ```bash
 pgxc_ctl -c $HOME/polardb/polardb_paxos.conf deploy cm
@@ -143,7 +174,7 @@ pgxc_ctl -c $HOME/polardb/polardb_paxos.conf start all
 pgxc_ctl -c $HOME/polardb/polardb_paxos.conf stop all
 ```
 
-* failover datanode
+* failover datanode (only works for standalone mode)
 
 datanode_1 is node name configured in polardb_paxos.conf.
 
@@ -151,7 +182,7 @@ datanode_1 is node name configured in polardb_paxos.conf.
 pgxc_ctl -c $HOME/polardb/polardb_paxos.conf failover datanode datanode_1
 ```
 
-* cluster health check
+* cluster health check (only works for standalone mode)
 
  check cluster status and start failed node.
 
@@ -167,7 +198,7 @@ pgxc_ctl -c $HOME/polardb/polardb_paxos.conf log var datanodeNames
 pgxc_ctl -c $HOME/polardb/polardb_paxos.conf show configuration all
 ```
 
-* check and test
+* check and test (change port based on polardb_paxos.conf)
 
 ```bash
 ps -ef | grep postgres
@@ -195,13 +226,17 @@ See [architecture design](/doc/polardb/arch.md) for more information
 * [Architecture design](/doc/polardb/arch.md)
 * [Roadmap](/doc/polardb/roadmap.md)
 * [Deployment](/doc/polardb/deployment.md)
-* Features and their design in PolarDB for PostgreSQL Version 1.0
+* Features and their design in PolarDB for PostgreSQL Distributed Version 1.0
   * [Paxos replication](/doc/polardb/ha_paxos.md)
   * [Cluster management](/doc/polardb/cluster_manager.md)
   * [Timestamp based MVCC](/doc/polardb/cts.md)
   * [Parallel Redo](/doc/polardb/parallel_redo.md)
   * [Remote Recovery](/doc/polardb/no_fpw.md)
-
+* Features and their design in PolarDB for PostgreSQL Distributed Version 2.0
+  * [HLC based distributed transaction management](/doc/polardb/hlc_2pc_chinese.md)
+  * [CTS and MVCC](/doc/polardb/cts_mvcc_chinese.md)
+  * [Two-phase transaction fault tolerance](/doc/polardb/2pc_cleanup_chinese.md)
+  * [FDW based Distribured SQL computation](/doc/polardb/dis_sql_outline_chinese.md)
 
 ## Contributing
 
@@ -209,7 +244,7 @@ PolarDB is built on open-source projects and extends open-source PostgreSQL. You
 
 # Software License
 
-PolarDB code is released under the Apache License (Version 2.0), developed based on the PostgreSQL which is released under the PostgreSQL License. This product contains various third-party components under other open source licenses. 
+PolarDB code is released under the Apache License (Version 2.0), developed based on the PostgreSQL which is released under the PostgreSQL License. This product contains various third-party components under other open source licenses.
 See the [LICENSE](./LICENSE) and [NOTICE](./NOTICE) file for more information.
 
 ## Acknowledgements

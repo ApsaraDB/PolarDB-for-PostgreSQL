@@ -39,6 +39,7 @@ SUBDIRS = \
 		pgcrypto	\
 		pgrowlocks	\
 		pg_visibility	\
+		polarx	\
 		postgres_fdw	\
 		seg		\
 		spi		\

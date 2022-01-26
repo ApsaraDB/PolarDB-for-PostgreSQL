@@ -4,7 +4,6 @@
  *		Two-phase commit support functions.
  *
  * Support CTS-based transactions.
- * Author: Junbin Kang
  *
  * Portions Copyright (c) 2020, Alibaba Group Holding Limited
  * Portions Copyright (C) 2019 THL A29 Limited, a Tencent company.  All rights reserved.
@@ -113,8 +112,13 @@
 #include "utils/builtins.h"
 #include "utils/memutils.h"
 #include "utils/timestamp.h"
+#ifdef POLARDB_X
+#include "catalog/pg_control.h"
+#endif
+
 #ifdef ENABLE_DISTRIBUTED_TRANSACTION
 #include "distributed_txn/txn_timestamp.h"
+#include "pgxc/transam/txn_coordinator.h"
 #endif
 
 
@@ -125,6 +129,11 @@
 
 /* GUC variable, can't be changed after startup */
 int			max_prepared_xacts = 0;
+
+#ifdef POLARDB_X
+/* HashTable key: gid  value: local xact id, acquire GidHashTableLock before access it. */
+static HTAB *g_GidHashTab = NULL;
+#endif
 
 /*
  * This struct describes one global transaction that is in prepared state
@@ -180,6 +189,11 @@ typedef struct GlobalTransactionData
 	bool		ondisk;			/* true if prepare state file is on disk */
 	bool		inredo;			/* true if entry was added via xlog_redo */
 	char		gid[GIDSIZE];	/* The GID assigned to the prepared xact */
+#ifdef POLARDB_X
+	bool		need_reserve;	/* true if global commit not finished, still need to checkpoint into 2pc file. */
+	TimestampTz commit_timestamp;		/* time of commit */
+	char		participate_nodes[TWOPHASE_PARTICIPATE_NODE_SIZE];
+#endif
 }			GlobalTransactionData;
 
 /*
@@ -228,6 +242,9 @@ static void RecordTransactionAbortPrepared(TransactionId xid,
 static void ProcessRecords(char *bufptr, TransactionId xid,
 			   const TwoPhaseCallback callbacks[]);
 static void RemoveGXact(GlobalTransaction gxact);
+#ifdef POLARDB_X
+static void MarkGXactDone(GlobalTransaction gxact);
+#endif
 
 static void XlogReadTwoPhaseData(XLogRecPtr lsn, char **buf, int *len);
 static char *ProcessTwoPhaseBuffer(TransactionId xid,
@@ -238,7 +255,17 @@ static void MarkAsPreparingGuts(GlobalTransaction gxact, TransactionId xid,
 					Oid databaseid);
 static void RemoveTwoPhaseFile(TransactionId xid, bool giveWarning);
 static void RecreateTwoPhaseFile(TransactionId xid, void *content, int len);
+#ifdef POLARDB_X
+PG_FUNCTION_INFO_V1(polardbx_finish_global_transation);
+PG_FUNCTION_INFO_V1(polardbx_get_2pc_commit_timestamp);
+PG_FUNCTION_INFO_V1(polardbx_parse_2pc_file);
+PG_FUNCTION_INFO_V1(polardbx_get_2pc_filelist);
 
+GlobalTimestamp GetTwoPhaseXactCommitTimestamp(char* gid);
+static void print_twophase_state_content(void);
+static void print_single_twophase_state_gxact(GlobalTransaction gact);
+static int get_twophase_filelist(StringInfo str);
+#endif
 /*
  * Initialization of shared memory
  */
@@ -351,7 +378,15 @@ AtAbort_Twophase(void)
 	 */
 	LWLockAcquire(TwoPhaseStateLock, LW_EXCLUSIVE);
 	if (!MyLockedGxact->valid)
+	{
 		RemoveGXact(MyLockedGxact);
+#ifdef POLARDB_X
+		if (enable_twophase_recover_debug_print)
+		{
+			elog(DEBUG_2PC, "RemoveGXact for MyLockedGxact->gid:%s", MyLockedGxact->gid);
+		}
+#endif
+	}
 	else
 		MyLockedGxact->locking_backend = InvalidBackendId;
 	LWLockRelease(TwoPhaseStateLock);
@@ -433,7 +468,9 @@ MarkAsPreparing(TransactionId xid, const char *gid,
 	MarkAsPreparingGuts(gxact, xid, gid, prepared_at, owner, databaseid);
 
 	gxact->ondisk = false;
-
+#ifdef POLARDB_X
+	gxact->need_reserve = false;
+#endif
 	/* And insert it into the active array */
 	Assert(TwoPhaseState->numPrepXacts < max_prepared_xacts);
 	TwoPhaseState->prepXacts[TwoPhaseState->numPrepXacts++] = gxact;
@@ -501,6 +538,17 @@ MarkAsPreparingGuts(GlobalTransaction gxact, TransactionId xid, const char *gid,
 	gxact->valid = false;
 	gxact->inredo = false;
 	strcpy(gxact->gid, gid);
+#ifdef POLARDB_X
+	if (!IS_PGXC_SINGLE_NODE)
+	{
+		gxact->need_reserve = false;
+		gxact->commit_timestamp = InvalidGlobalTimestamp;
+		if (g_twophase_state.participants) // in recovery, g_twophase_state.participants is null.
+		{
+			strcpy(gxact->participate_nodes, g_twophase_state.participants);
+		}
+	}
+#endif
 
 	/*
 	 * Remember that we have this GlobalTransaction entry locked for us. If we
@@ -619,7 +667,12 @@ RemoveGXact(GlobalTransaction gxact)
 	int			i;
 
 	Assert(LWLockHeldByMeInMode(TwoPhaseStateLock, LW_EXCLUSIVE));
-
+#ifdef POLARDB_X
+	if (enable_twophase_recover_debug_print)
+	{
+		elog(DEBUG_2PC, "RemoveGXact: gid=%s, TwoPhaseState->numPrepXacts=%d", gxact->gid, TwoPhaseState->numPrepXacts);
+	}
+#endif
 	for (i = 0; i < TwoPhaseState->numPrepXacts; i++)
 	{
 		if (gxact == TwoPhaseState->prepXacts[i])
@@ -638,6 +691,32 @@ RemoveGXact(GlobalTransaction gxact)
 
 	elog(ERROR, "failed to find %p in GlobalTransaction array", gxact);
 }
+
+#ifdef POLARDB_X
+/*
+ * MarkGXactDone
+ *		set gxact->need_reserve to true.
+ * When local node transaction finish commit prepared, but global transaction is not finished,
+ * we keep gxact in TwoPhaseState->prepXacts until receive another command which show global transaction is compeleted.
+ *
+ * NB: caller should have already removed it from ProcArray
+ */
+static void
+MarkGXactDone(GlobalTransaction gxact)
+{
+	Assert(LWLockHeldByMeInMode(TwoPhaseStateLock, LW_EXCLUSIVE));
+
+	gxact->need_reserve = true;
+	
+	if (enable_twophase_recover_debug_print)
+	{
+		elog(DEBUG_2PC, "MarkGXactDone mark gxact->need_reserve to true.");
+		print_single_twophase_state_gxact(gxact);
+	}
+	
+	return;
+}
+#endif
 
 /*
  * Returns an array of all prepared transactions for the user-level
@@ -717,7 +796,11 @@ pg_prepared_xact(PG_FUNCTION_ARGS)
 
 		/* build tupdesc for result tuples */
 		/* this had better match pg_prepared_xacts view in system_views.sql */
+#ifdef POLARDB_X
+		tupdesc = CreateTemplateTupleDesc(7, false);
+#else
 		tupdesc = CreateTemplateTupleDesc(5, false);
+#endif
 		TupleDescInitEntry(tupdesc, (AttrNumber) 1, "transaction",
 						   XIDOID, -1, 0);
 		TupleDescInitEntry(tupdesc, (AttrNumber) 2, "gid",
@@ -728,6 +811,12 @@ pg_prepared_xact(PG_FUNCTION_ARGS)
 						   OIDOID, -1, 0);
 		TupleDescInitEntry(tupdesc, (AttrNumber) 5, "dbid",
 						   OIDOID, -1, 0);
+#ifdef POLARDB_X
+		TupleDescInitEntry(tupdesc, (AttrNumber) 6, "commit_timestamp",
+						   TIMESTAMPTZOID, -1, 0);
+		TupleDescInitEntry(tupdesc, (AttrNumber) 7, "participate_nodes",
+						   TEXTOID, -1, 0);
+#endif
 
 		funcctx->tuple_desc = BlessTupleDesc(tupdesc);
 
@@ -752,8 +841,13 @@ pg_prepared_xact(PG_FUNCTION_ARGS)
 		GlobalTransaction gxact = &status->array[status->currIdx++];
 		PGPROC	   *proc = &ProcGlobal->allProcs[gxact->pgprocno];
 		PGXACT	   *pgxact = &ProcGlobal->allPgXact[gxact->pgprocno];
+#ifdef POLARDB_X
+		Datum		values[7];
+		bool		nulls[7];
+#else
 		Datum		values[5];
 		bool		nulls[5];
+#endif
 		HeapTuple	tuple;
 		Datum		result;
 
@@ -771,6 +865,10 @@ pg_prepared_xact(PG_FUNCTION_ARGS)
 		values[2] = TimestampTzGetDatum(gxact->prepared_at);
 		values[3] = ObjectIdGetDatum(gxact->owner);
 		values[4] = ObjectIdGetDatum(proc->databaseId);
+#ifdef POLARDB_X
+		values[5] = TimestampTzGetDatum(gxact->commit_timestamp);
+		values[6] = CStringGetTextDatum(gxact->participate_nodes);
+#endif
 
 		tuple = heap_form_tuple(funcctx->tuple_desc, values, nulls);
 		result = HeapTupleGetDatum(tuple);
@@ -869,10 +967,11 @@ TwoPhaseGetDummyProc(TransactionId xid)
  *	3. RelFileNode[] (files to be deleted at commit)
  *	4. RelFileNode[] (files to be deleted at abort)
  *	5. SharedInvalidationMessage[] (inval messages to be sent at commit)
- *	6. TwoPhaseRecordOnDisk
- *	7. ...
- *	8. TwoPhaseRecordOnDisk (end sentinel, rmid == TWOPHASE_RM_END_ID)
- *	9. checksum (CRC-32C)
+ *	6. participate node names  -- added by polarx 2pc recover.
+ *	7. TwoPhaseRecordOnDisk
+ *	8. ...
+ *	9. TwoPhaseRecordOnDisk (end sentinel, rmid == TWOPHASE_RM_END_ID)
+ *	10. checksum (CRC-32C)
  *
  * Each segment except the final checksum is MAXALIGN'd.
  */
@@ -898,6 +997,10 @@ typedef struct TwoPhaseFileHeader
 	uint16		gidlen;			/* length of the GID - GID follows the header */
 	XLogRecPtr	origin_lsn;		/* lsn of this record at origin node */
 	TimestampTz origin_timestamp;	/* time of prepare at origin node */
+#ifdef POLARDB_X
+	TimestampTz commit_timestamp;	/* time of commit */
+	int32 		nparticipatenodes_len; /* len of participate nodes string info */
+#endif
 } TwoPhaseFileHeader;
 
 /*
@@ -1009,6 +1112,12 @@ StartPrepare(GlobalTransaction gxact)
 	hdr.ninvalmsgs = xactGetCommittedInvalidationMessages(&invalmsgs,
 														  &hdr.initfileinval);
 	hdr.gidlen = strlen(gxact->gid) + 1;	/* Include '\0' */
+#ifdef POLARDB_X
+	hdr.commit_timestamp = InvalidGlobalTimestamp;
+	hdr.nparticipatenodes_len = strlen(g_twophase_state.participants) + 1;
+	if (enable_twophase_recover_debug_print)
+		elog(DEBUG_2PC, "Get nparticipatenodes_len:%d, participants:%s", hdr.nparticipatenodes_len, g_twophase_state.participants);
+#endif
 
 	save_state_data(&hdr, sizeof(TwoPhaseFileHeader));
 	save_state_data(gxact->gid, hdr.gidlen);
@@ -1037,6 +1146,14 @@ StartPrepare(GlobalTransaction gxact)
 						hdr.ninvalmsgs * sizeof(SharedInvalidationMessage));
 		pfree(invalmsgs);
 	}
+#ifdef POLARDB_X
+	if (hdr.nparticipatenodes_len > 1)
+	{
+		save_state_data(g_twophase_state.participants, hdr.nparticipatenodes_len);
+		if (enable_twophase_recover_debug_print)
+			elog(DEBUG_2PC, "gid:%s record participate nodes:%s in xlog.", gxact->gid, g_twophase_state.participants);
+	}
+#endif
 }
 
 /*
@@ -1137,6 +1254,14 @@ EndPrepare(GlobalTransaction gxact)
 	 * twice in ProcArray, which is OK.
 	 */
 	MarkAsPrepared(gxact, false);
+#ifdef POLARDB_X
+	if (!IS_PGXC_SINGLE_NODE)
+	{
+		AddToGidHashTab(gxact->gid, gxact->xid);
+		if (enable_twophase_recover_debug_print)
+			elog(DEBUG_2PC, "[gidhashtabtrace] EndPrepare. insert gid:%s xid:%d", gxact->gid, gxact->xid);
+	}
+#endif
 
 	/*
 	 * Now we can mark ourselves as out of the commit critical section: a
@@ -1175,7 +1300,7 @@ EndGlobalPrepare(GlobalTransaction gxact)
 	pg_atomic_write_u64(&pgxact->tmin, pg_atomic_read_u64(&MyPgXact->tmin));
 	if (!COMMITSEQNO_IS_NORMAL(pg_atomic_read_u64(&MyPgXact->tmin)))
 	{
-		elog(WARNING,
+		elog(ERROR,
 			 "prepare transaction %d does not have valid tmin " UINT64_FORMAT,
 			 MyPgXact->xid, pg_atomic_read_u64(&MyPgXact->tmin));
 	}
@@ -1452,6 +1577,9 @@ FinishPreparedTransaction(const char *gid, bool isCommit)
 	RelFileNode *delrels;
 	int			ndelrels;
 	SharedInvalidationMessage *invalmsgs;
+#ifdef POLARDB_X
+	char 		*participate_nodes;
+#endif
 
 	/*
 	 * Validate the GID, and lock the GXACT to ensure that two backends do not
@@ -1468,9 +1596,21 @@ FinishPreparedTransaction(const char *gid, bool isCommit)
 	 * to disk if for some reason they have lived for a long time.
 	 */
 	if (gxact->ondisk)
+	{
+#ifdef POLARDB_X
+		if (enable_twophase_recover_debug_print)
+			elog(DEBUG_2PC, "gxact gid:%s 2pc info is on disk.", gxact->gid);
+#endif
 		buf = ReadTwoPhaseFile(xid, true);
+	}
 	else
+	{
+#ifdef POLARDB_X
+		if (enable_twophase_recover_debug_print)
+			elog(DEBUG_2PC, "gxact gid:%s 2pc info is NOT on disk.", gxact->gid);
+#endif
 		XlogReadTwoPhaseData(gxact->prepare_start_lsn, &buf, NULL);
+	}
 
 
 	/*
@@ -1488,6 +1628,15 @@ FinishPreparedTransaction(const char *gid, bool isCommit)
 	bufptr += MAXALIGN(hdr->nabortrels * sizeof(RelFileNode));
 	invalmsgs = (SharedInvalidationMessage *) bufptr;
 	bufptr += MAXALIGN(hdr->ninvalmsgs * sizeof(SharedInvalidationMessage));
+#ifdef POLARDB_X
+	if (!IS_PGXC_SINGLE_NODE)
+	{
+		participate_nodes = bufptr;
+		if (enable_twophase_recover_debug_print)
+			elog(DEBUG_2PC, "get participate_nodes:%s for gid:%s", participate_nodes, gid);
+		bufptr += MAXALIGN(hdr->nparticipatenodes_len);
+	}
+#endif
 
 	/* Prevent cancel/die interrupt while cleaning up */
 	HOLD_INTERRUPTS();
@@ -1568,15 +1717,71 @@ FinishPreparedTransaction(const char *gid, bool isCommit)
 
 	/* Count the prepared xact as committed or aborted */
 	AtEOXact_PgStat(isCommit);
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+	AtEOXact_txn();
+	if (!IS_PGXC_SINGLE_NODE)
+	{
+		/* NB: if using 2pc recover developed by polardbx team, XactCallbackFinishPrepared will not be called. */
+		XactCallbackFinishPrepared(isCommit);
+	}
+#endif/*ENABLE_DISTRIBUTED_TRANSACTION*/
 
 	/*
 	 * And now we can clean up any files we may have left.
 	 */
 	if (gxact->ondisk)
+    {
+#ifdef POLARDB_X
+		if (!IS_PGXC_SINGLE_NODE)
+		{
+			if (isCommit)
+			{
+				if (enable_twophase_recover_debug_print)
+					elog(DEBUG_2PC, "skip RemoveTwoPhaseFile:%d in FinishPreparedTransaction, gid:%s", xid, gxact->gid);
+			}
+			else
+			{
+				if (enable_twophase_recover_debug_print)
+					elog(DEBUG_2PC, "RemoveTwoPhaseFile:%d in FinishPreparedTransaction, gid:%s, since it is rollback.", xid, gxact->gid);
+				RemoveTwoPhaseFile(xid, true);
+			}
+		}
+		else
+		{
+			RemoveTwoPhaseFile(xid, true);
+		}
+#else
 		RemoveTwoPhaseFile(xid, true);
+#endif
+    }
 
 	LWLockAcquire(TwoPhaseStateLock, LW_EXCLUSIVE);
+#ifdef POLARDB_X
+	if (!IS_PGXC_SINGLE_NODE)
+	{
+		if (isCommit)
+		{
+			if (enable_twophase_recover_debug_print)
+				elog(DEBUG_2PC, "MarkGXactDone in FinishPreparedTransaction, gid:%s, xid:%d", gxact->gid, xid);
+			MarkGXactDone(gxact);
+		}
+		else
+		{
+			if (enable_twophase_recover_debug_print)
+				elog(DEBUG_2PC, "Remove from gid hash tab in FinishPreparedTransaction, gid:%s, xid:%d, since it is rollback.", gxact->gid, xid);
+			RemoveFromGidHashTab(gxact->gid, xid);
+			if (enable_twophase_recover_debug_print)
+				elog(DEBUG_2PC, "RemoveGXact in FinishPreparedTransaction, gid:%s, xid:%d, since it is rollback.", gxact->gid, xid);
+			RemoveGXact(gxact);
+		}
+	}
+	else
+	{
+		RemoveGXact(gxact);
+	}
+#else
 	RemoveGXact(gxact);
+#endif
 	LWLockRelease(TwoPhaseStateLock);
 	MyLockedGxact = NULL;
 
@@ -1736,6 +1941,9 @@ CheckPointTwoPhase(XLogRecPtr redo_horizon)
 {
 	int			i;
 	int			serialized_xacts = 0;
+#ifdef POLARDB_X
+	TwoPhaseFileHeader *hdr = NULL;
+#endif
 
 	if (max_prepared_xacts <= 0)
 		return;					/* nothing to do */
@@ -1759,6 +1967,11 @@ CheckPointTwoPhase(XLogRecPtr redo_horizon)
 	 * because of the efforts with delayChkpt.
 	 */
 	LWLockAcquire(TwoPhaseStateLock, LW_SHARED);
+#ifdef POLARDB_X
+	if (enable_twophase_recover_debug_print)
+		elog(DEBUG_2PC, "In CheckPointTwoPhase");
+	print_twophase_state_content();
+#endif
 	for (i = 0; i < TwoPhaseState->numPrepXacts; i++)
 	{
 		/*
@@ -1767,14 +1980,28 @@ CheckPointTwoPhase(XLogRecPtr redo_horizon)
 		 */
 		GlobalTransaction gxact = TwoPhaseState->prepXacts[i];
 
+#ifdef POLARDB_X
+		// gxact->need_reserve will be true when global txn has not finished yet.
+		if ((gxact->valid || gxact->inredo || gxact->need_reserve) &&
+			!gxact->ondisk &&
+			gxact->prepare_end_lsn <= redo_horizon)
+#else
 		if ((gxact->valid || gxact->inredo) &&
 			!gxact->ondisk &&
 			gxact->prepare_end_lsn <= redo_horizon)
+#endif
 		{
 			char	   *buf;
 			int			len;
 
 			XlogReadTwoPhaseData(gxact->prepare_start_lsn, &buf, &len);
+#ifdef POLARDB_X
+			hdr = (TwoPhaseFileHeader*) buf;
+			hdr->commit_timestamp = gxact->commit_timestamp;
+			if (enable_twophase_recover_debug_print)
+				elog(DEBUG_2PC, "RecreateTwoPhaseFile in CheckPointTwoPhase, gid:%s, xid:%d", gxact->gid, gxact->xid);
+			print_single_twophase_state_gxact(gxact);
+#endif
 			RecreateTwoPhaseFile(gxact->xid, buf, len);
 			gxact->ondisk = true;
 			gxact->prepare_start_lsn = InvalidXLogRecPtr;
@@ -1882,6 +2109,11 @@ PrescanPreparedTransactions(TransactionId **xids_p, int *nxids_p)
 	int			i;
 
 	LWLockAcquire(TwoPhaseStateLock, LW_EXCLUSIVE);
+#ifdef POLARDB_X
+	if (enable_twophase_recover_debug_print)
+		elog(DEBUG_2PC, "PrescanPreparedTransactions: print twophasestate content");
+	print_twophase_state_content();
+#endif
 	for (i = 0; i < TwoPhaseState->numPrepXacts; i++)
 	{
 		TransactionId xid;
@@ -1957,6 +2189,11 @@ StandbyRecoverPreparedTransactions(void)
 	int			i;
 
 	LWLockAcquire(TwoPhaseStateLock, LW_EXCLUSIVE);
+#ifdef POLARDB_X
+	if (enable_twophase_recover_debug_print)
+		elog(DEBUG_2PC, "StandbyRecoverPreparedTransactions: print twophasestate content");
+	print_twophase_state_content();
+#endif
 	for (i = 0; i < TwoPhaseState->numPrepXacts; i++)
 	{
 		TransactionId xid;
@@ -1998,6 +2235,11 @@ RecoverPreparedTransactions(void)
 	int			i;
 
 	LWLockAcquire(TwoPhaseStateLock, LW_EXCLUSIVE);
+#ifdef POLARDB_X
+	if (enable_twophase_recover_debug_print)
+		elog(DEBUG_2PC, "RecoverPreparedTransactions: print twophasestate content");
+	print_twophase_state_content();
+#endif
 	for (i = 0; i < TwoPhaseState->numPrepXacts; i++)
 	{
 		TransactionId xid;
@@ -2046,6 +2288,10 @@ RecoverPreparedTransactions(void)
 		MarkAsPreparingGuts(gxact, xid, gid,
 							hdr->prepared_at,
 							hdr->owner, hdr->database);
+#ifdef POLARDB_X
+		strncpy(gxact->participate_nodes, bufptr, hdr->nparticipatenodes_len);
+		bufptr += MAXALIGN(hdr->nparticipatenodes_len);
+#endif
 
 		/* recovered, so reset the flag for entries generated by redo */
 		gxact->inredo = false;
@@ -2122,17 +2368,44 @@ ProcessTwoPhaseBuffer(TransactionId xid,
 	{
 		if (fromdisk)
 		{
+#ifdef POLARDB_X
+			if (!IS_PGXC_SINGLE_NODE)
+			{
+				if (enable_twophase_recover_debug_print)
+					elog(DEBUG_2PC, "skip RemoveTwoPhaseFile:%d in ProcessTwoPhaseBuffer. Xid not in progress.", xid);
+			}
+			else
+			{
+				ereport(WARNING,
+						(errmsg("removing stale two-phase state file for transaction %u",
+								xid)));
+				RemoveTwoPhaseFile(xid, true);
+			}
+#else
 			ereport(WARNING,
 					(errmsg("removing stale two-phase state file for transaction %u",
 							xid)));
-			RemoveTwoPhaseFile(xid, true);
+            RemoveTwoPhaseFile(xid, true);
+#endif
 		}
 		else
 		{
 			ereport(WARNING,
 					(errmsg("removing stale two-phase state from memory for transaction %u",
 							xid)));
+#ifdef POLARDB_X
+			if (!IS_PGXC_SINGLE_NODE)
+			{
+				PrepareRedoRemove(xid, true, false);
+			}
+			else
+			{
+				PrepareRedoRemove(xid, true, true);
+			}
+
+#else
 			PrepareRedoRemove(xid, true);
+#endif
 		}
 		return NULL;
 	}
@@ -2142,17 +2415,39 @@ ProcessTwoPhaseBuffer(TransactionId xid,
 	{
 		if (fromdisk)
 		{
+#ifdef POLARDB_X
+			if (!IS_PGXC_SINGLE_NODE)
+			{
+				if (enable_twophase_recover_debug_print)
+					elog(DEBUG_2PC, "skip RemoveTwoPhaseFile:%d in ProcessTwoPhaseBuffer. xid too new. origNextXid:%d", xid, origNextXid);
+			}
+			else
+			{
+				ereport(WARNING,
+						(errmsg("removing future two-phase state file for transaction %u",
+								xid)));
+				RemoveTwoPhaseFile(xid, true);
+			}
+#else
 			ereport(WARNING,
 					(errmsg("removing future two-phase state file for transaction %u",
 							xid)));
-			RemoveTwoPhaseFile(xid, true);
+            RemoveTwoPhaseFile(xid, true);
+#endif
 		}
 		else
 		{
 			ereport(WARNING,
 					(errmsg("removing future two-phase state from memory for transaction %u",
 							xid)));
+#ifdef POLARDB_X
+			if (!IS_PGXC_SINGLE_NODE)
+				PrepareRedoRemove(xid, true, false);
+			else
+				PrepareRedoRemove(xid, true, true);
+#else
 			PrepareRedoRemove(xid, true);
+#endif
 		}
 		return NULL;
 	}
@@ -2192,7 +2487,11 @@ ProcessTwoPhaseBuffer(TransactionId xid,
 			ereport(WARNING,
 					(errmsg("removing corrupt two-phase state from memory for transaction %u",
 							xid)));
+#ifdef POLARDB_X
+			PrepareRedoRemove(xid, true, false);
+#else
 			PrepareRedoRemove(xid, true);
+#endif
 		}
 		pfree(buf);
 		return NULL;
@@ -2260,6 +2559,10 @@ RecordTransactionCommitPrepared(TransactionId xid,
 								bool initfileinval,
 								const char *gid)
 {
+#ifdef POLARDB_X
+	if (enable_twophase_recover_debug_print)
+		elog(DEBUG_2PC, "RecordTransactionCommitPrepared for gid:%s", gid);
+#endif
 	XLogRecPtr	recptr;
 	TimestampTz committs = GetCurrentTimestamp();
 	bool		replorigin;
@@ -2378,6 +2681,10 @@ RecordTransactionAbortPrepared(TransactionId xid,
 							   RelFileNode *rels,
 							   const char *gid)
 {
+#ifdef POLARDB_X
+	if (enable_twophase_recover_debug_print)
+		elog(DEBUG_2PC, "RecordTransactionAbortPrepared for gid:%s, xid:%d", gid, xid);
+#endif
 	XLogRecPtr	recptr;
 
 	/*
@@ -2395,6 +2702,10 @@ RecordTransactionAbortPrepared(TransactionId xid,
 	 * potentially having AccessExclusiveLocks since we don't know whether or
 	 * not they do.
 	 */
+#ifdef POLARDB_X
+	if (enable_twophase_recover_debug_print)
+		elog(DEBUG_2PC, "RecordTransactionAbortPrepared call XactLogAbortRecord, gid:%s, xid:%d", gid, xid);
+#endif
 	recptr = XactLogAbortRecord(GetCurrentTimestamp(),
 								nchildren, children,
 								nrels, rels,
@@ -2475,6 +2786,11 @@ PrepareRedoAdd(char *buf, XLogRecPtr start_lsn,
 	gxact->ondisk = XLogRecPtrIsInvalid(start_lsn);
 	gxact->inredo = true;		/* yes, added in redo */
 	strcpy(gxact->gid, gid);
+#ifdef POLARDB_X
+	gxact->commit_timestamp = hdr->commit_timestamp;
+	if (enable_twophase_recover_debug_print)
+		elog(DEBUG_2PC, "PrepareRedoAdd: get gid:%s commit_timestamp:" INT64_FORMAT, gxact->gid, gxact->commit_timestamp);
+#endif
 
 	/* And insert it into the active array */
 	Assert(TwoPhaseState->numPrepXacts < max_prepared_xacts);
@@ -2499,8 +2815,12 @@ PrepareRedoAdd(char *buf, XLogRecPtr start_lsn,
  * Caller must hold TwoPhaseStateLock in exclusive mode, because TwoPhaseState
  * is updated.
  */
+#ifdef POLARDB_X
 void
+PrepareRedoRemove(TransactionId xid, bool giveWarning, bool shouldClear)
+#else
 PrepareRedoRemove(TransactionId xid, bool giveWarning)
+#endif
 {
 	GlobalTransaction gxact = NULL;
 	int			i;
@@ -2508,11 +2828,17 @@ PrepareRedoRemove(TransactionId xid, bool giveWarning)
 
 	Assert(LWLockHeldByMeInMode(TwoPhaseStateLock, LW_EXCLUSIVE));
 	Assert(RecoveryInProgress());
-
+#ifdef POLARDB_X
+	if (enable_twophase_recover_debug_print)
+		elog(DEBUG_2PC, "PrepareRedoRemove xid:%d. TwoPhaseState->numPrepXacts:%d", xid, TwoPhaseState->numPrepXacts);
+#endif
 	for (i = 0; i < TwoPhaseState->numPrepXacts; i++)
 	{
 		gxact = TwoPhaseState->prepXacts[i];
-
+#ifdef POLARDB_X
+		if (enable_twophase_recover_debug_print)
+			print_single_twophase_state_gxact(gxact);
+#endif
 		if (gxact->xid == xid)
 		{
 			Assert(gxact->inredo);
@@ -2525,15 +2851,746 @@ PrepareRedoRemove(TransactionId xid, bool giveWarning)
 	 * Just leave if there is nothing, this is expected during WAL replay.
 	 */
 	if (!found)
+	{
+#ifdef POLARDB_X
+		if (enable_twophase_recover_debug_print)
+			elog(DEBUG_2PC, "PrepareRedoRemove: xid:%d not found in TwoPhaseState", xid);
+#endif
 		return;
+	}
 
 	/*
 	 * And now we can clean up any files we may have left.
 	 */
 	elog(DEBUG2, "removing 2PC data for transaction %u", xid);
+#ifdef POLARDB_X
+	if (gxact->ondisk)
+	{
+		if (shouldClear)
+		{
+			if (enable_twophase_recover_debug_print)
+				elog(DEBUG_2PC, "PrepareRedoRemove: clear on disk 2pc file for gxact, gid:%s, xid:%d", gxact->gid, xid);
+			RemoveTwoPhaseFile(xid, giveWarning);
+		}
+	}
+
+	if (shouldClear)
+	{
+		if (enable_twophase_recover_debug_print)
+			elog(DEBUG_2PC, "PrepareRedoRemove: should clear in-memory gxact, gid:%s, xid:%d", gxact->gid, xid);
+		RemoveGXact(gxact);
+	}
+	else
+	{
+		if (enable_twophase_recover_debug_print)
+			elog(DEBUG_2PC, "PrepareRedoRemove: skip clear in-memory gxact, gid:%s, xid:%d",gxact->gid, xid);
+		MarkGXactDone(gxact);
+	}
+#else
 	if (gxact->ondisk)
 		RemoveTwoPhaseFile(xid, giveWarning);
 	RemoveGXact(gxact);
+#endif
 
 	return;
 }
+
+#ifdef POLARDB_X
+/*
+ * Output raw timestamp.
+ * 1. get commit timestamp from in-memory.
+ * 2. If not in-memory, commit timestamp is recorded in 2pc file.
+ */
+GlobalTimestamp GetTwoPhaseXactCommitTimestamp(char* gid)
+{
+	GlobalTimestamp commit_timestamp = InvalidGlobalTimestamp;
+	int i;
+
+	// 1. find in-memory TwoPhaseState->prepXacts first.
+	LWLockAcquire(TwoPhaseStateLock, LW_EXCLUSIVE);
+	for (i = 0; i < TwoPhaseState->numPrepXacts; i++)
+	{
+		GlobalTransaction gxact = TwoPhaseState->prepXacts[i];
+
+		/* Ignore not-yet-valid GIDs */
+		if (!gxact->valid && !gxact->need_reserve)
+			continue;
+		if (strcmp(gxact->gid, gid) != 0)
+			continue;
+
+		/* Found it */
+		LWLockRelease(TwoPhaseStateLock);
+		return gxact->commit_timestamp;
+	}
+	LWLockRelease(TwoPhaseStateLock);
+	if (i == TwoPhaseState->numPrepXacts)
+	{
+		if (enable_twophase_recover_debug_print)
+			elog(DEBUG_2PC, "Unable to get commit timestamp by gid:%s in-memory.", gid);
+	}
+
+	// 2. find commit timestamp in 2pc file.
+	TransactionId localxid = GetTwoPhaseXactLocalxid(gid);
+	char *buf = NULL;
+	TwoPhaseFileHeader *hdr = NULL;
+
+	if (InvalidTransactionId == localxid)
+	{
+		if (enable_twophase_recover_debug_print)
+			elog(DEBUG_2PC, "Unable to find localxid by gid:%s", gid);
+		return InvalidGlobalTimestamp;
+	}
+
+	/* Read and validate file */
+	buf = ReadTwoPhaseFile(localxid, true);
+	if (buf == NULL)
+	{
+		if (enable_twophase_recover_debug_print)
+			elog(DEBUG_2PC, "Failed to read pg_twophase for gid:%s", gid);
+		return InvalidGlobalTimestamp;
+	}
+
+	/* Check header also */
+	hdr = (TwoPhaseFileHeader *) buf;
+	Assert(hdr->xid == localxid);
+
+	commit_timestamp = hdr->commit_timestamp;
+	if (enable_twophase_recover_debug_print)
+		elog(DEBUG_2PC, "get commit_timestamp" INT64_FORMAT " for gid:%s, xid:%d, xid in 2pc file:%d",
+			 commit_timestamp, gid, localxid, hdr->xid);
+	pfree(buf);
+
+	return commit_timestamp;
+}
+
+TransactionId GetTwoPhaseXactLocalxid(char* gid)
+{
+	GidLookupTag tag;
+	GidLookupEnt *ent;
+	bool found;
+	TransactionId localxid = InvalidTransactionId;
+
+	memset(tag.gid, 0, sizeof(tag.gid));
+	strcpy(tag.gid, gid);
+
+	LWLockAcquire(GidHashTableLock, LW_EXCLUSIVE);
+	ent = (GidLookupEnt*)hash_search(g_GidHashTab, (void *) &tag, HASH_FIND, &found);
+
+	if (found)
+	{
+		if (enable_twophase_recover_debug_print)
+			elog(DEBUG_2PC, "Find xid:%d by gid:%s", ent->localxid, tag.gid);
+		localxid = ent->localxid;
+	}
+	else
+	{
+		if (enable_twophase_recover_debug_print)
+			elog(DEBUG_2PC, "Unable to find xid by gid:%s, traverse pg_twophase.", tag.gid);
+
+		RefreshGidHashMap(false);
+
+		// get localxid in hashmap again
+		ent = (GidLookupEnt*)hash_search(g_GidHashTab, (void *) &tag, HASH_FIND, &found);
+		if (found)
+		{
+			if (enable_twophase_recover_debug_print)
+				elog(DEBUG_2PC, "Find xid:%d by gid:%s after refresh gid hashmap.", ent->localxid, tag.gid);
+			localxid = ent->localxid;
+		}
+	}
+	LWLockRelease(GidHashTableLock);
+	return localxid;
+}
+
+void RefreshGidHashMap(bool need_lock)
+{
+	DIR *dir;
+	struct dirent *de;
+	char *bufptr;
+	const char *gid_in_file;
+	GidLookupTag tag;
+	GidLookupEnt *ent;
+	bool found;
+	TwoPhaseFileHeader *hdr;
+
+	if (need_lock)
+	{
+		LWLockAcquire(GidHashTableLock, LW_EXCLUSIVE);
+	}
+
+	dir = AllocateDir(TWOPHASE_DIR);
+	LWLockAcquire(TwoPhaseStateLock, LW_EXCLUSIVE);
+	while ((de = ReadDir(dir, TWOPHASE_DIR)) != NULL)
+	{
+		if (strlen(de->d_name) == 8 &&
+			strspn(de->d_name, "0123456789ABCDEF") == 8)
+		{
+			TransactionId xid;
+			char	   *buf;
+
+			xid = (TransactionId) strtoul(de->d_name, NULL, 16);
+
+			/* Read and validate file */
+			buf = ReadTwoPhaseFile(xid, true);
+
+			if (buf == NULL)
+			{
+				elog(WARNING, "Corrupt 2pc file to xid:%d", xid);
+				continue;
+			}
+
+			hdr = (TwoPhaseFileHeader*)buf;
+			bufptr = buf + MAXALIGN(sizeof(TwoPhaseFileHeader));
+			gid_in_file = (const char *) bufptr;
+
+			Assert(hdr->xid == xid);
+
+			memset(tag.gid, 0, sizeof(tag.gid));
+			strcpy(tag.gid, gid_in_file);
+			if (enable_twophase_recover_debug_print)
+				elog(DEBUG_2PC, "[gidhashtabtrace] RefreshGidHashMap. insert gid:%s xid:%d", tag.gid, xid);
+			ent = (GidLookupEnt*)hash_search(g_GidHashTab, (void *) &tag, HASH_ENTER, &found);
+			if (!found)
+			{
+				ent->localxid = xid;
+			}
+			Assert(ent->localxid == xid);
+		}
+	}
+	LWLockRelease(TwoPhaseStateLock);
+	FreeDir(dir);
+
+	if (need_lock)
+	{
+		LWLockRelease(GidHashTableLock);
+	}
+}
+
+static void RemoveGXactByGid(char* gid)
+{
+	int i;
+	GlobalTransaction gxact;
+
+	LWLockAcquire(TwoPhaseStateLock, LW_EXCLUSIVE);
+	for (i = 0; i < TwoPhaseState->numPrepXacts; i++)
+	{
+		gxact = TwoPhaseState->prepXacts[i];
+		if (strcmp(gxact->gid, gid) == 0)
+		{
+			if (enable_twophase_recover_debug_print)
+				elog(DEBUG_2PC, "RemoveGXactByGid. found match gid:%s in i:%d", gid, i);
+			print_single_twophase_state_gxact(gxact);
+			break;
+		}
+	}
+
+	if (i >= TwoPhaseState->numPrepXacts)
+	{
+		if (enable_twophase_recover_debug_print)
+			elog(DEBUG_2PC, "Failed to find gid:%s in TwoPhaseState. TwoPhaseState->numPrepXacts:%d", gid, TwoPhaseState->numPrepXacts);
+	}
+	else
+	{
+		RemoveGXact(gxact);
+		if (enable_twophase_recover_debug_print)
+			elog(DEBUG_2PC, "RemoveGXact in CleanUpTwoPhaseFile, gid:%s", gid);
+	}
+	LWLockRelease(TwoPhaseStateLock);
+}
+
+// Return true if cleanup succeed.
+bool CleanUpTwoPhaseFile(char* gid)
+{
+	XLogRecPtr xlogrec = 0;
+	GlobalTransaction gxact = NULL;
+	int i;
+	TransactionId localxid = InvalidTransactionId;
+	bool ret = false;
+
+	if (enable_twophase_recover_debug_print)
+		elog(DEBUG_2PC, "CleanUpTwoPhaseFile, use gid:%s to find xid", gid);
+
+	localxid = GetTwoPhaseXactLocalxid(gid);
+	if (InvalidTransactionId == localxid)
+	{
+		/* use ERROR level?  -- when repeated cleanup 2pc files, WARNING is ok. */
+		elog(WARNING, "Unable to find 2pc file related to gid:%s. File may not exist.", gid);
+		/*
+		 * If in recovery, startup can not find localxid in g_GidHashMap and pg_twophase files.
+		 * So need to clear TwoPhaseState by RemoveGXact(gxact). If not, TwoPhaseState->prepXacts will
+		 * be exhausted since failed to remove.
+		 * */
+		if (RecoveryInProgress())
+		{
+			if (enable_twophase_recover_debug_print)
+				elog(DEBUG_2PC, "CleanUpTwoPhaseFile: in recovery, remove gxact of gid:%s", gid);
+			RemoveGXactByGid(gid);
+		}
+	}
+	else
+	{
+		/*
+		 * Do some check.
+		 * Only already commited transaction can use this function.
+		 */
+		LWLockAcquire(TwoPhaseStateLock, LW_EXCLUSIVE);
+		for (i = 0; i < TwoPhaseState->numPrepXacts; i++)
+		{
+			gxact = TwoPhaseState->prepXacts[i];
+			if (strcmp(gxact->gid, gid) == 0)
+			{
+				if (!gxact->need_reserve || gxact->valid)
+				{
+					print_single_twophase_state_gxact(gxact);
+					elog(PANIC, "CleanUpTwoPhaseFile: invalid gxact state. gid:%s, need_reserve:%d, valid:%d",
+						 gxact->gid, gxact->need_reserve, gxact->valid);
+				}
+				break;
+			}
+		}
+		LWLockRelease(TwoPhaseStateLock);
+
+		if (!RecoveryInProgress())
+		{
+			// write xlog
+			XLogBeginInsert();
+			XLogRegisterData(gid, strlen(gid) + 1);
+			XLogRegisterData((char *)&localxid, sizeof(TransactionId) + 1);
+			xlogrec = XLogInsert(RM_XLOG_ID, XLOG_REMOVE_2PC_FILE);
+			XLogFlush(xlogrec);
+			SyncRepWaitForLSN(xlogrec, false);
+			if (enable_twophase_recover_debug_print)
+				elog(DEBUG_2PC, "Record remove 2pcfile in xlog for gid:%s localxid:%d", gid, localxid);
+		}
+
+		// remove file
+		RemoveTwoPhaseFile(localxid, false);
+
+		// RemoveGXact which gxact->need_reserve is true.
+		RemoveGXactByGid(gid);
+
+		ret = RemoveFromGidHashTab(gid, localxid);
+		if (enable_twophase_recover_debug_print)
+			elog(DEBUG_2PC, "[gidhashtabtrace] CleanUpTwoPhaseFile. remove gid:%s xid:%d", gid, localxid);
+	}
+
+	return ret;
+}
+
+/*
+ * For given gid,
+ * 1. RemoveGXact
+ * 2. remove 2pc file in pg_twophase.
+ */
+Datum polardbx_finish_global_transation(PG_FUNCTION_ARGS)
+{
+	bool ret;
+	char *gid = text_to_cstring(PG_GETARG_TEXT_PP(0));
+
+	ret = CleanUpTwoPhaseFile(gid);
+
+	PG_RETURN_BOOL(ret);
+}
+
+/*
+ * For given gid, get 2pc xact commit timestamp.
+ */
+Datum polardbx_get_2pc_commit_timestamp(PG_FUNCTION_ARGS)
+{
+	TimestampTz ret;
+	char *gid = text_to_cstring(PG_GETARG_TEXT_PP(0));
+
+	ret = GetTwoPhaseXactCommitTimestamp(gid);
+
+	PG_RETURN_INT64(ret);
+}
+
+// update in-memory commit timestamp recorded in GlobalTransaction.
+void SetTwoPhaseXactCommitTimestamp(char* gid, GlobalTimestamp timestamp)
+{
+	int i = 0;
+	GlobalTransaction gxact = NULL;
+
+	if (InvalidGlobalTimestamp == timestamp)
+	{
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+					errmsg("Invalid action to set gid:%s commit timestamp.",
+						   gid)));
+	}
+
+	LWLockAcquire(TwoPhaseStateLock, LW_EXCLUSIVE);
+	/* Look for matching GID */
+	for (i = 0; i < TwoPhaseState->numPrepXacts; i++)
+	{
+		gxact = TwoPhaseState->prepXacts[i];
+		if (strcmp(gxact->gid, gid) == 0)
+		{
+			break;
+		}
+	}
+
+	if (TwoPhaseState->numPrepXacts == i)
+	{
+		abort();
+		elog(ERROR, "SetTwoPhaseXactCommitTimestamp gid:%s not exist.", gid);
+	}
+#ifdef POLARDB_X
+	else
+	{
+		if (enable_twophase_recover_debug_print)
+			elog(DEBUG_2PC, "SetTwoPhaseXactCommitTimestamp found gxact info for gid:%s, i:%d", gid, i);
+		print_single_twophase_state_gxact(gxact);
+	}
+#endif
+	gxact->commit_timestamp = timestamp;
+	LWLockRelease(TwoPhaseStateLock);
+}
+
+// record commit timestamp in xlog.
+void RecordTwoPhaseXactCommitTimestamp(char* gid, GlobalTimestamp timestamp)
+{
+	XLogRecPtr xlogrec = 0;
+
+	if (InvalidGlobalTimestamp == timestamp)
+	{
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+					errmsg("Invalid action to record gid:%s commit timestamp.",
+						   gid)));
+	}
+
+	XLogBeginInsert();
+	XLogRegisterData(gid, strlen(gid) + 1);
+	XLogRegisterData((char *)&timestamp, sizeof(GlobalTimestamp) + 1);
+	xlogrec = XLogInsert(RM_XLOG_ID, XLOG_RECORD_2PC_TIMESTAMP);
+	XLogFlush(xlogrec);
+	SyncRepWaitForLSN(xlogrec, false);
+	if (enable_twophase_recover_debug_print)
+		elog(DEBUG_2PC, "Record timestamp in xlog for gid:%s timestamp:" UINT64_FORMAT "success.", gid, timestamp);
+}
+
+// update commit timestamp in 2pc file. It's normal that 2pc file not exist.
+void UpdateTwoPhaseFileCommitTimestamp(char* gid, GlobalTimestamp timestamp)
+{
+	int i = 0;
+	GlobalTransaction gxact = NULL;
+	char *buf = NULL;
+	TransactionId xid = InvalidTransactionId;
+	TwoPhaseFileHeader *hdr = NULL;
+
+	// Use LW_EXCLUSIVE to avoid race condition which checkpointer is writing to disk.
+	LWLockAcquire(TwoPhaseStateLock, LW_EXCLUSIVE);
+
+	/* Look for matching GID */
+	for (i = 0; i < TwoPhaseState->numPrepXacts; i++)
+	{
+		gxact = TwoPhaseState->prepXacts[i];
+		if (strcmp(gxact->gid, gid) == 0)
+		{
+			xid = gxact->xid;
+			break;
+		}
+	}
+
+	// If 2pc not commited, the coresponding GlobalTransaction structure should exist in-memory.
+	if (TwoPhaseState->numPrepXacts == i)
+	{
+		elog(ERROR, "UpdateTwoPhaseFileCommitTimestamp gid:%s not exist.", gid);
+	}
+	LWLockRelease(TwoPhaseStateLock);
+
+	if (!gxact->ondisk)
+	{
+		if (enable_twophase_recover_debug_print)
+			elog(DEBUG_2PC, "Gid:%s xid:%d doesn't have pg_twophase file in disk.", gid, xid);
+		return;
+	}
+
+	buf = ReadTwoPhaseFile(xid, false);
+	if (buf == NULL)
+	{
+		elog(ERROR, "Failed to get pg_twophase file content for xid:%d", xid);
+	}
+	hdr = (TwoPhaseFileHeader *) buf;
+
+	if (enable_twophase_recover_debug_print)
+		elog(DEBUG_2PC, "get gid:%s, xid:%d commit_timestamp: " INT64_FORMAT " from pg_twophase file, set to new value" UINT64_FORMAT,
+		 				gid, xid, hdr->commit_timestamp, timestamp);
+	hdr->commit_timestamp = timestamp;
+
+	if (enable_twophase_recover_debug_print)
+		elog(DEBUG_2PC, "get gid:%s, xid:%d, strlen(buf)=%d, hdr->total_len=%d, RecreateTwoPhaseFile in UpdateTwoPhaseFileCommitTimestamp.",
+						gid, xid, (int)strlen(buf), hdr->total_len);
+	RecreateTwoPhaseFile(xid, buf, hdr->total_len - sizeof(pg_crc32c));
+	pfree(buf);
+}
+
+/*
+ * TwoPhaseGidHashTableShmemSize
+ *	Get the size of 2pc Gid to Localxid hash map size
+ */
+Size TwoPhaseGidHashTableShmemSize(void)
+{
+	Size size;
+
+	/* hash table, here just double the max_prepared_xacts size, in case of memory corruption */
+	size = mul_size(max_prepared_xacts * 2 , MAXALIGN64(sizeof(GidLookupEnt)));
+
+	return size;
+}
+
+
+void GidHashTabShmemInit(void)
+{
+	HASHCTL		info;
+
+	/* Init hash table for nodeoid to dnDefs/coDefs lookup */
+	info.keysize   = sizeof(GidLookupTag);
+	info.entrysize = sizeof(GidLookupEnt);
+	info.hash 	   = tag_hash;
+	g_GidHashTab = ShmemInitHash("Gid info look up",
+								 max_prepared_xacts,
+								 max_prepared_xacts,
+									 &info,
+									 HASH_ELEM | HASH_FUNCTION | HASH_FIXED_SIZE);
+
+	if (!g_GidHashTab)
+	{
+		elog(FATAL, "invalid shmem status when creating gid hash.");
+	}
+}
+
+
+
+Datum polardbx_parse_2pc_file(PG_FUNCTION_ARGS)
+{
+	StringInfoData result;
+	char *buf = NULL;
+	char *bufptr = NULL;
+	TwoPhaseFileHeader *hdr = NULL;
+	TransactionId localxid = InvalidTransactionId;
+	char *localxid_hexstr = text_to_cstring(PG_GETARG_TEXT_PP(0));
+
+	sscanf(localxid_hexstr, "%x", &localxid);
+	if (enable_twophase_recover_debug_print)
+		elog(DEBUG_2PC, "polardbx_parse_2pc_file: get decimal localxid:%d by hex:%s", localxid, localxid_hexstr);
+
+	buf = ReadTwoPhaseFile(localxid, true);
+	if (buf == NULL)
+	{
+		PG_RETURN_NULL();
+	}
+
+	initStringInfo(&result);
+	hdr = (TwoPhaseFileHeader*) buf;
+	Assert(TransactionIdEquals(hdr->xid, localxid));
+	// header info.
+	appendStringInfo(&result, "magic:0x%x\n", hdr->magic);
+	appendStringInfo(&result, "total_len:%u\n", hdr->total_len);
+	appendStringInfo(&result, "xid:%d\n", hdr->xid);
+	appendStringInfo(&result, "database:%u\n", hdr->database);
+	appendStringInfo(&result, "prepared_at:" INT64_FORMAT "\n", hdr->prepared_at);
+	appendStringInfo(&result, "owner:%d\n", hdr->owner);
+	appendStringInfo(&result, "nsubxacts:%d\n", hdr->nsubxacts);
+	appendStringInfo(&result, "ncommitrels:%d\n", hdr->ncommitrels);
+	appendStringInfo(&result, "nabortrels:%d\n", hdr->nabortrels);
+	appendStringInfo(&result, "ninvalmsgs:%d\n", hdr->ninvalmsgs);
+	appendStringInfo(&result, "initfileinval:%d\n", hdr->initfileinval);
+	appendStringInfo(&result, "gidlen:%d\n", hdr->gidlen);
+	appendStringInfo(&result, "origin_lsn:" UINT64_FORMAT "\n", hdr->origin_lsn);
+	appendStringInfo(&result, "origin_timestamp:" INT64_FORMAT "\n", hdr->origin_timestamp);
+	appendStringInfo(&result, "commit_timestamp:" INT64_FORMAT "\n", hdr->commit_timestamp);
+	appendStringInfo(&result, "nparticipatenodes_len:%d\n", hdr->nparticipatenodes_len);
+
+	// the rest field
+	bufptr = buf + MAXALIGN(sizeof(TwoPhaseFileHeader));
+	appendStringInfo(&result, "gid:%s\n", bufptr);
+
+	bufptr += MAXALIGN(hdr->gidlen);
+	bufptr += MAXALIGN(hdr->nsubxacts * sizeof(TransactionId));
+	bufptr += MAXALIGN(hdr->ncommitrels * sizeof(RelFileNode));
+	bufptr += MAXALIGN(hdr->nabortrels * sizeof(RelFileNode));
+	bufptr += MAXALIGN(hdr->ninvalmsgs * sizeof(SharedInvalidationMessage));
+
+	appendStringInfo(&result, "participate_nodes:%s\n", bufptr);
+	bufptr += MAXALIGN(hdr->nparticipatenodes_len);
+
+	PG_RETURN_TEXT_P(cstring_to_text(result.data));
+}
+
+Datum polardbx_get_2pc_filelist(PG_FUNCTION_ARGS)
+{
+	StringInfoData result;
+	initStringInfo(&result);
+	get_twophase_filelist(&result);
+
+	PG_RETURN_TEXT_P(cstring_to_text(result.data));
+}
+
+static int get_twophase_filelist(StringInfo str)
+{
+	DIR		   *cldir;
+	struct dirent *clde;
+	int cnt = 0;
+	cldir = AllocateDir(TWOPHASE_DIR);
+	while ((clde = ReadDir(cldir, TWOPHASE_DIR)) != NULL)
+	{
+		if (strlen(clde->d_name) == 8 &&
+			strspn(clde->d_name, "0123456789ABCDEF") == 8)
+		{
+			if (cnt != 0)
+			{
+				appendStringInfo(str, ",");
+			}
+			appendStringInfo(str, "%s", clde->d_name);
+			cnt++;
+		}
+	}
+	FreeDir(cldir);
+	return cnt;
+}
+
+static void print_twophase_state_content(void)
+{
+	int i;
+	for (i = 0; i < TwoPhaseState->numPrepXacts; i++)
+	{
+		if (enable_twophase_recover_debug_print)
+		{
+			elog(DEBUG_2PC, "[twophasetrace]TwoPhaseState numPrepXacts:%d, i:%d gid:%s, xid:%d, locking_backend:%d, valid:%d, "
+							"need_reserve:%d, ondisk:%d, inredo:%d, participate_nodes:%s, commit_timestamp:" INT64_FORMAT,
+				 TwoPhaseState->numPrepXacts,
+				 i,
+				 TwoPhaseState->prepXacts[i]->gid,
+				 TwoPhaseState->prepXacts[i]->xid,
+				 TwoPhaseState->prepXacts[i]->locking_backend,
+				 TwoPhaseState->prepXacts[i]->valid,
+				 TwoPhaseState->prepXacts[i]->need_reserve,
+				 TwoPhaseState->prepXacts[i]->ondisk,
+				 TwoPhaseState->prepXacts[i]->inredo,
+				 TwoPhaseState->prepXacts[i]->participate_nodes,
+				 TwoPhaseState->prepXacts[i]->commit_timestamp
+			);
+		}
+	}
+};
+
+static void print_single_twophase_state_gxact(GlobalTransaction gxact)
+{
+	if (enable_twophase_recover_debug_print)
+	{
+		elog(DEBUG_2PC, "[twophasetrace]gxact gid:%s, xid:%d, locking_backend:%d, valid:%d, "
+						"need_reserve:%d, ondisk:%d, inredo:%d, participate_nodes:%s, commit_timestamp:" INT64_FORMAT,
+			 gxact->gid,
+			 gxact->xid,
+			 gxact->locking_backend,
+			 gxact->valid,
+			 gxact->need_reserve,
+			 gxact->ondisk,
+			 gxact->inredo,
+			 gxact->participate_nodes,
+			 gxact->commit_timestamp);
+	}
+};
+
+bool RemoveFromGidHashTab(char* gid, TransactionId xid)
+{
+	GidLookupTag tag;
+	GidLookupEnt *ent;
+	bool ret = true;
+	memset(tag.gid, 0, sizeof(tag.gid));
+	strcpy(tag.gid, gid);
+
+	if (enable_twophase_recover_debug_print)
+		elog(DEBUG_2PC, "[gidhashtabtrace] RemoveFromGidHashTab: remove from gid hashtab. gid:%s, tag.gid:%s, xid:%d.", gid, tag.gid, xid);
+	LWLockAcquire(GidHashTableLock, LW_EXCLUSIVE);
+	ent = (GidLookupEnt*)hash_search(g_GidHashTab, (void *) &tag, HASH_REMOVE, NULL);
+	LWLockRelease(GidHashTableLock);
+	if (!ent)
+	{
+		ret = false;
+		elog(WARNING, "[gidhashtabtrace]RemoveFromGidHashTab: unable to remove the object from GidHashTab, gid:%s xid:%d.",
+			 tag.gid, xid);
+	}
+	else
+	{
+		Assert(ent->localxid == xid);
+	}
+
+	return ret;
+}
+
+bool AddToGidHashTab(char* gid, TransactionId xid)
+{
+	GidLookupTag tag;
+	GidLookupEnt *ent;
+	bool ret = true;
+	bool found;
+
+	memset(tag.gid, 0, sizeof(tag.gid));
+	strcpy(tag.gid, gid);
+	if (enable_twophase_recover_debug_print)
+		elog(DEBUG_2PC, "[gidhashtabtrace] AddToGidHashTab: add to gid hashtab. gid:%s, tag.gid:%s, xid:%d.", gid, tag.gid, xid);
+
+	LWLockAcquire(GidHashTableLock, LW_EXCLUSIVE);
+	ent = (GidLookupEnt*)hash_search(g_GidHashTab, (void *) &tag, HASH_ENTER, &found);
+	ent->localxid = xid;
+	LWLockRelease(GidHashTableLock);
+	if (found)
+	{
+		if (enable_twophase_recover_debug_print)
+			elog(DEBUG_2PC, "gid:%s xid:%d ent->xid:%d already in hash map.", tag.gid, xid, ent->localxid);
+	}
+
+	return ret;
+}
+
+GlobalTransaction GetXactByXid(TransactionId xid, bool need_lock)
+{
+	int i;
+	GlobalTransaction gxact = NULL;
+	bool found = false;
+
+	if (need_lock)
+	{
+		LWLockAcquire(TwoPhaseStateLock, LW_SHARED);
+	}
+
+	for (i = 0; i < TwoPhaseState->numPrepXacts; i++)
+	{
+		gxact = TwoPhaseState->prepXacts[i];
+		if (gxact->xid == xid)
+		{
+			found = true;
+			break;
+		}
+	}
+
+	if (need_lock)
+	{
+		LWLockRelease(TwoPhaseStateLock);
+	}
+
+	if (found)
+		return gxact;
+
+	return NULL;
+}
+
+// debug use.
+bool CompareGXact(char* gid, TransactionId xid, bool need_lock)
+{
+	GlobalTransaction gxact = GetXactByXid(xid, need_lock);
+	int res = strcmp(gxact->gid, gid);
+	Assert(gxact);
+	Assert(res == 0);
+	if (res != 0)
+	{
+		if (enable_twophase_recover_debug_print)
+			elog(DEBUG_2PC, "gid:%s not equal to gxact->gid:%s found by xid:%d, need_lock:%d", gid, gxact->gid, xid, need_lock);
+		return false;
+	}
+	return true;
+}
+#endif

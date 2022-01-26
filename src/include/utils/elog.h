@@ -17,7 +17,17 @@
 #include <setjmp.h>
 
 /* Error level codes */
-#define DEBUG6		9
+#ifdef POLARDB_X
+#define DEBUG_2PC 15
+#define DEBUG12 9
+#define DEBUG11 9
+#define DEBUG10 9
+#define DEBUG9 9 /* Debugging sending prepare timestamp */
+#define DEBUG8 9
+#define DEBUG7 9
+#endif /* POLARDB_X */
+
+#define DEBUG6 9
 #define DEBUG5		10			/* Debugging messages, in categories of
 								 * decreasing detail. */
 #define DEBUG4		11
@@ -52,6 +62,9 @@
 #endif
 #define FATAL		21			/* fatal error - abort process */
 #define PANIC		22			/* take down the other backends with me */
+#ifdef POLARDB_X
+#define STOP        23          /* stop postgres */
+#endif
 
  /* #define DEBUG DEBUG1 */	/* Backward compatibility with pre-7.3 */
 

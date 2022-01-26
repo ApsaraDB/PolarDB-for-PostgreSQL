@@ -81,6 +81,10 @@ typedef struct CheckPoint
 #define XLOG_FPI_FOR_HINT				0xA0
 #define XLOG_FPI						0xB0
 
+#ifdef POLARDB_X
+#define XLOG_RECORD_2PC_TIMESTAMP 0xD0
+#define XLOG_REMOVE_2PC_FILE 0xE0
+#endif
 
 /*
  * System status indicator.  Note this is stored in pg_control; if you change

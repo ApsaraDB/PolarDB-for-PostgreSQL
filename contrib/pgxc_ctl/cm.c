@@ -63,8 +63,7 @@ static int do_datanode_command(bool master_run, bool slave_run, int idx)
     {
         /* start datanode master */
         rc_local = doImmediate(aval(VAR_datanodeMasterServers)[idx], NULL,
-                               "pg_ctl start -w %s -D %s %s; sleep 1",
-                               isVarYes(VAR_standAlone)? "" :"-Z datanode",
+                               "pg_ctl start -w -D %s %s; sleep 1",
                                aval(VAR_datanodeMasterDirs)[idx],
                                isVarYes(VAR_standAlone)? "" :"-o -i");
         checkRc();
@@ -74,8 +73,7 @@ static int do_datanode_command(bool master_run, bool slave_run, int idx)
     {
         /* start datanode slave */
         rc_local = doImmediate(aval(VAR_datanodeSlaveServers)[idx], NULL,
-                               "pg_ctl start -w %s -D %s %s; sleep 1",
-                               isVarYes(VAR_standAlone)? "" :"-Z datanode",
+                               "pg_ctl start -w -D %s %s; sleep 1",
                                aval(VAR_datanodeSlaveDirs)[idx],
                                isVarYes(VAR_standAlone)? "" :"-o -i");
         checkRc();
@@ -115,7 +113,7 @@ static int do_datanode_command_aa(bool master_run, bool slave_run, int idx)
     {
         /* start datanode master, for aa replication, only take care master node */
         rc_local = doImmediate(aval(VAR_datanodeMasterServers)[idx], NULL,
-                               "pg_ctl start -w -Z datanode -D %s -o -i; sleep 1",
+                               "pg_ctl start -w -D %s -o -i; sleep 1",
                                aval(VAR_datanodeMasterDirs)[idx]);
         checkRc();
     }

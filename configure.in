@@ -38,6 +38,8 @@ PGAC_ARG_REQ(with, extra-version, [STRING], [append STRING to version],
              [PG_VERSION="$PACKAGE_VERSION"])
 AC_DEFINE_UNQUOTED(PG_VERSION, "$PG_VERSION", [PostgreSQL version as a string])
 
+AC_DEFINE_UNQUOTED(PGXC_VERSION, "$PACKAGE_XC_VERSION", [PostgreSQL version as a string])
+
 AC_CANONICAL_HOST
 
 template=
@@ -208,6 +210,13 @@ PGAC_ARG_BOOL(enable, debug, no,
 AC_SUBST(enable_debug)
 
 #
+# --enable-regress adds -D_PG_REGRESS_ to compiler flags
+#
+PGAC_ARG_BOOL(enable, regress, no,
+              [build with regression symbols (-D_PG_REGRESS_)])
+AC_SUBST(enable_regress)
+
+#
 # --enable-profiling enables gcc profiling
 #
 PGAC_ARG_BOOL(enable, profiling, no,
@@ -341,6 +350,37 @@ AC_DEFINE_UNQUOTED([XLOG_BLCKSZ], ${XLOG_BLCKSZ}, [
  buffers, else direct I/O may fail.
 
  Changing XLOG_BLCKSZ requires an initdb.
+])
+
+#
+# WAL segment size
+#
+AC_MSG_CHECKING([for WAL segment size])
+PGAC_ARG_REQ(with, wal-segsize, [SEGSIZE], [set WAL segment size in MB [16]],
+             [wal_segsize=$withval],
+             [wal_segsize=16])
+case ${wal_segsize} in
+  1) ;;
+  2) ;;
+  4) ;;
+  8) ;;
+ 16) ;;
+ 32) ;;
+ 64) ;;
+ 128) ;;
+ 256) ;;
+ 512) ;;
+ 1024) ;;
+  *) AC_MSG_ERROR([Invalid WAL segment size. Allowed values are 1,2,4,8,16,32,64,128,256,512,1024.])
+esac
+AC_MSG_RESULT([${wal_segsize}MB])
+
+AC_DEFINE_UNQUOTED([XLOG_SEG_SIZE], [(${wal_segsize} * 1024 * 1024)], [
+ XLOG_SEG_SIZE is the size of a single WAL file.  This must be a power of 2
+ and larger than XLOG_BLCKSZ (preferably, a great deal larger than
+ XLOG_BLCKSZ).
+
+ Changing XLOG_SEG_SIZE requires an initdb.
 ])
 
 #
@@ -559,6 +599,11 @@ fi
 
 if test "$enable_debug" = yes && test "$ac_cv_prog_cxx_g" = yes; then
   CXXFLAGS="$CXXFLAGS -g"
+fi
+
+# supply -D_PG_REGRESS_ if --enable-regress
+if test "$enable_regress" = yes && test "$ac_cv_prog_cc_g" = yes; then
+  CFLAGS="$CFLAGS -D_PG_REGRESS_"
 fi
 
 # enable code coverage if --enable-coverage
@@ -2381,6 +2426,11 @@ AC_DEFINE_UNQUOTED(PG_VERSION_STR,
                    ["PostgreSQL $PG_VERSION on $host, compiled by $cc_string, `expr $ac_cv_sizeof_void_p \* 8`-bit"],
                    [A string containing the version number, platform, and C compiler])
 
+# Supply additional version name for Postgres-XL
+AC_DEFINE_UNQUOTED(PGXC_VERSION_STR,
+                   ["PostgreSQL $PACKAGE_XC_VERSION on $host, based on PostgreSQL $PACKAGE_VERSION, compiled by $cc_string, `expr $ac_cv_sizeof_void_p \* 8`-bit"],
+                   [A string containing the version number, platform, and C compiler])
+
 # Supply a numeric version string for use by 3rd party add-ons
 # awk -F is a regex on some platforms, and not on others, so make "." a tab
 [PG_VERSION_NUM="`echo "$PACKAGE_VERSION" | sed 's/[A-Za-z].*$//' |
@@ -2397,6 +2447,10 @@ if test x"$PG_SYSROOT" != x; then
   CPPFLAGS=`echo "$CPPFLAGS" | sed -e "s| $PG_SYSROOT | \\\$(PG_SYSROOT) |"`
 fi
 AC_SUBST(PG_SYSROOT)
+
+# For PGXC, set -DPGXC by default. This can be overriden with -UPGXC if the user sets it.
+# For Postgres-XL, set both -DPGXC and -DXCP
+CFLAGS="-DPGXC -DXCP $CFLAGS"
 
 
 # Begin output steps

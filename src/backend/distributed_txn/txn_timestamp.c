@@ -30,6 +30,7 @@
 #include "access/mvccvars.h"
 #include "storage/proc.h"
 #include "storage/procarray.h"
+#include "pgxc/transam/txn_coordinator.h"
 
 /* user-set guc parameter */
 bool		enable_timestamp_debug_print = false;
@@ -43,6 +44,8 @@ static bool backendReceivedTimestamp = false;
 static LogicalTime txnStartTs = 0;
 /* commit_ts = ClockTick() */
 static LogicalTime txnCommitTs = 0;
+
+static LogicalTime txnPrepareTs = 0;
 /* coordinated_ts = Max(prepare_ts) */
 static LogicalTime txnCoordinatedCommitTs = 0;
 static LogicalTime replyTs = 0;
@@ -161,6 +164,18 @@ TxnGetOrGenerateCommitTs(bool fromCoordinator)
 	return res;
 }
 
+
+LogicalTime TxnGetOrGeneratePrepareTs(void)
+{
+	Assert(txn_coordination != TXN_COORDINATION_NONE);
+	if (txnPrepareTs != 0)
+	{
+		return txnPrepareTs;
+	}
+	txnPrepareTs = LogicalClockTick();
+	return txnPrepareTs;
+}
+
 void
 AtEOXact_txn(void)
 {
@@ -170,6 +185,7 @@ AtEOXact_txn(void)
 	txnUseGlobalSnapshot = false;
 	RecentGlobalTs = InvalidCommitSeqNo;
 	txnCoordinatedCommitTs = 0;
+	txnPrepareTs = 0;
 	TxnSetStartTs(0);
 	TxnSetCommitTs(0);
 }
@@ -190,6 +206,16 @@ TxnSetCommitTs(LogicalTime commitTs)
 	if (enable_timestamp_debug_print)
 		elog(LOG, "set commit timestamp " UINT64_FORMAT, commitTs);
 
+}
+
+void TxnSetPrepareTs(LogicalTime ts)
+{
+	Assert(txnPrepareTs == 0 || ts == 0);
+	txnPrepareTs = ts;
+
+	if (enable_timestamp_debug_print)
+		elog(LOG, "set prepare timestamp from coordinator "LOGICALTIME_FORMAT, 
+				LOGICALTIME_STRING(ts));
 }
 
 void
@@ -239,6 +265,20 @@ TxnGetAndClearReplyTimestamp(void)
 	return res;
 }
 
+LogicalTime TxnDecideCoordinatedCommitTs(void)
+{
+	LogicalTime global_committs = 0;
+	global_committs = TxnGetCoordinatedCommitTs();
+	Assert(global_committs);
+	if (enable_timestamp_debug_print)
+	{
+		elog(LOG,
+				"decide global commit_ts" LOGICALTIME_FORMAT " from max(prepare_ts)",
+				LOGICALTIME_STRING(global_committs));
+	}
+	return global_committs;
+}
+
 /*
  * Receive timestamp from coordinator
  * read-committed: receive start_ts every statement, use start_ts as snapshot.csn
@@ -279,6 +319,7 @@ FrontendRecvTimestamp(LogicalTime ts)
 }
 
 PG_FUNCTION_INFO_V1(txn_get_start_ts);
+PG_FUNCTION_INFO_V1(txn_get_commit_ts);
 PG_FUNCTION_INFO_V1(txn_commit_prepared);
 
 /**
@@ -292,19 +333,38 @@ txn_get_start_ts(PG_FUNCTION_ARGS)
 	PG_RETURN_UINT64(ts);
 }
 
+Datum
+txn_get_commit_ts(PG_FUNCTION_ARGS)
+{
+	LogicalTime ts = TxnGetCoordinatedCommitTs();
+	PG_RETURN_UINT64(ts);
+}
+
 /**
  * Commit a prepared transaction, with timestamp assigned from coordinator
  */
 Datum
 txn_commit_prepared(PG_FUNCTION_ARGS)
 {
-	const char *gid = text_to_cstring(PG_GETARG_TEXT_PP(0));
+	char *gid = text_to_cstring(PG_GETARG_TEXT_PP(0));
 	LogicalTime commit_ts = PG_GETARG_INT64(1);
 
 	if (commit_ts == 0)
 		ereport(ERROR, (errmsg("coordinated commit_ts is 0")));
 
 	TxnSetCoordinatedCommitTs(commit_ts);
+
+	/*
+	 * 1. setup in-memory commit_ts;
+	 * 2. record xlog
+	 * 3. update on-disk file
+	 * */
+	SetTwoPhaseXactCommitTimestamp(gid, commit_ts);
+	RecordTwoPhaseXactCommitTimestamp(gid, commit_ts);
+	UpdateTwoPhaseFileCommitTimestamp(gid, commit_ts);
+	if (enable_twophase_recover_debug_print)
+		elog(DEBUG_2PC, "TwoPhase Xact:%s, Receive commit timestamp " UINT64_FORMAT, g_twophase_state.gid, commit_ts);
+
 	FinishPreparedTransaction(gid, true);
 	PG_RETURN_NULL();
 }

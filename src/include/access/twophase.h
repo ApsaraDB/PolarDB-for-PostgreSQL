@@ -19,6 +19,20 @@
 #include "datatype/timestamp.h"
 #include "storage/lock.h"
 
+
+#ifdef POLARDB_X
+typedef struct
+{
+	char gid[GIDSIZE];
+} GidLookupTag;
+
+typedef struct
+{
+	GidLookupTag tag;
+	TransactionId localxid;
+} GidLookupEnt;
+#endif
+
 /*
  * GlobalTransactionData is defined in twophase.c; other places have no
  * business knowing the internal definition.
@@ -62,6 +76,24 @@ extern void FinishPreparedTransaction(const char *gid, bool isCommit);
 
 extern void PrepareRedoAdd(char *buf, XLogRecPtr start_lsn,
 			   XLogRecPtr end_lsn, RepOriginId origin_id);
+#ifdef POLARDB_X
+extern void PrepareRedoRemove(TransactionId xid, bool giveWarning, bool shouldClear);
+#else
 extern void PrepareRedoRemove(TransactionId xid, bool giveWarning);
+#endif
 extern void restoreTwoPhaseData(void);
+#ifdef POLARDB_X
+extern void SetTwoPhaseXactCommitTimestamp(char* gid, GlobalTimestamp timestamp);
+extern void RecordTwoPhaseXactCommitTimestamp(char* gid, GlobalTimestamp timestamp);
+extern void UpdateTwoPhaseFileCommitTimestamp(char* gid, GlobalTimestamp timestamp);
+extern Size TwoPhaseGidHashTableShmemSize(void);
+extern void GidHashTabShmemInit(void);
+extern bool CleanUpTwoPhaseFile(char* gid);
+extern void RefreshGidHashMap(bool need_lock);
+extern TransactionId GetTwoPhaseXactLocalxid(char* gid);
+extern bool RemoveFromGidHashTab(char* gid, TransactionId xid);
+extern bool AddToGidHashTab(char* gid, TransactionId xid);
+extern GlobalTransaction GetXactByXid(TransactionId xid, bool need_lock);
+extern bool CompareGXact(char* gid, TransactionId xid, bool need_lock);
+#endif
 #endif							/* TWOPHASE_H */

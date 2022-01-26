@@ -70,7 +70,6 @@
 #include "pgxc_ctl_log.h"
 #include "varnames.h"
 #include "do_command.h"
-//#include "do_command_standalone.h"
 #include "utils.h"
 
 /*
@@ -569,8 +568,8 @@ int main(int argc, char *argv[])
 	else
 	{
         // only support standalone for now
-	    if ((!find_var(VAR_standAlone)) || (!isVarYes(VAR_standAlone)))
-            reset_var_val(VAR_standAlone, "y");
+//	    if ((!find_var(VAR_standAlone)) || (!isVarYes(VAR_standAlone)))
+//            reset_var_val(VAR_standAlone, "y");
 
 	    if (isVarYes(VAR_standAlone))
             check_configuration_standalone();

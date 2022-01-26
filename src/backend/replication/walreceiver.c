@@ -186,9 +186,9 @@ typedef struct
 
 typedef struct
 {
-	PGPipe	  **request;		/* request pipe */
-	PGPipe	  **response;
-	ThreadSema *sem;			/* response sem */
+	PGPipeRec	  **request;		/* request pipe */
+	PGPipeRec	  **response;
+	ThreadSemaRec *sem;			/* response sem */
 	LogFlushResultPerThread *results;
 	CurrentState *state;
 	pthread_mutex_t m_mutex;	/* thread lock it to create new xlog file */
@@ -250,9 +250,9 @@ walreceiver_init_parallel_control(WALReceiverParallelControl * control, int thre
 {
 	int			i;
 
-	control->request = (PGPipe * *) palloc0(threadCount * sizeof(PGPipe *));
-	control->response = (PGPipe * *) palloc0(threadCount * sizeof(PGPipe *));
-	control->sem = (ThreadSema *) palloc0(threadCount * sizeof(ThreadSema));
+	control->request = (PGPipeRec * *) palloc0(threadCount * sizeof(PGPipeRec *));
+	control->response = (PGPipeRec * *) palloc0(threadCount * sizeof(PGPipeRec *));
+	control->sem = (ThreadSemaRec *) palloc0(threadCount * sizeof(ThreadSemaRec));
 	control->results = (LogFlushResultPerThread *)
 		palloc0(threadCount * sizeof(LogFlushResultPerThread));
 	control->state = (CurrentState *) palloc0(threadCount * sizeof(CurrentState));
@@ -263,7 +263,7 @@ walreceiver_init_parallel_control(WALReceiverParallelControl * control, int thre
 		control->results[i].recvFile = -1;
 		control->state[i].threadRecvFile = -1;
 	}
-	ThreadMutexInit(&control->m_mutex);
+	ThreadMutexInitRec(&control->m_mutex);
 }
 
 static void
@@ -460,11 +460,11 @@ WalReceiverMain(void)
 		walreceiver_init_parallel_control(&rcv_ParallelWriteControl, max_parallel_write_thread);
 		for (i = 0; i < max_parallel_write_thread; i++)
 		{
-			rcv_ParallelWriteControl.request[i] = CreatePipe(max_parallel_write_pipe_len);
-			rcv_ParallelWriteControl.response[i] = CreatePipe(max_parallel_write_pipe_len);
-			ThreadSemaInit(&rcv_ParallelWriteControl.sem[i], 0);
+			rcv_ParallelWriteControl.request[i] = CreatePipeRec(max_parallel_write_pipe_len);
+			rcv_ParallelWriteControl.response[i] = CreatePipeRec(max_parallel_write_pipe_len);
+			ThreadSemaRecInit(&rcv_ParallelWriteControl.sem[i], 0);
 			threadParam[i].threadIndex = i;
-			ret = CreateThread(walrecevier_async_write_management_thread, (void *) &threadParam[i], MT_THR_DETACHED);
+			ret = CreateThreadRec(walrecevier_async_write_management_thread, (void *) &threadParam[i], MT_THR_DETACHED);
 			if (ret)
 			{
 				elog(ERROR, "create walreceiver parallel write manage thread failed");
@@ -2030,10 +2030,10 @@ walrecevier_async_write_management_thread(void *arg)
 	while (1)
 	{
 		/* wait for signal */
-		ThreadSemaDown(&rcv_ParallelWriteControl.sem[threadIndex]);
+		ThreadSemaRecDown(&rcv_ParallelWriteControl.sem[threadIndex]);
 
 		/* create connect as needed */
-		request = (WALParallelWriteReq *) PipeGet(rcv_ParallelWriteControl.request[threadIndex]);
+		request = (WALParallelWriteReq *) PipeGetRec(rcv_ParallelWriteControl.request[threadIndex]);
 		if (request)
 		{
 
@@ -2064,7 +2064,7 @@ walrecevier_async_write_management_thread(void *arg)
 					}
 			}
 
-			while (-1 == PipePut(rcv_ParallelWriteControl.response[threadIndex], request))
+			while (-1 == PipePutRec(rcv_ParallelWriteControl.response[threadIndex], request))
 			{
 				pg_usleep(1000L);
 			}
@@ -2104,12 +2104,12 @@ WalRcvParallelWrite(char *buf, Size nbytes, XLogRecPtr recptr)
 		writeReq->start = recptr;
 		writeReq->cmd = COMMAND_WRITE;
 
-		while (-1 == PipePut(rcv_ParallelWriteControl.request[threadIndex], (void *) writeReq))
+		while (-1 == PipePutRec(rcv_ParallelWriteControl.request[threadIndex], (void *) writeReq))
 		{
 			round++;
 		}
 		rcv_ParallelWriteControl.messageCnt++;
-		ThreadSemaUp(&rcv_ParallelWriteControl.sem[threadIndex]);
+		ThreadSemaRecUp(&rcv_ParallelWriteControl.sem[threadIndex]);
 
 		recptr += segbytes;
 		nbytes -= segbytes;
@@ -2134,12 +2134,12 @@ WalRcvParallelFlush(XLogRecPtr flush)
 	flushReq->cmd = COMMAND_FLUSH;
 
 
-	while (-1 == PipePut(rcv_ParallelWriteControl.request[threadIndex], (void *) flushReq))
+	while (-1 == PipePutRec(rcv_ParallelWriteControl.request[threadIndex], (void *) flushReq))
 	{
 		round++;
 	}
 	rcv_ParallelWriteControl.messageCnt++;
-	ThreadSemaUp(&rcv_ParallelWriteControl.sem[threadIndex]);
+	ThreadSemaRecUp(&rcv_ParallelWriteControl.sem[threadIndex]);
 	LogstreamResult.Send = LogstreamResult.Receive;
 }
 
@@ -2166,7 +2166,7 @@ WalRcvParallelSync(void)
 		state = &(rcv_ParallelWriteControl.state[threadIndex]);
 		for (responseCnt = 0; responseCnt < max_parallel_write_pipe_len; responseCnt++)
 		{
-			wrsp = (WALParallelWriteReq *) PipeGet(rcv_ParallelWriteControl.response[threadIndex]);
+			wrsp = (WALParallelWriteReq *) PipeGetRec(rcv_ParallelWriteControl.response[threadIndex]);
 			if (wrsp)
 			{
 				switch (wrsp->cmd)
@@ -2451,7 +2451,7 @@ XLogFileParallelInit(XLogSegNo logsegno, bool *use_existent, bool use_lock, int 
 		/*
 		 * We want to be sure that only one process does this at a time.
 		 */
-		ThreadMutexLock(&rcv_ParallelWriteControl.m_mutex);
+		ThreadMutexLockRec(&rcv_ParallelWriteControl.m_mutex);
 
 		LWLockAcquire(ControlFileLock, LW_EXCLUSIVE);
 
@@ -2462,7 +2462,7 @@ XLogFileParallelInit(XLogSegNo logsegno, bool *use_existent, bool use_lock, int 
 			{
 				/* Failed to find a free slot within specified range */
 				LWLockRelease(ControlFileLock);
-				ThreadMutexUnlock(&rcv_ParallelWriteControl.m_mutex);
+				ThreadMutexUnlockRec(&rcv_ParallelWriteControl.m_mutex);
 				return false;
 			}
 			installed_segno++;
@@ -2476,13 +2476,13 @@ XLogFileParallelInit(XLogSegNo logsegno, bool *use_existent, bool use_lock, int 
 		if (durable_link_or_rename(tmppath, path, LOG) != 0)
 		{
 			LWLockRelease(ControlFileLock);
-			ThreadMutexUnlock(&rcv_ParallelWriteControl.m_mutex);
+			ThreadMutexUnlockRec(&rcv_ParallelWriteControl.m_mutex);
 			/* durable_link_or_rename already emitted log message */
 			return false;
 		}
 
 		LWLockRelease(ControlFileLock);
-		ThreadMutexUnlock(&rcv_ParallelWriteControl.m_mutex);
+		ThreadMutexUnlockRec(&rcv_ParallelWriteControl.m_mutex);
 	}
 	*use_existent = false;
 

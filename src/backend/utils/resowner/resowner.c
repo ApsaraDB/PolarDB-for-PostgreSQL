@@ -126,6 +126,9 @@ typedef struct ResourceOwnerData
 	ResourceArray filearr;		/* open temporary files */
 	ResourceArray dsmarr;		/* dynamic shmem segments */
 	ResourceArray jitarr;		/* JIT contexts */
+#ifdef POLARDB_X
+    ResourceArray prepstmts;    /* prepared statements */
+#endif
 
 	/* We can remember up to MAX_RESOWNER_LOCKS references to local locks. */
 	int			nlocks;			/* number of owned locks */
@@ -1222,6 +1225,42 @@ PrintFileLeakWarning(File file)
 		 file);
 }
 
+#ifdef POLARDB_X
+/*
+ * Make sure there is room for at least one more entry in a ResourceOwner's
+ * prepared statements reference array.
+ *
+ * This is separate from actually inserting an entry because if we run out
+ * of memory, it's critical to do so *before* acquiring the resource.
+ */
+void
+ResourceOwnerEnlargePreparedStmts(ResourceOwner owner)
+{
+    ResourceArrayEnlarge(&(owner->prepstmts));
+}
+
+/*
+ * Remember that a prepared statement is owned by a ResourceOwner
+ *
+ * Caller must have previously done ResourceOwnerEnlargePreparedStmts()
+ */
+void
+ResourceOwnerRememberPreparedStmt(ResourceOwner owner, char *stmt)
+{
+    ResourceArrayAdd(&(owner->prepstmts), PointerGetDatum(stmt));
+}
+
+/*
+ * Forget that a prepared statement is owned by a ResourceOwner
+ */
+void
+ResourceOwnerForgetPreparedStmt(ResourceOwner owner, char *stmt)
+{
+    if (!ResourceArrayRemove(&(owner->prepstmts), PointerGetDatum(stmt)))
+        elog(ERROR, "prepared statement %p is not owned by resource owner %s",
+             stmt, owner->name);
+}
+#endif /* POLARDB_X */
 /*
  * Make sure there is room for at least one more entry in a ResourceOwner's
  * dynamic shmem segment reference array.

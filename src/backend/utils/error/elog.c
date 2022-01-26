@@ -541,6 +541,19 @@ errfinish(int dummy,...)
 		proc_exit(1);
 	}
 
+#ifdef POLARDB_X
+    if (STOP == elevel)
+	{
+		/*
+		 * Serious stop time. Postmaster will observe STOP process exit.
+		 * status 3 and kill the other backends too. Doing this is to ensure transaction security.
+		 */
+		fflush(stdout);
+		fflush(stderr);
+		exit(3);
+	}
+#endif
+
 	if (elevel >= PANIC)
 	{
 		/*
@@ -3631,6 +3644,11 @@ error_severity(int elevel)
 		case PANIC:
 			prefix = gettext_noop("PANIC");
 			break;
+#ifdef POLARDB_X
+        case STOP:
+            prefix = gettext_noop("STOP");
+            break;
+#endif
 		default:
 			prefix = "???";
 			break;

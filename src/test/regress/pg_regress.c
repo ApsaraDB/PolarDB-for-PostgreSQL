@@ -501,11 +501,6 @@ polar_dma_init_node(char *node_name, int node_port, uint64 sys_identifier, bool 
 	header(_("initializing database system"));
 	snprintf(buf, sizeof(buf),
 			 "\"%s%sinitdb\" -D \"%s/%s/data\" "
-#ifdef POLARDB_X
-			 "--nodename=regress --nodetype=coordinator "
-			 "--master_gtm_nodename=regress_gtm --master_gtm_ip=localhost "
-			 "--master_gtm_port=9999 "
-#endif							/* POLARDB_X */
 			 "--no-clean -i %lu --no-sync%s%s > \"%s/log/initdb.log\" 2>&1",
 			 bindir ? bindir : "",
 			 bindir ? "/" : "",

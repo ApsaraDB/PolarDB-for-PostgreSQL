@@ -6,7 +6,6 @@
  * See src/backend/access/transam/README for more information.
  *
  * Support CTS-based distributed transactions
- * Author: Junbin Kang
  *
  * Portions Copyright (c) 2020, Alibaba Group Holding Limited
  * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
@@ -73,6 +72,15 @@
 #include "utils/timestamp.h"
 #include "pg_trace.h"
 
+#ifdef POLARDB_X
+#include "libpq/pqformat.h"
+#include "libpq/libpq.h"
+#include "pgxc/pgxc.h"
+#include "pgxc/transam/txn_util.h"
+#include "pgxc/transam/txn_coordinator.h"
+
+#endif /* POLARDB_X */
+
 /*
  *	User-tweakable parameters
  */
@@ -86,7 +94,11 @@ bool		DefaultXactDeferrable = false;
 bool		XactDeferrable;
 
 int			synchronous_commit = SYNCHRONOUS_COMMIT_ON;
-
+#ifdef POLARDB_X
+char *savePrepareGID = NULL;
+char *saveNodeString = NULL;
+bool XactLocalNodePrepared;
+#endif
 /*
  * When running as a parallel worker, we place only a single
  * TransactionStateData on the parallel worker's state stack, and the XID
@@ -203,6 +215,14 @@ typedef struct TransactionStateData
 	bool		startedInRecovery;	/* did we start in recovery? */
 	int			parallelModeLevel;	/* Enter/ExitParallelMode counter */
 	struct TransactionStateData *parent;	/* back link to parent */
+#ifdef POLARDB_X
+    bool        isLocalParameterUsed;        /* Check if a local parameter is active
+											* in transaction block (SET LOCAL, DEFERRED) */
+    bool        need_send_begin_txn;
+    bool        need_send_begin_subtxn;
+    List        *node_has_begin_txn_list;
+    List        *node_has_begin_subtxn_list;
+#endif /* POLARDB_X */
 } TransactionStateData;
 
 typedef TransactionStateData *TransactionState;
@@ -231,7 +251,7 @@ static TransactionStateData TopTransactionStateData = {
 	0,							/* previous SecurityRestrictionContext */
 	false,						/* entry-time xact r/o state */
 	false,						/* startedInRecovery */
-	//false,						/* didLogXid */ 
+	//false,						/* didLogXid */
 	0,							/* parallelModeLevel */
 	NULL						/* link to parent state block */
 };
@@ -245,6 +265,26 @@ static TransactionState CurrentTransactionState = &TopTransactionStateData;
 static SubTransactionId currentSubTransactionId;
 static CommandId currentCommandId;
 static bool currentCommandIdUsed;
+
+#ifdef POLARDB_X
+/*
+ * Parameters for communication control of Command ID between Postgres-XC nodes.
+ * isCommandIdReceived is used to determine of a command ID has been received by a remote
+ * node from a Coordinator.
+ * sendCommandId is used to determine if a Postgres-XC node needs to communicate its command ID.
+ * This is possible for both remote nodes and Coordinators connected to applications.
+ * receivedCommandId is the command ID received on Coordinator from remote node or on remote node
+ * from Coordinator.
+ */
+static bool isCommandIdReceived;
+static bool sendCommandId;
+static CommandId receivedCommandId;
+
+#ifdef POLARDBX_TWO_PHASE_TESTS
+int twophase_exception_case = 0;
+int twophase_exception_node_exception = 0;
+#endif
+#endif /* POLARDB_X */
 
 /*
  * xactStartTimestamp is the value of transaction_timestamp().
@@ -618,6 +658,32 @@ SubTransactionIsActive(SubTransactionId subxid)
 CommandId
 GetCurrentCommandId(bool used)
 {
+#ifdef POLARDB_X
+    /* If coordinator has sent a command id, remote node should use it */
+    if (isCommandIdReceived)
+    {
+        /*
+         * Indicate to successive calls of this function that the sent command id has
+         * already been used.
+         */
+        isCommandIdReceived = false;
+        currentCommandId = GetReceivedCommandId();
+    }
+    else if (IS_PGXC_LOCAL_COORDINATOR)
+    {
+        /*
+         * If command id reported by remote node is greater that the current
+         * command id, the coordinator needs to use it. This is required because
+         * a remote node can increase the command id sent by the coordinator
+         * e.g. in case a trigger fires at the remote node and inserts some rows
+         * The coordinator should now send the next command id knowing
+         * the largest command id either current or received from remote node.
+         */
+        if (GetReceivedCommandId() > currentCommandId)
+            currentCommandId = GetReceivedCommandId();
+    }
+#endif /* POLARDB_X */
+
 	/* this is global to a transaction, not subtransaction-local */
 	if (used)
 	{
@@ -903,6 +969,16 @@ CommandCounterIncrement(void)
 
 		/* Propagate new command ID into static snapshots */
 		SnapshotSetCommandId(currentCommandId);
+#ifdef POLARDB_X
+		/*
+		 * Remote node should report local command id changes only if
+		 * required by the Coordinator. The requirement of the
+		 * Coordinator is inferred from the fact that Coordinator
+		 * has itself sent the command id to the remote nodes.
+		 */
+		if (IsConnFromCoord() && IsSendCommandId())
+			ReportCommandIdChange(currentCommandId);
+#endif
 
 		/*
 		 * Make any catalog changes done by the just-completed command visible
@@ -1833,6 +1909,18 @@ StartTransaction(void)
 	currentSubTransactionId = TopSubTransactionId;
 	currentCommandId = FirstCommandId;
 	currentCommandIdUsed = false;
+#ifdef POLARDB_X
+    /*
+     * Parameters related to global command ID control for transaction.
+     * Send the 1st command ID.
+     */
+    isCommandIdReceived = false;
+    if (IsConnFromCoord())
+    {
+        SetReceivedCommandId(FirstCommandId);
+        SetSendCommandId(false);
+    }
+#endif /* POLARDB_X */
 
 	/*
 	 * must initialize resource-management stuff first
@@ -2129,6 +2217,9 @@ CommitTransaction(void)
 	s->state = TRANS_DEFAULT;
 
 	RESUME_INTERRUPTS();
+#ifdef POLARDB_X
+	AtEOXact_Remote();
+#endif
 }
 
 #ifdef ENABLE_DISTRIBUTED_TRANSACTION
@@ -2275,8 +2366,27 @@ PrepareTransaction(void)
 	 * prepare processing
 	 */
 	s->state = TRANS_PREPARE;
+#ifdef POLARDB_X
+	if (txn_coordination == TXN_COORDINATION_HLC)
+	{
+		Assert(GetGlobalPrepareTimestamp() == InvalidGlobalTimestamp);
+		prepared_at = GetCurrentTimestamp();
+		if (enable_twophase_recover_debug_print)
+			elog(DEBUG_2PC, "HLC still use local current timestamp as prepare time. "
+							"prepared_at:" UINT64_FORMAT , prepared_at);
+	}
+	else
+	{
+		prepared_at = GetGlobalPrepareTimestamp();
+		if (enable_twophase_recover_debug_print)
+			elog(DEBUG_2PC, "Use GlobalPrepareTimestamp instead of currentTimestamp. "
+							"XactGlobalPrepareTimestamp:" UINT64_FORMAT ", CurrentTimestamp:" UINT64_FORMAT,
+							prepared_at, GetCurrentTimestamp());
+	}
 
+#else
 	prepared_at = GetCurrentTimestamp();
+#endif
 
 	/* Tell bufmgr and smgr to prepare for commit */
 	BufmgrCommit();
@@ -2477,6 +2587,9 @@ PrepareTransaction(void)
 	s->state = TRANS_DEFAULT;
 
 	RESUME_INTERRUPTS();
+#ifdef POLARDB_X
+	AtEOXact_Remote();
+#endif
 }
 
 
@@ -2488,6 +2601,16 @@ AbortTransaction(void)
 {
 	TransactionState s = CurrentTransactionState;
 	bool		is_parallel_worker;
+
+#ifdef  POLARDB_X
+	if (TWO_PHASE_COMMITTING == g_twophase_state.state ||
+	    TWO_PHASE_COMMIT_ERROR == g_twophase_state.state)
+	{
+		// STOP
+        elog(STOP, "Exit backend in AbortTransaction");
+	}
+#endif
+
 
 	/* Prevent cancel/die interrupt while cleaning up */
 	HOLD_INTERRUPTS();
@@ -2658,6 +2781,9 @@ AbortTransaction(void)
 	 * State remains TRANS_ABORT until CleanupTransaction().
 	 */
 	RESUME_INTERRUPTS();
+#ifdef POLARDB_X
+	AtEOXact_Remote();
+#endif
 }
 
 /*
@@ -5439,6 +5565,10 @@ XactLogAbortRecord(TimestampTz abort_time,
 				   int xactflags, TransactionId twophase_xid,
 				   const char *twophase_gid)
 {
+#ifdef POLARDB_X
+	if (enable_twophase_recover_debug_print)
+		elog(DEBUG_2PC, "XactLogAbortRecord: twophase_gid:%s, twophase_xid:%d", twophase_gid, twophase_xid);
+#endif
 	xl_xact_abort xlrec;
 	xl_xact_xinfo xl_xinfo;
 	xl_xact_subxacts xl_subxacts;
@@ -5484,9 +5614,10 @@ XactLogAbortRecord(TimestampTz abort_time,
 		xl_xinfo.xinfo |= XACT_XINFO_HAS_TWOPHASE;
 		xl_twophase.xid = twophase_xid;
 		Assert(twophase_gid != NULL);
-
-		if (XLogLogicalInfoActive())
-			xl_xinfo.xinfo |= XACT_XINFO_HAS_GID;
+#ifndef POLARDB_X
+		if (XLogLogicalInfoActive())  /* If POLARDB_X is defined, record gid in xlog anyway. Xlog redo after crash will use it. */
+#endif
+		xl_xinfo.xinfo |= XACT_XINFO_HAS_GID;
 	}
 
 	if (TransactionIdIsValid(twophase_xid) && XLogLogicalInfoActive())
@@ -5861,7 +5992,14 @@ xact_redo(XLogReaderState *record)
 
 		/* Delete TwoPhaseState gxact entry and/or 2PC file. */
 		LWLockAcquire(TwoPhaseStateLock, LW_EXCLUSIVE);
+#ifdef POLARDB_X
+		if (!IS_PGXC_SINGLE_NODE)
+			PrepareRedoRemove(parsed.twophase_xid, false, false);
+		else
+			PrepareRedoRemove(parsed.twophase_xid, false, true);
+#else
 		PrepareRedoRemove(parsed.twophase_xid, false);
+#endif
 		LWLockRelease(TwoPhaseStateLock);
 	}
 	else if (info == XLOG_XACT_ABORT)
@@ -5890,8 +6028,33 @@ xact_redo(XLogReaderState *record)
 
 		/* Delete TwoPhaseState gxact entry and/or 2PC file. */
 		LWLockAcquire(TwoPhaseStateLock, LW_EXCLUSIVE);
+#ifdef POLARDB_X
+		if (enable_twophase_recover_debug_print)
+		{
+			// debug code.
+			if (!IS_PGXC_SINGLE_NODE)
+				CompareGXact(parsed.twophase_gid, parsed.twophase_xid, false);
+		}
+#endif
+
+#ifdef POLARDB_X
+		PrepareRedoRemove(parsed.twophase_xid, false, true);
+#else
 		PrepareRedoRemove(parsed.twophase_xid, false);
+#endif
 		LWLockRelease(TwoPhaseStateLock);
+
+#ifdef POLARDB_X
+		if (!IS_PGXC_SINGLE_NODE)
+		{
+			if (enable_twophase_recover_debug_print)
+				elog(DEBUG_2PC, "xact_time:"INT64_FORMAT" ,xinfo:%u, dbId:%u, tsId:%u, nsubxacts:%d, nrels:%d, twophase_xid:%d, "
+														"twophase_gid:%s, origin_lsn:"UINT64_FORMAT" ,origin_timestamp:"INT64_FORMAT,
+					 parsed.xact_time, parsed.xinfo, parsed.dbId, parsed.tsId, parsed.nsubxacts, parsed.nrels, parsed.twophase_xid,
+					 parsed.twophase_gid, parsed.origin_lsn, parsed.origin_timestamp);
+			RemoveFromGidHashTab(parsed.twophase_gid, parsed.twophase_xid);
+		}
+#endif
 	}
 	else if (info == XLOG_XACT_PREPARE)
 	{
@@ -5909,3 +6072,373 @@ xact_redo(XLogReaderState *record)
 	else
 		elog(PANIC, "xact_redo: unknown op code %u", info);
 }
+
+#ifdef POLARDB_X
+bool
+InSubTransaction(void)
+{
+    TransactionState s = CurrentTransactionState;
+    if (s->parent != NULL && s->nestingLevel > 1)
+    {
+        return true;
+    }
+
+    return false;
+}
+
+bool
+InPlpgsqlFunc(void)
+{
+    return g_in_plpgsql_exec_fun;
+}
+
+bool
+NeedBeginTxn(void)
+{
+    bool ret = false;
+    TransactionState s = &TopTransactionStateData;
+
+    if (!InPlpgsqlFunc())
+    {
+        return false;
+    }
+
+    ret = (1 == s->nestingLevel  && s->need_send_begin_txn);
+    return ret;
+}
+
+
+bool
+NeedBeginSubTxn(void)
+{
+    bool ret = false;
+    TransactionState s = CurrentTransactionState;
+
+    if (!InPlpgsqlFunc())
+        return false;
+
+    ret = s->need_send_begin_subtxn;
+
+    return ret;
+}
+
+void
+SetNodeBeginTxn(Oid nodeoid)
+{
+    TransactionState s = &TopTransactionStateData;
+    MemoryContext oldcontext = NULL;
+
+    if (!InPlpgsqlFunc() || s->nestingLevel != 1)
+    {
+        elog(PANIC,"SetNodeBeginTxn should only called in plpgsql exec env and TopmostTxn");
+    }
+
+    oldcontext = MemoryContextSwitchTo(TopTransactionContext);
+
+    s->node_has_begin_txn_list = list_append_unique_oid(s->node_has_begin_txn_list, nodeoid);
+
+    MemoryContextSwitchTo(oldcontext);
+}
+
+void
+SetNodeBeginSubTxn(Oid nodeoid)
+{
+    MemoryContext oldcontext = NULL;
+    TransactionState s = CurrentTransactionState;
+
+    if (!InPlpgsqlFunc() || s->nestingLevel <= 1)
+    {
+        elog(PANIC,"SetNodeBeginSubTxn should only called in plpgsql exec env");
+    }
+
+    oldcontext = MemoryContextSwitchTo(TopTransactionContext);
+    s->node_has_begin_subtxn_list = list_append_unique_oid(s->node_has_begin_subtxn_list, nodeoid);
+    MemoryContextSwitchTo(oldcontext);
+}
+
+
+bool NodeHasBeginTxn(Oid nodeoid)
+{
+    TransactionState s = &TopTransactionStateData;
+
+    if (!InPlpgsqlFunc())
+    {
+        elog(PANIC,"NodeHasBeginTxn should only called in plpgsql exec env");
+    }
+
+    return list_member_oid(s->node_has_begin_txn_list, nodeoid);
+}
+
+
+bool NodeHasBeginSubTxn(Oid nodeoid)
+{
+    TransactionState s = CurrentTransactionState;
+
+    if (!InPlpgsqlFunc())
+    {
+        elog(PANIC,"NodeHasBeginSubTxn should only called in plpgsql exec env");
+    }
+
+    return list_member_oid(s->node_has_begin_subtxn_list, nodeoid);
+}
+
+void SetTopXactNeedBeginTxn(void)
+{
+    TransactionState s = CurrentTransactionState;
+    /* Only TopTranscation need set begin flag */
+    if (s->nestingLevel == 1)
+    {
+        s->need_send_begin_txn = true;
+    }
+}
+
+void SetEnterPlpgsqlFunc(void)
+{
+    g_in_plpgsql_exec_fun = true;
+}
+
+void SetExitPlpgsqlFunc(void)
+{
+    g_in_plpgsql_exec_fun = false;
+}
+
+
+bool SavepointDefined(void)
+{
+    TransactionState s = CurrentTransactionState;
+    if (s->name && TBLOCK_SUBBEGIN == s->blockState)
+    {
+        return true;
+    }
+
+    return false;
+}
+
+/* so far, DDL such as (savepoint,rollback to,release savepoint) should not acquire xid */
+bool ExecDDLWithoutAcquireXid(Node* parsetree)
+{
+    TransactionStmt *stmt = (TransactionStmt *) parsetree;
+    bool              ret  =  false;
+
+    if (parsetree && T_TransactionStmt == nodeTag(parsetree))
+    {
+        switch (stmt->kind)
+        {
+            case TRANS_STMT_SAVEPOINT:
+            case TRANS_STMT_RELEASE:
+            case TRANS_STMT_ROLLBACK_TO:
+                ret = true;
+                break;
+            default:
+                break;
+        }
+    }
+
+    return ret;
+}
+
+MemoryContext
+GetCurrentTransactionContext(void)
+{
+    return CurrentTransactionState->curTransactionContext;
+}
+
+ResourceOwner
+GetCurrentTransactionResourceOwner(void)
+{
+    return CurrentTransactionState->curTransactionOwner;
+}
+
+const char * GetPrepareGID(void)
+{
+    return prepareGID;
+}
+
+void ClearPrepareGID(void)
+{
+    prepareGID = NULL;
+    return;
+}
+
+/*
+ * Parameters for communication control of Command ID between Postgres-XC nodes.
+ * isCommandIdReceived is used to determine of a command ID has been received by a remote
+ * node from a Coordinator.
+ * sendCommandId is used to determine if a Postgres-XC node needs to communicate its command ID.
+ * This is possible for both remote nodes and Coordinators connected to applications.
+ * receivedCommandId is the command ID received on Coordinator from remote node or on remote node
+ * from Coordinator.
+ */
+static bool isCommandIdReceived;
+static bool sendCommandId;
+static CommandId receivedCommandId;
+
+/*
+ * SaveReceivedCommandId
+ * Save a received command ID from another node for future use.
+ */
+void
+SaveReceivedCommandId(CommandId cid)
+{
+    /* Set the new command ID */
+    SetReceivedCommandId(cid);
+
+    /*
+     * Change command ID information status to report any changes in remote ID
+     * for a remote node. A new command ID has also been received.
+     */
+    {
+        SetSendCommandId(true);
+        isCommandIdReceived = true;
+    }
+}
+
+/*
+ * SetReceivedCommandId
+ * Set the command Id received from other nodes
+ */
+void
+SetReceivedCommandId(CommandId cid)
+{
+    receivedCommandId = cid;
+    currentCommandId = cid;
+}
+
+/*
+ * GetReceivedCommandId
+ * Get the command id received from other nodes
+ */
+CommandId
+GetReceivedCommandId(void)
+{
+    return receivedCommandId;
+}
+
+/*
+ * ReportCommandIdChange
+ * ReportCommandIdChange reports a change in current command id at remote node
+ * to the Coordinator. This is required because a remote node can increment command
+ * Id in case of triggers or constraints.
+ */
+void
+ReportCommandIdChange(CommandId cid)
+{
+    StringInfoData buf;
+
+    /* Send command Id change to Coordinator */
+    pq_beginmessage(&buf, 'M');
+    pq_sendint(&buf, cid, 4);
+    pq_endmessage(&buf);
+    pq_flush();
+}
+
+/*
+ * IsSendCommandId
+ * Get status of command ID sending. If set at true, command ID needs to be communicated
+ * to other nodes.
+ */
+bool
+IsSendCommandId(void)
+{
+    return sendCommandId;
+}
+
+/*
+ * SetSendCommandId
+ * Change status of command ID sending.
+ */
+void
+SetSendCommandId(bool status)
+{
+    sendCommandId = status;
+}
+
+
+bool
+IsTransactionIdle(void)
+{
+    TransactionState s = CurrentTransactionState;
+
+    if (TBLOCK_DEFAULT == s->blockState && TRANS_DEFAULT == s->state)
+        return true;
+
+    elog(WARNING,"reload is be processing in transaction. trans state: %d", CurrentTransactionState->state);
+    elog(WARNING,"reload is be processing in transaction. trans block state: %d", CurrentTransactionState->blockState);
+
+    return false;
+}
+
+void 
+AtEOXact_Twophase(void)
+{
+	TransactionState s = CurrentTransactionState;
+
+	if (s->node_has_begin_subtxn_list)
+	{
+		// list_free(s->node_has_begin_subtxn_list);
+		s->node_has_begin_subtxn_list = NULL;
+	}
+	if (s->node_has_begin_txn_list)
+	{
+		// list_free(s->node_has_begin_txn_list);
+		s->node_has_begin_txn_list = NULL;
+	}
+	s->need_send_begin_subtxn = false;
+	s->need_send_begin_txn	  = false;
+
+	AtEOXact_Remote();
+	SetGTMxactStartTimestamp(0);
+
+	SetCurrentHandlesReadonly();
+	AtEOXact_Global();
+
+}
+
+const char* 
+LoadPrepareGID(void)
+{
+	return prepareGID;
+}
+
+void 
+StorePrepareGID(const char *gid)
+{
+	if (gid == NULL) 
+		prepareGID = NULL;
+	else 
+		prepareGID = pstrdup(gid);
+}
+
+/* PrepareStartNode will start prepare the node which accept user sql and participate in 2pc transaction */
+void PrepareStartNode(void)
+{
+	TransactionState s = CurrentTransactionState;
+	/*
+	 * OK, local node is involved in the transaction. Prepare the
+	 * local transaction now. Errors will be reported via ereport
+	 * and that will lead to transaction abortion.
+	 */
+	if(enable_distri_print)
+	{
+		elog(LOG, "implicit prepare xid %d.", GetTopTransactionIdIfAny());
+	}
+	PrepareTransaction();
+	s->blockState = TBLOCK_DEFAULT;
+
+	/*
+	 * PrepareTransaction would have ended the current transaction.
+	 * Start a new transaction. We can also use the GXID of this
+	 * new transaction to run the COMMIT/ROLLBACK PREPARED
+	 * commands.
+	 */
+	StartTransaction();
+	XactLocalNodePrepared = true;
+}
+
+
+bool IsTransactionStatePrepared(void)
+{
+	return CurrentTransactionState->blockState == TBLOCK_PREPARE;
+}
+
+#endif /*POLARDB_X*/

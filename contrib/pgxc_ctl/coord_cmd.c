@@ -36,7 +36,6 @@
 #include <readline/history.h>
 #include <stdbool.h>
 
-//#include "port.h"
 #include "pgxc_ctl.h"
 #include "do_command.h"
 #include "variables.h"
@@ -46,7 +45,7 @@
 #include "do_shell.h"
 #include "utils.h"
 #include "coord_cmd.h"
-//#include "gtm_util.h"
+#include "gtm_util.h"
 
 
 static int failover_oneCoordinator(int coordIdx);
@@ -113,16 +112,19 @@ cmd_t *prepare_initCoordinatorMaster(char *nodeName)
              "%s"
              "rm -rf %s;"
              "mkdir -p %s;"
-             "PGXC_CTL_SILENT=1 initdb --nodename %s --nodetype coordinator -D %s "
-             "--master_gtm_nodename %s --master_gtm_ip %s --master_gtm_port %s",
+//             "PGXC_CTL_SILENT=1 initdb --nodename %s --nodetype coordinator -D %s "
+//             "--master_gtm_nodename %s --master_gtm_ip %s --master_gtm_port %s",
+             "PGXC_CTL_SILENT=1 initdb -D %s ",
              remoteDirCheck,
              aval(VAR_coordMasterDirs)[jj],
              aval(VAR_coordMasterDirs)[jj],
-             nodeName,
-             aval(VAR_coordMasterDirs)[jj],
-             sval(VAR_gtmName),
-             sval(VAR_gtmMasterServer),
-             sval(VAR_gtmMasterPort));
+//             nodeName,
+//             aval(VAR_coordMasterDirs)[jj],
+//             sval(VAR_gtmName),
+//             sval(VAR_gtmMasterServer),
+//             sval(VAR_gtmMasterPort));
+             aval(VAR_coordMasterDirs)[jj]
+             );
 
     /* Update postgresql.conf */
 
@@ -152,6 +154,7 @@ cmd_t *prepare_initCoordinatorMaster(char *nodeName)
             "# Added at initialization. %s\n"
             "port = %d\n"
             "pooler_port = %s\n"
+            "max_worker_processes = 8\n"
             "# End of Additon\n",
             timeStampString(timestamp, MAXTOKEN),
             atoi(aval(VAR_coordPorts)[jj]),
@@ -329,7 +332,8 @@ cmd_t *prepare_initCoordinatorSlave(char *nodeName)
         /* Master is not running. Must start it first */
         appendCmdEl(cmdBuildDir, (cmdStartMaster = initCmd(aval(VAR_coordMasterServers)[idx])));
         snprintf(newCommand(cmdStartMaster), MAXLINE,
-                 "pg_ctl start -w -Z coordinator -D %s -o -i",
+//                 "pg_ctl start -w -Z coordinator -D %s -o -i",
+                 "pg_ctl start -w -D %s -o -i",
                  aval(VAR_coordMasterDirs)[idx]);
     }
     /*
@@ -533,6 +537,7 @@ cmd_t *prepare_configureNode(char *nodeName)
     int ii;
     int idx;
     FILE *f;
+    int tnum = 0 ;
 
     if ((idx = coordIdx(nodeName)) < 0)
     {
@@ -554,6 +559,8 @@ cmd_t *prepare_configureNode(char *nodeName)
         Free(cmd);
         return NULL;
     }
+    fprintf(f, "CREATE EXTENSION polarx;\n");
+
     /* Setup coordinators */
     for (ii = 0; aval(VAR_coordNames)[ii]; ii++)
     {
@@ -567,18 +574,20 @@ cmd_t *prepare_configureNode(char *nodeName)
         {
             if (idx != targetIdx)
                 /* Register outside coordinator */
-                fprintf(f, "CREATE NODE %s WITH (TYPE='coordinator', HOST='%s', PORT=%d);\n",
+                fprintf(f, "CREATE SERVER %s TYPE 'C' FOREIGN DATA WRAPPER polarx OPTIONS (host '%s',port '%d', nodeis_primary 'false', nodeis_preferred 'false', node_cluster_name 'cluster_server', nodeis_local '%s', node_id '%d');\n",
                         aval(VAR_coordNames)[ii], 
                         aval(VAR_coordMasterServers)[ii],
-                        atoi(aval(VAR_coordPorts)[ii]));
+                        atoi(aval(VAR_coordPorts)[ii]), "false", ii);
             else
                 /* Update myself */
-                fprintf(f, "ALTER NODE %s WITH (HOST='%s', PORT=%d);\n",
+
+                fprintf(f, "CREATE SERVER %s TYPE 'C' FOREIGN DATA WRAPPER polarx OPTIONS (host '%s',port '%d', nodeis_primary 'false', nodeis_preferred 'false', node_cluster_name 'cluster_server', nodeis_local '%s', node_id '%d');\n",
                         aval(VAR_coordNames)[ii],
                         aval(VAR_coordMasterServers)[ii],
-                        atoi(aval(VAR_coordPorts)[ii]));
+                        atoi(aval(VAR_coordPorts)[ii]), "true", ii);
         }
     }
+    tnum = tnum + ii;
     /* Setup datanodes */
     for (ii = 0; aval(VAR_datanodeNames)[ii]; ii++)
     {
@@ -602,30 +611,31 @@ cmd_t *prepare_configureNode(char *nodeName)
             /* Primary Node */
             if (strcmp(aval(VAR_coordMasterServers)[idx], aval(VAR_datanodeMasterServers)[dnIdx]) == 0)
                 /* Primay and preferred node */
-                fprintf(f, "CREATE NODE %s WITH (TYPE='datanode', HOST='%s', PORT=%d, PRIMARY, PREFERRED);\n",
+                fprintf(f, "CREATE SERVER %s TYPE 'D' FOREIGN DATA WRAPPER polarx OPTIONS (host '%s',port '%d', nodeis_primary 'true', nodeis_preferred 'true', node_cluster_name 'cluster_server', nodeis_local '%s', node_id '%d');\n",
                         aval(VAR_datanodeNames)[dnIdx], aval(VAR_datanodeMasterServers)[dnIdx],
-                        atoi(aval(VAR_datanodePorts)[dnIdx]));
+                        atoi(aval(VAR_datanodePorts)[dnIdx]), "false", ii + tnum);
             else
                 /* Primary but not prefereed node */
-                fprintf(f, "CREATE NODE %s WITH (TYPE='datanode', HOST='%s', PORT=%d, PRIMARY);\n",
+                fprintf(f, "CREATE SERVER %s TYPE 'D' FOREIGN DATA WRAPPER polarx OPTIONS (host '%s',port '%d', nodeis_primary 'true', nodeis_preferred 'false', node_cluster_name 'cluster_server', nodeis_local '%s', node_id '%d');\n",
                         aval(VAR_datanodeNames)[dnIdx], aval(VAR_datanodeMasterServers)[dnIdx],
-                        atoi(aval(VAR_datanodePorts)[dnIdx]));
+                        atoi(aval(VAR_datanodePorts)[dnIdx]), "false", ii + tnum);
         }
         else
         {
             /* Non-primary node */
             if (strcmp(aval(VAR_coordMasterServers)[idx], aval(VAR_datanodeMasterServers)[dnIdx]) == 0)
                 /* Preferred node */
-                fprintf(f, "CREATE NODE %s WITH (TYPE='datanode', HOST='%s', PORT=%d, PREFERRED);\n",
+                fprintf(f, "CREATE SERVER %s TYPE 'D' FOREIGN DATA WRAPPER polarx OPTIONS (host '%s',port '%d', nodeis_primary 'false', nodeis_preferred 'true', node_cluster_name 'cluster_server', nodeis_local '%s', node_id '%d');\n",
                         aval(VAR_datanodeNames)[dnIdx], aval(VAR_datanodeMasterServers)[dnIdx],
-                        atoi(aval(VAR_datanodePorts)[dnIdx]));
+                        atoi(aval(VAR_datanodePorts)[dnIdx]), "false", ii + tnum);
             else
                 /* non-Preferred node */
-                fprintf(f, "CREATE NODE %s WITH (TYPE='datanode', HOST='%s', PORT=%d);\n",
+                fprintf(f, "CREATE SERVER %s TYPE 'D' FOREIGN DATA WRAPPER polarx OPTIONS (host '%s',port '%d', nodeis_primary 'false', nodeis_preferred 'false', node_cluster_name 'cluster_server', nodeis_local '%s', node_id '%d');\n",
                         aval(VAR_datanodeNames)[dnIdx], aval(VAR_datanodeMasterServers)[dnIdx],
-                        atoi(aval(VAR_datanodePorts)[dnIdx]));
+                        atoi(aval(VAR_datanodePorts)[dnIdx]), "false", ii + tnum);
         }
     }
+    fprintf(f, "CREATE SERVER cluster_server FOREIGN DATA WRAPPER polarx;\n");
     fprintf(f, "SELECT pgxc_pool_reload();\n");
     fclose(f);
     return(cmd);
@@ -640,6 +650,7 @@ static cmd_t *prepare_configureDataNode(char *nodeName)
     int connCordIndx;
     FILE *f;
     bool is_preferred;
+    int tnum = 0;
 
     if ((idx = datanodeIdx(nodeName)) < 0)
     {
@@ -657,8 +668,8 @@ static cmd_t *prepare_configureDataNode(char *nodeName)
 
     snprintf(newCommand(cmd), MAXLINE,
              "psql -p %d -h %s -a %s %s",
-             atoi(aval(VAR_coordPorts)[connCordIndx]),
-             aval(VAR_coordMasterServers)[connCordIndx],
+             atoi(aval(VAR_datanodePorts)[idx]),
+             aval(VAR_datanodeMasterServers)[idx],
              sval(VAR_defaultDatabase),
              sval(VAR_pgxcOwner));
     if ((f = prepareLocalStdin(newFilename(cmd->localStdin), MAXPATH, NULL)) == NULL)
@@ -667,6 +678,7 @@ static cmd_t *prepare_configureDataNode(char *nodeName)
         Free(cmd);
         return NULL;
     }
+    fprintf(f, "CREATE EXTENSION polarx;\n");
     /* Setup coordinators */
     for (ii = 0; aval(VAR_coordNames)[ii]; ii++)
     {
@@ -678,13 +690,13 @@ static cmd_t *prepare_configureDataNode(char *nodeName)
         if (!is_none(aval(VAR_coordMasterServers)[ii]))
         {
             /* Register outside coordinator */
-            fprintf(f, "EXECUTE DIRECT ON (%s) 'CREATE NODE %s WITH (TYPE=''coordinator'', HOST=''%s'', PORT=%d)';\n",
-                    aval(VAR_datanodeNames)[idx],
+            fprintf(f, "CREATE SERVER %s TYPE 'C' FOREIGN DATA WRAPPER polarx OPTIONS (host '%s',port '%d', nodeis_primary 'false', nodeis_preferred 'false', node_cluster_name 'cluster_server', nodeis_local '%s', node_id '%d');\n",
                     aval(VAR_coordNames)[ii],
                     aval(VAR_coordMasterServers)[ii],
-                    atoi(aval(VAR_coordPorts)[ii]));
+                    atoi(aval(VAR_coordPorts)[ii]), "false", ii);
         }
     }
+    tnum = ii;
 
     /* Setup datanodes */
     for (ii = 0; aval(VAR_datanodeNames)[ii]; ii++)
@@ -723,33 +735,30 @@ static cmd_t *prepare_configureDataNode(char *nodeName)
                 if (is_preferred)
                 {
                     /* Primay and preferred node */
-                    fprintf(f, "EXECUTE DIRECT ON (%s) 'CREATE NODE %s WITH (TYPE=''datanode'', HOST=''%s'', PORT=%d, PRIMARY, PREFERRED)';\n",
-                            aval(VAR_datanodeNames)[idx],
+                    fprintf(f, "CREATE SERVER %s TYPE 'D' FOREIGN DATA WRAPPER polarx OPTIONS (host '%s',port '%d', nodeis_primary 'true', nodeis_preferred 'true', node_cluster_name 'cluster_server', nodeis_local '%s', node_id '%d');\n",
                             aval(VAR_datanodeNames)[dnIdx], aval(VAR_datanodeMasterServers)[dnIdx],
-                            atoi(aval(VAR_datanodePorts)[dnIdx]));
+                            atoi(aval(VAR_datanodePorts)[dnIdx]), "false", tnum + ii);
+
                 }
                 else
                     /* Primary but not prefereed node */
-                    fprintf(f, "EXECUTE DIRECT ON (%s) 'CREATE NODE %s WITH (TYPE=''datanode'', HOST=''%s'', PORT=%d, PRIMARY)';\n",
-                            aval(VAR_datanodeNames)[idx],
+                    fprintf(f, "CREATE SERVER %s TYPE 'D' FOREIGN DATA WRAPPER polarx OPTIONS (host '%s',port '%d', nodeis_primary 'true', nodeis_preferred 'false', node_cluster_name 'cluster_server', nodeis_local '%s', node_id '%d');\n",
                             aval(VAR_datanodeNames)[dnIdx], aval(VAR_datanodeMasterServers)[dnIdx],
-                            atoi(aval(VAR_datanodePorts)[dnIdx]));
+                            atoi(aval(VAR_datanodePorts)[dnIdx]), "false", tnum + ii);
             }
             else
             {
                 /* Primary Node */
                 if (is_preferred)
                     /* Primay and preferred node */
-                    fprintf(f, "EXECUTE DIRECT ON (%s) 'ALTER NODE %s WITH (TYPE=''datanode'', HOST=''%s'', PORT=%d, PRIMARY, PREFERRED)';\n",
-                            aval(VAR_datanodeNames)[idx],
+                    fprintf(f, "CREATE SERVER %s TYPE 'D' FOREIGN DATA WRAPPER polarx OPTIONS (host '%s',port '%d', nodeis_primary 'true', nodeis_preferred 'true', node_cluster_name 'cluster_server', nodeis_local '%s', node_id '%d');\n",
                             aval(VAR_datanodeNames)[dnIdx], aval(VAR_datanodeMasterServers)[dnIdx],
-                            atoi(aval(VAR_datanodePorts)[dnIdx]));
+                            atoi(aval(VAR_datanodePorts)[dnIdx]), "true", tnum + ii);
                 else
                     /* Primary but not prefereed node */
-                    fprintf(f, "EXECUTE DIRECT ON (%s) 'ALTER NODE %s WITH (TYPE=''datanode'', HOST=''%s'', PORT=%d, PRIMARY)';\n",
-                            aval(VAR_datanodeNames)[idx],
+                    fprintf(f, "CREATE SERVER %s TYPE 'D' FOREIGN DATA WRAPPER polarx OPTIONS (host '%s',port '%d', nodeis_primary 'true', nodeis_preferred 'false', node_cluster_name 'cluster_server', nodeis_local '%s', node_id '%d');\n",
                             aval(VAR_datanodeNames)[dnIdx], aval(VAR_datanodeMasterServers)[dnIdx],
-                            atoi(aval(VAR_datanodePorts)[dnIdx]));
+                            atoi(aval(VAR_datanodePorts)[dnIdx]), "true", tnum + ii);
             }
         }
         else
@@ -759,36 +768,33 @@ static cmd_t *prepare_configureDataNode(char *nodeName)
                 /* Non-primary node */
                 if (is_preferred)
                     /* Preferred node */
-                    fprintf(f, "EXECUTE DIRECT ON (%s) 'CREATE NODE %s WITH (TYPE=''datanode'', HOST=''%s'', PORT=%d, PREFERRED)';\n",
-                            aval(VAR_datanodeNames)[idx],
+                    fprintf(f, "CREATE SERVER %s TYPE 'D' FOREIGN DATA WRAPPER polarx OPTIONS (host '%s',port '%d', nodeis_primary 'false', nodeis_preferred 'true', node_cluster_name 'cluster_server', nodeis_local '%s', node_id '%d');\n",
                             aval(VAR_datanodeNames)[dnIdx], aval(VAR_datanodeMasterServers)[dnIdx],
-                            atoi(aval(VAR_datanodePorts)[dnIdx]));
+                            atoi(aval(VAR_datanodePorts)[dnIdx]), "false", tnum + ii);
                 else
                     /* non-Preferred node */
-                    fprintf(f, "EXECUTE DIRECT ON (%s) 'CREATE NODE %s WITH (TYPE=''datanode'', HOST=''%s'', PORT=%d)';\n",
-                            aval(VAR_datanodeNames)[idx],
+                    fprintf(f, "CREATE SERVER %s TYPE 'D' FOREIGN DATA WRAPPER polarx OPTIONS (host '%s',port '%d', nodeis_primary 'false', nodeis_preferred 'false', node_cluster_name 'cluster_server', nodeis_local '%s', node_id '%d');\n",
                             aval(VAR_datanodeNames)[dnIdx], aval(VAR_datanodeMasterServers)[dnIdx],
-                            atoi(aval(VAR_datanodePorts)[dnIdx]));
+                            atoi(aval(VAR_datanodePorts)[dnIdx]), "false", tnum + ii);
             }
             else
             {
                 /* Non-primary node */
                 if (is_preferred)
                     /* Preferred node */
-                    fprintf(f, "EXECUTE DIRECT ON (%s) 'ALTER NODE %s WITH (TYPE=''datanode'', HOST=''%s'', PORT=%d, PREFERRED)';\n",
-                            aval(VAR_datanodeNames)[idx],
+                    fprintf(f, "CREATE SERVER %s TYPE 'D' FOREIGN DATA WRAPPER polarx OPTIONS (host '%s',port '%d', nodeis_primary 'false', nodeis_preferred 'true', node_cluster_name 'cluster_server', nodeis_local '%s', node_id '%d');\n",
                             aval(VAR_datanodeNames)[dnIdx], aval(VAR_datanodeMasterServers)[dnIdx],
-                            atoi(aval(VAR_datanodePorts)[dnIdx]));
+                            atoi(aval(VAR_datanodePorts)[dnIdx]), "true", tnum + ii);
                 else
                     /* non-Preferred node */
-                    fprintf(f, "EXECUTE DIRECT ON (%s) 'ALTER NODE %s WITH (TYPE=''datanode'', HOST=''%s'', PORT=%d)';\n",
-                            aval(VAR_datanodeNames)[idx],
+                    fprintf(f, "CREATE SERVER %s TYPE 'D' FOREIGN DATA WRAPPER polarx OPTIONS (host '%s',port '%d', nodeis_primary 'false', nodeis_preferred 'false', node_cluster_name 'cluster_server', nodeis_local '%s', node_id '%d');\n",
                             aval(VAR_datanodeNames)[dnIdx], aval(VAR_datanodeMasterServers)[dnIdx],
-                            atoi(aval(VAR_datanodePorts)[dnIdx]));
+                            atoi(aval(VAR_datanodePorts)[dnIdx]), "true", tnum + ii);
             }
         }
     }
-    fprintf(f, "EXECUTE DIRECT ON (%s) 'SELECT pgxc_pool_reload()';\n", aval(VAR_datanodeNames)[idx]);
+    fprintf(f, "CREATE SERVER cluster_server FOREIGN DATA WRAPPER polarx;\n");
+    fprintf(f, "SELECT pgxc_pool_reload();\n");
     fclose(f);
     return(cmd);
 }
@@ -835,26 +841,26 @@ cmd_t *prepare_configureNode_multicluster(char *nodeName)
         {
             if (idx != targetIdx)
                 /* Register outside coordinator */
-                fprintf(f, "CREATE NODE %s WITH (TYPE='coordinator', HOST='%s', PORT=%d, CLUSTER='%s');\n",
+                fprintf(f, "CREATE NODE %s WITH (TYPE='coordinator', HOST='%s', PORT=%d, CLUSTER='%s', local=%d);\n",
                         aval(VAR_coordNames)[ii], 
                         aval(VAR_coordMasterServers)[ii],
                         atoi(aval(VAR_coordPorts)[ii]),
-                        aval(VAR_coordMasterCluster)[ii]);
+                        aval(VAR_coordMasterCluster)[ii], false);
             else
                 /* Update myself */
-                fprintf(f, "ALTER NODE %s WITH (HOST='%s', PORT=%d, CLUSTER='%s');\n",
+                fprintf(f, "CREATE NODE %s WITH (HOST='%s', PORT=%d, CLUSTER='%s', local=%d);\n",
                         aval(VAR_coordNames)[ii],
                         aval(VAR_coordMasterServers)[ii],
                         atoi(aval(VAR_coordPorts)[ii]),
-                        aval(VAR_coordMasterCluster)[ii]);
+                        aval(VAR_coordMasterCluster)[ii], true);
         }
         if (!is_none(aval(VAR_coordSlaveServers)[ii]))
         {
-            fprintf(f, "CREATE NODE %s WITH (TYPE='coordinator', HOST='%s', PORT=%d, CLUSTER='%s');\n",
+            fprintf(f, "CREATE NODE %s WITH (TYPE='coordinator', HOST='%s', PORT=%d, CLUSTER='%s', local=%d);\n",
                         aval(VAR_coordNames)[ii], 
                         aval(VAR_coordSlaveServers)[ii],
                         atoi(aval(VAR_coordSlavePorts)[ii]),
-                        aval(VAR_coordSlaveCluster)[ii]);
+                        aval(VAR_coordSlaveCluster)[ii], false);
     
         }
     }
@@ -881,10 +887,10 @@ cmd_t *prepare_configureNode_multicluster(char *nodeName)
             /* Primary Node */
             if (strcmp(aval(VAR_coordMasterServers)[idx], aval(VAR_datanodeMasterServers)[dnIdx]) == 0)
                 /* Primay and preferred node */
-                fprintf(f, "CREATE NODE %s WITH (TYPE='datanode', HOST='%s', PORT=%d, CLUSTER='%s', PRIMARY, PREFERRED);\n",
+                fprintf(f, "CREATE NODE %s WITH (TYPE='datanode', HOST='%s', PORT=%d, CLUSTER='%s', PRIMARY, PREFERRED, local=%d);\n",
                         aval(VAR_datanodeNames)[dnIdx], aval(VAR_datanodeMasterServers)[dnIdx],
                         atoi(aval(VAR_datanodePorts)[dnIdx]),
-                        aval(VAR_datanodeMasterCluster)[dnIdx]);
+                        aval(VAR_datanodeMasterCluster)[dnIdx], false);
             else
                 /* Primary but not prefereed node */
                 fprintf(f, "CREATE NODE %s WITH (TYPE='datanode', HOST='%s', PORT=%d, CLUSTER='%s', PRIMARY);\n",
@@ -897,24 +903,24 @@ cmd_t *prepare_configureNode_multicluster(char *nodeName)
             /* Non-primary node */
             if (strcmp(aval(VAR_coordMasterServers)[idx], aval(VAR_datanodeMasterServers)[dnIdx]) == 0)
                 /* Preferred node */
-                fprintf(f, "CREATE NODE %s WITH (TYPE='datanode', HOST='%s', PORT=%d, CLUSTER='%s', PREFERRED);\n",
+                fprintf(f, "CREATE NODE %s WITH (TYPE='datanode', HOST='%s', PORT=%d, CLUSTER='%s', PRIMARY, local=%d);\n",
                         aval(VAR_datanodeNames)[dnIdx], aval(VAR_datanodeMasterServers)[dnIdx],
                         atoi(aval(VAR_datanodePorts)[dnIdx]),
-                        aval(VAR_datanodeMasterCluster)[dnIdx]);
+                        aval(VAR_datanodeMasterCluster)[dnIdx], false);
             else
                 /* non-Preferred node */
-                fprintf(f, "CREATE NODE %s WITH (TYPE='datanode', HOST='%s', PORT=%d, CLUSTER='%s');\n",
+                fprintf(f, "CREATE NODE %s WITH (TYPE='datanode', HOST='%s', PORT=%d, CLUSTER='%s', local=%d);\n",
                         aval(VAR_datanodeNames)[dnIdx], aval(VAR_datanodeMasterServers)[dnIdx],
                         atoi(aval(VAR_datanodePorts)[dnIdx]),
-                        aval(VAR_datanodeMasterCluster)[dnIdx]);
+                        aval(VAR_datanodeMasterCluster)[dnIdx], false);
         }
 
         if (isVarYes(VAR_datanodeSlave))
-        {            
-            fprintf(f, "CREATE NODE %s WITH (TYPE='datanode', HOST='%s', PORT=%d, CLUSTER='%s');\n",
+        {
+            fprintf(f, "CREATE NODE %s WITH (TYPE='datanode', HOST='%s', PORT=%d, CLUSTER='%s', local=%d);\n",
                 aval(VAR_datanodeNames)[dnIdx], aval(VAR_datanodeSlaveServers)[dnIdx],
                 atoi(aval(VAR_datanodeSlavePorts)[dnIdx]),
-                aval(VAR_datanodeSlaveCluster)[dnIdx]);
+                aval(VAR_datanodeSlaveCluster)[dnIdx], false);
 
         }
         
@@ -972,21 +978,21 @@ static cmd_t *prepare_configureDataNode_multicluster(char *nodeName)
         if (!is_none(aval(VAR_coordMasterServers)[ii]))
         {
             /* Register outside coordinator */
-            fprintf(f, "EXECUTE DIRECT ON (%s) 'CREATE NODE %s WITH (TYPE=''coordinator'', HOST=''%s'', PORT=%d, CLUSTER=''%s'')';\n",
+            fprintf(f, "EXECUTE DIRECT ON (%s) 'CREATE NODE %s WITH (TYPE=''coordinator'', HOST=''%s'', PORT=%d, CLUSTER=''%s'', local=%d)';\n",
                     aval(VAR_datanodeNames)[idx],
                     aval(VAR_coordNames)[ii],
                     aval(VAR_coordMasterServers)[ii],
                     atoi(aval(VAR_coordPorts)[ii]),
-                    aval(VAR_coordMasterCluster)[ii]);
+                    aval(VAR_coordMasterCluster)[ii], false);
         }
         if (!is_none(aval(VAR_coordSlaveServers)[ii]))
         {
-            fprintf(f, "EXECUTE DIRECT ON (%s) 'CREATE NODE %s WITH (TYPE=''coordinator'', HOST=''%s'', PORT=%d, CLUSTER=''%s'')';\n",
+            fprintf(f, "EXECUTE DIRECT ON (%s) 'CREATE NODE %s WITH (TYPE=''coordinator'', HOST=''%s'', PORT=%d, CLUSTER=''%s'', local=%d)';\n",
                 aval(VAR_datanodeNames)[idx],
                 aval(VAR_coordNames)[ii],
                 aval(VAR_coordSlaveServers)[ii],
                 atoi(aval(VAR_coordSlavePorts)[ii]),
-                aval(VAR_coordSlaveCluster)[ii]);
+                aval(VAR_coordSlaveCluster)[ii], false);
     
         }
     }
@@ -1028,37 +1034,37 @@ static cmd_t *prepare_configureDataNode_multicluster(char *nodeName)
                 if (is_preferred)
                 {
                     /* Primay and preferred node */
-                    fprintf(f, "EXECUTE DIRECT ON (%s) 'CREATE NODE %s WITH (TYPE=''datanode'', HOST=''%s'', PORT=%d, CLUSTER=''%s'', PRIMARY, PREFERRED)';\n",
+                    fprintf(f, "EXECUTE DIRECT ON (%s) 'CREATE NODE %s WITH (TYPE=''datanode'', HOST=''%s'', PORT=%d, CLUSTER=''%s'', PRIMARY, PREFERRED, local=%d)';\n",
                             aval(VAR_datanodeNames)[idx],
                             aval(VAR_datanodeNames)[dnIdx], aval(VAR_datanodeMasterServers)[dnIdx],
                             atoi(aval(VAR_datanodePorts)[dnIdx]),
-                            aval(VAR_datanodeMasterCluster)[dnIdx]);
+                            aval(VAR_datanodeMasterCluster)[dnIdx], false);
                 }
                 else
                     /* Primary but not prefereed node */
-                    fprintf(f, "EXECUTE DIRECT ON (%s) 'CREATE NODE %s WITH (TYPE=''datanode'', HOST=''%s'', PORT=%d, CLUSTER=''%s'', PRIMARY)';\n",
+                    fprintf(f, "EXECUTE DIRECT ON (%s) 'CREATE NODE %s WITH (TYPE=''datanode'', HOST=''%s'', PORT=%d, CLUSTER=''%s'', PRIMARY, local=%d)';\n",
                             aval(VAR_datanodeNames)[idx],
                             aval(VAR_datanodeNames)[dnIdx], aval(VAR_datanodeMasterServers)[dnIdx],
                             atoi(aval(VAR_datanodePorts)[dnIdx]),
-                            aval(VAR_datanodeMasterCluster)[dnIdx]);
+                            aval(VAR_datanodeMasterCluster)[dnIdx], false);
             }
             else
             {
                 /* Primary Node */
                 if (is_preferred)
                     /* Primay and preferred node */
-                    fprintf(f, "EXECUTE DIRECT ON (%s) 'ALTER NODE %s WITH (TYPE=''datanode'', HOST=''%s'', PORT=%d, CLUSTER=''%s'', PRIMARY, PREFERRED)';\n",
+                    fprintf(f, "EXECUTE DIRECT ON (%s) 'CREATE NODE %s WITH (TYPE=''datanode'', HOST=''%s'', PORT=%d, CLUSTER=''%s'', PRIMARY, PREFERRED, local=%d)';\n",
                             aval(VAR_datanodeNames)[idx],
                             aval(VAR_datanodeNames)[dnIdx], aval(VAR_datanodeMasterServers)[dnIdx],
                             atoi(aval(VAR_datanodePorts)[dnIdx]),
-                            aval(VAR_datanodeMasterCluster)[dnIdx]);
+                            aval(VAR_datanodeMasterCluster)[dnIdx], true);
                 else
                     /* Primary but not prefereed node */
-                    fprintf(f, "EXECUTE DIRECT ON (%s) 'ALTER NODE %s WITH (TYPE=''datanode'', HOST=''%s'', PORT=%d, CLUSTER=''%s'', PRIMARY)';\n",
+                    fprintf(f, "EXECUTE DIRECT ON (%s) 'CREATE NODE %s WITH (TYPE=''datanode'', HOST=''%s'', PORT=%d, CLUSTER=''%s'', PRIMARY, local=%d)';\n",
                             aval(VAR_datanodeNames)[idx],
                             aval(VAR_datanodeNames)[dnIdx], aval(VAR_datanodeMasterServers)[dnIdx],
                             atoi(aval(VAR_datanodePorts)[dnIdx]),
-                            aval(VAR_datanodeMasterCluster)[dnIdx]);
+                            aval(VAR_datanodeMasterCluster)[dnIdx], true);
             }
         }
         else
@@ -1068,47 +1074,46 @@ static cmd_t *prepare_configureDataNode_multicluster(char *nodeName)
                 /* Non-primary node */
                 if (is_preferred)
                     /* Preferred node */
-                    fprintf(f, "EXECUTE DIRECT ON (%s) 'CREATE NODE %s WITH (TYPE=''datanode'', HOST=''%s'', PORT=%d, CLUSTER=''%s'',PREFERRED)';\n",
+                    fprintf(f, "EXECUTE DIRECT ON (%s) 'CREATE NODE %s WITH (TYPE=''datanode'', HOST=''%s'', PORT=%d, CLUSTER=''%s'',PREFERRED, local=%d)';\n",
                             aval(VAR_datanodeNames)[idx],
                             aval(VAR_datanodeNames)[dnIdx], aval(VAR_datanodeMasterServers)[dnIdx],
                             atoi(aval(VAR_datanodePorts)[dnIdx]),
-                            aval(VAR_datanodeMasterCluster)[dnIdx]);
+                            aval(VAR_datanodeMasterCluster)[dnIdx], false);
                 else
                     /* non-Preferred node */
-                    fprintf(f, "EXECUTE DIRECT ON (%s) 'CREATE NODE %s WITH (TYPE=''datanode'', HOST=''%s'', PORT=%d, CLUSTER=''%s'')';\n",
+                    fprintf(f, "EXECUTE DIRECT ON (%s) 'CREATE NODE %s WITH (TYPE=''datanode'', HOST=''%s'', PORT=%d, CLUSTER=''%s'', local=%d)';\n",
                             aval(VAR_datanodeNames)[idx],
                             aval(VAR_datanodeNames)[dnIdx], aval(VAR_datanodeMasterServers)[dnIdx],
                             atoi(aval(VAR_datanodePorts)[dnIdx]),
-                            aval(VAR_datanodeMasterCluster)[dnIdx]);
+                            aval(VAR_datanodeMasterCluster)[dnIdx], false);
             }
             else
             {
                 /* Non-primary node */
                 if (is_preferred)
                     /* Preferred node */
-                    fprintf(f, "EXECUTE DIRECT ON (%s) 'ALTER NODE %s WITH (TYPE=''datanode'', HOST=''%s'', PORT=%d, CLUSTER=''%s'', PREFERRED)';\n",
+                    fprintf(f, "EXECUTE DIRECT ON (%s) 'CREATE NODE %s WITH (TYPE=''datanode'', HOST=''%s'', PORT=%d, CLUSTER=''%s'', PREFERRED, local=%d)';\n",
                             aval(VAR_datanodeNames)[idx],
                             aval(VAR_datanodeNames)[dnIdx], aval(VAR_datanodeMasterServers)[dnIdx],
                             atoi(aval(VAR_datanodePorts)[dnIdx]),
-                            aval(VAR_datanodeMasterCluster)[dnIdx]);
+                            aval(VAR_datanodeMasterCluster)[dnIdx], true);
                 else
                     /* non-Preferred node */
-                    fprintf(f, "EXECUTE DIRECT ON (%s) 'ALTER NODE %s WITH (TYPE=''datanode'', HOST=''%s'', PORT=%d, CLUSTER=''%s'')';\n",
+                    fprintf(f, "EXECUTE DIRECT ON (%s) 'CREATE NODE %s WITH (TYPE=''datanode'', HOST=''%s'', PORT=%d, CLUSTER=''%s'', local=%d)';\n",
                             aval(VAR_datanodeNames)[idx],
                             aval(VAR_datanodeNames)[dnIdx], aval(VAR_datanodeMasterServers)[dnIdx],
                             atoi(aval(VAR_datanodePorts)[dnIdx]),
-                            aval(VAR_datanodeMasterCluster)[dnIdx]);
+                            aval(VAR_datanodeMasterCluster)[dnIdx], true);
             }
         }
 
         if (isVarYes(VAR_datanodeSlave))
         {
-            
-            fprintf(f, "EXECUTE DIRECT ON (%s) 'CREATE NODE %s WITH (TYPE=''datanode'', HOST=''%s'', PORT=%d, CLUSTER=''%s'')';\n",
+            fprintf(f, "EXECUTE DIRECT ON (%s) 'CREATE NODE %s WITH (TYPE=''datanode'', HOST=''%s'', PORT=%d, CLUSTER=''%s'', local=%d)';\n",
                 aval(VAR_datanodeNames)[idx],
                 aval(VAR_datanodeNames)[dnIdx], aval(VAR_datanodeSlaveServers)[dnIdx],
                 atoi(aval(VAR_datanodeSlavePorts)[dnIdx]),
-                aval(VAR_datanodeSlaveCluster)[dnIdx]);
+                aval(VAR_datanodeSlaveCluster)[dnIdx], false);
 
         }
     }
@@ -1509,12 +1514,13 @@ int add_coordinatorMaster(char *name, char *host, int port, int pooler,
     /* Now add the master */
 
     /* initdb */
-    doImmediate(host, NULL, "PGXC_CTL_SILENT=1 initdb -D %s --nodename %s --nodetype coordinator "
-                            "--master_gtm_nodename %s --master_gtm_ip %s --master_gtm_port %s", 
-                            dir, name,
-                            sval(VAR_gtmName),
-                            sval(VAR_gtmMasterServer),
-                            sval(VAR_gtmMasterPort));
+//    doImmediate(host, NULL, "PGXC_CTL_SILENT=1 initdb -D %s --nodename %s --nodetype coordinator "
+//                            "--master_gtm_nodename %s --master_gtm_ip %s --master_gtm_port %s", 
+//                            dir, name,
+//                            sval(VAR_gtmName),
+//                            sval(VAR_gtmMasterServer),
+//                            sval(VAR_gtmMasterPort));
+    doImmediate(host, NULL, "PGXC_CTL_SILENT=1 initdb -D %s", dir);
 
     /* Edit configurations */
     if ((f = pgxc_popen_w(host, "cat >> %s/postgresql.conf", dir)))
@@ -1590,18 +1596,20 @@ int add_coordinatorMaster(char *name, char *host, int port, int pooler,
                    aval(VAR_coordMasterServers)[connCordIndx], pgdumpall_out);
 
     /* Start the new coordinator */
-    doImmediate(host, NULL, "pg_ctl start -w -Z restoremode -D %s -o -i", dir);
+//    doImmediate(host, NULL, "pg_ctl start -w -Z restoremode -D %s -o -i", dir);
+    doImmediate(host, NULL, "pg_ctl start -w -D %s -o -i", dir);
 
     /* Allow the new coordinator to start up by sleeping for a couple of seconds */
-    //pg_usleep(2000000L);
-    usleep(2000000L);
+    pg_usleep(2000000L);
+    //usleep(2000000L);
 
     /* Restore the backup */
     doImmediateRaw("psql -h %s -p %d -d %s -f %s", host, port, sval(VAR_defaultDatabase), pgdumpall_out);
     doImmediateRaw("rm -f %s", pgdumpall_out);
 
     /* Quit the new coordinator */
-    doImmediate(host, NULL, "pg_ctl stop -w -Z restoremode -D %s", dir);
+//    doImmediate(host, NULL, "pg_ctl stop -w -Z restoremode -D %s", dir);
+    doImmediate(host, NULL, "pg_ctl stop -w -D %s", dir);
 
     /* Start the new coordinator with --coordinator option */
     AddMember(nodelist, name);
@@ -1618,7 +1626,8 @@ int add_coordinatorMaster(char *name, char *host, int port, int pooler,
                 elog(ERROR, "ERROR: cannot connect to the coordinator master %s.\n", aval(VAR_coordNames)[ii]);
                 continue;
             }
-            fprintf(f, "CREATE NODE %s WITH (TYPE = 'coordinator', host='%s', PORT=%d);\n", name, host, port);
+//            fprintf(f, "CREATE NODE %s WITH (TYPE = 'coordinator', host='%s', PORT=%d);\n", name, host, port);
+            fprintf(f, "CREATE NODE %s WITH (TYPE = 'coordinator', host='%s', PORT=%d, local=%d);\n", name, host, port, false);
             fprintf(f, "SELECT pgxc_pool_reload();\n");
             fprintf(f, "\\q\n");
             pclose(f);
@@ -1637,7 +1646,7 @@ int add_coordinatorMaster(char *name, char *host, int port, int pooler,
                 elog(ERROR, "ERROR: cannot connect to the datanode master %s.\n", aval(VAR_datanodeNames)[ii]);
                 continue;
             }
-            fprintf(f, "CREATE NODE %s WITH (TYPE = 'coordinator', host='%s', PORT=%d);\n", name, host, port);
+            fprintf(f, "CREATE NODE %s WITH (TYPE = 'coordinator', host='%s', PORT=%d, local=%d);\n", name, host, port, false);
             fprintf(f, "SELECT pgxc_pool_reload();\n");
             fprintf(f, "\\q\n");
             pclose(f);
@@ -1652,7 +1661,7 @@ selfadd:
         elog(ERROR, "ERROR: cannot connect to the coordinator master %s.\n", name);
     else
     {
-        fprintf(f, "ALTER NODE %s WITH (host='%s', PORT=%d);\n", name, host, port);
+        fprintf(f, "CREATE NODE %s WITH (TYPE = 'coordinator', host='%s', PORT=%d, local=%d );\n", name, host, port, true);
         fprintf(f, "SELECT pgxc_pool_reload();\n");
         fprintf(f, "\\q\n");
         pclose(f);
@@ -1813,9 +1822,9 @@ int add_coordinatorSlave(char *name, char *host, int port, int pooler_port, char
      * transactions this coordinator is not involved.
      */
     doImmediate(aval(VAR_coordMasterServers)[idx], NULL, 
-                "pg_ctl stop -w -Z coordinator -D %s -m fast", aval(VAR_coordMasterDirs)[idx]);
+                "pg_ctl stop -w -D %s -m fast", aval(VAR_coordMasterDirs)[idx]);
     doImmediate(aval(VAR_coordMasterServers)[idx], NULL, 
-                "pg_ctl start -w -Z coordinator -D %s", aval(VAR_coordMasterDirs)[idx]);
+                "pg_ctl start -w -D %s", aval(VAR_coordMasterDirs)[idx]);
     /* pg_basebackup */
     doImmediate(host, NULL, "pg_basebackup -p %s -h %s -D %s --wal-method=stream",
                 aval(VAR_coordPorts)[idx], aval(VAR_coordMasterServers)[idx], dir);
@@ -1861,7 +1870,7 @@ int add_coordinatorSlave(char *name, char *host, int port, int pooler_port, char
     pclose(f);
 
     /* Start the slave */
-    doImmediate(host, NULL, "pg_ctl start -w -Z coordinator -D %s", dir);
+    doImmediate(host, NULL, "pg_ctl start -w  -D %s", dir);
     return 0;
 }
 
@@ -2085,7 +2094,7 @@ int remove_coordinatorSlave(char *name, int clean_opt)
                 timeStampString(date, MAXTOKEN));
         pclose(f);
     }
-    doImmediate(aval(VAR_coordMasterServers)[idx], NULL, "pg_ctl restart -Z coordinator -D %s", aval(VAR_coordMasterDirs)[idx]);
+    doImmediate(aval(VAR_coordMasterServers)[idx], NULL, "pg_ctl restart -D %s", aval(VAR_coordMasterDirs)[idx]);
     if (clean_opt)
         clean_coordinator_slave(nodelist);
     /*
@@ -2157,7 +2166,7 @@ cmd_t *prepare_startCoordinatorMaster(char *nodeName)
     }
     cmd = cmdPgCtl = initCmd(aval(VAR_coordMasterServers)[idx]);
     snprintf(newCommand(cmdPgCtl), MAXLINE,
-             "pg_ctl start -w -Z coordinator -D %s -o -i",
+             "pg_ctl start -w  -D %s -o -i",
              aval(VAR_coordMasterDirs)[idx]);
     return(cmd);
 }
@@ -2217,7 +2226,7 @@ cmd_t *prepare_startCoordinatorSlave(char *nodeName)
     }
     cmd = cmdPgCtlStart = initCmd(aval(VAR_coordSlaveServers)[idx]);
     snprintf(newCommand(cmdPgCtlStart), MAXLINE,
-             "pg_ctl start -w -Z coordinator -D %s -o -i",
+            "pg_ctl start -w  -D %s -o -i",
              aval(VAR_coordSlaveDirs)[idx]);
 
     /* Postgresql.conf at the Master */
@@ -2243,7 +2252,7 @@ cmd_t *prepare_startCoordinatorSlave(char *nodeName)
     /* Reload postgresql.conf change */
     appendCmdEl(cmdPgCtlStart, (cmdMasterReload = initCmd(aval(VAR_coordMasterServers)[idx])));
     snprintf(newCommand(cmdMasterReload), MAXLINE,
-             "pg_ctl reload -Z coordinator -D %s",
+             "pg_ctl reload  -D %s",
              aval(VAR_coordMasterDirs)[idx]);
     return(cmd);
 }
@@ -2299,11 +2308,11 @@ cmd_t *prepare_stopCoordinatorMaster(char *nodeName, char *immediate)
     cmd = initCmd(aval(VAR_coordMasterServers)[idx]);
     if (immediate)
         snprintf(newCommand(cmd), MAXLINE,
-                 "pg_ctl stop -w -Z coordinator -D %s -m %s",
+                 "pg_ctl stop -w  -D %s -m %s",
                  aval(VAR_coordMasterDirs)[idx], immediate);
     else
         snprintf(newCommand(cmd), MAXLINE,
-                 "pg_ctl stop -w -Z coordinator -D %s",
+                 "pg_ctl stop -w  -D %s",
                  aval(VAR_coordMasterDirs)[idx]);
     return(cmd);
 }
@@ -2391,11 +2400,11 @@ cmd_t *prepare_stopCoordinatorSlave(char *nodeName, char *immediate)
         cmd = cmdPgCtlStop = initCmd(aval(VAR_coordSlaveServers)[idx]);
     if (immediate)
         snprintf(newCommand(cmdPgCtlStop), MAXLINE,
-                 "pg_ctl stop -w -Z coordinator -D %s -m %s",
+                 "pg_ctl stop -w  -D %s -m %s",
                  aval(VAR_coordSlaveDirs)[idx], immediate);
     else
         snprintf(newCommand(cmdPgCtlStop), MAXLINE,
-                 "pg_ctl stop -w -Z coordinator -D %s",
+                 "pg_ctl stop -w  -D %s",
                  aval(VAR_coordSlaveDirs)[idx]);
     return(cmd);
 }
@@ -2510,7 +2519,7 @@ static int failover_oneCoordinator(int coordIdx)
 
     /* Promote the slave */
     rc_local = doImmediate(aval(VAR_coordSlaveServers)[coordIdx], NULL,
-                           "pg_ctl promote -Z coordinator -D %s",
+                           "pg_ctl promote  -D %s",
                            aval(VAR_coordSlaveDirs)[coordIdx]);
     checkRc();
 
@@ -2532,7 +2541,7 @@ static int failover_oneCoordinator(int coordIdx)
 
     /* Restart coord Slave Server */
     rc_local = doImmediate(aval(VAR_coordSlaveServers)[coordIdx], NULL,
-                           "pg_ctl restart -Z coordinator -D %s -w -o -i; sleep 1",
+                           "pg_ctl restart  -D %s -w -o -i; sleep 1",
                            aval(VAR_coordSlaveDirs)[coordIdx]);
     checkRc();
     

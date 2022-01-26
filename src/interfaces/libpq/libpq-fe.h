@@ -27,8 +27,11 @@ extern "C"
  * such as Oid.
  */
 #include "postgres_ext.h"
+#include "pg_config_manual.h"
 
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
 #include "distributed_txn/logical_clock.h"
+#endif
 
 /*
  * Option flags for PQcopyResult
@@ -610,9 +613,11 @@ extern int	pg_char_to_encoding(const char *name);
 extern const char *pg_encoding_to_char(int encoding);
 extern int	pg_valid_server_encoding_id(int encoding);
 
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
 /* Recv timestamp callback */
 typedef void (*PQTimestampReceiver) (LogicalTime ts);
 extern PQTimestampReceiver pq_timestamp_receiver;
+#endif/*ENABLE_DISTRIBUTED_TRANSACTION*/
 
 #ifdef __cplusplus
 }

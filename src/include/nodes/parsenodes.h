@@ -89,6 +89,13 @@ typedef uint32 AclMode;			/* a bitmask of privilege bits */
 /* Currently, SELECT ... FOR [KEY] UPDATE/SHARE requires UPDATE privileges */
 #define ACL_SELECT_FOR_UPDATE	ACL_UPDATE
 
+/* Possible types of nodes */
+#ifdef POLARDB_X
+#define PGXC_NODE_COORDINATOR        'C'
+#define PGXC_NODE_DATANODE            'D'
+#define PGXC_NODE_NONE                'N'
+#define PGXC_NODE_GTM                'G'
+#endif
 
 /*****************************************************************************
  *	Query Tree
@@ -951,6 +958,9 @@ typedef enum RTEKind
 	RTE_FUNCTION,				/* function in FROM */
 	RTE_TABLEFUNC,				/* TableFunc(.., column list) */
 	RTE_VALUES,					/* VALUES (<exprlist>), (<exprlist>), ... */
+#ifdef POLARDB_X
+	RTE_REMOTE_DUMMY,            /* RTEs created by remote plan reduction */
+#endif
 	RTE_CTE,					/* common table expr (WITH list element) */
 	RTE_NAMEDTUPLESTORE			/* tuplestore, e.g. for AFTER triggers */
 } RTEKind;
@@ -960,6 +970,9 @@ typedef struct RangeTblEntry
 	NodeTag		type;
 
 	RTEKind		rtekind;		/* see above */
+#ifdef POLARDB_X
+    char        *relname;
+#endif
 
 	/*
 	 * XXX the fields applicable to only some rte kinds should be merged into
@@ -1999,6 +2012,34 @@ typedef struct VariableShowStmt
 	char	   *name;
 } VariableShowStmt;
 
+#ifdef POLARDB_X
+/*----------
+ * DistributionType - how to distribute the data
+ *
+ *----------
+ */
+typedef enum DistributionType
+{
+    DISTTYPE_REPLICATION,            /* Replicated */
+    DISTTYPE_HASH,                /* Hash partitioned */
+    DISTTYPE_ROUNDROBIN,            /* Round Robin */
+    DISTTYPE_MODULO               /* Modulo partitioned */
+} DistributionType;
+
+/*----------
+ * DistributeBy - represents a DISTRIBUTE BY clause in a CREATE TABLE statement
+ *
+ *----------
+ */
+typedef struct DistributeBy
+{
+    NodeTag        type;
+    DistributionType disttype;        /* Distribution type */
+    char           *colname;        /* Distribution column name */
+} DistributeBy;
+
+#endif
+
 /* ----------------------
  *		Create Table Statement
  *
@@ -2025,6 +2066,10 @@ typedef struct CreateStmt
 	OnCommitAction oncommit;	/* what do we do at COMMIT? */
 	char	   *tablespacename; /* table space to use, or NULL */
 	bool		if_not_exists;	/* just do nothing if it already exists? */
+#ifdef POLARDB_X
+    bool            islocal;        /* create only on the current node */
+    DistributeBy *distributeby;     /* distribution to use, or NULL */
+#endif
 } CreateStmt;
 
 /* ----------
@@ -3194,6 +3239,8 @@ typedef struct VacuumStmt
 	List	   *rels;			/* list of VacuumRelation, or NIL for all */
 } VacuumStmt;
 
+
+
 /* ----------------------
  *		Explain Statement
  *
@@ -3460,6 +3507,30 @@ typedef struct AlterTSConfigurationStmt
 	bool		missing_ok;		/* for DROP - skip error if missing? */
 } AlterTSConfigurationStmt;
 
+/* PGXC_BEGIN */
+/*
+ * EXECUTE DIRECT statement
+ */
+typedef struct ExecDirectStmt
+{
+    NodeTag        type;
+    List        *node_names;
+    char        *query;
+} ExecDirectStmt;
+
+/*
+ * CLEAN CONNECTION statement
+ */
+typedef struct CleanConnStmt
+{
+    NodeTag        type;
+    List        *nodes;        /* list of nodes dropped */
+    char        *dbname;    /* name of database to drop connections */
+    char        *username;    /* name of user whose connections are dropped */
+    bool        is_coord;    /* type of connections dropped */
+    bool        is_force;    /* option force  */
+} CleanConnStmt;
+/* PGXC_END */
 
 typedef struct CreatePublicationStmt
 {

@@ -182,6 +182,14 @@ xlog_identify(uint8 info)
 		case XLOG_FPI_FOR_HINT:
 			id = "FPI_FOR_HINT";
 			break;
+#ifdef POLARDB_X
+		case XLOG_RECORD_2PC_TIMESTAMP:
+			id = "RECORD_2PC_TIMESTAMP";
+			break;
+		case XLOG_REMOVE_2PC_FILE:
+			id = "REMOVE_2PC_FILE";
+			break;
+#endif
 	}
 
 	return id;

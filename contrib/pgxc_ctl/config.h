@@ -35,6 +35,10 @@ typedef enum NodeType {
     NodeType_DATANODE, 
     NodeType_SERVER} NodeType;
 
+#define HAType_STREAMING "1"
+#define HAType_AA "2"
+#define HAType_PAXOS "3"
+
 void read_vars(FILE *conf);
 void check_configuration(int type);
 void check_configuration_standalone(void);

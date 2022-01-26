@@ -33,8 +33,11 @@
 #endif
 #endif
 
-PQTimestampReceiver pq_timestamp_receiver = NULL;
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+#include "pg_config_manual.h"
 
+PQTimestampReceiver pq_timestamp_receiver = NULL;
+#endif/*ENABLE_DISTRIBUTED_TRANSACTION*/
 
 /*
  * This macro lists the backend message types that could be "long" (more
@@ -419,6 +422,27 @@ pqParseInput3(PGconn *conn)
 					 * the COPY command.
 					 */
 					break;
+
+				#ifdef POLARDB_X
+				case 'M':      /* Command Id */
+                    if (conn->result == NULL)
+                    {
+                        conn->result = PQmakeEmptyPGresult(conn,
+                                                           PGRES_COMMAND_OK);
+                        if (!conn->result)
+                        {
+                            printfPQExpBuffer(&conn->errorMessage,
+                                              libpq_gettext("out of memory"));
+                            pqSaveErrorResult(conn);
+                        }
+                    }
+
+                    if (pqGetInt((int*)&(conn->result->report_commandid), 4, conn))
+                    {
+                        return;
+                    }
+                    break;
+				#endif
 				default:
 					printfPQExpBuffer(&conn->errorMessage,
 									  libpq_gettext(

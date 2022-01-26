@@ -22,8 +22,9 @@ SUBDIRS = access bootstrap catalog parser commands executor foreign lib libpq \
 	main nodes optimizer partitioning port postmaster \
 	regex replication rewrite \
 	statistics storage tcop tsearch utils $(top_builddir)/src/timezone \
-	jit polar_dma \
+	jit polardbx polar_dma \
 	polar_datamax
+	#$(top_builddir)/src/interfaces/libpq 
 
 include $(srcdir)/common.mk
 
@@ -40,7 +41,20 @@ endif
 endif
 
 OBJS = $(SUBDIROBJS) $(LOCALOBJS) $(top_builddir)/src/port/libpgport_srv.a \
-       $(top_builddir)/src/common/libpgcommon_srv.a
+       $(top_builddir)/src/common/libpgcommon_srv.a \
+       $(top_builddir)/src/interfaces/libpq/fe-connect.o \
+       $(top_builddir)/src/interfaces/libpq/fe-secure.o \
+       $(top_builddir)/src/interfaces/libpq/fe-misc.o \
+       $(top_builddir)/src/interfaces/libpq/fe-protocol3.o \
+       $(top_builddir)/src/interfaces/libpq/fe-protocol2.o \
+       $(top_builddir)/src/interfaces/libpq/fe-exec.o \
+       $(top_builddir)/src/interfaces/libpq/fe-auth.o \
+       $(top_builddir)/src/interfaces/libpq/pqexpbuffer.o \
+       $(top_builddir)/src/interfaces/libpq/fe-auth-scram.o
+
+ifeq ($(with_openssl), yes)
+OBJS += $(top_builddir)/src/interfaces/libpq/fe-secure-openssl.o
+endif
 
 # We put libpgport and libpgcommon into OBJS, so remove it from LIBS; also add
 # libldap and ICU

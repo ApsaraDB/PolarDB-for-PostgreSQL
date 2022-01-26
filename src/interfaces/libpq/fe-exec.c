@@ -167,7 +167,9 @@ PQmakeEmptyPGresult(PGconn *conn, ExecStatusType status)
 	result->curBlock = NULL;
 	result->curOffset = 0;
 	result->spaceLeft = 0;
-
+#ifdef POLARDB_X
+    result->report_commandid = InvalidCommandId;
+#endif
 	if (conn)
 	{
 		/* copy connection data we might need for operations on PGresult */
@@ -3866,3 +3868,135 @@ PQunescapeBytea(const unsigned char *strtext, size_t *retbuflen)
 	*retbuflen = buflen;
 	return tmpbuf;
 }
+
+
+#ifdef POLARDB_X
+/*
+ * PQgetResultTimed
+ *      Get the next PGresult produced by a query.  Returns NULL if no
+ *      query work remains or an error has occurred (e.g. out of
+ *      memory).
+ */
+
+PGresult *
+PQgetResultTimed(PGconn *conn, time_t finish_time)
+{// #lizard forgives
+    PGresult   *res;
+
+    if (!conn)
+        return NULL;
+
+    /* Parse any available data, if our state permits. */
+    parseInput(conn);
+
+    /* If not ready to return something, block until we are. */
+    while (conn->asyncStatus == PGASYNC_BUSY)
+    {
+        int            flushResult;
+
+        /*
+         * If data remains unsent, send it.  Else we might be waiting for the
+         * result of a command the backend hasn't even got yet.
+         */
+        while ((flushResult = pqFlush(conn)) > 0)
+        {
+            if (pqWaitTimed(false, true, conn, finish_time))
+            {
+                flushResult = -1;
+                break;
+            }
+        }
+
+        /* Wait for some more data, and load it. */
+        if (flushResult ||
+            pqWaitTimed(true, false, conn, finish_time) ||
+            pqReadData(conn) < 0)
+        {
+            /*
+             * conn->errorMessage has been set by pqWait or pqReadData. We
+             * want to append it to any already-received error message.
+             */
+            pqSaveErrorResult(conn);
+            conn->asyncStatus = PGASYNC_IDLE;
+            return pqPrepareAsyncResult(conn);
+        }
+
+        /* Parse it. */
+        parseInput(conn);
+    }
+
+    /* Return the appropriate thing. */
+    switch (conn->asyncStatus)
+    {
+        case PGASYNC_IDLE:
+            res = NULL;            /* query is complete */
+            break;
+        case PGASYNC_READY:
+            res = pqPrepareAsyncResult(conn);
+            /* Set the state back to BUSY, allowing parsing to proceed. */
+            conn->asyncStatus = PGASYNC_BUSY;
+            break;
+        case PGASYNC_COPY_IN:
+            if (conn->result && conn->result->resultStatus == PGRES_COPY_IN)
+                res = pqPrepareAsyncResult(conn);
+            else
+                res = PQmakeEmptyPGresult(conn, PGRES_COPY_IN);
+            break;
+        case PGASYNC_COPY_OUT:
+            if (conn->result && conn->result->resultStatus == PGRES_COPY_OUT)
+                res = pqPrepareAsyncResult(conn);
+            else
+                res = PQmakeEmptyPGresult(conn, PGRES_COPY_OUT);
+            break;
+        case PGASYNC_COPY_BOTH:
+            if (conn->result && conn->result->resultStatus == PGRES_COPY_BOTH)
+                res = pqPrepareAsyncResult(conn);
+            else
+                res = PQmakeEmptyPGresult(conn, PGRES_COPY_BOTH);
+            break;
+        default:
+            printfPQExpBuffer(&conn->errorMessage,
+                              libpq_gettext("unexpected asyncStatus: %d\n"),
+                              (int) conn->asyncStatus);
+            res = PQmakeEmptyPGresult(conn, PGRES_FATAL_ERROR);
+            break;
+    }
+
+    if (res)
+    {
+        int            i;
+
+        for (i = 0; i < res->nEvents; i++)
+        {
+            PGEventResultCreate evt;
+
+            evt.conn = conn;
+            evt.result = res;
+            if (!res->events[i].proc(PGEVT_RESULTCREATE, &evt,
+                                     res->events[i].passThrough))
+            {
+                printfPQExpBuffer(&conn->errorMessage,
+                                  libpq_gettext("PGEventProc \"%s\" failed during PGEVT_RESULTCREATE event\n"),
+                                  res->events[i].name);
+                pqSetResultError(res, conn->errorMessage.data);
+                res->resultStatus = PGRES_FATAL_ERROR;
+                break;
+            }
+            res->events[i].resultInitialized = true;
+        }
+    }
+
+    return res;
+}
+
+uint32
+PQresultCommandId(const PGresult *res)
+{
+    if (!res)
+    {
+        return 0;
+    }
+    return res->report_commandid;
+}
+
+#endif

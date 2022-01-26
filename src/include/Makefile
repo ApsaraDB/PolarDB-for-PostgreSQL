@@ -25,7 +25,7 @@ SUBDIRS = access bootstrap catalog commands common datatype \
 	statistics storage tcop snowball snowball/libstemmer tsearch \
 	tsearch/dicts utils port port/atomics port/win32 port/win32_msvc \
 	port/win32_msvc/sys port/win32/arpa port/win32/netinet \
-	port/win32/sys portability
+	port/win32/sys portability pgxc pgxc/transam
 
 # Install all headers
 install: all installdirs

@@ -68,7 +68,11 @@
 #include "utils/ruleutils.h"
 #include "utils/syscache.h"
 #include "utils/typcache.h"
-
+#ifdef POLARDB_X
+#include "pgxc/pgxc.h"
+#include "foreign/foreign.h"
+#include "pgxc/locator.h"
+#endif
 
 /* State shared by transformCreateStmt and its subroutines */
 typedef struct
@@ -92,6 +96,10 @@ typedef struct
 	List	   *alist;			/* "after list" of things to do after creating
 								 * the table */
 	IndexStmt  *pkey;			/* PRIMARY KEY index, if any */
+#ifdef POLARDB_X
+    List       *fallback_dist_cols;
+    DistributeBy    *distributeby;        /* original distribute by column of CREATE TABLE */
+#endif
 	bool		ispartitioned;	/* true if table is partitioned */
 	PartitionBoundSpec *partbound;	/* transformed FOR VALUES */
 	bool		ofType;			/* true if statement contains OF typename */
@@ -170,7 +178,10 @@ transformCreateStmt(CreateStmt *stmt, const char *queryString)
 	ParseCallbackState pcbstate;
 	bool		like_found = false;
 	bool		is_foreign_table = IsA(stmt, CreateForeignTableStmt);
-
+#ifdef POLARDB_X
+	bool        autodistribute = !stmt->islocal;
+	List		*saved_tableElts;
+#endif
 	/*
 	 * We must not scribble on the passed-in CreateStmt, so copy it.  (This is
 	 * overkill, but easy.)
@@ -246,6 +257,10 @@ transformCreateStmt(CreateStmt *stmt, const char *queryString)
 	cxt.ispartitioned = stmt->partspec != NULL;
 	cxt.partbound = stmt->partbound;
 	cxt.ofType = (stmt->ofTypename != NULL);
+#ifdef POLARDB_X
+	cxt.fallback_dist_cols = NIL;
+	cxt.distributeby = stmt->distributeby;
+#endif
 
 	/*
 	 * Notice that we allow OIDs here only for plain tables, even though
@@ -276,6 +291,9 @@ transformCreateStmt(CreateStmt *stmt, const char *queryString)
 	 * Run through each primary element in the table creation clause. Separate
 	 * column defs from constraints, and do preliminary analysis.
 	 */
+#ifdef POLARDB_X
+	saved_tableElts = stmt->tableElts;
+#endif
 	foreach(elements, stmt->tableElts)
 	{
 		Node	   *element = lfirst(elements);
@@ -316,6 +334,78 @@ transformCreateStmt(CreateStmt *stmt, const char *queryString)
 										  (Node *) makeInteger(true), -1),
 							  stmt->options);
 
+#ifdef POLARDB_X
+    /*
+     * If the table is inherited then use the distribution strategy of the
+     * parent. We must have already checked for multiple parents and raised an
+     * ERROR since Postgres-XL does not support inheriting from multiple
+     * parents.
+     */
+
+    if (stmt->inhRelations && IS_PGXC_COORDINATOR && autodistribute)
+    {
+        RangeVar   *inh = (RangeVar *) linitial(stmt->inhRelations);
+        Relation    rel;
+        RelationLocInfo *rd_locator_info;
+
+        Assert(IsA(inh, RangeVar));
+
+        rel = heap_openrv(inh, AccessShareLock);
+        if ((rel->rd_rel->relkind != RELKIND_RELATION) &&
+                (rel->rd_rel->relkind != RELKIND_PARTITIONED_TABLE))
+            ereport(ERROR,
+                    (errcode(ERRCODE_WRONG_OBJECT_TYPE),
+                     errmsg("inherited relation \"%s\" is not a table",
+                         inh->relname)));
+
+        rd_locator_info = GetRelationLocInfo(RelationGetRelid(rel));
+        if (stmt->distributeby)
+        {
+            if (!rd_locator_info)
+                ereport(ERROR,
+                        (errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
+                         errmsg("parent table \"%s\" is not distributed, but "
+                             "distribution is specified for the child table \"%s\"",
+                             RelationGetRelationName(rel),
+                             stmt->relation->relname)));
+            ereport(WARNING,
+                    (errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
+                     errmsg("Inherited/partition tables inherit"
+                         " distribution from the parent"),
+                     errdetail("Explicitly specified distribution will be ignored")));
+        }
+        else
+            stmt->distributeby = makeNode(DistributeBy);
+
+
+        if (rd_locator_info)
+        {
+            switch (rd_locator_info->locatorType)
+            {
+                case LOCATOR_TYPE_HASH:
+                    stmt->distributeby->disttype = DISTTYPE_HASH;
+                    stmt->distributeby->colname =
+                        pstrdup(rd_locator_info->partAttrName);
+                    break;
+
+                case LOCATOR_TYPE_MODULO:
+                    stmt->distributeby->disttype = DISTTYPE_MODULO;
+                    stmt->distributeby->colname =
+                        pstrdup(rd_locator_info->partAttrName);
+                    break;
+                case LOCATOR_TYPE_REPLICATED:
+                    stmt->distributeby->disttype = DISTTYPE_REPLICATION;
+                    break;
+                case LOCATOR_TYPE_RROBIN:
+                default:
+                    stmt->distributeby->disttype = DISTTYPE_ROUNDROBIN;
+                    break;
+            }
+
+        }
+        heap_close(rel, NoLock);
+    }
+#endif /* POLARDB_X */
 	/*
 	 * transformIndexConstraints wants cxt.alist to contain only index
 	 * statements, so transfer anything we already have into save_alist.
@@ -354,6 +444,251 @@ transformCreateStmt(CreateStmt *stmt, const char *queryString)
 	result = lappend(cxt.blist, stmt);
 	result = list_concat(result, cxt.alist);
 	result = list_concat(result, save_alist);
+
+#ifdef POLARDB_X
+	/*
+	 * If the user did not specify any distribution clause and there is no
+	 * inherits clause, try and use PK or unique index
+	 */
+
+	if (IS_PGXC_COORDINATOR && autodistribute && !stmt->distributeby)
+	{
+		if (cxt.distributeby)
+		{
+			stmt->distributeby = copyObject(cxt.distributeby);
+			return result;
+		}
+		/*
+		 * If constraints require replicated table set it replicated
+		 */
+		stmt->distributeby = makeNode(DistributeBy);
+		/*
+		 * If there are columns suitable for hash distribution distribute on
+		 * first of them.
+		 */
+		if (cxt.fallback_dist_cols)
+		{
+			stmt->distributeby->disttype = DISTTYPE_HASH;
+			stmt->distributeby->colname = (char *) linitial(cxt.fallback_dist_cols);
+		}
+		/*
+		 * If none of above applies distribute by round robin
+		 */
+		else
+		{
+			stmt->distributeby->disttype = DISTTYPE_ROUNDROBIN;
+			stmt->distributeby->colname = NULL;
+		}
+	}
+	if(IS_PGXC_COORDINATOR)
+	{
+		foreach(elements, saved_tableElts)
+		{
+			Node       *element = lfirst(elements);
+
+			switch (nodeTag(element))
+			{
+				case T_ColumnDef:
+					if(((ColumnDef *) element)->constraints)
+					{
+						ListCell   *clist;
+						foreach(clist, ((ColumnDef *) element)->constraints)
+						{
+							Constraint *constraint = lfirst_node(Constraint, clist);
+
+							if(constraint->contype == CONSTR_PRIMARY
+									&& stmt->distributeby->disttype != DISTTYPE_REPLICATION
+									&& (stmt->distributeby->colname == NULL
+										|| strcmp(stmt->distributeby->colname, ((ColumnDef *)element)->colname) != 0))
+							{
+								ereport(ERROR,
+										(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+										 errmsg("primary key must contain distribute col")));
+							}
+							else if(constraint->contype == CONSTR_UNIQUE
+									&& stmt->distributeby->disttype != DISTTYPE_REPLICATION
+									&& (stmt->distributeby->colname == NULL
+										|| strcmp(stmt->distributeby->colname, ((ColumnDef *)element)->colname) != 0))
+							{
+								ereport(ERROR,
+										(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+										 errmsg("unique constraint must contain distribute col")));
+							}
+							else if(constraint->contype == CONSTR_FOREIGN)
+							{
+								if(strcmp(stmt->relation->relname, constraint->pktable->relname) != 0)
+								{
+									Relation    rel;
+									rel = heap_openrv(constraint->pktable, AccessShareLock);
+									switch (GetRelationLocType(RelationGetRelid(rel)))
+									{
+										case LOCATOR_TYPE_RROBIN:
+											ereport(ERROR,
+													(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+													 errmsg("foreign key can't referenced to a roundrobin distribute table")));
+											break;
+										case LOCATOR_TYPE_REPLICATED:
+											break;
+										case LOCATOR_TYPE_HASH:
+											if(stmt->distributeby->disttype == DISTTYPE_HASH)
+												break;
+										case LOCATOR_TYPE_MODULO:
+											if(stmt->distributeby->disttype == DISTTYPE_MODULO)
+												break;
+										default:
+											ereport(ERROR,
+													(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+													 errmsg("the distribute type is not same with the reference table")));
+											break;
+									}
+									if(stmt->distributeby->colname != NULL
+											&& strcmp(stmt->distributeby->colname, ((ColumnDef *)element)->colname) != 0)
+										ereport(ERROR,
+												(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+												 errmsg("foreign key constraints colume must be same with distribute col")));
+									heap_close(rel, NoLock);
+								}
+								else if(stmt->distributeby->disttype != DISTTYPE_REPLICATION)
+								{
+									if(stmt->distributeby->colname != NULL
+											&& strcmp(stmt->distributeby->colname, ((ColumnDef *)element)->colname) != 0)
+										ereport(ERROR,
+												(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+												 errmsg("foreign key constraints colume must be same with distribute col")));
+								}
+							}
+						}
+					}
+					break;
+				case T_Constraint:
+					{
+						Constraint *constraint = (Constraint *) element;
+
+						if(constraint->contype == CONSTR_PRIMARY
+								|| constraint->contype == CONSTR_UNIQUE)
+						{
+							if(stmt->distributeby->disttype != DISTTYPE_REPLICATION) 
+							{
+								if(stmt->distributeby->colname == NULL)
+									ereport(ERROR,
+											(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+											 errmsg("roundrobin distribute type not support primary key or unique constraint")));
+								if(constraint->keys)
+								{
+									ListCell *ckcl = NULL;
+									foreach(ckcl, constraint->keys)
+									{
+										if(strcmp(strVal(lfirst(ckcl)), stmt->distributeby->colname) == 0 )
+											break;
+									}
+									if(ckcl == NULL)
+										ereport(ERROR,
+												(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+												 errmsg("primary key or unique constraint must contain distribute col")));
+								}
+								else
+									ereport(ERROR,
+											(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+											 errmsg("primary key or unique is empty")));
+							}
+						}
+						else if(constraint->contype == CONSTR_FOREIGN)
+						{
+							if(strcmp(stmt->relation->relname, constraint->pktable->relname) != 0)
+							{
+								Relation    rel;
+
+								rel = heap_openrv(constraint->pktable, AccessShareLock);
+								switch (GetRelationLocType(RelationGetRelid(rel)))
+								{
+									case LOCATOR_TYPE_RROBIN:
+										ereport(ERROR,
+												(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+												 errmsg("foreign key can't referenced to a roundrobin distribute table")));
+										break;
+									case LOCATOR_TYPE_REPLICATED:
+										break;
+									case LOCATOR_TYPE_HASH:
+										if(stmt->distributeby->disttype == DISTTYPE_HASH)
+											break;
+									case LOCATOR_TYPE_MODULO:
+										if(stmt->distributeby->disttype == DISTTYPE_MODULO)
+											break;
+									default:
+										ereport(ERROR,
+												(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+												 errmsg("the distribute type is not same with the reference table")));
+										break;
+								}
+
+								if(stmt->distributeby->colname != NULL && constraint->fk_attrs)
+								{
+									ListCell *fkcl = NULL;
+									foreach(fkcl, constraint->fk_attrs)
+									{
+										if(strcmp(strVal(lfirst(fkcl)), stmt->distributeby->colname) == 0)
+											break;
+									}
+									if(fkcl == NULL)
+										ereport(ERROR,
+												(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+												 errmsg("foreign key must contain distribute col")));
+								}
+								heap_close(rel, NoLock);
+							}
+							else if(stmt->distributeby->disttype != DISTTYPE_REPLICATION)
+							{
+								if(stmt->distributeby->colname != NULL && constraint->fk_attrs)
+								{
+									ListCell *fkcl = NULL;
+									foreach(fkcl, constraint->fk_attrs)
+									{
+										if(strcmp(strVal(lfirst(fkcl)), stmt->distributeby->colname) == 0)
+											break;
+									}
+									if(fkcl == NULL)
+										ereport(ERROR,
+												(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+												 errmsg("foreign key must contain distribute col")));
+								}
+							}
+						}
+						else if(constraint->contype == CONSTR_EXCLUSION)
+						{
+							if(stmt->distributeby->disttype != DISTTYPE_REPLICATION)
+							{
+								ListCell *index_elem;
+
+								if(stmt->distributeby->colname == NULL)
+									ereport(ERROR,
+											(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+											 errmsg("roundrobin distribute type not support exclude constraint")));
+								foreach(index_elem, constraint->exclusions)	
+								{
+									IndexElem *index_val =  (IndexElem *)(linitial(lfirst(index_elem)));
+
+									if(index_val->name
+											&& strcmp(index_val->name, stmt->distributeby->colname) == 0)
+										break;
+								}
+								if(index_elem == NULL)
+									ereport(ERROR,
+											(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+											 errmsg("exclude constraint must contain distribute col")));
+							}
+						}
+					}
+					break;
+				case T_TableLikeClause:
+					break;
+				default:
+					elog(ERROR, "unrecognized node type: %d",
+							(int) nodeTag(element));
+					break;
+			}
+		}	
+	}
+#endif /* POLARDB_X */
 
 	return result;
 }
@@ -973,7 +1308,14 @@ transformTableLikeClause(CreateStmtContext *cxt, TableLikeClause *table_like_cla
 		 */
 		if (attribute->attisdropped)
 			continue;
-
+#ifdef POLARDB_X
+		if(IS_PGXC_COORDINATOR && cxt->distributeby == NULL && 
+				IsTypeHashDistributable(attribute->atttypid))
+		{
+			cxt->fallback_dist_cols = lappend(cxt->fallback_dist_cols,
+					pstrdup(attributeName));
+		}
+#endif
 		/*
 		 * Create a new column, which is marked as NOT inherited.
 		 *
@@ -1164,6 +1506,35 @@ transformTableLikeClause(CreateStmtContext *cxt, TableLikeClause *table_like_cla
 
 			parent_index = index_open(parent_index_oid, AccessShareLock);
 
+#ifdef POLARDB_X
+			if(IS_PGXC_COORDINATOR && cxt->distributeby == NULL
+					&& (parent_index->rd_index->indisunique
+						|| parent_index->rd_index->indisprimary
+						|| parent_index->rd_index->indisexclusion))
+			{
+				cxt->distributeby = makeNode(DistributeBy);
+				switch (GetRelationLocType(RelationGetRelid(relation)))
+				{
+					case LOCATOR_TYPE_REPLICATED:
+						cxt->distributeby->disttype = DISTTYPE_REPLICATION;
+						cxt->distributeby->colname = NULL;
+						break;
+					case LOCATOR_TYPE_HASH:
+						cxt->distributeby->disttype = DISTTYPE_HASH;
+						cxt->distributeby->colname = GetRelationDistColumn(RelationGetRelid(relation));
+						break;
+					case LOCATOR_TYPE_MODULO:
+						cxt->distributeby->disttype = DISTTYPE_MODULO;
+						cxt->distributeby->colname = GetRelationDistColumn(RelationGetRelid(relation));
+						break;
+					default:
+						ereport(ERROR,
+								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+								 errmsg("Create table Like: the parent rel distribute type is valid")));
+						break;
+				}
+			}
+#endif
 			/* Build CREATE INDEX statement to recreate the parent_index */
 			index_stmt = generateClonedIndexStmt(cxt->relation, InvalidOid,
 												 parent_index,
@@ -3394,6 +3765,14 @@ transformColumnType(CreateStmtContext *cxt, ColumnDef *column)
 					 parser_errposition(cxt->pstate,
 										column->collClause->location)));
 	}
+#ifdef POLARDB_X
+	if(IS_PGXC_COORDINATOR && cxt->distributeby == NULL && !cxt->isalter &&
+			IsTypeHashDistributable(HeapTupleGetOid(ctype)))
+	{
+		cxt->fallback_dist_cols = lappend(cxt->fallback_dist_cols,
+				pstrdup(column->colname));
+	}
+#endif
 
 	ReleaseSysCache(ctype);
 }

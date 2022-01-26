@@ -38,9 +38,9 @@
 #include "replication/squeue.h"
 
 
-extern void ThreadSemaInit(ThreadSema * sema, int32 init);
-extern void ThreadSemaDown(ThreadSema * sema);
-extern void ThreadSemaUp(ThreadSema * sema);
+extern void ThreadSemaRecInit(ThreadSemaRec * sema, int32 init);
+extern void ThreadSemaRecDown(ThreadSemaRec * sema);
+extern void ThreadSemaRecUp(ThreadSemaRec * sema);
 
 typedef slock_t pg_spin_lock;
 
@@ -49,25 +49,25 @@ static void spinlock_lock(pg_spin_lock * lock);
 static void spinlock_unlock(pg_spin_lock * lock);
 
 void
-ThreadMutexInit(pthread_mutex_t *mutex)
+ThreadMutexInitRec(pthread_mutex_t *mutex)
 {
 	pthread_mutex_init(mutex, 0);
 }
 
 void
-ThreadMutexLock(pthread_mutex_t *mutex)
+ThreadMutexLockRec(pthread_mutex_t *mutex)
 {
 	pthread_mutex_lock(mutex);
 }
 
 void
-ThreadMutexUnlock(pthread_mutex_t *mutex)
+ThreadMutexUnlockRec(pthread_mutex_t *mutex)
 {
 	pthread_mutex_unlock(mutex);
 }
 
 void
-ThreadSemaInit(ThreadSema * sema, int32 init)
+ThreadSemaRecInit(ThreadSemaRec * sema, int32 init)
 {
 	if (sema)
 	{
@@ -78,7 +78,7 @@ ThreadSemaInit(ThreadSema * sema, int32 init)
 }
 
 void
-ThreadSemaDown(ThreadSema * sema)
+ThreadSemaRecDown(ThreadSemaRec * sema)
 {
 	if (sema)
 	{
@@ -96,7 +96,7 @@ ThreadSemaDown(ThreadSema * sema)
 }
 
 void
-ThreadSemaUp(ThreadSema * sema)
+ThreadSemaRecUp(ThreadSemaRec * sema)
 {
 	if (sema)
 	{
@@ -113,13 +113,13 @@ ThreadSemaUp(ThreadSema * sema)
 	}
 }
 
-void
+static void
 spinlock_init(pg_spin_lock * lock)
 {
 	SpinLockInit(lock);
 }
 
-void
+static void
 spinlock_lock(pg_spin_lock * lock)
 {
 	if (lock)
@@ -128,7 +128,7 @@ spinlock_lock(pg_spin_lock * lock)
 	}
 }
 
-void
+static void
 spinlock_unlock(pg_spin_lock * lock)
 {
 	if (lock)
@@ -138,7 +138,8 @@ spinlock_unlock(pg_spin_lock * lock)
 }
 
 
-int32		CreateThread(void *(*f) (void *), void *arg, int32 mode)
+int32
+CreateThreadRec(void *(*f) (void *), void *arg, int32 mode)
 {
 
 	pthread_attr_t attr;
@@ -168,12 +169,12 @@ int32		CreateThread(void *(*f) (void *), void *arg, int32 mode)
 }
 
 
-PGPipe *
-CreatePipe(uint32 size)
+PGPipeRec *
+CreatePipeRec(uint32 size)
 {
-	PGPipe	   *pPipe = NULL;
+	PGPipeRec	   *pPipe = NULL;
 
-	pPipe = palloc0(sizeof(PGPipe));
+	pPipe = palloc0(sizeof(PGPipeRec));
 	pPipe->m_List = (void **) palloc0(sizeof(void *) * size);
 	pPipe->m_Length = size;
 	pPipe->m_Head = 0;
@@ -182,7 +183,7 @@ CreatePipe(uint32 size)
 	return pPipe;
 }
 void
-DestoryPipe(PGPipe * pPipe)
+DestoryPipeRec(PGPipeRec * pPipe)
 {
 	if (pPipe)
 	{
@@ -192,7 +193,7 @@ DestoryPipe(PGPipe * pPipe)
 }
 
 void *
-PipeGet(PGPipe * pPipe)
+PipeGetRec(PGPipeRec * pPipe)
 {
 	void	   *ptr = NULL;
 
@@ -213,7 +214,7 @@ PipeGet(PGPipe * pPipe)
  * add p to the pipe, return 0 if successful, -1 if fail
  */
 int
-PipePut(PGPipe * pPipe, void *p)
+PipePutRec(PGPipeRec * pPipe, void *p)
 {
 	spinlock_lock(&(pPipe->m_lock));
 	if ((pPipe->m_Tail + 1) % pPipe->m_Length == pPipe->m_Head)
@@ -227,7 +228,7 @@ PipePut(PGPipe * pPipe, void *p)
 	return 0;
 }
 bool
-PipeIsFull(PGPipe * pPipe)
+PipeIsFullRec(PGPipeRec * pPipe)
 {
 	spinlock_lock(&(pPipe->m_lock));
 	if ((pPipe->m_Tail + 1) % pPipe->m_Length == pPipe->m_Head)
@@ -242,7 +243,7 @@ PipeIsFull(PGPipe * pPipe)
 	}
 }
 bool
-IsEmpty(PGPipe * pPipe)
+IsEmptyRec(PGPipeRec * pPipe)
 {
 	spinlock_lock(&(pPipe->m_lock));
 	if (pPipe->m_Tail == pPipe->m_Head)
@@ -257,7 +258,7 @@ IsEmpty(PGPipe * pPipe)
 	}
 }
 int
-PipeLength(PGPipe * pPipe)
+PipeLengthRec(PGPipeRec * pPipe)
 {
 	int			len = -1;
 

@@ -570,19 +570,17 @@ RecursiveGetCommitTs(TransactionId xid, int partitionno)
 
 		if (COMMITSEQNO_IS_SUBTRANS(cts))
 		{
-			if (COMMITSEQNO_IS_ABORTED(parentCts)
-				|| COMMITSEQNO_IS_COMMITTED(parentCts))
-			{
-				cts = COMMITSEQNO_ABORTED;
-			}
-			else if (COMMITSEQNO_IS_PREPARED(parentCts))
+			if (COMMITSEQNO_IS_PREPARED(parentCts))
 				cts = MASK_PREPARE_BIT(cts);
 			else if (COMMITSEQNO_IS_INPROGRESS(parentCts))
 				cts = COMMITSEQNO_INPROGRESS;
 			else if (COMMITSEQNO_IS_COMMITTING(parentCts))
 				cts = COMMITSEQNO_COMMITTING;
 			else
+			{
+				elog(ERROR, "unexpected parent status "INT64_FORMAT, parentCts);
 				Assert(false);
+			}
 		}
 	}
 
@@ -703,7 +701,8 @@ CTSLogGetNextActiveXid(TransactionId xid,
 			cts = *(XLogRecPtr *) (CtslogCtl->shared[partitionno]->page_buffer[slotno] + entryno * sizeof(XLogRecPtr));
 
 			if (COMMITSEQNO_IS_INPROGRESS(cts)
-				|| COMMITSEQNO_IS_COMMITTING(cts))
+				|| COMMITSEQNO_IS_PREPARED(cts)
+				|| COMMITSEQNO_IS_COMMITTING(cts))			
 			{
 				goto end;
 			}

@@ -1,10 +1,9 @@
-# Benchmark Using pgbench
+## benchmarking using pgbench
 
-## Install pgbench
-Go to directory `contrib/pgbench`to get pgbench source code.
-Run `make && make install` to install pgbench.
+### install pgbench
+The source code of pgbench is placed in the directory `contrib/pgbench`, simply by running `make && make install` to get pgbench installed.
 
-## init
+### init
 * First of all, a database (ie: pgbench) is required to run pgbench:
 
 ```bash
@@ -17,7 +16,7 @@ DROP DATABASE
 postgres=# create database pgbench;
 CREATE DATABASE
 ```
-* Initialize the benchmark environment with option `-s` to set the scaling factor, using `--help` to get more information:
+* Initialize the benchmark environment with option `-s` to set the scaling factor, using `--help` to see more:
 
 ```bash
 $~/pghome/bin/pgbench -i --unlogged-tables -s 32 -p 5432 -d pgbench
@@ -64,8 +63,8 @@ vacuuming...
 creating primary keys...
 done.
 ```
-## benchmark
-Run benchmark with some options,  using `--help` to get more information:
+### benchmark
+Running benchmark with some options,  using `--help` to see more:
 ```bash
 $~/pghome/bin/pgbench -M prepared -r -c 16 -j 4 -T 30 -p 5432 -d pgbench -l
 ... ...

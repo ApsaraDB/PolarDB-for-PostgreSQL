@@ -283,7 +283,8 @@ CREATE VIEW pg_available_extension_versions AS
 
 CREATE VIEW pg_prepared_xacts AS
     SELECT P.transaction, P.gid, P.prepared,
-           U.rolname AS owner, D.datname AS database
+           U.rolname AS owner, D.datname AS database,
+           P.participate_nodes, P.commit_timestamp
     FROM pg_prepared_xact() AS P
          LEFT JOIN pg_authid U ON P.ownerid = U.oid
          LEFT JOIN pg_database D ON P.dbid = D.oid;

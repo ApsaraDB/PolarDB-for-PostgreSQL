@@ -22,6 +22,7 @@
 #include "access/multixact.h"
 #include "access/nbtree.h"
 #include "access/twophase.h"
+#include "access/xlog.h"
 #include "commands/async.h"
 #include "distributed_txn/logical_clock.h"
 #include "miscadmin.h"
@@ -51,7 +52,9 @@
 #ifdef ENABLE_DISTRIBUTED_TRANSACTION
 #include "access/ctslog.h"
 #endif
-
+#ifdef POLARDB_X
+#include "pgxc/nodemgr.h"
+#endif
 /* POLAR */
 #include "polar_datamax/polar_datamax.h"
 #include "polar_dma/polar_dma.h"
@@ -169,6 +172,10 @@ CreateSharedMemoryAndSemaphores(bool makePrivate, int port)
 		/* POLAR: consensus share memory size */
 		if (polar_enable_dma)
 			size = add_size(size, ConsensusShmemSize());
+
+#ifdef POLARDB_X
+		size = add_size(size, TwoPhaseGidHashTableShmemSize());
+#endif
 
 #ifdef EXEC_BACKEND
 		size = add_size(size, ShmemBackendArraySize());
@@ -317,6 +324,11 @@ CreateSharedMemoryAndSemaphores(bool makePrivate, int port)
 	 */
 	if (!IsUnderPostmaster)
 		ShmemBackendArrayAllocation();
+#endif
+
+#ifdef POLARDB_X
+    NodeTablesShmemInit();
+	GidHashTabShmemInit();
 #endif
 
 	/* Initialize dynamic shared memory facilities. */

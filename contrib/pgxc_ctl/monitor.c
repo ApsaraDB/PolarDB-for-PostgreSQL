@@ -25,8 +25,8 @@
  * This module is imported from /contrib/pgxc_monitor, to provide monitoring
  * feature of each pgstgres-xc components.
  */
-//#include "gtm/gtm_client.h"
-//#include "gtm/libpq-fe.h"
+#include "gtm/gtm_client.h"
+#include "gtm/libpq-fe.h"
 
 #include <stdlib.h>
 #include <getopt.h>

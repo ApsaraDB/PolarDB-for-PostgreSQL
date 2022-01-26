@@ -45,7 +45,7 @@
 #include "do_shell.h"
 #include "utils.h"
 #include "datanode_cmd.h"
-//#include "gtm_util.h"
+#include "gtm_util.h"
 #include "coord_cmd.h"
 //#include "port.h"
 #include "c.h"
@@ -89,9 +89,9 @@ cmd_t *prepare_initPaxosDNMaster(char *nodeName)
         return(NULL);
 
     gettimeofday(&tv, NULL);
-    sysidentifier = ((uint64) tv.tv_sec) << 32;
-    sysidentifier |= ((uint64) tv.tv_usec) << 12;
-    sysidentifier |= getpid() & 0xFFF;
+	sysidentifier = ((uint64) tv.tv_sec) << 32;
+	sysidentifier |= ((uint64) tv.tv_usec) << 12;
+	sysidentifier |= getpid() & 0xFFF;
 
     identifierlist[idx] = sysidentifier;
 
@@ -183,21 +183,32 @@ cmd_t *prepare_initPaxosDNMaster(char *nodeName)
     appendFiles(f, fileList);
     CleanArray(fileList);
     freeAndReset(fileList);
-    
-    fprintf(f,
+
+    if (isVarYes(VAR_standAlone))
+    {
+        fprintf(f,
             "port = %s\n",
-//          "pooler_port = %s\n",
             aval(VAR_datanodePorts)[idx]
-//          aval(VAR_datanodePoolerPorts)[idx]
+            );    
+    }
+    else
+    {
+        fprintf(f,
+            "port = %s\n"
+            "pooler_port = %s\n",
+            aval(VAR_datanodePorts)[idx],
+            aval(VAR_datanodePoolerPorts)[idx]
             );
-//    if(isVarYes(VAR_multiCluster) && !is_none(aval(VAR_datanodeMasterCluster)[idx]))
-//    {
-//        fprintf(f, 
-//                "pgxc_main_cluster_name = %s\n"
-//                "pgxc_cluster_name = %s\n",
-//                sval(VAR_pgxcMainClusterName),
-//                aval(VAR_datanodeMasterCluster)[idx]);
-//    }
+        if(isVarYes(VAR_multiCluster) && !is_none(aval(VAR_datanodeMasterCluster)[idx]))
+        {
+            fprintf(f, 
+                    "pgxc_main_cluster_name = %s\n"
+                    "pgxc_cluster_name = %s\n",
+                    sval(VAR_pgxcMainClusterName),
+                    aval(VAR_datanodeMasterCluster)[idx]);
+        }
+    }
+
     fclose(f);
     
     /* Additional Initialization for log_shipping, for paxos, setting # for this part for now */
@@ -223,14 +234,17 @@ cmd_t *prepare_initPaxosDNMaster(char *nodeName)
             Free(cmdInitdb);
             return(NULL);
         }
-        fprintf(f,
-                "#wal_level = logical \n"
-                "#archive_mode = off\n"
-                "# archive_command = 'rsync %%p %s@%s:%s/%%f'\n"
-                "#max_wal_senders = %s\n"
-                "# End of Addition\n",
-                sval(VAR_pgxcUser), aval(VAR_datanodeSlaveServers)[idx], aval(VAR_datanodeArchLogDirs)[idx],
-                is_none(aval(VAR_datanodeMaxWALSenders)[idx]) ? "0" : aval(VAR_datanodeMaxWALSenders)[idx]);
+        if (strcmp(aval(VAR_datanodeSlaveType)[idx],HAType_PAXOS) != 0)
+        { //to-do, support for active-active
+            fprintf(f,
+                    "wal_level = logical \n"
+                    "archive_mode = off\n"
+                    "# archive_command = 'rsync %%p %s@%s:%s/%%f'\n"
+                    "max_wal_senders = %s\n"
+                    "# End of Addition\n",
+                    sval(VAR_pgxcUser), aval(VAR_datanodeSlaveServers)[idx], aval(VAR_datanodeArchLogDirs)[idx],
+                    is_none(aval(VAR_datanodeMaxWALSenders)[idx]) ? "0" : aval(VAR_datanodeMaxWALSenders)[idx]);
+        }
         fclose(f);
     }
     else
@@ -393,18 +407,20 @@ cmd_t *prepare_initDatanodeMaster(char *nodeName)
         snprintf(newCommand(cmdInitdb), MAXLINE,
              "%s %s"
              "rm -rf %s;"
-             "mkdir -p %s; PGXC_CTL_SILENT=1 initdb --nodename %s --nodetype datanode %s %s -D %s "
-             "--master_gtm_nodename %s --master_gtm_ip %s --master_gtm_port %s",
+//             "mkdir -p %s; PGXC_CTL_SILENT=1 initdb --nodename %s --nodetype datanode %s %s -D %s "
+//             "--master_gtm_nodename %s --master_gtm_ip %s --master_gtm_port %s",
+             "mkdir -p %s; PGXC_CTL_SILENT=1 initdb %s %s -D %s ",
              remoteDirCheck,
              remoteWalDirCheck,
              aval(VAR_datanodeMasterDirs)[idx], aval(VAR_datanodeMasterDirs)[idx],
-             aval(VAR_datanodeNames)[idx],
+//             aval(VAR_datanodeNames)[idx],
              wal ? "-X" : "",
              wal ? aval(VAR_datanodeMasterWALDirs)[idx] : "",
-             aval(VAR_datanodeMasterDirs)[idx],
-             sval(VAR_gtmName),
-             sval(VAR_gtmMasterServer),
-             sval(VAR_gtmMasterPort));
+//             aval(VAR_datanodeMasterDirs)[idx],
+//             sval(VAR_gtmName),
+//             sval(VAR_gtmMasterServer),
+//             sval(VAR_gtmMasterPort));
+             aval(VAR_datanodeMasterDirs)[idx]);
     }
     
     /* Configure recovery.conf of the slave */
@@ -448,7 +464,8 @@ cmd_t *prepare_initDatanodeMaster(char *nodeName)
             "logging_collector = on\n"
             "log_directory = 'pg_log'\n"
             "listen_addresses = '*'\n"
-            "max_connections = 100\n",
+            "max_connections = 100\n"
+            "max_worker_processes = 8\n",
             timeStampString(timeStamp, MAXTOKEN));
     if (doesExist(VAR_datanodeExtraConfig, 0) &&
         !is_none(sval(VAR_datanodeExtraConfig)))
@@ -599,28 +616,30 @@ int init_datanode_master(char **nodeList)
     }
     rc = doCmdList(cmdList);
     cleanCmdList(cmdList);
-    CleanArray(actualNodeList);
-    if (isPaxosEnv())
+    for(ii = 0; actualNodeList[ii]; ii++)
     {
-        if ((f = pgxc_popen_wRaw("psql -p %d -h %s %s %s",
-                                 atoi(aval(VAR_datanodePorts)[0]),
-                                 aval(VAR_datanodeMasterServers)[0],
-                                 sval(VAR_defaultDatabase),
-                                 sval(VAR_pgxcOwner)))
-            == NULL)
+        if (isPaxosEnv())
         {
-            elog(ERROR, "ERROR: failed to start psql for master %s, %s\n", aval(VAR_datanodeNames)[0], strerror(errno));
-        }
-        else
-        {
-            fprintf(f,
-                    "create extension polar_monitor;\n"
-                    "create role replicator with superuser login password '123456';\n"
-                    "\\q\n");
-            pclose(f);
+            if ((f = pgxc_popen_wRaw("psql -p %d -h %s %s %s",
+                                    atoi(aval(VAR_datanodePorts)[ii]),
+                                    aval(VAR_datanodeMasterServers)[ii],
+                                    sval(VAR_defaultDatabase),
+                                    sval(VAR_pgxcOwner)))
+                == NULL)
+            {
+                elog(ERROR, "ERROR: failed to start psql for master %s, %s\n", aval(VAR_datanodeNames)[ii], strerror(errno));
+            }
+            else
+            {
+                fprintf(f,
+                        "create extension polar_monitor;\n"
+                        "create role replicator with superuser login password '123456';\n"
+                        "\\q\n");
+                pclose(f);
+            }
         }
     }
-        
+    CleanArray(actualNodeList);   
     elog(NOTICE, "Done.\n");
     return(rc);
 }
@@ -639,14 +658,14 @@ cmd_t *prepare_basebackup(char *nodeName)
     cmd_t *cmd, *cmdBaseBkup, *mktmp, *cmdScp, *cmdScp1,*cmdTarExtract,*cmdTarExtract1,*cmdDel;
     int idx;
     bool wal;
-    
+    char tmpslavedir[24];
     /* If the node really a datanode? */
     if((idx = datanodeIdx(nodeName)) < 0)
     {
         elog(WARNING, "WARNING: node %s is not a datanode. Skipping\n", nodeName);
         return(NULL);
     }
-
+    snprintf(tmpslavedir,24,"tmpslave%d",idx);
     if (doesExist(VAR_datanodeSlaveWALDirs, idx) &&
             aval(VAR_datanodeSlaveWALDirs)[idx] &&
             !is_none(aval(VAR_datanodeSlaveWALDirs)[idx]))
@@ -656,41 +675,42 @@ cmd_t *prepare_basebackup(char *nodeName)
 
     cmd = cmdBaseBkup = initCmd(aval(VAR_datanodeMasterServers)[idx]);
     snprintf(newCommand(cmdBaseBkup), MAXLINE, 
-             "rm -rf %s/polar_backup; mkdir -p %s/polar_backup; chmod 0700 %s/polar_backup; pg_basebackup -p %s -h %s -U %s -D %s/polar_backup -X stream --progress --write-recovery-conf -v --format=t",
+             "rm -rf %s/polar_backup; mkdir -p %s/polar_backup; chmod 0700 %s/polar_backup; pg_basebackup -p %s -h %s -U %s -D %s/polar_backup -X stream --progress --write-recovery-conf --format=t",
              sval(VAR_localTmpDir), sval(VAR_localTmpDir), sval(VAR_localTmpDir),
              aval(VAR_datanodePorts)[idx], aval(VAR_datanodeMasterServers)[idx],
              sval(VAR_pgxcOwner), sval(VAR_localTmpDir));
     
-     appendCmdEl(cmd, (mktmp = initCmd(aval(VAR_datanodeSlaveServers)[idx])));
-     snprintf(newCommand(mktmp), MAXLINE,
-              "rm -rf %s/polar_backup_slave; mkdir -p %s/polar_backup_slave; chmod 0700 %s/polar_backup_slave", 
-             sval(VAR_tmpDir), sval(VAR_tmpDir), sval(VAR_tmpDir));
+    appendCmdEl(cmd, (mktmp = initCmd(aval(VAR_datanodeSlaveServers)[idx])));
+    snprintf(newCommand(mktmp), MAXLINE,
+            "rm -rf %s/polar_backup_slave/%s; mkdir -p %s/polar_backup_slave/%s; chmod 0700 %s/polar_backup_slave/%s", 
+            sval(VAR_tmpDir), tmpslavedir, sval(VAR_tmpDir), tmpslavedir,
+            sval(VAR_tmpDir), tmpslavedir);
 
     /* SCP backup */
     appendCmdEl(cmd, (cmdScp = initCmd(aval(VAR_datanodeMasterServers)[idx])));
     snprintf(newCommand(cmdScp), MAXLINE,
-             "scp %s/polar_backup/base.tar %s@%s:%s/polar_backup_slave",
-             sval(VAR_localTmpDir), sval(VAR_pgxcUser), aval(VAR_datanodeSlaveServers)[idx], sval(VAR_tmpDir));
+             "scp %s/polar_backup/base.tar %s@%s:%s/polar_backup_slave/%s",
+             sval(VAR_localTmpDir), sval(VAR_pgxcUser), aval(VAR_datanodeSlaveServers)[idx], sval(VAR_tmpDir), tmpslavedir);
 
      appendCmdEl(cmd, (cmdScp1 = initCmd(aval(VAR_datanodeMasterServers)[idx])));
      snprintf(newCommand(cmdScp1), MAXLINE,
-              "scp %s/polar_backup/pg_wal.tar %s@%s:%s/polar_backup_slave",
-              sval(VAR_localTmpDir), sval(VAR_pgxcUser), aval(VAR_datanodeSlaveServers)[idx], sval(VAR_tmpDir));
+              "scp %s/polar_backup/pg_wal.tar %s@%s:%s/polar_backup_slave/%s",
+              sval(VAR_localTmpDir), sval(VAR_pgxcUser), aval(VAR_datanodeSlaveServers)[idx], sval(VAR_tmpDir), tmpslavedir);
      
      /* Extract backup and remove it */
      appendCmdEl(cmd, (cmdTarExtract = initCmd(aval(VAR_datanodeSlaveServers)[idx])));
      snprintf(newCommand(cmdTarExtract), MAXLINE,
-              "tar -xvf %s/polar_backup_slave/base.tar -C %s;", 
-               sval(VAR_tmpDir), 
+              "tar -xf %s/polar_backup_slave/%s/base.tar -C %s;", 
+               sval(VAR_tmpDir), tmpslavedir,
                aval(VAR_datanodeSlaveDirs)[idx]);
 
     appendCmdEl(cmd, (cmdTarExtract1 = initCmd(aval(VAR_datanodeSlaveServers)[idx])));
     snprintf(newCommand(cmdTarExtract1), MAXLINE,
-             "tar -xvf %s/polar_backup_slave/pg_wal.tar -C %s/%s; rm -rf %s/polar_backup_slave", 
-              sval(VAR_tmpDir), 
+             "tar -xf %s/polar_backup_slave/%s/pg_wal.tar -C %s/%s; rm -rf %s/polar_backup_slave/%s", 
+              sval(VAR_tmpDir), tmpslavedir,
               aval(VAR_datanodeSlaveDirs)[idx],
               wal ? aval(VAR_datanodeSlaveWALDirs)[idx] : "pg_wal",
-              sval(VAR_tmpDir));
+              sval(VAR_tmpDir), tmpslavedir);
 
     appendCmdEl(cmd, (cmdDel = initCmd(aval(VAR_datanodeMasterServers)[idx])));
     snprintf(newCommand(cmdDel), MAXLINE,
@@ -705,14 +725,15 @@ cmd_t *prepare_basebackup_secondSlave(char *nodeName)
     cmd_t *cmd, *cmdBaseBkup, *mktmp, *cmdScp, *cmdScp1,*cmdTarExtract,*cmdTarExtract1,*cmdDel;
     int idx;
     bool wal;
-    
+    char tmplearnerdir[24];
+
     /* If the node really a datanode? */
     if((idx = datanodeIdx(nodeName)) < 0)
     {
         elog(WARNING, "WARNING: node %s is not a datanode. Skipping\n", nodeName);
         return(NULL);
     }
-
+    snprintf(tmplearnerdir,24,"tmplearner%d",idx);
     if (doesExist(VAR_datanodeLearnerWALDirs, idx) &&
             aval(VAR_datanodeLearnerWALDirs)[idx] &&
             !is_none(aval(VAR_datanodeLearnerWALDirs)[idx]))
@@ -722,41 +743,43 @@ cmd_t *prepare_basebackup_secondSlave(char *nodeName)
 
     cmd = cmdBaseBkup = initCmd(aval(VAR_datanodeMasterServers)[idx]);
     snprintf(newCommand(cmdBaseBkup), MAXLINE, 
-             "rm -rf %s/polar_backup; mkdir -p %s/polar_backup; chmod 0700 %s/polar_backup; pg_basebackup -p %s -h %s -U %s -D %s/polar_backup -X stream --progress --write-recovery-conf -v --format=t",
+             "rm -rf %s/polar_backup; mkdir -p %s/polar_backup; chmod 0700 %s/polar_backup; pg_basebackup -p %s -h %s -U %s -D %s/polar_backup -X stream --progress --write-recovery-conf --format=t",
              sval(VAR_localTmpDir), sval(VAR_localTmpDir), sval(VAR_localTmpDir),
              aval(VAR_datanodePorts)[idx], aval(VAR_datanodeMasterServers)[idx],
              sval(VAR_pgxcOwner), sval(VAR_localTmpDir));
     
-     appendCmdEl(cmd, (mktmp = initCmd(aval(VAR_datanodeLearnerServers)[idx])));
-     snprintf(newCommand(mktmp), MAXLINE,
-              "rm -rf %s/polar_backup_learner; mkdir -p %s/polar_backup_learner; chmod 0700 %s/polar_backup_learner", 
-             sval(VAR_tmpDir), sval(VAR_tmpDir), sval(VAR_tmpDir));
+    appendCmdEl(cmd, (mktmp = initCmd(aval(VAR_datanodeLearnerServers)[idx])));
+    snprintf(newCommand(mktmp), MAXLINE,
+            "rm -rf %s/polar_backup_learner/%s; mkdir -p %s/polar_backup_learner/%s; chmod 0700 %s/polar_backup_learner/%s",
+            sval(VAR_tmpDir), tmplearnerdir,sval(VAR_tmpDir),tmplearnerdir,
+            sval(VAR_tmpDir), tmplearnerdir);
+
 
     /* SCP backup */
     appendCmdEl(cmd, (cmdScp = initCmd(aval(VAR_datanodeMasterServers)[idx])));
     snprintf(newCommand(cmdScp), MAXLINE,
-             "scp %s/polar_backup/base.tar %s@%s:%s/polar_backup_learner",
-             sval(VAR_localTmpDir), sval(VAR_pgxcUser), aval(VAR_datanodeLearnerServers)[idx], sval(VAR_tmpDir));
+            "scp %s/polar_backup/base.tar %s@%s:%s/polar_backup_learner/%s",
+            sval(VAR_localTmpDir), sval(VAR_pgxcUser), aval(VAR_datanodeLearnerServers)[idx], sval(VAR_tmpDir),tmplearnerdir);
 
-     appendCmdEl(cmd, (cmdScp1 = initCmd(aval(VAR_datanodeMasterServers)[idx])));
-     snprintf(newCommand(cmdScp1), MAXLINE,
-              "scp %s/polar_backup/pg_wal.tar %s@%s:%s/polar_backup_learner",
-              sval(VAR_localTmpDir), sval(VAR_pgxcUser), aval(VAR_datanodeLearnerServers)[idx], sval(VAR_tmpDir));
+    appendCmdEl(cmd, (cmdScp1 = initCmd(aval(VAR_datanodeMasterServers)[idx])));
+    snprintf(newCommand(cmdScp1), MAXLINE,
+              "scp %s/polar_backup/pg_wal.tar %s@%s:%s/polar_backup_learner/%s",
+              sval(VAR_localTmpDir), sval(VAR_pgxcUser), aval(VAR_datanodeLearnerServers)[idx], sval(VAR_tmpDir), tmplearnerdir);
      
-     /* Extract backup and remove it */
-     appendCmdEl(cmd, (cmdTarExtract = initCmd(aval(VAR_datanodeLearnerServers)[idx])));
-     snprintf(newCommand(cmdTarExtract), MAXLINE,
-              "tar -xvf %s/polar_backup_learner/base.tar -C %s;", 
-               sval(VAR_tmpDir), 
+    /* Extract backup and remove it */
+    appendCmdEl(cmd, (cmdTarExtract = initCmd(aval(VAR_datanodeLearnerServers)[idx])));
+    snprintf(newCommand(cmdTarExtract), MAXLINE,
+              "tar -xf %s/polar_backup_learner/%s/base.tar -C %s;",
+               sval(VAR_tmpDir), tmplearnerdir,
                aval(VAR_datanodeLearnerDirs)[idx]);
 
     appendCmdEl(cmd, (cmdTarExtract1 = initCmd(aval(VAR_datanodeLearnerServers)[idx])));
     snprintf(newCommand(cmdTarExtract1), MAXLINE,
-             "tar -xvf %s/polar_backup_learner/pg_wal.tar -C %s/%s; rm -rf %s/polar_backup_learner", 
-              sval(VAR_tmpDir), 
+             "tar -xf %s/polar_backup_learner/%s/pg_wal.tar -C %s/%s; rm -rf %s/polar_backup_learner/%s",
+              sval(VAR_tmpDir), tmplearnerdir,
               aval(VAR_datanodeLearnerDirs)[idx],
               wal ? aval(VAR_datanodeLearnerWALDirs)[idx] : "pg_wal",
-              sval(VAR_tmpDir));
+              sval(VAR_tmpDir),tmplearnerdir);
 
     appendCmdEl(cmd, (cmdDel = initCmd(aval(VAR_datanodeMasterServers)[idx])));
     snprintf(newCommand(cmdDel), MAXLINE,
@@ -853,11 +876,11 @@ cmd_t *prepare_initPaxosDNSlave(char *nodeName)
             "# Added to startup the slave, %s\n"
             "hot_standby = on\n"
             "port = %s\n"
-//          "pooler_port = %s\n"
+//            "pooler_port = %s\n"
             "# End of addition\n",
             timeStampString(timestamp, MAXTOKEN),
             aval(VAR_datanodeSlavePorts)[idx]);
-//          aval(VAR_datanodeSlavePoolerPorts)[idx]);
+//            aval(VAR_datanodeSlavePoolerPorts)[idx]);
 //    if(isVarYes(VAR_multiCluster) && !is_none(aval(VAR_datanodeSlaveCluster)[idx]))
 //    {
 //        fprintf(f, 
@@ -1082,28 +1105,31 @@ int init_datanode_slave(char **nodeList)
     }
     rc = doCmdList(cmdList);
     cleanCmdList(cmdList);
-    CleanArray(actualNodeList);
-    if (isPaxosEnv())
+    for (ii = 0; actualNodeList[ii]; ii++)
     {
-        if ((f = pgxc_popen_wRaw("psql -p %d -h %s %s %s",
-                                 atoi(aval(VAR_datanodePorts)[0]),
-                                 aval(VAR_datanodeMasterServers)[0],
-                                 sval(VAR_defaultDatabase),
-                                 sval(VAR_pgxcOwner)))
-            == NULL)
+        if (isPaxosEnv())
         {
-            elog(ERROR, "ERROR: failed to start psql for master %s, %s\n", aval(VAR_datanodeNames)[0], strerror(errno));
-        }
-        else
-        {
-            fprintf(f,
-                    "alter system dma add follower \'%s:%s\';\n"
-                    "\\q\n",
-                    aval(VAR_datanodeSlaveServers)[0],
-                    aval(VAR_datanodeSlavePorts)[0]);
-            pclose(f);
+            if ((f = pgxc_popen_wRaw("psql -p %d -h %s %s %s",
+                                    atoi(aval(VAR_datanodePorts)[ii]),
+                                    aval(VAR_datanodeMasterServers)[ii],
+                                    sval(VAR_defaultDatabase),
+                                    sval(VAR_pgxcOwner)))
+                == NULL)
+            {
+                elog(ERROR, "ERROR: failed to start psql for master %s, %s\n", aval(VAR_datanodeNames)[ii], strerror(errno));
+            }
+            else
+            {
+                fprintf(f,
+                        "alter system dma add follower \'%s:%s\';\n"
+                        "\\q\n",
+                        aval(VAR_datanodeSlaveServers)[ii],
+                        aval(VAR_datanodeSlavePorts)[ii]);
+                pclose(f);
+            }
         }
     }
+    CleanArray(actualNodeList);
     return(rc);
 }
 
@@ -1202,11 +1228,11 @@ cmd_t *prepare_initPaxosDNSecondSlave(char *nodeName)
             "# Added to startup the slave, %s\n"
             "hot_standby = on\n"
             "port = %s\n"
-//          "pooler_port = %s\n"
+//            "pooler_port = %s\n"
             "# End of addition\n",
             timeStampString(timestamp, MAXTOKEN),
             aval(VAR_datanodeLearnerPorts)[idx]);
-//          aval(VAR_datanodeSlavePoolerPorts)[idx]);
+//            aval(VAR_datanodeSlavePoolerPorts)[idx]);
 //    if(isVarYes(VAR_multiCluster) && !is_none(aval(VAR_datanodeSlaveCluster)[idx]))
 //    {
 //        fprintf(f, 
@@ -1366,9 +1392,9 @@ cmd_t *prepare_initPaxosDNLearner(char *nodeName)
     
     fprintf(f,
             "port = %s\n",
-//          "pooler_port = %s\n",
+//            "pooler_port = %s\n",
             aval(VAR_datanodeLearnerPorts)[idx]
-//          aval(VAR_datanodePoolerPorts)[idx]
+//            aval(VAR_datanodePoolerPorts)[idx]
             );
 //    if(isVarYes(VAR_multiCluster) && !is_none(aval(VAR_datanodeMasterCluster)[idx]))
 //    {
@@ -1508,41 +1534,43 @@ int init_datanode_learner(char **nodeList)
     }
     rc = doCmdList(cmdList);
     cleanCmdList(cmdList);
-    CleanArray(actualNodeList);
-    if (isPaxosEnv())
+    for (ii = 0; actualNodeList[ii]; ii++)
     {
-        if ((f = pgxc_popen_wRaw("psql -p %d -h %s %s %s",
-                                 atoi(aval(VAR_datanodePorts)[0]),
-                                 aval(VAR_datanodeMasterServers)[0],
-                                 sval(VAR_defaultDatabase),
-                                 sval(VAR_pgxcOwner)))
-            == NULL)
+        if (isPaxosEnv())
         {
-            elog(ERROR, "ERROR: failed to start psql for master %s, %s\n", aval(VAR_datanodeNames)[0], strerror(errno));
-        }
-        else
-        {
-            if(getLearnerType()==1)
+            if ((f = pgxc_popen_wRaw("psql -p %d -h %s %s %s",
+                                    atoi(aval(VAR_datanodePorts)[ii]),
+                                    aval(VAR_datanodeMasterServers)[ii],
+                                    sval(VAR_defaultDatabase),
+                                    sval(VAR_pgxcOwner)))
+                == NULL)
             {
-            
-                fprintf(f,
-                        "alter system dma add follower \'%s:%s\';\n"
-                        "\\q\n",
-                        aval(VAR_datanodeLearnerServers)[0],
-                        aval(VAR_datanodeLearnerPorts)[0]);
+                elog(ERROR, "ERROR: failed to start psql for master %s, %s\n", aval(VAR_datanodeNames)[ii], strerror(errno));
             }
             else
             {
-                fprintf(f,
-                        "alter system dma add learner \'%s:%s\';\n"
-                        "\\q\n",
-                        aval(VAR_datanodeLearnerServers)[0],
-                        aval(VAR_datanodeLearnerPorts)[0]);
+                if(getLearnerType()==1)
+                {
+                
+                    fprintf(f,
+                            "alter system dma add follower \'%s:%s\';\n"
+                            "\\q\n",
+                            aval(VAR_datanodeLearnerServers)[ii],
+                            aval(VAR_datanodeLearnerPorts)[ii]);
+                }
+                else
+                {
+                    fprintf(f,
+                            "alter system dma add learner \'%s:%s\';\n"
+                            "\\q\n",
+                            aval(VAR_datanodeLearnerServers)[ii],
+                            aval(VAR_datanodeLearnerPorts)[ii]);
+                }
+                pclose(f);
             }
-            pclose(f);
         }
     }
-        
+    CleanArray(actualNodeList);    
     return(rc);
 }
 
@@ -1580,7 +1608,7 @@ cmd_t *prepare_startDatanodeMaster(char *nodeName)
     {
         cmdStartDatanodeMaster = initCmd(aval(VAR_datanodeMasterServers)[idx]);
         snprintf(newCommand(cmdStartDatanodeMaster), MAXLINE,
-                 "pg_ctl start -w -Z datanode -D %s -o -i", aval(VAR_datanodeMasterDirs)[idx]);
+                 "pg_ctl start -w -D %s -o -i; sleep 10", aval(VAR_datanodeMasterDirs)[idx]);
     }
     else
     {
@@ -1702,7 +1730,7 @@ cmd_t *prepare_startDatanodeSlave(char *nodeName)
         {
              cmd = cmdStartDatanodeSlave = initCmd(aval(VAR_datanodeSlaveServers)[idx]);
             snprintf(newCommand(cmdStartDatanodeSlave), MAXLINE,
-                     "pg_ctl start -w -Z datanode -D %s",
+                     "pg_ctl start -w -D %s",
                      aval(VAR_datanodeSlaveDirs)[idx]);       
         }
         
@@ -1737,7 +1765,7 @@ cmd_t *prepare_startDatanodeSlave(char *nodeName)
         else
         {
             snprintf(newCommand(cmdMasterReload), MAXLINE,
-                 "pg_ctl reload -Z datanode -D %s",
+                 "pg_ctl reload -D %s",
                  aval(VAR_datanodeMasterDirs)[idx]);
         }
     }
@@ -1866,13 +1894,11 @@ cmd_t *prepare_stopDatanodeMaster(char *nodeName, char *immediate)
     {
         if (immediate)
             snprintf(newCommand(cmdStopDatanodeMaster), MAXLINE,
-                     "pg_ctl stop -w %s -D %s -m %s",
-                     isVarYes(VAR_standAlone)? "" :"-Z datanode",
+                     "pg_ctl stop -w -D %s -m %s",
                      aval(VAR_datanodeMasterDirs)[idx], immediate);
         else
             snprintf(newCommand(cmdStopDatanodeMaster), MAXLINE,
-                     "pg_ctl stop -w %s -D %s",
-                     isVarYes(VAR_standAlone)? "" :"-Z datanode",
+                     "pg_ctl stop -w -D %s",
                      aval(VAR_datanodeMasterDirs)[idx]);
     }
     else
@@ -1974,8 +2000,7 @@ cmd_t *prepare_stopDatanodeSlave(char *nodeName, char *immediate)
 
             appendCmdEl(cmdMasterToAsyncMode, (cmdReloadMaster = initCmd(aval(VAR_datanodeMasterServers)[idx])));
             snprintf(newCommand(cmdReloadMaster), MAXLINE,
-                     "pg_ctl reload %s -D %s",
-                     isVarYes(VAR_standAlone)? "" :"-Z datanode",
+                     "pg_ctl reload -D %s",
                      aval(VAR_datanodeMasterDirs)[idx]);
         }
 
@@ -1984,13 +2009,11 @@ cmd_t *prepare_stopDatanodeSlave(char *nodeName, char *immediate)
 
         if (immediate)
             snprintf(newCommand(cmdStopSlave), MAXLINE,
-                     "pg_ctl stop -w %s -D %s -m %s", 
-                     isVarYes(VAR_standAlone)? "" :"-Z datanode",
+                     "pg_ctl stop -w -D %s -m %s", 
                      aval(VAR_datanodeSlaveDirs)[idx], immediate);
         else
             snprintf(newCommand(cmdStopSlave), MAXLINE,
-                     "pg_ctl stop -w %s -D %s", 
-                     isVarYes(VAR_standAlone)? "" :"-Z datanode",
+                     "pg_ctl stop -w -D %s", 
                      aval(VAR_datanodeSlaveDirs)[idx]);
     }
     else
@@ -2192,7 +2215,7 @@ int failover_oneDatanode(int datanodeIdx)
 
     /* Promote the slave */
     rc_local = doImmediate(aval(VAR_datanodeSlaveServers)[datanodeIdx], NULL,
-                           "pg_ctl promote -Z datanode -D %s",
+                           "pg_ctl promote -D %s",
                            aval(VAR_datanodeSlaveDirs)[datanodeIdx]);
     checkRc();
 
@@ -2225,12 +2248,12 @@ int failover_oneDatanode(int datanodeIdx)
     //checkRc();
 
     rc_local = doImmediate(aval(VAR_datanodeSlaveServers)[datanodeIdx], NULL,
-                           "pg_ctl stop -w -Z datanode -D %s -o -i; sleep 1",
+                           "pg_ctl stop -w -D %s -o -i; sleep 1",
                            aval(VAR_datanodeSlaveDirs)[datanodeIdx]);
     checkRc();
 
     rc_local = doImmediate(aval(VAR_datanodeSlaveServers)[datanodeIdx], NULL,
-                           "pg_ctl start -w -Z datanode -D %s -o -i; sleep 5",
+                           "pg_ctl start -w -D %s -o -i; sleep 5",
                            aval(VAR_datanodeSlaveDirs)[datanodeIdx]);
     checkRc();
     
@@ -2456,8 +2479,7 @@ int failover_oneDatanode_standalone(int datanodeIdx)
 
     /* Promote the slave */
     rc_local = doImmediate(aval(VAR_datanodeSlaveServers)[datanodeIdx], NULL,
-                           "pg_ctl promote %s -D %s",
-                           isVarYes(VAR_standAlone)? "" :"-Z datanode",
+                           "pg_ctl promote -D %s",
                            aval(VAR_datanodeSlaveDirs)[datanodeIdx]);
     checkRc();
 
@@ -2484,15 +2506,13 @@ int failover_oneDatanode_standalone(int datanodeIdx)
     pclose(f);
 
     rc_local = doImmediate(aval(VAR_datanodeSlaveServers)[datanodeIdx], NULL,
-                           "pg_ctl stop -w %s -D %s %s; sleep 1",
-                           isVarYes(VAR_standAlone)? "" :"-Z datanode",
+                           "pg_ctl stop -w -D %s %s; sleep 1",
                            aval(VAR_datanodeSlaveDirs)[datanodeIdx],
                            isVarYes(VAR_standAlone)? "" :"-o -i");
     checkRc();
 
     rc_local = doImmediate(aval(VAR_datanodeSlaveServers)[datanodeIdx], NULL,
-                           "pg_ctl start -w %s -D %s %s; sleep 5",
-                           isVarYes(VAR_standAlone)? "" :"-Z datanode",
+                           "pg_ctl start -w -D %s %s; sleep 5",
                            aval(VAR_datanodeSlaveDirs)[datanodeIdx],
                            isVarYes(VAR_standAlone)? "" :"-o -i");
     checkRc();
@@ -2983,15 +3003,16 @@ int add_datanodeMaster(char *name, char *host, int port, int pooler, char *dir,
     //gtmPort = (gtmPxyIdx > 0) ? aval(VAR_gtmProxyPorts)[gtmPxyIdx] : sval(VAR_gtmMasterPort);
 
     /* initdb */
-    doImmediate(host, NULL, "PGXC_CTL_SILENT=1 initdb -D %s %s %s --nodename %s --nodetype datanode "
-                            "--master_gtm_nodename %s --master_gtm_ip %s --master_gtm_port %s", 
+//    doImmediate(host, NULL, "PGXC_CTL_SILENT=1 initdb -D %s %s %s --nodename %s --nodetype datanode "
+//                            "--master_gtm_nodename %s --master_gtm_ip %s --master_gtm_port %s",  
+    doImmediate(host, NULL, "PGXC_CTL_SILENT=1 initdb -D %s %s %s",
                             dir,
                             wal ? "-X" : "",
-                            wal ? waldir : "",
-                            name,
-                            sval(VAR_gtmName),
-                            sval(VAR_gtmMasterServer),
-                            sval(VAR_gtmMasterPort));
+                            wal ? waldir : "");
+ //                           name,
+ //                           sval(VAR_gtmName),
+ //                           sval(VAR_gtmMasterServer),
+ //                           sval(VAR_gtmMasterPort));
 
     /* Edit configurations */
     if ((f = pgxc_popen_w(host, "cat >> %s/postgresql.conf", dir)))
@@ -3094,7 +3115,7 @@ int add_datanodeMaster(char *name, char *host, int port, int pooler, char *dir,
      }
 
     /* Start the new datanode */
-    doImmediate(host, NULL, "pg_ctl start -w -Z restoremode -D %s -o -i", dir);
+    doImmediate(host, NULL, "pg_ctl start -w -D %s -o -i", dir);
 
     /* Allow the new datanode to start up by sleeping for a couple of seconds */
     usleep(2000000L);
@@ -3104,7 +3125,7 @@ int add_datanodeMaster(char *name, char *host, int port, int pooler, char *dir,
     doImmediateRaw("rm -f %s", pgdumpall_out);
 
     /* Quit the new datanode */
-    doImmediate(host, NULL, "pg_ctl stop -w -Z restoremode -D %s", dir);
+    doImmediate(host, NULL, "pg_ctl stop -w -D %s", dir);
 
     /* Start the new datanode with --datanode option */
     AddMember(nodelist, name);
@@ -3121,7 +3142,8 @@ int add_datanodeMaster(char *name, char *host, int port, int pooler, char *dir,
                 elog(ERROR, "ERROR: cannot connect to the coordinator master %s.\n", aval(VAR_coordNames)[ii]);
                 continue;
             }
-            fprintf(f, "CREATE NODE %s WITH (TYPE = 'datanode', host='%s', PORT=%d);\n", name, host, port);
+//            fprintf(f, "CREATE NODE %s WITH (TYPE = 'datanode', host='%s', PORT=%d);\n", name, host, port);
+            fprintf(f, "CREATE NODE %s WITH (TYPE = 'datanode', host='%s', PORT=%d, local=%d);\n", name, host, port, false);
             fprintf(f, "SELECT pgxc_pool_reload();\n");
             fprintf(f, "\\q\n");
             pclose(f);
@@ -3150,11 +3172,13 @@ int add_datanodeMaster(char *name, char *host, int port, int pooler, char *dir,
             }
             if (strcmp(aval(VAR_datanodeNames)[ii], name) != 0)
             {
-                fprintf(f, "CREATE NODE %s WITH (TYPE = 'datanode', host='%s', PORT=%d);\n",  name, host, port);
+//                fprintf(f, "CREATE NODE %s WITH (TYPE = 'datanode', host='%s', PORT=%d);\n",  name, host, port);
+                fprintf(f, "CREATE NODE %s WITH (TYPE = 'datanode', host='%s', PORT=%d, local=%d);\n",  name, host, port, false);
             }
             else
             {
-                fprintf(f, "ALTER NODE %s WITH (TYPE = 'datanode', host='%s', PORT=%d);\n",  name, host, port);
+//                fprintf(f, "ALTER NODE %s WITH (TYPE = 'datanode', host='%s', PORT=%d);\n",  name, host, port);
+                fprintf(f, "CREATE NODE %s WITH (TYPE = 'datanode', host='%s', PORT=%d, local=%d);\n",  name, host, port, true);
             }
 
             fprintf(f, "SELECT pgxc_pool_reload();\n");
@@ -3343,9 +3367,9 @@ int add_datanodeSlave(char *name, char *host, int port, int pooler, char *dir,
      * transactions this coordinator is not involved.
      */
     doImmediate(aval(VAR_datanodeMasterServers)[idx], NULL, 
-                "pg_ctl stop -w -Z datanode -D %s -m fast", aval(VAR_datanodeMasterDirs)[idx]);
+                "pg_ctl stop -w -D %s -m fast", aval(VAR_datanodeMasterDirs)[idx]);
     doImmediate(aval(VAR_datanodeMasterServers)[idx], NULL, 
-                "pg_ctl start -w -Z datanode -D %s", aval(VAR_datanodeMasterDirs)[idx]);
+                "pg_ctl start -w -D %s", aval(VAR_datanodeMasterDirs)[idx]);
     /* pg_basebackup */
     doImmediate(host, NULL, "pg_basebackup -p %s -h %s -D %s --wal-method=stream %s %s",
                 aval(VAR_datanodePorts)[idx],
@@ -3393,7 +3417,7 @@ int add_datanodeSlave(char *name, char *host, int port, int pooler, char *dir,
     pclose(f);
 
     /* Start the slave */
-    doImmediate(host, NULL, "pg_ctl start -w -Z datanode -D %s", dir);
+    doImmediate(host, NULL, "pg_ctl start -w -D %s", dir);
     return 0;
 }
 
@@ -4093,7 +4117,7 @@ int remove_datanodeSlave(char *name, int clean_opt)
             pclose(f);
         }
     }
-    doImmediate(aval(VAR_datanodeMasterServers)[idx], NULL, "pg_ctl restart -Z datanode -D %s", aval(VAR_datanodeMasterDirs)[idx]);
+    doImmediate(aval(VAR_datanodeMasterServers)[idx], NULL, "pg_ctl restart -D %s", aval(VAR_datanodeMasterDirs)[idx]);
 
     if (clean_opt)
         clean_datanode_slave(nodelist);
@@ -4162,7 +4186,7 @@ int remove_datanodeLearner(char *name, int clean_opt)
                 aval(VAR_datanodeLearnerDirs)[idx]) == 0)
         stop_datanode_learner(nodelist, "immediate");
 
-    doImmediate(aval(VAR_datanodeMasterServers)[idx], NULL, "pg_ctl restart -Z datanode -D %s", aval(VAR_datanodeMasterDirs)[idx]);
+    doImmediate(aval(VAR_datanodeMasterServers)[idx], NULL, "pg_ctl restart -D %s", aval(VAR_datanodeMasterDirs)[idx]);
 
     if (clean_opt)
         clean_datanode_learner(nodelist);
