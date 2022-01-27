@@ -1240,6 +1240,10 @@ _equalCreateStmt(const CreateStmt *a, const CreateStmt *b)
 	COMPARE_SCALAR_FIELD(oncommit);
 	COMPARE_STRING_FIELD(tablespacename);
 	COMPARE_SCALAR_FIELD(if_not_exists);
+#ifdef POLARDB_X
+    COMPARE_SCALAR_FIELD(islocal);
+    COMPARE_NODE_FIELD(distributeby);
+#endif
 
 	return true;
 }
@@ -2999,6 +3003,24 @@ _equalValue(const Value *a, const Value *b)
 	return true;
 }
 
+#ifdef POLARDB_X
+
+/*
+ * stuff from connpool.h
+ */
+static bool
+_equalCleanConnStmt(const CleanConnStmt *a, const CleanConnStmt *b)
+{
+    COMPARE_NODE_FIELD(nodes);
+    COMPARE_STRING_FIELD(dbname);
+    COMPARE_STRING_FIELD(username);
+    COMPARE_SCALAR_FIELD(is_coord);
+    COMPARE_SCALAR_FIELD(is_force);
+    return true;
+}
+
+#endif
+
 /*
  * equal
  *	  returns whether two nodes are equal
@@ -3534,6 +3556,11 @@ equal(const void *a, const void *b)
 		case T_CheckPointStmt:
 			retval = true;
 			break;
+#ifdef POLARDB_X
+        case T_CleanConnStmt:
+            retval = _equalCleanConnStmt(a, b);
+            break;
+#endif
 		case T_CreateSchemaStmt:
 			retval = _equalCreateSchemaStmt(a, b);
 			break;

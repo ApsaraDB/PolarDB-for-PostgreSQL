@@ -200,6 +200,10 @@ DecodeXLogOp(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 		case XLOG_FPW_CHANGE:
 		case XLOG_FPI_FOR_HINT:
 		case XLOG_FPI:
+#ifdef POLARDB_X
+		case XLOG_RECORD_2PC_TIMESTAMP:
+		case XLOG_REMOVE_2PC_FILE:
+#endif
 			break;
 		default:
 			elog(ERROR, "unexpected RM_XLOG_ID record type: %u", info);

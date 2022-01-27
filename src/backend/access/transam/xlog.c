@@ -92,6 +92,9 @@
 #include "replication/syncrep.h"
 #include "access/xlog.h"
 #endif
+#ifdef POLARDB_X
+#include "pgxc/transam/txn_coordinator.h"
+#endif
 
 /* POLAR */
 #include "polar_datamax/polar_datamax.h"
@@ -10684,6 +10687,38 @@ xlog_redo(XLogReaderState *record)
 		/* Keep track of full_page_writes */
 		lastFullPageWrites = fpw;
 	}
+#ifdef POLARDB_X
+	else if (info == XLOG_RECORD_2PC_TIMESTAMP)
+	{
+		char *gid;
+		GlobalTimestamp commit_timestamp;
+
+		gid = XLogRecGetData(record);
+		memcpy(&commit_timestamp, gid + strlen(gid) + 1, sizeof(GlobalTimestamp));
+		if (enable_twophase_recover_debug_print)
+			elog(DEBUG_2PC, "In xlog_redo, process XLOG_RECORD_2PC_TIMESTAMP, gid:%s, commit_timestamp:" UINT64_FORMAT, gid, commit_timestamp);
+		// update in-memory structure.
+		SetTwoPhaseXactCommitTimestamp(gid, commit_timestamp);
+		// update on-disk pg_twophase file.
+		UpdateTwoPhaseFileCommitTimestamp(gid, commit_timestamp);
+	}
+	else if (info == XLOG_REMOVE_2PC_FILE)
+	{
+		char *gid;
+		TransactionId localxid;
+		bool ret;
+
+		gid = XLogRecGetData(record);
+		memcpy(&localxid, gid + strlen(gid) + 1, sizeof(TransactionId));
+		if (enable_twophase_recover_debug_print)
+			elog(DEBUG_2PC, "In xlog_redo, process XLOG_REMOVE_2PC_FILE, gid:%s, localxid:%d", gid, localxid);
+
+		ret = CleanUpTwoPhaseFile(gid);
+		if (enable_twophase_recover_debug_print)
+			elog(DEBUG_2PC, "In xlog_redo, process XLOG_REMOVE_2PC_FILE, ret:%d", ret);
+	}
+
+#endif
 }
 
 #ifdef WAL_DEBUG
@@ -13129,12 +13164,18 @@ CheckForStandbyTrigger(void)
 		{
 			unlink(PROMOTE_SIGNAL_FILE);
 			fast_promote = true;
-			ereport(LOG, (errmsg("received force promote request")));
-
-			ResetPromoteTriggered();
-			triggered = true;
-			return true;
 		}
+		else if (stat(FALLBACK_PROMOTE_SIGNAL_FILE, &stat_buf) == 0)
+		{
+			unlink(FALLBACK_PROMOTE_SIGNAL_FILE);
+			fast_promote = false;
+		}
+
+		ereport(LOG, (errmsg("received promote request")));
+
+		ResetPromoteTriggered();
+		triggered = true;
+		return true;
 	}
 
 	if (TriggerFile == NULL)

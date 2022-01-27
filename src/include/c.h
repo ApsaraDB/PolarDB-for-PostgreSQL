@@ -270,6 +270,21 @@
 #if defined(HAVE_STDBOOL_H) && SIZEOF_BOOL == 1
 #include <stdbool.h>
 #define USE_STDBOOL 1
+#ifndef TRUE
+#define TRUE    1
+#endif
+
+#ifndef FALSE
+#define FALSE    0
+#endif
+
+/*
+ * NULL
+ *        Null pointer.
+ */
+#ifndef NULL
+#define NULL    ((void *) 0)
+#endif
 #else
 
 #ifndef bool
@@ -1062,7 +1077,11 @@ typedef union PGAlignedXLogBlock
 #define STATUS_EOF				(-2)
 #define STATUS_FOUND			(1)
 #define STATUS_WAITING			(2)
-
+#define STATUS_NOT_FOUND        (3)
+#define STATUS_DELAYED            (4)
+#ifdef POALRDB_X
+#define STATUS_LOCK                (5) /* account locked */
+#endif
 /*
  * gettext support
  */

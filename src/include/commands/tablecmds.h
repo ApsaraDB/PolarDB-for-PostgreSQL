@@ -98,4 +98,8 @@ extern void RangeVarCallbackOwnsRelation(const RangeVar *relation,
 extern bool PartConstraintImpliedByRelConstraint(Relation scanrel,
 									 List *partConstraint);
 
+#ifdef POLARDB_X
+extern bool IsOnCommitActions(void);
+#endif
+
 #endif							/* TABLECMDS_H */

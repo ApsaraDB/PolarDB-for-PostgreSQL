@@ -36,6 +36,8 @@ extern LogicalTime TxnGetStartTs(void);
 extern LogicalTime TxnGetCoordinatedCommitTs(void);
 extern LogicalTime TxnGetOrGenerateStartTs(bool latest);
 extern LogicalTime TxnGetOrGenerateCommitTs(bool fromCoordinator);
+extern LogicalTime TxnDecideCoordinatedCommitTs(void);
+extern LogicalTime TxnGetOrGeneratePrepareTs(void);
 
 /**
  * Reply prepare_ts, commit_ts through libpq

@@ -32,4 +32,9 @@ extern void spi_dest_startup(DestReceiver *self, int operation,
 				 TupleDesc typeinfo);
 extern bool spi_printtup(TupleTableSlot *slot, DestReceiver *self);
 
+#ifdef POLARDB_X
+extern void FormRowDescriptionMessage(TupleDesc typeinfo, List *targetlist, 
+                          int16 *formats, StringInfo buf);
+#endif
+
 #endif							/* PRINTTUP_H */

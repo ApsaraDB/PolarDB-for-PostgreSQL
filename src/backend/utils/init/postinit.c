@@ -39,6 +39,7 @@
 #include "pgstat.h"
 #include "postmaster/autovacuum.h"
 #include "postmaster/postmaster.h"
+#include "pgxc/transam/txn_coordinator.h"
 #include "replication/walsender.h"
 #include "storage/bufmgr.h"
 #include "storage/fd.h"
@@ -615,6 +616,10 @@ InitPostgres(const char *in_dbname, Oid dboid, const char *username,
 	 */
 	InitBufferPoolBackend();
 
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+    InitLocalTwoPhaseState();
+#endif
+
 	/*
 	 * Initialize local process's access to XLOG.
 	 */
@@ -1049,6 +1054,14 @@ InitPostgres(const char *in_dbname, Oid dboid, const char *username,
 	/* close the transaction we started above */
 	if (!bootstrap)
 		CommitTransactionCommand();
+
+#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+    /*
+     *init g_twophase_state here, since we need to init g_twophase_state in multiple startup mode
+     */
+	InitTxnManagement();
+#endif
+
 }
 
 /*

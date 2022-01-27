@@ -15,6 +15,7 @@ include $(top_builddir)/src/Makefile.global
 
 SUBDIRS = \
 	initdb \
+	initgtm \
 	pg_archivecleanup \
 	pg_basebackup \
 	pg_config \
@@ -30,6 +31,7 @@ SUBDIRS = \
 	pg_waldump \
 	pgbench \
 	psql \
+	pgxc_clean \
 	scripts
 
 ifeq ($(PORTNAME), win32)

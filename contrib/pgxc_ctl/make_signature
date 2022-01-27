@@ -203,3 +203,47 @@ NULL
 EOF
 
 rm pgxc_ctl_conf_standalone.wk
+
+sed -e 's/"/\\\"/g; s/^/"/; s/$/",/; s/^"#ifdef XCP",/#ifdef XCP/; s/^"#endif",/#endif/' pgxc_ctl_conf_distributed > pgxc_ctl_conf_distributed.wk
+
+cat >> pgxc_ctl_bash.c <<EOF
+/*
+ * Prototype of pgxc_ctl configuration file.
+ *
+ * It should be self descripting.   Can be extracted to your pgxc_ctl
+ * work directory with 'prepare standalone' command.
+ */
+
+char *pgxc_ctl_conf_prototype_distributed[] = {
+EOF
+
+cat pgxc_ctl_conf_distributed.wk >> pgxc_ctl_bash.c
+
+cat >> pgxc_ctl_bash.c <<EOF
+NULL
+};
+EOF
+
+rm pgxc_ctl_conf_distributed.wk
+
+sed -e 's/"/\\\"/g; s/^/"/; s/$/",/; s/^"#ifdef XCP",/#ifdef XCP/; s/^"#endif",/#endif/' pgxc_ctl_conf_dispaxos > pgxc_ctl_conf_dispaxos.wk
+
+cat >> pgxc_ctl_bash.c <<EOF
+/*
+ * Prototype of pgxc_ctl configuration file.
+ *
+ * It should be self descripting.   Can be extracted to your pgxc_ctl
+ * work directory with 'prepare standalone' command.
+ */
+
+char *pgxc_ctl_conf_prototype_dispaxos[] = {
+EOF
+
+cat pgxc_ctl_conf_dispaxos.wk >> pgxc_ctl_bash.c
+
+cat >> pgxc_ctl_bash.c <<EOF
+NULL
+};
+EOF
+
+rm pgxc_ctl_conf_dispaxos.wk

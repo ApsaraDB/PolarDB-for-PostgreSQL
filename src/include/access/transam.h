@@ -128,7 +128,7 @@ extern bool TransactionIdDidAbort(TransactionId transactionId);
 #define MASK_PREPARE_BIT(csn) ((csn) | CSN_PREPARE_BIT)
 #define UNMASK_PREPARE_BIT(csn) ((csn) & (~CSN_PREPARE_BIT))
 
-#define COMMITSEQNO_IS_INPROGRESS(csn) (((csn) == COMMITSEQNO_INPROGRESS) || COMMITSEQNO_IS_PREPARED(csn))
+#define COMMITSEQNO_IS_INPROGRESS(csn) ((csn) == COMMITSEQNO_INPROGRESS)
 #define COMMITSEQNO_IS_ABORTED(csn) ((csn) == COMMITSEQNO_ABORTED)
 #define COMMITSEQNO_IS_FROZEN(csn) ((csn) == COMMITSEQNO_FROZEN)
 #define COMMITSEQNO_IS_COMMITTING(csn) ((csn) == COMMITSEQNO_COMMITTING)
@@ -142,6 +142,14 @@ typedef enum
 	XID_ABORTED,
 	XID_INPROGRESS
 } TransactionIdStatus;
+
+#ifdef POLARDB_X
+/* POLARDBX_TRANSACTION list below is return value of polardbx_get_transaction_status */
+#define POLARDBX_TRANSACTION_COMMITED 0
+#define POLARDBX_TRANSACTION_ABORTED 1
+#define POLARDBX_TRANSACTION_INPROGRESS 2
+#define POLARDBX_TRANSACTION_TWOPHASE_FILE_NOT_FOUND 3
+#endif
 
 extern CommitSeqNo TransactionIdGetCommitSeqNo(TransactionId xid);
 extern TransactionIdStatus TransactionIdGetStatus(TransactionId transactionId);
@@ -165,5 +173,10 @@ extern void SetTransactionIdLimit(TransactionId oldest_datfrozenxid,
 extern void AdvanceOldestClogXid(TransactionId oldest_datfrozenxid);
 extern bool ForceTransactionIdLimitUpdate(void);
 extern Oid	GetNewObjectId(void);
+
+#ifdef POLARDB_X
+extern void StorePartNodes(const char *partNodes);
+extern void StoreGid(const char *gid);
+#endif
 
 #endif							/* TRAMSAM_H */

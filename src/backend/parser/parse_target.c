@@ -400,6 +400,11 @@ markTargetListOrigin(ParseState *pstate, TargetEntry *tle,
 		case RTE_NAMEDTUPLESTORE:
 			/* not a simple relation, leave it unmarked */
 			break;
+#ifdef POLARDB_X
+        case RTE_REMOTE_DUMMY:
+            elog(ERROR, "Invalid RTE found");
+            break;
+#endif 
 		case RTE_CTE:
 
 			/*
@@ -1590,6 +1595,11 @@ expandRecordVariable(ParseState *pstate, Var *var, int levelsup)
 			 * Table function cannot have columns with RECORD type.
 			 */
 			break;
+#ifdef POLARDB_X
+        case RTE_REMOTE_DUMMY:
+            elog(ERROR, "Invalid RTE found");
+            break;
+#endif 
 		case RTE_CTE:
 			/* CTE reference: examine subquery's output expr */
 			if (!rte->self_reference)

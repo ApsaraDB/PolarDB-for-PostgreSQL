@@ -28,6 +28,11 @@
 #include "storage/pmsignal.h"
 #include "storage/proc.h"
 #include "utils/syscache.h"
+#include "utils/tqual.h"
+
+#ifdef POLARDB_X
+#include "pgxc/transam/txn_coordinator.h"
+#endif
 
 
 /* Number of OIDs to prefetch (preallocate) per XLOG write */
@@ -510,3 +515,23 @@ GetNewObjectId(void)
 
 	return result;
 }
+
+#ifdef POLARDB_X
+void StorePartNodes(const char *partNodes)
+{
+	strncpy(g_twophase_state.participants, partNodes, strlen(partNodes) + 1);
+	if(enable_distri_print)
+	{
+		elog (LOG, "store transaction participants %s to g_twophase_state", g_twophase_state.participants);
+	}
+}
+
+void StoreGid(const char *gid)
+{
+	strncpy(g_twophase_state.gid, gid, strlen(gid) + 1);
+	if(enable_distri_print)
+	{
+		elog (LOG, "store transaction gid %s to g_twophase_state", g_twophase_state.gid);
+	}
+}
+#endif

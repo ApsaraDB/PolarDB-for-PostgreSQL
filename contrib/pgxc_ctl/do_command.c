@@ -58,6 +58,8 @@ extern char *pgxc_ctl_conf_prototype[];
 extern char *pgxc_ctl_conf_prototype_minimal[];
 extern char *pgxc_ctl_conf_prototype_empty[];
 extern char *pgxc_ctl_conf_prototype_standalone[];
+extern char *pgxc_ctl_conf_prototype_distributed[];
+extern char *pgxc_ctl_conf_prototype_dispaxos[];
 
 int forceInit = false;
 
@@ -95,6 +97,8 @@ typedef enum ConfigType
     CONFIG_EMPTY,
     CONFIG_MINIMAL,
     CONFIG_STANDALONE,
+    CONFIG_DISTRIBUTED,
+    CONFIG_DISPAXOS,
     CONFIG_COMPLETE
 } ConfigType;
 
@@ -135,6 +139,10 @@ static void do_prepareConfFile(char *Path, ConfigType config_type)
         my_pgxc_conf_prototype = pgxc_ctl_conf_prototype_minimal;
     else if (config_type == CONFIG_STANDALONE)
         my_pgxc_conf_prototype = pgxc_ctl_conf_prototype_standalone;
+    else if (config_type == CONFIG_DISTRIBUTED)
+        my_pgxc_conf_prototype = pgxc_ctl_conf_prototype_distributed;
+    else if (config_type == CONFIG_DISPAXOS)
+        my_pgxc_conf_prototype = pgxc_ctl_conf_prototype_dispaxos;
     else
         my_pgxc_conf_prototype = pgxc_ctl_conf_prototype;
 
@@ -356,9 +364,6 @@ static void do_failover_command(char *line)
     }
     else if (TestToken("datanode"))
     {
-        if (isPaxosEnv())
-            elog(ERROR, "ERROR: failover command only support streaming HA, dont support paxos for now.\n");
-            
         if (!isVarYes(VAR_datanodeSlave))
             elog(ERROR, "ERROR: datanode slave is not configured.\n");
         else if (!GetToken())
@@ -637,6 +642,7 @@ static void do_kill_command(char *line)
 
 static void init_all(void)
 {
+    printf("standAlone: %s\n",sval(VAR_standAlone));
     if (isVarYes(VAR_standAlone))
     {
         init_datanode_master_all();
@@ -2713,6 +2719,10 @@ int do_singleLine(char *buf, char *wkline)
                 config_type = CONFIG_MINIMAL;
             else if (TestToken("standalone"))
                 config_type = CONFIG_STANDALONE;
+            else if (TestToken("distributed"))
+                config_type = CONFIG_DISTRIBUTED;
+            else if (TestToken("dispaxos"))
+                config_type = CONFIG_DISPAXOS;
             else if (TestToken("complete"))
                 config_type = CONFIG_COMPLETE;
             else if (token)

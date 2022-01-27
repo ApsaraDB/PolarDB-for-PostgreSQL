@@ -26,7 +26,7 @@ localTmpDir=$tmpDir			# temporary dir used here locally
 
 configBackup=n					# If you want config file backup, specify y to this value.
 configBackupHost=pgxc-linker	# host to backup config file
-configBackupDir=$HOME/pgxc		# Backup directory
+configBackupDir=$HOME/polardb/pgxc_backup		# Backup directory
 configBackupFile=pgxc_ctl.bak	# Backup file name --> Need to synchronize when original changed.
 standAlone=y
 

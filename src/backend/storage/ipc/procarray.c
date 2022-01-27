@@ -90,6 +90,7 @@
 /* User-settable GUC parameters */
 int			gc_interval;
 int			snapshot_delay;
+static CommitSeqNo GetGlobalSnapshot(void);
 static bool GlobalSnapshotIsAdmitted(Snapshot snapshot, CommitSeqNo * cutoffTs);
 #endif
 
@@ -1034,6 +1035,22 @@ GetOldestXmin(Relation rel, int flags)
 }
 
 #ifdef ENABLE_DISTRIBUTED_TRANSACTION
+static CommitSeqNo
+GetGlobalSnapshot(void)
+{
+	CommitSeqNo snapshotcsn;
+	/*
+	 * Todo: we should assign logical timestamp max_ts for
+	 * both distributed and local transactions.
+	 */
+	SpinLockAcquire(&ShmemVariableCache->ts_lock);
+	snapshotcsn = ShmemVariableCache->maxCommitTs;
+	SpinLockRelease(&ShmemVariableCache->ts_lock);
+	if (snapshotcsn < COMMITSEQNO_FIRST_NORMAL)
+		elog(ERROR, "csn abnormal "UINT64_FORMAT, snapshotcsn);
+	return snapshotcsn;
+
+}
 /*
  * Support cluster-wide global vacuum.
  * oldest Tmin = min{max_ts, min{per-Proc's Tmin}}
@@ -2549,6 +2566,52 @@ CountOtherDBBackends(Oid databaseId, int *nbackends, int *nprepared)
 	return true;				/* timed out, still conflicts */
 }
 
+#ifdef POLARDB_X
+/*
+ * ReloadConnInfoOnBackends -- reload/refresh connection information
+ * for all the backends
+ *
+ * "refresh" is less destructive than "reload"
+ */
+void
+ReloadConnInfoOnBackends(bool refresh_only)
+{
+    ProcArrayStruct *arrayP = procArray;
+    int            index;
+    pid_t        pid = 0;
+
+    /* tell all backends to reload except this one who already reloaded */
+    LWLockAcquire(ProcArrayLock, LW_EXCLUSIVE);
+
+    for (index = 0; index < arrayP->numProcs; index++)
+    {
+        int            pgprocno = arrayP->pgprocnos[index];
+        volatile PGPROC *proc = &allProcs[pgprocno];
+        volatile PGXACT *pgxact = &allPgXact[pgprocno];
+        VirtualTransactionId vxid;
+        GET_VXID_FROM_PGPROC(vxid, *proc);
+
+        if (proc == MyProc)
+            continue;            /* do not do that on myself */
+        if (proc->pid == 0)
+            continue;            /* useless on prepared xacts */
+        if (!OidIsValid(proc->databaseId))
+            continue;            /* ignore backends not connected to a database */
+        if (pgxact->vacuumFlags & PROC_IN_VACUUM)
+            continue;            /* ignore vacuum processes */
+
+        pid = proc->pid;
+        /*
+         * Send the reload signal if backend still exists
+         */
+        (void) SendProcSignal(pid, refresh_only?
+                      PROCSIG_PGXCPOOL_REFRESH:PROCSIG_PGXCPOOL_RELOAD,
+                      vxid.backendId);
+    }
+
+    LWLockRelease(ProcArrayLock);
+}
+#endif
 /*
  * ProcArraySetReplicationSlotXmin
  *

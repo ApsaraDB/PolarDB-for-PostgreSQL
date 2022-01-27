@@ -79,6 +79,10 @@
 #include "access/ctslog.h"
 #include "access/clog.h"
 #include "storage/buf_internals.h"
+#ifdef POLARDB_X
+#include "miscadmin.h"
+#include "pgxc/transam/txn_coordinator.h"
+#endif
 
 
 /* Static variables representing various special snapshot semantics */
@@ -1453,7 +1457,14 @@ HeapTupleSatisfiesVacuum(HeapTuple htup, TransactionId OldestXmin,
 		 */ 
 		committs = TransactionIdGetCommitSeqNo(xmax);
 
-		if (COMMITSEQNO_IS_INPROGRESS(committs))
+		Assert(COMMITSEQNO_IS_INPROGRESS(committs)
+				|| COMMITSEQNO_IS_PREPARED(committs)
+				|| COMMITSEQNO_IS_COMMITTED(committs)
+				|| COMMITSEQNO_IS_ABORTED(committs));
+
+
+		if (COMMITSEQNO_IS_INPROGRESS(committs)
+			|| COMMITSEQNO_IS_PREPARED(committs))
 			return HEAPTUPLE_DELETE_IN_PROGRESS;
 		else if (COMMITSEQNO_IS_COMMITTED(committs))
 		{
@@ -1786,6 +1797,15 @@ XidVisibleInSnapshotDistri(HeapTupleHeader tuple,
 		CommitSeqNo preparets = UNMASK_PREPARE_BIT(committs);
 		BufferDesc 	*buf;
 		int 		lock_type;
+
+#ifdef POLARDB_X
+		if (IsInitProcessingMode())
+		{
+			if (enable_twophase_recover_debug_print)
+				elog(DEBUG_2PC, "Prepared tuple invisible in InitProcessingMode.xid:%d", xid);
+			return false;
+		}
+#endif
 
 		/* 
 		 * Prepare ts may be zero for recovered prepared transaction

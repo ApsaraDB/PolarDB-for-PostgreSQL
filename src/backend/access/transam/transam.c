@@ -27,6 +27,11 @@
 #include "distributed_txn/txn_timestamp.h"
 #include "storage/lmgr.h"
 #include "utils/snapmgr.h"
+#ifdef POLARDB_X
+#include "access/twophase.h"
+#include "utils/builtins.h"
+#include "pgxc/transam/txn_coordinator.h"
+#endif
 
 /*
  * Single-item cache for results of TransactionIdGetCommitSeqNo.  It's worth
@@ -43,6 +48,10 @@ static CommitSeqNo cachedCSN;
  */
 static TransactionId cachedLSNFetchXid = InvalidTransactionId;
 static XLogRecPtr cachedCommitLSN;
+
+#ifdef POLARDB_X
+PG_FUNCTION_INFO_V1(polardbx_get_transaction_status);
+#endif
 
 /*
  * TransactionIdGetCommitSeqNo --- fetch CSN of specified transaction id
@@ -545,3 +554,52 @@ TransactionIdGetCommitLSN(TransactionId xid)
 
 	return result;
 }
+
+#ifdef POLARDB_X
+/*
+ * For given gid, check if transaction is committed, aborted, inprogress, or failed to get localxid from 2pc file.
+ * 1. get localxid by gid
+ * 2. see localxid is committed?
+ */
+Datum
+polardbx_get_transaction_status(PG_FUNCTION_ARGS)
+{
+	char *gid = text_to_cstring(PG_GETARG_TEXT_PP(0));
+	TransactionId localxid = InvalidTransactionId;
+	TransactionIdStatus   xidstatus = XID_INPROGRESS;
+
+	localxid = GetTwoPhaseXactLocalxid(gid);
+
+	if (InvalidTransactionId == localxid)
+	{
+		if (enable_twophase_recover_debug_print)
+			elog(DEBUG_2PC, "gid:%s, no coresponding 2pc file found.", gid);
+		PG_RETURN_INT32(POLARDBX_TRANSACTION_TWOPHASE_FILE_NOT_FOUND);
+	}
+	else
+	{
+		xidstatus = TransactionIdGetStatus(localxid);
+	}
+
+	if (xidstatus == XID_COMMITTED)
+	{
+		if (enable_twophase_recover_debug_print)
+			elog(DEBUG_2PC, "polardbx_get_transaction_status: gid:%s is committed.", gid);
+		PG_RETURN_INT32(POLARDBX_TRANSACTION_COMMITED);
+	}
+	else if (xidstatus == XID_ABORTED)
+	{
+		if (enable_twophase_recover_debug_print)
+			elog(DEBUG_2PC, "polardbx_get_transaction_status: gid:%s is aborted.", gid);
+		PG_RETURN_INT32(POLARDBX_TRANSACTION_ABORTED);
+	}
+	else if (xidstatus == XID_INPROGRESS)
+	{
+		if (enable_twophase_recover_debug_print)
+			elog(DEBUG_2PC, "polardbx_get_transaction_status: gid:%s status:%d.", gid, xidstatus);
+		PG_RETURN_INT32(POLARDBX_TRANSACTION_INPROGRESS);
+	}
+	
+	PG_RETURN_NULL();
+}
+#endif

@@ -1,0 +1,476 @@
+-- try a special column name 
+create table xltest_type ("primary" integer, b integer);
+insert into xltest_type values(1, 11);
+insert into xltest_type values(2, 12);
+insert into xltest_type values(3, 13);
+select count(*) from xltest_type;
+ count 
+-------
+     3
+(1 row)
+
+set enable_fast_query_shipping to false;
+select count(*) from xltest_type;
+ count 
+-------
+     3
+(1 row)
+
+select * from xltest_type order by "primary";
+ primary | b  
+---------+----
+       1 | 11
+       2 | 12
+       3 | 13
+(3 rows)
+
+drop table xltest_type;
+-- repeat with a temp table
+set enable_fast_query_shipping to default;
+create temp table xltest_type ("primary" integer, b integer);
+insert into xltest_type values(1, 11);
+insert into xltest_type values(2, 12);
+insert into xltest_type values(3, 13);
+select count(*) from xltest_type;
+ count 
+-------
+     3
+(1 row)
+
+set enable_fast_query_shipping to false;
+select count(*) from xltest_type;
+ count 
+-------
+     3
+(1 row)
+
+select * from xltest_type order by "primary";
+ primary | b  
+---------+----
+       1 | 11
+       2 | 12
+       3 | 13
+(3 rows)
+
+drop table xltest_type;
+-- try a special table name
+set enable_fast_query_shipping to default;
+create table "XLTEST_type" ("primary" integer, b integer);
+-- fail
+insert into xltest_type values(1, 11);
+ERROR:  relation "xltest_type" does not exist
+LINE 1: insert into xltest_type values(1, 11);
+                    ^
+-- fail
+insert into XLTEST_type values(1, 11);
+ERROR:  relation "xltest_type" does not exist
+LINE 1: insert into XLTEST_type values(1, 11);
+                    ^
+-- ok
+insert into "XLTEST_type" values(1, 11);
+insert into "XLTEST_type" values(2, 12);
+insert into "XLTEST_type" values(3, 13);
+-- fail
+select count(*) from XLTEST_type;
+ERROR:  relation "xltest_type" does not exist
+LINE 1: select count(*) from XLTEST_type;
+                             ^
+-- ok
+select count(*) from "XLTEST_type";
+ count 
+-------
+     3
+(1 row)
+
+select array_agg(c.*) from "XLTEST_type" c where c.primary = 1;
+ array_agg  
+------------
+ {"(1,11)"}
+(1 row)
+
+set enable_fast_query_shipping to false;
+-- fail
+select count(*) from XLTEST_type;
+ERROR:  relation "xltest_type" does not exist
+LINE 1: select count(*) from XLTEST_type;
+                             ^
+-- ok
+select count(*) from "XLTEST_type";
+ count 
+-------
+     3
+(1 row)
+
+select array_agg(c.*) from "XLTEST_type" c where c.primary = 1;
+ array_agg  
+------------
+ {"(1,11)"}
+(1 row)
+
+-- fail
+drop table xltest_type;
+ERROR:  table "xltest_type" does not exist
+-- fail
+drop table XLTEST_type;
+ERROR:  table "xltest_type" does not exist
+-- fail
+drop table "XLTEST_TYPE";
+ERROR:  table "XLTEST_TYPE" does not exist
+-- ok
+drop table "XLTEST_type";
+-- try schema qualification for simple schema name
+set enable_fast_query_shipping to default;
+create schema xltypeschema;
+create table xltypeschema."XLTEST_type" ("primary" integer, b integer);
+insert into xltypeschema."XLTEST_type" values(1, 11);
+insert into xltypeschema."XLTEST_type" values(2, 12);
+insert into xltypeschema."XLTEST_type" values(3, 13);
+select array_agg(c.*) from "XLTEST_type" c where c.primary = 1;
+ERROR:  relation "XLTEST_type" does not exist
+LINE 1: select array_agg(c.*) from "XLTEST_type" c where c.primary =...
+                                   ^
+select array_agg(c.*) from xltypeschema."XLTEST_type" c where c.primary = 1;
+ array_agg  
+------------
+ {"(1,11)"}
+(1 row)
+
+drop table xltypeschema."XLTEST_type";
+-- try schema qualification for special schema name
+create schema "XL.Schema";
+create table "XL.Schema"."XLTEST_type" ("primary" integer, b integer);
+insert into "XL.Schema"."XLTEST_type" values(1, 11);
+insert into "XL.Schema"."XLTEST_type" values(2, 12);
+insert into "XL.Schema"."XLTEST_type" values(3, 13);
+select array_agg(c.*) from "XL.Schema"."XLTEST_type" c where c.primary = 1;
+ array_agg  
+------------
+ {"(1,11)"}
+(1 row)
+
+-- without schema, fail
+select array_agg(c.*) from "XLTEST_type" c;
+ERROR:  relation "XLTEST_type" does not exist
+LINE 1: select array_agg(c.*) from "XLTEST_type" c;
+                                   ^
+set search_path = "XL.Schema";
+-- should work
+select array_agg(c.*) from "XLTEST_type" c where c.primary = 1;
+ array_agg  
+------------
+ {"(1,11)"}
+(1 row)
+
+drop table "XL.Schema"."XLTEST_type";
+-- test ANALYZE
+set search_path to default;
+create table test_a1 (a int, b int);
+insert into test_a1 values (1, 10);
+analyze test_a1;
+-- check temp table handling
+create temp table test_a2 (a int, b int);
+insert into test_a2 values (1, 10);
+analyze test_a2;
+-- check schema qualification
+create schema analyze_s1;
+create table analyze_s1.test_a1 (a int, b int);
+create table analyze_s1.test_a3 (a int, b int);
+insert into analyze_s1.test_a1 values (1, 10);
+insert into analyze_s1.test_a3 values (1, 10);
+analyze analyze_s1.test_a1;
+analyze test_a3;				-- error
+ERROR:  relation "test_a3" does not exist
+set search_path = 'analyze_s1';
+analyze test_a3;				-- ok
+-- schema names requiring quoating
+create schema "ANALYZE S2";
+set search_path = 'ANALYZE S2';
+create table "TEST A4" (a int, b int);
+insert into "TEST A4" values (1, 10);
+set search_path to default;
+analyze "TEST A4";				-- error
+ERROR:  relation "TEST A4" does not exist
+analyze "ANALYZE S2"."TEST A4";
+set search_path = 'ANALYZE S2';
+analyze "TEST A4";
+-- check materialised view
+set search_path to default;
+create materialized view analyze_mv1 as select * from test_a1;
+analyze analyze_mv1;
+drop table test_a1 cascade;
+NOTICE:  drop cascades to materialized view analyze_mv1
+drop table test_a2;
+drop schema analyze_s1 cascade;
+NOTICE:  drop cascades to 2 other objects
+DETAIL:  drop cascades to table analyze_s1.test_a1
+drop cascades to table analyze_s1.test_a3
+drop schema "ANALYZE S2" cascade;
+NOTICE:  drop cascades to table "ANALYZE S2"."TEST A4"
+-- size functions
+create table tabsize (a int);
+insert into tabsize values (1);
+select pg_relation_size('tabsize');			-- only one node should have one heap page
+ pg_relation_size 
+------------------
+             8192
+(1 row)
+
+select pg_total_relation_size('tabsize');	-- no indexes or toast
+ pg_total_relation_size 
+------------------------
+                   8192
+(1 row)
+
+insert into tabsize values (2), (3);
+select pg_relation_size('tabsize');			-- both nodes should have one heap page each
+ pg_relation_size 
+------------------
+            16384
+(1 row)
+
+select pg_total_relation_size('tabsize');	-- no indexes or toast
+ pg_total_relation_size 
+------------------------
+                  16384
+(1 row)
+
+create index testindx ON tabsize(a);
+select pg_total_relation_size('tabsize');	-- index size gets added
+ pg_total_relation_size 
+------------------------
+                  49152
+(1 row)
+
+alter table tabsize add column b text default 'x';		-- toast table
+select pg_total_relation_size('tabsize');	-- toast table size gets added
+ pg_total_relation_size 
+------------------------
+                  65536
+(1 row)
+
+create index testindx_b ON tabsize(b);
+select pg_total_relation_size('tabsize');	-- another index on the table
+ pg_total_relation_size 
+------------------------
+                  98304
+(1 row)
+
+-- check materialized view
+create materialized view tabsize_mv1 as select a from tabsize;
+select pg_total_relation_size('tabsize_mv1');
+ pg_total_relation_size 
+------------------------
+                   8192
+(1 row)
+
+create materialized view tabsize_mv2 as select a, b from tabsize;
+select pg_total_relation_size('tabsize_mv2');
+ pg_total_relation_size 
+------------------------
+                  16384
+(1 row)
+
+drop table tabsize cascade;
+NOTICE:  drop cascades to 2 other objects
+DETAIL:  drop cascades to materialized view tabsize_mv1
+drop cascades to materialized view tabsize_mv2
+-- check temp table
+create temp table tabsize (a int);
+insert into tabsize values (1), (2), (3);
+select pg_relation_size('tabsize');			-- both nodes should have one heap page each
+ pg_relation_size 
+------------------
+            16384
+(1 row)
+
+select pg_total_relation_size('tabsize');	-- no indexes or toast
+ pg_total_relation_size 
+------------------------
+                  16384
+(1 row)
+
+create index testindx ON tabsize(a);
+select pg_total_relation_size('tabsize');	-- index size gets added
+ pg_total_relation_size 
+------------------------
+                  49152
+(1 row)
+
+drop table tabsize;
+-- check replicated tables
+create table tabsize (a int) distribute by replication;
+insert into tabsize values (1), (2), (3);
+select pg_relation_size('tabsize');
+ pg_relation_size 
+------------------
+            16384
+(1 row)
+
+select pg_total_relation_size('tabsize');
+ pg_total_relation_size 
+------------------------
+                  16384
+(1 row)
+
+drop table tabsize;
+-- check schema qualified, special names etc
+create schema "schema_SIZE";
+create table "schema_SIZE"."tab_SIZE" (a int);
+insert into "schema_SIZE"."tab_SIZE" values (1), (2), (3);
+select pg_relation_size('"schema_SIZE"."tab_SIZE"');
+ pg_relation_size 
+------------------
+            16384
+(1 row)
+
+set search_path to "schema_SIZE";
+select pg_relation_size('"tab_SIZE"');
+ pg_relation_size 
+------------------
+            16384
+(1 row)
+
+drop table "schema_SIZE"."tab_SIZE";
+-- a test known to crash (before it was fixed)
+CREATE TEMPORARY TABLE empsalary (
+    depname varchar,
+    empno bigint,
+    salary int,
+    enroll_date date
+);
+INSERT INTO empsalary VALUES
+('develop', 10, 5200, '2007-08-01'),
+('sales', 1, 5000, '2006-10-01'),
+('personnel', 5, 3500, '2007-12-10'),
+('sales', 4, 4800, '2007-08-08'),
+('personnel', 2, 3900, '2006-12-23'),
+('develop', 7, 4200, '2008-01-01'),
+('develop', 9, 4500, '2008-01-01'),
+('sales', 3, 4800, '2007-08-01'),
+('develop', 8, 6000, '2006-10-01'),
+('develop', 11, 5200, '2007-08-15');
+CREATE TEMPORARY TABLE t1_tmp (depname text, empno int, salary int, sum int);
+INSERT INTO t1_tmp SELECT depname, empno, salary, sum(salary) OVER (PARTITION BY depname) FROM empsalary;
+SELECT * FROM t1_tmp ORDER BY empno;
+  depname  | empno | salary |  sum  
+-----------+-------+--------+-------
+ sales     |     1 |   5000 | 14600
+ personnel |     2 |   3900 |  7400
+ sales     |     3 |   4800 | 14600
+ sales     |     4 |   4800 | 14600
+ personnel |     5 |   3500 |  7400
+ develop   |     7 |   4200 | 25100
+ develop   |     8 |   6000 | 25100
+ develop   |     9 |   4500 | 25100
+ develop   |    10 |   5200 | 25100
+ develop   |    11 |   5200 | 25100
+(10 rows)
+
+-- Test ALTER TYPE .. RENAME VALUE #211
+CREATE TYPE rainbow AS ENUM ('red', 'orange', 'yellow', 'green', 'blue', 'purple');
+CREATE TABLE enumtest_parent (id rainbow PRIMARY KEY);
+CREATE TABLE enumtest_child (parent rainbow REFERENCES enumtest_parent);
+INSERT INTO enumtest_parent VALUES ('red');
+INSERT INTO enumtest_child VALUES ('red');
+SELECT id FROM enumtest_parent;
+ id  
+-----
+ red
+(1 row)
+
+SELECT * FROM enumtest_child;
+ parent 
+--------
+ red
+(1 row)
+
+               
+-- check renaming a value
+ALTER TYPE rainbow RENAME VALUE 'red' TO 'crimson';
+-- check that renaming a non-existent value fails
+ALTER TYPE rainbow RENAME VALUE 'red' TO 'white';
+ERROR:  "red" is not an existing enum label
+-- check that renaming to an existent value fails
+ALTER TYPE rainbow RENAME VALUE 'blue' TO 'green';
+ERROR:  enum label "green" already exists
+-- check that RENAMED value is refected in tables
+SELECT id FROM enumtest_parent;
+   id    
+---------
+ crimson
+(1 row)
+
+SELECT id FROM enumtest_child;
+ERROR:  column "id" does not exist
+LINE 1: SELECT id FROM enumtest_child;
+               ^
+-- Try inserting old and new values
+INSERT INTO enumtest_parent VALUES ('green');
+INSERT INTO enumtest_child VALUES ('crimson');
+-- try inserting non existing value after renaming
+INSERT INTO enumtest_parent VALUES ('red');
+ERROR:  invalid input value for enum rainbow: "red"
+LINE 1: INSERT INTO enumtest_parent VALUES ('red');
+                                            ^
+SELECT id FROM enumtest_parent;
+   id    
+---------
+ crimson
+ green
+(2 rows)
+
+SELECT * FROM enumtest_child;
+ parent  
+---------
+ crimson
+ crimson
+(2 rows)
+
+DROP TABLE enumtest_child;
+DROP TABLE enumtest_parent;
+DROP TYPE rainbow;
+-- Check if ALTER TABLE .. ADD PRIMARY KEY sets columns 
+-- NOT NULL on all child tables on all nodes #203
+CREATE TABLE test_add_primary(id int,a int);
+CREATE TABLE test_add_primary_child(b int) INHERITS (test_add_primary);
+ALTER TABLE test_add_primary ADD PRIMARY KEY (id);
+EXECUTE DIRECT ON (datanode_1) $$ SELECT COLUMN_NAME, IS_NULLABLE
+FROM INFORMATION_SCHEMA.COLUMNS
+WHERE table_name = 'test_add_primary' $$;
+ column_name | is_nullable 
+-------------+-------------
+ id          | NO
+ a           | YES
+(2 rows)
+
+EXECUTE DIRECT ON (datanode_2) $$ SELECT column_name, IS_NULLABLE
+FROM INFORMATION_SCHEMA.COLUMNS
+WHERE table_name = 'test_add_primary' $$;
+ column_name | is_nullable 
+-------------+-------------
+ id          | NO
+ a           | YES
+(2 rows)
+
+EXECUTE DIRECT ON (datanode_1) $$ SELECT COLUMN_NAME, IS_NULLABLE
+FROM INFORMATION_SCHEMA.COLUMNS
+WHERE table_name = 'test_add_primary_child' $$;
+ column_name | is_nullable 
+-------------+-------------
+ id          | NO
+ a           | YES
+ b           | YES
+(3 rows)
+
+EXECUTE DIRECT ON (datanode_2) $$ SELECT column_name, IS_NULLABLE
+FROM INFORMATION_SCHEMA.COLUMNS
+WHERE table_name = 'test_add_primary_child' $$;
+ column_name | is_nullable 
+-------------+-------------
+ id          | NO
+ a           | YES
+ b           | YES
+(3 rows)
+
+DROP TABLE test_add_primary CASCADE;
+NOTICE:  drop cascades to table test_add_primary_child

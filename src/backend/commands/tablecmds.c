@@ -102,7 +102,6 @@
 #include "utils/tqual.h"
 #include "utils/typcache.h"
 
-
 /*
  * ON COMMIT action list
  */
@@ -779,7 +778,6 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 	 * tuple visible for opening.
 	 */
 	CommandCounterIncrement();
-
 	/*
 	 * Open the new relation and acquire exclusive lock on it.  This isn't
 	 * really necessary for locking out other backends (since they can't see
@@ -14138,7 +14136,18 @@ RangeVarCallbackForAlterRelation(const RangeVar *rv, Oid relid, Oid oldrelid,
 
 	ReleaseSysCache(tuple);
 }
-
+#ifdef POLARDB_X
+/*
+ * IsOnCommitActions
+ *
+ * Check if there are any on-commit actions activated.
+ */
+bool
+IsOnCommitActions(void)
+{
+    return list_length(on_commits) > 0;
+}
+#endif /* POLARDB_X */
 /*
  * Transform any expressions present in the partition key
  *

@@ -24,7 +24,7 @@
 #ifndef GTM_CMD_H
 #define GTM_CMD_H
 
-//#include "gtm/gtm_c.h"
+#include "gtm/gtm_c.h"
 #include "utils.h"
 
 extern int init_gtm_master(bool stop);

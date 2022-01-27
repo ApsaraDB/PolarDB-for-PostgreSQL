@@ -822,6 +822,16 @@
 /* A string containing the version number, platform, and C compiler */
 #undef PG_VERSION_STR
 
+
+/* Postgres-XC version as a string */
+#undef PGXC_VERSION
+
+/* A string containing the version number of Postgres-XC, platform, and C compiler */
+#undef PGXC_VERSION_STR
+
+/* Postgres-XC version as a number */
+#undef PGXC_VERSION_NUM
+
 /* Define to 1 to allow profiling output to be saved separately for each
    process. */
 #undef PROFILE_PID_DIR
@@ -976,7 +986,10 @@
    */
 #undef XLOG_BLCKSZ
 
-
+/* XLOG_SEG_SIZE is the size of a single WAL file. This must be a power of 2
+   and larger than XLOG_BLCKSZ (preferably, a great deal larger than
+   XLOG_BLCKSZ). Changing XLOG_SEG_SIZE requires an initdb. */
+#undef XLOG_SEG_SIZE
 
 /* Number of bits in a file offset, on hosts where this is settable. */
 #undef _FILE_OFFSET_BITS
