@@ -237,6 +237,7 @@ See [architecture design](/doc/polardb/arch.md) for more information
   * [CTS and MVCC](/doc/polardb/cts_mvcc_chinese.md)
   * [Two-phase transaction fault tolerance](/doc/polardb/2pc_cleanup_chinese.md)
   * [FDW based Distribured SQL computation](/doc/polardb/dis_sql_outline_chinese.md)
+  * [Useful commands and setup related to distributed SQL](/doc/polardb/distributed_related_usage.md)
 
 ## Contributing
 
