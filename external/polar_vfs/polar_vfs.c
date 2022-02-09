@@ -51,7 +51,9 @@
 #include <sys/time.h>
 #include <semaphore.h>
 #include <pthread.h>
+#ifdef USE_PFSD
 #include "pfsd_sdk.h"
+#endif
 
 /* POLAR */
 #include "polar_datamax/polar_datamax.h"
@@ -110,7 +112,9 @@ static volatile sig_atomic_t shutdown_requested = false;
 static const char polar_vfs_kind[POLAR_VFS_KIND_SIZE][POLAR_VFS_PROTOCOL_MAX_LEN] =
 {
 	POLAR_VFS_PROTOCAL_LOCAL_BIO,	//POLAR_VFS_LOCAL_BIO
+#ifdef USE_PFSD
 	POLAR_VFS_PROTOCAL_PFS,			//POLAR_VFS_PFS
+#endif
 	POLAR_VFS_PROTOCAL_LOCAL_DIO	//POLAR_VFS_LOCAL_DIO
 };
 
@@ -214,13 +218,15 @@ static inline int vfs_file_type(const char *path);
 static inline int vfs_data_type(const char *path);
 static inline void vfs_timer_end(instr_time *time);
 
+#ifdef USE_PFSD
 static void polar_worker_sigterm_handler(SIGNAL_ARGS);
 static void polar_worker_sighup_handler(SIGNAL_ARGS);
 static void polar_request_shutdown_handler(SIGNAL_ARGS);
 static void polar_vfs_quickdie(SIGNAL_ARGS);
-static void polar_vfs_init_mem_and_lock(void);
 static void polar_set_vfs_state(vfs_mount_state *state, vfs_state vstate);
 static vfs_state polar_get_vfs_state(vfs_mount_state *state);
+#endif
+static void polar_vfs_init_mem_and_lock(void);
 
 static const vfs_mgr *vfs_get_mgr(const char *path);
 
@@ -283,6 +289,7 @@ static const vfs_mgr vfs[] =
 		.vfs_rmdir = rmdir,
 		.vfs_mgr_func = NULL
 	},
+#ifdef USE_PFSD
 	/*
 	 * POLAR: Pfsd file system interface.
 	 * It use original pfsd's file access interface.
@@ -320,6 +327,7 @@ static const vfs_mgr vfs[] =
 		.vfs_rmdir = pfsd_rmdir,
 		.vfs_mgr_func = NULL
 	},
+#endif
 	/*
 	 * POLAR: Local file system interface with O_DIRECT flag.
 	 * It use original file system interface to do other jobs
@@ -396,7 +404,9 @@ static const vfs_mgr vfs_interface =
 static bool	localfs_mode = false;
 static bool	enable_file_size_cache = false;
 static bool	pfs_force_mount = true;
+#ifdef USE_PFSD
 static bool	enable_mount_vfs_in_subprocess = false;
+#endif
 /* POLAR: Switch to statistics of IO time consumption */
 static bool enable_io_time_stat = false;
 /* POLAR: end */
@@ -455,6 +465,7 @@ _PG_init(void)
 							 NULL,
 							 NULL);
 
+#ifdef USE_PFSD
 	DefineCustomIntVariable("polar_vfs.max_pfsd_io_size",
 							"max pfsd io size",
 							NULL,
@@ -468,18 +479,6 @@ _PG_init(void)
 							NULL,
 							NULL);
 
-	/* This parameter is a switch that controls whether IO time statistics are turned on. */
-	DefineCustomBoolVariable("polar_vfs.enable_io_time_stat",
-								"pfs force mount mode when ro switch rw",
-								NULL,
-								&enable_io_time_stat,
-								true,
-								PGC_POSTMASTER,
-								0,
-								NULL,
-								NULL,
-								NULL);
-
 	DefineCustomIntVariable("polar_vfs.max_direct_io_size",
 							"max direct io size",
 							NULL,
@@ -492,6 +491,19 @@ _PG_init(void)
 							NULL,
 							NULL,
 							NULL);
+#endif
+
+	/* This parameter is a switch that controls whether IO time statistics are turned on. */
+	DefineCustomBoolVariable("polar_vfs.enable_io_time_stat",
+								"pfs force mount mode when ro switch rw",
+								NULL,
+								&enable_io_time_stat,
+								true,
+								PGC_POSTMASTER,
+								0,
+								NULL,
+								NULL,
+								NULL);
 
 	DefineCustomBoolVariable("polar_vfs.debug",
 							 "turn on debug switch or not",
@@ -559,11 +571,13 @@ polar_vfs_shmem_shutdown(int code, Datum arg)
 		if (polar_in_error_handling_process || code != STATUS_OK)
 			elog(WARNING, "subprocess exit abnormally");
 
+#ifdef USE_PFSD
 		elog(LOG, "umount pfs %s", polar_disk_name);
 		if (pfsd_umount_force(polar_disk_name) < 0)
 			elog(ERROR, "can't umount PBD %s, id %d", polar_disk_name, polar_hostid);
 		else
 			elog(LOG, "umount PBD %s, id %d success", polar_disk_name, polar_hostid);
+#endif
 		inited = false;
 	}
 
@@ -573,6 +587,7 @@ polar_vfs_shmem_shutdown(int code, Datum arg)
 Datum
 polar_vfs_disk_expansion(PG_FUNCTION_ARGS)
 {
+#ifdef USE_PFSD
 	char			*expansion_disk_name = text_to_cstring(PG_GETARG_TEXT_PP(0));
 	vfs_state		vstate;
 	vfs_mount_state	*m_state = mount_state;
@@ -612,6 +627,9 @@ polar_vfs_disk_expansion(PG_FUNCTION_ARGS)
 		PG_RETURN_BOOL(false);
 	else
 		PG_RETURN_BOOL(true);
+#else
+	PG_RETURN_BOOL(false);
+#endif
 }
 
 Datum
@@ -681,9 +699,11 @@ static void
 polar_vfs_init(void)
 {
 	bool	do_force_mount = false;
-	char	*mode;
-	int		flag;
+	char	*mode = NULL;
+#ifdef USE_PFSD
+	int		flag = 0;
 	vfs_mount_state		*m_state = mount_state;
+#endif
 
 	if (!polar_enable_shared_storage_mode)
 		return;
@@ -692,13 +712,17 @@ polar_vfs_init(void)
 	{
 		polar_mount_pfs_readonly_mode = true;
 		mode = "readonly";
+#ifdef USE_PFSD
 		flag = PFS_RD;
+#endif
 	}
 	else
 	{
 		polar_mount_pfs_readonly_mode = false;
 		mode = "readwrite";
+#ifdef USE_PFSD
 		flag = PFS_RDWR;
+#endif
 	}
 
 	elog(LOG, "Database will be in %s mode", mode);
@@ -722,11 +746,13 @@ polar_vfs_init(void)
 		return;
 	}
 
+#ifdef USE_PFSD
 	if (do_force_mount)
 	{
 		flag |= MNTFLG_PAXOS_BYFORCE;
 		mode = "readwrite (force)";
 	}
+#endif
 
 	if (polar_disk_name == NULL ||
 		polar_hostid <= 0 ||
@@ -738,6 +764,7 @@ polar_vfs_init(void)
 
 	Assert(inited == false);
 
+#ifdef USE_PFSD
 	if (polar_storage_cluster_name)
 		elog(LOG, "init pangu cluster %s", polar_storage_cluster_name);
 
@@ -755,6 +782,7 @@ polar_vfs_init(void)
 		elog(LOG, "removed file \"%s\"", RECOVERY_COMMAND_DONE);
 	}
 	polar_set_vfs_state(m_state, mount_pfs_done);
+#endif
 	polar_vfs_switch = POLAR_VFS_SWITCH_PLUGIN;
 	inited = true;
 	elog(LOG, "mount pfs %s %s mode success", polar_disk_name, mode);
@@ -833,9 +861,11 @@ vfs_env_init(void)
 {
 	int index = polar_get_io_proc_index();
 
+#ifdef USE_PFSD
 	if (vfs[POLAR_VFS_PFS].vfs_env_init &&
 		localfs_mode == false)
 		vfs[POLAR_VFS_PFS].vfs_env_init();
+#endif
 
 	memset(&vfs_start, 0, sizeof(vfs_start));
 	INSTR_TIME_SET_CURRENT(vfs_start);
@@ -859,9 +889,11 @@ vfs_env_init(void)
 static int
 vfs_env_destroy(void)
 {
+#ifdef USE_PFSD
 	if (vfs[POLAR_VFS_PFS].vfs_env_destroy &&
 		localfs_mode == false)
 		vfs[POLAR_VFS_PFS].vfs_env_destroy();
+#endif
 
 	vfs_timer_end(&vfs_end);
 	if (enable_file_size_cache && AmStartupProcess())
@@ -888,13 +920,16 @@ vfs_mount(void)
 static int
 vfs_remount(void)
 {
+#ifdef USE_PFSD
 	int		flag;
+#endif
 	if (localfs_mode)
 	{
 		elog(LOG, "pfs in localfs mode");
 		return 0;
 	}
 
+#ifdef USE_PFSD
 	polar_mount_pfs_readonly_mode = false;
 	flag = PFS_RDWR;
 
@@ -910,6 +945,7 @@ vfs_remount(void)
 	unlink(RECOVERY_COMMAND_DONE);
 	elog(LOG, "removed file \"%s\"", RECOVERY_COMMAND_DONE);
 	elog(LOG, "remount pfs %s readwrite mode success", polar_disk_name);
+#endif
 	return 0;
 }
 
@@ -1512,10 +1548,12 @@ vfs_file_type(const char *path)
 	if (path[0] != '/')
 		return POLAR_VFS_LOCAL_BIO;
 
+#ifdef USE_PFSD
 	if (strncmp(polar_disk_name, path + 1, polar_disk_strsize) == 0)
 	{
 		return POLAR_VFS_PFS;
 	}
+#endif
 
 	return POLAR_VFS_LOCAL_BIO;
 }
@@ -1720,12 +1758,15 @@ polar_vfs_timer_end_iostat(instr_time *time, int kind)
 Datum
 polar_libpfs_version(PG_FUNCTION_ARGS)
 {
+#ifdef USE_PFSD
 	int64 version_num = pfsd_meta_version_get();
 	const char	*version_str = pfsd_build_version_get();
 	char	libpfs_version[MAXPGPATH] = {0};
 
 	snprintf(libpfs_version, MAXPGPATH-1, "%s version number "INT64_FORMAT"", version_str, version_num);
-        PG_RETURN_TEXT_P(cstring_to_text(libpfs_version));
+	PG_RETURN_TEXT_P(cstring_to_text(libpfs_version));
+#endif
+	PG_RETURN_TEXT_P(cstring_to_text(""));
 }
 
 static bool
@@ -1745,6 +1786,7 @@ file_exists(const char *name)
 	return false;
 }
 
+#ifdef USE_PFSD
 void
 polar_vfs_mount_main(Datum main_arg)
 {
@@ -1798,7 +1840,6 @@ polar_vfs_mount_main(Datum main_arg)
 				else
 					elog(LOG, "umount PBD %s, id %d in subprocess success", polar_disk_name, polar_hostid);
 			}
-
 			break;
 		}
 
@@ -1913,6 +1954,7 @@ polar_vfs_quickdie(SIGNAL_ARGS)
 	elog(WARNING, "polar vfs receive quickdie signal");
 	_exit(2);
 }
+#endif
 
 static void
 polar_vfs_init_mem_and_lock(void)
@@ -1943,6 +1985,7 @@ polar_vfs_init_mem_and_lock(void)
 	return;
 }
 
+#ifdef USE_PFSD
 static vfs_state
 polar_get_vfs_state(vfs_mount_state *state)
 {
@@ -1970,6 +2013,7 @@ polar_set_vfs_state(vfs_mount_state *state, vfs_state vstate)
 
 	return;
 }
+#endif
 
 static const vfs_mgr* 
 vfs_get_mgr(const char *path)

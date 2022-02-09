@@ -845,7 +845,7 @@ polar_node_type_by_file(void)
 	{
 		/* set true when replica or standby mode is set */
 		bool polar_is_set = false;
-		if (!polar_enable_dma && strcmp(item->name, "polar_replica") == 0)
+		if (!POLAR_ENABLE_DMA() && strcmp(item->name, "polar_replica") == 0)
 		{
 			if (!parse_bool(item->value, &polar_is_set))
 				ereport(ERROR,
@@ -857,7 +857,7 @@ polar_node_type_by_file(void)
 			if (polar_is_set)
 				flag |= POLAR_REPLICA_MODE;
 		}
-		else if (!polar_enable_dma && strcmp(item->name, "standby_mode") == 0)
+		else if (!POLAR_ENABLE_DMA() && strcmp(item->name, "standby_mode") == 0)
 		{
 			if (!parse_bool(item->value, &polar_is_set))
 				ereport(ERROR,

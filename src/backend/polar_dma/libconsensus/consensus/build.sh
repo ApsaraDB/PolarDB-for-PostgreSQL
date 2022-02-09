@@ -106,8 +106,8 @@ export OPENSSL_ROOT_DIR=/usr/local/openssl
 
 # modify this cmake script for you own needs
 cmake -D CMAKE_INSTALL_PREFIX=$dest_dir -D WITH_DEBUG=$debug -D WITHOUT_CXX11_ABI=$without_cxx11_abi -D WITH_TSAN=OFF -D WITH_ASAN=$with_asan ..
-make libmyeasy -sj
+make libmyeasy -sj`getconf _NPROCESSORS_ONLN`
 cd ../protocol
 cd ../bu
-make -sj
-make install
+make -sj`getconf _NPROCESSORS_ONLN`
+make install -j`getconf _NPROCESSORS_ONLN`

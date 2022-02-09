@@ -55,23 +55,22 @@ analyze t1;
 --
 -- Simple positive cases
 --
-explain (costs off, timing off, summary off, analyze) select * from t, pt where tid = ptid;
-                       QUERY PLAN                       
---------------------------------------------------------
- Hash Join (actual rows=18 loops=1)
+explain (costs off, timing off, summary off) select * from t, pt where tid = ptid;
+            QUERY PLAN             
+-----------------------------------
+ Hash Join
    Hash Cond: (pt_p0.ptid = t.tid)
-   ->  Append (actual rows=54 loops=1)
-         ->  Seq Scan on pt_p0 (actual rows=9 loops=1)
-         ->  Seq Scan on pt_p1 (actual rows=9 loops=1)
-         ->  Seq Scan on pt_p2 (actual rows=0 loops=1)
-         ->  Seq Scan on pt_p3 (actual rows=0 loops=1)
-         ->  Seq Scan on pt_p4 (actual rows=9 loops=1)
-         ->  Seq Scan on pt_p5 (actual rows=9 loops=1)
-         ->  Seq Scan on pt_p6 (actual rows=18 loops=1)
-   ->  Hash (actual rows=2 loops=1)
-         Buckets: 1024  Batches: 1  Memory Usage: 9kB
-         ->  Seq Scan on t (actual rows=2 loops=1)
-(13 rows)
+   ->  Append
+         ->  Seq Scan on pt_p0
+         ->  Seq Scan on pt_p1
+         ->  Seq Scan on pt_p2
+         ->  Seq Scan on pt_p3
+         ->  Seq Scan on pt_p4
+         ->  Seq Scan on pt_p5
+         ->  Seq Scan on pt_p6
+   ->  Hash
+         ->  Seq Scan on t
+(12 rows)
 
 select * from t, pt where tid = ptid;
  dist | tid |   t1   | t2  | dist |   pt1   |  pt2  |    pt3    | ptid 
@@ -164,32 +163,31 @@ select * from t, pt where tid = ptid;
  Optimizer: PolarDB PX Optimizer
 (30 rows)
 
-explain (costs off, timing off, summary off, analyze) select * from t, pt where tid + 1 = ptid;
-                               QUERY PLAN                               
-------------------------------------------------------------------------
- Nested Loop (actual rows=18 loops=1)
-   ->  Seq Scan on t (actual rows=2 loops=1)
-   ->  Append (actual rows=9 loops=2)
-         ->  Seq Scan on pt_p0 (never executed)
+explain (costs off, timing off, summary off) select * from t, pt where tid + 1 = ptid;
+                      QUERY PLAN                       
+-------------------------------------------------------
+ Nested Loop
+   ->  Seq Scan on t
+   ->  Append
+         ->  Seq Scan on pt_p0
                Filter: ((t.tid + 1) = ptid)
-         ->  Seq Scan on pt_p1 (never executed)
+         ->  Seq Scan on pt_p1
                Filter: ((t.tid + 1) = ptid)
-         ->  Bitmap Heap Scan on pt_p2 (never executed)
+         ->  Bitmap Heap Scan on pt_p2
                Recheck Cond: (ptid = (t.tid + 1))
-               ->  Bitmap Index Scan on pt_p2_ptid_idx (never executed)
+               ->  Bitmap Index Scan on pt_p2_ptid_idx
                      Index Cond: (ptid = (t.tid + 1))
-         ->  Bitmap Heap Scan on pt_p3 (never executed)
+         ->  Bitmap Heap Scan on pt_p3
                Recheck Cond: (ptid = (t.tid + 1))
-               ->  Bitmap Index Scan on pt_p3_ptid_idx (never executed)
+               ->  Bitmap Index Scan on pt_p3_ptid_idx
                      Index Cond: (ptid = (t.tid + 1))
-         ->  Seq Scan on pt_p4 (never executed)
+         ->  Seq Scan on pt_p4
                Filter: ((t.tid + 1) = ptid)
-         ->  Seq Scan on pt_p5 (actual rows=9 loops=1)
+         ->  Seq Scan on pt_p5
                Filter: ((t.tid + 1) = ptid)
-         ->  Seq Scan on pt_p6 (actual rows=9 loops=1)
+         ->  Seq Scan on pt_p6
                Filter: ((t.tid + 1) = ptid)
-               Rows Removed by Filter: 9
-(22 rows)
+(21 rows)
 
 select * from t, pt where tid + 1 = ptid;
  dist | tid |   t1   | t2  | dist |   pt1   |  pt2  |    pt3    | ptid 
@@ -282,30 +280,30 @@ select * from t, pt where tid + 1 = ptid;
  Optimizer: PolarDB PX Optimizer
 (30 rows)
 
-explain (costs off, timing off, summary off, analyze) select * from t, pt where tid = ptid and t1 = 'hello' || tid;
-                               QUERY PLAN                               
-------------------------------------------------------------------------
- Nested Loop (actual rows=18 loops=1)
-   ->  Seq Scan on t (actual rows=2 loops=1)
+explain (costs off, timing off, summary off) select * from t, pt where tid = ptid and t1 = 'hello' || tid;
+                      QUERY PLAN                       
+-------------------------------------------------------
+ Nested Loop
+   ->  Seq Scan on t
          Filter: (t1 = ('hello'::text || (tid)::text))
-   ->  Append (actual rows=9 loops=2)
-         ->  Seq Scan on pt_p0 (never executed)
+   ->  Append
+         ->  Seq Scan on pt_p0
                Filter: (t.tid = ptid)
-         ->  Seq Scan on pt_p1 (never executed)
+         ->  Seq Scan on pt_p1
                Filter: (t.tid = ptid)
-         ->  Bitmap Heap Scan on pt_p2 (never executed)
+         ->  Bitmap Heap Scan on pt_p2
                Recheck Cond: (ptid = t.tid)
-               ->  Bitmap Index Scan on pt_p2_ptid_idx (never executed)
+               ->  Bitmap Index Scan on pt_p2_ptid_idx
                      Index Cond: (ptid = t.tid)
-         ->  Bitmap Heap Scan on pt_p3 (never executed)
+         ->  Bitmap Heap Scan on pt_p3
                Recheck Cond: (ptid = t.tid)
-               ->  Bitmap Index Scan on pt_p3_ptid_idx (never executed)
+               ->  Bitmap Index Scan on pt_p3_ptid_idx
                      Index Cond: (ptid = t.tid)
-         ->  Seq Scan on pt_p4 (actual rows=9 loops=1)
+         ->  Seq Scan on pt_p4
                Filter: (t.tid = ptid)
-         ->  Seq Scan on pt_p5 (actual rows=9 loops=1)
+         ->  Seq Scan on pt_p5
                Filter: (t.tid = ptid)
-         ->  Seq Scan on pt_p6 (never executed)
+         ->  Seq Scan on pt_p6
                Filter: (t.tid = ptid)
 (22 rows)
 
@@ -406,39 +404,37 @@ select * from t, pt where tid = ptid and t1 = 'hello' || tid;
  Optimizer: PolarDB PX Optimizer
 (33 rows)
 
-explain (costs off, timing off, summary off, analyze) select * from t, pt where t1 = pt1 and ptid = tid;
-                                  QUERY PLAN                                  
-------------------------------------------------------------------------------
- Nested Loop (actual rows=2 loops=1)
-   ->  Seq Scan on t (actual rows=2 loops=1)
-   ->  Append (actual rows=1 loops=2)
-         ->  Seq Scan on pt_p0 (never executed)
+explain (costs off, timing off, summary off) select * from t, pt where t1 = pt1 and ptid = tid;
+                          QUERY PLAN                           
+---------------------------------------------------------------
+ Nested Loop
+   ->  Seq Scan on t
+   ->  Append
+         ->  Seq Scan on pt_p0
                Filter: ((t.t1 = pt1) AND (t.tid = ptid))
-         ->  Seq Scan on pt_p1 (never executed)
+         ->  Seq Scan on pt_p1
                Filter: ((t.t1 = pt1) AND (t.tid = ptid))
-         ->  Bitmap Heap Scan on pt_p2 (never executed)
+         ->  Bitmap Heap Scan on pt_p2
                Recheck Cond: ((ptid = t.tid) AND (pt1 = t.t1))
-               ->  BitmapAnd (never executed)
-                     ->  Bitmap Index Scan on pt_p2_ptid_idx (never executed)
+               ->  BitmapAnd
+                     ->  Bitmap Index Scan on pt_p2_ptid_idx
                            Index Cond: (ptid = t.tid)
-                     ->  Bitmap Index Scan on pt_p2_pt1_idx (never executed)
+                     ->  Bitmap Index Scan on pt_p2_pt1_idx
                            Index Cond: (pt1 = t.t1)
-         ->  Bitmap Heap Scan on pt_p3 (never executed)
+         ->  Bitmap Heap Scan on pt_p3
                Recheck Cond: ((ptid = t.tid) AND (pt1 = t.t1))
-               ->  BitmapAnd (never executed)
-                     ->  Bitmap Index Scan on pt_p3_ptid_idx (never executed)
+               ->  BitmapAnd
+                     ->  Bitmap Index Scan on pt_p3_ptid_idx
                            Index Cond: (ptid = t.tid)
-                     ->  Bitmap Index Scan on pt_p3_pt1_idx (never executed)
+                     ->  Bitmap Index Scan on pt_p3_pt1_idx
                            Index Cond: (pt1 = t.t1)
-         ->  Seq Scan on pt_p4 (actual rows=1 loops=1)
+         ->  Seq Scan on pt_p4
                Filter: ((t.t1 = pt1) AND (t.tid = ptid))
-               Rows Removed by Filter: 8
-         ->  Seq Scan on pt_p5 (actual rows=1 loops=1)
+         ->  Seq Scan on pt_p5
                Filter: ((t.t1 = pt1) AND (t.tid = ptid))
-               Rows Removed by Filter: 8
-         ->  Seq Scan on pt_p6 (never executed)
+         ->  Seq Scan on pt_p6
                Filter: ((t.t1 = pt1) AND (t.tid = ptid))
-(29 rows)
+(27 rows)
 
 select * from t, pt where t1 = pt1 and ptid = tid;
  dist | tid |   t1   | t2  | dist |  pt1   |  pt2  |    pt3    | ptid 
@@ -532,32 +528,32 @@ select * from t, pt where t1 = pt1 and ptid = tid;
 --
 -- in and exists clauses
 --
-explain (costs off, timing off, summary off, analyze) select * from pt where ptid in (select tid from t where t1 = 'hello' || tid);
-                               QUERY PLAN                               
-------------------------------------------------------------------------
- Nested Loop (actual rows=18 loops=1)
-   ->  HashAggregate (actual rows=2 loops=1)
+explain (costs off, timing off, summary off) select * from pt where ptid in (select tid from t where t1 = 'hello' || tid);
+                         QUERY PLAN                          
+-------------------------------------------------------------
+ Nested Loop
+   ->  HashAggregate
          Group Key: t.tid
-         ->  Seq Scan on t (actual rows=2 loops=1)
+         ->  Seq Scan on t
                Filter: (t1 = ('hello'::text || (tid)::text))
-   ->  Append (actual rows=9 loops=2)
-         ->  Seq Scan on pt_p0 (never executed)
+   ->  Append
+         ->  Seq Scan on pt_p0
                Filter: (t.tid = ptid)
-         ->  Seq Scan on pt_p1 (never executed)
+         ->  Seq Scan on pt_p1
                Filter: (t.tid = ptid)
-         ->  Bitmap Heap Scan on pt_p2 (never executed)
+         ->  Bitmap Heap Scan on pt_p2
                Recheck Cond: (ptid = t.tid)
-               ->  Bitmap Index Scan on pt_p2_ptid_idx (never executed)
+               ->  Bitmap Index Scan on pt_p2_ptid_idx
                      Index Cond: (ptid = t.tid)
-         ->  Bitmap Heap Scan on pt_p3 (never executed)
+         ->  Bitmap Heap Scan on pt_p3
                Recheck Cond: (ptid = t.tid)
-               ->  Bitmap Index Scan on pt_p3_ptid_idx (never executed)
+               ->  Bitmap Index Scan on pt_p3_ptid_idx
                      Index Cond: (ptid = t.tid)
-         ->  Seq Scan on pt_p4 (actual rows=9 loops=1)
+         ->  Seq Scan on pt_p4
                Filter: (t.tid = ptid)
-         ->  Seq Scan on pt_p5 (actual rows=9 loops=1)
+         ->  Seq Scan on pt_p5
                Filter: (t.tid = ptid)
-         ->  Seq Scan on pt_p6 (never executed)
+         ->  Seq Scan on pt_p6
                Filter: (t.tid = ptid)
 (24 rows)
 
@@ -675,32 +671,32 @@ select * from pt where ptid in (select tid from t where t1 = 'hello' || tid);
 -- start_ignore
 -- Known_opt_diff: MPP-21320
 -- end_ignore
-explain (costs off, timing off, summary off, analyze) select * from pt where exists (select 1 from t where tid = ptid and t1 = 'hello' || tid);
-                               QUERY PLAN                               
-------------------------------------------------------------------------
- Nested Loop (actual rows=18 loops=1)
-   ->  HashAggregate (actual rows=2 loops=1)
+explain (costs off, timing off, summary off) select * from pt where exists (select 1 from t where tid = ptid and t1 = 'hello' || tid);
+                         QUERY PLAN                          
+-------------------------------------------------------------
+ Nested Loop
+   ->  HashAggregate
          Group Key: t.tid
-         ->  Seq Scan on t (actual rows=2 loops=1)
+         ->  Seq Scan on t
                Filter: (t1 = ('hello'::text || (tid)::text))
-   ->  Append (actual rows=9 loops=2)
-         ->  Seq Scan on pt_p0 (never executed)
+   ->  Append
+         ->  Seq Scan on pt_p0
                Filter: (t.tid = ptid)
-         ->  Seq Scan on pt_p1 (never executed)
+         ->  Seq Scan on pt_p1
                Filter: (t.tid = ptid)
-         ->  Bitmap Heap Scan on pt_p2 (never executed)
+         ->  Bitmap Heap Scan on pt_p2
                Recheck Cond: (ptid = t.tid)
-               ->  Bitmap Index Scan on pt_p2_ptid_idx (never executed)
+               ->  Bitmap Index Scan on pt_p2_ptid_idx
                      Index Cond: (ptid = t.tid)
-         ->  Bitmap Heap Scan on pt_p3 (never executed)
+         ->  Bitmap Heap Scan on pt_p3
                Recheck Cond: (ptid = t.tid)
-               ->  Bitmap Index Scan on pt_p3_ptid_idx (never executed)
+               ->  Bitmap Index Scan on pt_p3_ptid_idx
                      Index Cond: (ptid = t.tid)
-         ->  Seq Scan on pt_p4 (actual rows=9 loops=1)
+         ->  Seq Scan on pt_p4
                Filter: (t.tid = ptid)
-         ->  Seq Scan on pt_p5 (actual rows=9 loops=1)
+         ->  Seq Scan on pt_p5
                Filter: (t.tid = ptid)
-         ->  Seq Scan on pt_p6 (never executed)
+         ->  Seq Scan on pt_p6
                Filter: (t.tid = ptid)
 (24 rows)
 
@@ -818,24 +814,23 @@ select * from pt where exists (select 1 from t where tid = ptid and t1 = 'hello'
 --
 -- group-by on top
 --
-explain (costs off, timing off, summary off, analyze) select count(*) from t, pt where tid = ptid;
-                          QUERY PLAN                          
---------------------------------------------------------------
- Aggregate (actual rows=1 loops=1)
-   ->  Hash Join (actual rows=18 loops=1)
+explain (costs off, timing off, summary off) select count(*) from t, pt where tid = ptid;
+               QUERY PLAN                
+-----------------------------------------
+ Aggregate
+   ->  Hash Join
          Hash Cond: (pt_p0.ptid = t.tid)
-         ->  Append (actual rows=54 loops=1)
-               ->  Seq Scan on pt_p0 (actual rows=9 loops=1)
-               ->  Seq Scan on pt_p1 (actual rows=9 loops=1)
-               ->  Seq Scan on pt_p2 (actual rows=0 loops=1)
-               ->  Seq Scan on pt_p3 (actual rows=0 loops=1)
-               ->  Seq Scan on pt_p4 (actual rows=9 loops=1)
-               ->  Seq Scan on pt_p5 (actual rows=9 loops=1)
-               ->  Seq Scan on pt_p6 (actual rows=18 loops=1)
-         ->  Hash (actual rows=2 loops=1)
-               Buckets: 1024  Batches: 1  Memory Usage: 9kB
-               ->  Seq Scan on t (actual rows=2 loops=1)
-(14 rows)
+         ->  Append
+               ->  Seq Scan on pt_p0
+               ->  Seq Scan on pt_p1
+               ->  Seq Scan on pt_p2
+               ->  Seq Scan on pt_p3
+               ->  Seq Scan on pt_p4
+               ->  Seq Scan on pt_p5
+               ->  Seq Scan on pt_p6
+         ->  Hash
+               ->  Seq Scan on t
+(13 rows)
 
 select count(*) from t, pt where tid = ptid;
  count 
@@ -924,27 +919,25 @@ select count(*) from t, pt where tid = ptid;
 --
 -- window function on top
 --
-explain (costs off, timing off, summary off, analyze) select *, rank() over (order by ptid,pt1) from t, pt where tid = ptid;
-                             QUERY PLAN                             
---------------------------------------------------------------------
- WindowAgg (actual rows=18 loops=1)
-   ->  Sort (actual rows=18 loops=1)
+explain (costs off, timing off, summary off) select *, rank() over (order by ptid,pt1) from t, pt where tid = ptid;
+                  QUERY PLAN                   
+-----------------------------------------------
+ WindowAgg
+   ->  Sort
          Sort Key: pt_p0.ptid, pt_p0.pt1
-         Sort Method: quicksort  Memory: 27kB
-         ->  Hash Join (actual rows=18 loops=1)
+         ->  Hash Join
                Hash Cond: (pt_p0.ptid = t.tid)
-               ->  Append (actual rows=54 loops=1)
-                     ->  Seq Scan on pt_p0 (actual rows=9 loops=1)
-                     ->  Seq Scan on pt_p1 (actual rows=9 loops=1)
-                     ->  Seq Scan on pt_p2 (actual rows=0 loops=1)
-                     ->  Seq Scan on pt_p3 (actual rows=0 loops=1)
-                     ->  Seq Scan on pt_p4 (actual rows=9 loops=1)
-                     ->  Seq Scan on pt_p5 (actual rows=9 loops=1)
-                     ->  Seq Scan on pt_p6 (actual rows=18 loops=1)
-               ->  Hash (actual rows=2 loops=1)
-                     Buckets: 1024  Batches: 1  Memory Usage: 9kB
-                     ->  Seq Scan on t (actual rows=2 loops=1)
-(17 rows)
+               ->  Append
+                     ->  Seq Scan on pt_p0
+                     ->  Seq Scan on pt_p1
+                     ->  Seq Scan on pt_p2
+                     ->  Seq Scan on pt_p3
+                     ->  Seq Scan on pt_p4
+                     ->  Seq Scan on pt_p5
+                     ->  Seq Scan on pt_p6
+               ->  Hash
+                     ->  Seq Scan on t
+(15 rows)
 
 select *, rank() over (order by ptid,pt1) from t, pt where tid = ptid;
  dist | tid |   t1   | t2  | dist |   pt1   |  pt2  |    pt3    | ptid | rank 
@@ -1052,48 +1045,46 @@ select *, rank() over (order by ptid,pt1) from t, pt where tid = ptid;
 --
 -- set ops
 --
-explain (costs off, timing off, summary off, analyze) select * from t, pt where tid = ptid
+explain (costs off, timing off, summary off) select * from t, pt where tid = ptid
 	  union all
 	  select * from t, pt where tid + 2 = ptid;
-                                  QUERY PLAN                                  
-------------------------------------------------------------------------------
- Append (actual rows=36 loops=1)
-   ->  Hash Join (actual rows=18 loops=1)
+                          QUERY PLAN                          
+--------------------------------------------------------------
+ Append
+   ->  Hash Join
          Hash Cond: (pt_p0.ptid = t.tid)
-         ->  Append (actual rows=54 loops=1)
-               ->  Seq Scan on pt_p0 (actual rows=9 loops=1)
-               ->  Seq Scan on pt_p1 (actual rows=9 loops=1)
-               ->  Seq Scan on pt_p2 (actual rows=0 loops=1)
-               ->  Seq Scan on pt_p3 (actual rows=0 loops=1)
-               ->  Seq Scan on pt_p4 (actual rows=9 loops=1)
-               ->  Seq Scan on pt_p5 (actual rows=9 loops=1)
-               ->  Seq Scan on pt_p6 (actual rows=18 loops=1)
-         ->  Hash (actual rows=2 loops=1)
-               Buckets: 1024  Batches: 1  Memory Usage: 9kB
-               ->  Seq Scan on t (actual rows=2 loops=1)
-   ->  Nested Loop (actual rows=18 loops=1)
-         ->  Seq Scan on t t_1 (actual rows=2 loops=1)
-         ->  Append (actual rows=9 loops=2)
-               ->  Seq Scan on pt_p0 pt_p0_1 (never executed)
+         ->  Append
+               ->  Seq Scan on pt_p0
+               ->  Seq Scan on pt_p1
+               ->  Seq Scan on pt_p2
+               ->  Seq Scan on pt_p3
+               ->  Seq Scan on pt_p4
+               ->  Seq Scan on pt_p5
+               ->  Seq Scan on pt_p6
+         ->  Hash
+               ->  Seq Scan on t
+   ->  Nested Loop
+         ->  Seq Scan on t t_1
+         ->  Append
+               ->  Seq Scan on pt_p0 pt_p0_1
                      Filter: ((t_1.tid + 2) = ptid)
-               ->  Seq Scan on pt_p1 pt_p1_1 (never executed)
+               ->  Seq Scan on pt_p1 pt_p1_1
                      Filter: ((t_1.tid + 2) = ptid)
-               ->  Bitmap Heap Scan on pt_p2 pt_p2_1 (never executed)
+               ->  Bitmap Heap Scan on pt_p2 pt_p2_1
                      Recheck Cond: (ptid = (t_1.tid + 2))
-                     ->  Bitmap Index Scan on pt_p2_ptid_idx (never executed)
+                     ->  Bitmap Index Scan on pt_p2_ptid_idx
                            Index Cond: (ptid = (t_1.tid + 2))
-               ->  Bitmap Heap Scan on pt_p3 pt_p3_1 (never executed)
+               ->  Bitmap Heap Scan on pt_p3 pt_p3_1
                      Recheck Cond: (ptid = (t_1.tid + 2))
-                     ->  Bitmap Index Scan on pt_p3_ptid_idx (never executed)
+                     ->  Bitmap Index Scan on pt_p3_ptid_idx
                            Index Cond: (ptid = (t_1.tid + 2))
-               ->  Seq Scan on pt_p4 pt_p4_1 (never executed)
+               ->  Seq Scan on pt_p4 pt_p4_1
                      Filter: ((t_1.tid + 2) = ptid)
-               ->  Seq Scan on pt_p5 pt_p5_1 (never executed)
+               ->  Seq Scan on pt_p5 pt_p5_1
                      Filter: ((t_1.tid + 2) = ptid)
-               ->  Seq Scan on pt_p6 pt_p6_1 (actual rows=9 loops=2)
+               ->  Seq Scan on pt_p6 pt_p6_1
                      Filter: ((t_1.tid + 2) = ptid)
-                     Rows Removed by Filter: 9
-(36 rows)
+(34 rows)
 
 select * from t, pt where tid = ptid
 	  union all
@@ -1265,53 +1256,51 @@ select * from t, pt where tid = ptid
 --
 -- set-ops
 --
-explain (costs off, timing off, summary off, analyze) select count(*) from
+explain (costs off, timing off, summary off) select count(*) from
 	( select * from t, pt where tid = ptid
 	  union all
 	  select * from t, pt where tid + 2 = ptid
 	  ) foo;
-                                        QUERY PLAN                                        
-------------------------------------------------------------------------------------------
- Aggregate (actual rows=1 loops=1)
-   ->  Append (actual rows=36 loops=1)
-         ->  Subquery Scan on "*SELECT* 1" (actual rows=18 loops=1)
-               ->  Hash Join (actual rows=18 loops=1)
+                                QUERY PLAN                                
+--------------------------------------------------------------------------
+ Aggregate
+   ->  Append
+         ->  Subquery Scan on "*SELECT* 1"
+               ->  Hash Join
                      Hash Cond: (pt_p0.ptid = t.tid)
-                     ->  Append (actual rows=54 loops=1)
-                           ->  Seq Scan on pt_p0 (actual rows=9 loops=1)
-                           ->  Seq Scan on pt_p1 (actual rows=9 loops=1)
-                           ->  Seq Scan on pt_p2 (actual rows=0 loops=1)
-                           ->  Seq Scan on pt_p3 (actual rows=0 loops=1)
-                           ->  Seq Scan on pt_p4 (actual rows=9 loops=1)
-                           ->  Seq Scan on pt_p5 (actual rows=9 loops=1)
-                           ->  Seq Scan on pt_p6 (actual rows=18 loops=1)
-                     ->  Hash (actual rows=2 loops=1)
-                           Buckets: 1024  Batches: 1  Memory Usage: 9kB
-                           ->  Seq Scan on t (actual rows=2 loops=1)
-         ->  Subquery Scan on "*SELECT* 2" (actual rows=18 loops=1)
-               ->  Nested Loop (actual rows=18 loops=1)
-                     ->  Seq Scan on t t_1 (actual rows=2 loops=1)
-                     ->  Append (actual rows=9 loops=2)
-                           ->  Seq Scan on pt_p0 pt_p0_1 (never executed)
+                     ->  Append
+                           ->  Seq Scan on pt_p0
+                           ->  Seq Scan on pt_p1
+                           ->  Seq Scan on pt_p2
+                           ->  Seq Scan on pt_p3
+                           ->  Seq Scan on pt_p4
+                           ->  Seq Scan on pt_p5
+                           ->  Seq Scan on pt_p6
+                     ->  Hash
+                           ->  Seq Scan on t
+         ->  Subquery Scan on "*SELECT* 2"
+               ->  Nested Loop
+                     ->  Seq Scan on t t_1
+                     ->  Append
+                           ->  Seq Scan on pt_p0 pt_p0_1
                                  Filter: ((t_1.tid + 2) = ptid)
-                           ->  Seq Scan on pt_p1 pt_p1_1 (never executed)
+                           ->  Seq Scan on pt_p1 pt_p1_1
                                  Filter: ((t_1.tid + 2) = ptid)
-                           ->  Bitmap Heap Scan on pt_p2 pt_p2_1 (never executed)
+                           ->  Bitmap Heap Scan on pt_p2 pt_p2_1
                                  Recheck Cond: (ptid = (t_1.tid + 2))
-                                 ->  Bitmap Index Scan on pt_p2_ptid_idx (never executed)
+                                 ->  Bitmap Index Scan on pt_p2_ptid_idx
                                        Index Cond: (ptid = (t_1.tid + 2))
-                           ->  Bitmap Heap Scan on pt_p3 pt_p3_1 (never executed)
+                           ->  Bitmap Heap Scan on pt_p3 pt_p3_1
                                  Recheck Cond: (ptid = (t_1.tid + 2))
-                                 ->  Bitmap Index Scan on pt_p3_ptid_idx (never executed)
+                                 ->  Bitmap Index Scan on pt_p3_ptid_idx
                                        Index Cond: (ptid = (t_1.tid + 2))
-                           ->  Seq Scan on pt_p4 pt_p4_1 (never executed)
+                           ->  Seq Scan on pt_p4 pt_p4_1
                                  Filter: ((t_1.tid + 2) = ptid)
-                           ->  Seq Scan on pt_p5 pt_p5_1 (never executed)
+                           ->  Seq Scan on pt_p5 pt_p5_1
                                  Filter: ((t_1.tid + 2) = ptid)
-                           ->  Seq Scan on pt_p6 pt_p6_1 (actual rows=9 loops=2)
+                           ->  Seq Scan on pt_p6 pt_p6_1
                                  Filter: ((t_1.tid + 2) = ptid)
-                                 Rows Removed by Filter: 9
-(39 rows)
+(37 rows)
 
 select count(*) from
 	( select * from t, pt where tid = ptid
@@ -1465,23 +1454,22 @@ select count(*) from
 set polar_px_optimizer_enable_hashjoin=off;
 set polar_px_optimizer_enable_nestloopjoin=on;
 set polar_px_optimizer_enable_mergejoin=off;
-explain (costs off, timing off, summary off, analyze) select * from t, pt where tid = ptid;
-                       QUERY PLAN                       
---------------------------------------------------------
- Hash Join (actual rows=18 loops=1)
+explain (costs off, timing off, summary off) select * from t, pt where tid = ptid;
+            QUERY PLAN             
+-----------------------------------
+ Hash Join
    Hash Cond: (pt_p0.ptid = t.tid)
-   ->  Append (actual rows=54 loops=1)
-         ->  Seq Scan on pt_p0 (actual rows=9 loops=1)
-         ->  Seq Scan on pt_p1 (actual rows=9 loops=1)
-         ->  Seq Scan on pt_p2 (actual rows=0 loops=1)
-         ->  Seq Scan on pt_p3 (actual rows=0 loops=1)
-         ->  Seq Scan on pt_p4 (actual rows=9 loops=1)
-         ->  Seq Scan on pt_p5 (actual rows=9 loops=1)
-         ->  Seq Scan on pt_p6 (actual rows=18 loops=1)
-   ->  Hash (actual rows=2 loops=1)
-         Buckets: 1024  Batches: 1  Memory Usage: 9kB
-         ->  Seq Scan on t (actual rows=2 loops=1)
-(13 rows)
+   ->  Append
+         ->  Seq Scan on pt_p0
+         ->  Seq Scan on pt_p1
+         ->  Seq Scan on pt_p2
+         ->  Seq Scan on pt_p3
+         ->  Seq Scan on pt_p4
+         ->  Seq Scan on pt_p5
+         ->  Seq Scan on pt_p6
+   ->  Hash
+         ->  Seq Scan on t
+(12 rows)
 
 select * from t, pt where tid = ptid;
  dist | tid |   t1   | t2  | dist |   pt1   |  pt2  |    pt3    | ptid 
@@ -1585,39 +1573,33 @@ set polar_px_optimizer_enable_hashjoin=off;
 -- start_ignore
 -- Known_opt_diff: MPP-21322
 -- end_ignore
-explain (costs off, timing off, summary off, analyze) select * from t, pt where tid = ptid and pt1 = 'hello0';
-                                  QUERY PLAN                                  
-------------------------------------------------------------------------------
- Nested Loop (actual rows=1 loops=1)
+explain (costs off, timing off, summary off) select * from t, pt where tid = ptid and pt1 = 'hello0';
+                       QUERY PLAN                       
+--------------------------------------------------------
+ Nested Loop
    Join Filter: (t.tid = pt_p0.ptid)
-   Rows Removed by Join Filter: 1
-   ->  Append (actual rows=1 loops=1)
-         ->  Seq Scan on pt_p0 (actual rows=0 loops=1)
+   ->  Append
+         ->  Seq Scan on pt_p0
                Filter: (pt1 = 'hello0'::text)
-               Rows Removed by Filter: 9
-         ->  Seq Scan on pt_p1 (actual rows=0 loops=1)
+         ->  Seq Scan on pt_p1
                Filter: (pt1 = 'hello0'::text)
-               Rows Removed by Filter: 9
-         ->  Bitmap Heap Scan on pt_p2 (actual rows=0 loops=1)
+         ->  Bitmap Heap Scan on pt_p2
                Recheck Cond: (pt1 = 'hello0'::text)
-               ->  Bitmap Index Scan on pt_p2_pt1_idx (actual rows=0 loops=1)
+               ->  Bitmap Index Scan on pt_p2_pt1_idx
                      Index Cond: (pt1 = 'hello0'::text)
-         ->  Bitmap Heap Scan on pt_p3 (actual rows=0 loops=1)
+         ->  Bitmap Heap Scan on pt_p3
                Recheck Cond: (pt1 = 'hello0'::text)
-               ->  Bitmap Index Scan on pt_p3_pt1_idx (actual rows=0 loops=1)
+               ->  Bitmap Index Scan on pt_p3_pt1_idx
                      Index Cond: (pt1 = 'hello0'::text)
-         ->  Seq Scan on pt_p4 (actual rows=1 loops=1)
+         ->  Seq Scan on pt_p4
                Filter: (pt1 = 'hello0'::text)
-               Rows Removed by Filter: 8
-         ->  Seq Scan on pt_p5 (actual rows=0 loops=1)
+         ->  Seq Scan on pt_p5
                Filter: (pt1 = 'hello0'::text)
-               Rows Removed by Filter: 9
-         ->  Seq Scan on pt_p6 (actual rows=0 loops=1)
+         ->  Seq Scan on pt_p6
                Filter: (pt1 = 'hello0'::text)
-               Rows Removed by Filter: 18
-   ->  Materialize (actual rows=2 loops=1)
-         ->  Seq Scan on t (actual rows=2 loops=1)
-(29 rows)
+   ->  Materialize
+         ->  Seq Scan on t
+(23 rows)
 
 select * from t, pt where tid = ptid and pt1 = 'hello0';
  dist | tid |   t1   | t2  | dist |  pt1   |  pt2  |    pt3    | ptid 
@@ -1714,23 +1696,22 @@ set polar_px_optimizer_enable_nestloopjoin=on;
 set polar_px_optimizer_enable_indexscan=on;
 set polar_px_optimizer_enable_seqscan=off;
 set polar_px_optimizer_enable_hashjoin=off;
-explain (costs off, timing off, summary off, analyze) select * from t, pt where tid = ptid;
-                       QUERY PLAN                       
---------------------------------------------------------
- Hash Join (actual rows=18 loops=1)
+explain (costs off, timing off, summary off) select * from t, pt where tid = ptid;
+            QUERY PLAN             
+-----------------------------------
+ Hash Join
    Hash Cond: (pt_p0.ptid = t.tid)
-   ->  Append (actual rows=54 loops=1)
-         ->  Seq Scan on pt_p0 (actual rows=9 loops=1)
-         ->  Seq Scan on pt_p1 (actual rows=9 loops=1)
-         ->  Seq Scan on pt_p2 (actual rows=0 loops=1)
-         ->  Seq Scan on pt_p3 (actual rows=0 loops=1)
-         ->  Seq Scan on pt_p4 (actual rows=9 loops=1)
-         ->  Seq Scan on pt_p5 (actual rows=9 loops=1)
-         ->  Seq Scan on pt_p6 (actual rows=18 loops=1)
-   ->  Hash (actual rows=2 loops=1)
-         Buckets: 1024  Batches: 1  Memory Usage: 9kB
-         ->  Seq Scan on t (actual rows=2 loops=1)
-(13 rows)
+   ->  Append
+         ->  Seq Scan on pt_p0
+         ->  Seq Scan on pt_p1
+         ->  Seq Scan on pt_p2
+         ->  Seq Scan on pt_p3
+         ->  Seq Scan on pt_p4
+         ->  Seq Scan on pt_p5
+         ->  Seq Scan on pt_p6
+   ->  Hash
+         ->  Seq Scan on t
+(12 rows)
 
 select * from t, pt where tid = ptid;
  dist | tid |   t1   | t2  | dist |   pt1   |  pt2  |    pt3    | ptid 
@@ -1830,36 +1811,31 @@ set polar_px_optimizer_enable_indexscan=off;
 set polar_px_optimizer_enable_seqscan=on;
 set polar_px_optimizer_enable_hashjoin=on;
 set polar_px_optimizer_enable_nestloopjoin=off;
-explain (costs off, timing off, summary off, analyze) select * from t, pt where t1 = pt1;
-                                  QUERY PLAN                                  
-------------------------------------------------------------------------------
- Nested Loop (actual rows=2 loops=1)
-   ->  Seq Scan on t (actual rows=2 loops=1)
-   ->  Append (actual rows=1 loops=2)
-         ->  Seq Scan on pt_p0 (actual rows=0 loops=2)
+explain (costs off, timing off, summary off) select * from t, pt where t1 = pt1;
+                      QUERY PLAN                      
+------------------------------------------------------
+ Nested Loop
+   ->  Seq Scan on t
+   ->  Append
+         ->  Seq Scan on pt_p0
                Filter: (t.t1 = pt1)
-               Rows Removed by Filter: 9
-         ->  Seq Scan on pt_p1 (actual rows=0 loops=2)
+         ->  Seq Scan on pt_p1
                Filter: (t.t1 = pt1)
-               Rows Removed by Filter: 9
-         ->  Bitmap Heap Scan on pt_p2 (actual rows=0 loops=2)
+         ->  Bitmap Heap Scan on pt_p2
                Recheck Cond: (pt1 = t.t1)
-               ->  Bitmap Index Scan on pt_p2_pt1_idx (actual rows=0 loops=2)
+               ->  Bitmap Index Scan on pt_p2_pt1_idx
                      Index Cond: (pt1 = t.t1)
-         ->  Bitmap Heap Scan on pt_p3 (actual rows=0 loops=2)
+         ->  Bitmap Heap Scan on pt_p3
                Recheck Cond: (pt1 = t.t1)
-               ->  Bitmap Index Scan on pt_p3_pt1_idx (actual rows=0 loops=2)
+               ->  Bitmap Index Scan on pt_p3_pt1_idx
                      Index Cond: (pt1 = t.t1)
-         ->  Seq Scan on pt_p4 (actual rows=0 loops=2)
+         ->  Seq Scan on pt_p4
                Filter: (t.t1 = pt1)
-               Rows Removed by Filter: 8
-         ->  Seq Scan on pt_p5 (actual rows=0 loops=2)
+         ->  Seq Scan on pt_p5
                Filter: (t.t1 = pt1)
-               Rows Removed by Filter: 8
-         ->  Seq Scan on pt_p6 (actual rows=0 loops=2)
+         ->  Seq Scan on pt_p6
                Filter: (t.t1 = pt1)
-               Rows Removed by Filter: 18
-(26 rows)
+(21 rows)
 
 select * from t, pt where t1 = pt1;
  dist | tid |   t1   | t2  | dist |  pt1   |  pt2  |    pt3    | ptid 
@@ -1936,23 +1912,22 @@ select * from t, pt where t1 = pt1;
  Optimizer: PolarDB PX Optimizer
 (30 rows)
 
-explain (costs off, timing off, summary off, analyze) select * from t, pt where tid < ptid;
-                       QUERY PLAN                       
---------------------------------------------------------
- Nested Loop (actual rows=81 loops=1)
+explain (costs off, timing off, summary off) select * from t, pt where tid < ptid;
+             QUERY PLAN              
+-------------------------------------
+ Nested Loop
    Join Filter: (t.tid < pt_p0.ptid)
-   Rows Removed by Join Filter: 27
-   ->  Append (actual rows=54 loops=1)
-         ->  Seq Scan on pt_p0 (actual rows=9 loops=1)
-         ->  Seq Scan on pt_p1 (actual rows=9 loops=1)
-         ->  Seq Scan on pt_p2 (actual rows=0 loops=1)
-         ->  Seq Scan on pt_p3 (actual rows=0 loops=1)
-         ->  Seq Scan on pt_p4 (actual rows=9 loops=1)
-         ->  Seq Scan on pt_p5 (actual rows=9 loops=1)
-         ->  Seq Scan on pt_p6 (actual rows=18 loops=1)
-   ->  Materialize (actual rows=2 loops=54)
-         ->  Seq Scan on t (actual rows=2 loops=1)
-(13 rows)
+   ->  Append
+         ->  Seq Scan on pt_p0
+         ->  Seq Scan on pt_p1
+         ->  Seq Scan on pt_p2
+         ->  Seq Scan on pt_p3
+         ->  Seq Scan on pt_p4
+         ->  Seq Scan on pt_p5
+         ->  Seq Scan on pt_p6
+   ->  Materialize
+         ->  Seq Scan on t
+(12 rows)
 
 select * from t, pt where tid < ptid;
  dist | tid |   t1   | t2  | dist |   pt1   |  pt2  |    pt3    | ptid 
@@ -2116,27 +2091,26 @@ reset polar_px_optimizer_enable_nestloopjoin;
 -- multiple joins
 --
 -- one of the joined tables can be used for partition elimination, the other can not
-explain (costs off, timing off, summary off, analyze) select * from t, t1, pt where t1.t2 = t.t2 and t1.tid = ptid;
-                          QUERY PLAN                          
---------------------------------------------------------------
- Nested Loop (actual rows=36 loops=1)
+explain (costs off, timing off, summary off) select * from t, t1, pt where t1.t2 = t.t2 and t1.tid = ptid;
+                QUERY PLAN                
+------------------------------------------
+ Nested Loop
    Join Filter: (t1.t2 = t.t2)
-   ->  Hash Join (actual rows=18 loops=1)
+   ->  Hash Join
          Hash Cond: (pt_p0.ptid = t1.tid)
-         ->  Append (actual rows=54 loops=1)
-               ->  Seq Scan on pt_p0 (actual rows=9 loops=1)
-               ->  Seq Scan on pt_p1 (actual rows=9 loops=1)
-               ->  Seq Scan on pt_p2 (actual rows=0 loops=1)
-               ->  Seq Scan on pt_p3 (actual rows=0 loops=1)
-               ->  Seq Scan on pt_p4 (actual rows=9 loops=1)
-               ->  Seq Scan on pt_p5 (actual rows=9 loops=1)
-               ->  Seq Scan on pt_p6 (actual rows=18 loops=1)
-         ->  Hash (actual rows=2 loops=1)
-               Buckets: 1024  Batches: 1  Memory Usage: 9kB
-               ->  Seq Scan on t1 (actual rows=2 loops=1)
-   ->  Materialize (actual rows=2 loops=18)
-         ->  Seq Scan on t (actual rows=2 loops=1)
-(17 rows)
+         ->  Append
+               ->  Seq Scan on pt_p0
+               ->  Seq Scan on pt_p1
+               ->  Seq Scan on pt_p2
+               ->  Seq Scan on pt_p3
+               ->  Seq Scan on pt_p4
+               ->  Seq Scan on pt_p5
+               ->  Seq Scan on pt_p6
+         ->  Hash
+               ->  Seq Scan on t1
+   ->  Materialize
+         ->  Seq Scan on t
+(16 rows)
 
 select * from t, t1, pt where t1.t2 = t.t2 and t1.tid = ptid;
  dist | tid |   t1   | t2  | dist | tid |   t1   | t2  | dist |   pt1   |  pt2  |    pt3    | ptid 
@@ -2269,28 +2243,26 @@ insert into t select i, -100, 'dummy' from generate_series(1,10) i;
 insert into t1 select i, -100, 'dummy' from generate_series(1,10) i;
 analyze t;
 analyze t1;
-explain (costs off, timing off, summary off, analyze) select * from t, t1, pt where t1.tid = ptid and t.tid = ptid;
-                          QUERY PLAN                          
---------------------------------------------------------------
- Hash Join (actual rows=9 loops=1)
+explain (costs off, timing off, summary off) select * from t, t1, pt where t1.tid = ptid and t.tid = ptid;
+               QUERY PLAN                
+-----------------------------------------
+ Hash Join
    Hash Cond: (pt_p0.ptid = t1.tid)
-   ->  Hash Join (actual rows=18 loops=1)
+   ->  Hash Join
          Hash Cond: (pt_p0.ptid = t.tid)
-         ->  Append (actual rows=54 loops=1)
-               ->  Seq Scan on pt_p0 (actual rows=9 loops=1)
-               ->  Seq Scan on pt_p1 (actual rows=9 loops=1)
-               ->  Seq Scan on pt_p2 (actual rows=0 loops=1)
-               ->  Seq Scan on pt_p3 (actual rows=0 loops=1)
-               ->  Seq Scan on pt_p4 (actual rows=9 loops=1)
-               ->  Seq Scan on pt_p5 (actual rows=9 loops=1)
-               ->  Seq Scan on pt_p6 (actual rows=18 loops=1)
-         ->  Hash (actual rows=12 loops=1)
-               Buckets: 1024  Batches: 1  Memory Usage: 9kB
-               ->  Seq Scan on t (actual rows=12 loops=1)
-   ->  Hash (actual rows=12 loops=1)
-         Buckets: 1024  Batches: 1  Memory Usage: 9kB
-         ->  Seq Scan on t1 (actual rows=12 loops=1)
-(18 rows)
+         ->  Append
+               ->  Seq Scan on pt_p0
+               ->  Seq Scan on pt_p1
+               ->  Seq Scan on pt_p2
+               ->  Seq Scan on pt_p3
+               ->  Seq Scan on pt_p4
+               ->  Seq Scan on pt_p5
+               ->  Seq Scan on pt_p6
+         ->  Hash
+               ->  Seq Scan on t
+   ->  Hash
+         ->  Seq Scan on t1
+(16 rows)
 
 select * from t, t1, pt where t1.tid = ptid and t.tid = ptid;
  dist | tid |   t1   | t2  | dist | tid |   t1   | t2  | dist |   pt1   |  pt2  |    pt3    | ptid 
@@ -2314,85 +2286,76 @@ begin;
 -- to test
 set local from_collapse_limit = 1;
 set local join_collapse_limit = 1;
-explain (costs off, timing off, summary off, analyze) select * from t1 inner join (select pt1.*, pt2.ptid as ptid2 from pt as pt1, pt as pt2 WHERE pt1.ptid <= pt2.ptid and pt1.dist = pt2.dist ) as ptx ON t1.dist = ptx.dist and t1.tid = ptx.ptid and t1.tid = ptx.ptid2;
-                                QUERY PLAN                                
---------------------------------------------------------------------------
- Hash Join (actual rows=2 loops=1)
+explain (costs off, timing off, summary off) select * from t1 inner join (select pt1.*, pt2.ptid as ptid2 from pt as pt1, pt as pt2 WHERE pt1.ptid <= pt2.ptid and pt1.dist = pt2.dist ) as ptx ON t1.dist = ptx.dist and t1.tid = ptx.ptid and t1.tid = ptx.ptid2;
+                              QUERY PLAN                              
+----------------------------------------------------------------------
+ Hash Join
    Hash Cond: ((pt1.dist = t1.dist) AND (pt1.ptid = t1.tid))
-   ->  Hash Join (actual rows=54 loops=1)
+   ->  Hash Join
          Hash Cond: ((pt1.dist = pt2.dist) AND (pt1.ptid = pt2.ptid))
          Join Filter: (pt1.ptid <= pt2.ptid)
-         ->  Append (actual rows=54 loops=1)
-               ->  Seq Scan on pt_p0 pt1 (actual rows=9 loops=1)
-               ->  Seq Scan on pt_p1 pt1_1 (actual rows=9 loops=1)
-               ->  Seq Scan on pt_p2 pt1_2 (actual rows=0 loops=1)
-               ->  Seq Scan on pt_p3 pt1_3 (actual rows=0 loops=1)
-               ->  Seq Scan on pt_p4 pt1_4 (actual rows=9 loops=1)
-               ->  Seq Scan on pt_p5 pt1_5 (actual rows=9 loops=1)
-               ->  Seq Scan on pt_p6 pt1_6 (actual rows=18 loops=1)
-         ->  Hash (actual rows=54 loops=1)
-               Buckets: 2048  Batches: 1  Memory Usage: 19kB
-               ->  Append (actual rows=54 loops=1)
-                     ->  Seq Scan on pt_p0 pt2 (actual rows=9 loops=1)
-                     ->  Seq Scan on pt_p1 pt2_1 (actual rows=9 loops=1)
-                     ->  Seq Scan on pt_p2 pt2_2 (actual rows=0 loops=1)
-                     ->  Seq Scan on pt_p3 pt2_3 (actual rows=0 loops=1)
-                     ->  Seq Scan on pt_p4 pt2_4 (actual rows=9 loops=1)
-                     ->  Seq Scan on pt_p5 pt2_5 (actual rows=9 loops=1)
-                     ->  Seq Scan on pt_p6 pt2_6 (actual rows=18 loops=1)
-   ->  Hash (actual rows=2 loops=1)
-         Buckets: 1024  Batches: 1  Memory Usage: 9kB
-         ->  Seq Scan on t1 (actual rows=2 loops=1)
-(26 rows)
+         ->  Append
+               ->  Seq Scan on pt_p0 pt1
+               ->  Seq Scan on pt_p1 pt1_1
+               ->  Seq Scan on pt_p2 pt1_2
+               ->  Seq Scan on pt_p3 pt1_3
+               ->  Seq Scan on pt_p4 pt1_4
+               ->  Seq Scan on pt_p5 pt1_5
+               ->  Seq Scan on pt_p6 pt1_6
+         ->  Hash
+               ->  Append
+                     ->  Seq Scan on pt_p0 pt2
+                     ->  Seq Scan on pt_p1 pt2_1
+                     ->  Seq Scan on pt_p2 pt2_2
+                     ->  Seq Scan on pt_p3 pt2_3
+                     ->  Seq Scan on pt_p4 pt2_4
+                     ->  Seq Scan on pt_p5 pt2_5
+                     ->  Seq Scan on pt_p6 pt2_6
+   ->  Hash
+         ->  Seq Scan on t1
+(24 rows)
 
 rollback;
 --
 -- Partitioned table on both sides of the join. This will create a result node as Append node is
 -- not projection capable.
 --
-explain (costs off, timing off, summary off, analyze) select * from pt, pt1 where pt.ptid = pt1.ptid and pt.pt1 = 'hello0' order by pt1.dist;
-                                     QUERY PLAN                                     
-------------------------------------------------------------------------------------
- Sort (actual rows=9 loops=1)
+explain (costs off, timing off, summary off) select * from pt, pt1 where pt.ptid = pt1.ptid and pt.pt1 = 'hello0' order by pt1.dist;
+                          QUERY PLAN                          
+--------------------------------------------------------------
+ Sort
    Sort Key: pt1_p0.dist
-   Sort Method: quicksort  Memory: 26kB
-   ->  Hash Join (actual rows=9 loops=1)
+   ->  Hash Join
          Hash Cond: (pt_p0.ptid = pt1_p0.ptid)
-         ->  Append (actual rows=1 loops=1)
-               ->  Seq Scan on pt_p0 (actual rows=0 loops=1)
+         ->  Append
+               ->  Seq Scan on pt_p0
                      Filter: (pt1 = 'hello0'::text)
-                     Rows Removed by Filter: 9
-               ->  Seq Scan on pt_p1 (actual rows=0 loops=1)
+               ->  Seq Scan on pt_p1
                      Filter: (pt1 = 'hello0'::text)
-                     Rows Removed by Filter: 9
-               ->  Bitmap Heap Scan on pt_p2 (actual rows=0 loops=1)
+               ->  Bitmap Heap Scan on pt_p2
                      Recheck Cond: (pt1 = 'hello0'::text)
-                     ->  Bitmap Index Scan on pt_p2_pt1_idx (actual rows=0 loops=1)
+                     ->  Bitmap Index Scan on pt_p2_pt1_idx
                            Index Cond: (pt1 = 'hello0'::text)
-               ->  Bitmap Heap Scan on pt_p3 (actual rows=0 loops=1)
+               ->  Bitmap Heap Scan on pt_p3
                      Recheck Cond: (pt1 = 'hello0'::text)
-                     ->  Bitmap Index Scan on pt_p3_pt1_idx (actual rows=0 loops=1)
+                     ->  Bitmap Index Scan on pt_p3_pt1_idx
                            Index Cond: (pt1 = 'hello0'::text)
-               ->  Seq Scan on pt_p4 (actual rows=1 loops=1)
+               ->  Seq Scan on pt_p4
                      Filter: (pt1 = 'hello0'::text)
-                     Rows Removed by Filter: 8
-               ->  Seq Scan on pt_p5 (actual rows=0 loops=1)
+               ->  Seq Scan on pt_p5
                      Filter: (pt1 = 'hello0'::text)
-                     Rows Removed by Filter: 9
-               ->  Seq Scan on pt_p6 (actual rows=0 loops=1)
+               ->  Seq Scan on pt_p6
                      Filter: (pt1 = 'hello0'::text)
-                     Rows Removed by Filter: 18
-         ->  Hash (actual rows=108 loops=1)
-               Buckets: 1024  Batches: 1  Memory Usage: 15kB
-               ->  Append (actual rows=108 loops=1)
-                     ->  Seq Scan on pt1_p0 (actual rows=18 loops=1)
-                     ->  Seq Scan on pt1_p1 (actual rows=36 loops=1)
-                     ->  Seq Scan on pt1_p2 (actual rows=0 loops=1)
-                     ->  Seq Scan on pt1_p3 (actual rows=9 loops=1)
-                     ->  Seq Scan on pt1_p4 (actual rows=9 loops=1)
-                     ->  Seq Scan on pt1_p5 (actual rows=18 loops=1)
-                     ->  Seq Scan on pt1_p6 (actual rows=18 loops=1)
-(39 rows)
+         ->  Hash
+               ->  Append
+                     ->  Seq Scan on pt1_p0
+                     ->  Seq Scan on pt1_p1
+                     ->  Seq Scan on pt1_p2
+                     ->  Seq Scan on pt1_p3
+                     ->  Seq Scan on pt1_p4
+                     ->  Seq Scan on pt1_p5
+                     ->  Seq Scan on pt1_p6
+(32 rows)
 
 select * from pt, pt1 where pt.ptid = pt1.ptid and pt.pt1 = 'hello0' order by pt1.dist;
  dist |  pt1   |  pt2  |    pt3    | ptid | dist |   pt1   |  pt2  |    pt3    | ptid 
@@ -2594,47 +2557,41 @@ select * from pt, pt1 where pt.ptid = pt1.ptid and pt.pt1 = 'hello0' order by pt
  Optimizer: PolarDB PX Optimizer
 (89 rows)
 
-explain (costs off, timing off, summary off, analyze) select count(*) from pt, pt1 where pt.ptid = pt1.ptid and pt.pt1 = 'hello0';
-                                     QUERY PLAN                                     
-------------------------------------------------------------------------------------
- Aggregate (actual rows=1 loops=1)
-   ->  Hash Join (actual rows=9 loops=1)
+explain (costs off, timing off, summary off) select count(*) from pt, pt1 where pt.ptid = pt1.ptid and pt.pt1 = 'hello0';
+                          QUERY PLAN                          
+--------------------------------------------------------------
+ Aggregate
+   ->  Hash Join
          Hash Cond: (pt_p0.ptid = pt1_p0.ptid)
-         ->  Append (actual rows=1 loops=1)
-               ->  Seq Scan on pt_p0 (actual rows=0 loops=1)
+         ->  Append
+               ->  Seq Scan on pt_p0
                      Filter: (pt1 = 'hello0'::text)
-                     Rows Removed by Filter: 9
-               ->  Seq Scan on pt_p1 (actual rows=0 loops=1)
+               ->  Seq Scan on pt_p1
                      Filter: (pt1 = 'hello0'::text)
-                     Rows Removed by Filter: 9
-               ->  Bitmap Heap Scan on pt_p2 (actual rows=0 loops=1)
+               ->  Bitmap Heap Scan on pt_p2
                      Recheck Cond: (pt1 = 'hello0'::text)
-                     ->  Bitmap Index Scan on pt_p2_pt1_idx (actual rows=0 loops=1)
+                     ->  Bitmap Index Scan on pt_p2_pt1_idx
                            Index Cond: (pt1 = 'hello0'::text)
-               ->  Bitmap Heap Scan on pt_p3 (actual rows=0 loops=1)
+               ->  Bitmap Heap Scan on pt_p3
                      Recheck Cond: (pt1 = 'hello0'::text)
-                     ->  Bitmap Index Scan on pt_p3_pt1_idx (actual rows=0 loops=1)
+                     ->  Bitmap Index Scan on pt_p3_pt1_idx
                            Index Cond: (pt1 = 'hello0'::text)
-               ->  Seq Scan on pt_p4 (actual rows=1 loops=1)
+               ->  Seq Scan on pt_p4
                      Filter: (pt1 = 'hello0'::text)
-                     Rows Removed by Filter: 8
-               ->  Seq Scan on pt_p5 (actual rows=0 loops=1)
+               ->  Seq Scan on pt_p5
                      Filter: (pt1 = 'hello0'::text)
-                     Rows Removed by Filter: 9
-               ->  Seq Scan on pt_p6 (actual rows=0 loops=1)
+               ->  Seq Scan on pt_p6
                      Filter: (pt1 = 'hello0'::text)
-                     Rows Removed by Filter: 18
-         ->  Hash (actual rows=108 loops=1)
-               Buckets: 1024  Batches: 1  Memory Usage: 12kB
-               ->  Append (actual rows=108 loops=1)
-                     ->  Seq Scan on pt1_p0 (actual rows=18 loops=1)
-                     ->  Seq Scan on pt1_p1 (actual rows=36 loops=1)
-                     ->  Seq Scan on pt1_p2 (actual rows=0 loops=1)
-                     ->  Seq Scan on pt1_p3 (actual rows=9 loops=1)
-                     ->  Seq Scan on pt1_p4 (actual rows=9 loops=1)
-                     ->  Seq Scan on pt1_p5 (actual rows=18 loops=1)
-                     ->  Seq Scan on pt1_p6 (actual rows=18 loops=1)
-(37 rows)
+         ->  Hash
+               ->  Append
+                     ->  Seq Scan on pt1_p0
+                     ->  Seq Scan on pt1_p1
+                     ->  Seq Scan on pt1_p2
+                     ->  Seq Scan on pt1_p3
+                     ->  Seq Scan on pt1_p4
+                     ->  Seq Scan on pt1_p5
+                     ->  Seq Scan on pt1_p6
+(31 rows)
 
 select count(*) from pt, pt1 where pt.ptid = pt1.ptid and pt.pt1 = 'hello0';
  count 
@@ -2844,23 +2801,22 @@ begin;
 set polar_px_optimizer_enable_hashjoin=off;
 set polar_px_optimizer_enable_seqscan=on;
 set polar_px_optimizer_enable_nestloopjoin=on;
-explain (costs off, timing off, summary off, analyze) select * from t, pt where a = b;
-                      QUERY PLAN                       
--------------------------------------------------------
- Hash Join (actual rows=5 loops=1)
+explain (costs off, timing off, summary off) select * from t, pt where a = b;
+          QUERY PLAN           
+-------------------------------
+ Hash Join
    Hash Cond: (pt_p0.b = t.a)
-   ->  Append (actual rows=5 loops=1)
-         ->  Seq Scan on pt_p0 (actual rows=1 loops=1)
-         ->  Seq Scan on pt_p1 (actual rows=0 loops=1)
-         ->  Seq Scan on pt_p2 (actual rows=0 loops=1)
-         ->  Seq Scan on pt_p3 (actual rows=0 loops=1)
-         ->  Seq Scan on pt_p4 (actual rows=1 loops=1)
-         ->  Seq Scan on pt_p5 (actual rows=1 loops=1)
-         ->  Seq Scan on pt_p6 (actual rows=2 loops=1)
-   ->  Hash (actual rows=5 loops=1)
-         Buckets: 1024  Batches: 1  Memory Usage: 9kB
-         ->  Seq Scan on t (actual rows=5 loops=1)
-(13 rows)
+   ->  Append
+         ->  Seq Scan on pt_p0
+         ->  Seq Scan on pt_p1
+         ->  Seq Scan on pt_p2
+         ->  Seq Scan on pt_p3
+         ->  Seq Scan on pt_p4
+         ->  Seq Scan on pt_p5
+         ->  Seq Scan on pt_p6
+   ->  Hash
+         ->  Seq Scan on t
+(12 rows)
 
 select * from t, pt where a = b;
  id | a | id | b 
@@ -2902,23 +2858,22 @@ insert into t select i from generate_series(7,8) i;
 insert into pt select 0 from generate_series(1,1000) g;
 analyze t;
 analyze pt;
-explain (costs off, timing off, summary off, analyze) select * from t, pt where a = b;
-                        QUERY PLAN                        
-----------------------------------------------------------
- Hash Join (actual rows=0 loops=1)
+explain (costs off, timing off, summary off) select * from t, pt where a = b;
+          QUERY PLAN           
+-------------------------------
+ Hash Join
    Hash Cond: (pt_p0.b = t.a)
-   ->  Append (actual rows=1005 loops=1)
-         ->  Seq Scan on pt_p0 (actual rows=1 loops=1)
-         ->  Seq Scan on pt_p1 (actual rows=0 loops=1)
-         ->  Seq Scan on pt_p2 (actual rows=0 loops=1)
-         ->  Seq Scan on pt_p3 (actual rows=0 loops=1)
-         ->  Seq Scan on pt_p4 (actual rows=1001 loops=1)
-         ->  Seq Scan on pt_p5 (actual rows=1 loops=1)
-         ->  Seq Scan on pt_p6 (actual rows=2 loops=1)
-   ->  Hash (actual rows=4 loops=1)
-         Buckets: 1024  Batches: 1  Memory Usage: 9kB
-         ->  Seq Scan on t (actual rows=4 loops=1)
-(13 rows)
+   ->  Append
+         ->  Seq Scan on pt_p0
+         ->  Seq Scan on pt_p1
+         ->  Seq Scan on pt_p2
+         ->  Seq Scan on pt_p3
+         ->  Seq Scan on pt_p4
+         ->  Seq Scan on pt_p5
+         ->  Seq Scan on pt_p6
+   ->  Hash
+         ->  Seq Scan on t
+(12 rows)
 
 select * from t, pt where a = b;
  a | b 
@@ -2955,26 +2910,24 @@ insert into fact1 select 1, i % 4 , 'CA', i + 10000 from generate_series (1,100)
 -- Join on all partitioning columns
 --
 set polar_px_optimizer_enable_partition_selection=off;
-explain (costs off, timing off, summary off, analyze) select * from dim1 inner join fact1 on (dim1.pid=fact1.pid and dim1.code=fact1.code) order by fact1.u;
+explain (costs off, timing off, summary off) select * from dim1 inner join fact1 on (dim1.pid=fact1.pid and dim1.code=fact1.code) order by fact1.u;
                                    QUERY PLAN                                   
 --------------------------------------------------------------------------------
- Sort (actual rows=50 loops=1)
+ Sort
    Sort Key: fact1_p0.u
-   Sort Method: quicksort  Memory: 29kB
-   ->  Hash Join (actual rows=50 loops=1)
+   ->  Hash Join
          Hash Cond: ((fact1_p0.pid = dim1.pid) AND (fact1_p0.code = dim1.code))
-         ->  Append (actual rows=200 loops=1)
-               ->  Seq Scan on fact1_p0 (actual rows=0 loops=1)
-               ->  Seq Scan on fact1_p1 (actual rows=0 loops=1)
-               ->  Seq Scan on fact1_p2 (actual rows=0 loops=1)
-               ->  Seq Scan on fact1_p3 (actual rows=0 loops=1)
-               ->  Seq Scan on fact1_p4 (actual rows=50 loops=1)
-               ->  Seq Scan on fact1_p5 (actual rows=50 loops=1)
-               ->  Seq Scan on fact1_p6 (actual rows=100 loops=1)
-         ->  Hash (actual rows=3 loops=1)
-               Buckets: 1024  Batches: 1  Memory Usage: 9kB
-               ->  Seq Scan on dim1 (actual rows=3 loops=1)
-(16 rows)
+         ->  Append
+               ->  Seq Scan on fact1_p0
+               ->  Seq Scan on fact1_p1
+               ->  Seq Scan on fact1_p2
+               ->  Seq Scan on fact1_p3
+               ->  Seq Scan on fact1_p4
+               ->  Seq Scan on fact1_p5
+               ->  Seq Scan on fact1_p6
+         ->  Hash
+               ->  Seq Scan on dim1
+(14 rows)
 
 select * from dim1 inner join fact1 on (dim1.pid=fact1.pid and dim1.code=fact1.code) order by fact1.u;
  dist | pid | code |   t1   | dist | pid | code |  u  
@@ -3098,26 +3051,24 @@ select * from dim1 inner join fact1 on (dim1.pid=fact1.pid and dim1.code=fact1.c
 (29 rows)
 
 set polar_px_optimizer_enable_partition_selection=on;
-explain (costs off, timing off, summary off, analyze) select * from dim1 inner join fact1 on (dim1.pid=fact1.pid and dim1.code=fact1.code) order by fact1.u;
+explain (costs off, timing off, summary off) select * from dim1 inner join fact1 on (dim1.pid=fact1.pid and dim1.code=fact1.code) order by fact1.u;
                                    QUERY PLAN                                   
 --------------------------------------------------------------------------------
- Sort (actual rows=50 loops=1)
+ Sort
    Sort Key: fact1_p0.u
-   Sort Method: quicksort  Memory: 29kB
-   ->  Hash Join (actual rows=50 loops=1)
+   ->  Hash Join
          Hash Cond: ((fact1_p0.pid = dim1.pid) AND (fact1_p0.code = dim1.code))
-         ->  Append (actual rows=200 loops=1)
-               ->  Seq Scan on fact1_p0 (actual rows=0 loops=1)
-               ->  Seq Scan on fact1_p1 (actual rows=0 loops=1)
-               ->  Seq Scan on fact1_p2 (actual rows=0 loops=1)
-               ->  Seq Scan on fact1_p3 (actual rows=0 loops=1)
-               ->  Seq Scan on fact1_p4 (actual rows=50 loops=1)
-               ->  Seq Scan on fact1_p5 (actual rows=50 loops=1)
-               ->  Seq Scan on fact1_p6 (actual rows=100 loops=1)
-         ->  Hash (actual rows=3 loops=1)
-               Buckets: 1024  Batches: 1  Memory Usage: 9kB
-               ->  Seq Scan on dim1 (actual rows=3 loops=1)
-(16 rows)
+         ->  Append
+               ->  Seq Scan on fact1_p0
+               ->  Seq Scan on fact1_p1
+               ->  Seq Scan on fact1_p2
+               ->  Seq Scan on fact1_p3
+               ->  Seq Scan on fact1_p4
+               ->  Seq Scan on fact1_p5
+               ->  Seq Scan on fact1_p6
+         ->  Hash
+               ->  Seq Scan on dim1
+(14 rows)
 
 select * from dim1 inner join fact1 on (dim1.pid=fact1.pid and dim1.code=fact1.code) order by fact1.u;
  dist | pid | code |   t1   | dist | pid | code |  u  
@@ -3250,26 +3201,24 @@ select * from dim1 inner join fact1 on (dim1.pid=fact1.pid and dim1.code=fact1.c
 -- Join on one of the partitioning columns
 --
 set polar_px_optimizer_enable_partition_selection=off;
-explain (costs off, timing off, summary off, analyze) select * from dim1 inner join fact1 on (dim1.pid=fact1.pid) order by fact1.u;
-                            QUERY PLAN                            
-------------------------------------------------------------------
- Sort (actual rows=100 loops=1)
+explain (costs off, timing off, summary off) select * from dim1 inner join fact1 on (dim1.pid=fact1.pid) order by fact1.u;
+                  QUERY PLAN                  
+----------------------------------------------
+ Sort
    Sort Key: fact1_p0.u
-   Sort Method: quicksort  Memory: 33kB
-   ->  Hash Join (actual rows=100 loops=1)
+   ->  Hash Join
          Hash Cond: (fact1_p0.pid = dim1.pid)
-         ->  Append (actual rows=200 loops=1)
-               ->  Seq Scan on fact1_p0 (actual rows=0 loops=1)
-               ->  Seq Scan on fact1_p1 (actual rows=0 loops=1)
-               ->  Seq Scan on fact1_p2 (actual rows=0 loops=1)
-               ->  Seq Scan on fact1_p3 (actual rows=0 loops=1)
-               ->  Seq Scan on fact1_p4 (actual rows=50 loops=1)
-               ->  Seq Scan on fact1_p5 (actual rows=50 loops=1)
-               ->  Seq Scan on fact1_p6 (actual rows=100 loops=1)
-         ->  Hash (actual rows=3 loops=1)
-               Buckets: 1024  Batches: 1  Memory Usage: 9kB
-               ->  Seq Scan on dim1 (actual rows=3 loops=1)
-(16 rows)
+         ->  Append
+               ->  Seq Scan on fact1_p0
+               ->  Seq Scan on fact1_p1
+               ->  Seq Scan on fact1_p2
+               ->  Seq Scan on fact1_p3
+               ->  Seq Scan on fact1_p4
+               ->  Seq Scan on fact1_p5
+               ->  Seq Scan on fact1_p6
+         ->  Hash
+               ->  Seq Scan on dim1
+(14 rows)
 
 select * from dim1 inner join fact1 on (dim1.pid=fact1.pid) order by fact1.u;
  dist | pid | code |   t1   | dist | pid | code |   u   
@@ -3443,26 +3392,24 @@ select * from dim1 inner join fact1 on (dim1.pid=fact1.pid) order by fact1.u;
 (29 rows)
 
 set polar_px_optimizer_enable_partition_selection=on;
-explain (costs off, timing off, summary off, analyze) select * from dim1 inner join fact1 on (dim1.pid=fact1.pid) order by fact1.u;
-                            QUERY PLAN                            
-------------------------------------------------------------------
- Sort (actual rows=100 loops=1)
+explain (costs off, timing off, summary off) select * from dim1 inner join fact1 on (dim1.pid=fact1.pid) order by fact1.u;
+                  QUERY PLAN                  
+----------------------------------------------
+ Sort
    Sort Key: fact1_p0.u
-   Sort Method: quicksort  Memory: 33kB
-   ->  Hash Join (actual rows=100 loops=1)
+   ->  Hash Join
          Hash Cond: (fact1_p0.pid = dim1.pid)
-         ->  Append (actual rows=200 loops=1)
-               ->  Seq Scan on fact1_p0 (actual rows=0 loops=1)
-               ->  Seq Scan on fact1_p1 (actual rows=0 loops=1)
-               ->  Seq Scan on fact1_p2 (actual rows=0 loops=1)
-               ->  Seq Scan on fact1_p3 (actual rows=0 loops=1)
-               ->  Seq Scan on fact1_p4 (actual rows=50 loops=1)
-               ->  Seq Scan on fact1_p5 (actual rows=50 loops=1)
-               ->  Seq Scan on fact1_p6 (actual rows=100 loops=1)
-         ->  Hash (actual rows=3 loops=1)
-               Buckets: 1024  Batches: 1  Memory Usage: 9kB
-               ->  Seq Scan on dim1 (actual rows=3 loops=1)
-(16 rows)
+         ->  Append
+               ->  Seq Scan on fact1_p0
+               ->  Seq Scan on fact1_p1
+               ->  Seq Scan on fact1_p2
+               ->  Seq Scan on fact1_p3
+               ->  Seq Scan on fact1_p4
+               ->  Seq Scan on fact1_p5
+               ->  Seq Scan on fact1_p6
+         ->  Hash
+               ->  Seq Scan on dim1
+(14 rows)
 
 select * from dim1 inner join fact1 on (dim1.pid=fact1.pid) order by fact1.u;
  dist | pid | code |   t1   | dist | pid | code |   u   
@@ -3645,24 +3592,23 @@ select * from dim1 inner join fact1 on (dim1.pid=fact1.pid) order by fact1.u;
 -- Join on the subpartitioning column only
 --
 set polar_px_optimizer_enable_partition_selection=off;
-explain (costs off, timing off, summary off, analyze)
+explain (costs off, timing off, summary off)
 select * from dim1 inner join fact1 on (dim1.dist = fact1.dist and dim1.code=fact1.code);
                                  QUERY PLAN                                 
 ----------------------------------------------------------------------------
- Hash Join (actual rows=200 loops=1)
+ Hash Join
    Hash Cond: ((fact1_p0.dist = dim1.dist) AND (fact1_p0.code = dim1.code))
-   ->  Append (actual rows=200 loops=1)
-         ->  Seq Scan on fact1_p0 (actual rows=0 loops=1)
-         ->  Seq Scan on fact1_p1 (actual rows=0 loops=1)
-         ->  Seq Scan on fact1_p2 (actual rows=0 loops=1)
-         ->  Seq Scan on fact1_p3 (actual rows=0 loops=1)
-         ->  Seq Scan on fact1_p4 (actual rows=50 loops=1)
-         ->  Seq Scan on fact1_p5 (actual rows=50 loops=1)
-         ->  Seq Scan on fact1_p6 (actual rows=100 loops=1)
-   ->  Hash (actual rows=3 loops=1)
-         Buckets: 1024  Batches: 1  Memory Usage: 9kB
-         ->  Seq Scan on dim1 (actual rows=3 loops=1)
-(13 rows)
+   ->  Append
+         ->  Seq Scan on fact1_p0
+         ->  Seq Scan on fact1_p1
+         ->  Seq Scan on fact1_p2
+         ->  Seq Scan on fact1_p3
+         ->  Seq Scan on fact1_p4
+         ->  Seq Scan on fact1_p5
+         ->  Seq Scan on fact1_p6
+   ->  Hash
+         ->  Seq Scan on dim1
+(12 rows)
 
 select * from dim1 inner join fact1 on (dim1.dist = fact1.dist and dim1.code=fact1.code);
  dist | pid | code |   t1   | dist | pid | code |  u  
@@ -3928,24 +3874,23 @@ select * from dim1 inner join fact1 on (dim1.dist = fact1.dist and dim1.code=fac
 (25 rows)
 
 set polar_px_optimizer_enable_partition_selection=on;
-explain (costs off, timing off, summary off, analyze)
+explain (costs off, timing off, summary off)
 select * from dim1 inner join fact1 on (dim1.dist = fact1.dist and dim1.code=fact1.code);
                                  QUERY PLAN                                 
 ----------------------------------------------------------------------------
- Hash Join (actual rows=200 loops=1)
+ Hash Join
    Hash Cond: ((fact1_p0.dist = dim1.dist) AND (fact1_p0.code = dim1.code))
-   ->  Append (actual rows=200 loops=1)
-         ->  Seq Scan on fact1_p0 (actual rows=0 loops=1)
-         ->  Seq Scan on fact1_p1 (actual rows=0 loops=1)
-         ->  Seq Scan on fact1_p2 (actual rows=0 loops=1)
-         ->  Seq Scan on fact1_p3 (actual rows=0 loops=1)
-         ->  Seq Scan on fact1_p4 (actual rows=50 loops=1)
-         ->  Seq Scan on fact1_p5 (actual rows=50 loops=1)
-         ->  Seq Scan on fact1_p6 (actual rows=100 loops=1)
-   ->  Hash (actual rows=3 loops=1)
-         Buckets: 1024  Batches: 1  Memory Usage: 9kB
-         ->  Seq Scan on dim1 (actual rows=3 loops=1)
-(13 rows)
+   ->  Append
+         ->  Seq Scan on fact1_p0
+         ->  Seq Scan on fact1_p1
+         ->  Seq Scan on fact1_p2
+         ->  Seq Scan on fact1_p3
+         ->  Seq Scan on fact1_p4
+         ->  Seq Scan on fact1_p5
+         ->  Seq Scan on fact1_p6
+   ->  Hash
+         ->  Seq Scan on dim1
+(12 rows)
 
 select * from dim1 inner join fact1 on (dim1.dist = fact1.dist and dim1.code=fact1.code);
  dist | pid | code |   t1   | dist | pid | code |  u  
@@ -4214,36 +4159,31 @@ select * from dim1 inner join fact1 on (dim1.dist = fact1.dist and dim1.code=fac
 -- Join on one of the partitioning columns and static elimination on other
 --
 set polar_px_optimizer_enable_partition_selection=off;
-explain (costs off, timing off, summary off, analyze) select * from dim1 inner join fact1 on (dim1.pid=fact1.pid) and fact1.code = 'OH' order by fact1.u;
-                           QUERY PLAN                            
------------------------------------------------------------------
- Sort (actual rows=50 loops=1)
+explain (costs off, timing off, summary off) select * from dim1 inner join fact1 on (dim1.pid=fact1.pid) and fact1.code = 'OH' order by fact1.u;
+                   QUERY PLAN                    
+-------------------------------------------------
+ Sort
    Sort Key: fact1_p0.u
-   Sort Method: quicksort  Memory: 29kB
-   ->  Hash Join (actual rows=50 loops=1)
+   ->  Hash Join
          Hash Cond: (fact1_p0.pid = dim1.pid)
-         ->  Append (actual rows=100 loops=1)
-               ->  Seq Scan on fact1_p0 (actual rows=0 loops=1)
+         ->  Append
+               ->  Seq Scan on fact1_p0
                      Filter: (code = 'OH'::text)
-               ->  Seq Scan on fact1_p1 (actual rows=0 loops=1)
+               ->  Seq Scan on fact1_p1
                      Filter: (code = 'OH'::text)
-               ->  Seq Scan on fact1_p2 (actual rows=0 loops=1)
+               ->  Seq Scan on fact1_p2
                      Filter: (code = 'OH'::text)
-               ->  Seq Scan on fact1_p3 (actual rows=0 loops=1)
+               ->  Seq Scan on fact1_p3
                      Filter: (code = 'OH'::text)
-               ->  Seq Scan on fact1_p4 (actual rows=25 loops=1)
+               ->  Seq Scan on fact1_p4
                      Filter: (code = 'OH'::text)
-                     Rows Removed by Filter: 25
-               ->  Seq Scan on fact1_p5 (actual rows=25 loops=1)
+               ->  Seq Scan on fact1_p5
                      Filter: (code = 'OH'::text)
-                     Rows Removed by Filter: 25
-               ->  Seq Scan on fact1_p6 (actual rows=50 loops=1)
+               ->  Seq Scan on fact1_p6
                      Filter: (code = 'OH'::text)
-                     Rows Removed by Filter: 50
-         ->  Hash (actual rows=3 loops=1)
-               Buckets: 1024  Batches: 1  Memory Usage: 9kB
-               ->  Seq Scan on dim1 (actual rows=3 loops=1)
-(26 rows)
+         ->  Hash
+               ->  Seq Scan on dim1
+(21 rows)
 
 select * from dim1 inner join fact1 on (dim1.pid=fact1.pid) and fact1.code = 'OH' order by fact1.u;
  dist | pid | code |   t1   | dist | pid | code |  u  
@@ -4381,36 +4321,31 @@ select * from dim1 inner join fact1 on (dim1.pid=fact1.pid) and fact1.code = 'OH
 (36 rows)
 
 set polar_px_optimizer_enable_partition_selection=on;
-explain (costs off, timing off, summary off, analyze) select * from dim1 inner join fact1 on (dim1.pid=fact1.pid) and fact1.code = 'OH' order by fact1.u;
-                           QUERY PLAN                            
------------------------------------------------------------------
- Sort (actual rows=50 loops=1)
+explain (costs off, timing off, summary off) select * from dim1 inner join fact1 on (dim1.pid=fact1.pid) and fact1.code = 'OH' order by fact1.u;
+                   QUERY PLAN                    
+-------------------------------------------------
+ Sort
    Sort Key: fact1_p0.u
-   Sort Method: quicksort  Memory: 29kB
-   ->  Hash Join (actual rows=50 loops=1)
+   ->  Hash Join
          Hash Cond: (fact1_p0.pid = dim1.pid)
-         ->  Append (actual rows=100 loops=1)
-               ->  Seq Scan on fact1_p0 (actual rows=0 loops=1)
+         ->  Append
+               ->  Seq Scan on fact1_p0
                      Filter: (code = 'OH'::text)
-               ->  Seq Scan on fact1_p1 (actual rows=0 loops=1)
+               ->  Seq Scan on fact1_p1
                      Filter: (code = 'OH'::text)
-               ->  Seq Scan on fact1_p2 (actual rows=0 loops=1)
+               ->  Seq Scan on fact1_p2
                      Filter: (code = 'OH'::text)
-               ->  Seq Scan on fact1_p3 (actual rows=0 loops=1)
+               ->  Seq Scan on fact1_p3
                      Filter: (code = 'OH'::text)
-               ->  Seq Scan on fact1_p4 (actual rows=25 loops=1)
+               ->  Seq Scan on fact1_p4
                      Filter: (code = 'OH'::text)
-                     Rows Removed by Filter: 25
-               ->  Seq Scan on fact1_p5 (actual rows=25 loops=1)
+               ->  Seq Scan on fact1_p5
                      Filter: (code = 'OH'::text)
-                     Rows Removed by Filter: 25
-               ->  Seq Scan on fact1_p6 (actual rows=50 loops=1)
+               ->  Seq Scan on fact1_p6
                      Filter: (code = 'OH'::text)
-                     Rows Removed by Filter: 50
-         ->  Hash (actual rows=3 loops=1)
-               Buckets: 1024  Batches: 1  Memory Usage: 9kB
-               ->  Seq Scan on dim1 (actual rows=3 loops=1)
-(26 rows)
+         ->  Hash
+               ->  Seq Scan on dim1
+(21 rows)
 
 select * from dim1 inner join fact1 on (dim1.pid=fact1.pid) and fact1.code = 'OH' order by fact1.u;
  dist | pid | code |   t1   | dist | pid | code |  u  
@@ -4557,28 +4492,26 @@ select * from dim1 inner join fact1 on (dim1.pid=fact1.pid) and fact1.code = 'OH
 -- add aggregates
 --
 set polar_px_optimizer_enable_partition_selection=off;
-explain (costs off, timing off, summary off, analyze) select fact1.code, count(*) from dim1 inner join fact1 on (dim1.pid=fact1.pid) group by 1 order by 1;
-                               QUERY PLAN                               
-------------------------------------------------------------------------
- Sort (actual rows=2 loops=1)
+explain (costs off, timing off, summary off) select fact1.code, count(*) from dim1 inner join fact1 on (dim1.pid=fact1.pid) group by 1 order by 1;
+                     QUERY PLAN                     
+----------------------------------------------------
+ Sort
    Sort Key: fact1_p0.code
-   Sort Method: quicksort  Memory: 25kB
-   ->  HashAggregate (actual rows=2 loops=1)
+   ->  HashAggregate
          Group Key: fact1_p0.code
-         ->  Hash Join (actual rows=100 loops=1)
+         ->  Hash Join
                Hash Cond: (fact1_p0.pid = dim1.pid)
-               ->  Append (actual rows=200 loops=1)
-                     ->  Seq Scan on fact1_p0 (actual rows=0 loops=1)
-                     ->  Seq Scan on fact1_p1 (actual rows=0 loops=1)
-                     ->  Seq Scan on fact1_p2 (actual rows=0 loops=1)
-                     ->  Seq Scan on fact1_p3 (actual rows=0 loops=1)
-                     ->  Seq Scan on fact1_p4 (actual rows=50 loops=1)
-                     ->  Seq Scan on fact1_p5 (actual rows=50 loops=1)
-                     ->  Seq Scan on fact1_p6 (actual rows=100 loops=1)
-               ->  Hash (actual rows=3 loops=1)
-                     Buckets: 1024  Batches: 1  Memory Usage: 9kB
-                     ->  Seq Scan on dim1 (actual rows=3 loops=1)
-(18 rows)
+               ->  Append
+                     ->  Seq Scan on fact1_p0
+                     ->  Seq Scan on fact1_p1
+                     ->  Seq Scan on fact1_p2
+                     ->  Seq Scan on fact1_p3
+                     ->  Seq Scan on fact1_p4
+                     ->  Seq Scan on fact1_p5
+                     ->  Seq Scan on fact1_p6
+               ->  Hash
+                     ->  Seq Scan on dim1
+(16 rows)
 
 select fact1.code, count(*) from dim1 inner join fact1 on (dim1.pid=fact1.pid) group by 1 order by 1;
  code | count 
@@ -4688,28 +4621,26 @@ select fact1.code, count(*) from dim1 inner join fact1 on (dim1.pid=fact1.pid) g
 (46 rows)
 
 set polar_px_optimizer_enable_partition_selection=on;
-explain (costs off, timing off, summary off, analyze) select fact1.code, count(*) from dim1 inner join fact1 on (dim1.pid=fact1.pid) group by 1 order by 1;
-                               QUERY PLAN                               
-------------------------------------------------------------------------
- Sort (actual rows=2 loops=1)
+explain (costs off, timing off, summary off) select fact1.code, count(*) from dim1 inner join fact1 on (dim1.pid=fact1.pid) group by 1 order by 1;
+                     QUERY PLAN                     
+----------------------------------------------------
+ Sort
    Sort Key: fact1_p0.code
-   Sort Method: quicksort  Memory: 25kB
-   ->  HashAggregate (actual rows=2 loops=1)
+   ->  HashAggregate
          Group Key: fact1_p0.code
-         ->  Hash Join (actual rows=100 loops=1)
+         ->  Hash Join
                Hash Cond: (fact1_p0.pid = dim1.pid)
-               ->  Append (actual rows=200 loops=1)
-                     ->  Seq Scan on fact1_p0 (actual rows=0 loops=1)
-                     ->  Seq Scan on fact1_p1 (actual rows=0 loops=1)
-                     ->  Seq Scan on fact1_p2 (actual rows=0 loops=1)
-                     ->  Seq Scan on fact1_p3 (actual rows=0 loops=1)
-                     ->  Seq Scan on fact1_p4 (actual rows=50 loops=1)
-                     ->  Seq Scan on fact1_p5 (actual rows=50 loops=1)
-                     ->  Seq Scan on fact1_p6 (actual rows=100 loops=1)
-               ->  Hash (actual rows=3 loops=1)
-                     Buckets: 1024  Batches: 1  Memory Usage: 9kB
-                     ->  Seq Scan on dim1 (actual rows=3 loops=1)
-(18 rows)
+               ->  Append
+                     ->  Seq Scan on fact1_p0
+                     ->  Seq Scan on fact1_p1
+                     ->  Seq Scan on fact1_p2
+                     ->  Seq Scan on fact1_p3
+                     ->  Seq Scan on fact1_p4
+                     ->  Seq Scan on fact1_p5
+                     ->  Seq Scan on fact1_p6
+               ->  Hash
+                     ->  Seq Scan on dim1
+(16 rows)
 
 select fact1.code, count(*) from dim1 inner join fact1 on (dim1.pid=fact1.pid) group by 1 order by 1;
  code | count 
@@ -4889,9 +4820,9 @@ analyze dim;
 ERROR:  relation "dim" does not exist
 -- ORCA doesn't do multi-attribute partitioning currently,so this falls
 -- back to the Postgres planner
-explain (costs off, timing off, summary off, analyze) select * from dim inner join malp on (dim.i = malp.i);
+explain (costs off, timing off, summary off) select * from dim inner join malp on (dim.i = malp.i);
 ERROR:  relation "dim" does not exist
-LINE 1: ..., timing off, summary off, analyze) select * from dim inner ...
+LINE 1: ...costs off, timing off, summary off) select * from dim inner ...
                                                              ^
 set polar_px_optimizer_enable_partition_selection = off;
 select * from dim inner join malp on (dim.i = malp.i);
@@ -4941,18 +4872,18 @@ ERROR:  relation "apart" does not exist
 analyze b;
 analyze c;
 set polar_px_optimizer_enable_partition_selection = off;
-explain (costs off, timing off, summary off, analyze) select * from apart as a, b, c where a.t = b.t and a.id = c.id;
+explain (costs off, timing off, summary off) select * from apart as a, b, c where a.t = b.t and a.id = c.id;
 ERROR:  relation "apart" does not exist
-LINE 1: ..., timing off, summary off, analyze) select * from apart as a...
+LINE 1: ...costs off, timing off, summary off) select * from apart as a...
                                                              ^
 select * from apart as a, b, c where a.t = b.t and a.id = c.id;
 ERROR:  relation "apart" does not exist
 LINE 1: select * from apart as a, b, c where a.t = b.t and a.id = c....
                       ^
 set polar_px_optimizer_enable_partition_selection = on;
-explain (costs off, timing off, summary off, analyze) select * from apart as a, b, c where a.t = b.t and a.id = c.id;
+explain (costs off, timing off, summary off) select * from apart as a, b, c where a.t = b.t and a.id = c.id;
 ERROR:  relation "apart" does not exist
-LINE 1: ..., timing off, summary off, analyze) select * from apart as a...
+LINE 1: ...costs off, timing off, summary off) select * from apart as a...
                                                              ^
 select * from apart as a, b, c where a.t = b.t and a.id = c.id;
 ERROR:  relation "apart" does not exist
@@ -4984,26 +4915,24 @@ analyze jpat;
 -- start_ignore
 -- Known_opt_diff: MPP-21323
 -- end_ignore
-explain (costs off, timing off, summary off, analyze) select * from (select count(*) over (order by a rows between 1 preceding and 1 following), a, b from jpat)jpat inner join pat using(b);
-                                  QUERY PLAN                                   
--------------------------------------------------------------------------------
- Hash Join (actual rows=1 loops=1)
+explain (costs off, timing off, summary off) select * from (select count(*) over (order by a rows between 1 preceding and 1 following), a, b from jpat)jpat inner join pat using(b);
+                      QUERY PLAN                       
+-------------------------------------------------------
+ Hash Join
    Hash Cond: (pat_p1.b = jpat.b)
-   ->  Append (actual rows=10 loops=1)
-         ->  Seq Scan on pat_p1 (actual rows=0 loops=1)
-         ->  Seq Scan on pat_p2 (actual rows=1 loops=1)
-         ->  Seq Scan on pat_p3 (actual rows=1 loops=1)
-         ->  Seq Scan on pat_p4 (actual rows=1 loops=1)
-         ->  Seq Scan on pat_p6 (actual rows=7 loops=1)
-   ->  Hash (actual rows=1 loops=1)
-         Buckets: 1024  Batches: 1  Memory Usage: 9kB
-         ->  Subquery Scan on jpat (actual rows=1 loops=1)
-               ->  WindowAgg (actual rows=1 loops=1)
-                     ->  Sort (actual rows=1 loops=1)
+   ->  Append
+         ->  Seq Scan on pat_p1
+         ->  Seq Scan on pat_p2
+         ->  Seq Scan on pat_p3
+         ->  Seq Scan on pat_p4
+         ->  Seq Scan on pat_p6
+   ->  Hash
+         ->  Subquery Scan on jpat
+               ->  WindowAgg
+                     ->  Sort
                            Sort Key: jpat_1.a
-                           Sort Method: quicksort  Memory: 25kB
-                           ->  Seq Scan on jpat jpat_1 (actual rows=1 loops=1)
-(16 rows)
+                           ->  Seq Scan on jpat jpat_1
+(14 rows)
 
 select * from (select count(*) over (order by a rows between 1 preceding and 1 following), a, b from jpat)jpat inner join pat using(b);
      b      | count | a | a 
@@ -5113,70 +5042,65 @@ insert into pt select i, i from generate_series(1,7) i;
 analyze t;
 analyze pt;
 -- Prune on the simple partition columns, but not on the expression
-explain (analyze, costs off, timing off, summary off)
+explain (costs off, timing off, summary off)
 select * from pt, t where t.id = pt.id;
-                      QUERY PLAN                       
--------------------------------------------------------
- Hash Join (actual rows=2 loops=1)
+           QUERY PLAN           
+--------------------------------
+ Hash Join
    Hash Cond: (pt_p1.id = t.id)
-   ->  Append (actual rows=7 loops=1)
-         ->  Seq Scan on pt_p1 (actual rows=3 loops=1)
-         ->  Seq Scan on pt_p2 (actual rows=2 loops=1)
-         ->  Seq Scan on pt_p3 (actual rows=2 loops=1)
-   ->  Hash (actual rows=2 loops=1)
-         Buckets: 1024  Batches: 1  Memory Usage: 9kB
-         ->  Seq Scan on t (actual rows=2 loops=1)
-(9 rows)
+   ->  Append
+         ->  Seq Scan on pt_p1
+         ->  Seq Scan on pt_p2
+         ->  Seq Scan on pt_p3
+   ->  Hash
+         ->  Seq Scan on t
+(8 rows)
 
 insert into t values (4, 4), (6, 6), (8, 8), (10, 10);
-explain (analyze, costs off, timing off, summary off)
+explain (costs off, timing off, summary off)
 select * from pt, t where t.id = pt.id;
-                      QUERY PLAN                       
--------------------------------------------------------
- Hash Join (actual rows=4 loops=1)
+           QUERY PLAN           
+--------------------------------
+ Hash Join
    Hash Cond: (pt_p1.id = t.id)
-   ->  Append (actual rows=7 loops=1)
-         ->  Seq Scan on pt_p1 (actual rows=3 loops=1)
-         ->  Seq Scan on pt_p2 (actual rows=2 loops=1)
-         ->  Seq Scan on pt_p3 (actual rows=2 loops=1)
-   ->  Hash (actual rows=6 loops=1)
-         Buckets: 1024  Batches: 1  Memory Usage: 9kB
-         ->  Seq Scan on t (actual rows=6 loops=1)
-(9 rows)
+   ->  Append
+         ->  Seq Scan on pt_p1
+         ->  Seq Scan on pt_p2
+         ->  Seq Scan on pt_p3
+   ->  Hash
+         ->  Seq Scan on t
+(8 rows)
 
 -- Plan-time pruning based on the 'id' partitioning column, and
 -- run-time join pruning based on the expression
-explain (analyze, costs off, timing off, summary off)
+explain (costs off, timing off, summary off)
 select * from pt, t where pt.id = 4 and t.id = 4 and (t.b % 2) = (pt.b % 2);
-                      QUERY PLAN                       
--------------------------------------------------------
- Nested Loop (actual rows=1 loops=1)
+                 QUERY PLAN                 
+--------------------------------------------
+ Nested Loop
    Join Filter: ((pt_p1.b % 2) = (t.b % 2))
-   ->  Append (actual rows=1 loops=1)
-         ->  Seq Scan on pt_p1 (actual rows=1 loops=1)
+   ->  Append
+         ->  Seq Scan on pt_p1
                Filter: (id = 4)
-               Rows Removed by Filter: 2
-   ->  Seq Scan on t (actual rows=1 loops=1)
+   ->  Seq Scan on t
          Filter: (id = 4)
-         Rows Removed by Filter: 5
-(9 rows)
+(7 rows)
 
 -- Mixed case
 insert into pt values (4, 5);
-explain (analyze, costs off, timing off, summary off)
+explain (costs off, timing off, summary off)
 select * from pt, t where t.id = pt.id and (t.b % 2) = (pt.b % 2);
                             QUERY PLAN                            
 ------------------------------------------------------------------
- Hash Join (actual rows=4 loops=1)
+ Hash Join
    Hash Cond: ((pt_p1.id = t.id) AND ((pt_p1.b % 2) = (t.b % 2)))
-   ->  Append (actual rows=8 loops=1)
-         ->  Seq Scan on pt_p1 (actual rows=4 loops=1)
-         ->  Seq Scan on pt_p2 (actual rows=2 loops=1)
-         ->  Seq Scan on pt_p3 (actual rows=2 loops=1)
-   ->  Hash (actual rows=6 loops=1)
-         Buckets: 1024  Batches: 1  Memory Usage: 9kB
-         ->  Seq Scan on t (actual rows=6 loops=1)
-(9 rows)
+   ->  Append
+         ->  Seq Scan on pt_p1
+         ->  Seq Scan on pt_p2
+         ->  Seq Scan on pt_p3
+   ->  Hash
+         ->  Seq Scan on t
+(8 rows)
 
 --
 -- Join pruning on an inequality qual
@@ -5198,26 +5122,24 @@ insert into t values (0, 3);
 insert into pt select 0, i from generate_series(1,9) i;
 analyze t;
 analyze pt;
-explain (analyze, costs off, timing off, summary off)
+explain (costs off, timing off, summary off)
 select * from pt, t where t.dist = pt.dist and t.tid < pt.ptid;
-                      QUERY PLAN                       
--------------------------------------------------------
- Hash Join (actual rows=11 loops=1)
+             QUERY PLAN              
+-------------------------------------
+ Hash Join
    Hash Cond: (pt_p0.dist = t.dist)
    Join Filter: (t.tid < pt_p0.ptid)
-   Rows Removed by Join Filter: 7
-   ->  Append (actual rows=9 loops=1)
-         ->  Seq Scan on pt_p0 (actual rows=1 loops=1)
-         ->  Seq Scan on pt_p1 (actual rows=1 loops=1)
-         ->  Seq Scan on pt_p2 (actual rows=0 loops=1)
-         ->  Seq Scan on pt_p3 (actual rows=0 loops=1)
-         ->  Seq Scan on pt_p4 (actual rows=1 loops=1)
-         ->  Seq Scan on pt_p5 (actual rows=1 loops=1)
-         ->  Seq Scan on pt_p6 (actual rows=5 loops=1)
-   ->  Hash (actual rows=2 loops=1)
-         Buckets: 1024  Batches: 1  Memory Usage: 9kB
-         ->  Seq Scan on t (actual rows=2 loops=1)
-(15 rows)
+   ->  Append
+         ->  Seq Scan on pt_p0
+         ->  Seq Scan on pt_p1
+         ->  Seq Scan on pt_p2
+         ->  Seq Scan on pt_p3
+         ->  Seq Scan on pt_p4
+         ->  Seq Scan on pt_p5
+         ->  Seq Scan on pt_p6
+   ->  Hash
+         ->  Seq Scan on t
+(13 rows)
 
 --
 -- Test join pruning with a MergeAppend
@@ -5245,27 +5167,25 @@ create index pt_ptid_idx on pt (ptid, sk);
 set polar_px_optimizer_enable_mergejoin=on;
 set polar_px_optimizer_enable_seqscan=off;
 -- force_explain
-explain (analyze, timing off, summary off)
+explain (timing off, summary off, costs off)
 select * from pt, t where t.dist = pt.dist and t.tid = pt.ptid order by t.tid, t.sk;
-                                            QUERY PLAN                                            
---------------------------------------------------------------------------------------------------
- Sort  (cost=12.90..12.91 rows=1 width=24) (actual rows=5 loops=1)
+                             QUERY PLAN                              
+---------------------------------------------------------------------
+ Sort
    Sort Key: pt_p0.ptid, t.sk
-   Sort Method: quicksort  Memory: 25kB
-   ->  Hash Join  (cost=3.45..12.89 rows=1 width=24) (actual rows=5 loops=1)
+   ->  Hash Join
          Hash Cond: ((pt_p0.dist = t.dist) AND (pt_p0.ptid = t.tid))
-         ->  Append  (cost=0.00..8.62 rows=108 width=12) (actual rows=108 loops=1)
-               ->  Seq Scan on pt_p0  (cost=0.00..1.17 rows=17 width=12) (actual rows=17 loops=1)
-               ->  Seq Scan on pt_p1  (cost=0.00..1.16 rows=16 width=12) (actual rows=16 loops=1)
-               ->  Seq Scan on pt_p2  (cost=0.00..1.15 rows=15 width=12) (actual rows=15 loops=1)
-               ->  Seq Scan on pt_p3  (cost=0.00..1.11 rows=11 width=12) (actual rows=11 loops=1)
-               ->  Seq Scan on pt_p4  (cost=0.00..1.14 rows=14 width=12) (actual rows=14 loops=1)
-               ->  Seq Scan on pt_p5  (cost=0.00..1.15 rows=15 width=12) (actual rows=15 loops=1)
-               ->  Seq Scan on pt_p6  (cost=0.00..1.20 rows=20 width=12) (actual rows=20 loops=1)
-         ->  Hash  (cost=1.98..1.98 rows=98 width=12) (actual rows=98 loops=1)
-               Buckets: 1024  Batches: 1  Memory Usage: 13kB
-               ->  Seq Scan on t  (cost=0.00..1.98 rows=98 width=12) (actual rows=98 loops=1)
-(16 rows)
+         ->  Append
+               ->  Seq Scan on pt_p0
+               ->  Seq Scan on pt_p1
+               ->  Seq Scan on pt_p2
+               ->  Seq Scan on pt_p3
+               ->  Seq Scan on pt_p4
+               ->  Seq Scan on pt_p5
+               ->  Seq Scan on pt_p6
+         ->  Hash
+               ->  Seq Scan on t
+(14 rows)
 
 set client_min_messages='warning';
 drop schema dpe_single cascade;

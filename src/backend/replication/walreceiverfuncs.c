@@ -279,7 +279,7 @@ RequestXLogStreaming(TimeLineID tli, XLogRecPtr recptr, const char *conninfo,
 	 *
 	 * In DMA mode, the starting point must be the end of WAL record.
 	 */
-	if (polar_enable_dma || walrcv->receiveStart == 0 || walrcv->receivedTLI != tli)
+	if (POLAR_ENABLE_DMA() || walrcv->receiveStart == 0 || walrcv->receivedTLI != tli)
 	{
 		walrcv->receivedUpto = recptr;
 		walrcv->receivedTLI = tli;

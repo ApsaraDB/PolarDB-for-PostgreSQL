@@ -37,7 +37,7 @@ polar_dma_get_member_status(PG_FUNCTION_ARGS)
 	bool	   *nulls;
 	ConsensusMemberInfo member_info;
 
-	if (!polar_enable_dma)
+	if (!POLAR_ENABLE_DMA())
 		PG_RETURN_NULL();
 
 	success = ConsensusWaitForStatCollect(POLAR_DMA_STAT_MEMBER_INFO);
@@ -82,7 +82,7 @@ polar_dma_get_cluster_status(PG_FUNCTION_ARGS)
 	ConsensusClusterInfo	clusterInfo[POLAR_DMA_MAX_NODES_NUM];
 	int			numCluster;
 
-	if (!polar_enable_dma)
+	if (!POLAR_ENABLE_DMA())
 		PG_RETURN_NULL();
 
 	success = ConsensusWaitForStatCollect(POLAR_DMA_STAT_CLUSTER_INFO);
@@ -147,7 +147,7 @@ polar_dma_get_msg_stats(PG_FUNCTION_ARGS)
 	ConsensusStatsInfo stats_info;
 	int			i;
 
-	if (!polar_enable_dma)
+	if (!POLAR_ENABLE_DMA())
 		PG_RETURN_NULL();
 
 	success = ConsensusWaitForStatCollect(POLAR_DMA_STATS_INFO);
@@ -188,7 +188,7 @@ polar_dma_get_consensus_status(PG_FUNCTION_ARGS)
 	ConsensusStatus status_info;
 	int			i;
 
-	if (!polar_enable_dma)
+	if (!POLAR_ENABLE_DMA())
 		PG_RETURN_NULL();
 
 	ConsensusGetStatus(&status_info);
@@ -230,7 +230,7 @@ polar_dma_get_log_status(PG_FUNCTION_ARGS)
 	ConsensusLogStatus status_info;
 	int			i;
 
-	if (!polar_enable_dma)
+	if (!POLAR_ENABLE_DMA())
 		PG_RETURN_NULL();
 
 	ConsensusLogGetStatus(&status_info);
@@ -270,7 +270,7 @@ polar_dma_get_meta_status(PG_FUNCTION_ARGS)
 			 learner_info_str[MEMBER_INFO_MAX_LENGTH];
 	int			i;
 
-	if (!polar_enable_dma)
+	if (!POLAR_ENABLE_DMA())
 		PG_RETURN_NULL();
 
 	ConsensusMetaGetStatus(&status_info);
@@ -335,7 +335,7 @@ polar_dma_get_consensus_stats(PG_FUNCTION_ARGS)
 	ConsensusStats stats_info;
 	int			i;
 
-	if (!polar_enable_dma)
+	if (!POLAR_ENABLE_DMA())
 		PG_RETURN_NULL();
 
 	ConsensusGetStats(&stats_info);
@@ -370,7 +370,7 @@ polar_dma_get_log_stats(PG_FUNCTION_ARGS)
 	ConsensusLogStats stats_info;
 	int			i;
 
-	if (!polar_enable_dma)
+	if (!POLAR_ENABLE_DMA())
 		PG_RETURN_NULL();
 
 	ConsensusLogGetStats(&stats_info);
@@ -408,7 +408,7 @@ polar_dma_get_slru_stats(PG_FUNCTION_ARGS)
 	MemoryContext per_query_ctx;
 	MemoryContext oldcontext;
 
-	if (!polar_enable_dma)
+	if (!POLAR_ENABLE_DMA())
 		PG_RETURN_NULL();
 
 	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)

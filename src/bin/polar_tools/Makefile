@@ -6,7 +6,11 @@ PGAPPICON=win32
 subdir = src/bin/polar_tools
 top_builddir = ../../..
 include $(top_builddir)/src/Makefile.global
-LDFLAGS_INTERNAL += -Wl,--as-needed  -L/usr/local/polarstore/pfsd/lib/ -L$(top_builddir)/src/fe_utils -lpgfeutils $(libpq_pgport) -lpfsd
+LDFLAGS_INTERNAL += -Wl,--as-needed -L$(top_builddir)/src/fe_utils -lpgfeutils $(libpq_pgport)
+
+ifeq ($(with_pfsd),yes)
+LDFLAGS_INTERNAL += -L/usr/local/polarstore/pfsd/lib/ -lpfsd
+endif
 
 OBJS = polar_tools.o \
 	   block_header_dump.o \

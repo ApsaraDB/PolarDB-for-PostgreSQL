@@ -146,7 +146,7 @@ TablespaceCreateDbspace(Oid spcNode, Oid dbNode, bool isRedo, bool polar_is_temp
 	 * local storage, rather than polar database path
 	 */
 	if ((polar_is_temp_table && !polar_temp_relation_file_in_shared_storage) ||
-		(polar_enable_dma && spcNode != DEFAULTTABLESPACE_OID))
+		(POLAR_ENABLE_DMA() && spcNode != DEFAULTTABLESPACE_OID))
 		dir = GetDatabasePath(dbNode, spcNode, false);
 	else
 		dir = polar_get_database_path(dbNode, spcNode);
@@ -387,7 +387,7 @@ CreateTableSpace(CreateTableSpaceStmt *stmt)
 	 * 
 	 * real tablespaces need to create directories and soft links. And record WAL logs
 	 */
-	if (polar_enable_dma || superuser())
+	if (POLAR_ENABLE_DMA() || superuser())
 	{
 		create_tablespace_directories(location, tablespaceoid);
 
@@ -534,7 +534,7 @@ DropTableSpace(DropTableSpaceStmt *stmt)
 	 * 
 	 * real tablespaces need to drop directories and soft links. And record WAL logs
 	 */
-	if (polar_enable_dma || superuser())
+	if (POLAR_ENABLE_DMA() || superuser())
 	{
 		/*
 		 * Try to remove the physical infrastructure.

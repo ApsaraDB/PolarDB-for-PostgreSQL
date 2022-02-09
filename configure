@@ -737,6 +737,8 @@ enable_polar_px
 BITCODE_CXXFLAGS
 BITCODE_CFLAGS
 CFLAGS_VECTOR
+with_dma
+with_pfsd
 LLVM_BINPATH
 LLVM_CXXFLAGS
 LLVM_CFLAGS
@@ -768,12 +770,9 @@ GCOV
 enable_debug
 enable_gpos_debug
 enable_strong_random
-enable_ganos_offline
-enable_polar_arm
 enable_inject_faults
 enable_rpath
 enable_polar_minimal
-enable_polar_inject_tests
 default_port
 WANTED_LANGUAGES
 enable_nls
@@ -842,8 +841,6 @@ enable_spinlocks
 enable_atomics
 enable_polar_lse
 enable_polar_cas
-enable_ganos_offline
-enable_polar_arm
 enable_inject_faults
 enable_strong_random
 enable_debug
@@ -858,6 +855,8 @@ with_segsize
 with_wal_blocksize
 with_CC
 with_llvm
+with_pfsd
+with_dma
 enable_depend
 enable_cassert
 enable_thread_safety
@@ -888,7 +887,6 @@ enable_largefile
 enable_float4_byval
 enable_float8_byval
 enable_polar_minimal
-enable_polar_inject_tests
 '
       ac_precious_vars='build_alias
 host_alias
@@ -1537,7 +1535,6 @@ Optional Features:
   --disable-atomics       do not use atomic operations
   --enable-polar-lse      use lse instructions
   --enable-polar-cas      use cas
-  --enable-ganos-offline  enable ganos offline version
   --enable-polar-arm      enable polar compile on arm platform
   --disable-strong-random do not use a strong random number source
   --enable-debug          build with debugging symbols (-g)
@@ -1549,8 +1546,6 @@ Optional Features:
   --enable-depend         turn on automatic dependency tracking
   --enable-cassert        enable assertion checks (for debugging)
   --enable-polar-minimal  enable minimal compile (for local development)
-  --enable-polar-inject-tests
-                          enable polar inject tests (for regression)
   --enable-inject-faults  enable inject faults (for test)
   --disable-thread-safety disable thread-safety in client libraries
   --disable-largefile     omit support for large files
@@ -1574,6 +1569,8 @@ Optional Packages:
                           set WAL block size in kB [8]
   --with-CC=CMD           set compiler (deprecated)
   --with-llvm             build with LLVM based JIT support
+  --with-pfsd             build with PFSD support
+  --with-dma              build with DMA support
   --with-icu              build with ICU support
   --with-tcl              build Tcl modules (PL/Tcl)
   --with-tclconfig=DIR    tclConfig.sh is in DIR
@@ -3580,60 +3577,6 @@ fi
 
 
 #
-# online/offline ganos support
-# "--enable-ganos-offline" switch.
-#
-
-
-# Check whether --enable-ganos-offline was given.
-if test "${enable_ganos_offline+set}" = set; then :
-  enableval=$enable_ganos_offline;
-  case $enableval in
-    yes)
-      :
-      ;;
-    no)
-      :
-      ;;
-    *)
-      as_fn_error $? "no argument expected for --enable-ganos-offline option" "$LINENO" 5
-      ;;
-  esac
-
-else
-  enable_ganos_offline=no
-
-fi
-
-#
-#  polar arm compile support
-# "--enable-polar-arm" switch.
-#
-
-
-# Check whether --enable-polar-arm was given.
-if test "${enable_polar_arm+set}" = set; then :
-  enableval=$enable_polar_arm;
-  case $enableval in
-    yes)
-      :
-      ;;
-    no)
-      :
-      ;;
-    *)
-      as_fn_error $? "no argument expected for --enable-polar-arm option" "$LINENO" 5
-      ;;
-  esac
-
-else
-  enable_polar_arm=no
-
-fi
-
-
-
-#
 # Random number generation
 #
 
@@ -5372,6 +5315,77 @@ fi
 
 
 fi # fi
+
+#
+# PFSD
+#
+{ $as_echo "$as_me:${as_lineno-$LINENO}: checking whether to build with PFSD support" >&5
+$as_echo_n "checking whether to build with PFSD support... " >&6; }
+
+
+
+# Check whether --with-pfsd was given.
+if test "${with_pfsd+set}" = set; then :
+  withval=$with_pfsd;
+  case $withval in
+    yes)
+
+$as_echo "#define USE_PFSD 1" >>confdefs.h
+
+      ;;
+    no)
+      :
+      ;;
+    *)
+      as_fn_error $? "no argument expected for --with-pfsd option" "$LINENO" 5
+      ;;
+  esac
+
+else
+  with_pfsd=no
+
+fi
+
+
+{ $as_echo "$as_me:${as_lineno-$LINENO}: result: $with_pfsd" >&5
+$as_echo "$with_pfsd" >&6; }
+
+
+
+#
+# DMA
+#
+{ $as_echo "$as_me:${as_lineno-$LINENO}: checking whether to build with DMA support" >&5
+$as_echo_n "checking whether to build with DMA support... " >&6; }
+
+
+
+# Check whether --with-dma was given.
+if test "${with_dma+set}" = set; then :
+  withval=$with_dma;
+  case $withval in
+    yes)
+
+$as_echo "#define USE_DMA 1" >>confdefs.h
+
+      ;;
+    no)
+      :
+      ;;
+    *)
+      as_fn_error $? "no argument expected for --with-dma option" "$LINENO" 5
+      ;;
+  esac
+
+else
+  with_dma=no
+
+fi
+
+
+{ $as_echo "$as_me:${as_lineno-$LINENO}: result: $with_dma" >&5
+$as_echo "$with_dma" >&6; }
+
 
 
 unset CFLAGS
@@ -7502,28 +7516,6 @@ $as_echo "#define POLAR_MINIMAL 1" >>confdefs.h
 
 else
   enable_polar_minimal=no
-
-fi
-
-# Check whether --enable-polar-inject-tests was given.
-if test "${enable_polar_inject_tests+set}" = set; then :
-  enableval=$enable_polar_inject_tests;
-  case $enableval in
-    yes)
-
-$as_echo "#define POLAR_INJECT_TESTS 1" >>confdefs.h
-
-      ;;
-    no)
-      :
-      ;;
-    *)
-      as_fn_error $? "no argument expected for --enable-polar-inject-tests option" "$LINENO" 5
-      ;;
-  esac
-
-else
-  enable_polar_inject_tests=no
 
 fi
 

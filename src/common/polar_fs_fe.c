@@ -25,7 +25,9 @@
 
 #include "common/polar_fs_fe.h"
 #include "common/file_utils.h"
+#ifdef USE_PFSD
 #include "pfsd_sdk.h"
+#endif
 
 #define LOCAL_IO_INDEX 0
 #define PFS_IO_INDEX 1
@@ -94,6 +96,7 @@ static const vfs_mgr vfs[] =
 		.vfs_rmdir = rmdir,
 		.vfs_chmod = chmod
 	},
+#ifdef USE_PFSD
 	{
 		.vfs_open = pfsd_open,
 		.vfs_creat = pfsd_creat,
@@ -120,13 +123,15 @@ static const vfs_mgr vfs[] =
 		.vfs_rmdir = pfsd_rmdir,
 		.vfs_chmod = pfsd_chmod
 	}
+#endif
 };
 
 static int polar_vfs_kind(bool is_pfs);
 
+#ifdef USE_PFSD
 void polar_fs_init(bool is_pfs, char *polar_storage_cluster_name, char *polar_disk_name, int polar_hostid)
 {
-    if (!is_pfs)
+	if (!is_pfs)
 	{
 		return;
 	} 
@@ -136,20 +141,24 @@ void polar_fs_init(bool is_pfs, char *polar_storage_cluster_name, char *polar_di
 	{
 		fprintf(stderr, _("invalid polar_disk_name or polar_hostid"));
 	}
-    if (pfsd_mount(polar_storage_cluster_name, polar_disk_name,
+	if (pfsd_mount(polar_storage_cluster_name, polar_disk_name,
 				  polar_hostid, PFS_RDWR) < 0)
-        fprintf(stderr, _("can't mount cluster %s PBD %s, id %d"), 
+		fprintf(stderr, _("can't mount cluster %s PBD %s, id %d"), 
 		polar_storage_cluster_name, 
 		polar_disk_name, polar_hostid);
 }
 
 void polar_fs_destory(bool is_pfs, char *polar_disk_name, int polar_hostid)
 {
-    if (!is_pfs)
-        return;
-    if (pfsd_umount_force(polar_disk_name) < 0)
-        fprintf(stderr, _("can't mount PBD %s, id %d"), polar_disk_name, polar_hostid);
+	if (!is_pfs)
+		return;
+	if (pfsd_umount_force(polar_disk_name) < 0)
+		fprintf(stderr, _("can't mount PBD %s, id %d"), polar_disk_name, polar_hostid);
 }
+#else
+void polar_fs_init(bool is_pfs, char *polar_storage_cluster_name, char *polar_disk_name, int polar_hostid) {}
+void polar_fs_destory(bool is_pfs, char *polar_disk_name, int polar_hostid) {}
+#endif
 
 int polar_chmod(const char *path, mode_t mode, bool is_pfs)
 {

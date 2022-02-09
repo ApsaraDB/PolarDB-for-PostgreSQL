@@ -185,7 +185,7 @@ CreateSharedMemoryAndSemaphores(int port)
 		/* POLAR end */
 
 		/* POLAR: consensus share memory size */
-		if (polar_enable_dma)
+		if (POLAR_ENABLE_DMA())
 			size = add_size(size, ConsensusShmemSize());
 
 #ifdef FAULT_INJECTOR
@@ -355,7 +355,7 @@ CreateSharedMemoryAndSemaphores(int port)
 	polar_flog_shmem_init();
 	/* POLAR end */
 
-	if (polar_enable_dma)
+	if (POLAR_ENABLE_DMA())
 		ConsensusShmemInit();
 
 #ifdef FAULT_INJECTOR

@@ -36,7 +36,6 @@ override CPPFLAGS += -DVAL_LDFLAGS="\"$(STD_LDFLAGS)\""
 override CPPFLAGS += -DVAL_LDFLAGS_EX="\"$(LDFLAGS_EX)\""
 override CPPFLAGS += -DVAL_LDFLAGS_SL="\"$(LDFLAGS_SL)\""
 override CPPFLAGS += -DVAL_LIBS="\"$(LIBS)\""
-override CPPFLAGS += -I/usr/local/polarstore/pfsd/include
 
 override CPPFLAGS := -DFRONTEND $(CPPFLAGS)
 LIBS += $(PTHREAD_LIBS)
@@ -53,6 +52,11 @@ OBJS_COMMON += sha2.o
 endif
 
 OBJS_FRONTEND = $(OBJS_COMMON) fe_memutils.o file_utils.o restricted_token.o polar_fs_fe.o
+
+ifeq ($(with_pfsd),yes)
+LIBS += -lpfsd
+override CPPFLAGS += -I/usr/local/polarstore/pfsd/include
+endif
 
 OBJS_SRV = $(OBJS_COMMON:%.o=%_srv.o)
 

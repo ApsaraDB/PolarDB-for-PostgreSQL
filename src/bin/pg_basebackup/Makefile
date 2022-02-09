@@ -20,7 +20,11 @@ tmp_bindir = $(abs_top_builddir)/tmp_install/$(bindir)
 include $(top_builddir)/src/Makefile.global
 
 override CPPFLAGS := -I$(libpq_srcdir) $(CPPFLAGS)
-LDFLAGS_INTERNAL += -Wl,--as-needed  -L/usr/local/polarstore/pfsd/lib/ -L$(top_builddir)/src/fe_utils -lpgfeutils $(libpq_pgport) -lpfsd -lpthread
+LDFLAGS_INTERNAL += -Wl,--as-needed -L$(top_builddir)/src/fe_utils -lpgfeutils $(libpq_pgport)
+
+ifeq ($(with_pfsd),yes)
+LDFLAGS_INTERNAL += -L/usr/local/polarstore/pfsd/lib/ -lpfsd
+endif
 
 OBJS=receivelog.o streamutil.o walmethods.o $(WIN32RES)
 

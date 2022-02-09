@@ -218,7 +218,7 @@ GetRelationPath(Oid dbNode, Oid spcNode, Oid relNode,
 	 * Also, polar_enable_shared_storage_mode is true in DMA mode, 
 	 * So we added judgment here.
 	 */
-	if (polar_enable_dma &&
+	if (POLAR_ENABLE_DMA() &&
 		spcNode != GLOBALTABLESPACE_OID &&
 		spcNode != DEFAULTTABLESPACE_OID)
 		return path;

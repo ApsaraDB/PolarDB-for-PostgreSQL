@@ -16,6 +16,7 @@ DATA = polar_monitor--1.0--1.1.sql polar_monitor--1.1--1.2.sql polar_monitor--1.
 PGFILEDESC = "polar_monitor - monitoring of polar db information in real-time"
 REGRESS = polar_monitor
 NO_CHECK = 1
+NO_INSTALLCHECK = 1
 
 ifdef USE_PGXS
 PG_CONFIG = pg_config
@@ -27,6 +28,3 @@ top_builddir = ../..
 include $(top_builddir)/src/Makefile.global
 include $(top_srcdir)/contrib/contrib-global.mk
 endif
-
-installcheck:
-	echo "no support make installcheck"

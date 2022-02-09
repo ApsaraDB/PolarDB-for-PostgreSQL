@@ -524,7 +524,7 @@ XLogArchiveNotify(const char *xlog)
 	/* insert an otherwise empty file called <XLOG>.ready */
 	StatusFilePath(archiveStatusPath, xlog, ".ready");
 
-	if (polar_enable_dma)
+	if (POLAR_ENABLE_DMA())
 	{
 		char		archiveLocalReady[MAXPGPATH];
 		struct stat stat_buf;
@@ -583,7 +583,7 @@ XLogArchiveNotifySeg(XLogSegNo segno)
 
 	/* POLAR: in dma mode, rename to .local firstly, 
 	 * rename it to .ready by archiver after consensus commit */
-	if (polar_enable_dma)
+	if (POLAR_ENABLE_DMA())
 		polar_dma_xlog_archive_notify(xlog, true);
 	else
 		XLogArchiveNotify(xlog);
@@ -610,7 +610,7 @@ XLogArchiveForceDone(const char *xlog)
 		return;
 
 	/* POLAR: in DMA mode, delete .paxos if exists. rename .local to .done if exists*/
-	if (polar_enable_dma)
+	if (POLAR_ENABLE_DMA())
 	{
 		StatusFilePath(archiveReady, xlog, ".paxos");
 		if (polar_stat(archiveReady, &stat_buf) == 0)
@@ -734,7 +734,7 @@ XLogArchiveCheckDone(const char *xlog)
 		return true;
 
 	/* POLAR: in dma mode, check for ready.local --- this means archiver is still busy with it */
-	if (polar_enable_dma)
+	if (POLAR_ENABLE_DMA())
 	{
 		StatusFilePath(archiveStatusPath, xlog, ".local");
 		if (polar_stat(archiveStatusPath, &stat_buf) == 0)
@@ -797,7 +797,7 @@ XLogArchiveIsBusy(const char *xlog)
 		return false;
 
 	/* POLAR: check for .local --- this means archiver is still busy with it */
-	if (polar_enable_dma)
+	if (POLAR_ENABLE_DMA())
 	{
 		StatusFilePath(archiveStatusPath, xlog, ".local");
 		if (polar_stat(archiveStatusPath, &stat_buf) == 0)
@@ -851,7 +851,7 @@ XLogArchiveIsReadyOrDone(const char *xlog)
 		return true;
 
 	/* POLAR: check for .local --- this means archiver is still busy with it */
-	if (polar_enable_dma)
+	if (POLAR_ENABLE_DMA())
 	{
 		StatusFilePath(archiveStatusPath, xlog, ".local");
 		if (polar_stat(archiveStatusPath, &stat_buf) == 0)
@@ -885,7 +885,7 @@ XLogArchiveIsReady(const char *xlog)
 	struct stat stat_buf;
 
 	/* POLAR: in dma mode, check .local file firstly */
-	if (polar_enable_dma)
+	if (POLAR_ENABLE_DMA())
 	{
 		StatusFilePath(archiveStatusPath, xlog, ".local");
 		if (polar_stat(archiveStatusPath, &stat_buf) == 0)
@@ -921,7 +921,7 @@ XLogArchiveCleanup(const char *xlog)
 	/* should we complain about failure? */
 
 	/* POLAR: Remove the .local file if present --- normally it shouldn't be */
-	if (polar_enable_dma)
+	if (POLAR_ENABLE_DMA())
 	{
 		StatusFilePath(archiveStatusPath, xlog, ".local");
 		polar_unlink(archiveStatusPath);

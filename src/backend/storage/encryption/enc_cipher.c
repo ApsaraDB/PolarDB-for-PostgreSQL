@@ -107,8 +107,10 @@ EncryptionCipherValue(const char *name)
 		return TDE_ENCRYPTION_AES_128;
 	else if (strcmp(name, "aes-256") == 0)
 		return TDE_ENCRYPTION_AES_256;
+#ifndef OPENSSL_NO_SM4
 	else if(strcmp(name, "sm4") == 0)
 		return TDE_ENCRYPTION_SM4;
+#endif
 	else
 		/*no cover line*/
 		return TDE_ENCRYPTION_OFF;
@@ -126,8 +128,10 @@ EncryptionCipherString(int value)
 			return "aes-128";
 		case TDE_ENCRYPTION_AES_256:
 			return "aes-256";
+#ifndef OPENSSL_NO_SM4
 		case TDE_ENCRYPTION_SM4:
 			return "sm4";
+#endif
 		/*no cover begin*/
 		default:
 			elog(ERROR, "the encryption_cipher is not in the data_encryption_cipher_options!");
@@ -145,9 +149,11 @@ assign_data_encryption_cipher(int new_encryption_cipher, void *extra)
 			EncryptionKeySize = 0;
 			break;
 		case TDE_ENCRYPTION_AES_128:
+#ifndef OPENSSL_NO_SM4
 		case TDE_ENCRYPTION_SM4:
 			EncryptionKeySize = 16;
 			break;
+#endif
 		case TDE_ENCRYPTION_AES_256:
 			EncryptionKeySize = 32;
 			break;

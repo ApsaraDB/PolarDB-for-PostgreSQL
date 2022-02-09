@@ -40,7 +40,7 @@ test: polar-px-dev/crash_in_nested_loop
 test: polar-px-dev/assertop
 test: polar-px-dev/px_parallel_dml
 test: polar-px-dev/polar_partition
-test: polar-px-dev/polar_partition_huge
+# test: polar-px-dev/polar_partition_huge
 test: polar-px-dev/left_index_nestloop_join
 test: polar-px-dev/polar_partition_hash
 test: polar-px-dev/polar_partition_alter_px_workers

@@ -156,6 +156,28 @@ extern int	polar_dma_log_keep_size_mb;
 #define POLAR_DMA_STAT_CLUSTER_INFO 	(1 << 1)
 #define POLAR_DMA_STATS_INFO					(1 << 2)
 
+#ifdef USE_DMA
+#define POLAR_ENABLE_DMA() polar_enable_dma
+#define POLAR_DMA_ASYNC_COMMIT() polar_dma_async_commit
+#define POLAR_DMA_REPL_SLOT_NAME() polar_dma_repl_slot_name
+#else
+#define POLAR_ENABLE_DMA() false
+#define POLAR_DMA_ASYNC_COMMIT() false
+#define POLAR_DMA_REPL_SLOT_NAME() false
+static inline void ConsensusMain(void) { Assert(false); }
+static inline bool ConsensusWaitForLSN(XLogRecPtr lsn, bool flush) { Assert(false); return false; }
+static inline bool ConsensusCheckpoint(void) { Assert(false); return false; }
+static inline void ConsensusWakeupCommit(XLogRecPtr rqstLSN) { Assert(false); }
+
+static inline void ConsensusSetXLogTerm(uint64 term) { Assert(false); }
+static inline void ConsensusSetXLogFlushedLSN(XLogRecPtr flush_lsn, TimeLineID flush_timeline, bool force) { Assert(false); }
+static inline void ConsensusGetXLogFlushedLSN(XLogRecPtr *flush_lsn, TimeLineID *flush_timeline) { Assert(false); }
+static inline XLogRecPtr ConsensusGetPurgeLSN(void) { Assert(false); return InvalidXLogRecPtr; }
+static inline XLogRecPtr ConsensusGetSyncedLSN(void) { Assert(false); return InvalidXLogRecPtr; }
+static inline void ConsensusGetSyncedLSNAndTLI(XLogRecPtr *lsn, TimeLineID *tli) { Assert(false); }
+static inline void ConsensusSetSyncedLSN(XLogRecPtr lsn, TimeLineID tli) { Assert(false); }
+#endif
+
 extern Size ConsensusShmemSize(void);
 extern void ConsensusShmemInit(void);
 extern void ConsensusProcInit(ConsensusProcInfo *procInfo);
