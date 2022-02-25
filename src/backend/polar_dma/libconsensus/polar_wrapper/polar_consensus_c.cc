@@ -495,11 +495,11 @@ ConsensusContext::get_stats_info(ConsensusStatsInfo *sinfo)
 /* c interface impl. */
 extern "C" {
 
-constexpr CONSENSUS_HANDLE ConsensusContext2Handle(ConsensusContext *ctx) {
+CONSENSUS_HANDLE ConsensusContext2Handle(ConsensusContext *ctx) {
     return reinterpret_cast<CONSENSUS_HANDLE>(ctx);
 }
 
-constexpr ConsensusContext *Handle2ConsensusContext(CONSENSUS_HANDLE handle) {
+ConsensusContext *Handle2ConsensusContext(CONSENSUS_HANDLE handle) {
     return reinterpret_cast<ConsensusContext*>(handle);
 }
 

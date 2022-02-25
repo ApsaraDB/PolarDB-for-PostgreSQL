@@ -938,6 +938,12 @@
 /* Define to 1 to build with PAM support. (--with-pam) */
 #undef USE_PAM
 
+/* Define to 1 to build with PFSD support. (--with-pfsd) */
+#undef USE_PFSD
+
+/* Define to 1 to build with DMA support. (--with-dma) */
+#undef USE_DMA
+
 /* Use replacement snprintf() functions. */
 #undef USE_REPL_SNPRINTF
 
@@ -1044,9 +1050,6 @@
 
 /* Define to 1 to compile with minimal mode. (--enable-polar-minimal) */
 #undef POLAR_MINIMAL
-
-/* Define to 1 to compile with polar tests. (--enable-polar-inject-tests) */
-#undef POLAR_INJECT_TESTS
 
 /* Define to 1 to build ORCA in debug (GPOS_DEBUG=1) */
 #undef GPOS_DEBUG

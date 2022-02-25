@@ -48,7 +48,9 @@
 #define POLAR_VFS_PROTOCOL_MAX_LEN		64
 #define POLAR_VFS_PROTOCOL_TAG			"://"
 #define POLAR_VFS_PROTOCAL_LOCAL_BIO	"file://"
+#ifdef USE_PFSD
 #define POLAR_VFS_PROTOCAL_PFS			"pfsd://"
+#endif
 #define POLAR_VFS_PROTOCAL_LOCAL_DIO	"file-dio://"
 
 #define POLAR_BUFFER_ALIGN_LEN			(4096)
@@ -60,10 +62,12 @@
  */
 typedef enum PolarVFSKind{
 	POLAR_VFS_LOCAL_BIO = 0,
-	POLAR_VFS_PFS = 1,
-	POLAR_VFS_LOCAL_DIO = 2,
+#ifdef USE_PFSD
+	POLAR_VFS_PFS,
+#endif
+	POLAR_VFS_LOCAL_DIO,
 	/* NB: Define the size here for future maintenance */
-	POLAR_VFS_KIND_SIZE = 3
+	POLAR_VFS_KIND_SIZE
 }PolarVFSKind;
 
 typedef enum PolarNodeType

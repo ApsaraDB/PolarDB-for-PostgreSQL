@@ -457,7 +457,7 @@ writeTimeLineHistory(TimeLineID newTLI, TimeLineID parentTLI,
 
 	/* POLAR: if in dma mode, nofity wal file ready after consensus commit. 
 	 * The history file can be archived immediately. */
-	if (!polar_enable_dma && XLogArchivingActive())
+	if (!POLAR_ENABLE_DMA() && XLogArchivingActive())
 	{
 		TLHistoryFileName(histfname, newTLI);
 		XLogArchiveNotify(histfname);

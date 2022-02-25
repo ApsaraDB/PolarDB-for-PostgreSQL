@@ -76,7 +76,9 @@ polar_io_stat_shmem_startup(void)
 		for (i = 0; i < POLAR_VFS_KIND_SIZE; i ++)
 			polar_kind_to_location[i] = -1;
 		polario_location_register(POLAR_VFS_LOCAL_BIO, POLARIO_LOCAL);
+#ifdef USE_PFSD
 		polario_location_register(POLAR_VFS_PFS, POLARIO_SHARED);
+#endif
 		polario_location_register(POLAR_VFS_LOCAL_DIO, POLARIO_SHARED);
 	}
 

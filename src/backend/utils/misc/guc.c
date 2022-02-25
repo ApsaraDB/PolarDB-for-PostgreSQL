@@ -588,7 +588,9 @@ const struct config_enum_entry data_encryption_cipher_options[] = {
 	{"off",		TDE_ENCRYPTION_OFF, false},
 	{"aes-128", TDE_ENCRYPTION_AES_128, false},
 	{"aes-256", TDE_ENCRYPTION_AES_256, false},
-	{"sm4",     TDE_ENCRYPTION_SM4, false},
+#ifndef OPENSSL_NO_SM4
+	{"sm4",		TDE_ENCRYPTION_SM4, false},
+#endif
 	{NULL, 0, false}
 };
 
@@ -1328,6 +1330,7 @@ static struct config_bool ConfigureNamesBool[] =
 		true,
 		NULL, NULL, NULL
 	},
+#ifdef USE_DMA
 	{
 		{"polar_enable_dma", PGC_POSTMASTER, UNGROUPED,
 			gettext_noop("whether to enable data max availability"),
@@ -1402,6 +1405,7 @@ static struct config_bool ConfigureNamesBool[] =
 		false,
 		NULL, NULL, NULL
 	},
+#endif
 	{
 		{"polar_openfile_with_readonly_in_replica", PGC_POSTMASTER, UNGROUPED,
 			gettext_noop("open datafile with readonly mode in replica"),
@@ -3629,6 +3633,7 @@ static struct config_bool ConfigureNamesBool[] =
 
 static struct config_int ConfigureNamesInt[] =
 {
+#ifdef USE_DMA
 	{
 		{"polar_dma_cluster_id", PGC_POSTMASTER, UNGROUPED,
 			gettext_noop("polar consensus cluster id."),
@@ -3831,6 +3836,7 @@ static struct config_int ConfigureNamesInt[] =
 		5000, 1, INT_MAX,
 		NULL, assign_dma_new_follower_threshold, NULL
 	},
+#endif
 
 	{
 		{"polar_wal_pipeline_mode", PGC_POSTMASTER, WAL_SETTINGS,
@@ -6709,6 +6715,7 @@ static struct config_real ConfigureNamesReal[] =
 
 static struct config_string ConfigureNamesString[] =
 {
+#ifdef USE_DMA
 	{
 		{"polar_dma_members_info", PGC_POSTMASTER, UNGROUPED,
 			gettext_noop("polar consensus nodes info"),
@@ -6785,7 +6792,7 @@ static struct config_string ConfigureNamesString[] =
 		"",
 		NULL, NULL, show_polar_dma_repl_password 
 	},
-
+#endif
 
 	{
 		{"polar_storage_cluster_name", PGC_POSTMASTER, UNGROUPED,
@@ -7735,7 +7742,13 @@ static struct config_enum ConfigureNamesEnum[] =
 		},
 		&log_min_messages,
 		WARNING, server_message_level_options,
-		NULL, assign_dma_log_level, NULL
+		NULL,
+#ifdef USE_DMA
+		assign_dma_log_level,
+#else
+		NULL,
+#endif
+		NULL
 	},
 
 	{

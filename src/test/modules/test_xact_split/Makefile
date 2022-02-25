@@ -2,7 +2,7 @@
 
 MODULE_big = test_xact_split
 OBJS = test_xact_split.o $(WIN32RES)
-PGFILEDESC = "test_xact_split - test code for polar csn"
+PGFILEDESC = "test_xact_split - test code for xact split"
 
 EXTENSION = test_xact_split
 DATA = test_xact_split--1.0.sql

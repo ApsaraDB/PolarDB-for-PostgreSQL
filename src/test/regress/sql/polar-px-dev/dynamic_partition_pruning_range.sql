@@ -63,19 +63,19 @@ analyze t1;
 -- Simple positive cases
 --
 
-explain (costs off, timing off, summary off, analyze) select * from t, pt where tid = ptid;
+explain (costs off, timing off, summary off) select * from t, pt where tid = ptid;
 
 select * from t, pt where tid = ptid;
 
-explain (costs off, timing off, summary off, analyze) select * from t, pt where tid + 1 = ptid;
+explain (costs off, timing off, summary off) select * from t, pt where tid + 1 = ptid;
 
 select * from t, pt where tid + 1 = ptid;
 
-explain (costs off, timing off, summary off, analyze) select * from t, pt where tid = ptid and t1 = 'hello' || tid;
+explain (costs off, timing off, summary off) select * from t, pt where tid = ptid and t1 = 'hello' || tid;
 
 select * from t, pt where tid = ptid and t1 = 'hello' || tid;
 
-explain (costs off, timing off, summary off, analyze) select * from t, pt where t1 = pt1 and ptid = tid;
+explain (costs off, timing off, summary off) select * from t, pt where t1 = pt1 and ptid = tid;
 
 select * from t, pt where t1 = pt1 and ptid = tid;
 
@@ -83,14 +83,14 @@ select * from t, pt where t1 = pt1 and ptid = tid;
 -- in and exists clauses
 --
 
-explain (costs off, timing off, summary off, analyze) select * from pt where ptid in (select tid from t where t1 = 'hello' || tid);
+explain (costs off, timing off, summary off) select * from pt where ptid in (select tid from t where t1 = 'hello' || tid);
 
 select * from pt where ptid in (select tid from t where t1 = 'hello' || tid);
 
 -- start_ignore
 -- Known_opt_diff: MPP-21320
 -- end_ignore
-explain (costs off, timing off, summary off, analyze) select * from pt where exists (select 1 from t where tid = ptid and t1 = 'hello' || tid);
+explain (costs off, timing off, summary off) select * from pt where exists (select 1 from t where tid = ptid and t1 = 'hello' || tid);
 
 select * from pt where exists (select 1 from t where tid = ptid and t1 = 'hello' || tid);
 
@@ -98,7 +98,7 @@ select * from pt where exists (select 1 from t where tid = ptid and t1 = 'hello'
 -- group-by on top
 --
 
-explain (costs off, timing off, summary off, analyze) select count(*) from t, pt where tid = ptid;
+explain (costs off, timing off, summary off) select count(*) from t, pt where tid = ptid;
 
 select count(*) from t, pt where tid = ptid;
 
@@ -106,7 +106,7 @@ select count(*) from t, pt where tid = ptid;
 -- window function on top
 --
 
-explain (costs off, timing off, summary off, analyze) select *, rank() over (order by ptid,pt1) from t, pt where tid = ptid;
+explain (costs off, timing off, summary off) select *, rank() over (order by ptid,pt1) from t, pt where tid = ptid;
 
 select *, rank() over (order by ptid,pt1) from t, pt where tid = ptid;
 
@@ -114,7 +114,7 @@ select *, rank() over (order by ptid,pt1) from t, pt where tid = ptid;
 -- set ops
 --
 
-explain (costs off, timing off, summary off, analyze) select * from t, pt where tid = ptid
+explain (costs off, timing off, summary off) select * from t, pt where tid = ptid
 	  union all
 	  select * from t, pt where tid + 2 = ptid;
 
@@ -126,7 +126,7 @@ select * from t, pt where tid = ptid
 -- set-ops
 --
 
-explain (costs off, timing off, summary off, analyze) select count(*) from
+explain (costs off, timing off, summary off) select count(*) from
 	( select * from t, pt where tid = ptid
 	  union all
 	  select * from t, pt where tid + 2 = ptid
@@ -146,7 +146,7 @@ set polar_px_optimizer_enable_hashjoin=off;
 set polar_px_optimizer_enable_nestloopjoin=on;
 set polar_px_optimizer_enable_mergejoin=off;
 
-explain (costs off, timing off, summary off, analyze) select * from t, pt where tid = ptid;
+explain (costs off, timing off, summary off) select * from t, pt where tid = ptid;
 
 select * from t, pt where tid = ptid;
 
@@ -163,7 +163,7 @@ set polar_px_optimizer_enable_hashjoin=off;
 -- start_ignore
 -- Known_opt_diff: MPP-21322
 -- end_ignore
-explain (costs off, timing off, summary off, analyze) select * from t, pt where tid = ptid and pt1 = 'hello0';
+explain (costs off, timing off, summary off) select * from t, pt where tid = ptid and pt1 = 'hello0';
 
 select * from t, pt where tid = ptid and pt1 = 'hello0';
 
@@ -175,7 +175,7 @@ set polar_px_optimizer_enable_indexscan=on;
 set polar_px_optimizer_enable_seqscan=off;
 set polar_px_optimizer_enable_hashjoin=off;
 
-explain (costs off, timing off, summary off, analyze) select * from t, pt where tid = ptid;
+explain (costs off, timing off, summary off) select * from t, pt where tid = ptid;
 
 select * from t, pt where tid = ptid;
 
@@ -188,11 +188,11 @@ set polar_px_optimizer_enable_seqscan=on;
 set polar_px_optimizer_enable_hashjoin=on;
 set polar_px_optimizer_enable_nestloopjoin=off;
 
-explain (costs off, timing off, summary off, analyze) select * from t, pt where t1 = pt1;
+explain (costs off, timing off, summary off) select * from t, pt where t1 = pt1;
 
 select * from t, pt where t1 = pt1;
 
-explain (costs off, timing off, summary off, analyze) select * from t, pt where tid < ptid;
+explain (costs off, timing off, summary off) select * from t, pt where tid < ptid;
 
 select * from t, pt where tid < ptid;
 
@@ -206,7 +206,7 @@ reset polar_px_optimizer_enable_nestloopjoin;
 --
 
 -- one of the joined tables can be used for partition elimination, the other can not
-explain (costs off, timing off, summary off, analyze) select * from t, t1, pt where t1.t2 = t.t2 and t1.tid = ptid;
+explain (costs off, timing off, summary off) select * from t, t1, pt where t1.t2 = t.t2 and t1.tid = ptid;
 
 select * from t, t1, pt where t1.t2 = t.t2 and t1.tid = ptid;
 
@@ -220,7 +220,7 @@ insert into t1 select i, -100, 'dummy' from generate_series(1,10) i;
 analyze t;
 analyze t1;
 
-explain (costs off, timing off, summary off, analyze) select * from t, t1, pt where t1.tid = ptid and t.tid = ptid;
+explain (costs off, timing off, summary off) select * from t, t1, pt where t1.tid = ptid and t.tid = ptid;
 
 select * from t, t1, pt where t1.tid = ptid and t.tid = ptid;
 
@@ -233,7 +233,7 @@ begin;
 -- to test
 set local from_collapse_limit = 1;
 set local join_collapse_limit = 1;
-explain (costs off, timing off, summary off, analyze) select * from t1 inner join (select pt1.*, pt2.ptid as ptid2 from pt as pt1, pt as pt2 WHERE pt1.ptid <= pt2.ptid and pt1.dist = pt2.dist ) as ptx ON t1.dist = ptx.dist and t1.tid = ptx.ptid and t1.tid = ptx.ptid2;
+explain (costs off, timing off, summary off) select * from t1 inner join (select pt1.*, pt2.ptid as ptid2 from pt as pt1, pt as pt2 WHERE pt1.ptid <= pt2.ptid and pt1.dist = pt2.dist ) as ptx ON t1.dist = ptx.dist and t1.tid = ptx.ptid and t1.tid = ptx.ptid2;
 rollback;
 
 
@@ -242,11 +242,11 @@ rollback;
 -- not projection capable.
 --
 
-explain (costs off, timing off, summary off, analyze) select * from pt, pt1 where pt.ptid = pt1.ptid and pt.pt1 = 'hello0' order by pt1.dist;
+explain (costs off, timing off, summary off) select * from pt, pt1 where pt.ptid = pt1.ptid and pt.pt1 = 'hello0' order by pt1.dist;
 
 select * from pt, pt1 where pt.ptid = pt1.ptid and pt.pt1 = 'hello0' order by pt1.dist;
 
-explain (costs off, timing off, summary off, analyze) select count(*) from pt, pt1 where pt.ptid = pt1.ptid and pt.pt1 = 'hello0';
+explain (costs off, timing off, summary off) select count(*) from pt, pt1 where pt.ptid = pt1.ptid and pt.pt1 = 'hello0';
 
 select count(*) from pt, pt1 where pt.ptid = pt1.ptid and pt.pt1 = 'hello0';
 
@@ -275,7 +275,7 @@ set polar_px_optimizer_enable_hashjoin=off;
 set polar_px_optimizer_enable_seqscan=on;
 set polar_px_optimizer_enable_nestloopjoin=on;
 
-explain (costs off, timing off, summary off, analyze) select * from t, pt where a = b;
+explain (costs off, timing off, summary off) select * from t, pt where a = b;
 select * from t, pt where a = b;
 rollback;
 
@@ -312,7 +312,7 @@ insert into pt select 0 from generate_series(1,1000) g;
 analyze t;
 analyze pt;
 
-explain (costs off, timing off, summary off, analyze) select * from t, pt where a = b;
+explain (costs off, timing off, summary off) select * from t, pt where a = b;
 select * from t, pt where a = b;
 rollback;
 
@@ -349,11 +349,11 @@ insert into fact1 select 1, i % 4 , 'CA', i + 10000 from generate_series (1,100)
 --
 
 set polar_px_optimizer_enable_partition_selection=off;
-explain (costs off, timing off, summary off, analyze) select * from dim1 inner join fact1 on (dim1.pid=fact1.pid and dim1.code=fact1.code) order by fact1.u;
+explain (costs off, timing off, summary off) select * from dim1 inner join fact1 on (dim1.pid=fact1.pid and dim1.code=fact1.code) order by fact1.u;
 select * from dim1 inner join fact1 on (dim1.pid=fact1.pid and dim1.code=fact1.code) order by fact1.u;
 
 set polar_px_optimizer_enable_partition_selection=on;
-explain (costs off, timing off, summary off, analyze) select * from dim1 inner join fact1 on (dim1.pid=fact1.pid and dim1.code=fact1.code) order by fact1.u;
+explain (costs off, timing off, summary off) select * from dim1 inner join fact1 on (dim1.pid=fact1.pid and dim1.code=fact1.code) order by fact1.u;
 select * from dim1 inner join fact1 on (dim1.pid=fact1.pid and dim1.code=fact1.code) order by fact1.u;
 
 --
@@ -361,11 +361,11 @@ select * from dim1 inner join fact1 on (dim1.pid=fact1.pid and dim1.code=fact1.c
 --
 
 set polar_px_optimizer_enable_partition_selection=off;
-explain (costs off, timing off, summary off, analyze) select * from dim1 inner join fact1 on (dim1.pid=fact1.pid) order by fact1.u;
+explain (costs off, timing off, summary off) select * from dim1 inner join fact1 on (dim1.pid=fact1.pid) order by fact1.u;
 select * from dim1 inner join fact1 on (dim1.pid=fact1.pid) order by fact1.u;
 
 set polar_px_optimizer_enable_partition_selection=on;
-explain (costs off, timing off, summary off, analyze) select * from dim1 inner join fact1 on (dim1.pid=fact1.pid) order by fact1.u;
+explain (costs off, timing off, summary off) select * from dim1 inner join fact1 on (dim1.pid=fact1.pid) order by fact1.u;
 select * from dim1 inner join fact1 on (dim1.pid=fact1.pid) order by fact1.u;
 
 --
@@ -373,12 +373,12 @@ select * from dim1 inner join fact1 on (dim1.pid=fact1.pid) order by fact1.u;
 --
 
 set polar_px_optimizer_enable_partition_selection=off;
-explain (costs off, timing off, summary off, analyze)
+explain (costs off, timing off, summary off)
 select * from dim1 inner join fact1 on (dim1.dist = fact1.dist and dim1.code=fact1.code);
 select * from dim1 inner join fact1 on (dim1.dist = fact1.dist and dim1.code=fact1.code);
 
 set polar_px_optimizer_enable_partition_selection=on;
-explain (costs off, timing off, summary off, analyze)
+explain (costs off, timing off, summary off)
 select * from dim1 inner join fact1 on (dim1.dist = fact1.dist and dim1.code=fact1.code);
 select * from dim1 inner join fact1 on (dim1.dist = fact1.dist and dim1.code=fact1.code);
 
@@ -387,11 +387,11 @@ select * from dim1 inner join fact1 on (dim1.dist = fact1.dist and dim1.code=fac
 --
 
 set polar_px_optimizer_enable_partition_selection=off;
-explain (costs off, timing off, summary off, analyze) select * from dim1 inner join fact1 on (dim1.pid=fact1.pid) and fact1.code = 'OH' order by fact1.u;
+explain (costs off, timing off, summary off) select * from dim1 inner join fact1 on (dim1.pid=fact1.pid) and fact1.code = 'OH' order by fact1.u;
 select * from dim1 inner join fact1 on (dim1.pid=fact1.pid) and fact1.code = 'OH' order by fact1.u;
 
 set polar_px_optimizer_enable_partition_selection=on;
-explain (costs off, timing off, summary off, analyze) select * from dim1 inner join fact1 on (dim1.pid=fact1.pid) and fact1.code = 'OH' order by fact1.u;
+explain (costs off, timing off, summary off) select * from dim1 inner join fact1 on (dim1.pid=fact1.pid) and fact1.code = 'OH' order by fact1.u;
 select * from dim1 inner join fact1 on (dim1.pid=fact1.pid) and fact1.code = 'OH' order by fact1.u;
 
 --
@@ -399,11 +399,11 @@ select * from dim1 inner join fact1 on (dim1.pid=fact1.pid) and fact1.code = 'OH
 --
 
 set polar_px_optimizer_enable_partition_selection=off;
-explain (costs off, timing off, summary off, analyze) select fact1.code, count(*) from dim1 inner join fact1 on (dim1.pid=fact1.pid) group by 1 order by 1;
+explain (costs off, timing off, summary off) select fact1.code, count(*) from dim1 inner join fact1 on (dim1.pid=fact1.pid) group by 1 order by 1;
 select fact1.code, count(*) from dim1 inner join fact1 on (dim1.pid=fact1.pid) group by 1 order by 1;
 
 set polar_px_optimizer_enable_partition_selection=on;
-explain (costs off, timing off, summary off, analyze) select fact1.code, count(*) from dim1 inner join fact1 on (dim1.pid=fact1.pid) group by 1 order by 1;
+explain (costs off, timing off, summary off) select fact1.code, count(*) from dim1 inner join fact1 on (dim1.pid=fact1.pid) group by 1 order by 1;
 select fact1.code, count(*) from dim1 inner join fact1 on (dim1.pid=fact1.pid) group by 1 order by 1;
 
 
@@ -446,7 +446,7 @@ analyze dim;
 
 -- ORCA doesn't do multi-attribute partitioning currently,so this falls
 -- back to the Postgres planner
-explain (costs off, timing off, summary off, analyze) select * from dim inner join malp on (dim.i = malp.i);
+explain (costs off, timing off, summary off) select * from dim inner join malp on (dim.i = malp.i);
 
 set polar_px_optimizer_enable_partition_selection = off;
 select * from dim inner join malp on (dim.i = malp.i);
@@ -482,11 +482,11 @@ analyze b;
 analyze c;
 
 set polar_px_optimizer_enable_partition_selection = off;
-explain (costs off, timing off, summary off, analyze) select * from apart as a, b, c where a.t = b.t and a.id = c.id;
+explain (costs off, timing off, summary off) select * from apart as a, b, c where a.t = b.t and a.id = c.id;
 select * from apart as a, b, c where a.t = b.t and a.id = c.id;
 
 set polar_px_optimizer_enable_partition_selection = on;
-explain (costs off, timing off, summary off, analyze) select * from apart as a, b, c where a.t = b.t and a.id = c.id;
+explain (costs off, timing off, summary off) select * from apart as a, b, c where a.t = b.t and a.id = c.id;
 select * from apart as a, b, c where a.t = b.t and a.id = c.id;
 
 
@@ -513,7 +513,7 @@ analyze jpat;
 -- start_ignore
 -- Known_opt_diff: MPP-21323
 -- end_ignore
-explain (costs off, timing off, summary off, analyze) select * from (select count(*) over (order by a rows between 1 preceding and 1 following), a, b from jpat)jpat inner join pat using(b);
+explain (costs off, timing off, summary off) select * from (select count(*) over (order by a rows between 1 preceding and 1 following), a, b from jpat)jpat inner join pat using(b);
 
 select * from (select count(*) over (order by a rows between 1 preceding and 1 following), a, b from jpat)jpat inner join pat using(b);
 
@@ -543,23 +543,23 @@ analyze t;
 analyze pt;
 
 -- Prune on the simple partition columns, but not on the expression
-explain (analyze, costs off, timing off, summary off)
+explain (costs off, timing off, summary off)
 select * from pt, t where t.id = pt.id;
 
 insert into t values (4, 4), (6, 6), (8, 8), (10, 10);
 
-explain (analyze, costs off, timing off, summary off)
+explain (costs off, timing off, summary off)
 select * from pt, t where t.id = pt.id;
 
 -- Plan-time pruning based on the 'id' partitioning column, and
 -- run-time join pruning based on the expression
-explain (analyze, costs off, timing off, summary off)
+explain (costs off, timing off, summary off)
 select * from pt, t where pt.id = 4 and t.id = 4 and (t.b % 2) = (pt.b % 2);
 
 -- Mixed case
 insert into pt values (4, 5);
 
-explain (analyze, costs off, timing off, summary off)
+explain (costs off, timing off, summary off)
 select * from pt, t where t.id = pt.id and (t.b % 2) = (pt.b % 2);
 
 --
@@ -585,7 +585,7 @@ insert into pt select 0, i from generate_series(1,9) i;
 analyze t;
 analyze pt;
 
-explain (analyze, costs off, timing off, summary off)
+explain (costs off, timing off, summary off)
 select * from pt, t where t.dist = pt.dist and t.tid < pt.ptid;
 
 
@@ -623,7 +623,7 @@ set polar_px_optimizer_enable_mergejoin=on;
 set polar_px_optimizer_enable_seqscan=off;
 
 -- force_explain
-explain (analyze, timing off, summary off)
+explain (timing off, summary off, costs off)
 select * from pt, t where t.dist = pt.dist and t.tid = pt.ptid order by t.tid, t.sk;
 
 set client_min_messages='warning';

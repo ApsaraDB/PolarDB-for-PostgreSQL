@@ -177,14 +177,14 @@ polar_datamax_read_recovery_conf(void)
 
 	for (item = head; item; item = item->next)
 	{
-		if (!polar_enable_dma && strcmp(item->name, "primary_conninfo") == 0)
+		if (!POLAR_ENABLE_DMA() && strcmp(item->name, "primary_conninfo") == 0)
 		{
 			primary_conninfo = pstrdup(item->value);
 			ereport(DEBUG2,
 					(errmsg_internal("primary_conninfo = '%s'",
 									 primary_conninfo)));
 		}
-		else if (!polar_enable_dma && strcmp(item->name, "primary_slot_name") == 0)
+		else if (!POLAR_ENABLE_DMA() && strcmp(item->name, "primary_slot_name") == 0)
 		{
 			ReplicationSlotValidateName(item->value, ERROR);
 			primary_slot_name = pstrdup(item->value);
@@ -203,7 +203,7 @@ polar_datamax_read_recovery_conf(void)
 		}
 	}
 
-	if (!polar_enable_dma && (primary_conninfo == NULL || primary_slot_name == NULL))
+	if (!POLAR_ENABLE_DMA() && (primary_conninfo == NULL || primary_slot_name == NULL))
 		ereport(FATAL,
 				(errmsg("recovery command file \"%s\" does't specified primary_conninfo or primary_slot_name",
 						RECOVERY_COMMAND_FILE),

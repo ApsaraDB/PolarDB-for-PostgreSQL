@@ -513,5 +513,5 @@ extern void polar_create_shmem_info_file(bool am_postmaster);
 extern void polar_delay_dml_wait(void);
 extern void polar_init_dynamic_bgworker_in_backends(void);
 
-#define polar_syntactically_compatible_tablespace_mode() (!polar_enable_dma && !superuser())
+#define polar_syntactically_compatible_tablespace_mode() (!POLAR_ENABLE_DMA() && !superuser())
 #endif							/* MISCADMIN_H */

@@ -476,7 +476,7 @@ InitProcess(void)
 	pg_atomic_init_u64(&MyProc->polar_read_min_lsn, InvalidXLogRecPtr);
 
 	/* Initialize fields for consensus rep */
-	if (polar_enable_dma)
+	if (POLAR_ENABLE_DMA())
 	{
 		ConsensusProcInit(&MyProc->consensusInfo);
 	}
@@ -681,7 +681,7 @@ InitAuxiliaryProcess(void)
 #endif
 
 	/* Initialize fields for consensus rep */
-	if (polar_enable_dma)
+	if (POLAR_ENABLE_DMA())
 	{
 		ConsensusProcInit(&MyProc->consensusInfo);
 	}

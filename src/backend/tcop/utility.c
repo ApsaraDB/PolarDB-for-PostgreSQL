@@ -799,7 +799,7 @@ standard_ProcessUtility(PlannedStmt *pstmt,
 			{
 				AlterSystemSetConfigFile((AlterSystemStmt *) parsetree);
 			}
-			else if (polar_enable_dma)
+			else if (POLAR_ENABLE_DMA())
 			{
 				Assert(((AlterSystemStmt *) parsetree)->dma_stmt != NULL);
 				PolarDMAUtility(((AlterSystemStmt *) parsetree)->dma_stmt);

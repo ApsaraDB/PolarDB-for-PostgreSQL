@@ -207,22 +207,6 @@ PGAC_ARG_BOOL(enable, polar-cas, no,
               [use cas])
 
 #
-# online/offline ganos support
-# "--enable-ganos-offline" switch.
-#
-PGAC_ARG_BOOL(enable, ganos-offline, no, 
-  [enable ganos offline  version])
-AC_SUBST(enable_ganos_offline)
-
-#
-# enable polar arm conpile support
-# "--enable-polar-arm" switch.
-#
-PGAC_ARG_BOOL(enable, polar-arm, no, 
-  [enable polar arm support])
-AC_SUBST(enable_polar_arm)
-
-#
 # Random number generation
 #
 PGAC_ARG_BOOL(enable, strong-random, yes,
@@ -381,14 +365,6 @@ PGAC_ARG_BOOL(enable, polar-minimal, no, [enable polar minimal (for local develo
 AC_SUBST(enable_polar_minimal)
 
 #
-# Enable polar inject tests
-#
-PGAC_ARG_BOOL(enable, polar-inject-tests, no, [enable polar inject tests (for debug)],
-              [AC_DEFINE([POLAR_INJECT_TESTS], 0,
-                         [Define to 1 to build with polar test functions. (--enable-polar-inject-tests)])])
-AC_SUBST(enable_polar_inject_tests)
-
-#
 # C compiler
 #
 
@@ -432,6 +408,24 @@ dnl must use AS_IF here, else AC_REQUIRES inside PGAC_LLVM_SUPPORT malfunctions
 AS_IF([test "$with_llvm" = yes], [
   PGAC_LLVM_SUPPORT()
 ]) # fi
+
+
+#
+# PFSD
+#
+AC_MSG_CHECKING([whether to build with PFSD support])
+PGAC_ARG_BOOL(with, pfsd, no, [build with PFSD support],
+              [AC_DEFINE([USE_PFSD], 1, [Define to 1 to build with PFSD support. (--with-pfsd)])])
+AC_SUBST(with_pfsd)
+
+
+#
+# DMA
+#
+AC_MSG_CHECKING([whether to build with DMA support])
+PGAC_ARG_BOOL(with, dma, no, [build with DMA support],
+              [AC_DEFINE([USE_DMA], 1, [Define to 1 to build with DMA support. (--with-dma)])])
+AC_SUBST(with_dma)
 
 
 unset CFLAGS

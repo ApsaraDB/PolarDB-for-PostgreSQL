@@ -2918,7 +2918,7 @@ SIGHUP_handler(SIGNAL_ARGS)
 			signal_child(WalWriterPID, SIGHUP);
 		if (WalReceiverPID != 0)
 			signal_child(WalReceiverPID, SIGHUP);
-		if (polar_enable_dma && ConsensusPID != 0)
+		if (POLAR_ENABLE_DMA() && ConsensusPID != 0)
 			signal_child(ConsensusPID, SIGHUP);
 		if (AutoVacPID != 0)
 			signal_child(AutoVacPID, SIGHUP);
@@ -3046,7 +3046,7 @@ pmdie(SIGNAL_ARGS)
 				if (LogIndexBgPID != 0)
 					signal_child(LogIndexBgPID, SIGTERM);
 				/* and the polar_consensus too */
-				if (polar_enable_dma && ConsensusPID != 0)
+				if (POLAR_ENABLE_DMA() && ConsensusPID != 0)
 					signal_child(ConsensusPID, SIGINT);
 				/* POLAR: and the flashback log background inserter process too */
 				if (FlogBgInserterPID != 0)
@@ -3105,7 +3105,7 @@ pmdie(SIGNAL_ARGS)
 				signal_child(WalReceiverPID, SIGTERM);
 			if (LogIndexBgPID != 0)
 				signal_child(LogIndexBgPID, SIGTERM);
-			if (polar_enable_dma && ConsensusPID != 0)
+			if (POLAR_ENABLE_DMA() && ConsensusPID != 0)
 				signal_child(ConsensusPID, SIGINT);
 			if (FlogBgInserterPID != 0)
 				signal_child(FlogBgInserterPID, SIGTERM);
@@ -3409,7 +3409,7 @@ reaper(SIGNAL_ARGS)
 				pmState = PM_SHUTDOWN_2;
 				polar_log_pmstate();
 
-				if (polar_enable_dma && ConsensusPID != 0)
+				if (POLAR_ENABLE_DMA() && ConsensusPID != 0)
 					signal_child(ConsensusPID, SIGTERM);
 
 				if (PolarWalPipelinerPID != 0)
@@ -3558,7 +3558,7 @@ reaper(SIGNAL_ARGS)
 		 * Any unexpected exit of the consensus (including FATAL
 		 * exit) is treated as a crash.
 		 */
-		if (polar_enable_dma && pid == ConsensusPID)
+		if (POLAR_ENABLE_DMA() && pid == ConsensusPID)
 		{
 			ConsensusPID = 0;
 			if (!EXIT_STATUS_0(exitstatus))
@@ -4075,7 +4075,7 @@ HandleChildCrash(int pid, int exitstatus, const char *procname)
 	}
 
 	/* Take care of the consensus process too */
-	if (polar_enable_dma && ConsensusPID != 0 && take_action)
+	if (POLAR_ENABLE_DMA() && ConsensusPID != 0 && take_action)
 	{
 		ereport(DEBUG2,
 				(errmsg_internal("sending %s to process %d", "SIGQUIT", 
@@ -4320,7 +4320,7 @@ PostmasterStateMachine(polar_pmstate_change_reason reason, pid_t pid)
 						signal_child(PgArchPID, SIGQUIT);
 					if (PgStatPID != 0)
 						signal_child(PgStatPID, SIGQUIT);
-					if (polar_enable_dma && ConsensusPID != 0)
+					if (POLAR_ENABLE_DMA() && ConsensusPID != 0)
 						signal_child(ConsensusPID, SIGQUIT);
 					if (PolarWalPipelinerPID != 0)
 						signal_child(PolarWalPipelinerPID, SIGQUIT);
@@ -4338,7 +4338,7 @@ PostmasterStateMachine(polar_pmstate_change_reason reason, pid_t pid)
 		 * archiver.
 		 */
 		if (PgArchPID == 0 && CountChildren(BACKEND_TYPE_ALL, false) == 0 &&
-				(!polar_enable_dma || ConsensusPID == 0) &&
+				(!POLAR_ENABLE_DMA() || ConsensusPID == 0) &&
 			PolarWalPipelinerPID == 0 &&
 			WalReceiverPID == 0)
 		{
@@ -4347,7 +4347,7 @@ PostmasterStateMachine(polar_pmstate_change_reason reason, pid_t pid)
 		}
 		/* POLAR: If polar_vfs is the last one backend process, then kill it. */
 		else if (PgArchPID == 0 && CountChildren(BACKEND_TYPE_ALL, false) == 1 &&
-				(!polar_enable_dma || ConsensusPID == 0) &&
+				(!POLAR_ENABLE_DMA() || ConsensusPID == 0) &&
 			WalReceiverPID == 0)
 		{
 			SignalSomeChildren(SIGUSR2, BACKEND_TYPE_ALL, false);
@@ -4373,7 +4373,7 @@ PostmasterStateMachine(polar_pmstate_change_reason reason, pid_t pid)
 		if (dlist_is_empty(&BackendList) &&
 			PgArchPID == 0 && PgStatPID == 0 && 
 			PolarWalPipelinerPID == 0 &&
-			(!polar_enable_dma || ConsensusPID == 0))
+			(!POLAR_ENABLE_DMA() || ConsensusPID == 0))
 		{
 			/* These other guys should be dead already */
 			Assert(StartupPID == 0);
@@ -4635,7 +4635,7 @@ TerminateChildren(int signal)
 		signal_child(PgStatPID, signal);
 	if (LogIndexBgPID != 0)
 		signal_child(LogIndexBgPID, signal);
-	if (polar_enable_dma && ConsensusPID != 0)
+	if (POLAR_ENABLE_DMA() && ConsensusPID != 0)
 		signal_child(ConsensusPID, signal);
 	if (PolarWalPipelinerPID != 0)
 		signal_child(PolarWalPipelinerPID, signal);
@@ -5942,7 +5942,7 @@ sigusr1_handler(SIGNAL_ARGS)
 		}
 	}
 
-	if (polar_enable_dma &&
+	if (POLAR_ENABLE_DMA() &&
 		CheckPostmasterSignal(PMSIGNAL_CONSENS_UPGRADE) &&
 			StartupPID != 0 &&
 			(pmState == PM_RECOVERY || pmState == PM_HOT_STANDBY || pmState == PM_DATAMAX))
@@ -5952,7 +5952,7 @@ sigusr1_handler(SIGNAL_ARGS)
 		polar_signal_recovery_state_change(true, false);
 	}
 
-	if (polar_enable_dma &&
+	if (POLAR_ENABLE_DMA() &&
 		CheckPostmasterSignal(PMSIGNAL_CONSENS_LEADER_CHANGE) &&
 			StartupPID != 0 &&
 			(pmState == PM_RECOVERY || pmState == PM_HOT_STANDBY || pmState == PM_DATAMAX))
@@ -5962,7 +5962,7 @@ sigusr1_handler(SIGNAL_ARGS)
 		polar_signal_recovery_state_change(false, false);
 	}
 
-	if (polar_enable_dma && 
+	if (POLAR_ENABLE_DMA() && 
 		CheckPostmasterSignal(PMSIGNAL_CONSENS_LEADER_RESUME) &&
 			(pmState == PM_RECOVERY ||
 			 pmState == PM_HOT_STANDBY ||

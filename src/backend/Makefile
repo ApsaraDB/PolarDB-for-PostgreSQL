@@ -21,11 +21,15 @@ SUBDIRS = access bootstrap catalog parser commands executor foreign lib libpq \
 	main nodes optimizer partitioning port postmaster \
 	regex replication rewrite \
 	statistics storage tcop tsearch utils $(top_builddir)/src/timezone \
-	jit polar_dma px \
+	jit px \
 	polar_datamax polar_flashback
 
 ifeq ($(enable_polar_px),yes)
 SUBDIRS += px_optimizer px_optimizer_util
+endif
+
+ifeq ($(with_dma),yes)
+SUBDIRS += polar_dma
 endif
 
 include $(srcdir)/common.mk
@@ -58,8 +62,10 @@ endif
 
 # POLAR libs
 LIBS += -lpthread -ldl
-###POLAR consensus libs
-LIBS += -lpolar_consensus_wrapper -lprotobuf -lstdc++ -lrt -lssl -lcrypto
+# POLAR consensus libs
+ifeq ($(with_dma),yes)
+LIBS += -lprotobuf -lstdc++ -lrt -lssl -lcrypto
+endif
 # POLAR end
 
 ##########################################################################

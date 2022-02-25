@@ -16,12 +16,12 @@ SUBDIRS += polar_parameter_check
 SUBDIRS += polar_stat_sql
 SUBDIRS += polar_csn
 SUBDIRS += polar_px
+endif #enable_polar_minimal
 # Common end
 
-# PG
-# PG end
-
-endif #enable_polar_minimal
+ifeq ($(with_pfsd),yes)
+export with_pfsd=yes
+endif
 
 $(recurse)
 $(recurse_always)

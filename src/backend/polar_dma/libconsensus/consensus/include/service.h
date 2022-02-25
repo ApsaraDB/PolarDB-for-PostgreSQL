@@ -78,7 +78,7 @@ class Service {
       int sendAsyncEvent(Callable&& f, Args&&... args)
       {
         CallbackType callBackPtr;
-#if (__GNUC__ >= 7)
+#if (__GNUC__ >= 7 || __clang__)
         callBackPtr= makeCallback(std::bind(std::forward<Callable>(f), std::forward<Args>(args)...));
 #else
         callBackPtr= makeCallback(std::__bind_simple(std::forward<Callable>(f), std::forward<Args>(args)...));

@@ -365,7 +365,7 @@ WalReceiverMain(void)
 
 	first_stream = true;
 	/* POLAR: create and init list for recording primary's valid lsn in datamax mode */
-	if (polar_is_datamax() && !polar_enable_dma)
+	if (polar_is_datamax() && !POLAR_ENABLE_DMA())
 		polar_datamax_received_valid_lsn_list = polar_datamax_create_valid_lsn_list();
 	for (;;)
 	{
@@ -402,8 +402,8 @@ WalReceiverMain(void)
 
 		/* POLAR: Update DataMax timeline if current is a initial one. */
 		if (polar_is_datamax() && 
-				((!polar_enable_dma && polar_datamax_is_initial(polar_datamax_ctl)) ||
-				 (polar_enable_dma && startpointTLI == POLAR_INVALID_TIMELINE_ID)))
+				((!POLAR_ENABLE_DMA() && polar_datamax_is_initial(polar_datamax_ctl)) ||
+				 (POLAR_ENABLE_DMA() && startpointTLI == POLAR_INVALID_TIMELINE_ID)))
 		{
 			Assert(startpointTLI == POLAR_INVALID_TIMELINE_ID);
 
@@ -506,7 +506,7 @@ WalReceiverMain(void)
 			 */
 			if (!polar_is_datamax())
 				LogstreamResult.Write = LogstreamResult.Flush = GetXLogReplayRecPtr(NULL);
-			else if (polar_enable_dma)
+			else if (POLAR_ENABLE_DMA())
 				LogstreamResult.Write = LogstreamResult.Flush = polar_dma_get_received_lsn();
 			else
 				LogstreamResult.Write = LogstreamResult.Flush = polar_datamax_get_last_valid_received_lsn(polar_datamax_ctl, NULL);
@@ -763,7 +763,7 @@ WalReceiverMain(void)
 			XLogFileName(xlogfname, recvFileTLI, recvSegNo, wal_segment_size);
 			if (XLogArchiveMode != ARCHIVE_MODE_ALWAYS)
 				XLogArchiveForceDone(xlogfname);
-			else if (polar_enable_dma)
+			else if (POLAR_ENABLE_DMA())
 				polar_dma_xlog_archive_notify(xlogfname, true);
 			else
 				XLogArchiveNotify(xlogfname);
@@ -907,7 +907,7 @@ WalRcvFetchTimeLineHistoryFiles(TimeLineID first, TimeLineID last)
 			/*
 			 * In DMA mode, archive history file for standby
 			 */
-			if (polar_enable_dma)
+			if (POLAR_ENABLE_DMA())
 			{
 				if (XLogArchiveMode != ARCHIVE_MODE_ALWAYS)
 					XLogArchiveForceDone(expectedfname);
@@ -1308,7 +1308,7 @@ XLogWalRcvProcessMsg(unsigned char type, char *buf, Size len)
 				POLAR_DATAMAX_SET_PRIMARY_NEXTXID(polar_primary_next_xid);
 				POLAR_DATAMAX_SET_PRIMARY_NEXTEPOCH(polar_primary_epoch);
 				/* record polar_primary_last_lsn into list */
-				if (!polar_enable_dma)
+				if (!POLAR_ENABLE_DMA())
 					polar_datamax_insert_last_valid_lsn(polar_datamax_received_valid_lsn_list, polar_primary_last_lsn);
 				/* record polar_upstream_last_removed_segno */
 				polar_datamax_update_upstream_last_removed_segno(polar_datamax_ctl, polar_upstream_last_removed_segno);
@@ -1384,7 +1384,7 @@ XLogWalRcvWrite(char *buf, Size nbytes, XLogRecPtr recptr)
 				polar_is_datamax_mode = polar_is_datamax();		/* POLAR: Enter datamax Mode. */
 				if (XLogArchiveMode != ARCHIVE_MODE_ALWAYS)
 					XLogArchiveForceDone(xlogfname);
-				else if (polar_enable_dma)
+				else if (POLAR_ENABLE_DMA())
 					polar_dma_xlog_archive_notify(xlogfname, true);
 				else
 					XLogArchiveNotify(xlogfname);
@@ -1488,7 +1488,7 @@ XLogWalRcvFlush(bool dying)
 		/* POLAR end */
 
 		/* POLAR: update received WAL lsn */
-		if (polar_enable_dma)
+		if (POLAR_ENABLE_DMA())
 			ConsensusSetXLogFlushedLSN(LogstreamResult.Flush, ThisTimeLineID, false);	
 		else if (polar_is_datamax())
 		{
