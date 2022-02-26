@@ -25,6 +25,8 @@ fi
 
 # avoid missing locale
 sed -i 's/override_install_langs/# &/' /etc/yum.conf
+# for su postgres
+sed -i 's/4096/unlimited/g' /etc/security/limits.d/20-nproc.conf
 
 # extra yum software source
 # curl -o /etc/yum.repos.d/CentOS-Base.repo https://mirrors.aliyun.com/repo/Centos-7.repo
@@ -36,10 +38,22 @@ rpmkeys --import file:///etc/pki/rpm-gpg/RPM-GPG-KEY-CentOS-SIG-SCLo
 yum update -y
 
 # compile tools
-yum install -y devtoolset-9-gcc devtoolset-9-gcc-c++ devtoolset-9-gdb devtoolset-9-libstdc++-devel devtoolset-9-make llvm-toolset-7.0-llvm-devel llvm-toolset-7.0-clang-devel llvm-toolset-7.0-cmake
+yum install -y devtoolset-9-gcc devtoolset-9-gcc-c++ \
+               devtoolset-9-gdb devtoolset-9-make \
+               llvm-toolset-7.0-llvm-devel \
+               llvm-toolset-7.0-clang-devel \
+               llvm-toolset-7.0-cmake
 
 # dependencies
-yum install -y libicu-devel pam-devel readline-devel libxml2-devel libxslt-devel openldap-devel openldap-clients openldap-servers libuuid-devel xerces-c-devel bison flex gettext tcl-devel python-devel perl-IPC-Run perl-Expect perl-Test-Simple perl-DBD-Pg perl-ExtUtils-Embed perl-ExtUtils-MakeMaker zlib-devel krb5-devel krb5-workstation krb5-server git lcov psmisc sudo vim libaio-devel wget protobuf-devel
+yum install -y libicu-devel pam-devel readline-devel libxml2-devel \
+               libxslt-devel openldap-devel openldap-clients \
+               openldap-servers libuuid-devel xerces-c-devel \
+               bison flex gettext tcl-devel python-devel \
+               perl-IPC-Run perl-Expect perl-Test-Simple perl-DBD-Pg \
+               perl-ExtUtils-Embed perl-ExtUtils-MakeMaker zlib-devel \
+               krb5-devel krb5-workstation krb5-server \
+               git lcov psmisc sudo vim libaio-devel wget \
+               protobuf-devel
 
 ln /usr/lib64/perl5/CORE/libperl.so /usr/lib64/libperl.so
 

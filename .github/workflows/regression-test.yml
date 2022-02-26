@@ -30,7 +30,7 @@ jobs:
     strategy:
       matrix:
         container_image: [ centos7 ]
-        instance_type: [ oltp, htap ]
+        instance_type: [ oltp, htap, dma ]
 
     steps:
       - 
@@ -54,7 +54,6 @@ jobs:
           docker exec                                            \
             polardb_${{ matrix.container_image }}                \
             bash -c "cd /home/postgres/PolarDB-for-PostgreSQL && \
-                     sudo chmod -R a+wr ./ &&                    \
                      sudo chown -R postgres:postgres ./"
 
       -
@@ -73,7 +72,7 @@ jobs:
             bash -c "cd /home/postgres/PolarDB-for-PostgreSQL &&     \
                      source /etc/bashrc &&                           \
                      ./polardb_build.sh --withrep -r -e -r-external  \
-                     -r-contrib -r-pl --tde"
+                     -r-contrib -r-pl --with-tde"
 
       -
         name: Ignore some test cases for HTAP regression testing
@@ -92,7 +91,18 @@ jobs:
             bash -c "cd /home/postgres/PolarDB-for-PostgreSQL &&     \
                      source /etc/bashrc &&                           \
                      ./polardb_build.sh -r-px -e -r-external         \
-                     -r-contrib -r-pl --tde"
+                     -r-contrib -r-pl --with-tde"
+
+      -
+        name: Build and run DMA regression testing
+        if: ${{ matrix.instance_type == 'dma' }}
+        run: |
+          docker exec                                                \
+            polardb_${{ matrix.container_image }}                    \
+            bash -c "cd /home/postgres/PolarDB-for-PostgreSQL &&     \
+                     source /etc/bashrc &&                           \
+                     ./polardb_build.sh -r -e -r-external            \
+                     -r-contrib -r-pl --with-tde --with-dma"
 
       - name: Change ownership of the source code
         run: |
