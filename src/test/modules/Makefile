@@ -37,7 +37,7 @@ SUBDIRS = \
 		  test_wal_pipeline \
 		  test_flashback_log
 
-ifeq ($(enable_polar_inject_tests),yes)
+ifeq ($(enable_inject_faults),yes)
 SUBDIRS += test_xact_split
 endif
 

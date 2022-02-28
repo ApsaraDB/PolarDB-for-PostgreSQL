@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 # 
 # Copyright (c) 2020, Alibaba Group Holding Limited
 # 
@@ -14,8 +14,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # 
-
-set -x
 
 ##################### PHASE 1: set up parameter #####################
 usage () {
@@ -40,11 +38,11 @@ cat <<EOF
   --repdir=<temp dir for databases>], specifies which dir to store replica data, note this dir would be cleaned up before being used
   --storage=localfs, specify storage type
   -e,--extension, run extension test
-  --tde, TDE enable
-  --dma, DMA enable
+  --with-tde, TDE enable
+  --with-dma, DMA enable
+  --with-pfsd, PFSD enable
   --fault-injector, faultinjector enable
   --without-fbl, run without flashback log
-  --witharm, build on ARM platform
   --extra-conf, add an extra conf file
 
   Please lookup the following secion to find the default values for above options.
@@ -107,7 +105,7 @@ function del_cov() {
     su_eval "$pg_bld_basedir/bin/pg_ctl -D $pg_bld_standby_dir restart -w -c -o '-p $pg_bld_standby_port'"
   fi
 
-  make coverage-html -j`getconf _NPROCESSORS_ONLN` > /dev/null
+  make coverage-html -sj`getconf _NPROCESSORS_ONLN`
   perl delta_coverage.pl -p $prev_commit
 
   cd coverage
@@ -233,7 +231,7 @@ fi
 prev_commit=`git rev-parse HEAD~1`
 next_commit=`git rev-parse HEAD~0`
 nocompile=off
-debug_mode=on
+debug_mode=off
 coverage=off
 regress_test=off
 regress_test_ng=off
@@ -253,6 +251,7 @@ tde=off
 dma=off
 fault_injector=off
 enable_flashback_log=on
+pfsd=off
 
 
 enc_func="aes-256"
@@ -286,7 +285,6 @@ normbasedir=no
 withpx=no
 initpx=no
 repnum=1
-witharm=no
 
 for arg do
   # the parameter after "=", or the whole $arg if no match
@@ -352,19 +350,19 @@ for arg do
     -r-pl)                      pl_test=on
                                 ;;
     --asan)                     enable_asan=on;;
-    --tde)                      tde=on
+    --with-tde)                 tde=on
                                 ;;
     --enc=*)                    eval enc_func="$val" #default aes-256 ,support aes-256、aes-128、sm4
                                 ;;
-    --dma)                      dma=on
+    --with-dma)                 dma=on
+                                ;;
+    --with-pfsd)                pfsd=on
                                 ;;
     --fault-injector)           fault_injector=on
                                 ;;
     --without-fbl)              enable_flashback_log=off
                                 ;;
     --extra-conf=*)             extra_conf="$val"
-                                ;;
-    --witharm)                  witharm=yes
                                 ;;
     *)                          echo "wrong options : $arg";
                                 exit 1
@@ -390,7 +388,7 @@ fi
 if [[ $withpx == "yes" ]];
 then
   echo "################################ build with px ################################"
-  configure_flag="$configure_flag --enable-polar-px"
+  configure_flag+=" --enable-polar-px"
   withrep="yes"
   if [[ $repnum == "1" ]];
   then
@@ -417,9 +415,9 @@ su_eval "$pg_bld_basedir/bin/pg_ctl -D $pg_bld_standby_dir stop -m i"
 set -e
 
 # must clean before dir remove, some module depend on base_dir/bin/pg_config
-if [[ $noclean == "no" ]] && [[ -d $pg_bld_basedir/bin ]];
+if [[ $noclean == "no" ]];
 then
-  make distclean > /dev/null || true
+  make -s distclean || true
 fi
 
 mkdir -p $pg_bld_basedir
@@ -440,67 +438,72 @@ then
   need_initdb=yes
 fi
 
-gcc_opt_level_flag=
-asan_opt_flag=
-common_configure_flag="--disable-rpath --with-system-tzdata=/usr/share/zoneinfo --with-openssl --with-libxml --with-readline --with-icu --with-uuid=e2fs --with-wal-blocksize=16 --with-segsize=128 --with-includes=/usr/local/openssl/include --enable-thread-safety --enable-nls --with-libxslt"
-tde_initdb_args=" "
+gcc_opt_level_flag="-g -pipe -Wall -grecord-gcc-switches -I/usr/include/et"
+tde_initdb_args=""
 
 if [[ $debug_mode == "on" ]];
 then
-  gcc_opt_level_flag="-ggdb -O0 -g3 -fno-omit-frame-pointer "
-  configure_flag="$configure_flag --enable-debug --enable-cassert --enable-tap-tests --enable-polar-inject-tests"
+  gcc_opt_level_flag+=" -ggdb -O0 -g3 -fno-omit-frame-pointer -fstack-protector-strong --param=ssp-buffer-size=4"
+  configure_flag+=" --enable-debug --enable-cassert --enable-tap-tests"
   export COPT="-Werror"
 else
-  gcc_opt_level_flag=" -O3 "
+  gcc_opt_level_flag+=" -O3"
   if [[ $withpx == "yes" ]];
   then
-    gcc_opt_level_flag+=" -Wp,-D_FORTIFY_SOURCE=2 "
+    gcc_opt_level_flag+=" -Wp,-D_FORTIFY_SOURCE=2"
   fi
 fi
 
 if [[ $px_debug_mode == "on" ]];
 then
-  debug_flag_in_config+=" --enable-gpos-debug "
+  configure_flag+=" --enable-gpos-debug"
 fi
 
 if [[ $enable_asan == "on" ]];
 then
-    asan_opt_flag=" -fsanitize=address -fno-omit-frame-pointer "
+    gcc_opt_level_flag+=" -fsanitize=address -fno-omit-frame-pointer"
     #Asan core file is huge (>15T), so we do not allow coredump.
     export ASAN_OPTIONS="alloc_dealloc_mismatch=0:"
 fi
 
 if [[ $coverage == "on" ]];
 then
-  configure_flag="$configure_flag --enable-coverage"
+  configure_flag+=" --enable-coverage"
 fi
 
 if [[ $tap_tests == "on" ]];
 then
-  configure_flag="$configure_flag --enable-tap-tests"
+  configure_flag+=" --enable-tap-tests"
 fi
 
 if [[ $fault_injector == "on" ]]
 then
-  configure_flag="$configure_flag --enable-inject-faults"
+  configure_flag+=" --enable-inject-faults"
 fi
 
-if [[ -z $conf_file ]];
+if [[ $minimal_compile == "on" ]];
 then
-  if [[ -f "./src/backend/utils/misc/postgresql.conf.regress" ]];
-  then
-    conf_file="./src/backend/utils/misc/postgresql.conf.regress"
-  else
-    conf_file="./src/backend/utils/misc/postgresql.conf.sample"
-  fi
+  configure_flag+=" --without-readline --without-zlib --enable-polar-minimal"
+else
+  configure_flag+=" --with-openssl --with-libxml --with-perl --with-python --with-tcl --with-pam --with-gssapi --enable-nls --with-libxslt --with-ldap --with-uuid=e2fs --with-icu --with-llvm"
+fi
+
+if [[ $pfsd == "on" ]];
+then
+  configure_flag+=" --with-pfsd"
+fi
+
+dma_regress_opt=
+if [[ $dma == "on" ]];
+then
+  dma_regress_opt="DMA_OPTS=cluster"
+  configure_flag+=" --with-dma"
 fi
 
 # setup env
-export CFLAGS=" $gcc_opt_level_flag -g -I/usr/include/et -DLINUX_OOM_SCORE_ADJ=0 -DLINUX_OOM_ADJ=0 -DMAP_HUGETLB=0x40000 -pipe -Wall -fexceptions -fstack-protector-strong --param=ssp-buffer-size=4 -grecord-gcc-switches -mtune=generic $asan_opt_flag "
-export CXXFLAGS=" $gcc_opt_level_flag -g -I/usr/include/et  -pipe -Wall -fexceptions -fstack-protector-strong --param=ssp-buffer-size=4 -grecord-gcc-switches -mtune=generic $asan_opt_flag "
-export LDFLAGS=" -Wl,-rpath,'\$\$ORIGIN/../lib' "
-export OPENSSL_ROOT_DIR=/usr/local/openssl
-export OPENSSL_LIBRARIES=/usr/local/openssl/lib/
+export CFLAGS="  $gcc_opt_level_flag"
+export CXXFLAGS="$gcc_opt_level_flag"
+export LDFLAGS="-Wl,-rpath,'\$\$ORIGIN/../lib'"
 
 # to get rid of postgis db creation error
 export LANG=en_US.UTF-8
@@ -511,51 +514,17 @@ export LD_LIBRARY_PATH=$pg_bld_basedir/lib:$LD_LIBRARY_PATH
 # may be needed by some module Makefile to get the correct pg_config
 export PATH=$pg_bld_basedir/bin:$PATH
 
-target_list=". external"
-
-# Note: do not include --with-include or --with-libraries options which can cause linking of /usr/lib64 pg libs
-if [[ $minimal_compile = "off" ]];
-then
-  configure_flag="$configure_flag --with-tclconfig=/usr/lib64 --with-perl --with-python --with-tcl --with-pam --with-gssapi --with-ldap --with-llvm"
-  target_list="$target_list contrib"
-else
-  configure_flag="$configure_flag --enable-polar-minimal"
-fi
-
-if [[ $witharm == "yes" ]];
-then
-  configure_flag="$configure_flag --enable-polar-arm"
-else
-  CFLAGS=" $CFLAGS -m64 "
-  CXXFLAGS=" $CXXFLAGS -m64 "
-fi
-
 #################### PHASE 3: compile and install ###################
 if [[ $nocompile == "off" ]];
 then
   ./configure --prefix=$pg_bld_basedir --with-pgport=$pg_bld_port $common_configure_flag $configure_flag
 
-  current_path=$PWD
-  cd src/backend/polar_dma/libconsensus/polar_wrapper
-  if [[ $debug_mode == "on" ]]; then
-    bash ./build.sh -r -c ON -t debug
-  else
-    bash ./build.sh -r -c ON -t release
-  fi
-  cd $current_path
-
-  for target in $target_list
+  for target in . contrib external
   do
-    make -j`getconf _NPROCESSORS_ONLN` -C $target > /dev/null
-    make install -C $target > /dev/null
+    make -sj`getconf _NPROCESSORS_ONLN` -C $target
+    make install -s -C $target
   done
 fi ##nocoimpile == off
-
-dma_regress_opt=
-if [[ $dma == "on" ]];
-then
-  dma_regress_opt="DMA_OPTS=cluster"
-fi
 
 ###################### PHASE 4 Test: run test cases in non-polar  ######################
 if [[ $make_check_world == "on" ]];
@@ -641,7 +610,7 @@ then
 
   echo "shared_preload_libraries = '\$libdir/polar_px,\$libdir/polar_vfs,\$libdir/polar_worker,\$libdir/pg_stat_statements,\$libdir/auth_delay,\$libdir/auto_explain,\$libdir/polar_monitor_preload,\$libdir/polar_stat_sql'" >> $pg_bld_master_dir/postgresql.conf
 
-  su_eval "sh $pg_bld_basedir/bin/polar-initdb.sh ${pg_bld_master_dir}/ ${pg_bld_data_dir}/ localfs"
+  su_eval "bash $pg_bld_basedir/bin/polar-initdb.sh ${pg_bld_master_dir}/ ${pg_bld_data_dir}/ localfs"
 
   if [[ $dma == "on" ]];
   then

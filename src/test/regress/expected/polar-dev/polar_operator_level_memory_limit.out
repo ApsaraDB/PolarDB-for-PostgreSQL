@@ -3,13 +3,13 @@ set polar_max_setop_mem=128;
 set polar_max_subplan_mem=128;
 set polar_max_recursiveunion_mem=128;
 -- HashAgg
-explain select count(*) from (select s from generate_series(1, 1000) s group by s) g;
-                                      QUERY PLAN                                      
---------------------------------------------------------------------------------------
- Aggregate  (cost=17.00..17.01 rows=1 width=8)
-   ->  HashAggregate  (cost=12.50..14.50 rows=200 width=4)
+explain (costs off) select count(*) from (select s from generate_series(1, 1000) s group by s) g;
+                   QUERY PLAN                   
+------------------------------------------------
+ Aggregate
+   ->  HashAggregate
          Group Key: s.s
-         ->  Function Scan on generate_series s  (cost=0.00..10.00 rows=1000 width=4)
+         ->  Function Scan on generate_series s
 (4 rows)
 
 select count(*) from (select s from generate_series(1, 1000) s group by s) g;
@@ -31,17 +31,17 @@ select count(*) from (select s from generate_series(1, 1000) s group by s) g;
 (1 row)
 
 -- SetOp
-explain select generate_series(1,1000) except select generate_series(1,1000);
-                                   QUERY PLAN                                    
----------------------------------------------------------------------------------
- HashSetOp Except  (cost=0.00..45.03 rows=1000 width=8)
-   ->  Append  (cost=0.00..40.03 rows=2000 width=8)
-         ->  Subquery Scan on "*SELECT* 1"  (cost=0.00..15.02 rows=1000 width=8)
-               ->  ProjectSet  (cost=0.00..5.02 rows=1000 width=4)
-                     ->  Result  (cost=0.00..0.01 rows=1 width=0)
-         ->  Subquery Scan on "*SELECT* 2"  (cost=0.00..15.02 rows=1000 width=8)
-               ->  ProjectSet  (cost=0.00..5.02 rows=1000 width=4)
-                     ->  Result  (cost=0.00..0.01 rows=1 width=0)
+explain (costs off) select generate_series(1,1000) except select generate_series(1,1000);
+                QUERY PLAN                 
+-------------------------------------------
+ HashSetOp Except
+   ->  Append
+         ->  Subquery Scan on "*SELECT* 1"
+               ->  ProjectSet
+                     ->  Result
+         ->  Subquery Scan on "*SELECT* 2"
+               ->  ProjectSet
+                     ->  Result
 (8 rows)
 
 select generate_series(1,1000) except select generate_series(1,1000);
@@ -54,13 +54,13 @@ select generate_series(1,1000) except select generate_series(1,1000);
 (0 rows)
 
 -- Subplan
-explain select * from generate_series(1,1001) as s where s not in (select * from generate_series(1,1000));
-                                   QUERY PLAN                                   
---------------------------------------------------------------------------------
- Function Scan on generate_series s  (cost=12.50..25.00 rows=500 width=4)
+explain (costs off) select * from generate_series(1,1001) as s where s not in (select * from generate_series(1,1000));
+                QUERY PLAN                
+------------------------------------------
+ Function Scan on generate_series s
    Filter: (NOT (hashed SubPlan 1))
    SubPlan 1
-     ->  Function Scan on generate_series  (cost=0.00..10.00 rows=1000 width=4)
+     ->  Function Scan on generate_series
 (4 rows)
 
 select * from generate_series(1,1001) as s where s not in (select * from generate_series(1,1000));

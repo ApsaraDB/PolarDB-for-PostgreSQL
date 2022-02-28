@@ -52,52 +52,51 @@ PolarDB 采用了基于 Shared-Storage 的存储计算分离架构。数据库�
 
 ## 快速入门
 
-请移步在线文档中的 [快速入门指南](https://apsaradb.github.io/PolarDB-for-PostgreSQL/zh/guide/)。推荐使用 [基于单机存储的部署方式和 Docker + CentOS 7 开发镜像](https://apsaradb.github.io/PolarDB-for-PostgreSQL/zh/guide/deploy-on-local-storage.html#方式-1-基于-centos7-的-docker-开发镜像) 快速尝鲜 PolarDB for PostgreSQL。
+如果您正在使用一个干净的 CentOS 7 系统，且正以一个非 root 用户登录，那么您可以使用以下最小化编译部署方式快速尝鲜 PolarDB for PostgreSQL。
+
+```bash
+# install extra software source
+sudo yum install epel-release centos-release-scl
+# update
+sudo yum update
+# install minimal dependencies
+sudo yum install devtoolset-9-gcc devtoolset-9-gcc-c++ \
+                 devtoolset-9-gdb devtoolset-9-make \
+                 bison flex perl-IPC-Run
+
+# enable GCC 9
+sudo bash -c 'echo "source /opt/rh/devtoolset-9/enable" >> /etc/bashrc'
+source /etc/bashrc
+
+# building
+./polardb_build -m
+```
+
+进入 `psql` 命令行则表明编译部署成功：
+
+```bash
+$HOME/tmp_basedir_polardb_pg_1100_bld/bin/psql -h 127.0.0.1
+
+psql (11.9)
+Type "help" for help.
+postgres=# select version();
+            version             
+--------------------------------
+ PostgreSQL 11.9 (POLARDB 11.9)
+(1 row)
+```
+
+对于更多进阶部署方式，请移步在线文档中的 [快速入门指南](https://apsaradb.github.io/PolarDB-for-PostgreSQL/zh/guide/)。推荐使用 [基于单机存储的部署方式 + Docker 开发镜像](https://apsaradb.github.io/PolarDB-for-PostgreSQL/zh/guide/deploy-on-local-storage.html) 部署 PolarDB for PostgreSQL。
 
 ## 文档
 
 请移步本项目的 [在线文档网站](https://apsaradb.github.io/PolarDB-for-PostgreSQL/zh/) 查阅完整文档。
 
-如果需要在本地预览或开发文档，请按以下步骤进行。
-
-### Node 环境准备
-
-本项目的文档是一个 Node.js 工程，您需要在本地准备 Node.js 环境。可在官网 [下载](https://nodejs.org/zh-cn/download/) 页面直接下载安装包。
-
-在 macOS 上可以直接使用 [Homebrew](https://brew.sh/) 安装：
-
-```bash
-brew install node
-```
-
-安装完毕后，使用如下命令检查安装是否成功：
-
-```bash
-node -v
-npm -v
-```
-
-### 依赖安装
-
-在 PolarDB for PostgreSQL 工程的根目录下运行以下命令，`npm` 将会根据 `package.json` 安装所有依赖：
-
-```bash
-npm install --registry https://registry.npm.taobao.org
-```
-
-### 运行文档开发服务器
-
-在 PolarDB for PostgreSQL 工程的根目录下运行以下命令：
-
-```bash
-npm run docs:dev
-```
-
-文档开发服务器将运行于 `http://localhost:8080/PolarDB-for-PostgreSQL/`。打开浏览器即可访问。
+如果需要在本地预览或开发文档，请参考 [贡献文档](https://apsaradb.github.io/PolarDB-for-PostgreSQL/zh/contributing/contributing-polardb-docs.html)。
 
 ## 参与贡献
 
-我们诚挚欢迎社区参与 PolarDB 的贡献。在线文档中的 [参与社区](https://apsaradb.github.io/PolarDB-for-PostgreSQL/zh/contributing/) 提供了关于贡献流程与规范的更多信息。
+我们诚挚欢迎社区参与 PolarDB 的贡献，无论是代码还是文档。在线文档中的 [参与社区](https://apsaradb.github.io/PolarDB-for-PostgreSQL/zh/contributing/) 提供了关于贡献流程与规范的更多信息。
 
 ## Software License
 

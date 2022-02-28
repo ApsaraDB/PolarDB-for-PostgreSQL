@@ -411,7 +411,7 @@ IdentifySystem(void)
 	if (am_cascading_walsender)
 	{
 		/* this also updates ThisTimeLineID */
-		if (polar_enable_dma)
+		if (POLAR_ENABLE_DMA())
 			logptr = polar_dma_get_flush_lsn();
 		else
 			logptr = GetStandbyFlushRecPtr();
@@ -587,7 +587,7 @@ StartReplication(StartReplicationCmd *cmd)
 				 errmsg("IDENTIFY_SYSTEM has not been run before START_REPLICATION")));
 
 	/* POLAR: do not allow DMA replication if not in DMA mode */
-	if (!polar_enable_dma && POLAR_IS_DMA_REPL(cmd->polar_repl_mode))
+	if (!POLAR_ENABLE_DMA() && POLAR_IS_DMA_REPL(cmd->polar_repl_mode))
 		ereport(ERROR,
 				(errmsg("DMA replication is illegally requested if not in DMA mode.")));
 
@@ -688,7 +688,7 @@ StartReplication(StartReplicationCmd *cmd)
 	if (am_cascading_walsender)
 	{
 		/* this also updates ThisTimeLineID */
-		if (polar_enable_dma)
+		if (POLAR_ENABLE_DMA())
 			FlushPtr = polar_dma_get_flush_lsn();
 		else
 			FlushPtr = GetStandbyFlushRecPtr();
@@ -2899,7 +2899,7 @@ XLogSendPhysicalExt(polar_repl_mode_t polar_replication_mode)
 		 */
 		bool		becameHistoric = false;
 
-		if (polar_enable_dma)
+		if (POLAR_ENABLE_DMA())
 			SendRqstPtr = polar_dma_get_flush_lsn();
 		else
 			SendRqstPtr = GetStandbyFlushRecPtr();
@@ -4350,12 +4350,12 @@ polar_gen_replication_mode(void)
 		case POLAR_STANDBY:
 			return POLAR_REPL_STANDBY;
 		case POLAR_STANDALONE_DATAMAX:
-			if (polar_enable_dma)
+			if (POLAR_ENABLE_DMA())
 				return POLAR_REPL_DMA_LOGGER;
 			else
 				return POLAR_REPL_SA_DATAMAX;
 		default:
-			if (polar_enable_dma)
+			if (POLAR_ENABLE_DMA())
 				return POLAR_REPL_DMA_DATA;
 			else
 				return POLAR_REPL_DEFAULT;

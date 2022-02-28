@@ -75,12 +75,6 @@ static int ldapServiceLookup(const char *purl, PQconninfoOption *options,
 #include "mb/pg_wchar.h"
 #include "port/pg_bswap.h"
 
-/* POLAR */
-#include <openssl/aes.h>
-#include <openssl/evp.h>
-#include "common/base64.h"
-
-
 #ifndef WIN32
 #define PGPASSFILE ".pgpass"
 #else

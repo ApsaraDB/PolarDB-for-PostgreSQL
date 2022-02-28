@@ -684,9 +684,11 @@ InitPostgres(const char *in_dbname, Oid dboid, const char *username,
 		 * We are either a bootstrap process or a standalone backend. Either
 		 * way, start up the XLOG machinery, and register to have it closed
 		 * down at exit.
-		 * POLAR: disable consensus
 		 */
+#ifdef USE_DMA
+		/* POLAR: disable consensus */
 		polar_enable_dma = false;
+#endif
 		StartupXLOG();
 		on_shmem_exit(ShutdownXLOG, 0);
 	}
@@ -807,7 +809,7 @@ InitPostgres(const char *in_dbname, Oid dboid, const char *username,
 	 * If we're trying to shut down, only superusers can connect, and new
 	 * replication connections are not allowed.
 	 */
-	if ((!polar_enable_dma && (!am_superuser || am_walsender)) &&
+	if ((!POLAR_ENABLE_DMA() && (!am_superuser || am_walsender)) &&
 		MyProcPort != NULL &&
 		MyProcPort->canAcceptConnections == CAC_WAITBACKUP)
 	{

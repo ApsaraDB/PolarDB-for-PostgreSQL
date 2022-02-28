@@ -87,5 +87,5 @@ fi
 
 cd bu
 cmake -D CMAKE_INSTALL_PREFIX=$CWD -D WITH_DEBUG=$debug -D WITHOUT_CXX11_ABI=$without_cxx11_abi -D WITH_ASAN=$with_asan ..
-make -sj
-make install
+make -sj`getconf _NPROCESSORS_ONLN`
+make install -j`getconf _NPROCESSORS_ONLN`

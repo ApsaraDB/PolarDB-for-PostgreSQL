@@ -3277,7 +3277,7 @@ XLogFlush(XLogRecPtr record)
 		if (polar_is_dma_data_node())
 		{
 			ConsensusSetXLogFlushedLSN(record, ThisTimeLineID, false);
-			if (!polar_dma_async_commit)
+			if (!POLAR_DMA_ASYNC_COMMIT())
 				polar_dma_xlog_commit(record);
 		}
 		return;
@@ -3407,7 +3407,7 @@ XLogFlush(XLogRecPtr record)
 	if (polar_is_dma_data_node())
 	{
 		ConsensusSetXLogFlushedLSN(record, ThisTimeLineID, false);
-		if (!polar_dma_async_commit)
+		if (!POLAR_DMA_ASYNC_COMMIT())
 			polar_dma_xlog_commit(record);
 	}
 
@@ -3687,7 +3687,7 @@ XLogNeedsFlush(XLogRecPtr record)
 	}
 
 	/* Quick exit if already known flushed */
-	if (polar_is_dma_data_node() && !polar_dma_async_commit)
+	if (polar_is_dma_data_node() && !POLAR_DMA_ASYNC_COMMIT())
 	{
 		if (record <= ConsensusCommit)
 			return false;
@@ -3704,7 +3704,7 @@ XLogNeedsFlush(XLogRecPtr record)
 	SpinLockRelease(&XLogCtl->info_lck);
 
 	/* check again */
-	if (polar_is_dma_data_node() && !polar_dma_async_commit)
+	if (polar_is_dma_data_node() && !POLAR_DMA_ASYNC_COMMIT())
 	{
 		if (record <= ConsensusCommit)
 			return false;
@@ -6457,7 +6457,7 @@ readRecoveryCommandFile(void)
 		}
 		else if (strcmp(item->name, "standby_mode") == 0)
 		{
-			if (!polar_enable_dma)
+			if (!POLAR_ENABLE_DMA())
 			{
 				if (!parse_bool(item->value, &StandbyModeRequested))
 					ereport(ERROR,
@@ -6481,12 +6481,12 @@ readRecoveryCommandFile(void)
 					(errmsg_internal("replica_mode = '%s'", item->value)));
 
 			/* POLAR: replica mode base on standby mode, just can not write shared storage */
-			if (polar_replica && !polar_enable_dma)
+			if (polar_replica && !POLAR_ENABLE_DMA())
 				StandbyModeRequested = true;
 		}
 		else if (strcmp(item->name, "primary_conninfo") == 0)
 		{
-			if (!polar_enable_dma)
+			if (!POLAR_ENABLE_DMA())
 			{
 				PrimaryConnInfo = pstrdup(item->value);
 				ereport(DEBUG2,
@@ -6496,7 +6496,7 @@ readRecoveryCommandFile(void)
 		}
 		else if (strcmp(item->name, "primary_slot_name") == 0)
 		{
-			if (!polar_enable_dma)
+			if (!POLAR_ENABLE_DMA())
 			{
 				ReplicationSlotValidateName(item->value, ERROR);
 				PrimarySlotName = pstrdup(item->value);
@@ -6507,7 +6507,7 @@ readRecoveryCommandFile(void)
 		}
 		else if (strcmp(item->name, "trigger_file") == 0)
 		{
-			if (!polar_enable_dma)
+			if (!POLAR_ENABLE_DMA())
 			{
 				TriggerFile = pstrdup(item->value);
 				ereport(DEBUG2,
@@ -6553,7 +6553,7 @@ readRecoveryCommandFile(void)
 	/* POLAR: DataMax mode need conninfo, too */
 	if (StandbyModeRequested || polar_datamax_mode_requested)
 	{
-		if (!polar_enable_dma && PrimaryConnInfo == NULL && recoveryRestoreCommand == NULL)
+		if (!POLAR_ENABLE_DMA() && PrimaryConnInfo == NULL && recoveryRestoreCommand == NULL)
 			ereport(WARNING,
 					(errmsg("recovery command file \"%s\" specified neither primary_conninfo nor restore_command",
 							RECOVERY_COMMAND_FILE),
@@ -6561,7 +6561,7 @@ readRecoveryCommandFile(void)
 	}
 	else
 	{
-		if (!polar_enable_dma && recoveryRestoreCommand == NULL)
+		if (!POLAR_ENABLE_DMA() && recoveryRestoreCommand == NULL)
 			ereport(FATAL,
 					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 					 errmsg("recovery command file \"%s\" must specify restore_command when standby mode is not enabled",
@@ -9343,7 +9343,7 @@ StartupXLOG(void)
 
 	if (fast_promoted)
 	{
-		if (polar_enable_dma || enable_logindex_online_promote || enable_logindex_online_promote_standby)
+		if (POLAR_ENABLE_DMA() || enable_logindex_online_promote || enable_logindex_online_promote_standby)
 		{
 			/* POLAR: crash recovery or recovery after becoming leader in DMA mode 
 			 * should always recover to the end of WAL*/
@@ -11157,7 +11157,7 @@ CreateRestartPoint(int flags)
 		 * POLAR: ignore remove xlogs if not update pg_control, otherwise 
 		 * the checkpint record of pg_control may be not exists 
 		 */
-		if (polar_enable_dma)
+		if (POLAR_ENABLE_DMA())
 			controlFileUpdated = true;
 	}
 	LWLockRelease(ControlFileLock);
@@ -11185,7 +11185,7 @@ CreateRestartPoint(int flags)
 	 * Delete old log files, those no longer needed for last restartpoint to
 	 * prevent the disk holding the xlog from growing full.
 	 */
-	if (!polar_enable_dma || controlFileUpdated)
+	if (!POLAR_ENABLE_DMA() || controlFileUpdated)
 		XLByteToSeg(RedoRecPtr, _logSegNo, wal_segment_size);
 
 	/* POLAR: Truncate logindex before removing wal files. Files may saved in local file system, like relation size cache. */
@@ -11198,7 +11198,7 @@ CreateRestartPoint(int flags)
 	receivePtr = GetWalRcvWriteRecPtr(NULL, NULL);
 	replayPtr = GetXLogReplayRecPtr(&replayTLI);
 	endptr = (receivePtr < replayPtr) ? replayPtr : receivePtr;
-	if (!polar_enable_dma || controlFileUpdated)
+	if (!POLAR_ENABLE_DMA() || controlFileUpdated)
 	{
 		KeepLogSeg(endptr, &_logSegNo);
 		InvalidateObsoleteReplicationSlots(_logSegNo);
@@ -11221,7 +11221,7 @@ CreateRestartPoint(int flags)
 	if (RecoveryInProgress())
 		ThisTimeLineID = replayTLI;
 
-	if (!polar_enable_dma || controlFileUpdated)
+	if (!POLAR_ENABLE_DMA() || controlFileUpdated)
 		RemoveOldXlogFiles(_logSegNo, RedoRecPtr, endptr);
 
 	/*
@@ -14197,7 +14197,7 @@ WaitForWALToBecomeAvailable(XLogRecPtr RecPtr, bool randAccess,
 
 						curFileTLI = tli;
 						RequestXLogStreaming(tli, ptr, PrimaryConnInfo,
-											 polar_is_dma_data_node() ? polar_dma_repl_slot_name : PrimarySlotName);
+											 polar_is_dma_data_node() ? POLAR_DMA_REPL_SLOT_NAME() : PrimarySlotName);
 						receivedUpto = 0;
 					}
 
@@ -15416,7 +15416,7 @@ polar_is_dma_data_node(void)
 	/*
 	 * For DMA logger, local polar node type would not be changed after start.
 	 */
-	return polar_enable_dma && polar_local_node_type != POLAR_STANDALONE_DATAMAX;
+	return POLAR_ENABLE_DMA() && polar_local_node_type != POLAR_STANDALONE_DATAMAX;
 }
 
 bool
@@ -15425,7 +15425,7 @@ polar_is_dma_logger_node(void)
 	/*
 	 * For DMA logger, local polar node type would not be changed after start.
 	 */
-	return polar_enable_dma && polar_local_node_type == POLAR_STANDALONE_DATAMAX;
+	return POLAR_ENABLE_DMA() && polar_local_node_type == POLAR_STANDALONE_DATAMAX;
 }
 
 /* POLAR: get the distance between consistent_lsn and oldest_lsn */
@@ -15952,6 +15952,7 @@ polar_signal_pm_state_change(int state,
 void
 polar_signal_recovery_state_change(bool newLeader, bool resumeLeader)
 {
+#ifdef USE_DMA
 	SpinLockAcquire(&XLogCtl->consens_state_lck);
 
 	if (resumeLeader && XLogCtl->inLeaderState)
@@ -15991,6 +15992,9 @@ polar_signal_recovery_state_change(bool newLeader, bool resumeLeader)
 	SpinLockAcquire(&XLogCtl->pm_state_lck);
 	XLogCtl->pmInStateChange = false;
 	SpinLockRelease(&XLogCtl->pm_state_lck);
+#else
+	Assert(false);
+#endif
 }
 
 /*

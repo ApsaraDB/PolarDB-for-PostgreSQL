@@ -375,7 +375,7 @@ perform_base_backup(basebackup_options *opt)
 				if (ti->polar_shared)
 				{
 					sendDir(polar_datadir, strlen(polar_datadir), false, tablespaces, true, 
-							ti->polar_shared, !polar_enable_dma);
+							ti->polar_shared, !POLAR_ENABLE_DMA());
 
 					/* ... and pg_control after everything else. */
 					polar_make_file_path_level2(polar_full_path, XLOG_CONTROL_FILE);
@@ -387,7 +387,7 @@ perform_base_backup(basebackup_options *opt)
 					sendPolarFile(polar_full_path, XLOG_CONTROL_FILE, &statbuf, false);
 
 					/* POLAR: backup polar_dma after pg_control */
-					if (polar_enable_dma)
+					if (POLAR_ENABLE_DMA())
 					{
 						polar_make_file_path_level2(polar_full_path, "polar_dma/consensus_meta");
 						if (polar_stat(polar_full_path, &statbuf) != 0)
@@ -435,10 +435,10 @@ perform_base_backup(basebackup_options *opt)
 						if (tblspc_map_file && opt->sendtblspcmapfile)
 						{
 							sendFileWithContent(TABLESPACE_MAP, tblspc_map_file->data);
-							sendDir(".", 1, false, tablespaces, false, ti->polar_shared, !polar_enable_dma);
+							sendDir(".", 1, false, tablespaces, false, ti->polar_shared, !POLAR_ENABLE_DMA());
 						}
 						else
-							sendDir(".", 1, false, tablespaces, true, ti->polar_shared, !polar_enable_dma);
+							sendDir(".", 1, false, tablespaces, true, ti->polar_shared, !POLAR_ENABLE_DMA());
 
 						/* ... and pg_control after everything else. */
 						if (lstat(XLOG_CONTROL_FILE, &statbuf) != 0)
@@ -449,7 +449,7 @@ perform_base_backup(basebackup_options *opt)
 						sendFile(XLOG_CONTROL_FILE, XLOG_CONTROL_FILE, &statbuf, false);
 
 						/* POLAR: backup polar_dma after pg_control */
-						if (polar_enable_dma)
+						if (POLAR_ENABLE_DMA())
 						{
 							if (lstat("polar_dma/consensus_meta", &statbuf) != 0)
 								ereport(ERROR,

@@ -31,7 +31,9 @@
 #include "storage/pg_shmem.h"
 #include "storage/shmem.h"
 #include "storage/lwlock.h"
+#ifdef USE_PFSD
 #include "pfsd_sdk.h"
+#endif
 
 /* POLAR */
 #include "storage/polar_pfsd.h"

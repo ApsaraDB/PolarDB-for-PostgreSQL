@@ -447,7 +447,7 @@ extern void polar_xact_split_mark_unsplittable(uint8 reason);
 extern bool polar_xact_split_splittable(void);
 extern bool polar_is_split_xact(void);
 extern void polar_stat_update_ro_proxy_info(void);
-#ifdef POLAR_INJECT_TESTS
+#ifdef FAULT_INJECTOR
 extern void test_single_polar_xact_split_mock(char *guc_xids, int *xact_state_xids);
 #endif
 /* POLAR end */

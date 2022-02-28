@@ -23,5 +23,5 @@ include $(top_builddir)/src/Makefile.global
 include $(top_srcdir)/contrib/contrib-global.mk
 endif
 
-installcheck: all
+installcheck:
 	$(pg_regress_installcheck) --host localhost --inputdir=. --bindir='$(bindir)' $(REGRESS_OPTS) polar_monitor_preload

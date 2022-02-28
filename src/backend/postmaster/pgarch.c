@@ -732,7 +732,7 @@ pgarch_readyXlog(char *xlog)
 		if (strspn(rlde->d_name, VALID_XFN_CHARS) < basenamelen)
 			continue;
 
-		if (polar_enable_dma && strcmp(rlde->d_name + basenamelen, ".local") == 0)
+		if (POLAR_ENABLE_DMA() && strcmp(rlde->d_name + basenamelen, ".local") == 0)
 		{
 			uint32 tli;
 			XLogSegNo segno;
@@ -749,7 +749,7 @@ pgarch_readyXlog(char *xlog)
 			StatusFilePath(rlogready, basename, ".ready");
 			(void) polar_durable_rename(rloglocal, rlogready, WARNING);
 		}
-		else if (polar_enable_dma && strcmp(rlde->d_name + basenamelen, ".paxos") == 0)
+		else if (POLAR_ENABLE_DMA() && strcmp(rlde->d_name + basenamelen, ".paxos") == 0)
 		{
 			uint32 tli;
 			XLogSegNo segno;

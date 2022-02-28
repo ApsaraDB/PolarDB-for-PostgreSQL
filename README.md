@@ -52,15 +52,51 @@ For more information, see [Architecture](https://apsaradb.github.io/PolarDB-for-
 
 ## Quick Start with PolarDB
 
-Please refer to [Getting Started](https://apsaradb.github.io/PolarDB-for-PostgreSQL/guide/) on documentation website. We recommand [deploying on local storage with Docker and development image](https://apsaradb.github.io/PolarDB-for-PostgreSQL/guide/deploy-on-local-storage.html#方式-1-基于-centos7-的-docker-开发镜像) for fast tasting PolarDB for PostgreSQL.
+If you are using a clean CentOS 7 system with a non-root user logged in, you can try the following steps to build a minimal PolarDB for fast tasting.
+
+```bash
+# install extra software source
+sudo yum install epel-release centos-release-scl
+# update
+sudo yum update
+# install minimal dependencies
+sudo yum install devtoolset-9-gcc devtoolset-9-gcc-c++ \
+                 devtoolset-9-gdb devtoolset-9-make \
+                 bison flex perl-IPC-Run
+
+# enable GCC 9
+sudo bash -c 'echo "source /opt/rh/devtoolset-9/enable" >> /etc/bashrc'
+source /etc/bashrc
+
+# building
+./polardb_build -m
+```
+
+If you can enter `psql` successfully, that means you are done.
+
+```bash
+$HOME/tmp_basedir_polardb_pg_1100_bld/bin/psql -h 127.0.0.1
+
+psql (11.9)
+Type "help" for help.
+postgres=# select version();
+            version             
+--------------------------------
+ PostgreSQL 11.9 (POLARDB 11.9)
+(1 row)
+```
+
+For more advanced building and deploying options, please refer to [Getting Started](https://apsaradb.github.io/PolarDB-for-PostgreSQL/guide/) on documentation website. We recommand using [deploying on local storage + Docker development image](https://apsaradb.github.io/PolarDB-for-PostgreSQL/guide/deploy-on-local-storage.html) for deploying PolarDB for PostgreSQL.
 
 ## Documentation
 
 Please refer to [Online Documentation Website](https://apsaradb.github.io/PolarDB-for-PostgreSQL/zh/) to see the whole documentations.
 
+If you want to explore or develop documentation locally, see [Document Contribution](https://apsaradb.github.io/PolarDB-for-PostgreSQL/contributing/contributing-polardb-docs.html).
+
 ## Contributions
 
-You are welcome to make contributions to PolarDB. We appreciate all the contributions. For more information about how to start development and pull requests, see [Community](https://apsaradb.github.io/PolarDB-for-PostgreSQL/contributing/).
+You are welcome to make contributions to PolarDB, no matter code or documentation. We appreciate all the contributions. For more information about how to start development and pull requests, see [Community](https://apsaradb.github.io/PolarDB-for-PostgreSQL/contributing/).
 
 ## Software License
 

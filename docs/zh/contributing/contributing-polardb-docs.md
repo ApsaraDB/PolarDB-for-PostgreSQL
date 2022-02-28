@@ -4,46 +4,67 @@ PolarDB for PostgreSQL 的文档使用 [VuePress 2](https://v2.vuepress.vuejs.or
 
 ## 浏览文档
 
-本文档在线托管于 [GitHub Pages](https://ApsaraDB.github.io/PolarDB-for-PostgreSQL/) 服务上。
+本文档在线托管于 [GitHub Pages](https://ApsaraDB.github.io/PolarDB-for-PostgreSQL/zh/) 服务上。
 
 ## 本地文档开发
 
-若您发现文档中存在内容或格式错误，或者您希望能够贡献新文档，那么您需要在本地准备文档开发环境。
+若您发现文档中存在内容或格式错误，或者您希望能够贡献新文档，那么您需要在本地安装并配置文档开发环境。本项目的文档是一个 Node.js 工程，[Node.js®](https://nodejs.org/zh-cn/) 是一个基于 Chrome V8 引擎的 JavaScript 运行时环境。
 
 ### Node 环境准备
 
-本项目的文档是一个 Node.js 工程，您需要在本地准备 Node.js 环境。[Node.js®](https://nodejs.org/zh-cn/) 是一个基于 Chrome V8 引擎的 JavaScript 运行时环境，可在官网 [下载](https://nodejs.org/zh-cn/download/) 页面直接下载安装包。
+您需要在本地准备 Node.js 环境。可以选择在 Node.js 官网 [下载](https://nodejs.org/zh-cn/download/) 页面下载安装包手动安装，也可以根据您正在使用的操作系统使用下面的命令自动安装。
+
+#### macOS
 
 在 macOS 上可以直接使用 [Homebrew](https://brew.sh/) 安装：
 
-```bash
+```bash:no-line-numbers
 brew install node
 ```
 
-安装完毕后，使用如下命令检查安装是否成功：
+#### Linux / Windows Subsystem for Linux (WSL)
 
-```bash
+在 Linux 上通过 `curl` 安装 Node 版本管理器 `nvm`。
+
+```bash:no-line-numbers
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.1/install.sh | bash
+command -v nvm
+```
+
+如果上一步显示 `command not found`，那么请关闭当前终端，然后重新打开。
+
+如果 `nvm` 已经被成功安装，执行以下命令安装 Node 的 LTS 版本：
+
+```bash:no-line-numbers
+nvm install --lts
+```
+
+### Node 环境验证
+
+Node.js 安装完毕后，使用如下命令检查安装是否成功：
+
+```bash:no-line-numbers
 node -v
 npm -v
 ```
 
-### 依赖安装
+### 文档依赖安装
 
 在 PolarDB for PostgreSQL 工程的根目录下运行以下命令，`npm` 将会根据 `package.json` 安装所有依赖：
 
-```bash
-npm install --registry https://registry.npm.taobao.org
+```bash:no-line-numbers
+npm install --registry https://registry.npmmirror.com
 ```
 
 ### 运行文档开发服务器
 
 在 PolarDB for PostgreSQL 工程的根目录下运行以下命令：
 
-```bash
+```bash:no-line-numbers
 npm run docs:dev
 ```
 
-文档开发服务器将运行于 `http://localhost:8080/PolarDB-for-PostgreSQL/`。打开浏览器即可访问。
+文档开发服务器将运行于 `http://localhost:8080/PolarDB-for-PostgreSQL/`，打开浏览器即可访问。对 Markdown 文件作出修改后，可以在网页上实时查看变化。
 
 ## 文档目录组织
 
@@ -83,7 +104,7 @@ PolarDB for PostgreSQL 的文档资源位于工程根目录的 `docs/` 目录下
 
 ## 文档开发规范
 
-1. 新的文档写好后，需要在文档配置中配置路由（可参考其他已有文档）
+1. 新的文档写好后，需要在文档配置中配置路由使其在导航栏和侧边栏中显示（可参考其他已有文档）
 2. 修正一种语言的文档时，也需要顺带修正其他语言的相同文档
 3. 修改文档后，使用 [Prettier](https://prettier.io/) 工具对 Markdown 文档进行格式化。Prettier 支持的编辑器集成：
    - [Prettier-VSCode](https://github.com/prettier/prettier-vscode)
