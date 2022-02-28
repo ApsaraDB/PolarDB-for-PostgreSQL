@@ -20,7 +20,8 @@
   },
   "homepage": "https://github.com/ApsaraDB/PolarDB-for-PostgreSQL#readme",
   "devDependencies": {
-    "@vuepress/plugin-search": "^2.0.0-beta.27",
-    "vuepress": "^2.0.0-beta.27"
+    "@vuepress/plugin-prismjs": "^2.0.0-beta.35",
+    "@vuepress/plugin-search": "^2.0.0-beta.35",
+    "vuepress": "^2.0.0-beta.35"
   }
 }
