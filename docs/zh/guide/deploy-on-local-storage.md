@@ -302,7 +302,7 @@ sudo chown -R postgres:postgres PolarDB-for-PostgreSQL
 - 安装 CentOS 7 的物理机/虚拟机
 - 从 CentOS 7 官方 Docker 镜像 `centos:centos7` 上启动的 Docker 容器
 
-根据 [上面的步骤](./deploy-on-local-storage.md#建立非-root-用户-视情况可跳过)，我们已经在系统中以 `root` 用户创建一个具有 sudo 权限的普通用户 `postgres`。接下来，切换到 `postgres` 用户（或您正在使用的其它普通用户），执行源代码根目录下的依赖安装脚本 `install_dependencies.sh` 完成所有的环境准备。注意，执行依赖安装脚本需要使用 `sudo`。
+根据 [上面的步骤](./deploy-on-local-storage.md#建立非-root-用户)，我们已经在系统中以 `root` 用户创建一个具有 sudo 权限的普通用户 `postgres`。接下来，切换到 `postgres` 用户（或您正在使用的其它普通用户），执行源代码根目录下的依赖安装脚本 `install_dependencies.sh` 完成所有的环境准备。注意，执行依赖安装脚本需要使用 `sudo`。
 
 ```bash:no-line-numbers
 cd PolarDB-for-PostgreSQL
