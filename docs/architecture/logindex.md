@@ -80,7 +80,7 @@ After the data in an Inactive LogIndex Memtable is flushed to the disk, the LogI
 
 ![image.png](../imgs/58_LogIndex_10.png)
 
-All modified data pages recorded in WAL logs before the LSN of consistent data are persisted to the shared storage based on the information described in [Buffer Management](Buffer_Management.md). The LSN of consistent data is the LSN before which data is consistent between the primary node and read-only nodes. Read-only nodes do not need to replay WAL logs generated before the LSN of consistent data. In this case, the WAL logs for the LSNs that are smaller than the LSN of consistent data can be cleared from LogIndex Tables. This way, the primary node can truncate LogIndex Tables that are no longer used in the storage. This enables more efficient log replay for read-only nodes and reduces the space occupied by LogIndex Tables.
+All modified data pages recorded in WAL logs before the LSN of consistent data are persisted to the shared storage based on the information described in [Buffer Management](./buffer-management.md). The LSN of consistent data is the LSN before which data is consistent between the primary node and read-only nodes. Read-only nodes do not need to replay WAL logs generated before the LSN of consistent data. In this case, the WAL logs for the LSNs that are smaller than the LSN of consistent data can be cleared from LogIndex Tables. This way, the primary node can truncate LogIndex Tables that are no longer used in the storage. This enables more efficient log replay for read-only nodes and reduces the space occupied by LogIndex Tables.
 
 ## Log replay
 

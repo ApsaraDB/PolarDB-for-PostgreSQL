@@ -80,7 +80,7 @@ LogIndex 实质为一个 HashTable 结构，其 key 为 PageTag，可标识一�
 
 ![image.png](../imgs/58_LogIndex_10.png)
 
-由 [Buffer 管理](Buffer_Management.md) 可知，一致性位点之前的所有 WAL 日志修改的数据页均已持久化到共享存储中，RO 节点无需回放该位点之前的 WAL 日志，故 LogIndex Table 中小于一致性位点的 LSN 均可清除。RW 据此 Truncate 掉存储上不再使用的 LogIndex Table，在加速 RO 回放效率的同时还可减少 LogIndex Table 占用的空间。
+由 [Buffer 管理](./buffer-management.md) 可知，一致性位点之前的所有 WAL 日志修改的数据页均已持久化到共享存储中，RO 节点无需回放该位点之前的 WAL 日志，故 LogIndex Table 中小于一致性位点的 LSN 均可清除。RW 据此 Truncate 掉存储上不再使用的 LogIndex Table，在加速 RO 回放效率的同时还可减少 LogIndex Table 占用的空间。
 
 ## 日志回放
 

@@ -11,10 +11,10 @@ actions:
     type: secondary
 features:
   - title: 极致弹性
-    details: 存储与计算能力均可独立地横向扩展。
-  - title: 毫秒级延迟
-    details: WAL 日志存储在共享存储上；独创的 LogIndex 技术，实现了延迟回放和并行回放，理论上最大程度地缩小了 RW 和 RO 节点间的延迟。
+    details: 存储与计算节点均可独立地横向扩展
+  - title: 毫秒级节点间延迟
+    details: 基于共享存储的 WAL 日志和独创的 LogIndex 技术实现延迟回放和并行回放
   - title: HTAP 能力
-    details: 基于 Shared-Storage 的分布式并行执行框架，加速在 OLTP 场景下的 OLAP 查询。
+    details: 基于共享存储的分布式并行执行框架，加速 OLTP 场景下的 OLAP 查询
 footer: Apache 2.0 Licensed | Copyright © Alibaba Group, Inc.
 ---
