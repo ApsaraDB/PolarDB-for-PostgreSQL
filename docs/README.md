@@ -11,10 +11,10 @@ actions:
     type: secondary
 features:
   - title: Flexible Scalability
-    details: You can use the service to scale out a compute cluster or a storage cluster based on your business requirements.
+    details: Scale out compute/storage clusters on demand
   - title: Millisecond-level Latency
-    details: "Write-ahead logging (WAL) logs are stored in the shared storage. The LogIndex technology provided by PolarDB features two record replay modes: lazy replay and parallel replay."
+    details: Lazy/parallel replay via shared-storage-based WAL and LogIndex
   - title: HTAP
-    details: HTAP is implemented by using a shared-storage-based massively parallel processing (MPP) architecture.
+    details: Shared-storage-based massively parallel processing (MPP) framework
 footer: Apache 2.0 Licensed | Copyright © Alibaba Group, Inc.
 ---
