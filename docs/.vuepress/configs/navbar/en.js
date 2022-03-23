@@ -9,19 +9,19 @@ module.exports = [
     children: [
       {
         text: "Overview",
-        link: "/architecture/README.md",
+        link: "/architecture/",
       },
       {
         text: "Buffer Management",
-        link: "/architecture/buffer-management.md",
+        link: "/architecture/buffer-management.html",
       },
       {
         text: "DDL Synchronization",
-        link: "/architecture/ddl-synchronization.md",
+        link: "/architecture/ddl-synchronization.html",
       },
       {
         text: "LogIndex",
-        link: "/architecture/logindex.md",
+        link: "/architecture/logindex.html",
       },
     ],
   },
@@ -35,19 +35,19 @@ module.exports = [
     children: [
       {
         text: "Code Contributing",
-        link: "/contributing/contributing-polardb-kernel.md",
+        link: "/contributing/contributing-polardb-kernel.html",
       },
       {
         text: "Docs Contributing",
-        link: "/contributing/contributing-polardb-docs.md",
+        link: "/contributing/contributing-polardb-docs.html",
       },
       {
         text: "Coding Style",
-        link: "/contributing/coding-style.md",
+        link: "/contributing/coding-style.html",
       },
       {
         text: "Code of Conduct",
-        link: "/contributing/code-of-conduct.md",
+        link: "/contributing/code-of-conduct.html",
       },
     ],
   },

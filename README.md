@@ -90,7 +90,7 @@ For more advanced building and deploying options, please refer to [Getting Start
 
 ## Documentation
 
-Please refer to [Online Documentation Website](https://apsaradb.github.io/PolarDB-for-PostgreSQL/zh/) to see the whole documentations.
+Please refer to [Online Documentation Website](https://apsaradb.github.io/PolarDB-for-PostgreSQL/) to see the whole documentations.
 
 If you want to explore or develop documentation locally, see [Document Contribution](https://apsaradb.github.io/PolarDB-for-PostgreSQL/contributing/contributing-polardb-docs.html).
 
