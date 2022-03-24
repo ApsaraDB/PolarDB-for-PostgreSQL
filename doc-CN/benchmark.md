@@ -19,7 +19,7 @@ CREATE DATABASE
 * 初始化基准测试环境，使用`-s`选项设置比例因子，使用`--help`选项获取更多信息：
 
 ```bash
-$~/pghome/bin/pgbench -i --unlogged-tables -s 32 -p 5432 -d pgbench
+$~/pghome/bin/pgbench -i --unlogged-tables -s 32 -p 5432 pgbench
 dropping old tables...
 NOTICE:  table "pgbench_accounts" does not exist, skipping
 NOTICE:  table "pgbench_branches" does not exist, skipping
@@ -66,7 +66,7 @@ done.
 ## 运行基准测试
 使用一些选项运行基准测试，使用`--help`选项获取更多信息：
 ```bash
-$~/pghome/bin/pgbench -M prepared -r -c 16 -j 4 -T 30 -p 5432 -d pgbench -l
+$~/pghome/bin/pgbench -M prepared -r -c 16 -j 4 -T 30 -p 5432 pgbench -l
 ... ...
 client 2 sending P0_10
 client 2 receiving
