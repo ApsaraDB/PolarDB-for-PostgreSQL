@@ -9,19 +9,19 @@ module.exports = [
     children: [
       {
         text: "架构详解",
-        link: "/zh/architecture/README.md",
+        link: "/zh/architecture/",
       },
       {
         text: "缓冲区管理",
-        link: "/zh/architecture/buffer-management.md",
+        link: "/zh/architecture/buffer-management.html",
       },
       {
         text: "DDL 同步",
-        link: "/zh/architecture/ddl-synchronization.md",
+        link: "/zh/architecture/ddl-synchronization.html",
       },
       {
         text: "LogIndex",
-        link: "/zh/architecture/logindex.md",
+        link: "/zh/architecture/logindex.html",
       },
     ],
   },
@@ -35,19 +35,19 @@ module.exports = [
     children: [
       {
         text: "贡献代码",
-        link: "/zh/contributing/contributing-polardb-kernel.md",
+        link: "/zh/contributing/contributing-polardb-kernel.html",
       },
       {
         text: "贡献文档",
-        link: "/zh/contributing/contributing-polardb-docs.md",
+        link: "/zh/contributing/contributing-polardb-docs.html",
       },
       {
         text: "编码风格",
-        link: "/zh/contributing/coding-style.md",
+        link: "/zh/contributing/coding-style.html",
       },
       {
         text: "行为准则",
-        link: "/zh/contributing/code-of-conduct.md",
+        link: "/zh/contributing/code-of-conduct.html",
       },
     ],
   },

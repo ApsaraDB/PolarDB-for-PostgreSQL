@@ -21,124 +21,22 @@
 - Fedora：[在 Fedora 上安装 Docker Engine](https://docs.docker.com/engine/install/fedora/)
 - macOS（支持 M1 芯片）：[在 Mac 上安装 Docker Desktop](https://docs.docker.com/desktop/mac/install/)，并建议将内存调整为 4GB
 
-## 建立非 root 用户
+## 编译环境准备
 
-::: tip
+以下两种方式任选一种即可：
 
-1. 如果您决定使用我们提供的 Docker 开发镜像，那么当您进入容器时就已经以用户 `postgres` 登录了，可忽略该步骤
-2. 如果您已经有了一个非 root 用户，但名称不是 `postgres:postgres`，同样可以忽略该步骤；但请注意在后续示例步骤中将命令中用户相关的信息替换为您自己的用户组名与用户名
+- [基于 PolarDB Docker 开发镜像](./deploy-on-local-storage.md#基于-polardb-docker-开发镜像)：无需手动配置环境，较为简单
+- [基于 CentOS 7 系统或容器](./deploy-on-local-storage.md#基于-centos-7-系统或容器)：适合对开发环境做更多定制
 
-:::
-
-PolarDB for PostgreSQL 需要以非 root 用户运行。以下步骤能够帮助您创建一个名为 `postgres` 的用户组和一个名为 `postgres` 的用户。该步骤适用于当前仅包含一个 root 用户的系统：
-
-- 从一个全新的 CentOS 7 操作系统系统开始
-- 从 `centos:centos7` 启动了一个干净的 Docker 容器
-
-下面的命令能够创建用户组 `postgres` 和用户 `postgres`，并为该用户赋予 sudo 和工作目录的权限。需要以 root 用户执行这些命令。
-
-```bash
-# install sudo
-yum install -y sudo
-
-# create user and group
-groupadd -r postgres
-useradd -m -g postgres postgres -p ''
-usermod -aG wheel postgres
-
-# make postgres as sudoer
-chmod u+w /etc/sudoers
-echo 'postgres ALL=(ALL) NOPASSWD: ALL' >> /etc/sudoers
-chmod u-w /etc/sudoers
-
-# grant access to home directory
-chown -R postgres:postgres /home/postgres/
-echo 'source /etc/bashrc' >> /home/postgres/.bashrc
-# for su postgres
-sed -i 's/4096/unlimited/g' /etc/security/limits.d/20-nproc.conf
-```
-
-接下来，切换到 `postgres` 用户，就可以进行后续的步骤了：
-
-```bash
-su postgres
-cd ~
-source /etc/bashrc
-```
-
-## 下载 PolarDB 源代码
-
-PolarDB for PostgreSQL 的代码托管于 [GitHub](https://github.com/ApsaraDB/PolarDB-for-PostgreSQL) 上，稳定分支为 `POLARDB_11_STABLE`。
-
-```bash:no-line-numbers
-git clone -b POLARDB_11_STABLE git@github.com:ApsaraDB/PolarDB-for-PostgreSQL.git
-```
-
-## 最小化编译部署
-
-该模式以最小化的依赖快速完成 PolarDB 的编译部署。以下步骤基于干净的 CentOS 7 系统或从 `centos:centos7` Docker 镜像启动的容器，且需要以 **非 root 用户** 执行：
-
-::: tip
-⚠️ 下面高亮行的作用是为用户 `postgres:postgres` 赋予 PolarDB-for-PostgreSQL 源码目录的权限。如果您的用户组名和用户名不一样，请将下面的命令中的用户组名和用户名替换。
-:::
-
-```bash:no-line-numbers{13}
-# install extra software source
-sudo yum install epel-release centos-release-scl
-# update
-sudo yum update
-# install minimal dependencies
-sudo yum install devtoolset-9-gcc devtoolset-9-gcc-c++ \
-                 devtoolset-9-gdb devtoolset-9-make \
-                 bison flex perl-IPC-Run
-
-# enable GCC 9
-sudo bash -c 'echo "source /opt/rh/devtoolset-9/enable" >> /etc/bashrc'
-source /etc/bashrc
-sudo chown -R postgres:postgres PolarDB-for-PostgreSQL
-
-# building
-./polardb_build -m
-```
-
-进入 `psql` 命令行则表明编译部署成功：
-
-```bash:no-line-numbers
-$HOME/tmp_basedir_polardb_pg_1100_bld/bin/psql -h 127.0.0.1
-
-psql (11.9)
-Type "help" for help.
-postgres=# select version();
-            version
---------------------------------
- PostgreSQL 11.9 (POLARDB 11.9)
-(1 row)
-```
-
-## 进阶编译部署
-
-该模式使您可以体验 PolarDB for PostgreSQL 的完整功能。我们提供两种方式助您完成开发环境的准备，您可按需选择其中一种：
-
-- [基于 Docker 开发镜像（推荐方式）](./deploy-on-local-storage.md#方式-1-docker-开发镜像)：迅速完成环境准备，适合快速尝鲜
-- [基于 CentOS 7 的标准系统（从零开始）](./deploy-on-local-storage.md#方式-2-centos-7-操作系统)：适合具有更多定制需求的开发人员或 DBA，适用于：
-  - 干净的 CentOS 7 物理机/虚拟机
-  - 从 `centos:centos7` 镜像启动的干净 Docker 容器
-
-### 方式 1：Docker 开发镜像
+### 基于 PolarDB Docker 开发镜像
 
 该方式使您可以在 Docker 容器中编译并部署示例。
 
-我们提供了下面的 Dockerfile，从 CentOS 7 官方镜像 `centos:centos7` 开始构建出一个安装完所有开发和运行时依赖的镜像。您可以根据自己的需要在 Dockerfile 中添加更多依赖。如果您不想自行手动构建镜像，我们也在 DockerHub 上提供了 [构建完毕的镜像](https://hub.docker.com/r/mrdrivingduck/polardb_pg_devel) 😁（支持 x86_64 和 ARM 架构）。
+#### Docker 镜像准备
 
-#### 手动构建 Docker 镜像
+我们在 DockerHub 上提供了 [构建完毕的镜像](https://hub.docker.com/r/polardb/polardb_pg_base) `polardb/polardb_pg_base` 可供直接使用（支持 x86_64 和 ARM 架构）😁。
 
-::: tip
-如果您决定直接使用 DockerHub 上构建完毕的镜像则跳过该步骤。
-
-⚠️ 请在下面的高亮行中按需替换 `<image_name>` 内的 Docker 镜像名称
-:::
-
-以下是手动构建镜像的 Dockerfile 及方法。
+另外，我们也提供了构建上述开发镜像的 Dockerfile，从 CentOS 7 官方镜像 `centos:centos7` 开始构建出一个安装完所有开发和运行时依赖的镜像。您可以根据自己的需要在 Dockerfile 中添加更多依赖。以下是手动构建镜像的 Dockerfile 及方法，如果您决定直接使用 DockerHub 上构建完毕的镜像，则跳过该步骤。
 
 ::: details
 
@@ -253,15 +151,25 @@ USER $USER_NAME
 
 将上述内容复制到一个文件内（假设文件名为 `Dockerfile-PolarDB`）后，使用如下命令构建镜像：
 
+::: tip
+⚠️ 请在下面的高亮行中按需替换 `<image_name>` 内的 Docker 镜像名称
+:::
+
 ```bash:no-line-numbers{2}
 docker build --network=host \
     -t <image_name> \
     -f Dockerfile-PolarDB .
 ```
 
-#### 启动 Docker 容器
+#### 代码下载
 
-镜像构建过程中已经创建了一个 `postgres:postgres` 用户，从该镜像运行的容器将直接使用这个用户。
+PolarDB for PostgreSQL 的代码托管于 [GitHub](https://github.com/ApsaraDB/PolarDB-for-PostgreSQL) 上，稳定分支为 `POLARDB_11_STABLE`。
+
+```bash:no-line-numbers
+git clone -b POLARDB_11_STABLE git@github.com:ApsaraDB/PolarDB-for-PostgreSQL.git
+```
+
+#### 启动 Docker 容器
 
 ::: tip
 ⚠️ 请在下面的高亮行中按需替换 `<>` 内的部分：
@@ -280,7 +188,7 @@ docker run -it \
     <image_name> bash
 ```
 
-容器启动后，后续直接进入正在运行的容器中：
+镜像构建过程中已经创建了一个 `postgres:postgres` 用户，从该镜像运行的容器将直接使用这个用户。容器启动后，后续直接进入正在运行的容器中：
 
 ```bash:no-line-numbers{4}
 docker exec -it \
@@ -289,72 +197,15 @@ docker exec -it \
     <container_name> bash
 ```
 
-进入容器的 bash 后，运行以下命令为用户 `postgres` 获取源代码目录权限：
+通过 bash 进入容器后，进入源码目录，运行以下命令为用户 `postgres` 获取源代码目录权限，然后编译实例：
 
-```bash:no-line-numbers
-sudo chown -R postgres:postgres PolarDB-for-PostgreSQL
-```
-
-### 方式 2：CentOS 7 操作系统
-
-该方式假设您从一台安装了干净的 CentOS 7 操作系统上从零开始，可以是：
-
-- 安装 CentOS 7 的物理机/虚拟机
-- 从 CentOS 7 官方 Docker 镜像 `centos:centos7` 上启动的 Docker 容器
-
-根据 [上面的步骤](./deploy-on-local-storage.md#建立非-root-用户)，我们已经在系统中以 `root` 用户创建一个具有 sudo 权限的普通用户 `postgres`。接下来，切换到 `postgres` 用户（或您正在使用的其它普通用户），执行源代码根目录下的依赖安装脚本 `install_dependencies.sh` 完成所有的环境准备。注意，执行依赖安装脚本需要使用 `sudo`。
-
-```bash:no-line-numbers
-cd PolarDB-for-PostgreSQL
-sudo ./install_dependencies.sh
-source /etc/bashrc
-```
-
-### 编译并搭建实例
-
-以下操作均以 **非 root 用户** 完成实例的编译和搭建。
-
-#### 本地单节点实例
-
-- 1 个主节点（运行于 `5432` 端口）
-
-```bash:no-line-numbers
+```bash
+cd /home/postgres/PolarDB-for-PostgreSQL
+sudo chown -R postgres:postgres ./
 ./polardb_build.sh
 ```
 
-#### 本地多节点实例
-
-- 1 个主节点（运行于 `5432` 端口）
-- 1 个只读节点（运行于 `5433` 端口）
-
-```bash:no-line-numbers
-./polardb_build.sh --withrep --repnum=1
-```
-
-#### 本地多节点带备库实例
-
-- 1 个主节点（运行于 `5432` 端口）
-- 1 个只读节点（运行于 `5433` 端口）
-- 1 个备库节点（运行于 `5434` 端口）
-
-```bash:no-line-numbers
-./polardb_build.sh --withrep --repnum=1 --withstandby
-```
-
-#### 本地多节点 HTAP 实例
-
-- 1 个主节点（运行于 `5432` 端口）
-- 2 个只读节点（运行于 `5433` / `5434` 端口）
-
-```bash:no-line-numbers
-./polardb_build.sh --initpx
-```
-
-### 检查和测试
-
 部署完成后，需要进行实例检查和测试，确保部署正确。
-
-#### 实例检查
 
 ```bash
 $HOME/tmp_basedir_polardb_pg_1100_bld/bin/psql \
@@ -365,7 +216,131 @@ $HOME/tmp_basedir_polardb_pg_1100_bld/bin/psql \
 (1 row)
 ```
 
-#### 一键执行全量回归测试
+### 基于 CentOS 7 系统或容器
+
+该方式假设您从一台具有 root 权限的干净的 CentOS 7 操作系统上从零开始，可以是：
+
+- 安装 CentOS 7 的物理机/虚拟机
+- 从 CentOS 7 官方 Docker 镜像 `centos:centos7` 上启动的 Docker 容器
+
+#### 建立非 root 用户
+
+PolarDB for PostgreSQL 需要以非 root 用户运行。以下步骤能够帮助您创建一个名为 `postgres` 的用户组和一个名为 `postgres` 的用户。
+
+::: tip
+如果您已经有了一个非 root 用户，但名称不是 `postgres:postgres`，可以忽略该步骤；但请注意在后续示例步骤中将命令中用户相关的信息替换为您自己的用户组名与用户名
+
+:::
+
+下面的命令能够创建用户组 `postgres` 和用户 `postgres`，并为该用户赋予 sudo 和工作目录的权限。需要以 root 用户执行这些命令。
+
+```bash
+# install sudo
+yum install -y sudo
+
+# create user and group
+groupadd -r postgres
+useradd -m -g postgres postgres -p ''
+usermod -aG wheel postgres
+
+# make postgres as sudoer
+chmod u+w /etc/sudoers
+echo 'postgres ALL=(ALL) NOPASSWD: ALL' >> /etc/sudoers
+chmod u-w /etc/sudoers
+
+# grant access to home directory
+chown -R postgres:postgres /home/postgres/
+echo 'source /etc/bashrc' >> /home/postgres/.bashrc
+# for su postgres
+sed -i 's/4096/unlimited/g' /etc/security/limits.d/20-nproc.conf
+```
+
+接下来，切换到 `postgres` 用户，就可以进行后续的步骤了：
+
+```bash
+su postgres
+source /etc/bashrc
+cd ~
+```
+
+#### 下载 PolarDB 源代码
+
+PolarDB for PostgreSQL 的代码托管于 [GitHub](https://github.com/ApsaraDB/PolarDB-for-PostgreSQL) 上，稳定分支为 `POLARDB_11_STABLE`。
+
+```bash:no-line-numbers
+sudo yum install -y git
+git clone -b POLARDB_11_STABLE git@github.com:ApsaraDB/PolarDB-for-PostgreSQL.git
+```
+
+#### 依赖安装
+
+使用普通用户执行源代码根目录下的依赖安装脚本 `install_dependencies.sh` 完成所有的环境准备。注意，执行依赖安装脚本需要使用 `sudo`。
+
+```bash
+cd PolarDB-for-PostgreSQL
+sudo ./install_dependencies.sh
+source /etc/bashrc
+```
+
+#### 编译部署
+
+代码下载完毕后，进入源码目录即可开始编译部署：
+
+```bash
+cd PolarDB-for-PostgreSQL
+./polardb_build.sh
+```
+
+部署完成后，需要进行实例检查和测试，确保部署正确。
+
+```bash
+$HOME/tmp_basedir_polardb_pg_1100_bld/bin/psql \
+    -p 5432 -h 127.0.0.1 -c 'select version();'
+            version
+--------------------------------
+ PostgreSQL 11.9 (POLARDB 11.9)
+(1 row)
+```
+
+## 编译实例类型
+
+### 本地单节点实例
+
+- 1 个主节点（运行于 `5432` 端口）
+
+```bash:no-line-numbers
+./polardb_build.sh
+```
+
+### 本地多节点实例
+
+- 1 个主节点（运行于 `5432` 端口）
+- 1 个只读节点（运行于 `5433` 端口）
+
+```bash:no-line-numbers
+./polardb_build.sh --withrep --repnum=1
+```
+
+### 本地多节点带备库实例
+
+- 1 个主节点（运行于 `5432` 端口）
+- 1 个只读节点（运行于 `5433` 端口）
+- 1 个备库节点（运行于 `5434` 端口）
+
+```bash:no-line-numbers
+./polardb_build.sh --withrep --repnum=1 --withstandby
+```
+
+### 本地多节点 HTAP 实例
+
+- 1 个主节点（运行于 `5432` 端口）
+- 2 个只读节点（运行于 `5433` / `5434` 端口）
+
+```bash:no-line-numbers
+./polardb_build.sh --initpx
+```
+
+## 实例回归测试
 
 普通实例回归测试：
 
