@@ -6,7 +6,7 @@ Translation
 
 以下是基于单机本地存储编译 PolarDB 源码并启动一写多读实例的步骤。
 
-我们推荐在 Docker 中编译源码并运行示例，从而尽可能减少配置环境的操作。我们提供了一个基于 [CentOS 7 官方 Docker 镜像](https://hub.docker.com/_/centos) `centos:centos7` 构建出的 [PolarDB 开发镜像](https://hub.docker.com/r/mrdrivingduck/polardb_pg_devel)，里面包含了编译运行 PolarDB 需要的所有依赖。您可以直接使用这个镜像进行实例搭建，也可以自行修改我们在下面提供的 Dockerfile 以满足您的定制需求。
+我们推荐在 Docker 中编译源码并运行示例，从而尽可能减少配置环境的操作。我们提供了一个基于 [CentOS 7 官方 Docker 镜像](https://hub.docker.com/_/centos) `centos:centos7` 构建出的 [PolarDB 开发镜像](https://hub.docker.com/r/polardb/polardb_pg_devel/tags)，里面包含了编译运行 PolarDB 需要的所有依赖。您可以直接使用这个镜像进行实例搭建，也可以自行修改我们在下面提供的 Dockerfile 以满足您的定制需求。
 
 当然，不使用 Docker 也完全没有问题。我们提供了基于纯净 CentOS 7 操作系统的依赖安装脚本，助您快速完成环境准备。🎉
 
@@ -38,7 +38,7 @@ Translation
 
 #### Docker 镜像准备
 
-我们在 DockerHub 上提供了 [构建完毕的镜像](https://hub.docker.com/r/polardb/polardb_pg_base) `polardb/polardb_pg_base` 可供直接使用（支持 x86_64 和 ARM 架构）😁。
+我们在 DockerHub 上提供了构建完毕的镜像 [`polardb/polardb_pg_devel:centos7`](https://hub.docker.com/r/polardb/polardb_pg_devel/tags) 可供直接使用（支持 x86_64 和 ARM 架构）😁。
 
 另外，我们也提供了构建上述开发镜像的 Dockerfile，从 CentOS 7 官方镜像 `centos:centos7` 开始构建出一个安装完所有开发和运行时依赖的镜像。您可以根据自己的需要在 Dockerfile 中添加更多依赖。以下是手动构建镜像的 Dockerfile 及方法，如果您决定直接使用 DockerHub 上构建完毕的镜像，则跳过该步骤。
 
@@ -156,7 +156,7 @@ USER $USER_NAME
 将上述内容复制到一个文件内（假设文件名为 `Dockerfile-PolarDB`）后，使用如下命令构建镜像：
 
 ::: tip
-⚠️ 请在下面的高亮行中按需替换 `<image_name>` 内的 Docker 镜像名称
+💡 请在下面的高亮行中按需替换 `<image_name>` 内的 Docker 镜像名称
 :::
 
 ```bash:no-line-numbers{2}
@@ -170,13 +170,13 @@ docker build --network=host \
 PolarDB for PostgreSQL 的代码托管于 [GitHub](https://github.com/ApsaraDB/PolarDB-for-PostgreSQL) 上，稳定分支为 `POLARDB_11_STABLE`。
 
 ```bash:no-line-numbers
-git clone -b POLARDB_11_STABLE git@github.com:ApsaraDB/PolarDB-for-PostgreSQL.git
+git clone -b POLARDB_11_STABLE https://github.com/ApsaraDB/PolarDB-for-PostgreSQL.git
 ```
 
 #### 启动 Docker 容器
 
 ::: tip
-⚠️ 请在下面的高亮行中按需替换 `<>` 内的部分：
+💡 请在下面的高亮行中按需替换 `<>` 内的部分：
 
 1. PolarDB for PostgreSQL 的源码路径
 2. 将要启动的 Docker 容器名称
@@ -201,7 +201,7 @@ docker exec -it \
     <container_name> bash
 ```
 
-通过 bash 进入容器后，进入源码目录，运行以下命令为用户 `postgres` 获取源代码目录权限，然后编译实例：
+通过 bash 进入容器后，进入源码目录，为用户 `postgres` 获取源代码目录权限，然后编译实例：
 
 ```bash
 cd /home/postgres/PolarDB-for-PostgreSQL
@@ -209,7 +209,7 @@ sudo chown -R postgres:postgres ./
 ./polardb_build.sh
 ```
 
-部署完成后，需要进行实例检查和测试，确保部署正确。
+部署完成后，进行简单的实例检查，确保部署正确：
 
 ```bash
 $HOME/tmp_basedir_polardb_pg_1100_bld/bin/psql \
@@ -232,7 +232,7 @@ $HOME/tmp_basedir_polardb_pg_1100_bld/bin/psql \
 PolarDB for PostgreSQL 需要以非 root 用户运行。以下步骤能够帮助您创建一个名为 `postgres` 的用户组和一个名为 `postgres` 的用户。
 
 ::: tip
-如果您已经有了一个非 root 用户，但名称不是 `postgres:postgres`，可以忽略该步骤；但请注意在后续示例步骤中将命令中用户相关的信息替换为您自己的用户组名与用户名
+如果您已经有了一个非 root 用户，但名称不是 `postgres:postgres`，可以忽略该步骤；但请注意在后续示例步骤中将命令中用户相关的信息替换为您自己的用户组名与用户名。
 
 :::
 
@@ -271,31 +271,30 @@ cd ~
 
 PolarDB for PostgreSQL 的代码托管于 [GitHub](https://github.com/ApsaraDB/PolarDB-for-PostgreSQL) 上，稳定分支为 `POLARDB_11_STABLE`。
 
-```bash:no-line-numbers
+```bash
 sudo yum install -y git
-git clone -b POLARDB_11_STABLE git@github.com:ApsaraDB/PolarDB-for-PostgreSQL.git
+git clone -b POLARDB_11_STABLE https://github.com/ApsaraDB/PolarDB-for-PostgreSQL.git
 ```
 
 #### 依赖安装
 
-使用普通用户执行源代码根目录下的依赖安装脚本 `install_dependencies.sh` 完成所有的环境准备。注意，执行依赖安装脚本需要使用 `sudo`。
+使用 `sudo` 执行源代码根目录下的依赖安装脚本 `install_dependencies.sh` 完成所有的依赖安装。
 
 ```bash
 cd PolarDB-for-PostgreSQL
 sudo ./install_dependencies.sh
-source /etc/bashrc
 ```
 
 #### 编译部署
 
-代码下载完毕后，进入源码目录即可开始编译部署：
+依赖安装完毕后，刷新用户配置，开始编译部署：
 
 ```bash
-cd PolarDB-for-PostgreSQL
+source /etc/bashrc
 ./polardb_build.sh
 ```
 
-部署完成后，需要进行实例检查和测试，确保部署正确。
+部署完成后，进行简单的实例检查：
 
 ```bash
 $HOME/tmp_basedir_polardb_pg_1100_bld/bin/psql \
