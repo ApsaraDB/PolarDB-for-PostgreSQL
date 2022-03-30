@@ -1,0 +1,35 @@
+
+task:
+  name: Regression
+  onlyif: $CIRRUS_BRANCH == 'POLARDB_11_STABLE' || $CIRRUS_BRANCH == 'POLARDB_11_DEV'
+  skip: "!changesInclude('.cirrus.yml', 'config/**', 'contrib/**', 'external/**', 'src/**', 'configure*', 'polardb_build.sh')"
+
+  matrix:
+    -
+      container:
+        image: polardb/polardb_pg_devel:centos7
+        memory: 8G
+        greedy: true
+    -
+      arm_container:
+        image: polardb/polardb_pg_devel:centos7
+        memory: 8G
+        greedy: true
+
+  # Instructions:
+  matrix:
+    -
+      name: "regression (OLTP)"
+      script:
+        - echo 'precheck case ignore'
+        - echo 'precheck'
+    -
+      name: "regression (OLAP)"
+      script:
+        - echo 'precheck-px case ignore'
+        - echo 'precheck-px'
+    -
+      name: "regression (DMA)"
+      script:
+        - echo 'precheck-dma case ignore'
+        - echo 'precheck-dma'
