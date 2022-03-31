@@ -21,7 +21,26 @@
 设置连接池服务端口, 默认6667.
 
 7. pooler.pool_print_stat_timeout
-设置连接池状态信息输出间隔，默认值为60秒，如果设置为-1 可关掉此功能。
+设置连接池状态信息输出间隔，默认值为60秒，如果设置为-1 可关掉此功能.
 
-8. 
+8. pooler.pooler_scale_factor
+设置连接池并行线程个数，默认值为2.
+
+9. pooler.pooler_dn_set_timeout
+设置连接池等待datanode消息超时时间，默认值为10秒.
+
+11. pooler.pool_session_memory_limit
+设置session内存使用限制，默认值为10MB，如果连接到节点中开启的session,内存使用超过这个限值，session将被关闭.
+
+12. pooler.pool_session_max_lifetime
+设置session最大存活时间，默认值为300秒
+
+13. pooler.pool_session_context_check_gap
+设置session内存检测间隔，默认值为120秒，连接池每隔这个时间间隔去检查session的内存使用量.
+
+14. pooler.min_free_size
+设置连接池最小空闲连接数，默认值为5.
+
+15. pooler.pooler_connect_timeout
+设置创建连接超时时间，默认值为10秒.
 
