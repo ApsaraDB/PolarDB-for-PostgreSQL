@@ -24,8 +24,9 @@
  * with collations that match the remote table's columns, which we can
  * consider to be user error.
  *
+ * Copyright (c) 2021, Alibaba Group Holding Limited
+ * Licensed under the Apache License, Version 2.0 (the "License");
  * Portions Copyright (c) 2012-2018, PostgreSQL Global Development Group
- * Copyright (c) 2020, Apache License Version 2.0*
  *
  * IDENTIFICATION
  *		  contrib/polarx/fdw_engines/polarx/deparse_fdw.c

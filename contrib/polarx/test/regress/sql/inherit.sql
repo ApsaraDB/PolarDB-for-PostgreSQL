@@ -3,10 +3,10 @@
 --
 
 
-CREATE TABLE a (aa TEXT) distribute by roundrobin;
-CREATE TABLE b (bb TEXT) INHERITS (a) distribute by roundrobin;
-CREATE TABLE c (cc TEXT) INHERITS (a) distribute by roundrobin;
-CREATE TABLE d (dd TEXT) INHERITS (b,c,a) distribute by roundrobin;
+CREATE TABLE a (aa TEXT) with(dist_type=roundrobin);
+CREATE TABLE b (bb TEXT) INHERITS (a) with(dist_type=roundrobin);
+CREATE TABLE c (cc TEXT) INHERITS (a) with(dist_type=roundrobin);
+CREATE TABLE d (dd TEXT) INHERITS (b,c,a) with(dist_type=roundrobin);
 
 INSERT INTO a(aa) VALUES('aaa');
 INSERT INTO a(aa) VALUES('aaaa');
@@ -156,7 +156,7 @@ SELECT * FROM ONLY c ORDER BY c.aa;
 SELECT * from ONLY d ORDER BY d.aa;
 
 -- Confirm PRIMARY KEY adds NOT NULL constraint to child table
-CREATE TEMP TABLE z1 (aa TEXT) DISTRIBUTE BY HASH(aa);
+CREATE TEMP TABLE z1 (aa TEXT) with(dist_type=hash, dist_col=aa);
 CREATE TEMP TABLE z (b TEXT, PRIMARY KEY(aa, b)) inherits (z1);
 INSERT INTO z VALUES (NULL, 'text'); -- should fail
 
@@ -298,8 +298,8 @@ select NULL::derived::base;
 drop table derived;
 drop table base;
 
-create table p1(ff1 int) distribute by roundrobin;
-create table p2(f1 text) distribute by roundrobin;
+create table p1(ff1 int) with(dist_type=roundrobin);
+create table p2(f1 text) with(dist_type=roundrobin);
 create function p2text(p2) returns text as 'select $1.f1' language sql;
 create table c1(f3 int) inherits(p1,p2);
 insert into c1 values(123456789, 'hi', 42);
@@ -350,8 +350,8 @@ select pc.relname, pgc.conname, pgc.contype, pgc.conislocal, pgc.coninhcount, pg
 drop table bc;
 drop table ac;
 
-create table ac (a int constraint check_a check (a <> 0)) distribute by roundrobin;
-create table bc (b int constraint check_b check (b <> 0)) distribute by roundrobin;
+create table ac (a int constraint check_a check (a <> 0)) with(dist_type=roundrobin);
+create table bc (b int constraint check_b check (b <> 0)) with(dist_type=roundrobin);
 create table cc (c int constraint check_c check (c <> 0)) inherits (ac, bc);
 select pc.relname, pgc.conname, pgc.contype, pgc.conislocal, pgc.coninhcount, pgc.consrc from pg_class as pc inner join pg_constraint as pgc on (pgc.conrelid = pc.oid) where pc.relname in ('ac', 'bc', 'cc') order by 1,2;
 
@@ -362,8 +362,8 @@ drop table cc;
 drop table bc;
 drop table ac;
 
-create table p1(f1 int) distribute by roundrobin;
-create table p2(f2 int) distribute by roundrobin;
+create table p1(f1 int) with(dist_type=roundrobin);
+create table p2(f2 int) with(dist_type=roundrobin);
 create table c1(f3 int) inherits(p1,p2);
 insert into c1 values(1,-1,2);
 alter table p2 add constraint cc check (f2>0);  -- fail
@@ -390,8 +390,8 @@ alter table pp1 add column a2 int check (a2 > 0);
 drop table pp1 cascade;
 
 -- Test for renaming in simple multiple inheritance
-CREATE TABLE inht1 (a int, b int) distribute by roundrobin;
-CREATE TABLE inhs1 (b int, c int) distribute by roundrobin;
+CREATE TABLE inht1 (a int, b int) with(dist_type=roundrobin);
+CREATE TABLE inhs1 (b int, c int) with(dist_type=roundrobin);
 CREATE TABLE inhts (d int) INHERITS (inht1, inhs1);
 
 ALTER TABLE inht1 RENAME a TO aa;
@@ -430,7 +430,7 @@ DROP TABLE inht1, inhs1 CASCADE;
 
 
 -- Test non-inheritable indices [UNIQUE, EXCLUDE] constraints
-CREATE TABLE test_constraints (id int, val1 varchar, val2 int, UNIQUE(val1, val2)) distribute by replication;
+CREATE TABLE test_constraints (id int, val1 varchar, val2 int, UNIQUE(val1, val2)) with(dist_type=replication);
 CREATE TABLE test_constraints_inh () INHERITS (test_constraints);
 \d+ test_constraints
 ALTER TABLE ONLY test_constraints DROP CONSTRAINT test_constraints_val1_val2_key;
@@ -442,7 +442,7 @@ DROP TABLE test_constraints;
 CREATE TABLE test_ex_constraints (
     c circle,
     EXCLUDE USING gist (c WITH &&)
-) distribute by replication;
+) with(dist_type=replication);
 CREATE TABLE test_ex_constraints_inh () INHERITS (test_ex_constraints);
 \d+ test_ex_constraints
 ALTER TABLE test_ex_constraints DROP CONSTRAINT test_ex_constraints_c_excl;

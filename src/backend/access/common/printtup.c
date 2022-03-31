@@ -22,9 +22,6 @@
 #include "utils/lsyscache.h"
 #include "utils/memdebug.h"
 #include "utils/memutils.h"
-#ifdef POLARDB_X
-#include "pgxc/pgxc.h"
-#endif
 
 
 static void printtup_startup(DestReceiver *self, int operation,
@@ -234,21 +231,6 @@ SendRowDescriptionCols_3(StringInfo buf, TupleDesc typeinfo, List *targetlist, i
 	 * Have to overestimate the size of the column-names, to account for
 	 * character set overhead.
 	 */
-#ifdef POLARDB_X
-	if (IsConnFromCoord())
-	{
-		enlargeStringInfo(buf, (NAMEDATALEN * MAX_CONVERSION_GROWTH /* attname */
-							+ NAMEDATALEN * MAX_CONVERSION_GROWTH /* typename */
-							+ sizeof(Oid)	/* resorigtbl */
-							+ sizeof(AttrNumber)	/* resorigcol */
-							+ sizeof(Oid)	/* atttypid */
-							+ sizeof(int16) /* attlen */
-							+ sizeof(int32) /* attypmod */
-							+ sizeof(int16) /* format */
-							) * natts);
-	}
-#else
-#endif /* POLARDB_X */
 	enlargeStringInfo(buf, (NAMEDATALEN * MAX_CONVERSION_GROWTH /* attname */
 							+ sizeof(Oid)	/* resorigtbl */
 							+ sizeof(AttrNumber)	/* resorigcol */
@@ -298,18 +280,6 @@ SendRowDescriptionCols_3(StringInfo buf, TupleDesc typeinfo, List *targetlist, i
 			format = 0;
 
 		pq_writestring(buf, NameStr(att->attname));
-#ifdef POLARDB_X
-        /*
-         * Send the type name from a Postgres-XC backend node.
-         * This preserves from OID inconsistencies as architecture is shared nothing.
-         */
-        if (IsConnFromCoord())
-        {
-            char       *typename;
-            typename = get_typename(atttypid);
-            pq_writestring(buf, typename);
-        }
-#endif
 		pq_writeint32(buf, resorigtbl);
 		pq_writeint16(buf, resorigcol);
 		pq_writeint32(buf, atttypid);
@@ -747,70 +717,3 @@ printtup_internal_20(TupleTableSlot *slot, DestReceiver *self)
 }
 
 
-#ifdef POLARDB_X
-void
-FormRowDescriptionMessage(TupleDesc typeinfo, List *targetlist, int16 *formats, StringInfo buf)
-{// #lizard forgives
-    int            natts = typeinfo->natts;
-    int            proto = PG_PROTOCOL_MAJOR(FrontendProtocol);
-    int            i;
-    ListCell   *tlist_item = list_head(targetlist);
-
-    pq_sendint(buf, natts, 2); /* # of attrs in tuples */
-
-    for (i = 0; i < natts; ++i)
-    {
-		Form_pg_attribute attr = TupleDescAttr(typeinfo, i);
-        Oid            atttypid = attr->atttypid;
-        int32        atttypmod = attr->atttypmod;
-
-        pq_sendstring(buf, NameStr(attr->attname));
-
-        /*
-         * Send the type name from a Postgres-XC backend node.
-         * This preserves from OID inconsistencies as architecture is shared nothing.
-         */
-        {
-            char       *typename;
-            typename = get_typename(atttypid);
-            pq_sendstring(buf, typename);
-        }
-
-        /* column ID info appears in protocol 3.0 and up */
-        if (proto >= 3)
-        {
-            /* Do we have a non-resjunk tlist item? */
-            while (tlist_item &&
-                   ((TargetEntry *) lfirst(tlist_item))->resjunk)
-                tlist_item = lnext(tlist_item);
-            if (tlist_item)
-            {
-                TargetEntry *tle = (TargetEntry *) lfirst(tlist_item);
-
-                pq_sendint(buf, tle->resorigtbl, 4);
-                pq_sendint(buf, tle->resorigcol, 2);
-                tlist_item = lnext(tlist_item);
-            }
-            else
-            {
-                /* No info available, so send zeroes */
-                pq_sendint(buf, 0, 4);
-                pq_sendint(buf, 0, 2);
-            }
-        }
-        /* If column is a domain, send the base type and typmod instead */
-        atttypid = getBaseTypeAndTypmod(atttypid, &atttypmod);
-        pq_sendint(buf, (int) atttypid, sizeof(atttypid));
-        pq_sendint(buf, attr->attlen, sizeof(attr->attlen));
-        pq_sendint(buf, atttypmod, sizeof(atttypmod));
-        /* format info appears in protocol 3.0 and up */
-        if (proto >= 3)
-        {
-            if (formats)
-                pq_sendint(buf, formats[i], 2);
-            else
-                pq_sendint(buf, 0, 2);
-        }
-    }
-}
-#endif

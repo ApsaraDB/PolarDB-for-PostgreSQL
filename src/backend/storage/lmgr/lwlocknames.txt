@@ -53,5 +53,4 @@ LogicalRepWorkerLock				45
 CLogTruncationLock				46
 CTSLogControlLock					47
 ConsensusLock                       48
-NodeTableLock						49
 GidHashTableLock				    50

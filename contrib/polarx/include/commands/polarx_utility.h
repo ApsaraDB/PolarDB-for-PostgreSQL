@@ -3,8 +3,8 @@
  * polarx_utility.h
  *    polarx utility hook and related functionality.
  *
- * Copyright (c) 2020, Alibaba Inc. and/or its affiliates
- * Copyright (c) 2020, Apache License Version 2.0
+ * Copyright (c) 2021, Alibaba Group Holding Limited
+ * Licensed under the Apache License, Version 2.0 (the "License");
  *
  * DENTIFICATION
  *        contrib/polarx/include/commands/polarx_utility.h

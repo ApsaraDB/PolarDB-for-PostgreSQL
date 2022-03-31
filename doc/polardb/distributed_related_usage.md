@@ -108,23 +108,23 @@ DN2 节点：
 
     支持原生建表方式建立分布式表，默认从第一个列尝试建立hash 分布表，如果所有列都不可以建立，则最后建立roundrobin 分布表。
 
-    create table polarx_test(id int , name text) distribute by hash(id);
+    create table polarx_test(id int , name text) with (dist_type = hash, dist_col = id);
 
     显式指定分布方式和分布键建立hash分布表，数据根据id计算hash值，然后根据hash值对节点数取余进行分布。
 
-    create table polarx_test(id int, name text) distribute by modulo(id);
+    create table polarx_test(id int, name text) with (dist_type = modulo, dist_col = id);
 
     显式建立modulo分布表, 根据id对节点数取余进行分布。
 
-    create table polarx_test(id int, name text) distribute by roundrobin;
+    create table polarx_test(id int, name text) with (dist_type = roundrobin);
 
     显式建立roundrobin 分布表，数据按节点顺序依次分布。
 
-    create table polarx_test(id int, name text) distribute by replication;
+    create table polarx_test(id int, name text) with (dist_type = replication);
 
     显式建立复制表，复制表将在每个DN上有完整的数据。
 
-    execute direct on (datanode1m) "select * from polarx_text;";
+    execute polarx_direct('datanode1m', 'select * from bmsql_warehouse;');
 
     通过Coordinator节点 直接在对应Datanode上执行语句。
 

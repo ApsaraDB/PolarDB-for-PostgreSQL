@@ -11,6 +11,6 @@ subdir = src/backend/polardbx
 top_builddir = ../../..
 include $(top_builddir)/src/Makefile.global
 
-SUBDIRS = mdcache nodemgr locator executor connection squeue transam
+SUBDIRS = transam
 
 include $(top_srcdir)/src/backend/common.mk

@@ -31,10 +31,6 @@ typedef enum
 {
 	PROCSIG_CATCHUP_INTERRUPT,	/* sinval catchup interrupt */
 	PROCSIG_NOTIFY_INTERRUPT,	/* listen/notify interrupt */
-#ifdef POLARDB_X
-    PROCSIG_PGXCPOOL_RELOAD,    /* abort current transaction and reconnect to pooler */
-    PROCSIG_PGXCPOOL_REFRESH,    /* refresh local view of connection handles */
-#endif
 	PROCSIG_PARALLEL_MESSAGE,	/* message from cooperating parallel backend */
 	PROCSIG_WALSND_INIT_STOPPING,	/* ask walsenders to prepare for shutdown  */
 

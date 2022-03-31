@@ -253,14 +253,6 @@ void makeServerList(void)
 {
     /* Initialize */
     reset_var(VAR_allServers);
-    /* GTM Master */
-    addServer(aval(VAR_gtmMasterServer));
-    /* GTM Slave */
-    if (isVarYes(VAR_gtmSlave))
-        addServer(aval(VAR_gtmSlaveServer));
-    /* GTM_Proxy */
-    if (isVarYes(VAR_gtmProxy))
-        addServer(aval(VAR_gtmProxyServers));
     /* Coordinator Master */
     if (find_var(VAR_coordMasterServers))
         addServer(aval(VAR_coordMasterServers));
@@ -317,44 +309,6 @@ int is_none(char *s)
     if (strcmp(s, "N/A") == 0)
         return TRUE;
     return FALSE;
-}
-
-/*
- * Remove gtm slave.  Used at failover.
- */
-static void emptyGtmSlave()
-{
-    reset_var_val(VAR_gtmSlaveServer, "none");
-    reset_var_val(VAR_gtmSlavePort, "0");
-    reset_var_val(VAR_gtmSlaveDir, "none");
-}
-
-/*
- * Remove gtm proxies.   Used when a node crashes.
- * Because gtm_proxy is expected to be running at any target
- * server, we don't have gtm_proxy slaves.
- * We can just initialize gtm_proy using gtminit, configure and
- * run it.
- */
-static void emptyGtmProxies()
-{
-    int ii;
-
-    reset_var_val(VAR_gtmProxy, "n");
-    reset_var(VAR_gtmProxyServers);
-    reset_var(VAR_gtmProxyNames);
-    reset_var(VAR_gtmProxyPorts);
-    reset_var(VAR_gtmProxyDirs);
-    reset_var_val(VAR_gtmPxyExtraConfig, "none");
-    reset_var(VAR_gtmPxySpecificExtraConfig);
-    for (ii = 0; ii < arraySizeName(VAR_allServers); ii++)
-    {
-        add_val(find_var(VAR_gtmProxyServers), "none");
-        add_val(find_var(VAR_gtmProxyNames), "none");
-        add_val(find_var(VAR_gtmProxyPorts), "-1");
-        add_val(find_var(VAR_gtmProxyDirs), "none");
-        add_val(find_var(VAR_gtmPxyExtraConfig), "none");
-    }
 }
 
 /*
@@ -474,45 +428,6 @@ void handle_no_slaves()
     int is_empty;
     int ii;
 
-    /* GTM Slave */
-    if (!find_var(VAR_gtmSlave))
-        reset_var_val(VAR_gtmSlave, "n");
-    if (!isVarYes(VAR_gtmSlave))
-        emptyGtmSlave();
-    else
-    {
-        confirm_var(VAR_gtmSlaveServer);
-        if (!sval(VAR_gtmSlaveServer) || is_none(sval(VAR_gtmSlaveServer)))
-        {
-            emptyGtmSlave();
-            reset_var_val(VAR_gtmSlaveServer, "n");
-        }
-    }
-
-    /* GTM Proxy */
-    if (!find_var(VAR_gtmProxy))
-        reset_var_val(VAR_gtmProxy, "n");
-    if (!isVarYes(VAR_gtmProxy))
-        emptyGtmProxies();
-    else
-    {
-        is_empty = TRUE;
-        for (ii = 0; aval(VAR_gtmProxyServers)[ii]; ii++)
-        {
-            if (is_none(aval(VAR_gtmProxyServers)[ii]))
-                continue;
-            else
-            {
-                is_empty = FALSE;
-                break;
-            }
-        }
-        if (is_empty)
-        {
-            reset_var_val(VAR_gtmProxy, "n");
-            emptyGtmProxies();
-        }
-    }
     /* Coordinator Slaves */
     if (!find_var(VAR_coordSlave))
         reset_var_val(VAR_coordSlave, "n");
@@ -612,21 +527,6 @@ void handle_no_slaves_standalone()
 {
     int is_empty;
     int ii;
-    /*if (find_var(VAR_gtmName)|| find_var(VAR_gtmMasterServer)||find_var(VAR_gtmMasterPort)||find_var(VAR_gtmMasterDir)||
-        find_var(VAR_gtmExtraConfig)||find_var(VAR_gtmMasterSpecificExtraConfig)||find_var(VAR_gtmSlave)||
-        find_var(VAR_gtmSlaveName)||find_var(VAR_gtmSlaveServer)||find_var(VAR_gtmSlavePort)||find_var(VAR_gtmSlaveDir)||
-        find_var(VAR_gtmProxy)||find_var(VAR_gtmProxyNames)||find_var(VAR_gtmProxyServers)||find_var(VAR_gtmProxyPorts)||
-        find_var(VAR_gtmProxyDirs)||find_var(VAR_gtmPxyExtraConfig)||find_var(VAR_gtmPxySpecificExtraConfig))
-        elog(ERROR, "configure gtm in configuration, standalone not support gtm.");
-
-    if (find_var(VAR_coordNames)|| find_var(VAR_coordPorts)||find_var(VAR_poolerPorts)||find_var(VAR_coordPgHbaEntries)||
-        find_var(VAR_coordMasterServers)||find_var(VAR_coordMasterDirs)||find_var(VAR_coordMaxWALSenders)||
-        find_var(VAR_coordMasterCluster)||find_var(VAR_coordSlave)||find_var(VAR_coordSlaveServers)||find_var(VAR_coordSlavePorts)||
-        find_var(VAR_coordSlavePoolerPorts)||find_var(VAR_coordSlaveSync)||find_var(VAR_coordSlaveDirs)||find_var(VAR_coordArchLogDirs)||
-        find_var(VAR_coordSlaveCluster)||find_var(VAR_coordExtraConfig)||find_var(VAR_coordSpecificExtraConfig)||
-        find_var(VAR_coordExtraPgHba)|| find_var(VAR_coordSpecificExtraPgHba)||find_var(VAR_coordAdditionalSlaves)||
-        find_var(VAR_coordAdditionalSlaveSet)||find_var(VAR_multiCluster)||find_var(VAR_pgxcMainClusterName))
-        elog(ERROR, "configure coordinator in configuration, standalone not support coordinator."); */
 
     /* Datanode Slaves */
     if (!find_var(VAR_datanodeSlave))
@@ -733,9 +633,9 @@ static void checkConfiguredAndSize(char *names[], char *msg)
     }
 }
 
-int checkSpecificResourceConflict(char *name, char *host, int port, char *dir, int is_gtm)
+int checkSpecificResourceConflict(char *name, char *host, int port, char *dir)
 {
-    if (checkNameConflict(name, is_gtm))
+    if (checkNameConflict(name))
         return 1;
     if (checkPortConflict(host, port))
         return 1;
@@ -746,22 +646,10 @@ int checkSpecificResourceConflict(char *name, char *host, int port, char *dir, i
 /*
  * Note that 1 will be returned when a conflict is found
  */
-int checkNameConflict(char *name, int is_gtm)
+int checkNameConflict(char *name)
 {
     int ii;
 
-    /*
-     * GTM Master
-     */
-    if (!is_gtm && strcasecmp(name, sval(VAR_gtmName)) == 0)
-        return 1;
-    /*
-     * GTM Proxy
-     */
-    if (isVarYes(VAR_gtmProxy))
-        for (ii = 0; aval(VAR_gtmProxyNames)[ii]; ii++)
-            if (strcasecmp(name, aval(VAR_gtmProxyNames)[ii]) == 0)
-                return 1;
     /*
      * Coordinator
      */
@@ -784,18 +672,6 @@ int checkPortConflict(char *host, int port)
 {
     int ii;
 
-    /* GTM Master */
-    if (doesExist(VAR_gtmMasterServer, 0) && doesExist(VAR_gtmMasterPort, 0) &&
-    (strcasecmp(host, sval(VAR_gtmMasterServer)) == 0) && (atoi(sval(VAR_gtmMasterPort)) == port))
-        return 1;
-    /* GTM Slave */
-    if (isVarYes(VAR_gtmSlave) && (strcasecmp(host, sval(VAR_gtmSlaveServer)) == 0) && (atoi(sval(VAR_gtmSlavePort)) == port))
-        return 1;
-    /* GTM Proxy */
-    if (isVarYes(VAR_gtmProxy))
-        for (ii = 0; aval(VAR_gtmProxyNames)[ii]; ii++)
-            if ((strcasecmp(host, aval(VAR_gtmProxyServers)[ii]) == 0) && (atoi(aval(VAR_gtmProxyPorts)[ii]) == port))
-                return 1;
     /* Coordinator Master */
     for (ii = 0; aval(VAR_coordNames)[ii]; ii++)
         if ((strcasecmp(host, aval(VAR_coordMasterServers)[ii]) == 0) && 
@@ -833,18 +709,6 @@ int checkDirConflict(char *host, char *dir)
     /* "none" conflictd with nothing */
     if (strcasecmp(dir, "none") == 0)
         return 0;
-    /* GTM Master */
-    if (doesExist(VAR_gtmMasterServer, 0) && doesExist(VAR_gtmMasterDir, 0) &&
-    (strcasecmp(host, sval(VAR_gtmMasterServer)) == 0) && (strcmp(dir, sval(VAR_gtmMasterDir)) == 0))
-        return 1;
-    /* GTM Slave */
-    if (isVarYes(VAR_gtmSlave) && (strcasecmp(host, sval(VAR_gtmSlaveServer)) == 0) && (strcmp(dir, sval(VAR_gtmSlaveDir)) == 0))
-        return 1;
-    /* GTM Proxy */
-    if (isVarYes(VAR_gtmProxy))
-        for (ii = 0; aval(VAR_gtmProxyNames)[ii]; ii++)
-            if ((strcasecmp(host, aval(VAR_gtmProxyServers)[ii]) == 0) && (strcmp(dir, aval(VAR_gtmProxyDirs)[ii]) == 0))
-                return 1;
     /* Coordinator Master */
     for (ii = 0; aval(VAR_coordNames)[ii]; ii++)
         if ((strcasecmp(host, aval(VAR_coordMasterServers)[ii]) == 0) && (strcmp(dir, aval(VAR_coordMasterDirs)[ii]) == 0))
@@ -882,7 +746,7 @@ int checkDirConflict(char *host, char *dir)
  *
  * The rules are:
  *
- * 1) Each node (gtm, gtm_proxy, coordinator, datanode) must have unique name.
+ * 1) Each node (coordinator, datanode) must have unique name.
  *
  * 2) A port, in a given host, must be owned (listed to) only by single node.
  *
@@ -1023,11 +887,6 @@ static void checkResourceConflict(char *srcNames, char *srcServers, char *srcPor
  */
 static void verifyResource(void)
 {
-    char *GtmVars[] = {VAR_gtmName, 
-                       VAR_gtmMasterServer, 
-                       VAR_gtmMasterPort, 
-                       VAR_gtmMasterDir, 
-                       NULL};
     char *mainClusterVars[] = {VAR_pgxcMainClusterName,
                             NULL};
     char *multiCoordClusterVars[] ={VAR_coordNames,
@@ -1039,16 +898,6 @@ static void verifyResource(void)
                                          VAR_datanodeSlaveCluster,
                                  NULL};
     
-    char *GtmSlaveVars[] = {VAR_gtmSlaveName,
-                            VAR_gtmSlaveServer, 
-                            VAR_gtmSlavePort, 
-                            VAR_gtmSlaveDir, 
-                            NULL};
-    char *gtmProxyVars[] = {VAR_gtmProxyNames, 
-                            VAR_gtmProxyServers, 
-                            VAR_gtmProxyPorts, 
-                            VAR_gtmProxyDirs, 
-                            NULL};
     char *coordMasterVars[] = {VAR_coordNames, 
                                VAR_coordPorts, 
                                VAR_poolerPorts, 
@@ -1113,14 +962,7 @@ static void verifyResource(void)
         checkConfiguredAndSize(multiCoordClusterVars, "multi coord cluster");
         checkConfiguredAndSize(multiDatanodeClusterVars, "multi datanode cluster");
     }
-    /* GTM */
-    checkIfConfigured(GtmVars);
-    /* GTM slave */
-    if (isVarYes(VAR_gtmSlave))
-        checkIfConfigured(GtmSlaveVars);
-    /* GTM proxy */
-    if (isVarYes(VAR_gtmProxy))
-        checkConfiguredAndSize(gtmProxyVars, "GTM Proxy");
+
     /* Coordinator Master */
     checkIfConfigured(coordMasterVars);
     checkConfiguredAndSize(coordMasterVars, "coordinator master");
@@ -1153,126 +995,7 @@ static void verifyResource(void)
     /*
      * --------------- Resource Conflict Check ---------------------
      */
-    /* 
-     * GTM Master and others ----------------
-     */
-    anyConfigErrors = FALSE;
-    /* GTM and GTM slave */
-    if (isVarYes(VAR_gtmSlave))
-        checkResourceConflict(VAR_gtmName, VAR_gtmMasterServer, VAR_gtmMasterPort, NULL, VAR_gtmMasterDir,
-                              VAR_gtmSlaveName, VAR_gtmSlaveServer, VAR_gtmSlavePort, NULL, VAR_gtmSlaveDir, TRUE, FALSE);
-    /* GTM and GTM Proxy, if any */
-    if (isVarYes(VAR_gtmProxy))
-        checkResourceConflict(VAR_gtmName, VAR_gtmMasterServer, VAR_gtmMasterPort, NULL, VAR_gtmMasterDir,
-                              VAR_gtmProxyNames, VAR_gtmProxyServers, VAR_gtmProxyPorts, NULL, VAR_gtmProxyDirs, TRUE, TRUE);
-    /* GTM and coordinator masters */
-    checkResourceConflict(VAR_gtmName, VAR_gtmMasterServer, VAR_gtmMasterPort, NULL, VAR_gtmMasterDir,
-                          VAR_coordNames, VAR_coordMasterServers, VAR_coordPorts, VAR_poolerPorts, VAR_coordMasterDirs,
-                          TRUE, TRUE);
-    /* GTM and coordinator slaves, if any */
-    if (isVarYes(VAR_coordSlave))
-        checkResourceConflict(VAR_gtmName, VAR_gtmMasterServer, VAR_gtmMasterPort, NULL, VAR_gtmMasterDir,
-                              VAR_coordNames, VAR_coordSlaveServers, VAR_coordSlavePorts, NULL, VAR_coordSlaveDirs, TRUE, TRUE);
-    /* GTM and datanode masters */
-    checkResourceConflict(VAR_gtmName, VAR_gtmMasterServer, VAR_gtmMasterPort, NULL, VAR_gtmMasterDir,
-                          VAR_datanodeNames, VAR_datanodeMasterServers, VAR_datanodePorts, NULL, VAR_datanodeMasterDirs, TRUE, TRUE);
-    checkResourceConflict(VAR_gtmName, VAR_gtmMasterServer, VAR_gtmMasterPort, NULL, VAR_gtmMasterDir,
-                          VAR_datanodeNames, VAR_datanodeMasterServers,
-                          VAR_datanodePorts, NULL, VAR_datanodeMasterWALDirs, TRUE, TRUE);
-    /* GTM and datanode slaves, if any */
-    if(isVarYes(VAR_datanodeSlave))
-    {
-        checkResourceConflict(VAR_gtmName, VAR_gtmMasterServer, VAR_gtmMasterPort, NULL, VAR_gtmMasterDir,
-                              VAR_datanodeNames, VAR_datanodeMasterServers, VAR_datanodeSlavePorts, NULL, VAR_datanodeSlaveDirs,
-                              TRUE, TRUE);
-        checkResourceConflict(VAR_gtmName, VAR_gtmMasterServer, VAR_gtmMasterPort, NULL, VAR_gtmMasterDir,
-                              VAR_datanodeNames, VAR_datanodeMasterServers,
-                              VAR_datanodeSlavePorts, NULL,
-                              VAR_datanodeSlaveWALDirs,
-                              TRUE, TRUE);
-    }
-    /* 
-     * GTM slave and others ------------
-     */
-    if (isVarYes(VAR_gtmSlave))
-    {
-        /* GTM slave and GTM master, if any */
-        if (isVarYes(VAR_gtmProxy))
-            checkResourceConflict(VAR_gtmSlaveName, VAR_gtmSlaveServer, VAR_gtmSlavePort, NULL, VAR_gtmSlaveDir,
-                                  VAR_gtmName, VAR_gtmMasterServer,
-                                  VAR_gtmMasterPort, NULL, VAR_gtmMasterDir, 
-                                  TRUE, TRUE);
-        /* GTM slave and GTM Proxy, if any */
-        if (isVarYes(VAR_gtmProxy))
-            checkResourceConflict(VAR_gtmSlaveName, VAR_gtmSlaveServer, VAR_gtmSlavePort, NULL, VAR_gtmSlaveDir,
-                                  VAR_gtmProxyNames, VAR_gtmProxyServers, VAR_gtmProxyPorts, NULL, VAR_gtmProxyDirs, 
-                                  TRUE, TRUE);
-        /* GTM slave and coordinator masters */
-        checkResourceConflict(VAR_gtmSlaveName, VAR_gtmSlaveServer, VAR_gtmSlavePort, NULL, VAR_gtmSlaveDir,
-                              VAR_coordNames, VAR_coordMasterServers, VAR_coordPorts, VAR_poolerPorts, VAR_coordMasterDirs,
-                              TRUE, TRUE);
-        /* GTM slave and coordinator slaves, if any */
-        if (isVarYes(VAR_coordSlave))
-            checkResourceConflict(VAR_gtmSlaveName, VAR_gtmSlaveServer, VAR_gtmSlavePort, NULL, VAR_gtmSlaveDir,
-                                  VAR_coordNames, VAR_coordSlaveServers,
-                                  VAR_coordSlavePorts, VAR_coordSlavePoolerPorts, VAR_coordSlaveDirs,
-                                  TRUE, TRUE);
-        /* GTM slave and datanode masters */
-        checkResourceConflict(VAR_gtmSlaveName, VAR_gtmSlaveServer, VAR_gtmSlavePort, NULL, VAR_gtmSlaveDir,
-                              VAR_datanodeNames, VAR_datanodeMasterServers, VAR_datanodePorts, NULL, VAR_datanodeMasterDirs,
-                              TRUE, TRUE);
-        checkResourceConflict(VAR_gtmSlaveName, VAR_gtmSlaveServer, VAR_gtmSlavePort, NULL, VAR_gtmSlaveDir,
-                              VAR_datanodeNames, VAR_datanodeMasterServers,
-                              VAR_datanodePorts, NULL, VAR_datanodeMasterWALDirs,
-                              TRUE, TRUE);
-        /* GTM slave and datanode slave, if any */
-        if (isVarYes(VAR_datanodeSlave))
-        {
-            checkResourceConflict(VAR_gtmSlaveName, VAR_gtmSlaveServer, VAR_gtmSlavePort, NULL, VAR_gtmSlaveDir,
-                                  VAR_datanodeNames, VAR_datanodeSlaveServers, VAR_datanodeSlavePorts, NULL, VAR_datanodeSlaveDirs,
-                                  TRUE, TRUE);
-            checkResourceConflict(VAR_gtmSlaveName, VAR_gtmSlaveServer, VAR_gtmSlavePort, NULL, VAR_gtmSlaveDir,
-                                  VAR_datanodeNames, VAR_datanodeSlaveServers,
-                                  VAR_datanodeSlavePorts, NULL,
-                                  VAR_datanodeSlaveWALDirs,
-                                  TRUE, TRUE);
-        }
-    }
-    /* 
-     * GTM proxy and others ---------
-     */
-    if (isVarYes(VAR_gtmProxy))
-    {
-        /* GTM proxy and coordinator masters */
-        checkResourceConflict(VAR_gtmProxyNames, VAR_gtmProxyServers, VAR_gtmProxyPorts, NULL, VAR_gtmProxyDirs,
-                              VAR_coordNames, VAR_coordMasterServers, VAR_coordPorts, VAR_poolerPorts, VAR_coordMasterDirs,
-                              FALSE, TRUE);
-        /* GTM proxy and coordinator slaves, if any */
-        if (sval(VAR_coordSlave) && (strcmp(sval(VAR_coordSlave), "y") == 0))
-            checkResourceConflict(VAR_gtmProxyNames, VAR_gtmProxyServers, VAR_gtmProxyPorts, NULL, VAR_gtmProxyDirs,
-                                  VAR_coordNames, VAR_coordSlaveServers, VAR_coordSlavePorts, VAR_coordSlavePoolerPorts, VAR_coordSlaveDirs,
-                                  TRUE, TRUE);
-        /* GTM proxy and datanode masters */
-            checkResourceConflict(VAR_gtmProxyNames, VAR_gtmProxyServers, VAR_gtmProxyPorts, NULL, VAR_gtmProxyDirs,
-                              VAR_datanodeNames, VAR_datanodeMasterServers, VAR_datanodePorts, NULL, VAR_datanodeMasterDirs,
-                              TRUE, TRUE);
-            checkResourceConflict(VAR_gtmProxyNames, VAR_gtmProxyServers, VAR_gtmProxyPorts, NULL, VAR_gtmProxyDirs,
-                              VAR_datanodeNames, VAR_datanodeMasterServers,
-                              VAR_datanodePorts, NULL, VAR_datanodeMasterWALDirs,
-                              TRUE, TRUE);
-        /* GTM proxy and datanode slave, if any */
-        if (sval(VAR_datanodeSlave) && (strcmp(sval(VAR_datanodeSlave), "y") == 0))
-        {
-            checkResourceConflict(VAR_gtmProxyNames, VAR_gtmProxyServers, VAR_gtmProxyPorts, NULL, VAR_gtmProxyDirs,
-                                  VAR_datanodeNames, VAR_datanodeSlaveServers, VAR_datanodeSlavePorts, NULL, VAR_datanodeSlaveDirs,
-                                  TRUE, TRUE);
-            checkResourceConflict(VAR_gtmProxyNames, VAR_gtmProxyServers, VAR_gtmProxyPorts, NULL, VAR_gtmProxyDirs,
-                                  VAR_datanodeNames, VAR_datanodeSlaveServers,
-                                  VAR_datanodeSlavePorts, NULL,
-                                  VAR_datanodeSlaveWALDirs,
-                                  TRUE, TRUE);
-        }
-    }
+
     /* 
      * Coordinator Masters and others
      */
@@ -1508,7 +1231,7 @@ static void verifyResource_standalone(void)
 
 
 /*
- * Check if the minimum components are configured --- gtm master, coordinator master and datanode master.
+ * Check if the minimum components are configured --- coordinator master and datanode master.
  */
 void check_configuration(int type)
 {
@@ -1516,9 +1239,6 @@ void check_configuration(int type)
      * See if mandatory configuration is defined.  Will continue if error is detected
      * to check all the errors at a time.
      */
-    /* GTM Master */
-    if (!find_var(VAR_gtmName) || !find_var(VAR_gtmMasterServer) || !find_var(VAR_gtmMasterPort) || !find_var(VAR_gtmMasterDir))
-        elog(ERROR, "ERROR: GTM master configuration is missing. gtmName, gtmMasterServer, gtmMasterPort or gtmMasterDir\n");
     /* Coordinator Master */
     if (!find_var(VAR_coordNames) || !find_var(VAR_coordPorts) || !find_var(VAR_poolerPorts) ||
         !find_var(VAR_coordMasterServers) || !find_var(VAR_coordMasterDirs))
@@ -1552,13 +1272,6 @@ void check_configuration_standalone(void)
     makeServerList_standalone();
 }
 
-/*void standalone_empty_cn_gtm(void)
-{
-    emptyGtmProxies();
-    emptyCoordSlaves();
-    emptyGtmSlave();
-}*/
-
 /*
  * dump configured for cm
  */
@@ -1578,15 +1291,6 @@ int dump_configuration(void)
     fprintf(f,
             "#=====================================================\n"
             "# dump cluster configuration for cluster manager, %s\n"
-            "gtmName=( %s )\n"
-            "gtmMasterServer=( %s )\n"
-            "gtmMasterPort=( %s )\n"
-            "gtmSlaveName=( %s )\n"
-            "gtmSlaveServer=( %s )\n"
-            "gtmSlavePort=( %s )\n"
-            "gtmProxyNames=( %s )\n"
-            "gtmProxyServers=( %s )\n"
-            "gtmProxyPorts=( %s )\n"
             "coordNames=( %s )\n"
             "coordMasterServers=( %s )\n"
             "coordPorts=( %s )\n"
@@ -1605,15 +1309,6 @@ int dump_configuration(void)
             "datanodeSlavePoolerPorts=( %s )\n"
             "# End of the dump\n",
             timeStampString(timestamp, MAXTOKEN),
-            listValue_CM(VAR_gtmName),
-            listValue_CM(VAR_gtmMasterServer),
-            listValue_CM(VAR_gtmMasterPort),
-            isVarYes(VAR_gtmSlave)?listValue_CM(VAR_gtmSlaveName):"",
-            isVarYes(VAR_gtmSlave)?listValue_CM(VAR_gtmSlaveServer):"",
-            isVarYes(VAR_gtmSlave)?listValue_CM(VAR_gtmSlavePort):"",
-            isVarYes(VAR_gtmProxy)?listValue_CM(VAR_gtmProxyNames):"",
-            isVarYes(VAR_gtmProxy)?listValue_CM(VAR_gtmProxyServers):"",
-            isVarYes(VAR_gtmProxy)?listValue_CM(VAR_gtmProxyPorts):"",
             listValue_CM(VAR_coordNames),
             listValue_CM(VAR_coordMasterServers),
             listValue_CM(VAR_coordPorts),
@@ -1691,13 +1386,6 @@ NodeType getNodeType(char *nodeName)
 {
     int ii;
 
-    /* Check GTM */
-    if (strcmp(nodeName, sval(VAR_gtmName)) == 0)
-        return NodeType_GTM;
-    /* GTM_Proxy */
-    for (ii = 0; aval(VAR_gtmProxyNames)[ii]; ii++)
-        if (strcmp(nodeName, aval(VAR_gtmProxyNames)[ii]) == 0)
-            return NodeType_GTM_PROXY;
     /* Coordinator */
     for (ii = 0; aval(VAR_coordNames)[ii]; ii++)
         if (strcmp(nodeName, aval(VAR_coordNames)[ii]) == 0)

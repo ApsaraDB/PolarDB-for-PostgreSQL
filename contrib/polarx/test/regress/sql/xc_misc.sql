@@ -24,16 +24,16 @@ $$;
 
 -- Test the system column added by XC called xc_node_id, used to find which tuples belong to which data node
 
-select create_table_nodes('t1_misc(a int, b int)', '{1, 2}'::int[], 'modulo(a)', NULL);
+select create_table_nodes('t1_misc(a int, b int)', '{1, 2}'::int[], 'dist_type=modulo, dist_col=a', NULL);
 insert into t1_misc values(1,11),(2,11),(3,11),(4,22),(5,22),(6,33),(7,44),(8,44);
 
 select get_unified_node_name(xc_node_id),* from t1_misc order by a;
 
 --select get_unified_node_name(xc_node_id),* from t1_misc where xc_node_id > 0 order by a;
 
-create table t2_misc(a int , xc_node_id int) distribute by modulo(a);
+create table t2_misc(a int , xc_node_id int) with(dist_type=modulo, dist_col=a);
 
-create table t2_misc(a int , b int) distribute by modulo(xc_node_id);
+create table t2_misc(a int , b int) with(dist_type=modulo, dist_col=xc_node_id);
 
 drop table t1_misc;
 
@@ -182,7 +182,7 @@ select * from cc_33 order by a;
 ---------------------------------
 -- Ensure that rows inserted into the table after declaring the cursor do not show up in fetch
 ---------------------------------
-CREATE TABLE tt_22 (a int, b int) distribute by replication;
+CREATE TABLE tt_22 (a int, b int) with(dist_type=replication);
 
 INSERT INTO tt_22 VALUES (10);
 

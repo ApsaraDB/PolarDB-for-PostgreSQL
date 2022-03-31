@@ -67,7 +67,7 @@ INSERT INTO uaccount VALUES
 CREATE TABLE category (
     cid        int primary key,
     cname      text
-) DISTRIBUTE BY REPLICATION;
+) with(dist_type=replication);
 GRANT ALL ON category TO public;
 INSERT INTO category VALUES
     (11, 'novel'),
@@ -81,7 +81,7 @@ CREATE TABLE document (
     dlevel      int not null,
     dauthor     name,
     dtitle      text
-) DISTRIBUTE BY REPLICATION;
+) with(dist_type=replication);
 GRANT ALL ON document TO public;
 INSERT INTO document VALUES    ( 1, 11, 1, 'regress_rls_bob', 'my first novel');
 INSERT INTO document VALUES    ( 2, 11, 2, 'regress_rls_bob', 'my second novel');
@@ -1551,8 +1551,8 @@ ROLLBACK;
 -- Non-target relations are only subject to SELECT policies
 --
 SET SESSION AUTHORIZATION regress_rls_alice;
-CREATE TABLE r1 (a int) DISTRIBUTE BY REPLICATION;
-CREATE TABLE r2 (a int) DISTRIBUTE BY REPLICATION;
+CREATE TABLE r1 (a int) with(dist_type=replication);
+CREATE TABLE r2 (a int) with(dist_type=replication);
 INSERT INTO r1 VALUES (10), (20);
 INSERT INTO r2 VALUES (10), (20);
 
@@ -1592,7 +1592,7 @@ DROP TABLE r2;
 --
 SET SESSION AUTHORIZATION regress_rls_alice;
 SET row_security = on;
-CREATE TABLE r1 (a int) DISTRIBUTE BY REPLICATION;
+CREATE TABLE r1 (a int) with(dist_type=replication);
 INSERT INTO r1 VALUES (10), (20);
 
 CREATE POLICY p1 ON r1 USING (false);
@@ -1692,7 +1692,7 @@ DROP TABLE r2;
 DROP TABLE r1;
 
 -- Ensure cascaded UPDATE works
-CREATE TABLE r1 (a int PRIMARY KEY) DISTRIBUTE BY REPLICATION;
+CREATE TABLE r1 (a int PRIMARY KEY) with(dist_type=replication);
 CREATE TABLE r2 (a int REFERENCES r1 ON UPDATE CASCADE);
 INSERT INTO r1 VALUES (10), (20);
 INSERT INTO r2 VALUES (10);
@@ -1754,7 +1754,7 @@ DROP TABLE r1;
 --
 SET SESSION AUTHORIZATION regress_rls_alice;
 SET row_security = on;
-CREATE TABLE r1 (a int PRIMARY KEY) DISTRIBUTE BY REPLICATION;
+CREATE TABLE r1 (a int PRIMARY KEY) with(dist_type=replication);
 
 CREATE POLICY p1 ON r1 FOR SELECT USING (a < 20);
 CREATE POLICY p2 ON r1 FOR UPDATE USING (a < 20) WITH CHECK (true);

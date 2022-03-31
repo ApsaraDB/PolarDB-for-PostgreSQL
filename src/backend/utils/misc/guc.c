@@ -100,8 +100,6 @@
 #endif
 #ifdef POLARDB_X
 #include "pgxc/pgxc.h"
-#include "pgxc/connpool.h"
-#include "pgxc/execRemoteQuery.h"
 #include "pgxc/transam/txn_coordinator.h"
 #endif
 #ifdef ENABLE_PARALLEL_RECOVERY
@@ -387,15 +385,6 @@ static const struct config_enum_entry constraint_exclusion_options[] = {
 /*
  * Define remote connection types for PGXC
  */
-static const struct config_enum_entry pgxc_conn_types[] = {
-    {"application", REMOTE_CONN_APP, false},
-    {"coordinator", REMOTE_CONN_COORD, false},
-    {"datanode", REMOTE_CONN_DATANODE, false},
-    {"gtm", REMOTE_CONN_GTM, false},
-	{"gtmproxy", REMOTE_CONN_GTM_PROXY, false},
-    {NULL, 0, false}
-};
-
 static const struct config_enum_entry txn_coordination_types[] = {
 	{"none", TXN_COORDINATION_NONE, false},
 	{"gtm", TXN_COORDINATION_GTM, false},
@@ -937,25 +926,6 @@ static struct config_bool ConfigureNamesBool[] =
 		NULL, NULL, NULL
 	},
 #endif
-	{
-		{"enable_force_2pc", PGC_USERSET, CUSTOM_OPTIONS,
-			gettext_noop("enable force two phase commit"),
-			NULL
-		},
-		&force_2pc,
-		false,
-		NULL, NULL, NULL
-	},
-	{
-		{"enable_log_remote_query", PGC_USERSET, CUSTOM_OPTIONS,
-			gettext_noop("enable log remote query"),
-			NULL
-		},
-		&enable_log_remote_query,
-		false,
-		NULL, NULL, NULL
-
-	},
 #endif
 
 #ifdef ENABLE_PARALLEL_RECOVERY
@@ -1998,19 +1968,6 @@ static struct config_bool ConfigureNamesBool[] =
 		NULL, NULL, NULL
 	},
 	
-#ifdef POLARDB_X
-    {
-        {"persistent_datanode_connections", PGC_BACKEND, DEVELOPER_OPTIONS,
-            gettext_noop("Session never releases acquired connections."),
-            NULL,
-            GUC_NOT_IN_SAMPLE
-        },
-        &PersistentConnections,
-        false,
-        check_persistent_connections, NULL, NULL
-    },
-#endif/*POLARDB_X*/
-
 	{
 		{"lo_compat_privileges", PGC_SUSET, COMPAT_OPTIONS_PREVIOUS,
 			gettext_noop("Enables backward compatibility mode for privilege checks on large objects."),
@@ -3727,178 +3684,6 @@ static struct config_int ConfigureNamesInt[] =
 		NULL, NULL, NULL
 	},
 
-#ifdef POLARDB_X
-    {
-        {"pool_conn_keepalive", PGC_SIGHUP, DATA_NODES,
-            gettext_noop("Close connections if they are idle in the pool for that time."),
-            gettext_noop("A value of -1 turns autoclose off."),
-            GUC_UNIT_S
-        },
-        &PoolConnKeepAlive,
-        60, 60, INT_MAX,
-        NULL, NULL, NULL
-    },
-
-    {
-        {"pool_maintenance_timeout", PGC_SIGHUP, DATA_NODES,
-            gettext_noop("Launch maintenance routine if pooler idle for that time."),
-            gettext_noop("A value of -1 turns feature off."),
-            GUC_UNIT_S
-        },
-        &PoolMaintenanceTimeout,
-        10, -1, INT_MAX,
-        NULL, NULL, NULL
-    },
-
-    {
-        {"max_pool_size", PGC_POSTMASTER, DATA_NODES,
-            gettext_noop("Max pool size."),
-            gettext_noop("If number of active connections reaches this value, "
-                         "other connection requests will be refused")
-        },
-        &MaxPoolSize,
-        300, 1, 65535,
-        NULL, NULL, NULL
-    },
-    {
-        {"init_pool_size", PGC_POSTMASTER, DATA_NODES,
-            gettext_noop("Initial pool size."),
-            gettext_noop("When a new user comes in, we precreate the number of connections for him ")
-        },
-        &InitPoolSize,
-        10, 1, 65535,
-        NULL, NULL, NULL
-    },
-    {
-        {"min_free_size", PGC_POSTMASTER, DATA_NODES,
-            gettext_noop("minimal pool free connection number."),
-            gettext_noop("When pool need to acquire new connections, we use the number as step ")
-        },
-        &MinFreeSize,
-        5, 1, 65535,
-        NULL, NULL, NULL
-    },
-    {
-        {"min_pool_size", PGC_POSTMASTER, DATA_NODES,
-            gettext_noop("Min pool size."),
-            gettext_noop("If number of active connections decreased below this value, "
-                         "we established new connections for warm user and database")
-        },
-        &MinPoolSize,
-        5, 1, 65535,
-        NULL, NULL, NULL
-    },
-    {
-        {"pool_session_context_check_gap", PGC_SIGHUP, DATA_NODES,
-            gettext_noop("Gap to check datanode session memory context."),
-            gettext_noop("In seconds."),
-            GUC_UNIT_S
-        },
-        &PoolSizeCheckGap,
-        120, 10, 7200,
-        NULL, NULL, NULL
-    },
-    {
-        {"pool_session_max_lifetime", PGC_SIGHUP, DATA_NODES,
-            gettext_noop("Datanode session max lifetime."),
-            gettext_noop("Session will be colsed when expired."),
-            GUC_UNIT_S
-        },
-        &PoolConnMaxLifetime,
-        300, 1, INT_MAX,
-        NULL, NULL, NULL
-    },
-    {
-        {"pool_session_memory_limit", PGC_SIGHUP, DATA_NODES,
-            gettext_noop("Datanode session max memory context size."),
-            gettext_noop("Exceed limit will be closed."),
-            GUC_UNIT_S
-        },
-        &PoolMaxMemoryLimit,
-        10, 1, 10000,
-        NULL, NULL, NULL
-    },
-    {
-        {"pooler_connect_timeout", PGC_POSTMASTER, DATA_NODES,
-            gettext_noop("Pooler connection timeout."),
-            gettext_noop("Pooler connection timeout."),
-            GUC_UNIT_S
-        },
-        &PoolConnectTimeOut,
-        10, 1, 3600,
-        NULL, NULL, NULL
-    },
-    {
-        {"pooler_scale_factor", PGC_POSTMASTER, DATA_NODES,
-            gettext_noop("Pooler scale factor."),
-            gettext_noop("Pooler scale factor.")
-        },
-        &PoolScaleFactor,
-        2, 1, 64,
-        NULL, NULL, NULL
-    },
-    {
-        {"pooler_dn_set_timeout", PGC_SIGHUP, DATA_NODES,
-            gettext_noop("Pooler datanode set query timeout."),
-            gettext_noop("Pooler datanode set query timeout."),
-            GUC_UNIT_S
-        },
-        &PoolDNSetTimeout,
-        10, 1, 3600,
-        NULL, NULL, NULL
-    },
-    {
-        {"pool_check_slot_timeout", PGC_SIGHUP, DATA_NODES,
-            gettext_noop("Enable pooler check slot. When slot is using by agent, shouldn't exist in nodepool."),
-            gettext_noop("A value of -1 turns feature off."),
-            GUC_UNIT_S
-        },
-        &PoolCheckSlotTimeout,
-        5, -1, INT_MAX,
-        NULL, NULL, NULL
-    },
-    {
-        {"pool_print_stat_timeout", PGC_SIGHUP, DATA_NODES,
-            gettext_noop("Enable pooler print stat info."),
-            gettext_noop("A value of -1 turns feature off."),
-            GUC_UNIT_S
-        },
-        &PoolPrintStatTimeout,
-        60, -1, INT_MAX,
-        NULL, NULL, NULL
-    },
-    {
-        {"pooler_port", PGC_POSTMASTER, DATA_NODES,
-            gettext_noop("Port of the Pool Manager."),
-            NULL
-        },
-        &PoolerPort,
-        6667, 1, 65535,
-        NULL, NULL, NULL
-    },
-
-#ifdef POLARDBX_TWO_PHASE_TESTS
-    {
-        {"twophase_exception_case", PGC_POSTMASTER, CUSTOM_OPTIONS,
-            gettext_noop("run tests for twophase transaction"),
-            NULL
-        },
-        &twophase_exception_case,
-        0, 0, INT_MAX,
-        NULL, NULL, NULL
-    },
-	{
-		 {"twophase_exception_node_exception", PGC_POSTMASTER, CUSTOM_OPTIONS,
-		  gettext_noop("run tests for twophase transaction, node crash"),
-		  NULL
-		 },
-		 &twophase_exception_node_exception,
-		 0, 0, INT_MAX,
-		 NULL, NULL, NULL
-	 },
-#endif
-#endif /* POLARDB_X */
-
 	{
 		{"gin_pending_list_limit", PGC_USERSET, CLIENT_CONN_STATEMENT,
 			gettext_noop("Sets the maximum size of the pending list for GIN index."),
@@ -4801,49 +4586,6 @@ static struct config_string ConfigureNamesString[] =
 		check_TSCurrentConfig, assign_TSCurrentConfig, NULL
 	},
 
-#ifdef POLARDB_X
-    {
-        {"pgxc_node_name", PGC_POSTMASTER, DEVELOPER_OPTIONS,
-            gettext_noop("The Coordinator or Datanode name."),
-            NULL,
-            GUC_NO_RESET_ALL | GUC_IS_NAME
-        },
-        &PGXCNodeName,
-        "",
-        NULL, NULL, NULL
-    },
-
-    {
-        {"pgxc_cluster_name", PGC_POSTMASTER, DEVELOPER_OPTIONS,
-            gettext_noop("The Cluster name."),
-            NULL,
-            GUC_NO_RESET_ALL | GUC_IS_NAME
-        },
-        &PGXCClusterName,
-        "cluster_server",
-        NULL, NULL, NULL
-    },
-    {
-        {"pgxc_main_cluster_name", PGC_POSTMASTER, DEVELOPER_OPTIONS,
-            gettext_noop("The Main Cluster name."),
-            NULL,
-            GUC_NO_RESET_ALL | GUC_IS_NAME
-        },
-        &PGXCMainClusterName,
-        "cluster_server",
-        NULL, NULL, NULL
-    },
-    {
-        {"parentnode", PGC_BACKEND, CONN_AUTH,
-            gettext_noop("Sets the name of the parent data node"),
-            NULL
-        },
-        &parentPGXCNode,
-        NULL,
-        NULL, NULL, NULL
-    },
-#endif
-
 	{
 		{"ssl_ciphers", PGC_SIGHUP, CONN_AUTH_SSL,
 			gettext_noop("Sets the list of allowed SSL ciphers."),
@@ -5175,15 +4917,6 @@ static struct config_enum ConfigureNamesEnum[] =
 		NULL, NULL, NULL
 	},
 #ifdef POLARDB_X
-    {
-        {"remotetype", PGC_BACKEND, CONN_AUTH,
-            gettext_noop("Sets the type of PolarDB-X remote connection"),
-            NULL
-        },
-        &remoteConnType,
-        REMOTE_CONN_APP, pgxc_conn_types,
-        NULL, NULL, NULL
-    },
 	{
 		{"txn_coordination", PGC_POSTMASTER, CUSTOM_OPTIONS,
 			gettext_noop("Distributed transation coordination method"),
@@ -11893,80 +11626,6 @@ show_log_file_mode(void)
 	return buf;
 }
 
-#ifdef POLARDB_X
-static void strreplace_all(char *str, char *needle, char *replacement);
-/*
- * Return a quoted GUC value, when necessary
- */
-const char *
-quote_guc_value(const char *value, int flags)
-{
-    char *new_value;
-
-    if (value == NULL)
-        return value;
-
-    /*
-     * An empty string is what gets created when someone fires SET var TO ''.
-     * We must send it in its original form to the remote node.
-     */
-    if (!value[0])
-        return "''";
-
-    /*
-     * A special case for empty string list members which may get replaced by
-     * "\"\"" when flatten_set_variable_args gets called. So replace that back
-     * to ''.
-     */
-    new_value = pstrdup(value);
-    strreplace_all(new_value, "\"\"", "''");
-    value = new_value;
-
-    /* Finally don't quote empty string */
-    if (strcmp(value, "''") == 0)
-        return value;
-
-    /*
-     * If the GUC rceives list input, then the individual elements in the list
-     * must be already quoted correctly by flatten_set_variable_args(). We must
-     * not quote the entire value again.
-     *
-     * We deal with empty strings which may have already been replaced with ""
-     * by flatten_set_variable_args. Unquote them so that remote side can
-     * handle it.
-     */
-    if (flags & GUC_LIST_INPUT)
-       return value;
-
-    /*
-     * Otherwise quote the value. quote_identifier() takes care of correctly
-     * quoting the value when needed, including GUC_UNIT_MEMORY and
-     * GUC_UNIT_TIME values.
-     */
-    return quote_identifier(value);
-}
-
-/*
- * Replace all occurrences of "needle" with "replacement". We do in-place
- * replacement, so "replacement" must be smaller or equal to "needle"
- */
-static void
-strreplace_all(char *str, char *needle, char *replacement)
-{
-    char       *s;
-
-    s = strstr(str, needle);
-    while (s != NULL)
-    {
-        int            replacementlen = strlen(replacement);
-        char       *rest = s + strlen(needle);
-
-        memcpy(s, replacement, replacementlen);
-        memmove(s + replacementlen, rest, strlen(rest) + 1);
-        s = strstr(str, needle);
-    }
-}
-#endif
 static const char *
 show_data_directory_mode(void)
 {

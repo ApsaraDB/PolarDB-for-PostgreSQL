@@ -1055,13 +1055,6 @@ InitPostgres(const char *in_dbname, Oid dboid, const char *username,
 	if (!bootstrap)
 		CommitTransactionCommand();
 
-#ifdef ENABLE_DISTRIBUTED_TRANSACTION
-    /*
-     *init g_twophase_state here, since we need to init g_twophase_state in multiple startup mode
-     */
-	InitTxnManagement();
-#endif
-
 }
 
 /*

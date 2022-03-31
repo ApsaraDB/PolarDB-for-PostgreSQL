@@ -118,7 +118,7 @@ CREATE TABLE INSERT_TBL (x INT DEFAULT nextval('insert_seq'),
 	y TEXT DEFAULT '-NULL-',
 	z INT DEFAULT -1 * currval('insert_seq'),
 	CONSTRAINT INSERT_CON CHECK (x >= 3 AND y <> 'check failed' AND x < 8),
-	CHECK (x + z = 0)) DISTRIBUTE BY REPLICATION;
+	CHECK (x + z = 0)) with(dist_type=replication);
 INSERT INTO INSERT_TBL(x,z) VALUES (2, -2);
 ERROR:  new row for relation "insert_tbl" violates check constraint "insert_con"
 DETAIL:  Failing row contains (2, -NULL-, -2).
@@ -438,7 +438,7 @@ DROP TABLE UNIQUE_TBL;
 -- Deferrable unique constraints
 --
 -- PGXCTODO : Feature ID 3520518
-CREATE TABLE unique_tbl (i int UNIQUE DEFERRABLE, t text) DISTRIBUTE BY REPLICATION;
+CREATE TABLE unique_tbl (i int UNIQUE DEFERRABLE, t text) with(dist_type=replication);
 NOTICE:  CREATE TABLE / UNIQUE will create implicit index "unique_tbl_i_key" for table "unique_tbl"
 INSERT INTO unique_tbl VALUES (0, 'one');
 INSERT INTO unique_tbl VALUES (1, 'two');
@@ -607,7 +607,7 @@ DROP TABLE circles;
 CREATE TABLE deferred_excl (
   f1 int,
   CONSTRAINT deferred_excl_con EXCLUDE (f1 WITH =) INITIALLY DEFERRED
-) DISTRIBUTE BY REPLICATION;
+) with(dist_type=replication);
 NOTICE:  CREATE TABLE / EXCLUDE will create implicit index "deferred_excl_con" for table "deferred_excl"
 INSERT INTO deferred_excl VALUES(1);
 INSERT INTO deferred_excl VALUES(2);

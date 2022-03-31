@@ -15,7 +15,7 @@ declare
 	num_nodes	int;
 begin
 	nodenames_query := 'SELECT node_name FROM pgxc_node WHERE node_type = ''D'''; 
-	cr_command := 'CREATE TABLE ' || tab_schema || ' DISTRIBUTE BY ' || distribution || ' TO NODE (';
+	cr_command := 'CREATE TABLE ' || tab_schema || ' with(' || distribution || ') TO NODE (';
 	for nodename in execute nodenames_query loop
 		nodes := array_append(nodes, nodename);
 	end loop;
@@ -43,14 +43,14 @@ begin
 end;
 $$;
 
-select cr_table('tab1_rep (val int, val2 int)', '{1, 2, 3}'::int[], 'replication', NULL);
+select cr_table('tab1_rep (val int, val2 int)', '{1, 2, 3}'::int[], 'dist_type=replication', NULL);
 insert into tab1_rep (select * from generate_series(1, 5) a, generate_series(1, 5) b);
-select cr_table('tab2_rep', '{2, 3, 4}'::int[], 'replication', 'as select * from tab1_rep');
-select cr_table('tab3_rep', '{1, 3}'::int[], 'replication', 'as select * from tab1_rep');
-select cr_table('tab4_rep', '{2, 4}'::int[], 'replication', 'as select * from tab1_rep');
-select cr_table('tab1_mod', '{1, 2, 3}'::int[], 'modulo(val)', 'as select * from tab1_rep');
-select cr_table('tab2_mod', '{2, 4}'::int[], 'modulo(val)', 'as select * from tab1_rep');
-select cr_table('tab3_mod', '{1, 2, 3}'::int[], 'modulo(val)', 'as select * from tab1_rep');
+select cr_table('tab2_rep', '{2, 3, 4}'::int[], 'dist_type=replication', 'as select * from tab1_rep');
+select cr_table('tab3_rep', '{1, 3}'::int[], 'dist_type=replication', 'as select * from tab1_rep');
+select cr_table('tab4_rep', '{2, 4}'::int[], 'dist_type=replication', 'as select * from tab1_rep');
+select cr_table('tab1_mod', '{1, 2, 3}'::int[], 'dist_type=modulo, dist_col=val', 'as select * from tab1_rep');
+select cr_table('tab2_mod', '{2, 4}'::int[], 'dist_type=modulo, dist_col=val', 'as select * from tab1_rep');
+select cr_table('tab3_mod', '{1, 2, 3}'::int[], 'dist_type=modulo, dist_col=val', 'as select * from tab1_rep');
 
 -- Join involving replicated tables only, all of them should be shippable
 select * from tab1_rep, tab2_rep where tab1_rep.val = tab2_rep.val and

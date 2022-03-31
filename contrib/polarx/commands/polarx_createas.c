@@ -2,14 +2,15 @@
  * polarx_createas.c
  *   The implementation of the CREATE TABLE AS command in polarx
  *
- * Copyright (c) 2020, Alibaba Inc. and/or its affiliates
- * Copyright (c) 2020, Apache License Version 2.0*
+ * Copyright (c) 2021, Alibaba Group Holding Limited
+ * Licensed under the Apache License, Version 2.0 (the "License");
  *
  * IDENTIFICATION
  *        contrib/polarx/commands/polarx_createas.c
  *-------------------------------------------------------------------------
  */
 #include "postgres.h"
+#include "polarx.h"
 #include "commands/polarx_createas.h"
 #include "access/reloptions.h"
 #include "access/htup_details.h"
@@ -35,12 +36,11 @@
 #include "utils/rel.h"
 #include "utils/rls.h"
 #include "utils/snapmgr.h"
-#include "pgxc/pgxc.h"
-#include "pgxc/planner.h"
 #include "commands/defrem.h"
 #include "deparse/deparse_fqs.h"
+#include "parser/parse_distribute.h"
 
-static ObjectAddress create_ctas_foreign_table(List *tlist, IntoClause *into);
+static ObjectAddress create_ctas_foreign_table(List *tlist, List *dist_list, IntoClause *into);
 
 void
 ExecCreateTableAsPre(CreateTableAsStmt *stmt)
@@ -63,6 +63,7 @@ ExecCreateTableAsReplace(CreateTableAsStmt *stmt, const char *queryString,
     List       *rewritten;
     PlannedStmt *plan;
     QueryDesc  *queryDesc;
+    List *dist_list = extractPolarxTableOption(&(into->options));
 
     if (stmt->if_not_exists)
     {
@@ -82,7 +83,7 @@ ExecCreateTableAsReplace(CreateTableAsStmt *stmt, const char *queryString,
     if(IS_PGXC_COORDINATOR && !is_matview)
     {
 
-        address = create_ctas_foreign_table(query->targetList, into);
+        address = create_ctas_foreign_table(query->targetList, dist_list, into);
         CommandCounterIncrement();
 
         if(!into->skipData && IS_PGXC_LOCAL_COORDINATOR)
@@ -154,15 +155,10 @@ ExecCreateTableAsReplace(CreateTableAsStmt *stmt, const char *queryString,
 }
 
 static ObjectAddress
-create_ctas_foreign_table(List *tlist, IntoClause *into)
+create_ctas_foreign_table(List *tlist, List *dist_list, IntoClause *into)
 {
     List       *attrList;
     ListCell   *t, *lc;
-    CreateForeignTableStmt *fstmt = NULL;
-    char *dist_type;
-    char *use_remote_estimate = "true";
-    char *server_name = PGXCClusterName;
-    char *dist_name = NULL;
     ObjectAddress intoRelationAddr;
 
 
@@ -218,56 +214,7 @@ create_ctas_foreign_table(List *tlist, IntoClause *into)
         ereport(ERROR,
                 (errcode(ERRCODE_SYNTAX_ERROR),
                  errmsg("too many column names were specified")));
-    fstmt = makeNode(CreateForeignTableStmt);
 
-    fstmt->servername = pstrdup(server_name);
-    fstmt->options = list_make1(
-            makeDefElem("use_remote_estimate", (Node *)makeString(pstrdup(use_remote_estimate)), -1));
-
-    if(into->distributeby)
-    {
-        if(into->distributeby->disttype == 0)
-            dist_type = "R";
-        else if(into->distributeby->disttype == 1)
-            dist_type = "H";
-        else if(into->distributeby->disttype == 2)
-            dist_type = "N";
-        else if(into->distributeby->disttype == 3)
-            dist_type = "M";
-        else
-            ereport(ERROR,
-                    (errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
-                     errmsg("distribute type is not defined %d", into->distributeby->disttype)));
-
-        if(into->distributeby->colname != NULL)
-            dist_name = into->distributeby->colname;
-    }
-    else
-    {
-        lc = NULL;
-
-        foreach(lc, attrList)
-        {
-            ColumnDef  *col = (ColumnDef *)lfirst(lc);
-            if(IsTypeHashDistributable(col->typeName->typeOid))
-            {
-                dist_type = "H";
-                dist_name = col->colname;
-                break;
-            }
-        }
-        if(lc == NULL)
-        {
-            dist_type = "N";
-            dist_name = NULL;
-        }
-    }
-    fstmt->options = lappend(fstmt->options,
-            makeDefElem("locator_type", (Node *)makeString(pstrdup(dist_type)), -1));
-
-    if(dist_name != NULL)
-        fstmt->options = lappend(fstmt->options,
-                makeDefElem("dist_col_name", (Node *)makeString(pstrdup(dist_name)), -1));
     {
         CreateStmt *create = makeNode(CreateStmt);
         bool        is_matview;
@@ -292,22 +239,6 @@ create_ctas_foreign_table(List *tlist, IntoClause *into)
         create->oncommit = into->onCommit;
         create->tablespacename = into->tableSpaceName;
         create->if_not_exists = false;
-        create->distributeby = makeNode(DistributeBy);
-        if(into->distributeby)
-            create->distributeby = copyObject(into->distributeby);
-        else
-        {
-            if(*dist_type == 'H')
-            {
-                create->distributeby->disttype = DISTTYPE_HASH;
-                create->distributeby->colname = pstrdup(dist_name);
-            }
-            else
-            {
-                create->distributeby->disttype = DISTTYPE_ROUNDROBIN;
-                create->distributeby->colname = NULL;
-            }
-        }
 
         /*
          * Create the relation.  (This will error out if there's an existing view,
@@ -343,7 +274,43 @@ create_ctas_foreign_table(List *tlist, IntoClause *into)
             CommandCounterIncrement();
         }
     }
-    CreateForeignTable((CreateForeignTableStmt *) fstmt, intoRelationAddr.objectId);
+    if(!isCreateLocalTable(dist_list))
+    {
+        CreateForeignTableStmt *fstmt = NULL;
+        char *dist_type;
+        char *use_remote_estimate = "true";
+        char *server_name = PGXCClusterName;
+        DistributeBy *dist_by = NULL;
+
+        fstmt = makeNode(CreateForeignTableStmt);
+
+        fstmt->servername = pstrdup(server_name);
+        fstmt->options = list_make1(
+                makeDefElem("use_remote_estimate", (Node *)makeString(pstrdup(use_remote_estimate)), -1));
+
+
+        dist_by = buildDistributeByForIntoClause(dist_list, attrList);
+        if(dist_by->disttype == DISTTYPE_REPLICATION)
+            dist_type = "R";
+        else if(dist_by->disttype == DISTTYPE_HASH)
+            dist_type = "H";
+        else if(dist_by->disttype == DISTTYPE_ROUNDROBIN)
+            dist_type = "N";
+        else if(dist_by->disttype == DISTTYPE_ROUNDROBIN)
+            dist_type = "M";
+        else
+            ereport(ERROR,
+                    (errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
+                     errmsg("distribute type is not defined %d", dist_by->disttype)));
+
+        fstmt->options = lappend(fstmt->options,
+                makeDefElem("locator_type", (Node *)makeString(pstrdup(dist_type)), -1));
+
+        if(dist_by->colname != NULL)
+            fstmt->options = lappend(fstmt->options,
+                    makeDefElem("dist_col_name", (Node *)makeString(pstrdup(dist_by->colname)), -1));
+        CreateForeignTable((CreateForeignTableStmt *) fstmt, intoRelationAddr.objectId);
+    }
 
 
     /* Create the relation definition using the ColumnDef list */

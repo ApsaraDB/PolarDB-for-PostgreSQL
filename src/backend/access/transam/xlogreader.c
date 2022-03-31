@@ -4,7 +4,7 @@
  *		Generic XLog reading facility
  *
  * Support remote recovery.
- * Author: Junbin Kang
+ * Author:  
  *
  * Portions Copyright (c) 2020, Alibaba Group Holding Limited
  * Portions Copyright (c) 2013-2018, PostgreSQL Global Development Group

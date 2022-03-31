@@ -48,7 +48,7 @@
  *   We add WAL for CTS log to perserve data across crashes so as to support recovery. 
  *   For more details on CTS log, please see ctslog.c
  * 
- *   Author: Junbin Kang, 2020-01-15
+ *   Author:  , 2020-01-15
  *   ------------------------------------------------------------------------------------
  *
  * Portions Copyright (c) 2020, Alibaba Group Holding Limited
@@ -1453,7 +1453,7 @@ HeapTupleSatisfiesVacuum(HeapTuple htup, TransactionId OldestXmin,
 		 * 
 		 * Improve: Only fetch CTS once for both status and prunable check.
 		 * 
-		 * Written by Junbin Kang, 2020-09-02.
+		 * Written by  , 2020-09-02.
 		 */ 
 		committs = TransactionIdGetCommitSeqNo(xmax);
 

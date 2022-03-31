@@ -14136,18 +14136,8 @@ RangeVarCallbackForAlterRelation(const RangeVar *rv, Oid relid, Oid oldrelid,
 
 	ReleaseSysCache(tuple);
 }
-#ifdef POLARDB_X
-/*
- * IsOnCommitActions
- *
- * Check if there are any on-commit actions activated.
- */
-bool
-IsOnCommitActions(void)
-{
-    return list_length(on_commits) > 0;
-}
-#endif /* POLARDB_X */
+
+
 /*
  * Transform any expressions present in the partition key
  *

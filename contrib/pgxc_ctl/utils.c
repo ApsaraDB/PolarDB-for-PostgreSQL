@@ -220,18 +220,6 @@ char **makeActualNodeList(char **nodeList)
     return actualNodeList;
 }
 
-int gtmProxyIdx(char *gtmProxyName)
-{
-    int ii;
-
-    for (ii = 0; aval(VAR_gtmProxyNames)[ii]; ii++)
-    {
-        if (strcmp(aval(VAR_gtmProxyNames)[ii], gtmProxyName) == 0)
-            return ii;
-    }
-    return -1;
-}
-
 int coordIdx(char *coordName)
 {
     int ii;
@@ -255,20 +243,6 @@ int datanodeIdx(char *datanodeName)
     for (ii = 0; aval(VAR_datanodeNames)[ii]; ii++)
     {
         if (strcmp(aval(VAR_datanodeNames)[ii], datanodeName) == 0)
-            return ii;
-    }
-    return -1;
-}
-
-int getEffectiveGtmProxyIdxFromServerName(char *serverName)
-{
-    int ii;
-
-    if (serverName == NULL)
-        return (-1);
-    for (ii = 0; aval(VAR_gtmProxyNames)[ii]; ii++)
-    {
-        if (strcmp(aval(VAR_gtmProxyServers)[ii], serverName) == 0)
             return ii;
     }
     return -1;

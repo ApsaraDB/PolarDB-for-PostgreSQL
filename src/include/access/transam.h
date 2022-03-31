@@ -143,13 +143,6 @@ typedef enum
 	XID_INPROGRESS
 } TransactionIdStatus;
 
-#ifdef POLARDB_X
-/* POLARDBX_TRANSACTION list below is return value of polardbx_get_transaction_status */
-#define POLARDBX_TRANSACTION_COMMITED 0
-#define POLARDBX_TRANSACTION_ABORTED 1
-#define POLARDBX_TRANSACTION_INPROGRESS 2
-#define POLARDBX_TRANSACTION_TWOPHASE_FILE_NOT_FOUND 3
-#endif
 
 extern CommitSeqNo TransactionIdGetCommitSeqNo(TransactionId xid);
 extern TransactionIdStatus TransactionIdGetStatus(TransactionId transactionId);

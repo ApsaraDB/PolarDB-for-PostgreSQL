@@ -433,12 +433,12 @@ drop table mytab3 cascade;
 -- If a transcation is preared and contains only a select with for share/update, it should be preapred on data nodes
 
 -- create some tables
-create table t1(val int, val2 int) DISTRIBUTE BY REPLICATION;
-create table t2(val int, val2 int) DISTRIBUTE BY REPLICATION;
-create table t3(val int, val2 int) DISTRIBUTE BY REPLICATION;
+create table t1(val int, val2 int) with(dist_type=replication);
+create table t2(val int, val2 int) with(dist_type=replication);
+create table t3(val int, val2 int) with(dist_type=replication);
 
-create table p1(a int, b int) DISTRIBUTE BY REPLICATION;
-create table c1(d int, e int) inherits (p1) DISTRIBUTE BY REPLICATION;
+create table p1(a int, b int) with(dist_type=replication);
+create table c1(d int, e int) inherits (p1) with(dist_type=replication);
 
 -- insert some rows in them
 insert into t1 values(1,11),(2,11);

@@ -3,7 +3,7 @@
 --
 
 BEGIN;
-CREATE TABLE xacttest(LIKE aggtest) distribute by replication;
+CREATE TABLE xacttest(LIKE aggtest) with (dist_type = replication);
 INSERT INTO xacttest SELECT * from aggtest;
 --SELECT *
 --   INTO TABLE xacttest
@@ -37,8 +37,8 @@ SELECT * FROM aggtest order by a, b;
 
 -- Read-only tests
 
-CREATE TABLE writetest (a int) distribute by replication;
-CREATE TEMPORARY TABLE temptest (a int) distribute by replication;
+CREATE TABLE writetest (a int) with (dist_type = replication);
+CREATE TEMPORARY TABLE temptest (a int) with (dist_type = replication);
 
 BEGIN;
 SET TRANSACTION ISOLATION LEVEL SERIALIZABLE, READ ONLY, DEFERRABLE; -- ok

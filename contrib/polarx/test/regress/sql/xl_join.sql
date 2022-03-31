@@ -2,8 +2,8 @@
 CREATE TABLE xl_join_t1 (val1 int, val2 int);
 CREATE TABLE xl_join_t2 (val1 int, val2 int);
 CREATE TABLE xl_join_t3 (val1 int, val2 int);
-CREATE TABLE xl_join_t4 (val1 int, val2 int) DISTRIBUTE BY REPLICATION;
-CREATE TABLE xl_join_t5 (val1 int, val2 int) DISTRIBUTE BY REPLICATION;
+CREATE TABLE xl_join_t4 (val1 int, val2 int) with(dist_type=replication);
+CREATE TABLE xl_join_t5 (val1 int, val2 int) with(dist_type=replication);
 
 INSERT INTO xl_join_t1 VALUES (1,10),(2,20);
 INSERT INTO xl_join_t2 VALUES (3,30),(4,40);

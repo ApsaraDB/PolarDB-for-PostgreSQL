@@ -48,8 +48,8 @@
 #include <pwd.h>
 #include <errno.h>
 #include <string.h>
-#include "libpq-fe.h"
 #include "pg_config.h"
+#include "libpq-fe.h"
 #include "getopt_long.h"
 #include "pgxc_clean.h"
 #include "txninfo.h"
@@ -101,6 +101,8 @@ bool no_clean_opt = false;
 bool verbose_opt = false;
 bool print_prepared_xact_only = false;
 bool force_clean_2pc = false;
+bool simple_clean_2pc = true; /* default: no HLC feature enabled. */
+int  handle_2pc_mode = ROLLBACK_ALL_PREPARED_TXN;
 FILE *outf;
 FILE *errf;
 
@@ -119,16 +121,12 @@ int total_prep_txn_count = 0; // total prepared xact num in cluster.
 const char* twophase_file_not_found_str = "no coresponding 2pc file found";
 
 /* Funcs */
-static void add_to_database_list(char *dbname);
-static void parse_pgxc_clean_options(int argc, char *argv[]);
-static void usage(void);
 static char *GetUserName(void);
-static void showVersion(void);
 static PGconn *loginDatabase(char *host, int port, char *user, char *password,
 							char *dbname, const char *progname, char *encoding, char *password_prompt);
 static void getMyNodename(PGconn *conn);
 static void recover2PCForDatabase(database_info *db_info);
-static void recover2PC(PGconn *conn, txn_info *txn);
+static void recover2PC(PGconn *conn, txn_info *txn, char *database_name);
 static void getDatabaseList(PGconn *conn);
 static void getNodeList(PGconn *conn);
 static void showVersion(void);
@@ -140,6 +138,9 @@ static void getTxnInfoOnOtherNodesAll(PGconn *conn);
 static void do_commit(PGconn *conn, txn_info *txn);
 static void do_abort(PGconn *conn, txn_info *txn);
 static void do_commit_abort(PGconn *conn, txn_info *txn, bool is_commit);
+static void getPreparedTxnListOfNode(PGconn *conn, int idx);
+static void getPreparedTxnListOfNodeSimpleCleanMode(PGconn *conn, int idx);
+static void do_commit_abort_simple_clean_mode(PGconn *conn, txn_info *txn, char *database_name, bool is_commit);
 
 #ifdef POLARDB_X
 /* POLARDBX_TRANSACTION list below is return value of polardbx_get_transaction_status */
@@ -186,7 +187,6 @@ TwoPhaseFileInfo *last_file_info = NULL;
 
 
 TimestampTz getCommitTimestamp(PGconn *conn, char* gid, char* node_name);
-static void cleanObsoleteTwoPhaseFiles(void);
 static void printTwoPhaseFileList(void);
 static void cleanObsoleteTwoPhaseFiles(void);
 bool parseTwoPhaseFileDetail(char *detail, TwoPhaseFileDetail *twoPhaseFileDetail);
@@ -399,6 +399,7 @@ int main(int argc, char *argv[])
 
 	/*
 	 * Get list of prepared statement
+	 * NB: will collect all cluster nodes' prepared txn info.
 	 */
 	getPreparedTxnList(coord_conn);
 
@@ -407,8 +408,12 @@ int main(int argc, char *argv[])
 	 */
 	if (!check2PCExists())
 	{
-		fprintf(errf, "%s: There's no prepared 2PC in this cluster. Checking 2pc files...\n", progname);
-		cleanObsoleteTwoPhaseFiles();
+	    /* In simple clean mode, no extra twophase file left on disk, and the cleanup functions are undefined in kernel. */
+        if (!simple_clean_2pc)
+        {
+            fprintf(errf, "%s: There's no prepared 2PC in this cluster. Checking 2pc files...\n", progname);
+            cleanObsoleteTwoPhaseFiles();
+        }
 		exit(0);
 	}
 
@@ -502,7 +507,11 @@ int main(int argc, char *argv[])
 		}
 	}
 
-	cleanObsoleteTwoPhaseFiles();
+    /* In simple clean mode, no extra twophase file left on disk, and the cleanup functions are undefined in kernel. */
+    if (!simple_clean_2pc)
+    {
+        cleanObsoleteTwoPhaseFiles();
+    }
 
 	exit(0);
 }
@@ -539,21 +548,12 @@ recover2PCForDatabase(database_info *db_info)
 		fprintf(errf, "Could not connect to the database %s.\n", db_info->database_name);
 		return;
 	}
-#if 0
-	if (!setMaintenanceMode(coord_conn))
-	{
-		/* Cannot recover */
-		fprintf(errf, "Skipping database %s.\n", db_info->database_name);
-		PQfinish(coord_conn);
-		return;
-	}
-#endif
 
 	if (verbose_opt)
 		fprintf(outf, "%s: connected to the database \"%s\"\n", progname, db_info->database_name);
 	for(cur_txn = db_info->head_txn_info; cur_txn; cur_txn = cur_txn->next)
 	{
-		recover2PC(coord_conn, cur_txn);
+		recover2PC(coord_conn, cur_txn, db_info->database_name);
 	}
 	PQfinish(coord_conn);
 }
@@ -580,18 +580,38 @@ GetCurrentTimestamp(void)
 }
 
 static void
-recover2PC(PGconn *conn, txn_info *txn)
+recover2PC(PGconn *conn, txn_info *txn, char *database_name)
 {
 	TXN_STATUS txn_stat;
 
-	txn_stat = check_txn_global_status(txn);
+	if (simple_clean_2pc)
+    {
+	    /* simple clean mode will rollback or commit all prepared txns depends on setting: handle_2pc_mode */
+	    if (ROLLBACK_ALL_PREPARED_TXN == handle_2pc_mode)
+        {
+            txn_stat = TXN_STATUS_ABORTED;
+        }
+	    else if (COMMIT_ALL_PREPARED_TXN == handle_2pc_mode)
+        {
+            txn_stat = TXN_STATUS_COMMITTED;
+        }
+	    else
+        {
+            fprintf(stderr, "Invalid handle_2pc_mode:%d\n", handle_2pc_mode);
+            exit(-1);
+        }
+    }
+	else
+    {
+        txn_stat = check_txn_global_status(txn);
+    }
 	if (verbose_opt)
 	{
 		fprintf(outf, "    Recovering TXN: gid: %s, owner: \"%s\", global status: %s\n",
 				txn->gid, txn->owner, str_txn_stat(txn_stat));
 	}
 
-	if (txn->prepare_timestamp_elapse < min_clean_xact_interval)
+	if (!simple_clean_2pc && txn->prepare_timestamp_elapse < min_clean_xact_interval)
 	{
 		if (force_clean_2pc)
 		{
@@ -624,18 +644,32 @@ recover2PC(PGconn *conn, txn_info *txn)
 				fprintf(outf, "        Recovery not needed. global txn_stat:%s\n", str_txn_stat(txn_stat));
 			return;
 		case TXN_STATUS_COMMITTED:
-			if (txn->commit_timestamp == InvalidGlobalTimestamp)
-			{
-				fprintf(errf, "        Recovery failed. global txn_stat:%s, but has no valid commit timestamp.\n", str_txn_stat(txn_stat));
-				exit(-1);
-			}
-			else
-			{
-				do_commit(conn, txn);
-			}
+		    if (simple_clean_2pc)
+            {
+		        do_commit_abort_simple_clean_mode(conn, txn, database_name, true);
+            }
+		    else
+            {
+                if (txn->commit_timestamp == InvalidGlobalTimestamp)
+                {
+                    fprintf(errf, "        Recovery failed. global txn_stat:%s, but has no valid commit timestamp.\n", str_txn_stat(txn_stat));
+                    exit(-1);
+                }
+                else
+                {
+                    do_commit(conn, txn);
+                }
+            }
 			return;
 		case TXN_STATUS_ABORTED:
-			do_abort(conn, txn);
+		    if (simple_clean_2pc)
+            {
+                do_commit_abort_simple_clean_mode(conn, txn, database_name, false);
+            }
+		    else
+            {
+                do_abort(conn, txn);
+            }
 			return;
 		case TXN_STATUS_INPROGRESS:
 			fprintf(stderr, "        Can't recover a running transaction. global txn_stat:%s\n", str_txn_stat(txn_stat));
@@ -944,7 +978,19 @@ getTxnInfoOnOtherNodes(PGconn *conn, txn_info *txn)
 	for (ii = 0; ii < pgxc_clean_node_count; ii++)
 	{
 		if (txn->txn_stat[ii] == TXN_STATUS_INITIAL && txn->nodeparts[ii])
-			txn->txn_stat[ii] = getTxnStatus(conn, txn, ii);
+        {
+		    if (!simple_clean_2pc)
+                txn->txn_stat[ii] = getTxnStatus(conn, txn, ii);
+		    else
+            {
+		        /* In simple clean mode, txn->txn_stat must be prepared when txn->nodeparts is 1. */
+                fprintf(errf, "Error. simple clean mode will have txn TXN_STATUS_PREPARED, now got TXN_STATUS_INITIAL "
+                              "in node:%s, txn gid:%s.\n", 
+                            pgxc_clean_node_info[ii].node_name, txn->gid);
+                exit(-1);
+            }
+                
+        }
 	}
 }
 
@@ -956,13 +1002,29 @@ getTxnInfoOnOtherNodesForDatabase(PGconn *conn, database_info *database)
 	int nodeidx = -1;
 	char* temp = NULL;
 
+	if (simple_clean_2pc && cur_txn->participate_nodes)
+    {
+        fprintf(errf, "Error. simple clean mode will have empty participate_nodes info, now got %s.\n", cur_txn->participate_nodes);
+        exit(-1);
+    }
+	
 	for (cur_txn = database->head_txn_info; cur_txn; cur_txn = cur_txn->next)
 	{
 		// get txn status on all other participated nodes.
-		if (cur_txn->participate_nodes[0] == '\0')
+		if ((NULL == cur_txn->participate_nodes) || cur_txn->participate_nodes[0] == '\0')
 		{
-			fprintf(errf, "Txn gid:%s has invalid participate_node.\n", cur_txn->gid);
-			exit(-1);
+            if (simple_clean_2pc)
+            {
+                /* 
+                 * It's ok. we only need to handle the node which has prepared txns (all rollback/commit).
+                 * cur_txn->nodeparts already marked when getPreparedTxnListOfNodeSImpleCleanMode
+                 * */
+            }
+            else
+            {
+                fprintf(errf, "Txn gid:%s has invalid participate_node.\n", cur_txn->gid);
+                exit(-1);
+            }
 		}
 		else
 		{
@@ -1020,7 +1082,7 @@ getPreparedTxnListOfNode(PGconn *conn, int idx)
 	/* SQL Statement */
 	static const char *STMT_GET_PREP_TXN_ON_NODE
 		= "EXECUTE DIRECT ON (%s) '/* pgxc_clean */ SELECT TRANSACTION::text, GID::text, OWNER::text, DATABASE::text, "
-		  "PARTICIPATE_NODES::text, floor(extract(epoch from (now()-prepared))), prepared::text, now()::text FROM PG_PREPARED_XACTS;'";
+		  "PARTICIPATE_NODES::text, floor(extract(epoch from (now()-prepared))), prepared::text, now()::text FROM POLARDBX_PREPARED_XACTS;'";
 	char stmt[MAX_STMT_LEN];
 
 	sprintf(stmt, STMT_GET_PREP_TXN_ON_NODE,
@@ -1087,7 +1149,10 @@ getPreparedTxnList(PGconn *conn)
 
 	for (ii = 0; ii < pgxc_clean_node_count; ii++)
 	{
-		getPreparedTxnListOfNode(conn, ii);
+	    if (simple_clean_2pc)
+            getPreparedTxnListOfNodeSimpleCleanMode(conn, ii);
+	    else
+		    getPreparedTxnListOfNode(conn, ii);
 	}
 
 	if (print_prepared_xact_only)
@@ -1294,6 +1359,12 @@ parse_pgxc_clean_options(int argc, char *argv[])
 		{"min-clean-xact-interval", required_argument, NULL, 'T'},
 		{"min-clean-2pcfile-interval", required_argument, NULL, 'y'},
 		{"force-clean-2pc", no_argument, NULL, 'f'},
+		/* simple-clean-2pc is used for plugin version without HLC. 
+		 * And when cleaning up, some HLC specific function will not used, such as polardbx_finish_global_transation etc.
+		 * For transactions which are prepared, will abort or commit based on handle-2pc-mode. 
+		 * */
+        {"simple-clean-2pc", no_argument, NULL, 'S'},
+        {"handle-2pc-mode", required_argument, NULL, 'H'},
 		{NULL, 0, NULL, 0}
 	};
 
@@ -1304,7 +1375,7 @@ parse_pgxc_clean_options(int argc, char *argv[])
 
 	progname = get_progname(argv[0]);		/* Should be more fancy */
 
-	while ((c = getopt_long(argc, argv, "ad:h:T:y:No:p:qU:vVwWstf?", long_options, &optindex)) != -1)
+	while ((c = getopt_long(argc, argv, "ad:h:T:y:No:p:qU:vVwWstfSH:?", long_options, &optindex)) != -1)
 	{
 		switch(c)
 		{
@@ -1353,6 +1424,17 @@ parse_pgxc_clean_options(int argc, char *argv[])
 			case 'f':
 				force_clean_2pc = true;
 				break;
+            case 'S':
+                simple_clean_2pc = true;
+                break;
+		    case 'H':
+		        handle_2pc_mode = atoi(optarg);
+		        if (handle_2pc_mode != ROLLBACK_ALL_PREPARED_TXN && handle_2pc_mode != COMMIT_ALL_PREPARED_TXN)
+                {
+                    fprintf(stderr, "Invalid mode. only 0 or 1 is valid. 0 for rollback and 1 for commit.\n");
+                    exit(1);
+                }
+		        break;
 			case 'T':
 				min_clean_xact_interval = atoi(optarg);
 				fprintf(stdout, "get min_clean_xact_interval:%d(s) from user input.\n",
@@ -1406,6 +1488,12 @@ parse_pgxc_clean_options(int argc, char *argv[])
 		fprintf(stderr, "Please specify at least one database or -a for all\n");
 		exit(1);
 	}
+	
+	if (simple_clean_2pc && force_clean_2pc)
+    {
+        fprintf(stderr, "simple-clean-2pc is not compatible with force-clean-2pc. Consider to disable either.\n");
+        exit(1);
+    }
 }
 
 static char *GetUserName(void)
@@ -2143,7 +2231,161 @@ static int getFileCount(char* filelist)
 }
 
 
+static void
+do_commit_abort_simple_clean_mode(PGconn *conn, txn_info *txn, char *database_name, bool is_commit)
+{
+    int ii;
+    bool has_error = false;
+
+    char* EXEC_DIRECT_COMMIT_STMT = "/* pgxc_clean simple_clean_mode */ COMMIT PREPARED '%s';";
+    char* EXEC_DIRECT_ABORT_STMT  = "/* pgxc_clean simple_clean_mode */ ROLLBACK PREPARED '%s';";
+
+    char *stmt = (char *) malloc (128 + strlen(txn->gid));
+    PGresult *res;
+    ExecStatusType res_status;
+    
+
+    if (verbose_opt)
+        fprintf(outf, "    %s... \n", is_commit ? "committing" : "aborting");
+    for (ii = 0; ii < pgxc_clean_node_count; ii++)
+    {
+        memset(stmt, 0, 128 + strlen(txn->gid));
+        if (txn->txn_stat[ii] == TXN_STATUS_PREPARED)
+        {
+            PGconn *node_conn = loginDatabase(pgxc_clean_node_info[ii].host, pgxc_clean_node_info[ii].port, username, password,
+                                              database_name,
+                                              progname, "auto", password_prompt);
+            if (txn->nodeparts[ii] == 0)
+            {
+                fprintf(errf, "Txn gid:%s node:%s is expected to participate in 2pc.\n", txn->gid, pgxc_clean_node_info[ii].node_name);
+                exit(-1);
+            }
+            if (txn->commit_timestamp == InvalidGlobalTimestamp && is_commit)
+            {
+                fprintf(errf, "Txn gid:%s has no commit timestamp.\n", txn->gid);
+                exit(-1);
+            }
+
+            if (is_commit)
+            {
+                sprintf(stmt, EXEC_DIRECT_COMMIT_STMT, txn->gid);
+            }
+            else
+            {
+                sprintf(stmt, EXEC_DIRECT_ABORT_STMT, txn->gid);
+            }
+
+            res = PQexec(node_conn, stmt);
+            res_status = PQresultStatus(res);
+            if (res_status != PGRES_COMMAND_OK && res_status != PGRES_TUPLES_OK)
+            {
+                fprintf(errf, "exec stmt:%s failed (%s), errmsg:%s, has_error set to true.\n",
+                        stmt, PQresultErrorMessage(res), pgxc_clean_node_info[ii].node_name);
+                has_error = true;
+            }
+            if (verbose_opt)
+            {
+                if (res_status == PGRES_COMMAND_OK || res_status == PGRES_TUPLES_OK)
+                    fprintf(outf, "exec stmt:%s succeeded (%s).\n", stmt, pgxc_clean_node_info[ii].node_name);
+                else
+                    fprintf(outf, "exec stmt:%s failed (%s: %s).\n",
+                            stmt,
+                            pgxc_clean_node_info[ii].node_name,
+                            PQresultErrorMessage(res));
+            }
+            else
+            {
+                if (res_status != PGRES_COMMAND_OK && res_status != PGRES_TUPLES_OK)
+                {
+                    fprintf(errf, "Failed to recover TXN, gid: %s, owner: \"%s\", node: \"%s\", stmt:%s, (%s)\n",
+                            txn->gid, txn->owner, pgxc_clean_node_info[ii].node_name,
+                            stmt, PQresultErrorMessage(res));
+                }
+            }
+            PQclear(res);
+            PQfinish(node_conn);
+        }
+    }
+
+    if (has_error)
+    {
+        fprintf(errf, "has_error when %s txn, gid:%s. so skip clear 2pc files.\n", is_commit ? "commit" : "abort", txn->gid);
+        free(stmt);
+        return;
+    }
+    
+    free(stmt);
+}
 
 
+/* This func is called in simple clean mode. Since it use pg_prepared_xacts instead of POLARDBX_PREPARED_XACTS */
+static void
+getPreparedTxnListOfNodeSimpleCleanMode(PGconn *conn, int idx)
+{
+    int prep_txn_count;
+    int ii;
+    PGresult *res;
+    ExecStatusType pq_status;
+
+#define MAX_STMT_LEN 1024
+
+    /* SQL Statement */
+    static const char *STMT_GET_PREP_TXN_ON_NODE
+            = "/* pgxc_clean simple_clean_mode */ SELECT TRANSACTION::text, GID::text, OWNER::text, DATABASE::text, "
+              " prepared::text, now()::text FROM PG_PREPARED_XACTS;";
+    char stmt[MAX_STMT_LEN];
+
+    strcpy(stmt, STMT_GET_PREP_TXN_ON_NODE);
+
+    PGconn *node_conn = loginDatabase(pgxc_clean_node_info[idx].host, pgxc_clean_node_info[idx].port, username, password,
+                                      clean_all_databases ? "postgres" : head_database_names->database_name,
+                                      progname, "auto", password_prompt);
 
 
+    res = PQexec(node_conn, stmt);
+    if (res == NULL || (pq_status = PQresultStatus(res)) != PGRES_TUPLES_OK)
+    {
+        fprintf(stderr, "Could not obtain prepared transaction list for node %s.(%s)\n",
+                pgxc_clean_node_info[idx].node_name, res ? PQresultErrorMessage(res) : "");
+        PQclear(res);
+        //exit (1);
+        return;
+    }
+    prep_txn_count = PQntuples(res);
+    total_prep_txn_count += prep_txn_count;
+    for (ii = 0; ii < prep_txn_count; ii++)
+    {
+        TransactionId xid;
+        char *gid;
+        char *owner;
+        char *database_name;
+        char *prepare_time;
+        char *now_time;
+
+        xid = atoi(PQgetvalue(res, ii, 0));
+        gid = strdup(PQgetvalue(res, ii, 1));
+        owner = strdup(PQgetvalue(res, ii, 2));
+        database_name = strdup(PQgetvalue(res, ii, 3));
+        prepare_time = strdup(PQgetvalue(res, ii, 4));
+        now_time = strdup(PQgetvalue(res, ii, 5));
+
+        fprintf(outf, "nodename:%s, get gid:%s, xid:%d, owner:%s, database_name:%s, prepare_time:%s, now_time:%s.\n",
+                pgxc_clean_node_info[idx].node_name, gid, xid, owner, database_name, prepare_time, now_time);
+        add_txn_info(database_name, pgxc_clean_node_info[idx].node_name, gid, xid, owner, NULL,
+                     INVALID_INT_VALUE,
+                     TXN_STATUS_PREPARED);
+
+        if (gid)
+            free(gid);
+        if (owner)
+            free(owner);
+        if (database_name)
+            free(database_name);
+        if (prepare_time)
+            free(prepare_time);
+        if (now_time)
+            free(now_time);
+    }
+    PQclear(res);
+    PQfinish(node_conn);
+}

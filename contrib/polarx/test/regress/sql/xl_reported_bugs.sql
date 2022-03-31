@@ -4,19 +4,19 @@ CREATE TABLE xl_atm (
     product_no INT8,
     product_id INT2,
     primary key (product_id)
-) DISTRIBUTE BY HASH (product_no);
+) with(dist_type=hash, dist_col=product_no);
 CREATE TABLE xl_atm (
     product_no INT8,
     product_id INT2,
     primary key (product_id)
-) DISTRIBUTE BY HASH (product_id);
+) with(dist_type=hash, dist_col=product_id);
 \d+ xl_atm;
 INSERT into xl_atm VALUES (11,1);
 INSERT into xl_atm VALUES (12,2);
 INSERT into xl_atm VALUES (13,3);
 INSERT into xl_atm VALUES (14,4);
 INSERT into xl_atm VALUES (11,5);--repeate a value in non-distribution column
-ALTER TABLE xl_atm DISTRIBUTE BY HASH (product_no);
+ALTER TABLE xl_atm with(dist_type=hash, dist_col=product_no);
 \d+ xl_atm;
 DROP TABLE xl_atm;
 -- #27
@@ -24,7 +24,7 @@ DROP TABLE xl_atm;
 CREATE TABLE xl_at2m (
     product_no INT8,
     product_id INT2
-) DISTRIBUTE BY MODULO (product_id);
+) with(dist_type=modulo, dist_col=product_id);
 ALTER TABLE xl_at2m DROP COLUMN product_id;
 DROP TABLE xl_at2m;
 -- #6

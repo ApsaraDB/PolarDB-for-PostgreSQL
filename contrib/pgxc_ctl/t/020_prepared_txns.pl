@@ -14,7 +14,6 @@ system("echo '==========clear existing configuration==========='");
 system("rm -rf $dataDirRoot");
 system("rm -rf $PGXC_CTL_HOME");
 
-my $GTM_HOST="localhost";
 my $COORD1_HOST="localhost";
 my $COORD1_PORT=30001;
 my $COORD2_PORT=30002;
@@ -26,8 +25,6 @@ my $TEST_DB="testdb";
 
 system("echo '==========prepare configuration==========='");
 system_or_bail 'pgxc_ctl', 'prepare', 'config', 'empty' ;
-
-system_or_bail 'pgxc_ctl', 'add', 'gtm', 'master', 'gtm', "$GTM_HOST", '20001', "$dataDirRoot/gtm" ;
 
 system_or_bail 'pgxc_ctl', 'add', 'coordinator', 'master', 'coord1', "$COORD1_HOST", '30001', '30011', "$dataDirRoot/coord_master.1", 'none', 'none';
 
@@ -150,11 +147,6 @@ system_or_bail 'psql', '-p', "$COORD1_PORT", "$TEST_DB",'-c', "EXECUTE DIRECT ON
 
 
 system("psql -p 30001 testdb -f t/prep_tx4.sql --echo-all --set AUTOCOMMIT=off &");
-system("echo '==========kill gtm master -- with data==========='");
-system_or_bail 'pgxc_ctl', 'kill', 'gtm', 'master', 'gtm' ;
-system_or_bail 'sleep', '3';
-system_or_bail 'pgxc_ctl', 'start', 'gtm', 'master', 'gtm' ;
-system_or_bail 'sleep', '10';
 
 system("echo '==========data sanity check==========='");
 

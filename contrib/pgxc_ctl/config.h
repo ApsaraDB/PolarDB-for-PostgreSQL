@@ -29,8 +29,6 @@
 
 typedef enum NodeType {
     NodeType_UNDEF = 0, 
-    NodeType_GTM, 
-    NodeType_GTM_PROXY, 
     NodeType_COORDINATOR, 
     NodeType_DATANODE, 
     NodeType_SERVER} NodeType;
@@ -49,8 +47,8 @@ char *get_word(char *line, char **token);
 int is_none(char *s);
 int backup_configuration(void);
 NodeType getNodeType(char *nodeName);
-int checkSpecificResourceConflict(char *name, char *host, int port, char *dir, int is_gtm);
-int checkNameConflict(char *name, int is_gtm);
+int checkSpecificResourceConflict(char *name, char *host, int port, char *dir);
+int checkNameConflict(char *name);
 int checkPortConflict(char *host, int port);
 int checkDirConflict(char *host, char *dir);
 void makeServerList(void);

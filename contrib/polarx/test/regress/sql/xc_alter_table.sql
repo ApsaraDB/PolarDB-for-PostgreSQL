@@ -26,7 +26,7 @@ SELECT id, name FROM xc_alter_table_1 ORDER BY 1;
 DROP TABLE xc_alter_table_1;
 
 -- Check for multiple columns dropped and created
-CREATE TABLE xc_alter_table_2 (a int, b varchar(20), c boolean, d text, e interval) distribute by replication;
+CREATE TABLE xc_alter_table_2 (a int, b varchar(20), c boolean, d text, e interval) with(dist_type=replication);
 INSERT INTO xc_alter_table_2 VALUES (1, 'John', true, 'Master', '01:00:10');
 INSERT INTO xc_alter_table_2 VALUES (2, 'Neo', true, 'Slave', '02:34:00');
 INSERT INTO xc_alter_table_2 VALUES (3, 'James', false, 'Cascading slave', '00:12:05');
@@ -62,7 +62,7 @@ DROP TABLE xc_alter_table_2;
 -- In the following test, a table is redistributed in all the ways possible
 -- and effects of redistribution is checked on all the dependent objects
 -- Table with integers
-CREATE TABLE xc_alter_table_3 (a int, b varchar(10)) DISTRIBUTE BY HASH(a);
+CREATE TABLE xc_alter_table_3 (a int, b varchar(10)) with(dist_type=hash, dist_col=a);
 INSERT INTO xc_alter_table_3 VALUES (0, NULL);
 INSERT INTO xc_alter_table_3 VALUES (1, 'a');
 INSERT INTO xc_alter_table_3 VALUES (2, 'aa');
@@ -82,7 +82,6 @@ PREPARE xc_alter_table_delete AS DELETE FROM xc_alter_table_3 WHERE a = $1;
 PREPARE xc_alter_table_update AS UPDATE xc_alter_table_3 SET b = $2 WHERE a = $1;
 
 -- Now begin the tests
-ALTER TABLE xc_alter_table_3 DISTRIBUTE BY HASH(a);
 SELECT count(*), sum(a), avg(a) FROM xc_alter_table_3; -- Check on tuple presence
 SELECT * FROM xc_alter_table_3_v;
 EXECUTE xc_alter_table_insert(11, 'b');
@@ -102,7 +101,7 @@ SELECT b FROM xc_alter_table_3 WHERE a = 11;
 EXECUTE xc_alter_table_delete(11);
 SELECT b FROM xc_alter_table_3 WHERE a = 11 or a = 12;
 EXECUTE xc_alter_table_delete(12);
-ALTER TABLE xc_alter_table_3 DISTRIBUTE BY ROUNDROBIN;
+ALTER TABLE xc_alter_table_3 with(dist_type=roundrobin);
 SELECT count(*), sum(a), avg(a) FROM xc_alter_table_3; -- Check on tuple presence
 SELECT * FROM xc_alter_table_3_v;
 EXECUTE xc_alter_table_insert(11, 'b');
@@ -134,7 +133,6 @@ SELECT b FROM xc_alter_table_3 WHERE a = 11 or a = 12;
 EXECUTE xc_alter_table_delete(12);
 -- Index and redistribution
 CREATE INDEX xc_alter_table_3_index ON xc_alter_table_3(a);
-ALTER TABLE xc_alter_table_3 DISTRIBUTE BY HASH(a);
 SELECT count(*), sum(a), avg(a) FROM xc_alter_table_3; -- Check on tuple presence
 SELECT * FROM xc_alter_table_3_v;
 EXECUTE xc_alter_table_insert(11, 'b');
@@ -146,18 +144,15 @@ SELECT b FROM xc_alter_table_3 WHERE a = 11 or a = 12;
 EXECUTE xc_alter_table_delete(12);
 -- Add column on table
 ALTER TABLE xc_alter_table_3 ADD COLUMN c int DEFAULT 4;
-ALTER TABLE xc_alter_table_3 DISTRIBUTE BY REPLICATION;
 SELECT count(*), sum(a), avg(a) FROM xc_alter_table_3;
 SELECT * FROM xc_alter_table_3_v;
 -- Drop column on table
 ALTER TABLE xc_alter_table_3 DROP COLUMN b CASCADE;
-ALTER TABLE xc_alter_table_3 DISTRIBUTE BY HASH(a);
 SELECT count(*), sum(a), avg(a) FROM xc_alter_table_3;
 SELECT * FROM xc_alter_table_3_v;
 -- Remanipulate table once again and distribute on old column
 ALTER TABLE xc_alter_table_3 DROP COLUMN c;
 ALTER TABLE xc_alter_table_3 ADD COLUMN b varchar(3) default 'aaa';
-ALTER TABLE xc_alter_table_3 DISTRIBUTE BY HASH(a);
 SELECT count(*), sum(a), avg(a) FROM xc_alter_table_3; -- Check on tuple presence
 SELECT * FROM xc_alter_table_3_v;
 -- Change the node list
@@ -187,6 +182,5 @@ SELECT alter_table_change_nodes('xc_alter_table_3', '{2}', 'delete', 'hash(a)');
 SELECT count(*), sum(a), avg(a) FROM xc_alter_table_3; -- Check on tuple presence
 SELECT * FROM xc_alter_table_3_v;
 -- Error checks
-ALTER TABLE xc_alter_table_3 ADD COLUMN b int, DISTRIBUTE BY HASH(a);
 -- Clean up
 DROP TABLE xc_alter_table_3 CASCADE;

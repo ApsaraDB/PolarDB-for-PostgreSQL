@@ -59,7 +59,7 @@ FROM tenk1 ORDER BY unique2 LIMIT 100;
 -- throw in some NULL's and different values
 -- Postgres-XL does not support ORDER BY in subqueries yet, so to get the
 -- same ordering as upstream, we work around it by clustering the table
-CREATE TABLE brintest2 (LIKE brintest, thousand INTEGER, tenthous INTEGER) DISTRIBUTE BY REPLICATION;
+CREATE TABLE brintest2 (LIKE brintest, thousand INTEGER, tenthous INTEGER) with(dist_type=replication);
 INSERT INTO brintest2 (inetcol, cidrcol, int4rangecol, thousand, tenthous) SELECT
 	inet 'fe80::6e40:8ff:fea9:8c46' + tenthous,
 	cidr 'fe80::6e40:8ff:fea9:8c46' + tenthous,
@@ -963,7 +963,7 @@ DECLARE
 	result integer;
 BEGIN
     node_name = get_xc_node_name(1);
-	str = 'execute direct on (' || node_name || ') $$ ' || 'SELECT brin_summarize_range(''brin_summarize_idx'', 0)' || ' $$'  ;
+	str = 'execute polarx_direct($$' || node_name || '$$, $$ ' || 'SELECT brin_summarize_range(''brin_summarize_idx'', 0)' || ' $$)'  ;
 	execute str into result;
 	raise notice '%', result;
 END $D$ language plpgsql;
@@ -976,7 +976,7 @@ DECLARE
 	result integer;
 BEGIN
     node_name = get_xc_node_name(1);
-	str = 'execute direct on (' || node_name || ') $$ ' || 'SELECT brin_summarize_range(''brin_summarize_idx'', 1)' || ' $$'  ;
+	str = 'execute polarx_direct($$' || node_name || '$$, $$ ' || 'SELECT brin_summarize_range(''brin_summarize_idx'', 1)' || ' $$)'  ;
 	execute str into result;
 	raise notice '%', result;
 END $D$ language plpgsql;
@@ -989,7 +989,7 @@ DECLARE
 	result integer;
 BEGIN
     node_name = get_xc_node_name(1);
-	str = 'execute direct on (' || node_name || ') $$ ' || 'SELECT brin_summarize_range(''brin_summarize_idx'', 2)' || ' $$'  ;
+	str = 'execute polarx_direct($$' || node_name || '$$, $$ ' || 'SELECT brin_summarize_range(''brin_summarize_idx'', 2)' || ' $$)'  ;
 	execute str into result;
 	raise notice '%', result;
 END $D$ language plpgsql;

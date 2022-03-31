@@ -4,7 +4,7 @@
 
 -- Postgres-XL case: point type cannot use ORDER BY so table
 -- is replicated for regression tests whatever the cluster configuration
-CREATE TABLE POINT_TBL(f1 point) DISTRIBUTE BY REPLICATION;
+CREATE TABLE POINT_TBL(f1 point) with(dist_type=replication);
 
 INSERT INTO POINT_TBL(f1) VALUES ('(0.0,0.0)');
 

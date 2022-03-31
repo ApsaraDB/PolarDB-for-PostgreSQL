@@ -48,7 +48,7 @@
  * Then we can use the globally minimal timestamp to vacuum stale tuple versions within
  * the cluster.
  *
- * Written by Junbin Kang, 2020.01.18
+ * Written by  , 2020.01.18
  *
  * Portions Copyright (c) 2020, Alibaba Group Holding Limited
  * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
@@ -90,7 +90,6 @@
 /* User-settable GUC parameters */
 int			gc_interval;
 int			snapshot_delay;
-static CommitSeqNo GetGlobalSnapshot(void);
 static bool GlobalSnapshotIsAdmitted(Snapshot snapshot, CommitSeqNo * cutoffTs);
 #endif
 
@@ -483,7 +482,7 @@ ProcArrayApplyRecoveryInfo(RunningTransactions running)
 		/*
 		 * Each time the transaction/subtransaction id is allocated, we have
 		 * written CTS extend WAL entry. As a result, no extra CTS extend is
-		 * needed here to avoid nested WAL. Written by Junbin Kang, 2020.06.16
+		 * needed here to avoid nested WAL. Written by  , 2020.06.16
 		 */
 #else
 		ExtendCSNLOG(latestObservedXid);
@@ -649,7 +648,7 @@ AdvanceOldestActiveXid(TransactionId myXid)
  * versions can be pruned. See CommittsSatisfiesVacuum().
  * The oldest committs computation is implemented in GetRecentGlobalXmin() and GetOldestXmin().
  * --------------------------------------------------------------------------------------
- * Written by Junbin Kang, 2020.01.18
+ * Written by  , 2020.01.18
  */
 TransactionId
 GetRecentGlobalXmin(void)
@@ -871,7 +870,7 @@ GetRecentGlobalDataXmin(void)
  * versions can be pruned. See CommittsSatisfiesVacuum().
  * The oldest committs computation is implemented in GetRecentGlobalXmin() and GetOldestXmin().
  * --------------------------------------------------------------------------------------
- * Written by Junbin Kang, 2020.01.18
+ * Written by  , 2020.01.18
  */
 
 TransactionId
@@ -1035,22 +1034,6 @@ GetOldestXmin(Relation rel, int flags)
 }
 
 #ifdef ENABLE_DISTRIBUTED_TRANSACTION
-static CommitSeqNo
-GetGlobalSnapshot(void)
-{
-	CommitSeqNo snapshotcsn;
-	/*
-	 * Todo: we should assign logical timestamp max_ts for
-	 * both distributed and local transactions.
-	 */
-	SpinLockAcquire(&ShmemVariableCache->ts_lock);
-	snapshotcsn = ShmemVariableCache->maxCommitTs;
-	SpinLockRelease(&ShmemVariableCache->ts_lock);
-	if (snapshotcsn < COMMITSEQNO_FIRST_NORMAL)
-		elog(ERROR, "csn abnormal "UINT64_FORMAT, snapshotcsn);
-	return snapshotcsn;
-
-}
 /*
  * Support cluster-wide global vacuum.
  * oldest Tmin = min{max_ts, min{per-Proc's Tmin}}
@@ -1064,7 +1047,7 @@ GetGlobalSnapshot(void)
  * it seems unnecessary now as ProcArrayLock is acquired in shared mode
  * in most critical path.
  *
- * Written by Junbin Kang
+ * Written by  
  */
 CommitSeqNo
 GetOldestTmin(void)
@@ -1206,7 +1189,7 @@ GlobalSnapshotIsAdmitted(Snapshot snapshot, CommitSeqNo * cutoffTs)
 	 * oldest committs computation is implemented in GetRecentGlobalXmin() and
 	 * GetOldestXmin().
 	 *
-	 * Written by Junbin Kang, 2020.01.18
+	 * Written by  , 2020.01.18
 	 */
 
 	if (maxCommitTs < SHIFT_GC_INTERVAL(gc_interval))
@@ -1391,7 +1374,7 @@ GetSnapshotDataExtend(Snapshot snapshot, bool latest)
 	 * Be carefull of the order between setting MyPgXact->tmin and acquiring
 	 * the ts_lock to fetch maxCommitTs in GlobalSnapshotIsAdmitted() which is
 	 * critical to the correctness of garbage collection algorithm. Written by
-	 * Junbin Kang, 2020.01.20
+	 *  , 2020.01.20
 	 */
 	if (!txnUseGlobalSnapshot && !latest)
 	{
@@ -2566,52 +2549,6 @@ CountOtherDBBackends(Oid databaseId, int *nbackends, int *nprepared)
 	return true;				/* timed out, still conflicts */
 }
 
-#ifdef POLARDB_X
-/*
- * ReloadConnInfoOnBackends -- reload/refresh connection information
- * for all the backends
- *
- * "refresh" is less destructive than "reload"
- */
-void
-ReloadConnInfoOnBackends(bool refresh_only)
-{
-    ProcArrayStruct *arrayP = procArray;
-    int            index;
-    pid_t        pid = 0;
-
-    /* tell all backends to reload except this one who already reloaded */
-    LWLockAcquire(ProcArrayLock, LW_EXCLUSIVE);
-
-    for (index = 0; index < arrayP->numProcs; index++)
-    {
-        int            pgprocno = arrayP->pgprocnos[index];
-        volatile PGPROC *proc = &allProcs[pgprocno];
-        volatile PGXACT *pgxact = &allPgXact[pgprocno];
-        VirtualTransactionId vxid;
-        GET_VXID_FROM_PGPROC(vxid, *proc);
-
-        if (proc == MyProc)
-            continue;            /* do not do that on myself */
-        if (proc->pid == 0)
-            continue;            /* useless on prepared xacts */
-        if (!OidIsValid(proc->databaseId))
-            continue;            /* ignore backends not connected to a database */
-        if (pgxact->vacuumFlags & PROC_IN_VACUUM)
-            continue;            /* ignore vacuum processes */
-
-        pid = proc->pid;
-        /*
-         * Send the reload signal if backend still exists
-         */
-        (void) SendProcSignal(pid, refresh_only?
-                      PROCSIG_PGXCPOOL_REFRESH:PROCSIG_PGXCPOOL_RELOAD,
-                      vxid.backendId);
-    }
-
-    LWLockRelease(ProcArrayLock);
-}
-#endif
 /*
  * ProcArraySetReplicationSlotXmin
  *
@@ -2705,7 +2642,7 @@ RecordKnownAssignedTransactionIds(TransactionId xid)
 			 * Each time the transaction/subtransaction id is allocated, we
 			 * have written CTS extend WAL entry. As a result, no extra CTS
 			 * extend is needed here to avoid nested WAL which would report
-			 * error. Written by Junbin Kang, 2020.06.16
+			 * error. Written by  , 2020.06.16
 			 */
 #else
 			ExtendCSNLOG(next_expected_xid);

@@ -10,9 +10,9 @@ set enable_fast_query_shipping to off;
 set enable_remotelimit to on;
 
 -- Testcase 1: Replicated tables
-create table xc_limit_tab1 (val int, val2 int) distribute by replication;
+create table xc_limit_tab1 (val int, val2 int) with(dist_type=replication);
 insert into xc_limit_tab1 values (generate_series(1, 10), generate_series(1, 10));
-create table xc_limit_tab2 (val int, val2 int) distribute by replication;
+create table xc_limit_tab2 (val int, val2 int) with(dist_type=replication);
 insert into xc_limit_tab2 values (generate_series(1, 10), generate_series(1, 10));
 
 -- simple shippable limit
@@ -86,7 +86,7 @@ drop table xc_limit_tab1;
 drop table xc_limit_tab2;
 
 -- Test the working of GUC
-create table xc_limit_tab1 (val int, val2 int) distribute by replication;
+create table xc_limit_tab1 (val int, val2 int) with(dist_type=replication);
 insert into xc_limit_tab1 values (generate_series(1, 10), generate_series(1, 10));
 set enable_remotelimit to off;
 select count(*) from (select * from xc_limit_tab1 limit 2) q;

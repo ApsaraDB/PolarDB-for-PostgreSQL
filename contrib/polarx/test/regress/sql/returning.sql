@@ -6,7 +6,7 @@
 
 --CREATE TEMP TABLE foo (f1 serial, f2 text, f3 int default 42);
 -- XL: Make this a real table
-CREATE TABLE foo (f1 serial, f2 text, f3 int default 42) DISTRIBUTE BY REPLICATION;
+CREATE TABLE foo (f1 serial, f2 text, f3 int default 42) with(dist_type=replication);
 
 -- XL: temporarily change to 3 inserts
 --INSERT INTO foo (f2,f3)

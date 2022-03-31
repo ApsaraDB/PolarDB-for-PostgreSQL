@@ -1,7 +1,7 @@
 --
 -- VACUUM
 --
-CREATE TABLE vactst (i INT) DISTRIBUTE BY REPLICATION;
+CREATE TABLE vactst (i INT) with(dist_type=replication);
 INSERT INTO vactst VALUES (1);
 INSERT INTO vactst SELECT * FROM vactst;
 INSERT INTO vactst SELECT * FROM vactst;

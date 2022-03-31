@@ -83,9 +83,7 @@
 
 #ifdef POLARDB_X
 #include "parser/parse_type.h"
-#include "pgxc/pgxcnode.h"
 #include "pgxc/pgxc.h"
-#include "pgxc/connpool.h"
 #include "access/twophase.h"
 #include "pgxc/transam/txn_coordinator.h"
 #endif
@@ -348,7 +346,6 @@ SocketBackend(StringInfo inBuf)
 	 * Get message type code from the frontend.
 	 */
 	HOLD_CANCEL_INTERRUPTS();
-retry:
 	pq_startmsgread();
 	qtype = pq_getbyte();
 
@@ -384,25 +381,6 @@ retry:
 	switch (qtype)
 	{
 #ifdef ENABLE_DISTRIBUTED_TRANSACTION
-		case 'L':
-			{
-				LogicalTime timestamp;
-				int32 len;
-				if (pq_getbytes((char *) &len, 4) == EOF)
-				{
-					ereport(COMMERROR,
-							(errcode(ERRCODE_PROTOCOL_VIOLATION),
-							errmsg("unexpected EOF within message length word")));
-					return EOF;
-				}
-
-				if (pq_gettimestamp(&timestamp))
-					return EOF;
-
-				pq_endmsgread();
-				BackendRecvTimestamp(timestamp);
-				goto retry;
-			}
         case 'T':                /* Global Timestamp */
 		case 't':					/* start timestamp */
 		case 'Z': 					/* prepare timestamp */
@@ -410,7 +388,6 @@ retry:
 			break;
 #ifdef POLARDB_X
 		case 'R':					/* participate node info */
-		case 'r':					/* cleanup pg_twophase file cmd */
 		case 'g':					/* gxid info */
 			break;
 #endif
@@ -1293,9 +1270,6 @@ static void
 exec_parse_message(const char *query_string,	/* string to execute */
 				   const char *stmt_name,	/* name for prepared stmt */
 				   Oid *paramTypes, /* parameter types */
-				   #ifdef POLARDB_X
-                   char **paramTypeNames,    /* parameter type names */
-				   #endif
 				   int numParams)	/* number of parameters */
 {
 	MemoryContext unnamed_stmt_context = NULL;
@@ -1308,9 +1282,6 @@ exec_parse_message(const char *query_string,	/* string to execute */
 	bool		is_named;
 	bool		save_log_statement_stats = log_statement_stats;
 	char		msec_str[32];
-#ifdef POLARDB_X
-    bool        use_resowner = false;
-#endif
 
 	/*
 	 * Report query to various monitoring facilities.
@@ -1355,15 +1326,6 @@ exec_parse_message(const char *query_string,	/* string to execute */
 	{
 		/* Named prepared statement --- parse in MessageContext */
 		oldcontext = MemoryContextSwitchTo(MessageContext);
-#ifdef POLARDB_TODO
-        use_resowner = NeedResourceOwner(stmt_name);
-
-        if (use_resowner && IS_PGXC_COORDINATOR)
-        {
-            elog(ERROR, "name with prefix %s/%s/%s for prepared stmt is forbidden",
-                        INSERT_TRIGGER, UPDATE_TRIGGER, DELETE_TRIGGER);
-        }
-#endif
 	}
 	else
 	{
@@ -1376,22 +1338,6 @@ exec_parse_message(const char *query_string,	/* string to execute */
 								  ALLOCSET_DEFAULT_SIZES);
 		oldcontext = MemoryContextSwitchTo(unnamed_stmt_context);
 	}
-#ifdef POLARDB_X
-    /*
-     * if we have the parameter types passed, which happens only in case of
-     * connection from Coordinators, fill paramTypes with their OIDs for
-     * subsequent use. We have to do name to OID conversion, in a transaction
-     * context.
-     */
-    if (IsConnFromCoord() && paramTypeNames)
-    {
-        int cnt_param;
-        /* we don't expect type mod */
-        for (cnt_param = 0; cnt_param < numParams; cnt_param++)
-            parseTypeString(paramTypeNames[cnt_param], &paramTypes[cnt_param],
-                            NULL, false);
-    }
-#endif /* POLARDB_X */
 	/*
 	 * Do basic parsing of the query or queries (this should be safe even if
 	 * we are in aborted transaction state!)
@@ -1441,11 +1387,7 @@ exec_parse_message(const char *query_string,	/* string to execute */
 		 * Create the CachedPlanSource before we do parse analysis, since it
 		 * needs to see the unmodified raw parse tree.
 		 */
-#ifdef POLARDB_X
-        psrc = CreateCachedPlan(raw_parse_tree, query_string, stmt_name, commandTag);
-#else
         psrc = CreateCachedPlan(raw_parse_tree, query_string, commandTag);
-#endif
 
 		/*
 		 * Set up a snapshot if parse analysis will need one.
@@ -1497,11 +1439,7 @@ exec_parse_message(const char *query_string,	/* string to execute */
 		/* Empty input string.  This is legal. */
 		raw_parse_tree = NULL;
 		commandTag = NULL;
-#ifdef POLARDB_X
-        psrc = CreateCachedPlan(raw_parse_tree, query_string, stmt_name, commandTag);
-#else
         psrc = CreateCachedPlan(raw_parse_tree, query_string, commandTag);
-#endif
 		querytree_list = NIL;
 	}
 
@@ -3173,10 +3111,6 @@ ProcessInterrupts(void)
 	if (ParallelMessagePending)
 		HandleParallelMessages();
 	
-	#ifdef POLARDB_X
-	if (PoolerMessagesPending())
-        HandlePoolerMessages();
-	#endif
 }
 
 
@@ -3754,10 +3688,6 @@ PostgresMain(int argc, char *argv[],
 
 #ifdef POLARDB_X
     remoteConnType = REMOTE_CONN_APP;
-	parentPGXCNode = NULL;
-    parentPGXCNodeId = -1;
-    parentPGXCNodeType = PGXC_NODE_DATANODE;
-	HOLD_POOLER_RELOAD();
 #endif
 
 	/* Initialize startup process environment if necessary. */
@@ -3994,16 +3924,6 @@ PostgresMain(int argc, char *argv[],
 	if (!IsUnderPostmaster)
 		PgStartTime = GetCurrentTimestamp();
 
-#ifdef POLARDB_X
-    if (IsUnderPostmaster && !am_walsender)
-    {
-        start_xact_command();
-        InitMultinodeExecutor(false);
-        finish_xact_command();
-    }
-	/* If we exit, first try and clean connections and send to pool */
-    on_proc_exit(PGXCNodeCleanAndRelease, 0);
-#endif
 	/*
 	 * POSTGRES main processing loop begins here
 	 *
@@ -4228,16 +4148,10 @@ PostgresMain(int argc, char *argv[],
 		 * STDIN doing the same thing.)
 		 */
 		DoingCommandRead = true;
-#ifdef POLARDB_X
-        RESUME_POOLER_RELOAD();
-#endif
 		/*
 		 * (3) read a command (loop blocks here)
 		 */
 		firstchar = ReadCommand(&input_message);
-#ifdef POLARDB_X
-        HOLD_POOLER_RELOAD();
-#endif
 
 		/*
 		 * (4) disable async signal conditions again.
@@ -4285,10 +4199,7 @@ PostgresMain(int argc, char *argv[],
 					GlobalTimestamp timestamp = (GlobalTimestamp) pq_getmsgint64(&input_message);
 					pq_getmsgend(&input_message);
 
-					if (enable_log_remote_query)
-					{
-						elog(LOG, "receive start_ts "UINT64_FORMAT, timestamp);
-					}
+                    elog(LOG, "receive start_ts "UINT64_FORMAT, timestamp);
 					BackendRecvTimestamp((LogicalTime)timestamp);
 					break;
 				}
@@ -4300,10 +4211,7 @@ PostgresMain(int argc, char *argv[],
 					/*
 					 * Set Xact global commit timestamp
 					 */
-					if (enable_log_remote_query)
-					{
-						elog(LOG, "receive global_ts "UINT64_FORMAT, timestamp);
-					}
+                    elog(LOG, "receive global_ts "UINT64_FORMAT, timestamp);
 					SetGlobalCommitTimestamp(timestamp);
 					TxnSetCoordinatedCommitTs((LogicalTime)timestamp);
 #ifdef POLARDB_X
@@ -4329,10 +4237,7 @@ PostgresMain(int argc, char *argv[],
 					/*
 					 * Set Xact global prepare timestamp
 					 */
-					if (enable_log_remote_query)
-					{
-						elog(LOG, "receive prepare_ts"UINT64_FORMAT, timestamp);
-					}
+                    elog(LOG, "receive prepare_ts"UINT64_FORMAT, timestamp);
 					SetGlobalPrepareTimestamp(timestamp);
 					TxnSetPrepareTs((LogicalTime)timestamp);
 					break;
@@ -4354,20 +4259,6 @@ PostgresMain(int argc, char *argv[],
 					elog(DEBUG_2PC, "2pc recv partnodes: %s", partnodes);
 				pq_getmsgend(&input_message);
 				StorePartNodes(partnodes);
-				break;
-			}
-
-			case 'r':
-			{
-				const char *gid = pq_getmsgstring(&input_message);
-				bool ret;
-				if (enable_twophase_recover_debug_print)
-					elog(DEBUG_2PC, "2pc recv cleanup file command for gid: %s", gid);
-
-				pq_getmsgend(&input_message);
-				ret = CleanUpTwoPhaseFile((char*)gid);
-				if (enable_twophase_recover_debug_print)
-					elog(DEBUG_2PC, "Exec cleanup file command for gid: %s, return %d", gid, ret);
 				break;
 			}
 
@@ -4409,9 +4300,6 @@ PostgresMain(int argc, char *argv[],
 					const char *query_string;
 					int			numParams;
 					Oid		   *paramTypes = NULL;
-					#ifdef POLARDB_X
-					char       **paramTypeNames = NULL;
-					#endif
 
 					forbidden_in_wal_sender(firstchar);
 
@@ -4426,29 +4314,13 @@ PostgresMain(int argc, char *argv[],
 						int			i;
 
 						paramTypes = (Oid *) palloc(numParams * sizeof(Oid));
-#ifdef POLARDB_X
-                        if (IsConnFromCoord())
-                        {
-                            paramTypeNames = (char **)palloc(numParams * sizeof(char *));
-                            for (i = 0; i < numParams; i++)
-                                paramTypeNames[i] = (char *)pq_getmsgstring(&input_message);
-                        }
-                        else
-						{
-#endif 
 						for (i = 0; i < numParams; i++)
 							paramTypes[i] = pq_getmsgint(&input_message, 4);
-#ifdef POLARDB_X
-						}
-#endif
 					}
 					pq_getmsgend(&input_message);
 
 					exec_parse_message(query_string, stmt_name,
 									   paramTypes, 
-									   #ifdef POLARDB_X
-                                       paramTypeNames,
-									   #endif
 									   numParams);
 				}
 				break;

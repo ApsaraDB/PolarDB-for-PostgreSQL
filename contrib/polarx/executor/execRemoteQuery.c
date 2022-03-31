@@ -5,10 +5,11 @@
  *      Functions to execute commands for fast ship query in polarx
  *
  *
+ * Copyright (c) 2021, Alibaba Group Holding Limited
+ * Licensed under the Apache License, Version 2.0 (the "License");
  * Portions Copyright (c) 2012-2014, TransLattice, Inc.
  * Portions Copyright (c) 1996-2011, PostgreSQL Global Development Group
  * Portions Copyright (c) 2010-2012 Postgres-XC Development Group
- * Copyright (c) 2020, Apache License Version 2.0*
  *
  * IDENTIFICATION
  *        contrib/polarx/executor/execRemoteQuery.c
@@ -17,6 +18,8 @@
  */
 
 #include "postgres.h"
+#include "polarx.h"
+#include "funcapi.h"
 
 #include <time.h>
 
@@ -41,10 +44,10 @@
 #include "executor/execRemoteQuery.h"
 #include "pgxc/locator.h"
 #include "pgxc/nodemgr.h"
-#include "pgxc/pgxc.h"
 #include "pgxc/pgxcnode.h"
+#include "utils/datarowstore.h"
 #include "executor/recvRemote.h"
-#include "pgxc/transam/txn_coordinator.h"
+#include "distribute_transaction/txn.h"
 #include "storage/ipc.h"
 #include "storage/proc.h"
 #include "tcop/tcopprot.h"
@@ -55,10 +58,11 @@
 #include "utils/pg_rusage.h"
 #include "utils/snapmgr.h"
 #include "utils/tuplesort.h"
-#include "gtm/gtm_c.h"
 #include "utils/ruleutils.h"
+#include "utils/typcache.h"
 #include "commands/explain.h"
 #include "nodes/makefuncs.h"
+#include "nodes/polarx_node.h"
 
 static PGXCNodeAllHandles *get_exec_connections(RemoteQueryState *planstate,
                                                 ExecNodes *exec_nodes,
@@ -86,6 +90,7 @@ static TupleTableSlot *PolarxFQSExecScan(CustomScanState *pstate);
 static void PolarxFQSReScan(CustomScanState *pstate);
 static void PolarxFQSEndScan(CustomScanState *pstate);
 static void PolarxFQSExplainScan(CustomScanState *pstate, List *ancestors, struct ExplainState *es);
+static void deform_datarow_into_slot(RemoteDataRow datarow, TupleTableSlot *slot);
 
 CustomScanMethods FastShipQueryExecutorCustomScanMethods = {
     "Polarx Fast Ship Query",
@@ -122,6 +127,7 @@ get_exec_connections(RemoteQueryState *planstate,
     bool is_query_coord_only = false;
     PGXCNodeAllHandles *pgxc_handles = NULL;
 
+
     /*
      * If query is launched only on Coordinators, we have to inform get_handles
      * not to ask for Datanode connections even if list of Datanodes is NIL.
@@ -141,7 +147,7 @@ get_exec_connections(RemoteQueryState *planstate,
             ExecNodes *nodes;
 
             ExprState *estate = ExecInitExpr(exec_nodes->en_expr,
-                                             (PlanState *)planstate);
+                                             (PlanState *)(&(planstate->combiner)));
             Datum partvalue = ExecEvalExpr(estate,
                                            planstate->combiner.ss.ps.ps_ExprContext,
                                            &isnull);
@@ -291,8 +297,8 @@ pgxc_start_command_on_connection(PGXCNodeHandle *connection,
                                  Snapshot snapshot)
 { // #lizard forgives
     CommandId cid;
-    ResponseCombiner *combiner = (ResponseCombiner *)remotestate;
-    RemoteQuery *step = (RemoteQuery *)combiner->ss.ps.plan;
+    ResponseCombiner *combiner = (ResponseCombiner *)(&(remotestate->combiner));
+    RemoteQuery *step = (RemoteQuery *)(remotestate->remote_query);
     elog(DEBUG5, "pgxc_start_command_on_connection - node %s, state %d",
          connection->nodename, connection->state);
 
@@ -320,8 +326,6 @@ pgxc_start_command_on_connection(PGXCNodeHandle *connection,
     {
         /* need to use Extended Query Protocol */
         int fetch = 0;
-        bool prepared = false;
-        char nodetype = PGXC_NODE_DATANODE;
         bool send_desc = false;
 
         if (step->base_tlist != NULL ||
@@ -329,15 +333,6 @@ pgxc_start_command_on_connection(PGXCNodeHandle *connection,
             step->read_only ||
             step->has_row_marks)
             send_desc = true;
-
-        /* if prepared statement is referenced see if it is already
-         * exist */
-
-        if (step->statement)
-            prepared =
-                ActivateDatanodeStatementOnNode(step->statement,
-                                                PGXCNodeGetNodeId(connection->nodeoid,
-                                                                  &nodetype));
 
         /*
          * execute and fetch rows only if they will be consumed
@@ -382,7 +377,7 @@ polarxFQSExecutorCreateRemoteState(CustomScan *scan)
 
     fsp_state->customScanState.ss.ps.type = T_CustomScanState;
     fsp_state->customScanState.methods = &FastShipQueryExecutorCustomExecMethods;
-    fsp_state->remoteQueryState = makeNode(RemoteQueryState);
+    fsp_state->remoteQueryState = polarxMakeNode(RemoteQueryState);
 
     return (Node *)fsp_state;
 }
@@ -393,10 +388,11 @@ ExecInitRemoteQuery(RemoteQuery *node, EState *estate, int eflags)
     ResponseCombiner *combiner;
     TupleDesc scan_type;
 
-    remotestate = makeNode(RemoteQueryState);
-    combiner = (ResponseCombiner *)remotestate;
+    remotestate = polarxMakeNode(RemoteQueryState);
+    remotestate->remote_query = node;
+    combiner = (ResponseCombiner *)(&(remotestate->combiner));
     InitResponseCombiner(combiner, 0, node->combine_type);
-    combiner->ss.ps.plan = (Plan *)node;
+    combiner->ss.ps.plan = (Plan *)(&(node->scan));
     combiner->ss.ps.state = estate;
     combiner->ss.ps.ExecProcNode = ExecRemoteQuery;
 
@@ -447,9 +443,12 @@ PolarxFQSBeginScan(CustomScanState *pstate, EState *estate, int eflags)
 static TupleTableSlot *
 RemoteQueryNext(RemoteQueryState *node)
 { // #lizard forgives
-    ResponseCombiner *combiner = (ResponseCombiner *)node;
-    RemoteQuery *step = (RemoteQuery *)combiner->ss.ps.plan;
-    TupleTableSlot *slot;
+
+    node = get_rqs_addr((ResponseCombiner *)node, RemoteQueryState, combiner);
+    ResponseCombiner *combiner = (ResponseCombiner *)(&(node->combiner));
+    RemoteQuery *step = (RemoteQuery *)(node->remote_query);
+    TupleTableSlot *slot = combiner->ss.ss_ScanTupleSlot;;
+    RemoteDataRow datarow = NULL;
 
     if (!node->query_Done)
     {
@@ -513,15 +512,9 @@ RemoteQueryNext(RemoteQueryState *node)
 
         for (i = 0; i < regular_conn_count; i++)
         {
-            BeginTxnIfNecessary(connections[i]);
-        }
-
-        for (i = 0; i < regular_conn_count; i++)
-        {
             //connections[i]->read_only = true;
             connections[i]->recv_datarows = 0;
-            GlobalTransactionId gxid = InvalidGlobalTransactionId;
-            if (pgxc_node_begin(1, &connections[i], gxid, need_tran_block,
+            if (pgxc_node_begin(1, &connections[i], 0, need_tran_block,
                                 step->read_only, PGXC_NODE_DATANODE))
                 ereport(ERROR,
                         (errcode(ERRCODE_INTERNAL_ERROR),
@@ -540,9 +533,14 @@ RemoteQueryNext(RemoteQueryState *node)
         node->query_Done = true;
     }
 
-    slot = FetchTuple(combiner);
-    if (!TupIsNull(slot))
+    datarow = FetchDatarow(combiner);
+    if (datarow)
+    {
+        ExecClearTuple(slot);
+        deform_datarow_into_slot(datarow, slot);
+        pfree(datarow);
         return slot;
+    }
 
     if (combiner->errorMessage)
         pgxc_node_report_error(combiner);
@@ -553,12 +551,11 @@ RemoteQueryNext(RemoteQueryState *node)
 static TupleTableSlot *
 ExecRemoteQuery(PlanState *pstate)
 {
-    RemoteQueryState *node = castNode(RemoteQueryState, pstate);
-    ResponseCombiner *combiner = (ResponseCombiner *)node;
+    ResponseCombiner *combiner = castNode(ResponseCombiner, pstate);
     /*
-     *      * As there may be unshippable qual which we need to evaluate on CN,
-     *           * We should call ExecScan to handle such cases.
-     *                */
+     * As there may be unshippable qual which we need to evaluate on CN,
+     * We should call ExecScan to handle such cases.
+     */
 
     return ExecScan(&(combiner->ss),
                     (ExecScanAccessMtd)RemoteQueryNext,
@@ -575,7 +572,7 @@ static TupleTableSlot *
 PolarxFQSExecScan(CustomScanState *pstate)
 {
     FastShipQueryState *fsp_state = (FastShipQueryState *)pstate;
-    return ExecRemoteQuery((PlanState *)fsp_state->remoteQueryState);
+    return ExecRemoteQuery((PlanState *)(&(fsp_state->remoteQueryState->combiner)));
 }
 
 /*
@@ -594,7 +591,7 @@ RemoteQueryRecheck(ScanState *node, TupleTableSlot *slot)
 static void
 ExecReScanRemoteQuery(RemoteQueryState *node)
 {
-    ResponseCombiner *combiner = (ResponseCombiner *)node;
+    ResponseCombiner *combiner = (ResponseCombiner *)(&(node->combiner));
 
     /*
      * If we haven't queried remote nodes yet, just return. If outerplan'
@@ -607,8 +604,8 @@ ExecReScanRemoteQuery(RemoteQueryState *node)
     /*
      * If we execute locally rescan local copy of the plan
      */
-    if (outerPlanState(node))
-        ExecReScan(outerPlanState(node));
+    if (outerPlanState(combiner))
+        ExecReScan(outerPlanState(combiner));
 
     /*
      * Consume any possible pending input
@@ -638,7 +635,7 @@ PolarxFQSReScan(CustomScanState *pstate)
 static void
 ExecEndRemoteQuery(RemoteQueryState *node)
 {
-    ResponseCombiner *combiner = (ResponseCombiner *)node;
+    ResponseCombiner *combiner = (ResponseCombiner *)(&(node->combiner));
 
     /*
      * Clean up remote connections
@@ -690,7 +687,7 @@ get_success_nodes(int node_count, PGXCNodeHandle **handles, char node_type, Stri
         if (handle->error[0])
         {
             if (!success_nodes)
-                success_nodes = makeNode(ExecNodes);
+                success_nodes = polarxMakeNode(ExecNodes);
             success_nodes->nodeList = lappend_int(success_nodes->nodeList, nodenum);
         }
         else
@@ -746,7 +743,6 @@ void ExecRemoteUtility(RemoteQuery *node)
     ResponseCombiner *combiner;
     bool force_autocommit = node->force_autocommit;
     RemoteQueryExecType exec_type = node->exec_type;
-    GlobalTransactionId gxid = InvalidGlobalTransactionId;
     PGXCNodeAllHandles *pgxc_connections;
     int co_conn_count;
     int dn_conn_count;
@@ -760,8 +756,8 @@ void ExecRemoteUtility(RemoteQuery *node)
             RegisterTransactionLocalNode(true);
     }
 
-    remotestate = makeNode(RemoteQueryState);
-    combiner = (ResponseCombiner *)remotestate;
+    remotestate = polarxMakeNode(RemoteQueryState);
+    combiner = (ResponseCombiner *)(&(remotestate->combiner));
     InitResponseCombiner(combiner, 0, node->combine_type);
 
     /*
@@ -800,7 +796,7 @@ void ExecRemoteUtility(RemoteQuery *node)
     /* send command */
     {
         if (pgxc_node_begin(dn_conn_count, pgxc_connections->datanode_handles,
-                            gxid, need_tran_block, g_in_set_config_option ? true : false, PGXC_NODE_DATANODE))
+                            0, need_tran_block, g_in_set_config_option ? true : false, PGXC_NODE_DATANODE))
             ereport(ERROR,
                     (errcode(ERRCODE_INTERNAL_ERROR),
                      errmsg("Could not begin transaction on Datanodes")));
@@ -820,7 +816,7 @@ void ExecRemoteUtility(RemoteQuery *node)
     }
     {
         if (pgxc_node_begin(co_conn_count, pgxc_connections->coord_handles,
-                            gxid, need_tran_block, g_in_set_config_option ? true : false, PGXC_NODE_COORDINATOR))
+                            0, need_tran_block, g_in_set_config_option ? true : false, PGXC_NODE_COORDINATOR))
             ereport(ERROR,
                     (errcode(ERRCODE_INTERNAL_ERROR),
                      errmsg("Could not begin transaction on coordinators")));
@@ -884,15 +880,9 @@ void ExecRemoteUtility(RemoteQuery *node)
             }
             else if (res == RESPONSE_TUPDESC)
             {
-                ereport(ERROR,
-                        (errcode(ERRCODE_INTERNAL_ERROR),
-                         errmsg("Unexpected response from Datanode")));
             }
             else if (res == RESPONSE_DATAROW)
             {
-                ereport(ERROR,
-                        (errcode(ERRCODE_INTERNAL_ERROR),
-                         errmsg("Unexpected response from Datanode")));
             }
         }
     }
@@ -1069,8 +1059,8 @@ static void
 PolarxFQSExplainScan(CustomScanState *pstate, List *ancestors, struct ExplainState *es)
 {
     FastShipQueryState *fsp_state = (FastShipQueryState *)pstate;
-    PlanState *planstate = (PlanState *)fsp_state->remoteQueryState;
-    RemoteQuery *plan = (RemoteQuery *)planstate->plan;
+    PlanState *planstate = (PlanState *)(&(fsp_state->remoteQueryState->combiner));
+    RemoteQuery *plan = (RemoteQuery *)(fsp_state->remoteQueryState->remote_query);
     ExecNodes *en = plan->exec_nodes;
     /* add names of the nodes if they exist */
     if (en)
@@ -1117,7 +1107,7 @@ PolarxFQSExplainScan(CustomScanState *pstate, List *ancestors, struct ExplainSta
 
     if (!es->analyze)
     {
-        RemoteQuery *step = makeNode(RemoteQuery);
+        RemoteQuery *step = polarxMakeNode(RemoteQuery);
         StringInfoData explainQuery;
         StringInfoData explainResult;
         EState *estate;
@@ -1182,7 +1172,7 @@ PolarxFQSExplainScan(CustomScanState *pstate, List *ancestors, struct ExplainSta
 
         node = ExecInitRemoteQuery(step, estate, 0);
         MemoryContextSwitchTo(oldcontext);
-        result = ExecRemoteQuery((PlanState *)node);
+        result = ExecRemoteQuery((PlanState *)(&(node->combiner)));
         while (result != NULL && !TupIsNull(result))
         {
             Datum value;
@@ -1197,7 +1187,7 @@ PolarxFQSExplainScan(CustomScanState *pstate, List *ancestors, struct ExplainSta
             }
 
             /* fetch next */
-            result = ExecRemoteQuery((PlanState *)node);
+            result = ExecRemoteQuery((PlanState *)(&(node->combiner)));
         }
         ExecEndRemoteQuery(node);
 
@@ -1206,4 +1196,181 @@ PolarxFQSExplainScan(CustomScanState *pstate, List *ancestors, struct ExplainSta
         else
             ExplainPropertyText("Remote plan", explainResult.data, es);
     }
+}
+static void
+deform_datarow_into_slot(RemoteDataRow datarow, TupleTableSlot *slot)
+{// #lizard forgives
+    int natts;
+    int i;
+    int         col_count;
+    char       *cur = datarow->msg;
+    StringInfo  buffer;
+    uint16        n16;
+    uint32        n32;
+    MemoryContext oldcontext;
+    AttInMetadata *tts_attinmeta = NULL;
+
+    Assert(slot->tts_tupleDescriptor != NULL);
+    Assert(datarow != NULL);
+
+    natts = slot->tts_tupleDescriptor->natts;
+
+    /* fastpath: exit if values already extracted */
+    if (slot->tts_nvalid == natts)
+        return;
+
+    memcpy(&n16, cur, 2);
+    cur += 2;
+    col_count = ntohs(n16);
+
+    if (col_count != natts)
+        ereport(ERROR,
+                (errcode(ERRCODE_DATA_CORRUPTED),
+                 errmsg("Tuple does not match the descriptor")));
+
+    /*
+     * Ensure info about input functions is available as long as slot lives
+     */
+    oldcontext = MemoryContextSwitchTo(slot->tts_mcxt);
+    tts_attinmeta = TupleDescGetAttInMetadata(slot->tts_tupleDescriptor);
+    MemoryContextSwitchTo(oldcontext);
+
+    buffer = makeStringInfo();
+    for (i = 0; i < natts; i++)
+    {
+        Form_pg_attribute attr = TupleDescAttr(slot->tts_tupleDescriptor, i);
+        int len;
+
+        /* get size */
+        memcpy(&n32, cur, 4);
+        cur += 4;
+        len = ntohl(n32);
+
+        /* get data */
+        if (len == -1)
+        {
+            slot->tts_values[i] = (Datum) 0;
+            slot->tts_isnull[i] = true;
+        }
+        else if (len == -2)
+        {
+            /* composite type */
+            TupleDesc tupDesc;
+
+            memcpy(&n32, cur, 4);
+            cur += 4;
+            len = ntohl(n32);
+
+            appendBinaryStringInfo(buffer, cur, len);
+
+            ignore_describe_response(buffer->data, len);
+            tupDesc = slot->tts_tupleDescriptor;
+
+            assign_record_type_typmod(tupDesc);
+
+            resetStringInfo(buffer);
+
+            cur += len;
+
+            memcpy(&n32, cur, 4);
+            cur += 4;
+            len = ntohl(n32);
+
+            appendBinaryStringInfo(buffer, cur, len);
+            cur += len;
+
+            slot->tts_values[i] = InputFunctionCall(tts_attinmeta->attinfuncs + i,
+                    buffer->data,
+                    tts_attinmeta->attioparams[i],
+                    tupDesc->tdtypmod);
+            slot->tts_isnull[i] = false;
+
+            resetStringInfo(buffer);
+
+            if (!attr->attbyval)
+            {
+                Pointer        val = DatumGetPointer(slot->tts_values[i]);
+                Size        data_length;
+                void       *data;
+
+                if (attr->attlen == -1)
+                {
+                    /* varlena */
+                    data_length = VARSIZE_ANY(val);
+                }
+                else if (attr->attlen == -2)
+                {
+                    /* cstring */
+                    data_length = strlen(val) + 1;
+                }
+                else
+                {
+                    /* fixed-length pass-by-reference */
+                    data_length = attr->attlen;
+                }
+                data = MemoryContextAlloc(slot->tts_mcxt, data_length);
+                memcpy(data, val, data_length);
+
+                pfree(val);
+
+                slot->tts_values[i] = PointerGetDatum(data);
+            }
+        }
+        else
+        {
+            appendBinaryStringInfo(buffer, cur, len);
+            cur += len;
+
+            slot->tts_values[i] = InputFunctionCall(tts_attinmeta->attinfuncs + i,
+                    buffer->data,
+                    tts_attinmeta->attioparams[i],
+                    tts_attinmeta->atttypmods[i]);
+            slot->tts_isnull[i] = false;
+
+            resetStringInfo(buffer);
+
+            /*
+             * The input function was executed in caller's memory context,
+             * because it may be allocating working memory, and caller may
+             * want to clean it up.
+             * However returned Datums need to be in the special context, so
+             * if attribute is pass-by-reference, copy it.
+             */
+            if (!attr->attbyval)
+            {
+                Pointer        val = DatumGetPointer(slot->tts_values[i]);
+                Size        data_length;
+                void       *data;
+
+                if (attr->attlen == -1)
+                {
+                    /* varlena */
+                    data_length = VARSIZE_ANY(val);
+                }
+                else if (attr->attlen == -2)
+                {
+                    /* cstring */
+                    data_length = strlen(val) + 1;
+                }
+                else
+                {
+                    /* fixed-length pass-by-reference */
+                    data_length = attr->attlen;
+                }
+                data = MemoryContextAlloc(slot->tts_mcxt, data_length);
+                memcpy(data, val, data_length);
+
+                pfree(val);
+
+                slot->tts_values[i] = PointerGetDatum(data);
+            }
+        }
+    }
+    pfree(buffer->data);
+    pfree(buffer);
+
+    slot->tts_nvalid = natts;
+    slot->tts_isempty = false;
+    slot->tts_shouldFree = false;
+    slot->tts_shouldFreeMin = false;
 }

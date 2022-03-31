@@ -45,12 +45,6 @@
 #include "parser/parsetree.h"
 #include "rewrite/rewriteManip.h"
 #include "utils/rel.h"
-#ifdef POLARDB_X
-#include "pgxc/pgxc.h"
-#include "pgxc/pgxcnode.h"
-#include "pgxc/planner.h"
-#include "tcop/tcopprot.h"
-#endif
 
 /* Hook for plugins to get control at end of parse analysis */
 post_parse_analyze_hook_type post_parse_analyze_hook = NULL;
@@ -81,9 +75,6 @@ static Query *transformExplainStmt(ParseState *pstate,
 					 ExplainStmt *stmt);
 static Query *transformCreateTableAsStmt(ParseState *pstate,
 						   CreateTableAsStmt *stmt);
-#ifdef POLARDB_X
-static Query *transformExecDirectStmt(ParseState *pstate, ExecDirectStmt *stmt);
-#endif
 static Query *transformCallStmt(ParseState *pstate,
 				  CallStmt *stmt);
 static void transformLockingClause(ParseState *pstate, Query *qry,
@@ -325,13 +316,6 @@ transformStmt(ParseState *pstate, Node *parseTree)
 										  (ExplainStmt *) parseTree);
 			break;
 		
-#ifdef POLARDB_X
-        case T_ExecDirectStmt:
-            result = transformExecDirectStmt(pstate,
-                                             (ExecDirectStmt *) parseTree);
-            break;
-#endif
-
 		case T_CreateTableAsStmt:
 			result = transformCreateTableAsStmt(pstate,
 												(CreateTableAsStmt *) parseTree);
@@ -394,16 +378,6 @@ analyze_requires_snapshot(RawStmt *parseTree)
 			/* yes, because we must analyze the contained statement */
 			result = true;
 			break;
-#ifdef POLARDB_X
-        case T_ExecDirectStmt:
-
-            /*
-             * We will parse/analyze/plan inner query, which probably will
-             * need a snapshot. Ensure it is set.
-             */
-            result = true;
-            break;
-#endif
 		default:
 			/* other utility statements don't have any real parse analysis */
 			result = false;
@@ -2629,160 +2603,6 @@ transformCreateTableAsStmt(ParseState *pstate, CreateTableAsStmt *stmt)
 	return result;
 }
 
-#ifdef POLARDB_X
-/*
- * transformExecDirectStmt -
- *    transform an EXECUTE DIRECT Statement
- *
- * Handling is depends if we should execute on nodes or on Coordinator.
- * To execute on nodes we return CMD_UTILITY query having one T_RemoteQuery node
- * with the inner statement as a sql_command.
- * If statement is to run on Coordinator we should parse inner statement and
- * analyze resulting query tree.
- */
-static Query *
-transformExecDirectStmt(ParseState *pstate, ExecDirectStmt *stmt)
-{// #lizard forgives
-    Query        *result = makeNode(Query);
-    char        *query = stmt->query;
-    List        *nodelist = stmt->node_names;
-    RemoteQuery    *step = makeNode(RemoteQuery);
-    bool        is_local = false;
-    List        *raw_parsetree_list;
-    ListCell    *raw_parsetree_item;
-    char        *nodename;
-    int            nodeIndex;
-    char        nodetype;
-
-    /* Support not available on Datanodes */
-    if (IS_PGXC_DATANODE)
-        ereport(ERROR,
-                (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-                 errmsg("EXECUTE DIRECT cannot be executed on a Datanode")));
-
-    if (list_length(nodelist) > 1)
-        ereport(ERROR,
-                (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-                 errmsg("Support for EXECUTE DIRECT on multiple nodes is not available yet")));
-
-    Assert(list_length(nodelist) == 1);
-    Assert(IS_PGXC_COORDINATOR);
-
-    /* There is a single element here */
-    nodename = strVal(linitial(nodelist));
-    nodetype = PGXC_NODE_NONE;
-    nodeIndex = PGXCNodeGetNodeIdFromName(nodename, &nodetype);
-    if (nodetype == PGXC_NODE_NONE)
-        ereport(ERROR,
-                (errcode(ERRCODE_UNDEFINED_OBJECT),
-                 errmsg("PGXC Node %s: object not defined",
-                        nodename)));
-
-    /* Check if node is requested is the self-node or not */
-    if (nodetype == PGXC_NODE_COORDINATOR && nodeIndex == PGXCNodeId - 1)
-        is_local = true;
-
-    /* Transform the query into a raw parse list */
-    raw_parsetree_list = pg_parse_query(query);
-
-    /* EXECUTE DIRECT can just be executed with a single query */
-    if (list_length(raw_parsetree_list) > 1)
-        ereport(ERROR,
-                (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-                 errmsg("EXECUTE DIRECT cannot execute multiple queries")));
-
-    /*
-     * Analyze the Raw parse tree
-     * EXECUTE DIRECT is restricted to one-step usage
-     */
-    foreach(raw_parsetree_item, raw_parsetree_list)
-    {
-        RawStmt   *parsetree = lfirst_node(RawStmt, raw_parsetree_item);
-        List *result_list = pg_analyze_and_rewrite(parsetree, query, NULL, 0, NULL);
-        result = linitial_node(Query, result_list);
-    }
-
-    /* Default list of parameters to set */
-    step->sql_statement = NULL;
-    step->exec_nodes = makeNode(ExecNodes);
-    step->combine_type = COMBINE_TYPE_NONE;
-    step->sort = NULL;
-    step->read_only = true;
-    step->force_autocommit = false;
-    step->cursor = NULL;
-
-    /* This is needed by executor */
-    step->sql_statement = pstrdup(query);
-    if (nodetype == PGXC_NODE_COORDINATOR)
-        step->exec_type = EXEC_ON_COORDS;
-    else
-        step->exec_type = EXEC_ON_DATANODES;
-
-    step->reduce_level = 0;
-    step->base_tlist = NIL;
-    step->outer_alias = NULL;
-    step->inner_alias = NULL;
-    step->outer_reduce_level = 0;
-    step->inner_reduce_level = 0;
-    step->outer_relids = NULL;
-    step->inner_relids = NULL;
-    step->inner_statement = NULL;
-    step->outer_statement = NULL;
-    step->join_condition = NULL;
-
-    /* Change the list of nodes that will be executed for the query and others */
-    step->force_autocommit = false;
-    step->combine_type = COMBINE_TYPE_SAME;
-    step->read_only = true;
-    step->exec_direct_type = EXEC_DIRECT_NONE;
-
-    /* Set up EXECUTE DIRECT flag */
-    if (is_local)
-    {
-        if (result->commandType == CMD_UTILITY)
-            step->exec_direct_type = EXEC_DIRECT_LOCAL_UTILITY;
-        else
-            step->exec_direct_type = EXEC_DIRECT_LOCAL;
-    }
-    else
-    {
-        switch(result->commandType)
-        {
-            case CMD_UTILITY:
-                step->exec_direct_type = EXEC_DIRECT_UTILITY;
-                break;
-            case CMD_SELECT:
-                step->exec_direct_type = EXEC_DIRECT_SELECT;
-                break;
-            case CMD_INSERT:
-                step->exec_direct_type = EXEC_DIRECT_INSERT;
-                break;
-            case CMD_UPDATE:
-                step->exec_direct_type = EXEC_DIRECT_UPDATE;
-                break;
-            case CMD_DELETE:
-                step->exec_direct_type = EXEC_DIRECT_DELETE;
-                break;
-            default:
-                Assert(0);
-        }
-    }
-
-    /* Build Execute Node list, there is a unique node for the time being */
-    step->exec_nodes->nodeList = lappend_int(step->exec_nodes->nodeList, nodeIndex);
-
-    if (!is_local)
-        result->utilityStmt = (Node *) step;
-
-    /*
-     * Reset the queryId since the caller would do that anyways.
-     */
-    result->queryId = 0;
-
-    return result;
-}
-
-#endif /* POLARDB_X */
 /*
  * transform a CallStmt
  *

@@ -3,8 +3,8 @@
  * deparse_fqs.h
  *		Declarations for deparse_fqs.c
  *
- * Copyright (c) 2020, Alibaba Inc. and/or its affiliates
- * Copyright (c) 2020, Apache License Version 2.0
+ * Copyright (c) 2021, Alibaba Group Holding Limited
+ * Licensed under the Apache License, Version 2.0 (the "License");
  *
  * IDENTIFICATION
  *        contrib/polarx/include/deparse/deparse_fqs.h

@@ -37,10 +37,6 @@ volatile uint32 InterruptHoldoffCount = 0;
 volatile uint32 QueryCancelHoldoffCount = 0;
 volatile uint32 CritSectionCount = 0;
 
-#ifdef POLARDB_X
-volatile int PoolerReloadHoldoffCount = 0;
-#endif
-
 int			MyProcPid;
 pg_time_t	MyStartTime;
 struct Port *MyProcPort;
@@ -82,16 +78,6 @@ char		postgres_exec_path[MAXPGPATH];	/* full path to backend */
 #endif
 
 BackendId	MyBackendId = InvalidBackendId;
-
-#ifdef POLARDB_X
-Oid            MyCoordId = InvalidOid;
-char        MyCoordName[NAMEDATALEN];
-
-int         MyCoordPid = 0;
-LocalTransactionId    MyCoordLxid = 0;
-
-BackendId    MyFirstBackendId = InvalidBackendId;
-#endif
 
 BackendId	ParallelMasterBackendId = InvalidBackendId;
 

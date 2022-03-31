@@ -238,6 +238,12 @@ See [architecture design](/doc/polardb/arch.md) for more information
   * [Two-phase transaction fault tolerance](/doc/polardb/2pc_cleanup_chinese.md)
   * [FDW based Distribured SQL computation](/doc/polardb/dis_sql_outline_chinese.md)
   * [Useful commands and setup related to distributed SQL](/doc/polardb/distributed_related_usage.md)
+* Design and Usage of PolarDB for PostgreSQL Distributed Version 3.0 (plug-in)
+  *  [Distributed transaction management as plug-in and HLC as patch](/doc/polardb/distrbuted_trans_and_hlc_patch.md)
+  *  [Updated DDL syntax](/doc/polardb/ddl_syntax.md)
+  *  [SQL limitations](/doc/polardb/sql_limitations.md)
+  *  [Scalable connection pool](/doc/polardb/conn_pooler.md)
+  *  [Fast query shipping with Custom Scan](/doc/polardb/fast_query_shipping.md)
 
 ## Contributing
 

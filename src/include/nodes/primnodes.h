@@ -116,9 +116,6 @@ typedef struct IntoClause
 	char	   *tableSpaceName; /* table space to use, or NULL */
 	Node	   *viewQuery;		/* materialized view's SELECT query */
 	bool		skipData;		/* true for WITH NO DATA */
-#ifdef POLARDB_X
-    struct DistributeBy *distributeby;  /* distribution to use, or NULL */
-#endif
 } IntoClause;
 
 

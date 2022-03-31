@@ -3,9 +3,9 @@
  * polarx_init.c
  *		  Foreign-data wrapper for poalrx distributed cluster
  *
+ * Copyright (c) 2021, Alibaba Group Holding Limited
+ * Licensed under the Apache License, Version 2.0 (the "License");
  * Portions Copyright (c) 2012-2018, PostgreSQL Global Development Group
- * Copyright (c) 2020, Alibaba Inc. and/or its affiliates
- * Copyright (c) 2020, Apache License Version 2.0*
  *
  * IDENTIFICATION
  *		  contrib/polarx/polarx_init.c
@@ -14,14 +14,15 @@
  */
 #include <math.h>
 #include "postgres.h"
+#include "polarx.h"
 
 #include "polarx/polarx_fdw.h"
 
-#include "pgxc/pgxc.h"
+#include "pgxc/connpool.h"
 #include "miscadmin.h"
 #include "optimizer/planner.h"
 #include "executor/execRemoteQuery.h"
-#include "plan/planner.h"
+#include "plan/polarx_planner.h"
 #include "utils/fdwplanner_utils.h"
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
@@ -32,17 +33,40 @@
 #include "catalog/pg_foreign_table.h"
 #include "catalog/indexing.h"
 #include "catalog/pg_class.h"
+#include "nodes/polarx_nodesdef.h"
+#include "distribute_transaction/txn.h"
+#include "pgxc/nodemgr.h"
+#include "pgxc/connpool.h"
 
 PG_MODULE_MAGIC;
 
 void    _PG_init(void);
 
+char    *PGXCNodeName = NULL;
+char    *PGXCClusterName = NULL;
+char    *PGXCMainClusterName = NULL;
+bool    IsPGXCMainCluster = false;
+int     PGXCNodeId = 0;
+bool    isPGXCCoordinator = false;
+bool    isPGXCDataNode = false;
+int     remoteConnType = REMOTE_CONN_APP;
+
+static const struct config_enum_entry pgxc_conn_types[] = {
+    {"application", REMOTE_CONN_APP, false},
+    {"coordinator", REMOTE_CONN_COORD, false},
+    {"datanode", REMOTE_CONN_DATANODE, false},
+    {"gtm", REMOTE_CONN_GTM, false},
+    {"gtmproxy", REMOTE_CONN_GTM_PROXY, false},
+    {NULL, 0, false}
+};
 static object_access_hook_type next_object_access_hook = NULL;
 /*
  * SQL functions
  */
 PG_FUNCTION_INFO_V1(polarx_fdw_handler);
 PG_FUNCTION_INFO_V1(self_node_inx);
+PG_FUNCTION_INFO_V1(clean_db_connections);
+PG_FUNCTION_INFO_V1(pgxc_node_str);
 
 /*
  * FDW callback routines
@@ -142,10 +166,29 @@ self_node_inx(PG_FUNCTION_ARGS)
 	PG_RETURN_INT32(PGXCNodeId - 1);
 }
 
+Datum
+clean_db_connections(PG_FUNCTION_ARGS)
+{
+    text *dbname_text = PG_GETARG_TEXT_P(0);
+    char *dbname = text_to_cstring(dbname_text);
+
+    DropDBCleanConnection(dbname);
+    PG_RETURN_VOID();
+}
+/*
+ * pgxc_node_str
+ *
+ * get the name of the node
+ */
+Datum
+pgxc_node_str(PG_FUNCTION_ARGS)
+{
+    PG_RETURN_TEXT_P(cstring_to_text(PGXCNodeName));
+}
+
 void
 _PG_init(void)
 {
-    BackgroundWorker worker;
 
     if (!process_shared_preload_libraries_in_progress)
     {
@@ -162,26 +205,20 @@ _PG_init(void)
                     errhint("Place polarx at the beginning of "
                         "shared_preload_libraries.")));
     }
-    /* set up common data for all our workers */
-    worker.bgw_flags = BGWORKER_SHMEM_ACCESS | BGWORKER_BACKEND_DATABASE_CONNECTION;
-    worker.bgw_start_time = BgWorkerStart_RecoveryFinished;
-    worker.bgw_restart_time = 5;
-    worker.bgw_main_arg = Int32GetDatum(0);
-    worker.bgw_notify_pid = 0;
-    sprintf(worker.bgw_library_name, "postgres");
-    sprintf(worker.bgw_function_name, "PoolManagerInit");
-    snprintf(worker.bgw_name, BGW_MAXLEN, "pooler process");
-    snprintf(worker.bgw_type, BGW_MAXLEN, "pooler process");
 
     RegisterPolarxConfigVariables();
-    RegisterBackgroundWorker(&worker);
     RegisterPolarxFastShipQueryMethods();
+    RegisterPolarxNodes();
     planner_hook = polarx_planner;
     ProcessUtility_hook = polarx_ProcessUtility;
     next_object_access_hook = object_access_hook;
     object_access_hook = polarx_object_access;
     ExecutorStart_hook = polarxExecutorStart;
     ExplainOneQuery_hook = polarxExplainOneQuery;
+    InitializeNodeTablesShmemStruct();
+    InitializePoolerShmemStruct();
+    
+    RegisterDistributeTxnCallback();
 }
 /*
  * Foreign-data wrapper handler function: return a struct with pointers
@@ -654,7 +691,7 @@ polarxExecutorStart(QueryDesc *queryDesc, int eflags)
             if(plan->custom_private)
             {
                 void *ptr = linitial(plan->custom_private);
-                if(IsA(ptr, RemoteQuery))
+                if(polarxIsA(ptr, RemoteQuery))
                     need_adjust = false;
             }
         }
@@ -716,5 +753,226 @@ RegisterPolarxConfigVariables(void)
             PGC_USERSET,
             0,
             NULL, NULL, NULL);
+    DefineCustomBoolVariable(
+            "polarx.enable_hlc_transaction",
+            gettext_noop("This GUC control HLC transaction"),
+            gettext_noop("When enabled, HLC will be used in distribute transaction, need kernel has coresponding support."),
+            &EnableHLCTransaction,
+            true,
+            PGC_USERSET,
+            0,
+            NULL, NULL, NULL);
+    DefineCustomBoolVariable(
+            "polarx.enable_txn_debug_print",
+            gettext_noop("This GUC control transaction log print"),
+            gettext_noop("When enabled, more logs will be printed."),
+            &EnableTransactionDebugPrint,
+            false,
+            PGC_USERSET,
+            0,
+            NULL, NULL, NULL);
+    DefineCustomBoolVariable(
+            "polarx.enable_log_remote_query",
+            gettext_noop("enable log remote query"),
+            NULL,
+            &enable_log_remote_query,
+            false,
+            PGC_USERSET,
+            0,
+            NULL, NULL, NULL);
+    DefineCustomBoolVariable(
+            "pooler.persistent_datanode_connections",
+            gettext_noop("Session never releases acquired connections."),
+            NULL,
+            &PersistentConnections,
+            false,
+            PGC_BACKEND,
+            GUC_NOT_IN_SAMPLE,
+            check_persistent_connections, NULL, NULL);
+    DefineCustomIntVariable(
+            "pooler.pool_conn_keepalive",
+            gettext_noop("Close connections if they are idle in the pool for that time."),
+            gettext_noop("A value of -1 turns autoclose off."),
+            &PoolConnKeepAlive,
+            60, 60, INT_MAX,
+            PGC_SIGHUP,
+            GUC_UNIT_S,
+            NULL, NULL, NULL);
+    DefineCustomIntVariable(
+            "pooler.pool_maintenance_timeout",
+            gettext_noop("Launch maintenance routine if pooler idle for that time."),
+            gettext_noop("A value of -1 turns feature off."),
+            &PoolMaintenanceTimeout,
+            10, -1, INT_MAX,
+            PGC_SIGHUP,
+            GUC_UNIT_S,
+            NULL, NULL, NULL);
+    DefineCustomIntVariable(
+            "pooler.max_pool_size",
+            gettext_noop("Max pool size."),
+            gettext_noop("If number of active connections reaches this value, "
+                            "other connection requests will be refused"),
+            &MaxPoolSize,
+            300, 1, 65535,
+            PGC_POSTMASTER,
+            0,
+            NULL, NULL, NULL);
+    DefineCustomIntVariable(
+            "pooler.min_free_size",
+            gettext_noop("minimal pool free connection number."),
+            gettext_noop("When pool need to acquire new connections, we use the number as step "),
+            &MinFreeSize,
+            5, 1, 65535,
+            PGC_POSTMASTER,
+            0,
+            NULL, NULL, NULL);
+    DefineCustomIntVariable(
+            "pooler.min_pool_size",
+            gettext_noop("Min pool size."),
+            gettext_noop("If number of active connections decreased below this value, "
+                         "we established new connections for warm user and database"),
+            &MinPoolSize,
+            5, 1, 65535,
+            PGC_POSTMASTER,
+            0,
+            NULL, NULL, NULL);
+    DefineCustomIntVariable(
+            "pooler.pool_session_context_check_gap",
+            gettext_noop("Gap to check datanode session memory context."),
+            gettext_noop("In seconds."),
+            &PoolSizeCheckGap,
+            120, 10, 7200,
+            PGC_SIGHUP,
+            GUC_UNIT_S,
+            NULL, NULL, NULL);
+    DefineCustomIntVariable(
+            "pooler.pool_session_max_lifetime",
+            gettext_noop("Datanode session max lifetime."),
+            gettext_noop("Session will be colsed when expired."),
+            &PoolConnMaxLifetime,
+            300, 1, INT_MAX,
+            PGC_SIGHUP,
+            GUC_UNIT_S,
+            NULL, NULL, NULL);
+    DefineCustomIntVariable(
+            "pooler.pool_session_memory_limit",
+            gettext_noop("Datanode session max memory context size."),
+            gettext_noop("Exceed limit will be closed."),
+            &PoolMaxMemoryLimit,
+            10, 1, 10000,
+            PGC_SIGHUP,
+            GUC_UNIT_S,
+            NULL, NULL, NULL);
+    DefineCustomIntVariable(
+            "pooler.pooler_connect_timeout",
+            gettext_noop("Pooler connection timeout."),
+            gettext_noop("Pooler connection timeout."),
+            &PoolConnectTimeOut,
+            10, 1, 3600,
+            PGC_POSTMASTER,
+            GUC_UNIT_S,
+            NULL, NULL, NULL);
+    DefineCustomIntVariable(
+            "pooler.pooler_scale_factor",
+            gettext_noop("Pooler scale factor."),
+            gettext_noop("Pooler scale factor."),
+            &PoolScaleFactor,
+            2, 1, 64,
+            PGC_POSTMASTER,
+            0,
+            NULL, NULL, NULL);
+    DefineCustomIntVariable(
+            "pooler.pooler_dn_set_timeout",
+            gettext_noop("Pooler datanode set query timeout."),
+            gettext_noop("Pooler datanode set query timeout."),
+            &PoolDNSetTimeout,
+            10, 1, 3600,
+            PGC_SIGHUP,
+            GUC_UNIT_S,
+            NULL, NULL, NULL);
+    DefineCustomIntVariable(
+            "pooler.pool_check_slot_timeout",
+            gettext_noop("Enable pooler check slot. When slot is using by agent, shouldn't exist in nodepool."),
+            gettext_noop("A value of -1 turns feature off."),
+            &PoolCheckSlotTimeout,
+            5, -1, INT_MAX,
+            PGC_SIGHUP,
+            GUC_UNIT_S,
+            NULL, NULL, NULL);
+    DefineCustomIntVariable(
+            "pooler.pool_print_stat_timeout",
+            gettext_noop("Enable pooler print stat info."),
+            gettext_noop("A value of -1 turns feature off."),
+            &PoolPrintStatTimeout,
+            60, -1, INT_MAX,
+            PGC_SIGHUP,
+            GUC_UNIT_S,
+            NULL, NULL, NULL);
+    DefineCustomIntVariable(
+            "pooler.port",
+            gettext_noop("Port of the Pool Manager."),
+            NULL,
+            &PoolerPort,
+            6667, 1, 65535,
+            PGC_POSTMASTER,
+            0,
+            NULL, NULL, NULL);
+    DefineCustomStringVariable(
+            "polarx.node_name",
+            gettext_noop("The Coordinator or Datanode name."),
+            NULL,
+            &PGXCNodeName,
+            "",
+            PGC_POSTMASTER,
+            GUC_NO_RESET_ALL | GUC_IS_NAME,
+            NULL, NULL, NULL);
+    DefineCustomStringVariable(
+            "polarx.cluster_name",
+            gettext_noop("The Cluster name."),
+            NULL,
+            &PGXCClusterName,
+            "cluster_server",
+            PGC_POSTMASTER,
+            GUC_NO_RESET_ALL | GUC_IS_NAME,
+            NULL, NULL, NULL);
+    DefineCustomStringVariable(
+            "polarx.main_cluster_name",
+            gettext_noop("The Main Cluster name."),
+            NULL,
+            &PGXCMainClusterName,
+            "cluster_server",
+            PGC_POSTMASTER,
+            GUC_NO_RESET_ALL | GUC_IS_NAME,
+            NULL, NULL, NULL);
+    DefineCustomEnumVariable(
+            "polarx.remotetype",
+            gettext_noop("Sets the type of PolarDB-X remote connection"),
+            NULL,
+            &remoteConnType,
+            REMOTE_CONN_APP,
+            pgxc_conn_types,
+            PGC_BACKEND,
+            0,
+            NULL, NULL, NULL);
+#ifdef POLARDBX_TWO_PHASE_TESTS
+    DefineCustomIntVariable(
+            "polarx.twophase_exception_case",
+            gettext_noop("run tests for twophase transaction"),
+            NULL,
+            &twophase_exception_case,
+            0, 0, INT_MAX,
+            PGC_POSTMASTER,
+            0,
+            NULL, NULL, NULL);
+    DefineCustomIntVariable(
+            "polarx.twophase_exception_node_exception",
+            gettext_noop("run tests for twophase transaction, node crash"),
+            NULL,
+            &twophase_exception_node_exception,
+            0, 0, INT_MAX,
+            PGC_POSTMASTER,
+            0,
+            NULL, NULL, NULL);
+#endif
 
 }

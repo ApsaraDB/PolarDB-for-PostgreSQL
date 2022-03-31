@@ -11,7 +11,7 @@ CREATE TABLE xl_funct2(
 	a integer,
 	b integer,
 	c integer DEFAULT xl_add(10,12 )
-) DISTRIBUTE BY HASH(a);
+) with(dist_type=hash, dist_col=a);
 
 INSERT INTO xl_funct2(a,b) VALUES (1,2);--c should be 22
 INSERT INTO xl_funct2(a,b,c) VALUES (3,4,5);-- c should be 5
@@ -27,7 +27,7 @@ CREATE TABLE xl_funct3(
 	a integer,
 	b integer,
 	c text DEFAULT xl_nochange('hello')
-) DISTRIBUTE BY HASH(a);
+) with(dist_type=hash, dist_col=a);
 
 INSERT INTO xl_funct3(a,b) VALUES (1,2);--c should be pallavi
 INSERT INTO xl_funct3(a,b,c) VALUES (3,4,'qwerty');-- c should be qwerty
@@ -39,7 +39,7 @@ CREATE TABLE xl_funct4(
 	a integer,
 	b integer,
 	c text DEFAULT xl_nochange('hello')
-) DISTRIBUTE BY HASH(c);
+) with(dist_type=hash, dist_col=c);
 
 INSERT INTO xl_funct4(a,b) VALUES (1,2);--c should be pallavi
 INSERT INTO xl_funct4(a,b,c) VALUES (3,4,'qwerty');-- c should be qwerty
@@ -56,7 +56,7 @@ CREATE TABLE xl_funct5(
 	a integer,
 	b integer,
 	c double precision DEFAULT xl_get_curr_decade()
-) DISTRIBUTE BY HASH(a);
+) with(dist_type=hash, dist_col=a);
 
 INSERT INTO xl_funct5(a,b) VALUES (1,2);--c should be e.g. 201 for 2015
 INSERT INTO xl_funct5(a,b,c) VALUES (3,4,20);-- c should be 20
@@ -70,7 +70,7 @@ CREATE SEQUENCE xl_INSERT_SEQ;
 CREATE TABLE xl_funct (
 	a integer,
 	b INT DEFAULT nextval('xl_insert_seq')
-) DISTRIBUTE BY HASH (a);
+) with(dist_type=hash, dist_col=a);
 
 INSERT INTO xl_funct (a) VALUES (1);
 INSERT INTO xl_funct (a) VALUES (2);
@@ -81,7 +81,7 @@ SELECT * FROM xl_funct;
 CREATE TABLE xl_funct1 (
 	a integer DEFAULT nextval('xl_insert_seq'),
 	b INT 
-) DISTRIBUTE BY HASH (a);
+) with(dist_type=hash, dist_col=a);
 
 INSERT INTO xl_funct1 (b) VALUES (1);
 INSERT INTO xl_funct1 (b) VALUES (2);

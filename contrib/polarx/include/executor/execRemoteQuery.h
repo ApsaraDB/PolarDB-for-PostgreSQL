@@ -5,10 +5,11 @@
  *      Functions to execute commands on multiple polarx Datanodes
  *
  *
+ * Copyright (c) 2021, Alibaba Group Holding Limited
+ * Licensed under the Apache License, Version 2.0 (the "License");
  * Portions Copyright (c) 2012-2014, TransLattice, Inc.
  * Portions Copyright (c) 1996-2011, PostgreSQL Global Development Group
  * Portions Copyright (c) 2010-2012 Postgres-XC Development Group
- * Copyright (c) 2020, Apache License Version 2.0*
  *
  * IDENTIFICATION
  *        contrib/polarx/include/executor/execRemoteQuery.h
@@ -21,7 +22,7 @@
 #include "pgxc/locator.h"
 #include "nodes/nodes.h"
 #include "pgxc/pgxcnode.h"
-#include "pgxc/planner.h"
+#include "plan/polarx_planner.h"
 #include "pgxc/squeue.h"
 #include "access/tupdesc.h"
 #include "executor/tuptable.h"
@@ -35,9 +36,16 @@
 #include "access/xact.h"
 #include "executor/recvRemote.h"
 
+
+#define get_rqs_addr(ptr, type, member)   ({                        \
+        const typeof( ((type *)0)->member ) *__mptr = (ptr);        \
+        (type *)( (char *)__mptr - offsetof(type,member) );})
+
 typedef struct RemoteQueryState
 {
+    PolarxNode type;
     ResponseCombiner combiner;            /* see ResponseCombiner struct */
+    RemoteQuery *remote_query;
     bool        query_Done;                /* query has been sent down to Datanodes */
     /*
      * While we are not supporting grouping use this flag to indicate we need
@@ -75,72 +83,6 @@ typedef struct RemoteParam
     Oid            paramtype;        /* pg_type OID of parameter's datatype */
     int            paramused;        /* is param used */
 } RemoteParam;
-
-
-/*
- * Execution state of a RemoteSubplan node
- */
-typedef struct RemoteSubplanState
-{
-    ResponseCombiner combiner;            /* see ResponseCombiner struct */
-    char       *subplanstr;                /* subplan encoded as a string */
-    bool        bound;                    /* subplan is sent down to the nodes */
-    bool        local_exec;             /* execute subplan on this datanode */
-    Locator    *locator;                /* determine destination of tuples of
-                                         * locally executed plan */
-    int        *dest_nodes;                /* allocate once */
-    List       *execNodes;                /* where to execute subplan */
-    /* should query be executed on all (true) or any (false) node specified
-     * in the execNodes list */
-    bool         execOnAll;
-    int            nParamRemote;    /* number of params sent from the master node */
-    RemoteParam *remoteparams;  /* parameter descriptors */
-    
-    bool        finish_init;
-    int32       eflags;                       /* estate flag. */
-} RemoteSubplanState;
-
-
-/*
- * Data needed to set up a PreparedStatement on the remote node and other data
- * for the remote executor
- */
-typedef struct RemoteStmt
-{
-    NodeTag        type;
-
-    CmdType        commandType;    /* select|insert|update|delete */
-
-    bool        hasReturning;    /* is it insert|update|delete RETURNING? */
-
-    bool        parallelModeNeeded;     /* is parallel needed? */
-    bool        parallelWorkerSendTuple;/* can parallel workers send tuples to remote? */
-
-    struct Plan *planTree;                /* tree of Plan nodes */
-
-    List       *rtable;                    /* list of RangeTblEntry nodes */
-
-    /* rtable indexes of target relations for INSERT/UPDATE/DELETE */
-    List       *resultRelations;    /* integer list of RT indexes, or NIL */
-
-    List       *subplans;        /* Plan trees for SubPlan expressions */
-
-    int            nParamExec;        /* number of PARAM_EXEC Params used */
-
-    int            nParamRemote;    /* number of params sent from the master node */
-
-    RemoteParam *remoteparams;  /* parameter descriptors */
-
-    List       *rowMarks;
-
-    char        distributionType;
-
-    AttrNumber    distributionKey;
-
-    List       *distributionNodes;
-
-    List       *distributionRestrict;
-} RemoteStmt;
 
 typedef struct FastShipQueryState 
 {

@@ -8,12 +8,13 @@
  *
  * This code is released under the terms of the PostgreSQL License.
  *
+ * Copyright (c) 2021, Alibaba Group Holding Limited
+ * Licensed under the Apache License, Version 2.0 (the "License");
  * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
- * Copyright (c) 2020, Apache License Version 2.0*
  *
  * IDENTIFICATION
- *        contrib/polarx/test/regress/pg_regress.c
+ *        contrib/polarx/test/regress/pg_regress_x.c
  *
  *-------------------------------------------------------------------------
  */
@@ -825,18 +826,20 @@ set_node_config_file(PGXCNodeTypeNum node)
 	fputs("log_directory = 'pg_log'\n", pg_conf);
 	fputs("log_min_messages = log\n", pg_conf);
 	fputs("log_min_error_statement = log\n", pg_conf);
+#ifdef PATCH_ENABLE_DISTRIBUTED_TRANSACTION
 	fputs("enable_timestamp_debug_print = false\n", pg_conf);
-	fputs("enable_log_remote_query = false\n", pg_conf);
+#endif
+	fputs("polarx.enable_log_remote_query = false\n", pg_conf);
 	fputs("log_statement = 'all'\n", pg_conf);
 
 	fputs("max_connections = 100\n", pg_conf);
-	fputs("max_pool_size = 10000\n", pg_conf);
+	fputs("pooler.max_pool_size = 10000\n", pg_conf);
 	fputs("shared_preload_libraries = 'polarx'\n", pg_conf);
-	fputs("polarx.enable_fast_query_shipping = false\n", pg_conf);
+    fputs("polarx.enable_fast_query_shipping = false\n", pg_conf);
 
-	snprintf(buf, sizeof(buf), "pooler_port = %d\n", get_pooler_port(node));
+	snprintf(buf, sizeof(buf), "pooler.port = %d\n", get_pooler_port(node));
 	fputs(buf, pg_conf);
-	snprintf(buf, sizeof(buf), "pgxc_node_name = '%s'\n", get_node_name(node));
+	snprintf(buf, sizeof(buf), "polarx.node_name = '%s'\n", get_node_name(node));
         fputs(buf, pg_conf);
 
 	for (sl = temp_configs; sl != NULL; sl = sl->next)
@@ -934,8 +937,6 @@ setup_connection_information(const char *database)
 			(char *)get_node_name(PGXC_DATANODE_2), get_port_number(PGXC_DATANODE_2));
 
     psql_command_node(database, PGXC_COORD_1, "CREATE SERVER cluster_server FOREIGN DATA WRAPPER polarx;");
-	/* Then reload the connection data */
-	psql_command_node(database, PGXC_COORD_1, "SELECT pgxc_pool_reload();");
 
 	/* -----coordinator 2 ------- */
     psql_command_node(database, PGXC_COORD_2, "CREATE EXTENSION polarx;");
@@ -958,8 +959,6 @@ setup_connection_information(const char *database)
 
 
     psql_command_node(database, PGXC_COORD_2, "CREATE SERVER cluster_server FOREIGN DATA WRAPPER polarx;");
-	/* Then reload the connection data */
-	psql_command_node(database, PGXC_COORD_2, "SELECT pgxc_pool_reload();");
 
 
 	/* -----datanode 1 ------- */
@@ -987,7 +986,6 @@ setup_connection_information(const char *database)
 
 
     psql_command_node(database, PGXC_DATANODE_1, "CREATE SERVER cluster_server FOREIGN DATA WRAPPER polarx;");
-	psql_command_node(database, PGXC_DATANODE_1, "SELECT pgxc_pool_reload();");
 
 	/* -----datanode 2 ------- */
     psql_command_node(database, PGXC_DATANODE_2, "CREATE EXTENSION polarx;");
@@ -1013,7 +1011,6 @@ setup_connection_information(const char *database)
 			(char *)get_node_name(PGXC_DATANODE_2), get_port_number(PGXC_DATANODE_2));
 
     psql_command_node(database, PGXC_DATANODE_2, "CREATE SERVER cluster_server FOREIGN DATA WRAPPER polarx;");
-	psql_command_node(database, PGXC_DATANODE_2, "SELECT pgxc_pool_reload();");
 }
 
 

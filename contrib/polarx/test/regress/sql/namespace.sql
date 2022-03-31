@@ -10,7 +10,7 @@ SET search_path TO test_schema_1, public;
        CREATE TABLE abc (
               a serial,
               b int UNIQUE
-       ) distribute by replication;
+       ) with (dist_type = replication);
 CREATE UNIQUE INDEX abc_a_idx ON abc (a);
 
        CREATE VIEW abc_view AS

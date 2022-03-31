@@ -7,7 +7,7 @@
 --
 -- Tables and rules for the view test
 --
-create table rtest_t1 (a int4, b int4) distribute by replication;
+create table rtest_t1 (a int4, b int4) with(dist_type=replication);
 create table rtest_t2 (a int4, b int4);
 create table rtest_t3 (a int4, b int4);
 
@@ -31,10 +31,10 @@ COMMENT ON RULE rtest_v1_del ON rtest_v1 IS NULL;
 -- 	both possible syntaxes to define them (The last action
 --  can but must not have a semicolon at the end).
 --
-create table rtest_system (sysname text, sysdesc text) distribute by roundrobin;
-create table rtest_interface (sysname text, ifname text) distribute by roundrobin;
-create table rtest_person (pname text, pdesc text) distribute by roundrobin;
-create table rtest_admin (pname text, sysname text) distribute by roundrobin;
+create table rtest_system (sysname text, sysdesc text) with(dist_type=roundrobin);
+create table rtest_interface (sysname text, ifname text) with(dist_type=roundrobin);
+create table rtest_person (pname text, pdesc text) with(dist_type=roundrobin);
+create table rtest_admin (pname text, sysname text) with(dist_type=roundrobin);
 
 create rule rtest_sys_upd as on update to rtest_system do also (
 	update rtest_interface set sysname = new.sysname
@@ -57,9 +57,9 @@ create rule rtest_pers_del as on delete to rtest_person do also
 --
 -- Tables and rules for the logging test
 --
-create table rtest_emp (ename char(20), salary money) distribute by roundrobin;
-create table rtest_emplog (ename char(20), who name, action char(10), newsal money, oldsal money) distribute by roundrobin;
-create table rtest_empmass (ename char(20), salary money) distribute by roundrobin;
+create table rtest_emp (ename char(20), salary money) with(dist_type=roundrobin);
+create table rtest_emplog (ename char(20), who name, action char(10), newsal money, oldsal money) with(dist_type=roundrobin);
+create table rtest_empmass (ename char(20), salary money) with(dist_type=roundrobin);
 
 create rule rtest_emp_ins as on insert to rtest_emp do
 	insert into rtest_emplog values (new.ename, current_user,
@@ -525,7 +525,7 @@ CREATE TABLE shoe_data (
 	slminlen   float,         -- minimum shoelace length
 	slmaxlen   float,         -- maximum shoelace length
 	slunit     char(8)        -- length unit
-) distribute by roundrobin;
+) with(dist_type=roundrobin);
 
 CREATE TABLE shoelace_data (
 	sl_name    char(10),      -- primary key
@@ -533,12 +533,12 @@ CREATE TABLE shoelace_data (
 	sl_color   char(10),      -- shoelace color
 	sl_len     float,         -- shoelace length
 	sl_unit    char(8)        -- length unit
-) distribute by roundrobin;
+) with(dist_type=roundrobin);
 
 CREATE TABLE unit (
 	un_name    char(8),       -- the primary key
 	un_fact    float          -- factor to transform to cm
-) distribute by roundrobin;
+) with(dist_type=roundrobin);
 
 CREATE VIEW shoe AS
 	SELECT sh.shoename,
@@ -947,10 +947,10 @@ drop table id cascade;
 -- check corner case where an entirely-dummy subplan is created by
 -- constraint exclusion
 --
-create temp table t1 (a integer primary key) distribute by replication;
+create temp table t1 (a integer primary key) with(dist_type=replication);
 
-create temp table t1_1 (check (a >= 0 and a < 10)) inherits (t1) distribute by replication;
-create temp table t1_2 (check (a >= 10 and a < 20)) inherits (t1) distribute by replication;
+create temp table t1_1 (check (a >= 0 and a < 10)) inherits (t1) with(dist_type=replication);
+create temp table t1_2 (check (a >= 10 and a < 20)) inherits (t1) with(dist_type=replication);
 
 create rule t1_ins_1 as on insert to t1
 	where new.a >= 0 and new.a < 10

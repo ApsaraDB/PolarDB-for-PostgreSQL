@@ -8,9 +8,10 @@
  *
  * This code is released under the terms of the PostgreSQL License.
  *
+ * Copyright (c) 2021, Alibaba Group Holding Limited
+ * Licensed under the Apache License, Version 2.0 (the "License");
  * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
- * Copyright (c) 2020, Apache License Version 2.0*
  *
  * IDENTIFICATION
  *        contrib/polarx/test/regress/pg_regress_main.c
@@ -22,7 +23,6 @@
 
 #include "pg_regress.h"
 
-#ifdef POLARDB_X
 /*
  * start a psql test process for specified file (including redirection),
  * and return process ID
@@ -114,14 +114,9 @@ psql_init(int argc, char **argv)
 	add_stringlist_item(&dblist, "polarx");
 }
 
-#endif /*POLARDB_X*/
 
 int
 main(int argc, char *argv[])
 {
-#ifdef POLARDB_X
 	return regression_main(argc, argv, psql_init, psql_start_test);
-#else
-	return 0;
-#endif /*POLARDB_X*/
 }

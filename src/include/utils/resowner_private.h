@@ -87,14 +87,6 @@ extern void ResourceOwnerRememberDSM(ResourceOwner owner,
 						 dsm_segment *);
 extern void ResourceOwnerForgetDSM(ResourceOwner owner,
 					   dsm_segment *);
-#ifdef POLARDB_X
-/* support for prepared statement management */
-extern void ResourceOwnerEnlargePreparedStmts(ResourceOwner owner);
-extern void ResourceOwnerRememberPreparedStmt(ResourceOwner owner,
-                          char *stmt);
-extern void ResourceOwnerForgetPreparedStmt(ResourceOwner owner,
-                        char *stmt);
-#endif
 /* support for JITContext management */
 extern void ResourceOwnerEnlargeJIT(ResourceOwner owner);
 extern void ResourceOwnerRememberJIT(ResourceOwner owner,

@@ -10,7 +10,7 @@ CREATE TABLE clstr_tst (a SERIAL,
 	c TEXT,
 	d TEXT,
 	CONSTRAINT clstr_tst_con FOREIGN KEY (b) REFERENCES clstr_tst_s)
-	DISTRIBUTE BY HASH (b);
+	with(dist_type=hash, dist_col=b);
 
 CREATE INDEX clstr_tst_b ON clstr_tst (b);
 CREATE INDEX clstr_tst_c ON clstr_tst (c);
@@ -161,7 +161,7 @@ ORDER BY 1;
 -- Test MVCC-safety of cluster. There isn't much we can do to verify the
 -- results with a single backend...
 
-CREATE TABLE clustertest (key int PRIMARY KEY) DISTRIBUTE BY REPLICATION;
+CREATE TABLE clustertest (key int PRIMARY KEY) with(dist_type=replication);
 
 INSERT INTO clustertest VALUES (10);
 INSERT INTO clustertest VALUES (20);
@@ -196,7 +196,7 @@ SELECT * FROM clustertest;
 RESET SESSION AUTHORIZATION;
 SET SESSION AUTHORIZATION regress_clstr_user;
 
-create temp table clstr_temp (col1 int primary key, col2 text) DISTRIBUTE BY REPLICATION;
+create temp table clstr_temp (col1 int primary key, col2 text) with(dist_type=replication);
 insert into clstr_temp values (2, 'two'), (1, 'one');
 cluster clstr_temp using clstr_temp_pkey;
 select * from clstr_temp;
@@ -206,7 +206,7 @@ RESET SESSION AUTHORIZATION;
 
 -- Test CLUSTER with external tuplesorting
 
-create table clstr_4 distribute by replication as select * from tenk1;
+create table clstr_4 with(dist_type=replication) as select * from tenk1;
 create index cluster_sort on clstr_4 (hundred, thousand, tenthous);
 -- ensure we don't use the index in CLUSTER nor the checking SELECTs
 set enable_indexscan = off;

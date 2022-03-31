@@ -4,9 +4,10 @@
  *	  Functions to convert stored expressions/querytrees back to
  *	  source text
  *
+ * Copyright (c) 2021, Alibaba Group Holding Limited
+ * Licensed under the Apache License, Version 2.0 (the "License");
  * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
- * Copyright (c) 2020, Apache License Version 2.0*
  *
  *
  * IDENTIFICATION
@@ -15,6 +16,7 @@
  *-------------------------------------------------------------------------
  */
 #include "postgres.h"
+#include "polarx.h"
 
 #include <ctype.h>
 #include <unistd.h>
@@ -72,8 +74,6 @@
 #include "utils/typcache.h"
 #include "utils/varlena.h"
 #include "utils/xml.h"
-#include "pgxc/pgxc.h"
-#include "pgxc/planner.h"
 #include "deparse/deparse_fqs.h"
 
 
@@ -3485,36 +3485,6 @@ get_variable(Var *var, int levelsup, bool istoplevel, deparse_context *context)
 		pop_child_plan(dpns, &save_dpns);
 		return NULL;
 	}
-    if (rte->rtekind == RTE_REMOTE_DUMMY &&
-        attnum > list_length(rte->eref->colnames) &&
-        dpns->planstate)
-    {
-        TargetEntry *tle;
-        RemoteQuery *rqplan;
-        Assert(IsA(dpns->planstate, RemoteQueryState));
-        Assert(netlevelsup == 0);
-
-        /*
-         * Get the expression representing the given Var from base_tlist of the
-         * RemoteQuery
-         */
-        rqplan = (RemoteQuery *)dpns->planstate->plan;
-        Assert(IsA(rqplan, RemoteQuery));
-        tle = get_tle_by_resno(rqplan->base_tlist, var->varattno);
-        if (!tle)
-            elog(ERROR, "bogus varattno for remotequery var: %d", var->varattno);
-        /*
-         * Force parentheses because our caller probably assumed a Var is a
-         * simple expression.
-         */
-        if (!IsA(tle->expr, Var))
-            appendStringInfoChar(buf, '(');
-        get_rule_expr((Node *) tle->expr, context, true);
-        if (!IsA(tle->expr, Var))
-            appendStringInfoChar(buf, ')');
-
-        return NULL;
-    }
 	/*
 	 * If it's an unnamed join, look at the expansion of the alias variable.
 	 * If it's a simple reference to one of the input vars, then recursively
@@ -4055,9 +4025,6 @@ get_name_for_var_field(Var *var, int fieldno,
 				}
 			}
 			break;
-        case RTE_REMOTE_DUMMY:
-            elog(ERROR, "Invalid RTE found");
-            break;
 	}
 
 	/*

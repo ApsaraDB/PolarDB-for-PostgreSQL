@@ -10,7 +10,7 @@
  * However, page torn may happen in case of OS crash or power loss.
  * In order to gurantee high availability while providing high performance,
  * Remote Recovery is designed to fetch full pages from the mirror node during recovery.
- * Author: Junbin Kang
+ * Author:  
  *
  * Portions Copyright (c) 2020, Alibaba Group Holding Limited
  * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
@@ -7718,7 +7718,7 @@ StartupXLOG(void)
 				 * Dispatch the WAL record to the corresponding worker for
 				 * parallel replay to catch up the master under high
 				 * workloads. If dispatch failed, we fall through to the
-				 * normal routine. Written by Junbin Kang, 2020-07-08
+				 * normal routine. Written by  , 2020-07-08
 				 */
 				if (!DispatchWalRecord(record, xlogreader))
 				{
@@ -8514,7 +8514,7 @@ CheckRecoveryConsistency(void)
 		 * loc of lastReplayedEndRecPtr means the invalid pages are correctly
 		 * forgotten.
 		 *
-		 * Written by Junbin Kang, 2020-07-22.
+		 * Written by  , 2020-07-22.
 		 */
 #endif
 		XLogCheckInvalidPages();

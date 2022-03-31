@@ -40,7 +40,6 @@
 #ifdef ENABLE_PARALLEL_RECOVERY
 #include "access/xlog.h"
 #endif
-#include "pgxc/connpool.h"
 
 /*
  * The postmaster's list of registered background workers, in private memory.
@@ -107,11 +106,6 @@ typedef struct BackgroundWorkerArray
 	BackgroundWorkerSlot slot[FLEXIBLE_ARRAY_MEMBER];
 } BackgroundWorkerArray;
 
-struct BackgroundWorkerHandle
-{
-	int			slot;
-	uint64		generation;
-};
 
 static BackgroundWorkerArray *BackgroundWorkerData;
 
@@ -141,10 +135,6 @@ static const struct
 		"ParallelRecoveryWorkerMain", ParallelRecoveryWorkerMain
 	}
 #endif
-    ,
-    {
-        "PoolManagerInit", PoolManagerInit
-    }
 };
 
 /* Private functions. */

@@ -10,10 +10,10 @@ set enable_fast_query_shipping to off;
 
 -- Testset 1 for distributed table (use hash tables so that node reduction can
 -- be tested)
-select create_table_nodes('xc_sort1_hash(val int, val2 int)', '{1, 2, 3}'::int[], 'hash(val)', NULL);
-select create_table_nodes('xc_sort2_hash(val int, val2 int)', '{1, 2, 3}'::int[], 'hash(val)', NULL);
-select create_table_nodes('xc_sort1_rep(val int, val2 int)', '{1, 2}'::int[], 'replication', NULL);
-select create_table_nodes('xc_sort2_rep(val int, val2 int)', '{1, 2}'::int[], 'replication', NULL);
+select create_table_nodes('xc_sort1_hash(val int, val2 int)', '{1, 2, 3}'::int[], 'dist_type=hash, dist_col=val', NULL);
+select create_table_nodes('xc_sort2_hash(val int, val2 int)', '{1, 2, 3}'::int[], 'dist_type=hash, dist_col=val', NULL);
+select create_table_nodes('xc_sort1_rep(val int, val2 int)', '{1, 2}'::int[], 'dist_type=replication', NULL);
+select create_table_nodes('xc_sort2_rep(val int, val2 int)', '{1, 2}'::int[], 'dist_type=replication', NULL);
 insert into xc_sort1_hash values (1, 2), (2, 4), (5, 3), (7, 8), (9, 2), (1, 3), (5, 10);
 insert into xc_sort2_hash values (1, 2), (2, 4), (5, 3), (7, 8), (9, 2), (1, 3), (5, 10);
 insert into xc_sort1_rep values (1, 2), (2, 4), (5, 3), (7, 8), (9, 2), (1, 3), (5, 10);

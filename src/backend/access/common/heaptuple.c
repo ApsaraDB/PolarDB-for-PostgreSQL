@@ -62,13 +62,6 @@
 #include "access/tuptoaster.h"
 #include "executor/tuptable.h"
 #include "utils/expandeddatum.h"
-#ifdef POLARDB_X
-#include "lib/stringinfo.h"
-#include "utils/memutils.h"
-#include "funcapi.h"
-#include "pgxc/recvRemote.h"
-#include "utils/typcache.h"
-#endif
 
 
 /* Does att's datatype allow packing into the 1-byte-header varlena format? */
@@ -1499,210 +1492,6 @@ slot_deform_tuple(TupleTableSlot *slot, int natts)
 	slot->tts_slow = slow;
 }
 
-#ifdef POLARDB_X
-/*
- * slot_deform_datarow
- *         Extract data from the DataRow message into Datum/isnull arrays.
- *
- * We always extract all atributes, as specified in tts_tupleDescriptor,
- * because there is no easy way to find random attribute in the DataRow.
- *
- * XXX There's an opportunity for optimization - we might extract only the
- * attributes we already need (up to some attnum), and keep a pointer to
- * the next byte in the DataRow message. On the next call we can either
- * return immediately if the attnum is already extracted, or deform next
- * chunk of the message. Not sure if this is worth the effort, as we're
- * likely to extract all attributes from the message eventually.
- */
-static void
-slot_deform_datarow(TupleTableSlot *slot)
-{// #lizard forgives
-    int natts;
-    int i;
-    int         col_count;
-    char       *cur = slot->tts_datarow->msg;
-    StringInfo  buffer;
-    uint16        n16;
-    uint32        n32;
-    MemoryContext oldcontext;
-
-    Assert(slot->tts_tupleDescriptor != NULL);
-    Assert(slot->tts_datarow != NULL);
-
-    natts = slot->tts_tupleDescriptor->natts;
-
-    /* fastpath: exit if values already extracted */
-    if (slot->tts_nvalid == natts)
-        return;
-
-    memcpy(&n16, cur, 2);
-    cur += 2;
-    col_count = ntohs(n16);
-
-    if (col_count != natts)
-        ereport(ERROR,
-                (errcode(ERRCODE_DATA_CORRUPTED),
-                 errmsg("Tuple does not match the descriptor")));
-
-    if (slot->tts_attinmeta == NULL)
-    {
-        /*
-         * Ensure info about input functions is available as long as slot lives
-         */
-        oldcontext = MemoryContextSwitchTo(slot->tts_mcxt);
-        slot->tts_attinmeta = TupleDescGetAttInMetadata(slot->tts_tupleDescriptor);
-        MemoryContextSwitchTo(oldcontext);
-    }
-
-    /*
-     * Store values to separate context to easily free them when base datarow is
-     * freed
-     */
-    if (slot->tts_drowcxt == NULL)
-    {
-        slot->tts_drowcxt = AllocSetContextCreate(slot->tts_mcxt,
-                                                  "Datarow",
-                                                  ALLOCSET_DEFAULT_MINSIZE,
-                                                  ALLOCSET_DEFAULT_INITSIZE,
-                                                  ALLOCSET_DEFAULT_MAXSIZE);
-    }
-
-    buffer = makeStringInfo();
-    for (i = 0; i < natts; i++)
-    {
-        Form_pg_attribute attr = TupleDescAttr(slot->tts_tupleDescriptor, i);
-        int len;
-
-        /* get size */
-        memcpy(&n32, cur, 4);
-        cur += 4;
-        len = ntohl(n32);
-
-        /* get data */
-        if (len == -1)
-        {
-            slot->tts_values[i] = (Datum) 0;
-            slot->tts_isnull[i] = true;
-        }
-        else if (len == -2)
-        {
-            /* composite type */
-            TupleDesc tupDesc;
-                
-            memcpy(&n32, cur, 4);
-            cur += 4;
-            len = ntohl(n32);
-
-            appendBinaryStringInfo(buffer, cur, len);
-
-            tupDesc = create_tuple_desc(buffer->data, len);
-
-            assign_record_type_typmod(tupDesc);
-
-            resetStringInfo(buffer);
-
-            cur += len;
-
-            memcpy(&n32, cur, 4);
-            cur += 4;
-            len = ntohl(n32);
-
-            appendBinaryStringInfo(buffer, cur, len);
-            cur += len;
-
-            slot->tts_values[i] = InputFunctionCall(slot->tts_attinmeta->attinfuncs + i,
-                                                    buffer->data,
-                                                    slot->tts_attinmeta->attioparams[i],
-                                                    tupDesc->tdtypmod);
-            slot->tts_isnull[i] = false;
-
-            resetStringInfo(buffer);
-
-            if (!attr->attbyval)
-            {
-                Pointer        val = DatumGetPointer(slot->tts_values[i]);
-                Size        data_length;
-                void       *data;
-
-                if (attr->attlen == -1)
-                {
-                    /* varlena */
-                    data_length = VARSIZE_ANY(val);
-                }
-                else if (attr->attlen == -2)
-                {
-                    /* cstring */
-                    data_length = strlen(val) + 1;
-                }
-                else
-                {
-                    /* fixed-length pass-by-reference */
-                    data_length = attr->attlen;
-                }
-                data = MemoryContextAlloc(slot->tts_drowcxt, data_length);
-                memcpy(data, val, data_length);
-
-                pfree(val);
-
-                slot->tts_values[i] = PointerGetDatum(data);
-            }
-        }
-        else
-        {
-            appendBinaryStringInfo(buffer, cur, len);
-            cur += len;
-
-            slot->tts_values[i] = InputFunctionCall(slot->tts_attinmeta->attinfuncs + i,
-                                                    buffer->data,
-                                                    slot->tts_attinmeta->attioparams[i],
-                                                    slot->tts_attinmeta->atttypmods[i]);
-            slot->tts_isnull[i] = false;
-
-            resetStringInfo(buffer);
-
-            /*
-             * The input function was executed in caller's memory context,
-             * because it may be allocating working memory, and caller may
-             * want to clean it up.
-             * However returned Datums need to be in the special context, so
-             * if attribute is pass-by-reference, copy it.
-             */
-            if (!attr->attbyval)
-            {
-                Pointer        val = DatumGetPointer(slot->tts_values[i]);
-                Size        data_length;
-                void       *data;
-
-                if (attr->attlen == -1)
-                {
-                    /* varlena */
-                    data_length = VARSIZE_ANY(val);
-                }
-                else if (attr->attlen == -2)
-                {
-                    /* cstring */
-                    data_length = strlen(val) + 1;
-                }
-                else
-                {
-                    /* fixed-length pass-by-reference */
-                    data_length = attr->attlen;
-                }
-                data = MemoryContextAlloc(slot->tts_drowcxt, data_length);
-                memcpy(data, val, data_length);
-
-                pfree(val);
-
-                slot->tts_values[i] = PointerGetDatum(data);
-            }
-        }
-    }
-    pfree(buffer->data);
-    pfree(buffer);
-
-    slot->tts_nvalid = natts;
-}
-#endif /* POLARDB_X */
 
 /*
  * slot_getattr
@@ -1753,15 +1542,6 @@ slot_getattr(TupleTableSlot *slot, int attnum, bool *isnull)
 		return (Datum) 0;
 	}
 
-#ifdef POLARDB_X
-    /* If it is a data row tuple extract all and return requested */
-    if (slot->tts_datarow)
-    {
-        slot_deform_datarow(slot);
-        *isnull = slot->tts_isnull[attnum - 1];
-        return slot->tts_values[attnum - 1];
-    }
-#endif
 	/*
 	 * otherwise we had better have a physical tuple (tts_nvalid should equal
 	 * natts in all virtual-tuple cases)
@@ -1830,14 +1610,6 @@ slot_getallattrs(TupleTableSlot *slot)
 	if (slot->tts_nvalid == tdesc_natts)
 		return;
 
-#ifdef POLARDB_X
-    /* Handle the DataRow tuple case */
-    if (slot->tts_datarow)
-    {
-        slot_deform_datarow(slot);
-        return;
-    }
-#endif
 	/*
 	 * otherwise we had better have a physical tuple (tts_nvalid should equal
 	 * natts in all virtual-tuple cases)
@@ -1881,14 +1653,6 @@ slot_getsomeattrs(TupleTableSlot *slot, int attnum)
 	if (slot->tts_nvalid >= attnum)
 		return;
 
-#ifdef POLARDB_X
-    /* Handle the DataRow tuple case */
-    if (slot->tts_datarow)
-    {
-        slot_deform_datarow(slot);
-        return;
-    }
-#endif
 	/* Check for caller error */
 	if (attnum <= 0 || attnum > slot->tts_tupleDescriptor->natts)
 		elog(ERROR, "invalid attribute number %d", attnum);
@@ -1956,14 +1720,6 @@ slot_attisnull(TupleTableSlot *slot, int attnum)
 	if (attnum > tupleDesc->natts)
 		return true;
 
-#ifdef POLARDB_X
-    /* If it is a data row tuple extract all and return requested */
-    if (slot->tts_datarow)
-    {
-        slot_deform_datarow(slot);
-        return slot->tts_isnull[attnum - 1];
-    }
-#endif
 	/*
 	 * otherwise we had better have a physical tuple (tts_nvalid should equal
 	 * natts in all virtual-tuple cases)

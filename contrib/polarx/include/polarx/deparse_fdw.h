@@ -3,9 +3,10 @@
  * deparse_fdw.h
  *		Declarations for deparse_fdw.c
  *
+ * Copyright (c) 2021, Alibaba Group Holding Limited
+ * Licensed under the Apache License, Version 2.0 (the "License");
  * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
- * Copyright (c) 2020, Apache License Version 2.0
  *
  * IDENTIFICATION
  *        contrib/polarx/include/polarx/deparse_fdw.h

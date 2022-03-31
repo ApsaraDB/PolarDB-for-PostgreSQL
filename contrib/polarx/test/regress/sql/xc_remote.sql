@@ -9,9 +9,9 @@ CREATE FUNCTION func_volatile (int) RETURNS int AS $$ SELECT $1 $$ LANGUAGE SQL 
 CREATE FUNCTION func_immutable (int) RETURNS int AS $$ SELECT $1 $$ LANGUAGE SQL IMMUTABLE;
 
 -- Test for remote DML on different tables
-CREATE TABLE rel_rep (a int, b int) DISTRIBUTE BY REPLICATION;
-CREATE TABLE rel_hash (a int, b int) DISTRIBUTE BY HASH (a);
-CREATE TABLE rel_rr (a int, b int) DISTRIBUTE BY ROUNDROBIN;
+CREATE TABLE rel_rep (a int, b int) with(dist_type=replication);
+CREATE TABLE rel_hash (a int, b int) with(dist_type=hash, dist_col=a);
+CREATE TABLE rel_rr (a int, b int) with(dist_type=roundrobin);
 CREATE SEQUENCE seqtest START 10;
 CREATE SEQUENCE seqtest2 START 100;
 
@@ -58,7 +58,7 @@ DROP TABLE rel_rr;
 
 -- UPDATE cases for replicated table
 -- Plain case, change it completely
-CREATE TABLE rel_rep (a int, b timestamp DEFAULT NULL, c boolean DEFAULT NULL) DISTRIBUTE BY REPLICATION;
+CREATE TABLE rel_rep (a int, b timestamp DEFAULT NULL, c boolean DEFAULT NULL) with(dist_type=replication);
 CREATE SEQUENCE seqtest3 START 1;
 INSERT INTO rel_rep VALUES (1),(2),(3),(4),(5);
 UPDATE rel_rep SET a = nextval('seqtest3'), b = now(), c = false;
@@ -80,7 +80,7 @@ DROP SEQUENCE seqtest3;
 
 -- UPDATE cases for roundrobin table
 -- Plain cases change it completely
-CREATE TABLE rel_rr (a int, b timestamp DEFAULT NULL, c boolean DEFAULT NULL) DISTRIBUTE BY ROUNDROBIN;
+CREATE TABLE rel_rr (a int, b timestamp DEFAULT NULL, c boolean DEFAULT NULL) with(dist_type=roundrobin);
 CREATE SEQUENCE seqtest4 START 1;
 INSERT INTO rel_rr VALUES (1),(2),(3),(4),(5);
 UPDATE rel_rr SET a = nextval('seqtest4'), b = now(), c = false;
@@ -102,7 +102,7 @@ DROP SEQUENCE seqtest4;
 
 -- UPDATE cases for hash table
 -- Hash tables cannot be updated on distribution keys so insert fresh rows
-CREATE TABLE rel_hash (a int, b timestamp DEFAULT now(), c boolean DEFAULT false) DISTRIBUTE BY HASH(a);
+CREATE TABLE rel_hash (a int, b timestamp DEFAULT now(), c boolean DEFAULT false) with(dist_type=hash, dist_col=a);
 CREATE SEQUENCE seqtest5 START 1;
 INSERT INTO rel_hash VALUES (nextval('seqtest5'));
 INSERT INTO rel_hash VALUES (nextval('seqtest5'));

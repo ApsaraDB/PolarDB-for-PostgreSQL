@@ -39,7 +39,7 @@
 #define ATOMICS_H
 
 #ifdef FRONTEND
-//#error "atomics.h may not be included from frontend code"
+#error "atomics.h may not be included from frontend code"
 #endif
 
 #define INSIDE_ATOMICS_H

@@ -9,7 +9,7 @@ CREATE TABLE xl_dcm (
     product_id INT8 PRIMARY KEY,
     name text,
     price numeric
-) DISTRIBUTE BY MODULO (product_id);
+) with(dist_type=modulo, dist_col=product_id);
 
 --integer
 CREATE TABLE xl_dcm0 (
@@ -17,7 +17,7 @@ CREATE TABLE xl_dcm0 (
     product_id integer PRIMARY KEY,
     name text,
     price numeric
-) DISTRIBUTE BY MODULO (product_id);
+) with(dist_type=modulo, dist_col=product_id);
 
 
 --INT2, 
@@ -28,7 +28,7 @@ CREATE TABLE xl_dcm1 (
     product_id INT2 PRIMARY KEY,
     name text,
     price numeric
-) DISTRIBUTE BY MODULO (product_id);
+) with(dist_type=modulo, dist_col=product_id);
 
 --OID, 
 CREATE TABLE xl_dcm2 (
@@ -36,7 +36,7 @@ CREATE TABLE xl_dcm2 (
     product_id OID PRIMARY KEY,
     name text,
     price numeric
-) DISTRIBUTE BY MODULO (product_id);
+) with(dist_type=modulo, dist_col=product_id);
 
 --INT4, 
 CREATE TABLE xl_dcm3 (
@@ -44,7 +44,7 @@ CREATE TABLE xl_dcm3 (
     product_id INT4 PRIMARY KEY,
     name text,
     price numeric
-) DISTRIBUTE BY MODULO (product_id);
+) with(dist_type=modulo, dist_col=product_id);
 
 --BOOL, 
 
@@ -53,7 +53,7 @@ CREATE TABLE xl_dcm4 (
     is_available BOOL PRIMARY KEY,
     name text,
     price numeric
-) DISTRIBUTE BY MODULO (is_available);
+) with(dist_type=modulo, dist_col=is_available);
 
 --INT2VECTOR, 
 CREATE TABLE xl_dcm5 (
@@ -62,7 +62,7 @@ CREATE TABLE xl_dcm5 (
     sub_product_ids INT2VECTOR PRIMARY KEY, 
     name text,
     price numeric
-) DISTRIBUTE BY MODULO (sub_product_ids);
+) with(dist_type=modulo, dist_col=sub_product_ids);
 
 --OIDVECTOR, 
 CREATE TABLE xl_dcm6 (
@@ -71,7 +71,7 @@ CREATE TABLE xl_dcm6 (
     sub_product_ids OIDVECTOR PRIMARY KEY, 
     name text,
     price numeric
-) DISTRIBUTE BY MODULO (sub_product_ids);
+) with(dist_type=modulo, dist_col=sub_product_ids);
 
 --CHAR, 
 CREATE TABLE xl_dcm7 (
@@ -79,7 +79,7 @@ CREATE TABLE xl_dcm7 (
     product_group CHAR PRIMARY KEY,
     name text,
     price numeric
-) DISTRIBUTE BY MODULO (product_group);
+) with(dist_type=modulo, dist_col=product_group);
 
 --NAME, 
 CREATE TABLE xl_dcm8 (
@@ -87,7 +87,7 @@ CREATE TABLE xl_dcm8 (
     product_name NAME PRIMARY KEY,
     name text,
     price numeric
-) DISTRIBUTE BY MODULO (product_name);
+) with(dist_type=modulo, dist_col=product_name);
 
 --TEXT, 
 CREATE TABLE xl_dcm9 (
@@ -95,7 +95,7 @@ CREATE TABLE xl_dcm9 (
     product_name TEXT PRIMARY KEY,
     name text,
     price numeric
-) DISTRIBUTE BY MODULO (product_name);
+) with(dist_type=modulo, dist_col=product_name);
 
 
 --BPCHAR - blank padded char, 
@@ -104,7 +104,7 @@ CREATE TABLE xl_dcm10 (
     product_group BPCHAR PRIMARY KEY,
     name text,
     price numeric
-) DISTRIBUTE BY MODULO (product_group);
+) with(dist_type=modulo, dist_col=product_group);
 
 --BYTEA - variable length binary string, 
 CREATE TABLE xl_dcm11 (
@@ -112,7 +112,7 @@ CREATE TABLE xl_dcm11 (
     product_group BYTEA PRIMARY KEY,
     name text,
     price numeric
-) DISTRIBUTE BY MODULO (product_group);
+) with(dist_type=modulo, dist_col=product_group);
 
 --VARCHAR, 
 CREATE TABLE xl_dcm12 (
@@ -120,7 +120,7 @@ CREATE TABLE xl_dcm12 (
     product_group VARCHAR PRIMARY KEY,
     name text,
     price numeric
-) DISTRIBUTE BY MODULO (product_group);
+) with(dist_type=modulo, dist_col=product_group);
 
 --NUMERIC, 
 CREATE TABLE xl_dcm15 (
@@ -128,7 +128,7 @@ CREATE TABLE xl_dcm15 (
     product_id NUMERIC PRIMARY KEY,
     name text,
     price numeric
-) DISTRIBUTE BY MODULO (product_id);
+) with(dist_type=modulo, dist_col=product_id);
 
 --MONEY - String datatype, 
 CREATE TABLE xl_dcm16 (
@@ -136,7 +136,7 @@ CREATE TABLE xl_dcm16 (
     product_id NUMERIC ,
     name MONEY PRIMARY KEY,
     price numeric
-) DISTRIBUTE BY MODULO (name);
+) with(dist_type=modulo, dist_col=name);
 
 --ABSTIME, 
 CREATE TABLE xl_dcm17 (
@@ -144,7 +144,7 @@ CREATE TABLE xl_dcm17 (
     product_id NUMERIC ,
     purchase_date ABSTIME PRIMARY KEY,
     price numeric
-) DISTRIBUTE BY MODULO (purchase_date);
+) with(dist_type=modulo, dist_col=purchase_date);
 
 --RELTIME, 
 CREATE TABLE xl_dcm18 (
@@ -153,7 +153,7 @@ CREATE TABLE xl_dcm18 (
     name MONEY,
     purchase_date RELTIME PRIMARY KEY,
     price numeric
-) DISTRIBUTE BY MODULO (purchase_date);
+) with(dist_type=modulo, dist_col=purchase_date);
 
 
 --DATE, 
@@ -163,7 +163,7 @@ CREATE TABLE xl_dcm19 (
     name MONEY,
     purchase_date DATE PRIMARY KEY,
     price numeric
-) DISTRIBUTE BY MODULO (purchase_date);
+) with(dist_type=modulo, dist_col=purchase_date);
 
 --TIME, 
 CREATE TABLE xl_dcm20 (
@@ -172,7 +172,7 @@ CREATE TABLE xl_dcm20 (
     name MONEY,
     purchase_date TIME PRIMARY KEY,
     price numeric
-) DISTRIBUTE BY MODULO (purchase_date);
+) with(dist_type=modulo, dist_col=purchase_date);
 
 --TIMESTAMP,
 
@@ -182,7 +182,7 @@ CREATE TABLE xl_dcm21 (
     name MONEY,
     purchase_date TIMESTAMP PRIMARY KEY,
     price numeric
-) DISTRIBUTE BY MODULO (purchase_date); 
+) with(dist_type=modulo, dist_col=purchase_date); 
 
 --TIMESTAMPTZ, 
 
@@ -192,7 +192,7 @@ CREATE TABLE xl_dcm22 (
     name MONEY,
     purchase_date TIMESTAMPTZ PRIMARY KEY,
     price numeric
-) DISTRIBUTE BY MODULO (purchase_date); 
+) with(dist_type=modulo, dist_col=purchase_date); 
 
 --INTERVAL, 
 CREATE TABLE xl_dcm23 (
@@ -201,7 +201,7 @@ CREATE TABLE xl_dcm23 (
     name MONEY,
     purchase_date INTERVAL PRIMARY KEY,
     price numeric
-) DISTRIBUTE BY MODULO (purchase_date); 
+) with(dist_type=modulo, dist_col=purchase_date); 
 
 --and TIMETZ - time along with time zone
 CREATE TABLE xl_dcm24 (
@@ -210,7 +210,7 @@ CREATE TABLE xl_dcm24 (
     name MONEY,
     purchase_date TIMETZ PRIMARY KEY,
     price numeric
-) DISTRIBUTE BY MODULO (purchase_date); 
+) with(dist_type=modulo, dist_col=purchase_date); 
 
 --Distribution strategy can specify on a single column
 CREATE TABLE xl_dcm25 (
@@ -220,7 +220,7 @@ CREATE TABLE xl_dcm25 (
     purchase_date TIMETZ,
     price numeric,
     primary key(product_no, product_id)
-) DISTRIBUTE BY MODULO (product_no, product_id); --fail
+) WITH (dist_type=modulo, dist_col='product_no, product_id'); --fail
 
 -- Distribution column value cannot be updated
 -- default distributed on HASH by primary key column, i.e. city
@@ -230,7 +230,7 @@ CREATE TABLE xl_dcm_weather (
     temp_hi         int,           -- high temperature
     prcp            real,          -- precipitation
     date            date
-) DISTRIBUTE BY MODULO (city_no);
+) with(dist_type=modulo, dist_col=city_no);
 
 INSERT INTO xl_dcm_weather VALUES (55, 46, 50, 0.25, '1994-11-27');
 

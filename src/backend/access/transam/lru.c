@@ -8,7 +8,7 @@
  * using exclusive locks as far as possible.
  * For example: LruReadPage_ReadOnly_Locked() for CTSLogSetPageStatus to 
  * set/get commit timestamp on LRU page with only shared lock being held which provide high concurrency.
- * Written by Junbin Kang, 2020.06.19
+ * Written by  , 2020.06.19
  *
  * Portions Copyright (c) 2020, Alibaba Group Holding Limited
  * Portions Copyright (C) 2019 THL A29 Limited, a Tencent company.  All rights reserved.
@@ -790,7 +790,6 @@ LruReadPage_ReadOnly(LruCtl ctl, int partitionno, int pageno, TransactionId xid)
             return slotno;
         }
     }
-    //elog(DEBUG10, "not found pageno %d partition %d.", pageno, partitionno);
     /* No luck, so switch to normal exclusive lock and do regular read */
     LWLockRelease(newPartitionLock);
     LWLockAcquire(newPartitionLock, LW_EXCLUSIVE);
@@ -876,7 +875,6 @@ LruReadPage_ReadOnly_Locked(LruCtl ctl, int partitionno, int pageno,  bool write
             return slotno;
         }
     }
-    //elog(DEBUG10, "not found pageno %d partition %d.", pageno, partitionno);
     /* No luck, so switch to normal exclusive lock and do regular read */
    
     

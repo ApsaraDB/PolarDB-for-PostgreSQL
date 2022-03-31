@@ -43,7 +43,7 @@ create unique index WSlot_name on WSlot using btree (slotname bpchar_ops);
 create table PField (
     name	text,
     comment	text
-) distribute by replication;
+) with(dist_type=replication);
 
 create unique index PField_name on PField using btree (name text_ops);
 
@@ -1443,7 +1443,7 @@ SELECT recursion_test(4,3);
 --
 -- Test the FOUND magic variable
 --
-CREATE TABLE found_test_tbl (a int) distribute by roundrobin;
+CREATE TABLE found_test_tbl (a int) with(dist_type=roundrobin);
 
 create function test_found()
   returns boolean as '
@@ -4254,9 +4254,9 @@ BEGIN
         TRUNCATE TABLE RealTable;
 
         CREATE TABLE IF NOT EXISTS TmpBar(NodeId int)
-                DISTRIBUTE BY REPLICATION;
+                with(dist_type=replication);
         CREATE TABLE IF NOT EXISTS TmpFoo(TempId int)
-                DISTRIBUTE BY REPLICATION;
+                with(dist_type=replication);
 END ;
 $$ LANGUAGE plpgsql;
 
@@ -4300,9 +4300,9 @@ BEGIN
         TRUNCATE TABLE RealTable;
 
         CREATE TEMPORARY TABLE IF NOT EXISTS TmpBar(NodeId int)
-                DISTRIBUTE BY REPLICATION;
+                with(dist_type=replication);
         CREATE TEMPORARY TABLE IF NOT EXISTS TmpFoo(TempId int)
-                DISTRIBUTE BY REPLICATION;
+                with(dist_type=replication);
 
         INSERT INTO RealTable(ProductId, ScenarioId)
                 SELECT generate_series(1,1000) as ProductId, (random() * 100)::int as ScenarioId;

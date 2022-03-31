@@ -5,9 +5,10 @@
  *        to remote polarx nodes
  *
  *
+ * Copyright (c) 2021, Alibaba Group Holding Limited
+ * Licensed under the Apache License, Version 2.0 (the "License");
  * Portions Copyright (c) 1996-2012 PostgreSQL Global Development Group
  * Portions Copyright (c) 2010-2012 Postgres-XC Development Group
- * Copyright (c) 2020, Apache License Version 2.0*
  *
  * IDENTIFICATION
  *        contrib/polarx/include/plan/pgxcship.h

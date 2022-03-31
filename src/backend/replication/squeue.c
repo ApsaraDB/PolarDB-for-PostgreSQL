@@ -38,9 +38,9 @@
 #include "replication/squeue.h"
 
 
-extern void ThreadSemaRecInit(ThreadSemaRec * sema, int32 init);
-extern void ThreadSemaRecDown(ThreadSemaRec * sema);
-extern void ThreadSemaRecUp(ThreadSemaRec * sema);
+extern void ThreadSemaRecInitRec(ThreadSemaRec * sema, int32 init);
+extern void ThreadSemaRecDownRec(ThreadSemaRec * sema);
+extern void ThreadSemaRecUpRec(ThreadSemaRec * sema);
 
 typedef slock_t pg_spin_lock;
 
@@ -67,7 +67,7 @@ ThreadMutexUnlockRec(pthread_mutex_t *mutex)
 }
 
 void
-ThreadSemaRecInit(ThreadSemaRec * sema, int32 init)
+ThreadSemaRecInitRec(ThreadSemaRec * sema, int32 init)
 {
 	if (sema)
 	{
@@ -78,7 +78,7 @@ ThreadSemaRecInit(ThreadSemaRec * sema, int32 init)
 }
 
 void
-ThreadSemaRecDown(ThreadSemaRec * sema)
+ThreadSemaRecDownRec(ThreadSemaRec * sema)
 {
 	if (sema)
 	{
@@ -96,7 +96,7 @@ ThreadSemaRecDown(ThreadSemaRec * sema)
 }
 
 void
-ThreadSemaRecUp(ThreadSemaRec * sema)
+ThreadSemaRecUpRec(ThreadSemaRec * sema)
 {
 	if (sema)
 	{

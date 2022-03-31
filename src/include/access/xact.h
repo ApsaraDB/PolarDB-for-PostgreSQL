@@ -34,6 +34,9 @@
  */
 #define GIDSIZE 200
 #ifdef POLARDB_X
+#define PGXC_NODENAME_LENGTH 64
+#define POLARX_MAX_COORDINATOR_NUMBER 256
+#define POLARX_MAX_DATANODE_NUMBER 256
 /*
  * TWOPHASE_PARTICIPATE_NODE_SIZE safe value should be: PGXC_NODENAME_LENGTH * (POLARX_MAX_COORDINATOR_NUMBER + POLARX_MAX_DATANODE_NUMBER)
  * Share memory cost will be TWOPHASE_PARTICIPATE_NODE_SIZE * max_prepared_xacts;
@@ -65,11 +68,6 @@ extern PGDLLIMPORT int XactIsoLevel;
 /* Xact read-only state */
 extern bool DefaultXactReadOnly;
 extern bool XactReadOnly;
-#ifdef POLARDB_X
-extern char *savePrepareGID;
-extern char *saveNodeString;
-extern bool	XactLocalNodePrepared;
-#endif
 /*
  * Xact is deferrable -- only meaningful (currently) for read only
  * SERIALIZABLE transactions
@@ -466,52 +464,12 @@ extern void ExitParallelMode(void);
 extern bool IsInParallelMode(void);
 
 #ifdef POLARDB_X
-extern bool IsTransactionIdle(void);
-extern void AtEOXact_Twophase(void);
-
 extern void SaveReceivedCommandId(CommandId cid);
 extern void SetReceivedCommandId(CommandId cid);
 extern CommandId GetReceivedCommandId(void);
 extern void ReportCommandIdChange(CommandId cid);
 extern bool IsSendCommandId(void);
 extern void SetSendCommandId(bool status);
-
-extern const char* LoadPrepareGID(void);
-extern void StorePrepareGID(const char *prepareGID);
-#ifdef POLARDB_X
-extern void PrepareStartNode(void);
-extern bool IsTransactionStatePrepared(void);
-#endif
-
-#ifdef POLARDBX_TWO_PHASE_TESTS
-typedef enum
-{
-	ERROR_GET_PREPARE_TIMESTAMP_FAIL = 1, // only tso.
-	ERROR_SEND_PREPARE_TIMESTAMP_FAIL, // only tso.
-	ERROR_SEND_PARTICIPATE_NODE_FAIL,
-	ERROR_SEND_PREPARE_CMD_FAIL,
-	ERROR_RECV_PREPARE_CMD_RESPONSE_FAIL, // 5
-	ERROR_RECV_PREPARE_CMD_RESPONSE_PENDING,
-	ERROR_GET_COMMIT_TIMESTAMP_FAIL,
-	ERROR_SEND_COMMIT_PREPARED_FAIL, // 8
-	ERROR_RECV_COMMIT_PREPARED_RESPONSE_FAIL,
-	ERROR_RECV_COMMIT_PREPARED_RESPONSE_PENDING, //10
-	ERROR_SEND_ROLLBACK_PREPARED_TXN_FAIL, // 11
-	ERROR_Butty
-}TwophaseTestCase;
-
-typedef enum
-{
-	NODE_EXCEPTION_NORMAL = 0, // node is normal. not in exception
-	NODE_EXCEPTION_CRASH = 1
-}TwophaseTestNodeException;
-
-extern int twophase_exception_case;
-extern int twophase_exception_node_exception;
-
-#endif
-
-
 
 #endif/*POLARDBX*/
 

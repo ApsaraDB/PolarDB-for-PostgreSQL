@@ -2,7 +2,7 @@
 --Sometimes plans get pushed down to more nodes than they really need to.
 
 
-CREATE TABLE xl_pp (a bigint, b int) DISTRIBUTE BY HASH(a);
+CREATE TABLE xl_pp (a bigint, b int) with(dist_type=hash, dist_col=a);
 
 INSERT INTO xl_pp SELECT generate_series(1,100), 20;
 
@@ -30,7 +30,7 @@ EXPLAIN VERBOSE DELETE FROM xl_pp where a=200::bigint;
 
 --Testing with MODULO distribution
 
-CREATE TABLE xl_ppm (a INT2, b int) DISTRIBUTE BY MODULO(a);
+CREATE TABLE xl_ppm (a INT2, b int) with(dist_type=modulo, dist_col=a);
 
 INSERT INTO xl_ppm SELECT generate_series(1,100), 20;
 

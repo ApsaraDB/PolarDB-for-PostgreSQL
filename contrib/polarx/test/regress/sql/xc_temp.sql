@@ -3,12 +3,12 @@
 --
 
 -- Create TEMPORARY and normal tables
-CREATE TABLE table_rep (a int, b_rep char(1)) DISTRIBUTE BY REPLICATION;
-CREATE TABLE table_hash (a int, b_hash char(1)) DISTRIBUTE BY HASH(a);
-CREATE TABLE table_rb (a int, b_rb char(1)) DISTRIBUTE BY ROUNDROBIN;
-CREATE TEMP TABLE temptable_rep (a int, b_tprep char(1)) DISTRIBUTE BY REPLICATION;
-CREATE TEMP TABLE temptable_hash (a int, b_tphash char(1)) DISTRIBUTE BY HASH(a);
-CREATE TEMP TABLE temptable_rb (a int, b_tprb char(1)) DISTRIBUTE BY ROUNDROBIN;
+CREATE TABLE table_rep (a int, b_rep char(1)) with(dist_type=replication);
+CREATE TABLE table_hash (a int, b_hash char(1)) with(dist_type=hash, dist_col=a);
+CREATE TABLE table_rb (a int, b_rb char(1)) with(dist_type=roundrobin);
+CREATE TEMP TABLE temptable_rep (a int, b_tprep char(1)) with(dist_type=replication);
+CREATE TEMP TABLE temptable_hash (a int, b_tphash char(1)) with(dist_type=hash, dist_col=a);
+CREATE TEMP TABLE temptable_rb (a int, b_tprb char(1)) with(dist_type=roundrobin);
 INSERT INTO table_rep VALUES (1, 'a');
 INSERT INTO table_rep VALUES (2, 'b');
 INSERT INTO table_rep VALUES (3, 'c');

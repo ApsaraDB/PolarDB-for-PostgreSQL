@@ -3,10 +3,11 @@
  * pgxcship.c
  *        Routines to evaluate expression shippability to remote nodes
  *
+ * Copyright (c) 2021, Alibaba Group Holding Limited
+ * Licensed under the Apache License, Version 2.0 (the "License");
  * Portions Copyright (c) 1996-2012, PostgreSQL Global Development Group
  * Portions Copyright (c) 2010-2012, Postgres-XC Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
- * Copyright (c) 2020, Apache License Version 2.0
  *
  *
  * IDENTIFICATION
@@ -147,7 +148,9 @@ static bool pgxc_query_contains_only_pg_catalog(List *rtable);
 static bool pgxc_is_var_distrib_column(Var *var, List *rtable);
 static bool pgxc_distinct_has_distcol(Query *query);
 static void merge_sublink_en_nodes(Shippability_context *sc_context, ExecNodes  *sublink_en);
+#if 0
 static bool exec_node_is_equal(ExecNodes *en1, ExecNodes *en2);
+#endif
 static bool pgxc_targetlist_has_distcol(Query *query);
 static ExecNodes *pgxc_FQS_find_datanodes_recurse(Node *node, Query *query,
                                             Bitmapset **relids,
@@ -162,7 +165,9 @@ static ExecNodes *GetExecNodesByQuals(Oid reloid, RelationLocInfo *rel_loc_info,
 
 static bool polarx_is_expr_shippable(Expr *node, bool *has_aggs);
 
+#ifndef _PG_REGRESS_
 static Node *get_var_from_arg(Node *arg);
+#endif
 /*
  * Set the given reason in Shippability_context indicating why the query can not be
  * shipped directly to remote nodes.
@@ -267,7 +272,7 @@ pgxc_FQS_datanodes_for_rtr(Index varno, Query *query, find_datanodes_context *co
 /*
  * We should extract all quals from join exprs
  * to restrict query exec nodes.
- * Added by Junbin Kang, 2020.05.21
+ * Added by  , 2020.05.21
  */ 
 
 typedef struct 
@@ -375,7 +380,7 @@ pgxc_FQS_find_datanodes_recurse(Node *node, Query *query, Bitmapset **relids, fi
              * We concat the query->jointree->quals with 
              * all implicit join quals within fromExpr/joinExpr
              * to restrict exec nodes.
-             * Added by Junbin Kang, 2020.05.21
+             * Added by  , 2020.05.21
              */ 
             joinQuals = polardbx_find_join_quals(from_expr);
             context->quals = list_concat(context->quals, joinQuals);
@@ -442,7 +447,7 @@ pgxc_FQS_find_datanodes_recurse(Node *node, Query *query, Bitmapset **relids, fi
                  * then it is not neccessary to check join shippability.
                  * Let pgxc_merge_exec_nodes try to merge two sides.
                  *                 * 
-                 * Added by Junbin Kang, 2020.05.21
+                 * Added by  , 2020.05.21
                  */
                 if (list_length(en->nodeList) == 1 
                     && list_length(result_en->nodeList) == 1)
@@ -507,7 +512,7 @@ pgxc_FQS_find_datanodes_recurse(Node *node, Query *query, Bitmapset **relids, fi
              * If both sides are restricted to the same single node,
              * then it is not neccessary to check join shippability.
              * Let pgxc_merge_exec_nodes try to merge two sides.
-             * Added by Junbin Kang
+             * Added by  
              */
             if (list_length(len->nodeList) == 1 
                 && list_length(ren->nodeList) == 1)
@@ -854,7 +859,7 @@ retry_pools:
     /* 
      * For multiple tables, quals are also need to be evaluated to
      * restrict the exec nodes.
-     * Added by Junbin Kang
+     * Added by  
      */
 
     rel_exec_nodes = GetExecNodesByQuals(rte->relid, rel_loc_info, varno,
@@ -968,6 +973,7 @@ pgxc_distinct_has_distcol(Query *query)
     }
     return false;
 }
+#if 0
 static bool
 exec_node_is_equal(ExecNodes *en1, ExecNodes *en2)
 {
@@ -989,6 +995,7 @@ exec_node_is_equal(ExecNodes *en1, ExecNodes *en2)
 
     return true;
 }
+#endif
 
 /*
  * We should carefully handle sublink exec node merging to ship
@@ -1632,7 +1639,7 @@ pgxc_shippability_walker(Node *node, Shippability_context *sc_context)
              *                           WHERE d_w_id = 1 AND d_id = 1
              *                   )
              *           ) AS L;
-             * Written by Junbin Kang
+             * Written by  
              */ 
             if (sc_context->sc_exec_nodes)
                 sc_context->sc_exec_nodes = pgxc_merge_exec_nodes(exec_nodes, sc_context->sc_exec_nodes); 
@@ -2380,7 +2387,7 @@ pgxc_find_dist_equi_nodes(Relids varnos_1,
         /* 
          * For join var reference, we should find its base relation reference
          * to restrict the exec nodes for higher performance.
-         * Added by Junbin Kang at Alibaba, 2020.04.28
+         * Added by   at Alibaba, 2020.04.28
          */
         newvar = var;
         {
@@ -2458,7 +2465,7 @@ pgxc_find_dist_equi_nodes(Relids varnos_1,
 static ExecNodes *
 pgxc_merge_exec_nodes(ExecNodes *en1, ExecNodes *en2)
 {// #lizard forgives
-    ExecNodes    *merged_en = makeNode(ExecNodes);
+    ExecNodes    *merged_en = polarxMakeNode(ExecNodes);
     ExecNodes    *tmp_en;
 
     /* If either of exec_nodes are NULL, return the copy of other one */
@@ -2664,7 +2671,7 @@ pgxc_is_join_shippable(ExecNodes *inner_en, ExecNodes *outer_en, Relids in_relid
             {
                 if (outer_en->restrict_shippable || inner_en->restrict_shippable)
                 {
-                    ExecNodes *merged_en = makeNode(ExecNodes);
+                    ExecNodes *merged_en = polarxMakeNode(ExecNodes);
                     switch (jointype)
                     {
                         case JOIN_INNER:
@@ -2707,7 +2714,7 @@ pgxc_is_join_shippable(ExecNodes *inner_en, ExecNodes *outer_en, Relids in_relid
                                                     (Node *)join_quals, rtables);
                         if (nodelist)
                         {
-                            ExecNodes *merged_en = makeNode(ExecNodes);
+                            ExecNodes *merged_en = polarxMakeNode(ExecNodes);
                             merged_en->nodeList = nodelist;
                             merged_en->baselocatortype = inner_en->baselocatortype;
                             merged_en->restrict_shippable = true;
@@ -2719,7 +2726,7 @@ pgxc_is_join_shippable(ExecNodes *inner_en, ExecNodes *outer_en, Relids in_relid
                                                     (Node *)make_ands_implicit((Expr *)query->jointree->quals), rtables);
                         if (nodelist)
                         {
-                            ExecNodes *merged_en = makeNode(ExecNodes);
+                            ExecNodes *merged_en = polarxMakeNode(ExecNodes);
                             merged_en->nodeList = nodelist;
                             merged_en->baselocatortype = inner_en->baselocatortype;
                             merged_en->restrict_shippable = true;
@@ -2737,7 +2744,7 @@ pgxc_is_join_shippable(ExecNodes *inner_en, ExecNodes *outer_en, Relids in_relid
                                                     (Node *)make_ands_implicit((Expr *)query->jointree->quals), rtables);
                         if (nodelist)
                         {
-                            ExecNodes *merged_en = makeNode(ExecNodes);
+                            ExecNodes *merged_en = polarxMakeNode(ExecNodes);
                             merged_en->nodeList = nodelist;
                             merged_en->baselocatortype = inner_en->baselocatortype;
                             merged_en->restrict_shippable = true;
@@ -2778,7 +2785,7 @@ pgxc_is_join_shippable(ExecNodes *inner_en, ExecNodes *outer_en, Relids in_relid
                                                 (Node *)join_quals, rtables);
                     if (nodelist && !list_difference_int(nodelist, inner_en->nodeList))
                     {
-                        ExecNodes *merged_en = makeNode(ExecNodes);
+                        ExecNodes *merged_en = polarxMakeNode(ExecNodes);
                         merged_en->nodeList = nodelist;
                         merged_en->baselocatortype = outer_en->baselocatortype;
                         merged_en->restrict_shippable = true;
@@ -2793,7 +2800,7 @@ pgxc_is_join_shippable(ExecNodes *inner_en, ExecNodes *outer_en, Relids in_relid
                                                 (Node *)make_ands_implicit((Expr *)query->jointree->quals), rtables);
                     if (nodelist && !list_difference_int(nodelist, inner_en->nodeList))
                     {
-                        ExecNodes *merged_en = makeNode(ExecNodes);
+                        ExecNodes *merged_en = polarxMakeNode(ExecNodes);
                         merged_en->nodeList = nodelist;
                         merged_en->baselocatortype = outer_en->baselocatortype;
                         merged_en->restrict_shippable = true;
@@ -2827,7 +2834,7 @@ pgxc_is_join_shippable(ExecNodes *inner_en, ExecNodes *outer_en, Relids in_relid
                                             (Node *)join_quals, rtables);
                 if (nodelist && !list_difference_int(nodelist, outer_en->nodeList))
                 {
-                    ExecNodes *merged_en = makeNode(ExecNodes);
+                    ExecNodes *merged_en = polarxMakeNode(ExecNodes);
                     merged_en->nodeList = nodelist;
                     merged_en->baselocatortype = inner_en->baselocatortype;
                     merged_en->restrict_shippable = true;
@@ -2839,7 +2846,7 @@ pgxc_is_join_shippable(ExecNodes *inner_en, ExecNodes *outer_en, Relids in_relid
                                             (Node *)make_ands_implicit((Expr *)query->jointree->quals), rtables);
                 if (nodelist && !list_difference_int(nodelist, outer_en->nodeList))
                 {
-                    ExecNodes *merged_en = makeNode(ExecNodes);
+                    ExecNodes *merged_en = polarxMakeNode(ExecNodes);
                     merged_en->nodeList = nodelist;
                     merged_en->baselocatortype = inner_en->baselocatortype;
                     merged_en->restrict_shippable = true;
@@ -3013,6 +3020,7 @@ pgxc_is_rte_subquery_shippable(Node *node, Shippability_context *sc_context)
     }
 }
 
+#ifndef _PG_REGRESS_
 static Node *
 get_var_from_arg(Node *arg)
 {
@@ -3046,6 +3054,7 @@ get_var_from_arg(Node *arg)
 
     return (Node *)var;
 }
+#endif
 
 
 #ifdef POLARDB_X_UPGRADE

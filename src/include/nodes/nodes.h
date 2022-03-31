@@ -140,9 +140,6 @@ typedef enum NodeTag
 	T_SetOpState,
 	T_LockRowsState,
 	T_LimitState,
-#ifdef POLARDB_X
-    T_RemoteQueryState,
-#endif
 
 	/*
 	 * TAGS FOR PRIMITIVE NODES (primnodes.h)
@@ -199,9 +196,6 @@ typedef enum NodeTag
 	T_FromExpr,
 	T_OnConflictExpr,
 	T_IntoClause,
-#ifdef POLARDB_X
-    T_DistributeBy,
-#endif
 
 	/*
 	 * TAGS FOR EXPRESSION STATE NODES (execnodes.h)
@@ -400,10 +394,6 @@ typedef enum NodeTag
 	T_CreateUserMappingStmt,
 	T_AlterUserMappingStmt,
 	T_DropUserMappingStmt,
-#ifdef POLARDB_X
-	T_ExecDirectStmt,
-    T_CleanConnStmt,
-#endif
 	T_AlterTableSpaceOptionsStmt,
 	T_AlterTableMoveAllStmt,
 	T_SecLabelStmt,
@@ -429,18 +419,6 @@ typedef enum NodeTag
 	T_CreateStatsStmt,
 	T_AlterCollationStmt,
 	T_CallStmt,
-#ifdef POLARDB_X
-    /*
-     * TAGS FOR PGXC NODES
-     * (planner.h, locator.h, nodemgr.h, groupmgr.h)
-     */
-
-    T_Distribution,
-    T_ExecNodes,
-    T_SimpleSort,
-    T_RemoteQuery,
-    T_PGXCNodeHandle,
-#endif
 
 	/*
 	 * TAGS FOR PARSE TREE NODES (parsenodes.h)

@@ -267,7 +267,7 @@ drop table syscolconflicttest;
 -- Previous tests all managed to not test any expressions requiring
 -- planner preprocessing ...
 --
-create table insertconflict (a bigint, b bigint) distribute by replication;
+create table insertconflict (a bigint, b bigint) with(dist_type=replication);
 
 create unique index insertconflicti1 on insertconflict(coalesce(a, 0));
 
@@ -433,7 +433,7 @@ DROP TABLE dropcol;
 -- check handling of regular btree constraint along with gist constraint
 
 create table twoconstraints (f1 int unique, f2 box,
-                             exclude using gist(f2 with &&)) distribute by replication;
+                             exclude using gist(f2 with &&)) with(dist_type=replication);
 insert into twoconstraints values(1, '((0,0),(1,1))');
 insert into twoconstraints values(1, '((2,2),(3,3))');  -- fail on f1
 insert into twoconstraints values(2, '((0,0),(1,2))');  -- fail on f2

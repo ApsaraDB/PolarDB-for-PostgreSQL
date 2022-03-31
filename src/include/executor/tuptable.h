@@ -135,12 +135,6 @@ typedef struct TupleTableSlot
 #define FIELDNO_TUPLETABLESLOT_OFF 14
 	uint32		tts_off;		/* saved state for slot_deform_tuple */
 	bool		tts_fixedTupleDescriptor;	/* descriptor can't be changed */
-#ifdef POLARDB_X
-    RemoteDataRow tts_datarow;     /* Tuple data in DataRow format */
-    MemoryContext tts_drowcxt;     /* Context to store deformed */
-    bool        tts_shouldFreeRow;    /* should pfree tts_dataRow? */
-    struct AttInMetadata *tts_attinmeta;    /* store here info to extract values from the DataRow */
-#endif
 } TupleTableSlot;
 
 #define TTS_HAS_PHYSICAL_TUPLE(slot)  \
@@ -166,13 +160,6 @@ extern TupleTableSlot *ExecStoreTuple(HeapTuple tuple,
 extern TupleTableSlot *ExecStoreMinimalTuple(MinimalTuple mtup,
 					  TupleTableSlot *slot,
 					  bool shouldFree);
-#ifdef POLARDB_X
-extern TupleTableSlot *ExecStoreDataRowTuple(RemoteDataRow datarow,
-                      TupleTableSlot *slot,
-                      bool shouldFree);
-extern RemoteDataRow ExecCopySlotDatarow(TupleTableSlot *slot,
-                    MemoryContext tmpcxt);
-#endif
 extern TupleTableSlot *ExecClearTuple(TupleTableSlot *slot);
 extern TupleTableSlot *ExecStoreVirtualTuple(TupleTableSlot *slot);
 extern TupleTableSlot *ExecStoreAllNullTuple(TupleTableSlot *slot);

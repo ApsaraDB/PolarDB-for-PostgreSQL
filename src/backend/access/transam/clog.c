@@ -539,7 +539,7 @@ CLogGetStatus(TransactionId xid, XLogRecPtr *lsn)
  * to disk. Under such situation, the xlog records of the
  * async transactions have been durable.
  *
- * Written by Junbin Kang, 2020-09-03
+ * Written by  , 2020-09-03
  */
 XLogRecPtr
 CLogGetLSN(TransactionId xid)

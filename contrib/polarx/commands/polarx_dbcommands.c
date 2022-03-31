@@ -3,8 +3,8 @@
  *   utitily functions in polarx for Database management commands
  *   (create/drop database).
  *
- * Copyright (c) 2020, Alibaba Inc. and/or its affiliates
- * Copyright (c) 2020, Apache License Version 2.0*
+ * Copyright (c) 2021, Alibaba Group Holding Limited
+ * Licensed under the Apache License, Version 2.0 (the "License");
  *
  * IDENTIFICATION
  *        contrib/polarx/commands/polarx_dbcommands.c

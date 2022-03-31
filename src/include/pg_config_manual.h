@@ -351,4 +351,7 @@
  */
 #define ENABLE_ONLINE_MIGRATION
 
-#define POLARDBX_TWO_PHASE_TESTS
+//#define POLARDBX_TWO_PHASE_TESTS
+/* If ENABLE_POLARDBX_HLC is defined, plugin will enable enhanced transaction support on distributed database. */
+#define ENABLE_POLARDBX_HLC
+#define PATCH_ENABLE_DISTRIBUTED_TRANSACTION

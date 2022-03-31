@@ -1851,7 +1851,7 @@ delete from xx1 using (select * from int4_tbl where f1 = xx1.x1) ss;
 delete from xx1 using lateral (select * from int4_tbl where f1 = x1) ss;
 
 -- demonstrate problem with extrememly slow join
-CREATE TABLE testr (a int, b int) DISTRIBUTE BY REPLICATION;
+CREATE TABLE testr (a int, b int) with(dist_type=replication);
 INSERT INTO testr SELECT generate_series(1, 10000), generate_series(5001, 15000);
 CREATE TABLE testh (a int, b int);
 INSERT INTO testh SELECT generate_series(1, 10000), generate_series(8001, 18000);
@@ -1866,7 +1866,7 @@ SELECT count(*) FROM testr WHERE NOT EXISTS (SELECT * FROM testh WHERE testr.b =
 
 begin;
 
-create table fkest (a int, b int, c int unique, primary key(a,b)) distribute by replication;
+create table fkest (a int, b int, c int unique, primary key(a,b)) with(dist_type=replication);
 create table fkest1 (a int, b int, primary key(a,b));
 
 insert into fkest select x/10, x%10, x from generate_series(1,2000) x;

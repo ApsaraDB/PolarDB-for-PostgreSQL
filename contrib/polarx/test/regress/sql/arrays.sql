@@ -387,7 +387,7 @@ SELECT -1 != ALL(ARRAY(SELECT NULLIF(g.i, 900) FROM generate_series(1,1000) g(i)
 -- should use roundrobin distribution if nothing is specified but roundrobin
 -- distribution cannot be safely used to check constraints on remote nodes.
 -- When global constraints are supported, this replication distribution should be removed.
-create temp table arr_tbl (f1 int[] unique) distribute by replication;
+create temp table arr_tbl (f1 int[] unique) with(dist_type=replication);
 insert into arr_tbl values ('{1,2,3}');
 insert into arr_tbl values ('{1,2}');
 -- failure expected:

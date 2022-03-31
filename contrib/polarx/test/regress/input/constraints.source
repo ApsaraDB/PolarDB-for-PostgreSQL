@@ -318,7 +318,7 @@ DROP TABLE UNIQUE_TBL;
 -- Deferrable unique constraints
 --
 -- PGXCTODO : Feature ID 3520518
-CREATE TABLE unique_tbl (i int UNIQUE DEFERRABLE, t text) DISTRIBUTE BY REPLICATION;
+CREATE TABLE unique_tbl (i int UNIQUE DEFERRABLE, t text) with(dist_type=replication);
 
 INSERT INTO unique_tbl VALUES (0, 'one');
 INSERT INTO unique_tbl VALUES (1, 'two');
@@ -432,7 +432,7 @@ CREATE TABLE circles (
   EXCLUDE USING gist
     (c1 WITH &&, (c2::circle) WITH &&)
     WHERE (circle_center(c1) <> '(0,0)')
-) distribute by replication;
+) with(dist_type=replication);
 
 -- these should succeed because they don't match the index predicate
 INSERT INTO circles VALUES('<(0,0), 5>', '<(0,0), 5>');
@@ -468,7 +468,7 @@ CREATE TABLE deferred_excl (
   f1 int,
   f2 int,
   CONSTRAINT deferred_excl_con EXCLUDE (f1 WITH =) INITIALLY DEFERRED
-) DISTRIBUTE BY REPLICATION;
+) with(dist_type=replication);
 
 INSERT INTO deferred_excl VALUES(1);
 INSERT INTO deferred_excl VALUES(2);

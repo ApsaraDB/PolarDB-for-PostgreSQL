@@ -45,7 +45,6 @@
 #include "do_shell.h"
 #include "utils.h"
 #include "datanode_cmd.h"
-#include "gtm_util.h"
 #include "coord_cmd.h"
 //#include "port.h"
 #include "c.h"
@@ -126,21 +125,6 @@ cmd_t *prepare_initPaxosDNMaster(char *nodeName)
 
     /* Build each datanode's initialize command, add nodename and nodetype when cluster support */
     cmd = cmdInitdb = initCmd(aval(VAR_datanodeMasterServers)[idx]);
-    //snprintf(newCommand(cmdInitdb), MAXLINE,
-    //         "%s %s"
-    //         "rm -rf %s;"
-    //         "mkdir -p %s; PGXC_CTL_SILENT=1 initdb --nodename %s --nodetype datanode %s %s -D %s "
-    //         "--master_gtm_nodename %s --master_gtm_ip %s --master_gtm_port %s",
-    //         remoteDirCheck,
-    //         remoteWalDirCheck,
-    //         aval(VAR_datanodeMasterDirs)[idx], aval(VAR_datanodeMasterDirs)[idx],
-    //         aval(VAR_datanodeNames)[idx],
-    //         wal ? "-X" : "",
-    //         wal ? aval(VAR_datanodeMasterWALDirs)[idx] : "",
-    //         aval(VAR_datanodeMasterDirs)[idx],
-    //         sval(VAR_gtmName),
-    //         sval(VAR_gtmMasterServer),
-    //         sval(VAR_gtmMasterPort));
 
     snprintf(newCommand(cmdInitdb), MAXLINE,
              "%s %s"
@@ -195,15 +179,15 @@ cmd_t *prepare_initPaxosDNMaster(char *nodeName)
     {
         fprintf(f,
             "port = %s\n"
-            "pooler_port = %s\n",
+            "pooler.port = %s\n",
             aval(VAR_datanodePorts)[idx],
             aval(VAR_datanodePoolerPorts)[idx]
             );
         if(isVarYes(VAR_multiCluster) && !is_none(aval(VAR_datanodeMasterCluster)[idx]))
         {
             fprintf(f, 
-                    "pgxc_main_cluster_name = %s\n"
-                    "pgxc_cluster_name = %s\n",
+                    "polarx.main_cluster_name = %s\n"
+                    "polarx.cluster_name = %s\n",
                     sval(VAR_pgxcMainClusterName),
                     aval(VAR_datanodeMasterCluster)[idx]);
         }
@@ -345,9 +329,6 @@ cmd_t *prepare_initDatanodeMaster(char *nodeName)
     int idx;
     int jj;
     cmd_t *cmd, *cmdInitdb, *cmdPgConf, *cmdRecovConf, *cmdPgHba;
-    //char *gtmHost;
-    //char *gtmPort;
-    //int gtmIdx;
     char **fileList = NULL;
     FILE *f;
     char timeStamp[MAXTOKEN+1];
@@ -407,19 +388,12 @@ cmd_t *prepare_initDatanodeMaster(char *nodeName)
         snprintf(newCommand(cmdInitdb), MAXLINE,
              "%s %s"
              "rm -rf %s;"
-//             "mkdir -p %s; PGXC_CTL_SILENT=1 initdb --nodename %s --nodetype datanode %s %s -D %s "
-//             "--master_gtm_nodename %s --master_gtm_ip %s --master_gtm_port %s",
              "mkdir -p %s; PGXC_CTL_SILENT=1 initdb %s %s -D %s ",
              remoteDirCheck,
              remoteWalDirCheck,
              aval(VAR_datanodeMasterDirs)[idx], aval(VAR_datanodeMasterDirs)[idx],
-//             aval(VAR_datanodeNames)[idx],
              wal ? "-X" : "",
              wal ? aval(VAR_datanodeMasterWALDirs)[idx] : "",
-//             aval(VAR_datanodeMasterDirs)[idx],
-//             sval(VAR_gtmName),
-//             sval(VAR_gtmMasterServer),
-//             sval(VAR_gtmMasterPort));
              aval(VAR_datanodeMasterDirs)[idx]);
     }
     
@@ -487,15 +461,15 @@ cmd_t *prepare_initDatanodeMaster(char *nodeName)
     {
         fprintf(f,
             "port = %s\n"
-            "pooler_port = %s\n",
+            "pooler.port = %s\n",
             aval(VAR_datanodePorts)[idx],
             aval(VAR_datanodePoolerPorts)[idx]
             );
         if(isVarYes(VAR_multiCluster) && !is_none(aval(VAR_datanodeMasterCluster)[idx]))
         {
             fprintf(f, 
-                    "pgxc_main_cluster_name = %s\n"
-                    "pgxc_cluster_name = %s\n",
+                    "polarx.main_cluster_name = %s\n"
+                    "polarx.cluster_name = %s\n",
                     sval(VAR_pgxcMainClusterName),
                     aval(VAR_datanodeMasterCluster)[idx]);
         }
@@ -876,7 +850,7 @@ cmd_t *prepare_initPaxosDNSlave(char *nodeName)
             "# Added to startup the slave, %s\n"
             "hot_standby = on\n"
             "port = %s\n"
-//            "pooler_port = %s\n"
+//            "pooler.port = %s\n"
             "# End of addition\n",
             timeStampString(timestamp, MAXTOKEN),
             aval(VAR_datanodeSlavePorts)[idx]);
@@ -886,8 +860,8 @@ cmd_t *prepare_initPaxosDNSlave(char *nodeName)
 //        fprintf(f, 
 //                "prefer_olap = true\n"
 //                "olap_optimizer = true\n"
-//                "pgxc_main_cluster_name = %s\n"
-//                "pgxc_cluster_name = %s\n",
+//                "polarx.main_cluster_name = %s\n"
+//                "polarx.cluster_name = %s\n",
 //                sval(VAR_pgxcMainClusterName),
 //                aval(VAR_datanodeSlaveCluster)[idx]);
 //    }
@@ -1048,7 +1022,7 @@ cmd_t *prepare_initDatanodeSlave(char *nodeName)
             "# Added to startup the slave, %s\n"
             "hot_standby = on\n"
             "port = %s\n"
-            "pooler_port = %s\n"
+            "pooler.port = %s\n"
             "# End of addition\n",
             timeStampString(timestamp, MAXTOKEN),
             aval(VAR_datanodeSlavePorts)[idx],
@@ -1058,8 +1032,8 @@ cmd_t *prepare_initDatanodeSlave(char *nodeName)
             fprintf(f, 
                     "prefer_olap = true\n"
                     "olap_optimizer = true\n"
-                    "pgxc_main_cluster_name = %s\n"
-                    "pgxc_cluster_name = %s\n",
+                    "polarx.main_cluster_name = %s\n"
+                    "polarx.cluster_name = %s\n",
                     sval(VAR_pgxcMainClusterName),
                     aval(VAR_datanodeSlaveCluster)[idx]);
         }
@@ -1228,7 +1202,7 @@ cmd_t *prepare_initPaxosDNSecondSlave(char *nodeName)
             "# Added to startup the slave, %s\n"
             "hot_standby = on\n"
             "port = %s\n"
-//            "pooler_port = %s\n"
+//            "pooler.port = %s\n"
             "# End of addition\n",
             timeStampString(timestamp, MAXTOKEN),
             aval(VAR_datanodeLearnerPorts)[idx]);
@@ -1238,8 +1212,8 @@ cmd_t *prepare_initPaxosDNSecondSlave(char *nodeName)
 //        fprintf(f, 
 //                "prefer_olap = true\n"
 //                "olap_optimizer = true\n"
-//                "pgxc_main_cluster_name = %s\n"
-//                "pgxc_cluster_name = %s\n",
+//                "polarx.main_cluster_name = %s\n"
+//                "polarx.cluster_name = %s\n",
 //                sval(VAR_pgxcMainClusterName),
 //                aval(VAR_datanodeSlaveCluster)[idx]);
 //    }
@@ -1332,21 +1306,6 @@ cmd_t *prepare_initPaxosDNLearner(char *nodeName)
 
     /* Build each datanode's initialize command, add nodename and nodetype when cluster support */
     cmd = cmdInitdb = initCmd(aval(VAR_datanodeLearnerServers)[idx]);
-    //snprintf(newCommand(cmdInitdb), MAXLINE,
-    //         "%s %s"
-    //         "rm -rf %s;"
-    //         "mkdir -p %s; PGXC_CTL_SILENT=1 initdb --nodename %s --nodetype datanode %s %s -D %s "
-    //         "--master_gtm_nodename %s --master_gtm_ip %s --master_gtm_port %s",
-    //         remoteDirCheck,
-    //         remoteWalDirCheck,
-    //         aval(VAR_datanodeLearnerDirs)[idx], aval(VAR_datanodeLearnerDirs)[idx],
-    //         aval(VAR_datanodeNames)[idx],
-    //         wal ? "-X" : "",
-    //         wal ? aval(VAR_datanodeLearnerWALDirs)[idx] : "",
-    //         aval(VAR_datanodeLearnerDirs)[idx],
-    //         sval(VAR_gtmName),
-    //         sval(VAR_gtmMasterServer),
-    //         sval(VAR_gtmMasterPort));
     
     snprintf(newCommand(cmdInitdb), MAXLINE,
              "%s %s"
@@ -1392,15 +1351,15 @@ cmd_t *prepare_initPaxosDNLearner(char *nodeName)
     
     fprintf(f,
             "port = %s\n",
-//            "pooler_port = %s\n",
+//            "pooler.port = %s\n",
             aval(VAR_datanodeLearnerPorts)[idx]
 //            aval(VAR_datanodePoolerPorts)[idx]
             );
 //    if(isVarYes(VAR_multiCluster) && !is_none(aval(VAR_datanodeMasterCluster)[idx]))
 //    {
 //        fprintf(f, 
-//                "pgxc_main_cluster_name = %s\n"
-//                "pgxc_cluster_name = %s\n",
+//                "polarx.main_cluster_name = %s\n"
+//                "polarx.cluster_name = %s\n",
 //                sval(VAR_pgxcMainClusterName),
 //                aval(VAR_datanodeMasterCluster)[idx]);
 //    }
@@ -2187,9 +2146,6 @@ int failover_oneDatanode(int datanodeIdx)
     int rc = 0;
     int rc_local;
     int jj;
-    //char *gtmHost;
-    //char *gtmPort;
-    int gtmPxyIdx;
     FILE *f;
     char timestamp[MAXTOKEN+1];
     char tmp[MAXTOKEN];
@@ -2200,18 +2156,6 @@ int failover_oneDatanode(int datanodeIdx)
 
 #    define checkRc() do{if(WEXITSTATUS(rc_local) > rc) rc = WEXITSTATUS(rc_local);}while(0)
 
-    /*
-     * Determine the target GTM
-     */
-    gtmPxyIdx = getEffectiveGtmProxyIdxFromServerName(aval(VAR_datanodeSlaveServers)[datanodeIdx]);
-    //gtmHost = (gtmPxyIdx >= 0) ? aval(VAR_gtmProxyServers)[gtmPxyIdx] : sval(VAR_gtmMasterServer);
-    //gtmPort = (gtmPxyIdx >= 0) ? aval(VAR_gtmProxyPorts)[gtmPxyIdx] : sval(VAR_gtmMasterPort);
-    if (gtmPxyIdx >= 0)
-        elog(NOTICE, "Failover datanode %s using gtm %s\n",
-             aval(VAR_datanodeNames)[datanodeIdx], aval(VAR_gtmProxyNames)[gtmPxyIdx]);
-    else
-        elog(NOTICE, "Failover datanode %s using GTM itself\n",
-             aval(VAR_datanodeNames)[datanodeIdx]);
 
     /* Promote the slave */
     rc_local = doImmediate(aval(VAR_datanodeSlaveServers)[datanodeIdx], NULL,
@@ -2341,13 +2285,11 @@ int failover_oneDatanode(int datanodeIdx)
             continue;
         }
         
-        len = snprintf(cmd + cmdlen, MAXLINE - cmdlen, "EXECUTE DIRECT ON (%s) 'ALTER NODE %s WITH (HOST=''%s'', PORT=%s)';\n"
-                "EXECUTE DIRECT ON (%s) 'select pgxc_pool_reload()';\n",
+        len = snprintf(cmd + cmdlen, MAXLINE - cmdlen, "EXECUTE DIRECT ON (%s) 'ALTER NODE %s WITH (HOST=''%s'', PORT=%s)';\n",
                                  aval(VAR_datanodeNames)[jj],
                                  aval(VAR_datanodeNames)[datanodeIdx],
                                  aval(VAR_datanodeMasterServers)[datanodeIdx],
-                                 aval(VAR_datanodePorts)[datanodeIdx],
-                                 aval(VAR_datanodeNames)[jj]);
+                                 aval(VAR_datanodePorts)[datanodeIdx]);
         //}
         /*else
         {
@@ -2429,7 +2371,6 @@ int failover_oneDatanode(int datanodeIdx)
         }
         fprintf(f,
                 "ALTER NODE %s WITH (HOST='%s', PORT=%s);\n"
-                "select pgxc_pool_reload();\n"
                 "\\q\n",
                 aval(VAR_datanodeNames)[datanodeIdx],
                 aval(VAR_datanodeMasterServers)[datanodeIdx],
@@ -2604,9 +2545,6 @@ int failover_oneDatanode_aa(int datanodeIdx)
     int rc = 0;
     int rc_local;
     int jj;
-    //char *gtmHost;
-    //char *gtmPort;
-    int gtmPxyIdx;
     FILE *f;
     char timestamp[MAXTOKEN+1];
     char tmp[MAXTOKEN];
@@ -2617,24 +2555,6 @@ int failover_oneDatanode_aa(int datanodeIdx)
 
 #    define checkRc() do{if(WEXITSTATUS(rc_local) > rc) rc = WEXITSTATUS(rc_local);}while(0)
 
-    /*
-     * Determine the target GTM
-     */
-    gtmPxyIdx = getEffectiveGtmProxyIdxFromServerName(aval(VAR_datanodeSlaveServers)[datanodeIdx]);
-    //gtmHost = (gtmPxyIdx >= 0) ? aval(VAR_gtmProxyServers)[gtmPxyIdx] : sval(VAR_gtmMasterServer);
-    //gtmPort = (gtmPxyIdx >= 0) ? aval(VAR_gtmProxyPorts)[gtmPxyIdx] : sval(VAR_gtmMasterPort);
-    if (gtmPxyIdx >= 0)
-        elog(NOTICE, "Failover datanode %s using gtm %s\n",
-             aval(VAR_datanodeNames)[datanodeIdx], aval(VAR_gtmProxyNames)[gtmPxyIdx]);
-    else
-        elog(NOTICE, "Failover datanode %s using GTM itself\n",
-             aval(VAR_datanodeNames)[datanodeIdx]);
-
-    /* Active active slave node no need Promote */
-    //rc_local = doImmediate(aval(VAR_datanodeSlaveServers)[datanodeIdx], NULL,
-    //                       "pg_ctl promote -Z datanode -D %s",
-    //                       aval(VAR_datanodeSlaveDirs)[datanodeIdx]);
-    //checkRc();
 
     /* Reconfigure new datanode master with new gtm_proxy or gtm */
     if ((f =  pgxc_popen_w(aval(VAR_datanodeSlaveServers)[datanodeIdx],
@@ -2739,13 +2659,11 @@ int failover_oneDatanode_aa(int datanodeIdx)
             continue;
         }
         
-        len = snprintf(cmd + cmdlen, MAXLINE - cmdlen, "EXECUTE DIRECT ON (%s) 'ALTER NODE %s WITH (HOST=''%s'', PORT=%s)';\n"
-                "EXECUTE DIRECT ON (%s) 'select pgxc_pool_reload()';\n",
+        len = snprintf(cmd + cmdlen, MAXLINE - cmdlen, "EXECUTE DIRECT ON (%s) 'ALTER NODE %s WITH (HOST=''%s'', PORT=%s)';\n",
                                  aval(VAR_datanodeNames)[jj],
                                  aval(VAR_datanodeNames)[datanodeIdx],
                                  aval(VAR_datanodeMasterServers)[datanodeIdx],
-                                 aval(VAR_datanodePorts)[datanodeIdx],
-                                 aval(VAR_datanodeNames)[jj]);
+                                 aval(VAR_datanodePorts)[datanodeIdx]);
         if (len > (MAXLINE - cmdlen))
         {
             elog(ERROR, "Datanode command exceeds the maximum allowed length");
@@ -2780,7 +2698,6 @@ int failover_oneDatanode_aa(int datanodeIdx)
         }
         fprintf(f,
                 "ALTER NODE %s WITH (HOST='%s', PORT=%s);\n"
-                "select pgxc_pool_reload();\n"
                 "%s"
                 "\\q\n",
                 aval(VAR_datanodeNames)[datanodeIdx],
@@ -2813,10 +2730,7 @@ int add_datanodeMaster(char *name, char *host, int port, int pooler, char *dir,
     char port_s[MAXTOKEN+1];
     char pooler_s[MAXTOKEN+1];
     char max_wal_senders_s[MAXTOKEN+1];
-    //int gtmPxyIdx;
     int connCordIdx;
-    //char *gtmHost;
-    //char *gtmPort;
     char pgdumpall_out[MAXPATH+1];
     char **nodelist = NULL;
     int ii, jj, restore_dnode_idx, restore_coord_idx = -1;
@@ -2836,7 +2750,7 @@ int add_datanodeMaster(char *name, char *host, int port, int pooler, char *dir,
         return 1;
     }
     /* Check if there's no conflict with the current configuration */
-    if (checkNameConflict(name, FALSE))
+    if (checkNameConflict(name))
     {
         elog(ERROR, "ERROR: Node name %s duplicate.\n", name);
         return 1;
@@ -2998,21 +2912,12 @@ int add_datanodeMaster(char *name, char *host, int port, int pooler, char *dir,
 
     /* Now add the master */
 
-    //gtmPxyIdx = getEffectiveGtmProxyIdxFromServerName(host);
-    //gtmHost = (gtmPxyIdx > 0) ? aval(VAR_gtmProxyServers)[gtmPxyIdx] : sval(VAR_gtmMasterServer);
-    //gtmPort = (gtmPxyIdx > 0) ? aval(VAR_gtmProxyPorts)[gtmPxyIdx] : sval(VAR_gtmMasterPort);
 
     /* initdb */
-//    doImmediate(host, NULL, "PGXC_CTL_SILENT=1 initdb -D %s %s %s --nodename %s --nodetype datanode "
-//                            "--master_gtm_nodename %s --master_gtm_ip %s --master_gtm_port %s",  
     doImmediate(host, NULL, "PGXC_CTL_SILENT=1 initdb -D %s %s %s",
                             dir,
                             wal ? "-X" : "",
                             wal ? waldir : "");
- //                           name,
- //                           sval(VAR_gtmName),
- //                           sval(VAR_gtmMasterServer),
- //                           sval(VAR_gtmMasterPort));
 
     /* Edit configurations */
     if ((f = pgxc_popen_w(host, "cat >> %s/postgresql.conf", dir)))
@@ -3022,7 +2927,7 @@ int add_datanodeMaster(char *name, char *host, int port, int pooler, char *dir,
                 "#===========================================\n"
                 "# Added at initialization. %s\n"
                 "port = %d\n"
-                "pooler_port = %d\n"
+                "pooler.port = %d\n"
                 "# End of Additon\n",
                 timeStampString(date, MAXTOKEN+1),
                 port, pooler);
@@ -3144,7 +3049,6 @@ int add_datanodeMaster(char *name, char *host, int port, int pooler, char *dir,
             }
 //            fprintf(f, "CREATE NODE %s WITH (TYPE = 'datanode', host='%s', PORT=%d);\n", name, host, port);
             fprintf(f, "CREATE NODE %s WITH (TYPE = 'datanode', host='%s', PORT=%d, local=%d);\n", name, host, port, false);
-            fprintf(f, "SELECT pgxc_pool_reload();\n");
             fprintf(f, "\\q\n");
             pclose(f);
         }
@@ -3181,7 +3085,6 @@ int add_datanodeMaster(char *name, char *host, int port, int pooler, char *dir,
                 fprintf(f, "CREATE NODE %s WITH (TYPE = 'datanode', host='%s', PORT=%d, local=%d);\n",  name, host, port, true);
             }
 
-            fprintf(f, "SELECT pgxc_pool_reload();\n");
             fprintf(f, "\\q\n");
             pclose(f);
         }
@@ -3387,7 +3290,7 @@ int add_datanodeSlave(char *name, char *host, int port, int pooler, char *dir,
             "# Added to initialize the slave, %s\n"
             "hot_standby = on\n"
             "port = %s\n"
-            "pooler_port = %s\n"
+            "pooler.port = %s\n"
             "wal_level = logical \n"
             "archive_mode = off\n"        /* No archive mode */
             "archive_command = ''\n"    /* No archive mode */
@@ -3446,7 +3349,7 @@ int add_datanodeMaster_paxos(char *name, char *host, int port, int pooler, char 
     }
     
     /* Check if there's no conflict with the current configuration */
-    if (checkNameConflict(name, FALSE))
+    if (checkNameConflict(name))
     {
         elog(ERROR, "ERROR: Node name %s duplicate.\n", name);
         return 1;
@@ -3948,7 +3851,6 @@ int remove_datanodeMaster(char *name, int clean_opt)
                     continue;
                 }
                 fprintf(f, "DROP NODE %s;\n", name);
-                fprintf(f, "SELECT pgxc_pool_reload();\n");
                 fprintf(f, "\\q");
                 pclose(f);
             }
@@ -3974,7 +3876,6 @@ int remove_datanodeMaster(char *name, int clean_opt)
                     continue;
                 }
                 fprintf(f, "EXECUTE DIRECT ON (%s) 'DROP NODE %s';\n", aval(VAR_datanodeNames)[ii], name);
-                fprintf(f, "EXECUTE DIRECT ON (%s) 'SELECT pgxc_pool_reload();'\n", aval(VAR_datanodeNames)[ii]);
                 fprintf(f, "\\q\n");
                 pclose(f);
             }

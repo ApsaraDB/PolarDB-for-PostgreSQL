@@ -34,6 +34,7 @@
 
 /* user-set guc parameter */
 bool		enable_timestamp_debug_print = false;
+int txn_coordination;
 
 /*
  * start timestamp used in both coordinator and worker:
@@ -291,7 +292,7 @@ BackendRecvTimestamp(LogicalTime ts)
 	/*
 	 * Be carefull of the order between setting MyPgXact->tmin and acquiring
 	 * the ts_lock to fetch maxCommitTs which is critical to the correctness
-	 * of garbage collection algorithm. Written by Junbin Kang, 2020.01.20
+	 * of garbage collection algorithm. Written by  , 2020.01.20
 	 */
 	pg_atomic_write_u64(&MyPgXact->tmin, ts);
 	pg_memory_barrier();

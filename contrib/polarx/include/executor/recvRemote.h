@@ -5,10 +5,11 @@
  *      Utility functions to communicate to polarx Datanodes and Coordinators
  *
  *
+ * Copyright (c) 2021, Alibaba Group Holding Limited
+ * Licensed under the Apache License, Version 2.0 (the "License");
  * Portions Copyright (c) 2012-2014, TransLattice, Inc.
  * Portions Copyright (c) 1996-2011, PostgreSQL Global Development Group ?
  * Portions Copyright (c) 2010-2012 Postgres-XC Development Group
- * Copyright (c) 2020, Apache License Version 2.0*
  *
  * IDENTIFICATION
  *        contrib/polarx/include/executor/recvRemote.h
@@ -29,8 +30,9 @@
 #include "tcop/dest.h"
 #include "nodes/execnodes.h"
 #include "tcop/dest.h"
-#include "pgxc/planner.h"
 #include "pgxc/pgxcnode.h"
+#include "utils/datarowstore.h"
+#include "plan/polarx_planner.h"
 
 typedef enum
 {
@@ -123,7 +125,7 @@ typedef struct ResponseCombiner
                                           *used for each connection in prefetch with merge_sort,
                                           * put datarows in each rowbuffer in order
                                                                             */
-    Tuplestorestate **dataRowBuffer;    /* used for prefetch */
+    Datarowstorestate **dataRowBuffer;    /* used for prefetch */
     long             *dataRowMemSize;    /* size of datarow in memory */
     int             *nDataRows;         /* number of datarows in tuplestore */
     TupleTableSlot  *tmpslot;
@@ -164,7 +166,7 @@ typedef struct ResponseCombiner
 
 extern int handle_response(PGXCNodeHandle *conn, ResponseCombiner *combiner);
 
-extern TupleDesc create_tuple_desc(char *msg_body, size_t len);
+extern void ignore_describe_response(char *msg_body, size_t len);
 extern void InitResponseCombiner(ResponseCombiner *combiner, int node_count,
                        CombineType combine_type);
 extern void CloseCombiner(ResponseCombiner *combiner);
@@ -177,7 +179,7 @@ extern bool ValidateAndCloseCombiner(ResponseCombiner *combiner);
 
 extern void pgxc_connections_cleanup(ResponseCombiner *combiner);
 
-extern TupleTableSlot *FetchTuple(ResponseCombiner *combiner);
+extern RemoteDataRow FetchDatarow(ResponseCombiner *combiner);
 
 extern int pgxc_node_receive_responses(const int		 conn_count,
 									   PGXCNodeHandle ** connections,

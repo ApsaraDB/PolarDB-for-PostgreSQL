@@ -462,7 +462,7 @@ WalReceiverMain(void)
 		{
 			rcv_ParallelWriteControl.request[i] = CreatePipeRec(max_parallel_write_pipe_len);
 			rcv_ParallelWriteControl.response[i] = CreatePipeRec(max_parallel_write_pipe_len);
-			ThreadSemaRecInit(&rcv_ParallelWriteControl.sem[i], 0);
+			ThreadSemaRecInitRec(&rcv_ParallelWriteControl.sem[i], 0);
 			threadParam[i].threadIndex = i;
 			ret = CreateThreadRec(walrecevier_async_write_management_thread, (void *) &threadParam[i], MT_THR_DETACHED);
 			if (ret)
@@ -2030,7 +2030,7 @@ walrecevier_async_write_management_thread(void *arg)
 	while (1)
 	{
 		/* wait for signal */
-		ThreadSemaRecDown(&rcv_ParallelWriteControl.sem[threadIndex]);
+		ThreadSemaRecDownRec(&rcv_ParallelWriteControl.sem[threadIndex]);
 
 		/* create connect as needed */
 		request = (WALParallelWriteReq *) PipeGetRec(rcv_ParallelWriteControl.request[threadIndex]);
@@ -2109,7 +2109,7 @@ WalRcvParallelWrite(char *buf, Size nbytes, XLogRecPtr recptr)
 			round++;
 		}
 		rcv_ParallelWriteControl.messageCnt++;
-		ThreadSemaRecUp(&rcv_ParallelWriteControl.sem[threadIndex]);
+		ThreadSemaRecUpRec(&rcv_ParallelWriteControl.sem[threadIndex]);
 
 		recptr += segbytes;
 		nbytes -= segbytes;
@@ -2139,7 +2139,7 @@ WalRcvParallelFlush(XLogRecPtr flush)
 		round++;
 	}
 	rcv_ParallelWriteControl.messageCnt++;
-	ThreadSemaRecUp(&rcv_ParallelWriteControl.sem[threadIndex]);
+	ThreadSemaRecUpRec(&rcv_ParallelWriteControl.sem[threadIndex]);
 	LogstreamResult.Send = LogstreamResult.Receive;
 }
 

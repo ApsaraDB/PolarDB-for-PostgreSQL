@@ -69,10 +69,6 @@
 #include "utils/rls.h"
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
-#ifdef POLARDB_X
-#include "pgxc/pgxc.h"
-#include "commands/prepare.h"
-#endif
 
 /*
  * We must skip "overhead" operations that involve database access when the
@@ -154,9 +150,6 @@ InitPlanCache(void)
 CachedPlanSource *
 CreateCachedPlan(RawStmt *raw_parse_tree,
 				 const char *query_string,
-#ifdef POLARDB_X
-                 const char *stmt_name,
-#endif
 				 const char *commandTag)
 {
 	CachedPlanSource *plansource;
@@ -214,9 +207,6 @@ CreateCachedPlan(RawStmt *raw_parse_tree,
 	plansource->generic_cost = -1;
 	plansource->total_custom_cost = 0;
 	plansource->num_custom_plans = 0;
-#ifdef POLARDB_X
-    plansource->stmt_name = (stmt_name ? pstrdup(stmt_name) : NULL);
-#endif
 
 	MemoryContextSwitchTo(oldcxt);
 
@@ -972,41 +962,6 @@ BuildCachedPlan(CachedPlanSource *plansource, List *qlist,
 	}
 	else
 		plan_context = CurrentMemoryContext;
-
-#ifdef POLARDB_X
-    /*
-     * If this plansource belongs to a named prepared statement, store the stmt
-     * name for the Datanode queries.
-     */
-    if (IS_PGXC_LOCAL_COORDINATOR && plansource->stmt_name &&
-            plansource->stmt_name[0] != '\0')
-    {
-        ListCell    *lc;
-        int         n;
-
-        /*
-         * Scan the plans and set the statement field for all found RemoteQuery
-         * nodes so they use Datanode statements
-         */
-        n = 0;
-        foreach(lc, plist)
-        {
-            Node *st;
-            PlannedStmt *ps;
-
-            st = (Node *) lfirst(lc);
-
-            if (IsA(st, PlannedStmt))
-            {
-                ps = (PlannedStmt *)st;
-
-                n = SetRemoteStatementName(ps->planTree, plansource->stmt_name,
-                            plansource->num_params,
-                            plansource->param_types, n);
-            }
-        }
-    }
-#endif
 
 	/*
 	 * Create and fill the CachedPlan struct within the new context.
