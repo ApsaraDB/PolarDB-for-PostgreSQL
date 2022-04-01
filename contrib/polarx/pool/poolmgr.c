@@ -9876,6 +9876,7 @@ static void hashtab_check_single_slot(PGXCNodePoolSlot *slot, HTAB  *nodeHtb, PG
         {            
             if (outerPool == nodePool)
             {
+                hash_seq_term(&hseq_status);
                 break;
             }
             
@@ -10687,6 +10688,7 @@ refresh_database_pools_internal(void)
                 if (!remove_all_agent_references(nodePool->nodeoid))
                 {
                     res = POOL_REFRESH_FAILED;
+                    hash_seq_term(&hseq_status);
                     break;
                 }
 

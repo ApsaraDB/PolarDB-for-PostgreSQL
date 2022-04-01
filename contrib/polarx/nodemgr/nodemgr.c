@@ -1317,6 +1317,7 @@ IsNodeInDefHash(uint32 hashvalue)
         if (def->nodeHashValue == hashvalue)
         {
             in_def = true;
+            hash_seq_term(&scan);
             break;
         }
     }
@@ -1356,6 +1357,7 @@ InitPolarxClusterGlobalInfo(void)
 
             if(strcmp(PGXCMainClusterName, PGXCClusterName) == 0)
                 IsPGXCMainCluster = true;
+            hash_seq_term(&scan);
             break;
         }
     }

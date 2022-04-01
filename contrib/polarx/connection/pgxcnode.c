@@ -4737,6 +4737,7 @@ is_node_altered(uint32 hashvalue, bool *is_cluster_node)
         if (entry->hashvalue == hashvalue) 
         {
             in_handle = true;
+            hash_seq_term(&scan);
             break;
         }
     }
