@@ -596,181 +596,182 @@ ERROR:  function count_operator(unknown, unknown) does not exist
 LINE 1: select count_operator('select * from mpp24151_t, mpp24151_pt...
                ^
 HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
-select * from mpp24151_t, mpp24151_pt where tid = ptid and pt1 = 'hello0';
+select * from mpp24151_t, mpp24151_pt where tid = ptid and pt1 = 'hello0'
+order by tid, mpp24151_t.dist, mpp24151_pt.dist;
  dist | tid |   t1    | t2  | dist |  pt1   |  pt2  |    pt3    | ptid 
 ------+-----+---------+-----+------+--------+-------+-----------+------
-    6 |   0 | hello6  | bar |    0 | hello0 | world | drop this |    0
     0 |   0 | hello0  | bar |    0 | hello0 | world | drop this |    0
-    6 |   0 | hello6  | bar |    6 | hello0 | world | drop this |    0
+    0 |   0 | hello0  | bar |    0 | hello0 | world | drop this |    0
     0 |   0 | hello0  | bar |    6 | hello0 | world | drop this |    0
-    6 |   0 | hello6  | bar |   12 | hello0 | world | drop this |    0
     0 |   0 | hello0  | bar |   12 | hello0 | world | drop this |    0
-    6 |   0 | hello6  | bar |   18 | hello0 | world | drop this |    0
     0 |   0 | hello0  | bar |   18 | hello0 | world | drop this |    0
-    6 |   0 | hello6  | bar |   24 | hello0 | world | drop this |    0
     0 |   0 | hello0  | bar |   24 | hello0 | world | drop this |    0
-    6 |   0 | hello6  | bar |   30 | hello0 | world | drop this |    0
     0 |   0 | hello0  | bar |   30 | hello0 | world | drop this |    0
-    6 |   0 | hello6  | bar |   36 | hello0 | world | drop this |    0
     0 |   0 | hello0  | bar |   36 | hello0 | world | drop this |    0
-    6 |   0 | hello6  | bar |   42 | hello0 | world | drop this |    0
     0 |   0 | hello0  | bar |   42 | hello0 | world | drop this |    0
-    6 |   0 | hello6  | bar |   48 | hello0 | world | drop this |    0
     0 |   0 | hello0  | bar |   48 | hello0 | world | drop this |    0
-    6 |   0 | hello6  | bar |   54 | hello0 | world | drop this |    0
     0 |   0 | hello0  | bar |   54 | hello0 | world | drop this |    0
-    6 |   0 | hello6  | bar |   60 | hello0 | world | drop this |    0
     0 |   0 | hello0  | bar |   60 | hello0 | world | drop this |    0
-    6 |   0 | hello6  | bar |   66 | hello0 | world | drop this |    0
     0 |   0 | hello0  | bar |   66 | hello0 | world | drop this |    0
-    6 |   0 | hello6  | bar |   72 | hello0 | world | drop this |    0
     0 |   0 | hello0  | bar |   72 | hello0 | world | drop this |    0
-    6 |   0 | hello6  | bar |   78 | hello0 | world | drop this |    0
     0 |   0 | hello0  | bar |   78 | hello0 | world | drop this |    0
-    6 |   0 | hello6  | bar |   84 | hello0 | world | drop this |    0
     0 |   0 | hello0  | bar |   84 | hello0 | world | drop this |    0
-    6 |   0 | hello6  | bar |   90 | hello0 | world | drop this |    0
     0 |   0 | hello0  | bar |   90 | hello0 | world | drop this |    0
-    6 |   0 | hello6  | bar |   96 | hello0 | world | drop this |    0
     0 |   0 | hello0  | bar |   96 | hello0 | world | drop this |    0
     6 |   0 | hello6  | bar |    0 | hello0 | world | drop this |    0
-    0 |   0 | hello0  | bar |    0 | hello0 | world | drop this |    0
-    7 |   1 | hello7  | bar |    1 | hello0 | world | drop this |    1
+    6 |   0 | hello6  | bar |    0 | hello0 | world | drop this |    0
+    6 |   0 | hello6  | bar |    6 | hello0 | world | drop this |    0
+    6 |   0 | hello6  | bar |   12 | hello0 | world | drop this |    0
+    6 |   0 | hello6  | bar |   18 | hello0 | world | drop this |    0
+    6 |   0 | hello6  | bar |   24 | hello0 | world | drop this |    0
+    6 |   0 | hello6  | bar |   30 | hello0 | world | drop this |    0
+    6 |   0 | hello6  | bar |   36 | hello0 | world | drop this |    0
+    6 |   0 | hello6  | bar |   42 | hello0 | world | drop this |    0
+    6 |   0 | hello6  | bar |   48 | hello0 | world | drop this |    0
+    6 |   0 | hello6  | bar |   54 | hello0 | world | drop this |    0
+    6 |   0 | hello6  | bar |   60 | hello0 | world | drop this |    0
+    6 |   0 | hello6  | bar |   66 | hello0 | world | drop this |    0
+    6 |   0 | hello6  | bar |   72 | hello0 | world | drop this |    0
+    6 |   0 | hello6  | bar |   78 | hello0 | world | drop this |    0
+    6 |   0 | hello6  | bar |   84 | hello0 | world | drop this |    0
+    6 |   0 | hello6  | bar |   90 | hello0 | world | drop this |    0
+    6 |   0 | hello6  | bar |   96 | hello0 | world | drop this |    0
     1 |   1 | hello1  | bar |    1 | hello0 | world | drop this |    1
-    7 |   1 | hello7  | bar |    7 | hello0 | world | drop this |    1
     1 |   1 | hello1  | bar |    7 | hello0 | world | drop this |    1
-    7 |   1 | hello7  | bar |   13 | hello0 | world | drop this |    1
     1 |   1 | hello1  | bar |   13 | hello0 | world | drop this |    1
-    7 |   1 | hello7  | bar |   19 | hello0 | world | drop this |    1
     1 |   1 | hello1  | bar |   19 | hello0 | world | drop this |    1
-    7 |   1 | hello7  | bar |   25 | hello0 | world | drop this |    1
     1 |   1 | hello1  | bar |   25 | hello0 | world | drop this |    1
-    7 |   1 | hello7  | bar |   31 | hello0 | world | drop this |    1
     1 |   1 | hello1  | bar |   31 | hello0 | world | drop this |    1
-    7 |   1 | hello7  | bar |   37 | hello0 | world | drop this |    1
     1 |   1 | hello1  | bar |   37 | hello0 | world | drop this |    1
-    7 |   1 | hello7  | bar |   43 | hello0 | world | drop this |    1
     1 |   1 | hello1  | bar |   43 | hello0 | world | drop this |    1
-    7 |   1 | hello7  | bar |   49 | hello0 | world | drop this |    1
     1 |   1 | hello1  | bar |   49 | hello0 | world | drop this |    1
-    7 |   1 | hello7  | bar |   55 | hello0 | world | drop this |    1
     1 |   1 | hello1  | bar |   55 | hello0 | world | drop this |    1
-    7 |   1 | hello7  | bar |   61 | hello0 | world | drop this |    1
     1 |   1 | hello1  | bar |   61 | hello0 | world | drop this |    1
-    7 |   1 | hello7  | bar |   67 | hello0 | world | drop this |    1
     1 |   1 | hello1  | bar |   67 | hello0 | world | drop this |    1
-    7 |   1 | hello7  | bar |   73 | hello0 | world | drop this |    1
     1 |   1 | hello1  | bar |   73 | hello0 | world | drop this |    1
-    7 |   1 | hello7  | bar |   79 | hello0 | world | drop this |    1
     1 |   1 | hello1  | bar |   79 | hello0 | world | drop this |    1
-    7 |   1 | hello7  | bar |   85 | hello0 | world | drop this |    1
     1 |   1 | hello1  | bar |   85 | hello0 | world | drop this |    1
-    7 |   1 | hello7  | bar |   91 | hello0 | world | drop this |    1
     1 |   1 | hello1  | bar |   91 | hello0 | world | drop this |    1
-    7 |   1 | hello7  | bar |   97 | hello0 | world | drop this |    1
     1 |   1 | hello1  | bar |   97 | hello0 | world | drop this |    1
-    8 |   2 | hello8  | bar |    2 | hello0 | world | drop this |    2
+    7 |   1 | hello7  | bar |    1 | hello0 | world | drop this |    1
+    7 |   1 | hello7  | bar |    7 | hello0 | world | drop this |    1
+    7 |   1 | hello7  | bar |   13 | hello0 | world | drop this |    1
+    7 |   1 | hello7  | bar |   19 | hello0 | world | drop this |    1
+    7 |   1 | hello7  | bar |   25 | hello0 | world | drop this |    1
+    7 |   1 | hello7  | bar |   31 | hello0 | world | drop this |    1
+    7 |   1 | hello7  | bar |   37 | hello0 | world | drop this |    1
+    7 |   1 | hello7  | bar |   43 | hello0 | world | drop this |    1
+    7 |   1 | hello7  | bar |   49 | hello0 | world | drop this |    1
+    7 |   1 | hello7  | bar |   55 | hello0 | world | drop this |    1
+    7 |   1 | hello7  | bar |   61 | hello0 | world | drop this |    1
+    7 |   1 | hello7  | bar |   67 | hello0 | world | drop this |    1
+    7 |   1 | hello7  | bar |   73 | hello0 | world | drop this |    1
+    7 |   1 | hello7  | bar |   79 | hello0 | world | drop this |    1
+    7 |   1 | hello7  | bar |   85 | hello0 | world | drop this |    1
+    7 |   1 | hello7  | bar |   91 | hello0 | world | drop this |    1
+    7 |   1 | hello7  | bar |   97 | hello0 | world | drop this |    1
     2 |   2 | hello2  | bar |    2 | hello0 | world | drop this |    2
-    8 |   2 | hello8  | bar |    8 | hello0 | world | drop this |    2
     2 |   2 | hello2  | bar |    8 | hello0 | world | drop this |    2
-    8 |   2 | hello8  | bar |   14 | hello0 | world | drop this |    2
     2 |   2 | hello2  | bar |   14 | hello0 | world | drop this |    2
-    8 |   2 | hello8  | bar |   20 | hello0 | world | drop this |    2
     2 |   2 | hello2  | bar |   20 | hello0 | world | drop this |    2
-    8 |   2 | hello8  | bar |   26 | hello0 | world | drop this |    2
     2 |   2 | hello2  | bar |   26 | hello0 | world | drop this |    2
-    8 |   2 | hello8  | bar |   32 | hello0 | world | drop this |    2
     2 |   2 | hello2  | bar |   32 | hello0 | world | drop this |    2
-    8 |   2 | hello8  | bar |   38 | hello0 | world | drop this |    2
     2 |   2 | hello2  | bar |   38 | hello0 | world | drop this |    2
-    8 |   2 | hello8  | bar |   44 | hello0 | world | drop this |    2
     2 |   2 | hello2  | bar |   44 | hello0 | world | drop this |    2
-    8 |   2 | hello8  | bar |   50 | hello0 | world | drop this |    2
     2 |   2 | hello2  | bar |   50 | hello0 | world | drop this |    2
-    8 |   2 | hello8  | bar |   56 | hello0 | world | drop this |    2
     2 |   2 | hello2  | bar |   56 | hello0 | world | drop this |    2
-    8 |   2 | hello8  | bar |   62 | hello0 | world | drop this |    2
     2 |   2 | hello2  | bar |   62 | hello0 | world | drop this |    2
-    8 |   2 | hello8  | bar |   68 | hello0 | world | drop this |    2
     2 |   2 | hello2  | bar |   68 | hello0 | world | drop this |    2
-    8 |   2 | hello8  | bar |   74 | hello0 | world | drop this |    2
     2 |   2 | hello2  | bar |   74 | hello0 | world | drop this |    2
-    8 |   2 | hello8  | bar |   80 | hello0 | world | drop this |    2
     2 |   2 | hello2  | bar |   80 | hello0 | world | drop this |    2
-    8 |   2 | hello8  | bar |   86 | hello0 | world | drop this |    2
     2 |   2 | hello2  | bar |   86 | hello0 | world | drop this |    2
-    8 |   2 | hello8  | bar |   92 | hello0 | world | drop this |    2
     2 |   2 | hello2  | bar |   92 | hello0 | world | drop this |    2
-    8 |   2 | hello8  | bar |   98 | hello0 | world | drop this |    2
     2 |   2 | hello2  | bar |   98 | hello0 | world | drop this |    2
-    9 |   3 | hello9  | bar |    3 | hello0 | world | drop this |    3
+    8 |   2 | hello8  | bar |    2 | hello0 | world | drop this |    2
+    8 |   2 | hello8  | bar |    8 | hello0 | world | drop this |    2
+    8 |   2 | hello8  | bar |   14 | hello0 | world | drop this |    2
+    8 |   2 | hello8  | bar |   20 | hello0 | world | drop this |    2
+    8 |   2 | hello8  | bar |   26 | hello0 | world | drop this |    2
+    8 |   2 | hello8  | bar |   32 | hello0 | world | drop this |    2
+    8 |   2 | hello8  | bar |   38 | hello0 | world | drop this |    2
+    8 |   2 | hello8  | bar |   44 | hello0 | world | drop this |    2
+    8 |   2 | hello8  | bar |   50 | hello0 | world | drop this |    2
+    8 |   2 | hello8  | bar |   56 | hello0 | world | drop this |    2
+    8 |   2 | hello8  | bar |   62 | hello0 | world | drop this |    2
+    8 |   2 | hello8  | bar |   68 | hello0 | world | drop this |    2
+    8 |   2 | hello8  | bar |   74 | hello0 | world | drop this |    2
+    8 |   2 | hello8  | bar |   80 | hello0 | world | drop this |    2
+    8 |   2 | hello8  | bar |   86 | hello0 | world | drop this |    2
+    8 |   2 | hello8  | bar |   92 | hello0 | world | drop this |    2
+    8 |   2 | hello8  | bar |   98 | hello0 | world | drop this |    2
     3 |   3 | hello3  | bar |    3 | hello0 | world | drop this |    3
-    9 |   3 | hello9  | bar |    9 | hello0 | world | drop this |    3
     3 |   3 | hello3  | bar |    9 | hello0 | world | drop this |    3
-    9 |   3 | hello9  | bar |   15 | hello0 | world | drop this |    3
     3 |   3 | hello3  | bar |   15 | hello0 | world | drop this |    3
-    9 |   3 | hello9  | bar |   21 | hello0 | world | drop this |    3
     3 |   3 | hello3  | bar |   21 | hello0 | world | drop this |    3
-    9 |   3 | hello9  | bar |   27 | hello0 | world | drop this |    3
     3 |   3 | hello3  | bar |   27 | hello0 | world | drop this |    3
-    9 |   3 | hello9  | bar |   33 | hello0 | world | drop this |    3
     3 |   3 | hello3  | bar |   33 | hello0 | world | drop this |    3
-    9 |   3 | hello9  | bar |   39 | hello0 | world | drop this |    3
     3 |   3 | hello3  | bar |   39 | hello0 | world | drop this |    3
-    9 |   3 | hello9  | bar |   45 | hello0 | world | drop this |    3
     3 |   3 | hello3  | bar |   45 | hello0 | world | drop this |    3
-    9 |   3 | hello9  | bar |   51 | hello0 | world | drop this |    3
     3 |   3 | hello3  | bar |   51 | hello0 | world | drop this |    3
-    9 |   3 | hello9  | bar |   57 | hello0 | world | drop this |    3
     3 |   3 | hello3  | bar |   57 | hello0 | world | drop this |    3
-    9 |   3 | hello9  | bar |   63 | hello0 | world | drop this |    3
     3 |   3 | hello3  | bar |   63 | hello0 | world | drop this |    3
-    9 |   3 | hello9  | bar |   69 | hello0 | world | drop this |    3
     3 |   3 | hello3  | bar |   69 | hello0 | world | drop this |    3
-    9 |   3 | hello9  | bar |   75 | hello0 | world | drop this |    3
     3 |   3 | hello3  | bar |   75 | hello0 | world | drop this |    3
-    9 |   3 | hello9  | bar |   81 | hello0 | world | drop this |    3
     3 |   3 | hello3  | bar |   81 | hello0 | world | drop this |    3
-    9 |   3 | hello9  | bar |   87 | hello0 | world | drop this |    3
     3 |   3 | hello3  | bar |   87 | hello0 | world | drop this |    3
-    9 |   3 | hello9  | bar |   93 | hello0 | world | drop this |    3
     3 |   3 | hello3  | bar |   93 | hello0 | world | drop this |    3
-    9 |   3 | hello9  | bar |   99 | hello0 | world | drop this |    3
     3 |   3 | hello3  | bar |   99 | hello0 | world | drop this |    3
-   10 |   4 | hello10 | bar |    4 | hello0 | world | drop this |    4
+    9 |   3 | hello9  | bar |    3 | hello0 | world | drop this |    3
+    9 |   3 | hello9  | bar |    9 | hello0 | world | drop this |    3
+    9 |   3 | hello9  | bar |   15 | hello0 | world | drop this |    3
+    9 |   3 | hello9  | bar |   21 | hello0 | world | drop this |    3
+    9 |   3 | hello9  | bar |   27 | hello0 | world | drop this |    3
+    9 |   3 | hello9  | bar |   33 | hello0 | world | drop this |    3
+    9 |   3 | hello9  | bar |   39 | hello0 | world | drop this |    3
+    9 |   3 | hello9  | bar |   45 | hello0 | world | drop this |    3
+    9 |   3 | hello9  | bar |   51 | hello0 | world | drop this |    3
+    9 |   3 | hello9  | bar |   57 | hello0 | world | drop this |    3
+    9 |   3 | hello9  | bar |   63 | hello0 | world | drop this |    3
+    9 |   3 | hello9  | bar |   69 | hello0 | world | drop this |    3
+    9 |   3 | hello9  | bar |   75 | hello0 | world | drop this |    3
+    9 |   3 | hello9  | bar |   81 | hello0 | world | drop this |    3
+    9 |   3 | hello9  | bar |   87 | hello0 | world | drop this |    3
+    9 |   3 | hello9  | bar |   93 | hello0 | world | drop this |    3
+    9 |   3 | hello9  | bar |   99 | hello0 | world | drop this |    3
     4 |   4 | hello4  | bar |    4 | hello0 | world | drop this |    4
-   10 |   4 | hello10 | bar |   10 | hello0 | world | drop this |    4
     4 |   4 | hello4  | bar |   10 | hello0 | world | drop this |    4
-   10 |   4 | hello10 | bar |   16 | hello0 | world | drop this |    4
     4 |   4 | hello4  | bar |   16 | hello0 | world | drop this |    4
-   10 |   4 | hello10 | bar |   22 | hello0 | world | drop this |    4
     4 |   4 | hello4  | bar |   22 | hello0 | world | drop this |    4
-   10 |   4 | hello10 | bar |   28 | hello0 | world | drop this |    4
     4 |   4 | hello4  | bar |   28 | hello0 | world | drop this |    4
-   10 |   4 | hello10 | bar |   34 | hello0 | world | drop this |    4
     4 |   4 | hello4  | bar |   34 | hello0 | world | drop this |    4
-   10 |   4 | hello10 | bar |   40 | hello0 | world | drop this |    4
     4 |   4 | hello4  | bar |   40 | hello0 | world | drop this |    4
-   10 |   4 | hello10 | bar |   46 | hello0 | world | drop this |    4
     4 |   4 | hello4  | bar |   46 | hello0 | world | drop this |    4
-   10 |   4 | hello10 | bar |   52 | hello0 | world | drop this |    4
     4 |   4 | hello4  | bar |   52 | hello0 | world | drop this |    4
-   10 |   4 | hello10 | bar |   58 | hello0 | world | drop this |    4
     4 |   4 | hello4  | bar |   58 | hello0 | world | drop this |    4
-   10 |   4 | hello10 | bar |   64 | hello0 | world | drop this |    4
     4 |   4 | hello4  | bar |   64 | hello0 | world | drop this |    4
-   10 |   4 | hello10 | bar |   70 | hello0 | world | drop this |    4
     4 |   4 | hello4  | bar |   70 | hello0 | world | drop this |    4
-   10 |   4 | hello10 | bar |   76 | hello0 | world | drop this |    4
     4 |   4 | hello4  | bar |   76 | hello0 | world | drop this |    4
-   10 |   4 | hello10 | bar |   82 | hello0 | world | drop this |    4
     4 |   4 | hello4  | bar |   82 | hello0 | world | drop this |    4
-   10 |   4 | hello10 | bar |   88 | hello0 | world | drop this |    4
     4 |   4 | hello4  | bar |   88 | hello0 | world | drop this |    4
-   10 |   4 | hello10 | bar |   94 | hello0 | world | drop this |    4
     4 |   4 | hello4  | bar |   94 | hello0 | world | drop this |    4
-   10 |   4 | hello10 | bar |  100 | hello0 | world | drop this |    4
     4 |   4 | hello4  | bar |  100 | hello0 | world | drop this |    4
+   10 |   4 | hello10 | bar |    4 | hello0 | world | drop this |    4
+   10 |   4 | hello10 | bar |   10 | hello0 | world | drop this |    4
+   10 |   4 | hello10 | bar |   16 | hello0 | world | drop this |    4
+   10 |   4 | hello10 | bar |   22 | hello0 | world | drop this |    4
+   10 |   4 | hello10 | bar |   28 | hello0 | world | drop this |    4
+   10 |   4 | hello10 | bar |   34 | hello0 | world | drop this |    4
+   10 |   4 | hello10 | bar |   40 | hello0 | world | drop this |    4
+   10 |   4 | hello10 | bar |   46 | hello0 | world | drop this |    4
+   10 |   4 | hello10 | bar |   52 | hello0 | world | drop this |    4
+   10 |   4 | hello10 | bar |   58 | hello0 | world | drop this |    4
+   10 |   4 | hello10 | bar |   64 | hello0 | world | drop this |    4
+   10 |   4 | hello10 | bar |   70 | hello0 | world | drop this |    4
+   10 |   4 | hello10 | bar |   76 | hello0 | world | drop this |    4
+   10 |   4 | hello10 | bar |   82 | hello0 | world | drop this |    4
+   10 |   4 | hello10 | bar |   88 | hello0 | world | drop this |    4
+   10 |   4 | hello10 | bar |   94 | hello0 | world | drop this |    4
+   10 |   4 | hello10 | bar |  100 | hello0 | world | drop this |    4
     5 |   5 | hello5  | bar |    5 | hello0 | world | drop this |    5
     5 |   5 | hello5  | bar |   11 | hello0 | world | drop this |    5
     5 |   5 | hello5  | bar |   17 | hello0 | world | drop this |    5
@@ -789,44 +790,48 @@ select * from mpp24151_t, mpp24151_pt where tid = ptid and pt1 = 'hello0';
     5 |   5 | hello5  | bar |   95 | hello0 | world | drop this |    5
 (188 rows)
 
-                                                                                   QUERY PLAN                                                                                   
---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+                                                                                      QUERY PLAN                                                                                      
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
  PX Coordinator 6:1  (slice1; segments: 6)
    Output: mpp24151_t.dist, mpp24151_t.tid, mpp24151_t.t1, mpp24151_t.t2, mpp24151_pt_1.dist, mpp24151_pt_1.pt1, mpp24151_pt_1.pt2, mpp24151_pt_1.pt3, mpp24151_pt_1.ptid
-   ->  Hash Join
+   Merge Key: mpp24151_t.tid, mpp24151_t.dist, mpp24151_pt_1.dist
+   ->  Sort
          Output: mpp24151_t.dist, mpp24151_t.tid, mpp24151_t.t1, mpp24151_t.t2, mpp24151_pt_1.dist, mpp24151_pt_1.pt1, mpp24151_pt_1.pt2, mpp24151_pt_1.pt3, mpp24151_pt_1.ptid
-         Hash Cond: (mpp24151_t.tid = mpp24151_pt_1.ptid)
-         ->  PX Hash 6:6  (slice2; segments: 6)
-               Output: mpp24151_t.dist, mpp24151_t.tid, mpp24151_t.t1, mpp24151_t.t2
-               Hash Key: mpp24151_t.tid
-               ->  Partial Seq Scan on bfv_partition_plans.mpp24151_t
+         Sort Key: mpp24151_t.tid, mpp24151_t.dist, mpp24151_pt_1.dist
+         ->  Hash Join
+               Output: mpp24151_t.dist, mpp24151_t.tid, mpp24151_t.t1, mpp24151_t.t2, mpp24151_pt_1.dist, mpp24151_pt_1.pt1, mpp24151_pt_1.pt2, mpp24151_pt_1.pt3, mpp24151_pt_1.ptid
+               Hash Cond: (mpp24151_t.tid = mpp24151_pt_1.ptid)
+               ->  PX Hash 6:6  (slice2; segments: 6)
                      Output: mpp24151_t.dist, mpp24151_t.tid, mpp24151_t.t1, mpp24151_t.t2
-         ->  Hash
-               Output: mpp24151_pt_1.dist, mpp24151_pt_1.pt1, mpp24151_pt_1.pt2, mpp24151_pt_1.pt3, mpp24151_pt_1.ptid
-               ->  PX Hash 6:6  (slice3; segments: 6)
+                     Hash Key: mpp24151_t.tid
+                     ->  Partial Seq Scan on bfv_partition_plans.mpp24151_t
+                           Output: mpp24151_t.dist, mpp24151_t.tid, mpp24151_t.t1, mpp24151_t.t2
+               ->  Hash
                      Output: mpp24151_pt_1.dist, mpp24151_pt_1.pt1, mpp24151_pt_1.pt2, mpp24151_pt_1.pt3, mpp24151_pt_1.ptid
-                     Hash Key: mpp24151_pt_1.ptid
-                     ->  Append
-                           ->  Partial Index Scan using mpp24151_pt_1_pt1_idx on bfv_partition_plans.mpp24151_pt_1
-                                 Output: mpp24151_pt_1.dist, mpp24151_pt_1.pt1, mpp24151_pt_1.pt2, mpp24151_pt_1.pt3, mpp24151_pt_1.ptid
-                                 Index Cond: (mpp24151_pt_1.pt1 = 'hello0'::text)
-                           ->  Partial Index Scan using mpp24151_pt_2_pt1_idx on bfv_partition_plans.mpp24151_pt_2
-                                 Output: mpp24151_pt_2.dist, mpp24151_pt_2.pt1, mpp24151_pt_2.pt2, mpp24151_pt_2.pt3, mpp24151_pt_2.ptid
-                                 Index Cond: (mpp24151_pt_2.pt1 = 'hello0'::text)
-                           ->  Partial Index Scan using mpp24151_pt_3_pt1_idx on bfv_partition_plans.mpp24151_pt_3
-                                 Output: mpp24151_pt_3.dist, mpp24151_pt_3.pt1, mpp24151_pt_3.pt2, mpp24151_pt_3.pt3, mpp24151_pt_3.ptid
-                                 Index Cond: (mpp24151_pt_3.pt1 = 'hello0'::text)
-                           ->  Partial Index Scan using mpp24151_pt_4_pt1_idx on bfv_partition_plans.mpp24151_pt_4
-                                 Output: mpp24151_pt_4.dist, mpp24151_pt_4.pt1, mpp24151_pt_4.pt2, mpp24151_pt_4.pt3, mpp24151_pt_4.ptid
-                                 Index Cond: (mpp24151_pt_4.pt1 = 'hello0'::text)
-                           ->  Partial Index Scan using mpp24151_pt_5_pt1_idx on bfv_partition_plans.mpp24151_pt_5
-                                 Output: mpp24151_pt_5.dist, mpp24151_pt_5.pt1, mpp24151_pt_5.pt2, mpp24151_pt_5.pt3, mpp24151_pt_5.ptid
-                                 Index Cond: (mpp24151_pt_5.pt1 = 'hello0'::text)
-                           ->  Partial Index Scan using mpp24151_pt_6_pt1_idx on bfv_partition_plans.mpp24151_pt_6
-                                 Output: mpp24151_pt_6.dist, mpp24151_pt_6.pt1, mpp24151_pt_6.pt2, mpp24151_pt_6.pt3, mpp24151_pt_6.ptid
-                                 Index Cond: (mpp24151_pt_6.pt1 = 'hello0'::text)
+                     ->  PX Hash 6:6  (slice3; segments: 6)
+                           Output: mpp24151_pt_1.dist, mpp24151_pt_1.pt1, mpp24151_pt_1.pt2, mpp24151_pt_1.pt3, mpp24151_pt_1.ptid
+                           Hash Key: mpp24151_pt_1.ptid
+                           ->  Append
+                                 ->  Partial Index Scan using mpp24151_pt_1_pt1_idx on bfv_partition_plans.mpp24151_pt_1
+                                       Output: mpp24151_pt_1.dist, mpp24151_pt_1.pt1, mpp24151_pt_1.pt2, mpp24151_pt_1.pt3, mpp24151_pt_1.ptid
+                                       Index Cond: (mpp24151_pt_1.pt1 = 'hello0'::text)
+                                 ->  Partial Index Scan using mpp24151_pt_2_pt1_idx on bfv_partition_plans.mpp24151_pt_2
+                                       Output: mpp24151_pt_2.dist, mpp24151_pt_2.pt1, mpp24151_pt_2.pt2, mpp24151_pt_2.pt3, mpp24151_pt_2.ptid
+                                       Index Cond: (mpp24151_pt_2.pt1 = 'hello0'::text)
+                                 ->  Partial Index Scan using mpp24151_pt_3_pt1_idx on bfv_partition_plans.mpp24151_pt_3
+                                       Output: mpp24151_pt_3.dist, mpp24151_pt_3.pt1, mpp24151_pt_3.pt2, mpp24151_pt_3.pt3, mpp24151_pt_3.ptid
+                                       Index Cond: (mpp24151_pt_3.pt1 = 'hello0'::text)
+                                 ->  Partial Index Scan using mpp24151_pt_4_pt1_idx on bfv_partition_plans.mpp24151_pt_4
+                                       Output: mpp24151_pt_4.dist, mpp24151_pt_4.pt1, mpp24151_pt_4.pt2, mpp24151_pt_4.pt3, mpp24151_pt_4.ptid
+                                       Index Cond: (mpp24151_pt_4.pt1 = 'hello0'::text)
+                                 ->  Partial Index Scan using mpp24151_pt_5_pt1_idx on bfv_partition_plans.mpp24151_pt_5
+                                       Output: mpp24151_pt_5.dist, mpp24151_pt_5.pt1, mpp24151_pt_5.pt2, mpp24151_pt_5.pt3, mpp24151_pt_5.ptid
+                                       Index Cond: (mpp24151_pt_5.pt1 = 'hello0'::text)
+                                 ->  Partial Index Scan using mpp24151_pt_6_pt1_idx on bfv_partition_plans.mpp24151_pt_6
+                                       Output: mpp24151_pt_6.dist, mpp24151_pt_6.pt1, mpp24151_pt_6.pt2, mpp24151_pt_6.pt3, mpp24151_pt_6.ptid
+                                       Index Cond: (mpp24151_pt_6.pt1 = 'hello0'::text)
  Optimizer: PolarDB PX Optimizer
-(35 rows)
+(39 rows)
 
 -- CLEANUP
 drop index mpp24151_pt1_idx;

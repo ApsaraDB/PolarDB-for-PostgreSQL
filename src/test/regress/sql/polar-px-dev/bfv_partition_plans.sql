@@ -236,7 +236,8 @@ set polar_px_optimizer_enable_dynamictablescan = off;
 -- implemented during the v12 merge, I'm not sure if this test is testing anything
 -- useful anymore. And/or it redundant with the tests in 'dpe'?
 select count_operator('select * from mpp24151_t, mpp24151_pt where tid = ptid and pt1 = E''hello0'';','->  Partition Selector');
-select * from mpp24151_t, mpp24151_pt where tid = ptid and pt1 = 'hello0';
+select * from mpp24151_t, mpp24151_pt where tid = ptid and pt1 = 'hello0'
+order by tid, mpp24151_t.dist, mpp24151_pt.dist;
 
 -- CLEANUP
 drop index mpp24151_pt1_idx;
