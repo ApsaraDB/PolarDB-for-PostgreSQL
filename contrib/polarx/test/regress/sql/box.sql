@@ -20,7 +20,7 @@
 
 -- Postgres-XL case: box type cannot use ORDER BY so its table
 -- is replicated for regression tests
-CREATE TABLE BOX_TBL (f1 box) DISTRIBUTE BY REPLICATION;
+CREATE TABLE BOX_TBL (f1 box) with(dist_type=replication);
 
 INSERT INTO BOX_TBL (f1) VALUES ('(2.0,2.0,0.0,0.0)');
 
@@ -124,7 +124,7 @@ SELECT '' AS four, height(f1), width(f1) FROM BOX_TBL ORDER BY (f1[0])[0], (f1[0
 -- Test the SP-GiST index
 --
 
-CREATE TEMPORARY TABLE box_temp (f1 box) DISTRIBUTE BY REPLICATION;
+CREATE TEMPORARY TABLE box_temp (f1 box) with(dist_type=replication);
 
 INSERT INTO box_temp
 	SELECT box(point(i, i), point(i * 2, i * 2))

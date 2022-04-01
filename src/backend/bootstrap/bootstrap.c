@@ -47,10 +47,6 @@
 #include "utils/relmapper.h"
 #include "utils/tqual.h"
 
-#ifdef POLARDB_X
-#include "pgxc/connpool.h"
-#endif							/* POLARDB_X */
-
 /* POLAR consensus */
 #include "polar_dma/polar_dma.h"
 

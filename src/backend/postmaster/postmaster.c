@@ -393,20 +393,6 @@ static bool LoadedSSL = false;
 static DNSServiceRef bonjour_sdref = NULL;
 #endif
 
-#ifdef POLARDB_X
-char             *PGXCDefaultClusterName = "cluster_server"; 
-char            *PGXCNodeName = NULL;
-char            *PGXCClusterName = NULL;
-char            *PGXCMainClusterName = NULL;
-bool        IsPGXCMainCluster = false;
-int            PGXCNodeId = 0;
-/*
- * When a particular node starts up, store the node identifier in this variable
- * so that we dont have to calculate it OR do a search in cache any where else
- * This will have minimal impact on performance
- */
-uint32            PGXCNodeIdentifier = 0;       
-#endif
 
 /*
  * postmaster.c - function prototypes
@@ -570,33 +556,10 @@ static void ShmemBackendArrayRemove(Backend *bn);
 #endif							/* EXEC_BACKEND */
 
 #ifdef POLARDB_X
-char *parentPGXCNode = NULL;
-int  parentPGXCNodeId = -1;
-int     parentPGXCPid = -1;
-char parentPGXCNodeType = PGXC_NODE_DATANODE;
-
 bool isPGXCCoordinator = false;
 bool isPGXCDataNode = false;
 
-/*
- * While adding a new node to the cluster we need to restore the schema of
- * an existing database to the new node.
- * If the new node is a datanode and we connect directly to it,
- * it does not allow DDL, because it is in read only mode &
- * If the new node is a coordinator it will send DDLs to all the other
- * coordinators which we do not want it to do
- * To provide ability to restore on the new node a new command line
- * argument is provided called --restoremode
- * It is to be provided in place of --coordinator OR --datanode.
- * In restore mode both coordinator and datanode are internally
- * treated as a datanode.
- */
-bool isRestoreMode = false;
-
 int remoteConnType = REMOTE_CONN_APP;
-/* key pair to be used as object id while using advisory lock for backup */
-Datum xc_lockForBackupKey1;
-Datum xc_lockForBackupKey2;
 
 #endif /* POLARDB_X */
 
@@ -880,26 +843,6 @@ PostmasterMain(int argc, char *argv[])
 							   *value;
 
 					ParseLongOption(optarg, &name, &value);
-#ifdef POLARDB_X
-                    /* A Coordinator is being activated */
-                    if (strcmp(name, "coordinator") == 0 &&
-                        !value)
-                        isPGXCCoordinator = true;
-                    else if (strcmp(name, "datanode") == 0 &&
-                        !value)
-                        isPGXCDataNode = true;
-                    else if (strcmp(name, "restoremode") == 0 && !value)
-                    {
-                        /*
-                         * In restore mode both coordinator and datanode
-                         * are internally treeated as datanodes
-                         */
-                        isRestoreMode = true;
-                        isPGXCDataNode = true;
-                    }
-                    else /* default case */
-                    {
-#endif
 					if (!value)
 					{
 						if (opt == '-')
@@ -915,9 +858,6 @@ PostmasterMain(int argc, char *argv[])
 					}
 
 					SetConfigOption(name, value, PGC_POSTMASTER, PGC_S_ARGV);
-#ifdef POLARDB_X
-                    }
-#endif
 					free(name);
 					if (value)
 						free(value);

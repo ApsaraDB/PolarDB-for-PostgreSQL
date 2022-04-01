@@ -1423,10 +1423,8 @@ pg_prepared_xacts| SELECT p.transaction,
     p.gid,
     p.prepared,
     u.rolname AS owner,
-    d.datname AS database,
-    p.participate_nodes,
-    p.commit_timestamp
-   FROM ((pg_prepared_xact() p(transaction, gid, prepared, ownerid, dbid, commit_timestamp, participate_nodes)
+    d.datname AS database
+   FROM ((pg_prepared_xact() p(transaction, gid, prepared, ownerid, dbid)
      LEFT JOIN pg_authid u ON ((p.ownerid = u.oid)))
      LEFT JOIN pg_database d ON ((p.dbid = d.oid)));
 pg_publication_tables| SELECT p.pubname,
@@ -2249,6 +2247,16 @@ pg_views| SELECT n.nspname AS schemaname,
    FROM (pg_class c
      LEFT JOIN pg_namespace n ON ((n.oid = c.relnamespace)))
   WHERE (c.relkind = 'v'::"char");
+polardbx_prepared_xacts| SELECT p.transaction,
+    p.gid,
+    p.prepared,
+    u.rolname AS owner,
+    d.datname AS database,
+    p.participate_nodes,
+    p.commit_timestamp
+   FROM ((polardbx_prepared_xact() p(transaction, gid, prepared, ownerid, dbid, commit_timestamp, participate_nodes)
+     LEFT JOIN pg_authid u ON ((p.ownerid = u.oid)))
+     LEFT JOIN pg_database d ON ((p.dbid = d.oid)));
 rtest_v1| SELECT rtest_t1.a,
     rtest_t1.b
    FROM rtest_t1;

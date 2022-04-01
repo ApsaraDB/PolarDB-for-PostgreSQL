@@ -27,14 +27,14 @@ CREATE TABLE personsx OF person_type (myname WITH OPTIONS NOT NULL); -- error
 CREATE TABLE persons2 OF person_type (
     id WITH OPTIONS PRIMARY KEY,
     UNIQUE (name)
-) distribute by replication;
+) with(dist_type=replication);
 
 \d persons2
 
 CREATE TABLE persons3 OF person_type (
     PRIMARY KEY (id),
     name WITH OPTIONS DEFAULT ''
-) distribute by replication;
+) with(dist_type=replication);
 
 \d persons3
 
@@ -62,13 +62,13 @@ SELECT id, namelen(persons) FROM persons;
 CREATE TABLE persons2 OF person_type (
     id WITH OPTIONS PRIMARY KEY,
     UNIQUE (name)
-) distribute by replication;
+) with(dist_type=replication);
 
 \d persons2
 
 CREATE TABLE persons3 OF person_type (
     PRIMARY KEY (id),
     name NOT NULL DEFAULT ''
-) distribute by replication;
+) with(dist_type=replication);
 
 \d persons3

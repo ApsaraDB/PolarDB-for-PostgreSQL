@@ -20,9 +20,9 @@
 
 #include "access/xact.h"
 #include "pg_config_manual.h"
-#include "pgxc/pgxc.h"
-#include "pgxc/pgxcnode.h"
 #include "pgxc/transam/txn_util.h"
+#include "pgxc/transam/txn_util.h"
+#include "distributed_txn/logical_clock.h"
 
 
 typedef enum
@@ -98,7 +98,6 @@ typedef struct LocalTwoPhaseState
 	char *			   gid;							 /* gid of twophase transaction*/
 	char *			   participants;
 
-	PGXCNodeAllHandles *handles;	 /* handles in each phase in twophase trans */
 	AllConnNodeInfo *	connections; /* map to coord_state or datanode_state in
 										pgxc_node_receive_response */
 	int				 connections_num;
@@ -106,63 +105,10 @@ typedef struct LocalTwoPhaseState
 } LocalTwoPhaseState;
 extern LocalTwoPhaseState g_twophase_state;
 
-typedef enum
-{
-	TXN_TYPE_CommitTxn,
-	TXN_TYPE_CommitSubTxn,
-	TXN_TYPE_RollbackTxn,
-	TXN_TYPE_RollbackSubTxn,
-	TXN_TYPE_CleanConnection,
-
-	TXN_TYPE_Butt
-} TranscationType;
-
-typedef enum
-{
-	TXN_COORDINATION_NONE,
-	TXN_COORDINATION_GTM,
-	TXN_COORDINATION_HLC
-} TxnCoordinationType;
-
-
-extern MemoryContext	   CommitContext;
-extern TxnCoordinationType txn_coordination;
-extern LocalTwoPhaseState  g_twophase_state;
-extern bool				   g_in_plpgsql_exec_fun;
-extern bool				   PlpgsqlDebugPrint;
-extern bool				   force_2pc;
 #ifdef POLARDB_X
 extern bool 			   enable_twophase_recover_debug_print;
-extern bool				   g_in_set_config_option;
 #endif
 
-extern void	 BeginTxnIfNecessary(PGXCNodeHandle *conn);
-extern int	 pgxc_node_begin(int				 conn_count,
-							 PGXCNodeHandle **	 connections,
-							 GlobalTransactionId gxid,
-							 bool				 need_tran_block,
-							 bool				 readOnly,
-							 char				 node_type);
 
-extern void	 InitLocalTwoPhaseState(void);
-extern void	 SetLocalTwoPhaseStateHandles(PGXCNodeAllHandles *handles);
-extern void  UpdateLocalTwoPhaseState(int result, PGXCNodeHandle *response_handle, int conn_index, char *errmsg);
-extern void	 ClearLocalTwoPhaseState(void);
-
-/* callbacks registered at Xact event*/
-extern void InitTxnManagement(void);
-extern void XactCallbackCoordinator(XactEvent event, void *args);
-extern void SubXactCallbackCoordinator(SubXactEvent event, void *args);
-extern void XactCallbackPreCommit(void);
-extern void XactCallbackPostCommit(void);
-extern void XactCallbackPreAbort(void);
-extern void XactCallbackPostAbort(void);
-extern void XactCallbackFinishPrepared(bool isCommit);
-
-extern void AtEOXact_Remote(void);
-extern void DropTxnDatanodeStatement(const char *stmt_name);
-extern bool PrepareTxnDatanodeStatement(char *stmt);
-extern bool ActivateTxnDatanodeStatementOnNode(const char *stmt_name, int noid);
-
-extern void RegisterTransactionLocalNode(bool write);
+extern void InitLocalTwoPhaseState(void);
 #endif /*POLARDBX_TXN_COORDINATOR_H*/

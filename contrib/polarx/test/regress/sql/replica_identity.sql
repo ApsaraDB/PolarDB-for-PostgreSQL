@@ -5,7 +5,7 @@ CREATE TABLE test_replica_identity (
        nonkey text,
        CONSTRAINT test_replica_identity_unique_defer UNIQUE (keya, keyb) DEFERRABLE,
        CONSTRAINT test_replica_identity_unique_nondefer UNIQUE (keya, keyb)
-) WITH OIDS distribute by replication;
+) with(dist_type=replication, oids);
 
 CREATE TABLE test_replica_identity_othertable (id serial primary key);
 

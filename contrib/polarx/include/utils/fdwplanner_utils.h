@@ -3,8 +3,8 @@
  * fdwplanner_utils.h 
  *    utility functions for fdw planner
  *
- * Copyright (c) 2020, Alibaba Inc. and/or its affiliates
- * Copyright (c) 2020, Apache License Version 2.0
+ * Copyright (c) 2021, Alibaba Group Holding Limited
+ * Licensed under the Apache License, Version 2.0 (the "License");
  *
  * IDENTIFICATION
  *        contrib/polarx/include/utils/fdwplanner_utils.h

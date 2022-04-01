@@ -5,7 +5,7 @@
  * Copyright (c) 2016-2018, PostgreSQL Global Development Group
  *
  *  Support CTS-based logical replication
- *  Author: Junbin Kang
+ *  Author:  
  *
  *  Portions Copyright (c) 2020, Alibaba Group Holding Limited
  *
@@ -157,7 +157,7 @@ should_apply_changes_for_rel(LogicalRepRelMapEntry *rel)
 	/*
 	 * For CTS snapshot based logical replication, it should skip record
 	 * replay for the transactions whose commit timestamps are equal or
-	 * smaller than snapshot start timestamp. Author: Junbin Kang
+	 * smaller than snapshot start timestamp. Author:  
 	 */
 	Assert(remote_final_cts != InvalidCommitSeqNo);
 	if (am_tablesync_worker())

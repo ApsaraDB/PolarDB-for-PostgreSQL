@@ -72,21 +72,6 @@ typedef HeapTupleData *HeapTuple;
 
 #define HEAPTUPLESIZE	MAXALIGN(sizeof(HeapTupleData))
 
-#ifdef POLARDB_X
-/*
- * Represents a DataRow message received from a remote node.
- * Contains originating node number and message body in DataRow format without
- * message code and length. Length and node number are separate fields.
- * This is a variable length structure.
- */
-typedef struct RemoteDataRowData
-{
-    Oid         msgnode;                /* node number of the data row message */
-    int         msglen;                    /* length of the data row message */
-    char        msg[0];                    /* last data row message */
-}     RemoteDataRowData;
-typedef RemoteDataRowData *RemoteDataRow;
-#endif
 /*
  * Accessor macros to be used with HeapTuple pointers.
  */

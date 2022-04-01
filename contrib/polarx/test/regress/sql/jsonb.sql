@@ -90,7 +90,7 @@ select to_jsonb(timestamptz '-Infinity');
 
 --jsonb_agg
 
-CREATE TEMP TABLE rows(x int, y text) distribute by roundrobin; 
+CREATE TEMP TABLE rows(x int, y text) with(dist_type=roundrobin); 
 insert into rows(x,y) SELECT x, 'txt' || x as y
 FROM generate_series(1,3) AS x;
 

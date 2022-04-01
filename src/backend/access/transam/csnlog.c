@@ -34,7 +34,7 @@
  * To support distributed transaction, XLOG is added for csnlog to preserve
  * data across crashes. During database startup, we would apply xlog records
  * to csnlog.
- * Written by Junbin Kang, 2020-01-11
+ * Written by  , 2020-01-11
  *
  * Portions Copyright (c) 2020, Alibaba Group Holding Limited
  * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
@@ -87,7 +87,7 @@ int			delay_after_set_committing_status = 0;
 #ifdef ENABLE_DISTRIBUTED_TRANSACTION
 /*
  * add WAL for CSNLog to support distributed transactions
- * written by Junbin Kang
+ * written by  
  */
 
 /* We store the latest async LSN for each group of transactions */
@@ -529,7 +529,7 @@ CSNLogGetCommitSeqNo(TransactionId xid)
 	 * TransactionIdIsInProgress() is removed by CSN to avoid proc array
 	 * walking. As a result, we need to perform further checking: If the xid
 	 * is below TransactionXmin and does not have cts, it should be crashed or
-	 * aborted transaction. Written by Junbin Kang, 2020.06.22
+	 * aborted transaction. Written by  , 2020.06.22
 	 */
 
 	if (TransactionIdPrecedes(xid, CsnlogCtl->shared->oldestActiveStartupXid))

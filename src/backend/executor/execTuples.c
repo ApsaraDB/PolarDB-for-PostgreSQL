@@ -90,9 +90,6 @@
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
 #include "utils/typcache.h"
-#ifdef POLARDB_X
-#include "access/printtup.h"
-#endif
 
 
 static TupleDesc ExecTypeFromTLInternal(List *targetList,
@@ -143,12 +140,6 @@ MakeTupleTableSlot(TupleDesc tupleDesc)
 	slot->tts_values = NULL;
 	slot->tts_isnull = NULL;
 	slot->tts_mintuple = NULL;
-#ifdef POLARDB_X
-    slot->tts_shouldFreeRow = false;
-    slot->tts_datarow = NULL;
-    slot->tts_drowcxt = NULL;
-    slot->tts_attinmeta = NULL;
-#endif
 
 	if (tupleDesc != NULL)
 	{
@@ -302,11 +293,6 @@ ExecSetSlotDescriptor(TupleTableSlot *slot, /* slot to change */
 	if (slot->tts_tupleDescriptor)
 		ReleaseTupleDesc(slot->tts_tupleDescriptor);
 
-#ifdef POLARDB_X
-    /* XXX there in no routine to release AttInMetadata instance */
-    if (slot->tts_attinmeta)
-        slot->tts_attinmeta = NULL;
-#endif
 
 	if (slot->tts_values)
 		pfree(slot->tts_values);
@@ -390,17 +376,6 @@ ExecStoreTuple(HeapTuple tuple,
 	if (slot->tts_shouldFreeMin)
 		heap_free_minimal_tuple(slot->tts_mintuple);
 
-#ifdef POLARDB_X
-    if (slot->tts_shouldFreeRow)
-    {
-        pfree(slot->tts_datarow);
-        if (slot->tts_drowcxt)
-            MemoryContextReset(slot->tts_drowcxt);
-    }
-
-    slot->tts_shouldFreeRow = false;
-    slot->tts_datarow = NULL;
-#endif
 	/*
 	 * Store the new tuple into the specified slot.
 	 */
@@ -462,17 +437,6 @@ ExecStoreMinimalTuple(MinimalTuple mtup,
 	if (slot->tts_shouldFreeMin)
 		heap_free_minimal_tuple(slot->tts_mintuple);
 
-#ifdef POLARDB_X
-    if (slot->tts_shouldFreeRow)
-    {
-        pfree(slot->tts_datarow);
-        if (slot->tts_drowcxt)
-            MemoryContextReset(slot->tts_drowcxt);
-    }
-
-    slot->tts_shouldFreeRow = false;
-    slot->tts_datarow = NULL;
-#endif
 	/*
 	 * Drop the pin on the referenced buffer, if there is one.
 	 */
@@ -524,13 +488,6 @@ ExecClearTuple(TupleTableSlot *slot)	/* slot in which to store tuple */
 	if (slot->tts_shouldFreeMin)
 		heap_free_minimal_tuple(slot->tts_mintuple);
 
-#ifdef POLARDB_X
-    if (slot->tts_shouldFreeRow)
-        pfree(slot->tts_datarow);
-
-    slot->tts_shouldFreeRow = false;
-    slot->tts_datarow = NULL;
-#endif
 
 	slot->tts_tuple = NULL;
 	slot->tts_mintuple = NULL;
@@ -638,13 +595,6 @@ ExecCopySlotTuple(TupleTableSlot *slot)
 		return heap_copytuple(slot->tts_tuple);
 	if (slot->tts_mintuple)
 		return heap_tuple_from_minimal_tuple(slot->tts_mintuple);
-#ifdef POLARDB_X
-    /*
-     * Ensure values are extracted from data row to the Datum array
-     */
-    if (slot->tts_datarow)
-        slot_getallattrs(slot);
-#endif
 	/*
 	 * Otherwise we need to build a tuple from the Datum array.
 	 */
@@ -684,13 +634,6 @@ ExecCopySlotMinimalTuple(TupleTableSlot *slot)
 		else
 			return minimal_tuple_from_heap_tuple(slot->tts_tuple);
 	}
-#ifdef POLARDB_X
-    /*
-     * Ensure values are extracted from data row to the Datum array
-     */
-    if (slot->tts_datarow)
-        slot_getallattrs(slot);
-#endif
 	/*
 	 * Otherwise we need to build a tuple from the Datum array.
 	 */
@@ -699,145 +642,6 @@ ExecCopySlotMinimalTuple(TupleTableSlot *slot)
 								   slot->tts_isnull);
 }
 
-#ifdef POLARDB_X
-/* --------------------------------
- *        ExecCopySlotDatarow
- *            Obtain a copy of a slot's data row.  The copy is
- *            palloc'd in the current memory context.
- *            The slot itself is undisturbed
- * --------------------------------
- */
-RemoteDataRow
-ExecCopySlotDatarow(TupleTableSlot *slot, MemoryContext tmpcxt)
-{// #lizard forgives
-    RemoteDataRow datarow;
-    if (slot->tts_datarow)
-    {
-        int len = slot->tts_datarow->msglen;
-        /* if we already have datarow make a copy */
-        datarow = (RemoteDataRow) palloc(sizeof(RemoteDataRowData) + len);
-        datarow->msgnode = slot->tts_datarow->msgnode;
-        datarow->msglen = len;
-        memcpy(datarow->msg, slot->tts_datarow->msg, len);
-        return datarow;
-    }
-    else
-    {
-        TupleDesc         tdesc = slot->tts_tupleDescriptor;
-        MemoryContext    savecxt = NULL;
-        StringInfoData    buf;
-        uint16             n16;
-        int             i;
-
-        /* ensure we have all values */
-        slot_getallattrs(slot);
-
-        /* if temporary memory context is specified reset it */
-        if (tmpcxt)
-        {
-            MemoryContextReset(tmpcxt);
-            savecxt = MemoryContextSwitchTo(tmpcxt);
-        }
-
-        initStringInfo(&buf);
-        /* Number of parameter values */
-        n16 = htons(tdesc->natts);
-        appendBinaryStringInfo(&buf, (char *) &n16, 2);
-
-        for (i = 0; i < tdesc->natts; i++)
-        {
-            uint32 n32;
-
-            if (slot->tts_isnull[i])
-            {
-                n32 = htonl(-1);
-                appendBinaryStringInfo(&buf, (char *) &n32, 4);
-            }
-            else
-            {
-                Form_pg_attribute attr = TupleDescAttr(tdesc, i);
-                Oid        typOutput;
-                bool    typIsVarlena;
-                Datum    pval;
-                char   *pstring;
-                int        len;
-
-                /* Get info needed to output the value */
-                getTypeOutputInfo(attr->atttypid, &typOutput, &typIsVarlena);
-                /*
-                 * If we have a toasted datum, forcibly detoast it here to avoid
-                 * memory leakage inside the type's output routine.
-                 */
-                if (typIsVarlena)
-                    pval = PointerGetDatum(PG_DETOAST_DATUM(slot->tts_values[i]));
-                else
-                    pval = slot->tts_values[i];
-
-                /*
-                  * column is composite type, need to send tupledesc to remote node
-                  */
-                if (attr->atttypid == RECORDOID)
-                {
-                    HeapTupleHeader rec;
-                    Oid            tupType;
-                    int32        tupTypmod;
-                    TupleDesc    tupdesc;
-                    StringInfoData  tupdesc_data;
-                    
-                    initStringInfo(&tupdesc_data);
-                    
-                    /* -2 to indicate this is composite type */
-                    n32 = htonl(-2);
-
-                    appendBinaryStringInfo(&buf, (char *) &n32, 4);
-
-                    rec = DatumGetHeapTupleHeader(pval);
-
-                    /* Extract type info from the tuple itself */
-                    tupType = HeapTupleHeaderGetTypeId(rec);
-                    tupTypmod = HeapTupleHeaderGetTypMod(rec);
-                    tupdesc = lookup_rowtype_tupdesc(tupType, tupTypmod);
-
-                    FormRowDescriptionMessage(tupdesc, NULL, NULL, &tupdesc_data);
-
-                    ReleaseTupleDesc(tupdesc);
-
-                    len = tupdesc_data.len;
-                    n32 = htonl(len);
-
-                    /* write rowDesctiption */
-                    appendBinaryStringInfo(&buf, (char *) &n32, 4);
-                    appendBinaryStringInfo(&buf, tupdesc_data.data, len);
-
-                    pfree(tupdesc_data.data);
-                }
-                /* Convert Datum to string */
-                pstring = OidOutputFunctionCall(typOutput, pval);
-
-                /* copy data to the buffer */
-                len = strlen(pstring);
-                n32 = htonl(len);
-                appendBinaryStringInfo(&buf, (char *) &n32, 4);
-                appendBinaryStringInfo(&buf, pstring, len);
-            }
-        }
-
-        /* restore memory context to allocate result */
-        if (savecxt)
-        {
-            MemoryContextSwitchTo(savecxt);
-        }
-
-        /* copy data to the buffer */
-        datarow = (RemoteDataRow) palloc(sizeof(RemoteDataRowData) + buf.len);
-        datarow->msgnode = InvalidOid;
-        datarow->msglen = buf.len;
-        memcpy(datarow->msg, buf.data, buf.len);
-        pfree(buf.data);
-        return datarow;
-    }
-}
-#endif
 
 /* --------------------------------
  *		ExecFetchSlotTuple
@@ -1031,10 +835,6 @@ ExecMaterializeSlot(TupleTableSlot *slot)
 	if (!slot->tts_shouldFreeMin)
 		slot->tts_mintuple = NULL;
 
-#ifdef POLARDB_X
-    if (!slot->tts_shouldFreeRow)
-        slot->tts_datarow = NULL;
-#endif
 	return slot->tts_tuple;
 }
 
@@ -1597,63 +1397,3 @@ end_tup_output(TupOutputState *tstate)
 	pfree(tstate);
 }
 
-#ifdef POLARDB_X
-/* --------------------------------
- *        ExecStoreDataRowTuple
- *
- *        Store a buffer in DataRow message format into the slot.
- *
- * --------------------------------
- */
-TupleTableSlot *
-ExecStoreDataRowTuple(RemoteDataRow datarow,
-                      TupleTableSlot *slot,
-                      bool shouldFree)
-{
-    /*
-     * sanity checks
-     */
-    Assert(datarow != NULL);
-    Assert(slot != NULL);
-    Assert(slot->tts_tupleDescriptor != NULL);
-
-    /*
-     * Free any old physical tuple belonging to the slot.
-     */
-    if (slot->tts_shouldFree)
-        heap_freetuple(slot->tts_tuple);
-    if (slot->tts_shouldFreeMin)
-        heap_free_minimal_tuple(slot->tts_mintuple);
-    if (slot->tts_shouldFreeRow)
-    {
-        pfree(slot->tts_datarow);
-        if (slot->tts_drowcxt)
-            MemoryContextReset(slot->tts_drowcxt);
-    }
-
-    /*
-     * Drop the pin on the referenced buffer, if there is one.
-     */
-    if (BufferIsValid(slot->tts_buffer))
-        ReleaseBuffer(slot->tts_buffer);
-
-    slot->tts_buffer = InvalidBuffer;
-
-    /*
-     * Store the new tuple into the specified slot.
-     */
-    slot->tts_isempty = false;
-    slot->tts_shouldFree = false;
-    slot->tts_shouldFreeMin = false;
-    slot->tts_shouldFreeRow = shouldFree;
-    slot->tts_tuple = NULL;
-    slot->tts_mintuple = NULL;
-    slot->tts_datarow = datarow;
-
-    /* Mark extracted state invalid */
-    slot->tts_nvalid = 0;
-
-    return slot;
-}
-
-#endif

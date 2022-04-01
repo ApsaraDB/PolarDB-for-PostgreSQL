@@ -796,7 +796,7 @@ CREATE TABLE country_table (
     country_id        serial primary key,
     country_name    text unique not null,
     continent        text not null
-) distribute by replication;
+) with (dist_type = replication);
 
 INSERT INTO country_table (country_name, continent)
     VALUES ('Japan', 'Asia'),
@@ -1151,7 +1151,7 @@ create temp table self_ref_trigger (
     parent int references self_ref_trigger,
     data text,
     nchildren int not null default 0
-) distribute by replication;
+) with (dist_type = replication);
 
 create function self_ref_trigger_ins_func()
   returns trigger language plpgsql as
@@ -1608,7 +1608,7 @@ create table child1 () inherits (parent);
 
 -- a child with a different column order
 -- XXX this fails in XL because we don't allow different column ordering
-create table child2 (b int, a text) distribute by hash(a);
+create table child2 (b int, a text) with (dist_type = hash, dist_col = a);
 alter table child2 inherit parent;
 
 -- a child with an extra column
@@ -1857,7 +1857,7 @@ drop table refd_table, trig_table;
 --
 
 create table self_ref (a int primary key,
-                       b int references self_ref(a) on delete cascade) distribute by replication;
+                       b int references self_ref(a) on delete cascade) with (dist_type = replication);
 
 create trigger self_ref_before_trig
   before delete on self_ref

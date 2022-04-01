@@ -131,8 +131,4 @@ extern int32 type_maximum_size(Oid type_oid, int32 typemod);
 
 /* quote.c */
 extern char *quote_literal_cstr(const char *rawstr);
-#ifdef POLARDB_X
-/* backend/access/transam/transam.c */
-extern Datum polardbx_get_transaction_status(PG_FUNCTION_ARGS);
-#endif
 #endif							/* BUILTINS_H */

@@ -128,8 +128,6 @@ ALTER TABLE xl_at3h DELETE NODE (datanode_2);
 
 ALTER TABLE xl_at3h ADD NODE (datanode_2);
 
-ALTER TABLE xl_at3h DISTRIBUTE BY REPLICATION; 
-
 -- MODULO Distributed table:
 
 CREATE TABLE xl_at2m (
@@ -173,7 +171,6 @@ ALTER TABLE xl_at3m DELETE NODE (datanode_2);
 
 ALTER TABLE xl_at3m ADD NODE (datanode_2);
 
-ALTER TABLE xl_at3m DISTRIBUTE BY REPLICATION;
 
 DROP TABLE xl_at;
 DROP TABLE xl_at1;

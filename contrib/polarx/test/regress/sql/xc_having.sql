@@ -43,8 +43,8 @@ drop table xc_having_tab2;
 -- Combination 2, enable_hashagg on and replicated tables.
 -- repeat the same tests for replicated tables
 -- create required tables and fill them with data
-create table xc_having_tab1 (val int, val2 int) distribute by replication;
-create table xc_having_tab2 (val int, val2 int) distribute by replication;
+create table xc_having_tab1 (val int, val2 int) with(dist_type=replication);
+create table xc_having_tab2 (val int, val2 int) with(dist_type=replication);
 insert into xc_having_tab1 values (1, 1), (2, 1), (3, 1), (2, 2), (6, 2), (4, 3), (1, 3), (6, 3);
 insert into xc_having_tab2 values (1, 1), (4, 1), (8, 1), (2, 4), (9, 4), (3, 4), (4, 2), (5, 2), (3, 2);
 -- having clause not containing any aggregate
@@ -106,8 +106,8 @@ drop table xc_having_tab2;
 -- Combination 4 enable_hashagg off and replicated tables.
 -- repeat the same tests for replicated tables
 -- create required tables and fill them with data
-create table xc_having_tab1 (val int, val2 int) distribute by replication;
-create table xc_having_tab2 (val int, val2 int) distribute by replication;
+create table xc_having_tab1 (val int, val2 int) with(dist_type=replication);
+create table xc_having_tab2 (val int, val2 int) with(dist_type=replication);
 insert into xc_having_tab1 values (1, 1), (2, 1), (3, 1), (2, 2), (6, 2), (4, 3), (1, 3), (6, 3);
 insert into xc_having_tab2 values (1, 1), (4, 1), (8, 1), (2, 4), (9, 4), (3, 4), (4, 2), (5, 2), (3, 2);
 -- having clause not containing any aggregate

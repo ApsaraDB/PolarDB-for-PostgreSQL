@@ -46,10 +46,8 @@
 #include "config.h"
 #include "do_shell.h"
 #include "utils.h"
-#include "gtm_cmd.h"
 #include "coord_cmd.h"
 #include "datanode_cmd.h"
-//#include "gtm_util.h"
 #include "monitor.h"
 #include "cm.h"
 
@@ -67,12 +65,12 @@ int forceInit = false;
 #define GetToken() (line = get_word(line, &token))
 #define TestToken(word) ((token != NULL) && (strcasecmp(token, word) == 0))
 #define testToken(word) ((token != NULL) && (strcmp(token, word) == 0))
-#define HideNodeTypeToken() ((token != NULL) && ( (strcasecmp(token, "coordinator") == 0) || (strcasecmp(token, "gtm") == 0) || (strcasecmp(token, "gtm_proxy") == 0) ))
+#define HideNodeTypeToken() ((token != NULL) && ( (strcasecmp(token, "coordinator") == 0) ))
 #define HideCommandToken() ((token != NULL) && ( (strcasecmp(token, "reconnect") == 0) || (strcasecmp(token, "configure") == 0) \
                                                   ||(strcasecmp(token, "add") == 0) || (strcasecmp(token, "remove") == 0) \
                                                   ||(strcasecmp(token, "Createdb") == 0) || (strcasecmp(token, "Createuser") == 0) \
                                                   ||(strcasecmp(token, "Psql") == 0) || (strcasecmp(token, "q") == 0) \
-                                                  ||(strcasecmp(token, "set") == 0) || (strcasecmp(token, "unregister") == 0) ))
+                                                  ||(strcasecmp(token, "set") == 0) ))
 
 static void kill_something(char *token);
 static void do_deploy(char *line);
@@ -185,7 +183,7 @@ static void do_deploy(char *line)
          * Please note that the following code does not check if the specified nost
          * appears in the configuration file.
          * We should deploy xc binary to the target not in the current configuraiton
-         * to add gtm slave, gtm_proxy, coordinator/datanode master/slave online.
+         * to add coordinator/datanode master/slave online.
          */
         do {
             AddMember(hostlist, token);
@@ -314,8 +312,7 @@ static void do_set(char *line)
 }
 
 /*
- * Failover command ... failover gtm
- *                        failover coordinator nodename
+ * Failover command ... failover coordinator nodename
  *                        failover datanode nodename
  *                        failover nodename
  */
@@ -327,14 +324,6 @@ static void do_failover_command(char *line)
     if (GetToken() == NULL)
     {
         elog(ERROR, "ERROR: Please specify failover command option.\n");
-        return;
-    }
-    else if (TestToken("gtm"))
-    {
-        if (isVarYes(VAR_gtmSlave) && !is_none(sval(VAR_gtmSlaveServer)))
-            failover_gtm();
-        else
-            elog(ERROR, "ERROR: no gtm slave is configured.\n");
         return;
     }
     else if (TestToken("coordinator"))
@@ -390,48 +379,9 @@ static void do_failover_command(char *line)
         elog(ERROR, "ERROR: invalid failover command option %s.\n", token);
 }
 
-/*
- * Reconnect command ... reconnect gtm_proxy [all | nodename ... ]
- */
-static void do_reconnect_command(char *line)
-{
-    char *token;
-
-    if (GetToken() == NULL)
-        elog(ERROR, "ERROR: Please specifiy option to reconnect command.\n");
-    else if (TestToken("gtm_proxy"))
-    {
-        if (!isVarYes(VAR_gtmProxy))
-            elog(ERROR, "ERROR: gtm proxy is not configured.\n");
-        else if ((GetToken() == NULL) || TestToken("all"))
-            reconnect_gtm_proxy_all();
-        else
-        {
-            char **nodeList = NULL;
-            int idx;
-            do
-            {
-                if ((idx = gtmProxyIdx(token)) < 0)
-                    elog(ERROR, "ERROR: %s is not gtm_proxy.\n", token);
-                else
-                    AddMember(nodeList, token);
-            } while(GetToken());
-            if (nodeList)
-                reconnect_gtm_proxy(nodeList);
-            CleanArray(nodeList);
-        }
-    }
-    else
-        elog(ERROR, "ERROR: invalid option %s for reconnect command.\n", token);
-    return;
-}
-
-                
 
 /*
  * Kill command ... kill nodename, kill all,
- *                    kill gtm [master|slave|all],
- *                    kill gtm_proxy [nodename|all] ...
  *                    kill coordinator [nodename ... |master [all | nodenames ... ] | slave [all | nodenames ... ] |all]
  *                    kill datanode [nodename ... |master [all | nodenames ... ] | slave [all | nodenames ... ] | learner [all | nodenames ... ] |all]
  */
@@ -441,44 +391,6 @@ static void do_kill_command(char *line)
 
     if (GetToken() == NULL)
         elog(ERROR, "ERROR: Please specifiy option to kill command\n");
-    else if (TestToken("gtm"))
-    {
-        if ((GetToken() == NULL) || TestToken("all"))
-        {
-            kill_gtm_master();
-            if (isVarYes(VAR_gtmSlave))
-                kill_gtm_slave();
-        }
-        else if (TestToken("master"))
-            kill_gtm_master();
-        else if (TestToken("slave"))
-        {
-            if (isVarYes(VAR_gtmSlave))
-                kill_gtm_slave();
-            else
-                elog(ERROR, "ERROR: GTM slave is not configured.\n");
-        }
-        else
-            elog(ERROR, "ERROR: input value \"%s\" is invalid.\n", token);
-        return;
-    }
-    else if (TestToken("gtm_proxy"))
-    {
-        if (GetToken() == NULL)
-            elog(ERROR, "ERROR: Please specify additonal option to kill gtm_proxies\n");
-        else if (TestToken("all"))
-            kill_gtm_proxy(aval(VAR_gtmProxyNames));
-        else
-        {
-            char **nodeList = Malloc0(sizeof(char*));
-            do {
-                AddMember(nodeList, token);
-            } while(GetToken());
-            kill_gtm_proxy(nodeList);
-            clean_array(nodeList);
-        }
-        return;
-    }
     else if (TestToken("coordinator"))
     {
         if ((GetToken() == NULL) || TestToken("all"))
@@ -623,11 +535,6 @@ static void do_kill_command(char *line)
             if (isVarYes(VAR_coordSlave))
                 kill_coordinator_slave(aval(VAR_coordNames));
             kill_coordinator_master(aval(VAR_coordNames));
-            if (isVarYes(VAR_gtmProxy))
-                kill_gtm_proxy(aval(VAR_gtmProxyNames));
-            if (isVarYes(VAR_gtmSlave))
-                kill_gtm_slave();
-            kill_gtm_master();
         }
     }
     else
@@ -659,18 +566,6 @@ static void init_all(void)
     }
     else
     {
-        init_gtm_master(true);
-        start_gtm_master();
-        if (isVarYes(VAR_gtmSlave))
-        {
-            init_gtm_slave();
-            start_gtm_slave();
-        }
-        if (isVarYes(VAR_gtmProxy))
-        {
-            init_gtm_proxy_all();
-            start_gtm_proxy_all();
-        }
         init_coordinator_master_all();
         start_coordinator_master_all();
         if (isVarYes(VAR_coordSlave))
@@ -695,8 +590,6 @@ static void init_all(void)
 
 /*
  * Init command ... init all
- *                    init gtm [master|slave|all],
- *                    init gtm_proxy [all| nodename ...]
  *                    init coordinator [all | master [all | nodename ... ]| slave [all | nodename ... ]| nodename ... ]
  *                    init datanode [all | master [all | nodename ...] | slave [all | nodename ... ] | slave [all | nodename ... ] | nodename ... ]
  */
@@ -716,33 +609,6 @@ static void do_init_command(char *line)
 
     if (TestToken("all"))
         init_all();
-    else if (TestToken("gtm"))
-    {
-        if (!GetToken() || (TestToken("all")))
-        {
-            init_gtm_master(true);
-            if (isVarYes(VAR_gtmSlave))
-                init_gtm_slave();
-        }
-        else if (TestToken("master"))
-            init_gtm_master(true);
-        else if (TestToken("slave"))
-            init_gtm_slave();
-        else
-            elog(ERROR, "ERROR: please specify master, slave or all for init gtm command.\n");
-    }
-    else if (TestToken("gtm_proxy"))
-        if (!GetToken() || TestToken("all"))
-            init_gtm_proxy_all();
-        else
-        {
-            char **nodeList = Malloc0(sizeof(char *));
-            do {
-                AddMember(nodeList, token);
-            } while(GetToken());
-            init_gtm_proxy(nodeList);
-            clean_array(nodeList);
-        }
     else if (TestToken("coordinator"))
         if (!GetToken() || TestToken("all"))
         {
@@ -854,8 +720,6 @@ static void do_init_command(char *line)
 
 /*
  * Start command ... start nodename, start all,
- *                     start gtm [master|slave|all],
- *                     start gtm_proxy [nodename|all] ...
  *                     start coordinator [nodename ... |master [all | nodenames ... ] | slave [all | nodenames ... ] |all]
  *                     start datanode [nodename ... |master [all | nodenames ... ] | slave [all | nodenames ... ] | learner [all | nodename ... ]|all]
  */
@@ -873,11 +737,6 @@ static void start_all(void)
     }
     else
     {
-        start_gtm_master();
-        if (isVarYes(VAR_gtmSlave))
-            start_gtm_slave();
-        if (isVarYes(VAR_gtmProxy))
-            start_gtm_proxy_all();
         start_coordinator_master_all();
         if (isVarYes(VAR_coordSlave))
             start_coordinator_slave_all();
@@ -899,33 +758,6 @@ static void do_start_command(char *line)
         elog(ERROR, "ERROR: Please specify option to start command.\n");
     else if (TestToken("all"))
         start_all();
-    else if (TestToken("gtm"))
-    {
-        if (!GetToken() || (TestToken("all")))
-        {
-            start_gtm_master();
-            if (isVarYes(VAR_gtmSlave))
-                start_gtm_slave();
-        }
-        else if (TestToken("master"))
-            start_gtm_master();
-        else if (TestToken("slave"))
-            start_gtm_slave();
-        else
-            elog(ERROR, "ERROR: please specify master, slave or all for start gtm command.\n");
-    }
-    else if (TestToken("gtm_proxy"))
-        if (!GetToken() || TestToken("all"))
-            start_gtm_proxy_all();
-        else
-        {
-            char **nodeList = NULL;
-            do
-                AddMember(nodeList, token);
-            while (GetToken());
-            start_gtm_proxy(nodeList);
-            clean_array(nodeList);
-        }
     else if (TestToken("coordinator"))
         if (!GetToken() || TestToken("all"))
         {
@@ -1033,8 +865,6 @@ static void do_start_command(char *line)
 
 /*
  * Stop command ... stop [-m smart | fast | immediate] all
- *                     stop gtm [master | slave | all],
- *                     stop gtm_proxy [ nodename | all] ...
  *                     stop [-m smart | fast | immediate ] coordinator [nodename ... | master [all | nodenames ... ] | slave [all | nodenames ... ] |all]
  *                     stop [-m smart | fast | immediate ] datanode [nodename ... | master [all | nodenames ... ] | slave [all | nodenames ... ] | learner [all | nodenames ... ] |all]
  *
@@ -1063,12 +893,6 @@ static void stop_all(char *immediate)
             stop_datanode_slave_all(immediate);
         }
         stop_datanode_master_all(immediate);
-        if (isVarYes(VAR_gtmProxy))
-            stop_gtm_proxy_all();
-        if (isVarYes(VAR_gtmSlave))
-            stop_gtm_slave();
-        if (!is_none(sval(VAR_gtmMasterServer)))
-            stop_gtm_master();
     }
 }
 
@@ -1095,65 +919,8 @@ static void do_add_command(char *line)
         elog(ERROR, "ERROR: Specify options for add command.\n");
         return;
     }
-    if (!TestToken("gtm") && is_none(sval(VAR_gtmMasterServer)))
-    {
-        elog(ERROR, "ERROR: GTM master must be added before adding any other component.\n");
-        return;
-    }
 
-    if (TestToken("gtm"))
-    {
-        /*
-         * add gtm master name host port dir
-         */
-
-        if (!GetToken())
-        {
-            elog(ERROR, "ERROR: Specify option for add gtm command.\n");
-            return;
-        }
-         if (TestToken("master"))
-         {
-             GetAndSet(name, "ERROR: please specify the name of gtm master\n");
-             GetAndSet(host, "ERROR: please specify the host name for gtm master\n");
-             GetAndSet(port, "ERROR: please specify the port number for gtm master\n");
-             GetAndSet(dir, "ERROR: please specify the working director for gtm master\n");
-             add_gtmMaster(name, host, atoi(port), dir);
-         }
-         else if (TestToken("slave"))
-        {
-            GetAndSet(name, "ERROR: please specify the name of gtm slave\n");
-            GetAndSet(host, "ERROR: please specify the host name for gtm slave\n");
-            GetAndSet(port, "ERROR: please specify the port number for gtm slave\n");
-            GetAndSet(dir, "ERROR: please specify the working director for gtm slave\n");
-            add_gtmSlave(name, host, atoi(port), dir);
-        }
-         else
-         {
-             elog(ERROR, "ERROR: you can specify only master/slave to add gtm command. %s is invalid.\n", token);
-             return;
-         }
-        freeAndReset(name);
-        freeAndReset(host);
-        freeAndReset(port);
-        freeAndReset(dir);
-    }
-    else if (TestToken("gtm_proxy"))
-    {
-        /*
-         * Add gtm_proxy name host port dir
-         */
-        GetAndSet(name, "ERROR: please specify the name of gtm_proxy\n");
-        GetAndSet(host, "ERROR: please specify the host name for gtm_proxy\n");
-        GetAndSet(port, "ERROR: please specify the port number for gtm_proxy\n");
-        GetAndSet(dir, "ERROR: please specify the working director for gtm_proxy\n");
-        add_gtmProxy(name, host, atoi(port), dir);
-        freeAndReset(name);
-        freeAndReset(host);
-        freeAndReset(port);
-        freeAndReset(dir);
-    }
-    else if (TestToken("coordinator"))
+    if (TestToken("coordinator"))
     {
         /*
          * Add coordinator master name host port pooler dir
@@ -1288,43 +1055,11 @@ static void do_remove_command(char *line)
 
     if (!GetToken())
     {
-        elog(ERROR, "ERROR: Please specify gtm, gtm_master, coordinator or datanode after add command.\n");
+        elog(ERROR, "ERROR: Please specify coordinator or datanode after add command.\n");
         return;
     }
-    if (TestToken("gtm"))
-    {
-        if (!GetToken())
-        {
-            elog(ERROR, "ERROR: Specify option to remove gtm command\n");
-            return;
-        }
-        if (TestToken("master"))
-        {
-            if (GetToken() && TestToken("clean"))
-                clean_opt = TRUE;
-            remove_gtmMaster(clean_opt);
-        }
-        else if (TestToken("slave"))
-        {
-            if (GetToken() && TestToken("clean"))
-                clean_opt = TRUE;
-            remove_gtmSlave(clean_opt);
-        }
-        else 
-        {
-            elog(ERROR, "ERROR: you can specify only master/slave to remove gtm command. %s is invalid.\n", token);
-            return;
-        }
-    }
-    else if (TestToken("gtm_proxy"))
-    {
-        GetAndSet(name, "ERROR: please specify gtm proxy name to remove.\n");
-         if (GetToken() && TestToken("clean"))
-            clean_opt = TRUE;
-        remove_gtmProxy(name, clean_opt    );
-        freeAndReset(name);
-    }
-    else if (TestToken("coordinator"))
+
+    if (TestToken("coordinator"))
     {
         if (!GetToken() || (!TestToken("master") && !TestToken("slave")))
         {
@@ -1424,40 +1159,6 @@ static void do_stop_command(char *line)
         if (GetToken() && TestToken("-m"))
             handle_m_option(line, &m_Option);
         stop_all(m_Option);
-    }
-    else if (TestToken("gtm"))
-    {
-        if (m_Option)
-            elog(WARNING, "-m option is not available with gtm. Ignoring.\n");
-        if (!GetToken() || (TestToken("all")))
-        {
-            if (!is_none(sval(VAR_gtmMasterServer)))
-                stop_gtm_master();
-            if (isVarYes(VAR_gtmSlave))
-                stop_gtm_slave();
-        }
-        else if (TestToken("master") && !is_none(sval(VAR_gtmMasterServer)))
-            stop_gtm_master();
-        else if (TestToken("slave") && isVarYes(VAR_gtmSlave))
-            stop_gtm_slave();
-        else
-            elog(ERROR, "ERROR: please specify master, slave or all for stop gtm command.\n");
-    }
-    else if (TestToken("gtm_proxy"))
-    {
-        if (m_Option)
-            elog(WARNING, "-m option is not available with gtm_prxy. Ignoring.\n");
-        if (!GetToken() || TestToken("all"))
-            stop_gtm_proxy_all();
-        else
-        {
-            char **nodeList = NULL;
-            do
-                AddMember(nodeList, token);
-            while (GetToken());
-            stop_gtm_proxy(nodeList);
-            clean_array(nodeList);
-        }
     }
     else if (TestToken("coordinator"))
     {
@@ -1661,13 +1362,6 @@ static void kill_something(char *nodeName)
         case NodeType_UNDEF:
             elog(ERROR, "ERROR: Could not find name \"%s\" in any node type.\n", nodeName);
             return;
-        case NodeType_GTM:
-            elog(ERROR, "ERROR: Issue kill gtm command to kill gtm master/slave\n");
-            return;
-        case NodeType_GTM_PROXY:
-            nodeList[0] = nodeName;
-            kill_gtm_proxy(nodeList);
-            return;
         case NodeType_COORDINATOR:
             nodeList[0] = nodeName;
             kill_coordinator_master(nodeList);
@@ -1702,15 +1396,6 @@ static void show_config_something(char *nodeName)
     {
         case NodeType_UNDEF:
             elog(ERROR, "ERROR: Could not find name \"%s\" in any node type.\n", nodeName);
-            return;
-        case NodeType_GTM:
-            show_config_gtmMaster(TRUE, sval(VAR_gtmMasterServer));
-            if (isVarYes(VAR_gtmSlave))
-                show_config_gtmSlave(TRUE, sval(VAR_gtmSlaveServer));
-            return;
-        case NodeType_GTM_PROXY:
-            idx = gtmProxyIdx(nodeName);
-            show_config_gtmProxy(TRUE, idx, aval(VAR_gtmProxyServers)[idx]);
             return;
         case NodeType_COORDINATOR:
             idx = coordIdx(nodeName);
@@ -1756,8 +1441,7 @@ static void show_config_servers(char **hostList)
 }
 
 /*
- * show {config|configuration} [all | name .... | gtm [master|slave|all] | gtm_proxy [all | name ...] |
- *                                coordinator [all | master | slave | name ... ] |
+ * show {config|configuration} [all | name .... | coordinator [all | master | slave | name ... ] |
  *                                host name .... ]
  * With no option, will print common configuartion parameters and exit.
  *
@@ -1808,49 +1492,6 @@ static void show_configuration(char *line)
         if (hostList[0])
             show_config_servers(hostList);
         clean_array(hostList);
-    }
-    else if (TestToken("gtm"))
-    {
-        if ((GetToken() == NULL) || (TestToken("all")))
-        {
-            show_config_gtmMaster(TRUE, sval(VAR_gtmMasterServer));
-            if (isVarYes(VAR_gtmSlave))
-                show_config_gtmSlave(TRUE, sval(VAR_gtmSlaveServer));
-        }
-        else if (TestToken("master"))
-            show_config_gtmMaster(TRUE, sval(VAR_gtmMasterServer));
-        else if (TestToken("slave"))
-        {
-            if (isVarYes(VAR_gtmSlave))
-                show_config_gtmSlave(TRUE, sval(VAR_gtmSlaveServer));
-            else
-                elog(NOTICE, "NOTICE: gtm slave is not configured.\n");
-        }
-        else
-            elog(ERROR, "ERROR: invalid option %s for 'show config gtm' command.\n", token);
-    }
-    else if (TestToken("gtm_proxy"))
-    {
-        if (!isVarYes(VAR_gtmProxy))
-        {
-            elog(ERROR, "ERROR: gtm proxies are not configured.\n");
-        }
-        else if ((GetToken() == NULL) || (TestToken("all")))
-            show_config_gtmProxies(aval(VAR_gtmProxyNames));
-        else 
-        {
-            char **nodeList = Malloc0(sizeof(char *));
-            do{
-                int idx;
-                idx = gtmProxyIdx(token);
-                if (idx < 0)
-                    elog(ERROR, "ERROR: Specified name %s is not GTM Proxy.\n", token);
-                else
-                    AddMember(nodeList, token);
-            } while(GetToken());
-            show_config_gtmProxies(nodeList);
-            clean_array(nodeList);
-        }
     }
     else if (TestToken("coordinator"))
     {
@@ -1957,17 +1598,6 @@ static void show_config_host(char *hostname)
     elog(NOTICE, "====== Server: %s =======\n", hostname);
     if (!isVarYes(VAR_standAlone))
     {
-        /* GTM Master */
-        if (strcmp(hostname, sval(VAR_gtmMasterServer)) == 0)
-            show_config_gtmMaster(TRUE, NULL);
-        /* GTM Slave */
-        if (isVarYes(VAR_gtmSlave) && (strcmp(sval(VAR_gtmSlaveServer), hostname) == 0))
-            show_config_gtmSlave(TRUE, NULL);
-        /* GTM Proxy */
-        if (isVarYes(VAR_gtmProxy))
-            for (ii = 0; aval(VAR_gtmProxyServers)[ii]; ii++)
-                if (strcmp(aval(VAR_gtmProxyServers)[ii], hostname) == 0)
-                    show_config_gtmProxy(TRUE, ii, NULL);
         /* Coordinator Master */
         for (ii = 0; aval(VAR_coordMasterServers)[ii]; ii++)
             if (strcmp(aval(VAR_coordMasterServers)[ii], hostname) == 0)
@@ -2005,8 +1635,6 @@ void show_config_hostList(char **hostList)
  * Clean command
  *
  * clean {all | 
- *        gtm [ all | master | slave ] |
- *          gtm_proxy [ all | nodename ... ]
  *          coordinator [[all | master | slave ] [nodename ... ]] |
  *        datanode [ [all | master | slave] [nodename ... ]}
  */
@@ -2040,12 +1668,6 @@ static void do_clean_command(char *line)
         }
         else
         {
-            if (!is_none(sval(VAR_gtmMasterServer)))
-                clean_gtm_master();
-            if (isVarYes(VAR_gtmSlave))
-                clean_gtm_slave();
-            if (isVarYes(VAR_gtmProxy))
-                clean_gtm_proxy_all();
             clean_coordinator_master_all();
             if (isVarYes(VAR_coordSlave))
                 clean_coordinator_slave_all();
@@ -2056,63 +1678,6 @@ static void do_clean_command(char *line)
                 if(isPaxosEnv())
                     clean_datanode_learner_all();
             }
-        }
-    }
-    else if (TestToken("gtm"))
-    {
-        GetToken();
-        if ((token == NULL) || TestToken("all"))
-        {
-            elog(INFO, "Stopping and cleaning GTM slave/master \n");
-            if (!is_none(sval(VAR_gtmMasterServer)))
-                stop_gtm_master();
-            if (isVarYes(VAR_gtmSlave))
-                stop_gtm_slave();
-
-            if (!is_none(sval(VAR_gtmMasterServer)))
-                clean_gtm_master();
-            if (isVarYes(VAR_gtmSlave))
-                clean_gtm_slave();
-        }
-        else if (TestToken("master") && !is_none(sval(VAR_gtmMasterServer)))
-        {
-            stop_gtm_master();
-            clean_gtm_master();
-        }
-        else if (TestToken("slave"))
-        {
-            if (isVarYes(VAR_gtmSlave))
-            {
-                stop_gtm_slave();
-                clean_gtm_slave();
-            }
-            else
-                elog(ERROR, "ERROR: gtm slave is not configured.\n");
-        }
-        else
-            elog(ERROR, "ERROR: invalid clean command option %s.\n", token);
-    }
-    else if (TestToken("gtm_proxy"))
-    {
-        elog(INFO, "Stopping and cleaning specified gtm_proxy.\n");
-        GetToken();
-        if (!isVarYes(VAR_gtmProxy))
-            elog(ERROR, "ERROR: gtm proxy is not configured.\n");
-        else if ((token == NULL) || TestToken("all"))
-        {
-            stop_gtm_proxy_all();
-            clean_gtm_proxy_all();
-        }
-        else
-        {
-            char **nodeList = NULL;
-            do
-                AddMember(nodeList, token);
-            while(GetToken());
-
-            stop_gtm_proxy(nodeList);
-            clean_gtm_proxy(nodeList);
-            CleanArray(nodeList);
         }
     }
     else if (TestToken("coordinator"))
@@ -2382,26 +1947,6 @@ static void do_clean_command(char *line)
             {
                 case NodeType_UNDEF:
                     elog(ERROR, "ERROR: %s is not found, skipping\n", token);
-                    continue;
-                case NodeType_GTM:
-                    elog(INFO, "Stopping and cleaning GTM master.\n");
-                    if (cmdList == NULL)
-                        cmdList = initCmdList();
-                    addCmd(cmdList, prepare_stopGtmMaster());
-                    addCmd(cmdList, prepare_cleanGtmMaster());
-                    if (isVarYes(VAR_gtmSlave))
-                    {
-                        elog(INFO, "Stopping and cleaning GTM slave.\n");
-                        addCmd(cmdList, prepare_stopGtmSlave());
-                        addCmd(cmdList, prepare_cleanGtmSlave());
-                    }
-                    continue;
-                case NodeType_GTM_PROXY:
-                    elog(INFO, "Stopping and cleaning GTM proxy %s.\n", token);
-                    if (cmdList == NULL)
-                        cmdList = initCmdList();
-                    addCmd(cmdList, prepare_stopGtmProxy(token));
-                    addCmd(cmdList, prepare_cleanGtmProxy(token));
                     continue;
                 case NodeType_COORDINATOR:
                     elog(INFO, "Stopping and cleaning coordinator master %s\n", token);
@@ -2676,7 +2221,7 @@ int do_singleLine(char *buf, char *wkline)
 
     if (HideNodeTypeToken())
     {
-        elog(ERROR, "Stand alone version don't supportgtm, gtm_proxy and coordinator node type.\n");
+        elog(ERROR, "Stand alone version don't support coordinator node type.\n");
         return 1;
     }
 
@@ -2769,11 +2314,6 @@ int do_singleLine(char *buf, char *wkline)
     else if (TestToken("failover"))
     {
         do_failover_command(line);
-        return 0;
-    }
-    else if (TestToken("reconnect"))
-    {
-        do_reconnect_command(line);
         return 0;
     }
     else if (TestToken("add"))
@@ -3071,8 +2611,6 @@ int do_singleLine(char *buf, char *wkline)
      * Clean command
      *
      * clean [all | 
-     *        gtm [ all | master | slave ] |
-     *          gtm_proxy [ all | nodename ... ]
      *          coordinator [[all | master | slave ] [nodename ... ]] |
      *        datanode [ [all | master | slave] [nodename ... ]
      */
@@ -3120,17 +2658,14 @@ show_all_help()
                "    help <command>\n"
                "    where <command> is either add, clean, monitor, \n"
                "        configure, deploy, failover, init, kill, log, \n"
-               "        prepare, start, unregister \n"
-               "        stop or unregister\n");
+               "        prepare, start, stop \n");
     else
         printf("You are using pgxc_ctl, the configuration utility for PGXL\n"
                "Type:\n"
                "    help <command>\n"
                "    where <command> is either add, Createdb, Createuser, clean,\n"
                "        configure, deploy, failover, init, kill, log, monitor,\n"
-               "        prepare, q, reconnect, remove, set, show, start, \n"
-               "        stop or unregister\n");
-
+               "        prepare, q, reconnect, remove, set, show, start, stop \n");
 }
 
 static void
@@ -3149,8 +2684,6 @@ do_show_help(char *line)
     {
         printf(
                 "\n"
-                "add gtm slave slave_name host port dir\n"
-                "add gtm_proxy name host port dir\n"
                 "add coordinator master name host port pooler dir extra_conf extra_pghba\n"
                 "add coordinator slave name host port pooler dir archDir\n"
                 "add datanode master name host port pooler dir xlogdir restore_datanode_name extra_conf extra_pghba\n"
@@ -3189,8 +2722,6 @@ do_show_help(char *line)
         printf(
                 "\n"
                 "clean all\n"
-                "clean gtm [all | master | slave]\n"
-                "clean gtm_proxy [all | nodename ... ]\n"
                 "clean coordinator [[all | master | slave ] [nodename ... ]]\n"
                 "clean datanode [[all | master | slave | learner ] [nodename ... ]]\n"
                 "\n"
@@ -3237,7 +2768,7 @@ do_show_help(char *line)
     {
         printf(
                 "\n"
-                "failover [ gtm | coordinator nodename | datanode nodename | nodename ]\n"
+                "failover [ coordinator nodename | datanode nodename | nodename ]\n"
                 "\n"
                 "Failover specified node to its master\n"
                 "For more details, please see the pgxc_ctl documentation\n"
@@ -3250,8 +2781,6 @@ do_show_help(char *line)
                 "\n"
                 "init [force] all\n"
                 "init [force] nodename ...\n"
-                "init [force] gtm [ master | slave | all ]\n"
-                "init [force] gtm_proxy [ all | nodename ... ]\n"
                 "init [force] coordinator nodename ...\n"
                 "init [force] coordinator [ master | slave ] [ all | nodename ... ]\n"
                 "init [force] datanode nodename ...\n"
@@ -3270,8 +2799,6 @@ do_show_help(char *line)
                 "\n"
                 "kill all\n"
                 "kill nodename ...\n"
-                "kill gtm [ master | slave | all ]\n"
-                "kill gtm_proxy [ all | nodename ... ]\n"
                 "kill coordinator nodename ...\n"
                 "kill coordinator [ master | slave ] [ all | nodename ... ]\n"
                 "kill datanode nodename ...\n"
@@ -3301,8 +2828,6 @@ do_show_help(char *line)
                 "\n"
                 "monitor all\n"
                 "monitor nodename ...\n"
-                "monitor gtm [ master | slave | all ]\n"
-                "monitor gtm_proxy [ all | nodename ... ]\n"
                 "monitor coordinator nodename ...\n"
                 "monitor coordinator [ master | slave ] [ all | nodename ... ]\n"
                 "monitor datanode nodename ...\n"
@@ -3346,23 +2871,10 @@ do_show_help(char *line)
                 "\n"
                 );
     }
-    else if (TestToken("reconnect"))
-    {
-        printf(
-                "\n"
-                "reconnect gtm_proxy [ all | nodename ... ]\n"
-                "\n"
-                "Reconnects specified gtm_proxy to new gtm\n"
-                "For more details, please see the pgxc_ctl documentation\n"
-                "\n"
-                );
-    }
     else if (TestToken("remove"))
     {
         printf(
                 "\n"
-                "remove gtm slave\n"
-                "remove gtm_proxy nodename [ clean ]\n"
                 "remove coordinator [ master| slave ] nodename [ clean ]\n"
                 "remove datanode [ master| slave ] nodename [ clean ]\n"
                 "\n"
@@ -3388,8 +2900,6 @@ do_show_help(char *line)
                 "\n"
                 "show [ configuration | configure | config ] [ all | basic ]\n"
                 "show [ configuration | configure | config ] host hostname ... \n"
-                "show [ configuration | configure | config ] gtm [ all | master | slave ]\n"
-                "show [ configuration | configure | config ] gtm_proxy [ all | gtm_proxy_name ... ]\n"
                 "show [ configuration | configure | config ] [ coordinator | datanode ] [ all | master | slave | learner ] nodename ...\n"
                 "\n"
                 "Shows postgres-xl configuration\n"
@@ -3410,8 +2920,6 @@ do_show_help(char *line)
                 "\n"
                 "start all\n"
                 "start nodename ...\n"
-                "start gtm [ master | slave | all ]\n"
-                "start gtm_proxy [ all | nodename ... ]\n"
                 "start coordinator nodename ...\n"
                 "start coordinator [ master | slave ] [ all | nodename ... ]\n"
                 "start datanode nodename ...\n"
@@ -3427,8 +2935,6 @@ do_show_help(char *line)
         printf(
                 "\n"
                 "stop [ -m smart | fast | immediate ] all\n"
-                "stop gtm [ master | slave | all ]\n"
-                "stop gtm_proxy [ all | nodename ... ]\n"
                 "stop [ -m smart | fast | immediate ] coordinator nodename ... \n"
                 "stop [ -m smart | fast | immediate ] coordinator [ master | slave ] [ all | nodename ... ] \n"
                 "stop [ -m smart | fast | immediate ] datanode nodename ... \n"
@@ -3438,17 +2944,6 @@ do_show_help(char *line)
                 "For more details, please see the pgxc_ctl documentation\n"
                 "\n"
               );
-    }
-    else if (TestToken("unregister"))
-    {
-        printf(
-                "\n"
-                "unregister unregister_option ...\n"
-                "\n"
-                "Unregisteres specified node from the gtm\n"
-                "For more details, please see the pgxc_ctl documentation\n"
-                "\n"
-                );
     }
     else
     {
@@ -3709,17 +3204,6 @@ do_show_help_single(char *line)
                 "\n"
               );
     }
-    /*else if (TestToken("unregister"))
-    {
-        printf(
-                "\n"
-                "unregister unregister_option ...\n"
-                "\n"
-                "Unregisteres specified node from the gtm\n"
-                "For more details, please see the pgxc_ctl documentation\n"
-                "\n"
-                );
-    }*/
     else
     {
         printf(

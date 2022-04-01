@@ -6,10 +6,10 @@
 -- by incrementation and decrementation of statement-based and row-based counters
 
 -- Create tables
-CREATE TABLE xc_trigger_rep_tab (a int, b int) DISTRIBUTE BY REPLICATION;
-CREATE TABLE xc_trigger_hash_tab (a int, b int) DISTRIBUTE BY HASH(a);
-CREATE TABLE xc_trigger_rr_tab (a int, b int) DISTRIBUTE BY ROUNDROBIN;
-CREATE TABLE xc_trigger_modulo_tab (a int, b int) DISTRIBUTE BY MODULO(a);
+CREATE TABLE xc_trigger_rep_tab (a int, b int) with(dist_type=replication);
+CREATE TABLE xc_trigger_hash_tab (a int, b int) with(dist_type=hash, dist_col=a);
+CREATE TABLE xc_trigger_rr_tab (a int, b int) with(dist_type=roundrobin);
+CREATE TABLE xc_trigger_modulo_tab (a int, b int) with(dist_type=modulo, dist_col=a);
 CREATE TABLE table_stats (table_name text primary key,
 num_insert_query int DEFAULT 0,
 num_update_query int DEFAULT 0,

@@ -5,8 +5,8 @@
  * Query-walker utility functions to be used to change RTE in query and
  * utililty functions of changing rel cache for using FDW planner
  *
- * Copyright (c) 2020, Alibaba Inc. and/or its affiliates
- * Copyright (c) 2020, Apache License Version 2.0*
+ * Copyright (c) 2021, Alibaba Group Holding Limited
+ * Licensed under the Apache License, Version 2.0 (the "License");
  *
  * IDENTIFICATION
  *        contrib/polarx/utils/fdwplanner_utils.c
@@ -15,6 +15,7 @@
  */
 
 #include "postgres.h"
+#include "polarx.h"
 #include "nodes/primnodes.h"
 
 #include "catalog/pg_class.h"
@@ -29,7 +30,6 @@
 #include "utils/memutils.h"
 #include "utils/inval.h"
 #include "utils/fdwplanner_utils.h"
-#include "pgxc/pgxc.h"
 #include "pgxc/locator.h"
 #include "access/xact.h"
 

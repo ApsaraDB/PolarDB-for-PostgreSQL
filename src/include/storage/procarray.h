@@ -70,9 +70,6 @@ extern void ProcArrayEndTransaction(PGPROC *proc);
 extern void ProcArrayClearTransaction(PGPROC *proc);
 extern void ProcArrayResetXmin(PGPROC *proc);
 extern void AdvanceOldestActiveXid(TransactionId myXid);
-#ifdef POLARDB_X
-extern void ReloadConnInfoOnBackends(bool refresh_only);
-#endif
 extern void ProcArrayInitRecovery(TransactionId oldestActiveXID, TransactionId initializedUptoXID);
 extern void ProcArrayApplyRecoveryInfo(RunningTransactions running);
 extern void ProcArrayApplyXidAssignment(TransactionId topxid,

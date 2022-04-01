@@ -71,18 +71,6 @@
 #include "utils/lsyscache.h"
 #include "utils/syscache.h"
 #include "utils/rel.h"
-#ifdef POLARDB_X
-#include "pgxc/pgxc.h"
-#include "nodes/nodes.h"
-#include "pgxc/nodemgr.h"
-#include "utils/lsyscache.h"
-#include "utils/rel.h"
-#include "utils/builtins.h"
-#include "utils/snapmgr.h"
-#include "pgxc/connpool.h"
-#include "access/xact.h"
-#include "nodes/makefuncs.h"
-#endif
 #ifdef ENABLE_DISTRIBUTED_TRANSACTION
 #include "distributed_txn/txn_timestamp.h"
 #endif							/* ENABLE_DISTRIBUTED_TRANSACTION */
@@ -469,12 +457,6 @@ standard_ProcessUtility(PlannedStmt *pstmt,
 
 					case TRANS_STMT_PREPARE:
 						PreventCommandDuringRecovery("PREPARE TRANSACTION");
-#ifdef POLARDB_X
-						if (IS_PGXC_LOCAL_COORDINATOR)
-						{
-							elog(ERROR, "Explict two phase commit is not supported yet.");
-						}
-#endif
 						if (!PrepareTransactionBlock(stmt->gid))
 						{
 							/* report unsuccessful commit in completionTag */
@@ -486,12 +468,6 @@ standard_ProcessUtility(PlannedStmt *pstmt,
 					case TRANS_STMT_COMMIT_PREPARED:
 						PreventInTransactionBlock(isTopLevel, "COMMIT PREPARED");
 						PreventCommandDuringRecovery("COMMIT PREPARED");
-#ifdef POLARDB_X
-						if (IS_PGXC_LOCAL_COORDINATOR)
-						{
-							elog(ERROR, "Explict two phase commit is not supported yet.");
-						}
-#endif
 #ifdef ENABLE_DISTRIBUTED_TRANSACTION
 						if (stmt->commit_ts)
 							TxnSetCoordinatedCommitTsFromStr(stmt->commit_ts);
@@ -2745,17 +2721,6 @@ CreateCommandTag(Node *parsetree)
 			tag = "CHECKPOINT";
 			break;
 
-#ifdef POLARDB_X
-        case T_ExecDirectStmt:
-            tag = "EXECUTE DIRECT";
-            break;
-        case T_CleanConnStmt:
-            tag = "CLEAN CONNECTION";
-            break;
-		case T_RemoteQuery:
-            tag = "REMOTE QUERY";
-            break;
-#endif
 		case T_ReindexStmt:
 			tag = "REINDEX";
 			break;
@@ -3492,13 +3457,6 @@ GetCommandLogLevel(Node *parsetree)
 
 			}
 			break;
-#ifdef POLARDB_X
-        case T_CleanConnStmt:
-        case T_ExecDirectStmt:
-		case T_RemoteQuery:
-            lev = LOGSTMT_ALL;
-            break;
-#endif
 		default:
 			elog(WARNING, "unrecognized node type: %d",
 				 (int) nodeTag(parsetree));

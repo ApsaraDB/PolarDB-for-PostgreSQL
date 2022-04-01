@@ -17,7 +17,6 @@ SUBDIRS = \
 	port \
 	timezone \
 	interfaces \
-	gtm \
 	backend \
 	backend/utils/mb/conversion_procs \
 	backend/snowball \

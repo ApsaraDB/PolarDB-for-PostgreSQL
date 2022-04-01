@@ -3,7 +3,7 @@
  *	  PostgreSQL logical replication
  *
  * Support CTS-based logical replication
- * Author: Junbin Kang
+ * Author:  
  *
  * Portions Copyright (c) 2020, Alibaba Group Holding Limited
  * Copyright (c) 2012-2018, PostgreSQL Global Development Group

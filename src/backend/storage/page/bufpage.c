@@ -4,7 +4,7 @@
  *	  POSTGRES standard buffer page code.
  *
  * Support remote recovery.
- * Author: Junbin Kang
+ * Author:  
  *
  * Portions Copyright (c) 2020, Alibaba Group Holding Limited
  * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group

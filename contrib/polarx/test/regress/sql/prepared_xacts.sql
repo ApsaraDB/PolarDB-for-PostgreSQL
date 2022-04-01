@@ -8,7 +8,7 @@
 
 
 -- create a simple table that we'll use in the tests
-CREATE TABLE pxtest1 (foobar VARCHAR(10)) distribute by replication;
+CREATE TABLE pxtest1 (foobar VARCHAR(10)) with(dist_type=replication);
 
 INSERT INTO pxtest1 VALUES ('aaa');
 

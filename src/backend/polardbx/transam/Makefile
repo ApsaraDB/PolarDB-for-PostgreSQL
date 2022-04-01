@@ -15,7 +15,6 @@ top_builddir = ../../../..
 include $(top_builddir)/src/Makefile.global
 
 OBJS = txn_coordinator.o \
-	   txn_gtm.o 		\
 	   txn_util.o \
 
 include $(top_srcdir)/src/backend/common.mk

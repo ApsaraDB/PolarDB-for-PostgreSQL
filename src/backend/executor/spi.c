@@ -1920,9 +1920,6 @@ _SPI_prepare_plan(const char *src, SPIPlanPtr plan)
 		 */
 		plansource = CreateCachedPlan(parsetree,
 									  src,
-                                      #ifdef POLARDB_X
-                                      NULL,
-                                      #endif
 									  CreateCommandTag(parsetree->stmt));
 
 		/*

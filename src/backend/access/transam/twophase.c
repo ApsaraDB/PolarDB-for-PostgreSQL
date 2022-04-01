@@ -114,6 +114,7 @@
 #include "utils/timestamp.h"
 #ifdef POLARDB_X
 #include "catalog/pg_control.h"
+#include "pgxc/pgxc.h"
 #endif
 
 #ifdef ENABLE_DISTRIBUTED_TRANSACTION
@@ -129,11 +130,6 @@
 
 /* GUC variable, can't be changed after startup */
 int			max_prepared_xacts = 0;
-
-#ifdef POLARDB_X
-/* HashTable key: gid  value: local xact id, acquire GidHashTableLock before access it. */
-static HTAB *g_GidHashTab = NULL;
-#endif
 
 /*
  * This struct describes one global transaction that is in prepared state
@@ -242,10 +238,6 @@ static void RecordTransactionAbortPrepared(TransactionId xid,
 static void ProcessRecords(char *bufptr, TransactionId xid,
 			   const TwoPhaseCallback callbacks[]);
 static void RemoveGXact(GlobalTransaction gxact);
-#ifdef POLARDB_X
-static void MarkGXactDone(GlobalTransaction gxact);
-#endif
-
 static void XlogReadTwoPhaseData(XLogRecPtr lsn, char **buf, int *len);
 static char *ProcessTwoPhaseBuffer(TransactionId xid,
 					  XLogRecPtr prepare_start_lsn,
@@ -256,11 +248,23 @@ static void MarkAsPreparingGuts(GlobalTransaction gxact, TransactionId xid,
 static void RemoveTwoPhaseFile(TransactionId xid, bool giveWarning);
 static void RecreateTwoPhaseFile(TransactionId xid, void *content, int len);
 #ifdef POLARDB_X
+/* POLARDBX_TRANSACTION list below is return value of polardbx_get_transaction_status */
+#define POLARDBX_TRANSACTION_COMMITED 0
+#define POLARDBX_TRANSACTION_ABORTED 1
+#define POLARDBX_TRANSACTION_INPROGRESS 2
+#define POLARDBX_TRANSACTION_TWOPHASE_FILE_NOT_FOUND 3
+
 PG_FUNCTION_INFO_V1(polardbx_finish_global_transation);
 PG_FUNCTION_INFO_V1(polardbx_get_2pc_commit_timestamp);
 PG_FUNCTION_INFO_V1(polardbx_parse_2pc_file);
 PG_FUNCTION_INFO_V1(polardbx_get_2pc_filelist);
+PG_FUNCTION_INFO_V1(polardbx_get_transaction_status);
+PG_FUNCTION_INFO_V1(polardbx_prepared_xact);
 
+/* HashTable key: gid  value: local xact id, acquire GidHashTableLock before access it. */
+static HTAB *g_GidHashTab = NULL;
+
+static void MarkGXactDone(GlobalTransaction gxact);
 GlobalTimestamp GetTwoPhaseXactCommitTimestamp(char* gid);
 static void print_twophase_state_content(void);
 static void print_single_twophase_state_gxact(GlobalTransaction gact);
@@ -543,7 +547,7 @@ MarkAsPreparingGuts(GlobalTransaction gxact, TransactionId xid, const char *gid,
 	{
 		gxact->need_reserve = false;
 		gxact->commit_timestamp = InvalidGlobalTimestamp;
-		if (g_twophase_state.participants) // in recovery, g_twophase_state.participants is null.
+		if (g_twophase_state.participants && g_twophase_state.participants[0] != '\0') // in recovery, g_twophase_state.participants is null.
 		{
 			strcpy(gxact->participate_nodes, g_twophase_state.participants);
 		}
@@ -692,32 +696,6 @@ RemoveGXact(GlobalTransaction gxact)
 	elog(ERROR, "failed to find %p in GlobalTransaction array", gxact);
 }
 
-#ifdef POLARDB_X
-/*
- * MarkGXactDone
- *		set gxact->need_reserve to true.
- * When local node transaction finish commit prepared, but global transaction is not finished,
- * we keep gxact in TwoPhaseState->prepXacts until receive another command which show global transaction is compeleted.
- *
- * NB: caller should have already removed it from ProcArray
- */
-static void
-MarkGXactDone(GlobalTransaction gxact)
-{
-	Assert(LWLockHeldByMeInMode(TwoPhaseStateLock, LW_EXCLUSIVE));
-
-	gxact->need_reserve = true;
-	
-	if (enable_twophase_recover_debug_print)
-	{
-		elog(DEBUG_2PC, "MarkGXactDone mark gxact->need_reserve to true.");
-		print_single_twophase_state_gxact(gxact);
-	}
-	
-	return;
-}
-#endif
-
 /*
  * Returns an array of all prepared transactions for the user-level
  * function pg_prepared_xact.
@@ -796,11 +774,7 @@ pg_prepared_xact(PG_FUNCTION_ARGS)
 
 		/* build tupdesc for result tuples */
 		/* this had better match pg_prepared_xacts view in system_views.sql */
-#ifdef POLARDB_X
-		tupdesc = CreateTemplateTupleDesc(7, false);
-#else
 		tupdesc = CreateTemplateTupleDesc(5, false);
-#endif
 		TupleDescInitEntry(tupdesc, (AttrNumber) 1, "transaction",
 						   XIDOID, -1, 0);
 		TupleDescInitEntry(tupdesc, (AttrNumber) 2, "gid",
@@ -811,12 +785,6 @@ pg_prepared_xact(PG_FUNCTION_ARGS)
 						   OIDOID, -1, 0);
 		TupleDescInitEntry(tupdesc, (AttrNumber) 5, "dbid",
 						   OIDOID, -1, 0);
-#ifdef POLARDB_X
-		TupleDescInitEntry(tupdesc, (AttrNumber) 6, "commit_timestamp",
-						   TIMESTAMPTZOID, -1, 0);
-		TupleDescInitEntry(tupdesc, (AttrNumber) 7, "participate_nodes",
-						   TEXTOID, -1, 0);
-#endif
 
 		funcctx->tuple_desc = BlessTupleDesc(tupdesc);
 
@@ -841,13 +809,8 @@ pg_prepared_xact(PG_FUNCTION_ARGS)
 		GlobalTransaction gxact = &status->array[status->currIdx++];
 		PGPROC	   *proc = &ProcGlobal->allProcs[gxact->pgprocno];
 		PGXACT	   *pgxact = &ProcGlobal->allPgXact[gxact->pgprocno];
-#ifdef POLARDB_X
-		Datum		values[7];
-		bool		nulls[7];
-#else
 		Datum		values[5];
 		bool		nulls[5];
-#endif
 		HeapTuple	tuple;
 		Datum		result;
 
@@ -865,10 +828,6 @@ pg_prepared_xact(PG_FUNCTION_ARGS)
 		values[2] = TimestampTzGetDatum(gxact->prepared_at);
 		values[3] = ObjectIdGetDatum(gxact->owner);
 		values[4] = ObjectIdGetDatum(proc->databaseId);
-#ifdef POLARDB_X
-		values[5] = TimestampTzGetDatum(gxact->commit_timestamp);
-		values[6] = CStringGetTextDatum(gxact->participate_nodes);
-#endif
 
 		tuple = heap_form_tuple(funcctx->tuple_desc, values, nulls);
 		result = HeapTupleGetDatum(tuple);
@@ -877,6 +836,7 @@ pg_prepared_xact(PG_FUNCTION_ARGS)
 
 	SRF_RETURN_DONE(funcctx);
 }
+
 
 /*
  * TwoPhaseGetGXact
@@ -1114,7 +1074,10 @@ StartPrepare(GlobalTransaction gxact)
 	hdr.gidlen = strlen(gxact->gid) + 1;	/* Include '\0' */
 #ifdef POLARDB_X
 	hdr.commit_timestamp = InvalidGlobalTimestamp;
-	hdr.nparticipatenodes_len = strlen(g_twophase_state.participants) + 1;
+	if (!g_twophase_state.participants || (g_twophase_state.participants && g_twophase_state.participants[0] == '\0'))
+        hdr.nparticipatenodes_len = 0;
+	else
+	    hdr.nparticipatenodes_len = strlen(g_twophase_state.participants) + 1;
 	if (enable_twophase_recover_debug_print)
 		elog(DEBUG_2PC, "Get nparticipatenodes_len:%d, participants:%s", hdr.nparticipatenodes_len, g_twophase_state.participants);
 #endif
@@ -1719,11 +1682,6 @@ FinishPreparedTransaction(const char *gid, bool isCommit)
 	AtEOXact_PgStat(isCommit);
 #ifdef ENABLE_DISTRIBUTED_TRANSACTION
 	AtEOXact_txn();
-	if (!IS_PGXC_SINGLE_NODE)
-	{
-		/* NB: if using 2pc recover developed by polardbx team, XactCallbackFinishPrepared will not be called. */
-		XactCallbackFinishPrepared(isCommit);
-	}
 #endif/*ENABLE_DISTRIBUTED_TRANSACTION*/
 
 	/*
@@ -2289,8 +2247,11 @@ RecoverPreparedTransactions(void)
 							hdr->prepared_at,
 							hdr->owner, hdr->database);
 #ifdef POLARDB_X
-		strncpy(gxact->participate_nodes, bufptr, hdr->nparticipatenodes_len);
-		bufptr += MAXALIGN(hdr->nparticipatenodes_len);
+		if (hdr->nparticipatenodes_len > 1)
+        {
+            strncpy(gxact->participate_nodes, bufptr, hdr->nparticipatenodes_len);
+            bufptr += MAXALIGN(hdr->nparticipatenodes_len);
+        }
 #endif
 
 		/* recovered, so reset the flag for entries generated by redo */
@@ -3011,7 +2972,6 @@ void RefreshGidHashMap(bool need_lock)
 	GidLookupTag tag;
 	GidLookupEnt *ent;
 	bool found;
-	TwoPhaseFileHeader *hdr;
 
 	if (need_lock)
 	{
@@ -3038,12 +2998,11 @@ void RefreshGidHashMap(bool need_lock)
 				elog(WARNING, "Corrupt 2pc file to xid:%d", xid);
 				continue;
 			}
-
-			hdr = (TwoPhaseFileHeader*)buf;
+			
 			bufptr = buf + MAXALIGN(sizeof(TwoPhaseFileHeader));
 			gid_in_file = (const char *) bufptr;
 
-			Assert(hdr->xid == xid);
+			Assert(((TwoPhaseFileHeader*)buf)->xid == xid);
 
 			memset(tag.gid, 0, sizeof(tag.gid));
 			strcpy(tag.gid, gid_in_file);
@@ -3235,14 +3194,12 @@ void SetTwoPhaseXactCommitTimestamp(char* gid, GlobalTimestamp timestamp)
 		abort();
 		elog(ERROR, "SetTwoPhaseXactCommitTimestamp gid:%s not exist.", gid);
 	}
-#ifdef POLARDB_X
 	else
 	{
 		if (enable_twophase_recover_debug_print)
 			elog(DEBUG_2PC, "SetTwoPhaseXactCommitTimestamp found gxact info for gid:%s, i:%d", gid, i);
 		print_single_twophase_state_gxact(gxact);
 	}
-#endif
 	gxact->commit_timestamp = timestamp;
 	LWLockRelease(TwoPhaseStateLock);
 }
@@ -3428,6 +3385,54 @@ Datum polardbx_get_2pc_filelist(PG_FUNCTION_ARGS)
 	PG_RETURN_TEXT_P(cstring_to_text(result.data));
 }
 
+/*
+ * For given gid, check if transaction is committed, aborted, inprogress, or failed to get localxid from 2pc file.
+ * 1. get localxid by gid
+ * 2. see localxid is committed?
+ */
+Datum
+polardbx_get_transaction_status(PG_FUNCTION_ARGS)
+{
+    char *gid = text_to_cstring(PG_GETARG_TEXT_PP(0));
+    TransactionId localxid = InvalidTransactionId;
+    TransactionIdStatus   xidstatus = XID_INPROGRESS;
+
+    localxid = GetTwoPhaseXactLocalxid(gid);
+
+    if (InvalidTransactionId == localxid)
+    {
+        if (enable_twophase_recover_debug_print)
+            elog(DEBUG_2PC, "gid:%s, no coresponding 2pc file found.", gid);
+        PG_RETURN_INT32(POLARDBX_TRANSACTION_TWOPHASE_FILE_NOT_FOUND);
+    }
+    else
+    {
+        xidstatus = TransactionIdGetStatus(localxid);
+    }
+
+    if (xidstatus == XID_COMMITTED)
+    {
+        if (enable_twophase_recover_debug_print)
+            elog(DEBUG_2PC, "polardbx_get_transaction_status: gid:%s is committed.", gid);
+        PG_RETURN_INT32(POLARDBX_TRANSACTION_COMMITED);
+    }
+    else if (xidstatus == XID_ABORTED)
+    {
+        if (enable_twophase_recover_debug_print)
+            elog(DEBUG_2PC, "polardbx_get_transaction_status: gid:%s is aborted.", gid);
+        PG_RETURN_INT32(POLARDBX_TRANSACTION_ABORTED);
+    }
+    else if (xidstatus == XID_INPROGRESS)
+    {
+        if (enable_twophase_recover_debug_print)
+            elog(DEBUG_2PC, "polardbx_get_transaction_status: gid:%s status:%d.", gid, xidstatus);
+        PG_RETURN_INT32(POLARDBX_TRANSACTION_INPROGRESS);
+    }
+
+    PG_RETURN_NULL();
+}
+
+
 static int get_twophase_filelist(StringInfo str)
 {
 	DIR		   *cldir;
@@ -3592,5 +3597,125 @@ bool CompareGXact(char* gid, TransactionId xid, bool need_lock)
 		return false;
 	}
 	return true;
+}
+
+/*
+ * MarkGXactDone
+ *		set gxact->need_reserve to true.
+ * When local node transaction finish commit prepared, but global transaction is not finished,
+ * we keep gxact in TwoPhaseState->prepXacts until receive another command which show global transaction is completed.
+ *
+ * NB: caller should have already removed it from ProcArray
+ */
+static void
+MarkGXactDone(GlobalTransaction gxact)
+{
+    Assert(LWLockHeldByMeInMode(TwoPhaseStateLock, LW_EXCLUSIVE));
+
+    gxact->need_reserve = true;
+
+    if (enable_twophase_recover_debug_print)
+    {
+        elog(DEBUG_2PC, "MarkGXactDone mark gxact->need_reserve to true.");
+        print_single_twophase_state_gxact(gxact);
+    }
+
+    return;
+}
+
+Datum
+polardbx_prepared_xact(PG_FUNCTION_ARGS)
+{
+    FuncCallContext *funcctx;
+    Working_State *status;
+
+    if (SRF_IS_FIRSTCALL())
+    {
+        TupleDesc	tupdesc;
+        MemoryContext oldcontext;
+
+        /* create a function context for cross-call persistence */
+        funcctx = SRF_FIRSTCALL_INIT();
+
+        /*
+         * Switch to memory context appropriate for multiple function calls
+         */
+        oldcontext = MemoryContextSwitchTo(funcctx->multi_call_memory_ctx);
+
+        /* build tupdesc for result tuples */
+        /* this had better match pg_prepared_xacts view in system_views.sql */
+
+        tupdesc = CreateTemplateTupleDesc(7, false);
+
+        TupleDescInitEntry(tupdesc, (AttrNumber) 1, "transaction",
+                           XIDOID, -1, 0);
+        TupleDescInitEntry(tupdesc, (AttrNumber) 2, "gid",
+                           TEXTOID, -1, 0);
+        TupleDescInitEntry(tupdesc, (AttrNumber) 3, "prepared",
+                           TIMESTAMPTZOID, -1, 0);
+        TupleDescInitEntry(tupdesc, (AttrNumber) 4, "ownerid",
+                           OIDOID, -1, 0);
+        TupleDescInitEntry(tupdesc, (AttrNumber) 5, "dbid",
+                           OIDOID, -1, 0);
+        TupleDescInitEntry(tupdesc, (AttrNumber) 6, "commit_timestamp",
+                           TIMESTAMPTZOID, -1, 0);
+        TupleDescInitEntry(tupdesc, (AttrNumber) 7, "participate_nodes",
+                           TEXTOID, -1, 0);
+
+        funcctx->tuple_desc = BlessTupleDesc(tupdesc);
+
+        /*
+         * Collect all the 2PC status information that we will format and send
+         * out as a result set.
+         */
+        status = (Working_State *) palloc(sizeof(Working_State));
+        funcctx->user_fctx = (void *) status;
+
+        status->ngxacts = GetPreparedTransactionList(&status->array);
+        status->currIdx = 0;
+
+        MemoryContextSwitchTo(oldcontext);
+    }
+
+    funcctx = SRF_PERCALL_SETUP();
+    status = (Working_State *) funcctx->user_fctx;
+
+    while (status->array != NULL && status->currIdx < status->ngxacts)
+    {
+        //GlobalTransaction gxact = &status->array[status->currIdx++];
+        struct GlobalTransactionData *gxact = &status->array[status->currIdx++];
+        PGPROC	   *proc = &ProcGlobal->allProcs[gxact->pgprocno];
+        PGXACT	   *pgxact = &ProcGlobal->allPgXact[gxact->pgprocno];
+
+        Datum		values[7];
+        bool		nulls[7];
+
+        HeapTuple	tuple;
+        Datum		result;
+
+        if (!gxact->valid)
+            continue;
+
+        /*
+         * Form tuple with appropriate data.
+         */
+        MemSet(values, 0, sizeof(values));
+        MemSet(nulls, 0, sizeof(nulls));
+
+        values[0] = TransactionIdGetDatum(pgxact->xid);
+        values[1] = CStringGetTextDatum(gxact->gid);
+        values[2] = TimestampTzGetDatum(gxact->prepared_at);
+        values[3] = ObjectIdGetDatum(gxact->owner);
+        values[4] = ObjectIdGetDatum(proc->databaseId);
+
+        values[5] = TimestampTzGetDatum(gxact->commit_timestamp);
+        values[6] = CStringGetTextDatum(gxact->participate_nodes);
+
+        tuple = heap_form_tuple(funcctx->tuple_desc, values, nulls);
+        result = HeapTupleGetDatum(tuple);
+        SRF_RETURN_NEXT(funcctx, result);
+    }
+
+    SRF_RETURN_DONE(funcctx);
 }
 #endif

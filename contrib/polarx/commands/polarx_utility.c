@@ -6,8 +6,8 @@
  * We use this to implement DDL commands and other utitily commands
  * working on polarx distributed tables.
  *
- * Copyright (c) 2020, Alibaba Inc. and/or its affiliates
- * Copyright (c) 2020, Apache License Version 2.0*
+ * Copyright (c) 2021, Alibaba Group Holding Limited
+ * Licensed under the Apache License, Version 2.0 (the "License");
  *
  * IDENTIFICATION
  *        contrib/polarx/commands/polarx_utility.c
@@ -16,6 +16,7 @@
  */
 #include "postgres.h"
 #include "miscadmin.h"
+#include "polarx.h"
 #include "access/htup_details.h"
 #include "access/reloptions.h"
 #include "access/twophase.h"
@@ -41,9 +42,8 @@
 #include "utils/snapmgr.h"
 #include "nodes/nodes.h"
 #include "nodes/makefuncs.h"
-#include "pgxc/pgxc.h"
 #include "pgxc/nodemgr.h"
-#include "plan/planner.h"
+#include "plan/polarx_planner.h"
 #include "executor/execRemoteQuery.h"
 #include "pgxc/connpool.h"
 #include "commands/polarx_utility.h"
@@ -84,8 +84,12 @@
 #include "commands/polarx_createas.h"
 #include "commands/polarx_tablecmds.h"
 #include "commands/polarx_dbcommands.h"
+#include "commands/polarx_execdirect.h"
 #include "deparse/deparse_fqs.h"
 #include "utils/fdwplanner_utils.h"
+#include "nodes/polarx_node.h"
+#include "parser/parse_distribute.h"
+#include "distribute_transaction/txn.h"
 
 bool SetExecUtilityLocal = false;
 
@@ -93,6 +97,7 @@ static bool ProcessUtilityPre(PlannedStmt *pstmt,
                                 const char *queryString,
                                 ProcessUtilityContext context,
                                 QueryEnvironment *queryEnv,
+                                DestReceiver *dest,
                                 bool sentToRemote,
                                 char *completionTag);
 
@@ -170,13 +175,14 @@ polarx_ProcessUtility_internal(PlannedStmt *pstmt,
         bool sentToRemote,
         char *completionTag)
 {
+    InitMultinodeExecutor(false);
     AdjustRelationBackToTable(false);
-    if (ProcessUtilityPre(pstmt, queryString, context, queryEnv, sentToRemote, completionTag))
+    if (!ProcessUtilityPre(pstmt, queryString, context, queryEnv, dest, sentToRemote, completionTag))
     {
-        return;
+        ProcessUtilityReplace(pstmt, queryString, context, params, queryEnv,
+                                dest, sentToRemote, completionTag);
+        ProcessUtilityPost(pstmt, queryString, context, queryEnv, sentToRemote);
     }
-    ProcessUtilityReplace(pstmt, queryString, context, params, queryEnv, dest, sentToRemote, completionTag);
-    ProcessUtilityPost(pstmt, queryString, context, queryEnv, sentToRemote);
     AdjustRelationBackToForeignTable();
 }
 /*
@@ -188,6 +194,7 @@ ProcessUtilityPre(PlannedStmt *pstmt,
         const char *queryString,
         ProcessUtilityContext context,
         QueryEnvironment *queryEnv,
+        DestReceiver *dest,
         bool sentToRemote,
         char *completionTag)
 {// #lizard forgives
@@ -206,7 +213,7 @@ ProcessUtilityPre(PlannedStmt *pstmt,
      * needs remote execution during the preprocessing step.
      */
 
-    switch (nodeTag(parsetree))
+    switch (polarxNodeTag(parsetree))
     {
         /*
          * ******************** transactions ********************
@@ -215,6 +222,26 @@ ProcessUtilityPre(PlannedStmt *pstmt,
             /*
              * Portal (cursor) manipulation
              */
+        {
+            TransactionStmt *stmt = (TransactionStmt *) parsetree;
+            switch (stmt->kind)
+            {
+                case TRANS_STMT_PREPARE:
+                    if (IS_PGXC_LOCAL_COORDINATOR)
+                    {
+                        elog(ERROR, "Explict two phase commit is not supported yet.");
+                    }
+                    break;
+                case TRANS_STMT_COMMIT_PREPARED:
+                    if (IS_PGXC_LOCAL_COORDINATOR)
+                    {
+                        elog(ERROR, "Explict two phase commit is not supported yet.");
+                    }
+                    break;
+                default:
+                    break;
+            }
+        }
         case T_DeclareCursorStmt:
         case T_ClosePortalStmt:
         case T_FetchStmt:
@@ -234,6 +261,7 @@ ProcessUtilityPre(PlannedStmt *pstmt,
             break;
         case T_PrepareStmt:
         case T_ExecuteStmt:
+            ExecDirectPre((ExecuteStmt *) parsetree, dest, completionTag, &all_done);
             break;
         case T_DeallocateStmt:
         case T_GrantRoleStmt:
@@ -252,9 +280,8 @@ ProcessUtilityPre(PlannedStmt *pstmt,
                     char query[256];
 
                     DropDBCleanConnection(stmt->dbname);
-                    /* Clean also remote Coordinators */
-                    sprintf(query, "CLEAN CONNECTION TO ALL FOR DATABASE %s;",
-                            quote_identifier(stmt->dbname));
+                    sprintf(query, "SELECT clean_db_connections('%s');",
+                            stmt->dbname);
                     ExecUtilityStmtOnNodes(parsetree, query, NULL, sentToRemote, true,
                             EXEC_ON_ALL_NODES, false, false);
                 }
@@ -428,18 +455,6 @@ ProcessUtilityPre(PlannedStmt *pstmt,
             all_done = true;
             break;
 
-        case T_CleanConnStmt:
-            /*
-             * First send command to other nodes via probably existing
-             * connections, then clean local pooler
-             */
-            if (IS_PGXC_COORDINATOR)
-                ExecUtilityStmtOnNodes(parsetree, queryString, NULL, sentToRemote, true,
-                        EXEC_ON_ALL_NODES, false, false);
-            CleanConnection((CleanConnStmt *) parsetree);
-            all_done = true;
-            break;
-
         case T_CommentStmt:
         case T_SecLabelStmt:
         case T_CreateSchemaStmt:
@@ -478,10 +493,11 @@ ProcessUtilityPre(PlannedStmt *pstmt,
             if(IS_PGXC_LOCAL_COORDINATOR)
             {
                 CreateTableAsStmt *stmt = (CreateTableAsStmt *) parsetree;
-
-                exec_type = EXEC_ON_ALL_NODES;
                 StringInfoData cquery;
                 char *p = NULL;
+
+                if(!isCreateLocalTable(stmt->into->options))
+                    exec_type = EXEC_ON_ALL_NODES;
 
                 if(stmt->is_select_into)
                 {
@@ -563,7 +579,7 @@ ProcessUtilityPre(PlannedStmt *pstmt,
             break;
         default:
             elog(ERROR, "unrecognized node type: %d",
-                    (int) nodeTag(parsetree));
+                    (int) polarxNodeTag(parsetree));
             break;
     }
 
@@ -597,7 +613,7 @@ ProcessUtilityPost(PlannedStmt *pstmt,
      * needs remote execution during the preprocessing step.
      */
 
-    switch (nodeTag(parsetree))
+    switch (polarxNodeTag(parsetree))
     {
         /*
          * ******************** transactions ********************
@@ -664,7 +680,6 @@ ProcessUtilityPost(PlannedStmt *pstmt,
         case T_RenameStmt:
         case T_AlterObjectDependsStmt:
         case T_RemoteQuery:
-        case T_CleanConnStmt:
         case T_SecLabelStmt:
         case T_CreateSchemaStmt:
         case T_CreateStmt:
@@ -1052,7 +1067,7 @@ ProcessUtilityPost(PlannedStmt *pstmt,
             break;
         default:
             elog(ERROR, "unrecognized node type: %d",
-                    (int) nodeTag(parsetree));
+                    (int) polarxNodeTag(parsetree));
             break;
     }
 
@@ -1083,7 +1098,7 @@ ExecUtilityStmtOnNodesInternal(Node* parsetree, const char *queryString, ExecNod
 
     if (!IsConnFromCoord())
     {
-        RemoteQuery *step = makeNode(RemoteQuery);
+        RemoteQuery *step = polarxMakeNode(RemoteQuery);
         step->combine_type = COMBINE_TYPE_SAME;
         step->exec_nodes = nodes;
         step->sql_statement = pstrdup(queryString);
@@ -1502,7 +1517,7 @@ ExecDropStmt(DropStmt *stmt,
                 RemoveRelations(stmt);
                 /* DROP is done depending on the object type and its temporary type */
                 if (IS_PGXC_LOCAL_COORDINATOR)
-                    ExecUtilityStmtOnNodes(NULL, queryString, NULL, FALSE, false,
+                    ExecUtilityStmtOnNodes(NULL, queryString, NULL, false, false,
                                              exec_type, is_temp, false);
             }
             break;
@@ -1561,7 +1576,7 @@ ProcessUtilitySlow(ParseState *pstate,
         if (isCompleteQuery)
             EventTriggerDDLCommandStart(parsetree);
 
-        switch (nodeTag(parsetree))
+        switch (polarxNodeTag(parsetree))
         {
             /*
              * relation and attribute manipulation
@@ -1573,7 +1588,7 @@ ProcessUtilitySlow(ParseState *pstate,
                         pstmt->stmt_len);
                 if(IS_PGXC_LOCAL_COORDINATOR && !sentToRemote)
                 {
-                    RemoteQuery *step = makeNode(RemoteQuery);
+                    RemoteQuery *step = polarxMakeNode(RemoteQuery);
                     PlannedStmt *wrapper;
 
                     step->combine_type = COMBINE_TYPE_SAME;
@@ -1613,7 +1628,8 @@ ProcessUtilitySlow(ParseState *pstate,
                     ListCell   *l;
                     bool        is_temp = false;
                     bool        is_distributed = false;
-                    bool        is_local = ((CreateStmt *) parsetree)->islocal;
+                    bool        is_local = isCreateLocalTable(((CreateStmt *) parsetree)->options);
+                    List        *orgColDefs = ((CreateStmt *) parsetree)->tableElts;
 
                     /* Run parse analysis ... */
                     stmts = transformCreateStmt((CreateStmt *) parsetree,
@@ -1637,9 +1653,8 @@ ProcessUtilitySlow(ParseState *pstate,
                             {
                                 CreateStmt *stmt_loc = (CreateStmt *) stmt;
                                 bool is_object_temp = stmt_loc->relation->relpersistence == RELPERSISTENCE_TEMP;
-                                bool is_object_distributed = stmt_loc->distributeby;
-
-                                if (is_first)
+                                bool is_object_distributed = is_local ? false : true;
+                                if(is_first)
                                 {
                                     is_first = false;
                                     if (is_object_temp)
@@ -1687,6 +1702,7 @@ ProcessUtilitySlow(ParseState *pstate,
                             static char *validnsps[] = HEAP_RELOPT_NAMESPACES;
 
                             CreateStmt *createStmt = (CreateStmt *)stmt;
+                            List *dist_table_option = extractPolarxTableOption(&createStmt->options);
 
                             /* Set temporary object object flag in pooler */
                             if (is_temp)
@@ -1699,39 +1715,45 @@ ProcessUtilitySlow(ParseState *pstate,
                                     RELKIND_RELATION,
                                     InvalidOid, NULL,
                                     queryString);
-                            if(IS_PGXC_COORDINATOR)
+                            if(IS_PGXC_COORDINATOR && !isCreateLocalTable(dist_table_option))
                             {
                                 char *use_remote_estimate = "true";
                                 char *server_name = PGXCClusterName;
                                 char *dist_type;
                                 CreateForeignTableStmt  *fstmt = makeNode(CreateForeignTableStmt);
+                                DistributeBy *dist_by = NULL;
 
+                                dist_by = buildDistributeBy(dist_table_option, createStmt, orgColDefs);
+
+                                if(!dist_by)
+                                    elog(ERROR, "distribute infomation is needed for create a distribute table");
+                                validDistbyOnTableConstrants(dist_by, orgColDefs, createStmt);
                                 fstmt->options = list_make1(makeDefElem("use_remote_estimate", 
                                             (Node *)makeString(pstrdup(use_remote_estimate)),
                                             -1));
                                 fstmt->servername = pstrdup(server_name);
 
-                                if(createStmt->distributeby->disttype == 0)
+                                if(dist_by->disttype == 0)
                                     dist_type = "R";
-                                else if(createStmt->distributeby->disttype == 1)
+                                else if(dist_by->disttype == 1)
                                     dist_type = "H";
-                                else if(createStmt->distributeby->disttype == 2)
+                                else if(dist_by->disttype == 2)
                                     dist_type = "N";
-                                else if(createStmt->distributeby->disttype == 3)
+                                else if(dist_by->disttype == 3)
                                     dist_type = "M";
                                 else
                                     ereport(ERROR,
                                             (errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
-                                             errmsg("distribute type is not defined %d", createStmt->distributeby->disttype)));
+                                             errmsg("distribute type is not defined %d", dist_by->disttype)));
                                 fstmt->options = lappend(fstmt->options,
                                         makeDefElem("locator_type",
                                             (Node *)makeString(pstrdup(dist_type)),
                                             -1));
 
-                                if(createStmt->distributeby->colname != NULL)
+                                if(dist_by->colname != NULL)
                                     fstmt->options = lappend(fstmt->options,
                                             makeDefElem("dist_col_name",
-                                                (Node *)makeString(pstrdup(createStmt->distributeby->colname)),
+                                                (Node *)makeString(pstrdup(dist_by->colname)),
                                                 -1));
                                 CreateForeignTable(fstmt,
                                         address.objectId);
@@ -1793,7 +1815,7 @@ ProcessUtilitySlow(ParseState *pstate,
                             wrapper->utilityStmt = stmt;
                             wrapper->stmt_location = pstmt->stmt_location;
                             wrapper->stmt_len = pstmt->stmt_len;
-                            if(IS_PGXC_COORDINATOR && (!IsA(stmt, RemoteQuery)))
+                            if(IS_PGXC_COORDINATOR && (!polarxIsA(stmt, RemoteQuery)))
                                 sentToRemote = true;
 
                             polarx_ProcessUtility_internal(wrapper,
@@ -1961,7 +1983,7 @@ check_xact_readonly(Node *parsetree)
      * PreventCommandIfParallelMode to actually throw the error.
      */
 
-    switch (nodeTag(parsetree))
+    switch (polarxNodeTag(parsetree))
     {
         case T_AlterDatabaseStmt:
         case T_AlterDatabaseSetStmt:
@@ -2071,7 +2093,7 @@ ProcessUtilityReplace(PlannedStmt *pstmt,
     pstate = make_parsestate(NULL);
     pstate->p_sourcetext = queryString;
 
-    switch (nodeTag(parsetree))
+    switch (polarxNodeTag(parsetree))
     {
         /*
          * ******************** transactions ********************
@@ -2101,6 +2123,47 @@ ProcessUtilityReplace(PlannedStmt *pstmt,
                                context, params, queryEnv,
                                  dest, sentToRemote, completionTag);
             break;
+        case T_TransactionStmt:
+        {
+            TransactionStmt *stmt = (TransactionStmt *) parsetree;
+            /* only handle ddl wrapped with {begin,end}. */
+            if (isXactWriteLocalNode() && 
+                stmt->kind == TRANS_STMT_COMMIT &&
+                IS_PGXC_LOCAL_COORDINATOR && 
+                IsTwoPhaseCommitRequired(true) &&
+                (GetCurrentTransactionNestLevel() == 1))
+            {
+                char *prepareGID = GetImplicit2PCGID(implicit2PC_head, true);
+                savePrepareGID = MemoryContextStrdup(CommitContext, prepareGID);
+
+                if (IsInTransactionBlock(true))
+                {
+                    /* block_state change from INPROGRESS to TBLOCK_END, then set prepareGID and change to TBLOCK_PREPARE */
+                    PrepareTransactionBlock(prepareGID);
+                    CommitTransactionCommand();
+                }
+                else
+                {
+                    /* block_state change from TBLOCK_STARTED to TBLOCK_BEGIN */
+                    BeginTransactionBlock();
+                    /* block_state change from TBLOCK_BEGIN to TBLOCK_INPROGRESS */
+                    CommitTransactionCommand();
+                    
+                    /* block_state change to TBLOCK_END, then set prepareGID and change to TBLOCK_PREPARE */
+                    PrepareTransactionBlock(savePrepareGID);
+                    CommitTransactionCommand();
+                }
+                
+                StartTransactionCommand();
+                XactLocalNodePrepared = true;
+            }
+            else
+            {
+                standard_ProcessUtility(pstmt, queryString, context,
+                                        params, queryEnv, dest, completionTag);
+            }
+            break;
+        }
         default:
             standard_ProcessUtility(pstmt, queryString, context,
                     params, queryEnv, dest, completionTag);

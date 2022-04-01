@@ -120,7 +120,7 @@ ORDER BY enumsortorder;
 --
 -- Basic table creation, row selection
 --
-CREATE TABLE enumtest (col rainbow) distribute by replication;
+CREATE TABLE enumtest (col rainbow) with(dist_type=replication);
 INSERT INTO enumtest values ('red'), ('orange'), ('yellow'), ('green');
 COPY enumtest FROM stdin;
 blue
@@ -244,8 +244,8 @@ DROP FUNCTION echo_me(rainbow);
 --
 -- RI triggers on enum types
 --
-CREATE TABLE enumtest_parent (id rainbow PRIMARY KEY) distribute by replication;
-CREATE TABLE enumtest_child (parent rainbow REFERENCES enumtest_parent) distribute by replication;
+CREATE TABLE enumtest_parent (id rainbow PRIMARY KEY) with(dist_type=replication);
+CREATE TABLE enumtest_child (parent rainbow REFERENCES enumtest_parent) with(dist_type=replication);
 INSERT INTO enumtest_parent VALUES ('red');
 INSERT INTO enumtest_child VALUES ('red');
 INSERT INTO enumtest_child VALUES ('blue');  -- fail

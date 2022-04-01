@@ -93,7 +93,7 @@ FROM (SELECT $$a$$ || x AS b,
       FROM generate_series(1,2) x,
            generate_series(4,5) y) q;
 
-CREATE TEMP TABLE rows(x int, y text) distribute by roundrobin;
+CREATE TEMP TABLE rows(x int, y text) with(dist_type=roundrobin);
 
 insert into rows(x, y) SELECT x, 'txt' || x as y
 FROM generate_series(1,3) AS x;

@@ -1,7 +1,7 @@
 # contrib/polarx/Makefile
 
 MODULE_big = polarx
-SUBDIRS = . commands plan executor deparse utils locator fdw_engines/polarx
+SUBDIRS = . mdcache nodemgr locator pool connection squeue commands plan executor deparse utils nodes parser fdw_engines/polarx distribute_transaction
 polarx_srcdir = .
 OBJS += \
     $(patsubst $(polarx_srcdir)/%.c,%.o,$(foreach dir,$(SUBDIRS), $(sort $(wildcard $(polarx_srcdir)/$(dir)/*.c))))

@@ -55,4 +55,14 @@ Datum txn_get_prepare_ts();
 Datum txn_set_commit_ts(commit_ts);
 */
 
+typedef enum
+{
+    TXN_COORDINATION_NONE,
+    TXN_COORDINATION_GTM,
+    TXN_COORDINATION_HLC
+} TxnCoordinationType;
+
+extern int txn_coordination;
+extern void TxnSetPrepareTs(LogicalTime ts);
+
 #endif							/* DISTRIBUTED_TXN_TIMESTAMP_H */

@@ -10,12 +10,12 @@
  * To support distributed transaction, XLOG is added for csnlog to preserve
  * data across crashes. During database startup, we would apply xlog records
  * to csnlog.
- * Author: Junbin Kang, 2020-01-11
+ * Author:  , 2020-01-11
  *
  * Implement the scalable CTS (Commit Timestamp Store) that adopts multi-partition LRU
  * and use lock-free algorithms as far as possible, i.e., Get/Set commit timestamp
  * in LRU cached pages with only shared-lock being held.
- * Author: Junbin Kang, 2020-06-19
+ * Author:  , 2020-06-19
  *
  * Portions Copyright (c) 2020, Alibaba Group Holding Limited
  * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
@@ -61,7 +61,7 @@
 #ifdef ENABLE_DISTRIBUTED_TRANSACTION
 /*
  * add WAL for CSNLog to support distributed transactions
- * written by Junbin Kang
+ * written by  
  */
 
 /* We store the latest async LSN for each group of transactions */
@@ -447,7 +447,7 @@ CTSLogSetCSN(TransactionId xid, int partitionno, CommitTs cts, XLogRecPtr lsn, i
 	 * The consideration is due to lack of locking protection when setting and
 	 * fetching LSN.
 	 *
-	 * Written by Junbin Kang, 2020-09-03
+	 * Written by  , 2020-09-03
 	 *
 	 */
 
@@ -512,7 +512,7 @@ CTSLogGetCommitTs(TransactionId xid)
 	 * TransactionIdIsInProgress() is removed by CSN to avoid proc array
 	 * walking. As a result, we need to perform further checking: If the xid
 	 * is below TransactionXmin and does not have cts, it should be crashed or
-	 * aborted transaction. Written by Junbin Kang, 2020.06.22
+	 * aborted transaction. Written by  , 2020.06.22
 	 */
 
 	if (TransactionIdPrecedes(xid, CtslogCtl->global_shared->oldestActiveStartupXid))

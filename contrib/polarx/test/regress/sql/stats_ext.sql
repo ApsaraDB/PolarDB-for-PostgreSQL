@@ -19,7 +19,7 @@ CREATE STATISTICS tst ON (relpages, reltuples) FROM pg_class;
 CREATE STATISTICS tst (unrecognized) ON relname, relnatts FROM pg_class;
 
 -- Ensure stats are dropped sanely, and test IF NOT EXISTS while at it
-CREATE TABLE ab1 (a INTEGER, b INTEGER, c INTEGER) DISTRIBUTE BY HASH(c);
+CREATE TABLE ab1 (a INTEGER, b INTEGER, c INTEGER) with(dist_type=hash, dist_col=c);
 CREATE STATISTICS IF NOT EXISTS ab1_a_b_stats ON a, b FROM ab1;
 CREATE STATISTICS IF NOT EXISTS ab1_a_b_stats ON a, b FROM ab1;
 DROP STATISTICS ab1_a_b_stats;

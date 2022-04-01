@@ -4,10 +4,11 @@
  *
  *      Functions for generating a PGXC style plan.
  *
+ * Copyright (c) 2021, Alibaba Group Holding Limited
+ * Licensed under the Apache License, Version 2.0 (the "License");
  * Portions Copyright (c) 2012-2014, TransLattice, Inc.
  * Portions Copyright (c) 1996-2009, PostgreSQL Global Development Group
  * Portions Copyright (c) 2010-2012 Postgres-XC Development Group
- * Copyright (c) 2020, Apache License Version 2.0*
  *
  * IDENTIFICATION
  *        contrib/polarx/plan/planner.c
@@ -15,6 +16,7 @@
  *-------------------------------------------------------------------------
  */
 #include "postgres.h"
+#include "polarx.h"
 #include "miscadmin.h"
 #include "access/transam.h"
 #include "catalog/pg_aggregate.h"
@@ -40,10 +42,9 @@
 #include "parser/parsetree.h"
 #include "parser/parse_oper.h"
 #include "parser/analyze.h"
-#include "pgxc/pgxc.h"
 #include "pgxc/locator.h"
 #include "pgxc/nodemgr.h"
-#include "plan/planner.h"
+#include "plan/polarx_planner.h"
 #include "tcop/pquery.h"
 #include "utils/acl.h"
 #include "utils/fmgroids.h"
@@ -69,6 +70,7 @@
 #include "executor/execRemoteQuery.h"
 #include "deparse/deparse_fqs.h"
 #include "utils/fdwplanner_utils.h"
+#include "nodes/polarx_node.h"
 
 bool EnableFastQueryShipping = false;
 
@@ -80,9 +82,8 @@ static RemoteQuery *pgxc_FQS_create_remote_plan(Query *query,
                                                 bool is_exec_direct);
 static CombineType get_plan_combine_type(CmdType commandType, char baselocatortype);
 
-static List *makeCustomScanVarTargetlistBasedTargetEntryList(List *targetEntryList);
 static void fqs_preprocess_rowmarks(PlannerInfo *root);
-static PlannedStmt *polarx_direct_planner(Query *query, int cursorOptions, ParamListInfo boundParams);
+static List *extractResjunkTarget(List *src_list);
 
 
 
@@ -386,33 +387,6 @@ eval_param_expressions_mutator(Node *node, eval_param_expressions_context *conte
 	return expression_tree_mutator(node, eval_param_expressions_mutator, context);
 } 
 
-
-
-typedef struct
-{
-	PlannerInfo *root;
-
-} replace_param_context;
-
-static Node * eval_param_mutator(Node *node, replace_param_context* context)
-{
-	#if 0
-	eval_param_expressions_context context;
-	Node *new_node;
-	
-	context.boundParams = boundParams;
-	
-	new_node = eval_param_expressions_mutator(node, &context);
-	return new_node;
-	#endif 
-	PlannerInfo *root = context->root;
-
-	return eval_const_expressions(root, node);
-	
-}
-
-
-
 static Query * replace_param_for_query(Query *query, eval_param_expressions_context *context)
 {
 	return (Query *) eval_param_expressions_mutator((Node *)query, context);
@@ -486,12 +460,10 @@ polarx_planner(Query *query, int cursorOptions, ParamListInfo boundParams)
     List *rangeTableList = NULL;
     bool    isGenericPlan = false;
 
+    InitMultinodeExecutor(false);
     if(IS_PGXC_LOCAL_COORDINATOR)
     {
         eval_param_expressions_context context;	
-
-        if(query->utilityStmt && IsA(query->utilityStmt, RemoteQuery))
-            return polarx_direct_planner(query, cursorOptions, boundParams);
 
         context.boundParams = boundParams;
         context.hasUndeterminedParams = false;
@@ -564,6 +536,7 @@ pgxc_FQS_planner(Query *query, int cursorOptions, ParamListInfo boundParams)
     Plan            *top_plan;
     List            *tlist = query->targetList;
     CustomScan *customScan = makeNode(CustomScan);
+    RemoteQuery *query_remote;
 
     /* Try by-passing standard planner, if fast query shipping is enabled */
     if (!EnableFastQueryShipping)
@@ -577,7 +550,7 @@ pgxc_FQS_planner(Query *query, int cursorOptions, ParamListInfo boundParams)
         return NULL;
 
     /* Do not FQS EXEC DIRECT statements */
-    if (query->utilityStmt && IsA(query->utilityStmt, RemoteQuery))
+    if (query->utilityStmt && polarxIsA(query->utilityStmt, RemoteQuery))
     {
         RemoteQuery *stmt = (RemoteQuery *) query->utilityStmt;
         if (stmt->exec_direct_type != EXEC_DIRECT_NONE)
@@ -601,15 +574,16 @@ pgxc_FQS_planner(Query *query, int cursorOptions, ParamListInfo boundParams)
     root->glob = glob;
     root->query_level = 1;
     root->planner_cxt = CurrentMemoryContext;
-    fqs_preprocess_rowmarks(root);
     tlist = preprocess_targetlist(root);
+    fqs_preprocess_rowmarks(root);
 
     /*
      * We decided to ship the query to the Datanode/s, create a RemoteQuery node
      * for the same.
      */
-    top_plan = (Plan *)pgxc_FQS_create_remote_plan(query, exec_nodes, false);
-    top_plan->targetlist = tlist;
+    query_remote = pgxc_FQS_create_remote_plan(query, exec_nodes, false);
+    top_plan = (Plan *)(&(query_remote->scan));
+    top_plan->targetlist = extractResjunkTarget(query->targetList);
     /*
      * Just before creating the PlannedStmt, do some final cleanup
      * We need to save plan dependencies, so that dropping objects will
@@ -621,7 +595,7 @@ pgxc_FQS_planner(Query *query, int cursorOptions, ParamListInfo boundParams)
     set_plan_references(root, NULL);
 
     customScan->methods = &FastShipQueryExecutorCustomScanMethods;
-    customScan->custom_private = list_make1((Node *)top_plan);
+    customScan->custom_private = list_make1((Node *)query_remote);
     customScan->custom_scan_tlist = tlist;
     customScan->scan.plan.targetlist = makeCustomScanVarTargetlistBasedTargetEntryList(tlist);
     /* build the PlannedStmt result */
@@ -649,18 +623,17 @@ pgxc_FQS_create_remote_plan(Query *query, ExecNodes *exec_nodes, bool is_exec_di
 {
     RemoteQuery *query_step;
     StringInfoData buf;
-    RangeTblEntry    *dummy_rte;
 
     /* EXECUTE DIRECT statements have their RemoteQuery node already built when analyzing */
     if (is_exec_direct)
     {
-        Assert(IsA(query->utilityStmt, RemoteQuery));
+        Assert(polarxIsA(query->utilityStmt, RemoteQuery));
         query_step = (RemoteQuery *)query->utilityStmt;
         query->utilityStmt = NULL;
     }
     else
     {
-        query_step = makeNode(RemoteQuery);
+        query_step = polarxMakeNode(RemoteQuery);
         query_step->combine_type = COMBINE_TYPE_NONE;
         query_step->exec_type = EXEC_ON_DATANODES;
         query_step->exec_direct_type = EXEC_DIRECT_NONE;
@@ -717,26 +690,6 @@ pgxc_FQS_create_remote_plan(Query *query, ExecNodes *exec_nodes, bool is_exec_di
     query_step->combine_type = get_plan_combine_type(
                 query->commandType, query_step->exec_nodes->baselocatortype);
 
-    /*
-     * Create a dummy RTE for the remote query being created. Append the dummy
-     * range table entry to the range table. Note that this modifies the master
-     * copy the caller passed us, otherwise e.g EXPLAIN VERBOSE will fail to
-     * find the rte the Vars built below refer to. Also create the tuple
-     * descriptor for the result of this query from the base_tlist (targetlist
-     * we used to generate the remote node query).
-     */
-    dummy_rte = makeNode(RangeTblEntry);
-    dummy_rte->rtekind = RTE_REMOTE_DUMMY;
-    /* Use a dummy relname... */
-    if (is_exec_direct)
-        dummy_rte->relname = "__EXECUTE_DIRECT__";
-    else
-        dummy_rte->relname       = "__REMOTE_FQS_QUERY__";
-    dummy_rte->eref           = makeAlias("__REMOTE_FQS_QUERY__", NIL);
-    /* Rest will be zeroed out in makeNode() */
-
-    query->rtable = lappend(query->rtable, dummy_rte);
-    query_step->scan.scanrelid     = list_length(query->rtable);
     query_step->scan.plan.targetlist = query->targetList;
     #if 0
 	query_step->base_tlist = query->targetList;
@@ -744,7 +697,7 @@ pgxc_FQS_create_remote_plan(Query *query, ExecNodes *exec_nodes, bool is_exec_di
     return query_step;
 }
 
-static List *
+List *
 makeCustomScanVarTargetlistBasedTargetEntryList(List *targetEntryList)
 {
     List *customScanTlist = NIL;
@@ -881,48 +834,6 @@ fqs_preprocess_rowmarks(PlannerInfo *root)
     root->rowMarks = prowmarks;
 }
 
-static PlannedStmt *
-polarx_direct_planner(Query *query, int cursorOptions, ParamListInfo boundParams)
-{
-    PlannedStmt *result;
-    RemoteQuery *query_step = NULL;
-    List *tlist = query->targetList;
-    CustomScan *customScan = makeNode(CustomScan);
-
-    result = makeNode(PlannedStmt);
-
-    result->commandType = query->commandType;
-    result->canSetTag = query->canSetTag;
-    result->utilityStmt = query->utilityStmt;
-    result->rtable = query->rtable;
-
-
-    /* EXECUTE DIRECT statements have their RemoteQuery node already built when analyzing */
-    if (query->utilityStmt
-            && IsA(query->utilityStmt, RemoteQuery))
-    {
-        RemoteQuery *stmt = (RemoteQuery *) query->utilityStmt;
-        if (stmt->exec_direct_type != EXEC_DIRECT_NONE)
-        {
-            query_step = stmt;
-            query->utilityStmt = NULL;
-            result->utilityStmt = NULL;
-        }
-    }
-    Assert(query_step);
-
-    query_step->scan.plan.targetlist = tlist;
-    query_step->read_only = query->commandType == CMD_SELECT;
-    customScan->methods = &FastShipQueryExecutorCustomScanMethods;
-    customScan->custom_private = list_make1((Node *)query_step);
-    customScan->custom_scan_tlist = tlist;
-    customScan->scan.plan.targetlist = makeCustomScanVarTargetlistBasedTargetEntryList(tlist);
-
-    result->planTree = (Plan *) customScan;
-
-    return result;
-}
-
 List *
 AddRemoteQueryNode(List *stmts, const char *queryString, RemoteQueryExecType remoteExecType)
 {
@@ -936,7 +847,7 @@ AddRemoteQueryNode(List *stmts, const char *queryString, RemoteQueryExecType rem
     if (remoteExecType == EXEC_ON_CURRENT ||
             (IS_PGXC_LOCAL_COORDINATOR))
     {
-        RemoteQuery *step = makeNode(RemoteQuery);
+        RemoteQuery *step = polarxMakeNode(RemoteQuery);
         step->combine_type = COMBINE_TYPE_SAME;
         step->sql_statement = (char *) queryString;
         step->exec_type = remoteExecType;
@@ -944,4 +855,19 @@ AddRemoteQueryNode(List *stmts, const char *queryString, RemoteQueryExecType rem
     }
 
     return result;
+}
+
+static List *
+extractResjunkTarget(List *src_list)
+{
+    ListCell   *lc;
+    List *res = NIL;
+    foreach(lc, src_list)
+    {
+        TargetEntry *tar = lfirst_node(TargetEntry, lc);
+
+        if(!tar->resjunk)
+            res = lappend(res, (void *)tar);
+    }
+    return res;
 }

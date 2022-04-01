@@ -13,8 +13,9 @@
  * functions or functions using nonportable collations.  Those considerations
  * need not be accounted for here.
  *
+ * Copyright (c) 2021, Alibaba Group Holding Limited
+ * Licensed under the Apache License, Version 2.0 (the "License");
  * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
- * Copyright (c) 2020, Apache License Version 2.0*
  *
  * IDENTIFICATION
  *	  contrib/polarx/fdw_engines/polarx/polarx_shippable.c

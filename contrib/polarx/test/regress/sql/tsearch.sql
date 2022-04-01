@@ -398,7 +398,7 @@ S. T. Coleridge (1772-1834)
 
 --Rewrite sub system
 
-CREATE TABLE test_tsquery (txtkeyword TEXT, txtsample TEXT) DISTRIBUTE BY REPLICATION;
+CREATE TABLE test_tsquery (txtkeyword TEXT, txtsample TEXT) with(dist_type=replication);
 \set ECHO none
 \copy test_tsquery from stdin
 'New York'	new & york | big & apple | nyc

@@ -45,7 +45,8 @@
 #include "do_shell.h"
 #include "utils.h"
 #include "coord_cmd.h"
-#include "gtm_util.h"
+#include "pg_config.h"
+#include "port.h"
 
 
 static int failover_oneCoordinator(int coordIdx);
@@ -75,11 +76,9 @@ cmd_t *prepare_initCoordinatorMaster(char *nodeName)
 {
     cmd_t *cmd, *cmdInitdb, *cmdPgConf, *cmdWalArchDir, *cmdWalArch, *cmdPgHba;
     int jj, kk;
-    // int gtmPxyIdx;
     char **confFiles = NULL;
     FILE *f;
     char localStdin[MAXPATH+1];
-    //char *gtmHost, *gtmPort;
     char timestamp[MAXTOKEN+1];
     char remoteDirCheck[MAXPATH * 2 + 128];
 
@@ -112,26 +111,16 @@ cmd_t *prepare_initCoordinatorMaster(char *nodeName)
              "%s"
              "rm -rf %s;"
              "mkdir -p %s;"
-//             "PGXC_CTL_SILENT=1 initdb --nodename %s --nodetype coordinator -D %s "
-//             "--master_gtm_nodename %s --master_gtm_ip %s --master_gtm_port %s",
              "PGXC_CTL_SILENT=1 initdb -D %s ",
              remoteDirCheck,
              aval(VAR_coordMasterDirs)[jj],
              aval(VAR_coordMasterDirs)[jj],
-//             nodeName,
-//             aval(VAR_coordMasterDirs)[jj],
-//             sval(VAR_gtmName),
-//             sval(VAR_gtmMasterServer),
-//             sval(VAR_gtmMasterPort));
              aval(VAR_coordMasterDirs)[jj]
              );
 
     /* Update postgresql.conf */
 
     /* coordSpecificExtraConfig */
-    //gtmPxyIdx = getEffectiveGtmProxyIdxFromServerName(aval(VAR_coordMasterServers)[jj]);
-    //gtmHost = (gtmPxyIdx >= 0) ? aval(VAR_gtmProxyServers)[gtmPxyIdx] : sval(VAR_gtmMasterServer);
-    //gtmPort = (gtmPxyIdx >= 0) ? aval(VAR_gtmProxyPorts)[gtmPxyIdx] : sval(VAR_gtmMasterPort);
     appendCmdEl(cmdInitdb, (cmdPgConf = initCmd(aval(VAR_coordMasterServers)[jj])));
     snprintf(newCommand(cmdPgConf), MAXLINE,
              "cat >> %s/postgresql.conf", aval(VAR_coordMasterDirs)[jj]);
@@ -153,7 +142,7 @@ cmd_t *prepare_initCoordinatorMaster(char *nodeName)
             "#===========================================\n"
             "# Added at initialization. %s\n"
             "port = %d\n"
-            "pooler_port = %s\n"
+            "pooler.port = %s\n"
             "max_worker_processes = 8\n"
             "# End of Additon\n",
             timeStampString(timestamp, MAXTOKEN),
@@ -164,8 +153,8 @@ cmd_t *prepare_initCoordinatorMaster(char *nodeName)
     if(isVarYes(VAR_multiCluster) && !is_none(aval(VAR_coordMasterCluster)[jj]))
     {
         fprintf(f, 
-                "pgxc_main_cluster_name = %s\n"
-                "pgxc_cluster_name = %s\n",
+                "polarx.main_cluster_name = %s\n"
+                "polarx.cluster_name = %s\n",
                 sval(VAR_pgxcMainClusterName),
                 aval(VAR_coordMasterCluster)[jj]);
     }
@@ -332,7 +321,6 @@ cmd_t *prepare_initCoordinatorSlave(char *nodeName)
         /* Master is not running. Must start it first */
         appendCmdEl(cmdBuildDir, (cmdStartMaster = initCmd(aval(VAR_coordMasterServers)[idx])));
         snprintf(newCommand(cmdStartMaster), MAXLINE,
-//                 "pg_ctl start -w -Z coordinator -D %s -o -i",
                  "pg_ctl start -w -D %s -o -i",
                  aval(VAR_coordMasterDirs)[idx]);
     }
@@ -386,13 +374,13 @@ cmd_t *prepare_initCoordinatorSlave(char *nodeName)
                 "olap_optimizer = true\n"
                 "hot_standby = on\n"
                 "port = %s\n"
-                "pooler_port = %s\n"
+                "pooler.port = %s\n"
                 "wal_level = logical \n"
                 "archive_mode = off\n"
                 "archive_command = ''\n"
                 "max_wal_senders = 0\n"
-                "pgxc_main_cluster_name = %s\n"
-                "pgxc_cluster_name = %s\n"
+                "polarx.main_cluster_name = %s\n"
+                "polarx.cluster_name = %s\n"
                 "# End of Addition\n",
                 timeStampString(timestamp, MAXTOKEN),
                 aval(VAR_coordSlavePorts)[idx],
@@ -408,7 +396,7 @@ cmd_t *prepare_initCoordinatorSlave(char *nodeName)
                 "# Added to initialize the slave, %s\n"
                 "hot_standby = on\n"
                 "port = %s\n"
-                "pooler_port = %s\n"
+                "pooler.port = %s\n"
                 "wal_level = logical \n"
                 "archive_mode = off\n"
                 "archive_command = ''\n"
@@ -636,7 +624,6 @@ cmd_t *prepare_configureNode(char *nodeName)
         }
     }
     fprintf(f, "CREATE SERVER cluster_server FOREIGN DATA WRAPPER polarx;\n");
-    fprintf(f, "SELECT pgxc_pool_reload();\n");
     fclose(f);
     return(cmd);
 }    
@@ -794,7 +781,6 @@ static cmd_t *prepare_configureDataNode(char *nodeName)
         }
     }
     fprintf(f, "CREATE SERVER cluster_server FOREIGN DATA WRAPPER polarx;\n");
-    fprintf(f, "SELECT pgxc_pool_reload();\n");
     fclose(f);
     return(cmd);
 }
@@ -926,7 +912,6 @@ cmd_t *prepare_configureNode_multicluster(char *nodeName)
         
     }
 
-    fprintf(f, "SELECT pgxc_pool_reload();\n");
     fclose(f);
     return(cmd);
 }    
@@ -1117,7 +1102,6 @@ static cmd_t *prepare_configureDataNode_multicluster(char *nodeName)
 
         }
     }
-    fprintf(f, "EXECUTE DIRECT ON (%s) 'SELECT pgxc_pool_reload()';\n", aval(VAR_datanodeNames)[idx]);
     fclose(f);
     return(cmd);
 }
@@ -1390,7 +1374,7 @@ int add_coordinatorMaster(char *name, char *host, int port, int pooler,
         return 1;
     }
     /* Check if there's no conflict with the current configuration */
-    if (checkNameConflict(name, FALSE))
+    if (checkNameConflict(name))
     {
         elog(ERROR, "ERROR: Node name %s duplicate.\n", name);
         return 1;
@@ -1514,12 +1498,6 @@ int add_coordinatorMaster(char *name, char *host, int port, int pooler,
     /* Now add the master */
 
     /* initdb */
-//    doImmediate(host, NULL, "PGXC_CTL_SILENT=1 initdb -D %s --nodename %s --nodetype coordinator "
-//                            "--master_gtm_nodename %s --master_gtm_ip %s --master_gtm_port %s", 
-//                            dir, name,
-//                            sval(VAR_gtmName),
-//                            sval(VAR_gtmMasterServer),
-//                            sval(VAR_gtmMasterPort));
     doImmediate(host, NULL, "PGXC_CTL_SILENT=1 initdb -D %s", dir);
 
     /* Edit configurations */
@@ -1530,7 +1508,7 @@ int add_coordinatorMaster(char *name, char *host, int port, int pooler,
                 "#===========================================\n"
                 "# Added at initialization. %s\n"
                 "port = %d\n"
-                "pooler_port = %d\n"
+                "pooler.port = %d\n"
                 "# End of Additon\n",
                 timeStampString(date, MAXTOKEN+1),
                 port, pooler);
@@ -1628,7 +1606,6 @@ int add_coordinatorMaster(char *name, char *host, int port, int pooler,
             }
 //            fprintf(f, "CREATE NODE %s WITH (TYPE = 'coordinator', host='%s', PORT=%d);\n", name, host, port);
             fprintf(f, "CREATE NODE %s WITH (TYPE = 'coordinator', host='%s', PORT=%d, local=%d);\n", name, host, port, false);
-            fprintf(f, "SELECT pgxc_pool_reload();\n");
             fprintf(f, "\\q\n");
             pclose(f);
         }
@@ -1647,7 +1624,6 @@ int add_coordinatorMaster(char *name, char *host, int port, int pooler,
                 continue;
             }
             fprintf(f, "CREATE NODE %s WITH (TYPE = 'coordinator', host='%s', PORT=%d, local=%d);\n", name, host, port, false);
-            fprintf(f, "SELECT pgxc_pool_reload();\n");
             fprintf(f, "\\q\n");
             pclose(f);
         }
@@ -1662,7 +1638,6 @@ selfadd:
     else
     {
         fprintf(f, "CREATE NODE %s WITH (TYPE = 'coordinator', host='%s', PORT=%d, local=%d );\n", name, host, port, true);
-        fprintf(f, "SELECT pgxc_pool_reload();\n");
         fprintf(f, "\\q\n");
         pclose(f);
     }
@@ -1839,7 +1814,7 @@ int add_coordinatorSlave(char *name, char *host, int port, int pooler_port, char
             "# Added to initialize the slave, %s\n"
             "hot_standby = on\n"
             "port = %d\n"
-            "pooler_port = %d\n"
+            "pooler.port = %d\n"
             "wal_level = logical \n"
             "archive_mode = off\n"        /* No archive mode */
             "archive_command = ''\n"    /* No archive mode */
@@ -1964,7 +1939,6 @@ int remove_coordinatorMaster(char *name, int clean_opt)
                 continue;
             }
             fprintf(f, "DROP NODE %s;\n", name);
-            fprintf(f, "SELECT pgxc_pool_reload();\n");
             fprintf(f, "\\q");
             pclose(f);
         }
@@ -1986,8 +1960,6 @@ int remove_coordinatorMaster(char *name, int clean_opt)
             }
             fprintf(f, "EXECUTE DIRECT ON (%s) 'DROP NODE %s';\n",
                     aval(VAR_datanodeNames)[ii], name);
-            fprintf(f, "EXECUTE DIRECT ON (%s) 'SELECT pgxc_pool_reload()';\n",
-                    aval(VAR_datanodeNames)[ii]);
             fprintf(f, "\\q");
             pclose(f);
         }
@@ -2491,9 +2463,6 @@ static int failover_oneCoordinator(int coordIdx)
     int    rc = 0;
     int rc_local;
     int jj;
-    int    gtmPxyIdx;
-    //char *gtmHost;
-    //char *gtmPort;
     FILE *f;
     char timestamp[MAXTOKEN+1];
     char cmd[MAXLINE];
@@ -2502,28 +2471,12 @@ static int failover_oneCoordinator(int coordIdx)
     
 #define checkRc() do{if(WEXITSTATUS(rc_local) > rc) rc = WEXITSTATUS(rc_local);}while(0)
 
-    /*
-     * Determine the target gtm
-     */
-    gtmPxyIdx= getEffectiveGtmProxyIdxFromServerName(aval(VAR_coordSlaveServers)[coordIdx]);
-    //gtmHost = (gtmPxyIdx < 0) ? sval(VAR_gtmMasterServer) :
-        //aval(VAR_gtmProxyServers)[gtmPxyIdx];
-    //gtmPort = (gtmPxyIdx < 0) ? sval(VAR_gtmMasterPort) :
-        //aval(VAR_gtmProxyPorts)[gtmPxyIdx];
-    if (gtmPxyIdx >= 0)
-        elog(NOTICE, "Failover coordinator %s using gtm %s\n",
-             aval(VAR_coordNames)[coordIdx], aval(VAR_gtmProxyNames)[gtmPxyIdx]);
-    else
-        elog(NOTICE, "Failover coordinator %s using GTM itself\n",
-             aval(VAR_coordNames)[coordIdx]);
 
     /* Promote the slave */
     rc_local = doImmediate(aval(VAR_coordSlaveServers)[coordIdx], NULL,
                            "pg_ctl promote  -D %s",
                            aval(VAR_coordSlaveDirs)[coordIdx]);
     checkRc();
-
-    /* Reconfigure new coordinator master with new gtm_proxy or gtm */
 
     if ((f =  pgxc_popen_w(aval(VAR_coordSlaveServers)[coordIdx],
                            "cat >> %s/postgresql.conf",
@@ -2610,13 +2563,11 @@ static int failover_oneCoordinator(int coordIdx)
             continue;
         }
         
-        len = snprintf(cmd + cmdlen, MAXLINE - cmdlen, "EXECUTE DIRECT ON (%s) 'ALTER NODE %s WITH (HOST=''%s'', PORT=%s)';\n"
-                "EXECUTE DIRECT ON (%s) 'select pgxc_pool_reload()';\n",
+        len = snprintf(cmd + cmdlen, MAXLINE - cmdlen, "EXECUTE DIRECT ON (%s) 'ALTER NODE %s WITH (HOST=''%s'', PORT=%s)';\n",
                                  aval(VAR_datanodeNames)[jj],
                                  aval(VAR_coordNames)[coordIdx],
                                  aval(VAR_coordMasterServers)[coordIdx],
-                                 aval(VAR_coordPorts)[coordIdx],
-                                 aval(VAR_datanodeNames)[jj]);
+                                 aval(VAR_coordPorts)[coordIdx]);
         if (len > (MAXLINE - cmdlen))
         {
             elog(ERROR, "Datanode command exceeds the maximum allowed length");
@@ -2652,7 +2603,6 @@ static int failover_oneCoordinator(int coordIdx)
         }
         fprintf(f,
                 "ALTER NODE %s WITH (HOST='%s', PORT=%s);\n"
-                "select pgxc_pool_reload();\n"
                 "%s"
                 "\\q\n",
                 aval(VAR_coordNames)[coordIdx],

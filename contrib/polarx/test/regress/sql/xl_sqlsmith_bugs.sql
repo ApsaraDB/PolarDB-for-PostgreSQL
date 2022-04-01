@@ -55,7 +55,7 @@ CREATE SEQUENCE xl_INSERT_SEQ;
 CREATE TABLE xl_funct (
         a integer,
         b INT DEFAULT nextval('xl_insert_seq')
-) DISTRIBUTE BY HASH (a);
+) with(dist_type=hash, dist_col=a);
 
 INSERT INTO xl_funct (a) VALUES (1);
 INSERT INTO xl_funct (a) VALUES (2);

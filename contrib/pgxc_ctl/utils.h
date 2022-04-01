@@ -37,10 +37,8 @@ extern void appendFiles(FILE *f, char **fileList);
 extern FILE *prepareLocalStdin(char *buf, int len, char **fileList);
 extern char *timeStampString(char *buf, int len);
 extern char **makeActualNodeList(char **nodeList);
-extern int gtmProxyIdx(char *gtmProxyName);
 extern int coordIdx(char *coordName);
 extern int datanodeIdx(char *datanodeName);
-extern int getEffectiveGtmProxyIdxFromServerName(char *serverName);
 extern pid_t get_prog_pid(char *host, char *pidfile, char *dir);
 extern int pingNode(char *host, char *port);
 extern int pingNodeSlave(char *host, char *datadir);
@@ -50,8 +48,6 @@ extern char *getIpAddress(char *hostName);
 extern int pgxc_check_dir(const char *dir);
 
 #define get_postmaster_pid(host, dir) get_prog_pid(host, "postmaster", dir)
-#define get_gtm_pid(host, dir) get_prog_pid(host, "gtm", dir)
-#define get_gtmProxy_pid(host, dir) get_prog_pid(host, "gtm_proxy", dir)
 #define freeAndReset(x) do{Free(x);(x)=NULL;}while(0)
 #define myWEXITSTATUS(rc) ((rc) & 0x000000FF)
 

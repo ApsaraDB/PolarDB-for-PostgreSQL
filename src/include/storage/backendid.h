@@ -24,23 +24,6 @@ typedef int BackendId;			/* unique currently active backend identifier */
 
 extern PGDLLIMPORT BackendId MyBackendId;	/* backend id of this backend */
 
-#ifdef POLARDB_X
-/*
- * Two next variables make up distributed session id. Actual distributed
- * session id is a string, which includes coordinator node name, but
- * it is better to use Oid to store and compare with distributed session ids
- * of other backends under the same postmaster.
- */
-extern PGDLLIMPORT Oid MyCoordId;
-extern PGDLLIMPORT char MyCoordName[NAMEDATALEN];
-
-extern PGDLLIMPORT int MyCoordPid;
-extern PGDLLIMPORT LocalTransactionId MyCoordLxid;
-
-/* BackendId of the first backend of the distributed session on the node */
-extern PGDLLIMPORT BackendId MyFirstBackendId;
-#endif
-
 /* backend id of our parallel session leader, or InvalidBackendId if none */
 extern PGDLLIMPORT BackendId ParallelMasterBackendId;
 

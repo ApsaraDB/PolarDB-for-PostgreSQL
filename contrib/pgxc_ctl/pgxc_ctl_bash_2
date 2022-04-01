@@ -45,32 +45,6 @@ function print_values
 	echo cmDumpFile $cmDumpFile
 	echo standAlone $standAlone
 
-	# GTM overall
-	echo gtmName $gtmName
-
-	# GTM master
-	echo gtmMasterServer $gtmMasterServer
-	echo gtmMasterPort $gtmMasterPort
-	echo gtmMasterDir $gtmMasterDir
-	echo gtmExtraConfig $gtmExtraConfig
-	echo gtmMasterSpecificExtraConfig $gtmMasterSpecificExtraConfig
-
-	# GTM slave
-	echo gtmSlave $gtmSlave
-	echo gtmSlaveName $gtmSlaveName
-	echo gtmSlaveServer $gtmSlaveServer
-	echo gtmSlavePort $gtmSlavePort
-	echo gtmSlaveDir $gtmSlaveDir
-	echo gtmSlaveSpecificExtraConfig $gtmSlaveSpecificExtraConfig
-
-	# GTM Proxy
-	echo gtmProxy $gtmProxy
-	print_array gtmProxyNames
-	print_array gtmProxyServers
-	print_array gtmProxyPorts
-	print_array gtmProxyDirs
-	echo gtmPxyExtraConfig $gtmPxyExtraConfig
-	print_array gtmPxySpecificExtraConfig
 
 	# Coordinators overall
 	print_array coordNames

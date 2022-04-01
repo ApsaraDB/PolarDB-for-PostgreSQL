@@ -16,12 +16,12 @@ INSERT INTO xc_int4_tbl(f1) VALUES ('2147483647');
 INSERT INTO xc_int4_tbl(f1) VALUES ('-2147483647');
 
 
-select create_table_nodes('rep_foo(a int, b int)', '{1, 2}'::int[], 'replication', NULL);
+select create_table_nodes('rep_foo(a int, b int)', '{1, 2}'::int[], 'dist_type=replication', NULL);
 
-select create_table_nodes('foo (f1 serial, f2 text, f3 int default 42)', '{1, 2}'::int[], 'hash(f1)', NULL);
+select create_table_nodes('foo (f1 serial, f2 text, f3 int default 42)', '{1, 2}'::int[], 'dist_type=hash, dist_col=f1', NULL);
 
-select create_table_nodes('tp (f1 serial, f2 text, f3 int default 42)', '{1}'::int[], 'hash(f1)', NULL);
-select create_table_nodes('tc (fc int) INHERITS (tp)', '{2}'::int[], 'hash(f1)', NULL);
+select create_table_nodes('tp (f1 serial, f2 text, f3 int default 42)', '{1}'::int[], 'dist_type=hash, dist_col=f1', NULL);
+select create_table_nodes('tc (fc int) INHERITS (tp)', '{2}'::int[], 'dist_type=hash, dist_col=f1', NULL);
 
 create table parent(a int, b int);
 create table child (c int) INHERITS (parent);
@@ -57,7 +57,7 @@ create or replace function fn_stable(integer) RETURNS integer
     STABLE
     RETURNS NULL ON NULL INPUT;
 
-select create_table_nodes('numbers(a int, b varchar(255), c int)', '{1, 2}'::int[], 'hash(a)', NULL);
+select create_table_nodes('numbers(a int, b varchar(255), c int)', '{1, 2}'::int[], 'dist_type=hash, dist_col=a', NULL);
 
 create table test_tab(a int, b varchar(255), c varchar(255), d int);
 

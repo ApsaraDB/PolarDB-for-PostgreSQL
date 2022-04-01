@@ -172,7 +172,7 @@ select pg_total_relation_size('tabsize');	-- index size gets added
 drop table tabsize;
 
 -- check replicated tables
-create table tabsize (a int) distribute by replication;
+create table tabsize (a int) with(dist_type=replication);
 insert into tabsize values (1), (2), (3);
 select pg_relation_size('tabsize');
 select pg_total_relation_size('tabsize');

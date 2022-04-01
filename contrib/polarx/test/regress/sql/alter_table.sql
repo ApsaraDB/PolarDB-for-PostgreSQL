@@ -253,9 +253,9 @@ ALTER TABLE IF EXISTS constraint_rename_test ADD CONSTRAINT con4 UNIQUE (a);
 
 -- FOREIGN KEY CONSTRAINT adding TEST
 
-CREATE TABLE tmp2 (a int primary key) DISTRIBUTE BY REPLICATION;
+CREATE TABLE tmp2 (a int primary key) with(dist_type=replication);
 
-CREATE TABLE tmp3 (a int, b int) DISTRIBUTE BY REPLICATION;
+CREATE TABLE tmp3 (a int, b int) with(dist_type=replication);
 
 CREATE TABLE tmp4 (a int, b int, unique(a,b));
 
@@ -388,9 +388,9 @@ alter table nv_parent add check (d between '2001-01-01'::date and '2099-12-31'::
 -- Note: these tables are TEMP to avoid name conflicts when this test
 -- is run in parallel with foreign_key.sql.
 
-CREATE TEMP TABLE PKTABLE (ptest1 int PRIMARY KEY) DISTRIBUTE BY REPLICATION;
+CREATE TEMP TABLE PKTABLE (ptest1 int PRIMARY KEY) with(dist_type=replication);
 INSERT INTO PKTABLE VALUES(42);
-CREATE TEMP TABLE FKTABLE (ftest1 inet) DISTRIBUTE BY REPLICATION;
+CREATE TEMP TABLE FKTABLE (ftest1 inet) with(dist_type=replication);
 -- This next should fail, because int=inet does not exist
 ALTER TABLE FKTABLE ADD FOREIGN KEY(ftest1) references pktable;
 -- This should also fail for the same reason, but here we
@@ -399,7 +399,7 @@ ALTER TABLE FKTABLE ADD FOREIGN KEY(ftest1) references pktable(ptest1);
 DROP TABLE FKTABLE;
 -- This should succeed, even though they are different types,
 -- because int=int8 exists and is a member of the integer opfamily
-CREATE TEMP TABLE FKTABLE (ftest1 int8) DISTRIBUTE BY REPLICATION;
+CREATE TEMP TABLE FKTABLE (ftest1 int8) with(dist_type=replication);
 ALTER TABLE FKTABLE ADD FOREIGN KEY(ftest1) references pktable;
 -- Check it actually works
 INSERT INTO FKTABLE VALUES(42);		-- should succeed
@@ -408,13 +408,13 @@ DROP TABLE FKTABLE;
 -- This should fail, because we'd have to cast numeric to int which is
 -- not an implicit coercion (or use numeric=numeric, but that's not part
 -- of the integer opfamily)
-CREATE TEMP TABLE FKTABLE (ftest1 numeric) DISTRIBUTE BY REPLICATION;
+CREATE TEMP TABLE FKTABLE (ftest1 numeric) with(dist_type=replication);
 ALTER TABLE FKTABLE ADD FOREIGN KEY(ftest1) references pktable;
 DROP TABLE FKTABLE;
 DROP TABLE PKTABLE;
 -- On the other hand, this should work because int implicitly promotes to
 -- numeric, and we allow promotion on the FK side
-CREATE TEMP TABLE PKTABLE (ptest1 numeric PRIMARY KEY) DISTRIBUTE BY REPLICATION;
+CREATE TEMP TABLE PKTABLE (ptest1 numeric PRIMARY KEY) with(dist_type=replication);
 INSERT INTO PKTABLE VALUES(42);
 CREATE TEMP TABLE FKTABLE (ftest1 int);
 ALTER TABLE FKTABLE ADD FOREIGN KEY(ftest1) references pktable;
@@ -427,16 +427,16 @@ DROP TABLE PKTABLE;
 CREATE TEMP TABLE PKTABLE (ptest1 int, ptest2 inet,
                            PRIMARY KEY(ptest1, ptest2));
 -- This should fail, because we just chose really odd types
-CREATE TEMP TABLE FKTABLE (ftest1 cidr, ftest2 timestamp) DISTRIBUTE BY REPLICATION;
+CREATE TEMP TABLE FKTABLE (ftest1 cidr, ftest2 timestamp) with(dist_type=replication);
 ALTER TABLE FKTABLE ADD FOREIGN KEY(ftest1, ftest2) references pktable;
 DROP TABLE FKTABLE;
 -- Again, so should this...
-CREATE TEMP TABLE FKTABLE (ftest1 cidr, ftest2 timestamp) DISTRIBUTE BY REPLICATION;
+CREATE TEMP TABLE FKTABLE (ftest1 cidr, ftest2 timestamp) with(dist_type=replication);
 ALTER TABLE FKTABLE ADD FOREIGN KEY(ftest1, ftest2)
      references pktable(ptest1, ptest2);
 DROP TABLE FKTABLE;
 -- This fails because we mixed up the column ordering
-CREATE TEMP TABLE FKTABLE (ftest1 int, ftest2 inet) DISTRIBUTE BY REPLICATION;
+CREATE TEMP TABLE FKTABLE (ftest1 int, ftest2 inet) with(dist_type=replication);
 ALTER TABLE FKTABLE ADD FOREIGN KEY(ftest1, ftest2)
      references pktable(ptest2, ptest1);
 -- As does this...
@@ -522,8 +522,8 @@ insert into atacc1 (test2, test) values (3, 4);
 drop table atacc1;
 
 -- inheritance related tests
-create table atacc1 (test int) distribute by roundrobin;
-create table atacc2 (test2 int) distribute by roundrobin;
+create table atacc1 (test int) with(dist_type=roundrobin);
+create table atacc2 (test2 int) with(dist_type=roundrobin);
 create table atacc3 (test3 int) inherits (atacc1, atacc2);
 alter table atacc2 add constraint foo check (test2>0);
 -- fail and then succeed on atacc2
@@ -551,8 +551,8 @@ alter table atacc2 inherit atacc1;
 drop table atacc1 cascade;
 
 -- same things with one created with INHERIT
-create table atacc1 (test int) distribute by roundrobin;
-create table atacc2 (test2 int) distribute by roundrobin;
+create table atacc1 (test int) with(dist_type=roundrobin);
+create table atacc2 (test2 int) with(dist_type=roundrobin);
 create table atacc3 (test3 int) inherits (atacc1, atacc2);
 alter table atacc3 no inherit atacc2;
 -- fail
@@ -601,7 +601,7 @@ drop table atacc1;
 
 -- test unique constraint adding
 
-create table atacc1 ( test int ) with oids distribute by replication;
+create table atacc1 ( test int ) with oids with(dist_type=replication);
 -- add a unique constraint
 alter table atacc1 add constraint atacc_test1 unique (test);
 -- insert first value
@@ -617,7 +617,7 @@ alter table atacc1 alter column test type integer using 0;
 drop table atacc1;
 
 -- let's do one where the unique constraint fails when added
-create table atacc1 ( test int ) distribute by replication;
+create table atacc1 ( test int ) with(dist_type=replication);
 -- insert soon to be failing rows
 insert into atacc1 (test) values (2);
 insert into atacc1 (test) values (2);
@@ -628,7 +628,7 @@ drop table atacc1;
 
 -- let's do one where the unique constraint fails
 -- because the column doesn't exist
-create table atacc1 ( test int ) distribute by roundrobin;
+create table atacc1 ( test int ) with(dist_type=roundrobin);
 -- add a unique constraint (fails)
 alter table atacc1 add constraint atacc_test1 unique (test1);
 drop table atacc1;
@@ -648,7 +648,7 @@ insert into atacc1 (test,test2) values (5,5);
 drop table atacc1;
 
 -- lets do some naming tests
-create table atacc1 (test int, test2 int, unique(test)) distribute by replication;
+create table atacc1 (test int, test2 int, unique(test)) with(dist_type=replication);
 alter table atacc1 add unique (test2);
 -- should fail for @@ second one @@
 insert into atacc1 (test2, test) values (3, 3);
@@ -657,7 +657,7 @@ drop table atacc1;
 
 -- test primary key constraint adding
 
-create table atacc1 ( test int ) with oids distribute by replication;
+create table atacc1 ( test int ) with oids with(dist_type=replication);
 -- add a primary key constraint
 alter table atacc1 add constraint atacc_test1 primary key (test);
 -- insert first value
@@ -697,14 +697,14 @@ drop table atacc1;
 
 -- let's do one where the primary key constraint fails
 -- because the column doesn't exist
-create table atacc1 ( test int ) distribute by replication;
+create table atacc1 ( test int ) with(dist_type=replication);
 -- add a primary key constraint (fails)
 alter table atacc1 add constraint atacc_test1 primary key (test1);
 drop table atacc1;
 
 -- adding a new column as primary key to a non-empty table.
 -- should fail unless the column has a non-null default value.
-create table atacc1 ( test int ) distribute by replication;
+create table atacc1 ( test int ) with(dist_type=replication);
 insert into atacc1 (test) values (0);
 -- add a primary key column without a default (fails).
 alter table atacc1 add column test2 int primary key;
@@ -847,7 +847,7 @@ alter table pg_class drop column relname;
 alter table nosuchtable drop column bar;
 
 -- test dropping columns
-create table atacc1 (a int4 not null, b int4, c int4 not null, d int4) with oids distribute by replication;
+create table atacc1 (a int4 not null, b int4, c int4 not null, d int4) with oids with(dist_type=replication);
 insert into atacc1 values (1, 2, 3, 4);
 alter table atacc1 drop a;
 alter table atacc1 drop a;
@@ -936,7 +936,7 @@ alter table atacc1 add unique(a);
 alter table atacc1 add unique("........pg.dropped.1........");
 alter table atacc1 add check (a > 3);
 alter table atacc1 add check ("........pg.dropped.1........" > 3);
-create table atacc2 (id int4 unique) distribute by replication;
+create table atacc2 (id int4 unique) with(dist_type=replication);
 alter table atacc1 add foreign key (a) references atacc2(id);
 alter table atacc1 add foreign key ("........pg.dropped.1........") references atacc2(id);
 alter table atacc2 add foreign key (id) references atacc1(a);
@@ -972,7 +972,7 @@ insert into atacc1(id, value) values (null, 0);
 drop table atacc1;
 
 -- test inheritance
-create table parent (a int, b int, c int) distribute by roundrobin;
+create table parent (a int, b int, c int) with(dist_type=roundrobin);
 insert into parent values (1, 2, 3);
 alter table parent drop a;
 create table child (d varchar(255)) inherits (parent);
@@ -999,7 +999,7 @@ drop table child;
 drop table parent;
 
 -- test copy in/out
-create table test (a int4, b int4, c int4) distribute by roundrobin;
+create table test (a int4, b int4, c int4) with(dist_type=roundrobin);
 insert into test values (1,2,3);
 alter table test drop a;
 copy test to stdout;
@@ -1023,8 +1023,8 @@ drop table test;
 
 -- test inheritance
 
-create table dropColumn (a int, b int, e int) distribute by replication;
-create table dropColumnChild (c int) inherits (dropColumn) distribute by replication;
+create table dropColumn (a int, b int, e int) with(dist_type=replication);
+create table dropColumnChild (c int) inherits (dropColumn) with(dist_type=replication);
 create table dropColumnAnother (d int) inherits (dropColumnChild);
 
 -- these two should fail
@@ -1064,8 +1064,8 @@ alter table only renameColumn add column x int;
 
 -- Test corner cases in dropping of inherited columns
 
-create table p1 (f1 int, f2 int) distribute by roundrobin;
-create table c1 (f1 int not null) inherits(p1) distribute by roundrobin;
+create table p1 (f1 int, f2 int) with(dist_type=roundrobin);
+create table c1 (f1 int not null) inherits(p1) with(dist_type=roundrobin);
 
 -- should be rejected since c1.f1 is inherited
 alter table c1 drop column f1;
@@ -1078,8 +1078,8 @@ select f1 from c1;
 
 drop table p1 cascade;
 
-create table p1 (f1 int, f2 int) distribute by roundrobin;
-create table c1 () inherits(p1) distribute by roundrobin;
+create table p1 (f1 int, f2 int) with(dist_type=roundrobin);
+create table c1 () inherits(p1) with(dist_type=roundrobin);
 
 -- should be rejected since c1.f1 is inherited
 alter table c1 drop column f1;
@@ -1089,8 +1089,8 @@ select f1 from c1;
 
 drop table p1 cascade;
 
-create table p1 (f1 int, f2 int) distribute by roundrobin;
-create table c1 () inherits(p1) distribute by roundrobin;
+create table p1 (f1 int, f2 int) with(dist_type=roundrobin);
+create table c1 () inherits(p1) with(dist_type=roundrobin);
 
 -- should be rejected since c1.f1 is inherited
 alter table c1 drop column f1;
@@ -1100,8 +1100,8 @@ alter table c1 drop column f1;
 
 drop table p1 cascade;
 
-create table p1 (f1 int, f2 int) distribute by roundrobin;
-create table c1 (f1 int not null) inherits(p1) distribute by roundrobin;
+create table p1 (f1 int, f2 int) with(dist_type=roundrobin);
+create table c1 (f1 int not null) inherits(p1) with(dist_type=roundrobin);
 
 -- should be rejected since c1.f1 is inherited
 alter table c1 drop column f1;
@@ -1111,8 +1111,8 @@ alter table c1 drop column f1;
 
 drop table p1 cascade;
 
-create table p1(id int, name text) distribute by roundrobin;
-create table p2(id2 int, name text, height int) distribute by roundrobin;
+create table p1(id int, name text) with(dist_type=roundrobin);
+create table p2(id2 int, name text, height int) with(dist_type=roundrobin);
 create table c1(age int) inherits(p1,p2);
 create table gc1() inherits (c1);
 
@@ -1392,7 +1392,7 @@ INSERT INTO test_type_diff_c VALUES (1, 2, 3);
 ALTER TABLE test_type_diff ALTER COLUMN f2 TYPE bigint USING f2::bigint;
 
 CREATE TABLE test_type_diff2 (int_two int2, int_four int4, int_eight int8);
-CREATE TABLE test_type_diff2_c1 (int_four int4, int_eight int8, int_two int2) distribute by hash (int_two);
+CREATE TABLE test_type_diff2_c1 (int_four int4, int_eight int8, int_two int2) with(dist_type=hash, dist_col=int_two);
 CREATE TABLE test_type_diff2_c2 (int_eight int8, int_two int2, int_four int4);
 CREATE TABLE test_type_diff2_c3 (int_two int2, int_four int4, int_eight int8);
 ALTER TABLE test_type_diff2_c1 INHERIT test_type_diff2;
@@ -1910,7 +1910,7 @@ ALTER TABLE old_system_table DROP COLUMN othercol;
 DROP TABLE old_system_table;
 
 -- set logged
-CREATE UNLOGGED TABLE unlogged1(f1 SERIAL PRIMARY KEY, f2 TEXT) DISTRIBUTE BY REPLICATION;
+CREATE UNLOGGED TABLE unlogged1(f1 SERIAL PRIMARY KEY, f2 TEXT) with(dist_type=replication);
 -- check relpersistence of an unlogged table
 SELECT relname, relkind, relpersistence FROM pg_class WHERE relname ~ '^unlogged1'
 UNION ALL
@@ -1918,7 +1918,7 @@ SELECT 'toast table', t.relkind, t.relpersistence FROM pg_class r JOIN pg_class 
 UNION ALL
 SELECT 'toast index', ri.relkind, ri.relpersistence FROM pg_class r join pg_class t ON t.oid = r.reltoastrelid JOIN pg_index i ON i.indrelid = t.oid JOIN pg_class ri ON ri.oid = i.indexrelid WHERE r.relname ~ '^unlogged1'
 ORDER BY relname;
-CREATE UNLOGGED TABLE unlogged2(f1 SERIAL PRIMARY KEY, f2 INTEGER REFERENCES unlogged1) DISTRIBUTE BY REPLICATION; -- foreign key
+CREATE UNLOGGED TABLE unlogged2(f1 SERIAL PRIMARY KEY, f2 INTEGER REFERENCES unlogged1) with(dist_type=replication); -- foreign key
 CREATE UNLOGGED TABLE unlogged3(f1 SERIAL PRIMARY KEY, f2 INTEGER REFERENCES unlogged3); -- self-referencing foreign key
 ALTER TABLE unlogged3 SET LOGGED; -- skip self-referencing foreign key
 ALTER TABLE unlogged2 SET LOGGED; -- fails because a foreign key to an unlogged table exists
@@ -1935,7 +1935,7 @@ DROP TABLE unlogged3;
 DROP TABLE unlogged2;
 DROP TABLE unlogged1;
 -- set unlogged
-CREATE TABLE logged1(f1 SERIAL PRIMARY KEY, f2 TEXT) DISTRIBUTE BY REPLICATION;
+CREATE TABLE logged1(f1 SERIAL PRIMARY KEY, f2 TEXT) with(dist_type=replication);
 -- check relpersistence of a permanent table
 SELECT relname, relkind, relpersistence FROM pg_class WHERE relname ~ '^logged1'
 UNION ALL
@@ -1943,7 +1943,7 @@ SELECT 'toast table', t.relkind, t.relpersistence FROM pg_class r JOIN pg_class 
 UNION ALL
 SELECT 'toast index', ri.relkind, ri.relpersistence FROM pg_class r join pg_class t ON t.oid = r.reltoastrelid JOIN pg_index i ON i.indrelid = t.oid JOIN pg_class ri ON ri.oid = i.indexrelid WHERE r.relname ~ '^logged1'
 ORDER BY relname;
-CREATE TABLE logged2(f1 SERIAL PRIMARY KEY, f2 INTEGER REFERENCES logged1) DISTRIBUTE BY REPLICATION; -- foreign key
+CREATE TABLE logged2(f1 SERIAL PRIMARY KEY, f2 INTEGER REFERENCES logged1) with(dist_type=replication); -- foreign key
 CREATE TABLE logged3(f1 SERIAL PRIMARY KEY, f2 INTEGER REFERENCES logged3); -- self-referencing foreign key
 ALTER TABLE logged1 SET UNLOGGED; -- fails because a foreign key from a permanent table exists
 ALTER TABLE logged3 SET UNLOGGED; -- skip self-referencing foreign key
@@ -2448,20 +2448,20 @@ create table xl_child2 (a int, b int, c text);
 alter table xl_parent attach partition xl_child2 for values in (4, 5, 6);
 
 -- attach a partition, distribution column position does not match
-create table xl_child3 (b int, a int, c text) distribute by hash (a);
+create table xl_child3 (b int, a int, c text) with(dist_type=hash, dist_col=a);
 alter table xl_parent attach partition xl_child3 for values in (7, 8, 9);
 
 -- attach a partition, distribution column position matches, others do not
-create table xl_child4 (a int, c text, b int) distribute by hash (a);
+create table xl_child4 (a int, c text, b int) with(dist_type=hash, dist_col=a);
 alter table xl_parent attach partition xl_child4 for values in (10, 11, 12);
 
-create table xl_child5 (a int) distribute by hash (a);
+create table xl_child5 (a int) with(dist_type=hash, dist_col=a);
 alter table xl_child5 add column c text;
 alter table xl_child5 add column b int;
 alter table xl_parent attach partition xl_child5 for values in (13, 14, 15);
 
-create table xl_child6 (a int, b int) distribute by hash (b);
-alter table xl_child6 distribute by hash (a);
+create table xl_child6 (a int, b int) with(dist_type=hash, dist_col=b);
+alter table xl_child6 with(dist_type=hash, dist_col=a);
 alter table xl_child6 add column c text;
 alter table xl_parent attach partition xl_child6 for values in (16, 17, 18);
 
@@ -2488,11 +2488,11 @@ select * from xl_parent where a = 4;
 select * from xl_parent where a = 13;
 drop table xl_parent;
 
-create table xl_parted (a int, b int, c text) partition by list (b) distribute by hash (b);
+create table xl_parted (a int, b int, c text) partition by list (b) with(dist_type=hash, dist_col=b);
 create table xl_c1 (a int, b int, c text);
 alter table xl_parted attach partition xl_c1 for values in (1, 2, 3);
 drop table xl_c1;
-create table xl_c1 (a int, b int, c text) distribute by hash (b);
+create table xl_c1 (a int, b int, c text) with(dist_type=hash, dist_col=b);
 alter table xl_parted attach partition xl_c1 for values in (1, 2, 3);
 insert into xl_parted values (100, 1, 'foo');
 insert into xl_parted values (200, 3, 'bar');
@@ -2503,12 +2503,12 @@ alter table xl_parted attach partition xl_c2 for values in (4, 5, 6);
 insert into xl_parted values (5, 'baz');
 -- since attach failed above
 drop table xl_c2;
-create table xl_c2 (a int, b text, c text) distribute by hash (b);
+create table xl_c2 (a int, b text, c text) with(dist_type=hash, dist_col=b);
 alter table xl_c2 drop column a;
 alter table xl_parted attach partition xl_c2 for values in (4, 5, 6);
 -- since attach failed above
 drop table xl_c2;
-create table xl_c2 (a int, b int, c text) distribute by hash (b);
+create table xl_c2 (a int, b int, c text) with(dist_type=hash, dist_col=b);
 alter table xl_c2 drop column a;
 alter table xl_parted attach partition xl_c2 for values in (4, 5, 6);
 insert into xl_parted values (5, 'baz');

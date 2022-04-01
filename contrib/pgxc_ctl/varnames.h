@@ -108,31 +108,6 @@
 #define VAR_standAlone       "standAlone"
 
 
-/* GTM master */
-#define VAR_gtmName    "gtmName"
-#define VAR_gtmMasterServer    "gtmMasterServer"
-#define VAR_gtmMasterPort    "gtmMasterPort"
-#define VAR_gtmMasterDir    "gtmMasterDir"
-#define VAR_gtmExtraConfig    "gtmExtraConfig"
-#define VAR_gtmMasterSpecificExtraConfig "gtmMasterSpecificExtraConfig"
-
-/* GTM slave */
-#define VAR_gtmSlave         "gtmSlave"
-#define VAR_gtmSlaveName    "gtmSlaveName"
-#define VAR_gtmSlaveServer    "gtmSlaveServer"
-#define VAR_gtmSlavePort    "gtmSlavePort"
-#define VAR_gtmSlaveDir        "gtmSlaveDir"
-#define VAR_gtmSlaveSpecificExtraConfig    "gtmSlaveSpecificExtraConfig"
-
-/* GTM Proxy */
-#define VAR_gtmProxy        "gtmProxy"
-#define VAR_gtmProxyNames    "gtmProxyNames"
-#define VAR_gtmProxyServers    "gtmProxyServers"
-#define VAR_gtmProxyPorts    "gtmProxyPorts"
-#define VAR_gtmProxyDirs    "gtmProxyDirs"
-#define VAR_gtmPxyExtraConfig    "gtmPxyExtraConfig"
-#define VAR_gtmPxySpecificExtraConfig    "gtmPxySpecificExtraConfig"
-
 /* Coordinators overall */
 #define VAR_coordNames        "coordNames"
 #define VAR_coordPorts        "coordPorts"

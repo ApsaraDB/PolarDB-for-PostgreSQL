@@ -28,9 +28,6 @@
 #include "nodes/relation.h"
 #include "utils/datum.h"
 #include "utils/rel.h"
-#ifdef POLARDB_X
-#include "pgxc/planner.h"
-#endif
 
 
 /*
@@ -1334,25 +1331,10 @@ _copyIntoClause(const IntoClause *from)
 	COPY_STRING_FIELD(tableSpaceName);
 	COPY_NODE_FIELD(viewQuery);
 	COPY_SCALAR_FIELD(skipData);
-#ifdef POLARDB_X
-    COPY_NODE_FIELD(distributeby);
-#endif
 
 	return newnode;
 }
 
-#ifdef POLARDB_X
-static DistributeBy *
-_copyDistributeBy(const DistributeBy *from)
-{
-    DistributeBy *newnode = makeNode(DistributeBy);
-
-    COPY_SCALAR_FIELD(disttype);
-    COPY_STRING_FIELD(colname);
-
-    return newnode;
-}
-#endif
 /*
  * We don't need a _copyExpr because Expr is an abstract supertype which
  * should never actually get instantiated.  Also, since it has no common
@@ -3353,10 +3335,6 @@ CopyCreateStmtFields(const CreateStmt *from, CreateStmt *newnode)
 	COPY_SCALAR_FIELD(oncommit);
 	COPY_STRING_FIELD(tablespacename);
 	COPY_SCALAR_FIELD(if_not_exists);
-#ifdef POLARDB_X
-    COPY_SCALAR_FIELD(islocal);
-    COPY_NODE_FIELD(distributeby);
-#endif
 }
 
 static CreateStmt *
@@ -4804,139 +4782,6 @@ _copyForeignKeyCacheInfo(const ForeignKeyCacheInfo *from)
 	return newnode;
 }
 
-#ifdef POLARDB_X
-/* ****************************************************************
- *                    connpool.h copy functions
- * ****************************************************************
- */
-static CleanConnStmt *
-_copyCleanConnStmt(const CleanConnStmt *from)
-{
-    CleanConnStmt *newnode = makeNode(CleanConnStmt);
-
-    COPY_NODE_FIELD(nodes);
-    COPY_STRING_FIELD(dbname);
-    COPY_STRING_FIELD(username);
-    COPY_SCALAR_FIELD(is_coord);
-    COPY_SCALAR_FIELD(is_force);
-
-    return newnode;
-}
-
-/*
- * _copyExecDirect
- */
-static ExecDirectStmt*
-_copyExecDirect(const ExecDirectStmt *from)
-{
-    ExecDirectStmt *newnode = makeNode(ExecDirectStmt);
-
-    COPY_NODE_FIELD(node_names);
-    COPY_STRING_FIELD(query);
-
-    return newnode;
-}
-
-/*
- * _copyExecNodes
- */
-static ExecNodes *
-_copyExecNodes(const ExecNodes *from)
-{
-    ExecNodes *newnode = makeNode(ExecNodes);
-
-    COPY_NODE_FIELD(primarynodelist);
-    COPY_NODE_FIELD(nodeList);
-    COPY_SCALAR_FIELD(baselocatortype);
-    COPY_NODE_FIELD(en_expr);
-    COPY_SCALAR_FIELD(en_relid);
-    COPY_SCALAR_FIELD(accesstype);
-
-    return newnode;
-}
-
-/*
- * _copyRemoteQuery
- */
-static RemoteQuery *
-_copyRemoteQuery(const RemoteQuery *from)
-{
-    RemoteQuery *newnode = makeNode(RemoteQuery);
-
-    /*
-     * copy node superclass fields
-     */
-    CopyScanFields((Scan *) from, (Scan *) newnode);
-
-    /*
-     * copy remainder of node
-     */
-    COPY_SCALAR_FIELD(exec_direct_type);
-    COPY_STRING_FIELD(sql_statement);
-    COPY_NODE_FIELD(exec_nodes);
-    COPY_SCALAR_FIELD(combine_type);
-    COPY_NODE_FIELD(sort);
-    COPY_SCALAR_FIELD(read_only);
-    COPY_SCALAR_FIELD(force_autocommit);
-    COPY_STRING_FIELD(statement);
-    COPY_STRING_FIELD(cursor);
-    COPY_SCALAR_FIELD(rq_num_params);
-    if (from->rq_param_types)
-        COPY_POINTER_FIELD(rq_param_types,
-            sizeof(from->rq_param_types[0]) * from->rq_num_params);
-    else
-        newnode->rq_param_types = NULL;
-    COPY_SCALAR_FIELD(exec_type);
-
-    COPY_SCALAR_FIELD(reduce_level);
-    COPY_NODE_FIELD(base_tlist);
-    COPY_STRING_FIELD(outer_alias);
-    COPY_STRING_FIELD(inner_alias);
-    COPY_SCALAR_FIELD(outer_reduce_level);
-    COPY_SCALAR_FIELD(inner_reduce_level);
-    COPY_BITMAPSET_FIELD(outer_relids);
-    COPY_BITMAPSET_FIELD(inner_relids);
-    COPY_STRING_FIELD(inner_statement);
-    COPY_STRING_FIELD(outer_statement);
-    COPY_STRING_FIELD(join_condition);
-    COPY_SCALAR_FIELD(has_row_marks);
-    COPY_SCALAR_FIELD(has_ins_child_sel_parent);
-
-    COPY_SCALAR_FIELD(rq_finalise_aggs);
-    COPY_SCALAR_FIELD(rq_sortgroup_colno);
-    COPY_NODE_FIELD(remote_query);
-    COPY_NODE_FIELD(coord_var_tlist);
-    COPY_NODE_FIELD(query_var_tlist);
-    COPY_SCALAR_FIELD(is_temp);
-    COPY_STRING_FIELD(sql_select);
-    COPY_STRING_FIELD(sql_select_base);
-    COPY_SCALAR_FIELD(forUpadte);
-    COPY_SCALAR_FIELD(ss_num_params);
-    if (from->ss_num_params)
-        COPY_POINTER_FIELD(ss_param_types,
-            sizeof(from->ss_param_types[0]) * from->ss_num_params);
-    else
-        newnode->ss_param_types = NULL;
-    COPY_STRING_FIELD(select_cursor);
-    COPY_STRING_FIELD(sql_update);
-    COPY_SCALAR_FIELD(su_num_params);
-    if (from->su_num_params)
-        COPY_POINTER_FIELD(su_param_types,
-            sizeof(from->su_param_types[0]) * from->su_num_params);
-    else
-        newnode->su_param_types = NULL;
-    COPY_STRING_FIELD(update_cursor);
-    COPY_SCALAR_FIELD(action);
-    COPY_SCALAR_FIELD(dml_on_coordinator);
-    COPY_SCALAR_FIELD(jf_ctid);
-    COPY_SCALAR_FIELD(jf_xc_node_id);
-    COPY_SCALAR_FIELD(jf_xc_wholerow);
-    COPY_BITMAPSET_FIELD(conflict_cols);
-
-    return newnode;
-}
-#endif
-
 /*
  * copyObjectImpl -- implementation of copyObject(); see nodes/nodes.h
  *
@@ -5122,11 +4967,6 @@ copyObjectImpl(const void *from)
 		case T_TableFunc:
 			retval = _copyTableFunc(from);
 			break;
-#ifdef POLARDB_X
-        case T_DistributeBy:
-            retval = _copyDistributeBy(from);
-            break;
-#endif
 		case T_IntoClause:
 			retval = _copyIntoClause(from);
 			break;
@@ -5634,20 +5474,6 @@ copyObjectImpl(const void *from)
 		case T_CheckPointStmt:
 			retval = (void *) makeNode(CheckPointStmt);
 			break;
-#ifdef POLARDB_X
-        case T_CleanConnStmt:
-            retval = _copyCleanConnStmt(from);
-            break;
-		case T_ExecDirectStmt:
-			retval = _copyExecDirect(from);
-			break;
-		case T_RemoteQuery:
-            retval = _copyRemoteQuery(from);
-            break;
-		case T_ExecNodes:
-			retval = _copyExecNodes(from);
-			break;
-#endif
 		case T_CreateSchemaStmt:
 			retval = _copyCreateSchemaStmt(from);
 			break;

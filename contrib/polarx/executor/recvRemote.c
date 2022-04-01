@@ -14,6 +14,7 @@
  */
 
 #include "postgres.h"
+#include "polarx.h"
 
 #include <time.h>
 
@@ -38,10 +39,10 @@
 #include "executor/execRemoteQuery.h"
 #include "pgxc/locator.h"
 #include "pgxc/nodemgr.h"
-#include "pgxc/pgxc.h"
 #include "pgxc/pgxcnode.h"
+#include "utils/datarowstore.h"
 #include "executor/recvRemote.h"
-#include "pgxc/transam/txn_coordinator.h"
+#include "distribute_transaction/txn.h"
 #include "storage/ipc.h"
 #include "storage/proc.h"
 #include "tcop/tcopprot.h"
@@ -53,7 +54,6 @@
 #include "utils/snapmgr.h"
 #include "utils/tuplesort.h"
 
-static void CopyDataRowTupleToSlot(ResponseCombiner *combiner, TupleTableSlot *slot);
 
 static void
 HandleCommandComplete(ResponseCombiner *combiner, char *msg_body, size_t len, PGXCNodeHandle *conn);
@@ -73,8 +73,6 @@ HandleDatanodeCommandId(ResponseCombiner *combiner, char *msg_body, size_t len);
 static
 void add_error_message_from_combiner(PGXCNodeHandle *handle, void *combiner_input);
 
-static void
-CopyDataRowTupleToSlot(ResponseCombiner *combiner, TupleTableSlot *slot);
 
 static int
 parse_row_count(const char *message, size_t len, uint64 *rowcount);
@@ -211,7 +209,7 @@ parse_row_count(const char *message, size_t len, uint64 *rowcount)
     return digits;
 }
 
-#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+#ifdef PATCH_ENABLE_DISTRIBUTED_TRANSACTION
 static void
 HandleTimestamp(ResponseCombiner *combiner, char *msg_body, size_t len, PGXCNodeHandle *conn)
 {
@@ -342,12 +340,11 @@ HandleCommandComplete(ResponseCombiner *combiner, char *msg_body, size_t len, PG
 }
 
 /*
- * Convert RowDescription message to a TupleDesc
+ * consume describe response
  */
-TupleDesc
-create_tuple_desc(char *msg_body, size_t len)
+void
+ignore_describe_response(char *msg_body, size_t len)
 {
-    TupleDesc     result;
     int         i, nattr;
     uint16        n16;
 
@@ -356,26 +353,14 @@ create_tuple_desc(char *msg_body, size_t len)
     nattr = ntohs(n16);
     msg_body += 2;
 
-    result = CreateTemplateTupleDesc(nattr, false);
-
     /* decode attributes */
     for (i = 1; i <= nattr; i++)
     {
-        AttrNumber    attnum;
         char        *attname;
-        char        *typname;
-        Oid         oidtypeid;
-        int32         typemode, typmod;
-
-        attnum = (AttrNumber) i;
 
         /* attribute name */
         attname = msg_body;
         msg_body += strlen(attname) + 1;
-
-        /* type name */
-        typname = msg_body;
-        msg_body += strlen(typname) + 1;
 
         /* table OID, ignored */
         msg_body += 4;
@@ -390,19 +375,12 @@ create_tuple_desc(char *msg_body, size_t len)
         msg_body += 2;
 
         /* type mod */
-        memcpy(&typemode, msg_body, 4);
-        typmod = ntohl(typemode);
         msg_body += 4;
 
         /* PGXCTODO text/binary flag? */
         msg_body += 2;
 
-        /* Get the OID type and mode type from typename */
-        parseTypeString(typname, &oidtypeid, NULL, false);
-
-        TupleDescInitEntry(result, attnum, attname, oidtypeid, typmod, 0);
     }
-    return result;
 }
 /*
  * Handle RowDescription ('T') message from a Datanode connection
@@ -424,8 +402,8 @@ HandleRowDescription(ResponseCombiner *combiner, char *msg_body, size_t len)
     /* Increment counter and check if it was first */
     if (combiner->description_count == 0)
     {
+        ignore_describe_response(msg_body, len);
         combiner->description_count++;
-        combiner->tuple_desc = create_tuple_desc(msg_body, len);
         return true;
     }
     combiner->description_count++;
@@ -568,10 +546,7 @@ HandleError(ResponseCombiner *combiner, char *msg_body, size_t len, PGXCNodeHand
      * The producer error may be hiding primary error, so if previously received
      * error is a producer error allow it to be overwritten.
      */
-    if (combiner->errorMessage == NULL ||
-            MAKE_SQLSTATE(combiner->errorCode[0], combiner->errorCode[1],
-                          combiner->errorCode[2], combiner->errorCode[3],
-                          combiner->errorCode[4]) == ERRCODE_PRODUCER_ERROR)
+    if (combiner->errorMessage == NULL)
     {
         MemoryContext oldcontext = MemoryContextSwitchTo(ErrorContext);
 #ifdef     _PG_REGRESS_
@@ -629,10 +604,11 @@ HandleDatanodeCommandId(ResponseCombiner *combiner, char *msg_body, size_t len)
     /* Get the command Id */
     memcpy(&n32, &msg_body[0], 4);
     cid = ntohl(n32);
-
+#ifdef PATCH_ENABLE_DISTRIBUTED_TRANSACTION
     /* If received command Id is higher than current one, set it to a new value */
     if (cid > GetReceivedCommandId())
         SetReceivedCommandId(cid);
+#endif
 }
 
 static
@@ -791,7 +767,7 @@ handle_response(PGXCNodeHandle *conn, ResponseCombiner *combiner)
         {
             case '\0':            /* Not enough data in the buffer */
                 return RESPONSE_EOF;
-#ifdef ENABLE_DISTRIBUTED_TRANSACTION
+#ifdef PATCH_ENABLE_DISTRIBUTED_TRANSACTION
 			case 'L':
 				HandleTimestamp(combiner, msg, msg_len, conn);
 				break;
@@ -1087,14 +1063,14 @@ pgxc_connections_cleanup(ResponseCombiner *combiner)
 	    {
 		    if (combiner->dataRowBuffer[i])
 		    {
-			    tuplestore_end(combiner->dataRowBuffer[i]);
+			    datarowstore_end(combiner->dataRowBuffer[i]);
 			    combiner->dataRowBuffer[i] = NULL;
 		    }
 	    }
 	}
 	else if(combiner->dataRowBuffer[0])
 	{
-		tuplestore_end(combiner->dataRowBuffer[0]);
+		datarowstore_end(combiner->dataRowBuffer[0]);
 		combiner->dataRowBuffer[0] = NULL;
 	}
         pfree(combiner->dataRowBuffer);
@@ -1241,26 +1217,6 @@ pgxc_connections_cleanup(ResponseCombiner *combiner)
 }
 
 
-/*
- * copy the datarow from combiner to the given slot, in the slot's memory
- * context
- */
-static void
-CopyDataRowTupleToSlot(ResponseCombiner *combiner, TupleTableSlot *slot)
-{
-    RemoteDataRow     datarow;
-    MemoryContext    oldcontext;
-    oldcontext = MemoryContextSwitchTo(slot->tts_mcxt);
-    datarow = (RemoteDataRow) palloc(sizeof(RemoteDataRowData) + combiner->currentRow->msglen);
-    datarow->msgnode = combiner->currentRow->msgnode;
-    datarow->msglen = combiner->currentRow->msglen;
-    memcpy(datarow->msg, combiner->currentRow->msg, datarow->msglen);
-    ExecStoreDataRowTuple(datarow, slot, true);
-    pfree(combiner->currentRow);
-    combiner->currentRow = NULL;
-    MemoryContextSwitchTo(oldcontext);
-}
-
 void
 BufferConnection(PGXCNodeHandle *conn)
 {
@@ -1300,7 +1256,7 @@ BufferConnection(PGXCNodeHandle *conn)
 
     if (!combiner->dataRowBuffer)
     {
-        combiner->dataRowBuffer = (Tuplestorestate **)palloc0(sizeof(Tuplestorestate *) * node_cnt);
+        combiner->dataRowBuffer = (Datarowstorestate **)palloc0(sizeof(Datarowstorestate *) * node_cnt);
     }
 
     if (!combiner->nDataRows)
@@ -1310,7 +1266,7 @@ BufferConnection(PGXCNodeHandle *conn)
 
     if (!combiner->dataRowBuffer[node_index])
     {
-        combiner->dataRowBuffer[node_index] = tuplestore_begin_datarow(false, work_mem, NULL);
+        combiner->dataRowBuffer[node_index] = datarowstore_begin_datarow(false, work_mem);
     }
 
     if (!combiner->tmpslot)
@@ -1334,8 +1290,8 @@ BufferConnection(PGXCNodeHandle *conn)
         /* Most often result check first */
         if (res == RESPONSE_DATAROW)
         {
-            combiner->tmpslot->tts_datarow = combiner->currentRow;
-            tuplestore_puttupleslot(combiner->dataRowBuffer[node_index], combiner->tmpslot);
+            datarowstore_putdatarow(combiner->dataRowBuffer[node_index],
+                                        combiner->currentRow);
             pfree(combiner->currentRow);
             combiner->currentRow = NULL;
             combiner->nDataRows[node_index]++;
@@ -1448,11 +1404,9 @@ static bool FetchFromTupleStore(ResponseCombiner *combiner)
     }
   
   
-    if (tuplestore_gettupleslot(combiner->dataRowBuffer[node_index], 
-                                true, true, combiner->tmpslot))
+    if (datarowstore_getdatarow(combiner->dataRowBuffer[node_index], 
+                                true, true, &combiner->currentRow))
     {
-        combiner->tmpslot->tts_shouldFreeRow = false;
-        combiner->currentRow = combiner->tmpslot->tts_datarow;
         combiner->nDataRows[node_index]--;
     }
     else
@@ -1466,11 +1420,10 @@ static bool FetchFromTupleStore(ResponseCombiner *combiner)
 
         /* 
             * datarows fetched from tuplestore in memory will be freed by caller, 
-            * we do not need to free them in tuplestore_end, tuplestore_set_tupdeleted
-            * avoid to free memtuples in tuplestore_end.
+            * we do not need to free them in datarowstore_end, 
+            * avoid to free memtuples in datarowstore_end.
             */
-        //tuplestore_set_tupdeleted(combiner->dataRowBuffer[node_index]);
-        tuplestore_end(combiner->dataRowBuffer[node_index]);
+        datarowstore_end(combiner->dataRowBuffer[node_index]);
         combiner->dataRowBuffer[node_index] = NULL;
         combiner->currentRow = NULL;
     }
@@ -1478,7 +1431,7 @@ static bool FetchFromTupleStore(ResponseCombiner *combiner)
     return true;
 }
 /*
- * FetchTuple
+ *FetchDatarow 
  *
         Get next tuple from one of the datanode connections.
  * The connections should be in combiner->connections, if "local" dummy
@@ -1493,11 +1446,10 @@ static bool FetchFromTupleStore(ResponseCombiner *combiner)
  * is a locally executed subplan function advance it and buffer resulting rows
  * instead of waiting.
  */
-TupleTableSlot *
-FetchTuple(ResponseCombiner *combiner)
+RemoteDataRow
+FetchDatarow(ResponseCombiner *combiner)
 {// #lizard forgives
     PGXCNodeHandle *conn;
-    TupleTableSlot *scanslot = combiner->ss.ss_ScanTupleSlot;
 
 READ_NEXT_ROW:
     if (combiner->conn_count > combiner->current_conn)
@@ -1512,8 +1464,9 @@ READ_NEXT_ROW:
     {
         if (combiner->currentRow)
         {
-            CopyDataRowTupleToSlot(combiner, scanslot);
-            return scanslot;
+            RemoteDataRow res_row = combiner->currentRow;
+            combiner->currentRow = NULL;
+            return res_row;
         }
     } 
 
@@ -1564,8 +1517,9 @@ READ_NEXT_ROW:
         {
             case RESPONSE_DATAROW:
                 {
-                    CopyDataRowTupleToSlot(combiner, scanslot);
-                    return scanslot;
+                    RemoteDataRow res_row = combiner->currentRow;
+                    combiner->currentRow = NULL;
+                    return res_row;
                 }
             case RESPONSE_EOF:
                 {
@@ -1622,25 +1576,10 @@ READ_NEXT_ROW:
                 }
             case RESPONSE_SUSPENDED:
                 {
-                    /* POLARDB_X_TODO */
                     break;
                 }
             case RESPONSE_TUPDESC:
-                {
-                    if (!scanslot->tts_fixedTupleDescriptor)
-                    {
-                        ExecSetSlotDescriptor(scanslot,
-                                  combiner->tuple_desc);
-                        /* Now slot is responsible for freeng the descriptor */
-                        combiner->tuple_desc = NULL;
-                    }
-                    else
-                    {
-                        ReleaseTupleDesc(combiner->tuple_desc);
-                    }
-
                     break;
-                }
             case RESPONSE_ERROR:
                 {
                     /* print error message outside */
@@ -1679,7 +1618,9 @@ pgxc_node_receive_responses(const int conn_count, PGXCNodeHandle ** connections,
 		int i = 0;
 		for (; i < conn_count; i++) 
 		{
+#ifdef PATCH_ENABLE_DISTRIBUTED_TRANSACTION
 			connections[i]->receivedTimestamp = 0;
+#endif
 		}
 	}
     /*
@@ -1724,7 +1665,7 @@ pgxc_node_receive_responses(const int conn_count, PGXCNodeHandle ** connections,
                 /*
                  *if exit abnormally reset response_operation for next call
                  */
-                g_twophase_state.response_operation = OTHER_OPERATIONS;
+                g_coord_twophase_state.response_operation = OTHER_OPERATIONS;
                 return EOF;
             }
             last_fatal_conn_count = fatal_conn_inner;
@@ -1772,7 +1713,7 @@ pgxc_node_receive_responses(const int conn_count, PGXCNodeHandle ** connections,
                     {
                         connection_index = receive_to_connections[i];
                     }
-                    UpdateLocalTwoPhaseState(result, to_receive[i], connection_index, combiner->errorMessage);
+                    UpdateLocalCoordTwoPhaseState(result, to_receive[i], connection_index, combiner->errorMessage);
                 case RESPONSE_COPY:
                     /* try to read every byte from peer. */
                     nbytes = pgxc_node_is_data_enqueued(to_receive[i]);
@@ -1828,7 +1769,7 @@ pgxc_node_receive_responses(const int conn_count, PGXCNodeHandle ** connections,
                     {
                         connection_index = receive_to_connections[i];
                     }
-                    UpdateLocalTwoPhaseState(result, to_receive[i], connection_index, combiner->errorMessage);
+                    UpdateLocalCoordTwoPhaseState(result, to_receive[i], connection_index, combiner->errorMessage);
                     break;
 
                 case RESPONSE_WAITXIDS:
@@ -1852,6 +1793,6 @@ pgxc_node_receive_responses(const int conn_count, PGXCNodeHandle ** connections,
         }
     }
 
-    g_twophase_state.response_operation = OTHER_OPERATIONS;
+    g_coord_twophase_state.response_operation = OTHER_OPERATIONS;
     return func_ret;
 }

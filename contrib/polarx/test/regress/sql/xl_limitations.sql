@@ -310,11 +310,11 @@ CREATE TABLE xl_circles (
     EXCLUDE USING gist (c WITH &&)
 );
 
-CREATE TABLE xl_cons_hash (a int, c circle, EXCLUDE USING gist (c WITH &&)) DISTRIBUTE BY HASH(a); 
-CREATE TABLE xl_cons_modulo (a int, c circle, EXCLUDE USING gist (c WITH &&)) DISTRIBUTE BY MODULO(a);  error
-CREATE TABLE xl_cons_rr (c circle, EXCLUDE USING gist (c WITH &&)) DISTRIBUTE BY ROUNDROBIN;
-CREATE TABLE xl_cons_hash2 (a int, b int, c circle, EXCLUDE USING btree (a WITH = , b WITH =)) DISTRIBUTE BY HASH(a); 
-CREATE TABLE xl_cons_modulo2 (a int, b int, c circle, EXCLUDE USING btree (a WITH =, b WITH =)) DISTRIBUTE BY MODULO(a); 
+CREATE TABLE xl_cons_hash (a int, c circle, EXCLUDE USING gist (c WITH &&))  WITH(dist_type=hash, dist_col=a); 
+CREATE TABLE xl_cons_modulo (a int, c circle, EXCLUDE USING gist (c WITH &&)) WITH(dist_type=modulo, dist_col=a);  error
+CREATE TABLE xl_cons_rr (c circle, EXCLUDE USING gist (c WITH &&)) WITH(dist_type=roundrobin);
+CREATE TABLE xl_cons_hash2 (a int, b int, c circle, EXCLUDE USING btree (a WITH = , b WITH =))  WITH(dist_type=hash, dist_col=a); 
+CREATE TABLE xl_cons_modulo2 (a int, b int, c circle, EXCLUDE USING btree (a WITH =, b WITH =)) WITH(dist_type=modulo, dist_col=a); 
 
 -- xl_test1 is distributed by default on HASH(a)
 CREATE TABLE xl_test1 (a int, b int);

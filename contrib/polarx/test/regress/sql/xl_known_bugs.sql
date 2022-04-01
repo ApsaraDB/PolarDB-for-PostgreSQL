@@ -46,8 +46,8 @@ drop table t3;
 
 -- WITH CHECK OPTION with subquery
 
-CREATE TABLE base_tbl (a int) DISTRIBUTE BY REPLICATION;
-CREATE TABLE ref_tbl (a int PRIMARY KEY) DISTRIBUTE BY REPLICATION;
+CREATE TABLE base_tbl (a int) WITH (dist_type = replication);
+CREATE TABLE ref_tbl (a int PRIMARY KEY) WITH (dist_type = replication);
 INSERT INTO ref_tbl SELECT * FROM generate_series(1,10);
 
 CREATE VIEW rw_view1 AS
@@ -65,9 +65,9 @@ drop table base_tbl;
 -- from xc_remote test
 
 -- Test for remote DML on different tables
-CREATE TABLE rel_rep (a int, b int) DISTRIBUTE BY REPLICATION;
-CREATE TABLE rel_hash (a int, b int) DISTRIBUTE BY HASH (a);
-CREATE TABLE rel_rr (a int, b int) DISTRIBUTE BY ROUNDROBIN;
+CREATE TABLE rel_rep (a int, b int) WITH (dist_type = replication);
+CREATE TABLE rel_hash (a int, b int) WITH (dist_type = hash, dist_col = a);
+CREATE TABLE rel_rr (a int, b int) WITH (dist_type = roundrobin);
 CREATE SEQUENCE seqtest START 10;
 CREATE SEQUENCE seqtest2 START 100;
 
@@ -300,7 +300,6 @@ string4 name
 -- distributed by default by HASH(unique1)
 CREATE TABLE xl_onek (
 unique1 int4,
-unique2 int4,
 two int4,
 four int4,
 stringu1 name,
@@ -363,7 +362,7 @@ CREATE TEMP TABLE department (
 	id INTEGER PRIMARY KEY,  -- department ID
 	parent_department INTEGER REFERENCES department, -- upper department ID
 	name TEXT -- department name
-) DISTRIBUTE BY REPLICATION;
+) WITH (dist_type = replication);
 
 with recursive q as (
       select * from department
@@ -378,7 +377,7 @@ with recursive q as (
 select * from q order by 1, 2, 3 limit 32;
 
 -- This fails to INSERT and RETURN the rows
-CREATE TEMPORARY TABLE y (a INTEGER) DISTRIBUTE BY REPLICATION;
+CREATE TEMPORARY TABLE y (a INTEGER) WITH (dist_type = replication);
 INSERT INTO y SELECT generate_series(1, 10);
 WITH t AS (
 	SELECT a FROM y

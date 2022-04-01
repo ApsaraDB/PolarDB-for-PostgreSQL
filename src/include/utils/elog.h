@@ -19,12 +19,6 @@
 /* Error level codes */
 #ifdef POLARDB_X
 #define DEBUG_2PC 15
-#define DEBUG12 9
-#define DEBUG11 9
-#define DEBUG10 9
-#define DEBUG9 9 /* Debugging sending prepare timestamp */
-#define DEBUG8 9
-#define DEBUG7 9
 #endif /* POLARDB_X */
 
 #define DEBUG6 9

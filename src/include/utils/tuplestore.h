@@ -88,12 +88,4 @@ extern void tuplestore_clear(Tuplestorestate *state);
 
 extern void tuplestore_end(Tuplestorestate *state);
 
-#ifdef POLARDB_X
-extern Tuplestorestate *tuplestore_begin_datarow(bool interXact, int maxKBytes,
-                         MemoryContext tmpcxt);
-extern Tuplestorestate *tuplestore_begin_message(bool interXact, int maxKBytes);
-extern void tuplestore_putmessage(Tuplestorestate *state, int len, char* msg);
-extern char *tuplestore_getmessage(Tuplestorestate *state, int *len);
-#endif
-
 #endif							/* TUPLESTORE_H */

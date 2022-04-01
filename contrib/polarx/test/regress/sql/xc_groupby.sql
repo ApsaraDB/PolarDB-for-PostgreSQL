@@ -122,8 +122,8 @@ drop table xc_groupby_g;
 -- Combination 2, enable_hashagg on and replicated tables.
 -- repeat the same tests for replicated tables
 -- create required tables and fill them with data
-create table xc_groupby_tab1 (val int, val2 int) distribute by replication;
-create table xc_groupby_tab2 (val int, val2 int) distribute by replication;
+create table xc_groupby_tab1 (val int, val2 int) with(dist_type=replication);
+create table xc_groupby_tab2 (val int, val2 int) with(dist_type=replication);
 insert into xc_groupby_tab1 values (1, 1), (2, 1), (3, 1), (2, 2), (6, 2), (4, 3), (1, 3), (6, 3);
 insert into xc_groupby_tab2 values (1, 1), (4, 1), (8, 1), (2, 4), (9, 4), (3, 4), (4, 2), (5, 2), (3, 2);
 select count(*), sum(val), avg(val), sum(val)::float8/count(*), val2 from xc_groupby_tab1 group by val2 order by 1, 2, 3;
@@ -159,7 +159,7 @@ drop table xc_groupby_tab1;
 drop table xc_groupby_tab2;
 
 -- some tests involving nulls, characters, float type etc.
-create table xc_groupby_def(a int, b varchar(25)) distribute by replication; 
+create table xc_groupby_def(a int, b varchar(25)) with(dist_type=replication); 
 insert into xc_groupby_def VALUES (NULL, NULL);
 insert into xc_groupby_def VALUES (1, NULL);
 insert into xc_groupby_def VALUES (NULL, 'One');
@@ -202,7 +202,7 @@ explain (verbose true, costs false, nodes false) select * from (select b,count(b
 select count(*) from xc_groupby_def where b is null group by b;
 explain (verbose true, costs false, nodes false) select count(*) from xc_groupby_def where b is null group by b;
 
-create table xc_groupby_g(a int, b float, c numeric) distribute by replication;
+create table xc_groupby_g(a int, b float, c numeric) with(dist_type=replication);
 insert into xc_groupby_g values(1,2.1,3.2);
 insert into xc_groupby_g values(1,2.1,3.2);
 insert into xc_groupby_g values(2,2.3,5.2);
@@ -326,8 +326,8 @@ drop table xc_groupby_g;
 -- Combination 4 enable_hashagg off and replicated tables.
 -- repeat the same tests for replicated tables
 -- create required tables and fill them with data
-create table xc_groupby_tab1 (val int, val2 int) distribute by replication;
-create table xc_groupby_tab2 (val int, val2 int) distribute by replication;
+create table xc_groupby_tab1 (val int, val2 int) with(dist_type=replication);
+create table xc_groupby_tab2 (val int, val2 int) with(dist_type=replication);
 insert into xc_groupby_tab1 values (1, 1), (2, 1), (3, 1), (2, 2), (6, 2), (4, 3), (1, 3), (6, 3);
 insert into xc_groupby_tab2 values (1, 1), (4, 1), (8, 1), (2, 4), (9, 4), (3, 4), (4, 2), (5, 2), (3, 2);
 select count(*), sum(val), avg(val), sum(val)::float8/count(*), val2 from xc_groupby_tab1 group by val2;
@@ -359,7 +359,7 @@ drop table xc_groupby_tab1;
 drop table xc_groupby_tab2;
 
 -- some tests involving nulls, characters, float type etc.
-create table xc_groupby_def(a int, b varchar(25)) distribute by replication; 
+create table xc_groupby_def(a int, b varchar(25)) with(dist_type=replication); 
 insert into xc_groupby_def VALUES (NULL, NULL);
 insert into xc_groupby_def VALUES (1, NULL);
 insert into xc_groupby_def VALUES (NULL, 'One');
@@ -396,7 +396,7 @@ explain (verbose true, costs false, nodes false) select b,count(b) from xc_group
 select count(*) from xc_groupby_def where b is null group by b;
 explain (verbose true, costs false, nodes false) select count(*) from xc_groupby_def where b is null group by b;
 
-create table xc_groupby_g(a int, b float, c numeric) distribute by replication;
+create table xc_groupby_g(a int, b float, c numeric) with(dist_type=replication);
 insert into xc_groupby_g values(1,2.1,3.2);
 insert into xc_groupby_g values(1,2.1,3.2);
 insert into xc_groupby_g values(2,2.3,5.2);
@@ -539,8 +539,8 @@ drop table xc_groupby_g;
 -- Combination 2, enable_hashagg on and replicated tables.
 -- repeat the same tests for replicated tables
 -- create required tables and fill them with data
-create table xc_groupby_tab1 (val int, val2 int) distribute by replication;
-create table xc_groupby_tab2 (val int, val2 int) distribute by replication;
+create table xc_groupby_tab1 (val int, val2 int) with(dist_type=replication);
+create table xc_groupby_tab2 (val int, val2 int) with(dist_type=replication);
 insert into xc_groupby_tab1 values (1, 1), (2, 1), (3, 1), (2, 2), (6, 2), (4, 3), (1, 3), (6, 3);
 insert into xc_groupby_tab2 values (1, 1), (4, 1), (8, 1), (2, 4), (9, 4), (3, 4), (4, 2), (5, 2), (3, 2);
 select count(*), sum(val), avg(val), sum(val)::float8/count(*), val2 from xc_groupby_tab1 group by val2 order by 1, 2;
@@ -576,7 +576,7 @@ drop table xc_groupby_tab1;
 drop table xc_groupby_tab2;
 
 -- some tests involving nulls, characters, float type etc.
-create table xc_groupby_def(a int, b varchar(25)) distribute by replication; 
+create table xc_groupby_def(a int, b varchar(25)) with(dist_type=replication); 
 insert into xc_groupby_def VALUES (NULL, NULL);
 insert into xc_groupby_def VALUES (1, NULL);
 insert into xc_groupby_def VALUES (NULL, 'One');
@@ -619,7 +619,7 @@ explain (verbose true, costs false, nodes false) select * from (select b,count(b
 select count(*) from xc_groupby_def where b is null group by b;
 explain (verbose true, costs false, nodes false) select count(*) from xc_groupby_def where b is null group by b;
 
-create table xc_groupby_g(a int, b float, c numeric) distribute by replication;
+create table xc_groupby_g(a int, b float, c numeric) with(dist_type=replication);
 insert into xc_groupby_g values(1,2.1,3.2);
 insert into xc_groupby_g values(1,2.1,3.2);
 insert into xc_groupby_g values(2,2.3,5.2);
@@ -751,8 +751,8 @@ drop table xc_groupby_g;
 -- Combination 4 enable_hashagg off and replicated tables.
 -- repeat the same tests for replicated tables
 -- create required tables and fill them with data
-create table xc_groupby_tab1 (val int, val2 int) distribute by replication;
-create table xc_groupby_tab2 (val int, val2 int) distribute by replication;
+create table xc_groupby_tab1 (val int, val2 int) with(dist_type=replication);
+create table xc_groupby_tab2 (val int, val2 int) with(dist_type=replication);
 insert into xc_groupby_tab1 values (1, 1), (2, 1), (3, 1), (2, 2), (6, 2), (4, 3), (1, 3), (6, 3);
 insert into xc_groupby_tab2 values (1, 1), (4, 1), (8, 1), (2, 4), (9, 4), (3, 4), (4, 2), (5, 2), (3, 2);
 select count(*), sum(val), avg(val), sum(val)::float8/count(*), val2 from xc_groupby_tab1 group by val2;
@@ -784,7 +784,7 @@ drop table xc_groupby_tab1;
 drop table xc_groupby_tab2;
 
 -- some tests involving nulls, characters, float type etc.
-create table xc_groupby_def(a int, b varchar(25)) distribute by replication; 
+create table xc_groupby_def(a int, b varchar(25)) with(dist_type=replication); 
 insert into xc_groupby_def VALUES (NULL, NULL);
 insert into xc_groupby_def VALUES (1, NULL);
 insert into xc_groupby_def VALUES (NULL, 'One');
@@ -821,7 +821,7 @@ explain (verbose true, costs false, nodes false) select b,count(b) from xc_group
 select count(*) from xc_groupby_def where b is null group by b;
 explain (verbose true, costs false, nodes false) select count(*) from xc_groupby_def where b is null group by b;
 
-create table xc_groupby_g(a int, b float, c numeric) distribute by replication;
+create table xc_groupby_g(a int, b float, c numeric) with(dist_type=replication);
 insert into xc_groupby_g values(1,2.1,3.2);
 insert into xc_groupby_g values(1,2.1,3.2);
 insert into xc_groupby_g values(2,2.3,5.2);

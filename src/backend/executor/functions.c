@@ -33,10 +33,6 @@
 #include "utils/memutils.h"
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
-#ifdef POLARDB_X
-#include "pgxc/pgxc.h"
-#include "commands/prepare.h"
-#endif
 
 
 /*
@@ -539,24 +535,6 @@ init_execution_state(List *queryTree_list,
 						 errmsg("%s is not allowed in a non-volatile function",
 								CreateCommandTag((Node *) stmt))));
 			
-#ifdef POLARDB_X
-            if (IS_PGXC_LOCAL_COORDINATOR)
-            {
-                if (queryTree->commandType != CMD_UTILITY)
-                {
-                    /*
-                    * The parameterised queries in RemoteQuery nodes will be prepared
-                    * on the Datanode, and need parameter types for the same. Set the
-                    * parameter types and their number in all RemoteQuery nodes in the
-                    * plan
-                    */
-                    SetRemoteStatementName(((PlannedStmt *)stmt)->planTree, NULL,
-                                            fcache->pinfo->nargs,
-                                            fcache->pinfo->argtypes, 0);
-                }
-            }
-#endif /* POLARDB_X */
-
 			if (IsInParallelMode() && !CommandIsReadOnly(stmt))
 				PreventCommandIfParallelMode(CreateCommandTag((Node *) stmt));
 

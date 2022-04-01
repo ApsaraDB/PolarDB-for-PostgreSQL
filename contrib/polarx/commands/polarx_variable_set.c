@@ -3,22 +3,23 @@
  *    support for propagation of SET including SET/SET LOCAL/SET in fuction
  *    for polarx 
  *
- * Copyright (c) 2020, Alibaba Inc. and/or its affiliates
- * Copyright (c) 2020, Apache License Version 2.0*
+ * Copyright (c) 2021, Alibaba Group Holding Limited
+ * Licensed under the Apache License, Version 2.0 (the "License");
  *
  * IDENTIFICATION
  *        contrib/polarx/commands/polarx_variable_set.c
  *
  *-------------------------------------------------------------------------
  */
-#include "pgxc/pgxc.h"
+#include "postgres.h"
 #include "pgxc/connpool.h"
 #include "executor/execRemoteQuery.h"
 #include "commands/polarx_variable_set.h"
 #include "utils/builtins.h"
 #include "parser/parse_type.h"
 #include "catalog/pg_type.h"
-#include "pgxc/transam/txn_coordinator.h"
+#include "distribute_transaction/txn.h"
+#include "nodes/polarx_node.h"
 
 
 static void strreplace_all(char *str, char *needle, char *replacement);
@@ -149,7 +150,7 @@ set_remote_config_option(const char *name, const char *value, bool local)
      * So let's go with "send immediately" approach: parameters are not set
      * too often to care about overhead here.
      */
-    step = makeNode(RemoteQuery);
+    step = polarxMakeNode(RemoteQuery);
     step->combine_type = COMBINE_TYPE_SAME;
     step->exec_nodes = NULL;
     step->sql_statement = poolcmd.data;

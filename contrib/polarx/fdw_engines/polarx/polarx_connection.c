@@ -3,8 +3,9 @@
  * polarx_connection.c
  *		  Connection management functions for polarx
  *
+ * Copyright (c) 2021, Alibaba Group Holding Limited
+ * Licensed under the Apache License, Version 2.0 (the "License");
  * Portions Copyright (c) 2012-2018, PostgreSQL Global Development Group
- * Copyright (c) 2020, Apache License Version 2.0*
  *
  * IDENTIFICATION
  *		  contrib/polarx/fdw_engines/polarx/polarx_connection.c

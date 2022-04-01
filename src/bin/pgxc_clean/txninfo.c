@@ -4,10 +4,8 @@
  * Portions Copyright (c) 2011-2012 Postgres-XC Development Group
  *
  */
-static int check_xid_is_implicit(char *xid);
 static txn_info *find_txn(char* gid);
 static txn_info *make_txn_info(char *dbname, char* gid, TransactionId xid, char *owner, char* participate_nodes);
-static void find_txn_participant_nodes(txn_info *txn);
 
 #define XIDPREFIX "_$XC$"
 
@@ -147,13 +145,13 @@ int add_txn_info(char *database, char *node, char* gid, TransactionId xid, char 
 	txn->nodeparts[nodeidx] = 1;
 
 	// cross check for participate_nodes
-	if (strcmp(txn->participate_nodes, participate_nodes) != 0)
+	if (participate_nodes && strcmp(txn->participate_nodes, participate_nodes) != 0)
     {
 		fprintf(stderr, "ERROR: database:%s, node:%s, gid:%s, xid:%d, get unmatch txn->participate_nodes:%s to participate_nodes:%s",
 			database, node, gid, xid, txn->participate_nodes, participate_nodes);
 		exit(1);
 	}
-	if (strstr(participate_nodes, node) == NULL)
+	if (participate_nodes && strstr(participate_nodes, node) == NULL)
     {
         fprintf(stderr, "ERROR: database:%s, node:%s, gid:%s, xid:%d, get unmatch txn->participate_nodes:%s",
                 database, node, gid, xid, txn->participate_nodes);
@@ -191,7 +189,8 @@ make_txn_info(char *dbname, char* gid, TransactionId xid, char *owner, char* par
 	memset(txn, 0, sizeof(txn_info));
 	txn->gid = strdup(gid);
 	txn->owner = strdup(owner);
-	txn->participate_nodes = strdup(participate_nodes);
+	if (participate_nodes)
+	    txn->participate_nodes = strdup(participate_nodes);
 	txn->commit_timestamp = InvalidGlobalTimestamp;
 
 	txn->xid = (TransactionId *)malloc(sizeof(TransactionId) * pgxc_clean_node_count);
@@ -286,92 +285,6 @@ static txn_info *find_txn(char* gid)
 	return NULL;
 }
 
-static void find_txn_participant_nodes(txn_info *txn)
-{
-	int ii;
-	char *gid;
-	char *val;
-
-	if (txn == NULL)
-		return;
-
-	if ((txn->gid == NULL || *txn->gid == '\0'))
-		return;
-
-	gid = strdup(txn->gid);
-
-#define SEP	":"
-	val = strtok(gid, SEP);
-	if (strncmp(val, XIDPREFIX, strlen(XIDPREFIX)) != 0)
-	{
-		fprintf(stderr, "Invalid format for implicit GID (%s).\n", txn->gid);
-		exit(1);
-	}
-
-	/* Get originating coordinator name */
-	val = strtok(NULL, SEP);
-	if (val == NULL)
-	{
-		fprintf(stderr, "Invalid format for implicit GID (%s).\n", txn->gid);
-		exit(1);
-	}
-	txn->origcoord = strdup(val);
-
-	/* Get if the originating coordinator was involved in the txn */
-	val = strtok(NULL, SEP);
-	if (val == NULL)
-	{
-		fprintf(stderr, "Invalid format for implicit GID (%s).\n", txn->gid);
-		exit(1);
-	}
-	txn->isorigcoord_part = atoi(val);
-
-	/* Get participating datanode count */
-	val = strtok(NULL, SEP);
-	if (val == NULL)
-	{
-		fprintf(stderr, "Invalid format for implicit GID (%s).\n", txn->gid);
-		exit(1);
-	}
-	txn->num_dnparts = atoi(val);
-
-	/* Get participating coordinator count */
-	val = strtok(NULL, SEP);
-	if (val == NULL)
-	{
-		fprintf(stderr, "Invalid format for implicit GID (%s).\n", txn->gid);
-		exit(1);
-	}
-	txn->num_coordparts = atoi(val);
-
-	txn->dnparts = (int *) malloc(sizeof (int) * txn->num_dnparts);
-	txn->coordparts = (int *) malloc(sizeof (int) * txn->num_coordparts);
-
-	for (ii = 0; ii < txn->num_dnparts; ii++)
-	{
-		val = strtok(NULL, SEP);
-		if (val == NULL)
-		{
-			fprintf(stderr, "Invalid format for implicit GID (%s).\n", txn->gid);
-			exit(1);
-		}
-		txn->dnparts[ii] = atoi(val);
-	}
-
-	for (ii = 0; ii < txn->num_coordparts; ii++)
-	{
-		val = strtok(NULL, SEP);
-		if (val == NULL)
-		{
-			fprintf(stderr, "Invalid format for implicit GID (%s).\n", txn->gid);
-			exit(1);
-		}
-		txn->coordparts[ii] = atoi(val);
-	}
-
-	return;
-}
-
 TXN_STATUS check_txn_global_status(txn_info *txn)
 {
 #define TXN_PREPARED 	0x0001
@@ -445,8 +358,10 @@ TXN_STATUS check_txn_global_status(txn_info *txn)
         return TXN_STATUS_COMMITTED;
 	}
     if (check_flag & TXN_ABORTED)
+    {
         /* Some 2PC transactions are aborted.  Need to abort others. */
         return TXN_STATUS_ABORTED;
+    }
 
 	if (check_flag & TXN_INPROGRESS)
 	{
@@ -466,19 +381,6 @@ TXN_STATUS check_txn_global_status(txn_info *txn)
 	exit(-1);
 	return TXN_STATUS_UNKNOWN;
 
-}
-
-
-/*
- * Returns 1 if implicit, 0 otherwise.
- *
- * Should this be replaced with regexp calls?
- */
-static int check_xid_is_implicit(char *xid)
-{
-	if (strncmp(xid, XIDPREFIX, strlen(XIDPREFIX)) != 0)
-		return 0;
-	return 1;
 }
 
 bool check2PCExists(void)

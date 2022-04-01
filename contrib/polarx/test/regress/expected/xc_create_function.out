@@ -17,7 +17,7 @@ declare
 	num_nodes	int;
 begin
 	nodenames_query := 'SELECT srvname FROM pg_foreign_server WHERE srvtype = ''D''';
-	cr_command := 'CREATE TABLE ' || tab_schema || ' DISTRIBUTE BY ' || distribution || ' TO NODE ';
+	cr_command := 'CREATE TABLE ' || tab_schema || ' with(' || distribution || ') TO NODE ';
 	for nodename in execute nodenames_query loop
 		nodes := array_append(nodes, nodename);
 	end loop;
@@ -119,7 +119,7 @@ BEGIN
 
 	-- Add distribution if necessary
 	IF (distribution IS NOT NULL) then
-		cr_command := cr_command  || ', DISTRIBUTE BY ' || distribution;
+		cr_command := cr_command  || ', with(' || distribution ||')';
 	END IF;
 
 	-- Launch it

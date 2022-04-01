@@ -3,8 +3,9 @@
  * polarx_fdw.c
  *		  Foreign-data wrapper for remote polarx cluster servers
  *
+ * Copyright (c) 2021, Alibaba Group Holding Limited
+ * Licensed under the Apache License, Version 2.0 (the "License");
  * Portions Copyright (c) 2012-2018, PostgreSQL Global Development Group
- * Copyright (c) 2020, Apache License Version 2.0*
  *
  * IDENTIFICATION
  *		  contrib/polarx/fdw_engines/polarx/polarx_fdw.c
@@ -51,8 +52,8 @@
 #include "pgxc/pgxcnode.h"
 #include "executor/recvRemote.h"
 #include "executor/execRemoteQuery.h"
-#include "plan/planner.h"
-#include "pgxc/transam/txn_coordinator.h"
+#include "plan/polarx_planner.h"
+#include "distribute_transaction/txn.h"
 #include "lib/binaryheap.h"
 #include "parser/parse_func.h"
 #include "access/tuptoaster.h"
@@ -400,7 +401,7 @@ static int polarxAcquireSampleRowsFunc(Relation relation, int elevel,
 							             HeapTuple *rows, int targrows,
                                          double *totalrows,
                                          double *totaldeadrows);
-static void analyze_row_processor(TupleTableSlot *slot,
+static void analyze_row_processor(RemoteDataRow datarow,
 					            PgFdwAnalyzeState *astate);
 static HeapTuple make_tuple_from_datarow(char *msg,
 						                Relation rel,
@@ -1811,12 +1812,14 @@ polarxIterateForeignScan(ForeignScanState *node)
 		{
 			for (i = 0; i < regular_conn_count; i++)
 			{
+                RemoteDataRow datarow = NULL;
+
 				combiner->current_conn = i;
-				slot = FetchTuple(combiner);
-				if (!TupIsNull(slot))
+				datarow = FetchDatarow(combiner);
+				if (datarow)
 				{
 					oldcontext = MemoryContextSwitchTo(fsstate->batch_cxt[i]);
-					fsstate->tuples[i] = make_tuple_from_datarow(slot->tts_datarow->msg,
+					fsstate->tuples[i] = make_tuple_from_datarow(datarow->msg,
 											fsstate->rel,
 											fsstate->attinmeta,
 											fsstate->retrieved_attrs,
@@ -1824,6 +1827,7 @@ polarxIterateForeignScan(ForeignScanState *node)
 											fsstate->temp_cxt, true);
 					MemoryContextSwitchTo(oldcontext);
 					binaryheap_add_unordered(fsstate->ms_heap, Int32GetDatum(i));
+                    pfree(datarow);
 				}
 			}
 			binaryheap_build(fsstate->ms_heap);
@@ -1832,16 +1836,17 @@ polarxIterateForeignScan(ForeignScanState *node)
 	else if(combiner->merge_sort)
 	{
 		MemoryContext oldcontext;
+        RemoteDataRow datarow = NULL;
 
 		i = DatumGetInt32(binaryheap_first(fsstate->ms_heap));
 		combiner->current_conn = i;
-		slot = FetchTuple(combiner);
+		datarow = FetchDatarow(combiner);
 		fsstate->tuples[i] = NULL;
 		MemoryContextReset(fsstate->batch_cxt[i]);
-		if (!TupIsNull(slot))
+		if (datarow)
 		{
 			oldcontext = MemoryContextSwitchTo(fsstate->batch_cxt[i]);
-			fsstate->tuples[i] = make_tuple_from_datarow(slot->tts_datarow->msg,
+			fsstate->tuples[i] = make_tuple_from_datarow(datarow->msg,
 									fsstate->rel,
 									fsstate->attinmeta,
 									fsstate->retrieved_attrs,
@@ -1849,6 +1854,7 @@ polarxIterateForeignScan(ForeignScanState *node)
 									fsstate->temp_cxt, true);
 			MemoryContextSwitchTo(oldcontext);
 			binaryheap_replace_first(fsstate->ms_heap, Int32GetDatum(i));
+            pfree(datarow);
 		}
 		else
 			(void) binaryheap_remove_first(fsstate->ms_heap);
@@ -1879,23 +1885,26 @@ polarxIterateForeignScan(ForeignScanState *node)
 	}
 	else
 	{
-		slot = FetchTuple(combiner);
+        RemoteDataRow datarow = NULL;
 
-		if(!TupIsNull(slot))
+		datarow = FetchDatarow(combiner);
+
+		if(datarow)
 		{
 			HeapTuple tmp_tuple;
 
-			tmp_tuple = make_tuple_from_datarow(slot->tts_datarow->msg,
+			tmp_tuple = make_tuple_from_datarow(datarow->msg,
 								fsstate->rel,
 								fsstate->attinmeta,
 								fsstate->retrieved_attrs,
 								node,
 								fsstate->temp_cxt, true);
-			fsstate->current_node = PGXCNodeGetNodeId(slot->tts_datarow->msgnode, NULL);
+			fsstate->current_node = PGXCNodeGetNodeId(datarow->msgnode, NULL);
 			ExecStoreTuple(tmp_tuple,
 					slot,
 					InvalidBuffer,
 					false);
+            pfree(datarow);
 
 			return slot;
 		}
@@ -2255,7 +2264,9 @@ polarxExecForeignInsert(EState *estate,
 	node_list = GetRelationNodesWithRelation(fmstate->rel,
 			isNull ? 0 : dist_val, isNull, fmstate->rel_access_type, NumDataNodes);
 	polarx_scan_begin(false, node_list, true);
+#ifdef PATCH_ENABLE_DISTRIBUTED_TRANSACTION
 	SetSendCommandId(true);
+#endif
 
 	/* Set up the prepared statement on the remote server, if we didn't yet */
 	prepare_foreign_modify(fmstate, node_list);
@@ -2302,7 +2313,9 @@ polarxExecForeignUpdate(EState *estate,
 		node_list = lappend_int(node_list, fmstate->current_node);
 	}
 	polarx_scan_begin(false, node_list, true);
+#ifdef PATCH_ENABLE_DISTRIBUTED_TRANSACTION
 	SetSendCommandId(true);
+#endif
 
 	prepare_foreign_modify(fmstate, node_list);
 
@@ -2368,7 +2381,9 @@ polarxExecForeignDelete(EState *estate,
 		node_list = lappend_int(node_list, fmstate->current_node);
 	}
 	polarx_scan_begin(false, node_list, true);
+#ifdef PATCH_ENABLE_DISTRIBUTED_TRANSACTION
 	SetSendCommandId(true);
+#endif
 
 	prepare_foreign_modify(fmstate, node_list);
 
@@ -2975,7 +2990,9 @@ polarxBeginDirectModify(ForeignScanState *node, int eflags)
 TupleTableSlot *
 polarxIterateDirectModify(ForeignScanState *node)
 {
+#ifdef PATCH_ENABLE_DISTRIBUTED_TRANSACTION
 	SetSendCommandId(true);
+#endif
 	return execute_dml_stmt(node);
 }
 
@@ -4106,6 +4123,7 @@ execute_dml_stmt(ForeignScanState *node)
 	EState	   *estate = node->ss.ps.state;
 	ResultRelInfo *resultRelInfo = estate->es_result_relation_info;
 	CommandId    cid = GetCurrentCommandId(false);
+    RemoteDataRow datarow = NULL;
 
 	Assert(list_length(dmstate->node_list) > 0);
 
@@ -4157,10 +4175,12 @@ execute_dml_stmt(ForeignScanState *node)
 		{
 			if (connections[i]->state == DN_CONNECTION_STATE_QUERY)
 				BufferConnection(connections[i]);
+#ifdef PATCH_ENABLE_DISTRIBUTED_TRANSACTION
 			if (pgxc_node_send_cmd_id(connections[i], cid) < 0 )
 				ereport(ERROR,
 						(errcode(ERRCODE_INTERNAL_ERROR),
 						 errmsg("Failed to send command ID to Datanodes")));
+#endif
 			if (pgxc_node_send_query_extended(connections[i],
 						dmstate->query,
 						NULL,
@@ -4213,9 +4233,10 @@ execute_dml_stmt(ForeignScanState *node)
 
 			while(true)
 			{
-				slot = FetchTuple(combiner);
-				if (TupIsNull(slot))
+                RemoteDataRow datarow_tmp = FetchDatarow(combiner);
+				if (datarow_tmp == NULL)
 					break;
+                pfree(datarow_tmp);
 			}
 			if (combiner->errorMessage)
 				pgxc_node_report_error(combiner);
@@ -4245,12 +4266,12 @@ execute_dml_stmt(ForeignScanState *node)
 
 	Assert(resultRelInfo->ri_projectReturning);
 
-	slot = FetchTuple(combiner);
+	datarow = FetchDatarow(combiner);
 
 	if (combiner->errorMessage)
 		pgxc_node_report_error(combiner);
 
-	if(TupIsNull(slot))
+	if(datarow == NULL)
 	{
 		if(combiner->combine_type == COMBINE_TYPE_SAME)
 			dmstate->num_tuples = combiner->DML_processed / combiner->node_count;
@@ -4270,7 +4291,7 @@ execute_dml_stmt(ForeignScanState *node)
 		TupleTableSlot *resultSlot;
 		HeapTuple	newtup;
 
-		newtup = make_tuple_from_datarow(slot->tts_datarow->msg,
+		newtup = make_tuple_from_datarow(datarow->msg,
 				dmstate->rel,
 				dmstate->attinmeta,
 				dmstate->retrieved_attrs,
@@ -4283,6 +4304,7 @@ execute_dml_stmt(ForeignScanState *node)
 		else
 			resultSlot = apply_returning_filter(dmstate, slot, estate);
 		resultRelInfo->ri_projectReturning->pi_exprContext->ecxt_scantuple = resultSlot;
+        pfree(datarow);
 
 		return slot;
 	}
@@ -4682,7 +4704,6 @@ polarxAcquireSampleRowsFunc(Relation relation, int elevel,
 	PGXCNodeHandle **connections = NULL;
 	PGXCNodeAllHandles *all_handles;
 	ResponseCombiner    combiner;
-	TupleTableSlot *slot = NULL;
 
 	/* Initialize workspace state */
 	astate.rel = relation;
@@ -4750,10 +4771,11 @@ polarxAcquireSampleRowsFunc(Relation relation, int elevel,
 
 	while(true)
 	{
-		slot = FetchTuple(&combiner);
-		if (TupIsNull(slot))
+        RemoteDataRow datarow = FetchDatarow(&combiner);
+		if (datarow == NULL)
 			break;
-		analyze_row_processor(slot, &astate);
+		analyze_row_processor(datarow, &astate);
+        pfree(datarow);
 	}
 
 	ExecClearTuple(combiner.ss.ss_ScanTupleSlot);
@@ -4793,7 +4815,7 @@ polarxAcquireSampleRowsFunc(Relation relation, int elevel,
  *	 - Subsequently, replace already-sampled tuples randomly.
  */
 static void
-analyze_row_processor(TupleTableSlot *slot, PgFdwAnalyzeState *astate)
+analyze_row_processor(RemoteDataRow datarow, PgFdwAnalyzeState *astate)
 {
 	int			targrows = astate->targrows;
 	int			pos;			/* array index to store tuple in */
@@ -4845,7 +4867,7 @@ analyze_row_processor(TupleTableSlot *slot, PgFdwAnalyzeState *astate)
 		 */
 		oldcontext = MemoryContextSwitchTo(astate->anl_cxt);
 
-		astate->rows[pos] = make_tuple_from_datarow(slot->tts_datarow->msg, 
+		astate->rows[pos] = make_tuple_from_datarow(datarow->msg, 
 													   astate->rel,
 													   astate->attinmeta,
 													   astate->retrieved_attrs,
@@ -6695,8 +6717,10 @@ polarx_start_command_on_connection(PGXCNodeHandle **connections, ForeignScanStat
 		{
 			BufferConnection(connections[i]);
 		}
+#ifdef PATCH_ENABLE_DISTRIBUTED_TRANSACTION
 		if (pgxc_node_send_cmd_id(connections[i], cid) < 0 )
 			return false;
+#endif
 #ifdef POLARDB_X_UPGRADE
 
 		if (snapshot && pgxc_node_send_snapshot(connections[i], snapshot))
@@ -6830,7 +6854,6 @@ polarx_send_query_prepared(PgFdwModifyState *fmstate, List *nodelist,
 	StringInfoData buf;
 	uint16 n16;
 	int     numParams = fmstate->p_nums;
-	TupleTableSlot *return_slot = NULL;
 	CommandId    cid = GetCurrentCommandId(false);
 
 	/* Exit if nodelist is empty */
@@ -6868,10 +6891,12 @@ polarx_send_query_prepared(PgFdwModifyState *fmstate, List *nodelist,
 	{
 		if (connections[i]->state == DN_CONNECTION_STATE_QUERY)
 			BufferConnection(connections[i]);
+#ifdef PATCH_ENABLE_DISTRIBUTED_TRANSACTION
 		if (pgxc_node_send_cmd_id(connections[i], cid) < 0)
 			ereport(ERROR,
 					(errcode(ERRCODE_INTERNAL_ERROR),
 					 errmsg("Failed to send command ID to Datanodes")));
+#endif
 		if (pgxc_node_send_query_extended(connections[i],
 					NULL,
 					fmstate->p_name,
@@ -6915,13 +6940,14 @@ polarx_send_query_prepared(PgFdwModifyState *fmstate, List *nodelist,
 	}
 	while(true)
 	{
-		return_slot = FetchTuple(&combiner);
-		if (TupIsNull(return_slot))
+        RemoteDataRow datarow = FetchDatarow(&combiner);
+		if (datarow == NULL)
 			break;
 		if(fmstate->has_returning)
 		{
-			store_returning_result_with_datarow(fmstate, slot, return_slot->tts_datarow->msg);
+			store_returning_result_with_datarow(fmstate, slot, datarow->msg);
 		}
+        pfree(datarow);
 	}
 
 	if(nrows)

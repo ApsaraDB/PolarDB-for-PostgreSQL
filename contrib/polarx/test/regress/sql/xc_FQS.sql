@@ -13,7 +13,7 @@ declare
 	num_nodes	int;
 begin
 	nodenames_query := 'SELECT node_name FROM pgxc_node WHERE node_type = ''D'''; 
-	cr_command := 'CREATE TABLE ' || tab_schema || ' DISTRIBUTE BY ' || distribution || ' TO NODE (';
+	cr_command := 'CREATE TABLE ' || tab_schema || ' with(' || distribution || ') TO NODE (';
 	for nodename in execute nodenames_query loop
 		nodes := array_append(nodes, nodename);
 	end loop;
@@ -40,8 +40,8 @@ $$;
 -- This file contains tests for Fast Query Shipping (FQS) for queries involving
 -- a single table
 
--- Testset 1 for distributed table (by roundrobin)
-select create_table_nodes('tab1_rr(val int, val2 int)', '{1, 2, 3}'::int[], 'roundrobin', NULL);
+-- Testset 1 for distributed table (by dist_type=roundrobin)
+select create_table_nodes('tab1_rr(val int, val2 int)', '{1, 2, 3}'::int[], 'dist_type=roundrobin', NULL);
 insert into tab1_rr values (1, 2);
 insert into tab1_rr values (2, 4);
 insert into tab1_rr values (5, 3);
@@ -77,7 +77,7 @@ explain (verbose on, nodes off, costs off) select val, val2 from tab1_rr where v
 select sum(val) from tab1_rr where val2 = 2 group by val2 having sum(val) > 1;
 explain (verbose on, nodes off, costs off) select sum(val) from tab1_rr where val2 = 2 group by val2 having sum(val) > 1;
 
--- tests for node reduction by application of quals, for roundrobin node
+-- tests for node reduction by application of quals, for dist_type=roundrobin node
 -- reduction is not applicable. Having query not FQSed because of existence of ORDER BY,
 -- implies that nodes did not get reduced.
 select * from tab1_rr where val = 7;
@@ -107,7 +107,7 @@ explain (verbose on, costs off) delete from tab1_rr where val = 7;
 select * from tab1_rr where val = 7;
 
 -- Testset 2 for distributed tables (by hash)
-select cr_table('tab1_hash(val int, val2 int)', '{1, 2, 3}'::int[], 'hash(val)');
+select cr_table('tab1_hash(val int, val2 int)', '{1, 2, 3}'::int[], 'dist_type=hash, dist_col=val');
 insert into tab1_hash values (1, 2);
 insert into tab1_hash values (2, 4);
 insert into tab1_hash values (5, 3);
@@ -172,7 +172,7 @@ explain (verbose on, costs off) delete from tab1_hash where val = 7;
 select * from tab1_hash where val = 7;
 
 -- Testset 3 for distributed tables (by modulo)
-select cr_table('tab1_modulo(val int, val2 int)', '{1, 2, 3}'::int[], 'modulo(val)');
+select cr_table('tab1_modulo(val int, val2 int)', '{1, 2, 3}'::int[], 'dist_type=modulo, dist_col=val');
 insert into tab1_modulo values (1, 2);
 insert into tab1_modulo values (2, 4);
 insert into tab1_modulo values (5, 3);
@@ -238,7 +238,7 @@ select * from tab1_modulo where val = 7;
 
 -- Testset 4 for replicated tables, for replicated tables, unless the expression
 -- is itself unshippable, any query involving a single replicated table is shippable
-select cr_table('tab1_replicated(val int, val2 int)', '{1, 2, 3}'::int[], 'replication');
+select cr_table('tab1_replicated(val int, val2 int)', '{1, 2, 3}'::int[], 'dist_type=replication');
 insert into tab1_replicated values (1, 2);
 insert into tab1_replicated values (2, 4);
 insert into tab1_replicated values (5, 3);

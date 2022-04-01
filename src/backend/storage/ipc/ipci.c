@@ -52,9 +52,6 @@
 #ifdef ENABLE_DISTRIBUTED_TRANSACTION
 #include "access/ctslog.h"
 #endif
-#ifdef POLARDB_X
-#include "pgxc/nodemgr.h"
-#endif
 /* POLAR */
 #include "polar_datamax/polar_datamax.h"
 #include "polar_dma/polar_dma.h"
@@ -327,7 +324,6 @@ CreateSharedMemoryAndSemaphores(bool makePrivate, int port)
 #endif
 
 #ifdef POLARDB_X
-    NodeTablesShmemInit();
 	GidHashTabShmemInit();
 #endif
 

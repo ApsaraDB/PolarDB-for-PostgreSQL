@@ -44,7 +44,7 @@ ERROR:  column "myname" does not exist
 CREATE TABLE persons2 OF person_type (
     id WITH OPTIONS PRIMARY KEY,
     UNIQUE (name)
-) distribute by replication;
+) with(dist_type=replication);
 \d persons2
               Table "public.persons2"
  Column |  Type   | Collation | Nullable | Default 
@@ -59,7 +59,7 @@ Typed table of type: person_type
 CREATE TABLE persons3 OF person_type (
     PRIMARY KEY (id),
     name WITH OPTIONS DEFAULT ''
-) distribute by replication;
+) with(dist_type=replication);
 \d persons3
               Table "public.persons3"
  Column |  Type   | Collation | Nullable | Default  
@@ -105,7 +105,7 @@ SELECT id, namelen(persons) FROM persons;
 CREATE TABLE persons2 OF person_type (
     id WITH OPTIONS PRIMARY KEY,
     UNIQUE (name)
-) distribute by replication;
+) with(dist_type=replication);
 \d persons2
               Table "public.persons2"
  Column |  Type   | Collation | Nullable | Default 
@@ -120,7 +120,7 @@ Typed table of type: person_type
 CREATE TABLE persons3 OF person_type (
     PRIMARY KEY (id),
     name NOT NULL DEFAULT ''
-) distribute by replication;
+) with(dist_type=replication);
 \d persons3
               Table "public.persons3"
  Column |  Type   | Collation | Nullable | Default  

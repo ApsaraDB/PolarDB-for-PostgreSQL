@@ -16,7 +16,6 @@ system("rm -rf $PGXC_CTL_HOME");
 program_help_ok('pgxc_ctl');
 program_version_ok('pgxc_ctl');
 
-my $GTM_HOST = "localhost";
 my $COORD1_HOST = "localhost";
 my $COORD2_HOST = "localhost";
 my $COORD3_HOST = "localhost";
@@ -26,8 +25,6 @@ my $DN3_HOST = "localhost";
 
 system_or_bail 'pgxc_ctl', 'prepare', 'config', 'empty' ;
 
-system_or_bail 'pgxc_ctl', 'add', 'gtm', 'master', 'gtm', "$GTM_HOST", '20001', "$dataDirRoot/gtm" ;
-
 system_or_bail 'pgxc_ctl', 'add', 'coordinator', 'master', 'coord1', "$COORD1_HOST", '30001', '30011', "$dataDirRoot/coord_master.1", 'none', 'none';
 
 system_or_bail 'pgxc_ctl', 'add', 'coordinator', 'master', 'coord2', "$COORD2_HOST", '30002', '30012', "$dataDirRoot/coord_master.2", 'none', 'none';
@@ -59,18 +56,6 @@ system_or_bail 'pgxc_ctl', 'monitor', 'all' ;
 system_or_bail 'pgxc_ctl', 'stop', "-m", 'immediate', 'datanode', 'master', 'dn1' ;
 
 system_or_bail 'pgxc_ctl', 'failover', 'datanode', 'dn1' ;
-
-system_or_bail 'pgxc_ctl', 'monitor', 'all' ;
-
-#GTM standby test
-
-system_or_bail 'pgxc_ctl', 'add', 'gtm', 'slave', 'gtm_slave', "$GTM_HOST", '20101', "$dataDirRoot/gtm_slave" ;
-
-system_or_bail 'pgxc_ctl', 'monitor', 'all' ;
-
-system_or_bail 'pgxc_ctl', 'stop', "-m", 'immediate', 'gtm', 'master', 'gtm' ;
-
-system_or_bail 'pgxc_ctl', 'failover', 'gtm', 'gtm' ;
 
 system_or_bail 'pgxc_ctl', 'monitor', 'all' ;
 
@@ -84,8 +69,6 @@ system("rm -rf $PGXC_CTL_HOME");
 
 system_or_bail 'pgxc_ctl', 'prepare', 'config', 'empty' ;
 
-system_or_bail 'pgxc_ctl', 'add', 'gtm', 'master', 'gtm', "$GTM_HOST", '20001', "$dataDirRoot/gtm" ;
-
 system_or_bail 'pgxc_ctl', 'add', 'coordinator', 'master', 'coord1', "$COORD1_HOST", '30001', '30011', "$dataDirRoot/coord_master.1", 'none', 'none';
 
 system_or_bail 'pgxc_ctl', 'add', 'coordinator', 'master', 'coord2', "$COORD2_HOST", '30002', '30012', "$dataDirRoot/coord_master.2", 'none', 'none';
@@ -117,18 +100,6 @@ system_or_bail 'pgxc_ctl', 'monitor', 'all' ;
 system_or_bail 'pgxc_ctl', 'stop', "-m", 'immediate', 'datanode', 'master', 'dn1' ;
 
 system_or_bail 'pgxc_ctl', 'failover', 'datanode', 'dn1' ;
-
-system_or_bail 'pgxc_ctl', 'monitor', 'all' ;
-
-#GTM standby test
-
-system_or_bail 'pgxc_ctl', 'add', 'gtm', 'slave', 'gtm_slave', "$GTM_HOST", '20101', "$dataDirRoot/gtm_slave" ;
-
-system_or_bail 'pgxc_ctl', 'monitor', 'all' ;
-
-system_or_bail 'pgxc_ctl', 'stop', "-m", 'immediate', 'gtm', 'master', 'gtm' ;
-
-system_or_bail 'pgxc_ctl', 'failover', 'gtm', 'gtm' ;
 
 system_or_bail 'pgxc_ctl', 'monitor', 'all' ;
 
@@ -142,8 +113,6 @@ system("rm -rf $PGXC_CTL_HOME");
 
 system_or_bail 'pgxc_ctl', 'prepare', 'config', 'empty' ;
 
-system_or_bail 'pgxc_ctl', 'add', 'gtm', 'master', 'gtm', "$GTM_HOST", '20001', "$dataDirRoot/gtm" ;
-
 system_or_bail 'pgxc_ctl', 'add', 'coordinator', 'master', 'coord1', "$COORD1_HOST", '30001', '30011', "$dataDirRoot/coord_master.1", 'none', 'none';
 
 system_or_bail 'pgxc_ctl', 'add', 'coordinator', 'master', 'coord2', "$COORD2_HOST", '30002', '30012', "$dataDirRoot/coord_master.2", 'none', 'none';
@@ -175,18 +144,6 @@ system_or_bail 'pgxc_ctl', 'monitor', 'all' ;
 system_or_bail 'pgxc_ctl', 'stop', "-m", 'immediate', 'datanode', 'master', 'dn1' ;
 
 system_or_bail 'pgxc_ctl', 'failover', 'datanode', 'dn1' ;
-
-system_or_bail 'pgxc_ctl', 'monitor', 'all' ;
-
-#GTM standby test
-
-system_or_bail 'pgxc_ctl', 'add', 'gtm', 'slave', 'gtm_slave', "$GTM_HOST", '20101', "$dataDirRoot/gtm_slave" ;
-
-system_or_bail 'pgxc_ctl', 'monitor', 'all' ;
-
-system_or_bail 'pgxc_ctl', 'stop', "-m", 'immediate', 'gtm', 'master', 'gtm' ;
-
-system_or_bail 'pgxc_ctl', 'failover', 'gtm', 'gtm' ;
 
 system_or_bail 'pgxc_ctl', 'monitor', 'all' ;
 
@@ -200,8 +157,6 @@ system("rm -rf $PGXC_CTL_HOME");
 
 system_or_bail 'pgxc_ctl', 'prepare', 'config', 'empty' ;
 
-system_or_bail 'pgxc_ctl', 'add', 'gtm', 'master', 'gtm', "$GTM_HOST", '20001', "$dataDirRoot/gtm" ;
-
 system_or_bail 'pgxc_ctl', 'add', 'coordinator', 'master', 'coord1', "$COORD1_HOST", '30001', '30011', "$dataDirRoot/coord_master.1", 'none', 'none';
 
 system_or_bail 'pgxc_ctl', 'add', 'coordinator', 'master', 'coord2', "$COORD2_HOST", '30002', '30012', "$dataDirRoot/coord_master.2", 'none', 'none';
@@ -233,18 +188,6 @@ system_or_bail 'pgxc_ctl', 'monitor', 'all' ;
 system_or_bail 'pgxc_ctl', 'stop', "-m", 'immediate', 'datanode', 'master', 'dn1' ;
 
 system_or_bail 'pgxc_ctl', 'failover', 'datanode', 'dn1' ;
-
-system_or_bail 'pgxc_ctl', 'monitor', 'all' ;
-
-#GTM standby test
-
-system_or_bail 'pgxc_ctl', 'add', 'gtm', 'slave', 'gtm_slave', "$GTM_HOST", '20101', "$dataDirRoot/gtm_slave" ;
-
-system_or_bail 'pgxc_ctl', 'monitor', 'all' ;
-
-system_or_bail 'pgxc_ctl', 'stop', "-m", 'immediate', 'gtm', 'master', 'gtm' ;
-
-system_or_bail 'pgxc_ctl', 'failover', 'gtm', 'gtm' ;
 
 system_or_bail 'pgxc_ctl', 'monitor', 'all' ;
 
@@ -259,8 +202,6 @@ system("rm -rf $PGXC_CTL_HOME");
 
 system_or_bail 'pgxc_ctl', 'prepare', 'config', 'empty' ;
 
-system_or_bail 'pgxc_ctl', 'add', 'gtm', 'master', 'gtm', "$GTM_HOST", '20001', "$dataDirRoot/gtm" ;
-
 system_or_bail 'pgxc_ctl', 'add', 'coordinator', 'master', 'coord1', "$COORD1_HOST", '30001', '30011', "$dataDirRoot/coord_master.1", 'none', 'none';
 
 system_or_bail 'pgxc_ctl', 'add', 'coordinator', 'master', 'coord2', "$COORD2_HOST", '30002', '30012', "$dataDirRoot/coord_master.2", 'none', 'none';
@@ -292,18 +233,6 @@ system_or_bail 'pgxc_ctl', 'monitor', 'all' ;
 system_or_bail 'pgxc_ctl', 'stop', "-m", 'immediate', 'datanode', 'master', 'dn1' ;
 
 system_or_bail 'pgxc_ctl', 'failover', 'datanode', 'dn1' ;
-
-system_or_bail 'pgxc_ctl', 'monitor', 'all' ;
-
-#GTM standby test
-
-system_or_bail 'pgxc_ctl', 'add', 'gtm', 'slave', 'gtm_slave', "$GTM_HOST", '20101', "$dataDirRoot/gtm_slave" ;
-
-system_or_bail 'pgxc_ctl', 'monitor', 'all' ;
-
-system_or_bail 'pgxc_ctl', 'stop', "-m", 'immediate', 'gtm', 'master', 'gtm' ;
-
-system_or_bail 'pgxc_ctl', 'failover', 'gtm', 'gtm' ;
 
 system_or_bail 'pgxc_ctl', 'monitor', 'all' ;
 
@@ -318,8 +247,6 @@ system("rm -rf $PGXC_CTL_HOME");
 
 system_or_bail 'pgxc_ctl', 'prepare', 'config', 'empty' ;
 
-system_or_bail 'pgxc_ctl', 'add', 'gtm', 'master', 'gtm', "$GTM_HOST", '20001', "$dataDirRoot/gtm" ;
-
 system_or_bail 'pgxc_ctl', 'add', 'coordinator', 'master', 'coord1', "$COORD1_HOST", '30001', '30011', "$dataDirRoot/coord_master.1", 'none', 'none';
 
 system_or_bail 'pgxc_ctl', 'add', 'coordinator', 'master', 'coord2', "$COORD2_HOST", '30002', '30012', "$dataDirRoot/coord_master.2", 'none', 'none';
@@ -351,18 +278,6 @@ system_or_bail 'pgxc_ctl', 'monitor', 'all' ;
 system_or_bail 'pgxc_ctl', 'stop', "-m", 'immediate', 'datanode', 'master', 'dn1' ;
 
 system_or_bail 'pgxc_ctl', 'failover', 'datanode', 'dn1' ;
-
-system_or_bail 'pgxc_ctl', 'monitor', 'all' ;
-
-#GTM standby test
-
-system_or_bail 'pgxc_ctl', 'add', 'gtm', 'slave', 'gtm_slave', "$GTM_HOST", '20101', "$dataDirRoot/gtm_slave" ;
-
-system_or_bail 'pgxc_ctl', 'monitor', 'all' ;
-
-system_or_bail 'pgxc_ctl', 'stop', "-m", 'immediate', 'gtm', 'master', 'gtm' ;
-
-system_or_bail 'pgxc_ctl', 'failover', 'gtm', 'gtm' ;
 
 system_or_bail 'pgxc_ctl', 'monitor', 'all' ;
 

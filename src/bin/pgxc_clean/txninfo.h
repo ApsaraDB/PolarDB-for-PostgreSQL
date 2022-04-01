@@ -13,8 +13,13 @@
 #ifndef TXNINFO_H
 #define TXNINFO_H
 
-#include "gtm/gtm_c.h"
+#include <pthread.h>
+#include "c.h"
 #include "datatype/timestamp.h"
+
+#define INVALID_INT_VALUE (-1)
+#define ROLLBACK_ALL_PREPARED_TXN 0
+#define COMMIT_ALL_PREPARED_TXN 1
 
 typedef enum TXN_STATUS
 {

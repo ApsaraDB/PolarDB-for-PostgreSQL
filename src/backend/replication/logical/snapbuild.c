@@ -145,7 +145,7 @@
  * Starting from the consistent point, logical replication can decode entire transactions
  * in WAL only except for RX1.
  *
- * Author: Junbin Kang, 2020.11.07
+ * Author:  , 2020.11.07
  *
  * Portions Copyright (c) 2020, Alibaba Group Holding Limited
  *
@@ -838,7 +838,7 @@ SnapBuildCommitTxn(SnapBuild *builder, XLogRecPtr lsn, TransactionId xid,
  * Starting from the consistent point, logical replication can decode entire transactions
  * in WAL only except for RX1.
  *
- * Author: Junbin Kang, 2020.11.07
+ * Author:  , 2020.11.07
  */
 
 static bool

@@ -8,7 +8,7 @@
  * In order to gurantee high availability while providing high performance,
  * Remote Recovery is designed to fetch full pages from the mirror node during recovery.
  *
- * @Author Junbin Kang, 2020.09.28
+ * @Author  , 2020.09.28
  *
  * This file contains the server-facing parts of remote_recovery. The libpq-
  * specific parts are in the libpqwalreceiver module. It's loaded

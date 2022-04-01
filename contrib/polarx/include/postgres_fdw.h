@@ -3,8 +3,9 @@
  * postgres_fdw.h
  *		  Foreign-data wrapper for remote polarx cluster servers
  *
+ * Copyright (c) 2021, Alibaba Group Holding Limited
+ * Licensed under the Apache License, Version 2.0 (the "License");
  * Portions Copyright (c) 2012-2018, PostgreSQL Global Development Group
- * Copyright (c) 2020, Apache License Version 2.0
  *
  * IDENTIFICATION
  *		  contrib/polarx/include/postgres_fdw.h

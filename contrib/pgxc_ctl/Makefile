@@ -26,13 +26,7 @@ PGAPPICON = win32
 
 PROGRAM= pgxc_ctl
 OBJS= pgxc_ctl_bash.o bash_handler.o config.o pgxc_ctl.o variables.o pgxc_ctl_log.o do_command.o \
-	 utils.o do_shell.o cm.o gtm_cmd.o coord_cmd.o datanode_cmd.o gtm_util.o mcxt.o monitor.o
-
-#Include GTM objectsz
-gtm_builddir = $(top_builddir)/src/gtm
-EX_OBJS = $(gtm_builddir)/common/assert.o \
-	  $(gtm_builddir)/client/libgtmclient.a \
-	  $(gtm_builddir)/common/gtm_serialize.o
+	 utils.o do_shell.o cm.o coord_cmd.o datanode_cmd.o monitor.o
 
 PG_CPPFLAGS  = -DFRONTEND -DDLSUFFIX=\"$(DLSUFFIX)\" -I$(srcdir) -I$(libpq_srcdir)
 PG_LIBS = $(libpq_pgport) $(PTHREAD_LIBS) $(EX_OBJS)

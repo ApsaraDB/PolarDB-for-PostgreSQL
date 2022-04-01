@@ -107,7 +107,12 @@ typedef enum BgwHandleStatus
 	BGWH_POSTMASTER_DIED		/* postmaster died; worker status unclear */
 } BgwHandleStatus;
 
-struct BackgroundWorkerHandle;
+struct BackgroundWorkerHandle
+{
+    int         slot;
+    uint64      generation;
+};
+
 typedef struct BackgroundWorkerHandle BackgroundWorkerHandle;
 
 /* Register a new bgworker during shared_preload_libraries */

@@ -26,6 +26,5 @@
 #define MONITOR_H
 
 extern void do_monitor_command(char *line);
-extern int do_gtm_ping(char *host, int port);
 
 #endif /* MONITOR_H */
