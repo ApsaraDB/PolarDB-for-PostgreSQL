@@ -145,7 +145,7 @@ sudo /usr/local/polarstore/pfsd/bin/start_pfsd.sh -p nvme0n1
 #### 内核编译
 
 ```bash
-./polardb_build.sh
+./polardb_build.sh --with-pfsd
 ```
 
 #### 节点初始化
@@ -211,7 +211,7 @@ $HOME/tmp_basedir_polardb_pg_1100_bld/bin/psql -p 5432 -d postgres -c "select pg
 #### 内核编译
 
 ```bash
-./polardb_build.sh
+./polardb_build.sh --with-pfsd
 ```
 
 #### 节点初始化
