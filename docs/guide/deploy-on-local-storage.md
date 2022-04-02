@@ -176,7 +176,7 @@ git clone -b POLARDB_11_STABLE https://github.com/ApsaraDB/PolarDB-for-PostgreSQ
 #### 启动 Docker 容器
 
 ::: tip
-💡 请在下面的高亮行中按需替换 `<>` 内的部分：
+💡 请在下面的高亮行中按需替换 `<>` 的部分：
 
 1. PolarDB for PostgreSQL 的源码路径
 2. 将要启动的 Docker 容器名称
