@@ -9,6 +9,7 @@ module.exports = {
         '/guide/deploy-on-nbd-shared-storage.md',
         '/guide/deploy-on-ceph-shared-storage.md',
         "/guide/deploy-on-polardb-stack.md",
+        "/guide/tpch-on-px.md",
       ],
     },
   ],
