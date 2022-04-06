@@ -1,0 +1,62 @@
+
+task:
+  # triggered when PR to 'POLARDB_11_STABLE' and 'POLARDB_11_DEV'
+  # and git push to 'POLARDB_11_DEV'
+  only_if: |
+    $CIRRUS_BASE_BRANCH == 'POLARDB_11_STABLE' ||
+    $CIRRUS_BASE_BRANCH == 'POLARDB_11_DEV' ||
+    $CIRRUS_BRANCH == 'POLARDB_11_DEV'
+  # triggered when the changes are included in:
+  skip: |
+    !changesInclude(
+      '.cirrus.yml',
+      'config/**',
+      'contrib/**',
+      'external/**',
+      'src/**',
+      'configure*',
+      'polardb_build.sh'
+    )
+  # task run timeout
+  timeout_in: 120m
+
+  # run on Linux-AMD64 and Linux-ARM64 in parallel
+  matrix:
+    # Linux - AMD64
+    -
+      container:
+        image: polardb/polardb_pg_devel:centos7
+        cpu: 2
+        memory: 8G
+        greedy: true
+    # Linux - ARM64
+    -
+      arm_container:
+        image: polardb/polardb_pg_devel:centos7
+        cpu: 2
+        memory: 8G
+        greedy: true
+
+  # Run OLTP/OLAP/DMA regression in parallel
+  matrix:
+    # OLTP regression
+    -
+      name: "regression (OLTP)"
+      script:
+        - |
+          source /etc/bashrc && \
+          ./polardb_build.sh -r -e -r-external -r-contrib -r-pl --withrep --with-tde
+    # OLAP regression
+    -
+      name: "regression (OLAP)"
+      script:
+        - |
+          source /etc/bashrc && \
+          ./polardb_build.sh -r-px -e -r-external -r-contrib -r-pl --with-tde
+    # DMA regression
+    -
+      name: "regression (DMA)"
+      script:
+        - |
+          source /etc/bashrc && \
+          ./polardb_build.sh -r -e -r-external -r-contrib -r-pl --with-tde --with-dma
