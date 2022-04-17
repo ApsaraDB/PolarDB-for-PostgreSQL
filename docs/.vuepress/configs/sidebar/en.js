@@ -5,9 +5,9 @@ module.exports = {
       children: [
         "/guide/README.md",
         "/guide/deploy-on-cloud.md",
-        '/guide/deploy-on-local-storage.md',
-        '/guide/deploy-on-nbd-shared-storage.md',
-        '/guide/deploy-on-ceph-shared-storage.md',
+        "/guide/deploy-on-local-storage.md",
+        "/guide/deploy-on-nbd-shared-storage.md",
+        "/guide/deploy-on-ceph-shared-storage.md",
         "/guide/deploy-on-polardb-stack.md",
         "/guide/tpch-on-px.md",
       ],

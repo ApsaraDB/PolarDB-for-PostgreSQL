@@ -10,11 +10,11 @@ The read-only nodes may read two types of pages from the shared storage:
 
 - Future pages: The pages that the read-only nodes read from the shared storage incorporate changes that are made after the apply log sequence numbers (LSNs) of the pages. For example, the read-only nodes have applied all WAL records up to the WAL record with an LSN of 200 to a page, but the change described by the most recent WAL record with an LSN of 300 has been incorporated into the same page in the shared storage. These pages are called future pages.
 
-	![image.png](../imgs/9_future_pages.png)
+  ![image.png](../imgs/9_future_pages.png)
 
 - Outdated pages: The pages that the read-only nodes read from the shared storage do not incorporate changes that are made before the apply LSNs of the pages. For example, the read-only nodes have applied all WAL records up to the most recent WAL record with an LSN of 200 to a page, but the change described by a previous WAL record with an LSN of 200 has not been incorporated into the same page in the shared storage. These pages are called outdated pages.
 
-	![image.png](../imgs/6_outdated_pages.png)
+  ![image.png](../imgs/6_outdated_pages.png)
 
 Each read-only node expects to read pages that incorporate only the changes made up to the apply LSNs of the pages on that read-only node. If the read-only nodes read outdated pages or future pages from the shared storage, you can take the following measures:
 
@@ -104,4 +104,3 @@ PolarDB supports consistent LSNs, which are similar to checkpoints. All changes 
 Consistent LSNs empower PolarDB to implement lazy checkpointing. If the lazy checkpointing mechanism is used, PolarDB does not flush all dirty pages in the buffer pool to the shared storage. Instead, PolarDB uses consistent LSNs as checkpoint LSNs. This significantly increases checkpointing efficiency.
 
 The underlying logic of the lazy checkpointing mechanism allows PolarDB to run BGWRITER processes that continuously flush dirty pages and maintain consistent LSNs. The lazy checkpointing mechanism cannot be used with the full page write feature. If you enable the full page write feature, the lazy checkpointing mechanism is automatically disabled.
-
