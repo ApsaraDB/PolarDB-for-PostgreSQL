@@ -112,10 +112,11 @@ alter table lineitem set (px_workers = 100);
    ```
 
    可以看到如图所示的 2 个并行度的并行计划：
+
    ```sql
                                                                            QUERY PLAN
    -----------------------------------------------------------------------------------------------------------------------------------------------------------------
-    Limit  (cost=9364138.51..9364141.51 rows=100 width=71)
+   Limit  (cost=9364138.51..9364141.51 rows=100 width=71)
    ->  GroupAggregate  (cost=9364138.51..9380736.94 rows=553281 width=71)
          Group Key: orders.o_totalprice, orders.o_orderdate, customer.c_name, customer.c_custkey, orders.o_orderkey
          ->  Sort  (cost=9364138.51..9365521.71 rows=553281 width=44)
