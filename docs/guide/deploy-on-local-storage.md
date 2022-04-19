@@ -38,7 +38,7 @@ Translation
 
 #### Docker 镜像准备
 
-我们在 DockerHub 上提供了构建完毕的镜像 [`polardb/polardb_pg_devel:centos7`](https://hub.docker.com/r/polardb/polardb_pg_devel/tags) 可供直接使用（支持 x86_64 和 ARM 架构）😁。
+我们在 DockerHub 上提供了构建完毕的镜像 [`polardb/polardb_pg_devel:centos7`](https://hub.docker.com/r/polardb/polardb_pg_devel/tags) 可供直接使用（支持 AMD64 和 ARM64 架构）😁。
 
 另外，我们也提供了构建上述开发镜像的 Dockerfile，从 CentOS 7 官方镜像 `centos:centos7` 开始构建出一个安装完所有开发和运行时依赖的镜像。您可以根据自己的需要在 Dockerfile 中添加更多依赖。以下是手动构建镜像的 Dockerfile 及方法，如果您决定直接使用 DockerHub 上构建完毕的镜像，则跳过该步骤。
 
@@ -46,8 +46,6 @@ Translation
 
 ```dockerfile
 FROM centos:centos7
-
-LABEL maintainer="mrdrivingduck@gmail.com"
 
 CMD bash
 
@@ -167,13 +165,26 @@ docker build --network=host \
 
 #### 代码下载
 
-PolarDB for PostgreSQL 的代码托管于 [GitHub](https://github.com/ApsaraDB/PolarDB-for-PostgreSQL) 上，稳定分支为 `POLARDB_11_STABLE`。
+PolarDB for PostgreSQL 的代码托管于 [GitHub](https://github.com/ApsaraDB/PolarDB-for-PostgreSQL) 上，稳定分支为 `POLARDB_11_STABLE`。如果因网络原因不能稳定访问 GitHub，则可以访问 [Gitee 国内镜像](https://gitee.com/mirrors/PolarDB-for-PostgreSQL)。
+
+:::: code-group
+::: code-group-item GitHub
 
 ```bash:no-line-numbers
 git clone -b POLARDB_11_STABLE https://github.com/ApsaraDB/PolarDB-for-PostgreSQL.git
 ```
 
-#### 启动 Docker 容器
+:::
+::: code-group-item Gitee 国内镜像
+
+```bash:no-line-numbers
+git clone -b POLARDB_11_STABLE https://gitee.com/mirrors/PolarDB-for-PostgreSQL
+```
+
+:::
+::::
+
+#### 创建并启动 Docker 容器
 
 ::: tip
 💡 请在下面的高亮行中按需替换 `<>` 的部分：
@@ -184,15 +195,39 @@ git clone -b POLARDB_11_STABLE https://github.com/ApsaraDB/PolarDB-for-PostgreSQ
 
 :::
 
-```bash:no-line-numbers{2,4,5}
-docker run -it \
+:::: code-group
+::: code-group-item 本地镜像
+
+```bash:no-line-numbers{3,5,6}
+# 创建容器
+docker create -it \
     -v <src_to_polardb>:/home/postgres/PolarDB-for-PostgreSQL \
     --cap-add=SYS_PTRACE --privileged=true \
     --name <container_name> \
     <image_name> bash
 ```
 
-镜像构建过程中已经创建了一个 `postgres:postgres` 用户，从该镜像运行的容器将直接使用这个用户。容器启动后，后续直接进入正在运行的容器中：
+:::
+::: code-group-item DockerHub 镜像
+
+```bash:no-line-numbers{3,5}
+# 创建容器
+docker create -it \
+    -v <src_to_polardb>:/home/postgres/PolarDB-for-PostgreSQL \
+    --cap-add=SYS_PTRACE --privileged=true \
+    --name <container_name> \
+    polardb/polardb_pg_devel:centos7 bash
+```
+
+:::
+::::
+
+```bash:no-line-numbers{2}
+# 启动容器
+docker start <container_name>
+```
+
+镜像构建过程中已经创建了一个 `postgres:postgres` 用户，从该镜像运行的容器将直接使用这个用户。容器启动后，通过以下命令进入正在运行的容器中：
 
 ```bash:no-line-numbers{4}
 docker exec -it \
@@ -269,12 +304,26 @@ cd ~
 
 #### 下载 PolarDB 源代码
 
-PolarDB for PostgreSQL 的代码托管于 [GitHub](https://github.com/ApsaraDB/PolarDB-for-PostgreSQL) 上，稳定分支为 `POLARDB_11_STABLE`。
+PolarDB for PostgreSQL 的代码托管于 [GitHub](https://github.com/ApsaraDB/PolarDB-for-PostgreSQL) 上，稳定分支为 `POLARDB_11_STABLE`。如果因网络原因不能稳定访问 GitHub，则可以访问 [Gitee 国内镜像](https://gitee.com/mirrors/PolarDB-for-PostgreSQL)。
 
-```bash
+:::: code-group
+::: code-group-item GitHub
+
+```bash:no-line-numbers
 sudo yum install -y git
 git clone -b POLARDB_11_STABLE https://github.com/ApsaraDB/PolarDB-for-PostgreSQL.git
 ```
+
+:::
+::: code-group-item Gitee 国内镜像
+
+```bash:no-line-numbers
+sudo yum install -y git
+git clone -b POLARDB_11_STABLE https://gitee.com/mirrors/PolarDB-for-PostgreSQL
+```
+
+:::
+::::
 
 #### 依赖安装
 
