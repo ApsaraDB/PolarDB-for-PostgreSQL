@@ -114,7 +114,7 @@ Some code and design ideas are based on other open source projects, such as PG-X
 - PolarDB PostgreSQL at Slack: [https://app.slack.com/client/T023NM10KGE/C023VEMKS02](https://app.slack.com/client/T023NM10KGE/C023VEMKS02)
 - Use the DingTalk application to scan the following QR code and join the DingTalk group for PolarDB technology promotion.
 
-  ![polardb_group](docs/imgs/polardb_group.png)
+  ![polardb_group](docs/.vuepress/public/images/polardb_group.png)
 
 ---
 

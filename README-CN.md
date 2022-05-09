@@ -114,7 +114,7 @@ See the [LICENSE](./LICENSE) and [NOTICE](./NOTICE) file for more information.
 - PolarDB PostgreSQL Slack：[https://app.slack.com/client/T023NM10KGE/C023VEMKS02](https://app.slack.com/client/T023NM10KGE/C023VEMKS02)
 - 使用钉钉扫描如下二维码，加入 PolarDB 技术推广组钉钉群
 
-  ![polardb_group](docs/zh/imgs/polardb_group.png)
+  ![polardb_group](docs/.vuepress/public/images/polardb_group.png)
 
 ---
 
