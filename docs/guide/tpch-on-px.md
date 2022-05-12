@@ -1,62 +1,65 @@
-# Practice：Accelerate TPC-H through PolarDB HTAP
+# 利用 PolarDB HTAP 加速 TPC-H
 
-In this section，we will accelerate TPC-H through PolarDB HTAP. The practice will be based on local storage.
+在本节，我们将利用 Polar PG 的 HTAP 能力来加速 TPC-H 的执行，实践将基于单机本地存储来运行。
 
-## Prepare
+## 前期准备
 
-### Deploy PolarDB PG on local storage
+### 部署 PolarDB PG
 
-Before this section, we should deploy PolarDB for PG HTAP through the documents [deploy PolarDB PG on local storage](deploy-on-local-storage.md). There are one primary node(running on port 5432) and two read-only node(running on port 5433/5434).
-
-We can verify PolarDB HTAP through commands as follows：
+在运行前默认已经通过 [前置文档](./db-localfs.md#本地多节点-htap-实例) 部署好本地多节点 HTAP 实例。总计 1 个主节点（运行于 5432 端口），2 个只读节点（运行于 5433/5434 端口）。可以通过下面的命令来验证：
 
 ```shell
 ps xf
 ```
 
-Three processes should exist. There are one primary node(running on port 5432) and two read-only node(running on port 5433/5434).
+会看到如下的三个进程，1 个主节点（运行于 5432 端口），2 个只读节点（运行于 5433/5434 端口）：
 
-![HTAP processes](../imgs/64_htap_process_test.png)
+![HTAP实例验证](../imgs/64_htap_process_test.png)
 
-### Generate TPC-H Dataset
+### 生成 TPC-H 测试数据集
 
-[TPC-H](https://www.tpc.org/tpch/default5.asp) is a dataset dedicated for OLAP. There are 22 sqls in TPC-H. We will utilize tpch-dbgen to generate arbitrarily sized TPC-H dataset.
+[TPC-H](https://www.tpc.org/tpch/default5.asp) 是专门测试数据库分析型场景性能的数据集，一共有 22 条分析型场景下的 SQL。用 TPC-H 可以有效测试 PolarDB 的 HTAP 的能力。我们将通过 [tpch-dbgen](https://github.com/qiuyuhang/tpch-dbgen.git) 工具来生成任意大小的数据集。
 
 ```shell
-# download tpch-dbgen
+# 下载 tpch-dbgen
 git clone https://github.com/qiuyuhang/tpch-dbgen.git
 
-# compile
+# 编译代码
 cd tpch-dbgen
 make
 ```
 
-Next, let's generate some simulation data.
+执行如下命令，生成模拟数据：
 
 ::: tip
-It is recommended to follow this command and start with 10GB data. After experiencing this case, you can also try 100GB of data by replacing 10 with 100 in this command. What's more, you should be careful not to exceed the local external storage capacity.
+建议先按照该命令，从 10GB 大小的数据开始生成。体验完本案例后还可尝试 100GB 的数据，即将该命令行中的 `10` 替换为 `100`。这里需要注意不要超过本机外存容量。
 :::
 
 ```shell
-# Generate simulation data
+# 生成 10GB 数据
 ./dbgen -s 10
 ```
 
-Let me briefly explain the files inside tpch-dbgen. The .tbl files indicates the generated table data. There are 22 TPC-H sqls in queries/. The explain files only print the plan but not actually execute.
+简单说明一下 tpch-dbgen 里面的各种文件：
 
-## Load Data
+- 后缀为 `.tbl` 表示生成的表数据
+- `queries/` 中存放的是 TPC-H 的 22 条 SQL
+- 含有 `explain` 的 `.sql` 文件只打印计划，并不实际执行
+- `answers/` 中存储了 TPC-H 中 22 条 SQL 的执行结果
 
-Load TPC-H data with psql
+## 导入数据
+
+通过 `psql` 导入 TPC-H 数据。
 
 ::: tip
-Note that it should always be executed in the tpch-dbgen/ directory.
+注意，一直要在 `tpch-dbgen/` 目录下执行
 :::
 
 ```shell
 # 创建表
 psql -f dss.ddl
 
-# 进入数据库Cli模式
+# 进入 psql 命令行
 psql
 ```
 
@@ -70,13 +73,12 @@ psql
 \copy customer from 'customer.tbl' DELIMITER '|';
 \copy orders from 'orders.tbl' DELIMITER '|';
 \copy lineitem from 'lineitem.tbl' DELIMITER '|';
-
 ```
 
-After loading data, execute the following commands to set the maximum parallelism for the created tables.
+数据导入完成后，逐行执行如下命令，对创建的表设置最大并行度：
 
 ```sql
-# Set maximum parallelism for tables that require PX queries (if not set, no PX queries will be executed)
+# 对需要 PX 查询的表设置最大并行度（若不设置则不会进入 PX 查询）
 alter table nation set (px_workers = 100);
 alter table region set (px_workers = 100);
 alter table supplier set (px_workers = 100);
@@ -87,29 +89,29 @@ alter table orders set (px_workers = 100);
 alter table lineitem set (px_workers = 100);
 ```
 
-## Execute parallel queries in single server
+## 执行单机并行查询
 
-After loading the simulated data, we first execute parallel queries in single server to observe the query speed.
+模拟数据导入到 PolarDB 后，我们先执行单机并行查询，观测一下查询速度。
 
-1. After entering psql, execute the following command to turn on the timer.
+1. psql 连入后，执行如下命令，开启计时。
 
    ```sql
    \timing
    ```
 
-2. Set max workers in single server through `max_parallel_workers_per_gather`:
+2. 通过 `max_parallel_workers_per_gather` 参数设置单机并行度：
 
    ```sql
-   set max_parallel_workers_per_gather=2; -- Set 2
+   set max_parallel_workers_per_gather=2; -- 并行度设置为 2
    ```
 
-3. Execute the following command to view the execution plan.
+3. 执行如下命令，查看执行计划。
 
    ```sql
    \i queries/q18.explain.sql
    ```
 
-   You can see the parallel plan in single machine with 2 workers as shown in the figure
+   可以看到如图所示的 2 个并行度的并行计划：
 
    ```sql
                                                                            QUERY PLAN
@@ -144,51 +146,47 @@ After loading the simulated data, we first execute parallel queries in single se
    (27 rows)
    ```
 
-4. Execute the following SQL.
+4. 执行 SQL，可以看到部分结果（按 `q` 不查看全部结果）和运行时间，运行时间为 1 分 23 秒：
 
    ```sql
    \i queries/q18.sql
    ```
 
-You can see some of the results (press q not to see all the results) and the running time, and you can see that the running time is 1 minute 23 seconds.
-
-![The parallel plan result for Q18](../imgs/68_htap_single_result.png)
+   ![q18的单机并行结果](../imgs/68_htap_single_result.png)
 
 ::: tip
-Note that the following error message appears because of too many workers on a single machine：pq: could not resize shared memory segment "/PostgreSQL.2058389254" to 12615680 bytes: No space left on device.
-
-The reason for that is the default shared memory of docker is not enough. You can refer to [this link](https://stackoverflow.com/questions/56751565/pq-could-not-resize-shared-memory-segment-no-space-left-on-device) and set the parameters to restart docker to fix it.
+如果单机并行度太高，可能会出现如下的错误提示：`pq: could not resize shared memory segment "/PostgreSQL.2058389254" to 12615680 bytes: No space left on device`。原因是 Docker 预设的 shared memory 空间不足，可以参考 [该链接](https://stackoverflow.com/questions/56751565/pq-could-not-resize-shared-memory-segment-no-space-left-on-device) 设置参数并重启 Docker 进行解决。
 :::
 
-## Execute parallel queries with PolarDB HTAP
+## 执行 PolarDB HTAP 跨机并行查询
 
-After experiencing single-computer parallel query, we turn on parallel queries in distributed servers.
+在体验完单机并行查询后，我们开启跨机并行查询。然后使用相同的数据，重新体验一下查询性能。
 
-1. After psql, execute the following command to turn on the timing (if it is already on, you can skip it).
+1. 在 psql 后，执行如下命令，开启计时（若已开启，可跳过）。
 
    ```sql
    \timing
    ```
 
-2. Execute the following command to enable parallel query in distributed servers(PX).
+2. 执行如下命令，开启跨机并行查询（PX）。
 
    ```sql
    set polar_enable_px=on;
    ```
 
-3. Set workers in every server as 1.
+3. 设置每个节点的并行度为 1。
 
    ```sql
    set polar_px_dop_per_node=1;
    ```
 
-4. Execute the following command to view the execution plan.
+4. 执行如下命令，查看执行计划。
 
    ```sql
    \i queries/q18.explain.sql
    ```
 
-   This cluster comes with 2 ROs and the default workers is 2x1=2 when PX is turned on.
+   该引擎集群带有 2 个 RO 节点，开启 PX 后默认并行度为 `2x1=2` 个：
 
    ```sql
                                                                                               QUERY PLAN
@@ -236,20 +234,17 @@ After experiencing single-computer parallel query, we turn on parallel queries i
    (39 rows)
    ```
 
-5. Execute the following SQL.
+5. 执行 SQL：
 
    ```sql
    \i queries/q18.sql
    ```
 
-You can see some of the results (press q not to see all the results) and the running time, and you can see that the running time is 1 minute. This is a 27.71\% reduction in runtime compared to the results of single-computer parallelism.
-If you are interested, you can also increase the parallelism or the amount of data to see improvement.
+可以看到部分结果（按 `q` 不查看全部结果）和运行时间，运行时间为 1 分钟，比单机并行的结果降低了 27.71\% 的运行时间。感兴趣的同学也可加大并行度或者数据量查看提升程度。
 
-![The PX results for q18](../imgs/69_htap_px_result.png)
+![q18的HTAP跨机并行结果](../imgs/69_htap_px_result.png)
 
-The PX parallel query goes to get the global consistency view, so the data obtained is consistent and there is no need to worry about data correctness.
-
-We can manually set the workers for PX：
+跨机并行查询会去获取全局一致性视图，因此得到的数据是一致的，无需担心数据正确性。可以通过如下方式手动设置跨机并行查询的并行度：
 
 ```sql
 set polar_px_dop_per_node = 1;
