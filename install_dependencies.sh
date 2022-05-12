@@ -85,7 +85,7 @@ rm -rf zlog-1.2.14 && \
 # unzip and install PFSD
 tar -zxf pfsd4pg-release-1.2.41-20211018.tar.gz && \
 cd PolarDB-FileSystem-pfsd4pg-release-1.2.41-20211018 && \
-./autobuild.sh && ./install.sh && \
+./autobuild.sh && ./uninstall.sh && ./install.sh && \
 cd .. && \
 rm pfsd4pg-release-1.2.41-20211018.tar.gz && \
 rm -rf PolarDB-FileSystem-pfsd4pg-release-1.2.41-20211018 && \
@@ -100,3 +100,6 @@ ln -sf /usr/lib64/libcrypto.so.1.1 /usr/lib64/libcrypto.so && \
 ln -sf /usr/lib64/libssl.so.1.1 /usr/lib64/libssl.so && \
 rm -f /usr/local/$OPENSSL_VERSION.tar.gz && \
 rm -rf /usr/local/openssl-$OPENSSL_VERSION
+
+ldconfig
+
