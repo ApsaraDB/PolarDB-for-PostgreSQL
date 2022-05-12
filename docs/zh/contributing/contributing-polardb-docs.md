@@ -106,9 +106,11 @@ PolarDB for PostgreSQL 的文档资源位于工程根目录的 `docs/` 目录下
 
 1. 新的文档写好后，需要在文档配置中配置路由使其在导航栏和侧边栏中显示（可参考其他已有文档）
 2. 修正一种语言的文档时，也需要顺带修正其他语言的相同文档
-3. 修改文档后，使用 [Prettier](https://prettier.io/) 工具对 Markdown 文档进行格式化。Prettier 支持的编辑器集成：
-   - [Prettier-VSCode](https://github.com/prettier/prettier-vscode)
-   - [Vim-Prettier](https://github.com/prettier/vim-prettier)
+3. 修改文档后，使用 [Prettier](https://prettier.io/) 工具对 Markdown 文档进行格式化：
+   - Prettier 支持的编辑器集成：
+     - [Prettier-VSCode](https://github.com/prettier/prettier-vscode)
+     - [Vim-Prettier](https://github.com/prettier/vim-prettier)
+   - 或直接在源码根目录运行：`npx prettier --write docs/`
 
 ## 文档在线部署
 

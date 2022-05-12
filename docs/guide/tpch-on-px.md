@@ -110,10 +110,11 @@ After loading the simulated data, we first execute parallel queries in single se
    ```
 
    You can see the parallel plan in single machine with 2 workers as shown in the figure
+
    ```sql
                                                                            QUERY PLAN
    -----------------------------------------------------------------------------------------------------------------------------------------------------------------
-    Limit  (cost=9364138.51..9364141.51 rows=100 width=71)
+   Limit  (cost=9364138.51..9364141.51 rows=100 width=71)
    ->  GroupAggregate  (cost=9364138.51..9380736.94 rows=553281 width=71)
          Group Key: orders.o_totalprice, orders.o_orderdate, customer.c_name, customer.c_custkey, orders.o_orderkey
          ->  Sort  (cost=9364138.51..9365521.71 rows=553281 width=44)
@@ -234,7 +235,6 @@ After experiencing single-computer parallel query, we turn on parallel queries i
    Optimizer: PolarDB PX Optimizer
    (39 rows)
    ```
-
 
 5. Execute the following SQL.
 
