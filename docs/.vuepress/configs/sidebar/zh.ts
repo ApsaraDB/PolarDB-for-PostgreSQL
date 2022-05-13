@@ -29,6 +29,7 @@ export const zh: SidebarConfig = {
             },
           ],
         },
+        "/zh/guide/customize-dev-env.md",
         "/zh/guide/deploy-more.md",
         {
           text: "特性体验",
