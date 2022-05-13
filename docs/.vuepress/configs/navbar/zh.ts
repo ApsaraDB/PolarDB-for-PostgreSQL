@@ -23,7 +23,13 @@ export const zh: NavbarConfig = [
         text: "编译部署 PolarDB 内核",
         children: ["/zh/guide/db-localfs.html", "/zh/guide/db-pfs.html"],
       },
-      "/zh/guide/deploy-more.html",
+      {
+        text: "更多",
+        children: [
+          "/zh/guide/customize-dev-env.md",
+          "/zh/guide/deploy-more.html",
+        ],
+      },
       {
         text: "特性体验",
         children: ["/zh/guide/tpch-on-px.html"],

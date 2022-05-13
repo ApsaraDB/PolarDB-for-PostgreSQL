@@ -65,4 +65,4 @@ nvme1n1     259:2    0  100G  0 disk
 
 ## 准备分布式文件系统
 
-接下来，在 ECS 共享的 ESSD 块设备上 [格式化并挂载 PFS](./fs-pfs.md)。
+接下来，将在两台 ECS 上分别部署 PolarDB 的主节点和只读节点。作为前提，需要在 ECS 共享的 ESSD 块设备上 [格式化并挂载 PFS](./fs-pfs.md)。

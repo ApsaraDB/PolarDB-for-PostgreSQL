@@ -29,6 +29,7 @@ export const en: SidebarConfig = {
             },
           ],
         },
+        "/guide/customize-dev-env.md",
         "/guide/deploy-more.md",
         {
           text: "特性体验",
