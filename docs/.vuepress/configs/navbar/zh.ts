@@ -28,6 +28,7 @@ export const zh: NavbarConfig = [
         children: [
           "/zh/deploying/db-localfs.html",
           "/zh/deploying/db-pfs.html",
+          "/zh/deploying/db-pfs-curve.html",
         ],
       },
       {

@@ -26,7 +26,11 @@ export const en: SidebarConfig = {
             },
             {
               text: "Building PolarDB Kernel",
-              children: ["/deploying/db-localfs.md", "/deploying/db-pfs.md"],
+              children: [
+                "/deploying/db-localfs.md",
+                "/deploying/db-pfs.md",
+                "/deploying/db-pfs-curve.md",
+              ],
             },
           ],
         },
