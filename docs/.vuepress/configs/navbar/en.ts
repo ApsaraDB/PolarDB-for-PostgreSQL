@@ -22,7 +22,11 @@ export const en: NavbarConfig = [
       },
       {
         text: "Building PolarDB Kernel",
-        children: ["/deploying/db-localfs.html", "/deploying/db-pfs.html"],
+        children: [
+          "/deploying/db-localfs.html",
+          "/deploying/db-pfs.html",
+          "/deploying/db-pfs-curve.html",
+        ],
       },
       {
         text: "More about Deployment",
