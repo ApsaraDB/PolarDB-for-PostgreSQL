@@ -53,41 +53,22 @@ PolarDB 采用了基于 Shared-Storage 的存储计算分离架构。数据库�
 
 ## 快速入门
 
-如果您正在使用一个干净的 CentOS 7 系统，且正以一个非 root 用户登录，那么您可以使用以下最小化编译部署方式快速尝鲜 PolarDB for PostgreSQL。
+如果您已安装 Docker，那么可以从 DockerHub 上拉取 PolarDB for PostgreSQL 的 本地存储实例镜像，创建、运行并进入容器，然后直接使用 PolarDB 实例：
 
 ```bash
-# install extra software source
-sudo yum install epel-release centos-release-scl
-# update
-sudo yum update
-# install minimal dependencies
-sudo yum install devtoolset-9-gcc devtoolset-9-gcc-c++ \
-                 devtoolset-9-gdb devtoolset-9-make \
-                 bison flex perl-IPC-Run
-
-# enable GCC 9
-sudo bash -c 'echo "source /opt/rh/devtoolset-9/enable" >> /etc/bashrc'
-source /etc/bashrc
-
-# building
-./polardb_build -m
-```
-
-进入 `psql` 命令行则表明编译部署成功：
-
-```bash
-$HOME/tmp_basedir_polardb_pg_1100_bld/bin/psql -h 127.0.0.1
-
-psql (11.9)
-Type "help" for help.
-postgres=# select version();
-            version             
+# 拉取单节点 PolarDB 镜像
+docker pull polardb/polardb_pg_local_instance:single
+# 创建运行并进入容器
+docker run -it --cap-add=SYS_PTRACE --privileged=true --name polardb_pg_single polardb/polardb_pg_local_instance:single bash
+# 测试实例可用性
+psql -h 127.0.0.1 -c 'select version();'
+            version
 --------------------------------
  PostgreSQL 11.9 (POLARDB 11.9)
 (1 row)
 ```
 
-对于更多进阶部署方式，请移步在线文档中的 [快速入门指南](https://apsaradb.github.io/PolarDB-for-PostgreSQL/zh/guide/)。推荐使用 [基于单机存储的部署方式 + Docker 开发镜像](https://apsaradb.github.io/PolarDB-for-PostgreSQL/zh/guide/deploy-on-local-storage.html) 部署 PolarDB for PostgreSQL。
+对于更多进阶部署方式，请移步在线文档中的 [进阶部署](https://apsaradb.github.io/PolarDB-for-PostgreSQL/zh/guide/deploy.html)。在部署前，我们建议您先了解一下 PolarDB for PostgreSQL 的 [架构简介](https://apsaradb.github.io/PolarDB-for-PostgreSQL/zh/guide/introduction.html)。
 
 ## 文档
 
@@ -99,17 +80,21 @@ postgres=# select version();
 
 我们诚挚欢迎社区参与 PolarDB 的贡献，无论是代码还是文档。在线文档中的 [参与社区](https://apsaradb.github.io/PolarDB-for-PostgreSQL/zh/contributing/) 提供了关于贡献流程与规范的更多信息。
 
-## Software License
+以下是贡献者列表（由 [contrib.rocks](https://contrib.rocks) 支持）：
 
-PolarDB code is released under the Apache License (Version 2.0), developed based on the PostgreSQL which is released under the PostgreSQL License. This product contains various third-party components under other open source licenses.
+<a href="https://github.com/ApsaraDB/PolarDB-for-PostgreSQL/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=ApsaraDB/PolarDB-for-PostgreSQL" />
+</a>
 
-See the [LICENSE](./LICENSE) and [NOTICE](./NOTICE) file for more information.
+## 软件许可
+
+PolarDB for PostgreSQL 的源代码遵循 Apache 2.0 许可证，基于遵循 PostgreSQL 许可证的 PostgreSQL 开发。其中还包含了部分遵循其它开源许可证的第三方组件。请移步 [LICENSE](./LICENSE) 和 [NOTICE](./NOTICE) 了解更多信息。
 
 ## 致谢
 
 部分代码和设计思路参考了其他开源项目，例如：PG-XC/XL (pgxc_ctl)、TBase (部分基于时间戳的 vacuum 和 MVCC)、Greenplum 以及 Citus (pg_cron)。感谢以上开源项目的贡献。
 
-## 联系我们
+## 加入社区
 
 - PolarDB PostgreSQL Slack：[https://app.slack.com/client/T023NM10KGE/C023VEMKS02](https://app.slack.com/client/T023NM10KGE/C023VEMKS02)
 - 使用钉钉扫描如下二维码，加入 PolarDB 技术推广组钉钉群

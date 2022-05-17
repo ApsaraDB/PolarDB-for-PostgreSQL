@@ -41,7 +41,7 @@ PolarDB provides a wide range of innovative multi-model database capabilities to
 
 ## Branch Introduction
 
-The `POLARDB_11_STABLE` is stable branch which is based on PostgreSQL 11.9. It supports compute-storage separation architecture. The `distributed` branch, which supports distributed architecture.
+The `POLARDB_11_STABLE` is the stable branch based on PostgreSQL 11.9, which supports compute-storage separation architecture. The `distributed` branch supports distributed architecture.
 
 ## Architecture and Roadmap
 
@@ -53,41 +53,22 @@ For more information, see [Architecture](https://apsaradb.github.io/PolarDB-for-
 
 ## Quick Start with PolarDB
 
-If you are using a clean CentOS 7 system with a non-root user logged in, you can try the following steps to build a minimal PolarDB for fast tasting.
+If you have Docker installed already，then you can pull the instance image of PolarDB for PostgreSQL based on local storage. Create, run and enter the container, and use PolarDB instance directly:
 
 ```bash
-# install extra software source
-sudo yum install epel-release centos-release-scl
-# update
-sudo yum update
-# install minimal dependencies
-sudo yum install devtoolset-9-gcc devtoolset-9-gcc-c++ \
-                 devtoolset-9-gdb devtoolset-9-make \
-                 bison flex perl-IPC-Run
-
-# enable GCC 9
-sudo bash -c 'echo "source /opt/rh/devtoolset-9/enable" >> /etc/bashrc'
-source /etc/bashrc
-
-# building
-./polardb_build -m
-```
-
-If you can enter `psql` successfully, that means you are done.
-
-```bash
-$HOME/tmp_basedir_polardb_pg_1100_bld/bin/psql -h 127.0.0.1
-
-psql (11.9)
-Type "help" for help.
-postgres=# select version();
-            version             
+# pull the instance image from DockerHub
+docker pull polardb/polardb_pg_local_instance:single
+# create, run and enter the container
+docker run -it --cap-add=SYS_PTRACE --privileged=true --name polardb_pg_single polardb/polardb_pg_local_instance:single bash
+# check
+psql -h 127.0.0.1 -c 'select version();'
+            version
 --------------------------------
  PostgreSQL 11.9 (POLARDB 11.9)
 (1 row)
 ```
 
-For more advanced building and deploying options, please refer to [Getting Started](https://apsaradb.github.io/PolarDB-for-PostgreSQL/guide/) on documentation website. We recommand using [deploying on local storage + Docker development image](https://apsaradb.github.io/PolarDB-for-PostgreSQL/guide/deploy-on-local-storage.html) for deploying PolarDB for PostgreSQL.
+For more advanced deployment way, please refer to [Advanced Deployment](https://apsaradb.github.io/PolarDB-for-PostgreSQL/guide/deploy.html). Before your deployment, we recommand to figure out the [architecture](https://apsaradb.github.io/PolarDB-for-PostgreSQL/guide/introduction.html) of PolarDB for PostgreSQL.
 
 ## Documentation
 
@@ -95,9 +76,17 @@ Please refer to [Online Documentation Website](https://apsaradb.github.io/PolarD
 
 If you want to explore or develop documentation locally, see [Document Contribution](https://apsaradb.github.io/PolarDB-for-PostgreSQL/contributing/contributing-polardb-docs.html).
 
-## Contributions
+## Contributing
 
 You are welcome to make contributions to PolarDB, no matter code or documentation. We appreciate all the contributions. For more information about how to start development and pull requests, see [Community](https://apsaradb.github.io/PolarDB-for-PostgreSQL/contributing/).
+
+Here are the contributors:
+
+<a href="https://github.com/ApsaraDB/PolarDB-for-PostgreSQL/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=ApsaraDB/PolarDB-for-PostgreSQL" />
+</a>
+
+Made with [contrib.rocks](https://contrib.rocks).
 
 ## Software License
 
@@ -109,7 +98,7 @@ See the [LICENSE](./LICENSE) and [NOTICE](./NOTICE) file for more information.
 
 Some code and design ideas are based on other open source projects, such as PG-XC/XL (pgxc_ctl), TBase (Timestamp-based vacuum and MVCC), Greenplum and Citus (pg_cron). We thank the contributions of the preceding open source projects.
 
-## Contact us
+## Join the Community
 
 - PolarDB PostgreSQL at Slack: [https://app.slack.com/client/T023NM10KGE/C023VEMKS02](https://app.slack.com/client/T023NM10KGE/C023VEMKS02)
 - Use the DingTalk application to scan the following QR code and join the DingTalk group for PolarDB technology promotion.
