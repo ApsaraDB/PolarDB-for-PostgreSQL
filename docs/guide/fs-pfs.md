@@ -9,6 +9,7 @@ PolarDB File System，简称 PFS 或 PolarFS，是由阿里云自主研发的高
 ```bash
 docker pull polardb/polardb_pg_devel
 docker run -it \
+    --network=host \
     --cap-add=SYS_PTRACE --privileged=true \
     --name polardb_pg \
     polardb/polardb_pg_devel bash
