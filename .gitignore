@@ -52,3 +52,4 @@ tags
 node_modules
 .temp
 .cache
+dist/
