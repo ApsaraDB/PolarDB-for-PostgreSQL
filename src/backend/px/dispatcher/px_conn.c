@@ -170,7 +170,10 @@ pxconn_doConnectStart(PxWorkerDescriptor *pxWorkerDesc,
 	 *
 	 * For other PX connections, we set "hostaddr". "host" is not used.
 	 */
-	if ((px_role == PX_ROLE_QC) || FAULT_COND(SIMPLE_FAULT_INJECTOR("hostaddr_info") == FaultInjectorTypeEnable))
+	if ((px_role == PX_ROLE_QC &&
+		(pxWorkerDesc->logicalWorkerInfo.idx == MASTER_CONTENT_ID ||
+		 pxWorkerDesc->identifier >= RW_COUNTER_START)) ||
+		 FAULT_COND(SIMPLE_FAULT_INJECTOR("hostaddr_info") == FaultInjectorTypeEnable))
 	{
 		keywords[nkeywords] = "hostaddr";
 		values[nkeywords] = "127.0.0.1";
