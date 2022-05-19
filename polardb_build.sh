@@ -596,11 +596,6 @@ then
 
   disk_name=`echo $pg_bld_data_dir | cut -d '/' -f2`
 
-  if [[ $withpx == "yes" ]];
-  then
-    sed -i 's/127.0.0.1\/32/0.0.0.0\/0/g' $pg_bld_master_dir/pg_hba.conf
-  fi
-
   echo "polar_vfs.localfs_mode = true
   polar_enable_localfs_test_mode = on
   polar_enable_shared_storage_mode = on
