@@ -114,7 +114,7 @@ $HOME/tmp_basedir_polardb_pg_1100_bld/bin/psql \
 (1 row)
 ```
 
-在主节点上，为对应的制度节点创建相应的 replication slot，用于只读节点的物理流复制：
+在主节点上，为对应的只读节点创建相应的 replication slot，用于只读节点的物理流复制：
 
 ```bash:no-line-numbers
 $HOME/tmp_basedir_polardb_pg_1100_bld/bin/psql \

@@ -1,14 +1,23 @@
 # 利用 PolarDB HTAP 加速 TPC-H
 
-在本节，我们将利用 Polar PG 的 HTAP 能力来加速 TPC-H 的执行，实践将基于单机本地存储来运行。
+在本节，我们将利用 PolarDB for PostgreSQL 的 HTAP 能力来加速 TPC-H 的执行，实践将基于单机本地存储来运行。
 
 ## 前期准备
 
 ### 部署 PolarDB PG
 
-在运行前默认已经通过 [前置文档](./db-localfs.md#本地多节点-htap-实例) 部署好本地多节点 HTAP 实例。总计 1 个主节点（运行于 5432 端口），2 个只读节点（运行于 5433/5434 端口）。可以通过下面的命令来验证：
+在运行前默认已经通过 [前置文档](./db-localfs.md#本地多节点-htap-实例) 部署好本地多节点 HTAP 实例。
 
-```shell
+也可以直接从 DockerHub 上拉取 HTAP 实例镜像：
+
+```bash:no-line-numbers
+docker pull polardb/polardb_pg_local_instance:htap
+docker run -it --cap-add=SYS_PTRACE --privileged=true --name polardb_pg_htap polardb/polardb_pg_local_instance:htap bash
+```
+
+总计 1 个主节点（运行于 5432 端口），2 个只读节点（运行于 5433/5434 端口）。可以通过下面的命令来验证：
+
+```bash:no-line-numbers
 ps xf
 ```
 
@@ -20,7 +29,7 @@ ps xf
 
 [TPC-H](https://www.tpc.org/tpch/default5.asp) 是专门测试数据库分析型场景性能的数据集，一共有 22 条分析型场景下的 SQL。用 TPC-H 可以有效测试 PolarDB 的 HTAP 的能力。我们将通过 [tpch-dbgen](https://github.com/qiuyuhang/tpch-dbgen.git) 工具来生成任意大小的数据集。
 
-```shell
+```bash
 # 下载 tpch-dbgen
 git clone https://github.com/qiuyuhang/tpch-dbgen.git
 
@@ -35,7 +44,7 @@ make
 建议先按照该命令，从 10GB 大小的数据开始生成。体验完本案例后还可尝试 100GB 的数据，即将该命令行中的 `10` 替换为 `100`。这里需要注意不要超过本机外存容量。
 :::
 
-```shell
+```bash
 # 生成 10GB 数据
 ./dbgen -s 10
 ```
@@ -55,7 +64,7 @@ make
 注意，一直要在 `tpch-dbgen/` 目录下执行
 :::
 
-```shell
+```bash
 # 创建表
 psql -f dss.ddl
 
@@ -164,25 +173,25 @@ alter table lineitem set (px_workers = 100);
 
 1. 在 psql 后，执行如下命令，开启计时（若已开启，可跳过）。
 
-   ```sql
+   ```sql:no-line-numbers
    \timing
    ```
 
 2. 执行如下命令，开启跨机并行查询（PX）。
 
-   ```sql
+   ```sql:no-line-numbers
    set polar_enable_px=on;
    ```
 
 3. 设置每个节点的并行度为 1。
 
-   ```sql
+   ```sql:no-line-numbers
    set polar_px_dop_per_node=1;
    ```
 
 4. 执行如下命令，查看执行计划。
 
-   ```sql
+   ```sql:no-line-numbers
    \i queries/q18.explain.sql
    ```
 

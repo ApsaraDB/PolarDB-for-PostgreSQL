@@ -62,6 +62,11 @@ echo "source /opt/rh/devtoolset-9/enable" >> /etc/bashrc && \
 echo "source /opt/rh/llvm-toolset-7.0/enable" >> /etc/bashrc && \
 source /etc/bashrc
 
+# install Node.js repo
+curl -fsSL https://rpm.nodesource.com/setup_lts.x | bash -
+# install Yarn
+curl -sL https://dl.yarnpkg.com/rpm/yarn.repo | tee /etc/yum.repos.d/yarn.repo && \
+    yum install -y yarn
 
 OPENSSL_VERSION=OpenSSL_1_1_1k
 GITHUB_PROXY=https://ghproxy.com

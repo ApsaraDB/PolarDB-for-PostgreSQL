@@ -12,23 +12,13 @@ PolarDB for PostgreSQL 的文档使用 [VuePress 2](https://v2.vuepress.vuejs.or
 
 ## 本地文档开发
 
-若您发现文档中存在内容或格式错误，或者您希望能够贡献新文档，那么您需要在本地安装并配置文档开发环境。本项目的文档是一个 Node.js 工程，[Node.js®](https://nodejs.org/en/) 是一个基于 Chrome V8 引擎的 JavaScript 运行时环境。
+若您发现文档中存在内容或格式错误，或者您希望能够贡献新文档，那么您需要在本地安装并配置文档开发环境。本项目的文档是一个 Node.js 工程，以 [Yarn](https://yarnpkg.com/) 作为软件包管理器。[Node.js®](https://nodejs.org/en/) 是一个基于 Chrome V8 引擎的 JavaScript 运行时环境。
 
 ### Node 环境准备
 
-您需要在本地准备 Node.js 环境。可以选择在 Node.js 官网 [下载](https://nodejs.org/en/download/) 页面下载安装包手动安装，也可以根据您正在使用的操作系统使用下面的命令自动安装。
+您需要在本地准备 Node.js 环境。可以选择在 Node.js 官网 [下载](https://nodejs.org/en/download/) 页面下载安装包手动安装，也可以使用下面的命令自动安装。
 
-#### macOS
-
-在 macOS 上可以直接使用 [Homebrew](https://brew.sh/) 安装：
-
-```bash:no-line-numbers
-brew install node
-```
-
-#### Linux / Windows Subsystem for Linux (WSL)
-
-在 Linux 上通过 `curl` 安装 Node 版本管理器 `nvm`。
+通过 `curl` 安装 Node 版本管理器 `nvm`。
 
 ```bash:no-line-numbers
 curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.1/install.sh | bash
@@ -43,8 +33,6 @@ command -v nvm
 nvm install --lts
 ```
 
-### Node 环境验证
-
 Node.js 安装完毕后，使用如下命令检查安装是否成功：
 
 ```bash:no-line-numbers
@@ -52,12 +40,19 @@ node -v
 npm -v
 ```
 
-### 文档依赖安装
-
-在 PolarDB for PostgreSQL 工程的根目录下运行以下命令，`npm` 将会根据 `package.json` 安装所有依赖：
+使用 `npm` 全局安装软件包管理器 `yarn`：
 
 ```bash:no-line-numbers
-npm install
+npm install -g yarn
+yarn -v
+```
+
+### 文档依赖安装
+
+在 PolarDB for PostgreSQL 工程的根目录下运行以下命令，`yarn` 将会根据 `package.json` 安装所有依赖：
+
+```bash:no-line-numbers
+yarn
 ```
 
 ### 运行文档开发服务器
@@ -65,7 +60,7 @@ npm install
 在 PolarDB for PostgreSQL 工程的根目录下运行以下命令：
 
 ```bash:no-line-numbers
-npm run docs:dev
+yarn docs:dev
 ```
 
 文档开发服务器将运行于 `http://localhost:8080/PolarDB-for-PostgreSQL/`，打开浏览器即可访问。对 Markdown 文件作出修改后，可以在网页上实时查看变化。
