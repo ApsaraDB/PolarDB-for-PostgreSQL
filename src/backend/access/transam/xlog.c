@@ -14945,6 +14945,20 @@ polar_is_checkpoint_legal(XLogRecPtr redo)
 {
 	XLogRecPtr consistent_lsn = polar_get_consistent_lsn();
 	XLogRecPtr oldest_applied_lsn = polar_get_oldest_applied_lsn();
+	uint32	freespace;
+
+	/*
+	 * like checkpoint.redo, we should add extra header for consistent lsn, 
+	 * then to compare with checkpoint.redo.
+	 */
+	freespace = INSERT_FREESPACE(consistent_lsn);
+	if (freespace == 0)
+	{
+		if (XLogSegmentOffset(consistent_lsn, wal_segment_size) == 0)
+			consistent_lsn += SizeOfXLogLongPHD;
+		else
+			consistent_lsn += SizeOfXLogShortPHD;
+	}
 
 	if (redo <= consistent_lsn)
 	{
