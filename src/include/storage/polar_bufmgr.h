@@ -46,9 +46,12 @@ extern XLogRecPtr polar_online_promote_fake_oldest_lsn(void);
 #define polar_buffer_first_touch_after_copy(buf_hdr) \
 	(buf_hdr->copy_buffer && !(buf_hdr->polar_flags & POLAR_BUF_FIRST_TOUCHED_AFTER_COPY))
 
+/* lazy checkpoint is not allowed when full page write is on */
+#define polar_lazy_checkpoint_is_allowed() \
+	(polar_enable_shared_storage_mode && polar_enable_lazy_checkpoint && (!fullPageWrites))
+
 #define polar_lazy_checkpoint_enabled() \
-	(polar_enable_shared_storage_mode && polar_enable_lazy_checkpoint && \
-	 (!fullPageWrites) && (!RecoveryInProgress()))
+	(polar_lazy_checkpoint_is_allowed() && (!RecoveryInProgress()))
 
 /* Unconditionally set the oldest lsn. */
 #define polar_buffer_set_oldest_lsn(bufHdr,lsn) \
@@ -58,8 +61,7 @@ extern XLogRecPtr polar_online_promote_fake_oldest_lsn(void);
 	(polar_buffer_set_oldest_lsn(bufHdr, polar_fake_oldest_lsn()))
 
 #define polar_lazy_end_of_recovery_checkpoint_enabled() \
-	(polar_enable_shared_storage_mode && polar_enable_lazy_checkpoint && \
-	 polar_enable_lazy_end_of_recovery_checkpoint && polar_is_master())
+	(polar_lazy_checkpoint_is_allowed() && polar_enable_lazy_end_of_recovery_checkpoint && polar_is_master())
 
 #define polar_buffer_adjust_oldest_lsn(lsn) \
 	(polar_bg_redo_state_is_parallel(polar_logindex_redo_instance) ? \
