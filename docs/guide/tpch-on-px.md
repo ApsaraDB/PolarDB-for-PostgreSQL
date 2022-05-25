@@ -98,7 +98,7 @@ alter table orders set (px_workers = 100);
 alter table lineitem set (px_workers = 100);
 ```
 
-## 执行单机并行查询
+## 执行 PostgreSQL 单机并行执行
 
 模拟数据导入到 PolarDB 后，我们先执行单机并行查询，观测一下查询速度。
 
@@ -167,9 +167,9 @@ alter table lineitem set (px_workers = 100);
 如果单机并行度太高，可能会出现如下的错误提示：`pq: could not resize shared memory segment "/PostgreSQL.2058389254" to 12615680 bytes: No space left on device`。原因是 Docker 预设的 shared memory 空间不足，可以参考 [该链接](https://stackoverflow.com/questions/56751565/pq-could-not-resize-shared-memory-segment-no-space-left-on-device) 设置参数并重启 Docker 进行解决。
 :::
 
-## 执行 PolarDB HTAP 跨机并行查询
+## 执行 PolarDB HTAP 单机并行执行
 
-在体验完单机并行查询后，我们开启跨机并行查询。然后使用相同的数据，重新体验一下查询性能。
+在体验完单机并行查询后，我们开启 PolarDB HTAP 的并行执行，在单机上重新体验一下查询性能。
 
 1. 在 psql 后，执行如下命令，开启计时（若已开启，可跳过）。
 
@@ -265,3 +265,83 @@ set polar_px_dop_per_node = 2;
 set polar_px_dop_per_node = 4;
 \i queries/q18.sql
 ```
+
+## 执行 PolarDB HTAP 跨机并行执行
+
+### 启动结点
+
+执行前提：
+
+- 代码编译通过
+- 存在 `~/tmp_basedir_polardb_pg_1100_bld/` 、 `~/tmp_replica_dir_polardb_pg_1100_bld1/` 和 `~/tmp_replica_dir_polardb_pg_1100_bld2/` 目录
+
+通过以下命令在不同机器上启动 replica 节点：
+
+```shell
+~/tmp_basedir_polardb_pg_1100_bld/bin/pg_ctl -D ~/tmp_replica_dir_polardb_pg_1100_bld1/ restart
+```
+
+### 查看只读结点的端口
+
+启动完两个只读结点后，可以通过 `ps -efww` 查看两个只读结点的端口：
+
+```shell
+ 84622 pts/5    S      0:00 /home/postgres/tmp_basedir_polardb_pg_1100_bld/bin/postgres -D tmp_replica_dir_polardb_pg_1100_bld1
+ 84623 ?        Ss     0:00  \_ postgres(5433): logger  0
+ 84624 ?        Ss     0:00  \_ postgres(5433): logger  1
+ 84625 ?        Ss     0:00  \_ postgres(5433): logger  2
+ 84626 ?        Ss     0:00  \_ postgres(5433): startup  recovering 00000001000000
+ 84627 ?        Ss     0:00  \_ postgres(5433): polar worker process
+ 84628 ?        Ss     0:00  \_ postgres(5433): checkpointer
+ 84629 ?        Ss     0:00  \_ postgres(5433): background writer
+ 84630 ?        Ss     0:00  \_ postgres(5433): background logindex writer
+ 84631 ?        Ss     0:00  \_ postgres(5433): polar async ddl lock replay worker
+ 84632 ?        Ss     0:00  \_ postgres(5433): stats collector
+ 84845 ?        Ss     0:00  \_ postgres(5433): walreceiver  streaming 0/4079DA20,
+ 84594 pts/5    S      0:00 /home/postgres/tmp_basedir_polardb_pg_1100_bld/bin/postgres -D tmp_replica_dir_polardb_pg_1100_bld2
+ 84595 ?        Ss     0:00  \_ postgres(5432): logger  0
+ 84596 ?        Ss     0:00  \_ postgres(5432): logger  1
+ 84597 ?        Ss     0:00  \_ postgres(5432): logger  2
+```
+
+进程分别运行在 `5433` 和 `5432` 端口，这个也可以通过 `polardb_build.sh` 进行调整。
+
+### 测试不同结点连通性
+
+通过下面的命令验证主节点到只读结点的连通性。如果访问不通，请检查防火墙等网络配置。
+
+::: warning
+更换 `<ip_address>` 和 `<port>` 为只读结点的 IP 地址和端口。
+:::
+
+```shell
+psql -h <ip_address> -p <port> -Upostgres postgres
+```
+
+### 主节点设置参数
+
+进入 psql 命令行后，执行以下 SQL 语句：
+
+::: warning
+更换 `<ip_address_1>` 、`<port_1>` 和 `<ip_address_2>` 、 `<port_2>` 为两个只读结点的 IP 地址和端口，端口若没有特别设置，一般为 5433 和 5434 。
+:::
+
+```sql
+alter system set polar_cluster_map='node1|<ip_address_1>|<port_1>,node2|<ip_address_2>|<port_2>';
+select pg_reload_conf();
+```
+
+### 测试
+
+以 TPC-H 为例，检查查询计划是否来自于 PolarDB 的 PX 优化器，并执行查询：
+
+```sql
+explain select count(*) from customer;
+select count(*) from customer;
+```
+
+### 常见的错误
+
+如果发现下面的错误，可以尝试统一修改每台机器的 MTU 为 9000。
+
+![网络包发送错误](../imgs/70_tpch_error_picture.png)
