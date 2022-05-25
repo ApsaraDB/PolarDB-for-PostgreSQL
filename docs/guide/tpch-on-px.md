@@ -170,6 +170,9 @@ alter table lineitem set (px_workers = 100);
 ## 执行 PolarDB HTAP 跨机并行查询
 
 在体验完单机并行查询后，我们开启跨机并行查询。然后使用相同的数据，重新体验一下查询性能。
+::: tip
+注意，本小节是在本地单台机器起多个进程来模拟多个结点，在下一节会教如何在不同结点上执行 HTAP 。
+:::
 
 1. 在 psql 后，执行如下命令，开启计时（若已开启，可跳过）。
 
@@ -265,3 +268,70 @@ set polar_px_dop_per_node = 2;
 set polar_px_dop_per_node = 4;
 \i queries/q18.sql
 ```
+
+## 在不同机器结点执行 PolarDB HTAP
+
+### 启动结点
+
+执行前提，在编译通过且有 `./tmp_basedir_polardb_pg_1100_bld/` 、 `./tmp_replica_dir_polardb_pg_1100_bld1/` 和 `./tmp_replica_dir_polardb_pg_1100_bld2/` 目录的情况下可以通过如下的命令，在不同机器上启动对应的 replica 结点：
+
+```sql
+./tmp_basedir_polardb_pg_1100_bld/bin/pg_ctl -D ./tmp_replica_dir_polardb_pg_1100_bld1/ restart
+```
+
+### 查看只读结点的端口
+
+启动完两个只读结点后，可以通过 `ps -efww` 看两个只读结点的端口：
+
+```shell
+ 84622 pts/5    S      0:00 /home/postgres/tmp_basedir_polardb_pg_1100_bld/bin/postgres -D tmp_replica_dir_polardb_pg_1100_bld1
+ 84623 ?        Ss     0:00  \_ postgres(5433): logger  0
+ 84624 ?        Ss     0:00  \_ postgres(5433): logger  1
+ 84625 ?        Ss     0:00  \_ postgres(5433): logger  2
+ 84626 ?        Ss     0:00  \_ postgres(5433): startup  recovering 00000001000000
+ 84627 ?        Ss     0:00  \_ postgres(5433): polar worker process
+ 84628 ?        Ss     0:00  \_ postgres(5433): checkpointer
+ 84629 ?        Ss     0:00  \_ postgres(5433): background writer
+ 84630 ?        Ss     0:00  \_ postgres(5433): background logindex writer
+ 84631 ?        Ss     0:00  \_ postgres(5433): polar async ddl lock replay worker
+ 84632 ?        Ss     0:00  \_ postgres(5433): stats collector
+ 84845 ?        Ss     0:00  \_ postgres(5433): walreceiver  streaming 0/4079DA20,
+ 84594 pts/5    S      0:00 /home/postgres/tmp_basedir_polardb_pg_1100_bld/bin/postgres -D tmp_replica_dir_polardb_pg_1100_bld2
+ 84595 ?        Ss     0:00  \_ postgres(5432): logger  0
+ 84596 ?        Ss     0:00  \_ postgres(5432): logger  1
+ 84597 ?        Ss     0:00  \_ postgres(5432): logger  2
+```
+
+一个在 5433 ，一个在 5432 端口，这个也可以通过 `polardb_build.sh` 进行调整。
+
+### 测试不同结点连通性
+
+确认不同结点之间是连通的，可以通过下面的命令验证：
+
+```shell
+psql -h IP地址 -p 端口 -Upostgres postgres
+```
+
+对只读结点进行访问，如果访问不通，请检查防火墙等网络配置。
+
+### 主节点设置参数
+
+```sql
+-- 进入 psql
+alter system set polar_cluster_map=polar_cluster_map='node1|127.0.0.1|5433,node2|127.0.0.1|5434'; -- IP 换成机器对应 IP
+select pg_reload_conf();
+```
+
+### 测试
+
+```sql
+-- 以 TPC-H 为例，可以检查计划中是否有 PX
+explain select count(*) from customer;
+-- 执行
+select count(*) from customer;
+```
+
+### 常见的错误
+
+如果发现下面的错误，可以尝试修改每台机器的 `mtu` 为 9000 统一。
+![网络包发送错误](../imgs/70_tpch_error_picture.png)
