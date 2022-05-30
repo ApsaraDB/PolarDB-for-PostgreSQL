@@ -56,7 +56,6 @@ static void RelationSavedCacheInitialize(void);
 static void RelationSavedCacheInvalidate(void);
 static void RelationSavedCacheInvalidateEntry(Oid relationId);
 static void InvalidRelationSavedCache(Datum argument, Oid relationId);
-static void AdjustRelationCallback(XactEvent event, void *arg);
 static bool IsFDWDistributeTable(Oid relid);
 
 #define INITRELCACHESIZE        400
@@ -195,6 +194,8 @@ polarx_distributable_rangeTableEntry(RangeTblEntry *rangeTableEntry)
                 rangeTableEntry->relkind = RELKIND_RELATION;
                 return true;
             }
+            if(rangeTableEntry->inh)
+                return true;
         }
         
     }
@@ -282,7 +283,7 @@ AdjustRelationToForeignTable(List *tableList)
 {
     ListCell *lc = NULL;
 
-    if(!IS_PGXC_LOCAL_COORDINATOR)
+    if(!IS_PGXC_LOCAL_COORDINATOR || !(IsTransactionState()))
         return;
     foreach(lc, tableList)
     {
@@ -341,7 +342,7 @@ AdjustRelationToForeignTable(List *tableList)
 void
 AdjustRelationBackToTable(bool is_durable)
 {
-    if (RelationSavedCache == NULL)
+    if (RelationSavedCache == NULL || !(IsTransactionState()))
         return;
     if(need_setback)
     {
@@ -372,7 +373,7 @@ AdjustRelationBackToTable(bool is_durable)
 void
 AdjustRelationBackToForeignTable(void)
 {
-    if (RelationSavedCache == NULL)
+    if (RelationSavedCache == NULL || !(IsTransactionState()))
         return;
     if(need_setback)
     {
@@ -409,7 +410,6 @@ RelationSavedCacheInitialize(void)
         RelationSavedCache = hash_create("RelSavedInfo by OID", INITRELCACHESIZE,
                 &ctl, HASH_ELEM | HASH_BLOBS);
         CacheRegisterRelcacheCallback(InvalidRelationSavedCache, (Datum) 0);
-        RegisterXactCallback(AdjustRelationCallback, NULL);
     }
 }
 static TriggerDesc *
@@ -618,22 +618,5 @@ IsFDWDistributeTable(Oid relid)
             return true;
         default:
             return false;
-    }
-}
-
-static void
-AdjustRelationCallback(XactEvent event, void *arg)
-{
-    switch (event)
-    {
-        case XACT_EVENT_COMMIT:
-        case XACT_EVENT_PARALLEL_COMMIT:
-        case XACT_EVENT_ABORT:
-        case XACT_EVENT_PARALLEL_ABORT:
-        case XACT_EVENT_PREPARE:
-            AdjustRelationBackToTable(true);
-            break;
-        default:
-            break;
     }
 }

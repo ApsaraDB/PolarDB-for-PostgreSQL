@@ -551,7 +551,7 @@ RemoteQueryNext(RemoteQueryState *node)
 static TupleTableSlot *
 ExecRemoteQuery(PlanState *pstate)
 {
-    ResponseCombiner *combiner = castNode(ResponseCombiner, pstate);
+    ResponseCombiner *combiner = (ResponseCombiner *) pstate;
     /*
      * As there may be unshippable qual which we need to evaluate on CN,
      * We should call ExecScan to handle such cases.
@@ -806,6 +806,7 @@ void ExecRemoteUtility(RemoteQuery *node)
 
             if (conn->state == DN_CONNECTION_STATE_QUERY)
                 BufferConnection(conn);
+            conn->combiner = NULL;  
             if (pgxc_node_send_query(conn, node->sql_statement) != 0)
             {
                 ereport(ERROR,
@@ -823,7 +824,11 @@ void ExecRemoteUtility(RemoteQuery *node)
         /* Now send it to Coordinators if necessary */
         for (i = 0; i < co_conn_count; i++)
         {
-            if (pgxc_node_send_query(pgxc_connections->coord_handles[i], node->sql_statement) != 0)
+            PGXCNodeHandle *conn = pgxc_connections->coord_handles[i];
+            if (conn->state == DN_CONNECTION_STATE_QUERY)
+                BufferConnection(conn);
+            conn->combiner = NULL;
+            if (pgxc_node_send_query(conn, node->sql_statement) != 0)
             {
                 ereport(ERROR,
                         (errcode(ERRCODE_INTERNAL_ERROR),
@@ -969,6 +974,7 @@ void ExecCloseRemoteStatement(const char *stmt_name, List *nodelist)
     {
         if (connections[i]->state == DN_CONNECTION_STATE_QUERY)
             BufferConnection(connections[i]);
+        connections[i]->combiner = NULL;
         if (pgxc_node_send_close(connections[i], true, stmt_name) != 0)
         {
             /*
