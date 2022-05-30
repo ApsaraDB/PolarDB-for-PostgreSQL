@@ -21,6 +21,7 @@
 #include "catalog/pg_extension.h"
 #include "catalog/indexing.h"
 #include "commands/extension.h"
+#include "commands/dbcommands.h"
 #include "access/htup_details.h"
 #include "access/genam.h"
 #include "access/heapam.h"
@@ -32,6 +33,10 @@ typedef struct GlobalDataCacheData
     Oid polarxOwner;
     bool isPoolerStarted;
     bool polarxLoaded;
+    bool dbnameIsValid;
+    char dbname[NAMEDATALEN];
+    bool authuserIsValid;
+    char authusername[NAMEDATALEN];
 } GlobalDataCacheData;
 
 static HTAB *DistRelCacheHash = NULL;
@@ -101,7 +106,7 @@ polarxExtensionOwner(void)
     HeapTuple extTup;
     Datum   datum;
     bool    isnull;
-    Oid extOwner;
+    Oid extOwner = InvalidOid;
 
     if (GlobalDataCache.polarxOwner != InvalidOid)
     {
@@ -194,4 +199,40 @@ bool
 GetPoolerWorkerStartStatus(void)
 {
     return GlobalDataCache.isPoolerStarted;
+}
+
+char *
+GetDataBaseName(void)
+{
+    if (!GlobalDataCache.dbnameIsValid)
+    {
+        char *dbName = get_database_name(MyDatabaseId);
+        if (dbName == NULL)
+        {
+            return NULL;
+        }
+
+        strlcpy(GlobalDataCache.dbname, dbName, NAMEDATALEN);
+        GlobalDataCache.dbnameIsValid = true;
+    }
+
+    return GlobalDataCache.dbname;
+}
+
+char *
+GetAuthUserName(void)
+{
+    if (!GlobalDataCache.authuserIsValid)
+    {
+        char *auName = GetUserNameFromId(GetAuthenticatedUserId(), false);
+        if (auName == NULL)
+        {
+            return NULL;
+        }
+
+        strlcpy(GlobalDataCache.authusername, auName, NAMEDATALEN);
+        GlobalDataCache.authuserIsValid = true;
+    }
+
+    return GlobalDataCache.authusername;
 }

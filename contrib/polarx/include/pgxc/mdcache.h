@@ -29,6 +29,8 @@ extern Oid polarxExtensionOwner(void);
 extern bool IsPoolerWokerStarted(void);
 extern bool polarx_has_been_loaded(void);
 extern bool GetPoolerWorkerStartStatus(void);
+extern char *GetDataBaseName(void);
+extern char *GetAuthUserName(void);
 
 #endif
 

@@ -483,8 +483,10 @@ polarx_planner(Query *query, int cursorOptions, ParamListInfo boundParams)
         {
             if (!context.hasUndeterminedParams)
             {
+                AdjustRelationBackToTable(false);
                  /* see if can ship the query completely */
                 result = pgxc_FQS_planner(query, cursorOptions, boundParams);
+                AdjustRelationBackToForeignTable();
                 if(result != NULL)
                     return result;
             }

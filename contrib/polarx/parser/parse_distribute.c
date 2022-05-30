@@ -34,13 +34,16 @@ static void validDistColInColDef(char *dist_col, CreateStmt *stmt);
 List * 
 extractPolarxTableOption(List **defList)
 {
-    ListCell   *cell;
+    ListCell   *lc;
+    ListCell   *nextlc;
     List *res_tlist = NIL;
 
     
-    foreach(cell, *defList)
+    for (lc = list_head(*defList); lc != NULL; lc = nextlc)
     {
-        DefElem    *def = (DefElem *) lfirst(cell);
+        DefElem    *def = (DefElem *) lfirst(lc);
+
+        nextlc = lnext(lc);
 
         if (strcmp(def->defname, "dist_type") == 0 ||
                 strcmp(def->defname, "dist_col") == 0 ||
@@ -48,6 +51,7 @@ extractPolarxTableOption(List **defList)
         {
             res_tlist = lappend(res_tlist, def);
             *defList = list_delete_ptr(*defList, def);
+            continue;
         }
     }
     if(*defList == NULL)
@@ -589,7 +593,7 @@ validDistbyOnTableConstrants(DistributeBy *dist_by, List *colDefs, CreateStmt *s
 {
     ListCell   *cell;
 
-    Assert(dist_by != NULL colDefs != NIL);
+    Assert(dist_by != NULL);
     foreach(cell, colDefs)
     {
         Node       *element = lfirst(cell);

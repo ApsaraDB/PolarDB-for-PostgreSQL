@@ -1515,9 +1515,7 @@ PoolManagerReconnect(void)
     }
     
     handle = GetPoolManagerHandle();
-    PoolManagerConnect(handle,
-                       get_database_name(MyDatabaseId),
-                       GetUserNameFromId(GetUserId(), false),
+    PoolManagerConnect(handle, GetDataBaseName(), GetAuthUserName(),
                        session_options());
 
     RESUME_POOLER_RELOAD();
@@ -1630,9 +1628,8 @@ PoolManagerSetCommand(PGXCNodeHandle **connections, int32 count, PoolCommandType
     if (NULL == poolHandle)
     {
         handle = GetPoolManagerHandle();
-        PoolManagerConnect(handle, get_database_name(MyDatabaseId),
-                           GetUserNameFromId(GetAuthenticatedUserId(), false),
-                           session_options());
+        PoolManagerConnect(handle,GetDataBaseName(), GetAuthUserName(),
+                            session_options());
     }
 
     if (poolHandle)
@@ -1809,9 +1806,8 @@ PoolManagerLock(bool is_lock)
     if (poolHandle == NULL)
     {
         handle = GetPoolManagerHandle();
-        PoolManagerConnect(handle, get_database_name(MyDatabaseId),
-                           GetUserNameFromId(GetAuthenticatedUserId(), false),
-                           session_options());
+        PoolManagerConnect(handle, GetDataBaseName(), GetAuthUserName(),
+                             session_options());
     }
 
     /* Message type */
@@ -2062,8 +2058,7 @@ PoolManagerGetConnections(List *datanodelist, List *coordlist, int **pids)
     if (poolHandle == NULL)
     {
         handle = GetPoolManagerHandle();
-        PoolManagerConnect(handle, get_database_name(MyDatabaseId),
-                           GetUserNameFromId(GetAuthenticatedUserId(), false),
+        PoolManagerConnect(handle, GetDataBaseName(), GetAuthUserName(),
                            session_options());
     }
     
@@ -2169,8 +2164,7 @@ PoolManagerAbortTransactions(char *dbname, char *username, int **proc_pids)
     if (poolHandle == NULL)
     {
         handle = GetPoolManagerHandle();
-        PoolManagerConnect(handle, get_database_name(MyDatabaseId),
-                           GetUserNameFromId(GetAuthenticatedUserId(), false),
+        PoolManagerConnect(handle, GetDataBaseName(), GetAuthUserName(),
                            session_options());
     }
 
@@ -2227,8 +2221,7 @@ PoolManagerCleanConnection(List *datanodelist, List *coordlist, char *dbname, ch
     if (poolHandle == NULL)
     {
         handle = GetPoolManagerHandle();
-        PoolManagerConnect(handle, get_database_name(MyDatabaseId),
-                           GetUserNameFromId(GetAuthenticatedUserId(), false),
+        PoolManagerConnect(handle, GetDataBaseName(), GetAuthUserName(),
                            session_options());
     }
 
@@ -2314,8 +2307,7 @@ PoolManagerCheckConnectionInfo(void)
                 (errcode(ERRCODE_IO_ERROR),
                  errmsg("Can not connect to pool manager")));
         }
-        PoolManagerConnect(pool_handle, get_database_name(MyDatabaseId),
-                           GetUserNameFromId(GetAuthenticatedUserId(), false),
+        PoolManagerConnect(pool_handle, GetDataBaseName(), GetAuthUserName(),
                            session_options());
     }
     
@@ -4956,9 +4948,9 @@ release_connection(DatabasePool *dbPool, PGXCNodePoolSlot *slot,
         }
     }
     
+    now = time(NULL);
     if (!force_destroy)
     {
-        now = time(NULL);
         if (dbPool->bneed_warm)
         {
             /* warm a connection is a hard job, when release them, we need make sure it has worked long enough. */
@@ -10954,8 +10946,7 @@ PoolManagerClosePooledConnections(const char *dbname, const char *username)
     if (poolHandle == NULL)
     {
         handle = GetPoolManagerHandle();
-        PoolManagerConnect(handle, get_database_name(MyDatabaseId),
-                           GetUserNameFromId(GetAuthenticatedUserId(), false),
+        PoolManagerConnect(handle, GetDataBaseName(), GetAuthUserName(),
                            session_options());
     }
 
@@ -11330,8 +11321,7 @@ PoolManagerCatchupNodeInfo(void)
         PoolHandle *handle;
 
         handle = GetPoolManagerHandle();
-        PoolManagerConnect(handle, get_database_name(MyDatabaseId),
-                GetUserNameFromId(GetAuthenticatedUserId(), false),
+        PoolManagerConnect(handle, GetDataBaseName(), GetAuthUserName(),
                 session_options());
     }
 

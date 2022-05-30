@@ -292,7 +292,7 @@ extract_join_exprs(Node *node, extract_join_exprs_context *context)
 	if (IsA(node, JoinExpr))
 	{
 		JoinExpr *joinExpr = (JoinExpr *) node;
-        List *joinQuals;
+        List *joinQuals = NIL;
 
 		if (joinExpr->quals != NULL)
 		{
@@ -879,8 +879,8 @@ retry_pools:
     if ((rel_access == RELATION_ACCESS_INSERT || list_length(query->rtable) == 1)&&
              IsRelationDistributedByValue(rel_loc_info))
     {
-        ListCell *lc;
-        TargetEntry *tle;
+        ListCell *lc = NULL;
+        TargetEntry *tle = NULL;
         /*
          * If the INSERT is happening on a table distributed by value of a
          * column, find out the

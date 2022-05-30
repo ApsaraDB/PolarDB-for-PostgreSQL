@@ -198,8 +198,7 @@ transformExecDirect(ExecuteStmt *stmt, char **query_string)
 
     /* There is a single element here */
     nodetype = PGXC_NODE_NONE;
-    if(nodename)
-        nodeIndex = PGXCNodeGetNodeIdFromName(nodename, &nodetype);
+    nodeIndex = PGXCNodeGetNodeIdFromName(nodename, &nodetype);
     if (nodetype == PGXC_NODE_NONE)
         ereport(ERROR,
                 (errcode(ERRCODE_UNDEFINED_OBJECT),
