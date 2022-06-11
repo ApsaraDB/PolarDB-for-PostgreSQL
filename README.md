@@ -4,7 +4,7 @@
 
 # PolarDB for PostgreSQL
 
-**A cloud-native database service independently developed by Alibaba Cloud**
+**A cloud-native database developed by Alibaba Cloud**
 
 #### English | [简体中文](README-CN.md)
 
