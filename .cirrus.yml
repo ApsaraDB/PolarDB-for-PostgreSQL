@@ -1,11 +1,10 @@
 
 task:
-  # triggered when PR to 'POLARDB_11_STABLE' and 'POLARDB_11_DEV'
-  # and git push to 'POLARDB_11_DEV'
+  # triggered when PR to 'POLARDB_11_DEV'
+  # or direct push to 'POLARDB_11_DEV' or merge to 'POLARDB_11_STABLE'
   only_if: |
-    $CIRRUS_BASE_BRANCH == 'POLARDB_11_STABLE' ||
-    $CIRRUS_BASE_BRANCH == 'POLARDB_11_DEV' ||
-    $CIRRUS_BRANCH == 'POLARDB_11_DEV'
+    ($CIRRUS_PR != '' && $CIRRUS_BASE_BRANCH == 'POLARDB_11_DEV') ||
+    ($CIRRUS_PR == '' && ($CIRRUS_BRANCH == 'POLARDB_11_DEV' || $CIRRUS_BRANCH == 'POLARDB_11_STABLE'))
   # triggered when the changes are included in:
   skip: |
     !changesInclude(
