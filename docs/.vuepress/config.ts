@@ -27,9 +27,7 @@ export default defineUserConfig({
   theme: defaultTheme({
     logo: "/images/polardb.png",
     repo: "ApsaraDB/PolarDB-for-PostgreSQL",
-
-    // whether to enable light/dark mode
-    darkMode: false,
+    colorMode: "light",
 
     locales: {
       "/": {
