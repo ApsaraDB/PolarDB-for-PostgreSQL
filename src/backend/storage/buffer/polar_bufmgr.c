@@ -1382,7 +1382,7 @@ repeat_read:
 			 * This judge is *ONLY* valid in replica mode, so we set
 			 * replica check above with polar_in_replica_mode().
 			 */
-			polar_apply_io_locked_page(bufHdr, __replay_from, checkpoint_redo_lsn, smgr, forkNum, blockNum);
+			polar_apply_io_locked_page(bufHdr, __replay_from, checkpoint_redo_lsn);
 		}
 		else if (redo_action == POLAR_REDO_MARK_OUTDATE)
 		{

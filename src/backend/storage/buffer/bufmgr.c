@@ -211,7 +211,7 @@ static PrivateRefCountEntry *GetPrivateRefCountEntry(Buffer buffer, bool do_move
 static inline int32 GetPrivateRefCount(Buffer buffer);
 static void ForgetPrivateRefCountEntry(PrivateRefCountEntry *ref);
 
-static bool polar_apply_io_locked_page(BufferDesc *bufHdr, XLogRecPtr replay_from, XLogRecPtr checkpoint_lsn, SMgrRelation smgr, ForkNumber forkNum, BlockNumber blockNum);
+static bool polar_apply_io_locked_page(BufferDesc *bufHdr, XLogRecPtr replay_from, XLogRecPtr checkpoint_lsn);
 static polar_redo_action polar_require_backend_redo(bool local_buf, ReadBufferMode mode, ForkNumber fork_num, XLogRecPtr *replay_from);
 static polar_checksum_err_action polar_handle_read_error_block(Block bufBlock, SMgrRelation smgr, ForkNumber forkNum, BlockNumber blockNum, ReadBufferMode mode, polar_redo_action redo_action, int *repeat_read_times, BufferDesc *buf_desc);
 
@@ -1022,7 +1022,7 @@ repeat_read:
 			 * This judge is *ONLY* valid in replica mode, so we set
 			 * replica check above with polar_in_replica_mode().
 			 */
-			polar_apply_io_locked_page(bufHdr, replay_from, checkpoint_redo_lsn, smgr, forkNum, blockNum);
+			polar_apply_io_locked_page(bufHdr, replay_from, checkpoint_redo_lsn);
 
 			POLAR_RESET_BACKEND_READ_MIN_LSN();
 		}
@@ -4812,7 +4812,7 @@ TestForOldSnapshot_impl(Snapshot snapshot, Relation relation)
 
 /* POLAR: Replay buffer with io lock. Return true if page lsn changed after replay */
 static bool
-polar_apply_io_locked_page(BufferDesc *bufHdr, XLogRecPtr replay_from, XLogRecPtr checkpoint_redo_lsn, SMgrRelation smgr, ForkNumber forkNum, BlockNumber blockNum)
+polar_apply_io_locked_page(BufferDesc *bufHdr, XLogRecPtr replay_from, XLogRecPtr checkpoint_redo_lsn)
 {
 	/*
 	 * POLAR: It's better to use AmStartupProcess() than InRecovery to avoid
