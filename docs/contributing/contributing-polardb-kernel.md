@@ -39,12 +39,13 @@ On GitHub repository of [PolarDB for PostgreSQL](https://github.com/ApsaraDB/Pol
 git clone https://github.com/<your-github>/PolarDB-for-PostgreSQL.git
 ```
 
-### Create a dev Branch
+### Create a Local Development Branch
 
-Suppose you name your branch as `dev`:
+Check out a new development branch from the stable development branch `POLARDB_11_DEV`. Suppose your branch is named as `dev`:
 
 ```bash
-git checkout -b test-github
+git checkout POLARDB_11_DEV
+git checkout -b dev
 ```
 
 ### Make Changes and Commit Locally
@@ -69,11 +70,11 @@ Then, rebase your development branch to the stable development branch, and resol
 ```bash
 git checkout dev
 git rebase POLARDB_11_DEV
--- resolve conflict, compile and test --
-git push origin dev
+-- resolve conflict --
+git push -f dev
 ```
 
-### Create a PR
+### Create a Pull Request
 
 Click **New pull request** or **Compare & pull request** button, choose to compare branches `ApsaraDB/PolarDB-for-PostgreSQL:POLARDB_11_DEV` and `<your-github>/PolarDB-for-PostgreSQL:dev`, and write PR description.
 

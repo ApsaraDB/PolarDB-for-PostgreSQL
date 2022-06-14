@@ -35,11 +35,12 @@ PolarDB for PostgreSQL 基于 PostgreSQL 和其它开源项目进行开发，我
 git clone https://github.com/<your-github>/PolarDB-for-PostgreSQL.git
 ```
 
-### 在本地创建一个开发分支
+### 创建本地开发分支
 
-假设这个分支名为 `dev`：
+从稳定开发分支 `POLARDB_11_DEV` 上检出一个新的开发分支，假设这个分支名为 `dev`：
 
 ```bash
+git checkout POLARDB_11_DEV
 git checkout -b dev
 ```
 
@@ -66,7 +67,7 @@ git pull
 git checkout dev
 git rebase POLARDB_11_DEV
 -- 解决冲突 --
-git push origin dev
+git push -f dev
 ```
 
 ### 创建 Pull Request
