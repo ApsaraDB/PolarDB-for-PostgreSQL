@@ -17,11 +17,24 @@ docker run -it \
 
 PFS 的手动编译安装方式请参考 PFS 的 [README](https://github.com/ApsaraDB/polardb-file-system/blob/master/Readme-CN.md)，此处不再赘述。
 
-## 块设备重命名（可选）
+## 块设备重命名
 
-PFS 仅支持访问 **以特定字符开头的块设备**，因此我们建议在所有访问块设备的节点上，通过软链接使用相同的名字访问共享块设备，例如 `nvme1n1`。
+PFS 仅支持访问 **以特定字符开头的块设备**（详情可见 [PolarDB File System](https://github.com/ApsaraDB/PolarDB-FileSystem) 源代码的 [`src/pfs_core/pfs_api.h`](https://github.com/ApsaraDB/PolarDB-FileSystem/blob/master/src/pfs_core/pfs_api.h) 文件）：
 
-例如，在 NBD 服务端主机上，使用新的块设备名 `/dev/nvme1n1` 软链到共享存储块设备的原有名称 `/dev/vdb` 上：
+```c
+#define PFS_PATH_ISVALID(path)                                  \
+    (path != NULL &&                                            \
+     ((path[0] == '/' && isdigit((path)[1])) || path[0] == '.'  \
+      || strncmp(path, "/pangu-", 7) == 0                       \
+      || strncmp(path, "/sd", 3) == 0                           \
+      || strncmp(path, "/sf", 3) == 0                           \
+      || strncmp(path, "/vd", 3) == 0                           \
+      || strncmp(path, "/nvme", 5) == 0                         \
+      || strncmp(path, "/loop", 5) == 0                         \
+      || strncmp(path, "/mapper_", 8) ==0))
+```
+
+因此，为了保证能够顺畅完成后续流程，我们建议在所有访问块设备的节点上使用相同的软链接访问共享块设备。例如，在 NBD 服务端主机上，使用新的块设备名 `/dev/nvme1n1` 软链接到共享存储块设备的原有名称 `/dev/vdb` 上：
 
 ```bash:no-line-numbers
 ln -s /dev/vdb /dev/nvme1n1
@@ -33,7 +46,7 @@ ln -s /dev/vdb /dev/nvme1n1
 ln -s /dev/nbd0 /dev/nvme1n1
 ```
 
-如此，便可以在服务端和客户端 2 台主机上使用相同的块设备名 `/dev/nvme1n1` 来访问同一个块设备。
+这样便可以在服务端和客户端两台主机上使用相同的块设备名 `/dev/nvme1n1` 访问同一个块设备。
 
 ## 块设备格式化
 
@@ -45,7 +58,7 @@ sudo pfs -C disk mkfs nvme1n1
 
 ## PFS 文件系统挂载
 
-在能够访问共享存储的 **所有主机节点** 上，分别启动 PFS 守护进程并挂载 PFS 文件系统：
+在能够访问共享存储的 **所有主机节点** 上分别启动 PFS 守护进程并挂载 PFS 文件系统：
 
 ```bash:no-line-numbers
 sudo /usr/local/polarstore/pfsd/bin/start_pfsd.sh -p nvme1n1
