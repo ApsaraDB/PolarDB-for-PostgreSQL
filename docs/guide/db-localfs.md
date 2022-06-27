@@ -37,15 +37,37 @@ git clone -b POLARDB_11_STABLE https://gitee.com/mirrors/PolarDB-for-PostgreSQL
 
 代码克隆完毕后，进入源码目录：
 
-```bash
+```bash:no-line-numbers
 cd PolarDB-for-PostgreSQL/
 ```
 
-## PolarDB 各集群形态编译部署
+## 编译测试选项说明
+
+以下表格列出了编译、初始化或测试 PolarDB 集群所可能使用到的选项及说明。更多选项及其说明详见源码目录下的 `polardb_build.sh` 脚本。
+
+| 选项                         | 描述                                                                         | 默认值 |
+| ---------------------------- | ---------------------------------------------------------------------------- | ------ |
+| `--withrep`                  | 是否初始化只读节点                                                           | `NO`   |
+| `--repnum`                   | 只读节点数量                                                                 | `1`    |
+| `--withstandby`              | 是否初始化热备份节点                                                         | `NO`   |
+| `--initpx`                   | 是否初始化为 HTAP 集群（1 个读写节点，2 个只读节点）                         | `NO`   |
+| `--with-pfsd`                | 是否编译 PolarDB File System（PFS）相关功能                                  | `NO`   |
+| `--with-tde`                 | 是否初始化 [透明数据加密（TDE）](https://zhuanlan.zhihu.com/p/84829027) 功能 | `NO`   |
+| `--with-dma`                 | 是否初始化为 DMA（Data Max Availability）高可用三节点集群                    | `NO`   |
+| `-r`/ `-t` / <br>`--regress` | 在编译安装完毕后运行内核回归测试                                             | `NO`   |
+| `-r-px`                      | 运行 HTAP 实例的回归测试                                                     | `NO`   |
+| `-e` /<br>`--extension`      | 运行扩展插件测试                                                             | `NO`   |
+| `-r-external`                | 测试 `external/` 下的扩展插件                                                | `NO`   |
+| `-r-contrib`                 | 测试 `contrib/` 下的扩展插件                                                 | `NO`   |
+| `-r-pl`                      | 测试 `src/pl/` 下的扩展插件                                                  | `NO`   |
+
+如无定制的需求，则可以按照下面给出的选项编译部署不同形态的 PolarDB 集群并进行测试。
+
+## PolarDB 各形态编译部署
 
 ### 本地单节点实例
 
-- 1 个主节点（运行于 `5432` 端口）
+- 1 个读写节点（运行于 `5432` 端口）
 
 ```bash:no-line-numbers
 ./polardb_build.sh
@@ -53,7 +75,7 @@ cd PolarDB-for-PostgreSQL/
 
 ### 本地多节点实例
 
-- 1 个主节点（运行于 `5432` 端口）
+- 1 个读写节点（运行于 `5432` 端口）
 - 1 个只读节点（运行于 `5433` 端口）
 
 ```bash:no-line-numbers
@@ -62,7 +84,7 @@ cd PolarDB-for-PostgreSQL/
 
 ### 本地多节点带备库实例
 
-- 1 个主节点（运行于 `5432` 端口）
+- 1 个读写节点（运行于 `5432` 端口）
 - 1 个只读节点（运行于 `5433` 端口）
 - 1 个备库节点（运行于 `5434` 端口）
 
@@ -72,19 +94,19 @@ cd PolarDB-for-PostgreSQL/
 
 ### 本地多节点 HTAP 实例
 
-- 1 个主节点（运行于 `5432` 端口）
+- 1 个读写节点（运行于 `5432` 端口）
 - 2 个只读节点（运行于 `5433` / `5434` 端口）
 
 ```bash:no-line-numbers
 ./polardb_build.sh --initpx
 ```
 
-### 实例回归测试
+## 实例回归测试
 
 普通实例回归测试：
 
 ```bash:no-line-numbers
-./polardb_build.sh -r -e -r-external -r-contrib -r-pl --withrep --with-tde
+./polardb_build.sh --withrep -r -e -r-external -r-contrib -r-pl --with-tde
 ```
 
 HTAP 实例回归测试：
