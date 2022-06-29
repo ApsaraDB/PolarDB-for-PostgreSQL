@@ -27,6 +27,10 @@ export const zh: SidebarConfig = {
               text: "三、编译部署 PolarDB 内核",
               children: ["/zh/guide/db-localfs.md", "/zh/guide/db-pfs.md"],
             },
+            {
+              text: "四、 PolarDB 备份恢复",
+              children: ["/zh/guide/backup-and-restore.md"],
+            },
           ],
         },
         "/zh/guide/customize-dev-env.md",
