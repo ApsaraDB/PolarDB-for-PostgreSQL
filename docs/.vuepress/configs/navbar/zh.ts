@@ -26,7 +26,8 @@ export const zh: NavbarConfig = [
       {
         text: "更多",
         children: [
-          "/zh/guide/customize-dev-env.md",
+          "/zh/guide/backup-and-restore.html",
+          "/zh/guide/customize-dev-env.html",
           "/zh/guide/deploy-more.html",
         ],
       },
