@@ -25,7 +25,11 @@ export const en: NavbarConfig = [
       },
       {
         text: "更多",
-        children: ["/guide/customize-dev-env.md", "/guide/deploy-more.html"],
+        children: [
+          "/guide/backup-and-restore.html",
+          "/guide/customize-dev-env.html",
+          "/guide/deploy-more.html",
+        ],
       },
       {
         text: "特性体验",
