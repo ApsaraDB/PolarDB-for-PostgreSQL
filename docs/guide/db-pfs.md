@@ -27,15 +27,15 @@ git clone -b POLARDB_11_STABLE https://gitee.com/mirrors/PolarDB-for-PostgreSQL
 
 代码克隆完毕后，进入源码目录：
 
-```bash
+```bash:no-line-numbers
 cd PolarDB-for-PostgreSQL/
 ```
 
 ## 编译部署 PolarDB
 
-### 主节点部署
+### 读写节点部署
 
-在主节点上，使用 `--with-pfsd` 选项编译 PolarDB 内核。
+在读写节点上，使用 `--with-pfsd` 选项编译 PolarDB 内核。请参考 [编译测试选项说明](./db-localfs.md#编译测试选项说明) 查看更多编译选项的说明。
 
 ```bash:no-line-numbers
 ./polardb_build.sh --with-pfsd
@@ -70,7 +70,7 @@ sudo $HOME/tmp_basedir_polardb_pg_1100_bld/bin/polar-initdb.sh \
     $HOME/primary/ /nvme1n1/shared_data/
 ```
 
-编辑主节点的配置。打开 `$HOME/primary/postgresql.conf`，增加配置项：
+编辑读写节点的配置。打开 `$HOME/primary/postgresql.conf`，增加配置项：
 
 ```ini
 port=5432
@@ -91,17 +91,17 @@ synchronous_standby_names='replica1'
 
 打开 `$HOME/primary/pg_hba.conf`，增加以下配置项：
 
-```ini
+```ini:no-line-numbers
 host	replication	postgres	0.0.0.0/0	trust
 ```
 
-最后，启动主节点：
+最后，启动读写节点：
 
 ```bash:no-line-numbers
 $HOME/tmp_basedir_polardb_pg_1100_bld/bin/pg_ctl start -D $HOME/primary
 ```
 
-检查主节点能否正常运行：
+检查读写节点能否正常运行：
 
 ```bash:no-line-numbers
 $HOME/tmp_basedir_polardb_pg_1100_bld/bin/psql \
@@ -114,7 +114,7 @@ $HOME/tmp_basedir_polardb_pg_1100_bld/bin/psql \
 (1 row)
 ```
 
-在主节点上，为对应的只读节点创建相应的 replication slot，用于只读节点的物理流复制：
+在读写节点上，为对应的只读节点创建相应的 replication slot，用于只读节点的物理流复制：
 
 ```bash:no-line-numbers
 $HOME/tmp_basedir_polardb_pg_1100_bld/bin/psql \
@@ -175,14 +175,14 @@ max_connections=1000
 创建 `$HOME/replica1/recovery.conf`，增加以下配置项：
 
 ::: warning
-请在下面替换主节点（容器）所在的 IP 地址。
+请在下面替换读写节点（容器）所在的 IP 地址。
 :::
 
 ```ini
 polar_replica='on'
 recovery_target_timeline='latest'
 primary_slot_name='replica1'
-primary_conninfo='host=[主节点所在IP] port=5432 user=postgres dbname=postgres application_name=replica1'
+primary_conninfo='host=[读写节点所在IP] port=5432 user=postgres dbname=postgres application_name=replica1'
 ```
 
 最后，启动只读节点：
@@ -206,9 +206,9 @@ $HOME/tmp_basedir_polardb_pg_1100_bld/bin/psql \
 
 ### 集群检查和测试
 
-部署完成后，需要进行实例检查和测试，确保主节点可正常写入数据、只读节点可以正常读取。
+部署完成后，需要进行实例检查和测试，确保读写节点可正常写入数据、只读节点可以正常读取。
 
-登录 **主节点**，创建测试表并插入样例数据：
+登录 **读写节点**，创建测试表并插入样例数据：
 
 ```bash:no-line-numbers
 $HOME/tmp_basedir_polardb_pg_1100_bld/bin/psql -q \
@@ -232,4 +232,4 @@ $HOME/tmp_basedir_polardb_pg_1100_bld/bin/psql -q \
 (3 rows)
 ```
 
-在主节点上插入的数据对只读节点可见。
+在读写节点上插入的数据对只读节点可见。
