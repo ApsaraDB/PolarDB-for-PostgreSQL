@@ -29,6 +29,7 @@ export const en: SidebarConfig = {
             },
           ],
         },
+        "/guide/backup-and-restore.md",
         "/guide/customize-dev-env.md",
         "/guide/deploy-more.md",
         {

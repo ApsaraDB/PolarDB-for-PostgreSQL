@@ -29,6 +29,7 @@ export const zh: SidebarConfig = {
             },
           ],
         },
+        "/zh/guide/backup-and-restore.md",
         "/zh/guide/customize-dev-env.md",
         "/zh/guide/deploy-more.md",
         {
