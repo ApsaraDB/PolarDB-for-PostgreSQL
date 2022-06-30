@@ -32,8 +32,8 @@ export const en: NavbarConfig = [
         ],
       },
       {
-        text: "特性体验",
-        children: ["/guide/tpch-on-px.html"],
+        text: "性能测试",
+        children: ["/guide/tpch-on-px.html", "/zh/guide/tpcc-test.html"],
       },
     ],
   },
