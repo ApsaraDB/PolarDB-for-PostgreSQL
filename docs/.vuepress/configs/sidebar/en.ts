@@ -33,8 +33,8 @@ export const en: SidebarConfig = {
         "/guide/customize-dev-env.md",
         "/guide/deploy-more.md",
         {
-          text: "特性体验",
-          children: ["/guide/tpch-on-px.md"],
+          text: "性能测试",
+          children: ["/guide/tpch-on-px.md", "/guide/tpcc-test.md"],
         },
       ],
     },
