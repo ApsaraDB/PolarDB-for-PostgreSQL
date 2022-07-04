@@ -1,59 +1,84 @@
 import type { SidebarConfig } from "@vuepress/theme-default";
 
 export const zh: SidebarConfig = {
-  "/zh/guide/": [
+  "/zh/deploying": [
     {
-      text: "入门指南",
+      text: "部署指南",
       children: [
-        "/zh/guide/quick-start.md",
-        "/zh/guide/introduction.md",
+        "/zh/deploying/introduction.md",
+        "/zh/deploying/quick-start.md",
         {
           text: "进阶部署",
-          link: "/zh/guide/deploy.md",
+          link: "/zh/deploying/deploy.md",
           children: [
             {
-              text: "一、准备块存储设备",
+              text: "存储设备的准备",
               children: [
-                "/zh/guide/storage-aliyun-essd.md",
-                "/zh/guide/storage-ceph.md",
-                "/zh/guide/storage-nbd.md",
+                "/zh/deploying/storage-aliyun-essd.md",
+                "/zh/deploying/storage-ceph.md",
+                "/zh/deploying/storage-nbd.md",
               ],
             },
             {
-              text: "二、准备文件系统",
-              children: ["/zh/guide/fs-pfs.md"],
+              text: "文件系统的准备",
+              children: ["/zh/deploying/fs-pfs.md"],
             },
             {
-              text: "三、编译部署 PolarDB 内核",
-              children: ["/zh/guide/db-localfs.md", "/zh/guide/db-pfs.md"],
+              text: "编译部署 PolarDB 内核",
+              children: [
+                "/zh/deploying/db-localfs.md",
+                "/zh/deploying/db-pfs.md",
+              ],
             },
           ],
         },
-        "/zh/guide/backup-and-restore.md",
-        "/zh/guide/customize-dev-env.md",
-        "/zh/guide/deploy-more.md",
+      ],
+    },
+  ],
+  "/zh/operation/": [
+    {
+      text: "使用与运维",
+      children: [
+        {
+          text: "日常运维",
+          children: ["/zh/operation/backup-and-restore.md"],
+        },
         {
           text: "性能测试",
-          children: ["/zh/guide/tpch-on-px.md", "/zh/guide/tpcc-test.md"],
+          children: ["/zh/operation/tpcc-test.md"],
         },
       ],
     },
   ],
-  "/zh/architecture/": [
+  "/zh/features": [
     {
-      text: "架构解读",
+      text: "特性实践",
       children: [
-        "/zh/architecture/README.md",
-        "/zh/architecture/buffer-management.md",
-        "/zh/architecture/ddl-synchronization.md",
-        "/zh/architecture/logindex.md",
+        {
+          text: "HTAP",
+          children: ["/zh/features/tpch-on-px.md"],
+        },
       ],
     },
   ],
-  "/zh/roadmap/": [
+  "/zh/theory/": [
     {
-      text: "版本规划",
-      children: ["/zh/roadmap/README.md"],
+      text: "原理解读",
+      children: [
+        "/zh/theory/arch-overview.md",
+        "/zh/theory/buffer-management.md",
+        "/zh/theory/ddl-synchronization.md",
+        "/zh/theory/logindex.md",
+      ],
+    },
+  ],
+  "/zh/development/": [
+    {
+      text: "上手开发",
+      children: [
+        "/zh/development/dev-on-docker.md",
+        "/zh/development/customize-dev-env.md",
+      ],
     },
   ],
   "/zh/contributing": [

@@ -2,86 +2,115 @@ import type { NavbarConfig } from "@vuepress/theme-default";
 
 export const en: NavbarConfig = [
   {
-    text: "Guide",
+    text: "Deployment",
     children: [
-      "/guide/quick-start.html",
-      "/guide/introduction.html",
-      "/guide/deploy.html",
+      "/deploying/introduction.html",
+      "/deploying/quick-start.html",
+      "/deploying/deploy.html",
       {
-        text: "准备块存储设备",
+        text: "Preparation of Storage Device",
         children: [
-          "/guide/storage-ceph.html",
-          "/guide/storage-aliyun-essd.html",
-          "/guide/storage-nbd.html",
+          "/deploying/storage-aliyun-essd.html",
+          "/deploying/storage-ceph.html",
+          "/deploying/storage-nbd.html",
         ],
       },
       {
-        text: "准备文件系统",
-        children: ["/guide/fs-pfs.html"],
+        text: "Preparation of File System",
+        children: ["/deploying/fs-pfs.html"],
       },
       {
-        text: "编译部署 PolarDB 内核",
-        children: ["/guide/db-localfs.html", "/guide/db-pfs.html"],
+        text: "Building PolarDB Kernel",
+        children: ["/deploying/db-localfs.html", "/deploying/db-pfs.html"],
       },
       {
-        text: "更多",
+        text: "More about Deploying",
         children: [
-          "/guide/backup-and-restore.html",
-          "/guide/customize-dev-env.html",
-          "/guide/deploy-more.html",
+          "/deploying/deploy-stack.html",
+          "/deploying/deploy-official.html",
         ],
-      },
-      {
-        text: "性能测试",
-        children: ["/guide/tpch-on-px.html", "/guide/tpcc-test.html"],
       },
     ],
   },
   {
-    text: "Architecture",
-    link: "/architecture/",
+    text: "Ops",
+    link: "/operation/",
     children: [
       {
-        text: "Overview",
-        link: "/architecture/",
+        text: "Daily Ops",
+        children: ["/operation/backup-and-restore.html"],
+      },
+      {
+        text: "Benchmarks",
+        children: ["/operation/tpcc-test.html"],
+      },
+    ],
+  },
+  {
+    text: "Features",
+    link: "/zh/features/",
+    children: [
+      {
+        text: "HTAP",
+        children: ["/zh/features/tpch-on-px.html"],
+      },
+    ],
+  },
+  {
+    text: "Theory",
+    link: "/theory/",
+    children: [
+      {
+        text: "Architecture Overview",
+        link: "/theory/arch-overview.html",
       },
       {
         text: "Buffer Management",
-        link: "/architecture/buffer-management.html",
+        link: "/theory/buffer-management.html",
       },
       {
         text: "DDL Synchronization",
-        link: "/architecture/ddl-synchronization.html",
+        link: "/theory/ddl-synchronization.html",
       },
       {
         text: "LogIndex",
-        link: "/architecture/logindex.html",
+        link: "/theory/logindex.html",
       },
     ],
   },
   {
-    text: "Roadmap",
-    link: "/roadmap/",
+    text: "Dev",
+    link: "/development/",
+    children: [
+      {
+        text: "Development on Docker",
+        link: "/development/dev-on-docker.md",
+      },
+      {
+        text: "Customize Development Environment",
+        link: "/development/customize-dev-env.md",
+      },
+    ],
   },
   {
-    text: "Community",
+    text: "Contributing",
     link: "/contributing/",
     children: [
       {
-        text: "Code Contributing",
-        link: "/contributing/contributing-polardb-kernel.html",
+        text: "Code of Conduct",
+        link: "/contributing/code-of-conduct.html",
       },
       {
-        text: "Docs Contributing",
+        text: "Contributing Docs",
         link: "/contributing/contributing-polardb-docs.html",
+      },
+      {
+        text: "Contributing Code",
+        link: "/contributing/contributing-polardb-kernel.html",
       },
       {
         text: "Coding Style",
         link: "/contributing/coding-style.html",
-      },
-      {
-        text: "Code of Conduct",
-        link: "/contributing/code-of-conduct.html",
       },
     ],
   },

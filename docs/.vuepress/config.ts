@@ -14,13 +14,12 @@ export default defineUserConfig({
     "/": {
       lang: "en-US",
       title: "PolarDB for PostgreSQL",
-      description:
-        "A cloud-native database service independently developed by Alibaba Cloud",
+      description: "A cloud-native database developed by Alibaba Cloud",
     },
     "/zh/": {
       lang: "zh-CN",
       title: "PolarDB for PostgreSQL",
-      description: "阿里云自主研发的云原生数据库产品",
+      description: "阿里云自主研发的云原生数据库",
     },
   },
 

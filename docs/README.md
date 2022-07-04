@@ -2,24 +2,12 @@
 home: true
 title: Documentation
 heroImage: /images/polardb.png
-actions:
-  - text: Getting Started
-    link: /guide/quick-start.html
-    type: primary
-  - text: Architecture Introduction
-    link: /architecture/
-    type: secondary
-features:
-  - title: Flexible Scalability
-    details: Scale out compute/storage clusters on demand.
-  - title: Millisecond-level Latency
-    details: Lazy/parallel replay via shared-storage-based WAL and LogIndex.
-  - title: HTAP
-    details: Shared-storage-based massively parallel processing (MPP) framework.
 footer: Apache 2.0 Licensed | Copyright © Alibaba Group, Inc.
 ---
 
-### Use with Docker
+---
+
+### Quick Start with Docker
 
 Pull the [instance image](https://hub.docker.com/r/polardb/polardb_pg_local_instance/tags) of PolarDB for PostgreSQL based on local storage. Create, run and enter the container, and use PolarDB instance directly:
 
@@ -75,29 +63,59 @@ psql -h 127.0.0.1 -c 'select version();'
 :::
 ::::
 
-### Develop with Docker
+<div class="features">
 
-Pull the [development image](https://hub.docker.com/r/polardb/polardb_pg_devel/tags) of PolarDB for PostgreSQL from DockerHub. Create, run and enter the container:
+  <div class="feature" style="position: relative;z-index: 10;">
+    <h3>Deployment</h3>
+    <ul>
+      <li><a href="./deploying/introduction.html">Architecture Introduction</a></li>
+      <li><a href="./deploying/quick-start.html">Quick Deployment</a></li>
+      <li><a href="./deploying/deploy.html">Advanced Deployment</a></li>
+      <li><a href="./deploying/deploy-stack.html">More</a></li>
+    </ul>
+  </div>
 
-```bash
-# pull the development image of PolarDB
-docker pull polardb/polardb_pg_devel
-# create, run and enter the container
-docker run -it --cap-add=SYS_PTRACE --privileged=true --name polardb_pg_devel polardb/polardb_pg_devel bash
-```
+  <div class="feature" style="position: relative;z-index: 10;">
+    <h3>Operation and Maintenance</h3>
+    <ul>
+      <li><a href="./operation/backup-and-restore.html">Backup and Recovery</a></li>
+      <li><a href="./operation/tpcc-test.html">TPC-C Benchmarking</a></li>
+    </ul>
+  </div>
 
-After entering the container, clone the latest stable code from GitHub, build and deploy the simplest PolarDB instance and check:
+  <div class="feature" style="position: relative;z-index: 10;">
+    <h3>Feature Practice</h3>
+    <ul>
+      <li><a href="./features/tpch-on-px.html">Accelerate TPC-H with PolarDB HTAP</a></li>
+    </ul>
+  </div>
 
-```bash
-# code fetching
-git clone -b POLARDB_11_STABLE https://github.com/ApsaraDB/PolarDB-for-PostgreSQL.git
-cd PolarDB-for-PostgreSQL
-# build and deploy
-./polardb_build.sh
-# check
-psql -h 127.0.0.1 -c 'select version();'
-            version
---------------------------------
- PostgreSQL 11.9 (POLARDB 11.9)
-(1 row)
-```
+  <div class="feature" style="position: relative;z-index: 10;">
+    <h3>Theory</h3>
+    <ul>
+      <li><a href="./theory/arch-overview.html">Feature Overview</a></li>
+      <li><a href="./theory/buffer-management.html">Buffer Management</a></li>
+      <li><a href="./theory/ddl-synchronization.html">DDL Synchronization</a></li>
+      <li><a href="./theory/logindex.html">LogIndex</a></li>
+    </ul>
+  </div>
+
+  <div class="feature" style="position: relative;z-index: 10;">
+    <h3>Development</h3>
+    <ul>
+      <li><a href="./development/dev-on-docker.html">Developing on Docker</a></li>
+      <li><a href="./development/customize-dev-env.html">Custom Development Environment</a></li>
+    </ul>
+  </div>
+
+  <div class="feature" style="position: relative;z-index: 10;">
+    <h3>Contributing</h3>
+    <ul>
+      <li><a href="./contributing/code-of-conduct.html">Code of Conduct</a></li>
+      <li><a href="./contributing/contributing-polardb-docs.html">Contributing Documentation</a></li>
+      <li><a href="./contributing/contributing-polardb-kernel.html">Contributing Code</a></li>
+      <li><a href="./contributing/coding-style">Coding Style</a></li>
+    </ul>
+  </div>
+
+</div>

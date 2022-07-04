@@ -9,7 +9,7 @@ PolarDB 是基于共享存储的存算分离架构，因此 PolarDB 的备份恢
 5. PolarDB 搭建 Standby
 6. PolarDB 按时间点恢复
 
-前置条件是先准备一个 PolarDB 实例，可以参考文档 [搭建 PolarDB](./deploy.md)。
+前置条件是先准备一个 PolarDB 实例，可以参考文档 [搭建 PolarDB](../deploying/deploy.md)。
 
 ## 备份恢复原理
 
@@ -223,7 +223,7 @@ Connection options:
 
 ### 使用 initdb 来搭建 RO
 
-主要步骤是使用 initdb 初始化 RO 的 Local Dir 目录，然后修改配置文件，启动实例。具体请参考 [只读节点部署](./db-pfs.md#只读节点部署)。
+主要步骤是使用 `initdb` 初始化 RO 的本地存储目录，然后修改配置文件，启动实例。具体请参考 [只读节点部署](../deploying/db-pfs.md#只读节点部署)。
 
 ### 备份 RW 的本地存储目录来搭建 RO
 
@@ -303,7 +303,7 @@ polar_basebackup --host=[主节点所在IP] --port=5432 -D /home/postgres/standb
 ![undefined](https://intranetproxy.alipay.com/skylark/lark/0/2022/png/135683/1656315576998-2aaeff3e-4341-46df-bce1-eb211ea4c605.png)
 
 ::: tip
-注意：这里是构建共享存储的 Standby，首先您需要找一台机器部署好 PolarDB 及其文件系统 PolarFS，且已经搭建好了共享存储`nvme0n2`, 具体操作请参考 [准备块设备与搭建文件系统](./deploy.md)
+注意：这里是构建共享存储的 Standby，首先您需要找一台机器部署好 PolarDB 及其文件系统 PolarFS，且已经搭建好了共享存储`nvme0n2`, 具体操作请参考 [准备块设备与搭建文件系统](../deploying/deploy.md)
 :::
 
 备份完成后如下图所示：
@@ -359,7 +359,7 @@ psql --host=[主节点所在IP]  --port=5432 -d postgres -c 'SELECT * FROM pg_cr
 
 ### 修改 Standby 本地目录配置
 
-在 Standby 的 Local Dir 中 `recovery.conf` 文件中增加如下参数：
+在 Standby 的本地存储目录中 `recovery.conf` 文件中增加如下参数：
 
 ```ini
 recovery_target_timeline = 'latest'

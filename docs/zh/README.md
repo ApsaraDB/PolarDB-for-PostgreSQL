@@ -2,26 +2,14 @@
 home: true
 title: 文档
 heroImage: /images/polardb.png
-actions:
-  - text: 快速上手
-    link: /zh/guide/quick-start.html
-    type: primary
-  - text: 架构解读
-    link: /zh/architecture/
-    type: secondary
-features:
-  - title: 极致弹性
-    details: 存储与计算节点均可独立地横向扩展。
-  - title: 毫秒级节点间延迟
-    details: 基于 LogIndex 的延迟回放和并行回放。
-  - title: HTAP 能力
-    details: 基于共享存储的分布式并行执行框架。
 footer: Apache 2.0 Licensed | Copyright © Alibaba Group, Inc.
+---
+
 ---
 
 ### 通过 Docker 快速使用
 
-从 DockerHub 上拉取 PolarDB for PostgreSQL 的 [本地存储实例镜像](https://hub.docker.com/r/polardb/polardb_pg_local_instance/tags)，创建、运行并进入容器，然后直接使用 PolarDB 实例：
+从 DockerHub 上拉取 PolarDB for PostgreSQL 的 [本地存储实例镜像](https://hub.docker.com/r/polardb/polardb_pg_local_instance/tags)，创建、运行并进入容器，然后直接使用 PolarDB：
 
 :::: code-group
 ::: code-group-item 单节点实例
@@ -75,29 +63,62 @@ psql -h 127.0.0.1 -c 'select version();'
 :::
 ::::
 
-### 通过 Docker 快速开发
+<div class="features">
 
-从 DockerHub 上拉取 PolarDB for PostgreSQL 的 [开发镜像](https://hub.docker.com/r/polardb/polardb_pg_devel/tags)，创建、运行并进入容器：
+  <div class="feature" style="position: relative;z-index: 10;">
+    <h3>部署指南</h3>
+    <ul>
+      <li><a href="./deploying/introduction.html">架构简介</a></li>
+      <li><a href="./deploying/quick-start.html">快速部署</a></li>
+      <li><a href="./deploying/deploy.html">进阶部署</a></li>
+      <!-- <li><a href="./deploying/storage-aliyun-essd.html">存储设备的准备</a></li>
+      <li><a href="./deploying/fs-pfs.html">文件系统的准备</a></li>
+      <li><a href="./deploying/db-localfs.html">编译部署 PolarDB 内核</a></li> -->
+      <li><a href="./deploying/deploy-stack.html">更多部署方式</a></li>
+    </ul>
+  </div>
 
-```bash
-# 拉取 PolarDB 开发镜像
-docker pull polardb/polardb_pg_devel
-# 创建、运行并进入容器
-docker run -it --cap-add=SYS_PTRACE --privileged=true --name polardb_pg_devel polardb/polardb_pg_devel bash
-```
+  <div class="feature" style="position: relative;z-index: 10;">
+    <h3>使用与运维</h3>
+    <ul>
+      <li><a href="./operation/backup-and-restore.html">备份恢复</a></li>
+      <li><a href="./operation/tpcc-test.html">TPC-C 测试</a></li>
+    </ul>
+  </div>
 
-进入容器后，从 GitHub 拉取最新的稳定代码，快速编译部署最简单的 PolarDB 实例并进行验证：
+  <div class="feature" style="position: relative;z-index: 10;">
+    <h3>特性实践</h3>
+    <ul>
+      <li><a href="./features/tpch-on-px.html">利用 PolarDB HTAP 加速 TPC-H</a></li>
+    </ul>
+  </div>
 
-```bash
-# 代码拉取
-git clone -b POLARDB_11_STABLE https://github.com/ApsaraDB/PolarDB-for-PostgreSQL.git
-cd PolarDB-for-PostgreSQL
-# 编译部署
-./polardb_build.sh
-# 验证
-psql -h 127.0.0.1 -c 'select version();'
-            version
---------------------------------
- PostgreSQL 11.9 (POLARDB 11.9)
-(1 row)
-```
+  <div class="feature" style="position: relative;z-index: 10;">
+    <h3>原理解读</h3>
+    <ul>
+      <li><a href="./theory/arch-overview.html">特性总览</a></li>
+      <li><a href="./theory/buffer-management.html">缓冲区管理</a></li>
+      <li><a href="./theory/ddl-synchronization.html">DDL 同步</a></li>
+      <li><a href="./theory/logindex.html">LogIndex</a></li>
+    </ul>
+  </div>
+
+  <div class="feature" style="position: relative;z-index: 10;">
+    <h3>上手开发</h3>
+    <ul>
+      <li><a href="./development/dev-on-docker.html">基于 Docker 容器开发</a></li>
+      <li><a href="./development/customize-dev-env.html">定制开发环境</a></li>
+    </ul>
+  </div>
+
+  <div class="feature" style="position: relative;z-index: 10;">
+    <h3>社区贡献</h3>
+    <ul>
+      <li><a href="./contributing/code-of-conduct.html">行为准则</a></li>
+      <li><a href="./contributing/contributing-polardb-docs.html">贡献文档</a></li>
+      <li><a href="./contributing/contributing-polardb-kernel.html">贡献代码</a></li>
+      <li><a href="./contributing/coding-style">编码风格</a></li>
+    </ul>
+  </div>
+
+</div>
