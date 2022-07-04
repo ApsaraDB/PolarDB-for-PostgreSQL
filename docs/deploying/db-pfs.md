@@ -1,4 +1,4 @@
-# PolarDB 编译部署：PFS 文件系统
+# 编译部署：基于 PFS 文件系统
 
 本文将指导您在分布式文件系统 PolarDB File System（PFS）上编译部署 PolarDB，适用于已经在共享存储上格式化并挂载 PFS 的计算节点。
 

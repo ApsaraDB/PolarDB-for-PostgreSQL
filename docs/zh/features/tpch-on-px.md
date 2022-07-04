@@ -6,7 +6,7 @@
 
 ### 部署 PolarDB PG
 
-在运行前默认已经通过 [前置文档](./db-localfs.md#本地多节点-htap-实例) 部署好本地多节点 HTAP 实例。
+在运行前默认已经通过 [前置文档](../deploying/db-localfs.md#本地多节点-htap-实例) 部署好本地多节点 HTAP 实例。
 
 也可以直接从 DockerHub 上拉取 HTAP 实例镜像：
 

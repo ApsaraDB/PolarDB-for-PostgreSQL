@@ -1,64 +1,86 @@
 import type { SidebarConfig } from "@vuepress/theme-default";
 
 export const en: SidebarConfig = {
-  "/guide/": [
+  "/deploying": [
     {
-      text: "Guide",
+      text: "Deployment",
       children: [
-        "/guide/quick-start.md",
-        "/guide/introduction.md",
+        "/deploying/introduction.md",
+        "/deploying/quick-start.md",
         {
-          text: "进阶部署",
-          link: "/guide/deploy.md",
+          text: "Advanced Deployment",
+          link: "/deploying/deploy.md",
           children: [
             {
-              text: "一、准备块存储设备",
+              text: "Preparation of Storage Device",
               children: [
-                "/guide/storage-aliyun-essd.md",
-                "/guide/storage-ceph.md",
-                "/guide/storage-nbd.md",
+                "/deploying/storage-aliyun-essd.md",
+                "/deploying/storage-ceph.md",
+                "/deploying/storage-nbd.md",
               ],
             },
             {
-              text: "二、准备文件系统",
-              children: ["/guide/fs-pfs.md"],
+              text: "Preparation of File System",
+              children: ["/deploying/fs-pfs.md"],
             },
             {
-              text: "三、编译部署 PolarDB 内核",
-              children: ["/guide/db-localfs.md", "/guide/db-pfs.md"],
+              text: "Building PolarDB Kernel",
+              children: ["/deploying/db-localfs.md", "/deploying/db-pfs.md"],
             },
           ],
         },
-        "/guide/backup-and-restore.md",
-        "/guide/customize-dev-env.md",
-        "/guide/deploy-more.md",
+      ],
+    },
+  ],
+  "/operation/": [
+    {
+      text: "Ops",
+      children: [
         {
-          text: "性能测试",
-          children: ["/guide/tpch-on-px.md", "/guide/tpcc-test.md"],
+          text: "Daily Ops",
+          children: ["/operation/backup-and-restore.md"],
+        },
+        {
+          text: "Benchmarks",
+          children: ["/operation/tpcc-test.md"],
         },
       ],
     },
   ],
-  "/architecture/": [
+  "/features": [
     {
-      text: "Architecture Introduction",
+      text: "Features Practice",
       children: [
-        "/architecture/README.md",
-        "/architecture/buffer-management.md",
-        "/architecture/ddl-synchronization.md",
-        "/architecture/logindex.md",
+        {
+          text: "HTAP",
+          children: ["/features/tpch-on-px.md"],
+        },
       ],
     },
   ],
-  "/roadmap/": [
+  "/theory/": [
     {
-      text: "Roadmap",
-      children: ["/roadmap/README.md"],
+      text: "Theory",
+      children: [
+        "/theory/arch-overview.md",
+        "/theory/buffer-management.md",
+        "/theory/ddl-synchronization.md",
+        "/theory/logindex.md",
+      ],
+    },
+  ],
+  "/development/": [
+    {
+      text: "Development",
+      children: [
+        "/development/dev-on-docker.md",
+        "/development/customize-dev-env.md",
+      ],
     },
   ],
   "/contributing": [
     {
-      text: "Community",
+      text: "Contributing",
       children: [
         "/contributing/contributing-polardb-kernel.md",
         "/contributing/contributing-polardb-docs.md",
