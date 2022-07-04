@@ -140,7 +140,8 @@ check: all tablespace-setup
 
 # POLAR check
 polar-check: all tablespace-setup temp-install check
-	$(PERL) $(srcdir)/cpdirstructure.pl
+	$(MKDIR_P) $(srcdir)/results/polar-dev
+	$(MKDIR_P) $(srcdir)/results/polar-px-dev
 	$(pg_regress_check) $(REGRESS_OPTS) --schedule=$(srcdir)/polar-dev-schedule $(MAXCONNOPT) $(EXTRA_TESTS)
 
 check-tests: all tablespace-setup | temp-install
@@ -153,7 +154,8 @@ installcheck: all tablespace-setup
 
 # like installcheck, but use polar-dev-schedule
 polar-installcheck: all tablespace-setup temp-install
-	$(PERL) $(srcdir)/cpdirstructure.pl
+	$(MKDIR_P) $(srcdir)/results/polar-dev
+	$(MKDIR_P) $(srcdir)/results/polar-px-dev
 	echo polar_create_table_with_full_replica_identity=false > temp_config
 	PATH="$(bindir):$$PATH" $(pg_regress_installcheck) $(REGRESS_OPTS) --temp-config=temp_config --schedule=$(srcdir)/polar-dev-schedule $(EXTRA_TESTS)
 	rm -f temp_config
@@ -161,21 +163,24 @@ polar-installcheck: all tablespace-setup temp-install
 # like installcheck, but use polar-dev-schedule and polar-px-dev-schedule in px mode
 polar-installcheck-px: export PG_REGRESS_PX_MODE=--polar-parallel-execution --load-extension=polar_px
 polar-installcheck-px: all tablespace-setup temp-install
-	$(PERL) $(srcdir)/cpdirstructure.pl
+	$(MKDIR_P) $(srcdir)/results/polar-dev
+	$(MKDIR_P) $(srcdir)/results/polar-px-dev
 	echo polar_create_table_with_full_replica_identity=false > temp_config
 	PATH="$(bindir):$$PATH" $(pg_regress_installcheck) $(REGRESS_OPTS) --temp-config=temp_config --schedule=$(srcdir)/polar-dev-schedule --schedule=$(srcdir)/polar-px-dev-schedule $(EXTRA_TESTS) 
 	rm -f temp_config
 
 
 quick-installcheck: all tablespace-setup temp-install
-	$(PERL) $(srcdir)/cpdirstructure.pl
+	$(MKDIR_P) $(srcdir)/results/polar-dev
+	$(MKDIR_P) $(srcdir)/results/polar-px-dev
 	echo polar_create_table_with_full_replica_identity=false > temp_config
 	PATH="$(bindir):$$PATH" $(pg_regress_installcheck) $(REGRESS_OPTS) --temp-config=temp_config --schedule=$(SCHEDULE) $(EXTRA_TESTS) 
 	rm -f temp_config
 
 quick-installcheck-px: export PG_REGRESS_PX_MODE=--polar-parallel-execution --load-extension=polar_px
 quick-installcheck-px: all tablespace-setup temp-install
-	$(PERL) $(srcdir)/cpdirstructure.pl
+	$(MKDIR_P) $(srcdir)/results/polar-dev
+	$(MKDIR_P) $(srcdir)/results/polar-px-dev
 	echo polar_create_table_with_full_replica_identity=false > temp_config
 	PATH="$(bindir):$$PATH" $(pg_regress_installcheck) $(REGRESS_OPTS) --temp-config=temp_config --schedule=$(SCHEDULE) $(EXTRA_TESTS) 
 	rm -f temp_config

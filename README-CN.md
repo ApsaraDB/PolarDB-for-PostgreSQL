@@ -43,13 +43,13 @@ PolarDB 还支持时空、GIS、图像、向量、搜索、图谱等多模创新
 
 `POLARDB_11_STABLE` 为稳定分支，持存储计算分离的云原生形态。 `distribute` 分支支持分布式形态。
 
-## 产品架构和版本规划
+## 产品架构
 
 PolarDB 采用了基于 Shared-Storage 的存储计算分离架构。数据库由传统的 Share-Nothing 架构，转变成了 Shared-Storage 架构。由原来的 N 份计算 + N 份存储，转变成了 N 份计算 + 1 份存储。虽然共享存储上数据是一份，但是数据在各节点内存中的状态是不同的，需要通过内存状态的同步来维护数据的一致性；同时主节点在刷脏时也需要做协调，避免只读节点读取到超前的 **“未来页面”**，也要避免只读节点读取到过时的没有在内存中被正确回放的 **“过去页面”**。为了解决该问题，PolarDB 创造性地设计了 _LogIndex_ 数据结构来维护页面的回放历史，该结构能够实现主节点与只读节点之间的同步。
 
 在存储计算分离后，I/O 单路延迟变大的同时，I/O 的吞吐也变大了。在处理分析型查询时，仅使用单个只读节点无法发挥出存储侧的大 I/O 带宽优势，也无法利用其他只读节点的 CPU、内存和 I/O 资源。为了解决该问题，PolarDB 研发了基于 Shared-Storage 的并行执行引擎，能够在 SQL 级别上弹性利用任意数目的 CPU 来加速分析查询，支持 HTAP 的混合负载场景。
 
-详情请查阅 [产品架构](https://apsaradb.github.io/PolarDB-for-PostgreSQL/zh/architecture/) 和 [版本规划](https://apsaradb.github.io/PolarDB-for-PostgreSQL/zh/roadmap/)。
+详情请查阅 [产品架构](https://apsaradb.github.io/PolarDB-for-PostgreSQL/zh/architecture/theory/arch-overview.html)。
 
 ## 快速入门
 
@@ -68,7 +68,7 @@ psql -h 127.0.0.1 -c 'select version();'
 (1 row)
 ```
 
-对于更多进阶部署方式，请移步在线文档中的 [进阶部署](https://apsaradb.github.io/PolarDB-for-PostgreSQL/zh/guide/deploy.html)。在部署前，我们建议您先了解一下 PolarDB for PostgreSQL 的 [架构简介](https://apsaradb.github.io/PolarDB-for-PostgreSQL/zh/guide/introduction.html)。
+对于更多进阶部署方式，请移步在线文档中的 [进阶部署](https://apsaradb.github.io/PolarDB-for-PostgreSQL/zh/deploying/deploy.html)。在部署前，我们建议您先了解一下 PolarDB for PostgreSQL 的 [架构简介](https://apsaradb.github.io/PolarDB-for-PostgreSQL/zh/deploying/introduction.html)。
 
 ## 文档
 
@@ -78,7 +78,7 @@ psql -h 127.0.0.1 -c 'select version();'
 
 ## 参与贡献
 
-我们诚挚欢迎社区参与 PolarDB 的贡献，无论是代码还是文档。在线文档中的 [参与社区](https://apsaradb.github.io/PolarDB-for-PostgreSQL/zh/contributing/) 提供了关于贡献流程与规范的更多信息。
+我们诚挚欢迎社区参与 PolarDB 的贡献，无论是代码还是文档。在线文档中的 [参与社区](https://apsaradb.github.io/PolarDB-for-PostgreSQL/zh/contributing/code-of-conduct.html) 提供了关于贡献流程与规范的更多信息。
 
 以下是贡献者列表（由 [contrib.rocks](https://contrib.rocks) 支持）：
 

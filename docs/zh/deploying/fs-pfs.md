@@ -1,4 +1,4 @@
-# 格式化并挂载 PFS
+# 格式化并挂载 PolarDB File System
 
 PolarDB File System，简称 PFS 或 PolarFS，是由阿里云自主研发的高性能类 POSIX 的用户态分布式文件系统，服务于阿里云数据库 PolarDB 产品。使用 PFS 对共享存储进行格式化并挂载后，能够保证一个计算节点对共享存储的写入能够立刻对另一个计算节点可见。
 

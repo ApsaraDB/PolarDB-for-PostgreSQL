@@ -12,14 +12,14 @@ TPC-C 的具体说明和排名可以通过官方网站 [TPC-C 官网](https://ww
 
 ### 部署 PolarDB PG
 
-在运行前默认已经通过文档 [PolarDB 编译部署：单机文件系统](./db-localfs.md) 部署好 PolarDB PG 的本地实例。
+在运行前默认已经通过文档 [PolarDB 编译部署：单机文件系统](../deploying/db-localfs.md) 部署好 PolarDB PG 的本地实例。
 
 ### 安装 Java 和 Ant
 
 由于 TPC-C 测试工具 benchmarksql 需要通过 Ant 来编译，所以需要安装 Java 和 Ant。这里安装的 Java 版本为 8.0[^java-install]，Ant 版本为 1.9.7[^ant-install]。
 
 ::: tip
-安装 Java 和 Ant 的时候需要注意修改环境变量。
+安装 Java 和 Ant 的后需要修改环境变量。
 :::
 
 ```bash
@@ -59,7 +59,7 @@ Apache Ant(TM) version 1.9.16 compiled on July 10 2021
 我们将通过 benchmarksql 工具来进行 TPC-C 测试。
 
 ::: tip
-下面链接中的 benchmarksql 采用的是 5.1 版本。相较于 5.0 版本，5.1 版本可以用 Procedures 性能表现较好。推荐使用 5.1 版本。
+下面链接中的 benchmarksql 采用的是 5.1 版本。相较于 5.0 版本，5.1 版本可以使用 Procedures，性能表现较好。推荐使用 5.1 版本。
 :::
 
 ```bash
