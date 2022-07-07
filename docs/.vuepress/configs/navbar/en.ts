@@ -24,7 +24,7 @@ export const en: NavbarConfig = [
         children: ["/deploying/db-localfs.html", "/deploying/db-pfs.html"],
       },
       {
-        text: "More about Deploying",
+        text: "More about Deployment",
         children: [
           "/deploying/deploy-stack.html",
           "/deploying/deploy-official.html",

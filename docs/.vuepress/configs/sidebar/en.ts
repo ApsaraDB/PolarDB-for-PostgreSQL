@@ -29,6 +29,13 @@ export const en: SidebarConfig = {
             },
           ],
         },
+        {
+          text: "More about Deployment",
+          children: [
+            "/deploying/deploy-stack.md",
+            "/deploying/deploy-official.md",
+          ],
+        },
       ],
     },
   ],
