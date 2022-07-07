@@ -32,6 +32,13 @@ export const zh: SidebarConfig = {
             },
           ],
         },
+        {
+          text: "更多部署方式",
+          children: [
+            "/zh/deploying/deploy-stack.md",
+            "/zh/deploying/deploy-official.md",
+          ],
+        },
       ],
     },
   ],
