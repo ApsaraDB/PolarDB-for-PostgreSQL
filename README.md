@@ -49,7 +49,7 @@ PolarDB uses a shared-storage-based architecture in which computing is decoupled
 
 After computing is decoupled from storage, the I/O latency and throughput increase. When a single read-only node is used to process analytical queries, the CPUs, memory, and I/O of other read-only nodes and the large storage I/O bandwidth cannot be fully utilized. To resolve this issue, PolarDB provides the shared-storage-based MPP engine. The engine can use CPUs to accelerate analytical queries at SQL level and support a mix of OLAP workloads and OLTP workloads for HTAP.
 
-For more information, see [Architecture](https://apsaradb.github.io/PolarDB-for-PostgreSQL/architecture/) and [Roadmap](https://apsaradb.github.io/PolarDB-for-PostgreSQL/roadmap/).
+For more information, see [Architecture](https://apsaradb.github.io/PolarDB-for-PostgreSQL/theory/arch-overview.html).
 
 ## Quick Start with PolarDB
 
@@ -68,7 +68,7 @@ psql -h 127.0.0.1 -c 'select version();'
 (1 row)
 ```
 
-For more advanced deployment way, please refer to [Advanced Deployment](https://apsaradb.github.io/PolarDB-for-PostgreSQL/guide/deploy.html). Before your deployment, we recommand to figure out the [architecture](https://apsaradb.github.io/PolarDB-for-PostgreSQL/guide/introduction.html) of PolarDB for PostgreSQL.
+For more advanced deployment way, please refer to [Advanced Deployment](https://apsaradb.github.io/PolarDB-for-PostgreSQL/deploying/deploy.html). Before your deployment, we recommand to figure out the [architecture](https://apsaradb.github.io/PolarDB-for-PostgreSQL/deploying/introduction.html) of PolarDB for PostgreSQL.
 
 ## Documentation
 
@@ -78,7 +78,7 @@ If you want to explore or develop documentation locally, see [Document Contribut
 
 ## Contributing
 
-You are welcome to make contributions to PolarDB, no matter code or documentation. We appreciate all the contributions. For more information about how to start development and pull requests, see [Community](https://apsaradb.github.io/PolarDB-for-PostgreSQL/contributing/).
+You are welcome to make contributions to PolarDB, no matter code or documentation. We appreciate all the contributions. For more information about how to start development and pull requests, see [Community](https://apsaradb.github.io/PolarDB-for-PostgreSQL/contributing/code-of-conduct.html).
 
 Here are the contributors:
 
