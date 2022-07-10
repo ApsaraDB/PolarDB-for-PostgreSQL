@@ -443,6 +443,7 @@ extern bool		polar_enable_early_launch_checkpointer;
 extern bool 	polar_enable_keep_wal_ready_file;
 extern bool		polar_enable_node_static_config;
 extern bool 	polar_replica_multi_version_snapshot_enable;
+extern bool		polar_enable_numa;
 extern int  	polar_replica_multi_version_snapshot_slot_num;
 extern int  	polar_replica_multi_version_snapshot_retry_times;
 extern bool		polar_enable_simply_redo_error_log;

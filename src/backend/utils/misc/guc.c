@@ -876,6 +876,7 @@ bool    polar_enable_debug = false;
 bool    polar_enable_pwrite = false;
 bool    polar_enable_pread = false;
 bool    polar_enable_parallel_replay_standby_mode = false;
+bool	polar_enable_numa = false;
 int  	polar_check_checkpoint_legal_interval;
 int  	polar_copy_buffers;
 int 	polar_logindex_table_batch_size = 1;
@@ -1734,6 +1735,17 @@ static struct config_bool ConfigureNamesBool[] =
 			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
 		},
 		&polar_enable_shared_storage_mode,
+		false,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_enable_numa", PGC_POSTMASTER, UNGROUPED,
+			gettext_noop("polar_enable_numa."),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_enable_numa,
 		false,
 		NULL, NULL, NULL
 	},

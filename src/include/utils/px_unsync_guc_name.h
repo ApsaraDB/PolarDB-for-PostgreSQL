@@ -286,6 +286,7 @@
 		"polar_enable_resolve_conflict",
 		"polar_enable_semi_sync_optimization",
 		"polar_enable_shared_storage_mode",
+		"polar_enable_numa",
 		"polar_enable_simply_redo_error_log",
 		"polar_enable_slru_hash_index",
 		"polar_enable_standby_pbp",

@@ -892,7 +892,7 @@ polar_fullpage_bgworker_wakeup(polar_fullpage_ctl_t ctl)
 			 * actually fine because procLatch isn't ever freed, so we just can
 			 * potentially set the wrong process' (or no process') latch.
 			 */
-			SetLatch(&ProcGlobal->allProcs[procno].procLatch);
+			SetLatch(&ProcGlobal->allProcs[procno]->procLatch);
 		}
 	}
 }

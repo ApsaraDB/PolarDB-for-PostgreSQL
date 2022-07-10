@@ -34,6 +34,7 @@
 #include <signal.h>
 #include <unistd.h>
 #include <sys/time.h>
+#include <numa.h>
 
 #include "access/transam.h"
 #include "access/twophase.h"
@@ -86,8 +87,11 @@ NON_EXEC_STATIC slock_t *ProcStructLock = NULL;
 
 /* Pointers to shared-memory structures */
 PROC_HDR   *ProcGlobal = NULL;
-NON_EXEC_STATIC PGPROC *AuxiliaryProcs = NULL;
-PGPROC	   *PreparedXactProcs = NULL;
+NON_EXEC_STATIC PGPROC **AuxiliaryProcs = NULL;
+PGPROC	   **PreparedXactProcs = NULL;
+
+/* NUMA-Aware variable */
+bool numaAvailable = false;
 
 /* If we are waiting for a lock, this points to the associated LOCALLOCK */
 static LOCALLOCK *lockAwaited = NULL;
@@ -113,15 +117,29 @@ Size
 ProcGlobalShmemSize(void)
 {
 	Size		size = 0;
+	Size 		pgprocSize = 0;
+	Size 		pageSize = (Size)getpagesize();
+
+	if (numa_available() >= 0 && polar_enable_numa)
+	{
+		pgprocSize = TYPEALIGN(pageSize, sizeof(PGPROC));
+	}
+	else
+	{
+		pgprocSize = sizeof(PGPROC);
+	}
 
 	/* ProcGlobal */
 	size = add_size(size, sizeof(PROC_HDR));
 	/* MyProcs, including autovacuum workers and launcher */
-	size = add_size(size, mul_size(MaxBackends, sizeof(PGPROC)));
+	size = add_size(size,mul_size(MaxBackends, sizeof(PGPROC*)));
+	size = add_size(size, mul_size(MaxBackends, pgprocSize));
 	/* AuxiliaryProcs */
-	size = add_size(size, mul_size(NUM_AUXILIARY_PROCS, sizeof(PGPROC)));
+	size = add_size(size,mul_size(NUM_AUXILIARY_PROCS, sizeof(PGPROC*)));
+	size = add_size(size, mul_size(NUM_AUXILIARY_PROCS, pgprocSize));
 	/* Prepared xacts */
-	size = add_size(size, mul_size(max_prepared_xacts, sizeof(PGPROC)));
+	size = add_size(size, mul_size(max_prepared_xacts, sizeof(PGPROC*)));
+	size = add_size(size, mul_size(max_prepared_xacts, pgprocSize));
 	/* ProcStructLock */
 	size = add_size(size, sizeof(slock_t));
 
@@ -172,12 +190,26 @@ ProcGlobalSemas(void)
 void
 InitProcGlobal(void)
 {
-	PGPROC	   *procs;
-	PGXACT	   *pgxacts;
-	int			i,
-				j;
-	bool		found;
-	uint32		TotalProcs = MaxBackends + NUM_AUXILIARY_PROCS + max_prepared_xacts;
+	PGPROC	      **procs;
+	PGXACT	   	   *pgxacts;
+	int				i,
+					j;
+	bool			found;
+	uint32			TotalProcs = MaxBackends + NUM_AUXILIARY_PROCS + max_prepared_xacts;
+	unsigned int	currNumaNode=0;
+	int 			maxNumaNode = 0;
+
+	/* check wether numa is available */
+	if (numa_available() >= 0 && polar_enable_numa)
+	{
+		numaAvailable = true;
+		maxNumaNode = numa_max_node();
+	}
+	else
+	{
+		numaAvailable = false;
+		maxNumaNode = 0;
+	}
 
 	/* Create the ProcGlobal shared structure */
 	ProcGlobal = (PROC_HDR *)
@@ -215,8 +247,28 @@ InitProcGlobal(void)
 	 * dedicated to exactly one of these purposes, and they do not move
 	 * between groups.
 	 */
-	procs = (PGPROC *) ShmemAlloc(TotalProcs * sizeof(PGPROC));
-	MemSet(procs, 0, TotalProcs * sizeof(PGPROC));
+	procs = (PGPROC **)ShmemAlloc(TotalProcs * sizeof(PGPROC *));
+	if (numaAvailable)
+	{
+		for (i = 0; i < TotalProcs; i++)
+		{
+			procs[i] = (PGPROC *)ShmemAllocPageSizeAligned(sizeof(PGPROC));
+			numa_tonode_memory(procs[i], sizeof(PGPROC), currNumaNode);
+			MemSet(procs[i], 0, sizeof(PGPROC));
+			procs[i]->numaNode = currNumaNode;
+			currNumaNode = (currNumaNode + 1) % (maxNumaNode + 1);
+		}
+	}
+	else
+	{
+		for (i = 0; i < TotalProcs; i++)
+		{
+			procs[i] = (PGPROC *)ShmemAlloc(sizeof(PGPROC));
+			MemSet(procs[i], 0, sizeof(PGPROC));
+			procs[i]->numaNode = -1;
+		}
+	}
+
 	ProcGlobal->allProcs = procs;
 	/* XXX allProcCount isn't really all of them; it excludes prepared xacts */
 	ProcGlobal->allProcCount = MaxBackends + NUM_AUXILIARY_PROCS;
@@ -244,11 +296,11 @@ InitProcGlobal(void)
 		 */
 		if (i < MaxBackends + NUM_AUXILIARY_PROCS)
 		{
-			procs[i].sem = PGSemaphoreCreate();
-			InitSharedLatch(&(procs[i].procLatch));
-			LWLockInitialize(&(procs[i].backendLock), LWTRANCHE_PROC);
+			procs[i]->sem = PGSemaphoreCreate();
+			InitSharedLatch(&(procs[i]->procLatch));
+			LWLockInitialize(&(procs[i]->backendLock), LWTRANCHE_PROC);
 		}
-		procs[i].pgprocno = i;
+		procs[i]->pgprocno = i;
 
 		/*
 		 * Newly created PGPROCs for normal backends, autovacuum and bgworkers
@@ -261,38 +313,38 @@ InitProcGlobal(void)
 		if (i < MaxConnections)
 		{
 			/* PGPROC for normal backend, add to freeProcs list */
-			procs[i].links.next = (SHM_QUEUE *) ProcGlobal->freeProcs;
-			ProcGlobal->freeProcs = &procs[i];
-			procs[i].procgloballist = &ProcGlobal->freeProcs;
+			procs[i]->links.next = (SHM_QUEUE *)ProcGlobal->freeProcs;
+			ProcGlobal->freeProcs = procs[i];
+			procs[i]->procgloballist = &ProcGlobal->freeProcs;
 		}
 		else if (i < MaxConnections + autovacuum_max_workers + 1)
 		{
 			/* PGPROC for AV launcher/worker, add to autovacFreeProcs list */
-			procs[i].links.next = (SHM_QUEUE *) ProcGlobal->autovacFreeProcs;
-			ProcGlobal->autovacFreeProcs = &procs[i];
-			procs[i].procgloballist = &ProcGlobal->autovacFreeProcs;
+			procs[i]->links.next = (SHM_QUEUE *)ProcGlobal->autovacFreeProcs;
+			ProcGlobal->autovacFreeProcs = procs[i];
+			procs[i]->procgloballist = &ProcGlobal->autovacFreeProcs;
 		}
 		else if (i < MaxBackends)
 		{
 			/* PGPROC for bgworker, add to bgworkerFreeProcs list */
-			procs[i].links.next = (SHM_QUEUE *) ProcGlobal->bgworkerFreeProcs;
-			ProcGlobal->bgworkerFreeProcs = &procs[i];
-			procs[i].procgloballist = &ProcGlobal->bgworkerFreeProcs;
+			procs[i]->links.next = (SHM_QUEUE *)ProcGlobal->bgworkerFreeProcs;
+			ProcGlobal->bgworkerFreeProcs = procs[i];
+			procs[i]->procgloballist = &ProcGlobal->bgworkerFreeProcs;
 		}
 
 		/* Initialize myProcLocks[] shared memory queues. */
 		for (j = 0; j < NUM_LOCK_PARTITIONS; j++)
-			SHMQueueInit(&(procs[i].myProcLocks[j]));
+			SHMQueueInit(&(procs[i]->myProcLocks[j]));
 
 		/* Initialize lockGroupMembers list. */
-		dlist_init(&procs[i].lockGroupMembers);
+		dlist_init(&(procs[i]->lockGroupMembers));
 
 		/*
 		 * Initialize the atomic variables, otherwise, it won't be safe to
 		 * access them for backends that aren't currently in use.
 		 */
-		pg_atomic_init_u32(&(procs[i].procArrayGroupNext), INVALID_PGPROCNO);
-		pg_atomic_init_u32(&(procs[i].clogGroupNext), INVALID_PGPROCNO);
+		pg_atomic_init_u32(&(procs[i]->procArrayGroupNext), INVALID_PGPROCNO);
+		pg_atomic_init_u32(&(procs[i]->clogGroupNext), INVALID_PGPROCNO);
 	}
 
 	/*
@@ -322,9 +374,10 @@ void InitTraceId(const uint32 ip_hash, const uint16 port)
 void
 InitProcess(void)
 {
-	PGPROC	   *volatile *procgloballist;
-	int 		pxLocalSessionId;  	/* this backend's PGPROC serial num */
-	uint32 		ip_hash = 0;
+	PGPROC	   	   *volatile *procgloballist;
+	int 			pxLocalSessionId;  	/* this backend's PGPROC serial num */
+	uint32 			ip_hash = 0;
+	int				bindCPU = 0;
 
 	/*
 	 * ProcGlobal should be set up already (if we are a backend, we inherit
@@ -336,6 +389,16 @@ InitProcess(void)
 	if (MyProc != NULL)
 		elog(ERROR, "you already exist");
 
+	/* check wether numa is available */
+	if (numa_available() >= 0 && polar_enable_numa)
+	{
+		numaAvailable = true;
+	}
+	else
+	{
+		numaAvailable = false;
+	}
+
 	/* Decide which list should supply our PGPROC. */
 	if (IsAnyAutoVacuumProcess())
 		procgloballist = &ProcGlobal->autovacFreeProcs;
@@ -343,6 +406,7 @@ InitProcess(void)
 		procgloballist = &ProcGlobal->bgworkerFreeProcs;
 	else
 		procgloballist = &ProcGlobal->freeProcs;
+		
 
 	/*
 	 * Try to get a proc struct from the appropriate free list.  If this
@@ -376,9 +440,21 @@ InitProcess(void)
 				 errmsg("sorry, too many clients already")));
 	}
 
+	/*
+	 * If the NUMA is available, then the bind the task memory allocation to the 
+	 * numaNode.
+	*/
+	if (numaAvailable && MyProc->numaNode >= 0)
+	{
+		bindCPU = numa_run_on_node(MyProc->numaNode);
+		numa_set_localalloc();
+	}
+
 #ifdef LOCK_DEBUG
 	/* POLAR: PGPROC is part of PROCLOCK, we print MyProc previous pid to validate it's cleared */
-	elog(LOG, "Alloc PRPROC %p for pid %d, and it's used by previous pid %d", MyProc, MyProcPid, MyProc->pid);
+	elog(LOG, "Alloc PGPROC %p for pid %d, and it's used by previous pid %d", MyProc, MyProcPid, MyProc->pid);
+	elog(LOG, "PGPROC->numaNode of %d is %d", MyProcPid, MyProc->numaNode);
+	elog(LOG, "numaAvailable is %d, bindCPU is %d", numaAvailable, bindCPU);
 #endif
 
 	MyPgXact = &ProcGlobal->allPgXact[MyProc->pgprocno];
@@ -616,7 +692,7 @@ InitAuxiliaryProcess(void)
 	 */
 	for (proctype = 0; proctype < NUM_AUXILIARY_PROCS; proctype++)
 	{
-		auxproc = &AuxiliaryProcs[proctype];
+		auxproc = AuxiliaryProcs[proctype];
 		if (auxproc->pid == 0)
 			break;
 	}
@@ -1035,7 +1111,7 @@ AuxiliaryProcKill(int code, Datum arg)
 
 	Assert(proctype >= 0 && proctype < NUM_AUXILIARY_PROCS);
 
-	auxproc = &AuxiliaryProcs[proctype];
+	auxproc = AuxiliaryProcs[proctype];
 
 	Assert(MyProc == auxproc);
 
@@ -1084,7 +1160,7 @@ AuxiliaryPidGetProc(int pid)
 
 	for (index = 0; index < NUM_AUXILIARY_PROCS; index++)
 	{
-		PGPROC	   *proc = &AuxiliaryProcs[index];
+		PGPROC	   *proc = AuxiliaryProcs[index];
 
 		if (proc->pid == pid)
 		{

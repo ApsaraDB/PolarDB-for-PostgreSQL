@@ -287,7 +287,7 @@ TwoPhaseShmemInit(void)
 			TwoPhaseState->freeGXacts = &gxacts[i];
 
 			/* associate it with a PGPROC assigned by InitProcGlobal */
-			gxacts[i].pgprocno = PreparedXactProcs[i].pgprocno;
+			gxacts[i].pgprocno = PreparedXactProcs[i]->pgprocno;
 
 			/*
 			 * Assign a unique ID for each dummy proc, so that the range of
@@ -468,7 +468,7 @@ MarkAsPreparingGuts(GlobalTransaction gxact, TransactionId xid, const char *gid,
 	Assert(LWLockHeldByMeInMode(TwoPhaseStateLock, LW_EXCLUSIVE));
 
 	Assert(gxact != NULL);
-	proc = &ProcGlobal->allProcs[gxact->pgprocno];
+	proc = ProcGlobal->allProcs[gxact->pgprocno];
 	pgxact = &ProcGlobal->allPgXact[gxact->pgprocno];
 
 	/* Initialize the PGPROC entry */
@@ -527,7 +527,7 @@ static void
 GXactLoadSubxactData(GlobalTransaction gxact, int nsubxacts,
 					 TransactionId *children)
 {
-	PGPROC	   *proc = &ProcGlobal->allProcs[gxact->pgprocno];
+	PGPROC	   *proc = ProcGlobal->allProcs[gxact->pgprocno];
 	PGXACT	   *pgxact = &ProcGlobal->allPgXact[gxact->pgprocno];
 
 	/* We need no extra lock since the GXACT isn't valid yet */
@@ -565,7 +565,7 @@ MarkAsPrepared(GlobalTransaction gxact, bool lock_held)
 	 * Put it into the global ProcArray so TransactionIdIsInProgress considers
 	 * the XID as still running.
 	 */
-	ProcArrayAdd(&ProcGlobal->allProcs[gxact->pgprocno]);
+	ProcArrayAdd(ProcGlobal->allProcs[gxact->pgprocno]);
 }
 
 /*
@@ -589,7 +589,7 @@ LockGXact(const char *gid, Oid user)
 	for (i = 0; i < TwoPhaseState->numPrepXacts; i++)
 	{
 		GlobalTransaction gxact = TwoPhaseState->prepXacts[i];
-		PGPROC	   *proc = &ProcGlobal->allProcs[gxact->pgprocno];
+		PGPROC	   *proc = ProcGlobal->allProcs[gxact->pgprocno];
 
 		/* Ignore not-yet-valid GIDs */
 		if (!gxact->valid)
@@ -785,7 +785,7 @@ pg_prepared_xact(PG_FUNCTION_ARGS)
 	while (status->array != NULL && status->currIdx < status->ngxacts)
 	{
 		GlobalTransaction gxact = &status->array[status->currIdx++];
-		PGPROC	   *proc = &ProcGlobal->allProcs[gxact->pgprocno];
+		PGPROC	   *proc = ProcGlobal->allProcs[gxact->pgprocno];
 		PGXACT	   *pgxact = &ProcGlobal->allPgXact[gxact->pgprocno];
 		Datum		values[5];
 		bool		nulls[5];
@@ -886,7 +886,7 @@ TwoPhaseGetDummyProc(TransactionId xid)
 {
 	GlobalTransaction gxact = TwoPhaseGetGXact(xid);
 
-	return &ProcGlobal->allProcs[gxact->pgprocno];
+	return ProcGlobal->allProcs[gxact->pgprocno];
 }
 
 /************************************************************************/
@@ -1019,7 +1019,7 @@ save_state_data(const void *data, uint32 len)
 void
 StartPrepare(GlobalTransaction gxact)
 {
-	PGPROC	   *proc = &ProcGlobal->allProcs[gxact->pgprocno];
+	PGPROC	   *proc = ProcGlobal->allProcs[gxact->pgprocno];
 	PGXACT	   *pgxact = &ProcGlobal->allPgXact[gxact->pgprocno];
 	TransactionId xid = pgxact->xid;
 	TwoPhaseFileHeader hdr;
@@ -1492,7 +1492,7 @@ FinishPreparedTransaction(const char *gid, bool isCommit)
 	 * try to commit the same GID at once.
 	 */
 	gxact = LockGXact(gid, GetUserId());
-	proc = &ProcGlobal->allProcs[gxact->pgprocno];
+	proc = ProcGlobal->allProcs[gxact->pgprocno];
 	pgxact = &ProcGlobal->allPgXact[gxact->pgprocno];
 	xid = pgxact->xid;
 
