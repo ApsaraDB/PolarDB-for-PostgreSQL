@@ -116,6 +116,8 @@ struct PGPROC
 	int			pid;			/* Backend's process ID; 0 if prepared xact */
 	int			pgprocno;
 
+	unsigned int numaNode;		/* NUMA node id of PGPROC  */
+
 	/* These fields are zero while a backend is still starting up: */
 	BackendId	backendId;		/* This backend's backend ID (if assigned) */
 	Oid			databaseId;		/* OID of database this backend is using */
@@ -300,8 +302,8 @@ typedef struct PGXACT
  */
 typedef struct PROC_HDR
 {
-	/* Array of PGPROC structures (not including dummies for prepared txns) */
-	PGPROC	   *allProcs;
+	/* Array of PGPROC structures pointer (not including dummies for prepared txns) */
+	PGPROC	   **allProcs;
 	/* Array of PGXACT structures (not including dummies for prepared txns) */
 	PGXACT	   *allPgXact;
 	/* Length of allProcs array */
@@ -340,10 +342,10 @@ typedef struct PROC_HDR
 
 extern PGDLLIMPORT PROC_HDR *ProcGlobal;
 
-extern PGPROC *PreparedXactProcs;
+extern PGPROC **PreparedXactProcs;
 
 /* Accessor for PGPROC given a pgprocno. */
-#define GetPGProcByNumber(n) (&ProcGlobal->allProcs[(n)])
+#define GetPGProcByNumber(n) (ProcGlobal->allProcs[(n)])
 
 /*
  * We set aside some extra PGPROC structures for auxiliary processes,

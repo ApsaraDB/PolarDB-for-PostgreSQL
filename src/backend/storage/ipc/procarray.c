@@ -223,7 +223,7 @@ typedef struct ProcArrayStruct
 
 static ProcArrayStruct *procArray;
 
-static PGPROC *allProcs;
+static PGPROC **allProcs;
 static PGXACT *allPgXact;
 
 /*
@@ -828,7 +828,7 @@ ProcArrayGroupClearXid(PGPROC *proc, TransactionId latestXid)
 	/* Walk the list and clear all XIDs. */
 	while (nextidx != INVALID_PGPROCNO)
 	{
-		PGPROC	   *proc = &allProcs[nextidx];
+		PGPROC	   *proc = allProcs[nextidx];
 		PGXACT	   *pgxact = &allPgXact[nextidx];
 
 		ProcArrayEndTransactionInternal(proc, pgxact, proc->procArrayGroupMemberXid);
@@ -849,7 +849,7 @@ ProcArrayGroupClearXid(PGPROC *proc, TransactionId latestXid)
 	 */
 	while (wakeidx != INVALID_PGPROCNO)
 	{
-		PGPROC	   *proc = &allProcs[wakeidx];
+		PGPROC	   *proc = allProcs[wakeidx];
 
 		wakeidx = pg_atomic_read_u32(&proc->procArrayGroupNext);
 		pg_atomic_write_u32(&proc->procArrayGroupNext, INVALID_PGPROCNO);
@@ -1411,7 +1411,7 @@ TransactionIdIsInProgress(TransactionId xid)
 	for (i = 0; i < arrayP->numProcs; i++)
 	{
 		int			pgprocno = arrayP->pgprocnos[i];
-		volatile PGPROC *proc = &allProcs[pgprocno];
+		volatile PGPROC *proc = allProcs[pgprocno];
 		volatile PGXACT *pgxact = &allPgXact[pgprocno];
 		TransactionId pxid;
 
@@ -1575,7 +1575,7 @@ TransactionIdIsActive(TransactionId xid)
 	for (i = 0; i < arrayP->numProcs; i++)
 	{
 		int			pgprocno = arrayP->pgprocnos[i];
-		volatile PGPROC *proc = &allProcs[pgprocno];
+		volatile PGPROC *proc = allProcs[pgprocno];
 		volatile PGXACT *pgxact = &allPgXact[pgprocno];
 		TransactionId pxid;
 
@@ -1872,7 +1872,7 @@ GetOldestXmin(Relation rel, int flags)
 	for (index = 0; index < arrayP->numProcs; index++)
 	{
 		int			pgprocno = arrayP->pgprocnos[index];
-		volatile PGPROC *proc = &allProcs[pgprocno];
+		volatile PGPROC *proc = allProcs[pgprocno];
 		volatile PGXACT *pgxact = &allPgXact[pgprocno];
 
 		if (pgxact->vacuumFlags & (flags & PROCARRAY_PROC_FLAGS_MASK))
@@ -2234,7 +2234,7 @@ GetSnapshotData(Snapshot snapshot)
 
 					if (nxids > 0)
 					{
-						volatile PGPROC *proc = &allProcs[pgprocno];
+						volatile PGPROC *proc = allProcs[pgprocno];
 
 						memcpy(snapshot->subxip + subcount,
 							   (void *) proc->subxids.xids,
@@ -2549,7 +2549,7 @@ ProcArrayInstallImportedXmin(TransactionId xmin,
 	for (index = 0; index < arrayP->numProcs; index++)
 	{
 		int			pgprocno = arrayP->pgprocnos[index];
-		volatile PGPROC *proc = &allProcs[pgprocno];
+		volatile PGPROC *proc = allProcs[pgprocno];
 		volatile PGXACT *pgxact = &allPgXact[pgprocno];
 		TransactionId xid;
 
@@ -2859,7 +2859,7 @@ GetRunningTransactionData(void)
 		for (index = 0; index < arrayP->numProcs; index++)
 		{
 			int			pgprocno = arrayP->pgprocnos[index];
-			volatile PGPROC *proc = &allProcs[pgprocno];
+			volatile PGPROC *proc = allProcs[pgprocno];
 			volatile PGXACT *pgxact = &allPgXact[pgprocno];
 			int			nxids;
 
@@ -3153,7 +3153,7 @@ GetVirtualXIDsDelayingChkpt(int *nvxids)
 	for (index = 0; index < arrayP->numProcs; index++)
 	{
 		int			pgprocno = arrayP->pgprocnos[index];
-		volatile PGPROC *proc = &allProcs[pgprocno];
+		volatile PGPROC *proc = allProcs[pgprocno];
 		volatile PGXACT *pgxact = &allPgXact[pgprocno];
 
 		if (pgxact->delayChkpt)
@@ -3193,7 +3193,7 @@ HaveVirtualXIDsDelayingChkpt(VirtualTransactionId *vxids, int nvxids)
 	for (index = 0; index < arrayP->numProcs; index++)
 	{
 		int			pgprocno = arrayP->pgprocnos[index];
-		volatile PGPROC *proc = &allProcs[pgprocno];
+		volatile PGPROC *proc = allProcs[pgprocno];
 		volatile PGXACT *pgxact = &allPgXact[pgprocno];
 		VirtualTransactionId vxid;
 
@@ -3263,7 +3263,7 @@ BackendPidGetProcWithLock(int pid)
 
 	for (index = 0; index < arrayP->numProcs; index++)
 	{
-		PGPROC	   *proc = &allProcs[arrayP->pgprocnos[index]];
+		PGPROC	   *proc = allProcs[arrayP->pgprocnos[index]];
 
 		if (proc->pid == pid)
 		{
@@ -3303,7 +3303,7 @@ BackendXidGetPid(TransactionId xid)
 	for (index = 0; index < arrayP->numProcs; index++)
 	{
 		int			pgprocno = arrayP->pgprocnos[index];
-		volatile PGPROC *proc = &allProcs[pgprocno];
+		volatile PGPROC *proc = allProcs[pgprocno];
 		volatile PGXACT *pgxact = &allPgXact[pgprocno];
 
 		if (pgxact->xid == xid)
@@ -3375,7 +3375,7 @@ GetCurrentVirtualXIDs(TransactionId limitXmin, bool excludeXmin0,
 	for (index = 0; index < arrayP->numProcs; index++)
 	{
 		int			pgprocno = arrayP->pgprocnos[index];
-		volatile PGPROC *proc = &allProcs[pgprocno];
+		volatile PGPROC *proc = allProcs[pgprocno];
 		volatile PGXACT *pgxact = &allPgXact[pgprocno];
 
 		if (proc == MyProc)
@@ -3472,7 +3472,7 @@ GetConflictingVirtualXIDs(TransactionId limitXmin, Oid dbOid)
 	for (index = 0; index < arrayP->numProcs; index++)
 	{
 		int			pgprocno = arrayP->pgprocnos[index];
-		volatile PGPROC *proc = &allProcs[pgprocno];
+		volatile PGPROC *proc = allProcs[pgprocno];
 		volatile PGXACT *pgxact = &allPgXact[pgprocno];
 
 		/* Exclude prepared transactions */
@@ -3531,7 +3531,7 @@ CancelVirtualTransaction(VirtualTransactionId vxid, ProcSignalReason sigmode)
 	for (index = 0; index < arrayP->numProcs; index++)
 	{
 		int			pgprocno = arrayP->pgprocnos[index];
-		volatile PGPROC *proc = &allProcs[pgprocno];
+		volatile PGPROC *proc = allProcs[pgprocno];
 		VirtualTransactionId procvxid;
 
 		GET_VXID_FROM_PGPROC(procvxid, *proc);
@@ -3586,7 +3586,7 @@ MinimumActiveBackends(int min)
 	for (index = 0; index < arrayP->numProcs; index++)
 	{
 		int			pgprocno = arrayP->pgprocnos[index];
-		volatile PGPROC *proc = &allProcs[pgprocno];
+		volatile PGPROC *proc = allProcs[pgprocno];
 		volatile PGXACT *pgxact = &allPgXact[pgprocno];
 
 		/*
@@ -3633,7 +3633,7 @@ CountDBBackends(Oid databaseid)
 	for (index = 0; index < arrayP->numProcs; index++)
 	{
 		int			pgprocno = arrayP->pgprocnos[index];
-		volatile PGPROC *proc = &allProcs[pgprocno];
+		volatile PGPROC *proc = allProcs[pgprocno];
 
 		if (proc->pid == 0)
 			continue;			/* do not count prepared xacts */
@@ -3663,7 +3663,7 @@ CountDBConnections(Oid databaseid)
 	for (index = 0; index < arrayP->numProcs; index++)
 	{
 		int			pgprocno = arrayP->pgprocnos[index];
-		volatile PGPROC *proc = &allProcs[pgprocno];
+		volatile PGPROC *proc = allProcs[pgprocno];
 
 		if (proc->pid == 0)
 			continue;			/* do not count prepared xacts */
@@ -3695,7 +3695,7 @@ CancelDBBackends(Oid databaseid, ProcSignalReason sigmode, bool conflictPending)
 	for (index = 0; index < arrayP->numProcs; index++)
 	{
 		int			pgprocno = arrayP->pgprocnos[index];
-		volatile PGPROC *proc = &allProcs[pgprocno];
+		volatile PGPROC *proc = allProcs[pgprocno];
 
 		if (databaseid == InvalidOid || proc->databaseId == databaseid)
 		{
@@ -3734,7 +3734,7 @@ CountUserBackends(Oid roleid)
 	for (index = 0; index < arrayP->numProcs; index++)
 	{
 		int			pgprocno = arrayP->pgprocnos[index];
-		volatile PGPROC *proc = &allProcs[pgprocno];
+		volatile PGPROC *proc = allProcs[pgprocno];
 
 		if (proc->pid == 0)
 			continue;			/* do not count prepared xacts */
@@ -3797,7 +3797,7 @@ CountOtherDBBackends(Oid databaseId, int *nbackends, int *nprepared)
 		for (index = 0; index < arrayP->numProcs; index++)
 		{
 			int			pgprocno = arrayP->pgprocnos[index];
-			volatile PGPROC *proc = &allProcs[pgprocno];
+			volatile PGPROC *proc = allProcs[pgprocno];
 			volatile PGXACT *pgxact = &allPgXact[pgprocno];
 
 			if (proc->databaseId != databaseId)
@@ -4896,7 +4896,7 @@ polar_get_nosuper_and_super_conn_count(int *nosupercount, int *supercount)
 	for (index = 0; index < arrayP->numProcs; index++)
 	{
 		int			pgprocno = arrayP->pgprocnos[index];
-		volatile PGPROC *proc = &allProcs[pgprocno];
+		volatile PGPROC *proc = allProcs[pgprocno];
 
 		/*
 		 * Do not count non-connection procs and prepared trans. See
@@ -4929,7 +4929,7 @@ polar_get_backend_min_replay_lsn(void)
 	for (i = 0; i < arrayP->numProcs; i++)
 	{
 		int			pgprocno = arrayP->pgprocnos[i];
-		volatile PGPROC *proc = &allProcs[pgprocno];
+		volatile PGPROC *proc = allProcs[pgprocno];
 		XLogRecPtr		read_min_lsn = InvalidXLogRecPtr;
 
 		if (proc->pid == 0)
@@ -5404,9 +5404,9 @@ polar_search_proc(pid_t pid)
 
 	for (i = 0; i < ProcGlobal->allProcCount; i++)
 	{
-		if (ProcGlobal->allProcs[i].pid == pid)
+		if (ProcGlobal->allProcs[i]->pid == pid)
 		{
-			proc = &ProcGlobal->allProcs[i];
+			proc = ProcGlobal->allProcs[i];
 			break;
 		}
 	}

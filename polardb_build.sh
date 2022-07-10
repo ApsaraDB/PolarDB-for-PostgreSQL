@@ -584,7 +584,8 @@ then
         polar_enable_persisted_buffer_pool = off
         polar_nblocks_cache_mode = 'all'
         polar_enable_replica_use_smgr_cache = on
-        polar_enable_standby_use_smgr_cache = on" >> $pg_bld_master_dir/postgresql.conf
+        polar_enable_standby_use_smgr_cache = on
+        polar_enable_numa = on" >> $pg_bld_master_dir/postgresql.conf
 
   if [[ $enable_flashback_log == "on" ]];
   then

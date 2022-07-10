@@ -62,6 +62,8 @@ endif
 
 # POLAR libs
 LIBS += -lpthread -ldl
+# POLAR NUMA libs
+LIBS += -lnuma
 # POLAR consensus libs
 ifeq ($(with_dma),yes)
 LIBS += -lprotobuf -lstdc++ -lrt -lssl -lcrypto
