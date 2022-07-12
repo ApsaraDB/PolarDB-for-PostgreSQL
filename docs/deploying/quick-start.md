@@ -11,6 +11,7 @@
   - RHEL：[在 RHEL 上安装 Docker Engine](https://docs.docker.com/engine/install/rhel/)
   - Fedora：[在 Fedora 上安装 Docker Engine](https://docs.docker.com/engine/install/fedora/)
   - macOS（支持 M1 芯片）：[在 Mac 上安装 Docker Desktop](https://docs.docker.com/desktop/mac/install/)，并建议将内存调整为 4GB 以上
+  - Windows：[在 Windows 上安装 Docker Desktop](https://docs.docker.com/desktop/windows/install/)，并建议将内存调整为 4GB 以上
 
 从 DockerHub 上拉取 PolarDB for PostgreSQL 的 [本地存储实例镜像](https://hub.docker.com/r/polardb/polardb_pg_local_instance/tags)，创建、运行并进入容器，然后直接使用 PolarDB 实例：
 
