@@ -32,6 +32,7 @@
 #include "utils/typcache.h"
 
 #include "px/px_conn.h"
+#include "px/px_copy.h"
 #include "px/px_disp.h"
 #include "px/px_disp_query.h"
 #include "px/px_dispatchresult.h"
@@ -99,6 +100,11 @@ static int fillSliceVector(SliceTable * sliceTable,
 static char *buildPXQueryString(DispatchCommandQueryParms *pQueryParms, int *finalLen);
 
 static DispatchCommandQueryParms *pxdisp_buildPlanQueryParms(struct QueryDesc *queryDesc, bool planRequiresTxn);
+static DispatchCommandQueryParms *pxdisp_buildUtilityQueryParms(struct Node *stmt, int flags, List *oid_assignments);
+
+static void pxdisp_dispatchCommandInternal(DispatchCommandQueryParms *pQueryParms,
+											int flags, List *segments,
+											PxPgResults *cdb_pgresults);
 
 static void pxdisp_dispatchX(QueryDesc *queryDesc,
 				  bool planRequiresTxn,
@@ -247,6 +253,75 @@ pxdisp_buildPlanQueryParms(struct QueryDesc *queryDesc,
 	pQueryParms->serializedQueryDispatchDesclen = sddesc_len;
 	pQueryParms->serializedSnapshot = pxsn_get_serialized_snapshot();
 	pQueryParms->serializedSnapshotlen = pxsn_get_serialized_snapshot_size();
+
+	return pQueryParms;
+}
+
+static DispatchCommandQueryParms *
+pxdisp_buildUtilityQueryParms(struct Node *stmt,
+				int flags,
+				List *oid_assignments)
+{
+	char *serializedPlantree = NULL;
+	char *serializedQueryDispatchDesc = NULL;
+	char *sparams;
+	int serializedPlantree_len = 0;
+	int serializedQueryDispatchDesc_len = 0;
+	int sparams_len = 0;
+	QueryDispatchDesc *qddesc;
+	PlannedStmt *pstmt;
+	DispatchCommandQueryParms *pQueryParms;
+	Oid	save_userid;
+
+	Assert(stmt != NULL);
+	Assert(stmt->type < 1000);
+	Assert(stmt->type > 0);
+
+	/* Wrap it in a PlannedStmt */
+	pstmt = makeNode(PlannedStmt);
+	pstmt->commandType = CMD_UTILITY;
+
+	/*
+	 * We must set q->canSetTag = true.  False would be used to hide a command
+	 * introduced by rule expansion which is not allowed to return its
+	 * completion status in the command tag (PQcmdStatus/PQcmdTuples). For
+	 * example, if the original unexpanded command was SELECT, the status
+	 * should come back as "SELECT n" and should not reflect other commands
+	 * inserted by rewrite rules.  True means we want the status.
+	 */
+	pstmt->canSetTag = true;
+	pstmt->utilityStmt = stmt;
+	pstmt->stmt_location = 0;
+	pstmt->stmt_len = 0;
+
+	/*
+	 * serialized the stmt tree, and create the sql statement: mppexec ....
+	 */
+	serializedPlantree = serializeNode((Node *) pstmt, &serializedPlantree_len,
+									   NULL /* uncompressed_size */ );
+	Assert(serializedPlantree != NULL);
+
+	if (oid_assignments)
+	{
+		qddesc = makeNode(QueryDispatchDesc);
+		qddesc->oidAssignments = oid_assignments;
+		// GetUserIdAndSecContext(&save_userid, &qddesc->secContext);
+		serializedQueryDispatchDesc = serializeNode((Node *) qddesc, &serializedQueryDispatchDesc_len,
+													NULL /* uncompressed_size */ );
+	}
+
+	pQueryParms = palloc0(sizeof(*pQueryParms));
+	pQueryParms->strCommand = PointerIsValid(debug_query_string) ? debug_query_string : "";
+	// pQueryParms->serializedQuerytree = NULL;
+	// pQueryParms->serializedQuerytreelen = 0;
+	pQueryParms->serializedPlantree = serializedPlantree;
+	pQueryParms->serializedPlantreelen = serializedPlantree_len;
+	// pQueryParms->serializedParams = sparams;
+	// pQueryParms->serializedParamslen = sparams_len;
+	pQueryParms->serializedQueryDispatchDesc = serializedQueryDispatchDesc;
+	pQueryParms->serializedQueryDispatchDesclen = serializedQueryDispatchDesc_len;
+	// pQueryParms->serializedSnapshot = pxsn_get_serialized_snapshot();
+	// pQueryParms->serializedSnapshotlen = pxsn_get_serialized_snapshot_size();
 
 	return pQueryParms;
 }
@@ -968,3 +1043,192 @@ deserializeParamListInfo(const char *str, int slen)
 	return paramLI;
 }
 
+
+/*
+ * PxDispatchCopyStart allocate a writer gang and
+ * dispatch the COPY command to segments.
+ *
+ * In COPY protocol, after a COPY command is dispatched, a response
+ * to this will be a PGresult object bearing a status code of
+ * PGRES_COPY_OUT or PGRES_COPY_IN, then client can use APIs like
+ * PQputCopyData/PQgetCopyData to copy in/out data.
+ *
+ * pxdisp_checkDispatchResult() will block until all connections
+ * has issued a PGRES_COPY_OUT/PGRES_COPY_IN PGresult response.
+ */
+void
+PxDispatchCopyStart(struct PxCopy *pxCopy, Node *stmt, int flags)
+{
+	DispatchCommandQueryParms *pQueryParms;
+	char *queryText;
+	int queryTextLength;
+	PxDispatcherState *ds;
+	Gang *primaryGang;
+	ErrorData *error = NULL;
+	// bool needTwoPhase = flags & DF_NEED_TWO_PHASE;
+
+
+	// elogif(log_min_messages <= DEBUG5, LOG,
+	// 	   "PxDispatchCopyStart: %s (needTwoPhase = %s)",
+	// 	   (PointerIsValid(debug_query_string) ? debug_query_string : "\"\""),
+	// 	   (needTwoPhase ? "true" : "false"));
+
+	pQueryParms = pxdisp_buildUtilityQueryParms(stmt, flags, NULL);
+
+	/*
+	 * Dispatch the command.
+	 */
+	ds = pxdisp_makeDispatcherState(false);
+
+	queryText = buildPXQueryString(pQueryParms, &queryTextLength);
+
+	/*
+	 * Allocate a primary QE for every available segDB in the system.
+	 */
+	primaryGang = AllocateGang(ds, GANGTYPE_PRIMARY_WRITER, pxCopy->seglist);
+	Assert(primaryGang);
+
+	pxdisp_makeDispatchResults(ds, 1, flags & DF_CANCEL_ON_ERROR);
+	pxdisp_makeDispatchParams (ds, 1, queryText, queryTextLength);
+
+	pxdisp_dispatchToGang(ds, primaryGang, -1);
+	// if ((flags & DF_NEED_TWO_PHASE) != 0 || isDtxExplicitBegin())
+	// 	addToGxactDtxSegments(primaryGang);
+
+	pxdisp_waitDispatchFinish(ds);
+
+	pxdisp_checkDispatchResult(ds, DISPATCH_WAIT_NONE);
+
+	if (!pxdisp_getDispatchResults(ds, &error))
+	{
+		FlushErrorState();
+		ReThrowError(error);
+	}
+
+	/*
+	 * Notice: Do not call pxdisp_finishCommand to destroy dispatcher state,
+	 * following PQputCopyData/PQgetCopyData will be called on those connections
+	 */
+	pxCopy->dispatcherState = ds;
+}
+
+void
+PxDispatchCopyEnd(struct PxCopy *pxCopy)
+{
+	PxDispatcherState *ds;
+
+	ds = pxCopy->dispatcherState;
+	pxCopy->dispatcherState = NULL;
+	pxdisp_destroyDispatcherState(ds);
+}
+
+
+/*
+ * PxDispatchUtilityStatement
+ *
+ * Dispatch an already parsed statement to all primary writer QEs, wait until
+ * all QEs finished successfully. If one or more QEs got error,
+ * throw an Error.
+ *
+ * -flags:
+ *      Is the combination of DF_NEED_TWO_PHASE, DF_WITH_SNAPSHOT,DF_CANCEL_ON_ERROR
+ *
+ * -px_pgresults:
+ *      Indicate whether return the pg_result for each QE connection.
+ *
+ */
+void
+PxDispatchUtilityStatement(struct Node *stmt,
+							int flags,
+							List *oid_assignments,
+							PxPgResults *px_pgresults)
+{
+	DispatchCommandQueryParms *pQueryParms;
+	bool needTwoPhase = flags & DF_NEED_TWO_PHASE;
+
+	// if (needTwoPhase)
+	// 	setupDtxTransaction();
+
+	// elogif((Debug_print_full_dtm || log_min_messages <= DEBUG5), LOG,
+	// 	   "PxDispatchUtilityStatement: %s (needTwoPhase = %s)",
+	// 	   (PointerIsValid(debug_query_string) ? debug_query_string : "\"\""),
+	// 	   (needTwoPhase ? "true" : "false"));
+
+	pQueryParms = pxdisp_buildUtilityQueryParms(stmt, flags, oid_assignments);
+
+	return pxdisp_dispatchCommandInternal(pQueryParms,
+										   flags,
+										   pxcomponent_getPxComponentsList(),
+										   px_pgresults);
+}
+
+static void
+pxdisp_dispatchCommandInternal(DispatchCommandQueryParms *pQueryParms,
+                                int flags,
+								List *segments,
+                                PxPgResults *px_pgresults)
+{
+	PxDispatcherState *ds;
+	Gang *primaryGang;
+	PxDispatchResults *pr;
+	ErrorData *qeError = NULL;
+	char *queryText;
+	int queryTextLength;
+
+	/*
+	 * Dispatch the command.
+	 */
+	ds = pxdisp_makeDispatcherState(false);
+
+	/*
+	 * Reader gangs use local snapshot to access catalog, as a result, it will
+	 * not synchronize with the global snapshot from write gang which will lead
+	 * to inconsistent visibilty of catalog table. Considering the case:
+	 *
+	 * select * from t, t t1; -- create a reader gang.
+	 * begin;
+	 * create role r1;
+	 * set role r1;  -- set command will also dispatched to idle reader gang
+	 *
+	 * When set role command dispatched to reader gang, reader gang cannot see
+	 * the new tuple t1 in catalog table pg_auth.
+	 * To fix this issue, we should drop the idle reader gangs after each
+	 * utility statement which may modify the catalog table.
+	 */
+	// ds->destroyIdleReaderGang = true;
+
+	queryText = buildPXQueryString(pQueryParms, &queryTextLength);
+
+	/*
+	 * Allocate a primary QE for every available segDB in the system.
+	 */
+	primaryGang = AllocateGang(ds, GANGTYPE_PRIMARY_WRITER, segments);
+	Assert(primaryGang);
+
+	pxdisp_makeDispatchResults(ds, 1, flags & DF_CANCEL_ON_ERROR);
+	pxdisp_makeDispatchParams (ds, 1, queryText, queryTextLength);
+
+	pxdisp_dispatchToGang(ds, primaryGang, -1);
+
+	// if ((flags & DF_NEED_TWO_PHASE) != 0 || isDtxExplicitBegin())
+	// 	addToGxactDtxSegments(primaryGang);
+
+	pxdisp_waitDispatchFinish(ds);
+
+	pxdisp_checkDispatchResult(ds, DISPATCH_WAIT_NONE);
+
+	pr = pxdisp_getDispatchResults(ds, &qeError);
+
+	if (qeError)
+	{
+		FlushErrorState();
+		ReThrowError(qeError);
+	}
+
+	/* collect pgstat from QEs for current transaction level */
+	// pgstat_combine_from_qe(pr, -1);
+
+	pxdisp_returnResults(pr, px_pgresults);
+
+	pxdisp_destroyDispatcherState(ds);
+}

@@ -14,6 +14,8 @@
  */
 #include "postgres.h"
 
+#include "libpq-int.h"
+
 #include <ctype.h>
 #include <unistd.h>
 #include <sys/stat.h>
@@ -54,177 +56,12 @@
 
 /* POLAR */
 #include "utils/guc.h"
-
+#include "px/px_copy.h"
+#include "px/px_disp_query.h"
+#include "px/px_dispatchresult.h"
 
 #define ISOCTAL(c) (((c) >= '0') && ((c) <= '7'))
 #define OCTVALUE(c) ((c) - '0')
-
-/*
- * Represents the different source/dest cases we need to worry about at
- * the bottom level
- */
-typedef enum CopyDest
-{
-	COPY_FILE,					/* to/from file (or a piped program) */
-	COPY_OLD_FE,				/* to/from frontend (2.0 protocol) */
-	COPY_NEW_FE,				/* to/from frontend (3.0 protocol) */
-	COPY_CALLBACK				/* to/from callback function */
-} CopyDest;
-
-/*
- *	Represents the end-of-line terminator type of the input
- */
-typedef enum EolType
-{
-	EOL_UNKNOWN,
-	EOL_NL,
-	EOL_CR,
-	EOL_CRNL
-} EolType;
-
-/*
- * This struct contains all the state variables used throughout a COPY
- * operation. For simplicity, we use the same struct for all variants of COPY,
- * even though some fields are used in only some cases.
- *
- * Multi-byte encodings: all supported client-side encodings encode multi-byte
- * characters by having the first byte's high bit set. Subsequent bytes of the
- * character can have the high bit not set. When scanning data in such an
- * encoding to look for a match to a single-byte (ie ASCII) character, we must
- * use the full pg_encoding_mblen() machinery to skip over multibyte
- * characters, else we might find a false match to a trailing byte. In
- * supported server encodings, there is no possibility of a false match, and
- * it's faster to make useless comparisons to trailing bytes than it is to
- * invoke pg_encoding_mblen() to skip over them. encoding_embeds_ascii is true
- * when we have to do it the hard way.
- */
-typedef struct CopyStateData
-{
-	/* low-level state data */
-	CopyDest	copy_dest;		/* type of copy source/destination */
-	FILE	   *copy_file;		/* used if copy_dest == COPY_FILE */
-	StringInfo	fe_msgbuf;		/* used for all dests during COPY TO, only for
-								 * dest == COPY_NEW_FE in COPY FROM */
-	bool		is_copy_from;	/* COPY TO, or COPY FROM? */
-	bool		reached_eof;	/* true if we read to end of copy data (not
-								 * all copy_dest types maintain this) */
-	EolType		eol_type;		/* EOL type of input */
-	int			file_encoding;	/* file or remote side's character encoding */
-	bool		need_transcoding;	/* file encoding diff from server? */
-	bool		encoding_embeds_ascii;	/* ASCII can be non-first byte? */
-
-	/* parameters from the COPY command */
-	Relation	rel;			/* relation to copy to or from */
-	QueryDesc  *queryDesc;		/* executable query to copy from */
-	List	   *attnumlist;		/* integer list of attnums to copy */
-	char	   *filename;		/* filename, or NULL for STDIN/STDOUT */
-	bool		is_program;		/* is 'filename' a program to popen? */
-	copy_data_source_cb data_source_cb; /* function for reading data */
-	bool		binary;			/* binary format? */
-	bool		oids;			/* include OIDs? */
-	bool		freeze;			/* freeze rows on loading? */
-	bool		csv_mode;		/* Comma Separated Value format? */
-	bool		header_line;	/* CSV header line? */
-	char	   *null_print;		/* NULL marker string (server encoding!) */
-	int			null_print_len; /* length of same */
-	char	   *null_print_client;	/* same converted to file encoding */
-	char	   *delim;			/* column delimiter (must be 1 byte) */
-	char	   *quote;			/* CSV quote char (must be 1 byte) */
-	char	   *escape;			/* CSV escape char (must be 1 byte) */
-	List	   *force_quote;	/* list of column names */
-	bool		force_quote_all;	/* FORCE_QUOTE *? */
-	bool	   *force_quote_flags;	/* per-column CSV FQ flags */
-	List	   *force_notnull;	/* list of column names */
-	bool	   *force_notnull_flags;	/* per-column CSV FNN flags */
-	List	   *force_null;		/* list of column names */
-	bool	   *force_null_flags;	/* per-column CSV FN flags */
-	bool		convert_selectively;	/* do selective binary conversion? */
-	List	   *convert_select; /* list of column names (can be NIL) */
-	bool	   *convert_select_flags;	/* per-column CSV/TEXT CS flags */
-
-	/* these are just for error messages, see CopyFromErrorCallback */
-	const char *cur_relname;	/* table name for error messages */
-	uint64		cur_lineno;		/* line number for error messages */
-	const char *cur_attname;	/* current att for error messages */
-	const char *cur_attval;		/* current att value for error messages */
-
-	/*
-	 * Working state for COPY TO/FROM
-	 */
-	MemoryContext copycontext;	/* per-copy execution context */
-
-	/*
-	 * Working state for COPY TO
-	 */
-	FmgrInfo   *out_functions;	/* lookup info for output functions */
-	MemoryContext rowcontext;	/* per-row evaluation context */
-
-	/*
-	 * Working state for COPY FROM
-	 */
-	AttrNumber	num_defaults;
-	bool		file_has_oids;
-	FmgrInfo	oid_in_function;
-	Oid			oid_typioparam;
-	FmgrInfo   *in_functions;	/* array of input functions for each attrs */
-	Oid		   *typioparams;	/* array of element types for in_functions */
-	int		   *defmap;			/* array of default att numbers */
-	ExprState **defexprs;		/* array of default att expressions */
-	bool		volatile_defexprs;	/* is any of defexprs volatile? */
-	List	   *range_table;
-
-	/* Tuple-routing support info */
-	PartitionTupleRouting *partition_tuple_routing;
-
-	TransitionCaptureState *transition_capture;
-
-	/*
-	 * These variables are used to reduce overhead in textual COPY FROM.
-	 *
-	 * attribute_buf holds the separated, de-escaped text for each field of
-	 * the current line.  The CopyReadAttributes functions return arrays of
-	 * pointers into this buffer.  We avoid palloc/pfree overhead by re-using
-	 * the buffer on each cycle.
-	 */
-	StringInfoData attribute_buf;
-
-	/* field raw data pointers found by COPY FROM */
-
-	int			max_fields;
-	char	  **raw_fields;
-
-	/*
-	 * Similarly, line_buf holds the whole input line being processed. The
-	 * input cycle is first to read the whole line into line_buf, convert it
-	 * to server encoding there, and then extract the individual attribute
-	 * fields into attribute_buf.  line_buf is preserved unmodified so that we
-	 * can display it in error messages if appropriate.
-	 */
-	StringInfoData line_buf;
-	bool		line_buf_converted; /* converted to server encoding? */
-	bool		line_buf_valid; /* contains the row being processed? */
-
-	/*
-	 * Finally, raw_buf holds raw data read from the data source (file or
-	 * client connection).  CopyReadLine parses this data sufficiently to
-	 * locate line boundaries, then transfers the data to line_buf and
-	 * converts it.  Note: we guarantee that there is a \0 at
-	 * raw_buf[raw_buf_len].
-	 */
-#define RAW_BUF_SIZE 65536		/* we palloc RAW_BUF_SIZE+1 bytes */
-	char	   *raw_buf;
-	int			raw_buf_index;	/* next byte to process */
-	int			raw_buf_len;	/* total # of bytes stored */
-} CopyStateData;
-
-/* DestReceiver for COPY (query) TO */
-typedef struct
-{
-	DestReceiver pub;			/* publicly-known function pointers */
-	CopyState	cstate;			/* CopyStateData for the command */
-	uint64		processed;		/* # of tuples processed */
-} DR_copy;
-
 
 /*
  * These macros centralize code used to process line_buf and raw_buf buffers.
@@ -291,6 +128,10 @@ if (1) \
 	goto not_end_of_copy; \
 } else ((void) 0)
 
+
+/* GPDB_91_MERGE_FIXME: passing through a global variable like this is ugly */
+static CopyStmt *glob_copystmt = NULL;
+
 static const char BinarySignature[11] = "PGCOPY\n\377\r\n\0";
 
 
@@ -305,6 +146,7 @@ static CopyState BeginCopyTo(ParseState *pstate, Relation rel, RawStmt *query,
 			List *attnamelist, List *options);
 static void EndCopyTo(CopyState cstate);
 static uint64 DoCopyTo(CopyState cstate);
+static uint64 CopyToDispatch(CopyState cstate);
 static uint64 CopyTo(CopyState cstate);
 static void CopyOneRowTo(CopyState cstate, Oid tupleOid,
 			 Datum *values, bool *nulls);
@@ -343,6 +185,81 @@ static void CopySendInt32(CopyState cstate, int32 val);
 static bool CopyGetInt32(CopyState cstate, int32 *val);
 static void CopySendInt16(CopyState cstate, int16 val);
 static bool CopyGetInt16(CopyState cstate, int16 *val);
+
+
+typedef struct
+{
+	/*
+	 * First field that should be processed in the QE. Any fields before
+	 * this will be included as Datums in the rows that follow.
+	 */
+	int16		first_qe_processed_field;
+} copy_from_dispatch_header;
+
+typedef struct
+{
+	/*
+	 * Information about this input line.
+	 *
+	 * 'relid' is the target relation's OID. Normally, the same as
+	 * cstate->relid, but for a partitioned relation, it indicates the target
+	 * partition. Note: this must be the first field, because InvalidOid means
+	 * that this is actually a 'copy_from_dispatch_error' struct.
+	 *
+	 * 'lineno' is the input line number, for error reporting.
+	 */
+	int64		lineno;
+	Oid			relid;
+
+	uint32		line_len;			/* size of the included input line */
+	uint32		residual_off;		/* offset in the line, where QE should
+									 * process remaining fields */
+	bool		delim_seen_at_end;  /* conveys to QE if QD saw a delim at end
+									 * of its processing */
+	uint16		fld_count;			/* # of fields that were processed in the
+									 * QD. */
+
+	/* The input line follows. */
+
+	/*
+	 * For each field that was parsed in the QD already, the following data follows:
+	 *
+	 * int16	fieldnum;
+	 * <data>
+	 *
+	 * NULL values are not included, any attributes that are not included in
+	 * the message are implicitly NULL.
+	 *
+	 * For pass-by-value datatypes, the <data> is the raw Datum. For
+	 * simplicity, it is always sent as a full-width 8-byte Datum, regardless
+	 * of the datatype's length.
+	 *
+	 * For other fixed width datatypes, <data> is the datatype's value.
+	 *
+	 * For variable-length datatypes, <data> begins with a 4-byte length field,
+	 * followed by the data. Cstrings (typlen = -2) are also sent in this
+	 * format.
+	 */
+} copy_from_dispatch_row;
+
+/* Size of the struct, without padding at the end. */
+#define SizeOfCopyFromDispatchRow (offsetof(copy_from_dispatch_row, fld_count) + sizeof(uint16))
+
+typedef struct
+{
+	int64		error_marker;	/* constant -1, to mark that this is an error
+								 * frame rather than 'copy_from_dispatch_row' */
+	int64		lineno;
+	uint32		errmsg_len;
+	uint32		line_len;
+	bool		line_buf_converted;
+
+	/* 'errmsg' follows */
+	/* 'line' follows */
+} copy_from_dispatch_error;
+
+/* Size of the struct, without padding at the end. */
+#define SizeOfCopyFromDispatchError (offsetof(copy_from_dispatch_error, line_buf_converted) + sizeof(bool))
 
 
 /*
@@ -539,6 +456,77 @@ CopySendEndOfRow(CopyState cstate)
 			break;
 		case COPY_CALLBACK:
 			Assert(false);		/* Not yet supported. */
+			break;
+	}
+
+	resetStringInfo(fe_msgbuf);
+}
+
+/*
+ * AXG: This one is equivalent to CopySendEndOfRow() besides that
+ * it doesn't send end of row - it just flushed the data. We need
+ * this method for the dispatcher COPY TO since it already has data
+ * with newlines (from the executors).
+ */
+static void
+CopyToDispatchFlush(CopyState cstate)
+{
+	StringInfo	fe_msgbuf = cstate->fe_msgbuf;
+
+	switch (cstate->copy_dest)
+	{
+		case COPY_FILE:
+
+			(void) fwrite(fe_msgbuf->data, fe_msgbuf->len,
+						  1, cstate->copy_file);
+			if (ferror(cstate->copy_file))
+			{
+				if (cstate->is_program)
+				{
+					if (errno == EPIPE)
+					{
+						/*
+						 * The pipe will be closed automatically on error at
+						 * the end of transaction, but we might get a better
+						 * error message from the subprocess' exit code than
+						 * just "Broken Pipe"
+						 */
+						ClosePipeToProgram(cstate);
+
+						/*
+						 * If ClosePipeToProgram() didn't throw an error,
+						 * the program terminated normally, but closed the
+						 * pipe first. Restore errno, and throw an error.
+						 */
+						errno = EPIPE;
+					}
+					ereport(ERROR,
+							(errcode_for_file_access(),
+							 errmsg("could not write to COPY program: %m")));
+				}
+				else
+					ereport(ERROR,
+						(errcode_for_file_access(),
+						 errmsg("could not write to COPY file: %m")));
+			}
+			break;
+		case COPY_OLD_FE:
+
+			if (pq_putbytes(fe_msgbuf->data, fe_msgbuf->len))
+			{
+				/* no hope of recovering connection sync, so FATAL */
+				ereport(FATAL,
+						(errcode(ERRCODE_CONNECTION_FAILURE),
+						 errmsg("connection lost during COPY to stdout")));
+			}
+			break;
+		case COPY_NEW_FE:
+
+			/* Dump the accumulated row as one CopyData message */
+			(void) pq_putmessage('d', fe_msgbuf->data, fe_msgbuf->len);
+			break;
+		case COPY_CALLBACK:
+			elog(ERROR, "unexpected destination COPY_CALLBACK to flush data");
 			break;
 	}
 
@@ -792,10 +780,14 @@ DoCopy(ParseState *pstate, const CopyStmt *stmt,
 {
 	CopyState	cstate;
 	bool		is_from = stmt->is_from;
-	bool		pipe = (stmt->filename == NULL);
+	bool		pipe = (stmt->filename == NULL || px_role == PX_ROLE_PX);
 	Relation	rel;
 	Oid			relid;
 	RawStmt    *query = NULL;
+	List	   *options;
+
+	glob_copystmt = (CopyStmt *) stmt;
+	options = stmt->options;
 
 	/*
 	 * Disallow COPY to/from file or program except to users with the
@@ -1001,12 +993,22 @@ DoCopy(ParseState *pstate, const CopyStmt *stmt,
 	}
 	else
 	{
-		cstate = BeginCopyTo(pstate, rel, query, relid,
-							 stmt->filename, stmt->is_program,
-							 stmt->attlist, stmt->options);
-		*processed = DoCopyTo(cstate);	/* copy from database to file */
+		PG_TRY();
+		{
+			cstate = BeginCopyTo(pstate, rel, query, relid,
+								 stmt->filename, stmt->is_program,
+								 stmt->attlist, stmt->options);
+				*processed = DoCopyTo(cstate);	/* copy from database to file */
+		}
+		PG_CATCH();
+		{
+			PG_RE_THROW();
+		}
+		PG_END_TRY();
+
 		EndCopyTo(cstate);
 	}
+
 
 	/*
 	 * Close the relation. If reading, we can release the AccessShareLock we
@@ -1921,10 +1923,31 @@ DoCopyTo(CopyState cstate)
 		if (fe_copy)
 			SendCopyBegin(cstate);
 
-		processed = CopyTo(cstate);
+		/*
+		 * We want to dispatch COPY TO commands only in the case that
+		 * we are the dispatcher and we are copying from a user relation
+		 * (a relation where data is distributed in the segment databases).
+		 * Otherwize, if we are not the dispatcher *or* if we are
+		 * doing COPY (SELECT) we just go straight to work, without
+		 * dispatching COPY commands to executors.
+		 */
+		// if (px_role == PX_ROLE_QC && cstate->rel && cstate->rel->rd_pxpolicy && px_enable_copy)
+		if (px_role == PX_ROLE_QC && cstate->rel && px_enable_copy)
+			processed = CopyToDispatch(cstate);
+		else
+			processed = CopyTo(cstate);
 
 		if (fe_copy)
 			SendCopyEnd(cstate);
+		else if (px_role == PX_ROLE_PX)
+		{
+			/*
+			 * For COPY ON SEGMENT command, switch back to front end
+			 * before sending copy end which is "\."
+			 */
+			cstate->copy_dest = COPY_NEW_FE;
+			SendCopyEnd(cstate);
+		}
 	}
 	PG_CATCH();
 	{
@@ -1933,6 +1956,9 @@ DoCopyTo(CopyState cstate)
 		 * okay to do this in all cases, since it does nothing if the mode is
 		 * not on.
 		 */
+		if (px_role == PX_ROLE_PX && px_enable_copy)
+			cstate->copy_dest = COPY_NEW_FE;
+
 		pq_endcopyout(true);
 		PG_RE_THROW();
 	}
@@ -1958,6 +1984,167 @@ EndCopyTo(CopyState cstate)
 
 	/* Clean up storage */
 	EndCopy(cstate);
+}
+
+/*
+ * Copy FROM relation TO file, in the dispatcher. Starts a COPY TO command on
+ * each of the executors and gathers all the results and writes it out.
+ */
+static uint64
+CopyToDispatch(CopyState cstate)
+{
+	CopyStmt   *stmt = glob_copystmt;
+	TupleDesc	tupDesc;
+	int			num_phys_attrs;
+	int			attr_count;
+	FormData_pg_attribute *attr;
+	PxCopy    *pxCopy;
+	uint64		processed = 0;
+
+	tupDesc = cstate->rel->rd_att;
+	attr = tupDesc->attrs;
+	num_phys_attrs = tupDesc->natts;
+	attr_count = list_length(cstate->attnumlist);
+
+	/* We use fe_msgbuf as a per-row buffer regardless of copy_dest */
+	cstate->fe_msgbuf = makeStringInfo();
+
+	pxCopy = makePxCopy(cstate, false);
+
+	/* XXX: lock all partitions */
+
+	/*
+	 * Start a COPY command in every db of every segment in Greenplum Database.
+	 *
+	 * From this point in the code we need to be extra careful
+	 * about error handling. ereport() must not be called until
+	 * the COPY command sessions are closed on the executors.
+	 * Calling ereport() will leave the executors hanging in
+	 * COPY state.
+	 */
+	elog(DEBUG5, "COPY command sent to segdbs");
+
+	PG_TRY();
+	{
+		bool		done;
+
+		pxCopyStart(pxCopy, stmt, cstate->file_encoding);
+
+		if (cstate->binary)
+		{
+			/* Generate header for a binary copy */
+			int32		tmp;
+
+			/* Signature */
+			CopySendData(cstate, (char *) BinarySignature, 11);
+			/* Flags field */
+			tmp = 0;
+			CopySendInt32(cstate, tmp);
+			/* No header extension */
+			tmp = 0;
+			CopySendInt32(cstate, tmp);
+		}
+
+		/* if a header has been requested send the line */
+		if (cstate->header_line)
+		{
+			ListCell   *cur;
+			bool		hdr_delim = false;
+
+			/*
+			 * For non-binary copy, we need to convert null_print to client
+			 * encoding, because it will be sent directly with CopySendString.
+			 *
+			 * MPP: in here we only care about this if we need to print the
+			 * header. We rely on the segdb server copy out to do the conversion
+			 * before sending the data rows out. We don't need to repeat it here
+			 */
+			if (cstate->need_transcoding)
+				cstate->null_print = (char *)
+					// pg_server_to_custom(cstate->null_print,
+					// 					strlen(cstate->null_print),
+					// 					cstate->file_encoding,
+					// 					cstate->enc_conversion_proc);
+					pg_server_to_any(cstate->null_print,
+									 strlen(cstate->null_print),
+									 cstate->file_encoding);
+
+			foreach(cur, cstate->attnumlist)
+			{
+				int			attnum = lfirst_int(cur);
+				char	   *colname;
+
+				if (hdr_delim)
+					CopySendChar(cstate, cstate->delim[0]);
+				hdr_delim = true;
+
+				colname = NameStr(attr[attnum - 1].attname);
+
+				CopyAttributeOutCSV(cstate, colname, false,
+									list_length(cstate->attnumlist) == 1);
+			}
+
+			/* add a newline and flush the data */
+			CopySendEndOfRow(cstate);
+		}
+
+		/*
+		 * This is the main work-loop. In here we keep collecting data from the
+		 * COPY commands on the segdbs, until no more data is available. We
+		 * keep writing data out a chunk at a time.
+		 */
+		do
+		{
+			bool		copy_cancel = (QueryCancelPending ? true : false);
+
+			/* get a chunk of data rows from the QE's */
+			done = pxCopyGetData(pxCopy, copy_cancel, &processed);
+
+			/* send the chunk of data rows to destination (file or stdout) */
+			if (pxCopy->copy_out_buf.len > 0) /* conditional is important! */
+			{
+				/*
+				 * in the dispatcher we receive chunks of whole rows with row endings.
+				 * We don't want to use CopySendEndOfRow() b/c it adds row endings and
+				 * also b/c it's intended for a single row at a time. Therefore we need
+				 * to fill in the out buffer and just flush it instead.
+				 */
+				CopySendData(cstate, (void *) pxCopy->copy_out_buf.data, pxCopy->copy_out_buf.len);
+				CopyToDispatchFlush(cstate);
+			}
+		} while(!done);
+
+		pxCopyEnd(pxCopy, NULL, NULL);
+
+		/* now it's safe to destroy the whole dispatcher state */
+		PxDispatchCopyEnd(pxCopy);
+	}
+    /* catch error from CopyStart, CopySendEndOfRow or CopyToDispatchFlush */
+	PG_CATCH();
+	{
+		MemoryContext oldcontext = MemoryContextSwitchTo(cstate->copycontext);
+
+		pxCopyAbort(pxCopy);
+
+		MemoryContextSwitchTo(oldcontext);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (cstate->binary)
+	{
+		/* Generate trailer for a binary copy */
+		CopySendInt16(cstate, -1);
+		/* Need to flush out the trailer */
+		CopySendEndOfRow(cstate);
+	}
+
+	/* we can throw the error now if QueryCancelPending was set previously */
+	CHECK_FOR_INTERRUPTS();
+
+	pfree(pxCopy);
+
+	return processed;
 }
 
 /*

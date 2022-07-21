@@ -2978,6 +2978,21 @@ _readDMLActionExpr(void)
 
 	READ_DONE();
 }
+
+static CopyStmt *
+_readCopyStmt(void)
+{
+	READ_LOCALS(CopyStmt);
+
+	READ_NODE_FIELD(relation);
+	READ_NODE_FIELD(attlist);
+	READ_BOOL_FIELD(is_from);
+	READ_BOOL_FIELD(is_program);
+	READ_STRING_FIELD(filename);
+	READ_NODE_FIELD(options);
+
+	READ_DONE();
+}
 /* POLAR end */
 
 
@@ -3265,6 +3280,8 @@ parseNodeString(void)
 		return_value = _readSplitUpdate();
 	else if (MATCH("DMLACTIONEXPR", 13))
 		return_value = _readDMLActionExpr();
+	else if (MATCH("COPYSTMT", 8))
+		return_value = _readCopyStmt();
 	/* POLAR end */
 	else
 	{

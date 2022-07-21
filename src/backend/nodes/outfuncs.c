@@ -2941,6 +2941,22 @@ _outDeclareCursorStmt(StringInfo str, const DeclareCursorStmt *node)
 	WRITE_NODE_FIELD(query);
 }
 
+// #ifndef COMPILING_BINARY_FUNCS
+static void
+_outCopyStmt(StringInfo str, const CopyStmt *node)
+{
+	WRITE_NODE_TYPE("COPYSTMT");
+
+	WRITE_NODE_FIELD(relation);
+	WRITE_NODE_FIELD(attlist);
+	WRITE_BOOL_FIELD(is_from);
+	WRITE_BOOL_FIELD(is_program);
+	WRITE_STRING_FIELD(filename);
+	WRITE_NODE_FIELD(options);
+	// WRITE_NODE_FIELD(sreh);
+}
+// #endif/* COMPILING_BINARY_FUNCS */
+
 static void
 _outSelectStmt(StringInfo str, const SelectStmt *node)
 {
@@ -4591,6 +4607,9 @@ outNode(StringInfo str, const void *obj)
 				break;
 			case T_DeclareCursorStmt:
 				_outDeclareCursorStmt(str, obj);
+				break;
+			case T_CopyStmt:
+				_outCopyStmt(str, obj);
 				break;
 			case T_SelectStmt:
 				_outSelectStmt(str, obj);

@@ -730,3 +730,20 @@ getPxWorkerCount(void)
 		numsegments = 1;
 	return numsegments;
 }
+
+List *
+pxcomponent_getPxComponentsList(void)
+{
+	PxNodes *px_nodes;;
+	List *segments = NIL;
+	int i;
+
+	px_nodes = pxnode_getPxNodes();
+
+	for (i = 0; i < px_nodes->totalPxNodes; i++)
+	{
+		segments = lappend_int(segments, i);
+	}
+
+	return segments;
+}

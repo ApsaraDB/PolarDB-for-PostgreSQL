@@ -76,6 +76,8 @@ extern List *getPxProcessesForQC(int isPrimary);
 extern Gang *AllocateGang(struct PxDispatcherState *ds, enum GangType type, List *segments);
 extern void RecycleGang(Gang *gp, bool forceDestroy);
 
+extern struct PxWorkerDescriptor *getSegmentDescriptorFromGang(const Gang *gp, int seg);
+
 Gang	   *buildGangDefinition(List *segments, SegmentType segmentType);
 bool build_pxid_param(char *buf, int bufsz, int identifier, int icHtabSize);
 
