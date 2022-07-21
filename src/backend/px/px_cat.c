@@ -88,3 +88,39 @@ createRandomPartitionedPolicy(int numsegments)
 {
 	return makePxPolicy(POLICYTYPE_PARTITIONED, 0, numsegments);
 }
+
+
+/*
+ * createReplicatedPxPolicy-- Create a policy with replicated distribution
+ */
+PxPolicy *
+createReplicatedPolicy(int numsegments)
+{
+	return makePxPolicy(POLICYTYPE_REPLICATED, 0, numsegments);
+}
+
+
+/*
+ * PxPolicyCopy -- Return a copy of a PxPolicy object.
+ *
+ * The copy is palloc'ed.
+ */
+PxPolicy *
+PxPolicyCopy(const PxPolicy *src)
+{
+	PxPolicy   *tgt;
+	int i;
+
+	if (!src)
+		return NULL;
+
+	tgt = makePxPolicy(src->ptype, src->nattrs, src->numsegments);
+
+	for (i = 0; i < src->nattrs; i++)
+	{
+		tgt->attrs[i] = src->attrs[i];
+		tgt->opclasses[i] = src->opclasses[i];
+	}
+
+	return tgt;
+}								/* PxPolicyCopy */
