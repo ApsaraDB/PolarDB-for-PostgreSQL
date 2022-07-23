@@ -43,7 +43,7 @@
  *
  * Portions Copyright (c) 2005-2008, Greenplum inc
  * Portions Copyright (c) 2012-Present VMware, Inc. or its affiliates.
- *
+ * Portions Copyright (c) 2021, Alibaba Group Holding Limited
  *
  * IDENTIFICATION
  *	    src/backend/px/px_copy.c
@@ -111,19 +111,28 @@ makePxCopy(CopyState cstate, bool is_copy_in)
 	c = palloc0(sizeof(PxCopy));
 
 	/* fresh start */
+
+  
 	c->total_segs = 0;
 	c->copy_in = is_copy_in;
 	c->seglist = NIL;
 	c->dispatcherState = NULL;
 	initStringInfo(&(c->copy_out_buf));
+  
+  if (!is_copy_in)
+	{
+		c->total_segs = 1;
+		c->seglist = list_make1_int(px_session_id % c->total_segs);
+	}
+	else
+	{
+		int	i;
 
-	
-	int			i;
+		c->total_segs = policy->numsegments;
 
-	c->total_segs = policy->numsegments;
-
-	for (i = 0; i < c->total_segs; i++)
-		c->seglist = lappend_int(c->seglist, i);
+		for (i = 0; i < c->total_segs; i++)
+			c->seglist = lappend_int(c->seglist, i);
+	}
 
 	cstate->pxCopy = c;
 
@@ -432,7 +441,7 @@ pxCopyEndInternal(PxCopy *c, char *abort_msg,
 	struct pollfd	*pollRead;
 	bool		io_errors = false;
 	StringInfoData io_err_msg;
-	// List           *oidList = NIL;
+	List           *oidList = NIL;
 	int				nest_level;
 
 	SIMPLE_FAULT_INJECTOR("px_copy_end_internal_start");
@@ -559,8 +568,6 @@ pxCopyEndInternal(PxCopy *c, char *abort_msg,
 				if (!first_error)
 					first_error = pxdisp_get_PXerror(res);
 			}
-
-			// pgstat_combine_one_qe_result(&oidList, res, nest_level, q->logicalWorkerInfo.idx);
 
 			// if (q->conn->wrote_xlog)
 			// {

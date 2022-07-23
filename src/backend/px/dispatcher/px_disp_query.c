@@ -264,10 +264,8 @@ pxdisp_buildUtilityQueryParms(struct Node *stmt,
 {
 	char *serializedPlantree = NULL;
 	char *serializedQueryDispatchDesc = NULL;
-	char *sparams;
 	int serializedPlantree_len = 0;
 	int serializedQueryDispatchDesc_len = 0;
-	int sparams_len = 0;
 	QueryDispatchDesc *qddesc;
 	PlannedStmt *pstmt;
 	DispatchCommandQueryParms *pQueryParms;
@@ -305,23 +303,20 @@ pxdisp_buildUtilityQueryParms(struct Node *stmt,
 	{
 		qddesc = makeNode(QueryDispatchDesc);
 		qddesc->oidAssignments = oid_assignments;
-		// GetUserIdAndSecContext(&save_userid, &qddesc->secContext);
 		serializedQueryDispatchDesc = serializeNode((Node *) qddesc, &serializedQueryDispatchDesc_len,
 													NULL /* uncompressed_size */ );
 	}
 
 	pQueryParms = palloc0(sizeof(*pQueryParms));
 	pQueryParms->strCommand = PointerIsValid(debug_query_string) ? debug_query_string : "";
-	// pQueryParms->serializedQuerytree = NULL;
-	// pQueryParms->serializedQuerytreelen = 0;
+	pQueryParms->serializedQuerytree = NULL;
+	pQueryParms->serializedQuerytreelen = 0;
 	pQueryParms->serializedPlantree = serializedPlantree;
 	pQueryParms->serializedPlantreelen = serializedPlantree_len;
-	// pQueryParms->serializedParams = sparams;
-	// pQueryParms->serializedParamslen = sparams_len;
 	pQueryParms->serializedQueryDispatchDesc = serializedQueryDispatchDesc;
 	pQueryParms->serializedQueryDispatchDesclen = serializedQueryDispatchDesc_len;
-	// pQueryParms->serializedSnapshot = pxsn_get_serialized_snapshot();
-	// pQueryParms->serializedSnapshotlen = pxsn_get_serialized_snapshot_size();
+	pQueryParms->serializedSnapshot = pxsn_get_serialized_snapshot();
+	pQueryParms->serializedSnapshotlen = pxsn_get_serialized_snapshot_size();
 
 	return pQueryParms;
 }
@@ -1065,8 +1060,12 @@ PxDispatchCopyStart(struct PxCopy *pxCopy, Node *stmt, int flags)
 	PxDispatcherState *ds;
 	Gang *primaryGang;
 	ErrorData *error = NULL;
-	// bool needTwoPhase = flags & DF_NEED_TWO_PHASE;
-
+	bool needTwoPhase = flags & DF_NEED_TWO_PHASE;
+  
+  // if (needTwoPhase)
+  // {
+	px_sql_wal_lsn = polar_px_max_valid_lsn();
+  // }
 
 	// elogif(log_min_messages <= DEBUG5, LOG,
 	// 	   "PxDispatchCopyStart: %s (needTwoPhase = %s)",
@@ -1094,8 +1093,12 @@ PxDispatchCopyStart(struct PxCopy *pxCopy, Node *stmt, int flags)
 	pxdisp_dispatchToGang(ds, primaryGang, -1);
 	// if ((flags & DF_NEED_TWO_PHASE) != 0 || isDtxExplicitBegin())
 	// 	addToGxactDtxSegments(primaryGang);
-
-	pxdisp_waitDispatchFinish(ds);
+  
+  // 	/* Start a background libpq thread */
+	// pxdisp_startPqThread(ds);
+	// /* If libpq is not run in background*/
+	// if (!pxdisp_isDsThreadRuning())
+	// 	pxdisp_waitDispatchFinish(ds);
 
 	pxdisp_checkDispatchResult(ds, DISPATCH_WAIT_NONE);
 

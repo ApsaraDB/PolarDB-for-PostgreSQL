@@ -1531,7 +1531,10 @@ BeginCopy(ParseState *pstate,
 		}
 
 		/* plan the query */
-		plan = pg_plan_query(query, CURSOR_OPT_PX_OK, NULL);
+		int cursor_options = CURSOR_OPT_PARALLEL_OK;
+		if (px_enable_copy)
+			cursor_options |= CURSOR_OPT_PX_OK;
+		plan = pg_plan_query(query, cursor_options, NULL);
 
 		/*
 		 * With row level security and a user using "COPY relation TO", we
@@ -1995,16 +1998,12 @@ CopyToDispatch(CopyState cstate)
 {
 	CopyStmt   *stmt = glob_copystmt;
 	TupleDesc	tupDesc;
-	int			num_phys_attrs;
-	int			attr_count;
 	FormData_pg_attribute *attr;
 	PxCopy    *pxCopy;
 	uint64		processed = 0;
 
 	tupDesc = cstate->rel->rd_att;
 	attr = tupDesc->attrs;
-	num_phys_attrs = tupDesc->natts;
-	attr_count = list_length(cstate->attnumlist);
 
 	/* We use fe_msgbuf as a per-row buffer regardless of copy_dest */
 	cstate->fe_msgbuf = makeStringInfo();
@@ -2061,10 +2060,6 @@ CopyToDispatch(CopyState cstate)
 			 */
 			if (cstate->need_transcoding)
 				cstate->null_print = (char *)
-					// pg_server_to_custom(cstate->null_print,
-					// 					strlen(cstate->null_print),
-					// 					cstate->file_encoding,
-					// 					cstate->enc_conversion_proc);
 					pg_server_to_any(cstate->null_print,
 									 strlen(cstate->null_print),
 									 cstate->file_encoding);
