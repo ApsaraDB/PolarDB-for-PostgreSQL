@@ -61,20 +61,17 @@ export const en: NavbarConfig = [
     link: "/theory/",
     children: [
       {
-        text: "Architecture Overview",
-        link: "/theory/arch-overview.html",
+        text: "PolarDB for PostgreSQL",
+        children: [
+          "/theory/arch-overview.html",
+          "/theory/buffer-management.html",
+          "/theory/ddl-synchronization.html",
+          "/theory/logindex.html",
+        ],
       },
       {
-        text: "Buffer Management",
-        link: "/theory/buffer-management.html",
-      },
-      {
-        text: "DDL Synchronization",
-        link: "/theory/ddl-synchronization.html",
-      },
-      {
-        text: "LogIndex",
-        link: "/theory/logindex.html",
+        text: "PostgreSQL",
+        children: ["/theory/analyze.html"],
       },
     ],
   },
@@ -84,11 +81,11 @@ export const en: NavbarConfig = [
     children: [
       {
         text: "Development on Docker",
-        link: "/development/dev-on-docker.md",
+        link: "/development/dev-on-docker.html",
       },
       {
         text: "Customize Development Environment",
-        link: "/development/customize-dev-env.md",
+        link: "/development/customize-dev-env.html",
       },
     ],
   },

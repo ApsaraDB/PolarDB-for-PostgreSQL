@@ -100,6 +100,7 @@ psql -h 127.0.0.1 -c 'select version();'
       <li><a href="./theory/buffer-management.html">缓冲区管理</a></li>
       <li><a href="./theory/ddl-synchronization.html">DDL 同步</a></li>
       <li><a href="./theory/logindex.html">LogIndex</a></li>
+      <li><a href="./theory/analyze.html">ANALYZE 源码解读</a></li>
     </ul>
   </div>
 

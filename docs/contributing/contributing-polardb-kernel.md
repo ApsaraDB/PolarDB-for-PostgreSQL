@@ -19,7 +19,7 @@ New features will be merged to `POLARDB_11_DEV`, and will be merged to `POLARDB_
 Here is a checklist to prepare and submit your PR (pull request):
 
 - Create your own Github repository copy by forking `ApsaraDB/PolarDB-for-PostgreSQL`.
-- Checkout documentations for [quick start](../guide/quick-start.md) from PolarDB source code.
+- Checkout documentations for [Advanced Deployment](../deploying/deploy.md) from PolarDB source code.
 - Push changes to your personal fork and make sure they follow our [coding style](./coding-style.md).
 - Create a PR with a detailed description, if commit messages do not express themselves.
 - Submit PR for review and address all feedbacks.

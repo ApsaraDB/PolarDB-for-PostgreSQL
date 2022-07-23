@@ -17,7 +17,7 @@ PolarDB for PostgreSQL 基于 PostgreSQL 和其它开源项目进行开发，我
 ## 贡献流程
 
 - 在 `ApsaraDB/PolarDB-for-PostgreSQL` 仓库点击 `fork` 复制一个属于您自己的仓库
-- 查阅 [入门指南](../guide/quick-start.md) 了解如何从源码编译开发 PolarDB
+- 查阅 [进阶部署](../deploying/deploy.md) 了解如何从源码编译开发 PolarDB
 - 向您的复制源码仓库推送代码，并确保代码符合我们的 [编码风格规范](./coding-style.md)
 - 向 PolarDB 官方源码仓库发起 pull request；如果 commit message 本身不能很好地表达您的贡献内容，您可以在 PR 中给出较为细节的描述
 - 等待维护者评审您的代码，讨论并解决所有的评审意见
