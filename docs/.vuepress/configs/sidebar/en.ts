@@ -69,10 +69,19 @@ export const en: SidebarConfig = {
     {
       text: "Theory",
       children: [
-        "/theory/arch-overview.md",
-        "/theory/buffer-management.md",
-        "/theory/ddl-synchronization.md",
-        "/theory/logindex.md",
+        {
+          text: "PolarDB for PostgreSQL",
+          children: [
+            "/theory/arch-overview.md",
+            "/theory/buffer-management.md",
+            "/theory/ddl-synchronization.md",
+            "/theory/logindex.md",
+          ],
+        },
+        {
+          text: "PostgreSQL",
+          children: ["/theory/analyze.md"],
+        },
       ],
     },
   ],

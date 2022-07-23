@@ -97,6 +97,7 @@ psql -h 127.0.0.1 -c 'select version();'
       <li><a href="./theory/buffer-management.html">Buffer Management</a></li>
       <li><a href="./theory/ddl-synchronization.html">DDL Synchronization</a></li>
       <li><a href="./theory/logindex.html">LogIndex</a></li>
+      <li><a href="./theory/analyze.html">Code Analysis of ANALYZE</a></li>
     </ul>
   </div>
 
