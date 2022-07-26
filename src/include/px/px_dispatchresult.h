@@ -272,6 +272,9 @@ PxDispatchResult *pxdisp_resultBegin(PxDispatchResults *results, int sliceIndex)
  */
 PxDispatchResult *pxdisp_resultEnd(PxDispatchResults *results, int sliceIndex);
 
+void
+pxdisp_returnResults(PxDispatchResults *primaryResults, PxPgResults *cdb_pgresults);
+
 /*
  * used in the interconnect on the dispatcher to avoid error-cleanup deadlocks.
  */
@@ -286,6 +289,9 @@ bool
 void pxdisp_makeDispatchResults(struct PxDispatcherState *ds,
 							int sliceCapacity,
 							bool cancelOnError);
+
+void
+pxdisp_clearPxPgResults(PxPgResults* px_pgresults);
 
 /* Px adaptive scan */
 extern volatile bool px_adps_dispatch_wait;

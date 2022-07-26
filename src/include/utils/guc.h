@@ -804,6 +804,7 @@ extern bool px_optimizer_enable_relsize_collection;
 
 /* Optimizer related gucs */
 extern bool	polar_enable_px;
+extern bool	px_enable_copy;
 extern bool	px_enable_executor;
 extern bool px_enable_join;
 extern bool px_enable_window_function;

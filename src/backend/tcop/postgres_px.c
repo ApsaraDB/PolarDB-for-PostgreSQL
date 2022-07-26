@@ -193,7 +193,8 @@ exec_px_query(const char *query_string,
 	    if (plan->commandType != CMD_SELECT &&
         	plan->commandType != CMD_INSERT &&
         	plan->commandType != CMD_UPDATE &&
-        	plan->commandType != CMD_DELETE)
+        	plan->commandType != CMD_DELETE &&
+        	plan->commandType != CMD_UTILITY)
         	elog(ERROR, "POLARPX: received non-DML Plan");
 
         commandType = plan->commandType;
