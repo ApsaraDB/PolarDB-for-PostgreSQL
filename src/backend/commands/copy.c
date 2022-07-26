@@ -1532,7 +1532,7 @@ BeginCopy(ParseState *pstate,
 
 		/* plan the query */
 		int cursor_options = CURSOR_OPT_PARALLEL_OK;
-		if (px_enable_copy)
+		if (px_enable_copy && polar_enable_px)
 			cursor_options |= CURSOR_OPT_PX_OK;
 		plan = pg_plan_query(query, cursor_options, NULL);
 
