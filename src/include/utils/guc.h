@@ -984,6 +984,7 @@ extern bool	px_enable_udp_testmode;
 extern bool	px_enable_tcp_testmode;
 extern bool px_enable_remove_redundant_results;
 extern bool px_enable_btbuild;
+extern bool px_enable_create_table_as;
 extern bool px_enable_btbuild_cic_phase2;
 extern int 	px_btbuild_batch_size;
 extern int	px_btbuild_mem_size;

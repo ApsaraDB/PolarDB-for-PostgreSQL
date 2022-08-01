@@ -128,6 +128,7 @@ function px_init() {
   echo "polar_px_wait_lock_timeout=1800000" >> $pg_bld_master_dir/postgresql.conf
   echo "polar_px_enable_partitionwise_join=1" >> $pg_bld_master_dir/postgresql.conf
   echo "polar_px_optimizer_multilevel_partitioning=1" >> $pg_bld_master_dir/postgresql.conf
+  echo "polar_px_enable_create_table_as=0" >> $pg_bld_master_dir/postgresql.conf
   echo "polar_px_max_slices=1000000" >> $pg_bld_master_dir/postgresql.conf
   echo "polar_px_enable_adps=1" >> $pg_bld_master_dir/postgresql.conf
   echo "polar_px_enable_adps_explain_analyze=1" >> $pg_bld_master_dir/postgresql.conf

@@ -236,6 +236,8 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 	List	   *rewritten;
 	PlannedStmt *plan;
 	QueryDesc  *queryDesc;
+	int cursorOptions = CURSOR_OPT_PARALLEL_OK;
+
 
 	if (stmt->if_not_exists)
 	{
@@ -326,8 +328,11 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 		query = linitial_node(Query, rewritten);
 		Assert(query->commandType == CMD_SELECT);
 
+		if (px_enable_create_table_as)
+			cursorOptions |= CURSOR_OPT_PX_OK;
+
 		/* plan the query */
-		plan = pg_plan_query(query, CURSOR_OPT_PARALLEL_OK, params);
+		plan = pg_plan_query(query, cursorOptions, params);
 
 		/*
 		 * Use a snapshot with an updated command ID to ensure this query sees
