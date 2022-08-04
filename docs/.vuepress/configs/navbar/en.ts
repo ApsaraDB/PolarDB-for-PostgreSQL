@@ -48,11 +48,11 @@ export const en: NavbarConfig = [
   },
   {
     text: "Features",
-    link: "/zh/features/",
+    link: "/features/",
     children: [
       {
         text: "HTAP",
-        children: ["/zh/features/tpch-on-px.html"],
+        children: ["/features/tpch-on-px.html"],
       },
     ],
   },
