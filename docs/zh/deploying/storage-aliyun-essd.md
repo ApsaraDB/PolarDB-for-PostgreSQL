@@ -1,4 +1,4 @@
-# 阿里云 ECS + ESSD 云盘存储
+# 阿里云 ECS + ESSD 云盘存储 <a href="https://developer.aliyun.com/live/249628"><Badge type="tip" text="视频" vertical="top" /></a>
 
 [阿里云 ESSD（Enhanced SSD）云盘](https://help.aliyun.com/document_detail/122389.html) 结合 25 GE 网络和 RDMA 技术，能够提供单盘高达 100 万的随机读写能力和单路低时延性能。阿里云 ESSD 云盘支持 NVMe 协议，且可以同时挂载到多台支持 NVMe 协议的 ECS（Elastic Compute Service）实例上，从而实现多个 ECS 实例并发读写访问，具备高可靠、高并发、高性能等特点。更新信息请参考阿里云 ECS 文档：
 
