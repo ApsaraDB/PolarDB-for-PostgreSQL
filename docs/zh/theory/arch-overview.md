@@ -1,4 +1,12 @@
+---
+author: 北侠
+date: 2021/08/24
+minute: 35
+---
+
 # 特性总览
+
+<ArticleInfo :frontmatter=$frontmatter></ArticleInfo>
 
 [[toc]]
 
@@ -272,7 +280,7 @@ PolarDB 支持一套 OLTP 场景型的数据在如下两种计算引擎下使用
 
 ## PolarDB：HTAP 架构详解
 
-PolaDB 读写分离后，由于底层是存储池，理论上 IO 吞吐是无限大的。而大查询只能在单个计算节点上执行，单个计算节点的 CPU/MEM/IO 是有限的，因此单个计算节点无法发挥出存储侧的大 IO 带宽的优势，也无法通过增加计算资源来加速大的查询。我们研发了基于 Shared-Storage 的 MPP 分布式并行执行，来加速在 OLTP 场景下 OLAP 查询。
+PolarDB 读写分离后，由于底层是存储池，理论上 IO 吞吐是无限大的。而大查询只能在单个计算节点上执行，单个计算节点的 CPU/MEM/IO 是有限的，因此单个计算节点无法发挥出存储侧的大 IO 带宽的优势，也无法通过增加计算资源来加速大的查询。我们研发了基于 Shared-Storage 的 MPP 分布式并行执行，来加速在 OLTP 场景下 OLAP 查询。
 
 ### HTAP 架构原理
 
