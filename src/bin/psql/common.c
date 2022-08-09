@@ -1673,27 +1673,37 @@ SendQuery(const char *query)
 
 				if (!enable_px)
 				{
+					SetCancelConn();
 					tmp_results = PQexec(pset.db, "SET polar_enable_px=1;");
+					ResetCancelConn();
 					PQclear(tmp_results);
 				}
 
 				if (need_analyze && 
 					(pset.explain_query || pset.explain_analyze))
 				{
+					SetCancelConn();
 					tmp_results = PQexec(pset.db, "SET client_min_messages='FATAL';");
+					ResetCancelConn();
 					PQclear(tmp_results);
 
+					SetCancelConn();
 					tmp_results = PQexec(pset.db, "ANALYZE");
+					ResetCancelConn();
 					PQclear(tmp_results);
 					need_analyze = false;
 
+					SetCancelConn();
 					tmp_results = PQexec(pset.db, "RESET client_min_messages;");
+					ResetCancelConn();
 					PQclear(tmp_results);
 				}
 
-				new_query = (char*)malloc(query_len);
+				new_query = (char*) malloc(query_len);
 				snprintf(new_query, query_len, "EXPLAIN (VERBOSE, COSTS OFF) %s", query);
+				SetCancelConn();
 				tmp_results = PQexec(pset.db, new_query);
+				ResetCancelConn();
 				free(new_query);
 
 				tmp_OK = ProcessResult(&tmp_results);
@@ -1712,9 +1722,11 @@ SendQuery(const char *query)
 
 				if (pset.explain_analyze)
 				{
-					new_query = (char*)malloc(query_len);
+					new_query = (char*) malloc(query_len);
 					snprintf(new_query, query_len, "EXPLAIN (VERBOSE, COSTS OFF, TIMING OFF, SUMMARY OFF, ANALYZE) %s", query);
+					SetCancelConn();
 					tmp_results = PQexec(pset.db, new_query);
+					ResetCancelConn();
 					free(new_query);
 
 					tmp_OK = ProcessResult(&tmp_results);
@@ -1734,7 +1746,9 @@ SendQuery(const char *query)
 
 				if (is_px_used)
 				{
+					SetCancelConn();
 					tmp_results = PQexec(pset.db, query);
+					ResetCancelConn();
 					result_status_px = PQresultStatus(tmp_results);
 					result_hash_px = polar_calc_result_hash(tmp_results, &pset.popt);
 					tmp_OK = ProcessResult(&tmp_results);
@@ -1748,13 +1762,15 @@ SendQuery(const char *query)
 					{
 						pset.popt.sort_result = true;
 						PrintQueryResults(tmp_results);
-						PQclear(tmp_results);
 					}
+					PQclear(tmp_results);
 				}
 
 				if (!enable_px)
 				{
+					SetCancelConn();
 					tmp_results = PQexec(pset.db, "SET polar_enable_px=0;");
+					ResetCancelConn();
 					PQclear(tmp_results);
 				}
 			}

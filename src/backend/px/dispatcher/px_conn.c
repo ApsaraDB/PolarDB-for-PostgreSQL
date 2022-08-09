@@ -530,10 +530,6 @@ pxconn_get_motion_snapshot(PGconn *conn)
  * needs to be delivered to the user. To do that, we install a libpq Notice
  * receiver callback to every QC->PX connection.
  *
- * The callback is very limited in what it can do, so it cannot directly
- * forward the Notice to the user->QC connection. Instead, it queues the
- * Notices as a list of PXNotice structs. Later, when we are out of of the
- * callback, forwardPXNotices() sends the queued Notices to the client.
  *-------------------------------------------------------------------------
  */
 
@@ -556,8 +552,7 @@ struct PXNotice
 	char		buf[];
 };
 
-static PXNotice *pxNotices_head = NULL;
-static PXNotice *pxNotices_tail = NULL;
+static void forwardPXNotices(PXNotice *notice);
 
 /*
  * libpq Notice receiver callback.
@@ -756,150 +751,121 @@ MPPnoticeReceiver(void *arg, const PGresult *res)
 
 		Assert(bufptr - (char *) notice == size);
 
-		/* Link it to the queue */
-		notice->next = NULL;
-		if (pxNotices_tail)
-		{
-			pxNotices_tail->next = notice;
-			pxNotices_tail = notice;
-		}
-		else
-			pxNotices_tail = pxNotices_head = notice;
+		/* Forward the notice message to client */
+		forwardPXNotices(notice);
 	}
 }
 
 /*
- * Send all Notices to the client, that we have accumulated from PXs since last
- * call.
- *
- * This should be called after every libpq call that might read from the QC->PX
- * connection, so that the notices are sent to the user in a timely fashion.
+ * Send the Notice to the client.
  */
-void
-forwardPXNotices(void)
+static void
+forwardPXNotices(PXNotice *notice)
 {
-	bool		hasNotices = false;
-
 	/* POLAR px: use to inject error */
 	bool polar_px_inject = false;
 
-	while (pxNotices_head)
+	StringInfoData msgbuf;
+
+	/*
+	 * Use PG_TRY() - PG_CATCH() to make sure we free the struct, no
+	 * matter what.
+	 */
+	PG_TRY();
 	{
-		PXNotice   *notice;
-		StringInfoData msgbuf;
-
-		notice = pxNotices_head;
-		hasNotices = true;
-
-		/*
-		 * Unlink it first, so that if something goes wrong in sending it to
-		 * the client, we don't get stuck in a loop trying to send the same
-		 * message again and again.
-		 */
-		pxNotices_head = notice->next;
-		if (pxNotices_head == NULL)
-			pxNotices_tail = NULL;
-
-		/*
-		 * Use PG_TRY() - PG_CATCH() to make sure we free the struct, no
-		 * matter what.
-		 */
-		PG_TRY();
-		{
 #ifdef FAULT_INJECTOR
-			if (SIMPLE_FAULT_INJECTOR("px_forward_notices_error") == FaultInjectorTypeEnable)
-				elog(ERROR, "forwardPXNotices inject error");
-			if (SIMPLE_FAULT_INJECTOR("px_forward_notices_old_style") == FaultInjectorTypeEnable)
-				polar_px_inject = true;
+		if (SIMPLE_FAULT_INJECTOR("px_forward_notices_error") == FaultInjectorTypeEnable)
+			elog(ERROR, "forwardPXNotices inject error");
+		if (SIMPLE_FAULT_INJECTOR("px_forward_notices_old_style") == FaultInjectorTypeEnable)
+			polar_px_inject = true;
 #endif
-			/* 'N' (Notice) is for nonfatal conditions, 'E' is for errors */
-			pq_beginmessage(&msgbuf, 'N');
+		/* 'N' (Notice) is for nonfatal conditions, 'E' is for errors */
+		pq_beginmessage(&msgbuf, 'N');
 
-			if (PG_PROTOCOL_MAJOR(FrontendProtocol) >= 3 && !polar_px_inject)
-			{
-				/* New style with separate fields */
-				pq_sendbyte(&msgbuf, PG_DIAG_SEVERITY);
-				pq_sendstring(&msgbuf, notice->severity);
-
-				pq_sendbyte(&msgbuf, PG_DIAG_SQLSTATE);
-				pq_sendstring(&msgbuf, notice->sqlstate);
-
-				/* M field is required per protocol, so always send something */
-				pq_sendbyte(&msgbuf, PG_DIAG_MESSAGE_PRIMARY);
-				pq_sendstring(&msgbuf, notice->message);
-
-				if (notice->detail)
-				{
-					pq_sendbyte(&msgbuf, PG_DIAG_MESSAGE_DETAIL);
-					pq_sendstring(&msgbuf, notice->detail);
-				}
-
-				if (notice->hint)
-				{
-					pq_sendbyte(&msgbuf, PG_DIAG_MESSAGE_HINT);
-					pq_sendstring(&msgbuf, notice->hint);
-				}
-
-				if (notice->context)
-				{
-					pq_sendbyte(&msgbuf, PG_DIAG_CONTEXT);
-					pq_sendstring(&msgbuf, notice->context);
-				}
-
-				if (notice->file)
-				{
-					pq_sendbyte(&msgbuf, PG_DIAG_SOURCE_FILE);
-					pq_sendstring(&msgbuf, notice->file);
-				}
-
-				if (notice->line[0])
-				{
-					pq_sendbyte(&msgbuf, PG_DIAG_SOURCE_LINE);
-					pq_sendstring(&msgbuf, notice->line);
-				}
-
-				if (notice->func)
-				{
-					pq_sendbyte(&msgbuf, PG_DIAG_SOURCE_FUNCTION);
-					pq_sendstring(&msgbuf, notice->func);
-				}
-
-				pq_sendbyte(&msgbuf, '\0'); /* terminator */
-			}
-			else
-			{
-				/* Old style --- gin up a backwards-compatible message */
-				StringInfoData buf;
-
-				initStringInfo(&buf);
-
-				appendStringInfo(&buf, "%s:  ", notice->severity);
-
-				if (notice->func)
-					appendStringInfo(&buf, "%s: ", notice->func);
-
-				if (notice->message)
-					appendStringInfoString(&buf, notice->message);
-				else
-					appendStringInfoString(&buf, _("missing error text"));
-
-				appendStringInfoChar(&buf, '\n');
-
-				pq_sendstring(&msgbuf, buf.data);
-
-				pfree(buf.data);
-			}
-
-			pq_endmessage(&msgbuf);
-			free(notice);
-		}
-		PG_CATCH();
+		if (PG_PROTOCOL_MAJOR(FrontendProtocol) >= 3 && !polar_px_inject)
 		{
-			free(notice);
-			PG_RE_THROW();
+			/* New style with separate fields */
+			pq_sendbyte(&msgbuf, PG_DIAG_SEVERITY);
+			pq_sendstring(&msgbuf, notice->severity);
+
+			pq_sendbyte(&msgbuf, PG_DIAG_SQLSTATE);
+			pq_sendstring(&msgbuf, notice->sqlstate);
+
+			/* M field is required per protocol, so always send something */
+			pq_sendbyte(&msgbuf, PG_DIAG_MESSAGE_PRIMARY);
+			pq_sendstring(&msgbuf, notice->message);
+
+			if (notice->detail)
+			{
+				pq_sendbyte(&msgbuf, PG_DIAG_MESSAGE_DETAIL);
+				pq_sendstring(&msgbuf, notice->detail);
+			}
+
+			if (notice->hint)
+			{
+				pq_sendbyte(&msgbuf, PG_DIAG_MESSAGE_HINT);
+				pq_sendstring(&msgbuf, notice->hint);
+			}
+
+			if (notice->context)
+			{
+				pq_sendbyte(&msgbuf, PG_DIAG_CONTEXT);
+				pq_sendstring(&msgbuf, notice->context);
+			}
+
+			if (notice->file)
+			{
+				pq_sendbyte(&msgbuf, PG_DIAG_SOURCE_FILE);
+				pq_sendstring(&msgbuf, notice->file);
+			}
+
+			if (notice->line[0])
+			{
+				pq_sendbyte(&msgbuf, PG_DIAG_SOURCE_LINE);
+				pq_sendstring(&msgbuf, notice->line);
+			}
+
+			if (notice->func)
+			{
+				pq_sendbyte(&msgbuf, PG_DIAG_SOURCE_FUNCTION);
+				pq_sendstring(&msgbuf, notice->func);
+			}
+
+			pq_sendbyte(&msgbuf, '\0'); /* terminator */
 		}
-		PG_END_TRY();
+		else
+		{
+			/* Old style --- gin up a backwards-compatible message */
+			StringInfoData buf;
+
+			initStringInfo(&buf);
+
+			appendStringInfo(&buf, "%s:  ", notice->severity);
+
+			if (notice->func)
+				appendStringInfo(&buf, "%s: ", notice->func);
+
+			if (notice->message)
+				appendStringInfoString(&buf, notice->message);
+			else
+				appendStringInfoString(&buf, _("missing error text"));
+
+			appendStringInfoChar(&buf, '\n');
+
+			pq_sendstring(&msgbuf, buf.data);
+
+			pfree(buf.data);
+		}
+
+		pq_endmessage(&msgbuf);
+		free(notice);
 	}
-	if (hasNotices)
-		pq_flush();
+	PG_CATCH();
+	{
+		free(notice);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	pq_flush();
 }
