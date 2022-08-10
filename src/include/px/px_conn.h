@@ -98,6 +98,4 @@ void		pxconn_setPXIdentifier(PxWorkerDescriptor *pxWorkerDesc, int sliceIndex);
  */
 bool		pxconn_signalPX(PxWorkerDescriptor *pxWorkerDesc, char *errbuf, bool isCancel);
 
-extern void forwardPXNotices(void);
-
 #endif							/* PXCONN_H */

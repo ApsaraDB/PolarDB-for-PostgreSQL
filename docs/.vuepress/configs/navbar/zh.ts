@@ -64,20 +64,17 @@ export const zh: NavbarConfig = [
     link: "/zh/theory/",
     children: [
       {
-        text: "架构总览",
-        link: "/zh/theory/arch-overview.html",
+        text: "PolarDB for PostgreSQL",
+        children: [
+          "/zh/theory/arch-overview.html",
+          "/zh/theory/buffer-management.html",
+          "/zh/theory/ddl-synchronization.html",
+          "/zh/theory/logindex.html",
+        ],
       },
       {
-        text: "缓冲区管理",
-        link: "/zh/theory/buffer-management.html",
-      },
-      {
-        text: "DDL 同步",
-        link: "/zh/theory/ddl-synchronization.html",
-      },
-      {
-        text: "LogIndex",
-        link: "/zh/theory/logindex.html",
+        text: "PostgreSQL",
+        children: ["/zh/theory/analyze.html"],
       },
     ],
   },
@@ -85,14 +82,8 @@ export const zh: NavbarConfig = [
     text: "上手开发",
     link: "/zh/development/",
     children: [
-      {
-        text: "基于容器开发",
-        link: "/zh/development/dev-on-docker.md",
-      },
-      {
-        text: "开发环境定制",
-        link: "/zh/development/customize-dev-env.md",
-      },
+      "/zh/development/dev-on-docker.html",
+      "/zh/development/customize-dev-env.html",
     ],
   },
   {

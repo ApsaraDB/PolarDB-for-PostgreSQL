@@ -2,6 +2,8 @@ import { defineUserConfig } from "@vuepress/cli";
 import { defaultTheme } from "@vuepress/theme-default";
 import { docsearchPlugin } from "@vuepress/plugin-docsearch";
 import { navbar, sidebar } from "./configs";
+import { registerComponentsPlugin } from "@vuepress/plugin-register-components";
+import { path } from "@vuepress/utils";
 
 export default defineUserConfig({
   base: "/PolarDB-for-PostgreSQL/",
@@ -27,6 +29,7 @@ export default defineUserConfig({
     logo: "/images/polardb.png",
     repo: "ApsaraDB/PolarDB-for-PostgreSQL",
     colorMode: "light",
+    contributors: false,
 
     locales: {
       "/": {
@@ -120,6 +123,9 @@ export default defineUserConfig({
           },
         },
       },
+    }),
+    registerComponentsPlugin({
+      componentsDir: path.resolve(__dirname, "./components"),
     }),
   ],
 });

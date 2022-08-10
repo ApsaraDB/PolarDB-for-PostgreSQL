@@ -589,8 +589,6 @@ dispatchCommand(PxDispatchResult *dispatchResult,
 						dispatchResult->pxWorkerDesc->whoami, msg ? msg : "unknown error")));
 	}
 
-	forwardPXNotices();
-
 	if (DEBUG1 >= log_min_messages)
 	{
 		TimestampDifference(beforeSend, GetCurrentTimestamp(), &secs, &usecs);
@@ -657,7 +655,6 @@ handlePollError(PxDispatchCmdAsync *pParms)
 			dispatchResult->stillRunning = false;
 		}
 	}
-	forwardPXNotices();
 
 	return;
 }
@@ -862,7 +859,6 @@ processResults(PxDispatchResult *dispatchResult)
 									   pxWorkerDesc->whoami, msg ? msg : "unknown error");
 		return true;
 	}
-	forwardPXNotices();
 
 	/*
 	 * If we have received one or more complete messages, process them.
@@ -873,8 +869,6 @@ processResults(PxDispatchResult *dispatchResult)
 		PGresult   *pRes;
 		ExecStatusType resultStatus;
 		int			resultIndex;
-
-		forwardPXNotices();
 
 		/*
 		 * PQisBusy() does some error handling, which can cause the connection
@@ -996,8 +990,6 @@ processResults(PxDispatchResult *dispatchResult)
 		}
 	}
 
-	forwardPXNotices();
-
 	/*
 	 * If there was nextval request then respond back on this libpq connection
 	 * with the next value. Check and process nextval message only if QC has
@@ -1048,8 +1040,6 @@ processResults(PxDispatchResult *dispatchResult)
 	if (nextval)
 		PQfreemem(nextval);
 
-	forwardPXNotices();
-
 	return false;				/* we must keep on monitoring this socket */
 }
 
@@ -1082,7 +1072,6 @@ checkDispatchResult_thread(PxDispatcherState *ds, bool wait)
 		}
 		if (!wait || is_all_finish)
 			break;
-		forwardPXNotices();
 		pg_usleep(1);
 	}
 	elog(DEBUG5, "pq_thread: finish check dispatch result from libpq thread.");

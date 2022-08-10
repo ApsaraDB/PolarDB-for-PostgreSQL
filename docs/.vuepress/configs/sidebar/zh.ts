@@ -72,10 +72,19 @@ export const zh: SidebarConfig = {
     {
       text: "原理解读",
       children: [
-        "/zh/theory/arch-overview.md",
-        "/zh/theory/buffer-management.md",
-        "/zh/theory/ddl-synchronization.md",
-        "/zh/theory/logindex.md",
+        {
+          text: "PolarDB for PostgreSQL",
+          children: [
+            "/zh/theory/arch-overview.md",
+            "/zh/theory/buffer-management.md",
+            "/zh/theory/ddl-synchronization.md",
+            "/zh/theory/logindex.md",
+          ],
+        },
+        {
+          text: "PostgreSQL",
+          children: ["/zh/theory/analyze.md"],
+        },
       ],
     },
   ],
