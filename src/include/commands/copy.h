@@ -49,6 +49,32 @@ typedef enum EolType
 } EolType;
 
 /*
+ *
+ * COPY FROM modes (from file/client to table)
+ *
+ * 1. "normal", direct, mode. This means ON SEGMENT running on a segment, or
+ *    utility mode, or non-distributed table in QD.
+ * 2. Dispatcher mode. We are reading from file/client, and forwarding all data to QEs,
+ *    or vice versa.
+ * 3. Executor mode. We are receiving pre-processed data from QD, and inserting to table.
+ *
+ * COPY TO modes (table/query to file/client)
+ *
+ * 1. Direct. This can mean ON SEGMENT running on segment, or utility mode, or
+ *    non-distributed table in QD. Or COPY TO running on segment.
+ * 2. Dispatcher mode. We are receiving pre-formatted data from segments, and forwarding
+ *    it all to to the client.
+ * 3. Executor mode. Not used.
+ */
+
+typedef enum
+{
+	COPY_DIRECT,
+	COPY_DISPATCH,
+	COPY_EXECUTOR
+} CopyDispatchMode;
+
+/*
  * This struct contains all the state variables used throughout a COPY
  * operation. For simplicity, we use the same struct for all variants of COPY,
  * even though some fields are used in only some cases.
@@ -118,6 +144,7 @@ typedef struct CopyStateData
 	/*
 	 * Working state for COPY TO/FROM
 	 */
+	CopyDispatchMode dispatch_mode;
 	MemoryContext copycontext;	/* per-copy execution context */
 
 	/*
@@ -144,6 +171,9 @@ typedef struct CopyStateData
 	PartitionTupleRouting *partition_tuple_routing;
 
 	TransitionCaptureState *transition_capture;
+
+	StringInfo	dispatch_msgbuf; /* used in COPY_DISPATCH mode, to construct message
+								  * to send to QE. */
 
 	/*
 	 * These variables are used to reduce overhead in textual COPY FROM.
@@ -184,8 +214,10 @@ typedef struct CopyStateData
 	int			raw_buf_len;	/* total # of bytes stored */
 
 
+	int			first_qe_processed_field;
 	/* Information on the connections to QEs. */
-	PxCopy    *pxCopy;
+	PxCopy	*pxCopy;
+
 } CopyStateData;
 
 typedef struct CopyStateData *CopyState;
@@ -216,5 +248,15 @@ extern void CopyFromErrorCallback(void *arg);
 extern uint64 CopyFrom(CopyState cstate);
 
 extern DestReceiver *CreateCopyDestReceiver(void);
+
+/*
+ * This is used to hold information about the target's distribution policy,
+ * during COPY FROM.
+ */
+typedef struct PxDistributionData
+{
+	PxPolicy   *policy;		/* partitioning policy for this table */
+	PxHash	   *pxHash;	/* corresponding CdbHash object */
+} PxDistributionData;
 
 #endif							/* COPY_H */

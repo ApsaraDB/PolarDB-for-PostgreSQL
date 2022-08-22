@@ -240,7 +240,8 @@ buildGangDefinition(List *segments, SegmentType segmentType)
 		{
 			workerId = lfirst_int(lc);
 			newGangDefinition->db_descriptors[i] =
-						pxnode_allocateIdlePX(workerId, totalPxNodes, segmentType);
+						// pxnode_allocateIdlePX(workerId, totalPxNodes, segmentType);
+						pxnode_allocateIdlePX(RW_SEGMENT, totalPxNodes, segmentType);
 		}
 	}
 	PG_CATCH();

@@ -60,9 +60,7 @@
 #include "px/px_copy.h"
 #include "px/px_disp_query.h"
 #include "px/px_dispatchresult.h"
-// #include "px/px_fts.h"
 #include "px/px_gang.h"
-// #include "px/px_tm.h"
 #include "px/px_vars.h"
 #include "commands/copy.h"
 #include "commands/defrem.h"
@@ -118,8 +116,12 @@ makePxCopy(CopyState cstate, bool is_copy_in)
 	c->seglist = NIL;
 	c->dispatcherState = NULL;
 	initStringInfo(&(c->copy_out_buf));
-  
-  if (!is_copy_in)
+
+	/*
+	 * COPY replicated table TO file, pick only one replica, otherwise, duplicate
+	 * rows will be copied.
+	 */
+	if (!is_copy_in)
 	{
 		c->total_segs = 1;
 		c->seglist = list_make1_int(px_session_id % c->total_segs);

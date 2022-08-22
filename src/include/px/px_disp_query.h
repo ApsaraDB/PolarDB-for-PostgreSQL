@@ -61,10 +61,6 @@ void PxDispatchPlan(struct QueryDesc *queryDesc,
 
 extern ParamListInfo deserializeParamListInfo(const char *str, int slen);
 
-extern void PxDispatchUtilityStatement(struct Node *stmt,
-										int flags,
-										List *oid_assignments,
-										struct PxPgResults* cdb_pgresults);
 extern void PxDispatchCopyStart(struct PxCopy *pxCopy, Node *stmt, int flags);
 extern void PxDispatchCopyEnd(struct PxCopy *pxCopy);
 

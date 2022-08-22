@@ -1062,15 +1062,7 @@ PxDispatchCopyStart(struct PxCopy *pxCopy, Node *stmt, int flags)
 	ErrorData *error = NULL;
 	bool needTwoPhase = flags & DF_NEED_TWO_PHASE;
   
-  // if (needTwoPhase)
-  // {
 	px_sql_wal_lsn = polar_px_max_valid_lsn();
-  // }
-
-	// elogif(log_min_messages <= DEBUG5, LOG,
-	// 	   "PxDispatchCopyStart: %s (needTwoPhase = %s)",
-	// 	   (PointerIsValid(debug_query_string) ? debug_query_string : "\"\""),
-	// 	   (needTwoPhase ? "true" : "false"));
 
 	pQueryParms = pxdisp_buildUtilityQueryParms(stmt, flags, NULL);
 
@@ -1097,8 +1089,8 @@ PxDispatchCopyStart(struct PxCopy *pxCopy, Node *stmt, int flags)
   // 	/* Start a background libpq thread */
 	// pxdisp_startPqThread(ds);
 	// /* If libpq is not run in background*/
-	// if (!pxdisp_isDsThreadRuning())
-	// 	pxdisp_waitDispatchFinish(ds);
+	if (!pxdisp_isDsThreadRuning())
+		pxdisp_waitDispatchFinish(ds);
 
 	pxdisp_checkDispatchResult(ds, DISPATCH_WAIT_NONE);
 
@@ -1122,116 +1114,5 @@ PxDispatchCopyEnd(struct PxCopy *pxCopy)
 
 	ds = pxCopy->dispatcherState;
 	pxCopy->dispatcherState = NULL;
-	pxdisp_destroyDispatcherState(ds);
-}
-
-
-/*
- * PxDispatchUtilityStatement
- *
- * Dispatch an already parsed statement to all primary writer QEs, wait until
- * all QEs finished successfully. If one or more QEs got error,
- * throw an Error.
- *
- * -flags:
- *      Is the combination of DF_NEED_TWO_PHASE, DF_WITH_SNAPSHOT,DF_CANCEL_ON_ERROR
- *
- * -px_pgresults:
- *      Indicate whether return the pg_result for each QE connection.
- *
- */
-void
-PxDispatchUtilityStatement(struct Node *stmt,
-							int flags,
-							List *oid_assignments,
-							PxPgResults *px_pgresults)
-{
-	DispatchCommandQueryParms *pQueryParms;
-	bool needTwoPhase = flags & DF_NEED_TWO_PHASE;
-
-	// if (needTwoPhase)
-	// 	setupDtxTransaction();
-
-	// elogif((Debug_print_full_dtm || log_min_messages <= DEBUG5), LOG,
-	// 	   "PxDispatchUtilityStatement: %s (needTwoPhase = %s)",
-	// 	   (PointerIsValid(debug_query_string) ? debug_query_string : "\"\""),
-	// 	   (needTwoPhase ? "true" : "false"));
-
-	pQueryParms = pxdisp_buildUtilityQueryParms(stmt, flags, oid_assignments);
-
-	return pxdisp_dispatchCommandInternal(pQueryParms,
-										   flags,
-										   pxcomponent_getPxComponentsList(),
-										   px_pgresults);
-}
-
-static void
-pxdisp_dispatchCommandInternal(DispatchCommandQueryParms *pQueryParms,
-                                int flags,
-								List *segments,
-                                PxPgResults *px_pgresults)
-{
-	PxDispatcherState *ds;
-	Gang *primaryGang;
-	PxDispatchResults *pr;
-	ErrorData *qeError = NULL;
-	char *queryText;
-	int queryTextLength;
-
-	/*
-	 * Dispatch the command.
-	 */
-	ds = pxdisp_makeDispatcherState(false);
-
-	/*
-	 * Reader gangs use local snapshot to access catalog, as a result, it will
-	 * not synchronize with the global snapshot from write gang which will lead
-	 * to inconsistent visibilty of catalog table. Considering the case:
-	 *
-	 * select * from t, t t1; -- create a reader gang.
-	 * begin;
-	 * create role r1;
-	 * set role r1;  -- set command will also dispatched to idle reader gang
-	 *
-	 * When set role command dispatched to reader gang, reader gang cannot see
-	 * the new tuple t1 in catalog table pg_auth.
-	 * To fix this issue, we should drop the idle reader gangs after each
-	 * utility statement which may modify the catalog table.
-	 */
-	// ds->destroyIdleReaderGang = true;
-
-	queryText = buildPXQueryString(pQueryParms, &queryTextLength);
-
-	/*
-	 * Allocate a primary QE for every available segDB in the system.
-	 */
-	primaryGang = AllocateGang(ds, GANGTYPE_PRIMARY_WRITER, segments);
-	Assert(primaryGang);
-
-	pxdisp_makeDispatchResults(ds, 1, flags & DF_CANCEL_ON_ERROR);
-	pxdisp_makeDispatchParams (ds, 1, queryText, queryTextLength);
-
-	pxdisp_dispatchToGang(ds, primaryGang, -1);
-
-	// if ((flags & DF_NEED_TWO_PHASE) != 0 || isDtxExplicitBegin())
-	// 	addToGxactDtxSegments(primaryGang);
-
-	pxdisp_waitDispatchFinish(ds);
-
-	pxdisp_checkDispatchResult(ds, DISPATCH_WAIT_NONE);
-
-	pr = pxdisp_getDispatchResults(ds, &qeError);
-
-	if (qeError)
-	{
-		FlushErrorState();
-		ReThrowError(qeError);
-	}
-
-	/* collect pgstat from QEs for current transaction level */
-	// pgstat_combine_from_qe(pr, -1);
-
-	pxdisp_returnResults(pr, px_pgresults);
-
 	pxdisp_destroyDispatcherState(ds);
 }

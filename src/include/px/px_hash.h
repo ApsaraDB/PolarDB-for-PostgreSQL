@@ -49,6 +49,7 @@ typedef struct PxHash
  * Create and initialize a PxHash in the current memory context.
  */
 extern PxHash *makePxHash(int numsegs, int natts, Oid *typeoids);
+extern PxHash *makePxHashForRelation(Relation rel);
 
 /*
  * Initialize PxHash for hashing the next tuple values.

@@ -124,6 +124,37 @@ makePxHash(int numsegs, int natts, Oid *hashfuncs)
 }
 
 /*
+ * Convenience routine, to create a PxHash according to a relation's
+ * distribution policy.
+ */
+PxHash *
+makePxHashForRelation(Relation rel)
+{
+	// PxPolicy   *policy = rel->rd_pxpolicy;
+	PxPolicy *policy;
+	int	numsegments = getPxWorkerCount();
+  policy = createReplicatedPolicy(numsegments);
+	Oid		   *hashfuncs;
+	int			i;
+	TupleDesc	desc = RelationGetDescr(rel);
+
+	hashfuncs = palloc(policy->nattrs * sizeof(Oid));
+
+	for (i = 0; i < policy->nattrs; i++)
+	{
+		AttrNumber	attnum = policy->attrs[i];
+		Oid			typeoid = TupleDescAttr(desc, attnum - 1)->atttypid;
+		Oid			opfamily;
+
+		opfamily = get_opclass_family(policy->opclasses[i]);
+
+		hashfuncs[i] = px_hashproc_in_opfamily(opfamily, typeoid);
+	}
+
+	return makePxHash(policy->numsegments, policy->nattrs, hashfuncs);
+}
+
+/*
  * Initialize PxHash for hashing the next tuple values.
  */
 void
