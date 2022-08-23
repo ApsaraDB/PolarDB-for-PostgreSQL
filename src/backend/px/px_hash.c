@@ -132,7 +132,8 @@ makePxHashForRelation(Relation rel)
 {
 	// PxPolicy   *policy = rel->rd_pxpolicy;
 	PxPolicy *policy;
-	int	numsegments = getPxWorkerCount();
+	// int	numsegments = getPxWorkerCount();
+	int numsegments = polar_get_stmt_px_dop();
   policy = createReplicatedPolicy(numsegments);
 	Oid		   *hashfuncs;
 	int			i;

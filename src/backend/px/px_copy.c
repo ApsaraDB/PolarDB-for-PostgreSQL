@@ -101,8 +101,9 @@ makePxCopy(CopyState cstate, bool is_copy_in)
 
 	/* initial replicated policy*/
 	int numsegments = -1;
-	numsegments = pxnode_getPxNodes()->totalPxNodes
-			  * polar_get_stmt_px_dop();
+	// numsegments = pxnode_getPxNodes()->totalPxNodes
+	// 		  * polar_get_stmt_px_dop();
+	numsegments = polar_get_stmt_px_dop();
   policy = createReplicatedPolicy(numsegments);
 	Assert(policy);
 
@@ -133,7 +134,7 @@ makePxCopy(CopyState cstate, bool is_copy_in)
 		c->total_segs = policy->numsegments;
 
 		for (i = 0; i < c->total_segs; i++)
-			c->seglist = lappend_int(c->seglist, i);
+			c->seglist = lappend_int(c->seglist, RW_SEGMENT);
 	}
 
 	cstate->pxCopy = c;

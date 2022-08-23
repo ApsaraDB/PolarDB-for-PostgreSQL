@@ -26,9 +26,6 @@
 #include "px/px_vars.h"
 #include "utils/faultinjector.h"
 
-static int pxdisp_snatchPGresults(PxDispatchResult *dispatchResult,
-						struct pg_result **pgresultptrs, int maxresults);
-
 static void
 noTrailingNewlinePQ(PQExpBuffer buf)
 {
@@ -734,48 +731,6 @@ pxdisp_resultEnd(PxDispatchResults *results, int sliceIndex)
 	return &results->resultArray[si->resultEnd];
 }
 
-void
-pxdisp_returnResults(PxDispatchResults *primaryResults, PxPgResults *px_pgresults)
-{
-	PxDispatchResult *dispatchResult;
-	int			nslots;
-	int			nresults = 0;
-	int			i;
-
-	if (!primaryResults || !px_pgresults)
-		return;
-
-	/*
-	 * Allocate result set ptr array. The caller must PQclear() each PGresult
-	 * and free() the array.
-	 */
-	nslots = 0;
-
-	for (i = 0; i < primaryResults->resultCount; ++i)
-		nslots += pxdisp_numPGresult(&primaryResults->resultArray[i]);
-
-	px_pgresults->pg_results = (struct pg_result **) palloc0(nslots * sizeof(struct pg_result *));
-
-	/*
-	 * Collect results from primary gang.
-	 */
-	for (i = 0; i < primaryResults->resultCount; ++i)
-	{
-		dispatchResult = &primaryResults->resultArray[i];
-
-		/*
-		 * Take ownership of this QE's PGresult object(s).
-		 */
-		nresults += pxdisp_snatchPGresults(dispatchResult,
-											px_pgresults->pg_results + nresults,
-											nslots - nresults);
-	}
-
-	Assert(nresults == nslots);
-
-	/* tell the caller how many sets we're returning. */
-	px_pgresults->numResults = nresults;
-}
 
 /*
  * used in the interconnect on the dispatcher to avoid error-cleanup deadlocks.
@@ -857,40 +812,4 @@ pxdisp_clearPxPgResults(PxPgResults *px_pgresults)
 	}
 
 	px_pgresults->numResults = 0;
-}
-
-/*
- * Remove all of the PGresult ptrs from a PxDispatchResult object
- * and place them into an array provided by the caller. The caller
- * becomes responsible for PQclear()ing them. Returns the number of
- * PGresult ptrs placed in the array.
- */
-static int
-pxdisp_snatchPGresults(PxDispatchResult *dispatchResult,
-						struct pg_result **pgresultptrs, int maxresults)
-{
-	PQExpBuffer buf = dispatchResult->resultbuf;
-	PGresult  **begp = (PGresult **) buf->data;
-	PGresult  **endp = (PGresult **) (buf->data + buf->len);
-	PGresult  **p;
-	int			nresults = 0;
-
-	/*
-	 * Snatch the PGresult objects.
-	 */
-	for (p = begp; p < endp; ++p)
-	{
-		Assert(*p != NULL);
-		Assert(nresults < maxresults);
-		pgresultptrs[nresults++] = *p;
-		*p = NULL;
-	}
-
-	/*
-	 * Empty our PGresult array.
-	 */
-	resetPQExpBuffer(buf);
-	dispatchResult->okindex = -1;
-
-	return nresults;
 }

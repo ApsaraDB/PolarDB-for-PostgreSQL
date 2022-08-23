@@ -272,9 +272,6 @@ PxDispatchResult *pxdisp_resultBegin(PxDispatchResults *results, int sliceIndex)
  */
 PxDispatchResult *pxdisp_resultEnd(PxDispatchResults *results, int sliceIndex);
 
-void
-pxdisp_returnResults(PxDispatchResults *primaryResults, PxPgResults *cdb_pgresults);
-
 /*
  * used in the interconnect on the dispatcher to avoid error-cleanup deadlocks.
  */

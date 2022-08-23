@@ -3067,7 +3067,7 @@ if (cstate->dispatch_mode == COPY_DISPATCH)
 		if (cstate->dispatch_mode == COPY_DISPATCH)
 		{
 			/* In QD, compute the target segment to send this row to. */
-			target_seg = GetTargetSeg(distData, myslot);
+			target_seg = GetTargetSeg(distData, tuple);
 		}
 
 		if (cstate->dispatch_mode == COPY_DISPATCH)
@@ -3082,8 +3082,8 @@ if (cstate->dispatch_mode == COPY_DISPATCH)
 									   cstate->cur_lineno,
 									   cstate->line_buf.data,
 									   cstate->line_buf.len,
-									   myslot->tts_values,
-									   myslot->tts_isnull);
+									   values,
+									   slot->tts_isnull);
 			skip_tuple = true;
 			processed++;
 		}
@@ -3231,6 +3231,10 @@ next_tuple:
 	FreeBulkInsertState(bistate);
 
 	MemoryContextSwitchTo(oldcontext);
+
+	pxCopyEnd(pxCopy, NULL, NULL);
+
+	PxDispatchCopyEnd(pxCopy);
 
 	/*
 	 * In the old protocol, tell pqcomm that we can process normal protocol
@@ -3716,7 +3720,7 @@ NextCopyFrom(CopyState cstate, ExprContext *econtext,
 	// switch (cstate->dispatch_mode)
 	// {
 	// 	case COPY_DIRECT:
-	// 		stop_processing_at_field = -1;
+			// stop_processing_at_field = -1;
 	// 		attnumlist = cstate->attnumlist;
 	// 		break;
 
@@ -5449,8 +5453,8 @@ SendCopyFromForwardedTuple(CopyState cstate,
 		int16		attnum = i + 1;
 
 		/* NULLs are simply left out of the message. */
-		if (nulls[i])
-			continue;
+		// if (nulls[i])
+		// 	continue;
 
 		/*
 		 * Make sure we have room for the attribute number. While we're at it,
