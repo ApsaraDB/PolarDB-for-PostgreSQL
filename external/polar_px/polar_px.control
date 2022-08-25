@@ -2,5 +2,4 @@
 comment = 'Parallel Execution extension'
 default_version = '1.0'
 module_pathname = '$libdir/polar_px'
-relocatable = true
-
+schema = 'public'

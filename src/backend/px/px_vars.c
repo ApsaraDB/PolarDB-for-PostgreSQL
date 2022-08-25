@@ -198,6 +198,7 @@ get_px_workerid(void)
 uint32
 get_px_workerid_funcid(void)
 {
+	update_px_workerid_funcid();
 	return px_workerid_funcid;
 }
 
@@ -207,11 +208,11 @@ update_px_workerid_funcid(void)
 	List		*funcname = NIL;
 	Oid			fargtypes[1];	/* dummy */
 
-	funcname = list_make1(makeString(px_workerid_funcname));
-	px_workerid_funcid = LookupFuncName(funcname, 0, fargtypes, false);
+	funcname = list_make2(makeString("public"), makeString(px_workerid_funcname));
+	px_workerid_funcid = LookupFuncName(funcname, 0, fargtypes, true);
 
-	if(px_workerid_funcid == InvalidOid)
-			elog(ERROR, "load polar_px extension.");
+	if (px_workerid_funcid == InvalidOid)
+		elog(ERROR, "polar_px: load polar_px_workerid() failed, try \"CREATE EXTENSION polar_px;\"");
 }
 
 bool
