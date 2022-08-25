@@ -787,23 +787,19 @@ pxhash_const_list(List *plConsts, int iSegments, Oid *hashfuncs)
 }
 
 /*
- * Construct an expression that checks whether the current segment is
- * 'segid'.
+ * Construct an expression that checks whether the current worker is
+ * 'workerid'.
  */
 Node *
-makePXWorkerIndexFilterExpr(int segid)
+makePXWorkerIndexFilterExpr(int workerid)
 {
 	/* 
-	 * get px_workerid_funcid every time, 
-	 * for case user reinstall polar_px plugin many times,
-	 * and funcid changed.
+	 * get px_workerid_funcid if it is InvalidOid.
 	 */
-	update_px_workerid_funcid();
+	if (px_workerid_funcid == InvalidOid)
+		update_px_workerid_funcid();
 
-	Assert(px_workerid_funcid != InvalidOid);
-	elog(DEBUG5, "px_workerid_funcid: %d", px_workerid_funcid);
-
-	/* Build an expression: gp_execution_segment() = <segid> */
+	/* Build an expression: polar_px_workerid() = <workerid> */
 	return (Node *)
 		make_opclause(Int4EqualOperator,
 					  BOOLOID,
@@ -818,7 +814,7 @@ makePXWorkerIndexFilterExpr(int segid)
 										 -1,		/* consttypmod */
 										 InvalidOid, /* constcollid */
 										 sizeof(int32),
-										 Int32GetDatum(segid),
+										 Int32GetDatum(workerid),
 										 false,		/* constisnull */
 										 true),		/* constbyval */
 					  InvalidOid,	/* opcollid */

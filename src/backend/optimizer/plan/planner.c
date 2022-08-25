@@ -308,6 +308,7 @@ standard_planner(Query *parse, int cursorOptions, ParamListInfo boundParams)
 	 */
 	/* POLAR px */
 	local_px_insert_dop_num = px_insert_dop_num;
+	px_workerid_funcid = InvalidOid;
 
 	if ((cursorOptions & CURSOR_OPT_PX_OK) && should_px_planner(parse))
 	{
