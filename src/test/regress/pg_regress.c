@@ -2533,11 +2533,15 @@ run_schedule(const char *schedule, test_function tfunc)
 			{
 				/* POLAR */
 				if (polar_ignore)
+				{
 					status(_("ok (polar ignored)"));
+				}
 				else
+				{
 					status(_("ok"));
+					success_count++;
+				}
 				/* POLAR end */
-				success_count++;
 			}
 
 			/* Calculate time spent in test */
@@ -3369,7 +3373,7 @@ regression_main(int argc, char *argv[], init_function ifunc, test_function tfunc
 	/* POLAR */
 	snprintf(polar_buf, sizeof(polar_buf),
 			_(" All %d tests, %d tests in ignore, %d tests in polar ignore. "),
-			success_count + polar_ignore_count + ignore_count,
+			success_count + polar_ignore_count + fail_count + fail_ignore_count,
 			ignore_count,
 			polar_ignore_count);
 
