@@ -1,4 +1,12 @@
+---
+author: 棠羽
+date: 2022/05/09
+minute: 5
+---
+
 # 快速部署
+
+<ArticleInfo :frontmatter=$frontmatter></ArticleInfo>
 
 ::: danger
 为简化使用，容器内的 `postgres` 用户没有设置密码，仅供体验。如果在生产环境等高安全性需求场合，请务必修改健壮的密码！

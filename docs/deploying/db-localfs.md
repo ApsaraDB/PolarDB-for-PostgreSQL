@@ -1,4 +1,12 @@
+---
+author: 棠羽
+date: 2022/05/09
+minute: 15
+---
+
 # 编译部署：基于单机文件系统
+
+<ArticleInfo :frontmatter=$frontmatter></ArticleInfo>
 
 本文将指导您在单机文件系统（如 ext4）上编译部署 PolarDB，适用于所有计算节点都可以访问相同本地磁盘存储的场景。
 

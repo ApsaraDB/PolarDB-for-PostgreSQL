@@ -11,13 +11,17 @@ export const zh: NavbarConfig = [
         text: "存储设备的准备",
         children: [
           "/zh/deploying/storage-aliyun-essd.html",
+          "/zh/deploying/storage-curvebs.html",
           "/zh/deploying/storage-ceph.html",
           "/zh/deploying/storage-nbd.html",
         ],
       },
       {
         text: "文件系统的准备",
-        children: ["/zh/deploying/fs-pfs.html"],
+        children: [
+          "/zh/deploying/fs-pfs.html",
+          "/zh/deploying/fs-pfs-curve.html",
+        ],
       },
       {
         text: "编译部署 PolarDB 内核",

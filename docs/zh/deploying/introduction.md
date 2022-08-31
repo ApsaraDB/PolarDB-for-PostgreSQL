@@ -1,4 +1,12 @@
+---
+author: 棠羽
+date: 2022/05/09
+minute: 5
+---
+
 # 架构简介
+
+<ArticleInfo :frontmatter=$frontmatter></ArticleInfo>
 
 PolarDB for PostgreSQL 采用了基于 Shared-Storage 的存储计算分离架构。数据库由传统的 Share-Nothing 架构，转变成了 Shared-Storage 架构——由原来的 N 份计算 + N 份存储，转变成了 N 份计算 + 1 份存储；而 PostgreSQL 使用了传统的单体数据库架构，存储和计算耦合在一起。
 

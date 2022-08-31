@@ -15,13 +15,14 @@ export const en: SidebarConfig = {
               text: "Preparation of Storage Device",
               children: [
                 "/deploying/storage-aliyun-essd.md",
+                "/deploying/storage-curvebs.md",
                 "/deploying/storage-ceph.md",
                 "/deploying/storage-nbd.md",
               ],
             },
             {
               text: "Preparation of File System",
-              children: ["/deploying/fs-pfs.md"],
+              children: ["/deploying/fs-pfs.md", "/deploying/fs-pfs-curve.md"],
             },
             {
               text: "Building PolarDB Kernel",

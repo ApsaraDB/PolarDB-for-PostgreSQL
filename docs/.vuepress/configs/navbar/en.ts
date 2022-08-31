@@ -11,13 +11,14 @@ export const en: NavbarConfig = [
         text: "Preparation of Storage Device",
         children: [
           "/deploying/storage-aliyun-essd.html",
+          "/deploying/storage-curvebs.html",
           "/deploying/storage-ceph.html",
           "/deploying/storage-nbd.html",
         ],
       },
       {
         text: "Preparation of File System",
-        children: ["/deploying/fs-pfs.html"],
+        children: ["/deploying/fs-pfs.html", "/deploying/fs-pfs-curve.html"],
       },
       {
         text: "Building PolarDB Kernel",
