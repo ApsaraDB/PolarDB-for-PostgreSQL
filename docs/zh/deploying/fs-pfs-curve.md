@@ -19,6 +19,7 @@ docker pull polardb/polardb_pg_devel
 docker run -it \
     --network=host \
     --cap-add=SYS_PTRACE --privileged=true \
+    --volume /dev:/dev \
     --name polardb_pg \
     polardb/polardb_pg_devel bash
 ```
