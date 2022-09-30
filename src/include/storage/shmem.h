@@ -45,6 +45,9 @@ extern void *ShmemInitStruct(const char *name, Size size, bool *foundPtr);
 extern Size add_size(Size s1, Size s2);
 extern Size mul_size(Size s1, Size s2);
 
+extern void *ShmemAllocPageSizeAligned(Size size);
+extern void *ShmemAllocPageSizeAlignedNoError(Size size);
+
 /* ipci.c */
 extern void RequestAddinShmemSpace(Size size);
 

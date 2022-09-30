@@ -245,7 +245,7 @@ StrategyGetBuffer(BufferAccessStrategy strategy, uint32 *buf_state)
 		 * actually fine because procLatch isn't ever freed, so we just can
 		 * potentially set the wrong process' (or no process') latch.
 		 */
-		SetLatch(&ProcGlobal->allProcs[bgwprocno].procLatch);
+		SetLatch(&ProcGlobal->allProcs[bgwprocno]->procLatch);
 	}
 
 	/*
@@ -742,7 +742,7 @@ polar_try_to_wake_bgwriter(void)
 		 * actually fine because procLatch isn't ever freed, so we just can
 		 * potentially set the wrong process' (or no process') latch.
 		 */
-		SetLatch(&ProcGlobal->allProcs[bgwprocno].procLatch);
+		SetLatch(&ProcGlobal->allProcs[bgwprocno]->procLatch);
 	}
 }
 /* POLAR end */

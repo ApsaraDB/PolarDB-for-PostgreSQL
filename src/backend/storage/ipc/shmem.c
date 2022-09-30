@@ -65,6 +65,8 @@
 
 #include "postgres.h"
 
+#include <unistd.h>
+
 #include "access/transam.h"
 #include "miscadmin.h"
 #include "storage/lwlock.h"
@@ -172,6 +174,64 @@ ShmemAlloc(Size size)
 				(errcode(ERRCODE_OUT_OF_MEMORY),
 				 errmsg("out of shared memory (%zu bytes requested)",
 						size)));
+	return newSpace;
+}
+
+/*
+ * ShmemAllocPageSizeAligned -- allocate page-aligned(address and size) chunk from shared memory
+ *
+ * Throws error if request cannot be satisfied.
+ *
+ * Assumes ShmemLock and ShmemSegHdr are initialized.
+ */
+void *
+ShmemAllocPageSizeAligned(Size size)
+{
+	void 	   *newSpace;
+
+	newSpace = ShmemAllocPageSizeAlignedNoError(size);
+	if(!newSpace)
+		ereport(ERROR,
+				(errcode(ERRCODE_OUT_OF_MEMORY),
+				 errmsg("out of shared memory (%zu bytes requested)",
+						size)));
+	return newSpace;
+}
+
+/*
+ * ShmemAllocPageSizeAlignedNoError -- allocate page-aligned(address and size) chunk from shared memory
+ *
+ * As ShmemAllocPageSizeAligned, but returns NULL if out of space, rather than erroring.
+ */
+void *
+ShmemAllocPageSizeAlignedNoError(Size size)
+{
+	Size 		newStart;
+	Size 		newFree;
+	void   	   *newSpace;
+	Size 		pageSize = (Size)getpagesize();
+
+	size = TYPEALIGN(pageSize,size);
+
+	Assert(ShmemSegHdr != NULL);
+
+	SpinLockAcquire(ShmemLock);
+
+	newStart = ShmemSegHdr->freeoffset;
+
+	newStart = TYPEALIGN(pageSize,newStart);
+
+	newFree = newStart + size;
+	if (newFree <= ShmemSegHdr->totalsize)
+	{
+		newSpace = (void *) ((char *) ShmemBase + newStart);
+		ShmemSegHdr->freeoffset = newFree;
+	}
+	else
+		newSpace = NULL;
+
+	SpinLockRelease(ShmemLock);
+
 	return newSpace;
 }
 
