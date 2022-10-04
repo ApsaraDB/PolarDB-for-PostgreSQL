@@ -4,7 +4,7 @@ date: 2022/08/31
 minute: 30
 ---
 
-# CurveBS 共享存储
+# CurveBS 共享存储 <a href="https://developer.aliyun.com/live/250218"><Badge type="tip" text="视频" vertical="top" /></a>
 
 <ArticleInfo :frontmatter=$frontmatter></ArticleInfo>
 
