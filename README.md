@@ -233,10 +233,10 @@ See [architecture design](/doc/polardb/arch.md) for more information
   * [Parallel Redo](/doc/polardb/parallel_redo.md)
   * [Remote Recovery](/doc/polardb/no_fpw.md)
 * Features and their design in PolarDB for PostgreSQL Distributed Version 2.0
-  * [HLC based distributed transaction management](/doc/polardb/hlc_2pc_chinese.md)
-  * [CTS and MVCC](/doc/polardb/cts_mvcc_chinese.md)
-  * [Two-phase transaction fault tolerance](/doc/polardb/2pc_cleanup_chinese.md)
-  * [FDW based Distribured SQL computation](/doc/polardb/dis_sql_outline_chinese.md)
+  * [HLC based distributed transaction management](/doc/polardb/hlc_2pc.md)
+  * [CTS and MVCC](/doc/polardb/cts_mvcc.md)
+  * [Two-phase transaction fault tolerance](/doc/polardb/2pc_cleanup.md)
+  * [FDW based Distribured SQL computation](/doc/polardb/dis_sql_outline.md)
   * [Useful commands and setup related to distributed SQL](/doc/polardb/distributed_related_usage.md)
 * Design and Usage of PolarDB for PostgreSQL Distributed Version 3.0 (plug-in)
   *  [Distributed transaction management as plug-in and HLC as patch](/doc/polardb/distrbuted_trans_and_hlc_patch.md)
@@ -244,6 +244,10 @@ See [architecture design](/doc/polardb/arch.md) for more information
   *  [SQL limitations](/doc/polardb/sql_limitations.md)
   *  [Scalable connection pool](/doc/polardb/conn_pooler.md)
   *  [Fast query shipping with Custom Scan](/doc/polardb/fast_query_shipping.md)
+* Design and Usage of PolarDB for PostgreSQL Distributed Version 4.0 (plug-in)
+  *  [Global Plan Cache](/doc/polardb/global_plancache_cn.md)
+  *  [Sharding Support](/doc/polardb/sharding_plugin_cn.md)
+
 
 ## Contributing
 

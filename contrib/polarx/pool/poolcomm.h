@@ -19,6 +19,7 @@
 #include "lib/stringinfo.h"
 #include "storage/s_lock.h"
 #include "pgxc/connpool.h"
+#include "pgxc/nodemgr.h"
 #include "pool/poolnodes.h"
 
 #define POOL_MGR_PREFIX "PoolMgr: "
@@ -66,6 +67,17 @@ typedef struct
     char        err_msg[POOL_ERR_MSG_LEN];
 } PoolPort;
 
+typedef struct
+{
+    /* dynahash.c requires key to be first field */
+    char stmt_name[15];/*32byte num change to string add _ and 1byte num change to str */
+    int  self_version[MAX_DATANODE_NUMBER];
+    bool exist_flag[MAX_DATANODE_NUMBER]; /* every slot means one node*/
+    bool send_flag[MAX_DATANODE_NUMBER]; /* every slot means one node*/
+    bool is_update[MAX_DATANODE_NUMBER]; /* flag is for update slot preapred_stmt hash*/
+    bool ignore_send[MAX_DATANODE_NUMBER]; /* true means not send prepared stmt info */
+} AgentPreparedStmt;
+
 extern int    pool_listen(unsigned short port, const char *unixSocketName);
 extern int    pool_connect(unsigned short port, const char *unixSocketName);
 extern int    pool_getbyte(PoolPort *port);
@@ -107,5 +119,10 @@ extern void PoolManagerLock(bool is_lock);
 
 /* Refresh connection data in pooler and drop connections of altered nodes in pooler */
 extern int PoolManagerRefreshConnectionInfo(void);
+
+extern int pool_sendprepstmt(PoolPort *port, HTAB *prepared_stmts, int count,
+                                int current_version, bool is_init,
+                                char **buf_return, char *errbuf, int32 buf_len);
+extern int pool_recvprepstmt(PoolPort *port, HTAB *prepared_stmts, const char *buf_in, int *current_version);
 
 #endif   /* POOLCOMM_H */

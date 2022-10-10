@@ -24,7 +24,11 @@ typedef enum PolarxNodeTag
     T_RemoteQueryState,
     T_DistributeBy,
     T_ExecNodes,
-    T_SimpleSort
+    T_SimpleSort,
+    T_ParamExternDataInfo,
+    T_BoundParamsInfo,
+    T_DistributionForParam,
+    T_ResponseCombiner
 } PolarxNodeTag;
 
 const char** PolarxNodeTagNames;

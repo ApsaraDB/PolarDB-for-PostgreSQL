@@ -1,49 +1,32 @@
-# polarx 分布式插件采用连接池处理coordinator和datanode之间的通信
+# Polarx plug-in uses connection pools between coordinators and datanodes
 
-## 连接池简要介绍:
-连接池采用多线程架构，主线程通过监听服务端口，负责处理所有backend服务进程发来的消息，根据消息类型，将工作派发给负责的线程处理，最后通过同步结果，返回给服务进程。通过连接池，实现了连接的复用，避免了重复建立连接带来的性能损耗，同时连接池还支持通过配置参数动态调整连接数量，将无用的连接释放，提供一定数量的空闲连接作为连接预热等功能，进一步提供了连接管理效率。同时实现了连接池的插件化，在插件中使用worker的方式动态启动，实现了一个数据库对应一个连接池worker,为多库提供了支持。
+## Connection pools:
 
-## 连接池参数说明：
+The distributed plug-in polarx uses a connection pool to establish communication between coordinators and datanodes. Connection pools adopt a multi-threaded architecture. The main thread receives messages sent by all backend service processes through listening ports. The main thread then distributes messages based on their types to different threads for processing, and finally synchronizes the processing results to the backend service processes. Connection pools provide a way to reuse connections, reducing the overhead for repeatedly establishing new connections. You can also dynamically adjust the number of connections by configuring the parameters of the feature to release unused connections. By doing so, the idle connections can be used to prefetch resources, improving the efficiency of connection management. Connection pools are deployed as plug-ins and can dynamically start as workers. Each connection pool worker corresponds to one database.
 
-1. pooler.persistent_datanode_connections 参数
-连接池永久不释放获得的连接。默认值为false.
+## Connection pool parameters:
 
-2. pooler.pool_conn_keepalive
-设置一个空闲连接最大存活时间.默认60秒。
+ pool works
 
-3. pooler.pool_maintenance_timeout
-设置连接池维护间隔，如果连接池空闲超过这个时间，就进行维护操作，默认设置10秒
+The distributed plug-in polarx uses a connection pool to establish communication between coordinators and datanodes. Connection pools adopt a multi-threaded architecture. The main thread receives messages sent by all backend service processes through listening ports. The main thread then distributes messages based on their types to different threads for processing, and finally synchronizes the processing results to the backend service processes. Connection pools provide a way to reuse connections, reducing the overhead for repeatedly establishing new connections. You can also dynamically adjust the number of connections by configuring the parameters of the feature to release unused connections. By doing so, the idle connections can be used to prefetch resources, improving the efficiency of connection management. Connection pools are deployed as plug-ins and can dynamically start as workers. Each connection pool worker corresponds to one database.
 
-4. pooler.max_pool_size
-设置最大连接数，如果连接池总连接数超过这个值，将拒绝新的连接申请，默认值为300.
+Connection pool parameters:
 
-5. pooler.min_pool_size 
-设置最小连接数，如果连接池总连接数小于这个值，将建立新的空闲连接，来位置最小连接数，默认值为5.
+1. pooler.persistent_datanode_connections: specifies that the connection pool does not release connections permanently. Default value: false.
+2. pooler.pool_conn_keepalive: sets the maximum time to live for an idle connection. Default value: 60. Unit: seconds.
+3. pooler.pool_maintenance_timeout: sets the maintenance interval of the connection pool. If the idle duration of the connection pool exceeds the specified time, the maintenance operation is performed. Default value: 10. Unit: seconds.
+4. pooler.max_pool_size: sets the maximum number of connections. If the total number of connections in the connection pool exceeds this value, new connections are rejected. Default value: 300.
+5. pooler.min_pool_size: sets the minimum number of connections. If the total number of connections in the connection pool is less than this value, new idle connections will be established. Default value: 5.
+6. pooler.port: specifies the service port of the connection pool . Default value: 6667.
+7. pooler.pool_print_stat_timeout: sets the time interval to return connection pool status information. Default value: 60. Unit: seconds. If you set this parameter to -1, the feature is disabled.
+8. pooler.pooler_scale_factor: sets the number of parallel threads in the connection pool. Default value: 2.
+9. pooler.pooler_dn_set_timeout: sets the timeout period for the connection pool to wait for datanode messages. Default value: 10. Unit: seconds.
+10. pooler.pool_session_memory_limit: sets the memory usage limit of a session. Default value: 10. Unit: MB. If the memory usage of a session on a node exceeds this limit, the session is closed.
+11. pooler.pool_session_max_lifetime: sets the maximum time to live for a session. Default value: 300. Unit: seconds.
+12. pooler.pool_session_context_check_gap: sets the time interval for the connection pool to check the memory usage of a session. Default value: 120. Unit: seconds.
+13. pooler.min_free_size: sets the minimum number of idle connections in the connection pool. Default value: 5.
+14. pooler.pooler_connect_timeout: sets the timeout period for creating a connection. Default value: 10. Unit: seconds.
 
-6. pooler.port
-设置连接池服务端口, 默认6667.
+___
 
-7. pooler.pool_print_stat_timeout
-设置连接池状态信息输出间隔，默认值为60秒，如果设置为-1 可关掉此功能.
-
-8. pooler.pooler_scale_factor
-设置连接池并行线程个数，默认值为2.
-
-9. pooler.pooler_dn_set_timeout
-设置连接池等待datanode消息超时时间，默认值为10秒.
-
-11. pooler.pool_session_memory_limit
-设置session内存使用限制，默认值为10MB，如果连接到节点中开启的session,内存使用超过这个限值，session将被关闭.
-
-12. pooler.pool_session_max_lifetime
-设置session最大存活时间，默认值为300秒
-
-13. pooler.pool_session_context_check_gap
-设置session内存检测间隔，默认值为120秒，连接池每隔这个时间间隔去检查session的内存使用量.
-
-14. pooler.min_free_size
-设置连接池最小空闲连接数，默认值为5.
-
-15. pooler.pooler_connect_timeout
-设置创建连接超时时间，默认值为10秒.
-
+Copyright © Alibaba Group, Inc.

@@ -296,8 +296,10 @@ create_ctas_foreign_table(List *tlist, List *dist_list, IntoClause *into)
             dist_type = "H";
         else if(dist_by->disttype == DISTTYPE_ROUNDROBIN)
             dist_type = "N";
-        else if(dist_by->disttype == DISTTYPE_ROUNDROBIN)
+        else if(dist_by->disttype == DISTTYPE_MODULO)
             dist_type = "M";
+        else if(dist_by->disttype == DISTTYPE_SHARD)
+			dist_type = "S";
         else
             ereport(ERROR,
                     (errcode(ERRCODE_INVALID_OBJECT_DEFINITION),

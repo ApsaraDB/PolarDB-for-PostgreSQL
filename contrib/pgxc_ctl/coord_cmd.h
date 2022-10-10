@@ -95,8 +95,10 @@ extern cmd_t *prepare_initCoordinatorMaster(char *nodeName);
 extern cmd_t *prepare_initCoordinatorSlave(char *nodeName);
 
 extern int configure_nodes(char **nodeList);
+extern int configure_coord_shardmap(char **nodeList);
 extern int configure_datanodes(char **nodeList);
 extern int configure_nodes_all(void);
+extern cmd_t *prepare_coord_shardmap_cmd(char *nodeName);
 extern cmd_t *prepare_configureNode(char *nodeName);
 extern cmd_t *prepare_configureNode_multicluster(char *nodeName);
 

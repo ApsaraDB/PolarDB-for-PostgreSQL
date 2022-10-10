@@ -37,6 +37,8 @@
 #include "distribute_transaction/txn.h"
 #include "pgxc/nodemgr.h"
 #include "pgxc/connpool.h"
+#include "plancache/polarx_plancache.h"
+#include "metadata/cache.h"
 
 PG_MODULE_MAGIC;
 
@@ -50,6 +52,8 @@ int     PGXCNodeId = 0;
 bool    isPGXCCoordinator = false;
 bool    isPGXCDataNode = false;
 int     remoteConnType = REMOTE_CONN_APP;
+int		defaultTableDistType = DISTTYPE_HASH;
+bool	tryTransformShardToHash = false;
 
 static const struct config_enum_entry pgxc_conn_types[] = {
     {"application", REMOTE_CONN_APP, false},
@@ -58,6 +62,12 @@ static const struct config_enum_entry pgxc_conn_types[] = {
     {"gtm", REMOTE_CONN_GTM, false},
     {"gtmproxy", REMOTE_CONN_GTM_PROXY, false},
     {NULL, 0, false}
+};
+
+static const struct config_enum_entry default_table_dist_types[] = {
+		{"hash", DISTTYPE_HASH, false},
+		{"shard", DISTTYPE_SHARD, false},
+		{NULL, 0, false}
 };
 static object_access_hook_type next_object_access_hook = NULL;
 /*
@@ -683,6 +693,7 @@ polarxExecutorStart(QueryDesc *queryDesc, int eflags)
                 && plannedStmt->rtable)
     {
         bool need_adjust = true;
+        ParamExternDataInfo *eparams = NULL;
 
         if(IsA(plannedStmt->planTree, CustomScan))
         {
@@ -692,13 +703,47 @@ polarxExecutorStart(QueryDesc *queryDesc, int eflags)
             {
                 void *ptr = linitial(plan->custom_private);
                 if(polarxIsA(ptr, RemoteQuery))
+                {
                     need_adjust = false;
+                    queryDesc->params = NULL;
+                }
             }
         }
         if(need_adjust)
-            AdjustRelationToForeignTable(plannedStmt->rtable);
+            AdjustRelationToForeignTable(plannedStmt->rtable, NULL);
         else 
             AdjustRelationBackToTable(false);
+
+        if(EnablePlanCache)
+        {
+            eparams = GetParaminfoFromPlan(plannedStmt);
+
+            if(queryDesc->params == NULL && eparams)
+                queryDesc->params = copyParamList(eparams->param_list_info);
+            else if(queryDesc->params && eparams)
+                eparams->param_list_info = queryDesc->params;
+
+            if(eparams && eparams->fqs_plannedstmt)
+            {
+                int target_node = -1;
+
+                Assert(IsA(eparams->fqs_plannedstmt->planTree, CustomScan));
+
+                target_node = CheckFQSValid(plannedStmt, eparams);
+                if(target_node > -1)
+                {
+                    List *node_list = NIL;
+                    CustomScan *custom_fqs_scan = (CustomScan *)eparams->fqs_plannedstmt->planTree;
+                    RemoteQuery *query_remote = (RemoteQuery *)linitial(custom_fqs_scan->custom_private);
+
+                    Assert(query_remote->exec_nodes != NULL);
+
+                    node_list = lappend_int(node_list, target_node);
+                    query_remote->exec_nodes->nodeList = node_list;
+                    queryDesc->plannedstmt = eparams->fqs_plannedstmt;
+                }
+            }
+        }
     }
 
     standard_ExecutorStart(queryDesc, eflags);
@@ -789,6 +834,15 @@ RegisterPolarxConfigVariables(void)
             PGC_BACKEND,
             GUC_NOT_IN_SAMPLE,
             check_persistent_connections, NULL, NULL);
+    DefineCustomBoolVariable(
+            "polarx.enable_plan_cache",
+            gettext_noop("This GUC control Plan Cache"),
+            gettext_noop("When enabled, plan cache will be actived."),
+            &EnablePlanCache,
+            true,
+            PGC_USERSET,
+            0,
+            NULL, NULL, NULL);
     DefineCustomIntVariable(
             "pooler.pool_conn_keepalive",
             gettext_noop("Close connections if they are idle in the pool for that time."),
@@ -974,5 +1028,34 @@ RegisterPolarxConfigVariables(void)
             0,
             NULL, NULL, NULL);
 #endif
+    DefineCustomIntVariable(
+            "polarx.max_plancache_size",
+            gettext_noop("Max plan cache size."),
+            gettext_noop("If number of active plan cache reaches this value, "
+                "least-recently-used lru will chose one slot for new plan"),
+            &MaxPlancacheSize,
+            300, 100, 50000,
+            PGC_POSTMASTER,
+            0,
+            NULL, NULL, NULL);
 
+	DefineCustomEnumVariable(
+			"polarx.default_table_dist_type",
+			gettext_noop("This GUC sets the default table type when created."),
+			NULL,
+			&defaultTableDistType,
+			DISTTYPE_HASH,
+			default_table_dist_types,
+			PGC_USERSET,
+			0,
+			NULL, NULL, NULL);
+	DefineCustomBoolVariable(
+			"polarx.try_transform_shard_to_hash",
+			gettext_noop("Try transform shard table to hash table if shard is not supported."),
+			NULL,
+			&tryTransformShardToHash,
+			false,
+			PGC_USERSET,
+			0,
+			NULL, NULL, NULL);
 }

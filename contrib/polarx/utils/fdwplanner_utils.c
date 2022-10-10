@@ -15,6 +15,7 @@
  */
 
 #include "postgres.h"
+#include "miscadmin.h"
 #include "polarx.h"
 #include "nodes/primnodes.h"
 
@@ -32,6 +33,8 @@
 #include "utils/fdwplanner_utils.h"
 #include "pgxc/locator.h"
 #include "access/xact.h"
+#include "access/transam.h"
+#include "polarx/polarx_fdw.h"
 
 
 typedef struct relsavedinfoent
@@ -44,19 +47,51 @@ typedef struct relsavedinfoent
     TriggerDesc *foreign_trigdesc;
 } RelSavedInfoEnt;
 
+typedef struct
+{
+    ParamExternDataInfo *params;
+    Datum hash_val;
+    int sql_seq;
+    int random_node;
+    int target_node;
+    bool fqs_valid;
+    bool is_cursor;
+} pc_param_context;
+
+typedef struct
+{
+    bool is_invalid;
+}
+pc_plan_valid_context;
+
 static HTAB *RelationSavedCache;
 static bool need_setback = false;
 
 static TriggerDesc *ExceptInternalTrigger(TriggerDesc *trigdesc);
 static void SetTriggerFlags(TriggerDesc *trigdesc, Trigger *trigger);
-static bool ExtractRelationRangeTableListWalker(Node *node, List **rangeTableEntryList);
-static bool polarx_distributable_rangeTableEntry(RangeTblEntry *rangeTableEntry);
+static bool ExtractRelationRangeTableListWalker(Node *node, extract_rte_context *context);
+static void  polarx_distributable_rangeTableEntry(RangeTblEntry *rangeTableEntry, extract_rte_context *context);
 static void AdjustRelationToForeignTableWorker(Relation rd);
 static void RelationSavedCacheInitialize(void);
 static void RelationSavedCacheInvalidate(void);
 static void RelationSavedCacheInvalidateEntry(Oid relationId);
 static void InvalidRelationSavedCache(Datum argument, Oid relationId);
 static bool IsFDWDistributeTable(Oid relid);
+static void plan_tree_walker(Plan *plan,
+                                void (*worker) (Plan *plan, void *context),
+                                void *context);
+static void get_paraminfo_from_foreignscan(Plan *plan, void *context);
+static void add_paraminfo_into_foreignscan(Plan *plan, void *context);
+static void is_direct_modify_plan_valid(Plan *plan, void *context);
+static void exec_on_plantree(PlannedStmt *planned_stmt, void (*execute_func) (Plan *plan, void *context),
+                                void *context);
+static void params_add_worker(Plan *plan,  void *context);
+static void params_get_worker(Plan *plan,  void *context);
+static void check_plan_valid_worker(Plan *plan,  void *context);
+static void eval_target_node_warker(Plan *plan,  void *context);
+static void eval_target_node_foreignscan(Plan *plan, void *context);
+static void add_fqsplan_into_foreignscan(Plan *plan, void *context);
+static void fqs_add_worker(Plan *plan,  void *context);
 
 #define INITRELCACHESIZE        400
 #define RelationSavedCacheInsert(RELATION_SAVED)  \
@@ -108,7 +143,7 @@ static bool IsFDWDistributeTable(Oid relid);
  * ExtractRelationRangeTableList walks over a query tree to gather relation range table entries.
  */
 static bool
-ExtractRelationRangeTableListWalker(Node *node, List **rangeTableEntryList)
+ExtractRelationRangeTableListWalker(Node *node, extract_rte_context *context)
 {
     bool done = false;
 
@@ -121,10 +156,7 @@ ExtractRelationRangeTableListWalker(Node *node, List **rangeTableEntryList)
     {
         RangeTblEntry *rangeTable = (RangeTblEntry *) node;
 
-        if (polarx_distributable_rangeTableEntry(rangeTable))
-        {
-            (*rangeTableEntryList) = lappend(*rangeTableEntryList, rangeTable);
-        }
+        polarx_distributable_rangeTableEntry(rangeTable, context);
     }
     else if (IsA(node, Query))
     {
@@ -134,21 +166,21 @@ ExtractRelationRangeTableListWalker(Node *node, List **rangeTableEntryList)
         {
             done = query_tree_walker(query,
                                     ExtractRelationRangeTableList,
-                                    rangeTableEntryList,
+                                    (void *)context,
                                     QTW_EXAMINE_RTES);
         }
         else
         {
             done = range_table_walker(query->rtable,
                                     ExtractRelationRangeTableList,
-                                    rangeTableEntryList,
+                                    (void *)context,
                                     QTW_EXAMINE_RTES);
         }
     }
     else
     {
         done = expression_tree_walker(node, ExtractRelationRangeTableList,
-                                    rangeTableEntryList);
+                                    (void *)context);
     }
 
     return done;
@@ -159,14 +191,20 @@ ExtractRelationRangeTableListWalker(Node *node, List **rangeTableEntryList)
  * polarxDistributableRangeTableEntry returns true if the input range table
  * entry is a relation and it can be used in fdw planner.
  */
-static bool
-polarx_distributable_rangeTableEntry(RangeTblEntry *rangeTableEntry)
+static void 
+polarx_distributable_rangeTableEntry(RangeTblEntry *rangeTableEntry, extract_rte_context *context)
 {
 	char relationKind = '\0';
 
+    if(rangeTableEntry->relid && rangeTableEntry->relid < FirstNormalObjectId)
+    {
+        context->has_sys = true;
+        return;
+    }
+
 	if (rangeTableEntry->rtekind != RTE_RELATION)
 	{
-		return false;
+		return;
 	}
 
 	relationKind = rangeTableEntry->relkind;
@@ -176,7 +214,8 @@ polarx_distributable_rangeTableEntry(RangeTblEntry *rangeTableEntry)
          * RELKIND_RELATION is a table, RELKIND_PARTITIONED_TABLE is partition table.
          * partition table's child table will be used as distributed table.
 		 */
-		return true;
+        context->has_foreign = true;
+        context->rteList = lappend(context->rteList, rangeTableEntry);
 	}
     else if(relationKind == RELKIND_FOREIGN_TABLE)
     {
@@ -189,25 +228,26 @@ polarx_distributable_rangeTableEntry(RangeTblEntry *rangeTableEntry)
             */
             RelSavedInfoEnt *rel_saved = NULL;
             RelationSavedInfoLookup(rangeTableEntry->relid,rel_saved);
-            if(rel_saved && !rel_saved->is_foreign)
+            if(rel_saved)
             {
-                rangeTableEntry->relkind = RELKIND_RELATION;
-                return true;
+                context->has_foreign = true;
+                if(!rel_saved->is_foreign)
+                {
+                    rangeTableEntry->relkind = RELKIND_RELATION;
+                    context->rteList = lappend(context->rteList, rangeTableEntry);
+                }
             }
             if(rangeTableEntry->inh)
-                return true;
+                context->rteList = lappend(context->rteList, rangeTableEntry);
         }
-        
     }
-
-	return false;
 }
 
 bool
-ExtractRelationRangeTableList(Node *node, List **rangeTableList)
+ExtractRelationRangeTableList(Node *node, void *context)
 {
     if(IS_PGXC_LOCAL_COORDINATOR)
-        return ExtractRelationRangeTableListWalker(node, rangeTableList);
+        return ExtractRelationRangeTableListWalker(node, (extract_rte_context *)context);
     else
         return false;
 }
@@ -279,7 +319,7 @@ AdjustRelationToForeignTableWorker(Relation rd)
 }
 
 void
-AdjustRelationToForeignTable(List *tableList)
+AdjustRelationToForeignTable(List *tableList, bool *is_all_foreign)
 {
     ListCell *lc = NULL;
 
@@ -293,8 +333,9 @@ AdjustRelationToForeignTable(List *tableList)
         {
             RangeTblEntry *rte = (RangeTblEntry *)tbl;
 
-            if(rte->rtekind == RTE_RELATION &&
-                    IsFDWDistributeTable(rte->relid))
+            if(rte->rtekind != RTE_RELATION)
+                continue;
+            if(IsFDWDistributeTable(rte->relid))
             {
                 Oid relid = rte->relid;
 
@@ -327,6 +368,10 @@ AdjustRelationToForeignTable(List *tableList)
                 if(IS_PGXC_COORDINATOR &&
                         rte->relkind == RELKIND_RELATION)
                     rte->relkind = RELKIND_FOREIGN_TABLE;
+            }
+            else if(is_all_foreign)
+            {
+                *is_all_foreign = false;
             }
         }
         /* used for utility process */
@@ -615,8 +660,485 @@ IsFDWDistributeTable(Oid relid)
         case LOCATOR_TYPE_RANGE:
         case LOCATOR_TYPE_RROBIN:
         case LOCATOR_TYPE_MODULO:
+        case LOCATOR_TYPE_SHARD:
             return true;
         default:
             return false;
     }
+}
+
+bool
+CheckPlanValid(PlannedStmt *planned_stmt)
+{
+    
+    pc_plan_valid_context context;
+
+    context.is_invalid = false;
+    exec_on_plantree(planned_stmt, is_direct_modify_plan_valid, (void *)&context);
+    if(context.is_invalid)
+        return false;
+    else
+        return true;
+}
+
+int
+CheckFQSValid(PlannedStmt *planned_stmt,
+        ParamExternDataInfo *value)
+{
+    
+    pc_param_context context;
+
+    context.params = value;
+    context.target_node = -1;
+    context.random_node = -1;
+    context.fqs_valid = true;
+
+    exec_on_plantree(planned_stmt, eval_target_node_foreignscan, (void *)&context);
+    if(context.fqs_valid)
+    {
+        if(context.target_node > -1)
+            return context.target_node;
+        else if(context.random_node > -1)
+            return context.random_node;
+        else
+            return -1;
+    }
+    else
+    {
+        return -1;
+    }
+}
+
+void
+SetParaminfoToPlan(PlannedStmt *planned_stmt,
+        ParamExternDataInfo *value, Datum hash_val, bool is_cursor)
+{
+    
+    pc_param_context context;
+
+    context.params = value;
+    context.hash_val = hash_val;
+    context.sql_seq = 1; /* 0 is used for FQS */
+    context.is_cursor = is_cursor;
+    exec_on_plantree(planned_stmt, add_paraminfo_into_foreignscan, (void *)&context);
+}
+
+void
+SetFQSPlannedStmtToPlan(PlannedStmt *planned_stmt,
+        ParamExternDataInfo *value)
+{
+    
+    pc_param_context context;
+
+    context.params = value;
+    exec_on_plantree(planned_stmt, add_fqsplan_into_foreignscan, (void *)&context);
+}
+
+ParamExternDataInfo *
+GetParaminfoFromPlan(PlannedStmt *planned_stmt)
+{
+    pc_param_context context; 
+
+    context.params = NULL;
+    exec_on_plantree(planned_stmt, get_paraminfo_from_foreignscan, (void *)&context);
+    return context.params;
+}
+
+static void
+exec_on_plantree(PlannedStmt *planned_stmt,
+        void (*execute_func) (Plan *plan, void *context),
+        void *context)
+{
+    ListCell    *lc;
+
+    execute_func(planned_stmt->planTree, context);
+
+    foreach (lc, planned_stmt->subplans)
+    {
+        Plan    *subPlan = lfirst(lc);
+        execute_func(subPlan, context);
+    }
+}
+
+static void
+params_add_worker(Plan *plan,  void *context)
+{
+    pc_param_context *param_cxt = (pc_param_context *) context;
+
+    switch(nodeTag(plan))
+    {
+        case T_ForeignScan:
+            {
+                ForeignScan *fscan = (ForeignScan *)plan;
+                CmdType operation = fscan->operation;
+
+                if(fscan->fdw_private == NULL)
+                    return;
+                if(operation == CMD_SELECT)
+                {
+                    setParamsExternIntoForeginScan(fscan->fdw_private, param_cxt->params);
+                    param_cxt->sql_seq++;
+                    if(param_cxt->params && !CheckForeginScanDistByParam(fscan->fdw_private))
+                        param_cxt->params->may_be_fqs = false;
+                }
+                else if(operation == CMD_UPDATE || operation == CMD_DELETE)
+                {
+                    setParamsExternIntoForeginDirect(fscan->fdw_private, param_cxt->params);
+                    param_cxt->sql_seq++;
+                    if(param_cxt->params)
+                        param_cxt->params->may_be_fqs = false;
+                }
+                else
+                {
+                    if(param_cxt->params)
+                        param_cxt->params->may_be_fqs = false;
+                }
+                if(param_cxt->sql_seq > 1 && param_cxt->params && param_cxt->params->portal_need_name == false)
+                    param_cxt->params->portal_need_name = true;
+
+            }
+            break;
+        case T_ModifyTable:
+            {
+                int i = 0;
+                ListCell *lc = NULL;
+                ModifyTable   *modifyplan = (ModifyTable *) plan;
+                CmdType operation = modifyplan->operation;
+
+                foreach (lc, modifyplan->plans)
+                {
+                    List       *fdw_private = (List *) list_nth(modifyplan->fdwPrivLists, i);
+
+                    if(operation == CMD_INSERT)
+                    {
+                        if(fdw_private == NULL)
+                        {
+                            ListCell *l = NULL;
+
+                            l = list_nth_cell(modifyplan->fdwPrivLists, 0);
+                            lfirst(l) = (void *)list_make1(param_cxt->params);
+                        }
+                        else if(list_length(fdw_private) == 1)
+                        {
+                            ListCell *l = NULL;
+
+                            l = list_nth_cell(fdw_private, 0);
+                            lfirst(l) = param_cxt->params; 
+                        }
+                        else
+                        {
+                            setParamsExternIntoForeginModify(fdw_private, param_cxt->params);
+                        }
+                        param_cxt->sql_seq++;
+                    }
+                    else if((operation == CMD_UPDATE ||
+                                operation == CMD_DELETE) && fdw_private != NULL)
+                    {
+                        setParamsExternIntoForeginModify(fdw_private, param_cxt->params);
+                        param_cxt->sql_seq++;
+                    }
+                    if(param_cxt->sql_seq > 1 && param_cxt->params && param_cxt->params->portal_need_name == false)
+                        param_cxt->params->portal_need_name = true;
+                    i++;
+                }
+                if(param_cxt->params)
+                    param_cxt->params->may_be_fqs = false;
+            }
+            break;
+        default:
+            elog(ERROR, "can not operation on this node %d", nodeTag(plan));
+    }
+    return;
+}
+
+static void
+fqs_add_worker(Plan *plan,  void *context)
+{
+    pc_param_context *param_cxt = (pc_param_context *) context;
+
+    switch(nodeTag(plan))
+    {
+        case T_ForeignScan:
+            {
+                ForeignScan *fscan = (ForeignScan *)plan;
+                CmdType operation = fscan->operation;
+
+                if(fscan->fdw_private == NULL)
+                    return;
+                if(operation == CMD_SELECT)
+                {
+                    setFQSPlannedStmtIntoForeginScan(fscan->fdw_private,
+                                                      param_cxt->params->fqs_plannedstmt);
+                }
+
+            }
+            break;
+        case T_ModifyTable:
+            break;
+        default:
+            elog(ERROR, "can not operation on this node %d", nodeTag(plan));
+    }
+    return;
+}
+
+static void
+params_get_worker(Plan *plan,  void *context)
+{
+    pc_param_context *param_cxt = (pc_param_context *) context;
+
+    if(param_cxt->params)
+        return;
+
+    switch(nodeTag(plan))
+    {
+        case T_ForeignScan:
+            {
+                ForeignScan *fscan = (ForeignScan *)plan;
+                CmdType operation = fscan->operation;
+
+                if(fscan->fdw_private == NULL)
+                    return;
+                if(operation == CMD_SELECT)
+                    param_cxt->params = getParamsExternFromForeginScan(fscan->fdw_private);
+                else if(operation == CMD_UPDATE || operation == CMD_DELETE)
+                    param_cxt->params = getParamsExternFromForeginDirect(fscan->fdw_private);
+            }
+            break;
+        case T_ModifyTable:
+            {
+                int i = 0;
+                ListCell *lc = NULL;
+                ModifyTable   *modifyplan = (ModifyTable *) plan;
+                CmdType operation = modifyplan->operation;
+
+                foreach (lc, modifyplan->plans)
+                {
+                    List       *fdw_private = (List *) list_nth(modifyplan->fdwPrivLists, i);
+
+                    if(fdw_private == NULL)
+                        continue;
+                    if(list_length(fdw_private) == 1 &&
+                        operation == CMD_INSERT)
+                    {
+                        if(param_cxt->params == NULL)
+                            param_cxt->params = (ParamExternDataInfo *)list_nth(fdw_private, 0);
+                    }
+                    else if(operation == CMD_INSERT ||
+                            operation == CMD_UPDATE ||
+                            operation == CMD_DELETE)
+                        param_cxt->params = getParamsExternFromForeginModify(fdw_private);
+                    i++;
+                }
+            }
+            break;
+        default:
+            elog(ERROR, "can not operation on this node %d", nodeTag(plan));
+    }
+    return;
+}
+
+static void
+check_plan_valid_worker(Plan *plan,  void *context)
+{
+    pc_plan_valid_context *valid_cxt = (pc_plan_valid_context *) context;
+
+    if(valid_cxt->is_invalid)
+        return;
+
+    switch(nodeTag(plan))
+    {
+        case T_ForeignScan:
+            {
+                ForeignScan *fscan = (ForeignScan *)plan;
+                CmdType operation = fscan->operation;
+
+                if(fscan->fdw_private == NULL)
+                    return;
+                if(operation == CMD_UPDATE || operation == CMD_DELETE)
+                {
+                    Oid target_reloid = getTargetRelOidFromForeginDirect(fscan->fdw_private);
+                    Relation    relation;
+                    TriggerDesc *trigDesc;
+                    bool result = false;
+
+                    relation = heap_open(target_reloid, NoLock);
+
+                    trigDesc = relation->trigdesc;
+                    switch (operation)
+                    {
+                        case CMD_UPDATE:
+                            if (trigDesc &&
+                                    (trigDesc->trig_update_after_row ||
+                                     trigDesc->trig_update_before_row))
+                                result = true;
+                            break;
+                        case CMD_DELETE:
+                            if (trigDesc &&
+                                    (trigDesc->trig_delete_after_row ||
+                                     trigDesc->trig_delete_before_row))
+                                result = true;
+                            break;
+                        default:
+                            break;
+                    }
+                    heap_close(relation, NoLock);
+                    if(result)
+                        valid_cxt->is_invalid = true;               
+                }
+            }
+            break;
+        case T_ModifyTable:
+            break;
+        default:
+            elog(ERROR, "can not operation on this node %d", nodeTag(plan));
+    }
+    return;
+}
+
+static void
+eval_target_node_warker(Plan *plan,  void *context)
+{
+    pc_param_context *param_cxt = (pc_param_context *) context;
+
+    if(param_cxt->fqs_valid == false)
+        return;
+
+    switch(nodeTag(plan))
+    {
+        case T_ForeignScan:
+            {
+                ForeignScan *fscan = (ForeignScan *)plan;
+                CmdType operation = fscan->operation;
+
+                if(fscan->fdw_private == NULL)
+                {
+                    param_cxt->fqs_valid = false;
+                    return;
+                }
+                if(operation == CMD_SELECT)
+                {
+                    int tmp_target = -1;
+                    bool is_replicate = false;
+
+                    tmp_target = evalTargetNodeFromForeginScan(fscan->fdw_private, param_cxt->params, &is_replicate);
+                    if(tmp_target < 0)
+                    {
+                        param_cxt->fqs_valid = false;
+                    }
+                    else if(param_cxt->target_node < 0)
+                    {
+                        if(is_replicate)
+                            param_cxt->random_node = tmp_target;
+                        else
+                            param_cxt->target_node = tmp_target;
+                    }
+                    else if(param_cxt->target_node != tmp_target &&
+                            !is_replicate)
+                    {
+                            param_cxt->fqs_valid = false;
+                    }
+                }
+                else
+                {
+                    param_cxt->fqs_valid = false;
+                }
+            }
+            break;
+        case T_ModifyTable:
+            break;
+        default:
+            elog(ERROR, "can not operation on this node %d", nodeTag(plan));
+    }
+    return;
+}
+
+static void
+is_direct_modify_plan_valid(Plan *plan, void *context)
+{
+    plan_tree_walker(plan, check_plan_valid_worker, context);
+}
+
+static void
+add_paraminfo_into_foreignscan(Plan *plan, void *context)
+{
+    plan_tree_walker(plan, params_add_worker, context);
+}
+
+static void
+add_fqsplan_into_foreignscan(Plan *plan, void *context)
+{
+    plan_tree_walker(plan, fqs_add_worker, context);
+}
+
+static void
+eval_target_node_foreignscan(Plan *plan, void *context)
+{
+    plan_tree_walker(plan, eval_target_node_warker, context);
+}
+
+static void
+get_paraminfo_from_foreignscan(Plan *plan, void *context)
+{
+    plan_tree_walker(plan, params_get_worker, context);
+}
+
+static void
+plan_tree_walker(Plan *plan,
+        void (*worker) (Plan *plan, void *context),
+        void *context)
+{
+    ListCell   *lc;
+
+    if (plan == NULL)
+        return;
+
+    check_stack_depth();
+
+    switch (nodeTag(plan))
+    {
+        case T_ForeignScan:
+            worker(plan,  context);
+            break;
+        case T_ModifyTable:
+            {
+                ModifyTable   *modifyplan = (ModifyTable *) plan;
+
+                worker(plan, context);
+                foreach (lc, modifyplan->plans)
+                    plan_tree_walker((Plan *) lfirst(lc), worker, context);
+            }
+            break;
+
+        case T_Append:
+            foreach (lc, ((Append *) plan)->appendplans)
+                plan_tree_walker((Plan *) lfirst(lc), worker, context);
+            break;
+
+        case T_MergeAppend:
+            foreach (lc, ((MergeAppend *) plan)->mergeplans)
+                plan_tree_walker((Plan *) lfirst(lc), worker, context);
+            break;
+
+        case T_BitmapAnd:
+            foreach (lc, ((BitmapAnd *) plan)->bitmapplans)
+                plan_tree_walker((Plan *) lfirst(lc), worker, context);
+            break;
+
+        case T_BitmapOr:
+            foreach (lc, ((BitmapOr *) plan)->bitmapplans)
+                plan_tree_walker((Plan *) lfirst(lc), worker, context);
+            break;
+        case T_SubqueryScan:
+            plan_tree_walker(((SubqueryScan *) plan)->subplan, worker, context);
+            break;
+        case T_CustomScan:
+            foreach (lc, ((CustomScan *) plan)->custom_plans)
+                plan_tree_walker((Plan *) lfirst(lc), worker, context);
+            break;
+        default:
+            break;
+    }
+
+    plan_tree_walker(plan->lefttree, worker, context);
+    plan_tree_walker(plan->righttree, worker, context);
 }

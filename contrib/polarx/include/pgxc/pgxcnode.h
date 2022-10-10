@@ -142,6 +142,7 @@ struct pgxc_node_handle
     long        recv_datarows;
 #ifdef PATCH_ENABLE_DISTRIBUTED_TRANSACTION
 	LogicalTime receivedTimestamp;
+	LogicalTime sendTimestamp;
 #endif
 };
 typedef struct pgxc_node_handle PGXCNodeHandle;
@@ -156,6 +157,14 @@ typedef struct
     PGXCNodeHandle      **coord_handles;    /* an array of Coordinator handles */
 } PGXCNodeAllHandles;
 
+typedef struct
+{
+    /* dynahash.c requires key to be first field */
+    char stmt_name[NAMEDATALEN];
+    bool is_valid;
+    bool is_new_added;
+    bool need_refresh;
+} PreparedStmt;
 
 extern int NumDataNodes;
 extern int NumCoords;

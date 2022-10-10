@@ -130,6 +130,14 @@ typedef struct LocalTwoPhaseState
 										pgxc_node_receive_response */
     int				 connections_num;
     CurrentOperation response_operation;
+#ifdef POLARDBX_SHARDING
+	bool local_coord_participate; /* Normally it is false, 
+                                    * but when update shardmap meta, we want local coord 
+                                    * act as a remote cn, thus local coord can exec prepare txn
+                                    * sql instead of PrepareStartNode function. */
+	bool force_2pc;               /* Force use 2pc. Currently used in update shardmap metadata, 
+                                    * prepared and commit even if only one coordinator participated.  */
+#endif
 } LocalTwoPhaseState;
 extern LocalTwoPhaseState g_coord_twophase_state;
 
@@ -177,11 +185,6 @@ extern int	 pgxc_node_begin(int				 conn_count,
                                bool				 need_tran_block,
                                bool				 readOnly,
                                char				 node_type);
-
-extern void DropTxnDatanodeStatement(const char *stmt_name);
-extern bool PrepareTxnDatanodeStatement(char *stmt);
-extern bool ActivateTxnDatanodeStatementOnNode(const char *stmt_name, int noid);
-extern void DropAllTxnDatanodeStatement(void);
 
 extern bool isXactWriteLocalNode(void);
 extern char* GetImplicit2PCGID(const char *head, bool localWrite);

@@ -911,7 +911,7 @@ retry_pools:
         }
         else
         {
-            if(rel_loc_info->locatorType == LOCATOR_TYPE_HASH)
+            if(rel_loc_info->locatorType == LOCATOR_TYPE_HASH || rel_loc_info->locatorType == LOCATOR_TYPE_SHARD)
             {
                 Node *quals = query->jointree->quals;
                 rel_exec_nodes->en_expr = create_dis_col_eval(quals, rel_loc_info->partAttrNum);
@@ -2002,7 +2002,7 @@ polarx_is_query_shippable(Query *query, int query_level)
          * that as multiple nodes.
          */
         if (list_length(exec_nodes->nodeList) > 1 ||
-            !((exec_nodes->baselocatortype == LOCATOR_TYPE_HASH)
+            !((exec_nodes->baselocatortype == LOCATOR_TYPE_HASH || exec_nodes->baselocatortype == LOCATOR_TYPE_SHARD)
                 && (exec_nodes->en_expr || list_length(exec_nodes->nodeList) == 1)))
             canShip = false;
 

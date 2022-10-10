@@ -71,8 +71,16 @@
 #include "deparse/deparse_fqs.h"
 #include "utils/fdwplanner_utils.h"
 #include "nodes/polarx_node.h"
+#include "plancache/polarx_plancache.h"
+#include "polarx/polarx_fdw.h"
 
 bool EnableFastQueryShipping = false;
+
+typedef struct
+{
+    CmdType commandType;
+    List *parame_list;
+} pc_const_to_param_context;
 
 static bool contains_temp_tables(List *rtable);
 static PlannedStmt *pgxc_FQS_planner(Query *query, int cursorOptions,
@@ -84,8 +92,13 @@ static CombineType get_plan_combine_type(CmdType commandType, char baselocatorty
 
 static void fqs_preprocess_rowmarks(PlannerInfo *root);
 static List *extractResjunkTarget(List *src_list);
-
-
+static Node *pc_query_const_mutator(Node *node, void *context);
+static Node *pc_query_mutator(Node *node, void *context);
+static bool contain_extern_param(Node *node);
+static PlannedStmt *pgxc_FQS_param_planner(Query *query,
+                                            int cursorOptions,
+                                            ParamListInfo boundParams,
+                                            List       *relationOids);
 
 
 /*
@@ -456,51 +469,186 @@ Cost	 generic_plan_cost = (FLT_MAX/MAX_QUERIES_PER_STMT);
 PlannedStmt *
 polarx_planner(Query *query, int cursorOptions, ParamListInfo boundParams)
 {
-    PlannedStmt *result;
-    List *rangeTableList = NULL;
+    PlannedStmt *result = NULL;
     bool    isGenericPlan = false;
+    bool    isAllForeign = true;
+    Datum  key;
+    Query *queryParam = NULL;
+    Query *queryFQS = NULL;
+    ParamExternDataInfo *params = NULL;
+    extract_rte_context context;
+    Datum param_val = (Datum)0;
+    bool is_cursor = cursorOptions & CURSOR_OPT_FAST_PLAN;
 
     InitMultinodeExecutor(false);
     if(IS_PGXC_LOCAL_COORDINATOR)
     {
-        eval_param_expressions_context context;	
-
-        context.boundParams = boundParams;
-        context.hasUndeterminedParams = false;
-        /* replace extern params with values first to simplfy distributed planning */
-        query = replace_param_for_query(query, &context);
-        /*
-         * First check params to find whether it is to generate a generic plan
-         * of which boundParams would be set to NULL while extern params exist.
-         * We set planTree->total_cost to an extremely large value to 
-         * make generic plan always not choosen in choose_custom_plan,
-         * so as to support distributed stored procedures and extended protocols.
-         */ 
-        if (!boundParams && context.hasUndeterminedParams)
-            isGenericPlan = true;
-        
         if(EnableFastQueryShipping && !IsSimpleQuery(query))
         {
+            eval_param_expressions_context context;
+            Query *queryWithoutParam  = NULL;
+
+            context.boundParams = boundParams;
+            context.hasUndeterminedParams = false;
+            /* replace extern params with values first to simplfy distributed planning */
+            queryWithoutParam = replace_param_for_query(query, &context);
+
+            /*
+             * First check params to find whether it is to generate a generic plan
+             * of which boundParams would be set to NULL while extern params exist.
+             * We set planTree->total_cost to an extremely large value to 
+             * make generic plan always not choosen in choose_custom_plan,
+             * so as to support distributed stored procedures and extended protocols.
+             */
+            if (!boundParams && context.hasUndeterminedParams)
+                isGenericPlan = true;
+
+
             if (!context.hasUndeterminedParams)
             {
-                AdjustRelationBackToTable(false);
                  /* see if can ship the query completely */
-                result = pgxc_FQS_planner(query, cursorOptions, boundParams);
-                AdjustRelationBackToForeignTable();
+                result = pgxc_FQS_planner(queryWithoutParam, cursorOptions, NULL);
                 if(result != NULL)
                     return result;
             }
         }
     }
 
-    ExtractRelationRangeTableList((Node *)query, &rangeTableList);
-    if(rangeTableList)
-        AdjustRelationToForeignTable(rangeTableList);
-    result = standard_planner(query, cursorOptions, boundParams);
+    context.has_foreign = false;
+    context.has_sys = false;
+    context.rteList = NULL;
+    ExtractRelationRangeTableList((Node *)query, (void *)&context);
 
-    if (isGenericPlan)
+    if(context.rteList)
+    {
+        AdjustRelationToForeignTable(context.rteList, &isAllForeign);
+    }
+    if(isAllForeign && (context.has_sys || !context.has_foreign))
+    {
+        isAllForeign = false;
+    }
+
+#if 0
+    key = get_node_hash((Node *)query);
+    result = get_plan_from_cache(key);
+    if(result != NULL)
+    {
+        if(CheckPlanValid(result))
+            return result;
+        else
+            remove_plan_from_cache(key);
+    }
+#endif
+
+    if(isAllForeign) 
+    {
+        params = polarxMakeNode(ParamExternDataInfo);
+        params->param_list_info = NULL;
+        params->is_cursor = is_cursor;
+        params->portal_need_name = false;
+        params->may_be_fqs = true;
+        params->fqs_plannedstmt = NULL;
+
+        if(EnablePlanCache)
+        {
+            if(boundParams == NULL &&
+                    !contain_extern_param((Node *)query))
+            {
+                pc_const_to_param_context context;
+
+                context.parame_list = NULL;
+                context.commandType = CMD_UNKNOWN;
+
+                queryParam = (Query *)pc_query_mutator((Node *)query, &context);
+                if(context.parame_list != NULL)
+                {
+                    int numParams = list_length(context.parame_list); 
+                    ListCell *lc = NULL;
+                    int i = 0;
+                    ParamListInfo params_info;
+
+                    params_info = (ParamListInfo) palloc(offsetof(ParamListInfoData, params) +
+                            numParams * sizeof(ParamExternData));
+                    /* we have static list of params, so no hooks needed */
+                    params_info->paramFetch = NULL;
+                    params_info->paramFetchArg = NULL;
+                    params_info->paramCompile = NULL;
+                    params_info->paramCompileArg = NULL;
+                    params_info->parserSetup = NULL;
+                    params_info->parserSetupArg = NULL;
+                    params_info->numParams = numParams;
+
+                    foreach(lc, context.parame_list)
+                    {
+                        ParamExternData *pParamData = lfirst(lc);
+                        params_info->params[i].value = pParamData->value;
+                        params_info->params[i].isnull = pParamData->isnull;
+                        params_info->params[i].pflags = pParamData->pflags;
+                        params_info->params[i].ptype = pParamData->ptype;
+                        i++;
+                    }
+                    params->param_list_info = params_info;
+                }
+            }
+            else if(boundParams != NULL)
+            {
+                params->param_list_info = boundParams;
+            }
+            if(queryParam)
+                key = get_node_hash((Node *)queryParam);
+            else
+                key = get_node_hash((Node *)query);
+
+            result = get_plan_from_cache(key, param_val);
+            if(result != NULL)
+            {
+                SetParaminfoToPlan(result, params, key, is_cursor);
+                return result;
+            }
+            //result = standard_planner(query, cursorOptions, NULL);
+            if(queryParam)
+            {
+                if(queryParam->commandType == CMD_SELECT)
+                    queryFQS = copyObject(queryParam);
+                result = standard_planner(queryParam, cursorOptions, NULL);
+            }
+            else
+            {
+                if(query->commandType == CMD_SELECT)
+                    queryFQS = copyObject(query);
+                result = standard_planner(query, cursorOptions, NULL);
+            }
+
+            if(result != NULL)
+            {
+                SetParaminfoToPlan(result, params, key, is_cursor);
+            }
+            if(params->param_list_info == NULL || params->param_list_info->paramFetch == NULL)
+            {
+                if(params->may_be_fqs && queryFQS)
+                {
+                    params->fqs_plannedstmt = pgxc_FQS_param_planner(queryFQS, cursorOptions,
+                            NULL, result->relationOids);
+                    SetFQSPlannedStmtToPlan(result, params);
+                }
+            }
+            result = save_plan_into_cache(result, key, param_val);
+        }
+    }
+
+    if(result == NULL) 
+    {
+        result = standard_planner(query, cursorOptions, boundParams);
+        if(context.has_foreign)
+        {
+           key = get_node_hash((Node *)query); 
+           SetParaminfoToPlan(result, params, key, is_cursor);
+        }
+    }
+
+    if (EnableFastQueryShipping && isGenericPlan)
         result->planTree->total_cost = generic_plan_cost;
-
+        
     return result;
 }
 
@@ -620,6 +768,90 @@ pgxc_FQS_planner(Query *query, int cursorOptions, ParamListInfo boundParams)
     return result;
 }
 
+static PlannedStmt *
+pgxc_FQS_param_planner(Query *query, int cursorOptions,
+                        ParamListInfo boundParams,
+                        List       *relationOids)
+{// #lizard forgives
+    PlannedStmt        *result;
+    PlannerGlobal    *glob;
+    PlannerInfo        *root;
+    ExecNodes        *exec_nodes;
+    Plan            *top_plan;
+    List            *tlist = query->targetList;
+    CustomScan *customScan = makeNode(CustomScan);
+    RemoteQuery *query_remote;
+
+
+    /* Do not FQS cursor statements that require backward scrolling */
+    if (cursorOptions & CURSOR_OPT_SCROLL)
+        return NULL;
+    
+    if ((MyXactFlags & XACT_FLAGS_ACCESSEDTEMPREL))
+        return NULL;
+
+    /*
+     * If the query can not be or need not be shipped to the Datanodes, don't
+     * create any plan here. standard_planner() will take care of it.
+     */
+ 
+    exec_nodes = polarxMakeNode(ExecNodes);
+    if (exec_nodes == NULL)
+        return NULL;
+
+    glob = makeNode(PlannerGlobal);
+    glob->boundParams = boundParams;
+    /* Create a PlannerInfo data structure, usually it is done for a subquery */
+    root = makeNode(PlannerInfo);
+    root->parse = query;
+    root->glob = glob;
+    root->query_level = 1;
+    root->planner_cxt = CurrentMemoryContext;
+    tlist = preprocess_targetlist(root);
+    fqs_preprocess_rowmarks(root);
+
+    /*
+     * We decided to ship the query to the Datanode/s, create a RemoteQuery node
+     * for the same.
+     */
+    query_remote = pgxc_FQS_create_remote_plan(query, exec_nodes, false);
+    query_remote->statement = getPreparedStmtName(query_remote->sql_statement, relationOids);
+
+    top_plan = (Plan *)(&(query_remote->scan));
+    top_plan->targetlist = extractResjunkTarget(query->targetList);
+    /*
+     * Just before creating the PlannedStmt, do some final cleanup
+     * We need to save plan dependencies, so that dropping objects will
+     * invalidate the cached plan if it depends on those objects. Table
+     * dependencies are available in glob->relationOids and all other
+     * dependencies are in glob->invalItems. These fields can be retrieved
+     * through set_plan_references().
+     */
+    set_plan_references(root, NULL);
+
+    customScan->methods = &FastShipQueryExecutorCustomScanMethods;
+    customScan->custom_private = list_make1((Node *)query_remote);
+    customScan->custom_scan_tlist = tlist;
+    customScan->scan.plan.targetlist = makeCustomScanVarTargetlistBasedTargetEntryList(tlist);
+    /* build the PlannedStmt result */
+    result = makeNode(PlannedStmt);
+    /* Try and set what we can, rest must have been zeroed out by makeNode() */
+    result->commandType = query->commandType;
+    result->canSetTag = query->canSetTag;
+    result->utilityStmt = query->utilityStmt;
+
+    /* Set result relations */
+    if (query->commandType != CMD_SELECT)
+        result->resultRelations = list_make1_int(query->resultRelation);
+    result->planTree = (Plan *)customScan;
+    result->rtable = query->rtable;
+    result->queryId = query->queryId;
+    result->relationOids = glob->relationOids;
+    result->invalItems = glob->invalItems;
+    result->rowMarks = glob->finalrowmarks;
+
+    return result;
+}
 static RemoteQuery *
 pgxc_FQS_create_remote_plan(Query *query, ExecNodes *exec_nodes, bool is_exec_direct)
 {
@@ -872,4 +1104,170 @@ extractResjunkTarget(List *src_list)
             res = lappend(res, (void *)tar);
     }
     return res;
+}
+static bool
+contain_extern_param(Node *node)
+{
+    if (node == NULL)
+        return false;
+
+    switch (nodeTag(node))
+    {
+
+        case T_Param:
+            {
+                Param *param = (Param *) node;
+                if(param->paramkind == PARAM_EXTERN)
+                    return true;
+            }
+            break;
+        case T_Query:
+            return query_tree_walker((Query *)node, contain_extern_param, NULL, 0);
+            break;
+        default:
+            break;
+    }
+    return expression_tree_walker(node, contain_extern_param, NULL);
+}
+
+static Node *
+pc_query_mutator(Node *node, void *context)
+{
+    pc_const_to_param_context *cp_cxt = (pc_const_to_param_context *)context;
+
+    if(node == NULL)
+        return NULL;
+
+    if(IsA(node, Query))
+    {
+        Node *new_node = NULL;
+        CmdType saved_cmdtype = cp_cxt->commandType;
+
+        cp_cxt->commandType = ((Query *)node)->commandType; 
+        new_node = (Node *)query_tree_mutator((Query *)node, pc_query_mutator, context, 0);
+        cp_cxt->commandType = saved_cmdtype;
+        return new_node;
+    }
+
+    if(IsA(node, FromExpr))
+        return (Node *)pc_query_const_mutator(node, context);
+
+    if(IsA(node, TargetEntry) &&
+            (cp_cxt->commandType == CMD_UPDATE ||
+             cp_cxt->commandType == CMD_INSERT))
+    {
+        return (Node *)pc_query_const_mutator(node, context);
+    }
+
+
+
+    return expression_tree_mutator((Node *)node, pc_query_mutator, context);
+}
+
+static Node * 
+replace_const_with_param(Const *cnst, void *context)
+{
+    pc_const_to_param_context *cp_cxt = (pc_const_to_param_context *)context;
+    List *parameList = cp_cxt->parame_list;
+    int paramNum = list_length(parameList) + 1;
+    ParamExternData *prme = palloc(sizeof(ParamExternData));
+    Param *prm = makeNode(Param);
+    int16       typLen;
+    bool        typByVal;
+    Datum       pval;
+
+
+    prm->paramkind = PARAM_EXTERN;
+    prm->paramid = paramNum;
+    prm->paramtype = cnst->consttype;
+    prm->paramtypmod = cnst->consttypmod;
+    prm->paramcollid = cnst->constcollid;
+    prm->location = cnst->location;
+
+    get_typlenbyval(cnst->consttype,
+            &typLen, &typByVal);
+    if (cnst->constisnull || typByVal)
+        pval = cnst->constvalue;
+    else
+        pval = datumCopy(cnst->constvalue, typByVal, typLen);
+
+    prme->value = pval;
+    prme->isnull = cnst->constisnull;
+    prme->pflags = PARAM_FLAG_CONST;
+    prme->ptype = cnst->consttype;
+
+    if(parameList == NULL)
+        parameList = list_make1(prme);
+    else
+        parameList = lappend(parameList, prme);
+
+    cp_cxt->parame_list = parameList;
+    cnst->location = paramNum;
+
+   return (Node *)prm;
+   //return (Node *)cnst;
+}
+
+static bool
+contain_mutable_functions_checker(Oid func_id, void *context)
+{
+    return (func_volatile(func_id) != PROVOLATILE_IMMUTABLE);
+}
+
+static Node *
+pc_query_null_mutator(Node *node, void *context)
+{
+    return node;
+}
+
+static Node *
+pc_query_const_mutator(Node *node, void *context)
+{
+    if (node == NULL)
+    {
+        return NULL;
+    }
+
+    if (check_functions_in_node(node, contain_mutable_functions_checker, NULL))
+        return expression_tree_mutator(node, pc_query_null_mutator, context);
+
+    switch (nodeTag(node))
+    {
+
+        case T_Const:
+            return replace_const_with_param((Const *) node, context);
+        case T_JoinExpr:
+            {
+                JoinExpr *join_expr = (JoinExpr *)node;
+
+                if(join_expr->jointype == JOIN_FULL && IsA(join_expr->quals, Const))
+                    return expression_tree_mutator(node, pc_query_null_mutator, context);
+            }
+            break;
+        case T_ArrayRef:
+        case T_ArrayExpr:
+        case T_RowExpr:
+        case T_FuncExpr:
+            {
+                Const      *cnst;
+                /* If all arguments are Consts, we can fold to a constant */
+                if (epe_all_arguments_const(node))
+                {
+                    cnst = (Const *)epe_evaluate_expr(node);
+                    if(!cnst->constisnull)
+                        return replace_const_with_param(cnst, context);
+                }
+
+                return expression_tree_mutator(node, pc_query_null_mutator, context);
+            }
+        case T_Query:
+            {
+                return (Node *) query_tree_mutator((Query *) node, pc_query_mutator,
+                        context, 0);
+            }
+        default:
+            break;
+    }
+
+    return expression_tree_mutator(node, pc_query_const_mutator, context);
 }

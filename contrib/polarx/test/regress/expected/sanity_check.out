@@ -137,6 +137,7 @@ pg_replication_origin|t
 pg_rewrite|t
 pg_seclabel|t
 pg_sequence|t
+pg_shard_map|f
 pg_shdepend|t
 pg_shdescription|t
 pg_shseclabel|t
@@ -169,6 +170,7 @@ sql_implementation_info|f
 sql_languages|f
 sql_packages|f
 sql_parts|f
+sql_prepared|t
 sql_sizing|f
 sql_sizing_profiles|f
 stud_emp|f

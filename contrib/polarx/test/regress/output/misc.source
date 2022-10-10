@@ -6,10 +6,10 @@
 --
 UPDATE onek
    SET unique1 = onek.unique1 + 1;
-ERROR:  distribute-column update is not supported
+ERROR:  distribute-column does not support cross update
 UPDATE onek
    SET unique1 = onek.unique1 - 1;
-ERROR:  distribute-column update is not supported
+ERROR:  distribute-column does not support cross update
 --
 -- BTREE partial
 --

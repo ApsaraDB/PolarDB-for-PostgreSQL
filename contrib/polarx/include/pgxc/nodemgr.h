@@ -85,7 +85,13 @@ extern int get_polar_local_nodeport(void);
 extern char *get_polar_local_nodehost(void);
 extern bool is_polar_local_nodepreferred(void);
 extern bool is_polar_local_nodeprimary(void);
+
+extern NodeDefinition* get_dn_nodes_def(void);
 extern void InitLocalNodeInfo(void);
 extern void InitPolarxClusterGlobalInfo(void);
 extern bool IsNodeInDefHash(uint32 hashvalue);
+
+#ifdef POLARDBX_SHARDING
+int32 get_node_index_by_nodeoid(Oid node);
+#endif
 #endif    /* NODEMGR_H */

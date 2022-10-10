@@ -1,22 +1,22 @@
-## 简要使用说明
+## How to deploy a cluster
 
-### 部署工具部署集群
+### Cluster Deployment
 
-支持通过设置配置文件，然后通过工具pgxc_ctl 实现快速部署集群。
+You can configure a configuration file and use the pgxc_ctl utility to deploy a cluster.
 
-    pgxc_ctl -c polarx.conf init all //初始化并启动集群
+    pgxc_ctl -c polarx.conf init all //Initialize and start a cluster
 
-    pgxc_ctl -c polarx.conf clean all // 关停并清理集群
+    pgxc_ctl -c polarx.conf clean all // shut down and clean up the cluster
 
-    pgxc_ctl -c polarx.conf start all // 启动集群
+    pgxc_ctl -c polarx.conf start all // start the cluster
 
-    pgxc_ctl -c polarx.conf stop all //关停集群
+    pgxc_ctl -c polarx.conf stop all // shut down the cluster
 
-### 手动部署集群
+### manually deployment
 
-这里以一个CN节点和两个DN节点的集群举例：
+In the following examples, a cluster has one coordinator and two datanodes.
 
-#### 修改postgresql.conf
+#### Modify postgresql.conf
 
 CN/DN:
 
@@ -49,16 +49,16 @@ DN2:
     pooler_port = 21019
 
 
-#### 修改 pg_hba.conf
+#### Modify pg_hba.conf
 
     host    all             all             127.0.0.1/32            trust
 
     host    all             all             ::1/128                 trust
 
 
-#### 创建集群节点信息
+#### Create cluster node information
 
-CN 节点：
+CN node：
 
     CREATE EXTENSION polarx;
 
@@ -71,7 +71,7 @@ CN 节点：
     CREATE SERVER cluster_server FOREIGN DATA WRAPPER polarx;
 
 
-DN1 节点:
+DN1 node:
 
     CREATE EXTENSION polarx;
 
@@ -84,7 +84,7 @@ DN1 节点:
     CREATE SERVER cluster_server FOREIGN DATA WRAPPER polarx;
 
 
-DN2 节点：
+DN2 node：
 
     CREATE EXTENSION polarx;
 
@@ -98,39 +98,25 @@ DN2 节点：
 
 
 
-### 常用命令
+### Useful Commands
 
-    select * from pg_foreign_server; // 查看节点信息。
+    select * from pg_foreign_server; // view node information
 
-    select * from pg_foreign_table; // 查看分布表信息。
+    select * from pg_foreign_table; // view distributed tables
 
-    create table polarx_test(id int , name text);
+    create table polarx_test(id int , name text); //Create a distributed table. By default, a hash-distributed table is created based on the first column. If none of the columns can be used to create a hash-distributed table, a round-robin distributed table is created.
 
-    支持原生建表方式建立分布式表，默认从第一个列尝试建立hash 分布表，如果所有列都不可以建立，则最后建立roundrobin 分布表。
+    create table polarx_test(id int , name text) with (dist_type = hash, dist_col = id); //Explicitly specify the distribution mode and distribution keys to create a hash-distributed table. Calculate hash values based on the id column, determine the number of nodes based on the remainder method, and then distribute the data.
 
-    create table polarx_test(id int , name text) with (dist_type = hash, dist_col = id);
+    create table polarx_test(id int, name text) with (dist_type = modulo, dist_col = id); //Explicitly create a modulo distributed table. Calculate hash values based on data IDs, determine the number of nodes based on the remainder method, and then distribute the data.
 
-    显式指定分布方式和分布键建立hash分布表，数据根据id计算hash值，然后根据hash值对节点数取余进行分布。
+    create table polarx_test(id int, name text) with (dist_type = roundrobin); //Explicitly create a round-robin distributed table. The data is distributed to each node in sequence.
 
-    create table polarx_test(id int, name text) with (dist_type = modulo, dist_col = id);
+    create table polarx_test(id int, name text) with (dist_type = replication); //Explicitly establish a replication table whose complete data is synchronized on each datanode.
 
-    显式建立modulo分布表, 根据id对节点数取余进行分布。
+    execute polarx_direct('datanode1m', 'select * from bmsql_warehouse;'); //Execute the statement on the corresponding datanode through a coordinator.
 
-    create table polarx_test(id int, name text) with (dist_type = roundrobin);
-
-    显式建立roundrobin 分布表，数据按节点顺序依次分布。
-
-    create table polarx_test(id int, name text) with (dist_type = replication);
-
-    显式建立复制表，复制表将在每个DN上有完整的数据。
-
-    execute polarx_direct('datanode1m', 'select * from bmsql_warehouse;');
-
-    通过Coordinator节点 直接在对应Datanode上执行语句。
-
-    drop table polarx_test;
-
-    删除一张表。
+    drop table polarx_test; // delete a table
 
 ___
 

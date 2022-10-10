@@ -8,10 +8,13 @@
  *
  *-------------------------------------------------------------------------
  */
+#include "postgres.h"
+#include "nodes/params.h"
 #include "nodes/polarx_node.h"
 #include "nodes/polarx_copyfuncs.h"
 #include "plan/polarx_planner.h"
 #include "parser/parse_distribute.h"
+#include "polarx/polarx_locator.h"
 
 
 static inline Node *
@@ -189,4 +192,43 @@ CopyExecNodes(POLARX_COPYFUNC_ARGS)
     COPY_NODE_FIELD(en_expr);
     COPY_SCALAR_FIELD(en_relid);
     COPY_SCALAR_FIELD(accesstype);
+}
+
+void
+CopyParamExternDataInfo(POLARX_COPYFUNC_ARGS)
+{
+    TRANSLATE_FOR_EXTENSIBLE_NODE_COPY(ParamExternDataInfo);
+
+    COPY_SCALAR_FIELD(is_cursor);
+    COPY_SCALAR_FIELD(portal_need_name);
+    COPY_SCALAR_FIELD(may_be_fqs);
+    if(from->param_list_info)
+    {
+        COPY_POINTER_FIELD(param_list_info, offsetof(ParamListInfoData, params) +
+                from->param_list_info->numParams * sizeof(ParamExternData));
+    }
+    COPY_NODE_FIELD(fqs_plannedstmt);
+}
+
+void
+CopyBoundParamsInfo(POLARX_COPYFUNC_ARGS)
+{
+    TRANSLATE_FOR_EXTENSIBLE_NODE_COPY(BoundParamsInfo);
+
+    COPY_SCALAR_FIELD(numParams);
+    if (from->numParams)
+        COPY_POINTER_FIELD(params,
+                sizeof(ParamExternData) * from->numParams);
+}
+
+void
+CopyDistributionForParam(POLARX_COPYFUNC_ARGS)
+{
+    TRANSLATE_FOR_EXTENSIBLE_NODE_COPY(DistributionForParam);
+
+    COPY_SCALAR_FIELD(distributionType);
+    COPY_SCALAR_FIELD(accessType);
+    COPY_SCALAR_FIELD(paramId);
+    COPY_SCALAR_FIELD(targetNode);
+    COPY_NODE_FIELD(distributionExpr);
 }

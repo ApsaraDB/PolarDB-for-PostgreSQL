@@ -22,6 +22,7 @@
 #include "nodes/plannodes.h"
 #include "nodes/execnodes.h"
 #include "commands/explain.h"
+#include "plan/polarx_planner.h"
 
 /* in polarx_fdw.c */
 extern int	set_transmission_modes(void);
@@ -109,4 +110,20 @@ extern void polarxGetForeignUpperPaths(PlannerInfo *root,
         RelOptInfo *input_rel,
         RelOptInfo *output_rel,
         void *extra);
+extern void setParamsExternIntoForeginScan(List *fdw_private,
+                                            ParamExternDataInfo *paramsExtern);
+extern ParamExternDataInfo *getParamsExternFromForeginScan(List *fdw_private);
+extern void setParamsExternIntoForeginDirect(List *fdw_private,
+                                            ParamExternDataInfo *paramsExtern);
+extern ParamExternDataInfo *getParamsExternFromForeginDirect(List *fdw_private);
+extern void setParamsExternIntoForeginModify(List *fdw_private,
+                                            ParamExternDataInfo *paramsExtern);
+extern ParamExternDataInfo *getParamsExternFromForeginModify(List *fdw_private);
+extern Oid getTargetRelOidFromForeginDirect(List *fdw_private);
+extern bool CheckForeginScanDistByParam(List *fdw_private);
+extern int evalTargetNodeFromForeginScan(List *fdw_private, ParamExternDataInfo *paramsExtern,
+                                            bool *is_replicate);
+extern void setFQSPlannedStmtIntoForeginScan(List *fdw_private, PlannedStmt *fqs_plannedstmt);
+extern char *getPreparedStmtName(char *sql, List *reloids_list);
+
 #endif							/* POLARX_FDW_H */

@@ -1,45 +1,47 @@
-# polarx 分布式插件当前版本使用限制
+# Limitations
 
-* 不支持跨CN sequence.
+* Sequences are not supported for cross-coordinator queries.
 
-* 不支持全局vacuum.
+* Global vacuum operations are not supported.
 
-* 不支持不指定表的analyze.
+* Analyze operations without specifying a table are not supported.
 
-* 不支持reindex.
+* Reindexing is not supported.
 
-* 不支持一条语句执行多个sql.
+* A query with multiple SQL statements cannot be run.
 
-* 不支持复杂DML中使用DEFERRABLE constraints.
+* DEFERRABLE constraints are not supported in complex data manipulation language (DML) statements.
 
-* 不支持全局OID.
+* Object identifiers (OIDs) are not globally unique.
 
-* 不支持CREATE INDEX CONCURRENTLY.
+* The CREATE INDEX CONCURRENTLY statement is not supported.
 
-* 不支持使用OID作为分片键.
+* OIDs cannot be used as shard keys.
 
-* 不支持在创建一个非复制表的类型化的表中使用constraint.
+* Constraints cannot be used to create tables of the non-replicated type.
 
-* 不支持explain analyze select into.
+* The EXPLAIN ANALYZE SELECT INTO statement is not supported.
 
-* 不支持从coordinator查询非本地表的xmin,xmax.
+* The xmin and xmax columns of non-local tables cannot be queried from coordinators.
 
-* 不支持使用Volatile函数更新复制表.
+* The volatile function cannot be used to update a replicated table.
 
-* 不支持显示prepared transaction. 
+* Prepared transactions cannot be displayed.
 
-* 不支持 TABLESAMPLE. 
+* The TABLESAMPLE clause is not supported.
 
-* 不支持 SSI 隔离级别.
+* Serializable Snapshot Isolation (SSI) is not supported.
 
-* 不支持  WHERE CURRENT OF.
+* The WHERE CURRENT OF statement is not supported.
 
-* 权限管理：不支持只对view 赋予权限. 如果需要给view赋予权限，则同时也要赋予展开表权限.
+* Permissions cannot be granted only on views. If you want to grant permissions on views, you must also grant permissions to expanded tables.
 
-* 权限管理：不支持没有foreign server 权限的角色，使用select into. 如需使用需要授权这个角色使用foreign server的权限.
+* Roles that cannot access data on foreign servers cannot execute the SELECT INTO statement. To allow rows the permissions to execute the SELECT INTO statement, the roles must be granted permissions to access data on foreign servers.
 
-* 触发器：不支持在coordinator上执行内部触发器.
+* Internal triggers cannot be executed on coordinators.
 
+___
 
+Copyright © Alibaba Group, Inc.
 
 

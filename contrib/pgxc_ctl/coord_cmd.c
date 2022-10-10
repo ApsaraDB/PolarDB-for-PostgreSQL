@@ -456,7 +456,30 @@ int init_coordinator_slave(char **nodeList)
 int configure_nodes_all(void)
 {
     configure_nodes(aval(VAR_coordNames));
-    return configure_datanodes(aval(VAR_datanodeNames));
+    configure_datanodes(aval(VAR_datanodeNames));
+	return configure_coord_shardmap(aval(VAR_coordNames));
+}
+
+int configure_coord_shardmap(char **nodeList)
+{
+	char **actualNodeList;
+	int ii;
+	cmdList_t *cmdList;
+	cmd_t *cmd;
+	int rc;
+
+	actualNodeList = makeActualNodeList(nodeList);
+	cmdList = initCmdList();
+	for (ii = 0; actualNodeList[ii]; ii++)
+	{
+		if ((cmd = prepare_coord_shardmap_cmd(actualNodeList[ii])))
+			addCmd(cmdList, cmd);
+	}
+	rc = doCmdList(cmdList);
+	cleanCmdList(cmdList);
+	CleanArray(actualNodeList);
+	elog(INFO, "Done.\n");
+	return(rc);
 }
 
 int configure_nodes(char **nodeList)
@@ -517,6 +540,39 @@ int configure_datanodes(char **nodeList)
     CleanArray(actualNodeList);
     elog(INFO, "Done.\n");
     return(rc);
+}
+
+cmd_t *prepare_coord_shardmap_cmd(char *nodeName)
+{
+	cmd_t *cmd;
+	int ii;
+	int idx;
+	FILE *f;
+	int tnum = 0 ;
+
+	if ((idx = coordIdx(nodeName)) < 0)
+	{
+		elog(ERROR, "ERROR: %s is not a coordinator.\n", nodeName);
+		return NULL;
+	}
+	if (is_none(aval(VAR_coordMasterServers)[idx]))
+		return NULL;
+	cmd = initCmd(NULL);
+	snprintf(newCommand(cmd), MAXLINE,
+			 "psql -p %d -h %s -a %s %s",
+			 atoi(aval(VAR_coordPorts)[idx]),
+			 aval(VAR_coordMasterServers)[idx],
+			 sval(VAR_defaultDatabase),
+			 sval(VAR_pgxcOwner));
+	if ((f = prepareLocalStdin(newFilename(cmd->localStdin), MAXPATH, NULL)) == NULL)
+	{
+		cleanCmd(cmd);
+		Free(cmd);
+		return NULL;
+	}
+	fprintf(f, "select polardbx_build_shard_map(4);\n");
+	fclose(f);
+	return(cmd);
 }
 
 cmd_t *prepare_configureNode(char *nodeName)

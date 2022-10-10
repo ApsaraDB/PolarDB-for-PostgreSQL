@@ -141,6 +141,7 @@ typedef struct ResponseCombiner
     Tuplestorestate *tuplestorestate;
     /* cursor support */
     char       *cursor;                    /* cursor name */
+    char       *prep_name;                    /* prepared stmt name */
     char       *update_cursor;            /* throw this cursor current tuple can be updated */
     int            cursor_count;            /* total count of participating nodes */
     PGXCNodeHandle **cursor_connections;/* data node connections being combined */

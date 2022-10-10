@@ -43,5 +43,8 @@ extern void PoolManagerReleaseConnections(bool force);
 extern bool PoolManagerCancelQuery(int dn_count, int* dn_list, int co_count, int* co_list, int signal);
 
 extern bool PoolManagerCatchupNodeInfo(void);
-
+extern void InitBEPreparedStmtsHashTable(void);
+extern bool IsStmtPrepared(const char *p_name, int node_inx, int self_version, bool *is_expired);
+extern bool SetPrepStmtIntoBEHash(const char *p_name, int node_inx, bool flag);
+extern int GetPrepStmtNameAndSelfVersion(const char *p_name, char **prep_name);
 #endif

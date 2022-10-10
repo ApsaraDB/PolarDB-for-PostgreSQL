@@ -38,7 +38,6 @@
 #include "distributed_txn/txn_timestamp.h"
 #endif
 
-HTAB *txn_datanode_queries = NULL;
 MemoryContext CommitContext = NULL;
 
 bool EnableHLCTransaction = true;
@@ -61,8 +60,6 @@ static char *prepareGID;
 LocalTwoPhaseState g_coord_twophase_state;
 bool EnableTransactionDebugPrint = false;
 
-static void InitTxnQueryHashTable(void);
-static TxnDatanodeStatement *FetchTxnDatanodeStatement(const char *stmt_name, bool throwError);
 static char *pgxc_node_remote_prepare(const char *prepareGID, bool localNode, bool implicit);
 static void pgxc_node_remote_commit(TranscationType txn_type, bool need_release_handle);
 static bool pgxc_node_remote_commit_prepared(char *prepareGID, bool commit, char *nodestring);
@@ -170,7 +167,7 @@ void XactCallbackCoordinator(XactEvent event, void *args)
  */
 void XactCallbackPreCommit(void)
 {
-    elog(LOG, "TXN XactCallbackPreCommit");
+    elog(DEBUG1, "TXN XactCallbackPreCommit");
     if (!IS_PGXC_LOCAL_COORDINATOR)
         return;
 
@@ -193,14 +190,14 @@ void XactCallbackPreCommit(void)
     {
         if (EnableTransactionDebugPrint)
 		{
-			elog(DEBUG5, "XactCallbackPreCommit: no need to use 2pc, return.");
+			elog(LOG, "XactCallbackPreCommit: no need to use 2pc, return.");
 		}
         return;
     }
     
     if (EnableTransactionDebugPrint)
 	{
-		elog(DEBUG5, "XactCallbackPreCommit: use 2pc, xactWriteLocalNode:%d.", xactWriteLocalNode);
+		elog(LOG, "XactCallbackPreCommit: use 2pc, xactWriteLocalNode:%d.", xactWriteLocalNode);
 	}
 
     if (!XactLocalNodePrepared)
@@ -208,7 +205,7 @@ void XactCallbackPreCommit(void)
         const char *prepareGID = GetImplicit2PCGID(implicit2PC_head, xactWriteLocalNode);
 
         if (EnableTransactionDebugPrint)
-            elog(DEBUG5, "[xidtrace]XactCallbackPreCommit get prepareGID:%s", prepareGID);
+            elog(LOG, "[xidtrace]XactCallbackPreCommit get prepareGID:%s", prepareGID);
 
         StorePrepareGID(prepareGID);
         savePrepareGID = MemoryContextStrdup(CommitContext, prepareGID);
@@ -386,7 +383,7 @@ pgxc_node_remote_prepare(const char *prepareGID, bool localNode, bool implicit)
         strncpy(g_coord_twophase_state.participants, partnodes.data, partnodes.len + 1);
         if (EnableTransactionDebugPrint)
         {
-            elog(DEBUG5,
+            elog(DEBUG1,
                  "pgxc_node_remote_prepare: set g_coord_twophase_state.state to TWO_PHASE_PREPARING, "
                  "gid:%s, participants:%s",
                  g_coord_twophase_state.gid,
@@ -462,7 +459,7 @@ pgxc_node_remote_prepare(const char *prepareGID, bool localNode, bool implicit)
 						last_step_ret = -1;
 						conn_state = TWO_PHASE_SEND_PARTICIPANTS_ERROR;
 						if (EnableTransactionDebugPrint)
-							elog(DEBUG5, "Fault injection. twophase_exception_case:%d, set conn_state to %d, simulate case: failed to send participate node:%s. prepare_cmd:%s, global_prepare_ts:" UINT64_FORMAT " to node:%s, remote backendpid:%d. ",
+							elog(LOG, "Fault injection. twophase_exception_case:%d, set conn_state to %d, simulate case: failed to send participate node:%s. prepare_cmd:%s, global_prepare_ts:" UINT64_FORMAT " to node:%s, remote backendpid:%d. ",
 								 twophase_exception_case, conn_state, partnodes.data, prepare_cmd, global_prepare_ts, conn->nodename, conn->backend_pid);
 					}
 					else
@@ -489,7 +486,7 @@ pgxc_node_remote_prepare(const char *prepareGID, bool localNode, bool implicit)
 						last_step_ret = -1;
 						conn_state = TWO_PHASE_SEND_QUERY_ERROR;
 						if (EnableTransactionDebugPrint)
-							elog(DEBUG5, "Fault injection. twophase_exception_case:%d, set conn_state to %d, simulate case: failed to send prepare cmd:%s. global_prepare_ts:" UINT64_FORMAT " to node:%s, remote backendpid:%d. ",
+							elog(LOG, "Fault injection. twophase_exception_case:%d, set conn_state to %d, simulate case: failed to send prepare cmd:%s. global_prepare_ts:" UINT64_FORMAT " to node:%s, remote backendpid:%d. ",
 								 twophase_exception_case, conn_state, prepare_cmd, global_prepare_ts, conn->nodename, conn->backend_pid);
 					}
 					// srcatch on prepare cmd to simulate case: get error response from remote backend. ERROR_RECV_PREPARE_CMD_RESPONSE_FAIL
@@ -497,7 +494,7 @@ pgxc_node_remote_prepare(const char *prepareGID, bool localNode, bool implicit)
 					{
 						last_step_ret = pgxc_node_send_query(conn, error_request_sql);
 						if (EnableTransactionDebugPrint)
-							elog(DEBUG5, "Fault injection. twophase_exception_case:%d, simulate case: recv error response from remote node. error_request_sql:%s. global_prepare_ts:" UINT64_FORMAT " to node:%s, remote backendpid:%d. ",
+							elog(LOG, "Fault injection. twophase_exception_case:%d, simulate case: recv error response from remote node. error_request_sql:%s. global_prepare_ts:" UINT64_FORMAT " to node:%s, remote backendpid:%d. ",
 								 twophase_exception_case, error_request_sql, global_prepare_ts, conn->nodename, conn->backend_pid);
 					}
 					else
@@ -512,7 +509,7 @@ pgxc_node_remote_prepare(const char *prepareGID, bool localNode, bool implicit)
                 if (conn_state != TWO_PHASE_HEALTHY)
                 {
                     if (EnableTransactionDebugPrint)
-						elog(DEBUG5, "conn_state:%d not healthy. i:%d, conn->nodename:%s, conn->backend_pid:%d", conn_state, i, conn->nodename, conn->backend_pid);
+						elog(LOG, "conn_state:%d not healthy. i:%d, conn->nodename:%s, conn->backend_pid:%d", conn_state, i, conn->nodename, conn->backend_pid);
                     isOK = false;
                     txn_state = TWO_PHASE_PREPARE_ERROR;
                 }
@@ -539,7 +536,7 @@ pgxc_node_remote_prepare(const char *prepareGID, bool localNode, bool implicit)
              */
 
             if (EnableTransactionDebugPrint)
-				elog(DEBUG5, "conn->transaction_status:'E'. i:%d, conn->nodename:%s, conn->backend_pid:%d", i, conn->nodename, conn->backend_pid);
+				elog(LOG, "conn->transaction_status:'E'. i:%d, conn->nodename:%s, conn->backend_pid:%d", i, conn->nodename, conn->backend_pid);
 
             isOK = false;
             ereport(WARNING,
@@ -581,17 +578,17 @@ pgxc_node_remote_prepare(const char *prepareGID, bool localNode, bool implicit)
 			if (NODE_EXCEPTION_NORMAL == twophase_exception_node_exception)
 			{
 				if (EnableTransactionDebugPrint)
-					elog(DEBUG5, "Fault injection. twophase_exception_case:%d, sleep sometime after send prepare_cmd:%s, global_prepare_ts:" UINT64_FORMAT,
+					elog(LOG, "Fault injection. twophase_exception_case:%d, sleep sometime after send prepare_cmd:%s, global_prepare_ts:" UINT64_FORMAT,
 						 twophase_exception_case, prepare_cmd, global_prepare_ts);
 				// sleep for several mins to simulate recv pending.
 				pg_usleep(twophase_exception_pending_time);
 				if (EnableTransactionDebugPrint)
-					elog(DEBUG5, "Fault injection. sleep done.");
+					elog(LOG, "Fault injection. sleep done.");
 			}
 			else if (NODE_EXCEPTION_CRASH == twophase_exception_node_exception)
 			{
 				if (EnableTransactionDebugPrint)
-					elog(DEBUG5, "Fault injection. twophase_exception_case:%d, simulate node crash when send prepare command and waiting for remote node response.",
+					elog(LOG, "Fault injection. twophase_exception_case:%d, simulate node crash when send prepare command and waiting for remote node response.",
 						 twophase_exception_case);
 				// STOP
 				elog(PANIC, "exit backend when simulate node crash when send prepare command and waiting for remote node response.");
@@ -863,7 +860,7 @@ prepare_err:
 
 void XactCallbackPostCommit(void)
 {
-    elog(LOG, "TXN XactCallbackPostCommit");
+    elog(DEBUG1, "TXN XactCallbackPostCommit");
     if (IS_PGXC_COORDINATOR)
     {
         if (g_coord_twophase_state.state == TWO_PHASE_PREPARED)
@@ -924,7 +921,7 @@ void XactCallbackPostCommit(void)
 
 void XactCallbackPostAbort(void)
 {
-    elog(LOG, "XactCallbackPostAbort");
+    elog(DEBUG1, "XactCallbackPostAbort");
     StringInfoData errormsg;
 
     /* print prepare err in pgxc_node_remote_prepare */
@@ -1012,7 +1009,7 @@ pgxc_node_remote_commit_prepared(char *prepareGID, bool commit, char *nodestring
      * Now based on the nodestring, run COMMIT/ROLLBACK PREPARED command on the
      * remote nodes and also finish the transaction locally is required
      */
-    elog(DEBUG5, "pgxc_node_remote_commit_prepared nodestring %s gid %s", nodestring, prepareGID);
+    elog(DEBUG1, "pgxc_node_remote_commit_prepared nodestring %s gid %s", nodestring, prepareGID);
 #ifdef PATCH_ENABLE_DISTRIBUTED_TRANSACTION //ENABLE_POLARDBX_HLC
     if (EnableHLCTransaction)
     {
@@ -1025,7 +1022,7 @@ pgxc_node_remote_commit_prepared(char *prepareGID, bool commit, char *nodestring
 		if (NODE_EXCEPTION_NORMAL == twophase_exception_node_exception)
 		{
 			if (EnableTransactionDebugPrint)
-				elog(DEBUG5, "Fault injection. twophase_exception_case:%d, simulate case failed to get global_committs.", twophase_exception_case);
+				elog(LOG, "Fault injection. twophase_exception_case:%d, simulate case failed to get global_committs.", twophase_exception_case);
 			elog(ERROR, "Fault injection. Failed to get commit timestamp from TSO.");
 		}
 		else if (NODE_EXCEPTION_CRASH == twophase_exception_node_exception)
@@ -1083,7 +1080,7 @@ pgxc_node_remote_commit_prepared(char *prepareGID, bool commit, char *nodestring
 			{
 				conn_state = TWO_PHASE_SEND_QUERY_ERROR;
 				if (EnableTransactionDebugPrint)
-					elog(DEBUG5, "Fault injection. twophase_exception_case:%d, set conn_state to %d. simulate case: failed to send commit prepared command. command:%s, commit timestamp:" UINT64_FORMAT " to node:%s, remote backendpid:%d. ",
+					elog(LOG, "Fault injection. twophase_exception_case:%d, set conn_state to %d. simulate case: failed to send commit prepared command. command:%s, commit timestamp:" UINT64_FORMAT " to node:%s, remote backendpid:%d. ",
 						 twophase_exception_case, conn_state, finish_cmd, global_committs, conn->nodename, conn->backend_pid);
 			}
 			else if (NODE_EXCEPTION_CRASH == twophase_exception_node_exception)
@@ -1102,7 +1099,7 @@ pgxc_node_remote_commit_prepared(char *prepareGID, bool commit, char *nodestring
 		{
 			pgxc_node_send_query(conn, error_request_sql);
 			if (EnableTransactionDebugPrint)
-				elog(DEBUG5, "Fault injection. twophase_exception_case:%d, simulate case: recv error when commit prepare command from remote node. error_request_sql:%s. commit timestamp:" UINT64_FORMAT " to node:%s, remote backendpid:%d. ",
+				elog(LOG, "Fault injection. twophase_exception_case:%d, simulate case: recv error when commit prepare command from remote node. error_request_sql:%s. commit timestamp:" UINT64_FORMAT " to node:%s, remote backendpid:%d. ",
 					 twophase_exception_case, error_request_sql, global_committs, conn->nodename, conn->backend_pid);
 		}
 		else
@@ -1128,7 +1125,7 @@ pgxc_node_remote_commit_prepared(char *prepareGID, bool commit, char *nodestring
             }
             else
             {
-                elog(DEBUG5, "Send finish_cmd:%s, global_committs:" UINT64_FORMAT " to node:%s, remote backendpid:%d. ",
+                elog(DEBUG1, "Send finish_cmd:%s, global_committs:" UINT64_FORMAT " to node:%s, remote backendpid:%d. ",
                         finish_cmd, global_committs, conn->nodename, conn->backend_pid);
             }
         }
@@ -1143,7 +1140,7 @@ pgxc_node_remote_commit_prepared(char *prepareGID, bool commit, char *nodestring
             }
             else
             {
-                elog(DEBUG5, "Send finish_cmd:%s to node:%s, remote backendpid:%d. ",
+                elog(DEBUG1, "Send finish_cmd:%s to node:%s, remote backendpid:%d. ",
                         finish_cmd, conn->nodename, conn->backend_pid);
             }
         }
@@ -1176,17 +1173,17 @@ pgxc_node_remote_commit_prepared(char *prepareGID, bool commit, char *nodestring
 			if (NODE_EXCEPTION_NORMAL == twophase_exception_node_exception)
 			{
 				if (EnableTransactionDebugPrint)
-					elog(DEBUG5, "Fault injection. twophase_exception_case:%d, sleep sometime after send finish_cmd:%s. nodestring:%s",
+					elog(LOG, "Fault injection. twophase_exception_case:%d, sleep sometime after send finish_cmd:%s. nodestring:%s",
 						 twophase_exception_case, finish_cmd, nodestring);
 				// sleep several mins to simulate recv commit prepared cmd pending.
 				pg_usleep(twophase_exception_pending_time);
 				if (EnableTransactionDebugPrint)
-					elog(DEBUG5, "Fault injection. sleep done.");
+					elog(LOG, "Fault injection. sleep done.");
 			}
 			else if (NODE_EXCEPTION_CRASH == twophase_exception_node_exception)
 			{
 				if (EnableTransactionDebugPrint)
-					elog(DEBUG5, "Fault injection. twophase_exception_case:%d, simulate node crash after send commit prepared :%s and waiting for remote node response.",
+					elog(LOG, "Fault injection. twophase_exception_case:%d, simulate node crash after send commit prepared :%s and waiting for remote node response.",
 						 twophase_exception_case, finish_cmd);
 				// STOP
 				elog(PANIC, "exit backend when simulate node crash when send commit prepared command:%s and waiting for remote node response.", finish_cmd);
@@ -1225,7 +1222,7 @@ pgxc_node_remote_commit_prepared(char *prepareGID, bool commit, char *nodestring
     if (XactLocalNodePrepared)
     {
         if (EnableTransactionDebugPrint)
-            elog(DEBUG5, "Local node participated. So keep connections for now.");
+            elog(LOG, "Local node participated. So keep connections for now.");
         clear_handles();
         pfree_pgxc_all_handles(pgxc_handles);
     }
@@ -1893,7 +1890,7 @@ RemoteTransactionPrepareReadonly(PGXCNodeHandle *conn,
          * not a big deal, it was read only, the connection will be
          * abandoned later.
          */
-        ereport(LOG,
+        ereport(DEBUG1,
                 (errcode(ERRCODE_INTERNAL_ERROR),
                         errmsg("failed to send COMMIT command to "
                                "the node %u",
@@ -1945,8 +1942,6 @@ TwoPhaseStateAppendConnection(bool is_datanode, int twophase_index)
 static void
 TxnCleanUpHandles(PGXCNodeAllHandles *handles, bool release_handle)
 {
-    DropAllTxnDatanodeStatement();
-
     if (IsNeedReleaseHandle())
     {
         pgxc_node_remote_cleanup_all();
@@ -1975,7 +1970,7 @@ pgxc_node_remote_cleanup_all(void)
                      "RESET SESSION AUTHORIZATION;"
                      "RESET transaction_isolation;";
 
-    elog(DEBUG5,
+    elog(DEBUG1,
          "pgxc_node_remote_cleanup_all - handles->co_conn_count %d,"
          "handles->dn_conn_count %d",
          handles->co_conn_count,
@@ -2079,7 +2074,7 @@ FinishGlobalXacts(char *prepareGID, char *nodestring)
     if (nodelist == NIL && coordlist == NIL)
     {
         if (EnableTransactionDebugPrint)
-            elog(DEBUG5, "nodestring:%s only contain startnode itself.", nodestring);
+            elog(LOG, "nodestring:%s only contain startnode itself.", nodestring);
         return prepared_local;
     }
 
@@ -2142,14 +2137,14 @@ FinishGlobalXacts(char *prepareGID, char *nodestring)
         {
             if (combiner.errorMessage)
             {
-                ereport(LOG,
+                ereport(DEBUG1,
                         (errcode(ERRCODE_INTERNAL_ERROR),
                                 errmsg("Failed to send finish global transaction to on one or more nodes errmsg:%s",
                                        combiner.errorMessage)));
             }
             else
             {
-                ereport(LOG,
+                ereport(DEBUG1,
                         (errcode(ERRCODE_INTERNAL_ERROR),
                                 errmsg("Failed to send finish global transaction to on one or more nodes")));
             }
@@ -2441,7 +2436,7 @@ AbortRunningQuery(TranscationType txn_type, bool need_release_handle)
                 cancel_co_list[cancel_co_count++] = PGXCNodeGetNodeId(handle->nodeoid, NULL);
 
 #ifdef _PG_REGRESS_
-                ereport(LOG,
+                ereport(DEBUG1,
 						(errcode(ERRCODE_INTERNAL_ERROR),
 						 errmsg("PreAbort_Remote node:%s pid:%d status:%d need clean.",
 								handle->nodename,
@@ -2452,7 +2447,7 @@ AbortRunningQuery(TranscationType txn_type, bool need_release_handle)
                 {
                     if (pgxc_node_send_sync(handle))
                     {
-                        ereport(LOG,
+                        ereport(DEBUG1,
                                 (errcode(ERRCODE_INTERNAL_ERROR),
                                         errmsg("Failed to sync msg to node:%s pid:%d when abort",
                                                handle->nodename,
@@ -2460,7 +2455,7 @@ AbortRunningQuery(TranscationType txn_type, bool need_release_handle)
                     }
 
 #ifdef _PG_REGRESS_
-                    ereport(LOG,
+                    ereport(DEBUG1,
 							(errcode(ERRCODE_INTERNAL_ERROR),
 							 errmsg("Succeed to sync msg to node:%s pid:%d when abort",
 									handle->nodename,
@@ -2472,7 +2467,7 @@ AbortRunningQuery(TranscationType txn_type, bool need_release_handle)
             {
                 if (handle->needSync)
                 {
-                    ereport(LOG,
+                    ereport(DEBUG1,
                             (errcode(ERRCODE_INTERNAL_ERROR),
                                     errmsg("Invalid node:%s pid:%d needSync flag",
                                            handle->nodename,
@@ -2480,7 +2475,7 @@ AbortRunningQuery(TranscationType txn_type, bool need_release_handle)
                 }
 
 #ifdef _PG_REGRESS_
-                ereport(LOG,
+                ereport(DEBUG1,
 						(errcode(ERRCODE_INTERNAL_ERROR),
 						 errmsg("PreAbort_Remote node:%s pid:%d status:%d no need clean.",
 								handle->nodename,
@@ -2503,7 +2498,7 @@ AbortRunningQuery(TranscationType txn_type, bool need_release_handle)
                 handle->state == DN_CONNECTION_STATE_COPY_OUT || !node_ready_for_query(handle))
             {
 #ifdef _PG_REGRESS_
-                ereport(LOG,
+                ereport(DEBUG1,
 						(errcode(ERRCODE_INTERNAL_ERROR),
 						 errmsg("PreAbort_Remote node:%s pid:%d status:%d need clean.",
 								handle->nodename,
@@ -2514,14 +2509,14 @@ AbortRunningQuery(TranscationType txn_type, bool need_release_handle)
                 {
                     if (pgxc_node_send_sync(handle))
                     {
-                        ereport(LOG,
+                        ereport(DEBUG1,
                                 (errcode(ERRCODE_INTERNAL_ERROR),
                                         errmsg("Failed to sync msg to node:%s pid:%d when abort",
                                                handle->nodename,
                                                handle->backend_pid)));
                     }
 #ifdef _PG_REGRESS_
-                    ereport(LOG,
+                    ereport(DEBUG1,
 							(errcode(ERRCODE_INTERNAL_ERROR),
 							 errmsg("Succeed to sync msg to node:%s pid:%d when abort",
 									handle->nodename,
@@ -2557,7 +2552,7 @@ AbortRunningQuery(TranscationType txn_type, bool need_release_handle)
                 clean_nodes[node_count++] = handle;
                 cancel_dn_list[cancel_dn_count++] = PGXCNodeGetNodeId(handle->nodeoid, NULL);
 #ifdef _PG_REGRESS_
-                ereport(LOG,
+                ereport(DEBUG1,
 						(errcode(ERRCODE_INTERNAL_ERROR),
 						 errmsg("PreAbort_Remote node:%s pid:%d status:%d need clean.",
 								handle->nodename,
@@ -2569,14 +2564,14 @@ AbortRunningQuery(TranscationType txn_type, bool need_release_handle)
                 {
                     if (pgxc_node_send_sync(handle))
                     {
-                        ereport(LOG,
+                        ereport(DEBUG1,
                                 (errcode(ERRCODE_INTERNAL_ERROR),
                                         errmsg("Failed to sync msg to node:%s pid:%d when abort",
                                                handle->nodename,
                                                handle->backend_pid)));
                     }
 #ifdef _PG_REGRESS_
-                    ereport(LOG,
+                    ereport(DEBUG1,
 							(errcode(ERRCODE_INTERNAL_ERROR),
 							 errmsg("Succeed to sync msg to node:%s pid:%d when abort",
 									handle->nodename,
@@ -2588,14 +2583,14 @@ AbortRunningQuery(TranscationType txn_type, bool need_release_handle)
             {
                 if (handle->needSync)
                 {
-                    ereport(LOG,
+                    ereport(DEBUG1,
                             (errcode(ERRCODE_INTERNAL_ERROR),
                                     errmsg("Invalid node:%s pid:%d needSync flag",
                                            handle->nodename,
                                            handle->backend_pid)));
                 }
 #ifdef _PG_REGRESS_
-                ereport(LOG,
+                ereport(DEBUG1,
 						(errcode(ERRCODE_INTERNAL_ERROR),
 						 errmsg("PreAbort_Remote node:%s pid:%d status:%d no need clean.",
 								handle->nodename,
@@ -2754,7 +2749,7 @@ pgxc_node_remote_abort(TranscationType txn_type, bool need_release_handle)
     SetSendCommandId(false);
 #endif
 
-    elog(DEBUG5,
+    elog(DEBUG1,
          "pgxc_node_remote_abort - dn_conn_count %d, co_conn_count %d",
          handles->dn_conn_count,
          handles->co_conn_count);
@@ -2791,7 +2786,7 @@ pgxc_node_remote_abort(TranscationType txn_type, bool need_release_handle)
                 if (ret)
                 {
                     add_error_message(conn, "Failed to send SYNC command");
-                    ereport(LOG,
+                    ereport(DEBUG1,
                             (errcode(ERRCODE_INTERNAL_ERROR),
                                     errmsg("Failed to send SYNC command nodename:%s, pid:%d",
                                            conn->nodename,
@@ -2827,14 +2822,14 @@ pgxc_node_remote_abort(TranscationType txn_type, bool need_release_handle)
         {
             if (combiner.errorMessage)
             {
-                ereport(LOG,
+                ereport(DEBUG1,
                         (errcode(ERRCODE_INTERNAL_ERROR),
                                 errmsg("Failed to send SYNC to on one or more nodes errmsg:%s",
                                        combiner.errorMessage)));
             }
             else
             {
-                ereport(LOG,
+                ereport(DEBUG1,
                         (errcode(ERRCODE_INTERNAL_ERROR),
                                 errmsg("Failed to send SYNC to on one or more nodes")));
             }
@@ -2931,14 +2926,14 @@ pgxc_node_remote_abort(TranscationType txn_type, bool need_release_handle)
         {
             if (combiner.errorMessage)
             {
-                ereport(LOG,
+                ereport(DEBUG1,
                         (errcode(ERRCODE_INTERNAL_ERROR),
                                 errmsg("Failed to send SYNC to on one or more nodes errmsg:%s",
                                        combiner.errorMessage)));
             }
             else
             {
-                ereport(LOG,
+                ereport(DEBUG1,
                         (errcode(ERRCODE_INTERNAL_ERROR),
                                 errmsg("Failed to send SYNC to on one or more nodes")));
             }
@@ -2954,7 +2949,6 @@ pgxc_node_remote_abort(TranscationType txn_type, bool need_release_handle)
     if (force_release_handle)
     {
         elog(LOG, "found bad remote node connections, force release handles now");
-        DropAllTxnDatanodeStatement();
         release_handles(true);
     }
 
@@ -3033,12 +3027,6 @@ int pgxc_node_begin(int conn_count,
             BufferConnection(connections[i]);
 
         /* Send timestamp and check for errors */
-#ifdef PATCH_ENABLE_DISTRIBUTED_TRANSACTION //ENABLE_POLARDBX_HLC
-        if (EnableHLCTransaction && pgxc_node_send_timestamp(connections[i], start_ts))
-        {
-            return EOF;
-        }
-#endif
 
         if (IS_PGXC_REMOTE_COORDINATOR)
         {
@@ -3060,6 +3048,21 @@ int pgxc_node_begin(int conn_count,
         {
             need_send_begin = true;
         }
+        /* Send timestamp and check for errors */
+#ifdef PATCH_ENABLE_DISTRIBUTED_TRANSACTION //ENABLE_POLARDBX_HLC
+        if (enable_log_remote_query)
+        {
+            elog(LOG, "current_start_ts " UINT64_FORMAT "/" UINT64_FORMAT " to server %s, backend_pid:%d",
+                    start_ts, connections[i]->sendTimestamp, connections[i]->nodename, connections[i]->backend_pid);
+        }
+        if (need_send_begin || (EnableHLCTransaction &&
+            start_ts > connections[i]->sendTimestamp))
+        {
+            if(pgxc_node_send_timestamp(connections[i], start_ts))
+                return EOF;
+            connections[i]->sendTimestamp = start_ts;
+        }
+#endif
 
         if (EnableTransactionDebugPrint)
         {
@@ -3082,7 +3085,7 @@ int pgxc_node_begin(int conn_count,
                 return EOF;
             }
 
-            elog(DEBUG5,
+            elog(DEBUG1,
                  "pgxc_node_begin send %s to node %s, pid:%d",
                  cmd,
                  connections[i]->nodename,
@@ -3137,142 +3140,6 @@ int pgxc_node_begin(int conn_count,
 
     /* No problem, let's get going */
     return 0;
-}
-
-
-static void
-InitTxnQueryHashTable(void)
-{
-    HASHCTL hash_ctl;
-
-    MemSet(&hash_ctl, 0, sizeof(hash_ctl));
-
-    hash_ctl.keysize = NAMEDATALEN;
-    hash_ctl.entrysize = sizeof(TxnDatanodeStatement) + NumDataNodes * sizeof(int);
-    hash_ctl.hcxt = CacheMemoryContext;
-
-    txn_datanode_queries = hash_create("Transaction Datanode Queries",
-                                       64,
-                                       &hash_ctl,
-                                       HASH_ELEM);
-}
-
-static TxnDatanodeStatement *
-FetchTxnDatanodeStatement(const char *stmt_name, bool throwError)
-{
-    TxnDatanodeStatement *entry;
-
-    /*
-     * If the hash table hasn't been initialized, it can't be storing
-     * anything, therefore it couldn't possibly store our plan.
-     */
-    if (txn_datanode_queries)
-        entry = (TxnDatanodeStatement *)hash_search(txn_datanode_queries, stmt_name, HASH_FIND, NULL);
-    else
-        entry = NULL;
-
-    /* Report error if entry is not found */
-    if (!entry && throwError)
-        ereport(ERROR,
-                (errcode(ERRCODE_UNDEFINED_PSTATEMENT),
-                        errmsg("transaction datanode statement \"%s\" does not exist",
-                               stmt_name)));
-
-    return entry;
-}
-
-void DropTxnDatanodeStatement(const char *stmt_name)
-{
-    TxnDatanodeStatement *entry;
-
-    entry = FetchTxnDatanodeStatement(stmt_name, false);
-    if (entry)
-    {
-        int i;
-        List *nodelist = NIL;
-
-        /* make a List of integers from node numbers */
-        for (i = 0; i < entry->number_of_nodes; i++)
-            nodelist = lappend_int(nodelist, entry->dns_node_indices[i]);
-        entry->number_of_nodes = 0;
-
-        ExecCloseRemoteStatement(stmt_name, nodelist);
-
-        hash_search(txn_datanode_queries, entry->stmt_name, HASH_REMOVE, NULL);
-    }
-}
-
-bool PrepareTxnDatanodeStatement(char *stmt)
-{
-    bool exists;
-    TxnDatanodeStatement *entry;
-    bool first_call = false;
-
-    /* Initialize the hash table, if necessary */
-    if (!txn_datanode_queries)
-    {
-        InitTxnQueryHashTable();
-        first_call = true;
-    }
-
-    hash_search(txn_datanode_queries, stmt, HASH_FIND, &exists);
-
-    if (!exists)
-    {
-        entry = (TxnDatanodeStatement *)hash_search(txn_datanode_queries,
-                                                    stmt,
-                                                    HASH_ENTER,
-                                                    NULL);
-        entry->number_of_nodes = 0;
-    }
-    return first_call;
-}
-
-bool ActivateTxnDatanodeStatementOnNode(const char *stmt_name, int noid)
-{
-    TxnDatanodeStatement *entry;
-    int i;
-
-    /* find the statement in cache */
-    entry = FetchTxnDatanodeStatement(stmt_name, true);
-
-    /* see if statement already active on the node */
-    for (i = 0; i < entry->number_of_nodes; i++)
-        if (entry->dns_node_indices[i] == noid)
-            return true;
-
-    /* statement is not active on the specified node append item to the list */
-    entry->dns_node_indices[entry->number_of_nodes++] = noid;
-    return false;
-}
-
-
-void
-DropAllTxnDatanodeStatement(void)
-{
-    HASH_SEQ_STATUS seq;
-    TxnDatanodeStatement *entry;
-
-    /* nothing cached */
-    if (!txn_datanode_queries)
-        return;
-
-    /* walk over cache */
-    hash_seq_init(&seq, txn_datanode_queries);
-    while ((entry = hash_seq_search(&seq)) != NULL)
-    {
-        int i;
-        List *nodelist = NIL;
-
-        /* make a List of integers from node numbers */
-        for (i = 0; i < entry->number_of_nodes; i++)
-            nodelist = lappend_int(nodelist, entry->dns_node_indices[i]);
-        entry->number_of_nodes = 0;
-
-        ExecCloseRemoteStatement(entry->stmt_name, nodelist);
-
-        hash_search(txn_datanode_queries, entry->stmt_name, HASH_REMOVE, NULL);
-    }
 }
 
 static void

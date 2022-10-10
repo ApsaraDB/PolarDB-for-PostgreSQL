@@ -54,33 +54,10 @@
 #include "access/reloptions.h"
 #include "catalog/pg_foreign_table.h"
 #include "pgxc/mdcache.h"
-
-/*
- * Locator details are private
- */
-struct _Locator
-{
-    /*
-     * Determine target nodes for value.
-     * Resulting nodes are stored to the results array.
-     * Function returns number of node references written to the array.
-     */
-    int (*locatefunc)(Locator *self, Datum value, bool isnull,
-                      bool *hasprimary);
-    Oid dataType; /* values of that type are passed to locateNodes function */
-    LocatorListType listType;
-    bool primary;
-
-    /* locator-specific data */
-    /* XXX: move them into union ? */
-    int roundRobinNode;       /* for LOCATOR_TYPE_RROBIN */
-    LocatorHashFunc hashfunc; /* for LOCATOR_TYPE_HASH */
-    int valuelen;             /* 1, 2 or 4 for LOCATOR_TYPE_MODULO */
-
-    int nodeCount; /* How many nodes are in the map */
-    void *nodeMap; /* map index to node reference according to listType */
-    void *results; /* array to output results */
-};
+#include "metadata/cache.h"
+#include "catalog/pg_type.h"
+#include "access/xact.h"
+#include "utils/inval.h"
 
 Oid primary_data_node = InvalidOid;
 int num_preferred_data_nodes = 0;
@@ -97,7 +74,9 @@ static int locate_hash_insert(Locator *self, Datum value, bool isnull,
                               bool *hasprimary);
 static int locate_hash_select(Locator *self, Datum value, bool isnull,
                               bool *hasprimary);
-
+static int locate_shard_insert(Locator *self, Datum value, bool isnull, bool *hasprimary);
+static int locate_shard_select(Locator *self, Datum value, bool isnull, bool *hasprimary);
+static int GetNodeIndexByHashValue(int hashvalue);
 static int locate_modulo_insert(Locator *self, Datum value, bool isnull,
                                 bool *hasprimary);
 static int locate_modulo_select(Locator *self, Datum value, bool isnull,
@@ -216,6 +195,10 @@ GetRelationDistColumn(Oid relid)
     pColName = NULL;
 
     pColName = GetRelationHashColumn(rel_loc_info);
+#ifdef POLARDBX_SHARDING
+    if (pColName == NULL)
+        pColName = GetRelationShardColumn(rel_loc_info);
+#endif
     if (pColName == NULL)
         pColName = GetRelationModuloColumn(rel_loc_info);
 
@@ -255,6 +238,33 @@ GetRelationHashColumn(RelationLocInfo *rel_loc_info)
 
     return column_str;
 }
+
+#ifdef POLARDBX_SHARDING
+/*
+ * GetRelationShardColumn - return shard column for relation.
+ *
+ * Returns NULL if the relation is not shard partitioned.
+ */
+char *
+GetRelationShardColumn(RelationLocInfo *rel_loc_info)
+{
+    char *column_str = NULL;
+
+    if (rel_loc_info == NULL)
+        column_str = NULL;
+    else if (rel_loc_info->locatorType != LOCATOR_TYPE_SHARD)
+        column_str = NULL;
+    else
+    {
+        int len = strlen(rel_loc_info->partAttrName);
+
+        column_str = (char *)palloc(len + 1);
+        strncpy(column_str, rel_loc_info->partAttrName, len + 1);
+    }
+
+    return column_str;
+}
+#endif
 
 /*
  * IsDistColumnForRelId - return whether or not column for relation is used for hash or modulo distribution
@@ -393,6 +403,11 @@ char ConvertToLocatorType(int disttype)
     case DISTTYPE_MODULO:
         loctype = LOCATOR_TYPE_MODULO;
         break;
+#ifdef POLARDBX_SHARDING
+    case DISTTYPE_SHARD:
+        loctype = LOCATOR_TYPE_SHARD;
+        break;
+#endif
     default:
         ereport(ERROR,
                 (errcode(ERRCODE_WRONG_OBJECT_TYPE),
@@ -913,6 +928,57 @@ createLocator(char locatorType, RelationAccessType accessType,
             ereport(ERROR, (errmsg("Error: unsupported data type for HASH locator: %d\n",
                                    dataType)));
         break;
+	case LOCATOR_TYPE_SHARD:
+		if (accessType == RELATION_ACCESS_INSERT)
+		{
+			locator->locatefunc = locate_shard_insert;
+			locator->nodeMap = nodeMap;
+			switch (locator->listType)
+			{
+				case LOCATOR_LIST_NONE:
+				case LOCATOR_LIST_INT:
+					locator->results = palloc(sizeof(int));
+					break;
+				case LOCATOR_LIST_OID:
+					locator->results = palloc(sizeof(Oid));
+					break;
+				case LOCATOR_LIST_POINTER:
+					locator->results = palloc(sizeof(void *));
+					break;
+				case LOCATOR_LIST_LIST:
+					/* Should never happen */
+					Assert(false);
+					break;
+			}
+		}
+		else
+		{
+			locator->locatefunc = locate_shard_select;
+			locator->nodeMap = nodeMap;
+			switch (locator->listType)
+			{
+				case LOCATOR_LIST_NONE:
+				case LOCATOR_LIST_INT:
+					locator->results = palloc(locator->nodeCount * sizeof(int));
+					break;
+				case LOCATOR_LIST_OID:
+					locator->results = palloc(locator->nodeCount * sizeof(Oid));
+					break;
+				case LOCATOR_LIST_POINTER:
+					locator->results = palloc(locator->nodeCount * sizeof(void *));
+					break;
+				case LOCATOR_LIST_LIST:
+					/* Should never happen */
+					Assert(false);
+					break;
+			}
+		}
+
+		locator->hashfunc = hash_func_ptr(dataType);
+		if (locator->hashfunc == NULL)
+			ereport(ERROR, (errmsg("Error: unsupported data type for SHARD locator: %d\n",
+								   dataType)));
+		break;    
     case LOCATOR_TYPE_MODULO:
         if (accessType == RELATION_ACCESS_INSERT)
         {
@@ -1710,4 +1776,152 @@ get_foreign_table(Oid relid)
     ReleaseSysCache(tp);
 
     return ft;
+}
+
+static int
+locate_shard_insert(Locator *self, Datum value, bool isnull,
+					bool *hasprimary)
+{ // #lizard forgives
+	int index;
+	if (hasprimary)
+		*hasprimary = false;
+
+	InitializeMetadataCache();
+	elog(DEBUG1, "[TRACESHARDMAP] Accept invalidate message when check shard map cache.");
+	AcceptInvalidationMessages();
+	if (ReceivedShardMapInvalidateMsg && (!IsolationUsesXactSnapshot()))
+	{
+		elog(DEBUG1, "[TRACESHARDMAP] Reload shard map in RC isolation level.");
+		ReloadShardMapCache();
+	}
+
+	if (isnull)
+	{
+		int hashvalue = 0;
+		index = GetNodeIndexByHashValue(hashvalue);
+	}
+	else
+	{
+		int hashvalue;
+		hashvalue = (int)DatumGetInt32(DirectFunctionCall1(self->hashfunc, value));
+		index = GetNodeIndexByHashValue(hashvalue);
+	}
+	switch (self->listType)
+	{
+		case LOCATOR_LIST_NONE:
+			((int *)self->results)[0] = index;
+			break;
+		case LOCATOR_LIST_INT:
+			((int *)self->results)[0] = ((int *)self->nodeMap)[index];
+			break;
+		case LOCATOR_LIST_OID:
+			((Oid *)self->results)[0] = ((Oid *)self->nodeMap)[index];
+			break;
+		case LOCATOR_LIST_POINTER:
+			((void **)self->results)[0] = ((void **)self->nodeMap)[index];
+			break;
+		case LOCATOR_LIST_LIST:
+			/* Should never happen */
+			Assert(false);
+			break;
+	}
+	return 1;
+}
+
+static int
+locate_shard_select(Locator *self, Datum value, bool isnull,
+					bool *hasprimary)
+{ // #lizard forgives
+	if (hasprimary)
+		*hasprimary = false;
+	InitializeMetadataCache();
+	elog(DEBUG1, "[TRACESHARDMAP] Accept invalidate message when check shard map cache.");
+	AcceptInvalidationMessages();
+	if (ReceivedShardMapInvalidateMsg && (!IsolationUsesXactSnapshot()))
+	{
+		elog(DEBUG1, "[TRACESHARDMAP] Reload shard map in RC isolation level.");
+		ReloadShardMapCache();
+	}
+
+	if (isnull)
+	{
+		int i;
+		switch (self->listType)
+		{
+			case LOCATOR_LIST_NONE:
+				for (i = 0; i < self->nodeCount; i++)
+					((int *)self->results)[i] = i;
+				break;
+			case LOCATOR_LIST_INT:
+				memcpy(self->results, self->nodeMap,
+					   self->nodeCount * sizeof(int));
+				break;
+			case LOCATOR_LIST_OID:
+				memcpy(self->results, self->nodeMap,
+					   self->nodeCount * sizeof(Oid));
+				break;
+			case LOCATOR_LIST_POINTER:
+				memcpy(self->results, self->nodeMap,
+					   self->nodeCount * sizeof(void *));
+				break;
+			case LOCATOR_LIST_LIST:
+				/* Should never happen */
+				Assert(false);
+				break;
+		}
+		return self->nodeCount;
+	}
+	else
+	{
+		int hashvalue;
+		int index;
+
+		hashvalue = (int)DatumGetInt32(DirectFunctionCall1(self->hashfunc, value));
+
+		index = GetNodeIndexByHashValue(hashvalue);
+		switch (self->listType)
+		{
+			case LOCATOR_LIST_NONE:
+				((int *)self->results)[0] = index;
+				break;
+			case LOCATOR_LIST_INT:
+				((int *)self->results)[0] = ((int *)self->nodeMap)[index];
+				break;
+			case LOCATOR_LIST_OID:
+				((Oid *)self->results)[0] = ((Oid *)self->nodeMap)[index];
+				break;
+			case LOCATOR_LIST_POINTER:
+				((void **)self->results)[0] = ((void **)self->nodeMap)[index];
+				break;
+			case LOCATOR_LIST_LIST:
+				/* Should never happen */
+				Assert(false);
+				break;
+		}
+		return 1;
+	}
+}
+
+static int GetNodeIndexByHashValue(int hashvalue)
+{
+	int i = 0;
+	InitializeMetadataCache();
+	ShardMapCacheData *cache = GetShardMapCache();
+	if (!cache || cache->valid == false)
+	{
+		elog(ERROR, "Shard map cache is not available.");
+	}
+
+	ShardMapCacheItem* items = cache->items;
+	Assert(ShardCount != 0);
+	for (i = 0; i < ShardCount; i++)
+	{
+		if (hashvalue >= items[i].shardMinValue && hashvalue <= items[i].shardMaxValue)
+		{
+			return items[i].nodeIndex;
+		}
+	}
+
+	return -1;
+
 }

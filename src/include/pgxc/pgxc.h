@@ -20,6 +20,8 @@
 extern bool isPGXCCoordinator;
 extern bool isPGXCDataNode;
 extern int        remoteConnType;
+#ifndef PGXC_MACRO
+#define PGXC_MACRO
 
 typedef enum
 {
@@ -48,6 +50,6 @@ typedef enum
 #define IsConnFromDatanode() (remoteConnType == REMOTE_CONN_DATANODE)
 #define IsConnFromGtm() (remoteConnType == REMOTE_CONN_GTM)
 #define IsConnFromGtmProxy() (remoteConnType == REMOTE_CONN_GTM_PROXY)
-
+#endif
 
 #endif   /* PGXC */

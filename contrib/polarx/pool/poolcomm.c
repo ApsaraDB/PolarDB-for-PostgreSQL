@@ -393,7 +393,7 @@ pool_recvbuf(PoolPort *port)
             /*
              * Report broken connection
              */
-            ereport(LOG,
+            ereport(DEBUG1,
                     (errcode_for_socket_access(),
                      errmsg("could not receive data from client: %m")));
             return EOF;
@@ -601,7 +601,7 @@ pool_sendfds(PoolPort *port, int *fds, int count, char *errbuf, int32 buf_len)
             else
             {
                 err = errno;
-                elog(LOG, POOL_MGR_PREFIX"Pooler pool_sendfds flush failed for:%s", strerror(err));
+                elog(DEBUG1, POOL_MGR_PREFIX"Pooler pool_sendfds flush failed for:%s", strerror(err));
             }
             return EOF;
         }
@@ -633,7 +633,7 @@ pool_sendfds(PoolPort *port, int *fds, int count, char *errbuf, int32 buf_len)
                 else
                 {
                     err = errno;
-                    elog(LOG, POOL_MGR_PREFIX"Pooler invalid send length:%d", offset);
+                    elog(DEBUG1, POOL_MGR_PREFIX"Pooler invalid send length:%d", offset);
                 }
                 return EOF;
             }    
@@ -697,7 +697,7 @@ failure:
     }
     else
     {
-        elog(LOG, POOL_MGR_PREFIX"Pooler pool_sendfds flush failed for:%s", strerror(err));
+        elog(DEBUG1, POOL_MGR_PREFIX"Pooler pool_sendfds flush failed for:%s", strerror(err));
     }
     return EOF;
 }
@@ -726,7 +726,7 @@ pool_recvfds(PoolPort *port, int *fds, int count)
     {
         if (PoolConnectDebugPrint)
         {
-            elog(LOG, "[pool_recvfds]cmptr == NULL, return EOF");
+            elog(DEBUG1, "[pool_recvfds]cmptr == NULL, return EOF");
         }
         return EOF;
     }
@@ -750,7 +750,7 @@ pool_recvfds(PoolPort *port, int *fds, int count)
             /*
              * report broken connection
              */
-            ereport(LOG,
+            ereport(DEBUG1,
                             (errcode_for_socket_access(),
                              errmsg("could not receive data from client: %m")));
             goto failure;
@@ -763,7 +763,6 @@ pool_recvfds(PoolPort *port, int *fds, int count)
                 break;
             }
             
-            //elog(LOG, "[pool_recvfds]r == 0, errmsg=%s", strerror(errno));
             if (errno)
             {
                 /* if errno is not zero, it means connection pipe got error */
@@ -796,7 +795,7 @@ pool_recvfds(PoolPort *port, int *fds, int count)
     /* Verify response */
     if (buf[0] != 'f')
     {
-        ereport(LOG,
+        ereport(DEBUG1,
                 (errcode(ERRCODE_PROTOCOL_VIOLATION),
                  errmsg("unexpected message code")));
         goto failure;
@@ -806,7 +805,7 @@ pool_recvfds(PoolPort *port, int *fds, int count)
     n32 = ntohl(n32);
     if (n32 != 8)
     {
-        ereport(LOG,
+        ereport(DEBUG1,
                 (errcode(ERRCODE_PROTOCOL_VIOLATION),
                  errmsg("invalid message size")));
         goto failure;
@@ -839,8 +838,8 @@ pool_recvfds(PoolPort *port, int *fds, int count)
                 /*
                  * Report broken connection
                  */
-                elog(LOG, "recv size %d size %d n32 %d.", recved_size, size, n32);
-                ereport(LOG,
+                elog(DEBUG1, "recv size %d size %d n32 %d.", recved_size, size, n32);
+                ereport(DEBUG1,
                         (errcode_for_socket_access(),
                          errmsg("could not receive data from client: %m")));
                 error_no = errno;
@@ -865,7 +864,7 @@ pool_recvfds(PoolPort *port, int *fds, int count)
     
     if (n32 == 0)
     {
-        ereport(LOG,
+        ereport(DEBUG1,
                 (errcode(ERRCODE_INSUFFICIENT_RESOURCES),
                  errmsg("failed to acquire connections")));
         goto failure;
@@ -873,7 +872,7 @@ pool_recvfds(PoolPort *port, int *fds, int count)
 
     if (n32 != count)
     {
-        ereport(LOG,
+        ereport(DEBUG1,
                 (errcode(ERRCODE_PROTOCOL_VIOLATION),
                  errmsg("unexpected connection count")));
         goto failure;
@@ -883,22 +882,22 @@ pool_recvfds(PoolPort *port, int *fds, int count)
     free(cmptr);
     if (PoolConnectDebugPrint)
     {
-        elog(LOG, "[pool_recvfds]success. fds=%p", fds);
+        elog(DEBUG1, "[pool_recvfds]success. fds=%p", fds);
     }
     return 0;
 failure:
     free(cmptr);
     if (PoolErrIsValid(err))
     {
-        elog(LOG, "%s, errno:%d, errmsg:%s", err_msg, errno, strerror(errno));
+        elog(DEBUG1, "%s, errno:%d, errmsg:%s", err_msg, errno, strerror(errno));
     }
     else
     {
-        elog(LOG, "[pool_recvfds]failure, return EOF, errno:%d, errmsg:%s", errno, strerror(errno));
+        elog(DEBUG1, "[pool_recvfds]failure, return EOF, errno:%d, errmsg:%s", errno, strerror(errno));
     }
     return EOF;
 receive_error:
-    elog(LOG, "[pool_recvfds]failure, fail to receive error message, err_msg %s", strerror(error_no));
+    elog(DEBUG1, "[pool_recvfds]failure, fail to receive error message, err_msg %s", strerror(error_no));
     return EOF;
 }
 
@@ -966,7 +965,7 @@ pool_sendres(PoolPort *port, int res, char *errbuf, int32 buf_len, bool need_log
                 err = errno;
                 if (need_log)
                 {
-                    elog(LOG, POOL_MGR_PREFIX" pool_sendres send data failed for %s", strerror(err));
+                    elog(DEBUG1, POOL_MGR_PREFIX" pool_sendres send data failed for %s", strerror(err));
                 }
             }
             return EOF;
@@ -1021,7 +1020,7 @@ pool_sendres_with_command_id(PoolPort *port, int res, CommandId cmdID, char *err
     {
         if (need_log)
         {
-            elog(LOG, POOL_MGR_PREFIX"pool_sendres_with_command_id ENTER, res:%d commandid:%u", res, cmdID);
+            elog(DEBUG1, POOL_MGR_PREFIX"pool_sendres_with_command_id ENTER, res:%d commandid:%u", res, cmdID);
         }
     }
 
@@ -1039,7 +1038,7 @@ pool_sendres_with_command_id(PoolPort *port, int res, CommandId cmdID, char *err
             {
                 if (need_log)
                 {
-                    elog(LOG, POOL_MGR_PREFIX" pool_sendres_with_command_id out of memory size:%d", send_buf_len);
+                    elog(DEBUG1, POOL_MGR_PREFIX" pool_sendres_with_command_id out of memory size:%d", send_buf_len);
                 }
             }
         }        
@@ -1095,7 +1094,7 @@ pool_sendres_with_command_id(PoolPort *port, int res, CommandId cmdID, char *err
                     }
                     else if (need_log)
                     {
-                        elog(LOG, POOL_MGR_PREFIX" pool_sendres_with_command_id send data failed for %s", strerror(err));
+                        elog(DEBUG1, POOL_MGR_PREFIX" pool_sendres_with_command_id send data failed for %s", strerror(err));
                     }
                     goto failure;
                 }
@@ -1106,7 +1105,7 @@ pool_sendres_with_command_id(PoolPort *port, int res, CommandId cmdID, char *err
                 {
                     if (need_log)
                     {
-                        elog(LOG, POOL_MGR_PREFIX"pool_sendres_with_command_id EXIT, res:%d commandid:%u send succeed", res, cmdID);
+                        elog(DEBUG1, POOL_MGR_PREFIX"pool_sendres_with_command_id EXIT, res:%d commandid:%u send succeed", res, cmdID);
                     }
                 }
                 
@@ -1130,7 +1129,7 @@ pool_sendres_with_command_id(PoolPort *port, int res, CommandId cmdID, char *err
                 {
                     if (need_log)
                     {
-                        elog(LOG, POOL_MGR_PREFIX" pool_sendres_with_command_id EXIT, send data failed for %s", strerror(err));
+                        elog(DEBUG1, POOL_MGR_PREFIX" pool_sendres_with_command_id EXIT, send data failed for %s", strerror(err));
                     }
                 }
             }
@@ -1150,7 +1149,7 @@ pool_sendres_with_command_id(PoolPort *port, int res, CommandId cmdID, char *err
             {
                 if (need_log)
                 {
-                    elog(LOG, POOL_MGR_PREFIX"pool_sendres_with_command_id EXIT, res:%d commandid:%u send succeed", res, cmdID);
+                    elog(DEBUG1, POOL_MGR_PREFIX"pool_sendres_with_command_id EXIT, res:%d commandid:%u send succeed", res, cmdID);
                 }
             }
             
@@ -1182,7 +1181,7 @@ failure:
     {
         if (need_log)
         {
-            elog(LOG, POOL_MGR_PREFIX"pool_sendres_with_command_id EXIT, res:%d commandid:%u send failed", res, cmdID);
+            elog(DEBUG1, POOL_MGR_PREFIX"pool_sendres_with_command_id EXIT, res:%d commandid:%u send failed", res, cmdID);
         }
     }
     return EOF;    
@@ -1215,8 +1214,8 @@ pool_recvres_with_commandID(PoolPort *port, CommandId *cmdID, const char *sql)
             /*
              * Report broken connection
              */
-            elog(LOG, "[pool_recvres_with_commandID] ERROR recv size %d size %d n32 %d.", recved_size, size, n32);
-            ereport(LOG,
+            elog(DEBUG1, "[pool_recvres_with_commandID] ERROR recv size %d size %d n32 %d.", recved_size, size, n32);
+            ereport(DEBUG1,
                     (errcode_for_socket_access(),
                      errmsg("[pool_recvres_with_commandID]could not receive data from client: %m")));
             goto failure;
@@ -1293,7 +1292,7 @@ pool_recvres_with_commandID(PoolPort *port, CommandId *cmdID, const char *sql)
 
     if (PoolConnectDebugPrint)
     {
-        elog(LOG, "[pool_recvres_with_commandID] res=%d, cmdID=%u", pooler_res, *cmdID);
+        elog(DEBUG1, "[pool_recvres_with_commandID] res=%d, cmdID=%u", pooler_res, *cmdID);
     }
     
     if (ptr && ptr != buf)
@@ -1308,7 +1307,7 @@ failure:
         pfree(ptr);
     }
     *cmdID = InvalidCommandId;
-    elog(LOG, "[pool_recvres_with_commandID] ERROR failed res=%d, cmdID=%u", pooler_res, *cmdID);
+    elog(DEBUG1, "[pool_recvres_with_commandID] ERROR failed res=%d, cmdID=%u", pooler_res, *cmdID);
     return EOF;
 }
 /*
@@ -1336,8 +1335,8 @@ pool_recvres(PoolPort *port)
             /*
              * Report broken connection
              */
-            elog(LOG, "recv size %d size %d n32 %d.", recved_size, size, n32);
-            ereport(LOG,
+            elog(DEBUG1, "recv size %d size %d n32 %d.", recved_size, size, n32);
+            ereport(DEBUG1,
                     (errcode_for_socket_access(),
                      errmsg("could not receive data from client: %m")));
             goto failure;
@@ -1358,7 +1357,7 @@ pool_recvres(PoolPort *port)
     /* Verify response */
     if (buf[0] != 's')
     {
-        ereport(LOG,
+        ereport(DEBUG1,
                 (errcode(ERRCODE_PROTOCOL_VIOLATION),
                  errmsg("unexpected message code:%c", buf[0])));
         goto failure;
@@ -1368,7 +1367,7 @@ pool_recvres(PoolPort *port)
     n32 = ntohl(n32);
     if (n32 != 0)
     {
-        ereport(LOG,
+        ereport(DEBUG1,
                 (errcode(ERRCODE_PROTOCOL_VIOLATION),
                  errmsg("pool_recvres return code:%d", n32)));
     }
@@ -1390,8 +1389,8 @@ pool_recvres(PoolPort *port)
                 /*
                  * Report broken connection
                  */
-                elog(LOG, "recv size %d size %d n32 %d.", recved_size, size, n32);
-                ereport(LOG,
+                elog(DEBUG1, "recv size %d size %d n32 %d.", recved_size, size, n32);
+                ereport(DEBUG1,
                         (errcode_for_socket_access(),
                          errmsg("could not receive data from client: %m")));
                 goto failure;
@@ -1437,7 +1436,7 @@ pool_recvpids(PoolPort *port, int **pids)
     buf = (char*)malloc(SEND_PID_BUFFER_SIZE);
     if (NULL == buf)
     {
-        ereport(LOG,
+        ereport(DEBUG1,
                 (errcode_for_socket_access(),
                  errmsg("pool_recvpids failed to alloc %d size memory.", SEND_PID_BUFFER_SIZE)));
         return 0;
@@ -1457,7 +1456,7 @@ pool_recvpids(PoolPort *port, int **pids)
             /*
              * Report broken connection
              */
-            ereport(LOG,
+            ereport(DEBUG1,
                     (errcode_for_socket_access(),
                      errmsg("could not receive data from client: %m recved_size %d size %d.", recved_size, size)));
             goto failure;
@@ -1479,8 +1478,8 @@ pool_recvpids(PoolPort *port, int **pids)
     /* Verify response */
     if (buf[0] != 'p')
     {
-        elog(LOG, "recv code %c.", buf[0]);
-        ereport(LOG,
+        elog(DEBUG1, "recv code %c.", buf[0]);
+        ereport(DEBUG1,
                 (errcode(ERRCODE_PROTOCOL_VIOLATION),
                  errmsg("unexpected message code %c", buf[0])));
         goto failure;
@@ -1506,8 +1505,8 @@ pool_recvpids(PoolPort *port, int **pids)
             /*
              * Report broken connection
              */
-            elog(LOG, "recv size %d size %d n32 %d.", recved_size, size, n32);
-            ereport(LOG,
+            elog(DEBUG1, "recv size %d size %d n32 %d.", recved_size, size, n32);
+            ereport(DEBUG1,
                     (errcode_for_socket_access(),
                      errmsg("could not receive data from client: %m")));
             goto failure;
@@ -1545,7 +1544,7 @@ pool_recvpids(PoolPort *port, int **pids)
     
 failure:
     free(buf);
-    ereport(LOG,
+    ereport(DEBUG1,
                     (errcode_for_socket_access(),
                      errmsg("recvpids failure recv size %d size %d count %d.", recved_size, size, n32)));
     return 0;
@@ -1639,11 +1638,623 @@ failure:
     else
     {
         err = errno;
-        elog(LOG, POOL_MGR_PREFIX"pool_sendpids send data failed for %s. failure send size %d size %d count %d.",
+        elog(DEBUG1, POOL_MGR_PREFIX"pool_sendpids send data failed for %s. failure send size %d size %d count %d.",
                 strerror(err), sended, size, count);
     }
     free(buf);
     return EOF;
+}
+
+/*
+ * Send a message containing preapred stmt name to the specified connection
+ */
+int
+pool_sendprepstmt(PoolPort *port, HTAB *prepared_stmts, int count,
+                    int current_version, bool is_init, char **buf_return,
+                    char *errbuf, int32 buf_len)
+{
+    int         i      = 0;
+    int32       err    = 0;    
+    char        *buf   = NULL;
+    uint        n32    = 0;
+    int         size   = 0;
+    int         sended = 0;
+    int            r       = 0;
+    char         *ptr   = NULL;
+    int current_size = 0;
+
+    if(prepared_stmts == NULL)
+    {
+        
+        count = 0;
+        buf = (char*)malloc(2+4*sizeof(uint32));
+        buf[0] = 'u';
+        buf[1] = is_init ? 't': 'f';
+
+        n32 = htonl((uint32) current_version);
+        memcpy(buf + 2, &n32, sizeof(uint32));
+        
+        n32 = htonl((uint32) 0);
+        memcpy(buf + 2 + sizeof(uint32), &n32, sizeof(uint32));
+        memcpy(buf + 2 + 2*sizeof(uint32), &n32, sizeof(uint32));
+        memcpy(buf + 2 + 3*sizeof(uint32), &n32, sizeof(uint32));
+        current_size = 2+4*sizeof(uint32);
+    }
+    else
+    {
+        HASH_SEQ_STATUS status;
+        AgentPreparedStmt *agent_prep_entry = NULL;
+        List *prep_list = NIL;
+        List *count_list = NIL;
+        int dn_num = count;
+        int total_count = 0;
+        ListCell *lc = NULL;
+        ListCell *lcc = NULL;
+
+        hash_seq_init(&status, prepared_stmts);
+        while ((agent_prep_entry = hash_seq_search(&status)) != NULL)
+        {
+            int j = 0;
+            int k = 0;
+            bool is_all_false = true;
+            bool is_all_true = true;
+            int self_version = -1;
+
+            for(j =0; j < dn_num; j++)
+            {
+                if(self_version == -1)
+                {
+                    self_version = agent_prep_entry->self_version[j];
+                }
+                else if(self_version != agent_prep_entry->self_version[j])
+                {
+                    is_all_false = false;
+                    is_all_true = false;
+                }
+                    
+                if(agent_prep_entry->exist_flag[j])
+                    is_all_false = false;
+                else
+                    is_all_true = false;
+                if(agent_prep_entry->ignore_send[j])
+                {
+                    agent_prep_entry->ignore_send[j] = false;
+                    continue;
+                }
+                if(agent_prep_entry->send_flag[j])
+                    k++;
+            }
+            if(k == 0)
+                continue;
+            prep_list = lappend(prep_list, agent_prep_entry);
+            if(is_all_true || is_all_false)
+            {
+                for(j =0; j < dn_num; j++)
+                {
+                    agent_prep_entry->send_flag[j] = false;
+                }
+            }
+            else
+            {
+                total_count = total_count + k;
+            }
+            if(is_all_false)
+                count_list = lappend_int(count_list,-dn_num);
+            else if(is_all_true)
+                count_list = lappend_int(count_list, dn_num + 1);
+            else
+                count_list = lappend_int(count_list, k);
+        }
+
+        count =prep_list ? prep_list->length : 0;
+
+        buf = (char*)malloc(2+4*sizeof(uint32) + count*(sizeof(uint32) + sizeof(uint32) + sizeof(char)) + 2*total_count*sizeof(uint32));
+        if (NULL == buf)
+        {
+            err = errno;
+            snprintf(errbuf + strlen(errbuf) + 1, buf_len - strlen(errbuf) - 1, 
+                    POOL_MGR_PREFIX"pool_sendprepstmt malloc %d memory failed.", 
+                    SEND_PID_BUFFER_SIZE);
+            return EOF;
+        }
+
+        buf[0] = 'u';
+        buf[1] = is_init ? 't': 'f'; 
+        n32 = htonl((uint32) current_version);
+        memcpy(buf + 2, &n32, sizeof(uint32));
+        n32 = htonl((uint32) count);
+        memcpy(buf + 2 + sizeof(uint32), &n32, sizeof(uint32));
+        n32 = htonl((uint32) (count*(sizeof(uint32) + sizeof(uint32) + sizeof(char)) + 2*total_count*sizeof(uint32)));
+        memcpy(buf + 2 + 2*sizeof(uint32), &n32, sizeof(uint32));
+        n32 = htonl((uint32) dn_num);
+        memcpy(buf + 2 + 3*sizeof(uint32), &n32, sizeof(uint32));
+        
+        
+        current_size = 2+4*sizeof(uint32);
+        for(i = 0; i < count; i++)
+        {
+            int n;
+            char *p = NULL;
+            int j = 0;
+            int dn_count = 0;
+            char stmt_name[15];
+
+            agent_prep_entry = NULL;
+            if(lc == NULL)
+                lc = prep_list->head;
+            else
+                lc = lc->next;
+            if(lcc == NULL)
+                lcc = count_list->head;
+            else
+                lcc = lcc->next;
+            agent_prep_entry = lfirst(lc);
+            dn_count = lfirst_int(lcc);
+            memcpy(stmt_name, agent_prep_entry->stmt_name, 15);
+            p = strtok(stmt_name, "_");
+
+            while(p != NULL)
+            {
+                if(j > 1) 
+                {
+                    snprintf(errbuf + strlen(errbuf) + 1, buf_len - strlen(errbuf) - 1,
+                            POOL_MGR_PREFIX"pool_sendprepstmt parse prepared stmt: %s fail, only support num_num.",
+                            agent_prep_entry->stmt_name);
+                    free(buf);
+                    return EOF;
+                }
+                if(j == 0)
+                {
+                    n = htonl((uint32)atoi(p));
+                    memcpy(buf + current_size, &n, sizeof(uint32));
+                    current_size = current_size + sizeof(uint32);
+                }
+                if(j == 1)
+                {
+                    int val = atoi(p);
+                    if(val > 255)
+                    {
+                        snprintf(errbuf + strlen(errbuf) + 1, buf_len - strlen(errbuf) - 1,
+                                POOL_MGR_PREFIX"pool_sendprepstmt parse prepared stmt: %s fail, only support 1 byte seq num.",
+                                agent_prep_entry->stmt_name);
+                        free(buf);
+                        return EOF;
+                    }
+                    buf[current_size] = (char)val;
+                    current_size = current_size + sizeof(char);
+                }
+                p = strtok(NULL, "_");
+                j++;
+            }
+
+            n = htonl(dn_count);
+            memcpy(buf +current_size, &n, sizeof(uint32));
+            current_size = current_size + sizeof(uint32);
+            if(dn_count > 0 && dn_count <= dn_num)
+            {
+                for(j = 0; j < dn_num; j++)
+                {
+                    uint32 n32;
+                    if(agent_prep_entry->send_flag[j])  
+                    {
+                        agent_prep_entry->send_flag[j] = false;
+                        if(agent_prep_entry->exist_flag[j])
+                            n32 = htonl(j+1);
+                        else
+                            n32 = htonl(-(j+1));
+                        memcpy(buf + current_size, &n32, sizeof(uint32));
+                        current_size = current_size + sizeof(uint32);
+                        n32 = htonl(agent_prep_entry->self_version[j]);
+                        memcpy(buf + current_size, &n32, sizeof(uint32));
+                        current_size = current_size + sizeof(uint32);
+                    }
+                }
+            }
+        }
+    }
+
+    if(buf_return)
+    {
+        *buf_return = buf;
+        return current_size;
+    }
+    size = current_size;
+
+    /* try to send data. */
+    sended = 0;
+    ptr = buf;
+    for(;;)
+    {
+        r = send(Socket(*port), ptr + sended, size - sended, 0);
+        if (r < 0)
+        {
+            if(errno == EINTR)
+                continue;
+            else 
+                goto failure;
+        }
+        
+        if(r == 0)
+        {
+            if(sended == size)
+            {    
+                if (!errbuf)
+                {
+                    elog(DEBUG1, "send size %d size %d count %d.", sended, size, count);
+                }
+                free(buf);
+                return 0;
+            } 
+            else 
+            {
+                goto failure;
+            }
+        }
+        sended += r;
+        if(sended == size)
+        {
+            if (!errbuf)
+            {
+                elog(DEBUG1, "send size %d size %d count %d.", sended, size, count);
+            }
+            free(buf);
+            return 0;
+        }
+    }
+failure:
+    if (errbuf && buf_len)
+    {
+        err = errno;
+        snprintf(errbuf+strlen(errbuf)+1, buf_len-strlen(errbuf)-1, 
+                POOL_MGR_PREFIX"pool_sendprepstmt send data failed for %s. failure send size %d size %d count %d.", 
+                strerror(err), sended, size, count);
+    }
+    else
+    {
+        err = errno;
+        elog(DEBUG1, POOL_MGR_PREFIX"pool_sendprepstmt send data failed for %s. failure send size %d size %d count %d.",
+                strerror(err), sended, size, count);
+    }
+    free(buf);
+    return EOF;
+}
+
+/*
+ * Read a message from the specified connection carrying  prepared stmt name
+ * of transactions interacting with pooler
+ */
+int
+pool_recvprepstmt(PoolPort *port, HTAB *prepared_stmts,
+                    const char *buf_in, int *current_version)
+{// #lizard forgives
+    int            r   = 0;
+    int            i   = 0;
+    uint        n32 = 0;
+    char        *buf = NULL;
+    int         recved_size = 0;
+    int          size = 2+4*sizeof(uint32);
+    char         *ptr = NULL;
+    uint         total_count = 0;
+    uint         dn_num = 0;
+    uint         total_size = 0;
+    uint         current_size = 0;
+    bool        reset = false;
+    int         recved_version = 0;
+
+    Assert(current_version != NULL);
+
+    if(buf_in == NULL)
+    {
+        buf = (char*)malloc(2+4*sizeof(uint32));
+        if (NULL == buf)
+        {
+            ereport(DEBUG1,
+                    (errcode_for_socket_access(),
+                     errmsg("pool_recvprepstmt failed to alloc %d size memory.", 5)));
+            return 0;
+        }
+
+        ptr = buf;
+        /*
+         * Buffer size is upper bounded by the maximum number of connections,
+         * as in the pooler each connection has one Pooler Agent.
+         */
+        for(;;)
+        {
+            r = recv(Socket(*port), ptr + recved_size, size - recved_size, 0);
+            elog(DEBUG1, "recv %d size %d.", r, size - recved_size);
+            if (r < 0)
+            {
+                /*
+                 * Report broken connection
+                 */
+                ereport(DEBUG1,
+                        (errcode_for_socket_access(),
+                         errmsg("could not receive data from client: %m recved_size %d size %d.", recved_size, size)));
+                goto failure;
+            }
+            else if (r == 0)
+            {
+                if(size == recved_size)
+                    break;
+                else 
+                    goto failure;
+            }
+
+            recved_size += r;
+            if(recved_size == size)
+                break;
+
+        }
+
+        /* Verify response */
+        if (buf[0] != 'u')
+        {
+            elog(DEBUG1, "recv code %c.", buf[0]);
+            ereport(DEBUG1,
+                    (errcode(ERRCODE_PROTOCOL_VIOLATION),
+                     errmsg("unexpected message code %c", buf[0])));
+            goto failure;
+        }
+        if(buf[1] == 't')
+            reset = true;
+
+        //if(*current_version == recved_version && recved_version == 0)
+         //   reset = true;
+        memcpy(&n32, buf + 2, sizeof(uint32));
+        recved_version = ntohl(n32);
+
+        if(*current_version > recved_version)
+        {
+            if(reset == false)
+                elog(ERROR, "pool_recvprepstmt recv version < current_version, pooler agent cache is corrupted");
+            else
+                *current_version = recved_version;
+        }
+
+
+        memcpy(&n32, buf + 2 + sizeof(uint32), sizeof(uint32));
+        total_count = ntohl(n32);
+        if (total_count == 0)
+        {
+            if(reset)
+            {
+                HASH_SEQ_STATUS seq;
+                AgentPreparedStmt *entry;
+
+                hash_seq_init(&seq, prepared_stmts);
+                while ((entry = hash_seq_search(&seq)) != NULL)
+                {
+                    /* Now we can remove the hash table entry */
+                    hash_search(prepared_stmts, entry->stmt_name, HASH_REMOVE, NULL);
+                }
+            }
+            free(buf);
+            return 0;
+        }
+        memcpy(&n32, buf + 2 + 2*sizeof(uint32), sizeof(uint32));
+        total_size = ntohl(n32);
+
+        memcpy(&n32, buf + 2 + 3*sizeof(uint32), sizeof(uint32));
+        dn_num = ntohl(n32);
+
+        size = total_size ;
+        free(buf);
+        buf = (char*)malloc(size);
+        if (NULL == buf)
+        {
+            ereport(DEBUG1,
+                    (errcode_for_socket_access(),
+                     errmsg("pool_recvprepstmt failed to alloc %d size memory.", size)));
+            return 0;
+        }
+
+        ptr = buf;
+        recved_size = 0;
+        for(;;)
+        {
+            r = recv(Socket(*port), ptr + recved_size, size - recved_size, 0);
+            elog(DEBUG1, "recv %d size %d.", r, size - recved_size);
+            if (r < 0)
+            {
+                /*
+                 * Report broken connection
+                 */
+                elog(DEBUG1, "recv size %d size %d n32 %d.", recved_size, size, n32);
+                ereport(DEBUG1,
+                        (errcode_for_socket_access(),
+                         errmsg("could not receive data from client: %m")));
+                goto failure;
+            }
+            else if (r == 0)
+            {
+                if(recved_size == size)
+                    break;
+                else
+                    goto failure;
+            }
+
+            recved_size += r;
+            if(recved_size == size)
+                break;
+
+        }
+    }
+    else
+    {
+        if (buf_in[0] != 'u')
+        {
+            elog(DEBUG1, "recv code %c.", buf_in[0]);
+            ereport(DEBUG1,
+                    (errcode(ERRCODE_PROTOCOL_VIOLATION),
+                     errmsg("unexpected message code %c", buf_in[0])));
+            goto failure;
+        }
+
+        memcpy(&n32, buf_in + 2, sizeof(uint32));
+        recved_version = ntohl(n32);
+
+        if(recved_version != *current_version + 1)
+        {
+            elog(ERROR, "pooler agent lost info");
+        }
+
+        *current_version = recved_version;
+
+        memcpy(&n32, buf_in + 2 + sizeof(uint32), sizeof(uint32));
+        total_count = ntohl(n32);
+        if (total_count == 0)
+        {
+            return 0;
+        }
+        memcpy(&n32, buf_in + 2 + 2*sizeof(uint32), sizeof(uint32));
+        total_size = ntohl(n32);
+
+        memcpy(&n32, buf_in + 2 + 3*sizeof(uint32), sizeof(uint32));
+        dn_num = ntohl(n32);
+
+        size = total_size ;
+    }
+
+    if(buf == NULL && buf_in)
+    {
+        buf = (char*)malloc(size);
+        memcpy(buf, buf_in  + 2 +4*sizeof(uint32), size);
+    }
+
+    if(reset)
+    {
+        HASH_SEQ_STATUS seq;
+        AgentPreparedStmt *entry;
+
+        hash_seq_init(&seq, prepared_stmts);
+        while ((entry = hash_seq_search(&seq)) != NULL)
+        {
+            /* Now we can remove the hash table entry */
+            hash_search(prepared_stmts, entry->stmt_name, HASH_REMOVE, NULL);
+        }
+    }
+
+    for (i = 0; i < total_count; i++)
+    {
+        int n;
+        int j = 0;
+        uint32 hash_val;
+        char seq;
+        char stmt_name[15];
+        bool found = false;
+        int dn_count = 0;
+        bool is_all_false = false;
+        bool is_all_true = false;
+        AgentPreparedStmt *agent_prep_entry = NULL;
+
+        memcpy(&n, buf  + current_size, sizeof(uint32));
+        hash_val = ntohl(n);
+        current_size = current_size + sizeof(uint32);
+        memcpy(&seq, buf  + current_size, sizeof(char));
+        current_size = current_size + sizeof(char);
+        snprintf(stmt_name, 15, "%u_%u", hash_val, (int)seq);
+        memcpy(&n, buf  + current_size, sizeof(uint32));
+        dn_count = (int)ntohl(n);
+        current_size = current_size + sizeof(uint32);
+
+        agent_prep_entry = (AgentPreparedStmt *) hash_search(prepared_stmts,
+                                                                stmt_name,
+                                                                HASH_ENTER, &found);
+        if(!found)
+        {
+            memset(agent_prep_entry->self_version,
+                    0, sizeof(agent_prep_entry->self_version));
+            memset(agent_prep_entry->exist_flag,
+                    0, sizeof(agent_prep_entry->exist_flag));
+            memset(agent_prep_entry->send_flag,
+                    0, sizeof(agent_prep_entry->send_flag));
+            memset(agent_prep_entry->is_update,
+                    0, sizeof(agent_prep_entry->is_update));
+            memset(agent_prep_entry->ignore_send,
+                    0, sizeof(agent_prep_entry->ignore_send));
+        }
+        if(dn_count < 0)
+        {
+            is_all_false = true;
+            dn_count = dn_num;
+        }
+        else if(dn_count == dn_num + 1)
+        {
+            is_all_true = true;
+            dn_count = dn_num;
+        }
+        for(j = 0; j < dn_count; j++)
+        {
+            if(is_all_false)
+            {
+                if(agent_prep_entry->exist_flag[j])
+                {
+                    agent_prep_entry->exist_flag[j] = false;
+                    agent_prep_entry->is_update[j] = true;
+                }
+            }
+            else if(is_all_true)
+            {
+                if(agent_prep_entry->exist_flag[j] == false)
+                {
+                    agent_prep_entry->exist_flag[j] = true;
+                    agent_prep_entry->is_update[j] = true;
+                }
+            }
+            else
+            {
+                bool set_flag = false;
+                int self_version;
+                int node_inx = 0;
+
+                memcpy(&n, buf  + current_size, sizeof(uint32));
+                node_inx = (int)ntohl(n); 
+                current_size = current_size + sizeof(uint32);
+                memcpy(&n, buf  + current_size, sizeof(uint32));
+                self_version = (int)ntohl(n); 
+                current_size = current_size + sizeof(uint32);
+                
+                if(node_inx < 0)
+                {
+                    set_flag = false;
+                    node_inx = -node_inx;
+                    node_inx = node_inx -1;
+                }
+                else
+                {
+                    set_flag = true;
+                    node_inx = node_inx -1;
+                }
+
+                if(agent_prep_entry->exist_flag[node_inx] != set_flag)
+                {
+                    agent_prep_entry->exist_flag[node_inx] = set_flag;
+                    agent_prep_entry->is_update[node_inx] = true;
+                }
+                if(agent_prep_entry->self_version[node_inx] != self_version)
+                {
+                    agent_prep_entry->self_version[node_inx] = self_version;
+                    agent_prep_entry->is_update[node_inx] = true;
+                }
+            }
+        }
+    }
+    
+    if (PoolConnectDebugPrint)
+    {
+        elog(LOG, "recv size %d size %d total_count %d.", recved_size, size, total_count);
+    }
+
+    free(buf);
+    return total_count;
+    
+failure:
+    free(buf);
+    ereport(DEBUG1,
+                    (errcode_for_socket_access(),
+                     errmsg("pool_recvprepstmt failure recv size %d size %d count %d.", recved_size, size, total_count)));
+    return 0;
 }
 
 static void

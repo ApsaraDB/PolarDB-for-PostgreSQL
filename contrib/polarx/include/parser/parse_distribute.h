@@ -30,4 +30,5 @@ extern bool isCreateLocalTable(List *defList);
 extern DistributeBy *buildDistributeBy(List *defList, CreateStmt *stmt, List *orgColDefs);
 extern void validDistbyOnTableConstrants(DistributeBy *dist_by, List *colDefs, CreateStmt *stmt);
 extern DistributeBy *buildDistributeByForIntoClause(List *distList, List *colDefs);
+extern DistributionType getDistType(List *defList);
 #endif /* PARSE_DISTIRBUTE_H */

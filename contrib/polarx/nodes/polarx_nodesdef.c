@@ -14,12 +14,17 @@
 #include "plan/polarx_planner.h"
 #include "executor/execRemoteQuery.h"
 #include "parser/parse_distribute.h"
+#include "polarx/polarx_locator.h"
 
 static const char *PolarxNodeTagNamesD[] = {
     "RemoteQuery",
     "RemoteQueryState",
     "DistributeBy",
-    "ExecNodes"
+    "ExecNodes",
+    "SimpleSort",
+    "ParamExternDataInfo",
+    "BoundParamsInfo",
+    "DistributionForParam"
 };
 
 const char **PolarxNodeTagNames = PolarxNodeTagNamesD;
@@ -70,8 +75,34 @@ const ExtensibleNodeMethods nodeDefMethods[] =
         NULL,
         NULL,
         NULL 
-    }
+    },
 
+    {
+        "ParamExternDataInfo",
+        sizeof(ParamExternDataInfo),
+        CopyParamExternDataInfo,
+        NULL,
+        NULL,
+        NULL 
+    },
+
+    {
+        "BoundParamsInfo",
+        sizeof(BoundParamsInfo),
+        CopyBoundParamsInfo,
+        NULL,
+        NULL,
+        NULL 
+    },
+
+    {
+        "DistributionForParam",
+        sizeof(DistributionForParam),
+        CopyDistributionForParam,
+        NULL,
+        NULL,
+        NULL 
+    }
 };
 
 void
