@@ -1,37 +1,44 @@
-# 支持使用原生Postgresql语法建立分片表
-Polardb for PostgreSQL分布式实现了插件化建表语句，通过原生语法可以建立分布式表。
-## 分布式表建表语法介绍
-通过原生SQL中CREATE TABLE 语法对WITH语句支持，将分布式表的分布信息加入到WITH语句中，通过dist_type记录表的分布类型，目前支持replication，hash, modulo, roundrobin 四种分布类型，通过dist_col记录分布列信息，目前只支持使用单列作为分布列，其他的语法同原生SQL CREATE TALBE 语法，可参考社区版Postgresql https://www.postgresql.org/docs/11/sql-createtable.html
-下面以建立简单表举例：
+# Create sharded tables by using native PostgreSQL syntax
+PolarDB for PostgreSQL supports using the CREATE TABLE statement to create distributed tables
 
-显示创建复制表语法：
+## Syntax for creating distributed tables
+
+The syntax of the CREATE TABLE statement is the same as that of the CREATE TABLE statement in PostgreSQL. However, the CREATE TABLE statement in PolarDB for PostgreSQL also supports the usage of the WITH clause. In short, the distribution information of distributed tables can be added to the WITH clause. dist_type specifies the distribution types of tables. The following distribution types are supported: replication, hash, modulo, and round-robin. dist_col column specifies the information of distribution keys. Currently, only a single column can be used to record distribution keys. For more information, visit https://www.postgresql.org/docs/11/sql-createtable.html. The following section provides the syntax for creating simple tables:
+
+Explicitly create a replicated table:
+
+
 ```
 create table polarx_test(id int, name text) with (dist_type = replication);
 ```
-显式创建hash分布式表语法：
+Explicitly create a hash-distributed table:
 ```
 create table polarx_test(id int, name text) with (dist_type = hash, dist_col = id);
 ```
-显示创建modulo分布式表语法：
+Explicitly create a modulo distributed table:
 ```
 create table polarx_test(id int, name text) with (dist_type = modulo, dist_col = id);
 ```
-显示创建roundrobin分布式表语法：
+Explicitly create a round-robin distributed table:
 ```
 create table polarx_test(id int, name text) with (dist_type = roundrobin);
 ```
-隐式创建分布式表语法, 默认从第一个列尝试建立hash 分布表，如果所有列都不可以建立，则最后建立roundrobin 分布表：
+Implicitly create a distributed table. By default, a hash-distributed table is created based on the first column. If none of the columns can be used to create a hash-distributed table, a round-robin distributed table is created.
 ```
 create table polarx_test(id int, name text);
 ```
-# execute polarx_direct 语法
-通过Coordinator节点 使用 execute polarx_direct 语法可以直接在对应节点上执行SQL语句。 
-## 语法介绍：
+# The execute polarx_direct statement
+You can execute the execute polarx_direct statement on the coordinator. 
+## Syntax:：
 ```
 execute polarx_direct($node_name, $sql);
 ```
-node_name为设置的节点名称，sql 为要在这个节点上执行的语句。
-这里以polarx_test表举例，假设有两个DN，分别为datanode1， datanode2。想查询datanode1节点上polarx_test表的内容语句如下：
+node_name specifies the name of the node on which to execute the SQL statement. sql specifies the statement you want to execute.  In this example, the polarx_test table has two datanodes: datanode1 and datanode2. The following statement is used to query the content of the polarx_test table on datanode1:
+
 ```
 execute polarx_direct('datanode1', 'select * from bmsql_warehouse;');
 ```
+
+___
+
+Copyright © Alibaba Group, Inc.

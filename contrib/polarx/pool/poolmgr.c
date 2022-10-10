@@ -70,6 +70,7 @@
 #include "storage/ipc.h"
 #include "storage/shmem.h"
 #include "postmaster/bgworker.h"
+#include "polarx/polarx_connection.h"
 
 #include "pool/poolnodes.h"
 #include "../interfaces/libpq/libpq-fe.h"
@@ -140,6 +141,8 @@ typedef struct
     char   *file;      /* file where destroy the slot */
     int32  lineno;       /* lineno where destroy the slot */
     char   *node_name; /* connection node name , pointer to datanode_pool node_name, no memory allocated*/
+    HTAB    *prepared_stmt; /* prepared stmt names in this connection */
+    int     count; /* prepared stmt count in this connection */
     int32  backend_pid;/* backend pid of remote connection */
 } PGXCNodePoolSlot;
 
@@ -224,6 +227,7 @@ typedef struct
     int                num_coord_connections;
     Oid                  *dn_conn_oids;        /* one for each Datanode */
     Oid                  *coord_conn_oids;    /* one for each Coordinator */
+    int32           *slot_seqnums; /* current Agent slot seqnums */
     PGXCNodePoolSlot **dn_connections; /* one for each Datanode */
     PGXCNodePoolSlot **coord_connections; /* one for each Coordinator */
     
@@ -238,9 +242,14 @@ typedef struct
     bool            breconnecting; /* whether we are reconnecting */
     int             agentindex;
 
+    bool            is_init;
+    int             current_version;
+
     
     bool            destory_pending; /* whether we have been ordered to destory */
+    bool            ignore_send; /* true means not send prepared stmts */
     int32            ref_count;         /* reference count */
+    HTAB            *prepared_stmts; /* all prepared stmts in this agent */
     PGXCASyncTaskCtl *task_control;  /* in error situation, we need to free the task control */
 } PoolAgent;
 
@@ -250,6 +259,13 @@ typedef struct
     /* communication channel */
     PoolPort    port;
 } PoolHandle;
+
+typedef struct
+{
+    /* dynahash.c requires key to be first field */
+    char stmt_name[15];
+    int  self_version;
+} ConnPreparedStmt;
 
 #define     POOLER_ERROR_MSG_LEN  256
 
@@ -310,6 +326,8 @@ bool         PoolConnectDebugPrint  = false; /* Pooler connect debug print */
 bool         PoolerStuckExit         = true;  /* Pooler exit when stucked */
 volatile int PoolerReloadHoldoffCount = 0;
 
+int         current_version = 0;
+
 #define      POOL_ASYN_WARM_PIPE_LEN      32   /* length of asyn warm pipe */
 #define      POOL_ASYN_WARN_NUM           1      /* how many connections to warm once maintaince per node pool */
 #define      POOL_SYN_CONNECTION_NUM      512   /* original was 128. To avoid can't get pooled connection */     
@@ -337,8 +355,11 @@ static volatile sig_atomic_t shutdown_requested = false;
 static volatile sig_atomic_t got_SIGHUP = false;
 
 /* used to track connection slot info */
-static int32    g_Slot_Seqnum                = 0;  
+static int32    g_Slot_Seqnum                = 1;  
 static int32    g_Connection_Acquire_Count = 0; 
+
+/* used to track backend prepared stmts */
+static HTAB *be_prep_hash = NULL;
 
 
 typedef struct PoolerStatistics
@@ -499,7 +520,9 @@ typedef struct PGXCMapNode
 
 static void  create_node_map(void);
 static void  refresh_node_map(void);
+#ifndef POLARDBX_SHARDING
 static int32 get_node_index_by_nodeoid(Oid node);
+#endif
 static int32 get_node_info_by_nodeoid(Oid node, char *type);
 static char* get_node_name_by_nodeoid(Oid node);
 static bool  connection_need_pool(char *filter, const char *name);
@@ -583,7 +606,8 @@ typedef struct
 
 static inline void RebuildAgentIndex(void);
 
-static inline PGXCASyncTaskCtl* create_task_control(List *datanodelist,    List *coordlist, int32 *fd_result, int32 *pid_result);
+static inline PGXCASyncTaskCtl* create_task_control(List *datanodelist,    List *coordlist,
+                                                    int32 *fd_result, int32 *pid_result);
 static inline bool dispatch_connection_request(PGXCASyncTaskCtl  *taskControl,
                                                 bool               bCoord,
                                                 PoolAgent         *agent,
@@ -673,7 +697,8 @@ static void insert_database_pool(DatabasePool *pool);
 static void reload_database_pools(PoolAgent *agent);
 static DatabasePool *find_database_pool(const char *database, const char *user_name, const char *pgoptions);
 
-static int agent_acquire_connections(PoolAgent *agent, List *datanodelist, List *coordlist, int32 *num, int **fd_result, int **pid_result);
+static int agent_acquire_connections(PoolAgent *agent, List *datanodelist, List *coordlist, int32 *num,
+                                        int **fd_result, int **pid_result);
 static int send_local_commands(PoolAgent *agent, List *datanodelist, List *coordlist);
 static int cancel_query_on_connections(PoolAgent *agent, List *datanodelist, List *coordlist, int signal);
 static PGXCNodePoolSlot *acquire_connection(DatabasePool *dbPool, PGXCNodePool **pool,int32 nodeidx, Oid node, bool bCoord);
@@ -779,6 +804,10 @@ static void pooler_agent_inval_callback(Datum arg, int cacheid, uint32 hashvalue
 static void reload_database_pools_internal(void);
 static int node_info_check_internal(void);
 static int catchup_node_info(void);
+static HTAB *InitAgentPreparedStmtsHashTable(void);
+static HTAB *InitConnPreparedStmtHashTable(void);
+static void set_agent_prep_stmts_hash(PoolAgent *agent);
+static void set_conn_prep_stmt_hash(PoolAgent *agent);
 
 
 #define IncreaseSlotRefCount(slot,filename,linenumber)\
@@ -1375,6 +1404,7 @@ agent_create(int new_fd)
     agent->is_temp = false;
     agent->pid = 0;
     agent->agentindex = agentindex;
+    agent->prepared_stmts = InitAgentPreparedStmtsHashTable();
 
     /* Append new agent to the list */    
     poolAgents[agentindex] = agent;
@@ -1856,6 +1886,7 @@ agent_init(PoolAgent *agent, const char *database, const char *user_name,
             palloc0(agent->num_dn_connections * sizeof(PGXCNodePoolSlot *));
     /* find database */
     agent->pool = find_database_pool(database, user_name, pgoptions);
+    agent->slot_seqnums = (int32 *)palloc0(agent->num_dn_connections * sizeof(int32));
 
     /* create if not found */
     if (agent->pool == NULL)
@@ -1869,6 +1900,9 @@ agent_init(PoolAgent *agent, const char *database, const char *user_name,
     agent->destory_pending = false;
     agent->task_control    = NULL;
     agent->breconnecting   = false;
+    agent->ignore_send   = false;
+    agent->is_init   = true;
+    agent->current_version = 0;
     return;
 }
 
@@ -2105,6 +2139,7 @@ PoolManagerGetConnections(List *datanodelist, List *coordlist, int **pids)
     }
     
     pool_flush(&poolHandle->port);
+    pool_recvprepstmt(&poolHandle->port, be_prep_hash, NULL, &current_version);
     pool_recvfds_ret = pool_recvfds(&poolHandle->port, fds, totlen);
     if (pool_recvfds_ret)
     {
@@ -2484,9 +2519,22 @@ agent_handle_input(PoolAgent * agent, StringInfo s)
             case 'r':            /* RELEASE CONNECTIONS */
                 {
                     bool destroy;
+                    const char *buf_in = NULL;
 
-                    pool_getmessage(&agent->port, s, 8);
+                    pool_getmessage(&agent->port, s, 0);
                     destroy = (bool) pq_getmsgint(s, 4);
+                    buf_in = pq_getmsgbytes(s, s->len - 4);
+                    if(s->len - 4 > 13)
+                    {
+                        /*
+                         * 13 means 1 byte message type, 4byte prep stmts count
+                         * 4 byte total prep stmts size
+                         * 4 byte dn total count 
+                         * so if size > 13 means message contain prep stmts info
+                         */
+                        pool_recvprepstmt(NULL, agent->prepared_stmts, buf_in, &(agent->current_version));
+                        set_conn_prep_stmt_hash(agent);
+                    }
                     pq_getmsgend(s);
                     if (PoolConnectDebugPrint)
                     {
@@ -3173,7 +3221,8 @@ FATAL_ERROR:
  * return 0 : when fd_result and pid_result is not NULL, acquire connection is done(acquire from freeslot in pool).
  */
 static int 
-agent_acquire_connections(PoolAgent *agent, List *datanodelist, List *coordlist, int32 *num, int **fd_result, int **pid_result)
+agent_acquire_connections(PoolAgent *agent, List *datanodelist, List *coordlist,
+                            int32 *num, int **fd_result, int **pid_result)
 {// #lizard forgives
     int32              i    = 0;
     int32             acquire_seq = 0;
@@ -3214,6 +3263,7 @@ agent_acquire_connections(PoolAgent *agent, List *datanodelist, List *coordlist,
         int32  orig_dn_number = agent->num_dn_connections;
         PGXCNodePoolSlot **orig_cn_connections = agent->coord_connections;
         PGXCNodePoolSlot **orig_dn_connections = agent->dn_connections;
+        int32 *orig_slot_seqnums = agent->slot_seqnums;
         
         elog(LOG, POOL_MGR_PREFIX"[agent_acquire_connections]Pooler found node number extension pid:%d, acquire_seq:%d, refresh node info now", agent->pid, acquire_seq);
         pfree((void*)(agent->dn_conn_oids));        
@@ -3231,6 +3281,9 @@ agent_acquire_connections(PoolAgent *agent, List *datanodelist, List *coordlist,
                 palloc0(agent->num_coord_connections * sizeof(PGXCNodePoolSlot *));
         agent->dn_connections = (PGXCNodePoolSlot **)
                 palloc0(agent->num_dn_connections * sizeof(PGXCNodePoolSlot *));
+        agent->slot_seqnums = (int32 *)
+                palloc0(agent->num_dn_connections * sizeof(int32));
+
 
         /* fix memleak */
         MemoryContextSwitchTo(oldcontext);
@@ -3238,8 +3291,10 @@ agent_acquire_connections(PoolAgent *agent, List *datanodelist, List *coordlist,
         /* index of newly added nodes must be biggger, so memory copy can hanle node extension */
         memcpy(agent->coord_connections, orig_cn_connections, sizeof(sizeof(PGXCNodePoolSlot *)) * orig_cn_number);
         memcpy(agent->dn_connections, orig_dn_connections, sizeof(sizeof(PGXCNodePoolSlot *)) * orig_dn_number);
+        memcpy(agent->slot_seqnums, orig_slot_seqnums, sizeof(sizeof(int32)) * orig_dn_number);
         pfree((void*)orig_cn_connections);
         pfree((void*)orig_dn_connections);
+        pfree((void*)orig_slot_seqnums);
     }
     
     /* Check if pooler can accept those requests */
@@ -3614,6 +3669,7 @@ agent_acquire_connections(PoolAgent *agent, List *datanodelist, List *coordlist,
         check_duplicate_allocated_conn();
 #endif
         i = 0;
+        //set_agent_prep_stmts_hash(agent);
         /* Save in array fds of Datanodes first */
         foreach(nodelist_item, datanodelist)
         {
@@ -4042,6 +4098,8 @@ PoolManagerReleaseConnections(bool force)
     char msgtype = 'r';
     int n32;
     int msglen = 8;
+    int prep_stmt_size = 0;
+    char *buf = NULL;
 
     /* If disconnected from pooler all the connections already released */
     if (!poolHandle)
@@ -4051,17 +4109,23 @@ PoolManagerReleaseConnections(bool force)
 
     elog(DEBUG1, "Returning connections back to the pool");
 
+    current_version = current_version + 1;
+    prep_stmt_size = pool_sendprepstmt(NULL, be_prep_hash,
+                                        NumDataNodes, current_version, false, &buf, NULL, 0);
+        
     /* Message type */
     pool_putbytes(&poolHandle->port, &msgtype, 1);
 
     /* Message length */
-    n32 = htonl(msglen);
+    n32 = htonl(msglen + prep_stmt_size);
     pool_putbytes(&poolHandle->port, (char *) &n32, 4);
 
     /* Lock information */
     n32 = htonl((int) force);
     pool_putbytes(&poolHandle->port, (char *) &n32, 4);
+    pool_putbytes(&poolHandle->port, buf , prep_stmt_size);
     pool_flush(&poolHandle->port);
+    free(buf);
 }
 
 /*
@@ -4184,6 +4248,7 @@ agent_release_connections(PoolAgent *agent, bool force_destroy)
     }
 
     if (((agent->session_params) || agent->is_temp) && !force_destroy)
+//    if (!force_destroy)
     {
         if (PoolConnectDebugPrint)
         {
@@ -5224,6 +5289,7 @@ destroy_slot_ex(int32 nodeidx, Oid node, PGXCNodePoolSlot *slot, char *file, int
          elog(LOG, POOL_MGR_PREFIX"destroy_slot_ex async close connection node:%u nodeidx:%d threadid:%d usecount:%d slot_seq:%d", node, nodeidx, threadid, slot->usecount, slot->seqnum);    
     }
 
+    hash_destroy(slot->prepared_stmt);
     /* set destroy flag */
     slot->bdestoryed = true;
     pfree(slot);
@@ -5284,6 +5350,7 @@ close_slot(int32 nodeidx, Oid node, PGXCNodePoolSlot *slot)
     {
         elog(LOG, POOL_MGR_PREFIX"async close connection node:%u nodeidx:%d threadid:%d usecount:%d slot_seq:%d", node, nodeidx, threadid, slot->usecount, slot->seqnum);    
     }
+    hash_destroy(slot->prepared_stmt);
     /* set destroy flag */
     slot->bdestoryed = true;
 }
@@ -7862,6 +7929,7 @@ void *pooler_sync_remote_operator_thread(void *arg)
                             case PoolConnectStaus_destory:
                             {
                                 int32                ret2    = 0;
+                                int32                ret1    = 0;
                                                 
                                 /* set myself finish count */
                                 finish_task_request(request->taskControl);
@@ -7901,6 +7969,8 @@ void *pooler_sync_remote_operator_thread(void *arg)
                                 
                                     /* handle response */
                                     node_number = 0;
+
+                                    set_agent_prep_stmts_hash(request->agent);
                                     
                                     /* Save in array fds of Datanodes first */
                                     foreach(nodelist_item, request->taskControl->m_datanodelist)
@@ -7978,6 +8048,17 @@ void *pooler_sync_remote_operator_thread(void *arg)
                                         }
                                     }
 #endif                                                                    
+                                    if(request->agent->ignore_send)
+                                        ret1 = pool_sendprepstmt(&request->agent->port, NULL, 0,
+                                                                    request->agent->current_version,
+                                                                    request->agent->is_init, NULL, request->errmsg, POOLER_ERROR_MSG_LEN);
+                                    else
+                                        ret1 = pool_sendprepstmt(&request->agent->port, request->agent->prepared_stmts,
+                                                                request->agent->num_dn_connections,
+                                                                request->agent->current_version,
+                                                                request->agent->is_init,
+                                                                NULL, request->errmsg, POOLER_ERROR_MSG_LEN);
+                                    request->agent->is_init = false;
                                     ret = pool_sendfds(&request->agent->port, request->taskControl->m_result, node_number, request->errmsg, POOLER_ERROR_MSG_LEN);
                                     /*
                                      * Also send the PIDs of the remote backend processes serving
@@ -7985,7 +8066,7 @@ void *pooler_sync_remote_operator_thread(void *arg)
                                      */
                                     ret2 = pool_sendpids(&request->agent->port, request->taskControl->m_pidresult, node_number, request->errmsg, POOLER_ERROR_MSG_LEN);
                                     
-                                    if (ret || ret2)
+                                    if (ret || ret1 || ret2)
                                     {
                                         /* error */
                                         request->needfree       = true;
@@ -8001,6 +8082,11 @@ void *pooler_sync_remote_operator_thread(void *arg)
                                 }
                                 else
                                 {
+                                    pool_sendprepstmt(&request->agent->port, NULL, 0,
+                                                     request->agent->current_version,
+                                                     request->agent->is_init,
+                                                     NULL, request->errmsg, POOLER_ERROR_MSG_LEN);
+                                    request->agent->is_init = false;
                                     /* failed to acquire connection */
                                     pool_sendfds(&request->agent->port, NULL, 0, request->errmsg, POOLER_ERROR_MSG_LEN);
                                     /*
@@ -8290,7 +8376,8 @@ void *pooler_async_utility_thread(void *arg)
     return NULL;
 }
 
-static inline PGXCASyncTaskCtl* create_task_control(List *datanodelist,    List *coordlist, int32 *fd_result, int32 *pid_result)
+static inline PGXCASyncTaskCtl* create_task_control(List *datanodelist, List *coordlist,
+                                                    int32 *fd_result, int32 *pid_result)
 {
     PGXCASyncTaskCtl *asyncTaskCtl;
     MemoryContext     oldcontext;
@@ -8855,7 +8942,9 @@ static inline CommandId get_task_max_commandID(PGXCASyncTaskCtl  *taskControl)
 
 static void create_node_map(void)
 {
+#ifndef POLARDBX_SHARDING
     MemoryContext    oldcontext;
+#endif
     PGXCMapNode     *node      = NULL;
     NodeDefinition  *node_def = NULL;
     HASHCTL            hinfo;
@@ -8867,8 +8956,9 @@ static void create_node_map(void)
     int                numDn;
     int             nodeindex;
     bool            found;
-    
+#ifndef POLARDBX_SHARDING
     oldcontext = MemoryContextSwitchTo(PoolerMemoryContext);
+#endif
     /* Init node hashtable */
     MemSet(&hinfo, 0, sizeof(hinfo));
     hflags = 0;
@@ -8925,9 +9015,10 @@ static void create_node_map(void)
             node_def = PgxcNodeGetDefinition(dnOids[nodeindex]);
             snprintf(node->node_name, NAMEDATALEN, "%s", NameStr(node_def->nodename));
         }
-    }    
-
+    }
+#ifndef POLARDBX_SHARDING
     MemoryContextSwitchTo(oldcontext);
+#endif
     /* Release palloc'ed memory */
     pfree(coOids);
     pfree(dnOids);
@@ -8984,8 +9075,11 @@ static void refresh_node_map(void)
     pfree(coOids);
     pfree(dnOids);
 }
-
+#ifdef POLARDBX_SHARDING
+int32 get_node_index_by_nodeoid(Oid node)
+#else
 static int32 get_node_index_by_nodeoid(Oid node)
+#endif
 {
     PGXCMapNode     *entry = NULL;    
     bool            found  = false;
@@ -10386,6 +10480,18 @@ handle_get_connections(PoolAgent * agent, StringInfo s)
             {
                 elog(LOG, POOL_MGR_PREFIX"return %d database connections pid:%d", connect_num, agent->pid);
             }
+            set_agent_prep_stmts_hash(agent);
+            if(agent->ignore_send)
+                pool_sendprepstmt(&agent->port, NULL, 0,
+                                    agent->current_version,
+                                    agent->is_init,
+                                    NULL, NULL, 0);
+            else
+                pool_sendprepstmt(&agent->port, agent->prepared_stmts, agent->num_dn_connections,
+                                    agent->current_version,
+                                    agent->is_init,
+                                    NULL, NULL, 0);
+            agent->is_init = false;
             pool_sendfds(&agent->port, fds, fds ? connect_num : 0, NULL, 0);
             if (fds)
             {
@@ -10432,6 +10538,11 @@ handle_get_connections(PoolAgent * agent, StringInfo s)
                 pfree(pids);
                 pids = NULL;
             }
+            pool_sendprepstmt(&agent->port, NULL, 0,
+                                agent->current_version,
+                                agent->is_init,
+                                NULL, NULL, 0);
+            agent->is_init = false;
             pool_sendfds(&agent->port, NULL, 0, NULL, 0);
             /*
              * Also send the PIDs of the remote backend processes serving
@@ -11336,3 +11447,365 @@ PoolManagerCatchupNodeInfo(void)
 
     return false;
 }
+
+static HTAB *
+InitAgentPreparedStmtsHashTable(void)
+{
+    HASHCTL hash_ctl;
+
+    MemSet(&hash_ctl, 0, sizeof(hash_ctl));
+
+    hash_ctl.keysize = 15;
+    hash_ctl.entrysize = sizeof(AgentPreparedStmt);
+    hash_ctl.hcxt = CurrentMemoryContext;
+
+    return  hash_create("Agent Preapred Stmts",
+            300,
+            &hash_ctl,
+            HASH_ELEM | HASH_CONTEXT);
+}
+static HTAB *
+InitConnPreparedStmtHashTable(void)
+{
+    HASHCTL hash_ctl;
+
+    MemSet(&hash_ctl, 0, sizeof(hash_ctl));
+
+    hash_ctl.keysize = 15;
+    hash_ctl.entrysize = sizeof(ConnPreparedStmt);
+    hash_ctl.hcxt = CurrentMemoryContext;
+
+    return  hash_create("Conn Preapred Stmts",
+            300,
+            &hash_ctl,
+            HASH_ELEM | HASH_CONTEXT);
+}
+static void
+set_conn_prep_stmt_hash(PoolAgent *agent)
+{
+    HTAB *orig_prepared_stmts = NULL;
+    AgentPreparedStmt *agent_prep_entry = NULL;
+    HASH_SEQ_STATUS status;
+    int i = 0;
+    int dn_num = 0;
+
+    Assert(agent != NULL);
+
+    orig_prepared_stmts = agent->prepared_stmts;
+    dn_num = agent->num_dn_connections;
+    hash_seq_init(&status, orig_prepared_stmts);
+    while ((agent_prep_entry = hash_seq_search(&status)) != NULL)
+    {
+        for(i = 0; i< dn_num; i++)
+        {
+            HTAB *prepared_stmt = NULL;
+            PGXCNodePoolSlot *slot = agent->dn_connections[i];
+            bool found = false;
+
+            if(slot == NULL)
+            {
+                agent_prep_entry->is_update[i] = false;
+                continue;
+            }
+
+            if(slot->prepared_stmt == NULL)
+            {
+                MemoryContext     oldcontext;
+                oldcontext = MemoryContextSwitchTo(PoolerMemoryContext);
+                slot->prepared_stmt = InitConnPreparedStmtHashTable();
+                MemoryContextSwitchTo(oldcontext);
+            }
+            prepared_stmt = slot->prepared_stmt;
+
+            if(agent_prep_entry->is_update[i])
+            {
+                if(agent_prep_entry->exist_flag[i])
+                {
+                    ConnPreparedStmt *entry = NULL;
+                    entry = hash_search(prepared_stmt,
+                                    agent_prep_entry->stmt_name,
+                                    HASH_ENTER, &found);
+                    entry->self_version = agent_prep_entry->self_version[i];
+                }
+                else
+                {
+                    hash_search(prepared_stmt,
+                                    agent_prep_entry->stmt_name,
+                                    HASH_REMOVE, &found);
+                }
+                agent_prep_entry->is_update[i] = false;
+            }
+        }
+    }
+}
+static void
+set_agent_prep_stmts_hash(PoolAgent *agent)
+{
+    HTAB *orig_prepared_stmts = NULL;
+    ConnPreparedStmt *conn_prep_entry = NULL;
+    AgentPreparedStmt *agent_prep_entry = NULL;
+    HASH_SEQ_STATUS status;
+    int i = 0;
+    int dn_num = 0;
+
+    Assert(agent != NULL);
+
+    orig_prepared_stmts = agent->prepared_stmts;
+    dn_num = agent->num_dn_connections;
+    agent->ignore_send = true;
+
+    for(i = 0; i< dn_num; i++)
+    {
+        HTAB *prepared_stmt = NULL;
+        PGXCNodePoolSlot *slot = agent->dn_connections[i];
+        bool found = false;
+
+        if(slot != NULL) 
+            prepared_stmt = slot->prepared_stmt;
+        /* if slot is new and orignal slot is NULL means no need send */
+        if(prepared_stmt == NULL)
+        {
+            hash_seq_init(&status, orig_prepared_stmts); 
+            while ((agent_prep_entry = hash_seq_search(&status)) != NULL)
+            {
+                if(agent_prep_entry->exist_flag[i])
+                {
+                    agent_prep_entry->exist_flag[i] = false;
+                    agent_prep_entry->send_flag[i] = true;
+                    agent_prep_entry->ignore_send[i] = false;
+                    agent->ignore_send = false;
+                }
+                else
+                {
+                    agent_prep_entry->ignore_send[i] = true;
+                    agent_prep_entry->send_flag[i] = false;
+                }
+            }
+        }
+        else
+        {
+            conn_prep_entry = NULL;
+            agent_prep_entry = NULL;
+            hash_seq_init(&status, prepared_stmt);
+
+            while ((conn_prep_entry = hash_seq_search(&status)) != NULL)
+            {
+                agent_prep_entry = (AgentPreparedStmt *) hash_search(orig_prepared_stmts,
+                        conn_prep_entry->stmt_name,
+                        HASH_ENTER, &found);
+
+                if(!found)
+                {
+                    memset(agent_prep_entry->self_version,
+                            0, sizeof(agent_prep_entry->self_version));
+                    memset(agent_prep_entry->exist_flag,
+                            0, sizeof(agent_prep_entry->exist_flag));
+                    memset(agent_prep_entry->send_flag,
+                            0, sizeof(agent_prep_entry->send_flag));
+                    memset(agent_prep_entry->is_update,
+                            0, sizeof(agent_prep_entry->is_update));
+                    memset(agent_prep_entry->ignore_send,
+                            0, sizeof(agent_prep_entry->ignore_send));
+                }
+                if(!agent_prep_entry->exist_flag[i])
+                {
+                    agent_prep_entry->exist_flag[i] = true;
+                    agent_prep_entry->send_flag[i] = true;
+                    agent_prep_entry->ignore_send[i] = false;
+                    agent_prep_entry->self_version[i] = conn_prep_entry->self_version;
+                    agent->ignore_send = false;
+                }
+                else if(agent_prep_entry->self_version[i] != conn_prep_entry->self_version)
+                {
+                    agent_prep_entry->self_version[i] = conn_prep_entry->self_version;
+                    agent_prep_entry->send_flag[i] = true;
+                    agent_prep_entry->ignore_send[i] = false;
+                    agent->ignore_send = false;
+                }
+                else
+                {
+                    agent_prep_entry->ignore_send[i] = true;
+                    agent_prep_entry->send_flag[i] = false;
+                }
+            }
+        }
+    }
+    /*
+     * set prepared stmt not in slot but exsit in agent
+     */
+    hash_seq_init(&status, orig_prepared_stmts);
+    while ((agent_prep_entry = hash_seq_search(&status)) != NULL)
+    {
+        for(i = 0; i< dn_num; i++)
+        {
+            if(agent_prep_entry->exist_flag[i] 
+                    && agent_prep_entry->ignore_send[i] == false
+                    && agent_prep_entry->send_flag[i] == false)
+            {
+                agent_prep_entry->exist_flag[i] = false;
+                agent_prep_entry->send_flag[i] = true;
+                agent->ignore_send = false;
+            }
+        }
+    }
+    if(agent->ignore_send)
+    {
+        hash_seq_init(&status, orig_prepared_stmts);
+        while ((agent_prep_entry = hash_seq_search(&status)) != NULL)
+        {
+            for(i = 0; i< dn_num; i++)
+            {
+                if(agent_prep_entry->ignore_send[i])
+                {
+                    agent_prep_entry->ignore_send[i] = false;
+                }
+            }
+        }
+    }
+}
+
+void
+InitBEPreparedStmtsHashTable(void)
+{
+    if(be_prep_hash == NULL)
+    {
+        HASHCTL hash_ctl;
+
+        MemSet(&hash_ctl, 0, sizeof(hash_ctl));
+
+        hash_ctl.keysize = 15;
+        hash_ctl.entrysize = sizeof(AgentPreparedStmt);
+        hash_ctl.hcxt = CurrentMemoryContext;
+
+        be_prep_hash = hash_create("BE Preapred Stmts",
+                300,
+                &hash_ctl,
+                HASH_ELEM | HASH_CONTEXT);
+        current_version = 0;
+        RegisterFdwTxnCallback();
+    }
+}
+
+bool
+IsStmtPrepared(const char *p_name, int node_inx,
+                int self_version,
+                bool *is_expired)
+{
+    bool found = false;
+    AgentPreparedStmt *entry;
+
+    Assert(node_inx >= 0);
+
+    if(p_name == NULL || be_prep_hash == NULL)
+        return false;
+
+    entry = (AgentPreparedStmt *)hash_search(be_prep_hash,
+            p_name,
+            HASH_FIND,
+            &found);
+    if(found && entry->exist_flag[node_inx])
+    {
+        if(is_expired && entry->self_version[node_inx] < self_version)
+            *is_expired = true;
+        return true;
+    }
+
+    return false;
+}
+
+bool
+SetPrepStmtIntoBEHash(const char *p_name, int node_inx, bool flag)
+{
+    bool found = false;
+    AgentPreparedStmt *entry;
+    int self_version;
+    char *prep_name;
+
+    Assert(node_inx >= 0);
+
+    if(p_name == NULL || be_prep_hash == NULL)
+        return false;
+
+    self_version = GetPrepStmtNameAndSelfVersion(p_name, &prep_name);
+    entry = (AgentPreparedStmt *)hash_search(be_prep_hash,
+            prep_name,
+            HASH_ENTER,
+            &found);
+    if(!found)
+    {
+        memset(entry->self_version,
+                0, sizeof(entry->self_version));
+        memset(entry->ignore_send,
+                0, sizeof(entry->ignore_send));
+        memset(entry->exist_flag,
+                0, sizeof(entry->exist_flag));
+        memset(entry->send_flag,
+                0, sizeof(entry->send_flag));
+        memset(entry->is_update,
+                0, sizeof(entry->is_update));
+    }
+    if(entry->exist_flag[node_inx] != flag)
+    {
+        entry->exist_flag[node_inx] = flag;
+        entry->send_flag[node_inx] = true;
+    }
+    if(flag && entry->self_version[node_inx] < self_version)
+    {
+        entry->self_version[node_inx] = self_version;
+        entry->send_flag[node_inx] = true;
+    }
+    return true;
+}
+
+int
+GetPrepStmtNameAndSelfVersion(const char *p_name, char **prep_name)
+{
+    int version;
+    int self_version;
+    char *p = NULL;
+    int j = 0;
+    uint32 hash_key;
+    char stmt_name[21];
+    char prep_stmt_name[15];
+
+    memcpy(stmt_name, p_name, 21);
+    p = strtok(stmt_name, "_");
+
+    while(p != NULL)
+    {
+        if(j > 2) 
+        {
+            elog(ERROR, "parse prepared stmt: %s fail, only support num_num_num", p_name);
+        }
+        if(j == 0)
+        {
+            hash_key = (uint32)atoi(p);
+        }
+        if(j == 1)
+        {
+            version = atoi(p);
+            if(version > 255)
+            {
+                elog(ERROR, "parse prepared stmt: %s fail, only support 1byte version num", p_name);
+            }
+        }
+        if(j == 2)
+        {
+            self_version = atoi(p);
+            if(self_version > 65535)
+            {
+                elog(ERROR, "parse prepared stmt: %s fail, only support 2byte self_version num", p_name);
+            }
+        }
+        p = strtok(NULL, "_");
+        j++;
+    }
+    if(prep_name)
+    {
+        snprintf(prep_stmt_name, 15, "%u_%u", hash_key, (int)version);
+        *prep_name = pstrdup(prep_stmt_name);
+    }
+    return self_version; 
+}
+
+

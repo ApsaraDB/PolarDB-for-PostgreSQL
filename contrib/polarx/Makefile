@@ -1,14 +1,14 @@
 # contrib/polarx/Makefile
 
 MODULE_big = polarx
-SUBDIRS = . mdcache nodemgr locator pool connection squeue commands plan executor deparse utils nodes parser fdw_engines/polarx distribute_transaction
+SUBDIRS = . mdcache nodemgr locator pool connection squeue commands plancache plan executor deparse utils nodes parser fdw_engines/polarx distribute_transaction metadata
 polarx_srcdir = .
 OBJS += \
     $(patsubst $(polarx_srcdir)/%.c,%.o,$(foreach dir,$(SUBDIRS), $(sort $(wildcard $(polarx_srcdir)/$(dir)/*.c))))
 OBJS += $(WIN32RES)
 PGFILEDESC = "polarx - Distribute cluster plugin for PostgreSQL"
 
-PG_CPPFLAGS = -I$(libpq_srcdir) -I ./include
+PG_CPPFLAGS = -DPOLARDBX_SHARDING -I$(libpq_srcdir) -I ./include
 SHLIB_LINK_INTERNAL = $(libpq)
 
 EXTENSION = polarx

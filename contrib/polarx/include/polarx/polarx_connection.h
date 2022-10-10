@@ -22,8 +22,8 @@ extern PGconn *GetConnection(UserMapping *user, bool will_prep_stmt);
 extern PGconn **GetConnections(UserMapping *user, bool will_prep_stmt, List *node_list, int *conn_num);
 extern void ReleaseConnection(PGconn *conn);
 extern void ReleaseConnectionCluster(PGconn **conns);
-extern unsigned int GetCursorNumber(PGconn **conns);
-extern unsigned int GetPrepStmtNumber(PGconn *conn);
+extern unsigned int GetCursorNumber(void);
+extern unsigned int GetPrepStmtNumber(void);
 extern PGresult *pgfdw_get_result(PGconn *conn, const char *query);
 extern PGresult *pgfdw_exec_query(PGconn *conn, const char *query);
 extern void pgfdw_report_error(int elevel, PGresult *res, PGconn *conn,

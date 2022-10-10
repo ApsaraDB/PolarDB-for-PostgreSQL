@@ -62,7 +62,21 @@
 #include "utils/typcache.h"
 #include "commands/explain.h"
 #include "nodes/makefuncs.h"
+#include "metadata/cache.h"
+#include "catalog/pg_class.h"
+#include "utils/syscache.h"
+#include "deparse/deparse_fqs.h"
+#include "utils/fmgroids.h"
+#include "utils/relcache.h"
+#include "catalog/pg_collation.h"
+#include "utils/rel.h"
+#include "catalog/namespace.h"
+#include "parser/parser.h"
 #include "nodes/polarx_node.h"
+#include "pool/poolnodes.h"
+#include "catalog/dependency.h"
+#include "catalog/indexing.h"
+#include "catalog/pg_inherits.h"
 
 static PGXCNodeAllHandles *get_exec_connections(RemoteQueryState *planstate,
                                                 ExecNodes *exec_nodes,
@@ -70,7 +84,8 @@ static PGXCNodeAllHandles *get_exec_connections(RemoteQueryState *planstate,
                                                 bool is_global_session);
 static bool pgxc_start_command_on_connection(PGXCNodeHandle *connection,
                                              RemoteQueryState *remotestate,
-                                             Snapshot snapshot);
+                                             Snapshot snapshot,
+                                             bool is_prepared);
 static ExecNodes *get_success_nodes(int node_count, PGXCNodeHandle **handles,
                                     char node_type, StringInfo failednodes);
 static TupleTableSlot *RemoteQueryNext(RemoteQueryState *node);
@@ -91,6 +106,16 @@ static void PolarxFQSReScan(CustomScanState *pstate);
 static void PolarxFQSEndScan(CustomScanState *pstate);
 static void PolarxFQSExplainScan(CustomScanState *pstate, List *ancestors, struct ExplainState *es);
 static void deform_datarow_into_slot(RemoteDataRow datarow, TupleTableSlot *slot);
+static void SetDataRowForExtParams(ParamListInfo paraminfo, RemoteQueryState *rq_state);
+static int prepare_fqs_sql(const char *p_name, const char *query,
+                            PGXCNodeHandle **connections, int conn_num);
+static char* GenDNCreatePartitionTableCmd(Oid relationId,char* sql_statement, char* schema_name, char* tbl_name, 
+                                          char* dist_col_name, char* hash_func_name, bool with_oids);
+static char *generate_relation_name(Oid relid, List *namespaces);
+static char* GetTableCreateCommand(Oid relationId, char *dist_col_name, char* hash_func_name, bool with_oids);
+static char *flatten_reloptions(Oid relid);
+static void simple_quote_literal(StringInfo buf, const char *val);
+static const char* get_dn_partition_key_postfix_name(char* hashfuncname);
 
 CustomScanMethods FastShipQueryExecutorCustomScanMethods = {
     "Polarx Fast Ship Query",
@@ -294,7 +319,8 @@ get_exec_connections(RemoteQueryState *planstate,
 static bool
 pgxc_start_command_on_connection(PGXCNodeHandle *connection,
                                  RemoteQueryState *remotestate,
-                                 Snapshot snapshot)
+                                 Snapshot snapshot,
+                                 bool is_prepared)
 { // #lizard forgives
     CommandId cid;
     ResponseCombiner *combiner = (ResponseCombiner *)(&(remotestate->combiner));
@@ -327,6 +353,10 @@ pgxc_start_command_on_connection(PGXCNodeHandle *connection,
         /* need to use Extended Query Protocol */
         int fetch = 0;
         bool send_desc = false;
+        char *prep_name = NULL;
+
+        if(step->statement)
+            GetPrepStmtNameAndSelfVersion(step->statement, &prep_name);
 
         if (step->base_tlist != NULL ||
             step->exec_nodes->accesstype == RELATION_ACCESS_READ ||
@@ -348,10 +378,13 @@ pgxc_start_command_on_connection(PGXCNodeHandle *connection,
         }
 
         combiner->extended_query = true;
-
+#ifdef PATCH_ENABLE_DISTRIBUTED_TRANSACTION
+        if (pgxc_node_send_cmd_id(connection, cid) < 0 )
+            return false;
+#endif
         if (pgxc_node_send_query_extended(connection,
-                                          step->sql_statement,
-                                          NULL,
+                                          is_prepared ? NULL : step->sql_statement,
+                                          prep_name,
                                           step->cursor,
                                           remotestate->rqs_num_params,
                                           remotestate->rqs_param_types,
@@ -364,6 +397,10 @@ pgxc_start_command_on_connection(PGXCNodeHandle *connection,
     else
     {
         combiner->extended_query = false;
+#ifdef PATCH_ENABLE_DISTRIBUTED_TRANSACTION
+        if (pgxc_node_send_cmd_id(connection, cid) < 0 )
+            return false;
+#endif
         if (pgxc_node_send_query(connection, step->sql_statement) != 0)
             return false;
     }
@@ -411,6 +448,9 @@ ExecInitRemoteQuery(RemoteQuery *node, EState *estate, int eflags)
         scan_type = ExecTypeFromTL(node->scan.plan.targetlist, false);
 
     ExecAssignScanType(&combiner->ss, scan_type);
+
+    if(estate->es_param_list_info)
+        SetDataRowForExtParams(estate->es_param_list_info, remotestate);
 
     if (node->base_tlist)
         ExecAssignScanProjectionInfo(&combiner->ss);
@@ -510,17 +550,24 @@ RemoteQueryNext(RemoteQueryState *node)
             combiner->current_conn = 0;
         }
 
+        if(pgxc_node_begin(regular_conn_count, connections, 0,
+                        need_tran_block, step->read_only, PGXC_NODE_DATANODE))
+            ereport(ERROR,
+                    (errcode(ERRCODE_INTERNAL_ERROR),
+                     errmsg("Could not begin transaction on data node.")));
+        if(!node->is_prepared && step->statement)
+        {
+            prepare_fqs_sql(step->statement,step->sql_statement,connections, regular_conn_count); 
+            node->is_prepared = true;
+        }
+
         for (i = 0; i < regular_conn_count; i++)
         {
             //connections[i]->read_only = true;
             connections[i]->recv_datarows = 0;
-            if (pgxc_node_begin(1, &connections[i], 0, need_tran_block,
-                                step->read_only, PGXC_NODE_DATANODE))
-                ereport(ERROR,
-                        (errcode(ERRCODE_INTERNAL_ERROR),
-                         errmsg("Could not begin transaction on data node:%s.", connections[i]->nodename)));
+
             /* If explicit transaction is needed gxid is already sent */
-            if (!pgxc_start_command_on_connection(connections[i], node, snapshot))
+            if (!pgxc_start_command_on_connection(connections[i], node, snapshot, node->is_prepared))
             {
                 pfree_pgxc_all_handles(pgxc_connections);
                 ereport(ERROR,
@@ -806,8 +853,18 @@ void ExecRemoteUtility(RemoteQuery *node)
 
             if (conn->state == DN_CONNECTION_STATE_QUERY)
                 BufferConnection(conn);
-            conn->combiner = NULL;  
-            if (pgxc_node_send_query(conn, node->sql_statement) != 0)
+			conn->combiner = NULL;
+			/* To support shard table, replace original create table statement to partition table */
+            char* sql_string = node->sql_statement;
+            if (node->need_dn_create_partition_table_cmd)
+                sql_string = GenDNCreatePartitionTableCmd( node->relationId,
+                                                           node->sql_statement, 
+                                                           node->schema_name,
+                                                           node->tbl_name,
+                                                           node->dist_col_name,
+                                                           node->hash_func_name,
+                                                           node->with_oids);
+            if (pgxc_node_send_query(conn, sql_string) != 0)
             {
                 ereport(ERROR,
                         (errcode(ERRCODE_INTERNAL_ERROR),
@@ -1379,4 +1436,958 @@ deform_datarow_into_slot(RemoteDataRow datarow, TupleTableSlot *slot)
     slot->tts_isempty = false;
     slot->tts_shouldFree = false;
     slot->tts_shouldFreeMin = false;
+}
+/*
+   Encode parameter values to format of DataRow message (the same format is
+ * used in Bind) to prepare for sending down to Datanodes.
+ * The data row is copied to RemoteQueryState.paramval_data.
+ */
+static void
+SetDataRowForExtParams(ParamListInfo paraminfo, RemoteQueryState *rq_state)
+{
+    StringInfoData buf;
+    uint16 n16;
+    int i;
+    int real_num_params = paraminfo->numParams;
+    RemoteQuery *node = (RemoteQuery*) rq_state->remote_query;
+
+    /* If there are no parameters, there is no data to BIND. */
+    if (!paraminfo)
+        return;
+
+    Assert(!rq_state->paramval_data);
+
+    /*
+     * If there are no parameters available, simply leave.
+     * This is possible in the case of a query called through SPI
+     * and using no parameters.
+     */
+    if (real_num_params == 0)
+    {
+        rq_state->paramval_data = NULL;
+        rq_state->paramval_len = 0;
+        return;
+    }
+
+    initStringInfo(&buf);
+
+    /* Number of parameter values */
+    n16 = htons(real_num_params);
+    appendBinaryStringInfo(&buf, (char *) &n16, 2);
+
+    /* Parameter values */
+    for (i = 0; i < real_num_params; i++)
+    {
+        ParamExternData *param = &paraminfo->params[i];
+        uint32 n32;
+
+        /*
+         * Parameters with no types are considered as NULL and treated as integer
+         * The same trick is used for dropped columns for remote DML generation.
+         */
+        if (param->isnull || !OidIsValid(param->ptype))
+        {
+            n32 = htonl(-1);
+            appendBinaryStringInfo(&buf, (char *) &n32, 4);
+        }
+        else
+        {
+            Oid     typOutput;
+            bool    typIsVarlena;
+            Datum   pval;
+            char   *pstring;
+            int     len;
+
+            /* Get info needed to output the value */
+            getTypeOutputInfo(param->ptype, &typOutput, &typIsVarlena);
+
+            /*
+             * If we have a toasted datum, forcibly detoast it here to avoid
+             * memory leakage inside the type's output routine.
+             */
+            if (typIsVarlena)
+                pval = PointerGetDatum(PG_DETOAST_DATUM(param->value));
+            else
+                pval = param->value;
+
+            /* Convert Datum to string */
+            pstring = OidOutputFunctionCall(typOutput, pval);
+
+            /* copy data to the buffer */
+            len = strlen(pstring);
+            n32 = htonl(len);
+            appendBinaryStringInfo(&buf, (char *) &n32, 4);
+            appendBinaryStringInfo(&buf, pstring, len);
+        }
+    }
+
+
+    /*
+     * If parameter types are not already set, infer them from
+     * the paraminfo.
+     */
+    if (node->rq_num_params > 0)
+    {
+        /*
+         * Use the already known param types for BIND. Parameter types
+         * can be already known when the same plan is executed multiple
+         * times.
+         */
+        if (node->rq_num_params != real_num_params)
+            elog(ERROR, "Number of user-supplied parameters do not match "
+                    "the number of remote parameters");
+        rq_state->rqs_num_params = node->rq_num_params;
+        rq_state->rqs_param_types = node->rq_param_types;
+    }
+    else
+    {
+        rq_state->rqs_num_params = real_num_params;
+        rq_state->rqs_param_types = (Oid *) palloc(sizeof(Oid) * real_num_params);
+        for (i = 0; i < real_num_params; i++)
+            rq_state->rqs_param_types[i] = paraminfo->params[i].ptype;
+    }
+
+    /* Assign the newly allocated data row to paramval */
+    rq_state->paramval_data = buf.data;
+    rq_state->paramval_len = buf.len;
+}
+
+static int
+prepare_fqs_sql(const char *p_name, const char *query,
+                 PGXCNodeHandle **connections, int conn_num)
+{
+    int     i = 0;
+    int     j = 0;
+    PGXCNodeHandle      *res_conns[conn_num];
+    ResponseCombiner    combiner;
+    int         complete_num = 0;
+    char *prep_name;
+    int self_version;
+
+    if(conn_num == 0)
+        return 0;
+
+    self_version = GetPrepStmtNameAndSelfVersion(p_name, &prep_name);
+    for (j = 0; j < conn_num; j++)
+    {
+        bool is_expired = false; 
+        bool is_prepared = false; 
+       
+        is_prepared = IsStmtPrepared(prep_name,
+                                        PGXCNodeGetNodeId(connections[j]->nodeoid, NULL),
+                                        self_version,
+                                        &is_expired);
+        if(is_prepared && is_expired == false)
+        {
+            continue;
+        }
+        if (connections[j]->state == DN_CONNECTION_STATE_QUERY)
+            BufferConnection(connections[j]);
+
+        if(is_expired)
+        {
+            pgxc_node_send_close(connections[j], true, prep_name);
+        }
+        if (pgxc_node_send_parse(connections[j], prep_name, query, 0, NULL) != 0)
+        {
+            PGXCNodeSetConnectionState(connections[j],
+                    DN_CONNECTION_STATE_ERROR_FATAL);
+            ereport(WARNING,
+                    (errcode(ERRCODE_INTERNAL_ERROR),
+                     errmsg("Failed to prepare statement: %s, in node: %d", query, connections[j]->nodeoid)));
+        }
+        if (pgxc_node_send_sync(connections[j]) != 0)
+        {
+            PGXCNodeSetConnectionState(connections[j],
+                    DN_CONNECTION_STATE_ERROR_FATAL);
+            ereport(WARNING,
+                    (errcode(ERRCODE_INTERNAL_ERROR),
+                     errmsg("Failed to close Datanode cursor")));
+        }
+        PGXCNodeSetConnectionState(connections[j], DN_CONNECTION_STATE_QUERY);
+        res_conns[i++] = connections[j];
+    }
+    if(i == 0)
+        return 0;
+    conn_num = i;
+    j = i;
+    InitResponseCombiner(&combiner, conn_num, COMBINE_TYPE_NONE);
+    memset(&combiner, 0, sizeof(ScanState));
+    combiner.request_type = REQUEST_TYPE_QUERY;
+    if(p_name)
+    {
+        combiner.prep_name = pstrdup(p_name);
+    }
+
+    while (conn_num > 0)
+    {
+        if (pgxc_node_receive(conn_num, res_conns, NULL))
+            ereport(ERROR,
+                    (errcode(ERRCODE_INTERNAL_ERROR),
+                     errmsg("Failed to send prepared in receive result")));
+        i = 0;
+        while (i < conn_num)
+        {
+            int res = handle_response(res_conns[i], &combiner);
+            if (res == RESPONSE_EOF)
+            {
+                i++;
+            }
+            else if (res == RESPONSE_READY || res_conns[i]->state == DN_CONNECTION_STATE_ERROR_FATAL)
+            {
+                if(res == RESPONSE_READY)
+                {
+                    complete_num++;
+                }
+                if (--conn_num > i)
+                {
+                    res_conns[i] = res_conns[conn_num];
+                }
+            }
+            else
+            {
+            }
+        }
+    }
+
+    if(complete_num != j)
+    {
+        ereport(ERROR,
+                (errcode(ERRCODE_INTERNAL_ERROR),
+                 errmsg("Failed to send prepared due to not complete all")));
+    }
+
+    CloseCombiner(&combiner);
+    return complete_num;
+}
+
+static char *
+generate_relation_name(Oid relid, List *namespaces)
+{
+    HeapTuple	tp;
+    Form_pg_class reltup;
+    bool		need_qual;
+    ListCell   *nslist;
+    char	   *relname;
+    char	   *nspname;
+    char	   *result;
+
+    tp = SearchSysCache1(RELOID, ObjectIdGetDatum(relid));
+    if (!HeapTupleIsValid(tp))
+        elog(ERROR, "cache lookup failed for relation %u", relid);
+    reltup = (Form_pg_class) GETSTRUCT(tp);
+    relname = NameStr(reltup->relname);
+
+    /* Check for conflicting CTE name */
+    need_qual = false;
+    foreach(nslist, namespaces)
+    {
+        deparse_namespace *dpns = (deparse_namespace *) lfirst(nslist);
+        ListCell   *ctlist;
+
+        foreach(ctlist, dpns->ctes)
+        {
+            CommonTableExpr *cte = (CommonTableExpr *) lfirst(ctlist);
+
+            if (strcmp(cte->ctename, relname) == 0)
+            {
+                need_qual = true;
+                break;
+            }
+        }
+        if (need_qual)
+            break;
+    }
+
+    /* Otherwise, qualify the name if not visible in search path */
+    if (!need_qual)
+        need_qual = !RelationIsVisible(relid);
+
+    if (need_qual)
+        nspname = get_namespace_name(reltup->relnamespace);
+    else
+        nspname = NULL;
+
+    result = quote_qualified_identifier(nspname, relname);
+
+    ReleaseSysCache(tp);
+
+    return result;
+}
+
+static bool contain_nextval_expression_walker(Node *node, void *context)
+{
+    if (node == NULL)
+    {
+        return false;
+    }
+
+    if (IsA(node, FuncExpr))
+    {
+        FuncExpr *funcExpr = (FuncExpr *) node;
+
+        if (funcExpr->funcid == F_NEXTVAL_OID)
+        {
+            return true;
+        }
+    }
+    return expression_tree_walker(node, contain_nextval_expression_walker, context);
+}
+
+/*
+ * Generate a C string representing a relation's reloptions, or NULL if none.
+ */
+static char *
+flatten_reloptions(Oid relid)
+{
+    char	   *result = NULL;
+    HeapTuple	tuple;
+    Datum		reloptions;
+    bool		isnull;
+
+    tuple = SearchSysCache1(RELOID, ObjectIdGetDatum(relid));
+    if (!HeapTupleIsValid(tuple))
+        elog(ERROR, "cache lookup failed for relation %u", relid);
+
+    reloptions = SysCacheGetAttr(RELOID, tuple,
+                                 Anum_pg_class_reloptions, &isnull);
+    if (!isnull)
+    {
+        StringInfoData buf;
+        Datum	   *options;
+        int			noptions;
+        int			i;
+
+        initStringInfo(&buf);
+
+        deconstruct_array(DatumGetArrayTypeP(reloptions),
+                          TEXTOID, -1, false, 'i',
+                          &options, NULL, &noptions);
+
+        for (i = 0; i < noptions; i++)
+        {
+            char	   *option = TextDatumGetCString(options[i]);
+            char	   *name;
+            char	   *separator;
+            char	   *value;
+
+            /*
+             * Each array element should have the form name=value.  If the "="
+             * is missing for some reason, treat it like an empty value.
+             */
+            name = option;
+            separator = strchr(option, '=');
+            if (separator)
+            {
+                *separator = '\0';
+                value = separator + 1;
+            }
+            else
+                value = "";
+
+            if (i > 0)
+                appendStringInfoString(&buf, ", ");
+            appendStringInfo(&buf, "%s=", quote_identifier(name));
+
+            /*
+             * In general we need to quote the value; but to avoid unnecessary
+             * clutter, do not quote if it is an identifier that would not
+             * need quoting.  (We could also allow numbers, but that is a bit
+             * trickier than it looks --- for example, are leading zeroes
+             * significant?  We don't want to assume very much here about what
+             * custom reloptions might mean.)
+             */
+            if (quote_identifier(value) == value)
+                appendStringInfoString(&buf, value);
+            else
+                simple_quote_literal(&buf, value);
+
+            pfree(option);
+        }
+
+        result = buf.data;
+    }
+
+    ReleaseSysCache(tuple);
+
+    return result;
+}
+
+/*
+ * simple_quote_literal - Format a string as a SQL literal, append to buf
+ */
+static void
+simple_quote_literal(StringInfo buf, const char *val)
+{
+    const char *valptr;
+
+    /*
+     * We form the string literal according to the prevailing setting of
+     * standard_conforming_strings; we never use E''. User is responsible for
+     * making sure result is used correctly.
+     */
+    appendStringInfoChar(buf, '\'');
+    for (valptr = val; *valptr; valptr++)
+    {
+        char		ch = *valptr;
+
+        if (SQL_STR_DOUBLE(ch, !standard_conforming_strings))
+            appendStringInfoChar(buf, ch);
+        appendStringInfoChar(buf, ch);
+    }
+    appendStringInfoChar(buf, '\'');
+}
+
+
+static char* GetTableCreateCommand(Oid relationId, char *dist_col_name, char* hash_func_name, bool with_oids)
+{
+    int attIndex = 0;
+    bool firstAttributePrinted = false;
+    AttrNumber defaultValueIndex = 0;
+    AttrNumber constraintIndex = 0;
+    AttrNumber constraintCount = 0;
+    StringInfoData buffer = { NULL, 0, 0, 0 };
+    const char* postfix_name = NULL;
+    
+    Relation relation = relation_open(relationId, NoLock);
+    char *relationName = generate_relation_name(relationId, NIL);
+
+    initStringInfo(&buffer);
+    
+    appendStringInfoString(&buffer, "CREATE ");
+
+    if (relation->rd_rel->relpersistence == RELPERSISTENCE_UNLOGGED)
+    {
+        appendStringInfoString(&buffer, "UNLOGGED ");
+    }
+
+    appendStringInfo(&buffer, "TABLE %s (", relationName);
+    
+    TupleDesc tupleDescriptor = RelationGetDescr(relation);
+    TupleConstr *tupleConstraints = tupleDescriptor->constr;
+
+    for (attIndex = 0; attIndex < tupleDescriptor->natts; attIndex++)
+    {
+        Form_pg_attribute attributeForm = TupleDescAttr(tupleDescriptor, attIndex);
+        
+        if (!attributeForm->attisdropped)
+        {
+            if (firstAttributePrinted)
+            {
+                appendStringInfoString(&buffer, ", ");
+            }
+            firstAttributePrinted = true;
+
+            const char *attributeName = NameStr(attributeForm->attname);
+            appendStringInfo(&buffer, "%s ", quote_identifier(attributeName));
+
+            const char *attributeTypeName = format_type_with_typemod(
+                    attributeForm->atttypid,
+                    attributeForm->
+                            atttypmod);
+            appendStringInfoString(&buffer, attributeTypeName);
+
+            /* if this column has a default value, append the default value */
+            if (attributeForm->atthasdef)
+            {
+                List *defaultContext = NULL;
+                char *defaultString = NULL;
+
+                Assert(tupleConstraints != NULL);
+
+                AttrDefault *defaultValueList = tupleConstraints->defval;
+                Assert(defaultValueList != NULL);
+
+                AttrDefault *defaultValue = &(defaultValueList[defaultValueIndex]);
+                defaultValueIndex++;
+
+                Assert(defaultValue->adnum == (attIndex + 1));
+                Assert(defaultValueIndex <= tupleConstraints->num_defval);
+
+                /* convert expression to node tree, and prepare deparse context */
+                Node *defaultNode = (Node *) stringToNode(defaultValue->adbin);
+
+                /*
+                 * if column default value is explicitly requested, or it is
+                 * not set from a sequence then we include DEFAULT clause for
+                 * this column.
+                 */
+                if (!contain_nextval_expression_walker(defaultNode, NULL))
+                {
+                    defaultContext = deparse_context_for(relationName, relationId);
+
+                    /* deparse default value string */
+                    defaultString = deparse_expression(defaultNode, defaultContext,
+                                                       false, false);
+                    
+                    appendStringInfo(&buffer, " DEFAULT %s", defaultString);
+                }
+            }
+
+            /* if this column has a not null constraint, append the constraint */
+            if (attributeForm->attnotnull)
+            {
+                appendStringInfoString(&buffer, " NOT NULL");
+            }
+
+            if (attributeForm->attcollation != InvalidOid &&
+                attributeForm->attcollation != DEFAULT_COLLATION_OID)
+            {
+                appendStringInfo(&buffer, " COLLATE %s", generate_collation_name(
+                        attributeForm->attcollation));
+            }
+        }
+    }
+
+    /*
+     * Now check if the table has any constraints. If it does, set the number of
+     * check constraints here. Then iterate over all check constraints and print
+     * them.
+     */
+    if (tupleConstraints != NULL)
+    {
+        constraintCount = tupleConstraints->num_check;
+    }
+
+    for (constraintIndex = 0; constraintIndex < constraintCount; constraintIndex++)
+    {
+        ConstrCheck *checkConstraintList = tupleConstraints->check;
+        ConstrCheck *checkConstraint = &(checkConstraintList[constraintIndex]);
+
+
+        /* if an attribute or constraint has been printed, format properly */
+        if (firstAttributePrinted || constraintIndex > 0)
+        {
+            appendStringInfoString(&buffer, ", ");
+        }
+
+        appendStringInfo(&buffer, "CONSTRAINT %s CHECK ",
+                         quote_identifier(checkConstraint->ccname));
+
+        /* convert expression to node tree, and prepare deparse context */
+        Node *checkNode = (Node *) stringToNode(checkConstraint->ccbin);
+        List *checkContext = deparse_context_for(relationName, relationId);
+
+        /* deparse check constraint string */
+        char *checkString = deparse_expression(checkNode, checkContext, false, false);
+
+        appendStringInfoString(&buffer, checkString);
+    }
+
+    /* close create table's outer parentheses */
+    appendStringInfoString(&buffer, ")");
+    
+    appendStringInfo(&buffer, " PARTITION BY RANGE(%s(%s", hash_func_name, dist_col_name);
+    postfix_name = get_dn_partition_key_postfix_name(hash_func_name);
+    if (postfix_name)
+        appendStringInfo(&buffer, "::%s", postfix_name);
+    appendStringInfo(&buffer, ")) ");
+    /*
+     * Add any reloptions (storage parameters) defined on the table in a WITH
+     * clause.
+     */
+    {
+        char *reloptions = flatten_reloptions(relationId);
+        if (reloptions)
+        {
+            appendStringInfo(&buffer, " WITH (%s", reloptions);
+            pfree(reloptions);
+			if (with_oids)
+				appendStringInfo(&buffer, " ,OIDS)");
+			else
+				appendStringInfo(&buffer, ")");
+        }
+        else
+		{
+        	if (with_oids)
+				appendStringInfo(&buffer, " WITH OIDS");
+		}
+    }
+
+    relation_close(relation, NoLock);
+    appendStringInfoString(&buffer, ";");
+    return (buffer.data);
+}
+
+static char* pg_get_indexclusterdef_string(Oid indexRelationId)
+{
+	StringInfoData buffer = { NULL, 0, 0, 0 };
+
+	HeapTuple indexTuple = SearchSysCache(INDEXRELID, ObjectIdGetDatum(indexRelationId),
+										  0, 0, 0);
+	if (!HeapTupleIsValid(indexTuple))
+	{
+		ereport(ERROR, (errmsg("cache lookup failed for index %u", indexRelationId)));
+	}
+
+	Form_pg_index indexForm = (Form_pg_index) GETSTRUCT(indexTuple);
+	Oid tableRelationId = indexForm->indrelid;
+
+	/* check if the table is clustered on this index */
+	if (indexForm->indisclustered)
+	{
+		char *tableName = generate_relation_name(tableRelationId, NIL);
+		char *indexName = get_rel_name(indexRelationId); /* needs to be quoted */
+
+		initStringInfo(&buffer);
+		appendStringInfo(&buffer, "ALTER TABLE %s CLUSTER ON %s",
+						 tableName, quote_identifier(indexName));
+	}
+
+	ReleaseSysCache(indexTuple);
+
+	return (buffer.data);
+}
+
+static char *GetTableIndexAndConstraintCommands(Oid relationId)
+{
+	StringInfoData buffer = { NULL, 0, 0, 0 };
+	ScanKeyData scanKey[1];
+	int scanKeyCount = 1;
+
+	initStringInfo(&buffer);
+	
+	/*
+	 * Set search_path to NIL so that all objects outside of pg_catalog will be
+	 * schema-prefixed. pg_catalog will be added automatically when we call
+	 * PushOverrideSearchPath(), since we set addCatalog to true;
+	 */
+	OverrideSearchPath *overridePath = GetOverrideSearchPath(CurrentMemoryContext);
+	overridePath->schemas = NIL;
+	overridePath->addCatalog = true;
+	PushOverrideSearchPath(overridePath);
+
+	/* open system catalog and scan all indexes that belong to this table */
+	Relation pgIndex = heap_open(IndexRelationId, AccessShareLock);
+
+	ScanKeyInit(&scanKey[0], Anum_pg_index_indrelid,
+				BTEqualStrategyNumber, F_OIDEQ, relationId);
+
+	SysScanDesc scanDescriptor = systable_beginscan(pgIndex,
+													IndexIndrelidIndexId, true, /* indexOK */
+													NULL, scanKeyCount, scanKey);
+
+	HeapTuple heapTuple = systable_getnext(scanDescriptor);
+	while (HeapTupleIsValid(heapTuple))
+	{
+		Form_pg_index indexForm = (Form_pg_index) GETSTRUCT(heapTuple);
+		Oid indexId = indexForm->indexrelid;
+		bool isConstraint = false;
+		char *statementDef = NULL;
+
+		/*
+		 * A primary key index is always created by a constraint statement.
+		 * A unique key index or exclusion index is created by a constraint
+		 * if and only if the index has a corresponding constraint entry in pg_depend.
+		 * Any other index form is never associated with a constraint.
+		 */
+		if (indexForm->indisprimary)
+		{
+			isConstraint = true;
+		}
+		else if (indexForm->indisunique || indexForm->indisexclusion)
+		{
+			Oid constraintId = get_index_constraint(indexId);
+			isConstraint = OidIsValid(constraintId);
+		}
+		else
+		{
+			isConstraint = false;
+		}
+
+		/* get the corresponding constraint or index statement */
+		if (isConstraint)
+		{
+			Oid constraintId = get_index_constraint(indexId);
+			Assert(constraintId != InvalidOid);
+
+			statementDef = pg_get_constraintdef_command(constraintId);
+		}
+		else
+		{
+			statementDef = pg_get_indexdef_string(indexId);
+		}
+
+		/* append found constraint or index definition to the list */
+		appendStringInfo(&buffer, "%s;", statementDef);
+
+		/* if table is clustered on this index, append definition to the list */
+		if (indexForm->indisclustered)
+		{
+			char *clusteredDef = pg_get_indexclusterdef_string(indexId);
+			Assert(clusteredDef != NULL);
+			
+			appendStringInfo(&buffer, "%s;", clusteredDef);
+		}
+
+		heapTuple = systable_getnext(scanDescriptor);
+	}
+
+	/* clean up scan and close system catalog */
+	systable_endscan(scanDescriptor);
+	heap_close(pgIndex, AccessShareLock);
+
+	/* revert back to original search_path */
+	PopOverrideSearchPath();
+
+	return buffer.data;
+}
+
+
+static char* GenDNCreatePartitionTableCmd(Oid relationId, char* sql_statement, char* schema_name, char* tbl_name, 
+										  char* dist_col_name, char* hash_func_name, bool with_oids)
+{
+#define MAX_STR_LEN 512
+    char str[MAX_STR_LEN] = {0};
+    int i = 0;
+
+    InitializeMetadataCache();
+    ShardMapCacheData *cache = GetShardMapCache();
+    
+    MemoryContext oldcontext;
+    StringInfoData cmd;
+    oldcontext = MemoryContextSwitchTo(TopTransactionContext);
+    initStringInfo(&cmd);
+
+    char* table_create_cmd = GetTableCreateCommand(relationId, dist_col_name, hash_func_name, with_oids);
+    appendStringInfoString(&cmd, table_create_cmd);
+    char* index_cmd = GetTableIndexAndConstraintCommands(relationId);
+	appendStringInfoString(&cmd, index_cmd);
+	
+    /* sql like: create table test_1 partition of test for values from (range1) to (range2);*/
+    Assert(ShardCount != 0);
+    for (i = 0; i < ShardCount; i++)
+    {
+        memset(str, 0, MAX_STR_LEN);
+        if (i == ShardCount -1)
+		{
+			snprintf(str, MAX_STR_LEN, "create table %s.%s_%d partition of %s.%s DEFAULT;",
+					 schema_name, tbl_name, i+1, schema_name, tbl_name);
+		}
+        else
+		{
+			snprintf(str, MAX_STR_LEN, "create table %s.%s_%d partition of %s.%s for values from (%d) to (%d);",
+					 schema_name, tbl_name, i+1, schema_name, tbl_name, cache->items[i].shardMinValue, cache->items[i].shardMaxValue);
+		}
+        
+        appendStringInfoString(&cmd, str);
+    }
+    
+    MemoryContextSwitchTo(oldcontext);
+    elog(DEBUG1, "GenDNCreatePartitionTableCmd: %s", cmd.data);
+    return cmd.data;
+}
+
+/*
+ * polardbx_execute_on_nodes
+ * Execute 'query' on all the nodes in 'nodelist', and returns int64 datum
+ * which has the sum of all the results. If multiples nodes are involved, it
+ * assumes that the query returns exactly one row with one attribute of type
+ * int64. If there is a single node, it just returns the datum as-is without
+ * checking the type of the returned value.
+ *
+ * Note: nodelist should either have all coordinators or all datanodes in it.
+ * Mixing both will result an error being thrown
+ */
+Datum
+polardbx_execute_on_nodes(int numnodes, Oid *nodelist, char *query)
+{
+    int             i;
+    int64           total_size = 0;
+    int64           size = 0;
+    Datum            datum = (Datum) 0;
+    bool        isnull = false;
+
+    EState           *estate;
+    MemoryContext    oldcontext;
+    RemoteQuery       *plan;
+    RemoteQueryState   *pstate;
+    TupleTableSlot       *result = NULL;
+    Var               *dummy;
+
+    /*
+     * Make up RemoteQuery plan node
+     */
+    plan = makeNode(RemoteQuery);
+    plan->combine_type = COMBINE_TYPE_NONE;
+    plan->exec_nodes = makeNode(ExecNodes);
+    plan->exec_type = EXEC_ON_NONE;
+
+    for (i = 0; i < numnodes; i++)
+    {
+        char ntype = PGXC_NODE_NONE;
+        plan->exec_nodes->nodeList = lappend_int(plan->exec_nodes->nodeList,
+                                                 PGXCNodeGetNodeId(nodelist[i], &ntype));
+        if (ntype == PGXC_NODE_NONE)
+            ereport(ERROR,
+                    (errcode(ERRCODE_INTERNAL_ERROR),
+                            errmsg("Unknown node Oid: %u", nodelist[i])));
+        else if (ntype == PGXC_NODE_COORDINATOR)
+        {
+            if (plan->exec_type == EXEC_ON_DATANODES)
+                ereport(ERROR,
+                        (errcode(ERRCODE_INTERNAL_ERROR),
+                                errmsg("Cannot mix datanodes and coordinators")));
+            plan->exec_type = EXEC_ON_COORDS;
+        }
+        else
+        {
+            if (plan->exec_type == EXEC_ON_COORDS)
+                ereport(ERROR,
+                        (errcode(ERRCODE_INTERNAL_ERROR),
+                                errmsg("Cannot mix datanodes and coordinators")));
+            plan->exec_type = EXEC_ON_DATANODES;
+        }
+
+    }
+    plan->sql_statement = query;
+    plan->force_autocommit = false;
+    /*
+     * We only need the target entry to determine result data type.
+     * So create dummy even if real expression is a function.
+     */
+    dummy = makeVar(1, 1, INT8OID, 0, InvalidOid, 0);
+    plan->scan.plan.targetlist = lappend(plan->scan.plan.targetlist,
+                                         makeTargetEntry((Expr *) dummy, 1, NULL, false));
+    /* prepare to execute */
+    estate = CreateExecutorState();
+    oldcontext = MemoryContextSwitchTo(estate->es_query_cxt);
+    estate->es_snapshot = GetActiveSnapshot();
+    pstate = ExecInitRemoteQuery(plan, estate, 0);
+    MemoryContextSwitchTo(oldcontext);
+
+    result = ExecRemoteQuery((PlanState *) pstate);
+    while (result != NULL && !TupIsNull(result))
+    {
+        datum = slot_getattr(result, 1, &isnull);
+        result = ExecRemoteQuery((PlanState *) pstate);
+
+        /* For single node, don't assume the type of datum. It can be bool also. */
+        if (numnodes == 1)
+            continue;
+        /* We should not cast a null into an int */
+        if (isnull)
+        {
+            ereport(ERROR,
+                    (errcode(ERRCODE_INTERNAL_ERROR),
+                            errmsg("Expected Int64 but got null instead "
+                                   "while executing query '%s'",
+                                   query)));
+            break;
+        }
+
+        size = DatumGetInt64(datum);
+        total_size += size;
+    }
+    ExecEndRemoteQuery(pstate);
+
+
+    if (numnodes == 1)
+    {
+        /* 
+         * if result is NULL, so no need to check isnull value, just return 0
+         * isnull also needs explict asignment.
+         */
+        if (isnull)
+            ereport(ERROR,
+                    (errcode(ERRCODE_INTERNAL_ERROR),
+                            errmsg("Expected datum but got null instead "
+                                   "while executing query '%s'",
+                                   query)));
+        PG_RETURN_DATUM(datum);
+    }
+    else
+        PG_RETURN_INT64(total_size);
+}
+
+void exec_query_on_nodes(int numnodes, PGXCNodeHandle** conns, char *query)
+{
+    int i = 0;
+    int conn_count = numnodes;
+    ResponseCombiner combiner;
+    InitResponseCombiner(&combiner, 0, COMBINE_TYPE_NONE);
+    for (i = 0; i < numnodes; i++)
+    {
+        PGXCNodeHandle *conn = conns[i];
+        
+        if (conn->state == DN_CONNECTION_STATE_QUERY)
+            BufferConnection(conn);
+
+        if (pgxc_node_send_query(conn, query) != 0)
+        {
+            ereport(ERROR,
+                    (errcode(ERRCODE_INTERNAL_ERROR),
+                            errmsg("Failed to send command to node")));
+        }
+    }
+
+    /*
+     * Stop if all commands are completed or we got a data row and
+     * initialized state node for subsequent invocations
+     */
+    while (conn_count > 0)
+    {
+        i = 0;
+
+        if (pgxc_node_receive(conn_count, conns, NULL))
+            break;
+        
+        while (i < conn_count)
+        {
+            PGXCNodeHandle *conn = conns[i];
+            int res = handle_response(conn, &combiner);
+            if (res == RESPONSE_EOF)
+            {
+                i++;
+            }
+            else if (res == RESPONSE_COMPLETE)
+            {
+                /* Ignore, wait for ReadyForQuery */
+                if (conn->state == DN_CONNECTION_STATE_ERROR_FATAL)
+                {
+                    ereport(ERROR,
+                            (errcode(ERRCODE_INTERNAL_ERROR),
+                                    errmsg("Unexpected FATAL ERROR on Connection to node %s pid %d",
+                                           conn->nodename, conn->backend_pid)));
+                }
+            }
+            else if (res == RESPONSE_ERROR)
+            {
+                /* Ignore, wait for ReadyForQuery */
+            }
+            else if (res == RESPONSE_READY)
+            {
+                if (i < --conn_count)
+                    conns[i] = conns[conn_count];
+            }
+            else if (res == RESPONSE_TUPDESC)
+            {
+                ereport(ERROR,
+                        (errcode(ERRCODE_INTERNAL_ERROR),
+                                errmsg("Unexpected response from Datanode")));
+            }
+            else if (res == RESPONSE_DATAROW)
+            {
+                ereport(ERROR,
+                        (errcode(ERRCODE_INTERNAL_ERROR),
+                                errmsg("Unexpected response from Datanode")));
+            }
+        }
+    }
+    
+    pgxc_node_report_error(&combiner);
+}
+
+static const char* get_dn_partition_key_postfix_name(char* hashfuncname)
+{ // #lizard forgives
+    if (strcmp(hashfuncname, "hashint4") == 0)
+    {
+        return "integer";
+    } 
+    else if (strcmp(hashfuncname, "hashint8") == 0)
+    {
+        return "bigint";
+    }
+
+    return NULL;
 }

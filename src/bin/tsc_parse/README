@@ -1,0 +1,38 @@
+src/bin/tsc_pars
+
+This folder contains the offline tools to process TSC traces.
+
+For generating TSC traces, please refer the comments in src/utils/tsc_tracer.h
+One thing to remember, the default setup has a sampling rate, which only triggers trace at 1/4096 chance. 
+If you see no trace or very few records, the sampling rate is the reason. 
+In tsc_parse.c, there is an example about how to use TSC trace functions, such as
+  initTimeTags(&tags, true);
+  appendTimeTag(&tags, traceId, ...
+For PG kernel to output the trace to its pg_log, we use
+  logTimedTrace();
+
+After ``make install'', we should have an executable tsc_parse
+and two awk scripts: filtertsclog.awk and tracefields.awk
+installed under bin directory of the postgres installation
+directory.
+
+Currently TSC tracing relies on ereport (LOG level) logging
+to output binary tracing information into hex strings.
+By default, these information can be found in postgres'
+error log files. Use the following command to filter out
+the hex strings, and translate them into human readable
+traces:
+
+filtertsclog.awk <log_file_name> | tsc_parse > trace_file.csv
+
+
+tracefields_example.awk is a trace summarization tool. It reads
+the trace_file.csv, and extract high level information,
+such as total execution time of the trace, how many
+times Citus execution happened and how long did they
+take. The result is a wide table with one trace per row,
+suitable for many aggregation operations.
+
+If new instrumentation points are added, it is strongly
+recommended to modify the tracefields.awk tool to add
+logic to extract the information.

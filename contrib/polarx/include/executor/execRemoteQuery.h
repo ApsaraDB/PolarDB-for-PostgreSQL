@@ -47,6 +47,7 @@ typedef struct RemoteQueryState
     ResponseCombiner combiner;            /* see ResponseCombiner struct */
     RemoteQuery *remote_query;
     bool        query_Done;                /* query has been sent down to Datanodes */
+    bool        is_prepared;            /* the stmt has been prepared */
     /*
      * While we are not supporting grouping use this flag to indicate we need
      * to initialize collecting of aggregates from the DNs
@@ -95,4 +96,6 @@ extern void ExecRemoteUtility(RemoteQuery *node);
 extern void ExecCloseRemoteStatement(const char *stmt_name, List *nodelist);
 extern void pgxc_all_success_nodes(ExecNodes **d_nodes, ExecNodes **c_nodes, char **failednodes_msg);
 extern void RegisterPolarxFastShipQueryMethods(void);
+extern Datum polardbx_execute_on_nodes(int numnodes, Oid *nodelist, char *query);
+extern void exec_query_on_nodes(int numnodes, PGXCNodeHandle** conns, char *query);
 #endif

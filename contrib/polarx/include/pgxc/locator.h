@@ -18,7 +18,7 @@
 #define LOCATOR_TYPE_REPLICATED 'R'
 #define LOCATOR_TYPE_HASH 'H'
 #define LOCATOR_TYPE_RANGE 'G'
-#define LOCATOR_TYPE_SINGLE 'S'
+#define LOCATOR_TYPE_SHARD 'S'
 #define LOCATOR_TYPE_RROBIN 'N'
 #define LOCATOR_TYPE_CUSTOM 'C'
 #define LOCATOR_TYPE_MODULO 'M'
@@ -37,6 +37,17 @@
 
 #define IsLocatorNone(x) (x == LOCATOR_TYPE_NONE)
 #define IsLocatorReplicated(x) (x == LOCATOR_TYPE_REPLICATED)
+#ifdef POLARDBX_SHARDING
+#define IsLocatorColumnDistributed(x) (x == LOCATOR_TYPE_HASH || \
+                                       x == LOCATOR_TYPE_SHARD || \
+                                       x == LOCATOR_TYPE_RROBIN || \
+                                       x == LOCATOR_TYPE_MODULO || \
+                                       x == LOCATOR_TYPE_DISTRIBUTED)
+#define IsLocatorDistributedByValue(x) (x == LOCATOR_TYPE_HASH || \
+                                        x == LOCATOR_TYPE_SHARD || \
+                                        x == LOCATOR_TYPE_MODULO || \
+                                        x == LOCATOR_TYPE_RANGE)
+#else
 #define IsLocatorColumnDistributed(x) (x == LOCATOR_TYPE_HASH || \
                                        x == LOCATOR_TYPE_RROBIN || \
                                        x == LOCATOR_TYPE_MODULO || \
@@ -44,7 +55,7 @@
 #define IsLocatorDistributedByValue(x) (x == LOCATOR_TYPE_HASH || \
                                         x == LOCATOR_TYPE_MODULO || \
                                         x == LOCATOR_TYPE_RANGE)
-
+#endif
 #include "nodes/primnodes.h"
 #include "utils/relcache.h"
 
@@ -117,6 +128,33 @@ typedef enum
 typedef Datum (*LocatorHashFunc) (PG_FUNCTION_ARGS);
 
 typedef struct _Locator Locator;
+/*
+ * Locator details are private
+ */
+struct _Locator
+{
+    /*
+     * Determine target nodes for value.
+     * Resulting nodes are stored to the results array.
+     * Function returns number of node references written to the array.
+     */
+    int (*locatefunc)(Locator *self, Datum value, bool isnull,
+                      bool *hasprimary);
+    Oid dataType; /* values of that type are passed to locateNodes function */
+    LocatorListType listType;
+    bool primary;
+
+    /* locator-specific data */
+    /* XXX: move them into union ? */
+    int roundRobinNode;       /* for LOCATOR_TYPE_RROBIN */
+    LocatorHashFunc hashfunc; /* for LOCATOR_TYPE_HASH and LOCATOR_TYPE_SHARD */
+    int valuelen;             /* 1, 2 or 4 for LOCATOR_TYPE_MODULO */
+
+    int nodeCount; /* How many nodes are in the map */
+    void *nodeMap; /* map index to node reference according to listType */
+    void *results; /* array to output results */
+};
+
 
 typedef enum
 {
@@ -146,11 +184,9 @@ typedef enum
  *            Primary node will be returned as the first element of the
  *              result array
  */
-
 extern Locator *createLocator(char locatorType, RelationAccessType accessType,
-              Oid dataType, LocatorListType listType, int nodeCount,
-              void *nodeList, void **result, bool primary);
-
+							  Oid dataType, LocatorListType listType, int nodeCount,
+							  void *nodeList, void **result, bool primary);
 extern void freeLocator(Locator *locator);
 
 extern int GET_NODES(Locator *self, Datum value, bool isnull,
@@ -169,6 +205,9 @@ extern char GetLocatorType(Oid relid);
 extern char ConvertToLocatorType(int disttype);
 
 extern char *GetRelationHashColumn(RelationLocInfo *rel_loc_info);
+#ifdef POLARDBX_SHARDING
+extern char *GetRelationShardColumn(RelationLocInfo *rel_loc_info);
+#endif
 extern RelationLocInfo *GetRelationLocInfo(Oid relid);
 extern RelationLocInfo *CopyRelationLocInfo(RelationLocInfo *src_info);
 extern char GetRelationLocType(Oid relid);

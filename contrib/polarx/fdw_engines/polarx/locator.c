@@ -147,3 +147,59 @@ GetRelationPartAttrNum(ForeignTable *table)
 	}
 	return partAttrNum;
 }
+
+List *
+GetRelationNodesWithDistAndParam(DistributionForParam *dist_for_param,
+                                    ParamListInfo param_list_info,
+                                    List *org_nodes)
+{
+    int *nodenums;
+    int i, count;
+    Locator *locator;
+    Oid typeOfValueForDistCol = InvalidOid;
+    List    *node_list = org_nodes;
+    bool isValueNull = true;
+    Datum valueForDistCol = 0;
+
+    Assert(dist_for_param != NULL);
+    Assert(org_nodes != NULL);
+
+    if(list_length(node_list) == 0)
+        return node_list;
+
+    if(param_list_info && dist_for_param->paramId > 0 &&
+        dist_for_param->paramId <= param_list_info->numParams)
+    {
+        
+        isValueNull = false;
+        valueForDistCol =  param_list_info->params[dist_for_param->paramId -1].value;
+    }
+
+    if (IsLocatorDistributedByValue(dist_for_param->distributionType))
+    {
+        if(dist_for_param->distributionExpr)
+            typeOfValueForDistCol = exprType(dist_for_param->distributionExpr);
+        else if(isValueNull)
+            return node_list;
+    }
+
+    locator = createLocator(dist_for_param->distributionType,
+            dist_for_param->accessType,
+            typeOfValueForDistCol,
+            LOCATOR_LIST_LIST,
+            0,
+            (void *) node_list,
+            (void **) &nodenums,
+            false);
+    count = GET_NODES(locator, valueForDistCol, isValueNull, NULL);
+
+    node_list = NIL;
+
+    if(count)
+    {
+        for(i = 0; i < count; i++)
+            node_list = lappend_int(node_list, nodenums[i]);
+    }
+    freeLocator(locator);
+    return node_list;
+}

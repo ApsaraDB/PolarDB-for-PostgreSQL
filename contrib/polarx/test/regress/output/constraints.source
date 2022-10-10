@@ -323,18 +323,15 @@ DROP TABLE tmp;
 -- Check constraints on UPDATE
 --
 UPDATE INSERT_TBL SET x = NULL WHERE x = 5;
-ERROR:  distribute-column update is not supported
 UPDATE INSERT_TBL SET x = 6 WHERE x = 6;
-ERROR:  distribute-column update is not supported
 UPDATE INSERT_TBL SET x = -z, z = -x;
-ERROR:  distribute-column update is not supported
 UPDATE INSERT_TBL SET x = z, z = x;
-ERROR:  distribute-column update is not supported
+ERROR:  distribute-column does not support cross update
 SELECT * FROM INSERT_TBL order by x,y,z;
  x |       y       | z  
 ---+---------------+----
  4 | Y             | -4
- 5 | !check failed | -5
+ 5 | !check failed |   
  6 | try again     | -6
  7 | try again     | -7
    | try again     |   

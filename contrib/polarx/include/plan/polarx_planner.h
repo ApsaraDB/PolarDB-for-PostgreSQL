@@ -166,8 +166,33 @@ typedef struct
     Bitmapset       *conflict_cols;
 
     Node            *parsetree;  /* to recognise subtxn cmds(savepoint,rollback to,release savepoint) */
-
+#ifdef POLARDBX_SHARDING
+    bool            need_dn_create_partition_table_cmd;
+    bool			with_oids;
+    Oid             relationId;
+    char 			*schema_name;
+    char            *tbl_name;
+    char            *dist_col_name;
+    char            *hash_func_name;
+#endif
 } RemoteQuery;
+
+typedef struct
+{
+    PolarxNode type;
+    bool is_cursor;
+    bool portal_need_name;
+    bool may_be_fqs;/* this foreign scan may be pushed as FQS */
+    ParamListInfo param_list_info;
+    PlannedStmt *fqs_plannedstmt;
+} ParamExternDataInfo;
+
+typedef struct
+{
+    int         numParams;;
+    ParamExternData *params;
+} BoundParamsInfo;
+
 
 extern PlannedStmt *polarx_planner(Query *query, int cursorOptions,
                                          ParamListInfo boundParams);

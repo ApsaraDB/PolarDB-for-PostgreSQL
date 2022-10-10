@@ -130,7 +130,7 @@ EXPLAIN (ANALYZE, COSTS OFF, SUMMARY OFF, TIMING OFF)
 -- XL does not support WHERE CURRENT OF and hence the next
 -- statement fails
 UPDATE tidscan SET id = -id WHERE CURRENT OF c RETURNING *;
-ERROR:  distribute-column update is not supported
+ERROR:  WHERE CURRENT OF is not supported for this table type
 FETCH NEXT FROM c;
 ERROR:  current transaction is aborted, commands ignored until end of transaction block
 -- perform update

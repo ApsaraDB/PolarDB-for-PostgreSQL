@@ -119,6 +119,15 @@ interpretDistirbuteType(char *type, DistributionType *dist_type, bool *need_dist
 
         return true;
     }
+    else if(strcmp(type, "shard") == 0)
+	{
+    	if (need_dist_col)
+    		*need_dist_col = true;
+    	if (dist_type)
+    		*dist_type = DISTTYPE_SHARD;
+    	
+    	return true;
+	}
     else
         return false;
 }
@@ -176,7 +185,7 @@ buildDistbyFromTableOption(List *defList)
                 ereport(ERROR,
                         (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
                          errmsg("dist_type parameter's value %s is not valid, we currnetly support \
-                         hash, modulo, replication, roundrobin", value)));
+                         hash, modulo, replication, roundrobin, shard", value)));
         }
         else if(strcmp(def->defname, "dist_col") == 0)
         {
@@ -204,7 +213,7 @@ buildDistbyFromTableOption(List *defList)
             if(dist_by == NULL)
             {
                 dist_by = polarxMakeNode(DistributeBy);
-                dist_by->disttype = DISTTYPE_HASH;
+                dist_by->disttype = defaultTableDistType;
             }
             value = defGetString(def);
             dist_by->colname = pstrdup(value); 
@@ -281,7 +290,7 @@ buildDistributeBy(List *defList, CreateStmt *stmt, List *orgColDefs)
 
     if(dist_by == NULL || 
         (dist_by->colname == NULL &&
-            dist_by->disttype == DISTTYPE_HASH))
+			(dist_by->disttype == DISTTYPE_SHARD || dist_by->disttype == DISTTYPE_HASH)))
         dist_by = buildDistbyFromCols(stmt);
 
     return dist_by;
@@ -306,7 +315,7 @@ buildDistributeByForIntoClause(List *distList, List *colDefs)
             ColumnDef  *col = (ColumnDef *)lfirst(lc);
             if(IsTypeHashDistributable(col->typeName->typeOid))
             {
-                dist_by->disttype = DISTTYPE_HASH;
+                dist_by->disttype = defaultTableDistType;
                 dist_by->colname = col->colname;
                 break;
             }
@@ -414,6 +423,10 @@ buildDistbyFromLikeStmt(List *colDefs)
                                         dist_by->disttype = DISTTYPE_MODULO;
                                         dist_by->colname = GetRelationDistColumn(RelationGetRelid(relation));
                                         break;
+									case LOCATOR_TYPE_SHARD:
+										dist_by->disttype = DISTTYPE_SHARD;
+										dist_by->colname = GetRelationDistColumn(RelationGetRelid(relation));
+										break;    
                                     default:
                                         pfree(dist_by);
                                         dist_by = NULL;
@@ -512,7 +525,7 @@ buildDistbyFromCols(CreateStmt *stmt)
                 if(dist_by->colname == NULL 
                         || (is_unique && dist_by->colname != NULL))
                 {
-                    dist_by->disttype = DISTTYPE_HASH;
+					dist_by->disttype = defaultTableDistType; // set hash or shard as default.
                     dist_by->colname = pstrdup(((ColumnDef *)element)->colname);
                 }
                 break;
@@ -569,7 +582,11 @@ buildDistbyFromInhTable(CreateStmt *stmt)
                 dist_by->colname =
                     pstrdup(rd_locator_info->partAttrName);
                 break;
-
+			case LOCATOR_TYPE_SHARD:
+				dist_by->disttype = DISTTYPE_SHARD;
+				dist_by->colname =
+						pstrdup(rd_locator_info->partAttrName);
+				break;
             case LOCATOR_TYPE_MODULO:
                 dist_by->disttype = DISTTYPE_MODULO;
                 dist_by->colname =
@@ -643,6 +660,9 @@ validDistbyOnTableConstrants(DistributeBy *dist_by, List *colDefs, CreateStmt *s
                                     case LOCATOR_TYPE_HASH:
                                         if(dist_by->disttype == DISTTYPE_HASH)
                                             break;
+                                	case LOCATOR_TYPE_SHARD:
+										if(dist_by->disttype == DISTTYPE_SHARD)
+											break;
                                     case LOCATOR_TYPE_MODULO:
                                         if(dist_by->disttype == DISTTYPE_MODULO)
                                             break;
@@ -722,6 +742,9 @@ validDistbyOnTableConstrants(DistributeBy *dist_by, List *colDefs, CreateStmt *s
                                 case LOCATOR_TYPE_HASH:
                                     if(dist_by->disttype == DISTTYPE_HASH)
                                         break;
+								case LOCATOR_TYPE_SHARD:
+									if(dist_by->disttype == DISTTYPE_SHARD)
+										break;
                                 case LOCATOR_TYPE_MODULO:
                                     if(dist_by->disttype == DISTTYPE_MODULO)
                                         break;
@@ -798,4 +821,33 @@ validDistbyOnTableConstrants(DistributeBy *dist_by, List *colDefs, CreateStmt *s
                 break;
         }
     }
+}
+
+DistributionType getDistType(List *defList)
+{
+	ListCell   *cell;
+	char *value;
+	DistributionType type;
+
+
+	foreach(cell, defList)
+	{
+		DefElem    *def = (DefElem *) lfirst(cell);
+
+		if (strcmp(def->defname, "dist_type") == 0)
+		{
+			value = defGetString(def);
+
+			if(!interpretDistirbuteType(value, &type, NULL))
+			{
+				ereport(ERROR,
+						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+								errmsg("dist_type parameter's value %s is not valid, we currnetly support \
+                         hash, modulo, replication, roundrobin, shard", value)));
+			}
+			return type;	
+		}
+	}
+
+	return defaultTableDistType;
 }

@@ -27,12 +27,24 @@
 #include "access/heapam.h"
 #include "utils/fmgroids.h"
 #include "utils/rel.h"
+#include "utils/lsyscache.h"
+#include "access/sysattr.h"
+
+#define SQL_PREPARED "sql_prepared"
+#define SQL_PREPARED_HASH_IDX "sql_prepared_hash_idx"
+#define SQL_PREPARED_QUERY_IDX "sql_prepared_query_idx"
+#define SQL_PREPARED_OIDS_IDX "sql_prepared_oids_idx"
 
 typedef struct GlobalDataCacheData
 {
     Oid polarxOwner;
     bool isPoolerStarted;
     bool polarxLoaded;
+    Oid sql_prepared_oid;
+    Oid sql_prepared_idx_oid;
+    Oid sql_query_idx_oid;
+    Oid sql_oids_idx_oid;
+    Oid polarx_schema_oid;
     bool dbnameIsValid;
     char dbname[NAMEDATALEN];
     bool authuserIsValid;
@@ -41,6 +53,8 @@ typedef struct GlobalDataCacheData
 
 static HTAB *DistRelCacheHash = NULL;
 static GlobalDataCacheData GlobalDataCache;
+static Oid get_polarx_schema(void);
+static Oid polarx_get_relname_oid(Oid schema_oid, const char *relname);
 
 static void
 InitDistRelCache(void)
@@ -199,6 +213,115 @@ bool
 GetPoolerWorkerStartStatus(void)
 {
     return GlobalDataCache.isPoolerStarted;
+}
+
+Oid
+GetPolarxSchemaOid(void)
+{
+    if(!GlobalDataCache.polarx_schema_oid) 
+        GlobalDataCache.polarx_schema_oid = get_polarx_schema();
+    return GlobalDataCache.polarx_schema_oid;
+}
+
+Oid
+GetPolarxSqlPreparedOid(void)
+{
+    if(!GlobalDataCache.sql_prepared_oid)
+        GlobalDataCache.sql_prepared_oid =
+            polarx_get_relname_oid(GlobalDataCache.polarx_schema_oid,
+                                    SQL_PREPARED);
+    return GlobalDataCache.sql_prepared_oid;
+}
+
+Oid
+GetPolarxSqlPreparedIdxOid(void)
+{
+    if(!GlobalDataCache.sql_prepared_idx_oid)
+        GlobalDataCache.sql_prepared_idx_oid =
+            polarx_get_relname_oid(GlobalDataCache.polarx_schema_oid,
+                                    SQL_PREPARED_HASH_IDX);
+    return GlobalDataCache.sql_prepared_idx_oid;
+}
+
+Oid
+GetPolarxSqlQueryIdxOid(void)
+{
+    if(!GlobalDataCache.sql_query_idx_oid)
+        GlobalDataCache.sql_query_idx_oid =
+            polarx_get_relname_oid(GlobalDataCache.polarx_schema_oid,
+                                    SQL_PREPARED_QUERY_IDX);
+    return GlobalDataCache.sql_query_idx_oid;
+}
+
+Oid
+GetPolarxSqlOidsIdxOid(void)
+{
+    if(!GlobalDataCache.sql_oids_idx_oid)
+        GlobalDataCache.sql_oids_idx_oid =
+            polarx_get_relname_oid(GlobalDataCache.polarx_schema_oid,
+                                    SQL_PREPARED_OIDS_IDX);
+    return GlobalDataCache.sql_oids_idx_oid;
+}
+
+static Oid
+polarx_get_relname_oid(Oid schema_oid, const char *relname)
+{
+    if (schema_oid == InvalidOid)
+        schema_oid = GetPolarxSchemaOid();
+
+    if (schema_oid == InvalidOid)
+        return InvalidOid;
+
+    return get_relname_relid(relname, schema_oid);
+}
+
+static Oid
+get_polarx_schema(void)
+{
+    Oid             result;
+    Relation        rel;
+    SysScanDesc     desc;
+    HeapTuple       tuple;
+    ScanKeyData     entry[1];
+    Oid             polarx_schema;
+    LOCKMODE lock =  AccessShareLock;
+
+    if (!IsTransactionState())
+        return InvalidOid;
+
+    polarx_schema = get_extension_oid("polarx", true);
+    if (polarx_schema == InvalidOid)
+        return InvalidOid; /* exit if polarx does not exist */
+
+#if PG_VERSION_NUM >= 120000
+    ScanKeyInit(&entry[0],
+            Anum_pg_extension_oid,
+            BTEqualStrategyNumber, F_OIDEQ,
+            ObjectIdGetDatum(polarx_schema));
+#else
+    ScanKeyInit(&entry[0],
+            ObjectIdAttributeNumber,
+            BTEqualStrategyNumber, F_OIDEQ,
+            ObjectIdGetDatum(polarx_schema));
+#endif
+
+    rel = heap_open(ExtensionRelationId, lock);
+    desc = systable_beginscan(rel, ExtensionOidIndexId, true,
+            NULL, 1, entry);
+
+    tuple = systable_getnext(desc);
+
+    /* We assume that there can be at most one matching tuple */
+    if (HeapTupleIsValid(tuple))
+        result = ((Form_pg_extension) GETSTRUCT(tuple))->extnamespace;
+    else
+        result = InvalidOid;
+
+    systable_endscan(desc);
+
+    heap_close(rel, lock);
+
+    return result;
 }
 
 char *

@@ -29,15 +29,34 @@ extern int  PGXCNodeId;
 extern bool isPGXCCoordinator;
 extern bool isPGXCDataNode;
 extern int  remoteConnType;
+extern int defaultTableDistType;
+extern bool tryTransformShardToHash;
 
 typedef enum DistributionType
 {
     DISTTYPE_REPLICATION,            /* Replicated */
     DISTTYPE_HASH,                /* Hash partitioned */
     DISTTYPE_ROUNDROBIN,            /* Round Robin */
-    DISTTYPE_MODULO               /* Modulo partitioned */
+    DISTTYPE_MODULO,               /* Modulo partitioned */
+	DISTTYPE_SHARD,
+	DISTTYPE_LOCAL
 } DistributionType;
 
+typedef uint32 GlobalTransactionId;
+
+enum
+{
+    Anum_sql_hash = 1,
+    Anum_version,
+    Anum_self_vs,
+    Anum_sql_md5,
+    Anum_reloids,
+    Anum_sql
+} sql_prepared_attributes;
+
+
+#ifndef PGXC_MACRO
+#define PGXC_MACRO
 typedef enum
 {
     REMOTE_CONN_APP,
@@ -46,8 +65,6 @@ typedef enum
     REMOTE_CONN_GTM,
     REMOTE_CONN_GTM_PROXY
 } RemoteConnTypes;
-
-typedef uint32 GlobalTransactionId;
 
 #define IS_PGXC_COORDINATOR isPGXCCoordinator
 #define IS_PGXC_DATANODE isPGXCDataNode
@@ -66,4 +83,5 @@ typedef uint32 GlobalTransactionId;
 #define IsConnFromDatanode() (remoteConnType == REMOTE_CONN_DATANODE)
 #define IsConnFromGtm() (remoteConnType == REMOTE_CONN_GTM)
 #define IsConnFromGtmProxy() (remoteConnType == REMOTE_CONN_GTM_PROXY)
+#endif
 #endif   /* POLARX_H */

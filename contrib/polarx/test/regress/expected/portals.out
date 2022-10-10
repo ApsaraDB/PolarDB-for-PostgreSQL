@@ -956,7 +956,7 @@ FETCH c1;
 (1 row)
 
 UPDATE uctest SET f1 = 8 WHERE CURRENT OF c1;
-ERROR:  distribute-column update is not supported
+ERROR:  WHERE CURRENT OF is not supported for this table type
 SELECT * FROM uctest ORDER BY f1;
 ERROR:  current transaction is aborted, commands ignored until end of transaction block
 COMMIT;
@@ -978,7 +978,7 @@ FETCH c1;
 (1 row)
 
 UPDATE uctest SET f1 = f1 + 10 WHERE CURRENT OF c1;
-ERROR:  distribute-column update is not supported
+ERROR:  WHERE CURRENT OF is not supported for this table type
 SELECT * FROM uctest ORDER BY 1;
 ERROR:  current transaction is aborted, commands ignored until end of transaction block
 UPDATE uctest SET f1 = f1 + 10 WHERE CURRENT OF c1;
@@ -1020,7 +1020,7 @@ FETCH c1;
 (1 row)
 
 UPDATE uctest SET f1 = f1 + 10 WHERE CURRENT OF c1;
-ERROR:  distribute-column update is not supported
+ERROR:  WHERE CURRENT OF is not supported for this table type
 SELECT * FROM uctest ORDER BY f1;
 ERROR:  current transaction is aborted, commands ignored until end of transaction block
 UPDATE uctest SET f1 = f1 + 10 WHERE CURRENT OF c1;
@@ -1072,7 +1072,7 @@ FETCH 1 FROM c1;
 (1 row)
 
 UPDATE uctest SET f1 = f1 + 10 WHERE CURRENT OF c1;
-ERROR:  distribute-column update is not supported
+ERROR:  WHERE CURRENT OF is not supported for this table type
 FETCH 1 FROM c1;
 ERROR:  current transaction is aborted, commands ignored until end of transaction block
 UPDATE uctest SET f1 = f1 + 10 WHERE CURRENT OF c1;
@@ -1102,7 +1102,7 @@ FETCH 1 FROM c1;
 (0 rows)
 
 UPDATE uctest SET f1 = f1 + 10 WHERE CURRENT OF c1;  -- fail
-ERROR:  distribute-column update is not supported
+ERROR:  WHERE CURRENT OF is not supported for this table type
 ROLLBACK;
 BEGIN;
 DECLARE c1 CURSOR FOR SELECT * FROM uctest a, uctest b WHERE a.f1 = b.f1 + 5 ORDER BY 1 FOR UPDATE;
@@ -1112,7 +1112,7 @@ FETCH 1 FROM c1;
 (0 rows)
 
 UPDATE uctest SET f1 = f1 + 10 WHERE CURRENT OF c1;  -- fail
-ERROR:  distribute-column update is not supported
+ERROR:  WHERE CURRENT OF is not supported for this table type
 ROLLBACK;
 BEGIN;
 DECLARE c1 CURSOR FOR SELECT * FROM uctest a, uctest b WHERE a.f1 = b.f1 + 5 ORDER BY 1 FOR SHARE OF a;
@@ -1122,7 +1122,7 @@ FETCH 1 FROM c1;
 (0 rows)
 
 UPDATE uctest SET f1 = f1 + 10 WHERE CURRENT OF c1;
-ERROR:  distribute-column update is not supported
+ERROR:  WHERE CURRENT OF is not supported for this table type
 SELECT * FROM uctest ORDER BY f1;
 ERROR:  current transaction is aborted, commands ignored until end of transaction block
 ROLLBACK;

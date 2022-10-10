@@ -21,4 +21,7 @@
 extern void CopyRemoteQuery(POLARX_COPYFUNC_ARGS);
 extern void CopyDistributeBy(POLARX_COPYFUNC_ARGS);
 extern void CopyExecNodes(POLARX_COPYFUNC_ARGS);
+extern void CopyParamExternDataInfo(POLARX_COPYFUNC_ARGS);
+extern void CopyBoundParamsInfo(POLARX_COPYFUNC_ARGS);
+extern void CopyDistributionForParam(POLARX_COPYFUNC_ARGS);
 #endif /* POLARX_COPYFUNCS_H */

@@ -20,6 +20,7 @@
 #include "access/htup_details.h"
 #include "access/sysattr.h"
 #include "access/xact.h"
+#include "access/hash.h"
 #include "catalog/pg_class.h"
 #include "commands/defrem.h"
 #include "commands/explain.h"
@@ -68,6 +69,13 @@
 #include "polarx/polarx_shippable.h"
 #include "polarx/polarx_connection.h"
 #include "polarx/polarx_option.h"
+#include "executor/execPartition.h"
+#include "pool/poolnodes.h"
+#include "pgxc/mdcache.h"
+#include "utils/fmgroids.h"
+#include "catalog/index.h"
+#include "storage/lmgr.h"
+#include "common/md5.h"
 
 /* Default CPU cost to start up a foreign query. */
 #define DEFAULT_FDW_STARTUP_COST	100.0
@@ -78,6 +86,12 @@
 /* If no remote estimates, assume a sort costs 20% extra */
 #define DEFAULT_FDW_SORT_MULTIPLIER 1.2
 
+#if PG_VERSION_NUM >= 100000
+#define index_insert_compat(rel,v,n,t,h,u) \
+    index_insert(rel,v,n,t,h,u, BuildIndexInfo(rel))
+#else
+#define index_insert_compat(rel,v,n,t,h,u) index_insert(rel,v,n,t,h,u)
+#endif
 enum FdwPathPrivateIndex
 {
 	FdwPathPrivateNodeList
@@ -104,6 +118,10 @@ enum FdwScanPrivateIndex
 	FdwScanPrivateAddNodeInx,
 	FdwScanPrivateHaveWholerow,
 	FdwScanPrivateHasOid,
+    FdwScanPrivateParamsExtern,
+    FdwScanPrivateQueryTreeHash,
+    FdwScanPrivateDistByParam,
+    FdwScanPrivateFQSPlannedStmt,
 
 	/*
 	 * String describing join i.e. names of relations being joined and types
@@ -132,7 +150,9 @@ enum FdwModifyPrivateIndex
 	FdwModifyPrivateHasReturning,
 	/* Integer list of attribute numbers retrieved by RETURNING */
 	FdwModifyPrivateRetrievedAttrs,
-	FdwModifyPrivateAccessType
+	FdwModifyPrivateAccessType,
+	FdwModifyPrivateParamsExtern,
+	FdwModifyPrivateQueryTreeHash
 };
 
 /*
@@ -155,7 +175,11 @@ enum FdwDirectModifyPrivateIndex
 	/* set-processed flag (as an integer Value node) */
 	FdwDirectModifyPrivateSetProcessed,
 	FdwDirectModifyPrivateNodeList,
-	FdwDirectModifyPrivateLocatorType
+	FdwDirectModifyPrivateLocatorType,
+    FdwDirectModifyPrivateTargetAttnums,
+    FdwDirectModifyPrivateTargetRelOid,
+	FdwDirectModifyPrivateParamsExtern,
+	FdwDirectModifyPrivateQueryTreeHash
 };
 
 /*
@@ -193,6 +217,7 @@ typedef struct PgFdwScanState
 	int            ms_nkeys;
 	SortSupport ms_sortkeys;
 	struct binaryheap *ms_heap;
+	char  *query_hash; /* query tree hash value */
 
 	/* for storing result tuples */
 	HeapTuple  *tuples;			/* array of currently-retrieved tuples */
@@ -228,6 +253,7 @@ typedef struct PgFdwModifyState
 	int		current_node;
 	RelationAccessType rel_access_type;
 	int		total_conn_num;
+	char  *query_hash; /* query tree hash value */
 
 	/* for remote query execution */
 	PGconn	   *conn;			/* connection for the scan */
@@ -262,6 +288,7 @@ typedef struct PgFdwDirectModifyState
 {
 	Relation	rel;			/* relcache entry for the foreign table */
 	AttInMetadata *attinmeta;	/* attribute datatype conversion metadata */
+	char  *query_hash; /* query tree hash value */
 
 	/* extracted fdw_private data */
 	char	   *query;			/* text of UPDATE/DELETE command */
@@ -460,7 +487,26 @@ static TargetEntry *get_node_index(Plan *plan, bool *is_exist);
 static void change_wholerow(Plan *plan);
 static bool reloptinfo_contain_targetrel_inx(int targetrel_inx, RelOptInfo *rel);
 static bool pathkeys_contain_const(List *pathkeys, RelOptInfo *rel);
+static int prepare_foreign_sql(const char *p_name, const char *query, List *node_list,
+                                int *prep_conns);
+static bool check_hashjoinable(Expr *clause);
 
+static char *get_preapred_name(Snapshot snapshot, Relation sql_preapred_rel,
+                                 Relation sql_index_rel, ScanKey key,
+                                 char *sql, int *max_version, bool *is_deleted);
+static void set_preapred_name(Relation sql_preapred_rel,
+                    Relation sql_index_rel,
+                    Relation sql_query_idx_rel,
+                    Relation sql_reloids_idx_rel,
+                    Datum sql_hash, Datum version,
+                    Datum reloids,char *sql);
+static Datum md5_text_local(text *in_text);
+static List *get_all_reloids(PlannerInfo *root, RelOptInfo *rel);
+static void search_and_update_reloids(Snapshot snapshot, Relation sql_preapred_rel,
+                                    Relation sql_index_rel,
+                                    ScanKey key, char *sql, Datum new_reloids);
+static void update_sql_prepared_reloids(HeapTuple old_tup,
+                            Relation rel, Datum new_reloids);
 /*
  * polarxGetForeignRelSize
  *		Estimate # of rows and width of the result of the scan
@@ -1155,6 +1201,8 @@ polarxGetForeignPlan(PlannerInfo *root,
 	bool have_wholerow = false;
 	bool has_oid = false;
 	bool is_target_rel = false;
+    DistributionForParam *dist_for_param = NULL;
+    List *reloids_list = NIL;
 
 	if (IS_SIMPLE_REL(foreignrel))
 	{
@@ -1526,6 +1574,10 @@ polarxGetForeignPlan(PlannerInfo *root,
 	deparseSelectStmtForRel(&sql, root, foreignrel, fdw_scan_tlist,
 							remote_exprs, best_path->path.pathkeys,
 							false, &retrieved_attrs, &params_list);
+    if(reloids_list == NIL)
+    {
+       reloids_list = get_all_reloids(root, foreignrel); 
+    }
 	if(have_wholerow)
 	{
 		Node       *new_expr;
@@ -1557,6 +1609,91 @@ polarxGetForeignPlan(PlannerInfo *root,
 	{
 		fpinfo->node_list = NIL;
 	}
+
+    dist_for_param = polarxMakeNode(DistributionForParam);
+    dist_for_param->distributionType =  dist->distributionType;
+    dist_for_param->accessType = get_relation_access_type(root->parse);
+    dist_for_param->paramId = -1; /* -1 means this foreign scan can not be pushed into one node*/
+    dist_for_param->distributionExpr = copyObject(dist->distributionExpr);
+    if(IsLocatorReplicated(dist_for_param->distributionType))
+    {
+        dist_for_param->paramId = 0; /*0 means this is replication table, can be pushed any one node*/
+    }
+    else if((remote_exprs || (IS_JOIN_REL(foreignrel) && fpinfo->joinclauses))
+                && IsLocatorDistributedByValue(dist_for_param->distributionType))
+    {
+        ListCell   *lc = NULL;
+        foreach(lc, remote_exprs)
+        {
+            Expr       *expr = (Expr *) lfirst(lc);
+
+            /* Extract clause from RestrictInfo, if required */
+            if (IsA(expr, RestrictInfo))
+                expr = ((RestrictInfo *) expr)->clause;
+
+            if(!check_hashjoinable(expr))
+            {
+                continue;
+            }
+            else
+            {
+                OpExpr *op_node = (OpExpr *)expr;
+
+                Node       *leftarg  = linitial(op_node->args);
+                Node       *rightarg  = lsecond(op_node->args);
+
+                if(equal(leftarg, dist_for_param->distributionExpr) && 
+                    IsA(rightarg,Param))
+                {
+                    dist_for_param->paramId = ((Param *)rightarg)->paramid; 
+                    break;
+                }
+                else if(equal(rightarg, dist_for_param->distributionExpr) &&
+                        IsA(leftarg,Param))
+                {
+                    dist_for_param->paramId = ((Param *)leftarg)->paramid;
+                    break;
+                }
+            }
+        }
+
+        if(dist_for_param->paramId < 0)
+        {
+            foreach(lc, fpinfo->joinclauses)
+            {
+                Expr       *expr = (Expr *) lfirst(lc);
+
+                /* Extract clause from RestrictInfo, if required */
+                if (IsA(expr, RestrictInfo))
+                    expr = ((RestrictInfo *) expr)->clause;
+
+                if(!check_hashjoinable(expr))
+                {
+                    continue;
+                }
+                else
+                {
+                    OpExpr *op_node = (OpExpr *)expr;
+
+                    Node       *leftarg  = linitial(op_node->args);
+                    Node       *rightarg  = lsecond(op_node->args);
+
+                    if(equal(leftarg, dist_for_param->distributionExpr) && 
+                            IsA(rightarg,Param))
+                    {
+                        dist_for_param->paramId = ((Param *)rightarg)->paramid; 
+                        break;
+                    }
+                    else if(equal(rightarg, dist_for_param->distributionExpr) &&
+                                                IsA(leftarg,Param))
+                    {
+                        dist_for_param->paramId = ((Param *)leftarg)->paramid;
+                        break;
+                    }
+                }
+            }
+        }
+    }
 	/*
 	 * Build the fdw_private list that will be available to the executor.
 	 * Items in the list must match order in enum FdwScanPrivateIndex.
@@ -1573,6 +1710,11 @@ polarxGetForeignPlan(PlannerInfo *root,
 	else
 		fdw_private = lappend(fdw_private, makeInteger(0));
 	fdw_private = lappend(fdw_private, makeInteger(has_oid));
+    /* params extern will be set in polarx_planner for cached plan*/
+	fdw_private = lappend(fdw_private, NULL);
+	fdw_private = lappend(fdw_private, makeString(getPreparedStmtName(sql.data, reloids_list)));
+	fdw_private = lappend(fdw_private, dist_for_param);
+	fdw_private = lappend(fdw_private, NULL);
 
 	if (IS_JOIN_REL(foreignrel) || IS_UPPER_REL(foreignrel))
 		fdw_private = lappend(fdw_private,
@@ -1604,13 +1746,15 @@ polarxBeginForeignScan(ForeignScanState *node, int eflags)
 {
 	ForeignScan *fsplan = (ForeignScan *) node->ss.ps.plan;
 	EState	   *estate = node->ss.ps.state;
+    ExprContext *econtext = node->ss.ps.ps_ExprContext;
 	PgFdwScanState *fsstate;
 	int			numParams;
 	int			i = 0;
 	ListCell		*lc = NULL;
-	char    portal_name[64];
 	MergeAppend *simple_sort = NULL;
 	bool add_node_inx = false;
+    ParamExternDataInfo *paramsExtern = NULL;
+    char    portal_name[NAMEDATALEN];
 
 	/*
 	 * Do nothing in EXPLAIN (no ANALYZE) case.  node->fdw_state stays NULL.
@@ -1636,6 +1780,15 @@ polarxBeginForeignScan(ForeignScanState *node, int eflags)
 	add_node_inx = intVal(list_nth(fsplan->fdw_private,FdwScanPrivateAddNodeInx));
 	fsstate->have_wholerow = intVal(list_nth(fsplan->fdw_private,FdwScanPrivateHaveWholerow));
 	fsstate->has_oid = intVal(list_nth(fsplan->fdw_private,FdwScanPrivateHasOid));
+    paramsExtern = (ParamExternDataInfo *) list_nth(fsplan->fdw_private, FdwScanPrivateParamsExtern);
+	fsstate->query_hash = strVal(list_nth(fsplan->fdw_private,FdwScanPrivateQueryTreeHash));
+	fsstate->cursor_exists = paramsExtern ? paramsExtern->is_cursor : false;
+
+    if (paramsExtern && econtext && econtext->ecxt_param_list_info == NULL)
+    {
+        econtext->ecxt_param_list_info = paramsExtern->param_list_info;
+    }
+
 	if(fsstate->have_wholerow > 0)
 		fsstate->wholerow_first = true;
 	else
@@ -1684,14 +1837,29 @@ polarxBeginForeignScan(ForeignScanState *node, int eflags)
 	fsstate->current_node = -1;
 
 	/* Assign a unique ID for my cursor */
-	fsstate->cursor_number = GetCursorNumber(fsstate->conns);
-	fsstate->cursor_exists = false;
 	fsstate->is_prepared = false;
-	snprintf(portal_name, sizeof(portal_name),
-			"polarx_fdw_%u", fsstate->cursor_number);
-	if(PrepareTxnDatanodeStatement(portal_name))
-		RegisterFdwTxnCallback();
-	fsstate->combiner.cursor = pstrdup(portal_name);
+    if(fsstate->cursor_exists)
+    {
+        fsstate->cursor_number = GetCursorNumber();
+        snprintf(portal_name, sizeof(portal_name),
+                    "%s_0_%u", fsstate->query_hash, fsstate->cursor_number);
+    }
+    else
+    {
+        fsstate->cursor_number = GetPrepStmtNumber();
+        snprintf(portal_name, sizeof(portal_name),
+                "%s_1_%u", fsstate->query_hash, fsstate->cursor_number);
+    }
+
+    if(paramsExtern ? paramsExtern->portal_need_name : true)
+    {
+        fsstate->combiner.cursor = pstrdup(portal_name);
+    }
+    else
+    {
+        fsstate->combiner.cursor = NULL;
+    }
+    fsstate->combiner.prep_name = pstrdup(fsstate->query_hash);
 
 	polarx_scan_begin(fsstate->rel_access_type == RELATION_ACCESS_READ, fsstate->node_list, true);
 	if(fsstate->combiner.merge_sort)
@@ -1796,6 +1964,11 @@ polarxIterateForeignScan(ForeignScanState *node)
 			combiner->conn_count = regular_conn_count;
 			combiner->current_conn = 0;
 		}
+        if(!fsstate->is_prepared)
+            prepare_foreign_sql(fsstate->query_hash, fsstate->query,
+                                     fsstate->node_list, NULL);
+        if(!fsstate->is_prepared)
+            fsstate->is_prepared = true;
 		if (!polarx_start_command_on_connection(connections, node, snapshot))
 		{
 			pfree_pgxc_all_handles(all_handles);
@@ -1805,8 +1978,6 @@ polarxIterateForeignScan(ForeignScanState *node)
 		}
 
 		fsstate->query_done = true;
-		if(!fsstate->is_prepared)
-			fsstate->is_prepared = true;
 
 		if(combiner->merge_sort)
 		{
@@ -1933,13 +2104,14 @@ polarxReScanForeignScan(ForeignScanState *node)
 
 	if(fsstate->combiner.cursor)
 	{
-		close_node_cursors(fsstate->combiner.cursor, fsstate->node_list);
+		close_node_cursors(fsstate->combiner.cursor,
+                            fsstate->node_list);
 	}
 
 	fsstate->query_done = false;
 	if(fsstate->combiner.merge_sort)
 		binaryheap_reset(fsstate->ms_heap);
-	pgxc_connections_cleanup(&(fsstate->combiner));
+    pgxc_connections_cleanup(&(fsstate->combiner));
 	fsstate->combiner.command_complete_count = 0;
 	fsstate->combiner.description_count = 0;
 
@@ -1962,10 +2134,11 @@ polarxEndForeignScan(ForeignScanState *node)
 		return;
 	if(fsstate->combiner.cursor)
 	{
-		DropTxnDatanodeStatement(fsstate->combiner.cursor);
-		close_node_cursors(fsstate->combiner.cursor, fsstate->node_list);
+		//DropTxnDatanodeStatement(fsstate->combiner.cursor);
+		close_node_cursors(fsstate->combiner.cursor,
+                            fsstate->node_list);
 	}
-	pgxc_connections_cleanup(&(fsstate->combiner));
+    pgxc_connections_cleanup(&(fsstate->combiner));
 	fsstate->query_done = false;
 	if(fsstate->combiner.merge_sort)
 		binaryheap_reset(fsstate->ms_heap);
@@ -2025,8 +2198,10 @@ polarxPlanForeignModify(PlannerInfo *root,
 	List	   *targetAttrs = NIL;
 	List	   *returningList = NIL;
 	List	   *retrieved_attrs = NIL;
+    List       *res = NIL;
 	bool		doNothing = false;
 	PgFdwRelationInfo *fpinfo = NULL;
+    List       *reloids_list = NIL;
 
 	if(operation != CMD_INSERT)
 		fpinfo =  (PgFdwRelationInfo *)root->simple_rel_array[resultRelation]->fdw_private;
@@ -2119,9 +2294,6 @@ polarxPlanForeignModify(PlannerInfo *root,
 
 			if (attno <= InvalidAttrNumber) /* shouldn't happen */
 				elog(ERROR, "system-column update is not supported");
-			if (fpinfo && IsLocatorDistributedByValue(fpinfo->rd_locator_info->locatorType)
-					&& attno == fpinfo->rd_locator_info->partAttrNum)
-				elog(ERROR, "distribute-column update is not supported");
 			targetAttrs = lappend_int(targetAttrs, attno);
 		}
 	}
@@ -2175,11 +2347,18 @@ polarxPlanForeignModify(PlannerInfo *root,
 	 * Build the fdw_private list that will be available to the executor.
 	 * Items in the list must match enum FdwModifyPrivateIndex, above.
 	 */
-	return list_make5(makeString(sql.data),
+	res = list_make5(makeString(sql.data),
 			targetAttrs,
 			makeInteger((retrieved_attrs != NIL)),
 			retrieved_attrs,
 			makeInteger(get_relation_access_type(root->parse)));
+    res = lappend(res, NULL);
+    if(rte)
+    {
+        reloids_list = list_make1_oid(rte->relid);
+    }
+    res = lappend(res, makeString(getPreparedStmtName(sql.data, reloids_list)));
+    return res;
 }
 
 /*
@@ -2230,7 +2409,25 @@ polarxBeginForeignModify(ModifyTableState *mtstate,
 									target_attrs,
 									has_returning,
 									retrieved_attrs);
+    fmstate->query_hash = strVal(list_nth(fdw_private,FdwModifyPrivateQueryTreeHash));
 	fmstate->rel_access_type = intVal(list_nth(fdw_private,FdwModifyPrivateAccessType));
+    /* check it again due to plan cache feature */
+    if(mtstate->operation == CMD_UPDATE)
+    {
+        ListCell *lc = NULL;
+        Plan *subplan = mtstate->mt_plans[subplan_index]->plan;
+
+        foreach(lc, target_attrs)
+        {
+            int         attno = lfirst_int(lc);
+            TargetEntry *tle;
+
+            tle = get_tle_by_resno(subplan->targetlist, attno);
+            if(IsLocatorReplicated(fmstate->locator_type)
+                && contain_volatile_functions((Node *)tle->expr))
+            elog(ERROR, "update replication table with volatile function is not support yet");
+        }
+    }
 
 	resultRelInfo->ri_FdwState = fmstate;
 }
@@ -2251,6 +2448,7 @@ polarxExecForeignInsert(EState *estate,
 	List *node_list = NIL;
 	Datum dist_val = 0;
 	bool isNull = false;
+    ListCell        *lc = NULL;
 
 	/*
 	 * If the fmstate has aux_fmstate set, use the aux_fmstate (see
@@ -2263,13 +2461,20 @@ polarxExecForeignInsert(EState *estate,
 		dist_val = slot_getattr(slot, fmstate->part_attr_num, &isNull);
 	node_list = GetRelationNodesWithRelation(fmstate->rel,
 			isNull ? 0 : dist_val, isNull, fmstate->rel_access_type, NumDataNodes);
-	polarx_scan_begin(false, node_list, true);
+    foreach(lc, node_list)
+    {
+        int index = lfirst_int(lc);
+
+        if(fmstate->is_prepared[index])
+            continue;
+        polarx_scan_begin(false, node_list, true);
+    }
 #ifdef PATCH_ENABLE_DISTRIBUTED_TRANSACTION
 	SetSendCommandId(true);
 #endif
 
 	/* Set up the prepared statement on the remote server, if we didn't yet */
-	prepare_foreign_modify(fmstate, node_list);
+    prepare_foreign_modify(fmstate, node_list);
 
 	/* Convert parameters needed by prepared statement to text form */
 	p_values = convert_prep_stmt_params(fmstate, NULL, slot);
@@ -2298,6 +2503,7 @@ polarxExecForeignUpdate(EState *estate,
 	const char **p_values;
 	int	n_rows = 0;
 	List *node_list = NIL;
+    ListCell        *lc = NULL;
 
 	if(fmstate->nodeIndexAttno)
 	{
@@ -2310,14 +2516,42 @@ polarxExecForeignUpdate(EState *estate,
 		if(node_inx_isNull)
 			elog(ERROR, "node index is missing");
 		fmstate->current_node = DatumGetInt32(node_inx_datum);
-		node_list = lappend_int(node_list, fmstate->current_node);
+
+        if(IsLocatorDistributedByValue(fmstate->locator_type) &&
+           list_member_int(fmstate->target_attrs, fmstate->part_attr_num))
+        {
+            Datum dist_val = ExecGetJunkAttribute(planSlot, fmstate->part_attr_num, &isNull);
+
+            /* if the value is NULL, defalut this record should be in node 0*/
+            if(isNull)
+                node_list = lappend_int(node_list, 0);
+            else
+                node_list = GetRelationNodesWithRelation(fmstate->rel,
+                                                        dist_val,
+                                                        false,
+                                                        fmstate->rel_access_type,
+                                                        NumDataNodes);
+            if(!list_member_int(node_list, fmstate->current_node))
+                elog(ERROR, "distribute-column does not support cross update");
+        }
+        else
+        {
+            node_list = lappend_int(node_list, fmstate->current_node);
+        }
 	}
-	polarx_scan_begin(false, node_list, true);
+    foreach(lc, node_list)
+    {
+        int index = lfirst_int(lc);
+
+        if(fmstate->is_prepared[index])
+            continue;
+        polarx_scan_begin(false, node_list, true);
+    }
 #ifdef PATCH_ENABLE_DISTRIBUTED_TRANSACTION
 	SetSendCommandId(true);
 #endif
 
-	prepare_foreign_modify(fmstate, node_list);
+    prepare_foreign_modify(fmstate, node_list);
 
 	/* Get the ctid that was passed up as a resjunk column */
 	datum = ExecGetJunkAttribute(planSlot,
@@ -2366,6 +2600,7 @@ polarxExecForeignDelete(EState *estate,
 	const char **p_values;
 	int	n_rows = 0;
 	List *node_list = NIL;
+    ListCell        *lc = NULL;
 
 	if(fmstate->nodeIndexAttno)
 	{
@@ -2380,12 +2615,19 @@ polarxExecForeignDelete(EState *estate,
 		fmstate->current_node = DatumGetInt32(node_inx_datum);
 		node_list = lappend_int(node_list, fmstate->current_node);
 	}
-	polarx_scan_begin(false, node_list, true);
+    foreach(lc, node_list)
+    {
+        int index = lfirst_int(lc);
+
+        if(fmstate->is_prepared[index])
+            continue;
+        polarx_scan_begin(false, node_list, true);
+    }
 #ifdef PATCH_ENABLE_DISTRIBUTED_TRANSACTION
 	SetSendCommandId(true);
 #endif
 
-	prepare_foreign_modify(fmstate, node_list);
+    prepare_foreign_modify(fmstate, node_list);
 
 	/* Get the ctid that was passed up as a resjunk column */
 	datum = ExecGetJunkAttribute(planSlot,
@@ -2455,7 +2697,7 @@ polarxBeginForeignInsert(ModifyTableState *mtstate,
 	List	   *targetAttrs = NIL;
 	List	   *retrieved_attrs = NIL;
 	bool		doNothing = false;
-	List		*node_list;
+    List        *reloids_list = NIL;
 
 	/*
 	 * If the foreign table we are about to insert routed rows into is also
@@ -2538,10 +2780,12 @@ polarxBeginForeignInsert(ModifyTableState *mtstate,
 									targetAttrs,
 									retrieved_attrs != NIL,
 									retrieved_attrs);
+    if(rte)
+    {
+        reloids_list = list_make1_oid(rte->relid);
+    }
+	fmstate->query_hash = getPreparedStmtName(sql.data, reloids_list);
 	fmstate->rel_access_type = RELATION_ACCESS_INSERT;
-	node_list = GetRelationNodesWithRelation(fmstate->rel,
-							0 , true, fmstate->rel_access_type, NumDataNodes);
-	polarx_scan_begin(false, node_list, true);
 
 	/*
 	 * If the given resultRelInfo already has PgFdwModifyState set, it means
@@ -2680,6 +2924,7 @@ polarxPlanDirectModify(PlannerInfo *root,
 	List	   *params_list = NIL;
 	List	   *returningList = NIL;
 	List	   *retrieved_attrs = NIL;
+	List	   *reloids_list = NIL;
 
 	/*
 	 * Decide whether it is safe to modify a foreign table directly.
@@ -2749,9 +2994,10 @@ polarxPlanDirectModify(PlannerInfo *root,
 
 			if (attno <= InvalidAttrNumber) /* shouldn't happen */
 				elog(ERROR, "system-column update is not supported");
-			if (IsLocatorDistributedByValue(fpinfo->rd_locator_info->locatorType)
-				&& attno == fpinfo->rd_locator_info->partAttrNum)
-				elog(ERROR, "distribute-column update is not supported");
+            /* update distribute column not support diretct update*/
+            if (IsLocatorDistributedByValue(fpinfo->rd_locator_info->locatorType)
+                    && attno == fpinfo->rd_locator_info->partAttrNum)
+                return false;
 
 			tle = get_tle_by_resno(subplan->targetlist, attno);
 
@@ -2770,15 +3016,16 @@ polarxPlanDirectModify(PlannerInfo *root,
 	}
 
 	/*
-	 * Ok, rewrite subplan so as to modify the foreign table directly.
-	 */
-	initStringInfo(&sql);
-
-	/*
 	 * Core code already has some lock on each rel being planned, so we can
 	 * use NoLock here.
 	 */
 	rel = heap_open(rte->relid, NoLock);
+
+    /*
+	 * Ok, rewrite subplan so as to modify the foreign table directly.
+	 */
+	initStringInfo(&sql);
+
 
 	/*
 	 * Recall the qual clauses that must be evaluated remotely.  (These are
@@ -2831,7 +3078,16 @@ polarxPlanDirectModify(PlannerInfo *root,
 			elog(ERROR, "unexpected operation: %d", (int) operation);
 			break;
 	}
+    if(reloids_list == NIL)
+    {
+        RangeTblEntry *rte = planner_rt_fetch(resultRelation, root);
 
+        reloids_list = get_all_reloids(root, foreignrel);
+        if(reloids_list == NIL)
+            reloids_list = list_make1_oid(rte->relid);
+        else
+            reloids_list = list_append_unique_oid(reloids_list, rte->relid);
+    }
 	/*
 	 * Update the operation info.
 	 */
@@ -2850,8 +3106,13 @@ polarxPlanDirectModify(PlannerInfo *root,
 									makeInteger((retrieved_attrs != NIL)),
 									retrieved_attrs,
 									makeInteger(plan->canSetTag),
-									fpinfo->node_list);
-        fscan->fdw_private = lappend(fscan->fdw_private, makeInteger(fpinfo->rd_locator_info->locatorType));
+                                    fpinfo->node_list);
+    fscan->fdw_private = lappend(fscan->fdw_private, makeInteger(fpinfo->rd_locator_info->locatorType));
+    fscan->fdw_private = lappend(fscan->fdw_private, targetAttrs);
+    fscan->fdw_private = lappend(fscan->fdw_private, makeInteger(rte->relid));
+    fscan->fdw_private = lappend(fscan->fdw_private, NULL);
+    fscan->fdw_private = lappend(fscan->fdw_private,
+                            makeString(getPreparedStmtName(sql.data, reloids_list)));
 
 	/*
 	 * Update the foreign-join-related fields.
@@ -2886,6 +3147,7 @@ polarxBeginDirectModify(ForeignScanState *node, int eflags)
 	PgFdwDirectModifyState *dmstate;
 	Index		rtindex;
 	int			numParams;
+    List       *target_attrs;
 
 	/*
 	 * Do nothing in EXPLAIN (no ANALYZE) case.  node->fdw_state stays NULL.
@@ -2938,7 +3200,28 @@ polarxBeginDirectModify(ForeignScanState *node, int eflags)
 											FdwDirectModifyPrivateNodeList);
 
 	polarx_scan_begin(false, dmstate->node_list, true);
+	dmstate->query_hash = strVal(list_nth(fsplan->fdw_private, FdwDirectModifyPrivateQueryTreeHash));
 	dmstate->locator_type = (char)intVal(list_nth(fsplan->fdw_private, FdwDirectModifyPrivateLocatorType));
+    target_attrs = (List *) list_nth(fsplan->fdw_private,
+											FdwDirectModifyPrivateTargetAttnums);
+
+    /* check it again due to plan cache feature */
+    if(fsplan->operation == CMD_UPDATE)
+    {
+        ListCell *lc = NULL;
+        Plan *subplan = (Plan *)fsplan;
+
+        foreach(lc, target_attrs)
+        {
+            int         attno = lfirst_int(lc);
+            TargetEntry *tle;
+
+            tle = get_tle_by_resno(subplan->targetlist, attno);
+            if(IsLocatorReplicated(dmstate->locator_type)
+                    && contain_volatile_functions((Node *)tle->expr))
+                elog(ERROR, "update replication table with volatile function is not support yet");
+        }
+    }
 	dmstate->current_result = 0;
 	dmstate->current_index = 0;
 
@@ -3009,7 +3292,7 @@ polarxEndDirectModify(ForeignScanState *node)
 	if (dmstate == NULL)
 		return;
 
-	pgxc_connections_cleanup(&(dmstate->combiner));
+    pgxc_connections_cleanup(&(dmstate->combiner));
 
 	/* close the target relation. */
 	if (dmstate->resultRel)
@@ -3783,118 +4066,26 @@ create_foreign_modify(EState *estate,
 static void
 prepare_foreign_modify(PgFdwModifyState *fmstate, List *node_list)
 {
-	char		prep_name[NAMEDATALEN];
 	char		*p_name;
-	int		i = 0;
 	int		conn_num = list_length(node_list);
-	PGXCNodeAllHandles *all_handles;
-	PGXCNodeHandle      **connections;
-	ResponseCombiner    combiner;
-	ListCell        *lc = NULL;
 	int             *conn_map = NULL;
-	int 		complete_num = 0;
 
 	Assert(conn_num > 0);
 	conn_map = palloc0(conn_num * sizeof(int));
 
-	/* Construct name we'll use for the prepared statement. */
-	if(!fmstate->p_name)
-	{
-		snprintf(prep_name, sizeof(prep_name), "pgsql_fdw_prep_%u",
-				GetPrepStmtNumber(fmstate->conn));
-		if(PrepareTxnDatanodeStatement(prep_name))
-			RegisterFdwTxnCallback();
-		p_name = pstrdup(prep_name);
-	}
+    /* Construct name we'll use for the prepared statement. */
+	if(!fmstate->p_name && fmstate->query_hash)
+        p_name = fmstate->query_hash;
 	else
-		p_name= fmstate->p_name;		
+		p_name= fmstate->p_name;
 
-	all_handles = get_handles(node_list, NIL, false, true);
-	conn_num = all_handles->dn_conn_count;
-	connections = all_handles->datanode_handles;
+    prepare_foreign_sql(p_name, fmstate->query,
+                        node_list, conn_map);
 
-	foreach(lc, node_list)
-	{
-		int index = lfirst_int(lc);
-
-		if(fmstate->is_prepared[index])
-                        continue;
-		if (connections[i]->state == DN_CONNECTION_STATE_QUERY)
-			BufferConnection(connections[i]);
-		if (pgxc_node_send_parse(connections[i], p_name, fmstate->query, 0, NULL) != 0)
-		{
-			PGXCNodeSetConnectionState(connections[i],
-					DN_CONNECTION_STATE_ERROR_FATAL);
-			ereport(WARNING,
-					(errcode(ERRCODE_INTERNAL_ERROR),
-					 errmsg("Failed to prepare statement: %s, in node: %d", fmstate->query, connections[i]->nodeoid)));
-		}
-		if (pgxc_node_send_sync(connections[i]) != 0)
-		{
-			PGXCNodeSetConnectionState(connections[i],
-					DN_CONNECTION_STATE_ERROR_FATAL);
-			ereport(WARNING,
-					(errcode(ERRCODE_INTERNAL_ERROR),
-					 errmsg("Failed to close Datanode cursor")));
-		}
-		PGXCNodeSetConnectionState(connections[i], DN_CONNECTION_STATE_QUERY);
-		conn_map[i] = index;
-		i++;
-	}
-	if(i == 0)
-		return;
-	InitResponseCombiner(&combiner, conn_num, COMBINE_TYPE_NONE);
-	memset(&combiner, 0, sizeof(ScanState));
-	combiner.request_type = REQUEST_TYPE_QUERY;
-
-	while (conn_num > 0)
-	{
-		if (pgxc_node_receive(conn_num, connections, NULL))
-			ereport(ERROR,
-					(errcode(ERRCODE_INTERNAL_ERROR),
-					 errmsg("Failed to send prepared in receive result")));
-		i = 0;
-		while (i < conn_num)
-		{
-			int res = handle_response(connections[i], &combiner);
-			if (res == RESPONSE_EOF)
-			{
-				i++;
-			}
-			else if (res == RESPONSE_READY || connections[i]->state == DN_CONNECTION_STATE_ERROR_FATAL)
-			{
-				if(res == RESPONSE_READY)
-				{
-					ActivateTxnDatanodeStatementOnNode(p_name,
-							PGXCNodeGetNodeId(connections[i]->nodeoid, NULL));
-					fmstate->is_prepared[conn_map[i]] = true;
-                                        complete_num++;
-                                }
-				if (--conn_num > i)
-				{
-					connections[i] = connections[conn_num];
-					conn_map[i] = conn_map[conn_num];
-				}
-			}
-			else
-			{
-			}
-		}
-	}
-
-	if(complete_num != all_handles->dn_conn_count)
-	{
-		ereport(ERROR,
-				(errcode(ERRCODE_INTERNAL_ERROR),
-				 errmsg("Failed to send prepared due to not complete all")));
-	}
-
-	CloseCombiner(&combiner);
-	pfree_pgxc_all_handles(all_handles);
-
-	/* This action shows that the prepare has been done. */
-	if(!fmstate->p_name)
-		fmstate->p_name = p_name;
+    if(p_name && !fmstate->p_name)
+    {
+        fmstate->p_name = p_name;
+    }
 }
 /*
  * convert_prep_stmt_params
@@ -3972,7 +4163,7 @@ finish_foreign_modify(PgFdwModifyState *fmstate)
 	/* If we created a prepared statement, destroy it */
 	if (fmstate->p_name)
 	{
-		DropTxnDatanodeStatement(fmstate->p_name);
+		//DropTxnDatanodeStatement(fmstate->p_name);
 		fmstate->p_name = NULL;
 	}
 }
@@ -4124,9 +4315,12 @@ execute_dml_stmt(ForeignScanState *node)
 	ResultRelInfo *resultRelInfo = estate->es_result_relation_info;
 	CommandId    cid = GetCurrentCommandId(false);
     RemoteDataRow datarow = NULL;
+    char *prep_name;
+
 
 	Assert(list_length(dmstate->node_list) > 0);
 
+    GetPrepStmtNameAndSelfVersion(dmstate->query_hash, &prep_name);
 	if(dmstate->num_tuples == -1)
 	{
 		PGXCNodeAllHandles *all_handles;
@@ -4171,6 +4365,8 @@ execute_dml_stmt(ForeignScanState *node)
 			}
 		}
 
+        prepare_foreign_sql(dmstate->query_hash, dmstate->query,
+                dmstate->node_list, NULL);
 		for (i = 0; i < conn_count; i++)
 		{
 			if (connections[i]->state == DN_CONNECTION_STATE_QUERY)
@@ -4182,9 +4378,10 @@ execute_dml_stmt(ForeignScanState *node)
 						 errmsg("Failed to send command ID to Datanodes")));
 #endif
 			if (pgxc_node_send_query_extended(connections[i],
-						dmstate->query,
 						NULL,
-						NULL,
+						prep_name,
+                       // NULL,
+                        NULL,
 						numParams,
 						dmstate->param_types,
 						buf.len,
@@ -4211,6 +4408,7 @@ execute_dml_stmt(ForeignScanState *node)
 		combiner->node_count = conn_count;
 		combiner->DML_processed = 0;
 		combiner->extended_query = true;
+        combiner->cursor = NULL;
 		if(IsLocatorReplicated(dmstate->locator_type))
 			combiner->combine_type = COMBINE_TYPE_SAME;
 		else
@@ -6046,7 +6244,7 @@ joinrelation_build_locator(RelOptInfo *joinrel, JoinType jointype, RelOptInfo *o
 			if (ri->orclause)
 				continue;
 
-			if (!OidIsValid(ri->hashjoinoperator))
+			if (!OidIsValid(ri->hashjoinoperator) && (!check_hashjoinable(ri->clause)))
 				continue;
 
 			found_outer = false;
@@ -6652,7 +6850,9 @@ polarx_start_command_on_connection(PGXCNodeHandle **connections, ForeignScanStat
 	StringInfoData buf;
 	MemoryContext oldcontext;
 	uint16 n16;
+    char *prep_name;
 
+    GetPrepStmtNameAndSelfVersion(fsstate->query_hash, &prep_name);
 	if (snapshot)
 	{
 		cid = snapshot->curcid;
@@ -6728,8 +6928,8 @@ polarx_start_command_on_connection(PGXCNodeHandle **connections, ForeignScanStat
 #endif
 
 		if (pgxc_node_send_query_extended(connections[i],
-					fsstate->is_prepared ? NULL : fsstate->query,
-					combiner->cursor,
+					NULL,
+					prep_name,
 					combiner->cursor,
 					numParams,
 					fsstate->param_types,
@@ -6738,9 +6938,6 @@ polarx_start_command_on_connection(PGXCNodeHandle **connections, ForeignScanStat
 					send_desc,
 					1000) != 0)
 			return false;
-		if (combiner->cursor && !fsstate->is_prepared)
-			ActivateTxnDatanodeStatementOnNode(combiner->cursor,
-					PGXCNodeGetNodeId(connections[i]->nodeoid, NULL));
 		connections[i]->combiner = combiner;
 	}
 	return  true;
@@ -6855,11 +7052,13 @@ polarx_send_query_prepared(PgFdwModifyState *fmstate, List *nodelist,
 	uint16 n16;
 	int     numParams = fmstate->p_nums;
 	CommandId    cid = GetCurrentCommandId(false);
+    char *prep_name;
 
 	/* Exit if nodelist is empty */
 	if (list_length(nodelist) == 0)
 		return;
 
+    GetPrepStmtNameAndSelfVersion(fmstate->p_name, &prep_name);
 	/* get needed Datanode connections */
 	all_handles = get_handles(nodelist, NIL, false, true);
 	conn_count = all_handles->dn_conn_count;
@@ -6899,7 +7098,7 @@ polarx_send_query_prepared(PgFdwModifyState *fmstate, List *nodelist,
 #endif
 		if (pgxc_node_send_query_extended(connections[i],
 					NULL,
-					fmstate->p_name,
+					prep_name,
 					NULL,
 					numParams,
 					fmstate->param_types,
@@ -7465,4 +7664,659 @@ pathkeys_contain_const(List *pathkeys, RelOptInfo *rel)
 			return true;
 	}
 	return false;
+}
+
+bool
+CheckForeginScanDistByParam(List *fdw_private)
+{
+    ListCell *lc;
+
+    if(fdw_private == NULL) 
+        return false;
+    lc = list_nth_cell(fdw_private, FdwScanPrivateDistByParam);
+    return ((DistributionForParam *)lfirst(lc))->paramId >= 0;
+}
+
+void
+setParamsExternIntoForeginScan(List *fdw_private, ParamExternDataInfo *paramsExtern)
+{
+    ListCell *lc;
+
+    if(fdw_private == NULL) 
+        return;
+    lc = list_nth_cell(fdw_private, FdwScanPrivateParamsExtern);
+    lfirst(lc) = (void *)paramsExtern;
+}
+
+void
+setFQSPlannedStmtIntoForeginScan(List *fdw_private, PlannedStmt *fqs_plannedstmt)
+{
+    ListCell *lc;
+
+    if(fdw_private == NULL)
+        return;
+    if(fqs_plannedstmt != NULL)
+    {
+        lc = list_nth_cell(fdw_private, FdwScanPrivateFQSPlannedStmt);
+        lfirst(lc) = fqs_plannedstmt;
+    }
+}
+
+ParamExternDataInfo *
+getParamsExternFromForeginScan(List *fdw_private)
+{
+    ListCell *lc;
+    ParamExternDataInfo *res = NULL;
+
+    if(fdw_private == NULL) 
+        return NULL;
+    lc = list_nth_cell(fdw_private, FdwScanPrivateParamsExtern);
+    res = (ParamExternDataInfo *)lfirst(lc);
+    lc = list_nth_cell(fdw_private, FdwScanPrivateFQSPlannedStmt);
+    if(lfirst(lc) != NULL)
+        res->fqs_plannedstmt = (PlannedStmt *)lfirst(lc);
+    return res;
+}
+
+void
+setParamsExternIntoForeginModify(List *fdw_private, ParamExternDataInfo *paramsExtern)
+{
+    ListCell *lc;
+
+    if(fdw_private == NULL) 
+        return;
+    lc = list_nth_cell(fdw_private, FdwModifyPrivateParamsExtern);
+    lfirst(lc) = (void *)paramsExtern;
+}
+
+ParamExternDataInfo *
+getParamsExternFromForeginModify(List *fdw_private)
+{
+    ListCell *lc;
+
+    if(fdw_private == NULL) 
+        return NULL;
+    lc = list_nth_cell(fdw_private, FdwModifyPrivateParamsExtern);
+    return (ParamExternDataInfo *)lfirst(lc);
+}
+
+void
+setParamsExternIntoForeginDirect(List *fdw_private, ParamExternDataInfo *paramsExtern)
+{
+    ListCell *lc;
+
+    if(fdw_private == NULL) 
+        return;
+    lc = list_nth_cell(fdw_private, FdwDirectModifyPrivateParamsExtern);
+    lfirst(lc) = (void *)paramsExtern;
+}
+
+ParamExternDataInfo *
+getParamsExternFromForeginDirect(List *fdw_private)
+{
+    ListCell *lc;
+
+    if(fdw_private == NULL) 
+        return NULL;
+    lc = list_nth_cell(fdw_private, FdwDirectModifyPrivateParamsExtern);
+    return (ParamExternDataInfo *)lfirst(lc);
+}
+
+Oid
+getTargetRelOidFromForeginDirect(List *fdw_private)
+{
+    if(fdw_private == NULL) 
+        return InvalidOid;
+    return intVal(list_nth(fdw_private, FdwDirectModifyPrivateTargetRelOid));
+}
+
+char * 
+getPreparedStmtName(char *sql, List *reloids_list)
+{
+    char        *result = NULL;
+    LOCKMODE    heap_lock =  AccessShareLock;
+    Oid         sql_prepared_oid = InvalidOid;
+    Oid         sql_index_oid = InvalidOid;
+    Oid         sql_query_idx_oid = InvalidOid;
+    Relation    sql_preapred_rel,
+                sql_index_rel;
+    Snapshot    snapshot;
+    ScanKeyData     key;
+    Datum       hash_val;
+    bool        is_deleted = false;
+
+    sql_prepared_oid = GetPolarxSqlPreparedOid();
+    sql_index_oid = GetPolarxSqlPreparedIdxOid();
+    sql_query_idx_oid = GetPolarxSqlQueryIdxOid();
+    if(sql_prepared_oid == InvalidOid ||
+            sql_index_oid == InvalidOid || 
+            sql_query_idx_oid == InvalidOid )
+        return NULL;
+    sql_preapred_rel = heap_open(sql_prepared_oid, heap_lock);
+    sql_index_rel = index_open(sql_index_oid, heap_lock);
+    if(sql_preapred_rel == NULL ||
+            sql_index_rel == NULL)
+        return NULL;
+    
+    hash_val = hash_any((unsigned char *) sql, strlen(sql));
+    ScanKeyInit(&key, Anum_sql_hash, BTEqualStrategyNumber, F_INT4EQ, hash_val);
+    snapshot = RegisterSnapshot(GetLatestSnapshot());
+    result = get_preapred_name(snapshot, sql_preapred_rel,
+                                sql_index_rel, &key, sql, NULL, &is_deleted);
+    if(result == NULL)
+    {
+        int version = 0;
+
+        UnregisterSnapshot(snapshot);
+        index_close(sql_index_rel, heap_lock);
+        heap_close(sql_preapred_rel, heap_lock);
+
+        heap_lock = AccessExclusiveLock;
+        sql_preapred_rel = heap_open(sql_prepared_oid, heap_lock);
+        sql_index_rel = index_open(sql_index_oid, heap_lock);
+
+        snapshot = RegisterSnapshot(GetLatestSnapshot());
+        result = get_preapred_name(snapshot, sql_preapred_rel,
+                                    sql_index_rel, &key, sql, &version, &is_deleted);
+        if(result == NULL)
+        {
+            char        prep_name[NAMEDATALEN];
+            Relation    sql_query_idx_rel;
+            Relation    sql_reloids_idx_rel;
+            int reloids_len = list_length(reloids_list);
+            Datum       reloids = (Datum) 0;
+            Oid         sql_reloids_oid = GetPolarxSqlOidsIdxOid();
+
+            if (reloids_len)
+            {
+                int         pos;
+                ListCell   *lc;
+                ArrayType  *reloids_tmp;
+                Datum      *reloids_arr = palloc(sizeof(Datum) * reloids_len);
+
+                pos = 0;
+                foreach(lc, reloids_list)
+                {
+                    reloids_arr[pos] = ObjectIdGetDatum(lfirst_oid(lc));
+                    pos++;
+                }
+                reloids_tmp = construct_array(reloids_arr, reloids_len,
+                                                OIDOID,
+                                                sizeof(Oid), true, 'i');
+                reloids = PointerGetDatum(reloids_tmp);
+
+                pfree(reloids_arr);
+            }
+            sql_query_idx_rel = index_open(sql_query_idx_oid, heap_lock);
+            sql_reloids_idx_rel = index_open(sql_reloids_oid, heap_lock);
+
+
+            set_preapred_name(sql_preapred_rel, sql_index_rel,
+                                sql_query_idx_rel,
+                                sql_reloids_idx_rel,
+                                hash_val, version +1,
+                                reloids,
+                                sql);
+            index_close(sql_query_idx_rel, heap_lock);
+            index_close(sql_reloids_idx_rel, heap_lock);
+            snprintf(prep_name, sizeof(prep_name),
+                    "%u_%d_%d", DatumGetUInt32(hash_val), version +1, 0);
+
+            result = pstrdup(prep_name);
+        }
+    }
+    if(is_deleted)
+    {
+        int reloids_len = list_length(reloids_list);
+        Datum       reloids = (Datum) 0;
+
+        if (reloids_len)
+        {
+            int         pos;
+            ListCell   *lc;
+            ArrayType  *reloids_tmp;
+            Datum      *reloids_arr = palloc(sizeof(Datum) * reloids_len);
+
+            pos = 0;
+            foreach(lc, reloids_list)
+            {
+                reloids_arr[pos] = ObjectIdGetDatum(lfirst_oid(lc));
+                pos++;
+            }
+            reloids_tmp = construct_array(reloids_arr, reloids_len,
+                    OIDOID,
+                    sizeof(Oid), true, 'i');
+            reloids = PointerGetDatum(reloids_tmp);
+
+            pfree(reloids_arr);
+        }
+
+        if(heap_lock == AccessShareLock)
+        {
+            UnregisterSnapshot(snapshot);
+            index_close(sql_index_rel, heap_lock);
+            heap_close(sql_preapred_rel, heap_lock);
+
+            heap_lock = AccessExclusiveLock;
+            sql_preapred_rel = heap_open(sql_prepared_oid, heap_lock);
+            sql_index_rel = index_open(sql_index_oid, heap_lock);
+        }
+
+        snapshot = RegisterSnapshot(GetLatestSnapshot());
+        search_and_update_reloids(snapshot, sql_preapred_rel,
+                                    sql_index_rel, &key,
+                                    sql, reloids);
+    }
+    UnregisterSnapshot(snapshot);
+    index_close(sql_index_rel, heap_lock);
+    heap_close(sql_preapred_rel, heap_lock);
+    return result; 
+}
+static void
+update_sql_prepared_reloids(HeapTuple old_tup,
+                            Relation rel, Datum new_reloids)
+{
+    TupleDesc   rel_dsc;
+    Datum       values[Anum_sql];
+    bool        nulls[Anum_sql];
+    bool        repl[Anum_sql];
+    HeapTuple   new_tup;
+    Relation    sql_reloids_idx_rel;
+    Oid         sql_reloids_oid = GetPolarxSqlOidsIdxOid();
+
+    sql_reloids_idx_rel = index_open(sql_reloids_oid, RowExclusiveLock);
+
+    rel_dsc = RelationGetDescr(rel);
+
+    MemSet(values, 0, sizeof(values));
+    MemSet(nulls, false, sizeof(nulls));
+    MemSet(repl, false, sizeof(repl));
+
+    values[Anum_reloids -1] = new_reloids;
+    repl[Anum_reloids-1] = true;
+
+    new_tup = heap_modify_tuple(old_tup, rel_dsc, values, nulls, repl);
+    simple_heap_update(rel, &old_tup->t_self, new_tup);
+
+    index_insert_compat(sql_reloids_idx_rel,
+            &values[Anum_reloids-1], &nulls[Anum_reloids-1],
+            &(new_tup->t_self),
+            rel,
+            UNIQUE_CHECK_NO);
+    heap_freetuple(new_tup);
+    index_close(sql_reloids_idx_rel, RowExclusiveLock);
+}
+
+static void 
+search_and_update_reloids(Snapshot snapshot, Relation sql_preapred_rel,
+                     Relation sql_index_rel, ScanKey key, char *sql, Datum new_reloids)
+{
+    IndexScanDesc   sql_index_scan;
+    HeapTuple       htup = NULL;
+   
+    sql_index_scan = index_beginscan(sql_preapred_rel, sql_index_rel, snapshot, 1, 0);
+    index_rescan(sql_index_scan, key, 1, NULL, 0);
+
+    while ((htup = index_getnext(sql_index_scan, ForwardScanDirection)) != NULL)
+    {
+        Datum       search_values[Anum_sql];
+        bool        search_nulls[Anum_sql];
+
+        heap_deform_tuple(htup, sql_preapred_rel->rd_att,
+                search_values, search_nulls);
+
+        if(memcmp(TextDatumGetCString(search_values[Anum_sql - 1]),
+                    sql, strlen(sql)) == 0)
+        {
+            update_sql_prepared_reloids(htup, sql_preapred_rel, new_reloids);
+            break;
+        }
+    }
+
+    index_endscan(sql_index_scan);
+}
+
+static char * 
+get_preapred_name(Snapshot snapshot, Relation sql_preapred_rel,
+                     Relation sql_index_rel, ScanKey key,
+                     char *sql, int *max_version, bool *is_deleted)
+{
+    char        prep_name[NAMEDATALEN];
+    IndexScanDesc   sql_index_scan;
+    HeapTuple       htup = NULL;
+    bool            found = false;
+    int             count = 0;
+   
+    sql_index_scan = index_beginscan(sql_preapred_rel, sql_index_rel, snapshot, 1, 0);
+    index_rescan(sql_index_scan, key, 1, NULL, 0);
+
+    while ((htup = index_getnext(sql_index_scan, ForwardScanDirection)) != NULL)
+    {
+        Datum       search_values[Anum_sql];
+        bool        search_nulls[Anum_sql];
+
+        heap_deform_tuple(htup, sql_preapred_rel->rd_att,
+                search_values, search_nulls);
+
+        if(search_values[Anum_version - 1] >= count)
+            count = search_values[Anum_version - 1];
+        if(memcmp(TextDatumGetCString(search_values[Anum_sql - 1]),
+                    sql, strlen(sql)) == 0)
+        {
+            snprintf(prep_name, sizeof(prep_name),"%u_%d_%d",
+                    DatumGetUInt32(search_values[Anum_sql_hash - 1]),
+                    DatumGetUInt32(search_values[Anum_version - 1]),
+                    DatumGetUInt32(search_values[Anum_self_vs - 1]));
+            count = search_values[Anum_version - 1];
+            if(is_deleted && search_nulls[Anum_reloids - 1])
+               *is_deleted = true; 
+            found = true;
+            break;
+        }
+    }
+
+    index_endscan(sql_index_scan);
+
+    if(max_version)
+        *max_version = count;
+    if(!found)
+        return NULL;
+    return pstrdup(prep_name);
+}
+
+static void 
+set_preapred_name(Relation sql_preapred_rel, Relation sql_index_rel,
+                    Relation sql_query_idx_rel,
+                    Relation sql_reloids_idx_rel,
+                    Datum sql_hash, Datum version,
+                    Datum reloids, char *sql)
+{
+    Datum       values[Anum_sql];
+    bool        nulls[Anum_sql];
+    HeapTuple       tuple;
+    bool    unconflict = false;
+    uint32      specToken;
+
+    MemSet(nulls, 0, sizeof(nulls));
+
+    values[Anum_sql_hash -1] = sql_hash;
+    values[Anum_version -1] = version;
+    values[Anum_self_vs -1] = 0;
+    values[Anum_sql_md5 -1] = md5_text_local(cstring_to_text(sql));
+    values[Anum_reloids -1] = reloids;
+    values[Anum_sql -1] = CStringGetTextDatum(sql);
+
+    tuple = heap_form_tuple(sql_preapred_rel->rd_att, values, nulls);
+    specToken = SpeculativeInsertionLockAcquire(GetCurrentTransactionId());
+    HeapTupleHeaderSetSpeculativeToken(tuple->t_data, specToken);
+
+    heap_insert(sql_preapred_rel, tuple,
+            GetCurrentCommandId(true), HEAP_INSERT_SPECULATIVE, NULL);
+    unconflict = index_insert_compat(sql_query_idx_rel,
+                &values[Anum_sql_md5-1], &nulls[Anum_sql_md5-1],
+                &(tuple->t_self),
+                sql_preapred_rel,
+                UNIQUE_CHECK_PARTIAL);
+        
+    if(unconflict)
+    {
+        index_insert_compat(sql_index_rel,
+            values, nulls,
+            &(tuple->t_self),
+            sql_preapred_rel,
+            UNIQUE_CHECK_NO);
+        index_insert_compat(sql_reloids_idx_rel,
+            &values[Anum_reloids-1], &nulls[Anum_reloids-1],
+            &(tuple->t_self),
+            sql_preapred_rel,
+            UNIQUE_CHECK_NO);
+        heap_finish_speculative(sql_preapred_rel, tuple);
+    }
+    else
+    {
+        unconflict = index_insert_compat(sql_index_rel,
+            values, nulls,
+            &(tuple->t_self),
+            sql_preapred_rel,
+            UNIQUE_CHECK_PARTIAL);
+        heap_abort_speculative(sql_preapred_rel, tuple); 
+        if(unconflict)
+        {
+            elog(ERROR, "insert into sql_prepared with diffrent sql, \
+                    but same hash value at same time is not supported.");
+        }
+    }
+    SpeculativeInsertionLockRelease(GetCurrentTransactionId());
+
+    CommandCounterIncrement();
+}
+
+static int
+prepare_foreign_sql(const char *p_name, const char *query,
+                        List *node_list,int *prep_conns)
+{
+	int		i = 0;
+	int		j = 0;
+	int		conn_num = list_length(node_list);
+	PGXCNodeAllHandles *all_handles;
+	PGXCNodeHandle      **connections;
+	PGXCNodeHandle      *res_conns[conn_num];
+	ResponseCombiner    combiner;
+	ListCell        *lc = NULL;
+	int 		complete_num = 0;
+    char *prep_name = NULL;
+    int  self_version;
+
+	Assert(conn_num > 0);
+    Assert(p_name != NULL);
+
+	all_handles = get_handles(node_list, NIL, false, true);
+	connections = all_handles->datanode_handles;
+    self_version = GetPrepStmtNameAndSelfVersion(p_name, &prep_name);
+	foreach(lc, node_list)
+	{
+		int index = lfirst_int(lc);
+        bool is_expired = false;
+        bool is_prepared = false;
+        
+        is_prepared = IsStmtPrepared(prep_name,
+                                        PGXCNodeGetNodeId(connections[j]->nodeoid, NULL),
+                                        self_version,
+                                        &is_expired);
+        if(is_prepared && is_expired == false)
+        {
+                j++;
+                continue;
+        }
+
+        if (connections[j]->state == DN_CONNECTION_STATE_QUERY)
+            BufferConnection(connections[j]);
+        if(is_expired)
+        {
+            pgxc_node_send_close(connections[j], true, prep_name);
+        }
+        if (pgxc_node_send_parse(connections[j], prep_name, query, 0, NULL) != 0)
+		{
+			PGXCNodeSetConnectionState(connections[j],
+					DN_CONNECTION_STATE_ERROR_FATAL);
+			ereport(WARNING,
+					(errcode(ERRCODE_INTERNAL_ERROR),
+					 errmsg("Failed to prepare statement: %s, in node: %d", query, connections[j]->nodeoid)));
+		}
+		if (pgxc_node_send_sync(connections[j]) != 0)
+		{
+			PGXCNodeSetConnectionState(connections[j],
+					DN_CONNECTION_STATE_ERROR_FATAL);
+			ereport(WARNING,
+					(errcode(ERRCODE_INTERNAL_ERROR),
+					 errmsg("Failed to close Datanode cursor")));
+		}
+		PGXCNodeSetConnectionState(connections[j], DN_CONNECTION_STATE_QUERY);
+        if(prep_conns)
+            prep_conns[i] = index;
+        res_conns[i] = connections[j];
+		i++;
+        j++;
+	}
+	if(i == 0)
+		return 0;
+    conn_num = i;
+    j = i;
+	InitResponseCombiner(&combiner, conn_num, COMBINE_TYPE_NONE);
+	memset(&combiner, 0, sizeof(ScanState));
+	combiner.request_type = REQUEST_TYPE_QUERY;
+    if(p_name)
+    {
+        combiner.prep_name = pstrdup(p_name);
+    }
+
+	while (conn_num > 0)
+	{
+		if (pgxc_node_receive(conn_num, res_conns, NULL))
+			ereport(ERROR,
+					(errcode(ERRCODE_INTERNAL_ERROR),
+					 errmsg("Failed to send prepared in receive result")));
+		i = 0;
+		while (i < conn_num)
+		{
+			int res = handle_response(res_conns[i], &combiner);
+			if (res == RESPONSE_EOF)
+			{
+				i++;
+			}
+			else if (res == RESPONSE_READY || res_conns[i]->state == DN_CONNECTION_STATE_ERROR_FATAL)
+			{
+				if(res == RESPONSE_READY)
+                {
+                    complete_num++;
+                }
+				if (--conn_num > i)
+				{
+					res_conns[i] = res_conns[conn_num];
+				}
+			}
+			else
+			{
+			}
+		}
+	}
+
+	if(complete_num != j)
+	{
+		ereport(ERROR,
+				(errcode(ERRCODE_INTERNAL_ERROR),
+				 errmsg("Failed to send prepared due to not complete all")));
+	}
+
+	CloseCombiner(&combiner);
+	pfree_pgxc_all_handles(all_handles);
+    return complete_num;
+}
+
+static bool 
+check_hashjoinable(Expr *clause)
+{
+    Oid         opno;
+    Node       *leftarg;
+
+    if (!is_opclause(clause))
+        return false;
+    if (list_length(((OpExpr *) clause)->args) != 2)
+        return false;
+
+    opno = ((OpExpr *) clause)->opno;
+    leftarg = linitial(((OpExpr *) clause)->args);
+
+    if (op_hashjoinable(opno, exprType(leftarg)) &&
+            !contain_volatile_functions((Node *) clause))
+        return true;
+    return false;
+}
+int
+evalTargetNodeFromForeginScan(List *fdw_private, ParamExternDataInfo *paramsExtern, bool *is_replicate)
+{
+    ListCell *lc = NULL;
+    DistributionForParam *dist_for_param = NULL;
+    List *node_list;
+    
+    if(fdw_private == NULL)
+        return -1;
+
+    if(paramsExtern == NULL)
+        return -1;
+    lc = list_nth_cell(fdw_private, FdwScanPrivateDistByParam);
+    dist_for_param = (DistributionForParam *)lfirst(lc);
+
+    if(dist_for_param == NULL)
+        return -1;
+    if(dist_for_param->paramId == 0 && is_replicate != NULL)
+    {
+        *is_replicate = true;
+    }
+
+    node_list = GetRelationNodesWithDistAndParam(dist_for_param,  paramsExtern->param_list_info,
+                                        (List *) list_nth(fdw_private, FdwScanPrivateNodeList));
+
+    if(node_list == NULL || list_length(node_list) != 1)
+        return -1;
+
+    return linitial_int(node_list);
+}
+
+static Datum
+md5_text_local(text *in_text)
+{
+    size_t      len;
+    char        hexsum[32 + 1];
+
+    /* Calculate the length of the buffer using varlena metadata */
+    len = VARSIZE_ANY_EXHDR(in_text);
+
+    /* get the hash result */
+    if (pg_md5_hash(VARDATA_ANY(in_text), len, hexsum) == false)
+        ereport(ERROR,
+                (errcode(ERRCODE_OUT_OF_MEMORY),
+                 errmsg("out of memory")));
+
+    /* convert to text and return it */
+    PG_RETURN_TEXT_P(cstring_to_text(hexsum));
+}
+
+static List * 
+get_all_reloids(PlannerInfo *root, RelOptInfo *rel)
+{
+    int         relid = -1;
+    PgFdwRelationInfo *fpinfo = (PgFdwRelationInfo *) rel->fdw_private;
+    List *res = NIL;
+
+    while ((relid = bms_next_member(rel->relids, relid)) >= 0)
+    {
+        RangeTblEntry *rte;
+        if (bms_is_member(relid, fpinfo->lower_subquery_rels))
+            continue;
+        rte = planner_rt_fetch(relid, root); 
+        if(rte->rtekind == RTE_RELATION)
+        {
+            if(res == NIL)
+                res = list_make1_oid(rte->relid);
+            else
+                res = list_append_unique_oid(res, rte->relid);
+        }
+    }
+    relid = -1;
+    while ((relid = bms_next_member(fpinfo->lower_subquery_rels, relid)) >= 0)
+    {
+        RangeTblEntry *rte;
+
+        rte = planner_rt_fetch(relid, root); 
+        if(rte->rtekind == RTE_RELATION)
+        {
+            if(res == NIL)
+                res = list_make1_oid(rte->relid);
+            else
+                res = list_append_unique_oid(res, rte->relid);
+        }
+    }
+
+    return res;
 }

@@ -53,6 +53,7 @@
 #include "utils/pg_rusage.h"
 #include "utils/snapmgr.h"
 #include "utils/tuplesort.h"
+#include "pool/poolnodes.h"
 
 
 static void
@@ -169,6 +170,7 @@ InitResponseCombiner(ResponseCombiner *combiner, int node_count,
     combiner->tapemarks = NULL;
     combiner->tuplesortstate = NULL;
     combiner->cursor = NULL;
+    combiner->prep_name = NULL;
     combiner->update_cursor = NULL;
     combiner->cursor_count = 0;
     combiner->cursor_connections = NULL;
@@ -221,7 +223,7 @@ HandleTimestamp(ResponseCombiner *combiner, char *msg_body, size_t len, PGXCNode
 	LogicalClockUpdate(conn->receivedTimestamp);
 	if (enable_log_remote_query)
 	{
-		elog(LOG, "receive timestamp "LOGICALTIME_FORMAT" from server %s",
+		elog(DEBUG1, "receive timestamp "LOGICALTIME_FORMAT" from server %s",
 				LOGICALTIME_STRING(conn->receivedTimestamp), conn->nodename);
 	}
 }
@@ -276,7 +278,7 @@ HandleCommandComplete(ResponseCombiner *combiner, char *msg_body, size_t len, PG
 						{
 							PGXCNodeSetConnectionState(conn, DN_CONNECTION_STATE_IDLE);
 #ifdef     _PG_REGRESS_
-							elog(LOG, "RESPONSE_COMPLETE_2 set node %s, remote pid %d DN_CONNECTION_STATE_IDLE", conn->nodename, conn->backend_pid);
+							elog(DEBUG1, "RESPONSE_COMPLETE_2 set node %s, remote pid %d DN_CONNECTION_STATE_IDLE", conn->nodename, conn->backend_pid);
 #endif
 						}
 						/* There is a consistency issue in the database with the replicated table */
@@ -645,7 +647,7 @@ void add_error_message_from_combiner(PGXCNodeHandle *handle, void *combiner_inpu
         }
 
 #ifdef _PG_REGRESS_
-        elog(LOG, "add_error_message node:%s, running with pid %d non first time error: %s, error ptr:%lx",
+        elog(DEBUG1, "add_error_message node:%s, running with pid %d non first time error: %s, error ptr:%lx",
                 handle->nodename, handle->backend_pid, handle->error, (uint64)handle->error);
 #endif
 
@@ -669,7 +671,7 @@ void add_error_message_from_combiner(PGXCNodeHandle *handle, void *combiner_inpu
         }
 
 #ifdef _PG_REGRESS_
-        elog(LOG, "add_error_message node:%s, running with pid %d first time error: %s, ptr:%lx",
+        elog(DEBUG1, "add_error_message node:%s, running with pid %d first time error: %s, ptr:%lx",
                 handle->nodename, handle->backend_pid, handle->error, (uint64)handle->error);
 #endif
     }
@@ -724,7 +726,7 @@ handle_response(PGXCNodeHandle *conn, ResponseCombiner *combiner)
         if (conn->state == DN_CONNECTION_STATE_ERROR_FATAL)
         {
 #ifdef     _PG_REGRESS_
-            elog(LOG, "RESPONSE_COMPLETE_1 from node %s, remote pid %d", conn->nodename, conn->backend_pid);
+            elog(DEBUG1, "RESPONSE_COMPLETE_1 from node %s, remote pid %d", conn->nodename, conn->backend_pid);
 #endif
             return RESPONSE_COMPLETE;
         }
@@ -785,11 +787,11 @@ handle_response(PGXCNodeHandle *conn, ResponseCombiner *combiner)
                 {
                     PGXCNodeSetConnectionState(conn, DN_CONNECTION_STATE_IDLE);
 #ifdef     _PG_REGRESS_
-                    elog(LOG, "RESPONSE_COMPLETE_2 set node %s, remote pid %d DN_CONNECTION_STATE_IDLE", conn->nodename, conn->backend_pid);
+                    elog(DEBUG1, "RESPONSE_COMPLETE_2 set node %s, remote pid %d DN_CONNECTION_STATE_IDLE", conn->nodename, conn->backend_pid);
 #endif
                 }
 #ifdef     _PG_REGRESS_
-                elog(LOG, "RESPONSE_COMPLETE_2 from node %s, remote pid %d", conn->nodename, conn->backend_pid);
+                elog(DEBUG1, "RESPONSE_COMPLETE_2 from node %s, remote pid %d", conn->nodename, conn->backend_pid);
 #endif
                 return RESPONSE_COMPLETE;
 
@@ -819,8 +821,21 @@ handle_response(PGXCNodeHandle *conn, ResponseCombiner *combiner)
                 PGXCNodeSetConnectionState(conn, DN_CONNECTION_STATE_IDLE);
                 return RESPONSE_SUSPENDED;
             case '1': /* ParseComplete */
+                if(combiner->prep_name) 
+                {
+                    if(!SetPrepStmtIntoBEHash(combiner->prep_name, PGXCNodeGetNodeId(conn->nodeoid, NULL), true))
+                        elog(ERROR, "save preapre stmt info into BE prep hash failed");
+                }
+                break;
             case '2': /* BindComplete */
+                break;
             case '3': /* CloseComplete */
+                if(combiner->prep_name)
+                {
+                    if(!SetPrepStmtIntoBEHash(combiner->prep_name, PGXCNodeGetNodeId(conn->nodeoid, NULL), false))
+                        elog(ERROR, "save preapre stmt info into BE prep hash failed");
+                }
+                break;
             case 'n': /* NoData */
                 /* simple notifications, continue reading */
                 break;
@@ -845,7 +860,7 @@ handle_response(PGXCNodeHandle *conn, ResponseCombiner *combiner)
                     conn->needSync = true;
                 }
 #ifdef     _PG_REGRESS_
-                elog(LOG, "HandleError from node %s, remote pid %d, errorMessage:%s",
+                elog(DEBUG1, "HandleError from node %s, remote pid %d, errorMessage:%s",
                         conn->nodename, conn->backend_pid, combiner->errorMessage);
 #endif
                 return RESPONSE_ERROR;
@@ -875,7 +890,7 @@ handle_response(PGXCNodeHandle *conn, ResponseCombiner *combiner)
 #endif
 
 #ifdef     _PG_REGRESS_
-                elog(LOG, "ReadyForQuery from node %s, remote pid %d", conn->nodename, conn->backend_pid);
+                elog(DEBUG1, "ReadyForQuery from node %s, remote pid %d", conn->nodename, conn->backend_pid);
 #endif
                 return RESPONSE_READY;
             }
@@ -887,7 +902,7 @@ handle_response(PGXCNodeHandle *conn, ResponseCombiner *combiner)
 #ifdef DN_CONNECTION_DEBUG
                 conn->have_row_desc = false;
 #endif
-                elog(LOG, "ReadyForQuery from node %s, remote pid %d", conn->nodename, conn->backend_pid);
+                elog(DEBUG1, "ReadyForQuery from node %s, remote pid %d", conn->nodename, conn->backend_pid);
                 return RESPONSE_READY;
             }
             case 'M':            /* Command Id */
@@ -900,7 +915,7 @@ handle_response(PGXCNodeHandle *conn, ResponseCombiner *combiner)
 
             case 'I':            /* EmptyQuery */
 #ifdef     _PG_REGRESS_
-                elog(LOG, "RESPONSE_COMPLETE_3 from node %s, remote pid %d", conn->nodename, conn->backend_pid);
+                elog(DEBUG1, "RESPONSE_COMPLETE_3 from node %s, remote pid %d", conn->nodename, conn->backend_pid);
 #endif
                 return RESPONSE_COMPLETE;
 
@@ -909,7 +924,7 @@ handle_response(PGXCNodeHandle *conn, ResponseCombiner *combiner)
                 elog(WARNING, "Received unsupported message type: %c", msg_type);
                 PGXCNodeSetConnectionState(conn, DN_CONNECTION_STATE_ERROR_FATAL);
                 /* stop reading */
-                elog(LOG, "RESPONSE_COMPLETE_4 from node %s, remote pid %d", conn->nodename, conn->backend_pid);
+                elog(DEBUG1, "RESPONSE_COMPLETE_4 from node %s, remote pid %d", conn->nodename, conn->backend_pid);
                 return RESPONSE_COMPLETE;
         }
     }
@@ -928,13 +943,13 @@ validate_combiner(ResponseCombiner *combiner)
     /* There was error message while combining */
     if (combiner->errorMessage)
     {
-        elog(LOG, "validate_combiner there is errorMessage in combiner");
+        elog(DEBUG1, "validate_combiner there is errorMessage in combiner");
         return false;
     }
     /* Check if state is defined */
     if (combiner->request_type == REQUEST_TYPE_NOT_DEFINED)
     {
-        elog(LOG, "validate_combiner request_type is REQUEST_TYPE_NOT_DEFINED");
+        elog(DEBUG1, "validate_combiner request_type is REQUEST_TYPE_NOT_DEFINED");
         return false;
     }
 
@@ -943,14 +958,14 @@ validate_combiner(ResponseCombiner *combiner)
             || combiner->request_type == REQUEST_TYPE_QUERY)
             && combiner->command_complete_count != combiner->node_count)
     {
-        elog(LOG, "validate_combiner request_type is %d, command_complete_count:%d not equal node_count:%d", combiner->request_type, combiner->command_complete_count, combiner->node_count);
+        elog(DEBUG1, "validate_combiner request_type is %d, command_complete_count:%d not equal node_count:%d", combiner->request_type, combiner->command_complete_count, combiner->node_count);
         return false;
     }
 
     /* Check count of description responses */
     if (combiner->request_type == REQUEST_TYPE_QUERY && combiner->description_count != combiner->node_count)
     {
-        elog(LOG, "validate_combiner request_type is REQUEST_TYPE_QUERY, description_count:%d not equal node_count:%d", combiner->description_count, combiner->node_count);
+        elog(DEBUG1, "validate_combiner request_type is REQUEST_TYPE_QUERY, description_count:%d not equal node_count:%d", combiner->description_count, combiner->node_count);
         return false;
     }
 
@@ -958,7 +973,7 @@ validate_combiner(ResponseCombiner *combiner)
     if (combiner->request_type == REQUEST_TYPE_COPY_IN
             && combiner->copy_in_count != combiner->node_count)
     {
-        elog(LOG, "validate_combiner request_type is REQUEST_TYPE_COPY_IN, copy_in_count:%d not equal node_count:%d", combiner->copy_in_count, combiner->node_count);
+        elog(DEBUG1, "validate_combiner request_type is REQUEST_TYPE_COPY_IN, copy_in_count:%d not equal node_count:%d", combiner->copy_in_count, combiner->node_count);
         return false;
     }
 
@@ -966,7 +981,7 @@ validate_combiner(ResponseCombiner *combiner)
     if (combiner->request_type == REQUEST_TYPE_COPY_OUT
             && combiner->copy_out_count != combiner->node_count)
     {
-        elog(LOG, "validate_combiner request_type is REQUEST_TYPE_COPY_OUT, copy_out_count:%d not equal node_count:%d", combiner->copy_out_count, combiner->node_count);
+        elog(DEBUG1, "validate_combiner request_type is REQUEST_TYPE_COPY_OUT, copy_out_count:%d not equal node_count:%d", combiner->copy_out_count, combiner->node_count);
         return false;
     }
 
@@ -1118,7 +1133,7 @@ pgxc_connections_cleanup(ResponseCombiner *combiner)
          */
         if (conn->combiner && conn->combiner != combiner)
         {
-            elog(LOG, "pgxc_connections_cleanup is different, remove connection:%s", conn->nodename);
+            elog(DEBUG1, "pgxc_connections_cleanup is different, remove connection:%s", conn->nodename);
             REMOVE_CURR_CONN(combiner);
             continue;
         }
@@ -1133,7 +1148,7 @@ pgxc_connections_cleanup(ResponseCombiner *combiner)
         ret = pgxc_node_receive(1, &conn, &timeout);
         if (DNStatus_ERR == ret)
         {
-            elog(LOG, "Failed to read response from data node:%s pid:%d when ending query for ERROR, node status:%d",
+            elog(DEBUG1, "Failed to read response from data node:%s pid:%d when ending query for ERROR, node status:%d",
                          conn->nodename, conn->backend_pid, conn->state);
         }
 
@@ -1150,7 +1165,7 @@ pgxc_connections_cleanup(ResponseCombiner *combiner)
                 ret = pgxc_node_receive(1, &conn, &timeout);
                 if (DNStatus_ERR == ret)
                 {
-                    elog(LOG, "Failed to read response from data node:%u when ending query for ERROR, state:%d",
+                    elog(DEBUG1, "Failed to read response from data node:%u when ending query for ERROR, state:%d",
                                     conn->nodeoid, conn->state);
                 }
 
@@ -1534,43 +1549,43 @@ READ_NEXT_ROW:
                 {
                     if (combiner->extended_query)
                     {
-			if(combiner->merge_sort)
-			{
-				combiner->connections[combiner->current_conn] = NULL;
-				conn = NULL;
-				if(combiner->dataRowBuffer && combiner->dataRowBuffer[combiner->current_conn])
-					goto READ_NEXT_ROW;
-			}
-			else
-			{
+                        if(combiner->merge_sort)
+                        {
+                            combiner->connections[combiner->current_conn] = NULL;
+                            conn = NULL;
+                            if(combiner->dataRowBuffer && combiner->dataRowBuffer[combiner->current_conn])
+                                goto READ_NEXT_ROW;
+                        }
+                        else
+                        {
 
-				REMOVE_CURR_CONN(combiner);
-				if (combiner->conn_count > 0)
-					conn = combiner->connections[combiner->current_conn];
-				else
-					goto READ_NEXT_ROW;
-			}
+                            REMOVE_CURR_CONN(combiner);
+                            if (combiner->conn_count > 0)
+                                conn = combiner->connections[combiner->current_conn];
+                            else
+                                goto READ_NEXT_ROW;
+                        }
                         
                     }
                     break;
                 }
             case RESPONSE_READY:
                 {
-			if(combiner->merge_sort)
-			{
-				combiner->connections[combiner->current_conn] = NULL;
-				conn = NULL;
-				if(combiner->dataRowBuffer && combiner->dataRowBuffer[combiner->current_conn])
-					goto READ_NEXT_ROW;
-			}
-			else
-			{
-				REMOVE_CURR_CONN(combiner);
-				if (combiner->conn_count > 0)
-					conn = combiner->connections[combiner->current_conn];
-				else
-					goto READ_NEXT_ROW;
-			}
+                    if(combiner->merge_sort)
+                    {
+                        combiner->connections[combiner->current_conn] = NULL;
+                        conn = NULL;
+                        if(combiner->dataRowBuffer && combiner->dataRowBuffer[combiner->current_conn])
+                            goto READ_NEXT_ROW;
+                    }
+                    else
+                    {
+                        REMOVE_CURR_CONN(combiner);
+                        if (combiner->conn_count > 0)
+                            conn = combiner->connections[combiner->current_conn];
+                        else
+                            goto READ_NEXT_ROW;
+                    }
 
                     break;
                 }
@@ -1639,7 +1654,7 @@ pgxc_node_receive_responses(const int conn_count, PGXCNodeHandle ** connections,
             int rece_idx = 0;
             int fatal_conn_inner;
             has_errmsg = true;
-            elog(LOG, "pgxc_node_receive_responses pgxc_node_receive data from node number:%d failed", count);
+            elog(DEBUG1, "pgxc_node_receive_responses pgxc_node_receive data from node number:%d failed", count);
             /* mark has error */
             func_ret = -1;
             memset((char*)to_receive, 0, conn_count*sizeof(PGXCNodeHandle *));
@@ -1678,7 +1693,7 @@ pgxc_node_receive_responses(const int conn_count, PGXCNodeHandle ** connections,
             int32 nbytes = 0;
             int result =  handle_response(to_receive[i], combiner);
 #ifdef     _PG_REGRESS_
-            elog(LOG, "Received response %d on connection to node %s",
+            elog(DEBUG1, "Received response %d on connection to node %s",
                     result, to_receive[i]->nodename);
 #else
             elog(DEBUG5, "Received response %d on connection to node %s",
@@ -1732,13 +1747,13 @@ pgxc_node_receive_responses(const int conn_count, PGXCNodeHandle ** connections,
                             {
                                 case DNStatus_ERR:
                                     {
-                                        elog(LOG, "pgxc_node_receive Pending data %d bytes from node:%s pid:%d failed for ERROR:%s. ", nbytes, to_receive[i]->nodename, to_receive[i]->backend_pid, strerror(errno));
+                                        elog(DEBUG1, "pgxc_node_receive Pending data %d bytes from node:%s pid:%d failed for ERROR:%s. ", nbytes, to_receive[i]->nodename, to_receive[i]->backend_pid, strerror(errno));
                                         break;
                                     }
 
                                 case DNStatus_EXPIRED:
                                     {
-                                        elog(LOG, "pgxc_node_receive Pending data %d bytes from node:%s pid:%d failed for EXPIRED. ", nbytes, to_receive[i]->nodename, to_receive[i]->backend_pid);
+                                        elog(DEBUG1, "pgxc_node_receive Pending data %d bytes from node:%s pid:%d failed for EXPIRED. ", nbytes, to_receive[i]->nodename, to_receive[i]->backend_pid);
                                         break;
                                     }
                                 default:

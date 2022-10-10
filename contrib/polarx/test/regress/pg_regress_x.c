@@ -830,6 +830,7 @@ set_node_config_file(PGXCNodeTypeNum node)
 	fputs("enable_timestamp_debug_print = false\n", pg_conf);
 #endif
 	fputs("polarx.enable_log_remote_query = false\n", pg_conf);
+	fputs("polarx.enable_plan_cache = false\n", pg_conf);
 	fputs("log_statement = 'all'\n", pg_conf);
 
 	fputs("max_connections = 100\n", pg_conf);
@@ -937,6 +938,7 @@ setup_connection_information(const char *database)
 			(char *)get_node_name(PGXC_DATANODE_2), get_port_number(PGXC_DATANODE_2));
 
     psql_command_node(database, PGXC_COORD_1, "CREATE SERVER cluster_server FOREIGN DATA WRAPPER polarx;");
+    psql_command_node(database, PGXC_COORD_1, "SELECT polardbx_build_shard_map(4);");
 
 	/* -----coordinator 2 ------- */
     psql_command_node(database, PGXC_COORD_2, "CREATE EXTENSION polarx;");
@@ -959,6 +961,7 @@ setup_connection_information(const char *database)
 
 
     psql_command_node(database, PGXC_COORD_2, "CREATE SERVER cluster_server FOREIGN DATA WRAPPER polarx;");
+    psql_command_node(database, PGXC_COORD_2, "SELECT polardbx_build_shard_map(4);");
 
 
 	/* -----datanode 1 ------- */

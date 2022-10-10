@@ -57,3 +57,7 @@ Checkpoint时会遍历内存中的2pc事务列表
 当cn确认所有参与者提交成功，再下发命令，删除该2pc事务在所有节点上的2pc file。
 * 如果删除失败：为避免2pc file堆积，由2pc清理程序来清理过时的2pc file
 * 如果在所有参与者上都不存在2pc残留事务，且当前时间比该2pc file中的prepare时间超过5min（时间暂定，需要比2min的事务清理时限更长），则由清理程序来删除该文件。
+
+___
+
+Copyright © Alibaba Group, Inc.

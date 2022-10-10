@@ -219,15 +219,15 @@ select * from tttest order by 1,2,3,4;
 -- now we want to change pric_id in ALL tuples
 -- this gets us not what we need
 update tttest set price_id = 5 where price_id = 3;
+ERROR:  distribute-column does not support cross update
 select * from tttest order by 1,2,3,4;
  price_id | price_val | price_on | price_off 
 ----------+-----------+----------+-----------
         1 |         1 |       10 |    999999
         2 |         2 |       20 |        40
         3 |         3 |       30 |        50
-        3 |        30 |       50 |        60
-        5 |        30 |       60 |    999999
-(5 rows)
+        3 |        30 |       50 |    999999
+(4 rows)
 
 -- restore data as before last update:
 select set_ttdummy(0);
@@ -249,13 +249,14 @@ select * from tttest order by 1,2,3,4;
 
 -- and try change price_id now!
 update tttest set price_id = 5 where price_id = 3;
+ERROR:  distribute-column does not support cross update
 select * from tttest order by 1,2,3,4;
  price_id | price_val | price_on | price_off 
 ----------+-----------+----------+-----------
         1 |         1 |       10 |    999999
         2 |         2 |       20 |        40
-        5 |         3 |       30 |        50
-        5 |        30 |       50 |    999999
+        3 |         3 |       30 |        50
+        3 |        30 |       50 |    999999
 (4 rows)
 
 -- isn't it what we need ?
@@ -282,8 +283,8 @@ select * from tttest order by 1,2,3,4;
 ----------+-----------+----------+-----------
         1 |         1 |       -1 |    999999
         2 |         2 |       20 |        40
-        5 |         3 |       30 |        50
-        5 |        30 |       50 |    999999
+        3 |         3 |       30 |        50
+        3 |        30 |       50 |    999999
 (4 rows)
 
 -- isn't it what we need ?
@@ -328,10 +329,10 @@ INSERT INTO main_table DEFAULT VALUES;
 NOTICE:  trigger_func(before_ins_stmt) called: action = INSERT, when = BEFORE, level = STATEMENT
 NOTICE:  trigger_func(after_ins_stmt) called: action = INSERT, when = AFTER, level = STATEMENT
 UPDATE main_table SET a = a + 1 WHERE b < 30;
-ERROR:  distribute-column update is not supported
+ERROR:  distribute-column does not support cross update
 -- UPDATE that effects zero rows should still call per-statement trigger
 UPDATE main_table SET a = a + 2 WHERE b > 100;
-ERROR:  distribute-column update is not supported
+NOTICE:  trigger_func(after_upd_stmt) called: action = UPDATE, when = AFTER, level = STATEMENT
 -- constraint now unneeded
 ALTER TABLE main_table DROP CONSTRAINT main_table_a_key;
 -- COPY should fire per-row and per-statement INSERT triggers
@@ -499,10 +500,9 @@ UPDATE some_t SET some_col = TRUE;
 NOTICE:  dummy_update_func(before) called: action = UPDATE, old = (t), new = (t)
 UPDATE some_t SET some_col = FALSE;
 NOTICE:  dummy_update_func(before) called: action = UPDATE, old = (t), new = (f)
-NOTICE:  dummy_update_func(afterb) called: action = UPDATE, old = (t), new = (f)
+ERROR:  distribute-column does not support cross update
 UPDATE some_t SET some_col = TRUE;
-NOTICE:  dummy_update_func(before) called: action = UPDATE, old = (f), new = (t)
-NOTICE:  dummy_update_func(aftera) called: action = UPDATE, old = (f), new = (t)
+NOTICE:  dummy_update_func(before) called: action = UPDATE, old = (t), new = (t)
 DROP TABLE some_t;
 -- bogus cases
 CREATE TRIGGER error_upd_and_col BEFORE UPDATE OR UPDATE OF a ON main_table
@@ -1032,16 +1032,36 @@ UPDATE main_view SET b = 31 WHERE a = 20;
 NOTICE:  main_view BEFORE UPDATE STATEMENT (before_view_upd_stmt)
 NOTICE:  main_view INSTEAD OF UPDATE ROW (instead_of_upd)
 NOTICE:  OLD: (20,10), NEW: (20,31)
-ERROR:  distribute-column update is not supported
-CONTEXT:  SQL statement "UPDATE main_table SET a = NEW.a, b = NEW.b WHERE a = OLD.a AND b = OLD.b"
-PL/pgSQL function view_trigger() line 23 at SQL statement
+NOTICE:  trigger_func(before_upd_a_stmt) called: action = UPDATE, when = BEFORE, level = STATEMENT
+NOTICE:  trigger_func(after_upd_a_b_row) called: action = UPDATE, when = AFTER, level = ROW
+NOTICE:  trigger_func(after_upd_b_row) called: action = UPDATE, when = AFTER, level = ROW
+NOTICE:  trigger_func(after_upd_b_stmt) called: action = UPDATE, when = AFTER, level = STATEMENT
+NOTICE:  trigger_func(after_upd_stmt) called: action = UPDATE, when = AFTER, level = STATEMENT
+NOTICE:  main_view INSTEAD OF UPDATE ROW (instead_of_upd)
+NOTICE:  OLD: (20,30), NEW: (20,31)
+NOTICE:  trigger_func(before_upd_a_stmt) called: action = UPDATE, when = BEFORE, level = STATEMENT
+NOTICE:  trigger_func(after_upd_a_b_row) called: action = UPDATE, when = AFTER, level = ROW
+NOTICE:  trigger_func(after_upd_b_row) called: action = UPDATE, when = AFTER, level = ROW
+NOTICE:  trigger_func(after_upd_b_stmt) called: action = UPDATE, when = AFTER, level = STATEMENT
+NOTICE:  trigger_func(after_upd_stmt) called: action = UPDATE, when = AFTER, level = STATEMENT
+NOTICE:  main_view AFTER UPDATE STATEMENT (after_view_upd_stmt)
+UPDATE 2
 UPDATE main_view SET b = 32 WHERE a = 21 AND b = 31 RETURNING a, b;
 NOTICE:  main_view BEFORE UPDATE STATEMENT (before_view_upd_stmt)
 NOTICE:  main_view INSTEAD OF UPDATE ROW (instead_of_upd)
 NOTICE:  OLD: (21,31), NEW: (21,32)
-ERROR:  distribute-column update is not supported
-CONTEXT:  SQL statement "UPDATE main_table SET a = NEW.a, b = NEW.b WHERE a = OLD.a AND b = OLD.b"
-PL/pgSQL function view_trigger() line 23 at SQL statement
+NOTICE:  trigger_func(before_upd_a_stmt) called: action = UPDATE, when = BEFORE, level = STATEMENT
+NOTICE:  trigger_func(after_upd_a_b_row) called: action = UPDATE, when = AFTER, level = ROW
+NOTICE:  trigger_func(after_upd_b_row) called: action = UPDATE, when = AFTER, level = ROW
+NOTICE:  trigger_func(after_upd_b_stmt) called: action = UPDATE, when = AFTER, level = STATEMENT
+NOTICE:  trigger_func(after_upd_stmt) called: action = UPDATE, when = AFTER, level = STATEMENT
+NOTICE:  main_view AFTER UPDATE STATEMENT (after_view_upd_stmt)
+ a  | b  
+----+----
+ 21 | 32
+(1 row)
+
+UPDATE 1
 -- Before and after stmt triggers should fire even when no rows are affected
 UPDATE main_view SET b = 0 WHERE false;
 NOTICE:  main_view BEFORE UPDATE STATEMENT (before_view_upd_stmt)
@@ -1051,13 +1071,13 @@ UPDATE 0
 DELETE FROM main_view WHERE a IN (20,21);
 NOTICE:  main_view BEFORE DELETE STATEMENT (before_view_del_stmt)
 NOTICE:  main_view INSTEAD OF DELETE ROW (instead_of_del)
-NOTICE:  OLD: (21,31)
+NOTICE:  OLD: (21,32)
 NOTICE:  main_view INSTEAD OF DELETE ROW (instead_of_del)
-NOTICE:  OLD: (20,10)
+NOTICE:  OLD: (20,31)
 NOTICE:  main_view INSTEAD OF DELETE ROW (instead_of_del)
-NOTICE:  OLD: (20,30)
+NOTICE:  OLD: (20,31)
 NOTICE:  main_view AFTER DELETE STATEMENT (after_view_del_stmt)
-DELETE 3
+DELETE 2
 DELETE FROM main_view WHERE a = 31 RETURNING a, b;
 NOTICE:  main_view BEFORE DELETE STATEMENT (before_view_del_stmt)
 NOTICE:  main_view AFTER DELETE STATEMENT (after_view_del_stmt)
@@ -1828,7 +1848,12 @@ NOTICE:  trigger on parted_stmt_trig AFTER INSERT for STATEMENT
 with upd as (
   update parted2_stmt_trig set a = a
 ) update parted_stmt_trig  set a = a;
-ERROR:  distribute-column update is not supported
+NOTICE:  trigger on parted_stmt_trig BEFORE UPDATE for STATEMENT
+NOTICE:  trigger on parted_stmt_trig1 BEFORE UPDATE for ROW
+NOTICE:  trigger on parted2_stmt_trig BEFORE UPDATE for STATEMENT
+NOTICE:  trigger on parted_stmt_trig1 AFTER UPDATE for ROW
+NOTICE:  trigger on parted_stmt_trig AFTER UPDATE for STATEMENT
+NOTICE:  trigger on parted2_stmt_trig AFTER UPDATE for STATEMENT
 delete from parted_stmt_trig;
 NOTICE:  trigger on parted_stmt_trig BEFORE DELETE for STATEMENT
 NOTICE:  trigger on parted_stmt_trig AFTER DELETE for STATEMENT
@@ -2261,7 +2286,7 @@ insert into refd_table values
 --  (3, 'three a'),
 --  (3, 'three b');
 update refd_table set a = 11 where b = 'one';
-ERROR:  distribute-column update is not supported
+ERROR:  distribute-column does not support cross update
 select * from trig_table;
  a | b 
 ---+---

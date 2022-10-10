@@ -159,6 +159,9 @@ AlterTablePrepCmds(AlterTableStmt *atstmt)
                                         case LOCATOR_TYPE_HASH:
                                             if(rd_locator_info->locatorType == LOCATOR_TYPE_HASH)
                                                 break;
+                                        case LOCATOR_TYPE_SHARD:
+                                            if(rd_locator_info->locatorType == LOCATOR_TYPE_SHARD)
+                                                break;    
                                         case LOCATOR_TYPE_MODULO:
                                             if(rd_locator_info->locatorType == LOCATOR_TYPE_MODULO)
                                                 break;
@@ -320,6 +323,9 @@ AlterTablePrepCmds(AlterTableStmt *atstmt)
                                             case LOCATOR_TYPE_HASH:
                                                 if(rd_locator_info->locatorType == LOCATOR_TYPE_HASH)
                                                     break;
+                                            case LOCATOR_TYPE_SHARD:
+                                                if(rd_locator_info->locatorType == LOCATOR_TYPE_SHARD)
+                                                    break;
                                             case LOCATOR_TYPE_MODULO:
                                                 if(rd_locator_info->locatorType == LOCATOR_TYPE_MODULO)
                                                     break;
@@ -478,7 +484,7 @@ CheckLocalIndexColumn (char loctype, char *partcolname, char *indexcolname)
         ereport(ERROR,
                 (errcode(ERRCODE_INVALID_COLUMN_REFERENCE),
                  errmsg("Cannot locally enforce a unique index on round robin distributed table.")));
-    else if (loctype == LOCATOR_TYPE_HASH || loctype == LOCATOR_TYPE_MODULO)
+    else if (loctype == LOCATOR_TYPE_HASH || loctype == LOCATOR_TYPE_MODULO || loctype == LOCATOR_TYPE_SHARD)
     {
         if (partcolname && indexcolname && strcmp(partcolname, indexcolname) == 0)
             return true;

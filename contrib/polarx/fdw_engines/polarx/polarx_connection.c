@@ -28,6 +28,7 @@
 #include "utils/inval.h"
 #include "utils/memutils.h"
 #include "utils/syscache.h"
+#include "metadata/cache.h"
 
 
 /*
@@ -643,7 +644,7 @@ ReleaseConnectionCluster(PGconn **conns)
  * collisions are highly improbable; just be sure to use %u not %d to print.
  */
 unsigned int
-GetCursorNumber(PGconn **conns)
+GetCursorNumber(void)
 {
 	return ++cursor_number;
 }
@@ -657,7 +658,7 @@ GetCursorNumber(PGconn **conns)
  * increasing the risk of prepared-statement name collisions by resetting.
  */
 unsigned int
-GetPrepStmtNumber(PGconn *conn)
+GetPrepStmtNumber(void)
 {
 	return ++prep_stmt_number;
 }
@@ -1403,6 +1404,22 @@ exit:	;
 static void
 polarx_fdw_xact_callback(XactEvent event, void *arg)
 {
-	cursor_number = 0;
 	prep_stmt_number = 0;
+	
+	switch (event)
+    {
+        case XACT_EVENT_COMMIT:
+        case XACT_EVENT_ABORT:            
+            if (ReceivedShardMapInvalidateMsg)
+            {
+                elog(DEBUG1, "[TRACESHARDMAP] set ReceivedShardMapInvalidateMsg to false, "
+                          "and invalidate shardmap cache when transaction is complete.");
+                InvalidateShardMapCache();
+                ReceivedShardMapInvalidateMsg = false;
+            }
+            break;
+
+        default:
+            break;
+    }
 }

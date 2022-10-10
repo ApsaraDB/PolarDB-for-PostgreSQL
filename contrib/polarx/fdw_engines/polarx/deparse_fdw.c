@@ -191,6 +191,7 @@ static void appendAggOrderBy(List *orderList, List *targetList,
 static void appendFunctionName(Oid funcid, deparse_expr_cxt *context);
 static Node *deparseSortGroupClause(Index ref, List *tlist, bool force_colno,
 					   deparse_expr_cxt *context);
+static void deparseArrayCoerceExpr(ArrayCoerceExpr *node, deparse_expr_cxt *context);
 
 /*
  * Helper functions
@@ -487,7 +488,8 @@ foreign_expr_walker(Node *node,
 				 * If function's input collation is not derived from a foreign
 				 * Var, it can't be sent to remote.
 				 */
-				if (fe->inputcollid == InvalidOid)
+				if (fe->inputcollid == InvalidOid ||
+                        fe->inputcollid == DEFAULT_COLLATION_OID)
 					 /* OK, inputs are all noncollatable */ ;
 				else if (inner_cxt.state != FDW_COLLATE_SAFE ||
 						 fe->inputcollid != inner_cxt.collation)
@@ -798,6 +800,32 @@ foreign_expr_walker(Node *node,
 					state = FDW_COLLATE_UNSAFE;
 			}
 			break;
+        case T_ArrayCoerceExpr:
+            {
+                ArrayCoerceExpr  *arrce = (ArrayCoerceExpr *) node; 
+
+                if(IsA(arrce->arg, Param))
+                {
+                    if (!foreign_expr_walker((Node *)arrce->arg, glob_cxt, &inner_cxt))
+                        return false;
+
+                    collation = arrce->resultcollid;
+                    if (collation == InvalidOid)
+                        state = FDW_COLLATE_NONE;
+                    else if (inner_cxt.state == FDW_COLLATE_SAFE &&
+                            collation == inner_cxt.collation)
+                        state = FDW_COLLATE_SAFE;
+                    else if (collation == DEFAULT_COLLATION_OID)
+                        state = FDW_COLLATE_NONE;
+                    else
+                        state = FDW_COLLATE_UNSAFE;
+                }
+                else
+                {
+                    return false;
+                }
+            }
+            break;
 		default:
 
 			/*
@@ -2404,6 +2432,9 @@ deparseExpr(Expr *node, deparse_expr_cxt *context)
 		case T_PlaceHolderVar:
 			deparseExpr((Expr *)((PlaceHolderVar *)node)->phexpr, context);
 			break;
+        case T_ArrayCoerceExpr:
+            deparseArrayCoerceExpr((ArrayCoerceExpr *) node, context);
+            break;
 		default:
 			elog(ERROR, "unsupported expression type for deparse: %d",
 				 (int) nodeTag(node));
@@ -3074,6 +3105,13 @@ deparseAggref(Aggref *node, deparse_expr_cxt *context)
 	appendStringInfoChar(buf, ')');
 }
 
+static void
+deparseArrayCoerceExpr(ArrayCoerceExpr *node, deparse_expr_cxt *context)
+{
+    if(!IsA(node->arg, Param))
+        elog(ERROR, "current not support deparse ArrayCoerceExpr without Param");
+    deparseExpr((Expr *) node->arg, context);
+}
 /*
  * Append ORDER BY within aggregate function.
  */

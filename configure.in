@@ -2448,10 +2448,6 @@ if test x"$PG_SYSROOT" != x; then
 fi
 AC_SUBST(PG_SYSROOT)
 
-# For PGXC, set -DPGXC by default. This can be overriden with -UPGXC if the user sets it.
-# For Postgres-XL, set both -DPGXC and -DXCP
-CFLAGS="-DPGXC -DXCP $CFLAGS"
-
 
 # Begin output steps
 

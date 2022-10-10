@@ -1233,6 +1233,11 @@ bool is_polar_local_nodeprimary(void)
     return lnDef.nodeisprimary;
 }
 
+NodeDefinition* get_dn_nodes_def(void)
+{
+	return dnDefs;
+}
+
 void
 InitLocalNodeInfo(void)
 { // #lizard forgives

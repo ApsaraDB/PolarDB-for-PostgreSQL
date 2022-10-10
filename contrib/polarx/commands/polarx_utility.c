@@ -90,7 +90,14 @@
 #include "nodes/polarx_node.h"
 #include "parser/parse_distribute.h"
 #include "distribute_transaction/txn.h"
+#include "executor/spi.h"
+#include "metadata/cache.h"
+#include "catalog/indexing.h"
+#include "partitioning/partdefs.h"
+#include "utils/partcache.h"
+#include "parser/parse_clause.h"
 
+PG_FUNCTION_INFO_V1(polardbx_build_shard_map);
 bool SetExecUtilityLocal = false;
 
 static bool ProcessUtilityPre(PlannedStmt *pstmt,
@@ -149,6 +156,7 @@ static void polarx_ProcessUtility_internal(PlannedStmt *pstmt,
                                             DestReceiver *dest,
                                             bool sentToRemote,
                                             char *completionTag);
+static const char* get_hashfunc_name(Oid dataType);
 
 void
 polarx_ProcessUtility(PlannedStmt *pstmt,
@@ -256,7 +264,7 @@ ProcessUtilityPre(PlannedStmt *pstmt,
                 RangeVar *var = ((CopyStmt *) parsetree)->relation;
 
                 if(var)
-                    AdjustRelationToForeignTable(list_make1(var));
+                    AdjustRelationToForeignTable(list_make1(var), NULL);
             }
             break;
         case T_PrepareStmt:
@@ -315,7 +323,7 @@ ProcessUtilityPre(PlannedStmt *pstmt,
                         {
                             VacuumRelation *vrel = lfirst_node(VacuumRelation, cell);
                             if(vrel->relation)
-                                AdjustRelationToForeignTable(list_make1(vrel->relation));
+                                AdjustRelationToForeignTable(list_make1(vrel->relation), NULL);
                         }
                     }
                     if(IS_PGXC_LOCAL_COORDINATOR)
@@ -1629,12 +1637,14 @@ ProcessUtilitySlow(ParseState *pstate,
                     bool        is_temp = false;
                     bool        is_distributed = false;
                     bool        is_local = isCreateLocalTable(((CreateStmt *) parsetree)->options);
+                    bool		is_with_oids = false;
                     List        *orgColDefs = ((CreateStmt *) parsetree)->tableElts;
+                    bool		force_hash_strategy = false;
 
                     /* Run parse analysis ... */
                     stmts = transformCreateStmt((CreateStmt *) parsetree,
                             queryString);
-
+					is_with_oids = interpretOidsOption(((CreateStmt *) parsetree)->options, polarxNodeTag(parsetree) == T_CreateStmt);
                     if (IS_PGXC_LOCAL_COORDINATOR)
                     {
                         /*
@@ -1688,8 +1698,7 @@ ProcessUtilitySlow(ParseState *pstate,
                      */
                     if (is_distributed)
                         stmts = AddRemoteQueryNode(stmts, queryString, is_local
-                          ? EXEC_ON_NONE	 
-                               :EXEC_ON_ALL_NODES);
+                          ? EXEC_ON_NONE : EXEC_ON_ALL_NODES);
                     
                     /* ... and do it */
                     foreach(l, stmts)
@@ -1728,19 +1737,92 @@ ProcessUtilitySlow(ParseState *pstate,
                                 if(!dist_by)
                                     elog(ERROR, "distribute infomation is needed for create a distribute table");
                                 validDistbyOnTableConstrants(dist_by, orgColDefs, createStmt);
-                                fstmt->options = list_make1(makeDefElem("use_remote_estimate", 
-                                            (Node *)makeString(pstrdup(use_remote_estimate)),
-                                            -1));
+
+                                if (dist_by->disttype == DISTTYPE_HASH)
+								{
+									if(dist_by->colname != NULL)
+									{
+										fstmt->options = list_make1(makeDefElem("dist_col_name",
+																				(Node *)makeString(pstrdup(dist_by->colname)),
+																				-1));
+									}
+								}
+								else if (dist_by->disttype == DISTTYPE_SHARD)
+								{
+									/* If partiton table, try to use hash strategy for now */
+									if (tryTransformShardToHash)
+									{
+										if (createStmt->partspec || createStmt->partbound || createStmt->inhRelations)
+											force_hash_strategy = true;
+									}
+
+									if(dist_by->colname != NULL)
+									{
+										fstmt->options = list_make1(makeDefElem("dist_col_name",
+																				(Node *)makeString(pstrdup(dist_by->colname)),
+																				-1));
+										if (is_distributed)
+										{
+											Oid relationId = address.objectId;
+											Node *remote_query_stmt = (Node *) lfirst(list_tail(stmts));
+											RemoteQuery* remote_query = (RemoteQuery*)remote_query_stmt;
+
+											Relation rel = relation_open(relationId, NoLock);
+											TupleDesc tupDesc = RelationGetDescr(rel);
+											Form_pg_attribute attr = tupDesc->attrs;
+											int partAttrNum = get_attnum(relationId, dist_by->colname);
+											Oid typeOfValueForDistCol = attr[partAttrNum - 1].atttypid;
+											relation_close(rel, NoLock);
+											const char* tmp = NULL;
+											tmp = get_hashfunc_name(typeOfValueForDistCol);
+											if (NULL == tmp || is_temp)
+											{
+												if (tryTransformShardToHash)
+													force_hash_strategy = true;
+												else
+													elog(ERROR, "Failed to create shard table, try to use hash table.");
+											}
+												
+											if (force_hash_strategy)
+											{
+												/* should use hash if current is shard. */
+													dist_by->disttype = 1;
+											}
+											else
+											{
+												remote_query->relationId = relationId;
+												remote_query->schema_name = pstrdup(createStmt->relation->schemaname);
+												remote_query->tbl_name = pstrdup(createStmt->relation->relname);
+												remote_query->dist_col_name = pstrdup(dist_by->colname);
+												remote_query->need_dn_create_partition_table_cmd = true;
+												remote_query->with_oids = is_with_oids;
+												remote_query->hash_func_name = pstrdup(tmp);
+											}
+										}
+									}
+								}
+                                
+								if (NULL == fstmt->options)
+									fstmt->options = list_make1(makeDefElem("use_remote_estimate", 
+												(Node *)makeString(pstrdup(use_remote_estimate)),
+												-1));
+								else
+									fstmt->options = lappend(fstmt->options,
+															 makeDefElem("use_remote_estimate",
+																	(Node *)makeString(pstrdup(use_remote_estimate)),
+																	-1));
                                 fstmt->servername = pstrdup(server_name);
 
-                                if(dist_by->disttype == 0)
+                                if(dist_by->disttype == DISTTYPE_REPLICATION)
                                     dist_type = "R";
-                                else if(dist_by->disttype == 1)
+                                else if(dist_by->disttype == DISTTYPE_HASH)
                                     dist_type = "H";
-                                else if(dist_by->disttype == 2)
+                                else if(dist_by->disttype == DISTTYPE_ROUNDROBIN)
                                     dist_type = "N";
-                                else if(dist_by->disttype == 3)
+                                else if(dist_by->disttype == DISTTYPE_MODULO)
                                     dist_type = "M";
+                                else if(dist_by->disttype == DISTTYPE_SHARD)
+                                    dist_type = "S";
                                 else
                                     ereport(ERROR,
                                             (errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
@@ -1749,12 +1831,6 @@ ProcessUtilitySlow(ParseState *pstate,
                                         makeDefElem("locator_type",
                                             (Node *)makeString(pstrdup(dist_type)),
                                             -1));
-
-                                if(dist_by->colname != NULL)
-                                    fstmt->options = lappend(fstmt->options,
-                                            makeDefElem("dist_col_name",
-                                                (Node *)makeString(pstrdup(dist_by->colname)),
-                                                -1));
                                 CreateForeignTable(fstmt,
                                         address.objectId);
 
@@ -1848,6 +1924,10 @@ ProcessUtilitySlow(ParseState *pstate,
                     List       *stmts;
                     ListCell   *l;
                     LOCKMODE    lockmode;
+					bool need_disable_partition_key = false;
+					Relation	rel;
+					struct PartitionKeyData *key;
+					int partnatts_save;
 
                     if(IS_PGXC_COORDINATOR)
                         AlterTablePrepCmds(atstmt);
@@ -1878,9 +1958,57 @@ ProcessUtilitySlow(ParseState *pstate,
 
                             if (IsA(stmt, AlterTableStmt))
                             {
+                            	AlterTableStmt *tmpStmt = (AlterTableStmt*)stmt;
+								int cmd_count = list_length(tmpStmt->cmds);
+								ListCell *tmpCell;
+								if (IS_PGXC_DATANODE && IsConnFromCoord() && cmd_count > 0)
+								{
+									foreach(tmpCell, tmpStmt->cmds)
+									{
+										Node *tmpNode = (Node*) lfirst(tmpCell);
+										if (IsA(tmpNode, AlterTableCmd))
+										{
+											AlterTableCmd *tmpATCmd = (AlterTableCmd*)tmpNode;
+											if (tmpATCmd->def && IsA(tmpATCmd->def, IndexStmt))
+											{
+												IndexStmt *tmpIndexStmt = (IndexStmt*)(tmpATCmd->def);
+												if (tmpIndexStmt->unique || tmpIndexStmt->primary)
+												{
+													need_disable_partition_key = true;
+													break;
+												}
+											}
+										}
+									}
+								}
+                            	
+								if (need_disable_partition_key)
+								{
+									rel = heap_open(relid, NoLock);
+									key =  rel->rd_partkey;
+									if (key)
+									{
+										partnatts_save = key->partnatts;
+										key->partnatts = 0;
+									}
+									heap_close(rel, NoLock);
+								}
+								
                                 /* Do the table alteration proper */
                                 AlterTable(relid, lockmode,
                                         (AlterTableStmt *) stmt);
+                                
+                                if (need_disable_partition_key)
+								{
+									rel = heap_open(relid, NoLock);
+									key =  rel->rd_partkey;
+									if (key)
+									{
+										key->partnatts = partnatts_save;
+									}
+									heap_close(rel, NoLock);
+									need_disable_partition_key = false;
+								}
                             }
                             else
                             {
@@ -2164,6 +2292,51 @@ ProcessUtilityReplace(PlannedStmt *pstmt,
             }
             break;
         }
+    	case T_IndexStmt:
+		{
+			/* To fix create index failure on sharding table. */
+			if (IS_PGXC_DATANODE && IsConnFromCoord())
+			{
+				Oid			relid;
+				LOCKMODE	lockmode;
+				Relation	rel;
+				int16 		partnatts_save;
+				struct PartitionKeyData *key;
+				IndexStmt  *stmt = (IndexStmt *) parsetree;
+				lockmode = stmt->concurrent ? ShareUpdateExclusiveLock : ShareLock;
+				relid = RangeVarGetRelidExtended(stmt->relation, lockmode,
+												 0,
+												 RangeVarCallbackOwnsRelation,
+												 NULL);
+
+				rel = heap_open(relid, NoLock);
+				key =  rel->rd_partkey;
+				if (key)
+				{
+					partnatts_save = key->partnatts;
+					key->partnatts = 0;
+				}
+				heap_close(rel, NoLock);
+				
+				standard_ProcessUtility(pstmt, queryString, context,
+										params, queryEnv, dest, completionTag);
+				
+				rel = heap_open(relid, NoLock);
+				key =  rel->rd_partkey;
+				if (key)
+				{
+					key->partnatts = partnatts_save;
+				}
+				heap_close(rel, NoLock);
+				
+			}
+			else
+			{
+				standard_ProcessUtility(pstmt, queryString, context,
+										params, queryEnv, dest, completionTag);
+			}
+			break;
+		}
         default:
             standard_ProcessUtility(pstmt, queryString, context,
                     params, queryEnv, dest, completionTag);
@@ -2203,4 +2376,130 @@ set_exec_utility_local(bool value)
         set_config_option("polarx.set_exec_utility_local", "off",
                 PGC_USERSET, PGC_S_SESSION,
                 GUC_ACTION_LOCAL, true, 0, false);
+}
+
+Datum
+polardbx_build_shard_map(PG_FUNCTION_ARGS)
+{
+#define HASH_TOKEN_SPACE INT64CONST(4294967296)
+	ShardCount = PG_GETARG_INT32(0);
+    int shardIndex = 0;
+    char sqlCommand[1024] = {0};
+    bool columnNull = false;
+    int spiQueryResult;
+    NodeDefinition *dns = get_dn_nodes_def();
+
+    elog(LOG, "insert shard map data");
+    uint64 increment = HASH_TOKEN_SPACE / ShardCount;
+
+    int spiConnectionResult = SPI_connect();
+    if (spiConnectionResult != SPI_OK_CONNECT)
+    {
+        ereport(WARNING, (errmsg("could not connect to SPI manager to insert shard map")));
+        SPI_finish();
+        return false;
+    }
+
+    /* If pg_shard_map already has data, return */
+    snprintf(sqlCommand, sizeof(sqlCommand), "SELECT EXISTS (SELECT 1 FROM %s)",  "pg_catalog.pg_shard_map");
+    spiQueryResult = SPI_execute(sqlCommand, false, 0);
+    if (spiQueryResult != SPI_OK_SELECT)
+    {
+        elog(WARNING, "query shard map table failed.");
+        SPI_finish();
+        return false;
+    }
+    Assert(SPI_processed == 1);
+    HeapTuple tuple = SPI_tuptable->vals[0];
+    Datum hasDataDatum = SPI_getbinval(tuple, SPI_tuptable->tupdesc, 1,
+                                       &columnNull);
+    bool tableEmpty = !DatumGetBool(hasDataDatum);
+    if (!tableEmpty)
+    {
+        elog(WARNING, "shard map table not empty.");
+        SPI_finish();
+        return false;
+    }
+    SPI_finish();
+
+    Datum		values[Natts_pg_shard_map];
+    bool		nulls[Natts_pg_shard_map];
+    Relation	rel;
+
+    rel = heap_open(ShardMapRelationId(), RowExclusiveLock);
+    memset(values, 0, sizeof(values));
+    memset(nulls, false, sizeof(nulls));
+    TupleDesc tupleDescriptor = RelationGetDescr(rel);
+    
+    for (shardIndex = 0; shardIndex < ShardCount; shardIndex++)
+    {
+        int32 shardId = shardIndex + 1;
+        int32 shardMinHash = INT32_MIN + (shardIndex * increment);
+        int32 shardMaxHash = shardMinHash + (increment);
+        Oid nodeOid = dns[shardIndex % NumDataNodes].nodeoid;
+
+        if (shardIndex == (ShardCount - 1))
+            shardMaxHash = INT32_MAX;
+
+        values[Anum_pg_shard_map_shardid - 1] = Int32GetDatum(shardId);
+        values[Anum_pg_shard_map_nodeoid - 1] = UInt32GetDatum(nodeOid);
+        values[Anum_pg_shard_map_shardminvalue - 1] = Int32GetDatum(shardMinHash);
+        values[Anum_pg_shard_map_shardmaxvalue - 1] = Int32GetDatum(shardMaxHash);
+        
+        HeapTuple heapTuple = heap_form_tuple(tupleDescriptor, values, nulls);
+        CatalogTupleInsert(rel, heapTuple);
+    }
+    
+    CommandCounterIncrement();
+    heap_close(rel, RowExclusiveLock);
+    
+    return true;
+}
+
+static const char* get_hashfunc_name(Oid dataType)
+{ // #lizard forgives
+    switch (dataType)
+    {
+        case INT8OID:
+            return "hashint8";
+        case INT2OID:
+            return "hashint2";
+        case OIDOID:
+            return "hashoid";
+        case INT4OID:
+        case ABSTIMEOID:
+        case RELTIMEOID:
+        case BOOLOID:
+        case CHAROID:
+            return "hashint4";
+        case FLOAT4OID:
+            return "hashfloat4";
+        case FLOAT8OID:
+            return "hashfloat8";
+        case JSONBOID:
+            return "jsonb_hash";
+        case NAMEOID:
+            return "hashname";
+        case VARCHAROID:
+        case TEXTOID:
+            return "hashtext";
+        case OIDVECTOROID:
+            return "hashoidvector";
+        case BPCHAROID:
+            return "hashbpchar";
+        case TIMEOID:
+            return "time_hash";
+        case INTERVALOID:
+            return "interval_hash";
+        case TIMETZOID:
+            return "timetz_hash";
+        case NUMERICOID:
+            return "hash_numeric";
+        case UUIDOID:
+            return "uuid_hash";
+        default:
+            return NULL;
+    }
+
+    return NULL;
 }

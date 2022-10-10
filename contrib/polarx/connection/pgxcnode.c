@@ -68,6 +68,8 @@
 #include "pgxc/connpool.h"
 #include "pgxc/mdcache.h"
 #include "commands/polarx_variable_set.h"
+#include "polarx/polarx_connection.h"
+#include "pool/poolnodes.h"
 
 #ifdef PATCH_ENABLE_DISTRIBUTED_TRANSACTION
 #include "pgxc/transam/txn_util.h"
@@ -179,6 +181,9 @@ init_pgxc_handle(PGXCNodeHandle *pgxc_handle)
     pgxc_handle->outEnd = 0;
     pgxc_handle->needSync = false;
     pgxc_handle->sendGxidVersion = 0;
+#ifdef PATCH_ENABLE_DISTRIBUTED_TRANSACTION
+    pgxc_handle->sendTimestamp = 0;
+#endif
 
     if (pgxc_handle->outBuffer == NULL || pgxc_handle->inBuffer == NULL)
     {
@@ -247,6 +252,7 @@ static void init_handles(bool is_force)
                                       polar_handles_inval_callback, (Datum)0);
         on_proc_exit(PGXCNodeCleanAndRelease, 0);
     }
+
 
     MemSet(&hinfo, 0, sizeof(hinfo));
     hflags = 0;
@@ -327,6 +333,7 @@ static void init_handles(bool is_force)
         }
     }
 
+    InitBEPreparedStmtsHashTable();
     datanode_count = 0;
     coord_count = 0;
     slavedatanode_count = 0;
@@ -574,7 +581,7 @@ int pgxc_node_receive(const int conn_count,
         {
             return DNStatus_OK;
         }
-        elog(LOG, "no message in buffer");
+        elog(DEBUG1, "no message in buffer");
         return DNStatus_ERR;
     }
 
@@ -601,9 +608,9 @@ retry:
 
         if (errno == EBADF)
         {
-            elog(LOG, "poll() bad file descriptor set");
+            elog(DEBUG1, "poll() bad file descriptor set");
         }
-        elog(LOG, "poll() failed for error: %d, %s", errno, strerror(errno));
+        elog(DEBUG1, "poll() failed for error: %d, %s", errno, strerror(errno));
 
         if (errno)
         {
@@ -646,7 +653,7 @@ retry:
                     PGXCNodeSetConnectionState(conn,
                                                DN_CONNECTION_STATE_ERROR_FATAL);
                     add_error_message(conn, "unexpected EOF on datanode connection.");
-                    elog(LOG, "unexpected EOF on node:%s pid:%d", conn->nodename, conn->backend_pid);
+                    elog(DEBUG1, "unexpected EOF on node:%s pid:%d", conn->nodename, conn->backend_pid);
 #if 0
                     /*
                      * before returning, also update the shared health
@@ -673,7 +680,7 @@ retry:
                 PGXCNodeSetConnectionState(connections[i],
                                            DN_CONNECTION_STATE_ERROR_FATAL);
                 add_error_message(conn, "unexpected network error on datanode connection");
-                elog(LOG, "unexpected EOF on datanode:%s pid:%d with event %d", conn->nodename, conn->backend_pid, pool_fd[i].revents);
+                elog(DEBUG1, "unexpected EOF on datanode:%s pid:%d with event %d", conn->nodename, conn->backend_pid, pool_fd[i].revents);
                 /* Should we check/read from the other connections before returning? */
                 return DNStatus_ERR;
             }
@@ -702,22 +709,22 @@ void pgxc_print_pending_data(PGXCNodeHandle *handle, bool reset)
         ret = pgxc_node_receive(1, &handle, &timeout);
         if (DNStatus_ERR == ret)
         {
-            elog(LOG, "pgxc_print_pending_data pgxc_node_receive LEFT_OVER data ERROR");
+            elog(DEBUG1, "pgxc_print_pending_data pgxc_node_receive LEFT_OVER data ERROR");
             break;
         }
         else if (DNStatus_OK == ret)
         {
-            elog(LOG, "pgxc_print_pending_data pgxc_node_receive LEFT_OVER data succeed");
+            elog(DEBUG1, "pgxc_print_pending_data pgxc_node_receive LEFT_OVER data succeed");
         }
         else
         {
-            elog(LOG, "pgxc_print_pending_data pgxc_node_receive LEFT_OVER data timeout");
+            elog(DEBUG1, "pgxc_print_pending_data pgxc_node_receive LEFT_OVER data timeout");
         }
 
         /* No data available, exit */
         if (!HAS_MESSAGE_BUFFERED(handle))
         {
-            elog(LOG, "pgxc_print_pending_data pgxc_node_receive LEFT_OVER data finished");
+            elog(DEBUG1, "pgxc_print_pending_data pgxc_node_receive LEFT_OVER data finished");
             break;
         }
 
@@ -728,19 +735,19 @@ void pgxc_print_pending_data(PGXCNodeHandle *handle, bool reset)
         case '\0': /* Not enough data in the buffer */
             goto DONE;
         case 'c': /* CopyToCommandComplete */
-            elog(LOG, "LEFT_OVER CopyToCommandComplete found");
+            elog(DEBUG1, "LEFT_OVER CopyToCommandComplete found");
             break;
         case 'C': /* CommandComplete */
-            elog(LOG, "LEFT_OVER CommandComplete found");
+            elog(DEBUG1, "LEFT_OVER CommandComplete found");
             break;
         case 'T': /* RowDescription */
-            elog(LOG, "LEFT_OVER RowDescription found");
+            elog(DEBUG1, "LEFT_OVER RowDescription found");
             break;
         case 'D': /* DataRow */
-            elog(LOG, "LEFT_OVER DataRow found");
+            elog(DEBUG1, "LEFT_OVER DataRow found");
             break;
         case 's': /* PortalSuspended */
-            elog(LOG, "LEFT_OVER PortalSuspended found");
+            elog(DEBUG1, "LEFT_OVER PortalSuspended found");
             break;
         case '1': /* ParseComplete */
         case '2': /* BindComplete */
@@ -749,16 +756,16 @@ void pgxc_print_pending_data(PGXCNodeHandle *handle, bool reset)
             /* simple notifications, continue reading */
             break;
         case 'G': /* CopyInResponse */
-            elog(LOG, "LEFT_OVER CopyInResponse found");
+            elog(DEBUG1, "LEFT_OVER CopyInResponse found");
             break;
         case 'H': /* CopyOutResponse */
-            elog(LOG, "LEFT_OVER CopyOutResponse found");
+            elog(DEBUG1, "LEFT_OVER CopyOutResponse found");
             break;
         case 'd': /* CopyOutDataRow */
-            elog(LOG, "LEFT_OVER CopyOutDataRow found");
+            elog(DEBUG1, "LEFT_OVER CopyOutDataRow found");
             break;
         case 'E': /* ErrorResponse */
-            elog(LOG, "LEFT_OVER ErrorResponse found");
+            elog(DEBUG1, "LEFT_OVER ErrorResponse found");
             break;
         case 'A': /* NotificationResponse */
         case 'N': /* NoticeResponse */
@@ -770,33 +777,33 @@ void pgxc_print_pending_data(PGXCNodeHandle *handle, bool reset)
             break;
         case 'Z': /* ReadyForQuery */
         {
-            elog(LOG, "LEFT_OVER ReadyForQuery found");
+            elog(DEBUG1, "LEFT_OVER ReadyForQuery found");
             break;
         }
 
         case 'Y': /* ReadyForQuery */
         {
-            elog(LOG, "LEFT_OVER ReadyForQuery found");
+            elog(DEBUG1, "LEFT_OVER ReadyForQuery found");
             break;
         }
         case 'M': /* Command Id */
-            elog(LOG, "LEFT_OVER Command Id found");
+            elog(DEBUG1, "LEFT_OVER Command Id found");
             break;
         case 'b':
-            elog(LOG, "LEFT_OVER DN_CONNECTION_STATE_IDLE found");
+            elog(DEBUG1, "LEFT_OVER DN_CONNECTION_STATE_IDLE found");
             break;
 
         case 'I': /* EmptyQuery */
-            elog(LOG, "LEFT_OVER EmptyQuery found");
+            elog(DEBUG1, "LEFT_OVER EmptyQuery found");
             break;
         case 'W':
-            elog(LOG, "LEFT_OVER W found");
+            elog(DEBUG1, "LEFT_OVER W found");
             break;
         case 'x':
-            elog(LOG, "LEFT_OVER RESPONSE_ASSIGN_GXID found");
+            elog(DEBUG1, "LEFT_OVER RESPONSE_ASSIGN_GXID found");
             break;
         default:
-            elog(LOG, "LEFT_OVER invalid status found");
+            elog(DEBUG1, "LEFT_OVER invalid status found");
             break;
         }
     }
@@ -811,7 +818,7 @@ DONE:
     {
         if (handle->error[0])
         {
-            elog(LOG, "pgxc_print_pending_data LEFT_OVER errmsg:%s", handle->error);
+            elog(DEBUG1, "pgxc_print_pending_data LEFT_OVER errmsg:%s", handle->error);
             handle->error[0] = '\0';
         }
         handle->outEnd = 0;
@@ -1295,7 +1302,7 @@ void release_handles(bool force)
             }
 
 #ifdef _PG_REGRESS_
-            elog(LOG, "release_handles release a connection with datanode %s"
+            elog(DEBUG1, "release_handles release a connection with datanode %s"
                       "remote backend PID %d",
                  handle->nodename, (int)handle->backend_pid);
 #endif
@@ -1330,7 +1337,7 @@ void release_handles(bool force)
             }
 
 #ifdef _PG_REGRESS_
-            elog(LOG, "release_handles release a connection with datanode %s"
+            elog(DEBUG1, "release_handles release a connection with datanode %s"
                       "remote backend PID %d",
                  handle->nodename, (int)handle->backend_pid);
 #endif
@@ -1368,7 +1375,7 @@ void release_handles(bool force)
                 }
 
 #ifdef _PG_REGRESS_
-                elog(LOG, "release_handles release a connection with coordinator %s"
+                elog(DEBUG1, "release_handles release a connection with coordinator %s"
                           "remote backend PID %d",
                      handle->nodename, (int)handle->backend_pid);
 #endif
@@ -1385,7 +1392,6 @@ void release_handles(bool force)
         }
     }
 
-    //destroy = true;
     /* And finally release all the connections on pooler */
     PoolManagerReleaseConnections(destroy);
 
@@ -1419,7 +1425,7 @@ bool validate_handles(void)
                 ret = pgxc_check_socket_health(handle->sock, 1, 0, 0);
                 if (ret < 0)
                 {
-                    elog(LOG, "Remote node \"%s\", running with pid %d state:%d is bad",
+                    elog(DEBUG1, "Remote node \"%s\", running with pid %d state:%d is bad",
                          handle->nodename, handle->backend_pid, handle->state);
                     return true;
                 }
@@ -1443,7 +1449,7 @@ bool validate_handles(void)
                 ret = pgxc_check_socket_health(handle->sock, 1, 0, 0);
                 if (ret < 0)
                 {
-                    elog(LOG, "Remote node \"%s\", running with pid %d state:%d is bad",
+                    elog(DEBUG1, "Remote node \"%s\", running with pid %d state:%d is bad",
                          handle->nodename, handle->backend_pid, handle->state);
                     return true;
                 }
@@ -1470,7 +1476,7 @@ bool validate_handles(void)
                     ret = pgxc_check_socket_health(handle->sock, 1, 0, 0);
                     if (ret < 0)
                     {
-                        elog(LOG, "Remote node \"%s\", running with pid %d state:%d is bad",
+                        elog(DEBUG1, "Remote node \"%s\", running with pid %d state:%d is bad",
                              handle->nodename, handle->backend_pid, handle->state);
                         return true;
                     }
@@ -1779,6 +1785,7 @@ int pgxc_node_send_parse(PGXCNodeHandle *handle, const char *statement,
 
     /* if there are parameters, param_types should exist */
     Assert(num_params <= 0 || param_types);
+
     /* 2 bytes for number of parameters, preceding the type names */
     paramTypeLen = 2;
     /* find names of the types of parameters */
@@ -2212,7 +2219,7 @@ int pgxc_node_flush(PGXCNodeHandle *handle)
         if (send_some(handle, handle->outEnd) < 0)
         {
             int32 error = errno;
-            elog(LOG, "pgxc_node_flush data to datanode:%u fd:%d failed for %s", handle->nodeoid, handle->sock, strerror(errno));
+            elog(DEBUG1, "pgxc_node_flush data to datanode:%u fd:%d failed for %s", handle->nodeoid, handle->sock, strerror(errno));
             add_error_message(handle, "failed to send data to datanode");
 #if 0
             /*
@@ -2262,7 +2269,7 @@ is_data_node_ready(PGXCNodeHandle *conn)
         data_len = ntohl(*((uint32_t *)((conn)->inBuffer + (conn)->inCursor + 1)));
         if (data_len >= (MaxAllocSize >> 1))
         {
-            elog(LOG, "size:%lu too big in buffer, close socket on node:%u now", data_len, conn->nodeoid);
+            elog(DEBUG1, "size:%lu too big in buffer, close socket on node:%u now", data_len, conn->nodeoid);
             close(conn->sock);
             conn->sock = NO_SOCKET;
             return true;
@@ -2321,7 +2328,7 @@ void pgxc_node_flush_read(PGXCNodeHandle *handle)
         /* break, only if the connection is ready for query. */
         if (is_ready)
         {
-            elog(LOG, "pgxc_node_flush_read node:%s ready for query.", handle->nodename);
+            elog(DEBUG1, "pgxc_node_flush_read node:%s ready for query.", handle->nodename);
             break;
         }
 
@@ -2329,7 +2336,7 @@ void pgxc_node_flush_read(PGXCNodeHandle *handle)
         read_result = pgxc_node_read_data(handle, true);
         if (read_result <= 0)
         {
-            elog(LOG, "pgxc_node_flush_read node:%s read failure.", handle->nodename);
+            elog(DEBUG1, "pgxc_node_flush_read node:%s read failure.", handle->nodename);
             break;
         }
     }
@@ -2352,7 +2359,7 @@ pgxc_node_send_query_internal(PGXCNodeHandle *handle, const char *query,
 #ifdef PATCH_ENABLE_DISTRIBUTED_TRANSACTION
     if (enable_timestamp_debug_print)
     {
-        elog(LOG, "pgxc_node_send_query to %s(%s:%d), query %s, remote backend_pid:%d",
+        elog(DEBUG1, "pgxc_node_send_query to %s(%s:%d), query %s, remote backend_pid:%d",
              handle->nodename,
              handle->nodehost, handle->nodeport,
              query,
@@ -2368,7 +2375,7 @@ pgxc_node_send_query_internal(PGXCNodeHandle *handle, const char *query,
     if ((handle->state != DN_CONNECTION_STATE_IDLE) &&
         !(handle->state == DN_CONNECTION_STATE_ERROR_FATAL && rollback))
     {
-        elog(LOG, "pgxc_node_send_query_internal datanode:%u invalid status:%d, no need to send data, return NOW", handle->nodeoid, handle->state);
+        elog(DEBUG1, "pgxc_node_send_query_internal datanode:%u invalid status:%d, no need to send data, return NOW", handle->nodeoid, handle->state);
         return EOF;
     }
 
@@ -2416,7 +2423,7 @@ int pgxc_node_send_gid(PGXCNodeHandle *handle, char *gid)
     /* Invalid connection state, return error */
     if (handle->state != DN_CONNECTION_STATE_IDLE)
     {
-        elog(LOG, "pgxc_node_send_gid datanode:%u invalid stauts:%d, no need to send data, return NOW", handle->nodeoid, handle->state);
+        elog(DEBUG1, "pgxc_node_send_gid datanode:%u invalid stauts:%d, no need to send data, return NOW", handle->nodeoid, handle->state);
         return EOF;
     }
 
@@ -2447,7 +2454,7 @@ int pgxc_node_send_starter(PGXCNodeHandle *handle, char *startnode)
     /* Invalid connection state, return error */
     if (handle->state != DN_CONNECTION_STATE_IDLE)
     {
-        elog(LOG, "pgxc_node_send_starter datanode:%u invalid stauts:%d, no need to send data, return NOW", handle->nodeoid, handle->state);
+        elog(DEBUG1, "pgxc_node_send_starter datanode:%u invalid stauts:%d, no need to send data, return NOW", handle->nodeoid, handle->state);
         return EOF;
     }
 
@@ -2476,7 +2483,7 @@ int pgxc_node_send_startxid(PGXCNodeHandle *handle, GlobalTransactionId transact
     /* Invalid connection state, return error */
     if (handle->state != DN_CONNECTION_STATE_IDLE)
     {
-        elog(LOG, "pgxc_node_send_startxid datanode:%u invalid stauts:%d, no need to send data, return NOW", handle->nodeoid, handle->state);
+        elog(DEBUG1, "pgxc_node_send_startxid datanode:%u invalid stauts:%d, no need to send data, return NOW", handle->nodeoid, handle->state);
         return EOF;
     }
 
@@ -2508,7 +2515,7 @@ int pgxc_node_send_partnodes(PGXCNodeHandle *handle, char *partnodes)
     /* Invalid connection state, return error */
     if (handle->state != DN_CONNECTION_STATE_IDLE)
     {
-        elog(LOG, "pgxc_node_send_partnodes datanode:%u invalid stauts:%d, no need to send data, return NOW", handle->nodeoid, handle->state);
+        elog(DEBUG1, "pgxc_node_send_partnodes datanode:%u invalid stauts:%d, no need to send data, return NOW", handle->nodeoid, handle->state);
         return EOF;
     }
 
@@ -2539,7 +2546,7 @@ int pgxc_node_send_clean(PGXCNodeHandle *handle)
     /* Invalid connection state, return error */
     if (handle->state != DN_CONNECTION_STATE_IDLE)
     {
-        elog(LOG, "pgxc_node_send_clean datanode:%u invalid stauts:%d, no need to send data, return NOW", handle->nodeoid, handle->state);
+        elog(DEBUG1, "pgxc_node_send_clean datanode:%u invalid stauts:%d, no need to send data, return NOW", handle->nodeoid, handle->state);
         return EOF;
     }
 
@@ -2564,7 +2571,7 @@ int pgxc_node_send_readonly(PGXCNodeHandle *handle)
     /* Invalid connection state, return error */
     if (handle->state != DN_CONNECTION_STATE_IDLE)
     {
-        elog(LOG, "pgxc_node_send_readonly datanode:%u invalid stauts:%d, no need to send data, return NOW", handle->nodeoid, handle->state);
+        elog(DEBUG1, "pgxc_node_send_readonly datanode:%u invalid stauts:%d, no need to send data, return NOW", handle->nodeoid, handle->state);
         return EOF;
     }
 
@@ -2589,7 +2596,7 @@ int pgxc_node_send_after_prepare(PGXCNodeHandle *handle)
     /* Invalid connection state, return error */
     if (handle->state != DN_CONNECTION_STATE_IDLE)
     {
-        elog(LOG, "pgxc_node_send_after_prepare datanode:%u invalid stauts:%d, no need to send data, return NOW", handle->nodeoid, handle->state);
+        elog(DEBUG1, "pgxc_node_send_after_prepare datanode:%u invalid stauts:%d, no need to send data, return NOW", handle->nodeoid, handle->state);
         return EOF;
     }
 
@@ -2617,7 +2624,7 @@ int pgxc_node_send_gxid(PGXCNodeHandle *handle, char *gxid)
     /* Invalid connection state, return error */
     if (handle->state != DN_CONNECTION_STATE_IDLE)
     {
-        elog(LOG, "pgxc_node_send_gxid datanode:%u invalid stauts:%d, no need to send data, return NOW", handle->nodeoid, handle->state);
+        elog(DEBUG1, "pgxc_node_send_gxid datanode:%u invalid stauts:%d, no need to send data, return NOW", handle->nodeoid, handle->state);
         return EOF;
     }
 
@@ -2655,7 +2662,7 @@ int pgxc_node_send_cmd_id(PGXCNodeHandle *handle, CommandId cid)
     /* Invalid connection state, return error */
     if (handle->state != DN_CONNECTION_STATE_IDLE)
     {
-        elog(LOG, "pgxc_node_send_cmd_id datanode:%u invalid stauts:%d, no need to send data, return NOW", handle->nodeoid, handle->state);
+        elog(DEBUG1, "pgxc_node_send_cmd_id datanode:%u invalid stauts:%d, no need to send data, return NOW", handle->nodeoid, handle->state);
         return EOF;
     }
 
@@ -2687,7 +2694,7 @@ int pgxc_node_send_snapshot(PGXCNodeHandle *handle, Snapshot snapshot)
     /* Invalid connection state, return error */
     if (handle->state != DN_CONNECTION_STATE_IDLE)
     {
-        elog(LOG, "pgxc_node_send_snapshot datanode:%u invalid stauts:%d, no need to send data, return NOW", handle->nodeoid, handle->state);
+        elog(DEBUG1, "pgxc_node_send_snapshot datanode:%u invalid stauts:%d, no need to send data, return NOW", handle->nodeoid, handle->state);
         return EOF;
     }
 
@@ -2712,7 +2719,7 @@ int pgxc_node_send_snapshot(PGXCNodeHandle *handle, Snapshot snapshot)
     handle->outEnd += 4;
     if (enable_distri_print)
     {
-        elog(LOG, "send snapshot start_ts" INT64_FORMAT " xid %d.", snapshot->snapshotcsn, GetTopTransactionIdIfAny());
+        elog(DEBUG1, "send snapshot start_ts" INT64_FORMAT " xid %d.", snapshot->snapshotcsn, GetTopTransactionIdIfAny());
     }
 #ifndef POLARX_TODO
     if (snapshot->local)
@@ -2741,7 +2748,7 @@ int pgxc_node_send_prefinish_timestamp(PGXCNodeHandle *handle, GlobalTimestamp t
     /* Invalid connection state, return error */
     if (handle->state != DN_CONNECTION_STATE_IDLE)
     {
-        elog(LOG, "pgxc_node_send_prefinish_timestamp datanode:%u invalid stauts:%d, no need to send data, return NOW", handle->nodeoid, handle->state);
+        elog(DEBUG1, "pgxc_node_send_prefinish_timestamp datanode:%u invalid stauts:%d, no need to send data, return NOW", handle->nodeoid, handle->state);
         return EOF;
     }
 
@@ -2788,7 +2795,7 @@ int pgxc_node_send_prepare_timestamp(PGXCNodeHandle *handle, GlobalTimestamp tim
     int64 i = (int64)timestamp;
     if (enable_timestamp_debug_print)
     {
-        elog(LOG, "pgxc_node_send_prepare_timestamp remote backend_pid:%d, host:%s, nodename:%s, timestamp:" INT64_FORMAT,
+        elog(DEBUG1, "pgxc_node_send_prepare_timestamp remote backend_pid:%d, host:%s, nodename:%s, timestamp:" INT64_FORMAT,
              handle->backend_pid, handle->nodehost, handle->nodename, timestamp);
     }
 
@@ -2805,7 +2812,7 @@ int pgxc_node_send_prepare_timestamp(PGXCNodeHandle *handle, GlobalTimestamp tim
     /* Invalid connection state, return error */
     if (handle->state != DN_CONNECTION_STATE_IDLE)
     {
-        elog(LOG, "pgxc_node_send_prepare_timestamp datanode:%u invalid stauts:%d, no need to send data, return NOW", handle->nodeoid, handle->state);
+        elog(DEBUG1, "pgxc_node_send_prepare_timestamp datanode:%u invalid stauts:%d, no need to send data, return NOW", handle->nodeoid, handle->state);
         return EOF;
     }
 
@@ -2851,7 +2858,7 @@ int pgxc_node_send_global_timestamp(PGXCNodeHandle *handle, GlobalTimestamp time
 
     if (enable_log_remote_query)
     {
-        elog(LOG, "send global timestamp " LOGICALTIME_FORMAT " to server %s",
+        elog(DEBUG1, "send global timestamp " LOGICALTIME_FORMAT " to server %s",
              LOGICALTIME_STRING(timestamp), handle->nodename);
     }
     if (!GlobalTimestampIsValid(timestamp))
@@ -2859,7 +2866,7 @@ int pgxc_node_send_global_timestamp(PGXCNodeHandle *handle, GlobalTimestamp time
     /* Invalid connection state, return error */
     if (handle->state != DN_CONNECTION_STATE_IDLE)
     {
-        elog(LOG, "pgxc_node_send_global_timestamp datanode:%u invalid stauts:%d, no need to send data, return NOW", handle->nodeoid, handle->state);
+        elog(DEBUG1, "pgxc_node_send_global_timestamp datanode:%u invalid stauts:%d, no need to send data, return NOW", handle->nodeoid, handle->state);
         return EOF;
     }
 
@@ -2911,7 +2918,7 @@ int pgxc_node_send_timestamp(PGXCNodeHandle *handle, GlobalTimestamp timestamp)
     }
     if (enable_log_remote_query)
     {
-        elog(LOG, "send start timestamp " UINT64_FORMAT LOGICALTIME_FORMAT " to server %s, backend_pid:%d",
+        elog(DEBUG1, "send start timestamp " UINT64_FORMAT LOGICALTIME_FORMAT " to server %s, backend_pid:%d",
              timestamp, LOGICALTIME_STRING(timestamp), handle->nodename, handle->backend_pid);
     }
 
@@ -2960,7 +2967,7 @@ void add_error_message(PGXCNodeHandle *handle, const char *message)
     {
         int32 offset = 0;
 #ifdef _PG_REGRESS_
-        elog(LOG, "add_error_message node:%s, running with pid %d non first time error before append: %s, error ptr:%lx",
+        elog(DEBUG1, "add_error_message node:%s, running with pid %d non first time error before append: %s, error ptr:%lx",
              handle->nodename, handle->backend_pid, message, (uint64)handle->error);
 #endif
 
@@ -2968,7 +2975,7 @@ void add_error_message(PGXCNodeHandle *handle, const char *message)
         snprintf(handle->error + offset, MAX_ERROR_MSG_LENGTH - offset, "%s", message);
 
 #ifdef _PG_REGRESS_
-        elog(LOG, "add_error_message node:%s, running with pid %d non first time after append error: %s, ptr:%lx",
+        elog(DEBUG1, "add_error_message node:%s, running with pid %d non first time after append error: %s, ptr:%lx",
              handle->nodename, handle->backend_pid, handle->error, (uint64)handle->error);
 #endif
     }
@@ -2977,7 +2984,7 @@ void add_error_message(PGXCNodeHandle *handle, const char *message)
         snprintf(handle->error, MAX_ERROR_MSG_LENGTH, "%s", message);
 
 #ifdef _PG_REGRESS_
-        elog(LOG, "add_error_message node:%s, running with pid %d first time error: %s, ptr:%lx",
+        elog(DEBUG1, "add_error_message node:%s, running with pid %d first time error: %s, ptr:%lx",
              handle->nodename, handle->backend_pid, handle->error, (uint64)handle->error);
 #endif
     }
@@ -3385,7 +3392,7 @@ get_handles(List *datanodelist, List *coordlist, bool is_coord_only_query, bool 
                      node_handle->nodename, (int)be_pid, fdsock,
                      is_global_session ? 'T' : 'F');
 #ifdef _PG_REGRESS_
-                elog(LOG, "Established a connection with datanode \"%s\","
+                elog(DEBUG1, "Established a connection with datanode \"%s\","
                           "remote backend PID %d, socket fd %d, global session %c",
                      node_handle->nodename, (int)be_pid, fdsock,
                      is_global_session ? 'T' : 'F');
@@ -3418,7 +3425,7 @@ get_handles(List *datanodelist, List *coordlist, bool is_coord_only_query, bool 
                      node_handle->nodename, (int)be_pid, fdsock,
                      is_global_session ? 'T' : 'F');
 #ifdef _PG_REGRESS_
-                elog(LOG, "Established a connection with datanode \"%s\","
+                elog(DEBUG1, "Established a connection with datanode \"%s\","
                           "remote backend PID %d, socket fd %d, global session %c",
                      node_handle->nodename, (int)be_pid, fdsock,
                      is_global_session ? 'T' : 'F');
@@ -4242,7 +4249,7 @@ DoRefreshRemoteHandles(void)
             {
                 /* a new node has been added to the shmem */
                 added = lappend_oid(added, nodeoid);
-                elog(LOG, "Node added: name (%s) host (%s) port (%d)",
+                elog(DEBUG1, "Node added: name (%s) host (%s) port (%d)",
                      NameStr(nodeDef->nodename), NameStr(nodeDef->nodehost),
                      nodeDef->nodeport);
             }
@@ -4263,7 +4270,7 @@ DoRefreshRemoteHandles(void)
                     strncmp(handle->nodehost, NameStr(nodeDef->nodehost), NAMEDATALEN) != 0 ||
                     handle->nodeport != nodeDef->nodeport)
                 {
-                    elog(LOG, "Node altered: old name (%s) old host (%s) old port (%d)"
+                    elog(DEBUG1, "Node altered: old name (%s) old host (%s) old port (%d)"
                               " new name (%s) new host (%s) new port (%d)",
                          handle->nodename, handle->nodehost, handle->nodeport,
                          NameStr(nodeDef->nodename), NameStr(nodeDef->nodehost),
@@ -4287,7 +4294,7 @@ DoRefreshRemoteHandles(void)
             if (!list_member_oid(shmoids, nodeoid))
             {
                 deleted = lappend_oid(deleted, nodeoid);
-                elog(LOG, "Node deleted: name (%s) host (%s) port (%d)",
+                elog(DEBUG1, "Node deleted: name (%s) host (%s) port (%d)",
                      handle->nodename, handle->nodehost, handle->nodeport);
             }
         }
@@ -4300,7 +4307,7 @@ DoRefreshRemoteHandles(void)
             if (!list_member_oid(shmoids, nodeoid))
             {
                 deleted = lappend_oid(deleted, nodeoid);
-                elog(LOG, "Node deleted: name (%s) host (%s) port (%d)",
+                elog(DEBUG1, "Node deleted: name (%s) host (%s) port (%d)",
                      handle->nodename, handle->nodehost, handle->nodeport);
             }
         }
@@ -4313,7 +4320,7 @@ DoRefreshRemoteHandles(void)
             if (!list_member_oid(shmoids, nodeoid))
             {
                 deleted = lappend_oid(deleted, nodeoid);
-                elog(LOG, "Node deleted: name (%s) host (%s) port (%d)",
+                elog(DEBUG1, "Node deleted: name (%s) host (%s) port (%d)",
                      handle->nodename, handle->nodehost, handle->nodeport);
             }
         }
@@ -4327,13 +4334,13 @@ DoRefreshRemoteHandles(void)
 
     if (deleted != NIL || added != NIL)
     {
-        elog(LOG, "Nodes added/deleted. Reload needed!");
+        elog(DEBUG1, "Nodes added/deleted. Reload needed!");
         res = false;
     }
 
     if (altered == NIL)
     {
-        elog(LOG, "No nodes altered. Returning");
+        elog(DEBUG1, "No nodes altered. Returning");
         res = true;
     }
     else
@@ -4417,7 +4424,7 @@ bool PgxcNodeDiffBackendHandles(List **nodes_alter,
         {
             /* a new node has been added to the catalog */
             added = lappend_oid(added, nodeoid);
-            elog(LOG, "Node added: name (%s) host (%s) port (%s)",
+            elog(DEBUG1, "Node added: name (%s) host (%s) port (%s)",
                  NameStr(nodeForm->srvname),
                  defGetString(GetServerOptionWithName(NameStr(nodeForm->srvname), "host")),
                  defGetString(GetServerOptionWithName(NameStr(nodeForm->srvname), "port")));
@@ -4439,7 +4446,7 @@ bool PgxcNodeDiffBackendHandles(List **nodes_alter,
                 strcmp(handle->nodehost, defGetString(GetServerOptionWithName(NameStr(nodeForm->srvname), "host"))) != 0 ||
                 handle->nodeport != strtol(defGetString(GetServerOptionWithName(NameStr(nodeForm->srvname), "port")), NULL, 10))
             {
-                elog(LOG, "Node altered: old name (%s) old host (%s) old port (%d)"
+                elog(DEBUG1, "Node altered: old name (%s) old host (%s) old port (%d)"
                           " new name (%s) new host (%s) new port (%ld)",
                      handle->nodename, handle->nodehost, handle->nodeport,
                      NameStr(nodeForm->srvname),
@@ -4472,7 +4479,7 @@ bool PgxcNodeDiffBackendHandles(List **nodes_alter,
         if (!list_member_oid(catoids, nodeoid))
         {
             deleted = lappend_oid(deleted, nodeoid);
-            elog(LOG, "Node deleted: name (%s) host (%s) port (%d)",
+            elog(DEBUG1, "Node deleted: name (%s) host (%s) port (%d)",
                  handle->nodename, handle->nodehost, handle->nodeport);
         }
     }
@@ -4483,7 +4490,7 @@ bool PgxcNodeDiffBackendHandles(List **nodes_alter,
         if (!list_member_oid(catoids, nodeoid))
         {
             deleted = lappend_oid(deleted, nodeoid);
-            elog(LOG, "Node deleted: name (%s) host (%s) port (%d)",
+            elog(DEBUG1, "Node deleted: name (%s) host (%s) port (%d)",
                  handle->nodename, handle->nodehost, handle->nodeport);
         }
     }
@@ -4495,7 +4502,7 @@ bool PgxcNodeDiffBackendHandles(List **nodes_alter,
         if (!list_member_oid(catoids, nodeoid))
         {
             deleted = lappend_oid(deleted, nodeoid);
-            elog(LOG, "Node deleted: name (%s) host (%s) port (%d)",
+            elog(DEBUG1, "Node deleted: name (%s) host (%s) port (%d)",
                  handle->nodename, handle->nodehost, handle->nodeport);
         }
     }
@@ -4552,7 +4559,7 @@ void PgxcNodeRefreshBackendHandlesShmem(List *nodes_alter)
          * Free the handle first..
          */
         pgxc_node_free(handle);
-        elog(LOG, "Backend (%u), Node (%s) updated locally",
+        elog(DEBUG1, "Backend (%u), Node (%s) updated locally",
              MyBackendId, handle->nodename);
         nodedef = PgxcNodeGetDefinition(nodeoid);
         strncpy(handle->nodename, NameStr(nodedef->nodename), NAMEDATALEN);
@@ -4569,7 +4576,7 @@ void HandlePoolerMessages(void)
     {
         DoRefreshRemoteHandles();
 
-        elog(LOG, "Backend (%u), doing handles refresh",
+        elog(DEBUG1, "Backend (%u), doing handles refresh",
              MyBackendId);
     }
     return;
@@ -4766,7 +4773,7 @@ polar_handles_inval_callback(Datum arg, int cacheid, uint32 hashvalue)
 {
     bool is_cluster_node = false;
     Assert(cacheid == FOREIGNSERVEROID);
-    elog(LOG, "handle foreign server inval callback %d, %d, hashvalue %d", cacheid, FOREIGNSERVEROID, hashvalue);
+    elog(DEBUG1, "handle foreign server inval callback %d, %d, hashvalue %d", cacheid, FOREIGNSERVEROID, hashvalue);
 
     if (proc_exit_inprogress)
         return;

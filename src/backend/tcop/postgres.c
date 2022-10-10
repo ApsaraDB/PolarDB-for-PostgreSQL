@@ -4199,7 +4199,7 @@ PostgresMain(int argc, char *argv[],
 					GlobalTimestamp timestamp = (GlobalTimestamp) pq_getmsgint64(&input_message);
 					pq_getmsgend(&input_message);
 
-                    elog(LOG, "receive start_ts "UINT64_FORMAT, timestamp);
+                    //elog(LOG, "receive start_ts "UINT64_FORMAT, timestamp);
 					BackendRecvTimestamp((LogicalTime)timestamp);
 					break;
 				}
@@ -4211,7 +4211,7 @@ PostgresMain(int argc, char *argv[],
 					/*
 					 * Set Xact global commit timestamp
 					 */
-                    elog(LOG, "receive global_ts "UINT64_FORMAT, timestamp);
+                    //elog(LOG, "receive global_ts "UINT64_FORMAT, timestamp);
 					SetGlobalCommitTimestamp(timestamp);
 					TxnSetCoordinatedCommitTs((LogicalTime)timestamp);
 #ifdef POLARDB_X
@@ -4237,7 +4237,7 @@ PostgresMain(int argc, char *argv[],
 					/*
 					 * Set Xact global prepare timestamp
 					 */
-                    elog(LOG, "receive prepare_ts"UINT64_FORMAT, timestamp);
+                    //elog(LOG, "receive prepare_ts"UINT64_FORMAT, timestamp);
 					SetGlobalPrepareTimestamp(timestamp);
 					TxnSetPrepareTs((LogicalTime)timestamp);
 					break;

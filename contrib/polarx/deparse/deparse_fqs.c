@@ -75,6 +75,7 @@
 #include "utils/varlena.h"
 #include "utils/xml.h"
 #include "deparse/deparse_fqs.h"
+#include "polarx/polarx_shippable.h"
 
 
 /* ----------
@@ -122,52 +123,6 @@ typedef struct
 	ParseExprKind special_exprkind; /* set only for exprkinds needing special
 									 * handling */
 } deparse_context;
-
-/*
- * Each level of query context around a subtree needs a level of Var namespace.
- * A Var having varlevelsup=N refers to the N'th item (counting from 0) in
- * the current context's namespaces list.
- *
- * The rangetable is the list of actual RTEs from the query tree, and the
- * cte list is the list of actual CTEs.
- *
- * rtable_names holds the alias name to be used for each RTE (either a C
- * string, or NULL for nameless RTEs such as unnamed joins).
- * rtable_columns holds the column alias names to be used for each RTE.
- *
- * In some cases we need to make names of merged JOIN USING columns unique
- * across the whole query, not only per-RTE.  If so, unique_using is true
- * and using_names is a list of C strings representing names already assigned
- * to USING columns.
- *
- * When deparsing plan trees, there is always just a single item in the
- * deparse_namespace list (since a plan tree never contains Vars with
- * varlevelsup > 0).  We store the PlanState node that is the immediate
- * parent of the expression to be deparsed, as well as a list of that
- * PlanState's ancestors.  In addition, we store its outer and inner subplan
- * state nodes, as well as their plan nodes' targetlists, and the index tlist
- * if the current plan node might contain INDEX_VAR Vars.  (These fields could
- * be derived on-the-fly from the current PlanState, but it seems notationally
- * clearer to set them up as separate fields.)
- */
-typedef struct
-{
-	List	   *rtable;			/* List of RangeTblEntry nodes */
-	List	   *rtable_names;	/* Parallel list of names for RTEs */
-	List	   *rtable_columns; /* Parallel list of deparse_columns structs */
-	List	   *ctes;			/* List of CommonTableExpr nodes */
-	/* Workspace for column alias assignment: */
-	bool		unique_using;	/* Are we making USING names globally unique */
-	List	   *using_names;	/* List of assigned names for USING columns */
-	/* Remaining fields are used only when deparsing a Plan tree: */
-	PlanState  *planstate;		/* immediate parent of current expression */
-	List	   *ancestors;		/* ancestors of planstate */
-	PlanState  *outer_planstate;	/* outer subplan state, or NULL if none */
-	PlanState  *inner_planstate;	/* inner subplan state, or NULL if none */
-	List	   *outer_tlist;	/* referent for OUTER_VAR Vars */
-	List	   *inner_tlist;	/* referent for INNER_VAR Vars */
-	List	   *index_tlist;	/* referent for INDEX_VAR Vars */
-} deparse_namespace;
 
 /*
  * Per-relation data about column alias names.
@@ -430,6 +385,7 @@ static char *generate_operator_name(Oid operid, Oid arg1, Oid arg2);
 
 static char *generate_collation_name(Oid collid);
 static char *get_range_partbound_string(List *bound_datums);
+static char *deparse_type_name(Oid type_oid, int32 typemod);
 #define only_marker(rte)  ((rte)->inh ? "" : "ONLY ")
 
 /*
@@ -4222,9 +4178,20 @@ get_parameter(Param *param, deparse_context *context)
 	/*
 	 * Not PARAM_EXEC, or couldn't find referent: just print $N.
 	 */
-	appendStringInfo(context->buf, "$%d", param->paramid);
+	appendStringInfo(context->buf, "$%d::%s", param->paramid, 
+                        deparse_type_name(param->paramtype, param->paramtypmod));
 }
 
+static char *
+deparse_type_name(Oid type_oid, int32 typemod)
+{
+    bits16      flags = FORMAT_TYPE_TYPEMOD_GIVEN;
+
+    if (!is_builtin(type_oid))
+        flags |= FORMAT_TYPE_FORCE_QUALIFY;
+
+    return format_type_extended(type_oid, typemod, flags);
+}
 /*
  * get_simple_binary_op_name
  *
@@ -6911,6 +6878,11 @@ get_from_clause_item(Node *jtnode, Query *query, deparse_context *context)
 			/* Always print alias if user provided one */
 			printalias = true;
 		}
+        else if (rte->rtekind == RTE_SUBQUERY)
+        {
+            /* alias is needed for subquery */
+            printalias = true;
+        }
 		else if (colinfo->printaliases)
 		{
 			/* Always print alias if we need to print column aliases */
