@@ -45,7 +45,10 @@ export const zh: NavbarConfig = [
     children: [
       {
         text: "日常运维",
-        children: ["/zh/operation/backup-and-restore.html"],
+        children: [
+          "/zh/operation/backup-and-restore.html",
+          "/zh/operation/grow-storage.html",
+        ],
       },
       {
         text: "性能测试",

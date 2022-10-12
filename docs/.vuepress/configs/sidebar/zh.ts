@@ -52,7 +52,10 @@ export const zh: SidebarConfig = {
       children: [
         {
           text: "日常运维",
-          children: ["/zh/operation/backup-and-restore.md"],
+          children: [
+            "/zh/operation/backup-and-restore.md",
+            "/zh/operation/grow-storage.md",
+          ],
         },
         {
           text: "性能测试",
