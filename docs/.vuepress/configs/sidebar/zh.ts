@@ -15,13 +15,17 @@ export const zh: SidebarConfig = {
               text: "存储设备的准备",
               children: [
                 "/zh/deploying/storage-aliyun-essd.md",
+                "/zh/deploying/storage-curvebs.md",
                 "/zh/deploying/storage-ceph.md",
                 "/zh/deploying/storage-nbd.md",
               ],
             },
             {
               text: "文件系统的准备",
-              children: ["/zh/deploying/fs-pfs.md"],
+              children: [
+                "/zh/deploying/fs-pfs.md",
+                "/zh/deploying/fs-pfs-curve.md",
+              ],
             },
             {
               text: "编译部署 PolarDB 内核",
@@ -48,7 +52,10 @@ export const zh: SidebarConfig = {
       children: [
         {
           text: "日常运维",
-          children: ["/zh/operation/backup-and-restore.md"],
+          children: [
+            "/zh/operation/backup-and-restore.md",
+            "/zh/operation/grow-storage.md",
+          ],
         },
         {
           text: "性能测试",
