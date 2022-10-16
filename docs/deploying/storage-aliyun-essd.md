@@ -24,7 +24,7 @@ minute: 20
 
 ## 部署阿里云 ECS
 
-首先需要准备两台或以上的 [阿里云 ECS](https://www.aliyun.com/product/ecs)。目前，ECS 对支持 ESSD 多重挂载的规格有较多限制，详情请参考 [使用限制](https://help.aliyun.com/document_detail/256487.htm?spm=a2c4g.11186623.0.0.61397e72QGaXV0#section-4w6-dyy-otg)。仅部分规格的 ECS 实例可以支持 ESSD 的多重挂载：ecs.g7se、ecs.c7se、ecs.r7se。如图，请务必选择支持多重挂载的 ECS 规格：
+首先需要准备两台或以上的 [阿里云 ECS](https://www.aliyun.com/product/ecs)。目前，ECS 对支持 ESSD 多重挂载的规格有较多限制，详情请参考 [使用限制](https://help.aliyun.com/document_detail/256487.htm?spm=a2c4g.11186623.0.0.61397e72QGaXV0#section-4w6-dyy-otg)。仅 **部分可用区**、**部分规格**（ecs.g7se、ecs.c7se、ecs.r7se）的 ECS 实例可以支持 ESSD 的多重挂载。如图，请务必选择支持多重挂载的 ECS 规格：
 
 ![aliyun-ecs-specs](../imgs/aliyun-ecs-specs.png)
 
@@ -38,7 +38,7 @@ minute: 20
 
 ## 准备 ESSD 云盘
 
-在阿里云 ECS 的管理控制台中，选择 _存储与快照_ 下的 _云盘_，点击 _创建云盘_。在已经建好的 ECS 所在可用区内，选择建立一个 ESSD 云盘，并勾选 **多实例挂载**。如果您的 ECS 不符合多实例挂载的限制条件，则该选框不会出现。
+在阿里云 ECS 的管理控制台中，选择 _存储与快照_ 下的 _云盘_，点击 _创建云盘_。在与已经建好的 ECS 所在的相同可用区内，选择建立一个 ESSD 云盘，并勾选 **多实例挂载**。如果您的 ECS 不符合多实例挂载的限制条件，则该选框不会出现。
 
 ![aliyun-essd-specs](../imgs/aliyun-essd-specs.png)
 
