@@ -589,6 +589,35 @@ if test "$with_llvm" = yes ; then
   PGAC_PROG_VARCXX_VARFLAGS_OPT(CLANGXX, BITCODE_CXXFLAGS, [-fwrapv])
   PGAC_PROG_VARCC_VARFLAGS_OPT(CLANG, BITCODE_CFLAGS, [-fexcess-precision=standard])
   PGAC_PROG_VARCXX_VARFLAGS_OPT(CLANGXX, BITCODE_CXXFLAGS, [-fexcess-precision=standard])
+
+  PGAC_PROG_VARCC_VARFLAGS_OPT(CLANG, BITCODE_CFLAGS, [-Xclang -no-opaque-pointers])
+  PGAC_PROG_VARCXX_VARFLAGS_OPT(CLANGXX, BITCODE_CXXFLAGS, [-Xclang -no-opaque-pointers])
+
+  NOT_THE_CFLAGS=""
+  PGAC_PROG_VARCC_VARFLAGS_OPT(CLANG, NOT_THE_CFLAGS, [-Wunused-command-line-argument])
+  if test -n "$NOT_THE_CFLAGS"; then
+    BITCODE_CFLAGS="$BITCODE_CFLAGS -Wno-unused-command-line-argument"
+  fi
+  NOT_THE_CFLAGS=""
+  PGAC_PROG_VARCC_VARFLAGS_OPT(CLANG, NOT_THE_CFLAGS, [-Wcompound-token-split-by-macro])
+  if test -n "$NOT_THE_CFLAGS"; then
+    BITCODE_CFLAGS="$BITCODE_CFLAGS -Wno-compound-token-split-by-macro"
+  fi
+  NOT_THE_CFLAGS=""
+  PGAC_PROG_VARCC_VARFLAGS_OPT(CLANG, NOT_THE_CFLAGS, [-Wdeprecated-non-prototype])
+  if test -n "$NOT_THE_CFLAGS"; then
+    BITCODE_CFLAGS="$BITCODE_CFLAGS -Wno-deprecated-non-prototype"
+  fi
+  NOT_THE_CFLAGS=""
+  PGAC_PROG_VARCC_VARFLAGS_OPT(CLANG, NOT_THE_CFLAGS, [-Wformat-truncation])
+  if test -n "$NOT_THE_CFLAGS"; then
+    BITCODE_CFLAGS="$BITCODE_CFLAGS -Wno-format-truncation"
+  fi
+  NOT_THE_CFLAGS=""
+  PGAC_PROG_VARCC_VARFLAGS_OPT(CLANG, NOT_THE_CFLAGS, [-Wstringop-truncation])
+  if test -n "$NOT_THE_CFLAGS"; then
+    BITCODE_CFLAGS="$BITCODE_CFLAGS -Wno-stringop-truncation"
+  fi
 fi
 
 # supply -g if --enable-debug
