@@ -39,7 +39,10 @@ export const en: NavbarConfig = [
     children: [
       {
         text: "Daily Ops",
-        children: ["/operation/backup-and-restore.html"],
+        children: [
+          "/operation/backup-and-restore.html",
+          "/operation/grow-storage.html",
+        ],
       },
       {
         text: "Benchmarks",
