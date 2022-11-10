@@ -46,7 +46,10 @@ export const en: SidebarConfig = {
       children: [
         {
           text: "Daily Ops",
-          children: ["/operation/backup-and-restore.md"],
+          children: [
+            "/operation/backup-and-restore.md",
+            "/operation/grow-storage.md",
+          ],
         },
         {
           text: "Benchmarks",

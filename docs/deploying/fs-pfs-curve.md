@@ -12,19 +12,17 @@ PolarDB File System，简称 PFS 或 PolarFS，是由阿里云自主研发的高
 
 ## PFS 编译安装
 
-在 PolarDB 计算节点上准备好 PFS 相关工具。推荐使用 DockerHub 上的 PolarDB 开发镜像，其中已经包含了编译完毕的 PFS，无需再次编译安装。在用于部署 PolarDB 的计算节点上，通过以下命令进入容器即可：
+在 PolarDB 计算节点上准备好 PFS 相关工具。推荐使用 DockerHub 上的 PolarDB 开发镜像，其中已经包含了编译完毕的 PFS，无需再次编译安装。[Curve 开源社区](https://github.com/opencurve) 针对 PFS 对接 CurveBS 存储做了专门的优化。在用于部署 PolarDB 的计算节点上，使用下面的命令拉起带有 [PFS for CurveBS](https://github.com/opencurve/PolarDB-FileSystem) 的 PolarDB 开发镜像：
 
 ```shell
-docker pull polardb/polardb_pg_devel
+docker pull polardb/polardb_pg_devel:curvebs
 docker run -it \
     --network=host \
     --cap-add=SYS_PTRACE --privileged=true \
     --volume /dev:/dev \
     --name polardb_pg \
-    polardb/polardb_pg_devel bash
+    polardb/polardb_pg_devel:curvebs bash
 ```
-
-Curve 开源社区针对 PFS 对接 CurveBS 存储做了专门的优化，开发了专门用于适配 CurveBS 的 PFS 版本。目前容器内已有标准版的 PFS。如果想要在 CurveBS 上追求最好的性能，可以在容器内覆盖安装 [PFS for CurveBS](https://github.com/opencurve/PolarDB-FileSystem)。
 
 ## 读写节点块设备映射与格式化
 
