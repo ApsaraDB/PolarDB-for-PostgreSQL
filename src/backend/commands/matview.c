@@ -394,7 +394,12 @@ refresh_matview_datafill(DestReceiver *dest, Query *query,
 	CHECK_FOR_INTERRUPTS();
 
 	/* Plan the query which will generate data for the refresh. */
-	plan = pg_plan_query(query, 0, NULL);
+	/* POLAR px: try to use PX if possible */
+	if (px_enable_create_table_as && px_enable_replay_wait)
+		plan = pg_plan_query(query, CURSOR_OPT_PX_OK, NULL);
+	else
+	/* POLAR end */
+		plan = pg_plan_query(query, 0, NULL);
 
 	/*
 	 * Use a snapshot with an updated command ID to ensure this query sees

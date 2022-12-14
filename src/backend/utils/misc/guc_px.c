@@ -275,6 +275,7 @@ bool		px_allow_pagemode_seqscan;
 bool		px_allow_pagemode_bitmapscan;
 bool		px_enable_left_index_nestloop_join;
 bool		px_enable_result_hash_filter;
+bool		px_enable_create_table_as;
 
 int			px_wait_lock_timeout = 0;
 
@@ -1852,6 +1853,17 @@ struct config_bool ConfigureNamesBool_px[] =
 		true,
 		NULL, NULL, NULL
 	},
+
+	{
+		{"polar_px_enable_create_table_as", PGC_USERSET, UNGROUPED,
+			gettext_noop("This GUC allows PX to support create table as in parallel."),
+			NULL
+		},
+		&px_enable_create_table_as,
+		true,
+		NULL, NULL, NULL
+	},
+
 	{
 		{"polar_px_enable_insert_select", PGC_USERSET, UNGROUPED,
 			gettext_noop("This guc allows Insert....select on px."),

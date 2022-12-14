@@ -282,9 +282,11 @@ ExplainQuery(ParseState *pstate, ExplainStmt *stmt, const char *queryString,
 		/* Explain every plan */
 		foreach(l, rewritten)
 		{
+			/* POLAR px: try to use PX if possible */
 			ExplainOneQuery(lfirst_node(Query, l),
-							CURSOR_OPT_PARALLEL_OK, NULL, es,
+							CURSOR_OPT_PARALLEL_OK | CURSOR_OPT_PX_OK, NULL, es,
 							queryString, params, queryEnv);
+			/* POLAR end */
 
 			/* Separate plans with an appropriate separator */
 			if (lnext(l) != NULL)
@@ -393,7 +395,7 @@ ExplainOneQuery(Query *query, int cursorOptions,
 		INSTR_TIME_SET_CURRENT(planstart);
 
 		/* plan the query */
-		plan = pg_plan_query(query, cursorOptions | CURSOR_OPT_PX_OK, params);
+		plan = pg_plan_query(query, cursorOptions, params);
 
 		INSTR_TIME_SET_CURRENT(planduration);
 		INSTR_TIME_SUBTRACT(planduration, planstart);
@@ -435,9 +437,17 @@ ExplainOneUtility(Node *utilityStmt, IntoClause *into, ExplainState *es,
 
 		rewritten = QueryRewrite(castNode(Query, copyObject(ctas->query)));
 		Assert(list_length(rewritten) == 1);
-		ExplainOneQuery(linitial_node(Query, rewritten),
-						CURSOR_OPT_PARALLEL_OK, ctas->into, es,
-						queryString, params, queryEnv);
+
+		/* POLAR px: try to use PX if GUC enables */
+		if (px_enable_create_table_as && px_enable_replay_wait)
+			ExplainOneQuery(linitial_node(Query, rewritten),
+							CURSOR_OPT_PARALLEL_OK | CURSOR_OPT_PX_OK, ctas->into, es,
+							queryString, params, queryEnv);
+		else
+		/* POLAR end */
+			ExplainOneQuery(linitial_node(Query, rewritten),
+							CURSOR_OPT_PARALLEL_OK, ctas->into, es,
+							queryString, params, queryEnv);
 	}
 	else if (IsA(utilityStmt, DeclareCursorStmt))
 	{
