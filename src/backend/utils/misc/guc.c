@@ -165,6 +165,7 @@ bool           polar_hold_truncate_interrupt;
 bool 		   polar_replay_fpi_check_lsn;
 bool           polar_enable_localfs_test_mode;
 bool 			polar_enable_ro_prewarm;
+bool           polar_enable_create_table_as_bulk_insert;
 
 /* polar_realease_date, format:YYYYMMDD */
 static char *polar_release_date;
@@ -3367,6 +3368,17 @@ static struct config_bool ConfigureNamesBool[] =
 		},
 		&polar_enable_track_sql_time_stat,
 		false,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_enable_create_table_as_bulk_insert", PGC_USERSET, UNGROUPED,
+			gettext_noop("Enable CREATE MATERIALIZED VIEW / CREATE TALBE AS / "
+						 "SELECT INTO to buffer tuples and insert them in batch"),
+			NULL,
+		},
+		&polar_enable_create_table_as_bulk_insert,
+		true,
 		NULL, NULL, NULL
 	},
 
