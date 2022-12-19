@@ -49,7 +49,7 @@ PolarDB 采用了基于 Shared-Storage 的存储计算分离架构。数据库�
 
 在存储计算分离后，I/O 单路延迟变大的同时，I/O 的吞吐也变大了。在处理分析型查询时，仅使用单个只读节点无法发挥出存储侧的大 I/O 带宽优势，也无法利用其他只读节点的 CPU、内存和 I/O 资源。为了解决该问题，PolarDB 研发了基于 Shared-Storage 的并行执行引擎，能够在 SQL 级别上弹性利用任意数目的 CPU 来加速分析查询，支持 HTAP 的混合负载场景。
 
-详情请查阅 [产品架构](https://apsaradb.github.io/PolarDB-for-PostgreSQL/zh/architecture/theory/arch-overview.html)。
+详情请查阅 [产品架构](https://apsaradb.github.io/PolarDB-for-PostgreSQL/zh/theory/arch-overview.html)。
 
 ## 快速入门
 

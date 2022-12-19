@@ -49,6 +49,7 @@
 #include "utils/rls.h"
 #include "utils/snapmgr.h"
 
+#define MAX_BUFFERED_TUPLES 1000
 
 typedef struct
 {
@@ -60,6 +61,13 @@ typedef struct
 	CommandId	output_cid;		/* cmin to insert in output tuples */
 	int			hi_options;		/* heap_insert performance options */
 	BulkInsertState bistate;	/* bulk insert state */
+
+	/* POLAR px */
+	int nBufferedTuples;		/* number of tuples currently in bufferedTuples */
+	HeapTuple *bufferedTuples;	/* buffered tuples that will be inserted in bulk later */
+	Size bufferedTuplesSize;	/* total size of tuples currently in bufferedTuples */
+	MemoryContext tmpcontext;	/* memory context for per-row workspace */
+	/* POLAR end */
 } DR_intorel;
 
 /* utility functions for CTAS definition creation */
@@ -72,6 +80,13 @@ static bool intorel_receive(TupleTableSlot *slot, DestReceiver *self);
 static void intorel_shutdown(DestReceiver *self);
 static void intorel_destroy(DestReceiver *self);
 
+/* POLAR px: buffered version of intorel for bulk insert */
+static DestReceiver *CreateIntoRelDestReceiverBuffered(IntoClause *intoClause);
+static void intorel_startup_buffered(DestReceiver *self, int operation, TupleDesc typeinfo);
+static bool intorel_receive_buffered(TupleTableSlot *slot, DestReceiver *self);
+static void intorel_shutdown_buffered(DestReceiver *self);
+static void intorel_destroy_buffered(DestReceiver *self);
+/* POLAR end */
 
 /*
  * create_ctas_internal
@@ -253,10 +268,22 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 		}
 	}
 
+	/* POLAR px: check the existence of the relation to be insert */
+	if (px_enable_replay_wait && px_enable_create_table_as &&
+		InvalidOid != get_relname_relid(into->rel->relname,
+										RangeVarGetAndCheckCreationNamespace(into->rel, NoLock, NULL)))
+		ereport(ERROR,
+				(errcode(ERRCODE_DUPLICATE_TABLE),
+				 errmsg("relation \"%s\" already exists", into->rel->relname)));
+	/* POLAR end */
+
 	/*
 	 * Create the tuple receiver object and insert info it will need
 	 */
-	dest = CreateIntoRelDestReceiver(into);
+	if (polar_enable_create_table_as_bulk_insert)
+		dest = CreateIntoRelDestReceiverBuffered(into);
+	else
+		dest = CreateIntoRelDestReceiver(into);
 
 	/*
 	 * The contained Query could be a SELECT, or an EXECUTE utility command.
@@ -327,7 +354,10 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 		Assert(query->commandType == CMD_SELECT);
 
 		/* plan the query */
-		plan = pg_plan_query(query, CURSOR_OPT_PARALLEL_OK, params);
+		if (px_enable_create_table_as && px_enable_replay_wait)
+			plan = pg_plan_query(query, CURSOR_OPT_PARALLEL_OK | CURSOR_OPT_PX_OK, params);
+		else
+			plan = pg_plan_query(query, CURSOR_OPT_PARALLEL_OK, params);
 
 		/*
 		 * Use a snapshot with an updated command ID to ensure this query sees
@@ -634,3 +664,173 @@ intorel_destroy(DestReceiver *self)
 {
 	pfree(self);
 }
+
+/* POLAR px */
+
+/*
+ * POLAR px: CreateIntoRelDestReceiverBuffered.
+ *
+ * Create a suitable DestReceiver object. This is the buffered version
+ * of CreateIntoRelDestReceiver. Received tuples will be buffered and
+ * insert into the target table in batch.
+ */
+static DestReceiver *
+CreateIntoRelDestReceiverBuffered(IntoClause *intoClause)
+{
+	DR_intorel *self = (DR_intorel *) palloc0(sizeof(DR_intorel));
+
+	/* use buffered version of intorel callbacks */
+	self->pub.receiveSlot = intorel_receive_buffered;
+	self->pub.rStartup = intorel_startup_buffered;
+	self->pub.rShutdown = intorel_shutdown_buffered;
+	self->pub.rDestroy = intorel_destroy_buffered;
+	self->pub.mydest = DestIntoRel;
+	self->into = intoClause;
+
+	/* initialization of tuple buffer array */
+	self->nBufferedTuples = 0;
+	self->bufferedTuples = NULL;
+	self->bufferedTuplesSize = 0;
+	self->tmpcontext = NULL;
+
+	/* other private fields will be set during intorel_startup */
+
+	return (DestReceiver *) self;
+}
+
+/*
+ * POLAR px: intorel_startup_buffered.
+ *
+ * Executor starts up.
+ */
+static void
+intorel_startup_buffered(DestReceiver *self, int operation, TupleDesc typeinfo)
+{
+	DR_intorel *myState = (DR_intorel *) self;
+
+	/* original startup */
+	intorel_startup(self, operation, typeinfo);
+
+	myState->bufferedTuples = palloc(MAX_BUFFERED_TUPLES * sizeof(HeapTuple));
+	myState->tmpcontext = AllocSetContextCreate(CurrentMemoryContext,
+												"ctasbulk",
+												ALLOCSET_DEFAULT_SIZES);
+}
+
+/*
+ * POLAR px: intorel_receive_buffered.
+ *
+ * Receive one tuple, store it in buffer and call heap_multi_insert
+ * when # of tuples buffered reaches threshold or total size of all
+ * the buffered tuples reaches the limit.
+ */
+static bool
+intorel_receive_buffered(TupleTableSlot *slot, DestReceiver *self)
+{
+	DR_intorel *myState = (DR_intorel *) self;
+	HeapTuple	tuple;
+	HeapTuple tuple_copy;
+	MemoryContext oldcontext;
+
+	/*
+	 * get the heap tuple out of the tuple table slot, making sure we have a
+	 * writable copy
+	 */
+	tuple = ExecMaterializeSlot(slot);
+	tuple_copy = heap_copytuple(tuple);
+
+	/*
+	 * force assignment of new OID (see comments in ExecInsert)
+	 */
+	if (myState->rel->rd_rel->relhasoids)
+		HeapTupleSetOid(tuple_copy, InvalidOid);
+
+	myState->bufferedTuples[myState->nBufferedTuples++] = tuple_copy;
+	myState->bufferedTuplesSize += tuple_copy->t_len;
+
+	/*
+	 * If the buffer filled up, flush it. Also flush if the
+	 * total size of all the tuples in the buffer becomes
+	 * large, to avoid using large amounts of memory for the
+	 * buffer when the tuples are exceptionally wide.
+	 */
+	if (myState->nBufferedTuples == MAX_BUFFERED_TUPLES ||
+		myState->bufferedTuplesSize > 65535)
+	{
+		oldcontext = MemoryContextSwitchTo(myState->tmpcontext);
+		heap_multi_insert(myState->rel, 
+						  myState->bufferedTuples, 
+						  myState->nBufferedTuples, 
+						  myState->output_cid,
+						  myState->hi_options,
+						  myState->bistate);
+		MemoryContextSwitchTo(oldcontext);
+		MemoryContextReset(myState->tmpcontext);
+
+		for (int i = 0; i < myState->nBufferedTuples; i++)
+			heap_freetuple(myState->bufferedTuples[i]);
+
+		myState->nBufferedTuples = 0;
+		myState->bufferedTuplesSize = 0;
+	}
+
+	/* We know this is a newly created relation, so there are no indexes */
+
+	return true;
+}
+
+/*
+ * POLAR px: intorel_shutdown_buffered.
+ *
+ * Executor ends. Flush tuples that are still in the buffer.
+ */
+static void
+intorel_shutdown_buffered(DestReceiver *self)
+{
+	DR_intorel *myState = (DR_intorel *) self;
+	MemoryContext oldcontext;
+
+	/* flush tuples that are still in the buffer */
+	if (myState->nBufferedTuples > 0)
+	{
+		oldcontext = MemoryContextSwitchTo(myState->tmpcontext);
+		heap_multi_insert(myState->rel, 
+						  myState->bufferedTuples, 
+						  myState->nBufferedTuples, 
+						  myState->output_cid,
+						  myState->hi_options,
+						  myState->bistate);
+		MemoryContextSwitchTo(oldcontext);
+		MemoryContextReset(myState->tmpcontext);
+
+		for (int i = 0; i < myState->nBufferedTuples; i++)
+			heap_freetuple(myState->bufferedTuples[i]);
+
+		myState->nBufferedTuples = 0;
+		myState->bufferedTuplesSize = 0;
+	}
+
+	/* original shutdown */
+	intorel_shutdown(self);
+}
+
+/*
+ * POLAR px: intorel_destroy_buffered
+ */
+static void
+intorel_destroy_buffered(DestReceiver *self)
+{
+	DR_intorel *myState = (DR_intorel *) self;
+
+	/* destroy memory context for storing tuple backups */
+	MemoryContextDelete(myState->tmpcontext);
+	myState->tmpcontext = NULL;
+
+	/* release tuple buffer array */
+	pfree(myState->bufferedTuples);
+
+	/* original destory */
+	intorel_destroy(self);
+}
+
+/* POLAR end */

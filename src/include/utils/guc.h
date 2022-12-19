@@ -509,6 +509,7 @@ extern bool		px_enable_plpgsql;
 extern bool		px_enable_procedure;
 extern bool		px_enable_prepare_statement;
 extern bool		px_enable_check_csn;
+extern bool		px_enable_create_table_as;
 
 extern bool		polar_droptbl_write_wal_beforehand;
 extern bool 	polar_enable_localfs_test_mode;
@@ -517,6 +518,7 @@ extern bool 	polar_publish_via_partition_root;
 extern bool		px_enable_sethintbits;
 extern bool		polar_enable_buffer_alignment;
 extern bool 	polar_enable_ro_prewarm;
+extern bool		polar_enable_create_table_as_bulk_insert;
 extern int		polar_dma_max_standby_wait_delay_size_mb;
 extern char		*polar_partition_recursive_reloptions;
 extern bool		polar_enable_dump_incorrect_checksum_xlog;

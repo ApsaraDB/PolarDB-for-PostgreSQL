@@ -32,6 +32,7 @@ export const zh: SidebarConfig = {
               children: [
                 "/zh/deploying/db-localfs.md",
                 "/zh/deploying/db-pfs.md",
+                "/zh/deploying/db-pfs-curve.md",
               ],
             },
           ],
