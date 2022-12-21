@@ -800,9 +800,9 @@ fi
 
 echo "Following command can be used to connect to PG:"
 echo ""
-echo su $pg_bld_user -c \"$pg_bld_basedir/bin/psql -h 127.0.0.1 -d -p $pg_bld_replica_dir postgres \"
-echo su $pg_bld_user -c \"$pg_bld_basedir/bin/psql -h 127.0.0.1 -d -p $pg_bld_rep_port postgres \"
-echo su $pg_bld_user -c \"$pg_bld_basedir/bin/psql -h 127.0.0.1 -d -p $pg_bld_standby_port postgres \"
+echo su $pg_bld_user -c \"$pg_bld_basedir/bin/psql -h 127.0.0.1 -p $pg_bld_port postgres\"
+echo su $pg_bld_user -c \"$pg_bld_basedir/bin/psql -h 127.0.0.1 -p $pg_bld_rep_port postgres\"
+echo su $pg_bld_user -c \"$pg_bld_basedir/bin/psql -h 127.0.0.1 -p $pg_bld_standby_port postgres\"
 echo ""
 
 ######################### PHASE 6 Test: test for polar ###########################
