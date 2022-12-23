@@ -17,7 +17,7 @@
  * This is the default value for wal_segment_size to be used when initdb is run
  * without the --wal-segsize option.  It must be a valid segment size.
  */
-#define DEFAULT_XLOG_SEG_SIZE	(1024*1024*1024)
+#define DEFAULT_XLOG_SEG_SIZE	(1024*1024*16)
 
 /*
  * Maximum length for identifiers (e.g. table names, column names,
