@@ -591,8 +591,8 @@ then
   echo "polar_enable_flashback_log = on" >> $pg_bld_master_dir/postgresql.conf
   fi
 
-  echo "max_wal_size = 16GB
-        min_wal_size = 4GB" >> $pg_bld_master_dir/postgresql.conf
+  # echo "max_wal_size = 16GB
+  #       min_wal_size = 4GB" >> $pg_bld_master_dir/postgresql.conf
 
   disk_name=`echo $pg_bld_data_dir | cut -d '/' -f2`
 
