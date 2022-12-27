@@ -4,7 +4,7 @@ date: 2022/10/12
 minute: 15
 ---
 
-# PolarDB PG 存储动态扩容
+# 共享存储在线扩容
 
 <ArticleInfo :frontmatter=$frontmatter></ArticleInfo>
 

@@ -56,22 +56,46 @@ export const zh: SidebarConfig = {
           children: [
             "/zh/operation/backup-and-restore.md",
             "/zh/operation/grow-storage.md",
+            "/zh/operation/scale-out.md",
+            "/zh/operation/ro-online-promote.md",
           ],
         },
         {
           text: "性能测试",
-          children: ["/zh/operation/tpcc-test.md"],
+          children: [
+            "/zh/operation/tpcc-test.md",
+            "/zh/operation/tpch-on-px.md",
+          ],
         },
       ],
     },
   ],
   "/zh/features": [
     {
-      text: "特性实践",
+      text: "内核特性",
+      link: "/zh/features/v11/",
       children: [
         {
-          text: "HTAP",
-          children: ["/zh/features/tpch-on-px.md"],
+          text: "PolarDB for PostgreSQL 11",
+          link: "/zh/features/v11/",
+          children: [
+            {
+              text: "高性能",
+              link: "/zh/features/v11/performance/",
+            },
+            {
+              text: "高可用",
+              link: "/zh/features/v11/availability/",
+            },
+            {
+              text: "安全",
+              link: "/zh/features/v11/security/",
+            },
+            {
+              text: "HTAP",
+              link: "/zh/features/v11/htap/",
+            },
+          ],
         },
       ],
     },
@@ -84,6 +108,7 @@ export const zh: SidebarConfig = {
           text: "PolarDB for PostgreSQL",
           children: [
             "/zh/theory/arch-overview.md",
+            "/zh/theory/arch-htap.md",
             "/zh/theory/buffer-management.md",
             "/zh/theory/ddl-synchronization.md",
             "/zh/theory/logindex.md",
@@ -91,7 +116,10 @@ export const zh: SidebarConfig = {
         },
         {
           text: "PostgreSQL",
-          children: ["/zh/theory/analyze.md"],
+          children: [
+            "/zh/theory/analyze.md",
+            "/zh/theory/polar-sequence-tech.md",
+          ],
         },
       ],
     },

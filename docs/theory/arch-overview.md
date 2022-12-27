@@ -8,13 +8,13 @@ minute: 35
 
 <ArticleInfo :frontmatter=$frontmatter></ArticleInfo>
 
-[[toc]]
-
 PolarDB PostgreSQL (hereafter simplified as PolarDB) is a stable, reliable, scalable, highly available, and secure enterprise-grade database service that is independently developed by Alibaba Cloud to help you increase security compliance and cost-effectiveness. PolarDB is compatible with PostgreSQL and Oracle. It runs in a proprietary compute-storage separation architecture of Alibaba Cloud to support the horizontal scaling of the storage and computing capabilities.
 
 PolarDB can process a mix of online transaction processing (OLTP) workloads and online analytical processing (OLAP) workloads in parallel. PolarDB also provides a wide range of innovative multi-model database capabilities to help you process, analyze, and search for diversified data, such as spatio-temporal, GIS, image, vector, and graph data.
 
 PolarDB supports various deployment architectures. For example, PolarDB supports compute-storage separation, three-node X-Paxos clusters, and local SSDs.
+
+[[toc]]
 
 ## Issues in Conventional Database Systems
 

@@ -8,11 +8,11 @@ minute: 35
 
 <ArticleInfo :frontmatter=$frontmatter></ArticleInfo>
 
-[[toc]]
-
 PolarDB PostgreSQL（以下简称 PolarDB）是一款阿里云自主研发的企业级数据库产品，采用计算存储分离架构，兼容 PostgreSQL 与 Oracle。PolarDB 的存储与计算能力均可横向扩展，具有高可靠、高可用、弹性扩展等企业级数据库特性。同时，PolarDB 具有大规模并行计算能力，可以应对 OLTP 与 OLAP 混合负载；还具有时空、向量、搜索、图谱等多模创新特性，可以满足企业对数据处理日新月异的新需求。
 
 PolarDB 支持多种部署形态：存储计算分离部署、X-Paxos 三节点部署、本地盘部署。
+
+[[toc]]
 
 ## 传统数据库的问题
 

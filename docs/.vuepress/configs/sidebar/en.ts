@@ -53,26 +53,18 @@ export const en: SidebarConfig = {
           children: [
             "/operation/backup-and-restore.md",
             "/operation/grow-storage.md",
+            "/operation/scale-out.md",
+            "/operation/ro-online-promote.md",
           ],
         },
         {
           text: "Benchmarks",
-          children: ["/operation/tpcc-test.md"],
+          children: ["/operation/tpcc-test.md", "/operation/tpch-on-px.md"],
         },
       ],
     },
   ],
-  "/features": [
-    {
-      text: "Features Practice",
-      children: [
-        {
-          text: "HTAP",
-          children: ["/features/tpch-on-px.md"],
-        },
-      ],
-    },
-  ],
+  "/features": [],
   "/theory/": [
     {
       text: "Theory",
@@ -81,6 +73,7 @@ export const en: SidebarConfig = {
           text: "PolarDB for PostgreSQL",
           children: [
             "/theory/arch-overview.md",
+            "/theory/arch-htap.md",
             "/theory/buffer-management.md",
             "/theory/ddl-synchronization.md",
             "/theory/logindex.md",
@@ -88,7 +81,7 @@ export const en: SidebarConfig = {
         },
         {
           text: "PostgreSQL",
-          children: ["/theory/analyze.md"],
+          children: ["/theory/analyze.md", "/theory/polar-sequence-tech.md"],
         },
       ],
     },
