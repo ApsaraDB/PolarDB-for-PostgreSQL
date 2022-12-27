@@ -46,23 +46,19 @@ export const en: NavbarConfig = [
         children: [
           "/operation/backup-and-restore.html",
           "/operation/grow-storage.html",
+          "/operation/scale-out.html",
+          "/operation/ro-online-promote.html",
         ],
       },
       {
         text: "Benchmarks",
-        children: ["/operation/tpcc-test.html"],
+        children: ["/operation/tpcc-test.html", "/operation/tpch-on-px.html"],
       },
     ],
   },
   {
-    text: "Features",
+    text: "Kernel Features",
     link: "/features/",
-    children: [
-      {
-        text: "HTAP",
-        children: ["/features/tpch-on-px.html"],
-      },
-    ],
   },
   {
     text: "Theory",
@@ -72,6 +68,7 @@ export const en: NavbarConfig = [
         text: "PolarDB for PostgreSQL",
         children: [
           "/theory/arch-overview.html",
+          "/theory/arch-htap.html",
           "/theory/buffer-management.html",
           "/theory/ddl-synchronization.html",
           "/theory/logindex.html",
@@ -79,7 +76,7 @@ export const en: NavbarConfig = [
       },
       {
         text: "PostgreSQL",
-        children: ["/theory/analyze.html"],
+        children: ["/theory/analyze.html", "/theory/polar-sequence-tech.html"],
       },
     ],
   },

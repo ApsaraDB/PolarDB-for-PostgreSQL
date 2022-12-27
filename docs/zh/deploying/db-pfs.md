@@ -8,67 +8,19 @@ minute: 15
 
 <ArticleInfo :frontmatter=$frontmatter></ArticleInfo>
 
-本文将指导您在分布式文件系统 PolarDB File System（PFS）上编译部署 PolarDB，适用于已经在共享存储上格式化并挂载 PFS 的计算节点。
+本文将指导您在分布式文件系统 PolarDB File System（PFS）上编译部署 PolarDB，适用于已经在共享存储上格式化并挂载 PFS 文件系统的计算节点。
 
-我们在 DockerHub 上提供了一个 [PolarDB 开发镜像](https://hub.docker.com/r/polardb/polardb_pg_devel/tags)，里面已经包含编译运行 PolarDB for PostgreSQL 所需要的所有依赖。您可以直接使用这个开发镜像进行实例搭建。镜像目前支持 AMD64 和 ARM64 两种 CPU 架构。
+[[toc]]
 
-## 源码下载
+## 读写节点部署
 
-在前置文档中，我们已经从 DockerHub 上拉取了 PolarDB 开发镜像，并且进入到了容器中。进入容器后，从 [GitHub](https://github.com/ApsaraDB/PolarDB-for-PostgreSQL) 上下载 PolarDB for PostgreSQL 的源代码，稳定分支为 `POLARDB_11_STABLE`。如果因网络原因不能稳定访问 GitHub，则可以访问 [Gitee 国内镜像](https://gitee.com/mirrors/PolarDB-for-PostgreSQL)。
-
-:::: code-group
-::: code-group-item GitHub
-
-```bash:no-line-numbers
-git clone -b POLARDB_11_STABLE https://github.com/ApsaraDB/PolarDB-for-PostgreSQL.git
-```
-
-:::
-::: code-group-item Gitee 国内镜像
-
-```bash:no-line-numbers
-git clone -b POLARDB_11_STABLE https://gitee.com/mirrors/PolarDB-for-PostgreSQL
-```
-
-:::
-::::
-
-代码克隆完毕后，进入源码目录：
-
-```bash:no-line-numbers
-cd PolarDB-for-PostgreSQL/
-```
-
-## 编译部署 PolarDB
-
-### 读写节点部署
-
-在读写节点上，使用 `--with-pfsd` 选项编译 PolarDB 内核。请参考 [编译测试选项说明](./db-localfs.md#编译测试选项说明) 查看更多编译选项的说明。
-
-```bash:no-line-numbers
-./polardb_build.sh --with-pfsd
-```
-
-::: warning
-上述脚本在编译完成后，会自动部署一个基于 **本地文件系统** 的实例，运行于 `5432` 端口上。
-
-手动键入以下命令停止这个实例，以便 **在 PFS 和共享存储上重新部署实例**：
-
-```bash:no-line-numbers
-$HOME/tmp_basedir_polardb_pg_1100_bld/bin/pg_ctl \
-    -D $HOME/tmp_master_dir_polardb_pg_1100_bld/ \
-    stop
-```
-
-:::
-
-在节点本地初始化数据目录 `$HOME/primary/`：
+初始化读写节点的本地数据目录 `~/primary/`：
 
 ```bash:no-line-numbers
 $HOME/tmp_basedir_polardb_pg_1100_bld/bin/initdb -D $HOME/primary
 ```
 
-在共享存储的 `/nvme1n1/shared_data/` 目录上初始化共享数据目录
+在共享存储的 `/nvme1n1/shared_data/` 路径上创建共享数据目录，然后使用 `polar-initdb.sh` 脚本初始化共享数据目录：
 
 ```bash:no-line-numbers
 # 使用 pfs 创建共享数据目录
@@ -78,7 +30,7 @@ sudo $HOME/tmp_basedir_polardb_pg_1100_bld/bin/polar-initdb.sh \
     $HOME/primary/ /nvme1n1/shared_data/
 ```
 
-编辑读写节点的配置。打开 `$HOME/primary/postgresql.conf`，增加配置项：
+编辑读写节点的配置。打开 `~/primary/postgresql.conf`，增加配置项：
 
 ```ini
 port=5432
@@ -97,7 +49,7 @@ max_connections=1000
 synchronous_standby_names='replica1'
 ```
 
-打开 `$HOME/primary/pg_hba.conf`，增加以下配置项：
+编辑读写节点的客户端认证文件 `~/primary/pg_hba.conf`，增加以下配置项，允许只读节点进行物理复制：
 
 ```ini:no-line-numbers
 host	replication	postgres	0.0.0.0/0	trust
@@ -115,54 +67,40 @@ $HOME/tmp_basedir_polardb_pg_1100_bld/bin/pg_ctl start -D $HOME/primary
 $HOME/tmp_basedir_polardb_pg_1100_bld/bin/psql \
     -p 5432 \
     -d postgres \
-    -c 'select version();'
+    -c 'SELECT version();'
             version
 --------------------------------
  PostgreSQL 11.9 (POLARDB 11.9)
 (1 row)
 ```
 
-在读写节点上，为对应的只读节点创建相应的 replication slot，用于只读节点的物理流复制：
+在读写节点上，为对应的只读节点创建相应的复制槽，用于只读节点的物理复制：
 
 ```bash:no-line-numbers
 $HOME/tmp_basedir_polardb_pg_1100_bld/bin/psql \
     -p 5432 \
     -d postgres \
-    -c "select pg_create_physical_replication_slot('replica1');"
+    -c "SELECT pg_create_physical_replication_slot('replica1');"
  pg_create_physical_replication_slot
 -------------------------------------
  (replica1,)
 (1 row)
 ```
 
-### 只读节点部署
+## 只读节点部署
 
-在只读节点上，使用 `--with-pfsd` 选项编译 PolarDB 内核。
+在只读节点本地磁盘的 `~/replica1` 路径上创建一个空目录，然后通过 `polar-replica-initdb.sh` 脚本使用共享存储上的数据目录来初始化只读节点的本地目录。初始化后的本地目录中没有默认配置文件，所以还需要使用 `initdb` 创建一个临时的本地目录模板，然后将所有的默认配置文件拷贝到只读节点的本地目录下：
 
-```bash:no-line-numbers
-./polardb_build.sh --with-pfsd
+```shell:no-line-numbers
+mkdir -m 0700 $HOME/replica1
+sudo ~/tmp_basedir_polardb_pg_1100_bld/bin/polar-replica-initdb.sh \
+    /nvme1n1/shared_data/ $HOME/replica1/
+
+$HOME/tmp_basedir_polardb_pg_1100_bld/bin/initdb -D /tmp/replica1
+cp /tmp/replica1/*.conf $HOME/replica1/
 ```
 
-::: warning
-上述脚本在编译完成后，会自动部署一个基于 **本地文件系统** 的实例，运行于 `5432` 端口上。
-
-手动键入以下命令停止这个实例，以便 **在 PFS 和共享存储上重新部署实例**：
-
-```bash:no-line-numbers
-$HOME/tmp_basedir_polardb_pg_1100_bld/bin/pg_ctl \
-    -D $HOME/tmp_master_dir_polardb_pg_1100_bld/ \
-    stop
-```
-
-:::
-
-在节点本地初始化数据目录 `$HOME/replica1/`：
-
-```bash:no-line-numbers
-$HOME/tmp_basedir_polardb_pg_1100_bld/bin/initdb -D $HOME/replica1
-```
-
-编辑只读节点的配置。打开 `$HOME/replica1/postgresql.conf`，增加配置项：
+编辑只读节点的配置。打开 `~/replica1/postgresql.conf`，增加配置项：
 
 ```ini
 port=5433
@@ -180,13 +118,9 @@ listen_addresses='*'
 max_connections=1000
 ```
 
-创建 `$HOME/replica1/recovery.conf`，增加以下配置项：
+创建只读节点的复制配置文件 `~/replica1/recovery.conf`，增加读写节点的连接信息，以及复制槽名称：
 
-::: warning
-请在下面替换读写节点（容器）所在的 IP 地址。
-:::
-
-```ini
+```ini:no-line-numbers
 polar_replica='on'
 recovery_target_timeline='latest'
 primary_slot_name='replica1'
@@ -205,14 +139,14 @@ $HOME/tmp_basedir_polardb_pg_1100_bld/bin/pg_ctl start -D $HOME/replica1
 $HOME/tmp_basedir_polardb_pg_1100_bld/bin/psql \
     -p 5433 \
     -d postgres \
-    -c 'select version();'
+    -c 'SELECT version();'
             version
 --------------------------------
  PostgreSQL 11.9 (POLARDB 11.9)
 (1 row)
 ```
 
-### 集群检查和测试
+## 集群检查和测试
 
 部署完成后，需要进行实例检查和测试，确保读写节点可正常写入数据、只读节点可以正常读取。
 
@@ -222,7 +156,7 @@ $HOME/tmp_basedir_polardb_pg_1100_bld/bin/psql \
 $HOME/tmp_basedir_polardb_pg_1100_bld/bin/psql -q \
     -p 5432 \
     -d postgres \
-    -c "create table t(t1 int primary key, t2 int);insert into t values (1, 1),(2, 3),(3, 3);"
+    -c "CREATE TABLE t (t1 INT PRIMARY KEY, t2 INT); INSERT INTO t VALUES (1, 1),(2, 3),(3, 3);"
 ```
 
 登录 **只读节点**，查询刚刚插入的样例数据：
@@ -231,7 +165,7 @@ $HOME/tmp_basedir_polardb_pg_1100_bld/bin/psql -q \
 $HOME/tmp_basedir_polardb_pg_1100_bld/bin/psql -q \
     -p 5433 \
     -d postgres \
-    -c "select * from t;"
+    -c "SELECT * FROM t;"
  t1 | t2
 ----+----
   1 |  1
@@ -240,4 +174,12 @@ $HOME/tmp_basedir_polardb_pg_1100_bld/bin/psql -q \
 (3 rows)
 ```
 
-在读写节点上插入的数据对只读节点可见。
+在读写节点上插入的数据对只读节点可见，这意味着基于共享存储的 PolarDB 计算节点集群搭建成功。
+
+---
+
+## 常见运维步骤
+
+- [共享存储在线扩容](../operation/grow-storage.md)
+- [计算节点扩缩容](../operation/scale-out.md)
+- [只读节点在线 Promote](../operation/ro-online-promote.md)
