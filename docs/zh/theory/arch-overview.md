@@ -64,7 +64,8 @@ PolarDB 支持一套 OLTP 场景型的数据在如下两种计算引擎下使用
 - 分布式执行引擎：处理大查询的 OLAP 型负载。
 
 ![image.png](../imgs/3_HTAP_architecture.png)
-在使用相同的硬件资源时性能达到了传统 Greenplum 的 90%，同时具备了 SQL 级别的弹性：在计算能力不足时，可随时增加参与 OLAP 分析查询的 CPU，而数据无需重分布。
+
+在使用相同的硬件资源时性能达到了传统 MPP 数据库的 90%，同时具备了 SQL 级别的弹性：在计算能力不足时，可随时增加参与 OLAP 分析查询的 CPU，而数据无需重分布。
 
 ## PolarDB：存储计算分离架构详解
 
@@ -371,15 +372,15 @@ PolarDB 中有 4 类算子需要并行化，下面介绍一个具有代表性的
 
 另外，使用分布式执行引擎测，试增加 CPU 时的性能，可以看到，从 16 核和 128 核时性能线性提升；单看 22 条 SQL，通过该增加 CPU，每个条 SQL 性能线性提升。
 
-### TPCH 性能：和 Greenplum 的对比
+### TPCH 性能：和传统 MPP 数据库的对比
 
-和传统 MPP 的 Greenplum 的对比，同样使用 16 个节点，PolarDB 的性能是 Greenplum 的 90%。
+与传统 MPP 数据库相比，同样使用 16 个节点，PolarDB 的性能是传统 MPP 数据库的 90%。
 
-![image.png](../imgs/36_TPC-H_performance_Comparison_with_Greenplum1.png)
+![image.png](../imgs/36_TPC-H_performance_Comparison_with_mpp1.png)
 
-![image.png](../imgs/37_TPC-H_performance_Comparison_with_Greenplum2.png)
+![image.png](../imgs/37_TPC-H_performance_Comparison_with_mpp2.png)
 
-前面讲到我们给 PolarDB 的分布式引擎做到了弹性扩展，数据不需要充分重分布，当 dop=8 时，性能是 Greenplum 的 5.6 倍。
+前面讲到我们给 PolarDB 的分布式引擎做到了弹性扩展，数据不需要充分重分布，当 dop = 8 时，性能是传统 MPP 数据库的 5.6 倍。
 
 ### 分布式执行加速索引创建
 
