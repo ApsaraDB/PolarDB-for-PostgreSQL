@@ -73,7 +73,7 @@ PolarDB supports a complete suite of data types that are used in OLTP scenarios.
 
 ![image.png](../imgs/3_HTAP_architecture.png)
 
-When the same hardware resources are used, PolarDB delivers performance that is 90% of the performance delivered by Greenplum. PolarDB also provides SQL statement-level scalability. If the computing power of your PolarDB cluster is insufficient, you can allocate more CPU resources to OLAP queries without the need to rearrange data.
+When the same hardware resources are used, PolarDB delivers performance that is 90% of the performance delivered by traditional MPP database. PolarDB also provides SQL statement-level scalability. If the computing power of your PolarDB cluster is insufficient, you can allocate more CPU resources to OLAP queries without the need to rearrange data.
 
 The following sections provide more details about compute-storage separation and HTAP.
 
@@ -389,15 +389,15 @@ First, run 22 SQL statements in a PolarDB cluster and in a conventional database
 Then, run a TPC-H test by using a distributed execution engine.
 The test result shows that the speed at which each of the 22 SQL statements runs linearly increases as the number of cores increases from 16 to 128.
 
-### TPC-H Performance: Comparison with Greenplum
+### TPC-H Performance: Comparison with Traditional MPP Database
 
-When 16 nodes are configured, PolarDB delivers performance that is 90% of the performance delivered by MPP-based Greenplum.
+When 16 nodes are configured, PolarDB delivers performance that is 90% of the performance delivered by MPP-based database.
 
-![image.png](../imgs/36_TPC-H_performance_Comparison_with_Greenplum1.png)
+![image.png](../imgs/36_TPC-H_performance_Comparison_with_mpp1.png)
 
-![image.png](../imgs/37_TPC-H_performance_Comparison_with_Greenplum2.png)
+![image.png](../imgs/37_TPC-H_performance_Comparison_with_mpp2.png)
 
-As mentioned earlier, the distributed execution engine of PolarDB supports scalability, and data in PolarDB does not need to be redistributed. When the degree of parallelism (DOP) is 8, PolarDB delivers performance that is 5.6 times the performance delivered by Greenplum.
+As mentioned earlier, the distributed execution engine of PolarDB supports scalability, and data in PolarDB does not need to be redistributed. When the degree of parallelism (DOP) is 8, PolarDB delivers performance that is 5.6 times the performance delivered by MPP-based database.
 
 ### Index Creation Accelerated by Distributed Execution
 
