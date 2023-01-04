@@ -49,21 +49,47 @@ export const zh: NavbarConfig = [
         children: [
           "/zh/operation/backup-and-restore.html",
           "/zh/operation/grow-storage.html",
+          "/zh/operation/scale-out.html",
+          "/zh/operation/ro-online-promote.html",
         ],
       },
       {
         text: "性能测试",
-        children: ["/zh/operation/tpcc-test.html"],
+        children: [
+          "/zh/operation/tpcc-test.html",
+          "/zh/operation/tpch-on-px.html",
+        ],
       },
     ],
   },
   {
-    text: "特性实践",
-    link: "/zh/features/",
+    text: "内核特性",
     children: [
       {
-        text: "HTAP",
-        children: ["/zh/features/tpch-on-px.html"],
+        text: "文档入口",
+        link: "/zh/features/v11/",
+      },
+      {
+        text: "PolarDB for PostgreSQL 11",
+        link: "/zh/features/v11/",
+        children: [
+          {
+            text: "高性能",
+            link: "/zh/features/v11/performance/",
+          },
+          {
+            text: "高可用",
+            link: "/zh/features/v11/availability/",
+          },
+          {
+            text: "安全",
+            link: "/zh/features/v11/security/",
+          },
+          {
+            text: "HTAP",
+            link: "/zh/features/v11/htap/",
+          },
+        ],
       },
     ],
   },
@@ -75,6 +101,7 @@ export const zh: NavbarConfig = [
         text: "PolarDB for PostgreSQL",
         children: [
           "/zh/theory/arch-overview.html",
+          "/zh/theory/arch-htap.html",
           "/zh/theory/buffer-management.html",
           "/zh/theory/ddl-synchronization.html",
           "/zh/theory/logindex.html",
@@ -82,7 +109,10 @@ export const zh: NavbarConfig = [
       },
       {
         text: "PostgreSQL",
-        children: ["/zh/theory/analyze.html"],
+        children: [
+          "/zh/theory/analyze.html",
+          "/zh/theory/polar-sequence-tech.html",
+        ],
       },
     ],
   },

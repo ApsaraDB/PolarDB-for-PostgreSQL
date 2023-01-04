@@ -151,9 +151,9 @@ assign_data_encryption_cipher(int new_encryption_cipher, void *extra)
 		case TDE_ENCRYPTION_AES_128:
 #ifndef OPENSSL_NO_SM4
 		case TDE_ENCRYPTION_SM4:
+#endif
 			EncryptionKeySize = 16;
 			break;
-#endif
 		case TDE_ENCRYPTION_AES_256:
 			EncryptionKeySize = 32;
 			break;

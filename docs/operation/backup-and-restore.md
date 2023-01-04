@@ -1,4 +1,4 @@
-# PolarDB PG 备份恢复
+# 备份恢复
 
 PolarDB 是基于共享存储的存算分离架构，因此 PolarDB 的备份恢复和 PostgreSQL 存在部分差异。本文将指导您如何对 PolarDB 做备份恢复，搭建只读节点，搭建 Standby 实例等：
 
