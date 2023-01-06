@@ -4,7 +4,7 @@ date: 2022/10/12
 minute: 15
 ---
 
-# 共享存储在线扩容
+# 共享存储在线扩容 <a href="https://developer.aliyun.com/live/250669"><Badge type="tip" text="视频" vertical="top" /></a>
 
 <ArticleInfo :frontmatter=$frontmatter></ArticleInfo>
 
