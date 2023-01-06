@@ -360,11 +360,11 @@ PolarDB 中有 4 类算子需要并行化，下面介绍一个具有代表性的
 
 ![image.png](../imgs/32_transactional_consistency.png)
 
-### TPCH 性能：加速比
+### TPC-H 性能：加速比
 
 ![image.png](../imgs/33_TPC-H_performance_Speedup1.png)
 
-我们使用 1TB 的 TPCH 进行了测试，首先对比了 PolarDB 新的分布式并行和单机并行的性能：有 3 个 SQL 提速 60 倍，19 个 SQL 提速 10 倍以上；
+我们使用 1TB 的 TPC-H 进行了测试，首先对比了 PolarDB 新的分布式并行和单机并行的性能：有 3 个 SQL 提速 60 倍，19 个 SQL 提速 10 倍以上；
 
 ![image.png](../imgs/34_TPC-H_performance_Speedup2.png)
 
@@ -372,7 +372,7 @@ PolarDB 中有 4 类算子需要并行化，下面介绍一个具有代表性的
 
 另外，使用分布式执行引擎测，试增加 CPU 时的性能，可以看到，从 16 核和 128 核时性能线性提升；单看 22 条 SQL，通过该增加 CPU，每个条 SQL 性能线性提升。
 
-### TPCH 性能：和传统 MPP 数据库的对比
+### TPC-H 性能：和传统 MPP 数据库的对比
 
 与传统 MPP 数据库相比，同样使用 16 个节点，PolarDB 的性能是传统 MPP 数据库的 90%。
 
