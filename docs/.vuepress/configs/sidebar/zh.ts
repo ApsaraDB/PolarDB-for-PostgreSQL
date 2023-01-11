@@ -12,7 +12,7 @@ export const zh: SidebarConfig = {
           link: "/zh/deploying/deploy.md",
           children: [
             {
-              text: "存储设备的准备",
+              text: "共享存储设备的准备",
               children: [
                 "/zh/deploying/storage-aliyun-essd.md",
                 "/zh/deploying/storage-curvebs.md",
@@ -28,7 +28,7 @@ export const zh: SidebarConfig = {
               ],
             },
             {
-              text: "编译部署 PolarDB 内核",
+              text: "部署 PolarDB 数据库",
               children: [
                 "/zh/deploying/db-localfs.md",
                 "/zh/deploying/db-pfs.md",

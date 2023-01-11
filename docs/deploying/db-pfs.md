@@ -4,7 +4,7 @@ date: 2022/05/09
 minute: 15
 ---
 
-# 编译部署：基于 PFS 文件系统
+# 基于 PFS 文件系统部署
 
 <ArticleInfo :frontmatter=$frontmatter></ArticleInfo>
 
@@ -180,6 +180,7 @@ $HOME/tmp_basedir_polardb_pg_1100_bld/bin/psql -q \
 
 ## 常见运维步骤
 
+- [备份恢复](../operation/backup-and-restore.md)
 - [共享存储在线扩容](../operation/grow-storage.md)
 - [计算节点扩缩容](../operation/scale-out.md)
 - [只读节点在线 Promote](../operation/ro-online-promote.md)

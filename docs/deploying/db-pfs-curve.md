@@ -4,7 +4,7 @@ date: 2022/11/02
 minute: 15
 ---
 
-# 编译部署：基于 Curve 块存储的 PFS 文件系统
+# 基于 PFS for CurveBS 文件系统部署
 
 <ArticleInfo :frontmatter=$frontmatter></ArticleInfo>
 

@@ -12,7 +12,7 @@ export const en: SidebarConfig = {
           link: "/deploying/deploy.md",
           children: [
             {
-              text: "Preparation of Storage Device",
+              text: "Preparation of Shared-Storage Device",
               children: [
                 "/deploying/storage-aliyun-essd.md",
                 "/deploying/storage-curvebs.md",
@@ -25,7 +25,7 @@ export const en: SidebarConfig = {
               children: ["/deploying/fs-pfs.md", "/deploying/fs-pfs-curve.md"],
             },
             {
-              text: "Building PolarDB Kernel",
+              text: "Deploying PolarDB",
               children: [
                 "/deploying/db-localfs.md",
                 "/deploying/db-pfs.md",

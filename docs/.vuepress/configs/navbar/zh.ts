@@ -8,7 +8,7 @@ export const zh: NavbarConfig = [
       "/zh/deploying/quick-start.html",
       "/zh/deploying/deploy.html",
       {
-        text: "存储设备的准备",
+        text: "共享存储设备的准备",
         children: [
           "/zh/deploying/storage-aliyun-essd.html",
           "/zh/deploying/storage-curvebs.html",
@@ -24,7 +24,7 @@ export const zh: NavbarConfig = [
         ],
       },
       {
-        text: "编译部署 PolarDB 内核",
+        text: "部署 PolarDB 数据库",
         children: [
           "/zh/deploying/db-localfs.html",
           "/zh/deploying/db-pfs.html",

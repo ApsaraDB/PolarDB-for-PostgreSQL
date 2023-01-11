@@ -4,7 +4,7 @@ date: 2022/05/09
 minute: 15
 ---
 
-# 编译部署：基于单机文件系统
+# 基于单机文件系统部署
 
 <ArticleInfo :frontmatter=$frontmatter></ArticleInfo>
 
