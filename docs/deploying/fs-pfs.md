@@ -14,7 +14,7 @@ PolarDB File System，简称 PFS 或 PolarFS，是由阿里云自主研发的高
 
 ## PFS 编译安装
 
-推荐使用 [DockerHub](https://hub.docker.com/u/polardb) 上的 PolarDB [可执行文件镜像](https://hub.docker.com/r/polardb/polardb_pg_binary/tags)，目前支持 AMD64 和 ARM64 两种 CPU 架构，其中已经包含了编译完毕的 PFS，无需再次编译安装。通过以下命令进入容器即可：
+推荐使用 [DockerHub](https://hub.docker.com/u/polardb) 上的 PolarDB for PostgreSQL [可执行文件镜像](https://hub.docker.com/r/polardb/polardb_pg_binary/tags)，目前支持 `linux/amd64` 和 `linux/arm64` 两种架构，其中已经包含了编译完毕的 PFS 工具，无需手动编译安装。通过以下命令进入容器即可：
 
 ```shell:no-line-numbers
 docker pull polardb/polardb_pg_binary:pfs
