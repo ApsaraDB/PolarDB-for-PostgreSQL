@@ -8,7 +8,7 @@ export const en: NavbarConfig = [
       "/deploying/quick-start.html",
       "/deploying/deploy.html",
       {
-        text: "Preparation of Storage Device",
+        text: "Preparation of Shared-Storage Device",
         children: [
           "/deploying/storage-aliyun-essd.html",
           "/deploying/storage-curvebs.html",
@@ -21,7 +21,7 @@ export const en: NavbarConfig = [
         children: ["/deploying/fs-pfs.html", "/deploying/fs-pfs-curve.html"],
       },
       {
-        text: "Building PolarDB Kernel",
+        text: "Deploying PolarDB",
         children: [
           "/deploying/db-localfs.html",
           "/deploying/db-pfs.html",

@@ -41,6 +41,7 @@
 #include "utils/xml.h"
 
 /* POLAR px */
+#include "parser/parse_clause.h"
 #include "px/px_vars.h"
 #include "px/px_hash.h"
 #include "px/px_gang.h"
@@ -439,7 +440,8 @@ ExplainOneUtility(Node *utilityStmt, IntoClause *into, ExplainState *es,
 		Assert(list_length(rewritten) == 1);
 
 		/* POLAR px: try to use PX if GUC enables */
-		if (px_enable_create_table_as && px_enable_replay_wait)
+		if (px_enable_create_table_as && px_enable_replay_wait &&
+			!interpretOidsOption(ctas->into->options, !(ctas->into->viewQuery != NULL)))
 			ExplainOneQuery(linitial_node(Query, rewritten),
 							CURSOR_OPT_PARALLEL_OK | CURSOR_OPT_PX_OK, ctas->into, es,
 							queryString, params, queryEnv);

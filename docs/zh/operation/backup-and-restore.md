@@ -1,89 +1,72 @@
+---
+author: 慎追、棠羽
+date: 2023/01/11
+minute: 30
+---
+
 # 备份恢复
 
-PolarDB 是基于共享存储的存算分离架构，因此 PolarDB 的备份恢复和 PostgreSQL 存在部分差异。本文将指导您如何对 PolarDB 做备份恢复，搭建只读节点，搭建 Standby 实例等：
+<ArticleInfo :frontmatter=$frontmatter></ArticleInfo>
 
-1. PolarDB 备份恢复原理
-2. PolarDB 的目录结构
-3. polar_basebackup 备份工具
-4. PolarDB 搭建 RO
-5. PolarDB 搭建 Standby
-6. PolarDB 按时间点恢复
+PolarDB for PostgreSQL 采用基于共享存储的存算分离架构，其备份恢复和 PostgreSQL 存在部分差异。本文将指导您如何对 PolarDB for PostgreSQL 进行备份，并通过备份来搭建 Replica 节点或 Standby 节点。
 
-前置条件是先准备一个 PolarDB 实例，可以参考文档 [搭建 PolarDB](../deploying/deploy.md)。
+[[toc]]
 
 ## 备份恢复原理
 
-![theory](https://intranetproxy.alipay.com/skylark/lark/0/2022/png/135683/1656473213509-02fd756c-a796-47e0-af3b-cb7ce7e02751.png)
+PostgreSQL 的备份流程可以总结为以下几步：
 
-PolarDB 的备份恢复原理整体上和 PostgreSQL 几乎一致，总结为以下几步：
+1. 进入备份模式
+   - 强制进入 Full Page Write 模式，并切换当前的 WAL segment 文件
+   - 在数据目录下创建 `backup_label` 文件，其中包含基础备份的起始点位置
+   - 备份的恢复必须从一个内存数据与磁盘数据一致的检查点开始，所以将等待下一次检查点的到来，或立刻强制进行一次 `CHECKPOINT`
+2. 备份数据库：使用文件系统级别的工具进行备份
+3. 退出备份模式
+   - 重置 Full Page Write 模式，并切换到下一个 WAL segment 文件
+   - 创建备份历史文件，包含当前基础备份的起止 WAL 位置，并删除 `backup_label` 文件
 
-1. 执行 `pg_start_backup` 命令
-2. 使用各种方式对数据库进行复制
-3. 执行 `pg_stop_backup` 命令
+备份 PostgreSQL 数据库最简便方法是使用 `pg_basebackup` 工具。
 
-进行备份的更简单方法是使用 `polar_basebackup` ，但它其实是在内部发出这些低级命令，并且支持使用网络将文件发送到远端。
+## 数据目录结构
 
-- `pg_start_backup`：准备进行基本备份。恢复过程从 REDO 点开始，因此 `pg_start_backup` 必须执行检查点以在开始进行基本备份时显式创建 REDO 点。此外，其检查点的检查点位置必须保存在 `pg_control` 以外的文件中，因为在备份期间可能会多次执行常规检查点。因此 `pg_start_backup` 执行以下四个操作：
+PolarDB for PostgreSQL 采用基于共享存储的存算分离架构，其数据目录分为以下两类：
 
-  1. 强制进入整页写模式。
-  2. 切换到当前的 WAL 段文件。
-  3. 做检查点。
-  4. 创建一个 `backup_label` 文件——该文件在基础目录的顶层创建，包含关于基础备份本身的基本信息，例如该检查点的检查点位置。
-     第三和第四个操作是这个命令的核心；执行第一和第二操作以更可靠地恢复数据库集群。
+- 本地数据目录：位于每个计算节点的本地存储上，为每个计算节点私有
+- 共享数据目录：位于共享存储上，被所有计算节点共享
 
-- `pg_stop_backup`：执行以下五个操作来完成备份。
+![backup-dir](../imgs/backup-dir.png)
 
-  1. 如果已被 `pg_start_backup` 强制更改，则重置为非整页写入模式。
-  2. 写一条备份端的 XLOG 记录。
-  3. 切换 WAL 段文件。
-  4. 创建备份历史文件——该文件包含 `backup_label` 文件的内容和 `pg_stop_backup` 已执行的时间戳。
-  5. 删除 `backup_label` 文件 – 从基本备份恢复需要 `backup_label` 文件，一旦复制，在原始数据库集群中就不需要了。
+由于本地数据目录中的目录和文件不涉及数据库的核心数据，因此在备份数据库时，备份本地数据目录是可选的。可以仅备份共享存储上的数据目录，然后使用 `initdb` 重新生成新的本地存储目录。但是计算节点的本地配置文件需要被手动备份，如 `postgresql.conf`、`pg_hba.conf` 等文件。
 
-## 目录结构
+### 本地数据目录
 
-如上所述，PolarDB 备份过程总体可以概括为三步，其中第二步是使用各种方式对数据库进行复制：
+通过以下 SQL 命令可以查看节点的本地数据目录：
 
-- 手动 copy
-- 使用网络工具传输
-- 基于存储进行打快照。
-
-因此，这里介绍一下 PolarDB 数据目录结构，以便于进一步理解备份恢复。
-
-![storage](https://intranetproxy.alipay.com/skylark/lark/0/2022/png/135683/1656470771553-e0c32f21-2ca4-43a4-a0a8-44d8a15e7358.png)
-
-如上图，PolarDB 是基于共享存储的，所以 PolarDB 在物理上有两个重要的数据目录，分别是 **本地存储目录** 和 **共享存储目录**。
-
-### 本地存储目录
-
-```
-postgres=# show data_directory;
+```sql:no-line-numbers
+postgres=# SHOW data_directory;
      data_directory
 ------------------------
  /home/postgres/primary
 (1 row)
 ```
 
-可以通过上述命令在数据库中获取本地存储目录的位置，可以看到它是类似于 PostgreSQL 的数据目录。
+本地数据目录类似于 PostgreSQL 的数据目录，大多数目录和文件都是通过 `initdb` 生成的。随着数据库服务的运行，本地数据目录中会产生更多的本地文件，如临时文件、缓存文件、配置文件、日志文件等。其结构如下：
 
-```
-.
+```shell:no-line-numbers
+$ tree ./ -L 1
+./
 ├── base
-│   ├── 1
-│   ├── 13938
-│   ├── 13939
-│   └── 13940
+├── current_logfiles
 ├── global
 ├── pg_commit_ts
 ├── pg_csnlog
 ├── pg_dynshmem
+├── pg_hba.conf
+├── pg_ident.conf
 ├── pg_log
 ├── pg_logical
-│   ├── mappings
-│   └── snapshots
 ├── pg_logindex
 ├── pg_multixact
-│   ├── members
-│   └── offsets
 ├── pg_notify
 ├── pg_replslot
 ├── pg_serial
@@ -92,67 +75,62 @@ postgres=# show data_directory;
 ├── pg_stat_tmp
 ├── pg_subtrans
 ├── pg_tblspc
+├── PG_VERSION
 ├── pg_xact
 ├── polar_cache_trash
+├── polar_dma.conf
 ├── polar_fullpage
-└── polar_rel_size_cache
+├── polar_node_static.conf
+├── polar_rel_size_cache
+├── polar_shmem
+├── polar_shmem_stat_file
+├── postgresql.auto.conf
+├── postgresql.conf
+├── postmaster.opts
+└── postmaster.pid
+
+21 directories, 12 files
 ```
 
-本地存储目录中，大多都是通过 `initdb` 命令生成的文件或目录。随着数据库服务运行，这里会生成更多的本地文件，如临时文件、缓存文件、配置文件、日志文件。
+### 共享数据目录
 
-由于本地存储目录中的文件不涉及核心数据，因此在做备份时本地存储目录是可选的。您可以仅备份共享存储上的数据目录，然后用 `initdb` 重新生成一份新的本地存储目录。但是需要记住之前的本地配置信息，如 `postgresql.conf`，`pg_hba.conf` 等。
+通过以下 SQL 命令可以查看所有计算节点在共享存储上的共享数据目录：
 
-::: tip
-如果您不能记住历史配置，或者您需要保留历史日志，建议您将本地存储目录也进行备份。可以将这个目录完全复制后修改配置文件来搭建 RO 或者 Standby。
-:::
-
-### 共享存储目录
-
-```sql
-postgres=# show polar_datadir;
+```sql:no-line-numbers
+postgres=# SHOW polar_datadir;
      polar_datadir
 -----------------------
- /nvme0n1/shared_data/
+ /nvme1n1/shared_data/
 (1 row)
 ```
 
-```
-.
-├── base
-│   ├── 1
-│   ├── 16555
-│   ├── 16556
-│   ├── 16557
-│   └── 16558
-├── global
-├── pg_commit_ts
-├── pg_csnlog
-├── pg_logindex
-├── pg_multixact
-│   ├── members
-│   └── offsets
-├── pg_replslot
-├── pg_tblspc
-├── pg_twophase
-├── pg_wal
-│   └── archive_status
-├── pg_xact
-├── polar_dma
-│   ├── consensus_cc_log
-│   └── consensus_log
-├── polar_flog
-├── polar_flog_index
-├── polar_fraindex
-│   ├── fbpoint
-│   └── pg_xact
-└── polar_fullpage
-```
+共享数据目录中存放 PolarDB for PostgreSQL 的核心数据文件，如表文件、索引文件、WAL 日志、DMA、LogIndex、Flashback Log 等。这些文件被所有节点共享，因此必须被备份。其结构如下：
 
-共享存储目录中存放 PolarDB 的核心数据文件，如表文件、索引文件、WAL 日志、DMA、LogIndex、Flashback 等。这些文件被一个 RW 节点和多个 RO 节点共享，因此是必须备份的。您可以使用 `copy` 命令、存储快照、网络传输等方式进行备份。如果您没有更好的选择，推荐使用 `polar_basebackup` 命令。
+```shell:no-line-numbers
+$ sudo pfs -C disk ls /nvme1n1/shared_data/
+   Dir  1     512               Wed Jan 11 09:34:01 2023  base
+   Dir  1     7424              Wed Jan 11 09:34:02 2023  global
+   Dir  1     0                 Wed Jan 11 09:34:02 2023  pg_tblspc
+   Dir  1     512               Wed Jan 11 09:35:05 2023  pg_wal
+   Dir  1     384               Wed Jan 11 09:35:01 2023  pg_logindex
+   Dir  1     0                 Wed Jan 11 09:34:02 2023  pg_twophase
+   Dir  1     128               Wed Jan 11 09:34:02 2023  pg_xact
+   Dir  1     0                 Wed Jan 11 09:34:02 2023  pg_commit_ts
+   Dir  1     256               Wed Jan 11 09:34:03 2023  pg_multixact
+   Dir  1     0                 Wed Jan 11 09:34:03 2023  pg_csnlog
+   Dir  1     256               Wed Jan 11 09:34:03 2023  polar_dma
+   Dir  1     512               Wed Jan 11 09:35:09 2023  polar_fullpage
+  File  1     32                Wed Jan 11 09:35:00 2023  RWID
+   Dir  1     256               Wed Jan 11 10:25:42 2023  pg_replslot
+  File  1     224               Wed Jan 11 10:19:37 2023  polar_non_exclusive_backup_label
+total 16384 (unit: 512Bytes)
+```
 
 ## polar_basebackup 备份工具
 
-下面介绍一下 PolarDB 的备份工具 `polar_basebackup`，它由 [`pg_basebackup`](https://www.postgresql.org/docs/11/app-pgbasebackup.html) 改造而来，且完全兼容 `pg_baseabckup`，也就是说它同样可以用于对 PostgreSQL 做备份恢复。`polar_basebackup` 在 PolarDB 二进制安装目录下的 `bin/` 目录中，您可以配置 `export` 环境变量来直接使用它。
+PolarDB for PostgreSQL 的备份工具 `polar_basebackup`，由 PostgreSQL 的 [`pg_basebackup`](https://www.postgresql.org/docs/11/app-pgbasebackup.html) 改造而来，完全兼容 `pg_basebackup`，因此同样可以用于对 PostgreSQL 做备份恢复。`polar_basebackup` 的可执行文件位于 PolarDB for PostgreSQL 安装目录下的 `bin/` 目录中。
+
+该工具的主要功能是将一个运行中的 PolarDB for PostgreSQL 数据库的数据目录（包括本地数据目录和共享数据目录）备份到目标目录中。
 
 ```shell
 polar_basebackup takes a base backup of a running PostgreSQL server.
@@ -206,192 +184,244 @@ Connection options:
       --polar_storage_cluster_name=cluster_name  polar_storage_cluster_name for polar data backup
 ```
 
-可以看到 `polar_basebackup` 的大部分参数及用法都和 [`pg_basebackup`](https://www.postgresql.org/docs/11/app-pgbasebackup.html) 一致，只是多了以下几个参数，下面重点来介绍一下：
+`polar_basebackup` 的参数及用法几乎和 `pg_basebackup` 一致，新增了以下与共享存储相关的参数：
 
-- `polardata`：
-  如果您备份的实例是 PolarDB 共享存储架构，这个参数用于指定 PolarDB 共享存储目录的位置。如果您不指定，将会使用默认目录 `polar_shared_data`，并且放在本地存储目录（即 `-D` / `--pgdata` 所指定的参数）下面。如果您对 PostgreSQL 备份则无需关心他。
-- `polar_disk_home`：
-  如果您备份的实例是 PolarDB 共享存储架构，且您希望将共享存储目录通过 PFS 写入共享存储设备，则需要指定这个参数，它是 PFS 的使用参数。
-- `polar_host_id`：
-  如果您备份的实例是 PolarDB 共享存储架构，且您希望将共享存储目录通过 PFS 写入共享存储设备，则需要指定这个参数，它是 PFS 的使用参数。
-- `polar_storage_cluster_name`：
-  如果您备份的实例是 PolarDB 共享存储架构，且您希望将共享存储目录通过 PFS 写入共享存储设备，则需要指定这个参数，它是 PFS 的使用参数。
+- `--polar_disk_home` / `--polar_host_id` / `--polar_storage_cluster_name`：这三个参数指定了用于存放备份共享数据的共享存储节点
+- `--polardata`：该参数指定了备份共享存储节点上存放共享数据的路径；如不指定，则默认将共享数据备份到本地数据备份目录的 `polar_shared_data/` 路径下
 
-## 搭建 RO
+## 备份并恢复一个 Replica 节点
 
-您可以通过以下两种方式来搭建 RO node。
+基础备份可用于搭建一个新的 Replica（RO）节点。如前文所述，一个正在运行中的 PolarDB for PostgreSQL 实例的数据文件分布在各计算节点的本地存储和存储节点的共享存储中。下面将说明如何使用 `polar_basebackup` 将实例的数据文件备份到一个本地磁盘上，并从这个备份上启动一个 Replica 节点。
 
-### 使用 initdb 来搭建 RO
+### PFS 文件系统挂载
 
-主要步骤是使用 `initdb` 初始化 RO 的本地存储目录，然后修改配置文件，启动实例。具体请参考 [只读节点部署](../deploying/db-pfs.md#只读节点部署)。
+首先，在将要部署 Replica 节点的机器上启动 PFSD 守护进程，挂载到正在运行中的共享存储的 PFS 文件系统上。后续启动的 Replica 节点将使用这个守护进程来访问共享存储。
 
-### 备份 RW 的本地存储目录来搭建 RO
-
-这里使用备份 RW 的本地存储目录。下面通过 `polar_basebakcup` 来演示：
-
-```bash:no-line-numbers
-polar_basebackup --host=[主节点所在IP] --port=5432 -D /home/postgres/replica1 -X stream --progress --write-recovery-conf -v
+```shell:no-line-numbers
+sudo /usr/local/polarstore/pfsd/bin/start_pfsd.sh -p nvme1n1 -w 2
 ```
 
-![undefined](https://intranetproxy.alipay.com/skylark/lark/0/2022/png/135683/1656301721373-90677c11-9e82-4b5b-a60d-ea2e101cf81a.png)
+### 备份数据到本地存储
 
-完成 `polar_basebackup` 命令后，我们可以看到 `/home/postgres/replica1` 中存在一个 `polar_shared_data`, 搭建 RO 时不需要它，将它删除：
+运行如下命令，将实例 Primary 节点的本地数据和共享数据备份到用于部署 Replica 节点的本地存储路径 `/home/postgres/replica1` 下：
 
-```bash:no-line-numbers
-rm -rf /home/postgres/replica1/polar_shared_data
+```shell:no-line-numbers
+polar_basebackup \
+    --host=[Primary节点所在IP] \
+    --port=[Primary节点所在端口号] \
+    -D /home/postgres/replica1 \
+    -X stream --progress --write-recovery-conf -v
 ```
 
-![undefined](https://intranetproxy.alipay.com/skylark/lark/0/2022/png/135683/1656301745881-219b7540-3190-4cfe-a717-4083d579cc3a.png)
+将看到如下输出：
 
-打开 `/home/postgres/replica1/postgresql.conf`，修改如下配置项：
-
-```ini
-port=5433
-polar_hostid=2
-polar_enable_shared_storage_mode=on
-polar_disk_name='nvme0n1'
-polar_datadir='/nvme0n1/shared_data/'
-polar_vfs.localfs_mode=off
-shared_preload_libraries='$libdir/polar_vfs,$libdir/polar_worker'
-polar_storage_cluster_name='disk'
-logging_collector=on
-log_line_prefix='%p\t%r\t%u\t%m\t'
-log_directory='pg_log'
-listen_addresses='*'
-max_connections=1000
-synchronous_standby_names=''
+```shell:no-line-numbers
+polar_basebackup: initiating base backup, waiting for checkpoint to complete
+polar_basebackup: checkpoint completed
+polar_basebackup: write-ahead log start point: 0/16ADD60 on timeline 1
+polar_basebackup: starting background WAL receiver
+polar_basebackup: created temporary replication slot "pg_basebackup_359"
+851371/851371 kB (100%), 2/2 tablespaces
+polar_basebackup: write-ahead log end point: 0/16ADE30
+polar_basebackup: waiting for background process to finish streaming ...
+polar_basebackup: base backup completed
 ```
 
-打开 `/home/postgres/replica1/recovery.conf`，使用以下配置项替换文件中的所有内容：
+备份完成后，可以以这个备份目录作为本地数据目录，启动一个新的 Replica 节点。由于本地数据目录中不需要共享存储上已有的共享数据文件，所以删除掉本地数据目录中的 `polar_shared_data/` 目录：
 
-```ini
+```shell:no-line-numbers
+rm -rf ~/replica1/polar_shared_data
+```
+
+### 重新配置 Replica 节点
+
+重新编辑 Replica 节点的配置文件 `~/replica1/postgresql.conf`：
+
+```diff:no-line-numbers
+-polar_hostid=1
++polar_hostid=2
+-synchronous_standby_names='replica1'
+```
+
+重新编辑 Replica 节点的复制配置文件 `~/replica1/recovery.conf`：
+
+```ini:no-line-numbers
 polar_replica='on'
 recovery_target_timeline='latest'
 primary_slot_name='replica1'
-primary_conninfo='host=[主节点所在IP] port=5432 user=postgres dbname=postgres application_name=replica1'
+primary_conninfo='host=[Primary节点所在IP] port=5432 user=postgres dbname=postgres application_name=replica1'
 ```
 
-最后，启动只读节点：
+### Replica 节点启动
 
-```shell
-$HOME/tmp_basedir_polardb_pg_1100_bld/bin/pg_ctl start -D $HOME/replica1
+启动 Replica 节点：
+
+```shell:no-line-numbers
+pg_ctl -D $HOME/replica1 start
 ```
 
-检查只读节点能否正常运行：
+### Replica 节点验证
 
-```shell
-$HOME/tmp_basedir_polardb_pg_1100_bld/bin/psql \
-    -p 5433 \
+在 Primary 节点上执行建表并插入数据，在 Replica 节点上可以查到 Primary 节点插入的数据：
+
+```shell:no-line-numbers
+$ psql -q \
+    -h [Primary节点所在IP] \
+    -p 5432 \
     -d postgres \
-    -c 'select version();'
-            version
---------------------------------
- PostgreSQL 11.9 (POLARDB 11.9)
-(1 row)
+    -c "CREATE TABLE t (t1 INT PRIMARY KEY, t2 INT); INSERT INTO t VALUES (1, 1),(2, 3),(3, 3);"
+
+$ psql -q \
+    -h [Replica节点所在IP] \
+    -p 5432 \
+    -d postgres \
+    -c "SELECT * FROM t;"
+ t1 | t2
+----+----
+  1 |  1
+  2 |  3
+  3 |  3
+(3 rows)
 ```
 
-## 搭建 Standby
+## 备份并恢复一个 Standby 节点
 
-您可以使用全量备份集搭建 Standby，这里推荐使用 `polar_basebackup` 进行搭建，下面介绍搭建流程。
+基础备份也可以用于搭建一个新的 Standby 节点。如下图所示，Standby 节点与 Primary / Replica 节点各自使用独立的共享存储，与 Primary 节点使用物理复制保持同步。Standby 节点可用于作为主共享存储的灾备。
 
-### 使用 `polar_basebakcup` 对实例作全量备份
+![backup-dir](../imgs/backup-dir.png)
 
-```shell
-polar_basebackup --host=[主节点所在IP] --port=5432 -D /home/postgres/standby --polardata=/nvme0n2/shared_data/  --polar_storage_cluster_name=disk --polar_disk_name=nvme0n2  --polar_host_id=3 -X stream --progress --write-recovery-conf -v
+### PFS 文件系统格式化和挂载
+
+假设此时用于部署 Standby 计算节点的机器已经准备好用于后备的共享存储 `nvme2n1`：
+
+```shell:no-line-numbers
+$ lsblk
+NAME        MAJ:MIN RM SIZE RO TYPE MOUNTPOINT
+nvme0n1     259:1    0  40G  0 disk
+└─nvme0n1p1 259:2    0  40G  0 part /etc/hosts
+nvme2n1     259:3    0  70G  0 disk
+nvme1n1     259:0    0  60G  0 disk
 ```
 
-![undefined](https://intranetproxy.alipay.com/skylark/lark/0/2022/png/135683/1656315576998-2aaeff3e-4341-46df-bce1-eb211ea4c605.png)
+将这个共享存储格式化为 PFS 格式，并启动 PFSD 守护进程挂载到 PFS 文件系统：
 
-::: tip
-注意：这里是构建共享存储的 Standby，首先您需要找一台机器部署好 PolarDB 及其文件系统 PolarFS，且已经搭建好了共享存储`nvme0n2`, 具体操作请参考 [准备块设备与搭建文件系统](../deploying/deploy.md)
-:::
-
-备份完成后如下图所示：
-
-![undefined](https://intranetproxy.alipay.com/skylark/lark/0/2022/png/135683/1656315627036-15320d4f-3711-4400-b094-b698edfa8caa.png)
-
-::: tip
-如果您没有共享存储设备，则不需要指定 `--polar_storage_cluster_name`，`--polar_disk_name`，`--polar_host_id` 参数。
-:::
-
-下面我们简单介绍下其他形态的 PolarDB 备份：
-
-```shell
--- 单节点本地备份
-polar_basebackup -D /polardb/data-standby -X stream  --progress --write-recovery-conf -v
---共享存储本地备份
-polar_basebackup -D /polardb/data-standby --polardata=/polardb/data-local  -X stream --progress --write-recovery-conf -v
--- 共享存储写入pfs
-polar_basebackup -D /polardb/data-standby --polardata=/nvme7n1/data  --polar_storage_cluster_name=disk --polar_disk_name=nvme7n1  --polar_host_id=3
+```shell:no-line-numbers
+sudo pfs -C disk mkfs nvme2n1
+sudo /usr/local/polarstore/pfsd/bin/start_pfsd.sh -p nvme2n1 -w 2
 ```
 
-### 检查备份是否正常
+### 备份数据到本地存储和共享存储
 
-查看本地目录：
+在用于部署 Standby 节点的机器上执行备份，以 `~/standby` 作为本地数据目录，以 `/nvme2n1/shared_data` 作为共享存储目录：
 
-![undefined](https://intranetproxy.alipay.com/skylark/lark/0/2022/png/135683/1656315747873-16bf409d-d58f-4e65-b1e0-1ae0e523b863.png)
-
-查看共享存储目录：
-
-![undefined](https://intranetproxy.alipay.com/skylark/lark/0/2022/png/135683/1656315649979-c0731ab7-4516-4e5e-9626-93ccdd1abab4.png)
-
-### 修改 postgresql.conf
-
-将参数修改为如下所示：
-
-```ini
-polar_hostid = 3
-polar_disk_name = 'nvme0n2'
-polar_datadir = '/nvme0n2/shared_data'
-polar_storage_cluster_name = 'disk'
-synchronous_standby_names=''
+```shell:no-line-numbers
+polar_basebackup \
+    --host=[Primary节点所在IP] \
+    --port=[Primary节点所在端口号] \
+    -D /home/postgres/standby \
+    --polardata=/nvme2n1/shared_data/ \
+    --polar_storage_cluster_name=disk \
+    --polar_disk_name=nvme2n1 \
+    --polar_host_id=3 \
+    -X stream --progress --write-recovery-conf -v
 ```
 
-### 在主库中创建复制槽
+将会看到如下输出。其中，除了 `polar_basebackup` 的输出以外，还有 PFS 的输出日志：
 
-```shell
-psql --host=[主节点所在IP]  --port=5432 -d postgres -c 'SELECT * FROM pg_create_physical_replication_slot('standby1');'
+```shell:no-line-numbers
+[PFSD_SDK INF Jan 11 10:11:27.247112][99]pfs_mount_prepare 103: begin prepare mount cluster(disk), PBD(nvme2n1), hostid(3),flags(0x13)
+[PFSD_SDK INF Jan 11 10:11:27.247161][99]pfs_mount_prepare 165: pfs_mount_prepare success for nvme2n1 hostid 3
+[PFSD_SDK INF Jan 11 10:11:27.293900][99]chnl_connection_poll_shm 1238: ack data update s_mount_epoch 1
+[PFSD_SDK INF Jan 11 10:11:27.293912][99]chnl_connection_poll_shm 1266: connect and got ack data from svr, err = 0, mntid 0
+[PFSD_SDK INF Jan 11 10:11:27.293979][99]pfsd_sdk_init 191: pfsd_chnl_connect success
+[PFSD_SDK INF Jan 11 10:11:27.293987][99]pfs_mount_post 208: pfs_mount_post err : 0
+[PFSD_SDK ERR Jan 11 10:11:27.297257][99]pfsd_opendir 1437: opendir /nvme2n1/shared_data/ error: No such file or directory
+[PFSD_SDK INF Jan 11 10:11:27.297396][99]pfsd_mkdir 1320: mkdir /nvme2n1/shared_data
+polar_basebackup: initiating base backup, waiting for checkpoint to complete
+WARNING:  a labelfile "/nvme1n1/shared_data//polar_non_exclusive_backup_label" is already on disk
+HINT:  POLAR: we overwrite it
+polar_basebackup: checkpoint completed
+polar_basebackup: write-ahead log start point: 0/16C91F8 on timeline 1
+polar_basebackup: starting background WAL receiver
+polar_basebackup: created temporary replication slot "pg_basebackup_373"
+...
+[PFSD_SDK INF Jan 11 10:11:32.992005][99]pfsd_open 539: open /nvme2n1/shared_data/polar_non_exclusive_backup_label with inode 6325, fd 0
+[PFSD_SDK INF Jan 11 10:11:32.993074][99]pfsd_open 539: open /nvme2n1/shared_data/global/pg_control with inode 8373, fd 0
+851396/851396 kB (100%), 2/2 tablespaces
+polar_basebackup: write-ahead log end point: 0/16C9300
+polar_basebackup: waiting for background process to finish streaming ...
+polar_basebackup: base backup completed
+[PFSD_SDK INF Jan 11 10:11:52.378220][99]pfsd_umount_force 247: pbdname nvme2n1
+[PFSD_SDK INF Jan 11 10:11:52.378229][99]pfs_umount_prepare 269: pfs_umount_prepare. pbdname:nvme2n1
+[PFSD_SDK INF Jan 11 10:11:52.404010][99]chnl_connection_release_shm 1164: client umount return : deleted /var/run/pfsd//nvme2n1/99.pid
+[PFSD_SDK INF Jan 11 10:11:52.404171][99]pfs_umount_post 281: pfs_umount_post. pbdname:nvme2n1
+[PFSD_SDK INF Jan 11 10:11:52.404174][99]pfsd_umount_force 261: umount success for nvme2n1
+```
+
+上述命令会在当前机器的本地存储上备份 Primary 节点的本地数据目录，在参数指定的共享存储目录上备份共享数据目录。
+
+### 重新配置 Standby 节点
+
+重新编辑 Standby 节点的配置文件 `~/standby/postgresql.conf`：
+
+```diff:no-line-numbers
+-polar_hostid=1
++polar_hostid=3
+-polar_disk_name='nvme1n1'
+-polar_datadir='/nvme1n1/shared_data/'
++polar_disk_name='nvme2n1'
++polar_datadir='/nvme2n1/shared_data/'
+-synchronous_standby_names='replica1'
+```
+
+在 Standby 节点的复制配置文件 `~/standby/recovery.conf` 中添加：
+
+```diff:no-line-numbers
++recovery_target_timeline = 'latest'
++primary_slot_name = 'standby1'
+```
+
+### Standby 节点启动
+
+在 Primary 节点上创建用于与 Standby 进行物理复制的复制槽：
+
+```shell:no-line-numbers
+$ psql \
+    --host=[Primary节点所在IP] --port=5432 \
+    -d postgres \
+    -c "SELECT * FROM pg_create_physical_replication_slot('standby1');"
  slot_name | lsn
 -----------+-----
  standby1  |
 (1 row)
 ```
 
-### 修改 Standby 本地目录配置
+启动 Standby 节点：
 
-在 Standby 的本地存储目录中 `recovery.conf` 文件中增加如下参数：
-
-```ini
-recovery_target_timeline = 'latest'
-primary_slot_name = 'standby1'
+```shell:no-line-numbers
+pg_ctl -D $HOME/standby start
 ```
 
-### 启动 Standby
+### Standby 节点验证
 
-```shell
-$HOME/tmp_basedir_polardb_pg_1100_bld/bin/pg_ctl start -D $HOME/standby
-```
+在 Primary 节点上创建表并插入数据，在 Standby 节点上可以查询到数据：
 
-### 验证 Standby
+```shell:no-line-numbers
+$ psql -q \
+    -h [Primary节点所在IP] \
+    -p 5432 \
+    -d postgres \
+    -c "CREATE TABLE t (t1 INT PRIMARY KEY, t2 INT); INSERT INTO t VALUES (1, 1),(2, 3),(3, 3);"
 
-```shell
-psql --host=[master所在IP] --port=5432 -d postgres -c "create table t(t1 int primary key, t2 int);insert into t values (1, 1),(2, 3),(3, 3);"
-CREATE TABLE
-INSERT 0 3
-```
-
-```shell
-psql --host=[standby所在IP] --port=5432 -d postgres -c ' select * from t;'
-t1 | t2
+$ psql -q \
+    -h [Standby节点所在IP] \
+    -p 5432 \
+    -d postgres \
+    -c "SELECT * FROM t;"
+ t1 | t2
 ----+----
- 1 |  1
- 2 |  3
- 3 |  3
+  1 |  1
+  2 |  3
+  3 |  3
 (3 rows)
 ```
-
-## 按时间点恢复
-
-可以参考 PostgreSQL [按时间点恢复 PITR](http://www.postgres.cn/docs/11/continuous-archiving.html)。其原理如图所示，使用备份集加上归档日志，可以恢复出任意历史时刻的 PolarDB 实例：
-
-![undefined](https://intranetproxy.alipay.com/skylark/lark/0/2022/png/135683/1656473229849-8b7dbf39-2830-45e1-a076-adea16c06366.png)

@@ -354,7 +354,8 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 		Assert(query->commandType == CMD_SELECT);
 
 		/* plan the query */
-		if (px_enable_create_table_as && px_enable_replay_wait)
+		if (px_enable_create_table_as && px_enable_replay_wait &&
+			!interpretOidsOption(into->options, !is_matview))
 			plan = pg_plan_query(query, CURSOR_OPT_PARALLEL_OK | CURSOR_OPT_PX_OK, params);
 		else
 			plan = pg_plan_query(query, CURSOR_OPT_PARALLEL_OK, params);
