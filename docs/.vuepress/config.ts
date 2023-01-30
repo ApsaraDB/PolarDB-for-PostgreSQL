@@ -1,8 +1,9 @@
 import { defineUserConfig } from "@vuepress/cli";
 import { defaultTheme } from "@vuepress/theme-default";
 import { docsearchPlugin } from "@vuepress/plugin-docsearch";
-import { navbar, sidebar } from "./configs";
+import { mdPlusPlugin } from "@renovamen/vuepress-plugin-md-plus";
 import { registerComponentsPlugin } from "@vuepress/plugin-register-components";
+import { navbar, sidebar } from "./configs";
 import { path } from "@vuepress/utils";
 
 export default defineUserConfig({
@@ -70,11 +71,6 @@ export default defineUserConfig({
     },
   }),
 
-  extendsMarkdown: (md) => {
-    md.use(require("markdown-it-footnote"));
-    md.linkify.set({ fuzzyEmail: false });
-  },
-
   plugins: [
     docsearchPlugin({
       appId: "OYQ6LCESQG",
@@ -123,6 +119,9 @@ export default defineUserConfig({
           },
         },
       },
+    }),
+    mdPlusPlugin({
+      all: true,
     }),
     registerComponentsPlugin({
       componentsDir: path.resolve(__dirname, "./components"),
