@@ -117,6 +117,16 @@ export const zh: NavbarConfig = [
     ],
   },
   {
+    text: "应用实践",
+    link: "/zh/practice/",
+    children: [
+      {
+        text: "最佳实践",
+        children: ["/zh/practice/brin.html"],
+      },
+    ],
+  },
+  {
     text: "上手开发",
     link: "/zh/development/",
     children: [
