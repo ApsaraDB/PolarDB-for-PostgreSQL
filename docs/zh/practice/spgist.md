@@ -6,6 +6,10 @@ minute: 15
 
 # 采用 iprange 和 SPGiST index 加速全球化业务用户体验 - 根据来源 IP 智能路由就近机房降低访问延迟
 
+<ArticleInfo :frontmatter=$frontmatter></ArticleInfo>
+
+## 背景
+
 上一篇信息: [《如何获得 IP 地址对应的地理信息库, 实现智能 DNS 解析? 就近路由提升全球化部署业务的访问性能》](https://github.com/digoal/blog/blob/master/202211/20221124_09.md) 提到了如何获取 IP 地址段的地理信息库, 本篇信息将使用 PolarDB for PostgreSQL 来加速根据来源 IP 快速找到对应的 IP 地址段, 将用到 PolarDB for PostgreSQL 的 SPGiST 索引和 inet 数据类型.
 
 相比于把 IP 地址段存储为 2 个 int8 字段作 between and 的匹配, SPGiST 索引和 inet 数据类型至少可以提升 20 倍性能.
