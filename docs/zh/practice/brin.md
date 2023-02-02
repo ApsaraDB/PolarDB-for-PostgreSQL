@@ -17,8 +17,7 @@ PolarDB 的云原生存算分离架构, 具备低廉的数据存储、高效扩�
 
 测试环境为 macOS+docker, PolarDB 部署请参考:
 
-- [《如何用 PolarDB 证明巴菲特的投资理念 - 包括 PolarDB 简单部署》](https://github.com/digoal/blog/blob/master/202209/20220908_02.md)  
-
+- [《如何用 PolarDB 证明巴菲特的投资理念 - 包括 PolarDB 简单部署》](https://github.com/digoal/blog/blob/master/202209/20220908_02.md)
 
 ## 原理
 
@@ -168,5 +167,4 @@ postgres=# \di+
 - [《PostgreSQL 聚集存储 与 BRIN 索引 - 高并发行为、轨迹类大吞吐数据查询场景解说》](https://github.com/digoal/blog/blob/master/201702/20170219_01.md)
 - [《PostgreSQL 物联网黑科技 - 瘦身几百倍的索引(BRIN index)》](https://github.com/digoal/blog/blob/master/201604/20160414_01.md)
 - [《PostgreSQL 9.5 new feature - lets BRIN be used with R-Tree-like indexing strategies For "inclusion" opclasses》](https://github.com/digoal/blog/blob/master/201505/20150526_01.md)
-- [《PostgreSQL 9.5 new feature - BRIN (block range index) index》](https://github.com/digoal/blog/blob/master/201504/20150419_01.md)  
-
+- [《PostgreSQL 9.5 new feature - BRIN (block range index) index》](https://github.com/digoal/blog/blob/master/201504/20150419_01.md)
