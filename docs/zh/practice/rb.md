@@ -16,8 +16,7 @@ PolarDB 的云原生存算分离架构, 具备低廉的数据存储、高效扩�
 
 测试环境为 macos+docker, polardb 部署请参考:
 
-- [《如何用 PolarDB 证明巴菲特的投资理念 - 包括 PolarDB 简单部署》](https://github.com/digoal/blog/blob/master/202209/20220908_02.md)  
-
+- [《如何用 PolarDB 证明巴菲特的投资理念 - 包括 PolarDB 简单部署》](https://github.com/digoal/blog/blob/master/202209/20220908_02.md)
 
 ## roaringbitmap for PolarDB
 
