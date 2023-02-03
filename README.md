@@ -18,6 +18,7 @@
 [![github-forks](https://img.shields.io/github/forks/ApsaraDB/PolarDB-for-PostgreSQL?style=for-the-badge&logo=github)](https://github.com/ApsaraDB/PolarDB-for-PostgreSQL/network/members)
 [![github-stars](https://img.shields.io/github/stars/ApsaraDB/PolarDB-for-PostgreSQL?style=for-the-badge&logo=github)](https://github.com/ApsaraDB/PolarDB-for-PostgreSQL/stargazers)
 [![github-contributors](https://img.shields.io/github/contributors/ApsaraDB/PolarDB-for-PostgreSQL?style=for-the-badge&logo=github)](https://github.com/ApsaraDB/PolarDB-for-PostgreSQL/graphs/contributors)
+[![Leaderboard](https://img.shields.io/badge/PolarDB--for--PostgreSQL-Check%20Your%20Contribution-orange?style=for-the-badge)](https://opensource.alibaba.com/contribution_leaderboard/details?projectValue=polardb-pg)
 
 </div>
 
