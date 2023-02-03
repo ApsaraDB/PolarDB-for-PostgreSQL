@@ -122,7 +122,16 @@ export const zh: NavbarConfig = [
     children: [
       {
         text: "最佳实践",
-        children: ["/zh/practice/brin.html", "/zh/practice/spgist.html"],
+        children: [
+          "/zh/practice/brin.html",
+          "/zh/practice/spgist.html",
+          "/zh/practice/vector.html",
+          "/zh/practice/age.html",
+          "/zh/practice/madlib.html",
+          "/zh/practice/pg_jieba.html",
+          "/zh/practice/rb.html",
+          "/zh/practice/pgcat.html",
+        ],
       },
     ],
   },
