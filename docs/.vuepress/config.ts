@@ -1,7 +1,7 @@
 import { defineUserConfig } from "@vuepress/cli";
 import { defaultTheme } from "@vuepress/theme-default";
 import { docsearchPlugin } from "@vuepress/plugin-docsearch";
-import { mdPlusPlugin } from "@renovamen/vuepress-plugin-md-plus";
+import { mdEnhancePlugin } from "vuepress-plugin-md-enhance";
 import { registerComponentsPlugin } from "@vuepress/plugin-register-components";
 import { navbar, sidebar } from "./configs";
 import { path } from "@vuepress/utils";
@@ -120,8 +120,8 @@ export default defineUserConfig({
         },
       },
     }),
-    mdPlusPlugin({
-      all: true,
+    mdEnhancePlugin({
+      footnote: true,
     }),
     registerComponentsPlugin({
       componentsDir: path.resolve(__dirname, "./components"),
