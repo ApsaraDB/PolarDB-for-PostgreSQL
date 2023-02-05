@@ -161,7 +161,7 @@ docker run -d \
     --privileged=true \
     -v /etc/ceph:/etc/ceph \
     -v /var/lib/ceph/:/var/lib/ceph/ \
-    -e MON_IP=1192.168.1.175 \
+    -e MON_IP=192.168.1.175 \
     -e CEPH_PUBLIC_NETWORK=192.168.1.0/24 \
     --security-opt seccomp=unconfined \
     --name=mon03 \
