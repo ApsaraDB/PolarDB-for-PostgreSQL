@@ -19,7 +19,7 @@ TPC-C 的具体说明和排名可以通过官方网站 [TPC-C 官网](https://ww
 由于 TPC-C 测试工具 benchmarksql 需要通过 Ant 来编译，所以需要安装 Java 和 Ant。这里安装的 Java 版本为 8.0[^java-install]，Ant 版本为 1.9.7[^ant-install]。
 
 ::: tip
-安装 Java 和 Ant 的后需要修改环境变量。
+安装 Java 和 Ant 后需要修改环境变量。
 :::
 
 ```bash
