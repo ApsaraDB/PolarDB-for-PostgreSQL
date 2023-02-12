@@ -4,7 +4,7 @@
 
 ## TPC-C 测试
 
-TPC-C 是一种衡量 OLTP 性能的基准测试。TPC-C 混合了五种不同类型和复杂程度的并发交易，这五种并发交易又包括了在线执行以及排队延迟执行。TPC-C 数据库由九种类型的表组成，以每分钟交易量（tmpC）来衡量具体性能。
+TPC-C 是一种衡量 OLTP 性能的基准测试。TPC-C 混合了五种不同类型和复杂程度的并发交易，这五种并发交易又包括了在线执行以及排队延迟执行。TPC-C 数据库由九种类型的表组成，以每分钟交易量（tpmC）来衡量具体性能。
 
 TPC-C 的具体说明和排名可以通过官方网站 [TPC-C 官网](https://www.tpc.org/tpcc/) 进行查看。
 
@@ -19,7 +19,7 @@ TPC-C 的具体说明和排名可以通过官方网站 [TPC-C 官网](https://ww
 由于 TPC-C 测试工具 benchmarksql 需要通过 Ant 来编译，所以需要安装 Java 和 Ant。这里安装的 Java 版本为 8.0[^java-install]，Ant 版本为 1.9.7[^ant-install]。
 
 ::: tip
-安装 Java 和 Ant 的后需要修改环境变量。
+安装 Java 和 Ant 后需要修改环境变量。
 :::
 
 ```bash
