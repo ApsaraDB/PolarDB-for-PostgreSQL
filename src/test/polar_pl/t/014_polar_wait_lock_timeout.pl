@@ -43,8 +43,6 @@ sub px_init_conf
 }
 px_init_conf($node_master);
 
-# cluster map
-$node_master->append_conf('postgresql.conf', "polar_cluster_map='node1|127.0.0.1|".$node_replica1->port.", node2|127.0.0.1|".$node_replica2->port."'");
 # wait lock timeout
 $node_master->append_conf('postgresql.conf', "polar_px_wait_lock_timeout=3000");
 $node_master->start;

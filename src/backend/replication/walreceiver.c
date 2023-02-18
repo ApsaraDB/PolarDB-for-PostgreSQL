@@ -77,7 +77,11 @@
 /* POLAR */
 #include "access/polar_logindex_redo.h"
 #include "access/polar_async_ddl_lock_replay.h"
+#include "pgstat.h"
 #include "polar_datamax/polar_datamax.h"
+#include "polar_dma/polar_dma.h"
+#include "postmaster/postmaster.h"
+#include "replication/polar_cluster_info.h"
 #include "storage/polar_fd.h"
 #include "utils/guc.h"
 #include "polar_dma/polar_dma.h"
@@ -279,6 +283,7 @@ WalReceiverMain(void)
 	before_shmem_exit(polar_notify_read_wal_file, 0);
 	/* POLAR: free memory of datamax_valid_lsn_list */
 	before_shmem_exit(polar_datamax_free_valid_lsn_list, PointerGetDatum(polar_datamax_received_valid_lsn_list));
+	before_shmem_exit(polar_cluster_info_offline, 0);
 
 	/* Arrange to clean up at walreceiver exit */
 	on_shmem_exit(WalRcvDie, 0);
@@ -355,6 +360,8 @@ WalReceiverMain(void)
 
 	walrcv->sender_port = sender_port;
 	walrcv->ready_to_display = true;
+	/* POLAR: we'd like to update first */
+	walrcv->polar_hot_standby_state = -1;
 	SpinLockRelease(&walrcv->mutex);
 
 	if (tmp_conninfo)
@@ -526,6 +533,7 @@ WalReceiverMain(void)
 				bool		endofwal = false;
 				pgsocket	wait_fd = PGINVALID_SOCKET;
 				int			rc;
+				int			hot_standby_state;
 
 				/*
 				 * Exit walreceiver if we're not in recovery. This should not
@@ -621,6 +629,14 @@ WalReceiverMain(void)
 				/* POLAR: check whether all wal have been received, if so, promote is allowed */
 				polar_promote_check_received_all_wal();
 				/* POLAR end */
+
+				hot_standby_state = polar_get_hot_standby_state() + polar_get_available_state() * 10;
+				if (walrcv->polar_hot_standby_state != hot_standby_state)
+				{
+					walrcv->polar_hot_standby_state = hot_standby_state;
+					polar_send_node_info(&reply_message);
+					walrcv_send(wrconn, reply_message.data, reply_message.len);
+				}
 
 				/* Check if we need to exit the streaming loop. */
 				if (endofwal)
@@ -1327,6 +1343,14 @@ XLogWalRcvProcessMsg(unsigned char type, char *buf, Size len)
 
 					polar_is_initial_datamax = false;
 				}
+				break;
+			}
+			/* POLAR: 'M' means cluster info */
+		case 'M':
+			{
+				/* copy message to StringInfo */
+				appendBinaryStringInfo(&incoming_message, buf, len);
+				polar_process_cluster_info(&incoming_message);
 				break;
 			}
 		/* POLAR end */
@@ -2221,4 +2245,3 @@ XLogRecPtr polar_dma_get_received_lsn(void)
 	return receivePtr;
 }
 /* POLAR end */
-

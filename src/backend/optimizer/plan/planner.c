@@ -7936,13 +7936,6 @@ should_px_planner(Query *current_parse)
 
 	if (!is_check_disable_px_planner_walker)
 	{
-		/* If px_cluster_map is not set, we should notice user */
-		if (polar_cluster_map && strlen(polar_cluster_map) == 0)
-		{
-			elog(WARNING, "PX Failed: should use PX planner, but polar_cluster_map is not set, "
-						  "falling back to default optimizer");
-			return false;
-		}
 		return true;
 	}
 

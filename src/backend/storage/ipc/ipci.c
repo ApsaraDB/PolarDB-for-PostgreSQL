@@ -51,18 +51,19 @@
 /* POLAR */
 #include <unistd.h>
 
-#include "access/polar_logindex_redo.h"
 #include "access/polar_async_ddl_lock_replay.h"
+#include "access/polar_csnlog.h"
+#include "access/polar_logindex_redo.h"
 #include "common/file_perm.h"
+#include "executor/nodeShareInputScan.h"
 #include "polar_datamax/polar_datamax.h"
 #include "polar_flashback/polar_flashback_log.h"
 #include "postmaster/polar_parallel_bgwriter.h"
+#include "replication/polar_cluster_info.h"
 #include "storage/polar_shmem.h"
 #include "storage/polar_xlogbuf.h"
-#include "access/polar_csnlog.h"
 #include "polar_dma/polar_dma.h"
 #include "utils/faultinjector.h"
-#include "executor/nodeShareInputScan.h"
 /* POLAR end */
 
 shmem_startup_hook_type shmem_startup_hook = NULL;
@@ -218,7 +219,10 @@ CreateSharedMemoryAndSemaphores(int port)
 
 		/* POLAR: add shared memory size for flashback log */
 		size = add_size(size, polar_flog_shmem_size());
+		/* POLAR end */
 
+		/* POLAR: add shared memory size for flashback log */
+		size = add_size(size, polar_cluster_info_shmem_size());
 		/* POLAR end */
 
 		/* freeze the addin request size and include it */
@@ -353,6 +357,10 @@ CreateSharedMemoryAndSemaphores(int port)
 
 	/* POLAR: init shared memory for flashback log */
 	polar_flog_shmem_init();
+	/* POLAR end */
+
+	/* POLAR: init cluster info share memory struct */
+	polar_cluster_info_shmem_init();
 	/* POLAR end */
 
 	if (POLAR_ENABLE_DMA())

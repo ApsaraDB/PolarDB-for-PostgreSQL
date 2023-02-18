@@ -3367,8 +3367,6 @@ ParamWalkerContext
 LogicalIndexInfoHashEntry
 PartitionIndexNode
 ParamWalkerContext
-SegIpEntry
-HostSegsEntry
 QENotice
 PxDispatchCmdAsync
 SliceVec

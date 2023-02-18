@@ -56,8 +56,6 @@ standard_ExecutorStart_PX(QueryDesc *queryDesc, int eflags)
 	{
 		if (!IS_PX_SETUP_DONE())
 		{
-			if (polar_cluster_map == NULL || polar_cluster_map[0] == '\0')
-				elog(ERROR, "enable px, but px cluster map not initialized");
 			px_setup();
 			on_proc_exit(px_cleanup, 0);
 		}

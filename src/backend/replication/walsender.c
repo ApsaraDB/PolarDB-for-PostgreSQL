@@ -97,12 +97,13 @@
 #include "utils/timestamp.h"
 
 /* POLAR */
+#include "access/polar_logindex_redo.h"
 #include "pgstat.h"
 #include "polar_datamax/polar_datamax.h"
-#include "replication/polar_priority_replication.h"
-#include "access/polar_logindex_redo.h"
-#include "storage/polar_fd.h"
 #include "polar_dma/polar_dma.h"
+#include "replication/polar_cluster_info.h"
+#include "replication/polar_priority_replication.h"
+#include "storage/polar_fd.h"
 
 /*
  * Maximum data payload in a WAL data message.  Must be >= XLOG_BLCKSZ.
@@ -1892,6 +1893,11 @@ ProcessStandbyMessage(void)
 		case 'p':
 			polar_process_standby_promote();
 			break;
+
+		/* POLAR: 'm' means node info */
+		case 'm':
+			polar_process_node_info(&reply_message);
+			break;
 		/* POLAR end */
 
 		default:
@@ -2440,6 +2446,8 @@ WalSndLoop(WalSndSendDataCallback send_data)
 		if (POLAR_WALSND_RECEIVE_PROMOTE() && !polar_walrcv_receive_promote_reply)
 			polar_send_promote_reply();
 		/* POLAR end */
+
+		polar_send_cluster_info(&output_message);
 
 		/* Try to flush pending output to the client */
 		if (pq_flush_if_writable() != 0)

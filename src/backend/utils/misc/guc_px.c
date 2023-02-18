@@ -229,6 +229,8 @@ bool		px_enable_join_prefetch_inner;
 int			px_max_workers_number;
 char	   *polar_px_ignore_function = NULL;
 polar_px_function_oid_array px_function_oid_array;
+bool		px_use_standby;
+bool		polar_px_ignore_unusable_nodes;
 
 /* Prepare statement, plpgsql function, procedure, csn */
 bool		px_enable_plan_cache;
@@ -280,11 +282,7 @@ bool		px_enable_create_table_as;
 int			px_wait_lock_timeout = 0;
 
 /* POLAR */
-static bool px_check_polar_cluster_map(char **newval, void **extra, GucSource source);
-static bool px_check_polar_px_nodes(char **newval, void **extra, GucSource source);
-static void px_assign_polar_px_nodes(const char *newval, void *extra);
 static bool px_check_dispatch_log_stats(bool *newval, void **extra, GucSource source);
-static const char * show_polar_cluster_map(void);
 static bool px_check_scan_unit_size(int *newval, void **extra, GucSource source);
 static const char* px_show_scan_unit_size(void);
 static bool px_check_ignore_function(char **newval, void **extra, GucSource source);
@@ -1966,6 +1964,26 @@ struct config_bool ConfigureNamesBool_px[] =
 		NULL, NULL, NULL
 	},
 
+	{
+		{"polar_px_use_standby", PGC_USERSET, UNGROUPED,
+			gettext_noop("Whether PolarDB PX use standby"),
+			NULL
+		},
+		&px_use_standby,
+		false,
+		NULL, (void (*)(bool, void *))polar_invalid_px_nodes_cache, NULL
+	},
+
+	{
+		{"polar_px_ignore_unusable_nodes", PGC_USERSET, UNGROUPED,
+			gettext_noop("Whether PolarDB PX skip unusable nodes"),
+			NULL
+		},
+		&polar_px_ignore_unusable_nodes,
+		false,
+		NULL, NULL, NULL
+	},
+
 	/* End-of-list marker */
 	{
 		{NULL, 0, 0, NULL, NULL}, NULL, false, NULL, NULL
@@ -2594,17 +2612,6 @@ struct config_string ConfigureNamesString_px[] =
 	},
 
 	{
-		{"polar_cluster_map", PGC_SUSET, UNGROUPED,
-			gettext_noop("polar_cluster_map"),
-			NULL,
-			GUC_NO_RESET_ALL, GUC_NO_SHOW_ALL
-		},
-		&polar_cluster_map,
-		"",
-		px_check_polar_cluster_map, NULL, show_polar_cluster_map
-	},
-
-	{
 		{"polar_px_nodes", PGC_USERSET, UNGROUPED,
 			gettext_noop("Sets px worker nodes, separated by comma"),
 			NULL,
@@ -2612,7 +2619,7 @@ struct config_string ConfigureNamesString_px[] =
 		},
 		&polar_px_nodes,
 		"",
-		px_check_polar_px_nodes, px_assign_polar_px_nodes, NULL
+		NULL, (void (*)(const char *, void *))polar_invalid_px_nodes_cache, NULL
 	},
 
 	{
@@ -2755,240 +2762,6 @@ px_check_dispatch_log_stats(bool *newval, void **extra, GucSource source)
 			return false;
 	}
 	return true;
-}
-
-
-static int
-px_verify_polar_cluster_map_syntax(const char *liststring, PxNodeConfigEntry **ret_config)
-{
-	PxNodeConfigEntry *config = NULL;
-	char	   *rawname = NULL;
-	List	   *namelist = NULL;
-	int			config_len = 0 ;
-	bool		success = true;
-	ListCell   *lc;
-
-	if (liststring == NULL || liststring[0] == '\0')
-		return 0;
-
-	/* Need a modifiable copy of string */
-	rawname = pstrdup(liststring);
-
-	if (NULL == rawname)
-	{
-		success = false;
-		goto out_1;
-	}
-
-	/* Parse string into list of identifiers */
-	if (!SplitIdentifierString(rawname, ',', &namelist))
-	{
-		/* syntax error in name list */
-		GUC_check_errdetail("px cluster map is invalid, name|ip|port, ...");
-		success = false;
-		goto out_1;
-	}
-
-	config = palloc0(sizeof(PxNodeConfigEntry) * list_length(namelist));
-	foreach_with_count(lc, namelist, config_len)
-	{
-		List *itemlist;
-		ListCell *itemlc;
-		PxNodeConfigEntry *c;
-		char *rawname;
-		char *itemname;
-		char *ip, *port, *name;
-		int cport;
-		int i;
-
-		rawname = (char*)lfirst(lc);
-		itemname = pstrdup(rawname);
-
-		if (!SplitIdentifierString(itemname, '|', &itemlist))
-		{
-			/* syntax error in name list */
-			GUC_check_errdetail("px cluster map is invalid %s, name|ip|port, ...", rawname);
-			success = false;
-			goto out_2;
-		}
-
-		if (list_length(itemlist) != 3)
-		{
-			GUC_check_errdetail("px cluster map is invalid %s, name|ip|port, ...", rawname);
-			success = false;
-			goto out_2;
-		}
-
-		foreach(itemlc, itemlist)
-		{
-			char *s = (char *)lfirst(itemlc);
-			if (s == NULL || s[0] == '\0')
-			{
-				GUC_check_errdetail("px cluster map is invalid %s, name|ip|port, ...", rawname);
-				success = false;
-				goto out_2;
-			}
-		}
-
-		name = (char *)list_nth(itemlist, 0);
-		ip = (char *)list_nth(itemlist, 1);
-		port = (char *)list_nth(itemlist, 2);
-		cport = pg_atoi(port, sizeof(int), '\0');
-
-		if (cport <= 0)
-		{
-			GUC_check_errdetail("px cluster map is invalid %s, name|ip|port, ...", rawname);
-			success = false;
-			goto out_2;
-		}
-
-		for (i = 0; i < config_len; i++)
-		{
-			PxNodeConfigEntry *c = &config[i];
-			if (c->port == cport && strcmp(c->hostip, ip) == 0)
-			{
-				GUC_check_errdetail("px cluster map ip:port is duplicate %s:%d", ip, cport);
-				success = false;
-				goto out_2;
-			}
-		}
-
-		c = &config[config_len];
-		c->port = cport;
-		c->name = pstrdup(name);
-		c->hostip = pstrdup(ip);
-
-out_2:
-		list_free(itemlist);
-		pfree(itemname);
-
-		if (!success)
-			goto out_1;
-	}
-
-out_1:
-	if (namelist)
-		list_free(namelist);
-
-	if (rawname)
-		pfree(rawname);
-
-	if (success && ret_config != NULL)
-		*ret_config = config;
-	else if (config != NULL)
-	{
-		int i;
-		for (i = 0; i < config_len; i++)
-		{
-			pfree(config[i].name);
-			pfree(config[i].hostip);
-		}
-		pfree(config);
-	}
-
-	return success ? config_len : -1;
-}
-
-static bool
-px_check_polar_cluster_map(char **newval, void **extra, GucSource source)
-{
-	if (px_verify_polar_cluster_map_syntax(*newval, NULL) >= 0)
-	{
-		pxnode_destroyPxNodes();
-		return true;
-	}
-
-	return false;
-}
-
-static bool
-px_check_polar_px_nodes(char **newval, void **extra, GucSource source)
-{
-	char		*liststring = *newval;
-	char	   *rawname = NULL;
-	List	   *namelist = NULL;
-	PxNodeConfigEntry *config = NULL;
-	int			config_len = 0;
-	bool		ret = true;
-	ListCell	*lc;
-
-	if (liststring == NULL || liststring[0] == '\0')
-	{
-		pxnode_destroyPxNodes();
-		return true;
-	}
-
-	config_len = px_verify_polar_cluster_map_syntax(polar_cluster_map, &config);
-	if (config_len <= 0)
-	{
-		GUC_check_errdetail("polar_cluster_map is invalid %s", polar_cluster_map);
-		ret = false;
-		goto out;
-	}
-
-	rawname = pstrdup(liststring);
-	if (!SplitIdentifierString(rawname, ',', &namelist))
-	{
-		GUC_check_errdetail("polar_px_nodes is invalid, str1|str2, ...");
-		ret = false;
-		goto out;
-	}
-
-	foreach(lc, namelist)
-	{
-		char *nodename = (char*)lfirst(lc);
-		int i;
-		for (i = 0; i < config_len; i++)
-		{
-			if (strcmp(config[i].name, nodename) == 0)
-				break;
-		}
-		if (i == config_len)
-		{
-			GUC_check_errdetail("polar_px_nodes %s not int polar_cluster_map", nodename);
-			ret = false;
-			goto out;
-		}
-	}
-
-out:
-	if (namelist)
-		list_free(namelist);
-
-	if (rawname)
-		pfree(rawname);
-
-	if (config)
-	{
-		int i;
-		for (i = 0; i < config_len; i++)
-		{
-			pfree(config[i].name);
-			pfree(config[i].hostip);
-		}
-		pfree(config);
-	}
-
-	if (ret)
-		pxnode_destroyPxNodes();
-
-	return ret;
-}
-
-/* POLAR: reset won't trigger check_hook, do this in assign_hook */
-void
-px_assign_polar_px_nodes(const char *newval, void *extra)
-{
-	if (newval == NULL || newval[0] == '\0')
-		pxnode_destroyPxNodes();
-}
-
-static const char *
-show_polar_cluster_map(void)
-{
-	if (*polar_cluster_map == '\0' || superuser())
-		return polar_cluster_map;
-	return GeneratePxWorkerNames();
 }
 
 static bool

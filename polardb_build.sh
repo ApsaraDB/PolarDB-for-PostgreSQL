@@ -684,7 +684,6 @@ fi
 echo "port = ${pg_bld_port}
       polar_hostid = 100
       full_page_writes = off" >> $pg_bld_master_dir/postgresql.conf
-polar_cluster_map=""
 
 su_eval "$pg_bld_basedir/bin/pg_ctl -D $pg_bld_master_dir start -w -c"
 
@@ -725,9 +724,7 @@ then
     echo "primary_slot_name = 'replica${i}'" >> $pg_bld_replica_dir_n/recovery.conf
     # su_eval "env $pg_bld_basedir/bin/psql -h 127.0.0.1 -d postgres -U $pg_db_user -c \"SELECT * FROM pg_create_physical_replication_slot('replica${i}')\""
     su_eval "$pg_bld_basedir/bin/pg_ctl -D $pg_bld_replica_dir_n start -w -c"
-    polar_cluster_map=$polar_cluster_map",node$i|127.0.0.1|$pg_bld_rep_port_n"
   done
-  polar_cluster_map=${polar_cluster_map: 1}
 fi
 
 if [[ $dma == "on" ]];
@@ -760,8 +757,6 @@ then
     fi
   done
 fi
-
-echo polar_cluster_map=\'$polar_cluster_map\' >> $pg_bld_master_dir/postgresql.conf
 
 if [[ -n $extra_conf ]];
 then
