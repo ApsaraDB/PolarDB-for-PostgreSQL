@@ -34,7 +34,6 @@ sub px_init_conf
 }
 
 px_init_conf($node_master);
-$node_master->append_conf('postgresql.conf', "polar_cluster_map='node1|127.0.0.1|".$node_replica1->port.", node2|127.0.0.1|".$node_replica2->port."'");
 $node_master->start;
 
 $node_master->polar_create_slot($node_replica1->name);
@@ -42,8 +41,6 @@ $node_master->polar_create_slot($node_replica2->name);
 
 px_init_conf($node_replica1);
 px_init_conf($node_replica2);
-$node_replica1->append_conf('postgresql.conf', "polar_cluster_map='node1|127.0.0.1|".$node_replica1->port.", node2|127.0.0.1|".$node_replica2->port."'");
-$node_replica2->append_conf('postgresql.conf', "polar_cluster_map='node1|127.0.0.1|".$node_replica2->port.", node2|127.0.0.1|".$node_replica1->port."'");
 $node_replica1->start;
 $node_replica2->start;
 

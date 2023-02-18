@@ -16,7 +16,7 @@ override CPPFLAGS := -I. -I$(srcdir) $(CPPFLAGS)
 
 OBJS = walsender.o walreceiverfuncs.o walreceiver.o basebackup.o \
 	repl_gram.o slot.o slotfuncs.o syncrep.o syncrep_gram.o \
-	polar_priority_replication.o
+	polar_priority_replication.o polar_cluster_info.o
 
 SUBDIRS = logical
 

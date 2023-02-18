@@ -38,8 +38,11 @@
 #include "libpq/libpq-be.h"
 #include "miscadmin.h"
 #include "postmaster/bgworker.h"
+#include "postmaster/polar_wal_pipeliner.h"
+#include "postmaster/postmaster.h"
 #include "procstat.h"
 #include "replication/slot.h"
+#include "replication/polar_cluster_info.h"
 #include "replication/walreceiver.h"
 #include "replication/walsender.h"
 #include "storage/buf_internals.h"
@@ -47,11 +50,12 @@
 #include "storage/pg_shmem.h"
 #include "storage/polar_io_stat.h"
 #include "storage/procarray.h"
+#include "storage/smgr.h"
 #include "utils/builtins.h"
 #include "utils/guc.h"
 #include "utils/pg_lsn.h"
+#include "utils/relfilenodemap.h"
 #include "utils/timestamp.h"
-#include "postmaster/polar_wal_pipeliner.h"
 
 extern Datum polar_stat_process(PG_FUNCTION_ARGS);
 extern Datum polar_stat_io_info(PG_FUNCTION_ARGS);

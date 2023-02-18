@@ -168,9 +168,10 @@ bool 			polar_enable_ro_prewarm;
 bool           polar_enable_create_table_as_bulk_insert;
 
 /* polar_realease_date, format:YYYYMMDD */
-static char *polar_release_date;
+char		   *polar_release_date;
 /* polar_version, format:1.1.0 */
-static char *polar_version;
+char		   *polar_version;
+char		   *polar_instance_name;
 bool           polar_enable_polar_superuser;
 bool           polar_apply_global_guc_for_super;
 char      *polar_available_extensions;
@@ -960,6 +961,8 @@ bool	polar_enable_operator_mem_limit = true;
 bool	polar_enable_operator_mem_limit_by_level = true;
 bool	polar_enable_dump_incorrect_checksum_xlog = false;
 bool	polar_trace_heap_scan_flow = false;
+bool	polar_enable_send_node_info = true;
+bool	polar_enable_send_cluster_info = true;
 
 /*
  * polar replica multi version snapshot related GUC parameters
@@ -3633,6 +3636,28 @@ static struct config_bool ConfigureNamesBool[] =
 		},
 		&polar_trace_heap_scan_flow,
 		false,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_enable_send_node_info", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("Whether send node info"),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_SUPERUSER_ONLY
+		},
+		&polar_enable_send_node_info,
+		true,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_enable_send_cluster_info", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("Whether send cluster info"),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_SUPERUSER_ONLY
+		},
+		&polar_enable_send_cluster_info,
+		true,
 		NULL, NULL, NULL
 	},
 
@@ -7662,6 +7687,16 @@ static struct config_string ConfigureNamesString[] =
 		polar_check_recursive_reloptions, polar_assign_recursive_reloptions, NULL
 	},
 
+	{
+		{"polar_instance_name", PGC_POSTMASTER, UNGROUPED,
+			gettext_noop("PolarDB instance name, the max length is 63."),
+			NULL,
+			GUC_NO_RESET_ALL | GUC_NOT_IN_SAMPLE | GUC_SUPERUSER_ONLY
+		},
+		&polar_instance_name,
+		"",
+		NULL, NULL, NULL
+	},
 	/* POLAR end */
 
 	/* End-of-list marker */

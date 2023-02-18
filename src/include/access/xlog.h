@@ -503,4 +503,9 @@ extern void polar_wal_pipeline_set_local_recovery_mode(bool mode);
 extern void polar_set_replica_update_dirs_by_redo(bool value);
 extern bool polar_replica_update_dirs_by_redo(void);
 
+extern void polar_set_available_state(bool state);
+extern bool polar_get_available_state(void);
+extern const char *polar_node_type_string(PolarNodeType type, int error_level);
+extern const char *polar_standby_state_string(int state, int error_level);
+
 #endif							/* XLOG_H */

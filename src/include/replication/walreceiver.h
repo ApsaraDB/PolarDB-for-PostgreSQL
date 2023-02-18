@@ -198,6 +198,7 @@ typedef struct
 	pg_atomic_uint64	polar_end_lsn;
 	/* POLAR: save latest flush lsn */
 	pg_atomic_uint64	polar_latest_flush_lsn;
+	HotStandbyState		polar_hot_standby_state;
 } WalRcvData;
 
 extern WalRcvData *WalRcv;
