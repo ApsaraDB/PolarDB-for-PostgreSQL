@@ -16636,6 +16636,49 @@ polar_dma_xlog_truncate(XLogRecPtr resetPtr, TimeLineID resetTLI, int elevel)
 	RemoveNonParentXlogFiles(resetPtr, resetTLI+1);
 }
 
+/*
+ * POLAR: Returns the latest point in WAL that has been safely flushed, and
+ * can be sent to the standby. This should only be called when in recovery,
+ * ie. we're streaming to a cascaded standby.
+ *
+ * As a side-effect, ThisTimeLineID is updated to the TLI of the last
+ * replayed WAL record.
+ */
+XLogRecPtr
+polar_dma_get_flush_lsn(bool committed, bool in_recovery)
+{
+	XLogRecPtr	replayPtr;
+	TimeLineID	replayTLI;
+	XLogRecPtr	receivePtr;
+	TimeLineID	receiveTLI;
+	XLogRecPtr	result;
+
+	/*
+	 * POLAR: in DMA mode, advance to new timeline from consensus flushed point.
+	 * otherwise, the new timeline cannot be sent before exit from recovery status.
+	 */
+	if (!committed)
+		ConsensusGetXLogFlushedLSN(&receivePtr, &receiveTLI);
+	else
+		ConsensusGetSyncedLSNAndTLI(&receivePtr, &receiveTLI);
+
+	if (in_recovery)
+		ThisTimeLineID = receiveTLI;
+
+	result = receivePtr;
+
+	if (in_recovery && !polar_is_dma_logger_node())
+	{
+		replayPtr = GetXLogReplayRecPtr(&replayTLI);
+		if (replayTLI == ThisTimeLineID && replayPtr > receivePtr)
+			result = replayPtr;
+	}
+
+	return result;
+}
+
+/* POLAR end */
+
 static polar_wal_pipeline_flush_event_t *
 polar_wal_pipeline_flush_event_get_slot(int slot_no)
 {

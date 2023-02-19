@@ -140,6 +140,11 @@ bool		am_cascading_walsender = false; /* Am I cascading WAL to another
 											 * standby? */
 bool		am_db_walsender = false;	/* Connected to a database? */
 
+/* POLAR: dma replication */
+bool		polar_dma_consistent_replication = false;
+bool		polar_dma_non_committed_walsender = true;
+/* POLAR end */
+
 /* User-settable parameters for walsender */
 int			max_wal_senders = 0;	/* the maximum number of concurrent
 									 * walsenders */
@@ -304,7 +309,6 @@ static bool polar_walsnd_legal_shutdown(void);
 static void polar_datamax_xlog_send_physical(void);
 static void polar_dma_logger_xlog_send_physical(void);
 static void polar_dma_data_xlog_send_physical(void);
-static XLogRecPtr polar_dma_get_flush_lsn(void);
 
 /* Initialize walsender process before entering the main command loop */
 void
@@ -409,13 +413,17 @@ IdentifySystem(void)
 			 GetSystemIdentifier());
 
 	am_cascading_walsender = RecoveryInProgress();
-	if (am_cascading_walsender)
+	if (POLAR_ENABLE_DMA() &&
+		(am_cascading_walsender || !polar_dma_non_committed_walsender))
 	{
 		/* this also updates ThisTimeLineID */
-		if (POLAR_ENABLE_DMA())
-			logptr = polar_dma_get_flush_lsn();
-		else
-			logptr = GetStandbyFlushRecPtr();
+		logptr = polar_dma_get_flush_lsn(
+				!polar_dma_non_committed_walsender, am_cascading_walsender);
+	}
+	else if (am_cascading_walsender)
+	{
+		/* this also updates ThisTimeLineID */
+		logptr = GetStandbyFlushRecPtr();
 	}
 	else
 		logptr = GetFlushRecPtr();
@@ -686,13 +694,17 @@ StartReplication(StartReplicationCmd *cmd)
 	 * that. Otherwise use the timeline of the last replayed record, which is
 	 * kept in ThisTimeLineID.
 	 */
-	if (am_cascading_walsender)
+	if (POLAR_ENABLE_DMA() &&
+		(am_cascading_walsender || !polar_dma_non_committed_walsender))
 	{
 		/* this also updates ThisTimeLineID */
-		if (POLAR_ENABLE_DMA())
-			FlushPtr = polar_dma_get_flush_lsn();
-		else
-			FlushPtr = GetStandbyFlushRecPtr();
+		FlushPtr = polar_dma_get_flush_lsn(
+				!polar_dma_non_committed_walsender, am_cascading_walsender);
+	}
+	else if (am_cascading_walsender)
+	{
+		/* this also updates ThisTimeLineID */
+		FlushPtr = GetStandbyFlushRecPtr();
 	}
 	else
 		FlushPtr = GetFlushRecPtr();
@@ -2908,7 +2920,8 @@ XLogSendPhysicalExt(polar_repl_mode_t polar_replication_mode)
 		bool		becameHistoric = false;
 
 		if (POLAR_ENABLE_DMA())
-			SendRqstPtr = polar_dma_get_flush_lsn();
+			SendRqstPtr = polar_dma_get_flush_lsn(
+					!polar_dma_non_committed_walsender, true);
 		else
 			SendRqstPtr = GetStandbyFlushRecPtr();
 
@@ -2972,7 +2985,10 @@ XLogSendPhysicalExt(polar_repl_mode_t polar_replication_mode)
 		 * master: if the master subsequently crashes and restarts, standbys
 		 * must not have applied any WAL that got lost on the master.
 		 */
-		SendRqstPtr = GetFlushRecPtr();
+		if (POLAR_ENABLE_DMA() && !polar_dma_non_committed_walsender)
+			SendRqstPtr = polar_dma_get_flush_lsn(true, false);
+		else
+			SendRqstPtr = GetFlushRecPtr();
 	}
 
 	/*
@@ -3378,7 +3394,10 @@ XLogSendLogical(void)
 	/*
 	 * We'll use the current flush point to determine whether we've caught up.
 	 */
-	flushPtr = GetFlushRecPtr();
+	if (POLAR_ENABLE_DMA())
+		flushPtr = polar_dma_get_flush_lsn(true, false);
+	else
+		flushPtr = GetFlushRecPtr();
 
 	if (record != NULL)
 	{
@@ -4552,42 +4571,6 @@ static void
 polar_dma_data_xlog_send_physical(void)
 {
 	XLogSendPhysicalExt(POLAR_REPL_DMA_DATA);
-}
-
-/*
- * POLAR: Returns the latest point in WAL that has been safely flushed, and
- * can be sent to the standby. This should only be called when in recovery,
- * ie. we're streaming to a cascaded standby.
- *
- * As a side-effect, ThisTimeLineID is updated to the TLI of the last
- * replayed WAL record.
- */
-static XLogRecPtr
-polar_dma_get_flush_lsn(void)
-{
-	XLogRecPtr	replayPtr;
-	TimeLineID	replayTLI;
-	XLogRecPtr	receivePtr;
-	TimeLineID	receiveTLI;
-	XLogRecPtr	result;
-
-	/*
-	 * POLAR: in DMA mode, advance to new timeline from consensus flushed point.
-	 * otherwise, the new timeline cannot be sent before exit from recovery status.
-	 */
-	ConsensusGetXLogFlushedLSN(&receivePtr, &receiveTLI);
-
-	ThisTimeLineID = receiveTLI;
-	result = receivePtr;
-
-	if (!polar_is_dma_logger_node())
-	{
-		replayPtr = GetXLogReplayRecPtr(&replayTLI);
-		if (replayTLI == ThisTimeLineID && replayPtr > receivePtr)
-			result = replayPtr;
-	}
-
-	return result;
 }
 
 /* POLAR end */

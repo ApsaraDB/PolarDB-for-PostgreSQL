@@ -2261,6 +2261,9 @@ retry1:
 				pxid = pstrdup(valptr);
 			else if (strcmp(nameptr, "replication") == 0)
 			{
+				/* POLAR: send only committed WAL defaultly if consistent replication is enabled */
+				polar_dma_non_committed_walsender = !polar_dma_consistent_replication;
+
 				/*
 				 * Due to backward compatibility concerns the replication
 				 * parameter is a hybrid beast which allows the value to be
@@ -2272,6 +2275,15 @@ retry1:
 				{
 					am_walsender = true;
 					am_db_walsender = true;
+
+					/* POLAR: send only committed WAL for logical replication if in DMA mode*/
+					polar_dma_non_committed_walsender = false;
+				}
+				else if (strcmp(valptr, "dma") == 0)
+				{
+					am_walsender = true;
+					polar_dma_non_committed_walsender = true;
+					elog(DEBUG5, "Process DMA replication startup packet");
 				}
 				else if (!parse_bool(valptr, &am_walsender))
 					ereport(FATAL,
