@@ -1345,7 +1345,16 @@ static struct config_bool ConfigureNamesBool[] =
 		NULL, NULL, NULL
 	},
 	{
-		{"polar_dma_async_commit", PGC_POSTMASTER, UNGROUPED,
+		{"polar_dma_consistent_replication", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("whether to enable consistent replication"),
+			NULL
+		},
+		&polar_dma_consistent_replication,
+		false,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_dma_async_commit", PGC_SIGHUP, UNGROUPED,
 			gettext_noop("whether to enable async consensus commit"),
 			NULL
 		},

@@ -431,6 +431,7 @@ extern int polar_wait_recovery_wakeup(int wakeEvents, long timeout,
 					uint32 wait_event_info);
 extern bool polar_is_dma_data_node(void);
 extern bool polar_is_dma_logger_node(void);
+extern XLogRecPtr polar_dma_get_flush_lsn(bool committed, bool in_recovery);
 
 
 

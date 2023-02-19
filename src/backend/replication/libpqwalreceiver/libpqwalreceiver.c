@@ -135,7 +135,8 @@ libpqrcv_connect(const char *conninfo, bool logical, const char *appname,
 	keys[i] = "dbname";
 	vals[i] = conninfo;
 	keys[++i] = "replication";
-	vals[i] = logical ? "database" : "true";
+	vals[i] = logical ? "database" :
+		(POLAR_ENABLE_DMA() && polar_dma_consistent_replication ? "dma" : "true");
 	if (!logical)
 	{
 		/*

@@ -1180,7 +1180,12 @@ read_local_xlog_page(XLogReaderState *state, XLogRecPtr targetPagePtr,
 		 * local process until recovery ends.
 		 */
 		if (!RecoveryInProgress())
-			read_upto = GetFlushRecPtr();
+		{
+			if (POLAR_ENABLE_DMA())
+				read_upto = polar_dma_get_flush_lsn(true, false);
+			else
+				read_upto = GetFlushRecPtr();
+		}
 
 		/*
 		 * POLAR: If call logindex parse we read upto replayEndRecPtr instead
