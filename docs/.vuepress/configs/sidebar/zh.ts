@@ -61,6 +61,10 @@ export const zh: SidebarConfig = {
           ],
         },
         {
+          text: "问题诊断",
+          children: ["/zh/operation/cpu-usage-high.md"],
+        },
+        {
           text: "性能测试",
           children: [
             "/zh/operation/tpcc-test.md",
