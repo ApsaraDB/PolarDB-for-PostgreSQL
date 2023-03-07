@@ -71,7 +71,7 @@ struct PxNodeInfo
 {
 	struct PxNodeConfigEntry *config;
 
-	PxNodes 	*px_nodes;	/* point to owners */
+	PxNodes	   *px_nodes;	/* point to owners */
 
 	int16		hostSegs;		/* number of primary segments on the same hosts */
 	List	   *freelist;		/* list of idle segment dbs */
@@ -93,7 +93,7 @@ struct PxNodes
 	PxNodeInfo *qcInfo;			/* array of PxNodeInfo's for QcWorker*/
 	int			totalQcNodes;	/* count of the array  */
 	PxNodeInfo *pxInfo;			/* array of PxNodeInfo's for PxWorker*/
-	int         totalPxNodes;   /* count of the array  */
+	int			totalPxNodes;   /* count of the array  */
 
 	uint8		fts_version;		/* the version of fts */
 	int			expand_version;
@@ -142,7 +142,6 @@ extern void px_cleanup(int code, Datum arg pg_attribute_unused());
  * for setting the current storage context and releasing the storage occupied the returned values.
  */
 PxNodes *pxnode_getPxNodes(void);
-void pxnode_destroyPxNodes(void);
 
 PxNodeInfo *pxnode_getPxNodeInfo(int contentId);
 
@@ -170,6 +169,6 @@ extern int	getPxWorkerCount(void);
     } while(false);
 
 extern MemoryContext SwitchToPXWorkerContext(void);
-extern char *GeneratePxWorkerNames(void);
+extern void polar_invalid_px_nodes_cache(void *newval, void *extra);
 
 #endif							/* PXUTIL_H */

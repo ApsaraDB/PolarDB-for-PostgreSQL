@@ -68,6 +68,8 @@ extern bool polar_shutdown_walsnd_wait_non_super;
 #define POLAR_REPLICATION_KIND_INVALID -1
 /* POLAR: REPLICATION_KIND_LOGICAL and REPLICATION_KIND_PHYSICAL are defined in replnodes.h. */
 #define POLAR_REPLICATION_KIND_ALL -2
+extern bool polar_dma_non_committed_walsender;
+extern bool polar_dma_consistent_replication;
 /* POLAR: end */
 
 extern void InitWalSender(void);

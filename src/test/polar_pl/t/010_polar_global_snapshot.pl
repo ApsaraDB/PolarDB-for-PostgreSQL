@@ -18,7 +18,6 @@ my $node_replica2 = get_new_node('replica2');
 $node_replica2->polar_init(0, 'polar_repli_logindex');
 $node_replica2->polar_set_recovery($node_master);
 
-$node_master->append_conf('postgresql.conf', "polar_cluster_map='node1|127.0.0.1|".$node_replica1->port.", node2|127.0.0.1|".$node_replica2->port."'");
 $node_master->append_conf('postgresql.conf', "logging_collector=off");
 $node_master->append_conf('postgresql.conf', "polar_enable_px=on");
 $node_master->append_conf('postgresql.conf', "listen_addresses=localhost");

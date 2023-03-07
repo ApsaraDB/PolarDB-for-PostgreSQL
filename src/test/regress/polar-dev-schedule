@@ -14,7 +14,6 @@ test: polar-dev/polar_superuser_create_event_trigger
 test: polar-dev/polar_covered_index
 test: polar-dev/polar_full_replica_identity
 test: polar-dev/polar_or_to_union_all
-test: polar-dev/reload_conf_a polar-dev/reload_conf_b
 test: polar-dev/polar_operator_level_memory_limit
 test: polar-dev/px_parallel_dml_correct
 test: polar-dev/px_parallel_dml_error

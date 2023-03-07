@@ -1,9 +1,9 @@
 #
-# Test PX wait lock timeout with two sessions.
-#	Session 1 (main): execute a hanging PX query (by fault injection).
-#	Session 2 (child): execute a DDL whose lock mode conflicts with PX query.
-#	
-#	PX query is expected to be canceled due to wait lock timeout.
+# Test PX PDML deadlock timeout with two sessions.
+#   Session 1 (main): execute a parallel delete hang 
+#        after qc get lock and before delete worker run (by fault injection).
+#   Session 2 (child): execute vacuum full after main hang. deadlock trigger
+#   parallel delete is expected to be canceled due to wait lock timeout.
 #
 use strict;
 use warnings;
@@ -39,12 +39,15 @@ sub px_init_conf
 	$node->append_conf('postgresql.conf', 'polar_px_optimizer_trace_fallback=1');
 	$node->append_conf('postgresql.conf', 'polar_px_dop_per_node=3');
 	$node->append_conf('postgresql.conf', 'polar_px_max_workers_number=0');
+    $node->append_conf('postgresql.conf', 'polar_px_enable_delete=1');
 	$node->append_conf('postgresql.conf', "listen_addresses=localhost");
 }
 px_init_conf($node_master);
 
+# cluster map
+$node_master->append_conf('postgresql.conf', "polar_cluster_map='node1|127.0.0.1|".$node_replica1->port.", node2|127.0.0.1|".$node_replica2->port."'");
 # wait lock timeout
-$node_master->append_conf('postgresql.conf', "polar_px_wait_lock_timeout=3000");
+$node_master->append_conf('postgresql.conf', "polar_px_wait_lock_timeout=10000");
 $node_master->start;
 
 $node_master->polar_create_slot($node_replica1->name);
@@ -57,32 +60,30 @@ my $start_time = time();
 # enable fault injector extension
 $node_master->psql($regress_db, "create extension faultinjector;");
 
-# create table and index
-$node_master->psql($regress_db, "drop table if exists test_table;");
-$node_master->psql($regress_db, "create table test_table (id int);");
-$node_master->psql($regress_db, "insert into test_table(id) select generate_series(1, 1000) as id;");
-$node_master->psql($regress_db, "create index i on test_table(id);");
+# create table and load data
+$node_master->psql($regress_db, "drop table deadlock_table1 cascade;");
+$node_master->psql($regress_db, "CREATE TABLE deadlock_table1 (c1 int, c2 int);");
+$node_master->psql($regress_db, "insert into deadlock_table1 select generate_series(1,1000),generate_series(1,1000);");
 
 # child session on RW
 my $pid = fork();
 if( $pid == 0 ) {
-	$ENV{"whoami"} = "child";
+    $ENV{"whoami"} = "child";
 
 	# wait for main session to start PX query
 	$node_master->psql($regress_db, "select pg_sleep(3);");
 	# perform DDL to wait lock
-	$node_master->psql($regress_db, "drop index i;");
-	
-	exit 0;
+	$node_master->psql($regress_db, "vacuum full;");
+
+    exit 0;
 }
 
 my $errmsg = "";
-
 # inject fault once to hang the subsequent PX query
 $node_master->psql($regress_db, "select inject_fault('all', 'reset');");
-$node_master->psql($regress_db, "select inject_fault('px_wait_lock_timeout', 'enable', '', 'test_table', 1, 1, 0);");
+$node_master->psql($regress_db, "select inject_fault('pdml_deadlock_creation', 'enable', '', 'pdml_test_table', 1, 1, 0);");
 $node_master->psql($regress_db,
-				   "select * from test_table;",
+				   "delete from deadlock_table1 where c1 <10;",
 				   stderr => \$errmsg);
 
 # PX query is expected to be canceled

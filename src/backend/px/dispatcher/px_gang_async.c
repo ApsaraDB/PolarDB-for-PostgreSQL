@@ -98,7 +98,7 @@ create_gang_retry:
 
 	PG_TRY();
 	{
-		int pxid_buf_len = 100 + strlen(polar_cluster_map);
+		int pxid_buf_len = 1000;
 		char *pxid = palloc(pxid_buf_len);
 
 		for (i = 0; i < size; i++)

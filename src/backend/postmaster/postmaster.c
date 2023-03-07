@@ -2177,6 +2177,18 @@ retry1:
 		if (SSLok == 'S' && secure_open_server(port) == -1)
 			return STATUS_ERROR;
 #endif
+		/*
+		 * At this point we should have no data already buffered.  If we do,
+		 * it was received before we performed the SSL handshake, so it wasn't
+		 * encrypted and indeed may have been injected by a man-in-the-middle.
+		 * We report this case to the client.
+		 */
+		if (pq_buffer_has_data())
+			ereport(FATAL,
+					(errcode(ERRCODE_PROTOCOL_VIOLATION),
+					 errmsg("received unencrypted data after SSL request"),
+					 errdetail("This could be either a client-software bug or evidence of an attempted man-in-the-middle attack.")));
+
 		/* regular startup packet, cancel, etc packet should follow... */
 		/* but not another SSL negotiation request */
 		return ProcessStartupPacket(port, true);
@@ -2249,6 +2261,9 @@ retry1:
 				pxid = pstrdup(valptr);
 			else if (strcmp(nameptr, "replication") == 0)
 			{
+				/* POLAR: send only committed WAL defaultly if consistent replication is enabled */
+				polar_dma_non_committed_walsender = !polar_dma_consistent_replication;
+
 				/*
 				 * Due to backward compatibility concerns the replication
 				 * parameter is a hybrid beast which allows the value to be
@@ -2260,6 +2275,15 @@ retry1:
 				{
 					am_walsender = true;
 					am_db_walsender = true;
+
+					/* POLAR: send only committed WAL for logical replication if in DMA mode*/
+					polar_dma_non_committed_walsender = false;
+				}
+				else if (strcmp(valptr, "dma") == 0)
+				{
+					am_walsender = true;
+					polar_dma_non_committed_walsender = true;
+					elog(DEBUG5, "Process DMA replication startup packet");
 				}
 				else if (!parse_bool(valptr, &am_walsender))
 					ereport(FATAL,

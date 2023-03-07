@@ -54,6 +54,10 @@ export const zh: NavbarConfig = [
         ],
       },
       {
+        text: "问题诊断",
+        children: ["/zh/operation/cpu-usage-high.html"],
+      },
+      {
         text: "性能测试",
         children: [
           "/zh/operation/tpcc-test.html",

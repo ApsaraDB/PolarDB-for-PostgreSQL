@@ -631,6 +631,10 @@ px_adps_coordinator_thread(void *arg)
 		{
 			px_consumer_ds(pxds_backgroup);
 			pthread_mutex_unlock(&px_pq_mutex);
+
+			/* sleep for schedule yield */
+			if (px_task_finished)
+				pg_usleep(1);
 		}
 	}
 	return NULL;

@@ -82,28 +82,28 @@
 
 /* POLAR */
 #include "access/heapam_xlog.h"
-#include "access/polar_logindex_redo.h"
 #include "access/polar_async_ddl_lock_replay.h"
 #include "access/polar_csn_mvcc_vars.h"
 #include "access/polar_csnlog.h"
+#include "access/polar_checkpoint_ringbuf.h"
+#include "access/polar_logindex_redo.h"
 #include "commands/dbcommands_xlog.h"
 #include "commands/tablespace.h"
-#include "access/polar_logindex_redo.h"
-#include "access/polar_checkpoint_ringbuf.h"
+#include "polar_dma/polar_dma.h"
+#include "polar_datamax/polar_datamax.h"
+#include "polar_flashback/polar_flashback_point.h"
+#include "portability/instr_time.h"
+#include "replication/polar_cluster_info.h"
 #include "storage/polar_fd.h"
 #include "storage/polar_flushlist.h"
+#include "storage/polar_io_fencing.h"
 #include "storage/polar_io_stat.h"
 #include "storage/polar_pbp.h"
 #include "storage/polar_xlogbuf.h"
-#include "storage/polar_io_fencing.h"
-#include "polar_datamax/polar_datamax.h"
-#include "portability/instr_time.h"
+#include "utils/faultinjector.h"
 #include "utils/polar_backtrace.h"
 #include "utils/polar_local_cache.h"
 #include "utils/timestamp.h"
-#include "polar_dma/polar_dma.h"
-#include "utils/faultinjector.h"
-#include "polar_flashback/polar_flashback_point.h"
 /* POLAR end */
 
 #ifdef ENABLE_THREAD_SAFETY
@@ -868,6 +868,8 @@ typedef struct XLogCtlData
 
 	/* POLAR: put standbyState into shared memory */
 	HotStandbyState		polar_hot_standby_state;
+
+	bool		polar_available_state;
 
 	/* POLAR: Protected by info_lck */
 	XLogRecPtr	ConsensusCommit;			/* last byte + 1 consensus committed */
@@ -5895,6 +5897,8 @@ XLOGShmemInit(void)
 
 	/* POLAR: Init hot_standby_state, same as standbyState */
 	XLogCtl->polar_hot_standby_state = STANDBY_DISABLED;
+
+	XLogCtl->polar_available_state = true;
 
 	/* POLAR: Init replica_update_dirs_by_redo flag */
 	XLogCtl->polar_replica_update_dirs_by_redo = false;
@@ -15607,6 +15611,26 @@ polar_get_hot_standby_state(void)
 }
 
 /*
+ * POLAR: interface to set and get polar_available_state.
+ */
+void
+polar_set_available_state(bool state)
+{
+	if (UsedShmemSegAddr != NULL && XLogCtl != NULL)
+		XLogCtl->polar_available_state = state;
+	polar_update_cluster_info();
+}
+
+bool
+polar_get_available_state(void)
+{
+	if (UsedShmemSegAddr != NULL && XLogCtl != NULL)
+		return XLogCtl->polar_available_state;
+	else
+		return true;
+}
+
+/*
  * POLAR: update lockLastReplayedEndRecPtr, which will be sent to RW
  */
 void
@@ -16611,6 +16635,49 @@ polar_dma_xlog_truncate(XLogRecPtr resetPtr, TimeLineID resetTLI, int elevel)
 
 	RemoveNonParentXlogFiles(resetPtr, resetTLI+1);
 }
+
+/*
+ * POLAR: Returns the latest point in WAL that has been safely flushed, and
+ * can be sent to the standby. This should only be called when in recovery,
+ * ie. we're streaming to a cascaded standby.
+ *
+ * As a side-effect, ThisTimeLineID is updated to the TLI of the last
+ * replayed WAL record.
+ */
+XLogRecPtr
+polar_dma_get_flush_lsn(bool committed, bool in_recovery)
+{
+	XLogRecPtr	replayPtr;
+	TimeLineID	replayTLI;
+	XLogRecPtr	receivePtr;
+	TimeLineID	receiveTLI;
+	XLogRecPtr	result;
+
+	/*
+	 * POLAR: in DMA mode, advance to new timeline from consensus flushed point.
+	 * otherwise, the new timeline cannot be sent before exit from recovery status.
+	 */
+	if (!committed)
+		ConsensusGetXLogFlushedLSN(&receivePtr, &receiveTLI);
+	else
+		ConsensusGetSyncedLSNAndTLI(&receivePtr, &receiveTLI);
+
+	if (in_recovery)
+		ThisTimeLineID = receiveTLI;
+
+	result = receivePtr;
+
+	if (in_recovery && !polar_is_dma_logger_node())
+	{
+		replayPtr = GetXLogReplayRecPtr(&replayTLI);
+		if (replayTLI == ThisTimeLineID && replayPtr > receivePtr)
+			result = replayPtr;
+	}
+
+	return result;
+}
+
+/* POLAR end */
 
 static polar_wal_pipeline_flush_event_t *
 polar_wal_pipeline_flush_event_get_slot(int slot_no)
@@ -17670,3 +17737,47 @@ polar_update_curFileTLI(XLogRecPtr ptr)
 		elog(LOG, "%s: change curFileTLI from %d to %d", __func__, old, curFileTLI);
 }
 /* POLAR end */
+
+const char *
+polar_node_type_string(PolarNodeType type, int error_level)
+{
+	switch (type)
+	{
+		case POLAR_UNKNOWN:
+			return "Unknown";
+		case POLAR_MASTER:
+			return "RW";
+		case POLAR_REPLICA:
+			return "RO";
+		case POLAR_STANDBY:
+			return "Standby";
+		case POLAR_STANDALONE_DATAMAX:
+			return "Standalone DataMax";
+		default:
+			elog(error_level, "Unknown node type: %d", type);
+			return "Unknown";
+	}
+}
+
+const char *
+polar_standby_state_string(int state, int error_level)
+{
+	switch (state)
+	{
+		case POLAR_NODE_OFFLINE:
+			return "Offline";
+		case POLAR_NODE_GOING_OFFLINE:
+			return "Going Offline";
+		case STANDBY_DISABLED:
+			return "Disabled";
+		case STANDBY_INITIALIZED:
+			return "Initialized";
+		case STANDBY_SNAPSHOT_PENDING:
+			return "Pending";
+		case STANDBY_SNAPSHOT_READY:
+			return "Ready";
+		default:
+			elog(error_level, "Unknown node state: %d", state);
+			return "Unknown";
+	}
+}

@@ -48,6 +48,8 @@
 
 #include "storage/fd.h"
 
+#include "polar_dma/polar_dma.h"
+
 /* private date for writing out data */
 typedef struct DecodingOutputState
 {
@@ -240,7 +242,12 @@ pg_logical_slot_get_changes_guts(FunctionCallInfo fcinfo, bool confirm, bool bin
 	 * RecoveryInProgress() will update ThisTimeLineID on promotion.
 	 */
 	if (!RecoveryInProgress())
-		end_of_wal = GetFlushRecPtr();
+	{
+		if (POLAR_ENABLE_DMA())
+			end_of_wal = polar_dma_get_flush_lsn(true, false);
+		else
+			end_of_wal = GetFlushRecPtr();
+	}
 	else
 		end_of_wal = GetXLogReplayRecPtr(&ThisTimeLineID);
 

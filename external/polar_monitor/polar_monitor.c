@@ -23,8 +23,6 @@
  */
 
 #include "polar_monitor.h"
-#include "storage/smgr.h"
-#include "utils/relfilenodemap.h"
 
 #define NUM_REPLICATION_SLOTS_ELEN 14
 #define NUM_REPLICA_MULTI_VERSION_SNAPSHOT_ELEM 9
@@ -1358,4 +1356,118 @@ polar_release_target_smgr_shared_mem(PG_FUNCTION_ARGS)
 		smgr_unlock_sr(sr, 0);
 
 	PG_RETURN_VOID();
+}
+
+PG_FUNCTION_INFO_V1(polar_cluster_info);
+Datum
+polar_cluster_info(PG_FUNCTION_ARGS)
+{
+#define CLUSTER_INFO_COUNT 18
+	int i, count, cols = 1;
+	ReturnSetInfo	   *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
+	TupleDesc			tupdesc;
+	Tuplestorestate    *tupstore;
+	MemoryContext		per_query_ctx;
+	MemoryContext		oldcontext;
+	polar_cluster_info_item *items = polar_cluster_info_ctl->items;
+	polar_cluster_info_item *item;
+
+	/* Build a tuple descriptor for our result type */
+	tupdesc = CreateTemplateTupleDesc(CLUSTER_INFO_COUNT, false);
+	TupleDescInitEntry(tupdesc, (AttrNumber) cols++, "name",
+						TEXTOID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) cols++, "host",
+						TEXTOID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) cols++, "port",
+						INT4OID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) cols++, "release_date",
+						TEXTOID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) cols++, "version",
+						TEXTOID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) cols++, "slot_name",
+						TEXTOID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) cols++, "type",
+						TEXTOID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) cols++, "state",
+						TEXTOID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) cols++, "cpu",
+						INT4OID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) cols++, "cpu_quota",
+						INT4OID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) cols++, "memory",
+						INT4OID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) cols++, "memory_quota",
+						INT4OID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) cols++, "iops",
+						INT4OID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) cols++, "iops_quota",
+						INT4OID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) cols++, "connection",
+						INT4OID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) cols++, "connection_quota",
+						INT4OID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) cols++, "px_connection",
+						INT4OID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) cols++, "px_connection_quota",
+						INT4OID, -1, 0);
+
+	per_query_ctx = rsinfo->econtext->ecxt_per_query_memory;
+	oldcontext = MemoryContextSwitchTo(per_query_ctx);
+	tupstore = tuplestore_begin_heap(true, false, work_mem);
+	rsinfo->returnMode = SFRM_Materialize;
+	rsinfo->setResult = tupstore;
+	rsinfo->setDesc = tupdesc;
+	MemoryContextSwitchTo(oldcontext);
+
+	LWLockAcquire(&polar_cluster_info_ctl->lock, LW_EXCLUSIVE);
+	count = polar_cluster_info_ctl->count;
+	for (i = 0; i < count; ++i)
+	{
+		Datum		values[CLUSTER_INFO_COUNT];
+		bool		nulls[CLUSTER_INFO_COUNT];
+		MemSet(nulls, 0, sizeof(bool) * CLUSTER_INFO_COUNT);
+
+		item = &items[i];
+		values[0] = CStringGetTextDatum(item->name);
+		values[1] = CStringGetTextDatum(item->host);
+		values[2] = Int32GetDatum(item->port);
+		values[3] = CStringGetTextDatum(item->release_date);
+		values[4] = CStringGetTextDatum(item->version);
+		values[5] = CStringGetTextDatum(item->slot_name);
+		values[6] = CStringGetTextDatum(polar_node_type_string(item->type, DEBUG5));
+		values[7] = CStringGetTextDatum(polar_standby_state_string(item->state, DEBUG5));
+		values[8] = Int32GetDatum(item->cpu);
+		values[9] = Int32GetDatum(item->cpu_quota);
+		values[10] = Int32GetDatum(item->memory);
+		values[11] = Int32GetDatum(item->memory_quota);
+		values[12] = Int32GetDatum(item->iops);
+		values[13] = Int32GetDatum(item->iops_quota);
+		values[14] = Int32GetDatum(item->connection);
+		values[15] = Int32GetDatum(item->connection_quota);
+		values[16] = Int32GetDatum(item->px_connection);
+		values[17] = Int32GetDatum(item->px_connection_quota);
+		tuplestore_putvalues(tupstore, tupdesc, values, nulls);
+	}
+	LWLockRelease(&polar_cluster_info_ctl->lock);
+
+	/* clean up and return the tuplestore */
+	tuplestore_donestoring(tupstore);
+
+	return (Datum) 0;
+}
+
+PG_FUNCTION_INFO_V1(polar_set_available);
+Datum
+polar_set_available(PG_FUNCTION_ARGS)
+{
+	bool available = PG_GETARG_BOOL(0);
+	polar_set_available_state(available);
+	PG_RETURN_VOID();
+}
+
+PG_FUNCTION_INFO_V1(polar_is_available);
+Datum
+polar_is_available(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_BOOL(polar_get_available_state());
 }

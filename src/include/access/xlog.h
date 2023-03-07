@@ -431,6 +431,7 @@ extern int polar_wait_recovery_wakeup(int wakeEvents, long timeout,
 					uint32 wait_event_info);
 extern bool polar_is_dma_data_node(void);
 extern bool polar_is_dma_logger_node(void);
+extern XLogRecPtr polar_dma_get_flush_lsn(bool committed, bool in_recovery);
 
 
 
@@ -502,5 +503,10 @@ extern void polar_wal_pipeline_set_local_recovery_mode(bool mode);
 /* POLAR */
 extern void polar_set_replica_update_dirs_by_redo(bool value);
 extern bool polar_replica_update_dirs_by_redo(void);
+
+extern void polar_set_available_state(bool state);
+extern bool polar_get_available_state(void);
+extern const char *polar_node_type_string(PolarNodeType type, int error_level);
+extern const char *polar_standby_state_string(int state, int error_level);
 
 #endif							/* XLOG_H */

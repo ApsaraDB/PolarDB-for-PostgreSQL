@@ -25,6 +25,7 @@
 #include "utils/inval.h"
 #include "utils/pg_lsn.h"
 #include "utils/resowner.h"
+#include "polar_dma/polar_dma.h"
 
 static void
 check_permissions(void)
@@ -492,7 +493,12 @@ pg_replication_slot_advance(PG_FUNCTION_ARGS)
 	 * target position accordingly.
 	 */
 	if (!RecoveryInProgress())
-		moveto = Min(moveto, GetFlushRecPtr());
+	{
+		if (POLAR_ENABLE_DMA())
+			moveto = Min(moveto, polar_dma_get_flush_lsn(true, false));
+		else
+			moveto = Min(moveto, GetFlushRecPtr());
+	}
 	else
 		moveto = Min(moveto, GetXLogReplayRecPtr(&ThisTimeLineID));
 

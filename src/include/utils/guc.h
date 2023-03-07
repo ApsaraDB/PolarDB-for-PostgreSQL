@@ -341,6 +341,10 @@ extern int     polar_max_non_super_conns;
 extern int     polar_max_super_conns;
 extern int     polar_reserved_polar_super_conns;
 
+extern char	   *polar_release_date;
+extern char	   *polar_version;
+extern char	   *polar_instance_name;
+
 /* POLAR */
 extern double	polar_max_normal_backends_factor;
 
@@ -969,10 +973,13 @@ extern bool	px_optimizer_enable_associativity;
 
 /* GUCs for slice table*/
 extern int	px_max_slices;
-extern char *polar_cluster_map;
 extern char *polar_px_nodes;
 extern char *polar_px_ignore_function;
 extern polar_px_function_oid_array px_function_oid_array;
+extern bool	px_use_standby;
+extern bool	polar_px_ignore_unusable_nodes;
+extern bool	polar_enable_send_node_info;
+extern bool	polar_enable_send_cluster_info;
 
 /* The number of blocks to scan table */
 extern int 	px_scan_unit_size;
