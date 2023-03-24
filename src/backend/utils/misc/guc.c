@@ -7573,6 +7573,8 @@ static struct config_string ConfigureNamesString[] =
 		"sslinfo,tablefunc,unaccent,fuzzystrmatch,pgstattuple,pg_buffercache,\"uuid-ossp\",bloom,"
 		/* POLAR: extensions in src/pl dir */
 		"plpgsql,plperl,"
+		/* PostGIS */
+		"postgis,postgis_raster,postgis_topology,postgis_sfcgal,fuzzystrmatch,address_standardizer,address_standardizer_data_us,postgis_tiger_geocoder,"
 		/* POLAR: extensions in external dir */
 		"polar_csn,polar_monitor,polar_monitor_preload,polar_px",
 		check_polar_available_extensions, NULL, NULL
