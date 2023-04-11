@@ -392,10 +392,14 @@ if [[ $withpx == "yes" ]];
 then
   echo "################################ build with px ################################"
   configure_flag+=" --enable-polar-px"
-  withrep="yes"
-  if [[ $repnum == "1" ]];
+
+  if [[ $noinit == "no" ]];
   then
-    repnum=2
+    withrep="yes"
+    if [[ $repnum == "1" ]];
+    then
+      repnum=2
+    fi
   fi
 fi
 
