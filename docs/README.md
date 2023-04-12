@@ -80,13 +80,13 @@ psql -h 127.0.0.1 -c 'select version();'
     <ul style="position: relative;z-index: 10;">
       <li><a href="./operation/backup-and-restore.html">Backup and Recovery</a></li>
       <li><a href="./operation/tpcc-test.html">TPC-C Benchmarking</a></li>
+      <li><a href="./operation/tpch-test.html">TPC-H Benchmarking</a></li>
     </ul>
   </div>
 
   <div class="feature">
-    <h3>Feature Practice</h3>
+    <h3>Kernel Features</h3>
     <ul style="position: relative;z-index: 10;">
-      <li><a href="./features/tpch-on-px.html">Accelerate TPC-H with PolarDB HTAP</a></li>
     </ul>
   </div>
 

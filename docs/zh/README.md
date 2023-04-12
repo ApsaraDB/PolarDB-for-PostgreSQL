@@ -83,13 +83,17 @@ psql -h 127.0.0.1 -c 'select version();'
     <ul style="position: relative;z-index: 10;">
       <li><a href="./operation/backup-and-restore.html">备份恢复</a></li>
       <li><a href="./operation/tpcc-test.html">TPC-C 测试</a></li>
+      <li><a href="./operation/tpch-test.html">TPC-H 测试</a></li>
     </ul>
   </div>
 
   <div class="feature">
-    <h3>特性实践</h3>
+    <h3>内核特性</h3>
     <ul style="position: relative;z-index: 10;">
-      <li><a href="./features/tpch-on-px.html">利用 PolarDB HTAP 加速 TPC-H</a></li>
+      <li><a href="./features/v11/performance/">高性能</a></li>
+      <li><a href="./features/v11/availability/">高可用</a></li>
+      <li><a href="./features/v11/security/">安全</a></li>
+      <li><a href="./features/v11/htap/">HTAP</a></li>
     </ul>
   </div>
 
