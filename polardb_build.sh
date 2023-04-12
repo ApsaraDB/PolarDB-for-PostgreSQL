@@ -282,6 +282,7 @@ need_initdb=no
 need_initrep=no
 noclean=no
 normbasedir=no
+noinit=no
 withpx=no
 initpx=no
 repnum=1
@@ -362,6 +363,8 @@ for arg do
                                 ;;
     --without-fbl)              enable_flashback_log=off
                                 ;;
+    --noinit)                   noinit=yes
+                                ;;
     --extra-conf=*)             extra_conf="$val"
                                 ;;
     *)                          echo "wrong options : $arg";
@@ -389,10 +392,14 @@ if [[ $withpx == "yes" ]];
 then
   echo "################################ build with px ################################"
   configure_flag+=" --enable-polar-px"
-  withrep="yes"
-  if [[ $repnum == "1" ]];
+
+  if [[ $noinit == "no" ]];
   then
-    repnum=2
+    withrep="yes"
+    if [[ $repnum == "1" ]];
+    then
+      repnum=2
+    fi
   fi
 fi
 
@@ -421,9 +428,12 @@ then
 fi
 
 mkdir -p $pg_bld_basedir
+if [[ $noinit == "no" ]];
+then
 mkdir -p $pg_bld_master_dir
 mkdir -p $pg_bld_replica_dir
 mkdir -p $pg_bld_data_dir
+fi
 
 if [[ $normbasedir == "no" ]] && [[ -n $pg_bld_basedir ]] && [[ -d $pg_bld_basedir/bin ]];
 then
@@ -431,7 +441,7 @@ then
 fi
 
 # cleanup datadir only if it is not specified explicitly by user (so a default trival one)
-if [[ $data_dir_specified == "no" ]] && [[ -n $pg_bld_master_dir ]];
+if [[ $noinit == "no" ]] && [[ $data_dir_specified == "no" ]] && [[ -n $pg_bld_master_dir ]];
 then
   rm -fr $pg_bld_master_dir/*
   rm -fr $pg_bld_data_dir/*
@@ -548,7 +558,7 @@ fi
 
 ###################### PHASE 5: init and start ######################
 # to protect us from running from wrong dir, use ../polardb_pg etc. here
-if [[ "$EUID" == 0 ]];
+if [[ $noinit == "no" ]] && [[ "$EUID" == 0 ]];
 then
   chown -R $pg_bld_user ../polardb_pg
   chown -R $pg_bld_user $pg_bld_basedir
@@ -680,12 +690,15 @@ then
   
 fi
 
+if [[ $noinit == "no" ]];
+then
 # start master
 echo "port = ${pg_bld_port}
       polar_hostid = 100
       full_page_writes = off" >> $pg_bld_master_dir/postgresql.conf
 
 su_eval "$pg_bld_basedir/bin/pg_ctl -D $pg_bld_master_dir start -w -c"
+fi
 
 # create a replication_slot and start
 if [[ $withrep == "yes" ]];
@@ -770,7 +783,10 @@ then
   fi
 fi
 
+if [[ $noinit == "no" ]];
+then
 su_eval "$pg_bld_basedir/bin/pg_ctl -D $pg_bld_master_dir reload"
+fi
 
 # create a replication_slot and user $pg_bld_user
 if [[ $withrep == "yes" ]];
@@ -793,12 +809,15 @@ then
   su_eval "$pg_bld_basedir/bin/pg_ctl -D $pg_bld_standby_dir start -w -c -o '-p $pg_bld_standby_port'"
 fi
 
+if [[ $noinit == "no" ]];
+then
 echo "Following command can be used to connect to PG:"
 echo ""
 echo su $pg_bld_user -c \"$pg_bld_basedir/bin/psql -h 127.0.0.1 -p $pg_bld_port postgres\"
 echo su $pg_bld_user -c \"$pg_bld_basedir/bin/psql -h 127.0.0.1 -p $pg_bld_rep_port postgres\"
 echo su $pg_bld_user -c \"$pg_bld_basedir/bin/psql -h 127.0.0.1 -p $pg_bld_standby_port postgres\"
 echo ""
+fi
 
 ######################### PHASE 6 Test: test for polar ###########################
 if [[ $initpx == "yes" ]];
