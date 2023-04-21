@@ -52,7 +52,7 @@ export const en: NavbarConfig = [
       },
       {
         text: "Benchmarks",
-        children: ["/operation/tpcc-test.html", "/operation/tpch-on-px.html"],
+        children: ["/operation/tpcc-test.html", "/operation/tpch-test.html"],
       },
     ],
   },

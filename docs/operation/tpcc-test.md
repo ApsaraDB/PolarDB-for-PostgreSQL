@@ -1,222 +1,109 @@
-# PolarDB PG TPC-C 测试
+---
+author: 棠羽
+date: 2023/04/11
+minute: 15
+---
 
-在本节中，我们将学习如何对 PolarDB PG 进行 TPCC 测试，本次实践将基于单机本地存储来运行。
+# TPC-C 测试
 
-## TPC-C 测试
+<ArticleInfo :frontmatter=$frontmatter></ArticleInfo>
 
-TPC-C 是一种衡量 OLTP 性能的基准测试。TPC-C 混合了五种不同类型和复杂程度的并发交易，这五种并发交易又包括了在线执行以及排队延迟执行。TPC-C 数据库由九种类型的表组成，以每分钟交易量（tmpC）来衡量具体性能。
+本文将引导您对 PolarDB for PostgreSQL 进行 TPC-C 测试。
 
-TPC-C 的具体说明和排名可以通过官方网站 [TPC-C 官网](https://www.tpc.org/tpcc/) 进行查看。
+[[toc]]
 
-## 前期准备
+## 背景
 
-### 部署 PolarDB PG
+TPC 是一系列事务处理和数据库基准测试的规范。其中 [TPC-C](https://www.tpc.org/tpcc/) (Transaction Processing Performance Council) 是针对 OLTP 的基准测试模型。TPC-C 测试模型给基准测试提供了一种统一的测试标准，可以大体观察出数据库服务稳定性、性能以及系统性能等一系列问题。对数据库展开 TPC-C 基准性能测试，一方面可以衡量数据库的性能，另一方面可以衡量采用不同硬件软件系统的性价比，是被业内广泛应用并关注的一种测试模型。
 
-在运行前默认已经通过文档 [PolarDB 编译部署：单机文件系统](../deploying/db-localfs.md) 部署好 PolarDB PG 的本地实例。
+## 测试步骤
 
-### 安装 Java 和 Ant
+### 部署 PolarDB-PG
 
-由于 TPC-C 测试工具 benchmarksql 需要通过 Ant 来编译，所以需要安装 Java 和 Ant。这里安装的 Java 版本为 8.0[^java-install]，Ant 版本为 1.9.7[^ant-install]。
+参考如下教程部署 PolarDB for PostgreSQL：
 
-::: tip
-安装 Java 和 Ant 的后需要修改环境变量。
-:::
+- [快速部署](../deploying/quick-start.md)
+- [进阶部署](../deploying/deploy.md)
 
-```bash
-# 配置环境变量
-vim /etc/profile
+### 安装测试工具 BenchmarkSQL
 
-# 以下是本人机器上的配置，可以参考，路径需要根据自己机器进行调整
-JAVA_HOME=/usr/lib/jvm/java-1.8.0-openjdk-1.8.0.332.b09-1.el7_9.x86_64
-JRE_HOME=$JAVA_HOME/jre
-CLASSPATH=.:$JRE_HOME/lib/rt.jar:${JAVA_HOME}/lib/dt.jar:${JAVA_HOME}/lib/tools.jar
-PATH=$PATH:$JAVA_HOME/bin:$JRE_HOME/bin
-export JAVA_HOME JRE_HOME CLASSPATH PATH
-#ant environment
-export ANT_HOME=/home/postgres/apache-ant-1.9.16
-export PATH=$PATH:$ANT_HOME/bin
+[BenchmarkSQL](https://github.com/pgsql-io/benchmarksql) 依赖 Java 运行环境与 Maven 包管理工具，需要预先安装。拉取 BenchmarkSQL 工具源码并进入目录后，通过 `mvn` 编译工程：
 
-# 生效
-source /etc/profile
+```bash:no-line-numbers
+$ git clone https://github.com/pgsql-io/benchmarksql.git
+$ cd benchmarksql
+$ mvn
 ```
 
-验证 Java 和 Ant 安装成功。
+编译出的工具位于如下目录中：
 
-```bash
-# java
-$ java -version
-openjdk version "1.8.0_332"
-OpenJDK Runtime Environment (build 1.8.0_332-b09)
-OpenJDK 64-Bit Server VM (build 25.332-b09, mixed mode)
-
-# ant
-$ ant -version
-Apache Ant(TM) version 1.9.16 compiled on July 10 2021
+```bash:no-line-numbers
+$ cd target/run
 ```
 
-### 安装 benchmarksql
+### TPC-C 配置
 
-我们将通过 benchmarksql 工具来进行 TPC-C 测试。
+在编译完毕的工具目录下，将会存在面向不同数据库产品的示例配置：
 
-::: tip
-下面链接中的 benchmarksql 采用的是 5.1 版本。相较于 5.0 版本，5.1 版本可以使用 Procedures，性能表现较好。推荐使用 5.1 版本。
-:::
-
-```bash
-# 下载 benchmarksql
-git clone https://github.com/petergeoghegan/benchmarksql
-
-# 编译
-cd benchmarksql
-ant
+```bash:no-line-numbers
+$ ls | grep sample
+sample.firebird.properties
+sample.mariadb.properties
+sample.oracle.properties
+sample.postgresql.properties
+sample.transact-sql.properties
 ```
 
-## 进行 TPC-C 测试
+其中，`sample.postgresql.properties` 包含 PostgreSQL 系列数据库的模板参数，可以基于这个模板来修改并自定义配置。参考 BenchmarkSQL 工具的 [文档](https://github.com/pgsql-io/benchmarksql/blob/master/docs/PROPERTIES.md) 可以查看关于配置项的详细描述。
 
-TPC-C 测试主要分为四个步骤：载入数据、预热数据、进行测试、结果分析。下面将分别进行说明。
+配置项包含的配置类型有：
 
-通过如下命令进入到指定目录：
+- JDBC 驱动及连接信息：需要自行配置 PostgreSQL 数据库运行的连接串、用户名、密码等
+- 测试规模参数
+- 测试时间参数
+- 吞吐量参数
+- 事务类型参数
 
-```bash
-cd run
-```
+### 导入数据
 
-### TPC-C 配置文件
+使用 `runDatabaseBuild.sh` 脚本，以配置文件作为参数，产生和导入测试数据：
 
-在使用 benchmarksql 运行 TPC-C 测试的时候，需要指定配置参数，配置包括要连接的数据库类型（Oracle、PG）、IP、端口等。如下代码块说明了具体的配置字段名以及含义：
-
-::: tip
-后续的载入数据、预热数据、进行测试都可以采用该配置文件，后续该配置文件的名称都为 `PolarDB_PG_Run.conf`。
-:::
-
-```bash
-# 要连接的数据库类型，下面都以 postgres 为例
-db=postgres
-# 驱动程序
-driver=org.postgresql.Driver
-# 连接的 IP 为 localhost， 端口为 5432， 数据库为 tpcc
-conn=jdbc:postgresql://localhost:5432/tpcc
-# 数据库用户名
-user=postgres
-# 数据库密码
-password=postgres
-
-# 仓库数量，相当于测试数据量
-warehouses=10
-# 装载数据的进程数量，可根据机器核数动态调整
-loadWorkers=20
-# 运行测试时的并发客户端数量，一般设置为 CPU 线程总数的 2～6 倍。注意不能超过数据库的最大连接数。 最大连接数可以通过 show max_connections; 查看
-terminals=20
-
-# 每个终端运行的事务数，如果该值非 0，则运行总事务数为 runTxnsPerTerminal * terminals。注意，runTxnsPerTerminal 不能和 runMins 同时非 0
-runTxnsPerTerminal=0
-
-# 运行时间数，单位为分钟。注意，runTxnsPerTerminal 不能和 runMins 同时非 0
-runMins=1
-
-# 每分钟执行的最大事务数，设置为0，则表示不加限制 ( Number of total transactions per minute )
-limitTxnsPerMin=0
-
-
-# 终端和仓库的绑定模式，设置为 true 时说明每个终端有一个固定仓库。 一般采用默认值 true
-terminalWarehouseFixed=true
-# 是否采用存储过程，为 true 则说明使用
-useStoredProcedures=false
-```
-
-该配置的部分中文解释说明参考 [benchmarksql 使用指南](https://cloud.tencent.com/developer/article/1893777)。
-
-### 载入数据
-
-脚本 `runDatabaseBuild.sh` 用来装载数据。在装载数据前，需要通过 `psql` 命令 `create database tpcc` 创建 tpcc 数据库。
-
-执行如下 bash 命令，执行装载数据：
-
-```bash
-./runDatabaseBuild.sh PolarDB_PG_Run.conf
-```
-
-执行成功的结果如下所示：
-
-```bash
--- ----
--- Extra commands to run after the tables are created, loaded,
--- indexes built and extra\'s created.
--- PostgreSQL version.
--- ----
-vacuum analyze;
+```bash:no-line-numbers
+./runDatabaseBuild.sh sample.postgresql.properties
 ```
 
 ### 预热数据
 
-脚本 `runBenchmark.sh` 用来执行 TPC-C 测试。通常，在正式压测前会进行一次数据预热。
+通常，在正式测试前会进行一次数据预热：
 
-数据预热的命令如下：
-
-```bash
-./runBenchmark.sh PolarDB_PG_Run.conf
+```bash:no-line-numbers
+./runBenchmark.sh sample.postgresql.properties
 ```
 
-#### 可能会出现的错误以及解决方法
+### 正式测试
 
-错误日志：
+预热完毕后，再次运行同样的命令进行正式测试：
 
-```bash
-ERROR  jTPCC : Term-00, This session ended with errors!
+```bash:no-line-numbers
+./runBenchmark.sh sample.postgresql.properties
 ```
 
-解决方法：
+### 查看结果
 
-该错误说明会话断连，需要通过数据库的日志来定位问题，打印数据库的错误日志命令如下：
+```bash:no-line-numbers
+                                          _____ latency (seconds) _____
+  TransType              count |   mix % |    mean       max     90th% |    rbk%          errors
++--------------+---------------+---------+---------+---------+---------+---------+---------------+
+| NEW_ORDER    |           635 |  44.593 |   0.006 |   0.012 |   0.008 |   1.102 |             0 |
+| PAYMENT      |           628 |  44.101 |   0.001 |   0.006 |   0.002 |   0.000 |             0 |
+| ORDER_STATUS |            58 |   4.073 |   0.093 |   0.168 |   0.132 |   0.000 |             0 |
+| STOCK_LEVEL  |            52 |   3.652 |   0.035 |   0.044 |   0.041 |   0.000 |             0 |
+| DELIVERY     |            51 |   3.581 |   0.000 |   0.001 |   0.001 |   0.000 |             0 |
+| DELIVERY_BG  |            51 |   0.000 |   0.018 |   0.023 |   0.020 |   0.000 |             0 |
++--------------+---------------+---------+---------+---------+---------+---------+---------------+
 
-```bash
-# 文件名需要替换成目录中带 error 的文件名
-cat /home/postgres/tmp_master_dir_polardb_pg_1100_bld/pg_log/postgresql-2022-06-29_101344_error.log
+Overall NOPM:          635 (98.76% of the theoretical maximum)
+Overall TPM:         1,424
 ```
 
-### 进行测试
-
-数据预热完，就可以进行正式测试。正式测试的命令如下：
-
-```bash
-./runBenchmark.sh PolarDB_PG_Run.conf
-```
-
-### 结果分析
-
-压测结束后，结果如下所示：
-
-```bash
-
-11:49:15,896 [Thread-9] INFO   jTPCC : Term-00, Measured tpmC (NewOrders) = 71449.03
-11:49:15,896 [Thread-9] INFO   jTPCC : Term-00, Measured tpmTOTAL = 164116.88
-11:49:15,896 [Thread-9] INFO   jTPCC : Term-00, Session Start     = 2022-06-29 11:48:15
-11:49:15,896 [Thread-9] INFO   jTPCC : Term-00, Session End       = 2022-06-29 11:49:15
-11:49:15,896 [Thread-9] INFO   jTPCC : Term-00, Transaction Count = 164187
-```
-
-- Running Average tpmTOTAL / Measured tpmTOTAL：每分钟平均执行事务数（所有事务）
-- Memory Usage：客户端内存使用情况
-- Measured tpmC (NewOrders) ：每分钟执行的事务数（只统计 NewOrders 事务）
-- Transaction Count：执行的交易总数量
-
-该结果的部分解释参考 [benchmarksql 使用指南](https://cloud.tencent.com/developer/article/1893777)。
-
-## 如何在不同场景下测试
-
-本文档主要提供了 PolarDB PG 通用的 TPC-C 测试方式，如果需要进行不同场景下的测试，比如：三节点、PFS 文件系统、Ceph 共享存储等。需要通过对应文档创建数据库实例，然后修改数据库的配置。修改配置方式有两个：
-
-1. 可以通过 psql 命令 `alter system set ...;` 和 `select pg_reload_conf();` 来修改配置。
-2. 二是修改数据库配置文件来实现修改配置，命令如下：
-
-   ```bash
-   # 修改配置文件
-   vim /home/postgres/tmp_master_dir_polardb_pg_1100_bld/postgresql.auto.conf
-   # 重启数据库
-   /home/postgres/tmp_basedir_polardb_pg_1100_bld/bin/pg_ctl -D /home/postgres/tmp_master_dir_polardb_pg_1100_bld restart
-   ```
-
-后续，再根据该文档进行 TPC-C 测试。
-
-[^java-install]: [Java 8 安装流程](https://blog.csdn.net/Sanayeah/article/details/118721863)
-[^ant-install]: [Ant 安装流程](https://blog.csdn.net/downing114/article/details/51470743)。
+另外也有 CSV 形式的结果被保存，从输出日志中可以找到结果存放目录。

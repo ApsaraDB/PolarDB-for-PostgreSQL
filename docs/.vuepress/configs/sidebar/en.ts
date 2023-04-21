@@ -59,7 +59,7 @@ export const en: SidebarConfig = {
         },
         {
           text: "Benchmarks",
-          children: ["/operation/tpcc-test.md", "/operation/tpch-on-px.md"],
+          children: ["/operation/tpcc-test.md", "/operation/tpch-test.md"],
         },
       ],
     },

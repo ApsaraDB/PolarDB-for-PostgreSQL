@@ -61,7 +61,7 @@ export const zh: NavbarConfig = [
         text: "性能测试",
         children: [
           "/zh/operation/tpcc-test.html",
-          "/zh/operation/tpch-on-px.html",
+          "/zh/operation/tpch-test.html",
         ],
       },
     ],

@@ -68,7 +68,7 @@ export const zh: SidebarConfig = {
           text: "性能测试",
           children: [
             "/zh/operation/tpcc-test.md",
-            "/zh/operation/tpch-on-px.md",
+            "/zh/operation/tpch-test.md",
           ],
         },
       ],
