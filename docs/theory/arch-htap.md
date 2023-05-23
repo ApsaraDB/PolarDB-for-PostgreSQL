@@ -72,7 +72,7 @@ PxScan 算子扫描出来的数据会通过 Shuffle 算子来重分布。重分�
 
 ![image.png](../imgs/htap-4-1-consistency.png)
 
-任意选择一个节点作为 Coordinator 节点，它的 ReadLSN 会作为约定的 LSN，从所有 MPP 节点的快照版本号中选择最小的版本号作为全局约定的快照版本号。通过 LSN 的回放等待和 Global Snaphot 同步机制，确保在任何一个节点发起 MPP 查询时，数据和快照均能达到一致可用的状态。
+任意选择一个节点作为 Coordinator 节点，它的 ReadLSN 会作为约定的 LSN，从所有 MPP 节点的快照版本号中选择最小的版本号作为全局约定的快照版本号。通过 LSN 的回放等待和 Global Snapshot 同步机制，确保在任何一个节点发起 MPP 查询时，数据和快照均能达到一致可用的状态。
 
 ![image.png](../imgs/htap-4-2-serverless.png)
 
