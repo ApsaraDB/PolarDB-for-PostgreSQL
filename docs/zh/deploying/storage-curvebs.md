@@ -193,7 +193,7 @@ chunkserver_services:
   config:
     listen.ip: ${service_host}
     listen.port: 82${format_replicas_sequence} # 8200,8201,8202
-    data_dir: /data/chunkserver${service_replicas_sequence} # /data/chunkserver0, /data/chunksever1
+    data_dir: /data/chunkserver${service_replicas_sequence} # /data/chunkserver0, /data/chunkserver1
     copysets: 100
   deploy:
     - host: ${machine1}
