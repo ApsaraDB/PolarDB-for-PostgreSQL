@@ -5,6 +5,7 @@
 
 ALTER SYSTEM SET polar_index_bulk_extend_size = 512;
 ALTER SYSTEM SET polar_min_bulk_extend_table_size = 0;
+ALTER SYSTEM SET polar_bulk_extend_size = 0;
 SELECT pg_reload_conf();
 SELECT pg_sleep(2);
 show polar_index_bulk_extend_size;
@@ -17,7 +18,8 @@ SELECT * FROM test_index_bulk_extend LIMIT 1;
 DROP INDEX test_index_bulk;
 DROP TABLE test_index_bulk_extend;
 
-RESET polar_index_bulk_extend_size;
-RESET polar_min_bulk_extend_table_size;
+ALTER SYSTEM RESET polar_index_bulk_extend_size;
+ALTER SYSTEM RESET polar_min_bulk_extend_table_size;
+ALTER SYSTEM RESET polar_bulk_extend_size;
 SELECT pg_reload_conf();
 

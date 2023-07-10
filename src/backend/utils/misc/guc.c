@@ -5845,7 +5845,7 @@ static struct config_int ConfigureNamesInt[] =
 			GUC_UNIT_BLOCKS
 		},
 		&polar_bulk_extend_size,
-		0, 0, INT_MAX / 2,
+		512, 0, INT_MAX / 2,
 		NULL, NULL, NULL
 	},
 	{
