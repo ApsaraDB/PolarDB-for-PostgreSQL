@@ -79,7 +79,7 @@ psql -h 127.0.0.1 -c 'select version();'
 
 ## 参与贡献
 
-我们诚挚欢迎社区参与 PolarDB 的贡献，无论是代码还是文档。在线文档中的 [参与社区](https://apsaradb.github.io/PolarDB-for-PostgreSQL/zh/contributing/code-of-conduct.html) 提供了关于贡献流程与规范的更多信息。
+我们诚挚欢迎社区参与 PolarDB 的贡献，无论是代码还是文档。
 
 以下是贡献者列表（由 [contrib.rocks](https://contrib.rocks) 支持）：
 

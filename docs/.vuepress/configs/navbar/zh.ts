@@ -133,10 +133,6 @@ export const zh: NavbarConfig = [
     link: "/zh/contributing/",
     children: [
       {
-        text: "行为准则",
-        link: "/zh/contributing/code-of-conduct.html",
-      },
-      {
         text: "贡献文档",
         link: "/zh/contributing/contributing-polardb-docs.html",
       },
