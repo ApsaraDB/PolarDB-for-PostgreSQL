@@ -119,7 +119,6 @@ psql -h 127.0.0.1 -c 'select version();'
   <div class="feature">
     <h3>社区贡献</h3>
     <ul style="position: relative;z-index: 10;">
-      <li><a href="./contributing/code-of-conduct.html">行为准则</a></li>
       <li><a href="./contributing/contributing-polardb-docs.html">贡献文档</a></li>
       <li><a href="./contributing/contributing-polardb-kernel.html">贡献代码</a></li>
       <li><a href="./contributing/coding-style">编码风格</a></li>

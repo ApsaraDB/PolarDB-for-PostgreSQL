@@ -102,7 +102,6 @@ export const en: SidebarConfig = {
         "/contributing/contributing-polardb-kernel.md",
         "/contributing/contributing-polardb-docs.md",
         "/contributing/coding-style.md",
-        "/contributing/code-of-conduct.md",
       ],
     },
   ],

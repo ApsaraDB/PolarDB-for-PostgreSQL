@@ -112,7 +112,6 @@ psql -h 127.0.0.1 -c 'select version();'
   <div class="feature">
     <h3>Contributing</h3>
     <ul style="position: relative;z-index: 10;">
-      <li><a href="./contributing/code-of-conduct.html">Code of Conduct</a></li>
       <li><a href="./contributing/contributing-polardb-docs.html">Contributing Documentation</a></li>
       <li><a href="./contributing/contributing-polardb-kernel.html">Contributing Code</a></li>
       <li><a href="./contributing/coding-style">Coding Style</a></li>

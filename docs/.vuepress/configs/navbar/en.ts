@@ -99,10 +99,6 @@ export const en: NavbarConfig = [
     link: "/contributing/",
     children: [
       {
-        text: "Code of Conduct",
-        link: "/contributing/code-of-conduct.html",
-      },
-      {
         text: "Contributing Docs",
         link: "/contributing/contributing-polardb-docs.html",
       },
