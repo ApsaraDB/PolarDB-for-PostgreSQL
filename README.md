@@ -79,7 +79,7 @@ If you want to explore or develop documentation locally, see [Document Contribut
 
 ## Contributing
 
-You are welcome to make contributions to PolarDB, no matter code or documentation. We appreciate all the contributions. For more information about how to start development and pull requests, see [Community](https://apsaradb.github.io/PolarDB-for-PostgreSQL/contributing/code-of-conduct.html).
+You are welcome to make contributions to PolarDB, no matter code or documentation.
 
 Here are the contributors:
 

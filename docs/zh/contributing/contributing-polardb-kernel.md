@@ -11,7 +11,6 @@ PolarDB for PostgreSQL 基于 PostgreSQL 和其它开源项目进行开发，我
 
 ## 贡献代码之前
 
-- 阅读并遵守我们的 [行为准则](./code-of-conduct.md)
 - 签署 PolarDB for PostgreSQL 的 [CLA](https://gist.github.com/alibaba-oss/151a13b0a72e44ba471119c7eb737d74)
 
 ## 贡献流程

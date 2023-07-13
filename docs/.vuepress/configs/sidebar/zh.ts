@@ -144,7 +144,6 @@ export const zh: SidebarConfig = {
         "/zh/contributing/contributing-polardb-kernel.md",
         "/zh/contributing/contributing-polardb-docs.md",
         "/zh/contributing/coding-style.md",
-        "/zh/contributing/code-of-conduct.md",
       ],
     },
   ],

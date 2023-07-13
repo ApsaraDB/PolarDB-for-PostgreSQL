@@ -11,7 +11,6 @@ New features will be merged to `POLARDB_11_DEV`, and will be merged to `POLARDB_
 
 ## Before Contributing
 
-- Read and follow our [Code of Conduct](./code-of-conduct.md).
 - Sign the [CLA](https://gist.github.com/alibaba-oss/151a13b0a72e44ba471119c7eb737d74) of PolarDB for PostgreSQL
 
 ## Contributing
