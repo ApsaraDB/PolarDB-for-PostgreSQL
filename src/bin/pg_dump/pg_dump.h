@@ -310,6 +310,7 @@ typedef struct _tableInfo
 	char	   *attstorage;		/* attribute storage scheme */
 	char	   *typstorage;		/* type storage scheme */
 	bool	   *attisdropped;	/* true if attr is dropped; don't dump it */
+	bool	   *attisinvisible; /* true if attr is invisible */
 	char	   *attidentity;
 	int		   *attlen;			/* attribute length, used by binary_upgrade */
 	char	   *attalign;		/* attribute align, used by binary_upgrade */

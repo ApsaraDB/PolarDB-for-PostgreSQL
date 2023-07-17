@@ -2573,6 +2573,12 @@ expandTupleDesc(TupleDesc tupdesc, Alias *eref, int count, int offset,
 			continue;
 		}
 
+		if (attr->attisinvisible) {
+			if (aliascell)
+				aliascell = lnext(aliascell);
+			continue;
+		}
+
 		if (colnames)
 		{
 			char	   *label;

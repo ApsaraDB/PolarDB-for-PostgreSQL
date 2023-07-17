@@ -382,6 +382,10 @@ static ObjectAddress ATExecDropNotNull(Relation rel, const char *colName, LOCKMO
 static void ATPrepSetNotNull(Relation rel, bool recurse, bool recursing);
 static ObjectAddress ATExecSetNotNull(AlteredTableInfo *tab, Relation rel,
 				 const char *colName, LOCKMODE lockmode);
+static ObjectAddress ATExecSetVisible(AlteredTableInfo *tab, Relation rel,
+				 const char *colName, LOCKMODE lockmode);
+static ObjectAddress ATExecSetInvisible(AlteredTableInfo *tab, Relation rel,
+				 const char *colName, LOCKMODE lockmode);
 static ObjectAddress ATExecColumnDefault(Relation rel, const char *colName,
 					Node *newDefault, LOCKMODE lockmode);
 static ObjectAddress ATExecAddIdentity(Relation rel, const char *colName,
@@ -782,6 +786,9 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 
 		if (colDef->identity)
 			attr->attidentity = colDef->identity;
+
+		if (colDef->is_invisible)
+			attr->attisinvisible = colDef->is_invisible;
 	}
 
 	/*
@@ -3538,6 +3545,14 @@ AlterTableGetLockLevel(List *cmds)
 				break;
 
 				/*
+				 * changing visibilty can affect concurrent SELECTs
+				 */
+			case AT_SetInvisible:
+			case AT_SetVisible:
+				cmd_lockmode = AccessExclusiveLock;
+				break;
+
+				/*
 				 * These subcommands affect write operations only.
 				 */
 			case AT_EnableTrig:
@@ -3826,6 +3841,16 @@ ATPrepCmd(List **wqueue, Relation rel, AlterTableCmd *cmd,
 			/* No command-specific prep needed */
 			pass = AT_PASS_ADD_CONSTR;
 			break;
+		case AT_SetVisible:	/* ALTER COLUMN SET VISIBLE */
+			ATSimplePermissions(rel, ATT_TABLE | ATT_FOREIGN_TABLE);
+			ATSimpleRecursion(wqueue, rel, cmd, recurse, lockmode);
+			/* No command-specific prep needed */
+			pass = AT_PASS_ADD_CONSTR;
+		case AT_SetInvisible:	/* ALTER COLUMN SET INVISIBLE */
+			ATSimplePermissions(rel, ATT_TABLE | ATT_FOREIGN_TABLE);
+			ATSimpleRecursion(wqueue, rel, cmd, recurse, lockmode);
+			/* No command-specific prep needed */
+			pass = AT_PASS_ADD_CONSTR;
 		case AT_SetStatistics:	/* ALTER COLUMN SET STATISTICS */
 			ATSimpleRecursion(wqueue, rel, cmd, recurse, lockmode);
 			/* Performs own permission checks */
@@ -4158,6 +4183,12 @@ ATExecCmd(List **wqueue, AlteredTableInfo *tab, Relation rel,
 			break;
 		case AT_SetNotNull:		/* ALTER COLUMN SET NOT NULL */
 			address = ATExecSetNotNull(tab, rel, cmd->name, lockmode);
+			break;
+		case AT_SetVisible:	/* ALTER COLUMN SET VISIBLE */
+			address = ATExecSetVisible(tab, rel, cmd->name, lockmode);
+			break;
+		case AT_SetInvisible:	/* ALTER COLUMN SET INVISIBLE */
+			address = ATExecSetInvisible(tab, rel, cmd->name, lockmode);
 			break;
 		case AT_SetStatistics:	/* ALTER COLUMN SET STATISTICS */
 			address = ATExecSetStatistics(rel, cmd->name, cmd->num, cmd->def, lockmode);
@@ -5656,6 +5687,7 @@ ATExecAddColumn(List **wqueue, AlteredTableInfo *tab, Relation rel,
 	attribute.atthasmissing = false;
 	attribute.attidentity = colDef->identity;
 	attribute.attisdropped = false;
+	attribute.attisinvisible = colDef->is_invisible;
 	attribute.attislocal = colDef->is_local;
 	attribute.attinhcount = colDef->inhcount;
 	attribute.attcollation = collOid;
@@ -6234,6 +6266,118 @@ ATExecSetNotNull(AlteredTableInfo *tab, Relation rel,
 							  RelationGetRelid(rel), attnum);
 
 	heap_close(attr_rel, RowExclusiveLock);
+
+	return address;
+}
+
+/*
+ * Return the address of the modified column.  If the column was already Invisible,
+ * InvalidObjectAddress is returned.
+ */
+static ObjectAddress
+ATExecSetVisible(AlteredTableInfo *tab, Relation rel,
+				 const char *colName, LOCKMODE lockmode)
+{
+	HeapTuple	tuple;
+	AttrNumber	attnum;
+	Relation	attr_rel;
+	ObjectAddress address;
+
+	/*
+	 * lookup the attribute
+	 */
+	attr_rel = heap_open(AttributeRelationId, RowExclusiveLock);
+
+	tuple = SearchSysCacheCopyAttName(RelationGetRelid(rel), colName);
+
+	if (!HeapTupleIsValid(tuple))
+		ereport(ERROR,
+				(errcode(ERRCODE_UNDEFINED_COLUMN),
+				 errmsg("column \"%s\" of relation \"%s\" does not exist",
+						colName, RelationGetRelationName(rel))));
+
+	attnum = ((Form_pg_attribute) GETSTRUCT(tuple))->attnum;
+
+	/* Prevent them from altering a system attribute */
+	if (attnum <= 0)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("cannot alter system column \"%s\"",
+						colName)));
+
+	if (((Form_pg_attribute) GETSTRUCT(tuple))->attisinvisible)
+	{
+		((Form_pg_attribute) GETSTRUCT(tuple))->attisinvisible = false;
+
+		CatalogTupleUpdate(attr_rel, &tuple->t_self, tuple);
+
+		ObjectAddressSubSet(address, RelationRelationId,
+							RelationGetRelid(rel), attnum);
+	}
+	else
+		address = InvalidObjectAddress;
+
+	InvokeObjectPostAlterHook(RelationRelationId,
+							  RelationGetRelid(rel), attnum);
+
+	heap_close(attr_rel, RowExclusiveLock);
+	heap_freetuple(tuple);
+
+	return address;
+}
+
+/*
+ * Return the address of the modified column.  If the column was already Invisible,
+ * InvalidObjectAddress is returned.
+ */
+static ObjectAddress
+ATExecSetInvisible(AlteredTableInfo *tab, Relation rel,
+				 const char *colName, LOCKMODE lockmode)
+{
+	HeapTuple	tuple;
+	AttrNumber	attnum;
+	Relation	attr_rel;
+	ObjectAddress address;
+
+	/*
+	 * lookup the attribute
+	 */
+	attr_rel = heap_open(AttributeRelationId, RowExclusiveLock);
+
+	tuple = SearchSysCacheCopyAttName(RelationGetRelid(rel), colName);
+
+	if (!HeapTupleIsValid(tuple))
+		ereport(ERROR,
+				(errcode(ERRCODE_UNDEFINED_COLUMN),
+				 errmsg("column \"%s\" of relation \"%s\" does not exist",
+						colName, RelationGetRelationName(rel))));
+
+	attnum = ((Form_pg_attribute) GETSTRUCT(tuple))->attnum;
+
+	/* Prevent them from altering a system attribute */
+	if (attnum <= 0)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("cannot alter system column \"%s\"",
+						colName)));
+
+	if (!((Form_pg_attribute) GETSTRUCT(tuple))->attisinvisible)
+	{
+		((Form_pg_attribute) GETSTRUCT(tuple))->attisinvisible = true;
+
+		CatalogTupleUpdate(attr_rel, &tuple->t_self, tuple);
+
+		ObjectAddressSubSet(address, RelationRelationId,
+							RelationGetRelid(rel), attnum);
+	}
+	else
+		address = InvalidObjectAddress;
+
+	InvokeObjectPostAlterHook(RelationRelationId,
+							  RelationGetRelid(rel), attnum);
+
+	heap_close(attr_rel, RowExclusiveLock);
+	heap_freetuple(tuple);
 
 	return address;
 }

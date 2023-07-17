@@ -162,6 +162,7 @@ DefineSequence(ParseState *pstate, CreateSeqStmt *seq)
 		ColumnDef  *coldef = makeNode(ColumnDef);
 
 		coldef->inhcount = 0;
+		coldef->is_invisible = false;
 		coldef->is_local = true;
 		coldef->is_not_null = true;
 		coldef->is_from_type = false;

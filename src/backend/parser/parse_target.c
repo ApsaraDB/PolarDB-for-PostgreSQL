@@ -997,7 +997,7 @@ checkInsertTargets(ParseState *pstate, List *cols, List **attrnos)
 
 			attr = TupleDescAttr(pstate->p_target_relation->rd_att, i);
 
-			if (attr->attisdropped)
+			if (attr->attisdropped || attr->attisinvisible)
 				continue;
 
 			col = makeNode(ResTarget);

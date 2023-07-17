@@ -36,6 +36,7 @@ test: money
 test: rangetypes
 test: pg_lsn
 test: regproc
+test: invisible
 test: strings
 test: numerology
 test: point

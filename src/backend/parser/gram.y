@@ -656,7 +656,7 @@ static bool polar_is_ignore_user_defined_tablespace(char *tablespace_name);
 	IDENTITY_P IF_P ILIKE IMMEDIATE IMMUTABLE IMPLICIT_P IMPORT_P IN_P INCLUDE
 	INCLUDING INCREMENT INDEX INDEXES INHERIT INHERITS INITIALLY INLINE_P
 	INNER_P INOUT INPUT_P INSENSITIVE INSERT INSTEAD INT_P INTEGER
-	INTERSECT INTERVAL INTO INVOKER IS ISNULL ISOLATION
+	INTERSECT INTERVAL INTO INVISIBLE INVOKER IS ISNULL ISOLATION
 
 	JOIN
 
@@ -702,7 +702,7 @@ static bool polar_is_ignore_user_defined_tablespace(char *tablespace_name);
 	UNTIL UPDATE USER USING
 
 	VACUUM VALID VALIDATE VALIDATOR VALUE_P VALUES VARCHAR VARIADIC VARYING
-	VERBOSE VERSION_P VIEW VIEWS VOLATILE
+	VERBOSE VERSION_P VIEW VIEWS VISIBLE VOLATILE
 
 	WEIGHT WHEN WHERE WHITESPACE_P WINDOW WITH WITHIN WITHOUT WORK WRAPPER WRITE
 
@@ -2185,6 +2185,22 @@ alter_table_cmd:
 					n->def = (Node *) $5;
 					$$ = (Node *)n;
 				}
+			/* ALTER TABLE <name> ALTER [COLUMN] <colname> SET INVISIBLE */
+			| ALTER opt_column ColId SET INVISIBLE
+				{
+					AlterTableCmd *n = makeNode(AlterTableCmd);
+					n->subtype = AT_SetInvisible;
+					n->name = $3;
+					$$ = (Node *)n;
+				}
+			/* ALTER TABLE <name> ALTER [COLUMN] <colname> SET VISIBLE */
+			| ALTER opt_column ColId SET VISIBLE
+				{
+					AlterTableCmd *n = makeNode(AlterTableCmd);
+					n->subtype = AT_SetVisible;
+					n->name = $3;
+					$$ = (Node *)n;
+				}
 			/* ALTER TABLE <name> ALTER [COLUMN] <colname> RESET ( column_parameter = value [, ... ] ) */
 			| ALTER opt_column ColId RESET reloptions
 				{
@@ -3429,6 +3445,7 @@ columnDef:	ColId Typename create_generic_options ColQualList
 					n->colname = $1;
 					n->typeName = $2;
 					n->inhcount = 0;
+					n->is_invisible = false;
 					n->is_local = true;
 					n->is_not_null = false;
 					n->is_from_type = false;
@@ -3450,6 +3467,7 @@ columnOptions:	ColId ColQualList
 					n->colname = $1;
 					n->typeName = NULL;
 					n->inhcount = 0;
+					n->is_invisible = false;
 					n->is_local = true;
 					n->is_not_null = false;
 					n->is_from_type = false;
@@ -3468,6 +3486,7 @@ columnOptions:	ColId ColQualList
 					n->colname = $1;
 					n->typeName = NULL;
 					n->inhcount = 0;
+					n->is_invisible = false;
 					n->is_local = true;
 					n->is_not_null = false;
 					n->is_from_type = false;
@@ -3607,6 +3626,13 @@ ColConstraintElem:
 					n->fk_del_action	= (char) ($5 & 0xFF);
 					n->skip_validation  = false;
 					n->initially_valid  = true;
+					$$ = (Node *)n;
+				}
+			| INVISIBLE
+				{
+					Constraint *n = makeNode(Constraint);
+					n->contype = CONSTR_INVISIBLE;
+					n->location = @1;
 					$$ = (Node *)n;
 				}
 		;
@@ -12624,6 +12650,7 @@ TableFuncElement:	ColId Typename opt_collate_clause
 					n->colname = $1;
 					n->typeName = $2;
 					n->inhcount = 0;
+					n->is_invisible = false;
 					n->is_local = true;
 					n->is_not_null = false;
 					n->is_from_type = false;
@@ -15820,6 +15847,7 @@ reserved_keyword:
 			| INITIALLY
 			| INTERSECT
 			| INTO
+			| INVISIBLE
 			| LATERAL_P
 			| LEADING
 			| LIMIT
@@ -15850,6 +15878,7 @@ reserved_keyword:
 			| USER
 			| USING
 			| VARIADIC
+			| VISIBLE
 			| WHEN
 			| WHERE
 			| WINDOW

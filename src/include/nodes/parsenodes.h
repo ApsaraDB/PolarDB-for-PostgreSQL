@@ -671,6 +671,7 @@ typedef struct ColumnDef
 	char	   *colname;		/* name of column */
 	TypeName   *typeName;		/* type of column */
 	int			inhcount;		/* number of times column is inherited */
+	bool        is_invisible;   /* invisible constraint */
 	bool		is_local;		/* column has local (non-inherited) def'n */
 	bool		is_not_null;	/* NOT NULL constraint specified? */
 	bool		is_from_type;	/* column definition came from table type */
@@ -1772,6 +1773,8 @@ typedef enum AlterTableType
 	AT_ColumnDefault,			/* alter column default */
 	AT_DropNotNull,				/* alter column drop not null */
 	AT_SetNotNull,				/* alter column set not null */
+	AT_SetInvisible,			/* alter column set invisible */
+	AT_SetVisible,				/* alter column set visible */
 	AT_SetStatistics,			/* alter column set statistics */
 	AT_SetOptions,				/* alter column set ( options ) */
 	AT_ResetOptions,			/* alter column reset ( options ) */
@@ -2105,6 +2108,7 @@ typedef enum ConstrType			/* types of constraints */
 	CONSTR_NOTNULL,
 	CONSTR_DEFAULT,
 	CONSTR_IDENTITY,
+	CONSTR_INVISIBLE,           /* Oracle 12c new feature*/
 	CONSTR_CHECK,
 	CONSTR_PRIMARY,
 	CONSTR_UNIQUE,
