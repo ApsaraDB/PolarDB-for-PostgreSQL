@@ -1466,7 +1466,7 @@ static struct config_bool ConfigureNamesBool[] =
 		    NULL,
 		},
 		&polar_csn_enable,
-		false,
+		true,
 		NULL, NULL, NULL
 	},
 	{
