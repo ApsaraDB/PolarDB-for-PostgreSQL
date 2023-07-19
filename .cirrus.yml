@@ -1,5 +1,6 @@
 
 task:
+  name: Compilation Tests (arm64)
   # triggered when PR to 'POLARDB_11_DEV'
   # or direct push to 'POLARDB_11_DEV' or merge to 'POLARDB_11_STABLE'
   only_if: |
@@ -21,13 +22,6 @@ task:
 
   # run on Linux-AMD64 and Linux-ARM64 in parallel
   matrix:
-    # Linux - AMD64
-    -
-      container:
-        image: polardb/polardb_pg_devel:centos7
-        cpu: 2
-        memory: 8G
-        greedy: true
     # Linux - ARM64
     -
       arm_container:
@@ -38,24 +32,17 @@ task:
 
   # Run OLTP/OLAP/DMA regression in parallel
   matrix:
-    # OLTP regression
-    -
-      name: "regression (OLTP)"
-      script:
-        - |
-          source /etc/bashrc && \
-          ./polardb_build.sh -r -e -r-external -r-contrib -r-pl --withrep --with-tde
     # OLAP regression
     -
       name: "regression (OLAP)"
       script:
         - |
           source /etc/bashrc && \
-          ./polardb_build.sh -r-px -e -r-external -r-contrib -r-pl --with-tde
+          ./polardb_build.sh --withpx --noinit
     # DMA regression
     -
       name: "regression (DMA)"
       script:
         - |
           source /etc/bashrc && \
-          ./polardb_build.sh -r -e -r-external -r-contrib -r-pl --with-tde --with-dma
+          ./polardb_build.sh --with-tde --with-dma
