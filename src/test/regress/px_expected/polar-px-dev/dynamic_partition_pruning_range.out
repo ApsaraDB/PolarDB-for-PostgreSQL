@@ -364,20 +364,23 @@ select * from t, pt where tid = ptid and t1 = 'hello' || tid;
 (30 rows)
 
 explain (costs off, timing off, summary off) select * from t, pt where t1 = pt1 and ptid = tid;
-                         QUERY PLAN                         
-------------------------------------------------------------
- Hash Join
-   Hash Cond: ((pt_p1.pt1 = t.t1) AND (pt_p1.ptid = t.tid))
-   ->  Append
-         ->  Seq Scan on pt_p1
-         ->  Seq Scan on pt_p2
-         ->  Seq Scan on pt_p3
-         ->  Seq Scan on pt_p4
-         ->  Seq Scan on pt_p5
-         ->  Seq Scan on pt_junk_data
-   ->  Hash
+                            QUERY PLAN                             
+-------------------------------------------------------------------
+ Merge Join
+   Merge Cond: (pt_p1.pt1 = t.t1)
+   Join Filter: (t.tid = pt_p1.ptid)
+   ->  Merge Append
+         Sort Key: pt_p1.pt1
+         ->  Index Scan using pt_p1_pt1_idx on pt_p1
+         ->  Index Scan using pt_p2_pt1_idx on pt_p2
+         ->  Index Scan using pt_p3_pt1_idx on pt_p3
+         ->  Index Scan using pt_p4_pt1_idx on pt_p4
+         ->  Index Scan using pt_p5_pt1_idx on pt_p5
+         ->  Index Scan using pt_junk_data_pt1_idx on pt_junk_data
+   ->  Sort
+         Sort Key: t.t1
          ->  Seq Scan on t
-(11 rows)
+(14 rows)
 
 select * from t, pt where t1 = pt1 and ptid = tid;
  dist | tid |   t1   | t2  | dist |  pt1   |  pt2  |    pt3    | ptid 
@@ -1627,20 +1630,22 @@ set polar_px_optimizer_enable_seqscan=on;
 set polar_px_optimizer_enable_hashjoin=on;
 set polar_px_optimizer_enable_nestloopjoin=off;
 explain (costs off, timing off, summary off) select * from t, pt where t1 = pt1;
-              QUERY PLAN              
---------------------------------------
- Hash Join
-   Hash Cond: (pt_p1.pt1 = t.t1)
-   ->  Append
-         ->  Seq Scan on pt_p1
-         ->  Seq Scan on pt_p2
-         ->  Seq Scan on pt_p3
-         ->  Seq Scan on pt_p4
-         ->  Seq Scan on pt_p5
-         ->  Seq Scan on pt_junk_data
-   ->  Hash
+                            QUERY PLAN                             
+-------------------------------------------------------------------
+ Merge Join
+   Merge Cond: (pt_p1.pt1 = t.t1)
+   ->  Merge Append
+         Sort Key: pt_p1.pt1
+         ->  Index Scan using pt_p1_pt1_idx on pt_p1
+         ->  Index Scan using pt_p2_pt1_idx on pt_p2
+         ->  Index Scan using pt_p3_pt1_idx on pt_p3
+         ->  Index Scan using pt_p4_pt1_idx on pt_p4
+         ->  Index Scan using pt_p5_pt1_idx on pt_p5
+         ->  Index Scan using pt_junk_data_pt1_idx on pt_junk_data
+   ->  Sort
+         Sort Key: t.t1
          ->  Seq Scan on t
-(11 rows)
+(13 rows)
 
 select * from t, pt where t1 = pt1;
  dist | tid |   t1   | t2  | dist |  pt1   |  pt2  |    pt3    | ptid 
