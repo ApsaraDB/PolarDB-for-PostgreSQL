@@ -86,6 +86,9 @@ static void transformLockingClause(ParseState *pstate, Query *qry,
 static bool test_raw_expression_coverage(Node *node, void *context);
 #endif
 
+/* POLAR: transform flashback table statement */
+static Query *transformPolarFlashbackTableStmt(ParseState *pstate,
+		PolarFlashbackTableStmt *stmt);
 
 /*
  * parse_analyze
@@ -339,6 +342,11 @@ transformStmt(ParseState *pstate, Node *parseTree)
 		case T_CallStmt:
 			result = transformCallStmt(pstate,
 									   (CallStmt *) parseTree);
+			break;
+
+		case T_PolarFlashbackTableStmt:
+			result = transformPolarFlashbackTableStmt(pstate,
+									   (PolarFlashbackTableStmt *) parseTree);
 			break;
 
 		default:
@@ -2994,3 +3002,20 @@ test_raw_expression_coverage(Node *node, void *context)
 }
 
 #endif							/* RAW_EXPRESSION_COVERAGE_TEST */
+
+/*
+ * POLAR: transform a PolarFlashbackTableStmt
+ *
+ * We need to do parse analysis on timestamp expression.
+ */
+static Query *
+transformPolarFlashbackTableStmt(ParseState *pstate, PolarFlashbackTableStmt *stmt)
+{
+	Query	   *result;
+	Node* node = transformExpr(pstate, stmt->target_timestamp, EXPR_KIND_FLASHBACK_TABLE);
+	stmt->time_expr = coerce_to_specific_type(pstate, node, TIMESTAMPTZOID, "FLASHBACK TABLE");
+	result = makeNode(Query);
+	result->commandType = CMD_UTILITY;
+	result->utilityStmt = (Node *) stmt;
+	return result;
+}

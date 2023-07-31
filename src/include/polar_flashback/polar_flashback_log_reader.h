@@ -23,10 +23,21 @@
  */
 #ifndef POLAR_FLASHBACK_LOG_READER_H
 #define POLAR_FLASHBACK_LOG_READER_H
+
 #include "polar_flashback/polar_flashback_log_mem.h"
 #include "polar_flashback/polar_flashback_log_record.h"
 
 #define REC_UNFLUSHED_ERROR_MSG "The flashback log record is not flushed, please read in next time"
+
+/* Allocate a flashback log reader which read function is polar_flog_page_read */
+#define FLOG_ALLOC_PAGE_READER(reader, buf_ctl, elevel) \
+	do{\
+		(reader) = polar_flog_reader_allocate(POLAR_FLOG_SEG_SIZE, \
+				&polar_flog_page_read, NULL, (buf_ctl)); \
+	    if ((reader) == NULL) \
+	    	ereport((elevel), (errcode(ERRCODE_OUT_OF_MEMORY), \
+	    			errmsg("Can not allocate the flashback log reader memory"))); \
+	} while(0)
 
 typedef struct flog_reader_state flog_reader_state;
 
@@ -126,4 +137,7 @@ extern int polar_flog_page_read(flog_reader_state *state,
 extern flog_reader_state *polar_flog_reader_allocate(int segment_size, page_read_callback pagereadfunc, void *private_data, flog_buf_ctl_t flog_buf_ctl);
 extern void polar_flog_reader_free(flog_reader_state *state);
 extern bool polar_is_flog_rec_ignore(polar_flog_rec_ptr *ptr, uint32 log_len, flog_reader_state *reader);
+extern flog_record * polar_decode_flog_rec_common(flog_reader_state *reader, polar_flog_rec_ptr ptr, RmgrId rm_id);
+extern bool polar_decode_origin_page_rec(flog_reader_state *reader, polar_flog_rec_ptr ptr, Page page,
+		XLogRecPtr *redo_lsn, BufferTag *tag);
 #endif

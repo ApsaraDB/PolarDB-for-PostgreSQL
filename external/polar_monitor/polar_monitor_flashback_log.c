@@ -132,8 +132,8 @@ polar_stat_flashback_log_buf(PG_FUNCTION_ARGS)
 
 	ptr = polar_get_curr_flog_ptr(flog_instance->buf_ctl, &prev_ptr);
 	initalized_upto = polar_get_flog_buf_initalized_upto(flog_instance->buf_ctl);
-	polar_flog_get_keep_wal_lsn(flog_instance->buf_ctl, &keep_wal_lsn);
-	is_ready = polar_is_flog_buf_ready(flog_instance->buf_ctl);
+	keep_wal_lsn = flog_instance->buf_ctl->redo_lsn;
+	is_ready = POLAR_IS_FLOG_BUF_READY(flog_instance->buf_ctl);
 
 	values[i++] = LSNGetDatum(ptr);
 	values[i++] = LSNGetDatum(prev_ptr);

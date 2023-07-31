@@ -105,6 +105,7 @@
 #include "commands/tablecmds.h"
 #include "common/username.h"
 #include "polar_flashback/polar_flashback_log.h"
+#include "polar_flashback/polar_flashback_table.h"
 #include "replication/polar_priority_replication.h"
 #include "storage/predicate.h"
 #include "storage/polar_fd.h"
@@ -335,6 +336,7 @@ static void polar_assign_crash_recovery_rto_delay_time(const int newval, void *e
 
 static bool polar_check_enable_lazy_checkpoint(bool *newval, void **extra, GucSource source);
 static bool polar_check_enable_full_page_writes(bool *newval, void **extra, GucSource source);
+static bool polar_check_enable_fra(bool *newval, void **extra, GucSource source);
 
 /*
  * Options for enum values defined in this module.
@@ -3676,6 +3678,17 @@ static struct config_bool ConfigureNamesBool[] =
 		NULL, NULL, NULL
 	},
 
+	{
+		{"polar_enable_fast_recovery_area", PGC_POSTMASTER, UNGROUPED,
+			gettext_noop("Enable fast recovery area for flashback"),
+			gettext_noop("Please make sure polar_enable_flashback_log=on to enable fast recovery area"),
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_enable_fast_recovery_area,
+		false,
+		polar_check_enable_fra, NULL, NULL
+	},
+
 	/* End-of-list marker */
 	{
 		{NULL, 0, 0, NULL, NULL}, NULL, false, NULL, NULL, NULL
@@ -6330,7 +6343,7 @@ static struct config_int ConfigureNamesInt[] =
 			NULL
 		},
 		&polar_flashback_point_segments,
-		20, 1, INT_MAX,
+		16, 1, INT_MAX,
 		NULL, NULL, NULL
 	},
 
@@ -6341,7 +6354,29 @@ static struct config_int ConfigureNamesInt[] =
 			GUC_UNIT_S
 		},
 		&polar_flashback_point_timeout,
-		300, 1, 86400,
+		300, 300, 86400,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_fast_recovery_area_rotation", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("Sets the maximum time to keep fast recovery area "
+					"include clog, xact snapshot and flashback point files."),
+			NULL,
+			GUC_UNIT_MIN
+		},
+		&polar_fast_recovery_area_rotation,
+		180, 0, 14400,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_workers_per_flashback_table", PGC_USERSET, UNGROUPED,
+		 gettext_noop("Set the max number of the background workers for each flashback table operation."),
+		 NULL
+		},
+		&polar_workers_per_flashback_table,
+		5, 0, 64,
 		NULL, NULL, NULL
 	},
 
@@ -15541,6 +15576,21 @@ polar_assign_max_normal_backends(double newval, void *extra)
 	MaxNormalBackends = (int)floor(newval * MaxConnections);
 }
 
+static bool
+polar_check_enable_fra(bool *newval, void **extra, GucSource source)
+{
+
+	if (IsUnderPostmaster && !(IsInParallelMode() || IsParallelWorker()) &&
+			source != PGC_S_DEFAULT && *newval && !polar_enable_flashback_log)
+	{
+		/*no cover begin*/
+		GUC_check_errdetail("Cannot enable parameter polar_enable_fast_recovery_area when \"polar_enable_flashback_log\" is false.");
+		return false;
+		/*no cover end*/
+	}
+
+	return true;
+}
 /* POLAR end */
 
 #include "guc-file.c"

@@ -364,6 +364,7 @@ typedef struct log_index_snapshot_t
 	slock_t                     lock;
 	char                        dir[NAMEDATALEN];
 	XLogRecPtr                  max_lsn;
+	XLogRecPtr                  max_parsed_lsn; /* Max end+1 parsed lsn, now just is used by flashback logindex */
 	pg_atomic_uint32            state;
 	uint32                      active_table;
 	log_idx_table_id_t          max_idx_table_id;

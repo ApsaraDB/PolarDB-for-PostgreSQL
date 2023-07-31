@@ -35,7 +35,8 @@ SUBDIRS = \
 		  test_polar_bulk_read \
 		  test_px \
 		  test_wal_pipeline \
-		  test_flashback_log
+		  test_flashback_log \
+		  test_flashback_table
 
 ifeq ($(enable_inject_faults),yes)
 SUBDIRS += test_xact_split

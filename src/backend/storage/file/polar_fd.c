@@ -954,3 +954,11 @@ assign_polar_datadir(const char *newval, void *extra)
 	if (strncmp(POLAR_VFS_PROTOCAL_LOCAL_DIO, newval, strlen(POLAR_VFS_PROTOCAL_LOCAL_DIO)) == 0)
 		polar_enable_buffer_alignment = true;
 }
+
+inline bool
+polar_file_exists(const char *path)
+{
+	struct stat st;
+
+	return (polar_stat(path, &st) == 0) && S_ISREG(st.st_mode);
+}

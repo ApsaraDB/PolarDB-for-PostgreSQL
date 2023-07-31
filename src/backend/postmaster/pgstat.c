@@ -4323,6 +4323,24 @@ pgstat_get_wait_io(WaitEventIO w)
 		case WAIT_EVENT_FLASHBACK_LOG_INSERT:
 			event_name = "PolarFlashbackLogInsert";
 			break;
+		case WAIT_EVENT_FLASHBACK_POINT_FILE_WRITE:
+			event_name = "PolarFlashbackPointFileWrite";
+			break;
+		case WAIT_EVENT_FLASHBACK_POINT_FILE_READ:
+			event_name = "PolarFlashbackPointFileRead";
+			break;
+		case WAIT_EVENT_FLASHBACK_POINT_FILE_SYNC:
+			event_name = "PolarFlashbackPointFileSync";
+			break;
+		case WAIT_EVENT_FRA_CTL_FILE_READ:
+			event_name = "PolarFraCtlFileRead";
+			break;
+		case WAIT_EVENT_FRA_CTL_FILE_WRITE:
+			event_name = "PolarFraCtlFileWrite";
+			break;
+		case WAIT_EVENT_FRA_CTL_FILE_SYNC:
+			event_name = "PolarFraCtlFileSync";
+			break;
 		/*no cover end*/
 		/* POLAR end */
 			/* no default case, so that compiler will warn */

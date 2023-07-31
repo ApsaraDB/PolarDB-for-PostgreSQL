@@ -23,6 +23,7 @@
  */
 #ifndef POLAR_FLASHBACK_LOG_RECORD_H
 #define POLAR_FLASHBACK_LOG_RECORD_H
+
 #include "access/xlogdefs.h"
 #include "access/xlogrecord.h"
 #include "polar_flashback/polar_flashback_log_internal.h"
@@ -88,7 +89,7 @@ typedef flog_long_page_header_data *polar_long_page_header;
 
 /* Make the invalid ptr to first record ptr in flashback log */
 #define VALID_FLOG_PTR(ptr) \
-	((ptr == POLAR_INVALID_FLOG_REC_PTR) ? FLOG_LONG_PHD_SIZE : ptr)
+	(((ptr) == POLAR_INVALID_FLOG_REC_PTR) ? FLOG_LONG_PHD_SIZE : (ptr))
 
 /* Check if an flog ptr value is in a plausible range */
 #define FLOG_REC_PTR_IS_VAILD(ptr) \
@@ -110,7 +111,12 @@ typedef struct XLogRecord flog_record;
 #define FLOG_REC_HEADER_SIZE    SizeOfXLogRecord
 
 /* RMGR ID */
-#define ORIGIN_PAGE_ID 0x00
+#define ORIGIN_PAGE_ID  0x00
+#define REL_FILENODE_ID 0x01
+
+#define FLOG_REC_TYPES (2)
+
+#define FLOG_RECORD_TYPES {"original_page", "relation_file_node", NULL}
 
 /* Every thing for origin page record (xl_rmid = ORIGIN_PAGE_ID in the flashback log) */
 /* xl_info */
@@ -146,8 +152,10 @@ typedef struct XLogRecordBlockCompressHeader fl_rec_img_comp_header;
 
 #define FL_REC_IMG_COMP_HEADER_SIZE SizeOfXLogRecordBlockCompressHeader
 
+#define FL_GET_REC_DATA(rec) ((char *)(rec) + FLOG_REC_HEADER_SIZE))
+
 #define FL_GET_ORIGIN_PAGE_REC_DATA(rec) \
-	((fl_origin_page_rec_data *)((char *)rec + FLOG_REC_HEADER_SIZE))
+	((fl_origin_page_rec_data *)(FL_GET_REC_DATA(rec))
 #define FL_GET_ORIGIN_PAGE_IMG_HEADER(rec) \
-	((fl_rec_img_header *)((char *)rec + FLOG_REC_HEADER_SIZE + FL_ORIGIN_PAGE_REC_INFO_SIZE))
+	((fl_rec_img_header *)((char *)(rec) + FLOG_REC_HEADER_SIZE + FL_ORIGIN_PAGE_REC_INFO_SIZE))
 #endif

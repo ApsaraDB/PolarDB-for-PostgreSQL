@@ -441,7 +441,7 @@ polar_ringbuf_free_up(polar_ringbuf_t rbuf, size_t len, polar_interrupt_callback
 				CHECK_FOR_INTERRUPTS();
 
 				if (callback != NULL)
-					callback();
+					callback(rbuf);
 
 				pg_usleep(10);
 				continue;

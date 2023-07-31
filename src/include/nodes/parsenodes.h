@@ -27,6 +27,7 @@
 #include "nodes/primnodes.h"
 #include "nodes/value.h"
 #include "partitioning/partdefs.h"
+#include "datatype/timestamp.h"
 
 /* POLAR px */
 #include "catalog/px_policy.h"
@@ -3570,5 +3571,18 @@ typedef struct DropSubscriptionStmt
 	bool		missing_ok;		/* Skip error if missing? */
 	DropBehavior behavior;		/* RESTRICT or CASCADE behavior */
 } DropSubscriptionStmt;
+
+/* ---------------------------------------------
+ *  POLAR: FLASHBACK TABLE xxx TO TIMESTAMP xxx
+ * ---------------------------------------------
+ */
+typedef struct PolarFlashbackTableStmt
+{
+	NodeTag		type;
+	RangeVar    *relation;		/* table to work on */
+	Node        *target_timestamp;    /* The flashback target timestamp expr */
+	Node        *time_expr; /* transformed target timestamp expr */
+	char	    *newname;		/* the new name */
+} PolarFlashbackTableStmt;
 
 #endif							/* PARSENODES_H */

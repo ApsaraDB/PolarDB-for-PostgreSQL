@@ -167,4 +167,6 @@ extern void polar_logindex_online_promote(logindex_snapshot_t logindex_snapshot)
 extern XLogRecPtr polar_logindex_check_valid_start_lsn(logindex_snapshot_t logindex_snapshot);
 extern int polar_trace_logindex(int trace_level);
 extern void polar_logindex_update_promoted_info(logindex_snapshot_t logindex_snapshot, XLogRecPtr last_replayed_lsn);
+extern XLogRecPtr polar_get_logindex_max_parsed_lsn(logindex_snapshot_t logindex_snapshot);
+extern void polar_set_logindex_max_parsed_lsn(logindex_snapshot_t logindex_snapshot, XLogRecPtr lsn);
 #endif

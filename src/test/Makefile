@@ -40,12 +40,6 @@ endif
 # make confusion.)
 ALWAYS_SUBDIRS = $(filter-out $(SUBDIRS),examples kerberos ldap locale thread ssl)
 
-ifeq ($(enable_inject_faults),yes)
-SUBDIRS += polar_flog_repair_partial
-else
-ALWAYS_SUBDIRS += polar_flog_repair_partial
-endif
-
 # We want to recurse to all subdirs for all standard targets, except that
 # installcheck and install should not recurse into the subdirectory "modules".
 

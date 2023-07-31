@@ -63,6 +63,7 @@
 /* POLAR end */
 
 /* POLAR */
+#include "polar_flashback/polar_fast_recovery_area.h"
 #include "utils/guc.h"
 #include "storage/polar_fd.h"
 
@@ -155,6 +156,7 @@ static void polar_slru_file_name_by_name(SlruCtl ctl, char *path, char *filename
 static void polar_slru_file_dir(SlruCtl ctl, char *path);
 static bool polar_slru_local_cache_read_page(SlruCtl ctl, int pageno, int slotno);
 static bool polar_slru_local_cache_write_page(SlruCtl ctl, int pageno, int slotno);
+static bool polar_slru_scan_dir_internal(SlruCtl ctl, SlruScanCallback callback, void *data, const char *path);
 
 #define SlruFileName(a,b,c)			polar_slru_file_name_by_seg(a,b,c)
 
@@ -1666,6 +1668,8 @@ restart:;
  *
  * NB: This does not touch the SLRU buffers themselves, callers have to ensure
  * they either can't yet contain anything, or have already been cleaned out.
+ *
+ * POLAR: Add rename action for flashback table/database.
  */
 static void
 SlruInternalDeleteSegment(SlruCtl ctl, char *filename)
@@ -1689,7 +1693,11 @@ SlruInternalDeleteSegment(SlruCtl ctl, char *filename)
 		polar_slru_file_name_by_name(ctl, path, filename);
 		ereport(LOG,
 				(errmsg("removing file \"%s\"", path)));
-		polar_unlink(path);
+
+		if (polar_slru_seg_need_mv(fra_instance, ctl))
+			polar_mv_slru_seg_to_fra(fra_instance, filename, path);
+		else
+			polar_unlink(path);
 	}
 }
 
@@ -1831,20 +1839,43 @@ SlruScanDirectory(SlruCtl ctl, SlruScanCallback callback, void *data)
 {
 	bool		retval = false;
 	SlruShared	shared = ctl->shared;
+	char		path[MAXPGPATH];
+
+	/*
+	 * POLAR: We add a local cache for slru files, so scan it first.
+	 * Scan the shared storage while the return value is false.
+	 *
+	 * NB: If you want to scan the local cache and shared storage all files,
+	 * the return value must be false.
+	 */
+	if (shared->polar_cache != NULL)
+	{
+		snprintf(path, MAXPGPATH, "%s", shared->polar_cache->dir_name);
+		retval = polar_slru_scan_dir_internal(ctl, callback, data, path);
+	}
+
+	if (!retval)
+	{
+		polar_slru_file_dir(ctl, path);
+		retval = polar_slru_scan_dir_internal(ctl, callback, data, path);
+	}
+
+	return retval;
+}
+
+/*
+ * POLAR: Slru scan directory internal function like SlruScanDirectory old version.
+ */
+static bool
+polar_slru_scan_dir_internal(SlruCtl ctl, SlruScanCallback callback, void *data, const char *path)
+{
+	bool		retval = false;
 	DIR		   *cldir;
 	struct dirent *clde;
 	int			segno;
 	int			segpage;
-	char		path[MAXPGPATH];
 
-	if (shared->polar_cache != NULL)
-		cldir = polar_allocate_dir(shared->polar_cache->dir_name);
-	else
-	{
-		polar_slru_file_dir(ctl, path);
-		cldir = polar_allocate_dir(path);
-	}
-
+	cldir = polar_allocate_dir(path);
 	while ((clde = ReadDir(cldir, path)) != NULL)
 	{
 		size_t		len;
@@ -1858,7 +1889,7 @@ SlruScanDirectory(SlruCtl ctl, SlruScanCallback callback, void *data)
 			segpage = segno * SLRU_PAGES_PER_SEGMENT;
 
 			elog(DEBUG2, "SlruScanDirectory invoking callback on %s/%s",
-				 ctl->Dir, clde->d_name);
+				 path, clde->d_name);
 			retval = callback(ctl, clde->d_name, segpage, data);
 			if (retval)
 				break;
@@ -2168,4 +2199,70 @@ polar_slru_remove_local_cache_file(SlruCtl ctl)
 	SlruShared shared = ctl->shared;
 	if (shared && shared->polar_cache)
 		polar_local_cache_move_trash(shared->polar_cache->dir_name);
+}
+
+/*
+ * POLAR: SlruScanDirectory callback.
+ *		This callback get minimal of all segments.
+ */
+bool
+polar_slru_find_min_seg(SlruCtl ctl, char *filename, int segpage, void *data)
+{
+	int	seg_no;
+	int *min_seg_no = (int *) data;
+
+	seg_no = (int) strtol(filename, NULL, 16);
+	*min_seg_no = Min(seg_no, *min_seg_no);
+	return false;				/* keep going */
+}
+
+/*
+ * POLAR: physical read fast recovery slru file.
+ *
+ * Like SlruPhysicalReadPage but we will report error when we can't find the file
+ * while SlruPhysicalReadPage just return a empty page.
+ */
+void
+polar_physical_read_fra_slru(const char *slru_dir, int page_no, char *page)
+{
+	SlruCtlData ctl;
+	int			seg_no = page_no / SLRU_PAGES_PER_SEGMENT;
+	int			rpageno = page_no % SLRU_PAGES_PER_SEGMENT;
+	int			offset = rpageno * BLCKSZ;
+	char		path[MAXPGPATH];
+	int			fd;
+
+	StrNCpy(ctl.Dir, slru_dir, sizeof(ctl.Dir));
+	SlruFileName(&ctl, path, seg_no);
+
+	fd = polar_open_transient_file(path, O_RDWR | PG_BINARY);
+
+	if (fd < 0)
+		/*no cover line*/
+		ereport(ERROR,
+				(errcode_for_file_access(),
+						errmsg("could not open file \"%s\": %m", path)));
+
+	pgstat_report_wait_start(WAIT_EVENT_SLRU_READ);
+
+	if (polar_pread(fd, page, BLCKSZ, offset) != BLCKSZ)
+	{
+		/*no cover begin*/
+		pgstat_report_wait_end();
+		ereport(ERROR,
+				(errcode_for_file_access(),
+						errmsg("could not read from file \"%s\": %m", path)));
+		/*no cover end*/
+	}
+
+	pgstat_report_wait_end();
+
+	if (CloseTransientFile(fd))
+	{
+		/*no cover begin*/
+		ereport(ERROR,
+				(errcode_for_file_access(),
+						errmsg("could not close fast recovery area slru file %s: %m", path)));
+		/*no cover end*/
+	}
 }

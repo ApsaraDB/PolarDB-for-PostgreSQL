@@ -25,6 +25,7 @@
 #include "storage/smgr.h"
 
 /* POLAR */
+#include "polar_flashback/polar_flashback.h"
 #include "utils/guc.h"
 
 static Buffer polar_relation_add_extra_blocks_and_return_last_buffer(Relation relation, BulkInsertState bistate);
@@ -674,6 +675,9 @@ polar_relation_add_extra_blocks_and_return_last_buffer(Relation relation, BulkIn
 	int         index = 0;
 	char        *bulk_buf_block = NULL;
 	BufferAccessStrategy strategy = NULL;
+	bool		need_flog;
+
+	need_flog = polar_enable_fra(fra_instance);
 
 	if (bistate != NULL)
 	{
@@ -767,6 +771,10 @@ polar_relation_add_extra_blocks_and_return_last_buffer(Relation relation, BulkIn
 				 RelationGetRelationName(relation));
 
 		PageInit(page, BufferGetPageSize(buffer), 0);
+
+		/* Insert the flashback log record for relation bulk extend */
+		if (need_flog)
+			polar_flog_rel_bulk_extend(flog_instance, buffer);
 
 		/*
 		 * We mark all the new buffers dirty, but do nothing to write them

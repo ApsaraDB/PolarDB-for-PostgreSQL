@@ -704,4 +704,6 @@
 		"polar_flashback_point_timeout",
 		"polar_has_partial_write",
 		"polar_enable_flashback_drop",
-
+		"polar_enable_fast_recovery_area",
+		"polar_fast_recovery_area_rotation",
+		"polar_workers_per_flashback_table",

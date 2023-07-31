@@ -1818,6 +1818,7 @@ transformSubLink(ParseState *pstate, SubLink *sublink)
 		case EXPR_KIND_RETURNING:
 		case EXPR_KIND_VALUES:
 		case EXPR_KIND_VALUES_SINGLE:
+		case EXPR_KIND_FLASHBACK_TABLE:
 			/* okay */
 			break;
 		case EXPR_KIND_CHECK_CONSTRAINT:
@@ -3475,6 +3476,9 @@ ParseExprKindName(ParseExprKind exprKind)
 			return "PARTITION BY";
 		case EXPR_KIND_CALL_ARGUMENT:
 			return "CALL";
+		/* POLAR: add expr for flashback table */
+		case EXPR_KIND_FLASHBACK_TABLE:
+			return "FLASHBACK TABLE";
 
 			/*
 			 * There is intentionally no default: case here, so that the

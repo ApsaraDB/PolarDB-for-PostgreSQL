@@ -91,7 +91,7 @@
 #include "commands/tablespace.h"
 #include "polar_dma/polar_dma.h"
 #include "polar_datamax/polar_datamax.h"
-#include "polar_flashback/polar_flashback_point.h"
+#include "polar_flashback/polar_flashback.h"
 #include "portability/instr_time.h"
 #include "replication/polar_cluster_info.h"
 #include "storage/polar_fd.h"
@@ -7852,8 +7852,8 @@ StartupXLOG(void)
 	pg_atomic_write_u32(&polar_shmem_csn_mvcc_var_cache->polar_oldest_active_xid, checkPoint.nextXid);
 	/* POLAR end */
 
-	/* Startup all about flashback log */
-	polar_startup_flog(&checkPoint, flog_instance);
+	/* Startup all about flashback */
+	polar_startup_flashback(&checkPoint);
 
 	/*
 	 * Initialize replication slots, before there's a chance to remove
@@ -9065,7 +9065,7 @@ StartupXLOG(void)
 		 */
 		if (!ArchiveRecoveryRequested &&
 			polar_lazy_end_of_recovery_checkpoint_enabled() &&
-			!fast_promoted && !bgwriterLaunched)
+			!fast_promoted && !bgwriterLaunched && !flog_instance)
 			polar_lazy_end_of_recovery_checkpoint = true;
 
 		/*
@@ -9380,7 +9380,7 @@ StartupXLOG(void)
 		if (enable_logindex_online_promote)
 		{
 			/* Start up the flashback log before reset background replayed lsn */
-			polar_startup_flog(&ControlFile->checkPointCopy, flog_instance);
+			polar_startup_flashback(&ControlFile->checkPointCopy);
 			/* POLAR: Wake up background process to start marking buffer dirty from replayed lsn */
 			polar_reset_bg_replayed_lsn(polar_logindex_redo_instance);
 		}
@@ -10248,6 +10248,7 @@ CreateCheckPoint(int flags)
 	polar_flog_rec_ptr flog_ptr_ckp_start = POLAR_INVALID_FLOG_REC_PTR;
 	bool		is_flashback_point = false;
 	bool		is_online_promote = false;
+	flashback_snapshot_header_t    fbpoint_snapshot = NULL;
 
 	/*
 	 * POLAR: Don't do checkpoint during online promote when background process
@@ -10312,6 +10313,20 @@ CreateCheckPoint(int flags)
 					InvalidXLogRecPtr, &flags, false);
 
 	/*
+	 * POLAR: get current flashback log ptr of the flashback point begining.
+	 *
+	 * NB: We don't need a precise value, but a little earlier value.
+	 * When we search a right flashback log in logindex, sometime we will get
+	 * two right flashback log.
+	 */
+	if (is_flashback_point)
+	{
+		flog_ptr_ckp_start = polar_get_flog_write_result(flog_instance->buf_ctl);
+		/* Get the current snapshot for flashback table */
+		fbpoint_snapshot = polar_get_flashback_snapshot_data(fra_instance, GetXLogInsertRecPtr());
+	}
+
+	/*
 	 * Use a critical section to force system panic if we have trouble.
 	 */
 	START_CRIT_SECTION();
@@ -10356,16 +10371,6 @@ CreateCheckPoint(int flags)
 	 */
 	if (polar_csn_enable)
 		oldest_active_xid = pg_atomic_read_u32(&polar_shmem_csn_mvcc_var_cache->polar_oldest_active_xid);
-
-	/*
-	 * POLAR: get current flashback log ptr of the flashback point begining.
-	 *
-	 * NB: We don't need a precise value, but a little earlier value.
-	 * When we search a right flashback log in logindex, sometime we will get
-	 * two right flashback log.
-	 */
-	if (is_flashback_point)
-		flog_ptr_ckp_start = polar_get_flog_write_result(flog_instance->buf_ctl);
 
 	/*
 	 * Get location of last important record before acquiring insert locks (as
@@ -10687,7 +10692,7 @@ CreateCheckPoint(int flags)
 	 * 2. remove the old flashback data.
 	 */
 	if (is_flashback_point)
-		polar_flog_do_fbpoint(flog_instance, flog_ptr_ckp_start, shutdown);
+		polar_do_flashback_point(flog_ptr_ckp_start, fbpoint_snapshot, shutdown);
 
 	/* POLAR: record checkpoint ptr when checkpoint finished */
 	polar_buffer_pool_ctl_set_last_checkpoint_lsn(ControlFile->checkPoint);
@@ -10863,6 +10868,12 @@ CheckPointGuts(XLogRecPtr checkPointRedo, int flags)
 	CheckPointReplicationOrigin();
 	/* We deliberately delay 2PC checkpointing as long as possible */
 	CheckPointTwoPhase(checkPointRedo);
+
+	/*
+	 * POLAR: Flashback log do checkpoint.
+	 * Now just set flog_instance->buf_ctl->redo_lsn to checkPointRedo.
+	 */
+	POLAR_CHECK_POINT_FLOG(flog_instance, checkPointRedo);
 }
 
 /*
@@ -10951,19 +10962,8 @@ CreateRestartPoint(int flags)
 	bg_replayed_lsn = polar_bg_redo_get_replayed_lsn(polar_logindex_redo_instance);
 	/* POLAR: Is it a flashback point? */
 	is_flashback_point = polar_is_flashback_point(flog_instance,
-			polar_get_replay_end_rec_ptr(&replayTLI), bg_replayed_lsn,
+			polar_get_replay_end_rec_ptr(NULL), bg_replayed_lsn,
 			&flags, true);
-
-	flashback_point_time = (pg_time_t) time(NULL);
-	/*
-	 * POLAR: get current flashback log ptr of the flashback point begining.
-	 *
-	 * NB: We don't need a precise value, but a little earlier value.
-	 * When we search a right flashback log in logindex, sometime we will get
-	 * two right flashback log.
-	 */
-	if (is_flashback_point)
-		flog_ptr_ckp_start = polar_get_flog_write_result(flog_instance->buf_ctl);
 
 	/*
 	 * Acquire CheckpointLock to ensure only one restartpoint or checkpoint
@@ -10988,19 +10988,6 @@ CreateRestartPoint(int flags)
 		lastCheckPointRecPtr = XLogCtl->lastCheckPointRecPtr;
 		lastCheckPointEndPtr = XLogCtl->lastCheckPointEndPtr;
 		lastCheckPoint = XLogCtl->lastCheckPoint;
-		SpinLockRelease(&XLogCtl->info_lck);
-	}
-
-	/*
-	 * POLAR: Set the flashback point lsn to replayEndRecPtr.
-	 *
-	 * NB: Must hold the XLogCtl->info_lck to protect XLogCtl->replayEndRecPtr
-	 * not change.
-	 */
-	if (is_flashback_point)
-	{
-		SpinLockAcquire(&XLogCtl->info_lck);
-		polar_set_fbpoint_wal_info(flog_instance->buf_ctl, XLogCtl->replayEndRecPtr, flashback_point_time, bg_replayed_lsn, true);
 		SpinLockRelease(&XLogCtl->info_lck);
 	}
 
@@ -11033,6 +11020,17 @@ CreateRestartPoint(int flags)
 		return false;
 	}
 	/* POLAR end */
+
+	flashback_point_time = (pg_time_t) time(NULL);
+	/*
+	 * POLAR: get current flashback log ptr of the flashback point begining.
+	 *
+	 * NB: We don't need a precise value, but a little earlier value.
+	 * When we search a right flashback log in logindex, sometime we will get
+	 * two right flashback log.
+	 */
+	if (is_flashback_point)
+		flog_ptr_ckp_start = polar_get_flog_write_result(flog_instance->buf_ctl);
 
 	/*
 	 * If the last checkpoint record we've replayed is already our last
@@ -11068,13 +11066,28 @@ CreateRestartPoint(int flags)
 			/*
 			 * When hot standby is shutdown in this case, do the shutdown checkpoint
 			 * things about flashback log.
+			 *
+			 * NB: Now the fast recovery area is disable for standby, so we don't
+			 * need the next xid and snapshot.
 			 */
 			if (is_flashback_point)
-				polar_flog_do_fbpoint(flog_instance, flog_ptr_ckp_start, true);
+			{
+				polar_set_fbpoint_wal_info(flog_instance->buf_ctl, polar_get_replay_end_rec_ptr(NULL), flashback_point_time, bg_replayed_lsn, true);
+				polar_do_flashback_point(flog_ptr_ckp_start, NULL, true);
+			}
 		}
 		LWLockRelease(CheckpointLock);
 		return false;
 	}
+
+	/*
+	 * POLAR: Set the flashback point lsn to replayEndRecPtr.
+	 *
+	 * NB: Must hold the XLogCtl->info_lck to protect XLogCtl->replayEndRecPtr
+	 * not change.
+	 */
+	if (is_flashback_point)
+		polar_set_fbpoint_wal_info(flog_instance->buf_ctl, polar_get_replay_end_rec_ptr(NULL), flashback_point_time, bg_replayed_lsn, true);
 
 	/*
 	 * Update the shared RedoRecPtr so that the startup process can calculate
@@ -11170,9 +11183,12 @@ CreateRestartPoint(int flags)
 	 * POLAR: Do something after the flashback point is done:
 	 * 1. Flush the flashback data.
 	 * 2. remove the old flashback data.
+	 *
+	 * NB: Now the fast recovery area is disable for standby, so we don't
+	 * need the next xid and snapshot.
 	 */
 	if (is_flashback_point)
-		polar_flog_do_fbpoint(flog_instance, flog_ptr_ckp_start, is_shutdown);
+		polar_do_flashback_point(flog_ptr_ckp_start, NULL, is_shutdown);
 
 	/* POLAR: record checkpoint ptr when checkpoint finished */
 	polar_buffer_pool_ctl_set_last_checkpoint_lsn(ControlFile->checkPoint);
@@ -15334,10 +15350,7 @@ polar_calc_min_used_lsn(bool is_contain_replication_slot)
 		min_lsn = Min(min_lsn, logindex_start_lsn);
 
 	/* Keep the wal for flashback */
-	if (polar_is_flog_enabled(flog_instance))
-		polar_flog_get_keep_wal_lsn(flog_instance->buf_ctl, &min_lsn);
-
-	return min_lsn;
+	return polar_get_flashback_keep_wal(min_lsn);
 }
 
 void
@@ -17643,24 +17656,28 @@ polar_fill_segment_file_zero(int fd, char *tmppath, int segment_size,
 	int		nbytes = 0;
 	instr_time	polar_init_start;
 	instr_time	polar_init_end;
+	int			each_size = POALR_FILL_ZERO_EACH_SIZE;
+
+	if (each_size > segment_size)
+		each_size = segment_size;
 
 	if (IsUnderPostmaster)
 		INSTR_TIME_SET_CURRENT(polar_init_start);
 
 	MemSet(data, 0, sizeof(data));
-	for (nbytes = 0; nbytes < segment_size; nbytes += POALR_FILL_ZERO_EACH_SIZE)
+	for (nbytes = 0; nbytes < segment_size; nbytes += each_size)
 	{
 		int 	rc = 0;
 
 		errno = 0;
 		pgstat_report_wait_start(init_write_event_info);
 		if (POLAR_ENABLE_PWRITE())
-			rc = (int)polar_pwrite(fd, data, POALR_FILL_ZERO_EACH_SIZE, nbytes);
+			rc = (int)polar_pwrite(fd, data, each_size, nbytes);
 		else
 			/*no cover line*/
-			rc = (int)polar_write(fd, data, POALR_FILL_ZERO_EACH_SIZE);
+			rc = (int)polar_write(fd, data, each_size);
 
-		if (rc != POALR_FILL_ZERO_EACH_SIZE)
+		if (rc != each_size)
 		{
 			/*no cover begin*/
 			int 		save_errno = errno;

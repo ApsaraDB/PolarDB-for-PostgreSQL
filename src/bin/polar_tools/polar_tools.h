@@ -18,6 +18,7 @@
 
 #include "common/fe_memutils.h"
 #include "getopt_long.h"
+#include "polar_flashback/polar_flashback_log_internal.h"
 
 /* Get a bit mask of the bits set in non-uint32 aligned addresses */
 #define UINT32_ALIGN_MASK (sizeof(uint32) - 1)
@@ -60,5 +61,9 @@ extern int datamax_meta_main(int argc, char **argv);
 extern int datamax_get_wal_main(int argc, char **argv);
 extern int flashback_log_control_dump_main(int argc, char **argv);
 extern int flashback_log_file_dump_main(int argc, char **argv);
+extern int flashback_point_file_dump_main(int argc, char **argv);
+extern int fra_control_dump_main(int argc, char **argv);
+extern int flashback_snapshot_dump_main(int argc, char **argv);
+extern void flashback_snapshot_dump(const char *dir, fbpoint_pos_t snapshot_pos);
 
 #endif

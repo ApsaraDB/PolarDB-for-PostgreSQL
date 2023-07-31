@@ -2610,7 +2610,7 @@ polar_logindex_find_first_fpi(polar_logindex_redo_ctl_t instance, XLogRecPtr sta
 		}
 		else
 			elog(WARNING, "The first WAL record of " POLAR_LOG_BUFFER_TAG_FORMAT ""
-					"from %lx to %lx is not a full page image", POLAR_LOG_BUFFER_TAG(tag),
+					" from %lx to %lx is not a full page image", POLAR_LOG_BUFFER_TAG(tag),
 					start_lsn, end_lsn);
 	}
 

@@ -90,7 +90,6 @@ typedef struct CheckPoint
 #define XLOG_CSNLOG_TRUNCATE			0xF0
 /* POLAR end */
 
-
 /*
  * System status indicator.  Note this is stored in pg_control; if you change
  * it, you must bump PG_CONTROL_VERSION

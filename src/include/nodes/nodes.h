@@ -571,7 +571,11 @@ typedef enum NodeTag
 	T_PartitionSelectorState,
 	T_AssertOpState,
 	/* POLAR px */
-	T_SplitUpdateState
+	T_SplitUpdateState,
+	/* POLAR end */
+
+	/* POLAR: Flashback table stmt */
+	T_PolarFlashbackTableStmt
 	/* POLAR end */
 } NodeTag;
 

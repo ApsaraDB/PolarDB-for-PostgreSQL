@@ -45,6 +45,9 @@
 /* POLAR px */
 #include "access/px_btbuild.h"
 
+/* POLAR: flashback table */
+#include "polar_flashback/polar_flashback_table.h"
+
 /*
  * We don't want to waste a lot of memory on an error queue which, most of
  * the time, will process only a handful of small messages.  However, it is
@@ -143,6 +146,9 @@ static const struct
 	{
 		"polar_px_bt_build_main", polar_px_bt_build_main
 	},
+	{
+		"polar_flashback_pages_woker_main", polar_flashback_pages_woker_main
+	}
 	/* POLAR End*/
 };
 

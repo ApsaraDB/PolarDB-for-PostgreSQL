@@ -24,19 +24,21 @@
 #ifndef POLAR_FLASHBACK_LOG_LIST_H
 #define POLAR_FLASHBACK_LOG_LIST_H
 
-#include "postgres.h"
-
 #include "access/xlogdefs.h"
 #include "polar_flashback/polar_flashback_log_internal.h"
 #include "polar_flashback/polar_flashback_log_mem.h"
 #include "storage/buf.h"
 
 #define POLAR_ORIGIN_PAGE_BUF_NUM_PER_ARRAY (32)
+/* The POLAR_ORIGIN_PAGE_BUF_NUM_PER_ARRAY is 32, so we can use 31 to do mod operation */
+#define POLAR_ORIGIN_PAGE_BUF_BIT_MASK (31)
 #define POLAR_ORIGIN_PAGE_BUF_ARRAY_NUM (4)
 #define POLAR_ORIGIN_PAGE_BUF_NUM (POLAR_ORIGIN_PAGE_BUF_NUM_PER_ARRAY * POLAR_ORIGIN_PAGE_BUF_ARRAY_NUM)
-#define get_origin_buf_array_id(index) (index / POLAR_ORIGIN_PAGE_BUF_NUM_PER_ARRAY)
-#define get_origin_buf_bit(ctl, index) (pg_atomic_read_u32(&ctl->origin_buf_bitmap[get_origin_buf_array_id(index)]) >> index)
-#define is_buf_in_flog_list(buf_hdr) polar_check_buf_flog_state(buf_hdr, POLAR_BUF_IN_FLOG_LIST)
+
+#define GET_ORIGIN_BUF_INDEX(index) ((index) & POLAR_ORIGIN_PAGE_BUF_BIT_MASK)
+#define GET_ORIGIN_BUF_ARRAY_ID(index) ((index) / POLAR_ORIGIN_PAGE_BUF_NUM_PER_ARRAY)
+#define GET_ORIGIN_BUF_BIT(ctl, index) (pg_atomic_read_u32(&(ctl)->origin_buf_bitmap[GET_ORIGIN_BUF_ARRAY_ID(index)]) >> (GET_ORIGIN_BUF_INDEX(index)))
+#define IS_BUF_IN_FLOG_LIST(buf_hdr) POLAR_CHECK_BUF_FLOG_STATE(buf_hdr, POLAR_BUF_IN_FLOG_LIST)
 
 typedef struct flog_list_slot
 {
@@ -94,9 +96,7 @@ extern flog_list_ctl_t polar_flog_async_list_init(const char *name);
 extern void polar_flog_get_async_list_info(flog_list_ctl_t ctl, int *head, int *tail);
 
 extern void polar_push_buf_to_flog_list(flog_list_ctl_t ctl, flog_buf_ctl_t buf_ctl, Buffer buf, bool is_candidate);
-extern void polar_insert_flog_rec_from_list_bg(flog_list_ctl_t list_ctl, flog_buf_ctl_t buf_ctl, flog_index_queue_ctl_t queue_ctl);
 
-extern void polar_insert_buf_flog_rec_sync(flog_list_ctl_t list_ctl, flog_buf_ctl_t buf_ctl, flog_index_queue_ctl_t queue_ctl, BufferDesc *buf_hdr, bool is_validate);
 extern void polar_flush_buf_flog(flog_list_ctl_t list_ctl, flog_buf_ctl_t buf_ctl, BufferDesc *buf, bool is_invalidate);
 
 extern void polar_get_flog_list_stat(flog_list_ctl_t ctl, uint64 *insert_total_num, uint64 *remove_total_num, uint64 *bg_remove_num);

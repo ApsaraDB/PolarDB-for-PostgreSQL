@@ -1,0 +1,4 @@
+comment = 'Test code for flashback table feature'
+default_version = '1.0'
+module_pathname = '$libdir/test_flashback_table'
+relocatable = true

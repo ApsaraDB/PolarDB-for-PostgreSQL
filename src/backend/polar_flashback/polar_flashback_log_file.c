@@ -20,6 +20,7 @@
 #include "access/xlog.h"
 #include "miscadmin.h"
 #include "pgstat.h"
+#include "polar_flashback/polar_flashback.h"
 #include "polar_flashback/polar_flashback_log_file.h"
 #include "port.h"
 #include "storage/fd.h"
@@ -28,25 +29,14 @@
 
 #define FLOG_TMP_FNAME "flogtmp."
 
-#define flog_dir_full_path(ctl, path) \
+#define FLOG_GET_DIR_FULL_PATH(ctl, path) \
 	polar_make_file_path_level2(path, polar_get_flog_dir(ctl))
 
-#define flog_file_full_path(ctl, path, file_name) \
+#define FLOG_GET_FILE_FULL_PATH(ctl, path, file_name) \
 	polar_make_file_path_level3(path, polar_get_flog_dir(ctl), file_name)
 
 /* GUCs */
 int polar_flashback_log_keep_segments;
-
-static bool
-is_file_exist(const char *path)
-{
-	struct stat st;
-
-	if ((polar_stat(path, &st) == 0) && S_ISREG(st.st_mode))
-		return true;
-	else
-		return false;
-}
 
 /* Get flashback log file path. */
 static void
@@ -54,7 +44,7 @@ flog_file_path_from_seg(char *path, const char *dir, uint64 seg_no, int segsz_by
 {
 	char seg_file_name[FLOG_MAX_FNAME_LEN];
 
-	get_flog_fname(seg_file_name, seg_no, segsz_bytes, FLOG_DEFAULT_TIMELINE);
+	FLOG_GET_FNAME(seg_file_name, seg_no, segsz_bytes, FLOG_DEFAULT_TIMELINE);
 	polar_make_file_path_level3(path, dir, seg_file_name);
 }
 
@@ -124,26 +114,25 @@ static void
 remove_old_flog_file(flog_buf_ctl_t ctl, const char *segname, polar_flog_rec_ptr endptr)
 {
 	char        path[MAXPGPATH];
-	struct stat statbuf;
 	uint64  endlogSegNo;
 	uint64  recycleSegNo;
 
 	/*
 	 * Initialize info about where to try to recycle to.
 	 */
-	endlogSegNo = flog_ptr_to_seg(endptr, POLAR_FLOG_SEG_SIZE);
+	endlogSegNo = FLOG_PTR_TO_SEG(endptr, POLAR_FLOG_SEG_SIZE);
 
 	/* POLAR: Just reuse polar_flashback_log_keep_segments segments */
 	recycleSegNo = endlogSegNo + polar_flashback_log_keep_segments;
 
-	flog_file_full_path(ctl, path, segname);
+	FLOG_GET_FILE_FULL_PATH(ctl, path, segname);
 
 	/*
 	 * Before deleting the file, see if it can be recycled as a future log
 	 * segment. Only recycle normal files.
 	 */
 	if (endlogSegNo <= recycleSegNo &&
-			polar_lstat(path, &statbuf) == 0 && S_ISREG(statbuf.st_mode) &&
+			polar_file_exists(path) &&
 			install_flog_seg(ctl, &endlogSegNo, path,
 							 true, recycleSegNo))
 	{
@@ -194,14 +183,14 @@ truncate_flog_files(flog_buf_ctl_t ctl, uint64 segno, polar_flog_rec_ptr endptr)
 	char        polar_path[MAXPGPATH];
 
 	Assert(!polar_in_replica_mode());
-	flog_dir_full_path(ctl, polar_path);
+	FLOG_GET_DIR_FULL_PATH(ctl, polar_path);
 
 	/*
 	 * Construct a filename of the last segment to be kept. The timeline ID
 	 * doesn't matter, we ignore that in the comparison. (During recovery,
 	 * ThisTimeLineID isn't set, so we can't use that.)
 	 */
-	get_flog_fname(lastoff, segno, POLAR_FLOG_SEG_SIZE, FLOG_DEFAULT_TIMELINE);
+	FLOG_GET_FNAME(lastoff, segno, POLAR_FLOG_SEG_SIZE, FLOG_DEFAULT_TIMELINE);
 
 	elog(LOG, "attempting to remove flashback log segments older than log file %s",
 		 lastoff);
@@ -211,7 +200,7 @@ truncate_flog_files(flog_buf_ctl_t ctl, uint64 segno, polar_flog_rec_ptr endptr)
 	while ((xlde = ReadDir(xldir, polar_path)) != NULL)
 	{
 		/* Ignore files that are not flashback log segments */
-		if (!is_flashback_log_file(xlde->d_name))
+		if (!FLOG_IS_LOG_FILE(xlde->d_name))
 			continue;
 
 		if (strcmp(xlde->d_name, lastoff) <= 0)
@@ -233,7 +222,7 @@ polar_truncate_flog_before(flog_buf_ctl_t ctl, polar_flog_rec_ptr ptr)
 	/* Get the current flashback log write result (end of flashback log in disk) */
 	recptr = polar_get_flog_write_result(ctl);
 
-	seg_no = flog_ptr_to_seg(ptr, POLAR_FLOG_SEG_SIZE);
+	seg_no = FLOG_PTR_TO_SEG(ptr, POLAR_FLOG_SEG_SIZE);
 
 	/* There is only one file, just return */
 	if (seg_no == 0)
@@ -280,14 +269,14 @@ polar_flog_read(char *buf, int segsize, polar_flog_rec_ptr startptr,
 		startoff = FLOG_SEGMENT_OFFSET(recptr, segsize);
 
 		/* Do we need to switch to a different xlog segment? */
-		if (open_file < 0 || !ptr_in_flog_seg(recptr, open_segno, segsize))
+		if (open_file < 0 || !FLOG_PTR_IN_SEG(recptr, open_segno, segsize))
 		{
 			char        path[MAXPGPATH];
 
 			if (open_file >= 0)
 				polar_close(open_file);
 
-			open_segno = flog_ptr_to_seg(recptr, segsize);
+			open_segno = FLOG_PTR_TO_SEG(recptr, segsize);
 
 			flog_file_path_from_seg(path, dir, open_segno, segsize);
 
@@ -376,7 +365,7 @@ polar_flog_pos2ptr(uint64 bytepos)
 		seg_offset += fullpages * POLAR_FLOG_BLCKSZ + bytesleft + FLOG_SHORT_PHD_SIZE;
 	}
 
-	flog_seg_offset_to_ptr(fullsegs, seg_offset, POLAR_FLOG_SEG_SIZE, result);
+	FLOG_SEG_OFFSET_TO_PTR(fullsegs, seg_offset, POLAR_FLOG_SEG_SIZE, result);
 	return result;
 }
 
@@ -421,7 +410,7 @@ polar_flog_pos2endptr(uint64 bytepos)
 			seg_offset += fullpages * POLAR_FLOG_BLCKSZ + bytesleft + FLOG_SHORT_PHD_SIZE;
 	}
 
-	flog_seg_offset_to_ptr(fullsegs, seg_offset, POLAR_FLOG_SEG_SIZE, result);
+	FLOG_SEG_OFFSET_TO_PTR(fullsegs, seg_offset, POLAR_FLOG_SEG_SIZE, result);
 	return result;
 }
 
@@ -436,7 +425,7 @@ polar_flog_ptr2pos(polar_flog_rec_ptr ptr)
 	uint32      offset;
 	uint64      result;
 
-	fullsegs = flog_ptr_to_seg(ptr, POLAR_FLOG_SEG_SIZE);
+	fullsegs = FLOG_PTR_TO_SEG(ptr, POLAR_FLOG_SEG_SIZE);
 
 	fullpages = (FLOG_SEGMENT_OFFSET(ptr, POLAR_FLOG_SEG_SIZE)) / POLAR_FLOG_BLCKSZ;
 	offset = ptr % POLAR_FLOG_BLCKSZ;
@@ -479,45 +468,40 @@ polar_read_flog_ctl_file(flog_buf_ctl_t ctl, flog_ctl_file_data_t *ctl_file_data
 {
 	char ctl_file_path[MAXPGPATH];
 	int fd;
-	int read_len;
 	pg_crc32c   crc;
-	int rc;
 
-	flog_file_full_path(ctl, ctl_file_path, FLOG_CTL_FILE);
+	FLOG_GET_FILE_FULL_PATH(ctl, ctl_file_path, FLOG_CTL_FILE);
 
 	/* The control file may be non-exist */
-	if (!is_file_exist(ctl_file_path))
+	if (!polar_file_exists(ctl_file_path))
 	{
 		elog(WARNING, "Can't find %s", ctl_file_path);
 		return false;
 	}
 
-	fd = BasicOpenFile(ctl_file_path, O_RDWR | PG_BINARY, true);
+	fd = polar_open_transient_file(ctl_file_path, O_RDONLY | PG_BINARY);
 
 	if (fd < 0)
 		/*no cover line*/
 		ereport(FATAL,
 				(errcode_for_file_access(),
-				 (errmsg("could not open file \"%s\": %m", ctl_file_path))));
+						errmsg("could not open file \"%s\": %m", ctl_file_path)));
 
-	/* Read data */
-	pgstat_report_wait_start(WAIT_EVENT_FLASHBACK_LOG_CTL_FILE_READ);
-	read_len = polar_read(fd, ctl_file_data, sizeof(flog_ctl_file_data_t));
+	pgstat_report_wait_start(WAIT_EVENT_FRA_CTL_FILE_READ);
+
+	if (polar_read(fd, ctl_file_data, sizeof(flog_ctl_file_data_t)) != sizeof(flog_ctl_file_data_t))
+		/*no cover line*/
+		ereport(FATAL,
+				(errcode_for_file_access(),
+						errmsg("could not read from file \"%s\": %m", ctl_file_path)));
+
 	pgstat_report_wait_end();
 
-	if (read_len != sizeof(flog_ctl_file_data_t))
+	if (CloseTransientFile(fd))
 		/*no cover line*/
 		ereport(FATAL,
 				(errcode_for_file_access(),
-				 (errmsg("could not read from file \"%s\": %m", ctl_file_path))));
-
-	rc = polar_close(fd);
-
-	if (rc)
-		/*no cover line*/
-		ereport(FATAL,
-				(errcode_for_file_access(),
-				 errmsg("could not close file \"%s\": %m", ctl_file_path)));
+						errmsg("could not close file \"%s\": %m", ctl_file_path)));
 
 	/* Verify CRC */
 	INIT_CRC32C(crc);
@@ -543,7 +527,6 @@ polar_write_flog_ctl_file(flog_buf_ctl_t ctl)
 {
 	flog_ctl_file_data_t flashback_log_ctl_file;
 	char            ctl_file_path[MAXPGPATH];
-	int             fd;
 
 	flashback_log_ctl_file.version_no = FLOG_CTL_FILE_VERSION;
 
@@ -559,46 +542,10 @@ polar_write_flog_ctl_file(flog_buf_ctl_t ctl)
 				offsetof(flog_ctl_file_data_t, crc));
 	FIN_CRC32C(flashback_log_ctl_file.crc);
 
-	flog_file_full_path(ctl, ctl_file_path, FLOG_CTL_FILE);
-	fd = BasicOpenFile(ctl_file_path, O_RDWR | O_CREAT | PG_BINARY, true);
+	FLOG_GET_FILE_FULL_PATH(ctl, ctl_file_path, FLOG_CTL_FILE);
 
-	if (fd < 0)
-	{
-		/*no cover line*/
-		ereport(PANIC,
-				(errcode_for_file_access(),
-				 errmsg("could not open file \"%s\": %m",
-						ctl_file_path)));
-		return;
-	}
-
-	pgstat_report_wait_start(WAIT_EVENT_FLASHBACK_LOG_CTL_FILE_WRITE);
-
-	if (polar_write(fd, &flashback_log_ctl_file, sizeof(flog_ctl_file_data_t)) != sizeof(flog_ctl_file_data_t))
-		/*no cover line*/
-		ereport(PANIC,
-				(errcode_for_file_access(),
-				 errmsg("could not write file \"%s\": %m",
-						ctl_file_path)));
-
-	pgstat_report_wait_end();
-
-	pgstat_report_wait_start(WAIT_EVENT_FLASHBACK_LOG_CTL_FILE_SYNC);
-
-	if (polar_fsync(fd) != 0)
-		/*no cover line*/
-		ereport(PANIC,
-				(errcode_for_file_access(),
-				 (errmsg("could not sync file \"%s\": %m",
-						 ctl_file_path))));
-
-	pgstat_report_wait_end();
-
-	if (polar_close(fd))
-		/*no cover line*/
-		ereport(PANIC,
-				(errcode_for_file_access(),
-				 errmsg("could not close file \"%s\": %m", ctl_file_path)));
+	polar_write_ctl_file_atomic(ctl_file_path, &flashback_log_ctl_file, sizeof(flog_ctl_file_data_t),
+			WAIT_EVENT_FLASHBACK_LOG_CTL_FILE_WRITE, WAIT_EVENT_FLASHBACK_LOG_CTL_FILE_SYNC);
 
 	if (unlikely(polar_flashback_log_debug))
 	{
@@ -678,7 +625,7 @@ polar_validate_flog_dir(flog_buf_ctl_t ctl)
 {
 	char path[MAXPGPATH];
 
-	flog_dir_full_path(ctl, path);
+	FLOG_GET_DIR_FULL_PATH(ctl, path);
 	polar_validate_dir(path);
 }
 
@@ -762,7 +709,7 @@ polar_flog_file_init(flog_buf_ctl_t ctl, uint64 logsegno, bool *use_existent)
 	elog(DEBUG2, "creating and filling new flashback log file");
 
 	snprintf(tmpfile_name, FLOG_MAX_FNAME_LEN, FLOG_TMP_FNAME "%d", (int) getpid());
-	flog_file_full_path(ctl, tmppath, tmpfile_name);
+	FLOG_GET_FILE_FULL_PATH(ctl, tmppath, tmpfile_name);
 	polar_unlink(tmppath);
 
 	fd = BasicOpenFile(tmppath, O_RDWR | O_CREAT | O_EXCL | PG_BINARY, true);
@@ -846,7 +793,7 @@ polar_prealloc_flog_files(flog_buf_ctl_t ctl, int num)
 	bool        use_existent;
 	int     count = 0;
 
-	_log_seg_no = flog_ptr_to_seg(request_ptr, POLAR_FLOG_SEG_SIZE);
+	_log_seg_no = FLOG_PTR_TO_SEG(request_ptr, POLAR_FLOG_SEG_SIZE);
 
 	while (count < num)
 	{
@@ -860,15 +807,15 @@ polar_prealloc_flog_files(flog_buf_ctl_t ctl, int num)
 
 /* POLAR: Check the flashback log of the segment no exists */
 bool
-polar_is_flog_file_exist(const char *dir, polar_flog_rec_ptr ptr, int elevel)
+polar_flog_file_exists(const char *dir, polar_flog_rec_ptr ptr, int elevel)
 {
 	char        path[MAXPGPATH];
 	uint64      segno;
 
-	segno = flog_ptr_to_seg(ptr, POLAR_FLOG_SEG_SIZE);
+	segno = FLOG_PTR_TO_SEG(ptr, POLAR_FLOG_SEG_SIZE);
 	flog_file_path_from_seg(path, dir, segno, POLAR_FLOG_SEG_SIZE);
 
-	if (is_file_exist(path))
+	if (polar_file_exists(path))
 		return true;
 
 	/*no cover begin*/
@@ -896,7 +843,7 @@ polar_flog_remove_all(flog_buf_ctl_t ctl)
 {
 	char        path[MAXPGPATH];
 
-	flog_dir_full_path(ctl, path);
+	FLOG_GET_DIR_FULL_PATH(ctl, path);
 	polar_flog_clean_dir_internal(path);
 }
 
@@ -924,20 +871,25 @@ polar_write_flog_history_file(const char *dir, TimeLineID tli, polar_flog_rec_pt
 	tmp_fd = polar_open_transient_file(tmp_path, O_RDWR | O_CREAT | O_TRUNC);
 
 	if (tmp_fd < 0)
+		/*no cover line*/
 		ereport(ERROR,
 				(errcode_for_file_access(),
 				 errmsg("could not create file \"%s\": %m", tmp_path)));
 
-	if (is_file_exist(path))
+	if (polar_file_exists(path))
 	{
-		fd = BasicOpenFile(path, O_RDONLY, true);
+		fd = polar_open_transient_file(path, O_RDONLY);
 
 		if (fd < 0)
-			/*no cover line*/
+		{
+			/*no cover begin*/
+			CloseTransientFile(tmp_fd);
 			ereport(ERROR,
 					(errcode_for_file_access(),
-					 errmsg("could not open file \"%s\": %m",
-							path)));
+					 errmsg("could not open flashback log history file \"%s\": %m",
+							 path)));
+			/*no cover end*/
+		}
 
 		for (;;)
 		{
@@ -980,7 +932,7 @@ polar_write_flog_history_file(const char *dir, TimeLineID tli, polar_flog_rec_pt
 			pgstat_report_wait_end();
 		}
 
-		polar_close(fd);
+		CloseTransientFile(fd);
 	}
 
 	snprintf(ptr_info, sizeof(ptr_info),
@@ -1000,11 +952,21 @@ polar_write_flog_history_file(const char *dir, TimeLineID tli, polar_flog_rec_pt
 
 	pgstat_report_wait_end();
 
-	if (polar_close(tmp_fd))
+	pgstat_report_wait_start(WAIT_EVENT_FLASHBACK_LOG_HISTORY_FILE_SYNC);
+
+	if (polar_fsync(tmp_fd) != 0)
+		/*no cover line*/
+		ereport(data_sync_elevel(ERROR),
+				(errcode_for_file_access(),
+				 errmsg("could not fsync file \"%s\": %m", tmp_path)));
+
+	pgstat_report_wait_end();
+
+	if (CloseTransientFile(tmp_fd))
 		/*no cover line*/
 		ereport(ERROR,
 				(errcode_for_file_access(),
-				 errmsg("could not close file \"%s\": %m", path)));
+				 errmsg("could not close file \"%s\": %m", tmp_path)));
 
 	/*
 	 * As the rename is atomic operation, if any problem occurs after this
@@ -1030,14 +992,15 @@ polar_read_flog_history_file(const char *dir)
 
 	polar_make_file_path_level3(path, dir, FLOG_HISTORY_FILE);
 
-	if (!is_file_exist(path))
+	if (!polar_file_exists(path))
 		return result;
 
-	history_file_fd = BasicOpenFile(path, O_RDWR, true);
+	history_file_fd = polar_open_transient_file(path, O_RDONLY);
 
 	if (history_file_fd < 0)
-		/*no cover line*/
-		ereport(ERROR, (errcode_for_file_access(),
+		/*no cover line */
+		ereport(FATAL,
+				(errcode_for_file_access(),
 						errmsg("could not open file \"%s\": %m", path)));
 
 	pgstat_report_wait_start(WAIT_EVENT_FLASHBACK_LOG_HISTORY_FILE_READ);
@@ -1103,6 +1066,8 @@ polar_read_flog_history_file(const char *dir)
 	}
 
 	pgstat_report_wait_end();
+
+	CloseTransientFile(history_file_fd);
 
 	return result;
 }

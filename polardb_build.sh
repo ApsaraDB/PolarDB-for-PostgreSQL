@@ -598,7 +598,8 @@ then
 
   if [[ $enable_flashback_log == "on" ]];
   then
-  echo "polar_enable_flashback_log = on" >> $pg_bld_master_dir/postgresql.conf
+  echo "polar_enable_flashback_log = on
+        polar_enable_fast_recovery_area = on" >> $pg_bld_master_dir/postgresql.conf
   fi
 
   # echo "max_wal_size = 16GB

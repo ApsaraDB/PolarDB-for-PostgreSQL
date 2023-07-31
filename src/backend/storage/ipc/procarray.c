@@ -2685,7 +2685,7 @@ ProcArrayInstallRestoredXmin(TransactionId xmin, PGPROC *proc)
  * If both field valid, we should not add it to running xids list
  */
 RunningTransactions
-GetRunningTransactionData(void)
+PolarGetRunningTransactionData(bool ignore_subxid)
 {
 	/* result workspace */
 	static RunningTransactionsData CurrentRunningXactsData;
@@ -2854,7 +2854,7 @@ GetRunningTransactionData(void)
 	 * Spin over procArray collecting all subxids, but only if there hasn't
 	 * been a suboverflow.
 	 */
-	if (!suboverflowed)
+	if (!suboverflowed && !ignore_subxid)
 	{
 		for (index = 0; index < arrayP->numProcs; index++)
 		{
@@ -5421,6 +5421,33 @@ TransactionId
 polar_get_latestObservedXid(void)
 {
 	return latestObservedXid;
+}
+
+/*
+ * POLAR: Just get the running top transactions (without sub transactions).
+ *
+ * Now it is used by flashback.
+ */
+RunningTransactions
+polar_get_running_top_trans(void)
+{
+	RunningTransactions trans;
+
+	/* Ignore the sub transactions */
+	trans = PolarGetRunningTransactionData(true);
+
+	if (polar_csn_enable)
+	{
+		LWLockRelease(ProcArrayLock);
+		LWLockRelease(XidGenLock);
+		LWLockRelease(CommitSeqNoLock);
+	}
+	else
+	{
+		LWLockRelease(ProcArrayLock);
+		LWLockRelease(XidGenLock);
+	}
+	return trans;
 }
 
 /* POLAR test end */

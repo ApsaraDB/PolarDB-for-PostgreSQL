@@ -23,8 +23,8 @@
  */
 #ifndef POLAR_FLASHBACK_LOG_WORKER_H
 #define POLAR_FLASHBACK_LOG_WORKER_H
-#include "postgres.h"
 
+#include "polar_flashback/polar_flashback_log.h"
 #define FLOG_BG_WORKER_NAME "polar flashback log bg worker"
 #define FLOG_BG_WORKER_TYPE "polar flashback log"
 
@@ -38,6 +38,11 @@
 		if (FlogBgWriterPID == 0)                       \
 			FlogBgWriterPID = StartFlogBgWriter();      \
 	} while (0)
+
+typedef bool (*flog_bg_worker_done)(flog_ctl_t ins, void *data);
+
+extern bool polar_is_flog_index_inserted(flog_ctl_t instance, void *data);
+extern void polar_wait_flog_bgworker(flog_ctl_t instance, flog_bg_worker_done is_done, void *extra_data);
 
 extern void polar_flog_bgwriter_main(void);
 extern void polar_flog_bginserter_main(void);

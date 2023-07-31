@@ -18,7 +18,6 @@
 #include "access/xlog.h"
 #include "miscadmin.h"
 #include "polar_flashback/polar_flashback_log.h"
-#include "polar_flashback/polar_flashback_log_decoder.h"
 #include "polar_flashback/polar_flashback_log_file.h"
 #include "polar_flashback/polar_flashback_log_index.h"
 #include "polar_flashback/polar_flashback_log_mem.h"
@@ -27,7 +26,7 @@
 #include "postmaster/startup.h"
 #include "storage/lwlock.h"
 
-#define flog_index_dir_full_path(path, snapshot) \
+#define FLOG_GET_INDEX_DIR_FULL_PATH(path, snapshot) \
 	polar_make_file_path_level2(path, get_flog_index_dir(snapshot))
 
 /*
@@ -59,11 +58,9 @@ polar_flog_index_add_lsn(logindex_snapshot_t snapshot, BufferTag *tag, polar_flo
 
 	if (unlikely(polar_flashback_log_debug))
 	{
-		elog(LOG, "Add flashback logindex: tag is '[%u, %u, %u], %d, %u', "
-			 "lsn is %X/%X, previous lsn is %X/%X",
-			 tag->rnode.spcNode, tag->rnode.dbNode, tag->rnode.relNode,
-			 tag->forkNum, tag->blockNum,
-			 (uint32)(ptr >> 32), (uint32)(ptr), (uint32)(prev >> 32), (uint32)(prev));
+		elog(LOG, "Add flashback logindex: tag is " POLAR_LOG_BUFFER_TAG_FORMAT " , lsn is %X/%X, "
+				"previous lsn is %X/%X", POLAR_LOG_BUFFER_TAG(tag), (uint32)(ptr >> 32),
+				(uint32)(ptr), (uint32)(prev >> 32), (uint32)(prev));
 	}
 }
 
@@ -82,26 +79,20 @@ insert_flog_index_from_file(logindex_snapshot_t snapshot, flog_reader_state *sta
 
 	if (record != NULL)
 	{
-		/* Now just insert the origin page record */
-		if (record->xl_rmid == ORIGIN_PAGE_ID)
-		{
-			fl_origin_page_rec_data *rec_data;
+		BufferTag tag;
 
-			rec_data = FL_GET_ORIGIN_PAGE_REC_DATA(record);
+		polar_get_buffer_tag_in_flog_rec(record, &tag);
 
-			if (unlikely(polar_flashback_log_debug))
-				elog(LOG, "We found the flashback log record at %X/%X from file, "
-					 "total length is %u, the tag is '[%u, %u, %u], %d, %u'",
-					 (uint32)(*ptr_expected >> 32), (uint32)(*ptr_expected), record->xl_tot_len,
-					 rec_data->tag.rnode.spcNode, rec_data->tag.rnode.dbNode, rec_data->tag.rnode.relNode,
-					 rec_data->tag.forkNum, rec_data->tag.blockNum);
-
-			/* The add lsn can ignore the first insert which is inserted already */
-			polar_flog_index_add_lsn(snapshot, &(rec_data->tag), POLAR_INVALID_FLOG_REC_PTR, state->read_rec_ptr);
-		}
+		/* The add lsn can ignore the first insert which is inserted already */
+		polar_flog_index_add_lsn(snapshot, &tag, POLAR_INVALID_FLOG_REC_PTR, state->read_rec_ptr);
 
 		*ptr_expected = convert_to_first_valid_ptr(state->end_rec_ptr);
-		return true;
+
+		if (unlikely(polar_flashback_log_debug))
+			elog(LOG, "We found the flashback log record at %X/%X from file, "
+				 "total length is %u, the tag is " POLAR_LOG_BUFFER_TAG_FORMAT,
+				 (uint32)(*ptr_expected >> 32), (uint32)(*ptr_expected), record->xl_tot_len,
+				 POLAR_LOG_BUFFER_TAG(&tag));
 	}
 	/*
 	 * Ignore the switch point invalid flashback log and skip to next ptr.
@@ -110,10 +101,7 @@ insert_flog_index_from_file(logindex_snapshot_t snapshot, flog_reader_state *sta
 	 * insert to logidnex.
 	 */
 	else if (state->in_switch_region)
-	{
 		*ptr_expected = state->end_rec_ptr;
-		return true;
-	}
 	/* Ignore the error when read the record which is over the write result. */
 	else if (strncmp(errormsg, REC_UNFLUSHED_ERROR_MSG, strlen(REC_UNFLUSHED_ERROR_MSG)) == 0)
 		return false;
@@ -122,7 +110,9 @@ insert_flog_index_from_file(logindex_snapshot_t snapshot, flog_reader_state *sta
 		elog(PANIC, "Failed to read record %X/%08X from flashback log file with error: %s",
 			 (uint32)(*ptr_expected >> 32), (uint32)*ptr_expected, errormsg);
 
-	return false;
+	/* The max end lsn is the next one */
+	polar_set_logindex_max_parsed_lsn(snapshot, *ptr_expected);
+	return true;
 }
 
 static bool
@@ -135,10 +125,17 @@ insert_flog_index_from_queue(logindex_snapshot_t snapshot, polar_ringbuf_ref_t *
 
 	if (polar_flog_read_info_from_queue(ref, *ptr_expected, &tag, &log_len, max_ptr))
 	{
+		polar_flog_rec_ptr next_ptr;
+
+		next_ptr = polar_get_next_flog_ptr(*ptr_expected, log_len);
 		polar_flog_index_add_lsn(snapshot, &tag, POLAR_INVALID_FLOG_REC_PTR, *ptr_expected);
-		*ptr_expected = polar_get_next_flog_ptr(*ptr_expected, log_len);
+		polar_set_logindex_max_parsed_lsn(snapshot, next_ptr);
+		*ptr_expected = next_ptr;
 		return true;
 	}
+	/* The last record is contrecord, set max end lsn to max_ptr */
+	else if (log_len)
+		polar_set_logindex_max_parsed_lsn(snapshot, max_ptr);
 
 	return false;
 }
@@ -187,7 +184,7 @@ polar_validate_flog_index_dir(logindex_snapshot_t snapshot)
 {
 	char path[MAXPGPATH];
 
-	flog_index_dir_full_path(path, snapshot);
+	FLOG_GET_INDEX_DIR_FULL_PATH(path, snapshot);
 	polar_validate_dir(path);
 }
 
@@ -197,7 +194,7 @@ polar_flog_index_remove_all(logindex_snapshot_t snapshot)
 {
 	char        path[MAXPGPATH];
 
-	flog_index_dir_full_path(path, snapshot);
+	FLOG_GET_INDEX_DIR_FULL_PATH(path, snapshot);
 	polar_flog_clean_dir_internal(path);
 }
 
@@ -300,15 +297,7 @@ polar_flog_index_insert(logindex_snapshot_t snapshot, flog_index_queue_ctl_t que
 	}
 
 	if (NEED_READER(source) && state == NULL)
-	{
-		state = polar_flog_reader_allocate(POLAR_FLOG_SEG_SIZE, &polar_flog_page_read, NULL, buf_ctl);
-
-		if (state == NULL)
-			/*no cover line*/
-			ereport(PANIC,
-					(errcode(ERRCODE_OUT_OF_MEMORY),
-					 errmsg("Can not allocate the flashback log reader memory")));
-	}
+		FLOG_ALLOC_PAGE_READER(state, buf_ctl, PANIC);
 
 	/* Pop the flashback log lsn_info from logindex queue or read it from log files */
 	while (insert_ptr < max_ptr && inserted)
@@ -393,12 +382,9 @@ polar_get_flog_index_meta_max_ptr(logindex_snapshot_t snapshot)
 void
 polar_recover_flog_index(logindex_snapshot_t snapshot, flog_index_queue_ctl_t queue_ctl, flog_buf_ctl_t buf_ctl)
 {
-	polar_flog_rec_ptr min_recover_lsn;
-
 	Assert(snapshot);
-	min_recover_lsn = polar_get_flog_min_recover_lsn(buf_ctl);
-	polar_flog_index_insert(snapshot, queue_ctl, buf_ctl, min_recover_lsn, LOG_FILE);
+	polar_flog_index_insert(snapshot, queue_ctl, buf_ctl, buf_ctl->min_recover_lsn, LOG_FILE);
 
 	elog(LOG, "Recover the flashback logindex to %X/%X",
-		 (uint32) (min_recover_lsn >> 32), (uint32) min_recover_lsn);
+		 (uint32) (buf_ctl->min_recover_lsn >> 32), (uint32) buf_ctl->min_recover_lsn);
 }

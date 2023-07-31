@@ -12,16 +12,15 @@
  *
  *-------------------------------------------------------------------------
  */
-
 #include "postgres.h"
 
+#include "access/polar_log.h"
 #include "access/polar_logindex_redo.h"
 #include "access/xlog.h"
 #include "access/xlog_internal.h"
 #include "miscadmin.h"
 #include "pgstat.h"
-#include "polar_flashback/polar_flashback_log_insert.h"
-#include "polar_flashback/polar_flashback_log_list.h"
+#include "polar_flashback/polar_flashback_log.h"
 #include "polar_flashback/polar_flashback_point.h"
 #include "port/atomics.h"
 #include "postmaster/startup.h"
@@ -39,14 +38,14 @@ int polar_flashback_log_sync_buf_timeout;
 void
 polar_clean_origin_buf_bit(flog_list_ctl_t ctl, int buf_id, int8 origin_buf_index)
 {
-	int array_id = get_origin_buf_array_id(origin_buf_index);
+	int array_id = GET_ORIGIN_BUF_ARRAY_ID(origin_buf_index);
+	int8 bit_index = GET_ORIGIN_BUF_INDEX(origin_buf_index);
 
 	/* Clean the buffer and release */
 	MemSet(ctl->origin_buf + origin_buf_index * BLCKSZ, 0, BLCKSZ);
 	CLEAR_BUFFERTAG(ctl->buf_tag[origin_buf_index]);
-	Assert(((get_origin_buf_bit(ctl, origin_buf_index)) & 1) == 1);
-	pg_atomic_fetch_and_u32(&ctl->origin_buf_bitmap[array_id], ~((uint32) 1 << origin_buf_index));
-	Assert(((get_origin_buf_bit(ctl, origin_buf_index)) & 1) == 0);
+	Assert(((GET_ORIGIN_BUF_BIT(ctl, origin_buf_index)) & 1) == 1);
+	pg_atomic_fetch_and_u32(&ctl->origin_buf_bitmap[array_id], ~((uint32) 1 << bit_index));
 
 	Assert(ctl->flashback_list[buf_id].origin_buf_index != INVAILD_ORIGIN_BUF_INDEX);
 	ctl->flashback_list[buf_id].origin_buf_index = INVAILD_ORIGIN_BUF_INDEX;
@@ -67,7 +66,7 @@ add_buf_to_list(int buf_id, uint8 info, flog_list_ctl_t list_ctl, flog_buf_ctl_t
 	Assert(buf_id < NBuffers && buf_id >= 0);
 	Assert(list_ctl->flashback_list[buf_id].info == FLOG_LIST_SLOT_EMPTY);
 
-	lsn = polar_get_prior_fbpoint_lsn(buf_ctl);
+	lsn = buf_ctl->redo_lsn;
 	Assert(!XLogRecPtrIsInvalid(lsn));
 	list_ctl->flashback_list[buf_id].redo_lsn = lsn;
 	list_ctl->flashback_list[buf_id].fbpoint_lsn = polar_get_local_fbpoint_lsn(buf_ctl, InvalidXLogRecPtr, InvalidXLogRecPtr);
@@ -103,13 +102,8 @@ add_buf_to_list(int buf_id, uint8 info, flog_list_ctl_t list_ctl, flog_buf_ctl_t
 	{
 		BufferDesc *buf_hdr = GetBufferDescriptor(buf_id);
 
-		elog(LOG, "Insert the page [%u, %u, %u], %u, %u in buffer %d into flashback log async list, "
-			 "its prev is %d, its redo lsn is %ld",
-			 buf_hdr->tag.rnode.spcNode,
-			 buf_hdr->tag.rnode.dbNode,
-			 buf_hdr->tag.rnode.relNode,
-			 buf_hdr->tag.forkNum,
-			 buf_hdr->tag.blockNum,
+		elog(LOG, "Insert the page " POLAR_LOG_BUFFER_TAG_FORMAT " in buffer %d into flashback log async list, "
+			 "its prev is %d, its redo lsn is %ld", POLAR_LOG_BUFFER_TAG(&(buf_hdr->tag)),
 			 buf_id, prev, lsn);
 	}
 }
@@ -147,11 +141,10 @@ remove_buf_from_list(int buf_id, flog_list_ctl_t ctl)
 
 	SpinLockRelease(&ctl->info_lck);
 
+	/* Read the prev_buf and next buf first and set */
+	pg_read_barrier();
 	ctl->flashback_list[buf_id].prev_buf = NOT_IN_FLOG_LIST;
 	ctl->flashback_list[buf_id].next_buf = NOT_IN_FLOG_LIST;
-
-	/* Make sure the insert of the slot becomes visible to others. */
-	pg_write_barrier();
 	pg_atomic_fetch_add_u64(&ctl->remove_total_num, 1);
 
 	if (unlikely(polar_flashback_log_debug))
@@ -237,7 +230,7 @@ polar_wait_buf_flog_rec_insert(BufferDesc *buf_hdr)
 																			   GetCurrentTimestamp(), polar_flashback_log_sync_buf_timeout))
 			return false;
 	}
-	while (is_buf_in_flog_list(buf_hdr));
+	while (IS_BUF_IN_FLOG_LIST(buf_hdr));
 
 	return true;
 }
@@ -278,12 +271,8 @@ read_origin_page_from_file(BufferTag *tag, char *origin_page)
 	{
 		if (unlikely(polar_flashback_log_debug))
 		{
-			elog(LOG, "The origin page of [%u, %u, %u], %u, %u is a empty page",
-					rnode.spcNode,
-					rnode.dbNode,
-					rnode.relNode,
-					fork_num,
-					blkno);
+			elog(LOG, "The origin page of " POLAR_LOG_BUFFER_TAG_FORMAT " is a empty page",
+					POLAR_LOG_BUFFER_TAG(tag));
 		}
 
 		return;
@@ -296,12 +285,8 @@ read_origin_page_from_file(BufferTag *tag, char *origin_page)
 	 * record.
 	 */
 	if (unlikely(polar_flashback_log_debug))
-		elog(LOG, "Read the origin page [%u, %u, %u], %u, %u from file",
-			 rnode.spcNode,
-			 rnode.dbNode,
-			 rnode.relNode,
-			 fork_num,
-			 blkno);
+		elog(LOG, "Read the origin page " POLAR_LOG_BUFFER_TAG_FORMAT " from file",
+				POLAR_LOG_BUFFER_TAG(tag));
 }
 
 /*
@@ -313,14 +298,12 @@ read_origin_page_from_file(BufferTag *tag, char *origin_page)
  * The background worker will insert the flashback log record of async list
  * head buffer, but the buffer can be removed by backend in very small cases.
  * And in very small cases, the normal backend check the buffer is
- * in the list by is_buf_in_flog_list, but it may remove by the background.
+ * in the list by IS_BUF_IN_FLOG_LIST, but it may remove by the background.
  *
  * The background worker will report the error when the result is false.
  */
-static bool
-insert_buf_flog_rec_from_list(flog_list_ctl_t list_ctl, flog_buf_ctl_t buf_ctl,
-							  flog_index_queue_ctl_t queue_ctl, BufferDesc *buf_hdr,
-							  bool is_background, bool is_validate)
+bool
+polar_process_buf_flog_list(flog_ctl_t instance, BufferDesc *buf_hdr, bool is_background, bool invalidate)
 {
 	XLogRecPtr redo_lsn;
 	XLogRecPtr fbpoint_lsn;
@@ -331,6 +314,7 @@ insert_buf_flog_rec_from_list(flog_list_ctl_t list_ctl, flog_buf_ctl_t buf_ctl,
 	bool result = false;
 	int8 origin_buf_index;
 	PGAlignedBlock  origin_page;
+	flog_list_ctl_t list_ctl = instance->list_ctl;
 
 	buf_id = buf_hdr->buf_id;
 	/* Wait the buffer inserting flashback log finished */
@@ -348,8 +332,8 @@ insert_buf_flog_rec_from_list(flog_list_ctl_t list_ctl, flog_buf_ctl_t buf_ctl,
 		/* Remove the buffer to let others go */
 		remove_buf_from_list(buf_id, list_ctl);
 
-		/* When the buffer is validate, just clean everything */
-		if (!is_validate)
+		/* When invalidate the buffer, just clean everything */
+		if (!invalidate)
 		{
 			bool from_origin_buf = false;
 
@@ -364,7 +348,7 @@ insert_buf_flog_rec_from_list(flog_list_ctl_t list_ctl, flog_buf_ctl_t buf_ctl,
 				read_origin_page_from_file(&buf_hdr->tag, origin_page.data);
 
 			/* Insert the flashback log for the buffer */
-			ptr = polar_insert_buf_flog_rec(buf_ctl, queue_ctl, &buf_hdr->tag, redo_lsn,
+			ptr = polar_insert_buf_flog_rec(instance, &buf_hdr->tag, redo_lsn,
 					fbpoint_lsn, info, origin_page.data, from_origin_buf);
 			list_ctl->flashback_list[buf_id].flashback_ptr = ptr;
 		}
@@ -380,34 +364,24 @@ insert_buf_flog_rec_from_list(flog_list_ctl_t list_ctl, flog_buf_ctl_t buf_ctl,
 
 		if (unlikely(polar_flashback_log_debug))
 			elog(LOG, "Insert flashback log record from async list: "
-				 "page [%u, %u, %u], %u, %u buffer(%d) by %s.",
-				 buf_hdr->tag.rnode.spcNode,
-				 buf_hdr->tag.rnode.dbNode,
-				 buf_hdr->tag.rnode.relNode,
-				 buf_hdr->tag.forkNum,
-				 buf_hdr->tag.blockNum, buf_id, is_background ? "background worker" : "backend");
+				 "page " POLAR_LOG_BUFFER_TAG_FORMAT " buffer(%d) by %s.",
+				 POLAR_LOG_BUFFER_TAG(&(buf_hdr->tag)), buf_id,
+				 is_background ? "background worker" : "backend");
 
 		result = true;
 	}
 	else if (inserting_already)
 	{
 		if (unlikely(polar_flashback_log_debug))
-			elog(LOG, "Wait to insert the page [%u, %u, %u], %u, %u flashback log record "
-				 "by %s.",
-				 buf_hdr->tag.rnode.spcNode,
-				 buf_hdr->tag.rnode.dbNode,
-				 buf_hdr->tag.rnode.relNode,
-				 buf_hdr->tag.forkNum,
-				 buf_hdr->tag.blockNum, is_background ? "backend" : "background worker");
+			elog(LOG, "Wait to insert the page " POLAR_LOG_BUFFER_TAG_FORMAT " flashback log record "
+				 "by %s.", POLAR_LOG_BUFFER_TAG(&(buf_hdr->tag)),
+				 is_background ? "backend" : "background worker");
 
 		/* The background worker just return */
 		if (!is_background && !polar_wait_buf_flog_rec_insert(buf_hdr))
 			elog(ERROR, "Cancel the process due to wait the flashback log of the page "
 				 "([%u, %u, %u]), %u, %u inserting timeout. Please enlarge the "
-				 "guc polar_flashback_log_sync_buf_timeout",
-				 buf_hdr->tag.rnode.spcNode, buf_hdr->tag.rnode.dbNode,
-				 buf_hdr->tag.rnode.relNode, buf_hdr->tag.forkNum,
-				 buf_hdr->tag.blockNum);
+				 "guc polar_flashback_log_sync_buf_timeout", POLAR_LOG_BUFFER_TAG(&(buf_hdr->tag)));
 
 		result = true;
 	}
@@ -484,7 +458,7 @@ polar_push_buf_to_flog_list(flog_list_ctl_t ctl, flog_buf_ctl_t buf_ctl, Buffer 
 		 * We are here means that the replay of the buffer has been done,
 		 * clean the POLAR_BUF_FLOG_DISABLE state and go on.
 		 */
-		if (polar_check_buf_flog_state(buf_hdr, POLAR_BUF_FLOG_DISABLE))
+		if (POLAR_CHECK_BUF_FLOG_STATE(buf_hdr, POLAR_BUF_FLOG_DISABLE))
 			clean_buf_flog_state(buf_hdr, POLAR_BUF_FLOG_DISABLE);
 
 		info = FLOG_LIST_SLOT_READY;
@@ -497,31 +471,23 @@ polar_push_buf_to_flog_list(flog_list_ctl_t ctl, flog_buf_ctl_t buf_ctl, Buffer 
 		add_buf_to_list(buf_id, info, ctl, buf_ctl);
 	}
 	else if (unlikely(polar_flashback_log_debug))
-		elog(LOG, "The page [%u, %u, %u], %u, %u buffer %d "
-			 "is in flashback log list already.",
-			 buf_hdr->tag.rnode.spcNode,
-			 buf_hdr->tag.rnode.dbNode,
-			 buf_hdr->tag.rnode.relNode,
-			 buf_hdr->tag.forkNum,
-			 buf_hdr->tag.blockNum,
-			 buf_id);
+		elog(LOG, "The page " POLAR_LOG_BUFFER_TAG_FORMAT " buffer %d "
+			 "is in flashback log list already.", POLAR_LOG_BUFFER_TAG(&(buf_hdr->tag)), buf_id);
 }
 
 /*
  * Insert a flashback log record from list head.
  *
- * NB: Just one process to insert record from one flashback ring.
- * Maybe the flashback ring can be many.
+ * NB: Just one process to insert record from list.
  */
 void
-polar_insert_flog_rec_from_list_bg(flog_list_ctl_t list_ctl, flog_buf_ctl_t buf_ctl,
-								   flog_index_queue_ctl_t queue_ctl)
+polar_process_flog_list_bg(flog_ctl_t instance)
 {
 	BufferDesc *buf_hdr;
 	int buf;
 
 	/* Get the head with spin lock */
-	buf = get_flog_list_head_with_lock(list_ctl);
+	buf = get_flog_list_head_with_lock(instance->list_ctl);
 	Assert(buf < NBuffers);
 
 	if (buf == NOT_IN_FLOG_LIST)
@@ -535,30 +501,14 @@ polar_insert_flog_rec_from_list_bg(flog_list_ctl_t list_ctl, flog_buf_ctl_t buf_
 	 * If it is failed, we check whether someone else has inserted it.
 	 * If not, just report a PANIC.
 	 */
-	if (!insert_buf_flog_rec_from_list(list_ctl, buf_ctl, queue_ctl,
-			buf_hdr, true, false) && buf == get_flog_list_head_with_lock(list_ctl))
+	if (!polar_process_buf_flog_list(instance, buf_hdr, true, false) &&
+			buf == get_flog_list_head_with_lock(instance->list_ctl))
 	{
 		/* Check someone remove it or a memory PANIC */
-		elog(PANIC, "The page [%u, %u, %u], %u, %u buffer(%d) is list head but not in list",
-			 buf_hdr->tag.rnode.spcNode,
-			 buf_hdr->tag.rnode.dbNode,
-			 buf_hdr->tag.rnode.relNode,
-			 buf_hdr->tag.forkNum,
-			 buf_hdr->tag.blockNum, buf);
+		elog(PANIC, "The page " POLAR_LOG_BUFFER_TAG_FORMAT " buffer(%d) is list head but not in list",
+				POLAR_LOG_BUFFER_TAG(&(buf_hdr->tag)), buf);
 	}
 	/*no cover end*/
-}
-
-/*
- * POLAR: Insert the flashback log record of the buffer by myself or
- * wait the background to insert it.
- */
-void
-polar_insert_buf_flog_rec_sync(flog_list_ctl_t list_ctl, flog_buf_ctl_t buf_ctl,
-		flog_index_queue_ctl_t queue_ctl, BufferDesc *buf_hdr, bool is_validate)
-{
-	if (is_buf_in_flog_list(buf_hdr))
-		insert_buf_flog_rec_from_list(list_ctl, buf_ctl, queue_ctl, buf_hdr, false, is_validate);
 }
 
 Size
@@ -705,7 +655,7 @@ polar_add_origin_buf(flog_list_ctl_t ctl, BufferDesc *buf_desc)
 		/*
 		 * In some cases, like the buffer not flushed, keep the old one.
 		 */
-		if (is_buf_in_flog_list(buf_desc))
+		if (IS_BUF_IN_FLOG_LIST(buf_desc))
 			/*no cover line*/
 			return INVAILD_ORIGIN_BUF_INDEX;
 
@@ -715,12 +665,8 @@ polar_add_origin_buf(flog_list_ctl_t ctl, BufferDesc *buf_desc)
 		ctl->flashback_list[buf_desc->buf_id].origin_buf_index = buf_index;
 
 		if (unlikely(polar_flashback_log_debug))
-		{
-			elog(LOG, "Add page [%u, %u, %u], %u, %u buffer(%d) in the origin buffer %d",
-					buf_desc->tag.rnode.spcNode, buf_desc->tag.rnode.dbNode,
-					buf_desc->tag.rnode.relNode, buf_desc->tag.forkNum,
-					buf_desc->tag.blockNum, buf_desc->buf_id, buf_index);
-		}
+			elog(LOG, "Add page " POLAR_LOG_BUFFER_TAG_FORMAT " buffer(%d) in the origin buffer %d",
+					POLAR_LOG_BUFFER_TAG(&(buf_desc->tag)), buf_desc->buf_id, buf_index);
 	}
 
 	return buf_index;
