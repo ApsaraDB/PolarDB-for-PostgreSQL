@@ -55,7 +55,6 @@
 /* POLAR */
 #include "access/polar_logindex_redo.h"
 #include "polar_flashback/polar_flashback_log.h"
-#include "polar_flashback/polar_flashback_log_repair_page.h"
 #include "replication/walreceiver.h"
 #include "storage/checksum.h"
 #include "storage/polar_fd.h"

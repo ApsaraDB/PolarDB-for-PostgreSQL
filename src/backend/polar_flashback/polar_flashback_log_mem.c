@@ -47,7 +47,7 @@ static LWLock *flog_write_lock = NULL;
 
 /* Macro to advance to next buffer index. */
 #define FLOG_NEXT_BUF_IDX(idx, ctl)     \
-	(((idx) == ctl->cache_blck) ? 0 : ((idx) + 1))
+	(((idx) == (ctl)->cache_blck) ? 0 : ((idx) + 1))
 
 #define INSERT_FREESPACE(endptr)    \
 	(((endptr) % POLAR_FLOG_BLCKSZ == 0) ? 0 : (POLAR_FLOG_BLCKSZ - (endptr) % POLAR_FLOG_BLCKSZ))
@@ -328,7 +328,7 @@ flog_file_close(void)
 	{
 		char name[FLOG_MAX_FNAME_LEN];
 		/*no cover begin*/
-		get_flog_fname(name, open_log_segno, POLAR_FLOG_SEG_SIZE, FLOG_DEFAULT_TIMELINE);
+		FLOG_GET_FNAME(name, open_log_segno, POLAR_FLOG_SEG_SIZE, FLOG_DEFAULT_TIMELINE);
 		ereport(PANIC,
 				(errcode_for_file_access(),
 				 errmsg("could not close log file %s: %m", name)));
@@ -425,7 +425,7 @@ flog_write(flog_buf_ctl_t ctl, polar_flog_rec_ptr write_request, bool flexible)
 		write_result = EndPtr;
 		is_partial_page = write_request < write_result;
 
-		if (!ptr_prev_in_flog_seg(write_result, open_log_segno,
+		if (!FLOG_PTR_PREV_IN_SEG(write_result, open_log_segno,
 								  POLAR_FLOG_SEG_SIZE))
 		{
 			/*
@@ -437,7 +437,7 @@ flog_write(flog_buf_ctl_t ctl, polar_flog_rec_ptr write_request, bool flexible)
 			if (open_log_file >= 0)
 				flog_file_close();
 
-			open_log_segno = flog_ptr_prev_to_seg(write_result,
+			open_log_segno = FLOG_PTR_PREV_TO_SEG(write_result,
 												  POLAR_FLOG_SEG_SIZE);
 
 			/* create/use new log file */
@@ -453,7 +453,7 @@ flog_write(flog_buf_ctl_t ctl, polar_flog_rec_ptr write_request, bool flexible)
 		/* Make sure we have the current logfile open */
 		if (open_log_file < 0)
 		{
-			open_log_segno = flog_ptr_prev_to_seg(write_result,
+			open_log_segno = FLOG_PTR_PREV_TO_SEG(write_result,
 												  POLAR_FLOG_SEG_SIZE);
 			/* create/use new log file */
 			use_existent = true;
@@ -517,7 +517,7 @@ flog_write(flog_buf_ctl_t ctl, polar_flog_rec_ptr write_request, bool flexible)
 					if (errno == EINTR)
 						continue;
 
-					get_flog_fname(name, open_log_segno, POLAR_FLOG_SEG_SIZE, FLOG_DEFAULT_TIMELINE);
+					FLOG_GET_FNAME(name, open_log_segno, POLAR_FLOG_SEG_SIZE, FLOG_DEFAULT_TIMELINE);
 					ereport(PANIC,
 							(errcode_for_file_access(),
 							 errmsg("could not write to flashback log file %s "
@@ -552,7 +552,7 @@ flog_write(flog_buf_ctl_t ctl, polar_flog_rec_ptr write_request, bool flexible)
 					/*no cover begin*/
 					int         save_errno = errno;
 					char name[FLOG_MAX_FNAME_LEN];
-					get_flog_fname(name, open_log_segno, POLAR_FLOG_SEG_SIZE, FLOG_DEFAULT_TIMELINE);
+					FLOG_GET_FNAME(name, open_log_segno, POLAR_FLOG_SEG_SIZE, FLOG_DEFAULT_TIMELINE);
 					polar_close(open_log_file);
 					errno = save_errno;
 					ereport(PANIC,
@@ -1219,36 +1219,11 @@ polar_startup_flog_buf(flog_buf_ctl_t ctl, CheckPoint *checkpoint)
 		polar_set_fbpoint_wal_info(ctl, checkpoint->redo, checkpoint->time, InvalidXLogRecPtr, false);
 		ctl->fbpoint_info.wal_info = ctl->wal_info;
 		/* There no flashback, so just set buffer ready */
-		polar_set_flog_buf_state(ctl, FLOG_BUF_READY);
+		ctl->buf_state = FLOG_BUF_READY;
 	}
-}
 
-flog_buf_state
-polar_get_flog_buf_state(flog_buf_ctl_t ctl)
-{
-	pg_read_barrier();
-	return ctl->buf_state;
-}
-
-void
-polar_set_flog_buf_state(flog_buf_ctl_t ctl, flog_buf_state buf_state)
-{
-	ctl->buf_state = buf_state;
-	pg_write_barrier();
-}
-
-polar_flog_rec_ptr
-polar_get_flog_min_recover_lsn(flog_buf_ctl_t ctl)
-{
-	pg_read_barrier();
-	return ctl->min_recover_lsn;
-}
-
-void
-polar_set_flog_min_recover_lsn(flog_buf_ctl_t ctl, polar_flog_rec_ptr ptr)
-{
-	ctl->min_recover_lsn = ptr;
-	pg_write_barrier();
+	/* Set flashback log redo lsn to checkpoint redo lsn */
+	ctl->redo_lsn = checkpoint->redo;
 }
 
 /* POLAR: Track and log flashback log service state. */
@@ -1313,7 +1288,7 @@ polar_flog_rec_insert(flog_buf_ctl_t buf_ctl, flog_index_queue_ctl_t queue_ctl, 
 	pgstat_report_wait_start(WAIT_EVENT_FLASHBACK_LOG_BUF_READY);
 
 	/* Check the flashback log shared buffer ready */
-	if (!polar_is_flog_buf_ready(buf_ctl))
+	if (!POLAR_IS_FLOG_BUF_READY(buf_ctl))
 		/*no cover line*/
 		elog(PANIC, "The flashback log buffer must be ready before insert flashback log record.");
 
@@ -1527,7 +1502,7 @@ polar_flog_flush_bg(flog_buf_ctl_t ctl)
 	{
 		if (open_log_file >= 0)
 		{
-			if (!ptr_prev_in_flog_seg(write_result, open_log_segno,
+			if (!FLOG_PTR_PREV_IN_SEG(write_result, open_log_segno,
 									  POLAR_FLOG_SEG_SIZE))
 				flog_file_close();
 		}
@@ -1591,21 +1566,6 @@ polar_flog_flush(flog_buf_ctl_t ctl, polar_flog_rec_ptr end_ptr)
 		flog_write(ctl, end_ptr, false);
 		LWLockRelease(flog_write_lock);
 	}
-}
-
-void
-polar_flog_get_keep_wal_lsn(flog_buf_ctl_t ctl, XLogRecPtr *keep)
-{
-	XLogRecPtr fl_keep_wal_lsn;
-
-	fl_keep_wal_lsn = ctl->keep_wal_lsn;
-
-	if (fl_keep_wal_lsn == InvalidXLogRecPtr)
-		return;
-	else if (*keep != InvalidXLogRecPtr)
-		*keep = Min(*keep, fl_keep_wal_lsn);
-	else
-		*keep = fl_keep_wal_lsn;
 }
 
 char *

@@ -2360,3 +2360,22 @@ polar_logindex_update_promoted_info(logindex_snapshot_t logindex_snapshot, XLogR
 	info->old_rw_max_inserted_lsn = last_replayed_lsn;
 	info->old_rw_max_tid = logindex_snapshot->max_idx_table_id;
 }
+
+XLogRecPtr
+polar_get_logindex_max_parsed_lsn(logindex_snapshot_t logindex_snapshot)
+{
+	XLogRecPtr  max_parsed_lsn = InvalidXLogRecPtr;
+
+	SpinLockAcquire(LOG_INDEX_SNAPSHOT_LOCK);
+	max_parsed_lsn = logindex_snapshot->max_parsed_lsn;
+	SpinLockRelease(LOG_INDEX_SNAPSHOT_LOCK);
+	return max_parsed_lsn;
+}
+
+void
+polar_set_logindex_max_parsed_lsn(logindex_snapshot_t logindex_snapshot, XLogRecPtr lsn)
+{
+	SpinLockAcquire(LOG_INDEX_SNAPSHOT_LOCK);
+	logindex_snapshot->max_parsed_lsn = lsn;
+	SpinLockRelease(LOG_INDEX_SNAPSHOT_LOCK);
+}

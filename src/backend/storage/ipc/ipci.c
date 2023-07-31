@@ -57,7 +57,7 @@
 #include "common/file_perm.h"
 #include "executor/nodeShareInputScan.h"
 #include "polar_datamax/polar_datamax.h"
-#include "polar_flashback/polar_flashback_log.h"
+#include "polar_flashback/polar_flashback.h"
 #include "postmaster/polar_parallel_bgwriter.h"
 #include "replication/polar_cluster_info.h"
 #include "storage/polar_shmem.h"
@@ -218,7 +218,7 @@ CreateSharedMemoryAndSemaphores(int port)
 		/* POLAR end */
 
 		/* POLAR: add shared memory size for flashback log */
-		size = add_size(size, polar_flog_shmem_size());
+		size = add_size(size, polar_flashback_shmem_size());
 		/* POLAR end */
 
 		/* POLAR: add shared memory size for flashback log */
@@ -356,7 +356,7 @@ CreateSharedMemoryAndSemaphores(int port)
 	/* POLAR end */
 
 	/* POLAR: init shared memory for flashback log */
-	polar_flog_shmem_init();
+	polar_flashback_shmem_init();
 	/* POLAR end */
 
 	/* POLAR: init cluster info share memory struct */

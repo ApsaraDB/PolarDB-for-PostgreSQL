@@ -22,6 +22,8 @@
  */
 #include <time.h>
 
+#include "postgres.h"
+
 #include "polar_tools.h"
 #include "polar_flashback/polar_flashback_log_file.h"
 
@@ -37,7 +39,7 @@ static void
 usage(void)
 {
 	printf("Dump flashback log control file usage:\n");
-	printf("-f, --file_path  Specify dma log file path\n");
+	printf("-f, --file_path  Specify flashback log control file path\n");
 	printf("-?, --help show this help, then exit\n");
 }
 
@@ -107,7 +109,7 @@ flashback_log_control_dump_main(int argc, char **argv)
 	printf(_("The flashback log record write result point in the last flashback point end: %X/%X\n"),
 		   (uint32)(flashback_log_ctl_file.fbpoint_info.flog_end_ptr >> 32),
 		   (uint32) flashback_log_ctl_file.fbpoint_info.flog_end_ptr);
-	printf(_("The previous flashback log record start point in the last flashback point end: %X/%X\n"),
+	printf(_("The last flashback log record start point before shutdown: %X/%X\n"),
 		   (uint32)(flashback_log_ctl_file.fbpoint_info.flog_end_ptr_prev >> 32),
 		   (uint32) flashback_log_ctl_file.fbpoint_info.flog_end_ptr_prev);
 	printf(_("The current flashback point WAL lsn: %X/%X\n"),

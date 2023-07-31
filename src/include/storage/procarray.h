@@ -94,7 +94,7 @@ extern bool ProcArrayInstallImportedXmin(TransactionId xmin,
 							 VirtualTransactionId *sourcevxid);
 extern bool ProcArrayInstallRestoredXmin(TransactionId xmin, PGPROC *proc);
 
-extern RunningTransactions GetRunningTransactionData(void);
+extern RunningTransactions PolarGetRunningTransactionData(bool ignore_subxid);
 
 extern bool TransactionIdIsInProgress(TransactionId xid);
 extern bool TransactionIdIsActive(TransactionId xid);
@@ -172,5 +172,8 @@ extern void AdvanceOldestActiveXidCSNWrapper(TransactionId myXid);
 extern void polar_set_latestObservedXid(TransactionId latest_observed_xid);
 extern TransactionId polar_get_latestObservedXid(void);
 /* POLAR end */
+
+#define GetRunningTransactionData() (PolarGetRunningTransactionData(false))
+extern RunningTransactions polar_get_running_top_trans(void);
 
 #endif							/* PROCARRAY_H */

@@ -74,6 +74,7 @@
 /* POLAR */
 #include "storage/proc.h"
 #include "polar_dma/polar_dma.h"
+#include "polar_flashback/polar_flashback_table.h"
 
 /* POLAR px */
 #include "access/px_btbuild.h"
@@ -1042,6 +1043,16 @@ standard_ProcessUtility(PlannedStmt *pstmt,
 					ExecSecLabelStmt(stmt);
 				break;
 			}
+
+		/* POLAR: Flashback table */
+		case T_PolarFlashbackTableStmt:
+		{
+			/* not allow this during "read only" transactions */
+			PreventCommandDuringRecovery("FLASHBACK TABLE");
+			PreventInTransactionBlock(isTopLevel, "FLASHBACK TABLE");
+			polar_exec_flashback_table_stmt((PolarFlashbackTableStmt *) parsetree);
+			break;
+		}
 
 		default:
 			/* All other statement types have event trigger support */
@@ -3062,6 +3073,11 @@ CreateCommandTag(Node *parsetree)
 			}
 			break;
 
+		/* POLAR: Flashback table */
+		case T_PolarFlashbackTableStmt:
+		tag = "FLASHBACK TABLE";
+		break;
+
 		default:
 			elog(WARNING, "unrecognized node type: %d",
 				 (int) nodeTag(parsetree));
@@ -3582,6 +3598,11 @@ GetCommandLogLevel(Node *parsetree)
 				}
 
 			}
+			break;
+
+		/* POLAR: Flashback table */
+		case T_PolarFlashbackTableStmt:
+			lev = LOGSTMT_DDL;
 			break;
 
 		default:

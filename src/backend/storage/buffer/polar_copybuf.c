@@ -23,6 +23,8 @@
  *
  *-------------------------------------------------------------------------
  */
+#include "postgres.h"
+
 #include "polar_flashback/polar_flashback_log.h"
 #include "storage/polar_copybuf.h"
 #include "storage/polar_bufmgr.h"

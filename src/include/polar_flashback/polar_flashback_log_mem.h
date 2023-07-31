@@ -30,7 +30,7 @@
 #include "polar_flashback/polar_flashback_log_index_queue.h"
 #include "polar_flashback/polar_flashback_log_record.h"
 
-#define polar_is_flog_buf_ready(ctl) (polar_get_flog_buf_state(ctl) == FLOG_BUF_READY)
+#define POLAR_IS_FLOG_BUF_READY(ctl) ((ctl)->buf_state == FLOG_BUF_READY)
 
 typedef struct
 {
@@ -106,7 +106,7 @@ typedef struct flog_buf_ctl_data_t
 	fbpoint_wal_info_data_t wal_info; /* The flashback point wal info */
 	slock_t     info_lck;       /* locks shared variables shown above */
 
-	XLogRecPtr  keep_wal_lsn;   /* keep lsn of WAL */
+	XLogRecPtr  redo_lsn;   /* The redo lsn of flashback log record, a copy of XLogCtl->RedoRecPtr after CheckPointBuffers */
 	polar_flog_rec_ptr  initalized_upto; /* initalized upto location, protect by buf_mapping_lock */
 
 	fbpoint_info_data_t fbpoint_info; /* The information about flashback log point */
@@ -145,9 +145,6 @@ extern void polar_flog_buf_init_data(flog_buf_ctl_t ctl, const char *name,
 extern flog_buf_ctl_t polar_flog_buf_init(const char *name, int insert_locks_num, int log_buffers);
 
 extern void polar_startup_flog_buf(flog_buf_ctl_t ctl, CheckPoint *checkpoint);
-
-extern flog_buf_state polar_get_flog_buf_state(flog_buf_ctl_t ctl);
-extern void polar_set_flog_buf_state(flog_buf_ctl_t ctl, flog_buf_state buf_state);
 extern void polar_log_flog_buf_state(flog_buf_state state);
 
 extern polar_flog_rec_ptr polar_flog_rec_insert(flog_buf_ctl_t buf_ctl, flog_index_queue_ctl_t queue_ctl, flog_record *rec, polar_flog_rec_ptr *start_ptr);
@@ -159,15 +156,10 @@ extern polar_flog_rec_ptr polar_get_flog_write_request(flog_buf_ctl_t ctl);
 extern polar_flog_rec_ptr polar_get_curr_flog_ptr(flog_buf_ctl_t ctl, polar_flog_rec_ptr *prev_ptr);
 extern polar_flog_rec_ptr polar_get_flog_buf_initalized_upto(flog_buf_ctl_t ctl);
 
-extern void polar_flog_get_keep_wal_lsn(flog_buf_ctl_t ctl, XLogRecPtr *keep);
-
 extern polar_flog_rec_ptr polar_flog_flush_bg(flog_buf_ctl_t ctl);
 extern void polar_flog_flush(flog_buf_ctl_t ctl, polar_flog_rec_ptr end_ptr);
 
 extern void polar_get_flog_write_stat(flog_buf_ctl_t ctl, uint64 *write_total_num, uint64 *bg_write_num, uint64 *segs_added_total_num);
 extern char *polar_get_flog_dir(flog_buf_ctl_t ctl);
-
-extern polar_flog_rec_ptr polar_get_flog_min_recover_lsn(flog_buf_ctl_t ctl);
-extern void polar_set_flog_min_recover_lsn(flog_buf_ctl_t ctl, polar_flog_rec_ptr ptr);
 
 #endif

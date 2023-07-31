@@ -288,6 +288,8 @@ static bool polar_is_ignore_user_defined_tablespace(char *tablespace_name);
 		CreateMatViewStmt RefreshMatViewStmt CreateAmStmt
 		CreatePublicationStmt AlterPublicationStmt
 		CreateSubscriptionStmt AlterSubscriptionStmt DropSubscriptionStmt
+		/* POLAR: flashback table stmt */
+		PolarFlashbackTableStmt
 
 %type <node>	select_no_parens select_with_parens select_clause
 				simple_select values_clause
@@ -644,7 +646,7 @@ static bool polar_is_ignore_user_defined_tablespace(char *tablespace_name);
 	EXCLUDE EXCLUDING EXCLUSIVE EXECUTE EXISTS EXPLAIN
 	EXTENSION EXTERNAL EXTRACT
 
-	FALSE_P FAMILY FETCH FILTER FIRST_P FLASHBACK FLOAT_P FOLLOWER FOLLOWING FOR
+	FALSE_P FAMILY FETCH FILTER FIRST_P FLOAT_P FOLLOWER FOLLOWING FOR
 	FORCE FOREIGN FORWARD FREEZE FROM FULL FUNCTION FUNCTIONS
 
 	GENERATED GLOBAL GRANT GRANTED GREATEST GROUP_P GROUPING GROUPS
@@ -710,6 +712,10 @@ static bool polar_is_ignore_user_defined_tablespace(char *tablespace_name);
 	YEAR_P YES_P
 
 	ZONE
+	
+	/* POLAR: FLASHBACK */
+	FLASHBACK
+	/* POLAR: End */
 
 /*
  * The grammar thinks these are keywords, but they are not in the kwlist.h
@@ -955,6 +961,7 @@ stmt :
 			| VariableSetStmt
 			| VariableShowStmt
 			| ViewStmt
+			| PolarFlashbackTableStmt
 			| /*EMPTY*/
 				{ $$ = NULL; }
 		;
@@ -15328,6 +15335,23 @@ ColLabel:	IDENT									{ $$ = $1; }
 		;
 
 
+/*****************************************************************************
+ *
+ *		POLAR:
+ *			FLASHBACK TABLE relation_expr
+ *			TO TIMESTAMP a_expr
+ *
+ *****************************************************************************/
+PolarFlashbackTableStmt:
+		FLASHBACK TABLE relation_expr TO TIMESTAMP a_expr
+			{
+				PolarFlashbackTableStmt *n = makeNode(PolarFlashbackTableStmt);
+				n->relation = $3;
+				n->target_timestamp = $6;
+				$$ = (Node *)n;
+			}
+		;
+		
 /*
  * Keyword category lists.  Generally, every keyword present in
  * the Postgres grammar should appear in exactly one of these lists.

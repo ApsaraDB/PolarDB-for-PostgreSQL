@@ -27,7 +27,10 @@ OBJS = polar_tools.o \
 	   datamax_get_wal_from_backup.o \
 	   xlogreader.o \
 	   flashback_log_control_dump.o \
-	   flashback_log_file_dump.o
+	   flashback_log_file_dump.o \
+	   flashback_point_file_dump.o \
+	   flashback_snapshot_dump.o \
+	   fra_control_dump.o
 
 CPPFLAGS_XLOGREADER := $(CPPFLAGS) -DFRONTEND 
 

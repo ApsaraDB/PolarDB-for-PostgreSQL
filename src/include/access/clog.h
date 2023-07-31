@@ -72,6 +72,9 @@ extern const char *clog_identify(uint8 info);
 extern void polar_promote_clog(void);
 /* POLAR: remove clog local cache file */
 extern void polar_remove_clog_local_cache_file(void);
+extern int polar_get_clog_min_seg_no(void);
+extern XidStatus polar_get_xid_status(TransactionId xid, const char *clog_dir);
+extern bool polar_xid_in_clog_dir(TransactionId xid, const char *clog_dir);
 #endif
 
 #endif							/* CLOG_H */

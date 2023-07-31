@@ -29,7 +29,6 @@
 #include "access/polar_logindex_redo.h"
 #include "access/xlog.h"
 #include "polar_flashback/polar_flashback_log.h"
-#include "polar_flashback/polar_flashback_log_repair_page.h"
 #include "postmaster/polar_parallel_bgwriter.h"
 #include "storage/polar_bufmgr.h"
 #include "storage/polar_copybuf.h"

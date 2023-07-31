@@ -161,7 +161,8 @@ static void WalRcvShutdownHandler(SIGNAL_ARGS);
 static void WalRcvQuickDieHandler(SIGNAL_ARGS);
 
 /* POLAR: callback function when waiting free space from polar_xlog_queue */
-static void polar_receiver_xlog_queue_callback(void);
+static void polar_receiver_xlog_queue_callback(polar_ringbuf_t rbuf);
+static void polar_recv_push_storage_begin_callback(polar_ringbuf_t rbuf);
 static void polar_notify_read_wal_file(int code, Datum arg);
 
 /*
@@ -1151,7 +1152,7 @@ XLogWalRcvProcessMsg(unsigned char type, char *buf, Size len)
 				{
 					Assert(POLAR_LOGINDEX_ENABLE_XLOG_QUEUE());
 
-					polar_xlog_recv_queue_push_storage_begin(polar_logindex_redo_instance->xlog_queue, ProcessWalRcvInterrupts);
+					polar_xlog_recv_queue_push_storage_begin(polar_logindex_redo_instance->xlog_queue, polar_recv_push_storage_begin_callback);
 
 					SpinLockAcquire(&WalRcv->mutex);
 					WalRcv->polar_use_xlog_queue = false;
@@ -2064,11 +2065,17 @@ pg_stat_get_wal_receiver(PG_FUNCTION_ARGS)
  * polar_xlog_queue.It will send feedback and handle interrupts
  */
 static void
-polar_receiver_xlog_queue_callback(void)
+polar_receiver_xlog_queue_callback(polar_ringbuf_t rbuf)
 {
 	ProcessWalRcvInterrupts();
 	XLogWalRcvSendReply(false, false);
 	XLogWalRcvSendHSFeedback(false);
+}
+
+static inline void
+polar_recv_push_storage_begin_callback(polar_ringbuf_t rbuf)
+{
+	ProcessWalRcvInterrupts();
 }
 
 static void
@@ -2080,7 +2087,7 @@ polar_notify_read_wal_file(int code, Datum arg)
 	if (!got_SIGTERM && polar_in_replica_mode() && POLAR_LOGINDEX_ENABLE_XLOG_QUEUE())
 	{
 		elog(LOG, "polar replica exit wal receiver and request to read from WAL file");
-		polar_xlog_recv_queue_push_storage_begin(polar_logindex_redo_instance->xlog_queue, ProcessWalRcvInterrupts);
+		polar_xlog_recv_queue_push_storage_begin(polar_logindex_redo_instance->xlog_queue, polar_recv_push_storage_begin_callback);
 	}
 }
 

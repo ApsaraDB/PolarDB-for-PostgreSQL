@@ -8,7 +8,8 @@ use PostgresNode;
 use TestLib ();
 
 use IO::Pipe;
-use Time::HiRes qw( gettimeofday tv_interval );
+use Time::HiRes qw( gettimeofday tv_interval time );
+use POSIX qw(strftime);
 
 our @EXPORT = qw(
 	create_new_test
@@ -33,11 +34,15 @@ sub new
 		# randome pg_control command could be registered by register_random_pg_control.
 		_random_pg_control => '',
 		_mode => 'default',
+		_enable_random_flashback => 0,
 	};
 
 	$node_master->safe_psql('postgres', 'CREATE DATABASE '.$regress_db, timeout=>600);
 	$node_master->safe_psql($regress_db, 'CREATE extension polar_monitor', timeout=>10);
 	$node_master->safe_psql($regress_db, 'CREATE TABLE replayed(val integer unique);');
+	# Create a function to copy random rel for flashback test
+	$node_master->safe_psql($regress_db, "CREATE OR REPLACE FUNCTION fb_copy_a_random_rel() RETURNS TEXT LANGUAGE plpgsql AS \$\$ DECLARE random_rel TEXT; BEGIN SELECT (n.nspname)::text || '.' || (c.relname)::text into random_rel FROM pg_catalog.pg_class c LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace WHERE c.relkind IN ('r') AND n.nspname <> 'pg_catalog' AND n.nspname <> 'information_schema' AND n.nspname !~ '^pg_toast' AND relispartition = 'f' AND relpersistence = 'p' AND reltoastrelid = 0 AND relhassubclass = 'f' AND pg_catalog.pg_table_is_visible(c.oid) order by random() limit 1; execute 'drop table if exists ' || random_rel || '_fbnew'; execute 'create table ' || random_rel || '_fbnew as select * from ' || random_rel; RETURN random_rel; END \$\$;");
+	
 	bless $self, $class;
 
 	return $self;
@@ -85,6 +90,86 @@ sub register_random_pg_control
 		$self->{_random_pg_control} = $self->{_random_pg_control}.";$pg_control";
 	}
 }
+
+sub enable_random_flashback
+{
+	my ($self) = @_;
+	$self->{_enable_random_flashback} = 1;
+}
+
+sub fb_copy_a_random_rel
+{
+	my ($self) = @_;
+	
+	my $node_master = $self->node_master;
+	my $random_rel = $node_master->safe_psql($self->regress_db, "select * from fb_copy_a_random_rel()");
+	
+	return $random_rel;
+}
+
+sub get_rel_oid
+{
+	my ($self, $rel) = @_;
+	
+	my $relid = 0;
+	my $node_master = $self->node_master;
+	$relid = $node_master->safe_psql($self->regress_db, "select '$rel'::regclass::oid");
+	return $relid;
+}
+
+sub fb_rel_and_check
+{
+	my ($self, $old_rel, $old_rel_oid, $flashback_time) = @_;
+	
+	my $new_rel = $old_rel."_fbnew";
+	my $flashback_rel = '';
+	my $rel_exist = 0;
+	my $failed = 0;
+	
+	$rel_exist = $self->node_master->safe_psql($self->regress_db, "select count(1) from pg_class where oid = $old_rel_oid");
+		
+	if ($rel_exist)
+	{
+		$self->node_master->safe_psql($self->regress_db,
+		"flashback table $old_rel to timestamp '$flashback_time'"
+		);
+		
+		$flashback_rel = 'polar_flashback_'.$old_rel_oid;
+		
+		# Just count(1) to be quick.
+		
+		my $count = $self->node_master->safe_psql($self->regress_db,
+		"select count(1) from $new_rel"
+		);
+		
+		my $right_count = $self->node_master->safe_psql($self->regress_db,
+		"select count(1) from $flashback_rel"
+		);
+		
+		if ($right_count != $count)
+		{
+			print "flashback: The count in the ".$new_rel." is:".$count.", but is:".$right_count." in the ".$flashback_rel."\n";
+			$failed = 1;
+		}
+	}
+	
+	return $failed;
+}
+
+sub fb_drop_copy_rel
+{
+	my ($self, $old_rel, $old_rel_oid) = @_;
+	
+	my $new_rel = $old_rel."_fbnew";
+	my $flashback_rel = 'polar_flashback_'.$old_rel_oid;
+	
+	$self->node_master->safe_psql($self->regress_db,
+		"drop table IF EXISTS $new_rel");
+		
+	$self->node_master->safe_psql($self->regress_db,
+		"drop table IF EXISTS $flashback_rel");
+}
+
 
 sub get_random_pg_control
 {
@@ -1003,6 +1088,13 @@ sub test_one_case
 	my $failed = 0;
 	$ENV{'PG_TEST_NOCLEAN'} = 'Do not clean data directory after error during test.';
 	my $table = "replayed_$test_case\_$$";
+	
+	# something about random flashback
+	my $random_rel = '';
+	my $flashback_time = '';
+	my $flashback_epoc = 0;
+	my $random_rel_oid = 0;
+	my $flashback_t;
 
 	$node_master->safe_psql($regress_db, "CREATE TABLE $table(val integer unique);");
 	$self->replay_check_all($node_replica_ref, $table);
@@ -1060,6 +1152,40 @@ sub test_one_case
 		{
 			last;
 		}
+		
+		# Get a random relation and copy
+		if ($self->{_enable_random_flashback} and $random_rel eq '' and $line_num > 10 and $line_num > int(rand(20)))
+		{
+			$random_rel = $self->fb_copy_a_random_rel;
+			print "flashback: The random relation is ".$random_rel."\n";
+			$random_rel_oid = $self->get_rel_oid($random_rel);
+			print "flashback: The random relation oid is ".$random_rel_oid."\n";
+			
+			$flashback_t = time;
+			$flashback_time = strftime "%Y-%m-%d %H:%M:%S", gmtime $flashback_t;
+			$flashback_time .= sprintf ".%05d", ($flashback_t-int($flashback_t))*100000;
+			print "flashback: The flashback time is ".$flashback_time."\n";
+			$flashback_epoc = time();
+		}
+		
+		# FLashback the table and check it if it exists
+		if ($random_rel ne '' and time() - $flashback_epoc >= 3)
+		{
+			$failed = $self->fb_rel_and_check($random_rel, $random_rel_oid, $flashback_time);
+			print "flashback: The flashback table ".$random_rel." are ".$failed." failed\n";
+			
+			$random_rel = '';
+			
+			if ($failed == 1)
+			{
+				last;
+			}
+			else
+			{
+				$self->fb_drop_copy_rel($random_rel, $random_rel_oid);
+			}
+		}
+
 		if ($polar_prev_tag ne 'EQUAL' and $polar_tag eq 'EQUAL' or
 			$polar_prev_tag ne 'REPLICA_IGNORE' and $polar_tag eq 'REPLICA_IGNORE')
 		{
@@ -1089,6 +1215,12 @@ sub test_one_case
 	foreach my $node_replica (@{$node_replica_ref})
 	{
 		$node_replica->psql_close($node_replica->get_psql());
+	}
+	
+	# Clean the random rel when it isn't flashbacked because it run within 3 second
+	if ($random_rel ne '')
+	{
+		 $self->fb_drop_copy_rel($random_rel, $random_rel_oid);
 	}
 
 	close $fh;
