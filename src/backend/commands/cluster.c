@@ -54,6 +54,9 @@
 #include "utils/tqual.h"
 #include "utils/tuplesort.h"
 
+/* POLAR: start */
+#include "polar_flashback/polar_flashback_rel_filenode.h"
+/* POLAR: end */
 
 /*
  * This struct is used to pass around the information on tables to be
@@ -619,8 +622,8 @@ rebuild_relation(Relation OldHeap, Oid indexOid, bool verbose)
  * data, then call finish_heap_swap to complete the operation.
  */
 Oid
-make_new_heap(Oid OIDOldHeap, Oid NewTableSpace, char relpersistence,
-			  LOCKMODE lockmode)
+polar_make_new_heap(Oid OIDOldHeap, Oid NewTableSpace, char relpersistence,
+			  LOCKMODE lockmode, const char * NewHeapNameGiven)
 {
 	TupleDesc	OldHeapDesc;
 	char		NewHeapName[NAMEDATALEN];
@@ -670,7 +673,10 @@ make_new_heap(Oid OIDOldHeap, Oid NewTableSpace, char relpersistence,
 	 * mapped.  This simplifies swap_relation_files, and is absolutely
 	 * necessary for rebuilding pg_class, for reasons explained there.
 	 */
-	snprintf(NewHeapName, sizeof(NewHeapName), "pg_temp_%u", OIDOldHeap);
+	if (NewHeapNameGiven)
+		strncpy(NewHeapName, NewHeapNameGiven, sizeof(NewHeapName));
+	else
+		snprintf(NewHeapName, sizeof(NewHeapName), "pg_temp_%u", OIDOldHeap);
 
 	OIDNewHeap = heap_create_with_catalog(NewHeapName,
 										  namespaceid,
@@ -1189,6 +1195,7 @@ swap_relation_files(Oid r1, Oid r2, bool target_is_pg_class,
 				relfilenode2;
 	Oid			swaptemp;
 	char		swptmpchr;
+	bool		change_persistence;
 
 	/* We need writable copies of both pg_class tuples. */
 	relRelation = heap_open(RelationRelationId, RowExclusiveLock);
@@ -1205,6 +1212,9 @@ swap_relation_files(Oid r1, Oid r2, bool target_is_pg_class,
 
 	relfilenode1 = relform1->relfilenode;
 	relfilenode2 = relform2->relfilenode;
+
+	/* When change the relation persistence, we need to flog the relation file node change */
+	change_persistence = (relform1->relpersistence != relform2->relpersistence);
 
 	if (OidIsValid(relfilenode1) && OidIsValid(relfilenode2))
 	{
@@ -1347,6 +1357,9 @@ swap_relation_files(Oid r1, Oid r2, bool target_is_pg_class,
 		CacheInvalidateRelcacheByTuple(reltup1);
 		CacheInvalidateRelcacheByTuple(reltup2);
 	}
+
+	/* POLAR: Log the relation file node update after swapping the two heaps */
+	polar_flog_filenode_update(flog_instance, fra_instance, r1, relfilenode2, InvalidOid, change_persistence, false);
 
 	/*
 	 * Post alter hook for modified relations. The change to r2 is always

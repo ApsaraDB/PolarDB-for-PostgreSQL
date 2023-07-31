@@ -34,6 +34,12 @@
 #include "utils/polar_coredump.h"
 #include "utils/resowner.h"
 
+#define WAKEUP_FLOG_BG_WORKER(latch) \
+	do { \
+		if (latch) \
+			SetLatch(latch); \
+	} while (0)
+
 /* GUCs */
 int polar_flashback_log_bgwrite_delay;
 int polar_flashback_log_insert_list_delay;
@@ -69,6 +75,14 @@ bg_shutdown_handler(SIGNAL_ARGS)
 	SetLatch(MyLatch);
 
 	errno = save_errno;
+}
+
+static void
+set_flog_bgwriter_latch(flog_ctl_t instance)
+{
+	Assert(MyLatch);
+
+	instance->bgwriter_latch = MyLatch;
 }
 
 void
@@ -133,6 +147,8 @@ polar_flog_bgwriter_main(void)
 											 "Flashback Log Background Writer",
 											 ALLOCSET_DEFAULT_SIZES);
 	MemoryContextSwitchTo(bgworker_context);
+
+	set_flog_bgwriter_latch(flog_instance);
 
 	/*
 	 * If an exception is encountered, processing resumes here.
@@ -248,6 +264,9 @@ polar_flog_bgwriter_main(void)
 			if (!polar_is_flog_ready(flog_instance))
 				polar_recover_flog(flog_instance);
 
+			/* insert the logindex first */
+			polar_flog_index_insert(snapshot, queue_ctl, buf_ctl, polar_get_flog_write_result(buf_ctl), ANY);
+
 			ptr_expected = polar_flog_flush_bg(buf_ctl);
 
 			if (!FLOG_REC_PTR_IS_INVAILD(ptr_expected))
@@ -275,9 +294,7 @@ polar_flog_bginserter_main(void)
 {
 	sigjmp_buf  local_sigjmp_buf;
 	MemoryContext bgworker_context;
-	flog_buf_ctl_t buf_ctl = flog_instance->buf_ctl;
 	flog_list_ctl_t list_ctl = flog_instance->list_ctl;
-	flog_index_queue_ctl_t queue_ctl = flog_instance->queue_ctl;
 
 	/*
 	 * Properly accept or ignore signals the postmaster might send us.
@@ -445,7 +462,7 @@ polar_flog_bginserter_main(void)
 		insert_num = 0;
 		do
 		{
-			polar_insert_flog_rec_from_list_bg(list_ctl, buf_ctl, queue_ctl);
+			polar_process_flog_list_bg(flog_instance);
 			polar_flog_get_async_list_info(list_ctl, &head, &tail);
 			insert_num++;
 		}
@@ -463,5 +480,25 @@ polar_flog_bginserter_main(void)
 		 */
 		if (rc & WL_POSTMASTER_DEATH)
 			exit(1);
+	}
+}
+
+bool
+polar_is_flog_index_inserted(flog_ctl_t instance, void *data)
+{
+	polar_flog_rec_ptr *ptr = (polar_flog_rec_ptr *) data;
+
+	return polar_get_logindex_max_parsed_lsn(instance->logindex_snapshot) >= *ptr;
+}
+
+void
+polar_wait_flog_bgworker(flog_ctl_t instance, flog_bg_worker_done is_done, void *extra_data)
+{
+	WAKEUP_FLOG_BG_WORKER(instance->bgwriter_latch);
+
+	while (!is_done(instance, extra_data))
+	{
+		CHECK_FOR_INTERRUPTS();
+		pg_usleep(1000);
 	}
 }

@@ -20,6 +20,7 @@
  *-------------------------------------------------------------------------
  */
 #include <dirent.h>
+#include <libgen.h>
 #include <stdio.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -29,11 +30,13 @@
 #include "access/xlogdefs.h"
 #include "access/transam.h"
 #include "common/pg_lzcompress.h"
+#include "fe_utils/timestamp.h"
 #include "polar_flashback/polar_flashback_log_file.h"
 #include "polar_flashback/polar_flashback_log_reader.h"
 #include "polar_flashback/polar_flashback_log_record.h"
+#include "polar_flashback/polar_flashback_rel_filenode.h"
 #include "polar_tools.h"
-
+#include "utils/datetime.h"
 /*no cover begin*/
 /*  checksum_impl.h uses Assert, which doesn't work outside the server */
 #undef Assert
@@ -48,8 +51,6 @@ static const char *progname;
 static int  segment_size;
 static bool just_version = false;
 static bool just_one_record_without_check = false;
-
-#define FLASHBACK_LOG_REC_TYPES (1)
 
 /* load the flashback log switch ptrs */
 #define load_switch_ptrs(dir, ptrs) \
@@ -85,13 +86,9 @@ typedef union pg_aligned_flashback_log_blk
 	int64       force_align_i64;
 } pg_aligned_flashback_log_blk;
 
-const char *flashback_log_record_types[FLASHBACK_LOG_REC_TYPES + 1] =
-{
-	"original_page",
-	NULL
-};
-
 static List *switch_ptr_list = NIL;
+
+const char *flog_record_types[FLOG_REC_TYPES + 1] = FLOG_RECORD_TYPES;
 
 static void fatal_error(const char *fmt, ...) pg_attribute_printf(1, 2);
 static void report_invalid_flog_record(flog_reader_state *state,
@@ -121,8 +118,8 @@ print_type_list(void)
 {
 	int         i;
 
-	for (i = 0; i < FLASHBACK_LOG_REC_TYPES; i++)
-		printf("%s\n", flashback_log_record_types[i]);
+	for (i = 0; i < FLOG_REC_TYPES; i++)
+		printf("%s\n", flog_record_types[i]);
 }
 
 /*
@@ -536,7 +533,7 @@ flog_pos2ptr(uint64 bytepos)
 		seg_offset += fullpages * POLAR_FLOG_BLCKSZ + bytesleft + FLOG_SHORT_PHD_SIZE;
 	}
 
-	flog_seg_offset_to_ptr(fullsegs, seg_offset, POLAR_FLOG_SEG_SIZE, result);
+	FLOG_SEG_OFFSET_TO_PTR(fullsegs, seg_offset, POLAR_FLOG_SEG_SIZE, result);
 	return result;
 }
 
@@ -551,7 +548,7 @@ flog_ptr2pos(polar_flog_rec_ptr ptr)
 	uint32      offset;
 	uint64      result;
 
-	fullsegs = flog_ptr_to_seg(ptr, POLAR_FLOG_SEG_SIZE);
+	fullsegs = FLOG_PTR_TO_SEG(ptr, POLAR_FLOG_SEG_SIZE);
 
 	fullpages = (FLOG_SEGMENT_OFFSET(ptr, POLAR_FLOG_SEG_SIZE)) / POLAR_FLOG_BLCKSZ;
 	offset = ptr % POLAR_FLOG_BLCKSZ;
@@ -725,16 +722,16 @@ flog_page_header_validate(flog_reader_state *state,
 
 	Assert((recptr % POLAR_FLOG_BLCKSZ) == 0);
 
-	segno = flog_ptr_to_seg(recptr, state->segment_size);
+	segno = FLOG_PTR_TO_SEG(recptr, state->segment_size);
 	offset = FLOG_SEGMENT_OFFSET(recptr, state->segment_size);
 
-	flog_seg_offset_to_ptr(segno, offset, state->segment_size, recaddr);
+	FLOG_SEG_OFFSET_TO_PTR(segno, offset, state->segment_size, recaddr);
 
 	if (hdr->xlp_magic != FLOG_PAGE_MAGIC)
 	{
 		char        fname[FLOG_MAX_FNAME_LEN];
 
-		get_flog_fname(fname, segno, state->segment_size, FLOG_DEFAULT_TIMELINE);
+		FLOG_GET_FNAME(fname, segno, state->segment_size, FLOG_DEFAULT_TIMELINE);
 
 		report_invalid_flog_record(state,
 								   "invalid magic number %04X in flashback log segment %s, offset %u",
@@ -747,7 +744,7 @@ flog_page_header_validate(flog_reader_state *state,
 	if (hdr->xlp_version < FLOG_PAGE_VERSION)
 	{
 		char        fname[FLOG_MAX_FNAME_LEN];
-		get_flog_fname(fname, segno, state->segment_size, FLOG_DEFAULT_TIMELINE);
+		FLOG_GET_FNAME(fname, segno, state->segment_size, FLOG_DEFAULT_TIMELINE);
 		report_invalid_flog_record(state,
 								   "invalid version %04X in flashback log segment %s, offset %u",
 								   hdr->xlp_version,
@@ -760,7 +757,7 @@ flog_page_header_validate(flog_reader_state *state,
 	{
 		char        fname[FLOG_MAX_FNAME_LEN];
 
-		get_flog_fname(fname, segno, state->segment_size, FLOG_DEFAULT_TIMELINE);
+		FLOG_GET_FNAME(fname, segno, state->segment_size, FLOG_DEFAULT_TIMELINE);
 
 		report_invalid_flog_record(state,
 								   "invalid info bits %04X in flashback log segment %s, offset %u",
@@ -814,7 +811,7 @@ flog_page_header_validate(flog_reader_state *state,
 	{
 		char        fname[FLOG_MAX_FNAME_LEN];
 
-		get_flog_fname(fname, segno, state->segment_size, FLOG_DEFAULT_TIMELINE);
+		FLOG_GET_FNAME(fname, segno, state->segment_size, FLOG_DEFAULT_TIMELINE);
 
 		/* hmm, first page of file doesn't have a long header? */
 		report_invalid_flog_record(state,
@@ -834,7 +831,7 @@ flog_page_header_validate(flog_reader_state *state,
 	{
 		char        fname[FLOG_MAX_FNAME_LEN];
 
-		get_flog_fname(fname, segno, state->segment_size, FLOG_DEFAULT_TIMELINE);
+		FLOG_GET_FNAME(fname, segno, state->segment_size, FLOG_DEFAULT_TIMELINE);
 
 		report_invalid_flog_record(state,
 								   "unexpected pageaddr %X/%X in flashback log segment %s, offset %u",
@@ -934,7 +931,7 @@ read_flog_page_internal(flog_reader_state *state,
 
 	Assert((pageptr % POLAR_FLOG_BLCKSZ) == 0);
 
-	targetSegNo = flog_ptr_to_seg(pageptr, state->segment_size);
+	targetSegNo = FLOG_PTR_TO_SEG(pageptr, state->segment_size);
 
 	targetPageOff = FLOG_SEGMENT_OFFSET(pageptr, state->segment_size);
 
@@ -1482,35 +1479,6 @@ out:
 }
 
 /*
- * Split a pathname as dirname(1) and basename(1) would.
- *
- * XXX this probably doesn't do very well on Windows.  We probably need to
- * apply canonicalize_path(), at the very least.
- */
-static void
-split_path(const char *path, char **dir, char **fname)
-{
-	char       *sep;
-
-	/* split filepath into directory & filename */
-	sep = strrchr(path, '/');
-
-	/* directory path */
-	if (sep != NULL)
-	{
-		*dir = pg_strdup(path);
-		(*dir)[(sep - path) + 1] = '\0';    /* no strndup */
-		*fname = pg_strdup(sep + 1);
-	}
-	/* local directory */
-	else
-	{
-		*dir = NULL;
-		*fname = pg_strdup(path);
-	}
-}
-
-/*
  * Open the file in the valid target directory.
  *
  * return a read only fd
@@ -1560,7 +1528,7 @@ search_directory(const char *directory, const char *fname)
 
 		while ((xlde = readdir(xldir)) != NULL)
 		{
-			if (is_flashback_log_file(xlde->d_name))
+			if (FLOG_IS_LOG_FILE(xlde->d_name))
 			{
 				fd = open_file_in_directory(directory, xlde->d_name);
 				fname = xlde->d_name;
@@ -1716,7 +1684,7 @@ flog_dump_read(const char *directory, polar_flog_rec_ptr startptr,
 
 		startoff = FLOG_SEGMENT_OFFSET(recptr, segment_size);
 
-		if (sendFile < 0 || !ptr_in_flog_seg(recptr, sendSegNo, segment_size))
+		if (sendFile < 0 || !FLOG_PTR_IN_SEG(recptr, sendSegNo, segment_size))
 		{
 			char        fname[FLOG_MAX_FNAME_LEN];
 			int         tries;
@@ -1725,9 +1693,9 @@ flog_dump_read(const char *directory, polar_flog_rec_ptr startptr,
 			if (sendFile >= 0)
 				close(sendFile);
 
-			sendSegNo = flog_ptr_to_seg(recptr, segment_size);
+			sendSegNo = FLOG_PTR_TO_SEG(recptr, segment_size);
 
-			get_flog_fname(fname, sendSegNo, segment_size, FLOG_DEFAULT_TIMELINE);
+			FLOG_GET_FNAME(fname, sendSegNo, segment_size, FLOG_DEFAULT_TIMELINE);
 
 			/*
 			 * In follow mode there is a short period of time after the server
@@ -1773,7 +1741,7 @@ flog_dump_read(const char *directory, polar_flog_rec_ptr startptr,
 				int         err = errno;
 				char        fname[MAXPGPATH];
 
-				get_flog_fname(fname, sendSegNo, segment_size, FLOG_DEFAULT_TIMELINE);
+				FLOG_GET_FNAME(fname, sendSegNo, segment_size, FLOG_DEFAULT_TIMELINE);
 
 				fatal_error("could not seek in log file %s to offset %u: %s",
 							fname, startoff, strerror(err));
@@ -1795,7 +1763,7 @@ flog_dump_read(const char *directory, polar_flog_rec_ptr startptr,
 			int         err = errno;
 			char        fname[MAXPGPATH];
 
-			get_flog_fname(fname, sendSegNo, segment_size, FLOG_DEFAULT_TIMELINE);
+			FLOG_GET_FNAME(fname, sendSegNo, segment_size, FLOG_DEFAULT_TIMELINE);
 
 			fatal_error("could not read from log file %s, offset %u, length %d: %s",
 						fname, sendOff, segbytes, strerror(err));
@@ -1845,13 +1813,30 @@ get_flog_rec_type(flog_record *record, polar_flog_rec_ptr lsn)
 {
 	RmgrId      xl_rmgr = record->xl_rmid;
 
-	if (xl_rmgr < FLASHBACK_LOG_REC_TYPES)
-		return flashback_log_record_types[xl_rmgr];
+	if (xl_rmgr < FLOG_REC_TYPES)
+		return flog_record_types[xl_rmgr];
 	else
 		fatal_error("The type of the record %X/%08X is wrong, \n",
 					(uint32)(lsn >> 32), (uint32)lsn);
 
 	return NULL;
+}
+
+static void
+print_rel_filenode_rec(flog_record *record)
+{
+	fl_filenode_rec_data_t *filenode_rec;
+	bool can_be_flashback;
+
+	can_be_flashback = (record->xl_info & REL_FILENODE_TYPE_MASK) & REL_CAN_FLASHBACK;
+	filenode_rec = FL_GET_FILENODE_REC_DATA(record);
+	printf("The previous relation filenode is [%u, %u, %u], "
+			"the current relation filenode is [%u, %u, %u], the time is %s, "
+			"can%s flashback the relation to past",
+			filenode_rec->old_filenode.spcNode, filenode_rec->old_filenode.dbNode,
+			filenode_rec->old_filenode.relNode, filenode_rec->new_filenode.spcNode,
+			filenode_rec->new_filenode.dbNode, filenode_rec->new_filenode.relNode,
+			timestamptz_to_str(filenode_rec->time), (can_be_flashback)? "":"'t");
 }
 
 /*
@@ -1883,7 +1868,7 @@ flog_display_rec(dump_config *config, flog_record *record,
 	rec_len = record->xl_tot_len;
 	rmid = record->xl_rmid;
 	record_data = (char *)record;
-	printf("type: %16s total_len: %6u, tx: %10u, lsn: %X/%08X, prev %X/%08X, ",
+	printf("type: %24s total_len: %6u, tx: %10u, lsn: %X/%08X, prev %X/%08X, ",
 		   get_flog_rec_type(record, lsn),
 		   rec_len, record->xl_xid, (uint32)(lsn >> 32), (uint32) lsn,
 		   (uint32)(xl_prev >> 32), (uint32) xl_prev);
@@ -1898,6 +1883,13 @@ flog_display_rec(dump_config *config, flog_record *record,
 		from_origin_buf = info & FROM_ORIGIN_BUF;
 		printf("desc: %s, ", type == ORIGIN_PAGE_EMPTY ? "empty page" : "full  page");
 	}
+	else if (rmid == REL_FILENODE_ID)
+	{
+		printf("desc: change relation file node, ");
+	}
+	else
+		fatal_error("invalid rmid %d for the record at %X/%X", rmid,
+					(uint32)(lsn >> 32), (uint32) lsn);
 
 	if (!config->bkp_details)
 	{
@@ -1906,6 +1898,8 @@ flog_display_rec(dump_config *config, flog_record *record,
 				   tag.rnode.spcNode, tag.rnode.dbNode, tag.rnode.relNode,
 				   forkNames[tag.forkNum], tag.blockNum,
 				   (uint32)(redo_lsn >> 32), (uint32) redo_lsn);
+		else if (rmid == REL_FILENODE_ID)
+			print_rel_filenode_rec(record);
 
 		putchar('\n');
 	}
@@ -2004,12 +1998,10 @@ flog_display_rec(dump_config *config, flog_record *record,
 			else
 				fatal_error("invalid xl_info %d for the record at %X/%X", info,
 							(uint32)(lsn >> 32), (uint32) lsn);
-
-			putchar('\n');
 		}
-		else
-			fatal_error("invalid rmid %d for the record at %X/%X", rmid,
-						(uint32)(lsn >> 32), (uint32) lsn);
+		else if (rmid == REL_FILENODE_ID)
+			print_rel_filenode_rec(record);
+		putchar('\n');
 	}
 }
 
@@ -2152,16 +2144,16 @@ flashback_log_file_dump_main(int argc, char **argv)
 					exit(EXIT_SUCCESS);
 				}
 
-				for (i = 0; i < FLASHBACK_LOG_REC_TYPES; i++)
+				for (i = 0; i < FLOG_REC_TYPES; i++)
 				{
-					if (pg_strcasecmp(optarg, flashback_log_record_types[i]) == 0)
+					if (pg_strcasecmp(optarg, flog_record_types[i]) == 0)
 					{
 						config.filter_by_type = i;
 						break;
 					}
 				}
 
-				if (config.filter_by_type > FLASHBACK_LOG_REC_TYPES)
+				if (config.filter_by_type > FLOG_REC_TYPES)
 				{
 					fprintf(stderr, _("%s: type \"%s\" does not exist\n"),
 							progname, optarg);
@@ -2257,7 +2249,8 @@ flashback_log_file_dump_main(int argc, char **argv)
 		int         fd;
 		uint64  segno;
 
-		split_path(argv[optind], &directory, &fname);
+		fname = basename(argv[optind]);
+		directory = dirname(argv[optind]);
 
 		if (private.inpath == NULL && directory != NULL)
 		{
@@ -2277,16 +2270,16 @@ flashback_log_file_dump_main(int argc, char **argv)
 		close(fd);
 
 		/* parse position from file */
-		get_flog_seg_from_fname(fname, &segno, segment_size);
+		FLOG_GET_SEG_FROM_FNAME(fname, &segno, segment_size);
 
 		if (private.startptr == POLAR_INVALID_FLOG_REC_PTR)
 		{
-			flog_seg_offset_to_ptr(segno, 0,
+			FLOG_SEG_OFFSET_TO_PTR(segno, 0,
 								   segment_size, private.startptr);
 			private.startptr = private.startptr == POLAR_INVALID_FLOG_REC_PTR ?
 							   FLOG_LONG_PHD_SIZE : private.startptr;
 		}
-		else if (!ptr_in_flog_seg(private.startptr, segno, segment_size))
+		else if (!FLOG_PTR_IN_SEG(private.startptr, segno, segment_size))
 		{
 			fprintf(stderr,
 					_("%s: start flashback log location "
@@ -2300,7 +2293,7 @@ flashback_log_file_dump_main(int argc, char **argv)
 
 		/* no second file specified, set end position */
 		if (!(optind + 1 < argc) && private.endptr == POLAR_INVALID_FLOG_REC_PTR)
-			flog_seg_offset_to_ptr(segno + 1, 0,
+			FLOG_SEG_OFFSET_TO_PTR(segno + 1, 0,
 								   segment_size, private.endptr);
 
 		/* parse ENDSEG if passed */
@@ -2309,8 +2302,7 @@ flashback_log_file_dump_main(int argc, char **argv)
 			uint64  endsegno;
 
 			/* ignore directory, already have that */
-			split_path(argv[optind + 1], &directory, &fname);
-
+			fname = basename(argv[optind]);
 			fd = open_file_in_directory(private.inpath, fname);
 
 			if (fd < 0)
@@ -2319,21 +2311,21 @@ flashback_log_file_dump_main(int argc, char **argv)
 			close(fd);
 
 			/* parse position from file */
-			get_flog_seg_from_fname(fname, &endsegno, segment_size);
+			FLOG_GET_SEG_FROM_FNAME(fname, &endsegno, segment_size);
 
 			if (endsegno < segno)
 				fatal_error("ENDSEG %s is before STARTSEG %s",
 							argv[optind + 1], argv[optind]);
 
 			if (private.endptr == POLAR_INVALID_FLOG_REC_PTR)
-				flog_seg_offset_to_ptr(endsegno + 1, 0,
+				FLOG_SEG_OFFSET_TO_PTR(endsegno + 1, 0,
 									   segment_size, private.endptr);
 
 			/* set segno to endsegno for check of --end */
 			segno = endsegno;
 		}
 
-		if (!ptr_in_flog_seg(private.endptr, segno, segment_size) &&
+		if (!FLOG_PTR_IN_SEG(private.endptr, segno, segment_size) &&
 				private.endptr != (segno + 1) * segment_size)
 		{
 			fprintf(stderr,
@@ -2427,15 +2419,31 @@ flashback_log_file_dump_main(int argc, char **argv)
 				config.filter_by_type != record->xl_rmid)
 			continue;
 
-		if (record->xl_rmid == ORIGIN_PAGE_ID && config.rel_file_node.spcNode != 0)
+		if (config.rel_file_node.spcNode != 0)
 		{
-			fl_origin_page_rec_data       *rec_data;
+			if (record->xl_rmid == ORIGIN_PAGE_ID)
+			{
+				fl_origin_page_rec_data       *rec_data;
 
-			rec_data = FL_GET_ORIGIN_PAGE_REC_DATA(record);
+				rec_data = FL_GET_ORIGIN_PAGE_REC_DATA(record);
 
-			if (config.rel_file_node.spcNode != rec_data->tag.rnode.spcNode ||
-					config.rel_file_node.dbNode != rec_data->tag.rnode.dbNode ||
-					config.rel_file_node.relNode != rec_data->tag.rnode.relNode)
+				if (config.rel_file_node.spcNode != rec_data->tag.rnode.spcNode ||
+						config.rel_file_node.dbNode != rec_data->tag.rnode.dbNode ||
+						config.rel_file_node.relNode != rec_data->tag.rnode.relNode)
+					continue;
+			}
+			else if (record->xl_rmid == REL_FILENODE_ID)
+			{
+				fl_filenode_rec_data_t *rec_data;
+
+				rec_data = FL_GET_FILENODE_REC_DATA(record);
+
+				if (config.rel_file_node.spcNode != rec_data->new_filenode.spcNode||
+						config.rel_file_node.dbNode != rec_data->new_filenode.dbNode ||
+						config.rel_file_node.relNode != rec_data->new_filenode.relNode)
+					continue;
+			}
+			else
 				continue;
 		}
 

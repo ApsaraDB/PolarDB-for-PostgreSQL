@@ -15,6 +15,7 @@
 #include "postgres.h"
 
 #include "access/xlog.h"
+#include "common/pg_lzcompress.h"
 #include "miscadmin.h"
 #include "pgstat.h"
 #include "polar_flashback/polar_flashback_log_file.h"
@@ -26,12 +27,13 @@ static int  read_file = -1;
 static uint64 read_segno = 0;
 static uint32 read_off = 0;
 static uint32 read_len = 0;
+const char *flog_record_types[FLOG_REC_TYPES + 1] = FLOG_RECORD_TYPES;
 
 /* size of the buffer allocated for error message. */
 #define MAX_ERRORMSG_LEN 1000
 /* load the flashback log switch ptrs */
-#define load_switch_ptrs(dir, ptrs) \
-	(ptrs != NIL? ptrs : polar_read_flog_history_file(dir))
+#define FLOG_LOAD_SWITCH_PTRS(dir, ptrs) \
+	((ptrs) != NIL? (ptrs) : polar_read_flog_history_file(dir))
 
 static void report_invalid_flog_record(flog_reader_state *state,
 									   const char *fmt, ...) pg_attribute_printf(2, 3);
@@ -117,7 +119,7 @@ is_flog_ptr_switch(polar_flog_rec_ptr ptr, polar_flog_rec_ptr prev_ptr, flog_rea
 		return false;
 
 	/* Check strictly */
-	reader->switch_ptrs = load_switch_ptrs(reader->flog_buf_ctl->dir, reader->switch_ptrs);
+	reader->switch_ptrs = FLOG_LOAD_SWITCH_PTRS(reader->flog_buf_ctl->dir, reader->switch_ptrs);
 
 	foreach (cell, reader->switch_ptrs)
 	{
@@ -213,17 +215,17 @@ flog_page_header_validate(flog_reader_state *state,
 
 	Assert((recptr % POLAR_FLOG_BLCKSZ) == 0);
 
-	segno = flog_ptr_to_seg(recptr, state->segment_size);
+	segno = FLOG_PTR_TO_SEG(recptr, state->segment_size);
 	offset = FLOG_SEGMENT_OFFSET(recptr, state->segment_size);
 
-	flog_seg_offset_to_ptr(segno, offset, state->segment_size, recaddr);
+	FLOG_SEG_OFFSET_TO_PTR(segno, offset, state->segment_size, recaddr);
 
 	if (hdr->xlp_magic != FLOG_PAGE_MAGIC)
 	{
 		/*no cover begin*/
 		char        fname[FLOG_MAX_FNAME_LEN];
 
-		get_flog_fname(fname, segno, state->segment_size, FLOG_DEFAULT_TIMELINE);
+		FLOG_GET_FNAME(fname, segno, state->segment_size, FLOG_DEFAULT_TIMELINE);
 
 		report_invalid_flog_record(state,
 								   "invalid magic number %04X in flashback log segment %s, offset %u",
@@ -239,7 +241,7 @@ flog_page_header_validate(flog_reader_state *state,
 		/*no cover begin*/
 		char        fname[FLOG_MAX_FNAME_LEN];
 
-		get_flog_fname(fname, segno, state->segment_size, FLOG_DEFAULT_TIMELINE);
+		FLOG_GET_FNAME(fname, segno, state->segment_size, FLOG_DEFAULT_TIMELINE);
 		report_invalid_flog_record(state,
 								   "invalid version %04X in flashback log segment %s, offset %u",
 								   hdr->xlp_version,
@@ -254,7 +256,7 @@ flog_page_header_validate(flog_reader_state *state,
 		/*no cover begin*/
 		char        fname[FLOG_MAX_FNAME_LEN];
 
-		get_flog_fname(fname, segno, state->segment_size, FLOG_DEFAULT_TIMELINE);
+		FLOG_GET_FNAME(fname, segno, state->segment_size, FLOG_DEFAULT_TIMELINE);
 
 		report_invalid_flog_record(state,
 								   "invalid info bits %04X in flashback log segment %s, offset %u",
@@ -316,7 +318,7 @@ flog_page_header_validate(flog_reader_state *state,
 		/*no cover begin*/
 		char        fname[FLOG_MAX_FNAME_LEN];
 
-		get_flog_fname(fname, segno, state->segment_size, FLOG_DEFAULT_TIMELINE);
+		FLOG_GET_FNAME(fname, segno, state->segment_size, FLOG_DEFAULT_TIMELINE);
 
 		/* hmm, first page of file doesn't have a long header? */
 		report_invalid_flog_record(state,
@@ -338,7 +340,7 @@ flog_page_header_validate(flog_reader_state *state,
 		/*no cover begin*/
 		char        fname[FLOG_MAX_FNAME_LEN];
 
-		get_flog_fname(fname, segno, state->segment_size, FLOG_DEFAULT_TIMELINE);
+		FLOG_GET_FNAME(fname, segno, state->segment_size, FLOG_DEFAULT_TIMELINE);
 
 		report_invalid_flog_record(state,
 								   "unexpected pageaddr %X/%X in flashback log segment %s, offset %u",
@@ -374,7 +376,7 @@ read_flog_page_internal(flog_reader_state *state,
 	flog_page_header hdr;
 
 	Assert((page_ptr % POLAR_FLOG_BLCKSZ) == 0);
-	target_segno = flog_ptr_to_seg(page_ptr, state->segment_size);
+	target_segno = FLOG_PTR_TO_SEG(page_ptr, state->segment_size);
 	target_pageoff = FLOG_SEGMENT_OFFSET(page_ptr, state->segment_size);
 
 	/* check whether we have all the requested data already */
@@ -981,7 +983,7 @@ polar_flog_page_read(flog_reader_state *state,
 		read_len = read_upto - target_page_ptr;
 	}
 
-	target_seg_no = flog_ptr_to_seg(target_page_ptr, POLAR_FLOG_SEG_SIZE);
+	target_seg_no = FLOG_PTR_TO_SEG(target_page_ptr, POLAR_FLOG_SEG_SIZE);
 	target_page_off = FLOG_SEGMENT_OFFSET(target_page_ptr, POLAR_FLOG_SEG_SIZE);
 
 	/*
@@ -989,22 +991,22 @@ polar_flog_page_read(flog_reader_state *state,
 	 * is not in the currently open one.
 	 */
 	if (read_file >= 0 &&
-			!ptr_in_flog_seg(target_page_ptr, read_segno, POLAR_FLOG_SEG_SIZE))
+			!FLOG_PTR_IN_SEG(target_page_ptr, read_segno, POLAR_FLOG_SEG_SIZE))
 	{
 		polar_close(read_file);
 		read_file = -1;
 	}
 
-	read_segno = flog_ptr_to_seg(target_page_ptr, POLAR_FLOG_SEG_SIZE);
+	read_segno = FLOG_PTR_TO_SEG(target_page_ptr, POLAR_FLOG_SEG_SIZE);
 
 	if (read_file < 0)
 	{
-		if (polar_is_flog_file_exist(state->flog_buf_ctl->dir, target_page_ptr, WARNING))
+		if (polar_flog_file_exists(state->flog_buf_ctl->dir, target_page_ptr, WARNING))
 			read_file = polar_flog_file_open(read_segno, state->flog_buf_ctl->dir);
 		else
 		{
 			/*no cover begin*/
-			get_flog_fname(file_name, read_segno,
+			FLOG_GET_FNAME(file_name, read_segno,
 						   POLAR_FLOG_SEG_SIZE, FLOG_DEFAULT_TIMELINE);
 			report_invalid_flog_record(state,
 									   "Can't find the flashback log segno file %s", file_name);
@@ -1033,7 +1035,7 @@ polar_flog_page_read(flog_reader_state *state,
 
 		/*no cover begin*/
 		pgstat_report_wait_end();
-		get_flog_fname(fname, read_segno, POLAR_FLOG_SEG_SIZE, FLOG_DEFAULT_TIMELINE);
+		FLOG_GET_FNAME(fname, read_segno, POLAR_FLOG_SEG_SIZE, FLOG_DEFAULT_TIMELINE);
 		errno = save_errno;
 		ereport(WARNING,
 				(errcode_for_file_access(),
@@ -1094,7 +1096,7 @@ polar_is_flog_rec_ignore(polar_flog_rec_ptr *ptr, uint32 log_len, flog_reader_st
 	else
 		end_ptr = polar_get_next_flog_ptr(*ptr, log_len);
 
-	reader->switch_ptrs = load_switch_ptrs(reader->flog_buf_ctl->dir, reader->switch_ptrs);
+	reader->switch_ptrs = FLOG_LOAD_SWITCH_PTRS(reader->flog_buf_ctl->dir, reader->switch_ptrs);
 	foreach (cell, reader->switch_ptrs)
 	{
 		flog_history_entry *tle = (flog_history_entry *) lfirst(cell);
@@ -1115,4 +1117,138 @@ polar_is_flog_rec_ignore(polar_flog_rec_ptr *ptr, uint32 log_len, flog_reader_st
 	}
 
 	return false;
+}
+
+static bool
+decode_origin_page(flog_record *rec, Page page, polar_flog_rec_ptr ptr)
+{
+	fl_origin_page_rec_data *rec_data;
+	fl_rec_img_header *img;
+	fl_rec_img_comp_header *c_img;
+	char *origin_page;
+	int record_data_len;
+	PGAlignedBlock tmp;
+	uint16 hole_length = 0;
+
+	rec_data = FL_GET_ORIGIN_PAGE_REC_DATA(rec);
+	img = FL_GET_ORIGIN_PAGE_IMG_HEADER(rec);
+	origin_page = (char *)img + FL_REC_IMG_HEADER_SIZE;
+	record_data_len = img->length;
+
+	if (img->bimg_info & IMAGE_IS_COMPRESSED)
+	{
+		if (img->bimg_info & IMAGE_HAS_HOLE)
+		{
+			c_img = (fl_rec_img_comp_header *) origin_page;
+			origin_page += FL_REC_IMG_COMP_HEADER_SIZE;
+			hole_length = c_img->hole_length;
+		}
+
+		if (pglz_decompress(origin_page, record_data_len, tmp.data,
+							BLCKSZ - hole_length) < 0)/* POLAR Ganos: external detoast slice */
+		{
+			/*no cover line*/
+			elog(ERROR, "Invalid compressed origin page " POLAR_LOG_BUFFER_TAG_FORMAT
+					", from flashback log at %X/%X", POLAR_LOG_BUFFER_TAG(&(rec_data->tag)),
+					(uint32)(ptr >> 32), (uint32) ptr);
+		}
+
+		origin_page = tmp.data;
+	}
+	else if (img->bimg_info & IMAGE_HAS_HOLE)
+		hole_length = BLCKSZ - img->length;
+
+	/* generate page, taking into account hole if necessary */
+	if (hole_length == 0)
+		memcpy((char *)page, origin_page, BLCKSZ);
+	else
+	{
+		memcpy((char *)page, origin_page, img->hole_offset);
+		/* must zero-fill the hole */
+		MemSet((char *)page + img->hole_offset, 0, hole_length);
+		memcpy((char *)page + (img->hole_offset + hole_length),
+			   origin_page + img->hole_offset,
+			   BLCKSZ - (img->hole_offset + hole_length));
+	}
+
+	/* Checksum again */
+	if (!PageIsVerified(page, rec_data->tag.forkNum, rec_data->tag.blockNum, NULL))
+		/*no cover line*/
+		elog(ERROR, "The checksum of origin page " POLAR_LOG_BUFFER_TAG_FORMAT
+				", from flashback log at %X/%X is wrong", POLAR_LOG_BUFFER_TAG(&(rec_data->tag)),
+				(uint32)(ptr >> 32), (uint32) ptr);
+
+	return true;
+}
+
+/*
+ * POLAR: Decode the flashback log record
+ */
+flog_record *
+polar_decode_flog_rec_common(flog_reader_state *reader, polar_flog_rec_ptr ptr, RmgrId rm_id)
+{
+	flog_record *rec;
+	char *errormsg = NULL;
+
+	Assert(reader);
+	/* Read the flashback log record until the flashback log is invalid */
+	rec = polar_read_flog_record(reader, ptr, &errormsg);
+
+	if (rec == NULL)
+		/*no cover line*/
+		elog(ERROR, "The flashback log record at %X/%X is invaid with error: %s",
+			 (uint32)(ptr >> 32), (uint32) ptr, errormsg);
+	else if (rec->xl_rmid != rm_id)
+		/*no cover line*/
+		elog(ERROR, "The flashback log record at %X/%X expected is %s, but its rmid is %d now",
+				(uint32)(ptr >> 32), (uint32) ptr, flog_record_types[rm_id], rec->xl_rmid);
+
+	return rec;
+}
+
+/*
+ * POLAR: Decode the origin page flashback log record.
+ * Check the checkpoint lsn and crc field.
+ */
+bool
+polar_decode_origin_page_rec(flog_reader_state *reader, polar_flog_rec_ptr ptr, Page page,
+		XLogRecPtr *redo_lsn, BufferTag *tag)
+{
+	uint8       info;
+	bool        is_valid = false;
+	flog_record *rec;
+
+	rec = polar_decode_flog_rec_common(reader, ptr, ORIGIN_PAGE_ID);
+
+	Assert(rec->xl_rmid == ORIGIN_PAGE_ID);
+
+	if (!BUFFERTAGS_EQUAL(FL_GET_ORIGIN_PAGE_REC_DATA(rec)->tag, *tag))
+		/*no cover line*/
+		elog(ERROR, "The buffer tag flashback log record at %X/%X is " POLAR_LOG_BUFFER_TAG_FORMAT
+			 "not " POLAR_LOG_BUFFER_TAG_FORMAT,
+			 (uint32)(ptr >> 32), (uint32) ptr,
+			 POLAR_LOG_BUFFER_TAG(&(FL_GET_ORIGIN_PAGE_REC_DATA(rec)->tag)), POLAR_LOG_BUFFER_TAG(tag));
+
+	info = rec->xl_info;
+
+	switch (info & ORIGIN_PAGE_TYPE_MASK)
+	{
+		case ORIGIN_PAGE_EMPTY:
+			is_valid = true;
+			PageInit(page, BLCKSZ, 0);
+			break;
+
+		case ORIGIN_PAGE_FULL:
+			is_valid = decode_origin_page(rec, page, ptr);
+			break;
+
+		default:
+			/*no cover line*/
+			elog(ERROR, "Parse flashback log origin page rec: unknown information %u", info);
+	}
+
+	if (is_valid)
+		*redo_lsn = FL_GET_ORIGIN_PAGE_REC_DATA(rec)->redo_lsn;
+
+	return is_valid;
 }

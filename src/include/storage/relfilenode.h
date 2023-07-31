@@ -96,4 +96,12 @@ typedef struct RelFileNodeBackend
 	 (node1).backend == (node2).backend && \
 	 (node1).node.spcNode == (node2).node.spcNode)
 
+/* Copy relation filenode from a to b */
+#define COPY_REL_FILENODE(a, b) \
+( \
+	(b).spcNode = (a).spcNode, \
+	(b).dbNode = (a).dbNode, \
+	(b).relNode = (a).relNode \
+)
+
 #endif							/* RELFILENODE_H */

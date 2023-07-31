@@ -38,6 +38,9 @@ usage(void)
 	printf("datamax-get-wal\n");
 	printf("flashback-log-control\n");
 	printf("flashback-log-file\n");
+	printf("flashback-point-file\n");
+	printf("flashback-snapshot-file\n");
+	printf("fra-control-file\n");
 }
 
 int
@@ -73,6 +76,12 @@ main(int argc, char **argv)
 		return flashback_log_control_dump_main(--argc, ++argv);
 	else if (strcmp(argv[1], "flashback-log-file") == 0)
 		return flashback_log_file_dump_main(--argc, ++argv);
+	else if (strcmp(argv[1], "flashback-point-file") == 0)
+		return flashback_point_file_dump_main(--argc, ++argv);
+	else if (strcmp(argv[1], "flashback-snapshot-file") == 0)
+		return flashback_snapshot_dump_main(--argc, ++argv);
+	else if (strcmp(argv[1], "fra-control-file") == 0)
+		return fra_control_dump_main(--argc, ++argv);
 	else
 		usage();
 

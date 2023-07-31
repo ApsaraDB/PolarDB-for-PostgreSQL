@@ -1176,3 +1176,43 @@ polar_remove_clog_local_cache_file(void)
 {
 	polar_slru_remove_local_cache_file(ClogCtl);
 }
+
+/* POLAR */
+
+/*
+ * POLAR: Get the minimal segment no in clog
+ */
+int
+polar_get_clog_min_seg_no(void)
+{
+	int min_seg_no = INT_MAX;
+
+	SlruScanDirectory(ClogCtl, polar_slru_find_min_seg, &min_seg_no);
+	return min_seg_no;
+}
+
+bool
+polar_xid_in_clog_dir(TransactionId xid, const char *clog_dir)
+{
+	int			pageno = TransactionIdToPage(xid);
+	SlruCtlData ctl;
+
+	StrNCpy(ctl.Dir, clog_dir, sizeof(ctl.Dir));
+	return polar_slru_page_physical_exists(&ctl, pageno);
+}
+
+XidStatus
+polar_get_xid_status(TransactionId xid, const char *clog_dir)
+{
+	int			pageno = TransactionIdToPage(xid);
+	int			byteno = TransactionIdToByte(xid);
+	int			bshift = TransactionIdToBIndex(xid) * CLOG_BITS_PER_XACT;
+	char	   *byteptr;
+	XidStatus	status;
+	PGAlignedBlock  clog_page;
+
+	polar_physical_read_fra_slru(clog_dir, pageno, clog_page.data);
+	byteptr = clog_page.data + byteno;
+	status = (*byteptr >> bshift) & CLOG_XACT_BITMASK;
+	return status;
+}

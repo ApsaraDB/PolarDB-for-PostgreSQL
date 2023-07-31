@@ -228,4 +228,6 @@ extern void polar_slru_init(void);
 extern void polar_slru_reg_local_cache(SlruCtl ctl, polar_local_cache cache);
 extern void polar_slru_promote(SlruCtl ctl);
 extern void polar_slru_remove_local_cache_file(SlruCtl ctl);
+extern bool polar_slru_find_min_seg(SlruCtl ctl, char *filename, int segpage, void *data);
+extern void polar_physical_read_fra_slru(const char *slru_dir, int page_no, char *page);
 #endif							/* SLRU_H */

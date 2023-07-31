@@ -102,6 +102,7 @@
 #include "utils/typcache.h"
 
 /* POLAR */
+#include "polar_flashback/polar_flashback_rel_filenode.h"
 #include "utils/guc.h"
 #include "storage/procarray.h"
 /* POLAR end */
@@ -11842,6 +11843,9 @@ ATExecSetTableSpace(Oid tableOid, Oid newTableSpace, LOCKMODE lockmode)
 	rd_rel->reltablespace = (newTableSpace == MyDatabaseTableSpace) ? InvalidOid : newTableSpace;
 	rd_rel->relfilenode = newrelfilenode;
 	CatalogTupleUpdate(pg_class, &tuple->t_self, tuple);
+
+	/* Log the relation file node update after pg_class changed */
+	polar_flog_filenode_update(flog_instance, fra_instance, rel->rd_id, newrelfilenode, newTableSpace, false, true);
 
 	InvokeObjectPostAlterHook(RelationRelationId, RelationGetRelid(rel), 0);
 

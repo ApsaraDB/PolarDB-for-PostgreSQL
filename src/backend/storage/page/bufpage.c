@@ -25,7 +25,7 @@
 
 /* POLAR */
 #include "utils/guc.h"
-#include "polar_flashback/polar_flashback_log_repair_page.h"
+#include "polar_flashback/polar_flashback_log.h"
 /* POLAR end */
 
 /* GUC variable */

@@ -27,17 +27,14 @@
 #include "catalog/pg_am_d.h"
 #include "miscadmin.h"
 #include "polar_flashback/polar_flashback_log.h"
-#include "polar_flashback/polar_flashback_log_decoder.h"
 #include "polar_flashback/polar_flashback_log_file.h"
 #include "polar_flashback/polar_flashback_log_index.h"
 #include "polar_flashback/polar_flashback_log_index_queue.h"
-#include "polar_flashback/polar_flashback_log_insert.h"
 #include "polar_flashback/polar_flashback_log_internal.h"
 #include "polar_flashback/polar_flashback_log_list.h"
 #include "polar_flashback/polar_flashback_log_mem.h"
 #include "polar_flashback/polar_flashback_log_reader.h"
 #include "polar_flashback/polar_flashback_log_record.h"
-#include "polar_flashback/polar_flashback_log_repair_page.h"
 #include "polar_flashback/polar_flashback_log_worker.h"
 #include "polar_flashback/polar_flashback_point.h"
 #include "postmaster/bgworker.h"
@@ -301,8 +298,8 @@ check_flog_history_file(polar_flog_rec_ptr switch_ptr, polar_flog_rec_ptr next_p
 static polar_flog_rec_ptr
 test_flog_insert_to_buffer(BufferTag test_tag, Page page, XLogRecPtr redo_lsn)
 {
-	return polar_insert_buf_flog_rec(buf_ctl_test, flog_index_queue_test,
-			&test_tag, redo_lsn, polar_get_curr_fbpoint_lsn(buf_ctl_test), 0, page, false);
+	return polar_insert_buf_flog_rec(test_instance, &test_tag, redo_lsn,
+			polar_get_curr_fbpoint_lsn(buf_ctl_test), 0, page, false);
 }
 
 static void
@@ -473,16 +470,16 @@ check_flog_truncate(polar_flog_rec_ptr ptr)
 	uint64      seg_no;
 
 	polar_make_file_path_level2(polar_path, polar_get_flog_dir(buf_ctl_test));
-	seg_no = flog_ptr_to_seg(ptr, POLAR_FLOG_SEG_SIZE);
+	seg_no = FLOG_PTR_TO_SEG(ptr, POLAR_FLOG_SEG_SIZE);
 	if (seg_no == 0)
 		return;
 	seg_no--;
-	get_flog_fname(lastoff, seg_no, POLAR_FLOG_SEG_SIZE, FLOG_DEFAULT_TIMELINE);
+	FLOG_GET_FNAME(lastoff, seg_no, POLAR_FLOG_SEG_SIZE, FLOG_DEFAULT_TIMELINE);
 	xldir = polar_allocate_dir(polar_path);
 	while ((xlde = ReadDir(xldir, polar_path)) != NULL)
 	{
 		/* Ignore files that are not flashback log segments */
-		if (!is_flashback_log_file(xlde->d_name))
+		if (!FLOG_IS_LOG_FILE(xlde->d_name))
 			continue;
 		Assert(strcmp(xlde->d_name, lastoff) > 0);
 	}
@@ -498,12 +495,12 @@ check_flog_prealloc_files(uint64 seg_no)
 	char		polar_path[MAXPGPATH];
 
 	polar_make_file_path_level2(polar_path, polar_get_flog_dir(buf_ctl_test));
-	get_flog_fname(lastoff, seg_no, POLAR_FLOG_SEG_SIZE, FLOG_DEFAULT_TIMELINE);
+	FLOG_GET_FNAME(lastoff, seg_no, POLAR_FLOG_SEG_SIZE, FLOG_DEFAULT_TIMELINE);
 	xldir = polar_allocate_dir(polar_path);
 	while ((xlde = ReadDir(xldir, polar_path)) != NULL)
 	{
 		/* Ignore files that are not flashback log segments */
-		if (!is_flashback_log_file(xlde->d_name))
+		if (!FLOG_IS_LOG_FILE(xlde->d_name))
 			continue;
 		Assert(strcmp(xlde->d_name, lastoff) <= 0);
 	}
@@ -578,7 +575,7 @@ init_flog_index(char *name, int logindex_mem_size, int logindex_bloom_blocks)
 static bool
 check_add_origin_page(BufferDesc *buf_hdr, int8 buf_index)
 {
-	Assert(((get_origin_buf_bit(flog_list_test, buf_index)) & 1) == 1);
+	Assert(((GET_ORIGIN_BUF_BIT(flog_list_test, buf_index)) & 1) == 1);
 	Assert(BUFFERTAGS_EQUAL(flog_list_test->buf_tag[buf_index], buf_hdr->tag));
 	Assert(memcmp(flog_list_test->origin_buf + buf_index * BLCKSZ,
 			(char *) BufHdrGetBlock(buf_hdr), BLCKSZ) == 0);
@@ -592,7 +589,7 @@ check_clean_origin_page(int buf_id, int8 buf_index)
 	char origin_buf_clean[BLCKSZ];
 
 	MemSet(origin_buf_clean, 0, BLCKSZ);
-	Assert(((get_origin_buf_bit(flog_list_test, buf_index)) & 1) == 0);
+	Assert(((GET_ORIGIN_BUF_BIT(flog_list_test, buf_index)) & 1) == 0);
 	Assert(memcmp(flog_list_test->origin_buf + buf_index * BLCKSZ, origin_buf_clean, BLCKSZ) == 0);
 	Assert(flog_list_test->flashback_list[buf_id].origin_buf_index == -1);
 	return true;
@@ -736,9 +733,22 @@ test_flog_index_search(polar_flog_rec_ptr start_ptr)
 	PGAlignedBlock page_empty;
 	polar_flog_rec_ptr end_ptr;
 	int i;
+	flshbak_buf_context_t context;
+	flog_reader_state *reader;
 
 	PageInit((Page)page_empty.data, BLCKSZ, 0);
 	end_ptr = polar_get_flog_write_result(buf_ctl_test);
+
+	reader = polar_flog_reader_allocate(POLAR_FLOG_SEG_SIZE,
+			&polar_flog_page_read, NULL, buf_ctl_test);
+
+	Assert(reader);
+
+	context.logindex_snapshot = flog_index_test;
+	context.start_ptr = start_ptr;
+	context.end_ptr = end_ptr;
+	context.reader = reader;
+
 	for (i = 0; i < insert_empty_page_rec_num; i++)
 	{
 		BufferTag test_tag;
@@ -752,8 +762,8 @@ test_flog_index_search(polar_flog_rec_ptr start_ptr)
 		test_tag.rnode.spcNode = i;
 		test_tag.forkNum = MAIN_FORKNUM;
 		test_tag.blockNum = i;
-
-		polar_get_origin_page(test_instance, &test_tag, (Page) page.data, start_ptr, end_ptr, &redo_lsn);
+		context.tag = &test_tag;
+		polar_get_origin_page(&context, (Page) page.data, &redo_lsn);
 		Assert(redo_lsn == i);
 		Assert(memcmp(page_empty.data, page.data, BLCKSZ) == 0);
 	}
@@ -791,7 +801,7 @@ test_flog_init(bool first_init)
 	Assert(test_instance->list_ctl);
 	Assert(test_instance->logindex_snapshot);
 	Assert(test_instance->queue_ctl);
-	Assert(test_instance->state == FLOG_INIT);
+	Assert(pg_atomic_read_u32(&test_instance->state) == FLOG_INIT);
 
 	/* Check flashback log control */
 	buf_ctl_test = test_instance->buf_ctl;
@@ -833,14 +843,14 @@ test_flog_startup(bool is_crash, flog_ctl_file_data_t ctl_file_data)
 		ctl_file_data.fbpoint_info.flog_end_ptr_prev = POLAR_INVALID_FLOG_REC_PTR;
 		polar_startup_flog(&checkpoint, test_instance);
 		Assert(buf_ctl_test->buf_state == FLOG_BUF_READY);
-		Assert(test_instance->state == FLOG_STARTUP || test_instance->state == FLOG_READY);
+		Assert(pg_atomic_read_u32(&test_instance->state) == FLOG_STARTUP || pg_atomic_read_u32(&test_instance->state) == FLOG_READY);
 	}
 	else
 	{
 		Assert(ctl_file_data.version_no & FLOG_SHUTDOWNED);
 		polar_startup_flog(&checkpoint, test_instance);
 		Assert(buf_ctl_test->buf_state == FLOG_BUF_READY);
-		Assert(test_instance->state == FLOG_STARTUP || test_instance->state == FLOG_READY);
+		Assert(pg_atomic_read_u32(&test_instance->state) == FLOG_STARTUP || pg_atomic_read_u32(&test_instance->state) == FLOG_READY);
 	}
 	check_flog_dir_validate(TEST_FLOG_NAME, false);
 	/* Check the flashback log checkpoint info */
@@ -848,6 +858,8 @@ test_flog_startup(bool is_crash, flog_ctl_file_data_t ctl_file_data)
 	/* Check the flashback point wal lsn */
 	Assert(flog_wal_info_equal(buf_ctl_test->wal_info,
 			ctl_file_data.fbpoint_info.wal_info));
+	/* Check the flashback log redo lsn */
+	Assert(buf_ctl_test->redo_lsn == checkpoint.redo);
 	/* Check the flashback log max seg no */
 	Assert(buf_ctl_test->max_seg_no == ctl_file_data.max_seg_no);
 	/* Check the flashback log index */
@@ -864,7 +876,7 @@ test_flog_recover(void)
 
 	polar_recover_flog(test_instance);
 	Assert(buf_ctl_test->buf_state == FLOG_BUF_READY);
-	Assert(test_instance->state == FLOG_READY);
+	Assert(pg_atomic_read_u32(&test_instance->state) == FLOG_READY);
 }
 
 static void
@@ -873,12 +885,12 @@ check_flog_list_insert(int buf_id, XLogRecPtr fbpoint_lsn)
 	XLogRecPtr redo_lsn;
 	BufferDesc *buf_hdr = GetBufferDescriptor(buf_id);
 
-	redo_lsn = polar_get_prior_fbpoint_lsn(buf_ctl_test);
+	redo_lsn = buf_ctl_test->redo_lsn;
 	Assert(flog_list_test->flashback_list[buf_id].flashback_ptr == POLAR_INVALID_FLOG_REC_PTR);
 	Assert(flog_list_test->flashback_list[buf_id].redo_lsn == redo_lsn);
 	Assert(flog_list_test->flashback_list[buf_id].fbpoint_lsn == fbpoint_lsn);
 	Assert(flog_list_test->flashback_list[buf_id].info & FLOG_LIST_SLOT_READY);
-	Assert(polar_check_buf_flog_state(buf_hdr, POLAR_BUF_IN_FLOG_LIST));
+	Assert(POLAR_CHECK_BUF_FLOG_STATE(buf_hdr, POLAR_BUF_IN_FLOG_LIST));
 }
 
 static void
@@ -898,7 +910,7 @@ check_flog_list_clean(int buf_id, bool is_flog_flushed, bool check_buf_redo_stat
 	Assert(flog_list_test->flashback_list[buf_id].origin_buf_index == -1);
 	Assert(flog_list_test->head != buf_id);
 	if (check_buf_redo_state)
-		Assert(!polar_check_buf_flog_state(buf_hdr, POLAR_BUF_IN_FLOG_LIST));
+		Assert(!POLAR_CHECK_BUF_FLOG_STATE(buf_hdr, POLAR_BUF_IN_FLOG_LIST));
 }
 
 static void
@@ -921,8 +933,9 @@ test_flog_insert_list(bool has_origin_buffer)
 		int8 origin_buf_index = -1;
 
 
-		rel = try_relation_open(test_relnodes[i], NoLock);
+		rel = try_relation_open(test_relnodes[i], AccessShareLock);
 		buf = ReadBuffer(rel, 0);
+		relation_close(rel, AccessShareLock);
 		Assert(buf > 0 && buf <= NBuffers);
 		buf_id = buf - 1;
 		buf_hdr = GetBufferDescriptor(buf_id);
@@ -967,7 +980,7 @@ test_flog_insert_list(bool has_origin_buffer)
 
 		buf_id = test_bufs[i];
 		Assert(flog_list_test->flashback_list[buf_id].prev_buf == NOT_IN_FLOG_LIST);
-		polar_insert_flog_rec_from_list_bg(flog_list_test, buf_ctl_test, flog_index_queue_test);
+		polar_process_flog_list_bg(test_instance);
 
 		if (has_origin_buffer)
 		{
@@ -1163,6 +1176,8 @@ test_flog_repair_buffer(Buffer bufs[TEST_BUF_LIST_NUM])
 		{
 			buf_hdr = GetBufferDescriptor(buf_id);
 			memcpy(page.data, (char *) BufHdrGetBlock(buf_hdr), BLCKSZ);
+			/* Memset the hole to zero */
+			MemSet(page.data + ((PageHeader) page.data)->pd_lower, 0, ((PageHeader) page.data)->pd_upper - ((PageHeader) page.data)->pd_lower);
 
 			/* Set the buffer invalid first to test */
 			buf_state = LockBufHdr(buf_hdr);
@@ -1172,9 +1187,8 @@ test_flog_repair_buffer(Buffer bufs[TEST_BUF_LIST_NUM])
 			/* Break the buffer */
 			memset((char *) BufHdrGetBlock(buf_hdr), 0, BLCKSZ);
 			polar_repair_partial_write(test_instance, buf_hdr);
-			Assert(polar_check_buf_flog_state(buf_hdr, POLAR_BUF_FLOG_DISABLE));
+			Assert(POLAR_CHECK_BUF_FLOG_STATE(buf_hdr, POLAR_BUF_FLOG_DISABLE));
 			Assert(memcmp(page.data, (char *) BufHdrGetBlock(buf_hdr), BLCKSZ) == 0);
-
 			/* Set the buffer valid again */
 			buf_state = LockBufHdr(buf_hdr);
 			buf_state |= BM_VALID;
@@ -1216,7 +1230,9 @@ test_flog_checkpoint(bool is_shutdown)
 
 	ckp_start = polar_get_flog_write_result(buf_ctl_test);
 	polar_set_fbpoint_wal_info(buf_ctl_test, lsn, ckp_time, InvalidXLogRecPtr, false);
-	polar_flog_do_fbpoint(test_instance, ckp_start, is_shutdown);
+	polar_flog_do_fbpoint(test_instance, ckp_start, ckp_start, is_shutdown);
+	/* Just set the redo lsn to lsn prior */
+	POLAR_CHECK_POINT_FLOG(test_instance, lsn_prior);
 
 	if (is_shutdown)
 	{
@@ -1244,7 +1260,7 @@ test_flog_checkpoint(bool is_shutdown)
 	check_flog_control_file(ckp_start, ckp_end, ckp_end_prev, max_seg_no,
 			buf_ctl_test->wal_info, is_shutdown);
 
-	Assert(buf_ctl_test->keep_wal_lsn == lsn_prior);
+	Assert(buf_ctl_test->redo_lsn == lsn_prior);
 	check_flog_truncate(Min(ckp_start, polar_get_flog_index_meta_max_ptr(flog_index_test)));
 }
 
@@ -1453,7 +1469,7 @@ test_insert_flog_from_bp(int test_bp_buf_nums, bool is_recovery)
 				replay_lsn = polar_get_curr_fbpoint_lsn(buf_ctl_test) + 1;
 		}
 
-		if (polar_check_buf_flog_state(buf_hdr, POLAR_BUF_IN_FLOG_LIST))
+		if (POLAR_CHECK_BUF_FLOG_STATE(buf_hdr, POLAR_BUF_IN_FLOG_LIST))
 		{
 			check_buf_redo_state = false;
 			inserted = false;
@@ -1536,13 +1552,13 @@ test_flashback_log_online_promote(void)
 		polar_get_local_fbpoint_lsn(buf_ctl_test, InvalidXLogRecPtr, 1);
 
 		if ((j & 1) ||
-				polar_check_buf_flog_state(buf_hdr, POLAR_BUF_FLOG_LOST_CHECKED))
+				POLAR_CHECK_BUF_FLOG_STATE(buf_hdr, POLAR_BUF_FLOG_LOST_CHECKED))
 		{
 			polar_set_buf_flog_lost_checked(test_instance, &redo_instance, i + 1);
 			inserted = false;
 		}
 
-		if (polar_check_buf_flog_state(buf_hdr, POLAR_BUF_IN_FLOG_LIST))
+		if (POLAR_CHECK_BUF_FLOG_STATE(buf_hdr, POLAR_BUF_IN_FLOG_LIST))
 		{
 			inserted = false;
 			check_buf_redo_state = false;
@@ -1596,7 +1612,6 @@ test_flashback_log(PG_FUNCTION_ARGS)
 {
 	polar_flog_rec_ptr ptr;
 	flog_ctl_file_data_t ctl_file_data;
-	CheckPoint checkpoint;
 	fbpoint_wal_info_data_t wal_info;
 
 	if (!polar_is_flog_enabled(flog_instance))
@@ -1665,10 +1680,7 @@ test_flashback_log(PG_FUNCTION_ARGS)
 	test_flashback_log_online_promote();
 
 	/* test remove the flashback data */
-	polar_enable_flashback_log = false;
-	checkpoint.redo = GetRedoRecPtr();
-	checkpoint.time = (pg_time_t) time(NULL);
-	polar_startup_flog(&checkpoint, test_instance);
+	polar_remove_all_flog_data(test_instance);
 	check_flog_dir_validate(TEST_FLOG_NAME, true);
 
 	PG_RETURN_VOID();

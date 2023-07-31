@@ -23,12 +23,13 @@
  */
 #ifndef POLAR_FLASHBACK_LOG_FILE_H
 #define POLAR_FLASHBACK_LOG_FILE_H
+
 #include "access/xlogdefs.h"
 #include "polar_flashback/polar_flashback_log_mem.h"
 
 /* Something about flashback log ctl file */
 #define FLOG_CTL_FILE_VERSION 0x0001
-#define FLOG_CTL_FILE "flashback_log_control"
+#define FLOG_CTL_FILE "flog_control"
 
 /* Something about flashback log history file */
 #define FLOG_HISTORY_FILE "flashback_log.history"
@@ -45,33 +46,33 @@
 /*
  * Is an flashback log ptr within a particular segment?
  *
- * For ptr_in_flog_seg, do the computation at face value.
- * For ptr_prev_in_flog_seg, a boundary byte is taken to be in the previous segment.
+ * For FLOG_PTR_IN_SEG, do the computation at face value.
+ * For FLOG_PTR_PREV_IN_SEG, a boundary byte is taken to be in the previous segment.
  */
-#define ptr_in_flog_seg(ptr, seg_no, segsz_bytes) \
+#define FLOG_PTR_IN_SEG(ptr, seg_no, segsz_bytes) \
 	(((ptr) / (segsz_bytes)) == (seg_no))
 
-#define ptr_prev_in_flog_seg(ptr, seg_no, segsz_bytes) \
+#define FLOG_PTR_PREV_IN_SEG(ptr, seg_no, segsz_bytes) \
 	((((ptr) - 1) / (segsz_bytes)) == (seg_no))
 
-#define segs_per_flog_id(segsz_bytes)   \
+#define FLOG_SEGS_PER_ID(segsz_bytes)   \
 	(UINT64CONST(0x100000000) / (segsz_bytes))
 
-#define get_flog_fname(fname, seg_no, segsz_bytes, tli) \
+#define FLOG_GET_FNAME(fname, seg_no, segsz_bytes, tli) \
 	snprintf(fname, FLOG_MAX_FNAME_LEN, "%08X%08X%08X", \
-			 tli, (uint32) ((seg_no) / segs_per_flog_id(segsz_bytes)), \
-			 (uint32) ((seg_no) % segs_per_flog_id(segsz_bytes)))
+			 tli, (uint32) ((seg_no) / FLOG_SEGS_PER_ID(segsz_bytes)), \
+			 (uint32) ((seg_no) % FLOG_SEGS_PER_ID(segsz_bytes)))
 
-#define get_flog_seg_from_fname(fname, seg_no, seg_size) \
+#define FLOG_GET_SEG_FROM_FNAME(fname, seg_no, seg_size) \
 	do {                                                \
 		uint32 log;                                     \
 		uint32 seg;                                     \
 		TimeLineID tli;                                 \
 		sscanf(fname, "%08X%08X%08X", &tli, &log, &seg); \
-		*seg_no = (uint64) log * segs_per_flog_id(seg_size) + seg; \
+		*seg_no = (uint64) log * FLOG_SEGS_PER_ID(seg_size) + seg; \
 	} while (0)
 
-#define is_flashback_log_file(fname) \
+#define FLOG_IS_LOG_FILE(fname) \
 	(strlen(fname) == FLOG_FNAME_LEN && \
 	 strspn(fname, "0123456789ABCDEF") == FLOG_FNAME_LEN)
 
@@ -90,10 +91,10 @@
  * be in the previous segment. This is suitable for deciding which segment
  * to write given a pointer to a record end, for example.
  */
-#define flog_ptr_to_seg(ptr, segsz_bytes) \
+#define FLOG_PTR_TO_SEG(ptr, segsz_bytes) \
 	((ptr) / (segsz_bytes))
 
-#define flog_ptr_prev_to_seg(ptr, segsz_bytes) \
+#define FLOG_PTR_PREV_TO_SEG(ptr, segsz_bytes) \
 	(((ptr) - 1) / (segsz_bytes))
 
 typedef struct flog_ctl_file_data_t
@@ -131,7 +132,7 @@ extern void polar_validate_flog_dir(flog_buf_ctl_t ctl);
 extern void polar_flog_clean_dir_internal(const char *dir_path);
 extern void polar_flog_remove_all(flog_buf_ctl_t ctl);
 
-extern bool polar_is_flog_file_exist(const char *dir, polar_flog_rec_ptr ptr, int elevel);
+extern bool polar_flog_file_exists(const char *dir, polar_flog_rec_ptr ptr, int elevel);
 
 extern int polar_flog_file_open(uint64 segno, const char *dir);
 extern int polar_flog_file_init(flog_buf_ctl_t ctl, uint64 logsegno, bool *use_existent);

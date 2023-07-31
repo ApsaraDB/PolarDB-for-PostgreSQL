@@ -27,8 +27,6 @@
 #include "port/atomics.h"
 #include "storage/lwlock.h"
 
-typedef void (*polar_interrupt_callback)(void);
-
 /*
  * Each ring buffer reference occupy one slot.
  * Define the upper limit for ring buffer reference
@@ -36,6 +34,8 @@ typedef void (*polar_interrupt_callback)(void);
 #define POLAR_RINGBUF_MAX_SLOT              32
 #define POLAR_RINGBUF_MAX_REF_NAME          63
 typedef struct polar_ringbuf_data_t         *polar_ringbuf_t;
+
+typedef void (*polar_interrupt_callback)(polar_ringbuf_t);
 
 typedef struct polar_ringbuf_slot_t
 {

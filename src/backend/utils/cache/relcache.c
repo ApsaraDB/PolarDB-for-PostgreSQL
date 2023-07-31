@@ -95,6 +95,7 @@
 
 /* POLAR */
 #include "utils/guc.h"
+#include "polar_flashback/polar_flashback_rel_filenode.h"
 
 #define RELCACHE_INIT_FILEMAGIC		0x573266	/* version ID value */
 
@@ -3442,6 +3443,10 @@ RelationSetNewRelfilenode(Relation relation, char persistence,
 
 		CatalogTupleUpdate(pg_class, &tuple->t_self, tuple);
 	}
+
+	/* POLAR: Log the relation file node update after set a new relfilenode */
+	polar_flog_filenode_update(flog_instance, fra_instance, relation->rd_id,
+			newrelfilenode, InvalidOid, false, false);
 
 	heap_freetuple(tuple);
 

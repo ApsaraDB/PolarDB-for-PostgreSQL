@@ -16,20 +16,28 @@
 
 #include "access/xlog.h"
 #include "access/xlogdefs.h"
+#include "common/pg_lzcompress.h"
 #include "miscadmin.h"
 #include "polar_flashback/polar_flashback_log.h"
 #include "polar_flashback/polar_flashback_log_file.h"
 #include "polar_flashback/polar_flashback_log_index.h"
-#include "polar_flashback/polar_flashback_log_insert.h"
 #include "polar_flashback/polar_flashback_log_worker.h"
 #include "polar_flashback/polar_flashback_point.h"
+#include "polar_flashback/polar_flashback_rel_filenode.h"
+#include "postmaster/startup.h"
 #include "storage/buf_internals.h"
 #include "storage/bufpage.h"
 #include "storage/bufmgr.h"
+#include "storage/checksum.h"
 #include "utils/guc.h"
+
+/* Buffer size required to store a compressed version of origin page */
+#define PGLZ_MAX_BLCKSZ PGLZ_MAX_OUTPUT(BLCKSZ)
 
 /* GUCs */
 bool polar_enable_flashback_log;
+bool polar_has_partial_write;
+bool polar_flashback_log_debug;
 /* For the logindex */
 int polar_flashback_logindex_mem_size;
 int polar_flashback_logindex_bloom_blocks;
@@ -40,18 +48,12 @@ int polar_flashback_log_insert_locks;
 
 flog_ctl_t flog_instance = NULL;
 
-static bool
-flog_data_need_remove_all(void)
-{
-	return !polar_enable_flashback_log && !polar_in_replica_mode();
-}
-
 /*
  * POLAR: Remove all the flashback relative files contain log files and
  * logindex files. And keep the flashback logindex dir.
  */
-static void
-flog_data_remove_all(flog_ctl_t instance)
+void
+polar_remove_all_flog_data(flog_ctl_t instance)
 {
 	logindex_snapshot_t snapshot = NULL;
 	flog_buf_ctl_t buf_ctl = NULL;
@@ -66,7 +68,7 @@ flog_data_remove_all(flog_ctl_t instance)
 	polar_flog_remove_all(buf_ctl);
 }
 
-static Size
+static inline Size
 flog_ctl_size(void)
 {
 	return MAXALIGN(sizeof(flog_ctl_data_t));
@@ -77,18 +79,17 @@ flog_ctl_size(void)
  *
  * NB: Only startup process will call the function, so it is lock free.
  */
-static void
-polar_set_flog_state(flog_ctl_t instance, flashback_state state)
+static inline void
+polar_set_flog_state(flog_ctl_t instance, uint32 state)
 {
-	instance->state = state;
-	pg_write_barrier();
+	pg_atomic_write_u32(&instance->state, state);
 }
 
-void
+inline void
 polar_flog_ctl_init_data(flog_ctl_t ctl)
 {
 	MemSet(ctl, 0, sizeof(flog_ctl_data_t));
-	ctl->state = FLOG_INIT;
+	pg_atomic_init_u32(&ctl->state, FLOG_INIT);
 }
 
 static flog_ctl_t
@@ -165,7 +166,7 @@ polar_flush_flog_data(flog_buf_ctl_t ctl, polar_flog_rec_ptr ckp_start, bool shu
 		 * while the buffer isn't always flushed in shutdown restartpoint of standby.
 		 */
 		polar_flog_flush(ctl, ckp_end);
-		polar_set_flog_buf_state(ctl, FLOG_BUF_SHUTDOWNED);
+		ctl->buf_state = FLOG_BUF_SHUTDOWNED;
 	}
 	else
 		ckp_end = polar_get_flog_write_result(ctl);
@@ -199,7 +200,7 @@ clean_buf_flog_state(BufferDesc *buf_hdr, uint32 flog_state)
 	polar_unlock_redo_state(buf_hdr, state);
 }
 
-bool
+inline bool
 polar_is_flog_mem_enabled(void)
 {
 	return polar_enable_flashback_log && !polar_is_datamax() && !IsBootstrapProcessingMode();
@@ -208,17 +209,16 @@ polar_is_flog_mem_enabled(void)
 /*
  * POLAR: Is the flashback log enabled?
  */
-bool
+inline bool
 polar_is_flog_enabled(flog_ctl_t instance)
 {
 	return instance && !polar_in_replica_mode();
 }
 
-bool
+inline bool
 polar_is_flog_ready(flog_ctl_t instance)
 {
-	pg_read_barrier();
-	return instance->state == FLOG_READY;
+	return pg_atomic_read_u32(&instance->state) == FLOG_READY;
 }
 
 /*
@@ -229,11 +229,10 @@ polar_is_flog_ready(flog_ctl_t instance)
  * 1. read the control file and fill the flashback log buf_ctl info.
  * 2. call polar_logindex_snapshot_init to do logindex snapshot init.
  */
-bool
+inline bool
 polar_has_flog_startup(flog_ctl_t instance)
 {
-	pg_read_barrier();
-	return instance->state > FLOG_INIT;
+	return pg_atomic_read_u32(&instance->state) > FLOG_INIT;
 }
 
 /*
@@ -254,33 +253,6 @@ polar_flog_shmem_size_internal(int insert_locks_num, int log_buffers, int logind
 }
 
 /*
- * POLAR: Get the flashback log relative memory.
- */
-Size
-polar_flog_shmem_size(void)
-{
-	Size size = 0;
-
-	if (polar_enable_flashback_log)
-	{
-		/*no cover begin*/
-		if (polar_flashback_logindex_mem_size == 0)
-			elog(FATAL, "Cannot enable flashback log when \"polar_flashback_logindex_mem_size\" is zero.");
-
-		if (polar_logindex_mem_size == 0)
-			elog(FATAL, "Cannot enable flashback log when \"polar_logindex_mem_size\" is zero.");
-
-		/*no cover end*/
-	}
-	else
-		return size;
-
-	return polar_flog_shmem_size_internal(polar_flashback_log_insert_locks,
-										  polar_flashback_log_buffers, polar_flashback_logindex_mem_size,
-										  polar_flashback_logindex_bloom_blocks, polar_flashback_logindex_queue_buffers);
-}
-
-/*
  * POLAR: Initialization of shared memory for flashback log internal function
  */
 flog_ctl_t
@@ -298,16 +270,6 @@ polar_flog_shmem_init_internal(const char *name, int insert_locks_num,
 	return ctl;
 }
 
-void
-polar_flog_shmem_init(void)
-{
-	if (polar_is_flog_mem_enabled())
-		flog_instance = polar_flog_shmem_init_internal(POLAR_FL_DEFAULT_DIR,
-													   polar_flashback_log_insert_locks, polar_flashback_log_buffers,
-													   polar_flashback_logindex_mem_size, polar_flashback_logindex_bloom_blocks,
-													   polar_flashback_logindex_queue_buffers);
-}
-
 /*
  * POLAR: Do something after the flashback point is done.
  *
@@ -315,12 +277,13 @@ polar_flog_shmem_init(void)
  * 2. remove the old flashback log.
  */
 void
-polar_flog_do_fbpoint(flog_ctl_t instance, polar_flog_rec_ptr ckp_start, bool shutdown)
+polar_flog_do_fbpoint(flog_ctl_t instance, polar_flog_rec_ptr ckp_start,
+		polar_flog_rec_ptr keep_ptr, bool shutdown)
 {
 	flog_buf_ctl_t buf_ctl = instance->buf_ctl;
 
 	polar_flush_flog_data(buf_ctl, ckp_start, shutdown);
-	polar_remove_flog_data(instance, ckp_start);
+	polar_remove_flog_data(instance, keep_ptr);
 }
 
 /*
@@ -336,7 +299,7 @@ polar_is_buf_flog_enabled(flog_ctl_t instance, Buffer buf)
 
 	buf_hdr = GetBufferDescriptor(buf - 1);
 	return polar_is_flog_enabled(flog_instance) &&
-			!polar_check_buf_flog_state(buf_hdr, POLAR_BUF_FLOG_DISABLE);
+			!POLAR_CHECK_BUF_FLOG_STATE(buf_hdr, POLAR_BUF_FLOG_DISABLE);
 }
 
 /*
@@ -356,7 +319,7 @@ polar_is_flog_needed(flog_ctl_t flog_ins, polar_logindex_redo_ctl_t redo_ins,
 {
 	Assert(flog_ins);
 
-	if (!is_need_flog(forkno) || !is_permanent)
+	if (!POLAR_IS_NEED_FLOG(forkno) || !is_permanent)
 		return false;
 
 	if (redo_lsn != InvalidXLogRecPtr)
@@ -421,30 +384,30 @@ polar_check_fpi_origin_page(RelFileNode rnode, ForkNumber forkno, BlockNumber bl
 
 		if (!PageIsNew(page_tmp.data) && !polar_page_is_just_inited(page_tmp.data))
 			/*no cover line*/
-			elog(PANIC, "The page [%u, %u, %u], %d, %u has a full page image wal record, "
-					"but its origin page is not a empty page", rnode.spcNode, rnode.dbNode, rnode.relNode,
-					forkno, block);
+			elog(PANIC, "The page " POLAR_LOG_BUFFER_TAG_FORMAT " has a full page image wal record, "
+					"but its origin page is not a empty page", rnode.spcNode, rnode.dbNode,
+					rnode.relNode, forkno, block);
 	}
 }
 
 /*
  * POLAR: Flush the flashback log record of the buffer.
  *
- * is_invalidate: Is the buffer invalidate?
+ * invalidate: Invalidate the buffer?
  *
  * When we drop the relation or database, the buffer is invalidate and its flashback log is
  * unnecessary.
  */
 void
-polar_flush_buf_flog_rec(BufferDesc *buf_hdr, flog_ctl_t instance, bool is_invalidate)
+polar_flush_buf_flog_rec(BufferDesc *buf_hdr, flog_ctl_t instance, bool invalidate)
 {
 	if (!polar_is_flog_enabled(instance))
 		return;
 
-	polar_insert_buf_flog_rec_sync(instance->list_ctl, instance->buf_ctl,
-			instance->queue_ctl, buf_hdr, is_invalidate);
+	if (IS_BUF_IN_FLOG_LIST(buf_hdr))
+		polar_process_buf_flog_list(instance, buf_hdr, false, invalidate);
 
-	polar_flush_buf_flog(instance->list_ctl, instance->buf_ctl, buf_hdr, is_invalidate);
+	polar_flush_buf_flog(instance->list_ctl, instance->buf_ctl, buf_hdr, invalidate);
 }
 
 /*
@@ -453,51 +416,36 @@ polar_flush_buf_flog_rec(BufferDesc *buf_hdr, flog_ctl_t instance, bool is_inval
  * state: the database state.
  * instance: the flashback log instance.
  *
- * NB: It just fill some control info. The flashback log
- * buffer recovery and logindex recovery will be
- * done by the flashback log background writer.
+ * NB: It will switch to a new file when the flashback log is in crash recovery.
  */
 void
 polar_startup_flog(CheckPoint *checkpoint, flog_ctl_t instance)
 {
-	if (!IsUnderPostmaster)
-		return;
-
-	/* Remove all when flashback log is unenable */
-	if (flog_data_need_remove_all())
-	{
-		flog_data_remove_all(instance);
-		return;
-	}
-
 	/* Validate directory and startup the flashback log and flashback logindex in the rw and standby */
-	if (polar_is_flog_enabled(instance))
+	logindex_snapshot_t snapshot = instance->logindex_snapshot;
+	flog_buf_ctl_t buf_ctl = instance->buf_ctl;
+
+	Assert(polar_is_flog_enabled(instance));
+	polar_validate_flog_dir(buf_ctl);
+	polar_validate_flog_index_dir(snapshot);
+
+	/* Remove all the temporary flashback log files */
+	polar_remove_tmp_flog_file(buf_ctl->dir);
+
+	polar_startup_flog_buf(buf_ctl, checkpoint);
+	polar_startup_flog_index(snapshot,
+							 VALID_FLOG_PTR(polar_get_fbpoint_start_ptr(buf_ctl)));
+
+	if (buf_ctl->buf_state == FLOG_BUF_READY)
+		polar_set_flog_state(instance, FLOG_READY);
+	else
 	{
-		logindex_snapshot_t snapshot = instance->logindex_snapshot;
-		flog_buf_ctl_t buf_ctl = instance->buf_ctl;
-
-		Assert(instance);
-		polar_validate_flog_dir(buf_ctl);
-		polar_validate_flog_index_dir(snapshot);
-
-		/* Remove all the temporary flashback log files */
-		polar_remove_tmp_flog_file(buf_ctl->dir);
-
-		polar_startup_flog_buf(buf_ctl, checkpoint);
-		polar_startup_flog_index(snapshot,
-								 VALID_FLOG_PTR(polar_get_fbpoint_start_ptr(buf_ctl)));
-
-		if (buf_ctl->buf_state == FLOG_BUF_READY)
-			polar_set_flog_state(instance, FLOG_READY);
-		else
-		{
-			/*
-			 * Recover the flashback log buffer, so we can insert flashback log
-			 * in the startup process without wait.
-			 */
-			polar_recover_flog_buf(instance);
-			polar_set_flog_state(instance, FLOG_STARTUP);
-		}
+		/*
+		 * Recover the flashback log buffer, so we can insert flashback log
+		 * in the startup process without wait.
+		 */
+		polar_recover_flog_buf(instance);
+		polar_set_flog_state(instance, FLOG_STARTUP);
 	}
 }
 
@@ -521,7 +469,6 @@ polar_recover_flog_buf(flog_ctl_t instance)
 	polar_flog_rec_ptr prev_pos;
 	polar_flog_rec_ptr block_end_ptr;
 	uint64    seg_no = 0;
-	flog_buf_state state;
 
 	LWLockAcquire(&buf_ctl->ctl_file_lock, LW_SHARED);
 	ckp_end_ptr = buf_ctl->fbpoint_info.flog_end_ptr;
@@ -534,15 +481,14 @@ polar_recover_flog_buf(flog_ctl_t instance)
 	/* If there is no flashback log record, just return */
 	if (seg_no == POLAR_INVALID_FLOG_SEGNO)
 	{
-		polar_set_flog_buf_state(buf_ctl, FLOG_BUF_READY);
+		buf_ctl->buf_state = FLOG_BUF_READY;
 		polar_set_flog_state(instance, FLOG_READY);
 		elog(LOG, "There is no flashback log data, so just skip the recovery of"
 			 " the flashback log and logindex");
 		return;
 	}
 
-	state = polar_get_flog_buf_state(buf_ctl);
-	polar_log_flog_buf_state(state);
+	polar_log_flog_buf_state(buf_ctl->buf_state);
 
 	/*
 	 * Note the previous pointer is not correct. Its expected value
@@ -550,9 +496,9 @@ polar_recover_flog_buf(flog_ctl_t instance)
 	 * than ckp_end_ptr. It is nothing serious, we just process this case
 	 * in the reader function.
 	 */
-	if (state == FLOG_BUF_SHUTDOWN_RECOVERY)
+	if (buf_ctl->buf_state == FLOG_BUF_SHUTDOWN_RECOVERY)
 		ptr = ckp_end_ptr;
-	else if (state == FLOG_BUF_CRASH_RECOVERY)
+	else if (buf_ctl->buf_state == FLOG_BUF_CRASH_RECOVERY)
 	{
 		ptr = (seg_no + 1) * POLAR_FLOG_SEG_SIZE;
 		prev_ptr = POLAR_INVALID_FLOG_REC_PTR;
@@ -587,7 +533,7 @@ polar_recover_flog_buf(flog_ctl_t instance)
 	else
 		/*no cover line*/
 		ereport(PANIC, (errcode(ERRCODE_INTERNAL_ERROR),
-						errmsg("The invalid flashback log buffer recovery state: %u", state)));
+						errmsg("The invalid flashback log buffer recovery state: %u", buf_ctl->buf_state)));
 
 	/* Write control file, update the flashback state area */
 	LWLockAcquire(&buf_ctl->ctl_file_lock, LW_EXCLUSIVE);
@@ -640,9 +586,8 @@ polar_recover_flog_buf(flog_ctl_t instance)
 	insert->curr_pos = pos;
 	insert->prev_pos = prev_pos;
 	SpinLockRelease(&insert->insertpos_lck);
-	polar_set_flog_buf_state(buf_ctl, FLOG_BUF_READY);
-
-	polar_set_flog_min_recover_lsn(buf_ctl, ptr);
+	buf_ctl->buf_state = FLOG_BUF_READY;
+	buf_ctl->min_recover_lsn = ptr;
 
 	elog(LOG, "The flashback log shared buffer is ready now, the current point(position)"
 				 " is %X/%X(%X/%X), previous point(position) is %X/%X(%X/%X), initalized upto point is"
@@ -685,7 +630,7 @@ polar_set_buf_flog_lost_checked(flog_ctl_t flog_ins,
  * flushed to disk already.
  */
 bool
-polar_may_buf_lost_flog(flog_ctl_t flog_ins, polar_logindex_redo_ctl_t redo_instance,
+polar_may_buf_lost_flog(flog_ctl_t flog_ins, polar_logindex_redo_ctl_t redo_ins,
 		BufferDesc *buf_desc)
 {
 	static XLogRecPtr max_page_lsn_in_disk = InvalidXLogRecPtr;
@@ -696,11 +641,11 @@ polar_may_buf_lost_flog(flog_ctl_t flog_ins, polar_logindex_redo_ctl_t redo_inst
 		return false;
 
 	/* Only used by online promote */
-	if (polar_get_bg_redo_state(redo_instance) != POLAR_BG_ONLINE_PROMOTE)
+	if (polar_get_bg_redo_state(redo_ins) != POLAR_BG_ONLINE_PROMOTE)
 		return false;
 
 	/* The buffer have been checked already */
-	if (polar_check_buf_flog_state(buf_desc, POLAR_BUF_FLOG_LOST_CHECKED))
+	if (POLAR_CHECK_BUF_FLOG_STATE(buf_desc, POLAR_BUF_FLOG_LOST_CHECKED))
 		return false;
 
 	page_lsn = BufferGetLSN(buf_desc);
@@ -736,13 +681,12 @@ polar_make_true_no_flog(flog_ctl_t instance, BufferDesc *buf)
 	if (!polar_is_flog_enabled(instance))
 		return;
 
-	if (is_buf_in_flog_list(buf))
+	if (IS_BUF_IN_FLOG_LIST(buf))
 	{
 		/*no cover line*/
-		elog(PANIC, "The buffer %d [%u, %u, %u], %u, %u will be evicted "
-			"but there is flashback log record of it not flushed",
-			buf->buf_id, buf->tag.rnode.spcNode, buf->tag.rnode.dbNode,
-			buf->tag.rnode.relNode, buf->tag.forkNum, buf->tag.blockNum);
+		elog(PANIC, "The buffer %d " POLAR_LOG_BUFFER_TAG_FORMAT " will be evicted "
+			"but there is flashback log record of it not flushed", buf->buf_id,
+			POLAR_LOG_BUFFER_TAG(&(buf->tag)));
 	}
 }
 
@@ -753,3 +697,633 @@ polar_recover_flog(flog_ctl_t instance)
 	polar_recover_flog_index(instance->logindex_snapshot, instance->queue_ctl, instance->buf_ctl);
 	polar_set_flog_state(instance, FLOG_READY);
 }
+
+void
+polar_get_buffer_tag_in_flog_rec(flog_record *rec, BufferTag *tag)
+{
+	switch (rec->xl_rmid)
+	{
+		case ORIGIN_PAGE_ID:
+			INIT_BUFFERTAG(*tag, FL_GET_ORIGIN_PAGE_REC_DATA(rec)->tag.rnode,
+					FL_GET_ORIGIN_PAGE_REC_DATA(rec)->tag.forkNum,
+					FL_GET_ORIGIN_PAGE_REC_DATA(rec)->tag.blockNum);
+			break;
+
+		case ORIGIN_PAGE_FULL:
+			INIT_BUFFERTAG(*tag, FL_GET_FILENODE_REC_DATA(rec)->new_filenode, FILENODE_FORK, 0);
+			break;
+
+		default:
+			/*no cover line*/
+			elog(ERROR, "Unknown flashback log record rmid %d", rec->xl_rmid);
+	}
+}
+
+/* POLAR: Just crash will cause partial write */
+static inline bool
+may_be_partial_write(void)
+{
+	return AmStartupProcess() && !reachedConsistency;
+}
+
+/*
+ * POLAR: Write the repaired buffer.
+ *
+ * NB: The buffer must be invaild, so write it without
+ * any lock is safe.
+ */
+static void
+write_repaired_buf(BufferDesc *buf)
+{
+	SMgrRelation reln;
+	Block       buf_block;
+	char       *buf_write;
+
+	Assert(pg_atomic_read_u32(&buf->polar_redo_state) & POLAR_BUF_FLOG_DISABLE);
+
+	buf_block = BufHdrGetBlock(buf);
+	buf_write = PageEncryptCopy((Page) buf_block, buf->tag.forkNum,
+								buf->tag.blockNum);
+	buf_write = PageSetChecksumCopy((Page) buf_write, buf->tag.blockNum);
+	reln = smgropen(buf->tag.rnode, InvalidBackendId);
+	smgrwrite(reln,
+			  buf->tag.forkNum,
+			  buf->tag.blockNum,
+			  buf_write,
+			  false);
+}
+
+/*
+ * POLAR: Get origin page to solve partial write problem.
+ *
+ * instance: The flashback log instance.
+ * buf: The target buffer.
+ * tag: The buffer tag.
+ */
+static bool
+get_origin_page_for_partial_write(flog_ctl_t instance, Buffer *buf, BufferTag *tag)
+{
+	flshbak_buf_context_t context;
+	bool found = false;
+	flog_reader_state * reader;
+
+	/* Allocate a flashback log reader */
+	FLOG_ALLOC_PAGE_READER(reader, instance->buf_ctl, ERROR);
+
+	INIT_FLSHBAK_BUF_CONTEXT(context, polar_get_fbpoint_start_ptr(instance->buf_ctl),
+			polar_get_flog_write_result(instance->buf_ctl),
+			polar_get_curr_fbpoint_lsn(instance->buf_ctl), GetRedoRecPtr(),
+			instance->logindex_snapshot, reader, tag, *buf, ERROR, true);
+
+	found = polar_flashback_buffer(&context);
+
+	polar_flog_reader_free(reader);
+	return found;
+}
+
+/*
+ * POLAR: The flashback log can repair the PERMANENT buffer
+ * when it meet a partial write.
+ */
+bool
+polar_can_flog_repair(flog_ctl_t instance, BufferDesc *buf_hdr, bool has_redo_action)
+{
+	uint32  buf_state;
+
+	if (!polar_is_flog_enabled(instance))
+		return false;
+
+	if (may_be_partial_write() || has_redo_action)
+	{
+		buf_state = pg_atomic_read_u32(&buf_hdr->state);
+		return buf_state & BM_PERMANENT;
+	}
+
+	return false;
+}
+
+/*
+ * To repair the partial write problem.
+ * Partial write problem will occur in three scenarios:
+ * 1. RW crash recovery.
+ * 2. Standby crash recovery.
+ * 3. RO to RW online promote.
+ */
+void
+polar_repair_partial_write(flog_ctl_t instance, BufferDesc *bufHdr)
+{
+	BufferTag *tag = &bufHdr->tag;
+	Buffer buf;
+
+	Assert((pg_atomic_read_u32(&bufHdr->state) & BM_VALID) == 0);
+	buf = bufHdr->buf_id + 1;
+
+	/* Wait for the flashback logindex ready */
+	while (!polar_is_flog_ready(instance))
+	{
+		/* Handle interrupt signals of startup process to avoid hang */
+		if (AmStartupProcess())
+			HandleStartupProcInterrupts();
+		else
+			CHECK_FOR_INTERRUPTS();
+
+		pg_usleep(1000L);
+	}
+
+	if (!get_origin_page_for_partial_write(instance, &buf, tag))
+	{
+		/*no cover line*/
+		elog(ERROR, "Can't find a valid origin page for " POLAR_LOG_BUFFER_TAG_FORMAT " from flashback log",
+				POLAR_LOG_BUFFER_TAG(tag));
+	}
+	else
+	{
+		/* Flush the buffer to protect the next first modify after checkpoint. */
+		write_repaired_buf(bufHdr);
+
+		elog(LOG, "The page " POLAR_LOG_BUFFER_TAG_FORMAT " has been repaired by flashback log",
+				POLAR_LOG_BUFFER_TAG(tag));
+	}
+}
+
+static void
+log_flog_rec(flog_record *record, polar_flog_rec_ptr ptr)
+{
+#define MAX_EXTRA_INFO_SIZE 512
+
+	char extra_info[MAX_EXTRA_INFO_SIZE];
+	fl_origin_page_rec_data *origin_page_rec;
+	fl_filenode_rec_data_t *filenode_rec;
+
+	switch (record->xl_rmid)
+	{
+		case ORIGIN_PAGE_ID:
+			origin_page_rec = FL_GET_ORIGIN_PAGE_REC_DATA(record);
+			snprintf(extra_info, MAX_EXTRA_INFO_SIZE, "It is a origin page record, "
+					 "the origin page is %s page. The redo lsn of the origin page is %X/%X, "
+					 "the page tag is " POLAR_LOG_BUFFER_TAG_FORMAT,
+					 (record->xl_info == ORIGIN_PAGE_EMPTY ? "empty" : "not empty"),
+					 (uint32)(origin_page_rec->redo_lsn >> 32), (uint32)(origin_page_rec->redo_lsn),
+					 POLAR_LOG_BUFFER_TAG(&(origin_page_rec->tag)));
+			break;
+		case REL_FILENODE_ID:
+			filenode_rec = FL_GET_FILENODE_REC_DATA(record);
+			snprintf(extra_info, MAX_EXTRA_INFO_SIZE, "It is a relation file node change record, "
+					"the origin relation file node for [%u, %u, %u] is [%u, %u, %u] before %s",
+					filenode_rec->new_filenode.spcNode, filenode_rec->new_filenode.dbNode,
+					filenode_rec->new_filenode.relNode,
+					filenode_rec->old_filenode.spcNode, filenode_rec->old_filenode.dbNode,
+					filenode_rec->old_filenode.relNode, timestamptz_to_str(filenode_rec->time));
+			break;
+		default:
+			/*no cover begin*/
+			elog(ERROR, "The type of the record %X/%08X is wrong\n",
+				 (uint32)(ptr >> 32), (uint32)ptr);
+			break;
+			/*no cover end*/
+	}
+
+	elog(LOG, "Insert a flashback log record at %X/%X: total length is %u, "
+		 "the previous pointer is %X/%X. %s",
+		 (uint32)(ptr >> 32), (uint32)ptr, record->xl_tot_len,
+		 (uint32)(record->xl_prev >> 32), (uint32)(record->xl_prev), extra_info);
+}
+
+static uint32
+get_origin_page_rec_len(uint32 xl_tot_len, flog_insert_context *insert_context,
+		fl_rec_img_header *b_img, fl_rec_img_comp_header *cb_img, char *data)
+{
+	Page page;
+	uint32 result = xl_tot_len;
+
+	page = (Page) insert_context->data;
+	result += FL_ORIGIN_PAGE_REC_INFO_SIZE;
+
+	/* Process the unempty origin page record */
+	if (page && !PageIsNew(page) && !polar_page_is_just_inited(page))
+	{
+		BlockNumber block_num;
+		bool need_checksum_again;
+		uint16 data_len = BLCKSZ;
+		bool from_origin_buf = false;
+		uint16      lower;
+		uint16      upper;
+
+		need_checksum_again = from_origin_buf = insert_context->info & FROM_ORIGIN_BUF;
+		block_num = insert_context->buf_tag->blockNum;
+
+		/* Assume we can omit data between pd_lower and pd_upper */
+		lower = ((PageHeader) page)->pd_lower;
+		upper = ((PageHeader) page)->pd_upper;
+
+		if (lower >= SizeOfPageHeaderData &&
+				upper > lower &&
+				upper <= BLCKSZ)
+		{
+			b_img->hole_offset = lower;
+			b_img->bimg_info |= IMAGE_HAS_HOLE;
+			cb_img->hole_length = upper - lower;
+			/*
+			 * Check the checksum before compute it again, so we will
+			 * not change the rightness of checksum.
+			 *
+			 * When it is from origin buffer, the checksum may be wrong,
+			 * so we don't check the pages from origin page buffer.
+			 *
+			 * We do nothing while the checksum is wrong here, but
+			 * the decoder will verify the page.
+			 */
+			if ((!from_origin_buf) && DataChecksumsEnabled())
+				need_checksum_again =
+					(pg_checksum_page((char *) page, block_num) == ((PageHeader) page)->pd_checksum);
+		}
+		else
+		{
+			/* No "hole" to compress out */
+			b_img->hole_offset = 0;
+			cb_img->hole_length = 0;
+		}
+
+		/* Clean the hole */
+		MemSet((char *)page + b_img->hole_offset, 0, cb_img->hole_length);
+
+		/* Compute checksum again */
+		if (need_checksum_again && DataChecksumsEnabled())
+			((PageHeader) page)->pd_checksum = pg_checksum_page((char *) page, block_num);
+
+		/* Try to compress flashback log */
+		if (polar_compress_block_in_log(page, b_img->hole_offset, cb_img->hole_length,
+				data, &data_len, FL_REC_IMG_COMP_HEADER_SIZE))
+		{
+			b_img->bimg_info |= IMAGE_IS_COMPRESSED;
+			b_img->length = data_len;
+
+			if (cb_img->hole_length != 0)
+				result += FL_REC_IMG_COMP_HEADER_SIZE;
+		}
+		else
+			b_img->length = BLCKSZ - cb_img->hole_length;
+
+		result += FL_REC_IMG_HEADER_SIZE + b_img->length;
+	}
+
+	/* The empty origin page record just a fl_origin_page_rec_data */
+	return result;
+}
+
+static flog_record *
+assemble_origin_page_rec(flog_insert_context *insert_context, uint32 xl_tot_len)
+{
+	fl_rec_img_header b_img = {0, 0, 0};
+	fl_rec_img_comp_header cb_img = {0};
+	char data[PGLZ_MAX_BLCKSZ];
+	fl_origin_page_rec_data rec_data;
+	flog_record *rec;
+	char    *scratch;
+
+	Assert(insert_context->rmgr == ORIGIN_PAGE_ID);
+	xl_tot_len = get_origin_page_rec_len(xl_tot_len, insert_context, &b_img, &cb_img, data);
+
+	/* Construct the flashback log record */
+	rec = polar_palloc_in_crit(xl_tot_len);
+	rec->xl_tot_len = xl_tot_len;
+	rec->xl_info = insert_context->info;
+
+	/* Copy the record data for the origin page. */
+	rec_data.redo_lsn = insert_context->redo_lsn;
+	INIT_BUFFERTAG(rec_data.tag, insert_context->buf_tag->rnode,
+			insert_context->buf_tag->forkNum, insert_context->buf_tag->blockNum);
+	scratch = (char *)rec + FLOG_REC_HEADER_SIZE;
+	memcpy(scratch, &rec_data, FL_ORIGIN_PAGE_REC_INFO_SIZE);
+	scratch += FL_ORIGIN_PAGE_REC_INFO_SIZE;
+
+	/* An empty origin page record */
+	if (b_img.length == 0)
+	{
+		Assert(xl_tot_len == (FLOG_REC_HEADER_SIZE + FL_ORIGIN_PAGE_REC_INFO_SIZE));
+		rec->xl_info = ORIGIN_PAGE_EMPTY;
+	}
+	else
+	{
+		Assert(xl_tot_len >= FLOG_REC_HEADER_SIZE + FL_ORIGIN_PAGE_REC_INFO_SIZE +
+			   FL_REC_IMG_HEADER_SIZE + b_img.length);
+
+		rec->xl_info = ORIGIN_PAGE_FULL;
+		memcpy(scratch, &b_img, FL_REC_IMG_HEADER_SIZE);
+		scratch += FL_REC_IMG_HEADER_SIZE;
+
+		/* Process compressed one */
+		if (b_img.bimg_info & IMAGE_IS_COMPRESSED)
+		{
+			if (cb_img.hole_length != 0)
+			{
+				memcpy(scratch, &cb_img, FL_REC_IMG_COMP_HEADER_SIZE);
+				scratch += FL_REC_IMG_COMP_HEADER_SIZE;
+				Assert(xl_tot_len == FLOG_REC_HEADER_SIZE + FL_ORIGIN_PAGE_REC_INFO_SIZE +
+					   FL_REC_IMG_HEADER_SIZE + FL_REC_IMG_COMP_HEADER_SIZE + b_img.length);
+			}
+
+			memcpy(scratch, data, b_img.length);
+		}
+		else
+		{
+			Assert(xl_tot_len == FLOG_REC_HEADER_SIZE + FL_ORIGIN_PAGE_REC_INFO_SIZE +
+				   FL_REC_IMG_HEADER_SIZE + b_img.length);
+
+			if (cb_img.hole_length != 0)
+			{
+				Assert(b_img.length < BLCKSZ);
+				Assert(b_img.hole_offset >= SizeOfPageHeaderData);
+
+				memcpy(scratch, (char *) (insert_context->data), b_img.hole_offset);
+				scratch += b_img.hole_offset;
+				memcpy(scratch, (char *) (insert_context->data) + b_img.hole_offset + cb_img.hole_length,
+					   b_img.length - b_img.hole_offset);
+			}
+			else
+			{
+				Assert(b_img.length == BLCKSZ);
+				memcpy(scratch, (char *) (insert_context->data), b_img.length);
+			}
+		}
+	}
+
+	return rec;
+}
+
+/*
+ * Assemble a flashback log record from the buffers into an
+ * polar_flashback_log_record, ready for insertion with
+ * polar_flashback_log_insert_record().
+ *
+ * tag is the buffer tag of buffer which is a origin page.
+ * redo_ptr is the last checkpoint XLOG record pointer.
+ *
+ * Return the flashback log record which palloc in this function.
+ * The caller can switch the memory context and pfree.
+ *
+ * The record will be contain the (compressed) block data.
+ * The record header fields are filled in, except for the CRC field and
+ * previous pointer.
+ *
+ */
+static flog_record *
+flog_rec_assemble(flog_insert_context *insert_context)
+{
+	flog_record *rec;
+	uint32 xl_tot_len = FLOG_REC_HEADER_SIZE;
+
+	if (insert_context->rmgr == ORIGIN_PAGE_ID)
+		rec = assemble_origin_page_rec(insert_context, xl_tot_len);
+	else if (insert_context->rmgr == REL_FILENODE_ID)
+		rec = polar_assemble_filenode_rec(insert_context, xl_tot_len);
+	else
+		/*no cover line*/
+		elog(PANIC, "Unknown flashback log record rmid %d", insert_context->rmgr);
+
+	/* Set the common part */
+	rec->xl_prev = POLAR_INVALID_FLOG_REC_PTR;
+	rec->xl_rmid = insert_context->rmgr;
+	rec->xl_xid = 0;
+
+	return rec;
+}
+
+/*
+ * POLAR: Insert a flashback log record to flashback log shared buffer.
+ *
+ * insert_context: Everything about the insertion.
+ */
+polar_flog_rec_ptr
+polar_flog_insert_into_buffer(flog_ctl_t instance, flog_insert_context *insert_context)
+{
+	polar_flog_rec_ptr start_ptr = POLAR_INVALID_FLOG_REC_PTR;
+	polar_flog_rec_ptr end_ptr = POLAR_INVALID_FLOG_REC_PTR;
+	flog_record *rec = NULL;
+
+	/* Assemble the flashback log record without the previous pointer and the CRC field */
+	rec = flog_rec_assemble(insert_context);
+	/*
+	 * Fill the previous pointer and the CRC field and insert the flashback log record to flashback log
+	 * shared buffers.
+	 */
+	end_ptr = polar_flog_rec_insert(instance->buf_ctl, instance->queue_ctl, rec, &start_ptr);
+
+	if (unlikely(polar_flashback_log_debug))
+		log_flog_rec(rec, start_ptr);
+
+	pfree(rec);
+
+	return end_ptr;
+}
+
+polar_flog_rec_ptr
+polar_insert_buf_flog_rec(flog_ctl_t instance, BufferTag *tag, XLogRecPtr redo_lsn,
+		XLogRecPtr fbpoint_lsn, uint8 info, Page origin_page, bool from_origin_buf)
+{
+	flog_insert_context insert_context;
+
+	/*
+	 * It is candidate, check it in here.
+	 */
+	if ((info & FLOG_LIST_SLOT_CANDIDATE) && PageGetLSN(origin_page) > fbpoint_lsn)
+		return POLAR_INVALID_FLOG_REC_PTR;
+
+	Assert(PageGetLSN(origin_page) <= fbpoint_lsn);
+
+	/* Construct the insert context */
+	insert_context.buf_tag = tag;
+	insert_context.data = origin_page;
+	insert_context.redo_lsn = redo_lsn;
+	insert_context.rmgr = ORIGIN_PAGE_ID;
+	/* This will be update in the flashback log record */
+	insert_context.info = ORIGIN_PAGE_FULL;
+
+	if (from_origin_buf)
+		insert_context.info |= FROM_ORIGIN_BUF;
+
+	return polar_flog_insert_into_buffer(instance, &insert_context);
+}
+
+static polar_flog_rec_ptr
+polar_insert_rel_extend_flog_rec(flog_ctl_t instance, Buffer buffer)
+{
+	flog_insert_context insert_context;
+	XLogRecPtr redo_lsn;
+
+	/* The buffer is just extended, so the redo_lsn of the record is just the wal lsn in the disk */
+	redo_lsn = GetFlushRecPtr();
+
+	/* Construct the insert context */
+	insert_context.buf_tag = &(GetBufferDescriptor(buffer - 1)->tag);
+	insert_context.data = NULL;
+	insert_context.redo_lsn = redo_lsn;
+	insert_context.rmgr = ORIGIN_PAGE_ID;
+	/* This will be update in the flashback log record */
+	insert_context.info = ORIGIN_PAGE_EMPTY;
+
+	return polar_flog_insert_into_buffer(instance, &insert_context);
+}
+
+void
+polar_flog_rel_bulk_extend(flog_ctl_t instance, Buffer buffer)
+{
+	polar_flog_rec_ptr ptr;
+
+	Assert(polar_is_flog_enabled(instance));
+
+	ptr = polar_insert_rel_extend_flog_rec(instance, buffer);
+	/* Flush it right now to avoid to miss it */
+	polar_flog_flush(instance->buf_ctl, ptr);
+}
+
+/*
+ * POLAR: Get the origin page from flashback log.
+ * Return true when we get a right origin page.
+ *
+ * context: contain the start point and end point of flashback log to search and the target buffer tag.
+ * Page: The target page.
+ * replay_start_lsn: The replay start WAL lsn.
+ *
+ * NB: Please make true the context->end_ptr larger than context->start_ptr.
+ *
+ */
+bool
+polar_get_origin_page(flshbak_buf_context_t *context, Page page, XLogRecPtr *replay_start_lsn)
+{
+
+	log_index_page_iter_t originpage_iter;
+	log_index_lsn_t *lsn_info = NULL;
+	polar_flog_rec_ptr ptr;
+	bool found = false;
+
+	Assert(context->start_ptr < context->end_ptr);
+
+	originpage_iter =
+		polar_logindex_create_page_iterator(context->logindex_snapshot, context->tag, context->start_ptr, context->end_ptr - 1, false);
+
+	if (polar_logindex_page_iterator_state(originpage_iter) != ITERATE_STATE_FINISHED)
+	{
+		/*no cover begin*/
+		polar_logindex_release_page_iterator(originpage_iter);
+		elog(ERROR, "Failed to iterate data for flashback log of " POLAR_LOG_BUFFER_TAG_FORMAT
+				", which start pointer =%X/%X and end pointer =%X/%X",
+				POLAR_LOG_BUFFER_TAG(context->tag),
+				(uint32)((context->start_ptr) >> 32), (uint32)(context->start_ptr),
+				(uint32)((context->end_ptr - 1) >> 32), (uint32)(context->end_ptr - 1));
+		return false;
+		/*no cover end*/
+	}
+
+	if ((lsn_info = polar_logindex_page_iterator_next(originpage_iter)) != NULL)
+	{
+		ptr = (polar_flog_rec_ptr) lsn_info->lsn;
+		Assert(BUFFERTAGS_EQUAL(*(lsn_info->tag), *(context->tag)));
+		found = polar_decode_origin_page_rec(context->reader, ptr, page, replay_start_lsn, context->tag);
+	}
+
+	polar_logindex_release_page_iterator(originpage_iter);
+
+	if (!found)
+	{
+		/*no cover line*/
+		elog(LOG, "Can't find a valid origin page for page " POLAR_LOG_BUFFER_TAG_FORMAT
+			 " with flashback log start location %X/%X and end location %X/%X",
+			 POLAR_LOG_BUFFER_TAG(context->tag),
+			 (uint32)((context->start_ptr) >> 32), (uint32)(context->start_ptr),
+			 (uint32)((context->end_ptr - 1) >> 32), (uint32)(context->end_ptr - 1));
+	}
+	else if (unlikely(polar_flashback_log_debug))
+	{
+		*replay_start_lsn = Max(*replay_start_lsn, PageGetLSN(page));
+		elog(LOG, "We find a valid origin page for page " POLAR_LOG_BUFFER_TAG_FORMAT
+			 " with flashback log start location %X/%X and end location %X/%X, its "
+			 "WAL replay start lsn is %X/%X", POLAR_LOG_BUFFER_TAG(context->tag),
+			 (uint32)((context->start_ptr) >> 32), (uint32)(context->start_ptr),
+			 (uint32)((context->end_ptr - 1) >> 32), (uint32)(context->end_ptr - 1),
+			 (uint32)(*replay_start_lsn >> 32), (uint32)(*replay_start_lsn));
+	}
+
+	return found;
+}
+
+/*
+ * POLAR: Flashback the buffer.
+ *
+ * context: everything we need. You can see the detail in its definition.
+ *
+ * NB: Please make sure context->end_ptr >= context->start_ptr.
+ */
+bool
+polar_flashback_buffer(flshbak_buf_context_t *context)
+{
+	Page page;
+	XLogRecPtr lsn = InvalidXLogRecPtr;
+	BufferDesc *buf_desc;
+
+	if (unlikely(context->start_ptr == context->end_ptr))
+	{
+		elog(WARNING, "The page " POLAR_LOG_BUFFER_TAG_FORMAT " has no origin page between "
+				"flashback log %X/%X and %X/%X", POLAR_LOG_BUFFER_TAG(context->tag),
+				(uint32) (context->start_ptr >> 32), (uint32) (context->start_ptr),
+				(uint32) (context->end_ptr >> 32), (uint32) context->end_ptr);
+		return false;
+	}
+	else if (unlikely(context->start_ptr > context->end_ptr))
+	{
+		/*no cover begin*/
+		elog(ERROR, "The range to flashback page " POLAR_LOG_BUFFER_TAG_FORMAT " is wrong, "
+				"the flashback log start pointer %X/%X, the flashback log end pointer %X/%X",
+				POLAR_LOG_BUFFER_TAG(context->tag),
+				(uint32) (context->start_ptr >> 32), (uint32) (context->start_ptr),
+				(uint32) (context->end_ptr >> 32), (uint32) (context->end_ptr));
+		/*no cover end*/
+	}
+
+	/* Disable the flashback log for the buffer in the flashback. */
+	buf_desc = GetBufferDescriptor(context->buf - 1);
+	set_buf_flog_state(buf_desc, POLAR_BUF_FLOG_DISABLE);
+
+	page = BufferGetPage(context->buf);
+
+	if (!polar_get_origin_page(context, page, &lsn))
+	{
+		/* If not found, check its first modify is a XLOG_FPI_MULTI/XLOG_FPI/XLOG_FPI_FOR_HINT record? */
+		lsn = polar_logindex_find_first_fpi(polar_logindex_redo_instance,
+						context->start_lsn, context->end_lsn, context->tag, &(context->buf), context->apply_fpi);
+
+		if (!XLogRecPtrIsInvalid(lsn))
+		{
+			elog(LOG, "The first modify of " POLAR_LOG_BUFFER_TAG_FORMAT " after %X/%X "
+					"is a new full page image, its origin page is a empty page or the image",
+					POLAR_LOG_BUFFER_TAG(context->tag),
+					(uint32) (context->start_lsn >> 32), (uint32) (context->start_lsn));
+
+			if (context->apply_fpi)
+				lsn = PageGetLSN(page);
+			else
+				MemSet(page, 0, BLCKSZ);
+		}
+		else
+		{
+			elog(context->elevel, "Can't find a valid origin page for " POLAR_LOG_BUFFER_TAG_FORMAT " from flashback log",
+					POLAR_LOG_BUFFER_TAG(context->tag));
+			return false;
+		}
+	}
+
+	Assert(!XLogRecPtrIsInvalid(lsn));
+
+	if (unlikely(polar_flashback_log_debug))
+	{
+		elog(LOG, "The origin page " POLAR_LOG_BUFFER_TAG_FORMAT " need to replay from %X/%X to %X/%X",
+				POLAR_LOG_BUFFER_TAG(context->tag),
+				(uint32) (lsn >> 32), (uint32) lsn,
+				(uint32) (context->end_lsn >> 32), (uint32) (context->end_lsn));
+	}
+
+	/* The lsn can be larger than or equal to context->end_lsn, it means no WAL record to replay */
+	polar_logindex_apply_page(polar_logindex_redo_instance, lsn, context->end_lsn, context->tag, &(context->buf));
+	return true;
+}
+

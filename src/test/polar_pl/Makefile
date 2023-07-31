@@ -10,6 +10,7 @@
 #-------------------------------------------------------------------------
 
 EXTRA_INSTALL=contrib/test_decoding
+EXTRA_INSTALL+=contrib/faultinjector
 
 subdir = src/test/polar_pl
 top_builddir = ../../..

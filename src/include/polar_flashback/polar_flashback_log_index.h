@@ -23,6 +23,7 @@
  */
 #ifndef POLAR_FLASHBACK_LOG_INDEX_H
 #define POLAR_FLASHBACK_LOG_INDEX_H
+
 #include "access/polar_logindex.h"
 #include "access/polar_logindex_internal.h"
 #include "polar_flashback/polar_flashback_log_index_queue.h"

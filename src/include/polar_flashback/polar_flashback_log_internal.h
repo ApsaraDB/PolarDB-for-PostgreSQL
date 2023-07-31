@@ -37,6 +37,20 @@
 
 typedef uint64 polar_flog_rec_ptr;
 
+typedef struct fbpoint_pos_t
+{
+	uint32 seg_no;
+	uint32 offset;
+} fbpoint_pos_t;
+
+#define FBPOINT_POS_EQUAL(p1, p2) ((p1).seg_no == (p2).seg_no && (p1).offset == (p2).offset)
+
+#define SET_FBPOINT_POS(p, seg, off) \
+( \
+	(p).seg_no = (seg), \
+	(p).offset = (off) \
+)
+
 /* GUCs */
 extern bool polar_enable_flashback_log;
 extern bool polar_has_partial_write;
@@ -51,10 +65,13 @@ extern int polar_flashback_log_insert_list_delay;
 extern int polar_flashback_point_segments;
 extern int polar_flashback_point_timeout;
 
+extern bool polar_enable_fast_recovery_area;
+extern int polar_fast_recovery_area_rotation;
+
 #define FLOG_SEGMENT_OFFSET(ptr, segsz_bytes)   \
 	((ptr) & ((segsz_bytes) - 1))
 
-#define flog_seg_offset_to_ptr(segno, offset, segsz_bytes, dest) \
+#define FLOG_SEG_OFFSET_TO_PTR(segno, offset, segsz_bytes, dest) \
 	(dest) = (segno) * (segsz_bytes) + (offset)
 
 /*
@@ -88,13 +105,5 @@ typedef enum
 	FLOG_BUF_READY,
 	FLOG_BUF_SHUTDOWNED
 } flog_buf_state;
-
-typedef enum
-{
-	/* FLOG_INIT must be first */
-	FLOG_INIT,
-	FLOG_STARTUP,
-	FLOG_READY
-} flashback_state;
 
 #endif

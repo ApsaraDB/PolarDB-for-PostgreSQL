@@ -81,10 +81,9 @@ polar_flog_index_queue_ref_pop(polar_ringbuf_ref_t *ref, flog_index_queue_lsn_in
 	polar_ringbuf_update_ref(ref);
 
 	if (unlikely(polar_flashback_log_debug))
-		elog(LOG, "%s ptr: %x/%x, total length: %u, the tag: '[%u, %u, %u], %d, %u'", __func__,
+		elog(LOG, "%s ptr: %x/%x, total length: %u, the tag: " POLAR_LOG_BUFFER_TAG_FORMAT, __func__,
 			 (uint32)(lsn_info->ptr >> 32), (uint32)lsn_info->ptr, lsn_info->log_len,
-			 lsn_info->tag.rnode.spcNode, lsn_info->tag.rnode.dbNode, lsn_info->tag.rnode.relNode,
-			 lsn_info->tag.forkNum, lsn_info->tag.blockNum);
+			 POLAR_LOG_BUFFER_TAG(&(lsn_info->tag)));
 
 	return true;
 }
@@ -96,10 +95,9 @@ polar_flog_index_queue_ref_pop(polar_ringbuf_ref_t *ref, flog_index_queue_lsn_in
  * NB: It is a callback, so we don't use the polar_ringbuf_t as a parameter.
  */
 static void
-flog_index_queue_keep_data(void)
+flog_index_queue_keep_data(polar_ringbuf_t queue)
 {
 	polar_ringbuf_ref_t ref = { .slot = -1 };
-	polar_ringbuf_t queue = flog_instance->queue_ctl->queue;
 
 	if (!polar_ringbuf_new_ref(queue, true, &ref,
 							   "flashback_logindex_queue_data_keep"))
@@ -227,19 +225,21 @@ polar_flog_index_queue_push(flog_index_queue_ctl_t ctl, size_t rbuf_pos, flog_re
 	int offset = 0;
 	ssize_t copy_size;
 	polar_ringbuf_t ringbuf = ctl->queue;
+	BufferTag tag;
 
 	if (rbuf_pos >= ringbuf->size)
 		/*no cover line*/
 		ereport(PANIC, (errmsg("rbuf_pos=%ld is incorrect for flashback logindex queue, "
 							   "queue_size=%ld", rbuf_pos, ringbuf->size)));
 
+	polar_get_buffer_tag_in_flog_rec(record, &tag);
 	offset += polar_ringbuf_pkt_write(ringbuf, rbuf_pos,
 									  offset, (uint8 *)&start_lsn, sizeof(start_lsn));
 	offset += polar_ringbuf_pkt_write(ringbuf, rbuf_pos,
 									  offset, (uint8 *)&log_len, sizeof(log_len));
 
 	copy_size = polar_ringbuf_pkt_write(ringbuf, rbuf_pos, offset,
-										(uint8 *)(&(FL_GET_ORIGIN_PAGE_REC_DATA(record)->tag)), copy_len);
+										(uint8 *)(&tag), copy_len);
 
 	if (copy_size != copy_len)
 		/*no cover line*/
@@ -277,6 +277,8 @@ polar_flog_read_info_from_queue(polar_ringbuf_ref_t *ref, polar_flog_rec_ptr ptr
 
 	Assert(!FLOG_REC_PTR_IS_INVAILD(ptr_expected));
 
+	lsn_info.log_len = 0;
+
 	do
 	{
 		memset(&lsn_info, 0, sizeof(flog_index_queue_lsn_info));
@@ -284,7 +286,11 @@ polar_flog_read_info_from_queue(polar_ringbuf_ref_t *ref, polar_flog_rec_ptr ptr
 		if (polar_flog_index_queue_ref_pop(ref, &lsn_info, max_ptr))
 			ptr = lsn_info.ptr;
 		else
+		{
+			/* The log_len may be zero */
+			*log_len = lsn_info.log_len;
 			return false;
+		}
 
 		if (ptr > ptr_expected)
 		{
@@ -313,10 +319,8 @@ polar_flog_read_info_from_queue(polar_ringbuf_ref_t *ref, polar_flog_rec_ptr ptr
 
 	if (unlikely(polar_flashback_log_debug))
 		elog(LOG, "We found the flashback log record at %X/%X from logindex queue, "
-			 "total length is %u, the tag is '[%u, %u, %u], %d, %u'",
-			 (uint32)(ptr >> 32), (uint32)ptr, *log_len,
-			 tag->rnode.spcNode, tag->rnode.dbNode, tag->rnode.relNode,
-			 tag->forkNum, tag->blockNum);
+			 "total length is %u, the tag is " POLAR_LOG_BUFFER_TAG_FORMAT,
+			 (uint32)(ptr >> 32), (uint32)ptr, *log_len, POLAR_LOG_BUFFER_TAG(tag));
 
 	return true;
 }

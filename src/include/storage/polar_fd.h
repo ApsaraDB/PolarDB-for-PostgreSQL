@@ -176,4 +176,6 @@ extern void polar_init_node_type(void);
 extern PolarNodeType polar_node_type_by_file(void);
 extern void assign_polar_datadir(const char *newval, void *extra);
 
+extern bool polar_file_exists(const char *path);
+
 #endif
