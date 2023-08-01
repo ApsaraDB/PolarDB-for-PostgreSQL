@@ -1,6 +1,6 @@
 ---
 author: 棠羽
-date: 2022/05/09
+date: 2023/08/01
 minute: 15
 ---
 
@@ -8,123 +8,54 @@ minute: 15
 
 <ArticleInfo :frontmatter=$frontmatter></ArticleInfo>
 
-本文将指导您在单机文件系统（如 ext4）上编译部署 PolarDB，适用于所有计算节点都可以访问相同本地磁盘存储的场景。
+本文将指导您在单机文件系统（如 ext4）上编译部署 PolarDB-PG，适用于所有计算节点都可以访问相同本地磁盘存储的场景。
 
-我们在 DockerHub 上提供了一个 [PolarDB 开发镜像](https://hub.docker.com/r/polardb/polardb_pg_devel/tags)，里面已经包含编译运行 PolarDB for PostgreSQL 所需要的所有依赖。您可以直接使用这个开发镜像进行实例搭建。镜像目前支持 AMD64 和 ARM64 两种 CPU 架构。
+[[toc]]
 
-## 环境准备
+## 拉取镜像
 
-拉取开发镜像，创建并进入容器：
-
-```bash
-docker pull polardb/polardb_pg_devel
-docker run -it \
-    --cap-add=SYS_PTRACE --privileged=true \
-    --name polardb_pg \
-    polardb/polardb_pg_devel bash
-```
-
-进入容器后，从 [GitHub](https://github.com/ApsaraDB/PolarDB-for-PostgreSQL) 上下载 PolarDB for PostgreSQL 的源代码，稳定分支为 `POLARDB_11_STABLE`。如果因网络原因不能稳定访问 GitHub，则可以访问 [Gitee 国内镜像](https://gitee.com/mirrors/PolarDB-for-PostgreSQL)。
-
-:::: code-group
-::: code-group-item GitHub
+我们在 DockerHub 上提供了 PolarDB-PG 的 [本地实例镜像](https://hub.docker.com/r/polardb/polardb_pg_local_instance/tags)，里面已包含启动 PolarDB-PG 本地存储实例的入口脚本。镜像目前支持 `linux/amd64` 和 `linux/arm64` 两种 CPU 架构。
 
 ```bash:no-line-numbers
-git clone -b POLARDB_11_STABLE https://github.com/ApsaraDB/PolarDB-for-PostgreSQL.git
+docker pull polardb/polardb_pg_local_instance
 ```
 
-:::
-::: code-group-item Gitee 国内镜像
+## 初始化数据库
+
+新建一个空白目录 `${your_data_dir}` 作为 PolarDB-PG 实例的数据目录。启动容器时，将该目录作为 VOLUME 挂载到容器内，对数据目录进行初始化。在初始化的过程中，可以传入环境变量覆盖默认值：
+
+- `POLARDB_PORT`：PolarDB-PG 运行所需要使用的端口号，默认值为 `5432`；镜像将会使用三个连续的端口号（默认 `5432-5434`）
+- `POLARDB_USER`：初始化数据库时创建默认的 superuser（默认 `postgres`）
+- `POLARDB_PASSWORD`：默认 superuser 的密码
+
+使用如下命令初始化数据库：
 
 ```bash:no-line-numbers
-git clone -b POLARDB_11_STABLE https://gitee.com/mirrors/PolarDB-for-PostgreSQL
+docker run -it --rm \
+    --env POLARDB_PORT=5432 \
+    --env POLARDB_USER=u1 \
+    --env POLARDB_PASSWORD=your_password \
+    -v ${your_data_dir}:/var/polardb \
+    polardb/polardb_pg_local_instance \
+    echo 'done'
 ```
 
-:::
-::::
+## 启动 PolarDB-PG 服务
 
-代码克隆完毕后，进入源码目录：
+数据库初始化完毕后，使用 `-d` 参数以后台模式创建容器，启动 PolarDB-PG 服务。通常 PolarDB-PG 的端口需要暴露给外界使用，使用 `-p` 参数将容器内的端口范围暴露到容器外。比如，初始化数据库时使用的是 `5432-5434` 端口，如下命令将会把这三个端口映射到容器外的 `54320-54322` 端口：
 
 ```bash:no-line-numbers
-cd PolarDB-for-PostgreSQL/
+docker run -d \
+    -p 54320-54322:5432-5434 \
+    -v ${your_data_dir}:/var/polardb \
+    polardb/polardb_pg_local_instance
 ```
 
-## 编译测试选项说明
-
-以下表格列出了编译、初始化或测试 PolarDB 集群所可能使用到的选项及说明。更多选项及其说明详见源码目录下的 `polardb_build.sh` 脚本。
-
-| 选项                         | 描述                                                                         | 默认值 |
-| ---------------------------- | ---------------------------------------------------------------------------- | ------ |
-| `--withrep`                  | 是否初始化只读节点                                                           | `NO`   |
-| `--repnum`                   | 只读节点数量                                                                 | `1`    |
-| `--withstandby`              | 是否初始化热备份节点                                                         | `NO`   |
-| `--initpx`                   | 是否初始化为 HTAP 集群（1 个读写节点，2 个只读节点）                         | `NO`   |
-| `--with-pfsd`                | 是否编译 PolarDB File System（PFS）相关功能                                  | `NO`   |
-| `--with-tde`                 | 是否初始化 [透明数据加密（TDE）](https://zhuanlan.zhihu.com/p/84829027) 功能 | `NO`   |
-| `--with-dma`                 | 是否初始化为 DMA（Data Max Availability）高可用三节点集群                    | `NO`   |
-| `-r`/ `-t` / <br>`--regress` | 在编译安装完毕后运行内核回归测试                                             | `NO`   |
-| `-r-px`                      | 运行 HTAP 实例的回归测试                                                     | `NO`   |
-| `-e` /<br>`--extension`      | 运行扩展插件测试                                                             | `NO`   |
-| `-r-external`                | 测试 `external/` 下的扩展插件                                                | `NO`   |
-| `-r-contrib`                 | 测试 `contrib/` 下的扩展插件                                                 | `NO`   |
-| `-r-pl`                      | 测试 `src/pl/` 下的扩展插件                                                  | `NO`   |
-
-如无定制的需求，则可以按照下面给出的选项编译部署不同形态的 PolarDB 集群并进行测试。
-
-## PolarDB 各形态编译部署
-
-### 本地单节点实例
-
-- 1 个读写节点（运行于 `5432` 端口）
+或者也可以直接让容器与宿主机共享网络：
 
 ```bash:no-line-numbers
-./polardb_build.sh
-```
-
-### 本地多节点实例
-
-- 1 个读写节点（运行于 `5432` 端口）
-- 1 个只读节点（运行于 `5433` 端口）
-
-```bash:no-line-numbers
-./polardb_build.sh --withrep --repnum=1
-```
-
-### 本地多节点带备库实例
-
-- 1 个读写节点（运行于 `5432` 端口）
-- 1 个只读节点（运行于 `5433` 端口）
-- 1 个备库节点（运行于 `5434` 端口）
-
-```bash:no-line-numbers
-./polardb_build.sh --withrep --repnum=1 --withstandby
-```
-
-### 本地多节点 HTAP 实例
-
-- 1 个读写节点（运行于 `5432` 端口）
-- 2 个只读节点（运行于 `5433` / `5434` 端口）
-
-```bash:no-line-numbers
-./polardb_build.sh --initpx
-```
-
-## 实例回归测试
-
-普通实例回归测试：
-
-```bash:no-line-numbers
-./polardb_build.sh --withrep -r -e -r-external -r-contrib -r-pl --with-tde
-```
-
-HTAP 实例回归测试：
-
-```bash:no-line-numbers
-./polardb_build.sh -r-px -e -r-external -r-contrib -r-pl --with-tde
-```
-
-DMA 实例回归测试：
-
-```bash:no-line-numbers
-./polardb_build.sh -r -e -r-external -r-contrib -r-pl --with-tde --with-dma
+docker run -d \
+    --network=host \
+    -v ${your_data_dir}:/var/polardb \
+    polardb/polardb_pg_local_instance
 ```

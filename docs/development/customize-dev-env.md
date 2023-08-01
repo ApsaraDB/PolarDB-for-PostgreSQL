@@ -2,118 +2,138 @@
 
 ## 自行构建开发镜像
 
-我们在 DockerHub 上提供了构建完毕的镜像 [`polardb/polardb_pg_devel`](https://hub.docker.com/r/polardb/polardb_pg_devel/tags) 可供直接使用（支持 AMD64 和 ARM64 架构）😁。
+DockerHub 上已有构建完毕的开发镜像 [`polardb/polardb_pg_devel`](https://hub.docker.com/r/polardb/polardb_pg_devel/tags) 可供直接使用（支持 `linux/amd64` 和 `linux/arm64` 两种架构）。
 
-另外，我们也提供了构建上述开发镜像的 Dockerfile，从 CentOS 7 官方镜像 `centos:centos7` 开始构建出一个安装完所有开发和运行时依赖的镜像。您可以根据自己的需要在 Dockerfile 中添加更多依赖。以下是手动构建镜像的 Dockerfile 及方法。
+另外，我们也提供了构建上述开发镜像的 Dockerfile，从 [Ubuntu 官方镜像](https://hub.docker.com/_/ubuntu/tags) `ubuntu:20.04` 开始构建出一个安装完所有开发和运行时依赖的镜像，您可以根据自己的需要在 Dockerfile 中添加更多依赖。以下是手动构建镜像的 Dockerfile 及方法：
 
 ::: details
 
 ```dockerfile
-FROM centos:centos7
-
+FROM ubuntu:20.04
+LABEL maintainer="mrdrivingduck@gmail.com"
 CMD bash
 
-# avoid missing locale problem
-RUN sed -i 's/override_install_langs/# &/' /etc/yum.conf
+# Timezone problem
+ENV TZ=Asia/Shanghai
+RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
-# add EPEL and scl source
-RUN rpmkeys --import file:///etc/pki/rpm-gpg/RPM-GPG-KEY-CentOS-7 && \
-    yum install -y epel-release centos-release-scl && \
-    rpmkeys --import file:///etc/pki/rpm-gpg/RPM-GPG-KEY-EPEL-7 && \
-    rpmkeys --import file:///etc/pki/rpm-gpg/RPM-GPG-KEY-CentOS-SIG-SCLo && \
-    yum update -y
+# Upgrade softwares
+RUN apt update -y && \
+    apt upgrade -y && \
+    apt clean -y
 
-# GCC and LLVM
-RUN yum install -y devtoolset-9-gcc devtoolset-9-gcc-c++ devtoolset-9-gdb devtoolset-9-libstdc++-devel devtoolset-9-make && \
-    yum install -y llvm-toolset-7.0-llvm-devel llvm-toolset-7.0-clang-devel llvm-toolset-7.0-cmake
+# GCC (force to 9) and LLVM (force to 11)
+RUN apt install -y \
+        gcc-9 \
+        g++-9 \
+        llvm-11-dev \
+        clang-11 \
+        make \
+        gdb \
+        pkg-config \
+        locales && \
+    update-alternatives --install \
+        /usr/bin/gcc gcc /usr/bin/gcc-9 60 --slave \
+        /usr/bin/g++ g++ /usr/bin/g++-9 && \
+    update-alternatives --install \
+        /usr/bin/llvm-config llvm-config /usr/bin/llvm-config-11 60 --slave \
+        /usr/bin/clang++ clang++ /usr/bin/clang++-11 --slave \
+        /usr/bin/clang clang /usr/bin/clang-11 && \
+    apt clean -y
 
-# dependencies
-RUN yum install -y libicu-devel pam-devel readline-devel libxml2-devel libxslt-devel openldap-devel openldap-clients openldap-servers libuuid-devel xerces-c-devel bison flex gettext tcl-devel python-devel perl-IPC-Run perl-Expect perl-Test-Simple perl-DBD-Pg perl-ExtUtils-Embed perl-ExtUtils-MakeMaker zlib-devel krb5-devel krb5-workstation krb5-server protobuf-devel && \
-    ln /usr/lib64/perl5/CORE/libperl.so /usr/lib64/libperl.so
+# Generate locale
+RUN sed -i '/en_US.UTF-8/s/^# //g' /etc/locale.gen && \
+    sed -i '/zh_CN.UTF-8/s/^# //g' /etc/locale.gen && \
+    locale-gen
 
-# install basic tools
-RUN echo "install basic tools" && \
-    yum install -y \
-        git lcov psmisc sudo vim \
-        less  \
-        net-tools  \
-        python2-psycopg2 \
-        python2-requests  \
-        tar  \
-        shadow-utils \
-        which  \
-        binutils\
-        libtool \
-        perf  \
-        make sudo \
-        util-linux
+# Dependencies
+RUN apt install -y \
+        libicu-dev \
+        bison \
+        flex \
+        python3-dev \
+        libreadline-dev \
+        libgss-dev \
+        libssl-dev \
+        libpam0g-dev \
+        libxml2-dev \
+        libxslt1-dev \
+        libldap2-dev \
+        uuid-dev \
+        liblz4-dev \
+        libkrb5-dev \
+        gettext \
+        libxerces-c-dev \
+        tcl-dev \
+        libperl-dev \
+        libipc-run-perl \
+        libaio-dev \
+        libfuse-dev && \
+    apt clean -y
+
+# Tools
+RUN apt install -y \
+        iproute2 \
+        wget \
+        ccache \
+        sudo \
+        vim \
+        git \
+        cmake && \
+    apt clean -y
 
 # set to empty if GitHub is not barriered
 # ENV GITHUB_PROXY=https://ghproxy.com/
 ENV GITHUB_PROXY=
 
-ENV OPENSSL_VERSION=OpenSSL_1_1_1k
+ENV ZLOG_VERSION=1.2.14
+ENV PFSD_VERSION=pfsd4pg-release-1.2.42-20220419
 
 # install dependencies from GitHub mirror
-RUN yum install -y libaio-devel wget && \
-    cd /usr/local && \
+RUN cd /usr/local && \
     # zlog for PFSD
-    wget --no-verbose --no-check-certificate "${GITHUB_PROXY}https://github.com/HardySimpson/zlog/archive/refs/tags/1.2.14.tar.gz" && \
+    wget --no-verbose --no-check-certificate "${GITHUB_PROXY}https://github.com/HardySimpson/zlog/archive/refs/tags/${ZLOG_VERSION}.tar.gz" && \
     # PFSD
-    wget --no-verbose --no-check-certificate "${GITHUB_PROXY}https://github.com/ApsaraDB/PolarDB-FileSystem/archive/refs/tags/pfsd4pg-release-1.2.41-20211018.tar.gz" && \
-    # OpenSSL 1.1.1
-    wget --no-verbose --no-check-certificate "${GITHUB_PROXY}https://github.com/openssl/openssl/archive/refs/tags/${OPENSSL_VERSION}.tar.gz" && \
-    # enable build tools
-    echo "source /opt/rh/devtoolset-9/enable" >> /etc/bashrc && \
-    echo "source /opt/rh/llvm-toolset-7.0/enable" >> /etc/bashrc && \
-    source /etc/bashrc && \
+    wget --no-verbose --no-check-certificate "${GITHUB_PROXY}https://github.com/ApsaraDB/PolarDB-FileSystem/archive/refs/tags/${PFSD_VERSION}.tar.gz" && \
     # unzip and install zlog
-    tar -zxf 1.2.14.tar.gz && \
-    cd zlog-1.2.14 && \
+    gzip -d $ZLOG_VERSION.tar.gz && \
+    tar xpf $ZLOG_VERSION.tar && \
+    cd zlog-$ZLOG_VERSION && \
     make && make install && \
     echo '/usr/local/lib' >> /etc/ld.so.conf && ldconfig && \
     cd .. && \
-    rm 1.2.14.tar.gz && \
-    rm -rf zlog-1.2.14 && \
+    rm -rf $ZLOG_VERSION* && \
+    rm -rf zlog-$ZLOG_VERSION && \
     # unzip and install PFSD
-    tar -zxf pfsd4pg-release-1.2.41-20211018.tar.gz && \
-    cd PolarDB-FileSystem-pfsd4pg-release-1.2.41-20211018 && \
+    gzip -d $PFSD_VERSION.tar.gz && \
+    tar xpf $PFSD_VERSION.tar && \
+    cd PolarDB-FileSystem-$PFSD_VERSION && \
+    sed -i 's/-march=native //' CMakeLists.txt && \
     ./autobuild.sh && ./install.sh && \
     cd .. && \
-    rm pfsd4pg-release-1.2.41-20211018.tar.gz && \
-    rm -rf PolarDB-FileSystem-pfsd4pg-release-1.2.41-20211018 && \
-    # unzip and install OpenSSL 1.1.1
-    tar -zxf $OPENSSL_VERSION.tar.gz && \
-    cd /usr/local/openssl-$OPENSSL_VERSION && \
-    ./config --prefix=/usr/local/openssl && make -j64 && make install && \
-    cp /usr/local/openssl/lib/libcrypto.so.1.1 /usr/lib64/ && \
-    cp /usr/local/openssl/lib/libssl.so.1.1 /usr/lib64/ && \
-    cp -r /usr/local/openssl/include/openssl /usr/include/ && \
-    ln -sf /usr/lib64/libcrypto.so.1.1 /usr/lib64/libcrypto.so && \
-    ln -sf /usr/lib64/libssl.so.1.1 /usr/lib64/libssl.so && \
-    rm -f /usr/local/$OPENSSL_VERSION.tar.gz && \
-    rm -rf /usr/local/openssl-$OPENSSL_VERSION
+    rm -rf $PFSD_VERSION* && \
+    rm -rf PolarDB-FileSystem-$PFSD_VERSION*
 
 # create default user
 ENV USER_NAME=postgres
 RUN echo "create default user" && \
-    groupadd -r $USER_NAME && useradd -g $USER_NAME $USER_NAME -p '' && \
-    usermod -aG wheel $USER_NAME
-
-WORKDIR /home/$USER_NAME
+    groupadd -r $USER_NAME && \
+    useradd -ms /bin/bash -g $USER_NAME $USER_NAME -p '' && \
+    usermod -aG sudo $USER_NAME
 
 # modify conf
 RUN echo "modify conf" && \
-    mkdir -p /run/pfs && chown $USER_NAME /run/pfs && \
     mkdir -p /var/log/pfs && chown $USER_NAME /var/log/pfs && \
+    mkdir -p /var/run/pfs && chown $USER_NAME /var/run/pfs && \
+    mkdir -p /var/run/pfsd && chown $USER_NAME /var/run/pfsd && \
+    mkdir -p /dev/shm/pfsd && chown $USER_NAME /dev/shm/pfsd && \
+    touch /var/run/pfsd/.pfsd && \
     echo "ulimit -c unlimited" >> /home/postgres/.bashrc && \
-    echo "export PATH=/home/postgres/tmp_basedir_polardb_pg_1100_bld/bin:\$PATH" >> /home/postgres/.bashrc && \
-    echo "alias pg='psql -h /home/postgres/tmp_master_dir_polardb_pg_1100_bld/'" >> /home/postgres/.bashrc && \
-    rm /etc/localtime && \
-    cp /usr/share/zoneinfo/UTC /etc/localtime && \
-    sed -i 's/4096/unlimited/g' /etc/security/limits.d/20-nproc.conf && \
-    sed -i 's/vim/vi/g' /root/.bashrc
+    echo "export PGHOST=127.0.0.1" >> /home/postgres/.bashrc && \
+    echo "alias pg='psql -h /home/postgres/tmp_master_dir_polardb_pg_1100_bld/'" >> /home/postgres/.bashrc
 
+ENV PATH="/home/postgres/tmp_basedir_polardb_pg_1100_bld/bin:$PATH"
+WORKDIR /home/$USER_NAME
 USER $USER_NAME
 ```
 
