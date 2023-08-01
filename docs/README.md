@@ -9,59 +9,20 @@ footer: Apache 2.0 Licensed | Copyright © Alibaba Group, Inc.
 
 ### Quick Start with Docker
 
-Pull the [instance image](https://hub.docker.com/r/polardb/polardb_pg_local_instance/tags) of PolarDB for PostgreSQL based on local storage. Create, run and enter the container, and use PolarDB instance directly:
-
-:::: code-group
-::: code-group-item Single-Node
+Pull the [local instance image](https://hub.docker.com/r/polardb/polardb_pg_local_instance/tags) of PolarDB for PostgreSQL based on local storage. Create and run the container, and try PolarDB-PG instance directly:
 
 ```bash:no-line-numbers
 # pull the instance image from DockerHub
-docker pull polardb/polardb_pg_local_instance:single
-# create, run and enter the container
-docker run -it --cap-add=SYS_PTRACE --privileged=true --name polardb_pg_single polardb/polardb_pg_local_instance:single bash
+docker pull polardb/polardb_pg_local_instance
+# create and run the container
+docker run -it --rm polardb/polardb_pg_local_instance psql
 # check
-psql -h 127.0.0.1 -c 'select version();'
+postgres=# SELECT version();
             version
 --------------------------------
  PostgreSQL 11.9 (POLARDB 11.9)
 (1 row)
 ```
-
-:::
-::: code-group-item Multi-Node
-
-```bash:no-line-numbers
-# pull the instance image from DockerHub
-docker pull polardb/polardb_pg_local_instance:withrep
-# create, run and enter the container
-docker run -it --cap-add=SYS_PTRACE --privileged=true --name polardb_pg_withrep polardb/polardb_pg_local_instance:withrep bash
-# check
-psql -h 127.0.0.1 -c 'select version();'
-            version
---------------------------------
- PostgreSQL 11.9 (POLARDB 11.9)
-(1 row)
-```
-
-:::
-
-::: code-group-item HTAP
-
-```bash:no-line-numbers
-# pull the instance image from DockerHub
-docker pull polardb/polardb_pg_local_instance:htap
-# create, run and enter the container
-docker run -it --cap-add=SYS_PTRACE --privileged=true --name polardb_pg_htap polardb/polardb_pg_local_instance:htap bash
-# check
-psql -h 127.0.0.1 -c 'select version();'
-            version
---------------------------------
- PostgreSQL 11.9 (POLARDB 11.9)
-(1 row)
-```
-
-:::
-::::
 
 <div class="features">
 
