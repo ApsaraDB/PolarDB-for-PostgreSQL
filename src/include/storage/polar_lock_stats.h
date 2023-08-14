@@ -84,6 +84,8 @@ typedef struct polar_all_locks_stat
 			INSTR_TIME_SET_CURRENT(start);   									\
 	} while (0);
 
+#define POLAR_MAX_LOCK_STAT_SLOTS_BASE (MaxBackends + NUM_AUXPROCTYPES)
+
 extern polar_lwlock_stat polar_lwlock_stat_local_summary;
 extern polar_all_lwlocks_stat *polar_lwlocks_stat_array;
 extern polar_all_locks_stat *polar_locks_stat_array;

@@ -58,6 +58,8 @@
 #include "utils/dsa.h"
 #include "utils/freepage.h"
 #include "utils/memutils.h"
+#include "utils/memdebug.h"
+#include "portability/instr_time.h"
 
 /*
  * The size of the initial DSM segment that backs a dsa_area created by
@@ -142,6 +144,44 @@ typedef size_t dsa_segment_index;
 /* Macros for access to locks. */
 #define DSA_AREA_LOCK(area) (&area->control->lock)
 #define DSA_SCLASS_LOCK(area, sclass) (&area->control->pools[sclass].lock)
+
+#define DSA_LOCK_STAT_INIT \
+	instr_time lock_start;\
+	instr_time lock_duration;\
+	uint64 lock_time_us;\
+
+#define DSA_AREA_LOCK_STAT_BEGIN \
+	do { \
+		INSTR_TIME_SET_CURRENT(lock_start);\
+		area->lock_stat.lock_area_count++;\
+	} while (0)
+
+#define DSA_AREA_LOCK_STAT_END \
+	do { \
+		INSTR_TIME_SET_CURRENT(lock_duration);\
+		INSTR_TIME_SUBTRACT(lock_duration, lock_start);\
+		lock_time_us = INSTR_TIME_GET_MICROSEC(lock_duration);\
+		area->lock_stat.lock_area_time_us += lock_time_us;\
+		if (lock_time_us > area->lock_stat.lock_area_max_time_us)\
+			area->lock_stat.lock_area_max_time_us = lock_time_us;\
+	} while (0)
+
+#define DSA_SCLASS_LOCK_STAT_BEGIN \
+	do { \
+		INSTR_TIME_SET_CURRENT(lock_start);\
+		area->lock_stat.lock_sclass_count++;\
+	} while (0)
+
+#define DSA_SCLASS_LOCK_STAT_END \
+	do { \
+		INSTR_TIME_SET_CURRENT(lock_duration);\
+		INSTR_TIME_SUBTRACT(lock_duration, lock_start);\
+		lock_time_us = INSTR_TIME_GET_MICROSEC(lock_duration);\
+		area->lock_stat.lock_sclass_time_us += lock_time_us;\
+		if (lock_time_us > area->lock_stat.lock_sclass_max_time_us)\
+			area->lock_stat.lock_sclass_max_time_us = lock_time_us;\
+	} while (0)
+
 
 /*
  * The header for an individual segment.  This lives at the start of each DSM
@@ -372,6 +412,8 @@ struct dsa_area
 
 	/* The last observed freed_segment_counter. */
 	size_t		freed_segment_counter;
+
+	DSALockStat lock_stat;
 };
 
 #define DSA_SPAN_NOTHING_FREE	((uint16) -1)
@@ -406,6 +448,9 @@ static dsa_area *attach_internal(void *place, dsm_segment *segment,
 				dsa_handle handle);
 static void check_for_freed_segments(dsa_area *area);
 static void check_for_freed_segments_locked(dsa_area *area);
+
+/* POLAR */
+static void rebin_segment(dsa_area *area, dsa_segment_map *segment_map);
 
 /*
  * Create a new shared area in a new DSM segment.  Further DSM segments will
@@ -669,6 +714,7 @@ dsa_allocate_extended(dsa_area *area, size_t size, int flags)
 	dsa_segment_map *segment_map;
 	dsa_pointer result;
 
+	Assert(area != NULL);
 	Assert(size > 0);
 
 	/* Sanity check on huge individual allocation size. */
@@ -689,6 +735,7 @@ dsa_allocate_extended(dsa_area *area, size_t size, int flags)
 		size_t		first_page;
 		dsa_pointer span_pointer;
 		dsa_area_pool *pool = &area->control->pools[DSA_SCLASS_SPAN_LARGE];
+		DSA_LOCK_STAT_INIT;
 
 		/* Obtain a span object. */
 		span_pointer = alloc_object(area, DSA_SCLASS_BLOCK_OF_SPANS);
@@ -704,6 +751,7 @@ dsa_allocate_extended(dsa_area *area, size_t size, int flags)
 			return InvalidDsaPointer;
 		}
 
+		DSA_AREA_LOCK_STAT_BEGIN;
 		LWLockAcquire(DSA_AREA_LOCK(area), LW_EXCLUSIVE);
 
 		/* Find a segment from which to allocate. */
@@ -714,6 +762,7 @@ dsa_allocate_extended(dsa_area *area, size_t size, int flags)
 		{
 			/* Can't make any more segments: game over. */
 			LWLockRelease(DSA_AREA_LOCK(area));
+			DSA_AREA_LOCK_STAT_END;
 			dsa_free(area, span_pointer);
 
 			/* Raise error unless asked not to. */
@@ -737,17 +786,20 @@ dsa_allocate_extended(dsa_area *area, size_t size, int flags)
 			elog(FATAL,
 				 "dsa_allocate could not find %zu free pages", npages);
 		LWLockRelease(DSA_AREA_LOCK(area));
+		DSA_AREA_LOCK_STAT_END;
 
 		start_pointer = DSA_MAKE_POINTER(get_segment_index(area, segment_map),
 										 first_page * FPM_PAGE_SIZE);
 
 		/* Initialize span and pagemap. */
+		DSA_SCLASS_LOCK_STAT_BEGIN;
 		LWLockAcquire(DSA_SCLASS_LOCK(area, DSA_SCLASS_SPAN_LARGE),
 					  LW_EXCLUSIVE);
 		init_span(area, span_pointer, pool, start_pointer, npages,
 				  DSA_SCLASS_SPAN_LARGE);
 		segment_map->pagemap[first_page] = span_pointer;
 		LWLockRelease(DSA_SCLASS_LOCK(area, DSA_SCLASS_SPAN_LARGE));
+		DSA_SCLASS_LOCK_STAT_END;
 
 		/* Zero-initialize the memory if requested. */
 		if ((flags & DSA_ALLOC_ZERO) != 0)
@@ -828,6 +880,8 @@ dsa_free(dsa_area *area, dsa_pointer dp)
 	size_t		size;
 	int			size_class;
 
+	Assert(area != NULL);
+
 	/* Make sure we don't have a stale segment in the slot 'dp' refers to. */
 	check_for_freed_segments(area);
 
@@ -847,9 +901,8 @@ dsa_free(dsa_area *area, dsa_pointer dp)
 	 */
 	if (span->size_class == DSA_SCLASS_SPAN_LARGE)
 	{
-
 #ifdef CLOBBER_FREED_MEMORY
-		memset(object, 0x7f, span->npages * FPM_PAGE_SIZE);
+		wipe_mem(object, span->npages * FPM_PAGE_SIZE);
 #endif
 
 		/* Give pages back to free page manager. */
@@ -857,6 +910,10 @@ dsa_free(dsa_area *area, dsa_pointer dp)
 		FreePageManagerPut(segment_map->fpm,
 						   DSA_EXTRACT_OFFSET(span->start) / FPM_PAGE_SIZE,
 						   span->npages);
+
+		/* POLAR */
+		rebin_segment(area, segment_map);
+
 		LWLockRelease(DSA_AREA_LOCK(area));
 		/* Unlink span. */
 		LWLockAcquire(DSA_SCLASS_LOCK(area, DSA_SCLASS_SPAN_LARGE),
@@ -869,7 +926,7 @@ dsa_free(dsa_area *area, dsa_pointer dp)
 	}
 
 #ifdef CLOBBER_FREED_MEMORY
-	memset(object, 0x7f, size);
+	wipe_mem(object, size);
 #endif
 
 	LWLockAcquire(DSA_SCLASS_LOCK(area, size_class), LW_EXCLUSIVE);
@@ -920,6 +977,7 @@ dsa_free(dsa_area *area, dsa_pointer dp)
 	}
 
 	LWLockRelease(DSA_SCLASS_LOCK(area, size_class));
+
 }
 
 /*
@@ -964,15 +1022,19 @@ dsa_get_address(dsa_area *area, dsa_pointer dp)
 void
 dsa_pin(dsa_area *area)
 {
+	DSA_LOCK_STAT_INIT;
+	DSA_AREA_LOCK_STAT_BEGIN;
 	LWLockAcquire(DSA_AREA_LOCK(area), LW_EXCLUSIVE);
 	if (area->control->pinned)
 	{
 		LWLockRelease(DSA_AREA_LOCK(area));
+		DSA_AREA_LOCK_STAT_END;
 		elog(ERROR, "dsa_area already pinned");
 	}
 	area->control->pinned = true;
 	++area->control->refcnt;
 	LWLockRelease(DSA_AREA_LOCK(area));
+	DSA_AREA_LOCK_STAT_END;
 }
 
 /*
@@ -983,16 +1045,20 @@ dsa_pin(dsa_area *area)
 void
 dsa_unpin(dsa_area *area)
 {
+	DSA_LOCK_STAT_INIT;
+	DSA_AREA_LOCK_STAT_BEGIN;
 	LWLockAcquire(DSA_AREA_LOCK(area), LW_EXCLUSIVE);
 	Assert(area->control->refcnt > 1);
 	if (!area->control->pinned)
 	{
 		LWLockRelease(DSA_AREA_LOCK(area));
+		DSA_AREA_LOCK_STAT_END;
 		elog(ERROR, "dsa_area not pinned");
 	}
 	area->control->pinned = false;
 	--area->control->refcnt;
 	LWLockRelease(DSA_AREA_LOCK(area));
+	DSA_AREA_LOCK_STAT_END;
 }
 
 /*
@@ -1007,9 +1073,12 @@ dsa_unpin(dsa_area *area)
 void
 dsa_set_size_limit(dsa_area *area, size_t limit)
 {
+	DSA_LOCK_STAT_INIT;
+	DSA_AREA_LOCK_STAT_BEGIN;
 	LWLockAcquire(DSA_AREA_LOCK(area), LW_EXCLUSIVE);
 	area->control->max_total_segment_size = limit;
 	LWLockRelease(DSA_AREA_LOCK(area));
+	DSA_AREA_LOCK_STAT_END;
 }
 
 /*
@@ -1020,6 +1089,7 @@ void
 dsa_trim(dsa_area *area)
 {
 	int			size_class;
+	DSA_LOCK_STAT_INIT;
 
 	/*
 	 * Trim in reverse pool order so we get to the spans-of-spans last, just
@@ -1041,6 +1111,7 @@ dsa_trim(dsa_area *area)
 		 * entirely empty superblock (entirely empty superblocks in other
 		 * fullness classes are returned to the free page map by dsa_free).
 		 */
+		DSA_SCLASS_LOCK_STAT_BEGIN;
 		LWLockAcquire(DSA_SCLASS_LOCK(area, size_class), LW_EXCLUSIVE);
 		span_pointer = pool->spans[1];
 		while (DsaPointerIsValid(span_pointer))
@@ -1054,6 +1125,7 @@ dsa_trim(dsa_area *area)
 			span_pointer = next;
 		}
 		LWLockRelease(DSA_SCLASS_LOCK(area, size_class));
+		DSA_SCLASS_LOCK_STAT_END;
 	}
 }
 
@@ -1066,12 +1138,14 @@ dsa_dump(dsa_area *area)
 {
 	size_t		i,
 				j;
+	DSA_LOCK_STAT_INIT;
 
 	/*
 	 * Note: This gives an inconsistent snapshot as it acquires and releases
 	 * individual locks as it goes...
 	 */
 
+	DSA_AREA_LOCK_STAT_BEGIN;
 	LWLockAcquire(DSA_AREA_LOCK(area), LW_EXCLUSIVE);
 	check_for_freed_segments_locked(area);
 	fprintf(stderr, "dsa_area handle %x:\n", area->control->handle);
@@ -1111,12 +1185,14 @@ dsa_dump(dsa_area *area)
 		}
 	}
 	LWLockRelease(DSA_AREA_LOCK(area));
+	DSA_AREA_LOCK_STAT_END;
 
 	fprintf(stderr, "  pools:\n");
 	for (i = 0; i < DSA_NUM_SIZE_CLASSES; ++i)
 	{
 		bool		found = false;
 
+		DSA_SCLASS_LOCK_STAT_BEGIN;
 		LWLockAcquire(DSA_SCLASS_LOCK(area, i), LW_EXCLUSIVE);
 		for (j = 0; j < DSA_FULLNESS_CLASSES; ++j)
 			if (DsaPointerIsValid(area->control->pools[i].spans[j]))
@@ -1158,7 +1234,14 @@ dsa_dump(dsa_area *area)
 			}
 		}
 		LWLockRelease(DSA_SCLASS_LOCK(area, i));
+		DSA_SCLASS_LOCK_STAT_END;
 	}
+}
+
+DSALockStat *
+dsa_get_lock_stat(dsa_area *area)
+{
+	return &(area->lock_stat);
 }
 
 /*
@@ -1254,6 +1337,7 @@ create_internal(void *place, size_t size,
 	memset(area->segment_maps, 0, sizeof(dsa_segment_map) * DSA_MAX_SEGMENTS);
 	area->high_segment_index = 0;
 	area->freed_segment_counter = 0;
+	memset(&area->lock_stat, 0, sizeof(DSALockStat));
 	LWLockInitialize(&control->lock, control->lwlock_tranche_id);
 	for (i = 0; i < DSA_NUM_SIZE_CLASSES; ++i)
 		LWLockInitialize(DSA_SCLASS_LOCK(area, i),
@@ -1296,6 +1380,7 @@ attach_internal(void *place, dsm_segment *segment, dsa_handle handle)
 	dsa_area_control *control;
 	dsa_area   *area;
 	dsa_segment_map *segment_map;
+	DSA_LOCK_STAT_INIT;
 
 	control = (dsa_area_control *) place;
 	Assert(control->handle == handle);
@@ -1310,6 +1395,7 @@ attach_internal(void *place, dsm_segment *segment, dsa_handle handle)
 	memset(&area->segment_maps[0], 0,
 		   sizeof(dsa_segment_map) * DSA_MAX_SEGMENTS);
 	area->high_segment_index = 0;
+	memset(&area->lock_stat, 0, sizeof(DSALockStat));
 
 	/* Set up the segment map for this process's mapping. */
 	segment_map = &area->segment_maps[0];
@@ -1323,6 +1409,7 @@ attach_internal(void *place, dsm_segment *segment, dsa_handle handle)
 		 MAXALIGN(sizeof(FreePageManager)));
 
 	/* Bump the reference count. */
+	DSA_AREA_LOCK_STAT_BEGIN;
 	LWLockAcquire(DSA_AREA_LOCK(area), LW_EXCLUSIVE);
 	if (control->refcnt == 0)
 	{
@@ -1334,6 +1421,7 @@ attach_internal(void *place, dsm_segment *segment, dsa_handle handle)
 	++control->refcnt;
 	area->freed_segment_counter = area->control->freed_segment_counter;
 	LWLockRelease(DSA_AREA_LOCK(area));
+	DSA_AREA_LOCK_STAT_END;
 
 	return area;
 }
@@ -1445,6 +1533,7 @@ alloc_object(dsa_area *area, int size_class)
 	dsa_pointer result;
 	char	   *object;
 	size_t		size;
+	DSA_LOCK_STAT_INIT;
 
 	/*
 	 * Even though ensure_active_superblock can in turn call alloc_object if
@@ -1453,6 +1542,7 @@ alloc_object(dsa_area *area, int size_class)
 	 * we hold this lock for the duration of this function.
 	 */
 	Assert(!LWLockHeldByMe(DSA_SCLASS_LOCK(area, size_class)));
+	DSA_SCLASS_LOCK_STAT_BEGIN;
 	LWLockAcquire(DSA_SCLASS_LOCK(area, size_class), LW_EXCLUSIVE);
 
 	/*
@@ -1498,6 +1588,7 @@ alloc_object(dsa_area *area, int size_class)
 
 	Assert(LWLockHeldByMe(DSA_SCLASS_LOCK(area, size_class)));
 	LWLockRelease(DSA_SCLASS_LOCK(area, size_class));
+	DSA_SCLASS_LOCK_STAT_END;
 
 	return result;
 }
@@ -1537,6 +1628,7 @@ ensure_active_superblock(dsa_area *area, dsa_area_pool *pool,
 	size_t		first_page;
 	size_t		i;
 	dsa_segment_map *segment_map;
+	DSA_LOCK_STAT_INIT;
 
 	Assert(LWLockHeldByMe(DSA_SCLASS_LOCK(area, size_class)));
 
@@ -1665,6 +1757,7 @@ ensure_active_superblock(dsa_area *area, dsa_area_pool *pool,
 	}
 
 	/* Find or create a segment and allocate the superblock. */
+	DSA_AREA_LOCK_STAT_BEGIN;
 	LWLockAcquire(DSA_AREA_LOCK(area), LW_EXCLUSIVE);
 	segment_map = get_best_segment(area, npages);
 	if (segment_map == NULL)
@@ -1673,6 +1766,7 @@ ensure_active_superblock(dsa_area *area, dsa_area_pool *pool,
 		if (segment_map == NULL)
 		{
 			LWLockRelease(DSA_AREA_LOCK(area));
+			DSA_AREA_LOCK_STAT_END;
 			return false;
 		}
 	}
@@ -1685,6 +1779,7 @@ ensure_active_superblock(dsa_area *area, dsa_area_pool *pool,
 			 "dsa_allocate could not find %zu free pages for superblock",
 			 npages);
 	LWLockRelease(DSA_AREA_LOCK(area));
+	DSA_AREA_LOCK_STAT_END;
 
 	/* Compute the start of the superblock. */
 	start_pointer =
@@ -1804,7 +1899,7 @@ destroy_superblock(dsa_area *area, dsa_pointer span_pointer)
 	dsa_area_span *span = dsa_get_address(area, span_pointer);
 	int			size_class = span->size_class;
 	dsa_segment_map *segment_map;
-
+	DSA_LOCK_STAT_INIT;
 
 	/* Remove it from its fullness class list. */
 	unlink_span(area, span);
@@ -1814,6 +1909,7 @@ destroy_superblock(dsa_area *area, dsa_pointer span_pointer)
 	 * lock.  We never hold the area lock and then take a pool lock, or we
 	 * could deadlock.
 	 */
+	DSA_AREA_LOCK_STAT_BEGIN;
 	LWLockAcquire(DSA_AREA_LOCK(area), LW_EXCLUSIVE);
 	check_for_freed_segments_locked(area);
 	segment_map =
@@ -1848,8 +1944,12 @@ destroy_superblock(dsa_area *area, dsa_pointer span_pointer)
 			segment_map->mapped_address = NULL;
 		}
 	}
-	LWLockRelease(DSA_AREA_LOCK(area));
 
+	/* POLAR: try to adjust segment to appropriate bin */
+	rebin_segment(area, segment_map);
+
+	LWLockRelease(DSA_AREA_LOCK(area));
+	DSA_AREA_LOCK_STAT_END;
 	/*
 	 * Span-of-spans blocks store the span which describes them within the
 	 * block itself, so freeing the storage implicitly frees the descriptor
@@ -2249,10 +2349,13 @@ check_for_freed_segments(dsa_area *area)
 	freed_segment_counter = area->control->freed_segment_counter;
 	if (unlikely(area->freed_segment_counter != freed_segment_counter))
 	{
+		DSA_LOCK_STAT_INIT;
 		/* Check all currently mapped segments to find what's been freed. */
+		DSA_AREA_LOCK_STAT_BEGIN;
 		LWLockAcquire(DSA_AREA_LOCK(area), LW_EXCLUSIVE);
 		check_for_freed_segments_locked(area);
 		LWLockRelease(DSA_AREA_LOCK(area));
+		DSA_AREA_LOCK_STAT_END;
 	}
 }
 
@@ -2286,4 +2389,94 @@ check_for_freed_segments_locked(dsa_area *area)
 		}
 		area->freed_segment_counter = freed_segment_counter;
 	}
+}
+
+/*
+ * POLAR: Re-bin segment if it's no longer in the appropriate bin. Now it is
+ * only used when ShmAllocSet is enabled to avoid affecting others.
+ */
+static void
+rebin_segment(dsa_area *area, dsa_segment_map *segment_map)
+{
+	size_t	new_bin;
+	dsa_segment_index	segment_index;
+
+	if (!polar_shm_aset_enabled() || segment_map->segment == NULL)
+		return;
+
+	new_bin = contiguous_pages_to_segment_bin(fpm_largest(segment_map->fpm));
+	if (segment_map->header->bin == new_bin)
+		return;
+
+	segment_index = get_segment_index(area, segment_map);
+
+	/* Re-bin it to the appropriate bin. */
+	unlink_segment(area, segment_map);
+
+	/* Push it onto the front of its new bin. */
+	segment_map->header->prev = DSA_SEGMENT_INDEX_NONE;
+	segment_map->header->next = area->control->segment_bins[new_bin];
+	segment_map->header->bin = new_bin;
+	area->control->segment_bins[new_bin] = segment_index;
+	if (segment_map->header->next != DSA_SEGMENT_INDEX_NONE)
+	{
+		dsa_segment_map *next;
+
+		next = get_segment_by_index(area, segment_map->header->next);
+		Assert(next->header->bin == new_bin);
+		next->header->prev = segment_index;
+	}
+}
+
+/*
+ * polar_dsa_monitor 
+ *		Compute stats about memory consumption of a DSA area. 
+ *
+ * Note: This gives an inconsistent snapshot as it acquires and releases
+ * individual locks as it goes...
+ */
+void
+polar_dsa_monitor(dsa_area *area, DSAContextCounters *totals)
+{
+	size_t		i;
+	DSA_LOCK_STAT_INIT;
+
+	if (totals == NULL)
+		return;
+
+	/* Lock all DSA area */
+	DSA_AREA_LOCK_STAT_BEGIN;
+	LWLockAcquire(DSA_AREA_LOCK(area), LW_EXCLUSIVE);
+	check_for_freed_segments_locked(area);
+
+	for (i = 0; i < DSA_NUM_SEGMENT_BINS; ++i)
+	{
+		if (area->control->segment_bins[i] != DSA_SEGMENT_INDEX_NONE)
+		{
+			dsa_segment_index segment_index;
+
+			fprintf(stderr,
+					"    segment bin %zu (at least %d contiguous pages free):\n",
+					i, 1 << (i - 1));
+			segment_index = area->control->segment_bins[i];
+			while (segment_index != DSA_SEGMENT_INDEX_NONE)
+			{
+				dsa_segment_map *segment_map;
+
+				segment_map = get_segment_by_index(area, segment_index);
+				totals->usable_pages += segment_map->header->usable_pages;
+				if (fpm_largest(segment_map->fpm) > totals->max_contiguous_pages)
+					totals->max_contiguous_pages = fpm_largest(segment_map->fpm);
+				segment_index = segment_map->header->next;
+			}
+		}
+	}
+
+	totals->max_total_segment_size = area->control->max_total_segment_size;
+	totals->total_segment_size = area->control->total_segment_size;
+	totals->refcnt = area->control->refcnt;
+	totals->pinned = area->control->pinned;
+
+	LWLockRelease(DSA_AREA_LOCK(area));
+	DSA_AREA_LOCK_STAT_END;
 }

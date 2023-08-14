@@ -106,7 +106,7 @@ typedef struct PlannedStmt
 	int			stmt_location;	/* start location, or -1 if unknown */
 	int			stmt_len;		/* length in bytes; 0 means "rest of string" */
 
-	/* POALR px */
+	/* POLAR px */
 	PlanGenerator	planGen;		/* optimizer generation */
 	int		   *subplan_sliceIds; /* Slice IDs for initplans. Size equals 'subplans'. 0 for non-initplans */
 	bool	   *subplan_initPlanParallel;
@@ -115,7 +115,9 @@ typedef struct PlannedStmt
 	int			nParamExec;		/* number of PARAM_EXEC Params used */
 	int			numSlices;
 	struct PlanSlice *slices;
-	/* POALR end */
+	/* What is the memory reserved for this query's execution? */
+	uint64		query_mem;
+	/* POLAR end */
 } PlannedStmt;
 
 /* ----------------
@@ -209,6 +211,10 @@ typedef struct Plan
 	 */
 	struct Plan *motionNode;
 	bool		px_scan_partial;
+	/**
+	 * How much memory (in KB) should be used to execute this plan node?
+	 */
+	uint64 operatorMemKB;
 	/* POLAR end */
 } Plan;
 
@@ -897,7 +903,7 @@ typedef struct Agg
 
     /* POLAR px: Stream entries when out of memory instead of spilling to disk */
 	bool		streaming;
-	/* POALR end */
+	/* POLAR end */
 } Agg;
 
 /* ----------------

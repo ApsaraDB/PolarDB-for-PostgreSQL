@@ -1,0 +1,483 @@
+create table px_analyze_t1 (a int, b int, c varchar(20));
+create table px_analyze_t2 (a int, b int, c varchar(20));
+create table foo(x1 int, x2 int, x3 int);
+create table bar1(x1 int, x2 int, x3 int);
+create or replace function explain_analyze_memory_detail_count() returns int language plpgsql as
+$$
+declare 
+	ln text; 
+	executor_memory_count int;
+begin
+    executor_memory_count=0;
+    for ln in
+        explain (analyze)  select * from px_analyze_t1
+    loop
+        if ln like '%Executor Memory:%' then
+            executor_memory_count = executor_memory_count + 1;
+		end if;
+    end loop;
+	return executor_memory_count;
+end;
+$$;
+create or replace function explain_analyze_allstat_count() returns int language plpgsql as
+$$
+declare 
+	ln text; 
+	executor_memory_count int;
+begin
+    executor_memory_count=0;
+    for ln in
+        explain (analyze)  select * from px_analyze_t1
+    loop
+        if ln like '%allstat:%' then
+            executor_memory_count = executor_memory_count + 1;
+		end if;
+    end loop;
+	return executor_memory_count;
+end;
+$$;
+create or replace function explain_analyze_allstat_count_with_slicetable() returns int language plpgsql as
+$$
+declare 
+	ln text; 
+	executor_memory_count int;
+begin
+    executor_memory_count=0;
+    for ln in
+        explain (analyze,slicetable) select * from px_analyze_t1 order by a
+    loop
+        if ln like '%gang size %' then
+            executor_memory_count = executor_memory_count + 1;
+		end if;
+    end loop;
+	return executor_memory_count;
+end;
+$$;
+create or replace function explain_analyze_memory_detail_count_hashjoin() returns int language plpgsql as
+$$
+declare 
+	ln text; 
+	executor_memory_count int;
+    hash_join int;
+begin
+    executor_memory_count=0;
+    hash_join = 0;
+    for ln in
+        explain (analyze)  select count(*) from px_analyze_t2 t2,px_analyze_t1 t1 where t2.c = t1.c
+    loop
+        if ln like '%Executor Memory:%' then
+            executor_memory_count = executor_memory_count + 1;
+		end if;
+        if ln like '%Hash Join%' then
+            hash_join = hash_join + 1;
+		end if;
+    end loop;
+	return executor_memory_count * hash_join;
+end;
+$$;
+create or replace function explain_analyze_allstat_count_hashjoin() returns int language plpgsql as
+$$
+declare 
+	ln text; 
+	executor_memory_count int;
+begin
+    executor_memory_count=0;
+    for ln in
+        explain (analyze)  select count(*) from px_analyze_t2 t2,px_analyze_t1 t1 where t2.c = t1.c
+    loop
+        if ln like '%allstat:%' then
+            executor_memory_count = executor_memory_count + 1;
+		end if;
+    end loop;
+	return executor_memory_count;
+end;
+$$;
+create or replace function explain_analyze_allstat_count_with_slicetable_hashjoin() returns int language plpgsql as
+$$
+declare 
+	ln text; 
+	executor_memory_count int;
+begin
+    executor_memory_count=0;
+    for ln in
+        explain (analyze,slicetable) select count(*) from px_analyze_t2 t2,px_analyze_t1 t1 where t2.c = t1.c
+    loop
+        if ln like '%gang size %' then
+            executor_memory_count = executor_memory_count + 1;
+		end if;
+    end loop;
+	return executor_memory_count;
+end;
+$$;
+create or replace function explain_analyze_memory_detail_count_material() returns int language plpgsql as
+$$
+declare 
+	ln text; 
+	executor_memory_count int;
+    material int;
+begin
+    executor_memory_count=0;
+    material = 0;
+    for ln in
+        explain analyze select count(*)+1 from bar1 b where b.x1 < any (with cte1 as (select * from foo) select a.x1+1 from (select * from cte1) a group by a.x1)
+    loop
+        if ln like '%Executor Memory:%' then
+            executor_memory_count = executor_memory_count + 1;
+		end if;
+        if ln like '%Materialize%' then
+            material = material + 1;
+		end if;
+    end loop;
+	return executor_memory_count * material;
+end;
+$$;
+-- empty table
+set polar_enable_px to on;
+set polar_px_explain_memory_verbosity = detail;
+select explain_analyze_memory_detail_count();
+ explain_analyze_memory_detail_count 
+-------------------------------------
+                                   2
+(1 row)
+
+set polar_px_explain_memory_verbosity = summary;
+select explain_analyze_memory_detail_count();
+ explain_analyze_memory_detail_count 
+-------------------------------------
+                                   0
+(1 row)
+
+set polar_px_enable_explain_all_stat to on;
+select explain_analyze_allstat_count();
+ explain_analyze_allstat_count 
+-------------------------------
+                             1
+(1 row)
+
+set polar_px_enable_explain_all_stat to off;
+select explain_analyze_allstat_count();
+ explain_analyze_allstat_count 
+-------------------------------
+                             0
+(1 row)
+
+select explain_analyze_allstat_count_with_slicetable();
+ explain_analyze_allstat_count_with_slicetable 
+-----------------------------------------------
+                                             2
+(1 row)
+
+set polar_enable_px to off;
+-- insert one tuple
+insert into px_analyze_t1 values(1,1,'xiaoming');
+set polar_enable_px to on;
+set polar_px_explain_memory_verbosity = detail;
+select explain_analyze_memory_detail_count();
+ explain_analyze_memory_detail_count 
+-------------------------------------
+                                   2
+(1 row)
+
+set polar_px_explain_memory_verbosity = summary;
+select explain_analyze_memory_detail_count();
+ explain_analyze_memory_detail_count 
+-------------------------------------
+                                   0
+(1 row)
+
+set polar_px_enable_explain_all_stat to on;
+select explain_analyze_allstat_count();
+ explain_analyze_allstat_count 
+-------------------------------
+                             1
+(1 row)
+
+set polar_px_enable_explain_all_stat to off;
+select explain_analyze_allstat_count();
+ explain_analyze_allstat_count 
+-------------------------------
+                             0
+(1 row)
+
+set polar_enable_px to off;
+-- create index
+insert into px_analyze_t1 SELECT i, i*2, to_char(i, 'FM00000') FROM generate_series(1, 100000) i;
+insert into px_analyze_t2 SELECT i, i*2, to_char(i, 'FM00000') FROM generate_series(1, 100000) i;
+insert into foo select i,i+1,i+2 from generate_series(1,10) i;
+insert into bar1 select i,i+1,i+2 from generate_series(1,20) i;
+analyze foo;
+analyze bar1;
+create index on px_analyze_t1(a);
+set polar_enable_px to on;
+set polar_px_explain_memory_verbosity = detail;
+select explain_analyze_memory_detail_count();
+ explain_analyze_memory_detail_count 
+-------------------------------------
+                                   2
+(1 row)
+
+select explain_analyze_memory_detail_count_hashjoin();
+ explain_analyze_memory_detail_count_hashjoin 
+----------------------------------------------
+                                            7
+(1 row)
+
+select explain_analyze_memory_detail_count_material();
+ explain_analyze_memory_detail_count_material 
+----------------------------------------------
+                                           10
+(1 row)
+
+set polar_px_explain_memory_verbosity = summary;
+select explain_analyze_memory_detail_count();
+ explain_analyze_memory_detail_count 
+-------------------------------------
+                                   0
+(1 row)
+
+select explain_analyze_memory_detail_count_hashjoin();
+ explain_analyze_memory_detail_count_hashjoin 
+----------------------------------------------
+                                            0
+(1 row)
+
+set polar_px_enable_explain_all_stat to on;
+select explain_analyze_allstat_count();
+ explain_analyze_allstat_count 
+-------------------------------
+                             1
+(1 row)
+
+select explain_analyze_allstat_count_hashjoin();
+ explain_analyze_allstat_count_hashjoin 
+----------------------------------------
+                                      5
+(1 row)
+
+set polar_px_enable_explain_all_stat to off;
+select explain_analyze_allstat_count();
+ explain_analyze_allstat_count 
+-------------------------------
+                             0
+(1 row)
+
+select explain_analyze_allstat_count_hashjoin();
+ explain_analyze_allstat_count_hashjoin 
+----------------------------------------
+                                      0
+(1 row)
+
+set polar_enable_px to off;
+drop table px_analyze_t1;
+drop table px_analyze_t2;
+drop table foo;
+drop table bar1;
+--- partition table ---
+CREATE OR REPLACE FUNCTION create_huge_partitions()
+RETURNS VOID AS $$
+DECLARE
+	partition_num   INT := 1000;
+	i INT := 0;
+	last_num INT := 0;
+BEGIN
+	EXECUTE 'CREATE TABLE sales (id int, date date, amt decimal(10,2)) PARTITION BY RANGE (id)';
+
+	LOOP
+		EXIT WHEN i = partition_num;
+		i := i + 1;
+		EXECUTE format('CREATE TABLE sales_part_%s PARTITION of sales for values FROM (%s) to (%s)', i - 1, last_num, last_num + 100);
+		last_num := last_num + 100;
+	END LOOP;
+
+	EXECUTE format('create table sales_part_default partition of sales  DEFAULT');
+
+	insert into sales select x, '2021-04-27', 111.1  from  generate_series(1,99) x;
+END;
+$$ LANGUAGE plpgsql;
+-- multi-level range partition
+DROP TABLE IF EXISTS range_list;
+NOTICE:  table "range_list" does not exist, skipping
+CREATE TABLE range_list (a int,b timestamp,c varchar(10)) PARTITION BY RANGE (b);
+ 
+CREATE TABLE range_pa1 PARTITION OF range_list FOR VALUES from ('2000-01-01') TO ('2010-01-01')  PARTITION BY RANGE (a);
+CREATE TABLE range_pa2 PARTITION OF range_list FOR VALUES from ('2010-01-01') TO ('2020-01-01')  PARTITION BY RANGE (a);
+CREATE TABLE range_list_2000_2010_1_10  PARTITION OF range_pa1 FOR VALUES from (1) TO (10);
+CREATE TABLE range_list_2000_2010_10_20 PARTITION OF range_pa1 FOR VALUES from (11) TO (20);
+CREATE TABLE range_list_2010_2020_1_10  PARTITION OF range_pa2 FOR VALUES from (1) TO (10);
+CREATE TABLE range_list_2010_2020_10_20 PARTITION OF range_pa2 FOR VALUES from (11) TO (20);
+insert into range_list values(1,'2005-01-05 5:05');
+create or replace function get_random_timestamp(start_date date,end_date date) returns timestamp as
+$BODY$
+declare
+    interval_days integer;
+    random_days integer;
+    random_date date;
+    result_date text; 
+    result_time text; 
+begin
+    interval_days := end_date - start_date;
+    random_days := trunc(random() * (interval_days + 1));
+    random_date := start_date + random_days;
+    result_date := date_part('year',random_date)|| '-' || date_part('month',random_date)|| '-' || date_part('day',random_date);
+    result_time := (mod((random()*100)::integer,23)+1)||':'||(mod((random()*100)::integer,59)+1)||':'||(mod((random()*100)::integer,59)+1);
+    return to_timestamp(result_date||' '||result_time,'YYYY-MM-DD HH24:MI:SS');
+    end;
+$BODY$ language plpgsql;
+insert into range_list select round(random()*8) + 1, get_random_timestamp('2000-01-01', '2010-01-01') from generate_series(1,10);
+insert into range_list select round(random()*8) + 11, get_random_timestamp('2000-01-01', '2010-01-01') from generate_series(1,10);
+insert into range_list select round(random()*8) + 1, get_random_timestamp('2010-01-01', '2019-12-01') from generate_series(1,10);
+insert into range_list select round(random()*8) + 11, get_random_timestamp('2010-01-01', '2019-12-01') from generate_series(1,10);
+analyze range_list;
+set polar_px_optimizer_multilevel_partitioning=1;
+create or replace function explain_analyze_memory_detail_count() returns int language plpgsql as
+$$
+declare 
+	ln text; 
+	executor_memory_count int;
+begin
+    executor_memory_count=0;
+    for ln in
+        explain (analyze)  select count(*) from range_pa1 where a = 1 and b < '2009-01-01 00:00:00'
+    loop
+        if ln like '%Executor Memory:%' then
+            executor_memory_count = executor_memory_count + 1;
+		end if;
+    end loop;
+	return executor_memory_count;
+end;
+$$;
+create or replace function explain_analyze_allstat_count() returns int language plpgsql as
+$$
+declare 
+	ln text; 
+	executor_memory_count int;
+begin
+    executor_memory_count=0;
+    for ln in
+        explain (analyze) select count(*) from range_pa1 where a = 1 and b < '2009-01-01 00:00:00'
+    loop
+        if ln like '%allstat:%' then
+            executor_memory_count = executor_memory_count + 1;
+		end if;
+    end loop;
+	return executor_memory_count;
+end;
+$$;
+set polar_enable_px to on;
+set polar_px_explain_memory_verbosity = detail;
+select explain_analyze_memory_detail_count();
+ explain_analyze_memory_detail_count 
+-------------------------------------
+                                   5
+(1 row)
+
+set polar_px_explain_memory_verbosity = summary;
+select explain_analyze_memory_detail_count();
+ explain_analyze_memory_detail_count 
+-------------------------------------
+                                   0
+(1 row)
+
+set polar_px_enable_explain_all_stat to on;
+select explain_analyze_allstat_count();
+ explain_analyze_allstat_count 
+-------------------------------
+                             3
+(1 row)
+
+set polar_px_enable_explain_all_stat to off;
+select explain_analyze_allstat_count();
+ explain_analyze_allstat_count 
+-------------------------------
+                             0
+(1 row)
+
+set polar_enable_px to off;
+create or replace function explain_analyze_memory_detail_count() returns int language plpgsql as
+$$
+declare 
+	ln text; 
+	executor_memory_count int;
+begin
+    executor_memory_count=0;
+    for ln in
+        explain (analyze)  select count(*) from range_pa1 t1, range_pa2 t2 where t1.a = t2.a
+    loop
+        if ln like '%Executor Memory:%' then
+            executor_memory_count = executor_memory_count + 1;
+		end if;
+    end loop;
+	return executor_memory_count;
+end;
+$$;
+create or replace function explain_analyze_allstat_count() returns int language plpgsql as
+$$
+declare 
+	ln text; 
+	executor_memory_count int;
+begin
+    executor_memory_count=0;
+    for ln in
+        explain (analyze)  select count(*) from range_pa1 t1, range_pa2 t2 where t1.a = t2.a
+    loop
+        if ln like '%allstat:%' then
+            executor_memory_count = executor_memory_count + 1;
+		end if;
+    end loop;
+	return executor_memory_count;
+end;
+$$;
+create or replace function explain_analyze_allstat_count_with_slicetable() returns int language plpgsql as
+$$
+declare 
+	ln text; 
+	executor_memory_count int;
+begin
+    executor_memory_count=0;
+    for ln in
+        explain (analyze, slicetable,format json)  select count(*) from range_pa1 t1, range_pa2 t2 where t1.a = t2.a
+    loop
+        if ln like '%gang size:%' then
+            executor_memory_count = executor_memory_count + 1;
+		end if;
+    end loop;
+	return executor_memory_count;
+end;
+$$;
+set polar_enable_px to on;
+set polar_px_explain_memory_verbosity = detail;
+select explain_analyze_memory_detail_count();
+ explain_analyze_memory_detail_count 
+-------------------------------------
+                                  16
+(1 row)
+
+set polar_px_explain_memory_verbosity = summary;
+select explain_analyze_memory_detail_count();
+ explain_analyze_memory_detail_count 
+-------------------------------------
+                                   0
+(1 row)
+
+set polar_px_enable_explain_all_stat to on;
+select explain_analyze_allstat_count();
+ explain_analyze_allstat_count 
+-------------------------------
+                            14
+(1 row)
+
+set polar_px_enable_explain_all_stat to off;
+select explain_analyze_allstat_count();
+ explain_analyze_allstat_count 
+-------------------------------
+                             0
+(1 row)
+
+select explain_analyze_allstat_count_with_slicetable();
+ explain_analyze_allstat_count_with_slicetable 
+-----------------------------------------------
+                                             0
+(1 row)
+
+set polar_enable_px to off;
+DROP TABLE range_list;

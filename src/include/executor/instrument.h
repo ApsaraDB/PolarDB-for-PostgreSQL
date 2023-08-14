@@ -40,6 +40,7 @@ typedef enum InstrumentOption
 	INSTRUMENT_BUFFERS = 1 << 1,	/* needs buffer usage */
 	INSTRUMENT_ROWS = 1 << 2,	/* needs row count */
 	/* POLAR px */
+	INSTRUMENT_MEMORY_DETAIL = 1 << 28,	/* needs detailed memory accounting */
 	INSTRUMENT_OPERATION = 1 << 29,	/* needs operation statistics */
 	INSTRUMENT_PX = 1 << 30,	/* needs px statistics */
 	/* 
@@ -85,6 +86,7 @@ typedef struct Instrumentation
 	BufferUsage bufusage;		/* Total buffer usage */
 
 	/* POLAR px */
+	bool 		need_px;        /* PX: true if we need px statistics */
 	double		execmemused;	/* PX: executor memory used (bytes) */
 	double		workmemused;	/* PX: work_mem actually used (bytes) */
 	double		workmemwanted;	/* PX: work_mem to avoid scratch i/o (bytes) */

@@ -172,6 +172,14 @@ typedef struct pgPxStatCell
 	char	   *data;
 } pgPxStatCell;
 
+/* POLAR px */
+typedef enum PXExtraType {
+	PXExtraTypeNone,
+	PXExtraTypeVacuumStats,		/* Stats collected for vacuum and analyze from QEs */
+	PXExtraTypeTableStats		/* Table stats collected for statement from QEs */
+} PXExtraType;
+/* POLAR end */
+
 struct pg_result
 {
 	int			ntups;
@@ -220,6 +228,10 @@ struct pg_result
 	/* POLAR px: List of statistical response messages ('Y') from PX. */
 	pgPxStatCell *pxstats;		/* ordered from newest to oldest */
 
+	/* POLAR px: Used for gang management commands and stats collected from PXs.*/
+    void * extras;
+    int	   extraslen;
+    PXExtraType		extraType;
 
 	/* POLAR px: number of rows rejected in SREH (protocol message 'j') */
 	int64		numRejected;

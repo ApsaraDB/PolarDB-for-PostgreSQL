@@ -25,6 +25,9 @@
 #include "portability/instr_time.h"
 #include "polar_dma/polar_dma.h"
 
+/* POLAR: Shared Server */
+#include "storage/polar_session_context.h"
+
 /*
  * Each backend advertises up to PGPROC_MAX_CACHED_SUBXIDS TransactionIds
  * for non-aborted subtransactions of its current top transaction.  These
@@ -233,6 +236,12 @@ struct PGPROC
 	pg_atomic_flag	polar_px_is_executing;		/* whether this process is executing PX? */
 	/* POLAR end */
 
+	/* POLAR: Shared Server */
+	bool							isPolarDispatcher; /* true if polar dispatcher worker. */
+	/* Backend is bound to 1 session and serves only that session. */
+	volatile bool       			polar_is_backend_dedicated;
+	PolarSessionContext * volatile	polar_shared_session;
+	/* POLAR end */
 };
 
 /* NOTE: "typedef struct PGPROC PGPROC" appears in storage/lock.h. */
@@ -256,7 +265,7 @@ struct PGPROC
 extern PGDLLIMPORT PGPROC *MyProc;
 extern PGDLLIMPORT struct PGXACT *MyPgXact;
 
-/* POALR px: Special for PX reader gangs */
+/* POLAR px: Special for PX reader gangs */
 extern PGDLLIMPORT PGPROC *lockHolderProcPtr;
 
 /*
@@ -310,6 +319,8 @@ typedef struct PROC_HDR
 	PGPROC	   *freeProcs;
 	/* Head of list of autovacuum's free PGPROC structures */
 	PGPROC	   *autovacFreeProcs;
+	/* Head of list of dispatcher worker free PGPROC structures */
+	PGPROC	   *polarDispatcherFreeProcs;
 	/* Head of list of bgworker free PGPROC structures */
 	PGPROC	   *bgworkerFreeProcs;
 	/* First pgproc waiting for group XID clear */

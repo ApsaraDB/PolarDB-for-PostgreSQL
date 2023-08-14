@@ -222,9 +222,48 @@ current_query(PG_FUNCTION_ARGS)
 static int
 pg_signal_backend(int pid, int sig)
 {
+	int			real_pid;
+	PGPROC	   *proc;
+	ELOG_PSS(DEBUG1, "pg_signal_backend %d, %d", pid, sig);
+
+	if (IS_POLAR_SESSION_SHARED() && POLAR_IS_SESSION_ID(pid))
+	{
+		Oid roleId;
+		if (!polar_get_session_roleid(pid, &roleId))
+		{
+			ereport(WARNING,
+				(errmsg("PID %d is not a PostgreSQL server process", pid)));
+			return SIGNAL_BACKEND_ERROR;
+		}
+
+		/* Only allow superusers to signal superuser-owned backends. */
+		if (superuser_arg(roleId) && !superuser())
+			return SIGNAL_BACKEND_NOSUPERUSER;
+			
+		/* POLAR: only allow superusers and polar_superuser to signal polar_superuser-owned backends. */
+		if (polar_superuser_arg(roleId) && 
+			!(superuser() || polar_superuser()))
+			return SIGNAL_BACKEND_NOPOLARSUPERUSER;
+
+		/* Users can signal backends they have role membership in. */
+		if (!has_privs_of_role(GetUserId(), roleId) &&
+			!has_privs_of_role(GetUserId(), DEFAULT_ROLE_SIGNAL_BACKENDID))
+			return SIGNAL_BACKEND_NOPERMISSION;
+
+		if (!polar_send_signal(pid, NULL, sig))
+		{
+			/* Again, just a warning to allow loops */
+			ereport(WARNING,
+					(errmsg("could not send signal to process %d: %m", pid)));
+			return SIGNAL_BACKEND_ERROR;
+		}
+
+		return SIGNAL_BACKEND_SUCCESS;
+	}
+
 	/* POLAR: try to get real pid, the pid here might be a virtual pid */
-	int			real_pid = polar_pgstat_get_real_pid(pid, 0, false, false);
-	PGPROC	   *proc = BackendPidGetProc(real_pid);
+	real_pid = polar_pgstat_get_real_pid(pid, 0, false, false);
+	proc = BackendPidGetProc(real_pid);
 
 	/*
 	 * BackendPidGetProc returns NULL if the pid isn't valid; but by the time

@@ -17,4 +17,7 @@ OBJS = attoptcache.o catcache.o evtcache.o inval.o lsyscache.o \
 	spccache.o syscache.o ts_cache.o typcache.o polar_local_cache.o \
 	lsyscache_px.o
 
+# POLAR
+OBJS += polar_session_inval.o
+
 include $(top_srcdir)/src/backend/common.mk

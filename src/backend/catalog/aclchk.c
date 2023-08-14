@@ -76,6 +76,8 @@
 #include "utils/syscache.h"
 #include "utils/tqual.h"
 
+/* POLAR: Shared Server */
+#include "postmaster/polar_dispatcher.h"
 
 /*
  * Internal format used by ALTER DEFAULT PRIVILEGES.
@@ -2231,6 +2233,9 @@ ExecGrant_Database(InternalGrant *istmt)
 		ReleaseSysCache(tuple);
 
 		pfree(new_acl);
+
+		/* POLAR: Shared Server */
+		polar_update_db_role_setting_version(datId, InvalidOid, false);
 
 		/* prevent error when processing duplicate objects */
 		CommandCounterIncrement();

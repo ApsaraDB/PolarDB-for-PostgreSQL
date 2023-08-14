@@ -97,6 +97,11 @@
 #include "utils/xml.h"
 
 /* POLAR */
+/* POLAR px */
+#ifdef HAVE_POLL_H
+#include <poll.h>
+#endif
+#include <malloc.h>
 #include "access/polar_async_ddl_lock_replay.h"
 #include "access/polar_queue_manager.h"
 #include "access/multixact.h"
@@ -113,6 +118,9 @@
 #include "nodes/replnodes.h"
 #include "storage/s_lock.h"
 #include "polar_dma/polar_dma.h"
+
+/* POLAR: Shared Server */
+#include "postmaster/polar_dispatcher.h"
 
 #ifndef PG_KRB_SRVTAB
 #define PG_KRB_SRVTAB ""
@@ -337,6 +345,18 @@ static void polar_assign_crash_recovery_rto_delay_time(const int newval, void *e
 static bool polar_check_enable_lazy_checkpoint(bool *newval, void **extra, GucSource source);
 static bool polar_check_enable_full_page_writes(bool *newval, void **extra, GucSource source);
 static bool polar_check_enable_fra(bool *newval, void **extra, GucSource source);
+
+/* POLAR end */
+static bool polar_session_guc_need_save(struct config_generic *gconf);
+static void polar_session_guc_save(struct config_generic *gconf, config_var_value *prior_val);
+
+static bool polar_check_dedicated_names(char **newval, void **extra, GucSource source);
+static void polar_assign_dedicated_guc_names(const char *newval, void *extra);
+static void polar_assign_dedicated_extension_names(const char *newval, void *extra);
+static void polar_assign_dedicated_dbuser_names(const char *newval, void *extra);
+static void polar_assign_shared_server_enable(const bool newval, void *extra);
+
+static void polar_shared_server_guc_initialize(void);
 
 /*
  * Options for enum values defined in this module.
@@ -649,6 +669,22 @@ int polar_max_hashagg_mem = 0;
 int polar_max_setop_mem = 0;
 int polar_max_subplan_mem = 0;
 int polar_max_recursiveunion_mem = 0;
+
+static const struct config_enum_entry client_schedule_options[] = {
+	{"round-robin", CLIENT_SCHEDULE_ROUND_ROBIN, false},
+	{"random", CLIENT_SCHEDULE_RANDOM, false},
+	{"load-balancing", CLIENT_SCHEDULE_LOAD_BALANCING, false},
+	{NULL, 0, false}
+};
+
+static const struct config_enum_entry session_schedule_options[] = {
+	{"fifo", SESSION_SCHEDULE_FIFO, false},
+	{"random", SESSION_SCHEDULE_RANDOM, false},
+	{"disposable", SESSION_SCHEDULE_DISPOSABLE, false},
+	{"dedicated", SESSION_SCHEDULE_DEDICATED, false},
+	{NULL, 0, false}
+ };
+
 
 /*
  * Options for enum values stored in other modules
@@ -965,6 +1001,7 @@ bool	polar_enable_dump_incorrect_checksum_xlog = false;
 bool	polar_trace_heap_scan_flow = false;
 bool	polar_enable_send_node_info = true;
 bool	polar_enable_send_cluster_info = true;
+bool	polar_enable_shm_aset = false;
 
 /*
  * polar replica multi version snapshot related GUC parameters
@@ -1141,6 +1178,8 @@ const char *const config_group_names[] =
 	gettext_noop(PACKAGE_NAME " / Worker Process Identity"),
 	/* PX PX_ARRAY_TUNING */
 	gettext_noop(PACKAGE_NAME " / Array Tuning"),
+	/* POLAR_SHARED_SERVER */
+	gettext_noop("POLAR Shared Server"),
 	/* help_config wants this array to be null-terminated */
 	NULL
 };
@@ -1261,6 +1300,72 @@ static const unit_conversion time_unit_conversion_table[] =
 	{""}						/* end of table marker */
 };
 
+typedef struct PolarSessionGUC
+{
+	dlist_node	node;
+	enum config_array_type	array_type;
+	int						array_index;
+	union config_var_val	val;
+	void	   				*extra;
+	GucSource				source;
+	GucContext				scontext;
+} PolarSessionGUC;
+
+typedef struct PolarName
+{
+	int id;
+	const char *name;
+} PolarName;
+
+typedef struct PolarNames {
+	int			count;
+	PolarName	cell[FLEXIBLE_ARRAY_MEMBER];
+} PolarNames;
+
+static PolarName polar_session_external_guc_bool_names_array[] =
+{
+	#include "utils/polar_session_external_guc_bool_names.dat"
+};
+
+static PolarName polar_session_external_guc_int_names_array[] =
+{
+	#include "utils/polar_session_external_guc_int_names.dat"
+};
+
+static PolarName polar_session_external_guc_real_names_array[] =
+{
+	#include "utils/polar_session_external_guc_real_names.dat"
+};
+
+static PolarName polar_session_external_guc_string_names_array[] =
+{
+	#include "utils/polar_session_external_guc_string_names.dat"
+};
+
+static PolarName polar_session_external_guc_enum_names_array[] =
+{
+	#include "utils/polar_session_external_guc_enum_names.dat"
+};
+
+static PolarNames *polar_session_dedicated_guc_name_array;
+static PolarNames *polar_session_dedicated_extention_name_array;
+static PolarNames *polar_session_dedicated_dbuser_name_array;
+
+const int polar_session_external_guc_bool_count = sizeof(polar_session_external_guc_bool_names_array) / sizeof(PolarName);
+const int polar_session_external_guc_int_count = sizeof(polar_session_external_guc_int_names_array) / sizeof(PolarName);
+const int polar_session_external_guc_real_count = sizeof(polar_session_external_guc_real_names_array) / sizeof(PolarName);
+const int polar_session_external_guc_string_count = sizeof(polar_session_external_guc_string_names_array) / sizeof(PolarName);
+const int polar_session_external_guc_enum_count = sizeof(polar_session_external_guc_enum_names_array) / sizeof(PolarName);
+
+static struct config_bool   *ConfigureNamesBool_external[sizeof(polar_session_external_guc_bool_names_array) / sizeof(PolarName)] = {};
+static struct config_int    *ConfigureNamesInt_external[sizeof(polar_session_external_guc_int_names_array) / sizeof(PolarName)] = {};
+static struct config_real   *ConfigureNamesReal_external[sizeof(polar_session_external_guc_real_names_array) / sizeof(PolarName)] = {};
+static struct config_string *ConfigureNamesString_external[sizeof(polar_session_external_guc_string_names_array) / sizeof(PolarName)] = {};
+static struct config_enum   *ConfigureNamesEnum_external[sizeof(polar_session_external_guc_enum_names_array) / sizeof(PolarName)] = {};
+
+static bool update_session_external_guc_index(struct config_generic *var);
+
+
 /*
  * Contents of GUC tables
  *
@@ -1314,6 +1419,46 @@ static struct config_bool ConfigureNamesBool[] =
 		},
 		&polar_enable_master_pbp,
 		true,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_enable_shared_server", PGC_USERSET, POLAR_SHARED_SERVER,
+		 	gettext_noop("polar enable shared server mode. Depend on global guc polar_enable_shm_aset."),
+		 	NULL,
+		},
+		&polar_enable_shared_server,
+		false,
+		NULL, polar_assign_shared_server_enable, NULL
+	},
+
+	{
+		{"polar_enable_shared_server_log", PGC_SIGHUP, POLAR_SHARED_SERVER,
+		 	gettext_noop("polar enable shared server log. If off, do not print log."),
+		 	NULL,
+		},
+		&polar_enable_shared_server_log,
+		false,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_enable_shared_server_hang", PGC_SIGHUP, POLAR_SHARED_SERVER,
+			gettext_noop("polar enable shared server hang without abort."),
+			NULL,
+		},
+		&polar_enable_shared_server_hang,
+		false,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_enable_shared_server_testmode", PGC_SIGHUP, POLAR_SHARED_SERVER,
+			gettext_noop("polar enable shared server testmode for special case."),
+			NULL,
+		},
+		&polar_enable_shared_server_testmode,
+		false,
 		NULL, NULL, NULL
 	},
 
@@ -3689,6 +3834,17 @@ static struct config_bool ConfigureNamesBool[] =
 		polar_check_enable_fra, NULL, NULL
 	},
 
+	{
+		{"polar_enable_shm_aset", PGC_POSTMASTER, UNGROUPED,
+			gettext_noop("Enable AllocSet memory context based on shared memory"),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_SUPERUSER_ONLY
+		},
+		&polar_enable_shm_aset,
+		false,
+		NULL, NULL, NULL
+	},
+
 	/* End-of-list marker */
 	{
 		{NULL, 0, 0, NULL, NULL}, NULL, false, NULL, NULL, NULL
@@ -4587,6 +4743,89 @@ static struct config_int ConfigureNamesInt[] =
 	},
 
 	{
+		{"polar_ss_backend_idle_timeout", PGC_SIGHUP, POLAR_SHARED_SERVER,
+			gettext_noop("Sets the maximum allowed idle timeout of shared server(backend). If it reaches threshold, it is shut down peacefully."),
+			gettext_noop("A value of 0 turns off the timeout."),
+			GUC_UNIT_S
+		},
+		&polar_ss_backend_idle_timeout,
+		3 * 60, 0, INT_MAX,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_ss_backend_keepalive_timeout", PGC_SIGHUP, POLAR_SHARED_SERVER,
+			gettext_noop("Sets the maximum allowed killalive timeout of shared server(backend) since created. If it reaches threshold, it is shut down peacefully."),
+			gettext_noop("A value of 0 turns off the timeout."),
+			GUC_UNIT_S
+		},
+		&polar_ss_backend_keepalive_timeout,
+		0, 0, INT_MAX,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_ss_dispatcher_count", PGC_POSTMASTER, POLAR_SHARED_SERVER,
+			gettext_noop("Sets count of connection dispatcher."),
+			gettext_noop("Postmaster spawns separate worker process for each dispatcher, each dispatcher launches its own subset of backends(shared server)")
+		},
+		&polar_ss_dispatcher_count,
+		2, 1, POLAR_DISPATCHER_MAX_COUNT,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_ss_backend_max_count", PGC_POSTMASTER, POLAR_SHARED_SERVER,
+			gettext_noop("Sets max count of total shared backend."),
+			gettext_noop("A value of 0/-1 means use 'max_connection', -2 means use 'max_connection' / 2,  -3 means use 'max_connection' / 3, and so on"),
+		},
+		&polar_ss_backend_max_count,
+		-5, -1000, INT_MAX,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_ss_backend_pool_min_size", PGC_POSTMASTER, POLAR_SHARED_SERVER,
+			gettext_noop("Sets min size of shared backend pool without idle timeout considering"),
+		},
+		&polar_ss_backend_pool_min_size,
+		0, 0, INT_MAX,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_ss_session_wait_timeout", PGC_SIGHUP, POLAR_SHARED_SERVER,
+			gettext_noop("Sets the maximum allowed wait time(milliseconds) of any session for new backend."),
+			gettext_noop("A value of 0 turns off the timeout."),
+			GUC_UNIT_MS
+		},
+		&polar_ss_session_wait_timeout,
+		5000, 0, INT_MAX,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_ss_db_role_setting_max_size", PGC_POSTMASTER, POLAR_SHARED_SERVER,
+			gettext_noop("Sets max rolw count of pg_db_role_setting. Only valid when polar_enable_shared_server is on."),
+			NULL
+		},
+		&polar_ss_db_role_setting_max_size,
+		100, 1, INT_MAX,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_ss_shared_memory_size", PGC_POSTMASTER, POLAR_SHARED_SERVER,
+		 	gettext_noop("Sets the shared memory for polar shared server"),
+			gettext_noop("A value of 0 turns off"),
+		 	GUC_UNIT_KB
+		},
+		&polar_ss_shared_memory_size,
+		1024, 0, INT_MAX,
+		NULL, NULL, NULL
+	},
+
+	{
 		{"max_connections", PGC_POSTMASTER, CONN_AUTH_SETTINGS,
 			gettext_noop("Sets the maximum number of concurrent connections."),
 			NULL
@@ -4619,6 +4858,38 @@ static struct config_int ConfigureNamesInt[] =
 		},
 		&NBuffers,
 		1024, 16, INT_MAX / 2,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_shm_limit", PGC_POSTMASTER, RESOURCES_MEM,
+			gettext_noop("Sets the size of hugepage used by the server."),
+			NULL,
+			GUC_UNIT_BLOCKS
+		},
+		&polar_shm_limit,
+		/*
+		 * POLAR: default to 64 * 1024 * 8KB = 512MB for RDS, but POLAR cannot start with it less than 3GB.
+		 */
+		0, 0, INT_MAX / 2,
+		NULL, NULL, NULL
+	},
+
+	/* 
+	 * POLAR: real num of allocated shared memory pages equals to 
+	 * 		polar_shm_limit - polar_huge_pages_reserved
+	 */
+	{
+		{"polar_huge_pages_reserved", PGC_POSTMASTER, RESOURCES_MEM,
+			gettext_noop("Keep a bias with polar_shm_limit to avoid over-allocating."),
+			NULL,
+			GUC_UNIT_BLOCKS
+		},
+		&polar_huge_pages_reserved,
+		/*
+		 * POLAR: default to 512 * 8KB = 4MB.
+		 */
+		512, 1, INT_MAX / 2,
 		NULL, NULL, NULL
 	},
 
@@ -4914,8 +5185,7 @@ static struct config_int ConfigureNamesInt[] =
 		{"polar_delay_dml_lsn_lag_threshold", PGC_USERSET, UNGROUPED,
 			gettext_noop("Sets the polar dml delay size for replay."),
 			gettext_noop("A value of 0 turns off the size threshold."),
-			GUC_UNIT_KB,
-			GUC_SUPERUSER_ONLY | GUC_NO_RESET_ALL
+			GUC_UNIT_KB | GUC_SUPERUSER_ONLY | GUC_NO_RESET_ALL
 		},
 		&polar_delay_dml_lsn_lag_threshold,
 		10 * 1024 * 1024 /* default 10GB */, 0, INT_MAX,
@@ -4927,8 +5197,7 @@ static struct config_int ConfigureNamesInt[] =
 		{"polar_primary_dml_delay", PGC_USERSET, UNGROUPED,
 			gettext_noop("Sets the polar dml delay for replay."),
 			gettext_noop("A value of 0 turns off the timeout."),
-			GUC_UNIT_MS,
-			GUC_SUPERUSER_ONLY | GUC_NO_RESET_ALL
+			GUC_UNIT_MS | GUC_SUPERUSER_ONLY | GUC_NO_RESET_ALL
 		},
 		&polar_primary_dml_delay,
 		1, 0, INT_MAX,
@@ -6925,7 +7194,7 @@ static struct config_string ConfigureNamesString[] =
 		{"client_encoding", PGC_USERSET, CLIENT_CONN_LOCALE,
 			gettext_noop("Sets the client's character set encoding."),
 			NULL,
-			GUC_IS_NAME | GUC_REPORT
+			GUC_IS_NAME | GUC_REPORT | GUC_ASSIGN_IN_TRANS
 		},
 		&client_encoding_string,
 		"SQL_ASCII",
@@ -6938,7 +7207,7 @@ static struct config_string ConfigureNamesString[] =
 			gettext_noop("If blank, no prefix is used.")
 		},
 		&Log_line_prefix,
-		"%m [%p] ",
+		"%m [%p] [%P] ",
 		NULL, NULL, NULL
 	},
 
@@ -6979,7 +7248,7 @@ static struct config_string ConfigureNamesString[] =
 		{"temp_tablespaces", PGC_USERSET, CLIENT_CONN_STATEMENT,
 			gettext_noop("Sets the tablespace(s) to use for temporary tables and sort files."),
 			NULL,
-			GUC_LIST_INPUT | GUC_LIST_QUOTE
+			GUC_LIST_INPUT | GUC_LIST_QUOTE | GUC_SESSION_DEDICATED
 		},
 		&temp_tablespaces,
 		"",
@@ -7159,7 +7428,7 @@ static struct config_string ConfigureNamesString[] =
 		{"role", PGC_USERSET, UNGROUPED,
 			gettext_noop("Sets the current role."),
 			NULL,
-			GUC_IS_NAME | GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL | GUC_NOT_IN_SAMPLE | GUC_DISALLOW_IN_FILE | GUC_NOT_WHILE_SEC_REST
+			GUC_IS_NAME | GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL | GUC_NOT_IN_SAMPLE | GUC_DISALLOW_IN_FILE | GUC_NOT_WHILE_SEC_REST | GUC_SESSION_DEDICATED
 		},
 		&role_string,
 		"none",
@@ -7171,7 +7440,7 @@ static struct config_string ConfigureNamesString[] =
 		{"session_authorization", PGC_USERSET, UNGROUPED,
 			gettext_noop("Sets the session user name."),
 			NULL,
-			GUC_IS_NAME | GUC_REPORT | GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL | GUC_NOT_IN_SAMPLE | GUC_DISALLOW_IN_FILE | GUC_NOT_WHILE_SEC_REST
+			GUC_IS_NAME | GUC_REPORT | GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL | GUC_NOT_IN_SAMPLE | GUC_DISALLOW_IN_FILE | GUC_NOT_WHILE_SEC_REST | GUC_SESSION_DEDICATED
 		},
 		&session_authorization_string,
 		NULL,
@@ -7566,7 +7835,7 @@ static struct config_string ConfigureNamesString[] =
 		{"polar_forbidden_functions_ext", PGC_SUSET, UNGROUPED,
 			gettext_noop("Changes the list of functions that are not allowed to create rule by nosuper users."),
 			NULL,
-			GUC_LIST_INPUT | GUC_LIST_QUOTE | GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL | GUC_NOT_IN_SAMPLE | GUC_NOT_WHILE_SEC_REST
+			GUC_LIST_INPUT | GUC_LIST_QUOTE | GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL | GUC_NOT_IN_SAMPLE | GUC_NOT_WHILE_SEC_REST | GUC_SESSION_DEDICATED
 		},
 		&polar_forbidden_functions_ext,
 		"",
@@ -7643,7 +7912,7 @@ static struct config_string ConfigureNamesString[] =
 		{"polar_rename_wal_ready_file", PGC_SUSET, UNGROUPED,
 			gettext_noop("rename file under /pfs-disk/data/pg_wal/archive_status from .ready to .done"),
 			NULL,
-			GUC_SUPERUSER_ONLY, GUC_NO_RESET_ALL
+			GUC_SUPERUSER_ONLY | GUC_NO_RESET_ALL | GUC_SESSION_DEDICATED
 		},
 		&polar_rename_wal_ready_file,
 		"",
@@ -7732,7 +8001,7 @@ static struct config_string ConfigureNamesString[] =
 		{"polar_partition_recursive_reloptions", PGC_SUSET, UNGROUPED,
 			gettext_noop("Reloptions to be recursively set on partitioned tables."),
 			NULL,
-			GUC_LIST_INPUT | GUC_LIST_QUOTE | GUC_NO_RESET_ALL | GUC_NOT_IN_SAMPLE | GUC_NOT_WHILE_SEC_REST
+			GUC_LIST_INPUT | GUC_LIST_QUOTE | GUC_NO_RESET_ALL | GUC_NOT_IN_SAMPLE | GUC_NOT_WHILE_SEC_REST | GUC_SESSION_DEDICATED
 		},
 		&polar_partition_recursive_reloptions,
 		"px_workers",
@@ -7750,6 +8019,36 @@ static struct config_string ConfigureNamesString[] =
 		NULL, NULL, NULL
 	},
 	/* POLAR end */
+
+	{
+		{"polar_ss_dedicated_guc_names", PGC_SIGHUP, POLAR_SHARED_SERVER,
+			gettext_noop("guc will not session cached in shared server"),
+			NULL
+		},
+		&polar_ss_dedicated_guc_names,
+		"",
+		polar_check_dedicated_names, polar_assign_dedicated_guc_names, NULL
+	},
+
+	{
+		{"polar_ss_dedicated_extension_names", PGC_SIGHUP, POLAR_SHARED_SERVER,
+			gettext_noop("extension will use dedicated mode in shared server, extension name from pg_proc.probin"),
+			NULL
+		},
+		&polar_ss_dedicated_extension_names,
+		"",
+		polar_check_dedicated_names, polar_assign_dedicated_extension_names, NULL
+	},
+
+	{
+		{"polar_ss_dedicated_dbuser_names", PGC_SIGHUP, POLAR_SHARED_SERVER,
+			gettext_noop("db/user will use dedicated mode in shared server, format like 'd1/*,*/u1,d2/u2'"),
+			NULL
+		},
+		&polar_ss_dedicated_dbuser_names,
+		"",
+		polar_check_dedicated_names, polar_assign_dedicated_dbuser_names, NULL
+	},
 
 	/* End-of-list marker */
 	{
@@ -8091,6 +8390,26 @@ static struct config_enum ConfigureNamesEnum[] =
 	},
 
 	{
+		{"polar_ss_client_schedule_policy", PGC_SIGHUP, POLAR_SHARED_SERVER,
+			gettext_noop("Client schedule policy between dispatchers: round-robin, random, load-balancing")
+		},
+		&polar_ss_client_schedule_policy,
+		CLIENT_SCHEDULE_LOAD_BALANCING, client_schedule_options,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_ss_session_schedule_policy", PGC_SIGHUP, POLAR_SHARED_SERVER,
+			gettext_noop("Session schedule policy between backend: fifo, random, disposable, dedicated"),
+			NULL
+		},
+		&polar_ss_session_schedule_policy,
+		SESSION_SCHEDULE_FIFO, session_schedule_options,
+		NULL, NULL, NULL
+	},
+
+	/* End-of-list marker */
+	{
 		{"polar_nblocks_cache_mode", PGC_SIGHUP, UNGROUPED,
 			gettext_noop("Number of Blocks cache mode"),
 			NULL,
@@ -8151,7 +8470,8 @@ static int	size_guc_variables;
 
 static bool guc_dirty;			/* true if need to do commit/abort work */
 
-static bool reporting_enabled;	/* true to enable GUC_REPORT */
+#define reporting_enabled			POLAR_SESSION(reporting_enabled)
+
 
 static int	GUCNestLevel = 0;	/* 1 when in main transaction */
 
@@ -8177,7 +8497,7 @@ static void replace_auto_config_value(ConfigVariable **head_p, ConfigVariable **
 /*
  * Some infrastructure for checking malloc/strdup/realloc calls
  */
-static void *
+void *
 guc_malloc(int elevel, size_t size)
 {
 	void	   *data;
@@ -8414,7 +8734,12 @@ build_guc_variables(void)
 
 		/* Rather than requiring vartype to be filled in by hand, do this: */
 		conf->gen.vartype = PGC_BOOL;
+		conf->gen.polar_array_type = CAT_BOOL;
+		conf->gen.polar_array_index = i;
 		num_vars++;
+
+		if (conf->assign_hook != NULL && !is_session_dedicated_guc(&conf->gen))
+			ELOG_PSS(DEBUG1, "conf with assign_hook is shared '%s'", conf->gen.name);
 	}
 
 	/* POLAR px */
@@ -8423,7 +8748,12 @@ build_guc_variables(void)
 		struct config_bool *conf = &ConfigureNamesBool_px[i];
 
 		conf->gen.vartype = PGC_BOOL;
+		conf->gen.polar_array_type = CAT_BOOL_PX;
+		conf->gen.polar_array_index = i;
 		num_vars++;
+
+		if (conf->assign_hook != NULL && !is_session_dedicated_guc(&conf->gen))
+			ELOG_PSS(DEBUG1, "conf with assign_hook is shared '%s'", conf->gen.name);
 	}
 	/* POLAR end */
 
@@ -8432,7 +8762,12 @@ build_guc_variables(void)
 		struct config_int *conf = &ConfigureNamesInt[i];
 
 		conf->gen.vartype = PGC_INT;
+		conf->gen.polar_array_type = CAT_INT;
+		conf->gen.polar_array_index = i;
 		num_vars++;
+
+		if (conf->assign_hook != NULL && !is_session_dedicated_guc(&conf->gen))
+			ELOG_PSS(DEBUG1, "conf with assign_hook is shared '%s'", conf->gen.name);
 	}
 
 	/* POLAR px */
@@ -8441,7 +8776,12 @@ build_guc_variables(void)
 		struct config_int *conf = &ConfigureNamesInt_px[i];
 
 		conf->gen.vartype = PGC_INT;
+		conf->gen.polar_array_type = CAT_INT_PX;
+		conf->gen.polar_array_index = i;
 		num_vars++;
+
+		if (conf->assign_hook != NULL && !is_session_dedicated_guc(&conf->gen))
+			ELOG_PSS(DEBUG1, "conf with assign_hook is shared '%s'", conf->gen.name);
 	}
 	/* POLAR end */
 
@@ -8450,7 +8790,12 @@ build_guc_variables(void)
 		struct config_real *conf = &ConfigureNamesReal[i];
 
 		conf->gen.vartype = PGC_REAL;
+		conf->gen.polar_array_type = CAT_REAL;
+		conf->gen.polar_array_index = i;
 		num_vars++;
+
+		if (conf->assign_hook != NULL && !is_session_dedicated_guc(&conf->gen))
+			ELOG_PSS(DEBUG1, "conf with assign_hook is shared '%s'", conf->gen.name);
 	}
 
 	/* POLAR px */
@@ -8459,7 +8804,12 @@ build_guc_variables(void)
 		struct config_real *conf = &ConfigureNamesReal_px[i];
 
 		conf->gen.vartype = PGC_REAL;
+		conf->gen.polar_array_type = CAT_REAL_PX;
+		conf->gen.polar_array_index = i;
 		num_vars++;
+
+		if (conf->assign_hook != NULL && !is_session_dedicated_guc(&conf->gen))
+			ELOG_PSS(DEBUG1, "conf with assign_hook is shared '%s'", conf->gen.name);
 	}
 	/* POLAR end */
 
@@ -8468,7 +8818,12 @@ build_guc_variables(void)
 		struct config_string *conf = &ConfigureNamesString[i];
 
 		conf->gen.vartype = PGC_STRING;
+		conf->gen.polar_array_type = CAT_STRING;
+		conf->gen.polar_array_index = i;
 		num_vars++;
+
+		if (conf->assign_hook != NULL && !is_session_dedicated_guc(&conf->gen))
+			ELOG_PSS(DEBUG1, "conf with assign_hook is shared '%s'", conf->gen.name);
 	}
 
 	/* POLAR px */
@@ -8477,7 +8832,12 @@ build_guc_variables(void)
 		struct config_string *conf = &ConfigureNamesString_px[i];
 
 		conf->gen.vartype = PGC_STRING;
+		conf->gen.polar_array_type = CAT_STRING_PX;
+		conf->gen.polar_array_index = i;
 		num_vars++;
+
+		if (conf->assign_hook != NULL && !is_session_dedicated_guc(&conf->gen))
+			ELOG_PSS(DEBUG1, "conf with assign_hook is shared '%s'", conf->gen.name);
 	}
 	/* POLAR end */
 
@@ -8486,7 +8846,12 @@ build_guc_variables(void)
 		struct config_enum *conf = &ConfigureNamesEnum[i];
 
 		conf->gen.vartype = PGC_ENUM;
+		conf->gen.polar_array_type = CAT_ENUM;
+		conf->gen.polar_array_index = i;
 		num_vars++;
+
+		if (conf->assign_hook != NULL && !is_session_dedicated_guc(&conf->gen))
+			ELOG_PSS(DEBUG1, "conf with assign_hook is shared '%s'", conf->gen.name);
 	}
 
 	/* POLAR px */
@@ -8495,7 +8860,12 @@ build_guc_variables(void)
 		struct config_enum *conf = &ConfigureNamesEnum_px[i];
 
 		conf->gen.vartype = PGC_ENUM;
+		conf->gen.polar_array_type = CAT_ENUM_PX;
+		conf->gen.polar_array_index = i;
 		num_vars++;
+
+		if (conf->assign_hook != NULL && !is_session_dedicated_guc(&conf->gen))
+			ELOG_PSS(DEBUG1, "conf with assign_hook is shared '%s'", conf->gen.name);
 	}
 	/* POLAR end */
 
@@ -8601,6 +8971,14 @@ add_guc_variable(struct config_generic *var, int elevel)
 	/* POLAR px */
 	px_assign_sync_flag(&var, 1, false /* predefine */);
 	/* POLAR end */
+
+	if (!(var->flags & GUC_CUSTOM_PLACEHOLDER))
+		update_session_external_guc_index(var);
+	else if (POLAR_SS_NOT_DEDICATED())
+	{
+		MyProc->polar_is_backend_dedicated = true;
+		elog(LOG, "polar shared server set dedicated from custom variable '%s'", var->name);
+	}
 
 	qsort((void *) guc_variables, num_guc_variables,
 		  sizeof(struct config_generic *), guc_var_compare);
@@ -8763,6 +9141,8 @@ InitializeGUCOptions(void)
 	 * sure that timezone processing is minimally alive (see elog.c).
 	 */
 	pg_timezone_initialize();
+
+	polar_shared_server_guc_initialize();
 
 	/*
 	 * Build sorted array of all GUC variables.
@@ -9452,7 +9832,10 @@ AtEOXact_GUC(bool isCommit, int nestLevel)
 				else if (stack->state == GUC_SET)
 				{
 					/* we keep the current active value */
-					discard_stack_value(gconf, &stack->prior);
+					if (polar_session_guc_need_save(gconf))
+						polar_session_guc_save(gconf, &stack->prior);
+					else
+						discard_stack_value(gconf, &stack->prior);
 				}
 				else			/* must be GUC_LOCAL */
 					restorePrior = true;
@@ -10467,6 +10850,27 @@ set_config_option(const char *name, const char *value,
 		changeVal = false;
 	}
 
+	/* POLAR: Shared Server */
+	if (POLAR_SS_NOT_DEDICATED() &&
+		changeVal &&
+		is_session_dedicated_guc(record))
+	{
+		MyProc->polar_is_backend_dedicated = true;
+		elog(LOG, "polar shared server set dedicated from session private guc '%s'", record->name);
+	}
+
+	/* POLAR: Shared Server */
+	if (POLAR_SS_NOT_DEDICATED() &&
+		makeDefault &&
+		polar_current_session->info->is_inited &&
+		polar_private_session->info->is_inited &&
+		source >= PGC_S_GLOBAL)
+	{
+		MyProc->polar_is_backend_dedicated = true;
+		elog(LOG, "polar shared server set dedicated from session makeDefault '%s'", record->name);
+		Assert(false);
+	}
+
 	/*
 	 * Evaluate value and set variable.
 	 */
@@ -10945,6 +11349,9 @@ set_config_option(const char *name, const char *value,
 #undef newval
 			}
 	}
+
+	ELOG_PSS(DEBUG1, "set_config_option name:'%s', value:'%s', context:%d, source:%d, action:%d, makeDefault:%d, changeVal:%d, is_reload:%d", 
+		name, value, context, source, action, makeDefault, changeVal, is_reload);
 
 	if (changeVal && (record->flags & GUC_REPORT))
 		ReportGUCOption(record);
@@ -12099,6 +12506,10 @@ DefineCustomBoolVariable(const char *name,
 	var->check_hook = check_hook;
 	var->assign_hook = assign_hook;
 	var->show_hook = show_hook;
+
+	if (var->assign_hook != NULL && !is_session_dedicated_guc(&var->gen))
+		ELOG_PSS(DEBUG1, "conf with assign_hook is shared '%s'", var->gen.name);
+
 	define_custom_variable(&var->gen);
 }
 
@@ -12129,6 +12540,10 @@ DefineCustomIntVariable(const char *name,
 	var->check_hook = check_hook;
 	var->assign_hook = assign_hook;
 	var->show_hook = show_hook;
+
+	if (var->assign_hook != NULL && !is_session_dedicated_guc(&var->gen))
+		ELOG_PSS(DEBUG1, "conf with assign_hook is shared '%s'", var->gen.name);
+
 	define_custom_variable(&var->gen);
 }
 
@@ -12159,6 +12574,10 @@ DefineCustomRealVariable(const char *name,
 	var->check_hook = check_hook;
 	var->assign_hook = assign_hook;
 	var->show_hook = show_hook;
+
+	if (var->assign_hook != NULL && !is_session_dedicated_guc(&var->gen))
+		ELOG_PSS(DEBUG1, "conf with assign_hook is shared '%s'", var->gen.name);
+
 	define_custom_variable(&var->gen);
 }
 
@@ -12184,6 +12603,10 @@ DefineCustomStringVariable(const char *name,
 	var->check_hook = check_hook;
 	var->assign_hook = assign_hook;
 	var->show_hook = show_hook;
+
+	if (var->assign_hook != NULL && !is_session_dedicated_guc(&var->gen))
+		ELOG_PSS(DEBUG1, "conf with assign_hook is shared '%s'", var->gen.name);
+
 	define_custom_variable(&var->gen);
 }
 
@@ -12212,6 +12635,10 @@ DefineCustomEnumVariable(const char *name,
 	var->check_hook = check_hook;
 	var->assign_hook = assign_hook;
 	var->show_hook = show_hook;
+
+	if (var->assign_hook != NULL && !is_session_dedicated_guc(&var->gen))
+		ELOG_PSS(DEBUG1, "conf with assign_hook is shared '%s'", var->gen.name);
+
 	define_custom_variable(&var->gen);
 }
 
@@ -14537,7 +14964,7 @@ assign_session_replication_role(int newval, void *extra)
 	 * Must flush the plan cache when changing replication role; but don't
 	 * flush unnecessarily.
 	 */
-	if (SessionReplicationRole != newval)
+	if (!POLAR_SHARED_SERVER_RUNNING() && SessionReplicationRole != newval)
 		ResetPlanCache();
 }
 
@@ -14764,7 +15191,8 @@ static bool
 check_maxconnections(int *newval, void **extra, GucSource source)
 {
 	if (*newval + autovacuum_max_workers + 1 +
-		max_worker_processes > MAX_BACKENDS)
+		MaxPolarDispatcher +/* POLAR: Shared Server */
+		max_worker_processes> MAX_BACKENDS)
 		return false;
 	return true;
 }
@@ -14772,7 +15200,8 @@ check_maxconnections(int *newval, void **extra, GucSource source)
 static bool
 check_autovacuum_max_workers(int *newval, void **extra, GucSource source)
 {
-	if (MaxConnections + *newval + 1 + max_worker_processes > MAX_BACKENDS)
+	/* POLAR: Shared Server */ 
+	if (MaxConnections + *newval + 1 + max_worker_processes + MaxPolarDispatcher > MAX_BACKENDS)
 		return false;
 	return true;
 }
@@ -14803,7 +15232,7 @@ check_autovacuum_work_mem(int *newval, void **extra, GucSource source)
 static bool
 check_max_worker_processes(int *newval, void **extra, GucSource source)
 {
-	if (MaxConnections + autovacuum_max_workers + 1 + *newval > MAX_BACKENDS)
+	if (MaxConnections + autovacuum_max_workers + 1 + MaxPolarDispatcher + *newval > MAX_BACKENDS)
 		return false;
 	return true;
 }
@@ -15592,5 +16021,899 @@ polar_check_enable_fra(bool *newval, void **extra, GucSource source)
 	return true;
 }
 /* POLAR end */
+
+
+/*
+ * POLAR:
+ * Calculate the crc of the entire file,
+ * return 0 if parsing the file fails.
+ */
+static int
+polar_name_compare(const void *a, const void *b)
+{
+	const PolarName *namea = (const PolarName *) a;
+	const PolarName *nameb = (const PolarName *) b;
+
+	return guc_name_compare(namea->name, nameb->name);
+}
+
+static bool
+update_session_external_guc_index(struct config_generic *var)
+{
+	static bool is_init = false;
+	const PolarName *session_external_guc_names_array = NULL;
+	int session_external_guc_count = 0;
+	PolarName *res;
+	PolarName temp;
+
+	/* ordering guc_name_array alphabets */
+	if (!is_init) {
+		pg_qsort(polar_session_external_guc_bool_names_array, polar_session_external_guc_bool_count,
+		      sizeof(PolarName), polar_name_compare);
+
+		pg_qsort(polar_session_external_guc_int_names_array, polar_session_external_guc_int_count,
+		      sizeof(PolarName), polar_name_compare);
+
+		pg_qsort(polar_session_external_guc_real_names_array, polar_session_external_guc_real_count,
+		      sizeof(PolarName), polar_name_compare);
+
+		pg_qsort(polar_session_external_guc_string_names_array, polar_session_external_guc_string_count,
+		      sizeof(PolarName), polar_name_compare);
+
+		pg_qsort(polar_session_external_guc_enum_names_array, polar_session_external_guc_enum_count,
+		      sizeof(PolarName), polar_name_compare);
+		is_init = true;
+	}
+
+	/* if the context is defined as internal postmaster sighup, skip it */
+	if (var->context <= PGC_SIGHUP || (var->flags & GUC_CUSTOM_PLACEHOLDER) != 0)
+		return false;
+
+	switch (var->vartype)
+	{
+		case PGC_BOOL:
+			session_external_guc_names_array = polar_session_external_guc_bool_names_array;
+			session_external_guc_count = polar_session_external_guc_bool_count;
+			break;
+		case PGC_INT:
+			session_external_guc_names_array = polar_session_external_guc_int_names_array;
+			session_external_guc_count = polar_session_external_guc_int_count;
+			break;
+		case PGC_REAL:
+			session_external_guc_names_array = polar_session_external_guc_real_names_array;
+			session_external_guc_count = polar_session_external_guc_real_count;
+			break;
+		case PGC_STRING:
+			session_external_guc_names_array = polar_session_external_guc_string_names_array;
+			session_external_guc_count = polar_session_external_guc_string_count;
+			break;
+		case PGC_ENUM:
+			session_external_guc_names_array = polar_session_external_guc_enum_names_array;
+			session_external_guc_count = polar_session_external_guc_enum_count;
+			break;
+		default:
+			Assert(false);
+	}
+	temp.id = -1;
+	temp.name = var->name;
+
+	res = (PolarName *) bsearch((void *) &temp,
+									(void *) session_external_guc_names_array,
+									session_external_guc_count,
+									sizeof(PolarName),
+									polar_name_compare);
+	if (!res)
+	{
+		if (POLAR_SS_NOT_DEDICATED())
+		{
+			MyProc->polar_is_backend_dedicated = true;
+			elog(LOG, "polar shared server set dedicated from unknown extenal variable '%s'", var->name);
+		}
+		return false;
+	}
+
+	switch (var->vartype)
+	{
+		case PGC_BOOL:
+			var->polar_array_type = CAT_BOOL_EXTERNAL;
+			var->polar_array_index = res->id;
+			ConfigureNamesBool_external[res->id] = (struct config_bool *)var;
+			break;
+		case PGC_INT:
+			var->polar_array_type = CAT_INT_EXTERNAL;
+			var->polar_array_index = res->id;
+			ConfigureNamesInt_external[res->id] = (struct config_int *)var;
+			break;
+		case PGC_REAL:
+			var->polar_array_type = CAT_REAL_EXTERNAL;
+			var->polar_array_index = res->id;
+			ConfigureNamesReal_external[res->id] = (struct config_real *)var;
+			break;
+		case PGC_STRING:
+			var->polar_array_type = CAT_STRING_EXTERNAL;
+			var->polar_array_index = res->id;
+			ConfigureNamesString_external[res->id] = (struct config_string *)var;
+			break;
+		case PGC_ENUM:
+			var->polar_array_type = CAT_ENUM_EXTERNAL;
+			var->polar_array_index = res->id;
+			ConfigureNamesEnum_external[res->id] = (struct config_enum *)var;
+			break;
+		default:
+			Assert(false);
+	}
+
+	ELOG_PSS(DEBUG1, "update_session_external_guc_index '%s'", var->name);
+
+	return true;
+}
+
+static bool
+polar_check_dedicated_names(char **newval, void **extra, GucSource source)
+{
+	char	   *rawstring;
+	List	   *elemlist;
+	ListCell   *l;
+	PolarNames *tmp_array;
+	int i = 0;
+
+	/* Need a modifiable copy of string */
+	rawstring = pstrdup(*newval);
+
+	/* Parse string into list of identifiers */
+	if (!SplitIdentifierString(rawstring, ',', &elemlist))
+	{
+		/* syntax error in list */
+		GUC_check_errdetail("List syntax is invalid.");
+		pfree(rawstring);
+		list_free(elemlist);
+		return false;
+	}
+
+	tmp_array = guc_malloc(FATAL, sizeof(PolarNames) + list_length(elemlist) * sizeof(PolarName));
+	if (!tmp_array)
+		return false;
+
+	tmp_array->count = list_length(elemlist);
+
+	foreach(l, elemlist)
+	{
+		char	   *tok = (char *) lfirst(l);
+
+		tmp_array->cell[i].id = i;
+		tmp_array->cell[i].name = strdup(tok);
+
+		i++;
+	}
+
+	Assert(tmp_array->count == i);
+
+	pfree(rawstring);
+	list_free(elemlist);
+
+	*extra = tmp_array;
+	return true;
+}
+
+static void
+polar_assign_dedicated_guc_names(const char *newval, void *extra)
+{
+	polar_session_dedicated_guc_name_array = (PolarNames *)extra;
+
+	pg_qsort(polar_session_dedicated_guc_name_array->cell, 
+			 polar_session_dedicated_guc_name_array->count,
+		     sizeof(PolarName), polar_name_compare);
+}
+
+static void
+polar_assign_dedicated_extension_names(const char *newval, void *extra)
+{
+	polar_session_dedicated_extention_name_array = (PolarNames *)extra;
+
+	pg_qsort(polar_session_dedicated_extention_name_array->cell, 
+			 polar_session_dedicated_extention_name_array->count,
+		     sizeof(PolarName), polar_name_compare);
+}
+
+static void
+polar_assign_dedicated_dbuser_names(const char *newval, void *extra)
+{
+	polar_session_dedicated_dbuser_name_array = (PolarNames *)extra;
+
+	pg_qsort(polar_session_dedicated_dbuser_name_array->cell,
+				polar_session_dedicated_dbuser_name_array->count,
+				sizeof(PolarName), polar_name_compare);
+}
+
+static void
+polar_assign_shared_server_enable(const bool newval, void *extra)
+{
+	if (!newval && POLAR_SS_NOT_DEDICATED())
+	{
+		MyProc->polar_is_backend_dedicated = true;
+		elog(LOG, "polar shared server set dedicated from disable 'polar_enable_shared_server'");
+	}
+}
+
+
+static void polar_shared_server_guc_initialize(void)
+{
+	polar_session_dedicated_guc_name_array = guc_malloc(FATAL, sizeof(PolarNames));
+	polar_session_dedicated_guc_name_array->count = 0;
+
+	polar_session_dedicated_extention_name_array = guc_malloc(FATAL, sizeof(PolarNames));
+	polar_session_dedicated_extention_name_array->count = 0;
+
+	polar_session_dedicated_dbuser_name_array = guc_malloc(FATAL, sizeof(PolarNames));
+	polar_session_dedicated_dbuser_name_array->count = 0;
+}
+
+void
+polar_check_extention_dedicated(const char *extention_name)
+{
+	if (POLAR_SS_NOT_DEDICATED() &&
+		polar_session_dedicated_extention_name_array->count > 0)
+	{
+		PolarName temp;
+		PolarName *res;
+		temp.id = -1;
+		temp.name = extention_name;
+
+		res = (PolarName *) bsearch((void *) &temp,
+										(void *) polar_session_dedicated_extention_name_array->cell,
+										polar_session_dedicated_extention_name_array->count,
+										sizeof(PolarName),
+										polar_name_compare);
+		if (res)
+		{
+			MyProc->polar_is_backend_dedicated = true;
+			elog(LOG, "polar shared server set dedicated from dedicated extention '%s'", extention_name);
+		}
+	}
+}
+
+bool
+polar_check_dbuser_dedicated(const char *dbname, const char *username)
+{
+	if (dbname &&
+		username &&
+		polar_session_dedicated_dbuser_name_array->count > 0)
+	{
+		char dbuser_name[SM_DATABASE_USER];
+		int i = 0;
+		PolarName temp;
+		temp.id = -1;
+		temp.name = dbuser_name;
+		for (i = 0; i < 3; i++)
+		{
+			sprintf(dbuser_name, "%s/%s", (i == 1 ? "*" : dbname), (i == 0 ? "*" : username));
+			if ((PolarName *) bsearch((void *) &temp,
+										(void *) polar_session_dedicated_dbuser_name_array->cell,
+										polar_session_dedicated_dbuser_name_array->count,
+										sizeof(PolarName),
+										polar_name_compare))
+			{
+				elog(LOG, "polar shared server set dedicated from dedicated dbuser '%s'", temp.name);
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+static bool
+polar_session_guc_need_save(struct config_generic *gconf)
+{
+	dlist_iter	iter;
+
+	if (!IS_POLAR_SESSION_SHARED())
+		return false;
+
+	if (!POLAR_SS_NOT_DEDICATED())
+		return false;
+
+	if (gconf->polar_array_type == 0)
+		return false;
+
+	if (polar_session_dedicated_guc_name_array->count > 0)
+	{
+		PolarName temp;
+		PolarName *res;
+		temp.id = -1;
+		temp.name = gconf->name;
+
+		res = (PolarName *) bsearch((void *) &temp,
+										(void *) polar_session_dedicated_guc_name_array->cell,
+										polar_session_dedicated_guc_name_array->count,
+										sizeof(PolarName),
+										polar_name_compare);
+		if (res)
+		{
+			if (POLAR_SS_NOT_DEDICATED())
+			{
+				MyProc->polar_is_backend_dedicated = true;
+				elog(LOG, "polar shared server set dedicated from dedicated guc '%s'", gconf->name);
+			}
+			return false;
+		}
+	}
+
+	dlist_foreach(iter, &polar_session_info()->m_saved_guc_list)
+	{
+		PolarSessionGUC	*sg = dlist_container(PolarSessionGUC, node, iter.cur);
+
+		if (sg != NULL &&
+			sg->array_type == gconf->polar_array_type &&
+			sg->array_index == gconf->polar_array_index)
+			/* already there */
+			return false;
+	}
+
+	return true;
+}
+
+/*
+ * Save changed variables after SET command.
+ * It's important to restore variables as we add them to the list.
+ */
+static void
+polar_session_guc_save(struct config_generic *gconf, config_var_value *prior_val)
+{
+	PolarSessionGUC	*sg = NULL;
+
+	sg = MemoryContextAllocZero(polar_session()->memory_context, sizeof(PolarSessionGUC));
+	sg->array_type = gconf->polar_array_type;
+	sg->array_index = gconf->polar_array_index;
+
+	dlist_push_tail(&polar_session_info()->m_saved_guc_list, &sg->node);
+	polar_session_info()->saved_guc_count++;
+
+	ELOG_PSS(DEBUG1, "polar_session_guc_save session:%d, index:%d-%d, name:'%s'", 
+		polar_session()->session_id,
+		sg->array_type, sg->array_index,
+		gconf->name
+		);
+}
+
+static Size
+get_malloc_usable_size(void *extra, MemoryContext mctx)
+{
+	if (mctx != NULL)
+		return polar_malloc_usable_size(mctx, extra);
+	else
+		return malloc_usable_size(extra);
+}
+
+static bool
+polar_session_guc_copy_extra(void **dest_extra, MemoryContext dest_mctx,
+	void *source_extra, MemoryContext source_mctx)
+{
+	int ret = true;
+	if (source_extra)
+	{
+		const Size source_size = get_malloc_usable_size(source_extra, source_mctx);
+		if (*dest_extra != NULL)
+		{
+			//do not need copy again
+			const Size dest_size = get_malloc_usable_size(*dest_extra, dest_mctx);
+			if (source_size == dest_size && memcmp(*dest_extra, source_extra, dest_size) ==0)
+			{
+				ELOG_PSS(DEBUG5, "polar_session_guc_copy_extra no need copy");
+				return ret;
+			}
+
+			if (dest_mctx != NULL)
+			{
+				Assert(MemoryContextContains(dest_mctx, *dest_extra));
+				pfree(*dest_extra);
+			}
+			else
+			{
+				free(*dest_extra);
+			}
+			*dest_extra = NULL;
+		}
+		if (dest_mctx != NULL)
+			*dest_extra = MemoryContextAlloc(dest_mctx, source_size);
+		else
+			*dest_extra = malloc(source_size);
+		if (*dest_extra != NULL)
+			memcpy(*dest_extra, source_extra, source_size);
+		else
+			ret = false;
+		ELOG_PSS(DEBUG5, "polar_session_guc_copy_extra need copy size %lu", source_size);
+	}
+	else
+	{
+		if (*dest_extra != NULL)
+		{
+			if (dest_mctx != NULL)
+			{
+				Assert(MemoryContextContains(dest_mctx, *dest_extra));
+				pfree(*dest_extra);
+			}
+			else
+			{
+				free(*dest_extra);
+			}
+			*dest_extra = NULL;
+		}
+	}
+	return ret;
+}
+
+static bool
+polar_session_guc_copy_string(char **dest_str, MemoryContext dest_mctx, const char *source_str)
+{
+	int ret = true;
+	const Size source_size = strlen(source_str) + 1;
+	if (*dest_str != NULL)
+	{
+		const Size dest_size = strlen(*dest_str) + 1;
+		//do not need copy again
+		if (source_size == dest_size && memcmp(*dest_str, source_str, dest_size) ==0)
+		{
+			ELOG_PSS(DEBUG5, "polar_session_guc_copy_string no need copy");
+			return ret;
+		}
+
+		if (dest_mctx != NULL)
+		{
+			Assert(MemoryContextContains(dest_mctx, *dest_str));
+			pfree(*dest_str);
+		}
+		else
+		{
+			free(*dest_str);
+		}
+		*dest_str = NULL;
+	}
+	if (dest_mctx != NULL)
+		*dest_str = MemoryContextAlloc(dest_mctx, source_size);
+	else
+		*dest_str = malloc(source_size);
+
+	if (*dest_str != NULL)
+		memcpy(*dest_str, source_str, source_size);
+	else
+		ret = false;
+
+	return ret;
+}
+
+static struct config_generic *
+get_config_from_array(const enum config_array_type polar_array_type, const int polar_array_index)
+{
+	struct config_generic *ret = NULL;
+	Assert(polar_array_index >= 0);
+	switch(polar_array_type)
+	{
+		case CAT_BOOL:
+		{
+			ret = &ConfigureNamesBool[polar_array_index].gen;
+			break;
+		}
+		case CAT_INT:
+		{
+			ret = &ConfigureNamesInt[polar_array_index].gen;
+			break;
+		}
+		case CAT_REAL:
+		{
+			ret = &ConfigureNamesReal[polar_array_index].gen;
+			break;
+		}
+		case CAT_STRING:
+		{
+			ret = &ConfigureNamesString[polar_array_index].gen;
+			break;
+		}
+		case CAT_ENUM:
+		{
+			ret = &ConfigureNamesEnum[polar_array_index].gen;
+			break;
+		}
+		case CAT_BOOL_PX:
+		{
+			ret = &ConfigureNamesBool_px[polar_array_index].gen;
+			break;
+		}
+		case CAT_INT_PX:
+		{
+			ret = &ConfigureNamesInt_px[polar_array_index].gen;
+			break;
+		}
+		case CAT_REAL_PX:
+		{
+			ret = &ConfigureNamesReal_px[polar_array_index].gen;
+			break;
+		}
+		case CAT_STRING_PX:
+		{
+			ret = &ConfigureNamesString_px[polar_array_index].gen;
+			break;
+		}
+		case CAT_ENUM_PX:
+		{
+			ret = &ConfigureNamesEnum_px[polar_array_index].gen;
+			break;
+		}
+		case CAT_BOOL_EXTERNAL:
+		{
+			ret = &ConfigureNamesBool_external[polar_array_index]->gen;
+			break;
+		}
+		case CAT_INT_EXTERNAL:
+		{
+			ret = &ConfigureNamesInt_external[polar_array_index]->gen;
+			break;
+		}
+		case CAT_REAL_EXTERNAL:
+		{
+			ret = &ConfigureNamesReal_external[polar_array_index]->gen;
+			break;
+		}
+		case CAT_STRING_EXTERNAL:
+		{
+			ret = &ConfigureNamesString_external[polar_array_index]->gen;
+			break;
+		}
+		case CAT_ENUM_EXTERNAL:
+		{
+			ret = &ConfigureNamesEnum_external[polar_array_index]->gen;
+			break;
+		}
+		default:
+			Assert(false);
+			break;
+	}
+	return ret;
+}
+
+bool
+polar_session_guc_restore(PolarSessionContext *session, bool to_session)
+{
+	dlist_iter	iter;
+
+	Assert(session != NULL);
+
+	if (polar_enable_shared_server_testmode)
+		usleep(100);
+
+	dlist_foreach(iter, &session->info->m_saved_guc_list)
+	{
+		PolarSessionGUC	*sg = dlist_container(PolarSessionGUC, node, iter.cur);
+		struct config_generic *gconf = get_config_from_array(sg->array_type, sg->array_index);
+		bool need_in_trans = is_session_in_trans_guc(gconf) && !IsInTransactionBlock(true);
+		PolarSessionGUC	new_value;
+		memset(&new_value, 0, sizeof(PolarSessionGUC));
+
+		if (polar_enable_shared_server_testmode)
+			usleep(500);
+
+		/* restore actual values */
+		switch (gconf->vartype)
+		{
+			case PGC_BOOL:
+			{
+				struct config_bool *conf = (struct config_bool *)gconf;
+				if (to_session)
+				{
+					new_value.val.boolval = sg->val.boolval;
+					polar_session_guc_copy_extra(&new_value.extra, NULL, sg->extra, session->memory_context);
+					new_value.source = sg->source;
+					new_value.scontext = sg->scontext;
+				}
+				else
+				{
+					//deep copy
+					sg->val.boolval = *conf->variable;
+					if (!polar_session_guc_copy_extra(&sg->extra, session->memory_context, gconf->extra, NULL))
+						return false;
+					sg->source = gconf->source;
+					sg->scontext = gconf->scontext;
+
+					new_value.val.boolval = conf->reset_val;
+					new_value.extra = conf->reset_extra;
+					new_value.source = gconf->reset_source;
+					new_value.scontext = gconf->reset_scontext;
+				}
+
+				if (need_in_trans)
+				{
+					StartTransactionCommand();
+					PushActiveSnapshot(GetTransactionSnapshot());
+				}
+
+				//free old
+				set_extra_field(gconf, &(gconf->extra), NULL);
+
+				if (conf->assign_hook)
+					conf->assign_hook(new_value.val.boolval, new_value.extra);
+				*conf->variable = new_value.val.boolval;
+				set_extra_field(gconf, &gconf->extra, new_value.extra);
+				gconf->source = new_value.source;
+				gconf->scontext = new_value.scontext;
+
+				if (need_in_trans)
+				{
+					PopActiveSnapshot();
+					CommitTransactionCommand();
+				}
+
+				ELOG_PSS(DEBUG1, "polar_session_guc_restore session:%d-%d, index:%d-%d, name:'%s', value:'%d'", 
+					session->session_id, to_session,
+					sg->array_type, sg->array_index,
+					gconf->name,
+					new_value.val.boolval
+					);
+
+				break;
+			}
+			case PGC_INT:
+			{
+				struct config_int *conf = (struct config_int*)gconf;
+				if (to_session)
+				{
+					new_value.val.intval = sg->val.intval;
+					polar_session_guc_copy_extra(&new_value.extra, NULL, sg->extra, session->memory_context);
+					new_value.source = sg->source;
+					new_value.scontext = sg->scontext;
+				}
+				else
+				{
+					//deep copy
+					sg->val.intval = *conf->variable;
+					if (!polar_session_guc_copy_extra(&sg->extra, session->memory_context, gconf->extra, NULL))
+						return false;
+					sg->source = gconf->source;
+					sg->scontext = gconf->scontext;
+
+					new_value.val.intval = conf->reset_val;
+					new_value.extra = conf->reset_extra;
+					new_value.source = gconf->reset_source;
+					new_value.scontext = gconf->reset_scontext;
+				}
+
+				if (need_in_trans)
+				{
+					StartTransactionCommand();
+					PushActiveSnapshot(GetTransactionSnapshot());
+				}
+
+				//free old
+				set_extra_field(gconf, &(gconf->extra), NULL);
+
+				if (conf->assign_hook)
+					conf->assign_hook(new_value.val.intval, new_value.extra);
+				*conf->variable = new_value.val.intval;
+				set_extra_field(gconf, &gconf->extra, new_value.extra);
+				gconf->source = new_value.source;
+				gconf->scontext = new_value.scontext;
+
+				if (need_in_trans)
+				{
+					PopActiveSnapshot();
+					CommitTransactionCommand();
+				}
+
+				ELOG_PSS(DEBUG1, "polar_session_guc_restore session:%d-%d, index:%d-%d, name:'%s', value:'%d'", 
+					session->session_id, to_session,
+					sg->array_type, sg->array_index,
+					gconf->name,
+					new_value.val.intval
+					);
+				break;
+			}
+			case PGC_REAL:
+			{
+				struct config_real *conf = (struct config_real*)gconf;
+				if (to_session)
+				{
+					new_value.val.realval = sg->val.realval;
+					polar_session_guc_copy_extra(&new_value.extra, NULL, sg->extra, session->memory_context);
+					new_value.source = sg->source;
+					new_value.scontext = sg->scontext;
+				}
+				else
+				{
+					//deep copy
+					sg->val.realval = *conf->variable;
+					if (!polar_session_guc_copy_extra(&sg->extra, session->memory_context, gconf->extra, NULL))
+						return false;
+					sg->source = gconf->source;
+					sg->scontext = gconf->scontext;
+
+					new_value.val.realval = conf->reset_val;
+					new_value.extra = conf->reset_extra;
+					new_value.source = gconf->reset_source;
+					new_value.scontext = gconf->reset_scontext;
+				}
+
+				if (need_in_trans)
+				{
+					StartTransactionCommand();
+					PushActiveSnapshot(GetTransactionSnapshot());
+				}
+
+				//free old
+				set_extra_field(gconf, &(gconf->extra), NULL);
+
+				if (conf->assign_hook)
+					conf->assign_hook(new_value.val.realval, new_value.extra);
+				*conf->variable = new_value.val.realval;
+				set_extra_field(gconf, &gconf->extra, new_value.extra);
+				gconf->source = new_value.source;
+				gconf->scontext = new_value.scontext;
+
+				if (need_in_trans)
+				{
+					PopActiveSnapshot();
+					CommitTransactionCommand();
+				}
+
+				ELOG_PSS(DEBUG1, "polar_session_guc_restore session:%d-%d, index:%d-%d, name:'%s', value:'%lf'", 
+					session->session_id, to_session,
+					sg->array_type, sg->array_index,
+					gconf->name,
+					new_value.val.realval
+					);
+				break;
+			}
+			case PGC_STRING:
+			{
+				struct config_string *conf = (struct config_string*)gconf;
+				if (to_session)
+				{
+					polar_session_guc_copy_string(&new_value.val.stringval, NULL, sg->val.stringval);
+					polar_session_guc_copy_extra(&new_value.extra, NULL, sg->extra, session->memory_context);
+					new_value.source = sg->source;
+					new_value.scontext = sg->scontext;
+				}
+				else
+				{
+					//deep copy
+					if (!polar_session_guc_copy_string(&sg->val.stringval, session->memory_context, *conf->variable))
+						return false;
+					if (!polar_session_guc_copy_extra(&sg->extra, session->memory_context, gconf->extra, NULL))
+						return false;
+					sg->source = gconf->source;
+					sg->scontext = gconf->scontext;
+
+					new_value.val.stringval = conf->reset_val;
+					new_value.extra = conf->reset_extra;
+					new_value.source = gconf->reset_source;
+					new_value.scontext = gconf->reset_scontext;
+				}
+
+				if (need_in_trans)
+				{
+					StartTransactionCommand();
+					PushActiveSnapshot(GetTransactionSnapshot());
+				}
+
+				//free old
+				set_string_field(conf, conf->variable, NULL);
+				set_extra_field(gconf, &(gconf->extra), NULL);
+
+				if (conf->assign_hook)
+					conf->assign_hook(new_value.val.stringval, new_value.extra);
+				set_string_field(conf, conf->variable, new_value.val.stringval);
+				set_extra_field(gconf, &gconf->extra, new_value.extra);
+				gconf->source = new_value.source;
+				gconf->scontext = new_value.scontext;
+
+				if (need_in_trans)
+				{
+					PopActiveSnapshot();
+					CommitTransactionCommand();
+				}
+
+				ELOG_PSS(DEBUG1, "polar_session_guc_restore session:%d-%d, index:%d-%d, name:'%s', value:'%s'", 
+					session->session_id, to_session,
+					sg->array_type, sg->array_index,
+					gconf->name,
+					new_value.val.stringval
+					);
+				break;
+			}
+			case PGC_ENUM:
+			{
+				struct config_enum *conf = (struct config_enum*)gconf;
+				if (to_session)
+				{
+					new_value.val.enumval = sg->val.enumval;
+					polar_session_guc_copy_extra(&new_value.extra, NULL, sg->extra, session->memory_context);
+					new_value.source = sg->source;
+					new_value.scontext = sg->scontext;
+				}
+				else
+				{
+					//deep copy
+					sg->val.enumval = *conf->variable;
+					if (!polar_session_guc_copy_extra(&sg->extra, session->memory_context, gconf->extra, NULL))
+						return false;
+					sg->source = gconf->source;
+					sg->scontext = gconf->scontext;
+
+					new_value.val.enumval = conf->reset_val;
+					new_value.extra = conf->reset_extra;
+					new_value.source = gconf->reset_source;
+					new_value.scontext = gconf->reset_scontext;
+				}
+
+				if (need_in_trans)
+				{
+					StartTransactionCommand();
+					PushActiveSnapshot(GetTransactionSnapshot());
+				}
+
+				//free old
+				set_extra_field(gconf, &(gconf->extra), NULL);
+
+				if (conf->assign_hook)
+					conf->assign_hook(new_value.val.enumval, new_value.extra);
+				*conf->variable = new_value.val.enumval;
+				set_extra_field(gconf, &gconf->extra, new_value.extra);
+				gconf->source = new_value.source;
+				gconf->scontext = new_value.scontext;
+
+				if (need_in_trans)
+				{
+					PopActiveSnapshot();
+					CommitTransactionCommand();
+				}
+
+				ELOG_PSS(DEBUG1, "polar_session_guc_restore session:%d-%d, index:%d-%d, name:'%s', value:'%d'", 
+					session->session_id, to_session,
+					sg->array_type, sg->array_index,
+					gconf->name,
+					new_value.val.enumval
+					);
+				break;
+			}
+		}
+	}
+	return true;
+}
+
+void
+polar_session_guc_release(PolarSessionContext *session)
+{
+	dlist_mutable_iter	iter;
+
+	if (session == NULL)
+		return;
+
+	if (POLAR_SS_NOT_DEDICATED())
+		return;
+
+	dlist_foreach_modify(iter, &session->info->m_saved_guc_list)
+	{
+		PolarSessionGUC	*sg = dlist_container(PolarSessionGUC, node, iter.cur);
+		struct config_generic *gconf = get_config_from_array(sg->array_type, sg->array_index);
+
+		ELOG_PSS(DEBUG1, "polar_session_guc_release session:%d, index:%d-%d, name:'%s'", 
+			session->session_id,
+			sg->array_type, sg->array_index,
+			gconf->name
+			);
+
+		if (sg->extra != NULL)
+		{
+			Assert(MemoryContextContains(session->memory_context, sg->extra));
+			pfree(sg->extra);
+		}
+
+		if (gconf->vartype == PGC_STRING && sg->val.stringval != NULL)
+		{
+			Assert(MemoryContextContains(session->memory_context, sg->val.stringval));
+			pfree(sg->val.stringval);
+		}
+
+		dlist_delete(&sg->node);
+	}
+	polar_session_info()->saved_guc_count = 0;
+}
 
 #include "guc-file.c"

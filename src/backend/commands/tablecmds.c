@@ -587,6 +587,15 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 				(errcode(ERRCODE_INVALID_TABLE_DEFINITION),
 				 errmsg("ON COMMIT can only be used on temporary tables")));
 
+	/* POLAR: Shared Server */
+	if (stmt->relation->relpersistence == RELPERSISTENCE_TEMP &&
+		stmt->oncommit != ONCOMMIT_DROP &&
+		POLAR_SS_NOT_DEDICATED())
+	{
+		MyProc->polar_is_backend_dedicated = true;
+		elog(LOG, "polar shared server set dedicated from non ONCOMMIT_DROP temp table");
+	}
+
 	if (stmt->partspec != NULL)
 	{
 		if (relkind != RELKIND_RELATION)

@@ -100,7 +100,7 @@ private:
 								   const CCostModelGPDB *pcmgpdb,
 								   const SCostingInfo *pci);
 
-	// POALR px: cost of share index scan
+	// POLAR px: cost of share index scan
 	static CCost CostShareIndexScan(CMemoryPool *mp, CExpressionHandle &exprhdl,
 								   const CCostModelGPDB *pcmgpdb,
 								   const SCostingInfo *pci);

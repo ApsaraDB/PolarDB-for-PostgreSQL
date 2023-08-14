@@ -31,6 +31,10 @@
 #include "utils/ps_status.h"
 #include "utils/guc.h"
 
+/* POLAR */
+#include "postmaster/polar_dispatcher.h"
+#include "storage/proc.h"
+
 /* POLAR px */
 #include "px/px_vars.h"
 /* POLAR end */
@@ -328,6 +332,93 @@ init_ps_display(const char *username, const char *dbname,
 #endif
 	}
 
+
+	ps_buffer_cur_len = ps_buffer_fixed_size = strlen(ps_buffer);
+
+	set_ps_display(initial_str, true);
+#endif							/* not PS_USE_NONE */
+}
+
+void
+polar_ss_init_ps_display(const char *username, const char *dbname,
+				const uint32 polar_startup_gucs_hash,
+				const char *host_info, const char *initial_str)
+{
+	Assert(username);
+	Assert(dbname);
+	Assert(host_info);
+
+#ifndef PS_USE_NONE
+	/* no ps display for stand-alone backend */
+	if (!IsUnderPostmaster)
+		return;
+
+	/* no ps display if you didn't call save_ps_display_args() */
+	if (!save_argv)
+		return;
+
+#ifdef PS_USE_CLOBBER_ARGV
+	/* If ps_buffer is a pointer, it might still be null */
+	if (!ps_buffer)
+		return;
+#endif
+
+	/*
+	 * Overwrite argv[] to point at appropriate space, if needed
+	 */
+
+#ifdef PS_USE_CHANGE_ARGV
+	save_argv[0] = ps_buffer;
+	save_argv[1] = NULL;
+#endif							/* PS_USE_CHANGE_ARGV */
+
+#ifdef PS_USE_CLOBBER_ARGV
+	{
+		int			i;
+
+		/* make extra argv slots point at end_of_area (a NUL) */
+		for (i = 1; i < save_argc; i++)
+			save_argv[i] = ps_buffer + ps_buffer_size;
+	}
+#endif							/* PS_USE_CLOBBER_ARGV */
+
+	/*
+	 * Make fixed prefix of ps display.
+	 */
+
+#ifdef PS_USE_SETPROCTITLE
+
+	/*
+	 * apparently setproctitle() already adds a `progname:' prefix to the ps
+	 * line
+	 */
+#define PROGRAM_NAME_PREFIX ""
+#else
+#define PROGRAM_NAME_PREFIX "postgres(%d): "
+#endif
+
+	if (*cluster_name == '\0')
+	{
+		snprintf(ps_buffer, ps_buffer_size,
+				PROGRAM_NAME_PREFIX "PSS backend %u: %s %s %s",
+#ifndef PS_USE_SETPROCTITLE
+				PostPortNumber, 
+#endif
+				polar_startup_gucs_hash,
+				username, dbname, host_info);
+	}
+	else
+	{
+		snprintf(ps_buffer, ps_buffer_size,
+				PROGRAM_NAME_PREFIX "%s PSS backend %u: %s %s %s",
+#ifndef PS_USE_SETPROCTITLE
+				PostPortNumber, 
+#endif
+				cluster_name,
+				polar_startup_gucs_hash,
+				username, dbname, host_info);
+	}
+
 	ps_buffer_cur_len = ps_buffer_fixed_size = strlen(ps_buffer);
 
 	set_ps_display(initial_str, true);
@@ -362,6 +453,15 @@ set_ps_display(const char *activity, bool force)
 	strlcpy(ps_buffer + ps_buffer_fixed_size, activity,
 			ps_buffer_size - ps_buffer_fixed_size);
 	ps_buffer_cur_len = strlen(ps_buffer);
+
+	/* POLAR: Shared Server */
+	if(IS_POLAR_SESSION_SHARED() && !IS_POLAR_BACKEND_SHARED() && !strstr(ps_buffer, "PSS dedicated"))
+	{
+		size_t len = strlcpy(ps_buffer + ps_buffer_cur_len, ": PSS dedicated",
+							 ps_buffer_size - ps_buffer_cur_len);
+		ps_buffer_cur_len += len;
+	}
+	/* POLAR end */
 
 	/* POLAR px */
 	if (px_is_executing && !strstr(ps_buffer,"sessid"))

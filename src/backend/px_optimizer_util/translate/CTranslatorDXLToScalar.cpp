@@ -671,7 +671,7 @@ CTranslatorDXLToScalar::TranslateDXLScalarFuncExprToScalar
 	func_expr->inputcollid = px::ExprCollation((Node *) func_expr->args);
 	func_expr->funccollid = px::TypeCollation(func_expr->funcresulttype);
 
-	/* POALR px */
+	// POLAR px
 	func_expr->location = -1;
 
 	return (Expr *)func_expr;
@@ -876,7 +876,7 @@ CDXLScalarIdent *inner_ident = nullptr;
 	param->paramtypmod = inner_ident->TypeModifier();
 	param->paramid = dxl_to_plstmt_ctxt->GetNextParamId(param->paramtype);
 
-	/* POALR px */
+	// POLAR px
 	param->location = -1;
 
 	// test expression is used for non-scalar subplan,
@@ -1048,7 +1048,7 @@ CTranslatorDXLToScalar::TranslateParamFromMapping
 	// GPDB_91_MERGE_FIXME: collation
 	param->paramcollid = px::TypeCollation(param->paramtype);
 
-	/* POALR px */
+	// POLAR px
 	param->location = -1;
 
 	return param;
@@ -1260,7 +1260,7 @@ CTranslatorDXLToScalar::TranslateDXLScalarCastWithChildExpr(const CDXLScalarCast
 		func_expr->inputcollid = px::ExprCollation((Node *) func_expr->args);
 		func_expr->funccollid = px::TypeCollation(func_expr->funcresulttype);
 
-		/* POALR px */
+		// POLAR px
 		func_expr->location = -1;
 
 		return (Expr *) func_expr;
@@ -1433,7 +1433,7 @@ CTranslatorDXLToScalar::TranslateDXLScalarArrayCoerceExprToScalar
 		func_expr->args = px::LPrepend(
 			case_test_expr, ListMake2(px::MakeIntConst(dxlop->TypeModifier()),
 									  px::MakeBoolConst(true, false)));
-		/* POALR px */
+		// POLAR px
 		func_expr->location = -1;
 
 		coerce->elemexpr = (Expr *) func_expr;

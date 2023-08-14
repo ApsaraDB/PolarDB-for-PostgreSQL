@@ -29,7 +29,7 @@
 					 MAXALIGN(N_MC_STAT * sizeof(MemoryContextStat)))
 
 /* POLAR: the number of memory contexts for one backend */
-#define N_MC_STAT 1024
+#define N_MC_STAT 2048
 
 /*
  * Record the backend memory context
@@ -37,6 +37,9 @@
 typedef struct MemoryContextStat {
 	NameData				name;
 	int32					level;
+	int32					type;
+	bool					is_shared;
+	NameData				ident;
 	MemoryContextCounters	stat;
 } MemoryContextStat;
 
@@ -44,6 +47,7 @@ typedef struct BackendMemoryStat {
 	LWLock				*lock;
 	int32				pid;
 	int32				nContext;
+	bool				is_session_pid;
 	pg_atomic_uint32	signal_ready;
 	pg_atomic_uint32	data_ready;
 	MemoryContextStat	stats[FLEXIBLE_ARRAY_MEMBER];
@@ -66,8 +70,9 @@ extern BackendMemoryStat *memstats;
 
 extern Size getMemstatSize(void);
 extern void allocShmem(void);
-extern void polar_handle_monitor_hook(PolarHookActionType action);
+extern void polar_handle_monitor_hook(PolarHookActionType action, void *args);
 extern void polar_set_signal_mctx(void);
 extern void polar_check_signal_mctx(void);
+extern void polar_ss_check_signal_mctx(void *session);
 
 #endif

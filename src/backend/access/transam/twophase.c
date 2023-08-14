@@ -458,7 +458,7 @@ MarkAsPreparingGuts(GlobalTransaction gxact, TransactionId xid, const char *gid,
 	PGXACT	   *pgxact;
 	int			i;
 
-	/* POALR */
+	/* POLAR */
 	if (strlen(gid) >= GIDSIZE)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
@@ -488,6 +488,12 @@ MarkAsPreparingGuts(GlobalTransaction gxact, TransactionId xid, const char *gid,
 	proc->roleId = owner;
 	proc->tempNamespaceId = InvalidOid;
 	proc->isBackgroundWorker = false;
+
+	/* POLAR: Shared Server */
+	proc->isPolarDispatcher = false;
+	proc->polar_is_backend_dedicated = false;
+	proc->polar_shared_session = NULL;
+
 	proc->lwWaiting = false;
 	proc->lwWaitMode = 0;
 	proc->waitLock = NULL;
@@ -2488,7 +2494,7 @@ PrepareRedoAdd(char *buf, XLogRecPtr start_lsn,
 				 errhint("Increase max_prepared_transactions (currently %d).",
 						 max_prepared_xacts)));
 
-	/* POALR */
+	/* POLAR */
 	if (strlen(gid) >= GIDSIZE)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),

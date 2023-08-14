@@ -449,8 +449,8 @@ extern char *PageEncryptCopy(Page page, ForkNumber forknum, BlockNumber blkno);
 extern void PageEncryptInplace(Page page, ForkNumber forknum, BlockNumber blkno);
 extern void PageDecryptInplace(Page page, ForkNumber forknum, BlockNumber blkno, void *smgr);
 
-/* POALR */
+/* POLAR */
 extern bool polar_page_is_just_inited(Page page);
-/* POALR end */
+/* POLAR end */
 
 #endif							/* BUFPAGE_H */

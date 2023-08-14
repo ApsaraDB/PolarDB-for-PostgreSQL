@@ -24,8 +24,6 @@
 
 #include "storage/itemptr.h"
 #include "utils/dsa.h"
-
-
 /*
  * Actual bitmap representation is private to tidbitmap.c.  Callers can
  * do IsA(x, TIDBitmap) on it, but nothing else.

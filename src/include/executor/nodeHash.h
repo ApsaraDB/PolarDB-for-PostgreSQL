@@ -76,5 +76,9 @@ extern void ExecHashRetrieveInstrumentation(HashState *node);
 extern void ExecShutdownHash(HashState *node);
 extern void ExecHashGetInstrumentation(HashInstrumentation *instrument,
 						   HashJoinTable hashtable);
-
+/* POLAR px */
+extern void polar_ExecHashTableExplainInit(HashState *hashState, HashJoinState *hjstate,
+                                     HashJoinTable  hashtable);
+extern void polar_ExecHashTableExplainBatchEnd(HashState *hashState, HashJoinTable hashtable);
+/* POLAR end */
 #endif							/* NODEHASH_H */

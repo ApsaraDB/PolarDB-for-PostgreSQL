@@ -57,6 +57,7 @@ bool		px_eager_one_phase_agg = false;
 bool		px_eager_two_phase_agg = false;
 bool		px_cte_sharing = false;
 bool		px_optimizer_enable_relsize_collection = false;
+int			px_explain_memory_verbosity = 0;
 
 /* Optimizer related gucs */
 bool		polar_enable_px;
@@ -228,7 +229,8 @@ bool		px_enable_sort_distinct = false;
 bool		px_enable_join_prefetch_inner;
 int			px_max_workers_number;
 char	   *polar_px_ignore_function = NULL;
-polar_px_function_oid_array px_function_oid_array;
+PxFunctionOidArray *px_function_oid_array = NULL;
+bool		px_use_master;
 bool		px_use_standby;
 bool		polar_px_ignore_unusable_nodes;
 
@@ -286,6 +288,7 @@ static bool px_check_dispatch_log_stats(bool *newval, void **extra, GucSource so
 static bool px_check_scan_unit_size(int *newval, void **extra, GucSource source);
 static const char* px_show_scan_unit_size(void);
 static bool px_check_ignore_function(char **newval, void **extra, GucSource source);
+static void px_assign_ignore_function(const char *newval, void *extra);
 static int px_guc_array_compare(const void *a, const void *b);
 
 static const struct config_enum_entry px_interconnect_types[] = {
@@ -332,6 +335,13 @@ static const struct config_enum_entry px_optimizer_log_failure_options[] = {
 static const struct config_enum_entry optimizer_minidump_options[] = {
 	{"onerror", OPTIMIZER_MINIDUMP_FAIL},
 	{"always", OPTIMIZER_MINIDUMP_ALWAYS},
+	{NULL, 0}
+};
+
+static const struct config_enum_entry px_explain_memory_verbosity_options[] = {
+	{"suppress", EXPLAIN_MEMORY_VERBOSITY_SUPPRESS},
+	{"summary", EXPLAIN_MEMORY_VERBOSITY_SUMMARY},
+	{"detail", EXPLAIN_MEMORY_VERBOSITY_DETAIL},
 	{NULL, 0}
 };
 
@@ -1313,6 +1323,17 @@ struct config_bool ConfigureNamesBool_px[] =
 	},
 
 	{
+		{"polar_px_enable_explain_all_stat", PGC_USERSET, CLIENT_CONN_OTHER,
+			gettext_noop("Experimental feature: dump stats for all segments in EXPLAIN ANALYZE."),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NOT_IN_SAMPLE
+		},
+		&px_enable_explain_all_stat,
+		false,
+		NULL, NULL, NULL
+	},
+
+	{
 		{"polar_px_enable_join", PGC_USERSET, QUERY_TUNING_METHOD,
 		 gettext_noop("Enable px_enable_join."),
 		 NULL
@@ -2133,17 +2154,6 @@ struct config_int ConfigureNamesInt_px[] =
 	},
 
 	{
-		{"polar_px_session_id", PGC_BACKEND, CLIENT_CONN_OTHER,
-		 gettext_noop("Global ID used to uniquely identify a particular session in an Greenplum Database array"),
-		 NULL,
-		 GUC_NOT_IN_SAMPLE | GUC_DISALLOW_IN_FILE
-		},
-		&px_session_id,
-		-1, INT_MIN, INT_MAX,
-		NULL, NULL, NULL
-	},
-
-	{
 		{"polar_px_dop_per_node", PGC_USERSET, QUERY_TUNING_METHOD,
 		 gettext_noop("The degree of parallelism per dbid."),
 		 NULL
@@ -2652,7 +2662,7 @@ struct config_string ConfigureNamesString_px[] =
 		},
 		&polar_px_ignore_function,
 		"1574,1575,1576,1765,3078,4032",
-		px_check_ignore_function, NULL, NULL
+		px_check_ignore_function, px_assign_ignore_function, NULL
 	},
 
 	/* End-of-list marker */
@@ -2740,6 +2750,15 @@ struct config_enum ConfigureNamesEnum_px[] =
 	},
 
 	{
+		{"polar_px_explain_memory_verbosity", PGC_USERSET, RESOURCES_MEM,
+			gettext_noop("Experimental feature: show memory account usage in EXPLAIN ANALYZE."),
+			gettext_noop("Valid values are SUPPRESS, SUMMARY, DETAIL.")
+		},
+		&px_explain_memory_verbosity,
+		EXPLAIN_MEMORY_VERBOSITY_SUPPRESS, px_explain_memory_verbosity_options,
+		NULL, NULL, NULL
+	},
+	{
 		{NULL, 0, 0, NULL, NULL}, NULL, 0, NULL, NULL, NULL
 	}
 };
@@ -2798,29 +2817,28 @@ px_show_scan_unit_size(void)
 static bool
 px_check_ignore_function(char **newval, void **extra, GucSource source)
 {
-	bool ret = true;
 	ListCell *lc = NULL;
-	char *func_oid_list_copy = NULL;
+	char *rawstring = NULL;
 	int index = 0;
-	List *px_function_oid_list = NULL;
+	List *elemlist = NULL;
+	PxFunctionOidArray *tmp_array = NULL;
 
-	if (*newval == NULL || (*newval)[0] == '\0')
-	{
-		px_function_oid_array.len = 0;
-		return true;
-	}
+	rawstring = pstrdup(*newval);
 
-	func_oid_list_copy = pstrdup(*newval);
-
-	if (!SplitIdentifierString(func_oid_list_copy, ',', &px_function_oid_list))
+	if (!SplitIdentifierString(rawstring, ',', &elemlist))
 	{
 		/* syntax error in function oid list */
 		GUC_check_errdetail("polar px ignore function list is invalid, func1,func2,func3, ...");
-		ret = false;
 		goto out_result;
 	}
 
-	foreach(lc, px_function_oid_list)
+	tmp_array = guc_malloc(FATAL, sizeof(PxFunctionOidArray) + list_length(elemlist) * sizeof(int));
+	if (!tmp_array)
+		return false;
+
+	tmp_array->count = list_length(elemlist);
+
+	foreach(lc, elemlist)
 	{
 		char *s = (char *)lfirst(lc);
 		int oid = atoi(s);
@@ -2829,20 +2847,30 @@ px_check_ignore_function(char **newval, void **extra, GucSource source)
 		{
 			/* syntax error in function oid list */
 			GUC_check_errdetail("polar px ignore function list is invalid, func1,func2,func3, ...");
-			ret = false;
 			goto out_result;
 		}
-
-		px_function_oid_array.array[index++] = oid;
+		tmp_array->oid[index++] = oid;
 	}
-	px_function_oid_array.len = index;
+
+	Assert(tmp_array->count == index);
+
+	*extra = tmp_array;
+
+	return true;
 
 out_result:
-	if (func_oid_list_copy)
-		pfree(func_oid_list_copy);
-	if (!ret)
-		px_function_oid_array.len = 0;
-	return ret;
+	list_free(elemlist);
+	if (rawstring)
+		pfree(rawstring);
+	if (tmp_array)
+		free(tmp_array);
+	return false;
+}
+
+static void
+px_assign_ignore_function(const char *newval, void *extra)
+{
+	px_function_oid_array = (PxFunctionOidArray *)extra;
 }
 
 /*

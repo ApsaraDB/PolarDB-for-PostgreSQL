@@ -57,11 +57,9 @@ select show_result_type('select 1 as a');
 -- currently this fails due to cached plan for pg_typeof expression
 -- (but a CLOBBER_CACHE_ALWAYS build will succeed)
 select show_result_type('select 2.0 as a');
-    show_result_type    
-------------------------
- type numeric value 2.0
-(1 row)
-
+ERROR:  type of parameter 5 (numeric) does not match that when preparing the plan (integer)
+CONTEXT:  SQL statement "select pg_typeof(r.a)"
+PL/pgSQL function show_result_type(text) line 7 at SQL statement
 -- but it's OK if we force plan rebuilding
 discard plans;
 select show_result_type('select 2.0 as a');

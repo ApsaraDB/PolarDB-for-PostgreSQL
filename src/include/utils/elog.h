@@ -219,10 +219,26 @@ extern int	polar_mark_needs_mask(bool needs_mask);
 		} \
 	} while(0)
 #endif							/* HAVE__BUILTIN_CONSTANT_P */
+
+extern bool polar_ss_enable_output_to_client;
+
+#define ELOG_PSS(elevel, fmt,...) \
+	do { \
+		if (unlikely(polar_enable_shared_server_log)) \
+		{ \
+			polar_ss_enable_output_to_client = false; \
+			elog(elevel, "PSS: " fmt, ## __VA_ARGS__); \
+			polar_ss_enable_output_to_client = true; \
+		} \
+	} while(0)
+
 #else							/* !HAVE__VA_ARGS */
 #define elog  \
 	elog_start(__FILE__, __LINE__, PG_FUNCNAME_MACRO), \
 	elog_finish
+
+#define ELOG_PSS elog
+
 #endif							/* HAVE__VA_ARGS */
 
 extern void elog_start(const char *filename, int lineno, const char *funcname);
@@ -494,5 +510,7 @@ extern ErrorData *px_errfinish_and_return(int dummy,...);
 void px_elog_internalerror(const char *filename, int lineno, const char *funcname)
 						pg_attribute_noreturn();
 extern pg_noinline void set_backtrace(ErrorData *edata, int num_skip);
+
+extern char *polar_get_backtrace(void);
 
 #endif							/* ELOG_H */

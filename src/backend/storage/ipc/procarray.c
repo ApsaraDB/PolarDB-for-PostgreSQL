@@ -3667,7 +3667,7 @@ CountDBConnections(Oid databaseid)
 
 		if (proc->pid == 0)
 			continue;			/* do not count prepared xacts */
-		if (proc->isBackgroundWorker)
+		if (proc->isBackgroundWorker ||proc->isPolarDispatcher /* POLAR: Shared Server */)
 			continue;			/* do not count background workers */
 		if (!OidIsValid(databaseid) ||
 			proc->databaseId == databaseid)
@@ -3738,7 +3738,7 @@ CountUserBackends(Oid roleid)
 
 		if (proc->pid == 0)
 			continue;			/* do not count prepared xacts */
-		if (proc->isBackgroundWorker)
+		if (proc->isBackgroundWorker || proc->isPolarDispatcher)
 			continue;			/* do not count background workers */
 		if (proc->roleId == roleid)
 			count++;
@@ -3779,12 +3779,14 @@ CountOtherDBBackends(Oid databaseId, int *nbackends, int *nprepared)
 
 #define MAXAUTOVACPIDS	10		/* max autovacs to SIGTERM per iteration */
 	int			autovac_pids[MAXAUTOVACPIDS];
+	int			polar_shared_backend_pids[MAXAUTOVACPIDS];
 	int			tries;
 
 	/* 50 tries with 100ms sleep between tries makes 5 sec total wait */
 	for (tries = 0; tries < 50; tries++)
 	{
 		int			nautovacs = 0;
+		int			n_shared_backends = 0;
 		bool		found = false;
 		int			index;
 
@@ -3812,6 +3814,12 @@ CountOtherDBBackends(Oid databaseId, int *nbackends, int *nprepared)
 			else
 			{
 				(*nbackends)++;
+				if (POLAR_SHARED_SERVER_RUNNING() &&
+					proc->polar_shared_session == NULL &&
+					!proc->polar_is_backend_dedicated &&
+					n_shared_backends < MAXAUTOVACPIDS)
+					polar_shared_backend_pids[n_shared_backends++] = proc->pid;
+
 				if ((pgxact->vacuumFlags & PROC_IS_AUTOVACUUM) &&
 					nautovacs < MAXAUTOVACPIDS)
 					autovac_pids[nautovacs++] = proc->pid;
@@ -3831,6 +3839,67 @@ CountOtherDBBackends(Oid databaseId, int *nbackends, int *nprepared)
 		 */
 		for (index = 0; index < nautovacs; index++)
 			(void) kill(autovac_pids[index], SIGTERM);	/* ignore any error */
+
+		for (index = 0; index < n_shared_backends; index++)
+			(void) kill(polar_shared_backend_pids[index], SIGTERM);	/* ignore any error */
+
+		/* sleep, then try again */
+		pg_usleep(100 * 1000L); /* 100ms */
+	}
+
+	return true;				/* timed out, still conflicts */
+}
+
+/* POLAR: Shared Server */
+bool
+CountOtherUserBackends(Oid roleId, int *nbackends)
+{
+	ProcArrayStruct *arrayP = procArray;
+
+	int			polar_shared_backend_pids[MAXAUTOVACPIDS];
+	int			tries;
+
+	if (!POLAR_SHARED_SERVER_RUNNING())
+		return false;
+
+	/* 50 tries with 100ms sleep between tries makes 5 sec total wait */
+	for (tries = 0; tries < 50; tries++)
+	{
+		int			n_shared_backends = 0;
+		bool		found = false;
+		int			index;
+
+		CHECK_FOR_INTERRUPTS();
+
+		*nbackends = 0;
+
+		LWLockAcquire(ProcArrayLock, LW_SHARED);
+
+		for (index = 0; index < arrayP->numProcs; index++)
+		{
+			volatile PGPROC *proc = &allProcs[arrayP->pgprocnos[index]];
+
+			if (proc->roleId != roleId || proc->pid == 0)
+				continue;
+			if (proc == MyProc)
+				continue;
+
+			found = true;
+
+			(*nbackends)++;
+			if (proc->polar_shared_session == NULL &&
+				!proc->polar_is_backend_dedicated &&
+				n_shared_backends < MAXAUTOVACPIDS)
+				polar_shared_backend_pids[n_shared_backends++] = proc->pid;
+		}
+
+		LWLockRelease(ProcArrayLock);
+
+		if (!found)
+			return false;		/* no conflicting backends, so done */
+
+		for (index = 0; index < n_shared_backends; index++)
+			(void) kill(polar_shared_backend_pids[index], SIGTERM);	/* ignore any error */
 
 		/* sleep, then try again */
 		pg_usleep(100 * 1000L); /* 100ms */

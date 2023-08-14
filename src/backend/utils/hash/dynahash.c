@@ -96,6 +96,9 @@
 #include "access/xlog.h"
 #include "postmaster/startup.h"
 
+/* POLAR: Shared Server */
+#include "storage/polar_session_context.h"
+#include "storage/proc.h"
 
 /*
  * Constants
@@ -345,9 +348,30 @@ hash_create(const char *tabname, long nelem, HASHCTL *info, int flags)
 			CurrentDynaHashCxt = info->hcxt;
 		else
 			CurrentDynaHashCxt = TopMemoryContext;
-		CurrentDynaHashCxt = AllocSetContextCreate(CurrentDynaHashCxt,
-												   "dynahash",
-												   ALLOCSET_DEFAULT_SIZES);
+
+ 		/* POLAR: Shared Server */
+		if ((flags & PSS_HASH_FLAG) && POLAR_SS_NOT_DEDICATED())
+		{
+			MemoryContext fallback = CurrentDynaHashCxt;
+			if (fallback == NULL ||
+				(fallback == TopMemoryContext && IS_POLAR_SESSION_SHARED()))
+			{
+				CurrentDynaHashCxt = polar_session()->memory_context;
+				fallback = TopMemoryContext;
+			}
+
+			CurrentDynaHashCxt = polar_shmem_alloc_set_context_create_extended(
+					CurrentDynaHashCxt,
+					fallback,
+					"dynahash",
+					ALLOCSET_DEFAULT_SIZES);
+		}
+		else
+		{
+			CurrentDynaHashCxt = AllocSetContextCreate(CurrentDynaHashCxt,
+														"dynahash",
+														ALLOCSET_DEFAULT_SIZES);
+		}
 	}
 
 	/* Initialize the hash header, plus a copy of the table name */

@@ -40,6 +40,11 @@ typedef SOCKET pgsocket;
 /* non-blocking */
 extern bool pg_set_noblock(pgsocket sock);
 extern bool pg_set_block(pgsocket sock);
+extern bool polar_pg_is_block(pgsocket sock);
+
+/* send/receive socket descriptor */
+extern int polar_pg_send_sock(pgsocket chan, pgsocket sock);
+extern pgsocket polar_pg_recv_sock(pgsocket chan);
 
 /* Portable path handling for Unix/Win32 (in path.c) */
 
@@ -459,7 +464,7 @@ extern int	pg_mkdir_p(char *path, int omode);
 typedef void (*pqsigfunc) (int signo);
 extern pqsigfunc pqsignal(int signo, pqsigfunc func);
 
-/* POALR */
+/* POLAR */
 extern pqsigfunc pqsignal_with_sigsets(int signo, pqsigfunc func,
 										int signum1, int signum2);
 

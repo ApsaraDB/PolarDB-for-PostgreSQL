@@ -23,6 +23,9 @@ include $(top_builddir)/src/Makefile.global
 
 OBJS = atomics.o dynloader.o pg_sema.o pg_shmem.o $(TAS)
 
+# POLAR
+OBJS += polar_sock.o
+
 ifeq ($(PORTNAME), win32)
 SUBDIRS += win32
 endif

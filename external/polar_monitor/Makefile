@@ -10,6 +10,8 @@ OBJS += polar_monitor_dma.o
 OBJS += polar_monitor_datamax.o
 OBJS += polar_monitor_flashback_log.o
 OBJS += polar_monitor_proxy.o
+OBJS += polar_monitor_dsa.o
+OBJS += polar_monitor_shared_server.o
 
 EXTENSION = polar_monitor
 DATA = polar_monitor--1.0--1.1.sql polar_monitor--1.1--1.2.sql polar_monitor--1.2.sql

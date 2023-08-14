@@ -146,10 +146,6 @@ static void ExplainCustomChildren(CustomScanState *css,
 static void ExplainProperty(const char *qlabel, const char *unit,
 				const char *value, bool numeric, ExplainState *es);
 
-static void ExplainPropertyStringInfo(const char *qlabel, ExplainState *es,
-									  const char *fmt,...)
-									  __attribute__((format(PG_PRINTF_ATTRIBUTE, 3, 4)));
-
 static void ExplainDummyGroup(const char *objtype, const char *labelname,
 				  ExplainState *es);
 static void ExplainXMLTag(const char *tagname, int flags, ExplainState *es);
@@ -224,6 +220,8 @@ ExplainQuery(ParseState *pstate, ExplainStmt *stmt, const char *queryString,
 		/* POLAR px */
 		else if (strcmp(opt->defname, "dxl") == 0)
 			es->dxl = defGetBoolean(opt);
+		else if (strcmp(opt->defname, "slicetable") == 0)
+			es->slicetable = defGetBoolean(opt);
 		/* POLAR end */
 		else
 			ereport(ERROR,
@@ -250,6 +248,10 @@ ExplainQuery(ParseState *pstate, ExplainStmt *stmt, const char *queryString,
 	/* if the summary was not set explicitly, set default value */
 	es->summary = (summary_set) ? es->summary : es->analyze;
 
+	/* POLAR px */
+	if (px_explain_memory_verbosity >= EXPLAIN_MEMORY_VERBOSITY_DETAIL)
+		es->memory_detail = true;
+	/* POLAR end */
 	/*
 	 * Parse analysis was done already, but we still have to run the rule
 	 * rewriter.  We do not do AcquireRewriteLocks: we assume the query either
@@ -523,6 +525,10 @@ ExplainOnePlan(PlannedStmt *plannedstmt, IntoClause *into, ExplainState *es,
 
 	if (es->buffers)
 		instrument_option |= INSTRUMENT_BUFFERS;
+	/* POLAR px */
+	if (es->memory_detail)
+		instrument_option |= INSTRUMENT_MEMORY_DETAIL;
+	/* POLAR end */
 
 	/*
 	 * We always collect timing for the entire statement, even when node-level
@@ -562,6 +568,8 @@ ExplainOnePlan(PlannedStmt *plannedstmt, IntoClause *into, ExplainState *es,
     }
 	else
 		queryDesc->showstatctx = NULL;
+
+	queryDesc->plannedstmt->query_mem = ResourceManagerGetQueryMemoryLimit(queryDesc->plannedstmt);
 	/* POLAR end */
 
 	/* Select execution options */
@@ -613,12 +621,25 @@ ExplainOnePlan(PlannedStmt *plannedstmt, IntoClause *into, ExplainState *es,
 		ExplainPropertyFloat("Planning Time", "ms", 1000.0 * plantime, 3, es);
 	}
 
+	/* POLAR px */
+	if (queryDesc->plannedstmt->planGen == PLANGEN_PX)
+		ExplainPropertyStringInfo("Optimizer", es, "PolarDB PX Optimizer");
+	
+	/* Print slice table */
+	if (es->slicetable)
+		ExplainPrintSliceTable(es, queryDesc);
+
+	/*
+	 * Display per-slice and whole-query statistics.
+	 */
+	if (es->analyze && queryDesc->plannedstmt->planGen == PLANGEN_PX)
+		pxexplain_showExecStatsEnd(queryDesc->plannedstmt, queryDesc->showstatctx,
+									queryDesc->estate, es);
+	/* POLAR end */
+
 	/* Print info about runtime of triggers */
 	if (es->analyze)
 		ExplainPrintTriggers(es, queryDesc);
-
-	if (queryDesc->plannedstmt->planGen == PLANGEN_PX)
-		ExplainPropertyStringInfo("Optimizer", es, "PolarDB PX Optimizer");
 
 	/*
 	 * Print info about JITing. Tied to es->costs because we don't want to
@@ -726,6 +747,66 @@ ExplainPrintPlan(ExplainState *es, QueryDesc *queryDesc)
 		ps = outerPlanState(ps);
 	ExplainNode(ps, NIL, NULL, NULL, es);
 }
+
+/*
+ * POLAR px:
+ * ExplainPrintSliceTable -
+ *	  convert the MPP slice table text and append it to es->str
+ */
+void
+ExplainPrintSliceTable(ExplainState *es, QueryDesc *queryDesc)
+{
+	SliceTable *sliceTable = queryDesc->estate->es_sliceTable;
+	int			numSlices = (sliceTable ? sliceTable->numSlices : 0);
+
+	ExplainOpenGroup("Slice Table", "Slice Table", false, es);
+
+	for (int i = 0; i < numSlices; i++)
+	{
+		ExecSlice *slice = &sliceTable->slices[i];
+		const char *gangType = "???";
+
+		switch (slice->gangType)
+		{
+			case GANGTYPE_UNALLOCATED:
+				gangType = "Dispatcher";
+				break;
+			case GANGTYPE_PRIMARY_READER:
+				gangType = "Reader";
+				break;
+			default:
+				break;
+		}
+
+		if (es->format == EXPLAIN_FORMAT_TEXT)
+		{
+			appendStringInfo(es->str, "Slice %d: %s; root %d; parent %d; gang size %d",
+							 i,
+							 gangType,
+							 slice->rootIndex,
+							 slice->parentIndex,
+							 list_length(slice->segments)); 
+			if (slice->gangType == GANGTYPE_SINGLETON_READER)
+				appendStringInfo(es->str, "; segment %d", linitial_int(slice->segments));
+			appendStringInfoString(es->str, "\n");
+		}
+		else
+		{
+			ExplainOpenGroup("Slice", NULL, true, es);
+			ExplainPropertyInteger("Slice ID", NULL, i, es);
+			ExplainPropertyText("Gang Type", gangType, es);
+			ExplainPropertyInteger("Root", NULL, slice->rootIndex, es);
+			ExplainPropertyInteger("Parent", NULL, slice->parentIndex, es);
+			ExplainPropertyInteger("Gang Size", NULL, list_length(slice->segments), es);
+			if (slice->gangType == GANGTYPE_SINGLETON_READER)
+				ExplainPropertyInteger("Segment", NULL, linitial_int(slice->segments), es);
+			ExplainCloseGroup("Slice", NULL, true, es);
+		}
+	}
+
+	ExplainCloseGroup("Slice Table", "Slice Table", false, es);
+}
+/* POLAR end */
 
 /*
  * ExplainPrintTriggers -
@@ -903,7 +984,7 @@ ExplainPrintJIT(ExplainState *es, int jit_flags,
 	ExplainCloseGroup("JIT", "JIT", true, es);
 }
 
-static void
+void
 ExplainPropertyStringInfo(const char *qlabel, ExplainState *es, const char *fmt,...)
 {
 	StringInfoData buf;
@@ -1495,7 +1576,7 @@ ExplainNode(PlanState *planstate, List *ancestors,
 			appendStringInfoString(es->str, "Parallel ");
 		appendStringInfoString(es->str, pname);
 
-		/* POALR px :
+		/* POLAR px :
 		 * Print information about the current slice. In order to not make
 		 * the output too verbose, only print it at the slice boundaries,
 		 * ie. at Motion nodes. (We already switched the "current slice"
@@ -2129,6 +2210,11 @@ ExplainNode(PlanState *planstate, List *ancestors,
 		default:
 			break;
 	}
+
+	/* POLAR px : Show executor statistics */
+	if (planstate->instrument && planstate->instrument->need_px)
+		pxexplain_showExecStats(planstate, es);
+	/* POLAR end */
 
 	/* Show buffer usage */
 	if (es->buffers && planstate->instrument)

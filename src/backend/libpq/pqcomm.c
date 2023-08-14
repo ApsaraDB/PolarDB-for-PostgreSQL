@@ -711,13 +711,16 @@ Setup_AF_UNIX(char *sock_path)
  *		socket is ready for accept().
  *
  * RETURNS: STATUS_OK or STATUS_ERROR
+ *
+ * POLAR: polar_skip_accept, if true, set attr of socket and port for exist sock.
  */
 int
-StreamConnection(pgsocket server_fd, Port *port)
+StreamConnection(pgsocket server_fd, Port *port, bool polar_skip_accept)
 {
 	/* accept connection and fill in the client (remote) address */
 	port->raddr.salen = sizeof(port->raddr.addr);
-	if ((port->sock = accept(server_fd,
+	if (!polar_skip_accept &&
+		(port->sock = accept(server_fd,
 							 (struct sockaddr *) &port->raddr.addr,
 							 &port->raddr.salen)) == PGINVALID_SOCKET)
 	{
@@ -737,7 +740,7 @@ StreamConnection(pgsocket server_fd, Port *port)
 	}
 
 	/* POLAR: Get real client address of ALB. */
-	if (polar_enable_alb_client_address)
+	if (polar_enable_alb_client_address || polar_skip_accept)
 	{
 		port->raddr.salen = sizeof(port->raddr.addr);
 		if (getpeername(port->sock,

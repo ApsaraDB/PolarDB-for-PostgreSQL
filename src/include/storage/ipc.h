@@ -27,9 +27,10 @@ typedef enum
 	POLAR_SET_SIGNAL_MCTX,
 	POLAR_CHECK_SIGNAL_MCTX,
 	POLAR_SET_LOGGING_PLAN_OF_RUNNING_QUERY,
-	POLAR_CHECK_LOGGING_PLAN_OF_RUNNING_QUERY
+	POLAR_CHECK_LOGGING_PLAN_OF_RUNNING_QUERY,
+	POLAR_SS_CHECK_SIGNAL_MCTX
 } PolarHookActionType;
-typedef void (*polar_monitor_hook_type) (PolarHookActionType action);
+typedef void (*polar_monitor_hook_type) (PolarHookActionType action, void *args);
 
 typedef void (*polar_heap_profile_hook_type) (void);
 

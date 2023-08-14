@@ -70,13 +70,13 @@ public:
 		return nullptr;
 	}
 
-	/* POALR px */
+	// POLAR px
 	ULONG PartSchemeCount() const override
 	{
 		return 0;
 	}
 
-	// POALR px: retrieve the partition scheme at the given position
+	// POLAR px: retrieve the partition scheme at the given position
 	ULONG PartSchemeAt(ULONG  // pos
 	) const override
 	{

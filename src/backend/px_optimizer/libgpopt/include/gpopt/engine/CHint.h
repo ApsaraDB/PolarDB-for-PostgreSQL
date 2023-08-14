@@ -56,7 +56,7 @@ private:
 
 	ULONG m_ulPushGroupByBelowSetopThreshold;
 
-	/* POALR px */
+	/* POLAR px */
 	ULONG m_ulInsertDopNum;
 
 	ULONG m_ulUpdateDopNum;

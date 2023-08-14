@@ -77,13 +77,13 @@ typedef struct SeqTableData
 
 typedef SeqTableData *SeqTable;
 
-static HTAB *seqhashtab = NULL; /* hash table for SeqTable items */
+#define seqhashtab			POLAR_SESSION(seqhashtab)
 
 /*
  * last_used_seq is updated by nextval() to point to the last used
  * sequence.
  */
-static SeqTableData *last_used_seq = NULL;
+#define last_used_seq		POLAR_SESSION(last_used_seq)
 
 static void fill_seq_with_data(Relation rel, HeapTuple tuple);
 static Relation lock_and_open_sequence(SeqTable seq);
@@ -1051,6 +1051,10 @@ lock_and_open_sequence(SeqTable seq)
 {
 	LocalTransactionId thislxid = MyProc->lxid;
 
+	/* POLAR: Shared Server */
+	if (POLAR_SHARED_SERVER_RUNNING())
+		thislxid = POLAR_SESSION(nextLocalTransactionId);
+
 	/* Get the lock if not already held in this xact */
 	if (seq->lxid != thislxid)
 	{
@@ -1084,7 +1088,7 @@ create_seq_hashtable(void)
 	ctl.entrysize = sizeof(SeqTableData);
 
 	seqhashtab = hash_create("Sequence values", 16, &ctl,
-							 HASH_ELEM | HASH_BLOBS);
+							 HASH_ELEM | HASH_BLOBS | PSS_HASH_FLAG);
 }
 
 /*
@@ -1183,7 +1187,7 @@ read_seq_tuple(Relation rel, Buffer *buf, HeapTuple seqdatatuple)
 	seqdatatuple->t_data = (HeapTupleHeader) PageGetItem(page, lp);
 	seqdatatuple->t_len = ItemIdGetLength(lp);
 
-	/* POALR */
+	/* POLAR */
 	seqdatatuple->t_tableOid = InvalidOid;
 
 	/*

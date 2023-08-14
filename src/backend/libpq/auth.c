@@ -754,6 +754,197 @@ FakeClientAuthentication(Port *port)
 	sendAuthRequest(port, AUTH_REQ_OK, NULL, 0);
 }
 
+/* Shared Server
+ * shared server client authentication starts here.
+ */
+void
+palor_session_client_authentication(Port* port)
+{
+	int			status = STATUS_ERROR;
+	char	   *logdetail = NULL;
+
+	/*
+	 * If this is a QC to PX connection, we might be able to short circuit
+	 * client authentication.
+	 */
+	if (px_role == PX_ROLE_PX)
+	{
+		if (is_internal_px_conn(port))
+		{
+			if (internal_client_authentication(port))
+				return;
+		}
+		/* Else, try the normal authentication */
+	}
+
+	hba_getauthmethod(port);
+
+	/*
+	 * Now proceed to do the actual authentication check
+	 */
+	switch (port->hba->auth_method)
+	{
+		case uaMD5:
+			status = CheckPWChallengeAuth(port, &logdetail);
+			break;
+
+		case uaTrust:
+			status = STATUS_OK;
+			break;
+
+		case uaReject:
+
+			/*
+			 * An explicit "reject" entry in pg_hba.conf.  This report exposes
+			 * the fact that there's an explicit reject entry, which is
+			 * perhaps not so desirable from a security standpoint; but the
+			 * message for an implicit reject could confuse the DBA a lot when
+			 * the true situation is a match to an explicit reject.  And we
+			 * don't want to change the message for an implicit reject.  As
+			 * noted below, the additional information shown here doesn't
+			 * expose anything not known to an attacker.
+			 */
+			{
+				char		hostinfo[NI_MAXHOST];
+				SockAddr 	real_sock;
+
+				if (port->polar_proxy)
+					real_sock = port->polar_origin_addr;
+				else
+					real_sock = port->raddr;
+
+				pg_getnameinfo_all(&real_sock.addr, real_sock.salen,
+								   hostinfo, sizeof(hostinfo),
+								   NULL, 0,
+								   NI_NUMERICHOST);
+
+				Assert(!am_walsender);
+#ifdef USE_SSL
+				ereport(FATAL,
+						(errcode(ERRCODE_INVALID_AUTHORIZATION_SPECIFICATION),
+						 errmsg("pg_hba.conf rejects connection for host \"%s\", user \"%s\", database \"%s\", %s",
+								hostinfo, port->user_name,
+								port->database_name,
+								port->ssl_in_use ? _("SSL on") : _("SSL off"))));
+#else
+				ereport(FATAL,
+						(errcode(ERRCODE_INVALID_AUTHORIZATION_SPECIFICATION),
+						 errmsg("pg_hba.conf rejects connection for host \"%s\", user \"%s\", database \"%s\"",
+								hostinfo, port->user_name,
+								port->database_name)));
+#endif
+
+			}
+
+		case uaImplicitReject:
+
+			/*
+			 * No matching entry, so tell the user we fell through.
+			 *
+			 * NOTE: the extra info reported here is not a security breach,
+			 * because all that info is known at the frontend and must be
+			 * assumed known to bad guys.  We're merely helping out the less
+			 * clueful good guys.
+			 */
+			{
+				char		hostinfo[NI_MAXHOST];
+				SockAddr 	real_sock;
+				/* uaImplicitReject, port->hba is created by palloc0() in check_hba(). */
+				pfree(port->hba);
+				port->hba = NULL;
+
+				if (port->polar_proxy)
+					real_sock = port->polar_origin_addr;
+				else
+					real_sock = port->raddr;
+
+				pg_getnameinfo_all(&real_sock.addr, real_sock.salen,
+								   hostinfo, sizeof(hostinfo),
+								   NULL, 0,
+								   NI_NUMERICHOST);
+
+#define HOSTNAME_LOOKUP_DETAIL(port) \
+				(port->remote_hostname ? \
+				 (port->remote_hostname_resolv == +1 ? \
+				  errdetail_log("Client IP address resolved to \"%s\", forward lookup matches.", \
+								port->remote_hostname) : \
+				  port->remote_hostname_resolv == 0 ? \
+				  errdetail_log("Client IP address resolved to \"%s\", forward lookup not checked.", \
+								port->remote_hostname) : \
+				  port->remote_hostname_resolv == -1 ? \
+				  errdetail_log("Client IP address resolved to \"%s\", forward lookup does not match.", \
+								port->remote_hostname) : \
+				  port->remote_hostname_resolv == -2 ? \
+				  errdetail_log("Could not translate client host name \"%s\" to IP address: %s.", \
+								port->remote_hostname, \
+								gai_strerror(port->remote_hostname_errcode)) : \
+				  0) \
+				 : (port->remote_hostname_resolv == -2 ? \
+					errdetail_log("Could not resolve client IP address to a host name: %s.", \
+								  gai_strerror(port->remote_hostname_errcode)) : \
+					0))
+
+				Assert(!am_walsender);
+#ifdef USE_SSL
+				ereport(FATAL,
+						(errcode(ERRCODE_INVALID_AUTHORIZATION_SPECIFICATION),
+						 errmsg("no pg_hba.conf entry for host \"%s\", user \"%s\", database \"%s\", %s",
+								hostinfo, port->user_name,
+								port->database_name,
+								port->ssl_in_use ? _("SSL on") : _("SSL off")),
+						 HOSTNAME_LOOKUP_DETAIL(port)));
+#else
+				ereport(FATAL,
+						(errcode(ERRCODE_INVALID_AUTHORIZATION_SPECIFICATION),
+						 errmsg("no pg_hba.conf entry for host \"%s\", user \"%s\", database \"%s\"",
+								hostinfo, port->user_name,
+								port->database_name),
+						 HOSTNAME_LOOKUP_DETAIL(port)));
+#endif
+			}
+
+		default:
+			{
+				char		hostinfo[NI_MAXHOST];
+				SockAddr 	real_sock;
+
+				if (port->polar_proxy)
+					real_sock = port->polar_origin_addr;
+				else
+					real_sock = port->raddr;
+
+				pg_getnameinfo_all(&real_sock.addr, real_sock.salen,
+								   hostinfo, sizeof(hostinfo),
+								   NULL, 0,
+								   NI_NUMERICHOST);
+#ifdef USE_SSL
+				ereport(FATAL,
+						(errcode(ERRCODE_INVALID_AUTHORIZATION_SPECIFICATION),
+						 errmsg("shared server only support md5/trust auth method, host \"%s\", user \"%s\", database \"%s\", %s",
+								hostinfo, port->user_name,
+								port->database_name,
+								port->ssl_in_use ? _("SSL on") : _("SSL off"))));
+#else
+				ereport(FATAL,
+						(errcode(ERRCODE_INVALID_AUTHORIZATION_SPECIFICATION),
+						 errmsg("shared server only support md5/trust auth method,  host \"%s\", user \"%s\", database \"%s\"",
+								hostinfo, port->user_name,
+								port->database_name)));
+#endif
+			}
+	}
+
+	if (ClientAuthentication_hook)
+		(*ClientAuthentication_hook) (port, status);
+
+	if (status == STATUS_OK)
+		sendAuthRequest(port, AUTH_REQ_OK, NULL, 0);
+	else
+		auth_failed(port, status, logdetail);
+	pq_flush();
+	port->hba = NULL;
+}
+
 /*
  * Send an authentication request packet to the frontend.
  */

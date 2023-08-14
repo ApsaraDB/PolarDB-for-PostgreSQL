@@ -30,6 +30,7 @@
 #include "commands/extension.h"
 #include "utils/acl.h"
 #include "utils/guc.h"
+#include "storage/polar_session_context.h"
 
 /*
  * In common cases the same roleid (ie, the session or current ID) will
@@ -37,14 +38,40 @@
  * the status of the last requested roleid.  The cache can be flushed
  * at need by watching for cache update events on pg_authid.
  */
-static Oid	last_roleid = InvalidOid;	/* InvalidOid == cache not valid */
-static bool last_roleid_is_super = false;
 static bool roleid_callback_registered = false;
-
-/* POLAR: polar superuser cache similar to superuser */
-static Oid	last_roleid_polar_super = InvalidOid;	/* InvalidOid == cache not valid */
-static bool last_roleid_is_polar_super = false;
 static bool polar_super_roleid_callback_registered = false;
+
+typedef struct PolarSessionSuperUser
+{
+	Oid	m_last_roleid;	/* InvalidOid == cache not valid */
+	bool m_last_roleid_is_super;
+
+	/* POLAR: polar superuser cache similar to superuser */
+	Oid	m_last_roleid_polar_super;	/* InvalidOid == cache not valid */
+	bool m_last_roleid_is_polar_super;
+} PolarSessionSuperUser;
+
+PolarSessionSuperUser*
+polar_session_superuser_create(MemoryContext mctx)
+{
+	PolarSessionSuperUser* self;
+	if (mctx)
+		self = (PolarSessionSuperUser*)MemoryContextAlloc(mctx, sizeof(PolarSessionSuperUser));
+	else
+		self = (PolarSessionSuperUser*)malloc(sizeof(PolarSessionSuperUser));
+
+	memset(self, 0, sizeof(PolarSessionSuperUser));
+
+	return self;
+}
+
+#define POLAR_SESSION_SUPERUSER(name) \
+	(polar_session_info()->superuser->m_##name)
+
+#define last_roleid								POLAR_SESSION_SUPERUSER(last_roleid)
+#define last_roleid_is_super					POLAR_SESSION_SUPERUSER(last_roleid_is_super)
+#define last_roleid_polar_super					POLAR_SESSION_SUPERUSER(last_roleid_polar_super)
+#define last_roleid_is_polar_super				POLAR_SESSION_SUPERUSER(last_roleid_is_polar_super)
 
 static void RoleidCallback(Datum arg, int cacheid, uint32 hashvalue);
 

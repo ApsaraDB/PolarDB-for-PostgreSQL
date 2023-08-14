@@ -157,6 +157,7 @@ extern PGDLLIMPORT pid_t PostmasterPid;
 extern PGDLLIMPORT bool IsPostmasterEnvironment;
 extern PGDLLIMPORT bool IsUnderPostmaster;
 extern PGDLLIMPORT bool IsBackgroundWorker;
+extern PGDLLIMPORT bool IsPolarDispatcher;
 extern PGDLLIMPORT bool IsBinaryUpgrade;
 
 extern PGDLLIMPORT bool ExitOnAnyError;
@@ -165,8 +166,46 @@ extern PGDLLIMPORT char *DataDir;
 extern PGDLLIMPORT int data_directory_mode;
 
 extern PGDLLIMPORT int NBuffers;
+extern PGDLLIMPORT int polar_shm_limit;
+extern PGDLLIMPORT int polar_huge_pages_reserved;
 extern PGDLLIMPORT int MaxBackends;
 extern PGDLLIMPORT int MaxConnections;
+
+extern PGDLLIMPORT int MaxPolarDispatcher;
+extern PGDLLIMPORT int MaxPolarSessions;
+extern PGDLLIMPORT int MaxPolarSharedBackends;
+extern PGDLLIMPORT int MaxPolarSessionsPerDispatcher;
+extern PGDLLIMPORT int MaxPolarSharedBackendsPerDispatcher;
+
+enum ClientSchedulePolicy
+{
+	CLIENT_SCHEDULE_ROUND_ROBIN,
+	CLIENT_SCHEDULE_RANDOM,
+	CLIENT_SCHEDULE_LOAD_BALANCING
+};
+
+enum SessionSchedulePolicy
+{
+	SESSION_SCHEDULE_FIFO,
+	SESSION_SCHEDULE_RANDOM,
+	SESSION_SCHEDULE_DISPOSABLE,
+	SESSION_SCHEDULE_DEDICATED,
+};
+
+extern PGDLLIMPORT int  polar_ss_dispatcher_count;
+extern PGDLLIMPORT int  polar_ss_backend_max_count;
+extern PGDLLIMPORT int  polar_ss_backend_pool_min_size;
+extern PGDLLIMPORT int  polar_ss_backend_idle_timeout;
+extern PGDLLIMPORT int  polar_ss_backend_keepalive_timeout;
+extern PGDLLIMPORT int  polar_ss_session_wait_timeout;
+
+extern PGDLLIMPORT int  polar_ss_db_role_setting_max_size;
+extern PGDLLIMPORT int  polar_ss_client_schedule_policy;
+extern PGDLLIMPORT int  polar_ss_session_schedule_policy;
+extern PGDLLIMPORT char	*polar_ss_dedicated_guc_names;
+extern PGDLLIMPORT char	*polar_ss_dedicated_extension_names;
+extern PGDLLIMPORT char	*polar_ss_dedicated_dbuser_names;
+
 extern PGDLLIMPORT int max_worker_processes;
 extern PGDLLIMPORT int max_parallel_workers;
 
@@ -174,6 +213,7 @@ extern PGDLLIMPORT int max_parallel_workers;
 extern PGDLLIMPORT int MaxNormalBackends;
 
 extern PGDLLIMPORT int MyProcPid;
+extern PGDLLIMPORT int MySessionPid;
 extern PGDLLIMPORT pg_time_t MyStartTime;
 extern PGDLLIMPORT struct Port *MyProcPort;
 extern PGDLLIMPORT struct Latch *MyLatch;
@@ -314,6 +354,9 @@ extern char *DatabasePath;
 
 /* POLAR */
 extern char *polar_database_path;
+extern PGDLLIMPORT int planner_work_mem;
+extern PGDLLIMPORT int work_mem;
+extern PGDLLIMPORT int maintenance_work_mem;
 
 /* now in utils/init/miscinit.c */
 extern void InitPostmasterChild(void);
@@ -452,6 +495,7 @@ extern void InitializeMaxBackends(void);
 extern void InitPostgres(const char *in_dbname, Oid dboid, const char *username,
 			 Oid useroid, char *out_dbname, bool override_allow_connections);
 extern void BaseInit(void);
+extern void polar_process_startup_options(struct Port *port, bool am_superuser);
 
 /* in utils/init/miscinit.c */
 extern bool IgnoreSystemIndexes;

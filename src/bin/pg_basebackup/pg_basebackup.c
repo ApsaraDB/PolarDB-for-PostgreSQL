@@ -106,7 +106,7 @@ static bool success = false;
 static bool made_new_pgdata = false;
 static bool made_new_pgbase = false;
 static bool found_existing_pgdata = false;
-static bool found_existing_poalrdata = false;
+static bool found_existing_polardata = false;
 static bool made_new_xlogdir = false;
 static bool found_existing_xlogdir = false;
 static bool made_tablespace_dirs = false;
@@ -193,7 +193,7 @@ cleanup_directories_atexit(void)
 				fprintf(stderr, _("%s: failed to remove data directory\n"),
 						progname);
 		}
-		else if (found_existing_poalrdata)
+		else if (found_existing_polardata)
 		{
 			fprintf(stderr,
 					_("%s: removing contents of data directory \"%s\"\n"),
@@ -229,7 +229,7 @@ cleanup_directories_atexit(void)
 					_("%s: data directory \"%s\" not removed at user's request\n"),
 					progname, basedir);
 
-		if ((made_new_pgdata || found_existing_poalrdata) && !checksum_failure)
+		if ((made_new_pgdata || found_existing_polardata) && !checksum_failure)
 			fprintf(stderr,
 					_("%s: data directory \"%s\" not removed at user's request\n"),
 					progname, datadir);
@@ -2063,7 +2063,7 @@ BaseBackup(void)
 					sprintf(tmpdata, "%s/%s", basedir, POLAR_SHARED_DATA);
 					datadir = pg_strdup(tmpdata);
 					if (format == 'p')
-						verify_dir_is_empty_or_create(datadir, &made_new_pgdata, &found_existing_poalrdata, is_pfs_mode);
+						verify_dir_is_empty_or_create(datadir, &made_new_pgdata, &found_existing_polardata, is_pfs_mode);
 				}
 			}
 		}
@@ -2735,7 +2735,7 @@ main(int argc, char **argv)
 	{
 		verify_dir_is_empty_or_create(basedir, &made_new_pgbase, &found_existing_pgdata, false);
 		if (is_polar_mode)
-			verify_dir_is_empty_or_create(datadir, &made_new_pgdata, &found_existing_poalrdata, is_pfs_mode);
+			verify_dir_is_empty_or_create(datadir, &made_new_pgdata, &found_existing_polardata, is_pfs_mode);
 	}
 
 	/* determine remote server's xlog segment size */

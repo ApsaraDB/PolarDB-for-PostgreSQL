@@ -28,6 +28,28 @@ enum config_type
 	PGC_ENUM
 };
 
+enum config_array_type
+{
+	CAT_INVALID = 0,
+	CAT_BOOL,
+	CAT_INT,
+	CAT_REAL,
+	CAT_STRING,
+	CAT_ENUM,
+
+	CAT_BOOL_PX,
+	CAT_INT_PX,
+	CAT_REAL_PX,
+	CAT_STRING_PX,
+	CAT_ENUM_PX,
+
+	CAT_BOOL_EXTERNAL,
+	CAT_INT_EXTERNAL,
+	CAT_REAL_EXTERNAL,
+	CAT_STRING_EXTERNAL,
+	CAT_ENUM_EXTERNAL,
+};
+
 union config_var_val
 {
 	bool		boolval;
@@ -105,8 +127,9 @@ enum config_group
 	POLAR_NODE_STATIC,
 	/* POLAR px */
 	PX_WORKER_IDENTITY,
-	PX_ARRAY_TUNING
+	PX_ARRAY_TUNING,
 	/* POLAR end */
+	POLAR_SHARED_SERVER,
 };
 
 /*
@@ -168,6 +191,8 @@ struct config_generic
 	char	   *sourcefile;		/* file current setting is from (NULL if not
 								 * set in config file) */
 	int			sourceline;		/* line in source file */
+	enum config_array_type	polar_array_type;
+    int						polar_array_index;
 };
 
 /* bit values in status field */
@@ -178,6 +203,8 @@ struct config_generic
  */
 #define GUC_PENDING_RESTART 0x0002
 
+#define is_session_dedicated_guc(gen)	(((gen)->flags & GUC_SESSION_DEDICATED) != 0)
+#define is_session_in_trans_guc(gen)	(((gen)->flags & GUC_ASSIGN_IN_TRANS) != 0)
 
 /* GUC records for specific variable types */
 
@@ -268,7 +295,6 @@ extern struct config_int ConfigureNamesInt_px[];
 extern struct config_enum ConfigureNamesEnum_px[];
 extern struct config_real ConfigureNamesReal_px[];
 extern struct config_string ConfigureNamesString_px[];
-extern struct config_enum ConfigureNamesEnum_dq[];
 
 extern int px_get_num_guc_variables(void);
 extern void px_assign_sync_flag(struct config_generic **guc_variables, int size, bool predefine);

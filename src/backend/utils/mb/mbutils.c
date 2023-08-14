@@ -43,6 +43,7 @@
 
 /* POLAR */
 #include "fmgr.h"
+#include "storage/polar_session_context.h"
 
 /*
  * We maintain a simple linked list caching the fmgr lookup info for the
@@ -287,7 +288,7 @@ SetClientEncoding(int encoding)
 void
 InitializeClientEncoding(void)
 {
-	Assert(!backend_startup_complete);
+	Assert(POLAR_SHARED_SERVER_RUNNING() || !backend_startup_complete);
 	backend_startup_complete = true;
 
 	if (PrepareClientEncoding(pending_client_encoding) < 0 ||

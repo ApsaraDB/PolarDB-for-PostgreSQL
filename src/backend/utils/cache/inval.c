@@ -114,6 +114,9 @@
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
 
+/* POLAR: Shared Server */
+#include "utils/polar_session_inval.h"
+#include "storage/polar_session_context.h"
 
 /*
  * To minimize palloc traffic, we keep pending requests in successively-
@@ -680,6 +683,13 @@ InvalidateSystemCaches(void)
 void
 AcceptInvalidationMessages(void)
 {
+	/* POLAR: Shared Server */
+	if (IS_POLAR_SESSION_SHARED())
+	{
+		polar_session_accept_invalidation_messages(polar_session());
+	}
+	/* POLAR end */
+
 	ReceiveSharedInvalidMessages(LocalExecuteInvalidationMessage,
 								 InvalidateSystemCaches);
 
@@ -1443,7 +1453,16 @@ CacheRegisterSyscacheCallback(int cacheid,
 		int			i = syscache_callback_links[cacheid] - 1;
 
 		while (syscache_callback_list[i].link > 0)
+		{
+			if (POLAR_SHARED_SERVER_RUNNING() &&
+				syscache_callback_list[i].id == cacheid &&
+				syscache_callback_list[i].function == func &&
+				syscache_callback_list[i].arg == arg)
+				// already existed, ignore
+				return;
+
 			i = syscache_callback_list[i].link - 1;
+		}
 		syscache_callback_list[i].link = syscache_callback_count + 1;
 	}
 
@@ -1468,8 +1487,20 @@ void
 CacheRegisterRelcacheCallback(RelcacheCallbackFunction func,
 							  Datum arg)
 {
+	int			i = 0;
 	if (relcache_callback_count >= MAX_RELCACHE_CALLBACKS)
 		elog(FATAL, "out of relcache_callback_list slots");
+
+	if (POLAR_SHARED_SERVER_RUNNING())
+	{
+		for (i = 0; i < relcache_callback_count; i++)
+		{
+			if (relcache_callback_list[i].function == func &&
+				relcache_callback_list[i].arg == arg)
+				// already existed, ignore
+				return;
+		}
+	}
 
 	relcache_callback_list[relcache_callback_count].function = func;
 	relcache_callback_list[relcache_callback_count].arg = arg;

@@ -1137,7 +1137,7 @@ heapgettup_pagemode(HeapScanDesc scan,
 					return;
 				}
 			}
-			else /* POALR end */
+			else /* POLAR end */
 			if (scan->rs_parallel != NULL)
 			{
 				heap_parallelscan_startblock_init(scan);

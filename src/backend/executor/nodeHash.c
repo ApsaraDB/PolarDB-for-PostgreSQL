@@ -79,7 +79,15 @@ static bool ExecParallelHashTuplePrealloc(HashJoinTable hashtable,
 							  size_t size);
 static void ExecParallelHashMergeCounters(HashJoinTable hashtable);
 static void ExecParallelHashCloseBatchAccessors(HashJoinTable hashtable);
-
+/* POLAR px */
+static void polar_ExecHashTableExplainEnd(PlanState *planstate, struct StringInfoData *buf);
+static void
+polar_ExecHashTableExplainBatches(HashJoinTable   hashtable,
+                            StringInfo      buf,
+                            int             ibatch_begin,
+                            int             ibatch_end,
+                            const char     *title);
+/* POLAR end */
 
 /* ----------------------------------------------------------------
  *		ExecHash
@@ -526,6 +534,9 @@ ExecHashTableCreate(HashState *state, List *hashOperators, bool keepNulls)
 	hashtable->parallel_state = state->parallel_state;
 	hashtable->area = state->ps.state->es_query_dsa;
 	hashtable->batches = NULL;
+	/* POLAR px */
+	hashtable->stats = NULL;
+	/* POLAR end */
 
 #ifdef HJDEBUG
 	printf("Hashjoin %p: initial nbatch = %d, nbuckets = %d\n",
@@ -905,7 +916,11 @@ ExecHashIncreaseNumBatches(HashJoinTable hashtable)
 	long		ninmemory;
 	long		nfreed;
 	HashMemoryChunk oldchunks;
-
+	/* POLAR px */
+	Size		spaceFreed = 0;
+	HashJoinTableStats *stats = hashtable->stats;
+	Size		spaceUsedBefore = hashtable->spaceUsed;
+	/* POLAR end */
 	/* do nothing if we've decided to shut off growth */
 	if (!hashtable->growEnabled)
 		return;
@@ -947,6 +962,18 @@ ExecHashIncreaseNumBatches(HashJoinTable hashtable)
 			   (nbatch - oldnbatch) * sizeof(BufFile *));
 	}
 
+	/* POLAR px : EXPLAIN ANALYZE batch statistics */
+	if (stats && stats->nbatchstats < nbatch)
+	{
+		Size		sz = nbatch * sizeof(stats->batchstats[0]);
+
+		stats->batchstats =
+			(HashJoinBatchStats *) repalloc(stats->batchstats, sz);
+		sz = (nbatch - stats->nbatchstats) * sizeof(stats->batchstats[0]);
+		memset(stats->batchstats + stats->nbatchstats, 0, sz);
+		stats->nbatchstats = nbatch;
+	}
+	/* POLAR end */
 	MemoryContextSwitchTo(oldcxt);
 
 	hashtable->nbatch = nbatch;
@@ -1023,6 +1050,11 @@ ExecHashIncreaseNumBatches(HashJoinTable hashtable)
 									  &hashtable->innerBatchFile[batchno]);
 
 				hashtable->spaceUsed -= hashTupleSize;
+				/* POLAR px */
+				spaceFreed += hashTupleSize;
+				if (stats)
+					stats->batchstats[batchno].spillspace_in += hashTupleSize;
+				/* POLAR end */
 				nfreed++;
 			}
 
@@ -1043,6 +1075,14 @@ ExecHashIncreaseNumBatches(HashJoinTable hashtable)
 		   hashtable, nfreed, ninmemory, hashtable->spaceUsed);
 #endif
 
+	/* POLAR px: Update work_mem high-water mark and amount spilled. */
+	if (stats)
+	{
+		stats->workmem_max = Max(stats->workmem_max, spaceUsedBefore);
+		stats->batchstats[curbatch].spillspace_out += spaceFreed;
+		stats->batchstats[curbatch].spillrows_out += nfreed;
+	}
+	/* POLAR end */
 	/*
 	 * If we dumped out either all or none of the tuples in the table, disable
 	 * further expansion of nbatch.  This situation implies that we have
@@ -2216,6 +2256,343 @@ ExecReScanHash(HashState *node)
 		ExecReScan(node->ps.lefttree);
 }
 
+/* POLAR px */
+/* 
+ * polar_ExecHashTableExplainInit
+ *      Called after ExecHashTableCreate to set up EXPLAIN ANALYZE reporting.
+ */
+void
+polar_ExecHashTableExplainInit(HashState *hashState, HashJoinState *hjstate,
+						 HashJoinTable hashtable)
+{
+	MemoryContext oldcxt;
+	int			nbatch = Max(hashtable->nbatch, 1);
+
+    /* Switch to a memory context that survives until ExecutorEnd. */
+    oldcxt = MemoryContextSwitchTo(hjstate->js.ps.state->es_query_cxt);
+
+    /* Request a callback at end of query. */
+    hjstate->js.ps.pxexplainfun = polar_ExecHashTableExplainEnd;
+
+    /* Create workarea and attach it to the HashJoinTable. */
+    hashtable->stats = (HashJoinTableStats *)palloc0(sizeof(*hashtable->stats));
+    hashtable->stats->endedbatch = -1;
+
+    /* Create per-batch statistics array. */
+    hashtable->stats->batchstats =
+        (HashJoinBatchStats *)palloc0(nbatch * sizeof(hashtable->stats->batchstats[0]));
+    hashtable->stats->nbatchstats = nbatch;
+
+    /* Restore caller's memory context. */
+    MemoryContextSwitchTo(oldcxt);
+}                               /* polar_ExecHashTableExplainInit */
+
+
+/*
+ * polar_ExecHashTableExplainEnd
+ *      Called before ExecutorEnd to finish EXPLAIN ANALYZE reporting.
+ */
+static void
+polar_ExecHashTableExplainEnd(PlanState *planstate, struct StringInfoData *buf)
+{
+    HashJoinState      *hjstate = (HashJoinState *)planstate;
+    HashJoinTable       hashtable = hjstate->hj_HashTable;
+    HashJoinTableStats *stats;
+    Instrumentation    *jinstrument = hjstate->js.ps.instrument;
+    int                 i;
+	HashState          *hashState; 
+    if (!hashtable ||
+        !hashtable->stats ||
+        hashtable->nbatch < 1 ||
+        !jinstrument)
+        return;
+
+    stats = hashtable->stats;
+
+	Assert(stats->batchstats);
+
+	hashState = (HashState *) innerPlanState(hjstate);
+
+	/* Report on batch in progress, in case the join is being ended early. */
+	polar_ExecHashTableExplainBatchEnd(hashState, hashtable);
+	
+    /* Report actual work_mem high water mark. */
+    jinstrument->workmemused = Max(jinstrument->workmemused, stats->workmem_max);
+
+    /* How much work_mem would suffice to hold all inner tuples in memory? */
+    if (hashtable->nbatch > 1)
+    {
+        uint64  workmemwanted = 0;
+
+        /* Space actually taken by hash rows in completed batches... */
+        for (i = 0; i <= stats->endedbatch; i++)
+            workmemwanted += stats->batchstats[i].hashspace_final;
+
+        /* ... plus workfile size for original batches not reached, plus... */
+        for (; i < hashtable->nbatch_original; i++)
+            workmemwanted += stats->batchstats[i].innerfilesize;
+
+        /* ... rows spilled to unreached oflo batches, in case quitting early */
+        for (; i < stats->nbatchstats; i++)
+            workmemwanted += stats->batchstats[i].spillspace_in;
+
+        /*
+         * Sometimes workfiles are used even though all the data would fit
+         * in work_mem.  For example, if the planner overestimated the inner
+         * rel size, it might have instructed us to use more initial batches
+         * than were actually needed, causing unnecessary workfile I/O.  To
+         * avoid this I/O, the user would have to increase work_mem based on
+         * the planner's estimate rather than our runtime observations.  For
+         * now, we don't try to second-guess the planner; just keep quiet.
+         */
+        if (workmemwanted > polar_PlanStateOperatorMemKB(planstate) * 1024L)
+            jinstrument->workmemwanted =
+                Max(jinstrument->workmemwanted, workmemwanted);
+    }
+
+    /* Report workfile I/O statistics. */
+    if (hashtable->nbatch > 1)
+    {
+    	polar_ExecHashTableExplainBatches(hashtable, buf, 0, 1, "Initial");
+    	polar_ExecHashTableExplainBatches(hashtable,
+    			buf,
+				1,
+				hashtable->nbatch_original,
+				"Initial");
+    	polar_ExecHashTableExplainBatches(hashtable,
+    			buf,
+				hashtable->nbatch_original,
+				hashtable->nbatch_outstart,
+				"Overflow");
+    	polar_ExecHashTableExplainBatches(hashtable,
+    			buf,
+				hashtable->nbatch_outstart,
+				hashtable->nbatch,
+				"Secondary Overflow");
+    }
+}                               /* polar_ExecHashTableExplainEnd */
+
+
+/*
+ * polar_ExecHashTableExplainBatches
+ *      Report summary of EXPLAIN ANALYZE stats for a set of batches.
+ */
+static void
+polar_ExecHashTableExplainBatches(HashJoinTable   hashtable,
+                            StringInfo      buf,
+                            int             ibatch_begin,
+                            int             ibatch_end,
+                            const char     *title)
+{
+    HashJoinTableStats *stats = hashtable->stats;
+    PxExplain_Agg      irdbytes;
+    PxExplain_Agg      iwrbytes;
+    PxExplain_Agg      ordbytes;
+    PxExplain_Agg      owrbytes;
+
+    if (ibatch_begin >= ibatch_end)
+        return;
+
+    Assert(ibatch_begin >= 0 &&
+           ibatch_end <= hashtable->nbatch &&
+           hashtable->nbatch <= stats->nbatchstats &&
+           stats->batchstats != NULL);
+    pxexplain_agg_init0(&irdbytes);
+    pxexplain_agg_init0(&iwrbytes);
+    pxexplain_agg_init0(&ordbytes);
+    pxexplain_agg_init0(&owrbytes);
+
+#if 0
+    int                 i;
+    /* Add up the batch stats. */
+    for (i = ibatch_begin; i < ibatch_end; i++)
+    {
+        HashJoinBatchStats *bs = &stats->batchstats[i];
+
+        pxexplain_agg_upd(&irdbytes, (double)bs->irdbytes, i);
+        pxexplain_agg_upd(&iwrbytes, (double)bs->iwrbytes, i);
+        pxexplain_agg_upd(&ordbytes, (double)bs->ordbytes, i);
+        pxexplain_agg_upd(&owrbytes, (double)bs->owrbytes, i);
+    }
+
+    if (iwrbytes.vcnt + irdbytes.vcnt + owrbytes.vcnt + ordbytes.vcnt > 0)
+    {
+        if (ibatch_begin == ibatch_end - 1)
+            appendStringInfo(buf,
+                             "%s batch %d:\n",
+                             title,
+                             ibatch_begin);
+        else
+            appendStringInfo(buf,
+                             "%s batches %d..%d:\n",
+                             title,
+                             ibatch_begin,
+                             ibatch_end - 1);
+    }
+
+    /* Inner bytes read from workfile */
+    if (irdbytes.vcnt > 0)
+    {
+        appendStringInfo(buf,
+                         "  Read %.0fK bytes from inner workfile",
+                         ceil(irdbytes.vsum / 1024));
+        if (irdbytes.vcnt > 1)
+            appendStringInfo(buf,
+                             ": %.0fK avg x %d nonempty batches"
+                             ", %.0fK max",
+                             ceil(pxexplain_agg_avg(&irdbytes)/1024),
+                             irdbytes.vcnt,
+                             ceil(irdbytes.vmax / 1024));
+        appendStringInfoString(buf, ".\n");
+    }
+
+    /* Inner rel bytes spilled to workfile */
+    if (iwrbytes.vcnt > 0)
+    {
+        appendStringInfo(buf,
+                         "  Wrote %.0fK bytes to inner workfile",
+                         ceil(iwrbytes.vsum / 1024));
+        if (iwrbytes.vcnt > 1)
+            appendStringInfo(buf,
+                             ": %.0fK avg x %d overflowing batches"
+                             ", %.0fK max",
+                             ceil(pxexplain_agg_avg(&iwrbytes)/1024),
+                             iwrbytes.vcnt,
+                             ceil(iwrbytes.vmax / 1024));
+        appendStringInfoString(buf, ".\n");
+    }
+
+    /* Outer bytes read from workfile */
+    if (ordbytes.vcnt > 0)
+    {
+        appendStringInfo(buf,
+                         "  Read %.0fK bytes from outer workfile",
+                         ceil(ordbytes.vsum / 1024));
+        if (ordbytes.vcnt > 1)
+            appendStringInfo(buf,
+                             ": %.0fK avg x %d nonempty batches"
+                             ", %.0fK max",
+                             ceil(pxexplain_agg_avg(&ordbytes)/1024),
+                             ordbytes.vcnt,
+                             ceil(ordbytes.vmax / 1024));
+        appendStringInfoString(buf, ".\n");
+    }
+
+    /* Outer rel bytes spilled to workfile */
+    if (owrbytes.vcnt > 0)
+    {
+        appendStringInfo(buf,
+                         "  Wrote %.0fK bytes to outer workfile",
+                         ceil(owrbytes.vsum / 1024));
+        if (owrbytes.vcnt > 1)
+            appendStringInfo(buf,
+                             ": %.0fK avg x %d overflowing batches"
+                             ", %.0fK max",
+                             ceil(pxexplain_agg_avg(&owrbytes)/1024),
+                             owrbytes.vcnt,
+                             ceil(owrbytes.vmax / 1024));
+        appendStringInfoString(buf, ".\n");
+    }
+#endif
+}                               /* polar_ExecHashTableExplainBatches */
+
+
+/*
+ * polar_ExecHashTableExplainBatchEnd
+ *      Called at end of each batch to collect statistics for EXPLAIN ANALYZE.
+ */
+void
+polar_ExecHashTableExplainBatchEnd(HashState *hashState, HashJoinTable hashtable)
+{
+    int                 curbatch = hashtable->curbatch;
+    HashJoinTableStats *stats = hashtable->stats;
+    HashJoinBatchStats *batchstats = &stats->batchstats[curbatch];
+
+    /* Already reported on this batch? */
+    if ( stats->endedbatch == curbatch 
+			|| curbatch >= hashtable->nbatch)
+        return;
+    stats->endedbatch = curbatch;
+
+    /* Update high-water mark for work_mem actually used at one time. */
+    if (stats->workmem_max < hashtable->spaceUsed)
+        stats->workmem_max = hashtable->spaceUsed;
+
+    /* Final size of hash table for this batch */
+    batchstats->hashspace_final = hashtable->spaceUsed;
+
+    /* Collect workfile I/O statistics. */
+	/* GPDB_12_MERGE_FIXME: broken */
+#if 0
+    if (hashtable->nbatch > 1)
+    {
+        uint64      owrbytes = 0;
+        uint64      iwrbytes = 0;
+
+        Assert(stats->batchstats &&
+               hashtable->nbatch <= stats->nbatchstats);
+
+        /* How much was read from inner workfile for current batch? */
+        batchstats->irdbytes = batchstats->innerfilesize;
+
+        /* How much was read from outer workfiles for current batch? */
+		if (hashtable->outerBatchFile &&
+			hashtable->outerBatchFile[curbatch] != NULL)
+		{
+			batchstats->ordbytes = BufFileSize(hashtable->outerBatchFile[curbatch]);
+		}
+
+		/*
+		 * How much was written to workfiles for the remaining batches?
+		 */
+		for (i = curbatch + 1; i < hashtable->nbatch; i++)
+		{
+			HashJoinBatchStats *bs = &stats->batchstats[i];
+			uint64              filebytes = 0;
+
+			if (hashtable->outerBatchFile &&
+				hashtable->outerBatchFile[i] != NULL)
+			{
+				filebytes = BufFileGetSize(hashtable->outerBatchFile[i]);
+			}
+
+			Assert(filebytes >= bs->outerfilesize);
+			owrbytes += filebytes - bs->outerfilesize;
+			bs->outerfilesize = filebytes;
+
+			filebytes = 0;
+
+			if (hashtable->innerBatchFile &&
+				hashtable->innerBatchFile[i])
+			{
+				filebytes = BufFileGetSize(hashtable->innerBatchFile[i]);
+			}
+
+			Assert(filebytes >= bs->innerfilesize);
+			iwrbytes += filebytes - bs->innerfilesize;
+			bs->innerfilesize = filebytes;
+		}
+		batchstats->owrbytes = owrbytes;
+		batchstats->iwrbytes = iwrbytes;
+    }                           /* give workfile I/O statistics */
+
+	/* Collect hash chain statistics. */
+	stats->nonemptybatches++;
+	for (i = 0; i < hashtable->nbuckets; i++)
+	{
+		HashJoinTuple   hashtuple = hashtable->buckets[i];
+		int             chainlength;
+
+		if (hashtuple)
+		{
+			for (chainlength = 0; hashtuple; hashtuple = hashtuple->next)
+				chainlength++;
+			pxexplain_agg_upd(&stats->chainlength, chainlength, i);
+		}
+	}
+#endif
+}                               /* polar_ExecHashTableExplainBatchEnd */
+/* POLAR end */
 
 /*
  * ExecHashBuildSkewHash

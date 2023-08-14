@@ -15,6 +15,7 @@
 #define NODESUBPLAN_H
 
 #include "nodes/execnodes.h"
+#include "executor/execdesc.h"
 
 extern SubPlanState *ExecInitSubPlan(SubPlan *subplan, PlanState *parent);
 
@@ -27,6 +28,10 @@ extern Datum ExecAlternativeSubPlan(AlternativeSubPlanState *node, ExprContext *
 extern void ExecReScanSetParamPlan(SubPlanState *node, PlanState *parent);
 
 extern void ExecSetParamPlan(SubPlanState *node, ExprContext *econtext);
+
+/* POLAR px */
+extern void POLAR_ExecSetParamPlan(SubPlanState *node, ExprContext *econtext, QueryDesc *queryDesc);
+/* POLAR end */
 
 extern void ExecSetParamPlanMulti(const Bitmapset *params, ExprContext *econtext);
 

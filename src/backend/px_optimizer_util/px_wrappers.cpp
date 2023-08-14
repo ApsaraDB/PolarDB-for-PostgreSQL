@@ -2859,11 +2859,19 @@ px::GPDBAllocSetContextCreate()
 {
 	PX_WRAP_START;
 	{
-		return AllocSetContextCreate(px_OptimizerMemoryContext,
+		MemoryContext cxt;
+		cxt = AllocSetContextCreate(px_OptimizerMemoryContext,
 		"PXOPT memory pool",
 		ALLOCSET_DEFAULT_MINSIZE,
 		ALLOCSET_DEFAULT_INITSIZE,
 		ALLOCSET_DEFAULT_MAXSIZE);
+
+		/*
+		 * Declare it as accounting root so that we can call
+		 * MemoryContextGetCurrentSpace() on it.
+		 */
+		MemoryContextDeclareAccountingRoot(cxt);
+		return cxt;
 	}
 	PX_WRAP_END;
 	return NULL;

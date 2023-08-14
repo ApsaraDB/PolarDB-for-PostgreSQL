@@ -1584,7 +1584,7 @@ CCostModelGPDB::CostIndexOnlyScan(CMemoryPool *mp GPOS_UNUSED,	  // mp
 				  dIndexScanTupRandomFactor * dPartialVisFrac));
 }
 
-/* POALR px */
+/* POLAR px */
 CCost
 CCostModelGPDB::CostShareIndexScan(CMemoryPool *,  // mp
 							  CExpressionHandle &exprhdl,
@@ -2088,7 +2088,7 @@ CCostModelGPDB::Cost(
 			return CostIndexOnlyScan(m_mp, exprhdl, this, pci);
 		}
 
-		/* POALR px */
+		/* POLAR px */
 		case COperator::EopPhysicalShareIndexScan:
 		case COperator::EopPhysicalDynamicShareIndexScan:
 		{
