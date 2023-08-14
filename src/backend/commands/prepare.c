@@ -36,6 +36,8 @@
 #include "utils/snapmgr.h"
 #include "utils/timestamp.h"
 
+/* POLAR: Shared Server */
+#include "storage/proc.h"
 
 /*
  * The hash table in which prepared queries are stored. This is
@@ -43,7 +45,7 @@
  * The keys for this hash table are the arguments to PREPARE and EXECUTE
  * (statement names); the entries are PreparedStatement structs.
  */
-static HTAB *prepared_queries = NULL;
+#define prepared_queries 	POLAR_SESSION(prepared_queries)
 
 static void InitQueryHashTable(void);
 static ParamListInfo EvaluateParams(PreparedStatement *pstmt, List *params,
@@ -92,7 +94,8 @@ PrepareQuery(PrepareStmt *stmt, const char *queryString,
 	 * to see the unmodified raw parse tree.
 	 */
 	plansource = CreateCachedPlan(rawstmt, queryString,
-								  CreateCommandTag(stmt->query));
+								  CreateCommandTag(stmt->query),
+								  POLAR_SS_NOT_DEDICATED());
 
 	/* Transform list of TypeNames to array of type OIDs */
 	nargs = list_length(stmt->argtypes);
@@ -318,7 +321,7 @@ ExecuteQuery(ExecuteStmt *stmt, IntoClause *intoClause,
 				paramLI, 
 				eflags, 
 				GetActiveSnapshot(), 
-				NULL/* POALR px */
+				NULL/* POLAR px */
 				);
 
 	(void) PortalRun(portal, count, false, true, dest, dest, completionTag);
@@ -460,7 +463,7 @@ InitQueryHashTable(void)
 	prepared_queries = hash_create("Prepared Queries",
 								   32,
 								   &hash_ctl,
-								   HASH_ELEM);
+								   HASH_ELEM | PSS_HASH_FLAG /* POLAR: Shared Server */);
 }
 
 /*

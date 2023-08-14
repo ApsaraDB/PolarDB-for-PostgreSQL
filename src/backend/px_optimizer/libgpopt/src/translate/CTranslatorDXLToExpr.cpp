@@ -2924,7 +2924,7 @@ CTranslatorDXLToExpr::PexprScalarFunc(const CDXLNode *pdxlnFunc)
 			CMDArrayCoerceCastGPDB *parrayCoerceCast =
 				(CMDArrayCoerceCastGPDB *) pmdcast;
 
-			/* POALR px */
+			/* POLAR px */
 			pmdcast->GetCastFuncMdId()->AddRef();
 
 			pop = GPOS_NEW(m_mp) CScalarArrayCoerceExpr(
@@ -3616,7 +3616,7 @@ CTranslatorDXLToExpr::PexprScalarCast(const CDXLNode *pdxlnCast)
 		CMDArrayCoerceCastGPDB *parrayCoerceCast =
 			(CMDArrayCoerceCastGPDB *) pmdcast;
 
-		/* POALR px */
+		/* POLAR px */
 		pmdcast->GetCastFuncMdId()->AddRef();
 
 		pexpr = GPOS_NEW(m_mp) CExpression(

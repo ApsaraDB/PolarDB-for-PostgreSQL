@@ -35,6 +35,9 @@
 
 #include "storage/sharedfileset.h"
 
+/* POLAR px */
+#include "executor/instrument.h"
+/* POLAR end */
 
 /* Tuplestorestate is an opaque type whose details are not known outside
  * tuplestore.c.
@@ -90,6 +93,10 @@ extern void tuplestore_clear(Tuplestorestate *state);
 
 extern void tuplestore_end(Tuplestorestate *state);
 
+/* POLAR px */
+extern void tuplestore_set_instrument(Tuplestorestate *state,
+									  Instrumentation *instrument);
+/* POLAR end */
 extern void tuplestore_make_shared(Tuplestorestate *state, SharedFileSet *fileset,
 								   const char *filename);
 extern void tuplestore_freeze(Tuplestorestate *state);

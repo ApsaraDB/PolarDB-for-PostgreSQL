@@ -25,7 +25,7 @@
 
 /* POLAR */
 #include "utils/guc.h"
-
+#include "storage/proc.h"
 
 /* signatures for PostgreSQL-specific library init/fini functions */
 typedef void (*PG_init_t) (void);
@@ -291,7 +291,16 @@ internal_load_library(const char *libname)
 		 */
 		PG_init = (PG_init_t) pg_dlsym(file_scanner->handle, "_PG_init");
 		if (PG_init)
+		{
+			/* POLAR: Shared Server */
+			if (POLAR_SS_NOT_DEDICATED())
+			{
+				MyProc->polar_is_backend_dedicated = true;
+				elog(LOG, "polar shared server set dedicated from internal_load_library '%s'",
+					libname);
+			}
 			(*PG_init) ();
+		}
 
 		/* OK to link it into list */
 		if (file_list == NULL)

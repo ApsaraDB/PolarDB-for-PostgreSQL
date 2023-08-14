@@ -53,7 +53,7 @@ CMDRelationGPDB::CMDRelationGPDB(
 	  m_distr_opfamilies(distr_opfamilies),
 	  m_convert_hash_to_random(convert_hash_to_random),
 	  m_partition_cols_array(partition_cols_array),
-	  m_partition_scheme_arrays(partition_scheme_arrays),/* POALR px */
+	  m_partition_scheme_arrays(partition_scheme_arrays),/* POLAR px */
 	  m_str_part_types_array(str_part_types_array),
 	  m_num_of_partitions(num_of_partitions),
 	  m_partition_oids(partition_oids),
@@ -139,7 +139,7 @@ CMDRelationGPDB::~CMDRelationGPDB()
 	CRefCount::SafeRelease(m_distr_opfamilies);
 	CRefCount::SafeRelease(m_partition_oids);
 	CRefCount::SafeRelease(m_partition_cols_array);
-	CRefCount::SafeRelease(m_partition_scheme_arrays);/* POALR px */
+	CRefCount::SafeRelease(m_partition_scheme_arrays);/* POLAR px */
 	CRefCount::SafeRelease(m_str_part_types_array);
 	CRefCount::SafeRelease(m_keyset_array);
 	m_mdindex_info_array->Release();
@@ -475,14 +475,14 @@ CMDRelationGPDB::PartColAt(ULONG pos) const
 	return GetMdCol(partition_key_pos);
 }
 
-/* POALR px */
+/* POLAR px */
 ULONG
 CMDRelationGPDB::PartSchemeCount() const
 {
 	return (m_partition_scheme_arrays == nullptr) ? 0 : m_partition_scheme_arrays->Size();
 }
 
-/* POALR px */
+/* POLAR px */
 ULONG
 CMDRelationGPDB::PartSchemeAt(ULONG pos) const
 {
@@ -716,7 +716,7 @@ CMDRelationGPDB::Serialize(CXMLSerializer *xml_serializer) const
 			CDXLTokens::GetDXLTokenStr(EdxltokenPartKeys), part_keys_str_array);
 		GPOS_DELETE(part_keys_str_array);
 
-		/* POALR px */
+		/* POLAR px */
 		CWStringDynamic *part_schemes_str_array =
 			CDXLUtils::Serialize(m_mp, m_partition_scheme_arrays);
 		xml_serializer->AddAttribute(CDXLTokens::GetDXLTokenStr(EdxltokenPartScheme),

@@ -39,6 +39,7 @@
 #include "storage/sinvaladt.h"
 #include "tcop/utility.h"
 #include "utils/builtins.h"
+#include "postmaster/polar_dispatcher.h"
 
 #define BACKEND_TYPE_MAXLEN		96
 #define BACKEND_MAX_NUMBER      (1024)
@@ -429,6 +430,13 @@ polar_backend_collect_stat(pgBackendCounters *counters, int backendid)
 		return -1;
 	}
 
+	/* POLAR: Shared Server */
+	/* TODO: not compat this monitor now @yanhua */
+	if (POLAR_SHARED_SERVER_RUNNING() &&
+		beentry->st_backendType == B_BACKEND &&
+		beentry->session_local_id > 0)
+		return -1;
+
 	/* Add backend type */
 	if (beentry->st_backendType == B_BG_WORKER)
 	{
@@ -576,4 +584,11 @@ polar_backend_stat_shmem_startup(void)
 
 	return;
 
+}
+
+PG_FUNCTION_INFO_V1(polar_current_backend_pid);
+Datum
+polar_current_backend_pid(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_INT32(polar_pgstat_get_virtual_pid(MyProcPid, false));
 }

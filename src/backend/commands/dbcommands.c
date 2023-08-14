@@ -68,6 +68,7 @@
 #include "replication/syncrep.h"
 #include "storage/polar_fd.h"
 #include "utils/guc.h"
+#include "postmaster/polar_dispatcher.h"
 
 typedef struct
 {
@@ -1791,6 +1792,9 @@ AlterDatabaseOwner(const char *dbname, Oid newOwnerId)
 
 	/* Close pg_database, but keep lock till commit */
 	heap_close(rel, NoLock);
+
+	/* POLAR: Shared Server */
+	polar_update_db_role_setting_version(db_id, InvalidOid, false);
 
 	return address;
 }

@@ -150,7 +150,6 @@ static void ExecParallelHashJoinPartitionOuter(HashJoinState *node);
 /* POLAR px */
 static bool polar_isNotDistinctJoin(List *qualList);
 
-
 /* ----------------------------------------------------------------
  *		ExecHashJoinImpl
  *
@@ -180,7 +179,10 @@ ExecHashJoinImpl(PlanState *pstate, bool parallel)
 	ParallelHashJoinState *parallel_state;
 
 	/* POLAR px */
+	EState *estate;
 	bool keepNulls = false;
+	estate = node->js.ps.state;
+	/* POLAR end */
 
 	/*
 	 * get information from HashJoin node
@@ -288,7 +290,7 @@ ExecHashJoinImpl(PlanState *pstate, bool parallel)
 					node->hj_FirstOuterTupleSlot = NULL;
 				}
 
-				/* POALR px
+				/* POLAR px
 				 * hashNode->hs_keepnull is required to support using IS NOT DISTINCT FROM as hash condition
 				 * For example, in PXOPT, `explain SELECT t2.a FROM t2 INTERSECT (SELECT t1.a FROM t1);`
 				 */
@@ -303,7 +305,11 @@ ExecHashJoinImpl(PlanState *pstate, bool parallel)
 												keepNulls);
 				node->hj_HashTable = hashtable;
 
-				/* POLAR px
+				/* POLAR px: Offer extra info for EXPLAIN ANALYZE. */
+				if ((estate->es_instrument & INSTRUMENT_PX))
+					polar_ExecHashTableExplainInit(hashNode, node, hashtable);
+
+				/*
 				 * Only if doing a LASJ_NOTIN join, we want to quit as soon as we find
 				 * a NULL key on the inner side
 				 */
@@ -317,7 +323,7 @@ ExecHashJoinImpl(PlanState *pstate, bool parallel)
 				hashNode->hashtable = hashtable;
 				(void) MultiExecProcNode((PlanState *) hashNode);
 
-				/* POLAR px
+				/* px
 				 * If LASJ_NOTIN and a null was found on the inner side, then clean out.
 				 */
 				if (node->js.jointype == JOIN_LASJ_NOTIN && hashNode->hs_hashkeys_null)
@@ -331,7 +337,7 @@ ExecHashJoinImpl(PlanState *pstate, bool parallel)
 				if (hashtable->totalTuples == 0 && !HJ_FILL_OUTER(node))
 					return NULL;
 
-				/* POALR px
+				/* POLAR px
 				 * We just scanned the entire inner side and built the hashtable
 				 * (and its overflow batches). Check here and remember if the inner
 				 * side is empty.
@@ -700,7 +706,7 @@ ExecInitHashJoin(HashJoin *node, EState *estate, int eflags)
 	 */
 	ExecAssignExprContext(estate, &hjstate->js.ps);
 
-	/* POALR px */
+	/* POLAR px */
 	if (JOIN_LASJ_NOTIN == node->join.jointype && node->hashqualclauses != NIL)
 	{
 		/* PX: This must be an IS NOT DISTINCT join!  */
@@ -728,7 +734,7 @@ ExecInitHashJoin(HashJoin *node, EState *estate, int eflags)
 	innerPlanState(hjstate) = ExecInitNode((Plan *) hashNode, estate, eflags);
 	innerDesc = ExecGetResultType(innerPlanState(hjstate));
 
-	/* POALR px */
+	/* POLAR px */
 	((HashState *) innerPlanState(hjstate))->hs_keepnull = hjstate->hj_nonequijoin;
 
 	/*
@@ -1048,9 +1054,19 @@ ExecHashJoinNewBatch(HashJoinState *hjstate)
 	BufFile    *innerFile;
 	TupleTableSlot *slot;
 	uint32		hashvalue;
-
+	/* POLAR px */
+	HashState  *hashState = (HashState *) innerPlanState(hjstate);
+	/* POLAR end */
 	nbatch = hashtable->nbatch;
 	curbatch = hashtable->curbatch;
+
+	/* POLAR px */
+	if (curbatch >= nbatch)
+		return false;
+
+	if (curbatch >= 0 && hashtable->stats)
+		polar_ExecHashTableExplainBatchEnd(hashState, hashtable);
+	/* POLAR end */
 
 	if (curbatch > 0)
 	{

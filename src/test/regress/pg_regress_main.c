@@ -116,7 +116,8 @@ psql_start_test(const char *testname,
 		exit(2);
 	}
 
-	appnameenv = psprintf("PGAPPNAME=pg_regress/%s", testname);
+	/* Shared Server, use common appname */
+	appnameenv = psprintf("PGAPPNAME=pg_regress");
 	putenv(appnameenv);
 
 	pid = spawn_process(psql_cmd);

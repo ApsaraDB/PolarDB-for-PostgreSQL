@@ -788,6 +788,14 @@ LockAcquireExtended(const LOCKTAG *locktag,
 	else
 		owner = CurrentResourceOwner;
 
+	/* POLAR: Shared Server */
+	if (sessionLock && POLAR_SS_NOT_DEDICATED())
+	{
+		MyProc->polar_is_backend_dedicated = true;
+		elog(LOG, "polar shared server set dedicated from LockAcquireExtended lockmode %s", 
+			lockMethodTable->lockModeNames[lockmode]);
+	}
+
 	/*
 	 * Find or create a LOCALLOCK entry for this lock and lockmode
 	 */

@@ -92,6 +92,9 @@
 #include "storage/polar_fd.h"
 #include "utils/polar_sql_time_stat.h"
 
+#include "libpq/auth.h"
+#include "catalog/namespace.h"
+
 /* POLAR px */
 #include "px/px_disp_query.h"
 #include "px/px_gang.h"
@@ -123,9 +126,9 @@ int			max_stack_depth = 100;
 int			PostAuthDelay = 0;
 
 
-/* POALR */
+/* POLAR */
 TimestampTz polar_last_audit_log_flush_time = 0;
-/* POALR: end */
+/* POLAR: end */
 
 /* ----------------
  *		private variables
@@ -234,7 +237,6 @@ static void disable_statement_timeout(void);
 
 /* POLAR: for oom handle */
 static void SigCancelQueryHandler(void);
-static void polar_procsignal_sigusr2_handler(SIGNAL_ARGS);
 static bool polar_stmt_type_needs_mask(NodeTag tag);
 static char	*polar_get_errmsg_params(ParamListInfo params);
 static void polar_save_stack_info(void);
@@ -494,6 +496,7 @@ SocketBackend(StringInfo inBuf)
 			break;
 
 		case 'X':				/* terminate */
+		case 'Y':				/* POLAR: Shared Server */
 			doing_extended_query_message = false;
 			ignore_till_sync = false;
 			break;
@@ -1195,7 +1198,7 @@ exec_simple_query(const char *query_string)
 					NULL,
 					0,
 					InvalidSnapshot,
-					NULL/* POALR px */
+					NULL/* POLAR px */
 					);
 
 		/*
@@ -1453,10 +1456,9 @@ exec_parse_message(const char *query_string,	/* string to execute */
 		/* Unnamed prepared statement --- release any prior unnamed stmt */
 		drop_unnamed_stmt();
 		/* Create context for parsing */
-		unnamed_stmt_context =
-			AllocSetContextCreate(MessageContext,
-								  "unnamed prepared statement",
-								  ALLOCSET_DEFAULT_SIZES);
+		unnamed_stmt_context = AllocSetContextCreateExtended(MessageContext,
+															"unnamed prepared statement",
+															ALLOCSET_DEFAULT_SIZES);
 		oldcontext = MemoryContextSwitchTo(unnamed_stmt_context);
 	}
 
@@ -1509,7 +1511,7 @@ exec_parse_message(const char *query_string,	/* string to execute */
 		 * Create the CachedPlanSource before we do parse analysis, since it
 		 * needs to see the unmodified raw parse tree.
 		 */
-		psrc = CreateCachedPlan(raw_parse_tree, query_string, commandTag);
+		psrc = CreateCachedPlan(raw_parse_tree, query_string, commandTag, POLAR_SS_NOT_DEDICATED() && is_named);
 
 		/*
 		 * Set up a snapshot if parse analysis will need one.
@@ -1569,7 +1571,7 @@ exec_parse_message(const char *query_string,	/* string to execute */
 		/* Empty input string.  This is legal. */
 		raw_parse_tree = NULL;
 		commandTag = NULL;
-		psrc = CreateCachedPlan(raw_parse_tree, query_string, commandTag);
+		psrc = CreateCachedPlan(raw_parse_tree, query_string, commandTag, POLAR_SS_NOT_DEDICATED() && is_named);
 		querytree_list = NIL;
 	}
 
@@ -1583,6 +1585,7 @@ exec_parse_message(const char *query_string,	/* string to execute */
 		MemoryContextSetParent(psrc->context, MessageContext);
 
 	/* Finish filling in the CachedPlanSource */
+
 	CompleteCachedPlan(psrc,
 					   querytree_list,
 					   unnamed_stmt_context,
@@ -2013,7 +2016,7 @@ exec_bind_message(StringInfo input_message)
 				params,
 				0,
 				InvalidSnapshot,
-				NULL/* POALR px */);
+				NULL/* POLAR px */);
 
 	/*
 	 * Apply the result format requests to the portal.
@@ -3341,14 +3344,14 @@ ProcessInterrupts(void)
 	if (MemoryContextDumpPending && polar_monitor_hook)
 	{
 		MemoryContextDumpPending = false;
-		polar_monitor_hook(POLAR_CHECK_SIGNAL_MCTX);
+		polar_monitor_hook(POLAR_CHECK_SIGNAL_MCTX, NULL);
 	}
  
  	if (polar_enable_track_network_stat)
  		polar_local_network_stat();
 		
 	if (LogCurrentPlanPending && polar_monitor_hook)
-		polar_monitor_hook(POLAR_CHECK_LOGGING_PLAN_OF_RUNNING_QUERY);
+		polar_monitor_hook(POLAR_CHECK_LOGGING_PLAN_OF_RUNNING_QUERY, NULL);
 }
 
 
@@ -4400,6 +4403,13 @@ PostgresMain(int argc, char *argv[],
 		 */
 		InvalidateCatalogSnapshotConditionally();
 
+		/* POLAR: Shared Server */
+		if (POLAR_SHARED_SERVER_RUNNING())
+		{
+			pg_atomic_fetch_add_u64(&polar_session()->finished_command_count, 1);
+		}
+		/* POLAR end */
+
 		/*
 		 * (1) If we've reached idle state, tell the frontend we're ready for
 		 * a new query.
@@ -4461,6 +4471,15 @@ PostgresMain(int argc, char *argv[],
 				pgstat_report_activity(STATE_IDLE, NULL);
 			}
 
+
+			if (polar_need_switch_session())
+			{
+				/* POLAR: Shared Server */
+				polar_switch_to_session(polar_private_session);
+				pg_write_barrier();
+				/* POLAR end */
+			}
+
 			ReadyForQuery(whereToSendOutput);
 			send_ready_for_query = false;
 		}
@@ -4477,6 +4496,18 @@ PostgresMain(int argc, char *argv[],
 		 * (3) read a command (loop blocks here)
 		 */
 		firstchar = ReadCommand(&input_message);
+
+		/* POLAR: Shared Server */
+		if (polar_need_switch_session())
+		{
+			/* barrier keep order between ReadCommand(&input_message) and reading MyProc->polar_shared_session. */
+			pg_read_barrier();
+			if (MyProc->polar_shared_session != NULL)
+				polar_switch_to_session(MyProc->polar_shared_session);
+			else
+				polar_switch_to_session(polar_private_session);
+		}
+		/* POLAR end */
 
 		/*
 		 * (4) disable async signal conditions again.
@@ -4503,10 +4534,24 @@ PostgresMain(int argc, char *argv[],
 		 * (6) check for any other interesting events that happened while we
 		 * slept.
 		 */
-		if (ConfigReloadPending)
+		if (ConfigReloadPending ||
+			(POLAR_SHARED_SERVER_RUNNING() && polar_session_info()->m_ConfigReloadPending))
 		{
+			polar_session_info()->m_ConfigReloadPending = false;
 			ConfigReloadPending = false;
 			ProcessConfigFile(PGC_SIGHUP);
+
+			/*
+			 * Shared Server.
+			 * Keep parsed_hba_context, parsed_hba_lines, parsed_ident_context, parsed_ident_lines
+			 * existing and updated on shared backend.
+			 */
+			if (POLAR_SHARED_SERVER_RUNNING())
+			{
+				load_hba();
+				load_ident();
+			}
+			/* POLAR end */
 		}
 
 		/*
@@ -4841,6 +4886,51 @@ PostgresMain(int argc, char *argv[],
 				 */
 			case 'X':
 			case EOF:
+				if (firstchar == 'X' &&
+					IS_POLAR_SESSION_SHARED())
+				{
+					PolarSessionContext *current_session = polar_session();
+					/* recovery backend state to idle */
+					AbortOutOfAnyTransaction();
+					if (polar_session_has_temp_namespace())
+					{
+						/* Remove all temp tables from the temporary namespace. */
+						StartTransactionCommand();
+						ResetTempTableNamespace();
+						CommitTransactionCommand();
+					}
+					/* we don't send_ready_for_query. update process display */
+					if (IsAbortedTransactionBlockState())
+					{
+						set_ps_display("idle in transaction (aborted)", false);
+						pgstat_report_activity(STATE_IDLEINTRANSACTION_ABORTED, NULL);
+					}
+					else if (IsTransactionOrTransactionBlock())
+					{
+						set_ps_display("idle in transaction", false);
+						pgstat_report_activity(STATE_IDLEINTRANSACTION, NULL);
+					}
+					else
+					{
+						ProcessCompletedNotifies();
+						pgstat_report_stat(false);
+						set_ps_display("idle", false);
+						pgstat_report_activity(STATE_IDLE, NULL);
+					}
+
+					pq_putemptymessage('X');
+					pq_flush();
+
+					polar_delete_local_memory_context(polar_session()->memory_context);
+					current_session->will_close = 1;
+					polar_switch_to_session(polar_private_session);
+
+					/* barrier keep order between sending 'X' reply and changing status PSSE_CLOSED. */
+					SpinLockAcquire(&current_session->holding_lock);
+					pg_atomic_write_u32(&current_session->status, PSSE_CLOSED);
+					SpinLockRelease(&current_session->holding_lock);
+					break;
+				}
 
 				/*
 				 * Reset whereToSendOutput to prevent ereport from attempting
@@ -4858,6 +4948,77 @@ PostgresMain(int argc, char *argv[],
 				 */
 				proc_exit(0);
 
+			/* POLAR: new added command used for by polar */
+			case 'Y':			/* describe */
+				{
+					int			sub_type;
+					sub_type = pq_getmsgbyte(&input_message);
+					if (sub_type == 'A' &&
+						IS_POLAR_SESSION_SHARED())
+					{
+						char    remote_ps_data[NI_MAXHOST];
+						bool	use_local_resource;
+						ELOG_PSS(DEBUG5, "polar shared server process Y cmd");
+						/* shared server, shared session init, only sended by dispatcher */
+						/* auth */
+						if (!polar_private_session->info->is_inited)
+						{
+							MyProcPort->polar_startup_gucs_hash = polar_session_info()->client_port->polar_startup_gucs_hash;
+							if (polar_session_info()->client_port->remote_port[0] == '\0')
+								snprintf(remote_ps_data, sizeof(remote_ps_data), "%s", 
+										polar_session_info()->client_port->remote_host);
+							else
+								snprintf(remote_ps_data, sizeof(remote_ps_data), "%s(%s)", 
+										polar_session_info()->client_port->remote_host, 
+										polar_session_info()->client_port->remote_port);
+						}
+
+						pq_getmsgend(&input_message);
+						StartTransactionCommand();
+						(void) GetTransactionSnapshot();
+
+						use_local_resource = (CurrentResourceOwner == NULL);
+						if (use_local_resource)
+							CurrentResourceOwner = ResourceOwnerCreate(NULL, "session_info_init");
+
+						if (pg_database_aclcheck(MyDatabaseId, GetUserId(), ACL_CONNECT) != ACLCHECK_OK)
+							ereport(FATAL,
+									(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+									errmsg("permission denied for database \"%s\"",
+											polar_session_info()->client_port->database_name),
+									errdetail("User does not have CONNECT privilege.")));
+
+						if (use_local_resource)
+						{
+							ResourceOwnerRelease(CurrentResourceOwner,
+												RESOURCE_RELEASE_BEFORE_LOCKS,
+												false, true);
+							CurrentResourceOwner = NULL;
+						}
+
+						palor_session_client_authentication(polar_session_info()->client_port);
+						/* process startup guc */
+						polar_process_startup_options(polar_session_info()->client_port, superuser());
+						CommitTransactionCommand();
+						BeginReportingGUCOptions();
+
+						if (!polar_private_session->info->is_inited)
+						{
+							polar_ss_init_ps_display(MyProcPort->user_name,
+								MyProcPort->database_name, 
+								MyProcPort->polar_startup_gucs_hash, remote_ps_data,
+								update_process_title ? "idle" : "");
+							polar_private_session->info->is_inited = true;
+						}
+						polar_session_info()->is_inited = true;
+						send_ready_for_query = true;
+					}
+					else
+						goto polar_default_label;
+				}
+				break;
+			/* POLAR end */
+
 			case 'd':			/* copy data */
 			case 'c':			/* copy done */
 			case 'f':			/* copy fail */
@@ -4870,6 +5031,7 @@ PostgresMain(int argc, char *argv[],
 				break;
 
 			default:
+			polar_default_label:
 				ereport(FATAL,
 						(errcode(ERRCODE_PROTOCOL_VIOLATION),
 						 errmsg("invalid frontend message type %d",
@@ -5245,6 +5407,8 @@ polar_procsignal_sigusr2_handler(SIGNAL_ARGS)
 void
 polar_program_error_handler(SIGNAL_ARGS)
 {
+	PolarSessionContext tmp_session = *polar_session();
+
 	PG_SETMASK(&BlockSig);
 
 	/* Unblock SEGV/BUS/ILL signals, and set them to their default settings. */
@@ -5263,6 +5427,13 @@ polar_program_error_handler(SIGNAL_ARGS)
 	{
 		polar_save_stack_info();
 	}
+
+	/* Shared Server, for debug*/
+	if (POLAR_SHARED_SERVER_RUNNING() &&
+		tmp_session.memory_context &&
+		polar_enable_shared_server_hang)
+		while(1) {};
+
 	/* normal coredump */
 	raise(postgres_signal_arg);
 }

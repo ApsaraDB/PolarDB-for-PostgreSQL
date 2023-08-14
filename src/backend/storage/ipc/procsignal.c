@@ -27,7 +27,8 @@
 #include "storage/shmem.h"
 #include "storage/sinval.h"
 #include "tcop/tcopprot.h"
-
+/* POLAR */
+#include "postmaster/polar_dispatcher.h"
 
 /*
  * The SIGUSR1 signal is multiplexed to support signalling multiple event
@@ -211,6 +212,9 @@ SendProcSignal(pid_t pid, ProcSignalReason reason, BackendId backendId)
 		 */
 		int			i;
 
+		if (POLAR_IS_SESSION_ID(pid))
+			return polar_send_signal(pid, NULL, reason + __SIGRTMAX);
+
 		for (i = NumProcSignalSlots - 1; i >= 0; i--)
 		{
 			slot = &ProcSignalSlots[i];
@@ -299,11 +303,11 @@ procsignal_sigusr1_handler(SIGNAL_ARGS)
 		RecoveryConflictInterrupt(PROCSIG_RECOVERY_CONFLICT_BUFFERPIN);
 
 	if (polar_monitor_hook && CheckProcSignal(PROCSIG_LOG_CURRENT_PLAN))
-		polar_monitor_hook(POLAR_SET_LOGGING_PLAN_OF_RUNNING_QUERY);
+		polar_monitor_hook(POLAR_SET_LOGGING_PLAN_OF_RUNNING_QUERY, NULL);
 
 	/* POLAR: backend receives this signal to write the memory context in shared memory */
 	if (polar_monitor_hook)
-		polar_monitor_hook(POLAR_SET_SIGNAL_MCTX);
+		polar_monitor_hook(POLAR_SET_SIGNAL_MCTX, NULL);
 
 	/* POLAR: backend receives this signal to dump the heap profile files */
 	if (polar_heap_profile_hook && CheckProcSignal(POLAR_HEAP_PROFILE_DUMP))

@@ -99,6 +99,13 @@ main(int argc, char *argv[])
 	MemoryContextInit();
 
 	/*
+	 * Shared Server.
+	 * create private session. Any Postgres server process has a
+	 * private session.
+	 */
+	polar_private_session_initialize();
+
+	/*
 	 * Set up locale information from environment.  Note that LC_CTYPE and
 	 * LC_COLLATE will be overridden later from pg_control if we are in an
 	 * already-initialized database.  We set them here so that they will be

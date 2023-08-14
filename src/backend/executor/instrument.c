@@ -34,14 +34,15 @@ InstrAlloc(int n, int instrument_options)
 	/* initialize all fields to zeroes, then modify as needed */
 	instr = palloc0(n * sizeof(Instrumentation));
 	if (instrument_options & (INSTRUMENT_BUFFERS | INSTRUMENT_TIMER 
-								| INSTRUMENT_OPERATION/* POLAR px */))
+								| INSTRUMENT_OPERATION | INSTRUMENT_PX /* POLAR px */))
 	{
-		bool		need_buffers = (instrument_options & INSTRUMENT_BUFFERS) != 0;
-		bool		need_timer = (instrument_options & INSTRUMENT_TIMER) != 0;
 		int			i;
+		bool		need_buffers = (instrument_options & INSTRUMENT_BUFFERS) != 0;
+		bool		need_timer = (instrument_options & INSTRUMENT_TIMER) != 0;		
 
 		/* POLAR px */
 		bool need_operation = (instrument_options & INSTRUMENT_OPERATION) != 0;
+		bool		need_px = (instrument_options & INSTRUMENT_PX) != 0;
 
 		for (i = 0; i < n; i++)
 		{
@@ -50,6 +51,7 @@ InstrAlloc(int n, int instrument_options)
 
 			/* POLAR px */
 			instr[i].need_operation = need_operation;
+			instr[i].need_px = need_px;
 		}
 
 		/* POLAR px */
@@ -110,6 +112,10 @@ void
 InstrStopNode(Instrumentation *instr, double nTuples)
 {
 	instr_time	endtime;
+	/* POLAR px */
+	instr_time	starttime;
+	starttime = instr->starttime;
+	/* POLAR end */
 
 	/* count the returned tuples */
 	instr->tuplecount += nTuples;
@@ -141,7 +147,7 @@ InstrStopNode(Instrumentation *instr, double nTuples)
 		else 
 		{
 			instr->rescan_calls += (instr->last_change_time != 0);
-			instr->first_change_time = INSTR_TIME_GET_DOUBLE(endtime);;
+			instr->first_change_time = INSTR_TIME_GET_DOUBLE(endtime);
 			instr->last_change_time = instr->first_change_time;
 		}
 	}
@@ -158,7 +164,7 @@ InstrStopNode(Instrumentation *instr, double nTuples)
 		instr->running = true;
 		instr->firsttuple = INSTR_TIME_GET_DOUBLE(instr->counter);
 		/* POLAR px : save this start time as the first start */
-		instr->firststart = instr->starttime;
+		instr->firststart = starttime;
 		/* POLAR end */
 	}
 }

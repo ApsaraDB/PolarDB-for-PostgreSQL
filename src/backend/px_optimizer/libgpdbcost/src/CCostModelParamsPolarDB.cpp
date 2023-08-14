@@ -237,7 +237,7 @@ const CHAR rgszCostParamNames[CCostModelParamsPolarDB::EcpSentinel][GPOPT_COSTPA
 	"BitmapPageCostSmallerNDV",
 	"BitmapNDVThreshold",
 
-	/* POALR px */
+	/* POLAR px */
 	"PolarTableShareScanFactor",
 	"PolarShareIndexScanFactor",
 	};

@@ -26,7 +26,7 @@
 #include "utils/memutils.h"		/* MemoryContextGetPeakSpace() */
 
 #include "px/px_explain.h"             /* pxexplain_recvExecStats */
-
+#include <math.h>
 #define NUM_SORT_METHOD 5
 
 #define TOP_N_HEAP_SORT_STR "top-N heapsort"
@@ -100,9 +100,8 @@ typedef struct PxExplain_StatInst
 	instr_time	firststart;		/* Start time of first iteration of node */
 	double		peakMemBalance; /* Max mem account balance */
 	int			numPartScanned; /* Number of part tables scanned */
-	ExplainSortMethod sortMethod;	/* Type of sort */
-	ExplainSortSpaceType sortSpaceType; /* Sort space type */
-	long		sortSpaceUsed;	/* Memory / Disk used by sort(KBytes) */
+	TuplesortInstrumentation sortstats; /* Sort stats, if this is a Sort node */
+	HashInstrumentation hashstats; /* Hash stats, if this is a Hash node */
 	int			bnotes;			/* Offset to beginning of node's extra text */
 	int			enotes;			/* Offset to end of node's extra text */
 } PxExplain_StatInst;
@@ -313,12 +312,22 @@ typedef struct PxExplain_LocalStatCtx
 	PxExplain_StatHdr *msgptrs[1];
 } PxExplain_LocalStatCtx;
 
+static void
+pxexplain_showExecStatsEnd(struct PlannedStmt *stmt,
+							struct PxExplain_ShowStatCtx *showstatctx,
+                            struct EState *estate,
+							ExplainState *es);
+static void pxexplain_showExecStats(struct PlanState *planstate,
+									 ExplainState *es);
+
 static PxVisitOpt pxexplain_localStatWalker(PlanState *planstate,
 											  void *context);
 static PxVisitOpt pxexplain_sendStatWalker(PlanState *planstate,
 											 void *context);
 static PxVisitOpt pxexplain_recvStatWalker(PlanState *planstate,
 											 void *context);
+static void pxexplain_collectSliceStats(PlanState *planstate,
+										 PxExplain_SliceWorker *out_worker);
 static void pxexplain_depositSliceStats(PxExplain_StatHdr *hdr,
 										 PxExplain_RecvStatCtx *recvstatctx);
 static void pxexplain_collectStatsFromNode(PlanState *planstate,
@@ -327,10 +336,11 @@ static void pxexplain_depositStatsToNode(PlanState *planstate,
 										  PxExplain_RecvStatCtx *ctx);
 static int pxexplain_collectExtraText(PlanState *planstate,
 									   StringInfo notebuf);
+static void
+pxexplain_formatSlicesOutput(struct PxExplain_ShowStatCtx *showstatctx,
+                             struct EState *estate,
+                             ExplainState *es);
 
-static void show_motion_keys(PlanState *planstate, List *hashExpr, int nkeys,
-							 AttrNumber *keycols, const char *qlabel,
-							 List *ancestors, ExplainState *es);
 
 /*
  * PxExplain_DepStatAcc
@@ -466,6 +476,7 @@ pxexplain_localExecStats(struct PlanState *planstate,
 	planstate_walk_node(planstate, pxexplain_localStatWalker, &ctx);
 
 	/* Obtain per-slice stats and put them in SliceSummary. */
+	pxexplain_collectSliceStats(planstate, &ctx.send.hdr.worker);
 	pxexplain_depositSliceStats(&ctx.send.hdr, &ctx.recv);
 }								/* pxexplain_localExecStats */
 
@@ -503,7 +514,6 @@ pxexplain_sendExecStats(QueryDesc *queryDesc)
 	PlanState  *planstate;
 	PxExplain_SendStatCtx ctx;
 	StringInfoData notebuf;
-	StringInfoData memoryAccountTreeBuffer;
 
 	/* Header offset (where header begins in the message buffer) */
 	int			hoff;
@@ -557,14 +567,8 @@ pxexplain_sendExecStats(QueryDesc *queryDesc)
 	/* Append statistics from each PlanState node in this slice. */
 	planstate_walk_node(planstate, pxexplain_sendStatWalker, &ctx);
 
-	/* Append MemoryAccount Tree */
-	ctx.hdr.memAccountStartOffset = ctx.buf.len - hoff;
-	initStringInfo(&memoryAccountTreeBuffer);
-	// uint		totalSerialized = MemoryAccounting_Serialize(&memoryAccountTreeBuffer);
-
-	// ctx.hdr.memAccountCount = totalSerialized;
-	appendBinaryStringInfo(&ctx.buf, memoryAccountTreeBuffer.data, memoryAccountTreeBuffer.len);
-	pfree(memoryAccountTreeBuffer.data);
+	/* Obtain per-slice stats and put them in StatHdr. */
+	pxexplain_collectSliceStats(planstate, &ctx.hdr.worker);
 
 	/* Append the extra message text. */
 	ctx.hdr.bnotes = ctx.buf.len - hoff;
@@ -799,6 +803,26 @@ pxexplain_recvStatWalker(PlanState *planstate, void *context)
 
 
 /*
+ * pxexplain_collectSliceStats
+ *	  Obtain per-slice statistical observations from the current slice
+ *	  (which has just completed execution in the current process) and
+ *	  store the information in the given SliceWorker struct.
+ *
+ * 'planstate' is the top PlanState node of the current slice.
+ */
+static void
+pxexplain_collectSliceStats(PlanState *planstate,
+							 PxExplain_SliceWorker *out_worker)
+{
+	EState	   *estate = planstate->state;
+
+	/* Max bytes malloc'ed under executor's per-query memory context. */
+	out_worker->peakmemused = (double) MemoryContextGetPeakSpace(estate->es_query_cxt);
+
+	// out_worker->vmem_reserved =  (double) VmemTracker_GetMaxReservedVmemBytes();
+}	
+
+/*
  * pxexplain_depositStatsToNode
  *
  * Called by recvStatWalker and localStatWalker to update the given
@@ -840,8 +864,8 @@ pxexplain_depositStatsToNode(PlanState *planstate, PxExplain_RecvStatCtx *ctx)
 	PxExplain_DepStatAcc sortSpaceUsed[NUM_SORT_SPACE_TYPE][NUM_SORT_METHOD];
 	int			imsgptr;
 	int			nInst;
-	int			idx;
-
+	int			i;
+	int			j;
 	Insist(instr &&
 		   ctx->iStatInst < ctx->nStatInst);
 
@@ -863,10 +887,12 @@ pxexplain_depositStatsToNode(PlanState *planstate, PxExplain_RecvStatCtx *ctx)
 	pxexplain_depStatAcc_init0(&totalWorkfileCreated);
 	pxexplain_depStatAcc_init0(&peakMemBalance);
 	pxexplain_depStatAcc_init0(&totalPartTableScanned);
-	for (idx = 0; idx < NUM_SORT_METHOD; ++idx)
+	for (i = 0; i < NUM_SORT_METHOD; i++)
 	{
-		pxexplain_depStatAcc_init0(&sortSpaceUsed[MEMORY_SORT_SPACE_TYPE - 1][idx]);
-		pxexplain_depStatAcc_init0(&sortSpaceUsed[DISK_SORT_SPACE_TYPE - 1][idx]);
+		for (j = 0; j < NUM_SORT_SPACE_TYPE; j++)
+		{
+			pxexplain_depStatAcc_init0(&sortSpaceUsed[j][i]);
+		}
 	}
 
 	/* Initialize per-slice accumulators. */
@@ -907,11 +933,13 @@ pxexplain_depositStatsToNode(PlanState *planstate, PxExplain_RecvStatCtx *ctx)
 		pxexplain_depStatAcc_upd(&totalWorkfileCreated, (rsi->workfileCreated ? 1 : 0), rsh, rsi, nsi);
 		pxexplain_depStatAcc_upd(&peakMemBalance, rsi->peakMemBalance, rsh, rsi, nsi);
 		pxexplain_depStatAcc_upd(&totalPartTableScanned, rsi->numPartScanned, rsh, rsi, nsi);
-		if (rsi->sortMethod < NUM_SORT_METHOD && rsi->sortMethod != UNINITIALIZED_SORT && rsi->sortSpaceType != UNINITIALIZED_SORT_SPACE_TYPE)
+
+		if (rsi->sortstats.sortMethod != SORT_TYPE_STILL_IN_PROGRESS)
 		{
-			Assert(rsi->sortSpaceType <= NUM_SORT_SPACE_TYPE);
-			pxexplain_depStatAcc_upd(&sortSpaceUsed[rsi->sortSpaceType - 1][rsi->sortMethod - 1], (double) rsi->sortSpaceUsed, rsh, rsi, nsi);
+			pxexplain_depStatAcc_upd(&sortSpaceUsed[rsi->sortstats.spaceType][rsi->sortstats.sortMethod],
+									  (double) rsi->sortstats.spaceUsed, rsh, rsi, nsi);
 		}
+		//FIXME: different from orca, we only pxexplain_depStatAcc_upd once!
 
 		/* Update per-slice accumulators. */
 		pxexplain_depStatAcc_upd(&peakmemused, rsh->worker.peakmemused, rsh, rsi, nsi);
@@ -927,10 +955,12 @@ pxexplain_depositStatsToNode(PlanState *planstate, PxExplain_RecvStatCtx *ctx)
 	ns->totalWorkfileCreated = totalWorkfileCreated.agg;
 	ns->peakMemBalance = peakMemBalance.agg;
 	ns->totalPartTableScanned = totalPartTableScanned.agg;
-	for (idx = 0; idx < NUM_SORT_METHOD; ++idx)
+	for (i = 0; i < NUM_SORT_METHOD; i++)
 	{
-		ns->sortSpaceUsed[MEMORY_SORT_SPACE_TYPE - 1][idx] = sortSpaceUsed[MEMORY_SORT_SPACE_TYPE - 1][idx].agg;
-		ns->sortSpaceUsed[DISK_SORT_SPACE_TYPE - 1][idx] = sortSpaceUsed[DISK_SORT_SPACE_TYPE - 1][idx].agg;
+		for (int j = 0; j < NUM_SORT_SPACE_TYPE; j++)
+		{
+			ns->sortSpaceUsed[j][i] = sortSpaceUsed[j][i].agg;
+		}
 	}
 
 	/* Roll up summary over all nodes of slice into RecvStatCtx. */
@@ -990,6 +1020,39 @@ pxexplain_depositStatsToNode(PlanState *planstate, PxExplain_RecvStatCtx *ctx)
 		if (!saved ||
 			ntuples.agg.vmax > 1.05 * pxexplain_agg_avg(&ntuples.agg))
 			pxexplain_depStatAcc_saveText(&ntuples, ctx->extratextbuf, &saved);
+	}
+
+	/*
+	 * If this is a HashState, construct a SharedHashInfo with the stats from
+	 * all the QEs. In PostgreSQL, SharedHashInfo is used to show stats of all
+	 * the worker processes, we use it to show stats from all the QEs instead.
+	 *
+	 * GPDB_12_MERGE_FIXME: Should we do the same for Sort stats nowadays?
+	 */
+	if (IsA(planstate, HashState))
+	{
+		/* GPDB: Collect the results from all QE processes */
+		HashState *hashstate = (HashState *) planstate;
+		SharedHashInfo *shared_state;
+
+		size_t		size;
+
+		size = offsetof(SharedHashInfo, hinstrument) +
+			ctx->nmsgptr * sizeof(HashInstrumentation);
+		shared_state = palloc0(size);
+		shared_state->num_workers = ctx->nmsgptr;
+
+		/* Examine the statistics from each qExec. */
+		for (imsgptr = 0; imsgptr < ctx->nmsgptr; imsgptr++)
+		{
+			/* Locate PlanState node's StatInst received from this qExec. */
+			rsh = ctx->msgptrs[imsgptr];
+			rsi = &rsh->inst[ctx->iStatInst];
+
+			memcpy(&shared_state->hinstrument[imsgptr], &rsi->hashstats, sizeof(HashInstrumentation));
+		}
+
+		hashstate->shared_info = shared_state;
 	}
 }								/* pxexplain_depositStatsToNode */
 
@@ -1098,7 +1161,10 @@ pxexplain_collectStatsFromNode(PlanState *planstate, PxExplain_SendStatCtx *ctx)
 	/* Make sure there is a '\0' between this node's message and the next. */
 	if (si->bnotes < si->enotes)
 		appendStringInfoChar(ctx->notebuf, '\0');
-
+	
+	if (planstate->node_context)
+		si->execmemused = (double) MemoryContextGetPeakSpace(planstate->node_context);
+		
 	/* Transfer this node's statistics from Instrumentation into StatInst. */
 	si->starttime = instr->starttime;
 	si->counter = instr->counter;
@@ -1107,13 +1173,25 @@ pxexplain_collectStatsFromNode(PlanState *planstate, PxExplain_SendStatCtx *ctx)
 	si->total = instr->total;
 	si->ntuples = instr->ntuples;
 	si->nloops = instr->nloops;
-	si->execmemused = instr->execmemused;
 	si->workmemused = instr->workmemused;
 	si->workmemwanted = instr->workmemwanted;
 	si->workfileCreated = instr->workfileCreated;
 	si->firststart = instr->firststart;
 	si->numPartScanned = instr->numPartScanned;
-	si->sortSpaceUsed = instr->sortSpaceUsed;
+
+	if (IsA(planstate, SortState))
+	{
+		SortState *sortstate = (SortState *) planstate;
+
+		si->sortstats = sortstate->sortstats;
+	}
+	if (IsA(planstate, HashState))
+	{
+		HashState *hashstate = (HashState *) planstate;
+
+		if (hashstate->hashtable)
+			ExecHashGetInstrumentation(&si->hashstats, hashstate->hashtable);
+	}
 }								/* pxexplain_collectStatsFromNode */
 
 /*
@@ -1154,7 +1232,137 @@ pxexplain_collectExtraText(PlanState *planstate, StringInfo notebuf)
 	}
 
 	return bnotes;
-}								/* pxexplain_collectExtraText */
+}
+
+/*
+ * pxexplain_formatExtraText
+ *	  Format extra message text into the EXPLAIN output buffer.
+ */
+static void
+pxexplain_formatExtraText(StringInfo str,
+						   int indent,
+						   int segindex,
+						   const char *notes,
+						   int notelen)
+{
+	const char *cp = notes;
+	const char *ep = notes + notelen;
+
+	/* Could be more than one line... */
+	while (cp < ep)
+	{
+		const char *nlp = memchr(cp, '\n', ep - cp);
+		const char *dp = nlp ? nlp : ep;
+
+		/* Strip trailing whitespace. */
+		while (cp < dp &&
+			   isspace(dp[-1]))
+			dp--;
+
+		/* Add to output buffer. */
+		if (cp < dp)
+		{
+			appendStringInfoSpaces(str, indent * 2);
+			if (segindex >= 0)
+			{
+				appendStringInfo(str, "(seg%d) ", segindex);
+				if (segindex < 10)
+					appendStringInfoChar(str, ' ');
+				if (segindex < 100)
+					appendStringInfoChar(str, ' ');
+			}
+			appendBinaryStringInfo(str, cp, dp - cp);
+			if (nlp)
+				appendStringInfoChar(str, '\n');
+		}
+
+		if (!nlp)
+			break;
+		cp = nlp + 1;
+	}
+}								/* pxexplain_formatExtraText */
+
+
+
+/*
+ * pxexplain_formatMemory
+ *	  Convert memory size to string from (double) bytes.
+ *
+ *		outbuf:  [output] pointer to a char buffer to be filled
+ *		bufsize: [input] maximum number of characters to write to outbuf (must be set by the caller)
+ *		bytes:	 [input] a value representing memory size in bytes to be written to outbuf
+ */
+static void
+pxexplain_formatMemory(char *outbuf, int bufsize, double bytes)
+{
+	int			nchars_written ;
+	Assert(outbuf != NULL && "PXEXPLAIN: char buffer is null");
+	Assert(bufsize > 0 && "PXEXPLAIN: size of char buffer is zero");
+	/* check if truncation occurs */
+	nchars_written = snprintf(outbuf, bufsize, "%.0fK bytes", kb(bytes));
+	Assert(nchars_written < bufsize &&
+		   "PXEXPLAIN:  size of char buffer is smaller than the required number of chars");
+}								/* pxexplain_formatMemory */
+
+
+
+/*
+ * pxexplain_formatSeconds
+ *	  Convert time in seconds to readable string
+ *
+ *		outbuf:  [output] pointer to a char buffer to be filled
+ *		bufsize: [input] maximum number of characters to write to outbuf (must be set by the caller)
+ *		seconds: [input] a value representing no. of seconds to be written to outbuf
+ */
+static void
+pxexplain_formatSeconds(char *outbuf, int bufsize, double seconds, bool unit)
+{
+	int			nchars_written;
+	double		ms = seconds * 1000.0;
+	Assert(outbuf != NULL && "PXEXPLAIN: char buffer is null");
+	Assert(bufsize > 0 && "PXEXPLAIN: size of char buffer is zero");
+	
+	nchars_written = snprintf(outbuf, bufsize, "%.*f%s",
+			 (ms < 10.0 && ms != 0.0 && ms > -10.0) ? 3 : 0,
+			 ms, (unit ? "(ms)" : ""));
+	
+	Assert(nchars_written < bufsize &&
+		   "PXEXPLAIN:  size of char buffer is smaller than the required number of chars");
+}								/* pxexplain_formatSeconds */
+
+
+/*
+ * pxexplain_formatSeg
+ *	  Convert segment id to string.
+ *
+ *		outbuf:  [output] pointer to a char buffer to be filled
+ *		bufsize: [input] maximum number of characters to write to outbuf (must be set by the caller)
+ *		segindex:[input] a value representing segment index to be written to outbuf
+ *		nInst:	 [input] no. of stat instances
+ */
+static void
+pxexplain_formatSeg(char *outbuf, int bufsize, int segindex, int nInst)
+{
+	Assert(outbuf != NULL && "PXEXPLAIN: char buffer is null");
+	Assert(bufsize > 0 && "PXEXPLAIN: size of char buffer is zero");
+
+	if (nInst > 1 && segindex >= 0)
+	{
+		/* check if truncation occurs */
+#ifdef USE_ASSERT_CHECKING
+		int			nchars_written =
+#endif							/* USE_ASSERT_CHECKING */
+		snprintf(outbuf, bufsize, " (seg%d)", segindex);
+
+		Assert(nchars_written < bufsize &&
+			   "PXEXPLAIN:  size of char buffer is smaller than the required number of chars");
+	}
+	else
+	{
+		outbuf[0] = '\0';
+	}
+}								/* pxexplain_formatSeg */
+
 
 /*
  * pxexplain_showExecStatsBegin
@@ -1193,3 +1401,589 @@ pxexplain_showExecStatsBegin(struct QueryDesc *queryDesc,
 	
 	return ctx;
 }								/* pxexplain_showExecStatsBegin */
+
+/*
+ * nodeSupportWorkfileCaching
+ *	 Return true if a given node supports workfile caching.
+ */
+static bool
+nodeSupportWorkfileCaching(PlanState *planstate)
+{
+	return (IsA(planstate, SortState) ||
+			IsA(planstate, HashJoinState) ||
+			(IsA(planstate, AggState) &&((Agg *) planstate->plan)->aggstrategy == AGG_HASHED) ||
+			IsA(planstate, MaterialState));
+}
+
+/*
+ * pxexplain_showExecStats
+ *	  Called by qDisp process to format a node's EXPLAIN ANALYZE statistics.
+ *
+ * 'planstate' is the node whose statistics are to be displayed.
+ * 'str' is the output buffer.
+ * 'indent' is the root indentation for all the text generated for explain output
+ * 'ctx' is a PxExplain_ShowStatCtx object which was created by a call to
+ *		pxexplain_showExecStatsBegin().
+ */
+static void
+pxexplain_showExecStats(struct PlanState *planstate, ExplainState *es)
+{
+	struct PxExplain_ShowStatCtx *ctx = es->showstatctx;
+	Instrumentation *instr = planstate->instrument;
+	PxExplain_NodeSummary *ns = instr->pxNodeSummary;
+	instr_time	timediff;
+	int			i;
+
+	char		totalbuf[50];
+	char		avgbuf[50];
+	char		maxbuf[50];
+	char		segbuf[50];
+	char		startbuf[50];
+	bool 			haveExtraText = false;
+	StringInfoData	extraData;
+
+	/* Might not have received stats from qExecs if they hit errors. */
+	if (!ns)
+		return;
+
+	Assert(instr != NULL);
+
+	/*
+	 * Executor memory used by this individual node, if it allocates from a
+	 * memory context of its own instead of sharing the per-query context.
+	 */
+	if (es->analyze && ns->execmemused.vcnt > 0)
+	{
+		if (es->format == EXPLAIN_FORMAT_TEXT)
+		{
+			appendStringInfoSpaces(es->str, es->indent * 2);
+			appendStringInfo(es->str, "Executor Memory: %ldkB  Workers: %d  Max: %ldkB (worker %d)\n",
+							 (long) kb(ns->execmemused.vsum),
+							 ns->execmemused.vcnt,
+							 (long) kb(ns->execmemused.vmax),
+							 ns->execmemused.imax);
+		}
+		else
+		{
+			ExplainPropertyInteger("Executor Memory", "kB", kb(ns->execmemused.vsum), es);
+			ExplainPropertyInteger("Executor Memory Workers", NULL, ns->execmemused.vcnt, es);
+			ExplainPropertyInteger("Executor Max Memory", "kB", kb(ns->execmemused.vmax), es);
+			ExplainPropertyInteger("Executor Max Memory Worker", NULL, ns->execmemused.imax, es);
+		}
+	}
+
+	/*
+	 * Actual work_mem used and wanted
+	 */
+	if (es->analyze && es->verbose && ns->workmemused.vcnt > 0)
+	{
+		if (es->format == EXPLAIN_FORMAT_TEXT)
+		{
+			appendStringInfoSpaces(es->str, es->indent * 2);
+			appendStringInfo(es->str, "work_mem: %ldkB  Workers: %d  Max: %ldkB (worker %d)",
+							 (long) kb(ns->workmemused.vsum),
+							 ns->workmemused.vcnt,
+							 (long) kb(ns->workmemused.vmax),
+							 ns->workmemused.imax);
+
+			/*
+			 * Total number of segments in which this node reuses cached or
+			 * creates workfiles.
+			 */
+			if (nodeSupportWorkfileCaching(planstate))
+				appendStringInfo(es->str, "  Workfile: (%d spilling)",
+								 ns->totalWorkfileCreated.vcnt);
+
+			appendStringInfo(es->str, "\n");
+
+			if (ns->workmemwanted.vcnt > 0)
+			{
+				appendStringInfoSpaces(es->str, es->indent * 2);
+				pxexplain_formatMemory(maxbuf, sizeof(maxbuf), ns->workmemwanted.vmax);
+				if (ns->ninst == 1)
+				{
+					appendStringInfo(es->str,
+								 "Work_mem wanted: %s to lessen workfile I/O.",
+								 maxbuf);
+				}
+				else
+				{
+					pxexplain_formatMemory(avgbuf, sizeof(avgbuf), pxexplain_agg_avg(&ns->workmemwanted));
+					pxexplain_formatSeg(segbuf, sizeof(segbuf), ns->workmemwanted.imax, ns->ninst);
+					appendStringInfo(es->str,
+									 "Work_mem wanted: %s avg, %s max%s"
+									 " to lessen workfile I/O affecting %d workers.",
+									 avgbuf, maxbuf, segbuf, ns->workmemwanted.vcnt);
+				}
+
+				appendStringInfo(es->str, "\n");
+			}
+		}
+		else
+		{
+			ExplainOpenGroup("work_mem", "work_mem", true, es);
+			ExplainPropertyInteger("Used", "kB", kb(ns->workmemused.vsum), es);
+			ExplainPropertyInteger("Workers", NULL, ns->workmemused.vcnt, es);
+			ExplainPropertyInteger("Max Memory", "kB", kb(ns->workmemused.vmax), es);
+			ExplainPropertyInteger("Max Memory Workers", NULL, ns->workmemused.imax, es);
+
+			/*
+			 * Total number of segments in which this node reuses cached or
+			 * creates workfiles.
+			 */
+			if (nodeSupportWorkfileCaching(planstate))
+				ExplainPropertyInteger("Workfile Spilling", NULL, ns->totalWorkfileCreated.vcnt, es);
+
+			if (ns->workmemwanted.vcnt > 0)
+			{
+				ExplainPropertyInteger("Max Memory Wanted", "kB", kb(ns->workmemwanted.vmax), es);
+
+				if (ns->ninst > 1)
+				{
+					ExplainPropertyInteger("Max Memory Wanted Segment", NULL, ns->workmemwanted.imax, es);
+					ExplainPropertyInteger("Avg Memory Wanted", "kB", kb(pxexplain_agg_avg(&ns->workmemwanted)), es);
+					ExplainPropertyInteger("Workers Affected", NULL, ns->ninst, es);
+				}
+			}
+
+			ExplainCloseGroup("work_mem", "work_mem", true, es);
+		}
+	}
+
+	initStringInfo(&extraData);
+
+	for (i = 0; i < ns->ninst; i++)
+	{
+		PxExplain_StatInst *nsi = &ns->insts[i];
+
+		if (nsi->bnotes < nsi->enotes)
+		{
+			if (!haveExtraText)
+			{
+				ExplainOpenGroup("Extra Text", "Extra Text", false, es);
+				ExplainOpenGroup("Segment", NULL, true, es);
+				haveExtraText = true;
+			}
+			
+			resetStringInfo(&extraData);
+
+			pxexplain_formatExtraText(&extraData,
+									   0,
+									   (ns->ninst == 1) ? -1
+									   : ns->segindex0 + i,
+									   ctx->extratextbuf.data + nsi->bnotes,
+									   nsi->enotes - nsi->bnotes);
+			ExplainPropertyStringInfo("Extra Text", es, "%s", extraData.data);
+		}
+	}
+
+	if (haveExtraText)
+	{
+		ExplainCloseGroup("Segment", NULL, true, es);
+		ExplainCloseGroup("Extra Text", "Extra Text", false, es);
+	}
+	pfree(extraData.data);
+
+	/*
+	 * Dump stats for all workers.
+	 */
+	if (px_enable_explain_all_stat && ns->segindex0 >= 0 && ns->ninst > 0)
+	{
+		if (es->format == EXPLAIN_FORMAT_TEXT)
+		{
+			/*
+			 * create a header for all stats: separate each individual stat by an
+			 * underscore, separate the grouped stats for each node by a slash
+			 */
+			appendStringInfoSpaces(es->str, es->indent * 2);
+			appendStringInfoString(es->str,
+								   "allstat:");
+		}
+		else
+			ExplainOpenGroup("Allstat", "Allstat", true, es);
+		appendStringInfo(es->str,"\n");
+		for (i = 0; i < ns->ninst; i++)
+		{
+			PxExplain_StatInst *nsi = &ns->insts[i];
+
+			if (INSTR_TIME_IS_ZERO(nsi->firststart))
+				continue;
+
+			/* Time from start of query on qDisp to worker's first result row */
+			INSTR_TIME_SET_ZERO(timediff);
+			INSTR_TIME_ACCUM_DIFF(timediff, nsi->firststart, ctx->querystarttime);
+
+			if (es->format == EXPLAIN_FORMAT_TEXT)
+			{
+				pxexplain_formatSeconds(startbuf, sizeof(startbuf),
+										 INSTR_TIME_GET_DOUBLE(timediff), true);
+				pxexplain_formatSeconds(totalbuf, sizeof(totalbuf),
+										 nsi->total, true);
+				appendStringInfoSpaces(es->str, es->indent * 3);
+				appendStringInfo(es->str,
+								 "worker:%d, fisrt_time:%s, total_time:%s, total_num:%.0f\n",
+								 ns->segindex0 + i,
+								 startbuf,
+								 totalbuf,
+								 nsi->ntuples);
+			}
+			else
+			{
+				pxexplain_formatSeconds(startbuf, sizeof(startbuf),
+										 INSTR_TIME_GET_DOUBLE(timediff), false);
+				pxexplain_formatSeconds(totalbuf, sizeof(totalbuf),
+										 nsi->total, false);
+
+				ExplainOpenGroup("Worker", NULL, false, es);
+				ExplainPropertyInteger("Woker index", NULL, ns->segindex0 + i, es);
+				ExplainPropertyText("Time To First Result", startbuf, es);
+				ExplainPropertyText("Time To Total Result", totalbuf, es);
+				ExplainPropertyFloat("Tuples", NULL, nsi->ntuples, 1, es);
+				ExplainCloseGroup("Worker", NULL, false, es);
+			}
+		}
+	}
+}								/* pxexplain_showExecStats */
+
+/*
+ *	ExplainPrintExecStatsEnd
+ *			External API wrapper for pxexplain_showExecStatsEnd
+ *
+ * This is an externally exposed wrapper for pxexplain_showExecStatsEnd such
+ * that extensions, such as auto_explain, can leverage the Greenplum specific
+ * parts of the EXPLAIN machinery.
+ */
+void
+ExplainPrintExecStatsEnd(ExplainState *es, QueryDesc *queryDesc)
+{
+	pxexplain_showExecStatsEnd(queryDesc->plannedstmt,
+								queryDesc->showstatctx,
+								queryDesc->estate, es);
+}
+
+/*
+ * pxexplain_showExecStatsEnd
+ *	  Called by qDisp process to format the overall statistics for a query
+ *	  into the caller's buffer.
+ *
+ * 'ctx' is the PxExplain_ShowStatCtx object which was created by a call to
+ *		pxexplain_showExecStatsBegin() and contains statistics which have
+ *		been accumulated over a series of calls to pxexplain_showExecStats().
+ *		Invalid on return (it is freed).
+ *
+ * This doesn't free the PxExplain_ShowStatCtx object or buffers, because
+ * they will be free'd shortly by the end of statement anyway.
+ */
+static void
+pxexplain_showExecStatsEnd(struct PlannedStmt *stmt,
+							struct PxExplain_ShowStatCtx *showstatctx,
+							struct EState *estate,
+							ExplainState *es)
+{
+	if (!es->summary)
+		return;
+
+    pxexplain_formatSlicesOutput(showstatctx, estate, es);
+	
+	// TODO add statement statistics
+}			
+/*
+ * Given a statistics context search for all the slice statistics
+ * and format them to the correct layout
+ */
+static void
+pxexplain_formatSlicesOutput(struct PxExplain_ShowStatCtx *showstatctx,
+                             struct EState *estate,
+                             ExplainState *es)
+{
+	ExecSlice  *slice;
+	int			sliceIndex;
+	int			flag;
+	double		total_memory_across_slices = 0;
+
+	char		avgbuf[50];
+	char		maxbuf[50];
+	char		segbuf[50];
+
+    if (showstatctx->nslice > 0)
+        ExplainOpenGroup("Slice statistics", "Slice statistics", false, es);
+
+    for (sliceIndex = 0; sliceIndex < showstatctx->nslice; sliceIndex++)
+    {
+        PxExplain_SliceSummary *ss = &showstatctx->slices[sliceIndex];
+        PxExplain_DispatchSummary *ds = &ss->dispatchSummary;
+        
+        flag = es->str->len;
+        if (es->format == EXPLAIN_FORMAT_TEXT)
+        {
+
+            appendStringInfo(es->str, "  (slice%d) ", sliceIndex);
+            if (sliceIndex < 10)
+                appendStringInfoChar(es->str, ' ');
+
+            appendStringInfoString(es->str, "  ");
+        }
+        else 
+        {
+            ExplainOpenGroup("Slice", NULL, true, es);
+            ExplainPropertyInteger("Slice", NULL, sliceIndex, es);
+        }
+
+        /* Worker counts */
+        slice = getCurrentSlice(estate, sliceIndex);
+        if (slice &&
+			list_length(slice->segments) > 0 &&
+			list_length(slice->segments) != ss->dispatchSummary.nOk)
+        {
+			int			nNotDispatched;
+			StringInfoData workersInformationText;
+
+			nNotDispatched = list_length(slice->segments) - ds->nResult + ds->nNotDispatched;
+
+			es->str->data[flag] = (ss->dispatchSummary.nError > 0) ? 'X' : '_';
+
+			initStringInfo(&workersInformationText);
+			appendStringInfo(&workersInformationText, "Workers:");
+
+            if (es->format == EXPLAIN_FORMAT_TEXT)
+            {
+                if (ds->nError == 1)
+                {
+                    appendStringInfo(&workersInformationText,
+                                     " %d error;",
+                                     ds->nError);
+                }
+                else if (ds->nError > 1)
+                {
+                    appendStringInfo(&workersInformationText,
+                                     " %d errors;",
+                                     ds->nError);
+                }
+            }
+            else
+            {
+                ExplainOpenGroup("Workers", "Workers", true, es);
+                if (ds->nError > 0)
+                    ExplainPropertyInteger("Errors", NULL, ds->nError, es);
+            }
+
+            if (ds->nCanceled > 0)
+            {
+                if (es->format == EXPLAIN_FORMAT_TEXT)
+                {
+                    appendStringInfo(&workersInformationText,
+                                     " %d canceled;",
+                                     ds->nCanceled);
+                }
+                else
+                {
+                    ExplainPropertyInteger("Canceled", NULL, ds->nCanceled, es);
+                }
+            }
+
+            if (nNotDispatched > 0)
+            {
+                if (es->format == EXPLAIN_FORMAT_TEXT)
+                {
+                    appendStringInfo(&workersInformationText,
+                                     " %d not dispatched;",
+                                     nNotDispatched);
+                }
+                else
+                {
+                    ExplainPropertyInteger("Not Dispatched", NULL, nNotDispatched, es);
+                }
+            }
+
+            if (ds->nIgnorableError > 0)
+            {
+                if (es->format == EXPLAIN_FORMAT_TEXT)
+                {
+                    appendStringInfo(&workersInformationText,
+                                     " %d aborted;",
+                                     ds->nIgnorableError);
+                }
+                else
+                {
+                    ExplainPropertyInteger("Aborted", NULL, ds->nIgnorableError, es);
+                }
+            }
+
+            if (ds->nOk > 0)
+            {
+                if (es->format == EXPLAIN_FORMAT_TEXT)
+                {
+                    appendStringInfo(&workersInformationText,
+                                     " %d ok;",
+                                     ds->nOk);
+                }
+                else
+                {
+                    ExplainPropertyInteger("Ok", NULL, ds->nOk, es);
+                }
+            }
+
+            if (es->format == EXPLAIN_FORMAT_TEXT)
+            {
+                workersInformationText.len--;
+                ExplainPropertyStringInfo("Workers", es, "%s.  ", workersInformationText.data);
+            }
+            else
+            {
+                ExplainCloseGroup("Workers", "Workers", true, es);
+            }
+        }
+
+        /* Executor memory high-water mark */
+        pxexplain_formatMemory(maxbuf, sizeof(maxbuf), ss->peakmemused.vmax);
+        if (ss->peakmemused.vcnt == 1)
+        {
+            if (es->format == EXPLAIN_FORMAT_TEXT)
+            {
+                const char *seg = segbuf;
+
+                if (ss->peakmemused.imax >= 0)
+                {
+                    pxexplain_formatSeg(segbuf, sizeof(segbuf), ss->peakmemused.imax, 999);
+                }
+                else if (slice && list_length(slice->segments) > 0)
+                {
+                    seg = " (entry db)";
+                }
+                else
+                {
+                    seg = "";
+                }
+                appendStringInfo(es->str,
+                                 "Executor memory: %s%s.",
+                                 maxbuf,
+                                 seg);
+            }
+            else
+            {
+                ExplainPropertyInteger("Executor Memory", "kB", ss->peakmemused.vmax, es);
+            }
+        }
+        else if (ss->peakmemused.vcnt > 1)
+        {
+            if (es->format == EXPLAIN_FORMAT_TEXT)
+            {
+                pxexplain_formatMemory(avgbuf, sizeof(avgbuf), pxexplain_agg_avg(&ss->peakmemused));
+                pxexplain_formatSeg(segbuf, sizeof(segbuf), ss->peakmemused.imax, ss->nworker);
+                appendStringInfo(es->str,
+                                 "Executor memory: %s avg x %d workers, %s max%s.",
+                                 avgbuf,
+                                 ss->peakmemused.vcnt,
+                                 maxbuf,
+                                 segbuf);
+            }
+            else
+            {
+                ExplainOpenGroup("Executor Memory", "Executor Memory", true, es);
+                ExplainPropertyInteger("Average", "kB", pxexplain_agg_avg(&ss->peakmemused), es);
+                ExplainPropertyInteger("Workers", NULL, ss->peakmemused.vcnt, es);
+                ExplainPropertyInteger("Maximum Memory Used", "kB", ss->peakmemused.vmax, es);
+                ExplainCloseGroup("Executor Memory", "Executor Memory", true, es);
+            }
+        }
+
+        if (EXPLAIN_MEMORY_VERBOSITY_SUPPRESS < px_explain_memory_verbosity)
+        {
+            /* Vmem reserved by QEs */
+            pxexplain_formatMemory(maxbuf, sizeof(maxbuf), ss->vmem_reserved.vmax);
+            if (ss->vmem_reserved.vcnt == 1)
+            {
+
+                if (es->format == EXPLAIN_FORMAT_TEXT)
+                {
+                    const char *seg = segbuf;
+
+                    if (ss->vmem_reserved.imax >= 0)
+                    {
+                        pxexplain_formatSeg(segbuf, sizeof(segbuf), ss->vmem_reserved.imax, 999);
+                    }
+                    else if (slice && list_length(slice->segments) > 0)
+                    {
+                        seg = " (entry db)";
+                    }
+                    else
+                    {
+                        seg = "";
+                    }
+                    appendStringInfo(es->str,
+                                     "  Vmem reserved: %s%s.",
+                                     maxbuf,
+                                     seg);
+                }
+                else
+                {
+                    ExplainPropertyInteger("Virtual Memory", "kB", ss->vmem_reserved.vmax, es);
+                }
+            }
+            else if (ss->vmem_reserved.vcnt > 1)
+            {
+                if (es->format == EXPLAIN_FORMAT_TEXT)
+                {
+                    pxexplain_formatMemory(avgbuf, sizeof(avgbuf), pxexplain_agg_avg(&ss->vmem_reserved));
+                    pxexplain_formatSeg(segbuf, sizeof(segbuf), ss->vmem_reserved.imax, ss->nworker);
+                    appendStringInfo(es->str,
+                                     "  Vmem reserved: %s avg x %d workers, %s max%s.",
+                                     avgbuf,
+                                     ss->vmem_reserved.vcnt,
+                                     maxbuf,
+                                     segbuf);
+                }
+                else
+                {
+                    ExplainOpenGroup("Virtual Memory", "Virtual Memory", true, es);
+                    ExplainPropertyInteger("Average", "kB", pxexplain_agg_avg(&ss->vmem_reserved), es);
+                    ExplainPropertyInteger("Workers", NULL, ss->vmem_reserved.vcnt, es);
+                    ExplainPropertyInteger("Maximum Memory Used", "kB", ss->vmem_reserved.vmax, es);
+                    ExplainCloseGroup("Virtual Memory", "Virtual Memory", true, es);
+                }
+
+            }
+        }
+
+        /* Work_mem used/wanted (max over all nodes and workers of slice) */
+        if (ss->workmemused_max + ss->workmemwanted_max > 0)
+        {
+            if (es->format == EXPLAIN_FORMAT_TEXT)
+            {
+                pxexplain_formatMemory(maxbuf, sizeof(maxbuf), ss->workmemused_max);
+                appendStringInfo(es->str, "  Work_mem: %s max", maxbuf);
+                if (ss->workmemwanted_max > 0)
+                {
+                    es->str->data[flag] = '*';	/* draw attention to this slice */
+                    pxexplain_formatMemory(maxbuf, sizeof(maxbuf), ss->workmemwanted_max);
+                    appendStringInfo(es->str, ", %s wanted", maxbuf);
+                }
+                appendStringInfoChar(es->str, '.');
+            }
+            else
+            {
+                ExplainPropertyInteger("Work Maximum Memory", "kB", ss->workmemused_max, es);
+            }
+        }
+
+        if (es->format == EXPLAIN_FORMAT_TEXT)
+            appendStringInfoChar(es->str, '\n');
+
+        ExplainCloseGroup("Slice", NULL, true, es);
+    }
+
+    if (showstatctx->nslice > 0)
+        ExplainCloseGroup("Slice statistics", "Slice statistics", false, es);
+
+    if (total_memory_across_slices > 0)
+    {
+        if (es->format == EXPLAIN_FORMAT_TEXT)
+        {
+            appendStringInfo(es->str, "Total memory used across slices: %.0fK bytes \n", total_memory_across_slices);
+        }
+        else
+        {
+            ExplainPropertyInteger("Total memory used across slices", "bytes", total_memory_across_slices, es);
+        }
+    }
+}

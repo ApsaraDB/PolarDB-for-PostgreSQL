@@ -86,7 +86,7 @@ typedef enum UpperRelationKind
 } UpperRelationKind;
 
 /*
- * POALR px
+ * POLAR px
  * ApplyShareInputContext is used in different stages of ShareInputScan
  * processing. This is mostly used as working area during the stages, but
  * some information is also carried through multiple stages.

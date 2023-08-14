@@ -34,6 +34,8 @@
 #include "utils/memutils.h"
 #include "utils/snapmgr.h"
 
+/* POLAR: Shared Server */
+#include "storage/proc.h"
 
 /*
  * PerformCursorOpen
@@ -57,6 +59,13 @@ PerformCursorOpen(DeclareCursorStmt *cstmt, ParamListInfo params,
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_CURSOR_NAME),
 				 errmsg("invalid cursor name: must not be empty")));
+
+	/* POLAR: Shared Server */
+	if ((cstmt->options & CURSOR_OPT_HOLD) && POLAR_SS_NOT_DEDICATED())
+	{
+		MyProc->polar_is_backend_dedicated = true;
+		elog(LOG, "polar shared server set dedicated from PerformCursorOpen");
+	}
 
 	/*
 	 * If this is a non-holdable cursor, we require that this statement has
@@ -156,7 +165,7 @@ PerformCursorOpen(DeclareCursorStmt *cstmt, ParamListInfo params,
 				params, 
 				0, 
 				GetActiveSnapshot(), 
-				NULL/* POALR px */);
+				NULL/* POLAR px */);
 
 	Assert(portal->strategy == PORTAL_ONE_SELECT);
 

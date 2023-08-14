@@ -34,8 +34,7 @@
 #include "catalog/catalog.h"
 #include "utils/builtins.h"
 #include "executor/functions.h"
-
-static int PrimaryWriterSliceIndex(EState *estate);
+#include "miscadmin.h"
 
 #define PSW_IGNORE_INITPLAN    0x01
 static PxVisitOpt planstate_walk_node_extended(PlanState *planstate,
@@ -64,6 +63,38 @@ typedef struct MotionAssignerContext
 } MotionAssignerContext;
 
 
+/**
+ * This method is used to determine how much memory a specific operator
+ * is supposed to use (in KB). 
+ */
+uint64 polar_PlanStateOperatorMemKB(const PlanState *ps)
+{
+	uint64 result = 0;
+	Assert(ps);
+	Assert(ps->plan);
+	if (ps->plan->operatorMemKB == 0)
+	{
+		/**
+		 * There are some statements that do not go through the resource queue and these
+		 * plans dont get decorated with the operatorMemKB. Someday, we should fix resource queues.
+		 */
+		result = work_mem;
+	}
+	else
+	{
+#if 0
+		if (IsA(ps, AggState))
+		{
+			/* Retrieve all relinquished memory (quota the other node not using) */
+			result = ps->plan->operatorMemKB + (MemoryAccounting_RequestQuotaIncrease() >> 10);
+		}
+		else
+#endif
+			result = ps->plan->operatorMemKB;
+	}
+	
+	return result;
+}
 
 /*
  * POLAR px
@@ -508,7 +539,7 @@ AssignGangs(PxDispatcherState *ds, QueryDesc *queryDesc)
 
 	/* POLAR px */
 	AssignWriterGangFirst(ds, sliceTable, rootIdx);
-	/* POALR end */
+	/* POLAR end */
 	InventorySliceTree(ds, sliceTable, rootIdx);
 }
 
@@ -945,7 +976,7 @@ ExtractParamsFromInitPlans(PlannedStmt *plannedstmt, Plan *root, EState *estate)
 /**
  * Provide index of slice being executed on the primary writer gang
  */
-static int
+int
 PrimaryWriterSliceIndex(EState *estate)
 {
 	int i;

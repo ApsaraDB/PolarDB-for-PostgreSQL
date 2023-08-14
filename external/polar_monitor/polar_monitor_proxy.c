@@ -154,7 +154,8 @@ polar_stat_get_real_pid(PG_FUNCTION_ARGS)
 {
 	int	pid = PG_ARGISNULL(0) ? MyProcPid : PG_GETARG_INT32(0);
 	if (!PG_ARGISNULL(0) && !POLAR_IS_VIRTUAL_PID(pid))
-		elog(ERROR, "POLAR: Invalid virtual pid: %d, should between (10^7, 2*10^7)", pid);
+		elog(ERROR, "POLAR: Invalid virtual pid: %d%s",
+			pid, POLAR_SHARED_SERVER_RUNNING() ? "" : ", should between (10^7, 2*10^7)");
 	PG_RETURN_INT32(polar_pgstat_get_real_pid(pid, 0, false, true));
 }
 
@@ -164,6 +165,7 @@ polar_stat_get_virtual_pid(PG_FUNCTION_ARGS)
 {
 	int	pid = PG_ARGISNULL(0) ? MyProcPid : PG_GETARG_INT32(0);
 	if (!PG_ARGISNULL(0) && !POLAR_IS_REAL_PID(pid))
-		elog(ERROR, "POLAR: Invalid real pid: %d, should between (0, 10^7)", pid);
+		elog(ERROR, "POLAR: Invalid real pid: %d%s",
+			pid, POLAR_SHARED_SERVER_RUNNING() ? "" : ", should between (0, 10^7)");
 	PG_RETURN_INT32(polar_pgstat_get_virtual_pid(pid, true));
 }

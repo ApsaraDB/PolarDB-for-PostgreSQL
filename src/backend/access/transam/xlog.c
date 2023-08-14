@@ -17342,7 +17342,7 @@ polar_wal_pipeline_stats_reset(void)
 }
 
 /* 
- *	Only for poalr wal pipeline test 
+ *	Only for polar wal pipeline test 
  */
 void
 polar_wal_pipeline_set_local_recovery_mode(bool mode)
@@ -17648,15 +17648,15 @@ polar_fill_segment_file_zero(int fd, char *tmppath, int segment_size,
 		uint32 init_write_event_info, uint32 init_fsync_event_info,
 		const char *log_file_info)
 {
-#define	POALR_FILL_ZERO_EACH_SIZE		1024 * 1024
+#define	POLAR_FILL_ZERO_EACH_SIZE		1024 * 1024
 
 	/* POLAR: change palloc0 to static array to avoid memory allocations assert within a critical section */
-	static char data[POALR_FILL_ZERO_EACH_SIZE];
+	static char data[POLAR_FILL_ZERO_EACH_SIZE];
 
 	int		nbytes = 0;
 	instr_time	polar_init_start;
 	instr_time	polar_init_end;
-	int			each_size = POALR_FILL_ZERO_EACH_SIZE;
+	int			each_size = POLAR_FILL_ZERO_EACH_SIZE;
 
 	if (each_size > segment_size)
 		each_size = segment_size;

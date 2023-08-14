@@ -158,10 +158,10 @@ public:
 	// retrieve the partition column at the given position
 	virtual const IMDColumn *PartColAt(ULONG pos) const = 0;
 
-	// POALR px: number of key schemes
+	// POLAR px: number of key schemes
 	virtual ULONG PartSchemeCount() const = 0;
 
-	// POALR px: retrieve the partition scheme at the given position
+	// POLAR px: retrieve the partition scheme at the given position
 	virtual ULONG PartSchemeAt(ULONG pos) const = 0;
 
 	// retrieve list of partition types

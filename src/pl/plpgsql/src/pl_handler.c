@@ -28,6 +28,8 @@
 
 #include "plpgsql.h"
 
+/* POLAR: Shared Server */
+#include "storage/polar_session_context.h"
 
 static bool plpgsql_extra_checks_check_hook(char **newvalue, void **extra, GucSource source);
 static void plpgsql_extra_warnings_assign_hook(const char *newvalue, void *extra);

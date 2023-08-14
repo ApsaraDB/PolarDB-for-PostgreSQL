@@ -20,6 +20,7 @@
 #include "isolationtester.h"
 
 #define PREP_WAITING "isolationtester_waiting"
+#define PREP_PID "isolationtester_pid"
 
 /*
  * conns[0] is the global setup, teardown, and watchdog connection.  Additional
@@ -48,7 +49,7 @@ static void run_permutation(TestSpec *testspec, int nsteps, Step **steps);
 
 #define STEP_NONBLOCK	0x1		/* return 0 as soon as cmd waits for a lock */
 #define STEP_RETRY		0x2		/* this is a retry of a previously-waiting cmd */
-static bool try_complete_step(TestSpec *testspec, Step *step, int flags);
+static bool try_complete_step(TestSpec *testspec, Step *step, int stepindex, int flags);
 
 static int	step_qsort_cmp(const void *a, const void *b);
 static int	step_bsearch_cmp(const void *a, const void *b);
@@ -230,12 +231,12 @@ main(int argc, char **argv)
 	 */
 	initPQExpBuffer(&wait_query);
 	appendPQExpBufferStr(&wait_query,
-						 "SELECT pg_catalog.pg_isolation_test_session_is_blocked($1, '{");
+						 "SELECT pg_catalog.pg_isolation_test_session_is_blocked($1, $2)");
 	/* The spec syntax requires at least one session; assume that here. */
-	appendPQExpBufferStr(&wait_query, backend_pid_strs[1]);
+	/* appendPQExpBufferStr(&wait_query, backend_pid_strs[1]);
 	for (i = 2; i < nconns; i++)
 		appendPQExpBuffer(&wait_query, ",%s", backend_pid_strs[i]);
-	appendPQExpBufferStr(&wait_query, "}')");
+	appendPQExpBufferStr(&wait_query, "}')"); */
 
 	res = PQprepare(conns[0], PREP_WAITING, wait_query.data, 0, NULL);
 	if (PQresultStatus(res) != PGRES_COMMAND_OK)
@@ -245,6 +246,16 @@ main(int argc, char **argv)
 		exit_nicely();
 	}
 	PQclear(res);
+
+	res = PQprepare(conns[0], PREP_PID, "SELECT pid,state,query from pg_stat_activity where datname='isolation_regression' order by query_start asc", 0, NULL);
+	if (PQresultStatus(res) != PGRES_COMMAND_OK)
+	{
+		fprintf(stderr, "prepare of pid query failed: %s",
+				PQerrorMessage(conns[0]));
+		exit_nicely();
+	}
+	PQclear(res);
+
 	termPQExpBuffer(&wait_query);
 
 	/*
@@ -553,7 +564,7 @@ run_permutation(TestSpec *testspec, int nsteps, Step **steps)
 				oldstep = waiting[w];
 
 				/* Wait for previous step on this connection. */
-				try_complete_step(testspec, oldstep, STEP_RETRY);
+				try_complete_step(testspec, oldstep, w, STEP_RETRY);
 
 				/* Remove that step from the waiting[] array. */
 				if (w + 1 < nwaiting)
@@ -575,7 +586,7 @@ run_permutation(TestSpec *testspec, int nsteps, Step **steps)
 			nerrorstep = 0;
 			while (w < nwaiting)
 			{
-				if (try_complete_step(testspec, waiting[w],
+				if (try_complete_step(testspec, waiting[w], w, 
 									  STEP_NONBLOCK | STEP_RETRY))
 				{
 					/* Still blocked on a lock, leave it alone. */
@@ -605,14 +616,14 @@ run_permutation(TestSpec *testspec, int nsteps, Step **steps)
 		}
 
 		/* Try to complete this step without blocking.  */
-		mustwait = try_complete_step(testspec, step, STEP_NONBLOCK);
+		mustwait = try_complete_step(testspec, step, 0, STEP_NONBLOCK);
 
 		/* Check for completion of any steps that were previously waiting. */
 		w = 0;
 		nerrorstep = 0;
 		while (w < nwaiting)
 		{
-			if (try_complete_step(testspec, waiting[w],
+			if (try_complete_step(testspec, waiting[w], w,
 								  STEP_NONBLOCK | STEP_RETRY))
 				w++;
 			else
@@ -636,7 +647,7 @@ run_permutation(TestSpec *testspec, int nsteps, Step **steps)
 	/* Wait for any remaining queries. */
 	for (w = 0; w < nwaiting; ++w)
 	{
-		try_complete_step(testspec, waiting[w], STEP_RETRY);
+		try_complete_step(testspec, waiting[w], w, STEP_RETRY);
 		report_error_message(waiting[w]);
 	}
 
@@ -699,7 +710,7 @@ run_permutation(TestSpec *testspec, int nsteps, Step **steps)
  * a lock, returns true.  Otherwise, returns false.
  */
 static bool
-try_complete_step(TestSpec *testspec, Step *step, int flags)
+try_complete_step(TestSpec *testspec, Step *step, int stepindex, int flags)
 {
 	PGconn	   *conn = conns[1 + step->session];
 	fd_set		read_set;
@@ -743,9 +754,46 @@ try_complete_step(TestSpec *testspec, Step *step, int flags)
 			if (flags & STEP_NONBLOCK)
 			{
 				bool		waiting;
+				char 		*pid = NULL;
+				int			i;
+				char  		pids[100];
+				const char  **params = NULL;
+				int			cur = 0;
 
-				res = PQexecPrepared(conns[0], PREP_WAITING, 1,
-									 &backend_pid_strs[step->session + 1],
+				res = PQexecPrepared(conns[0], PREP_PID, 0,
+									 NULL,
+									 NULL, NULL, 0);
+				if (PQresultStatus(res) != PGRES_TUPLES_OK ||
+					PQntuples(res) == 0)
+				{
+					fprintf(stderr, "pid query failed: %s",
+							PQerrorMessage(conns[0]));
+					exit_nicely();
+				}
+				
+				for (i = 0; i < PQntuples(res) - 1; i++)
+				{
+					pid = PQgetvalue(res, i, 0);
+					if (strcmp(PQgetvalue(res, i, 2), step->sql) == 0
+						&& strcmp(PQgetvalue(res, i, 1), "active") == 0
+						&& stepindex-- == 0)
+					{
+						backend_pids[step->session + 1] = atoi(pid);
+						backend_pid_strs[step->session + 1] = psprintf("%d", backend_pids[step->session + 1]);
+					}
+					if (i == 0)
+						cur += sprintf(pids + cur, "{%s", pid);
+					else
+						cur += sprintf(pids + cur, ",%s", pid);
+				}
+				cur += sprintf(pids + cur, "%s", "}");
+				PQclear(res);
+
+				params = pg_malloc0(2 * sizeof(*params));
+				params[0] = backend_pid_strs[step->session + 1];
+				params[1] = pids;
+				res = PQexecPrepared(conns[0], PREP_WAITING, 2,
+									 params,
 									 NULL, NULL, 0);
 				if (PQresultStatus(res) != PGRES_TUPLES_OK ||
 					PQntuples(res) != 1)
@@ -755,6 +803,7 @@ try_complete_step(TestSpec *testspec, Step *step, int flags)
 					exit_nicely();
 				}
 				waiting = ((PQgetvalue(res, 0, 0))[0] == 't');
+				pfree(params);
 				PQclear(res);
 
 				if (waiting)	/* waiting to acquire a lock */

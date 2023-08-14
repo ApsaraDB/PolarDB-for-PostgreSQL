@@ -45,7 +45,7 @@ void		_PG_fini(void);
 PG_MODULE_MAGIC;
 
 void
-polar_handle_monitor_hook(PolarHookActionType action)
+polar_handle_monitor_hook(PolarHookActionType action, void *args)
 {
 	switch (action)
 	{
@@ -63,6 +63,11 @@ polar_handle_monitor_hook(PolarHookActionType action)
 
 		case POLAR_CHECK_LOGGING_PLAN_OF_RUNNING_QUERY:
 			ProcessLogCurrentPlanInterrupt();
+			break;
+
+		/* POLAR: Shared Server */
+		case POLAR_SS_CHECK_SIGNAL_MCTX:
+			polar_ss_check_signal_mctx(args);
 			break;
 
 		default:

@@ -35,9 +35,13 @@
 #define PG_STAT_TMP_DIR		"pg_stat_tmp"
 
 /* POLARDB Proxy base virtual pid */
-#define POLAR_BASE_VIRTUAL_PID		10000000
-#define POLAR_IS_VIRTUAL_PID(pid)	(pid > POLAR_BASE_VIRTUAL_PID && pid < 2 * POLAR_BASE_VIRTUAL_PID)
-#define POLAR_IS_REAL_PID(pid)	(pid > 0 && pid < POLAR_BASE_VIRTUAL_PID)
+#define POLAR_BASE_SESSION_ID		POLAR_MAX_PROCESS_COUNT
+#define POLAR_BASE_VIRTUAL_PID		2 * POLAR_MAX_PROCESS_COUNT
+
+#define POLAR_IS_REAL_PID(pid)		(0 < pid && pid < POLAR_MAX_PROCESS_COUNT)
+#define POLAR_IS_SESSION_ID(pid)	(POLAR_BASE_SESSION_ID <= pid && pid < POLAR_BASE_VIRTUAL_PID)
+#define POLAR_IS_VIRTUAL_PID(pid)	(POLAR_BASE_VIRTUAL_PID <= pid && pid < 2 * POLAR_BASE_VIRTUAL_PID)
+
 
 /* Values for track_functions GUC variable --- order is significant! */
 typedef enum TrackFunctionsLevel
@@ -760,7 +764,8 @@ typedef enum BackendType
 	B_POLAR_WAL_PIPELINER,
 	B_BG_LOGINDEX,
 	B_BG_FLOG_INSERTER,
-	B_BG_FLOG_WRITER
+	B_BG_FLOG_WRITER,
+	B_POLAR_DISPATCHER,
 } BackendType;
 
 
@@ -1199,6 +1204,13 @@ typedef struct PgBackendStatus
 
 	/* POLAR: queryid of  the current backend */
 	int64 		queryid;
+
+	/* POLAR: Shared Server */
+	int32 		dispatcher_pid;
+	int32 		session_local_id;
+	int32 		last_backend_pid;
+	int32 		saved_guc_count;
+	TimestampTz last_wait_start_timestamp;
 	/* POLAR end */
 } PgBackendStatus;
 
@@ -1679,5 +1691,7 @@ extern polar_unsplittable_reason_t polar_unable_to_split_reason;
 #define polar_stat_update_proxy_info(variable) \
 {if (polar_stat_need_update_proxy_info) {(variable)++;}}
 /* POLAR: end */
+
+extern void polar_pgstat_beshutdown(int id);
 
 #endif							/* PGSTAT_H */

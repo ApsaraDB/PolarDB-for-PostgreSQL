@@ -54,3 +54,4 @@ test: polar-px-dev/polar_multilevel_hash_partition
 test: polar-px-dev/polar_partition1_fromorca
 test: polar-px-dev/px_spi_select
 test: polar-px-dev/polar_px_create_table_as
+test: polar-px-dev/polar_px_analyze_detail

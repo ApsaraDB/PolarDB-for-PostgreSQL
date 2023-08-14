@@ -27,7 +27,7 @@
 #include "miscadmin.h"
 #include "utils/memutils.h"
 
-
+#include "nodes/tidbitmap.h"
 /* ----------------------------------------------------------------
  *		ExecBitmapIndexScan
  *

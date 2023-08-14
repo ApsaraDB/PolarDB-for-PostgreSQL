@@ -15,8 +15,9 @@
 #ifndef PXEXPLAIN_H
 #define PXEXPLAIN_H
 
+#include "px/memquota.h"
 #include "executor/instrument.h"        /* instr_time */
-
+#include "commands/explain.h"
 struct PxDispatchResults;              /* #include "px/px_dispatchresult.h" */
 struct PlanState;                       /* #include "nodes/execnodes.h" */
 struct QueryDesc;                       /* #include "executor/execdesc.h" */
@@ -73,7 +74,7 @@ pxexplain_agg_avg(PxExplain_Agg *agg)
  *    containing EXPLAIN ANALYZE statistics for a root slice that
  *    has been executed locally in the qDisp process.  Attaches these
  *    structures to the PlanState nodes' Instrumentation objects for
- *    later use by cdbexplain_showExecStats().
+ *    later use by pxexplain_showExecStats().
  *
  * 'planstate' is the top PlanState node of the slice.
  * 'showstatctx' is a PxExplain_ShowStatCtx object which was created by
@@ -125,5 +126,6 @@ pxexplain_showExecStatsBegin(struct QueryDesc *queryDesc,
                               instr_time        querystarttime);
 
 
+extern void ExplainPrintExecStatsEnd(ExplainState *es, QueryDesc *queryDesc);
 
 #endif   /* PXEXPLAIN_H */

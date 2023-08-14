@@ -1513,7 +1513,7 @@ SendQuery(const char *query)
 		goto sendquery_cleanup;
 	}
 
-	/* POALR px */
+	/* POLAR px */
 	contain_result = polar_contain_explain_query(query);
 	if (contain_result != 0)
 		pset.explain_query = (1 == contain_result);
@@ -1655,7 +1655,7 @@ SendQuery(const char *query)
 		{
 			OK = PrintQueryResults(results);
 
-			/* POALR px */
+			/* POLAR px */
 			result_status = PQresultStatus(results);
 			if (pset.compare_px_result &&
 				polar_is_px_select_command(query) &&

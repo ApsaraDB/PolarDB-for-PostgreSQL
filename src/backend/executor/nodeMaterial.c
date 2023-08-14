@@ -25,6 +25,10 @@
 #include "executor/nodeMaterial.h"
 #include "miscadmin.h"
 
+/* POLAR px */
+static void polar_ExecMaterialExplainEnd(PlanState *planstate, struct StringInfoData *buf);
+static void polar_ExecEagerFreeMaterial(MaterialState *node);
+/* POLAR end */
 /* ----------------------------------------------------------------
  *		ExecMaterial
  *
@@ -76,6 +80,16 @@ ExecMaterial(PlanState *pstate)
 			Assert(ptrno == 1);
 		}
 		node->tuplestorestate = tuplestorestate;
+
+   		/* PX: Offer extra info for EXPLAIN ANALYZE. */
+        if (node->ss.ps.instrument && node->ss.ps.instrument->need_px)
+        {
+            /* Let the tuplestore share our Instrumentation object. */
+			tuplestore_set_instrument(tuplestorestate, node->ss.ps.instrument);
+
+            /* Request a callback at end of query. */
+            node->ss.ps.pxexplainfun = polar_ExecMaterialExplainEnd;
+        }
 	}
 
 	/*
@@ -398,11 +412,26 @@ ExecReScanMaterial(MaterialState *node)
 }
 
 /*
+ * POLAR px:
+ * polar_ExecMaterialExplainEnd
+ *      Called before ExecutorEnd to finish EXPLAIN ANALYZE reporting.
+ *
+ * Some of the cleanup that ordinarily would occur during ExecEndMaterial()
+ * needs to be done earlier in order to report statistics to EXPLAIN ANALYZE.
+ * Note that ExecEndMaterial() will be called again during ExecutorEnd().
+ */
+static void
+polar_ExecMaterialExplainEnd(PlanState *planstate, struct StringInfoData *buf)
+{
+	polar_ExecEagerFreeMaterial((MaterialState*)planstate);
+}                               /* polar_ExecMaterialExplainEnd */
+
+/*
  * POLAR px: release tuplestore resources when eager freeing. Eager free
  *           is safe only when delayEagerFree is false.
  */
 static void
-ExecEagerFreeMaterial(MaterialState *node)
+polar_ExecEagerFreeMaterial(MaterialState *node)
 {
 	if (node->tuplestorestate)
 	{
@@ -425,7 +454,7 @@ ExecSquelchMaterial(MaterialState *node)
 	 */
 	if (!node->delayEagerFree)
 	{
-		ExecEagerFreeMaterial(node);
+		polar_ExecEagerFreeMaterial(node);
 		ExecSquelchNode(outerPlanState(node));
 	}
 }

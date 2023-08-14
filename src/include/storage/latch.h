@@ -146,6 +146,9 @@ typedef struct WaitEvent
 #ifdef WIN32
 	bool		reset;			/* Is reset of the event required? */
 #endif
+	/* POLAR: Shared Server */
+	int         polar_index;    /* position of correspondent element in 
+								   descriptors array (for poll() and win32 implementation */
 } WaitEvent;
 
 /* forward declaration to avoid exposing latch.c implementation details */
@@ -175,6 +178,8 @@ extern int WaitLatch(volatile Latch *latch, int wakeEvents, long timeout,
 		  uint32 wait_event_info);
 extern int WaitLatchOrSocket(volatile Latch *latch, int wakeEvents,
 				  pgsocket sock, long timeout, uint32 wait_event_info);
+
+extern void DeleteWaitEventFromSet(WaitEventSet *set, int event_pos);
 
 /*
  * Unix implementation uses SIGUSR1 for inter-process signaling.

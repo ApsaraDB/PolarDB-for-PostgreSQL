@@ -149,7 +149,8 @@ ExecInitNode(Plan *node, EState *estate, int eflags)
 	PlanState  *result;
 	List	   *subps;
 	ListCell   *l;
-
+	MemoryContext nodecxt = NULL;
+	MemoryContext oldcxt = NULL;
 	/*
 	 * do nothing when we get to the end of a leaf on tree.
 	 */
@@ -162,6 +163,24 @@ ExecInitNode(Plan *node, EState *estate, int eflags)
 	 * stack isn't overrun while initializing the node tree.
 	 */
 	check_stack_depth();
+
+	/*
+	 * If per-node memory usage was requested
+	 * (px_explain_memory_verbosity=detail), create a separate memory context
+	 * for every node, so that we can attribute memory usage to each node.
+	 * Otherwise, everything is allocated in the per-query ExecutorState
+	 * context. The extra memory contexts consume some memory on their
+	 * own, and prevent reusing memory allocated in one node in another
+	 * node, so we only want to do this if the level of detail is needed.
+	 */
+	if ((estate->es_instrument & INSTRUMENT_MEMORY_DETAIL) != 0)
+	{
+		nodecxt = AllocSetContextCreate(CurrentMemoryContext,
+										"executor node",
+										ALLOCSET_SMALL_SIZES);
+		MemoryContextDeclareAccountingRoot(nodecxt);
+		oldcxt = MemoryContextSwitchTo(nodecxt);
+	}
 
 	switch (nodeTag(node))
 	{
@@ -415,6 +434,12 @@ ExecInitNode(Plan *node, EState *estate, int eflags)
 
 	ExecSetExecProcNode(result, result->ExecProcNode);
 
+	if ((estate->es_instrument & INSTRUMENT_MEMORY_DETAIL) != 0)
+	{
+		Assert(CurrentMemoryContext == nodecxt);
+		result->node_context = nodecxt;
+		MemoryContextSwitchTo(oldcxt);
+	}
 	/*
 	 * Initialize any initPlans present in this node.  The planner put them in
 	 * a separate list for us.
@@ -438,7 +463,7 @@ ExecInitNode(Plan *node, EState *estate, int eflags)
 	}
 	result->initPlan = subps;
 
-	/* POALR px */
+	/* POLAR px */
 	result->plan_line_id = ++estate->max_plan_line_id;
 
 	/* Set up instrumentation for this node if requested */
@@ -495,7 +520,7 @@ ExecProcNodeFirst(PlanState *node)
 	else
 		node->ExecProcNode = node->ExecProcNodeReal;
 
-	/* POALR px */
+	/* POLAR px */
 	if (ExecProcNode_hook)
 		return (*ExecProcNode_hook)(node);
 	else
@@ -512,11 +537,25 @@ static TupleTableSlot *
 ExecProcNodeInstr(PlanState *node)
 {
 	TupleTableSlot *result;
+	/* POLAR px */
+	MemoryContext oldcxt = NULL;
+	/* POLAR end */
 
 	InstrStartNode(node->instrument);
 
+	/* POLAR px */
+	if ((node->state->es_instrument & INSTRUMENT_MEMORY_DETAIL) != 0)
+		oldcxt = MemoryContextSwitchTo(node->node_context);
+	/* POLAR end */
 	result = node->ExecProcNodeReal(node);
 
+	/* POLAR px */
+	if ((node->state->es_instrument & INSTRUMENT_MEMORY_DETAIL) != 0)
+	{
+		Assert(CurrentMemoryContext == node->node_context);
+		MemoryContextSwitchTo(oldcxt);
+	}
+	/* POLAR end */
 	InstrStopNode(node->instrument, TupIsNull(result) ? 0.0 : 1.0);
 
 	return result;
@@ -600,7 +639,7 @@ ExecEndNode(PlanState *node)
 		standard_ExecEndNode(node);
 }
 
-/* POALR px */
+/* POLAR px */
 void
 standard_ExecEndNode(PlanState *node)
 {

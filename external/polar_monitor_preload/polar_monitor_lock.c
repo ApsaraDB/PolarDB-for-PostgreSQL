@@ -36,7 +36,7 @@
 #include "utils/builtins.h"
 
 /* POLAR: max procs for lock stat */
-#define POLAR_MAX_LOCK_STAT_SLOTS (MaxBackends + NUM_AUXPROCTYPES)
+#define POLAR_MAX_LOCK_STAT_SLOTS (MaxBackends + NUM_AUXPROCTYPES + MaxPolarSessions)
 
 #define CHECK_BACKENDID_VALID(backendid) (backendid >= 1 && backendid <= POLAR_MAX_LOCK_STAT_SLOTS)
 
@@ -278,6 +278,13 @@ polar_proc_stat_lock(PG_FUNCTION_ARGS)
 		if (!CHECK_BACKENDID_VALID(beentry->backendid))
 			continue;
 
+		/* POLAR: Shared Server */
+		/* only show session pid */
+		if (POLAR_SHARED_SERVER_RUNNING() &&
+			beentry->st_backendType == B_BACKEND &&
+			beentry->session_local_id < 0)
+			continue;
+
 		procstat = &polar_locks_stat_array[beentry->backendid - 1];
 
 		for (i = 0; i <= LOCKTAG_LAST_TYPE; i++)
@@ -490,6 +497,13 @@ polar_proc_stat_lwlock(PG_FUNCTION_ARGS)
 
 		beentry = &local_beentry->backendStatus;
 		if (!CHECK_BACKENDID_VALID(beentry->backendid))
+			continue;
+
+		/* POLAR: Shared Server */
+		/* only show session pid */
+		if (POLAR_SHARED_SERVER_RUNNING() &&
+			beentry->st_backendType == B_BACKEND &&
+			beentry->session_local_id < 0)
 			continue;
 
 		procstat = &polar_lwlocks_stat_array[beentry->backendid - 1];

@@ -494,7 +494,7 @@ extern void polar_wal_pipeline_recent_written_add_link(XLogRecPtr start_lsn, XLo
 extern void polar_wal_pipeline_commit_wait(XLogRecPtr flush_lsn);
 
 /* 
- *	Only for poalr wal pipeline test 
+ *	Only for polar wal pipeline test 
  */
 extern void polar_wal_pipeline_set_local_recovery_mode(bool mode);
 

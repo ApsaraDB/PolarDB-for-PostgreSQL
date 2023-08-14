@@ -422,7 +422,7 @@ CExpressionPreprocessor::PexprRemoveSuperfluousLimit(CMemoryPool *mp,
 		!CLogicalLimit::PopConvert(pop)->FHasCount())
 	{
 		CLogicalLimit *popLgLimit = CLogicalLimit::PopConvert(pop);
-		/* POALR px: add guc control */
+		/* POLAR px: add guc control */
 		if (GPOS_FTRACE(EopttraceRemoveSuperfluousOrder) &&
 			((!popLgLimit->IsTopLimitUnderDMLorCTAS() &&
 				GPOS_FTRACE(EopttraceRemoveOrderBelowDML)) ||
@@ -2977,7 +2977,7 @@ CExpressionPreprocessor::PexprPreprocess(
 
 	PRINT_EXPR("26", pexprPrunedPartitions);
 
-	// POALR px (26.a) PartitionWiseJoin
+	// POLAR px (26.a) PartitionWiseJoin
 	if (GPOS_FTRACE(EopttraceEnablePartitionWiseJoin))
 	{
 		UlongToColRefMap *colref_mapping_first = NULL;

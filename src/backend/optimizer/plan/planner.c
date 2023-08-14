@@ -252,7 +252,6 @@ static bool group_by_has_partkey(RelOptInfo *input_rel,
 
 /* POLAR px */
 static void tag_should_jit(PlannedStmt *result, bool pxopt);
-static void init_hit_function_oid();
 static bool check_disable_px_planner_walker(Node *node, void *context);
 static bool contains_ignore_functions_checker(const Oid func_oid, void *context);
 static bool contains_returns_set_func(Node *node);
@@ -7302,9 +7301,12 @@ static bool
 contains_ignore_functions_checker(const Oid func_oid, void *context)
 {
 	int i;
-	for (i = 0; i < px_function_oid_array.len; i++)
+	if (!px_function_oid_array)
+		return false;
+
+	for (i = 0; i < px_function_oid_array->count; i++)
 	{
-		if (func_oid == px_function_oid_array.array[i])
+		if (func_oid == px_function_oid_array->oid[i])
 		{
 			elog(DEBUG1, "px ignore function oid hit : %d", func_oid);
 			return true;
@@ -7544,51 +7546,6 @@ tag_should_jit(	PlannedStmt *result, bool pxopt)
 	return;
 }
 
-static void
-init_hit_function_oid()
-{
-	char *hit_function_oid = pstrdup(polar_px_ignore_function);
-	bool need_print_func_names = (client_min_messages <= DEBUG5);
-	StringInfo names = makeStringInfo();
-	HeapTuple tup;
-	ListCell *lc;
-	List *px_function_oid_list = NULL;
-	int i = 0;
-
-	if (!SplitIdentifierString(hit_function_oid, ',', &px_function_oid_list))
-	{
-		/* syntax error in function oid list */
-		GUC_check_errdetail("polar px ignore function list is invalid, func1,func2,func3, ...");
-	}
-	else
-	{
-		foreach(lc, px_function_oid_list)
-		{
-			char *s = (char *)lfirst(lc);
-			Oid f_oid = atooid(s);
-			/* function oid has been checked in GUC check hook, no need to check here */
-			tup = SearchSysCache(PROCOID, ObjectIdGetDatum(f_oid), 0, 0, 0);
-			if(!HeapTupleIsValid(tup))
-				elog(WARNING, "polar_px_ignore_function contains invalid ignore function oid %d, continue",
-					f_oid);
-			else
-			{
-				px_function_oid_array.array[i++] = f_oid;
-				if (need_print_func_names)
-					appendStringInfo(names, "%d:%s;",
-						f_oid, NameStr(((Form_pg_proc) GETSTRUCT(tup))->proname));
-			}
-			ReleaseSysCache(tup);
-		}
-		px_function_oid_array.len = i;
-	}
-
-	if (need_print_func_names)
-		elog(DEBUG1, "px ignore function is %s", names->data);
-
-	pfree(hit_function_oid);
-}
-
 static bool
 check_disable_px_planner_walker(Node *node, void *context)
 {
@@ -7632,7 +7589,8 @@ check_disable_px_planner_walker(Node *node, void *context)
 		{
 			/* Check for px ignore functions in node itself */
 			has_not_support_node = polar_px_ignore_function &&
-							px_function_oid_array.len > 0 &&
+							px_function_oid_array &&
+							px_function_oid_array->count > 0 &&
 							check_functions_in_node(node,
 								contains_ignore_functions_checker, context);
 			CHECK_RETURN_HELP_LOG(has_not_support_node, "sql with px ignore functions was not supported in px");
@@ -7656,7 +7614,8 @@ check_disable_px_planner_walker(Node *node, void *context)
 		{
 			/* Check for px ignore functions in node itself */
 			has_not_support_node = polar_px_ignore_function &&
-							px_function_oid_array.len > 0 &&
+							px_function_oid_array &&
+							px_function_oid_array->count > 0 &&
 							check_functions_in_node(node,
 								contains_ignore_functions_checker, context);
 			CHECK_RETURN_HELP_LOG(has_not_support_node, "sql with px ignore functions was not supported in px");
@@ -7923,9 +7882,6 @@ should_px_planner(Query *current_parse)
 	 * can not execute nextval. But "select * from xxx where currval(xxx)"
 	 * will use parallel execution, it will make some errors.
 	 */
-	if (polar_px_ignore_function && px_function_oid_array.len == 0)
-		init_hit_function_oid();
-
 	if (CMD_INSERT == current_parse->commandType)
 		found_insert_select = true;
 

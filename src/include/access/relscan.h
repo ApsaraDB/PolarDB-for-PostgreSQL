@@ -182,7 +182,7 @@ typedef struct IndexScanDescData
 	/* parallel index scan information, in shared memory */
 	ParallelIndexScanDesc parallel_scan;
 
-	/* POALR px: scan desc */
+	/* POLAR px: scan desc */
 	PXScanDesc px_scan;
 	/* POLAR end */
 }			IndexScanDescData;

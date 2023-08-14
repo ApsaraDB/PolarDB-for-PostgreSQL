@@ -20,6 +20,9 @@
 #include "utils/rel.h"
 #include "utils/tqual.h"
 
+/* POLAR: Shared Server */
+#include "postmaster/polar_dispatcher.h"
+
 void
 AlterSetting(Oid databaseid, Oid roleid, VariableSetStmt *setstmt)
 {
@@ -28,6 +31,7 @@ AlterSetting(Oid databaseid, Oid roleid, VariableSetStmt *setstmt)
 	Relation	rel;
 	ScanKeyData scankey[2];
 	SysScanDesc scan;
+	bool is_drop = false;
 
 	valuestr = ExtractSetVariableArgs(setstmt);
 
@@ -91,7 +95,10 @@ AlterSetting(Oid databaseid, Oid roleid, VariableSetStmt *setstmt)
 				CatalogTupleUpdate(rel, &tuple->t_self, newtuple);
 			}
 			else
+			{
 				CatalogTupleDelete(rel, &tuple->t_self);
+				is_drop = true;
+			}
 		}
 	}
 	else if (HeapTupleIsValid(tuple))
@@ -129,7 +136,10 @@ AlterSetting(Oid databaseid, Oid roleid, VariableSetStmt *setstmt)
 			CatalogTupleUpdate(rel, &tuple->t_self, newtuple);
 		}
 		else
+		{
 			CatalogTupleDelete(rel, &tuple->t_self);
+			is_drop = true;
+		}
 	}
 	else if (valuestr)
 	{
@@ -159,6 +169,9 @@ AlterSetting(Oid databaseid, Oid roleid, VariableSetStmt *setstmt)
 
 	/* Close pg_db_role_setting, but keep lock till commit */
 	heap_close(rel, NoLock);
+
+	/* POLAR: Shared Server */
+	polar_update_db_role_setting_version(databaseid, roleid, is_drop);
 }
 
 /*
@@ -204,6 +217,9 @@ DropSetting(Oid databaseid, Oid roleid)
 	heap_endscan(scan);
 
 	heap_close(relsetting, RowExclusiveLock);
+
+	/* POLAR: Shared Server */
+	polar_update_db_role_setting_version(databaseid, roleid, true);
 }
 
 /*

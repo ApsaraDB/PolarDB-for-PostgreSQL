@@ -23,10 +23,8 @@
 
 /* POLAR px */
 #include "px/px_vars.h"
-/* POLAR end */
-
-/* POLAR px */
-static void ExecEagerFreeSort(SortState *node);
+static void polar_ExecSortExplainEnd(PlanState *planstate, struct StringInfoData *buf);
+static void polar_ExecEagerFreeSort(SortState *node);
 /* POLAR end */
 
 /* ----------------------------------------------------------------
@@ -168,7 +166,7 @@ ExecSort(PlanState *pstate)
 	 */
 	if (px_is_executing && TupIsNull(slot) && !node->delayEagerFree)
 	{
-		ExecEagerFreeSort(node);
+		polar_ExecEagerFreeSort(node);
 	}
 	/* POLAR end */
 
@@ -211,6 +209,16 @@ ExecInitSort(Sort *node, EState *estate, int eflags)
 	sortstate->sort_Done = false;
 	sortstate->tuplesortstate = NULL;
 
+	/* POLAR px: offer extra info for EXPLAIN ANALYZE. */
+	if (estate->es_instrument)
+	{
+		/* Allocate string buffer. */
+		sortstate->ss.ps.pxexplainbuf = makeStringInfo();
+
+		/* Request a callback at end of query. */
+		sortstate->ss.ps.pxexplainfun = polar_ExecSortExplainEnd;
+	}
+	/* POLAR end */
 	/*
 	 * Miscellaneous initialization
 	 *
@@ -399,6 +407,28 @@ ExecReScanSort(SortState *node)
 		tuplesort_rescan((Tuplesortstate *) node->tuplesortstate);
 }
 
+/* px
+ * polar_ExecSortExplainEnd
+ *      Called before ExecutorEnd to finish EXPLAIN ANALYZE reporting.
+ */
+void
+polar_ExecSortExplainEnd(PlanState *planstate, struct StringInfoData *buf)
+{
+	SortState *sortstate = (SortState *) planstate;
+
+	if (sortstate->tuplesortstate)
+	{
+		tuplesort_get_stats(sortstate->tuplesortstate,
+							&sortstate->sortstats);
+
+		if (planstate->instrument)
+		{
+			planstate->instrument->workfileCreated = (sortstate->sortstats.spaceType == SORT_SPACE_TYPE_DISK);
+			planstate->instrument->workmemused = sortstate->sortstats.workmemused;
+		}
+	}
+}                               /* polar_ExecSortExplainEnd */
+
 /* ----------------------------------------------------------------
  *						Parallel Query Support
  * ----------------------------------------------------------------
@@ -487,12 +517,12 @@ ExecSortRetrieveInstrumentation(SortState *node)
 }
 
 /* 
- * POLAR px: ExecEagerFreeSort() does nearly the same as ExecEndSort(),
+ * POLAR px: polar_ExecEagerFreeSort() does nearly the same as ExecEndSort(),
  *           but ExecSquelchSort() will decide whether or not the node is
  *           safe to eager free. It is safe ONLY IF delayEagerFree is false.
  */
 static void
-ExecEagerFreeSort(SortState *node)
+polar_ExecEagerFreeSort(SortState *node)
 {
 	/* clean out the tuple table */
 	ExecClearTuple(node->ss.ss_ScanTupleSlot);
@@ -502,6 +532,19 @@ ExecEagerFreeSort(SortState *node)
 
 	if (node->tuplesortstate != NULL)
 	{
+		/*
+		 * POLAR px:
+		 * Save stats like in polar_ExecSortExplainEnd, so that we can display
+		 * them later in EXPLAIN ANALYZE.
+		 */
+		tuplesort_get_stats(node->tuplesortstate,
+							&node->sortstats);
+		if (node->ss.ps.instrument)
+		{
+			node->ss.ps.instrument->workfileCreated = (node->sortstats.spaceType == SORT_SPACE_TYPE_DISK);
+			node->ss.ps.instrument->workmemused = node->sortstats.workmemused;
+		}
+		/* POLAR end */
 		tuplesort_end((Tuplesortstate *) node->tuplesortstate);
 		node->tuplesortstate = NULL;
 	}
@@ -513,7 +556,7 @@ ExecSquelchSort(SortState *node)
 	/* safe to eager free */
 	if (!node->delayEagerFree)
 	{
-		ExecEagerFreeSort(node);
+		polar_ExecEagerFreeSort(node);
 		ExecSquelchNode(outerPlanState(node));
 	}
 }

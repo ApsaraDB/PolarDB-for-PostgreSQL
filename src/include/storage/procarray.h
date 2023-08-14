@@ -124,6 +124,9 @@ extern int	CountUserBackends(Oid roleid);
 extern bool CountOtherDBBackends(Oid databaseId,
 					 int *nbackends, int *nprepared);
 
+/* POLAR: Shared Server */
+extern bool CountOtherUserBackends(Oid roleId, int *nbackends);
+
 extern void XidCacheRemoveRunningXids(TransactionId xid,
 						  int nxids, const TransactionId *xids,
 						  TransactionId latestXid);

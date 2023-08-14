@@ -35,6 +35,8 @@
 
 #include "plpgsql.h"
 
+/* POLAR: Shared Server */
+#include "storage/polar_session_context.h"
 
 /* ----------
  * Our own local and global variables

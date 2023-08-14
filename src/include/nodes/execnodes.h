@@ -656,6 +656,7 @@ typedef struct EState
 
 /* POLAR px */
 extern int LocallyExecutingSliceIndex(EState *estate);
+extern int PrimaryWriterSliceIndex(EState *estate);
 extern int RootSliceIndex(EState *estate);
 /* POLAR end */
 
@@ -928,6 +929,9 @@ typedef struct SubPlanState
 	FmgrInfo   *lhs_hash_funcs; /* hash functions for lefthand datatype(s) */
 	FmgrInfo   *cur_eq_funcs;	/* equality functions for LHS vs. table */
 	ExprState  *cur_eq_comp;	/* equality comparator for LHS vs. table */
+	/* POLAR px */
+	Tuplestorestate *ts_state;
+	/* POLAR end */
 } SubPlanState;
 
 /* ----------------
@@ -1049,10 +1053,14 @@ typedef struct PlanState
 	 * EXPLAIN ANALYZE statistics collection
 	 */
 	struct StringInfoData  *pxexplainbuf;  /* EXPLAIN ANALYZE report buf */
-
+	MemoryContext node_context;
 	void      (*pxexplainfun)(struct PlanState *planstate, struct StringInfoData *buf);
 	/* POLAR end */
 } PlanState;
+
+/* POLAR px */
+extern uint64 polar_PlanStateOperatorMemKB(const PlanState *ps);
+/* POLAR end */
 
 /* ----------------
  *	these are defined to avoid confusion problems with "left"
@@ -2027,6 +2035,7 @@ typedef struct SortState
 	/* POLAR px */
 	bool		delayEagerFree;		/* is it safe to free memory used by this node,
 									 * when this node has outputted its last row? */
+	TuplesortInstrumentation sortstats; /* holds stats, if the Sort is eagerly free'd */
 	/* POLAR end */
 } SortState;
 

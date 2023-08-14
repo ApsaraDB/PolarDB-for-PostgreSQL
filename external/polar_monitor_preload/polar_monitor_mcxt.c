@@ -24,9 +24,10 @@
 #include "polar_monitor_preload.h"
 #include "storage/procsignal.h"
 #include "miscadmin.h"
+#include "postmaster/polar_dispatcher.h"
 
 bool polar_mcxt_view = true;
-int	polar_mcxt_timeout = 30; /* default 3 seconds */
+int	polar_mcxt_timeout = 100; /* default 100 ms */
 
 BackendMemoryStat *memstats = NULL;
 
@@ -45,6 +46,7 @@ static void
 iterateMemoryContext(MemoryContextIteratorState *state)
 {
 	MemoryContext	context = state->context;
+	state->context = NULL;
 
 	AssertArg(MemoryContextIsValid(context));
 
@@ -102,7 +104,8 @@ copyBackendMemoryStat(InstanceState *state, pid_t targetBackendId)
 		state->iContext = 0;
 	}
 	else
-		elog(ERROR, "the target backend is not the expected one");
+		elog(ERROR, "the target backend is not the expected one, %d(%d) != %d",
+			memstats->pid, memstats->is_session_pid, targetBackendId);
 	LWLockRelease(memstats->lock);
 }
 
@@ -115,8 +118,8 @@ polar_get_memory_stats(PG_FUNCTION_ARGS)
 {
 	FuncCallContext			*funcctx;
 	InstanceState			*state;
-	Datum					values[7];
-	bool					nulls[7];
+	Datum					values[19];
+	bool					nulls[19];
 	HeapTuple				tuple;
 	MemoryContextStat		*ContextStat;
 	int						wait_times = polar_mcxt_timeout;
@@ -125,7 +128,7 @@ polar_get_memory_stats(PG_FUNCTION_ARGS)
 	if (!polar_mcxt_view || memstats == NULL)
 		elog(ERROR, "no support polar_get_memory_stats");
 
-	if (targetBackendId == MyProc->pid)
+	if (targetBackendId == MyProcPid || targetBackendId == MySessionPid)
 		elog(ERROR, "please use polar_get_local_mcxt to get current backend memory context");
 
 	if (SRF_IS_FIRSTCALL())
@@ -155,6 +158,8 @@ polar_get_memory_stats(PG_FUNCTION_ARGS)
 		funcctx->user_fctx = state;
 
 		MemoryContextSwitchTo(oldcontext);
+
+		memstats->is_session_pid = POLAR_IS_SESSION_ID(targetBackendId);
 
 		/* initialize the data_ready flag */
 		pg_atomic_write_u32(&memstats->data_ready, 0);
@@ -186,6 +191,7 @@ polar_get_memory_stats(PG_FUNCTION_ARGS)
 	if (state->iContext < state->stat->nContext)
 	{
 		ContextStat = state->stat->stats + state->iContext;
+		memset(values, 0, sizeof(values));
 		memset(nulls, 0, sizeof(nulls));
 
 		/* Fill data */
@@ -196,6 +202,29 @@ polar_get_memory_stats(PG_FUNCTION_ARGS)
 		values[4] = Int64GetDatum(ContextStat->stat.freechunks);
 		values[5] = Int64GetDatum(ContextStat->stat.totalspace);
 		values[6] = Int64GetDatum(ContextStat->stat.freespace);
+		if (strlen(ContextStat->ident.data) > 0)
+			values[7] = PointerGetDatum(cstring_to_text(ContextStat->ident.data));
+		else
+			nulls[7] = true;
+		values[8] = BoolGetDatum(ContextStat->is_shared);
+		values[9] = Int64GetDatum(ContextStat->type);
+
+		if (ContextStat->type == T_ShmAllocSetContext)
+		{
+			values[10] = Int64GetDatum(ContextStat->stat.dsa_lock_stat.lock_area_count);
+			values[11] = Int64GetDatum(ContextStat->stat.dsa_lock_stat.lock_area_time_us);
+			values[12] = Int64GetDatum(ContextStat->stat.dsa_lock_stat.lock_area_max_time_us);
+			values[13] = Int64GetDatum(ContextStat->stat.dsa_lock_stat.lock_sclass_count);
+			values[14] = Int64GetDatum(ContextStat->stat.dsa_lock_stat.lock_sclass_time_us);
+			values[15] = Int64GetDatum(ContextStat->stat.dsa_lock_stat.lock_freelist_max_time_us);
+			values[16] = Int64GetDatum(ContextStat->stat.dsa_lock_stat.lock_freelist_count);
+			values[17] = Int64GetDatum(ContextStat->stat.dsa_lock_stat.lock_freelist_time_us);
+			values[18] = Int64GetDatum(ContextStat->stat.dsa_lock_stat.lock_freelist_max_time_us);
+		}
+		else
+		{
+			MemSet(nulls + 10, true, 9 * sizeof(bool));
+		}
 
 		/* Data are ready */
 		tuple = heap_form_tuple(funcctx->tuple_desc, values, nulls);
@@ -217,6 +246,8 @@ polar_get_local_memory_stats(PG_FUNCTION_ARGS)
 {
 	FuncCallContext		*funcctx;
 	MemoryContextIteratorState	*state;
+	static bool try_session_shared_memctx = false;
+	int	session_id = MySessionPid;
 
 	if (SRF_IS_FIRSTCALL())
 	{
@@ -238,38 +269,74 @@ polar_get_local_memory_stats(PG_FUNCTION_ARGS)
 		state = palloc0(sizeof(*state));
 		state->context = TopMemoryContext;
 		funcctx->user_fctx = state;
+		try_session_shared_memctx = false;
 
 		MemoryContextSwitchTo(oldcontext);
 	}
 
 	funcctx = SRF_PERCALL_SETUP();
 	state = (MemoryContextIteratorState*) funcctx->user_fctx;
+
+LOOP:
 	if (state && state->context)
 	{
-		Datum					values[7];
-		bool					nulls[7];
+		Datum					values[19];
+		bool					nulls[19];
 		HeapTuple				tuple;
 		MemoryContextCounters	stat;
 
 		getMemoryContextStat(state->context, &stat);
+		memset(values, 0, sizeof(values));
 		memset(nulls, 0, sizeof(nulls));
 
 		/* Fill data */
-		values[0] = Int32GetDatum(MyProc->pid);
+		values[0] = Int32GetDatum(session_id);
 		values[1] = PointerGetDatum(cstring_to_text(state->context->name));
 		values[2] = Int32GetDatum(state->level);
 		values[3] = Int64GetDatum(stat.nblocks);
 		values[4] = Int64GetDatum(stat.freechunks);
 		values[5] = Int64GetDatum(stat.totalspace);
 		values[6] = Int64GetDatum(stat.freespace);
+		if (state->context->ident != NULL)
+			values[7] = PointerGetDatum(cstring_to_text(state->context->ident));
+		else
+			nulls[7] = true;
+		values[8] = BoolGetDatum(try_session_shared_memctx);
+		values[9] = Int64GetDatum(state->context->type);
+	
+		if (state->context->type == T_ShmAllocSetContext)
+		{
+			values[10] = Int64GetDatum(stat.dsa_lock_stat.lock_area_count);
+			values[11] = Int64GetDatum(stat.dsa_lock_stat.lock_area_time_us);
+			values[12] = Int64GetDatum(stat.dsa_lock_stat.lock_area_max_time_us);
+			values[13] = Int64GetDatum(stat.dsa_lock_stat.lock_sclass_count);
+			values[14] = Int64GetDatum(stat.dsa_lock_stat.lock_sclass_time_us);
+			values[15] = Int64GetDatum(stat.dsa_lock_stat.lock_sclass_max_time_us);
+			values[16] = Int64GetDatum(stat.dsa_lock_stat.lock_freelist_count);
+			values[17] = Int64GetDatum(stat.dsa_lock_stat.lock_freelist_time_us);
+			values[18] = Int64GetDatum(stat.dsa_lock_stat.lock_freelist_max_time_us);
+		}
+		else
+		{
+			MemSet(nulls + 10, true, 9 * sizeof(bool));
+		}
 
 		/* Data are ready */
 		tuple = heap_form_tuple(funcctx->tuple_desc, values, nulls);
 
 		/* go next context */
 		iterateMemoryContext(state);
+		AssertArg(!state->context || MemoryContextIsValid(state->context));
 
 		SRF_RETURN_NEXT(funcctx, HeapTupleGetDatum(tuple));
+	}
+	else if (!try_session_shared_memctx && IS_POLAR_SESSION_SHARED())
+	{
+		state->level = 0;
+		state->context = polar_session()->memory_context;
+		try_session_shared_memctx = true;
+		session_id = MySessionPid;
+		goto LOOP;
 	}
 	else
 	{
@@ -297,6 +364,7 @@ void
 polar_check_signal_mctx(void)
 {
 	MemoryContextIteratorState state;
+	static bool try_session_shared_memctx = false;
 
 	if (pg_atomic_read_u32(&memstats->signal_ready) == 1)
 	{
@@ -305,17 +373,27 @@ polar_check_signal_mctx(void)
 		*/
 		LWLockAcquire(memstats->lock, LW_EXCLUSIVE);
 
-		memstats->pid = MyProc->pid;
+		memstats->pid = (memstats->is_session_pid ? MySessionPid : MyProcPid);
+
 		memstats->nContext = 0;
 		state.context = TopMemoryContext;
 		state.level = 0;
+		try_session_shared_memctx = false;
+		ELOG_PSS(LOG, "polar_check_signal_mctx %d-%d", memstats->is_session_pid, memstats->pid);
 
 		/*
 		* walk through all memory context and fill stat table in shared memory
 		*/
+LOOP:
 		do {
 			MemoryContextStat	*mcs = memstats->stats + memstats->nContext;
-			int					namelen = strlen(state.context->name);
+			int					namelen = 0;
+			int					identlen = 0;
+
+			Assert(state.context);
+			Assert(state.context->name != NULL);
+
+			namelen = strlen(state.context->name);
 
 			if (namelen > NAMEDATALEN - 1)
 				namelen = NAMEDATALEN - 1;
@@ -324,13 +402,95 @@ polar_check_signal_mctx(void)
 
 			mcs->level = state.level;
 
+			if (state.context->ident != NULL)
+			{
+				identlen = strlen(state.context->ident);
+				memcpy(mcs->ident.data, state.context->ident, identlen);
+			}
+			mcs->ident.data[identlen] = '\0';
+			mcs->type = state.context->type;
+			mcs->is_shared = try_session_shared_memctx;
+
 			getMemoryContextStat(state.context, &mcs->stat);
 			memstats->nContext++;
 
 			iterateMemoryContext(&state);
+			AssertArg(!state.context || MemoryContextIsValid(state.context));
 		} while (state.context && memstats->nContext < N_MC_STAT);
+
+		if (!try_session_shared_memctx &&
+			IS_POLAR_SESSION_SHARED())
+		{
+			state.level = 0;
+			state.context = polar_session()->memory_context;
+			try_session_shared_memctx = true;
+			goto LOOP;
+		}
 		pg_atomic_write_u32(&memstats->signal_ready, 0);
 		pg_atomic_write_u32(&memstats->data_ready, 1);
 		LWLockRelease(memstats->lock);
 	}
+}
+
+void
+polar_ss_check_signal_mctx(void *args)
+{
+	MemoryContextIteratorState state;
+	PolarSessionContext *session = (PolarSessionContext *)args;
+
+	Assert(session);
+	Assert(pg_atomic_read_u32(&session->status) == PSSE_IDLE);
+
+	/*
+	* wait if reader currently locks our slot
+	*/
+	LWLockAcquire(memstats->lock, LW_EXCLUSIVE);
+
+	memstats->pid = session->session_id;
+	memstats->is_session_pid = true;
+	memstats->nContext = 0;
+	state.context = session->memory_context;
+	state.level = 0;
+
+	ELOG_PSS(LOG, "polar_ss_check_signal_mctx %d-%d", memstats->is_session_pid, memstats->pid);
+
+	/*
+	* walk through all memory context and fill stat table in shared memory
+	*/
+	do {
+		MemoryContextStat	*mcs = memstats->stats + memstats->nContext;
+		int					namelen = 0;
+		int					identlen = 0;
+
+		Assert(state.context);
+		Assert(state.context->name != NULL);
+
+		namelen = strlen(state.context->name);
+
+		if (namelen > NAMEDATALEN - 1)
+			namelen = NAMEDATALEN - 1;
+		if (identlen > NAMEDATALEN - 1)
+			identlen = NAMEDATALEN - 1;
+		memcpy(mcs->name.data, state.context->name, namelen);
+		mcs->name.data[namelen] = '\0';
+
+		mcs->level = state.level;
+
+		if (state.context->ident != NULL)
+		{
+			identlen = strlen(state.context->ident);
+			memcpy(mcs->ident.data, state.context->ident, identlen);
+		}
+		mcs->ident.data[identlen] = '\0';
+		mcs->type = state.context->type;
+		mcs->is_shared = true;
+
+		getMemoryContextStat(state.context, &mcs->stat);
+		memstats->nContext++;
+
+		iterateMemoryContext(&state);
+	} while (state.context && MemoryContextIsValid(state.context) && memstats->nContext < N_MC_STAT);
+	pg_atomic_write_u32(&memstats->signal_ready, 0);
+	pg_atomic_write_u32(&memstats->data_ready, 1);
+	LWLockRelease(memstats->lock);
 }

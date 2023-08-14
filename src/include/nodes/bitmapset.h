@@ -104,4 +104,9 @@ extern int	bms_prev_member(const Bitmapset *a, int prevbit);
 /* support for hashtables using Bitmapsets as keys: */
 extern uint32 bms_hash_value(const Bitmapset *a);
 
+/* POLAR: Shared Server */
+extern uint32 polar_bms_alloc_size(const int upper);
+extern void polar_bms_reset(Bitmapset *a, const int upper);
+extern void polar_bms_add_member(Bitmapset *a, int x);
+
 #endif							/* BITMAPSET_H */

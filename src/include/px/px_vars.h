@@ -371,6 +371,11 @@ extern bool px_enable_agg_distinct;
  */
 extern bool px_enable_dqa_pruning;
 
+/* May PolarDB dump statistics for all segments as a huge ugly string
+ * during EXPLAIN ANALYZE?
+ *
+ */
+extern bool px_enable_explain_all_stat;
 /*
  * "px_eager_agg_distinct_pruning"
  *
@@ -529,4 +534,8 @@ extern void update_px_workerid_funcid(void);
 extern bool polar_is_stmt_enable_px(void);
 extern int polar_get_stmt_px_dop(void);
 
+/*
+ * What level of details of the memory accounting information to show during EXPLAIN ANALYZE?
+ */
+extern int px_explain_memory_verbosity;
 #endif							/* PXVARS_H */

@@ -415,6 +415,9 @@ fmgr_info_C_lang(Oid functionId, FmgrInfo *finfo, HeapTuple procedureTuple)
 		/* Cache the addresses for later calls */
 		record_C_func(procedureTuple, user_fn, inforec);
 
+		/* POLAR: Shared Server */
+		polar_check_extention_dedicated(probinstring);
+
 		pfree(prosrcstring);
 		pfree(probinstring);
 	}

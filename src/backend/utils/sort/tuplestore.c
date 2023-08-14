@@ -192,6 +192,12 @@ struct Tuplestorestate
 	bool		frozen;
 	SharedFileSet *fileset;
 	char	   *shared_filename;
+	/*
+     * PX: EXPLAIN ANALYZE reporting interface and statistics.
+     */
+	struct Instrumentation *instrument;
+	long        availMemMin;    /* availMem low water mark (bytes) */
+	int64       spilledBytes;   /* memory used for spilled tuples */
 	/* POLAR end */
 };
 
@@ -284,6 +290,10 @@ tuplestore_begin_common(int eflags, bool interXact, int maxKBytes)
 	state->memtupdeleted = 0;
 	state->memtupcount = 0;
 	state->tuples = 0;
+
+	/* POLAR px */
+	state->availMemMin = state->availMem;
+	/* POLAR end */
 
 	/*
 	 * Initial size of array must be more than ALLOCSET_SEPARATE_THRESHOLD;
@@ -468,6 +478,29 @@ void
 tuplestore_end(Tuplestorestate *state)
 {
 	int			i;
+
+	/* POLAR px */
+	if (state->instrument && state->instrument->need_px)
+	{
+		double  nbytes;
+
+		/* How close did we come to the work_mem limit? */
+		FREEMEM(state, 0);              /* update low-water mark */
+		nbytes = state->allowedMem - state->availMemMin;
+		state->instrument->workmemused = Max(state->instrument->workmemused, nbytes);
+
+		/* How much work_mem would be enough to hold all tuples in memory? */
+		if (state->spilledBytes > 0)
+		{
+			nbytes = state->allowedMem - state->availMem + state->spilledBytes;
+			state->instrument->workmemwanted =
+				Max(state->instrument->workmemwanted, nbytes);
+		}
+
+		if (state->myfile)
+			state->instrument->workfileCreated = true;
+	}
+	/* POLAR end */
 
 	if (state->myfile)
 		BufFileClose(state->myfile);
@@ -1639,6 +1672,22 @@ tuplestore_freeze(Tuplestorestate *state)
 	dumptuples(state);
 	BufFileExportShared(state->myfile);
 	state->frozen = true;
+}
+
+/*
+ * tuplestore_set_instrument
+ *
+ * May be called after tuplestore_begin_xxx() to enable reporting of
+ * statistics and events for EXPLAIN ANALYZE.
+ *
+ * The 'instr' ptr is retained in the 'state' object.  The caller must
+ * ensure that it remains valid for the life of the Tuplestorestate object.
+ */
+void
+tuplestore_set_instrument(Tuplestorestate *state,
+						  struct Instrumentation *instrument)
+{
+	state->instrument = instrument;
 }
 
 /*

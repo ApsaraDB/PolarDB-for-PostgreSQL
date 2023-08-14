@@ -63,6 +63,7 @@ extern int SendProcSignal(pid_t pid, ProcSignalReason reason,
 			   BackendId backendId);
 
 extern void procsignal_sigusr1_handler(SIGNAL_ARGS);
+extern void polar_procsignal_sigusr2_handler(SIGNAL_ARGS);
 
 /* POLAR: CheckProcSignal for POLAR */
 extern bool polar_check_proc_signal(ProcSignalReason reason);

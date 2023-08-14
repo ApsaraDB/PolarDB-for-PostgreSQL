@@ -645,6 +645,13 @@ Async_Listen(const char *channel)
 		elog(DEBUG1, "Async_Listen(%s,%d)", channel, MyProcPid);
 
 	queue_listen(LISTEN_LISTEN, channel);
+
+	/* POLAR: Shared Server */
+	if (POLAR_SS_NOT_DEDICATED())
+	{
+		MyProc->polar_is_backend_dedicated = true;
+		elog(LOG, "polar shared server set dedicated from Async_Listen");
+	}
 }
 
 /*

@@ -2,7 +2,7 @@ create extension polar_monitor_preload;
 
 select name from polar_get_local_mcxt() where name = 'TopMemoryContext';
 
-select * from polar_get_mcxt(pg_backend_pid());
+select * from polar_get_mcxt(polar_current_backend_pid());
 
 SELECT COUNT(*) >= 1 AS result FROM polar_backends_mcxt WHERE name = 'CacheMemoryContext';
 
@@ -162,19 +162,19 @@ CREATE OR REPLACE FUNCTION empty_loop() RETURNS void AS
 $x$
 BEGIN
 	PERFORM (extract(epoch from now()))::int8;
-	PERFORM tcpinfo_update_time FROM polar_proc_stat_network() WHERE pid = (SELECT pg_backend_pid());
+	PERFORM tcpinfo_update_time FROM polar_proc_stat_network() WHERE pid = (SELECT polar_current_backend_pid());
 	PERFORM PG_SLEEP(1);
 	PERFORM (extract(epoch from now()))::int8;
-	PERFORM tcpinfo_update_time FROM polar_proc_stat_network() WHERE pid = (SELECT pg_backend_pid());
+	PERFORM tcpinfo_update_time FROM polar_proc_stat_network() WHERE pid = (SELECT polar_current_backend_pid());
 	PERFORM PG_SLEEP(1);
 	PERFORM (extract(epoch from now()))::int8;
-	PERFORM tcpinfo_update_time FROM polar_proc_stat_network() WHERE pid = (SELECT pg_backend_pid());
+	PERFORM tcpinfo_update_time FROM polar_proc_stat_network() WHERE pid = (SELECT polar_current_backend_pid());
 	PERFORM PG_SLEEP(1);
 	PERFORM (extract(epoch from now()))::int8;
-	PERFORM tcpinfo_update_time FROM polar_proc_stat_network() WHERE pid = (SELECT pg_backend_pid());
+	PERFORM tcpinfo_update_time FROM polar_proc_stat_network() WHERE pid = (SELECT polar_current_backend_pid());
 	PERFORM PG_SLEEP(1);
 	PERFORM (extract(epoch from now()))::int8;
-	PERFORM tcpinfo_update_time FROM polar_proc_stat_network() WHERE pid = (SELECT pg_backend_pid());
+	PERFORM tcpinfo_update_time FROM polar_proc_stat_network() WHERE pid = (SELECT polar_current_backend_pid());
 	PERFORM PG_SLEEP(1);
 END
 $x$
@@ -188,7 +188,7 @@ DECLARE
 BEGIN
 	SELECT (extract(epoch from now()))::int8 INTO STRICT begin_time;
 	PERFORM * FROM empty_loop();
-	SELECT tcpinfo_update_time > begin_time INTO STRICT ret FROM polar_proc_stat_network() WHERE pid = (SELECT pg_backend_pid());
+	SELECT tcpinfo_update_time > begin_time INTO STRICT ret FROM polar_proc_stat_network() WHERE pid = (SELECT polar_current_backend_pid());
 	return ret;
 END
 $x$

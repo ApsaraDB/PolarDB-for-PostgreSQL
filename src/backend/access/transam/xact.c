@@ -1985,6 +1985,9 @@ StartTransaction(void)
 	vxid.backendId = MyBackendId;
 	vxid.localTransactionId = GetNextLocalTransactionId();
 
+	/* POLAR: Shared Server */
+	polar_session_info()->m_nextLocalTransactionId++;
+
 	/*
 	 * Lock the virtual transaction id before we announce it in the proc array
 	 */

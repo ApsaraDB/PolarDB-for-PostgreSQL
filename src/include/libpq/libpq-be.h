@@ -199,6 +199,9 @@ typedef struct Port
 	SockAddr 	polar_origin_addr;
 	char		*polar_proxy_ssl_cipher_name;
 	char		*polar_proxy_ssl_version;
+
+	/* POLAR: Shared Server */
+	uint32		polar_startup_gucs_hash;
 } Port;
 
 #ifdef USE_SSL

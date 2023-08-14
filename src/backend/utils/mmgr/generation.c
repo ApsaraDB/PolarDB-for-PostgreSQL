@@ -104,15 +104,11 @@ struct GenerationChunk
 {
 	/* size is always the size of the usable space in the chunk */
 	Size		size;
-#ifdef MEMORY_CONTEXT_CHECKING
 	/* when debugging memory usage, also store actual requested size */
 	/* this is zero in a free chunk */
-	Size		requested_size;
+	Size		requested_size;/* POLAR: Shared Server */
 
 #define GENERATIONCHUNK_RAWSIZE  (SIZEOF_SIZE_T * 2 + SIZEOF_VOID_P * 2)
-#else
-#define GENERATIONCHUNK_RAWSIZE  (SIZEOF_SIZE_T + SIZEOF_VOID_P * 2)
-#endif							/* MEMORY_CONTEXT_CHECKING */
 
 	/* ensure proper alignment by adding padding if needed */
 #if (GENERATIONCHUNK_RAWSIZE % MAXIMUM_ALIGNOF) != 0
@@ -150,7 +146,7 @@ static void *GenerationAlloc(MemoryContext context, Size size);
 static void GenerationFree(MemoryContext context, void *pointer);
 static void *GenerationRealloc(MemoryContext context, void *pointer, Size size);
 static void GenerationReset(MemoryContext context);
-static void GenerationDelete(MemoryContext context);
+static void GenerationDelete(MemoryContext context, MemoryContext parent);
 static Size GenerationGetChunkSpace(MemoryContext context, void *pointer);
 static bool GenerationIsEmpty(MemoryContext context);
 static void GenerationStats(MemoryContext context,
@@ -316,7 +312,7 @@ GenerationReset(MemoryContext context)
  *		Free all memory which is allocated in the given context.
  */
 static void
-GenerationDelete(MemoryContext context)
+GenerationDelete(MemoryContext context, MemoryContext parent)
 {
 	/* Reset to release all the GenerationBlocks */
 	GenerationReset(context);
@@ -368,9 +364,9 @@ GenerationAlloc(MemoryContext context, Size size)
 		chunk->block = block;
 		chunk->context = set;
 		chunk->size = chunk_size;
+		chunk->requested_size = size;
 
 #ifdef MEMORY_CONTEXT_CHECKING
-		chunk->requested_size = size;
 		/* set mark to catch clobber of "unused" space */
 		if (size < chunk_size)
 			set_sentinel(GenerationChunkGetPointer(chunk), size);
@@ -448,9 +444,9 @@ GenerationAlloc(MemoryContext context, Size size)
 	chunk->block = block;
 	chunk->context = set;
 	chunk->size = chunk_size;
+	chunk->requested_size = size;
 
 #ifdef MEMORY_CONTEXT_CHECKING
-	chunk->requested_size = size;
 	/* set mark to catch clobber of "unused" space */
 	if (size < chunk->size)
 		set_sentinel(GenerationChunkGetPointer(chunk), size);
@@ -509,10 +505,8 @@ GenerationFree(MemoryContext context, void *pointer)
 	/* Reset context to NULL in freed chunks */
 	chunk->context = NULL;
 
-#ifdef MEMORY_CONTEXT_CHECKING
 	/* Reset requested_size to 0 in freed chunks */
 	chunk->requested_size = 0;
-#endif
 
 	block->nfree += 1;
 
@@ -578,6 +572,7 @@ GenerationRealloc(MemoryContext context, void *pointer, Size size)
 	{
 #ifdef MEMORY_CONTEXT_CHECKING
 		Size		oldrequest = chunk->requested_size;
+		chunk->requested_size = size;
 
 #ifdef RANDOMIZE_ALLOCATED_MEMORY
 		/* We can only fill the extra space if we know the prior request */
@@ -585,8 +580,6 @@ GenerationRealloc(MemoryContext context, void *pointer, Size size)
 			randomize_mem((char *) pointer + oldrequest,
 						  size - oldrequest);
 #endif
-
-		chunk->requested_size = size;
 
 		/*
 		 * If this is an increase, mark any newly-available part UNDEFINED.
@@ -603,6 +596,7 @@ GenerationRealloc(MemoryContext context, void *pointer, Size size)
 		if (size < oldsize)
 			set_sentinel(pointer, size);
 #else							/* !MEMORY_CONTEXT_CHECKING */
+		chunk->requested_size = size;
 
 		/*
 		 * We don't have the information to determine whether we're growing
@@ -639,9 +633,8 @@ GenerationRealloc(MemoryContext context, void *pointer, Size size)
 	 * bytes.
 	 */
 	MEMDEBUG_MAKE_MEM_UNDEFINED(newPointer, size);
-#ifdef MEMORY_CONTEXT_CHECKING
 	oldsize = chunk->requested_size;
-#else
+#ifndef MEMORY_CONTEXT_CHECKING
 	MEMDEBUG_MAKE_MEM_DEFINED(pointer, oldsize);
 #endif
 

@@ -49,6 +49,8 @@
 #include "utils/memdebug.h"
 #include "utils/memutils.h"
 
+#include "storage/polar_session_context.h"
+
 /* Define this to detail debug alloc information */
 /* #define HAVE_ALLOCINFO */
 
@@ -134,9 +136,80 @@ typedef struct AllocSetContext
 	AllocBlock	keeper;			/* keep this block over resets */
 	/* freelist this context could be put in, or -1 if not a candidate: */
 	int			freeListIndex;	/* index in context_freelists[], or -1 */
+
+	/*
+	 * PX: Memory accounting fields
+	 *
+	 * accountingParent: Each MemoryContext has a designated MemoryContext
+	 * that will act as its account for tracking all memory allocations and
+	 * de-allocations performed within the MemoryContext, captured in
+	 * localAllocated, currentAllocated and peakAllocated. The account for
+	 * a MemoryContext must be the context itself, or one of its ancestors
+	 * in the MemoryContext tree. For MemoryContexts that are accounts, their
+	 * accountingParent field will point to itself.
+	 *
+	 * localAllocated: This is the memory allocated (in bytes) for this memory
+	 * context alone (i.e. it does not consider the memory allocated for any
+	 * members of the context's subtree).
+	 * GPDB_13_MERGE_FIXME: PostgreSQL v13 added a field like this in
+	 * MemoryContextData.mem_allocated. We should probably switch to using that
+	 * once we catch up.
+	 *
+	 * currentAllocated: This field is only applicable to a MemoryContext
+	 * designated as an account. It tracks the current bytes allocated in all
+	 * of the subtree MemoryContexts it is responsible for.
+	 *ls -
+	 * peakAllocated: Maximum 'currentAllocated' value ever held in the
+	 * lifetime of this context.
+	 */
+	struct AllocSetContext *accountingParent;
+	Size		localAllocated;
+
+	Size		currentAllocated;
+	Size		peakAllocated;
 } AllocSetContext;
 
 typedef AllocSetContext *AllocSet;
+
+ /* the memorycontexts are accounted when accountingParent point to itself */
+static inline bool
+polar_is_memory_account(AllocSet set)
+{
+	return (set->accountingParent == set);
+}
+
+/* account the new memory */
+static inline void
+polar_memory_account_inc_allocated(AllocSet set, Size newbytes)
+{
+	AllocSet	parent = set->accountingParent;
+
+	Assert(parent != NULL);
+	set->localAllocated += newbytes;
+
+	parent->currentAllocated += newbytes;
+	parent->peakAllocated = Max(parent->peakAllocated,
+							  parent->currentAllocated);
+
+	/* Make sure these values are not overflow */
+	Assert(set->localAllocated >= newbytes);
+	// Assert(parent->currentAllocated >= set->localAllocated);
+}
+
+/* delete the allocated value for resetting account */
+static inline void
+polar_memory_account_dec_allocated(AllocSet set, Size newbytes)
+{
+	AllocSet	parent = set->accountingParent;
+
+	Assert(parent != NULL);
+	Assert(set->localAllocated >= newbytes);
+	// Assert(parent->currentAllocated >= set->localAllocated);
+
+	set->localAllocated -= newbytes;
+	parent->currentAllocated -= newbytes;
+
+}
 
 /*
  * AllocBlock
@@ -175,15 +248,11 @@ typedef struct AllocChunkData
 {
 	/* size is always the size of the usable space in the chunk */
 	Size		size;
-#ifdef MEMORY_CONTEXT_CHECKING
 	/* when debugging memory usage, also store actual requested size */
 	/* this is zero in a free chunk */
-	Size		requested_size;
+	Size		requested_size;/* POLAR: Shared Server */
 
 #define ALLOCCHUNK_RAWSIZE  (SIZEOF_SIZE_T * 2 + SIZEOF_VOID_P)
-#else
-#define ALLOCCHUNK_RAWSIZE  (SIZEOF_SIZE_T + SIZEOF_VOID_P)
-#endif							/* MEMORY_CONTEXT_CHECKING */
 
 	/* ensure proper alignment by adding padding if needed */
 #if (ALLOCCHUNK_RAWSIZE % MAXIMUM_ALIGNOF) != 0
@@ -269,12 +338,19 @@ static void *AllocSetAlloc(MemoryContext context, Size size);
 static void AllocSetFree(MemoryContext context, void *pointer);
 static void *AllocSetRealloc(MemoryContext context, void *pointer, Size size);
 static void AllocSetReset(MemoryContext context);
-static void AllocSetDelete(MemoryContext context);
+static void polar_AllocSetDelete(MemoryContext context, MemoryContext parent);
 static Size AllocSetGetChunkSpace(MemoryContext context, void *pointer);
 static bool AllocSetIsEmpty(MemoryContext context);
 static void AllocSetStats(MemoryContext context,
 			  MemoryStatsPrintFunc printfunc, void *passthru,
 			  MemoryContextCounters *totals);
+
+/* POLAR px */
+static void polar_AllocSetDeclareAccountingRoot(MemoryContext context);
+static Size polar_AllocSetGetPeakUsage(MemoryContext context);
+/*POLAR end */
+
+static Size	polar_AllocUsableSize(MemoryContext context, void *pointer);
 
 #ifdef MEMORY_CONTEXT_CHECKING
 static void AllocSetCheck(MemoryContext context);
@@ -288,13 +364,18 @@ static const MemoryContextMethods AllocSetMethods = {
 	AllocSetFree,
 	AllocSetRealloc,
 	AllocSetReset,
-	AllocSetDelete,
+	polar_AllocSetDelete,
 	AllocSetGetChunkSpace,
 	AllocSetIsEmpty,
 	AllocSetStats
 #ifdef MEMORY_CONTEXT_CHECKING
 	,AllocSetCheck
 #endif
+	/* POLAR px */
+	,polar_AllocSetDeclareAccountingRoot
+	,polar_AllocSetGetPeakUsage
+	/* POLAR end */
+	,polar_AllocUsableSize
 };
 
 /*
@@ -457,6 +538,16 @@ AllocSetContextCreateExtended(MemoryContext parent,
 								&AllocSetMethods,
 								parent,
 								name);
+			/* POLAR px */
+			if (parent)
+				set->accountingParent = ((AllocSet) parent)->accountingParent;
+			else
+				set->accountingParent = set;
+			
+			set->localAllocated = 0;
+			set->currentAllocated = 0;
+			set->peakAllocated = 0;
+			/* POLAR end */
 
 			((MemoryContext) set)->mem_allocated =
 				set->keeper->endptr - ((char *) set);
@@ -549,6 +640,15 @@ AllocSetContextCreateExtended(MemoryContext parent,
 						parent,
 						name);
 
+	if (parent)
+		set->accountingParent = ((AllocSet) parent)->accountingParent;
+	else
+		set->accountingParent = set;
+	
+	set->localAllocated = 0;
+	set->currentAllocated = 0;
+	set->peakAllocated = 0;
+
 	((MemoryContext) set)->mem_allocated = firstBlockSize;
 
 	return (MemoryContext) set;
@@ -580,6 +680,13 @@ AllocSetReset(MemoryContext context)
 	/* Check for corruption and leaks before freeing */
 	AllocSetCheck(context);
 #endif
+
+    /*
+	 * Make sure all children have been deleted,
+	 * or the accounting data is incorrect.
+	 */
+	Assert(context->firstchild == NULL);
+	polar_memory_account_dec_allocated(set, set->localAllocated);
 
 	/* Clear chunk freelists */
 	MemSetAligned(set->freelist, 0, sizeof(set->freelist));
@@ -628,14 +735,14 @@ AllocSetReset(MemoryContext context)
 }
 
 /*
- * AllocSetDelete
+ * polar_AllocSetDelete
  *		Frees all memory which is allocated in the given set,
  *		in preparation for deletion of the set.
  *
  * Unlike AllocSetReset, this *must* free all resources of the set.
  */
 static void
-AllocSetDelete(MemoryContext context)
+polar_AllocSetDelete(MemoryContext context, MemoryContext parent)
 {
 	AllocSet	set = (AllocSet) context;
 	AllocBlock	block = set->blocks;
@@ -648,6 +755,20 @@ AllocSetDelete(MemoryContext context)
 	/* Check for corruption and leaks before freeing */
 	AllocSetCheck(context);
 #endif
+
+	/* POLAR px :Make sure all children have been deleted */
+	Assert(context->firstchild == NULL);
+	polar_memory_account_dec_allocated(set, set->localAllocated);
+	if (polar_is_memory_account(set) && parent)
+	{
+		/* Roll up our peak value to the parent, before this context goes away. */
+		AllocSet	parentset = (AllocSet) parent;
+
+		parentset->accountingParent->peakAllocated =
+			Max(set->peakAllocated,
+				parentset->accountingParent->peakAllocated);
+	}
+	/* POLAR end */
 
 	/*
 	 * If the context is a candidate for a freelist, put it into that freelist
@@ -760,8 +881,8 @@ AllocSetAlloc(MemoryContext context, Size size)
 		chunk = (AllocChunk) (((char *) block) + ALLOC_BLOCKHDRSZ);
 		chunk->aset = set;
 		chunk->size = chunk_size;
-#ifdef MEMORY_CONTEXT_CHECKING
 		chunk->requested_size = size;
+#ifdef MEMORY_CONTEXT_CHECKING
 		/* set mark to catch clobber of "unused" space */
 		if (size < chunk_size)
 			set_sentinel(AllocChunkGetPointer(chunk), size);
@@ -792,12 +913,15 @@ AllocSetAlloc(MemoryContext context, Size size)
 
 		AllocAllocInfo(set, chunk);
 
+		polar_memory_account_inc_allocated(set, chunk->size);
+
 		/* Ensure any padding bytes are marked NOACCESS. */
 		MEMDEBUG_MAKE_MEM_NOACCESS((char *) AllocChunkGetPointer(chunk) + size,
 								   chunk_size - size);
 
 		/* Disallow external access to private part of chunk header. */
 		MEMDEBUG_MAKE_MEM_NOACCESS(chunk, ALLOCCHUNK_PRIVATE_LEN);
+
 
 		return AllocChunkGetPointer(chunk);
 	}
@@ -817,9 +941,9 @@ AllocSetAlloc(MemoryContext context, Size size)
 		set->freelist[fidx] = (AllocChunk) chunk->aset;
 
 		chunk->aset = (void *) set;
+		chunk->requested_size = size;
 
 #ifdef MEMORY_CONTEXT_CHECKING
-		chunk->requested_size = size;
 		/* set mark to catch clobber of "unused" space */
 		if (size < chunk->size)
 			set_sentinel(AllocChunkGetPointer(chunk), size);
@@ -831,12 +955,15 @@ AllocSetAlloc(MemoryContext context, Size size)
 
 		AllocAllocInfo(set, chunk);
 
+		polar_memory_account_inc_allocated(set, chunk->size);
+
 		/* Ensure any padding bytes are marked NOACCESS. */
 		MEMDEBUG_MAKE_MEM_NOACCESS((char *) AllocChunkGetPointer(chunk) + size,
 								   chunk->size - size);
 
 		/* Disallow external access to private part of chunk header. */
 		MEMDEBUG_MAKE_MEM_NOACCESS(chunk, ALLOCCHUNK_PRIVATE_LEN);
+
 
 		return AllocChunkGetPointer(chunk);
 	}
@@ -895,9 +1022,7 @@ AllocSetAlloc(MemoryContext context, Size size)
 				availspace -= (availchunk + ALLOC_CHUNKHDRSZ);
 
 				chunk->size = availchunk;
-#ifdef MEMORY_CONTEXT_CHECKING
 				chunk->requested_size = 0;	/* mark it free */
-#endif
 				chunk->aset = (void *) set->freelist[a_fidx];
 				set->freelist[a_fidx] = chunk;
 			}
@@ -979,8 +1104,8 @@ AllocSetAlloc(MemoryContext context, Size size)
 
 	chunk->aset = (void *) set;
 	chunk->size = chunk_size;
-#ifdef MEMORY_CONTEXT_CHECKING
 	chunk->requested_size = size;
+#ifdef MEMORY_CONTEXT_CHECKING
 	/* set mark to catch clobber of "unused" space */
 	if (size < chunk->size)
 		set_sentinel(AllocChunkGetPointer(chunk), size);
@@ -992,12 +1117,15 @@ AllocSetAlloc(MemoryContext context, Size size)
 
 	AllocAllocInfo(set, chunk);
 
+	polar_memory_account_inc_allocated(set, chunk->size);
+
 	/* Ensure any padding bytes are marked NOACCESS. */
 	MEMDEBUG_MAKE_MEM_NOACCESS((char *) AllocChunkGetPointer(chunk) + size,
 							   chunk_size - size);
 
 	/* Disallow external access to private part of chunk header. */
 	MEMDEBUG_MAKE_MEM_NOACCESS(chunk, ALLOCCHUNK_PRIVATE_LEN);
+
 
 	return AllocChunkGetPointer(chunk);
 }
@@ -1017,6 +1145,8 @@ AllocSetFree(MemoryContext context, void *pointer)
 
 	AllocFreeInfo(set, chunk);
 
+	polar_memory_account_dec_allocated(set, chunk->size);
+	
 #ifdef MEMORY_CONTEXT_CHECKING
 	/* Test for someone scribbling on unused space in chunk */
 	if (chunk->requested_size < chunk->size)
@@ -1075,10 +1205,8 @@ AllocSetFree(MemoryContext context, void *pointer)
 		MEMDEBUG_MAKE_MEM_NOACCESS(pointer, chunk->size);
 #endif
 
-#ifdef MEMORY_CONTEXT_CHECKING
 		/* Reset requested_size to 0 in chunks that are on freelist */
 		chunk->requested_size = 0;
-#endif
 		set->freelist[fidx] = chunk;
 	}
 }
@@ -1175,6 +1303,7 @@ AllocSetRealloc(MemoryContext context, void *pointer, Size size)
 		if (block->next)
 			block->next->prev = block;
 		chunk->size = chksize;
+		chunk->requested_size = size;
 
 #ifdef MEMORY_CONTEXT_CHECKING
 #ifdef RANDOMIZE_ALLOCATED_MEMORY
@@ -1195,8 +1324,6 @@ AllocSetRealloc(MemoryContext context, void *pointer, Size size)
 										oldsize - chunk->requested_size);
 #endif
 
-		chunk->requested_size = size;
-
 		/* set mark to catch clobber of "unused" space */
 		if (size < chunk->size)
 			set_sentinel(pointer, size);
@@ -1210,11 +1337,18 @@ AllocSetRealloc(MemoryContext context, void *pointer, Size size)
 		MEMDEBUG_MAKE_MEM_DEFINED(pointer, oldsize);
 #endif
 
+		if (chksize > oldsize)
+			polar_memory_account_inc_allocated(set, chksize - oldsize);
+		else
+			polar_memory_account_dec_allocated(set, oldsize - chksize);
+
 		/* Ensure any padding bytes are marked NOACCESS. */
 		MEMDEBUG_MAKE_MEM_NOACCESS((char *) pointer + size, chksize - size);
 
 		/* Disallow external access to private part of chunk header. */
 		MEMDEBUG_MAKE_MEM_NOACCESS(chunk, ALLOCCHUNK_PRIVATE_LEN);
+
+
 		return pointer;
 	}
 
@@ -1234,7 +1368,6 @@ AllocSetRealloc(MemoryContext context, void *pointer, Size size)
 			randomize_mem((char *) pointer + oldrequest,
 						  size - oldrequest);
 #endif
-
 		chunk->requested_size = size;
 
 		/*
@@ -1252,6 +1385,8 @@ AllocSetRealloc(MemoryContext context, void *pointer, Size size)
 		if (size < oldsize)
 			set_sentinel(pointer, size);
 #else							/* !MEMORY_CONTEXT_CHECKING */
+
+		chunk->requested_size = size;
 
 		/*
 		 * We don't have the information to determine whether we're growing
@@ -1302,9 +1437,8 @@ AllocSetRealloc(MemoryContext context, void *pointer, Size size)
 		 * trailing bytes.
 		 */
 		MEMDEBUG_MAKE_MEM_UNDEFINED(newPointer, size);
-#ifdef MEMORY_CONTEXT_CHECKING
 		oldsize = chunk->requested_size;
-#else
+#ifndef MEMORY_CONTEXT_CHECKING
 		MEMDEBUG_MAKE_MEM_DEFINED(pointer, oldsize);
 #endif
 
@@ -1335,6 +1469,28 @@ AllocSetGetChunkSpace(MemoryContext context, void *pointer)
 	return result;
 }
 
+static Size
+polar_AllocUsableSize(MemoryContext context, void *pointer)
+{
+	Size ret;
+	AllocSet	set = (AllocSet) context;
+	AllocChunk	chunk = AllocPointerGetChunk(pointer);
+
+	MEMDEBUG_MAKE_MEM_DEFINED(chunk, ALLOCCHUNK_PRIVATE_LEN);
+
+#ifdef MEMORY_CONTEXT_CHECKING
+	/* Test for someone scribbling on unused space in chunk */
+	if (chunk->requested_size < chunk->size)
+		if (!sentinel_ok(pointer, chunk->requested_size))
+			elog(ERROR, "detected write past chunk end in %s %p",
+				 set->header.name, chunk);
+#endif
+	ret = chunk->requested_size;
+	MEMDEBUG_MAKE_MEM_NOACCESS(chunk, ALLOCCHUNK_PRIVATE_LEN);
+
+	return ret;
+}
+
 /*
  * AllocSetIsEmpty
  *		Is an allocset empty of any allocated space?
@@ -1353,6 +1509,91 @@ AllocSetIsEmpty(MemoryContext context)
 	return false;
 }
 
+/* POLAR px */
+static void
+polar_AllocSetDeclareAccountingRoot(MemoryContext context)
+{
+	AllocSet	set = (AllocSet) context;
+
+	Assert(set->localAllocated == 0);
+
+	set->accountingParent = set;
+}
+
+static Size
+polar_AllocSetgetPeakUsageRecurse(MemoryContext parent, MemoryContext context)
+{
+	MemoryContext child;
+	Size		total;
+
+	total = 0;
+	for (child = context->firstchild;
+		 child != NULL;
+		 child = child->nextchild)
+	{
+		AllocSet	childset = (AllocSet) child;
+
+		if (childset->accountingParent == (AllocSet) parent)
+			polar_AllocSetgetPeakUsageRecurse(parent, child);
+		else
+			total += polar_AllocSetGetPeakUsage(child);
+	}
+
+	return total;
+}
+
+static Size
+polar_AllocSetGetPeakUsage(MemoryContext context)
+{
+	AllocSet	set = (AllocSet) context;
+	Size		total;
+
+	Assert(polar_is_memory_account(set));
+
+	total = set->peakAllocated;
+
+	total += polar_AllocSetgetPeakUsageRecurse(context, context);
+
+	return total;
+}
+
+void
+POLAR_AllocSetTransferAccounting(MemoryContext context, MemoryContext new_parent)
+{
+	AllocSet set = (AllocSet)context;
+	AllocSet np = (AllocSet)new_parent;
+
+	/* GPDB_12_MERGE_FIXME: If you mix AllocSetContexts and other contexts,
+	 * what happens to accounting? */
+	if (!IsA(context, AllocSetContext))
+		return;
+
+	if (set->accountingParent == set || set->accountingParent == np ||
+		(np && set->accountingParent == np->accountingParent))
+		return;
+
+	while (np && np != set->accountingParent)
+		np = (AllocSet)np->header.parent;
+
+	if (np == set->accountingParent)
+	{
+		/*
+		 * if set->accountingParent is the ancestor of the new parent,
+		 * the accoutingParent doesn't need to change.
+		 */
+	}
+	else
+	{
+		/* new_parent is NULL or new_parent is not the ancestor of context */
+		set->accountingParent->currentAllocated -= set->localAllocated;
+		set->accountingParent = set;
+		set->currentAllocated = set->localAllocated;
+		set->peakAllocated = set->localAllocated;
+	}
+
+}
+
+/* POLAR end */
 /*
  * AllocSetStats
  *		Compute stats about memory consumption of an allocset.

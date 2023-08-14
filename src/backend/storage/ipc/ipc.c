@@ -157,6 +157,13 @@ proc_exit(int code)
 	/* Clean up everything that must be cleaned up */
 	proc_exit_prepare(code);
 
+	/* POLAR: Shared Server */
+	if (IS_POLAR_SESSION_SHARED())
+	{
+		pg_atomic_write_u32(&polar_session()->is_shared_backend_exit, 1);
+	}
+	/* POLAR end */
+
 #ifdef PROFILE_PID_DIR
 	{
 		/*

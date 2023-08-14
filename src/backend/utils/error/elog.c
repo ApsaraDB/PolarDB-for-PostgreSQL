@@ -97,6 +97,8 @@ extern bool redirection_done;
 /* polar wal pipelien */
 extern bool multi_thread_elog;
 
+bool polar_ss_enable_output_to_client = true;
+
 /*
  * Hook for intercepting messages before they are sent to the server log.
  * Note that the hook will not get called for messages that are suppressed
@@ -347,6 +349,8 @@ errstart(int elevel, const char *filename, int lineno,
 		else
 			output_to_client = (elevel >= client_min_messages ||
 								elevel == INFO);
+
+		output_to_client &= polar_ss_enable_output_to_client;
 	}
 
 	/* Skip processing effort if non-error message will not be output */
@@ -461,6 +465,12 @@ errfinish(int dummy,...)
 	recursion_depth++;
 	CHECK_STACK_DEPTH();
 	elevel = edata->elevel;
+
+	if (POLAR_SHARED_SERVER_RUNNING() && polar_enable_shared_server_testmode)
+	{
+		fprintf(stderr, "[%d] [%d] %s \n", MyProcPid, MySessionPid, edata->message);
+		fflush(stderr);
+	}
 
 	/*
 	 * Do processing in ErrorContext, which we hope has enough reserved space
@@ -1432,6 +1442,17 @@ elog_finish(int elevel, const char *fmt,...)
 	ErrorData  *edata;
 	MemoryContext oldcontext;
 
+	va_list args;
+	if (POLAR_SHARED_SERVER_RUNNING() && polar_enable_shared_server_testmode)
+	{
+		va_start(args, fmt);
+		fprintf(stderr, "[%d] [%d] ", MyProcPid, MySessionPid);
+		vfprintf(stderr, fmt, args);
+		fprintf(stderr, "\n");
+		fflush(stderr);
+		va_end(args);
+	}
+
 	/*
 	 * In polar wal pipeline, we can not use elog
 	 */
@@ -1573,7 +1594,10 @@ EmitErrorReport(void)
 		send_message_to_server_log(edata);
 
 	/* Send to client, if enabled */
-	if (edata->output_to_client)
+	if (edata->output_to_client &&
+		(!POLAR_SHARED_SERVER_RUNNING() ||
+		 !IS_POLAR_SESSION_SHARED() ||
+		 (polar_session_info() != NULL && polar_session_info()->is_inited)))
 		send_message_to_frontend(edata);
 
 	MemoryContextSwitchTo(oldcontext);
@@ -1867,7 +1891,7 @@ pg_re_throw(void)
 														  log_min_messages);
 		else
 			edata->output_to_server = (FATAL >= log_min_messages);
-		if (whereToSendOutput == DestRemote)
+		if (whereToSendOutput == DestRemote && polar_ss_enable_output_to_client)
 			edata->output_to_client = true;
 
 		/*
@@ -2556,6 +2580,14 @@ log_line_prefix(StringInfo buf, ErrorData *edata)
 					appendStringInfo(buf, "%*d", padding, MyProcPid);
 				else
 					appendStringInfo(buf, "%d", MyProcPid);
+				break;
+
+			/* POLAR: Shared Server */
+			case 'P':
+				if (padding != 0)
+					appendStringInfo(buf, "%*d", padding, MySessionPid);
+				else
+					appendStringInfo(buf, "%d", MySessionPid);
 				break;
 			case 'l':
 				if (padding != 0)
@@ -4511,4 +4543,26 @@ px_errfinish_and_return(int dummy pg_attribute_unused(),...)
 	errno = saved_errno;
 
 	return edata_copy;
+}
+
+char *polar_get_backtrace(void)
+{
+#define LOCAL_BUF_LEN  1024
+	static __thread char buf[LOCAL_BUF_LEN];
+	static __thread void* addrs[100];
+	int size = backtrace(addrs, sizeof(addrs)/sizeof(addrs[0]));
+
+	int i = 0;
+	int pos = 0;
+	for (i = 0; i < size && pos < LOCAL_BUF_LEN; i++)
+		pos += snprintf(buf + pos, LOCAL_BUF_LEN - pos, " %p", addrs[i]);
+
+	if (pos >= LOCAL_BUF_LEN)
+	{
+		pos = LOCAL_BUF_LEN - 1;
+		buf[pos] = '\0';
+	}
+#undef LOCAL_BUF_LEN
+
+	return buf;
 }

@@ -12,7 +12,20 @@ CREATE FUNCTION polar_get_mcxt(
 	OUT nblocks int8,
     OUT freechunks int8,
     OUT totalspace int8,
-    OUT freespace int8)
+    OUT freespace int8,
+	OUT ident text,
+	OUT is_shared boolean,
+	OUT type int8,
+	OUT lock_area_count int8,
+	OUT lock_area_time_us int8,
+	OUT lock_area_max_time_us int8,
+	OUT lock_sclass_count int8,
+	OUT lock_sclass_time_us int8,
+	OUT lock_sclass_max_time_us int8,
+	OUT lock_freelist_count int8,
+	OUT lock_freelist_time_us int8,
+	OUT lock_freelist_max_time_us int8
+	)
 RETURNS SETOF record
 AS 'MODULE_PATHNAME', 'polar_get_memory_stats'
 LANGUAGE C IMMUTABLE;
@@ -25,7 +38,20 @@ CREATE FUNCTION polar_get_local_mcxt(
 		OUT nblocks int8,
         OUT freechunks int8,
         OUT totalspace int8,
-        OUT freespace int8)
+        OUT freespace int8,
+		OUT ident text,
+		OUT is_shared boolean,
+        OUT type int8,
+		OUT lock_area_count int8,
+		OUT lock_area_time_us int8,
+		OUT lock_area_max_time_us int8,
+		OUT lock_sclass_count int8,
+		OUT lock_sclass_time_us int8,
+		OUT lock_sclass_max_time_us int8,
+		OUT lock_freelist_count int8,
+		OUT lock_freelist_time_us int8,
+		OUT lock_freelist_max_time_us int8
+		)
 RETURNS SETOF record
 AS 'MODULE_PATHNAME', 'polar_get_local_memory_stats'
 LANGUAGE C IMMUTABLE;
@@ -37,7 +63,18 @@ CREATE TYPE polar_mcxt_record AS (
 	nblocks int8,
 	freechunks int8,
 	totalspace int8,
-	freespace int8
+	freespace int8,
+	is_shared boolean,
+	type int8,
+	lock_area_count int8,
+	lock_area_time_us int8,
+	lock_area_max_time_us int8,
+	lock_sclass_count int8,
+	lock_sclass_time_us int8,
+	lock_sclass_max_time_us int8,
+	lock_freelist_count int8,
+	lock_freelist_time_us int8,
+	lock_freelist_max_time_us int8
 );
 /* POLAR: UNION ALL memory context from all backends together */
 CREATE OR REPLACE FUNCTION polar_backends_mcxt() 
@@ -53,26 +90,35 @@ BEGIN
     /* just a mock schema */
     sql := '(SELECT 0 AS pid, ' || quote_nullable('hello') || ' AS name, '
 	  || ' 0::BIGINT AS nblocks, 0::BIGINT AS freechunks, '
-	  || ' 0::BIGINT AS totalspace, 0::BIGINT  AS freespace LIMIT 0)';
+	  || ' 0::BIGINT AS totalspace, 0::BIGINT  AS freespace, '
+	  || ' 0::BOOLEAN AS is_shared, 0::BIGINT AS type, '
+	  || ' 0::BIGINT AS lock_area_count, 0::BIGINT  AS lock_area_time_us, 0::BIGINT  AS lock_area_max_time_us, '
+	  || ' 0::BIGINT AS lock_sclass_count, 0::BIGINT  AS lock_sclass_time_us, 0::BIGINT  AS lock_sclass_max_time_us, '
+	  || ' 0::BIGINT AS lock_freelist_count, 0::BIGINT  AS lock_freelist_time_us, 0::BIGINT  AS lock_freelist_max_time_us '
+	  || ' LIMIT 0)';
 
     FOR p IN SELECT pid FROM pg_stat_activity WHERE backend_type='client backend'
     LOOP
 	sql := sql || ' UNION ALL '
 		|| 'SELECT pid, name, '
 		|| 'SUM(nblocks)::BIGINT AS nblocks, SUM(freechunks)::BIGINT AS freechunks, '
-		|| 'SUM(totalspace)::BIGINT AS totalspace, SUM(freespace)::BIGINT AS freespace ';
+		|| 'SUM(totalspace)::BIGINT AS totalspace, SUM(freespace)::BIGINT AS freespace, '
+		|| 'is_shared, type, '
+		|| 'SUM(lock_area_count)::BIGINT AS lock_area_count, SUM(lock_area_time_us)::BIGINT AS lock_area_time_us, MAX(lock_area_max_time_us)::BIGINT AS lock_area_max_time_us, '
+		|| 'SUM(lock_sclass_count)::BIGINT AS lock_sclass_count, SUM(lock_sclass_time_us)::BIGINT AS lock_sclass_time_us, MAX(lock_sclass_max_time_us)::BIGINT AS lock_sclass_max_time_us, '
+		|| 'SUM(lock_freelist_count)::BIGINT AS lock_freelist_count, SUM(lock_freelist_time_us)::BIGINT AS lock_freelist_time_us, MAX(lock_freelist_max_time_us)::BIGINT AS lock_freelist_max_time_us ';
 	IF selfpid != p THEN
 	    sql := sql || 'FROM polar_get_mcxt(' || p || ') ';
 	ELSE
 	    sql := sql || 'FROM polar_get_local_mcxt()';
 	END IF;
-
-	sql := sql || ' GROUP BY pid, name ';
-
+	sql := sql || ' GROUP BY pid, name, is_shared, type ';
     END LOOP;
-
-    sql := 'SELECT pid, name, nblocks, freechunks, totalspace, freespace FROM ( ' || sql || ') t';
-
+    sql := 'SELECT pid, name, nblocks, freechunks, totalspace, freespace, '
+		|| 'is_shared, type, '
+		|| 'lock_area_count, lock_area_time_us, lock_area_max_time_us, lock_sclass_count, lock_sclass_time_us, lock_sclass_max_time_us, '
+		|| 'lock_freelist_count, lock_freelist_time_us, lock_freelist_max_time_us '
+		|| 'FROM ( ' || sql || ') t';
     RETURN QUERY EXECUTE sql;
 END
 $x$
@@ -312,3 +358,8 @@ CREATE FUNCTION polar_log_current_plan(IN pid int4)
 RETURNS BOOLEAN
 AS 'MODULE_PATHNAME', 'polar_log_current_plan'
 LANGUAGE C IMMUTABLE;
+
+CREATE FUNCTION polar_current_backend_pid()
+RETURNS int4
+AS 'MODULE_PATHNAME', 'polar_current_backend_pid'
+LANGUAGE C STABLE PARALLEL RESTRICTED;

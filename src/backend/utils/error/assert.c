@@ -19,6 +19,9 @@
 
 #include <unistd.h>
 
+/* POLAR: Shared Server */
+#include "storage/polar_session_context.h"
+
 /*
  * ExceptionalCondition - Handles the failure of an Assert()
  */
@@ -28,6 +31,7 @@ ExceptionalCondition(const char *conditionName,
 					 const char *fileName,
 					 int lineNumber)
 {
+	PolarSessionContext tmp_session = *polar_session();
 	if (!PointerIsValid(conditionName)
 		|| !PointerIsValid(fileName)
 		|| !PointerIsValid(errorType))
@@ -51,5 +55,10 @@ ExceptionalCondition(const char *conditionName,
 	sleep(1000000);
 #endif
 
+	/* Shared Server, for debug*/
+	if (POLAR_SHARED_SERVER_RUNNING() &&
+		tmp_session.memory_context &&
+		polar_enable_shared_server_hang)
+		while(1) {};
 	abort();
 }

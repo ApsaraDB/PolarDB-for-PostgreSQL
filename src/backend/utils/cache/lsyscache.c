@@ -944,7 +944,7 @@ get_atttypetypmodcoll(Oid relid, AttrNumber attnum,
 		*collid = att_tup->attcollation;
 		return;
 	}
-	/* POALR end */
+	/* POLAR end */
 
 	tp = SearchSysCache2(ATTNUM,
 						 ObjectIdGetDatum(relid),

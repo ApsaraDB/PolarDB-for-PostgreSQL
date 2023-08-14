@@ -777,7 +777,7 @@ _bt_leafbuild_pxleader(PxLeaderstate *pxleader)
 	wstate.btws_pages_written = 0;
 	wstate.btws_zeropage = NULL;	/* until needed */
 
-	/* POALR: bulk extend index file */
+	/* POLAR: bulk extend index file */
 	wstate.polar_index_create_bulk_extend_size_copy = polar_index_create_bulk_extend_size;
 	wstate.px_index_buffer = NULL;
 

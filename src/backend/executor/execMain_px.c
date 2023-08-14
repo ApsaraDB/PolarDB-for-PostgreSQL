@@ -26,6 +26,7 @@
 #include "utils/ps_status.h"
 #include "px/px_disp.h"
 #include "px/px_adaptive_paging.h"
+#include "px/memquota.h"
 
 /* ----------------------------------------------------------------
  *		POLAR px functions
@@ -62,6 +63,20 @@ standard_ExecutorStart_PX(QueryDesc *queryDesc, int eflags)
 		if (!IS_PX_ADPS_SETUP_DONE())
 			pxdisp_createPqThread();
 	}
+
+	/*
+	 * POLAR px: distribute memory to operators.
+	 */
+	if (px_role == PX_ROLE_QC)
+	{
+		if (!IsResManagerMemoryPolicyNone() &&
+			LogResManagerMemory())
+		{
+			elog(PX_RESMANAGER_MEMORY_LOG_LEVEL, "query requested %.0fKB of memory",
+				 (double) queryDesc->plannedstmt->query_mem / 1024.0);
+		}
+	}
+	/* POLAR end */
 
 	/*
 	 * If the transaction is read-only, we need to check if any writes are
@@ -159,6 +174,9 @@ standard_ExecutorStart_PX(QueryDesc *queryDesc, int eflags)
 	estate->es_top_eflags = eflags;
 	estate->es_instrument = queryDesc->instrument_options;
 	estate->es_jit_flags = queryDesc->plannedstmt->jitFlags;
+	/* POLAR px */
+	estate->showstatctx = queryDesc->showstatctx;
+	/* POLAR end */
 
 	/*
 	 * Shared input info is needed when ROLE_EXECUTE or sequential plan

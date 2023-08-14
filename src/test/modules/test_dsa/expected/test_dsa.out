@@ -1,0 +1,43 @@
+CREATE EXTENSION test_dsa;
+SELECT test_dsa_random(3, 5, 1024, 4096, 'random');
+ test_dsa_random 
+-----------------
+ 
+(1 row)
+
+SELECT test_dsa_random(3, 5, 1024, 4096, 'forwards');
+ test_dsa_random 
+-----------------
+ 
+(1 row)
+
+SELECT test_dsa_random(3, 5, 1024, 4096, 'backwards');
+ test_dsa_random 
+-----------------
+ 
+(1 row)
+
+SELECT count(*) from test_dsa_random_parallel(3, 5, 1024, 8192, 'random', 5);
+ count 
+-------
+     5
+(1 row)
+
+SELECT count(*) from test_dsa_random_parallel(3, 5, 1024, 8192, 'forwards', 5);
+ count 
+-------
+     5
+(1 row)
+
+SELECT count(*) from test_dsa_random_parallel(3, 5, 1024, 8192, 'backwards', 5);
+ count 
+-------
+     5
+(1 row)
+
+SELECT test_dsa_oom();
+ test_dsa_oom 
+--------------
+ 
+(1 row)
+

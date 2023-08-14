@@ -73,6 +73,8 @@
 /* POLAR px*/
 #include "utils/guc.h"
 
+/* POLAR: Shared Server */
+#include "utils/polar_session_inval.h"
 
 /*
  * We must skip "overhead" operations that involve database access when the
@@ -85,10 +87,11 @@
 /*
  * This is the head of the backend's list of "saved" CachedPlanSources (i.e.,
  * those that are in long-lived storage and are examined for sinval events).
- * We thread the structs manually instead of using List cells so that we can
- * guarantee to save a CachedPlanSource without error.
+ * We use a dlist instead of separate List cells so that we can guarantee
+ * to save a CachedPlanSource without error.
  */
-static CachedPlanSource *first_saved_plan = NULL;
+#define saved_plan_list			POLAR_SESSION(saved_plan_list)
+static dlist_head local_saved_plan_list = DLIST_STATIC_INIT(local_saved_plan_list);
 
 static void ReleaseGenericPlan(CachedPlanSource *plansource);
 static List *RevalidateCachedQuery(CachedPlanSource *plansource,
@@ -125,6 +128,15 @@ InitPlanCache(void)
 	CacheRegisterSyscacheCallback(AMOPOPID, PlanCacheSysCallback, (Datum) 0);
 	CacheRegisterSyscacheCallback(FOREIGNSERVEROID, PlanCacheSysCallback, (Datum) 0);
 	CacheRegisterSyscacheCallback(FOREIGNDATAWRAPPEROID, PlanCacheSysCallback, (Datum) 0);
+
+	/* POLAR: Shared Server */
+	polar_ss_cache_register_relcache_callback(PlanCacheRelCallback, (Datum) 0);
+	polar_ss_cache_register_syscache_callback(PROCOID, PlanCacheFuncCallback, (Datum) 0);
+	polar_ss_cache_register_syscache_callback(NAMESPACEOID, PlanCacheSysCallback, (Datum) 0);
+	polar_ss_cache_register_syscache_callback(OPEROID, PlanCacheSysCallback, (Datum) 0);
+	polar_ss_cache_register_syscache_callback(AMOPOPID, PlanCacheSysCallback, (Datum) 0);
+	polar_ss_cache_register_syscache_callback(FOREIGNSERVEROID, PlanCacheSysCallback, (Datum) 0);
+	polar_ss_cache_register_syscache_callback(FOREIGNDATAWRAPPEROID, PlanCacheSysCallback, (Datum) 0);
 }
 
 /*
@@ -154,7 +166,8 @@ InitPlanCache(void)
 CachedPlanSource *
 CreateCachedPlan(RawStmt *raw_parse_tree,
 				 const char *query_string,
-				 const char *commandTag)
+				 const char *commandTag,
+				 bool polar_on_session_context)
 {
 	CachedPlanSource *plansource;
 	MemoryContext source_context;
@@ -169,9 +182,21 @@ CreateCachedPlan(RawStmt *raw_parse_tree,
 	 * caller's context (which we assume to be transient), so that it will be
 	 * cleaned up on error.
 	 */
-	source_context = AllocSetContextCreate(CurrentMemoryContext,
-										   "CachedPlanSource",
-										   ALLOCSET_START_SMALL_SIZES);
+	/* POLAR: shard_backend  */
+	if (polar_on_session_context)
+	{
+		source_context = polar_session_alloc_set_context_create(polar_session()->memory_context,
+															CurrentMemoryContext,
+															"CachedPlanSource",
+															ALLOCSET_START_SMALL_SIZES);
+	}
+	else
+	{
+		source_context = AllocSetContextCreate(CurrentMemoryContext,
+											   "CachedPlanSource",
+											   ALLOCSET_START_SMALL_SIZES);
+	}
+	/* POLAR end */
 
 	/*
 	 * Create and fill the CachedPlanSource struct within the new context.
@@ -208,11 +233,11 @@ CreateCachedPlan(RawStmt *raw_parse_tree,
 	plansource->is_saved = false;
 	plansource->is_valid = false;
 	plansource->generation = 0;
-	plansource->next_saved = NULL;
 	plansource->generic_cost = -1;
 	plansource->total_custom_cost = 0;
 	plansource->num_custom_plans = 0;
 	plansource->planId = 0;
+	plansource->polar_on_session_context = polar_on_session_context;
 
 	MemoryContextSwitchTo(oldcxt);
 
@@ -278,10 +303,10 @@ CreateOneShotCachedPlan(RawStmt *raw_parse_tree,
 	plansource->is_saved = false;
 	plansource->is_valid = false;
 	plansource->generation = 0;
-	plansource->next_saved = NULL;
 	plansource->generic_cost = -1;
 	plansource->total_custom_cost = 0;
 	plansource->num_custom_plans = 0;
+	plansource->polar_on_session_context = false;
 
 	return plansource;
 }
@@ -360,15 +385,29 @@ CompleteCachedPlan(CachedPlanSource *plansource,
 	}
 	else if (querytree_context != NULL)
 	{
-		MemoryContextSetParent(querytree_context, source_context);
+		MemoryContextSetParentWithFallback(querytree_context, 
+			source_context,
+			plansource->polar_on_session_context && POLAR_SS_NOT_DEDICATED());
 		MemoryContextSwitchTo(querytree_context);
 	}
 	else
 	{
 		/* Again, it's a good bet the querytree_context can be small */
-		querytree_context = AllocSetContextCreate(source_context,
-												  "CachedPlanQuery",
-												  ALLOCSET_START_SMALL_SIZES);
+		/* POLAR: Shared Server */
+		if (plansource->polar_on_session_context)
+		{
+			querytree_context = polar_session_alloc_set_context_create(source_context,
+																		source_context,
+																		"CachedPlanQuery",
+																		ALLOCSET_START_SMALL_SIZES);
+		}
+		else
+		{
+			querytree_context = AllocSetContextCreate(source_context,
+													  "CachedPlanQuery",
+													  ALLOCSET_START_SMALL_SIZES);
+		}
+		/* POLAR end */
 		MemoryContextSwitchTo(querytree_context);
 		querytree_list = copyObject(querytree_list);
 	}
@@ -480,13 +519,23 @@ SaveCachedPlan(CachedPlanSource *plansource)
 	 * will live indefinitely.  The query_context follows along since it's
 	 * already a child of the other one.
 	 */
-	MemoryContextSetParent(plansource->context, CacheMemoryContext);
-
-	/*
-	 * Add the entry to the global list of cached plans.
-	 */
-	plansource->next_saved = first_saved_plan;
-	first_saved_plan = plansource;
+	if (plansource->polar_on_session_context)
+	{
+		MemoryContextSetParentWithFallback(plansource->context, CacheMemoryContext, POLAR_SS_NOT_DEDICATED());
+		/* POLAR end */
+		/*
+		* Add the entry to the global list of cached plans.
+		*/
+		dlist_push_tail(&saved_plan_list, &plansource->node);;
+	}
+	else
+	{
+		MemoryContextSetParent(plansource->context, CacheMemoryContext);
+		/*
+		* Add the entry to the global list of cached plans.
+		*/
+		dlist_push_tail(&local_saved_plan_list, &plansource->node);;
+	}
 
 	plansource->is_saved = true;
 }
@@ -507,21 +556,7 @@ DropCachedPlan(CachedPlanSource *plansource)
 	/* If it's been saved, remove it from the list */
 	if (plansource->is_saved)
 	{
-		if (first_saved_plan == plansource)
-			first_saved_plan = plansource->next_saved;
-		else
-		{
-			CachedPlanSource *psrc;
-
-			for (psrc = first_saved_plan; psrc; psrc = psrc->next_saved)
-			{
-				if (psrc->next_saved == plansource)
-				{
-					psrc->next_saved = plansource->next_saved;
-					break;
-				}
-			}
-		}
+		dlist_delete(&plansource->node);
 		plansource->is_saved = false;
 	}
 
@@ -750,9 +785,21 @@ RevalidateCachedQuery(CachedPlanSource *plansource,
 	 * Allocate new query_context and copy the completed querytree into it.
 	 * It's transient until we complete the copying and dependency extraction.
 	 */
-	querytree_context = AllocSetContextCreate(CurrentMemoryContext,
-											  "CachedPlanQuery",
-											  ALLOCSET_START_SMALL_SIZES);
+	/* POLAR: Shared Server */
+	if (plansource->polar_on_session_context)
+	{
+		querytree_context = polar_session_alloc_set_context_create(CurrentMemoryContext,
+																	CurrentMemoryContext,
+																	"CachedPlanQuery",
+																	ALLOCSET_START_SMALL_SIZES);
+	} 	/* POLAR end */
+	else
+	{
+		querytree_context = AllocSetContextCreate(CurrentMemoryContext,
+												  "CachedPlanQuery",
+												  ALLOCSET_START_SMALL_SIZES);
+	}
+
 	oldcxt = MemoryContextSwitchTo(querytree_context);
 
 	qlist = copyObject(tlist);
@@ -781,7 +828,9 @@ RevalidateCachedQuery(CachedPlanSource *plansource,
 	MemoryContextSwitchTo(oldcxt);
 
 	/* Now reparent the finished query_context and save the links */
-	MemoryContextSetParent(querytree_context, plansource->context);
+	MemoryContextSetParentWithFallback(querytree_context, 
+		plansource->context,
+		plansource->polar_on_session_context && POLAR_SS_NOT_DEDICATED());
 
 	plansource->query_context = querytree_context;
 	plansource->query_list = qlist;
@@ -965,9 +1014,21 @@ BuildCachedPlan(CachedPlanSource *plansource, List *qlist,
 	 */
 	if (!plansource->is_oneshot)
 	{
-		plan_context = AllocSetContextCreate(CurrentMemoryContext,
-											 "CachedPlan",
-											 ALLOCSET_START_SMALL_SIZES);
+		/* POLAR: Shared Server */
+		if (plansource->polar_on_session_context)
+		{
+			plan_context = polar_session_alloc_set_context_create(polar_session()->memory_context,
+																	CurrentMemoryContext,
+																	"CachedPlan",
+																	ALLOCSET_START_SMALL_SIZES);
+		}
+		else
+		{
+			plan_context = AllocSetContextCreate(CurrentMemoryContext,
+												 "CachedPlan",
+												 ALLOCSET_START_SMALL_SIZES);
+		}
+		/* POLAR end */
 		MemoryContextCopyAndSetIdentifier(plan_context, plansource->query_string);
 
 		/*
@@ -1196,7 +1257,11 @@ GetCachedPlan(CachedPlanSource *plansource, ParamListInfo boundParams,
 			if (plansource->is_saved)
 			{
 				/* saved plans all live under CacheMemoryContext */
-				MemoryContextSetParent(plan->context, CacheMemoryContext);
+				/* POLAR: Shared Server */
+				MemoryContextSetParentWithFallback(plan->context, 
+					CacheMemoryContext,
+					plansource->polar_on_session_context && POLAR_SS_NOT_DEDICATED());
+				/* POLAR end */
 				plan->is_saved = true;
 			}
 			else
@@ -1257,7 +1322,11 @@ GetCachedPlan(CachedPlanSource *plansource, ParamListInfo boundParams,
 	 */
 	if (customplan && plansource->is_saved)
 	{
-		MemoryContextSetParent(plan->context, CacheMemoryContext);
+		/* POLAR: Shared Server */
+		MemoryContextSetParentWithFallback(plan->context, 
+			CacheMemoryContext,
+			plansource->polar_on_session_context && POLAR_SS_NOT_DEDICATED());
+		/* POLAR end */
 		plan->is_saved = true;
 	}
 
@@ -1318,8 +1387,9 @@ CachedPlanSetParentContext(CachedPlanSource *plansource,
 		elog(ERROR, "cannot move a one-shot cached plan to another context");
 
 	/* OK, let the caller keep the plan where he wishes */
-	MemoryContextSetParent(plansource->context, newcontext);
-
+	MemoryContextSetParentWithFallback(plansource->context, 
+		newcontext,
+		plansource->polar_on_session_context && POLAR_SS_NOT_DEDICATED());
 	/*
 	 * The query_context needs no special handling, since it's a child of
 	 * plansource->context.  But if there's a generic plan, it should be
@@ -1328,7 +1398,9 @@ CachedPlanSetParentContext(CachedPlanSource *plansource,
 	if (plansource->gplan)
 	{
 		Assert(plansource->gplan->magic == CACHEDPLAN_MAGIC);
-		MemoryContextSetParent(plansource->gplan->context, newcontext);
+		MemoryContextSetParentWithFallback(plansource->gplan->context, 
+			newcontext,
+			plansource->polar_on_session_context && POLAR_SS_NOT_DEDICATED());
 	}
 }
 
@@ -1359,9 +1431,16 @@ CopyCachedPlan(CachedPlanSource *plansource)
 	if (plansource->is_oneshot)
 		elog(ERROR, "cannot copy a one-shot cached plan");
 
-	source_context = AllocSetContextCreate(CurrentMemoryContext,
-										   "CachedPlanSource",
-										   ALLOCSET_START_SMALL_SIZES);
+	if (plansource->polar_on_session_context)
+		source_context = polar_session_alloc_set_context_create(
+											polar_session()->memory_context,
+											CurrentMemoryContext,
+											"CachedPlanSource",
+											ALLOCSET_START_SMALL_SIZES);
+	else
+		source_context = AllocSetContextCreate(CurrentMemoryContext,
+											"CachedPlanSource",
+											ALLOCSET_START_SMALL_SIZES);
 
 	oldcxt = MemoryContextSwitchTo(source_context);
 
@@ -1391,9 +1470,17 @@ CopyCachedPlan(CachedPlanSource *plansource)
 		newsource->resultDesc = NULL;
 	newsource->context = source_context;
 
-	querytree_context = AllocSetContextCreate(source_context,
-											  "CachedPlanQuery",
-											  ALLOCSET_START_SMALL_SIZES);
+	if (plansource->polar_on_session_context)
+		querytree_context = polar_session_alloc_set_context_create(
+												source_context,
+												source_context,
+												"CachedPlanQuery",
+												ALLOCSET_START_SMALL_SIZES);
+	else
+		querytree_context = AllocSetContextCreate(source_context,
+												"CachedPlanQuery",
+												ALLOCSET_START_SMALL_SIZES);
+
 	MemoryContextSwitchTo(querytree_context);
 	newsource->query_list = copyObject(plansource->query_list);
 	newsource->relationOids = copyObject(plansource->relationOids);
@@ -1412,12 +1499,12 @@ CopyCachedPlan(CachedPlanSource *plansource)
 	newsource->is_saved = false;
 	newsource->is_valid = plansource->is_valid;
 	newsource->generation = plansource->generation;
-	newsource->next_saved = NULL;
 
 	/* We may as well copy any acquired cost knowledge */
 	newsource->generic_cost = plansource->generic_cost;
 	newsource->total_custom_cost = plansource->total_custom_cost;
 	newsource->num_custom_plans = plansource->num_custom_plans;
+	newsource->polar_on_session_context = plansource->polar_on_session_context;
 
 	MemoryContextSwitchTo(oldcxt);
 
@@ -1728,12 +1815,15 @@ PlanCacheComputeResultDesc(List *stmt_list)
  * any rel at all if relid == InvalidOid.
  */
 static void
-PlanCacheRelCallback(Datum arg, Oid relid)
+PlanCacheRelCallback_common(Datum arg, Oid relid, dlist_head *plan_list)
 {
-	CachedPlanSource *plansource;
+	dlist_iter	iter;
 
-	for (plansource = first_saved_plan; plansource; plansource = plansource->next_saved)
+	dlist_foreach(iter, plan_list)
 	{
+		CachedPlanSource *plansource = dlist_container(CachedPlanSource,
+													   node, iter.cur);
+
 		Assert(plansource->magic == CACHEDPLANSOURCE_MAGIC);
 
 		/* No work if it's already invalidated */
@@ -1782,6 +1872,13 @@ PlanCacheRelCallback(Datum arg, Oid relid)
 	}
 }
 
+static void
+PlanCacheRelCallback(Datum arg, Oid relid)
+{
+	PlanCacheRelCallback_common(arg, relid, &saved_plan_list);
+	PlanCacheRelCallback_common(arg, relid, &local_saved_plan_list);
+}
+
 /*
  * PlanCacheFuncCallback
  *		Syscache inval callback function for PROCOID cache
@@ -1793,12 +1890,15 @@ PlanCacheRelCallback(Datum arg, Oid relid)
  * now only user-defined functions are tracked this way.
  */
 static void
-PlanCacheFuncCallback(Datum arg, int cacheid, uint32 hashvalue)
+PlanCacheFuncCallback_common(Datum arg, int cacheid, uint32 hashvalue, 
+	dlist_head *plan_list)
 {
-	CachedPlanSource *plansource;
+	dlist_iter	iter;
 
-	for (plansource = first_saved_plan; plansource; plansource = plansource->next_saved)
+	dlist_foreach(iter, plan_list)
 	{
+		CachedPlanSource *plansource = dlist_container(CachedPlanSource,
+													   node, iter.cur);
 		ListCell   *lc;
 
 		Assert(plansource->magic == CACHEDPLANSOURCE_MAGIC);
@@ -1865,6 +1965,14 @@ PlanCacheFuncCallback(Datum arg, int cacheid, uint32 hashvalue)
 	}
 }
 
+static void
+PlanCacheFuncCallback(Datum arg, int cacheid, uint32 hashvalue)
+{
+	PlanCacheFuncCallback_common(arg, cacheid, hashvalue, &saved_plan_list);
+	PlanCacheFuncCallback_common(arg, cacheid, hashvalue, &local_saved_plan_list);
+}
+
+
 /*
  * PlanCacheSysCallback
  *		Syscache inval callback function for other caches
@@ -1880,13 +1988,15 @@ PlanCacheSysCallback(Datum arg, int cacheid, uint32 hashvalue)
 /*
  * ResetPlanCache: invalidate all cached plans.
  */
-void
-ResetPlanCache(void)
+static void
+ResetPlanCache_common(dlist_head *plan_list)
 {
-	CachedPlanSource *plansource;
+	dlist_iter	iter;
 
-	for (plansource = first_saved_plan; plansource; plansource = plansource->next_saved)
+	dlist_foreach(iter, plan_list)
 	{
+		CachedPlanSource *plansource = dlist_container(CachedPlanSource,
+													   node, iter.cur);
 		ListCell   *lc;
 
 		Assert(plansource->magic == CACHEDPLANSOURCE_MAGIC);
@@ -1927,3 +2037,12 @@ ResetPlanCache(void)
 		}
 	}
 }
+
+void
+ResetPlanCache(void)
+{
+	ResetPlanCache_common(&saved_plan_list);
+	ResetPlanCache_common(&local_saved_plan_list);
+}
+
+
