@@ -115,7 +115,7 @@ CMappingColIdVarPlStmt::ParamFromDXLNodeScId
 		param->paramtype = CMDIdGPDB::CastMdid(elem->MdidType())->Oid();
 		param->paramtypmod = elem->TypeModifier();
 
-		/* POALR px */
+		/* POLAR px */
 		param->location = -1;
 	}
 

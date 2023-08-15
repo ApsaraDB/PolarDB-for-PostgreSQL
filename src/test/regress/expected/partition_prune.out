@@ -1267,6 +1267,7 @@ EXPLAIN (COSTS OFF) SELECT tableoid::regclass as part, a, b FROM part WHERE a IS
                Filter: (a IS NULL)
 (5 rows)
 
+drop table part cascade;
 --
 -- some more cases
 --

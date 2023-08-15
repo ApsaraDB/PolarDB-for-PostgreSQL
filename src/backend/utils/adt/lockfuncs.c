@@ -19,6 +19,7 @@
 #include "miscadmin.h"
 #include "pgstat.h"
 #include "storage/predicate_internals.h"
+#include "storage/proc.h"
 #include "utils/array.h"
 #include "utils/builtins.h"
 
@@ -661,6 +662,13 @@ pg_isolation_test_session_is_blocked(PG_FUNCTION_ARGS)
 static void
 PreventAdvisoryLocksInParallelMode(void)
 {
+	/* POLAR: Shared Server */
+	if (POLAR_SS_NOT_DEDICATED())
+	{
+		MyProc->polar_is_backend_dedicated = true;
+		elog(LOG, "polar shared server set dedicated from PreventAdvisoryLocksInParallelMode");
+	}
+
 	if (IsInParallelMode())
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_TRANSACTION_STATE),

@@ -61,5 +61,9 @@ select count(*) = 11 from polar_stat_proxy_info;
 select count(*) = 11 from polar_stat_proxy_info_rt;
 select count(*) = 0 from polar_stat_reset_proxy_info();
 
+select count(*) >= 0 from polar_stat_session where backend_type='client backend';
+select count(*) >= 0 from polar_stat_dispatcher;
+select polar_dispatcher_pid() - polar_dispatcher_pid(), polar_session_backend_pid() - polar_session_backend_pid(), pg_backend_pid() - pg_backend_pid();
+
 --cleanup
 drop extension polar_monitor;

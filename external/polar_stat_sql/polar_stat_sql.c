@@ -818,6 +818,7 @@ pgss_queryids_array_size(void)
 	 * and an extra one since BackendId numerotation starts at 1.
 	 */
 	return (sizeof(bool) * (MaxConnections + autovacuum_max_workers + 1
+							+ MaxPolarDispatcher/* POLAR: Shared Server */
 							+ max_worker_processes + 1));
 }
 

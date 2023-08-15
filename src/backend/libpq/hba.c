@@ -52,6 +52,9 @@
 #endif
 #endif
 
+/* POLAR: Shared Server */
+#include "storage/polar_session_context.h"
+
 
 #define MAX_TOKEN	256
 #define MAX_LINE	8192
@@ -2247,6 +2250,7 @@ load_hba(void)
 	MemoryContext linecxt;
 	MemoryContext oldcxt;
 	MemoryContext hbacxt;
+	MemoryContext hbacxt_parent;
 
 	file = AllocateFile(HbaFileName, "r");
 	if (file == NULL)
@@ -2262,10 +2266,12 @@ load_hba(void)
 	FreeFile(file);
 
 	/* Now parse all the lines */
-	Assert(PostmasterContext);
-	hbacxt = AllocSetContextCreate(PostmasterContext,
-								   "hba parser context",
-								   ALLOCSET_SMALL_SIZES);
+	/* Shared Server. Keep parsed_hba_context, parsed_hba_lines existing and updated on shared backend. */
+	hbacxt_parent = POLAR_SHARED_SERVER_RUNNING() ? TopMemoryContext : PostmasterContext;
+	hbacxt = AllocSetContextCreate(hbacxt_parent,
+									"hba parser context",
+									ALLOCSET_SMALL_SIZES);
+
 	oldcxt = MemoryContextSwitchTo(hbacxt);
 	foreach(line, hba_lines)
 	{
@@ -3038,6 +3044,7 @@ load_ident(void)
 	MemoryContext linecxt;
 	MemoryContext oldcxt;
 	MemoryContext ident_context;
+	MemoryContext ident_context_parent;
 	IdentLine  *newline;
 
 	file = AllocateFile(IdentFileName, "r");
@@ -3055,10 +3062,11 @@ load_ident(void)
 	FreeFile(file);
 
 	/* Now parse all the lines */
-	Assert(PostmasterContext);
-	ident_context = AllocSetContextCreate(PostmasterContext,
-										  "ident parser context",
-										  ALLOCSET_SMALL_SIZES);
+	/* Shared Server. Keep parsed_ident_context, parsed_ident_lines existing and updated on shared backend. */
+	ident_context_parent = POLAR_SHARED_SERVER_RUNNING() ? TopMemoryContext : PostmasterContext;
+	ident_context = AllocSetContextCreate(ident_context_parent,
+											"ident parser context",
+											ALLOCSET_SMALL_SIZES);
 	oldcxt = MemoryContextSwitchTo(ident_context);
 	foreach(line_cell, ident_lines)
 	{

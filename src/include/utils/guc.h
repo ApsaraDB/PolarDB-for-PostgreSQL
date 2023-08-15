@@ -233,6 +233,11 @@ typedef enum
 
 #define GUC_UNIT				(GUC_UNIT_MEMORY | GUC_UNIT_TIME)
 
+/* POLAR: Shared Server */
+#define GUC_SESSION_DEDICATED   0x100000	/* guc need in dedicated mode*/
+#define GUC_ASSIGN_IN_TRANS		0x200000	/* assign need in trans */
+/* POLAR end */
+
 /* POLAR */
 #define MAX_READ_AHEAD_XLOGS	200
 #define MAX_NUM_OF_PARALLEL_BGWRITER	16
@@ -270,11 +275,10 @@ typedef enum
 /* POLAR end */
 
 /* POLAR px */
-typedef struct polar_px_function_oid_array
-{
-	Oid array[1024];
-	int len;
-} polar_px_function_oid_array;
+typedef struct PxFunctionOidArray {
+	int	count;
+	int	oid[FLEXIBLE_ARRAY_MEMBER];
+} PxFunctionOidArray;
 
 /* GUC vars that are actually declared in guc.c, rather than elsewhere */
 extern bool log_duration;
@@ -543,6 +547,7 @@ extern char	   *polar_xact_split_xids;
 /* POLAR: GUCs for transaction rw-split end */
 
 extern bool		polar_enable_flashback_drop;
+extern bool		polar_enable_shm_aset;
 
 /* POLAR wal pipeline */
 
@@ -748,6 +753,8 @@ extern void write_nondefault_variables(GucContext context);
 extern void read_nondefault_variables(void);
 #endif
 
+extern void *guc_malloc(int elevel, size_t size);
+
 /* GUC serialization */
 extern Size EstimateGUCStateSpace(void);
 extern void SerializeGUCState(Size maxsize, char *start_address);
@@ -807,6 +814,11 @@ extern bool	px_enable_print;
 extern bool px_debug_cancel_print;
 extern bool px_log_dispatch_stats;
 extern bool px_optimizer_enable_relsize_collection;
+
+/* Macros to define the level of memory accounting to show in EXPLAIN ANALYZE */
+#define EXPLAIN_MEMORY_VERBOSITY_SUPPRESS	0 /* Suppress memory reporting in explain analyze */
+#define EXPLAIN_MEMORY_VERBOSITY_SUMMARY	1 /* Summary of memory usage for each owner in explain analyze */
+#define EXPLAIN_MEMORY_VERBOSITY_DETAIL		2 /* Detail memory accounting tree for each slice in explain analyze */
 
 /* Optimizer related gucs */
 extern bool	polar_enable_px;
@@ -975,7 +987,7 @@ extern bool	px_optimizer_enable_associativity;
 extern int	px_max_slices;
 extern char *polar_px_nodes;
 extern char *polar_px_ignore_function;
-extern polar_px_function_oid_array px_function_oid_array;
+extern PxFunctionOidArray *px_function_oid_array;
 extern bool	px_use_standby;
 extern bool	polar_px_ignore_unusable_nodes;
 extern bool	polar_enable_send_node_info;

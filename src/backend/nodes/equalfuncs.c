@@ -292,7 +292,7 @@ _equalFuncExpr(const FuncExpr *a, const FuncExpr *b)
 	COMPARE_NODE_FIELD(args);
 	COMPARE_LOCATION_FIELD(location);
 
-	/* POALR px */
+	/* POLAR px */
 	COMPARE_SCALAR_FIELD(isGlobalFunc);
 	/* POLAR end */
 

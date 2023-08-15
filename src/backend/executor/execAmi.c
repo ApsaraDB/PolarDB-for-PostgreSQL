@@ -86,7 +86,7 @@ ExecReScan(PlanState *node)
 	if (node->instrument)
 		InstrEndLoop(node->instrument);
 
-	/* POALR px: no longer squelched */
+	/* POLAR px: no longer squelched */
 	node->squelched = false;
 
 	/*

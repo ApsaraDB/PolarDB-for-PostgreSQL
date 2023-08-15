@@ -17,6 +17,9 @@
 #include "port/atomics.h"
 #include "storage/dsm.h"
 
+/* POLAR */
+#include "nodes/memnodes.h"
+
 /* The opaque type used for an area. */
 struct dsa_area;
 typedef struct dsa_area dsa_area;
@@ -121,5 +124,9 @@ extern void dsa_free(dsa_area *area, dsa_pointer dp);
 extern void *dsa_get_address(dsa_area *area, dsa_pointer dp);
 extern void dsa_trim(dsa_area *area);
 extern void dsa_dump(dsa_area *area);
+extern DSALockStat *dsa_get_lock_stat(dsa_area *area);
+
+/* POLAR */
+extern void polar_dsa_monitor(dsa_area *area, DSAContextCounters *totals);
 
 #endif							/* DSA_H */

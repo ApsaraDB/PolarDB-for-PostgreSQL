@@ -196,6 +196,7 @@ CREATE TABLE part_p2 PARTITION OF part DEFAULT PARTITION BY RANGE(a);
 CREATE TABLE part_p2_p1 PARTITION OF part_p2 DEFAULT;
 INSERT INTO part VALUES (-1,-1), (1,1), (2,NULL), (NULL,-2),(NULL,NULL);
 EXPLAIN (COSTS OFF) SELECT tableoid::regclass as part, a, b FROM part WHERE a IS NULL ORDER BY 1, 2, 3;
+drop table part cascade;
 
 --
 -- some more cases

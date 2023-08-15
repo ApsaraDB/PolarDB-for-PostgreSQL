@@ -24,7 +24,7 @@
 #include "px/px_explain.h"             /* pxexplain_recvExecStats */
 #include "executor/execdesc.h"
 #include "px/px_disp.h"
-/* POALR end */
+/* POLAR end */
 
 PG_MODULE_MAGIC;
 
@@ -373,6 +373,10 @@ explain_ExecutorEnd(QueryDesc *queryDesc)
 				ExplainPrintTriggers(es, queryDesc);
 			if (es->costs)
 				ExplainPrintJITSummary(es, queryDesc);
+			/* POLAR px */
+			if (es->analyze)
+				ExplainPrintExecStatsEnd(es, queryDesc);
+			/* POLAR end */
 			ExplainEndOutput(es);
 
 			/* Remove last line break */

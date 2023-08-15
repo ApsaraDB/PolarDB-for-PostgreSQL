@@ -2063,7 +2063,7 @@ CTranslatorDXLToPlStmt::TranslateDXLTvfToRangeTblEntry(
 	func_expr->funcresulttype =
 		CMDIdGPDB::CastMdid(dxlop->ReturnTypeMdId())->Oid();
 
-	/* POALR px */
+	// POLAR px
 	func_expr->location = -1;
 
 	Alias *alias = MakeNode(Alias);

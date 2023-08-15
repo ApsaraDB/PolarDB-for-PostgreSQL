@@ -298,6 +298,13 @@ polar_proc_stat_network(PG_FUNCTION_ARGS)
 		if (!CHECK_BACKENDID_VALID(beentry->backendid))
 			continue;
 
+		/* POLAR: Shared Server */
+		/* TODO: not compat this monitor now @yanhua */
+		if (POLAR_SHARED_SERVER_RUNNING() &&
+			beentry->st_backendType == B_BACKEND &&
+			beentry->session_local_id > 0)
+			continue;
+
 		MemSet(values, 0, sizeof(values));
 		MemSet(nulls, 0, sizeof(nulls));
 

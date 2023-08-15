@@ -50,6 +50,7 @@
 #include "utils/snapmgr.h"
 
 #define MAX_BUFFERED_TUPLES 1000
+#include "px/memquota.h"
 
 typedef struct
 {
@@ -374,6 +375,10 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 		queryDesc = CreateQueryDesc(plan, queryString,
 									GetActiveSnapshot(), InvalidSnapshot,
 									dest, params, queryEnv, 0);
+
+		/* POLAR px */
+		queryDesc->plannedstmt->query_mem = ResourceManagerGetQueryMemoryLimit(queryDesc->plannedstmt);
+		/* POLAR end */
 
 		/* call ExecutorStart to prepare the plan for execution */
 		ExecutorStart(queryDesc, GetIntoRelEFlags(into));

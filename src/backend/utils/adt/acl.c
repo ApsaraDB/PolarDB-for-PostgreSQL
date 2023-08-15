@@ -42,6 +42,8 @@
 /* POLAR */
 #include "utils/guc.h"
 #include "commands/extension.h"
+#include "storage/polar_session_context.h"
+#include "storage/proc.h"
 
 typedef struct
 {
@@ -75,11 +77,34 @@ typedef struct
  *		is a member of (always including itself).
  * The cache is valid if cached_member_role is not InvalidOid.
  */
-static Oid	cached_privs_role = InvalidOid;
-static List *cached_privs_roles = NIL;
-static Oid	cached_member_role = InvalidOid;
-static List *cached_membership_roles = NIL;
+typedef struct PolarSessionAcl
+{
+	Oid		 m_cached_privs_role;
+	List	*m_cached_privs_roles;
+	Oid		m_cached_member_role;
+	List	*m_cached_membership_roles;
+} PolarSessionAcl;
 
+PolarSessionAcl *
+polar_session_acl_create(MemoryContext mctx)
+{
+	PolarSessionAcl* self;
+	if (mctx)
+		self = (PolarSessionAcl*)MemoryContextAlloc(mctx, sizeof(PolarSessionAcl));
+	else
+		self = (PolarSessionAcl*)malloc(sizeof(PolarSessionAcl));
+
+	memset(self, 0, sizeof(PolarSessionAcl));
+
+	return self;
+}
+
+#define POLAR_SESSION_ACL(name)		(polar_session_info()->acl->m_##name)
+
+#define cached_privs_role		POLAR_SESSION_ACL(cached_privs_role)
+#define cached_privs_roles		POLAR_SESSION_ACL(cached_privs_roles)
+#define cached_member_role		POLAR_SESSION_ACL(cached_member_role)
+#define cached_membership_roles	POLAR_SESSION_ACL(cached_membership_roles)
 
 static const char *getid(const char *s, char *n);
 static void putid(char *p, const char *s);
@@ -4754,6 +4779,7 @@ roles_has_privs_of(Oid roleid)
 	ListCell   *l;
 	List	   *new_cached_privs_roles;
 	MemoryContext oldctx;
+	MemoryContext topctx;
 
 	/* If cache is already valid, just return the list */
 	if (OidIsValid(cached_privs_role) && cached_privs_role == roleid)
@@ -4803,7 +4829,8 @@ roles_has_privs_of(Oid roleid)
 	/*
 	 * Copy the completed list into TopMemoryContext so it will persist.
 	 */
-	oldctx = MemoryContextSwitchTo(TopMemoryContext);
+	topctx = (POLAR_SS_NOT_DEDICATED() ? polar_session()->memory_context : TopMemoryContext);
+	oldctx = MemoryContextSwitchTo(topctx);
 	new_cached_privs_roles = list_copy(roles_list);
 	MemoryContextSwitchTo(oldctx);
 	list_free(roles_list);
@@ -4837,6 +4864,7 @@ roles_is_member_of(Oid roleid)
 	ListCell   *l;
 	List	   *new_cached_membership_roles;
 	MemoryContext oldctx;
+	MemoryContext topctx;
 
 	/* If cache is already valid, just return the list */
 	if (OidIsValid(cached_member_role) && cached_member_role == roleid)
@@ -4882,7 +4910,8 @@ roles_is_member_of(Oid roleid)
 	/*
 	 * Copy the completed list into TopMemoryContext so it will persist.
 	 */
-	oldctx = MemoryContextSwitchTo(TopMemoryContext);
+	topctx = (POLAR_SS_NOT_DEDICATED() ? polar_session()->memory_context : TopMemoryContext);
+	oldctx = MemoryContextSwitchTo(topctx);
 	new_cached_membership_roles = list_copy(roles_list);
 	MemoryContextSwitchTo(oldctx);
 	list_free(roles_list);

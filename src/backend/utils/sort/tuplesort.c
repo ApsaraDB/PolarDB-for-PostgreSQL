@@ -697,7 +697,10 @@ tuplesort_begin_common(int workMem, SortCoordinate coordinate,
 	sortcontext = AllocSetContextCreate(CurrentMemoryContext,
 										"TupleSort main",
 										ALLOCSET_DEFAULT_SIZES);
-
+	/* POLAR px */
+	MemoryContextDeclareAccountingRoot(sortcontext);
+	/* POLAR end */
+	
 	/*
 	 * Caller tuple (e.g. IndexTuple) memory context.
 	 *
@@ -3148,6 +3151,9 @@ tuplesort_get_stats(Tuplesortstate *state,
 		stats->spaceType = SORT_SPACE_TYPE_MEMORY;
 		stats->spaceUsed = (state->allowedMem - state->availMem + 1023) / 1024;
 	}
+	/* POLAR px */
+	stats->workmemused = MemoryContextGetPeakSpace(state->sortcontext);
+	/* POLAR end */
 
 	switch (state->status)
 	{

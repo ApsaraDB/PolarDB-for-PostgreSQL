@@ -65,7 +65,7 @@ CQueryContext::CQueryContext(CMemoryPool *mp, CExpression *pexpr,
 
 	m_pexpr = CExpressionPreprocessor::PexprPreprocess(
 		mp, pexpr, pcrsOutputAndOrderingCols,
-		/* POALR px */
+		/* POLAR px */
 		colref_array, prpp->PcrsRequired(), prpp->Peo()->PosRequired());
 
 	pcrsOutputAndOrderingCols->Release();

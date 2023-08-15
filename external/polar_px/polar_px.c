@@ -1,7 +1,7 @@
 /*-------------------------------------------------------------------------
  *
  * polar_px.c
- *	  POALR_PX install polar_px_workerid function into pg_proc
+ *	  POLAR_PX install polar_px_workerid function into pg_proc
  *	  for px subselect.
  *
  * Copyright (c) 2020, Alibaba Group Holding Limited

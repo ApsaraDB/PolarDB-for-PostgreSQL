@@ -1210,3 +1210,42 @@ bms_hash_value(const Bitmapset *a)
 	return DatumGetUInt32(hash_any((const unsigned char *) a->words,
 								   (lastword + 1) * sizeof(bitmapword)));
 }
+
+/* POLAR: Shared Server */
+uint32
+polar_bms_alloc_size(const int upper)
+{
+	return BITMAPSET_SIZE(WORDNUM(upper) + 1);
+}
+
+void
+polar_bms_reset(Bitmapset *a, const int upper)
+{
+	if (upper < 0)
+		elog(ERROR, "negative bitmapset member not allowed");
+	memset(a, 0, polar_bms_alloc_size(upper));
+	a->nwords = WORDNUM(upper) + 1;
+}
+
+/*
+ * bms_add_member - add a specified member to set
+ *
+ * Input set is modified or recycled!
+ */
+void
+polar_bms_add_member(Bitmapset *a, int x)
+{
+	int			wordnum,
+				bitnum;
+
+	if (x < 0)
+		elog(ERROR, "negative bitmapset member not allowed");
+
+	wordnum = WORDNUM(x);
+	bitnum = BITNUM(x);
+
+	Assert(a != NULL);
+	Assert(wordnum < a->nwords);
+
+	a->words[wordnum] |= ((bitmapword) 1 << bitnum);
+}

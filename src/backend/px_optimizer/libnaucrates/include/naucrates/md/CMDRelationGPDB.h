@@ -232,10 +232,10 @@ public:
 	// retrieve the partition key column at the given position
 	const IMDColumn *PartColAt(ULONG pos) const override;
 
-	// POALR px: number of key schemes
+	// POLAR px: number of key schemes
 	ULONG PartSchemeCount() const override;
 
-	// POALR px: retrieve the partition scheme at the given position
+	// POLAR px: retrieve the partition scheme at the given position
 	ULONG PartSchemeAt(ULONG pos) const override;
 
 	// retrieve list of partition types

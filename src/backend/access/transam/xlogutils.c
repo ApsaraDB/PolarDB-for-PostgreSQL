@@ -755,13 +755,13 @@ XLogReadBufferExtended(RelFileNode rnode, ForkNumber forknum,
 			ReleaseBuffer(buffer);
 			log_invalid_page(rnode, forknum, blkno, true);
 
-			/* POALR: log for just-inited page */
+			/* POLAR: log for just-inited page */
 			if (polar_page_just_inited)
 			{
 				elog(WARNING, "Func %s, Page ([%u, %u, %u]), %u, %u is just-inited page during replay xlog",
 					 __func__, rnode.spcNode, rnode.dbNode, rnode.relNode, forknum, blkno);
 			}
-			/* POALR */
+			/* POLAR */
 
 			return InvalidBuffer;
 		}

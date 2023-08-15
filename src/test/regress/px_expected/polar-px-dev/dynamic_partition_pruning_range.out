@@ -555,6 +555,7 @@ select * from pt where ptid in (select tid from t where t1 = 'hello' || tid);
    ->  Hash Join (actual rows=18 loops=1)
          Output: pt_p1.dist, pt_p1.pt1, pt_p1.pt2, pt_p1.pt3, pt_p1.ptid
          Hash Cond: (pt_p1.ptid = t.tid)
+         work_mem: 49kB  Workers: 6  Max: 9kB (worker 0)  Workfile: (0 spilling)
          ->  Append (actual rows=18 loops=1)
                Partition Selectors: $0
                ->  Partial Seq Scan on dpe_single.pt_p1 (actual rows=9 loops=1)
@@ -571,6 +572,7 @@ select * from pt where ptid in (select tid from t where t1 = 'hello' || tid);
                      Output: pt_junk_data.dist, pt_junk_data.pt1, pt_junk_data.pt2, pt_junk_data.pt3, pt_junk_data.ptid
          ->  Hash (actual rows=2 loops=1)
                Output: t.tid
+               Buckets: 1024  Batches: 1  Memory Usage: 9kB
                ->  Partition Selector (selector id: $0) (actual rows=2 loops=1)
                      Output: t.tid
                      ->  PX Broadcast 6:6  (slice2; segments: 6) (actual rows=2 loops=1)
@@ -581,6 +583,7 @@ select * from pt where ptid in (select tid from t where t1 = 'hello' || tid);
                                  ->  Sort (actual rows=1 loops=1)
                                        Output: t.tid
                                        Sort Key: t.tid
+                                       work_mem: 208kB  Workers: 6  Max: 35kB (worker 0)  Workfile: (0 spilling)
                                        ->  PX Hash 6:6  (slice3; segments: 6) (actual rows=1 loops=1)
                                              Output: t.tid
                                              Hash Key: t.tid
@@ -588,7 +591,7 @@ select * from pt where ptid in (select tid from t where t1 = 'hello' || tid);
                                                    Output: t.tid
                                                    Filter: (t.t1 = ('hello'::text || (t.tid)::text))
  Optimizer: PolarDB PX Optimizer
-(38 rows)
+(41 rows)
 
 -- start_ignore
 -- Known_opt_diff: MPP-21320
@@ -682,6 +685,7 @@ select * from pt where exists (select 1 from t where tid = ptid and t1 = 'hello'
    ->  Hash Join (actual rows=18 loops=1)
          Output: pt_p1.dist, pt_p1.pt1, pt_p1.pt2, pt_p1.pt3, pt_p1.ptid
          Hash Cond: (pt_p1.ptid = t.tid)
+         work_mem: 49kB  Workers: 6  Max: 9kB (worker 0)  Workfile: (0 spilling)
          ->  Append (actual rows=18 loops=1)
                Partition Selectors: $0
                ->  Partial Seq Scan on dpe_single.pt_p1 (actual rows=9 loops=1)
@@ -698,6 +702,7 @@ select * from pt where exists (select 1 from t where tid = ptid and t1 = 'hello'
                      Output: pt_junk_data.dist, pt_junk_data.pt1, pt_junk_data.pt2, pt_junk_data.pt3, pt_junk_data.ptid
          ->  Hash (actual rows=2 loops=1)
                Output: t.tid
+               Buckets: 1024  Batches: 1  Memory Usage: 9kB
                ->  Partition Selector (selector id: $0) (actual rows=2 loops=1)
                      Output: t.tid
                      ->  PX Broadcast 6:6  (slice2; segments: 6) (actual rows=2 loops=1)
@@ -708,6 +713,7 @@ select * from pt where exists (select 1 from t where tid = ptid and t1 = 'hello'
                                  ->  Sort (actual rows=1 loops=1)
                                        Output: t.tid
                                        Sort Key: t.tid
+                                       work_mem: 208kB  Workers: 6  Max: 35kB (worker 0)  Workfile: (0 spilling)
                                        ->  PX Hash 6:6  (slice3; segments: 6) (actual rows=1 loops=1)
                                              Output: t.tid
                                              Hash Key: t.tid
@@ -715,7 +721,7 @@ select * from pt where exists (select 1 from t where tid = ptid and t1 = 'hello'
                                                    Output: t.tid
                                                    Filter: (t.t1 = ('hello'::text || (t.tid)::text))
  Optimizer: PolarDB PX Optimizer
-(38 rows)
+(41 rows)
 
 --
 -- group-by on top
@@ -907,6 +913,7 @@ select *, rank() over (order by ptid,pt1) from t, pt where tid = ptid;
          ->  Sort (actual rows=18 loops=1)
                Output: t.dist, t.tid, t.t1, t.t2, pt_p1.dist, pt_p1.pt1, pt_p1.pt2, pt_p1.pt3, pt_p1.ptid
                Sort Key: pt_p1.ptid, pt_p1.pt1
+               work_mem: 209kB  Workers: 6  Max: 35kB (worker 0)  Workfile: (0 spilling)
                ->  Nested Loop (actual rows=18 loops=1)
                      Output: t.dist, t.tid, t.t1, t.t2, pt_p1.dist, pt_p1.pt1, pt_p1.pt2, pt_p1.pt3, pt_p1.ptid
                      Join Filter: true
@@ -932,7 +939,7 @@ select *, rank() over (order by ptid,pt1) from t, pt where tid = ptid;
                                  Output: pt_junk_data.dist, pt_junk_data.pt1, pt_junk_data.pt2, pt_junk_data.pt3, pt_junk_data.ptid
                                  Index Cond: (pt_junk_data.ptid = t.tid)
  Optimizer: PolarDB PX Optimizer
-(33 rows)
+(34 rows)
 
 --
 -- set ops
@@ -1994,6 +2001,7 @@ select * from t, t1, pt where t1.t2 = t.t2 and t1.tid = ptid;
    ->  Hash Join (actual rows=36 loops=1)
          Output: t.dist, t.tid, t.t1, t.t2, t1.dist, t1.tid, t1.t1, t1.t2, pt_p1.dist, pt_p1.pt1, pt_p1.pt2, pt_p1.pt3, pt_p1.ptid
          Hash Cond: (t1.t2 = t.t2)
+         work_mem: 49kB  Workers: 6  Max: 9kB (worker 0)  Workfile: (0 spilling)
          ->  Nested Loop (actual rows=18 loops=1)
                Output: t1.dist, t1.tid, t1.t1, t1.t2, pt_p1.dist, pt_p1.pt1, pt_p1.pt2, pt_p1.pt3, pt_p1.ptid
                Join Filter: true
@@ -2020,10 +2028,11 @@ select * from t, t1, pt where t1.t2 = t.t2 and t1.tid = ptid;
                            Index Cond: (pt_junk_data.ptid = t1.tid)
          ->  Hash (actual rows=2 loops=1)
                Output: t.dist, t.tid, t.t1, t.t2
+               Buckets: 1024  Batches: 1  Memory Usage: 9kB
                ->  Full Seq Scan on dpe_single.t (actual rows=2 loops=1)
                      Output: t.dist, t.tid, t.t1, t.t2
  Optimizer: PolarDB PX Optimizer
-(34 rows)
+(36 rows)
 
 -- Both joined tables can be used for partition elimination. Only partitions
 -- that contain matching rows for both joins need to be scanned.
@@ -2243,14 +2252,17 @@ select * from pt, pt1 where pt.ptid = pt1.ptid and pt.pt1 = 'hello0' order by pt
    ->  Sort (actual rows=9 loops=1)
          Output: pt_p1.dist, pt_p1.pt1, pt_p1.pt2, pt_p1.pt3, pt_p1.ptid, pt1_p1.dist, pt1_p1.pt1, pt1_p1.pt2, pt1_p1.pt3, pt1_p1.ptid
          Sort Key: pt1_p1.dist
+         work_mem: 208kB  Workers: 6  Max: 35kB (worker 0)  Workfile: (0 spilling)
          ->  Append (actual rows=9 loops=1)
                ->  Hash Join (actual rows=9 loops=1)
                      Output: pt_p1.dist, pt_p1.pt1, pt_p1.pt2, pt_p1.pt3, pt_p1.ptid, pt1_p1.dist, pt1_p1.pt1, pt1_p1.pt2, pt1_p1.pt3, pt1_p1.ptid
                      Hash Cond: (pt1_p1.ptid = pt_p1.ptid)
+                     work_mem: 49kB  Workers: 6  Max: 9kB (worker 0)  Workfile: (0 spilling)
                      ->  Partial Seq Scan on dpe_single.pt1_p1 (actual rows=9 loops=1)
                            Output: pt1_p1.dist, pt1_p1.pt1, pt1_p1.pt2, pt1_p1.pt3, pt1_p1.ptid
                      ->  Hash (actual rows=1 loops=1)
                            Output: pt_p1.dist, pt_p1.pt1, pt_p1.pt2, pt_p1.pt3, pt_p1.ptid
+                           Buckets: 1024  Batches: 1  Memory Usage: 9kB
                            ->  PX Broadcast 6:6  (slice2; segments: 6) (actual rows=1 loops=1)
                                  Output: pt_p1.dist, pt_p1.pt1, pt_p1.pt2, pt_p1.pt3, pt_p1.ptid
                                  ->  Partial Index Scan using pt_p1_pt1_idx on dpe_single.pt_p1 (actual rows=1 loops=1)
@@ -2259,10 +2271,12 @@ select * from pt, pt1 where pt.ptid = pt1.ptid and pt.pt1 = 'hello0' order by pt
                ->  Hash Join (never executed)
                      Output: pt_p2.dist, pt_p2.pt1, pt_p2.pt2, pt_p2.pt3, pt_p2.ptid, pt1_p2.dist, pt1_p2.pt1, pt1_p2.pt2, pt1_p2.pt3, pt1_p2.ptid
                      Hash Cond: (pt1_p2.ptid = pt_p2.ptid)
+                     work_mem: 48kB  Workers: 6  Max: 8kB (worker 0)  Workfile: (0 spilling)
                      ->  Partial Seq Scan on dpe_single.pt1_p2 (never executed)
                            Output: pt1_p2.dist, pt1_p2.pt1, pt1_p2.pt2, pt1_p2.pt3, pt1_p2.ptid
                      ->  Hash (never executed)
                            Output: pt_p2.dist, pt_p2.pt1, pt_p2.pt2, pt_p2.pt3, pt_p2.ptid
+                           Buckets: 1024  Batches: 1  Memory Usage: 8kB
                            ->  PX Broadcast 6:6  (slice3; segments: 6) (never executed)
                                  Output: pt_p2.dist, pt_p2.pt1, pt_p2.pt2, pt_p2.pt3, pt_p2.ptid
                                  ->  Partial Index Scan using pt_p2_pt1_idx on dpe_single.pt_p2 (never executed)
@@ -2271,10 +2285,12 @@ select * from pt, pt1 where pt.ptid = pt1.ptid and pt.pt1 = 'hello0' order by pt
                ->  Hash Join (never executed)
                      Output: pt_p3.dist, pt_p3.pt1, pt_p3.pt2, pt_p3.pt3, pt_p3.ptid, pt1_p3.dist, pt1_p3.pt1, pt1_p3.pt2, pt1_p3.pt3, pt1_p3.ptid
                      Hash Cond: (pt1_p3.ptid = pt_p3.ptid)
+                     work_mem: 48kB  Workers: 6  Max: 8kB (worker 0)  Workfile: (0 spilling)
                      ->  Partial Seq Scan on dpe_single.pt1_p3 (never executed)
                            Output: pt1_p3.dist, pt1_p3.pt1, pt1_p3.pt2, pt1_p3.pt3, pt1_p3.ptid
                      ->  Hash (never executed)
                            Output: pt_p3.dist, pt_p3.pt1, pt_p3.pt2, pt_p3.pt3, pt_p3.ptid
+                           Buckets: 1024  Batches: 1  Memory Usage: 8kB
                            ->  PX Broadcast 6:6  (slice4; segments: 6) (never executed)
                                  Output: pt_p3.dist, pt_p3.pt1, pt_p3.pt2, pt_p3.pt3, pt_p3.ptid
                                  ->  Partial Index Scan using pt_p3_pt1_idx on dpe_single.pt_p3 (never executed)
@@ -2283,10 +2299,12 @@ select * from pt, pt1 where pt.ptid = pt1.ptid and pt.pt1 = 'hello0' order by pt
                ->  Hash Join (never executed)
                      Output: pt_p4.dist, pt_p4.pt1, pt_p4.pt2, pt_p4.pt3, pt_p4.ptid, pt1_p4.dist, pt1_p4.pt1, pt1_p4.pt2, pt1_p4.pt3, pt1_p4.ptid
                      Hash Cond: (pt1_p4.ptid = pt_p4.ptid)
+                     work_mem: 48kB  Workers: 6  Max: 8kB (worker 0)  Workfile: (0 spilling)
                      ->  Partial Seq Scan on dpe_single.pt1_p4 (never executed)
                            Output: pt1_p4.dist, pt1_p4.pt1, pt1_p4.pt2, pt1_p4.pt3, pt1_p4.ptid
                      ->  Hash (never executed)
                            Output: pt_p4.dist, pt_p4.pt1, pt_p4.pt2, pt_p4.pt3, pt_p4.ptid
+                           Buckets: 1024  Batches: 1  Memory Usage: 8kB
                            ->  PX Broadcast 6:6  (slice5; segments: 6) (never executed)
                                  Output: pt_p4.dist, pt_p4.pt1, pt_p4.pt2, pt_p4.pt3, pt_p4.ptid
                                  ->  Partial Index Scan using pt_p4_pt1_idx on dpe_single.pt_p4 (never executed)
@@ -2295,10 +2313,12 @@ select * from pt, pt1 where pt.ptid = pt1.ptid and pt.pt1 = 'hello0' order by pt
                ->  Hash Join (never executed)
                      Output: pt_p5.dist, pt_p5.pt1, pt_p5.pt2, pt_p5.pt3, pt_p5.ptid, pt1_p5.dist, pt1_p5.pt1, pt1_p5.pt2, pt1_p5.pt3, pt1_p5.ptid
                      Hash Cond: (pt1_p5.ptid = pt_p5.ptid)
+                     work_mem: 48kB  Workers: 6  Max: 8kB (worker 0)  Workfile: (0 spilling)
                      ->  Partial Seq Scan on dpe_single.pt1_p5 (never executed)
                            Output: pt1_p5.dist, pt1_p5.pt1, pt1_p5.pt2, pt1_p5.pt3, pt1_p5.ptid
                      ->  Hash (never executed)
                            Output: pt_p5.dist, pt_p5.pt1, pt_p5.pt2, pt_p5.pt3, pt_p5.ptid
+                           Buckets: 1024  Batches: 1  Memory Usage: 8kB
                            ->  PX Broadcast 6:6  (slice6; segments: 6) (never executed)
                                  Output: pt_p5.dist, pt_p5.pt1, pt_p5.pt2, pt_p5.pt3, pt_p5.ptid
                                  ->  Partial Index Scan using pt_p5_pt1_idx on dpe_single.pt_p5 (never executed)
@@ -2307,17 +2327,19 @@ select * from pt, pt1 where pt.ptid = pt1.ptid and pt.pt1 = 'hello0' order by pt
                ->  Hash Join (never executed)
                      Output: pt_junk_data.dist, pt_junk_data.pt1, pt_junk_data.pt2, pt_junk_data.pt3, pt_junk_data.ptid, pt1_junk_data.dist, pt1_junk_data.pt1, pt1_junk_data.pt2, pt1_junk_data.pt3, pt1_junk_data.ptid
                      Hash Cond: (pt1_junk_data.ptid = pt_junk_data.ptid)
+                     work_mem: 48kB  Workers: 6  Max: 8kB (worker 0)  Workfile: (0 spilling)
                      ->  Partial Seq Scan on dpe_single.pt1_junk_data (never executed)
                            Output: pt1_junk_data.dist, pt1_junk_data.pt1, pt1_junk_data.pt2, pt1_junk_data.pt3, pt1_junk_data.ptid
                      ->  Hash (never executed)
                            Output: pt_junk_data.dist, pt_junk_data.pt1, pt_junk_data.pt2, pt_junk_data.pt3, pt_junk_data.ptid
+                           Buckets: 1024  Batches: 1  Memory Usage: 8kB
                            ->  PX Broadcast 6:6  (slice7; segments: 6) (never executed)
                                  Output: pt_junk_data.dist, pt_junk_data.pt1, pt_junk_data.pt2, pt_junk_data.pt3, pt_junk_data.ptid
                                  ->  Partial Index Scan using pt_junk_data_pt1_idx on dpe_single.pt_junk_data (never executed)
                                        Output: pt_junk_data.dist, pt_junk_data.pt1, pt_junk_data.pt2, pt_junk_data.pt3, pt_junk_data.ptid
                                        Index Cond: (pt_junk_data.pt1 = 'hello0'::text)
  Optimizer: PolarDB PX Optimizer
-(80 rows)
+(93 rows)
 
 explain (costs off, timing off, summary off) select count(*) from pt, pt1 where pt.ptid = pt1.ptid and pt.pt1 = 'hello0';
                         QUERY PLAN                        
@@ -2443,10 +2465,12 @@ select count(*) from pt, pt1 where pt.ptid = pt1.ptid and pt.pt1 = 'hello0';
                ->  Append (actual rows=9 loops=1)
                      ->  Hash Join (actual rows=9 loops=1)
                            Hash Cond: (pt1_p1.ptid = pt_p1.ptid)
+                           work_mem: 49kB  Workers: 6  Max: 9kB (worker 0)  Workfile: (0 spilling)
                            ->  Partial Seq Scan on dpe_single.pt1_p1 (actual rows=9 loops=1)
                                  Output: pt1_p1.ptid
                            ->  Hash (actual rows=1 loops=1)
                                  Output: pt_p1.ptid
+                                 Buckets: 1024  Batches: 1  Memory Usage: 9kB
                                  ->  PX Broadcast 6:6  (slice2; segments: 6) (actual rows=1 loops=1)
                                        Output: pt_p1.ptid
                                        ->  Partial Index Scan using pt_p1_pt1_idx on dpe_single.pt_p1 (actual rows=1 loops=1)
@@ -2454,10 +2478,12 @@ select count(*) from pt, pt1 where pt.ptid = pt1.ptid and pt.pt1 = 'hello0';
                                              Index Cond: (pt_p1.pt1 = 'hello0'::text)
                      ->  Hash Join (never executed)
                            Hash Cond: (pt1_p2.ptid = pt_p2.ptid)
+                           work_mem: 48kB  Workers: 6  Max: 8kB (worker 0)  Workfile: (0 spilling)
                            ->  Partial Seq Scan on dpe_single.pt1_p2 (never executed)
                                  Output: pt1_p2.ptid
                            ->  Hash (never executed)
                                  Output: pt_p2.ptid
+                                 Buckets: 1024  Batches: 1  Memory Usage: 8kB
                                  ->  PX Broadcast 6:6  (slice3; segments: 6) (never executed)
                                        Output: pt_p2.ptid
                                        ->  Partial Index Scan using pt_p2_pt1_idx on dpe_single.pt_p2 (never executed)
@@ -2465,10 +2491,12 @@ select count(*) from pt, pt1 where pt.ptid = pt1.ptid and pt.pt1 = 'hello0';
                                              Index Cond: (pt_p2.pt1 = 'hello0'::text)
                      ->  Hash Join (never executed)
                            Hash Cond: (pt1_p3.ptid = pt_p3.ptid)
+                           work_mem: 48kB  Workers: 6  Max: 8kB (worker 0)  Workfile: (0 spilling)
                            ->  Partial Seq Scan on dpe_single.pt1_p3 (never executed)
                                  Output: pt1_p3.ptid
                            ->  Hash (never executed)
                                  Output: pt_p3.ptid
+                                 Buckets: 1024  Batches: 1  Memory Usage: 8kB
                                  ->  PX Broadcast 6:6  (slice4; segments: 6) (never executed)
                                        Output: pt_p3.ptid
                                        ->  Partial Index Scan using pt_p3_pt1_idx on dpe_single.pt_p3 (never executed)
@@ -2476,10 +2504,12 @@ select count(*) from pt, pt1 where pt.ptid = pt1.ptid and pt.pt1 = 'hello0';
                                              Index Cond: (pt_p3.pt1 = 'hello0'::text)
                      ->  Hash Join (never executed)
                            Hash Cond: (pt1_p4.ptid = pt_p4.ptid)
+                           work_mem: 48kB  Workers: 6  Max: 8kB (worker 0)  Workfile: (0 spilling)
                            ->  Partial Seq Scan on dpe_single.pt1_p4 (never executed)
                                  Output: pt1_p4.ptid
                            ->  Hash (never executed)
                                  Output: pt_p4.ptid
+                                 Buckets: 1024  Batches: 1  Memory Usage: 8kB
                                  ->  PX Broadcast 6:6  (slice5; segments: 6) (never executed)
                                        Output: pt_p4.ptid
                                        ->  Partial Index Scan using pt_p4_pt1_idx on dpe_single.pt_p4 (never executed)
@@ -2487,10 +2517,12 @@ select count(*) from pt, pt1 where pt.ptid = pt1.ptid and pt.pt1 = 'hello0';
                                              Index Cond: (pt_p4.pt1 = 'hello0'::text)
                      ->  Hash Join (never executed)
                            Hash Cond: (pt1_p5.ptid = pt_p5.ptid)
+                           work_mem: 48kB  Workers: 6  Max: 8kB (worker 0)  Workfile: (0 spilling)
                            ->  Partial Seq Scan on dpe_single.pt1_p5 (never executed)
                                  Output: pt1_p5.ptid
                            ->  Hash (never executed)
                                  Output: pt_p5.ptid
+                                 Buckets: 1024  Batches: 1  Memory Usage: 8kB
                                  ->  PX Broadcast 6:6  (slice6; segments: 6) (never executed)
                                        Output: pt_p5.ptid
                                        ->  Partial Index Scan using pt_p5_pt1_idx on dpe_single.pt_p5 (never executed)
@@ -2498,17 +2530,19 @@ select count(*) from pt, pt1 where pt.ptid = pt1.ptid and pt.pt1 = 'hello0';
                                              Index Cond: (pt_p5.pt1 = 'hello0'::text)
                      ->  Hash Join (never executed)
                            Hash Cond: (pt1_junk_data.ptid = pt_junk_data.ptid)
+                           work_mem: 48kB  Workers: 6  Max: 8kB (worker 0)  Workfile: (0 spilling)
                            ->  Partial Seq Scan on dpe_single.pt1_junk_data (never executed)
                                  Output: pt1_junk_data.ptid
                            ->  Hash (never executed)
                                  Output: pt_junk_data.ptid
+                                 Buckets: 1024  Batches: 1  Memory Usage: 8kB
                                  ->  PX Broadcast 6:6  (slice7; segments: 6) (never executed)
                                        Output: pt_junk_data.ptid
                                        ->  Partial Index Scan using pt_junk_data_pt1_idx on dpe_single.pt_junk_data (never executed)
                                              Output: pt_junk_data.ptid
                                              Index Cond: (pt_junk_data.pt1 = 'hello0'::text)
  Optimizer: PolarDB PX Optimizer
-(74 rows)
+(86 rows)
 
 --
 -- Partition Selector under Material in NestLoopJoin inner side
@@ -2737,9 +2771,11 @@ select * from dim1 inner join fact1 on (dim1.pid=fact1.pid and dim1.code=fact1.c
    ->  Sort (actual rows=50 loops=1)
          Output: dim1.dist, dim1.pid, dim1.code, dim1.t1, fact1_p1.dist, fact1_p1.pid, fact1_p1.code, fact1_p1.u
          Sort Key: fact1_p1.u
+         work_mem: 208kB  Workers: 6  Max: 35kB (worker 0)  Workfile: (0 spilling)
          ->  Hash Join (actual rows=50 loops=1)
                Output: dim1.dist, dim1.pid, dim1.code, dim1.t1, fact1_p1.dist, fact1_p1.pid, fact1_p1.code, fact1_p1.u
                Hash Cond: ((fact1_p1.pid = dim1.pid) AND (fact1_p1.code = dim1.code))
+               work_mem: 49kB  Workers: 6  Max: 9kB (worker 0)  Workfile: (0 spilling)
                ->  Append (actual rows=200 loops=1)
                      ->  Partial Seq Scan on dpe_multi.fact1_p1 (actual rows=50 loops=1)
                            Output: fact1_p1.dist, fact1_p1.pid, fact1_p1.code, fact1_p1.u
@@ -2753,10 +2789,11 @@ select * from dim1 inner join fact1 on (dim1.pid=fact1.pid and dim1.code=fact1.c
                            Output: fact1_p5.dist, fact1_p5.pid, fact1_p5.code, fact1_p5.u
                ->  Hash (actual rows=3 loops=1)
                      Output: dim1.dist, dim1.pid, dim1.code, dim1.t1
+                     Buckets: 1024  Batches: 1  Memory Usage: 9kB
                      ->  Full Seq Scan on dpe_multi.dim1 (actual rows=3 loops=1)
                            Output: dim1.dist, dim1.pid, dim1.code, dim1.t1
  Optimizer: PolarDB PX Optimizer
-(25 rows)
+(28 rows)
 
 set polar_px_optimizer_enable_partition_selection=on;
 explain (costs off, timing off, summary off) select * from dim1 inner join fact1 on (dim1.pid=fact1.pid and dim1.code=fact1.code) order by fact1.u;
@@ -2871,9 +2908,11 @@ select * from dim1 inner join fact1 on (dim1.pid=fact1.pid and dim1.code=fact1.c
    ->  Sort (actual rows=50 loops=1)
          Output: dim1.dist, dim1.pid, dim1.code, dim1.t1, fact1_p1.dist, fact1_p1.pid, fact1_p1.code, fact1_p1.u
          Sort Key: fact1_p1.u
+         work_mem: 208kB  Workers: 6  Max: 35kB (worker 0)  Workfile: (0 spilling)
          ->  Hash Join (actual rows=50 loops=1)
                Output: dim1.dist, dim1.pid, dim1.code, dim1.t1, fact1_p1.dist, fact1_p1.pid, fact1_p1.code, fact1_p1.u
                Hash Cond: ((fact1_p1.pid = dim1.pid) AND (fact1_p1.code = dim1.code))
+               work_mem: 49kB  Workers: 6  Max: 9kB (worker 0)  Workfile: (0 spilling)
                ->  Append (actual rows=100 loops=1)
                      Partition Selectors: $0
                      ->  Partial Seq Scan on dpe_multi.fact1_p1 (actual rows=50 loops=1)
@@ -2888,12 +2927,13 @@ select * from dim1 inner join fact1 on (dim1.pid=fact1.pid and dim1.code=fact1.c
                            Output: fact1_p5.dist, fact1_p5.pid, fact1_p5.code, fact1_p5.u
                ->  Hash (actual rows=3 loops=1)
                      Output: dim1.dist, dim1.pid, dim1.code, dim1.t1
+                     Buckets: 1024  Batches: 1  Memory Usage: 9kB
                      ->  Partition Selector (selector id: $0) (actual rows=3 loops=1)
                            Output: dim1.dist, dim1.pid, dim1.code, dim1.t1
                            ->  Full Seq Scan on dpe_multi.dim1 (actual rows=3 loops=1)
                                  Output: dim1.dist, dim1.pid, dim1.code, dim1.t1
  Optimizer: PolarDB PX Optimizer
-(28 rows)
+(31 rows)
 
 --
 -- Join on one of the partitioning columns
@@ -3058,9 +3098,11 @@ select * from dim1 inner join fact1 on (dim1.pid=fact1.pid) order by fact1.u;
    ->  Sort (actual rows=100 loops=1)
          Output: dim1.dist, dim1.pid, dim1.code, dim1.t1, fact1_p1.dist, fact1_p1.pid, fact1_p1.code, fact1_p1.u
          Sort Key: fact1_p1.u
+         work_mem: 208kB  Workers: 6  Max: 35kB (worker 0)  Workfile: (0 spilling)
          ->  Hash Join (actual rows=100 loops=1)
                Output: dim1.dist, dim1.pid, dim1.code, dim1.t1, fact1_p1.dist, fact1_p1.pid, fact1_p1.code, fact1_p1.u
                Hash Cond: (fact1_p1.pid = dim1.pid)
+               work_mem: 49kB  Workers: 6  Max: 9kB (worker 0)  Workfile: (0 spilling)
                ->  Append (actual rows=200 loops=1)
                      ->  Partial Seq Scan on dpe_multi.fact1_p1 (actual rows=50 loops=1)
                            Output: fact1_p1.dist, fact1_p1.pid, fact1_p1.code, fact1_p1.u
@@ -3074,10 +3116,11 @@ select * from dim1 inner join fact1 on (dim1.pid=fact1.pid) order by fact1.u;
                            Output: fact1_p5.dist, fact1_p5.pid, fact1_p5.code, fact1_p5.u
                ->  Hash (actual rows=3 loops=1)
                      Output: dim1.dist, dim1.pid, dim1.code, dim1.t1
+                     Buckets: 1024  Batches: 1  Memory Usage: 9kB
                      ->  Full Seq Scan on dpe_multi.dim1 (actual rows=3 loops=1)
                            Output: dim1.dist, dim1.pid, dim1.code, dim1.t1
  Optimizer: PolarDB PX Optimizer
-(25 rows)
+(28 rows)
 
 set polar_px_optimizer_enable_partition_selection=on;
 explain (costs off, timing off, summary off) select * from dim1 inner join fact1 on (dim1.pid=fact1.pid) order by fact1.u;
@@ -3242,9 +3285,11 @@ select * from dim1 inner join fact1 on (dim1.pid=fact1.pid) order by fact1.u;
    ->  Sort (actual rows=100 loops=1)
          Output: dim1.dist, dim1.pid, dim1.code, dim1.t1, fact1_p1.dist, fact1_p1.pid, fact1_p1.code, fact1_p1.u
          Sort Key: fact1_p1.u
+         work_mem: 208kB  Workers: 6  Max: 35kB (worker 0)  Workfile: (0 spilling)
          ->  Hash Join (actual rows=100 loops=1)
                Output: dim1.dist, dim1.pid, dim1.code, dim1.t1, fact1_p1.dist, fact1_p1.pid, fact1_p1.code, fact1_p1.u
                Hash Cond: (fact1_p1.pid = dim1.pid)
+               work_mem: 49kB  Workers: 6  Max: 9kB (worker 0)  Workfile: (0 spilling)
                ->  Append (actual rows=100 loops=1)
                      Partition Selectors: $0
                      ->  Partial Seq Scan on dpe_multi.fact1_p1 (actual rows=50 loops=1)
@@ -3259,12 +3304,13 @@ select * from dim1 inner join fact1 on (dim1.pid=fact1.pid) order by fact1.u;
                            Output: fact1_p5.dist, fact1_p5.pid, fact1_p5.code, fact1_p5.u
                ->  Hash (actual rows=3 loops=1)
                      Output: dim1.dist, dim1.pid, dim1.code, dim1.t1
+                     Buckets: 1024  Batches: 1  Memory Usage: 9kB
                      ->  Partition Selector (selector id: $0) (actual rows=3 loops=1)
                            Output: dim1.dist, dim1.pid, dim1.code, dim1.t1
                            ->  Full Seq Scan on dpe_multi.dim1 (actual rows=3 loops=1)
                                  Output: dim1.dist, dim1.pid, dim1.code, dim1.t1
  Optimizer: PolarDB PX Optimizer
-(28 rows)
+(31 rows)
 
 --
 -- Join on the subpartitioning column only
@@ -3523,6 +3569,7 @@ select * from dim1 inner join fact1 on (dim1.dist = fact1.dist and dim1.code=fac
    ->  Hash Join (actual rows=200 loops=1)
          Output: dim1.dist, dim1.pid, dim1.code, dim1.t1, fact1_p1.dist, fact1_p1.pid, fact1_p1.code, fact1_p1.u
          Hash Cond: ((fact1_p1.dist = dim1.dist) AND (fact1_p1.code = dim1.code))
+         work_mem: 49kB  Workers: 6  Max: 9kB (worker 0)  Workfile: (0 spilling)
          ->  Append (actual rows=200 loops=1)
                ->  Partial Seq Scan on dpe_multi.fact1_p1 (actual rows=50 loops=1)
                      Output: fact1_p1.dist, fact1_p1.pid, fact1_p1.code, fact1_p1.u
@@ -3536,10 +3583,11 @@ select * from dim1 inner join fact1 on (dim1.dist = fact1.dist and dim1.code=fac
                      Output: fact1_p5.dist, fact1_p5.pid, fact1_p5.code, fact1_p5.u
          ->  Hash (actual rows=3 loops=1)
                Output: dim1.dist, dim1.pid, dim1.code, dim1.t1
+               Buckets: 1024  Batches: 1  Memory Usage: 9kB
                ->  Full Seq Scan on dpe_multi.dim1 (actual rows=3 loops=1)
                      Output: dim1.dist, dim1.pid, dim1.code, dim1.t1
  Optimizer: PolarDB PX Optimizer
-(21 rows)
+(23 rows)
 
 set polar_px_optimizer_enable_partition_selection=on;
 explain (costs off, timing off, summary off)
@@ -3795,6 +3843,7 @@ select * from dim1 inner join fact1 on (dim1.dist = fact1.dist and dim1.code=fac
    ->  Hash Join (actual rows=200 loops=1)
          Output: dim1.dist, dim1.pid, dim1.code, dim1.t1, fact1_p1.dist, fact1_p1.pid, fact1_p1.code, fact1_p1.u
          Hash Cond: ((fact1_p1.dist = dim1.dist) AND (fact1_p1.code = dim1.code))
+         work_mem: 49kB  Workers: 6  Max: 9kB (worker 0)  Workfile: (0 spilling)
          ->  Append (actual rows=200 loops=1)
                ->  Partial Seq Scan on dpe_multi.fact1_p1 (actual rows=50 loops=1)
                      Output: fact1_p1.dist, fact1_p1.pid, fact1_p1.code, fact1_p1.u
@@ -3808,10 +3857,11 @@ select * from dim1 inner join fact1 on (dim1.dist = fact1.dist and dim1.code=fac
                      Output: fact1_p5.dist, fact1_p5.pid, fact1_p5.code, fact1_p5.u
          ->  Hash (actual rows=3 loops=1)
                Output: dim1.dist, dim1.pid, dim1.code, dim1.t1
+               Buckets: 1024  Batches: 1  Memory Usage: 9kB
                ->  Full Seq Scan on dpe_multi.dim1 (actual rows=3 loops=1)
                      Output: dim1.dist, dim1.pid, dim1.code, dim1.t1
  Optimizer: PolarDB PX Optimizer
-(21 rows)
+(23 rows)
 
 --
 -- Join on one of the partitioning columns and static elimination on other
@@ -3936,9 +3986,11 @@ select * from dim1 inner join fact1 on (dim1.pid=fact1.pid) and fact1.code = 'OH
    ->  Sort (actual rows=50 loops=1)
          Output: dim1.dist, dim1.pid, dim1.code, dim1.t1, fact1_p1.dist, fact1_p1.pid, fact1_p1.code, fact1_p1.u
          Sort Key: fact1_p1.u
+         work_mem: 208kB  Workers: 6  Max: 35kB (worker 0)  Workfile: (0 spilling)
          ->  Hash Join (actual rows=50 loops=1)
                Output: dim1.dist, dim1.pid, dim1.code, dim1.t1, fact1_p1.dist, fact1_p1.pid, fact1_p1.code, fact1_p1.u
                Hash Cond: (fact1_p1.pid = dim1.pid)
+               work_mem: 49kB  Workers: 6  Max: 9kB (worker 0)  Workfile: (0 spilling)
                ->  Append (actual rows=100 loops=1)
                      ->  Partial Seq Scan on dpe_multi.fact1_p1 (actual rows=25 loops=1)
                            Output: fact1_p1.dist, fact1_p1.pid, fact1_p1.code, fact1_p1.u
@@ -3957,10 +4009,11 @@ select * from dim1 inner join fact1 on (dim1.pid=fact1.pid) and fact1.code = 'OH
                            Filter: (fact1_p5.code = 'OH'::text)
                ->  Hash (actual rows=3 loops=1)
                      Output: dim1.dist, dim1.pid, dim1.code, dim1.t1
+                     Buckets: 1024  Batches: 1  Memory Usage: 9kB
                      ->  Full Seq Scan on dpe_multi.dim1 (actual rows=3 loops=1)
                            Output: dim1.dist, dim1.pid, dim1.code, dim1.t1
  Optimizer: PolarDB PX Optimizer
-(30 rows)
+(33 rows)
 
 set polar_px_optimizer_enable_partition_selection=on;
 explain (costs off, timing off, summary off) select * from dim1 inner join fact1 on (dim1.pid=fact1.pid) and fact1.code = 'OH' order by fact1.u;
@@ -4085,9 +4138,11 @@ select * from dim1 inner join fact1 on (dim1.pid=fact1.pid) and fact1.code = 'OH
    ->  Sort (actual rows=50 loops=1)
          Output: dim1.dist, dim1.pid, dim1.code, dim1.t1, fact1_p1.dist, fact1_p1.pid, fact1_p1.code, fact1_p1.u
          Sort Key: fact1_p1.u
+         work_mem: 208kB  Workers: 6  Max: 35kB (worker 0)  Workfile: (0 spilling)
          ->  Hash Join (actual rows=50 loops=1)
                Output: dim1.dist, dim1.pid, dim1.code, dim1.t1, fact1_p1.dist, fact1_p1.pid, fact1_p1.code, fact1_p1.u
                Hash Cond: (fact1_p1.pid = dim1.pid)
+               work_mem: 49kB  Workers: 6  Max: 9kB (worker 0)  Workfile: (0 spilling)
                ->  Append (actual rows=50 loops=1)
                      Partition Selectors: $0
                      ->  Partial Seq Scan on dpe_multi.fact1_p1 (actual rows=25 loops=1)
@@ -4107,12 +4162,13 @@ select * from dim1 inner join fact1 on (dim1.pid=fact1.pid) and fact1.code = 'OH
                            Filter: (fact1_p5.code = 'OH'::text)
                ->  Hash (actual rows=3 loops=1)
                      Output: dim1.dist, dim1.pid, dim1.code, dim1.t1
+                     Buckets: 1024  Batches: 1  Memory Usage: 9kB
                      ->  Partition Selector (selector id: $0) (actual rows=3 loops=1)
                            Output: dim1.dist, dim1.pid, dim1.code, dim1.t1
                            ->  Full Seq Scan on dpe_multi.dim1 (actual rows=3 loops=1)
                                  Output: dim1.dist, dim1.pid, dim1.code, dim1.t1
  Optimizer: PolarDB PX Optimizer
-(33 rows)
+(36 rows)
 
 --
 -- add aggregates
@@ -4198,12 +4254,14 @@ select fact1.code, count(*) from dim1 inner join fact1 on (dim1.pid=fact1.pid) g
    ->  Sort (actual rows=1 loops=1)
          Output: fact1_p1.code, (count())
          Sort Key: fact1_p1.code
+         work_mem: 208kB  Workers: 6  Max: 35kB (worker 0)  Workfile: (0 spilling)
          ->  Finalize GroupAggregate (actual rows=1 loops=1)
                Output: fact1_p1.code, count()
                Group Key: fact1_p1.code
                ->  Sort (actual rows=1 loops=1)
                      Output: fact1_p1.code, (PARTIAL count())
                      Sort Key: fact1_p1.code
+                     work_mem: 164kB  Workers: 6  Max: 28kB (worker 1)  Workfile: (0 spilling)
                      ->  PX Hash 6:6  (slice2; segments: 6) (actual rows=1 loops=1)
                            Output: fact1_p1.code, (PARTIAL count())
                            Hash Key: fact1_p1.code
@@ -4213,9 +4271,11 @@ select fact1.code, count(*) from dim1 inner join fact1 on (dim1.pid=fact1.pid) g
                                  ->  Sort (actual rows=100 loops=1)
                                        Output: fact1_p1.code
                                        Sort Key: fact1_p1.code
+                                       work_mem: 208kB  Workers: 6  Max: 35kB (worker 0)  Workfile: (0 spilling)
                                        ->  Hash Join (actual rows=100 loops=1)
                                              Output: fact1_p1.code
                                              Hash Cond: (fact1_p1.pid = dim1.pid)
+                                             work_mem: 49kB  Workers: 6  Max: 9kB (worker 0)  Workfile: (0 spilling)
                                              ->  Append (actual rows=200 loops=1)
                                                    ->  Partial Seq Scan on dpe_multi.fact1_p1 (actual rows=50 loops=1)
                                                          Output: fact1_p1.pid, fact1_p1.code
@@ -4229,12 +4289,13 @@ select fact1.code, count(*) from dim1 inner join fact1 on (dim1.pid=fact1.pid) g
                                                          Output: fact1_p5.pid, fact1_p5.code
                                              ->  Hash (actual rows=3 loops=1)
                                                    Output: dim1.pid
+                                                   Buckets: 1024  Batches: 1  Memory Usage: 9kB
                                                    ->  PX Broadcast 6:6  (slice3; segments: 6) (actual rows=3 loops=1)
                                                          Output: dim1.pid
                                                          ->  Partial Seq Scan on dpe_multi.dim1 (actual rows=3 loops=1)
                                                                Output: dim1.pid
  Optimizer: PolarDB PX Optimizer
-(42 rows)
+(47 rows)
 
 set polar_px_optimizer_enable_partition_selection=on;
 explain (costs off, timing off, summary off) select fact1.code, count(*) from dim1 inner join fact1 on (dim1.pid=fact1.pid) group by 1 order by 1;
@@ -4320,12 +4381,14 @@ select fact1.code, count(*) from dim1 inner join fact1 on (dim1.pid=fact1.pid) g
    ->  Sort (actual rows=1 loops=1)
          Output: fact1_p1.code, (count())
          Sort Key: fact1_p1.code
+         work_mem: 208kB  Workers: 6  Max: 35kB (worker 0)  Workfile: (0 spilling)
          ->  Finalize GroupAggregate (actual rows=1 loops=1)
                Output: fact1_p1.code, count()
                Group Key: fact1_p1.code
                ->  Sort (actual rows=1 loops=1)
                      Output: fact1_p1.code, (PARTIAL count())
                      Sort Key: fact1_p1.code
+                     work_mem: 164kB  Workers: 6  Max: 28kB (worker 1)  Workfile: (0 spilling)
                      ->  PX Hash 6:6  (slice2; segments: 6) (actual rows=1 loops=1)
                            Output: fact1_p1.code, (PARTIAL count())
                            Hash Key: fact1_p1.code
@@ -4335,9 +4398,11 @@ select fact1.code, count(*) from dim1 inner join fact1 on (dim1.pid=fact1.pid) g
                                  ->  Sort (actual rows=100 loops=1)
                                        Output: fact1_p1.code
                                        Sort Key: fact1_p1.code
+                                       work_mem: 208kB  Workers: 6  Max: 35kB (worker 0)  Workfile: (0 spilling)
                                        ->  Hash Join (actual rows=100 loops=1)
                                              Output: fact1_p1.code
                                              Hash Cond: (fact1_p1.pid = dim1.pid)
+                                             work_mem: 49kB  Workers: 6  Max: 9kB (worker 0)  Workfile: (0 spilling)
                                              ->  Append (actual rows=100 loops=1)
                                                    Partition Selectors: $0
                                                    ->  Partial Seq Scan on dpe_multi.fact1_p1 (actual rows=50 loops=1)
@@ -4352,6 +4417,7 @@ select fact1.code, count(*) from dim1 inner join fact1 on (dim1.pid=fact1.pid) g
                                                          Output: fact1_p5.pid, fact1_p5.code
                                              ->  Hash (actual rows=3 loops=1)
                                                    Output: dim1.pid
+                                                   Buckets: 1024  Batches: 1  Memory Usage: 9kB
                                                    ->  Partition Selector (selector id: $0) (actual rows=3 loops=1)
                                                          Output: dim1.pid
                                                          ->  PX Broadcast 6:6  (slice3; segments: 6) (actual rows=3 loops=1)
@@ -4359,7 +4425,7 @@ select fact1.code, count(*) from dim1 inner join fact1 on (dim1.pid=fact1.pid) g
                                                                ->  Partial Seq Scan on dpe_multi.dim1 (actual rows=3 loops=1)
                                                                      Output: dim1.pid
  Optimizer: PolarDB PX Optimizer
-(45 rows)
+(50 rows)
 
 --
 -- multi-attribute list partitioning
@@ -4536,12 +4602,14 @@ select * from apart as a, b, c where a.t = b.t and a.id = c.id;
    ->  Hash Join (actual rows=2 loops=1)
          Output: apart_p1.id, apart_p1.t, b.id, b.t, c.id, c.t
          Hash Cond: (apart_p1.id = c.id)
+         work_mem: 49kB  Workers: 6  Max: 9kB (worker 2)  Workfile: (0 spilling)
          ->  PX Hash 6:6  (slice2; segments: 6) (actual rows=2 loops=1)
                Output: apart_p1.id, apart_p1.t, b.id, b.t
                Hash Key: apart_p1.id
                ->  Hash Join (actual rows=5 loops=1)
                      Output: apart_p1.id, apart_p1.t, b.id, b.t
                      Hash Cond: (apart_p1.t = b.t)
+                     work_mem: 50kB  Workers: 6  Max: 9kB (worker 0)  Workfile: (0 spilling)
                      ->  Append (actual rows=999 loops=1)
                            ->  Partial Seq Scan on dpe_malp.apart_p1 (actual rows=199 loops=1)
                                  Output: apart_p1.id, apart_p1.t
@@ -4555,19 +4623,21 @@ select * from apart as a, b, c where a.t = b.t and a.id = c.id;
                                  Output: apart_p5.id, apart_p5.t
                      ->  Hash (actual rows=5 loops=1)
                            Output: b.id, b.t
+                           Buckets: 1024  Batches: 1  Memory Usage: 9kB
                            ->  PX Broadcast 6:6  (slice3; segments: 6) (actual rows=5 loops=1)
                                  Output: b.id, b.t
                                  ->  Partial Seq Scan on dpe_malp.b (actual rows=5 loops=1)
                                        Output: b.id, b.t
          ->  Hash (actual rows=5 loops=1)
                Output: c.id, c.t
+               Buckets: 1024  Batches: 1  Memory Usage: 9kB
                ->  PX Hash 6:6  (slice4; segments: 6) (actual rows=5 loops=1)
                      Output: c.id, c.t
                      Hash Key: c.id
                      ->  Partial Seq Scan on dpe_malp.c (actual rows=20 loops=1)
                            Output: c.id, c.t
  Optimizer: PolarDB PX Optimizer
-(36 rows)
+(40 rows)
 
 set polar_px_optimizer_enable_partition_selection = on;
 explain (costs off, timing off, summary off) select * from apart as a, b, c where a.t = b.t and a.id = c.id;
@@ -4649,12 +4719,14 @@ select * from apart as a, b, c where a.t = b.t and a.id = c.id;
    ->  Hash Join (actual rows=1 loops=1)
          Output: apart_p1.id, apart_p1.t, b.id, b.t, c.id, c.t
          Hash Cond: (apart_p1.t = b.t)
+         work_mem: 49kB  Workers: 6  Max: 9kB (worker 0)  Workfile: (0 spilling)
          ->  PX Hash 6:6  (slice2; segments: 6) (actual rows=5 loops=1)
                Output: apart_p1.id, apart_p1.t, c.id, c.t
                Hash Key: apart_p1.t
                ->  Hash Join (actual rows=20 loops=1)
                      Output: apart_p1.id, apart_p1.t, c.id, c.t
                      Hash Cond: (apart_p1.id = c.id)
+                     work_mem: 53kB  Workers: 6  Max: 9kB (worker 0)  Workfile: (0 spilling)
                      ->  Append (actual rows=199 loops=1)
                            Partition Selectors: $0
                            ->  Partial Seq Scan on dpe_malp.apart_p1 (actual rows=199 loops=1)
@@ -4669,6 +4741,7 @@ select * from apart as a, b, c where a.t = b.t and a.id = c.id;
                                  Output: apart_p5.id, apart_p5.t
                      ->  Hash (actual rows=20 loops=1)
                            Output: c.id, c.t
+                           Buckets: 1024  Batches: 1  Memory Usage: 9kB
                            ->  Partition Selector (selector id: $0) (actual rows=20 loops=1)
                                  Output: c.id, c.t
                                  ->  PX Broadcast 6:6  (slice3; segments: 6) (actual rows=20 loops=1)
@@ -4677,13 +4750,14 @@ select * from apart as a, b, c where a.t = b.t and a.id = c.id;
                                              Output: c.id, c.t
          ->  Hash (actual rows=1 loops=1)
                Output: b.id, b.t
+               Buckets: 1024  Batches: 1  Memory Usage: 9kB
                ->  PX Hash 6:6  (slice4; segments: 6) (actual rows=1 loops=1)
                      Output: b.id, b.t
                      Hash Key: b.t
                      ->  Partial Seq Scan on dpe_malp.b (actual rows=5 loops=1)
                            Output: b.id, b.t
  Optimizer: PolarDB PX Optimizer
-(39 rows)
+(43 rows)
 
 --
 -- DPE: assertion failed with window function
@@ -4770,13 +4844,14 @@ select * from (select count(*) over (order by a rows between 1 preceding and 1 f
  Optimizer: PolarDB PX Optimizer
 (34 rows)
 
-                                                QUERY PLAN                                                 
------------------------------------------------------------------------------------------------------------
+                                                      QUERY PLAN                                                       
+-----------------------------------------------------------------------------------------------------------------------
  PX Coordinator 6:1  (slice1; segments: 6) (actual rows=1 loops=1)
    Output: jpat.b, (count(*) OVER (?)), jpat.a, pat_p1.a
    ->  Hash Join (actual rows=1 loops=1)
          Output: jpat.b, (count(*) OVER (?)), jpat.a, pat_p1.a
          Hash Cond: (pat_p1.b = jpat.b)
+         work_mem: 49kB  Workers: 6  Max: 9kB (worker 0)  Workfile: (0 spilling)
          ->  Append (actual rows=1 loops=1)
                Partition Selectors: $0
                ->  Partial Seq Scan on dpe_bugs.pat_p1 (never executed)
@@ -4791,6 +4866,7 @@ select * from (select count(*) over (order by a rows between 1 preceding and 1 f
                      Output: pat_p6.a, pat_p6.b
          ->  Hash (actual rows=1 loops=1)
                Output: jpat.a, jpat.b, (count(*) OVER (?))
+               Buckets: 1024  Batches: 1  Memory Usage: 9kB
                ->  Partition Selector (selector id: $0) (actual rows=1 loops=1)
                      Output: jpat.a, jpat.b, (count(*) OVER (?))
                      ->  PX Broadcast 1:6  (slice2) (actual rows=1 loops=1)
@@ -4803,10 +4879,11 @@ select * from (select count(*) over (order by a rows between 1 preceding and 1 f
                                        ->  Sort (actual rows=1 loops=1)
                                              Output: jpat.a, jpat.b
                                              Sort Key: jpat.a
+                                             work_mem: 208kB  Workers: 6  Max: 35kB (worker 0)  Workfile: (0 spilling)
                                              ->  Partial Seq Scan on dpe_bugs.jpat (actual rows=1 loops=1)
                                                    Output: jpat.a, jpat.b
  Optimizer: PolarDB PX Optimizer
-(34 rows)
+(37 rows)
 
 --
 -- Partitioning on an expression

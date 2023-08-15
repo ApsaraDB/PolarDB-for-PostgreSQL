@@ -587,7 +587,7 @@ _bt_leafbuild(BTSpool *btspool, BTSpool *btspool2)
 	wstate.btws_zeropage = NULL;	/* until needed */
 
 	/*
-	 * POALR: bulk extend index file. For temp table in local storage, no need
+	 * POLAR: bulk extend index file. For temp table in local storage, no need
 	 * to use bulk extend.
 	 */
 	if (POLAR_TEMP_TABLE_FILE_IN_LOCAL_STORAGE(wstate.index->rd_backend))

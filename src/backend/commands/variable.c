@@ -35,6 +35,14 @@
 
 /* POLAR */
 #include "storage/proc.h"
+#include <malloc.h>
+
+/* POLAR: Shared Server */
+typedef struct TimeZoneKey {
+	bool	use_gmtoffset;
+	long	gmtoffset;
+	char	gmtname[FLEXIBLE_ARRAY_MEMBER];
+} TimeZoneKey;
 
 /*
  * DATESTYLE
@@ -259,6 +267,10 @@ check_timezone(char **newval, void **extra, GucSource source)
 	long		gmtoffset;
 	char	   *endptr;
 	double		hours;
+	/* POLAR: Shared Server */
+	bool		use_gmtoffset = true;
+	TimeZoneKey *tz_key;
+	Size alloc_size;
 
 	if (pg_strncasecmp(*newval, "interval", 8) == 0)
 	{
@@ -334,6 +346,7 @@ check_timezone(char **newval, void **extra, GucSource source)
 			 * Otherwise assume it is a timezone name, and try to load it.
 			 */
 			new_tz = pg_tzset(*newval);
+			use_gmtoffset = false;
 
 			if (!new_tz)
 			{
@@ -358,13 +371,26 @@ check_timezone(char **newval, void **extra, GucSource source)
 		return false;
 	}
 
+	/* POLAR: Shared Server */
+	alloc_size = sizeof(TimeZoneKey) + (use_gmtoffset ? 0 : (strlen(*newval) + 1));
+	tz_key = malloc(alloc_size);
+	if (!tz_key)
+		return false;
+
+	memset(tz_key, 0, alloc_size);
+	tz_key->use_gmtoffset = use_gmtoffset;
+	if (use_gmtoffset)
+		tz_key->gmtoffset = gmtoffset;
+	else
+	{
+		memcpy(tz_key->gmtname, *newval, strlen(*newval));
+		tz_key->gmtname[strlen(*newval)] = '\0';
+	}
+
 	/*
 	 * Pass back data for assign_timezone to use
 	 */
-	*extra = malloc(sizeof(pg_tz *));
-	if (!*extra)
-		return false;
-	*((pg_tz **) *extra) = new_tz;
+	*extra = tz_key;
 
 	return true;
 }
@@ -375,7 +401,14 @@ check_timezone(char **newval, void **extra, GucSource source)
 void
 assign_timezone(const char *newval, void *extra)
 {
-	session_timezone = *((pg_tz **) extra);
+	/* POLAR: Shared Server */
+	TimeZoneKey *temp = (TimeZoneKey *)extra;
+
+	if (temp->use_gmtoffset)
+		session_timezone = pg_tzset_offset(temp->gmtoffset);
+	else
+		session_timezone = pg_tzset(temp->gmtname);
+	Assert(session_timezone != NULL);
 }
 
 /*
@@ -411,6 +444,9 @@ bool
 check_log_timezone(char **newval, void **extra, GucSource source)
 {
 	pg_tz	   *new_tz;
+	/* POLAR: Shared Server */
+	TimeZoneKey *tz_key;
+	Size alloc_size;
 
 	/*
 	 * Assume it is a timezone name, and try to load it.
@@ -431,13 +467,18 @@ check_log_timezone(char **newval, void **extra, GucSource source)
 		return false;
 	}
 
-	/*
-	 * Pass back data for assign_log_timezone to use
-	 */
-	*extra = malloc(sizeof(pg_tz *));
-	if (!*extra)
+	/* POLAR: Shared Server */
+	alloc_size = sizeof(TimeZoneKey) + (strlen(*newval) + 1);
+	tz_key = malloc(alloc_size);
+	if (!tz_key)
 		return false;
-	*((pg_tz **) *extra) = new_tz;
+
+	memset(tz_key, 0, alloc_size);
+	tz_key->use_gmtoffset = false;
+	memcpy(tz_key->gmtname, *newval, strlen(*newval));
+	tz_key->gmtname[strlen(*newval)] = '\0';
+
+	*extra = tz_key;
 
 	return true;
 }
@@ -448,7 +489,9 @@ check_log_timezone(char **newval, void **extra, GucSource source)
 void
 assign_log_timezone(const char *newval, void *extra)
 {
-	log_timezone = *((pg_tz **) extra);
+	/* POLAR: Shared Server */
+	TimeZoneKey *temp = (TimeZoneKey *)extra;
+	log_timezone = pg_tzset(temp->gmtname);
 }
 
 /*
@@ -788,9 +831,24 @@ assign_client_encoding(const char *newval, void *extra)
 				 errmsg("cannot change client_encoding during a parallel operation")));
 	}
 
-	/* We do not expect an error if PrepareClientEncoding succeeded */
-	if (SetClientEncoding(encoding) < 0)
-		elog(LOG, "SetClientEncoding(%d) failed", encoding);
+	/* POLAR: Shared Server */
+	if (IS_POLAR_SESSION_SHARED())
+	{
+		if (PrepareClientEncoding(encoding) < 0)
+		{
+			Assert(false);
+			elog(ERROR, "PrepareClientEncoding(%d) failed", encoding);
+		}
+
+		if (SetClientEncoding(encoding) < 0)
+			elog(ERROR, "SetClientEncoding(%d) failed", encoding);
+	}
+	else
+	{
+		/* We do not expect an error if PrepareClientEncoding succeeded */
+		if (SetClientEncoding(encoding) < 0)
+			elog(LOG, "SetClientEncoding(%d) failed", encoding);
+	}
 }
 
 

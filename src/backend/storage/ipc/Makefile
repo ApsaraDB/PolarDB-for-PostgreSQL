@@ -14,5 +14,6 @@ OBJS = barrier.o dsm_impl.o dsm.o ipc.o ipci.o latch.o pmsignal.o procarray.o \
 
 # POLAR objects
 OBJS += polar_shmem.o polar_procpool.o
+OBJS += polar_session_context.o
 
 include $(top_srcdir)/src/backend/common.mk

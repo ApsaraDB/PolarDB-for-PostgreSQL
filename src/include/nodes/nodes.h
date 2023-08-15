@@ -299,6 +299,8 @@ typedef enum NodeTag
 	T_AllocSetContext,
 	T_SlabContext,
 	T_GenerationContext,
+	/* POLAR */
+	T_ShmAllocSetContext,
 
 	/*
 	 * TAGS FOR VALUE NODES (value.h)
@@ -575,7 +577,7 @@ typedef enum NodeTag
 	/* POLAR end */
 
 	/* POLAR: Flashback table stmt */
-	T_PolarFlashbackTableStmt
+	T_PolarFlashbackTableStmt,
 	/* POLAR end */
 } NodeTag;
 

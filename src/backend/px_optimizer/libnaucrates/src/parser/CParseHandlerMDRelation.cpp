@@ -47,7 +47,7 @@ CParseHandlerMDRelation::CParseHandlerMDRelation(
 	  m_distr_col_array(nullptr),
 	  m_convert_hash_to_random(false),
 	  m_partition_cols_array(nullptr),
-	  m_partition_scheme_arrays(nullptr),/* POALR px */
+	  m_partition_scheme_arrays(nullptr),/* POLAR px */
 	  m_str_part_types_array(nullptr),
 	  m_num_of_partitions(0),
 	  m_key_sets_arrays(nullptr),
@@ -167,7 +167,7 @@ CParseHandlerMDRelation::StartElement(const XMLCh *const element_uri,
 			EdxltokenPartKeys, EdxltokenRelation);
 	}
 
-	// POALR px parse  part scheme
+	// POLAR px parse  part scheme
 	const XMLCh *xmlszPartScheme =
 		attrs.getValue(CDXLTokens::XmlstrToken(EdxltokenPartScheme));
 	if (nullptr != xmlszPartScheme)
@@ -297,7 +297,7 @@ CParseHandlerMDRelation::EndElement(const XMLCh *const,	 // element_uri,
 	m_imd_obj = GPOS_NEW(m_mp) CMDRelationGPDB(
 		m_mp, m_mdid, m_mdname, m_is_temp_table, m_rel_storage_type,
 		m_rel_distr_policy, md_col_array, m_distr_col_array, distr_opfamilies,
-		m_partition_cols_array, m_partition_scheme_arrays/* POALR px */,
+		m_partition_cols_array, m_partition_scheme_arrays/* POLAR px */,
 		m_str_part_types_array, m_num_of_partitions,
 		child_partitions, m_convert_hash_to_random, m_key_sets_arrays,
 		md_index_info_array, mdid_triggers_array, mdid_check_constraint_array,

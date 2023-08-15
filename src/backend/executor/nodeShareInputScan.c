@@ -191,7 +191,9 @@ static void shareinput_writer_notifyready(shareinput_Xslice_reference *ref);
 static void shareinput_reader_waitready(shareinput_Xslice_reference *ref);
 static void shareinput_reader_notifydone(shareinput_Xslice_reference *ref, int nconsumers);
 static void shareinput_writer_waitdone(shareinput_Xslice_reference *ref, int nconsumers);
-
+/* POLAR px */
+static void polar_ExecShareInputScanExplainEnd(PlanState *planstate, struct StringInfoData *buf);
+/* POLAR end */
 
 /*
  * init_tuplestore_state
@@ -244,11 +246,7 @@ init_tuplestore_state(ShareInputScanState *node)
 				/* intra-slice */
 				ts = tuplestore_begin_heap(true, /* randomAccess */
 										   false, /* interXact */
-										   work_mem);
-#if 0
-				ts = tuplestore_begin_heap(true, /* randomAccess */
-										   false, /* interXact */
-										   PlanStateOperatorMemKB((PlanState *) node));
+										   polar_PlanStateOperatorMemKB((PlanState *) node));
 
 				/*
 				 * Offer extra memory usage info for EXPLAIN ANALYZE.
@@ -262,15 +260,14 @@ init_tuplestore_state(ShareInputScanState *node)
 				 * work_mem. So only track memory usage in the non-cross-slice
 				 * case.
 				 */
-				if (node->ss.ps.instrument && node->ss.ps.instrument->need_cdb)
+				if (node->ss.ps.instrument && node->ss.ps.instrument->need_px)
 				{
 					/* Let the tuplestore share our Instrumentation object. */
 					tuplestore_set_instrument(ts, node->ss.ps.instrument);
 
 					/* Request a callback at end of query. */
-					node->ss.ps.cdbexplainfun = ExecShareInputScanExplainEnd;
+					node->ss.ps.pxexplainfun = polar_ExecShareInputScanExplainEnd;
 				}
-#endif
 			}
 
 			for (;;)
@@ -484,9 +481,8 @@ ExecInitShareInputScan(ShareInputScan *node, EState *estate, int eflags)
 	return sisstate;
 }
 
-#if 0
 /*
- * ExecShareInputScanExplainEnd
+ * polar_ExecShareInputScanExplainEnd
  *      Called before ExecutorEnd to finish EXPLAIN ANALYZE reporting.
  *
  * Some of the cleanup that ordinarily would occur during ExecEndShareInputScan()
@@ -494,7 +490,7 @@ ExecInitShareInputScan(ShareInputScan *node, EState *estate, int eflags)
  * Note that ExecEndShareInputScan() will still be during ExecutorEnd().
  */
 static void
-ExecShareInputScanExplainEnd(PlanState *planstate, struct StringInfoData *buf)
+polar_ExecShareInputScanExplainEnd(PlanState *planstate, struct StringInfoData *buf)
 {
 	ShareInputScan *sisc = (ShareInputScan *) planstate->plan;
 	shareinput_local_state *local_state = ((ShareInputScanState *) planstate)->local_state;
@@ -508,7 +504,7 @@ ExecShareInputScanExplainEnd(PlanState *planstate, struct StringInfoData *buf)
 		local_state->ts_state = NULL;
 	}
 }
-#endif
+
 /* ------------------------------------------------------------------
  * 	ExecEndShareInputScan
  * ------------------------------------------------------------------

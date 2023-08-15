@@ -29,6 +29,7 @@
 /* POLAR px */
 #include "px/px_vars.h"
 /* POLAR end */
+#include "storage/proc.h"
 
 /*****************************************************************************
  *	  GLOBAL MEMORY															 *
@@ -75,6 +76,23 @@ static void MemoryContextStatsPrint(MemoryContext context, void *passthru,
  */
 #define AssertNotInCriticalSection(context) \
 	Assert(CritSectionCount == 0 || (context)->allowInCritSection)
+
+#define POLAR_SS_TRY_LOCAL_MEMORY_CONTEXT_BEFORE(context)	\
+	if (IS_POLAR_SESSION_SHARED() &&\
+		!IS_POLAR_BACKEND_SHARED() &&\
+		context->type == T_ShmAllocSetContext &&\
+		polar_get_local_memory_context(context))\
+	{\
+		context = context->fallback.mcxt;\
+	}\
+
+#define POLAR_SS_TRY_LOCAL_MEMORY_CONTEXT_AFTER(context)	\
+	if (polar_set_dedicate_from_oom(context) &&\
+		polar_get_local_memory_context(context))\
+	{\
+		context = context->fallback.mcxt;\
+		goto HEAD;\
+	}
 
 /*****************************************************************************
  *	  EXPORTED ROUTINES														 *
@@ -136,6 +154,28 @@ MemoryContextInit(void)
 	MemoryContextAllowInCriticalSection(ErrorContext, true);
 }
 
+void
+MemoryContextDeclareAccountingRoot(MemoryContext context)
+{
+	AssertArg(MemoryContextIsValid(context));
+
+	return (*context->methods->declare_accounting_root) (context);
+}
+
+/*
+ * MemoryContextGetPeakSpace
+ *		Return the peak number of bytes occupied by the memory context.
+ *
+ * This is the maximum value reached by MemoryContextGetCurrentSpace() since
+ * the context was created, or since reset by MemoryContextSetPeakSpace().
+ */
+Size
+MemoryContextGetPeakSpace(MemoryContext context)
+{
+	AssertArg(MemoryContextIsValid(context));
+    return (*context->methods->get_peak_usage) (context);
+}              
+
 /*
  * MemoryContextReset
  *		Release all space allocated within a context and delete all its
@@ -144,6 +184,7 @@ MemoryContextInit(void)
 void
 MemoryContextReset(MemoryContext context)
 {
+	MemoryContext fallback_context = context->fallback.mcxt;
 	AssertArg(MemoryContextIsValid(context));
 
 	/* save a function call in common case where there are no children */
@@ -153,6 +194,10 @@ MemoryContextReset(MemoryContext context)
 	/* save a function call if no pallocs since startup or last reset */
 	if (!context->isReset)
 		MemoryContextResetOnly(context);
+	
+	/* POLAR: Shared Server */
+	if (fallback_context != NULL && !IsPolarDispatcher)
+		MemoryContextReset(fallback_context);
 }
 
 /*
@@ -219,6 +264,19 @@ MemoryContextResetChildren(MemoryContext context)
 void
 MemoryContextDelete(MemoryContext context)
 {
+	MemoryContext parent;
+	MemoryContext fallback_cxt = context->fallback.mcxt;
+
+	ELOG_PSS(LOG, "MemoryContextDelete %d,(%p-%s-%s)(%p-%s-%s)(%s-%s), %s",
+			context->type, 
+			context,
+			context->name, context->ident ? context->ident : "null",
+			context->parent, context->parent ? context->parent->name : "null",
+			(context->parent && context->parent->ident) ? context->parent->ident : "null",
+			context->fallback.parent_name, context->fallback.parent_ident ? context->fallback.parent_ident : "null",
+			polar_get_backtrace()
+			);
+
 	AssertArg(MemoryContextIsValid(context));
 	/* We had better not be deleting TopMemoryContext ... */
 	Assert(context != TopMemoryContext);
@@ -242,6 +300,7 @@ MemoryContextDelete(MemoryContext context)
 	 * there's an error we won't have deleted/busted contexts still attached
 	 * to the context tree.  Better a leak than a crash.
 	 */
+	parent = MemoryContextGetParent(context);
 	MemoryContextSetParent(context, NULL);
 
 	/*
@@ -250,8 +309,13 @@ MemoryContextDelete(MemoryContext context)
 	 * (already unlinked) context, which is unlikely, but let's be safe.
 	 */
 	context->ident = NULL;
+	context->fallback.mcxt = NULL;
 
-	context->methods->delete_context(context);
+	context->methods->delete_context(context,parent);
+
+	/* POLAR: Shared Server */
+	if (fallback_cxt != NULL && !IsPolarDispatcher)
+		MemoryContextDelete(fallback_cxt);
 
 	MEMDEBUG_DESTROY_MEMPOOL(context);
 }
@@ -272,6 +336,9 @@ MemoryContextDeleteChildren(MemoryContext context)
 	 */
 	while (context->firstchild != NULL)
 		MemoryContextDelete(context->firstchild);
+
+	/* POLAR: Shared Server */
+	context->firstchild = NULL;
 }
 
 /*
@@ -369,6 +436,14 @@ MemoryContextSetParent(MemoryContext context, MemoryContext new_parent)
 	if (new_parent == context->parent)
 		return;
 
+	if (context && new_parent && context->type == T_ShmAllocSetContext && new_parent->type != T_ShmAllocSetContext)
+		ELOG_PSS(LOG, "alloc shared memory under local memory (%s-%s)",
+						new_parent->name, new_parent->ident ? new_parent->ident : "null");
+
+
+	/* POLAR px: update memory accounting */
+	POLAR_AllocSetTransferAccounting(context, new_parent);
+
 	/* Delink from existing parent, if any */
 	if (context->parent)
 	{
@@ -396,12 +471,31 @@ MemoryContextSetParent(MemoryContext context, MemoryContext new_parent)
 		if (new_parent->firstchild != NULL)
 			new_parent->firstchild->prevchild = context;
 		new_parent->firstchild = context;
+
+		context->fallback.parent_ident = new_parent->ident;
+		context->fallback.parent_name = new_parent->name;
+		context->fallback.mcxt = NULL;
 	}
 	else
 	{
 		context->parent = NULL;
 		context->prevchild = NULL;
 		context->nextchild = NULL;
+	}
+}
+
+void
+MemoryContextSetParentWithFallback(MemoryContext context,
+	MemoryContext new_parent, bool is_shared)
+{
+	if (!is_shared)
+		MemoryContextSetParent(context, new_parent);
+	else
+	{
+		MemoryContextSetParent(context, polar_session()->memory_context);
+		context->fallback.parent_name = new_parent->name;
+		context->fallback.parent_ident = new_parent->ident;
+		context->fallback.mcxt = NULL;
 	}
 }
 
@@ -763,6 +857,10 @@ MemoryContextCreate(MemoryContext node,
 	/* Creating new memory contexts is not allowed in a critical section */
 	Assert(CritSectionCount == 0);
 
+	if (node && parent && node->type == T_ShmAllocSetContext && parent->type != T_ShmAllocSetContext)
+		ELOG_PSS(LOG, "alloc shared memory under local memory (%s-%s)",
+				parent->name, parent->ident ? parent->ident : "null");
+
 	/* Initialize all standard fields of memory context header */
 	node->type = tag;
 	node->isReset = true;
@@ -774,6 +872,7 @@ MemoryContextCreate(MemoryContext node,
 	node->name = name;
 	node->ident = NULL;
 	node->reset_cbs = NULL;
+	memset(&node->fallback, 0, sizeof(MemoryContextFallbackData));
 
 	/* OK to link node into context tree */
 	if (parent)
@@ -792,6 +891,14 @@ MemoryContextCreate(MemoryContext node,
 	}
 
 	MEMDEBUG_CREATE_MEMPOOL(node, 0, false);
+
+	ELOG_PSS(LOG, "MemoryContextCreate %d,(%p-%s-%s)(%p-%s-%s), %s",
+		node->type,
+		node, node->name, node->ident ? node->ident : "null",
+		node->parent, node->parent ? node->parent->name : "null",
+		(node->parent && node->parent->ident) ? node->parent->ident : "null",
+		polar_get_backtrace()
+		);
 }
 
 /*
@@ -806,6 +913,10 @@ MemoryContextAlloc(MemoryContext context, Size size)
 {
 	void	   *ret;
 
+	/* POLAR: Shared Server */
+	POLAR_SS_TRY_LOCAL_MEMORY_CONTEXT_BEFORE(context);
+
+HEAD:
 	AssertArg(MemoryContextIsValid(context));
 	AssertNotInCriticalSection(context);
 
@@ -818,6 +929,9 @@ MemoryContextAlloc(MemoryContext context, Size size)
 	if (unlikely(ret == NULL))
 	{
 		MemoryContextStats(TopMemoryContext);
+
+		/* POLAR: Shared Server */
+		POLAR_SS_TRY_LOCAL_MEMORY_CONTEXT_AFTER(context);
 
 		/*
 		 * Here, and elsewhere in this module, we show the target context's
@@ -849,6 +963,10 @@ MemoryContextAllocZero(MemoryContext context, Size size)
 {
 	void	   *ret;
 
+	/* POLAR: Shared Server */
+	POLAR_SS_TRY_LOCAL_MEMORY_CONTEXT_BEFORE(context);
+
+HEAD:
 	AssertArg(MemoryContextIsValid(context));
 	AssertNotInCriticalSection(context);
 
@@ -861,6 +979,10 @@ MemoryContextAllocZero(MemoryContext context, Size size)
 	if (unlikely(ret == NULL))
 	{
 		MemoryContextStats(TopMemoryContext);
+
+		/* POLAR: Shared Server */
+		POLAR_SS_TRY_LOCAL_MEMORY_CONTEXT_AFTER(context);
+
 		ereport(ERROR,
 				(errcode(ERRCODE_OUT_OF_MEMORY),
 				 errmsg("out of memory"),
@@ -887,6 +1009,10 @@ MemoryContextAllocZeroAligned(MemoryContext context, Size size)
 {
 	void	   *ret;
 
+	/* POLAR: Shared Server */
+	POLAR_SS_TRY_LOCAL_MEMORY_CONTEXT_BEFORE(context);
+
+HEAD:
 	AssertArg(MemoryContextIsValid(context));
 	AssertNotInCriticalSection(context);
 
@@ -899,6 +1025,10 @@ MemoryContextAllocZeroAligned(MemoryContext context, Size size)
 	if (unlikely(ret == NULL))
 	{
 		MemoryContextStats(TopMemoryContext);
+
+		/* POLAR: Shared Server */
+		POLAR_SS_TRY_LOCAL_MEMORY_CONTEXT_AFTER(context);
+
 		ereport(ERROR,
 				(errcode(ERRCODE_OUT_OF_MEMORY),
 				 errmsg("out of memory"),
@@ -922,6 +1052,10 @@ MemoryContextAllocExtended(MemoryContext context, Size size, int flags)
 {
 	void	   *ret;
 
+	/* POLAR: Shared Server */
+	POLAR_SS_TRY_LOCAL_MEMORY_CONTEXT_BEFORE(context);
+
+HEAD:
 	AssertArg(MemoryContextIsValid(context));
 	AssertNotInCriticalSection(context);
 
@@ -937,6 +1071,10 @@ MemoryContextAllocExtended(MemoryContext context, Size size, int flags)
 		if ((flags & MCXT_ALLOC_NO_OOM) == 0)
 		{
 			MemoryContextStats(TopMemoryContext);
+
+			/* POLAR: Shared Server */
+			POLAR_SS_TRY_LOCAL_MEMORY_CONTEXT_AFTER(context);
+
 			ereport(ERROR,
 					(errcode(ERRCODE_OUT_OF_MEMORY),
 					 errmsg("out of memory"),
@@ -961,6 +1099,10 @@ palloc(Size size)
 	void	   *ret;
 	MemoryContext context = CurrentMemoryContext;
 
+	/* POLAR: Shared Server */
+	POLAR_SS_TRY_LOCAL_MEMORY_CONTEXT_BEFORE(context);
+
+HEAD:
 	AssertArg(MemoryContextIsValid(context));
 	AssertNotInCriticalSection(context);
 
@@ -973,6 +1115,10 @@ palloc(Size size)
 	if (unlikely(ret == NULL))
 	{
 		MemoryContextStats(TopMemoryContext);
+
+		/* POLAR: Shared Server */
+		POLAR_SS_TRY_LOCAL_MEMORY_CONTEXT_AFTER(context);
+
 		ereport(ERROR,
 				(errcode(ERRCODE_OUT_OF_MEMORY),
 				 errmsg("out of memory"),
@@ -992,6 +1138,10 @@ palloc0(Size size)
 	void	   *ret;
 	MemoryContext context = CurrentMemoryContext;
 
+	/* POLAR: Shared Server */
+	POLAR_SS_TRY_LOCAL_MEMORY_CONTEXT_BEFORE(context);
+
+HEAD:
 	AssertArg(MemoryContextIsValid(context));
 	AssertNotInCriticalSection(context);
 
@@ -1004,6 +1154,10 @@ palloc0(Size size)
 	if (unlikely(ret == NULL))
 	{
 		MemoryContextStats(TopMemoryContext);
+
+		/* POLAR: Shared Server */
+		POLAR_SS_TRY_LOCAL_MEMORY_CONTEXT_AFTER(context);
+
 		ereport(ERROR,
 				(errcode(ERRCODE_OUT_OF_MEMORY),
 				 errmsg("out of memory"),
@@ -1025,6 +1179,10 @@ palloc_extended(Size size, int flags)
 	void	   *ret;
 	MemoryContext context = CurrentMemoryContext;
 
+	/* POLAR: Shared Server */
+	POLAR_SS_TRY_LOCAL_MEMORY_CONTEXT_BEFORE(context);
+
+HEAD:
 	AssertArg(MemoryContextIsValid(context));
 	AssertNotInCriticalSection(context);
 
@@ -1040,6 +1198,10 @@ palloc_extended(Size size, int flags)
 		if ((flags & MCXT_ALLOC_NO_OOM) == 0)
 		{
 			MemoryContextStats(TopMemoryContext);
+
+			/* POLAR: Shared Server */
+			POLAR_SS_TRY_LOCAL_MEMORY_CONTEXT_AFTER(context);
+
 			ereport(ERROR,
 					(errcode(ERRCODE_OUT_OF_MEMORY),
 					 errmsg("out of memory"),
@@ -1067,6 +1229,7 @@ pfree(void *pointer)
 	MemoryContext context = GetMemoryChunkContext(pointer);
 
 	context->methods->free_p(context, pointer);
+
 	MEMDEBUG_MEMPOOL_FREE(context, pointer);
 }
 
@@ -1115,6 +1278,10 @@ MemoryContextAllocHuge(MemoryContext context, Size size)
 {
 	void	   *ret;
 
+	/* POLAR: Shared Server */
+	POLAR_SS_TRY_LOCAL_MEMORY_CONTEXT_BEFORE(context);
+
+HEAD:
 	AssertArg(MemoryContextIsValid(context));
 	AssertNotInCriticalSection(context);
 
@@ -1127,6 +1294,10 @@ MemoryContextAllocHuge(MemoryContext context, Size size)
 	if (unlikely(ret == NULL))
 	{
 		MemoryContextStats(TopMemoryContext);
+
+		/* POLAR: Shared Server */
+		POLAR_SS_TRY_LOCAL_MEMORY_CONTEXT_AFTER(context);
+
 		ereport(ERROR,
 				(errcode(ERRCODE_OUT_OF_MEMORY),
 				 errmsg("out of memory"),
@@ -1153,6 +1324,10 @@ repalloc_huge(void *pointer, Size size)
 	if (!AllocHugeSizeIsValid(size))
 		elog(ERROR, "invalid memory alloc request size %zu", size);
 
+	/* POLAR: Shared Server */
+	POLAR_SS_TRY_LOCAL_MEMORY_CONTEXT_BEFORE(context);
+
+HEAD:
 	AssertNotInCriticalSection(context);
 
 	/* isReset must be false already */
@@ -1162,6 +1337,10 @@ repalloc_huge(void *pointer, Size size)
 	if (unlikely(ret == NULL))
 	{
 		MemoryContextStats(TopMemoryContext);
+
+		/* POLAR: Shared Server */
+		POLAR_SS_TRY_LOCAL_MEMORY_CONTEXT_AFTER(context);
+
 		ereport(ERROR,
 				(errcode(ERRCODE_OUT_OF_MEMORY),
 				 errmsg("out of memory"),
@@ -1266,4 +1445,24 @@ polar_palloc_extended_in_crit(Size size, int flags)
 	ret = palloc_extended(size, flags);
 	context->allowInCritSection = allow_in_crit;
 	return ret;
+}
+
+/* POLAR: Shared Server */
+Size
+polar_malloc_usable_size(MemoryContext context, void *pointer)
+{
+	AssertArg(MemoryContextIsValid(context));
+	AssertNotInCriticalSection(context);
+
+	if (MemoryContextContains(context, pointer))
+		return context->methods->malloc_usable_size(context, pointer);
+	else if (context->fallback.mcxt != NULL)
+		return context->fallback.mcxt->methods->malloc_usable_size(context->fallback.mcxt, pointer);
+	else
+	{
+		Assert(false);
+		elog(ERROR, "context(%d-%s-%s) does not contains this pointer",
+				context->type, context->name,
+				context->ident ? context->ident : "null");
+	}
 }

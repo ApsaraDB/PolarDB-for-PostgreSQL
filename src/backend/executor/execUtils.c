@@ -90,7 +90,9 @@ CreateExecutorState(void)
 	qcontext = AllocSetContextCreate(CurrentMemoryContext,
 									 "ExecutorState",
 									 ALLOCSET_DEFAULT_SIZES);
-
+	/* POLAR px */
+	MemoryContextDeclareAccountingRoot(qcontext);
+	/* POLAR end */
 	/*
 	 * Make the EState node within the per-query context.  This way, we don't
 	 * need a separate pfree() operation for it at shutdown.

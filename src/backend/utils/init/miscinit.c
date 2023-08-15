@@ -292,7 +292,7 @@ InitPostmasterChild(void)
 {
 	IsUnderPostmaster = true;	/* we are a postmaster subprocess now */
 
-	MyProcPid = getpid();		/* reset MyProcPid */
+	MySessionPid = MyProcPid = getpid();		/* reset MyProcPid */
 
 	MyStartTime = time(NULL);	/* set our start time in case we call elog */
 
@@ -342,7 +342,7 @@ InitStandaloneProcess(const char *argv0)
 {
 	Assert(!IsPostmasterEnvironment);
 
-	MyProcPid = getpid();		/* reset MyProcPid */
+	MySessionPid = MyProcPid = getpid();		/* reset MyProcPid */
 
 	MyStartTime = time(NULL);	/* set our start time in case we call elog */
 
@@ -715,7 +715,7 @@ InitializeSessionUserIdStandalone(void)
 	 * This function should only be called in single-user mode, in autovacuum
 	 * workers, and in background workers.
 	 */
-	AssertState(!IsUnderPostmaster || IsAutoVacuumWorkerProcess() || IsBackgroundWorker);
+	AssertState(!IsUnderPostmaster || IsAutoVacuumWorkerProcess() || IsBackgroundWorker || IsPolarDispatcher);
 
 	/* call only once */
 	AssertState(!OidIsValid(AuthenticatedUserId));

@@ -477,7 +477,7 @@ pxgang_parse_pxid_params(struct Port *port pg_attribute_unused(),
 
 	/* px_session_id */
 	if (pxid_next_param(&cp, &np))
-		SetConfigOption("polar_px_session_id", cp, PGC_POSTMASTER, PGC_S_OVERRIDE);
+		px_session_id = pg_strtouint64(cp, NULL, 10);
 
 	/* PgStartTime */
 	if (pxid_next_param(&cp, &np))

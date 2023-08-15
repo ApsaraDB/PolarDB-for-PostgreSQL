@@ -375,7 +375,7 @@ CTranslatorExprToDXL::CreateDXLNode(CExpression *pexpr,
 				pfDML);
 			break;
 		case COperator::EopPhysicalIndexScan:
-		/* POALR px */
+		/* POLAR px */
 		case COperator::EopPhysicalShareIndexScan:
 			dxlnode = CTranslatorExprToDXL::PdxlnIndexScan(
 				pexpr, colref_array, pdrgpdsBaseTables, pulNonGatherMotions,
@@ -485,7 +485,7 @@ CTranslatorExprToDXL::CreateDXLNode(CExpression *pexpr,
 				pfDML);
 			break;
 		case COperator::EopPhysicalDynamicIndexScan:
-		/* POALR px */
+		/* POLAR px */
 		case COperator::EopPhysicalDynamicShareIndexScan:
 			dxlnode = CTranslatorExprToDXL::PdxlnDynamicIndexScan(
 				pexpr, colref_array, pdrgpdsBaseTables, pulNonGatherMotions,
@@ -2506,7 +2506,7 @@ CTranslatorExprToDXL::PdxlnFromFilter(CExpression *pexprFilter,
 		case COperator::EopPhysicalIndexOnlyScan:
 		case COperator::EopPhysicalIndexScan:
 		case COperator::EopPhysicalDynamicIndexScan:
-		/* POALR px */
+		/* POLAR px */
 		case COperator::EopPhysicalShareIndexScan:
 		case COperator::EopPhysicalDynamicShareIndexScan:
 		{

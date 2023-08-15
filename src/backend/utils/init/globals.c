@@ -41,6 +41,7 @@ volatile uint32 QueryCancelHoldoffCount = 0;
 volatile uint32 CritSectionCount = 0;
 
 int			MyProcPid;
+int			MySessionPid;
 pg_time_t	MyStartTime;
 struct Port *MyProcPort;
 int32		MyCancelKey;
@@ -111,6 +112,7 @@ bool		IsPostmasterEnvironment = false;
 bool		IsUnderPostmaster = false;
 bool		IsBinaryUpgrade = false;
 bool		IsBackgroundWorker = false;
+bool		IsPolarDispatcher = false;
 
 bool		ExitOnAnyError = false;
 
@@ -131,13 +133,40 @@ int			max_parallel_maintenance_workers = 2;
  * register background workers.
  */
 int			NBuffers = 1000;
+int         polar_shm_limit = 1000;
+int         polar_huge_pages_reserved = 1;
 int			MaxConnections = 90;
 int			max_worker_processes = 16;
 int			max_parallel_workers = 8;
 int			MaxBackends = 0;
+int			MaxPolarDispatcher = 0;
+int			MaxPolarSessions = 0;
+int			MaxPolarSharedBackends = 0;
+int			MaxPolarSessionsPerDispatcher = 0;
+int			MaxPolarSharedBackendsPerDispatcher = 0;
 
 /* POLAR */
 int			MaxNormalBackends = 0;
+
+/* POLAR: Shared Server */
+bool        polar_enable_shared_server;
+bool        polar_enable_shared_server_log;
+bool        polar_enable_shared_server_hang;
+bool        polar_enable_shared_server_testmode;
+int			polar_ss_shared_memory_size;
+int			polar_ss_backend_idle_timeout;
+int			polar_ss_backend_keepalive_timeout;
+int			polar_ss_session_wait_timeout;
+int			polar_ss_dispatcher_count;
+int			polar_ss_backend_max_count;
+int			polar_ss_backend_pool_min_size;
+int			polar_ss_db_role_setting_max_size;
+int			polar_ss_client_schedule_policy;
+int			polar_ss_session_schedule_policy;
+char		*polar_ss_dedicated_guc_names;
+char		*polar_ss_dedicated_extension_names;
+char		*polar_ss_dedicated_dbuser_names;
+/* POLAR end */
 
 int			VacuumCostPageHit = 1;	/* GUC parameters for vacuum */
 int			VacuumCostPageMiss = 10;

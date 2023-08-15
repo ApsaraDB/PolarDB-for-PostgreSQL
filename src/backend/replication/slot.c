@@ -309,7 +309,7 @@ ReplicationSlotCreate(const char *name, bool db_specific,
 				 errmsg("all replication slots are in use"),
 				 errhint("Free one or increase max_replication_slots.")));
 
-	/* POALR: limit slots use of non_super users */
+	/* POLAR: limit slots use of non_super users */
 	if (polar_repl_slots_reserved_for_superuser >= 0 &&
 			polar_replication_slots_available <= polar_repl_slots_reserved_for_superuser &&
 			!MyProc->issuper)

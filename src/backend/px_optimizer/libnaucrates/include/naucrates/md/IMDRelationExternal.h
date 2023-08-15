@@ -92,13 +92,13 @@ public:
 		return 0;
 	}
 
-	/* POALR px */
+	// POLAR px
 	ULONG PartSchemeCount() const override
 	{
 		return 0;
 	}
 
-	// POALR px: retrieve list of partition types
+	// POLAR px: retrieve list of partition types
 	CharPtrArray *
 	GetPartitionTypes() const override
 	{

@@ -48,7 +48,7 @@ PxRoleValue px_role = PX_ROLE_QC;	/* Role paid by this Greenplum Database
 									 	 * backend */
 bool		px_is_writer;		/* is this qExec a "writer" process. */
 
-int			px_session_id;		/* global unique id for session. */
+int			px_session_id = InvalidPxSessionId;		/* global unique id for session. */
 
 struct TraceId		sql_trace_id;
 
@@ -144,6 +144,9 @@ double		px_selectivity_damping_factor = 1;
 
 /* Analyzing aid */
 int			px_motion_slice_noop = 0;
+
+/* Database Experimental Feature GUCs */
+bool		px_enable_explain_all_stat = false;
 
 #ifdef USE_ASSERT_CHECKING
 bool		px_mk_sort_check = false;

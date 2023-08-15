@@ -136,6 +136,7 @@ static void doputenv(const char *var, const char *val);
 /* POLAR */
 bool polar_is_enable = true;
 bool polar_enable_parallel_execution = false;
+bool polar_enable_shared_server_mode = false;
 
 /*
  * allow core files if possible.
@@ -291,7 +292,7 @@ polar_dma_create_pg_conf(char *node_name)
 	fputs("\n# Configuration added by pg_regress\n\n", pg_conf);
 	fputs("log_autovacuum_min_duration = 0\n", pg_conf);
 	fputs("log_checkpoints = on\n", pg_conf);
-	fputs("log_line_prefix = '%m [%p] %q%a '\n", pg_conf);
+	fputs("log_line_prefix = '%m [%p] [%P] %q%a '\n", pg_conf);
 	fputs("log_lock_waits = on\n", pg_conf);
 	fputs("log_temp_files = 128kB\n", pg_conf);
 	fputs("max_prepared_transactions = 2\n", pg_conf);
@@ -2317,6 +2318,18 @@ run_schedule(const char *schedule, test_function tfunc)
 			}
 			continue;
 		}
+		else if (strncmp(scbuf, "polar_ss_ignore: ", 17) == 0)
+		{
+			if (polar_enable_shared_server_mode)
+			{
+				c = scbuf + 17;
+				while (*c && isspace((unsigned char) *c))
+					c++;
+				add_stringlist_item(&polar_ignorelist, c);
+				polar_ignore_count ++;
+			}
+			continue;
+		}
 		else if (strncmp(scbuf, "cluster_ignore: ", 16) == 0)
 		{
 			if (dma_cluster)
@@ -2465,7 +2478,8 @@ run_schedule(const char *schedule, test_function tfunc)
 
 				/* POLAR */
 				_stringlist *sl;
-				if (polar_is_enable || dma_cluster || polar_enable_parallel_execution)
+				if (polar_is_enable || dma_cluster ||
+					polar_enable_parallel_execution || polar_enable_shared_server_mode)
 				{
 					for (sl = polar_ignorelist; sl != NULL; sl = sl->next)
 					{
@@ -2857,6 +2871,7 @@ regression_main(int argc, char *argv[], init_function ifunc, test_function tfunc
 		{"config-auth", required_argument, NULL, 24},
 		{"max-concurrent-tests", required_argument, NULL, 25},
 		{"polar-parallel-execution", no_argument, NULL, 26},
+		{"polar-shared-server", no_argument, NULL, 27},
 		{"dma", required_argument, NULL, 2000},
 		{"dma-election-timeout", required_argument, NULL, 2001},
 		{NULL, 0, NULL, 0}
@@ -2984,6 +2999,9 @@ regression_main(int argc, char *argv[], init_function ifunc, test_function tfunc
 				break;
 			case 26:
 				polar_enable_parallel_execution = true;
+				break;
+			case 27:
+				polar_enable_shared_server_mode = true;
 				break;
 			case 2000:
 				dma_test = true;
@@ -3113,7 +3131,7 @@ regression_main(int argc, char *argv[], init_function ifunc, test_function tfunc
 		fputs("\n# Configuration added by pg_regress\n\n", pg_conf);
 		fputs("log_autovacuum_min_duration = 0\n", pg_conf);
 		fputs("log_checkpoints = on\n", pg_conf);
-		fputs("log_line_prefix = '%m [%p] %q%a '\n", pg_conf);
+		fputs("log_line_prefix = '%m [%p] [%P] %q%a '\n", pg_conf);
 		fputs("log_lock_waits = on\n", pg_conf);
 		fputs("log_temp_files = 128kB\n", pg_conf);
 		fputs("max_prepared_transactions = 2\n", pg_conf);
@@ -3277,30 +3295,24 @@ regression_main(int argc, char *argv[], init_function ifunc, test_function tfunc
 		printf(_("running on port %d with PID %lu\n"),
 			   port, ULONGPID(postmaster_pid));
 	}
-	else
-	{
-		/*
-		 * Using an existing installation, so may need to get rid of
-		 * pre-existing database(s) and role(s)
-		 */
-		if (!use_existing)
-		{
-			for (sl = dblist; sl; sl = sl->next)
-				drop_database_if_exists(sl->str);
-			for (sl = extraroles; sl; sl = sl->next)
-				drop_role_if_exists(sl->str);
-		}
-	}
 
 	/*
-	 * Create the test database(s) and role(s)
-	 */
+	* Using an existing installation, so may need to get rid of
+	* pre-existing database(s) and role(s)
+	* Create the test database(s) and role(s)
+	*/
 	if (!use_existing)
 	{
 		for (sl = dblist; sl; sl = sl->next)
+		{
+			drop_database_if_exists(sl->str);
 			create_database(sl->str);
+		}
 		for (sl = extraroles; sl; sl = sl->next)
+		{
+			drop_role_if_exists(sl->str);
 			create_role(sl->str, dblist);
+		}
 	}
 
 	/*
@@ -3406,6 +3418,5 @@ regression_main(int argc, char *argv[], init_function ifunc, test_function tfunc
 
 	if (fail_count != 0)
 		exit(1);
-
 	return 0;
 }

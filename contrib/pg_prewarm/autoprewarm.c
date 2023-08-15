@@ -280,7 +280,7 @@ apw_load_buffers(void)
 	BlockInfoRecord *blkinfo;
 	dsm_segment *seg;
 
-	/* POALR */
+	/* POLAR */
 	int create_size;
 
 	/*
@@ -327,7 +327,7 @@ apw_load_buffers(void)
 				 errmsg("could not read from file \"%s\": %m",
 						AUTOPREWARM_FILE)));
 
-	/* POALR */
+	/* POLAR */
 	create_size = sizeof(BlockInfoRecord) * num_elements;
 	if (create_size < num_elements)
 			ereport(ERROR,

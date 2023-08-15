@@ -16,6 +16,19 @@
 
 #include "nodes/nodes.h"
 
+typedef struct DSALockStat
+{
+	uint64		lock_area_count;
+	uint64		lock_area_time_us;
+	uint64		lock_area_max_time_us;
+	uint64		lock_sclass_count;
+	uint64		lock_sclass_time_us;
+	uint64		lock_sclass_max_time_us;
+	uint64		lock_freelist_count;
+	uint64		lock_freelist_time_us;
+	uint64		lock_freelist_max_time_us;
+} DSALockStat;
+
 /*
  * MemoryContextCounters
  *		Summarization state for MemoryContextStats collection.
@@ -32,7 +45,19 @@ typedef struct MemoryContextCounters
 	Size		freechunks;		/* Total number of free chunks */
 	Size		totalspace;		/* Total bytes requested from malloc */
 	Size		freespace;		/* The unused portion of totalspace */
+	DSALockStat	dsa_lock_stat;
 } MemoryContextCounters;
+
+/* POLAR */
+typedef struct DSAContextCounters
+{
+	Size		total_segment_size;
+	Size		max_total_segment_size;
+	int			refcnt;
+	bool		pinned;
+	Size		usable_pages;
+	Size		max_contiguous_pages;
+} DSAContextCounters;
 
 /*
  * MemoryContext
@@ -61,7 +86,9 @@ typedef struct MemoryContextMethods
 	void		(*free_p) (MemoryContext context, void *pointer);
 	void	   *(*realloc) (MemoryContext context, void *pointer, Size size);
 	void		(*reset) (MemoryContext context);
-	void		(*delete_context) (MemoryContext context);
+	/* POLAR px */
+	void		(*delete_context) (MemoryContext context, MemoryContext parent);
+	/* POLAR end */
 	Size		(*get_chunk_space) (MemoryContext context, void *pointer);
 	bool		(*is_empty) (MemoryContext context);
 	void		(*stats) (MemoryContext context,
@@ -70,8 +97,22 @@ typedef struct MemoryContextMethods
 #ifdef MEMORY_CONTEXT_CHECKING
 	void		(*check) (MemoryContext context);
 #endif
+	/* POLAR px */
+	void		(*declare_accounting_root) (MemoryContext context);
+	Size		(*get_peak_usage) (MemoryContext context);
+	Size		(*malloc_usable_size) (MemoryContext context, void *pointer);
+	/* POLAR end */
 } MemoryContextMethods;
 
+typedef struct MemoryContextFallbackData
+{
+	const char *parent_name;			/* context name (just for debugging) */
+	const char *parent_ident;			/* context ID if any (just for debugging) */
+	Size minContextSize;
+	Size initBlockSize;
+	Size maxBlockSize;
+	MemoryContext mcxt;
+} MemoryContextFallbackData;
 
 typedef struct MemoryContextData
 {
@@ -88,6 +129,7 @@ typedef struct MemoryContextData
 	const char *name;			/* context name (just for debugging) */
 	const char *ident;			/* context ID if any (just for debugging) */
 	MemoryContextCallback *reset_cbs;	/* list of reset/delete callbacks */
+	MemoryContextFallbackData fallback;
 } MemoryContextData;
 
 /* utils/palloc.h contains typedef struct MemoryContextData *MemoryContext */
@@ -103,6 +145,30 @@ typedef struct MemoryContextData
 	((context) != NULL && \
 	 (IsA((context), AllocSetContext) || \
 	  IsA((context), SlabContext) || \
-	  IsA((context), GenerationContext)))
+	  IsA((context), GenerationContext) || \
+	  IsA((context), ShmAllocSetContext)))
+
+/*
+ * MemoryContextIsShared
+ *		True iff memory context is shared.
+ *
+ * Add new context types to the set accepted by this macro.
+ */
+#define MemoryContextIsShared(context) \
+	((context) != NULL && \
+	 (IsA((context), ShmAllocSetContext)))
+
+static inline void dsa_lock_stat_add(DSALockStat *total, DSALockStat *inc)
+{
+	total->lock_area_count 				+= inc->lock_area_count;
+	total->lock_area_time_us			+= inc->lock_area_time_us;
+	total->lock_area_max_time_us		+= inc->lock_area_max_time_us;
+	total->lock_sclass_count			+= inc->lock_sclass_count;
+	total->lock_sclass_time_us			+= inc->lock_sclass_time_us;
+	total->lock_sclass_max_time_us		+= inc->lock_sclass_max_time_us;
+	total->lock_freelist_count			+= inc->lock_freelist_count;
+	total->lock_freelist_time_us		+= inc->lock_freelist_time_us;
+	total->lock_freelist_max_time_us	+= inc->lock_freelist_max_time_us;
+}
 
 #endif							/* MEMNODES_H */

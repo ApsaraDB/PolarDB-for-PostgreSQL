@@ -348,7 +348,7 @@ exec_px_query(const char *query_string,
 					paramLI, 
 					0, 
 					snapshot, 
-					ddesc/* POALR px */
+					ddesc/* POLAR px */
 					);
 
 		/*

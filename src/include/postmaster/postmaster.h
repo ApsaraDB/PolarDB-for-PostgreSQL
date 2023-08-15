@@ -73,6 +73,15 @@ extern Size ShmemBackendArraySize(void);
 extern void ShmemBackendArrayAllocation(void);
 #endif
 
+
+/* POLAR: Shared Server */
+extern bool RandomCancelKey(int32 *cancel_key);
+
+typedef struct Port Port;
+extern void processCancelRequest(Port *port, void *pkt);
+extern int polar_parse_startup_packet(Port* port, MemoryContext memctx, void* pkg_body, int pkg_size, bool SSLdone);
+/* POLAR end */
+
 /*
  * Note: MAX_BACKENDS is limited to 2^18-1 because that's the width reserved
  * for buffer references in buf_internals.h.  This limitation could be lifted

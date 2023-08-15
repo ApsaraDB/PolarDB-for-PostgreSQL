@@ -20,6 +20,12 @@ else
 
 my $node = get_new_node('master');
 $node->init(allows_streaming => 1);
+# POLAR: set polar_shm_limit to 3MB to ensure shared_buffers is almost 1MB as before.
+$node->append_conf(
+	'postgresql.conf', qq(
+polar_huge_pages_reserved = 1
+polar_shm_limit = 5GB
+));
 $node->start;
 
 my ($stdin, $stdout, $stderr) = ('', '', '');

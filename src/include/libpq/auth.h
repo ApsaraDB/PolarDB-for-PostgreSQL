@@ -21,13 +21,14 @@ extern bool pg_krb_caseins_users;
 extern char *pg_krb_realm;
 
 extern void ClientAuthentication(Port *port);
+extern void palor_session_client_authentication(Port* port);
 
 /* Hook for plugins to get control in ClientAuthentication() */
 typedef void (*ClientAuthentication_hook_type) (Port *, int);
 extern PGDLLIMPORT ClientAuthentication_hook_type ClientAuthentication_hook;
 
-/* POALR px */
+/* POLAR px */
 extern void FakeClientAuthentication(Port *port);
-/* POALR end */
+/* POLAR end */
 
 #endif							/* AUTH_H */

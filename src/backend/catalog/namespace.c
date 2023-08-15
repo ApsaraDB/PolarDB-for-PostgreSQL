@@ -58,6 +58,8 @@
 #include "utils/syscache.h"
 #include "utils/varlena.h"
 
+/* POLAR: Shared Server */
+#include "utils/polar_session_inval.h"
 
 /*
  * The namespace search path is a possibly-empty list of namespace OIDs.
@@ -128,28 +130,6 @@
  * Note: all data pointed to by these List variables is in TopMemoryContext.
  */
 
-/* These variables define the actually active state: */
-
-static List *activeSearchPath = NIL;
-
-/* default place to create stuff; if InvalidOid, no default */
-static Oid	activeCreationNamespace = InvalidOid;
-
-/* if true, activeCreationNamespace is wrong, it should be temp namespace */
-static bool activeTempCreationPending = false;
-
-/* These variables are the values last derived from namespace_search_path: */
-
-static List *baseSearchPath = NIL;
-
-static Oid	baseCreationNamespace = InvalidOid;
-
-static bool baseTempCreationPending = false;
-
-static Oid	namespaceUser = InvalidOid;
-
-/* The above four values are valid only if baseSearchPathValid */
-static bool baseSearchPathValid = true;
 
 /* Override requests are remembered in a stack of OverrideStackEntry structs */
 
@@ -160,28 +140,98 @@ typedef struct
 	int			nestLevel;		/* subtransaction nesting level */
 } OverrideStackEntry;
 
-static List *overrideStack = NIL;
+/* Shared Server. Session local states are gathered into PolarSessionNamespace. */
+typedef struct PolarSessionNamespace {
+	/* These variables define the actually active state: */
+	List *m_activeSearchPath;
 
-/*
- * myTempNamespace is InvalidOid until and unless a TEMP namespace is set up
- * in a particular backend session (this happens when a CREATE TEMP TABLE
- * command is first executed).  Thereafter it's the OID of the temp namespace.
- *
- * myTempToastNamespace is the OID of the namespace for my temp tables' toast
- * tables.  It is set when myTempNamespace is, and is InvalidOid before that.
- *
- * myTempNamespaceSubID shows whether we've created the TEMP namespace in the
- * current subtransaction.  The flag propagates up the subtransaction tree,
- * so the main transaction will correctly recognize the flag if all
- * intermediate subtransactions commit.  When it is InvalidSubTransactionId,
- * we either haven't made the TEMP namespace yet, or have successfully
- * committed its creation, depending on whether myTempNamespace is valid.
- */
-static Oid	myTempNamespace = InvalidOid;
+	/* default place to create stuff; if InvalidOid, no default */
+	Oid	m_activeCreationNamespace;
 
-static Oid	myTempToastNamespace = InvalidOid;
+	/* if true, activeCreationNamespace is wrong, it should be temp namespace */
+	bool m_activeTempCreationPending;
 
-static SubTransactionId myTempNamespaceSubID = InvalidSubTransactionId;
+	/* These variables are the values last derived from namespace_search_path: */
+	List *m_baseSearchPath;
+
+	Oid	m_baseCreationNamespace;
+
+	bool m_baseTempCreationPending;
+
+	Oid	m_namespaceUser;
+
+	/* The above four values are valid only if baseSearchPathValid */
+	bool m_baseSearchPathValid;
+
+	List *m_overrideStack;
+
+	/*
+	* myTempNamespace is InvalidOid until and unless a TEMP namespace is set up
+	* in a particular backend session (this happens when a CREATE TEMP TABLE
+	* command is first executed).  Thereafter it's the OID of the temp namespace.
+	*
+	* myTempToastNamespace is the OID of the namespace for my temp tables' toast
+	* tables.  It is set when myTempNamespace is, and is InvalidOid before that.
+	*
+	* myTempNamespaceSubID shows whether we've created the TEMP namespace in the
+	* current subtransaction.  The flag propagates up the subtransaction tree,
+	* so the main transaction will correctly recognize the flag if all
+	* intermediate subtransactions commit.  When it is InvalidSubTransactionId,
+	* we either haven't made the TEMP namespace yet, or have successfully
+	* committed its creation, depending on whether myTempNamespace is valid.
+	*/
+	Oid	m_myTempNamespace;
+
+	Oid	m_myTempToastNamespace;
+
+	SubTransactionId m_myTempNamespaceSubID;
+} PolarSessionNamespace;
+
+PolarSessionNamespace*
+polar_session_namespace_create(MemoryContext mctx)
+{
+	PolarSessionNamespace* self;
+	if (mctx)
+		self = (PolarSessionNamespace*)MemoryContextAlloc(mctx, sizeof(PolarSessionNamespace));
+	else
+		self = (PolarSessionNamespace*)malloc(sizeof(PolarSessionNamespace));
+
+	memset(self, 0, sizeof(PolarSessionNamespace));
+
+	self->m_activeSearchPath = NIL;
+	self->m_baseSearchPath = NIL;
+	self->m_overrideStack = NIL;
+	self->m_baseSearchPathValid = true;
+
+	return self;
+}
+
+#define POLAR_SESSION_NS(name)		(polar_session()->info->ns->m_##name)
+
+#define activeSearchPath           POLAR_SESSION_NS(activeSearchPath)
+#define activeCreationNamespace    POLAR_SESSION_NS(activeCreationNamespace)
+#define activeTempCreationPending  POLAR_SESSION_NS(activeTempCreationPending)
+#define baseSearchPath             POLAR_SESSION_NS(baseSearchPath)
+#define baseCreationNamespace      POLAR_SESSION_NS(baseCreationNamespace)
+#define baseTempCreationPending    POLAR_SESSION_NS(baseTempCreationPending)
+#define namespaceUser              POLAR_SESSION_NS(namespaceUser)
+#define baseSearchPathValid        POLAR_SESSION_NS(baseSearchPathValid)
+#define overrideStack              POLAR_SESSION_NS(overrideStack)
+#define myTempNamespace            POLAR_SESSION_NS(myTempNamespace)
+#define myTempToastNamespace       POLAR_SESSION_NS(myTempToastNamespace)
+#define myTempNamespaceSubID       POLAR_SESSION_NS(myTempNamespaceSubID)
+
+bool
+polar_session_has_temp_namespace(void)
+{
+	return OidIsValid(myTempNamespace);
+}
+
+void
+polar_inval_namespace_path(void)
+{
+	baseSearchPathValid = false;
+}
 
 /*
  * This is the user's textual search path specification --- it's the value
@@ -3239,6 +3289,7 @@ checkTempNamespaceStatus(Oid namespaceId)
 
 	/* Is the backend alive? */
 	proc = BackendIdGetProc(backendId);
+
 	if (proc == NULL)
 		return TEMP_NAMESPACE_IDLE;
 
@@ -3474,13 +3525,14 @@ PushOverrideSearchPath(OverrideSearchPath *newpath)
 	OverrideStackEntry *entry;
 	List	   *oidlist;
 	Oid			firstNS;
-	MemoryContext oldcxt;
+	MemoryContext oldcxt, topctx;
 
 	/*
 	 * Copy the list for safekeeping, and insert implicitly-searched
 	 * namespaces as needed.  This code should track recomputeNamespacePath.
 	 */
-	oldcxt = MemoryContextSwitchTo(TopMemoryContext);
+	topctx = (POLAR_SS_NOT_DEDICATED() ? polar_session()->memory_context : TopMemoryContext);
+	oldcxt = MemoryContextSwitchTo(topctx);
 
 	oidlist = list_copy(newpath->schemas);
 
@@ -3715,7 +3767,7 @@ recomputeNamespacePath(void)
 	ListCell   *l;
 	bool		temp_missing;
 	Oid			firstNS;
-	MemoryContext oldcxt;
+	MemoryContext oldcxt, topctx;
 
 	/* Do nothing if an override search spec is active. */
 	if (overrideStack)
@@ -3825,7 +3877,8 @@ recomputeNamespacePath(void)
 	 * Now that we've successfully built the new list of namespace OIDs, save
 	 * it in permanent storage.
 	 */
-	oldcxt = MemoryContextSwitchTo(TopMemoryContext);
+	topctx = (POLAR_SS_NOT_DEDICATED() ? polar_session()->memory_context : TopMemoryContext);
+	oldcxt = MemoryContextSwitchTo(topctx);
 	newpath = list_copy(oidlist);
 	MemoryContextSwitchTo(oldcxt);
 
@@ -4261,8 +4314,8 @@ InitializeSearchPath(void)
 		 * tables are created in the proper namespace; ignore the GUC setting.
 		 */
 		MemoryContext oldcxt;
-
-		oldcxt = MemoryContextSwitchTo(TopMemoryContext);
+		MemoryContext topctx = (POLAR_SS_NOT_DEDICATED() ? polar_session()->memory_context : TopMemoryContext);
+		oldcxt = MemoryContextSwitchTo(topctx);
 		baseSearchPath = list_make1_oid(PG_CATALOG_NAMESPACE);
 		MemoryContextSwitchTo(oldcxt);
 		baseCreationNamespace = PG_CATALOG_NAMESPACE;
@@ -4282,6 +4335,12 @@ InitializeSearchPath(void)
 		CacheRegisterSyscacheCallback(NAMESPACEOID,
 									  NamespaceCallback,
 									  (Datum) 0);
+
+		/* POLAR: Shared Server */
+		polar_ss_cache_register_syscache_callback(NAMESPACEOID,
+												NamespaceCallback,
+												(Datum) 0);
+
 		/* Force search path to be recomputed on next use */
 		baseSearchPathValid = false;
 	}

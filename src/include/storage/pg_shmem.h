@@ -29,6 +29,8 @@
 /* POLAR */
 #include "utils/hsearch.h"
 
+#define POLAR_SHMEM_PERSISTED_INIT_SIZE 100000
+
 typedef enum PolarShmemType
 {
 	POLAR_SHMEM_NORMAL = 0,

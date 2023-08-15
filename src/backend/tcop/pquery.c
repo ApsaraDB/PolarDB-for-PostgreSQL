@@ -29,6 +29,8 @@
 
 /* POLAR */
 #include "utils/polar_sql_time_stat.h"
+#include "px/memquota.h"
+
 /*
  * ActivePortal is the currently executing Portal (the most closely nested,
  * if there are several).
@@ -169,8 +171,16 @@ ProcessQuery(Portal portal, /* Polar PX */
 
 	/* Polar PX */
 	queryDesc->ddesc = portal->ddesc;
+
+	queryDesc->plannedstmt->query_mem = ResourceManagerGetQueryMemoryLimit(queryDesc->plannedstmt);
+
+	if (px_role == PX_ROLE_QC)
+	{
+		/* we will not track this query, so reset the query_mem*/
+		queryDesc->plannedstmt->query_mem = 0;
+	}
+
 	portal->status = PORTAL_ACTIVE;
-	/* Polar PX end */
 
 	/* POLAR */
 	queryDesc->prepStmtName = prepStmtName;
@@ -485,7 +495,7 @@ PortalStart(Portal portal,
 			ParamListInfo params,
 			int eflags, 
 			Snapshot snapshot,
-			QueryDispatchDesc *ddesc/* POALR px */
+			QueryDispatchDesc *ddesc/* POLAR px */
 			)
 {
 	Portal		saveActivePortal;
@@ -566,6 +576,9 @@ PortalStart(Portal portal,
 					queryDesc->portal_name = (portal->name ? pstrdup(portal->name) : (char *) NULL);
 				}
 
+				queryDesc->plannedstmt->query_mem = ResourceManagerGetQueryMemoryLimit(queryDesc->plannedstmt);
+
+				portal->status = PORTAL_ACTIVE;
 				/*
 				 * If it's a scrollable cursor, executor needs to support
 				 * REWIND and backwards scan, as well as whatever the caller

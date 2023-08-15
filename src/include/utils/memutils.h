@@ -19,6 +19,8 @@
 
 #include "nodes/memnodes.h"
 
+/* POLAR */
+#include "storage/polar_memutils.h"
 
 /*
  * MaxAllocSize, MaxAllocHugeSize
@@ -93,11 +95,20 @@ extern void MemoryContextStats(MemoryContext context);
 extern void MemoryContextStatsDetail(MemoryContext context, int max_children);
 extern void MemoryContextAllowInCriticalSection(MemoryContext context,
 									bool allow);
-
+/* POLAR px: statistics */
+extern void MemoryContextDeclareAccountingRoot(MemoryContext context);
+extern Size MemoryContextGetCurrentSpace(MemoryContext context);
+extern Size MemoryContextGetPeakSpace(MemoryContext context);
+extern Size MemoryContextSetPeakSpace(MemoryContext context, Size nbytes);
+/* POLAR end */
 #ifdef MEMORY_CONTEXT_CHECKING
 extern void MemoryContextCheck(MemoryContext context);
 #endif
 extern bool MemoryContextContains(MemoryContext context, void *pointer);
+
+extern Size polar_malloc_usable_size(MemoryContext context, void *pointer);
+extern void MemoryContextSetParentWithFallback(MemoryContext context,
+	MemoryContext new_parent, bool flag);
 
 /* Handy macro for copying and assigning context ID ... but note double eval */
 #define MemoryContextCopyAndSetIdentifier(cxt, id) \
@@ -150,6 +161,10 @@ extern void MemoryContextCreate(MemoryContext node,
 					MemoryContext parent,
 					const char *name);
 
+/* POLAR px: this function should be only called by MemoryContextSetParent() */
+extern void POLAR_AllocSetTransferAccounting(MemoryContext context,
+									   MemoryContext new_parent);
+/* POLAR end */
 
 /*
  * Memory-context-type-specific functions

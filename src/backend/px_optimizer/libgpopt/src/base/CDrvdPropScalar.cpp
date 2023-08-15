@@ -432,7 +432,7 @@ CDrvdPropScalar::DeriveHasScalarArrayCmp(CExpressionHandle &exprhdl)
 IOstream &
 CDrvdPropScalar::OsPrint(IOstream &os) const
 {
-	/* POALR px */
+	/* POLAR px */
 	os << "Defined Columns: [" << *GetDefinedColumns() << "], "
 	   << "Used Columns: [" << *GetUsedColumns() << "], "
 	   << "Set Returning Function Columns: ["

@@ -43,7 +43,7 @@ cd PolarDB-for-PostgreSQL/
 
 ### 读写节点部署
 
-在读写节点上，使用 `--with-pfsd` 选项编译 PolarDB 内核。请参考 [编译测试选项说明](./db-localfs.md#编译测试选项说明) 查看更多编译选项的说明。
+在读写节点上，使用 `--with-pfsd` 选项编译 PolarDB 内核。请参考 [编译测试选项说明](../development/dev-on-docker.md#编译测试选项说明) 查看更多编译选项的说明。
 
 ```bash:no-line-numbers
 ./polardb_build.sh --with-pfsd

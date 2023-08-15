@@ -16,6 +16,7 @@
 #define PLANCACHE_H
 
 #include "access/tupdesc.h"
+#include "lib/ilist.h"
 #include "nodes/params.h"
 #include "utils/queryenvironment.h"
 
@@ -111,12 +112,15 @@ typedef struct CachedPlanSource
 	bool		is_valid;		/* is the query_list currently valid? */
 	int			generation;		/* increments each time we create a plan */
 	/* If CachedPlanSource has been saved, it is a member of a global list */
-	struct CachedPlanSource *next_saved;	/* list link, if so */
+	dlist_node	node;			/* list link, if is_saved */
 	/* State kept to help decide whether to use custom or generic plans: */
 	double		generic_cost;	/* cost of generic plan, or -1 if not known */
 	double		total_custom_cost;	/* total cost of custom plans so far */
 	int			num_custom_plans;	/* number of plans included in total */
 	Oid 		planId;
+
+	/* POLAR: Shared Server */
+	bool		polar_on_session_context;
 } CachedPlanSource;
 
 /*
@@ -150,8 +154,9 @@ extern void InitPlanCache(void);
 extern void ResetPlanCache(void);
 
 extern CachedPlanSource *CreateCachedPlan(struct RawStmt *raw_parse_tree,
-				 const char *query_string,
-				 const char *commandTag);
+										  const char *query_string,
+										  const char *commandTag,
+										  bool polar_on_session_context);
 extern CachedPlanSource *CreateOneShotCachedPlan(struct RawStmt *raw_parse_tree,
 						const char *query_string,
 						const char *commandTag);

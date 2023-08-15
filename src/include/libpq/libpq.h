@@ -54,9 +54,10 @@ extern PGDLLIMPORT PQcommMethods *PqCommMethods;
  * prototypes for functions in pqcomm.c
  */
 extern int StreamServerPort(int family, char *hostName,
-				 unsigned short portNumber, char *unixSocketDir,
-				 pgsocket ListenSocket[], int MaxListen);
-extern int	StreamConnection(pgsocket server_fd, Port *port);
+							unsigned short portNumber, char *unixSocketDir,
+							pgsocket ListenSocket[], int MaxListen);
+extern int	StreamConnection(pgsocket server_fd, Port *port,
+							bool polar_skip_accept);
 extern void StreamClose(pgsocket sock);
 extern void TouchSocketFiles(void);
 extern void RemoveSocketFiles(void);

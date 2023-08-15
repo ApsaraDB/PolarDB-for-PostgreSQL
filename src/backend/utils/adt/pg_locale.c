@@ -65,6 +65,9 @@
 #include "utils/pg_locale.h"
 #include "utils/syscache.h"
 
+/* POLAR: Shared Server */
+#include "storage/polar_session_context.h"
+
 #ifdef USE_ICU
 #include <unicode/ucnv.h>
 #endif
@@ -158,6 +161,13 @@ pg_perm_setlocale(int category, const char *locale)
 #ifndef WIN32
 	result = setlocale(category, locale);
 #else
+
+	/* POLAR: Shared Server */
+	if (POLAR_SS_NOT_DEDICATED())
+	{
+		MyProc->polar_is_backend_dedicated = true;
+		elog(LOG, "polar shared server set dedicated from pg_perm_setlocale");
+	}
 
 	/*
 	 * On Windows, setlocale(LC_MESSAGES) does not work, so just assume that

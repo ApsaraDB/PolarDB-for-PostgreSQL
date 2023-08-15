@@ -40,6 +40,7 @@
 #include "utils/tqual.h"
 
 /* POLAR */
+#include "storage/procarray.h"
 #include "utils/guc.h"
 #include "commands/extension.h"
 
@@ -1163,6 +1164,7 @@ DropRole(DropRoleStmt *stmt)
 		char	   *detail_log;
 		SysScanDesc sscan;
 		Oid			roleid;
+		int			n_otherbackends;
 
 		if (rolspec->roletype != ROLESPEC_CSTRING)
 			ereport(ERROR,
@@ -1214,6 +1216,18 @@ DropRole(DropRoleStmt *stmt)
 			ereport(ERROR,
 					(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 					 errmsg("must be superuser to drop superusers")));
+
+
+		/* 
+		 * Shared Server
+		 * Check for other backends in the target user.
+		 */
+		if (CountOtherUserBackends(roleid, &n_otherbackends))
+			ereport(ERROR,
+					(errcode(ERRCODE_OBJECT_IN_USE),
+					errmsg("role \"%s\" cannot be dropped because %d shared server depend on it",
+							role, n_otherbackends)));
+
 
 		/* DROP hook for the role being removed */
 		InvokeObjectDropHook(AuthIdRelationId, roleid, 0);
@@ -1326,6 +1340,7 @@ RenameRole(const char *oldname, const char *newname)
 	Oid			roleid;
 	ObjectAddress address;
 	Form_pg_authid authform;
+	int 		n_otherbackends;
 
 	rel = heap_open(AuthIdRelationId, RowExclusiveLock);
 	dsc = RelationGetDescr(rel);
@@ -1397,6 +1412,18 @@ RenameRole(const char *oldname, const char *newname)
 					(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 					 errmsg("permission denied to rename role")));
 	}
+
+    /*
+	 * Shared Server
+     * Check for other backends in the target user.  (Because shared server hold the
+     * database lock, no new ones can start after this.)
+     *
+     */
+    if (CountOtherUserBackends(roleid, &n_otherbackends))
+      ereport(ERROR,
+          (errcode(ERRCODE_OBJECT_IN_USE),
+          errmsg("role \"%s\" cannot be renamed because %d shared server depend on it",
+              oldname, n_otherbackends)));
 
 	/* OK, construct the modified tuple */
 	for (i = 0; i < Natts_pg_authid; i++)

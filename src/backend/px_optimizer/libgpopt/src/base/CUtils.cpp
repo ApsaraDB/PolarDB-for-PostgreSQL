@@ -4842,7 +4842,7 @@ CUtils::AddExprs(CExpressionArrays *results_exprs,
 	GPOS_ASSERT(results_exprs->Size() >= input_exprs->Size());
 }
 
-/* POALR px */
+/* POLAR px */
 BOOL
 CUtils::FPartitionWiseJoinAble(CMemoryPool *mp, const CExpression *pexpr)
 {
