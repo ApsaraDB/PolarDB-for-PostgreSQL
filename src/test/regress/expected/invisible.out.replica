@@ -16,7 +16,11 @@ CREATE TABLE TEST_INVISIBLE_TBL3(
     a INT INVISIBLE,
     b INT
 );
-ERROR:  cannot execute INSERT in a read-only transaction
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+create TABLE TEST_INVISIBLE_TBL4(
+    a int INVISIBLE
+);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
 INSERT INTO TEST_INVISIBLE_TBL1 VALUES (1, 1, 'A');
 ERROR:  cannot execute INSERT in a read-only transaction
 INSERT INTO TEST_INVISIBLE_TBL1 VALUES (1, 'A');
@@ -81,6 +85,8 @@ SELECT a, b  FROM TEST_INVISIBLE_TBL3;
 --
 ALTER TABLE TEST_INVISIBLE_TBL1 ALTER COLUMN b SET INVISIBLE;
 ERROR:  cannot execute ALTER TABLE in a read-only transaction
+ALTER TABLE TEST_INVISIBLE_TBL1 ALTER COLUMN c SET INVISIBLE;
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
 SELECT * FROM TEST_INVISIBLE_TBL1;
  c 
 ---
@@ -88,7 +94,7 @@ SELECT * FROM TEST_INVISIBLE_TBL1;
  B
 (2 rows)
 
-ALTER TABLE TEST_INVISIBLE_TBL1 ALTER COLUMN a SET VISIBLE;
+ALTER TABLE TEST_INVISIBLE_TBL1 MODIFY a VISIBLE;
 ERROR:  cannot execute ALTER TABLE in a read-only transaction
 SELECT * FROM TEST_INVISIBLE_TBL1;
  a | c 
