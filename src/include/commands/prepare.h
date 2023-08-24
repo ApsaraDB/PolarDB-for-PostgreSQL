@@ -12,6 +12,7 @@
  */
 #ifndef PREPARE_H
 #define PREPARE_H
+#define MAX_PREPARED_PARAMS_LEN 200
 
 #include "commands/explain.h"
 #include "datatype/timestamp.h"
@@ -56,5 +57,5 @@ extern TupleDesc FetchPreparedStatementResultDesc(PreparedStatement *stmt);
 extern List *FetchPreparedStatementTargetList(PreparedStatement *stmt);
 
 extern void DropAllPreparedStatements(void);
-
+extern char current_prepared_params_string[MAX_PREPARED_PARAMS_LEN];
 #endif							/* PREPARE_H */

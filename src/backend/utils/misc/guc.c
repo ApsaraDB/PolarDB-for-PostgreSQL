@@ -1403,6 +1403,16 @@ static bool update_session_external_guc_index(struct config_generic *var);
 static struct config_bool ConfigureNamesBool[] =
 {
 	{
+		{"polar_auditlog_max_query_length_limit",PGC_SIGHUP,LOGGING,
+			gettext_noop("whether to limit polar_auditlog_max_query_length"),
+			NULL
+		},
+		&polar_auditlog_max_query_length_limit,
+		true,
+		NULL,NULL,NULL
+	},
+
+	{
 		{"polar_enable_flashback_drop",PGC_SUSET,UNGROUPED,
 			gettext_noop("whether to open flashback_drop"),
 			NULL

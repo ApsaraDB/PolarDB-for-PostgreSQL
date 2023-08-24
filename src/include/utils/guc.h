@@ -396,6 +396,7 @@ extern bool		polar_enable_pread;
 extern bool		polar_enable_parallel_replay_standby_mode;
 extern bool		polar_enable_fallocate_walfile;
 extern bool		polar_skip_fill_walfile_zero_page;
+extern bool		polar_auditlog_max_query_length_limit;
 extern int 		polar_auditlog_max_query_length;
 extern int		polar_audit_log_flush_timeout;
 extern int 		polar_clog_max_local_cache_segments;

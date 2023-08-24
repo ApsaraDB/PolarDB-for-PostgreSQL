@@ -77,6 +77,8 @@
 #include "utils/guc.h"
 #include "utils/memutils.h"
 #include "utils/ps_status.h"
+#include "catalog/namespace.h"
+#include "commands/prepare.h"
 
 /* POLAR */
 #include "utils/polar_backtrace.h"
@@ -116,8 +118,9 @@ char	   *Log_destination_string = NULL;
 bool		syslog_sequence_numbers = true;
 bool		syslog_split_messages = true;
 /* POLAR */
-#define LOG_CHANNEL_WRITE_BUFFER_SIZE 128 * 1024 /* 128k */
+#define LOG_CHANNEL_WRITE_BUFFER_SIZE 64 * 1024 /* 64k */
 int polar_auditlog_max_query_length = POLAR_DEFAULT_MAX_AUDIT_LOG_LEN;
+bool polar_auditlog_max_query_length_limit = true;
 int polar_audit_log_flush_timeout = 0;
 /* POLAR end */
 
@@ -2603,6 +2606,19 @@ log_line_prefix(StringInfo buf, ErrorData *edata)
 					appendStringInfoString(buf, formatted_log_time);
 				break;
 			/* POLAR: new format for polar */
+			case 'L':
+				if (padding != 0)
+					appendStringInfo(buf, "%*s", padding, current_prepared_params_string);
+				else
+					appendStringInfoString(buf, current_prepared_params_string);
+				current_prepared_params_string[0] = '\0';
+				break;
+			case 'N':
+				if (padding != 0)
+					appendStringInfo(buf, "%*s", padding, namespace_search_path);
+				else
+					appendStringInfoString(buf, namespace_search_path);
+				break;
 			case 'S':
 				if (edata->is_audit_log || edata->is_slow_log)
 				{
@@ -4246,7 +4262,8 @@ polar_construct_logdata_postprocess(StringInfoData *logbuf, ErrorData *edata)
 	else
 	{
 		// NOTE(wormhole.gl): make sure logbuf length is not larger than PIPE_MAX_PAYLOAD
-		polar_shrink_audit_log(logbuf, 0);
+		if (polar_auditlog_max_query_length_limit)
+			polar_shrink_audit_log(logbuf, 0);
 	}
 
 	appendStringInfoChar(logbuf, '\n');
@@ -4287,6 +4304,8 @@ polar_write_audit_log(ErrorData *edata, const char *fmt, ...)
 	int dest;
 	char *logbuf_base = NULL;
 	int logbuf_len = 0;
+	int residual_buf_len = 0;
+	int writed_buf_len = 0;
 
 	StringInfoData logbuf;
 
@@ -4333,6 +4352,28 @@ polar_write_audit_log(ErrorData *edata, const char *fmt, ...)
 								log_channel_write_buffer_pos);
 			log_channel_write_buffer_pos = 0;
 			polar_last_audit_log_flush_time = GetCurrentTimestamp();
+			// solving incomplete audit sql log problem
+			writed_buf_len = logbuf_len - PIPE_HEADER_SIZE;
+			residual_buf_len = logbuf.len - writed_buf_len;
+			while (residual_buf_len > 0)
+			{
+				logbuf_base = log_channel_write_buffer + log_channel_write_buffer_pos;
+				logbuf_len = LOGBUF_MIN_LEN(residual_buf_len, LOG_CHANNEL_WRITE_BUFFER_SIZE - PIPE_HEADER_SIZE - log_channel_write_buffer_pos);
+				memcpy(logbuf_base + PIPE_HEADER_SIZE, logbuf.data + writed_buf_len, logbuf_len);
+				// build pipechunk header
+				dest = polar_log_dest(edata);
+				polar_construct_pipechunk_header((PipeProtoChunk *)logbuf_base, logbuf_len, dest);
+				writed_buf_len += logbuf_len;
+				residual_buf_len = residual_buf_len - logbuf_len;
+
+				logbuf_len = logbuf_len + PIPE_HEADER_SIZE;
+				log_channel_write_buffer_pos += logbuf_len;
+				polar_write_channel((PipeProtoChunk *)log_channel_write_buffer,
+									log_channel_write_buffer_pos);
+				log_channel_write_buffer_pos = 0;
+				polar_last_audit_log_flush_time = GetCurrentTimestamp();
+			}
+
 			break;
 		case LOG_DESTINATION_POLAR_SLOWLOG:
 		default:
