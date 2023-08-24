@@ -35,7 +35,7 @@
 #include "utils/builtins.h"
 #include "utils/snapmgr.h"
 #include "utils/timestamp.h"
-// #include "utils/syscache.h"
+#include "utils/syscache.h"
 /* POLAR: Shared Server */
 #include "storage/proc.h"
 
@@ -227,6 +227,29 @@ ExecuteQuery(ExecuteStmt *stmt, IntoClause *intoClause,
 	/* Look it up in the hash table */
 	entry = FetchPreparedStatement(stmt->name, true);
 
+	// get prepare params for solving parameterization problem 
+	if(entry){
+		StringInfoData current_prepared_params;
+		Oid* oid_list ;
+
+		initStringInfo(&current_prepared_params);
+		oid_list = entry->plansource->param_types;
+		appendStringInfoString(&current_prepared_params,entry->stmt_name);
+		for(int i=0;i<entry->plansource->num_params;i++){
+			Type tmp = typeidType(oid_list[i]);
+			char * typname = typeTypeName(tmp);
+			ReleaseSysCache(tmp);
+			appendStringInfoChar(&current_prepared_params,',');
+			appendStringInfoString(&current_prepared_params,typname);
+		}
+		if(current_prepared_params.len < MAX_PREPARED_PARAMS_LEN)
+			memcpy(current_prepared_params_string,current_prepared_params.data,current_prepared_params.len);
+		else 
+			memcpy(current_prepared_params_string,current_prepared_params.data,MAX_PREPARED_PARAMS_LEN);
+	}else{
+		current_prepared_params_string[0] = '\0';
+	}
+	
 	/* Shouldn't find a non-fixed-result cached plan */
 	if (!entry->plansource->fixed_result)
 		elog(ERROR, "EXECUTE does not support variable-result cached plans");
@@ -531,29 +554,6 @@ FetchPreparedStatement(const char *stmt_name, bool throwError)
 												  NULL);
 	else
 		entry = NULL;
-	// // get prepare params for solving parameterization problem 
-	// if(entry){
-	// 	StringInfoData current_prepared_params;
-	// 	Oid* oid_list ;
-
-	// 	initStringInfo(&current_prepared_params);
-	// 	oid_list = entry->plansource->param_types;
-	// 	appendStringInfoString(&current_prepared_params,entry->stmt_name);
-	// 	for(int i=0;i<entry->plansource->num_params;i++){
-	// 		Type tmp = typeidType(oid_list[i]);
-	// 		char * typname = typeTypeName(tmp);
-	// 		ReleaseSysCache(tmp);
-	// 		appendStringInfoChar(&current_prepared_params,',');
-	// 		appendStringInfoString(&current_prepared_params,typname);
-	// 	}
-	// 	if(current_prepared_params.len < MAX_PREPARED_PARAMS_LEN)
-	// 		memcpy(current_prepared_params_string,current_prepared_params.data,current_prepared_params.len);
-	// 	else 
-	// 		memcpy(current_prepared_params_string,current_prepared_params.data,MAX_PREPARED_PARAMS_LEN);
-	// }else{
-	// 	current_prepared_params_string[0] = '\0';
-	// }
-
 	if (!entry && throwError)
 		ereport(ERROR,
 				(errcode(ERRCODE_UNDEFINED_PSTATEMENT),
