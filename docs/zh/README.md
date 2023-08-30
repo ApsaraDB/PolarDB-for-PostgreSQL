@@ -49,7 +49,7 @@ postgres=# SELECT version();
   </div>
 
   <div class="feature">
-    <h3>内核特性</h3>
+    <h3>内核功能增强</h3>
     <ul style="position: relative;z-index: 10;">
       <li><a href="./features/v11/performance/">高性能</a></li>
       <li><a href="./features/v11/availability/">高可用</a></li>
