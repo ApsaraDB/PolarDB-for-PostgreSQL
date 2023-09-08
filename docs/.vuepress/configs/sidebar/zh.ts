@@ -76,7 +76,7 @@ export const zh: SidebarConfig = {
   ],
   "/zh/features": [
     {
-      text: "内核特性",
+      text: "内核功能增强",
       link: "/zh/features/v11/",
       children: [
         {

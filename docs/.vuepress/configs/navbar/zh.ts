@@ -67,7 +67,7 @@ export const zh: NavbarConfig = [
     ],
   },
   {
-    text: "内核特性",
+    text: "内核功能增强",
     children: [
       {
         text: "文档入口",
