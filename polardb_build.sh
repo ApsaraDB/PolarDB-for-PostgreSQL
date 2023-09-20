@@ -584,7 +584,7 @@ then
         log_directory = 'pg_log'
 
         unix_socket_directories='.'
-        shared_buffers = 128MB
+        shared_buffers = '2GB'
         synchronous_commit = on
         full_page_writes = off
         #random_page_cost = 1.1
