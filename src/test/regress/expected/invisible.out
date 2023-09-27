@@ -35,6 +35,20 @@ SELECT *  FROM TEST_INVISIBLE_TBL1;
  2 | B
 (2 rows)
 
+SELECT TEST_INVISIBLE_TBL1.*  FROM TEST_INVISIBLE_TBL1;
+ b | c 
+---+---
+ 1 | A
+ 2 | B
+(2 rows)
+
+SELECT (TEST_INVISIBLE_TBL1).*  FROM TEST_INVISIBLE_TBL1;
+ b | c 
+---+---
+ 1 | A
+ 2 | B
+(2 rows)
+
 SELECT a, b, c  FROM TEST_INVISIBLE_TBL1;
  a | b | c 
 ---+---+---
@@ -77,6 +91,21 @@ SELECT a, b  FROM TEST_INVISIBLE_TBL3;
    | 1
  1 | 1
 (2 rows)
+
+--
+-- TEST JOIN
+--
+SELECT * from TEST_INVISIBLE_TBL1 as t1, TEST_INVISIBLE_TBL3 as t3 where t1.a = t3.a;
+ b | c | b 
+---+---+---
+ 1 | A | 1
+(1 row)
+
+SELECT t1.a from TEST_INVISIBLE_TBL1 as t1, TEST_INVISIBLE_TBL3 as t3 where t1.a = t3.a;
+ a 
+---
+ 1
+(1 row)
 
 --
 -- TEST ALTER TABLE
