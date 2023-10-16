@@ -884,11 +884,6 @@ typedef struct ArrayCoerceExpr
 	Expr	   *arg;			/* input expression (yields an array) */
 	Expr	   *elemexpr;		/* expression representing per-element work */
 	Oid			resulttype;		/* output type of coercion (an array type) */
-
-	/* TODO */
-	Oid			elemfuncid;		/* OID of element coercion function, or 0 */
-	bool		isExplicit;		/* conversion semantics flag to pass to func */
-
 	int32		resulttypmod;	/* output typmod (also element typmod) */
 	Oid			resultcollid;	/* OID of collation, or InvalidOid if none */
 	CoercionForm coerceformat;	/* how to display this node */

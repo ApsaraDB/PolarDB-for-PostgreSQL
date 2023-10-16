@@ -1309,16 +1309,32 @@ CTranslatorScalarToDXL::TranslateArrayCoerceExprToDXL
 
     GPOS_ASSERT(NULL != child_node);
 
+    Oid elemfuncid = 0;
+
+    if (IsA(array_coerce_expr->elemexpr, FuncExpr))
+    {
+        elemfuncid = ((FuncExpr *) array_coerce_expr->elemexpr)->funcid;
+    }
+    else if (IsA(array_coerce_expr->elemexpr, RelabelType))
+    {
+        ;
+    }
+    else
+    {
+        GPOS_RAISE(gpdxl::ExmaDXL, gpdxl::ExmiQuery2DXLUnsupportedFeature,
+                   GPOS_WSZ_LIT("ArrayCoerceExpr with elemexpr that is neither "
+                                "FuncExpr or RelabelType"));
+    }
+
     CDXLNode *dxlnode = GPOS_NEW(m_mp) CDXLNode
             (
                     m_mp,
                     GPOS_NEW(m_mp) CDXLScalarArrayCoerceExpr
                             (
                                     m_mp,
-                                    GPOS_NEW(m_mp) CMDIdGPDB(array_coerce_expr->elemfuncid),
+                                    GPOS_NEW(m_mp) CMDIdGPDB(elemfuncid),
                                     GPOS_NEW(m_mp) CMDIdGPDB(array_coerce_expr->resulttype),
-                                    array_coerce_expr->resulttypmod,
-                                    array_coerce_expr->isExplicit,
+                                    array_coerce_expr->resulttypmod, true,
                                     (EdxlCoercionForm) array_coerce_expr->coerceformat,
                                     array_coerce_expr->location
                             )
