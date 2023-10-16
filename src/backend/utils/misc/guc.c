@@ -7875,6 +7875,7 @@ static struct config_string ConfigureNamesString[] =
 		"pg_stat_statements,btree_gin,btree_gist,citext,cube,dict_int,earthdistance,"
 		"hstore,intagg,intarray,isn,ltree,pgcrypto,pgrowlocks,pg_prewarm,pg_trgm,"
 		"sslinfo,tablefunc,unaccent,fuzzystrmatch,pgstattuple,pg_buffercache,\"uuid-ossp\",bloom,"
+		"smlar,"
 		/* POLAR: extensions in src/pl dir */
 		"plpgsql,plperl,"
 		/* PostGIS */

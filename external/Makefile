@@ -16,6 +16,7 @@ SUBDIRS += polar_parameter_check
 SUBDIRS += polar_stat_sql
 SUBDIRS += polar_csn
 SUBDIRS += polar_px
+SUBDIRS += smlar
 endif #enable_polar_minimal
 # Common end
 
