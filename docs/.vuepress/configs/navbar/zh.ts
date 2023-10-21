@@ -67,32 +67,20 @@ export const zh: NavbarConfig = [
     ],
   },
   {
-    text: "内核功能增强",
+    text: "内核增强功能",
     children: [
       {
         text: "文档入口",
-        link: "/zh/features/v11/",
+        link: "/zh/features/",
       },
       {
         text: "PolarDB for PostgreSQL 11",
         link: "/zh/features/v11/",
         children: [
-          {
-            text: "高性能",
-            link: "/zh/features/v11/performance/",
-          },
-          {
-            text: "高可用",
-            link: "/zh/features/v11/availability/",
-          },
-          {
-            text: "安全",
-            link: "/zh/features/v11/security/",
-          },
-          {
-            text: "HTAP",
-            link: "/zh/features/v11/htap/",
-          },
+          "/zh/features/v11/performance/",
+          "/zh/features/v11/availability/",
+          "/zh/features/v11/security/",
+          "/zh/features/v11/epq/",
         ],
       },
     ],
