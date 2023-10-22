@@ -76,8 +76,8 @@ export const zh: SidebarConfig = {
   ],
   "/zh/features": [
     {
-      text: "内核功能增强",
-      link: "/zh/features/v11/",
+      text: "内核增强功能",
+      link: "/zh/features/",
       children: [
         {
           text: "PolarDB for PostgreSQL 11",
@@ -86,18 +86,41 @@ export const zh: SidebarConfig = {
             {
               text: "高性能",
               link: "/zh/features/v11/performance/",
+              children: [
+                "/zh/features/v11/performance/bulk-read-and-extend.md",
+                "/zh/features/v11/performance/rel-size-cache.md",
+                "/zh/features/v11/performance/shared-server.md",
+              ],
             },
             {
               text: "高可用",
               link: "/zh/features/v11/availability/",
+              children: [
+                "/zh/features/v11/availability/avail-online-promote.md",
+                "/zh/features/v11/availability/avail-parallel-replay.md",
+                "/zh/features/v11/availability/datamax.md",
+                "/zh/features/v11/availability/resource-manager.md",
+                "/zh/features/v11/availability/flashback-table.md",
+              ],
             },
             {
               text: "安全",
               link: "/zh/features/v11/security/",
+              children: ["/zh/features/v11/security/tde.md"],
             },
             {
-              text: "HTAP",
-              link: "/zh/features/v11/htap/",
+              text: "弹性跨机并行查询（ePQ）",
+              link: "/zh/features/v11/epq/",
+              children: [
+                "/zh/features/v11/epq/epq-explain-analyze.md",
+                "/zh/features/v11/epq/epq-node-and-dop.md",
+                "/zh/features/v11/epq/epq-partitioned-table.md",
+                "/zh/features/v11/epq/epq-create-btree-index.md",
+                "/zh/features/v11/epq/cluster-info.md",
+                "/zh/features/v11/epq/adaptive-scan.md",
+                "/zh/features/v11/epq/parallel-dml.md",
+                "/zh/features/v11/epq/epq-ctas-mtview-bulk-insert.md",
+              ],
             },
           ],
         },
