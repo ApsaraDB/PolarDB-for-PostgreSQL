@@ -167,7 +167,8 @@ CachedPlanSource *
 CreateCachedPlan(RawStmt *raw_parse_tree,
 				 const char *query_string,
 				 const char *commandTag,
-				 bool polar_on_session_context)
+				 bool polar_on_session_context,
+				 const char *stmt_name)
 {
 	CachedPlanSource *plansource;
 	MemoryContext source_context;
@@ -238,6 +239,9 @@ CreateCachedPlan(RawStmt *raw_parse_tree,
 	plansource->num_custom_plans = 0;
 	plansource->planId = 0;
 	plansource->polar_on_session_context = polar_on_session_context;
+
+	/* POLAR: record stmt_name */
+	plansource->stmt_name = stmt_name ? pstrdup(stmt_name) : NULL;
 
 	MemoryContextSwitchTo(oldcxt);
 
@@ -1469,6 +1473,8 @@ CopyCachedPlan(CachedPlanSource *plansource)
 	else
 		newsource->resultDesc = NULL;
 	newsource->context = source_context;
+
+	newsource->stmt_name = NULL;
 
 	if (plansource->polar_on_session_context)
 		querytree_context = polar_session_alloc_set_context_create(

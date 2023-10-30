@@ -1967,7 +1967,8 @@ _SPI_prepare_plan(const char *src, SPIPlanPtr plan)
 									   * Shared Server, here set polar_on_session_context = false.
 									   * This plansource is belong to backend context, not session context.
 									   */
-									  false);
+									  false,
+									  NULL);
 
 		/*
 		 * Parameter datatypes are driven by parserSetup hook if provided,

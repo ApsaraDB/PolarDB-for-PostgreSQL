@@ -33,6 +33,16 @@ typedef struct
 	TimestampTz prepare_time;	/* the time when the stmt was prepared */
 } PreparedStatement;
 
+/*
+ * POLAR: the data structure representing parameters typename and definition
+ * of a prepared statement. Currently, it only used to log info of a simple
+ * PREPARED statement.
+ */
+typedef struct 
+{
+	char *params_typename;
+	char *source_text;
+} LogPreparedInfo;
 
 /* Utility statements PREPARE, EXECUTE, DEALLOCATE, EXPLAIN EXECUTE */
 extern void PrepareQuery(PrepareStmt *stmt, const char *queryString,
@@ -57,4 +67,5 @@ extern List *FetchPreparedStatementTargetList(PreparedStatement *stmt);
 
 extern void DropAllPreparedStatements(void);
 
+extern LogPreparedInfo polar_log_prepared_info;
 #endif							/* PREPARE_H */
