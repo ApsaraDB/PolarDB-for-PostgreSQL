@@ -10,6 +10,7 @@ SUBDIRS += polar_monitor_preload
 
 # NB: those will be ignored in minimal mode.
 ifeq ($(enable_polar_minimal),no)
+SUBDIRS += pgvector
 SUBDIRS += polar_worker
 SUBDIRS += polar_tde_utils
 SUBDIRS += polar_parameter_check
