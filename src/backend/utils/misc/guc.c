@@ -848,6 +848,8 @@ int     polar_max_auditlog_files;
 int     polar_max_slowlog_files;
 int     polar_max_logindex_files;
 int 	polar_trace_logindex_messages = LOG;
+bool	polar_enable_log_search_path = true;
+bool	polar_enable_log_parameter_type = true;
 
 /*
  * Forbidden functions names for non-superuser
@@ -3842,6 +3844,27 @@ static struct config_bool ConfigureNamesBool[] =
 		},
 		&polar_enable_shm_aset,
 		false,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_enable_log_search_path", PGC_SIGHUP, DEVELOPER_OPTIONS,
+			gettext_noop("enable log search_path to log file."),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+		},
+		&polar_enable_log_search_path,
+		true,
+		NULL, NULL, NULL
+	},
+	{
+		{"polar_enable_log_parameter_type", PGC_SIGHUP, LOGGING,
+ 			gettext_noop("Enable polar log SQL parameter type."),
+ 			NULL,
+			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL
+ 		},
+ 		&polar_enable_log_parameter_type,
+		true,
 		NULL, NULL, NULL
 	},
 
@@ -7875,7 +7898,7 @@ static struct config_string ConfigureNamesString[] =
 		"pg_stat_statements,btree_gin,btree_gist,citext,cube,dict_int,earthdistance,"
 		"hstore,intagg,intarray,isn,ltree,pgcrypto,pgrowlocks,pg_prewarm,pg_trgm,"
 		"sslinfo,tablefunc,unaccent,fuzzystrmatch,pgstattuple,pg_buffercache,\"uuid-ossp\",bloom,"
-		"smlar,"
+		"smlar,vector,"
 		/* POLAR: extensions in src/pl dir */
 		"plpgsql,plperl,"
 		/* PostGIS */
