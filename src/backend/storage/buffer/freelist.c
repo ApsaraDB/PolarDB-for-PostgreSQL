@@ -581,7 +581,7 @@ GetAccessStrategy(BufferAccessStrategyType btype)
 			return NULL;
 
 		case BAS_BULKREAD:
-			ring_size = 256 * 1024 / BLCKSZ;
+			ring_size = 1024 * 1024 / BLCKSZ;
 			break;
 		case BAS_BULKWRITE:
 			ring_size = 16 * 1024 * 1024 / BLCKSZ;
