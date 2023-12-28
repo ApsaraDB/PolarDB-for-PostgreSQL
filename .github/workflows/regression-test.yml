@@ -44,7 +44,7 @@ jobs:
             -t                                                           \
             --name polardb_${{ matrix.container_image }}                 \
             -v `pwd`:/home/postgres/PolarDB-for-PostgreSQL               \
-            mrdrivingduck/polardb_pg_devel:${{ matrix.container_image }} \
+            polardb/polardb_pg_devel:${{ matrix.container_image }} \
             bash &&                                                      \
           docker start polardb_${{ matrix.container_image }}
 
