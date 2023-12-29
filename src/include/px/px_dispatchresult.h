@@ -287,6 +287,9 @@ void pxdisp_makeDispatchResults(struct PxDispatcherState *ds,
 							int sliceCapacity,
 							bool cancelOnError);
 
+void
+pxdisp_clearPxPgResults(PxPgResults* px_pgresults);
+
 /* Px adaptive scan */
 extern volatile bool px_adps_dispatch_wait;
 extern pg_atomic_uint32 px_adps_eno;

@@ -731,6 +731,7 @@ pxdisp_resultEnd(PxDispatchResults *results, int sliceIndex)
 	return &results->resultArray[si->resultEnd];
 }
 
+
 /*
  * used in the interconnect on the dispatcher to avoid error-cleanup deadlocks.
  */
@@ -791,4 +792,24 @@ pxdisp_makeDispatchResults(PxDispatcherState *ds,
 	MemoryContextSwitchTo(oldContext);
 
 	ds->primaryResults = results;
+}
+
+void
+pxdisp_clearPxPgResults(PxPgResults *px_pgresults)
+{
+	int			i = 0;
+
+	if (!px_pgresults)
+		return;
+
+	for (i = 0; i < px_pgresults->numResults; i++)
+		PQclear(px_pgresults->pg_results[i]);
+
+	if (px_pgresults->pg_results)
+	{
+		pfree(px_pgresults->pg_results);
+		px_pgresults->pg_results = NULL;
+	}
+
+	px_pgresults->numResults = 0;
 }

@@ -61,5 +61,9 @@ void PxDispatchPlan(struct QueryDesc *queryDesc,
 
 extern ParamListInfo deserializeParamListInfo(const char *str, int slen);
 
+extern void PxDispatchCopyStart(struct PxCopy *pxCopy, Node *stmt, int flags);
+extern void PxDispatchCopyEnd(struct PxCopy *pxCopy);
+
+
 void px_log_querydesc(QueryDispatchDesc *ddesc);
 #endif							/* PXDISP_QUERY_H */

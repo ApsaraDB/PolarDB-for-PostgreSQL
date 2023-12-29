@@ -34,6 +34,7 @@
 #include "utils/guc.h"
 
 #include "px/px_conn.h"			/* PxWorkerDescriptor */
+#include "px/px_copy.h"
 #include "px/px_disp.h"
 #include "px/px_disp_query.h"
 #include "px/px_gang.h"			/* me */
@@ -240,6 +241,7 @@ buildGangDefinition(List *segments, SegmentType segmentType)
 			workerId = lfirst_int(lc);
 			newGangDefinition->db_descriptors[i] =
 						pxnode_allocateIdlePX(workerId, totalPxNodes, segmentType);
+						// pxnode_allocateIdlePX(RW_SEGMENT, totalPxNodes, segmentType);
 		}
 	}
 	PG_CATCH();
@@ -573,6 +575,23 @@ makePxProcess(PxWorkerDescriptor *pxWorkerDesc)
 	process->contentCount = pxWorkerDesc->logicalWorkerInfo.total_count;
 	process->identifier = pxWorkerDesc->identifier;
 	return process;
+}
+
+struct PxWorkerDescriptor *
+getSegmentDescriptorFromGang(const Gang *gp, int seg)
+{
+	int			i = 0;
+
+	if (gp == NULL)
+		return NULL;
+
+	for (i = 0; i < gp->size; i++)
+	{
+		if (gp->db_descriptors[i]->logicalWorkerInfo.idx == seg)
+			return gp->db_descriptors[i];
+	}
+
+	return NULL;
 }
 
 /*

@@ -14,6 +14,7 @@ override CPPFLAGS := -I$(libpq_srcdir) $(CPPFLAGS)
 SUBDIRS := motion dispatcher
 
 OBJS = px_cat.o \
+	   px_copy.o \
 	   px_hash.o \
 	   px_llize.o \
 	   px_mutate.o \

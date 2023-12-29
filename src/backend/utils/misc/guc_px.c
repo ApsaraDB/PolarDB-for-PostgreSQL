@@ -61,6 +61,7 @@ int			px_explain_memory_verbosity = 0;
 
 /* Optimizer related gucs */
 bool		polar_enable_px;
+bool		px_enable_copy;
 bool		px_enable_executor;
 bool		px_enable_join;
 bool 		px_enable_window_function;
@@ -351,6 +352,16 @@ struct config_bool ConfigureNamesBool_px[] =
 		 NULL
 		},
 		&polar_enable_px,
+		false,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"polar_px_enable_copy", PGC_USERSET, QUERY_TUNING_METHOD,
+		 gettext_noop("Enable px_enable_copy."),
+		 NULL
+		},
+		&px_enable_copy,
 		false,
 		NULL, NULL, NULL
 	},

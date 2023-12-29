@@ -118,6 +118,7 @@ function del_cov() {
 function px_init() {
   echo "################################ px_init ################################"
   echo "polar_enable_px=0" >> $pg_bld_master_dir/postgresql.conf
+  echo "polar_px_enable_copy=0" >> $pg_bld_master_dir/postgresql.conf
   echo "polar_px_enable_check_workers=0" >> $pg_bld_master_dir/postgresql.conf
   echo "polar_px_enable_replay_wait=1" >> $pg_bld_master_dir/postgresql.conf
   echo "polar_px_dop_per_node=3" >> $pg_bld_master_dir/postgresql.conf

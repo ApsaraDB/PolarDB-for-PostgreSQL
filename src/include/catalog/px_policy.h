@@ -73,7 +73,19 @@ typedef struct PxPolicy
 	Oid		   *opclasses;	/* and their opclasses */
 } PxPolicy;
 
+/*
+ * PxPolicyCopy -- Return a copy of a PxPolicy object.
+ *
+ * The copy is palloc'ed in the specified context.
+ */
+extern PxPolicy *PxPolicyCopy(const PxPolicy *src);
+
 extern PxPolicy *makePxPolicy(PxPolicyType ptype, int nattrs, int numsegments);
 extern PxPolicy *createRandomPartitionedPolicy(int numsegments);
+extern PxPolicy *createReplicatedPolicy(int numsegments);
+
+extern bool PxPolicyIsReplicated(const PxPolicy *policy);
+
+
 
 #endif /*_PX_POLICY_H_*/

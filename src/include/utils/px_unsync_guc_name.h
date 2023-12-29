@@ -361,6 +361,7 @@
 		"polar_px_enable_check_workers",
 		"polar_px_enable_create_table_as",
 		"polar_px_enable_cte",
+		"polar_px_enable_copy",
 		"polar_px_enable_executor",
 		"polar_px_enable_join",
 		"polar_px_enable_plan_cache",
