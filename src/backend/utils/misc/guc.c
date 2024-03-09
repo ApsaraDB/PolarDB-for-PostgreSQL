@@ -612,8 +612,10 @@ const struct config_enum_entry data_encryption_cipher_options[] = {
 	{"off",		TDE_ENCRYPTION_OFF, false},
 	{"aes-128", TDE_ENCRYPTION_AES_128, false},
 	{"aes-256", TDE_ENCRYPTION_AES_256, false},
+#if OPENSSL_VERSION_NUMBER >= 0x10101000L
 #ifndef OPENSSL_NO_SM4
 	{"sm4",		TDE_ENCRYPTION_SM4, false},
+#endif
 #endif
 	{NULL, 0, false}
 };
