@@ -29,7 +29,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        container_image: [ centos7, ubuntu20.04, ubuntu22.04 ]
+        container_image: [ ubuntu20.04, ubuntu22.04 ]
         instance_type: [ oltp, htap ]
     steps:
       - name: Fetch PolarDB source code
