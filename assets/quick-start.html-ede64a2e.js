@@ -1,0 +1,1 @@
+const t=JSON.parse('{"key":"v-1ced8944","path":"/deploying/quick-start.html","title":"快速部署","lang":"en-US","frontmatter":{"author":"棠羽","date":"2022/05/09","minute":5},"headers":[],"git":{"updatedTime":1690894847000},"filePathRelative":"deploying/quick-start.md"}');export{t as data};

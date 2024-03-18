@@ -1,0 +1,1 @@
+const e=JSON.parse('{"key":"v-0bbe1b6a","path":"/zh/features/","title":"自研功能","lang":"zh-CN","frontmatter":{},"headers":[{"level":2,"title":"功能 / 版本映射矩阵","slug":"功能-版本映射矩阵","link":"#功能-版本映射矩阵","children":[]}],"git":{"updatedTime":1703745117000},"filePathRelative":"zh/features/README.md"}');export{e as data};

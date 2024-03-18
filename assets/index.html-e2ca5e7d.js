@@ -1,0 +1,1 @@
+const e=JSON.parse('{"key":"v-62087a8c","path":"/zh/features/v11/epq/","title":"弹性跨机并行查询（ePQ）","lang":"zh-CN","frontmatter":{},"headers":[],"git":{"updatedTime":1697908247000},"filePathRelative":"zh/features/v11/epq/README.md"}');export{e as data};

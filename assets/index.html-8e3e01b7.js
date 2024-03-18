@@ -1,0 +1,1 @@
+const e=JSON.parse('{"key":"v-7f44b843","path":"/zh/features/v11/","title":"自研功能","lang":"zh-CN","frontmatter":{},"headers":[],"git":{"updatedTime":1703745117000},"filePathRelative":"zh/features/v11/README.md"}');export{e as data};

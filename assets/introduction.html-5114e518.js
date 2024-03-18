@@ -1,0 +1,1 @@
+const t=JSON.parse('{"key":"v-635e913a","path":"/zh/deploying/introduction.html","title":"架构简介","lang":"zh-CN","frontmatter":{"author":"棠羽","date":"2022/05/09","minute":5},"headers":[],"git":{"updatedTime":1661950750000},"filePathRelative":"zh/deploying/introduction.md"}');export{t as data};

@@ -1,0 +1,1 @@
+const e=JSON.parse('{"key":"v-c6592cf8","path":"/zh/deploying/deploy-official.html","title":"阿里云官网购买实例","lang":"zh-CN","frontmatter":{},"headers":[],"git":{"updatedTime":1656919280000},"filePathRelative":"zh/deploying/deploy-official.md"}');export{e as data};

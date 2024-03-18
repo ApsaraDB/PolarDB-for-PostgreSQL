@@ -1,0 +1,1 @@
+const s="/PolarDB-for-PostgreSQL/assets/1_polardb_architecture-1942f502.png",o="/PolarDB-for-PostgreSQL/assets/6_outdated_pages-08398a44.png",t="/PolarDB-for-PostgreSQL/assets/7_solution_to_outdated_pages-15d7ced2.png",a="/PolarDB-for-PostgreSQL/assets/9_future_pages-5180f2fc.png";export{s as _,o as a,t as b,a as c};

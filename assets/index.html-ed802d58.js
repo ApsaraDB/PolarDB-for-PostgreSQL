@@ -1,0 +1,1 @@
+const e=JSON.parse('{"key":"v-ba4b3c7c","path":"/zh/features/v11/performance/","title":"高性能","lang":"zh-CN","frontmatter":{},"headers":[],"git":{"updatedTime":1693374263000},"filePathRelative":"zh/features/v11/performance/README.md"}');export{e as data};
