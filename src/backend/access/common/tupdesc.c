@@ -462,6 +462,8 @@ equalTupleDescs(TupleDesc tupdesc1, TupleDesc tupdesc2)
 			return false;
 		if (attr1->attisdropped != attr2->attisdropped)
 			return false;
+		if (attr1->attisinvisible != attr2->attisinvisible)
+			return false;
 		if (attr1->attislocal != attr2->attislocal)
 			return false;
 		if (attr1->attinhcount != attr2->attinhcount)
@@ -644,6 +646,7 @@ TupleDescInitEntry(TupleDesc desc,
 	att->atthasmissing = false;
 	att->attidentity = '\0';
 	att->attisdropped = false;
+	att->attisinvisible = false;
 	att->attislocal = true;
 	att->attinhcount = 0;
 	/* attacl, attoptions and attfdwoptions are not present in tupledescs */
@@ -703,6 +706,7 @@ TupleDescInitBuiltinEntry(TupleDesc desc,
 	att->atthasmissing = false;
 	att->attidentity = '\0';
 	att->attisdropped = false;
+	att->attisinvisible = false;
 	att->attislocal = true;
 	att->attinhcount = 0;
 	/* attacl, attoptions and attfdwoptions are not present in tupledescs */

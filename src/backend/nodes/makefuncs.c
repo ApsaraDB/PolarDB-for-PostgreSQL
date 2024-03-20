@@ -493,6 +493,7 @@ makeColumnDef(const char *colname, Oid typeOid, int32 typmod, Oid collOid)
 	n->colname = pstrdup(colname);
 	n->typeName = makeTypeNameFromOid(typeOid, typmod);
 	n->inhcount = 0;
+	n->is_invisible = false;
 	n->is_local = true;
 	n->is_not_null = false;
 	n->is_from_type = false;

@@ -539,6 +539,7 @@ transformColumnDefinition(CreateStmtContext *cxt, ColumnDef *column)
 	bool		saw_nullable;
 	bool		saw_default;
 	bool		saw_identity;
+	bool        saw_invisible;
 	ListCell   *clist;
 
 	cxt->columns = lappend(cxt->columns, column);
@@ -646,6 +647,7 @@ transformColumnDefinition(CreateStmtContext *cxt, ColumnDef *column)
 	saw_nullable = false;
 	saw_default = false;
 	saw_identity = false;
+	saw_invisible = false;
 
 	foreach(clist, column->constraints)
 	{
@@ -725,6 +727,18 @@ transformColumnDefinition(CreateStmtContext *cxt, ColumnDef *column)
 					column->is_not_null = true;
 					break;
 				}
+
+			case CONSTR_INVISIBLE:
+				if (saw_invisible)
+					ereport(ERROR,
+							(errcode(ERRCODE_SYNTAX_ERROR),
+							 errmsg("multiple invisible specifications for column \"%s\" of table \"%s\"",
+									column->colname, cxt->relation->relname),
+							 parser_errposition(cxt->pstate,
+												constraint->location)));
+				column->is_invisible = true;
+				saw_invisible = true;
+				break;
 
 			case CONSTR_CHECK:
 				cxt->ckconstraints = lappend(cxt->ckconstraints, constraint);
