@@ -17,6 +17,9 @@ devDependencies:
   '@vuepress/theme-default':
     specifier: ^2.0.0-rc.9
     version: 2.0.0-rc.23(vuepress@2.0.0-rc.9)
+  katex:
+    specifier: ^0.16.10
+    version: 0.16.10
   prettier:
     specifier: 3.2.5
     version: 3.2.5
@@ -28,7 +31,7 @@ devDependencies:
     version: 2.0.0-rc.9(@vuepress/bundler-vite@2.0.0-rc.9)(vue@3.4.21)
   vuepress-plugin-md-enhance:
     specifier: ^2.0.0-rc.33
-    version: 2.0.0-rc.33(markdown-it@14.1.0)(vuepress@2.0.0-rc.9)
+    version: 2.0.0-rc.33(katex@0.16.10)(markdown-it@14.1.0)(vuepress@2.0.0-rc.9)
 
 packages:
 
@@ -665,7 +668,7 @@ packages:
       upath: 2.0.1
     dev: true
 
-  /@mdit/plugin-katex@0.8.0(markdown-it@14.1.0):
+  /@mdit/plugin-katex@0.8.0(katex@0.16.10)(markdown-it@14.1.0):
     resolution: {integrity: sha512-u7CX3Xv5nuc2bu2sHrk1nil83/9ETKTBMmy0icbW8zlqBC0ykLo1xTCEBXmdhXtnJtPi9f/wUZVs6iMZrJzbNg==, tarball: https://registry.npmmirror.com/@mdit/plugin-katex/-/plugin-katex-0.8.0.tgz}
     engines: {node: '>= 18'}
     peerDependencies:
@@ -680,6 +683,7 @@ packages:
       '@mdit/plugin-tex': 0.8.0(markdown-it@14.1.0)
       '@types/katex': 0.16.7
       '@types/markdown-it': 13.0.7
+      katex: 0.16.10
       markdown-it: 14.1.0
     dev: true
 
@@ -1660,6 +1664,11 @@ packages:
     engines: {node: '>=6'}
     dev: true
 
+  /commander@8.3.0:
+    resolution: {integrity: sha512-OkTL9umf+He2DZkUq8f8J9of7yL6RJKI24dVITBmNfZBmri9zYZQrKkuXiKhyfPSu8tUhnVBB1iKXevvnlR4Ww==, tarball: https://registry.npmmirror.com/commander/-/commander-8.3.0.tgz}
+    engines: {node: '>= 12'}
+    dev: true
+
   /connect-history-api-fallback@2.0.0:
     resolution: {integrity: sha512-U73+6lQFmfiNPrYbXqr6kZ1i1wiRqXnp2nhMsINseWXO8lDau0LGEffJ8kQi4EjLZympVgRdvqjAgiZ1tgzDDA==, tarball: https://registry.npmmirror.com/connect-history-api-fallback/-/connect-history-api-fallback-2.0.0.tgz}
     engines: {node: '>=0.8'}
@@ -2016,6 +2025,13 @@ packages:
       universalify: 2.0.1
     optionalDependencies:
       graceful-fs: 4.2.11
+    dev: true
+
+  /katex@0.16.10:
+    resolution: {integrity: sha512-ZiqaC04tp2O5utMsl2TEZTXxa6WSC4yo0fv5ML++D3QZv/vx2Mct0mTlRx3O+uUkjfuAgOkzsCmq5MiUEsDDdA==, tarball: https://registry.npmmirror.com/katex/-/katex-0.16.10.tgz}
+    hasBin: true
+    dependencies:
+      commander: 8.3.0
     dev: true
 
   /kind-of@6.0.3:
@@ -2564,7 +2580,7 @@ packages:
       '@vue/shared': 3.4.21
     dev: true
 
-  /vuepress-plugin-md-enhance@2.0.0-rc.33(markdown-it@14.1.0)(vuepress@2.0.0-rc.9):
+  /vuepress-plugin-md-enhance@2.0.0-rc.33(katex@0.16.10)(markdown-it@14.1.0)(vuepress@2.0.0-rc.9):
     resolution: {integrity: sha512-yShU1E7K1i5zoI/8KxGsvXbE13ebX0GIbo0e7axlsMNj+xzADzF7sD/JbaPC1cJWn4pIoZ7Rg1jJiIsxWGJ8uw==, tarball: https://registry.npmmirror.com/vuepress-plugin-md-enhance/-/vuepress-plugin-md-enhance-2.0.0-rc.33.tgz}
     engines: {node: '>=18.16.0', npm: '>=8', pnpm: '>=7', yarn: '>=2'}
     peerDependencies:
@@ -2627,7 +2643,7 @@ packages:
       '@mdit/plugin-img-mark': 0.8.0(markdown-it@14.1.0)
       '@mdit/plugin-img-size': 0.8.0(markdown-it@14.1.0)
       '@mdit/plugin-include': 0.8.0(markdown-it@14.1.0)
-      '@mdit/plugin-katex': 0.8.0(markdown-it@14.1.0)
+      '@mdit/plugin-katex': 0.8.0(katex@0.16.10)(markdown-it@14.1.0)
       '@mdit/plugin-mark': 0.8.0(markdown-it@14.1.0)
       '@mdit/plugin-mathjax': 0.8.0(markdown-it@14.1.0)
       '@mdit/plugin-stylize': 0.8.0(markdown-it@14.1.0)
@@ -2642,6 +2658,7 @@ packages:
       '@vueuse/core': 10.9.0(vue@3.4.21)
       balloon-css: 1.2.0
       js-yaml: 4.1.0
+      katex: 0.16.10
       vue: 3.4.21
       vuepress: 2.0.0-rc.9(@vuepress/bundler-vite@2.0.0-rc.9)(vue@3.4.21)
       vuepress-plugin-sass-palette: 2.0.0-rc.33(vuepress@2.0.0-rc.9)
