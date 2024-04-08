@@ -124,6 +124,7 @@ export default defineUserConfig({
       },
     }),
     mdEnhancePlugin({
+      katex: true,
       footnote: true,
     }),
     registerComponentsPlugin({
