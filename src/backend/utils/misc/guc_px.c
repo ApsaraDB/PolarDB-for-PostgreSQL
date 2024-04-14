@@ -1964,6 +1964,16 @@ struct config_bool ConfigureNamesBool_px[] =
 	},
 
 	{
+		{"polar_px_use_master", PGC_USERSET, UNGROUPED,
+			gettext_noop("Whether PolarDB PX use master"),
+			NULL
+		},
+		&px_use_master,
+		false,
+		NULL, (void (*)(bool, void *))polar_invalid_px_nodes_cache, NULL
+	},
+
+	{
 		{"polar_px_use_standby", PGC_USERSET, UNGROUPED,
 			gettext_noop("Whether PolarDB PX use standby"),
 			NULL
