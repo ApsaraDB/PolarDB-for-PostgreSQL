@@ -671,6 +671,7 @@ int polar_max_hashagg_mem = 0;
 int polar_max_setop_mem = 0;
 int polar_max_subplan_mem = 0;
 int polar_max_recursiveunion_mem = 0;
+int polar_wait_before_shutdown_timeout = 0;
 
 static const struct config_enum_entry client_schedule_options[] = {
 	{"round-robin", CLIENT_SCHEDULE_ROUND_ROBIN, false},
@@ -6832,6 +6833,17 @@ static struct config_int ConfigureNamesInt[] =
 	},
 #endif
 	/* POLAR end */
+
+	{
+		{"polar_wait_before_shutdown_timeout", PGC_SIGHUP, UNGROUPED,
+			gettext_noop("PolarDB wait before shutdown timeout, in seconds."),
+			gettext_noop("0 means no wait.")
+			/* thought the unit is GUC_UNIT_S, to parse it conveniently, we remove it */
+		},
+		&polar_wait_before_shutdown_timeout,
+		0, 0, 300,
+		NULL, NULL, NULL
+	},
 
 	/* End-of-list marker */
 	{
