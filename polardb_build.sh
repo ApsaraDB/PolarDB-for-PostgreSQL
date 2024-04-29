@@ -226,10 +226,10 @@ pg_db_user=postgres
 current_branch=`git rev-parse --abbrev-ref HEAD`
 if [[ $current_branch == "HEAD" ]];
 then
-  current_branch=`git rev-parse HEAD~0`
+  current_branch=`git rev-parse -- HEAD~0`
 fi
-prev_commit=`git rev-parse HEAD~1`
-next_commit=`git rev-parse HEAD~0`
+prev_commit=`git rev-parse -- HEAD~1`
+next_commit=`git rev-parse -- HEAD~0`
 nocompile=off
 debug_mode=off
 coverage=off
