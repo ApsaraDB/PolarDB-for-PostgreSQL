@@ -7830,7 +7830,7 @@ static struct config_string ConfigureNamesString[] =
 			GUC_NOT_IN_SAMPLE | GUC_DISALLOW_IN_FILE
 		},
 		&polar_release_date,
-		"20211231",
+		"20240430",
 		NULL, NULL, NULL
 	},
 
