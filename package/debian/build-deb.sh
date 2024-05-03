@@ -1,5 +1,7 @@
-# PolarDB.spec
-#	  Spec file for building RPM package for PolarDB-PG
+#!/bin/bash
+
+# build-deb.sh
+#	  Use shell script to build .deb packages.
 #
 # Copyright (c) 2024, Alibaba Group Holding Limited
 #
@@ -16,80 +18,53 @@
 # limitations under the License.
 #
 # IDENTIFICATION
-#	  PolarDB.spec
+#	  package/debian/build-deb.sh
 
-# compile options
+build_date=${1:-$(date +"%Y%m%d%H%M%S")}
+code_commit=$(git rev-parse HEAD || echo unknown)
+code_branch=$(git rev-parse --abbrev-ref HEAD || echo unknown)
+polar_commit=$(git rev-parse --short=8 HEAD || echo unknown)
+pg_version=$(grep AC_INIT ../../configure.in | awk -F'[][]' '{print $4}')
+polar_majorversion=2.0.$(echo ${pg_version} | awk -F'[^0-9]+' '{print $1}')
+polar_minorversion=$(grep -A 1 '&polar_version' ../../src/backend/utils/misc/guc.c | awk 'NR==2{print}' | awk -F'[."]' '{print $4}').0
+polar_release_date=$(grep -A 1 '&polar_release_date' ../../src/backend/utils/misc/guc.c | awk 'NR==2{print}' | awk -F'[,"]' '{print $2}')
+polar_version=${polar_majorversion}.${polar_minorversion}
+polar_pg_version=${pg_version}.${polar_minorversion}
 
-%define build_date %(echo $RELEASE)
-%define code_commit %(git rev-parse HEAD || echo unknown)
-%define code_branch %(git rev-parse --abbrev-ref HEAD || echo unknown)
-%define polar_commit %(git rev-parse --short=8 HEAD || echo unknown)
-%define pg_version %(grep AC_INIT ../../configure.in | awk -F'[][]' '{print $4}')
-%define polar_majorversion 2.0.%(echo %pg_version | awk -F'[^0-9]+' '{print $1}')
-%define polar_minorversion %(grep -A 1 '&polar_version' ../../src/backend/utils/misc/guc.c | awk 'NR==2{print}' | awk -F'[."]' '{print $4}').0
-%define polar_release_date %(grep -A 1 '&polar_release_date' ../../src/backend/utils/misc/guc.c | awk 'NR==2{print}' | awk -F'[,"]' '{print $2}')
-%define polar_version %{polar_majorversion}.%{polar_minorversion}
-%define polar_pg_version %{pg_version}.%{polar_minorversion}
-%define _build_id_links none
-%define __spec_install_pre /bin/true
+package=PolarDB
+debpkgname=$(grep 'Package:' ./control | awk '{print $2}')
+distname=$(grep '^ID=' /etc/os-release | awk -F'=' '{print $2}')
+distversion=$(grep 'VERSION_ID=' /etc/os-release | awk -F\" '{print $2}')
+arch=$(dpkg --print-architecture)
 
-Version: %{polar_pg_version}
-Release: %{build_date}%{?dist}
-Summary: PolarDB
-Name: PolarDB
-Group: alibaba/application
-License: Commercial
-BuildArch: x86_64 aarch64
-Prefix: /u01/polardb_pg
-Provides: PolarDB
-AutoReqProv: none
+pkgname=${package}_${polar_pg_version}-${build_date}-${distname}${distversion}_${arch}
+rm -rf ./${pkgname}
+mkdir -p ${pkgname}/DEBIAN
 
-%define copy_dir /u01/polardb_pg_%{polar_release_date}
+cat ./control >> ${pkgname}/DEBIAN/control
+echo 'Version: '${polar_pg_version}'-'${build_date}'' >> ${pkgname}/DEBIAN/control
+echo 'Architecture: '${arch}'' >> ${pkgname}/DEBIAN/control
 
-Requires: libicu
+prefix=/u01/polardb_pg
+buildroot=$(pwd)
+cd ../../
+./polardb_build.sh --basedir=${buildroot}/${pkgname}${prefix} --debug=off --with-pfsd --noinit
+cd ${buildroot}
 
-%description
-CodeBranch: %{code_branch}
-CodeCommit: %{code_commit}
-PolarCommit: %{polar_commit}
-PolarVersion: %{polar_version}
-PolarPGVersion: %{polar_pg_version}
-PolarReleaseDate: %{polar_release_date}
-PFSDVersion: %{pfsd_version}
-PolarDB is an advanced Object-Relational database management system
-(DBMS) that supports almost all SQL constructs (including
-transactions, subselects and user-defined types and functions). The
-PolarDB package includes the client programs and libraries that
-you'll need to access a PolarDB DBMS server.  These PolarDB
-client programs are programs that directly manipulate the internal
-structure of PolarDB databases on a PolarDB server. These client
-programs can be located on the same machine with the PolarDB
-server, or may be on a remote machine which accesses a PolarDB
-server over a network connection. This package contains the command-line
-utilities for managing PolarDB databases on a PolarDB server.
-
-%build
-export CC=gcc CXX=g++
-export NM=gcc-nm AR=gcc-ar RANLIB=gcc-ranlib
-
-cd $OLDPWD/../../
-./polardb_build.sh --basedir=%{buildroot}%{prefix} --debug=off --with-pfsd --withpx --noinit
-
-%install
 polar_install_dependency()
 {
   target_dir=${1}
 
   # create link for lib inside lib
-  cd %{buildroot}${target_dir}/lib/
+  cd ${target_dir}/lib/
   ln -sf ../lib ./lib
 
-  cd %{buildroot}
+  cd ${target_dir}
 
   # generate list of .so files
   # collect all the executable binaries, scripts and shared libraries
-  binfiles=`find %{buildroot}${target_dir}/bin`
-  libfiles=`find %{buildroot}${target_dir}/lib`
+  binfiles=`find ${target_dir}/bin`
+  libfiles=`find ${target_dir}/lib`
   filelist=${binfiles}$'\n'${libfiles}
   exelist=`echo $filelist | xargs -r file | egrep -v ":.* (commands|script)" | \
       grep ":.*executable" | cut -d: -f1`
@@ -103,8 +78,7 @@ polar_install_dependency()
   cp /dev/null mytmpfilelist2
 
   # put PolarDB-PG libs before any other libs to let ldd take it first
-  eval PERL_PATH=`cd /usr/lib64/perl[5-9]/CORE/ ; pwd`
-  export LD_LIBRARY_PATH=%{buildroot}${target_dir}/lib:$PERL_PATH:$LD_LIBRARY_PATH:/usr/lib
+  export LD_LIBRARY_PATH=${target_dir}/lib:$LD_LIBRARY_PATH:/usr/lib
 
   # dependency list of all binaries and shared objects
   for f in $liblist $exelist; do
@@ -134,7 +108,7 @@ polar_install_dependency()
   # copy libraries if necessary
   for line in `cat mytmpfilelist2`; do
     base=`basename $line`
-    dirpath=%{buildroot}${target_dir}/lib
+    dirpath=${target_dir}/lib
     filepath=$dirpath/$base
 
     objdump -p $line | awk 'BEGIN { START=0; LIBNAME=""; }
@@ -163,36 +137,16 @@ polar_install_dependency()
     if [[ ! -f $filepath ]]; then
       if [[ $has_private != "true" ]]; then
           cp $line $dirpath
+          echo $line $dirpath
       fi
     fi
   done
 
   rm mytmpfilelist mytmpfilelist2 objdumpfile
-
-  # avoid failure of call to /usr/lib/rpm/check-buildroot
-  export QA_SKIP_BUILD_ROOT=1
 }
 
 # install package dependencies
-polar_install_dependency %{prefix}
+polar_install_dependency $(pwd)/${pkgname}${prefix}
+cd ${buildroot}
 
-# copy external file
-%post
-
-if [[ -f %{copy_dir}/bin/postgres ]];
-then
-  echo WARNING: PolarDB-PG files already exist, file copying will be skipped!
-else
-  if [[ -d %{copy_dir} ]];
-  then
-    cp -rf %{prefix}/* %{copy_dir}
-  else
-    cp -rf %{prefix} %{copy_dir}
-  fi
-fi
-
-%files
-%defattr(-,root,root)
-%{prefix}/*
-
-%{nil}
+dpkg --build ./${pkgname}
