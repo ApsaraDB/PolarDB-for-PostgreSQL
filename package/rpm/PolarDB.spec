@@ -103,7 +103,6 @@ polar_install_dependency()
   cp /dev/null mytmpfilelist2
 
   # put PolarDB-PG libs before any other libs to let ldd take it first
-  # Add /usr/lib for libmxml.so needed by oss_fdw extension
   eval PERL_PATH=`cd /usr/lib64/perl[5-9]/CORE/ ; pwd`
   export LD_LIBRARY_PATH=%{buildroot}${target_dir}/lib:$PERL_PATH:$LD_LIBRARY_PATH:/usr/lib
 
@@ -196,4 +195,4 @@ fi
 %defattr(-,root,root)
 %{prefix}/*
 
-%{nil}
+%define __os_install_post %{nil}
