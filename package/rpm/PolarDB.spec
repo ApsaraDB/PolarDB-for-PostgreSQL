@@ -195,4 +195,4 @@ fi
 %defattr(-,root,root)
 %{prefix}/*
 
-%{nil}
+%define __os_install_post %{nil}
