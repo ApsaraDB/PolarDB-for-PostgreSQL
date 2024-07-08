@@ -15,7 +15,7 @@
 # limitations under the License.
 # 
 
-##################### PHASE 1: set up parameter #####################
+##################### PHASE 1: Set up parameter #####################
 usage () {
 cat <<EOF
 
