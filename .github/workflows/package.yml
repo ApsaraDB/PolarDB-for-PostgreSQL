@@ -24,7 +24,8 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        base_image: [ centos7, anolis8, rocky8, rocky9 ]
+        # base_image: [ centos7, anolis8, rocky8, rocky9 ]
+        base_image: [ centos7, anolis8 ]
     steps:
       - name: Fetch source code
         uses: actions/checkout@v4
