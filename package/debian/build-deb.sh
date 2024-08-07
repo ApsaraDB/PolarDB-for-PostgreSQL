@@ -37,12 +37,12 @@ distname=$(grep '^ID=' /etc/os-release | awk -F'=' '{print $2}')
 distversion=$(grep 'VERSION_ID=' /etc/os-release | awk -F\" '{print $2}')
 arch=$(dpkg --print-architecture)
 
-pkgname=${package}_${polar_pg_version}-${build_date}-${distname}${distversion}_${arch}
+pkgname=${package}_${polar_version}-${polar_commit}-${distname}${distversion}_${arch}
 rm -rf ./${pkgname}
 mkdir -p ${pkgname}/DEBIAN
 
 cat ./control >> ${pkgname}/DEBIAN/control
-echo 'Version: '${polar_pg_version}'-'${build_date}'' >> ${pkgname}/DEBIAN/control
+echo 'Version: '${polar_version}'-'${polar_commit}'' >> ${pkgname}/DEBIAN/control
 echo 'Architecture: '${arch}'' >> ${pkgname}/DEBIAN/control
 
 prefix=/u01/polardb_pg
