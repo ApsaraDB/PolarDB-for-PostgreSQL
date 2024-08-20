@@ -1339,8 +1339,6 @@ repeat_read:
 	 */
 	for (index = actual_bulk_io_count - 1; index >= 0 ; index--)
 	{
-		BlockNumber blockNum = firstBlockNum + index;
-
 		bufHdr = polar_bulk_io_in_progress_buf[index];
 		bufBlock = isLocalBuf ? LocalBufHdrGetBlock(bufHdr) : BufHdrGetBlock(bufHdr);
 
