@@ -284,7 +284,6 @@ int			px_wait_lock_timeout = 0;
 /* POLAR */
 static bool px_check_dispatch_log_stats(bool *newval, void **extra, GucSource source);
 static bool px_check_scan_unit_size(int *newval, void **extra, GucSource source);
-static const char* px_show_scan_unit_size(void);
 static bool px_check_ignore_function(char **newval, void **extra, GucSource source);
 static void px_assign_ignore_function(const char *newval, void *extra);
 static int px_guc_array_compare(const void *a, const void *b);
