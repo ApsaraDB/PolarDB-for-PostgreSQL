@@ -14,18 +14,38 @@ PolarDB File System，简称 PFS 或 PolarFS，是由阿里云自主研发的高
 
 ## PFS 编译安装
 
-推荐使用 [DockerHub](https://hub.docker.com/u/polardb) 上的 PolarDB for PostgreSQL [可执行文件镜像](https://hub.docker.com/r/polardb/polardb_pg_binary/tags)，目前支持 `linux/amd64` 和 `linux/arm64` 两种架构，其中已经包含了编译完毕的 PFS 工具，无需手动编译安装。通过以下命令进入容器即可：
+推荐使用 PolarDB-PG 的 [可执行文件镜像](https://hub.docker.com/r/polardb/polardb_pg_binary/tags)，目前支持 `linux/amd64` 和 `linux/arm64` 两种架构，其中已经包含了编译完毕的 PFS 工具，无需手动编译安装。通过以下命令进入容器即可：
+
+:::: code-group
+::: code-group-item DockerHub
 
 ```shell:no-line-numbers
-docker pull polardb/polardb_pg_binary
+docker pull polardb/polardb_pg_binary:11
 docker run -it \
     --cap-add=SYS_PTRACE \
     --privileged=true \
     --name polardb_pg \
     --shm-size=512m \
-    polardb/polardb_pg_binary \
+    polardb/polardb_pg_binary:11 \
     bash
 ```
+
+:::
+::: code-group-item 阿里云 ACR
+
+```shell:no-line-numbers
+docker pull registry.cn-hangzhou.aliyuncs.com/polardb_pg/polardb_pg_binary:11
+docker run -it \
+    --cap-add=SYS_PTRACE \
+    --privileged=true \
+    --name polardb_pg \
+    --shm-size=512m \
+    registry.cn-hangzhou.aliyuncs.com/polardb_pg/polardb_pg_binary:11 \
+    bash
+```
+
+:::
+::::
 
 PFS 的手动编译安装方式请参考 PFS 的 [README](https://github.com/ApsaraDB/polardb-file-system/blob/master/Readme-CN.md)，此处不再赘述。
 

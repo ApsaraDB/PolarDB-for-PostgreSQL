@@ -54,13 +54,12 @@ For more information, see [Architecture](https://apsaradb.github.io/PolarDB-for-
 
 ## Quick Start with PolarDB
 
-If you have Docker installed already，then you can pull the instance image of PolarDB for PostgreSQL based on local storage. Create, run and enter the container, and use PolarDB instance directly:
+If you have Docker installed already，then you can pull the instance image of PolarDB-PG based on local storage. Create, run and enter the container, and use PolarDB-PG instance directly:
 
 ```bash
-# pull the instance image from DockerHub
-docker pull polardb/polardb_pg_local_instance
-# create, run and enter the container
-docker run -it --rm polardb/polardb_pg_local_instance psql
+# pull the instance image and run the container
+docker pull polardb/polardb_pg_local_instance:11
+docker run -it --rm polardb/polardb_pg_local_instance:11 psql
 # check
 postgres=# SELECT version();
             version

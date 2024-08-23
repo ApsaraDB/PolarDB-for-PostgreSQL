@@ -6,7 +6,7 @@
 
 ## 在开发机器上下载源代码
 
-从 [GitHub](https://github.com/ApsaraDB/PolarDB-for-PostgreSQL) 上下载 PolarDB for PostgreSQL 的源代码，稳定分支为 `POLARDB_11_STABLE`。如果因网络原因不能稳定访问 GitHub，则可以访问 [Gitee 国内镜像](https://gitee.com/mirrors/PolarDB-for-PostgreSQL)。
+从 [GitHub](https://github.com/ApsaraDB/PolarDB-for-PostgreSQL) 上下载 PolarDB for PostgreSQL 的源代码，稳定分支为 `POLARDB_11_STABLE`。如果因网络原因不能稳定访问 GitHub，则可以访问 [Gitee](https://gitee.com/mirrors/PolarDB-for-PostgreSQL)。
 
 :::: code-group
 ::: code-group-item GitHub
@@ -16,7 +16,7 @@ git clone -b POLARDB_11_STABLE https://github.com/ApsaraDB/PolarDB-for-PostgreSQ
 ```
 
 :::
-::: code-group-item Gitee 国内镜像
+::: code-group-item Gitee
 
 ```bash:no-line-numbers
 git clone -b POLARDB_11_STABLE https://gitee.com/mirrors/PolarDB-for-PostgreSQL
@@ -33,12 +33,24 @@ cd PolarDB-for-PostgreSQL/
 
 ## 拉取开发镜像
 
-从 DockerHub 上拉取 PolarDB for PostgreSQL 的 [开发镜像](https://hub.docker.com/r/polardb/polardb_pg_devel/tags)。
+拉取 PolarDB-PG 的 [开发镜像](https://hub.docker.com/r/polardb/polardb_pg_devel/tags)。
 
-```bash
-# 拉取 PolarDB 开发镜像
-docker pull polardb/polardb_pg_devel
+:::: code-group
+::: code-group-item DockerHub
+
+```bash:no-line-numbers
+docker pull polardb/polardb_pg_devel:ubuntu24.04
 ```
+
+:::
+::: code-group-item 阿里云 ACR
+
+```bash:no-line-numbers
+docker pull registry.cn-hangzhou.aliyuncs.com/polardb_pg/polardb_pg_devel:ubuntu24.04
+```
+
+:::
+::::
 
 ## 创建并运行容器
 
@@ -47,18 +59,36 @@ docker pull polardb/polardb_pg_devel
 - 在容器内的环境中编译源码
 - 在容器外（开发机器上）使用编辑器来查看或修改代码
 
-```bash
+:::: code-group
+::: code-group-item DockerHub
+
+```bash:no-line-numbers
 docker run -it \
     -v $PWD:/home/postgres/polardb_pg \
     --shm-size=512m --cap-add=SYS_PTRACE --privileged=true \
     --name polardb_pg_devel \
-    polardb/polardb_pg_devel \
+    polardb/polardb_pg_devel:ubuntu24.04 \
     bash
 ```
 
+:::
+::: code-group-item 阿里云 ACR
+
+```bash:no-line-numbers
+docker run -it \
+    -v $PWD:/home/postgres/polardb_pg \
+    --shm-size=512m --cap-add=SYS_PTRACE --privileged=true \
+    --name polardb_pg_devel \
+    registry.cn-hangzhou.aliyuncs.com/polardb_pg/polardb_pg_devel:ubuntu24.04 \
+    bash
+```
+
+:::
+::::
+
 进入容器后，为容器内用户获取源码目录的权限，然后编译部署 PolarDB-PG 实例。
 
-```bash
+```bash:no-line-numbers
 # 获取权限并编译部署
 cd polardb_pg
 sudo chmod -R a+wr ./

@@ -199,7 +199,7 @@ cd ~
 
 在 PolarDB for PostgreSQL 源码库根目录的 `deps/` 子目录下，放置了在各个 Linux 发行版上编译安装 PolarDB 和 PFS 需要运行的所有依赖。因此，首先需要克隆 PolarDB 的源码库。
 
-PolarDB for PostgreSQL 的代码托管于 [GitHub](https://github.com/ApsaraDB/PolarDB-for-PostgreSQL) 上，稳定分支为 `POLARDB_11_STABLE`。如果因网络原因不能稳定访问 GitHub，则可以访问 [Gitee 国内镜像](https://gitee.com/mirrors/PolarDB-for-PostgreSQL)。
+PolarDB for PostgreSQL 的代码托管于 [GitHub](https://github.com/ApsaraDB/PolarDB-for-PostgreSQL) 上，稳定分支为 `POLARDB_11_STABLE`。如果因网络原因不能稳定访问 GitHub，则可以访问 [Gitee](https://gitee.com/mirrors/PolarDB-for-PostgreSQL)。
 
 :::: code-group
 ::: code-group-item GitHub
@@ -210,7 +210,7 @@ git clone -b POLARDB_11_STABLE https://github.com/ApsaraDB/PolarDB-for-PostgreSQ
 ```
 
 :::
-::: code-group-item Gitee 国内镜像
+::: code-group-item Gitee
 
 ```bash:no-line-numbers
 sudo yum install -y git

@@ -20,18 +20,38 @@ minute: 20
 
 ### 部署 PolarDB-PG
 
-使用 Docker 快速拉起一个基于本地存储的 PolarDB for PostgreSQL 集群：
+使用 Docker 快速拉起一个单机的 PolarDB for PostgreSQL 集群：
+
+:::: code-group
+::: code-group-item DockerHub
 
 ```shell:no-line-numbers
-docker pull polardb/polardb_pg_local_instance
+docker pull polardb/polardb_pg_local_instance:11
 docker run -it \
     --cap-add=SYS_PTRACE \
     --privileged=true \
     --name polardb_pg_htap \
     --shm-size=512m \
-    polardb/polardb_pg_local_instance \
+    polardb/polardb_pg_local_instance:11 \
     bash
 ```
+
+:::
+::: code-group-item 阿里云 ACR
+
+```shell:no-line-numbers
+docker pull registry.cn-hangzhou.aliyuncs.com/polardb_pg/polardb_pg_local_instance:11
+docker run -it \
+    --cap-add=SYS_PTRACE \
+    --privileged=true \
+    --name polardb_pg_htap \
+    --shm-size=512m \
+    registry.cn-hangzhou.aliyuncs.com/polardb_pg/polardb_pg_local_instance:11 \
+    bash
+```
+
+:::
+::::
 
 或者参考 [进阶部署](../deploying/deploy.md) 部署一个基于共享存储的 PolarDB for PostgreSQL 集群。
 

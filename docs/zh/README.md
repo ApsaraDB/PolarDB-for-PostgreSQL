@@ -9,13 +9,15 @@ footer: Apache 2.0 Licensed | Copyright © Alibaba Group, Inc.
 
 ### 通过 Docker 快速使用
 
-从 DockerHub 上拉取 PolarDB for PostgreSQL 的 [本地存储实例镜像](https://hub.docker.com/r/polardb/polardb_pg_local_instance/tags)，创建并运行容器，然后直接试用 PolarDB-PG：
+拉取 PolarDB for PostgreSQL 的 [单机实例镜像](https://hub.docker.com/r/polardb/polardb_pg_local_instance/tags)，运行容器并试用 PolarDB-PG：
+
+:::: code-group
+::: code-group-item DockerHub
 
 ```bash:no-line-numbers
-# 拉取 PolarDB-PG 镜像
-docker pull polardb/polardb_pg_local_instance
-# 创建并运行容器
-docker run -it --rm polardb/polardb_pg_local_instance psql
+# 拉取镜像并运行容器
+docker pull polardb/polardb_pg_local_instance:11
+docker run -it --rm polardb/polardb_pg_local_instance:11 psql
 # 测试可用性
 postgres=# SELECT version();
             version
@@ -23,6 +25,24 @@ postgres=# SELECT version();
  PostgreSQL 11.9 (POLARDB 11.9)
 (1 row)
 ```
+
+:::
+::: code-group-item 阿里云 ACR
+
+```bash:no-line-numbers
+# 拉取镜像并运行容器
+docker pull registry.cn-hangzhou.aliyuncs.com/polardb_pg/polardb_pg_local_instance:11
+docker run -it --rm registry.cn-hangzhou.aliyuncs.com/polardb_pg/polardb_pg_local_instance:11 psql
+# 测试可用性
+postgres=# SELECT version();
+            version
+--------------------------------
+ PostgreSQL 11.9 (POLARDB 11.9)
+(1 row)
+```
+
+:::
+::::
 
 <div class="features">
 

@@ -14,18 +14,40 @@ PolarDB for PostgreSQL 是一款存储与计算分离的数据库，所有计算
 
 ## 部署读写节点
 
-首先，在已经搭建完毕的共享存储集群上，初始化并启动第一个计算节点，即读写节点，该节点可以对共享存储进行读写。我们在下面的镜像中提供了已经编译完毕的 PolarDB for PostgreSQL 内核和周边工具的可执行文件：
+首先，在已经搭建完毕的共享存储集群上，初始化并启动第一个计算节点，即读写节点，该节点可以对共享存储进行读写。我们在下面的镜像中提供了已经编译完毕的 PolarDB-PG 数据库和工具的可执行文件：
+
+:::: code-group
+::: code-group-item DockerHub
 
 ```shell:no-line-numbers
-$ docker pull polardb/polardb_pg_binary
-$ docker run -it \
+docker pull polardb/polardb_pg_binary:11
+docker run -it \
     --cap-add=SYS_PTRACE \
     --privileged=true \
     --name polardb_pg \
     --shm-size=512m \
-    polardb/polardb_pg_binary \
+    polardb/polardb_pg_binary:11 \
     bash
+```
 
+:::
+::: code-group-item 阿里云 ACR
+
+```shell:no-line-numbers
+docker pull registry.cn-hangzhou.aliyuncs.com/polardb_pg/polardb_pg_binary:11
+docker run -it \
+    --cap-add=SYS_PTRACE \
+    --privileged=true \
+    --name polardb_pg \
+    --shm-size=512m \
+    registry.cn-hangzhou.aliyuncs.com/polardb_pg/polardb_pg_binary:11 \
+    bash
+```
+
+:::
+::::
+
+```shell:no-line-numbers
 $ ls ~/tmp_basedir_polardb_pg_1100_bld/bin/
 clusterdb     dropuser           pg_basebackup   pg_dump         pg_resetwal    pg_test_timing       polar-initdb.sh          psql
 createdb      ecpg               pgbench         pg_dumpall      pg_restore     pg_upgrade           polar-replica-initdb.sh  reindexdb
@@ -129,16 +151,36 @@ $HOME/tmp_basedir_polardb_pg_1100_bld/bin/psql \
 
 类似地，在用于部署新计算节点的机器上，拉取镜像并启动带有可执行文件的容器：
 
+:::: code-group
+::: code-group-item DockerHub
+
 ```shell:no-line-numbers
-docker pull polardb/polardb_pg_binary
+docker pull polardb/polardb_pg_binary:11
 docker run -it \
     --cap-add=SYS_PTRACE \
     --privileged=true \
     --name polardb_pg \
     --shm-size=512m \
-    polardb/polardb_pg_binary \
+    polardb/polardb_pg_binary:11 \
     bash
 ```
+
+:::
+::: code-group-item 阿里云 ACR
+
+```shell:no-line-numbers
+docker pull registry.cn-hangzhou.aliyuncs.com/polardb_pg/polardb_pg_binary:11
+docker run -it \
+    --cap-add=SYS_PTRACE \
+    --privileged=true \
+    --name polardb_pg \
+    --shm-size=512m \
+    registry.cn-hangzhou.aliyuncs.com/polardb_pg/polardb_pg_binary:11 \
+    bash
+```
+
+:::
+::::
 
 ### 确认存储可访问
 

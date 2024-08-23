@@ -14,7 +14,7 @@ minute: 15
 
 ## 源码下载
 
-在前置文档中，我们已经从 DockerHub 上拉取了 PolarDB 开发镜像，并且进入到了容器中。进入容器后，从 [GitHub](https://github.com/ApsaraDB/PolarDB-for-PostgreSQL) 上下载 PolarDB for PostgreSQL 的源代码，稳定分支为 `POLARDB_11_STABLE`。如果因网络原因不能稳定访问 GitHub，则可以访问 [Gitee 国内镜像](https://gitee.com/mirrors/PolarDB-for-PostgreSQL)。
+在前置文档中，我们已经从 DockerHub 上拉取了 PolarDB 开发镜像，并且进入到了容器中。进入容器后，从 [GitHub](https://github.com/ApsaraDB/PolarDB-for-PostgreSQL) 上下载 PolarDB for PostgreSQL 的源代码，稳定分支为 `POLARDB_11_STABLE`。如果因网络原因不能稳定访问 GitHub，则可以访问 [Gitee](https://gitee.com/mirrors/PolarDB-for-PostgreSQL)。
 
 :::: code-group
 ::: code-group-item GitHub
@@ -24,7 +24,7 @@ git clone -b POLARDB_11_STABLE https://github.com/ApsaraDB/PolarDB-for-PostgreSQ
 ```
 
 :::
-::: code-group-item Gitee 国内镜像
+::: code-group-item Gitee
 
 ```bash:no-line-numbers
 git clone -b POLARDB_11_STABLE https://gitee.com/mirrors/PolarDB-for-PostgreSQL
@@ -50,7 +50,7 @@ cd PolarDB-for-PostgreSQL/
 ```
 
 ::: warning
-上述脚本在编译完成后，会自动部署一个基于 **本地文件系统** 的实例，运行于 `5432` 端口上。
+上述脚本在编译完成后，会自动部署一个基于 **单机文件系统** 的实例，运行于 `5432` 端口上。
 
 手动键入以下命令停止这个实例，以便 **在 PFS 和共享存储上重新部署实例**：
 
@@ -146,7 +146,7 @@ $HOME/tmp_basedir_polardb_pg_1100_bld/bin/psql \
 ```
 
 ::: warning
-上述脚本在编译完成后，会自动部署一个基于 **本地文件系统** 的实例，运行于 `5432` 端口上。
+上述脚本在编译完成后，会自动部署一个基于 **单机文件系统** 的实例，运行于 `5432` 端口上。
 
 手动键入以下命令停止这个实例，以便 **在 PFS 和共享存储上重新部署实例**：
 

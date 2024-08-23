@@ -16,18 +16,38 @@ PolarDB for PostgreSQL 是一款存储与计算分离的云原生数据库，所
 
 ## 前置准备
 
-为方便起见，本示例使用基于本地磁盘的实例来进行演示。拉取如下镜像并启动容器，可以得到一个基于本地磁盘的 HTAP 实例：
+为方便起见，本示例使用基于本地磁盘的实例来进行演示。拉取如下镜像并启动容器，可以得到一个单机的 HTAP 实例：
+
+:::: code-group
+::: code-group-item DockerHub
 
 ```shell:no-line-numbers
-docker pull polardb/polardb_pg_local_instance
+docker pull polardb/polardb_pg_local_instance:11
 docker run -it \
     --cap-add=SYS_PTRACE \
     --privileged=true \
     --name polardb_pg_htap \
     --shm-size=512m \
-    polardb/polardb_pg_local_instance \
+    polardb/polardb_pg_local_instance:11 \
     bash
 ```
+
+:::
+::: code-group-item 阿里云 ACR
+
+```shell:no-line-numbers
+docker pull registry.cn-hangzhou.aliyuncs.com/polardb_pg/polardb_pg_local_instance:11
+docker run -it \
+    --cap-add=SYS_PTRACE \
+    --privileged=true \
+    --name polardb_pg_htap \
+    --shm-size=512m \
+    registry.cn-hangzhou.aliyuncs.com/polardb_pg/polardb_pg_local_instance:11 \
+    bash
+```
+
+:::
+::::
 
 容器内的 `5432` 至 `5434` 端口分别运行着一个读写节点和两个只读节点。两个只读节点与读写节点共享同一份数据，并通过物理复制保持与读写节点的内存状态同步。
 

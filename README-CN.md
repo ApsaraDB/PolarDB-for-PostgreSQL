@@ -54,13 +54,12 @@ PolarDB for PostgreSQL 采用了基于 Shared-Storage 的存储计算分离架�
 
 ## 快速部署
 
-如果您已安装 Docker，那么可以从 DockerHub 上拉取 PolarDB for PostgreSQL 的 本地存储实例镜像，创建、运行并进入容器，然后直接使用 PolarDB 实例：
+如果您已安装 Docker，那么拉取 PolarDB-PG 的单机实例镜像，创建、运行并进入容器，然后直接使用 PolarDB-PG 实例：
 
 ```bash
-# 拉取单节点 PolarDB 镜像
-docker pull polardb/polardb_pg_local_instance
-# 创建运行并进入容器
-docker run -it --rm polardb/polardb_pg_local_instance psql
+# 拉取镜像并运行容器
+docker pull polardb/polardb_pg_local_instance:11
+docker run -it --rm polardb/polardb_pg_local_instance:11 psql
 # 测试实例可用性
 postgres=# SELECT version();
             version
