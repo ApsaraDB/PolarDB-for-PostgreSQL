@@ -1844,7 +1844,7 @@ static int
 ServerLoop(void)
 {
 	fd_set		readmask, readmask_base;
-	int			nSockets, nSockets_base;
+	int			nSockets, nSockets_base = 0;
 	time_t		last_lockfile_recheck_time,
 				last_touch_time;
 

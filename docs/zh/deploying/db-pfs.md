@@ -8,7 +8,7 @@ minute: 15
 
 <ArticleInfo :frontmatter=$frontmatter></ArticleInfo>
 
-本文将指导您在分布式文件系统 PolarDB File System（PFS）上编译部署 PolarDB，适用于已经在共享存储上格式化并挂载 PFS 文件系统的计算节点。
+本文将指导您在分布式文件系统 PolarDB File System（PFS）上编译部署 PolarDB-PG，适用于已经在共享存储上格式化并挂载 PFS 文件系统的计算节点。
 
 [[toc]]
 

@@ -24,7 +24,7 @@ export const zh: NavbarConfig = [
         ],
       },
       {
-        text: "部署 PolarDB 数据库",
+        text: "部署 PolarDB-PG 数据库",
         children: [
           "/zh/deploying/db-localfs.html",
           "/zh/deploying/db-pfs.html",

@@ -28,7 +28,7 @@ export const zh: SidebarConfig = {
               ],
             },
             {
-              text: "部署 PolarDB 数据库",
+              text: "部署 PolarDB-PG 数据库",
               children: [
                 "/zh/deploying/db-localfs.md",
                 "/zh/deploying/db-pfs.md",

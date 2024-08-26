@@ -22,16 +22,18 @@ minute: 5
   - CentOS：[在 CentOS 上安装 Docker Engine](https://docs.docker.com/engine/install/centos/)
   - RHEL：[在 RHEL 上安装 Docker Engine](https://docs.docker.com/engine/install/rhel/)
   - Fedora：[在 Fedora 上安装 Docker Engine](https://docs.docker.com/engine/install/fedora/)
-  - macOS（支持 M1 芯片）：[在 Mac 上安装 Docker Desktop](https://docs.docker.com/desktop/mac/install/)，并建议将内存调整为 4GB 以上
+  - macOS：[在 Mac 上安装 Docker Desktop](https://docs.docker.com/desktop/mac/install/)，并建议将内存调整为 4GB 以上
   - Windows：[在 Windows 上安装 Docker Desktop](https://docs.docker.com/desktop/windows/install/)，并建议将内存调整为 4GB 以上
 
-从 DockerHub 上拉取 PolarDB for PostgreSQL 的 [本地存储实例镜像](https://hub.docker.com/r/polardb/polardb_pg_local_instance/tags)，创建并运行容器，然后直接试用 PolarDB-PG：
+拉取 PolarDB for PostgreSQL 的 [单机实例镜像](https://hub.docker.com/r/polardb/polardb_pg_local_instance/tags)，运行容器并试用 PolarDB-PG：
+
+:::: code-group
+::: code-group-item DockerHub
 
 ```bash:no-line-numbers
-# 拉取 PolarDB-PG 镜像
-docker pull polardb/polardb_pg_local_instance
-# 创建并运行容器
-docker run -it --rm polardb/polardb_pg_local_instance psql
+# 拉取镜像并运行容器
+docker pull polardb/polardb_pg_local_instance:11
+docker run -it --rm polardb/polardb_pg_local_instance:11 psql
 # 测试可用性
 postgres=# SELECT version();
             version
@@ -39,3 +41,21 @@ postgres=# SELECT version();
  PostgreSQL 11.9 (POLARDB 11.9)
 (1 row)
 ```
+
+:::
+::: code-group-item 阿里云 ACR
+
+```bash:no-line-numbers
+# 拉取镜像并运行容器
+docker pull registry.cn-hangzhou.aliyuncs.com/polardb_pg/polardb_pg_local_instance:11
+docker run -it --rm registry.cn-hangzhou.aliyuncs.com/polardb_pg/polardb_pg_local_instance:11 psql
+# 测试可用性
+postgres=# SELECT version();
+            version
+--------------------------------
+ PostgreSQL 11.9 (POLARDB 11.9)
+(1 row)
+```
+
+:::
+::::

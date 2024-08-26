@@ -178,9 +178,9 @@ PolarDB 支持一套 OLTP 场景型的数据在如下两种计算引擎下使用
 
 ![image.png](../imgs/11_issues_of_conventional_streaming_replication.png)
 
-1. 主节点写入 WAL 日志到本地文件系统中。
+1. 主节点写入 WAL 日志到单机文件系统中。
 1. WAL Sender 进程读取，并发送。
-1. 只读节点的 WAL Receiver 进程接收写入到本地文件系统中。
+1. 只读节点的 WAL Receiver 进程接收写入到单机文件系统中。
 1. 回放进程读取 WAL 日志，读取对应的 Page 到 BufferPool 中，并在内存中回放。
 1. 主节点刷脏页到 Shared Storage。
 
