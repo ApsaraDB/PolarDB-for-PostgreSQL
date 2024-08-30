@@ -25,7 +25,7 @@ code_commit=$(git rev-parse HEAD || echo unknown)
 code_branch=$(git rev-parse --abbrev-ref HEAD || echo unknown)
 polar_commit=$(git rev-parse --short=8 HEAD || echo unknown)
 pg_version=$(grep AC_INIT ../../configure.in | awk -F'[][]' '{print $4}')
-polar_majorversion=2.0.$(echo ${pg_version} | awk -F'[^0-9]+' '{print $1}')
+polar_majorversion=2.0.$(echo ${pg_version})
 polar_minorversion=$(grep -A 1 '&polar_version' ../../src/backend/utils/misc/guc.c | awk 'NR==2{print}' | awk -F'[."]' '{print $4}').0
 polar_release_date=$(grep -A 1 '&polar_release_date' ../../src/backend/utils/misc/guc.c | awk 'NR==2{print}' | awk -F'[,"]' '{print $2}')
 polar_version=${polar_majorversion}.${polar_minorversion}
