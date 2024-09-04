@@ -3733,6 +3733,10 @@ _outConstraint(StringInfo str, const Constraint *node)
 			WRITE_CHAR_FIELD(generated_when);
 			break;
 
+		case CONSTR_INVISIBLE:
+			appendStringInfoString(str, "INVISIBLE");
+			break;
+
 		case CONSTR_CHECK:
 			appendStringInfoString(str, "CHECK");
 			WRITE_BOOL_FIELD(is_no_inherit);

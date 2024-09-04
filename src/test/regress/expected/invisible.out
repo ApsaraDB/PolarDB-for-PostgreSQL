@@ -1,0 +1,133 @@
+--
+-- INVISIBLE
+--
+CREATE TABLE TEST_INVISIBLE_TBL1(
+    a INT INVISIBLE DEFAULT 1,
+    b INT NOT NULL,
+    c CHAR
+);
+CREATE TABLE TEST_INVISIBLE_TBL2(
+    a INT NOT NULL INVISIBLE,
+    b INT
+);
+CREATE TABLE TEST_INVISIBLE_TBL3(
+    a INT INVISIBLE,
+    b INT
+);
+create TABLE TEST_INVISIBLE_TBL4(
+    a int INVISIBLE
+);
+ERROR:  table must have at least one column that is not invisible
+INSERT INTO TEST_INVISIBLE_TBL1 VALUES (1, 1, 'A');
+ERROR:  INSERT has more expressions than target columns
+LINE 1: INSERT INTO TEST_INVISIBLE_TBL1 VALUES (1, 1, 'A');
+                                                      ^
+INSERT INTO TEST_INVISIBLE_TBL1 VALUES (1, 'A');
+INSERT INTO TEST_INVISIBLE_TBL1 VALUES ('A');
+ERROR:  invalid input syntax for integer: "A"
+LINE 1: INSERT INTO TEST_INVISIBLE_TBL1 VALUES ('A');
+                                                ^
+INSERT INTO TEST_INVISIBLE_TBL1 (a, b, c) VALUES(2, 2, 'B');
+SELECT *  FROM TEST_INVISIBLE_TBL1;
+ b | c 
+---+---
+ 1 | A
+ 2 | B
+(2 rows)
+
+SELECT TEST_INVISIBLE_TBL1.*  FROM TEST_INVISIBLE_TBL1;
+ b | c 
+---+---
+ 1 | A
+ 2 | B
+(2 rows)
+
+SELECT (TEST_INVISIBLE_TBL1).*  FROM TEST_INVISIBLE_TBL1;
+ b | c 
+---+---
+ 1 | A
+ 2 | B
+(2 rows)
+
+SELECT a, b, c  FROM TEST_INVISIBLE_TBL1;
+ a | b | c 
+---+---+---
+ 1 | 1 | A
+ 2 | 2 | B
+(2 rows)
+
+INSERT INTO TEST_INVISIBLE_TBL2 VALUES (1);
+ERROR:  null value in column "a" violates not-null constraint
+DETAIL:  Failing row contains (null, 1).
+INSERT INTO TEST_INVISIBLE_TBL2 VALUES (1, 1);
+ERROR:  INSERT has more expressions than target columns
+LINE 1: INSERT INTO TEST_INVISIBLE_TBL2 VALUES (1, 1);
+                                                   ^
+INSERT INTO TEST_INVISIBLE_TBL2 (a, b) VALUES (1, 1);
+SELECT *  FROM TEST_INVISIBLE_TBL2;
+ b 
+---
+ 1
+(1 row)
+
+SELECT a, b  FROM TEST_INVISIBLE_TBL2;
+ a | b 
+---+---
+ 1 | 1
+(1 row)
+
+INSERT INTO TEST_INVISIBLE_TBL3 VALUES (1);
+INSERT INTO TEST_INVISIBLE_TBL3 (a, b) VALUES (1, 1);
+SELECT *  FROM TEST_INVISIBLE_TBL3;
+ b 
+---
+ 1
+ 1
+(2 rows)
+
+SELECT a, b  FROM TEST_INVISIBLE_TBL3;
+ a | b 
+---+---
+   | 1
+ 1 | 1
+(2 rows)
+
+--
+-- TEST JOIN
+--
+SELECT * from TEST_INVISIBLE_TBL1 as t1, TEST_INVISIBLE_TBL3 as t3 where t1.a = t3.a;
+ b | c | b 
+---+---+---
+ 1 | A | 1
+(1 row)
+
+SELECT t1.a from TEST_INVISIBLE_TBL1 as t1, TEST_INVISIBLE_TBL3 as t3 where t1.a = t3.a;
+ a 
+---
+ 1
+(1 row)
+
+--
+-- TEST ALTER TABLE
+--
+ALTER TABLE TEST_INVISIBLE_TBL1 ALTER COLUMN b SET INVISIBLE;
+ALTER TABLE TEST_INVISIBLE_TBL1 ALTER COLUMN c SET INVISIBLE;
+ERROR:  table must have at least one column that is not invisible
+SELECT * FROM TEST_INVISIBLE_TBL1;
+ c 
+---
+ A
+ B
+(2 rows)
+
+ALTER TABLE TEST_INVISIBLE_TBL1 MODIFY a VISIBLE;
+SELECT * FROM TEST_INVISIBLE_TBL1;
+ a | c 
+---+---
+ 1 | A
+ 2 | B
+(2 rows)
+
+DROP TABLE TEST_INVISIBLE_TBL1;
+DROP TABLE TEST_INVISIBLE_TBL2;
+DROP TABLE TEST_INVISIBLE_TBL3;

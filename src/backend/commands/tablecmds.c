@@ -382,6 +382,12 @@ static ObjectAddress ATExecDropNotNull(Relation rel, const char *colName, LOCKMO
 static void ATPrepSetNotNull(Relation rel, bool recurse, bool recursing);
 static ObjectAddress ATExecSetNotNull(AlteredTableInfo *tab, Relation rel,
 				 const char *colName, LOCKMODE lockmode);
+static void ATPrepSetVisible(Relation rel, bool recurse, bool recursing);
+static ObjectAddress ATExecSetVisible(AlteredTableInfo *tab, Relation rel,
+				 const char *colName, LOCKMODE lockmode);
+static void ATPrepSetInvisible(Relation rel, bool recurse, bool recursing);
+static ObjectAddress ATExecSetInvisible(AlteredTableInfo *tab, Relation rel,
+				 const char *colName, LOCKMODE lockmode);
 static ObjectAddress ATExecColumnDefault(Relation rel, const char *colName,
 					Node *newDefault, LOCKMODE lockmode);
 static ObjectAddress ATExecAddIdentity(Relation rel, const char *colName,
@@ -556,6 +562,7 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 	static char *validnsps[] = HEAP_RELOPT_NAMESPACES;
 	Oid			ofTypeId;
 	ObjectAddress address;
+	int 		invisibleColumnCount;
 
 	/*
 	 * Truncate relname to appropriate length (probably a waste of time, as
@@ -740,6 +747,7 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 	rawDefaults = NIL;
 	cookedDefaults = NIL;
 	attnum = 0;
+	invisibleColumnCount = 0;
 
 	foreach(listptr, stmt->tableElts)
 	{
@@ -782,7 +790,21 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 
 		if (colDef->identity)
 			attr->attidentity = colDef->identity;
+
+		if (colDef->is_invisible)
+		{
+			attr->attisinvisible = colDef->is_invisible;
+			invisibleColumnCount++;
+		}
 	}
+
+	/*
+	 * table must have at least one column that is not invisible
+	 */
+	if (invisibleColumnCount == attnum && attnum != 0)
+		ereport(ERROR,
+				(errcode(ERRCODE_SYNTAX_ERROR),
+				 errmsg("table must have at least one column that is not invisible")));
 
 	/*
 	 * Create the relation.  Inherited defaults and constraints are passed in
@@ -1996,6 +2018,7 @@ MergeAttributes(List *schema, List *supers, char relpersistence,
 					 * merge the column options into the column from the type
 					 */
 					coldef->is_not_null = restdef->is_not_null;
+					coldef->is_invisible = restdef->is_invisible;
 					coldef->raw_default = restdef->raw_default;
 					coldef->cooked_default = restdef->cooked_default;
 					coldef->constraints = restdef->constraints;
@@ -2239,6 +2262,7 @@ MergeAttributes(List *schema, List *supers, char relpersistence,
 				def->inhcount = 1;
 				def->is_local = false;
 				def->is_not_null = attribute->attnotnull;
+				def->is_invisible = attribute->attisinvisible;
 				def->is_from_type = false;
 				def->storage = attribute->attstorage;
 				def->raw_default = NULL;
@@ -3538,6 +3562,14 @@ AlterTableGetLockLevel(List *cmds)
 				break;
 
 				/*
+				 * changing visibilty can affect concurrent SELECTs
+				 */
+			case AT_SetInvisible:
+			case AT_SetVisible:
+				cmd_lockmode = AccessExclusiveLock;
+				break;
+
+				/*
 				 * These subcommands affect write operations only.
 				 */
 			case AT_EnableTrig:
@@ -3822,6 +3854,20 @@ ATPrepCmd(List **wqueue, Relation rel, AlterTableCmd *cmd,
 		case AT_SetNotNull:		/* ALTER COLUMN SET NOT NULL */
 			ATSimplePermissions(rel, ATT_TABLE | ATT_FOREIGN_TABLE);
 			ATPrepSetNotNull(rel, recurse, recursing);
+			ATSimpleRecursion(wqueue, rel, cmd, recurse, lockmode);
+			/* No command-specific prep needed */
+			pass = AT_PASS_ADD_CONSTR;
+			break;
+		case AT_SetVisible:	/* ALTER COLUMN SET VISIBLE */
+			ATSimplePermissions(rel, ATT_TABLE | ATT_FOREIGN_TABLE);
+			ATPrepSetVisible(rel, recurse, recursing);
+			ATSimpleRecursion(wqueue, rel, cmd, recurse, lockmode);
+			/* No command-specific prep needed */
+			pass = AT_PASS_ADD_CONSTR;
+			break;
+		case AT_SetInvisible:	/* ALTER COLUMN SET INVISIBLE */
+			ATSimplePermissions(rel, ATT_TABLE | ATT_FOREIGN_TABLE);
+			ATPrepSetInvisible(rel, recurse, recursing);
 			ATSimpleRecursion(wqueue, rel, cmd, recurse, lockmode);
 			/* No command-specific prep needed */
 			pass = AT_PASS_ADD_CONSTR;
@@ -4158,6 +4204,12 @@ ATExecCmd(List **wqueue, AlteredTableInfo *tab, Relation rel,
 			break;
 		case AT_SetNotNull:		/* ALTER COLUMN SET NOT NULL */
 			address = ATExecSetNotNull(tab, rel, cmd->name, lockmode);
+			break;
+		case AT_SetVisible:	/* ALTER COLUMN SET VISIBLE */
+			address = ATExecSetVisible(tab, rel, cmd->name, lockmode);
+			break;
+		case AT_SetInvisible:	/* ALTER COLUMN SET INVISIBLE */
+			address = ATExecSetInvisible(tab, rel, cmd->name, lockmode);
 			break;
 		case AT_SetStatistics:	/* ALTER COLUMN SET STATISTICS */
 			address = ATExecSetStatistics(rel, cmd->name, cmd->num, cmd->def, lockmode);
@@ -5656,6 +5708,7 @@ ATExecAddColumn(List **wqueue, AlteredTableInfo *tab, Relation rel,
 	attribute.atthasmissing = false;
 	attribute.attidentity = colDef->identity;
 	attribute.attisdropped = false;
+	attribute.attisinvisible = colDef->is_invisible;
 	attribute.attislocal = colDef->is_local;
 	attribute.attinhcount = colDef->inhcount;
 	attribute.attcollation = collOid;
@@ -6234,6 +6287,180 @@ ATExecSetNotNull(AlteredTableInfo *tab, Relation rel,
 							  RelationGetRelid(rel), attnum);
 
 	heap_close(attr_rel, RowExclusiveLock);
+
+	return address;
+}
+
+static void
+ATPrepSetVisible(Relation rel, bool recurse, bool recursing)
+{
+	/*
+	 * If the parent is a partitioned table, Set Visible
+	 * constraints must be added to the child tables.
+	 */
+	if (rel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
+	{
+		PartitionDesc partdesc = RelationGetPartitionDesc(rel);
+
+		if (partdesc && partdesc->nparts > 0 && !recurse && !recursing)
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_TABLE_DEFINITION),
+					 errmsg("cannot add constraint to only the partitioned table when partitions exist"),
+					 errhint("Do not specify the ONLY keyword.")));
+	}
+}
+
+/*
+ * Return the address of the modified column.  If the column was already Invisible,
+ * InvalidObjectAddress is returned.
+ */
+static ObjectAddress
+ATExecSetVisible(AlteredTableInfo *tab, Relation rel,
+				 const char *colName, LOCKMODE lockmode)
+{
+	HeapTuple	tuple;
+	AttrNumber	attnum;
+	Relation	attr_rel;
+	ObjectAddress address;
+
+	/*
+	 * lookup the attribute
+	 */
+	attr_rel = heap_open(AttributeRelationId, RowExclusiveLock);
+
+	tuple = SearchSysCacheCopyAttName(RelationGetRelid(rel), colName);
+
+	if (!HeapTupleIsValid(tuple))
+		ereport(ERROR,
+				(errcode(ERRCODE_UNDEFINED_COLUMN),
+				 errmsg("column \"%s\" of relation \"%s\" does not exist",
+						colName, RelationGetRelationName(rel))));
+
+	attnum = ((Form_pg_attribute) GETSTRUCT(tuple))->attnum;
+
+	/* Prevent them from altering a system attribute */
+	if (attnum <= 0)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("cannot alter system column \"%s\"",
+						colName)));
+
+	if (((Form_pg_attribute) GETSTRUCT(tuple))->attisinvisible)
+	{
+		((Form_pg_attribute) GETSTRUCT(tuple))->attisinvisible = false;
+
+		CatalogTupleUpdate(attr_rel, &tuple->t_self, tuple);
+
+		ObjectAddressSubSet(address, RelationRelationId,
+							RelationGetRelid(rel), attnum);
+	}
+	else
+		address = InvalidObjectAddress;
+
+	InvokeObjectPostAlterHook(RelationRelationId,
+							  RelationGetRelid(rel), attnum);
+
+	heap_close(attr_rel, RowExclusiveLock);
+	heap_freetuple(tuple);
+
+	return address;
+}
+
+static void
+ATPrepSetInvisible(Relation rel, bool recurse, bool recursing)
+{
+	/*
+	 * If the parent is a partitioned table, Set Invisible
+	 * constraints must be added to the child tables.
+	 */
+	if (rel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
+	{
+		PartitionDesc partdesc = RelationGetPartitionDesc(rel);
+
+		if (partdesc && partdesc->nparts > 0 && !recurse && !recursing)
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_TABLE_DEFINITION),
+					 errmsg("cannot add constraint to only the partitioned table when partitions exist"),
+					 errhint("Do not specify the ONLY keyword.")));
+	}
+}
+
+/*
+ * Return the address of the modified column.  If the column was already Invisible,
+ * InvalidObjectAddress is returned.
+ */
+static ObjectAddress
+ATExecSetInvisible(AlteredTableInfo *tab, Relation rel,
+				 const char *colName, LOCKMODE lockmode)
+{
+	HeapTuple	tuple;
+	AttrNumber	attnum;
+	Relation	attr_rel;
+	ObjectAddress address;
+
+	/*
+	 * lookup the attribute
+	 */
+	attr_rel = heap_open(AttributeRelationId, RowExclusiveLock);
+
+	tuple = SearchSysCacheCopyAttName(RelationGetRelid(rel), colName);
+
+	if (!HeapTupleIsValid(tuple))
+		ereport(ERROR,
+				(errcode(ERRCODE_UNDEFINED_COLUMN),
+				 errmsg("column \"%s\" of relation \"%s\" does not exist",
+						colName, RelationGetRelationName(rel))));
+
+	attnum = ((Form_pg_attribute) GETSTRUCT(tuple))->attnum;
+
+	/* Prevent them from altering a system attribute */
+	if (attnum <= 0)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("cannot alter system column \"%s\"",
+						colName)));
+
+	if (!((Form_pg_attribute) GETSTRUCT(tuple))->attisinvisible)
+	{
+		TupleDesc tupleDesc = RelationGetDescr(rel);
+		int numattrs = tupleDesc->natts;
+		int i;
+		bool visible_only = true;
+		Form_pg_attribute attr;
+
+		for (i = 0; i < numattrs; ++i) {
+			if (i == attnum - 1) {
+				continue;
+			}
+
+			attr = TupleDescAttr(tupleDesc, i);
+
+			if (!attr->attisinvisible) {
+				visible_only = false;
+				break;
+			}
+		}
+
+		if (visible_only)
+			ereport(ERROR,
+				(errcode(ERRCODE_SYNTAX_ERROR),
+				 errmsg("table must have at least one column that is not invisible")));
+		
+		((Form_pg_attribute) GETSTRUCT(tuple))->attisinvisible = true;
+
+		CatalogTupleUpdate(attr_rel, &tuple->t_self, tuple);
+
+		ObjectAddressSubSet(address, RelationRelationId,
+							RelationGetRelid(rel), attnum);
+	}
+	else
+		address = InvalidObjectAddress;
+
+	InvokeObjectPostAlterHook(RelationRelationId,
+							  RelationGetRelid(rel), attnum);
+
+	heap_close(attr_rel, RowExclusiveLock);
+	heap_freetuple(tuple);
 
 	return address;
 }

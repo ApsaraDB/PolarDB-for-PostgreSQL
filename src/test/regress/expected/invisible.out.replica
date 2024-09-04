@@ -1,0 +1,140 @@
+--
+-- INVISIBLE
+--
+CREATE TABLE TEST_INVISIBLE_TBL1(
+    a INT INVISIBLE DEFAULT 1,
+    b INT NOT NULL,
+    c CHAR
+);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE TEST_INVISIBLE_TBL2(
+    a INT NOT NULL INVISIBLE,
+    b INT
+);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE TEST_INVISIBLE_TBL3(
+    a INT INVISIBLE,
+    b INT
+);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+create TABLE TEST_INVISIBLE_TBL4(
+    a int INVISIBLE
+);
+ERROR:  cannot execute CREATE TABLE in a read-only transaction
+INSERT INTO TEST_INVISIBLE_TBL1 VALUES (1, 1, 'A');
+ERROR:  cannot execute INSERT in a read-only transaction
+INSERT INTO TEST_INVISIBLE_TBL1 VALUES (1, 'A');
+ERROR:  cannot execute INSERT in a read-only transaction
+INSERT INTO TEST_INVISIBLE_TBL1 VALUES ('A');
+ERROR:  invalid input syntax for integer: "A"
+ERROR:  cannot execute INSERT in a read-only transaction
+INSERT INTO TEST_INVISIBLE_TBL1 (a, b, c) VALUES(2, 2, 'B');
+ERROR:  cannot execute INSERT in a read-only transaction
+SELECT *  FROM TEST_INVISIBLE_TBL1;
+ b | c 
+---+---
+ 1 | A
+ 2 | B
+(2 rows)
+
+SELECT TEST_INVISIBLE_TBL1.*  FROM TEST_INVISIBLE_TBL1;
+ b | c 
+---+---
+ 1 | A
+ 2 | B
+(2 rows)
+
+SELECT (TEST_INVISIBLE_TBL1).*  FROM TEST_INVISIBLE_TBL1;
+ b | c 
+---+---
+ 1 | A
+ 2 | B
+(2 rows)
+
+SELECT a, b, c  FROM TEST_INVISIBLE_TBL1;
+ a | b | c 
+---+---+---
+ 1 | 1 | A
+ 2 | 2 | B
+(2 rows)
+
+INSERT INTO TEST_INVISIBLE_TBL2 VALUES (1);
+ERROR:  cannot execute INSERT in a read-only transaction
+INSERT INTO TEST_INVISIBLE_TBL2 VALUES (1, 1);
+ERROR:  cannot execute INSERT in a read-only transaction
+INSERT INTO TEST_INVISIBLE_TBL2 (a, b) VALUES (1, 1);
+ERROR:  cannot execute INSERT in a read-only transaction
+SELECT *  FROM TEST_INVISIBLE_TBL2;
+ b 
+---
+ 1
+(1 row)
+
+SELECT a, b  FROM TEST_INVISIBLE_TBL2;
+ a | b 
+---+---
+ 1 | 1
+(1 row)
+
+INSERT INTO TEST_INVISIBLE_TBL3 VALUES (1);
+ERROR:  cannot execute INSERT in a read-only transaction
+INSERT INTO TEST_INVISIBLE_TBL3 (a, b) VALUES (1, 1);
+ERROR:  cannot execute INSERT in a read-only transaction
+SELECT *  FROM TEST_INVISIBLE_TBL3;
+ b 
+---
+ 1
+ 1
+(2 rows)
+
+SELECT a, b  FROM TEST_INVISIBLE_TBL3;
+ a | b 
+---+---
+   | 1
+ 1 | 1
+(2 rows)
+
+--
+-- TEST JOIN
+--
+SELECT * from TEST_INVISIBLE_TBL1 as t1, TEST_INVISIBLE_TBL3 as t3 where t1.a = t3.a;
+ b | c | b 
+---+---+---
+ 1 | A | 1
+(1 row)
+
+SELECT t1.a from TEST_INVISIBLE_TBL1 as t1, TEST_INVISIBLE_TBL3 as t3 where t1.a = t3.a;
+ a 
+---
+ 1
+(1 row)
+
+--
+-- TEST ALTER TABLE
+--
+ALTER TABLE TEST_INVISIBLE_TBL1 ALTER COLUMN b SET INVISIBLE;
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+ALTER TABLE TEST_INVISIBLE_TBL1 ALTER COLUMN c SET INVISIBLE;
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+SELECT * FROM TEST_INVISIBLE_TBL1;
+ c 
+---
+ A
+ B
+(2 rows)
+
+ALTER TABLE TEST_INVISIBLE_TBL1 MODIFY a VISIBLE;
+ERROR:  cannot execute ALTER TABLE in a read-only transaction
+SELECT * FROM TEST_INVISIBLE_TBL1;
+ a | c 
+---+---
+ 1 | A
+ 2 | B
+(2 rows)
+
+DROP TABLE TEST_INVISIBLE_TBL1;
+ERROR:  cannot execute DROP TABLE in a read-only transaction
+DROP TABLE TEST_INVISIBLE_TBL2;
+ERROR:  cannot execute DROP TABLE in a read-only transaction
+DROP TABLE TEST_INVISIBLE_TBL3;
+ERROR:  cannot execute DROP TABLE in a read-only transaction

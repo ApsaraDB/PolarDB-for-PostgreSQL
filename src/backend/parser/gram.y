@@ -656,7 +656,7 @@ static bool polar_is_ignore_user_defined_tablespace(char *tablespace_name);
 	IDENTITY_P IF_P ILIKE IMMEDIATE IMMUTABLE IMPLICIT_P IMPORT_P IN_P INCLUDE
 	INCLUDING INCREMENT INDEX INDEXES INHERIT INHERITS INITIALLY INLINE_P
 	INNER_P INOUT INPUT_P INSENSITIVE INSERT INSTEAD INT_P INTEGER
-	INTERSECT INTERVAL INTO INVOKER IS ISNULL ISOLATION
+	INTERSECT INTERVAL INTO INVISIBLE INVOKER IS ISNULL ISOLATION
 
 	JOIN
 
@@ -666,7 +666,7 @@ static bool polar_is_ignore_user_defined_tablespace(char *tablespace_name);
 	LEADER LEADING LEAKPROOF LEARNER LEAST LEFT LEVEL LIKE LIMIT LISTEN LOAD LOCAL
 	LOCALTIME LOCALTIMESTAMP LOCATION LOCK_P LOCKED LOGGED LOGS
 
-	MAPPING MATCH MATERIALIZED MAXVALUE METHOD MINUTE_P MINVALUE MODE MONTH_P MOVE
+	MAPPING MATCH MATERIALIZED MAXVALUE METHOD MINUTE_P MINVALUE MODE MODIFY MONTH_P MOVE
 
 	NAME_P NAMES NATIONAL NATURAL NCHAR NEW NEXT NO NODE NONE
 	NOT NOTHING NOTIFY NOTNULL NOWAIT NULL_P NULLIF
@@ -702,7 +702,7 @@ static bool polar_is_ignore_user_defined_tablespace(char *tablespace_name);
 	UNTIL UPDATE USER USING
 
 	VACUUM VALID VALIDATE VALIDATOR VALUE_P VALUES VARCHAR VARIADIC VARYING
-	VERBOSE VERSION_P VIEW VIEWS VOLATILE
+	VERBOSE VERSION_P VIEW VIEWS VISIBLE VOLATILE
 
 	WEIGHT WHEN WHERE WHITESPACE_P WINDOW WITH WITHIN WITHOUT WORK WRAPPER WRITE
 
@@ -2185,6 +2185,38 @@ alter_table_cmd:
 					n->def = (Node *) $5;
 					$$ = (Node *)n;
 				}
+			/* ALTER TABLE <name> ALTER [COLUMN] <colname> SET INVISIBLE */
+			| ALTER opt_column ColId SET INVISIBLE
+				{
+					AlterTableCmd *n = makeNode(AlterTableCmd);
+					n->subtype = AT_SetInvisible;
+					n->name = $3;
+					$$ = (Node *)n;
+				}
+			/* ALTER TABLE <name> ALTER [COLUMN] <colname> SET VISIBLE */
+			| ALTER opt_column ColId SET VISIBLE
+				{
+					AlterTableCmd *n = makeNode(AlterTableCmd);
+					n->subtype = AT_SetVisible;
+					n->name = $3;
+					$$ = (Node *)n;
+				}
+			/* ALTER TABLE <name> MODIFY <colname> VISIBLE */
+			| MODIFY opt_column ColId VISIBLE 
+				{
+					AlterTableCmd *n = makeNode(AlterTableCmd);
+					n->subtype = AT_SetVisible;
+					n->name = $3;
+					$$ = (Node *)n;
+				}
+			/* ALTER TABLE <name> MODIFY <colname> INVISIBLE */
+			| MODIFY opt_column ColId INVISIBLE
+				{
+					AlterTableCmd *n = makeNode(AlterTableCmd);
+					n->subtype = AT_SetInvisible;
+					n->name = $3;
+					$$ = (Node *)n;
+				}
 			/* ALTER TABLE <name> ALTER [COLUMN] <colname> RESET ( column_parameter = value [, ... ] ) */
 			| ALTER opt_column ColId RESET reloptions
 				{
@@ -3528,7 +3560,14 @@ ColConstraint:
  * or be part of a_expr NOT LIKE or similar constructs).
  */
 ColConstraintElem:
-			NOT NULL_P
+		    INVISIBLE
+				{
+					Constraint *n = makeNode(Constraint);
+					n->contype = CONSTR_INVISIBLE;
+					n->location = @1;
+					$$ = (Node *)n;
+				}
+			| NOT NULL_P
 				{
 					Constraint *n = makeNode(Constraint);
 					n->contype = CONSTR_NOTNULL;
@@ -12624,6 +12663,7 @@ TableFuncElement:	ColId Typename opt_collate_clause
 					n->colname = $1;
 					n->typeName = $2;
 					n->inhcount = 0;
+					n->is_invisible = false;
 					n->is_local = true;
 					n->is_not_null = false;
 					n->is_from_type = false;
@@ -15518,6 +15558,7 @@ unreserved_keyword:
 			| MINUTE_P
 			| MINVALUE
 			| MODE
+			| MODIFY
 			| MONTH_P
 			| MOVE
 			| NAME_P
@@ -15820,6 +15861,7 @@ reserved_keyword:
 			| INITIALLY
 			| INTERSECT
 			| INTO
+			| INVISIBLE
 			| LATERAL_P
 			| LEADING
 			| LIMIT
@@ -15850,6 +15892,7 @@ reserved_keyword:
 			| USER
 			| USING
 			| VARIADIC
+			| VISIBLE
 			| WHEN
 			| WHERE
 			| WINDOW
