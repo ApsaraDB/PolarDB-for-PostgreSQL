@@ -25,7 +25,7 @@
 %define code_branch %(git rev-parse --abbrev-ref HEAD || echo unknown)
 %define polar_commit %(git rev-parse --short=8 HEAD || echo unknown)
 %define pg_version %(grep AC_INIT ../../configure.in | awk -F'[][]' '{print $4}')
-%define polar_majorversion 2.0.%{pg_version}
+%define polar_majorversion %{pg_version}
 %define polar_minorversion %(grep -A 1 '&polar_version' ../../src/backend/utils/misc/guc.c | awk 'NR==2{print}' | awk -F'[."]' '{print $4}').0
 %define polar_release_date %(grep -A 1 '&polar_release_date' ../../src/backend/utils/misc/guc.c | awk 'NR==2{print}' | awk -F'[,"]' '{print $2}')
 %define polar_version %{polar_majorversion}.%{polar_minorversion}
