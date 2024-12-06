@@ -250,7 +250,7 @@ enable_asan=off
 tde=off
 dma=off
 fault_injector=off
-enable_flashback_log=on
+enable_flashback_log=off
 pfsd=off
 
 
@@ -276,15 +276,15 @@ function set_env() {
 data_dir_specified=no
 rep_dir_specified=no
 standby_dir_specified=no
-withrep=no
+withrep=yes
 withstandby=no
 need_initdb=no
 need_initrep=no
 noclean=no
 normbasedir=no
 noinit=no
-withpx=no
-initpx=no
+withpx=yes
+initpx=yes
 repnum=1
 
 for arg do
