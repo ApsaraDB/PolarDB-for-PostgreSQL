@@ -208,7 +208,7 @@ fallback:
 					elog(error_level, "node %s is standby, but polar_px_use_standby is off, consider adjust polar_px_nodes or enable polar_px_use_standby", node_name);
 					goto next;
 				}
-				if (!(item->state == STANDBY_SNAPSHOT_READY || (item->type == POLAR_MASTER && !px_use_master)))
+				if (!(item->state == STANDBY_SNAPSHOT_READY || (item->type == POLAR_MASTER && px_use_master)))
 				{
 					elog(error_level, "node %s is not ready for PX query, consider adjust polar_px_nodes", node_name);
 					goto next;
