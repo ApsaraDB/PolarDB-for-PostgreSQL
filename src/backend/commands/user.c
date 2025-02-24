@@ -50,6 +50,12 @@ int			Password_encryption = PASSWORD_TYPE_SCRAM_SHA_256;
 /* Hook to check passwords in CreateRole() and AlterRole() */
 check_password_hook_type check_password_hook = NULL;
 
+/*
+ * POLAR: login history
+ */
+polar_remove_login_history_hook_type polar_remove_login_history_hook = NULL;
+/* POLAR end */
+
 static void AddRoleMems(const char *rolename, Oid roleid,
 						List *memberSpecs, List *memberIds,
 						Oid grantorId, bool admin_opt);
@@ -1072,6 +1078,14 @@ DropRole(DropRoleStmt *stmt)
 		 * itself.)
 		 */
 		CommandCounterIncrement();
+
+		/*
+		 * POLAR: login history
+		 * Delete the login history information related to the role.
+		 */
+		if (polar_remove_login_history_hook)
+			polar_remove_login_history_hook(roleid);
+		/* POLAR end */
 	}
 
 	/*
