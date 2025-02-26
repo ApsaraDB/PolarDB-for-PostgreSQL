@@ -10,6 +10,7 @@ SUBDIRS =
 # sort extention by names, less git conflict
 SUBDIRS += polar_feature_utils
 SUBDIRS += polar_io_stat
+SUBDIRS += polar_login_history
 SUBDIRS += polar_monitor
 SUBDIRS += polar_monitor_preload
 SUBDIRS += polar_parameter_manager
@@ -18,7 +19,6 @@ SUBDIRS += polar_resource_manager
 SUBDIRS += polar_smgrperf
 SUBDIRS += polar_stat_env
 SUBDIRS += polar_worker
-SUBDIRS += polar_login_history
 
 ifeq ($(enable_minimal),no)
 # will be ignored under minimal mode
