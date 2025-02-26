@@ -1619,8 +1619,8 @@ sub get_free_port
 		{
 			foreach my $addr (qw(127.0.0.1),
 				($use_tcp && $PostgreSQL::Test::Utils::windows_os)
-				  ? qw(127.0.0.2 127.0.0.3 0.0.0.0)
-				  : ())
+				? qw(127.0.0.2 127.0.0.3 0.0.0.0)
+				: ())
 			{
 				if (!can_bind($addr, $port))
 				{
@@ -4288,8 +4288,7 @@ sub polar_wait_for_startup
 
 ##########################################################################
 
-package PostgreSQL::Test::Cluster::V_11
-  ;    ## no critic (ProhibitMultiplePackages)
+package PostgreSQL::Test::Cluster::V_11;    ## no critic (ProhibitMultiplePackages)
 
 # parent.pm is not present in all perl versions before 5.10.1, so instead
 # do directly what it would do for this:
@@ -4319,8 +4318,7 @@ sub init
 
 ##########################################################################
 
-package PostgreSQL::Test::Cluster::V_10
-  ;    ## no critic (ProhibitMultiplePackages)
+package PostgreSQL::Test::Cluster::V_10;    ## no critic (ProhibitMultiplePackages)
 
 # use parent -norequire, qw(PostgreSQL::Test::Cluster::V_11);
 push @PostgreSQL::Test::Cluster::V_10::ISA, 'PostgreSQL::Test::Cluster::V_11';

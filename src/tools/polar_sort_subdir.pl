@@ -51,7 +51,7 @@ if ($help)
 my %patterns = (
 	'SUBDIRS \+=' => {},
 	'ALWAYS_SUBDIRS \+=' => {}
-	  # Add more patterns as needed
+	# Add more patterns as needed
 );
 
 foreach my $pattern (keys %patterns)

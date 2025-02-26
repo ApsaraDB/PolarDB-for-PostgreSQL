@@ -4511,8 +4511,7 @@ PostgresMain(const char *dbname, const char *username)
 	int			microsecs = 0;
 
 	/*
-	 * POLAR: login history
-	 * Indicate that the login process starts.
+	 * POLAR: login history Indicate that the login process starts.
 	 */
 	polar_login_flag = true;
 	/* POLAR end */
@@ -4686,8 +4685,8 @@ PostgresMain(const char *dbname, const char *username)
 	MemoryContextSwitchTo(TopMemoryContext);
 
 	/*
-	 * POLAR: login history
-	 * Record the successful login information of the user.
+	 * POLAR: login history Record the successful login information of the
+	 * user.
 	 */
 	if (polar_update_login_history_hook)
 		polar_update_login_history_hook(true);
