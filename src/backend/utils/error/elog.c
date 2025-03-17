@@ -141,6 +141,7 @@ int			polar_audit_log_flush_timeout = 0;
  */
 bool		polar_login_flag = false;
 polar_update_login_history_hook_type polar_update_login_history_hook = NULL;
+polar_flush_login_history_hook_type polar_flush_login_history_hook = NULL;
 
 /* POLAR end */
 

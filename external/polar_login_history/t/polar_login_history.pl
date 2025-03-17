@@ -1,9 +1,9 @@
 #!/usr/bin/perl
 
-# 046_polar_login_history.pl
+# polar_login_history.pl
 #
 # IDENTIFICATION
-#	  src/test/polar_pl/t/046_polar_login_history.pl
+#	  external/polar_login_history/t/polar_login_history.pl
 
 use strict;
 use warnings;
@@ -16,7 +16,7 @@ $node->init();
 $node->start;
 
 $node->append_conf('postgresql.conf',
-	"polar_internal_shared_preload_libraries = 'polar_login_history'");
+	"shared_preload_libraries = 'polar_login_history'");
 $node->restart;
 
 $node->append_conf('postgresql.conf', "polar_login_history.enable = on");
