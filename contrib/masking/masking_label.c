@@ -89,7 +89,7 @@ check_label_on_table_or_column(Relation label_tab_rel, Relation label_col_rel, O
 			sscan = systable_beginscan(label_col_rel, InvalidOid, false,
 									   NULL, 2, scankey);
 		}
-		
+
 	}
 
 	if (HeapTupleIsValid(tuple = systable_getnext(sscan)))

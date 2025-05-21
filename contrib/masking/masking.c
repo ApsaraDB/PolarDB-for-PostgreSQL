@@ -281,7 +281,7 @@ create_masking_var_node(MaskingInfo * maskinfo, Var *var)
 	Node	   *masked_node = NULL;
 
 	masked_node = create_masking_func_node(var, maskinfo->masking_op);
-	
+
 	if (masked_node == NULL)
 	{
 		masked_node = (Node *) var;
