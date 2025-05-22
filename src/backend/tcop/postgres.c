@@ -207,6 +207,13 @@ static bool polar_init_checkinterrupts = false;
  */
 sql_mapping_hook_type sql_mapping_hook = NULL;
 
+/*
+ * POLAR: Hook for masking plugin after rewrite
+ */
+polar_masking_hook_type polar_masking_hook = NULL;
+
+/* POLAR end */
+
 /* ----------------------------------------------------------------
  *		decls for routines only used in this file
  * ----------------------------------------------------------------
@@ -713,6 +720,13 @@ pg_analyze_and_rewrite_fixedparams(RawStmt *parsetree,
 	 */
 	querytree_list = pg_rewrite_query(query);
 
+	/* POLAR */
+	if (polar_masking_hook)
+	{
+		polar_masking_hook(querytree_list);
+	}
+	/* POLAR */
+
 	TRACE_POSTGRESQL_QUERY_REWRITE_DONE(query_string);
 
 	return querytree_list;
@@ -768,6 +782,13 @@ pg_analyze_and_rewrite_varparams(RawStmt *parsetree,
 
 	TRACE_POSTGRESQL_QUERY_REWRITE_DONE(query_string);
 
+	/* POLAR */
+	if (polar_masking_hook)
+	{
+		polar_masking_hook(querytree_list);
+	}
+	/* POLAR */
+
 	return querytree_list;
 }
 
@@ -805,6 +826,13 @@ pg_analyze_and_rewrite_withcb(RawStmt *parsetree,
 	 * (2) Rewrite the queries, as necessary
 	 */
 	querytree_list = pg_rewrite_query(query);
+
+	/* POLAR */
+	if (polar_masking_hook)
+	{
+		polar_masking_hook(querytree_list);
+	}
+	/* POLAR */
 
 	TRACE_POSTGRESQL_QUERY_REWRITE_DONE(query_string);
 
