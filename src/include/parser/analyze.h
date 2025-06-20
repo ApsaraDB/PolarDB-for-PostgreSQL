@@ -24,6 +24,12 @@ typedef void (*post_parse_analyze_hook_type) (ParseState *pstate,
 											  JumbleState *jstate);
 extern PGDLLIMPORT post_parse_analyze_hook_type post_parse_analyze_hook;
 
+/*
+ * POLAR: Hook for masking plugin after rewrite
+ */
+typedef void (*polar_masking_hook_type) (List *query_list);
+extern PGDLLIMPORT polar_masking_hook_type polar_masking_hook;
+/* POLAR end */
 
 extern Query *parse_analyze_fixedparams(RawStmt *parseTree, const char *sourceText,
 										const Oid *paramTypes, int numParams, QueryEnvironment *queryEnv);
