@@ -62,6 +62,14 @@ static bool auditLogCatalog = true;
 static bool auditLogRelation = false;
 
 /*
+ * GUC variable for plaudit.log_parameter
+ *
+ * Administrators can choose if parameters passed into a statement are
+ * included in the audit log.
+ */
+static bool auditLogParameter = false;
+
+/*
  * GUC variable for plaudit.log_statement
  *
  * Administrators can choose to not have the full statement text logged.
@@ -82,6 +90,146 @@ static ExecutorCheckPerms_hook_type next_ExecutorCheckPerms_hook = NULL;
 static ProcessUtility_hook_type next_ProcessUtility_hook = NULL;
 static object_access_hook_type next_object_access_hook = NULL;
 static ExecutorStart_hook_type next_ExecutorStart_hook = NULL;
+
+/*
+ * An AuditEvent represents an operation that potentially affects a single
+ * object.  If a statement affects multiple objects then multiple AuditEvents
+ * are created to represent them.
+ */
+typedef struct
+{
+	LogStmtLevel logStmtLevel;	/* From GetCommandLogLevel when possible,
+								 * generated when not. */
+	NodeTag		commandTag;		/* same here */
+	int			command;		/* same here */
+	const char *objectType;		/* From event trigger when possible, generated
+								 * when not. */
+	char	   *objectName;		/* Fully qualified object identification */
+	const char *commandText;	/* sourceText / queryString */
+	ParamListInfo paramList;	/* QueryDesc/ProcessUtility parameters */
+
+	bool		logged;			/* Track if we have logged this event, used
+								 * post-ProcessUtility to make sure we log */
+	int64		rows;			/* Track rows processed by the statement */
+	MemoryContext queryContext; /* Context for query tracking rows */
+	Oid			auditOid;		/* Role running query tracking rows  */
+	List	   *rangeTabls;		/* Tables in query tracking rows */
+}			AuditEvent;
+
+/*
+ * A simple FIFO queue to keep track of the current stack of audit events.
+ */
+typedef struct AuditEventStackItem
+{
+	struct AuditEventStackItem *next;
+
+	AuditEvent	auditEvent;
+
+	int64		stackId;
+
+	MemoryContext contextAudit;
+	MemoryContextCallback contextCallback;
+}			AuditEventStackItem;
+
+static AuditEventStackItem * auditEventStack = NULL;
+
+/*
+ * Track running total for statements and substatements and whether or not
+ * anything has been logged since the current statement began.
+ */
+static int64 stackTotal = 0;
+
+/*
+ * Respond to callbacks registered with MemoryContextRegisterResetCallback().
+ * Removes the event(s) off the stack that have become obsolete once the
+ * MemoryContext has been freed.  The callback should always be freeing the top
+ * of the stack, but the code is tolerant of out-of-order callbacks.
+ */
+static void
+stack_free(void *stackFree)
+{
+	AuditEventStackItem *nextItem = auditEventStack;
+
+	/* Only process if the stack contains items */
+	while (nextItem != NULL)
+	{
+		/* Check if this item matches the item to be freed */
+		if (nextItem == (AuditEventStackItem *) stackFree)
+		{
+			/* Move top of stack to the item after the freed item */
+			auditEventStack = nextItem->next;
+
+			return;
+		}
+
+		nextItem = nextItem->next;
+	}
+}
+
+/*
+ * Push a new audit event onto the stack and create a new memory context to
+ * store it.
+ */
+static AuditEventStackItem *
+stack_push()
+{
+	MemoryContext contextAudit;
+	MemoryContext contextOld;
+	AuditEventStackItem *stackItem;
+
+	/*
+	 * Create a new memory context to contain the stack item.  This will be
+	 * free'd on stack_pop, or by our callback when the parent context is
+	 * destroyed.
+	 */
+	contextAudit = AllocSetContextCreate(CurrentMemoryContext,
+										 "plaudit stack context",
+										 ALLOCSET_DEFAULT_SIZES);
+
+	/* Save the old context to switch back to at the end */
+	contextOld = MemoryContextSwitchTo(contextAudit);
+
+	/* Create our new stack item in our context */
+	stackItem = palloc0(sizeof(AuditEventStackItem));
+	stackItem->contextAudit = contextAudit;
+	stackItem->stackId = ++stackTotal;
+
+	/*
+	 * Setup a callback in case an error happens.  stack_free() will truncate
+	 * the stack at this item.
+	 */
+	stackItem->contextCallback.func = stack_free;
+	stackItem->contextCallback.arg = (void *) stackItem;
+	MemoryContextRegisterResetCallback(contextAudit,
+									   &stackItem->contextCallback);
+
+	/* Push new item onto the stack */
+	if (auditEventStack != NULL)
+		stackItem->next = auditEventStack;
+	else
+		stackItem->next = NULL;
+
+	auditEventStack = stackItem;
+
+	MemoryContextSwitchTo(contextOld);
+
+	return stackItem;
+}
+
+/*
+ * Pop an audit event from the stack by deleting the memory context that
+ * contains it.  The callback to stack_free() does the actual pop.
+ */
+static void
+stack_pop(int64 stackId)
+{
+	/* Make sure what we want to delete is at the top of the stack */
+	if (auditEventStack != NULL && auditEventStack->stackId == stackId)
+		MemoryContextDelete(auditEventStack->contextAudit);
+	else
+		elog(ERROR, "plaudit stack item " INT64_FORMAT " not found on top - cannot pop",
+			 stackId);
+}
 
 /*
  * Hook ExecutorStart to get the query text and basic command type for queries
@@ -131,6 +279,9 @@ plaudit_object_access_hook(ObjectAccessType access,
 						   int subId,
 						   void *arg)
 {
+	/* Temporary code to avoid compile warning. */
+	stack_push();
+	stack_pop(0);
 	return;
 }
 
@@ -209,6 +360,21 @@ _PG_init(void)
 							 NULL,
 							 &auditLogStatement,
 							 true,
+							 PGC_SUSET,
+							 GUC_NOT_IN_SAMPLE,
+							 NULL, NULL, NULL);
+
+	/* Define plaudit.log_parameter */
+	DefineCustomBoolVariable(
+							 "plaudit.log_parameter",
+
+							 "Specifies that audit logging should include the parameters that were "
+							 "passed into the statement. When parameters are present they will be "
+							 "included in CSV format after the statement text.",
+
+							 NULL,
+							 &auditLogParameter,
+							 false,
 							 PGC_SUSET,
 							 GUC_NOT_IN_SAMPLE,
 							 NULL, NULL, NULL);
