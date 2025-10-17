@@ -105,7 +105,11 @@ vfs_mgr		polar_vfs[] =
 		.vfs_fsync = fsync,
 		.vfs_unlink = unlink,
 		.vfs_rename = rename,
+#ifdef HAVE_POSIX_FALLOCATE
 		.vfs_posix_fallocate = posix_fallocate,
+#else
+		.vfs_posix_fallocate = NULL,
+#endif
 #ifdef __linux__
 		.vfs_fallocate = fallocate,
 #else
