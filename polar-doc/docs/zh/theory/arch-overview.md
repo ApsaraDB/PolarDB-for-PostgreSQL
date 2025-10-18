@@ -217,7 +217,7 @@ PolarDB 支持一套 OLTP 场景型的数据在如下两种计算引擎下使用
 1. 如果对应 Page 不在内存中，仅仅记录 LogIndex。
 1. 如果对应的 Page 在内存中，则标记为 Outdate，并记录 LogIndex，回放过程完成。
 1. 用户 session 进程在读取 Page 时，读取正确的 Page 到 BufferPool 中，并通过 LogIndex 来回放相应的日志。
-1. 可以看到，主要的 IO 操作有原来的单个回放进程 offload 到了多个用户进程。
+1. 可以看到，主要的 IO 操作由原来的单个回放进程 offload 到了多个用户进程。
 
 通过上述优化，能显著减少回放的延迟，比 AWS Aurora 快 30 倍。
 
