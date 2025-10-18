@@ -135,7 +135,7 @@ PolarDB 支持一套 OLTP 场景型的数据在如下两种计算引擎下使用
 2. WAL meta 记录该条日志修改了哪些 Page。
 3. 将该条 WAL meta 插入到 LogIndex 中，key 是 PageID，value 是 LSN。
 4. 一条 WAL 日志可能更新了多个 Page（索引分裂），在 LogIndex 对有多条记录。
-5. 同时在 BufferPool 中给该该 Page 打上 outdate 标记，以便使得下次读取的时候从 LogIndex 重回放对应的日志。
+5. 同时在 BufferPool 中给该 Page 打上 outdate 标记，以便使得下次读取的时候从 LogIndex 重回放对应的日志。
 6. 当内存达到一定阈值时，LogIndex 异步将内存中的 hash 刷到盘上。
 
 ![image.png](../imgs/8_solution_to_outdated_pages_LogIndex.png)
