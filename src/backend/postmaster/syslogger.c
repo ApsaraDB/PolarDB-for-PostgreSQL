@@ -56,6 +56,7 @@
 
 /* POLAR */
 #include "storage/fd.h"
+#include "storage/polar_fd.h"
 #include "utils/builtins.h"
 
 /*
@@ -2092,9 +2093,20 @@ polar_drop_log_page_cache(const char *filename)
 	{
 		ereport(LOG,
 				(errmsg("the old log file doesn't exist")));
+
+		/* no need to go further */
+		return;
 	}
-	ret = posix_fadvise(last_log_fd, 0, 0, POSIX_FADV_DONTNEED);
-	/* return zero means success */
+	/*
+	 * on platforms that support posix_fadvise, advise the kernel to drop
+	 * cached pages for the old log file. Otherwise, skip silently.
+	 */
+#if defined(USE_POSIX_FADVISE) && defined(POSIX_FADV_DONTNEED)
+	ret = polar_posix_fadvise(last_log_fd, 0, 0, POSIX_FADV_DONTNEED);
+#else
+	ret = 0;
+#endif
+
 	if (ret != 0)
 	{
 		ereport(LOG,
