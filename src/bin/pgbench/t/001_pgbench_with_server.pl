@@ -1545,10 +1545,9 @@ $node->safe_psql('postgres', 'DROP TABLE first_client_table, xy;');
 
 # Test copy in pgbench
 $node->pgbench(
-	'-t 10',
-	2,
+	'-t 10', 2,
 	[],
-	[ qr{COPY is not supported in pgbench, aborting} ],
+	[qr{COPY is not supported in pgbench, aborting}],
 	'Test copy in script',
 	{
 		'001_copy' => q{ COPY pgbench_accounts FROM stdin }

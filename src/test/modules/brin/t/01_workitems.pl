@@ -48,14 +48,16 @@ is($count, '1', "initial brin_packdate_idx index state is correct");
 $node->safe_psql('postgres',
 	'insert into brin_wi select * from generate_series(1, 100)');
 $node->safe_psql('postgres',
-	"insert into journal select * from generate_series(timestamp '1976-08-01', '1976-10-28', '1 day')");
+	"insert into journal select * from generate_series(timestamp '1976-08-01', '1976-10-28', '1 day')"
+);
 
 $node->poll_query_until(
 	'postgres',
 	"select count(*) > 1 from brin_page_items(get_raw_page('brin_wi_idx', 2), 'brin_wi_idx'::regclass)",
 	't');
 
-$count = $node->safe_psql('postgres',
+$count = $node->safe_psql(
+	'postgres',
 	"select count(*) from brin_page_items(get_raw_page('brin_wi_idx', 2), 'brin_wi_idx'::regclass)
 	 where not placeholder;"
 );
@@ -66,7 +68,8 @@ $node->poll_query_until(
 	"select count(*) > 1 from brin_page_items(get_raw_page('brin_packdate_idx', 2), 'brin_packdate_idx'::regclass)",
 	't');
 
-$count = $node->safe_psql('postgres',
+$count = $node->safe_psql(
+	'postgres',
 	"select count(*) from brin_page_items(get_raw_page('brin_packdate_idx', 2), 'brin_packdate_idx'::regclass)
 	 where not placeholder;"
 );

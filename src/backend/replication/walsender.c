@@ -224,10 +224,6 @@ typedef struct
 	XLogRecPtr	last_lsn;
 	WalTimeSample buffer[LAG_TRACKER_BUFFER_SIZE];
 	int			write_head;
-<<<<<<< HEAD
-	int			read_heads[POLAR_NUM_ALL_REP_WAIT_MODE];
-	WalTimeSample last_read[POLAR_NUM_ALL_REP_WAIT_MODE];
-=======
 	int			read_heads[NUM_SYNC_REP_WAIT_MODE];
 	WalTimeSample last_read[NUM_SYNC_REP_WAIT_MODE];
 
@@ -244,7 +240,6 @@ typedef struct
 	 * we transition back to normal buffer-based tracking.
 	 */
 	WalTimeSample overflowed[NUM_SYNC_REP_WAIT_MODE];
->>>>>>> REL_15_15
 } LagTracker;
 
 static LagTracker *lag_tracker;

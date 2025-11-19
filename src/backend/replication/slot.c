@@ -1835,7 +1835,7 @@ SaveSlotToPath(ReplicationSlot *slot, const char *dir, int elevel)
 
 		pgstat_report_wait_end();
 		CloseTransientFile(fd);
-		unlink(tmppath);
+		polar_unlink(tmppath);
 		LWLockRelease(&slot->io_in_progress_lock);
 
 		/* if write didn't set errno, assume problem is no disk space */
@@ -1856,7 +1856,7 @@ SaveSlotToPath(ReplicationSlot *slot, const char *dir, int elevel)
 
 		pgstat_report_wait_end();
 		CloseTransientFile(fd);
-		unlink(tmppath);
+		polar_unlink(tmppath);
 		LWLockRelease(&slot->io_in_progress_lock);
 
 		errno = save_errno;
@@ -1872,7 +1872,7 @@ SaveSlotToPath(ReplicationSlot *slot, const char *dir, int elevel)
 	{
 		int			save_errno = errno;
 
-		unlink(tmppath);
+		polar_unlink(tmppath);
 		LWLockRelease(&slot->io_in_progress_lock);
 
 		errno = save_errno;
@@ -1888,7 +1888,7 @@ SaveSlotToPath(ReplicationSlot *slot, const char *dir, int elevel)
 	{
 		int			save_errno = errno;
 
-		unlink(tmppath);
+		polar_unlink(tmppath);
 		LWLockRelease(&slot->io_in_progress_lock);
 
 		errno = save_errno;

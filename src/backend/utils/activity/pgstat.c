@@ -1637,7 +1637,7 @@ pgstat_read_statsfile(void)
 						 * WARNING, but it would mean that all the statistics
 						 * are discarded when the environment fails on OOM.
 						 */
-						elog(ERROR,	"could not allocate entry %d/%u/%u",
+						elog(ERROR, "could not allocate entry %d/%u/%u",
 							 key.kind, key.dboid, key.objoid);
 					}
 

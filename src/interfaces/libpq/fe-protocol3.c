@@ -51,13 +51,8 @@ static int	getCopyStart(PGconn *conn, ExecStatusType copytype);
 static int	getReadyForQuery(PGconn *conn);
 static void reportErrorPosition(PQExpBuffer msg, const char *query,
 								int loc, int encoding);
-<<<<<<< HEAD
-static int	build_startup_packet(PGconn *conn, char *packet,
-								 const PQEnvironmentOption *options);
-=======
-static size_t build_startup_packet(const PGconn *conn, char *packet,
+static size_t build_startup_packet(PGconn *conn, char *packet,
 								   const PQEnvironmentOption *options);
->>>>>>> REL_15_15
 
 
 /*
@@ -2258,13 +2253,8 @@ add_size_overflow(size_t s1, size_t s2, size_t *dst)
  * (with packet == allocated space) fills it in.  Return value is the number
  * of bytes used, or zero in the unlikely event of size_t overflow.
  */
-<<<<<<< HEAD
-static int
-build_startup_packet(PGconn *conn, char *packet,
-=======
 static size_t
-build_startup_packet(const PGconn *conn, char *packet,
->>>>>>> REL_15_15
+build_startup_packet(PGconn *conn, char *packet,
 					 const PQEnvironmentOption *options)
 {
 	size_t		packet_len = 0;
