@@ -3127,7 +3127,7 @@ lmerge_matched:;
 							 * the tuple moved, and setting our current
 							 * resultRelInfo to that.
 							 */
-							if (ItemPointerIndicatesMovedPartitions(&context->tmfd.ctid))
+							if (ItemPointerIndicatesMovedPartitions(tupleid))
 								ereport(ERROR,
 										(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
 										 errmsg("tuple to be deleted was already moved to another partition due to concurrent update")));
@@ -3139,14 +3139,14 @@ lmerge_matched:;
 							 * that the first qualifying WHEN MATCHED action
 							 * is executed.
 							 *
-							 * Update tupleid to that of the new tuple, for
-							 * the refetch we do at the top.
+							 * tupleid has been updated to that of the new
+							 * tuple, as required for the refetch we do at the
+							 * top.
 							 */
 							if (resultRelInfo->ri_needLockTagTuple)
 								UnlockTuple(resultRelInfo->ri_RelationDesc,
 											&lockedtid,
 											InplaceUpdateTupleLock);
-							ItemPointerCopy(&context->tmfd.ctid, tupleid);
 							goto lmerge_matched;
 
 						case TM_Deleted:
@@ -4220,6 +4220,10 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 	foreach(l, node->resultRelations)
 	{
 		Index		resultRelation = lfirst_int(l);
+		List	   *mergeActions = NIL;
+
+		if (node->mergeActionLists)
+			mergeActions = list_nth(node->mergeActionLists, i);
 
 		if (resultRelInfo != mtstate->rootResultRelInfo)
 		{
@@ -4241,7 +4245,8 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 		/*
 		 * Verify result relation is a valid target for the current operation
 		 */
-		CheckValidResultRel(resultRelInfo, operation);
+		CheckValidResultRelNew(resultRelInfo, operation,
+							   node->onConflictAction, mergeActions);
 
 		resultRelInfo++;
 		i++;
