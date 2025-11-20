@@ -25,7 +25,9 @@
 
 #include "postgres.h"
 
+#ifdef __linux__
 #include <linux/sockios.h>
+#endif
 #include <netinet/tcp.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
@@ -210,9 +212,13 @@ polar_network_stat_timer(void)
 static void
 polar_network_get_tcpinfo(void)
 {
+#ifdef __linux__
 	struct tcp_info info;
-	int			length = sizeof(struct tcp_info);
+	struct timeval now;
 	int			ret;
+	int			index;
+	int			length = sizeof(struct tcp_info);
+#endif
 
 	if (!polar_network_stat_array)
 		return;
@@ -220,12 +226,11 @@ polar_network_get_tcpinfo(void)
 	if (!MyProcPort)
 		return;
 
+#ifdef __linux__
 	ret = getsockopt(MyProcPort->sock, SOL_TCP, TCP_INFO, (void *) &info, (socklen_t *) &length);
 	if (ret == 0)
 	{
-		struct timeval now;
-		int			index = POLAR_NET_STAT_BACKEND_INDEX();
-
+		index = POLAR_NET_STAT_BACKEND_INDEX();
 		if (index < 0)
 			return;
 
@@ -238,6 +243,9 @@ polar_network_get_tcpinfo(void)
 		polar_network_stat_array[index].tcpinfo_update_time = now.tv_sec;
 		last_network_tcpinfo_update_time = now.tv_sec;
 	}
+#else
+	/* TCP_INFO with SOL_TCP are Linux-specific, skip updating tcpinfo */
+#endif
 }
 
 /*
@@ -246,9 +254,11 @@ polar_network_get_tcpinfo(void)
 static void
 polar_network_get_qlen(void)
 {
+#ifdef __linux__
 	int			queue_len;
-	int			index;
 	int			ret;
+#endif
+	int			index;
 
 	if (!polar_network_stat_array)
 		return;
@@ -260,6 +270,8 @@ polar_network_get_qlen(void)
 	if (index < 0)
 		return;
 
+#ifdef __linux__
+
 	ret = ioctl(MyProcPort->sock, SIOCOUTQ, &queue_len);
 	if (ret == 0)
 		polar_network_stat_array[index].sendq = queue_len;
@@ -267,4 +279,9 @@ polar_network_get_qlen(void)
 	ret = ioctl(MyProcPort->sock, SIOCINQ, &queue_len);
 	if (ret == 0)
 		polar_network_stat_array[index].recvq = queue_len;
+#else
+	/* SIOCOUTQ/SIOCINQ are Linux-specific, set values to 0 */
+	polar_network_stat_array[index].sendq = 0;
+	polar_network_stat_array[index].recvq = 0;
+#endif
 }
