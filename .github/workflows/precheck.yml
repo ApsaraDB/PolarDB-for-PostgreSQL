@@ -85,7 +85,15 @@ jobs:
             bash -c "cd /home/postgres/PolarDB-for-PostgreSQL &&     \
                      if [ -f /etc/bashrc ]; then source /etc/bashrc; fi && \
                      ./build.sh --wr=1 --debug=${{ matrix.debug_mode }} --ec='--enable-tap-tests' && \
-                     make ${{ matrix.rules }} -j4"
+                     make ${{ matrix.rules }} -j4" || \
+          docker exec                                            \
+            polardb_${{ matrix.container_image }}                \
+            bash -c "cd /home/postgres/PolarDB-for-PostgreSQL && \
+                     if [ -f 'src/test/regress/regression.diffs' ]; then \
+                       echo '=== Contents of regression.diffs ==='; \
+                       cat src/test/regress/regression.diffs; \
+                     fi && \
+                     exit 1"
 
       - name: change ownership of the source code back
         run: |
