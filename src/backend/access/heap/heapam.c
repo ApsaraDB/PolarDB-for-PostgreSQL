@@ -6513,7 +6513,7 @@ heap_inplace_update_and_unlock(Relation relation,
 		uint16		lower = ((PageHeader) page)->pd_lower;
 		uint16		upper = ((PageHeader) page)->pd_upper;
 		uintptr_t	dst_offset_in_block;
-		RelFileNode	rnode;
+		RelFileNode rnode;
 		ForkNumber	forkno;
 		BlockNumber blkno;
 		XLogRecPtr	recptr;

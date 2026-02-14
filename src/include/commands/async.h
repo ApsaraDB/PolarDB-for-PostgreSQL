@@ -50,11 +50,9 @@ extern void HandleNotifyInterrupt(void);
 /* process interrupts */
 extern void ProcessNotifyInterrupt(bool flush);
 
-<<<<<<< HEAD
-extern PGDLLIMPORT int polar_notify_buffer_slot_size;
-=======
 /* freeze old transaction IDs in notify queue (called by VACUUM) */
 extern void AsyncNotifyFreezeXids(TransactionId newFrozenXid);
->>>>>>> REL_15_16
+
+extern PGDLLIMPORT int polar_notify_buffer_slot_size;
 
 #endif							/* ASYNC_H */

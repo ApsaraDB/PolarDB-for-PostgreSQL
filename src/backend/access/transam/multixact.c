@@ -338,16 +338,14 @@ static MemoryContext MXactContext = NULL;
 #define debug_elog6(a,b,c,d,e,f)
 #endif
 
-<<<<<<< HEAD
 /* POLAR: Check whether multixact local file cache is enabled */
 #define POLAR_ENABLE_MULTIXACT_LOCAL_CACHE() \
 	(polar_multixact_max_local_cache_segments > 0 && polar_enable_shared_storage_mode)
 int			polar_mxact_offset_buffer_slot_size = NUM_MULTIXACTOFFSET_BUFFERS;
 int			polar_mxact_member_buffer_slot_size = NUM_MULTIXACTMEMBER_BUFFERS;
-=======
+
 /* hack to deal with WAL generated with older minor versions */
 static int	pre_initialized_offsets_page = -1;
->>>>>>> REL_15_16
 
 /* internal MultiXactId management */
 static void MultiXactIdSetOldestVisible(void);

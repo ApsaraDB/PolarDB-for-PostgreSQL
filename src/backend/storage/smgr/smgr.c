@@ -999,19 +999,17 @@ smgrtruncate2(SMgrRelation reln, ForkNumber *forknum, int nforks,
 		 * In such cases, smgr_truncate does nothing, so set the cached size
 		 * to the old size rather than the requested size.
 		 */
-<<<<<<< HEAD
-		reln->smgr_cached_nblocks[forknum[i]] = nblocks[i];
+		reln->smgr_cached_nblocks[forknum[i]] =
+			nblocks[i] > old_nblocks[i] ? old_nblocks[i] : nblocks[i];
 
 		/*
 		 * POLAR RSC: update blocknum after truncate.
 		 */
 		if (POLAR_RSC_SHOULD_UPDATE(reln, forknum[i]))
-			polar_rsc_update_entry(reln, forknum[i], nblocks[i]);
+			polar_rsc_update_entry(reln, forknum[i],
+								   nblocks[i] > old_nblocks[i] ?
+								   old_nblocks[i] : nblocks[i]);
 		/* POLAR end */
-=======
-		reln->smgr_cached_nblocks[forknum[i]] =
-			nblocks[i] > old_nblocks[i] ? old_nblocks[i] : nblocks[i];
->>>>>>> REL_15_16
 	}
 }
 
