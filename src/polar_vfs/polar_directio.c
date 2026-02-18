@@ -79,7 +79,11 @@ const vfs_mgr polar_vfs_dio =
 	.vfs_fsync = polar_directio_fsync,
 	.vfs_unlink = unlink,
 	.vfs_rename = rename,
+#ifdef HAVE_POSIX_FALLOCATE
 	.vfs_posix_fallocate = posix_fallocate,
+#else
+	.vfs_posix_fallocate = NULL,
+#endif
 #ifdef __linux__
 	.vfs_fallocate = fallocate,
 #else
