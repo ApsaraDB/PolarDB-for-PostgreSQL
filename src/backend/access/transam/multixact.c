@@ -3475,7 +3475,6 @@ multixact_redo(XLogReaderState *record)
 	else if (info == XLOG_MULTIXACT_TRUNCATE_ID)
 	{
 		xl_multixact_truncate xlrec;
-		int			pageno;
 
 		memcpy(&xlrec, XLogRecGetData(record),
 			   SizeOfMultiXactTruncate);
@@ -3500,14 +3499,6 @@ multixact_redo(XLogReaderState *record)
 		SetMultiXactIdLimit(xlrec.endTruncOff, xlrec.oldestMultiDB, false);
 
 		PerformMembersTruncation(xlrec.startTruncMemb, xlrec.endTruncMemb);
-
-		/*
-		 * During XLOG replay, latest_page_number isn't necessarily set up
-		 * yet; insert a suitable value to bypass the sanity test in
-		 * SimpleLruTruncate.
-		 */
-		pageno = MultiXactIdToOffsetPage(xlrec.endTruncOff);
-		MultiXactOffsetCtl->shared->latest_page_number = pageno;
 		PerformOffsetsTruncation(xlrec.startTruncOff, xlrec.endTruncOff);
 
 		LWLockRelease(MultiXactTruncationLock);
