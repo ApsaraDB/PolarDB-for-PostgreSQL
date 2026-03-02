@@ -75,7 +75,8 @@ $primary->safe_psql('postgres', 'VACUUM (TRUNCATE) t;');
 # Verify expected length after truncation.
 $t_blocks = $primary->safe_psql('postgres',
 	"SELECT pg_relation_size('t') / current_setting('block_size')::int;");
-is($t_blocks, $rows_after_truncation, 'post-truncation row count as expected');
+is($t_blocks, $rows_after_truncation,
+	'post-truncation row count as expected');
 cmp_ok($t_blocks, '>', $target_blocks,
 	'post-truncation block count as expected');
 

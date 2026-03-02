@@ -113,9 +113,10 @@ command_ok(
 	'dump primary server');
 command_ok(
 	[
-		'pg_dumpall', '-f', $outputdir . '/standby.dump',
-		'--restrict-key=test',
-		'--no-sync', '-p', $node_standby_1->port
+		'pg_dumpall', '-f',
+		$outputdir . '/standby.dump', '--restrict-key=test',
+		'--no-sync', '-p',
+		$node_standby_1->port
 	],
 	'dump standby server');
 command_ok(

@@ -889,13 +889,14 @@ SnapBuildDistributeSnapshotAndInval(SnapBuild *builder, XLogRecPtr lsn, Transact
 		 * transaction which in turn implies we don't yet need a snapshot at
 		 * all. We'll add a snapshot when the first change gets queued.
 		 *
-		 * Similarly, we don't need to add invalidations to a transaction whose
-		 * base snapshot is not yet set. Once a base snapshot is built, it will
-		 * include the xids of committed transactions that have modified the
-		 * catalog, thus reflecting the new catalog contents. The existing
-		 * catalog cache will have already been invalidated after processing
-		 * the invalidations in the transaction that modified catalogs,
-		 * ensuring that a fresh cache is constructed during decoding.
+		 * Similarly, we don't need to add invalidations to a transaction
+		 * whose base snapshot is not yet set. Once a base snapshot is built,
+		 * it will include the xids of committed transactions that have
+		 * modified the catalog, thus reflecting the new catalog contents. The
+		 * existing catalog cache will have already been invalidated after
+		 * processing the invalidations in the transaction that modified
+		 * catalogs, ensuring that a fresh cache is constructed during
+		 * decoding.
 		 *
 		 * NB: This works correctly even for subtransactions because
 		 * ReorderBufferAssignChild() takes care to transfer the base snapshot
@@ -942,7 +943,7 @@ SnapBuildDistributeSnapshotAndInval(SnapBuild *builder, XLogRecPtr lsn, Transact
 		 */
 		if (txn->xid != xid)
 		{
-			uint32 ninvalidations;
+			uint32		ninvalidations;
 			SharedInvalidationMessage *msgs = NULL;
 
 			ninvalidations = ReorderBufferGetInvalidations(builder->reorder,

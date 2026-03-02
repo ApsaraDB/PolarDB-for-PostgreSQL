@@ -280,7 +280,8 @@ $standby1->safe_psql('postgres', "SELECT pg_sync_replication_slots();");
 
 # Confirm that the invalidated slot has been dropped.
 $standby1->wait_for_log(
-	qr/dropped replication slot "lsub1_slot" of database with OID [0-9]+/, $log_offset);
+	qr/dropped replication slot "lsub1_slot" of database with OID [0-9]+/,
+	$log_offset);
 
 # Confirm that the logical slot has been re-created on the standby and is
 # flagged as 'synced'

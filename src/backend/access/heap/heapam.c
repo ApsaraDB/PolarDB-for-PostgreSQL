@@ -251,9 +251,9 @@ AssertHasSnapshotForToast(Relation rel)
 		return;
 
 	/*
-	 * Commit 16bf24e fixed accesses to pg_replication_origin without a
-	 * an active snapshot by removing its TOAST table.  On older branches,
-	 * these bugs are left in place.  Its only varlena column is roname (the
+	 * Commit 16bf24e fixed accesses to pg_replication_origin without a an
+	 * active snapshot by removing its TOAST table.  On older branches, these
+	 * bugs are left in place.  Its only varlena column is roname (the
 	 * replication origin name), so this is only a problem if the name
 	 * requires out-of-line storage, which seems unlikely.  In any case,
 	 * fixing it doesn't seem worth extra code churn on the back-branches.

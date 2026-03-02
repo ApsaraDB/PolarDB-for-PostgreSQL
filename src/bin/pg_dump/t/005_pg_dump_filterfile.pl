@@ -392,8 +392,7 @@ command_fails_like(
 		"--filter=$tempdir/inputfile.txt", 'postgres'
 	],
 	qr/unsupported filter object type: "table-data"/,
-	"invalid syntax: invalid object type specified"
-);
+	"invalid syntax: invalid object type specified");
 
 # Test missing object identifier pattern
 open $inputfile, '>', "$tempdir/inputfile.txt"
