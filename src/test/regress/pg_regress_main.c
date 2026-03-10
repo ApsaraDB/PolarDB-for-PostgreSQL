@@ -21,6 +21,10 @@
 #include "lib/stringinfo.h"
 #include "pg_regress.h"
 
+/* POLAR */
+extern char *polar_extension_user;
+extern bool polar_prepare_sql;
+
 /*
  * start a psql test process for specified file (including redirection),
  * and return process ID
@@ -70,15 +74,23 @@ psql_start_test(const char *testname,
 	/*
 	 * Use HIDE_TABLEAM to hide different AMs to allow to use regression tests
 	 * against different AMs without unnecessary differences.
+	 *
+	 * POLAR: extensions regressions are now run by default with the
+	 * configured extension user.
 	 */
 	appendStringInfo(&psql_cmd,
-					 "\"%s%spsql\" -X -a -q -d \"%s\" %s < \"%s\" > \"%s\" 2>&1",
+					 "\"%s%spsql\" -X -a -q -U \"%s\" -d \"%s\" %s < \"%s\" > \"%s\" 2>&1",
 					 bindir ? bindir : "",
 					 bindir ? "/" : "",
+					 polar_extension_user ? polar_extension_user : "",
 					 dblist->str,
 					 "-v HIDE_TABLEAM=on -v HIDE_TOAST_COMPRESSION=on",
 					 infile,
 					 outfile);
+
+	/* POLAR: replace psql via dummy command */
+	if (polar_prepare_sql)
+		psql_cmd.data[0] = '\0';
 
 	appnameenv = psprintf("pg_regress/%s", testname);
 	setenv("PGAPPNAME", appnameenv, 1);

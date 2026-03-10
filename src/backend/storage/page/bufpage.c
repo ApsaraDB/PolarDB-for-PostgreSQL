@@ -19,6 +19,8 @@
 #include "access/xlog.h"
 #include "pgstat.h"
 #include "storage/checksum.h"
+#include "storage/encryption.h"
+#include "storage/smgr.h"
 #include "utils/memdebug.h"
 #include "utils/memutils.h"
 
@@ -85,7 +87,7 @@ PageInit(Page page, Size pageSize, Size specialSize)
  * to pgstat.
  */
 bool
-PageIsVerifiedExtended(Page page, BlockNumber blkno, int flags)
+PageIsVerifiedExtended(Page page, ForkNumber forknum, BlockNumber blkno, void *smgr, int flags)
 {
 	PageHeader	p = (PageHeader) page;
 	size_t	   *pagebytes;
@@ -107,6 +109,8 @@ PageIsVerifiedExtended(Page page, BlockNumber blkno, int flags)
 			if (checksum != p->pd_checksum)
 				checksum_failure = true;
 		}
+
+		PageDecryptInplace(page, forknum, blkno, smgr);
 
 		/*
 		 * The following checks don't prove the header is correct, only that
@@ -1539,11 +1543,76 @@ PageSetChecksumCopy(Page page, BlockNumber blkno)
  * the page buffer.
  */
 void
-PageSetChecksumInplace(Page page, BlockNumber blkno)
+PageSetChecksumInplace(Page page, ForkNumber forknum, BlockNumber blkno)
 {
+	/* POLAR: handle encrypt stuff before checksum. */
+	PageEncryptInplace(page, forknum, blkno);
+
 	/* If we don't need a checksum, just return */
 	if (PageIsNew(page) || !DataChecksumsEnabled())
 		return;
 
 	((PageHeader) page)->pd_checksum = pg_checksum_page((char *) page, blkno);
+}
+
+char *
+PageEncryptCopy(Page page, ForkNumber forknum, BlockNumber blkno)
+{
+	static char *pageCopy = NULL;
+
+	if (PageIsNew(page) || !DataEncryptionEnabled() || !EncryptForkNum(forknum))
+		return (char *) page;
+
+	/*
+	 * We allocate the copy space once and use it over on each subsequent
+	 * call.  The point of palloc'ing here, rather than having a static char
+	 * array, is first to ensure adequate alignment for the checksumming code
+	 * and second to avoid wasting space in processes that never call this.
+	 */
+	if (pageCopy == NULL)
+		pageCopy = MemoryContextAllocAligned(TopMemoryContext,
+											 BLCKSZ,
+											 PG_IO_ALIGN_SIZE,
+											 0);
+
+	memcpy(pageCopy, (char *) page, BLCKSZ);
+	EncryptBufferBlock(blkno, pageCopy);
+	return pageCopy;
+}
+
+void
+PageEncryptInplace(Page page, ForkNumber forknum, BlockNumber blkno)
+{
+	Assert(forknum <= MAX_FORKNUM && blkno != InvalidBlockNumber);
+	if (PageIsNew(page) || !DataEncryptionEnabled() || !EncryptForkNum(forknum))
+		return;
+
+	EncryptBufferBlock(blkno, page);
+}
+
+
+void
+PageDecryptInplace(Page page, ForkNumber forknum, BlockNumber blkno, void *smgr)
+{
+	Assert(forknum <= MAX_FORKNUM && blkno != InvalidBlockNumber);
+	if (PageIsNew(page) || !DataEncryptionEnabled() || !EncryptForkNum(forknum))
+		return;
+	if (DataEncryptionEnabled())
+	{
+		if (!PageIsEncrypted(page))
+		{
+			if (smgr && polar_enable_tde_warning)
+			{
+				char	   *relpath = relpath(((SMgrRelation) smgr)->smgr_rlocator, forknum);
+
+				elog(WARNING, "POLARDB: data encryption is enabled, "
+					 "but the page %u of relation %s is not encrypted.", blkno, relpath);
+				pfree(relpath);
+			}
+
+			return;
+		}
+	}
+
+	DecryptBufferBlock(blkno, page);
 }

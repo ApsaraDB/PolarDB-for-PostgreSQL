@@ -3,6 +3,7 @@
  * postgres.c
  *	  POSTGRES C Backend Interface
  *
+ * Portions Copyright (c) 2024, Alibaba Group Holding Limited
  * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -64,6 +65,7 @@
 #include "storage/bufmgr.h"
 #include "storage/ipc.h"
 #include "storage/pmsignal.h"
+#include "storage/kmgr.h"
 #include "storage/proc.h"
 #include "storage/procsignal.h"
 #include "storage/sinval.h"
@@ -75,11 +77,17 @@
 #include "utils/injection_point.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
+#include "utils/polar_features.h"
 #include "utils/ps_status.h"
 #include "utils/snapmgr.h"
 #include "utils/timeout.h"
 #include "utils/timestamp.h"
 #include "utils/varlena.h"
+
+/* POLAR */
+#include "catalog/namespace.h"
+#include "libpq/polar_network_stats.h"
+#include "postmaster/syslogger.h"
 
 /* ----------------
  *		global variables
@@ -119,6 +127,10 @@ typedef struct BindParamCbData
 	int			paramno;		/* zero-based param number, or -1 initially */
 	const char *paramval;		/* textual input string, if available */
 } BindParamCbData;
+
+/* POLAR: point to audit log */
+TimestampTz polar_last_audit_log_flush_time = 0;
+Pg_audit_log polar_audit_log;
 
 /* ----------------
  *		private variables
@@ -174,6 +186,12 @@ static volatile sig_atomic_t RecoveryConflictPendingReasons[NUM_PROCSIGNALS];
 static MemoryContext row_description_context = NULL;
 static StringInfoData row_description_buf;
 
+/* POLAR: Flag to mark RESOURCE MANAGER OOM signal. When OOM signal comes, it will be true. */
+static bool got_oom_signal = false;
+
+/* Init flag to mark check interrupts signal */
+static bool polar_init_checkinterrupts = false;
+
 /* ----------------------------------------------------------------
  *		decls for routines only used in this file
  * ----------------------------------------------------------------
@@ -185,7 +203,6 @@ static int	ReadCommand(StringInfo inBuf);
 static void forbidden_in_wal_sender(char firstchar);
 static bool check_log_statement(List *stmt_list);
 static int	errdetail_execute(List *raw_parsetree_list);
-static int	errdetail_params(ParamListInfo params);
 static int	errdetail_abort(void);
 static void bind_param_error_callback(void *arg);
 static void start_xact_command(void);
@@ -198,6 +215,16 @@ static void log_disconnections(int code, Datum arg);
 static void enable_statement_timeout(void);
 static void disable_statement_timeout(void);
 
+/* POLAR: for sigusr2 */
+static void polar_procsignal_sigusr2_handler(SIGNAL_ARGS);
+
+/* POLAR */
+static bool polar_stmt_type_needs_mask(NodeTag tag);
+static char *polar_get_errmsg_params(ParamListInfo params);
+
+/* POLAR: for flush audit log, return buffer status */
+static void polar_audit_log_flush_callback(int code, Datum arg);
+extern bool polar_audit_log_buffer_is_null(void);
 
 /* ----------------------------------------------------------------
  *		infrastructure for valgrind debugging
@@ -1025,6 +1052,11 @@ exec_simple_query(const char *query_string)
 	bool		use_implicit_block;
 	char		msec_str[32];
 
+	/* POLAR audit */
+	ListCell   *stmt_item;
+	bool		needs_mask = false;
+	int			log_mode;
+
 	/*
 	 * Report query to various monitoring facilities.
 	 */
@@ -1069,20 +1101,17 @@ exec_simple_query(const char *query_string)
 	 */
 	parsetree_list = pg_parse_query(query_string);
 
-	/* Log immediately if dictated by log_statement */
-	if (check_log_statement(parsetree_list))
-	{
-		ereport(LOG,
-				(errmsg("statement: %s", query_string),
-				 errhidestmt(true),
-				 errdetail_execute(parsetree_list)));
-		was_logged = true;
-	}
-
 	/*
 	 * Switch back to transaction context to enter the loop.
 	 */
 	MemoryContextSwitchTo(oldcontext);
+
+	/*
+	 * POLAR: The default value of is_need_audit initialization is false
+	 * During the actual pgaudit process, if an audit is indeed required, the
+	 * value of is_need_audit is assigned to true
+	 */
+	polar_audit_log.is_need_audit = false;
 
 	/*
 	 * For historical reasons, if multiple SQL statements are given in a
@@ -1359,27 +1388,99 @@ exec_simple_query(const char *query_string)
 	if (!parsetree_list)
 		NullCommand(dest);
 
+	/* POLAR: else we have to inspect the statement(s) to see whether to log */
+	foreach(stmt_item, parsetree_list)
+	{
+		Node	   *stmt = ((RawStmt *) lfirst(stmt_item))->stmt;
+
+		if (polar_stmt_type_needs_mask(nodeTag(stmt)))
+		{
+			needs_mask = true;
+			break;
+		}
+	}
+
+	/*
+	 * if parse success and need log, record audit log, else polar_audit_log
+	 * is NULL.
+	 */
+	if (check_log_statement(parsetree_list) || polar_audit_log.is_need_audit)
+	{
+		polar_audit_log.query_string = query_string;
+		if (polar_enable_multi_syslogger)
+		{
+			ErrorData	edata;
+
+			MemSet(&edata, 0, sizeof(ErrorData));
+			edata.elevel = LOG;
+			edata.is_audit_log = true;
+			edata.hide_stmt = true;
+			edata.output_to_server = true;
+			edata.message = NULL;
+			edata.needs_mask = needs_mask;
+			if (polar_enable_output_search_path_to_log)
+				polar_write_audit_log(&edata, "statement: /*%s*/ %s", namespace_search_path, query_string);
+			else
+				polar_write_audit_log(&edata, "statement: %s", query_string);
+		}
+		else
+		{
+
+			if (polar_enable_output_search_path_to_log)
+				ereport(LOG,
+						(errmsg("statement: /*%s*/ %s", namespace_search_path, query_string),
+						 errhidestmt(true),
+						 polar_mark_audit_log(true),
+						 polar_mark_needs_mask(needs_mask),
+						 errdetail_execute(parsetree_list)));
+			else
+				ereport(LOG,
+						(errmsg("statement: %s", query_string),
+						 errhidestmt(true),
+						 polar_mark_audit_log(true),
+						 polar_mark_needs_mask(needs_mask),
+						 errdetail_execute(parsetree_list)));
+		}
+		was_logged = true;
+	}
+
+	log_mode = check_log_duration(msec_str, was_logged);
+	/* POLAR end */
+
 	/*
 	 * Emit duration logging if appropriate.
 	 */
-	switch (check_log_duration(msec_str, was_logged))
+	switch (log_mode)
 	{
 		case 1:
 			ereport(LOG,
 					(errmsg("duration: %s ms", msec_str),
+					 polar_mark_slow_log(true), /* POLAR */
 					 errhidestmt(true)));
 			break;
 		case 2:
-			ereport(LOG,
-					(errmsg("duration: %s ms  statement: %s",
-							msec_str, query_string),
-					 errhidestmt(true),
-					 errdetail_execute(parsetree_list)));
-			break;
+			{
+				StringInfoData buf;
+
+				initStringInfo(&buf);
+				if (polar_enable_output_search_path_to_log)
+					appendStringInfo(&buf, "/*%s*/ ", namespace_search_path);
+				ereport(LOG,
+						(errmsg("duration: %s ms  statement: %s%s",
+								msec_str, buf.data, query_string),
+						 errhidestmt(true),
+						 polar_mark_slow_log(true), /* POLAR */
+						 polar_mark_needs_mask(needs_mask),
+						 errdetail_execute(parsetree_list)));
+				pfree(buf.data);
+				break;
+			}
 	}
 
 	if (save_log_statement_stats)
 		ShowUsage("QUERY STATISTICS");
+
+	hit_polar_unique_feature(SimpleProtocolExecCount);
 
 	TRACE_POSTGRESQL_QUERY_DONE(query_string);
 
@@ -1603,16 +1704,29 @@ exec_parse_message(const char *query_string,	/* string to execute */
 		case 1:
 			ereport(LOG,
 					(errmsg("duration: %s ms", msec_str),
+					 polar_mark_slow_log(true), /* POLAR */
 					 errhidestmt(true)));
 			break;
 		case 2:
-			ereport(LOG,
-					(errmsg("duration: %s ms  parse %s: %s",
-							msec_str,
-							*stmt_name ? stmt_name : "<unnamed>",
-							query_string),
-					 errhidestmt(true)));
-			break;
+			{
+				StringInfoData buf;
+
+				initStringInfo(&buf);
+
+				if (polar_enable_output_search_path_to_log)
+					appendStringInfo(&buf, "/*%s*/ ", namespace_search_path);
+
+				ereport(LOG,
+						(errmsg("duration: %s ms  parse %s: %s%s",
+								msec_str,
+								*stmt_name ? stmt_name : "<unnamed>",
+								buf.data,
+								query_string),
+						 polar_mark_slow_log(true), /* POLAR */
+						 errhidestmt(true)));
+				pfree(buf.data);
+				break;
+			}
 	}
 
 	if (save_log_statement_stats)
@@ -1649,6 +1763,9 @@ exec_bind_message(StringInfo input_message)
 	ParamsErrorCbData params_data;
 	ErrorContextCallback params_errcxt;
 	ListCell   *lc;
+
+	/* POLAR */
+	char	   *params_string = NULL;
 
 	/* Get the fixed part of the message */
 	portal_name = pq_getmsgstring(input_message);
@@ -2069,20 +2186,50 @@ exec_bind_message(StringInfo input_message)
 		case 1:
 			ereport(LOG,
 					(errmsg("duration: %s ms", msec_str),
+					 polar_mark_slow_log(true), /* POLAR */
 					 errhidestmt(true)));
 			break;
 		case 2:
-			ereport(LOG,
-					(errmsg("duration: %s ms  bind %s%s%s: %s",
-							msec_str,
-							*stmt_name ? stmt_name : "<unnamed>",
-							*portal_name ? "/" : "",
-							*portal_name ? portal_name : "",
-							psrc->query_string),
-					 errhidestmt(true),
-					 errdetail_params(params)));
-			break;
+			{
+				StringInfoData buf;
+
+				initStringInfo(&buf);
+
+				/*
+				 * POLAR: get errmsg params string, we must free it in the
+				 * last
+				 */
+				params_string = polar_get_errmsg_params(params);
+				/* POLAR end */
+
+				if (polar_enable_output_search_path_to_log)
+					appendStringInfo(&buf, "/*%s*/ ", namespace_search_path);
+				ereport(LOG,
+						(errmsg("duration: %s ms  bind %s%s%s: %s%s\nparams: %s",
+								msec_str,
+								*stmt_name ? stmt_name : "<unnamed>",
+								*portal_name ? "/" : "",
+								*portal_name ? portal_name : "",
+								buf.data,
+								psrc->query_string,
+								params_string ? params_string : ""),
+						 polar_mark_slow_log(true), /* POLAR */
+						 errhidestmt(true)));
+				pfree(buf.data);
+
+				/* POLAR: free params_string */
+				if (params_string)
+					pfree(params_string);
+				/* POLAR end */
+				break;
+			}
 	}
+
+	if (!stmt_name[0])
+		hit_polar_unique_feature(UnnamedStmtExecCount);
+
+	if (numParams == 0)
+		hit_polar_unique_feature(UnparameterizedStmtExecCount);
 
 	if (save_log_statement_stats)
 		ShowUsage("BIND MESSAGE STATISTICS");
@@ -2118,6 +2265,13 @@ exec_execute_message(const char *portal_name, long max_rows)
 	const char *cmdtagname;
 	size_t		cmdtaglen;
 	ListCell   *lc;
+
+	/* POLAR */
+	ListCell   *stmt_item;
+	bool		needs_mask = false;
+	bool		to_log = false;
+	int			log_mode = false;
+	char	   *params_string = NULL;
 
 	/* Adjust destination to tell printtup.c what to do */
 	dest = whereToSendOutput;
@@ -2206,22 +2360,32 @@ exec_execute_message(const char *portal_name, long max_rows)
 	 */
 	execute_is_fetch = !portal->atStart;
 
+	/* POLAR: else we have to inspect the statement(s) to see whether to log */
+	foreach(stmt_item, portal->stmts)
+	{
+		Node	   *stmt = ((PlannedStmt *) lfirst(stmt_item))->utilityStmt;
+
+		if (stmt != NULL && polar_stmt_type_needs_mask(nodeTag(stmt)))
+		{
+			needs_mask = true;
+			break;
+		}
+	}
+
 	/* Log immediately if dictated by log_statement */
 	if (check_log_statement(portal->stmts))
 	{
-		ereport(LOG,
-				(errmsg("%s %s%s%s: %s",
-						execute_is_fetch ?
-						_("execute fetch from") :
-						_("execute"),
-						prepStmtName,
-						*portal_name ? "/" : "",
-						*portal_name ? portal_name : "",
-						sourceText),
-				 errhidestmt(true),
-				 errdetail_params(portalParams)));
-		was_logged = true;
+		polar_audit_log.query_string = sourceText;
+		to_log = true;
 	}
+
+	/*
+	 * POLAR: The default value of is_need_audit initialization is false
+	 * During the actual pgaudit process, if an audit is indeed required, the
+	 * value of is_need_audit is assigned to true
+	 */
+	polar_audit_log.is_need_audit = false;
+	/* POLAR end */
 
 	/*
 	 * If we are in aborted transaction state, the only portals we can
@@ -2323,31 +2487,107 @@ exec_execute_message(const char *portal_name, long max_rows)
 		MyXactFlags |= XACT_FLAGS_PIPELINING;
 	}
 
-	/*
-	 * Emit duration logging if appropriate.
-	 */
-	switch (check_log_duration(msec_str, was_logged))
+	if (to_log || polar_audit_log.is_need_audit)
 	{
-		case 1:
+		StringInfoData buf;
+
+		/* POLAR: get errmsg params string, we must free it in the last */
+		/* It needs to malloc and free twice, not so efficiency. */
+		params_string = polar_get_errmsg_params(portalParams);
+		initStringInfo(&buf);
+
+		if (polar_enable_output_search_path_to_log)
+			appendStringInfo(&buf, "/*%s*/ ", namespace_search_path);
+
+		if (polar_enable_multi_syslogger)
+		{
+			ErrorData	edata;
+
+			MemSet(&edata, 0, sizeof(ErrorData));
+			edata.elevel = LOG;
+			edata.is_audit_log = true;
+			edata.hide_stmt = true;
+			edata.output_to_server = true;
+			edata.message = NULL;
+			edata.needs_mask = needs_mask;
+			polar_write_audit_log(&edata,
+								  "%s %s%s%s: %s%s\nparams: %s",
+								  execute_is_fetch ?
+								  "execute fetch from" :
+								  "execute",
+								  prepStmtName,
+								  *portal_name ? "/" : "",
+								  *portal_name ? portal_name : "",
+								  buf.data,
+								  sourceText,
+								  params_string ? params_string : "");
+		}
+		else
+		{
 			ereport(LOG,
-					(errmsg("duration: %s ms", msec_str),
-					 errhidestmt(true)));
-			break;
-		case 2:
-			ereport(LOG,
-					(errmsg("duration: %s ms  %s %s%s%s: %s",
-							msec_str,
+					(errmsg("%s %s%s%s: %s%s\nparams: %s",
 							execute_is_fetch ?
 							_("execute fetch from") :
 							_("execute"),
 							prepStmtName,
 							*portal_name ? "/" : "",
 							*portal_name ? portal_name : "",
-							sourceText),
+							buf.data,
+							sourceText,
+							params_string ? params_string : ""),
 					 errhidestmt(true),
-					 errdetail_params(portalParams)));
-			break;
+					 polar_mark_audit_log(true),
+					 polar_mark_needs_mask(needs_mask)));
+		}
+		pfree(buf.data);
+		was_logged = true;
 	}
+
+	log_mode = check_log_duration(msec_str, was_logged);
+	/* POLAR end */
+
+	/*
+	 * Emit duration logging if appropriate.
+	 */
+	switch (log_mode)
+	{
+		case 1:
+			ereport(LOG,
+					(errmsg("duration: %s ms", msec_str),
+					 polar_mark_slow_log(true), /* POLAR */
+					 errhidestmt(true)));
+			break;
+		case 2:
+			{
+				StringInfoData buf;
+
+				initStringInfo(&buf);
+				if (polar_enable_output_search_path_to_log)
+					appendStringInfo(&buf, "/*%s*/ ", namespace_search_path);
+				ereport(LOG,
+						(errmsg("duration: %s ms  %s %s%s%s: %s%s\nparams: %s",
+								msec_str,
+								execute_is_fetch ?
+								_("execute fetch from") :
+								_("execute"),
+								prepStmtName,
+								*portal_name ? "/" : "",
+								*portal_name ? portal_name : "",
+								buf.data,
+								sourceText,
+								params_string ? params_string : ""),
+						 errhidestmt(true),
+						 polar_mark_slow_log(true), /* POLAR */
+						 polar_mark_needs_mask(needs_mask)));
+				pfree(buf.data);
+				break;
+			}
+	}
+
+	/* POLAR: free params_string */
+	if (params_string)
+		pfree(params_string);
+	/* POLAR end */
 
 	if (save_log_statement_stats)
 		ShowUsage("EXECUTE MESSAGE STATISTICS");
@@ -2450,7 +2690,8 @@ check_log_duration(char *msec_str, bool was_logged)
 		{
 			snprintf(msec_str, 32, "%ld.%03d",
 					 secs * 1000 + msecs, usecs % 1000);
-			if ((exceeded_duration || in_sample || xact_is_sampled) && !was_logged)
+			if ((exceeded_duration || in_sample || xact_is_sampled) &&
+				(!was_logged || polar_log_statement_with_duration))
 				return 2;
 			else
 				return 1;
@@ -2487,28 +2728,6 @@ errdetail_execute(List *raw_parsetree_list)
 				return 0;
 			}
 		}
-	}
-
-	return 0;
-}
-
-/*
- * errdetail_params
- *
- * Add an errdetail() line showing bind-parameter data, if available.
- * Note that this is only used for statement logging, so it is controlled
- * by log_parameter_max_length not log_parameter_max_length_on_error.
- */
-static int
-errdetail_params(ParamListInfo params)
-{
-	if (params && params->numParams > 0 && log_parameter_max_length != 0)
-	{
-		char	   *str;
-
-		str = BuildParamLogString(params, NULL, log_parameter_max_length);
-		if (str && str[0] != '\0')
-			errdetail("Parameters: %s", str);
 	}
 
 	return 0;
@@ -3024,9 +3243,11 @@ die(SIGNAL_ARGS)
 /*
  * Query-cancel signal from postmaster: abort current transaction
  * at soonest convenient time
+ * POLAR: Because polar_procsignal_sigusr2_handler and StatementCancelHandler
+ * have many same codes, so we merge them to CancelQueryHandler
  */
-void
-StatementCancelHandler(SIGNAL_ARGS)
+static void
+SigCancelQueryHandler(void)
 {
 	/*
 	 * Don't joggle the elbow of proc_exit
@@ -3039,6 +3260,16 @@ StatementCancelHandler(SIGNAL_ARGS)
 
 	/* If we're still here, waken anything waiting on the process latch */
 	SetLatch(MyLatch);
+}
+
+/*
+ * POLAR: Query-cancel signal from postmaster: abort current transaction
+ * at soonest convenient time
+ */
+void
+StatementCancelHandler(SIGNAL_ARGS)
+{
+	SigCancelQueryHandler();
 }
 
 /* signal handler for floating point exception */
@@ -3270,6 +3501,13 @@ ProcessRecoveryConflictInterrupts(void)
 void
 ProcessInterrupts(void)
 {
+	/*
+	 * POLAR: we use tmp variable to replace got_oom_signal, we can reset
+	 * got_oom_signal to false, if not, we have reset it before every ERROR
+	 * log level.
+	 */
+	bool		tmp_got_oom_signal = got_oom_signal;
+
 	/* OK to accept any interrupts now? */
 	if (InterruptHoldoffCount != 0 || CritSectionCount != 0)
 		return;
@@ -3311,6 +3549,10 @@ ProcessInterrupts(void)
 					(errcode(ERRCODE_ADMIN_SHUTDOWN),
 					 errmsg("terminating background worker \"%s\" due to administrator command",
 							MyBgworkerEntry->bgw_type)));
+		else if (tmp_got_oom_signal)
+			ereport(FATAL,
+					(errcode(ERRCODE_OUT_OF_MEMORY),
+					 errmsg("terminating connection due to out of memory")));
 		else
 			ereport(FATAL,
 					(errcode(ERRCODE_ADMIN_SHUTDOWN),
@@ -3375,6 +3617,15 @@ ProcessInterrupts(void)
 
 		QueryCancelPending = false;
 
+		/* POLAR */
+		got_oom_signal = false;
+		if (!polar_init_checkinterrupts)
+		{
+			bool	   *polar_point_checkinterrupts = &polar_enable_alloc_checkinterrupts;
+
+			*polar_point_checkinterrupts = false;
+		}
+
 		/*
 		 * If LOCK_TIMEOUT and STATEMENT_TIMEOUT indicators are both set, we
 		 * need to clear both, so always fetch both.
@@ -3422,9 +3673,14 @@ ProcessInterrupts(void)
 		if (!DoingCommandRead)
 		{
 			LockErrorCleanup();
-			ereport(ERROR,
-					(errcode(ERRCODE_QUERY_CANCELED),
-					 errmsg("canceling statement due to user request")));
+			if (tmp_got_oom_signal == false)
+				ereport(ERROR,
+						(errcode(ERRCODE_QUERY_CANCELED),
+						 errmsg("canceling statement due to user request")));
+			else
+				ereport(ERROR,
+						(errcode(ERRCODE_QUERY_CANCELED),
+						 errmsg("canceling statement due to user request")));
 		}
 	}
 
@@ -3494,6 +3750,18 @@ ProcessInterrupts(void)
 
 	if (LogMemoryContextPending)
 		ProcessLogMemoryContextInterrupt();
+
+	/* POLAR: monitor */
+	if (MemoryContextDumpPending && polar_monitor_hook)
+	{
+
+		MemoryContextDumpPending = false;
+		polar_monitor_hook(POLAR_CHECK_SIGNAL_MCTX);
+	}
+
+	if (polar_enable_track_network_stat)
+		polar_local_network_stat();
+	/* POLAR end */
 
 	if (ParallelApplyMessagePending)
 		HandleParallelApplyMessages();
@@ -4158,7 +4426,7 @@ PostgresSingleUserMain(int argc, char *argv[],
 	}
 
 	/* Acquire configuration parameters */
-	if (!SelectConfigFiles(userDoption, progname))
+	if (!SelectConfigFiles(userDoption, progname, false))
 		proc_exit(1);
 
 	/*
@@ -4173,8 +4441,13 @@ PostgresSingleUserMain(int argc, char *argv[],
 	 */
 	CreateDataDirLockFile(false);
 
+	/* POLAR: remove POLAR_REPLICA_BOOTED_FILE when not in replica node */
+	if (polar_enable_shared_storage_mode && !polar_is_replica())
+		polar_remove_replica_booted_file();
+
 	/* read control file (error checking and contains config ) */
 	LocalProcessControlFile(false);
+	elog(LOG, "PolarDB load controlfile in single user postmaster");
 
 	/*
 	 * process any libraries that should be preloaded at postmaster start
@@ -4245,6 +4518,11 @@ PostgresMain(const char *dbname, const char *username)
 	volatile bool idle_in_transaction_timeout_enabled = false;
 	volatile bool idle_session_timeout_enabled = false;
 
+	/* POLAR */
+	TimestampTz current_time;
+	long		secs = 0;
+	int			microsecs = 0;
+
 	Assert(dbname != NULL);
 	Assert(username != NULL);
 
@@ -4295,7 +4573,8 @@ PostgresMain(const char *dbname, const char *username)
 		 */
 		pqsignal(SIGPIPE, SIG_IGN);
 		pqsignal(SIGUSR1, procsignal_sigusr1_handler);
-		pqsignal(SIGUSR2, SIG_IGN);
+		/* POLAR: oom cancel query signal */
+		pqsignal(SIGUSR2, polar_procsignal_sigusr2_handler);
 		pqsignal(SIGFPE, FloatExceptionHandler);
 
 		/*
@@ -4308,6 +4587,13 @@ PostgresMain(const char *dbname, const char *username)
 
 	/* Early initialization */
 	BaseInit();
+
+	/*
+	 * Initialize kmgr for cluster encryption. Since kmgr needs to attach to
+	 * shared memory the initialization must be called after BaseInit().
+	 */
+	if (!IsUnderPostmaster)
+		InitializeKmgr();
 
 	/* We need to allow SIGINT, etc during the initial transaction */
 	sigprocmask(SIG_SETMASK, &UnBlockSig, NULL);
@@ -4353,6 +4639,13 @@ PostgresMain(const char *dbname, const char *username)
 
 	pgstat_report_connect(MyDatabaseId);
 
+	/*
+	 * POLAR: audit log flush callback. flush audit log will use MyProc in
+	 * LWLock, so use before_shmem_exit instead of on_proc_exit
+	 */
+	if (IsUnderPostmaster && polar_audit_log_flush_timeout > 0)
+		before_shmem_exit(polar_audit_log_flush_callback, 0);
+
 	/* Perform initialization specific to a WAL sender process. */
 	if (am_walsender)
 		InitWalSender();
@@ -4363,10 +4656,15 @@ PostgresMain(const char *dbname, const char *username)
 	if (whereToSendOutput == DestRemote)
 	{
 		StringInfoData buf;
+		int32		proxy_cancel_key;
+		int32		session_id = polar_proxy_get_sid(MyProcPid, &proxy_cancel_key);
 
 		pq_beginmessage(&buf, PqMsg_BackendKeyData);
-		pq_sendint32(&buf, (int32) MyProcPid);
-		pq_sendint32(&buf, (int32) MyCancelKey);
+		pq_sendint32(&buf, (int32) session_id);
+		if (POLAR_IS_PROXY_SID(session_id))
+			pq_sendint32(&buf, (int32) proxy_cancel_key);
+		else
+			pq_sendint32(&buf, (int32) MyCancelKey);
 		pq_endmessage(&buf);
 		/* Need not flush since ReadyForQuery will do it. */
 	}
@@ -4531,6 +4829,8 @@ PostgresMain(const char *dbname, const char *username)
 			ereport(FATAL,
 					(errcode(ERRCODE_PROTOCOL_VIOLATION),
 					 errmsg("terminating connection because protocol synchronization was lost")));
+
+		polar_xact_split_mark_unsplittable(POLAR_UNSPLITTABLE_FOR_ERROR);
 
 		/* Now we can allow interrupts again */
 		RESUME_INTERRUPTS();
@@ -4893,6 +5193,7 @@ PostgresMain(const char *dbname, const char *username)
 								/* special-case the unnamed statement */
 								drop_unnamed_stmt();
 							}
+							hit_polar_unique_feature(DeallocateStmtExecCount);
 							break;
 						case 'P':
 							{
@@ -5011,6 +5312,26 @@ PostgresMain(const char *dbname, const char *username)
 						(errcode(ERRCODE_PROTOCOL_VIOLATION),
 						 errmsg("invalid frontend message type %d",
 								firstchar)));
+		}
+
+		/*
+		 * POLAR: initialize polar_last_audit_log_flush_time if it is not set.
+		 * flush audit log over the audit log time threshold.
+		 */
+		if (!polar_audit_log_buffer_is_null() && polar_audit_log_flush_timeout > 0)
+		{
+			current_time = GetCurrentTimestamp();
+			TimestampDifference(polar_last_audit_log_flush_time, current_time, &secs, &microsecs);
+			if (polar_last_audit_log_flush_time == 0)
+				polar_last_audit_log_flush_time = current_time;
+			else
+			{
+				if (secs * 1000 + microsecs / 1000 > polar_audit_log_flush_timeout)
+				{
+					polar_audit_log_flush();
+					polar_last_audit_log_flush_time = current_time;
+				}
+			}
 		}
 	}							/* end of input-reading loop */
 }
@@ -5255,4 +5576,86 @@ disable_statement_timeout(void)
 {
 	if (get_timeout_active(STATEMENT_TIMEOUT))
 		disable_timeout(STATEMENT_TIMEOUT, false);
+}
+
+/*
+ * POLAR
+ * SIGUSR2: set a flag to check for interrupts when allocating memory.
+ *
+ * Sets the polar_enable_alloc_checkinterrupts flag, which should be checked
+ * at convenient places inside allocating memory.
+ */
+void
+polar_procsignal_sigusr2_handler(SIGNAL_ARGS)
+{
+	/*
+	 * Set a value to the init flag for check interrupts with the current
+	 * value of polar_enable_alloc_checkinterrupts.
+	 */
+	polar_init_checkinterrupts = polar_enable_alloc_checkinterrupts;
+
+	/*
+	 * Turn on got_oom_signal for query interrupt, indicating that it is a
+	 * query caused by OOM.
+	 */
+	got_oom_signal = true;
+
+	/*
+	 * To turn off polar_enable_alloc_checkinterrupts after canceling the
+	 * query, use polar_init_checkinterrupts to determine whether to turn on
+	 * polar_enable_alloc_checkinterrupts.
+	 */
+	if (!polar_init_checkinterrupts)
+	{
+		/*
+		 * write the value of polar_point_checkinterrupts into memory not
+		 * register
+		 */
+		bool	   *polar_point_checkinterrupts = &polar_enable_alloc_checkinterrupts;
+
+		*polar_point_checkinterrupts = true;
+	}
+}
+
+static bool
+polar_stmt_type_needs_mask(NodeTag tag)
+{
+	switch (tag)
+	{
+		case T_CreateRoleStmt:
+		case T_AlterRoleStmt:
+		case T_AlterRoleSetStmt:
+		case T_CreateForeignServerStmt:
+		case T_AlterForeignServerStmt:
+		case T_CreateUserMappingStmt:
+		case T_AlterUserMappingStmt:
+			return true;
+		default:
+			break;
+	}
+	return false;
+}
+
+/*
+ * polar_get_errmsg_params
+ *
+ * get errmsg params in error log and audit log.
+ */
+static char *
+polar_get_errmsg_params(ParamListInfo params)
+{
+	char	   *str = NULL;
+
+	if (params && params->numParams > 0 && log_parameter_max_length != 0)
+		str = BuildParamLogString(params, NULL, log_parameter_max_length);
+	return str;
+}
+
+/* POLAR: audit log flush callback */
+static void
+polar_audit_log_flush_callback(int code, Datum arg)
+{
+	if (!polar_audit_log_buffer_is_null())
+		polar_audit_log_flush();
+	return;
 }

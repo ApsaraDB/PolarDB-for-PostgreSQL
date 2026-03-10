@@ -14,7 +14,7 @@ OBJS = \
 all: pg_test_fsync
 
 pg_test_fsync: $(OBJS) | submake-libpgport
-	$(CC) $(CFLAGS) $^ $(LDFLAGS) $(LDFLAGS_EX) $(LIBS) -o $@$(X)
+	$(CC) $(CFLAGS) $^ $(LDFLAGS) $(LDFLAGS_EX) $(LIBS) $(polar_libvfs) -o $@$(X)
 
 install: all installdirs
 	$(INSTALL_PROGRAM) pg_test_fsync$(X) '$(DESTDIR)$(bindir)/pg_test_fsync$(X)'

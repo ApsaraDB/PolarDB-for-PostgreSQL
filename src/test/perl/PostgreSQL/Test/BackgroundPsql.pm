@@ -289,6 +289,11 @@ sub query
 
 	$ret = $self->{stderr} eq "" ? 0 : 1;
 
+	if ($self->{timeout}->is_expired)
+	{
+		$ret = 1;
+	}
+
 	return wantarray ? ($output, $ret) : $output;
 }
 

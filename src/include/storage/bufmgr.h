@@ -22,6 +22,9 @@
 #include "utils/relcache.h"
 #include "utils/snapmgr.h"
 
+/* POLAR: for code compile */
+typedef struct BufferDesc BufferDesc;
+
 typedef void *Block;
 
 /*
@@ -50,6 +53,10 @@ typedef enum
 	RBM_ZERO_ON_ERROR,			/* Read, but return an all-zeros page on error */
 	RBM_NORMAL_NO_LOG,			/* Don't log page as invalid during WAL
 								 * replay; otherwise same as RBM_NORMAL */
+	RBM_NORMAL_VALID,			/* POLAR: Don't read from disk, buffer is
+								 * valid; otherwise same as RBM_NORMAL */
+	RBM_NORMAL_VALID_NO_LOG,	/* POLAR: Don't log page as invalid during WAL
+								 * replay; otherwise same as RBM_NORMAL_VALID */
 } ReadBufferMode;
 
 /*
@@ -112,6 +119,16 @@ typedef struct BufferManagerRelation
 /* Call smgrprefetch() if I/O necessary. */
 #define READ_BUFFERS_ISSUE_ADVICE (1 << 1)
 
+/* POLAR redo action */
+typedef enum polar_redo_action
+{
+	POLAR_REDO_NO_ACTION,
+	POLAR_REDO_REPLAY_XLOG,
+	POLAR_REDO_MARK_OUTDATE
+} polar_redo_action;
+
+/* POLAR end */
+
 struct ReadBuffersOperation
 {
 	/*
@@ -135,6 +152,12 @@ struct ReadBuffersOperation
 	int			flags;
 	int16		nblocks;
 	int16		io_buffers_len;
+
+	/* POLAR: redo information and repeat read information */
+	polar_redo_action polar_replay_action;
+	XLogRecPtr	polar_replay_from;
+	XLogRecPtr	polar_replay_redo_lsn;
+	uint64		polar_repeat_read_times;
 };
 
 typedef struct ReadBuffersOperation ReadBuffersOperation;
@@ -167,11 +190,18 @@ extern PGDLLIMPORT int maintenance_io_concurrency;
 
 #define MAX_IO_COMBINE_LIMIT PG_IOV_MAX
 #define DEFAULT_IO_COMBINE_LIMIT Min(MAX_IO_COMBINE_LIMIT, (128 * 1024) / BLCKSZ)
+
 extern PGDLLIMPORT int io_combine_limit;
 
 extern PGDLLIMPORT int checkpoint_flush_after;
 extern PGDLLIMPORT int backend_flush_after;
 extern PGDLLIMPORT int bgwriter_flush_after;
+
+/* POLAR */
+extern PGDLLIMPORT bool polar_rsc_optimize_drop_buffers;
+extern PGDLLIMPORT bool polar_rsc_optimize_rel_size_udf;
+
+/* POLAR end */
 
 /* in buf_init.c */
 extern PGDLLIMPORT char *BufferBlocks;
@@ -194,6 +224,13 @@ extern PGDLLIMPORT int32 *LocalRefCount;
 #define BUFFER_LOCK_SHARE		1
 #define BUFFER_LOCK_EXCLUSIVE	2
 
+/*
+ * Note: these two macros only work on shared buffers, not local ones!
+ *
+ * POLAR: these two macros are moved from bufmgr.c.
+ */
+#define BufHdrGetBlock(bufHdr)	((Block) (BufferBlocks + ((Size) (bufHdr)->buf_id) * BLCKSZ))
+#define BufferGetLSN(bufHdr)	(PageGetLSN(BufHdrGetBlock(bufHdr)))
 
 /*
  * prototypes for functions in bufmgr.c
@@ -299,12 +336,27 @@ extern bool ConditionalLockBufferForCleanup(Buffer buffer);
 extern bool IsBufferCleanupOK(Buffer buffer);
 extern bool HoldingBufferPinThatDelaysRecovery(void);
 
-extern bool BgBufferSync(struct WritebackContext *wb_context);
+extern bool BgBufferSync(struct WritebackContext *wb_context, int flags);
 
 extern void LimitAdditionalPins(uint32 *additional_pins);
 extern void LimitAdditionalLocalPins(uint32 *additional_pins);
 
-extern bool EvictUnpinnedBuffer(Buffer buf);
+extern bool EvictUnpinnedBuffer(Buffer buf, bool *buffer_flushed);
+extern void EvictAllUnpinnedBuffers(int32 *buffers_evicted,
+									int32 *buffers_flushed,
+									int32 *buffers_skipped);
+extern void EvictRelUnpinnedBuffers(Relation rel,
+									int32 *buffers_evicted,
+									int32 *buffers_flushed,
+									int32 *buffers_skipped);
+extern bool MarkDirtyUnpinnedBuffer(Buffer buf, bool *buffer_already_dirty);
+extern void MarkDirtyRelUnpinnedBuffers(Relation rel,
+										int32 *buffers_dirtied,
+										int32 *buffers_already_dirty,
+										int32 *buffers_skipped);
+extern void MarkDirtyAllUnpinnedBuffers(int32 *buffers_dirtied,
+										int32 *buffers_already_dirty,
+										int32 *buffers_skipped);
 
 /* in buf_init.c */
 extern void InitBufferPool(void);
@@ -323,6 +375,20 @@ extern int	GetAccessStrategyPinLimit(BufferAccessStrategy strategy);
 
 extern void FreeAccessStrategy(BufferAccessStrategy strategy);
 
+/* POLAR */
+extern void PolarMarkBufferDirty(Buffer buffer, XLogRecPtr oldest_lsn);
+extern bool polar_start_buffer_io_extend(BufferDesc *buf,
+										 bool forInput,
+										 bool nowait,
+										 bool polar_copy_buf);
+
+/* POLAR: change static to extern */
+extern void TerminateBufferIO(BufferDesc *buf, bool clear_dirty,
+							  uint32 set_flag_bits, bool forget_owner);
+
+extern Buffer polar_read_buffer_common(struct SMgrRelationData *smgr, char relpersistence, ForkNumber forkNum,
+									   BlockNumber blockNum, ReadBufferMode mode,
+									   BufferAccessStrategy strategy);
 
 /* inline functions */
 
@@ -408,6 +474,31 @@ BufferGetPage(Buffer buffer)
 {
 	return (Page) BufferGetBlock(buffer);
 }
+
+/* POLAR */
+#define DEFAULT_WRITE_COMBINE_LIMIT 8
+#define MAX_BUFFERS_TO_READ_BY 64
+#define MAX_BUFFERS_TO_WRITE_BY 32
+#define MAX_BUFFERS_TO_EXTEND_BY 1024
+
+extern PGDLLIMPORT int polar_bulk_read_size;
+extern PGDLLIMPORT int polar_heap_bulk_extend_size;
+extern PGDLLIMPORT int polar_index_bulk_extend_size;
+extern PGDLLIMPORT int polar_recovery_bulk_extend_size;
+extern PGDLLIMPORT int polar_write_combine_limit;
+extern PGDLLIMPORT bool polar_force_write_combine;
+extern PGDLLIMPORT bool polar_flush_buffer_nowait;
+extern PGDLLIMPORT bool polar_has_partial_write;
+
+extern int	polar_get_recovery_bulk_extend_size(BlockNumber target_block,
+												BlockNumber nblocks);
+extern Buffer polar_index_add_blocks(Relation relation);
+
+extern void polar_lock_buffer_for_cleanup_ext(Buffer buffer, bool fresh_check);
+extern void polar_lock_buffer_ext(Buffer buffer, int mode, bool fresh_check);
+extern bool polar_conditional_lock_buffer_ext(Buffer buffer, bool fresh_check);
+
+/* POLAR end */
 
 #endif							/* FRONTEND */
 

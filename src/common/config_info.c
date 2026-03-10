@@ -38,7 +38,7 @@ get_configdata(const char *my_exec_path, size_t *configdata_len)
 	int			i = 0;
 
 	/* Adjust this to match the number of items filled below */
-	*configdata_len = 23;
+	*configdata_len = 29;
 	configdata = palloc_array(ConfigData, *configdata_len);
 
 	configdata[i].name = pstrdup("BINDIR");
@@ -192,7 +192,35 @@ get_configdata(const char *my_exec_path, size_t *configdata_len)
 	i++;
 
 	configdata[i].name = pstrdup("VERSION");
-	configdata[i].setting = pstrdup("PostgreSQL " PG_VERSION);
+	configdata[i].setting = pstrdup(PG_VERSION_STR);
+	i++;
+
+	configdata[i].name = pstrdup("POLAR_COMMIT");
+	configdata[i].setting = pstrdup(POLAR_COMMIT);
+	i++;
+
+	configdata[i].name = pstrdup("POLAR_VERSION");
+	configdata[i].setting = pstrdup(POLAR_VERSION);
+	i++;
+
+	configdata[i].name = pstrdup("POLARDB_VERSION");
+	configdata[i].setting = pstrdup(POLARDB_VERSION);
+	i++;
+
+	configdata[i].name = pstrdup("POLAR_RELEASE_DATE");
+	configdata[i].setting = pstrdup(POLAR_RELEASE_DATE);
+	i++;
+
+	configdata[i].name = pstrdup("POLAR_DEPLOY_MODE");
+	configdata[i].setting = pstrdup(POLAR_DEPLOY_MODE);
+	i++;
+
+	configdata[i].name = pstrdup("PFSD_VERSION");
+#ifdef PFSD_VERSION
+	configdata[i].setting = pstrdup(PFSD_VERSION);
+#else
+	configdata[i].setting = pstrdup(_(""));
+#endif
 	i++;
 
 	Assert(i == *configdata_len);

@@ -4533,18 +4533,17 @@ my %tests = (
 	# for objects originating at initdb.  Hence, any GRANT or REVOKE affecting
 	# owner privileges for those objects should reference the bootstrap
 	# superuser, not the dump-time owner.
-	'REVOKE EXECUTE ON FUNCTION pg_stat_reset FROM regress_dump_test_role' =>
-	  {
+	'REVOKE EXECUTE ON FUNCTION pg_promote FROM regress_dump_test_role' => {
 		create_order => 15,
 		create_sql => '
-			ALTER FUNCTION pg_stat_reset OWNER TO regress_dump_test_role;
-			REVOKE EXECUTE ON FUNCTION pg_stat_reset
+			ALTER FUNCTION pg_promote OWNER TO regress_dump_test_role;
+			REVOKE EXECUTE ON FUNCTION pg_promote
 			  FROM regress_dump_test_role;',
-		regexp => qr/^[^-].*pg_stat_reset.* regress_dump_test_role/m,
+		regexp => qr/^[^-].*pg_promote.* regress_dump_test_role/m,
 
 		# this shouldn't ever get emitted
 		like => {},
-	  },
+	},
 
 	'REVOKE SELECT ON TABLE pg_proc FROM public' => {
 		create_order => 45,

@@ -107,6 +107,11 @@
 #include "utils/typcache.h"
 #include "utils/usercontext.h"
 
+/* POLAR: GUC */
+bool		polar_force_unlogged_to_logged_table;
+
+/* POLAR end */
+
 /*
  * ON COMMIT action list
  */
@@ -717,6 +722,23 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 	ObjectAddress address;
 	LOCKMODE	parentLockmode;
 	Oid			accessMethodId = InvalidOid;
+
+	/*
+	 * POLAR: change unlogged table to logged table. Since unlogged table does
+	 * not support primary-replica mode, it does not write WAL. We must do it
+	 * before creating table.
+	 *
+	 * We do it in DefineRelation() because not only creating unlogged table
+	 * but also SELECT INTO XXX un-logged table, both call DefineRelation().
+	 */
+	if (polar_force_unlogged_to_logged_table &&
+		stmt->relation->relpersistence == RELPERSISTENCE_UNLOGGED)
+	{
+		stmt->relation->relpersistence = RELPERSISTENCE_PERMANENT;
+		elog(WARNING, "change unlogged table to logged table, "
+			 "because unlogged table does not support primary-replica mode");
+	}
+	/* POLAR end */
 
 	/*
 	 * Truncate relname to appropriate length (probably a waste of time, as
@@ -17130,6 +17152,15 @@ ATPrepChangePersistence(Relation rel, bool toLogged)
 						RelationGetRelationName(rel)),
 				 errdetail("Unlogged relations cannot be replicated.")));
 
+	/* POLAR: forbid ALTER TABLE to unlogged table. */
+	if (polar_force_unlogged_to_logged_table && !toLogged)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_TABLE_DEFINITION),
+				 errmsg("cannot change table \"%s\" to unlogged",
+						RelationGetRelationName(rel)),
+				 errdetail("Unlogged table does not support primary-replica mode.")));
+	/* POLAR end */
+
 	/*
 	 * Check existing foreign key constraints to preserve the invariant that
 	 * permanent tables cannot reference unlogged ones.  Self-referencing
@@ -18740,8 +18771,16 @@ ATExecAttachPartition(List **wqueue, Relation rel, PartitionCmd *cmd,
 												 rel);
 
 		/* Validate partition constraints against the table being attached. */
-		QueuePartitionConstraintValidation(wqueue, attachrel, partConstraint,
-										   false);
+		if (!cmd->nocheck_constraint)
+			QueuePartitionConstraintValidation(wqueue, attachrel, partConstraint,
+											   false);
+		else
+		{
+			ereport(INFO,
+					(errmsg("skip partition constraint validation for table \"%s\" as \"NOCHECK_CONSTRAINT\" option",
+							RelationGetRelationName(attachrel)),
+					 errhint("The caller is responsible for ensuring that the sub-partition satisfies the partition constraints.")));
+		}
 	}
 
 	/*
@@ -18770,8 +18809,16 @@ ATExecAttachPartition(List **wqueue, Relation rel, PartitionCmd *cmd,
 		defPartConstraint =
 			map_partition_varattnos(defPartConstraint,
 									1, defaultrel, rel);
-		QueuePartitionConstraintValidation(wqueue, defaultrel,
-										   defPartConstraint, true);
+		if (!cmd->nocheck_constraint)
+			QueuePartitionConstraintValidation(wqueue, defaultrel,
+											   defPartConstraint, true);
+		else
+		{
+			ereport(INFO,
+					(errmsg("skip partition constraint validation for default partition \"%s\" as \"NOCHECK_CONSTRAINT\" option",
+							RelationGetRelationName(defaultrel)),
+					 errhint("The caller is responsible for ensuring that the sub-partition satisfies the partition constraints.")));
+		}
 
 		/* keep our lock until commit. */
 		table_close(defaultrel, NoLock);

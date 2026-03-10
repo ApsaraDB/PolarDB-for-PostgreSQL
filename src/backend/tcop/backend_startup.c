@@ -3,6 +3,7 @@
  * backend_startup.c
  *	  Backend startup code
  *
+ * Portions Copyright (c) 2024, Alibaba Group Holding Limited
  * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -15,6 +16,7 @@
 
 #include "postgres.h"
 
+#include <arpa/inet.h>
 #include <unistd.h>
 
 #include "access/xlog.h"
@@ -46,6 +48,11 @@ static int	ProcessStartupPacket(Port *port, bool ssl_done, bool gss_done);
 static void SendNegotiateProtocolVersion(List *unrecognized_protocol_options);
 static void process_startup_packet_die(SIGNAL_ARGS);
 static void StartupPacketTimeoutHandler(void);
+
+/* POLAR */
+static bool polar_encode_client_conn(char *host, char *port, SockAddr *sock);
+
+/* POLAR end */
 
 /*
  * Entry point for a new backend process.
@@ -163,6 +170,17 @@ BackendInitialize(ClientSocket *client_sock, CAC_state cac)
 	/* set these to empty in case they are needed before we set them up */
 	port->remote_host = "";
 	port->remote_port = "";
+
+	/* POLAR orgin connection info init */
+	MemSet(&port->polar_proxy_client_raddr, 0, sizeof(port->polar_proxy_client_raddr));
+	port->polar_proxy = false;
+	port->polar_proxy_session_id = 0;
+	port->polar_proxy_cancel_key = 0;
+	port->polar_proxy_send_lsn = false;
+	port->polar_proxy_ssl_in_use = false;
+	port->polar_proxy_ssl_cipher_name = NULL;
+	port->polar_proxy_ssl_version = NULL;
+	/* POLAR end */
 
 	/*
 	 * We arrange to do _exit(1) if we receive SIGTERM or timeout while trying
@@ -694,6 +712,10 @@ ProcessStartupPacket(Port *port, bool ssl_done, bool gss_done)
 	{
 		int32		offset = sizeof(ProtocolVersion);
 		List	   *unrecognized_protocol_options = NIL;
+		char	   *client_host = NULL;
+		char	   *client_port = NULL;
+		bool		got_session_id = false;
+		bool		got_cancel_key = false;
 
 		/*
 		 * Scan packet body for name/option pairs.  We can assume any string
@@ -753,6 +775,76 @@ ProcessStartupPacket(Port *port, bool ssl_done, bool gss_done)
 				unrecognized_protocol_options =
 					lappend(unrecognized_protocol_options, pstrdup(nameptr));
 			}
+			/* POLAR: PolarDB options */
+			else if (strncmp(nameptr, "_polar_", 7) == 0)
+			{
+				/* POLAR: PolarDB proxy options */
+				if (strcmp(nameptr, "_polar_proxy_client_host") == 0 || strcmp(nameptr, "_polar_origin_client_ip") == 0)
+					client_host = pstrdup(valptr);
+				else if (strcmp(nameptr, "_polar_proxy_client_port") == 0 || strcmp(nameptr, "_polar_origin_client_port") == 0)
+					client_port = pstrdup(valptr);
+				else if (strcmp(nameptr, "_polar_proxy_session_id") == 0)
+				{
+					if (!parse_int(valptr, &port->polar_proxy_session_id, 0, NULL) || port->polar_proxy_session_id == 0)
+						ereport(FATAL,
+								(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+								 errmsg("invalid value for parameter \"%s\": \"%s\"",
+										"_polar_proxy_session_id",
+										valptr),
+								 errhint("Valid values is not-0-integer")));
+					got_session_id = true;
+				}
+				else if (strcmp(nameptr, "_polar_proxy_cancel_key") == 0)
+				{
+					if (!parse_int(valptr, &port->polar_proxy_cancel_key, 0, NULL))
+						ereport(FATAL,
+								(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+								 errmsg("invalid value for parameter \"%s\": \"%s\"",
+										"_polar_proxy_cancel_key",
+										valptr),
+								 errhint("Valid values is integer")));
+					got_cancel_key = true;
+				}
+				else if (strcmp(nameptr, "_polar_proxy_send_lsn") == 0 || strcmp(nameptr, "_polar_send_lsn") == 0)
+				{
+					if (!parse_bool(valptr, &port->polar_proxy_send_lsn))
+						ereport(FATAL,
+								(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+								 errmsg("invalid value for parameter \"%s\": \"%s\"",
+										"_polar_proxy_send_lsn",
+										valptr),
+								 errhint("Valid values are: \"false\", 0, \"true\", 1.")));
+				}
+				else if (strcmp(nameptr, "_polar_proxy_send_xact") == 0 || strcmp(nameptr, "_polar_send_xact") == 0)
+				{
+					if (!parse_bool(valptr, &port->polar_proxy_send_xact))
+						ereport(FATAL,
+								(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+								 errmsg("invalid value for parameter \"%s\": \"%s\"",
+										"polar_proxy_send_xact",
+										valptr),
+								 errhint("Valid values are: \"false\", 0, \"true\", 1.")));
+				}
+				else if (strcmp(nameptr, "_polar_proxy_use_ssl") == 0)
+				{
+					if (!parse_bool(valptr, &port->polar_proxy_ssl_in_use))
+						ereport(FATAL,
+								(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+								 errmsg("invalid value for parameter \"%s\": \"%s\"",
+										"_polar_proxy_use_ssl",
+										valptr),
+								 errhint("Valid values are: \"false\", 0, \"true\", 1.")));
+				}
+				else if (strcmp(nameptr, "_polar_proxy_ssl_version") == 0)
+					port->polar_proxy_ssl_version = pstrdup(valptr);
+				else if (strcmp(nameptr, "_polar_proxy_ssl_cipher_name") == 0)
+					port->polar_proxy_ssl_cipher_name = pstrdup(valptr);
+
+				/*
+				 * POLAR: For compatibility, reserve options with _polar_
+				 * prefix
+				 */
+			}
 			else
 			{
 				/* Assume it's a generic GUC option */
@@ -773,6 +865,61 @@ ProcessStartupPacket(Port *port, bool ssl_done, bool gss_done)
 				}
 			}
 			offset = valoffset + strlen(valptr) + 1;
+		}
+
+		/* POLAR: Handle proxy startup packet */
+		if (client_host == NULL || client_port == NULL)
+		{
+			if (client_host != NULL || client_port != NULL)
+				ereport(FATAL, (errmsg("[Proxy] proxy info is incomplete.")));
+			port->polar_proxy = false;
+		}
+		else
+		{
+			char	   *proxy_host,
+					   *proxy_port;
+
+			if (Log_connections)
+				ereport(LOG,
+						(errmsg("[Proxy] Direct ip and port, host=%s, port=%s, encoded_host=%d, encoded_port=%d",
+								port->remote_host, port->remote_port,
+								(int) (((struct sockaddr_in *) &port->raddr.addr)->sin_addr.s_addr),
+								(int) (((struct sockaddr_in *) &port->raddr.addr)->sin_port))));
+
+			/* Client connection information is ready */
+			if (!polar_encode_client_conn(client_host, client_port, &port->polar_proxy_client_raddr))
+				ereport(FATAL,
+						(errmsg("[Proxy] Construct client address fail, client_host=%s, client_port=%s, proxy_host=%s, proxy_port=%s",
+								client_host, client_port, port->remote_host, port->remote_port)));
+
+			port->polar_proxy = true;
+			proxy_host = port->remote_host;
+			proxy_port = port->remote_port;
+			port->remote_host = client_host;
+			port->remote_port = client_port;
+
+			if (Log_connections)
+				ereport(LOG,
+						(errmsg("[Proxy] Connection from proxy, client_host=%s, client_port=%s, proxy_host=%s, proxy_port=%s",
+								port->remote_host, port->remote_port, proxy_host, proxy_port)));
+
+			pfree(proxy_host);
+			pfree(proxy_port);
+
+			/* Check ssl info completeness */
+			if (port->polar_proxy_ssl_in_use &&
+				(port->polar_proxy_ssl_version == NULL || port->polar_proxy_ssl_cipher_name == NULL))
+				ereport(FATAL, (errmsg("[Proxy] ssl info is incomplete.")));
+
+			if (got_session_id != got_cancel_key)
+				ereport(FATAL, (errmsg("[Proxy] Should set both session id and cancel key.")));
+		}
+
+		if (!port->polar_proxy && (port->polar_proxy_send_lsn || port->polar_proxy_ssl_in_use))
+		{
+			ereport(FATAL,
+					(errcode(ERRCODE_PROTOCOL_VIOLATION),
+					 errmsg("[Proxy] Proxy is disabled, unable to use lsn or ssl")));
 		}
 
 		/*
@@ -895,4 +1042,53 @@ static void
 StartupPacketTimeoutHandler(void)
 {
 	_exit(1);
+}
+
+/*
+ * POLAR: Construct SockAddr according to host and port.
+ * The input parameters should be guaranteed to be valid.
+ *
+ * The output parameter sock will be modified even when fail encoding.
+ */
+static bool
+polar_encode_client_conn(char *host, char *port, SockAddr *sock)
+{
+#define polar_set_sock_port(is_v6, sock, port_num) \
+	do { \
+		if (is_v6) \
+			((struct sockaddr_in6 *)&(sock)->addr)->sin6_port = htons((uint16)(port_num)); \
+		else \
+			((struct sockaddr_in *)&(sock)->addr)->sin_port = htons((uint16)(port_num)); \
+	} while(0)
+#define polar_set_sock_addr(is_v6, sock, host, ret) \
+	do { \
+		if (is_v6) \
+			(ret) = inet_pton(AF_INET6, (host), &((struct sockaddr_in6 *)&(sock)->addr)->sin6_addr); \
+		else \
+			(ret) = inet_pton(AF_INET, (host), &((struct sockaddr_in *)&(sock)->addr)->sin_addr); \
+	} while(0)
+
+	long		port_num;
+	int			ret;
+	bool		ipv6 = false;
+
+	if (strchr(host, ':') != NULL)
+		ipv6 = true;
+
+	port_num = strtol(port, NULL, 10);
+
+	if (errno == ERANGE || port_num <= 0 || port_num > PG_UINT16_MAX)
+		return false;
+
+	polar_set_sock_port(ipv6, sock, port_num);
+	polar_set_sock_addr(ipv6, sock, host, ret);
+	if (ret != 1)
+		return false;
+
+	sock->addr.ss_family = ipv6 ? AF_INET6 : AF_INET;
+	sock->salen = sizeof(sock->addr);
+
+	return true;
+#undef polar_set_sock_port
+#undef polar_set_sock_addr
 }

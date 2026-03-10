@@ -32,10 +32,15 @@ typedef enum DataDirSyncMethod
 
 struct iovec;					/* avoid including port/pg_iovec.h here */
 
+extern int	polar_zero_buffer_size;
+extern int	polar_zero_buffers;
+extern void *polar_zero_buffer;
+
 #ifdef FRONTEND
 extern int	fsync_fname(const char *fname, bool isdir);
 extern void sync_pgdata(const char *pg_data, int serverVersion,
 						DataDirSyncMethod sync_method);
+extern void polar_fsync_pgdata(const char *pg_data, int serverVersion);
 extern void sync_dir_recurse(const char *dir, DataDirSyncMethod sync_method);
 extern int	durable_rename(const char *oldfile, const char *newfile);
 extern int	fsync_parent_path(const char *fname);
@@ -57,6 +62,8 @@ extern ssize_t pg_pwritev_with_retry(int fd,
 									 off_t offset);
 
 extern ssize_t pg_pwrite_zeros(int fd, size_t size, off_t offset);
+
+extern ssize_t polar_pwrite_zeros(int fd, size_t size, off_t offset);
 
 /* Filename components */
 #define PG_TEMP_FILES_DIR "pgsql_tmp"

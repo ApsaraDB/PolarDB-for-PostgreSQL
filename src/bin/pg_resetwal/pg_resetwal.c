@@ -19,6 +19,7 @@
  * step 2 ...
  *
  *
+ * Portions Copyright (c) 2024, Alibaba Group Holding Limited
  * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -59,6 +60,9 @@
 #include "pg_getopt.h"
 #include "storage/large_object.h"
 
+/* POLAR */
+#include "polar_vfs/polar_vfs_fe.h"
+
 static ControlFileData ControlFile; /* pg_control values */
 static XLogSegNo newXlogSegNo;	/* new XLOG segment # */
 static bool guessed = false;	/* T if we had to guess at any values */
@@ -91,6 +95,8 @@ static void KillExistingWALSummaries(void);
 static void WriteEmptyXLOG(void);
 static void usage(void);
 
+/* POLAR: delete all invalid logindex data */
+static void polar_kill_logindex(void);
 
 int
 main(int argc, char *argv[])
@@ -121,6 +127,7 @@ main(int argc, char *argv[])
 	char	   *DataDir = NULL;
 	char	   *log_fname = NULL;
 	int			fd;
+	char	   *polar_real_datadir;
 
 	pg_logging_init(argv[0]);
 	set_pglocale_pgservice(argv[0], PG_TEXTDOMAIN("pg_resetwal"));
@@ -358,6 +365,20 @@ main(int argc, char *argv[])
 
 	umask(pg_mode_mask);
 
+	/* POLAR: get polar_real_datadir before chdir. */
+	polar_real_datadir = realpath(DataDir, NULL);
+	if (polar_real_datadir == NULL)
+	{
+		fprintf(stderr, _("%s: realpath failed!\n"), __func__);
+		exit(EXIT_FAILURE);
+	}
+
+	/*
+	 * POLAR: save argv[0] so polar_vfs_init_simple_fe() can look for the
+	 * postgres if necessary.
+	 */
+	polar_argv0 = argv[0];
+
 	if (chdir(DataDir) < 0)
 		pg_fatal("could not change directory to \"%s\": %m",
 				 DataDir);
@@ -381,6 +402,12 @@ main(int argc, char *argv[])
 		pg_log_error_hint("Is a server running?  If not, delete the lock file and try again.");
 		exit(1);
 	}
+
+	/*
+	 * POLAR: init polar vfs. It must be executed before chdir(DataDir).
+	 */
+	polar_vfs_init_simple_fe(polar_real_datadir, polar_real_datadir, POLAR_VFS_RDWR);
+	/* POLAR end */
 
 	/*
 	 * Attempt to read the existing pg_control file
@@ -497,10 +524,15 @@ main(int argc, char *argv[])
 	 * Else, do the dirty deed.
 	 */
 	RewriteControlFile();
+	polar_kill_logindex();
 	KillExistingXLOG();
 	KillExistingArchiveStatus();
 	KillExistingWALSummaries();
 	WriteEmptyXLOG();
+
+	if (polar_real_datadir)
+		free(polar_real_datadir);
+	polar_vfs_destroy_simple_fe();
 
 	printf(_("Write-ahead log reset\n"));
 	return 0;
@@ -567,8 +599,11 @@ read_controlfile(void)
 	int			len;
 	char	   *buffer;
 	pg_crc32c	crc;
+	char		polar_control_file[MAXPGPATH];
 
-	if ((fd = open(XLOG_CONTROL_FILE, O_RDONLY | PG_BINARY, 0)) < 0)
+	polar_make_file_path_level2(polar_control_file, XLOG_CONTROL_FILE);
+
+	if ((fd = polar_open(polar_control_file, O_RDONLY | PG_BINARY, 0)) < 0)
 	{
 		/*
 		 * If pg_control is not there at all, or we can't read it, the odds
@@ -576,22 +611,22 @@ read_controlfile(void)
 		 * "touch pg_control" to force us to proceed.
 		 */
 		pg_log_error("could not open file \"%s\" for reading: %m",
-					 XLOG_CONTROL_FILE);
+					 polar_control_file);
 		if (errno == ENOENT)
 			pg_log_error_hint("If you are sure the data directory path is correct, execute\n"
 							  "  touch %s\n"
 							  "and try again.",
-							  XLOG_CONTROL_FILE);
+							  polar_control_file);
 		exit(1);
 	}
 
 	/* Use malloc to ensure we have a maxaligned buffer */
 	buffer = (char *) pg_malloc(PG_CONTROL_FILE_SIZE);
 
-	len = read(fd, buffer, PG_CONTROL_FILE_SIZE);
+	len = polar_read(fd, buffer, PG_CONTROL_FILE_SIZE);
 	if (len < 0)
 		pg_fatal("could not read file \"%s\": %m", XLOG_CONTROL_FILE);
-	close(fd);
+	polar_close(fd);
 
 	if (len >= sizeof(ControlFileData) &&
 		((ControlFileData *) buffer)->pg_control_version == PG_CONTROL_VERSION)
@@ -918,6 +953,7 @@ FindEndOfXLOG(void)
 	DIR		   *xldir;
 	struct dirent *xlde;
 	uint64		xlogbytepos;
+	char		polar_xlog_dir[MAXPGPATH];
 
 	/*
 	 * Initialize the max() computation using the last checkpoint address from
@@ -932,11 +968,12 @@ FindEndOfXLOG(void)
 	 * any present have been used; in most scenarios this should be
 	 * conservative, because of xlog.c's attempts to pre-create files.
 	 */
-	xldir = opendir(XLOGDIR);
+	polar_make_file_path_level2(polar_xlog_dir, XLOGDIR);
+	xldir = polar_opendir(polar_xlog_dir);
 	if (xldir == NULL)
-		pg_fatal("could not open directory \"%s\": %m", XLOGDIR);
+		pg_fatal("could not open directory \"%s\": %m", polar_xlog_dir);
 
-	while (errno = 0, (xlde = readdir(xldir)) != NULL)
+	while (errno = 0, (xlde = polar_readdir(xldir)) != NULL)
 	{
 		if (IsXLogFileName(xlde->d_name) ||
 			IsPartialXLogFileName(xlde->d_name))
@@ -962,7 +999,7 @@ FindEndOfXLOG(void)
 	if (errno)
 		pg_fatal("could not read directory \"%s\": %m", XLOGDIR);
 
-	if (closedir(xldir))
+	if (polar_closedir(xldir))
 		pg_fatal("could not close directory \"%s\": %m", XLOGDIR);
 
 	/*
@@ -984,27 +1021,29 @@ KillExistingXLOG(void)
 	DIR		   *xldir;
 	struct dirent *xlde;
 	char		path[MAXPGPATH + sizeof(XLOGDIR)];
+	char		polar_xlog_dir[MAXPGPATH];
 
-	xldir = opendir(XLOGDIR);
+	polar_make_file_path_level2(polar_xlog_dir, XLOGDIR);
+	xldir = polar_opendir(polar_xlog_dir);
 	if (xldir == NULL)
-		pg_fatal("could not open directory \"%s\": %m", XLOGDIR);
+		pg_fatal("could not open directory \"%s\": %m", polar_xlog_dir);
 
-	while (errno = 0, (xlde = readdir(xldir)) != NULL)
+	while (errno = 0, (xlde = polar_readdir(xldir)) != NULL)
 	{
 		if (IsXLogFileName(xlde->d_name) ||
 			IsPartialXLogFileName(xlde->d_name))
 		{
-			snprintf(path, sizeof(path), "%s/%s", XLOGDIR, xlde->d_name);
-			if (unlink(path) < 0)
+			snprintf(path, sizeof(path), "%s/%s", polar_xlog_dir, xlde->d_name);
+			if (polar_unlink(path) < 0)
 				pg_fatal("could not delete file \"%s\": %m", path);
 		}
 	}
 
 	if (errno)
-		pg_fatal("could not read directory \"%s\": %m", XLOGDIR);
+		pg_fatal("could not read directory \"%s\": %m", polar_xlog_dir);
 
-	if (closedir(xldir))
-		pg_fatal("could not close directory \"%s\": %m", XLOGDIR);
+	if (polar_closedir(xldir))
+		pg_fatal("could not close directory \"%s\": %m", polar_xlog_dir);
 }
 
 
@@ -1019,12 +1058,15 @@ KillExistingArchiveStatus(void)
 	DIR		   *xldir;
 	struct dirent *xlde;
 	char		path[MAXPGPATH + sizeof(ARCHSTATDIR)];
+	char		polar_archstat_dir[MAXPGPATH];
 
-	xldir = opendir(ARCHSTATDIR);
+	polar_make_file_path_level2(polar_archstat_dir, ARCHSTATDIR);
+
+	xldir = polar_opendir(polar_archstat_dir);
 	if (xldir == NULL)
-		pg_fatal("could not open directory \"%s\": %m", ARCHSTATDIR);
+		pg_fatal("could not open directory \"%s\": %m", polar_archstat_dir);
 
-	while (errno = 0, (xlde = readdir(xldir)) != NULL)
+	while (errno = 0, (xlde = polar_readdir(xldir)) != NULL)
 	{
 		if (strspn(xlde->d_name, "0123456789ABCDEF") == XLOG_FNAME_LEN &&
 			(strcmp(xlde->d_name + XLOG_FNAME_LEN, ".ready") == 0 ||
@@ -1032,17 +1074,17 @@ KillExistingArchiveStatus(void)
 			 strcmp(xlde->d_name + XLOG_FNAME_LEN, ".partial.ready") == 0 ||
 			 strcmp(xlde->d_name + XLOG_FNAME_LEN, ".partial.done") == 0))
 		{
-			snprintf(path, sizeof(path), "%s/%s", ARCHSTATDIR, xlde->d_name);
-			if (unlink(path) < 0)
+			snprintf(path, sizeof(path), "%s/%s", polar_archstat_dir, xlde->d_name);
+			if (polar_unlink(path) < 0)
 				pg_fatal("could not delete file \"%s\": %m", path);
 		}
 	}
 
 	if (errno)
-		pg_fatal("could not read directory \"%s\": %m", ARCHSTATDIR);
+		pg_fatal("could not read directory \"%s\": %m", polar_archstat_dir);
 
-	if (closedir(xldir))
-		pg_fatal("could not close directory \"%s\": %m", ARCHSTATDIR);
+	if (polar_closedir(xldir))
+		pg_fatal("could not close directory \"%s\": %m", polar_archstat_dir);
 
 #undef ARCHSTATDIR
 }
@@ -1059,27 +1101,29 @@ KillExistingWALSummaries(void)
 	DIR		   *xldir;
 	struct dirent *xlde;
 	char		path[MAXPGPATH + sizeof(WALSUMMARYDIR)];
+	char		polar_summaries_path[MAXPGPATH];
 
-	xldir = opendir(WALSUMMARYDIR);
+	polar_make_file_path_level2(polar_summaries_path, WALSUMMARYDIR);
+	xldir = polar_opendir(polar_summaries_path);
 	if (xldir == NULL)
-		pg_fatal("could not open directory \"%s\": %m", WALSUMMARYDIR);
+		pg_fatal("could not open directory \"%s\": %m", polar_summaries_path);
 
-	while (errno = 0, (xlde = readdir(xldir)) != NULL)
+	while (errno = 0, (xlde = polar_readdir(xldir)) != NULL)
 	{
 		if (strspn(xlde->d_name, "0123456789ABCDEF") == WALSUMMARY_NHEXCHARS &&
 			strcmp(xlde->d_name + WALSUMMARY_NHEXCHARS, ".summary") == 0)
 		{
-			snprintf(path, sizeof(path), "%s/%s", WALSUMMARYDIR, xlde->d_name);
-			if (unlink(path) < 0)
+			snprintf(path, sizeof(path), "%s/%s", polar_summaries_path, xlde->d_name);
+			if (polar_unlink(path) < 0)
 				pg_fatal("could not delete file \"%s\": %m", path);
 		}
 	}
 
 	if (errno)
-		pg_fatal("could not read directory \"%s\": %m", WALSUMMARYDIR);
+		pg_fatal("could not read directory \"%s\": %m", polar_summaries_path);
 
-	if (closedir(xldir))
-		pg_fatal("could not close directory \"%s\": %m", WALSUMMARYDIR);
+	if (polar_closedir(xldir))
+		pg_fatal("could not close directory \"%s\": %m", polar_summaries_path);
 
 #undef WALSUMMARY_NHEXCHARS
 #undef WALSUMMARYDIR
@@ -1140,15 +1184,15 @@ WriteEmptyXLOG(void)
 	XLogFilePath(path, ControlFile.checkPointCopy.ThisTimeLineID,
 				 newXlogSegNo, WalSegSz);
 
-	unlink(path);
+	polar_unlink(path);
 
-	fd = open(path, O_RDWR | O_CREAT | O_EXCL | PG_BINARY,
-			  pg_file_create_mode);
+	fd = polar_open(path, O_RDWR | O_CREAT | O_EXCL | PG_BINARY,
+					pg_file_create_mode);
 	if (fd < 0)
 		pg_fatal("could not open file \"%s\": %m", path);
 
 	errno = 0;
-	if (write(fd, buffer.data, XLOG_BLCKSZ) != XLOG_BLCKSZ)
+	if (polar_write(fd, buffer.data, XLOG_BLCKSZ) != XLOG_BLCKSZ)
 	{
 		/* if write didn't set errno, assume problem is no disk space */
 		if (errno == 0)
@@ -1161,7 +1205,7 @@ WriteEmptyXLOG(void)
 	for (nbytes = XLOG_BLCKSZ; nbytes < WalSegSz; nbytes += XLOG_BLCKSZ)
 	{
 		errno = 0;
-		if (write(fd, buffer.data, XLOG_BLCKSZ) != XLOG_BLCKSZ)
+		if (polar_write(fd, buffer.data, XLOG_BLCKSZ) != XLOG_BLCKSZ)
 		{
 			if (errno == 0)
 				errno = ENOSPC;
@@ -1169,10 +1213,10 @@ WriteEmptyXLOG(void)
 		}
 	}
 
-	if (fsync(fd) != 0)
+	if (polar_fsync(fd) != 0)
 		pg_fatal("fsync error: %m");
 
-	close(fd);
+	polar_close(fd);
 }
 
 
@@ -1206,4 +1250,53 @@ usage(void)
 
 	printf(_("\nReport bugs to <%s>.\n"), PACKAGE_BUGREPORT);
 	printf(_("%s home page: <%s>\n"), PACKAGE_NAME, PACKAGE_URL);
+}
+
+/*
+ * POLAR: Remove existing logindex data files
+ */
+static void
+polar_kill_logindex(void)
+{
+	DIR		   *dir;
+	struct dirent *de;
+	char		path[MAXPGPATH];
+	char		polar_logindex_dir[MAXPGPATH];
+
+	polar_make_file_path_level2(polar_logindex_dir, "pg_logindex");
+	dir = polar_opendir(polar_logindex_dir);
+	if (dir == NULL)
+	{
+		pg_log_error("could not open directory \"%s\": %m", polar_logindex_dir);
+		exit(1);
+	}
+
+	while (errno = 0, (de = polar_readdir(dir)) != NULL)
+	{
+		struct stat st;
+
+		snprintf(path, sizeof(path), "%s/%s", polar_logindex_dir, de->d_name);
+		if (polar_lstat(path, &st) < 0)
+		{
+			pg_log_error("could not stat file \"%s\": %m", path);
+			exit(1);
+		}
+		if (S_ISREG(st.st_mode) && polar_unlink(path) < 0)
+		{
+			pg_log_error("could not delete file \"%s\": %m", path);
+			exit(1);
+		}
+	}
+
+	if (errno)
+	{
+		pg_log_error("could not read directory \"%s\": %m", polar_logindex_dir);
+		exit(1);
+	}
+
+	if (polar_closedir(dir))
+	{
+		pg_log_error("could not close directory \"%s\": %m", polar_logindex_dir);
+		exit(1);
+	}
 }

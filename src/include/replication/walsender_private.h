@@ -22,6 +22,9 @@
 #include "storage/shmem.h"
 #include "storage/spin.h"
 
+/* POLAR */
+#include "port/atomics.h"
+
 typedef enum WalSndState
 {
 	WALSNDSTATE_STARTUP = 0,
@@ -83,9 +86,68 @@ typedef struct WalSnd
 	TimestampTz replyTime;
 
 	ReplicationKind kind;
+
+	/* POLAR: mark current user is superuser or not */
+	bool		is_super;
+
+	/* POLAR: mark whether send to replica or not */
+	bool		to_replica;
+
+	/*
+	 * POLAR: counters for WAL buffer read hit rate.
+	 *
+	 * Field 'ws_changecount' works as a lock. Before/after updating fields
+	 * below it, it needs to be incremented once. Reading fields below from
+	 * shared-memory should double check its value before and after reading,
+	 * and the values are valid only when 'ws_changecount' hasn't changed and
+	 * is even. See comments in structure 'PgBackendStatus'.
+	 */
+	int			wbr_changecount;
+
+	uint64		wbr_hit;
+	uint64		wbr_prefetched;
+	uint64		wbr_read;
+
+	uint64		wbr_hit_bytes;
+	uint64		wbr_prefetched_bytes;
+	uint64		wbr_read_bytes;
+	/* POLAR end */
 } WalSnd;
 
 extern PGDLLIMPORT WalSnd *MyWalSnd;
+
+/* POLAR: macros for reading/writing WAL sender statistics */
+#define WAL_SND_BEGIN_WRITE_STAT(walsnd) \
+	do { \
+		START_CRIT_SECTION(); \
+		(walsnd)->wbr_changecount++; \
+		pg_write_barrier(); \
+	} while (0)
+
+#define WAL_SND_END_WRITE_STAT(walsnd) \
+	do { \
+		pg_write_barrier(); \
+		(walsnd)->wbr_changecount++; \
+		Assert(((walsnd)->wbr_changecount & 1) == 0); \
+		END_CRIT_SECTION(); \
+	} while (0)
+
+#define WAL_SND_BEGIN_READ_STAT(walsnd, before_changecount) \
+	do { \
+		(before_changecount) = (walsnd)->wbr_changecount; \
+		pg_read_barrier(); \
+	} while (0)
+
+#define WAL_SND_END_READ_STAT(walsnd, after_changecount) \
+	do { \
+		pg_read_barrier(); \
+		(after_changecount) = (walsnd)->wbr_changecount; \
+	} while (0)
+
+#define WAL_SND_READ_STAT_COMPLETE(before_changecount, after_changecount) \
+	((before_changecount) == (after_changecount) && \
+	 ((before_changecount) & 1) == 0)
+/* POLAR end */
 
 /* There is one WalSndCtl struct for the whole database cluster */
 typedef struct
@@ -94,13 +156,13 @@ typedef struct
 	 * Synchronous replication queue with one queue per request type.
 	 * Protected by SyncRepLock.
 	 */
-	dlist_head	SyncRepQueue[NUM_SYNC_REP_WAIT_MODE];
+	dlist_head	SyncRepQueue[POLAR_NUM_ALL_REP_WAIT_MODE];
 
 	/*
 	 * Current location of the head of the queue. All waiters should have a
 	 * waitLSN that follows this value. Protected by SyncRepLock.
 	 */
-	XLogRecPtr	lsn[NUM_SYNC_REP_WAIT_MODE];
+	XLogRecPtr	lsn[POLAR_NUM_ALL_REP_WAIT_MODE];
 
 	/*
 	 * Status of data related to the synchronous standbys.  Waiting backends
@@ -119,6 +181,9 @@ typedef struct
 	 * logical failover slots when a walreceiver confirms the receipt of LSN.
 	 */
 	ConditionVariable wal_confirm_rcv_cv;
+
+	/* POLAR: Points to the end of the record waiting DDL */
+	pg_atomic_uint64 polar_wait_ddl_lsn;
 
 	WalSnd		walsnds[FLEXIBLE_ARRAY_MEMBER];
 } WalSndCtlData;

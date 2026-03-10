@@ -182,6 +182,16 @@ pq_init(ClientSocket *client_sock)
 	memcpy(&port->raddr.addr, &client_sock->raddr.addr, client_sock->raddr.salen);
 	port->raddr.salen = client_sock->raddr.salen;
 
+	/* POLAR: Get real client address of ALB. */
+	port->raddr.salen = sizeof(port->raddr.addr);
+	if (getpeername(port->sock,
+					(struct sockaddr *) &port->raddr.addr,
+					&port->raddr.salen) < 0)
+	{
+		ereport(FATAL,
+				(errmsg("%s() failed: %m", "getpeername")));
+	}
+
 	/* fill in the server (local) address */
 	port->laddr.salen = sizeof(port->laddr.addr);
 	if (getsockname(port->sock,

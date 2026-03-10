@@ -8,6 +8,10 @@
 # this directory and SUBDIRS to subdirectories containing more things
 # to build.
 
+# POLAR: CFLAGS_BE only takes effect for backend code.
+override CFLAGS += $(CFLAGS_BE)
+# POLAR end
+
 subsysfilename = objfiles.txt
 
 SUBDIROBJS = $(SUBDIRS:%=%/$(subsysfilename))

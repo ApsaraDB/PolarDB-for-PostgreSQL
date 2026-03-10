@@ -20,6 +20,7 @@
  * appropriate value for a free lock.  The meaning of the variable is up to
  * the caller, the lightweight lock code just assigns and compares it.
  *
+ * Portions Copyright (c) 2024, Alibaba Group Holding Limited
  * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -90,6 +91,10 @@
 #include "utils/hsearch.h"
 #endif
 
+/* POLAR */
+#include "storage/polar_lock_stats.h"
+#include "utils/guc.h"
+/* POLAR end */
 
 /* We use the ShmemLock spinlock to protect LWLockCounter */
 extern slock_t *ShmemLock;
@@ -169,6 +174,34 @@ static const char *const BuiltinTrancheNames[] = {
 	[LWTRANCHE_SUBTRANS_SLRU] = "SubtransSLRU",
 	[LWTRANCHE_XACT_SLRU] = "XactSLRU",
 	[LWTRANCHE_PARALLEL_VACUUM_DSA] = "ParallelVacuumDSA",
+	/* POLAR BuiltinTrancheNames: */
+	[LWTRANCHE_POLAR_COPY_BUFFER] = "copy_buffer",
+	[LWTRANCHE_POLAR_CLOG_LOCAL_CACHE] = "ClogLocalCache",
+	[LWTRANCHE_POLAR_COMMIT_TS_LOCAL_CACHE] = "CommitTsLocalCache",
+	[LWTRANCHE_POLAR_MULTIXACT_OFFSET_LOCAL_CACHE] = "MultixactOffsetLocalCache",
+	[LWTRANCHE_POLAR_MULTIXACT_MEMBER_LOCAL_CACHE] = "MultixactMemberLocalCache",
+	[LWTRANCHE_POLAR_LOGINDEX_LOCAL_CACHE] = "logindex_local_cache",
+	[LWTRANCHE_LOGINDEX_MINI_TRANSACTION] = "logindex_mini_transaction",
+	[LWTRANCHE_LOGINDEX_MINI_TRANSACTION_TBL] = "logindex_mini_transaction_tbl",
+	[LWTRANCHE_WAL_LOGINDEX_MEM_TBL] = "pg_logindex_mem",
+	[LWTRANCHE_WAL_LOGINDEX_HASH_LOCK] = "pg_logindex_hash",
+	[LWTRANCHE_WAL_LOGINDEX_IO] = "pg_logindex_io",
+	[LWTRANCHE_WAL_LOGINDEX_FLUSH_ACTIVE_TBL] = "pg_logindex_flush_active_tbl",
+	[LWTRANCHE_WAL_LOGINDEX_BLOOM_LRU_BUFFER] = "pg_logindex_bloom_buffer",
+	[LWTRANCHE_WAL_LOGINDEX_BLOOM_LRU] = "pg_logindex_bloom_bank",
+	[LWTRANCHE_FULLPAGE_LOGINDEX_MEM_TBL] = "polar_fullpage_mem",
+	[LWTRANCHE_FULLPAGE_LOGINDEX_HASH_LOCK] = "polar_fullpage_hash",
+	[LWTRANCHE_FULLPAGE_LOGINDEX_IO] = "polar_fullpage_io",
+	[LWTRANCHE_FULLPAGE_LOGINDEX_FLUSH_ACTIVE_TBL] = "polar_fullpage_flush_active_tbl",
+	[LWTRANCHE_FULLPAGE_LOGINDEX_BLOOM_LRU_BUFFER] = "polar_fullpage_bloom_buffer",
+	[LWTRANCHE_FULLPAGE_LOGINDEX_BLOOM_LRU] = "polar_fullpage_bloom_bank",
+	[LWTRANCHE_FULLPAGE_FILE] = "polar_fullpage_file_lock",
+	[LWTRANCHE_RELATION_SIZE_CACHE] = "polar_rel_size_cache",
+	[LWTRANCHE_POLAR_XLOG_QUEUE] = "polar_xlog_queue",
+	[LWTRANCHE_SYSLOGGER_WRITER_MAPPING] = "PolarSysLoggerWriterMapping",
+	[LWTRANCHE_POLAR_ASYNC_LOCK_REPLAY] = "async_lock_replay",
+	[LWTRANCHE_XLOG_BUFFER_CONTENT] = "xlog_buffer_content",
+	/* POLAR end */
 };
 
 StaticAssertDecl(lengthof(BuiltinTrancheNames) ==
@@ -189,6 +222,7 @@ static int	LWLockTrancheNamesAllocated = 0;
  * where we have special measures to pass it down).
  */
 LWLockPadded *MainLWLockArray = NULL;
+LWLockPadded *SysLoggerWriterLWLockArray = NULL;
 
 /*
  * We use this structure to keep track of locked LWLocks for release
@@ -521,6 +555,15 @@ InitializeLWLocks(void)
 	 * Copy the info about any named tranches into shared memory (so that
 	 * other processes can see it), and initialize the requested LWLocks.
 	 */
+	/* POLAR: Initialize syslogger write LWLocks  */
+	lock = MainLWLockArray + SYSLOG_WRITER_LWLOCK_OFFSET;
+	for (id = 0; id < NUM_SYSLOGGER_LOCK_PARTITIONS; id++, lock++)
+		LWLockInitialize(&lock->lock, LWTRANCHE_SYSLOGGER_WRITER_MAPPING);
+
+	SysLoggerWriterLWLockArray = MainLWLockArray + SYSLOG_WRITER_LWLOCK_OFFSET;
+	/* POLAR end */
+
+	/* Initialize named tranches. */
 	if (NamedLWLockTrancheRequests > 0)
 	{
 		char	   *trancheNames;
@@ -562,6 +605,10 @@ InitLWLockAccess(void)
 #ifdef LWLOCK_STATS
 	init_lwlock_stats();
 #endif
+
+	/* POLAR: init lwlock local stats */
+	polar_init_lwlock_local_stats();
+	/* POLAR end */
 }
 
 /*
@@ -709,9 +756,8 @@ void
 LWLockInitialize(LWLock *lock, int tranche_id)
 {
 	pg_atomic_init_u32(&lock->state, LW_FLAG_RELEASE_OK);
-#ifdef LOCK_DEBUG
 	pg_atomic_init_u32(&lock->nwaiters, 0);
-#endif
+	pg_atomic_init_u32(&lock->owner_pid, 0);
 	lock->tranche = tranche_id;
 	proclist_init(&lock->waiters);
 }
@@ -832,10 +878,18 @@ LWLockAttemptLock(LWLock *lock, LWLockMode mode)
 			if (lock_free)
 			{
 				/* Great! Got the lock. */
-#ifdef LOCK_DEBUG
 				if (mode == LW_EXCLUSIVE)
+				{
+#ifdef LOCK_DEBUG
 					lock->owner = MyProc;
 #endif
+
+					/*
+					 * POLAR: We only record the last exclusive lock owner.
+					 */
+					if (MyProc)
+						pg_atomic_write_u32(&lock->owner_pid, MyProc->pid);
+				}
 				return false;
 			}
 			else
@@ -1065,9 +1119,8 @@ LWLockQueueSelf(LWLock *lock, LWLockMode mode)
 	/* Can release the mutex now */
 	LWLockWaitListUnlock(lock);
 
-#ifdef LOCK_DEBUG
 	pg_atomic_fetch_add_u32(&lock->nwaiters, 1);
-#endif
+
 }
 
 /*
@@ -1148,14 +1201,12 @@ LWLockDequeueSelf(LWLock *lock)
 			PGSemaphoreUnlock(MyProc->sem);
 	}
 
-#ifdef LOCK_DEBUG
 	{
 		/* not waiting anymore */
 		uint32		nwaiters PG_USED_FOR_ASSERTS_ONLY = pg_atomic_fetch_sub_u32(&lock->nwaiters, 1);
 
 		Assert(nwaiters < MAX_BACKENDS);
 	}
-#endif
 }
 
 /*
@@ -1172,11 +1223,20 @@ LWLockAcquire(LWLock *lock, LWLockMode mode)
 	PGPROC	   *proc = MyProc;
 	bool		result = true;
 	int			extraWaits = 0;
+
+	/* POLAR: lock timing */
+	instr_time	lwlock_wait_start;
+	bool		is_blocking = false;
+
+	/* POLAR end */
 #ifdef LWLOCK_STATS
 	lwlock_stats *lwstats;
 
 	lwstats = get_lwlock_stats_entry(lock);
 #endif
+	/* POLAR: lock timing */
+	INSTR_TIME_SET_ZERO(lwlock_wait_start);
+	/* POLAR end */
 
 	Assert(mode == LW_SHARED || mode == LW_EXCLUSIVE);
 
@@ -1189,6 +1249,9 @@ LWLockAcquire(LWLock *lock, LWLockMode mode)
 	else
 		lwstats->sh_acquire_count++;
 #endif							/* LWLOCK_STATS */
+	/* POLAR: Count lock acquisition attempts */
+	polar_lwlock_stat_acquire(lock, mode);
+	/* POLAR end */
 
 	/*
 	 * We can't wait if we haven't got a PGPROC.  This should only occur
@@ -1279,6 +1342,14 @@ LWLockAcquire(LWLock *lock, LWLockMode mode)
 #ifdef LWLOCK_STATS
 		lwstats->block_count++;
 #endif
+		/* POLAR: track lock wait */
+		{
+			POLAR_LOCK_STATS_TIME_START(lwlock_wait_start);
+			if (!is_blocking)
+				polar_stat_wait_obj_and_time_set(pg_atomic_read_u32(&lock->owner_pid), &lwlock_wait_start, PGPROC_WAIT_PID);
+			POLAR_LWLOCK_STAT_BLOCK(lock, is_blocking);
+		}
+		/* POLAR end */
 
 		LWLockReportWaitStart(lock);
 		if (TRACE_POSTGRESQL_LWLOCK_WAIT_START_ENABLED())
@@ -1294,16 +1365,12 @@ LWLockAcquire(LWLock *lock, LWLockMode mode)
 
 		/* Retrying, allow LWLockRelease to release waiters again. */
 		pg_atomic_fetch_or_u32(&lock->state, LW_FLAG_RELEASE_OK);
-
-#ifdef LOCK_DEBUG
 		{
 			/* not waiting anymore */
 			uint32		nwaiters PG_USED_FOR_ASSERTS_ONLY = pg_atomic_fetch_sub_u32(&lock->nwaiters, 1);
 
 			Assert(nwaiters < MAX_BACKENDS);
 		}
-#endif
-
 		if (TRACE_POSTGRESQL_LWLOCK_WAIT_DONE_ENABLED())
 			TRACE_POSTGRESQL_LWLOCK_WAIT_DONE(T_NAME(lock), mode);
 		LWLockReportWaitEnd();
@@ -1316,6 +1383,11 @@ LWLockAcquire(LWLock *lock, LWLockMode mode)
 
 	if (TRACE_POSTGRESQL_LWLOCK_ACQUIRE_ENABLED())
 		TRACE_POSTGRESQL_LWLOCK_ACQUIRE(T_NAME(lock), mode);
+	/* POLAR: track lock timing */
+	polar_lwlock_stat_record_time(lock, &lwlock_wait_start);
+	if (is_blocking)
+		polar_stat_wait_obj_and_time_clear();
+	/* POLAR end */
 
 	/* Add lock to list of locks held by this backend */
 	held_lwlocks[num_held_lwlocks].lock = lock;
@@ -1400,11 +1472,20 @@ LWLockAcquireOrWait(LWLock *lock, LWLockMode mode)
 	PGPROC	   *proc = MyProc;
 	bool		mustwait;
 	int			extraWaits = 0;
+
+	/* POLAR: lock timing */
+	instr_time	lwlock_wait_start;
+	bool		is_blocking = false;
+
+	/* POLAR end */
 #ifdef LWLOCK_STATS
 	lwlock_stats *lwstats;
 
 	lwstats = get_lwlock_stats_entry(lock);
 #endif
+	/* POLAR: lock timing */
+	INSTR_TIME_SET_ZERO(lwlock_wait_start);
+	/* POLAR end */
 
 	Assert(mode == LW_SHARED || mode == LW_EXCLUSIVE);
 
@@ -1444,6 +1525,14 @@ LWLockAcquireOrWait(LWLock *lock, LWLockMode mode)
 #ifdef LWLOCK_STATS
 			lwstats->block_count++;
 #endif
+			/* POLAR: track lock wait */
+			{
+				POLAR_LOCK_STATS_TIME_START(lwlock_wait_start);
+				if (!is_blocking)
+					polar_stat_wait_obj_and_time_set(pg_atomic_read_u32(&lock->owner_pid), &lwlock_wait_start, PGPROC_WAIT_PID);
+				POLAR_LWLOCK_STAT_BLOCK(lock, is_blocking);
+			}
+			/* POLAR end */
 
 			LWLockReportWaitStart(lock);
 			if (TRACE_POSTGRESQL_LWLOCK_WAIT_START_ENABLED())
@@ -1457,17 +1546,22 @@ LWLockAcquireOrWait(LWLock *lock, LWLockMode mode)
 				extraWaits++;
 			}
 
-#ifdef LOCK_DEBUG
 			{
 				/* not waiting anymore */
 				uint32		nwaiters PG_USED_FOR_ASSERTS_ONLY = pg_atomic_fetch_sub_u32(&lock->nwaiters, 1);
 
 				Assert(nwaiters < MAX_BACKENDS);
 			}
-#endif
 			if (TRACE_POSTGRESQL_LWLOCK_WAIT_DONE_ENABLED())
 				TRACE_POSTGRESQL_LWLOCK_WAIT_DONE(T_NAME(lock), mode);
+
 			LWLockReportWaitEnd();
+
+			/* POLAR: track lock wait */
+			polar_lwlock_stat_record_time(lock, &lwlock_wait_start);
+			if (is_blocking)
+				polar_stat_wait_obj_and_time_clear();
+			/* POLAR end */
 
 			LOG_LWDEBUG("LWLockAcquireOrWait", lock, "awakened");
 		}
@@ -1589,11 +1683,20 @@ LWLockWaitForVar(LWLock *lock, pg_atomic_uint64 *valptr, uint64 oldval,
 	PGPROC	   *proc = MyProc;
 	int			extraWaits = 0;
 	bool		result = false;
+
+	/* POLAR: lock stats */
+	instr_time	lwlock_wait_start;
+	bool		is_blocking = false;
+
+	/* POLAR end */
 #ifdef LWLOCK_STATS
 	lwlock_stats *lwstats;
 
 	lwstats = get_lwlock_stats_entry(lock);
 #endif
+	/* POLAR: lock wait time */
+	INSTR_TIME_SET_ZERO(lwlock_wait_start);
+	/* POLAR end */
 
 	PRINT_LWDEBUG("LWLockWaitForVar", lock, LW_WAIT_UNTIL_FREE);
 
@@ -1662,6 +1765,14 @@ LWLockWaitForVar(LWLock *lock, pg_atomic_uint64 *valptr, uint64 oldval,
 #ifdef LWLOCK_STATS
 		lwstats->block_count++;
 #endif
+		/* POLAR: track lock wait */
+		{
+			POLAR_LOCK_STATS_TIME_START(lwlock_wait_start);
+			if (!is_blocking)
+				polar_stat_wait_obj_and_time_set(pg_atomic_read_u32(&lock->owner_pid), &lwlock_wait_start, PGPROC_WAIT_PID);
+			POLAR_LWLOCK_STAT_BLOCK(lock, is_blocking);
+		}
+		/* POLAR end */
 
 		LWLockReportWaitStart(lock);
 		if (TRACE_POSTGRESQL_LWLOCK_WAIT_START_ENABLED())
@@ -1675,14 +1786,12 @@ LWLockWaitForVar(LWLock *lock, pg_atomic_uint64 *valptr, uint64 oldval,
 			extraWaits++;
 		}
 
-#ifdef LOCK_DEBUG
 		{
 			/* not waiting anymore */
 			uint32		nwaiters PG_USED_FOR_ASSERTS_ONLY = pg_atomic_fetch_sub_u32(&lock->nwaiters, 1);
 
 			Assert(nwaiters < MAX_BACKENDS);
 		}
-#endif
 
 		if (TRACE_POSTGRESQL_LWLOCK_WAIT_DONE_ENABLED())
 			TRACE_POSTGRESQL_LWLOCK_WAIT_DONE(T_NAME(lock), LW_EXCLUSIVE);
@@ -1692,6 +1801,12 @@ LWLockWaitForVar(LWLock *lock, pg_atomic_uint64 *valptr, uint64 oldval,
 
 		/* Now loop back and check the status of the lock again. */
 	}
+
+	/* POLAR: track lock timing */
+	polar_lwlock_stat_record_time(lock, &lwlock_wait_start);
+	if (is_blocking)
+		polar_stat_wait_obj_and_time_clear();
+	/* POLAR end */
 
 	/*
 	 * Fix the process wait semaphore's count for any absorbed wakeups.
@@ -1820,6 +1935,11 @@ LWLockRelease(LWLock *lock)
 
 	if (TRACE_POSTGRESQL_LWLOCK_RELEASE_ENABLED())
 		TRACE_POSTGRESQL_LWLOCK_RELEASE(T_NAME(lock));
+
+	/* POLAR: set owner pid */
+	if (mode == LW_EXCLUSIVE)
+		pg_atomic_write_u32(&lock->owner_pid, 0);
+	/* POLAR end */
 
 	/*
 	 * We're still waiting for backends to get scheduled, don't wake them up
@@ -1968,3 +2088,22 @@ LWLockHeldByMeInMode(LWLock *lock, LWLockMode mode)
 	}
 	return false;
 }
+
+/*
+ * POLAR: get max lock tranche id now
+ */
+int
+polar_get_lwlock_counter(void)
+{
+	int			result;
+	int		   *LWLockCounter;
+
+	LWLockCounter = (int *) ((char *) MainLWLockArray - sizeof(int));
+	SpinLockAcquire(ShmemLock);
+	result = (*LWLockCounter);
+	SpinLockRelease(ShmemLock);
+
+	return result;
+}
+
+/* POLAR end */

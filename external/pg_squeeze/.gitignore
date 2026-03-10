@@ -1,0 +1,8 @@
+*~
+*.o
+*.so
+log/
+results/
+GPATH
+GRTAGS
+GTAGS

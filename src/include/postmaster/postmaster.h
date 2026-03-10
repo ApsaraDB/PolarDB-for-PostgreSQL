@@ -36,6 +36,9 @@ extern PGDLLIMPORT bool remove_temp_files_after_crash;
 extern PGDLLIMPORT bool send_abort_for_crash;
 extern PGDLLIMPORT bool send_abort_for_kill;
 
+/* POLAR */
+extern char *polar_unquote_unix_socket_directories;
+
 #ifdef WIN32
 extern PGDLLIMPORT HANDLE PostmasterHandle;
 #else

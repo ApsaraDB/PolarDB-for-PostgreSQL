@@ -38,6 +38,7 @@ typedef struct BackupState
 } BackupState;
 
 extern char *build_backup_content(BackupState *state,
+								  int *len,
 								  bool ishistoryfile);
 
 #endif							/* XLOG_BACKUP_H */

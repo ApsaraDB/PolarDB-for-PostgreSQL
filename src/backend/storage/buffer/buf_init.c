@@ -18,6 +18,13 @@
 #include "storage/bufmgr.h"
 #include "storage/proc.h"
 
+/* POLAR */
+#include "common/file_utils.h"
+#include "storage/polar_copybuf.h"
+#include "storage/polar_fd.h"
+#include "storage/polar_flush.h"
+#include "utils/guc.h"
+
 BufferDescPadded *BufferDescriptors;
 char	   *BufferBlocks;
 ConditionVariableMinimallyPadded *BufferIOCVArray;
@@ -57,6 +64,48 @@ CkptSortItem *CkptBufferIds;
  *		multiple times. Check the PrivateRefCount infrastructure in bufmgr.c.
  */
 
+static Size
+polar_zero_buffer_shmem_size()
+{
+	/* -1 indicates a request for auto-tune. */
+	if (polar_zero_buffers == -1)
+	{
+		/* Request according to NBuffers, which is in [16, INT_MAX / 2) */
+		polar_zero_buffers = 4;
+
+		if (NBuffers >= 1024)
+			polar_zero_buffers = 32;
+
+		if (NBuffers >= 16384)
+			polar_zero_buffers = 512;
+	}
+
+	/* 0 disables the zero buffer. */
+	if (polar_zero_buffers == 0)
+		return 0;
+
+	polar_zero_buffer_size = polar_zero_buffers * BLCKSZ;
+
+	return polar_zero_buffer_size + PG_IO_ALIGN_SIZE;
+}
+
+static void
+polar_zero_buffer_init()
+{
+	bool		found;
+
+	if (polar_zero_buffer_size == 0)
+		return;
+
+	polar_zero_buffer = (char *)
+		TYPEALIGN(PG_IO_ALIGN_SIZE,
+				  ShmemInitStruct("Zero Buffer Blocks",
+								  polar_zero_buffer_size + PG_IO_ALIGN_SIZE,
+								  &found));
+
+	if (!found)
+		MemSet(polar_zero_buffer, 0, polar_zero_buffer_size);
+}
 
 /*
  * Initialize shared buffer pool
@@ -122,6 +171,8 @@ InitBufferPool(void)
 			ClearBufferTag(&buf->tag);
 
 			pg_atomic_init_u32(&buf->state, 0);
+			pg_atomic_init_u32(&buf->state_ext, 0);
+			pg_atomic_init_u32(&buf->polar_redo_state, 0);
 			buf->wait_backend_pgprocno = INVALID_PROC_NUMBER;
 
 			buf->buf_id = i;
@@ -132,10 +183,22 @@ InitBufferPool(void)
 			 */
 			buf->freeNext = i + 1;
 
+#ifdef LOCKBUFHDR_DEBUG
+			buf->locker_pid = 0;
+#endif
+
 			LWLockInitialize(BufferDescriptorGetContentLock(buf),
 							 LWTRANCHE_BUFFER_CONTENT);
 
 			ConditionVariableInit(BufferDescriptorGetIOCV(buf));
+
+			/* POLAR */
+			buf->oldest_lsn = InvalidXLogRecPtr;
+			buf->flush_next = POLAR_FLUSHNEXT_NOT_IN_LIST;
+			buf->flush_prev = POLAR_FLUSHNEXT_NOT_IN_LIST;
+			buf->copy_buffer = NULL;
+			buf->recently_modified_count = 0;
+			buf->polar_flags = 0;
 		}
 
 		/* Correct last entry of linked list */
@@ -144,6 +207,15 @@ InitBufferPool(void)
 
 	/* Init other shared buffer-management stuff */
 	StrategyInitialize(!foundDescs);
+
+	/* POLAR: init flush list */
+	polar_init_flush_list_ctl(!foundDescs);
+
+	/* POLAR: init copy buffer pool */
+	polar_init_copy_buffer_pool();
+
+	/* POLAR: init global zero buffer */
+	polar_zero_buffer_init();
 
 	/* Initialize per-backend file flush context */
 	WritebackContextInit(&BackendWritebackContext,
@@ -181,6 +253,15 @@ BufferShmemSize(void)
 
 	/* size of checkpoint sort array in bufmgr.c */
 	size = add_size(size, mul_size(NBuffers, sizeof(CkptSortItem)));
+
+	/* POLAR: size of flush list */
+	size = add_size(size, polar_flush_list_ctl_shmem_size());
+
+	/* POLAR: add copy buffer shared memory size */
+	size = add_size(size, polar_copy_buffer_shmem_size());
+
+	/* POLAR: size of global zero buffer */
+	size = add_size(size, polar_zero_buffer_shmem_size());
 
 	return size;
 }

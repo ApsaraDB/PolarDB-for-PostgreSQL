@@ -1119,6 +1119,9 @@ extern void ExceptionalCondition(const char *conditionName,
  */
 typedef union PGAlignedBlock
 {
+#ifdef pg_attribute_aligned
+	pg_attribute_aligned(PG_IO_ALIGN_SIZE)
+#endif
 	char		data[BLCKSZ];
 	double		force_align_d;
 	int64		force_align_i64;
@@ -1299,6 +1302,11 @@ extern int	fdatasync(int fildes);
 #else
 #define strtoi64(str, endptr, base) ((int64) strtoll(str, endptr, base))
 #define strtou64(str, endptr, base) ((uint64) strtoull(str, endptr, base))
+#endif
+
+#if defined(HAVE___BACKTRACE)
+#define backtrace __backtrace
+extern int	__backtrace(void **__array, int __size);
 #endif
 
 /*

@@ -157,6 +157,27 @@ pqTraceOutputInt32(FILE *pfdebug, const char *data, int *cursor, bool suppress)
 }
 
 /*
+ *   pqTraceOutputUInt64: output a 8-byte unsigned integer message to the log
+ *
+ * If 'suppress' is true, print a literal NNNN instead of the actual number.
+ */
+static uint64
+pqTraceOutputUInt64(FILE *pfdebug, const char *data, int *cursor, bool suppress)
+{
+	uint64		result;
+
+	memcpy(&result, data + *cursor, 8);
+	*cursor += 8;
+	result = (uint64) pg_ntoh64(result);
+	if (suppress)
+		fprintf(pfdebug, " NNNN");
+	else
+		fprintf(pfdebug, " %zu", result);
+
+	return result;
+}
+
+/*
  *   pqTraceOutputString: output a string message to the log
  */
 static void
@@ -501,10 +522,15 @@ pqTraceOutput_CopyBothResponse(FILE *f, const char *message, int *cursor, int le
 }
 
 static void
-pqTraceOutput_ReadyForQuery(FILE *f, const char *message, int *cursor)
+pqTraceOutput_ReadyForQuery(FILE *f, const char *message, int *cursor, bool polar_proxy_send_lsn)
 {
 	fprintf(f, "ReadyForQuery\t");
 	pqTraceOutputByte1(f, message, cursor);
+	if (polar_proxy_send_lsn)
+	{
+		fprintf(f, "GetLSN\t");
+		pqTraceOutputUInt64(f, message, cursor, false);
+	}
 }
 
 /*
@@ -668,7 +694,7 @@ pqTraceOutputMessage(PGconn *conn, const char *message, bool toServer)
 			/* No message content */
 			break;
 		case PqMsg_ReadyForQuery:
-			pqTraceOutput_ReadyForQuery(conn->Pfdebug, message, &logCursor);
+			pqTraceOutput_ReadyForQuery(conn->Pfdebug, message, &logCursor, conn->polar_proxy_send_lsn);
 			break;
 		default:
 			fprintf(conn->Pfdebug, "Unknown message: %02x", id);

@@ -64,6 +64,12 @@ static const InfoItem info_items[] = {
 	{"--ldflags_sl", "LDFLAGS_SL"},
 	{"--libs", "LIBS"},
 	{"--version", "VERSION"},
+	{"--polar-commit", "POLAR_COMMIT"},
+	{"--polar-version", "POLAR_VERSION"},
+	{"--polardb-version", "POLARDB_VERSION"},
+	{"--polar-release-date", "POLAR_RELEASE_DATE"},
+	{"--polar-deploy-mode", "POLAR_DEPLOY_MODE"},
+	{"--pfsd-version", "PFSD_VERSION"},
 	{NULL, NULL}
 };
 
@@ -100,6 +106,12 @@ help(void)
 	printf(_("  --ldflags_sl          show LDFLAGS_SL value used when PostgreSQL was built\n"));
 	printf(_("  --libs                show LIBS value used when PostgreSQL was built\n"));
 	printf(_("  --version             show the PostgreSQL version\n"));
+	printf(_("  --polar-commit        show the PolarDB-PG commit number\n"));
+	printf(_("  --polar-version       show the PolarDB-PG version number\n"));
+	printf(_("  --polardb-version     show the PolarDB-PG (V2) version number\n"));
+	printf(_("  --polar-release-date  show the PolarDB-PG release date\n"));
+	printf(_("  --polar-deploy-mode   show the PolarDB-PG deploy mode\n"));
+	printf(_("  --pfsd-version        show the PFSD version\n"));
 	printf(_("  -?, --help            show this help, then exit\n"));
 	printf(_("\nWith no arguments, all known items are shown.\n\n"));
 	printf(_("Report bugs to <%s>.\n"), PACKAGE_BUGREPORT);

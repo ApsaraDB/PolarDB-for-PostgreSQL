@@ -100,7 +100,7 @@ _PG_init(void)
 							-1,
 							-1, INT_MAX,
 							PGC_SUSET,
-							GUC_UNIT_MS,
+							GUC_UNIT_MS | POLAR_GUC_IS_VISIBLE,
 							NULL,
 							NULL,
 							NULL);
@@ -123,7 +123,7 @@ _PG_init(void)
 							 &auto_explain_log_analyze,
 							 false,
 							 PGC_SUSET,
-							 0,
+							 POLAR_GUC_IS_VISIBLE,
 							 NULL,
 							 NULL,
 							 NULL);
@@ -145,7 +145,7 @@ _PG_init(void)
 							 &auto_explain_log_verbose,
 							 false,
 							 PGC_SUSET,
-							 0,
+							 POLAR_GUC_IS_VISIBLE,
 							 NULL,
 							 NULL,
 							 NULL);
@@ -156,7 +156,7 @@ _PG_init(void)
 							 &auto_explain_log_buffers,
 							 false,
 							 PGC_SUSET,
-							 0,
+							 POLAR_GUC_IS_VISIBLE,
 							 NULL,
 							 NULL,
 							 NULL);
@@ -178,7 +178,7 @@ _PG_init(void)
 							 &auto_explain_log_triggers,
 							 false,
 							 PGC_SUSET,
-							 0,
+							 POLAR_GUC_IS_VISIBLE,
 							 NULL,
 							 NULL,
 							 NULL);
@@ -190,7 +190,7 @@ _PG_init(void)
 							 EXPLAIN_FORMAT_TEXT,
 							 format_options,
 							 PGC_SUSET,
-							 0,
+							 POLAR_GUC_IS_VISIBLE,
 							 NULL,
 							 NULL,
 							 NULL);
@@ -213,7 +213,7 @@ _PG_init(void)
 							 &auto_explain_log_nested_statements,
 							 false,
 							 PGC_SUSET,
-							 0,
+							 POLAR_GUC_IS_VISIBLE,
 							 NULL,
 							 NULL,
 							 NULL);
@@ -224,7 +224,7 @@ _PG_init(void)
 							 &auto_explain_log_timing,
 							 true,
 							 PGC_SUSET,
-							 0,
+							 POLAR_GUC_IS_VISIBLE,
 							 NULL,
 							 NULL,
 							 NULL);
@@ -237,7 +237,7 @@ _PG_init(void)
 							 0.0,
 							 1.0,
 							 PGC_SUSET,
-							 0,
+							 POLAR_GUC_IS_VISIBLE,
 							 NULL,
 							 NULL,
 							 NULL);
@@ -431,6 +431,7 @@ explain_ExecutorEnd(QueryDesc *queryDesc)
 			ereport(auto_explain_log_level,
 					(errmsg("duration: %.3f ms  plan:\n%s",
 							msec, es->str->data),
+					 polar_mark_slow_log(true), /* POLAR */
 					 errhidestmt(true)));
 		}
 

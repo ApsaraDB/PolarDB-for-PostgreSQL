@@ -34,6 +34,9 @@ $node->command_fails_like(
 	qr/FATAL:  cannot connect to invalid database "regression_invalid"/,
 	'clusterdb cannot target invalid database');
 
+$node->safe_psql('polardb_admin',
+	'CREATE TABLE test1 (a int); CREATE INDEX test1x ON test1 (a); CLUSTER test1 USING test1x'
+);
 $node->safe_psql('postgres',
 	'CREATE TABLE test1 (a int); CREATE INDEX test1x ON test1 (a); CLUSTER test1 USING test1x'
 );

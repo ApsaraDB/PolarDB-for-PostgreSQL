@@ -537,12 +537,19 @@ XLogPrefetcherNextBlock(uintptr_t pgsr_private, XLogRecPtr *lsn)
 			if (rmid == RM_XLOG_ID)
 			{
 				if (record_type == XLOG_CHECKPOINT_SHUTDOWN ||
+					record_type == XLOG_OVERWRITE_CONTRECORD ||
 					record_type == XLOG_END_OF_RECOVERY)
 				{
 					/*
 					 * These records might change the TLI.  Avoid potential
 					 * bugs if we were to allow "read TLI" and "replay TLI" to
 					 * differ without more analysis.
+					 *
+					 * POLAR: An incremental not shutdown checkpoint will be
+					 * preformed at the end of recovery when the incremental
+					 * checkpoint is enabled. Then more than one overwrite
+					 * contrecord would be decoded in one batch, that would
+					 * make wal reader's overwrittenRecPtr corrupted.
 					 */
 					prefetcher->no_readahead_until = record->lsn;
 

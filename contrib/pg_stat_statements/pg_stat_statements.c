@@ -34,6 +34,7 @@
  * in the file to be read or written while holding only shared lock.
  *
  *
+ * Portions Copyright (c) 2026, Alibaba Group Holding Limited
  * Copyright (c) 2008-2024, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
@@ -73,6 +74,9 @@
 #include "utils/builtins.h"
 #include "utils/memutils.h"
 #include "utils/timestamp.h"
+
+/* POLAR */
+#include "storage/polar_fd.h"
 
 PG_MODULE_MAGIC;
 
@@ -293,11 +297,26 @@ static bool pgss_track_planning = false;	/* whether to track planning
 											 * duration */
 static bool pgss_save = true;	/* whether to save stats across shutdown */
 
+/* POLAR */
+static bool polar_pgss_track_superuser; /* whether to track commands executed
+										 * by superusers */
+static bool polar_pgss_ignore_sensitive_ddl;
+
+#define polar_pgss_enable_superuser_track() ((MyProc && MyProc->issuper) ? polar_pgss_track_superuser : true)
+
+#define POLAR_PGSS_IGNORED_UTILITY(n) \
+	(polar_pgss_ignore_sensitive_ddl && \
+	 (IsA(n, CreateRoleStmt) || IsA(n, AlterRoleStmt) || \
+	  IsA(n, CreateForeignServerStmt) || IsA(n, AlterForeignServerStmt) || \
+	  IsA(n, CreateUserMappingStmt) || IsA(n, AlterUserMappingStmt) || \
+	  IsA(n, CreateSubscriptionStmt) || IsA(n, AlterSubscriptionStmt)))
+/* POLAR end */
 
 #define pgss_enabled(level) \
 	(!IsParallelWorker() && \
 	(pgss_track == PGSS_TRACK_ALL || \
-	(pgss_track == PGSS_TRACK_TOP && (level) == 0)))
+	(pgss_track == PGSS_TRACK_TOP && (level) == 0)) && \
+	polar_pgss_enable_superuser_track())
 
 #define record_gc_qtexts() \
 	do { \
@@ -405,7 +424,7 @@ _PG_init(void)
 							100,
 							INT_MAX / 2,
 							PGC_POSTMASTER,
-							0,
+							POLAR_GUC_IS_UNCHANGEABLE,
 							NULL,
 							NULL,
 							NULL);
@@ -417,7 +436,7 @@ _PG_init(void)
 							 PGSS_TRACK_TOP,
 							 track_options,
 							 PGC_SUSET,
-							 0,
+							 POLAR_GUC_IS_UNCHANGEABLE,
 							 NULL,
 							 NULL,
 							 NULL);
@@ -428,7 +447,7 @@ _PG_init(void)
 							 &pgss_track_utility,
 							 true,
 							 PGC_SUSET,
-							 0,
+							 POLAR_GUC_IS_UNCHANGEABLE,
 							 NULL,
 							 NULL,
 							 NULL);
@@ -450,10 +469,42 @@ _PG_init(void)
 							 &pgss_save,
 							 true,
 							 PGC_SIGHUP,
+							 POLAR_GUC_IS_UNCHANGEABLE,
+							 NULL,
+							 NULL,
+							 NULL);
+
+	/*
+	 * POLAR: whether to track what superuser executes.
+	 */
+	DefineCustomBoolVariable("pg_stat_statements.enable_superuser_track",
+							 "Selects whether commands executed by superuser "
+							 "are tracked by pg_stat_statements.",
+							 NULL,
+							 &polar_pgss_track_superuser,
+							 false,
+							 PGC_SUSET,
 							 0,
 							 NULL,
 							 NULL,
 							 NULL);
+	/* POLAR end */
+
+	/*
+	 * POLAR: whether to ignore tracking sensitive DDL like CREATE/ALTER ROLE.
+	 */
+	DefineCustomBoolVariable("pg_stat_statements.ignore_sensitive_ddl",
+							 "Selects whether to ignore tracking sensitive DDL "
+							 "by pg_stat_statements.",
+							 NULL,
+							 &polar_pgss_ignore_sensitive_ddl,
+							 true,
+							 PGC_SUSET,
+							 0,
+							 NULL,
+							 NULL,
+							 NULL);
+	/* POLAR end */
 
 	MarkGUCPrefixReserved("pg_stat_statements");
 
@@ -843,7 +894,9 @@ pgss_post_parse_analyze(ParseState *pstate, Query *query, JumbleState *jstate)
 	 */
 	if (query->utilityStmt)
 	{
-		if (pgss_track_utility && IsA(query->utilityStmt, ExecuteStmt))
+		if (pgss_track_utility &&
+			(IsA(query->utilityStmt, ExecuteStmt) ||
+			 POLAR_PGSS_IGNORED_UTILITY(query->utilityStmt)))
 		{
 			query->queryId = UINT64CONST(0);
 			return;
@@ -1136,7 +1189,8 @@ pgss_ProcessUtility(PlannedStmt *pstmt, const char *queryString,
 	 */
 	if (enabled &&
 		!IsA(parsetree, ExecuteStmt) &&
-		!IsA(parsetree, PrepareStmt))
+		!IsA(parsetree, PrepareStmt) &&
+		!POLAR_PGSS_IGNORED_UTILITY(parsetree))
 	{
 		instr_time	start;
 		instr_time	duration;
@@ -2299,7 +2353,7 @@ qtext_load_file(Size *buffer_size)
 	}
 
 	/* Get file length */
-	if (fstat(fd, &stat))
+	if (polar_fstat(fd, &stat))
 	{
 		ereport(LOG,
 				(errcode_for_file_access(),
@@ -2343,7 +2397,7 @@ qtext_load_file(Size *buffer_size)
 		 * writes from garbage collection.
 		 */
 		errno = 0;
-		if (read(fd, buf + nread, toread) != toread)
+		if (polar_read(fd, buf + nread, toread) != toread)
 		{
 			if (errno)
 				ereport(LOG,

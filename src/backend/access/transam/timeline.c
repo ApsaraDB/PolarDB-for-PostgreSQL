@@ -42,6 +42,9 @@
 #include "pgstat.h"
 #include "storage/fd.h"
 
+/* POLAR */
+#include "storage/polar_fd.h"
+
 /*
  * Copies all timeline history files with id's between 'begin' and 'end'
  * from archive to pg_wal.
@@ -78,7 +81,7 @@ readTimeLineHistory(TimeLineID targetTLI)
 	List	   *result;
 	char		path[MAXPGPATH];
 	char		histfname[MAXFNAMELEN];
-	FILE	   *fd;
+	int			fd;
 	TimeLineHistoryEntry *entry;
 	TimeLineID	lasttli = 0;
 	XLogRecPtr	prevend;
@@ -102,8 +105,8 @@ readTimeLineHistory(TimeLineID targetTLI)
 	else
 		TLHistoryFilePath(path, targetTLI);
 
-	fd = AllocateFile(path, "r");
-	if (fd == NULL)
+	fd = OpenTransientFile(path, O_RDONLY);
+	if (fd < 0)
 	{
 		if (errno != ENOENT)
 			ereport(FATAL,
@@ -125,7 +128,7 @@ readTimeLineHistory(TimeLineID targetTLI)
 	for (;;)
 	{
 		char		fline[MAXPGPATH];
-		char	   *res;
+		int			res;
 		char	   *ptr;
 		TimeLineID	tli;
 		uint32		switchpoint_hi;
@@ -133,17 +136,10 @@ readTimeLineHistory(TimeLineID targetTLI)
 		int			nfields;
 
 		pgstat_report_wait_start(WAIT_EVENT_TIMELINE_HISTORY_READ);
-		res = fgets(fline, sizeof(fline), fd);
+		res = polar_read_line(fd, fline, sizeof(fline));
 		pgstat_report_wait_end();
-		if (res == NULL)
-		{
-			if (ferror(fd))
-				ereport(ERROR,
-						(errcode_for_file_access(),
-						 errmsg("could not read file \"%s\": %m", path)));
-
+		if (res <= 0)
 			break;
-		}
 
 		/* skip leading whitespace and check for # comment */
 		for (ptr = fline; *ptr; ptr++)
@@ -187,7 +183,7 @@ readTimeLineHistory(TimeLineID targetTLI)
 		/* we ignore the remainder of each line */
 	}
 
-	FreeFile(fd);
+	CloseTransientFile(fd);
 
 	if (result && targetTLI <= lasttli)
 		ereport(FATAL,
@@ -223,7 +219,7 @@ existsTimeLineHistory(TimeLineID probeTLI)
 {
 	char		path[MAXPGPATH];
 	char		histfname[MAXFNAMELEN];
-	FILE	   *fd;
+	int			fd;
 
 	/* Timeline 1 does not have a history file, so no need to check */
 	if (probeTLI == 1)
@@ -237,10 +233,10 @@ existsTimeLineHistory(TimeLineID probeTLI)
 	else
 		TLHistoryFilePath(path, probeTLI);
 
-	fd = AllocateFile(path, "r");
-	if (fd != NULL)
+	fd = BasicOpenFile(path, O_RDONLY);
+	if (fd >= 0)
 	{
-		FreeFile(fd);
+		polar_close(fd);
 		return true;
 	}
 	else
@@ -311,15 +307,17 @@ writeTimeLineHistory(TimeLineID newTLI, TimeLineID parentTLI,
 	int			srcfd;
 	int			fd;
 	int			nbytes;
+	char		polar_subtmppath[MAXPGPATH];
 
 	Assert(newTLI > parentTLI); /* else bad selection of newTLI */
 
 	/*
 	 * Write into a temp file name.
 	 */
-	snprintf(tmppath, MAXPGPATH, XLOGDIR "/xlogtemp.%d", (int) getpid());
+	snprintf(polar_subtmppath, MAXPGPATH, XLOGDIR "/xlogtemp.%d", (int) getpid());
+	polar_make_file_path_level2(tmppath, polar_subtmppath);
 
-	unlink(tmppath);
+	polar_unlink(tmppath);
 
 	/* do not use get_sync_bit() here --- want to fsync only at end of fill */
 	fd = OpenTransientFile(tmppath, O_RDWR | O_CREAT | O_EXCL);
@@ -354,7 +352,7 @@ writeTimeLineHistory(TimeLineID newTLI, TimeLineID parentTLI,
 		{
 			errno = 0;
 			pgstat_report_wait_start(WAIT_EVENT_TIMELINE_HISTORY_READ);
-			nbytes = (int) read(srcfd, buffer, sizeof(buffer));
+			nbytes = (int) polar_read(srcfd, buffer, sizeof(buffer));
 			pgstat_report_wait_end();
 			if (nbytes < 0 || errno != 0)
 				ereport(ERROR,
@@ -364,7 +362,7 @@ writeTimeLineHistory(TimeLineID newTLI, TimeLineID parentTLI,
 				break;
 			errno = 0;
 			pgstat_report_wait_start(WAIT_EVENT_TIMELINE_HISTORY_WRITE);
-			if ((int) write(fd, buffer, nbytes) != nbytes)
+			if ((int) polar_write(fd, buffer, nbytes) != nbytes)
 			{
 				int			save_errno = errno;
 
@@ -372,7 +370,7 @@ writeTimeLineHistory(TimeLineID newTLI, TimeLineID parentTLI,
 				 * If we fail to make the file, delete it to release disk
 				 * space
 				 */
-				unlink(tmppath);
+				polar_unlink(tmppath);
 
 				/*
 				 * if write didn't set errno, assume problem is no disk space
@@ -408,14 +406,14 @@ writeTimeLineHistory(TimeLineID newTLI, TimeLineID parentTLI,
 	nbytes = strlen(buffer);
 	errno = 0;
 	pgstat_report_wait_start(WAIT_EVENT_TIMELINE_HISTORY_WRITE);
-	if ((int) write(fd, buffer, nbytes) != nbytes)
+	if ((int) polar_write(fd, buffer, nbytes) != nbytes)
 	{
 		int			save_errno = errno;
 
 		/*
 		 * If we fail to make the file, delete it to release disk space
 		 */
-		unlink(tmppath);
+		polar_unlink(tmppath);
 		/* if write didn't set errno, assume problem is no disk space */
 		errno = save_errno ? save_errno : ENOSPC;
 
@@ -426,7 +424,7 @@ writeTimeLineHistory(TimeLineID newTLI, TimeLineID parentTLI,
 	pgstat_report_wait_end();
 
 	pgstat_report_wait_start(WAIT_EVENT_TIMELINE_HISTORY_SYNC);
-	if (pg_fsync(fd) != 0)
+	if (polar_fsync(fd) != 0)
 		ereport(data_sync_elevel(ERROR),
 				(errcode_for_file_access(),
 				 errmsg("could not fsync file \"%s\": %m", tmppath)));
@@ -465,13 +463,15 @@ writeTimeLineHistoryFile(TimeLineID tli, char *content, int size)
 	char		path[MAXPGPATH];
 	char		tmppath[MAXPGPATH];
 	int			fd;
+	char		polar_subtmppath[MAXPGPATH];
 
 	/*
 	 * Write into a temp file name.
 	 */
-	snprintf(tmppath, MAXPGPATH, XLOGDIR "/xlogtemp.%d", (int) getpid());
+	snprintf(polar_subtmppath, MAXPGPATH, XLOGDIR "/xlogtemp.%d", (int) getpid());
 
-	unlink(tmppath);
+	polar_make_file_path_level2(tmppath, polar_subtmppath);
+	polar_unlink(tmppath);
 
 	/* do not use get_sync_bit() here --- want to fsync only at end of fill */
 	fd = OpenTransientFile(tmppath, O_RDWR | O_CREAT | O_EXCL);
@@ -482,14 +482,14 @@ writeTimeLineHistoryFile(TimeLineID tli, char *content, int size)
 
 	errno = 0;
 	pgstat_report_wait_start(WAIT_EVENT_TIMELINE_HISTORY_FILE_WRITE);
-	if ((int) write(fd, content, size) != size)
+	if ((int) polar_write(fd, content, size) != size)
 	{
 		int			save_errno = errno;
 
 		/*
 		 * If we fail to make the file, delete it to release disk space
 		 */
-		unlink(tmppath);
+		polar_unlink(tmppath);
 		/* if write didn't set errno, assume problem is no disk space */
 		errno = save_errno ? save_errno : ENOSPC;
 
@@ -500,7 +500,7 @@ writeTimeLineHistoryFile(TimeLineID tli, char *content, int size)
 	pgstat_report_wait_end();
 
 	pgstat_report_wait_start(WAIT_EVENT_TIMELINE_HISTORY_FILE_SYNC);
-	if (pg_fsync(fd) != 0)
+	if (polar_fsync(fd) != 0)
 		ereport(data_sync_elevel(ERROR),
 				(errcode_for_file_access(),
 				 errmsg("could not fsync file \"%s\": %m", tmppath)));

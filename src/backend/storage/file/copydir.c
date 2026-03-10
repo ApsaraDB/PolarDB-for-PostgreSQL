@@ -27,6 +27,9 @@
 #include "storage/copydir.h"
 #include "storage/fd.h"
 
+/* POLAR */
+#include "storage/polar_fd.h"
+
 /*
  * copydir: copy a directory
  *
@@ -177,7 +180,7 @@ copy_file(const char *fromfile, const char *tofile)
 		}
 
 		pgstat_report_wait_start(WAIT_EVENT_COPY_FILE_READ);
-		nbytes = read(srcfd, buffer, COPY_BUF_SIZE);
+		nbytes = polar_read(srcfd, buffer, COPY_BUF_SIZE);
 		pgstat_report_wait_end();
 		if (nbytes < 0)
 			ereport(ERROR,
@@ -187,7 +190,7 @@ copy_file(const char *fromfile, const char *tofile)
 			break;
 		errno = 0;
 		pgstat_report_wait_start(WAIT_EVENT_COPY_FILE_WRITE);
-		if ((int) write(dstfd, buffer, nbytes) != nbytes)
+		if ((int) polar_write(dstfd, buffer, nbytes) != nbytes)
 		{
 			/* if write didn't set errno, assume problem is no disk space */
 			if (errno == 0)

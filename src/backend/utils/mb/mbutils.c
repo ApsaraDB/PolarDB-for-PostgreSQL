@@ -23,6 +23,7 @@
  * the result is validly encoded according to the destination encoding.
  *
  *
+ * Copyright (c) 2026, Alibaba Group Holding Limited
  * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -92,6 +93,7 @@ static const pg_enc2name *MessageEncoding = &pg_enc2name_tbl[PG_SQL_ASCII];
 static bool backend_startup_complete = false;
 static int	pending_client_encoding = PG_SQL_ASCII;
 
+bool		polar_skip_null_char_in_string = false;
 
 /* Internal functions */
 static char *perform_default_encoding_conversion(const char *src,
@@ -105,6 +107,32 @@ static void report_invalid_encoding_int(int encoding, const char *mbstr,
 pg_attribute_noreturn()
 static void report_invalid_encoding_db(const char *mbstr, int mblen, int len);
 
+/*
+ * POLAR: strip null (0x00) bytes from a string.
+ *
+ * Returns a palloc'd copy with null bytes removed. *newlen is set to the
+ * new length (0 if the input was entirely null bytes).
+ */
+static char *
+polar_strip_null_bytes(const char *s, int len, int *newlen)
+{
+	char	   *result;
+	int			i,
+				j;
+
+	Assert(s && newlen);
+
+	result = (char *) palloc(len + 1);
+	j = 0;
+	for (i = 0; i < len; i++)
+	{
+		if (s[i] != '\0')
+			result[j++] = s[i];
+	}
+	result[j] = '\0';
+	*newlen = j;
+	return result;
+}
 
 /*
  * Prepare for a future call to SetClientEncoding.  Success should mean
@@ -686,6 +714,30 @@ pg_any_to_server(const char *s, int len, int encoding)
 {
 	if (len <= 0)
 		return unconstify(char *, s);	/* empty string is always valid */
+
+	/*
+	 * POLAR: strip null bytes first. This is safe because 0x00 is never a
+	 * valid part of any multi-byte character in PostgreSQL-supported
+	 * encodings. By stripping early, we avoid passing null bytes to encoding
+	 * converters and validators that would reject them.
+	 *
+	 * The palloc'd buffer returned by polar_strip_null_bytes is allocated in
+	 * the current MemoryContext, just like the conversion result allocated by
+	 * pg_do_encoding_conversion / perform_default_encoding_conversion.  We do
+	 * not explicitly pfree it here; it will be reclaimed when the
+	 * MemoryContext is destroyed or reset, consistent with how all encoding
+	 * conversion functions in this file manage memory.
+	 */
+	if (polar_skip_null_char_in_string && memchr(s, 0, len) != NULL)
+	{
+		int			newlen;
+		char	   *cleaned = polar_strip_null_bytes(s, len, &newlen);
+
+		if (newlen <= 0)
+			return cleaned;
+		s = cleaned;
+		len = newlen;
+	}
 
 	if (encoding == DatabaseEncoding->encoding ||
 		encoding == PG_SQL_ASCII)

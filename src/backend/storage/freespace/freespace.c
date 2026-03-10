@@ -32,6 +32,8 @@
 #include "storage/smgr.h"
 #include "utils/rel.h"
 
+/* POLAR */
+#include "utils/guc.h"
 
 /*
  * We use just one byte to store the amount of free space on a page, so we
@@ -217,6 +219,21 @@ XLogRecordPageWithFreeSpace(RelFileLocator rlocator, BlockNumber heapBlk,
 	BlockNumber blkno;
 	Buffer		buf;
 	Page		page;
+
+	/* POLAR: replica mode can not write any data */
+	if (polar_is_replica())
+	{
+		/*
+		 * POLAR RSC: should be invalidated for FSM updating.
+		 */
+		if (POLAR_RSC_REPLICA_ENABLED())
+			polar_rsc_drop_entry(&rlocator);
+		/* POLAR end */
+
+		if (unlikely(polar_enable_debug))
+			elog(LOG, "PolarDB replica skip update fsm page");
+		return;
+	}
 
 	/* Get the location of the FSM byte representing the heap block */
 	addr = fsm_get_location(heapBlk, &slot);
@@ -937,4 +954,17 @@ fsm_does_block_exist(Relation rel, BlockNumber blknumber)
 	return ((BlockNumberIsValid(smgr->smgr_cached_nblocks[MAIN_FORKNUM]) &&
 			 blknumber < smgr->smgr_cached_nblocks[MAIN_FORKNUM]) ||
 			blknumber < RelationGetNumberOfBlocks(rel));
+}
+
+BlockNumber
+polar_calc_fsm_blocks(SMgrRelation reln, BlockNumber heap_blocks, uint16 *first_removed_slot)
+{
+	BlockNumber new_nfsmblocks;
+	FSMAddress	first_removed_address;
+
+	/* Get the location in the FSM of the first removed heap block */
+	first_removed_address = fsm_get_location(heap_blocks, first_removed_slot);
+	new_nfsmblocks = fsm_logical_to_physical(first_removed_address);
+
+	return new_nfsmblocks;
 }

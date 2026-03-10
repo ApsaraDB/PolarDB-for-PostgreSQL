@@ -631,9 +631,29 @@ other			.
 							 * have been made invalid by unescaping any chars.
 							 */
 							if (yyextra->saw_non_ascii)
+							{
+								/*
+								 * POLAR: if the literal actually contains null
+								 * bytes, strip them before verification. The memchr
+								 * check avoids a full scan when no nulls are present.
+								 */
+								if (polar_skip_null_char_in_string &&
+									memchr(yyextra->literalbuf, 0, yyextra->literallen) != NULL)
+								{
+									int			i,
+												j = 0;
+
+									for (i = 0; i < yyextra->literallen; i++)
+									{
+										if (yyextra->literalbuf[i] != '\0')
+											yyextra->literalbuf[j++] = yyextra->literalbuf[i];
+									}
+									yyextra->literallen = j;
+								}
 								pg_verifymbstr(yyextra->literalbuf,
 											   yyextra->literallen,
 											   false);
+							}
 							yylval->str = litbufdup(yyscanner);
 							return SCONST;
 						case xus:

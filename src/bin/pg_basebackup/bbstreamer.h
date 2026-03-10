@@ -215,10 +215,11 @@ extern bbstreamer *bbstreamer_zstd_compressor_new(bbstreamer *next,
 extern bbstreamer *bbstreamer_zstd_decompressor_new(bbstreamer *next);
 extern bbstreamer *bbstreamer_tar_parser_new(bbstreamer *next);
 extern bbstreamer *bbstreamer_tar_terminator_new(bbstreamer *next);
-extern bbstreamer *bbstreamer_tar_archiver_new(bbstreamer *next);
+extern bbstreamer *bbstreamer_tar_archiver_new(bbstreamer *next, bool need_append_polar_data);
 
 extern bbstreamer *bbstreamer_recovery_injector_new(bbstreamer *next,
 													bool is_recovery_guc_supported,
+													bool is_injected_polar_data,
 													PQExpBuffer recoveryconfcontents);
 extern void bbstreamer_inject_file(bbstreamer *streamer, char *pathname,
 								   char *data, int len);

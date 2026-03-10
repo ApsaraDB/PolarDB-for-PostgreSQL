@@ -3,6 +3,7 @@
  * hio.c
  *	  POSTGRES heap access method input/output code.
  *
+ * Portions Copyright (c) 2024, Alibaba Group Holding Limited
  * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -21,8 +22,33 @@
 #include "access/visibilitymap.h"
 #include "storage/bufmgr.h"
 #include "storage/freespace.h"
+#include "storage/indexfsm.h"
 #include "storage/lmgr.h"
 
+/* GUCs */
+int			polar_heap_bulk_extend_size = 512;
+int			polar_index_bulk_extend_size = 128;
+
+static int
+polar_get_bulk_extend_size(Relation relation, int extend_by_pages, int bulk_extend_size)
+{
+	if (bulk_extend_size > 0)
+	{
+		BlockNumber nblocks = RelationGetNumberOfBlocks(relation);
+
+		/* Avoid small table bloat */
+		if (nblocks < bulk_extend_size)
+			bulk_extend_size = 1;
+
+		/* Avoid acceed maximum possible length */
+		bulk_extend_size = Min(MaxBlockNumber - nblocks, bulk_extend_size);
+
+		/* Extend the relation by extend_by_pages at least */
+		extend_by_pages = Max(bulk_extend_size, extend_by_pages);
+	}
+
+	return extend_by_pages;
+}
 
 /*
  * RelationPutHeapTuple - place tuple at specified page
@@ -222,7 +248,7 @@ GetVisibilityMapPins(Relation relation, Buffer buffer1, Buffer buffer2,
  *
  * We do have to limit the number of pages to extend by to some value, as the
  * buffers for all the extended pages need to, temporarily, be pinned. For now
- * we define MAX_BUFFERS_TO_EXTEND_BY to be 64 buffers, it's hard to see
+ * we define MAX_BUFFERS_TO_EXTEND_BY to be 1024 buffers, it's hard to see
  * benefits with higher numbers. This partially is because copyfrom.c's
  * MAX_BUFFERED_TUPLES / MAX_BUFFERED_BYTES prevents larger multi_inserts.
  *
@@ -238,7 +264,6 @@ static Buffer
 RelationAddBlocks(Relation relation, BulkInsertState bistate,
 				  int num_pages, bool use_fsm, bool *did_unlock)
 {
-#define MAX_BUFFERS_TO_EXTEND_BY 64
 	Buffer		victim_buffers[MAX_BUFFERS_TO_EXTEND_BY];
 	BlockNumber first_block = InvalidBlockNumber;
 	BlockNumber last_block = InvalidBlockNumber;
@@ -328,6 +353,8 @@ RelationAddBlocks(Relation relation, BulkInsertState bistate,
 		ReleaseBuffer(bistate->current_buf);
 		bistate->current_buf = InvalidBuffer;
 	}
+
+	extend_by_pages = polar_get_bulk_extend_size(relation, extend_by_pages, polar_heap_bulk_extend_size);
 
 	/*
 	 * Extend the relation. We ask for the first returned page to be locked,
@@ -430,7 +457,6 @@ RelationAddBlocks(Relation relation, BulkInsertState bistate,
 	}
 
 	return buffer;
-#undef MAX_BUFFERS_TO_EXTEND_BY
 }
 
 /*
@@ -522,6 +548,10 @@ RelationGetBufferForTuple(Relation relation, Size len,
 	/* if the caller doesn't know by how many pages to extend, extend by 1 */
 	if (num_pages <= 0)
 		num_pages = 1;
+
+	/* POLAR: when bulk extend enabled, force use fsm to record blocks */
+	if (polar_heap_bulk_extend_size > 0)
+		use_fsm = true;
 
 	/* Bulk insert is not supported for updates, only inserts. */
 	Assert(otherBuffer == InvalidBuffer || !bistate);
@@ -880,6 +910,140 @@ loop:
 	 * good bet most of the time.  So for now, don't add it to FSM yet.
 	 */
 	RelationSetTargetBlock(relation, targetBlock);
+
+	return buffer;
+}
+
+/*
+ * Extend the index. By multiple pages, if beneficial.
+ *
+ * If the caller needs multiple pages (num_pages > 1), we always try to extend
+ * by at least that much.
+ *
+ * If there is contention on the extension lock, we don't just extend "for
+ * ourselves", but we try to help others. We can do so by adding empty pages
+ * into the FSM. Typically there is no contention when we can't use the FSM.
+ *
+ * We do have to limit the number of pages to extend by to some value, as the
+ * buffers for all the extended pages need to, temporarily, be pinned. For now
+ * we define MAX_BUFFERS_TO_EXTEND_BY to be 1024 buffers, it's hard to see
+ * benefits with higher numbers. This partially is because copyfrom.c's
+ * MAX_BUFFERED_TUPLES / MAX_BUFFERED_BYTES prevents larger multi_inserts.
+ *
+ * Returns a buffer for a newly extended block. If possible, the buffer is
+ * returned exclusively locked.
+ */
+Buffer
+polar_index_add_blocks(Relation relation)
+{
+	Buffer		victim_buffers[MAX_BUFFERS_TO_EXTEND_BY];
+	BlockNumber first_block = InvalidBlockNumber;
+	BlockNumber last_block = InvalidBlockNumber;
+	uint32		extend_by_pages;
+	uint32		not_in_fsm_pages;
+	Buffer		buffer;
+	Page		page;
+	int			num_pages = 1;
+
+	if (polar_index_bulk_extend_size == 0)
+		return ExtendBufferedRel(BMR_REL(relation), MAIN_FORKNUM, NULL, EB_LOCK_FIRST);
+
+	/*
+	 * Determine by how many pages to try to extend by.
+	 */
+	{
+		uint32		waitcount;
+
+		/*
+		 * Try to extend at least by the number of pages the caller needs. We
+		 * can remember the additional pages (via FSM).
+		 */
+		extend_by_pages = num_pages;
+
+		if (!RELATION_IS_LOCAL(relation))
+			waitcount = RelationExtensionLockWaiterCount(relation);
+		else
+			waitcount = 0;
+
+		/*
+		 * Multiply the number of pages to extend by the number of waiters. Do
+		 * this even if we're not using the FSM, as it still relieves
+		 * contention, by deferring the next time this backend needs to
+		 * extend. In that case the extended pages will be found via
+		 * bistate->next_free.
+		 */
+		extend_by_pages += extend_by_pages * waitcount;
+
+		/*
+		 * Can't extend by more than MAX_BUFFERS_TO_EXTEND_BY, we need to pin
+		 * them all concurrently.
+		 */
+		extend_by_pages = Min(extend_by_pages, MAX_BUFFERS_TO_EXTEND_BY);
+	}
+
+	/*
+	 * How many of the extended pages should be entered into the FSM?
+	 *
+	 * Never enter the page returned into the FSM, we'll immediately use it.
+	 */
+	if (num_pages > 1)
+		not_in_fsm_pages = 1;
+	else
+		not_in_fsm_pages = num_pages;
+
+	extend_by_pages = polar_get_bulk_extend_size(relation, extend_by_pages, polar_index_bulk_extend_size);
+
+	/*
+	 * Extend the relation. We ask for the first returned page to be locked,
+	 * so that we are sure that nobody has inserted into the page
+	 * concurrently.
+	 */
+	first_block = ExtendBufferedRelBy(BMR_REL(relation), MAIN_FORKNUM,
+									  NULL,
+									  EB_LOCK_FIRST,
+									  extend_by_pages,
+									  victim_buffers,
+									  &extend_by_pages);
+	buffer = victim_buffers[0]; /* the buffer the function will return */
+	last_block = first_block + (extend_by_pages - 1);
+	Assert(first_block == BufferGetBlockNumber(buffer));
+
+	/*
+	 * Relation is now extended. Initialize the page. We do this here, before
+	 * potentially releasing the lock on the page, because it allows us to
+	 * double check that the page contents are empty (this should never
+	 * happen, but if it does we don't want to risk wiping out valid data).
+	 */
+	page = BufferGetPage(buffer);
+	if (!PageIsNew(page))
+		elog(ERROR, "page %u of relation \"%s\" should be empty but is not",
+			 first_block,
+			 RelationGetRelationName(relation));
+
+	/*
+	 * Relation is now extended. Release pins on all buffers, except for the
+	 * first (which we'll return).  If we decided to put pages into the FSM,
+	 * we can do that as part of the same loop.
+	 */
+	for (uint32 i = 1; i < extend_by_pages; i++)
+	{
+		BlockNumber curBlock = first_block + i;
+
+		Assert(curBlock == BufferGetBlockNumber(victim_buffers[i]));
+		Assert(BlockNumberIsValid(curBlock));
+
+		ReleaseBuffer(victim_buffers[i]);
+
+		if (i >= not_in_fsm_pages)
+			RecordFreeIndexPage(relation, curBlock);
+	}
+
+	if (not_in_fsm_pages < extend_by_pages)
+	{
+		BlockNumber first_fsm_block = first_block + not_in_fsm_pages;
+
+		FreeSpaceMapVacuumRange(relation, first_fsm_block, last_block);
+	}
 
 	return buffer;
 }

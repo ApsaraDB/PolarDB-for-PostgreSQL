@@ -36,6 +36,8 @@ SUBDIRS = \
 	psql \
 	scripts
 
+SUBDIRS += polar_tools
+
 ifeq ($(PORTNAME), win32)
 SUBDIRS += pgevent
 else

@@ -18,6 +18,11 @@ OBJS = \
 	specparse.o \
 	specscanner.o
 
+# POLAR: make timeout large enough to provent query from canceling
+# The default timeout is 300s, we beleive 600s is enough for current
+# test pressure.
+export PGISOLATIONTIMEOUT=600
+
 all: isolationtester$(X) pg_isolation_regress$(X)
 
 install: all installdirs
@@ -38,10 +43,10 @@ pg_regress.o: | submake-regress
 	rm -f $@ && $(LN_S) $(top_builddir)/src/test/regress/pg_regress.o .
 
 pg_isolation_regress$(X): isolation_main.o pg_regress.o $(WIN32RES)
-	$(CC) $(CFLAGS) $^ $(libpq_pgport) $(LDFLAGS) $(LDFLAGS_EX) $(LIBS) -o $@
+	$(CC) $(CFLAGS) $^ $(libpq_pgport) $(LDFLAGS) $(LDFLAGS_EX) $(LIBS) $(polar_libvfs) -o $@
 
 isolationtester$(X): $(OBJS) | submake-libpq submake-libpgport
-	$(CC) $(CFLAGS) $^ $(libpq_pgport) $(LDFLAGS) $(LDFLAGS_EX) $(LIBS) -o $@
+	$(CC) $(CFLAGS) $^ $(libpq_pgport) $(LDFLAGS) $(LDFLAGS_EX) $(LIBS) $(polar_libpfsd) -o $@
 
 # See notes in src/backend/parser/Makefile about the following two rules
 specparse.h: specparse.c

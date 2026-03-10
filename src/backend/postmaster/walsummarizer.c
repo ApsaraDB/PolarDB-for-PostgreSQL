@@ -48,6 +48,9 @@
 #include "utils/memutils.h"
 #include "utils/wait_event.h"
 
+/* POLAR */
+#include "utils/timeout.h"
+
 /*
  * Data in shared memory related to WAL summarization.
  */
@@ -252,6 +255,13 @@ WalSummarizerMain(char *startup_data, size_t startup_data_len)
 	pqsignal(SIGPIPE, SIG_IGN);
 	pqsignal(SIGUSR1, procsignal_sigusr1_handler);
 	pqsignal(SIGUSR2, SIG_IGN); /* not used */
+
+	/*
+	 * POLAR: Establishes SIGALRM handler and initialize parameters to
+	 * facilitate the running of scheduled tasks. Some scheduled tasks will
+	 * cause assertion errors when parameters are not initialized.
+	 */
+	InitializeTimeouts();
 
 	/* Advertise ourselves. */
 	on_shmem_exit(WalSummarizerShutdown, (Datum) 0);
@@ -1194,6 +1204,9 @@ SummarizeWAL(TimeLineID tli, XLogRecPtr start_lsn, bool exact,
 	 */
 	if (summary_end_lsn > summary_start_lsn && !fast_forward)
 	{
+		char		polar_temp_path[MAXPGPATH];
+		char		polar_final_path[MAXPGPATH];
+
 		/* Generate temporary and final path name. */
 		snprintf(temp_path, MAXPGPATH,
 				 XLOGDIR "/summaries/temp.summary");
@@ -1203,13 +1216,16 @@ SummarizeWAL(TimeLineID tli, XLogRecPtr start_lsn, bool exact,
 				 LSN_FORMAT_ARGS(summary_start_lsn),
 				 LSN_FORMAT_ARGS(summary_end_lsn));
 
+		polar_make_file_path_level2(polar_temp_path, temp_path);
+		polar_make_file_path_level2(polar_final_path, final_path);
+
 		/* Open the temporary file for writing. */
 		io.filepos = 0;
-		io.file = PathNameOpenFile(temp_path, O_WRONLY | O_CREAT | O_TRUNC);
+		io.file = PathNameOpenFile(polar_temp_path, O_WRONLY | O_CREAT | O_TRUNC);
 		if (io.file < 0)
 			ereport(ERROR,
 					(errcode_for_file_access(),
-					 errmsg("could not create file \"%s\": %m", temp_path)));
+					 errmsg("could not create file \"%s\": %m", polar_temp_path)));
 
 		/* Write the data. */
 		WriteBlockRefTable(brtab, WriteWalSummary, &io);
@@ -1225,7 +1241,7 @@ SummarizeWAL(TimeLineID tli, XLogRecPtr start_lsn, bool exact,
 								LSN_FORMAT_ARGS(summary_end_lsn)));
 
 		/* Durably rename the new summary into place. */
-		durable_rename(temp_path, final_path, ERROR);
+		durable_rename(polar_temp_path, polar_final_path, ERROR);
 	}
 
 	/* If we skipped a non-zero amount of WAL, log a debug message. */

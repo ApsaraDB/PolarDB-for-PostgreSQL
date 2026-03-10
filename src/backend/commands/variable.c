@@ -566,6 +566,15 @@ check_transaction_read_only(bool *newval, void **extra, GucSource source)
 			GUC_check_errmsg("cannot set transaction read-write mode during recovery");
 			return false;
 		}
+
+		/* POLAR */
+		if (POLAR_FORCE_TXN_READ_ONLY())
+		{
+			GUC_check_errcode(ERRCODE_ACTIVE_SQL_TRANSACTION);
+			GUC_check_errmsg("cannot set transaction read-write mode while being locked as read-only globally");
+			return false;
+		}
+		/* POLAR end */
 	}
 
 	return true;
@@ -1256,4 +1265,28 @@ check_ssl(bool *newval, void **extra, GucSource source)
 	}
 #endif
 	return true;
+}
+
+/*
+ * POLAR: This function is used to remove the quotes from unix_socket_directories
+ * and use this variable as the host for connecting libpq.
+ */
+void
+polar_assign_unix_socket_directories(const char *newval, void *extra)
+{
+	char	   *src,
+			   *dst;
+
+	polar_unquote_unix_socket_directories = strdup(newval);
+	src = polar_unquote_unix_socket_directories;
+	dst = polar_unquote_unix_socket_directories;
+	while (*src)
+	{
+		if (*src != '"')
+		{
+			*dst++ = *src;
+		}
+		src++;
+	}
+	*dst = '\0';
 }

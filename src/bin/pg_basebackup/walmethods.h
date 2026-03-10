@@ -35,6 +35,8 @@ typedef enum
 	CLOSE_NO_RENAME,
 } WalCloseMethod;
 
+#define MAX_SEND_SIZE (XLOG_BLCKSZ * 16)
+
 /*
  * Table of callbacks for a WalWriteMethod.
  */
@@ -126,7 +128,7 @@ struct WalWriteMethod
  */
 WalWriteMethod *CreateWalDirectoryMethod(const char *basedir,
 										 pg_compress_algorithm compression_algorithm,
-										 int compression_level, bool sync);
+										 int compression_level, bool sync, bool use_pfs_to_write);
 WalWriteMethod *CreateWalTarMethod(const char *tarbase,
 								   pg_compress_algorithm compression_algorithm,
 								   int compression_level, bool sync);

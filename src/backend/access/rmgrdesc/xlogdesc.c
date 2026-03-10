@@ -18,6 +18,7 @@
 #include "access/xlog.h"
 #include "access/xlog_internal.h"
 #include "catalog/pg_control.h"
+#include "storage/bufpage.h"
 #include "utils/guc.h"
 #include "utils/timestamp.h"
 
@@ -65,12 +66,20 @@ xlog_desc(StringInfo buf, XLogReaderState *record)
 	{
 		CheckPoint *checkpoint = (CheckPoint *) rec;
 
-		appendStringInfo(buf, "redo %X/%X; "
+		/* POLAR: add location of XLOG_CHECKPOINT_REDO record */
+		XLogRecPtr	polar_ckpt_redo_loc = InvalidXLogRecPtr;
+
+		if (info == XLOG_CHECKPOINT_ONLINE &&
+			XLogRecGetDataLen(record) == sizeof(CheckPoint) + sizeof(XLogRecPtr))
+			memcpy(&polar_ckpt_redo_loc, rec + sizeof(CheckPoint), sizeof(XLogRecPtr));
+
+		appendStringInfo(buf, "redo %X/%X; redo_xlog_loc %X/%X; "
 						 "tli %u; prev tli %u; fpw %s; wal_level %s; xid %u:%u; oid %u; multi %u; offset %u; "
 						 "oldest xid %u in DB %u; oldest multi %u in DB %u; "
 						 "oldest/newest commit timestamp xid: %u/%u; "
 						 "oldest running xid %u; %s",
 						 LSN_FORMAT_ARGS(checkpoint->redo),
+						 LSN_FORMAT_ARGS(polar_ckpt_redo_loc),
 						 checkpoint->ThisTimeLineID,
 						 checkpoint->PrevTimeLineID,
 						 checkpoint->fullPageWrites ? "true" : "false",
@@ -105,6 +114,15 @@ xlog_desc(StringInfo buf, XLogReaderState *record)
 	else if (info == XLOG_FPI || info == XLOG_FPI_FOR_HINT)
 	{
 		/* no further information to print */
+	}
+	/* POLAR: print fullpage_no */
+	else if (info == POLAR_WAL && *((PolarWalType *) XLogRecGetData(record)) == PWT_FPSI)
+	{
+		uint64		fullpage_no = 0;
+
+		/* get fullpage_no from record */
+		memcpy(&fullpage_no, XLogRecGetData(record) + sizeof(PolarWalType), sizeof(uint64));
+		appendStringInfo(buf, "%ld", fullpage_no);
 	}
 	else if (info == XLOG_BACKUP_END)
 	{
@@ -167,6 +185,75 @@ xlog_desc(StringInfo buf, XLogReaderState *record)
 		memcpy(&wal_level, rec, sizeof(int));
 		appendStringInfo(buf, "wal_level %s", get_wal_level_string(wal_level));
 	}
+	/* POLAR WAL */
+	else if (info == POLAR_WAL)
+	{
+		PolarWalType type;
+		bool		is_alter_cluster_reload = false;
+
+		/* Read header to get polar_wal type */
+		memcpy(&type, rec, sizeof(PolarWalType));
+
+		switch (type)
+		{
+				/* POLAR: ALTER SYSTEM FOR CLUSTER */
+			case PWT_ALTERSYSTEMFORCLUSTER_RELOAD:
+				is_alter_cluster_reload = true; /* fallthrough */
+			case PWT_ALTERSYSTEMFORCLUSTER:
+				{
+					PolarSettingWalHeader *header = (PolarSettingWalHeader *) rec;
+
+					switch (header->action)
+					{
+							/*
+							 * ALTER SYSTEM FOR CLUSTER SET folowing with both
+							 * name and value
+							 */
+						case POLAR_SETTING_SET:
+							{
+								char	   *name = rec + sizeof(PolarSettingWalHeader);
+								char	   *value = rec + sizeof(PolarSettingWalHeader) + strlen(name) + 1; /* +1 to skip '\0' */
+
+								appendStringInfo(buf, "ALTER SYSTEM FOR CLUSTER %s SET %s TO %s",
+												 is_alter_cluster_reload ? "RELOAD" : "", name, value);
+								break;
+							}
+
+							/*
+							 * ALTER SYSTEM FOR CLUSTER RESET only folowing
+							 * with name
+							 */
+						case POLAR_SETTING_RESET:
+							{
+								char	   *name = rec + sizeof(PolarSettingWalHeader);
+
+								appendStringInfo(buf, "ALTER SYSTEM FOR CLUSTER %s RESET %s",
+												 is_alter_cluster_reload ? "RELOAD" : "", name);
+								break;
+							}
+
+							/*
+							 * ALTER SYSTEM FOR CLUSTER RESET ALL contains
+							 * nothing
+							 */
+						case POLAR_SETTING_RESET_ALL:
+							appendStringInfo(buf, "ALTER SYSTEM FOR CLUSTER %s RESET ALL",
+											 is_alter_cluster_reload ? "RELOAD" : "");
+							break;
+
+						default:
+							appendStringInfo(buf, "unexpected ALTER SYSTEM FOR CLUSTER WAL action: %d", header->action);
+							break;
+					}
+					break;
+				}
+
+			default:
+				appendStringInfo(buf, "unexpected POLAR_WAL record type: %d", type);
+				break;
+		}
+	}
+	/* POLAR end */
 }
 
 const char *
@@ -218,6 +305,11 @@ xlog_identify(uint8 info)
 		case XLOG_CHECKPOINT_REDO:
 			id = "CHECKPOINT_REDO";
 			break;
+			/* POLAR WAL */
+		case POLAR_WAL:
+			id = "POLAR_WAL";
+			break;
+			/* POLAR end */
 	}
 
 	return id;

@@ -127,6 +127,9 @@ typedef struct ReplicationSlotPersistentData
 	 * for logical slots on the primary server.
 	 */
 	bool		failover;
+
+	/* POLAR: replica apply lsn */
+	XLogRecPtr	polar_replica_apply_lsn;
 } ReplicationSlotPersistentData;
 
 /*
@@ -208,6 +211,15 @@ typedef struct ReplicationSlot
 	 * recently stopped.
 	 */
 	TimestampTz inactive_since;
+
+	/*
+	 * POLAR: The walsender will set this slot's node type. Otherwise it will
+	 * be POLAR_UNKNOWN.
+	 */
+	PolarNodeType polar_slot_node_type;
+
+	/* POLAR: lsn to record replica lock redo state */
+	XLogRecPtr	polar_replica_lock_lsn;
 } ReplicationSlot;
 
 #define SlotIsPhysical(slot) ((slot)->data.database == InvalidOid)
@@ -287,5 +299,31 @@ extern ReplicationSlotInvalidationCause
 extern bool SlotExistsInSyncStandbySlots(const char *slot_name);
 extern bool StandbySlotsHaveCaughtup(XLogRecPtr wait_for_lsn, int elevel);
 extern void WaitForStandbyConfirmation(XLogRecPtr wait_for_lsn);
+
+/* POLAR GUCs */
+extern bool polar_enable_persisted_logical_slot;
+
+/*
+ * POLAR: whether persist logical slot in shared storage
+ */
+#define POLAR_PERSIST_LOGICAL_SLOT(slot) \
+	(polar_enable_shared_storage_mode && \
+	 polar_enable_persisted_logical_slot && \
+	 !polar_is_replica() && \
+	 SlotIsLogical(slot))
+
+/*
+ * POLAR: whether persisted physical slot on shared storage
+ */
+#define POLAR_PERSIST_PHYSICAL_SLOT(slot) \
+	(polar_enable_shared_storage_mode && !polar_is_replica() && !SlotIsLogical(slot))
+
+/* POLAR */
+extern void polar_reload_replication_slots_from_shared_storage(void);
+extern XLogRecPtr polar_compute_physical_slots_restart_lsn(PolarNodeType node_type);
+extern void polar_replication_slot_set_node_type(PolarNodeType node_type);
+
+/* POLAR */
+extern void polar_compute_and_set_replica_lsn(void);
 
 #endif							/* SLOT_H */

@@ -23,7 +23,7 @@ include $(top_builddir)/src/Makefile.global
 override CPPFLAGS := -DUSE_PRIVATE_ENCODING_FUNCS -I$(libpq_srcdir) -I$(top_srcdir)/src/timezone $(CPPFLAGS) $(ICU_CFLAGS)
 
 # We need libpq only because fe_utils does.
-LDFLAGS_INTERNAL += -L$(top_builddir)/src/fe_utils -lpgfeutils $(libpq_pgport) $(ICU_LIBS)
+LDFLAGS_INTERNAL += -L$(top_builddir)/src/fe_utils -lpgfeutils $(libpq_pgport) $(ICU_LIBS) $(polar_libvfs)
 
 # use system timezone data?
 ifneq (,$(with_system_tzdata))
@@ -47,6 +47,7 @@ localtime.c: % : $(top_srcdir)/src/timezone/%
 
 install: all installdirs
 	$(INSTALL_PROGRAM) initdb$(X) '$(DESTDIR)$(bindir)/initdb$(X)'
+	$(INSTALL_PROGRAM) polar-initdb.sh '$(DESTDIR)$(bindir)/'
 
 installdirs:
 	$(MKDIR_P) '$(DESTDIR)$(bindir)'

@@ -876,8 +876,7 @@ gistNewBuffer(Relation r, Relation heaprel)
 	}
 
 	/* Must extend the file */
-	buffer = ExtendBufferedRel(BMR_REL(r), MAIN_FORKNUM, NULL,
-							   EB_LOCK_FIRST);
+	buffer = polar_index_add_blocks(r);
 
 	return buffer;
 }

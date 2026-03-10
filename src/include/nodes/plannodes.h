@@ -253,6 +253,11 @@ typedef struct ModifyTable
 									 * MERGE */
 	List	   *mergeJoinConditions;	/* per-target-table join conditions
 										 * for MERGE */
+
+	/* POLAR */
+	bool		has_volatile_func pg_node_attr(read_optional(false));	/* has volatile
+																		 * functions in
+																		 * targetlist */
 } ModifyTable;
 
 struct PartitionPruneInfo;		/* forward reference to struct below */

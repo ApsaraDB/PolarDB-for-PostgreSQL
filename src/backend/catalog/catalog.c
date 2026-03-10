@@ -47,6 +47,9 @@
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
 
+/* POLAR */
+#include "storage/polar_fd.h"
+
 /*
  * Parameters to determine when to emit a log message in
  * GetNewOidWithIndex()
@@ -582,7 +585,7 @@ GetNewRelFileNumber(Oid reltablespace, Relation pg_class, char relpersistence)
 		/* Check for existing file of same name */
 		rpath = relpath(rlocator, MAIN_FORKNUM);
 
-		if (access(rpath, F_OK) == 0)
+		if (polar_access(rpath, F_OK) == 0)
 		{
 			/* definite collision */
 			collides = true;

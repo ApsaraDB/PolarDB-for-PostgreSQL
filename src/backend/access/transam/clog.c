@@ -46,6 +46,9 @@
 #include "storage/sync.h"
 #include "utils/guc_hooks.h"
 
+/* POLAR */
+#include "utils/polar_local_cache.h"
+
 /*
  * Defines for CLOG page sizes.  A page is the same BLCKSZ as is used
  * everywhere else in Postgres.
@@ -109,6 +112,9 @@ static SlruCtlData XactCtlData;
 
 #define XactCtl (&XactCtlData)
 
+/* POLAR: Check whether clog local file cache is enabled */
+#define POLAR_ENABLE_CLOG_LOCAL_CACHE() \
+	(polar_clog_max_local_cache_segments > 0 && polar_enable_shared_storage_mode)
 
 static int	ZeroCLOGPage(int64 pageno, bool writeXlog);
 static bool CLOGPagePrecedes(int64 page1, int64 page2);
@@ -780,7 +786,13 @@ CLOGShmemBuffers(void)
 Size
 CLOGShmemSize(void)
 {
-	return SimpleLruShmemSize(CLOGShmemBuffers(), CLOG_LSNS_PER_PAGE);
+	Size		sz = SimpleLruShmemSize(CLOGShmemBuffers(), CLOG_LSNS_PER_PAGE);
+
+	/* POLAR: Add size for local cache segments */
+	if (POLAR_ENABLE_CLOG_LOCAL_CACHE())
+		sz = add_size(MAXALIGN(sz), polar_local_cache_shmem_size(polar_clog_max_local_cache_segments));
+
+	return sz;
 }
 
 void
@@ -810,8 +822,26 @@ CLOGShmemInit(void)
 	XactCtl->PagePrecedes = CLOGPagePrecedes;
 	SimpleLruInit(XactCtl, "transaction", CLOGShmemBuffers(), CLOG_LSNS_PER_PAGE,
 				  "pg_xact", LWTRANCHE_XACT_BUFFER,
-				  LWTRANCHE_XACT_SLRU, SYNC_HANDLER_CLOG, false);
+				  LWTRANCHE_XACT_SLRU, SYNC_HANDLER_CLOG, false, POLAR_SLRU_ENABLE_SHARED_STORAGE);
 	SlruPagePrecedesUnitTests(XactCtl, CLOG_XACTS_PER_PAGE);
+
+	/* POLAR: Create local segment file cache manager */
+	if (POLAR_ENABLE_CLOG_LOCAL_CACHE())
+	{
+		uint32		io_permission = POLAR_CACHE_LOCAL_FILE_READ | POLAR_CACHE_LOCAL_FILE_WRITE;
+		polar_local_cache cache;
+
+		if (!polar_is_replica())
+			io_permission |= (POLAR_CACHE_SHARED_FILE_READ | POLAR_CACHE_SHARED_FILE_WRITE);
+
+		cache = polar_create_local_cache("clog", "pg_xact",
+										 polar_clog_max_local_cache_segments,
+										 SLRU_PAGES_PER_SEGMENT * BLCKSZ,
+										 LWTRANCHE_POLAR_CLOG_LOCAL_CACHE,
+										 io_permission, false, NULL);
+
+		polar_slru_reg_local_cache(XactCtl, cache);
+	}
 }
 
 /*
@@ -1149,4 +1179,40 @@ int
 clogsyncfiletag(const FileTag *ftag, char *path)
 {
 	return SlruSyncFileTag(XactCtl, ftag, path);
+}
+
+void
+polar_promote_clog(void)
+{
+	polar_slru_promote(XactCtl);
+}
+
+/* POLAR: copy clog files from shared storage to local when replica start */
+void
+polar_init_local_clog(TransactionId xid, bool copy_all)
+{
+	int			start_pageno = 0,
+				res;
+	SlruScanCallback copy_condition = NULL;
+
+	Assert(polar_is_replica());
+
+	if (TransactionIdIsNormal(xid) && !copy_all)
+	{
+		start_pageno = TransactionIdToPage(xid);
+		start_pageno -= start_pageno % SLRU_PAGES_PER_SEGMENT;
+		copy_condition = polar_trans_file_need_copy;
+	}
+
+	res = polar_slru_copy_shared_dir(XactCtl, copy_condition, &start_pageno);
+
+	if (res)
+		polar_handle_init_local_dir_err(XactCtl->Dir, res);
+}
+
+/* POLAR: remove clog local cache file */
+void
+polar_remove_clog_local_cache_file(void)
+{
+	polar_slru_remove_local_cache_file(XactCtl);
 }

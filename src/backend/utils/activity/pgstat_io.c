@@ -342,6 +342,7 @@ pgstat_tracks_io_bktype(BackendType bktype)
 		case B_STANDALONE_BACKEND:
 		case B_STARTUP:
 		case B_WAL_SENDER:
+		case B_BG_LOGINDEX:
 			return true;
 	}
 

@@ -18,6 +18,9 @@
 #include "storage/block.h"
 #include "storage/relfilelocator.h"
 
+/* POLAR */
+#include "storage/polar_rsc.h"
+
 /*
  * smgr.c maintains a table of SMgrRelation objects, which are essentially
  * cached file handles.  An SMgrRelation is created (if not already present)
@@ -35,6 +38,14 @@ typedef struct SMgrRelationData
 {
 	/* rlocator is the hashtable lookup key, so it must be first! */
 	RelFileLocatorBackend smgr_rlocator;	/* relation physical identifier */
+
+	/*
+	 * POLAR RSC: pointer to shared object, valid if non-NULL and generation
+	 * matches.
+	 */
+	struct polar_rsc_shared_relation_t *rsc_ref;
+	uint64		rsc_generation;
+	/* POLAR end */
 
 	/*
 	 * The following fields are reset to InvalidBlockNumber upon a cache flush
@@ -103,6 +114,7 @@ extern void smgrwriteback(SMgrRelation reln, ForkNumber forknum,
 						  BlockNumber blocknum, BlockNumber nblocks);
 extern BlockNumber smgrnblocks(SMgrRelation reln, ForkNumber forknum);
 extern BlockNumber smgrnblocks_cached(SMgrRelation reln, ForkNumber forknum);
+extern BlockNumber smgrnblocks_ensure_opened(SMgrRelation reln, ForkNumber forknum);
 extern void smgrtruncate(SMgrRelation reln, ForkNumber *forknum, int nforks,
 						 BlockNumber *nblocks);
 extern void smgrtruncate2(SMgrRelation reln, ForkNumber *forknum, int nforks,
@@ -126,5 +138,21 @@ smgrwrite(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
 {
 	smgrwritev(reln, forknum, blocknum, &buffer, 1, skipFsync);
 }
+
+/* POLAR */
+#define POLAR_ZERO_EXTEND_NONE		0
+#define POLAR_ZERO_EXTEND_BULKWRITE	1
+#define POLAR_ZERO_EXTEND_FALLOCATE	2
+
+extern PGDLLIMPORT int polar_zero_extend_method;
+
+extern void polar_smgrbulkread(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
+							   int nblocks, void *buffer);
+extern void polar_smgrbulkwrite(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
+								int nblocks, const void *buffer, bool skipFsync);
+extern void polar_smgrbulkextend(SMgrRelation reln, ForkNumber forknum,
+								 BlockNumber blocknum, int nblocks, const void *buffer, bool skipFsync);
+
+/* POLAR end */
 
 #endif							/* SMGR_H */

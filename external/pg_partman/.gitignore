@@ -1,0 +1,11 @@
+ignore/*
+*.swp
+*.swo
+.deps/*
+*.o
+*.so
+*.bc
+*.dylib
+sql/*.sql
+test/not_working_yet/*
+*.zip

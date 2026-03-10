@@ -13,6 +13,8 @@ my $node = PostgreSQL::Test::Cluster->new('main');
 $node->init;
 $node->append_conf('postgresql.conf',
 	"shared_preload_libraries = 'pg_stat_statements'");
+$node->append_conf('postgresql.conf',
+	"pg_stat_statements.enable_superuser_track = on");
 $node->start;
 
 $node->safe_psql('postgres', 'CREATE EXTENSION pg_stat_statements');

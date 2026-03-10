@@ -38,6 +38,7 @@
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
+#include "optimizer/optimizer.h"
 #include "rewrite/rewriteHandler.h"
 #include "tcop/tcopprot.h"
 #include "utils/builtins.h"
@@ -56,6 +57,12 @@ typedef struct
 	CommandId	output_cid;		/* cmin to insert in output tuples */
 	int			ti_options;		/* table_tuple_insert performance options */
 	BulkInsertState bistate;	/* bulk insert state */
+
+	/* Table modify state. NULL if multi-inserts isn't supported. */
+	TableModifyState *mstate;
+
+	/* True if SELECT query contains volatile functions */
+	bool		volatile_funcs;
 } DR_intorel;
 
 /* utility functions for CTAS definition creation */
@@ -301,6 +308,10 @@ ExecCreateTableAs(ParseState *pstate, CreateTableAsStmt *stmt,
 		/* plan the query */
 		plan = pg_plan_query(query, pstate->p_sourcetext,
 							 CURSOR_OPT_PARALLEL_OK, params);
+
+		/* Check if the SELECT query has any volatile functions */
+		((DR_intorel *) dest)->volatile_funcs =
+			contain_volatile_functions_after_planning((Expr *) query);
 
 		/*
 		 * Use a snapshot with an updated command ID to ensure this query sees
@@ -551,16 +562,50 @@ intorel_startup(DestReceiver *self, int operation, TupleDesc typeinfo)
 	myState->rel = intoRelationDesc;
 	myState->reladdr = intoRelationAddr;
 	myState->output_cid = GetCurrentCommandId(true);
-	myState->ti_options = TABLE_INSERT_SKIP_FSM;
+	myState->ti_options = TABLE_INSERT_SKIP_FSM |
+		TABLE_INSERT_BAS_BULKWRITE;
+	Assert(myState->mstate == NULL);
+	Assert(myState->bistate == NULL);
 
 	/*
 	 * If WITH NO DATA is specified, there is no need to set up the state for
-	 * bulk inserts as there are no tuples to insert.
+	 * multi or bulk inserts as there are no tuples to insert.
 	 */
 	if (!into->skipData)
-		myState->bistate = GetBulkInsertState();
-	else
-		myState->bistate = NULL;
+	{
+		if (polar_enable_tableam_multi_insert &&
+			TableModifyIsMultiInsertsSupported(myState->rel,
+											   myState->volatile_funcs))
+		{
+			/*
+			 * POLAR: the relation to be created is not visible before the end
+			 * of transaction, so we can use raw insert and bulk write here.
+			 *
+			 * However, for relkind 'r', there can be publications created as
+			 * FOR ALL TABLES so that we cannot WAL-logged them as FPI, or the
+			 * change set will not be decoded and sent to subscribers. So use
+			 * raw insert here only if it is a matview or logical replication
+			 * is not enabled.
+			 */
+			Assert(polar_bulk_write_maxpages > 0);
+			if (is_matview || !XLogLogicalInfoActive())
+			{
+				myState->ti_options |= TABLE_INSERT_RAW_BULKWRITE;
+			}
+			/* POLAR end */
+
+			myState->mstate = table_modify_begin(myState->rel,
+												 myState->output_cid,
+												 myState->ti_options,
+												 NULL,	/* Multi-insert buffer
+														 * flush callback */
+												 NULL); /* Multi-insert buffer
+														 * flush callback
+														 * context */
+		}
+		else
+			myState->bistate = GetBulkInsertState();
+	}
 
 	/*
 	 * Valid smgr_targblock implies something already wrote to the relation.
@@ -588,11 +633,14 @@ intorel_receive(TupleTableSlot *slot, DestReceiver *self)
 		 * would not be cheap either. This also doesn't allow accessing per-AM
 		 * data (say a tuple's xmin), but since we don't do that here...
 		 */
-		table_tuple_insert(myState->rel,
-						   slot,
-						   myState->output_cid,
-						   myState->ti_options,
-						   myState->bistate);
+		if (myState->mstate != NULL)
+			table_modify_buffer_insert(myState->mstate, slot);
+		else
+			table_tuple_insert(myState->rel,
+							   slot,
+							   myState->output_cid,
+							   myState->ti_options,
+							   myState->bistate);
 	}
 
 	/* We know this is a newly created relation, so there are no indexes */
@@ -611,8 +659,13 @@ intorel_shutdown(DestReceiver *self)
 
 	if (!into->skipData)
 	{
-		FreeBulkInsertState(myState->bistate);
-		table_finish_bulk_insert(myState->rel, myState->ti_options);
+		if (myState->mstate != NULL)
+			table_modify_end(myState->mstate);
+		else
+		{
+			FreeBulkInsertState(myState->bistate);
+			table_finish_bulk_insert(myState->rel, myState->ti_options);
+		}
 	}
 
 	/* close rel, but keep lock until commit */

@@ -1080,6 +1080,14 @@ check_hostname(hbaPort *port, const char *hostname)
 	if (port->remote_hostname_resolv < 0)
 		return false;
 
+	/* POLAR: If proxy connection, hostname verification is disabled */
+	if (port->polar_proxy)
+	{
+		port->remote_hostname_resolv = -2;
+		port->remote_hostname_errcode = EAI_NONAME;
+		return false;
+	}
+
 	/* Lookup remote host name if not already done */
 	if (!port->remote_hostname)
 	{
@@ -2465,8 +2473,8 @@ parse_hba_auth_opt(char *name, char *val, HbaLine *hbaline,
  *	Scan the pre-parsed hba file, looking for a match to the port's connection
  *	request.
  */
-static void
-check_hba(hbaPort *port)
+static HbaLine *
+get_matched_hba(hbaPort *port, bool proxy)
 {
 	Oid			roleid;
 	ListCell   *line;
@@ -2482,16 +2490,16 @@ check_hba(hbaPort *port)
 		/* Check connection type */
 		if (hba->conntype == ctLocal)
 		{
-			if (port->raddr.addr.ss_family != AF_UNIX)
+			if (POLAR_PROXY_GET_RADDR(port, proxy).addr.ss_family != AF_UNIX)
 				continue;
 		}
 		else
 		{
-			if (port->raddr.addr.ss_family == AF_UNIX)
+			if (POLAR_PROXY_GET_RADDR(port, proxy).addr.ss_family == AF_UNIX)
 				continue;
 
 			/* Check SSL state */
-			if (port->ssl_in_use)
+			if (proxy ? port->polar_proxy_ssl_in_use : port->ssl_in_use)
 			{
 				/* Connection is SSL, match both "host" and "hostssl" */
 				if (hba->conntype == ctHostNoSSL)
@@ -2529,7 +2537,7 @@ check_hba(hbaPort *port)
 					}
 					else
 					{
-						if (!check_ip(&port->raddr,
+						if (!check_ip(POLAR_PROXY_GET_RADDR_P(port, proxy),
 									  (struct sockaddr *) &hba->addr,
 									  (struct sockaddr *) &hba->mask))
 							continue;
@@ -2539,7 +2547,7 @@ check_hba(hbaPort *port)
 					break;
 				case ipCmpSameHost:
 				case ipCmpSameNet:
-					if (!check_same_host_or_net(&port->raddr,
+					if (!check_same_host_or_net(POLAR_PROXY_GET_RADDR_P(port, proxy),
 												hba->ip_cmp_method))
 						continue;
 					break;
@@ -2558,10 +2566,29 @@ check_hba(hbaPort *port)
 			continue;
 
 		/* Found a record that matched! */
-		port->hba = hba;
-		return;
+		return hba;
 	}
+	return NULL;
+}
 
+/*
+ *	Scan the pre-parsed hba file, looking for a match to the port's connection
+ *	request.
+ */
+static void
+check_hba(hbaPort *port)
+{
+	HbaLine    *hba;
+
+	if ((hba = get_matched_hba(port, false)) == NULL)
+		goto not_found;
+	if (port->polar_proxy && (hba = get_matched_hba(port, true)) == NULL)
+		goto not_found;
+
+	port->hba = hba;
+	return;
+
+not_found:
 	/* If no matching entry was found, then implicitly reject. */
 	hba = palloc0(sizeof(HbaLine));
 	hba->auth_method = uaImplicitReject;

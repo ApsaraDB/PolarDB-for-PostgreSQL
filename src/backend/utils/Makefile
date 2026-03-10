@@ -29,6 +29,10 @@ SUBDIRS     = \
 	sort \
 	time
 
+# POLAR
+SUBDIRS += list
+SUBDIRS += polar_parameters_manage
+
 # location of Catalog.pm
 catalogdir  = $(top_srcdir)/src/backend/catalog
 

@@ -28,4 +28,8 @@ OBJS = \
 	walsummarizer.o \
 	walwriter.o
 
+# POLAR objects
+OBJS += polar_async_lock_replay.o
+OBJS += polar_parallel_bgwriter.o
+
 include $(top_srcdir)/src/backend/common.mk

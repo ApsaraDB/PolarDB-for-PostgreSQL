@@ -85,9 +85,13 @@ our @EXPORT = qw(
   program_version_ok
   program_options_handling_ok
   command_like
+  polar_command_like
   command_like_safe
   command_fails_like
   command_checks_all
+
+  polar_die
+  polar_note
 
   $windows_os
   $is_msys2
@@ -970,6 +974,28 @@ sub command_like
 
 =pod
 
+=item polar_command_like(cmd, expected_stdout, test_name)
+
+Check that the command runs successfully and the output
+matches the given regular expression.  Dosen't care about
+stderr.
+
+=cut
+
+sub polar_command_like
+{
+	local $Test::Builder::Level = $Test::Builder::Level + 1;
+	my ($cmd, $expected_stdout, $test_name) = @_;
+	my ($stdout, $stderr);
+	print("# Running: " . join(" ", @{$cmd}) . "\n");
+	my $result = IPC::Run::run $cmd, '>', \$stdout, '2>', \$stderr;
+	ok($result, "$test_name: exit code 0");
+	like($stdout, $expected_stdout, "$test_name: matches");
+	return;
+}
+
+=pod
+
 =item command_like_safe(cmd, expected_stdout, test_name)
 
 Check that the command runs successfully and the output
@@ -1077,6 +1103,38 @@ sub command_checks_all
 	}
 
 	return;
+}
+
+=pod
+
+=item polar_die(die_msg)
+
+diag message to client before die.
+
+=cut
+
+sub polar_die
+{
+	my ($die_msg) = @_;
+
+	diag "\n$die_msg\n";
+	die $die_msg;
+}
+
+=pod
+
+=item polar_note(note_msg)
+
+diag message to client and note it to log file.
+
+=cut
+
+sub polar_note
+{
+	my ($note_msg) = @_;
+
+	diag "\n$note_msg\n";
+	note $note_msg;
 }
 
 =pod

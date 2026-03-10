@@ -71,7 +71,12 @@ SELECT s.obj,
   a.privilege_type, a.is_grantable
 FROM
   (SELECT pg_describe_object(classoid,objoid,objsubid) COLLATE "C" AS obj, initprivs
-   FROM pg_init_privs WHERE privtype = 'e' ORDER BY 1) s,
+   FROM pg_init_privs WHERE privtype = 'e'
+   -- POLAR: polar_feature_utils is created by initdb and it
+   -- grants the schema and view to public.
+   -- It's safe and ignore the objects of it.
+   AND objoid NOT IN ('polar_feature_utils'::regnamespace, 'polar_feature_utils.polar_unique_feature_usage'::regclass)
+   ORDER BY 1) s,
   aclexplode(s.initprivs) a;
                         obj                         | grantor  |        grantee         | privilege_type | is_grantable 
 ----------------------------------------------------+----------+------------------------+----------------+--------------
@@ -85,6 +90,17 @@ FROM
  function wgo_then_no_access()                      | postgres | -                      | EXECUTE        | f
  function wgo_then_no_access()                      | postgres | postgres               | EXECUTE        | f
  function wgo_then_no_access()                      | postgres | pg_signal_backend      | EXECUTE        | t
+ schema cron                                        | postgres | postgres               | USAGE          | f
+ schema cron                                        | postgres | postgres               | CREATE         | f
+ schema cron                                        | postgres | -                      | USAGE          | f
+ sequence cron.jobid_seq                            | postgres | postgres               | SELECT         | f
+ sequence cron.jobid_seq                            | postgres | postgres               | UPDATE         | f
+ sequence cron.jobid_seq                            | postgres | postgres               | USAGE          | f
+ sequence cron.jobid_seq                            | postgres | -                      | SELECT         | f
+ sequence cron.runid_seq                            | postgres | postgres               | SELECT         | f
+ sequence cron.runid_seq                            | postgres | postgres               | UPDATE         | f
+ sequence cron.runid_seq                            | postgres | postgres               | USAGE          | f
+ sequence cron.runid_seq                            | postgres | -                      | SELECT         | f
  sequence regress_pg_dump_schema.test_seq           | postgres | postgres               | SELECT         | f
  sequence regress_pg_dump_schema.test_seq           | postgres | postgres               | UPDATE         | f
  sequence regress_pg_dump_schema.test_seq           | postgres | postgres               | USAGE          | f
@@ -103,6 +119,25 @@ FROM
  sequence wgo_then_regular                          | postgres | pg_signal_backend      | SELECT         | f
  sequence wgo_then_regular                          | postgres | pg_signal_backend      | UPDATE         | t
  sequence wgo_then_regular                          | postgres | pg_signal_backend      | USAGE          | t
+ table cron.job                                     | postgres | postgres               | INSERT         | f
+ table cron.job                                     | postgres | postgres               | SELECT         | f
+ table cron.job                                     | postgres | postgres               | UPDATE         | f
+ table cron.job                                     | postgres | postgres               | DELETE         | f
+ table cron.job                                     | postgres | postgres               | TRUNCATE       | f
+ table cron.job                                     | postgres | postgres               | REFERENCES     | f
+ table cron.job                                     | postgres | postgres               | TRIGGER        | f
+ table cron.job                                     | postgres | postgres               | MAINTAIN       | f
+ table cron.job                                     | postgres | -                      | SELECT         | f
+ table cron.job_run_details                         | postgres | postgres               | INSERT         | f
+ table cron.job_run_details                         | postgres | postgres               | SELECT         | f
+ table cron.job_run_details                         | postgres | postgres               | UPDATE         | f
+ table cron.job_run_details                         | postgres | postgres               | DELETE         | f
+ table cron.job_run_details                         | postgres | postgres               | TRUNCATE       | f
+ table cron.job_run_details                         | postgres | postgres               | REFERENCES     | f
+ table cron.job_run_details                         | postgres | postgres               | TRIGGER        | f
+ table cron.job_run_details                         | postgres | postgres               | MAINTAIN       | f
+ table cron.job_run_details                         | postgres | -                      | SELECT         | f
+ table cron.job_run_details                         | postgres | -                      | DELETE         | f
  table regress_pg_dump_schema.test_table            | postgres | postgres               | INSERT         | f
  table regress_pg_dump_schema.test_table            | postgres | postgres               | SELECT         | f
  table regress_pg_dump_schema.test_table            | postgres | postgres               | UPDATE         | f
@@ -133,7 +168,7 @@ FROM
  type regress_pg_dump_schema.test_type              | postgres | -                      | USAGE          | f
  type regress_pg_dump_schema.test_type              | postgres | postgres               | USAGE          | f
  type regress_pg_dump_schema.test_type              | postgres | regress_dump_test_role | USAGE          | f
-(58 rows)
+(88 rows)
 
 SELECT pg_describe_object(classid,objid,objsubid) COLLATE "C" AS obj,
   pg_describe_object(refclassid,refobjid,0) AS refobj,
@@ -208,7 +243,12 @@ SELECT s.obj,
   a.privilege_type, a.is_grantable
 FROM
   (SELECT pg_describe_object(classoid,objoid,objsubid) COLLATE "C" AS obj, initprivs
-   FROM pg_init_privs WHERE privtype = 'e' ORDER BY 1) s,
+   FROM pg_init_privs WHERE privtype = 'e'
+   -- POLAR: polar_feature_utils is created by initdb and it
+   -- grants the schema and view to public.
+   -- It's safe and ignore the objects of it.
+   AND objoid NOT IN ('polar_feature_utils'::regnamespace, 'polar_feature_utils.polar_unique_feature_usage'::regclass)
+   ORDER BY 1) s,
   aclexplode(s.initprivs) a;
                         obj                         | grantor  |      grantee      | privilege_type | is_grantable 
 ----------------------------------------------------+----------+-------------------+----------------+--------------
@@ -220,6 +260,17 @@ FROM
  function wgo_then_no_access()                      | postgres | -                 | EXECUTE        | f
  function wgo_then_no_access()                      | postgres | postgres          | EXECUTE        | f
  function wgo_then_no_access()                      | postgres | pg_signal_backend | EXECUTE        | t
+ schema cron                                        | postgres | postgres          | USAGE          | f
+ schema cron                                        | postgres | postgres          | CREATE         | f
+ schema cron                                        | postgres | -                 | USAGE          | f
+ sequence cron.jobid_seq                            | postgres | postgres          | SELECT         | f
+ sequence cron.jobid_seq                            | postgres | postgres          | UPDATE         | f
+ sequence cron.jobid_seq                            | postgres | postgres          | USAGE          | f
+ sequence cron.jobid_seq                            | postgres | -                 | SELECT         | f
+ sequence cron.runid_seq                            | postgres | postgres          | SELECT         | f
+ sequence cron.runid_seq                            | postgres | postgres          | UPDATE         | f
+ sequence cron.runid_seq                            | postgres | postgres          | USAGE          | f
+ sequence cron.runid_seq                            | postgres | -                 | SELECT         | f
  sequence regress_pg_dump_schema.test_seq           | postgres | postgres          | SELECT         | f
  sequence regress_pg_dump_schema.test_seq           | postgres | postgres          | UPDATE         | f
  sequence regress_pg_dump_schema.test_seq           | postgres | postgres          | USAGE          | f
@@ -236,6 +287,25 @@ FROM
  sequence wgo_then_regular                          | postgres | pg_signal_backend | SELECT         | f
  sequence wgo_then_regular                          | postgres | pg_signal_backend | UPDATE         | t
  sequence wgo_then_regular                          | postgres | pg_signal_backend | USAGE          | t
+ table cron.job                                     | postgres | postgres          | INSERT         | f
+ table cron.job                                     | postgres | postgres          | SELECT         | f
+ table cron.job                                     | postgres | postgres          | UPDATE         | f
+ table cron.job                                     | postgres | postgres          | DELETE         | f
+ table cron.job                                     | postgres | postgres          | TRUNCATE       | f
+ table cron.job                                     | postgres | postgres          | REFERENCES     | f
+ table cron.job                                     | postgres | postgres          | TRIGGER        | f
+ table cron.job                                     | postgres | postgres          | MAINTAIN       | f
+ table cron.job                                     | postgres | -                 | SELECT         | f
+ table cron.job_run_details                         | postgres | postgres          | INSERT         | f
+ table cron.job_run_details                         | postgres | postgres          | SELECT         | f
+ table cron.job_run_details                         | postgres | postgres          | UPDATE         | f
+ table cron.job_run_details                         | postgres | postgres          | DELETE         | f
+ table cron.job_run_details                         | postgres | postgres          | TRUNCATE       | f
+ table cron.job_run_details                         | postgres | postgres          | REFERENCES     | f
+ table cron.job_run_details                         | postgres | postgres          | TRIGGER        | f
+ table cron.job_run_details                         | postgres | postgres          | MAINTAIN       | f
+ table cron.job_run_details                         | postgres | -                 | SELECT         | f
+ table cron.job_run_details                         | postgres | -                 | DELETE         | f
  table regress_pg_dump_schema.test_table            | postgres | postgres          | INSERT         | f
  table regress_pg_dump_schema.test_table            | postgres | postgres          | SELECT         | f
  table regress_pg_dump_schema.test_table            | postgres | postgres          | UPDATE         | f
@@ -263,7 +333,7 @@ FROM
  table regress_table_dumpable                       | postgres | -                 | SELECT         | f
  type regress_pg_dump_schema.test_type              | postgres | -                 | USAGE          | f
  type regress_pg_dump_schema.test_type              | postgres | postgres          | USAGE          | f
-(51 rows)
+(81 rows)
 
 SELECT pg_describe_object(classid,objid,objsubid) COLLATE "C" AS obj,
   pg_describe_object(refclassid,refobjid,0) AS refobj,
@@ -278,10 +348,19 @@ SELECT pg_describe_object(classid,objid,objsubid) COLLATE "C" AS obj,
 DROP ROLE regress_dump_test_role;
 DROP EXTENSION test_pg_dump;
 -- shouldn't be anything left in pg_init_privs
-SELECT * FROM pg_init_privs WHERE privtype = 'e';
- objoid | classoid | objsubid | privtype | initprivs 
---------+----------+----------+----------+-----------
-(0 rows)
+SELECT * FROM pg_init_privs WHERE privtype = 'e'
+   -- POLAR: polar_feature_utils is created by initdb and it
+   -- grants the schema and view to public.
+   -- It's safe and ignore the objects of it.
+   AND objoid NOT IN ('polar_feature_utils'::regnamespace, 'polar_feature_utils.polar_unique_feature_usage'::regclass);
+ objoid | classoid | objsubid | privtype |                 initprivs                 
+--------+----------+----------+----------+-------------------------------------------
+  14307 |     1259 |        0 | e        | {postgres=arwdDxtm/postgres,=rd/postgres}
+  14289 |     1259 |        0 | e        | {postgres=rwU/postgres,=r/postgres}
+  14306 |     1259 |        0 | e        | {postgres=rwU/postgres,=r/postgres}
+  14288 |     2615 |        0 | e        | {postgres=UC/postgres,=U/postgres}
+  14290 |     1259 |        0 | e        | {postgres=arwdDxtm/postgres,=r/postgres}
+(5 rows)
 
 CREATE ROLE regress_dump_test_role;
 CREATE ROLE regress_dump_test_super SUPERUSER;
@@ -297,7 +376,12 @@ SELECT s.obj,
   a.privilege_type, a.is_grantable
 FROM
   (SELECT pg_describe_object(classoid,objoid,objsubid) COLLATE "C" AS obj, initprivs
-   FROM pg_init_privs WHERE privtype = 'e' ORDER BY 1) s,
+   FROM pg_init_privs WHERE privtype = 'e'
+   -- POLAR: polar_feature_utils is created by initdb and it
+   -- grants the schema and view to public.
+   -- It's safe and ignore the objects of it.
+   AND objoid NOT IN ('polar_feature_utils'::regnamespace, 'polar_feature_utils.polar_unique_feature_usage'::regclass)
+   ORDER BY 1) s,
   aclexplode(s.initprivs) a;
                         obj                         |         grantor         |         grantee         | privilege_type | is_grantable 
 ----------------------------------------------------+-------------------------+-------------------------+----------------+--------------
@@ -311,6 +395,17 @@ FROM
  function wgo_then_no_access()                      | regress_dump_test_super | -                       | EXECUTE        | f
  function wgo_then_no_access()                      | regress_dump_test_super | regress_dump_test_super | EXECUTE        | f
  function wgo_then_no_access()                      | regress_dump_test_super | pg_signal_backend       | EXECUTE        | t
+ schema cron                                        | postgres                | postgres                | USAGE          | f
+ schema cron                                        | postgres                | postgres                | CREATE         | f
+ schema cron                                        | postgres                | -                       | USAGE          | f
+ sequence cron.jobid_seq                            | postgres                | postgres                | SELECT         | f
+ sequence cron.jobid_seq                            | postgres                | postgres                | UPDATE         | f
+ sequence cron.jobid_seq                            | postgres                | postgres                | USAGE          | f
+ sequence cron.jobid_seq                            | postgres                | -                       | SELECT         | f
+ sequence cron.runid_seq                            | postgres                | postgres                | SELECT         | f
+ sequence cron.runid_seq                            | postgres                | postgres                | UPDATE         | f
+ sequence cron.runid_seq                            | postgres                | postgres                | USAGE          | f
+ sequence cron.runid_seq                            | postgres                | -                       | SELECT         | f
  sequence regress_pg_dump_schema.test_seq           | regress_dump_test_super | regress_dump_test_super | SELECT         | f
  sequence regress_pg_dump_schema.test_seq           | regress_dump_test_super | regress_dump_test_super | UPDATE         | f
  sequence regress_pg_dump_schema.test_seq           | regress_dump_test_super | regress_dump_test_super | USAGE          | f
@@ -329,6 +424,25 @@ FROM
  sequence wgo_then_regular                          | regress_dump_test_super | pg_signal_backend       | SELECT         | f
  sequence wgo_then_regular                          | regress_dump_test_super | pg_signal_backend       | UPDATE         | t
  sequence wgo_then_regular                          | regress_dump_test_super | pg_signal_backend       | USAGE          | t
+ table cron.job                                     | postgres                | postgres                | INSERT         | f
+ table cron.job                                     | postgres                | postgres                | SELECT         | f
+ table cron.job                                     | postgres                | postgres                | UPDATE         | f
+ table cron.job                                     | postgres                | postgres                | DELETE         | f
+ table cron.job                                     | postgres                | postgres                | TRUNCATE       | f
+ table cron.job                                     | postgres                | postgres                | REFERENCES     | f
+ table cron.job                                     | postgres                | postgres                | TRIGGER        | f
+ table cron.job                                     | postgres                | postgres                | MAINTAIN       | f
+ table cron.job                                     | postgres                | -                       | SELECT         | f
+ table cron.job_run_details                         | postgres                | postgres                | INSERT         | f
+ table cron.job_run_details                         | postgres                | postgres                | SELECT         | f
+ table cron.job_run_details                         | postgres                | postgres                | UPDATE         | f
+ table cron.job_run_details                         | postgres                | postgres                | DELETE         | f
+ table cron.job_run_details                         | postgres                | postgres                | TRUNCATE       | f
+ table cron.job_run_details                         | postgres                | postgres                | REFERENCES     | f
+ table cron.job_run_details                         | postgres                | postgres                | TRIGGER        | f
+ table cron.job_run_details                         | postgres                | postgres                | MAINTAIN       | f
+ table cron.job_run_details                         | postgres                | -                       | SELECT         | f
+ table cron.job_run_details                         | postgres                | -                       | DELETE         | f
  table regress_pg_dump_schema.test_table            | regress_dump_test_super | regress_dump_test_super | INSERT         | f
  table regress_pg_dump_schema.test_table            | regress_dump_test_super | regress_dump_test_super | SELECT         | f
  table regress_pg_dump_schema.test_table            | regress_dump_test_super | regress_dump_test_super | UPDATE         | f
@@ -359,7 +473,7 @@ FROM
  type regress_pg_dump_schema.test_type              | regress_dump_test_super | -                       | USAGE          | f
  type regress_pg_dump_schema.test_type              | regress_dump_test_super | regress_dump_test_super | USAGE          | f
  type regress_pg_dump_schema.test_type              | regress_dump_test_super | regress_dump_test_role  | USAGE          | f
-(58 rows)
+(88 rows)
 
 SELECT pg_describe_object(classid,objid,objsubid) COLLATE "C" AS obj,
   pg_describe_object(refclassid,refobjid,0) AS refobj,
@@ -421,7 +535,12 @@ SELECT s.obj,
   a.privilege_type, a.is_grantable
 FROM
   (SELECT pg_describe_object(classoid,objoid,objsubid) COLLATE "C" AS obj, initprivs
-   FROM pg_init_privs WHERE privtype = 'e' ORDER BY 1) s,
+   FROM pg_init_privs WHERE privtype = 'e'
+   -- POLAR: polar_feature_utils is created by initdb and it
+   -- grants the schema and view to public.
+   -- It's safe and ignore the objects of it.
+   AND objoid NOT IN ('polar_feature_utils'::regnamespace, 'polar_feature_utils.polar_unique_feature_usage'::regclass)
+   ORDER BY 1) s,
   aclexplode(s.initprivs) a;
                         obj                         | grantor  |        grantee         | privilege_type | is_grantable 
 ----------------------------------------------------+----------+------------------------+----------------+--------------
@@ -435,6 +554,17 @@ FROM
  function wgo_then_no_access()                      | postgres | -                      | EXECUTE        | f
  function wgo_then_no_access()                      | postgres | postgres               | EXECUTE        | f
  function wgo_then_no_access()                      | postgres | pg_signal_backend      | EXECUTE        | t
+ schema cron                                        | postgres | postgres               | USAGE          | f
+ schema cron                                        | postgres | postgres               | CREATE         | f
+ schema cron                                        | postgres | -                      | USAGE          | f
+ sequence cron.jobid_seq                            | postgres | postgres               | SELECT         | f
+ sequence cron.jobid_seq                            | postgres | postgres               | UPDATE         | f
+ sequence cron.jobid_seq                            | postgres | postgres               | USAGE          | f
+ sequence cron.jobid_seq                            | postgres | -                      | SELECT         | f
+ sequence cron.runid_seq                            | postgres | postgres               | SELECT         | f
+ sequence cron.runid_seq                            | postgres | postgres               | UPDATE         | f
+ sequence cron.runid_seq                            | postgres | postgres               | USAGE          | f
+ sequence cron.runid_seq                            | postgres | -                      | SELECT         | f
  sequence regress_pg_dump_schema.test_seq           | postgres | postgres               | SELECT         | f
  sequence regress_pg_dump_schema.test_seq           | postgres | postgres               | UPDATE         | f
  sequence regress_pg_dump_schema.test_seq           | postgres | postgres               | USAGE          | f
@@ -453,6 +583,25 @@ FROM
  sequence wgo_then_regular                          | postgres | pg_signal_backend      | SELECT         | f
  sequence wgo_then_regular                          | postgres | pg_signal_backend      | UPDATE         | t
  sequence wgo_then_regular                          | postgres | pg_signal_backend      | USAGE          | t
+ table cron.job                                     | postgres | postgres               | INSERT         | f
+ table cron.job                                     | postgres | postgres               | SELECT         | f
+ table cron.job                                     | postgres | postgres               | UPDATE         | f
+ table cron.job                                     | postgres | postgres               | DELETE         | f
+ table cron.job                                     | postgres | postgres               | TRUNCATE       | f
+ table cron.job                                     | postgres | postgres               | REFERENCES     | f
+ table cron.job                                     | postgres | postgres               | TRIGGER        | f
+ table cron.job                                     | postgres | postgres               | MAINTAIN       | f
+ table cron.job                                     | postgres | -                      | SELECT         | f
+ table cron.job_run_details                         | postgres | postgres               | INSERT         | f
+ table cron.job_run_details                         | postgres | postgres               | SELECT         | f
+ table cron.job_run_details                         | postgres | postgres               | UPDATE         | f
+ table cron.job_run_details                         | postgres | postgres               | DELETE         | f
+ table cron.job_run_details                         | postgres | postgres               | TRUNCATE       | f
+ table cron.job_run_details                         | postgres | postgres               | REFERENCES     | f
+ table cron.job_run_details                         | postgres | postgres               | TRIGGER        | f
+ table cron.job_run_details                         | postgres | postgres               | MAINTAIN       | f
+ table cron.job_run_details                         | postgres | -                      | SELECT         | f
+ table cron.job_run_details                         | postgres | -                      | DELETE         | f
  table regress_pg_dump_schema.test_table            | postgres | postgres               | INSERT         | f
  table regress_pg_dump_schema.test_table            | postgres | postgres               | SELECT         | f
  table regress_pg_dump_schema.test_table            | postgres | postgres               | UPDATE         | f
@@ -483,7 +632,7 @@ FROM
  type regress_pg_dump_schema.test_type              | postgres | -                      | USAGE          | f
  type regress_pg_dump_schema.test_type              | postgres | postgres               | USAGE          | f
  type regress_pg_dump_schema.test_type              | postgres | regress_dump_test_role | USAGE          | f
-(58 rows)
+(88 rows)
 
 SELECT pg_describe_object(classid,objid,objsubid) COLLATE "C" AS obj,
   pg_describe_object(refclassid,refobjid,0) AS refobj,
@@ -519,7 +668,12 @@ SELECT s.obj,
   a.privilege_type, a.is_grantable
 FROM
   (SELECT pg_describe_object(classoid,objoid,objsubid) COLLATE "C" AS obj, initprivs
-   FROM pg_init_privs WHERE privtype = 'e' ORDER BY 1) s,
+   FROM pg_init_privs WHERE privtype = 'e'
+   -- POLAR: polar_feature_utils is created by initdb and it
+   -- grants the schema and view to public.
+   -- It's safe and ignore the objects of it.
+   AND objoid NOT IN ('polar_feature_utils'::regnamespace, 'polar_feature_utils.polar_unique_feature_usage'::regclass)
+   ORDER BY 1) s,
   aclexplode(s.initprivs) a;
                         obj                         | grantor  |      grantee      | privilege_type | is_grantable 
 ----------------------------------------------------+----------+-------------------+----------------+--------------
@@ -531,6 +685,17 @@ FROM
  function wgo_then_no_access()                      | postgres | -                 | EXECUTE        | f
  function wgo_then_no_access()                      | postgres | postgres          | EXECUTE        | f
  function wgo_then_no_access()                      | postgres | pg_signal_backend | EXECUTE        | t
+ schema cron                                        | postgres | postgres          | USAGE          | f
+ schema cron                                        | postgres | postgres          | CREATE         | f
+ schema cron                                        | postgres | -                 | USAGE          | f
+ sequence cron.jobid_seq                            | postgres | postgres          | SELECT         | f
+ sequence cron.jobid_seq                            | postgres | postgres          | UPDATE         | f
+ sequence cron.jobid_seq                            | postgres | postgres          | USAGE          | f
+ sequence cron.jobid_seq                            | postgres | -                 | SELECT         | f
+ sequence cron.runid_seq                            | postgres | postgres          | SELECT         | f
+ sequence cron.runid_seq                            | postgres | postgres          | UPDATE         | f
+ sequence cron.runid_seq                            | postgres | postgres          | USAGE          | f
+ sequence cron.runid_seq                            | postgres | -                 | SELECT         | f
  sequence regress_pg_dump_schema.test_seq           | postgres | postgres          | SELECT         | f
  sequence regress_pg_dump_schema.test_seq           | postgres | postgres          | UPDATE         | f
  sequence regress_pg_dump_schema.test_seq           | postgres | postgres          | USAGE          | f
@@ -547,6 +712,25 @@ FROM
  sequence wgo_then_regular                          | postgres | pg_signal_backend | SELECT         | f
  sequence wgo_then_regular                          | postgres | pg_signal_backend | UPDATE         | t
  sequence wgo_then_regular                          | postgres | pg_signal_backend | USAGE          | t
+ table cron.job                                     | postgres | postgres          | INSERT         | f
+ table cron.job                                     | postgres | postgres          | SELECT         | f
+ table cron.job                                     | postgres | postgres          | UPDATE         | f
+ table cron.job                                     | postgres | postgres          | DELETE         | f
+ table cron.job                                     | postgres | postgres          | TRUNCATE       | f
+ table cron.job                                     | postgres | postgres          | REFERENCES     | f
+ table cron.job                                     | postgres | postgres          | TRIGGER        | f
+ table cron.job                                     | postgres | postgres          | MAINTAIN       | f
+ table cron.job                                     | postgres | -                 | SELECT         | f
+ table cron.job_run_details                         | postgres | postgres          | INSERT         | f
+ table cron.job_run_details                         | postgres | postgres          | SELECT         | f
+ table cron.job_run_details                         | postgres | postgres          | UPDATE         | f
+ table cron.job_run_details                         | postgres | postgres          | DELETE         | f
+ table cron.job_run_details                         | postgres | postgres          | TRUNCATE       | f
+ table cron.job_run_details                         | postgres | postgres          | REFERENCES     | f
+ table cron.job_run_details                         | postgres | postgres          | TRIGGER        | f
+ table cron.job_run_details                         | postgres | postgres          | MAINTAIN       | f
+ table cron.job_run_details                         | postgres | -                 | SELECT         | f
+ table cron.job_run_details                         | postgres | -                 | DELETE         | f
  table regress_pg_dump_schema.test_table            | postgres | postgres          | INSERT         | f
  table regress_pg_dump_schema.test_table            | postgres | postgres          | SELECT         | f
  table regress_pg_dump_schema.test_table            | postgres | postgres          | UPDATE         | f
@@ -574,7 +758,7 @@ FROM
  table regress_table_dumpable                       | postgres | -                 | SELECT         | f
  type regress_pg_dump_schema.test_type              | postgres | -                 | USAGE          | f
  type regress_pg_dump_schema.test_type              | postgres | postgres          | USAGE          | f
-(51 rows)
+(81 rows)
 
 SELECT pg_describe_object(classid,objid,objsubid) COLLATE "C" AS obj,
   pg_describe_object(refclassid,refobjid,0) AS refobj,

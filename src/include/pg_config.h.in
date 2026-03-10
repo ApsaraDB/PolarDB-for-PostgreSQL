@@ -51,6 +51,9 @@
 /* Define to 1 if you want National Language Support. (--enable-nls) */
 #undef ENABLE_NLS
 
+/* Define to 1 to build with fault injector. (--enable-fault-injector) */
+#undef FAULT_INJECTOR
+
 /* Define to 1 if you have the `append_history' function. */
 #undef HAVE_APPEND_HISTORY
 
@@ -140,6 +143,12 @@
 
 /* Define to 1 if you have the <editline/readline.h> header file. */
 #undef HAVE_EDITLINE_READLINE_H
+
+/* Define to 1 if you have the `EVP_PKEY_derive' function. */
+#undef HAVE_EVP_PKEY_DERIVE
+
+/* Define if EVP_sm4_ctr is available */
+#undef HAVE_EVP_SM4_CTR
 
 /* Define to 1 if you have the <execinfo.h> header file. */
 #undef HAVE_EXECINFO_H
@@ -275,6 +284,9 @@
 /* Define to 1 if you have the `ssl' library (-lssl). */
 #undef HAVE_LIBSSL
 
+/* Define to 1 if you have the `unwind' library (-lunwind). */
+#undef HAVE_LIBUNWIND
+
 /* Define to 1 if you have the `wldap32' library (-lwldap32). */
 #undef HAVE_LIBWLDAP32
 
@@ -307,6 +319,9 @@
 
 /* Define to 1 if you have the `mkdtemp' function. */
 #undef HAVE_MKDTEMP
+
+/* Define to 1 if you have the `OPENSSL_init_crypto' function. */
+#undef HAVE_OPENSSL_INIT_CRYPTO
 
 /* Define to 1 if you have the `OPENSSL_init_ssl' function. */
 #undef HAVE_OPENSSL_INIT_SSL
@@ -569,8 +584,14 @@
 /* Define to 1 if your compiler understands _Static_assert. */
 #undef HAVE__STATIC_ASSERT
 
+/* Define to 1 if you have the `__backtrace' function. */
+#undef HAVE___BACKTRACE
+
 /* Define to the appropriate printf length modifier for 64-bit ints. */
 #undef INT64_MODIFIER
+
+/* Linux distribution */
+#undef LINUX_DIST
 
 /* Define to 1 if `locale_t' requires <xlocale.h>. */
 #undef LOCALE_T_IN_XLOCALE
@@ -603,6 +624,9 @@
 /* Define to the version of this package. */
 #undef PACKAGE_VERSION
 
+/* PFSD version number */
+#undef PFSD_VERSION
+
 /* Define to the name of a signed 128-bit integer type. */
 #undef PG_INT128_TYPE
 
@@ -634,8 +658,27 @@
 /* PostgreSQL version as a number */
 #undef PG_VERSION_NUM
 
-/* A string containing the version number, platform, and C compiler */
+/* A string containing the PostgreSQL version number, PolarDB version number,
+   PolarDB version commit, debug/release mode, and target CPU platform */
 #undef PG_VERSION_STR
+
+/* PolarDB version as a string */
+#undef POLARDB_VERSION
+
+/* PolarDB commit as a string */
+#undef POLAR_COMMIT
+
+/* PolarDB deploy mode */
+#undef POLAR_DEPLOY_MODE
+
+/* PolarDB PG internal version as a string */
+#undef POLAR_PG_VERSION
+
+/* PolarDB release date as a string */
+#undef POLAR_RELEASE_DATE
+
+/* PolarDB internal version as a string */
+#undef POLAR_VERSION
 
 /* Define to 1 to allow profiling output to be saved separately for each
    process. */
@@ -706,6 +749,9 @@
 /* Define to 1 to build with LDAP support. (--with-ldap) */
 #undef USE_LDAP
 
+/* Define to 1 to build with libunwind support. (--with-libunwind) */
+#undef USE_LIBUNWIND
+
 /* Define to 1 to build with XML support. (--with-libxml) */
 #undef USE_LIBXML
 
@@ -722,6 +768,9 @@
 /* Define to 1 to build with LZ4 support. (--with-lz4) */
 #undef USE_LZ4
 
+/* Define to 1 to build with minimal compile. (--enable-minimal) */
+#undef USE_MINIMAL_COMPILE
+
 /* Define to select named POSIX semaphores. */
 #undef USE_NAMED_POSIX_SEMAPHORES
 
@@ -730,6 +779,9 @@
 
 /* Define to 1 to build with PAM support. (--with-pam) */
 #undef USE_PAM
+
+/* Define to 1 to build with PFSD support. (--with-pfsd) */
+#undef USE_PFSD
 
 /* Define to 1 to use software CRC-32C implementation (slicing-by-8). */
 #undef USE_SLICING_BY_8_CRC32C
@@ -740,6 +792,9 @@
 /* Define to 1 to use Intel SSE 4.2 CRC instructions with a runtime check. */
 #undef USE_SSE42_CRC32C_WITH_RUNTIME_CHECK
 
+/* Define to 1 to build with submodule packages. (--with-submodule) */
+#undef USE_SUBMODULE
+
 /* Define to build with systemd support. (--with-systemd) */
 #undef USE_SYSTEMD
 
@@ -748,6 +803,9 @@
 
 /* Define to select SysV-style shared memory. */
 #undef USE_SYSV_SHARED_MEMORY
+
+/* Define to 1 to build with TDE support. (--with-tde) */
+#undef USE_TDE
 
 /* Define to select unnamed POSIX semaphores. */
 #undef USE_UNNAMED_POSIX_SEMAPHORES

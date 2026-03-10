@@ -79,6 +79,9 @@ Node *replication_parse_result;
 %token K_USE_SNAPSHOT
 %token K_UPLOAD_MANIFEST
 
+/* POLAR */
+%token K_POLAR_REPL_MODE
+
 %type <node>	command
 %type <node>	base_backup start_replication start_logical_replication
 				create_replication_slot drop_replication_slot
@@ -94,6 +97,9 @@ Node *replication_parse_result;
 %type <boolval>	opt_temporary
 %type <list>	create_slot_options create_slot_legacy_opt_list
 %type <defelt>	create_slot_legacy_opt
+
+/* POLAR */
+%type <uintval>	opt_polar_repl_mode
 
 %%
 
@@ -275,10 +281,10 @@ alter_replication_slot:
 			;
 
 /*
- * START_REPLICATION [SLOT slot] [PHYSICAL] %X/%X [TIMELINE %u]
+ * START_REPLICATION [SLOT slot] [PHYSICAL] %X/%X [TIMELINE %d] [POLAR_MODE mode]
  */
 start_replication:
-			K_START_REPLICATION opt_slot opt_physical RECPTR opt_timeline
+			K_START_REPLICATION opt_slot opt_physical RECPTR opt_timeline opt_polar_repl_mode
 				{
 					StartReplicationCmd *cmd;
 
@@ -287,6 +293,7 @@ start_replication:
 					cmd->slotname = $2;
 					cmd->startpoint = $4;
 					cmd->timeline = $5;
+					cmd->polar_repl_mode = $6;
 					$$ = (Node *) cmd;
 				}
 			;
@@ -336,6 +343,24 @@ upload_manifest:
 opt_physical:
 			K_PHYSICAL
 			| /* EMPTY */
+			;
+
+opt_polar_repl_mode:
+	      		K_POLAR_REPL_MODE IDENT
+				{
+					if (strcmp($2, "default") == 0)
+						$$ = POLAR_REPL_DEFAULT;
+					else if (strcmp($2, "replica") == 0)
+						$$ = POLAR_REPL_REPLICA;
+					else if (strcmp($2, "standby") == 0)
+						$$ = POLAR_REPL_STANDBY;
+					else
+						ereport(ERROR,
+							(errcode(ERRCODE_SYNTAX_ERROR),
+							 errmsg("unrecognized polar_repl_mode option \"%s\"", $2)));
+				}
+			| /* EMPTY */
+				{ $$ = POLAR_REPL_DEFAULT; }
 			;
 
 opt_temporary:

@@ -24,7 +24,10 @@
  * make sure that the relation is correctly fsync'd by us or the checkpointer
  * even if a checkpoint happens concurrently.
  *
+ * NOTE:
+ * fsync is removed from PolarDB for we use buffer pool to cache those pages.
  *
+ * Portions Copyright (c) 2024, Alibaba Group Holding Limited
  * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -45,9 +48,7 @@
 #include "storage/smgr.h"
 #include "utils/rel.h"
 
-#define MAX_PENDING_WRITES XLR_MAX_BLOCK_ID
-
-static const PGIOAlignedBlock zero_buffer = {{0}};	/* worth BLCKSZ */
+#define MAX_PENDING_WRITES 512
 
 typedef struct PendingWrite
 {
@@ -63,8 +64,10 @@ struct BulkWriteState
 {
 	/* Information about the target relation we're writing */
 	SMgrRelation smgr;
+	RelFileLocatorBackend rlocator;
 	ForkNumber	forknum;
 	bool		use_wal;
+	char		relpersistence;
 
 	/* We keep several writes queued, and WAL-log them in batches */
 	int			npending;
@@ -73,11 +76,11 @@ struct BulkWriteState
 	/* Current size of the relation */
 	BlockNumber relsize;
 
-	/* The RedoRecPtr at the time that the bulk operation started */
-	XLogRecPtr	start_RedoRecPtr;
-
 	MemoryContext memcxt;
 };
+
+/* GUCs */
+int			polar_bulk_write_maxpages;
 
 static void smgr_bulk_flush(BulkWriteState *bulkstate);
 
@@ -89,7 +92,8 @@ smgr_bulk_start_rel(Relation rel, ForkNumber forknum)
 {
 	return smgr_bulk_start_smgr(RelationGetSmgr(rel),
 								forknum,
-								RelationNeedsWAL(rel) || forknum == INIT_FORKNUM);
+								RelationNeedsWAL(rel) || forknum == INIT_FORKNUM,
+								rel->rd_rel->relpersistence);
 }
 
 /*
@@ -98,19 +102,19 @@ smgr_bulk_start_rel(Relation rel, ForkNumber forknum)
  * This is like smgr_bulk_start_rel, but can be used without a relcache entry.
  */
 BulkWriteState *
-smgr_bulk_start_smgr(SMgrRelation smgr, ForkNumber forknum, bool use_wal)
+smgr_bulk_start_smgr(SMgrRelation smgr, ForkNumber forknum, bool use_wal, char relpersistence)
 {
 	BulkWriteState *state;
 
 	state = palloc(sizeof(BulkWriteState));
 	state->smgr = smgr;
+	state->rlocator = smgr->smgr_rlocator;
 	state->forknum = forknum;
 	state->use_wal = use_wal;
+	state->relpersistence = relpersistence;
 
 	state->npending = 0;
 	state->relsize = smgrnblocks(smgr, forknum);
-
-	state->start_RedoRecPtr = GetRedoRecPtr();
 
 	/*
 	 * Remember the memory context.  We will use it to allocate all the
@@ -123,103 +127,12 @@ smgr_bulk_start_smgr(SMgrRelation smgr, ForkNumber forknum, bool use_wal)
 
 /*
  * Finish bulk write operation.
- *
- * This WAL-logs and flushes any remaining pending writes to disk, and fsyncs
- * the relation if needed.
  */
 void
 smgr_bulk_finish(BulkWriteState *bulkstate)
 {
 	/* WAL-log and flush any remaining pages */
 	smgr_bulk_flush(bulkstate);
-
-	/*
-	 * Fsync the relation, or register it for the next checkpoint, if
-	 * necessary.
-	 */
-	if (SmgrIsTemp(bulkstate->smgr))
-	{
-		/* Temporary relations don't need to be fsync'd, ever */
-	}
-	else if (!bulkstate->use_wal)
-	{
-		/*----------
-		 * This is either an unlogged relation, or a permanent relation but we
-		 * skipped WAL-logging because wal_level=minimal:
-		 *
-		 * A) Unlogged relation
-		 *
-		 *    Unlogged relations will go away on crash, but they need to be
-		 *    fsync'd on a clean shutdown. It's sufficient to call
-		 *    smgrregistersync(), that ensures that the checkpointer will
-		 *    flush it at the shutdown checkpoint. (It will flush it on the
-		 *    next online checkpoint too, which is not strictly necessary.)
-		 *
-		 *    Note that the init-fork of an unlogged relation is not
-		 *    considered unlogged for our purposes. It's treated like a
-		 *    regular permanent relation. The callers will pass use_wal=true
-		 *    for the init fork.
-		 *
-		 * B) Permanent relation, WAL-logging skipped because wal_level=minimal
-		 *
-		 *    This is a new relation, and we didn't WAL-log the pages as we
-		 *    wrote, but they need to be fsync'd before commit.
-		 *
-		 *    We don't need to do that here, however. The fsync() is done at
-		 *    commit, by smgrDoPendingSyncs() (*).
-		 *
-		 *    (*) smgrDoPendingSyncs() might decide to WAL-log the whole
-		 *    relation at commit instead of fsyncing it, if the relation was
-		 *    very small, but it's smgrDoPendingSyncs() responsibility in any
-		 *    case.
-		 *
-		 * We cannot distinguish the two here, so conservatively assume it's
-		 * an unlogged relation. A permanent relation with wal_level=minimal
-		 * would require no actions, see above.
-		 */
-		smgrregistersync(bulkstate->smgr, bulkstate->forknum);
-	}
-	else
-	{
-		/*
-		 * Permanent relation, WAL-logged normally.
-		 *
-		 * We already WAL-logged all the pages, so they will be replayed from
-		 * WAL on crash. However, when we wrote out the pages, we passed
-		 * skipFsync=true to avoid the overhead of registering all the writes
-		 * with the checkpointer.  Register the whole relation now.
-		 *
-		 * There is one hole in that idea: If a checkpoint occurred while we
-		 * were writing the pages, it already missed fsyncing the pages we had
-		 * written before the checkpoint started.  A crash later on would
-		 * replay the WAL starting from the checkpoint, therefore it wouldn't
-		 * replay our earlier WAL records.  So if a checkpoint started after
-		 * the bulk write, fsync the files now.
-		 */
-
-		/*
-		 * Prevent a checkpoint from starting between the GetRedoRecPtr() and
-		 * smgrregistersync() calls.
-		 */
-		Assert((MyProc->delayChkptFlags & DELAY_CHKPT_START) == 0);
-		MyProc->delayChkptFlags |= DELAY_CHKPT_START;
-
-		if (bulkstate->start_RedoRecPtr != GetRedoRecPtr())
-		{
-			/*
-			 * A checkpoint occurred and it didn't know about our writes, so
-			 * fsync() the relation ourselves.
-			 */
-			MyProc->delayChkptFlags &= ~DELAY_CHKPT_START;
-			smgrimmedsync(bulkstate->smgr, bulkstate->forknum);
-			elog(DEBUG1, "flushed relation because a checkpoint occurred concurrently");
-		}
-		else
-		{
-			smgrregistersync(bulkstate->smgr, bulkstate->forknum);
-			MyProc->delayChkptFlags &= ~DELAY_CHKPT_START;
-		}
-	}
 }
 
 static int
@@ -244,6 +157,20 @@ smgr_bulk_flush(BulkWriteState *bulkstate)
 {
 	int			npending = bulkstate->npending;
 	PendingWrite *pending_writes = bulkstate->pending_writes;
+	BlockNumber nblocks;
+
+	if (!RelFileLocatorBackendEquals(bulkstate->rlocator, bulkstate->smgr->smgr_rlocator))
+		ereport(ERROR,
+				(errbacktrace(),
+				 errmsg("smgr_bulk_flush: rlocator changed, from (%u,%u,%u,%d) to (%u,%u,%u,%d)",
+						bulkstate->rlocator.locator.spcOid,
+						bulkstate->rlocator.locator.dbOid,
+						bulkstate->rlocator.locator.relNumber,
+						bulkstate->rlocator.backend,
+						bulkstate->smgr->smgr_rlocator.locator.spcOid,
+						bulkstate->smgr->smgr_rlocator.locator.dbOid,
+						bulkstate->smgr->smgr_rlocator.locator.relNumber,
+						bulkstate->smgr->smgr_rlocator.backend)));
 
 	if (npending == 0)
 		return;
@@ -251,16 +178,47 @@ smgr_bulk_flush(BulkWriteState *bulkstate)
 	if (npending > 1)
 		qsort(pending_writes, npending, sizeof(PendingWrite), buffer_cmp);
 
-	if (bulkstate->use_wal)
+	nblocks = bulkstate->pending_writes[npending - 1].blkno + 1;
+
+	/*
+	 * Before we alloc buffers from buffer pool for those pages, extend the
+	 * underlying file first.
+	 */
+	if (nblocks > bulkstate->relsize)
 	{
-		BlockNumber blknos[MAX_PENDING_WRITES];
-		Page		pages[MAX_PENDING_WRITES];
+		smgrzeroextend(bulkstate->smgr, bulkstate->forknum, bulkstate->relsize,
+					   nblocks - bulkstate->relsize, true);
+		bulkstate->relsize = nblocks;
+	}
+
+	for (int i = 0; i < npending;)
+	{
+		int			nbatch = 0;
+		BlockNumber blknos[XLR_MAX_BLOCK_ID];
+		Page		pages[XLR_MAX_BLOCK_ID];
+		Buffer		buffers[XLR_MAX_BLOCK_ID];
 		bool		page_std = true;
 
-		for (int i = 0; i < npending; i++)
+		/*
+		 * Accumulate XLR_MAX_BLOCK_ID pages at most per round. For
+		 * log_newpages takes those count of pages into one record. Also to
+		 * reduce the usage of LWLock to avoid "too many LWLocks taken" ERROR.
+		 */
+		do
 		{
-			blknos[i] = pending_writes[i].blkno;
-			pages[i] = pending_writes[i].buf->data;
+			BlockNumber blkno = pending_writes[i].blkno;
+			Page		cached_page = pending_writes[i].buf->data;
+			Page		page;
+			Buffer		buffer;
+
+			buffer = polar_read_buffer_common(bulkstate->smgr, bulkstate->relpersistence,
+											  bulkstate->forknum, blkno, RBM_ZERO_AND_LOCK, NULL);
+			page = BufferGetPage(buffer);
+
+			memcpy(page, cached_page, BLCKSZ);
+			pfree(cached_page);
+
+			MarkBufferDirty(buffer);
 
 			/*
 			 * If any of the pages use !page_std, we log them all as such.
@@ -270,43 +228,26 @@ smgr_bulk_flush(BulkWriteState *bulkstate)
 			 */
 			if (!pending_writes[i].page_std)
 				page_std = false;
-		}
-		log_newpages(&bulkstate->smgr->smgr_rlocator.locator, bulkstate->forknum,
-					 npending, blknos, pages, page_std);
-	}
 
-	for (int i = 0; i < npending; i++)
-	{
-		BlockNumber blkno = pending_writes[i].blkno;
-		Page		page = pending_writes[i].buf->data;
+			blknos[nbatch] = blkno;
+			pages[nbatch] = page;
+			buffers[nbatch] = buffer;
 
-		PageSetChecksumInplace(page, blkno);
+			i++;
+			nbatch++;
+		} while (i < npending && nbatch < XLR_MAX_BLOCK_ID);
 
-		if (blkno >= bulkstate->relsize)
-		{
-			/*
-			 * If we have to write pages nonsequentially, fill in the space
-			 * with zeroes until we come back and overwrite.  This is not
-			 * logically necessary on standard Unix filesystems (unwritten
-			 * space will read as zeroes anyway), but it should help to avoid
-			 * fragmentation.  The dummy pages aren't WAL-logged though.
-			 */
-			while (blkno > bulkstate->relsize)
-			{
-				/* don't set checksum for all-zero page */
-				smgrextend(bulkstate->smgr, bulkstate->forknum,
-						   bulkstate->relsize,
-						   &zero_buffer,
-						   true);
-				bulkstate->relsize++;
-			}
+		/*
+		 * log_newpages takes pages from buffer pool, it will do PageSetLSN
+		 * for those pages. After the logging stuff, we can mark dirty and
+		 * release those buffers.
+		 */
+		if (bulkstate->use_wal)
+			log_newpages(&bulkstate->smgr->smgr_rlocator.locator, bulkstate->forknum,
+						 nbatch, blknos, pages, page_std);
 
-			smgrextend(bulkstate->smgr, bulkstate->forknum, blkno, page, true);
-			bulkstate->relsize++;
-		}
-		else
-			smgrwrite(bulkstate->smgr, bulkstate->forknum, blkno, page, true);
-		pfree(page);
+		for (int j = 0; j < nbatch; j++)
+			UnlockReleaseBuffer(buffers[j]);
 	}
 
 	bulkstate->npending = 0;
@@ -330,7 +271,7 @@ smgr_bulk_write(BulkWriteState *bulkstate, BlockNumber blocknum, BulkWriteBuffer
 	w->blkno = blocknum;
 	w->page_std = page_std;
 
-	if (bulkstate->npending == MAX_PENDING_WRITES)
+	if (bulkstate->npending >= polar_bulk_write_maxpages)
 		smgr_bulk_flush(bulkstate);
 }
 

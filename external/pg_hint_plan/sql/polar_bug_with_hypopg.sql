@@ -1,0 +1,15 @@
+create schema polar_bug_with_index_advisor;
+set search_path to polar_bug_with_index_advisor;
+set client_min_messages to error;
+load 'pg_hint_plan';
+create table t1(a int, b int, c int);
+insert into t1 select 1,i,i from generate_series(1,10000)i;
+create index t1_a_idx ON t1 (a);
+create table t2 as select * from t1;
+analyze t1,t2;
+-- test with hypopg
+create extension hypopg ;
+select 1 as hypopg_create_index from hypopg_create_index('create index on t1(b)');
+explain (costs off) select/*+ indexscan(t1 t1_a_idx)*/ from t1 where a = 1 and b =4 ;
+-- end
+drop schema polar_bug_with_index_advisor cascade;

@@ -1,0 +1,16 @@
+#------------------------------------------------------------------------------
+# Don't add new parameter to this file. This is a legacy issue.
+# 
+# log_line_prefix is ​​because its value needs to have \n,
+# which is not allowed by PG ALTER SYSTEM. Maybe one day we
+# will improve and get rid of it.
+#
+# polar_enable_shared_storage_mode is bacause manager image has not
+# been additionally adapted yet, so it will be removed when
+# log_line_prefix is ​​removed.
+#------------------------------------------------------------------------------
+log_line_prefix='\1\n\tpolarpg_v1\t%p\t%r\t%u\t%d\t%t\t%e\t%T\t%S\t%U\t%E\t\t'
+polar_enable_shared_storage_mode=on
+#------------------------------------------------------------------------------
+# Don't add new parameter to this file.
+#------------------------------------------------------------------------------

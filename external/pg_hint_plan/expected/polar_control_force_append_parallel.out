@@ -1,0 +1,86 @@
+create schema test_control_force_append_parallel;
+set search_path to test_control_force_append_parallel;
+set client_min_messages to error;
+load 'pg_hint_plan';
+create table hint_plan_t( a int,b int);create table hint_plan_t1( a int,b int);
+create index on hint_plan_t1(a);
+create index on hint_plan_t(a);
+analyze hint_plan_t;
+analyze hint_plan_t1;
+-- parallel append
+set pg_hint_plan.polar_enable_force_append_turn_on_parallel TO on;
+explain(COSTS false) /*+ Set(enable_bitmapscan off) */ select * from (select * from hint_plan_t UNION ALL select * from hint_plan_t1) s where a = 1;
+              QUERY PLAN              
+--------------------------------------
+ Gather
+   Workers Planned: 1
+   Single Copy: true
+   ->  Parallel Append
+         ->  Seq Scan on hint_plan_t
+               Filter: (a = 1)
+         ->  Seq Scan on hint_plan_t1
+               Filter: (a = 1)
+(8 rows)
+
+explain(COSTS false) /*+ Set() */ select * from (select * from hint_plan_t UNION ALL select * from hint_plan_t1) s where a = 1;
+INFO:  pg_hint_plan: hint syntax error at or near " Set() "
+DETAIL:  Set hint requires name and value of GUC parameter.
+              QUERY PLAN              
+--------------------------------------
+ Gather
+   Workers Planned: 1
+   Single Copy: true
+   ->  Parallel Append
+         ->  Seq Scan on hint_plan_t
+               Filter: (a = 1)
+         ->  Seq Scan on hint_plan_t1
+               Filter: (a = 1)
+(8 rows)
+
+explain(COSTS false) /*+ Set(enable_seqscan off) */ select * from (select * from hint_plan_t UNION ALL select * from hint_plan_t1) s where a = 1;
+                                QUERY PLAN                                
+--------------------------------------------------------------------------
+ Gather
+   Workers Planned: 1
+   ->  Parallel Append
+         ->  Parallel Index Scan using hint_plan_t_a_idx on hint_plan_t
+               Index Cond: (a = 1)
+         ->  Parallel Index Scan using hint_plan_t1_a_idx on hint_plan_t1
+               Index Cond: (a = 1)
+(7 rows)
+
+-- non-parallel
+set pg_hint_plan.polar_enable_force_append_turn_on_parallel TO off;
+explain(COSTS false) /*+ Set(enable_bitmapscan off) */ select * from (select * from hint_plan_t UNION ALL select * from hint_plan_t1) s where a = 1;
+           QUERY PLAN           
+--------------------------------
+ Append
+   ->  Seq Scan on hint_plan_t
+         Filter: (a = 1)
+   ->  Seq Scan on hint_plan_t1
+         Filter: (a = 1)
+(5 rows)
+
+explain(COSTS false) /*+ Set() */ select * from (select * from hint_plan_t UNION ALL select * from hint_plan_t1) s where a = 1;
+INFO:  pg_hint_plan: hint syntax error at or near " Set() "
+DETAIL:  Set hint requires name and value of GUC parameter.
+           QUERY PLAN           
+--------------------------------
+ Append
+   ->  Seq Scan on hint_plan_t
+         Filter: (a = 1)
+   ->  Seq Scan on hint_plan_t1
+         Filter: (a = 1)
+(5 rows)
+
+explain(COSTS false) /*+ Set(enable_seqscan off) */ select * from (select * from hint_plan_t UNION ALL select * from hint_plan_t1) s where a = 1;
+                        QUERY PLAN                         
+-----------------------------------------------------------
+ Append
+   ->  Index Scan using hint_plan_t_a_idx on hint_plan_t
+         Index Cond: (a = 1)
+   ->  Index Scan using hint_plan_t1_a_idx on hint_plan_t1
+         Index Cond: (a = 1)
+(5 rows)
+
+drop schema test_control_force_append_parallel cascade;

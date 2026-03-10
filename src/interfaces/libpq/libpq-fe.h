@@ -721,6 +721,7 @@ extern PGresult *PQchangePassword(PGconn *conn, const char *user, const char *pa
 extern int	pg_char_to_encoding(const char *name);
 extern const char *pg_encoding_to_char(int encoding);
 extern int	pg_valid_server_encoding_id(int encoding);
+extern int	pg_valid_server_origin_encoding_id(int encoding);
 
 /* === in fe-secure-openssl.c === */
 

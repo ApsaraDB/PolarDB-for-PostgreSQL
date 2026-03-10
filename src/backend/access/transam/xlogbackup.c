@@ -26,7 +26,7 @@
  * Returns the result generated as a palloc'd string.
  */
 char *
-build_backup_content(BackupState *state, bool ishistoryfile)
+build_backup_content(BackupState *state, int *len, bool ishistoryfile)
 {
 	char		startstrbuf[128];
 	char		startxlogfile[MAXFNAMELEN]; /* backup start WAL file */
@@ -88,6 +88,8 @@ build_backup_content(BackupState *state, bool ishistoryfile)
 	}
 
 	data = result->data;
+	if (len != NULL)
+		*len = result->len;
 	pfree(result);
 
 	return data;

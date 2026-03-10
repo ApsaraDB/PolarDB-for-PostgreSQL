@@ -3,6 +3,7 @@
  * encode.c
  *	  Various data encoding/decoding things.
  *
+ * Portions Copyright (c) 2026, Alibaba Group Holding Limited
  * Copyright (c) 2001-2024, PostgreSQL Global Development Group
  *
  *

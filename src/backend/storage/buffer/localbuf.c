@@ -242,7 +242,7 @@ GetLocalVictimBuffer(void)
 		/* Find smgr relation for buffer */
 		oreln = smgropen(BufTagGetRelFileLocator(&bufHdr->tag), MyProcNumber);
 
-		PageSetChecksumInplace(localpage, bufHdr->tag.blockNum);
+		PageSetChecksumInplace(localpage, bufHdr->tag.forkNum, bufHdr->tag.blockNum);
 
 		io_start = pgstat_prepare_io_time(track_io_timing);
 
@@ -619,6 +619,9 @@ InitLocalBuffers(void)
 		 * is -1.)
 		 */
 		buf->buf_id = -i - 2;
+#ifdef LOCKBUFHDR_DEBUG
+		buf->locker_pid = 0;
+#endif
 
 		/*
 		 * Intentionally do not initialize the buffer's atomic variable

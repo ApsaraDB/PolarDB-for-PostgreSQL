@@ -73,6 +73,11 @@ extern PGDLLIMPORT int recovery_init_sync_method;
 extern PGDLLIMPORT int io_direct_flags;
 extern PGDLLIMPORT int file_extend_method;
 
+/* POLAR: GUC */
+extern PGDLLIMPORT bool polar_enable_fallocate_no_hide_stale;
+
+/* POLAR end */
+
 /*
  * This is private to fd.c, but exported for save/restore_backend_variables()
  */
@@ -121,7 +126,7 @@ extern int	FilePrefetch(File file, off_t offset, off_t amount, uint32 wait_event
 extern ssize_t FileReadV(File file, const struct iovec *iov, int iovcnt, off_t offset, uint32 wait_event_info);
 extern ssize_t FileWriteV(File file, const struct iovec *iov, int iovcnt, off_t offset, uint32 wait_event_info);
 extern int	FileSync(File file, uint32 wait_event_info);
-extern int	FileZero(File file, off_t offset, off_t amount, uint32 wait_event_info);
+extern int	FileZero(File file, off_t offset, off_t amount, uint32 wait_event_info, bool bulkwrite);
 extern int	FileFallocate(File file, off_t offset, off_t amount, uint32 wait_event_info);
 
 extern off_t FileSize(File file);

@@ -14,6 +14,10 @@
 
 #include "postgres.h"
 
+/* POLAR */
+#include <unistd.h>
+/* POLAR end */
+
 #include "access/brin.h"
 #include "access/nbtree.h"
 #include "access/parallel.h"
@@ -929,11 +933,19 @@ WaitForParallelWorkersToExit(ParallelContext *pcxt)
 		 * up safely -- we won't be able to tell when our workers are actually
 		 * dead.  This doesn't necessitate a PANIC since they will all abort
 		 * eventually, but we can't safely continue this session.
+		 *
+		 * POLAR: when this backend is exiting, do not raise error again,
+		 * which will result in reentering proc_exit with some resources such
+		 * as locks unreleased, exit directly without running any proc_exit()
+		 * or atexit() callbacks.
 		 */
 		if (status == BGWH_POSTMASTER_DIED)
-			ereport(FATAL,
+		{
+			ereport(proc_exit_inprogress ? WARNING : FATAL,
 					(errcode(ERRCODE_ADMIN_SHUTDOWN),
 					 errmsg("postmaster exited during a parallel transaction")));
+			_exit(1);
+		}
 
 		/* Release memory. */
 		pfree(pcxt->worker[i].bgwhandle);
@@ -1550,6 +1562,9 @@ ParallelWorkerMain(Datum main_arg)
 	 */
 	InitializingParallelWorker = false;
 	EnterParallelMode();
+
+	/* Advertise assigned master backend pgprocno in MyProc */
+	MyProc->polar_master_pgprocno = GetNumberFromPGProc(fps->parallel_leader_pgproc);
 
 	/*
 	 * Time to do the real work: invoke the caller-supplied code.

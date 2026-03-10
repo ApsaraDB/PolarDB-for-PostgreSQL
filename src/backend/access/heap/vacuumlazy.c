@@ -68,7 +68,7 @@
  * REL_TRUNCATE_MINIMUM or (relsize / REL_TRUNCATE_FRACTION) (whichever
  * is less) potentially-freeable pages.
  */
-#define REL_TRUNCATE_MINIMUM	1000
+#define REL_TRUNCATE_MINIMUM	MAX_BUFFERS_TO_EXTEND_BY
 #define REL_TRUNCATE_FRACTION	16
 
 /*
@@ -1370,7 +1370,8 @@ lazy_scan_new_or_empty(LVRelState *vacrel, Buffer buf, BlockNumber blkno,
 			PageSetAllVisible(page);
 			visibilitymap_set(vacrel->rel, blkno, buf, InvalidXLogRecPtr,
 							  vmbuffer, InvalidTransactionId,
-							  VISIBILITYMAP_ALL_VISIBLE | VISIBILITYMAP_ALL_FROZEN);
+							  VISIBILITYMAP_ALL_VISIBLE | VISIBILITYMAP_ALL_FROZEN,
+							  InvalidXLogRecPtr);
 			END_CRIT_SECTION();
 		}
 
@@ -1552,7 +1553,7 @@ lazy_scan_prune(LVRelState *vacrel,
 		MarkBufferDirty(buf);
 		visibilitymap_set(vacrel->rel, blkno, buf, InvalidXLogRecPtr,
 						  vmbuffer, presult.vm_conflict_horizon,
-						  flags);
+						  flags, InvalidXLogRecPtr);
 	}
 
 	/*
@@ -1567,7 +1568,7 @@ lazy_scan_prune(LVRelState *vacrel,
 		elog(WARNING, "page is not marked all-visible but visibility map bit is set in relation \"%s\" page %u",
 			 vacrel->relname, blkno);
 		visibilitymap_clear(vacrel->rel, blkno, vmbuffer,
-							VISIBILITYMAP_VALID_BITS);
+							VISIBILITYMAP_VALID_BITS, NULL);
 	}
 
 	/*
@@ -1591,7 +1592,7 @@ lazy_scan_prune(LVRelState *vacrel,
 		PageClearAllVisible(page);
 		MarkBufferDirty(buf);
 		visibilitymap_clear(vacrel->rel, blkno, vmbuffer,
-							VISIBILITYMAP_VALID_BITS);
+							VISIBILITYMAP_VALID_BITS, NULL);
 	}
 
 	/*
@@ -1624,7 +1625,8 @@ lazy_scan_prune(LVRelState *vacrel,
 		visibilitymap_set(vacrel->rel, blkno, buf, InvalidXLogRecPtr,
 						  vmbuffer, InvalidTransactionId,
 						  VISIBILITYMAP_ALL_VISIBLE |
-						  VISIBILITYMAP_ALL_FROZEN);
+						  VISIBILITYMAP_ALL_FROZEN,
+						  InvalidXLogRecPtr);
 	}
 
 	return presult.ndeleted;
@@ -2277,7 +2279,8 @@ lazy_vacuum_heap_page(LVRelState *vacrel, BlockNumber blkno, Buffer buffer,
 
 		PageSetAllVisible(page);
 		visibilitymap_set(vacrel->rel, blkno, buffer, InvalidXLogRecPtr,
-						  vmbuffer, visibility_cutoff_xid, flags);
+						  vmbuffer, visibility_cutoff_xid, flags,
+						  InvalidXLogRecPtr);
 	}
 
 	/* Revert to the previous phase information for error traceback */
@@ -2530,12 +2533,23 @@ static bool
 should_attempt_truncation(LVRelState *vacrel)
 {
 	BlockNumber possibly_freeable;
+	BlockNumber min_possibly_freeable;
 
 	if (!vacrel->do_rel_truncate || VacuumFailsafeActive)
 		return false;
 
+	/*
+	 * POLAR: If the table can be truncated to empty, let's do this without
+	 * considering bulk extend. Else if the table is truncatable, reserve bulk
+	 * extended pages.
+	 */
+	if (vacrel->nonempty_pages == 0)
+		min_possibly_freeable = 0;
+	else
+		min_possibly_freeable = polar_heap_bulk_extend_size;
+
 	possibly_freeable = vacrel->rel_pages - vacrel->nonempty_pages;
-	if (possibly_freeable > 0 &&
+	if (possibly_freeable > min_possibly_freeable &&
 		(possibly_freeable >= REL_TRUNCATE_MINIMUM ||
 		 possibly_freeable >= vacrel->rel_pages / REL_TRUNCATE_FRACTION))
 		return true;
@@ -2633,6 +2647,15 @@ lazy_truncate_heap(LVRelState *vacrel)
 		 * were vacuuming.
 		 */
 		new_rel_pages = count_nondeletable_pages(vacrel, &lock_waiter_detected);
+
+		/*
+		 * POLAR: If the table can be truncated to empty, let's do this
+		 * without considering bulk extend. Else if the table is truncatable,
+		 * reserve bulk extended pages.
+		 */
+		if (new_rel_pages != 0 && orig_rel_pages > new_rel_pages)
+			new_rel_pages = Min(orig_rel_pages, new_rel_pages + polar_heap_bulk_extend_size);
+
 		vacrel->blkno = new_rel_pages;
 
 		if (new_rel_pages >= orig_rel_pages)

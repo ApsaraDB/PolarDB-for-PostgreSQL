@@ -84,7 +84,12 @@ SELECT s.obj,
   a.privilege_type, a.is_grantable
 FROM
   (SELECT pg_describe_object(classoid,objoid,objsubid) COLLATE "C" AS obj, initprivs
-   FROM pg_init_privs WHERE privtype = 'e' ORDER BY 1) s,
+   FROM pg_init_privs WHERE privtype = 'e'
+   -- POLAR: polar_feature_utils is created by initdb and it
+   -- grants the schema and view to public.
+   -- It's safe and ignore the objects of it.
+   AND objoid NOT IN ('polar_feature_utils'::regnamespace, 'polar_feature_utils.polar_unique_feature_usage'::regclass)
+   ORDER BY 1) s,
   aclexplode(s.initprivs) a;
 SELECT pg_describe_object(classid,objid,objsubid) COLLATE "C" AS obj,
   pg_describe_object(refclassid,refobjid,0) AS refobj,
@@ -136,7 +141,12 @@ SELECT s.obj,
   a.privilege_type, a.is_grantable
 FROM
   (SELECT pg_describe_object(classoid,objoid,objsubid) COLLATE "C" AS obj, initprivs
-   FROM pg_init_privs WHERE privtype = 'e' ORDER BY 1) s,
+   FROM pg_init_privs WHERE privtype = 'e'
+   -- POLAR: polar_feature_utils is created by initdb and it
+   -- grants the schema and view to public.
+   -- It's safe and ignore the objects of it.
+   AND objoid NOT IN ('polar_feature_utils'::regnamespace, 'polar_feature_utils.polar_unique_feature_usage'::regclass)
+   ORDER BY 1) s,
   aclexplode(s.initprivs) a;
 SELECT pg_describe_object(classid,objid,objsubid) COLLATE "C" AS obj,
   pg_describe_object(refclassid,refobjid,0) AS refobj,
@@ -150,7 +160,11 @@ DROP ROLE regress_dump_test_role;
 DROP EXTENSION test_pg_dump;
 
 -- shouldn't be anything left in pg_init_privs
-SELECT * FROM pg_init_privs WHERE privtype = 'e';
+SELECT * FROM pg_init_privs WHERE privtype = 'e'
+   -- POLAR: polar_feature_utils is created by initdb and it
+   -- grants the schema and view to public.
+   -- It's safe and ignore the objects of it.
+   AND objoid NOT IN ('polar_feature_utils'::regnamespace, 'polar_feature_utils.polar_unique_feature_usage'::regclass);
 
 CREATE ROLE regress_dump_test_role;
 CREATE ROLE regress_dump_test_super SUPERUSER;
@@ -170,7 +184,12 @@ SELECT s.obj,
   a.privilege_type, a.is_grantable
 FROM
   (SELECT pg_describe_object(classoid,objoid,objsubid) COLLATE "C" AS obj, initprivs
-   FROM pg_init_privs WHERE privtype = 'e' ORDER BY 1) s,
+   FROM pg_init_privs WHERE privtype = 'e'
+   -- POLAR: polar_feature_utils is created by initdb and it
+   -- grants the schema and view to public.
+   -- It's safe and ignore the objects of it.
+   AND objoid NOT IN ('polar_feature_utils'::regnamespace, 'polar_feature_utils.polar_unique_feature_usage'::regclass)
+   ORDER BY 1) s,
   aclexplode(s.initprivs) a;
 SELECT pg_describe_object(classid,objid,objsubid) COLLATE "C" AS obj,
   pg_describe_object(refclassid,refobjid,0) AS refobj,
@@ -190,7 +209,12 @@ SELECT s.obj,
   a.privilege_type, a.is_grantable
 FROM
   (SELECT pg_describe_object(classoid,objoid,objsubid) COLLATE "C" AS obj, initprivs
-   FROM pg_init_privs WHERE privtype = 'e' ORDER BY 1) s,
+   FROM pg_init_privs WHERE privtype = 'e'
+   -- POLAR: polar_feature_utils is created by initdb and it
+   -- grants the schema and view to public.
+   -- It's safe and ignore the objects of it.
+   AND objoid NOT IN ('polar_feature_utils'::regnamespace, 'polar_feature_utils.polar_unique_feature_usage'::regclass)
+   ORDER BY 1) s,
   aclexplode(s.initprivs) a;
 SELECT pg_describe_object(classid,objid,objsubid) COLLATE "C" AS obj,
   pg_describe_object(refclassid,refobjid,0) AS refobj,
@@ -210,7 +234,12 @@ SELECT s.obj,
   a.privilege_type, a.is_grantable
 FROM
   (SELECT pg_describe_object(classoid,objoid,objsubid) COLLATE "C" AS obj, initprivs
-   FROM pg_init_privs WHERE privtype = 'e' ORDER BY 1) s,
+   FROM pg_init_privs WHERE privtype = 'e'
+   -- POLAR: polar_feature_utils is created by initdb and it
+   -- grants the schema and view to public.
+   -- It's safe and ignore the objects of it.
+   AND objoid NOT IN ('polar_feature_utils'::regnamespace, 'polar_feature_utils.polar_unique_feature_usage'::regclass)
+   ORDER BY 1) s,
   aclexplode(s.initprivs) a;
 SELECT pg_describe_object(classid,objid,objsubid) COLLATE "C" AS obj,
   pg_describe_object(refclassid,refobjid,0) AS refobj,

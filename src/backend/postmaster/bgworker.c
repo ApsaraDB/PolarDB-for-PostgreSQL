@@ -34,6 +34,11 @@
 #include "utils/ps_status.h"
 #include "utils/timeout.h"
 
+/* POLAR */
+#include "access/polar_logindex_redo.h"
+#include "postmaster/polar_async_lock_replay.h"
+#include "postmaster/polar_parallel_bgwriter.h"
+
 /*
  * The postmaster's list of registered background workers, in private memory.
  */
@@ -99,12 +104,6 @@ typedef struct BackgroundWorkerArray
 	BackgroundWorkerSlot slot[FLEXIBLE_ARRAY_MEMBER];
 } BackgroundWorkerArray;
 
-struct BackgroundWorkerHandle
-{
-	int			slot;
-	uint64		generation;
-};
-
 static BackgroundWorkerArray *BackgroundWorkerData;
 
 /*
@@ -132,7 +131,21 @@ static const struct
 	},
 	{
 		"TablesyncWorkerMain", TablesyncWorkerMain
+	},
+	/* POLAR */
+	{
+		"polar_parallel_bgwriter_worker_main", polar_parallel_bgwriter_worker_main
+	},
+	{
+		"polar_sub_task_main", polar_sub_task_main
+	},
+	{
+		"polar_logindex_saver_main", polar_logindex_saver_main
+	},
+	{
+		"polar_alr_worker_main", polar_alr_worker_main
 	}
+	/* POLAR end */
 };
 
 /* Private functions. */

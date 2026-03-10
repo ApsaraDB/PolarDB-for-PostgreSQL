@@ -43,10 +43,11 @@ typedef struct LWLock
 	uint16		tranche;		/* tranche ID */
 	pg_atomic_uint32 state;		/* state of exclusive/nonexclusive lockers */
 	proclist_head waiters;		/* list of waiting PGPROCs */
-#ifdef LOCK_DEBUG
 	pg_atomic_uint32 nwaiters;	/* number of waiters */
+#ifdef LOCK_DEBUG
 	struct PGPROC *owner;		/* last exclusive owner of the lock */
 #endif
+	pg_atomic_uint32 owner_pid; /* POLAR: last exclusive owner pid of the lock */
 } LWLock;
 
 /*
@@ -72,6 +73,10 @@ typedef union LWLockPadded
 } LWLockPadded;
 
 extern PGDLLIMPORT LWLockPadded *MainLWLockArray;
+
+/* POLAR */
+extern char *MainLWLockNames[];
+extern LWLockPadded *SysLoggerWriterLWLockArray;	/* POLAR */
 
 /* struct for storing named tranche information */
 typedef struct NamedLWLockTranche
@@ -100,14 +105,22 @@ extern PGDLLIMPORT int NamedLWLockTrancheRequests;
 #define LOG2_NUM_PREDICATELOCK_PARTITIONS  4
 #define NUM_PREDICATELOCK_PARTITIONS  (1 << LOG2_NUM_PREDICATELOCK_PARTITIONS)
 
+/* POLAR */
+#define NUM_SYSLOGGER_LOCK_PARTITIONS 16
+
 /* Offsets for various chunks of preallocated lwlocks. */
 #define BUFFER_MAPPING_LWLOCK_OFFSET	NUM_INDIVIDUAL_LWLOCKS
 #define LOCK_MANAGER_LWLOCK_OFFSET		\
 	(BUFFER_MAPPING_LWLOCK_OFFSET + NUM_BUFFER_PARTITIONS)
 #define PREDICATELOCK_MANAGER_LWLOCK_OFFSET \
 	(LOCK_MANAGER_LWLOCK_OFFSET + NUM_LOCK_PARTITIONS)
-#define NUM_FIXED_LWLOCKS \
+
+/* POLAR audit */
+#define SYSLOG_WRITER_LWLOCK_OFFSET \
 	(PREDICATELOCK_MANAGER_LWLOCK_OFFSET + NUM_PREDICATELOCK_PARTITIONS)
+
+#define NUM_FIXED_LWLOCKS \
+	(SYSLOG_WRITER_LWLOCK_OFFSET + NUM_SYSLOGGER_LOCK_PARTITIONS)
 
 typedef enum LWLockMode
 {
@@ -170,6 +183,11 @@ extern int	LWLockNewTrancheId(void);
 extern void LWLockRegisterTranche(int tranche_id, const char *tranche_name);
 extern void LWLockInitialize(LWLock *lock, int tranche_id);
 
+/* POLAR */
+extern int	polar_get_lwlock_counter(void);
+
+/* POLAR end */
+
 /*
  * Every tranche ID less than NUM_INDIVIDUAL_LWLOCKS is reserved; also,
  * we reserve additional tranche IDs for builtin tranches not included in
@@ -193,6 +211,7 @@ typedef enum BuiltinTrancheIds
 	LWTRANCHE_BUFFER_MAPPING,
 	LWTRANCHE_LOCK_MANAGER,
 	LWTRANCHE_PREDICATE_LOCK_MANAGER,
+	LWTRANCHE_SYSLOGGER_WRITER_MAPPING,
 	LWTRANCHE_PARALLEL_HASH_JOIN,
 	LWTRANCHE_PARALLEL_QUERY_DSA,
 	LWTRANCHE_PER_SESSION_DSA,
@@ -217,7 +236,44 @@ typedef enum BuiltinTrancheIds
 	LWTRANCHE_SUBTRANS_SLRU,
 	LWTRANCHE_XACT_SLRU,
 	LWTRANCHE_PARALLEL_VACUUM_DSA,
-	LWTRANCHE_FIRST_USER_DEFINED,
+	/* POLAR */
+	LWTRANCHE_POLAR_COPY_BUFFER,
+	LWTRANCHE_POLAR_CLOG_LOCAL_CACHE,
+	LWTRANCHE_POLAR_COMMIT_TS_LOCAL_CACHE,
+	LWTRANCHE_POLAR_MULTIXACT_OFFSET_LOCAL_CACHE,
+	LWTRANCHE_POLAR_MULTIXACT_MEMBER_LOCAL_CACHE,
+	LWTRANCHE_POLAR_LOGINDEX_LOCAL_CACHE,
+	LWTRANCHE_LOGINDEX_MINI_TRANSACTION,
+	LWTRANCHE_LOGINDEX_MINI_TRANSACTION_TBL,
+	/* POLAR logindex */
+	LWTRANCHE_WAL_LOGINDEX_MEM_TBL,
+	LWTRANCHE_WAL_LOGINDEX_HASH_LOCK,
+	LWTRANCHE_WAL_LOGINDEX_IO,
+	LWTRANCHE_WAL_LOGINDEX_FLUSH_ACTIVE_TBL,
+	LWTRANCHE_WAL_LOGINDEX_END = LWTRANCHE_WAL_LOGINDEX_FLUSH_ACTIVE_TBL,
+	LWTRANCHE_WAL_LOGINDEX_BLOOM_LRU_BUFFER,
+	LWTRANCHE_WAL_LOGINDEX_BLOOM_LRU,
+	LWTRANCHE_FULLPAGE_LOGINDEX_MEM_TBL,
+	LWTRANCHE_FULLPAGE_LOGINDEX_HASH_LOCK,
+	LWTRANCHE_FULLPAGE_LOGINDEX_IO,
+	LWTRANCHE_FULLPAGE_LOGINDEX_FLUSH_ACTIVE_TBL,
+	LWTRANCHE_FULLPAGE_LOGINDEX_BLOOM_LRU_BUFFER,
+	LWTRANCHE_FULLPAGE_LOGINDEX_BLOOM_LRU,
+	/* POLAR logindex end */
+	LWTRANCHE_FULLPAGE_FILE,
+	/* polar relation size cache for logindex */
+	LWTRANCHE_RELATION_SIZE_CACHE,
+	/* polar xlog meta queue */
+	LWTRANCHE_POLAR_XLOG_QUEUE,
+
+	/* POLAR async lock replay */
+	LWTRANCHE_POLAR_ASYNC_LOCK_REPLAY,
+
+	/* POLAR xlog buffer */
+	LWTRANCHE_XLOG_BUFFER_CONTENT,
+	/* POLAR end */
+
+	LWTRANCHE_FIRST_USER_DEFINED
 }			BuiltinTrancheIds;
 
 /*

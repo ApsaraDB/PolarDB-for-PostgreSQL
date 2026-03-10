@@ -17,6 +17,10 @@
 #include "lib/stringinfo.h"
 #include "nodes/pg_list.h"
 
+/* POLAR */
+#include "fmgr.h"
+#include "storage/polar_fd.h"
+
 
 /* Sync methods */
 enum WalSyncMethod
@@ -148,6 +152,14 @@ extern PGDLLIMPORT bool XLOG_DEBUG;
 #define CHECKPOINT_CAUSE_XLOG	0x0080	/* XLOG consumption */
 #define CHECKPOINT_CAUSE_TIME	0x0100	/* Elapsed time */
 
+/* POLAR: incremental checkpoint */
+#define CHECKPOINT_INCREMENTAL	0x1000
+
+/* Flush buffer strategy flags */
+#define FLUSH_NOWAIT			0x2000
+#define FLUSH_NOFPW				0x4000
+#define FLUSH_COMBINE			0x8000
+
 /*
  * Flag bits for the record being inserted, set using XLogSetRecordFlags().
  */
@@ -205,6 +217,8 @@ extern void XLogFlush(XLogRecPtr record);
 extern bool XLogBackgroundFlush(void);
 extern bool XLogNeedsFlush(XLogRecPtr record);
 extern int	XLogFileInit(XLogSegNo logsegno, TimeLineID logtli);
+extern int	XLogFileInitInternal(XLogSegNo logsegno, TimeLineID logtli,
+								 bool *added, char *path);
 extern int	XLogFileOpen(XLogSegNo segno, TimeLineID tli);
 
 extern void CheckXLogRemoved(XLogSegNo segno, TimeLineID tli);
@@ -257,6 +271,36 @@ extern void SetWalWriterSleeping(bool sleeping);
 extern Size WALReadFromBuffers(char *dstbuf, XLogRecPtr startptr, Size count,
 							   TimeLineID tli);
 
+/* POLAR */
+#define polar_is_primary()	(polar_get_node_type() == POLAR_PRIMARY)
+#define polar_is_replica()	(polar_get_node_type() == POLAR_REPLICA)
+#define polar_is_standby()	(polar_get_node_type() == POLAR_STANDBY)
+#define polar_is_primary_in_recovery() (RecoveryInProgress() && polar_is_primary())
+/* Only work during shared memory is attached */
+#define polar_vfs_is_writable() ((polar_get_vfs_state() & POLAR_VFS_RDWR) != 0)
+
+/* POLAR: During redo, use start of the record being replayed, see polar_cal_cur_consistent_lsn() for detail */
+#define polar_max_valid_lsn() \
+	((polar_is_primary() && !RecoveryInProgress()) ? GetXLogInsertRecPtr() : polar_get_replay_read_recptr())
+
+/* POLAR */
+extern void ReadControlFile(void);
+extern void polar_set_node_type(PolarNodeType node_type);
+extern PolarNodeType polar_get_node_type(void);
+extern void polar_set_vfs_state(uint32 vfs_state);
+extern uint32 polar_get_vfs_state(void);
+extern XLogRecPtr polar_get_fake_latest_lsn(void);
+extern void polar_set_oldest_replica_lsn(XLogRecPtr oldest_apply_lsn, XLogRecPtr oldest_lock_lsn);
+extern XLogRecPtr polar_get_oldest_apply_lsn(void);
+extern XLogRecPtr polar_get_oldest_lock_lsn(void);
+extern void polar_set_consistent_lsn(XLogRecPtr consistent_lsn);
+extern XLogRecPtr polar_get_consistent_lsn(void);
+extern void polar_checkpointer_do_reload(void);
+extern void polar_set_available_state(bool state);
+extern bool polar_get_available_state(void);
+extern void polar_set_bgwriter_pid(pid_t pid);
+extern pid_t polar_get_bgwriter_pid(void);
+
 /*
  * Routines used by xlogrecovery.c to call back into xlog.c during recovery.
  */
@@ -300,6 +344,7 @@ extern SessionBackupState get_backup_status(void);
 /* File path names (all relative to $PGDATA) */
 #define RECOVERY_SIGNAL_FILE	"recovery.signal"
 #define STANDBY_SIGNAL_FILE		"standby.signal"
+#define REPLICA_SIGNAL_FILE		"replica.signal"
 #define BACKUP_LABEL_FILE		"backup_label"
 #define BACKUP_LABEL_OLD		"backup_label.old"
 
@@ -308,5 +353,34 @@ extern SessionBackupState get_backup_status(void);
 
 /* files to signal promotion to primary */
 #define PROMOTE_SIGNAL_FILE		"promote"
+
+/* POLAR */
+extern PGDLLIMPORT bool polar_enable_wal_buffer_stat;
+extern PGDLLIMPORT bool polar_skip_padding_zero_wal_pages;
+extern PGDLLIMPORT int polar_startup_smgrdestroyall_multiplier;
+extern PGDLLIMPORT int polar_wal_buffer_reserved_old_pages;
+extern PGDLLIMPORT double polar_wal_buffer_reserved_old_pages_ratio;
+extern PGDLLIMPORT int polar_wal_buffer_insert_locks;
+
+extern XLogRecPtr polar_calc_min_used_lsn(bool is_contain_replication_slot);
+extern void polar_request_last_restartpoint(void);
+extern struct ControlFileData *polar_get_control_file(void);
+extern bool polar_read_control_file(char *polar_ctl_file_path,
+									struct ControlFileData *polar_control_file_buffer,
+									int error_level, int *saved_errno);
+extern XLogRecPtr polar_get_xlog_insert_ptr_nolock(void);
+extern int	get_sync_bit(int method);
+
+/* POLAR: from xlogrecovery.c move here */
+#define RECOVERY_COMMAND_DONE	"recovery.done"
+
+/* POLAR: filename of polar_backup_label and tablespace_map on shared storage */
+#define POLAR_NON_EXCLUSIVE_BACKUP_LABEL_FILE	"polar_non_exclusive_backup_label"
+#define POLAR_NON_EXCLUSIVE_TABLESPACE_MAP	"polar_non_exclusive_tablespace_map"
+
+/* POLAR: for getting WAL buffer statistics */
+extern void polar_reset_wal_buffer_stat(void);
+extern Datum polar_get_wal_buffer_stat(FunctionCallInfo fcinfo);
+extern Datum polar_get_wal_io_stat(FunctionCallInfo fcinfo);
 
 #endif							/* XLOG_H */

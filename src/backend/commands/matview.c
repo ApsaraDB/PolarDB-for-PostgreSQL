@@ -3,6 +3,7 @@
  * matview.c
  *	  materialized view support
  *
+ * Portions Copyright (c) 2025, Alibaba Group Holding Limited
  * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -31,6 +32,7 @@
 #include "executor/executor.h"
 #include "executor/spi.h"
 #include "miscadmin.h"
+#include "optimizer/optimizer.h"
 #include "pgstat.h"
 #include "rewrite/rewriteHandler.h"
 #include "storage/lmgr.h"
@@ -51,6 +53,12 @@ typedef struct
 	CommandId	output_cid;		/* cmin to insert in output tuples */
 	int			ti_options;		/* table_tuple_insert performance options */
 	BulkInsertState bistate;	/* bulk insert state */
+
+	/* Table modify state. NULL if multi-inserts isn't supported. */
+	TableModifyState *mstate;
+
+	/* True if SELECT query contains volatile functions */
+	bool		volatile_funcs;
 } DR_transientrel;
 
 static int	matview_maintenance_depth = 0;
@@ -412,6 +420,12 @@ refresh_matview_datafill(DestReceiver *dest, Query *query,
 	plan = pg_plan_query(query, queryString, CURSOR_OPT_PARALLEL_OK, NULL);
 
 	/*
+	 * Check if the stored MATERIALIZED VIEW query has any volatile functions.
+	 */
+	((DR_transientrel *) dest)->volatile_funcs =
+		contain_volatile_functions_after_planning((Expr *) query);
+
+	/*
 	 * Use a snapshot with an updated command ID to ensure this query sees
 	 * results of any previously executed queries.  (This could only matter if
 	 * the planner executed an allegedly-stable function that changed the
@@ -475,8 +489,36 @@ transientrel_startup(DestReceiver *self, int operation, TupleDesc typeinfo)
 	 */
 	myState->transientrel = transientrel;
 	myState->output_cid = GetCurrentCommandId(true);
-	myState->ti_options = TABLE_INSERT_SKIP_FSM | TABLE_INSERT_FROZEN;
-	myState->bistate = GetBulkInsertState();
+	myState->ti_options = TABLE_INSERT_SKIP_FSM |
+		TABLE_INSERT_FROZEN |
+		TABLE_INSERT_BAS_BULKWRITE;
+	Assert(myState->bistate == NULL);
+	Assert(myState->mstate == NULL);
+
+	/* Set up the state for multi or bulk inserts */
+	if (polar_enable_tableam_multi_insert &&
+		TableModifyIsMultiInsertsSupported(myState->transientrel,
+										   myState->volatile_funcs))
+	{
+		/*
+		 * POLAR: materialized view is never logically replicated, and the
+		 * newly created relation will not be visible before the end of
+		 * transaction, so use raw insert and WAL-log as FPI here.
+		 */
+		Assert(polar_bulk_write_maxpages > 0);
+		myState->ti_options |= TABLE_INSERT_RAW_BULKWRITE;
+		/* POLAR end */
+
+		myState->mstate = table_modify_begin(myState->transientrel,
+											 myState->output_cid,
+											 myState->ti_options,
+											 NULL,	/* Multi-insert buffer
+													 * flush callback */
+											 NULL); /* Multi-insert buffer
+													 * flush callback context */
+	}
+	else
+		myState->bistate = GetBulkInsertState();
 
 	/*
 	 * Valid smgr_targblock implies something already wrote to the relation.
@@ -502,11 +544,14 @@ transientrel_receive(TupleTableSlot *slot, DestReceiver *self)
 	 * tuple's xmin), but since we don't do that here...
 	 */
 
-	table_tuple_insert(myState->transientrel,
-					   slot,
-					   myState->output_cid,
-					   myState->ti_options,
-					   myState->bistate);
+	if (myState->mstate != NULL)
+		table_modify_buffer_insert(myState->mstate, slot);
+	else
+		table_tuple_insert(myState->transientrel,
+						   slot,
+						   myState->output_cid,
+						   myState->ti_options,
+						   myState->bistate);
 
 	/* We know this is a newly created relation, so there are no indexes */
 
@@ -521,9 +566,13 @@ transientrel_shutdown(DestReceiver *self)
 {
 	DR_transientrel *myState = (DR_transientrel *) self;
 
-	FreeBulkInsertState(myState->bistate);
-
-	table_finish_bulk_insert(myState->transientrel, myState->ti_options);
+	if (myState->mstate != NULL)
+		table_modify_end(myState->mstate);
+	else
+	{
+		FreeBulkInsertState(myState->bistate);
+		table_finish_bulk_insert(myState->transientrel, myState->ti_options);
+	}
 
 	/* close transientrel, but keep lock until commit */
 	table_close(myState->transientrel, NoLock);
@@ -965,4 +1014,54 @@ CloseMatViewIncrementalMaintenance(void)
 {
 	matview_maintenance_depth--;
 	Assert(matview_maintenance_depth >= 0);
+}
+
+/*
+ * Check if multi-inserts is supported.
+ *
+ * It's generally more efficient to prepare a bunch of tuples for insertion,
+ * and insert them in one multi-inserts call, than call
+ * table_tuple_insert() separately for every tuple. However, there are a
+ * number of reasons why we might not be able to do this. In general, can't
+ * support multi-inserts in the following cases:
+ *
+ * When there are any BEFORE/INSTEAD OF triggers on the table or any volatile
+ * functions/expressions in the SELECT query. Such triggers or volatile
+ * expressions might query the table we're inserting into and act differently
+ * if the tuples that have already been processed and prepared for insertion
+ * are not there.
+ *
+ * When inserting into partitioned table. For partitioned tables, we may still
+ * be able to perform multi-inserts. However, the possibility of this depends
+ * on which types of triggers exist on the partition. We must disable
+ * multi-inserts if the partition is a foreign table that can't use batching or
+ * it has any before row insert or insert instead triggers (same as we checked
+ * above for the parent table). We really can't know all these unless we start
+ * inserting tuples into the respective partitions. We can have an intermediate
+ * insert state to show the intent to do multi-inserts and later determine if
+ * we can use multi-inserts for the partition being inserted into.
+ *
+ * When inserting into foreign table. For foreign tables, we may still be able
+ * to do multi-inserts if the FDW supports batching.
+ */
+bool
+TableModifyIsMultiInsertsSupported(Relation rel, bool volatile_funcs)
+{
+	if (!table_multi_modify_supported(rel))
+		return false;
+
+	if (volatile_funcs)
+		return false;
+
+	/*
+	 * For CREATE TABLE AS, CREATE MATERIALIZED VIEW, REFRESH MATERIALIZED
+	 * VIEW, we really can't have triggers or can't create table as
+	 * partitioned or foreign. So, we will assert.
+	 */
+	Assert(rel->trigdesc == NULL);
+	Assert(rel->rd_rel->relkind != RELKIND_PARTITIONED_TABLE);
+	Assert(rel->rd_rel->relkind != RELKIND_FOREIGN_TABLE);
+
+	/* Can support multi-inserts */
+	return true;
 }

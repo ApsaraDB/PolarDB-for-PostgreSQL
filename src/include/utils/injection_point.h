@@ -41,4 +41,7 @@ extern bool InjectionPointDetach(const char *name);
 extern PGDLLIMPORT struct InjectionPointsCtl *ActiveInjectionPoints;
 #endif
 
+/* POLAR */
+extern bool polar_injection_point_find(const char *name);
+
 #endif							/* INJECTION_POINT_H */

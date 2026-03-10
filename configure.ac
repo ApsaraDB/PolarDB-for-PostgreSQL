@@ -42,6 +42,19 @@ PGAC_ARG_REQ(with, extra-version, [STRING], [append STRING to version],
              [PG_VERSION="$PACKAGE_VERSION"])
 AC_DEFINE_UNQUOTED(PG_VERSION, "$PG_VERSION", [PostgreSQL version as a string])
 
+POLAR_COMMIT=`git rev-parse --short=8 HEAD || echo unknown`
+POLAR_MAJORVERSION="$PG_MAJORVERSION"
+POLAR_MINORVERSION="5.0" # monthly-version.hotfix
+POLAR_RELEASE_DATE="20251230" # YYYYMMDD
+POLAR_VERSION="$PACKAGE_VERSION.$POLAR_MINORVERSION" # eg: 17.2.1.0
+POLAR_PG_VERSION="$PACKAGE_VERSION.$POLAR_MINORVERSION" # eg: 17.2.1.0
+POLARDB_VERSION="PolarDB V$PACKAGE_VERSION.$POLAR_MINORVERSION (open)" # eg: 17.2.1.0
+AC_DEFINE_UNQUOTED(POLAR_COMMIT, "$POLAR_COMMIT", [PolarDB commit as a string])
+AC_DEFINE_UNQUOTED(POLAR_VERSION, "$POLAR_VERSION", [PolarDB internal version as a string])
+AC_DEFINE_UNQUOTED(POLAR_PG_VERSION, "$POLAR_PG_VERSION", [PolarDB PG internal version as a string])
+AC_DEFINE_UNQUOTED(POLARDB_VERSION, "$POLARDB_VERSION", [PolarDB version as a string])
+AC_DEFINE_UNQUOTED(POLAR_RELEASE_DATE, "$POLAR_RELEASE_DATE", [PolarDB release date as a string])
+
 AC_CANONICAL_HOST
 
 template=
@@ -458,6 +471,11 @@ else
   fi
 fi
 
+# POLAR: use -fno-reorder-blocks-and-partition if compiler supports
+PGAC_PROG_CC_CFLAGS_OPT([-fno-reorder-blocks-and-partition])
+PGAC_PROG_CXX_CFLAGS_OPT([-fno-reorder-blocks-and-partition])
+# POLAR end
+
 # When generating bitcode (for inlining) we always want to use -O2
 # even when --enable-debug is specified. The bitcode is not going to
 # be used for line-by-line debugging, and JIT inlining doesn't work
@@ -796,6 +814,70 @@ PGAC_ARG_BOOL(enable, cassert, no, [enable assertion checks (for debugging)],
               [AC_DEFINE([USE_ASSERT_CHECKING], 1,
                          [Define to 1 to build with assertion checks. (--enable-cassert)])])
 
+#
+# PolarDB-PG deploy mode
+#
+AC_MSG_CHECKING([PolarDB-PG deploy mode])
+PGAC_ARG_REQ(with, deploy-mode, [DEPLOY_MODE], [set PolarDB-PG deploy mode [opensource]],
+             [deploy_mode=$withval],
+             [deploy_mode=opensource])
+case $deploy_mode in
+  opensource) POLAR_DEPLOY_MODE=OPEN_SOURCE;;
+  *) AC_MSG_ERROR([Invalid deploy mode "$deploy_mode". Allowed values are "opensource".])
+esac
+AC_MSG_RESULT([${deploy_mode}])
+AC_SUBST(with_deploy_mode, ${deploy_mode})
+AC_DEFINE_UNQUOTED([POLAR_DEPLOY_MODE], ["${POLAR_DEPLOY_MODE}"], [PolarDB deploy mode])
+
+#
+# Linux distribution
+#
+if test "$PORTNAME" = "linux"; then
+  AC_MSG_CHECKING([Linux distribution])
+  PGAC_ARG_REQ(with, linux-dist, [LINUX_DIST], [set Linux distribution])
+  AC_MSG_RESULT([$with_linux_dist])
+  AC_SUBST(with_linux_dist)
+  AC_DEFINE_UNQUOTED([LINUX_DIST], ["$with_linux_dist"], [Linux distribution])
+fi
+
+#
+# Enable fault injector
+#
+AC_MSG_CHECKING([whether to build with fault injector enable])
+PGAC_ARG_BOOL(enable, fault-injector, no, [enable fault injector (for testing)],
+              [AC_DEFINE([FAULT_INJECTOR], 1,
+                         [Define to 1 to build with fault injector. (--enable-fault-injector)])])
+AC_MSG_RESULT([$enable_fault_injector])
+AC_SUBST(enable_fault_injector)
+
+#
+# Enable minimal compile
+#
+AC_MSG_CHECKING([whether to build with minimal compile])
+PGAC_ARG_BOOL(enable, minimal, no, [enable minimal compile (for development)],
+              [AC_DEFINE([USE_MINIMAL_COMPILE], 0,
+                         [Define to 1 to build with minimal compile. (--enable-minimal)])])
+AC_MSG_RESULT([$enable_minimal])
+AC_SUBST(enable_minimal)
+
+#
+# libunwind
+#
+AC_MSG_CHECKING([whether to build with libunwind])
+PGAC_ARG_BOOL(with, libunwind, no,
+              [build with libunwind support],
+              [AC_DEFINE([USE_LIBUNWIND], 1, [Define to 1 to build with libunwind support. (--with-libunwind)])])
+AC_MSG_RESULT([$with_libunwind])
+AC_SUBST(with_libunwind)[]dnl
+
+#
+# SUBMODULE
+#
+AC_MSG_CHECKING([whether to build with submodule packages])
+PGAC_ARG_BOOL(with, submodule, no, [build with submodule packages],
+              [AC_DEFINE([USE_SUBMODULE], 1, [Define to 1 to build with submodule packages. (--with-submodule)])])
+AC_MSG_RESULT([$with_submodule])
+AC_SUBST(with_submodule)
 
 #
 # Include directories
@@ -866,6 +948,35 @@ AC_MSG_CHECKING([whether to build Perl modules])
 PGAC_ARG_BOOL(with, perl, no, [build Perl modules (PL/Perl)])
 AC_MSG_RESULT([$with_perl])
 AC_SUBST(with_perl)
+
+#
+# PFSD
+#
+AC_MSG_CHECKING([whether to build with PFSD support])
+PGAC_ARG_BOOL(with, pfsd, no, [build with PFSD support],
+              [AC_DEFINE([USE_PFSD], 1, [Define to 1 to build with PFSD support. (--with-pfsd)])])
+AC_MSG_RESULT([$with_pfsd])
+AC_SUBST(with_pfsd)
+
+if test "$with_pfsd" = "yes"; then
+  AC_MSG_CHECKING([PFSD version])
+  pfsd_version=`rpm -q --queryformat '%{VERSION}-%{RELEASE}' t-polarstore-pfsd`
+  if test -n "$pfsd_version"; then
+    AC_DEFINE_UNQUOTED([PFSD_VERSION], ["$pfsd_version"], [PFSD version number])
+    AC_MSG_RESULT([$pfsd_version])
+  else
+    AC_MSG_ERROR([PFSD not found])
+  fi
+fi
+
+#
+# TDE
+#
+AC_MSG_CHECKING([whether to build with TDE support])
+PGAC_ARG_BOOL(with, tde, no, [build with TDE support],
+              [AC_DEFINE([USE_TDE], 1, [Define to 1 to build with TDE support. (--with-tde)])])
+AC_MSG_RESULT([$with_tde])
+AC_SUBST(with_tde)
 
 #
 # Optionally build Python modules (PL/Python)
@@ -1127,6 +1238,11 @@ if test "$with_zstd" = yes; then
     esac
   done
 fi
+
+if test "$with_libunwind" = yes; then
+  AC_CHECK_LIB(unwind, unw_backtrace, [], [AC_MSG_ERROR([library 'unwind' is required for backtrace support])])
+fi
+
 #
 # Assignments
 #
@@ -1281,6 +1397,7 @@ AC_SEARCH_LIBS(clock_gettime, rt)
 # Cygwin:
 AC_SEARCH_LIBS(shmget, cygipc)
 # *BSD:
+AC_SEARCH_LIBS(__backtrace, execinfo)
 AC_SEARCH_LIBS(backtrace_symbols, execinfo)
 
 AC_SEARCH_LIBS(pthread_barrier_wait, pthread)
@@ -1359,7 +1476,7 @@ if test "$with_ssl" = openssl ; then
   # defines OPENSSL_VERSION_NUMBER to claim version 2.0.0, even though it
   # doesn't have these OpenSSL 1.1.0 functions. So check for individual
   # functions.
-  AC_CHECK_FUNCS([OPENSSL_init_ssl BIO_meth_new ASN1_STRING_get0_data HMAC_CTX_new HMAC_CTX_free])
+  AC_CHECK_FUNCS([OPENSSL_init_ssl OPENSSL_init_crypto BIO_meth_new ASN1_STRING_get0_data HMAC_CTX_new HMAC_CTX_free EVP_PKEY_derive])
   # OpenSSL versions before 1.1.0 required setting callback functions, for
   # thread-safety. In 1.1.0, it's no longer required, and CRYPTO_lock()
   # function was removed.
@@ -1544,9 +1661,20 @@ fi
 PGAC_PATH_PROGS(OPENSSL, openssl)
 pgac_openssl_version="$($OPENSSL version 2> /dev/null || echo openssl not found)"
 AC_MSG_NOTICE([using openssl: $pgac_openssl_version])
+
+if test "$with_tde" = yes && test "$with_ssl" != openssl ; then
+  AC_MSG_ERROR([--with-openssl is required for TDE])
+fi
+
 if test "$with_ssl" = openssl ; then
   AC_CHECK_HEADER(openssl/ssl.h, [], [AC_MSG_ERROR([header file <openssl/ssl.h> is required for OpenSSL])])
   AC_CHECK_HEADER(openssl/err.h, [], [AC_MSG_ERROR([header file <openssl/err.h> is required for OpenSSL])])
+
+  if test "$with_tde" = yes ; then
+    AC_CHECK_HEADER(openssl/kdf.h, [], [AC_MSG_ERROR([header file <openssl/kdf.h> is required for TDE])])
+    AC_CHECK_HEADER(openssl/evp.h, [], [AC_MSG_ERROR([header file <openssl/evp.h> is required for TDE])])
+    AC_CHECK_FUNC(EVP_sm4_ctr, [AC_DEFINE(HAVE_EVP_SM4_CTR, 1, [Define if EVP_sm4_ctr is available])], [])
+  fi
 fi
 
 if test "$with_pam" = yes ; then
@@ -1749,6 +1877,7 @@ LIBS_including_readline="$LIBS"
 LIBS=`echo "$LIBS" | sed -e 's/-ledit//g' -e 's/-lreadline//g'`
 
 AC_CHECK_FUNCS(m4_normalize([
+	__backtrace
 	backtrace_symbols
 	copyfile
 	copy_file_range
@@ -2446,9 +2575,13 @@ else
   cc_string=$CC
 fi
 
+if test "$enable_debug" = yes; then
+  debug_string=" debug"
+fi
+
 AC_DEFINE_UNQUOTED(PG_VERSION_STR,
-                   ["PostgreSQL $PG_VERSION on $host, compiled by $cc_string, `expr $ac_cv_sizeof_void_p \* 8`-bit"],
-                   [A string containing the version number, platform, and C compiler])
+                   ["PostgreSQL $PG_VERSION (PolarDB $POLAR_PG_VERSION build $POLAR_COMMIT$debug_string) on $host_cpu-$host_os"],
+                   [A string containing the PostgreSQL version number, PolarDB version number, PolarDB version commit, debug/release mode, and target CPU platform])
 
 # Supply a numeric version string for use by 3rd party add-ons
 # awk -F is a regex on some platforms, and not on others, so make "." a tab

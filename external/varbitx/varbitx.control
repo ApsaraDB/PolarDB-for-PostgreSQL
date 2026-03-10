@@ -1,0 +1,4 @@
+# varbitx extension
+comment = 'varbit functions pack'
+default_version = '1.1'
+module_pathname = '$libdir/varbitx'

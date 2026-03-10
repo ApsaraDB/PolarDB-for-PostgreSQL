@@ -1,0 +1,257 @@
+/*
+ * external/polar_advisor/sql/window_blacklist.sql
+ * Test the blacklist for maintenance window. super_pg client never operate the relations in the blacklist.
+ * We only test get/set blacklist here and the vacuum/reindex behavior of the blacklist is tested in
+ * blacklist_vacuum.sql and blacklist_reindex.sql.
+ */
+CREATE EXTENSION IF NOT EXISTS polar_advisor;
+NOTICE:  extension "polar_advisor" already exists, skipping
+\d+ polar_advisor.blacklist_relations
+                                                       Table "polar_advisor.blacklist_relations"
+    Column     |           Type            | Collation | Nullable |                   Default                   | Storage | Stats target | Description 
+---------------+---------------------------+-----------+----------+---------------------------------------------+---------+--------------+-------------
+ schema_name   | name                      |           | not null |                                             | plain   |              | 
+ relation_name | name                      |           | not null |                                             | plain   |              | 
+ action_type   | polar_advisor.action_type |           |          | 'VACUUM ANALYZE'::polar_advisor.action_type | plain   |              | 
+Indexes:
+    "blacklist_schema_table_pk" PRIMARY KEY, btree (schema_name, relation_name)
+
+--
+-- show blacklist, empty by default
+--
+SELECT * FROM polar_advisor.blacklist_relations;
+ schema_name | relation_name | action_type 
+-------------+---------------+-------------
+(0 rows)
+
+SELECT * FROM polar_advisor.get_vacuum_analyze_blacklist();
+ schema_name | relation_name | action_type 
+-------------+---------------+-------------
+(0 rows)
+
+SELECT * FROM polar_advisor.get_reindex_blacklist();
+ schema_name | relation_name | action_type 
+-------------+---------------+-------------
+(0 rows)
+
+--
+-- add a relation to blacklist
+--
+-- error if table does not exist
+SELECT polar_advisor.add_relation_to_vacuum_analyze_blacklist('public', 'xxxxxxxx');
+ERROR:  relation "public.xxxxxxxx" does not exist
+CONTEXT:  PL/pgSQL function polar_advisor.add_relation_to_blacklist_internal(name,name,polar_advisor.action_type) line 9 at RAISE
+PL/pgSQL function polar_advisor.add_relation_to_vacuum_analyze_blacklist(name,name) line 3 at RETURN
+-- ok
+SELECT polar_advisor.add_relation_to_vacuum_analyze_blacklist('pg_catalog', 'pg_class');
+ add_relation_to_vacuum_analyze_blacklist 
+------------------------------------------
+ t
+(1 row)
+
+SELECT polar_advisor.add_relation_to_vacuum_analyze_blacklist('pg_catalog', 'pg_database');
+ add_relation_to_vacuum_analyze_blacklist 
+------------------------------------------
+ t
+(1 row)
+
+-- error if index does not exist
+SELECT polar_advisor.add_relation_to_reindex_blacklist('public', 'xxxxxxxx');
+ERROR:  relation "public.xxxxxxxx" does not exist
+CONTEXT:  PL/pgSQL function polar_advisor.add_relation_to_blacklist_internal(name,name,polar_advisor.action_type) line 9 at RAISE
+PL/pgSQL function polar_advisor.add_relation_to_reindex_blacklist(name,name) line 3 at RETURN
+-- ok
+SELECT polar_advisor.add_relation_to_reindex_blacklist('pg_catalog', 'pg_class_relname_nsp_index');
+ add_relation_to_reindex_blacklist 
+-----------------------------------
+ t
+(1 row)
+
+SELECT polar_advisor.add_relation_to_reindex_blacklist('pg_catalog', 'pg_database_datname_index');
+ add_relation_to_reindex_blacklist 
+-----------------------------------
+ t
+(1 row)
+
+-- show blacklist, should have some rows
+SELECT * FROM polar_advisor.blacklist_relations;
+ schema_name |       relation_name        |  action_type   
+-------------+----------------------------+----------------
+ pg_catalog  | pg_class                   | VACUUM ANALYZE
+ pg_catalog  | pg_database                | VACUUM ANALYZE
+ pg_catalog  | pg_class_relname_nsp_index | REINDEX
+ pg_catalog  | pg_database_datname_index  | REINDEX
+(4 rows)
+
+SELECT * FROM polar_advisor.get_vacuum_analyze_blacklist();
+ schema_name | relation_name |  action_type   
+-------------+---------------+----------------
+ pg_catalog  | pg_class      | VACUUM ANALYZE
+ pg_catalog  | pg_database   | VACUUM ANALYZE
+(2 rows)
+
+SELECT * FROM polar_advisor.get_reindex_blacklist();
+ schema_name |       relation_name        | action_type 
+-------------+----------------------------+-------------
+ pg_catalog  | pg_class_relname_nsp_index | REINDEX
+ pg_catalog  | pg_database_datname_index  | REINDEX
+(2 rows)
+
+--
+-- check table in blacklist
+--
+-- in it
+SELECT polar_advisor.is_relation_in_vacuum_analyze_blacklist('pg_catalog', 'pg_class');
+ is_relation_in_vacuum_analyze_blacklist 
+-----------------------------------------
+ t
+(1 row)
+
+SELECT polar_advisor.is_relation_in_vacuum_analyze_blacklist('pg_catalog', 'pg_database');
+ is_relation_in_vacuum_analyze_blacklist 
+-----------------------------------------
+ t
+(1 row)
+
+-- another table not in it
+SELECT polar_advisor.is_relation_in_vacuum_analyze_blacklist('pg_catalog', 'pg_index');
+ is_relation_in_vacuum_analyze_blacklist 
+-----------------------------------------
+ f
+(1 row)
+
+-- index not in it
+SELECT polar_advisor.is_relation_in_vacuum_analyze_blacklist('pg_catalog', 'pg_class_relname_nsp_index');
+ is_relation_in_vacuum_analyze_blacklist 
+-----------------------------------------
+ f
+(1 row)
+
+-- invalid table not in it
+SELECT polar_advisor.is_relation_in_vacuum_analyze_blacklist('pg_catalog', 'xxxxx');
+ is_relation_in_vacuum_analyze_blacklist 
+-----------------------------------------
+ f
+(1 row)
+
+-- in it
+SELECT polar_advisor.is_relation_in_reindex_blacklist('pg_catalog', 'pg_class_relname_nsp_index');
+ is_relation_in_reindex_blacklist 
+----------------------------------
+ t
+(1 row)
+
+SELECT polar_advisor.is_relation_in_reindex_blacklist('pg_catalog', 'pg_database_datname_index');
+ is_relation_in_reindex_blacklist 
+----------------------------------
+ t
+(1 row)
+
+-- another index not in it
+SELECT polar_advisor.is_relation_in_reindex_blacklist('pg_catalog', 'pg_class_oid_index');
+ is_relation_in_reindex_blacklist 
+----------------------------------
+ f
+(1 row)
+
+-- table not in it
+SELECT polar_advisor.is_relation_in_reindex_blacklist('pg_catalog', 'pg_class');
+ is_relation_in_reindex_blacklist 
+----------------------------------
+ f
+(1 row)
+
+-- invalid index not in it
+SELECT polar_advisor.is_relation_in_reindex_blacklist('pg_catalog', 'xxxxx');
+ is_relation_in_reindex_blacklist 
+----------------------------------
+ f
+(1 row)
+
+--
+-- remove a relation from blacklist
+--
+-- return false if table does not exist
+SELECT polar_advisor.delete_relation_from_vacuum_analyze_blacklist('public', 'xxxxxxxx');
+NOTICE:  no relation to delete
+ delete_relation_from_vacuum_analyze_blacklist 
+-----------------------------------------------
+ f
+(1 row)
+
+-- ok
+SELECT polar_advisor.delete_relation_from_vacuum_analyze_blacklist('pg_catalog', 'pg_class');
+NOTICE:  delete relation "pg_catalog.pg_class" from blacklist of type VACUUM ANALYZE
+ delete_relation_from_vacuum_analyze_blacklist 
+-----------------------------------------------
+ t
+(1 row)
+
+-- return false if index does not exist
+SELECT polar_advisor.delete_relation_from_reindex_blacklist('public', 'xxxxxxxx');
+NOTICE:  no relation to delete
+ delete_relation_from_reindex_blacklist 
+----------------------------------------
+ f
+(1 row)
+
+-- ok
+SELECT polar_advisor.delete_relation_from_reindex_blacklist('pg_catalog', 'pg_class_relname_nsp_index');
+NOTICE:  delete relation "pg_catalog.pg_class_relname_nsp_index" from blacklist of type REINDEX
+ delete_relation_from_reindex_blacklist 
+----------------------------------------
+ t
+(1 row)
+
+-- less rows in blacklist now
+SELECT * FROM polar_advisor.blacklist_relations;
+ schema_name |       relation_name       |  action_type   
+-------------+---------------------------+----------------
+ pg_catalog  | pg_database               | VACUUM ANALYZE
+ pg_catalog  | pg_database_datname_index | REINDEX
+(2 rows)
+
+SELECT * FROM polar_advisor.get_vacuum_analyze_blacklist();
+ schema_name | relation_name |  action_type   
+-------------+---------------+----------------
+ pg_catalog  | pg_database   | VACUUM ANALYZE
+(1 row)
+
+SELECT * FROM polar_advisor.get_reindex_blacklist();
+ schema_name |       relation_name       | action_type 
+-------------+---------------------------+-------------
+ pg_catalog  | pg_database_datname_index | REINDEX
+(1 row)
+
+-- table not in it now
+SELECT polar_advisor.is_relation_in_vacuum_analyze_blacklist('pg_catalog', 'pg_class');
+ is_relation_in_vacuum_analyze_blacklist 
+-----------------------------------------
+ f
+(1 row)
+
+-- index not in it now
+SELECT polar_advisor.is_relation_in_reindex_blacklist('pg_catalog', 'pg_class_relname_nsp_index');
+ is_relation_in_reindex_blacklist 
+----------------------------------
+ f
+(1 row)
+
+-- another table still in it now
+SELECT polar_advisor.is_relation_in_vacuum_analyze_blacklist('pg_catalog', 'pg_database');
+ is_relation_in_vacuum_analyze_blacklist 
+-----------------------------------------
+ t
+(1 row)
+
+-- another index still in it now
+SELECT polar_advisor.is_relation_in_reindex_blacklist('pg_catalog', 'pg_database_datname_index');
+ is_relation_in_reindex_blacklist 
+----------------------------------
+ t
+(1 row)
+
+--
+-- clear blacklist
+--
+DELETE FROM polar_advisor.blacklist_relations;

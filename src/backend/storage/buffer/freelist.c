@@ -21,8 +21,19 @@
 #include "storage/bufmgr.h"
 #include "storage/proc.h"
 
+/* POLAR */
+#include "access/xlog.h"
+#include "storage/polar_flush.h"
+#include "utils/guc.h"
+/* POLAR end */
+
 #define INT_ACCESS_ONCE(var)	((int)(*((volatile int *)&(var))))
 
+
+/* GUCs */
+bool		polar_enable_ring_buffer;
+int			polar_ring_buffer_bulkread_size;
+int			polar_ring_buffer_bulkwrite_size;
 
 /*
  * The shared freelist control information.
@@ -555,13 +566,13 @@ GetAccessStrategy(BufferAccessStrategyType btype)
 			return NULL;
 
 		case BAS_BULKREAD:
-			ring_size_kb = 256;
+			ring_size_kb = polar_ring_buffer_bulkread_size * (BLCKSZ / 1024);
 			break;
 		case BAS_BULKWRITE:
-			ring_size_kb = 16 * 1024;
+			ring_size_kb = polar_ring_buffer_bulkwrite_size * (BLCKSZ / 1024);
 			break;
 		case BAS_VACUUM:
-			ring_size_kb = 2048;
+			ring_size_kb = VacuumBufferUsageLimit;
 			break;
 
 		default:
@@ -569,6 +580,9 @@ GetAccessStrategy(BufferAccessStrategyType btype)
 				 (int) btype);
 			return NULL;		/* keep compiler quiet */
 	}
+
+	if (ring_size_kb == 0 || !polar_enable_ring_buffer)
+		return NULL;
 
 	return GetAccessStrategyWithSize(btype, ring_size_kb);
 }
@@ -793,10 +807,30 @@ IOContextForStrategy(BufferAccessStrategy strategy)
  *
  * Returns true if buffer manager should ask for a new victim, and false
  * if this buffer should be written and re-used.
+ *
+ * POLAR: move XLogNeedsFlush condition from BufferAlloc, also add guc to
+ * determine whether to reject current buffer.
  */
 bool
 StrategyRejectBuffer(BufferAccessStrategy strategy, BufferDesc *buf, bool from_ring)
 {
+	/* POLAR */
+	XLogRecPtr	lsn;
+	uint32		buf_state;
+
+	/* Read the LSN while holding buffer header lock */
+	buf_state = LockBufHdr(buf);
+	lsn = BufferGetLSN(buf);
+	UnlockBufHdr(buf, buf_state);
+
+	/*
+	 * return false when writing the buffer won't require a WAL flush and
+	 * reject is not enable
+	 */
+	if (!(XLogNeedsFlush(lsn) || polar_enable_strategy_reject_buffer))
+		return false;
+	/* POLAR end */
+
 	/* We only do this in bulkread mode */
 	if (strategy->btype != BAS_BULKREAD)
 		return false;
@@ -814,3 +848,12 @@ StrategyRejectBuffer(BufferAccessStrategy strategy, BufferDesc *buf, bool from_r
 
 	return true;
 }
+
+void
+polar_backend_flush_stat(BufferAccessStrategy strategy, bool from_ring)
+{
+	if (polar_flush_ctl && (!strategy || (strategy && !from_ring)))
+		pg_atomic_fetch_add_u64(&polar_flush_ctl->backend_flush, 1);
+}
+
+/* POLAR end */

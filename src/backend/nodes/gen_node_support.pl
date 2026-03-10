@@ -468,6 +468,7 @@ foreach my $infile (@ARGV)
 							if (   $attr !~ /^array_size\(\w+\)$/
 								&& $attr !~ /^copy_as\(\w+\)$/
 								&& $attr !~ /^read_as\(\w+\)$/
+								&& $attr !~ /^read_optional\(\w+\)$/
 								&& !elem $attr,
 								qw(copy_as_scalar
 								equal_as_scalar
@@ -512,6 +513,7 @@ foreach my $infile (@ARGV)
 						{
 							if (   $attr !~ /^copy_as\(\w+\)$/
 								&& $attr !~ /^read_as\(\w+\)$/
+								&& $attr !~ /^read_optional\(\w+\)$/
 								&& !elem $attr,
 								qw(equal_ignore read_write_ignore))
 							{
@@ -968,6 +970,7 @@ _read${n}(void)
 		# extract per-field attributes
 		my $array_size_field;
 		my $read_as_field;
+		my $read_optional_field;
 		my $read_write_ignore = 0;
 		foreach my $a (@a)
 		{
@@ -982,6 +985,10 @@ _read${n}(void)
 			elsif ($a =~ /^read_as\(([\w.]+)\)$/)
 			{
 				$read_as_field = $1;
+			}
+			elsif ($a =~ /^read_optional\(([\w.]+)\)$/)
+			{
+				$read_optional_field = $1;
 			}
 			elsif ($a eq 'read_write_ignore')
 			{
@@ -1008,7 +1015,16 @@ _read${n}(void)
 		if ($t eq 'bool')
 		{
 			print $off "\tWRITE_BOOL_FIELD($f);\n";
-			print $rff "\tREAD_BOOL_FIELD($f);\n" unless $no_read;
+			if (defined $read_optional_field)
+			{
+				print $rff
+				  "\tREAD_BOOL_FIELD_OPTIONAL($f, $read_optional_field);\n"
+				  unless $no_read;
+			}
+			else
+			{
+				print $rff "\tREAD_BOOL_FIELD($f);\n" unless $no_read;
+			}
 		}
 		elsif ($t eq 'ParseLoc')
 		{

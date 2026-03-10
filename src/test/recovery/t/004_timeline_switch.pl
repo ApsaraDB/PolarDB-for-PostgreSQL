@@ -102,7 +102,7 @@ my $node_primary_2 = PostgreSQL::Test::Cluster->new('primary_2');
 $node_primary_2->init(allows_streaming => 1, has_archiving => 1);
 $node_primary_2->append_conf(
 	'postgresql.conf', qq(
-wal_keep_size = 512MB
+wal_keep_size = 10GB
 ));
 $node_primary_2->start;
 

@@ -78,6 +78,9 @@ struct Node;
 /* SQLSTATE codes for errors are defined in a separate file */
 #include "utils/errcodes.h"
 
+/* POLAR */
+#include "lib/stringinfo.h"
+
 /*
  * Provide a way to prevent "errno" from being accidentally used inside an
  * elog() or ereport() invocation.  Since we know that some operating systems
@@ -230,6 +233,11 @@ extern int	geterrlevel(void);
 extern int	geterrposition(void);
 extern int	getinternalerrposition(void);
 
+/* POLAR */
+extern int	polar_mark_audit_log(bool is_audit_log);
+extern int	polar_mark_needs_mask(bool needs_mask);
+extern void polar_shrink_audit_log(StringInfo buf, int prev_buf_pos);
+extern int	polar_mark_slow_log(bool is_slow_log);
 
 /*----------
  * Old-style error reporting API: to be used in this way:
@@ -468,6 +476,11 @@ typedef struct ErrorData
 	char	   *internalquery;	/* text of internally-generated query */
 	int			saved_errno;	/* errno at entry */
 
+	/* POLAR */
+	bool		is_audit_log;	/* true for audit log */
+	bool		is_slow_log;	/* true for slow log */
+	bool		needs_mask;		/* Has password ? */
+
 	/* context containing associated non-constant strings */
 	struct MemoryContextData *assoc_context;
 } ErrorData;
@@ -510,6 +523,23 @@ extern PGDLLIMPORT bool syslog_split_messages;
 #define LOG_DESTINATION_CSVLOG	 8
 #define LOG_DESTINATION_JSONLOG	16
 
+/* POLAR */
+#define LOG_DESTINATION_POLAR_AUDITLOG 64
+#define LOG_DESTINATION_POLAR_SLOWLOG  128
+#define POLAR_DEFAULT_MAX_AUDIT_LOG_LEN 2048
+
+/* log file suffix */
+#define AUDITLOG_SUFFIX			"_audit.log"
+#define SLOWLOG_SUFFIX			"_slow.log"
+#define SYSLOG_SUFFIX			"_error.log"
+
+/* define pipe chunk flag */
+#define AUDITLOG_CHUNK			'a'
+#define AUDITLOG_LAST_CHUNK		'A'
+#define SLOWLOG_CHUNK			's'
+#define SLOWLOG_LAST_CHUNK		'S'
+/* POLAR end */
+
 /* Other exported functions */
 extern void log_status_format(StringInfo buf, const char *format,
 							  ErrorData *edata);
@@ -537,5 +567,62 @@ extern void write_jsonlog(ErrorData *edata);
  */
 extern void write_stderr(const char *fmt,...) pg_attribute_printf(1, 2);
 extern void vwrite_stderr(const char *fmt, va_list ap) pg_attribute_printf(1, 0);
+
+#define POLAR_ASSERT_PANIC(condition)	\
+	do { \
+		if (unlikely(!(condition))) \
+			ereport(PANIC, \
+					(errmsg("polar assertion failed. " \
+							"condition:%s, file:%s, line:%d", \
+							#condition, __FILE__, __LINE__))); \
+	} while(0)
+/* POLAR */
+#define POLAR_ERROR_DATA_INIT_FOR_AUDITLOG(edata)			\
+	do														\
+	{														\
+				MemSet(&edata, 0, sizeof(ErrorData));		\
+				edata.elevel = LOG;							\
+				edata.is_audit_log = true;					\
+				edata.hide_stmt = true;						\
+				edata.output_to_server = true;				\
+				edata.message = NULL;						\
+				edata.needs_mask = false;					\
+	} while (0)
+
+#define POLAR_ASSERT_PANIC(condition)	\
+	do { \
+		if (unlikely(!(condition))) \
+			ereport(PANIC, \
+					(errmsg("polar assertion failed. " \
+							"condition:%s, file:%s, line:%d", \
+							#condition, __FILE__, __LINE__))); \
+	} while(0)
+
+extern int64 polar_last_audit_log_flush_time;
+extern void polar_write_audit_log(ErrorData *edata, const char *fmt,...) pg_attribute_printf(2, 3);
+extern void polar_audit_log_flush(void);
+extern bool polar_audit_log_buffer_is_null(void);
+
+/* POLAR end */
+
+#define POLAR_LOG_BACKTRACE() \
+	{ \
+		ereport(LOG, \
+				(errbacktrace(), \
+				 errmsg("Current backtrace:"))); \
+	}
+
+extern void polar_set_program_error_handler(SIGNAL_ARGS);
+extern void polar_reset_program_error_handler(void);
+extern void polar_assign_ignore_coredump_functions(const char *newval, void *extra);
+
+/* GUCs */
+extern PGDLLIMPORT bool polar_enable_coredump_print;
+extern PGDLLIMPORT bool polar_enable_coredump_cleanup;
+extern PGDLLIMPORT int polar_save_stack_info_level;
+extern PGDLLIMPORT char *polar_ignore_coredump_functions;
+extern PGDLLIMPORT char *polar_ignore_coredump_function_list;
+extern PGDLLIMPORT int polar_ignore_coredump_level;
+extern PGDLLIMPORT bool polar_ignore_coredump_fuzzy_match;
 
 #endif							/* ELOG_H */

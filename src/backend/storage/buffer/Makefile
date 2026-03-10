@@ -19,4 +19,8 @@ OBJS = \
 	freelist.o \
 	localbuf.o
 
+# POLAR objects
+OBJS += polar_copybuf.o polar_flush.o polar_xlogbuf.o
+OBJS += polar_io_stat.o
+
 include $(top_srcdir)/src/backend/common.mk

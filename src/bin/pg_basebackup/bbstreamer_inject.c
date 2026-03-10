@@ -15,12 +15,15 @@
 #include "common/file_perm.h"
 #include "common/logging.h"
 
+#include "backup/basebackup.h"
+
 typedef struct bbstreamer_recovery_injector
 {
 	bbstreamer	base;
 	bool		skip_file;
 	bool		is_recovery_guc_supported;
 	bool		is_postgresql_auto_conf;
+	bool		is_injected_polar_data;
 	bool		found_postgresql_auto_conf;
 	PQExpBuffer recoveryconfcontents;
 	bbstreamer_member member;
@@ -60,10 +63,15 @@ const bbstreamer_ops bbstreamer_recovery_injector_ops = {
  * In addition, if is_recovery_guc_supported is true, then we create a
  * zero-length standby.signal file, dropping any file with that name from
  * the archive.
+ *
+ * POLAR: is_injected_polar_data is a flag to tell the streamer that polar
+ * data should be injected as POLAR_SHARED_DATA data inside base data when
+ * write to standard output.
  */
 extern bbstreamer *
 bbstreamer_recovery_injector_new(bbstreamer *next,
 								 bool is_recovery_guc_supported,
+								 bool is_injected_polar_data,
 								 PQExpBuffer recoveryconfcontents)
 {
 	bbstreamer_recovery_injector *streamer;
@@ -74,6 +82,7 @@ bbstreamer_recovery_injector_new(bbstreamer *next,
 	streamer->base.bbs_next = next;
 	streamer->is_recovery_guc_supported = is_recovery_guc_supported;
 	streamer->recoveryconfcontents = recoveryconfcontents;
+	streamer->is_injected_polar_data = is_injected_polar_data;
 
 	return &streamer->base;
 }
@@ -133,6 +142,13 @@ bbstreamer_recovery_injector_content(bbstreamer *streamer,
 			/* Do not forward if the file is to be skipped. */
 			if (mystreamer->skip_file)
 				return;
+
+			if (mystreamer->is_injected_polar_data)
+			{
+				snprintf(mystreamer->member.pathname, sizeof(mystreamer->member.pathname),
+						 "%s/%s", POLAR_SHARED_DATA, member->pathname);
+			}
+
 			break;
 
 		case BBSTREAMER_MEMBER_CONTENTS:

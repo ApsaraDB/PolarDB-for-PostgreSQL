@@ -20,6 +20,8 @@
 #include "utils/guc.h"
 #include "utils/queryenvironment.h"
 
+/* POLAR */
+#include "pgstat.h"
 
 /* Required daylight between max_stack_depth and the kernel limit, in bytes */
 #define STACK_DEPTH_SLOP (512 * 1024L)
@@ -29,6 +31,18 @@ extern PGDLLIMPORT const char *debug_query_string;
 extern PGDLLIMPORT int max_stack_depth;
 extern PGDLLIMPORT int PostAuthDelay;
 extern PGDLLIMPORT int client_connection_check_interval;
+
+/* POLAR */
+typedef struct Pg_audit_log
+{
+	const char *query_string;
+	PgStat_Counter select_row_count;
+	PgStat_Counter update_row_count;
+	PgStat_Counter delete_row_count;
+	PgStat_Counter examined_row_count;
+	bool		is_need_audit;
+}			Pg_audit_log;
+extern Pg_audit_log polar_audit_log;
 
 /* GUC-configurable parameters */
 

@@ -1,0 +1,43 @@
+# external/pg_jieba/Makefile
+EXTENSION = pg_jieba
+DATA = pg_jieba--1.1.0.sql
+
+MODULE_big = $(EXTENSION)
+OBJS = pg_jieba.o
+
+PG_CPPFLAGS = -std=c++14 -Ilibjieba/deps -Ilibjieba/include -w
+SHLIB_LINK += -lstdc++
+
+# don't build LLVM byte code
+override with_llvm := no
+
+ifdef USE_PGXS
+PG_CONFIG = pg_config
+PGXS := $(shell $(PG_CONFIG) --pgxs)
+include $(PGXS)
+else
+subdir = external/pg_jieba
+top_builddir = ../..
+include $(top_builddir)/src/Makefile.global
+include $(top_srcdir)/contrib/contrib-global.mk
+endif
+
+install_jieba:
+	$(MKDIR_P) $(DESTDIR)$(datadir)/tsearch_data
+	$(INSTALL_DATA) libjieba/dict/jieba.dict.utf8 $(DESTDIR)$(datadir)/tsearch_data/jieba.dict.utf8
+	$(INSTALL_DATA) libjieba/dict/hmm_model.utf8 $(DESTDIR)$(datadir)/tsearch_data/jieba.hmm_model.utf8
+	$(INSTALL_DATA) libjieba/dict/user.dict.utf8 $(DESTDIR)$(datadir)/tsearch_data/jieba.user.dict.utf8
+	$(INSTALL_DATA) libjieba/dict/idf.utf8 $(DESTDIR)$(datadir)/tsearch_data/jieba.idf.utf8
+	$(INSTALL_DATA) libjieba/dict/stop_words.utf8 $(DESTDIR)$(datadir)/tsearch_data/jieba.stop
+
+uninstall_jieba:
+	rm -rf $(DESTDIR)$(datadir)/tsearch_data/jieba.*
+
+install: install_jieba
+uninstall: uninstall_jieba
+
+check_jieba:
+	$(pg_regress_check) $(REGRESS_OPTS) --temp-config pg_jieba.conf pg_jieba
+	$(pg_regress_check) $(REGRESS_OPTS) without_preload
+
+check: check_jieba

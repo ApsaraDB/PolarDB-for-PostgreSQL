@@ -22,7 +22,7 @@ export ZSTD
 export with_icu
 
 override CPPFLAGS := -I$(libpq_srcdir) $(CPPFLAGS)
-LDFLAGS_INTERNAL += -L$(top_builddir)/src/fe_utils -lpgfeutils $(libpq_pgport)
+LDFLAGS_INTERNAL += -L$(top_builddir)/src/fe_utils -lpgfeutils $(libpq_pgport) $(polar_libvfs)
 
 OBJS = \
 	$(WIN32RES) \
@@ -45,13 +45,13 @@ OBJS = \
 all: pg_dump pg_restore pg_dumpall
 
 pg_dump: pg_dump.o common.o pg_dump_sort.o $(OBJS) | submake-libpq submake-libpgport submake-libpgfeutils
-	$(CC) $(CFLAGS) pg_dump.o common.o pg_dump_sort.o $(OBJS) $(LDFLAGS) $(LDFLAGS_EX) $(LIBS) -o $@$(X)
+	$(CC) $(CFLAGS) pg_dump.o common.o pg_dump_sort.o $(OBJS) $(LDFLAGS) $(LDFLAGS_EX) $(LIBS) $(polar_libvfs) -o $@$(X)
 
 pg_restore: pg_restore.o $(OBJS) | submake-libpq submake-libpgport submake-libpgfeutils
-	$(CC) $(CFLAGS) pg_restore.o $(OBJS) $(LDFLAGS) $(LDFLAGS_EX) $(LIBS) -o $@$(X)
+	$(CC) $(CFLAGS) pg_restore.o $(OBJS) $(LDFLAGS) $(LDFLAGS_EX) $(LIBS) $(polar_libvfs)  -o $@$(X)
 
 pg_dumpall: pg_dumpall.o dumputils.o filter.o $(WIN32RES) | submake-libpq submake-libpgport submake-libpgfeutils
-	$(CC) $(CFLAGS) pg_dumpall.o dumputils.o filter.o $(WIN32RES) $(LDFLAGS) $(LDFLAGS_EX) $(LIBS) -o $@$(X)
+	$(CC) $(CFLAGS) pg_dumpall.o dumputils.o filter.o $(WIN32RES) $(LDFLAGS) $(LDFLAGS_EX) $(LIBS) $(polar_libvfs) -o $@$(X)
 
 install: all installdirs
 	$(INSTALL_PROGRAM) pg_dump$(X) '$(DESTDIR)$(bindir)'/pg_dump$(X)

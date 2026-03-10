@@ -18,6 +18,8 @@
 #include "utils/backend_status.h"	/* for backward compatibility */
 #include "utils/relcache.h"
 #include "utils/wait_event.h"	/* for backward compatibility */
+#include "utils/guc.h"
+#include "storage/proc.h"
 
 
 /* ----------
@@ -605,6 +607,61 @@ extern void pgstat_report_analyze(Relation rel,
 	(likely((rel)->pgstat_info != NULL) ? true :                    \
 	 ((rel)->pgstat_enabled ? pgstat_assoc_relation(rel), true : false))
 
+extern char *pgstat_clip_activity(const char *raw_activity);
+
+/*
+ * POLAR: stat wait_object and wait_time start
+ */
+static inline void
+polar_stat_wait_obj_and_time_set(int id, const instr_time *start_time, const int8 type)
+{
+	if (!polar_enable_stat_wait_info)
+		return;
+
+	if (!pgstat_track_activities || !MyProc)
+		return;
+
+	MyProc->cur_wait_stack_index++;
+	/* push stack if not overflow */
+	if (MyProc->cur_wait_stack_index > -1 && MyProc->cur_wait_stack_index < PGPROC_WAIT_STACK_LEN)
+	{
+		/*
+		 * POLAR:  We do not use pid 0 because it belongs to the root process.
+		 * We think -1 is an invalid pid.
+		 */
+		if (type == PGPROC_WAIT_PID && id == 0)
+			id = PGPROC_INVALID_WAIT_OBJ;
+		MyProc->wait_object[MyProc->cur_wait_stack_index] = id;
+		MyProc->wait_type[MyProc->cur_wait_stack_index] = type;
+		INSTR_TIME_SET_ZERO(MyProc->wait_time[MyProc->cur_wait_stack_index]);
+		if (!INSTR_TIME_IS_ZERO(*start_time))
+		{
+			INSTR_TIME_ADD(MyProc->wait_time[MyProc->cur_wait_stack_index], *start_time);
+		}
+	}
+}
+static inline void
+polar_stat_wait_obj_and_time_clear(void)
+{
+	if (!polar_enable_stat_wait_info)
+		return;
+
+	if (!pgstat_track_activities || !MyProc)
+		return;
+
+	/* pop stack if not overflow */
+	if (MyProc->cur_wait_stack_index > -1 && MyProc->cur_wait_stack_index < PGPROC_WAIT_STACK_LEN)
+	{
+		MyProc->wait_object[MyProc->cur_wait_stack_index] = PGPROC_INVALID_WAIT_OBJ;
+		MyProc->wait_type[MyProc->cur_wait_stack_index] = PGPROC_INVALID_WAIT_OBJ;
+		INSTR_TIME_SET_ZERO(MyProc->wait_time[MyProc->cur_wait_stack_index]);
+
+	}
+	MyProc->cur_wait_stack_index--;
+}
+
+/* POLAR: stat wait_object and wait_time end */
+
 /* nontransactional event counts are simple enough to inline */
 
 #define pgstat_count_heap_scan(rel)									\
@@ -776,5 +833,11 @@ extern PGDLLIMPORT SessionEndType pgStatSessionEndCause;
 /* updated directly by backends and background processes */
 extern PGDLLIMPORT PgStat_PendingWalStats PendingWalStats;
 
+/* POLAR */
+extern PgStat_Counter polar_get_audit_log_row_count(void);
+extern PgStat_Counter polar_pgstat_get_current_examined_row_count(void);
+
+typedef void (*polar_postmaster_child_init_register) (void);
+extern polar_postmaster_child_init_register polar_stat_hook;
 
 #endif							/* PGSTAT_H */

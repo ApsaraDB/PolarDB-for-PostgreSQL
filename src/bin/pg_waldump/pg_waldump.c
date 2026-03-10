@@ -32,6 +32,9 @@
 #include "rmgrdesc.h"
 #include "storage/bufpage.h"
 
+/* POLAR */
+#include "polar_vfs/polar_vfs_fe.h"
+
 /*
  * NOTE: For any code change or issue fix here, it is highly recommended to
  * give a thought about doing the same in pg_walinspect contrib module as well.
@@ -112,11 +115,11 @@ print_rmgr_list(void)
 static bool
 verify_directory(const char *directory)
 {
-	DIR		   *dir = opendir(directory);
+	DIR		   *dir = polar_opendir(directory);
 
 	if (dir == NULL)
 		return false;
-	closedir(dir);
+	polar_closedir(dir);
 	return true;
 }
 
@@ -193,7 +196,7 @@ open_file_in_directory(const char *directory, const char *fname)
 	Assert(directory != NULL);
 
 	snprintf(fpath, MAXPGPATH, "%s/%s", directory, fname);
-	fd = open(fpath, O_RDONLY | PG_BINARY, 0);
+	fd = polar_open(fpath, O_RDONLY | PG_BINARY, 0);
 
 	if (fd < 0 && errno != ENOENT)
 		pg_fatal("could not open file \"%s\": %m", fname);
@@ -221,11 +224,11 @@ search_directory(const char *directory, const char *fname)
 	 * we find any file whose name is a valid WAL file name then try to open
 	 * it.  If we cannot open it, bail out.
 	 */
-	else if ((xldir = opendir(directory)) != NULL)
+	else if ((xldir = polar_opendir(directory)) != NULL)
 	{
 		struct dirent *xlde;
 
-		while ((xlde = readdir(xldir)) != NULL)
+		while ((xlde = polar_readdir(xldir)) != NULL)
 		{
 			if (IsXLogFileName(xlde->d_name))
 			{
@@ -235,7 +238,7 @@ search_directory(const char *directory, const char *fname)
 			}
 		}
 
-		closedir(xldir);
+		polar_closedir(xldir);
 	}
 
 	/* set WalSegSz if file is successfully opened */
@@ -244,7 +247,7 @@ search_directory(const char *directory, const char *fname)
 		PGAlignedXLogBlock buf;
 		int			r;
 
-		r = read(fd, buf.data, XLOG_BLCKSZ);
+		r = polar_read(fd, buf.data, XLOG_BLCKSZ);
 		if (r == XLOG_BLCKSZ)
 		{
 			XLogLongPageHeader longhdr = (XLogLongPageHeader) buf.data;
@@ -267,7 +270,7 @@ search_directory(const char *directory, const char *fname)
 		else
 			pg_fatal("could not read file \"%s\": read %d of %d",
 					 fname, r, XLOG_BLCKSZ);
-		close(fd);
+		polar_close(fd);
 		return true;
 	}
 
@@ -379,7 +382,7 @@ WALDumpOpenSegment(XLogReaderState *state, XLogSegNo nextSegNo,
 static void
 WALDumpCloseSegment(XLogReaderState *state)
 {
-	close(state->seg.ws_file);
+	polar_close(state->seg.ws_file);
 	/* need to check errno? */
 	state->seg.ws_file = -1;
 }
@@ -783,6 +786,8 @@ usage(void)
 	printf(_("  -z, --stats[=record]   show statistics instead of records\n"
 			 "                         (optionally, show per-record statistics)\n"));
 	printf(_("  --save-fullpage=DIR    save full page images to DIR\n"));
+	printf(_("  --polar_disk_name=DISKNAME      the shared storage disk name which PFSD requires\n"));
+	printf(_("  --polar_storage_cluster_name=CLUSTER NAME  the shared storage cluster type\n"));
 	printf(_("  -?, --help             show this help, then exit\n"));
 	printf(_("\nReport bugs to <%s>.\n"), PACKAGE_BUGREPORT);
 	printf(_("%s home page: <%s>\n"), PACKAGE_NAME, PACKAGE_URL);
@@ -801,6 +806,7 @@ main(int argc, char **argv)
 	XLogRecPtr	first_record;
 	char	   *waldir = NULL;
 	char	   *errormsg;
+	char		ftype[MAXPGPATH];
 
 	static struct option long_options[] = {
 		{"bkp-details", no_argument, NULL, 'b'},
@@ -821,6 +827,8 @@ main(int argc, char **argv)
 		{"version", no_argument, NULL, 'V'},
 		{"stats", optional_argument, NULL, 'z'},
 		{"save-fullpage", required_argument, NULL, 1},
+		{"polar_disk_name", required_argument, NULL, 2},
+		{"polar_storage_cluster_name", required_argument, NULL, 3},
 		{NULL, 0, NULL, 0}
 	};
 
@@ -1076,6 +1084,12 @@ main(int argc, char **argv)
 			case 1:
 				config.save_fullpage_path = pg_strdup(optarg);
 				break;
+			case 2:
+				polar_disk_name = pg_strdup(optarg);
+				break;
+			case 3:
+				polar_storage_cluster_name = pg_strdup(optarg);
+				break;
 			default:
 				goto bad_argument;
 		}
@@ -1095,6 +1109,14 @@ main(int argc, char **argv)
 					 argv[optind + 2]);
 		goto bad_argument;
 	}
+
+	if (polar_disk_name && polar_storage_cluster_name)
+	{
+		polar_enable_shared_storage_mode = true;
+		snprintf(ftype, MAXPGPATH, "%s", waldir == NULL ? argv[optind] : waldir);
+		polar_vfs_init_fe(true, ftype, polar_storage_cluster_name, polar_disk_name, POLAR_VFS_RD);
+	}
+
 
 	if (waldir != NULL)
 	{
@@ -1131,7 +1153,7 @@ main(int argc, char **argv)
 		fd = open_file_in_directory(waldir, fname);
 		if (fd < 0)
 			pg_fatal("could not open file \"%s\"", fname);
-		close(fd);
+		polar_close(fd);
 
 		/* parse position from file */
 		XLogFromFileName(fname, &private.timeline, &segno, WalSegSz);
@@ -1161,7 +1183,7 @@ main(int argc, char **argv)
 			fd = open_file_in_directory(waldir, fname);
 			if (fd < 0)
 				pg_fatal("could not open file \"%s\"", fname);
-			close(fd);
+			polar_close(fd);
 
 			/* parse position from file */
 			XLogFromFileName(fname, &private.timeline, &endsegno, WalSegSz);
@@ -1314,10 +1336,14 @@ main(int argc, char **argv)
 				 errormsg);
 
 	XLogReaderFree(xlogreader_state);
+	if (polar_disk_name && polar_storage_cluster_name)
+		polar_vfs_destroy_fe(ftype, polar_disk_name);
 
 	return EXIT_SUCCESS;
 
 bad_argument:
+	if (polar_disk_name && polar_storage_cluster_name)
+		polar_vfs_destroy_fe(ftype, polar_disk_name);
 	pg_log_error_hint("Try \"%s --help\" for more information.", progname);
 	return EXIT_FAILURE;
 }

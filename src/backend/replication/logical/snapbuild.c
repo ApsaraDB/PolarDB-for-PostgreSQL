@@ -144,6 +144,9 @@
 #include "utils/snapmgr.h"
 #include "utils/snapshot.h"
 
+/* POLAR */
+#include "storage/polar_fd.h"
+
 /*
  * This struct contains the current state of the snapshot building
  * machinery. Besides a forward declaration in the header, it is not exposed
@@ -1823,7 +1826,7 @@ SnapBuildSerialize(SnapBuild *builder, XLogRecPtr lsn)
 
 	errno = 0;
 	pgstat_report_wait_start(WAIT_EVENT_SNAPBUILD_WRITE);
-	if ((write(fd, ondisk, needed_length)) != needed_length)
+	if ((polar_write(fd, ondisk, needed_length)) != needed_length)
 	{
 		int			save_errno = errno;
 
@@ -1849,7 +1852,7 @@ SnapBuildSerialize(SnapBuild *builder, XLogRecPtr lsn)
 	 * decoding?
 	 */
 	pgstat_report_wait_start(WAIT_EVENT_SNAPBUILD_SYNC);
-	if (pg_fsync(fd) != 0)
+	if (polar_fsync(fd) != 0)
 	{
 		int			save_errno = errno;
 
@@ -2084,7 +2087,7 @@ SnapBuildRestoreContents(int fd, char *dest, Size size, const char *path)
 	int			readBytes;
 
 	pgstat_report_wait_start(WAIT_EVENT_SNAPBUILD_READ);
-	readBytes = read(fd, dest, size);
+	readBytes = polar_read(fd, dest, size);
 	pgstat_report_wait_end();
 	if (readBytes != size)
 	{

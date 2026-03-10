@@ -13,6 +13,7 @@ use Test::More;
 my $primary = PostgreSQL::Test::Cluster->new('primary');
 $primary->init(has_archiving => 1, allows_streaming => 1);
 $primary->append_conf('postgresql.conf', 'summarize_wal = on');
+$primary->append_conf('postgresql.conf', 'polar_heap_bulk_extend_size = 0');
 $primary->start;
 
 # Backup locations

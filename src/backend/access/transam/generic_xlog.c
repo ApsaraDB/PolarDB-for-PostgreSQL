@@ -77,7 +77,6 @@ static void computeRegionDelta(PageData *pageData,
 							   int targetStart, int targetEnd,
 							   int validStart, int validEnd);
 static void computeDelta(PageData *pageData, Page curpage, Page targetpage);
-static void applyPageRedo(Page page, const char *delta, Size deltaSize);
 
 
 /*
@@ -449,7 +448,7 @@ GenericXLogAbort(GenericXLogState *state)
 /*
  * Apply delta to given page image.
  */
-static void
+void
 applyPageRedo(Page page, const char *delta, Size deltaSize)
 {
 	const char *ptr = delta;
@@ -520,7 +519,7 @@ generic_redo(XLogReaderState *record)
 				   pageHeader->pd_upper - pageHeader->pd_lower);
 
 			PageSetLSN(page, lsn);
-			MarkBufferDirty(buffers[block_id]);
+			PolarMarkBufferDirty(buffers[block_id], record->ReadRecPtr);
 		}
 	}
 

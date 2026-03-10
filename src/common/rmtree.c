@@ -35,6 +35,9 @@
 #define CLOSEDIR(x) closedir(x)
 #endif
 
+/* POLAR */
+#include "storage/polar_fd.h"
+
 /*
  *	rmtree
  *
@@ -66,7 +69,7 @@ rmtree(const char *path, bool rmtopdir)
 
 	dirnames = (char **) palloc(sizeof(char *) * dirnames_capacity);
 
-	while (errno = 0, (de = readdir(dir)))
+	while (errno = 0, (de = polar_readdir(dir)))
 	{
 		if (strcmp(de->d_name, ".") == 0 ||
 			strcmp(de->d_name, "..") == 0)
@@ -92,7 +95,7 @@ rmtree(const char *path, bool rmtopdir)
 				dirnames[dirnames_size++] = pstrdup(pathbuf);
 				break;
 			default:
-				if (unlink(pathbuf) != 0 && errno != ENOENT)
+				if (polar_unlink(pathbuf) != 0 && errno != ENOENT)
 				{
 					pg_log_warning("could not remove file \"%s\": %m", pathbuf);
 					result = false;
@@ -119,7 +122,7 @@ rmtree(const char *path, bool rmtopdir)
 
 	if (rmtopdir)
 	{
-		if (rmdir(path) != 0)
+		if (polar_rmdir(path) != 0)
 		{
 			pg_log_warning("could not remove directory \"%s\": %m", path);
 			result = false;

@@ -66,6 +66,7 @@
 #     to build against (typically just "pg_config" to use the first one in
 #     your PATH)
 #
+#   POLAR_NO_EXTENSION_USER -- ignore default extension regression with polar_superuser
 # Better look at some of the existing uses for examples...
 
 ifndef PGXS
@@ -415,6 +416,27 @@ $(test_files_build): $(abs_builddir)/%: $(srcdir)/%
 	$(MKDIR_P) $(dir $@)
 	ln -s $< $@
 endif # VPATH
+endif # REGRESS
+
+# To ensure that extensions added by PolarDB can run properly, the
+# regressions are by default with polar_superuser. The user name is
+# polar_$(EXTENSION), such as polar_pg_hint_plan.
+# Now, only extensions in external will be applied.
+
+ifeq ($(findstring external/,$(subdir)),external/)
+ifdef EXTENSION
+ifndef POLAR_NO_EXTENSION_USER
+ifdef REGRESS
+REGRESS_OPTS += --polar_extension_user=polar_$(EXTENSION)
+endif # REGRESS
+endif # POLAR_NO_EXTENSION_USER
+endif # EXTENSION
+endif # external
+
+ifdef REGRESS
+ifdef POLAR_EXTENSION_USER
+REGRESS_OPTS += --polar_extension_user=polar_$(EXTENSION)
+endif # POLAR_EXTENSION_USER
 endif # REGRESS
 
 .PHONY: submake

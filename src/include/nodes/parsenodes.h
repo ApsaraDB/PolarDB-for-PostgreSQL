@@ -956,6 +956,9 @@ typedef struct PartitionCmd
 	RangeVar   *name;			/* name of partition to attach/detach */
 	PartitionBoundSpec *bound;	/* FOR VALUES, if attaching */
 	bool		concurrent;
+
+	/* POLAR: donot check partition constraint when attach partition */
+	bool		nocheck_constraint pg_node_attr(query_jumble_ignore, read_write_ignore, read_as(false));
 } PartitionCmd;
 
 /****************************************************************************
@@ -3813,6 +3816,9 @@ typedef struct AlterSystemStmt
 {
 	NodeTag		type;
 	VariableSetStmt *setstmt;	/* SET subcommand */
+	/* POLAR: ALTER SYSTEM [FOR CLUSTER] [RELOAD] [FORCE] option */
+	int			polar_options;	/* OR of PolarAlterOption flags */
+	/* POLAR end */
 } AlterSystemStmt;
 
 /* ----------------------

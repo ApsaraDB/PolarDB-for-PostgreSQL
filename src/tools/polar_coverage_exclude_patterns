@@ -1,0 +1,5 @@
+# List of filename patterns to exclude from delta_coverage.pl runs
+#
+
+external/pg_squeeze/
+external/pg_stat_kcache/

@@ -1,0 +1,117 @@
+/*
+ * external/polar_advisor/sql/window_whitelist.sql
+ * Test the whitelist for maintenance window.
+ * Whitelist is useless now. Maybe we can use it to do dangerous actions like VACUUM FULL.
+ */
+CREATE EXTENSION IF NOT EXISTS polar_advisor;
+NOTICE:  extension "polar_advisor" already exists, skipping
+\d+ polar_advisor.whitelist_relations
+                                     Table "polar_advisor.whitelist_relations"
+    Column     |           Type            | Collation | Nullable | Default | Storage | Stats target | Description 
+---------------+---------------------------+-----------+----------+---------+---------+--------------+-------------
+ schema_name   | name                      |           | not null |         | plain   |              | 
+ relation_name | name                      |           | not null |         | plain   |              | 
+ action_type   | polar_advisor.action_type |           |          |         | plain   |              | 
+Indexes:
+    "whitelist_schema_table_pk" PRIMARY KEY, btree (schema_name, relation_name)
+
+--
+-- show whitelist, empty by default
+--
+SELECT * FROM polar_advisor.whitelist_relations;
+ schema_name | relation_name | action_type 
+-------------+---------------+-------------
+(0 rows)
+
+--
+-- add a relation to whitelist
+--
+-- error if table does not exist
+SELECT polar_advisor.add_relation_to_whitelist_internal('public', 'xxxxxxxx', 'VACUUM');
+ERROR:  relation "public.xxxxxxxx" does not exist
+CONTEXT:  PL/pgSQL function polar_advisor.add_relation_to_whitelist_internal(name,name,polar_advisor.action_type) line 9 at RAISE
+-- error if action type does not exist
+SELECT polar_advisor.add_relation_to_whitelist_internal('public', 'xxxxxxxx', 'WRONG TYPE');
+ERROR:  invalid input value for enum polar_advisor.action_type: "WRONG TYPE"
+LINE 1: ...ation_to_whitelist_internal('public', 'xxxxxxxx', 'WRONG TYP...
+                                                             ^
+-- ok
+SELECT polar_advisor.add_relation_to_whitelist_internal('pg_catalog', 'pg_class', 'VACUUM');
+ add_relation_to_whitelist_internal 
+------------------------------------
+ t
+(1 row)
+
+-- show whitelist, should have one entry
+SELECT * FROM polar_advisor.whitelist_relations;
+ schema_name | relation_name | action_type 
+-------------+---------------+-------------
+ pg_catalog  | pg_class      | VACUUM
+(1 row)
+
+--
+-- check table in whitelist
+--
+-- in it
+SELECT polar_advisor.is_relation_in_whitelist_internal('pg_catalog', 'pg_class', 'VACUUM');
+ is_relation_in_whitelist_internal 
+-----------------------------------
+ t
+(1 row)
+
+-- another table not in it
+SELECT polar_advisor.is_relation_in_whitelist_internal('pg_catalog', 'pg_index', 'VACUUM');
+ is_relation_in_whitelist_internal 
+-----------------------------------
+ f
+(1 row)
+
+-- invalid table not in it
+SELECT polar_advisor.is_relation_in_whitelist_internal('pg_catalog', 'xxxxx', 'VACUUM');
+ is_relation_in_whitelist_internal 
+-----------------------------------
+ f
+(1 row)
+
+-- invalid action type not in it
+SELECT polar_advisor.is_relation_in_whitelist_internal('pg_catalog', 'pg_class', 'WRONG TYPE');
+ERROR:  invalid input value for enum polar_advisor.action_type: "WRONG TYPE"
+LINE 1: ...n_in_whitelist_internal('pg_catalog', 'pg_class', 'WRONG TYP...
+                                                             ^
+--
+-- remove a relation from whitelist
+--
+-- return false if table does not exist
+SELECT polar_advisor.delete_relation_from_whitelist_internal('public', 'xxxxxxxx', 'VACUUM');
+NOTICE:  no relation to delete
+ delete_relation_from_whitelist_internal 
+-----------------------------------------
+ f
+(1 row)
+
+-- error if action type does not exist
+SELECT polar_advisor.delete_relation_from_whitelist_internal('pg_catalog', 'pg_class', 'WRONG TYPE');
+ERROR:  invalid input value for enum polar_advisor.action_type: "WRONG TYPE"
+LINE 1: ...from_whitelist_internal('pg_catalog', 'pg_class', 'WRONG TYP...
+                                                             ^
+-- ok
+SELECT polar_advisor.delete_relation_from_whitelist_internal('pg_catalog', 'pg_class', 'VACUUM');
+NOTICE:  delete relation "pg_catalog.pg_class" from whitelist of type VACUUM
+ delete_relation_from_whitelist_internal 
+-----------------------------------------
+ t
+(1 row)
+
+-- whitelist is empty now
+SELECT * FROM polar_advisor.whitelist_relations;
+ schema_name | relation_name | action_type 
+-------------+---------------+-------------
+(0 rows)
+
+-- table not in it now
+SELECT polar_advisor.is_relation_in_whitelist_internal('pg_catalog', 'pg_class', 'VACUUM');
+ is_relation_in_whitelist_internal 
+-----------------------------------
+ f
+(1 row)
+

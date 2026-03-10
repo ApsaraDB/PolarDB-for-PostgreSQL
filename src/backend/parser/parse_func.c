@@ -34,6 +34,12 @@
 #include "utils/lsyscache.h"
 #include "utils/syscache.h"
 
+/* POLAR */
+#include "miscadmin.h"
+#include "parser/parse_utilcmd.h"
+#include "utils/guc.h"
+#include "utils/guc_hooks.h"
+
 
 /* Possible error codes from LookupFuncNameInternal */
 typedef enum

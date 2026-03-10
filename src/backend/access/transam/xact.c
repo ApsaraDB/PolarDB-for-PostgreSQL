@@ -5,6 +5,7 @@
  *
  * See src/backend/access/transam/README for more information.
  *
+ * Portions Copyright (c) 2024, Alibaba Group Holding Limited
  * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -70,6 +71,12 @@
 #include "utils/timeout.h"
 #include "utils/timestamp.h"
 
+/* POLAR */
+#include "access/polar_logindex_redo.h"
+#include "utils/varlena.h"
+
+/* POLAR end */
+
 /*
  *	User-tweakable parameters
  */
@@ -83,6 +90,13 @@ bool		DefaultXactDeferrable = false;
 bool		XactDeferrable;
 
 int			synchronous_commit = SYNCHRONOUS_COMMIT_ON;
+
+/* POLAR: GUC */
+bool		polar_force_trans_ro_non_sup;
+bool		polar_enable_xact_split;
+bool		polar_enable_xact_split_debug;
+
+/* POLAR end */
 
 /*
  * CheckXidAlive is a xid value pointing to a possibly ongoing (sub)
@@ -212,6 +226,11 @@ typedef struct TransactionStateData
 	bool		parallelChildXact;	/* is any parent transaction parallel? */
 	bool		chain;			/* start a new block after this one */
 	bool		topXidLogged;	/* for a subxact: is top-level XID logged? */
+
+	bool		polar_split_xact;	/* POLAR: Whether this transaction is a
+									 * split xact */
+	bool		polar_xact_splittable;	/* POLAR: if this xact splittable. */
+
 	struct TransactionStateData *parent;	/* back link to parent */
 } TransactionStateData;
 
@@ -323,6 +342,8 @@ typedef struct SubXactCallbackItem
 
 static SubXactCallbackItem *SubXact_callbacks = NULL;
 
+polar_unsplittable_reason_t polar_unsplittable_reason;
+XLogRecPtr	polar_xact_split_wait_lsn = InvalidXLogRecPtr;
 
 /* local function prototypes */
 static void AssignTransactionId(TransactionState s);
@@ -1543,7 +1564,7 @@ RecordTransactionCommit(void)
 	 * in the procarray and continue to hold locks.
 	 */
 	if (wrote_xlog && markXidCommitted)
-		SyncRepWaitForLSN(XactLastRecEnd, true);
+		SyncRepWaitForLSN(XactLastRecEnd, true, false);
 
 	/* remember end of last commit record */
 	XactLastCommitEnd = XactLastRecEnd;
@@ -1815,8 +1836,19 @@ RecordTransactionAbort(bool isSubXact)
 	 * find that large aborts leave us with a long backlog for when commits
 	 * occur after the abort, increasing our window of data loss should
 	 * problems occur at that point.
+	 *
+	 * POLAR: The primary node must make sure that the abort record has to be
+	 * flushed before truncating any self-created relations. Otherwise, the
+	 * abort record may be missed to be flushed after finished truncate work,
+	 * the replica node could PANIC for applaying some wal records including
+	 * some unexisted blocks during promote. If this abort transaction is
+	 * across the last checkpoint, it may also cause some invalid pages when
+	 * startup process trys to read blocks from those truncated relation
+	 * files.
 	 */
-	if (!isSubXact)
+	if (nrels > 0)
+		XLogFlush(XactLastRecEnd);
+	else if (!isSubXact)
 		XLogSetAsyncXactLSN(XactLastRecEnd);
 
 	/*
@@ -2088,6 +2120,10 @@ StartTransaction(void)
 	{
 		s->startedInRecovery = false;
 		XactReadOnly = DefaultXactReadOnly;
+
+		/* POLAR */
+		XactReadOnly = XactReadOnly || POLAR_FORCE_TXN_READ_ONLY();
+		/* POLAR end */
 	}
 	XactDeferrable = DefaultXactDeferrable;
 	XactIsoLevel = DefaultXactIsoLevel;
@@ -2176,6 +2212,8 @@ StartTransaction(void)
 		enable_timeout_after(TRANSACTION_TIMEOUT, TransactionTimeout);
 
 	ShowTransactionState("StartTransaction");
+
+	Assert(polar_ddl_lock_lsn == InvalidXLogRecPtr);
 }
 
 
@@ -2192,6 +2230,16 @@ CommitTransaction(void)
 	bool		is_parallel_worker;
 
 	is_parallel_worker = (s->blockState == TBLOCK_PARALLEL_INPROGRESS);
+
+	/* POLAR: handle commit while xact split is enabled */
+	polar_xact_split_end();
+
+	/* POLAR: reset splittable state for Primary */
+	if (CurrentTransactionState == &TopTransactionStateData)
+	{
+		TopTransactionStateData.polar_xact_splittable = true;
+		polar_unsplittable_reason = POLAR_UNSPLITTABLE_FOR_NONE;
+	}
 
 	/* Enforce parallel mode restrictions during parallel worker commit. */
 	if (is_parallel_worker)
@@ -2297,6 +2345,9 @@ CommitTransaction(void)
 	 */
 	if (!is_parallel_worker)
 		PreCommit_CheckForSerializationFailure();
+
+	if (polar_enable_sync_ddl)
+		polar_wait_ddl_lock_for_pending_deletes();
 
 	/* Prevent cancel/die interrupt while cleaning up */
 	HOLD_INTERRUPTS();
@@ -2451,6 +2502,8 @@ CommitTransaction(void)
 	XactTopFullTransactionId = InvalidFullTransactionId;
 	nParallelCurrentXids = 0;
 
+	polar_ddl_lock_lsn = InvalidXLogRecPtr;
+
 	/*
 	 * done with commit processing, set current transaction state back to
 	 * default
@@ -2579,6 +2632,9 @@ PrepareTransaction(void)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("cannot PREPARE a transaction that has exported snapshots")));
+
+	if (polar_enable_sync_ddl)
+		polar_wait_ddl_lock_for_pending_deletes();
 
 	/* Prevent cancel/die interrupt while cleaning up */
 	HOLD_INTERRUPTS();
@@ -2742,6 +2798,8 @@ PrepareTransaction(void)
 	XactTopFullTransactionId = InvalidFullTransactionId;
 	nParallelCurrentXids = 0;
 
+	polar_ddl_lock_lsn = InvalidXLogRecPtr;
+
 	/*
 	 * done with 1st phase commit processing, set current transaction state
 	 * back to default
@@ -2772,6 +2830,25 @@ AbortTransaction(void)
 	/* Make sure we have a valid memory context and resource owner */
 	AtAbort_Memory();
 	AtAbort_ResourceOwner();
+
+	/* POLAR: handle abort while xact split is enabled */
+	polar_xact_split_end();
+
+	/* POLAR: reset splittable state for Primary */
+	if (CurrentTransactionState == &TopTransactionStateData &&
+		polar_unsplittable_reason != POLAR_UNSPLITTABLE_FOR_ERROR)
+		polar_unsplittable_reason = POLAR_UNSPLITTABLE_FOR_NONE;
+
+	/*
+	 * POLAR: logindex cleanup work for aborted transaction. (1) Clear
+	 * POLAR_REDO_REPLAYING state from current replaying buffer. If buffer
+	 * redo state is POLAR_REDO_REPLAYING startup will add logindex without
+	 * this buffer IO or content lock. (2) Release logindex mini transaction
+	 * resource. During this function we release mini transaction lock, so it
+	 * must be called before LWLockReleaseAll(). (3) Release logindex
+	 * iterator.
+	 */
+	polar_logindex_redo_abort(polar_logindex_redo_instance);
 
 	/*
 	 * Release any LW locks we might be holding as quickly as possible.
@@ -2942,6 +3019,8 @@ AbortTransaction(void)
 		pgstat_report_xact_timestamp(0);
 	}
 
+	polar_ddl_lock_lsn = InvalidXLogRecPtr;
+
 	/*
 	 * State remains TRANS_ABORT until CleanupTransaction().
 	 */
@@ -2962,6 +3041,13 @@ CleanupTransaction(void)
 	if (s->state != TRANS_ABORT)
 		elog(FATAL, "CleanupTransaction: unexpected state %s",
 			 TransStateAsString(s->state));
+
+	/* POLAR: reset polar_unsplittable_reason */
+	if (CurrentTransactionState == &TopTransactionStateData)
+	{
+		TopTransactionStateData.polar_xact_splittable = true;
+		polar_unsplittable_reason = POLAR_UNSPLITTABLE_FOR_NONE;
+	}
 
 	/*
 	 * do abort cleanup processing
@@ -5181,6 +5267,17 @@ AbortSubTransaction(void)
 	AtSubAbort_ResourceOwner();
 
 	/*
+	 * POLAR: logindex cleanup work for aborted transaction. (1) Clear
+	 * POLAR_REDO_REPLAYING state from current replaying buffer. If buffer
+	 * redo state is POLAR_REDO_REPLAYING startup will add logindex without
+	 * this buffer IO or content lock. (2) Release logindex mini transaction
+	 * resource. During this function we release mini transaction lock, so it
+	 * must be called before LWLockReleaseAll(). (3) Release logindex
+	 * iterator.
+	 */
+	polar_logindex_redo_abort(polar_logindex_redo_instance);
+
+	/*
 	 * Release any LW locks we might be holding as quickly as possible.
 	 * (Regular locks, however, must be held till we finish aborting.)
 	 * Releasing LW locks is critical since we might try to grab them again
@@ -6082,6 +6179,8 @@ xact_redo_commit(xl_xact_parsed_commit *parsed,
 {
 	TransactionId max_xid;
 	TimestampTz commit_time;
+	XLogRecPtr	polar_latest_end_lsn = InvalidXLogRecPtr;
+	bool		polar_should_wait_ddl = (parsed->nrels > 0 && POLAR_WAIT_DDL_IN_RECOVERY());
 
 	Assert(TransactionIdIsValid(xid));
 
@@ -6101,6 +6200,9 @@ xact_redo_commit(xl_xact_parsed_commit *parsed,
 	/* Set the transaction commit timestamp and metadata */
 	TransactionTreeSetCommitTsData(xid, parsed->nsubxacts, parsed->subxacts,
 								   commit_time, origin_id);
+
+	if (polar_should_wait_ddl)
+		polar_latest_end_lsn = polar_calc_latest_end_lsn(xid, parsed->nsubxacts, parsed->subxacts);
 
 	if (standbyState == STANDBY_DISABLED)
 	{
@@ -6182,6 +6284,10 @@ xact_redo_commit(xl_xact_parsed_commit *parsed,
 		 * WAL-first rule would be violated.
 		 */
 		XLogFlush(lsn);
+
+		/* POLAR: wait for cascade replica to apply if needed */
+		if (polar_should_wait_ddl)
+			polar_wait_ddl_in_recovery(polar_latest_end_lsn);
 
 		/* Make sure files supposed to be dropped are dropped */
 		DropRelationFiles(parsed->xlocators, parsed->nrels, true);
@@ -6391,4 +6497,229 @@ xact_redo(XLogReaderState *record)
 	}
 	else
 		elog(PANIC, "xact_redo: unknown op code %u", info);
+}
+
+const char *
+polar_show_xact_split_xids(void)
+{
+	char	   *xids = polar_xact_split_xact_info();
+
+	return xids ? xids : "unsplittable";
+}
+
+void
+polar_assign_xact_split_wait_lsn(const char *newval, void *extra)
+{
+	char	   *endptr;
+
+	if (newval == NULL || strlen(newval) == 0)
+	{
+		polar_xact_split_wait_lsn = InvalidXLogRecPtr;
+		return;
+	}
+	polar_xact_split_wait_lsn = strtou64(newval, &endptr, 10);
+}
+
+/*
+ * POLAR: save a xid into TransactionState->childXids.
+ */
+static void
+polar_xact_split_save_xact(TransactionId xid, TransactionState top_s)
+{
+	TransactionId *new_child_xids;
+	int			new_nchild_xids;
+
+	new_nchild_xids = top_s->nChildXids + 1;
+	if (new_nchild_xids > top_s->maxChildXids)
+	{
+		int			new_max_child_xids;
+
+		new_max_child_xids = Min(new_nchild_xids * 2, (int) (MaxAllocSize / sizeof(TransactionId)));
+
+		if (new_max_child_xids < new_nchild_xids)
+		{
+			ereport(ERROR,
+					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+					 errmsg("maximum number of committed subtransactions (%d) exceeded",
+							(int) (MaxAllocSize / sizeof(TransactionId)))));
+			return;
+		}
+		if (top_s->childXids == NULL)
+			new_child_xids = MemoryContextAlloc(TopTransactionContext, new_max_child_xids * sizeof(TransactionId));
+		else
+			new_child_xids = repalloc(top_s->childXids, new_max_child_xids * sizeof(TransactionId));
+
+		top_s->childXids = new_child_xids;
+		top_s->maxChildXids = new_max_child_xids;
+	}
+
+	top_s->childXids[top_s->nChildXids] = xid;
+	top_s->nChildXids = new_nchild_xids;
+}
+
+/*
+ * POLAR: Construct CurrentTransactionState value with related GUCs.
+ */
+void
+polar_xact_split_begin(const char *newval, void *extra)
+{
+	TransactionState top_s = &TopTransactionStateData;
+	char	   *rawstring;
+	List	   *vallist;
+	ListCell   *cell;
+	char	   *endptr;
+
+	/* POLAR: end the last split xact */
+	polar_xact_split_end();
+
+	if (newval == NULL || strlen(newval) == 0)
+		return;
+
+	if (polar_is_primary())
+		elog(ERROR, "Unable to start xact split in primary");
+
+	if (top_s->blockState == TBLOCK_STARTED)
+		elog(ERROR, "Unable to start xact split without begin");
+
+	if (GetTopTransactionIdIfAny() != InvalidTransactionId)
+		elog(ERROR, "Unable to start xact split under xact with XID assigned");
+
+	rawstring = pstrdup(newval);
+
+	if (!SplitIdentifierString(rawstring, ',', &vallist))
+	{
+		pfree(rawstring);
+		elog(ERROR, "polar_xact_split_xids is not an valid xid array: %s.",
+			 newval);
+		return;
+	}
+
+	/* POLAR: empty xid array is not an valid one. */
+	if (list_length(vallist) <= 1)
+	{
+		pfree(rawstring);
+		elog(ERROR, "polar_xact_split_xids is too short.");
+		return;
+	}
+
+	/* POLAR: fetch command id */
+	currentCommandId = strtou64((char *) (linitial(vallist)), &endptr, 10);
+	vallist = list_delete_first(vallist);
+
+	/* POLAR: fetch top transaction id */
+	top_s->fullTransactionId = FullTransactionIdFromU64(strtou64((char *) (linitial(vallist)), &endptr, 10));
+	vallist = list_delete_first(vallist);
+
+	foreach(cell, vallist)
+	{
+		polar_xact_split_save_xact(strtou64((char *) lfirst(cell), &endptr, 10), top_s);
+	}
+	pfree(rawstring);
+
+	qsort(top_s->childXids, top_s->nChildXids, sizeof(TransactionId), xidComparator);
+
+	TopTransactionStateData.polar_split_xact = true;
+}
+
+/*
+ * POLAR: finish mock xact split in Replica.
+ */
+void
+polar_xact_split_end(void)
+{
+	TransactionState top_s = &TopTransactionStateData;
+
+	if (!polar_is_split_xact())
+		return;
+
+	/* clear sub trans info */
+	if (top_s->childXids != NULL)
+		pfree(top_s->childXids);
+	top_s->childXids = NULL;
+	top_s->nChildXids = 0;
+	top_s->maxChildXids = 0;
+
+	/* clear xact info */
+	top_s->fullTransactionId = InvalidFullTransactionId;
+	currentCommandId = FirstCommandId;
+
+	TopTransactionStateData.polar_split_xact = false;
+}
+
+/*
+ * POLAR: get xact info for xact split, which mainly copied from TransactionIdIsCurrentTransactionId.
+ */
+char *
+polar_xact_split_xact_info(void)
+{
+	TransactionState s = CurrentTransactionState;
+	StringInfoData buf;
+	bool		got_xid = false;
+
+	if (!TopTransactionStateData.polar_xact_splittable)
+		return NULL;
+
+	initStringInfo(&buf);
+	appendStringInfo(&buf, "%u", currentCommandId);
+
+	for (s = CurrentTransactionState; s != NULL; s = s->parent)
+	{
+		int			i = 0;
+
+		if (s->state == TRANS_ABORT)
+			continue;
+		if (!FullTransactionIdIsValid(s->fullTransactionId))
+			continue;			/* it can't have any child XIDs either */
+
+		appendStringInfo(&buf, ",%zu", s->fullTransactionId.value);
+
+		/* sub-xid in childXids are all committed */
+		for (i = 0; i < s->nChildXids; ++i)
+			appendStringInfo(&buf, ",%u", s->childXids[i]);
+
+		got_xid = true;
+	}
+
+	if (got_xid)
+		return buf.data;
+	pfree(buf.data);
+	return pstrdup("");
+}
+
+/*
+ * POLAR: mark top transcation unsplittable
+ */
+void
+polar_xact_split_mark_unsplittable(polar_unsplittable_reason_t reason)
+{
+	if (polar_unsplittable_reason == POLAR_UNSPLITTABLE_FOR_NONE)
+		/* only use first reason */
+		polar_unsplittable_reason = reason;
+	if (reason == POLAR_UNSPLITTABLE_FOR_ERROR)
+		/* proxy will handle ERROR */
+		return;
+	TopTransactionStateData.polar_xact_splittable = false;
+}
+
+bool
+polar_is_split_xact(void)
+{
+	return TopTransactionStateData.polar_split_xact;
+}
+
+void
+polar_stat_update_xact_split_info(void)
+{
+	if (TopTransactionStateData.blockState == TBLOCK_STARTED || TopTransactionStateData.blockState == TBLOCK_DEFAULT)
+	{
+		polar_stat_update_proxy_info(polar_stat_proxy->proxy_implicit);
+	}
+	else if (TopTransactionStateData.polar_split_xact)
+	{
+		polar_stat_update_proxy_info(polar_stat_proxy->proxy_readafterwrite);
+	}
+	else
+	{
+		polar_stat_update_proxy_info(polar_stat_proxy->proxy_readbeforewrite);
+	}
 }

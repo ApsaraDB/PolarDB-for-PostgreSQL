@@ -45,9 +45,11 @@ GetWalSummaries(TimeLineID tli, XLogRecPtr start_lsn, XLogRecPtr end_lsn)
 	DIR		   *sdir;
 	struct dirent *dent;
 	List	   *result = NIL;
+	char		path[MAXPGPATH];
 
-	sdir = AllocateDir(XLOGDIR "/summaries");
-	while ((dent = ReadDir(sdir, XLOGDIR "/summaries")) != NULL)
+	polar_make_file_path_level3(path, XLOGDIR, "summaries");
+	sdir = AllocateDir(path);
+	while ((dent = ReadDir(sdir, path)) != NULL)
 	{
 		WalSummaryFile *ws;
 		uint32		tmp[5];
@@ -205,6 +207,7 @@ File
 OpenWalSummaryFile(WalSummaryFile *ws, bool missing_ok)
 {
 	char		path[MAXPGPATH];
+	char		polar_path[MAXPGPATH];
 	File		file;
 
 	snprintf(path, MAXPGPATH,
@@ -213,11 +216,13 @@ OpenWalSummaryFile(WalSummaryFile *ws, bool missing_ok)
 			 LSN_FORMAT_ARGS(ws->start_lsn),
 			 LSN_FORMAT_ARGS(ws->end_lsn));
 
-	file = PathNameOpenFile(path, O_RDONLY);
+	polar_make_file_path_level2(polar_path, path);
+
+	file = PathNameOpenFile(polar_path, O_RDONLY);
 	if (file < 0 && (errno != ENOENT || !missing_ok))
 		ereport(ERROR,
 				(errcode_for_file_access(),
-				 errmsg("could not open file \"%s\": %m", path)));
+				 errmsg("could not open file \"%s\": %m", polar_path)));
 
 	return file;
 }
@@ -230,6 +235,7 @@ void
 RemoveWalSummaryIfOlderThan(WalSummaryFile *ws, time_t cutoff_time)
 {
 	char		path[MAXPGPATH];
+	char		polar_path[MAXPGPATH];
 	struct stat statbuf;
 
 	snprintf(path, MAXPGPATH,
@@ -238,22 +244,24 @@ RemoveWalSummaryIfOlderThan(WalSummaryFile *ws, time_t cutoff_time)
 			 LSN_FORMAT_ARGS(ws->start_lsn),
 			 LSN_FORMAT_ARGS(ws->end_lsn));
 
-	if (lstat(path, &statbuf) != 0)
+	polar_make_file_path_level2(polar_path, path);
+
+	if (polar_lstat(polar_path, &statbuf) != 0)
 	{
 		if (errno == ENOENT)
 			return;
 		ereport(ERROR,
 				(errcode_for_file_access(),
-				 errmsg("could not stat file \"%s\": %m", path)));
+				 errmsg("could not stat file \"%s\": %m", polar_path)));
 	}
 	if (statbuf.st_mtime >= cutoff_time)
 		return;
-	if (unlink(path) != 0)
+	if (polar_unlink(polar_path) != 0)
 		ereport(ERROR,
 				(errcode_for_file_access(),
-				 errmsg("could not remove file \"%s\": %m", path)));
+				 errmsg("could not remove file \"%s\": %m", polar_path)));
 	ereport(DEBUG2,
-			(errmsg_internal("removing file \"%s\"", path)));
+			(errmsg_internal("removing file \"%s\"", polar_path)));
 }
 
 /*

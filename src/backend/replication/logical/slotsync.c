@@ -1072,7 +1072,7 @@ ValidateSlotSyncParams(int elevel)
 	 * replication slot, which allows informing the primary about the xmin and
 	 * catalog_xmin values on the standby.
 	 */
-	if (!hot_standby_feedback)
+	if (!POLAR_ENABLE_FEEDBACK())
 	{
 		ereport(elevel,
 				errcode(ERRCODE_INVALID_PARAMETER_VALUE),
@@ -1111,7 +1111,7 @@ slotsync_reread_config(void)
 	char	   *old_primary_conninfo = pstrdup(PrimaryConnInfo);
 	char	   *old_primary_slotname = pstrdup(PrimarySlotName);
 	bool		old_sync_replication_slots = sync_replication_slots;
-	bool		old_hot_standby_feedback = hot_standby_feedback;
+	bool		old_hot_standby_feedback = POLAR_ENABLE_FEEDBACK();
 	bool		conninfo_changed;
 	bool		primary_slotname_changed;
 
@@ -1135,7 +1135,7 @@ slotsync_reread_config(void)
 
 	if (conninfo_changed ||
 		primary_slotname_changed ||
-		(old_hot_standby_feedback != hot_standby_feedback))
+		(old_hot_standby_feedback != POLAR_ENABLE_FEEDBACK()))
 	{
 		ereport(LOG,
 				errmsg("replication slot synchronization worker will restart because of a parameter change"));

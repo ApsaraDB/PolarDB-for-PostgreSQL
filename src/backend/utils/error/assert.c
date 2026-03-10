@@ -19,6 +19,8 @@
 #include <execinfo.h>
 #endif
 
+#include "utils/polar_backtrace.h"
+
 /*
  * ExceptionalCondition - Handles the failure of an Assert()
  *
@@ -44,7 +46,10 @@ ExceptionalCondition(const char *conditionName,
 	fflush(stderr);
 
 	/* If we have support for it, dump a simple backtrace */
-#ifdef HAVE_BACKTRACE_SYMBOLS
+#ifdef USE_LIBUNWIND
+	POLAR_DUMP_BACKTRACE();
+	polar_reset_program_error_handler();
+#elif defined(HAVE_BACKTRACE_SYMBOLS)
 	{
 		void	   *buf[100];
 		int			nframes;

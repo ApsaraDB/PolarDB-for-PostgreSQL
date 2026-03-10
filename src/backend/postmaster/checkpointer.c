@@ -59,7 +59,7 @@
 #include "utils/guc.h"
 #include "utils/memutils.h"
 #include "utils/resowner.h"
-
+#include "utils/timeout.h"
 
 /*----------
  * Shared memory area for communication between checkpointer and backends
@@ -108,6 +108,7 @@ typedef struct
 typedef struct
 {
 	pid_t		checkpointer_pid;	/* PID (0 if not started) */
+	pid_t		polar_bgwriter_pid; /* POLAR: bgwriter pid (0 if not started) */
 
 	slock_t		ckpt_lck;		/* protects all the ckpt_* fields */
 
@@ -206,6 +207,13 @@ CheckpointerMain(char *startup_data, size_t startup_data_len)
 	 * Reset some signals that are accepted by postmaster but not here
 	 */
 	pqsignal(SIGCHLD, SIG_DFL);
+
+	/*
+	 * POLAR: Establishes SIGALRM handler and initialize parameters to
+	 * facilitate the running of scheduled tasks. Some scheduled tasks will
+	 * cause assertion errors when parameters are not initialized.
+	 */
+	InitializeTimeouts();
 
 	/*
 	 * Initialize so that first time-driven event happens at the correct time.
@@ -1107,6 +1115,13 @@ ForwardSyncRequest(const FileTag *ftag, SyncRequestType type)
 	if (AmCheckpointerProcess())
 		elog(ERROR, "ForwardSyncRequest must not be called in checkpointer");
 
+	/* POLAR: replica mode not write anything */
+	if (AmStartupProcess() && polar_is_replica())
+	{
+		elog(LOG, "PolarDB replica startup skip ForwardFsyncRequest");
+		return true;
+	}
+
 	LWLockAcquire(CheckpointerCommLock, LW_EXCLUSIVE);
 
 	/*
@@ -1350,3 +1365,41 @@ FirstCallSinceLastCheckpoint(void)
 
 	return FirstCall;
 }
+
+/* POLAR: some polar related implementations */
+void
+polar_checkpointer_do_reload(void)
+{
+	if (ConfigReloadPending)
+	{
+		ConfigReloadPending = false;
+		ProcessConfigFile(PGC_SIGHUP);
+
+		/*
+		 * Checkpointer is the last process to shut down, so we ask it to hold
+		 * the keys for a range of other tasks required most of which have
+		 * nothing to do with checkpointing at all.
+		 *
+		 * For various reasons, some config values can change dynamically so
+		 * the primary copy of them is held in shared memory to make sure all
+		 * backends see the same value.  We make Checkpointer responsible for
+		 * updating the shared memory copy if the parameter setting changes
+		 * because of SIGHUP.
+		 */
+		UpdateSharedMemoryConfig();
+	}
+}
+
+void
+polar_set_bgwriter_pid(pid_t pid)
+{
+	CheckpointerShmem->polar_bgwriter_pid = pid;
+}
+
+pid_t
+polar_get_bgwriter_pid(void)
+{
+	return CheckpointerShmem->polar_bgwriter_pid;
+}
+
+/* POLAR end */

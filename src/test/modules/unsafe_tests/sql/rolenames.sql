@@ -486,7 +486,10 @@ BEGIN;
 SET LOCAL session_preload_libraries TO 'path-to-preload-libraries';
 SET SESSION AUTHORIZATION regress_role_haspriv;
 -- passes with role member of pg_read_all_settings
+-- POLAR: For security reasons, pg_read_all_settings has been permanently banned.
 SHOW session_preload_libraries;
+ROLLBACK;
+BEGIN;
 SET SESSION AUTHORIZATION regress_role_nopriv;
 -- fails with role not member of pg_read_all_settings
 SHOW session_preload_libraries;

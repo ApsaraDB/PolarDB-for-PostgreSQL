@@ -25,13 +25,18 @@ OBJS = \
 	pg_config.o \
 	pg_controldata.o \
 	pg_rusage.o \
+	polar_feature_utilization.o \
 	ps_status.o \
 	queryenvironment.o \
 	rls.o \
 	sampling.o \
 	superuser.o \
 	timeout.o \
-	tzparser.o
+	tzparser.o 
+
+ifeq ($(enable_fault_injector),yes)
+OBJS += faultinjector.o 
+endif
 
 # This location might depend on the installation directories. Therefore
 # we can't substitute it into pg_config.h.

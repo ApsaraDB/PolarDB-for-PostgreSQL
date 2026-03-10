@@ -127,6 +127,9 @@ ProcessConfigFile(GucContext context)
 	 * SIGHUP (by the postmaster and its children)
 	 */
 	Assert((context == PGC_POSTMASTER && !IsUnderPostmaster) ||
+			/* POLAR */
+			(context == PGC_POSTMASTER_ONLY_LOAD_POLAR_SETTINGS && !IsUnderPostmaster) ||
+			/* POLAR end */
 		   context == PGC_SIGHUP);
 
 	/*

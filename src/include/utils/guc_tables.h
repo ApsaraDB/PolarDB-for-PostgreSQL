@@ -87,6 +87,7 @@ enum config_group
 	PROCESS_TITLE,
 	STATS_MONITORING,
 	STATS_CUMULATIVE,
+	ENCRYPTION,
 	AUTOVACUUM,
 	CLIENT_CONN_STATEMENT,
 	CLIENT_CONN_LOCALE,
@@ -98,6 +99,16 @@ enum config_group
 	ERROR_HANDLING_OPTIONS,
 	PRESET_OPTIONS,
 	CUSTOM_OPTIONS,
+
+	/* POLAR */
+	POLAR_REL_SIZE_CACHE,
+	POLAR_STORAGE,
+	POLAR_BUFFER_MANAGEMENT,
+	POLAR_IO_MANAGEMENT,
+	POLAR_LOGINDEX,
+	POLAR_PROXY,
+	/* POLAR end */
+
 	DEVELOPER_OPTIONS,
 };
 
@@ -159,6 +170,9 @@ struct config_generic
 	const char *short_desc;		/* short desc. of this variable's purpose */
 	const char *long_desc;		/* long desc. of this variable's purpose */
 	int			flags;			/* flag bits, see guc.h */
+	/* POLAR: added for parameter manger */
+	const char *optional;		/* hint for user to set correct value */
+	/* POLAR end */
 	/* variable fields, initialized at runtime: */
 	enum config_type vartype;	/* type of variable (set only at startup) */
 	int			status;			/* status bits, see below */
@@ -319,5 +333,8 @@ extern char *config_enum_get_options(struct config_enum *record,
 									 const char *prefix,
 									 const char *suffix,
 									 const char *separator);
+
+/* check guc flag to hint us */
+extern void polar_parameter_manage_check_flag(struct config_generic *guc_variable);
 
 #endif							/* GUC_TABLES_H */

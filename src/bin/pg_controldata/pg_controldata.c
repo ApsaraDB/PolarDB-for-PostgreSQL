@@ -29,6 +29,10 @@
 #include "getopt_long.h"
 #include "pg_getopt.h"
 
+/* POLAR */
+#include "polar_vfs/polar_vfs_fe.h"
+/* POLAR end */
+
 static void
 usage(const char *progname)
 {
@@ -165,6 +169,14 @@ main(int argc, char *argv[])
 		exit(1);
 	}
 
+	/*
+	 * POLAR: save argv[0] so do_start() can look for the postmaster if
+	 * necessary. we don't look for postmaster here because in many cases we
+	 * won't need it.
+	 */
+	polar_argv0 = argv[0];
+	polar_vfs_init_simple_fe(DataDir, DataDir, POLAR_VFS_RD);
+
 	/* get a copy of the control file */
 	ControlFile = get_controlfile(DataDir, &crc_ok);
 	if (!crc_ok)
@@ -173,6 +185,8 @@ main(int argc, char *argv[])
 		pg_log_warning_detail("Either the control file is corrupt, or it has a different layout than this program "
 							  "is expecting.  The results below are untrustworthy.");
 	}
+
+	polar_vfs_destroy_simple_fe();
 
 	/* set wal segment size */
 	WalSegSz = ControlFile->xlog_seg_size;

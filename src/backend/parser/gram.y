@@ -62,8 +62,10 @@
 #include "storage/lmgr.h"
 #include "utils/date.h"
 #include "utils/datetime.h"
+#include "utils/guc.h"
 #include "utils/numeric.h"
 #include "utils/xml.h"
+#include "utils/polar_cluster_settings.h"
 
 
 /*
@@ -676,6 +678,13 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 				json_object_constructor_null_clause_opt
 				json_array_constructor_null_clause_opt
 
+/* POLAR */
+%type <boolean> polar_opt_alter_scope polar_opt_reload polar_opt_force
+/* POLAR end */
+
+/* POLAR: donot check partition constraint */
+%type <boolean> no_check_partition_constraint
+/* POLAR end */
 
 /*
  * Non-keyword token types.  These are hard-wired into the "flex" lexer.
@@ -752,7 +761,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 	MINUTE_P MINVALUE MODE MONTH_P MOVE
 
 	NAME_P NAMES NATIONAL NATURAL NCHAR NESTED NEW NEXT NFC NFD NFKC NFKD NO
-	NONE NORMALIZE NORMALIZED
+	NOCHECK_CONSTRAINT NONE NORMALIZE NORMALIZED
 	NOT NOTHING NOTIFY NOTNULL NOWAIT NULL_P NULLIF
 	NULLS_P NUMERIC
 
@@ -768,7 +777,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 	QUOTE QUOTES
 
 	RANGE READ REAL REASSIGN RECHECK RECURSIVE REF_P REFERENCES REFERENCING
-	REFRESH REINDEX RELATIVE_P RELEASE RENAME REPEATABLE REPLACE REPLICA
+	REFRESH REINDEX RELATIVE_P RELEASE RELOAD RENAME REPEATABLE REPLACE REPLICA
 	RESET RESTART RESTRICT RETURN RETURNING RETURNS REVOKE RIGHT ROLE ROLLBACK ROLLUP
 	ROUTINE ROUTINES ROW ROWS RULE
 
@@ -2308,9 +2317,15 @@ alter_table_cmds:
 			| alter_table_cmds ',' alter_table_cmd	{ $$ = lappend($1, $3); }
 		;
 
+/* POLAR: donot check partition constraint */
+no_check_partition_constraint: NOCHECK_CONSTRAINT   { $$ = true; }
+		| /* empty */                          		{ $$ = false; }
+		;
+/* POLAR end */
+
 partition_cmd:
 			/* ALTER TABLE <name> ATTACH PARTITION <table_name> FOR VALUES */
-			ATTACH PARTITION qualified_name PartitionBoundSpec
+			ATTACH PARTITION qualified_name PartitionBoundSpec no_check_partition_constraint
 				{
 					AlterTableCmd *n = makeNode(AlterTableCmd);
 					PartitionCmd *cmd = makeNode(PartitionCmd);
@@ -2319,7 +2334,14 @@ partition_cmd:
 					cmd->name = $3;
 					cmd->bound = $4;
 					cmd->concurrent = false;
+					cmd->nocheck_constraint = $5; /* POLAR */
 					n->def = (Node *) cmd;
+
+					if (cmd->nocheck_constraint && !polar_enable_skip_partition_constraint_check)
+						ereport(ERROR,
+								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+								 errmsg("ATTACH PARTITION with NOCHECK_CONSTRAINT option is not supported."),
+								 errhint("Please enable the \"polar_enable_skip_partition_constraint_check\" GUC.")));
 
 					$$ = (Node *) n;
 				}
@@ -11483,21 +11505,46 @@ AlterCollationStmt: ALTER COLLATION any_name REFRESH VERSION_P
  *****************************************************************************/
 
 AlterSystemStmt:
-			ALTER SYSTEM_P SET generic_set
+			ALTER SYSTEM_P polar_opt_alter_scope polar_opt_reload polar_opt_force SET generic_set
 				{
 					AlterSystemStmt *n = makeNode(AlterSystemStmt);
-
-					n->setstmt = $4;
-					$$ = (Node *) n;
+					n->setstmt = $7;
+					if ($3)
+						n->polar_options |= ALTOPT_CLUSTER;
+					if ($4)
+						n->polar_options |= ALTOPT_RELOAD;
+					if ($5)
+						n->polar_options |= ALTOPT_FORCE;
+					$$ = (Node *)n;
 				}
-			| ALTER SYSTEM_P RESET generic_reset
+			| ALTER SYSTEM_P polar_opt_alter_scope polar_opt_reload polar_opt_force RESET generic_reset
 				{
 					AlterSystemStmt *n = makeNode(AlterSystemStmt);
-
-					n->setstmt = $4;
-					$$ = (Node *) n;
+					n->setstmt = $7;
+					if ($3)
+						n->polar_options |= ALTOPT_CLUSTER;
+					if ($4)
+						n->polar_options |= ALTOPT_RELOAD;
+					if ($5)
+						n->polar_options |= ALTOPT_FORCE;
+					$$ = (Node *)n;
 				}
 		;
+
+/* POLAR: ALTER SYSTEM FOR CLUSTER */
+polar_opt_alter_scope:
+			FOR CLUSTER 	{ $$ = true;}
+			| /* EMPTY */	{ $$ = false;}
+		;
+polar_opt_reload:
+			RELOAD			{ $$ = true;}
+			| /* EMPTY */	{ $$ = false;}
+		;
+polar_opt_force:
+			FORCE			{ $$ = true;}
+			| /* EMPTY */	{ $$ = false;}
+		;
+/* POLAR end */
 
 
 /*****************************************************************************
@@ -17698,6 +17745,7 @@ unreserved_keyword:
 			| NFKC
 			| NFKD
 			| NO
+			| NOCHECK_CONSTRAINT
 			| NORMALIZED
 			| NOTHING
 			| NOTIFY
@@ -17753,6 +17801,7 @@ unreserved_keyword:
 			| REINDEX
 			| RELATIVE_P
 			| RELEASE
+			| RELOAD
 			| RENAME
 			| REPEATABLE
 			| REPLACE
@@ -18312,6 +18361,7 @@ bare_label_keyword:
 			| NFKC
 			| NFKD
 			| NO
+			| NOCHECK_CONSTRAINT
 			| NONE
 			| NORMALIZE
 			| NORMALIZED
@@ -18382,6 +18432,7 @@ bare_label_keyword:
 			| REINDEX
 			| RELATIVE_P
 			| RELEASE
+			| RELOAD
 			| RENAME
 			| REPEATABLE
 			| REPLACE

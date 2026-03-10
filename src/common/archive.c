@@ -21,6 +21,7 @@
 
 #include "common/archive.h"
 #include "common/percentrepl.h"
+#include "storage/polar_fd.h"
 
 /*
  * BuildRestoreCommand
@@ -42,11 +43,13 @@ BuildRestoreCommand(const char *restoreCommand,
 					const char *lastRestartPointFname)
 {
 	char	   *nativePath = NULL;
+	const char *polar_xlog_path;
 	char	   *result;
 
 	if (xlogpath)
 	{
-		nativePath = pstrdup(xlogpath);
+		polar_xlog_path = polar_path_remove_protocol(xlogpath);
+		nativePath = pstrdup(polar_xlog_path);
 		make_native_path(nativePath);
 	}
 

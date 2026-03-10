@@ -187,11 +187,11 @@ typedef struct LOCKTAG
 	 (locktag).locktag_lockmethodid = DEFAULT_LOCKMETHOD)
 
 /* same ID info as RELATION */
-#define SET_LOCKTAG_RELATION_EXTEND(locktag,dboid,reloid) \
-	((locktag).locktag_field1 = (dboid), \
-	 (locktag).locktag_field2 = (reloid), \
-	 (locktag).locktag_field3 = 0, \
-	 (locktag).locktag_field4 = 0, \
+#define SET_LOCKTAG_RELATION_EXTEND(locktag,spcoid,dboid,relnum,forknum) \
+	((locktag).locktag_field1 = (spcoid), \
+	 (locktag).locktag_field2 = (dboid), \
+	 (locktag).locktag_field3 = (relnum), \
+	 (locktag).locktag_field4 = (forknum), \
 	 (locktag).locktag_type = LOCKTAG_RELATION_EXTEND, \
 	 (locktag).locktag_lockmethodid = DEFAULT_LOCKMETHOD)
 
@@ -620,5 +620,8 @@ extern void DumpAllLocks(void);
 extern void VirtualXactLockTableInsert(VirtualTransactionId vxid);
 extern void VirtualXactLockTableCleanup(void);
 extern bool VirtualXactLock(VirtualTransactionId vxid, bool wait);
+
+/* POLAR */
+extern void polar_init_lock_access(void);
 
 #endif							/* LOCK_H_ */

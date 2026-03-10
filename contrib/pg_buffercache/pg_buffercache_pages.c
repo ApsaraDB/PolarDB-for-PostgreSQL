@@ -3,22 +3,46 @@
  * pg_buffercache_pages.c
  *	  display some contents of the buffer cache
  *
+ * Copyright (c) 2025, Alibaba Group Holding Limited
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * IDENTIFICATION
  *	  contrib/pg_buffercache/pg_buffercache_pages.c
+ *
  *-------------------------------------------------------------------------
  */
 #include "postgres.h"
 
 #include "access/htup_details.h"
+#include "access/relation.h"
 #include "catalog/pg_type.h"
 #include "funcapi.h"
 #include "storage/buf_internals.h"
 #include "storage/bufmgr.h"
+#include "utils/rel.h"
 
 
 #define NUM_BUFFERCACHE_PAGES_MIN_ELEM	8
 #define NUM_BUFFERCACHE_PAGES_ELEM	9
 #define NUM_BUFFERCACHE_SUMMARY_ELEM 5
 #define NUM_BUFFERCACHE_USAGE_COUNTS_ELEM 4
+#define NUM_BUFFERCACHE_EVICT_ELEM 2
+#define NUM_BUFFERCACHE_EVICT_RELATION_ELEM 3
+#define NUM_BUFFERCACHE_EVICT_ALL_ELEM 3
+#define NUM_BUFFERCACHE_MARK_DIRTY_ELEM 2
+#define NUM_BUFFERCACHE_MARK_DIRTY_RELATION_ELEM 3
+#define NUM_BUFFERCACHE_MARK_DIRTY_ALL_ELEM 3
 
 PG_MODULE_MAGIC;
 
@@ -64,6 +88,11 @@ PG_FUNCTION_INFO_V1(pg_buffercache_pages);
 PG_FUNCTION_INFO_V1(pg_buffercache_summary);
 PG_FUNCTION_INFO_V1(pg_buffercache_usage_counts);
 PG_FUNCTION_INFO_V1(pg_buffercache_evict);
+PG_FUNCTION_INFO_V1(pg_buffercache_evict_relation);
+PG_FUNCTION_INFO_V1(pg_buffercache_evict_all);
+PG_FUNCTION_INFO_V1(pg_buffercache_mark_dirty);
+PG_FUNCTION_INFO_V1(pg_buffercache_mark_dirty_relation);
+PG_FUNCTION_INFO_V1(pg_buffercache_mark_dirty_all);
 
 Datum
 pg_buffercache_pages(PG_FUNCTION_ARGS)
@@ -356,20 +385,246 @@ pg_buffercache_usage_counts(PG_FUNCTION_ARGS)
 }
 
 /*
+ * Helper function to check if the user has superuser privileges.
+ */
+static void
+pg_buffercache_superuser_check(char *func_name)
+{
+	if (!superuser())
+		ereport(ERROR,
+				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+				 errmsg("must be superuser to use %s()",
+						func_name)));
+}
+
+/*
  * Try to evict a shared buffer.
  */
 Datum
 pg_buffercache_evict(PG_FUNCTION_ARGS)
 {
-	Buffer		buf = PG_GETARG_INT32(0);
+	Datum		result;
+	TupleDesc	tupledesc;
+	HeapTuple	tuple;
+	Datum		values[NUM_BUFFERCACHE_EVICT_ELEM];
+	bool		nulls[NUM_BUFFERCACHE_EVICT_ELEM] = {0};
 
-	if (!superuser())
-		ereport(ERROR,
-				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-				 errmsg("must be superuser to use pg_buffercache_evict function")));
+	Buffer		buf = PG_GETARG_INT32(0);
+	bool		buffer_flushed;
+
+	if (get_call_result_type(fcinfo, NULL, &tupledesc) != TYPEFUNC_COMPOSITE)
+		elog(ERROR, "return type must be a row type");
+
+	pg_buffercache_superuser_check("pg_buffercache_evict");
 
 	if (buf < 1 || buf > NBuffers)
 		elog(ERROR, "bad buffer ID: %d", buf);
 
-	PG_RETURN_BOOL(EvictUnpinnedBuffer(buf));
+	values[0] = BoolGetDatum(EvictUnpinnedBuffer(buf, &buffer_flushed));
+	values[1] = BoolGetDatum(buffer_flushed);
+
+	tuple = heap_form_tuple(tupledesc, values, nulls);
+	result = HeapTupleGetDatum(tuple);
+
+	PG_RETURN_DATUM(result);
+}
+
+/*
+ * Try to evict specified relation.
+ */
+Datum
+pg_buffercache_evict_relation(PG_FUNCTION_ARGS)
+{
+	Datum		result;
+	TupleDesc	tupledesc;
+	HeapTuple	tuple;
+	Datum		values[NUM_BUFFERCACHE_EVICT_RELATION_ELEM];
+	bool		nulls[NUM_BUFFERCACHE_EVICT_RELATION_ELEM] = {0};
+
+	Oid			relOid;
+	Relation	rel;
+
+	int32		buffers_evicted = 0;
+	int32		buffers_flushed = 0;
+	int32		buffers_skipped = 0;
+
+	if (get_call_result_type(fcinfo, NULL, &tupledesc) != TYPEFUNC_COMPOSITE)
+		elog(ERROR, "return type must be a row type");
+
+	pg_buffercache_superuser_check("pg_buffercache_evict_relation");
+
+	relOid = PG_GETARG_OID(0);
+
+	rel = relation_open(relOid, AccessShareLock);
+
+	if (RelationUsesLocalBuffers(rel))
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("relation uses local buffers, %s() is intended to be used for shared buffers only",
+						"pg_buffercache_evict_relation")));
+
+	EvictRelUnpinnedBuffers(rel, &buffers_evicted, &buffers_flushed,
+							&buffers_skipped);
+
+	relation_close(rel, AccessShareLock);
+
+	values[0] = Int32GetDatum(buffers_evicted);
+	values[1] = Int32GetDatum(buffers_flushed);
+	values[2] = Int32GetDatum(buffers_skipped);
+
+	tuple = heap_form_tuple(tupledesc, values, nulls);
+	result = HeapTupleGetDatum(tuple);
+
+	PG_RETURN_DATUM(result);
+}
+
+
+/*
+ * Try to evict all shared buffers.
+ */
+Datum
+pg_buffercache_evict_all(PG_FUNCTION_ARGS)
+{
+	Datum		result;
+	TupleDesc	tupledesc;
+	HeapTuple	tuple;
+	Datum		values[NUM_BUFFERCACHE_EVICT_ALL_ELEM];
+	bool		nulls[NUM_BUFFERCACHE_EVICT_ALL_ELEM] = {0};
+
+	int32		buffers_evicted = 0;
+	int32		buffers_flushed = 0;
+	int32		buffers_skipped = 0;
+
+	if (get_call_result_type(fcinfo, NULL, &tupledesc) != TYPEFUNC_COMPOSITE)
+		elog(ERROR, "return type must be a row type");
+
+	pg_buffercache_superuser_check("pg_buffercache_evict_all");
+
+	EvictAllUnpinnedBuffers(&buffers_evicted, &buffers_flushed,
+							&buffers_skipped);
+
+	values[0] = Int32GetDatum(buffers_evicted);
+	values[1] = Int32GetDatum(buffers_flushed);
+	values[2] = Int32GetDatum(buffers_skipped);
+
+	tuple = heap_form_tuple(tupledesc, values, nulls);
+	result = HeapTupleGetDatum(tuple);
+
+	PG_RETURN_DATUM(result);
+}
+
+/*
+ * Try to mark a shared buffer as dirty.
+ */
+Datum
+pg_buffercache_mark_dirty(PG_FUNCTION_ARGS)
+{
+
+	Datum		result;
+	TupleDesc	tupledesc;
+	HeapTuple	tuple;
+	Datum		values[NUM_BUFFERCACHE_MARK_DIRTY_ELEM];
+	bool		nulls[NUM_BUFFERCACHE_MARK_DIRTY_ELEM] = {0};
+
+	Buffer		buf = PG_GETARG_INT32(0);
+	bool		buffer_already_dirty;
+
+	if (get_call_result_type(fcinfo, NULL, &tupledesc) != TYPEFUNC_COMPOSITE)
+		elog(ERROR, "return type must be a row type");
+
+	pg_buffercache_superuser_check("pg_buffercache_mark_dirty");
+
+	if (buf < 1 || buf > NBuffers)
+		elog(ERROR, "bad buffer ID: %d", buf);
+
+	values[0] = BoolGetDatum(MarkDirtyUnpinnedBuffer(buf, &buffer_already_dirty));
+	values[1] = BoolGetDatum(buffer_already_dirty);
+
+	tuple = heap_form_tuple(tupledesc, values, nulls);
+	result = HeapTupleGetDatum(tuple);
+
+	PG_RETURN_DATUM(result);
+}
+
+/*
+ * Try to mark all the shared buffers of a relation as dirty.
+ */
+Datum
+pg_buffercache_mark_dirty_relation(PG_FUNCTION_ARGS)
+{
+	Datum		result;
+	TupleDesc	tupledesc;
+	HeapTuple	tuple;
+	Datum		values[NUM_BUFFERCACHE_MARK_DIRTY_RELATION_ELEM];
+	bool		nulls[NUM_BUFFERCACHE_MARK_DIRTY_RELATION_ELEM] = {0};
+
+	Oid			relOid;
+	Relation	rel;
+
+	int32		buffers_already_dirty = 0;
+	int32		buffers_dirtied = 0;
+	int32		buffers_skipped = 0;
+
+	if (get_call_result_type(fcinfo, NULL, &tupledesc) != TYPEFUNC_COMPOSITE)
+		elog(ERROR, "return type must be a row type");
+
+	pg_buffercache_superuser_check("pg_buffercache_mark_dirty_relation");
+
+	relOid = PG_GETARG_OID(0);
+
+	rel = relation_open(relOid, AccessShareLock);
+
+	if (RelationUsesLocalBuffers(rel))
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("relation uses local buffers, %s() is intended to be used for shared buffers only",
+						"pg_buffercache_mark_dirty_relation")));
+
+	MarkDirtyRelUnpinnedBuffers(rel, &buffers_dirtied, &buffers_already_dirty,
+								&buffers_skipped);
+
+	relation_close(rel, AccessShareLock);
+
+	values[0] = Int32GetDatum(buffers_dirtied);
+	values[1] = Int32GetDatum(buffers_already_dirty);
+	values[2] = Int32GetDatum(buffers_skipped);
+
+	tuple = heap_form_tuple(tupledesc, values, nulls);
+	result = HeapTupleGetDatum(tuple);
+
+	PG_RETURN_DATUM(result);
+}
+
+/*
+ * Try to mark all the shared buffers as dirty.
+ */
+Datum
+pg_buffercache_mark_dirty_all(PG_FUNCTION_ARGS)
+{
+	Datum		result;
+	TupleDesc	tupledesc;
+	HeapTuple	tuple;
+	Datum		values[NUM_BUFFERCACHE_MARK_DIRTY_ALL_ELEM];
+	bool		nulls[NUM_BUFFERCACHE_MARK_DIRTY_ALL_ELEM] = {0};
+
+	int32		buffers_already_dirty = 0;
+	int32		buffers_dirtied = 0;
+	int32		buffers_skipped = 0;
+
+	if (get_call_result_type(fcinfo, NULL, &tupledesc) != TYPEFUNC_COMPOSITE)
+		elog(ERROR, "return type must be a row type");
+
+	pg_buffercache_superuser_check("pg_buffercache_mark_dirty_all");
+
+	MarkDirtyAllUnpinnedBuffers(&buffers_dirtied, &buffers_already_dirty,
+								&buffers_skipped);
+
+	values[0] = Int32GetDatum(buffers_dirtied);
+	values[1] = Int32GetDatum(buffers_already_dirty);
+	values[2] = Int32GetDatum(buffers_skipped);
+
+	tuple = heap_form_tuple(tupledesc, values, nulls);
+	result = HeapTupleGetDatum(tuple);
+
+	PG_RETURN_DATUM(result);
 }

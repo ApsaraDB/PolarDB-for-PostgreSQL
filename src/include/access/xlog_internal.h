@@ -11,6 +11,7 @@
  * Note: This file must be includable in both frontend and backend contexts,
  * to allow stand-alone tools like pg_receivewal to deal with WAL files.
  *
+ * Portions Copyright (c) 2024, Alibaba Group Holding Limited
  * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -27,6 +28,8 @@
 #include "storage/block.h"
 #include "storage/relfilelocator.h"
 
+/* POLAR */
+#include "storage/polar_fd.h"
 
 /*
  * Each page of XLOG file has a header like this:
@@ -235,7 +238,7 @@ TLHistoryFilePath(char *path, TimeLineID tli)
 }
 
 static inline void
-StatusFilePath(char *path, const char *xlog, const char *suffix)
+PGStatusFilePath(char *path, const char *xlog, const char *suffix)
 {
 	snprintf(path, MAXPGPATH, XLOGDIR "/archive_status/%s%s", xlog, suffix);
 }
@@ -401,5 +404,90 @@ extern PGDLLIMPORT bool ArchiveRecoveryRequested;
 extern PGDLLIMPORT bool InArchiveRecovery;
 extern PGDLLIMPORT bool StandbyMode;
 extern PGDLLIMPORT char *recoveryRestoreCommand;
+
+/* POLAR: FRONTEND use macro definition (old way), BACKEND(normal mode or PolarDB mode) use function define */
+static inline void polar_backup_history_file_path(char *path, TimeLineID tli, XLogSegNo logSegNo, XLogRecPtr startpoint, int wal_segsz_bytes);
+static inline void polar_status_file_path(char *path, const char *xlog, char *suffix);
+static inline void polar_tl_history_file_path(char *path, TimeLineID tli);
+static inline void polar_xlog_file_path(char *path, TimeLineID tli, XLogSegNo logSegNo, int wal_segsz_bytes);
+
+#define XLogFilePath(a,b,c,d)				polar_xlog_file_path(a,b,c,d)
+#define TLHistoryFilePath(a,b)				polar_tl_history_file_path(a,b)
+#define StatusFilePath(a,b,c)				polar_status_file_path(a,b,c)
+#define BackupHistoryFilePath(a,b,c,d,e)	polar_backup_history_file_path(a,b,c,d,e)
+
+/*
+ * POLAR: Extend from XLogFilePath
+ */
+static inline void
+polar_xlog_file_path(char *path, TimeLineID tli, XLogSegNo logSegNo, int wal_segsz_bytes)
+{
+	if (polar_enable_shared_storage_mode)
+	{
+		snprintf(path, MAXPGPATH, "%s/" XLOGDIR "/%08X%08X%08X", polar_datadir, tli,
+				 (uint32) ((logSegNo) / XLogSegmentsPerXLogId(wal_segsz_bytes)),
+				 (uint32) ((logSegNo) % XLogSegmentsPerXLogId(wal_segsz_bytes)));
+	}
+	else
+	{
+		snprintf(path, MAXPGPATH, XLOGDIR "/%08X%08X%08X", tli,
+				 (uint32) ((logSegNo) / XLogSegmentsPerXLogId(wal_segsz_bytes)),
+				 (uint32) ((logSegNo) % XLogSegmentsPerXLogId(wal_segsz_bytes)));
+	}
+}
+
+/*
+ * POLAR: Extend from TLHistoryFilePath
+ */
+static inline void
+polar_tl_history_file_path(char *path, TimeLineID tli)
+{
+	if (polar_enable_shared_storage_mode)
+		snprintf(path, MAXPGPATH, "%s/" XLOGDIR "/%08X.history", polar_datadir, tli);
+	else
+		snprintf(path, MAXPGPATH, XLOGDIR "/%08X.history", tli);
+}
+
+/*
+ * POLAR: StatusFilePath
+ */
+static inline void
+polar_status_file_path(char *path, const char *xlog, char *suffix)
+{
+	if (polar_enable_shared_storage_mode)
+		snprintf(path, MAXPGPATH, "%s/" XLOGDIR "/archive_status/%s%s", polar_datadir, xlog, suffix);
+	else
+		snprintf(path, MAXPGPATH, XLOGDIR "/archive_status/%s%s", xlog, suffix);
+}
+
+/*
+ * POLAR: Extend from BackupHistoryFilePath
+ */
+static inline void
+polar_backup_history_file_path(char *path, TimeLineID tli, XLogSegNo logSegNo, XLogRecPtr startpoint, int wal_segsz_bytes)
+{
+	if (polar_enable_shared_storage_mode)
+	{
+		snprintf(path, MAXPGPATH, "%s/" XLOGDIR "/%08X%08X%08X.%08X.backup", polar_datadir, tli,
+				 (uint32) ((logSegNo) / XLogSegmentsPerXLogId(wal_segsz_bytes)),
+				 (uint32) ((logSegNo) % XLogSegmentsPerXLogId(wal_segsz_bytes)),
+				 (uint32) (XLogSegmentOffset((startpoint), wal_segsz_bytes)));
+	}
+	else
+	{
+		snprintf(path, MAXPGPATH, XLOGDIR "/%08X%08X%08X.%08X.backup", tli,
+				 (uint32) ((logSegNo) / XLogSegmentsPerXLogId(wal_segsz_bytes)),
+				 (uint32) ((logSegNo) % XLogSegmentsPerXLogId(wal_segsz_bytes)),
+				 (uint32) (XLogSegmentOffset((startpoint), wal_segsz_bytes)));
+	}
+}
+
+
+extern XLogRecData *polar_get_main_data_head(void);
+extern uint32 polar_get_main_data_len(void);
+extern void polar_set_main_data(void *data, uint32 len);
+extern void polar_reset_main_data(void);
+
+/* POLAR end */
 
 #endif							/* XLOG_INTERNAL_H */

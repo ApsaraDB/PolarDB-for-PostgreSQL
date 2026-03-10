@@ -61,6 +61,17 @@ extern void UnlockRelationForExtension(Relation relation, LOCKMODE lockmode);
 extern bool ConditionalLockRelationForExtension(Relation relation,
 												LOCKMODE lockmode);
 extern int	RelationExtensionLockWaiterCount(Relation relation);
+extern void LockRelationForkForExtension(RelFileLocator rlocator,
+										 ForkNumber forknum,
+										 LOCKMODE lockmode);
+extern void UnlockRelationForkForExtension(RelFileLocator rlocator,
+										   ForkNumber forknum,
+										   LOCKMODE lockmode);
+extern bool ConditionalLockRelationForkForExtension(RelFileLocator rlocator,
+													ForkNumber forknum,
+													LOCKMODE lockmode);
+extern int	RelationForkExtensionLockWaiterCount(RelFileLocator rlocator,
+												 ForkNumber forknum);
 
 /* Lock to recompute pg_database.datfrozenxid in the current database */
 extern void LockDatabaseFrozenIds(LOCKMODE lockmode);

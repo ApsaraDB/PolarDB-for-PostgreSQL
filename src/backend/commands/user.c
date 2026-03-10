@@ -3,6 +3,7 @@
  * user.c
  *	  Commands for manipulating roles (formerly called users).
  *
+ * Portions Copyright (c) 2026, Alibaba Group Holding Limited
  * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -354,6 +355,12 @@ CreateRole(ParseState *pstate, CreateRoleStmt *stmt)
 				 errmsg("role name \"%s\" is reserved",
 						stmt->role),
 				 errdetail("Role names starting with \"pg_\" are reserved.")));
+
+	/* POLAR: must be superuser to alter superuser, for twice check */
+	if (issuper && !superuser())
+		ereport(ERROR,
+				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+				 errmsg("must be superuser to alter superuser roles or change superuser attribute")));
 
 	/*
 	 * If built with appropriate switch, whine when regression-testing

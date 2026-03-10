@@ -54,7 +54,7 @@ static int	getCopyStart(PGconn *conn, ExecStatusType copytype);
 static int	getReadyForQuery(PGconn *conn);
 static void reportErrorPosition(PQExpBuffer msg, const char *query,
 								int loc, int encoding);
-static size_t build_startup_packet(const PGconn *conn, char *packet,
+static size_t build_startup_packet(PGconn *conn, char *packet,
 								   const PQEnvironmentOption *options);
 
 
@@ -1643,6 +1643,18 @@ getReadyForQuery(PGconn *conn)
 			break;
 	}
 
+	if (conn->polar_proxy_send_lsn)
+	{
+		uint64		lsn;
+		char		lsn_s[18];
+
+		if (pqGetnchar((char *) &lsn, 8, conn))
+			return EOF;
+		lsn = pg_ntoh64(lsn);
+		snprintf(lsn_s, 18, "%X/%X", (uint32) (lsn >> 32), (uint32) (lsn));
+		setenv("_polar_proxy_lsn", lsn_s, 1);
+	}
+
 	return 0;
 }
 
@@ -2299,7 +2311,7 @@ add_size_overflow(size_t s1, size_t s2, size_t *dst)
  * of bytes used, or zero in the unlikely event of size_t overflow.
  */
 static size_t
-build_startup_packet(const PGconn *conn, char *packet,
+build_startup_packet(PGconn *conn, char *packet,
 					 const PQEnvironmentOption *options)
 {
 	size_t		packet_len = 0;
@@ -2355,6 +2367,13 @@ build_startup_packet(const PGconn *conn, char *packet,
 		{
 			if (pg_strcasecmp(val, "default") != 0)
 				ADD_STARTUP_OPTION(next_eo->pgName, val);
+			if (pg_strcasecmp(next_eo->envName, "_polar_proxy_send_lsn") == 0)
+			{
+				if (pg_strcasecmp(val, "true") == 0 ||
+					pg_strcasecmp(val, "on") == 0 ||
+					pg_strcasecmp(val, "1") == 0)
+					conn->polar_proxy_send_lsn = true;
+			}
 		}
 	}
 

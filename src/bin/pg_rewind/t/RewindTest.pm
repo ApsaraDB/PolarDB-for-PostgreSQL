@@ -130,7 +130,7 @@ sub setup_cluster
 	# checkpoints in the tests.
 	$node_primary->append_conf(
 		'postgresql.conf', qq(
-wal_keep_size = 320MB
+wal_keep_size = 1GB
 allow_in_place_tablespaces = on
 ));
 	return;
@@ -174,6 +174,7 @@ sub create_standby
 	$node_standby->append_conf(
 		"postgresql.conf", qq(
 primary_conninfo='$connstr_primary'
+polar_enable_physical_repl_non_super_wal_snd = true
 ));
 
 	$node_standby->set_standby_mode();

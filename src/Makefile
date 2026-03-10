@@ -24,6 +24,7 @@ SUBDIRS = \
 	backend/replication/libpqwalreceiver \
 	backend/replication/pgoutput \
 	fe_utils \
+	polar_vfs \
 	bin \
 	pl \
 	makefiles \
@@ -33,6 +34,11 @@ SUBDIRS = \
 
 ifeq ($(with_llvm), yes)
 SUBDIRS += backend/jit/llvm
+endif
+
+# POLAR: install injection_points for some test scripts
+ifeq ($(enable_injection_points),yes)
+SUBDIRS += test/modules/injection_points
 endif
 
 # There are too many interdependencies between the subdirectories, so
@@ -70,7 +76,7 @@ distclean:
 	$(MAKE) -C tutorial NO_PGXS=1 $@
 	$(MAKE) -C test/isolation $@
 	$(MAKE) -C tools/pg_bsd_indent $@
-	rm -f Makefile.port Makefile.global
+	rm -f Makefile.port Makefile.global Makefile.precheck
 
 
 .PHONY: install-local installdirs-local uninstall-local

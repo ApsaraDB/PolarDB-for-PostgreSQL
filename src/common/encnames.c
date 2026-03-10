@@ -3,6 +3,7 @@
  * encnames.c
  *	  Encoding names and routines for working with them.
  *
+ * Portions Copyright (c) 2024, Alibaba Group Holding Limited
  * Portions Copyright (c) 2001-2024, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
@@ -448,9 +449,18 @@ static const char *const pg_enc2icu_tbl[] =
 	[PG_WIN1255] = "CP1255",
 	[PG_WIN1257] = "CP1257",
 	[PG_KOI8U] = "KOI8-U",
+	[PG_SJIS] = NULL,
+	[PG_BIG5] = NULL,
+	[PG_GBK] = "GBK",			/* GBK (Windows-936) (POLAR) */
+	[PG_UHC] = NULL,
+	[PG_GB18030] = "GB18030"	/* GB18030 (POLAR) */
 };
 
-StaticAssertDecl(lengthof(pg_enc2icu_tbl) == PG_ENCODING_BE_LAST + 1,
+/*
+ * POLAR: PG_ENCODING_BE_LAST need to plus GBK and GB18030 GBK and GB18030
+ * is supported by server encoding while keep numbering still
+ */
+StaticAssertDecl(lengthof(pg_enc2icu_tbl) == PG_ENCODING_BE_LAST + 6,
 				 "pg_enc2icu_tbl incomplete");
 
 
@@ -513,6 +523,12 @@ int
 pg_valid_server_encoding_id(int encoding)
 {
 	return PG_VALID_BE_ENCODING(encoding);
+}
+
+int
+pg_valid_server_origin_encoding_id(int encoding)
+{
+	return PG_VALID_BE_ORGIN_ENCODING(encoding);
 }
 
 /*

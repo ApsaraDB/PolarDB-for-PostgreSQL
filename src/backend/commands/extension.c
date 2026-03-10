@@ -1833,6 +1833,16 @@ get_required_extension(char *reqExtensionName,
 {
 	Oid			reqExtensionOid;
 
+	/*
+	 * POLAR: make auto cascade if the extension in the
+	 * polar_auto_cascade_extensions
+	 */
+	if (polar_find_in_string_list(extensionName, polar_auto_cascade_extensions))
+	{
+		cascade = true;
+	}
+	/* POLAR end */
+
 	reqExtensionOid = get_extension_oid(reqExtensionName, true);
 	if (!OidIsValid(reqExtensionOid))
 	{
@@ -1858,9 +1868,13 @@ get_required_extension(char *reqExtensionName,
 									reqExtensionName, extensionName)));
 			}
 
-			ereport(NOTICE,
-					(errmsg("installing required extension \"%s\"",
-							reqExtensionName)));
+			/* POLAR: if auto cascade extension, donot show install message */
+			if (!polar_find_in_string_list(extensionName, polar_auto_cascade_extensions))
+			{
+				ereport(NOTICE,
+						(errmsg("installing required extension \"%s\"",
+								reqExtensionName)));
+			}
 
 			/* Add current extension to list of parents to pass down. */
 			cascade_parents = lappend(list_copy(parents), extensionName);

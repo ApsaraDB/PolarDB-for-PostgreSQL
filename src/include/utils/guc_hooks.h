@@ -179,4 +179,14 @@ extern bool check_synchronized_standby_slots(char **newval, void **extra,
 											 GucSource source);
 extern void assign_synchronized_standby_slots(const char *newval, void *extra);
 
+extern void polar_assign_unix_socket_directories(const char *newval, void *extra);
+
+extern bool polar_check_rename_wal_ready_file(char **newval, void **extra, GucSource source);
+extern void polar_assign_rename_wal_ready_file(const char *newval, void *extra);
+
+extern void polar_assign_max_standby_archive_delay(int newval, void *extra);
+extern void polar_assign_max_standby_streaming_delay(int newval, void *extra);
+extern bool polar_check_max_replica_archive_delay(int *newval, void **extra, GucSource source);
+extern bool polar_check_max_replica_streaming_delay(int *newval, void **extra, GucSource source);
+
 #endif							/* GUC_HOOKS_H */

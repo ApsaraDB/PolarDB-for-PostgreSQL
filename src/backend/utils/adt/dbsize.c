@@ -2,6 +2,7 @@
  * dbsize.c
  *		Database object size functions, and related inquiries
  *
+ * Portions Copyright (c) 2025, Alibaba Group Holding Limited
  * Copyright (c) 2002-2024, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
@@ -30,6 +31,17 @@
 #include "utils/relfilenumbermap.h"
 #include "utils/relmapper.h"
 #include "utils/syscache.h"
+
+/* POLAR */
+#include "catalog/pg_class.h"
+#include "storage/polar_fd.h"
+
+/*
+ * POLAR: GUCs.
+ */
+bool		polar_rsc_optimize_rel_size_udf;
+
+/* POLAR end */
 
 /* Divide by two and round away from zero */
 #define half_rounded(x)   (((x) + ((x) < 0 ? -1 : 1)) / 2)
@@ -77,13 +89,15 @@ db_dir_size(const char *path)
 	struct dirent *direntry;
 	DIR		   *dirdesc;
 	char		filename[MAXPGPATH * 2];
+	char		polar_fullpath[MAXPGPATH * 2];
 
-	dirdesc = AllocateDir(path);
+	polar_make_file_path_level2(polar_fullpath, (char *) path);
+	dirdesc = AllocateDir(polar_fullpath);
 
 	if (!dirdesc)
 		return 0;
 
-	while ((direntry = ReadDir(dirdesc, path)) != NULL)
+	while ((direntry = ReadDir(dirdesc, polar_fullpath)) != NULL)
 	{
 		struct stat fst;
 
@@ -93,9 +107,9 @@ db_dir_size(const char *path)
 			strcmp(direntry->d_name, "..") == 0)
 			continue;
 
-		snprintf(filename, sizeof(filename), "%s/%s", path, direntry->d_name);
+		snprintf(filename, sizeof(filename), "%s/%s", polar_fullpath, direntry->d_name);
 
-		if (stat(filename, &fst) < 0)
+		if (polar_stat(filename, &fst) < 0)
 		{
 			if (errno == ENOENT)
 				continue;
@@ -143,7 +157,7 @@ calculate_database_size(Oid dbOid)
 	totalsize = db_dir_size(pathname);
 
 	/* Scan the non-default tablespaces */
-	snprintf(dirpath, MAXPGPATH, "pg_tblspc");
+	polar_make_file_path_level2(dirpath, "pg_tblspc");
 	dirdesc = AllocateDir(dirpath);
 
 	while ((direntry = ReadDir(dirdesc, dirpath)) != NULL)
@@ -207,6 +221,7 @@ calculate_tablespace_size(Oid tblspcOid)
 	DIR		   *dirdesc;
 	struct dirent *direntry;
 	AclResult	aclresult;
+	char		polar_full_path[MAXPGPATH * 2];
 
 	/*
 	 * User must have privileges of pg_read_all_stats or have CREATE privilege
@@ -230,14 +245,16 @@ calculate_tablespace_size(Oid tblspcOid)
 		snprintf(tblspcPath, MAXPGPATH, "pg_tblspc/%u/%s", tblspcOid,
 				 TABLESPACE_VERSION_DIRECTORY);
 
-	dirdesc = AllocateDir(tblspcPath);
+	polar_make_file_path_level2(polar_full_path, tblspcPath);
+	dirdesc = AllocateDir(polar_full_path);
 
 	if (!dirdesc)
 		return -1;
 
-	while ((direntry = ReadDir(dirdesc, tblspcPath)) != NULL)
+	while ((direntry = ReadDir(dirdesc, polar_full_path)) != NULL)
 	{
 		struct stat fst;
+		char		polar_tmp_path[MAXPGPATH * 2];
 
 		CHECK_FOR_INTERRUPTS();
 
@@ -245,9 +262,10 @@ calculate_tablespace_size(Oid tblspcOid)
 			strcmp(direntry->d_name, "..") == 0)
 			continue;
 
-		snprintf(pathname, sizeof(pathname), "%s/%s", tblspcPath, direntry->d_name);
+		snprintf(polar_tmp_path, sizeof(pathname), "%s/%s", tblspcPath, direntry->d_name);
+		snprintf(pathname, sizeof(pathname), "%s/%s", polar_full_path, direntry->d_name);
 
-		if (stat(pathname, &fst) < 0)
+		if (polar_stat(pathname, &fst) < 0)
 		{
 			if (errno == ENOENT)
 				continue;
@@ -258,7 +276,7 @@ calculate_tablespace_size(Oid tblspcOid)
 		}
 
 		if (S_ISDIR(fst.st_mode))
-			totalsize += db_dir_size(pathname);
+			totalsize += db_dir_size(polar_tmp_path);
 
 		totalsize += fst.st_size;
 	}
@@ -298,6 +316,80 @@ pg_tablespace_size_name(PG_FUNCTION_ARGS)
 }
 
 
+static BlockNumber
+calculate_relation_size_fast_path(Relation rel, ForkNumber forknum)
+{
+	SMgrRelation reln;
+	BlockNumber nblocks;
+
+	/*
+	 * No size if the relation does not have storage.
+	 */
+	if (!RELKIND_HAS_STORAGE(rel->rd_rel->relkind))
+	{
+		return 0;
+	}
+
+	/*
+	 * No size for INIT_FORKNUM if it is not an unlogged table.
+	 */
+	if (rel->rd_rel->relpersistence != RELPERSISTENCE_UNLOGGED &&
+		forknum == INIT_FORKNUM)
+	{
+		return 0;
+	}
+
+	/*
+	 * No size for VM if it is an index.
+	 */
+	if (rel->rd_rel->relkind == RELKIND_INDEX &&
+		forknum == VISIBILITYMAP_FORKNUM)
+	{
+		return 0;
+	}
+
+	/*
+	 * FSM is not used during replication, so always ask file system for its
+	 * size.
+	 */
+	if (!polar_is_primary() && forknum == FSM_FORKNUM)
+		return InvalidBlockNumber;
+
+	/*
+	 * VM is sometimes not WAL-logged, so always ask file system on replica.
+	 */
+	if (polar_is_replica() && forknum == VISIBILITYMAP_FORKNUM)
+		return InvalidBlockNumber;
+
+	/*
+	 * Check if RSC can be used. If not, ask for file system.
+	 */
+	reln = RelationGetSmgr(rel);
+	if (!POLAR_RSC_AVAILABLE(reln, forknum))
+		return InvalidBlockNumber;
+
+	/*
+	 * Search RSC in memory to see if we can avoid I/O.
+	 */
+	nblocks = polar_rsc_search_entry(reln, forknum,
+									 POLAR_RSC_SEARCH_MEMORY_ONLY);
+	if (nblocks != InvalidBlockNumber)
+		return nblocks;
+
+	/*
+	 * We do not have nblocks in memory, so we have to ask file system. But we
+	 * can cache the result in RSC for future use.
+	 *
+	 * NOTE: we need to tell RSC that we don't know if the file exists. So RSC
+	 * should take care of it.
+	 */
+	nblocks = polar_rsc_search_entry(reln, forknum,
+									 POLAR_RSC_NOEXIST_SEARCH_AND_EVICT);
+	Assert(nblocks != InvalidBlockNumber);
+
+	return nblocks;
+}
+
 /*
  * calculate size of (one fork of) a relation
  *
@@ -305,13 +397,29 @@ pg_tablespace_size_name(PG_FUNCTION_ARGS)
  * is no check here or at the call sites for that.
  */
 static int64
-calculate_relation_size(RelFileLocator *rfn, ProcNumber backend, ForkNumber forknum)
+calculate_relation_size(Relation rel, ForkNumber forknum)
 {
 	int64		totalsize = 0;
 	char	   *relationpath;
 	char		pathname[MAXPGPATH];
 	unsigned int segcount = 0;
+	RelFileLocator *rfn;
+	ProcNumber	backend;
 
+	/*
+	 * POLAR RSC: try to get relation size in a faster way.
+	 */
+	if (polar_rsc_optimize_rel_size_udf)
+	{
+		BlockNumber nblocks = calculate_relation_size_fast_path(rel, forknum);
+
+		if (nblocks != InvalidBlockNumber)
+			return (int64) nblocks * BLCKSZ;
+	}
+	/* POLAR end */
+
+	rfn = &(rel->rd_locator);
+	backend = rel->rd_backend;
 	relationpath = relpathbackend(*rfn, backend, forknum);
 
 	for (segcount = 0;; segcount++)
@@ -327,7 +435,7 @@ calculate_relation_size(RelFileLocator *rfn, ProcNumber backend, ForkNumber fork
 			snprintf(pathname, MAXPGPATH, "%s.%u",
 					 relationpath, segcount);
 
-		if (stat(pathname, &fst) < 0)
+		if (polar_stat(pathname, &fst) < 0)
 		{
 			if (errno == ENOENT)
 				break;
@@ -362,7 +470,7 @@ pg_relation_size(PG_FUNCTION_ARGS)
 	if (rel == NULL)
 		PG_RETURN_NULL();
 
-	size = calculate_relation_size(&(rel->rd_locator), rel->rd_backend,
+	size = calculate_relation_size(rel,
 								   forkname_to_number(text_to_cstring(forkName)));
 
 	relation_close(rel, AccessShareLock);
@@ -387,8 +495,7 @@ calculate_toast_table_size(Oid toastrelid)
 
 	/* toast heap size, including FSM and VM size */
 	for (forkNum = 0; forkNum <= MAX_FORKNUM; forkNum++)
-		size += calculate_relation_size(&(toastRel->rd_locator),
-										toastRel->rd_backend, forkNum);
+		size += calculate_relation_size(toastRel, forkNum);
 
 	/* toast index size, including FSM and VM size */
 	indexlist = RelationGetIndexList(toastRel);
@@ -401,8 +508,7 @@ calculate_toast_table_size(Oid toastrelid)
 		toastIdxRel = relation_open(lfirst_oid(lc),
 									AccessShareLock);
 		for (forkNum = 0; forkNum <= MAX_FORKNUM; forkNum++)
-			size += calculate_relation_size(&(toastIdxRel->rd_locator),
-											toastIdxRel->rd_backend, forkNum);
+			size += calculate_relation_size(toastIdxRel, forkNum);
 
 		relation_close(toastIdxRel, AccessShareLock);
 	}
@@ -430,8 +536,7 @@ calculate_table_size(Relation rel)
 	 * heap size, including FSM and VM
 	 */
 	for (forkNum = 0; forkNum <= MAX_FORKNUM; forkNum++)
-		size += calculate_relation_size(&(rel->rd_locator), rel->rd_backend,
-										forkNum);
+		size += calculate_relation_size(rel, forkNum);
 
 	/*
 	 * Size of toast relation
@@ -469,9 +574,7 @@ calculate_indexes_size(Relation rel)
 			idxRel = relation_open(idxOid, AccessShareLock);
 
 			for (forkNum = 0; forkNum <= MAX_FORKNUM; forkNum++)
-				size += calculate_relation_size(&(idxRel->rd_locator),
-												idxRel->rd_backend,
-												forkNum);
+				size += calculate_relation_size(idxRel, forkNum);
 
 			relation_close(idxRel, AccessShareLock);
 		}

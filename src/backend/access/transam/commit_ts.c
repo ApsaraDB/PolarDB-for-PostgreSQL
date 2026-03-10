@@ -104,6 +104,10 @@ typedef struct CommitTimestampShared
 
 static CommitTimestampShared *commitTsShared;
 
+/* POLAR: Check whether commit_ts local file cache is enabled */
+#define POLAR_ENABLE_COMMIT_TS_LOCAL_CACHE() \
+	(polar_commit_ts_max_local_cache_segments > 0 && polar_enable_shared_storage_mode)
+
 
 /* GUC variable */
 bool		track_commit_timestamp;
@@ -518,8 +522,13 @@ CommitTsShmemBuffers(void)
 Size
 CommitTsShmemSize(void)
 {
-	return SimpleLruShmemSize(CommitTsShmemBuffers(), 0) +
+	Size		sz = SimpleLruShmemSize(CommitTsShmemBuffers(), 0) +
 		sizeof(CommitTimestampShared);
+
+	if (POLAR_ENABLE_COMMIT_TS_LOCAL_CACHE())
+		sz = add_size(MAXALIGN(sz), polar_local_cache_shmem_size(polar_commit_ts_max_local_cache_segments));
+
+	return sz;
 }
 
 /*
@@ -557,12 +566,29 @@ CommitTsShmemInit(void)
 				  "pg_commit_ts", LWTRANCHE_COMMITTS_BUFFER,
 				  LWTRANCHE_COMMITTS_SLRU,
 				  SYNC_HANDLER_COMMIT_TS,
-				  false);
+				  false, POLAR_SLRU_ENABLE_SHARED_STORAGE);
 	SlruPagePrecedesUnitTests(CommitTsCtl, COMMIT_TS_XACTS_PER_PAGE);
 
 	commitTsShared = ShmemInitStruct("CommitTs shared",
 									 sizeof(CommitTimestampShared),
 									 &found);
+
+	if (POLAR_ENABLE_COMMIT_TS_LOCAL_CACHE())
+	{
+		uint32		io_permission = POLAR_CACHE_LOCAL_FILE_READ | POLAR_CACHE_LOCAL_FILE_WRITE;
+		polar_local_cache cache;
+
+		if (!polar_is_replica())
+			io_permission |= (POLAR_CACHE_SHARED_FILE_READ | POLAR_CACHE_SHARED_FILE_WRITE);
+
+		cache = polar_create_local_cache("commit_timestamp", "pg_commit_ts",
+										 polar_commit_ts_max_local_cache_segments,
+										 SLRU_PAGES_PER_SEGMENT * BLCKSZ,
+										 LWTRANCHE_POLAR_COMMIT_TS_LOCAL_CACHE,
+										 io_permission, false, NULL);
+
+		polar_slru_reg_local_cache(CommitTsCtl, cache);
+	}
 
 	if (!IsUnderPostmaster)
 	{
@@ -1070,4 +1096,41 @@ int
 committssyncfiletag(const FileTag *ftag, char *path)
 {
 	return SlruSyncFileTag(CommitTsCtl, ftag, path);
+}
+
+/* POLAR: do online promote for commit_ts */
+void
+polar_promote_commit_ts(void)
+{
+	polar_slru_promote(CommitTsCtl);
+}
+
+/* POLAR: copy committs files from shared storage to local when replica start */
+void
+polar_init_local_commit_ts(TransactionId xid, bool copy_all)
+{
+	int			start_pageno = 0,
+				res;
+	SlruScanCallback copy_condition = NULL;
+
+	Assert(polar_is_replica());
+
+	if (TransactionIdIsNormal(xid) && !copy_all)
+	{
+		start_pageno = TransactionIdToCTsPage(xid);
+		start_pageno -= start_pageno % SLRU_PAGES_PER_SEGMENT;
+		copy_condition = polar_trans_file_need_copy;
+	}
+
+	res = polar_slru_copy_shared_dir(CommitTsCtl, copy_condition, &start_pageno);
+
+	if (res)
+		polar_handle_init_local_dir_err(CommitTsCtl->Dir, res);
+}
+
+/* POLAR: remove committs local cache file */
+void
+polar_remove_commit_ts_local_cache_file(void)
+{
+	polar_slru_remove_local_cache_file(CommitTsCtl);
 }

@@ -139,6 +139,8 @@ USE_SNAPSHOT		{ return K_USE_SNAPSHOT; }
 WAIT				{ return K_WAIT; }
 UPLOAD_MANIFEST		{ return K_UPLOAD_MANIFEST; }
 
+POLAR_REPL_MODE		{ return K_POLAR_REPL_MODE; }
+
 {space}+		{ /* do nothing */ }
 
 {digit}+		{

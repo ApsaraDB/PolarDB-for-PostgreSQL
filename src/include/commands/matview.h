@@ -33,4 +33,7 @@ extern DestReceiver *CreateTransientRelDestReceiver(Oid transientoid);
 
 extern bool MatViewIncrementalMaintenanceIsEnabled(void);
 
+extern bool TableModifyIsMultiInsertsSupported(Relation rel,
+											   bool volatile_funcs);
+
 #endif							/* MATVIEW_H */

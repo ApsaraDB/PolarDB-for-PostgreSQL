@@ -975,7 +975,7 @@ _bt_allocbuf(Relation rel, Relation heaprel)
 	 * otherwise would make, as we can't use _bt_lockbuf() without introducing
 	 * a race.
 	 */
-	buf = ExtendBufferedRel(BMR_REL(rel), MAIN_FORKNUM, NULL, EB_LOCK_FIRST);
+	buf = polar_index_add_blocks(rel);
 	if (!RelationUsesLocalBuffers(rel))
 		VALGRIND_MAKE_MEM_DEFINED(BufferGetPage(buf), BLCKSZ);
 

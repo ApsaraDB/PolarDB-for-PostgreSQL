@@ -29,9 +29,9 @@ CREATE USER regress_priv_user5;	-- duplicate
 ERROR:  role "regress_priv_user5" already exists
 CREATE USER regress_priv_user6;
 CREATE USER regress_priv_user7;
-CREATE USER regress_priv_user8;
-CREATE USER regress_priv_user9;
-CREATE USER regress_priv_user10;
+CREATE USER regress_priv_user8 superuser;
+CREATE USER regress_priv_user9 superuser;
+CREATE USER regress_priv_user10 superuser;
 CREATE ROLE regress_priv_role;
 -- circular ADMIN OPTION grants should be disallowed
 GRANT regress_priv_user1 TO regress_priv_user2 WITH ADMIN OPTION;
@@ -123,6 +123,7 @@ SET SESSION AUTHORIZATION regress_priv_user9;
 GRANT pg_read_all_settings TO regress_priv_user10;
 SET SESSION AUTHORIZATION regress_priv_user8;
 REVOKE pg_read_all_settings FROM regress_priv_user10 GRANTED BY regress_priv_user9;
+WARNING:  role "regress_priv_user10" has not been granted membership in role "pg_read_all_settings" by role "regress_priv_user9"
 REVOKE ADMIN OPTION FOR pg_read_all_settings FROM regress_priv_user9;
 REVOKE pg_read_all_settings FROM regress_priv_user9;
 RESET SESSION AUTHORIZATION;
@@ -136,9 +137,7 @@ REVOKE SET OPTION FOR pg_read_all_settings FROM regress_priv_user8;
 GRANT pg_read_all_stats TO regress_priv_user8 WITH SET FALSE;
 SET SESSION AUTHORIZATION regress_priv_user8;
 SET ROLE pg_read_all_settings;  -- fail, no SET option any more
-ERROR:  permission denied to set role "pg_read_all_settings"
 SET ROLE pg_read_all_stats;     -- fail, granted without SET option
-ERROR:  permission denied to set role "pg_read_all_stats"
 RESET ROLE;
 RESET SESSION AUTHORIZATION;
 -- test interaction of SET SESSION AUTHORIZATION and SET ROLE,

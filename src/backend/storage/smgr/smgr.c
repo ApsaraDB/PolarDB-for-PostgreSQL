@@ -40,6 +40,7 @@
  * themselves, as there could pointers to them in active use.  See
  * smgrrelease() and smgrreleaseall().
  *
+ * Portions Copyright (c) 2024, Alibaba Group Holding Limited
  * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -60,6 +61,10 @@
 #include "utils/hsearch.h"
 #include "utils/inval.h"
 
+/* POLAR */
+#include "access/polar_logindex_redo.h"
+#include "access/xlog.h"
+#include "storage/polar_rsc.h"
 
 /*
  * This struct of function pointers defines the API between smgr.c and
@@ -102,6 +107,16 @@ typedef struct f_smgr
 								  BlockNumber old_blocks, BlockNumber nblocks);
 	void		(*smgr_immedsync) (SMgrRelation reln, ForkNumber forknum);
 	void		(*smgr_registersync) (SMgrRelation reln, ForkNumber forknum);
+	/* POLAR: bulk read */
+	void		(*polar_smgr_bulkread) (SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
+										int nblocks, void *buffer);
+	/* POLAR: bulk write */
+	void		(*polar_smgr_bulkwrite) (SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
+										 int nblocks, const void *buffer, bool skipFsync);
+	/* POLAR: bulk extend */
+	void		(*polar_smgr_bulkextend) (SMgrRelation reln, ForkNumber forknum,
+										  BlockNumber blocknum, int nblocks, const void *buffer, bool skipFsync);
+	/* POLAR end */
 } f_smgr;
 
 static const f_smgr smgrsw[] = {
@@ -124,6 +139,13 @@ static const f_smgr smgrsw[] = {
 		.smgr_truncate = mdtruncate,
 		.smgr_immedsync = mdimmedsync,
 		.smgr_registersync = mdregistersync,
+		/* POLAR: bulk read */
+		.polar_smgr_bulkread = polar_mdbulkread,
+		/* POLAR: bulk write */
+		.polar_smgr_bulkwrite = polar_mdbulkwrite,
+		/* POLAR: extend batch */
+		.polar_smgr_bulkextend = polar_mdbulkextend,
+		/* POLAR end */
 	}
 };
 
@@ -230,6 +252,13 @@ smgropen(RelFileLocator rlocator, ProcNumber backend)
 		for (int i = 0; i <= MAX_FORKNUM; ++i)
 			reln->smgr_cached_nblocks[i] = InvalidBlockNumber;
 		reln->smgr_which = 0;	/* we only have md.c at present */
+
+		/*
+		 * POLAR RSC: initialization shared entry reference and generation.
+		 */
+		reln->rsc_ref = NULL;
+		reln->rsc_generation = 0;
+		/* POLAR end */
 
 		/* it is not pinned yet */
 		reln->pincount = 0;
@@ -469,6 +498,19 @@ smgrdounlinkall(SMgrRelation *rels, int nrels, bool isRedo)
 		return;
 
 	/*
+	 * POLAR: Record relation size change infomation before doing the real
+	 * work
+	 */
+	if (polar_is_replica() || polar_bg_redo_state_is_parallel(polar_logindex_redo_instance))
+	{
+		ForkNumber	forks[MAX_FORKNUM + 1] = {MAIN_FORKNUM, FSM_FORKNUM, VISIBILITYMAP_FORKNUM, INIT_FORKNUM};
+		BlockNumber nblocks[MAX_FORKNUM + 1] = {0, 0, 0, 0};
+
+		for (i = 0; i < nrels; i++)
+			POLAR_RECORD_REL_SIZE(&(rels[i]->smgr_rlocator.locator), MAX_FORKNUM + 1, forks, nblocks);
+	}
+
+	/*
 	 * Get rid of any remaining buffers for the relations.  bufmgr will just
 	 * drop them without bothering to write the contents.
 	 */
@@ -492,6 +534,14 @@ smgrdounlinkall(SMgrRelation *rels, int nrels, bool isRedo)
 	}
 
 	/*
+	 * POLAR RSC: clean up for the relation to be unlinked.
+	 */
+	if (POLAR_RSC_ENABLED())
+		for (i = 0; i < nrels; i++)
+			polar_rsc_drop_entry(&rlocators[i].locator);
+	/* POLAR end */
+
+	/*
 	 * Send a shared-inval message to force other backends to close any
 	 * dangling smgr references they may have for these rels.  We should do
 	 * this before starting the actual unlinking, in case we fail partway
@@ -509,13 +559,16 @@ smgrdounlinkall(SMgrRelation *rels, int nrels, bool isRedo)
 	 * ERROR, because we've already decided to commit or abort the current
 	 * xact.
 	 */
-
-	for (i = 0; i < nrels; i++)
+	if (!polar_is_replica())
 	{
-		int			which = rels[i]->smgr_which;
+		for (i = 0; i < nrels; i++)
+		{
+			int			which = rels[i]->smgr_which;
 
-		for (forknum = 0; forknum <= MAX_FORKNUM; forknum++)
-			smgrsw[which].smgr_unlink(rlocators[i], forknum, isRedo);
+			for (forknum = 0; forknum <= MAX_FORKNUM; forknum++)
+				smgrsw[which].smgr_unlink(rlocators[i], forknum, isRedo);
+
+		}
 	}
 
 	pfree(rlocators);
@@ -535,8 +588,22 @@ void
 smgrextend(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
 		   const void *buffer, bool skipFsync)
 {
+#ifdef NBLOCKS_DEBUG
+	BlockNumber _nblocks_old = smgrnblocks_real(reln, forknum);
+	BlockNumber _nblocks_new;
+#endif
+
 	smgrsw[reln->smgr_which].smgr_extend(reln, forknum, blocknum,
 										 buffer, skipFsync);
+
+#ifdef NBLOCKS_DEBUG
+	_nblocks_new = smgrnblocks_real(reln, forknum);
+	elog(LOG, "smgrextend: %u/%u/%u, fork %s, blk %u (+1), real: %u -> %u",
+		 reln->smgr_rlocator.locator.spcOid,
+		 reln->smgr_rlocator.locator.dbOid,
+		 reln->smgr_rlocator.locator.relNumber,
+		 forkNames[forknum], blocknum, _nblocks_old, _nblocks_new);
+#endif
 
 	/*
 	 * Normally we expect this to increase nblocks by one, but if the cached
@@ -547,6 +614,14 @@ smgrextend(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
 		reln->smgr_cached_nblocks[forknum] = blocknum + 1;
 	else
 		reln->smgr_cached_nblocks[forknum] = InvalidBlockNumber;
+
+	/*
+	 * POLAR RSC: update new blocknum into entry.
+	 */
+	if (POLAR_RSC_AVAILABLE(reln, forknum))
+		polar_rsc_update_entry(reln, forknum, blocknum + 1,
+							   POLAR_RSC_SEARCH_AND_EVICT);
+	/* POLAR end */
 }
 
 /*
@@ -560,8 +635,22 @@ void
 smgrzeroextend(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
 			   int nblocks, bool skipFsync)
 {
+#ifdef NBLOCKS_DEBUG
+	BlockNumber _nblocks_old = smgrnblocks_real(reln, forknum);
+	BlockNumber _nblocks_new;
+#endif
+
 	smgrsw[reln->smgr_which].smgr_zeroextend(reln, forknum, blocknum,
 											 nblocks, skipFsync);
+
+#ifdef NBLOCKS_DEBUG
+	_nblocks_new = smgrnblocks_real(reln, forknum);
+	elog(LOG, "smgrzeroextend: %u/%u/%u, fork %s, blk %u (+%u), real: %u -> %u",
+		 reln->smgr_rlocator.locator.spcOid,
+		 reln->smgr_rlocator.locator.dbOid,
+		 reln->smgr_rlocator.locator.relNumber,
+		 forkNames[forknum], blocknum, nblocks, _nblocks_old, _nblocks_new);
+#endif
 
 	/*
 	 * Normally we expect this to increase the fork size by nblocks, but if
@@ -572,6 +661,62 @@ smgrzeroextend(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
 		reln->smgr_cached_nblocks[forknum] = blocknum + nblocks;
 	else
 		reln->smgr_cached_nblocks[forknum] = InvalidBlockNumber;
+
+	/*
+	 * POLAR RSC: update new blocknum into entry.
+	 */
+	if (POLAR_RSC_AVAILABLE(reln, forknum))
+		polar_rsc_update_entry(reln, forknum, blocknum + nblocks,
+							   POLAR_RSC_SEARCH_AND_EVICT);
+	/* POLAR end */
+}
+
+/*
+ * polar_smgrbulkextend() -- Add new blocks to a file.
+ *
+ * The semantics are nearly the same as smgrwrite(): write at the
+ * specified position.  However, this is to be used for the case of
+ * extending a relation (i.e., blocknum is at or beyond the current
+ * EOF).  Note that we assume writing nblocks beyond current EOF
+ * causes intervening file space to become filled with zeroes.
+ */
+void
+polar_smgrbulkextend(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
+					 int nblocks, const void *buffer, bool skipFsync)
+{
+#ifdef NBLOCKS_DEBUG
+	BlockNumber _nblocks_old = smgrnblocks_real(reln, forknum);
+	BlockNumber _nblocks_new;
+#endif
+
+	smgrsw[reln->smgr_which].polar_smgr_bulkextend(reln, forknum, blocknum, nblocks, buffer, skipFsync);
+
+#ifdef NBLOCKS_DEBUG
+	_nblocks_new = smgrnblocks_real(reln, forknum);
+	elog(LOG, "polar_smgrbulkextend: %u/%u/%u, fork %s, blk %u (+%u), real: %u -> %u",
+		 reln->smgr_rlocator.locator.spcOid,
+		 reln->smgr_rlocator.locator.dbOid,
+		 reln->smgr_rlocator.locator.relNumber,
+		 forkNames[forknum], blocknum, nblocks, _nblocks_old, _nblocks_new);
+#endif
+
+	/*
+	 * Normally we expect this to increase the fork size by nblocks, but if
+	 * the cached value isn't as expected, just invalidate it so the next call
+	 * asks the kernel.
+	 */
+	if (reln->smgr_cached_nblocks[forknum] == blocknum)
+		reln->smgr_cached_nblocks[forknum] = blocknum + nblocks;
+	else
+		reln->smgr_cached_nblocks[forknum] = InvalidBlockNumber;
+
+	/*
+	 * POLAR RSC: update new blocknum into entry.
+	 */
+	if (POLAR_RSC_AVAILABLE(reln, forknum))
+		polar_rsc_update_entry(reln, forknum, blocknum + nblocks,
+							   POLAR_RSC_SEARCH_AND_EVICT);
+	/* POLAR end */
 }
 
 /*
@@ -602,6 +747,21 @@ smgrreadv(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
 {
 	smgrsw[reln->smgr_which].smgr_readv(reln, forknum, blocknum, buffers,
 										nblocks);
+}
+
+/*
+ * polar_smgrbulkread() -- read multi particular blocks from a relation into
+ *						   the supplied buffers.
+ *
+ * This routine is called from the buffer manager in order to
+ * instantiate pages in the shared buffer cache.  All storage managers
+ * return pages in the format that POSTGRES expects.
+ */
+void
+polar_smgrbulkread(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
+				   int nblocks, void *buffer)
+{
+	smgrsw[reln->smgr_which].polar_smgr_bulkread(reln, forknum, blocknum, nblocks, buffer);
 }
 
 /*
@@ -636,6 +796,29 @@ smgrwritev(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
 }
 
 /*
+ * polar_smgrbulkwrite() -- Write the supplied buffers out.
+ *
+ * This is to be used only for updating already-existing blocks of a
+ * relation (ie, those before the current EOF).  To extend a relation,
+ * use polar_smgrbulkextend().
+ *
+ * This is not a synchronous write -- the block is not necessarily
+ * on disk at return, only dumped out to the kernel.  However,
+ * provisions will be made to fsync the write before the next checkpoint.
+ *
+ * skipFsync indicates that the caller will make other provisions to
+ * fsync the relation, so we needn't bother.  Temporary relations also
+ * do not require fsync.
+ */
+void
+polar_smgrbulkwrite(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
+					int nblocks, const void *buffer, bool skipFsync)
+{
+	smgrsw[reln->smgr_which].polar_smgr_bulkwrite(reln, forknum, blocknum, nblocks,
+												  buffer, skipFsync);
+}
+
+/*
  * smgrwriteback() -- Trigger kernel writeback for the supplied range of
  *					   blocks.
  */
@@ -646,6 +829,17 @@ smgrwriteback(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
 	smgrsw[reln->smgr_which].smgr_writeback(reln, forknum, blocknum,
 											nblocks);
 }
+
+/*
+ * POLAR: original call of f_smgr level API.
+ */
+inline BlockNumber
+smgrnblocks_real(SMgrRelation reln, ForkNumber forknum)
+{
+	return smgrsw[reln->smgr_which].smgr_nblocks(reln, forknum);
+}
+
+/* POLAR end */
 
 /*
  * smgrnblocks() -- Calculate the number of blocks in the
@@ -661,7 +855,15 @@ smgrnblocks(SMgrRelation reln, ForkNumber forknum)
 	if (result != InvalidBlockNumber)
 		return result;
 
-	result = smgrsw[reln->smgr_which].smgr_nblocks(reln, forknum);
+	/*
+	 * POLAR RSC: search for nblocks value, evict and update entry if
+	 * necessary.
+	 */
+	if (POLAR_RSC_AVAILABLE(reln, forknum))
+		result = polar_rsc_search_entry(reln, forknum, POLAR_RSC_SEARCH_AND_EVICT);
+	else
+		result = smgrnblocks_real(reln, forknum);
+	/* POLAR end */
 
 	reln->smgr_cached_nblocks[forknum] = result;
 
@@ -679,14 +881,49 @@ BlockNumber
 smgrnblocks_cached(SMgrRelation reln, ForkNumber forknum)
 {
 	/*
+	 * POLAR RSC: make sure all processes will use the shared-memory-based
+	 * search/update mechanism of RSC to get accurate shared nblocks value.
+	 */
+	if (POLAR_RSC_ENABLED())
+		return InvalidBlockNumber;
+	/* POLAR end */
+
+	/*
 	 * For now, this function uses cached values only in recovery due to lack
 	 * of a shared invalidation mechanism for changes in file size.  Code
 	 * elsewhere reads smgr_cached_nblocks and copes with stale data.
+	 *
+	 * POLAR: The startup process is just parsing xlog to build logindex
+	 * without doing the real replaying work. So there's no guarantee that all
+	 * blocks of every xlog will be accessed by startup. In other words, the
+	 * cache of smgr's nblock may be not right in startup. However, in standby
+	 * parallel replaying mode, it's safe to use this smgr nblocks cache
+	 * because only startup process could extend file.
 	 */
-	if (InRecovery && reln->smgr_cached_nblocks[forknum] != InvalidBlockNumber)
+	if (InRecovery && reln->smgr_cached_nblocks[forknum] != InvalidBlockNumber &&
+		!polar_is_replica())
 		return reln->smgr_cached_nblocks[forknum];
 
 	return InvalidBlockNumber;
+}
+
+/*
+ * smgrnblocks_ensure_opened() -- Calculate the number of blocks in the
+ *								  supplied relation.
+ *
+ * This interface ensures that all segment of the relation file is opened. This
+ * should be called before mdtruncate, to make sure all segments are truncated.
+ */
+BlockNumber
+smgrnblocks_ensure_opened(SMgrRelation reln, ForkNumber forknum)
+{
+	/*
+	 * POLAR: make sure all segments are opened.
+	 */
+	if (POLAR_RSC_AVAILABLE(reln, forknum))
+		(void) smgrnblocks_real(reln, forknum);
+
+	return smgrnblocks(reln, forknum);
 }
 
 /*
@@ -704,7 +941,7 @@ smgrtruncate(SMgrRelation reln, ForkNumber *forknum, int nforks,
 	BlockNumber old_nblocks[MAX_FORKNUM + 1];
 
 	for (int i = 0; i < nforks; ++i)
-		old_nblocks[i] = smgrnblocks(reln, forknum[i]);
+		old_nblocks[i] = smgrnblocks_ensure_opened(reln, forknum[i]);
 
 	smgrtruncate2(reln, forknum, nforks, old_nblocks, nblocks);
 }
@@ -729,6 +966,10 @@ smgrtruncate2(SMgrRelation reln, ForkNumber *forknum, int nforks,
 {
 	int			i;
 
+	/* POLAR: record the new relation size to the cache */
+	POLAR_RECORD_REL_SIZE(&(reln->smgr_rlocator.locator), nforks, forknum, nblocks);
+	/* POLAR end */
+
 	/*
 	 * Get rid of any buffers for the about-to-be-deleted blocks. bufmgr will
 	 * just drop them without bothering to write the contents.
@@ -750,11 +991,35 @@ smgrtruncate2(SMgrRelation reln, ForkNumber *forknum, int nforks,
 	/* Do the truncation */
 	for (i = 0; i < nforks; i++)
 	{
+#ifdef NBLOCKS_DEBUG
+		BlockNumber _nblocks_old;
+		BlockNumber _nblocks_new;
+
+		END_CRIT_SECTION();
+		_nblocks_old = smgrnblocks_real(reln, forknum[i]);
+		START_CRIT_SECTION();
+#endif
+
+		/* Skip truncation if the new size is larger than the old size. */
+		if (InRecovery && nblocks[i] >= old_nblocks[i])
+			continue;
+
 		/* Make the cached size is invalid if we encounter an error. */
 		reln->smgr_cached_nblocks[forknum[i]] = InvalidBlockNumber;
 
 		smgrsw[reln->smgr_which].smgr_truncate(reln, forknum[i],
 											   old_nblocks[i], nblocks[i]);
+
+#ifdef NBLOCKS_DEBUG
+		END_CRIT_SECTION();
+		_nblocks_new = smgrnblocks_real(reln, forknum[i]);
+		elog(LOG, "smgrtruncate: %u/%u/%u, fork %s, %u -> %u, real: %u -> %u",
+			 reln->smgr_rlocator.locator.spcOid,
+			 reln->smgr_rlocator.locator.dbOid,
+			 reln->smgr_rlocator.locator.relNumber,
+			 forkNames[forknum[i]], old_nblocks[i], nblocks[i], _nblocks_old, _nblocks_new);
+		START_CRIT_SECTION();
+#endif
 
 		/*
 		 * We might as well update the local smgr_cached_nblocks values. The
@@ -773,6 +1038,15 @@ smgrtruncate2(SMgrRelation reln, ForkNumber *forknum, int nforks,
 		 */
 		reln->smgr_cached_nblocks[forknum[i]] =
 			nblocks[i] > old_nblocks[i] ? old_nblocks[i] : nblocks[i];
+
+		/*
+		 * POLAR RSC: update blocknum after truncate.
+		 */
+		if (POLAR_RSC_AVAILABLE(reln, forknum[i]))
+			polar_rsc_update_entry(reln, forknum[i],
+								   nblocks[i] > old_nblocks[i] ? old_nblocks[i] : nblocks[i],
+								   POLAR_RSC_SEARCH_AND_EVICT);
+		/* POLAR end */
 	}
 }
 
@@ -841,6 +1115,10 @@ smgrimmedsync(SMgrRelation reln, ForkNumber forknum)
 void
 AtEOXact_SMgr(void)
 {
+	/* POLAR RSC: release the holding reference on transaction ends */
+	polar_rsc_release_holding_ref();
+	/* POLAR end */
+
 	smgrdestroyall();
 }
 

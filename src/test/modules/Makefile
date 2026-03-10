@@ -41,8 +41,17 @@ SUBDIRS = \
 		  test_tidstore \
 		  unsafe_tests \
 		  worker_spi \
-		  xid_wraparound
+		  xid_wraparound \
+		  test_local_cache
 
+# POLAR
+SUBDIRS += test_bulkio
+SUBDIRS += test_buffer
+SUBDIRS += test_coredump_handler
+SUBDIRS += test_logindex test_procpool
+SUBDIRS += test_polar_rsc
+SUBDIRS += test_polar_shm_limit
+# POLAR end
 
 ifeq ($(enable_injection_points),yes)
 SUBDIRS += injection_points gin

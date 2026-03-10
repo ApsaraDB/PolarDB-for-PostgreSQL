@@ -1,0 +1,6 @@
+# Generated subdirectories 
+pg_cron--?.?.sql
+/log/ 
+/results/ 
+/tmp_check/ 
+/src/*.bc

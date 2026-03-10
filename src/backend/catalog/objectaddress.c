@@ -83,6 +83,7 @@
 #include "utils/acl.h"
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
+#include "utils/guc.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/regproc.h"
@@ -2535,7 +2536,11 @@ check_object_ownership(Oid roleid, ObjectType objtype, ObjectAddress address,
 		case OBJECT_TSTEMPLATE:
 		case OBJECT_ACCESS_METHOD:
 		case OBJECT_PARAMETER_ACL:
-			/* We treat these object types as being owned by superusers */
+
+			/*
+			 * POLAR_CODE: We treat these object types as being owned by
+			 * superusers
+			 */
 			if (!superuser_arg(roleid))
 				ereport(ERROR,
 						(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),

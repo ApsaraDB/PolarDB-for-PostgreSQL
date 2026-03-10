@@ -25,6 +25,7 @@ $node_primary->append_conf(
 	'postgresql.conf',
 	qq{shared_preload_libraries = 'pg_stat_statements'
 pg_stat_statements.max = 50000
+pg_stat_statements.enable_superuser_track = on
 compute_query_id = 'regress'
 });
 

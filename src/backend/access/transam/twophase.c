@@ -106,6 +106,9 @@
 #include "utils/memutils.h"
 #include "utils/timestamp.h"
 
+/* POLAR */
+#include "storage/polar_fd.h"
+
 /*
  * Directory where Two-phase commit files reside within PGDATA
  */
@@ -946,10 +949,23 @@ TwoPhaseFilePath(char *path, TransactionId xid)
 {
 	FullTransactionId fxid = AdjustToFullTransactionId(xid);
 
-	return snprintf(path, MAXPGPATH, TWOPHASE_DIR "/%08X%08X",
-					EpochFromFullTransactionId(fxid),
-					XidFromFullTransactionId(fxid));
+	if (polar_enable_shared_storage_mode && !polar_is_replica())
+		return snprintf(path, MAXPGPATH, "%s/" TWOPHASE_DIR "/%08X%08X",
+						polar_datadir,
+						EpochFromFullTransactionId(fxid),
+						XidFromFullTransactionId(fxid));
+	else
+		return snprintf(path, MAXPGPATH, TWOPHASE_DIR "/%08X%08X",
+						EpochFromFullTransactionId(fxid),
+						XidFromFullTransactionId(fxid));
 }
+
+/* POLAR */
+#define POLAR_TWOPHASE_DIR(path)  													\
+	((polar_enable_shared_storage_mode && !polar_is_replica()) ? 					\
+		snprintf(path, MAXPGPATH, "%s/" TWOPHASE_DIR, polar_datadir) : 				\
+		snprintf(path, MAXPGPATH, "%s", TWOPHASE_DIR))
+/* POLAR end */
 
 /*
  * 2PC state file format:
@@ -1251,7 +1267,7 @@ EndPrepare(GlobalTransaction gxact)
 	 * Note that at this stage we have marked the prepare, but still show as
 	 * running in the procarray (twice!) and continue to hold locks.
 	 */
-	SyncRepWaitForLSN(gxact->prepare_end_lsn, false);
+	SyncRepWaitForLSN(gxact->prepare_end_lsn, false, false);
 
 	records.tail = records.head = NULL;
 	records.num_chunks = 0;
@@ -1315,7 +1331,7 @@ ReadTwoPhaseFile(TransactionId xid, bool missing_ok)
 	 * we can't guarantee that we won't get an out of memory error anyway,
 	 * even on a valid file.
 	 */
-	if (fstat(fd, &stat))
+	if (polar_fstat(fd, &stat))
 		ereport(ERROR,
 				(errcode_for_file_access(),
 				 errmsg("could not stat file \"%s\": %m", path)));
@@ -1344,7 +1360,7 @@ ReadTwoPhaseFile(TransactionId xid, bool missing_ok)
 	buf = (char *) palloc(stat.st_size);
 
 	pgstat_report_wait_start(WAIT_EVENT_TWOPHASE_FILE_READ);
-	r = read(fd, buf, stat.st_size);
+	r = polar_read(fd, buf, stat.st_size);
 	if (r != stat.st_size)
 	{
 		if (r < 0)
@@ -1710,7 +1726,7 @@ RemoveTwoPhaseFile(TransactionId xid, bool giveWarning)
 	char		path[MAXPGPATH];
 
 	TwoPhaseFilePath(path, xid);
-	if (unlink(path))
+	if (polar_unlink(path))
 		if (errno != ENOENT || giveWarning)
 			ereport(WARNING,
 					(errcode_for_file_access(),
@@ -1747,7 +1763,7 @@ RecreateTwoPhaseFile(TransactionId xid, void *content, int len)
 	/* Write content and CRC */
 	errno = 0;
 	pgstat_report_wait_start(WAIT_EVENT_TWOPHASE_FILE_WRITE);
-	if (write(fd, content, len) != len)
+	if (polar_write(fd, content, len) != len)
 	{
 		/* if write didn't set errno, assume problem is no disk space */
 		if (errno == 0)
@@ -1756,7 +1772,7 @@ RecreateTwoPhaseFile(TransactionId xid, void *content, int len)
 				(errcode_for_file_access(),
 				 errmsg("could not write file \"%s\": %m", path)));
 	}
-	if (write(fd, &statefile_crc, sizeof(pg_crc32c)) != sizeof(pg_crc32c))
+	if (polar_write(fd, &statefile_crc, sizeof(pg_crc32c)) != sizeof(pg_crc32c))
 	{
 		/* if write didn't set errno, assume problem is no disk space */
 		if (errno == 0)
@@ -1772,7 +1788,7 @@ RecreateTwoPhaseFile(TransactionId xid, void *content, int len)
 	 * so, there being no GXACT in shared memory yet to tell it to.
 	 */
 	pgstat_report_wait_start(WAIT_EVENT_TWOPHASE_FILE_SYNC);
-	if (pg_fsync(fd) != 0)
+	if (polar_fsync(fd) != 0)
 		ereport(ERROR,
 				(errcode_for_file_access(),
 				 errmsg("could not fsync file \"%s\": %m", path)));
@@ -1808,6 +1824,7 @@ CheckPointTwoPhase(XLogRecPtr redo_horizon)
 {
 	int			i;
 	int			serialized_xacts = 0;
+	char		polar_path[MAXPGPATH];
 
 	if (max_prepared_xacts <= 0)
 		return;					/* nothing to do */
@@ -1863,7 +1880,8 @@ CheckPointTwoPhase(XLogRecPtr redo_horizon)
 	 * removals need to be made persistent as well as any files newly created
 	 * previously since the last checkpoint.
 	 */
-	fsync_fname(TWOPHASE_DIR, true);
+	POLAR_TWOPHASE_DIR(polar_path);
+	fsync_fname(polar_path, true);
 
 	TRACE_POSTGRESQL_TWOPHASE_CHECKPOINT_DONE();
 
@@ -1890,10 +1908,13 @@ restoreTwoPhaseData(void)
 {
 	DIR		   *cldir;
 	struct dirent *clde;
+	char		twophase_path[MAXPGPATH];
+
+	POLAR_TWOPHASE_DIR(twophase_path);
 
 	LWLockAcquire(TwoPhaseStateLock, LW_EXCLUSIVE);
-	cldir = AllocateDir(TWOPHASE_DIR);
-	while ((clde = ReadDir(cldir, TWOPHASE_DIR)) != NULL)
+	cldir = AllocateDir(twophase_path);
+	while ((clde = ReadDir(cldir, twophase_path)) != NULL)
 	{
 		if (strlen(clde->d_name) == 16 &&
 			strspn(clde->d_name, "0123456789ABCDEF") == 16)
@@ -2380,7 +2401,7 @@ RecordTransactionCommitPrepared(TransactionId xid,
 	 * Note that at this stage we have marked clog, but still show as running
 	 * in the procarray and continue to hold locks.
 	 */
-	SyncRepWaitForLSN(recptr, true);
+	SyncRepWaitForLSN(recptr, true, false);
 }
 
 /*
@@ -2455,7 +2476,7 @@ RecordTransactionAbortPrepared(TransactionId xid,
 	 * Note that at this stage we have marked clog, but still show as running
 	 * in the procarray and continue to hold locks.
 	 */
-	SyncRepWaitForLSN(recptr, false);
+	SyncRepWaitForLSN(recptr, false, false);
 }
 
 /*
@@ -2501,16 +2522,29 @@ PrepareRedoAdd(char *buf, XLogRecPtr start_lsn,
 	 * duplicates in TwoPhaseState.  If a consistent state has been reached,
 	 * the record is added to TwoPhaseState and it should have no
 	 * corresponding file in pg_twophase.
+	 *
+	 * POLAR: When a consistent state is reached, it is highly likely that an
+	 * empty file will be accessed here. Each time a file is accessed, the OS
+	 * creates a dentry for it and increases the reference count of the parent
+	 * directory's dentry. The type of the dentry reference count is int32.
+	 * When there are many 2PC transactions, this logic may lead to an
+	 * overflow of the parent dentry's reference count. When reclaiming a
+	 * dentry, such as during memory reclamation or when deleting the
+	 * directory, the overflow of the reference count could ultimately cause
+	 * the OS to crash. So we perform the file access checks only when the
+	 * server has not yet reached a consistent state. Once consistency has
+	 * been reached, if a duplicate 2PC transaction is added, it will directly
+	 * result in an error in the subsequent replay logic.
 	 */
-	if (!XLogRecPtrIsInvalid(start_lsn))
+	if (!XLogRecPtrIsInvalid(start_lsn) && !reachedConsistency)
 	{
 		char		path[MAXPGPATH];
 
 		TwoPhaseFilePath(path, hdr->xid);
 
-		if (access(path, F_OK) == 0)
+		if (polar_access(path, F_OK) == 0)
 		{
-			ereport(reachedConsistency ? ERROR : WARNING,
+			ereport(WARNING,
 					(errmsg("could not recover two-phase state file for transaction %u",
 							hdr->xid),
 					 errdetail("Two-phase state file has been found in WAL record %X/%X, but this transaction has already been restored from disk.",

@@ -1,0 +1,964 @@
+/*
+ * external/polar_advisor/sql/maintenance_window.sql
+ * Test the maintenance window information and functions about it.
+ * super_pg client use the window info to do vacuum and reindex.
+ */
+CREATE EXTENSION IF NOT EXISTS polar_advisor;
+NOTICE:  extension "polar_advisor" already exists, skipping
+\d+ polar_advisor.advisor_window
+                                         Table "polar_advisor.advisor_window"
+      Column       |           Type           | Collation | Nullable | Default | Storage  | Stats target | Description 
+-------------------+--------------------------+-----------+----------+---------+----------+--------------+-------------
+ start_time        | time with time zone      |           | not null |         | plain    |              | 
+ end_time          | time with time zone      |           | not null |         | plain    |              | 
+ enabled           | boolean                  |           | not null | false   | plain    |              | 
+ last_error_time   | timestamp with time zone |           |          |         | plain    |              | 
+ last_error_detail | text                     |           |          |         | extended |              | 
+ others            | jsonb                    |           |          |         | extended |              | 
+
+SET timezone TO 'PRC';
+--
+-- Check default window info
+--
+-- Window has 1 row by default
+SELECT * FROM polar_advisor.advisor_window;
+ start_time  |  end_time   | enabled | last_error_time | last_error_detail |                             others                             
+-------------+-------------+---------+-----------------+-------------------+----------------------------------------------------------------
+ 02:00:00+08 | 03:00:00+08 | f       |                 |                   | {"super_pg_version": "2.0", "super_pg_release_date": 20240730}
+(1 row)
+
+SELECT * FROM polar_advisor.get_advisor_window();
+ start_time  |  end_time   | enabled | last_error_time | last_error_detail |                             others                             
+-------------+-------------+---------+-----------------+-------------------+----------------------------------------------------------------
+ 02:00:00+08 | 03:00:00+08 | f       |                 |                   | {"super_pg_version": "2.0", "super_pg_release_date": 20240730}
+(1 row)
+
+-- Window disabled by default
+SELECT polar_advisor.is_window_enabled();
+ is_window_enabled 
+-------------------
+ f
+(1 row)
+
+-- Vacuum analyze disabled because window is disabled
+SELECT polar_advisor.is_vacuum_analyze_enabled();
+ is_vacuum_analyze_enabled 
+---------------------------
+ f
+(1 row)
+
+-- Reindex disabled by default
+SELECT polar_advisor.is_reindex_enabled();
+ is_reindex_enabled 
+--------------------
+ f
+(1 row)
+
+-- No exception by default
+SELECT polar_advisor.advisor_window_has_exception();
+ advisor_window_has_exception 
+------------------------------
+ f
+(1 row)
+
+-- Window length is 1 hour by default
+SELECT polar_advisor.get_advisor_window_length();
+ get_advisor_window_length 
+---------------------------
+               3600.000000
+(1 row)
+
+--
+-- Get/set window
+--
+-- Default window
+SELECT * FROM polar_advisor.get_advisor_window();
+ start_time  |  end_time   | enabled | last_error_time | last_error_detail |                             others                             
+-------------+-------------+---------+-----------------+-------------------+----------------------------------------------------------------
+ 02:00:00+08 | 03:00:00+08 | f       |                 |                   | {"super_pg_version": "2.0", "super_pg_release_date": 20240730}
+(1 row)
+
+-- Set window
+SELECT polar_advisor.set_advisor_window('00:00:00+08', '01:00:00+08');
+NOTICE:  window length: 60 minutes
+ set_advisor_window 
+--------------------
+ 
+(1 row)
+
+-- Get window
+SELECT * FROM polar_advisor.get_advisor_window();
+ start_time  |  end_time   | enabled | last_error_time | last_error_detail |                             others                             
+-------------+-------------+---------+-----------------+-------------------+----------------------------------------------------------------
+ 00:00:00+08 | 01:00:00+08 | t       |                 |                   | {"super_pg_version": "2.0", "super_pg_release_date": 20240730}
+(1 row)
+
+-- Update window, it's ok to cross 00:00:00
+SELECT polar_advisor.set_advisor_window('23:02:33+08', '02:10:28+08');
+NOTICE:  window length: 187 minutes
+ set_advisor_window 
+--------------------
+ 
+(1 row)
+
+-- Get window again
+SELECT * FROM polar_advisor.get_advisor_window();
+ start_time  |  end_time   | enabled | last_error_time | last_error_detail |                             others                             
+-------------+-------------+---------+-----------------+-------------------+----------------------------------------------------------------
+ 23:02:33+08 | 02:10:28+08 | t       |                 |                   | {"super_pg_version": "2.0", "super_pg_release_date": 20240730}
+(1 row)
+
+-- Set invalid window
+-- try to set a window with length 29 minutes < 30 minutes
+SELECT polar_advisor.set_advisor_window('00:00:00+08', '00:29:00+08');
+NOTICE:  window length: 29 minutes
+ERROR:  advisor window time range should be no less than 30 mins
+CONTEXT:  PL/pgSQL function polar_advisor.set_advisor_window(time with time zone,time with time zone,boolean) line 29 at RAISE
+-- It's ok to set window when there's no row in table
+DELETE FROM polar_advisor.advisor_window;
+SELECT * FROM polar_advisor.get_advisor_window();
+ start_time | end_time | enabled | last_error_time | last_error_detail | others 
+------------+----------+---------+-----------------+-------------------+--------
+(0 rows)
+
+SELECT polar_advisor.set_advisor_window('08:00:00+08', '12:00:00+08');
+NOTICE:  window length: 240 minutes
+ set_advisor_window 
+--------------------
+ 
+(1 row)
+
+SELECT * FROM polar_advisor.get_advisor_window();
+ start_time  |  end_time   | enabled | last_error_time | last_error_detail | others 
+-------------+-------------+---------+-----------------+-------------------+--------
+ 08:00:00+08 | 12:00:00+08 | t       |                 |                   | 
+(1 row)
+
+-- We cannot set window when there's more than 1 row in table because we don't know which row to update.
+INSERT INTO polar_advisor.advisor_window (start_time, end_time, enabled) VALUES ('00:00:00+08', '01:00:00+08', FALSE);
+SELECT * FROM polar_advisor.get_advisor_window();
+ start_time  |  end_time   | enabled | last_error_time | last_error_detail | others 
+-------------+-------------+---------+-----------------+-------------------+--------
+ 08:00:00+08 | 12:00:00+08 | t       |                 |                   | 
+ 00:00:00+08 | 01:00:00+08 | f       |                 |                   | 
+(2 rows)
+
+SELECT polar_advisor.set_advisor_window('11:00:00+08', '18:00:00+08');
+ERROR:  there are more than 1 window info in table, please delete them at first
+CONTEXT:  PL/pgSQL function polar_advisor.set_advisor_window(time with time zone,time with time zone,boolean) line 10 at RAISE
+SELECT * FROM polar_advisor.get_advisor_window();
+ start_time  |  end_time   | enabled | last_error_time | last_error_detail | others 
+-------------+-------------+---------+-----------------+-------------------+--------
+ 08:00:00+08 | 12:00:00+08 | t       |                 |                   | 
+ 00:00:00+08 | 01:00:00+08 | f       |                 |                   | 
+(2 rows)
+
+DELETE FROM polar_advisor.advisor_window;
+INSERT INTO polar_advisor.advisor_window (start_time, end_time, enabled) VALUES ('08:00:00+08', '12:00:00+08', FALSE);
+-- Window is enabled by default after set
+SELECT polar_advisor.disable_advisor_window();
+ disable_advisor_window 
+------------------------
+ 
+(1 row)
+
+SELECT * FROM polar_advisor.get_advisor_window();
+ start_time  |  end_time   | enabled | last_error_time | last_error_detail | others 
+-------------+-------------+---------+-----------------+-------------------+--------
+ 08:00:00+08 | 12:00:00+08 | f       |                 |                   | 
+(1 row)
+
+SELECT polar_advisor.is_window_enabled();
+ is_window_enabled 
+-------------------
+ f
+(1 row)
+
+-- enabled by default
+SELECT polar_advisor.set_advisor_window('11:00:00+08', '18:00:00+08');
+NOTICE:  window length: 420 minutes
+ set_advisor_window 
+--------------------
+ 
+(1 row)
+
+SELECT * FROM polar_advisor.get_advisor_window();
+ start_time  |  end_time   | enabled | last_error_time | last_error_detail | others 
+-------------+-------------+---------+-----------------+-------------------+--------
+ 11:00:00+08 | 18:00:00+08 | t       |                 |                   | 
+(1 row)
+
+SELECT polar_advisor.is_window_enabled();
+ is_window_enabled 
+-------------------
+ t
+(1 row)
+
+-- set window but do not enable
+SELECT polar_advisor.set_advisor_window('11:00:00+08', '18:00:00+08', false);
+NOTICE:  window length: 420 minutes
+ set_advisor_window 
+--------------------
+ 
+(1 row)
+
+SELECT * FROM polar_advisor.get_advisor_window();
+ start_time  |  end_time   | enabled | last_error_time | last_error_detail | others 
+-------------+-------------+---------+-----------------+-------------------+--------
+ 11:00:00+08 | 18:00:00+08 | f       |                 |                   | 
+(1 row)
+
+SELECT polar_advisor.is_window_enabled();
+ is_window_enabled 
+-------------------
+ f
+(1 row)
+
+-- window start time and end time have different timezone
+SELECT polar_advisor.set_advisor_window('02:00:00+00', '12:00:00+08');
+ERROR:  Window start time and end time must be in the same timezone
+CONTEXT:  PL/pgSQL function polar_advisor.set_advisor_window(time with time zone,time with time zone,boolean) line 14 at RAISE
+SELECT polar_advisor.set_advisor_window('02:00:00+08', '12:00:00+05');
+ERROR:  Window start time and end time must be in the same timezone
+CONTEXT:  PL/pgSQL function polar_advisor.set_advisor_window(time with time zone,time with time zone,boolean) line 14 at RAISE
+SELECT polar_advisor.set_advisor_window('02:00:00 UTC', '12:00:00+07');
+ERROR:  Window start time and end time must be in the same timezone
+CONTEXT:  PL/pgSQL function polar_advisor.set_advisor_window(time with time zone,time with time zone,boolean) line 14 at RAISE
+SELECT polar_advisor.set_advisor_window('02:00:00 GMT', '12:00:00+08');
+ERROR:  Window start time and end time must be in the same timezone
+CONTEXT:  PL/pgSQL function polar_advisor.set_advisor_window(time with time zone,time with time zone,boolean) line 14 at RAISE
+SELECT * FROM polar_advisor.get_advisor_window();
+ start_time  |  end_time   | enabled | last_error_time | last_error_detail | others 
+-------------+-------------+---------+-----------------+-------------------+--------
+ 11:00:00+08 | 18:00:00+08 | f       |                 |                   | 
+(1 row)
+
+-- window time zone different from system timezone
+SHOW timezone;
+ TimeZone 
+----------
+ PRC
+(1 row)
+
+-- ok
+SELECT polar_advisor.set_advisor_window('02:00:00+08', '12:00:00+08');
+NOTICE:  window length: 600 minutes
+ set_advisor_window 
+--------------------
+ 
+(1 row)
+
+-- error
+SELECT polar_advisor.set_advisor_window('02:00:00+00', '12:00:00+00');
+ERROR:  Window start/end time timezone must match the database timezone PRC
+CONTEXT:  PL/pgSQL function polar_advisor.set_advisor_window(time with time zone,time with time zone,boolean) line 18 at RAISE
+SELECT polar_advisor.set_advisor_window('02:00:00 UTC', '12:00:00 UTC');
+ERROR:  Window start/end time timezone must match the database timezone PRC
+CONTEXT:  PL/pgSQL function polar_advisor.set_advisor_window(time with time zone,time with time zone,boolean) line 18 at RAISE
+SELECT polar_advisor.set_advisor_window('02:00:00 GMT', '12:00:00 GMT');
+ERROR:  Window start/end time timezone must match the database timezone PRC
+CONTEXT:  PL/pgSQL function polar_advisor.set_advisor_window(time with time zone,time with time zone,boolean) line 18 at RAISE
+SELECT polar_advisor.set_advisor_window('02:00:00+03', '12:00:00+03');
+ERROR:  Window start/end time timezone must match the database timezone PRC
+CONTEXT:  PL/pgSQL function polar_advisor.set_advisor_window(time with time zone,time with time zone,boolean) line 18 at RAISE
+SELECT * FROM polar_advisor.get_advisor_window();
+ start_time  |  end_time   | enabled | last_error_time | last_error_detail | others 
+-------------+-------------+---------+-----------------+-------------------+--------
+ 02:00:00+08 | 12:00:00+08 | t       |                 |                   | 
+(1 row)
+
+SET timezone TO 'UTC';
+-- ok
+SELECT polar_advisor.set_advisor_window('02:00:00+00', '12:00:00+00');
+NOTICE:  window length: 600 minutes
+ set_advisor_window 
+--------------------
+ 
+(1 row)
+
+SELECT polar_advisor.set_advisor_window('02:00:00 UTC', '12:00:00 UTC');
+NOTICE:  window length: 600 minutes
+ set_advisor_window 
+--------------------
+ 
+(1 row)
+
+SELECT * FROM polar_advisor.get_advisor_window();
+ start_time  |  end_time   | enabled | last_error_time | last_error_detail | others 
+-------------+-------------+---------+-----------------+-------------------+--------
+ 02:00:00+00 | 12:00:00+00 | t       |                 |                   | 
+(1 row)
+
+-- error
+SELECT polar_advisor.set_advisor_window('02:00:00+02', '12:00:00+02');
+ERROR:  Window start/end time timezone must match the database timezone UTC
+CONTEXT:  PL/pgSQL function polar_advisor.set_advisor_window(time with time zone,time with time zone,boolean) line 18 at RAISE
+-- the left and right time zones have different names
+-- ok, they are the same
+SELECT polar_advisor.set_advisor_window('02:00:00+00', '12:00:00 GMT');
+NOTICE:  window length: 600 minutes
+ set_advisor_window 
+--------------------
+ 
+(1 row)
+
+SELECT polar_advisor.set_advisor_window('02:00:00 UTC', '12:00:00 GMT');
+NOTICE:  window length: 600 minutes
+ set_advisor_window 
+--------------------
+ 
+(1 row)
+
+SELECT * FROM polar_advisor.get_advisor_window();
+ start_time  |  end_time   | enabled | last_error_time | last_error_detail | others 
+-------------+-------------+---------+-----------------+-------------------+--------
+ 02:00:00+00 | 12:00:00+00 | t       |                 |                   | 
+(1 row)
+
+-- error
+SELECT polar_advisor.set_advisor_window('02:00:00+08', '12:00:00 GMT');
+ERROR:  Window start time and end time must be in the same timezone
+CONTEXT:  PL/pgSQL function polar_advisor.set_advisor_window(time with time zone,time with time zone,boolean) line 14 at RAISE
+SELECT polar_advisor.set_advisor_window('02:00:00+05', '12:00:00 UTC');
+ERROR:  Window start time and end time must be in the same timezone
+CONTEXT:  PL/pgSQL function polar_advisor.set_advisor_window(time with time zone,time with time zone,boolean) line 14 at RAISE
+--
+-- Enable/disable window
+--
+-- Enable window
+SELECT polar_advisor.enable_advisor_window();
+ enable_advisor_window 
+-----------------------
+ 
+(1 row)
+
+-- Window enabled now
+SELECT polar_advisor.is_window_enabled();
+ is_window_enabled 
+-------------------
+ t
+(1 row)
+
+-- Vacuum analyze enabled by default
+SELECT polar_advisor.is_vacuum_analyze_enabled();
+ is_vacuum_analyze_enabled 
+---------------------------
+ t
+(1 row)
+
+-- Reindex disabled by default
+SELECT polar_advisor.is_reindex_enabled();
+ is_reindex_enabled 
+--------------------
+ f
+(1 row)
+
+-- Disable window
+SELECT polar_advisor.disable_advisor_window();
+ disable_advisor_window 
+------------------------
+ 
+(1 row)
+
+-- Window disabled now
+SELECT polar_advisor.is_window_enabled();
+ is_window_enabled 
+-------------------
+ f
+(1 row)
+
+-- Vacuum analyze disabled due to window disabled
+SELECT polar_advisor.is_vacuum_analyze_enabled();
+ is_vacuum_analyze_enabled 
+---------------------------
+ f
+(1 row)
+
+-- Reindex disabled due to window disabled
+SELECT polar_advisor.is_reindex_enabled();
+ is_reindex_enabled 
+--------------------
+ f
+(1 row)
+
+-- reenable window for later test
+SELECT polar_advisor.enable_advisor_window();
+ enable_advisor_window 
+-----------------------
+ 
+(1 row)
+
+-- Enable vacuum analyze
+SELECT polar_advisor.enable_vacuum_analyze();
+ enable_vacuum_analyze 
+-----------------------
+ 
+(1 row)
+
+-- Vacuum enabled now
+SELECT polar_advisor.is_vacuum_analyze_enabled();
+ is_vacuum_analyze_enabled 
+---------------------------
+ t
+(1 row)
+
+-- reindex is still disabled when vacuum is enabled
+SELECT polar_advisor.is_reindex_enabled();
+ is_reindex_enabled 
+--------------------
+ f
+(1 row)
+
+-- window is enabled
+SELECT polar_advisor.is_window_enabled();
+ is_window_enabled 
+-------------------
+ t
+(1 row)
+
+-- Disable vacuum analyze
+SELECT polar_advisor.disable_vacuum_analyze();
+ disable_vacuum_analyze 
+------------------------
+ 
+(1 row)
+
+-- window still enabled after disabling only vacuum analyze
+SELECT polar_advisor.is_window_enabled();
+ is_window_enabled 
+-------------------
+ t
+(1 row)
+
+-- vacuum is disabled
+SELECT polar_advisor.is_vacuum_analyze_enabled();
+ is_vacuum_analyze_enabled 
+---------------------------
+ f
+(1 row)
+
+-- reindex is disabled by default
+SELECT polar_advisor.is_reindex_enabled();
+ is_reindex_enabled 
+--------------------
+ f
+(1 row)
+
+-- reenable vacuum for later test
+SELECT polar_advisor.enable_vacuum_analyze();
+ enable_vacuum_analyze 
+-----------------------
+ 
+(1 row)
+
+-- enable reindex
+SELECT polar_advisor.enable_reindex();
+ enable_reindex 
+----------------
+ 
+(1 row)
+
+-- reindex is enabled after enabling reindex
+SELECT polar_advisor.is_reindex_enabled();
+ is_reindex_enabled 
+--------------------
+ t
+(1 row)
+
+-- vacuum is still enabled when reindex is enabled
+SELECT polar_advisor.is_vacuum_analyze_enabled();
+ is_vacuum_analyze_enabled 
+---------------------------
+ t
+(1 row)
+
+-- window is still enabled when reindex is enabled
+SELECT polar_advisor.is_window_enabled();
+ is_window_enabled 
+-------------------
+ t
+(1 row)
+
+-- disable reindex
+SELECT polar_advisor.disable_reindex();
+ disable_reindex 
+-----------------
+ 
+(1 row)
+
+-- window still enabled after disabling only reindex
+SELECT polar_advisor.is_window_enabled();
+ is_window_enabled 
+-------------------
+ t
+(1 row)
+
+-- reindex is disabled
+SELECT polar_advisor.is_reindex_enabled();
+ is_reindex_enabled 
+--------------------
+ f
+(1 row)
+
+-- vacuum is still enabled when reindex is disabled
+SELECT polar_advisor.is_vacuum_analyze_enabled();
+ is_vacuum_analyze_enabled 
+---------------------------
+ t
+(1 row)
+
+-- Disabled due to exception
+SELECT polar_advisor.report_exception('test exception');
+ report_exception 
+------------------
+ 
+(1 row)
+
+SELECT start_time, end_time, enabled, last_error_time IS NOT NULL, last_error_detail, others FROM polar_advisor.get_advisor_window();
+ start_time  |  end_time   | enabled | ?column? | last_error_detail |                           others                           
+-------------+-------------+---------+----------+-------------------+------------------------------------------------------------
+ 02:00:00+00 | 12:00:00+00 | f       | t        | test exception    | {"reindex_enabled": false, "vacuum_analyze_enabled": true}
+(1 row)
+
+SELECT polar_advisor.is_window_enabled();
+ is_window_enabled 
+-------------------
+ f
+(1 row)
+
+SELECT polar_advisor.is_vacuum_analyze_enabled();
+ is_vacuum_analyze_enabled 
+---------------------------
+ f
+(1 row)
+
+SELECT polar_advisor.is_reindex_enabled();
+ is_reindex_enabled 
+--------------------
+ f
+(1 row)
+
+SELECT polar_advisor.clear_exception();
+ clear_exception 
+-----------------
+ 
+(1 row)
+
+-- Disabled when more than 1 row in window because we don't know which row to use.
+INSERT INTO polar_advisor.advisor_window (start_time, end_time, enabled) VALUES ('00:00:00+08', '01:00:00+08', FALSE);
+SELECT * FROM polar_advisor.get_advisor_window();
+ start_time  |  end_time   | enabled | last_error_time | last_error_detail |                           others                           
+-------------+-------------+---------+-----------------+-------------------+------------------------------------------------------------
+ 02:00:00+00 | 12:00:00+00 | f       |                 |                   | {"reindex_enabled": false, "vacuum_analyze_enabled": true}
+ 00:00:00+08 | 01:00:00+08 | f       |                 |                   | 
+(2 rows)
+
+SELECT polar_advisor.is_window_enabled();
+ is_window_enabled 
+-------------------
+ f
+(1 row)
+
+SELECT polar_advisor.is_vacuum_analyze_enabled();
+ is_vacuum_analyze_enabled 
+---------------------------
+ f
+(1 row)
+
+SELECT polar_advisor.is_reindex_enabled();
+ is_reindex_enabled 
+--------------------
+ f
+(1 row)
+
+-- Disabled when no row in window
+DELETE FROM polar_advisor.advisor_window;
+SELECT * FROM polar_advisor.get_advisor_window();
+ start_time | end_time | enabled | last_error_time | last_error_detail | others 
+------------+----------+---------+-----------------+-------------------+--------
+(0 rows)
+
+SELECT polar_advisor.is_window_enabled();
+ is_window_enabled 
+-------------------
+ f
+(1 row)
+
+SELECT polar_advisor.is_vacuum_analyze_enabled();
+ is_vacuum_analyze_enabled 
+---------------------------
+ f
+(1 row)
+
+SELECT polar_advisor.is_reindex_enabled();
+ is_reindex_enabled 
+--------------------
+ f
+(1 row)
+
+--
+-- Window start/end time and length
+--
+SET timezone TO 'Asia/Shanghai';
+SELECT polar_advisor.set_advisor_window('00:00:00+08', '01:00:00+08');
+NOTICE:  window length: 60 minutes
+ set_advisor_window 
+--------------------
+ 
+(1 row)
+
+-- get length, 1 hour
+SELECT * FROM polar_advisor.get_advisor_window();
+ start_time  |  end_time   | enabled | last_error_time | last_error_detail | others 
+-------------+-------------+---------+-----------------+-------------------+--------
+ 00:00:00+08 | 01:00:00+08 | t       |                 |                   | 
+(1 row)
+
+SELECT polar_advisor.get_advisor_window_length();
+ get_advisor_window_length 
+---------------------------
+               3600.000000
+(1 row)
+
+-- update window and get length again, 10+ hours
+SELECT polar_advisor.set_advisor_window('08:22:00+08', '18:23:17+08');
+NOTICE:  window length: 601 minutes
+ set_advisor_window 
+--------------------
+ 
+(1 row)
+
+SELECT * FROM polar_advisor.get_advisor_window();
+ start_time  |  end_time   | enabled | last_error_time | last_error_detail | others 
+-------------+-------------+---------+-----------------+-------------------+--------
+ 08:22:00+08 | 18:23:17+08 | t       |                 |                   | 
+(1 row)
+
+SELECT polar_advisor.get_advisor_window_length();
+ get_advisor_window_length 
+---------------------------
+              36077.000000
+(1 row)
+
+SELECT polar_advisor.set_advisor_window('00:00:00+08', '01:00:00+08');
+NOTICE:  window length: 60 minutes
+ set_advisor_window 
+--------------------
+ 
+(1 row)
+
+-- get seconds to window start time. We cannot show the real value because it's different every time.
+SELECT secs_to_window_start > 0, time_now IS NOT NULL, window_start, window_end FROM polar_advisor.get_secs_to_advisor_window_start();
+ ?column? | ?column? | window_start | window_end  
+----------+----------+--------------+-------------
+ t        | t        | 00:00:00+08  | 01:00:00+08
+(1 row)
+
+-- 1 hour
+SELECT secs_to_window_start, time_now, window_start, window_end FROM polar_advisor.get_secs_to_advisor_window_start(current_t => '23:00:00+08');
+ secs_to_window_start |  time_now   | window_start | window_end  
+----------------------+-------------+--------------+-------------
+                 3600 | 23:00:00+08 | 00:00:00+08  | 01:00:00+08
+(1 row)
+
+-- 0 hour
+SELECT secs_to_window_start, time_now, window_start, window_end FROM polar_advisor.get_secs_to_advisor_window_start(current_t => '00:00:00+08');
+ secs_to_window_start |  time_now   | window_start | window_end  
+----------------------+-------------+--------------+-------------
+                    0 | 00:00:00+08 | 00:00:00+08  | 01:00:00+08
+(1 row)
+
+-- 23 hour
+SELECT secs_to_window_start, time_now, window_start, window_end FROM polar_advisor.get_secs_to_advisor_window_start(current_t => '01:00:00+08');
+ secs_to_window_start |  time_now   | window_start | window_end  
+----------------------+-------------+--------------+-------------
+                82800 | 01:00:00+08 | 00:00:00+08  | 01:00:00+08
+(1 row)
+
+-- get seconds to window end time. We cannot show the real value because it's different every time.
+SELECT secs_to_window_end IS NOT NULL, time_now IS NOT NULL, window_start, window_end FROM polar_advisor.get_secs_to_advisor_window_end();
+ ?column? | ?column? | window_start | window_end  
+----------+----------+--------------+-------------
+ t        | t        | 00:00:00+08  | 01:00:00+08
+(1 row)
+
+-- 2 hour
+SELECT secs_to_window_end, time_now, window_start, window_end FROM polar_advisor.get_secs_to_advisor_window_end(current_t => '22:50:00+08');
+ secs_to_window_end |  time_now   | window_start | window_end  
+--------------------+-------------+--------------+-------------
+               7200 | 22:50:00+08 | 00:00:00+08  | 01:00:00+08
+(1 row)
+
+SELECT secs_to_window_end, time_now, window_start, window_end FROM polar_advisor.get_secs_to_advisor_window_end(current_t => '23:00:00+08');
+ secs_to_window_end |  time_now   | window_start | window_end  
+--------------------+-------------+--------------+-------------
+               6600 | 23:00:00+08 | 00:00:00+08  | 01:00:00+08
+(1 row)
+
+SELECT secs_to_window_end, time_now, window_start, window_end FROM polar_advisor.get_secs_to_advisor_window_end(current_t => '23:00:00+08', time_reserved => INTERVAL '0s');
+ secs_to_window_end |  time_now   | window_start | window_end  
+--------------------+-------------+--------------+-------------
+               7200 | 23:00:00+08 | 00:00:00+08  | 01:00:00+08
+(1 row)
+
+-- 1 hour
+SELECT secs_to_window_end, time_now, window_start, window_end FROM polar_advisor.get_secs_to_advisor_window_end(current_t => '23:50:00+08');
+ secs_to_window_end |  time_now   | window_start | window_end  
+--------------------+-------------+--------------+-------------
+               3600 | 23:50:00+08 | 00:00:00+08  | 01:00:00+08
+(1 row)
+
+SELECT secs_to_window_end, time_now, window_start, window_end FROM polar_advisor.get_secs_to_advisor_window_end(current_t => '00:00:00+08');
+ secs_to_window_end |  time_now   | window_start | window_end  
+--------------------+-------------+--------------+-------------
+               3000 | 00:00:00+08 | 00:00:00+08  | 01:00:00+08
+(1 row)
+
+-- 0 hour
+SELECT secs_to_window_end, time_now, window_start, window_end FROM polar_advisor.get_secs_to_advisor_window_end(current_t => '00:50:00+08');
+ secs_to_window_end |  time_now   | window_start | window_end  
+--------------------+-------------+--------------+-------------
+                  0 | 00:50:00+08 | 00:00:00+08  | 01:00:00+08
+(1 row)
+
+SELECT secs_to_window_end, time_now, window_start, window_end FROM polar_advisor.get_secs_to_advisor_window_end(current_t => '01:00:00+08');
+ secs_to_window_end |  time_now   | window_start | window_end  
+--------------------+-------------+--------------+-------------
+              85800 | 01:00:00+08 | 00:00:00+08  | 01:00:00+08
+(1 row)
+
+-- 23 hour
+SELECT secs_to_window_end, time_now, window_start, window_end FROM polar_advisor.get_secs_to_advisor_window_end(current_t => '01:50:00+08');
+ secs_to_window_end |  time_now   | window_start | window_end  
+--------------------+-------------+--------------+-------------
+              82800 | 01:50:00+08 | 00:00:00+08  | 01:00:00+08
+(1 row)
+
+SELECT secs_to_window_end, time_now, window_start, window_end FROM polar_advisor.get_secs_to_advisor_window_end(current_t => '02:00:00+08');
+ secs_to_window_end |  time_now   | window_start | window_end  
+--------------------+-------------+--------------+-------------
+              82200 | 02:00:00+08 | 00:00:00+08  | 01:00:00+08
+(1 row)
+
+-- error, timezone mismatch
+SELECT secs_to_window_start, time_now, window_start, window_end FROM polar_advisor.get_secs_to_advisor_window_start(current_t => '01:00:00+03');
+ERROR:  The parameter timezone must match the window timezone
+CONTEXT:  PL/pgSQL function polar_advisor.get_secs_to_advisor_window_start(time with time zone) line 11 at RAISE
+SELECT secs_to_window_start, time_now, window_start, window_end FROM polar_advisor.get_secs_to_advisor_window_start(current_t => '01:00:00 GMT');
+ERROR:  The parameter timezone must match the window timezone
+CONTEXT:  PL/pgSQL function polar_advisor.get_secs_to_advisor_window_start(time with time zone) line 11 at RAISE
+SELECT secs_to_window_end, time_now, window_start, window_end FROM polar_advisor.get_secs_to_advisor_window_end(current_t => '02:00:00+05');
+ERROR:  The parameter timezone must match the window timezone
+CONTEXT:  PL/pgSQL function polar_advisor.get_secs_to_advisor_window_end(time with time zone,interval) line 11 at RAISE
+SELECT secs_to_window_end, time_now, window_start, window_end FROM polar_advisor.get_secs_to_advisor_window_end(current_t => '02:00:00 UTC');
+ERROR:  The parameter timezone must match the window timezone
+CONTEXT:  PL/pgSQL function polar_advisor.get_secs_to_advisor_window_end(time with time zone,interval) line 11 at RAISE
+SET timezone TO 'UTC';
+SELECT secs_to_window_start, time_now, window_start, window_end FROM polar_advisor.get_secs_to_advisor_window_start(current_t => '01:00:00+08');
+ERROR:  The parameter timezone must match the database timezone UTC
+CONTEXT:  PL/pgSQL function polar_advisor.get_secs_to_advisor_window_start(time with time zone) line 15 at RAISE
+SELECT secs_to_window_start, time_now, window_start, window_end FROM polar_advisor.get_secs_to_advisor_window_start(current_t => '01:00:00+03');
+ERROR:  The parameter timezone must match the window timezone
+CONTEXT:  PL/pgSQL function polar_advisor.get_secs_to_advisor_window_start(time with time zone) line 11 at RAISE
+SELECT secs_to_window_start, time_now, window_start, window_end FROM polar_advisor.get_secs_to_advisor_window_start(current_t => '01:00:00 GMT');
+ERROR:  The parameter timezone must match the window timezone
+CONTEXT:  PL/pgSQL function polar_advisor.get_secs_to_advisor_window_start(time with time zone) line 11 at RAISE
+SELECT secs_to_window_end, time_now, window_start, window_end FROM polar_advisor.get_secs_to_advisor_window_end(current_t => '02:00:00+08');
+ERROR:  The parameter timezone must match the database timezone UTC
+CONTEXT:  PL/pgSQL function polar_advisor.get_secs_to_advisor_window_end(time with time zone,interval) line 15 at RAISE
+SELECT secs_to_window_end, time_now, window_start, window_end FROM polar_advisor.get_secs_to_advisor_window_end(current_t => '02:00:00+05');
+ERROR:  The parameter timezone must match the window timezone
+CONTEXT:  PL/pgSQL function polar_advisor.get_secs_to_advisor_window_end(time with time zone,interval) line 11 at RAISE
+SELECT secs_to_window_end, time_now, window_start, window_end FROM polar_advisor.get_secs_to_advisor_window_end(current_t => '02:00:00 UTC');
+ERROR:  The parameter timezone must match the window timezone
+CONTEXT:  PL/pgSQL function polar_advisor.get_secs_to_advisor_window_end(time with time zone,interval) line 11 at RAISE
+--
+-- In-window check, this is very important because super_pg need this to decide when to vacuum
+--
+SET timezone TO 'Asia/Shanghai';
+SHOW timezone;
+   TimeZone    
+---------------
+ Asia/Shanghai
+(1 row)
+
+-- normal window
+SELECT polar_advisor.set_advisor_window('00:00:00+08', '01:00:00+08');
+NOTICE:  window length: 60 minutes
+ set_advisor_window 
+--------------------
+ 
+(1 row)
+
+SELECT * FROM polar_advisor.get_advisor_window();
+ start_time  |  end_time   | enabled | last_error_time | last_error_detail | others 
+-------------+-------------+---------+-----------------+-------------------+--------
+ 00:00:00+08 | 01:00:00+08 | t       |                 |                   | 
+(1 row)
+
+-- sometimes in window and sometimes not because the current time is used by default
+SELECT polar_advisor.is_in_advisor_window() IS NOT NULL;
+ ?column? 
+----------
+ t
+(1 row)
+
+-- yes
+SELECT polar_advisor.is_in_advisor_window(current_t => '00:00:00+08');
+ is_in_advisor_window 
+----------------------
+ t
+(1 row)
+
+SELECT polar_advisor.is_in_advisor_window(current_t => '00:50:00+08');
+ is_in_advisor_window 
+----------------------
+ t
+(1 row)
+
+-- no, timezone mismatch
+SELECT polar_advisor.is_in_advisor_window(current_t => CURRENT_TIME AT TIME ZONE 'UTC');
+ERROR:  The parameter timezone offset 0.00000000000000000000 hour must match the window timezone offset 8.0000000000000000 hour
+CONTEXT:  PL/pgSQL function polar_advisor.is_in_advisor_window(time with time zone,interval) line 19 at RAISE
+-- timezone check pass
+SELECT polar_advisor.is_in_advisor_window(current_t => CURRENT_TIME AT TIME ZONE 'PRC') IS NOT NULL;
+ ?column? 
+----------
+ t
+(1 row)
+
+-- no, we should reserve 10 min before window end to stop vacuum
+SELECT polar_advisor.is_in_advisor_window(current_t => '00:51:00+08');
+ is_in_advisor_window 
+----------------------
+ f
+(1 row)
+
+-- yes, reserve 0 min
+SELECT polar_advisor.is_in_advisor_window(current_t => '01:00:00+08', time_reserved => INTERVAL '0 min');
+ is_in_advisor_window 
+----------------------
+ t
+(1 row)
+
+-- no
+SELECT polar_advisor.is_in_advisor_window(current_t => '01:01:00+08', time_reserved => INTERVAL '0 min');
+ is_in_advisor_window 
+----------------------
+ f
+(1 row)
+
+-- no, other timezones
+SELECT polar_advisor.is_in_advisor_window(current_t => '23:10:00+07');
+ERROR:  The parameter timezone offset 7.0000000000000000 hour must match the window timezone offset 8.0000000000000000 hour
+CONTEXT:  PL/pgSQL function polar_advisor.is_in_advisor_window(time with time zone,interval) line 19 at RAISE
+SELECT polar_advisor.is_in_advisor_window(current_t => '00:10:00+00');
+ERROR:  The parameter timezone offset 0.00000000000000000000 hour must match the window timezone offset 8.0000000000000000 hour
+CONTEXT:  PL/pgSQL function polar_advisor.is_in_advisor_window(time with time zone,interval) line 19 at RAISE
+SELECT polar_advisor.is_in_advisor_window(current_t => '16:10:00 UTC');
+ERROR:  The parameter timezone offset 0.00000000000000000000 hour must match the window timezone offset 8.0000000000000000 hour
+CONTEXT:  PL/pgSQL function polar_advisor.is_in_advisor_window(time with time zone,interval) line 19 at RAISE
+SELECT polar_advisor.is_in_advisor_window(current_t => '17:10:00 GMT');
+ERROR:  The parameter timezone offset 0.00000000000000000000 hour must match the window timezone offset 8.0000000000000000 hour
+CONTEXT:  PL/pgSQL function polar_advisor.is_in_advisor_window(time with time zone,interval) line 19 at RAISE
+-- window cross midnight
+SELECT polar_advisor.set_advisor_window('23:00:00+08', '01:00:00+08');
+NOTICE:  window length: 120 minutes
+ set_advisor_window 
+--------------------
+ 
+(1 row)
+
+SELECT * FROM polar_advisor.get_advisor_window();
+ start_time  |  end_time   | enabled | last_error_time | last_error_detail | others 
+-------------+-------------+---------+-----------------+-------------------+--------
+ 23:00:00+08 | 01:00:00+08 | t       |                 |                   | 
+(1 row)
+
+-- yes
+SELECT polar_advisor.is_in_advisor_window(current_t => '23:05:00+08');
+ is_in_advisor_window 
+----------------------
+ t
+(1 row)
+
+SELECT polar_advisor.is_in_advisor_window(current_t => '00:14:00+08');
+ is_in_advisor_window 
+----------------------
+ t
+(1 row)
+
+SELECT polar_advisor.is_in_advisor_window(current_t => '00:50:00+08');
+ is_in_advisor_window 
+----------------------
+ t
+(1 row)
+
+-- no, we should reserve 10 min before window end to stop vacuum
+SELECT polar_advisor.is_in_advisor_window(current_t => '00:51:00+08');
+ is_in_advisor_window 
+----------------------
+ f
+(1 row)
+
+-- no, timezone changed
+SET timezone TO 'UTC';
+SELECT polar_advisor.is_in_advisor_window();
+ERROR:  The parameter timezone offset 0.00000000000000000000 hour must match the window timezone offset 8.0000000000000000 hour
+CONTEXT:  PL/pgSQL function polar_advisor.is_in_advisor_window(time with time zone,interval) line 19 at RAISE
+SELECT polar_advisor.is_in_advisor_window(current_t => '23:10:00+08');
+ERROR:  The parameter timezone offset 8.0000000000000000 hour must match the database timezone UTC
+CONTEXT:  PL/pgSQL function polar_advisor.is_in_advisor_window(time with time zone,interval) line 24 at RAISE
+SELECT polar_advisor.is_in_advisor_window(current_t => '00:10:00+08');
+ERROR:  The parameter timezone offset 8.0000000000000000 hour must match the database timezone UTC
+CONTEXT:  PL/pgSQL function polar_advisor.is_in_advisor_window(time with time zone,interval) line 24 at RAISE
+--
+-- Check exception
+--
+-- no exception now
+SELECT polar_advisor.advisor_window_has_exception();
+ advisor_window_has_exception 
+------------------------------
+ f
+(1 row)
+
+-- report exception
+SELECT polar_advisor.report_exception('test exception');
+ report_exception 
+------------------
+ 
+(1 row)
+
+-- exception exists
+SELECT polar_advisor.advisor_window_has_exception();
+ advisor_window_has_exception 
+------------------------------
+ t
+(1 row)
+
+SELECT start_time, end_time, enabled, last_error_time IS NOT NULL, last_error_detail, others FROM polar_advisor.get_advisor_window();
+ start_time  |  end_time   | enabled | ?column? | last_error_detail | others 
+-------------+-------------+---------+----------+-------------------+--------
+ 23:00:00+08 | 01:00:00+08 | f       | t        | test exception    | 
+(1 row)
+
+-- clear exception
+SELECT polar_advisor.clear_exception();
+ clear_exception 
+-----------------
+ 
+(1 row)
+
+-- no exception now
+SELECT polar_advisor.advisor_window_has_exception();
+ advisor_window_has_exception 
+------------------------------
+ f
+(1 row)
+
+SELECT * FROM polar_advisor.get_advisor_window();
+ start_time  |  end_time   | enabled | last_error_time | last_error_detail | others 
+-------------+-------------+---------+-----------------+-------------------+--------
+ 23:00:00+08 | 01:00:00+08 | f       |                 |                   | 
+(1 row)
+

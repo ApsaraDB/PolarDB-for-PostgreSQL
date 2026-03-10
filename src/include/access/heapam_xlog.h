@@ -22,6 +22,10 @@
 #include "storage/relfilelocator.h"
 #include "utils/relcache.h"
 
+/* POLAR */
+#ifndef FRONTEND
+#include "access/heapam.h"
+#endif
 
 /*
  * WAL record definitions for heapam.c's WAL operations
@@ -498,5 +502,37 @@ extern void heap_xlog_deserialize_prune_and_freeze(char *cursor, uint8 flags,
 												   int *nredirected, OffsetNumber **redirected,
 												   int *ndead, OffsetNumber **nowdead,
 												   int *nunused, OffsetNumber **nowunused);
+
+/* POLAR */
+#ifndef FRONTEND
+/*
+ * heap_execute_freeze_tuple
+ *		Execute the prepared freezing of a tuple with caller's freeze plan.
+ *
+ * Caller is responsible for ensuring that no other backend can access the
+ * storage underlying this tuple, either by holding an exclusive lock on the
+ * buffer containing it (which is what lazy VACUUM does), or by having it be
+ * in private storage (which is what CLUSTER and friends do).
+ */
+static inline void
+heap_execute_freeze_tuple(HeapTupleHeader tuple, HeapTupleFreeze *frz)
+{
+	HeapTupleHeaderSetXmax(tuple, frz->xmax);
+
+	if (frz->frzflags & XLH_FREEZE_XVAC)
+		HeapTupleHeaderSetXvac(tuple, FrozenTransactionId);
+
+	if (frz->frzflags & XLH_INVALID_XVAC)
+		HeapTupleHeaderSetXvac(tuple, InvalidTransactionId);
+
+	tuple->t_infomask = frz->t_infomask;
+	tuple->t_infomask2 = frz->t_infomask2;
+}
+
+#endif
+
+extern void fix_infomask_from_infobits(uint8 infobits, uint16 *infomask, uint16 *infomask2);
+
+/* POLAR end */
 
 #endif							/* HEAPAM_XLOG_H */

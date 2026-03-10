@@ -1,0 +1,4 @@
+comment = 'Test auto cascade extension 1'
+default_version = '1.0'
+relocatable = true
+requires = 'test_autocascade2'

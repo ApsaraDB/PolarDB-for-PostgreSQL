@@ -31,7 +31,7 @@ OBJS = \
 all: pg_combinebackup
 
 pg_combinebackup: $(OBJS) | submake-libpgport submake-libpgfeutils
-	$(CC) $(CFLAGS) $^ $(LDFLAGS) $(LDFLAGS_EX) $(LIBS) -o $@$(X)
+	$(CC) $(CFLAGS) $^ $(LDFLAGS) $(LDFLAGS_EX) $(LIBS) $(polar_libvfs) -o $@$(X)
 
 install: all installdirs
 	$(INSTALL_PROGRAM) pg_combinebackup$(X) '$(DESTDIR)$(bindir)/pg_combinebackup$(X)'

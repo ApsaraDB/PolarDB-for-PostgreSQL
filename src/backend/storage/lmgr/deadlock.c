@@ -1102,11 +1102,11 @@ DeadLockReport(void)
 
 		appendStringInfo(&clientbuf,
 						 _("Process %d waits for %s on %s; blocked by process %d."),
-						 info->pid,
+						 polar_get_session_id(info->pid),
 						 GetLockmodeName(info->locktag.locktag_lockmethodid,
 										 info->lockmode),
 						 locktagbuf.data,
-						 nextpid);
+						 polar_get_session_id(nextpid));
 	}
 
 	/* Duplicate all the above for the server ... */
@@ -1121,7 +1121,7 @@ DeadLockReport(void)
 
 		appendStringInfo(&logbuf,
 						 _("Process %d: %s"),
-						 info->pid,
+						 polar_get_session_id(info->pid),
 						 pgstat_get_backend_current_activity(info->pid, false));
 	}
 

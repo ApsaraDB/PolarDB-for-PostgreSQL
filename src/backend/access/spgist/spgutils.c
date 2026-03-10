@@ -425,8 +425,7 @@ SpGistNewBuffer(Relation index)
 		ReleaseBuffer(buffer);
 	}
 
-	buffer = ExtendBufferedRel(BMR_REL(index), MAIN_FORKNUM, NULL,
-							   EB_LOCK_FIRST);
+	buffer = polar_index_add_blocks(index);
 
 	return buffer;
 }

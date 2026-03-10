@@ -24,6 +24,7 @@ my $all_params = $node->safe_psql(
      FROM pg_settings
    WHERE NOT 'NOT_IN_SAMPLE' = ANY (pg_settings_get_flags(name)) AND
        name <> 'config_file' AND category <> 'Customized Options'
+	   AND name NOT LIKE 'polar%' -- POLAR: skip check polar guc.
      ORDER BY 1");
 # Note the lower-case conversion, for consistency.
 my @all_params_array = split("\n", lc($all_params));
@@ -65,6 +66,11 @@ while (my $line = <$contents>)
 		next if $param_name eq "include";
 		next if $param_name eq "include_dir";
 		next if $param_name eq "include_if_exists";
+		# POLAR: skip check polar guc.
+		next if $param_name =~ /^polar/;
+
+		# POLAR: skip check polar guc.
+		next if $param_name =~ /^polar/;
 
 		# Update the list of GUCs found in the sample file, for the
 		# follow-up tests.

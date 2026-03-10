@@ -21,6 +21,9 @@
 #include "storage/procarray.h"
 #include "utils/builtins.h"
 
+/* POLAR */
+#include "utils/backend_status.h"
+
 /* ----------
  * The max bytes for showing identifiers of MemoryContext.
  * ----------
@@ -146,6 +149,10 @@ pg_log_backend_memory_contexts(PG_FUNCTION_ARGS)
 	int			pid = PG_GETARG_INT32(0);
 	PGPROC	   *proc;
 	ProcNumber	procNumber = INVALID_PROC_NUMBER;
+
+	/* POLAR: try to get pid if it's proxy sid */
+	if (POLAR_IS_PROXY_SID(pid))
+		pid = polar_proxy_get_pid(pid, 0, false);
 
 	/*
 	 * See if the process with given pid is a backend or an auxiliary process.

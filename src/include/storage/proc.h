@@ -22,6 +22,7 @@
 #include "storage/pg_sema.h"
 #include "storage/proclist_types.h"
 #include "storage/procnumber.h"
+#include "portability/instr_time.h"
 
 /*
  * Each backend advertises up to PGPROC_MAX_CACHED_SUBXIDS TransactionIds
@@ -37,6 +38,16 @@
  * See src/test/isolation/specs/subxid-overflow.spec if you change this.
  */
 #define PGPROC_MAX_CACHED_SUBXIDS 64	/* XXX guessed-at value */
+/* POLAR: wait stack  */
+#define PGPROC_WAIT_STACK_LEN	4	/* the stack length for wait object and
+									 * wait time */
+#define PGPROC_WAIT_PID 0		/* current proc wait for pid */
+#define PGPROC_WAIT_FD 1		/* current proc wait for fd */
+#define PGPROC_INVALID_WAIT_OBJ -1	/* flag of current wait obj invalid */
+/* POLAR end */
+
+/* POLAR */
+#define POLAR_TOTALPROCS (MaxBackends + NUM_AUXILIARY_PROCS + max_prepared_xacts)
 
 typedef struct XidCacheStatus
 {
@@ -209,6 +220,8 @@ struct PGPROC
 	Oid			databaseId;		/* OID of database this backend is using */
 	Oid			roleId;			/* OID of role using this backend */
 
+	bool		issuper;		/* POLAR: is role a superuser? */
+
 	Oid			tempNamespaceId;	/* OID of temp schema this backend is
 									 * using */
 
@@ -278,7 +291,15 @@ struct PGPROC
 	 */
 	TransactionId procArrayGroupMemberXid;
 
+	/* POLAR: wait event infomation */
 	uint32		wait_event_info;	/* proc's wait information */
+	int			wait_object[PGPROC_WAIT_STACK_LEN]; /* proc's wait object
+													 * stack */
+	int8		wait_type[PGPROC_WAIT_STACK_LEN];	/* proc's wait type: 0
+													 * pid, 1 fd... */
+	instr_time	wait_time[PGPROC_WAIT_STACK_LEN];	/* proc's wait time stack */
+	int8		cur_wait_stack_index;	/* current index for wait stack */
+	/* POLAR end */
 
 	/* Support for group transaction status update. */
 	bool		clogGroupMember;	/* true, if member of clog group */
@@ -306,6 +327,16 @@ struct PGPROC
 	PGPROC	   *lockGroupLeader;	/* lock group leader, if I'm a member */
 	dlist_head	lockGroupMembers;	/* list of members, if I'm a leader */
 	dlist_node	lockGroupLink;	/* my member link, if I'm a member */
+
+	/* POLAR */
+	int			polar_master_pgprocno;	/* the pgprocno of the master process
+										 * of this parallel process */
+
+	/*
+	 * POLAR: record min lsn before replaying logindex to prevent primary node
+	 * from deleting WAL or logindex.
+	 */
+	pg_atomic_uint64 polar_read_min_lsn;
 };
 
 /* NOTE: "typedef struct PGPROC PGPROC" appears in storage/lock.h. */
@@ -439,8 +470,12 @@ extern PGDLLIMPORT PGPROC *PreparedXactProcs;
  * run during normal operation.  Startup process and WAL receiver also consume
  * 2 slots, but WAL writer is launched only after startup has exited, so we
  * only need 6 slots.
+ *
+ * POLAR: Logindex background worker is one more auxiliary process and makes it up to 7
+ * slots. Just make it up to 11 which includs other future processes, such as
+ * SGCComponentBG, SmgrCacheWriter, SmgrCacheReceiver and BpeWriter.
  */
-#define NUM_AUXILIARY_PROCS		6
+#define NUM_AUXILIARY_PROCS		11
 
 /* configurable options */
 extern PGDLLIMPORT int DeadlockTimeout;
@@ -484,5 +519,23 @@ extern PGPROC *AuxiliaryPidGetProc(int pid);
 
 extern void BecomeLockGroupLeader(void);
 extern bool BecomeLockGroupMember(PGPROC *leader, int pid);
+
+/*
+ * POLAR: We need to record read min lsn before relaying logindex
+ * to prevent primary node from deleting WAL and logindex
+ */
+#define POLAR_SET_BACKEND_READ_MIN_LSN(lsn) \
+	do { \
+		if (MyProc) \
+			pg_atomic_write_u64(&(MyProc->polar_read_min_lsn), (lsn)); \
+	} while (0)
+
+/* POLAR: Reset read min lsn */
+#define POLAR_RESET_BACKEND_READ_MIN_LSN() \
+	do { \
+		if (MyProc) \
+			pg_atomic_write_u64(&(MyProc->polar_read_min_lsn), InvalidXLogRecPtr); \
+	} while(0)
+/* POLAR end */
 
 #endif							/* _PROC_H_ */

@@ -504,6 +504,7 @@ struct pg_conn
 	AddrInfo   *addr;			/* the array of addresses for the currently
 								 * tried host */
 	bool		send_appname;	/* okay to send application_name? */
+	bool		polar_proxy_send_lsn;	/* backend send LSN? */
 
 	/* Miscellaneous stuff */
 	int			be_pid;			/* PID of backend --- needed for cancels */

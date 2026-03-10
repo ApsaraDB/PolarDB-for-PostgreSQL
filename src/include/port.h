@@ -223,8 +223,8 @@ extern int	pg_printf(const char *fmt,...) pg_attribute_printf(1, 2);
  * We add a pg_ prefix as a warning that the Windows implementations have the
  * non-standard side-effect of changing the current file position.
  */
-#define pg_pread pread
-#define pg_pwrite pwrite
+#define pg_pread polar_pread
+#define pg_pwrite polar_pwrite
 #endif
 
 /*
@@ -386,8 +386,10 @@ extern FILE *pgwin32_popen(const char *command, const char *type);
  */
 #ifndef WIN32
 #define PG_IOLBF	_IOLBF
+#define PG_IOFBF	_IOFBF		/* POLAR */
 #else
 #define PG_IOLBF	_IONBF
+#define PG_IOFBF	_IONBF		/* POLAR */
 #endif
 
 /*

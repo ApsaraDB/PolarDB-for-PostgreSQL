@@ -32,9 +32,9 @@ CREATE USER regress_priv_user5;
 CREATE USER regress_priv_user5;	-- duplicate
 CREATE USER regress_priv_user6;
 CREATE USER regress_priv_user7;
-CREATE USER regress_priv_user8;
-CREATE USER regress_priv_user9;
-CREATE USER regress_priv_user10;
+CREATE USER regress_priv_user8 superuser;
+CREATE USER regress_priv_user9 superuser;
+CREATE USER regress_priv_user10 superuser;
 CREATE ROLE regress_priv_role;
 
 -- circular ADMIN OPTION grants should be disallowed

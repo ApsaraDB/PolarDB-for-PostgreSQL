@@ -15,6 +15,11 @@
 
 #include "nodes/execnodes.h"
 
+/* POLAR: GUCs */
+extern PGDLLIMPORT double polar_table_multi_insert_min_rows;
+
+/* POLAR end */
+
 extern void ExecInitStoredGenerated(ResultRelInfo *resultRelInfo,
 									EState *estate,
 									CmdType cmdtype);

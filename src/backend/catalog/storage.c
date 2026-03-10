@@ -27,6 +27,7 @@
 #include "catalog/storage.h"
 #include "catalog/storage_xlog.h"
 #include "miscadmin.h"
+#include "replication/syncrep.h"
 #include "storage/bulk_write.h"
 #include "storage/freespace.h"
 #include "storage/proc.h"
@@ -35,8 +36,12 @@
 #include "utils/memutils.h"
 #include "utils/rel.h"
 
+/* POLAR */
+#include "storage/standby.h"
+
 /* GUC variables */
 int			wal_skip_threshold = 2048;	/* in kilobytes */
+bool		polar_hold_truncate_interrupt = false;
 
 /*
  * We keep a list of all relations (represented as RelFileLocator values)
@@ -296,6 +301,9 @@ RelationTruncate(Relation rel, BlockNumber nblocks)
 	int			nforks = 0;
 	SMgrRelation reln;
 
+	/* POLAR: If this flag is true,we will disable cancel signal */
+	bool		disable_cancel = false;
+
 	/*
 	 * Make sure smgr_targblock etc aren't pointing somewhere past new end.
 	 * (Note: don't rely on this reln pointer below this loop.)
@@ -307,7 +315,7 @@ RelationTruncate(Relation rel, BlockNumber nblocks)
 
 	/* Prepare for truncation of MAIN fork of the relation */
 	forks[nforks] = MAIN_FORKNUM;
-	old_blocks[nforks] = smgrnblocks(reln, MAIN_FORKNUM);
+	old_blocks[nforks] = smgrnblocks_ensure_opened(reln, MAIN_FORKNUM);
 	blocks[nforks] = nblocks;
 	nforks++;
 
@@ -319,7 +327,7 @@ RelationTruncate(Relation rel, BlockNumber nblocks)
 		if (BlockNumberIsValid(blocks[nforks]))
 		{
 			forks[nforks] = FSM_FORKNUM;
-			old_blocks[nforks] = smgrnblocks(reln, FSM_FORKNUM);
+			old_blocks[nforks] = smgrnblocks_ensure_opened(reln, FSM_FORKNUM);
 			nforks++;
 			need_fsm_vacuum = true;
 		}
@@ -333,10 +341,13 @@ RelationTruncate(Relation rel, BlockNumber nblocks)
 		if (BlockNumberIsValid(blocks[nforks]))
 		{
 			forks[nforks] = VISIBILITYMAP_FORKNUM;
-			old_blocks[nforks] = smgrnblocks(reln, VISIBILITYMAP_FORKNUM);
+			old_blocks[nforks] = smgrnblocks_ensure_opened(reln, VISIBILITYMAP_FORKNUM);
 			nforks++;
 		}
 	}
+
+	if (polar_enable_sync_ddl && reln->smgr_rlocator.backend == INVALID_PROC_NUMBER)
+		polar_wait_ddl_lock();
 
 	RelationPreTruncate(rel);
 
@@ -392,6 +403,18 @@ RelationTruncate(Relation rel, BlockNumber nblocks)
 		XLogRecPtr	lsn;
 		xl_smgr_truncate xlrec;
 
+		/*
+		 * POLAR: Disable cancel signal during writing truncate XLOG and
+		 * truncating. If standby receive truncate log but master failed to
+		 * truncate file, standby will crash when master write to these blocks
+		 * which truncated in standby node.
+		 */
+		if (polar_hold_truncate_interrupt)
+		{
+			disable_cancel = true;
+			HOLD_INTERRUPTS();
+		}
+
 		xlrec.blkno = nblocks;
 		xlrec.rlocator = rel->rd_locator;
 		xlrec.flags = SMGR_TRUNCATE_ALL;
@@ -424,6 +447,13 @@ RelationTruncate(Relation rel, BlockNumber nblocks)
 
 	/* We've done all the critical work, so checkpoints are OK now. */
 	MyProc->delayChkptFlags &= ~(DELAY_CHKPT_START | DELAY_CHKPT_COMPLETE);
+
+	/* POLAR: Resume to enable cancel signal */
+	if (disable_cancel)
+	{
+		RESUME_INTERRUPTS();
+		CHECK_FOR_INTERRUPTS();
+	}
 
 	/*
 	 * Update upper-level FSM pages to account for the truncation. This is
@@ -482,6 +512,9 @@ RelationCopyStorage(SMgrRelation src, SMgrRelation dst,
 	BlockNumber nblocks;
 	BlockNumber blkno;
 	BulkWriteState *bulkstate;
+	void	   *buffer;
+	int			block_count;
+	int			max_block_count;
 
 	/*
 	 * The init fork for an unlogged relation in many respects has to be
@@ -500,48 +533,67 @@ RelationCopyStorage(SMgrRelation src, SMgrRelation dst,
 	use_wal = XLogIsNeeded() &&
 		(relpersistence == RELPERSISTENCE_PERMANENT || copying_initfork);
 
-	bulkstate = smgr_bulk_start_smgr(dst, forkNum, use_wal);
+	max_block_count = Max(1, polar_bulk_read_size);
+	buffer = palloc_aligned(max_block_count * BLCKSZ, PG_IO_ALIGN_SIZE, 0);
+
+	bulkstate = smgr_bulk_start_smgr(dst, forkNum, use_wal, relpersistence);
 
 	nblocks = smgrnblocks(src, forkNum);
 
-	for (blkno = 0; blkno < nblocks; blkno++)
+	for (blkno = 0; blkno < nblocks; blkno += block_count)
 	{
 		BulkWriteBuffer buf;
 
 		/* If we got a cancel signal during the copy of the data, quit */
 		CHECK_FOR_INTERRUPTS();
 
-		buf = smgr_bulk_get_buf(bulkstate);
-		smgrread(src, forkNum, blkno, (Page) buf);
+		block_count = Min(max_block_count, nblocks - blkno);
 
-		if (!PageIsVerifiedExtended((Page) buf, blkno,
-									PIV_LOG_WARNING | PIV_REPORT_STAT))
+		polar_smgrbulkread(src, forkNum, blkno, block_count, buffer);
+
+		for (int i = 0; i < block_count; i++)
 		{
+			BlockNumber cur_blkno = blkno + i;
+			Page		page = (Page) ((char *) buffer + i * BLCKSZ);
+
+			if (!PageIsVerifiedExtended(page, forkNum, cur_blkno, src,
+										PIV_LOG_WARNING | PIV_REPORT_STAT))
+			{
+				/*
+				 * For paranoia's sake, capture the file path before invoking
+				 * the ereport machinery.  This guards against the possibility
+				 * of a relcache flush caused by, e.g., an errcontext
+				 * callback. (errcontext callbacks shouldn't be risking any
+				 * such thing, but people have been known to forget that
+				 * rule.)
+				 */
+				char	   *relpath = relpathbackend(src->smgr_rlocator.locator,
+													 src->smgr_rlocator.backend,
+													 forkNum);
+
+				ereport(ERROR,
+						(errcode(ERRCODE_DATA_CORRUPTED),
+						 errmsg("invalid page in block %u of relation %s",
+								cur_blkno, relpath)));
+			}
+
+			buf = smgr_bulk_get_buf(bulkstate);
+
+			memcpy(buf, page, BLCKSZ);
+
 			/*
-			 * For paranoia's sake, capture the file path before invoking the
-			 * ereport machinery.  This guards against the possibility of a
-			 * relcache flush caused by, e.g., an errcontext callback.
-			 * (errcontext callbacks shouldn't be risking any such thing, but
-			 * people have been known to forget that rule.)
+			 * Queue the page for WAL-logging and writing out.  Unfortunately
+			 * we don't know what kind of a page this is, so we have to log
+			 * the full page including any unused space.
 			 */
-			char	   *relpath = relpathbackend(src->smgr_rlocator.locator,
-												 src->smgr_rlocator.backend,
-												 forkNum);
-
-			ereport(ERROR,
-					(errcode(ERRCODE_DATA_CORRUPTED),
-					 errmsg("invalid page in block %u of relation %s",
-							blkno, relpath)));
+			smgr_bulk_write(bulkstate, cur_blkno, buf, false);
 		}
-
-		/*
-		 * Queue the page for WAL-logging and writing out.  Unfortunately we
-		 * don't know what kind of a page this is, so we have to log the full
-		 * page including any unused space.
-		 */
-		smgr_bulk_write(bulkstate, blkno, buf, false);
 	}
+	Assert(blkno == nblocks);
+
 	smgr_bulk_finish(bulkstate);
+
+	pfree(buffer);
 }
 
 /*
@@ -970,6 +1022,11 @@ smgr_redo(XLogReaderState *record)
 	/* Backup blocks are not used in smgr records */
 	Assert(!XLogRecHasAnyBlockRefs(record));
 
+	/* replica do not create or truncate files */
+	if ((info == XLOG_SMGR_CREATE || info == XLOG_SMGR_TRUNCATE) &&
+		polar_is_replica())
+		return;
+
 	if (info == XLOG_SMGR_CREATE)
 	{
 		xl_smgr_create *xlrec = (xl_smgr_create *) XLogRecGetData(record);
@@ -977,6 +1034,17 @@ smgr_redo(XLogReaderState *record)
 
 		reln = smgropen(xlrec->rlocator, INVALID_PROC_NUMBER);
 		smgrcreate(reln, xlrec->forkNum, true);
+
+		/*
+		 * POLAR RSC: initialize RSC entry for new file for faster dropping
+		 * buffers in the future.
+		 */
+		if (POLAR_RSC_ENABLED() && polar_rsc_optimize_drop_buffers &&
+			XLogIsNeeded() && xlrec->forkNum == MAIN_FORKNUM)
+		{
+			polar_rsc_init_empty_entry(&xlrec->rlocator, xlrec->forkNum);
+		}
+		/* POLAR end */
 	}
 	else if (info == XLOG_SMGR_TRUNCATE)
 	{
@@ -1020,7 +1088,7 @@ smgr_redo(XLogReaderState *record)
 		if ((xlrec->flags & SMGR_TRUNCATE_HEAP) != 0)
 		{
 			forks[nforks] = MAIN_FORKNUM;
-			old_blocks[nforks] = smgrnblocks(reln, MAIN_FORKNUM);
+			old_blocks[nforks] = smgrnblocks_ensure_opened(reln, MAIN_FORKNUM);
 			blocks[nforks] = xlrec->blkno;
 			nforks++;
 
@@ -1038,7 +1106,7 @@ smgr_redo(XLogReaderState *record)
 			if (BlockNumberIsValid(blocks[nforks]))
 			{
 				forks[nforks] = FSM_FORKNUM;
-				old_blocks[nforks] = smgrnblocks(reln, FSM_FORKNUM);
+				old_blocks[nforks] = smgrnblocks_ensure_opened(reln, FSM_FORKNUM);
 				nforks++;
 				need_fsm_vacuum = true;
 			}
@@ -1050,7 +1118,7 @@ smgr_redo(XLogReaderState *record)
 			if (BlockNumberIsValid(blocks[nforks]))
 			{
 				forks[nforks] = VISIBILITYMAP_FORKNUM;
-				old_blocks[nforks] = smgrnblocks(reln, VISIBILITYMAP_FORKNUM);
+				old_blocks[nforks] = smgrnblocks_ensure_opened(reln, VISIBILITYMAP_FORKNUM);
 				nforks++;
 			}
 		}
@@ -1058,6 +1126,15 @@ smgr_redo(XLogReaderState *record)
 		/* Do the real work to truncate relation forks */
 		if (nforks > 0)
 		{
+			/* POLAR: wait for cascade replica to apply if needed */
+			if (POLAR_WAIT_DDL_IN_RECOVERY())
+			{
+				XLogRecPtr	lock_end_lsn = polar_calc_latest_end_lsn(XLogRecGetXid(record),
+																	 0, NULL);
+
+				polar_wait_ddl_in_recovery(lock_end_lsn);
+			}
+
 			START_CRIT_SECTION();
 			smgrtruncate2(reln, forks, nforks, old_blocks, blocks);
 			END_CRIT_SECTION();

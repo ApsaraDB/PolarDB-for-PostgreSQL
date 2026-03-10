@@ -388,8 +388,7 @@ BloomNewBuffer(Relation index)
 	}
 
 	/* Must extend the file */
-	buffer = ExtendBufferedRel(BMR_REL(index), MAIN_FORKNUM, NULL,
-							   EB_LOCK_FIRST);
+	buffer = polar_index_add_blocks(index);
 
 	return buffer;
 }

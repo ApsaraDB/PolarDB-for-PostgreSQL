@@ -3,6 +3,7 @@
  * nodeModifyTable.c
  *	  routines to handle ModifyTable nodes.
  *
+ * Portions Copyright (c) 2025, Alibaba Group Holding Limited
  * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -72,6 +73,11 @@
 #include "utils/snapmgr.h"
 
 
+/* POLAR: GUCs */
+double		polar_table_multi_insert_min_rows;
+
+/* POLAR end */
+
 typedef struct MTTargetRelLookup
 {
 	Oid			relationOid;	/* hash key, must be first */
@@ -124,6 +130,17 @@ typedef struct UpdateContext
 	LockTupleMode lockmode;
 } UpdateContext;
 
+typedef struct InsertModifyBufferFlushContext
+{
+	ResultRelInfo *resultRelInfo;
+	EState	   *estate;
+	ModifyTableState *mtstate;
+} InsertModifyBufferFlushContext;
+
+static TableModifyState *table_modify_state = NULL;
+
+static void InsertModifyBufferFlushCallback(void *context,
+											TupleTableSlot *slot);
 
 static void ExecBatchInsert(ModifyTableState *mtstate,
 							ResultRelInfo *resultRelInfo,
@@ -756,6 +773,51 @@ ExecGetUpdateNewTuple(ResultRelInfo *relinfo,
 	return ExecProject(newProj);
 }
 
+/*
+ * InsertModifyBufferFlushCallback
+ *
+ * Caller must take care of opening and closing the indices.
+ */
+static void
+InsertModifyBufferFlushCallback(void *context, TupleTableSlot *slot)
+{
+	InsertModifyBufferFlushContext *ctx = (InsertModifyBufferFlushContext *) context;
+	ResultRelInfo *resultRelInfo = ctx->resultRelInfo;
+	EState	   *estate = ctx->estate;
+	ModifyTableState *mtstate = ctx->mtstate;
+
+	/*
+	 * If there are any indexes, update them for all the inserted tuples, and
+	 * run AFTER ROW INSERT triggers.
+	 */
+	if (resultRelInfo->ri_NumIndices > 0)
+	{
+		List	   *recheckIndexes;
+
+		recheckIndexes = ExecInsertIndexTuples(resultRelInfo,
+											   slot, estate, false,
+											   false, NULL, NIL,
+											   false);
+		ExecARInsertTriggers(estate, resultRelInfo,
+							 slot, recheckIndexes,
+							 mtstate->mt_transition_capture);
+		list_free(recheckIndexes);
+	}
+
+	/*
+	 * There's no indexes, but see if we need to run AFTER ROW INSERT triggers
+	 * anyway.
+	 */
+	else if (resultRelInfo->ri_TrigDesc != NULL &&
+			 (resultRelInfo->ri_TrigDesc->trig_insert_after_row ||
+			  resultRelInfo->ri_TrigDesc->trig_insert_new_table))
+	{
+		ExecARInsertTriggers(estate, resultRelInfo,
+							 slot, NIL,
+							 mtstate->mt_transition_capture);
+	}
+}
+
 /* ----------------------------------------------------------------
  *		ExecInsert
  *
@@ -781,7 +843,8 @@ ExecInsert(ModifyTableContext *context,
 		   TupleTableSlot *slot,
 		   bool canSetTag,
 		   TupleTableSlot **inserted_tuple,
-		   ResultRelInfo **insert_destrel)
+		   ResultRelInfo **insert_destrel,
+		   bool canMultiInsert)
 {
 	ModifyTableState *mtstate = context->mtstate;
 	EState	   *estate = context->estate;
@@ -1154,6 +1217,26 @@ ExecInsert(ModifyTableContext *context,
 
 			/* Since there was no insertion conflict, we're done */
 		}
+		else if (canMultiInsert)
+		{
+			if (table_modify_state == NULL)
+			{
+				InsertModifyBufferFlushContext *buffer_flush_ctx;
+
+				buffer_flush_ctx = palloc0(sizeof(InsertModifyBufferFlushContext));
+				buffer_flush_ctx->resultRelInfo = resultRelInfo;
+				buffer_flush_ctx->estate = estate;
+				buffer_flush_ctx->mtstate = mtstate;
+
+				table_modify_state = table_modify_begin(resultRelInfo->ri_RelationDesc,
+														estate->es_output_cid,
+														0,
+														InsertModifyBufferFlushCallback,
+														buffer_flush_ctx);
+			}
+
+			table_modify_buffer_insert(table_modify_state, slot);
+		}
 		else
 		{
 			/* insert the tuple normally */
@@ -1200,10 +1283,13 @@ ExecInsert(ModifyTableContext *context,
 	}
 
 	/* AFTER ROW INSERT Triggers */
-	ExecARInsertTriggers(estate, resultRelInfo, slot, recheckIndexes,
-						 ar_insert_trig_tcs);
+	if (table_modify_state == NULL)
+	{
+		ExecARInsertTriggers(estate, resultRelInfo, slot, recheckIndexes,
+							 ar_insert_trig_tcs);
 
-	list_free(recheckIndexes);
+		list_free(recheckIndexes);
+	}
 
 	/*
 	 * Check any WITH CHECK OPTION constraints from parent views.  We are
@@ -1900,7 +1986,7 @@ ExecCrossPartitionUpdate(ModifyTableContext *context,
 	/* Tuple routing starts from the root table. */
 	context->cpUpdateReturningSlot =
 		ExecInsert(context, mtstate->rootResultRelInfo, slot, canSetTag,
-				   inserted_tuple, insert_destrel);
+				   inserted_tuple, insert_destrel, false);
 
 	/*
 	 * Reset the transition state that may possibly have been written by
@@ -3470,7 +3556,7 @@ ExecMergeNotMatched(ModifyTableContext *context, ResultRelInfo *resultRelInfo,
 				mtstate->mt_merge_action = action;
 
 				rslot = ExecInsert(context, mtstate->rootResultRelInfo,
-								   newslot, canSetTag, NULL, NULL);
+								   newslot, canSetTag, NULL, NULL, false);
 				mtstate->mt_merge_inserted += 1;
 				break;
 			case CMD_NOTHING:
@@ -3955,6 +4041,117 @@ ExecPrepareTupleRouting(ModifyTableState *mtstate,
 	return slot;
 }
 
+/*
+ * table_modify_forbid_multi_insert_walker
+ *
+ * Returns true immediately if the plan tree contains something which conflicts
+ * with multi-insert.
+ */
+static bool
+table_modify_forbid_multi_insert_walker(PlanState *planstate, void *context)
+{
+	if (planstate == NULL)
+		return false;
+
+	switch (nodeTag(planstate))
+	{
+			/*
+			 * CTE query may contain DML + RETURNING on current relation,
+			 * where buffering may cause error. So forbid it.
+			 */
+		case T_CteScanState:
+
+			/*
+			 * We don't know what will be done in a Custom Scan node, which is
+			 * mainly used by extensions, like pg_pathman or polar_cluster. So
+			 * forbid it.
+			 */
+		case T_CustomScanState:
+			return true;
+
+		default:
+			break;
+	}
+
+	return planstate_tree_walker(planstate,
+								 table_modify_forbid_multi_insert_walker,
+								 NULL);
+}
+
+static bool
+table_modify_can_multi_insert(ModifyTableState *mtstate,
+							  ResultRelInfo *resultRelInfo)
+{
+	Relation	rel;
+	PlanState  *subplanstate;
+
+	Assert(mtstate->operation == CMD_INSERT);
+
+	subplanstate = outerPlanState(mtstate);
+
+	/*
+	 * Avoid using multi-insert if number of rows to insert is small.
+	 */
+	if (polar_table_multi_insert_min_rows == 0.0 ||
+		subplanstate->plan->plan_rows < polar_table_multi_insert_min_rows)
+		return false;
+
+	/*
+	 * AM does not support multi-insert, so don't use it.
+	 */
+	rel = mtstate->rootResultRelInfo->ri_RelationDesc;
+	if (!table_multi_modify_supported(rel))
+		return false;
+
+	/*
+	 * Only normal relations are allowed to multi-insert.
+	 *
+	 * For partitioned tables, each insertion may go through different
+	 * partitions, the buffering may cause error.
+	 */
+	if (rel->rd_rel->relkind != RELKIND_RELATION)
+		return false;
+
+	/*
+	 * Query contains volatile functions, forbid using multi-insert.
+	 */
+	if (((ModifyTable *) mtstate->ps.plan)->has_volatile_func == true)
+		return false;
+
+	/*
+	 * May have influence on row visibility, forbid it.
+	 */
+	if (resultRelInfo->ri_WithCheckOptions != NIL)
+		return false;
+
+	/*
+	 * BEFORE / INSTEAD OF row triggers cannot see the already inserted but
+	 * buffering rows, so forbid multi-insert if they are present.
+	 *
+	 * Post-processing triggers are allowed because they are fired when the
+	 * buffering rows are flushed.
+	 */
+	if (resultRelInfo->ri_TrigDesc &&
+		(resultRelInfo->ri_TrigDesc->trig_insert_before_row ||
+		 resultRelInfo->ri_TrigDesc->trig_insert_instead_row))
+		return false;
+
+	/*
+	 * Cannot process RETURNING ctid stuff, so just forbid all RETURNING.
+	 */
+	if (resultRelInfo->ri_projectReturning != NULL)
+		return false;
+
+	/*
+	 * Walk the sub-plan tree to see if there are any nodes which may conflict
+	 * with multi-insert.
+	 */
+	if (table_modify_forbid_multi_insert_walker(subplanstate, NULL))
+		return false;
+
+	return true;
+}
+
 /* ----------------------------------------------------------------
  *	   ExecModifyTable
  *
@@ -3978,6 +4175,9 @@ ExecModifyTable(PlanState *pstate)
 	HeapTuple	oldtuple;
 	ItemPointer tupleid;
 	bool		tuplock;
+	bool		can_multi_insert = false;
+
+	table_modify_state = NULL;
 
 	CHECK_FOR_INTERRUPTS();
 
@@ -4014,6 +4214,13 @@ ExecModifyTable(PlanState *pstate)
 	/* Preload local variables */
 	resultRelInfo = node->resultRelInfo + node->mt_lastResultIndex;
 	subplanstate = outerPlanState(node);
+
+	/*
+	 * POLAR: can we use multi-insert for this INSERT query?
+	 */
+	if (operation == CMD_INSERT && polar_enable_tableam_multi_insert)
+		can_multi_insert = table_modify_can_multi_insert(node, resultRelInfo);
+	/* POLAR end */
 
 	/* Set global context */
 	context.mtstate = node;
@@ -4290,7 +4497,7 @@ ExecModifyTable(PlanState *pstate)
 					ExecInitInsertProjection(node, resultRelInfo);
 				slot = ExecGetInsertNewTuple(resultRelInfo, context.planSlot);
 				slot = ExecInsert(&context, resultRelInfo, slot,
-								  node->canSetTag, NULL, NULL);
+								  node->canSetTag, NULL, NULL, can_multi_insert);
 				break;
 
 			case CMD_UPDATE:
@@ -4358,6 +4565,18 @@ ExecModifyTable(PlanState *pstate)
 		 */
 		if (slot)
 			return slot;
+	}
+
+	if (table_modify_state != NULL)
+	{
+		InsertModifyBufferFlushContext *buffer_flush_ctx;
+
+		Assert(operation == CMD_INSERT);
+
+		buffer_flush_ctx = table_modify_state->buffer_flush_ctx;
+		table_modify_end(table_modify_state);
+		table_modify_state = NULL;
+		pfree(buffer_flush_ctx);
 	}
 
 	/*

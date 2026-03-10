@@ -415,15 +415,29 @@ UnlockRelationIdForSession(LockRelId *relid, LOCKMODE lockmode)
  *
  * We assume the caller is already holding some type of regular lock on
  * the relation, so no AcceptInvalidationMessages call is needed here.
+ *
+ * POLAR: LockRelationForExtension-related APIs will lock/unlock the
+ * operations on MAIN fork, where most places use it for avoid changing
+ * of MAIN fork length, like getting nblocks before extending the fork.
  */
 void
 LockRelationForExtension(Relation relation, LOCKMODE lockmode)
 {
+	LockRelationForkForExtension(relation->rd_locator, MAIN_FORKNUM, lockmode);
+}
+
+void
+LockRelationForkForExtension(RelFileLocator rlocator,
+							 ForkNumber forknum,
+							 LOCKMODE lockmode)
+{
 	LOCKTAG		tag;
 
 	SET_LOCKTAG_RELATION_EXTEND(tag,
-								relation->rd_lockInfo.lockRelId.dbId,
-								relation->rd_lockInfo.lockRelId.relId);
+								rlocator.spcOid,
+								rlocator.dbOid,
+								rlocator.relNumber,
+								forknum);
 
 	(void) LockAcquire(&tag, lockmode, false, false);
 }
@@ -437,11 +451,23 @@ LockRelationForExtension(Relation relation, LOCKMODE lockmode)
 bool
 ConditionalLockRelationForExtension(Relation relation, LOCKMODE lockmode)
 {
+	return ConditionalLockRelationForkForExtension(relation->rd_locator,
+												   MAIN_FORKNUM,
+												   lockmode);
+}
+
+bool
+ConditionalLockRelationForkForExtension(RelFileLocator rlocator,
+										ForkNumber forknum,
+										LOCKMODE lockmode)
+{
 	LOCKTAG		tag;
 
 	SET_LOCKTAG_RELATION_EXTEND(tag,
-								relation->rd_lockInfo.lockRelId.dbId,
-								relation->rd_lockInfo.lockRelId.relId);
+								rlocator.spcOid,
+								rlocator.dbOid,
+								rlocator.relNumber,
+								forknum);
 
 	return (LockAcquire(&tag, lockmode, false, true) != LOCKACQUIRE_NOT_AVAIL);
 }
@@ -454,11 +480,21 @@ ConditionalLockRelationForExtension(Relation relation, LOCKMODE lockmode)
 int
 RelationExtensionLockWaiterCount(Relation relation)
 {
+	return RelationForkExtensionLockWaiterCount(relation->rd_locator,
+												MAIN_FORKNUM);
+}
+
+int
+RelationForkExtensionLockWaiterCount(RelFileLocator rlocator,
+									 ForkNumber forknum)
+{
 	LOCKTAG		tag;
 
 	SET_LOCKTAG_RELATION_EXTEND(tag,
-								relation->rd_lockInfo.lockRelId.dbId,
-								relation->rd_lockInfo.lockRelId.relId);
+								rlocator.spcOid,
+								rlocator.dbOid,
+								rlocator.relNumber,
+								forknum);
 
 	return LockWaiterCount(&tag);
 }
@@ -469,11 +505,23 @@ RelationExtensionLockWaiterCount(Relation relation)
 void
 UnlockRelationForExtension(Relation relation, LOCKMODE lockmode)
 {
+	UnlockRelationForkForExtension(relation->rd_locator,
+								   MAIN_FORKNUM,
+								   lockmode);
+}
+
+void
+UnlockRelationForkForExtension(RelFileLocator rlocator,
+							   ForkNumber forknum,
+							   LOCKMODE lockmode)
+{
 	LOCKTAG		tag;
 
 	SET_LOCKTAG_RELATION_EXTEND(tag,
-								relation->rd_lockInfo.lockRelId.dbId,
-								relation->rd_lockInfo.lockRelId.relId);
+								rlocator.spcOid,
+								rlocator.dbOid,
+								rlocator.relNumber,
+								forknum);
 
 	LockRelease(&tag, lockmode, false);
 }
@@ -1248,9 +1296,11 @@ DescribeLockTag(StringInfo buf, const LOCKTAG *tag)
 			break;
 		case LOCKTAG_RELATION_EXTEND:
 			appendStringInfo(buf,
-							 _("extension of relation %u of database %u"),
+							 _("extension of relation %u/%u/%u, fork %s"),
+							 tag->locktag_field1,
 							 tag->locktag_field2,
-							 tag->locktag_field1);
+							 tag->locktag_field3,
+							 forkNames[tag->locktag_field4]);
 			break;
 		case LOCKTAG_DATABASE_FROZEN_IDS:
 			appendStringInfo(buf,

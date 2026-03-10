@@ -14,6 +14,9 @@
 #include "access/xlogreader.h"
 #include "storage/bufmgr.h"
 
+/* POLAR */
+#include "storage/polar_bufmgr.h"
+
 /*
  * Prior to 8.4, all activity during recovery was carried out by the startup
  * process. This local variable continues to be used in many parts of the
@@ -55,7 +58,6 @@ typedef enum
 extern PGDLLIMPORT HotStandbyState standbyState;
 
 #define InHotStandby (standbyState >= STANDBY_SNAPSHOT_PENDING)
-
 
 extern bool XLogHaveInvalidPages(void);
 extern void XLogCheckInvalidPages(void);
@@ -114,5 +116,9 @@ extern void XLogReadDetermineTimeline(XLogReaderState *state,
 									  TimeLineID currTLI);
 
 extern void WALReadRaiseError(WALReadError *errinfo);
+
+extern int	polar_get_recovery_bulk_extend_size(BlockNumber target_block, BlockNumber nblocks);
+extern void polar_forget_invalid_pages(RelFileLocator locator, ForkNumber forkno, BlockNumber minblkno);
+extern void polar_forget_invalid_pages_db(Oid dbid);
 
 #endif

@@ -151,6 +151,8 @@
 #include "utils/snapmgr.h"
 #include "utils/timestamp.h"
 
+/* POLAR */
+#include "utils/backend_status.h"
 
 /*
  * Maximum size of a NOTIFY payload, including terminating NULL.  This
@@ -536,7 +538,7 @@ AsyncShmemInit(void)
 	NotifyCtl->PagePrecedes = asyncQueuePagePrecedes;
 	SimpleLruInit(NotifyCtl, "notify", notify_buffers, 0,
 				  "pg_notify", LWTRANCHE_NOTIFY_BUFFER, LWTRANCHE_NOTIFY_SLRU,
-				  SYNC_HANDLER_NONE, true);
+				  SYNC_HANDLER_NONE, true, false);
 
 	if (!found)
 	{
@@ -2356,6 +2358,8 @@ ProcessIncomingNotify(bool flush)
 void
 NotifyMyFrontEnd(const char *channel, const char *payload, int32 srcPid)
 {
+	srcPid = polar_get_session_id(srcPid);
+
 	if (whereToSendOutput == DestRemote)
 	{
 		StringInfoData buf;

@@ -1,0 +1,20 @@
+/* Drop test objects */
+DROP TABLE profile.grow_table;
+DROP TABLE profile.test_rel_storage_params1;
+DROP TABLE profile.test_rel_storage_params2;
+DROP FUNCTION profile.dummy_func();
+DROP FUNCTION profile.grow_table_trg_f();
+DROP FUNCTION profile.get_ids;
+DROP FUNCTION profile.get_sources;
+DROP FUNCTION profile.get_report_sections;
+DROP FUNCTION profile.check_dataset_queries;
+/* Testing drop server with data */
+SELECT * FROM profile.drop_server('local');
+DROP EXTENSION pg_profile;
+DROP EXTENSION pg_stat_kcache;
+DROP EXTENSION pg_stat_statements;
+DROP EXTENSION dblink;
+DROP SCHEMA profile;
+DROP SCHEMA dblink;
+DROP SCHEMA statements;
+DROP SCHEMA kcache;

@@ -44,6 +44,9 @@
 #include "tcop/tcopprot.h"
 #include "utils/lsyscache.h"
 
+/* POLAR */
+#include "access/tableam.h"
+
 
 /*
  * Flag bits that can appear in the flags argument of create_plan_recurse().
@@ -2842,6 +2845,15 @@ create_modifytable_plan(PlannerInfo *root, ModifyTablePath *best_path)
 							best_path->epqParam);
 
 	copy_generic_path_info(&plan->plan, &best_path->path);
+
+	/*
+	 * POLAR: check if there is any volatile function in query.
+	 */
+	if (plan->operation == CMD_INSERT && polar_enable_tableam_multi_insert)
+		plan->has_volatile_func = contain_volatile_functions((Node *) root->parse);
+	else
+		plan->has_volatile_func = false;
+	/* POLAR end */
 
 	return plan;
 }

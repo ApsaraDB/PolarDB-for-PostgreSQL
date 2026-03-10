@@ -6,6 +6,7 @@
  * Injection points can be used to run arbitrary code by attaching callbacks
  * that would be executed in place of the named injection point.
  *
+ * Portions Copyright (c) 2024, Alibaba Group Holding Limited
  * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -89,7 +90,7 @@ NON_EXEC_STATIC InjectionPointsCtl *ActiveInjectionPoints;
 
 /*
  * Backend local cache of injection callbacks already loaded, stored in
- * TopMemoryContext.
+ * polar_injection_point_context.
  */
 typedef struct InjectionPointCacheEntry
 {
@@ -108,6 +109,9 @@ typedef struct InjectionPointCacheEntry
 
 static HTAB *InjectionPointCache = NULL;
 
+/* POLAR: memory context for injection point */
+static MemoryContext polar_injection_point_context = NULL;
+
 /*
  * injection_point_cache_add
  *
@@ -123,20 +127,7 @@ injection_point_cache_add(const char *name,
 	InjectionPointCacheEntry *entry;
 	bool		found;
 
-	/* If first time, initialize */
-	if (InjectionPointCache == NULL)
-	{
-		HASHCTL		hash_ctl;
-
-		hash_ctl.keysize = sizeof(char[INJ_NAME_MAXLEN]);
-		hash_ctl.entrysize = sizeof(InjectionPointCacheEntry);
-		hash_ctl.hcxt = TopMemoryContext;
-
-		InjectionPointCache = hash_create("InjectionPoint cache hash",
-										  MAX_INJECTION_POINTS,
-										  &hash_ctl,
-										  HASH_ELEM | HASH_STRINGS | HASH_CONTEXT);
-	}
+	POLAR_ASSERT_PANIC(InjectionPointCache != NULL);
 
 	entry = (InjectionPointCacheEntry *)
 		hash_search(InjectionPointCache, name, HASH_ENTER, &found);
@@ -165,6 +156,31 @@ injection_point_cache_remove(const char *name)
 
 	(void) hash_search(InjectionPointCache, name, HASH_REMOVE, &found);
 	Assert(found);
+}
+
+/*
+ * POLAR: Remove all entries from the injection point local cache.
+ */
+static void
+polar_injection_point_cache_remove_all(void)
+{
+	HASH_SEQ_STATUS status;
+	InjectionPointCacheEntry *entry;
+
+	Assert(InjectionPointCache != NULL);
+
+	if (hash_get_num_entries(InjectionPointCache) <= 0)
+		return;
+
+	hash_seq_init(&status, InjectionPointCache);
+
+	while ((entry = (InjectionPointCacheEntry *) hash_seq_search(&status)) != NULL)
+	{
+		if (hash_search(InjectionPointCache,
+						entry->name,
+						HASH_REMOVE, NULL) == NULL)
+			elog(PANIC, "hash table corrupted");
+	}
 }
 
 /*
@@ -259,6 +275,29 @@ InjectionPointShmemInit(void)
 		pg_atomic_init_u32(&ActiveInjectionPoints->max_inuse, 0);
 		for (int i = 0; i < MAX_INJECTION_POINTS; i++)
 			pg_atomic_init_u64(&ActiveInjectionPoints->entries[i].generation, 0);
+
+		/*
+		 * POLAR: Initialize memory context and hash table here to avoid to
+		 * execute hash_create in a critical section.
+		 */
+		polar_injection_point_context = AllocSetContextCreate(TopMemoryContext,
+															  "polar injection point",
+															  ALLOCSET_DEFAULT_SIZES);
+		MemoryContextAllowInCriticalSection(polar_injection_point_context, true);
+
+		if (InjectionPointCache == NULL)
+		{
+			HASHCTL		hash_ctl;
+
+			hash_ctl.keysize = sizeof(char[INJ_NAME_MAXLEN]);
+			hash_ctl.entrysize = sizeof(InjectionPointCacheEntry);
+			hash_ctl.hcxt = polar_injection_point_context;
+
+			InjectionPointCache = hash_create("InjectionPoint cache hash",
+											  MAX_INJECTION_POINTS,
+											  &hash_ctl,
+											  HASH_ELEM | HASH_STRINGS | HASH_CONTEXT);
+		}
 	}
 	else
 		Assert(found);
@@ -433,11 +472,7 @@ InjectionPointCacheRefresh(const char *name)
 	max_inuse = pg_atomic_read_u32(&ActiveInjectionPoints->max_inuse);
 	if (max_inuse == 0)
 	{
-		if (InjectionPointCache)
-		{
-			hash_destroy(InjectionPointCache);
-			InjectionPointCache = NULL;
-		}
+		polar_injection_point_cache_remove_all();
 		return NULL;
 	}
 
@@ -533,5 +568,27 @@ InjectionPointRun(const char *name)
 		cache_entry->callback(name, cache_entry->private_data);
 #else
 	elog(ERROR, "Injection points are not supported by this build");
+#endif
+}
+
+/*
+ * POLAR: Check wether the injection point was defined
+ * under TopMemoryContext.
+ */
+bool
+polar_injection_point_find(const char *name)
+{
+#ifdef USE_INJECTION_POINTS
+	InjectionPointCacheEntry *cache_entry;
+	MemoryContext old_context = CurrentMemoryContext;
+
+	MemoryContextSwitchTo(polar_injection_point_context);
+	cache_entry = InjectionPointCacheRefresh(name);
+	MemoryContextSwitchTo(old_context);
+
+	return cache_entry != NULL;
+#else
+	elog(ERROR, "Injection points are not supported by this build");
+	return false;				/* silence compiler */
 #endif
 }

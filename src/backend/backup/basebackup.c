@@ -3,6 +3,7 @@
  * basebackup.c
  *	  code for taking a base backup and streaming it to a standby
  *
+ * Portions Copyright (c) 2024, Alibaba Group Holding Limited
  * Portions Copyright (c) 2010-2024, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
@@ -59,6 +60,9 @@
  */
 #define SINK_BUFFER_LENGTH			Max(32768, BLCKSZ)
 
+/* POLAR */
+#include "storage/polar_fd.h"
+
 typedef struct
 {
 	const char *label;
@@ -84,7 +88,7 @@ static int64 sendTablespace(bbsink *sink, char *path, Oid spcoid, bool sizeonly,
 static int64 sendDir(bbsink *sink, const char *path, int basepathlen, bool sizeonly,
 					 List *tablespaces, bool sendtblspclinks,
 					 backup_manifest_info *manifest, Oid spcoid,
-					 IncrementalBackupInfo *ib);
+					 IncrementalBackupInfo *ib, bool is_shared_data);
 static bool sendFile(bbsink *sink, const char *readfilename, const char *tarfilename,
 					 struct stat *statbuf, bool missing_ok,
 					 Oid dboid, Oid spcoid, RelFileNumber relfilenumber,
@@ -181,6 +185,9 @@ static const char *const excludeDirContents[] =
 	/* Contents zeroed on startup, see StartupSUBTRANS(). */
 	"pg_subtrans",
 
+	/* POLAR: excluede pg_logindex, new backup will rebuild it's own logindex */
+	"pg_logindex",
+
 	/* end of list */
 	NULL
 };
@@ -220,6 +227,15 @@ static const struct exclude_list_item excludeFiles[] =
 	{"postmaster.pid", false},
 	{"postmaster.opts", false},
 
+	/* Skip polar_settings temporary file. */
+	{POLAR_SETTING_FILENAME ".tmp", false},
+
+	/* POLAR */
+	{RECOVERY_COMMAND_DONE, false},
+	{"pgss_query_texts.stat", false},
+	{"polar_node_static.conf", false},
+	/* POLAR end */
+
 	/* end of list */
 	{NULL, false}
 };
@@ -240,6 +256,8 @@ perform_base_backup(basebackup_options *opt, bbsink *sink,
 	backup_manifest_info manifest;
 	BackupState *backup_state;
 	StringInfo	tablespace_map;
+
+	char		polar_full_path[MAXPGPATH];
 
 	/* Initial backup state, insofar as we know it now. */
 	state.tablespaces = NIL;
@@ -280,16 +298,27 @@ perform_base_backup(basebackup_options *opt, bbsink *sink,
 	PG_ENSURE_ERROR_CLEANUP(do_pg_abort_backup, BoolGetDatum(false));
 	{
 		ListCell   *lc;
-		tablespaceinfo *newti;
+		tablespaceinfo *tibase;
+		tablespaceinfo *tidata;
 
 		/* If this is an incremental backup, execute preparatory steps. */
 		if (ib != NULL)
 			PrepareForIncrementalBackup(ib, backup_state);
 
 		/* Add a node for the base directory at the end */
-		newti = palloc0(sizeof(tablespaceinfo));
-		newti->size = -1;
-		state.tablespaces = lappend(state.tablespaces, newti);
+		tibase = palloc0(sizeof(tablespaceinfo));
+		tibase->size = -1;
+		tibase->polar_shared = false;
+		state.tablespaces = lappend(state.tablespaces, tibase);
+
+		/* POLAR: if in shared storage, we need to send data dir */
+		if (polar_enable_shared_storage_mode)
+		{
+			tidata = palloc0(sizeof(tablespaceinfo));
+			tidata->size = -1;
+			tidata->polar_shared = true;
+			state.tablespaces = lappend(state.tablespaces, tidata);
+		}
 
 		/*
 		 * Calculate the total backup size by summing up the size of each
@@ -304,8 +333,8 @@ perform_base_backup(basebackup_options *opt, bbsink *sink,
 				tablespaceinfo *tmp = (tablespaceinfo *) lfirst(lc);
 
 				if (tmp->path == NULL)
-					tmp->size = sendDir(sink, ".", 1, true, state.tablespaces,
-										true, NULL, InvalidOid, NULL);
+					tmp->size = sendDir(sink, tmp->polar_shared ? polar_datadir : ".",
+										1, true, state.tablespaces, true, NULL, InvalidOid, NULL, tmp->polar_shared);
 				else
 					tmp->size = sendTablespace(sink, tmp->path, tmp->oid, true,
 											   NULL, NULL);
@@ -321,19 +350,28 @@ perform_base_backup(basebackup_options *opt, bbsink *sink,
 		foreach(lc, state.tablespaces)
 		{
 			tablespaceinfo *ti = (tablespaceinfo *) lfirst(lc);
+			char	   *tarname;
 
 			if (ti->path == NULL)
 			{
 				struct stat statbuf;
 				bool		sendtblspclinks = true;
 				char	   *backup_label;
+				bool		send_pg_control = false;
 
-				bbsink_begin_archive(sink, "base.tar");
+				tarname = ti->polar_shared ? "data.tar" : "base.tar";
+				bbsink_begin_archive(sink, tarname);
 
 				/* In the main tar, include the backup_label first... */
-				backup_label = build_backup_content(backup_state, false);
-				sendFileWithContent(sink, BACKUP_LABEL_FILE,
-									backup_label, -1, &manifest);
+				backup_label = build_backup_content(backup_state, NULL, false);
+
+				/*
+				 * POLAR: shared storage doesn't have backup_label, it's in
+				 * local dir
+				 */
+				if (!ti->polar_shared)
+					sendFileWithContent(sink, BACKUP_LABEL_FILE, backup_label,
+										-1, &manifest);
 				pfree(backup_label);
 
 				/* Then the tablespace_map file, if required... */
@@ -345,18 +383,33 @@ perform_base_backup(basebackup_options *opt, bbsink *sink,
 				}
 
 				/* Then the bulk of the files... */
-				sendDir(sink, ".", 1, false, state.tablespaces,
-						sendtblspclinks, &manifest, InvalidOid, ib);
+				if (ti->polar_shared)
+					sendDir(sink, polar_datadir, strlen(polar_datadir), false, state.tablespaces, sendtblspclinks,
+							&manifest, InvalidOid, ib, ti->polar_shared);
+				else
+					sendDir(sink, ".", 1, false, state.tablespaces, sendtblspclinks,
+							&manifest, InvalidOid, ib, ti->polar_shared);
 
-				/* ... and pg_control after everything else. */
-				if (lstat(XLOG_CONTROL_FILE, &statbuf) != 0)
-					ereport(ERROR,
-							(errcode_for_file_access(),
-							 errmsg("could not stat file \"%s\": %m",
-									XLOG_CONTROL_FILE)));
-				sendFile(sink, XLOG_CONTROL_FILE, XLOG_CONTROL_FILE, &statbuf,
-						 false, InvalidOid, InvalidOid,
-						 InvalidRelFileNumber, 0, &manifest, 0, NULL, 0);
+				/*
+				 * ... and pg_control after everything else. POLAR: in shared
+				 * storage mode, pg_control in shared
+				 * directory(polar_datadir). in non-shared storage mode,
+				 * pg_control in local directory.
+				 */
+				send_pg_control = (polar_enable_shared_storage_mode && ti->polar_shared) ||
+					(!polar_enable_shared_storage_mode && !ti->polar_shared);
+				if (send_pg_control)
+				{
+					polar_make_file_path_level2(polar_full_path, XLOG_CONTROL_FILE);
+					if (polar_stat(polar_full_path, &statbuf) != 0)
+						ereport(ERROR,
+								(errcode_for_file_access(),
+								 errmsg("could not stat file \"%s\": %m",
+										XLOG_CONTROL_FILE)));
+					sendFile(sink, polar_full_path, XLOG_CONTROL_FILE, &statbuf,
+							 false, InvalidOid, InvalidOid,
+							 InvalidRelFileNumber, 0, &manifest, 0, NULL, 0);
+				}
 			}
 			else
 			{
@@ -375,7 +428,14 @@ perform_base_backup(basebackup_options *opt, bbsink *sink,
 			 */
 			if (opt->includewal && ti->path == NULL)
 			{
-				Assert(lnext(state.tablespaces, lc) == NULL);
+				/*
+				 * POLAR: in shared storage mode, after send local directory,
+				 * we need send shared directory.
+				 */
+				if (polar_enable_shared_storage_mode && !ti->polar_shared)
+					bbsink_end_archive(sink);
+				else
+					Assert(lnext(state.tablespaces, lc) == NULL);
 			}
 			else
 			{
@@ -439,8 +499,9 @@ perform_base_backup(basebackup_options *opt, bbsink *sink,
 		XLByteToPrevSeg(endptr, endsegno, wal_segment_size);
 		XLogFileName(lastoff, endtli, endsegno, wal_segment_size);
 
-		dir = AllocateDir("pg_wal");
-		while ((de = ReadDir(dir, "pg_wal")) != NULL)
+		polar_make_file_path_level2(polar_full_path, "pg_wal");
+		dir = AllocateDir(polar_full_path);
+		while ((de = ReadDir(dir, polar_full_path)) != NULL)
 		{
 			/* Does it look like a WAL segment, and is it in the range? */
 			if (IsXLogFileName(de->d_name) &&
@@ -527,9 +588,10 @@ perform_base_backup(basebackup_options *opt, bbsink *sink,
 			pgoff_t		len = 0;
 
 			snprintf(pathbuf, MAXPGPATH, XLOGDIR "/%s", walFileName);
+			polar_make_file_path_level3(polar_full_path, "pg_wal", walFileName);
 			XLogFromFileName(walFileName, &tli, &segno, wal_segment_size);
 
-			fd = OpenTransientFile(pathbuf, O_RDONLY | PG_BINARY);
+			fd = OpenTransientFile(polar_full_path, O_RDONLY | PG_BINARY);
 			if (fd < 0)
 			{
 				int			save_errno = errno;
@@ -544,14 +606,14 @@ perform_base_backup(basebackup_options *opt, bbsink *sink,
 				errno = save_errno;
 				ereport(ERROR,
 						(errcode_for_file_access(),
-						 errmsg("could not open file \"%s\": %m", pathbuf)));
+						 errmsg("could not open file \"%s\": %m", polar_full_path)));
 			}
 
-			if (fstat(fd, &statbuf) != 0)
+			if (polar_fstat(fd, &statbuf) != 0)
 				ereport(ERROR,
 						(errcode_for_file_access(),
 						 errmsg("could not stat file \"%s\": %m",
-								pathbuf)));
+								polar_full_path)));
 			if (statbuf.st_size != wal_segment_size)
 			{
 				CheckXLogRemoved(segno, tli);
@@ -599,7 +661,7 @@ perform_base_backup(basebackup_options *opt, bbsink *sink,
 			 * walreceiver.c always doing an XLogArchiveForceDone() after a
 			 * complete segment.
 			 */
-			StatusFilePath(pathbuf, walFileName, ".done");
+			PGStatusFilePath(pathbuf, walFileName, ".done");
 			sendFileWithContent(sink, pathbuf, "", -1, &manifest);
 		}
 
@@ -617,18 +679,19 @@ perform_base_backup(basebackup_options *opt, bbsink *sink,
 			char	   *fname = lfirst(lc);
 
 			snprintf(pathbuf, MAXPGPATH, XLOGDIR "/%s", fname);
+			polar_make_file_path_level3(polar_full_path, "pg_wal", fname);
 
-			if (lstat(pathbuf, &statbuf) != 0)
+			if (polar_lstat(polar_full_path, &statbuf) != 0)
 				ereport(ERROR,
 						(errcode_for_file_access(),
 						 errmsg("could not stat file \"%s\": %m", pathbuf)));
 
-			sendFile(sink, pathbuf, pathbuf, &statbuf, false,
+			sendFile(sink, polar_full_path, pathbuf, &statbuf, false,
 					 InvalidOid, InvalidOid, InvalidRelFileNumber, 0,
 					 &manifest, 0, NULL, 0);
 
 			/* unconditionally mark file as archived */
-			StatusFilePath(pathbuf, fname, ".done");
+			PGStatusFilePath(pathbuf, fname, ".done");
 			sendFileWithContent(sink, pathbuf, "", -1, &manifest);
 		}
 
@@ -1166,7 +1229,7 @@ sendTablespace(bbsink *sink, char *path, Oid spcoid, bool sizeonly,
 
 	/* Send all the files in the tablespace version directory */
 	size += sendDir(sink, pathbuf, strlen(path), sizeonly, NIL, true, manifest,
-					spcoid, ib);
+					spcoid, ib, polar_enable_shared_storage_mode);
 
 	return size;
 }
@@ -1186,11 +1249,12 @@ sendTablespace(bbsink *sink, char *path, Oid spcoid, bool sizeonly,
 static int64
 sendDir(bbsink *sink, const char *path, int basepathlen, bool sizeonly,
 		List *tablespaces, bool sendtblspclinks, backup_manifest_info *manifest,
-		Oid spcoid, IncrementalBackupInfo *ib)
+		Oid spcoid, IncrementalBackupInfo *ib, bool is_shared_data)
 {
 	DIR		   *dir;
 	struct dirent *de;
 	char		pathbuf[MAXPGPATH * 2];
+	char		pathbuf2[MAXPGPATH * 2];	/* POLAR */
 	struct stat statbuf;
 	int64		size = 0;
 	const char *lastDir;		/* Split last dir from parent path. */
@@ -1226,7 +1290,8 @@ sendDir(bbsink *sink, const char *path, int basepathlen, bool sizeonly,
 		 * Mark path as a database directory if the parent path is either
 		 * $PGDATA/base or a tablespace version path.
 		 */
-		if (strncmp(path, "./base", parentPathLen) == 0 ||
+		snprintf(pathbuf2, sizeof(pathbuf2), "%s/base", is_shared_data ? polar_datadir : ".");
+		if (strncmp(path, pathbuf2, parentPathLen) == 0 ||
 			(parentPathLen >= (sizeof(TABLESPACE_VERSION_DIRECTORY) - 1) &&
 			 strncmp(lastDir - (sizeof(TABLESPACE_VERSION_DIRECTORY) - 1),
 					 TABLESPACE_VERSION_DIRECTORY,
@@ -1347,10 +1412,11 @@ sendDir(bbsink *sink, const char *path, int basepathlen, bool sizeonly,
 		snprintf(pathbuf, sizeof(pathbuf), "%s/%s", path, de->d_name);
 
 		/* Skip pg_control here to back up it last */
-		if (strcmp(pathbuf, "./global/pg_control") == 0)
+		snprintf(pathbuf2, sizeof(pathbuf2), "%s/global/pg_control", is_shared_data ? polar_datadir : ".");
+		if (strcmp(pathbuf, pathbuf2) == 0)
 			continue;
 
-		if (lstat(pathbuf, &statbuf) != 0)
+		if (polar_lstat(pathbuf, &statbuf) != 0)
 		{
 			if (errno != ENOENT)
 				ereport(ERROR,
@@ -1377,6 +1443,23 @@ sendDir(bbsink *sink, const char *path, int basepathlen, bool sizeonly,
 			}
 		}
 
+		/* POLAR: if shared directory inside local directory, we ignore it. */
+		if (!is_shared_data && polar_enable_shared_storage_mode && !excludeFound)
+		{
+			char	   *tmp_dir,
+					   *tmp_polar_datadir;
+
+			tmp_dir = realpath(pathbuf, NULL);
+			tmp_polar_datadir = realpath(polar_path_remove_protocol(polar_datadir), NULL);
+			if (tmp_dir != NULL && tmp_polar_datadir != NULL && strcmp(tmp_polar_datadir, tmp_dir) == 0)
+				excludeFound = true;
+			if (tmp_dir)
+				free(tmp_dir);
+			if (tmp_polar_datadir)
+				free(tmp_polar_datadir);
+		}
+		/* POLAR end */
+
 		if (excludeFound)
 			continue;
 
@@ -1385,7 +1468,8 @@ sendDir(bbsink *sink, const char *path, int basepathlen, bool sizeonly,
 		 * WAL archive anyway. But include it as an empty directory anyway, so
 		 * we get permissions right.
 		 */
-		if (strcmp(pathbuf, "./pg_wal") == 0)
+		snprintf(pathbuf2, MAXPGPATH, "%s/pg_wal", is_shared_data ? polar_datadir : ".");
+		if (strcmp(pathbuf, pathbuf2) == 0)
 		{
 			/* If pg_wal is a symlink, write it as a directory anyway */
 			convert_link_to_directory(pathbuf, &statbuf);
@@ -1405,7 +1489,8 @@ sendDir(bbsink *sink, const char *path, int basepathlen, bool sizeonly,
 		}
 
 		/* Allow symbolic links in pg_tblspc only */
-		if (strcmp(path, "./pg_tblspc") == 0 && S_ISLNK(statbuf.st_mode))
+		snprintf(pathbuf2, MAXPGPATH, "%s/pg_tblspc", is_shared_data ? polar_datadir : ".");
+		if (strcmp(path, pathbuf2) == 0 && S_ISLNK(statbuf.st_mode))
 		{
 			char		linkpath[MAXPGPATH];
 			int			rllen;
@@ -1463,12 +1548,13 @@ sendDir(bbsink *sink, const char *path, int basepathlen, bool sizeonly,
 			/*
 			 * skip sending directories inside pg_tblspc, if not required.
 			 */
-			if (strcmp(pathbuf, "./pg_tblspc") == 0 && !sendtblspclinks)
+			snprintf(pathbuf2, MAXPGPATH, "%s/pg_tblspc", is_shared_data ? polar_datadir : ".");
+			if (strcmp(pathbuf, pathbuf2) == 0 && !sendtblspclinks)
 				skip_this_dir = true;
 
 			if (!skip_this_dir)
 				size += sendDir(sink, pathbuf, basepathlen, sizeonly, tablespaces,
-								sendtblspclinks, manifest, spcoid, ib);
+								sendtblspclinks, manifest, spcoid, ib, is_shared_data);
 		}
 		else if (S_ISREG(statbuf.st_mode))
 		{

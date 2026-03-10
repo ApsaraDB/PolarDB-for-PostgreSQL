@@ -40,7 +40,7 @@ hash_xlog_init_meta_page(XLogReaderState *record)
 						  xlrec->ffactor, true);
 	page = (Page) BufferGetPage(metabuf);
 	PageSetLSN(page, lsn);
-	MarkBufferDirty(metabuf);
+	PolarMarkBufferDirty(metabuf, record->ReadRecPtr);
 
 	/*
 	 * Force the on-disk state of init forks to always be in sync with the
@@ -78,7 +78,7 @@ hash_xlog_init_bitmap_page(XLogReaderState *record)
 	bitmapbuf = XLogInitBufferForRedo(record, 0);
 	_hash_initbitmapbuffer(bitmapbuf, xlrec->bmsize, true);
 	PageSetLSN(BufferGetPage(bitmapbuf), lsn);
-	MarkBufferDirty(bitmapbuf);
+	PolarMarkBufferDirty(bitmapbuf, record->ReadRecPtr);
 
 	/*
 	 * Force the on-disk state of init forks to always be in sync with the
@@ -108,7 +108,7 @@ hash_xlog_init_bitmap_page(XLogReaderState *record)
 		metap->hashm_nmaps++;
 
 		PageSetLSN(page, lsn);
-		MarkBufferDirty(metabuf);
+		PolarMarkBufferDirty(metabuf, record->ReadRecPtr);
 
 		XLogRecGetBlockTag(record, 1, NULL, &forknum, NULL);
 		if (forknum == INIT_FORKNUM)
@@ -142,7 +142,7 @@ hash_xlog_insert(XLogReaderState *record)
 			elog(PANIC, "hash_xlog_insert: failed to add item");
 
 		PageSetLSN(page, lsn);
-		MarkBufferDirty(buffer);
+		PolarMarkBufferDirty(buffer, record->ReadRecPtr);
 	}
 	if (BufferIsValid(buffer))
 		UnlockReleaseBuffer(buffer);
@@ -160,7 +160,7 @@ hash_xlog_insert(XLogReaderState *record)
 		metap->hashm_ntuples += 1;
 
 		PageSetLSN(page, lsn);
-		MarkBufferDirty(buffer);
+		PolarMarkBufferDirty(buffer, record->ReadRecPtr);
 	}
 	if (BufferIsValid(buffer))
 		UnlockReleaseBuffer(buffer);
@@ -204,7 +204,7 @@ hash_xlog_add_ovfl_page(XLogReaderState *record)
 	ovflopaque->hasho_prevblkno = leftblk;
 
 	PageSetLSN(ovflpage, lsn);
-	MarkBufferDirty(ovflbuf);
+	PolarMarkBufferDirty(ovflbuf, record->ReadRecPtr);
 
 	if (XLogReadBufferForRedo(record, 1, &leftbuf) == BLK_NEEDS_REDO)
 	{
@@ -216,7 +216,7 @@ hash_xlog_add_ovfl_page(XLogReaderState *record)
 		leftopaque->hasho_nextblkno = rightblk;
 
 		PageSetLSN(leftpage, lsn);
-		MarkBufferDirty(leftbuf);
+		PolarMarkBufferDirty(leftbuf, record->ReadRecPtr);
 	}
 
 	if (BufferIsValid(leftbuf))
@@ -247,7 +247,7 @@ hash_xlog_add_ovfl_page(XLogReaderState *record)
 			SETBIT(freep, *bitmap_page_bit);
 
 			PageSetLSN(mappage, lsn);
-			MarkBufferDirty(mapbuffer);
+			PolarMarkBufferDirty(mapbuffer, record->ReadRecPtr);
 		}
 		if (BufferIsValid(mapbuffer))
 			UnlockReleaseBuffer(mapbuffer);
@@ -264,7 +264,7 @@ hash_xlog_add_ovfl_page(XLogReaderState *record)
 		new_bmpage = true;
 		newmapblk = BufferGetBlockNumber(newmapbuf);
 
-		MarkBufferDirty(newmapbuf);
+		PolarMarkBufferDirty(newmapbuf, record->ReadRecPtr);
 		PageSetLSN(BufferGetPage(newmapbuf), lsn);
 
 		UnlockReleaseBuffer(newmapbuf);
@@ -298,7 +298,7 @@ hash_xlog_add_ovfl_page(XLogReaderState *record)
 		}
 
 		PageSetLSN(page, lsn);
-		MarkBufferDirty(metabuf);
+		PolarMarkBufferDirty(metabuf, record->ReadRecPtr);
 	}
 	if (BufferIsValid(metabuf))
 		UnlockReleaseBuffer(metabuf);
@@ -344,7 +344,7 @@ hash_xlog_split_allocate_page(XLogReaderState *record)
 		oldopaque->hasho_prevblkno = xlrec->new_bucket;
 
 		PageSetLSN(oldpage, lsn);
-		MarkBufferDirty(oldbuf);
+		PolarMarkBufferDirty(oldbuf, record->ReadRecPtr);
 	}
 
 	/* replay the record for new bucket */
@@ -352,7 +352,7 @@ hash_xlog_split_allocate_page(XLogReaderState *record)
 								  &newbuf);
 	_hash_initbuf(newbuf, xlrec->new_bucket, xlrec->new_bucket,
 				  xlrec->new_bucket_flag, true);
-	MarkBufferDirty(newbuf);
+	PolarMarkBufferDirty(newbuf, record->ReadRecPtr);
 	PageSetLSN(BufferGetPage(newbuf), lsn);
 
 	/*
@@ -413,7 +413,7 @@ hash_xlog_split_allocate_page(XLogReaderState *record)
 			metap->hashm_ovflpoint = ovflpoint;
 		}
 
-		MarkBufferDirty(metabuf);
+		PolarMarkBufferDirty(metabuf, record->ReadRecPtr);
 		PageSetLSN(BufferGetPage(metabuf), lsn);
 	}
 
@@ -465,7 +465,7 @@ hash_xlog_split_complete(XLogReaderState *record)
 		oldopaque->hasho_flag = xlrec->old_bucket_flag;
 
 		PageSetLSN(oldpage, lsn);
-		MarkBufferDirty(oldbuf);
+		PolarMarkBufferDirty(oldbuf, record->ReadRecPtr);
 	}
 	if (BufferIsValid(oldbuf))
 		UnlockReleaseBuffer(oldbuf);
@@ -488,7 +488,7 @@ hash_xlog_split_complete(XLogReaderState *record)
 		nopaque->hasho_flag = xlrec->new_bucket_flag;
 
 		PageSetLSN(newpage, lsn);
-		MarkBufferDirty(newbuf);
+		PolarMarkBufferDirty(newbuf, record->ReadRecPtr);
 	}
 	if (BufferIsValid(newbuf))
 		UnlockReleaseBuffer(newbuf);
@@ -572,7 +572,7 @@ hash_xlog_move_page_contents(XLogReaderState *record)
 		Assert(ninserted == xldata->ntups);
 
 		PageSetLSN(writepage, lsn);
-		MarkBufferDirty(writebuf);
+		PolarMarkBufferDirty(writebuf, record->ReadRecPtr);
 	}
 
 	/* replay the record for deleting entries from overflow buffer */
@@ -599,7 +599,7 @@ hash_xlog_move_page_contents(XLogReaderState *record)
 		}
 
 		PageSetLSN(page, lsn);
-		MarkBufferDirty(deletebuf);
+		PolarMarkBufferDirty(deletebuf, record->ReadRecPtr);
 	}
 
 	/*
@@ -730,7 +730,7 @@ hash_xlog_squeeze_page(XLogReaderState *record)
 		if (mod_wbuf)
 		{
 			PageSetLSN(writepage, lsn);
-			MarkBufferDirty(writebuf);
+			PolarMarkBufferDirty(writebuf, record->ReadRecPtr);
 		}
 	}
 
@@ -753,7 +753,7 @@ hash_xlog_squeeze_page(XLogReaderState *record)
 		ovflopaque->hasho_page_id = HASHO_PAGE_ID;
 
 		PageSetLSN(ovflpage, lsn);
-		MarkBufferDirty(ovflbuf);
+		PolarMarkBufferDirty(ovflbuf, record->ReadRecPtr);
 	}
 	if (BufferIsValid(ovflbuf))
 		UnlockReleaseBuffer(ovflbuf);
@@ -768,7 +768,7 @@ hash_xlog_squeeze_page(XLogReaderState *record)
 		prevopaque->hasho_nextblkno = xldata->nextblkno;
 
 		PageSetLSN(prevpage, lsn);
-		MarkBufferDirty(prevbuf);
+		PolarMarkBufferDirty(prevbuf, record->ReadRecPtr);
 	}
 	if (BufferIsValid(prevbuf))
 		UnlockReleaseBuffer(prevbuf);
@@ -786,7 +786,7 @@ hash_xlog_squeeze_page(XLogReaderState *record)
 			nextopaque->hasho_prevblkno = xldata->prevblkno;
 
 			PageSetLSN(nextpage, lsn);
-			MarkBufferDirty(nextbuf);
+			PolarMarkBufferDirty(nextbuf, record->ReadRecPtr);
 		}
 		if (BufferIsValid(nextbuf))
 			UnlockReleaseBuffer(nextbuf);
@@ -821,7 +821,7 @@ hash_xlog_squeeze_page(XLogReaderState *record)
 		CLRBIT(freep, *bitmap_page_bit);
 
 		PageSetLSN(mappage, lsn);
-		MarkBufferDirty(mapbuf);
+		PolarMarkBufferDirty(mapbuf, record->ReadRecPtr);
 	}
 	if (BufferIsValid(mapbuf))
 		UnlockReleaseBuffer(mapbuf);
@@ -847,7 +847,7 @@ hash_xlog_squeeze_page(XLogReaderState *record)
 			metap->hashm_firstfree = *firstfree_ovflpage;
 
 			PageSetLSN(page, lsn);
-			MarkBufferDirty(metabuf);
+			PolarMarkBufferDirty(metabuf, record->ReadRecPtr);
 		}
 		if (BufferIsValid(metabuf))
 			UnlockReleaseBuffer(metabuf);
@@ -923,7 +923,7 @@ hash_xlog_delete(XLogReaderState *record)
 		}
 
 		PageSetLSN(page, lsn);
-		MarkBufferDirty(deletebuf);
+		PolarMarkBufferDirty(deletebuf, record->ReadRecPtr);
 	}
 	if (BufferIsValid(deletebuf))
 		UnlockReleaseBuffer(deletebuf);
@@ -951,7 +951,7 @@ hash_xlog_split_cleanup(XLogReaderState *record)
 		bucket_opaque = HashPageGetOpaque(page);
 		bucket_opaque->hasho_flag &= ~LH_BUCKET_NEEDS_SPLIT_CLEANUP;
 		PageSetLSN(page, lsn);
-		MarkBufferDirty(buffer);
+		PolarMarkBufferDirty(buffer, record->ReadRecPtr);
 	}
 	if (BufferIsValid(buffer))
 		UnlockReleaseBuffer(buffer);
@@ -977,7 +977,7 @@ hash_xlog_update_meta_page(XLogReaderState *record)
 		metap->hashm_ntuples = xldata->ntuples;
 
 		PageSetLSN(page, lsn);
-		MarkBufferDirty(metabuf);
+		PolarMarkBufferDirty(metabuf, record->ReadRecPtr);
 	}
 	if (BufferIsValid(metabuf))
 		UnlockReleaseBuffer(metabuf);
@@ -1041,7 +1041,7 @@ hash_xlog_vacuum_one_page(XLogReaderState *record)
 		pageopaque->hasho_flag &= ~LH_PAGE_HAS_DEAD_TUPLES;
 
 		PageSetLSN(page, lsn);
-		MarkBufferDirty(buffer);
+		PolarMarkBufferDirty(buffer, record->ReadRecPtr);
 	}
 	if (BufferIsValid(buffer))
 		UnlockReleaseBuffer(buffer);
@@ -1057,7 +1057,7 @@ hash_xlog_vacuum_one_page(XLogReaderState *record)
 		metap->hashm_ntuples -= xldata->ntuples;
 
 		PageSetLSN(metapage, lsn);
-		MarkBufferDirty(metabuf);
+		PolarMarkBufferDirty(metabuf, record->ReadRecPtr);
 	}
 	if (BufferIsValid(metabuf))
 		UnlockReleaseBuffer(metabuf);

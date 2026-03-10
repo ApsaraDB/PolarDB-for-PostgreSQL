@@ -32,6 +32,11 @@
 extern PGDLLIMPORT char *default_table_access_method;
 extern PGDLLIMPORT bool synchronize_seqscans;
 
+/* POLAR: GUCs */
+extern PGDLLIMPORT bool polar_enable_tableam_multi_insert;
+
+/* POLAR end */
+
 
 struct BulkInsertStateData;
 struct IndexInfo;
@@ -261,11 +266,48 @@ typedef struct TM_IndexDeleteOp
 	TM_IndexStatus *status;
 } TM_IndexDeleteOp;
 
+struct TableModifyState;
+
+/* Callback invoked upon flushing each buffered tuple */
+typedef void (*TableModifyBufferFlushCb) (void *context,
+										  TupleTableSlot *slot);
+
+/* Holds table modify state */
+typedef struct TableModifyState
+{
+	/* These fields are used for inserts for now */
+
+	Relation	rel;			/* Relation to insert to */
+	CommandId	cid;			/* Command ID for insert */
+	int			options;		/* TABLE_INSERT options */
+
+	/* Memory context for dealing with modify state variables */
+	MemoryContext mem_ctx;
+
+	/* Flush callback and its context used for multi inserts */
+	TableModifyBufferFlushCb buffer_flush_cb;
+	void	   *buffer_flush_ctx;
+
+	/* Table AM specific data */
+	void	   *data;
+} TableModifyState;
+
 /* "options" flag bits for table_tuple_insert */
 /* TABLE_INSERT_SKIP_WAL was 0x0001; RelationNeedsWAL() now governs */
 #define TABLE_INSERT_SKIP_FSM		0x0002
 #define TABLE_INSERT_FROZEN			0x0004
 #define TABLE_INSERT_NO_LOGICAL		0x0008
+/*
+ * Use BAS_BULKWRITE buffer access strategy. 0x0010 is for
+ * HEAP_INSERT_SPECULATIVE.
+ */
+#define TABLE_INSERT_BAS_BULKWRITE	0x0020
+#define TABLE_INSERT_RAW_BULKWRITE	0x0040	/* POLAR */
+
+/*
+ * See HEAP_MAX_BUFFERED_SLOTS.
+ */
+#define TABLE_MULTI_INSERT_MAX_BUFFERED_SLOTS		1000
 
 /* flag bits for table_tuple_lock */
 /* Follow tuples whose update is in progress if lock modes don't conflict  */
@@ -583,6 +625,21 @@ typedef struct TableAmRoutine
 	 */
 	void		(*finish_bulk_insert) (Relation rel, int options);
 
+	/*
+	 * Table Modify related functions.
+	 *
+	 * Optional callbacks.
+	 */
+	bool		(*tuple_multi_modify_supported) (void);
+	TableModifyState *(*tuple_modify_begin) (Relation rel,
+											 CommandId cid,
+											 int options,
+											 TableModifyBufferFlushCb buffer_flush_cb,
+											 void *buffer_flush_ctx);
+	void		(*tuple_modify_buffer_insert) (TableModifyState *state,
+											   TupleTableSlot *slot);
+	void		(*tuple_modify_buffer_flush) (TableModifyState *state);
+	void		(*tuple_modify_end) (TableModifyState *state);
 
 	/* ------------------------------------------------------------------------
 	 * DDL related functionality.
@@ -1607,6 +1664,49 @@ table_finish_bulk_insert(Relation rel, int options)
 		rel->rd_tableam->finish_bulk_insert(rel, options);
 }
 
+/*
+ * Table Modify related functions.
+ */
+static inline bool
+table_multi_modify_supported(Relation rel)
+{
+	if (rel->rd_tableam && rel->rd_tableam->tuple_multi_modify_supported)
+		return rel->rd_tableam->tuple_multi_modify_supported();
+
+	return false;
+}
+
+static inline TableModifyState *
+table_modify_begin(Relation rel,
+				   CommandId cid,
+				   int options,
+				   TableModifyBufferFlushCb buffer_flush_cb,
+				   void *buffer_flush_ctx)
+{
+	return rel->rd_tableam->tuple_modify_begin(rel,
+											   cid,
+											   options,
+											   buffer_flush_cb,
+											   buffer_flush_ctx);
+}
+
+static inline void
+table_modify_buffer_insert(TableModifyState *state, TupleTableSlot *slot)
+{
+	state->rel->rd_tableam->tuple_modify_buffer_insert(state, slot);
+}
+
+static inline void
+table_modify_buffer_flush(TableModifyState *state)
+{
+	state->rel->rd_tableam->tuple_modify_buffer_flush(state);
+}
+
+static inline void
+table_modify_end(TableModifyState *state)
+{
+	state->rel->rd_tableam->tuple_modify_end(state);
+}
 
 /* ------------------------------------------------------------------------
  * DDL related functionality.

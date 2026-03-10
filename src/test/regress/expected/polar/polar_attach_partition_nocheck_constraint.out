@@ -1,0 +1,294 @@
+-------------------------------------------------
+-- init
+-------------------------------------------------
+CREATE SCHEMA test_attach_partition_nocheck_constraint;
+SET search_path TO test_attach_partition_nocheck_constraint;
+-- range partition
+CREATE TABLE t(a int, b varchar(10), c char(10)) PARTITION BY RANGE (a);
+CREATE INDEX on t(a);
+\d+ t
+                     Partitioned table "test_attach_partition_nocheck_constraint.t"
+ Column |         Type          | Collation | Nullable | Default | Storage  | Stats target | Description 
+--------+-----------------------+-----------+----------+---------+----------+--------------+-------------
+ a      | integer               |           |          |         | plain    |              | 
+ b      | character varying(10) |           |          |         | extended |              | 
+ c      | character(10)         |           |          |         | extended |              | 
+Partition key: RANGE (a)
+Indexes:
+    "t_a_idx" btree (a)
+Number of partitions: 0
+
+-------------------------------------------------
+-- test
+-------------------------------------------------
+CREATE TABLE t_p1(a int, b varchar(10), c char(10));
+ALTER TABLE t_p1 REPLICA IDENTITY DEFAULT;
+INSERT INTO t_p1 VALUES(1, '1', '1');
+ALTER TABLE t ATTACH PARTITION t_p1 FOR VALUES FROM (0) TO (100);
+\d+ t
+                     Partitioned table "test_attach_partition_nocheck_constraint.t"
+ Column |         Type          | Collation | Nullable | Default | Storage  | Stats target | Description 
+--------+-----------------------+-----------+----------+---------+----------+--------------+-------------
+ a      | integer               |           |          |         | plain    |              | 
+ b      | character varying(10) |           |          |         | extended |              | 
+ c      | character(10)         |           |          |         | extended |              | 
+Partition key: RANGE (a)
+Indexes:
+    "t_a_idx" btree (a)
+Partitions: t_p1 FOR VALUES FROM (0) TO (100)
+
+\d+ t_p1
+                          Table "test_attach_partition_nocheck_constraint.t_p1"
+ Column |         Type          | Collation | Nullable | Default | Storage  | Stats target | Description 
+--------+-----------------------+-----------+----------+---------+----------+--------------+-------------
+ a      | integer               |           |          |         | plain    |              | 
+ b      | character varying(10) |           |          |         | extended |              | 
+ c      | character(10)         |           |          |         | extended |              | 
+Partition of: t FOR VALUES FROM (0) TO (100)
+Partition constraint: ((a IS NOT NULL) AND (a >= 0) AND (a < 100))
+Indexes:
+    "t_p1_a_idx" btree (a)
+
+SELECT * FROM t WHERE a = 1;
+ a | b |     c      
+---+---+------------
+ 1 | 1 | 1         
+(1 row)
+
+CREATE TABLE t_p2(a int, b varchar(10), c char(10));
+ALTER TABLE t_p2 REPLICA IDENTITY DEFAULT;
+INSERT INTO t_p2 VALUES(101, '101', '101');
+-- disable check constraint, error should be raised
+SET polar_enable_skip_partition_constraint_check TO off;
+ALTER TABLE t ATTACH PARTITION t_p2 FOR VALUES FROM (100) TO (200) NOCHECK_CONSTRAINT;
+ERROR:  ATTACH PARTITION with NOCHECK_CONSTRAINT option is not supported.
+HINT:  Please enable the "polar_enable_skip_partition_constraint_check" GUC.
+\d+ t
+                     Partitioned table "test_attach_partition_nocheck_constraint.t"
+ Column |         Type          | Collation | Nullable | Default | Storage  | Stats target | Description 
+--------+-----------------------+-----------+----------+---------+----------+--------------+-------------
+ a      | integer               |           |          |         | plain    |              | 
+ b      | character varying(10) |           |          |         | extended |              | 
+ c      | character(10)         |           |          |         | extended |              | 
+Partition key: RANGE (a)
+Indexes:
+    "t_a_idx" btree (a)
+Partitions: t_p1 FOR VALUES FROM (0) TO (100)
+
+\d+ t_p2
+                          Table "test_attach_partition_nocheck_constraint.t_p2"
+ Column |         Type          | Collation | Nullable | Default | Storage  | Stats target | Description 
+--------+-----------------------+-----------+----------+---------+----------+--------------+-------------
+ a      | integer               |           |          |         | plain    |              | 
+ b      | character varying(10) |           |          |         | extended |              | 
+ c      | character(10)         |           |          |         | extended |              | 
+
+SELECT * FROM t WHERE a = 101;
+ a | b | c 
+---+---+---
+(0 rows)
+
+-- enable check constraint
+SET polar_enable_skip_partition_constraint_check TO on;
+ALTER TABLE t ATTACH PARTITION t_p2 FOR VALUES FROM (100) TO (200) NOCHECK_CONSTRAINT;
+INFO:  skip partition constraint validation for table "t_p2" as "NOCHECK_CONSTRAINT" option
+HINT:  The caller is responsible for ensuring that the sub-partition satisfies the partition constraints.
+\d+ t
+                     Partitioned table "test_attach_partition_nocheck_constraint.t"
+ Column |         Type          | Collation | Nullable | Default | Storage  | Stats target | Description 
+--------+-----------------------+-----------+----------+---------+----------+--------------+-------------
+ a      | integer               |           |          |         | plain    |              | 
+ b      | character varying(10) |           |          |         | extended |              | 
+ c      | character(10)         |           |          |         | extended |              | 
+Partition key: RANGE (a)
+Indexes:
+    "t_a_idx" btree (a)
+Partitions: t_p1 FOR VALUES FROM (0) TO (100),
+            t_p2 FOR VALUES FROM (100) TO (200)
+
+\d+ t_p2
+                          Table "test_attach_partition_nocheck_constraint.t_p2"
+ Column |         Type          | Collation | Nullable | Default | Storage  | Stats target | Description 
+--------+-----------------------+-----------+----------+---------+----------+--------------+-------------
+ a      | integer               |           |          |         | plain    |              | 
+ b      | character varying(10) |           |          |         | extended |              | 
+ c      | character(10)         |           |          |         | extended |              | 
+Partition of: t FOR VALUES FROM (100) TO (200)
+Partition constraint: ((a IS NOT NULL) AND (a >= 100) AND (a < 200))
+Indexes:
+    "t_p2_a_idx" btree (a)
+
+SELECT * FROM t WHERE a = 101;
+  a  |  b  |     c      
+-----+-----+------------
+ 101 | 101 | 101       
+(1 row)
+
+CREATE TABLE t_p3(a int, b varchar(10), c char(10));
+ALTER TABLE t_p3 REPLICA IDENTITY DEFAULT;
+INSERT INTO t_p3 VALUES(201, '201', '201');
+ALTER TABLE t ATTACH PARTITION t_p3 FOR VALUES FROM (200) TO (300) NOCHECK_CONSTRAINT;
+INFO:  skip partition constraint validation for table "t_p3" as "NOCHECK_CONSTRAINT" option
+HINT:  The caller is responsible for ensuring that the sub-partition satisfies the partition constraints.
+\d+ t
+                     Partitioned table "test_attach_partition_nocheck_constraint.t"
+ Column |         Type          | Collation | Nullable | Default | Storage  | Stats target | Description 
+--------+-----------------------+-----------+----------+---------+----------+--------------+-------------
+ a      | integer               |           |          |         | plain    |              | 
+ b      | character varying(10) |           |          |         | extended |              | 
+ c      | character(10)         |           |          |         | extended |              | 
+Partition key: RANGE (a)
+Indexes:
+    "t_a_idx" btree (a)
+Partitions: t_p1 FOR VALUES FROM (0) TO (100),
+            t_p2 FOR VALUES FROM (100) TO (200),
+            t_p3 FOR VALUES FROM (200) TO (300)
+
+\d+ t_p3
+                          Table "test_attach_partition_nocheck_constraint.t_p3"
+ Column |         Type          | Collation | Nullable | Default | Storage  | Stats target | Description 
+--------+-----------------------+-----------+----------+---------+----------+--------------+-------------
+ a      | integer               |           |          |         | plain    |              | 
+ b      | character varying(10) |           |          |         | extended |              | 
+ c      | character(10)         |           |          |         | extended |              | 
+Partition of: t FOR VALUES FROM (200) TO (300)
+Partition constraint: ((a IS NOT NULL) AND (a >= 200) AND (a < 300))
+Indexes:
+    "t_p3_a_idx" btree (a)
+
+SELECT * FROM t WHERE a = 201;
+  a  |  b  |     c      
+-----+-----+------------
+ 201 | 201 | 201       
+(1 row)
+
+CREATE TABLE t_default(a int, b varchar(10), c char(10));
+ALTER TABLE t_default REPLICA IDENTITY DEFAULT;
+INSERT INTO t_default VALUES(-1, '-1', '-1');
+ALTER TABLE t ATTACH PARTITION t_default DEFAULT;
+\d+ t
+                     Partitioned table "test_attach_partition_nocheck_constraint.t"
+ Column |         Type          | Collation | Nullable | Default | Storage  | Stats target | Description 
+--------+-----------------------+-----------+----------+---------+----------+--------------+-------------
+ a      | integer               |           |          |         | plain    |              | 
+ b      | character varying(10) |           |          |         | extended |              | 
+ c      | character(10)         |           |          |         | extended |              | 
+Partition key: RANGE (a)
+Indexes:
+    "t_a_idx" btree (a)
+Partitions: t_p1 FOR VALUES FROM (0) TO (100),
+            t_p2 FOR VALUES FROM (100) TO (200),
+            t_p3 FOR VALUES FROM (200) TO (300),
+            t_default DEFAULT
+
+\d+ t_default
+                       Table "test_attach_partition_nocheck_constraint.t_default"
+ Column |         Type          | Collation | Nullable | Default | Storage  | Stats target | Description 
+--------+-----------------------+-----------+----------+---------+----------+--------------+-------------
+ a      | integer               |           |          |         | plain    |              | 
+ b      | character varying(10) |           |          |         | extended |              | 
+ c      | character(10)         |           |          |         | extended |              | 
+Partition of: t DEFAULT
+Partition constraint: (NOT ((a IS NOT NULL) AND (((a >= 0) AND (a < 100)) OR ((a >= 100) AND (a < 200)) OR ((a >= 200) AND (a < 300)))))
+Indexes:
+    "t_default_a_idx" btree (a)
+
+SELECT * FROM t WHERE a = -1;
+ a  | b  |     c      
+----+----+------------
+ -1 | -1 | -1        
+(1 row)
+
+DROP TABLE t;
+-- 2 level hash partition
+CREATE TABLE t(a int, b varchar(10), c char(10)) PARTITION BY HASH (a);
+CREATE INDEX on t(a);
+\d+ t
+                     Partitioned table "test_attach_partition_nocheck_constraint.t"
+ Column |         Type          | Collation | Nullable | Default | Storage  | Stats target | Description 
+--------+-----------------------+-----------+----------+---------+----------+--------------+-------------
+ a      | integer               |           |          |         | plain    |              | 
+ b      | character varying(10) |           |          |         | extended |              | 
+ c      | character(10)         |           |          |         | extended |              | 
+Partition key: HASH (a)
+Indexes:
+    "t_a_idx" btree (a)
+Number of partitions: 0
+
+CREATE TABLE t_p1(a int, b varchar(10), c char(10));
+ALTER TABLE t_p1 REPLICA IDENTITY DEFAULT;
+INSERT INTO t_p1 VALUES(0, '0', '0');
+ALTER TABLE t ATTACH PARTITION t_p1 FOR VALUES WITH (MODULUS 4, REMAINDER 0) NOCHECK_CONSTRAINT ;
+INFO:  skip partition constraint validation for table "t_p1" as "NOCHECK_CONSTRAINT" option
+HINT:  The caller is responsible for ensuring that the sub-partition satisfies the partition constraints.
+SELECT * FROM t WHERE a = 0;
+ a | b |     c      
+---+---+------------
+ 0 | 0 | 0         
+(1 row)
+
+CREATE TABLE t_p2(a int, b varchar(10), c char(10)) PARTITION BY HASH (a);
+CREATE TABLE t_p2_p1(a int, b varchar(10), c char(10));
+ALTER TABLE t_p2_p1 REPLICA IDENTITY DEFAULT;
+CREATE TABLE t_p2_p2(a int, b varchar(10), c char(10));
+ALTER TABLE t_p2_p2 REPLICA IDENTITY DEFAULT;
+INSERT INTO t_p2_p1 VALUES(1, '1', '1');
+INSERT INTO t_p2_p2 VALUES(5, '5', '5');
+ALTER TABLE t_p2 ATTACH PARTITION t_p2_p1 FOR VALUES WITH (MODULUS 8, REMAINDER 1) NOCHECK_CONSTRAINT;
+INFO:  skip partition constraint validation for table "t_p2_p1" as "NOCHECK_CONSTRAINT" option
+HINT:  The caller is responsible for ensuring that the sub-partition satisfies the partition constraints.
+ALTER TABLE t_p2 ATTACH PARTITION t_p2_p2 FOR VALUES WITH (MODULUS 8, REMAINDER 5) NOCHECK_CONSTRAINT;
+INFO:  skip partition constraint validation for table "t_p2_p2" as "NOCHECK_CONSTRAINT" option
+HINT:  The caller is responsible for ensuring that the sub-partition satisfies the partition constraints.
+ALTER TABLE t ATTACH PARTITION t_p2 FOR VALUES WITH (MODULUS 4, REMAINDER 1) NOCHECK_CONSTRAINT;
+INFO:  skip partition constraint validation for table "t_p2" as "NOCHECK_CONSTRAINT" option
+HINT:  The caller is responsible for ensuring that the sub-partition satisfies the partition constraints.
+\d+ t
+                     Partitioned table "test_attach_partition_nocheck_constraint.t"
+ Column |         Type          | Collation | Nullable | Default | Storage  | Stats target | Description 
+--------+-----------------------+-----------+----------+---------+----------+--------------+-------------
+ a      | integer               |           |          |         | plain    |              | 
+ b      | character varying(10) |           |          |         | extended |              | 
+ c      | character(10)         |           |          |         | extended |              | 
+Partition key: HASH (a)
+Indexes:
+    "t_a_idx" btree (a)
+Partitions: t_p1 FOR VALUES WITH (modulus 4, remainder 0),
+            t_p2 FOR VALUES WITH (modulus 4, remainder 1), PARTITIONED
+
+SELECT * FROM t;
+ a | b |     c      
+---+---+------------
+ 0 | 0 | 0         
+ 1 | 1 | 1         
+ 5 | 5 | 5         
+(3 rows)
+
+ALTER TABLE t ALTER COLUMN b TYPE varchar(15) NOCHECK_CONSTRAINT;
+ERROR:  syntax error at or near "NOCHECK_CONSTRAINT"
+LINE 1: ALTER TABLE t ALTER COLUMN b TYPE varchar(15) NOCHECK_CONSTR...
+                                                      ^
+DROP TABLE t;
+-- There will be data that does not satisfy the partition constraints.
+CREATE TABLE t(a int, b varchar(10), c char(10)) PARTITION BY RANGE (a);
+CREATE TABLE t_p1(a int, b varchar(10), c char(10));
+ALTER TABLE t_p1 REPLICA IDENTITY DEFAULT;
+INSERT INTO t_p1 VALUES(200, '200', '200');
+ALTER TABLE t ATTACH PARTITION t_p1 FOR VALUES FROM (0) TO (100);
+ERROR:  partition constraint of relation "t_p1" is violated by some row
+ALTER TABLE t ATTACH PARTITION t_p1 FOR VALUES FROM (0) TO (100) NOCHECK_CONSTRAINT;
+INFO:  skip partition constraint validation for table "t_p1" as "NOCHECK_CONSTRAINT" option
+HINT:  The caller is responsible for ensuring that the sub-partition satisfies the partition constraints.
+CREATE INDEX ON t(a);
+SELECT * FROM t;
+  a  |  b  |     c      
+-----+-----+------------
+ 200 | 200 | 200       
+(1 row)
+
+-------------------------------------------------
+-- clear
+-------------------------------------------------
+SET client_min_messages TO error;
+DROP TABLE t;
+DROP SCHEMA test_attach_partition_nocheck_constraint CASCADE;

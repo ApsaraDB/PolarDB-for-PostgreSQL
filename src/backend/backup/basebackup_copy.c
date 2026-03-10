@@ -384,10 +384,11 @@ SendTablespaceList(List *tablespaces)
 
 	dest = CreateDestReceiver(DestRemoteSimple);
 
-	tupdesc = CreateTemplateTupleDesc(3);
+	tupdesc = CreateTemplateTupleDesc(4);
 	TupleDescInitBuiltinEntry(tupdesc, (AttrNumber) 1, "spcoid", OIDOID, -1, 0);
 	TupleDescInitBuiltinEntry(tupdesc, (AttrNumber) 2, "spclocation", TEXTOID, -1, 0);
 	TupleDescInitBuiltinEntry(tupdesc, (AttrNumber) 3, "size", INT8OID, -1, 0);
+	TupleDescInitBuiltinEntry(tupdesc, (AttrNumber) 4, "shared_storage", INT4OID, -1, 0);
 
 	/* send RowDescription */
 	tstate = begin_tup_output_tupdesc(dest, tupdesc, &TTSOpsVirtual);
@@ -396,8 +397,8 @@ SendTablespaceList(List *tablespaces)
 	foreach(lc, tablespaces)
 	{
 		tablespaceinfo *ti = lfirst(lc);
-		Datum		values[3];
-		bool		nulls[3] = {0};
+		Datum		values[4];
+		bool		nulls[4] = {0};
 
 		/* Send one datarow message */
 		if (ti->path == NULL)
@@ -415,6 +416,10 @@ SendTablespaceList(List *tablespaces)
 		else
 			nulls[2] = true;
 
+		if (ti->polar_shared)
+			values[3] = Int32GetDatum(1);
+		else
+			nulls[3] = true;
 		do_tup_output(tstate, values, nulls);
 	}
 

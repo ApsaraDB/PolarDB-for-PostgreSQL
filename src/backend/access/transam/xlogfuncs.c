@@ -147,7 +147,7 @@ pg_backup_stop(PG_FUNCTION_ARGS)
 	do_pg_backup_stop(backup_state, waitforarchive);
 
 	/* Build the contents of backup_label */
-	backup_label = build_backup_content(backup_state, false);
+	backup_label = build_backup_content(backup_state, NULL, false);
 
 	values[0] = LSNGetDatum(backup_state->stoppoint);
 	values[1] = CStringGetTextDatum(backup_label);

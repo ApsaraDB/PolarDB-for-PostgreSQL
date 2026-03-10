@@ -1,0 +1,24 @@
+# pg_similarity extension
+
+EXTENSION = pg_similarity
+MODULE_big = pg_similarity
+OBJS = tokenizer.o similarity.o similarity_gin.o \
+       block.o cosine.o dice.o euclidean.o hamming.o jaccard.o \
+       jaro.o levenshtein.o matching.o mongeelkan.o needlemanwunsch.o \
+	   overlap.o qgram.o smithwaterman.o smithwatermangotoh.o soundex.o
+DATA = pg_similarity--1.0.sql pg_similarity--unpackaged--1.0.sql
+REGRESS = test1 test2 test3 test4 
+REGRESS_OPTS = --temp-config $(top_srcdir)/external/pg_similarity/pg_similarity.conf.sample
+
+NO_INSTALLCHECK = 1
+
+ifdef USE_PGXS
+PG_CONFIG = pg_config
+PGXS := $(shell $(PG_CONFIG) --pgxs)
+include $(PGXS)
+else
+subdir = external/pg_similarity
+top_builddir = ../..
+include $(top_builddir)/src/Makefile.global
+include $(top_srcdir)/contrib/contrib-global.mk
+endif

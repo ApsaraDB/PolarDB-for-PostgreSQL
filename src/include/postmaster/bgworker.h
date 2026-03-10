@@ -60,6 +60,12 @@
 #define BGWORKER_BACKEND_DATABASE_CONNECTION		0x0002
 
 /*
+ * POLAR: Pass this flag to make postmaster crash and restart after
+ * your worker exit abnormally whose exit status is not 0.
+ */
+#define BGWORKER_CRASH_ON_ERROR						0x0004
+
+/*
  * This class is used internally for parallel queries, to keep track of the
  * number of active parallel workers and make sure we never launch more than
  * max_parallel_workers parallel workers at the same time.  Third party
@@ -108,8 +114,11 @@ typedef enum BgwHandleStatus
 	BGWH_POSTMASTER_DIED,		/* postmaster died; worker status unclear */
 } BgwHandleStatus;
 
-struct BackgroundWorkerHandle;
-typedef struct BackgroundWorkerHandle BackgroundWorkerHandle;
+typedef struct BackgroundWorkerHandle
+{
+	int			slot;
+	uint64		generation;
+} BackgroundWorkerHandle;
 
 /* Register a new bgworker during shared_preload_libraries */
 extern void RegisterBackgroundWorker(BackgroundWorker *worker);
@@ -161,4 +170,6 @@ extern void BackgroundWorkerInitializeConnectionByOid(Oid dboid, Oid useroid, ui
 extern void BackgroundWorkerBlockSignals(void);
 extern void BackgroundWorkerUnblockSignals(void);
 
+/* POLAR: define the process name for polar_worker process */
+#define POLAR_WORKER_PROCESS_NAME "polar worker process"
 #endif							/* BGWORKER_H */

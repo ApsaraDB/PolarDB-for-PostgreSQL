@@ -32,6 +32,9 @@
 #include "nodes/makefuncs.h"
 #include "pg_getopt.h"
 #include "storage/bufpage.h"
+#include "storage/condition_variable.h"
+#include "storage/encryption.h"
+#include "storage/kmgr.h"
 #include "storage/ipc.h"
 #include "storage/proc.h"
 #include "utils/builtins.h"
@@ -40,6 +43,8 @@
 #include "utils/memutils.h"
 #include "utils/rel.h"
 #include "utils/relmapper.h"
+
+uint32		bootstrap_data_encryption_cipher = TDE_ENCRYPTION_OFF;	/* No encryption */
 
 uint32		bootstrap_data_checksum_version = 0;	/* No checksum */
 
@@ -217,7 +222,7 @@ BootstrapModeMain(int argc, char *argv[], bool check_only)
 	argv++;
 	argc--;
 
-	while ((flag = getopt(argc, argv, "B:c:d:D:Fkr:X:-:")) != -1)
+	while ((flag = getopt(argc, argv, "B:c:d:D:e:Fkr:X:-:")) != -1)
 	{
 		switch (flag)
 		{
@@ -266,6 +271,9 @@ BootstrapModeMain(int argc, char *argv[], bool check_only)
 					pfree(debugstr);
 				}
 				break;
+			case 'e':
+				bootstrap_data_encryption_cipher = EncryptionCipherValue(optarg);
+				break;
 			case 'F':
 				SetConfigOption("fsync", "false", PGC_POSTMASTER, PGC_S_ARGV);
 				break;
@@ -293,7 +301,7 @@ BootstrapModeMain(int argc, char *argv[], bool check_only)
 	}
 
 	/* Acquire configuration parameters */
-	if (!SelectConfigFiles(userDoption, progname))
+	if (!SelectConfigFiles(userDoption, progname, false))
 		proc_exit(1);
 
 	/*

@@ -1,0 +1,8 @@
+pg_profile*.sql
+pg_profile.control
+tmp_check/
+data/report_templates.sql
+report/report_build.sql
+schema/schema.sql
+log/
+results/

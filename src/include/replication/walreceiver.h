@@ -30,6 +30,9 @@ extern PGDLLIMPORT int wal_receiver_status_interval;
 extern PGDLLIMPORT int wal_receiver_timeout;
 extern PGDLLIMPORT bool hot_standby_feedback;
 
+/* POLAR */
+extern bool polar_standby_feedback;
+
 /*
  * MAXCONNINFO: maximum size of a connection string.
  *
@@ -159,6 +162,12 @@ typedef struct
 	 * store semantics, so use sig_atomic_t.
 	 */
 	sig_atomic_t force_reply;	/* used as a bool */
+
+	/* POLAR: current consistent lsn of primary */
+	pg_atomic_uint64 curr_primary_consistent_lsn;
+
+	/* POLAR: set true when receive XLOG meta from xlog queue */
+	bool		polar_use_xlog_queue;
 } WalRcvData;
 
 extern PGDLLIMPORT WalRcvData *WalRcv;
@@ -167,6 +176,7 @@ typedef struct
 {
 	bool		logical;		/* True if this is logical replication stream,
 								 * false if physical stream.  */
+	bool		polar_replica;	/* POLAR: True if i am on PolarDB replica */
 	char	   *slotname;		/* Name of the replication slot or NULL. */
 	XLogRecPtr	startpoint;		/* LSN of starting point. */
 
@@ -188,6 +198,9 @@ typedef struct
 								 * specified origin */
 		}			logical;
 	}			proto;
+
+	/* POLAR */
+	polar_repl_mode_t polar_repl_mode;
 } WalRcvStreamOptions;
 
 struct WalReceiverConn;
@@ -464,6 +477,16 @@ extern PGDLLIMPORT WalReceiverFunctionsType *WalReceiverFunctions;
 #define walrcv_disconnect(conn) \
 	WalReceiverFunctions->walrcv_disconnect(conn)
 
+/*
+ * POLAR: enable the hot_standby_feedback with two scenarios
+ * 1. in polar replica
+ * 2. in polar standby and polar_standby_feedback is true
+ */
+#define POLAR_ENABLE_FEEDBACK() \
+	((polar_is_replica() || \
+	 (!polar_is_replica() && polar_standby_feedback)) && \
+	 hot_standby_feedback)
+
 static inline void
 walrcv_clear_result(WalRcvExecResult *walres)
 {
@@ -500,5 +523,10 @@ extern XLogRecPtr GetWalRcvFlushRecPtr(XLogRecPtr *latestChunkStart, TimeLineID 
 extern XLogRecPtr GetWalRcvWriteRecPtr(void);
 extern int	GetReplicationApplyDelay(void);
 extern int	GetReplicationTransferLatency(void);
+
+/* POLAR */
+extern void polar_set_primary_consistent_lsn(XLogRecPtr new_consistent_lsn);
+extern XLogRecPtr polar_get_primary_consistent_lsn(void);
+extern TimestampTz polar_get_walrcv_last_msg_receipt_time(void);
 
 #endif							/* _WALRECEIVER_H */

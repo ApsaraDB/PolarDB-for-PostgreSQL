@@ -24,6 +24,9 @@
 #include "common/pg_prng.h"
 #include "getopt_long.h"
 
+/* POLAR */
+#include "polar_vfs/polar_vfs_fe.h"
+
 /*
  * put the temp files in the local directory
  * unless the user specifies otherwise
@@ -270,7 +273,7 @@ open_direct(const char *path, int flags, mode_t mode)
 	flags |= O_DIRECT;
 #endif
 
-	fd = open(path, flags, mode);
+	fd = polar_open(path, flags, mode);
 
 #if !defined(O_DIRECT) && defined(F_NOCACHE)
 	if (fd >= 0 && fcntl(fd, F_NOCACHE, 1) < 0)
@@ -325,7 +328,7 @@ test_sync(int writes_per_op)
 					die("write failed");
 		}
 		STOP_TIMER;
-		close(tmpfile);
+		polar_close(tmpfile);
 	}
 #else
 	printf(NA_FORMAT, _("n/a"));
@@ -337,7 +340,7 @@ test_sync(int writes_per_op)
 	printf(LABEL_FORMAT, "fdatasync");
 	fflush(stdout);
 
-	if ((tmpfile = open(filename, O_RDWR | PG_BINARY, 0)) == -1)
+	if ((tmpfile = polar_open(filename, O_RDWR | PG_BINARY, 0)) == -1)
 		die("could not open output file");
 	START_TIMER;
 	for (ops = 0; alarm_triggered == false; ops++)
@@ -348,10 +351,10 @@ test_sync(int writes_per_op)
 						  XLOG_BLCKSZ,
 						  writes * XLOG_BLCKSZ) != XLOG_BLCKSZ)
 				die("write failed");
-		fdatasync(tmpfile);
+		polar_fdatasync(tmpfile);
 	}
 	STOP_TIMER;
-	close(tmpfile);
+	polar_close(tmpfile);
 
 /*
  * Test fsync
@@ -359,7 +362,7 @@ test_sync(int writes_per_op)
 	printf(LABEL_FORMAT, "fsync");
 	fflush(stdout);
 
-	if ((tmpfile = open(filename, O_RDWR | PG_BINARY, 0)) == -1)
+	if ((tmpfile = polar_open(filename, O_RDWR | PG_BINARY, 0)) == -1)
 		die("could not open output file");
 	START_TIMER;
 	for (ops = 0; alarm_triggered == false; ops++)
@@ -370,11 +373,11 @@ test_sync(int writes_per_op)
 						  XLOG_BLCKSZ,
 						  writes * XLOG_BLCKSZ) != XLOG_BLCKSZ)
 				die("write failed");
-		if (fsync(tmpfile) != 0)
+		if (polar_fsync(tmpfile) != 0)
 			die("fsync failed");
 	}
 	STOP_TIMER;
-	close(tmpfile);
+	polar_close(tmpfile);
 
 /*
  * If fsync_writethrough is available, test as well
@@ -383,7 +386,7 @@ test_sync(int writes_per_op)
 	fflush(stdout);
 
 #ifdef HAVE_FSYNC_WRITETHROUGH
-	if ((tmpfile = open(filename, O_RDWR | PG_BINARY, 0)) == -1)
+	if ((tmpfile = polar_open(filename, O_RDWR | PG_BINARY, 0)) == -1)
 		die("could not open output file");
 	START_TIMER;
 	for (ops = 0; alarm_triggered == false; ops++)
@@ -398,7 +401,7 @@ test_sync(int writes_per_op)
 			die("fsync failed");
 	}
 	STOP_TIMER;
-	close(tmpfile);
+	polar_close(tmpfile);
 #else
 	printf(NA_FORMAT, _("n/a"));
 #endif
@@ -435,7 +438,7 @@ test_sync(int writes_per_op)
 					die("write failed");
 		}
 		STOP_TIMER;
-		close(tmpfile);
+		polar_close(tmpfile);
 	}
 #else
 	printf(NA_FORMAT, _("n/a"));
@@ -494,7 +497,7 @@ test_open_sync(const char *msg, int writes_size)
 					die("write failed");
 		}
 		STOP_TIMER;
-		close(tmpfile);
+		polar_close(tmpfile);
 	}
 #else
 	printf(NA_FORMAT, _("n/a"));
@@ -583,7 +586,7 @@ test_non_sync(void)
 	printf(LABEL_FORMAT, "write");
 	fflush(stdout);
 
-	if ((tmpfile = open(filename, O_RDWR | PG_BINARY, 0)) == -1)
+	if ((tmpfile = polar_open(filename, O_RDWR | PG_BINARY, 0)) == -1)
 		die("could not open output file");
 	START_TIMER;
 	for (ops = 0; alarm_triggered == false; ops++)
@@ -592,7 +595,7 @@ test_non_sync(void)
 			die("write failed");
 	}
 	STOP_TIMER;
-	close(tmpfile);
+	polar_close(tmpfile);
 }
 
 static void

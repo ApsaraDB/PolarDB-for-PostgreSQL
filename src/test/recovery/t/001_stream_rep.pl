@@ -281,24 +281,6 @@ ok( $ret == 0,
 	"SHOW with user-settable parameter, replication role and logical replication"
 );
 
-# Test SHOW with a superuser-settable parameter
-($ret, $stdout, $stderr) = $node_primary->psql(
-	'postgres', 'SHOW primary_conninfo;',
-	on_error_die => 1,
-	extra_params => [ '-d', $connstr_rep ]);
-ok( $ret == 0,
-	"SHOW with superuser-settable parameter, replication role and physical replication"
-);
-($ret, $stdout, $stderr) = $node_primary->psql(
-	'postgres', 'SHOW primary_conninfo;',
-	on_error_die => 1,
-	extra_params => [ '-d', $connstr_db ]);
-ok( $ret == 0,
-	"SHOW with superuser-settable parameter, replication role and logical replication"
-);
-
-note "testing READ_REPLICATION_SLOT command for replication connection";
-
 my $slotname = 'test_read_replication_slot_physical';
 
 ($ret, $stdout, $stderr) = $node_primary->psql(

@@ -19,6 +19,8 @@
 #include "utils/array.h"
 #include "utils/builtins.h"
 
+/* POLAR */
+#include "utils/backend_status.h"
 
 /*
  * This must match enum LockTagType!  Also, be sure to document any changes
@@ -354,7 +356,7 @@ pg_lock_status(PG_FUNCTION_ARGS)
 
 		values[10] = VXIDGetDatum(instance->vxid.procNumber, instance->vxid.localTransactionId);
 		if (instance->pid != 0)
-			values[11] = Int32GetDatum(instance->pid);
+			values[11] = Int32GetDatum(polar_get_session_id(instance->pid));
 		else
 			nulls[11] = true;
 		values[12] = CStringGetTextDatum(GetLockmodeName(instance->locktag.locktag_lockmethodid, mode));
@@ -421,7 +423,7 @@ pg_lock_status(PG_FUNCTION_ARGS)
 		values[10] = VXIDGetDatum(xact->vxid.procNumber,
 								  xact->vxid.localTransactionId);
 		if (xact->pid != 0)
-			values[11] = Int32GetDatum(xact->pid);
+			values[11] = Int32GetDatum(polar_get_session_id(xact->pid));
 		else
 			nulls[11] = true;
 

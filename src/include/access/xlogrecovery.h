@@ -76,6 +76,16 @@ extern PGDLLIMPORT bool reachedConsistency;
 /* Are we currently in standby mode? */
 extern PGDLLIMPORT bool StandbyMode;
 
+/*
+ * POLAR: GUC
+ */
+extern PGDLLIMPORT int polar_startup_xlog_bulk_read_size;
+extern PGDLLIMPORT uint64 polar_wakeup_recovery_req;
+extern PGDLLIMPORT bool polar_enable_parameters_inconsistency;
+extern PGDLLIMPORT int polar_warning_parameters_inconsistency_timeout;
+
+/* POLAR end */
+
 extern Size XLogRecoveryShmemSize(void);
 extern void XLogRecoveryShmemInit(void);
 
@@ -129,6 +139,11 @@ typedef struct
 	 */
 	bool		standby_signal_file_found;
 	bool		recovery_signal_file_found;
+	bool		replica_signal_file_found;
+
+	/* POLAR: promote mode */
+	bool		polar_logindex_promote_ro;
+	bool		polar_logindex_promote_standby;
 } EndOfWalRecoveryInfo;
 
 extern EndOfWalRecoveryInfo *FinishWalRecovery(void);
@@ -154,5 +169,48 @@ extern void XLogRequestWalReceiverReply(void);
 extern void RecoveryRequiresIntParameter(const char *param_name, int currValue, int minValue);
 
 extern void xlog_outdesc(StringInfo buf, XLogReaderState *record);
+
+/* POLAR */
+extern XLogRecPtr polar_get_xlog_replay_recptr_nolock(void);
+extern XLogRecPtr polar_get_replay_read_recptr(void);
+extern bool CheckForStandbyTrigger(void);
+extern void polar_reset_xlog_source(void);
+extern void polar_keep_wal_receiver_up(XLogRecPtr lsn);
+extern void polar_startup_wait_latch(long timeout, uint32 wait_event);
+extern void polar_update_receipt_time(void);
+extern XLogRecPtr polar_get_last_replayed_read_ptr(void);
+extern void polar_set_receipt_time(TimestampTz rtime, bool from_stream);
+extern bool polar_is_pitr_primary(void);
+
+/*
+ * POLAR: Remember wakup request that we want to wakeup startup later.
+ */
+#define polar_wakeup_recovery_request() \
+	do \
+	{ \
+		polar_wakeup_recovery_req += 1; \
+	} while(0)
+
+/*
+ * POLAR: Wakeup startup if there are enough work to be done.
+ * According to our experience, 24 is a more appropriate threshold.
+ */
+#define POLAR_WAKEUP_REQ_THRESHOLD (24)
+#define polar_handle_wakeup_recovery_req(threshold) \
+	do \
+	{ \
+		/* WakeupRecovery will reset polar_wakeup_recovery_req */ \
+		if (polar_wakeup_recovery_req >= threshold) \
+			WakeupRecovery(); \
+	} while(0)
+
+/*
+ * POLAR: Now we only support cascade replica node connected to standby node.
+ * Besides, the physical replication is allowed to be started only after the
+ * HotStandby is active.
+ */
+#define POLAR_WAIT_DDL_IN_RECOVERY() (polar_is_standby() && HotStandbyActive())
+
+/* POLAR end */
 
 #endif							/* XLOGRECOVERY_H */

@@ -9,8 +9,9 @@ EXTENSION = test_ext1 test_ext2 test_ext3 test_ext4 test_ext5 test_ext6 \
             test_ext_extschema \
             test_ext_evttrig \
             test_ext_set_schema \
-            test_ext_req_schema1 test_ext_req_schema2 test_ext_req_schema3
-
+            test_ext_req_schema1 test_ext_req_schema2 test_ext_req_schema3 \
+            test_autocascade1 test_autocascade2
+            
 DATA = test_ext1--1.0.sql test_ext2--1.0.sql test_ext3--1.0.sql \
        test_ext4--1.0.sql test_ext5--1.0.sql test_ext6--1.0.sql \
        test_ext7--1.0.sql test_ext7--1.0--2.0.sql test_ext8--1.0.sql \
@@ -23,9 +24,11 @@ DATA = test_ext1--1.0.sql test_ext2--1.0.sql test_ext3--1.0.sql \
        test_ext_set_schema--1.0.sql \
        test_ext_req_schema1--1.0.sql \
        test_ext_req_schema2--1.0.sql \
-       test_ext_req_schema3--1.0.sql
+       test_ext_req_schema3--1.0.sql \
+       test_autocascade1--1.0.sql test_autocascade2--1.0.sql
 
-REGRESS = test_extensions test_extdepend
+REGRESS = test_extensions test_extdepend \
+       test_extautocascade
 
 # force C locale for output stability
 NO_LOCALE = 1

@@ -9,5 +9,6 @@ top_builddir = ../../..
 include $(top_builddir)/src/Makefile.global
 
 SUBDIRS     = aio buffer file freespace ipc large_object lmgr page smgr sync
+SUBDIRS     += encryption
 
 include $(top_srcdir)/src/backend/common.mk

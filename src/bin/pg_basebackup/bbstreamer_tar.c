@@ -40,6 +40,7 @@ typedef struct bbstreamer_tar_archiver
 {
 	bbstreamer	base;
 	bool		rearchive_member;
+	bool		need_append_polar_data;
 } bbstreamer_tar_archiver;
 
 static void bbstreamer_tar_parser_content(bbstreamer *streamer,
@@ -351,9 +352,13 @@ bbstreamer_tar_parser_free(bbstreamer *streamer)
  * or for modifying one on the fly. The input should be a series of typed
  * chunks (i.e. not BBSTREAMER_UNKNOWN). See also the comments for
  * bbstreamer_tar_parser_content.
+ *
+ * POLAR: In addition, need_append_polar_data is a flag to tell the streamer
+ * that polar data will append later, so it is no need to append zero blocks
+ * when write to standard output.
  */
 extern bbstreamer *
-bbstreamer_tar_archiver_new(bbstreamer *next)
+bbstreamer_tar_archiver_new(bbstreamer *next, bool need_append_polar_data)
 {
 	bbstreamer_tar_archiver *streamer;
 
@@ -361,6 +366,7 @@ bbstreamer_tar_archiver_new(bbstreamer *next)
 	*((const bbstreamer_ops **) &streamer->base.bbs_ops) =
 		&bbstreamer_tar_archiver_ops;
 	streamer->base.bbs_next = next;
+	streamer->need_append_polar_data = need_append_polar_data;
 
 	return &streamer->base;
 }
@@ -397,9 +403,9 @@ bbstreamer_tar_archiver_content(bbstreamer *streamer,
 
 	Assert(context != BBSTREAMER_UNKNOWN);
 
-	if (context == BBSTREAMER_MEMBER_HEADER && len != TAR_BLOCK_SIZE)
+	if (context == BBSTREAMER_MEMBER_HEADER)
 	{
-		Assert(len == 0);
+		Assert(len == 0 || len == TAR_BLOCK_SIZE);
 
 		/* Replace zero-length tar header with a newly constructed one. */
 		tarCreateHeader(buffer, member->pathname, NULL,
@@ -429,7 +435,10 @@ bbstreamer_tar_archiver_content(bbstreamer *streamer,
 		/* Trailer should always be two blocks of zero bytes. */
 		memset(buffer, 0, 2 * TAR_BLOCK_SIZE);
 		data = buffer;
-		len = 2 * TAR_BLOCK_SIZE;
+		if (mystreamer->need_append_polar_data)
+			len = 0;
+		else
+			len = 2 * TAR_BLOCK_SIZE;
 	}
 
 	bbstreamer_content(streamer->bbs_next, member, data, len, context);

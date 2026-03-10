@@ -35,10 +35,26 @@
 #include "utils/timeout.h"
 #include "utils/timestamp.h"
 
+/* POLAR */
+#include "postmaster/polar_async_lock_replay.h"
+#include "replication/syncrep.h"
+#include "utils/guc.h"
+#include "utils/guc_hooks.h"
+
 /* User-settable GUC parameters */
 int			max_standby_archive_delay = 30 * 1000;
 int			max_standby_streaming_delay = 30 * 1000;
 bool		log_recovery_conflict_waits = false;
+
+/* POLAR */
+int			polar_max_bufferpin_conflict_delay = -1;
+int			polar_max_replica_archive_delay = 30 * 1000;
+int			polar_max_replica_streaming_delay = 30 * 1000;
+
+static bool polar_max_replica_archive_delay_is_set = false;
+static bool polar_max_replica_streaming_delay_is_set = false;
+
+/* POLAR end */
 
 /*
  * Keep track of all the exclusive locks owned by original transactions.
@@ -59,6 +75,7 @@ typedef struct RecoveryLockXidEntry
 {
 	TransactionId xid;			/* hash key -- must be first */
 	struct RecoveryLockEntry *head; /* chain head */
+	XLogRecPtr	polar_latest_end_lsn;
 } RecoveryLockXidEntry;
 
 static HTAB *RecoveryLockHash = NULL;
@@ -75,7 +92,7 @@ static void ResolveRecoveryConflictWithVirtualXIDs(VirtualTransactionId *waitlis
 												   bool report_waiting);
 static void SendRecoveryConflictWithBufferPin(ProcSignalReason reason);
 static XLogRecPtr LogCurrentRunningXacts(RunningTransactions CurrRunningXacts);
-static void LogAccessExclusiveLocks(int nlocks, xl_standby_lock *locks);
+static XLogRecPtr LogAccessExclusiveLocks(int nlocks, xl_standby_lock *locks);
 static const char *get_recovery_conflict_desc(ProcSignalReason reason);
 
 /*
@@ -202,6 +219,11 @@ GetStandbyLimitTime(void)
 	TimestampTz rtime;
 	bool		fromStream;
 
+	/* POLAR */
+	int			polar_delay = 0;
+
+	/* POLAR end */
+
 	/*
 	 * The cutoff time is the last WAL data receipt time plus the appropriate
 	 * delay variable.  Delay of -1 means wait forever.
@@ -209,15 +231,21 @@ GetStandbyLimitTime(void)
 	GetXLogReceiptTime(&rtime, &fromStream);
 	if (fromStream)
 	{
-		if (max_standby_streaming_delay < 0)
+		/* POLAR: use polar_max_replica_streaming_delay in replica mode */
+		polar_delay = polar_is_replica() ? polar_max_replica_streaming_delay : max_standby_streaming_delay;
+
+		if (polar_delay < 0)
 			return 0;			/* wait forever */
-		return TimestampTzPlusMilliseconds(rtime, max_standby_streaming_delay);
+		return TimestampTzPlusMilliseconds(rtime, polar_delay);
 	}
 	else
 	{
-		if (max_standby_archive_delay < 0)
+		/* POLAR: use polar_max_replica_archive_delay in replica mode */
+		polar_delay = polar_is_replica() ? polar_max_replica_archive_delay : max_standby_archive_delay;
+
+		if (polar_delay < 0)
 			return 0;			/* wait forever */
-		return TimestampTzPlusMilliseconds(rtime, max_standby_archive_delay);
+		return TimestampTzPlusMilliseconds(rtime, polar_delay);
 	}
 }
 
@@ -795,7 +823,17 @@ ResolveRecoveryConflictWithBufferPin(void)
 
 	Assert(InHotStandby);
 
-	ltime = GetStandbyLimitTime();
+	/* POLAR: get limit time according to polar_max_bufferpin_conflict_delay */
+	if (polar_max_bufferpin_conflict_delay >= 0)
+	{
+		bool		stream;
+
+		GetXLogReceiptTime(&ltime, &stream);
+		ltime = TimestampTzPlusMilliseconds(ltime, polar_max_bufferpin_conflict_delay);
+	}
+	else
+		ltime = GetStandbyLimitTime();
+	/* POLAR end */
 
 	if (GetCurrentTimestamp() >= ltime && ltime != 0)
 	{
@@ -978,11 +1016,13 @@ StandbyLockTimeoutHandler(void)
  *
  * We use session locks rather than normal locks so we don't need
  * ResourceOwners.
+ *
+ * POLAR: The lsn is used to record the latest end lsn of AccessExclusiveLock.
  */
 
 
 void
-StandbyAcquireAccessExclusiveLock(TransactionId xid, Oid dbOid, Oid relOid)
+StandbyAcquireAccessExclusiveLock(TransactionId xid, Oid dbOid, Oid relOid, XLogRecPtr lsn)
 {
 	RecoveryLockXidEntry *xidentry;
 	RecoveryLockEntry *lockentry;
@@ -1020,8 +1060,14 @@ StandbyAcquireAccessExclusiveLock(TransactionId xid, Oid dbOid, Oid relOid)
 		lockentry->next = xidentry->head;
 		xidentry->head = lockentry;
 
+		if (XLogRecPtrIsInvalid(lsn))
+			xidentry->polar_latest_end_lsn = GetCurrentReplayRecPtr(NULL);
+		else
+			xidentry->polar_latest_end_lsn = lsn;
+
 		/* ... and acquire the lock locally. */
 		SET_LOCKTAG_RELATION(locktag, dbOid, relOid);
+
 
 		(void) LockAcquire(&locktag, AccessExclusiveLock, true, false);
 	}
@@ -1078,6 +1124,9 @@ StandbyReleaseLocks(TransactionId xid)
 	}
 	else
 		StandbyReleaseAllLocks();
+
+	if (polar_allow_alr())
+		polar_alr_release_locks(xid, "startup");
 }
 
 /*
@@ -1145,6 +1194,45 @@ StandbyReleaseOldLocks(TransactionId oldxid)
 		StandbyReleaseXidEntryLocks(entry);
 		hash_search(RecoveryLockXidHash, entry, HASH_REMOVE, NULL);
 	}
+
+	if (polar_allow_alr())
+		polar_alr_release_old_locks(oldxid);
+}
+
+static XLogRecPtr
+polar_latest_end_lsn(TransactionId xid)
+{
+	XLogRecPtr	end_lsn = InvalidXLogRecPtr;
+	RecoveryLockXidEntry *entry;
+
+	if (TransactionIdIsValid(xid))
+	{
+		entry = hash_search(RecoveryLockXidHash, &xid, HASH_FIND, NULL);
+		if (entry)
+			end_lsn = entry->polar_latest_end_lsn;
+	}
+
+	return end_lsn;
+}
+
+/*
+ * polar_calc_latest_end_lsn: calculate the latest end lsn of transaction
+ * xid and it's all subtransactions.
+ *
+ * Note: Must be called before StandbyReleaseLocks.
+ */
+XLogRecPtr
+polar_calc_latest_end_lsn(TransactionId xid, int nsubxids, TransactionId *subxids)
+{
+	int			i;
+	XLogRecPtr	latest_end_lsn;
+
+	latest_end_lsn = polar_latest_end_lsn(xid);
+
+	for (i = 0; i < nsubxids; i++)
+		latest_end_lsn = Max(latest_end_lsn, polar_latest_end_lsn(subxids[i]));
+
+	return latest_end_lsn;
 }
 
 /*
@@ -1173,9 +1261,29 @@ standby_redo(XLogReaderState *record)
 		int			i;
 
 		for (i = 0; i < xlrec->nlocks; i++)
-			StandbyAcquireAccessExclusiveLock(xlrec->locks[i].xid,
-											  xlrec->locks[i].dbOid,
-											  xlrec->locks[i].relOid);
+		{
+			/*
+			 * POLAR: if enable async lock replay, offload the lock to async
+			 * replay worker
+			 */
+			if (polar_allow_alr())
+			{
+				TimestampTz rtime;
+				bool		fromStream;
+
+				GetXLogReceiptTime(&rtime, &fromStream);
+
+				polar_alr_add_async_lock(&xlrec->locks[i],
+										 GetCurrentReplayRecPtr(NULL),
+										 GetXLogReplayRecPtr(NULL),
+										 rtime, fromStream);
+			}
+			else
+				StandbyAcquireAccessExclusiveLock(xlrec->locks[i].xid,
+												  xlrec->locks[i].dbOid,
+												  xlrec->locks[i].relOid,
+												  record->EndRecPtr);
+		}
 	}
 	else if (info == XLOG_RUNNING_XACTS)
 	{
@@ -1401,7 +1509,7 @@ LogCurrentRunningXacts(RunningTransactions CurrRunningXacts)
  * Wholesale logging of AccessExclusiveLocks. Other lock types need not be
  * logged, as described in backend/storage/lmgr/README.
  */
-static void
+static XLogRecPtr
 LogAccessExclusiveLocks(int nlocks, xl_standby_lock *locks)
 {
 	xl_standby_locks xlrec;
@@ -1413,7 +1521,7 @@ LogAccessExclusiveLocks(int nlocks, xl_standby_lock *locks)
 	XLogRegisterData((char *) locks, nlocks * sizeof(xl_standby_lock));
 	XLogSetRecordFlags(XLOG_MARK_UNIMPORTANT);
 
-	(void) XLogInsert(RM_STANDBY_ID, XLOG_STANDBY_LOCK);
+	return XLogInsert(RM_STANDBY_ID, XLOG_STANDBY_LOCK);
 }
 
 /*
@@ -1429,8 +1537,11 @@ LogAccessExclusiveLock(Oid dbOid, Oid relOid)
 	xlrec.dbOid = dbOid;
 	xlrec.relOid = relOid;
 
-	LogAccessExclusiveLocks(1, &xlrec);
+	polar_ddl_lock_lsn = LogAccessExclusiveLocks(1, &xlrec);
 	MyXactFlags |= XACT_FLAGS_ACQUIREDACCESSEXCLUSIVELOCK;
+
+	if (polar_enable_sync_ddl_legacy)
+		polar_wait_ddl_lock();
 }
 
 /*
@@ -1514,3 +1625,54 @@ get_recovery_conflict_desc(ProcSignalReason reason)
 
 	return reasonDesc;
 }
+
+/*
+ * POLAR: replica and standby nodes may have different expectation
+ * when a recovery conflict occurs. The replica node typically needs
+ * to cancel the query quickly to advance the replay LSN, while the
+ * standby node may expect the query to complete without being canceled
+ * by the recovery. Therefore, add new guc polar_max_replica_archive_delay
+ * and polar_max_replica_streaming_delay for replica node, the standby node
+ * continues using max_standby_archive_delay and max_standby_streaming_delay,
+ * remaining consistent with the community. To avoid losing the configurations
+ * of existing replica instances, the value of max_standby_streaming(archive)_delay
+ * will continue to be used when polar_max_replica_streaming(archive)_delay is
+ * not configured.
+ */
+void
+polar_assign_max_standby_archive_delay(int newval, void *extra)
+{
+	if (!polar_max_replica_archive_delay_is_set)
+		polar_max_replica_archive_delay = newval;
+}
+
+void
+polar_assign_max_standby_streaming_delay(int newval, void *extra)
+{
+	if (!polar_max_replica_streaming_delay_is_set)
+		polar_max_replica_streaming_delay = newval;
+}
+
+bool
+polar_check_max_replica_archive_delay(int *newval, void **extra, GucSource source)
+{
+	if (source == PGC_S_FILE || source == PGC_S_GLOBAL)
+		polar_max_replica_archive_delay_is_set = true;
+	else
+		polar_max_replica_archive_delay_is_set = false;
+
+	return true;
+}
+
+bool
+polar_check_max_replica_streaming_delay(int *newval, void **extra, GucSource source)
+{
+	if (source == PGC_S_FILE || source == PGC_S_GLOBAL)
+		polar_max_replica_streaming_delay_is_set = true;
+	else
+		polar_max_replica_streaming_delay_is_set = false;
+
+	return true;
+}
+
+/*POLAR end */

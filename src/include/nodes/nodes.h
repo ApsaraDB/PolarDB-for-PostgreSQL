@@ -116,6 +116,10 @@ typedef enum NodeTag
  * - write_only_relids, write_only_nondefault_pathtarget, write_only_req_outer:
  *   Special handling for Path struct; see there.
  *
+ * POLAR:
+ * - read_optional(VALUE): set the field to VALUE if it is not present in the
+ *   input string.
+ *
  */
 #define pg_node_attr(...)
 

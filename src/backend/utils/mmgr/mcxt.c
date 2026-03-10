@@ -27,6 +27,7 @@
 #include "utils/memutils.h"
 #include "utils/memutils_internal.h"
 #include "utils/memutils_memorychunk.h"
+#include "utils/guc.h"
 
 
 static void BogusFree(void *pointer);
@@ -1187,6 +1188,9 @@ MemoryContextAlloc(MemoryContext context, Size size)
 	Assert(MemoryContextIsValid(context));
 	AssertNotInCriticalSection(context);
 
+	/* POLAR: Enable check interrupt when allocating memory. */
+	POLAR_INTERRUPTS_FOR_ALLOC();
+
 	context->isReset = false;
 
 	/*
@@ -1221,6 +1225,9 @@ MemoryContextAllocZero(MemoryContext context, Size size)
 	Assert(MemoryContextIsValid(context));
 	AssertNotInCriticalSection(context);
 
+	/* POLAR: Enable check interrupt when allocating memory. */
+	POLAR_INTERRUPTS_FOR_ALLOC();
+
 	context->isReset = false;
 
 	ret = context->methods->alloc(context, size, 0);
@@ -1247,6 +1254,9 @@ MemoryContextAllocExtended(MemoryContext context, Size size, int flags)
 	if (!((flags & MCXT_ALLOC_HUGE) != 0 ? AllocHugeSizeIsValid(size) :
 		  AllocSizeIsValid(size)))
 		elog(ERROR, "invalid memory alloc request size %zu", size);
+
+	/* POLAR: Enable check interrupt when allocating memory. */
+	POLAR_INTERRUPTS_FOR_ALLOC();
 
 	context->isReset = false;
 
@@ -1344,6 +1354,9 @@ palloc(Size size)
 	Assert(MemoryContextIsValid(context));
 	AssertNotInCriticalSection(context);
 
+	/* POLAR: Enable check interrupt when allocating memory. */
+	POLAR_INTERRUPTS_FOR_ALLOC();
+
 	context->isReset = false;
 
 	/*
@@ -1374,6 +1387,9 @@ palloc0(Size size)
 	Assert(MemoryContextIsValid(context));
 	AssertNotInCriticalSection(context);
 
+	/* POLAR: Enable check interrupt when allocating memory. */
+	POLAR_INTERRUPTS_FOR_ALLOC();
+
 	context->isReset = false;
 
 	ret = context->methods->alloc(context, size, 0);
@@ -1394,6 +1410,9 @@ palloc_extended(Size size, int flags)
 
 	Assert(MemoryContextIsValid(context));
 	AssertNotInCriticalSection(context);
+
+	/* POLAR: Enable check interrupt when allocating memory. */
+	POLAR_INTERRUPTS_FOR_ALLOC();
 
 	context->isReset = false;
 
@@ -1574,6 +1593,9 @@ repalloc(void *pointer, Size size)
 	/* isReset must be false already */
 	Assert(!context->isReset);
 
+	/* POLAR: Enable check interrupt when allocating memory. */
+	POLAR_INTERRUPTS_FOR_ALLOC();
+
 	/*
 	 * For efficiency reasons, we purposefully offload the handling of
 	 * allocation failures to the MemoryContextMethods implementation as this
@@ -1611,6 +1633,9 @@ repalloc_extended(void *pointer, Size size, int flags)
 
 	/* isReset must be false already */
 	Assert(!context->isReset);
+
+	/* POLAR: Enable check interrupt when allocating memory. */
+	POLAR_INTERRUPTS_FOR_ALLOC();
 
 	/*
 	 * For efficiency reasons, we purposefully offload the handling of
@@ -1664,6 +1689,9 @@ MemoryContextAllocHuge(MemoryContext context, Size size)
 
 	Assert(MemoryContextIsValid(context));
 	AssertNotInCriticalSection(context);
+
+	/* POLAR: Enable check interrupt when allocating memory. */
+	POLAR_INTERRUPTS_FOR_ALLOC();
 
 	context->isReset = false;
 
@@ -1750,4 +1778,22 @@ pchomp(const char *in)
 	while (n > 0 && in[n - 1] == '\n')
 		n--;
 	return pnstrdup(in, n);
+}
+
+/*
+ * POLAR: Like palloc,
+ * but allow to work well in the critical section temporarily.
+ */
+void *
+polar_palloc_in_crit(Size size)
+{
+	/* duplicates MemoryContextAlloc to avoid increased overhead */
+	void	   *ret;
+	MemoryContext context = CurrentMemoryContext;
+	bool		allow_in_crit = context->allowInCritSection;
+
+	context->allowInCritSection = true;
+	ret = palloc(size);
+	context->allowInCritSection = allow_in_crit;
+	return ret;
 }

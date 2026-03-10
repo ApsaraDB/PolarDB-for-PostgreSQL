@@ -248,6 +248,12 @@ StartupProcessMain(char *startup_data, size_t startup_data_len)
 	RegisterTimeout(STANDBY_LOCK_TIMEOUT, StandbyLockTimeoutHandler);
 
 	/*
+	 * POLAR: Initialize the local directories, copy some directories from
+	 * shared storage to local before unblock signals if needed
+	 */
+	polar_init_local_dir();
+
+	/*
 	 * Unblock signals (they were blocked when the postmaster forked us)
 	 */
 	sigprocmask(SIG_SETMASK, &UnBlockSig, NULL);

@@ -32,6 +32,7 @@
  *	  clients.
  *
  *
+ * Portions Copyright (c) 2024, Alibaba Group Holding Limited
  * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -113,6 +114,7 @@
 #include "replication/walsender.h"
 #include "storage/fd.h"
 #include "storage/ipc.h"
+#include "storage/kmgr.h"
 #include "storage/pmsignal.h"
 #include "storage/proc.h"
 #include "tcop/backend_startup.h"
@@ -126,6 +128,12 @@
 #ifdef EXEC_BACKEND
 #include "storage/pg_shmem.h"
 #endif
+
+/* POLAR */
+#include "access/polar_logindex_redo.h"
+#include "postmaster/polar_async_lock_replay.h"
+#include "storage/polar_fd.h"
+/* POLAR end */
 
 
 /*
@@ -192,6 +200,9 @@ int			PostPortNumber = DEF_PGPORT;
 /* The directory names for Unix socket(s) */
 char	   *Unix_socket_directories;
 
+/* POLAR */
+char	   *polar_unquote_unix_socket_directories;
+
 /* The TCP listen address(es) */
 char	   *ListenAddresses;
 
@@ -247,7 +258,10 @@ static pid_t StartupPID = 0,
 			AutoVacPID = 0,
 			PgArchPID = 0,
 			SysLoggerPID = 0,
-			SlotSyncWorkerPID = 0;
+			SlotSyncWorkerPID = 0,
+			LogIndexBgPID = 0;
+
+static pid_t SysLoggerPIDs[MAX_SYSLOGGER_NUM];	/* POLAR */
 
 /* Startup process's status */
 typedef enum
@@ -431,6 +445,13 @@ static void MaybeStartWalReceiver(void);
 static void MaybeStartWalSummarizer(void);
 static void InitPostmasterDeathWatchHandle(void);
 static void MaybeStartSlotSyncWorker(void);
+
+/* POLAR */
+static bool polar_wait_promote = false;
+static void polar_postmaster_receive_promote(void);
+static void polar_postmaster_online_promote(void);
+
+/* POLAR end */
 
 /*
  * Archiver is allowed to start up at the current postmaster state?
@@ -765,7 +786,7 @@ PostmasterMain(int argc, char *argv[])
 	 * Locate the proper configuration files and data directory, and read
 	 * postgresql.conf for the first time.
 	 */
-	if (!SelectConfigFiles(userDoption, progname))
+	if (!SelectConfigFiles(userDoption, progname, output_config_variable != NULL))
 		ExitPostmaster(2);
 
 	if (output_config_variable != NULL)
@@ -877,6 +898,16 @@ PostmasterMain(int argc, char *argv[])
 	}
 
 	/*
+	 * POLAR: Delete shared memory stat file before lockfile created. The
+	 * shmem_stat_file may be unreliable after database crashes. Delete before
+	 * lockfile to make correct assurance. Add to on_proc_exit callbacks once
+	 * here to avoid add repeatly when regress test kill process randomly.
+	 */
+	polar_unlink_shmem_stat_file(0, 0);
+	on_proc_exit(polar_unlink_shmem_stat_file, 0);
+	/* POLAR end */
+
+	/*
 	 * Create lockfile for data directory.
 	 *
 	 * We want to do this before we try to grab the input sockets, because the
@@ -893,6 +924,29 @@ PostmasterMain(int argc, char *argv[])
 	CreateDataDirLockFile(true);
 
 	/*
+	 * POLAR: init node type before set up shared memory because XLogCtl needs
+	 * local node type.
+	 */
+	polar_init_node_type();
+
+	if (polar_enable_shared_storage_mode)
+	{
+		/* POLAR: remove POLAR_REPLICA_BOOTED_FILE when not in replica node */
+		if (!polar_is_replica())
+			polar_remove_replica_booted_file();
+
+		/*
+		 * POLAR: Initialize the local global directories for replica or
+		 * standby copy pg_control file from shared storage to local. for
+		 * replica, move the copy of base directories and other trans status
+		 * log files to startup process so that postmaster can return and
+		 * respond to the detection of cm timely for standby, only pg_control
+		 * file is needed to copy
+		 */
+		polar_init_global_dir_for_replica_or_standby();
+	}
+
+	/*
 	 * Read the control file (for error checking and config info).
 	 *
 	 * Since we verify the control file's CRC, this has a useful side effect
@@ -902,12 +956,16 @@ PostmasterMain(int argc, char *argv[])
 	 * repeat the test.
 	 */
 	LocalProcessControlFile(false);
+	ereport(LOG, errmsg("PolarDB load controlfile in postmaster"));
 
 	/*
 	 * Register the apply launcher.  It's probably a good idea to call this
 	 * before any modules had a chance to take the background worker slots.
 	 */
 	ApplyLauncherRegister();
+
+	/* Register the polar logindex saver. */
+	polar_register_logindex_primary_saver();
 
 	/*
 	 * process any libraries that should be preloaded at postmaster start
@@ -1053,7 +1111,17 @@ PostmasterMain(int argc, char *argv[])
 	/*
 	 * If enabled, start up syslogger collection subprocess
 	 */
-	SysLoggerPID = SysLogger_Start();
+	/* POLAR */
+	if (!polar_enable_multi_syslogger)
+		SysLoggerPID = SysLogger_Start(0);
+	else
+	{
+		/* POLAR */
+		memset(SysLoggerPIDs, 0, sizeof(pid_t) * MAX_SYSLOGGER_NUM);
+		for (int i = 0; i < polar_syslogger_num; i++)
+			SysLoggerPIDs[i] = SysLogger_Start(i);
+	}
+	/* POLAR end */
 
 	/*
 	 * Reset whereToSendOutput from DestDebug (its starting state) to
@@ -1356,11 +1424,23 @@ PostmasterMain(int argc, char *argv[])
 	 */
 	AddToDataDirLockFile(LOCK_FILE_LINE_PM_STATUS, PM_STATUS_STARTING);
 
+	/*
+	 * Initialize cluster encryption key manager. Note that kmgr initialize
+	 * should start before checkpointer and bgwriter start since
+	 * data_encryption_cipher is forked from postmaster.
+	 */
+	InitializeKmgr();
+
 	/* Start bgwriter and checkpointer so they can help with recovery */
 	if (CheckpointerPID == 0)
 		CheckpointerPID = StartChildProcess(B_CHECKPOINTER);
 	if (BgWriterPID == 0)
 		BgWriterPID = StartChildProcess(B_BG_WRITER);
+
+	/* POLAR: start logindex background process */
+	if (polar_logindex_redo_instance && LogIndexBgPID == 0)
+		LogIndexBgPID = StartChildProcess(B_BG_LOGINDEX);
+	/* POLAR end */
 
 	/*
 	 * We're ready to rock and roll...
@@ -1494,6 +1574,13 @@ checkControlFile(void)
 	FILE	   *fp;
 
 	snprintf(path, sizeof(path), "%s/global/pg_control", DataDir);
+
+	/*
+	 * POLAR: At this moment the shared storage is not mounted. check it
+	 * later.
+	 */
+	if (polar_enable_shared_storage_mode)
+		return;
 
 	fp = AllocateFile(path, PG_BINARY_R);
 	if (fp == NULL)
@@ -1687,8 +1774,27 @@ ServerLoop(void)
 		}
 
 		/* If we have lost the log collector, try to start a new one */
-		if (SysLoggerPID == 0 && Logging_collector)
-			SysLoggerPID = SysLogger_Start();
+		/* POLAR */
+		if (!polar_enable_multi_syslogger)
+		{
+			if (SysLoggerPID == 0 && Logging_collector)
+				SysLoggerPID = SysLogger_Start(0);
+		}
+		else
+		{
+			/* POLAR */
+			if (Logging_collector)
+			{
+				int			i;
+
+				for (i = 0; i < polar_syslogger_num; i++)
+				{
+					if (SysLoggerPIDs[i] == 0)
+						SysLoggerPIDs[i] = SysLogger_Start(i);
+				}
+			}
+		}
+		/* POLAR end */
 
 		/*
 		 * If no background writer process is running, and we are not in a
@@ -1702,6 +1808,11 @@ ServerLoop(void)
 				CheckpointerPID = StartChildProcess(B_CHECKPOINTER);
 			if (BgWriterPID == 0)
 				BgWriterPID = StartChildProcess(B_BG_WRITER);
+
+			/* POLAR: start logindex background process */
+			if (polar_logindex_redo_instance && LogIndexBgPID == 0)
+				LogIndexBgPID = StartChildProcess(B_BG_LOGINDEX);
+			/* POLAR end */
 		}
 
 		/*
@@ -1845,6 +1956,39 @@ processCancelRequest(int backendPID, int32 cancelAuthCode)
 #else
 	int			i;
 #endif
+
+	/* POLAR: cancel request for proxy sid */
+	if (POLAR_IS_PROXY_SID(backendPID))
+	{
+		int			realBackendPID = polar_proxy_get_pid(backendPID, cancelAuthCode, true);
+
+		if (realBackendPID == 0)
+		{
+			/* No matching backend */
+			ereport(LOG,
+					(errmsg("PID %d in cancel request did not match any process",
+							backendPID)));
+			return;
+		}
+		else if (realBackendPID < 0)
+		{
+			/* Right PID, wrong key: no way, Jose */
+			ereport(LOG,
+					(errmsg("wrong key in cancel request for process %d",
+							backendPID)));
+			return;
+		}
+		else
+		{
+			/* Found a match; signal that backend to cancel current op */
+			ereport(DEBUG2,
+					(errmsg_internal("processing cancel request: sending SIGINT to process %d",
+									 realBackendPID)));
+			signal_child(realBackendPID, SIGINT);
+			return;
+		}
+	}
+	/* POLAR end */
 
 	/*
 	 * See if we have a matching backend.  In the EXEC_BACKEND case, we can no
@@ -2009,13 +2153,41 @@ ClosePostmasterPorts(bool am_syslogger)
 	if (!am_syslogger)
 	{
 #ifndef WIN32
-		if (syslogPipe[0] >= 0)
-			close(syslogPipe[0]);
-		syslogPipe[0] = -1;
+		if (!polar_enable_multi_syslogger)
+		{
+			if (syslogPipe[0] >= 0)
+				close(syslogPipe[0]);
+			syslogPipe[0] = -1;
+		}
+		else
+		{
+			/* POLAR */
+			for (int i = 0; i < polar_syslogger_num; i++)
+			{
+				if (syslogChannels[i][0] >= 0)
+					close(syslogChannels[i][0]);
+				syslogChannels[i][0] = -1;
+			}
+			/* POLAR end */
+		}
 #else
-		if (syslogPipe[0])
-			CloseHandle(syslogPipe[0]);
-		syslogPipe[0] = 0;
+		if (!polar_enable_multi_syslogger)
+		{
+			if (syslogPipe[0])
+				CloseHandle(syslogPipe[0]);
+			syslogPipe[0] = 0;
+		}
+		else
+		{
+			int			i;
+
+			for (i = 0; i < polar_syslogger_num; i++)
+			{
+				if (syslogChannels[i][0])
+					CloseHandle(syslogChannels[i][0])
+						syslogChannels[i][0] = 0;
+			}
+		}
 #endif
 	}
 
@@ -2128,6 +2300,10 @@ process_pm_reload_request(void)
 			signal_child(SysLoggerPID, SIGHUP);
 		if (SlotSyncWorkerPID != 0)
 			signal_child(SlotSyncWorkerPID, SIGHUP);
+
+		/* POLAR: signal logindex background process */
+		if (LogIndexBgPID != 0)
+			signal_child(LogIndexBgPID, SIGHUP);
 
 		/* Reload authentication config files too */
 		if (!load_hba())
@@ -2372,6 +2548,9 @@ process_pm_child_exit(void)
 		{
 			StartupPID = 0;
 
+			if (polar_logindex_redo_instance)
+				POLAR_STARTUP_REMOVE_STATUS(polar_logindex_redo_instance, POLAR_STARTUP_RUNNING);
+
 			/*
 			 * Startup process exited in response to a shutdown request (or it
 			 * completed normally regardless of the shutdown request).
@@ -2469,6 +2648,11 @@ process_pm_child_exit(void)
 				WalWriterPID = StartChildProcess(B_WAL_WRITER);
 			MaybeStartWalSummarizer();
 
+			/* POLAR: start logindex background process */
+			if (polar_logindex_redo_instance && LogIndexBgPID == 0)
+				LogIndexBgPID = StartChildProcess(B_BG_LOGINDEX);
+			/* POLAR end */
+
 			/*
 			 * Likewise, start other special children as needed.  In a restart
 			 * situation, some of them may be alive already.
@@ -2503,6 +2687,11 @@ process_pm_child_exit(void)
 		if (pid == BgWriterPID)
 		{
 			BgWriterPID = 0;
+
+			/* POLAR */
+			polar_set_bgwriter_pid(0);
+			/* POLAR end */
+
 			if (!EXIT_STATUS_0(exitstatus))
 				HandleChildCrash(pid, exitstatus,
 								 _("background writer process"));
@@ -2637,15 +2826,38 @@ process_pm_child_exit(void)
 		}
 
 		/* Was it the system logger?  If so, try to start a new one */
-		if (pid == SysLoggerPID)
+		if (!polar_enable_multi_syslogger)
 		{
-			SysLoggerPID = 0;
-			/* for safety's sake, launch new logger *first* */
-			SysLoggerPID = SysLogger_Start();
-			if (!EXIT_STATUS_0(exitstatus))
-				LogChildExit(LOG, _("system logger process"),
-							 pid, exitstatus);
-			continue;
+			if (pid == SysLoggerPID)
+			{
+				SysLoggerPID = 0;
+				/* for safety's sake, launch new logger *first* */
+				SysLoggerPID = SysLogger_Start(0);
+				if (!EXIT_STATUS_0(exitstatus))
+					LogChildExit(LOG, _("system logger process"),
+								 pid, exitstatus);
+				continue;
+			}
+		}
+		else
+		{
+			/* POLAR */
+			int			i;
+
+			for (i = 0; i < polar_syslogger_num; i++)
+			{
+				if (pid == SysLoggerPIDs[i])
+				{
+					SysLoggerPIDs[i] = SysLogger_Start(i);
+					if (!EXIT_STATUS_0(exitstatus))
+						LogChildExit(LOG, _("system logger process"),
+									 pid, exitstatus);
+					break;
+				}
+			}
+			if (i < polar_syslogger_num)
+				continue;
+			/* POLAR end */
 		}
 
 		/*
@@ -2661,6 +2873,19 @@ process_pm_child_exit(void)
 			if (!EXIT_STATUS_0(exitstatus) && !EXIT_STATUS_1(exitstatus))
 				HandleChildCrash(pid, exitstatus,
 								 _("slot sync worker process"));
+			continue;
+		}
+
+		/*
+		 * POLAR: Was it the logindex background process?  If exit status is
+		 * zero (normal), we assume everything is all right.
+		 */
+		if (pid == LogIndexBgPID)
+		{
+			LogIndexBgPID = 0;
+
+			if (!EXIT_STATUS_0(exitstatus))
+				HandleChildCrash(pid, exitstatus, _("logindex background process"));
 			continue;
 		}
 
@@ -2740,6 +2965,20 @@ CleanupBackgroundWorker(int pid,
 		{
 			HandleChildCrash(pid, exitstatus, namebuf);
 			return true;
+		}
+
+		/*
+		 * POLAR: For workers whose flag has BGWORKER_CRASH_ON_ERROR, any exit
+		 * status other than 0 is considered a crash and causes a system-wide
+		 * restart.
+		 */
+		if ((rw->rw_worker.bgw_flags & BGWORKER_CRASH_ON_ERROR) != 0)
+		{
+			if (!EXIT_STATUS_0(exitstatus))
+			{
+				HandleChildCrash(pid, exitstatus, namebuf);
+				return true;
+			}
 		}
 
 		/*
@@ -2990,7 +3229,13 @@ HandleChildCrash(int pid, int exitstatus, const char *procname)
 
 	/* Take care of the bgwriter too */
 	if (pid == BgWriterPID)
+	{
 		BgWriterPID = 0;
+
+		/* POLAR */
+		polar_set_bgwriter_pid(0);
+		/* POLAR end */
+	}
 	else if (BgWriterPID != 0 && take_action)
 		sigquit_child(BgWriterPID);
 
@@ -3035,6 +3280,12 @@ HandleChildCrash(int pid, int exitstatus, const char *procname)
 		SlotSyncWorkerPID = 0;
 	else if (SlotSyncWorkerPID != 0 && take_action)
 		sigquit_child(SlotSyncWorkerPID);
+
+	/* POLAR: Take care of the logindex background process too */
+	if (pid == LogIndexBgPID)
+		LogIndexBgPID = 0;
+	else if (LogIndexBgPID != 0 && take_action)
+		sigquit_child(LogIndexBgPID);
 
 	/* We do NOT restart the syslogger */
 
@@ -3178,6 +3429,9 @@ PostmasterStateMachine(void)
 			signal_child(WalSummarizerPID, SIGTERM);
 		if (SlotSyncWorkerPID != 0)
 			signal_child(SlotSyncWorkerPID, SIGTERM);
+		/* POLAR: and the logindex background process too */
+		if (LogIndexBgPID != 0)
+			signal_child(LogIndexBgPID, SIGTERM);
 		/* checkpointer, archiver, stats, and syslogger may continue for now */
 
 		/* Now transition to PM_WAIT_BACKENDS state to wait for them to die */
@@ -3210,6 +3464,7 @@ PostmasterStateMachine(void)
 			 (!FatalError && Shutdown < ImmediateShutdown)) &&
 			WalWriterPID == 0 &&
 			AutoVacPID == 0 &&
+			LogIndexBgPID == 0 &&
 			SlotSyncWorkerPID == 0)
 		{
 			if (Shutdown >= ImmediateShutdown || FatalError)
@@ -3309,6 +3564,7 @@ PostmasterStateMachine(void)
 			Assert(WalWriterPID == 0);
 			Assert(AutoVacPID == 0);
 			Assert(SlotSyncWorkerPID == 0);
+			Assert(LogIndexBgPID == 0);
 			/* syslogger is not considered here */
 			pmState = PM_NO_CHILDREN;
 		}
@@ -3376,6 +3632,9 @@ PostmasterStateMachine(void)
 		ereport(LOG,
 				(errmsg("all server processes terminated; reinitializing")));
 
+		/* POLAR: reset previous promote request during crash recovery */
+		polar_wait_promote = false;
+
 		/* remove leftover temporary files after a crash */
 		if (remove_temp_files_after_crash)
 			RemovePgTempFiles();
@@ -3384,6 +3643,29 @@ PostmasterStateMachine(void)
 		ResetBackgroundWorkerCrashTimes();
 
 		shmem_exit(1);
+
+		/* POLAR: reinitialize node type */
+		polar_init_node_type();
+
+		if (polar_enable_shared_storage_mode)
+		{
+			/*
+			 * POLAR: remove POLAR_REPLICA_BOOTED_FILE when not in replica
+			 * node
+			 */
+			if (!polar_is_replica())
+				polar_remove_replica_booted_file();
+
+			/*
+			 * POLAR: Initialize the local global directories for replica or
+			 * standby copy pg_control file from shared storage to local. for
+			 * replica, move the copy of base directories and other trans
+			 * status log files to startup process so that postmaster can
+			 * return and respond to the detection of cm timely for standby,
+			 * only pg_control file is needed to copy
+			 */
+			polar_init_global_dir_for_replica_or_standby();
+		}
 
 		/* re-read control file into local memory */
 		LocalProcessControlFile(true);
@@ -3401,6 +3683,11 @@ PostmasterStateMachine(void)
 		/* start accepting server socket connection events again */
 		ConfigurePostmasterWaitSet(true);
 	}
+
+	/* POLAR: all normal backend exit, ready to do online promote */
+	if (pmState == PM_STARTUP && polar_wait_promote &&
+		CountChildren(BACKEND_TYPE_NORMAL) == 0)
+		polar_postmaster_online_promote();
 }
 
 
@@ -3534,6 +3821,9 @@ TerminateChildren(int signal)
 		signal_child(PgArchPID, signal);
 	if (SlotSyncWorkerPID != 0)
 		signal_child(SlotSyncWorkerPID, signal);
+	/* POLAR: signal logindex background process */
+	if (LogIndexBgPID != 0)
+		signal_child(LogIndexBgPID, signal);
 }
 
 /*
@@ -3686,6 +3976,9 @@ ExitPostmaster(int status)
 				 errhint("Set the LC_ALL environment variable to a valid locale.")));
 #endif
 
+	if (!IsUnderPostmaster && polar_umount(polar_datadir, polar_disk_name) != 0)
+		elog(WARNING, "can't umount PBD %s", polar_disk_name);
+
 	/* should cleanup shared memory and kill all backends */
 
 	/*
@@ -3778,18 +4071,32 @@ process_pm_pmsignal(void)
 		maybe_start_bgworkers();
 
 	/* Tell syslogger to rotate logfile if requested */
-	if (SysLoggerPID != 0)
+	/* POLAR */
+	if (!polar_enable_multi_syslogger)
 	{
-		if (CheckLogrotateSignal())
+		if (CheckPostmasterSignal(PMSIGNAL_ROTATE_LOGFILE) &&
+			SysLoggerPID != 0)
 		{
-			signal_child(SysLoggerPID, SIGUSR1);
-			RemoveLogrotateSignalFiles();
-		}
-		else if (CheckPostmasterSignal(PMSIGNAL_ROTATE_LOGFILE))
-		{
+			/* Tell syslogger to rotate logfile */
 			signal_child(SysLoggerPID, SIGUSR1);
 		}
 	}
+	else
+	{
+		/* POLAR */
+		if (CheckPostmasterSignal(PMSIGNAL_ROTATE_LOGFILE) &&
+			polar_syslogger_num > 0)
+		{
+			int			i;
+
+			for (i = 0; i < polar_syslogger_num; i++)
+			{
+				if (SysLoggerPIDs[i] != 0)
+					signal_child(SysLoggerPIDs[i], SIGUSR1);
+			}
+		}
+	}
+	/* POLAR end */
 
 	if (CheckPostmasterSignal(PMSIGNAL_START_AUTOVAC_LAUNCHER) &&
 		Shutdown <= SmartShutdown && pmState < PM_STOP_BACKENDS)
@@ -3847,7 +4154,10 @@ process_pm_pmsignal(void)
 		 * Leave the promote signal file in place and let the Startup process
 		 * do the unlink.
 		 */
-		signal_child(StartupPID, SIGUSR2);
+		if (POLAR_LOGINDEX_ENABLE_ONLINE_PROMOTE())
+			polar_postmaster_receive_promote();
+		else
+			signal_child(StartupPID, SIGUSR2);
 	}
 }
 
@@ -4543,6 +4853,29 @@ PostmasterMarkPIDForWorkerNotify(int pid)
 			return true;
 		}
 	}
+
+	/*
+	 * POLAR: bgwrite process start parallel process to flush. Check whether
+	 * it's BgWriterPID register notification for background process
+	 */
+	if (pid != 0 && pid == BgWriterPID)
+		return true;
+
+	/*
+	 * POLAR: logindex background process start parallel process to replay.
+	 * Check whether it's LogIndexBgPID register notification for background
+	 * process.
+	 */
+	if (pid != 0 && pid == LogIndexBgPID)
+		return true;
+
+	/*
+	 * POLAR: startup process start async ddl replay worker to replay locks.
+	 * So we need to notify status of the worker to startup.
+	 */
+	if (pid != 0 && pid == StartupPID && polar_allow_alr())
+		return true;
+
 	return false;
 }
 
@@ -4751,4 +5084,94 @@ InitPostmasterDeathWatchHandle(void)
 				(errmsg_internal("could not duplicate postmaster handle: error code %lu",
 								 GetLastError())));
 #endif							/* WIN32 */
+}
+
+static int
+polar_postmaster_find_background_worker(const char *bgw_name)
+{
+	int			pid = 0;
+	slist_mutable_iter iter;
+
+	slist_foreach_modify(iter, &BackgroundWorkerList)
+	{
+		RegisteredBgWorker *rw = slist_container(RegisteredBgWorker, rw_lnode, iter.cur);
+
+		if (rw->rw_pid == 0)
+			continue;
+
+		if (strcmp(rw->rw_worker.bgw_name, bgw_name) != 0)
+			continue;
+
+		pid = rw->rw_pid;
+		break;
+	}
+
+	return pid;
+}
+
+static void
+polar_postmaster_receive_promote(void)
+{
+	static bool received_promote = false;
+
+	if (received_promote)
+		return;
+	received_promote = true;
+
+	/* Refuse any connection until startup replay all wal to logindex table */
+	pmState = PM_STARTUP;
+
+	/* Terminate any existing backend process */
+	SignalSomeChildren(SIGTERM, BACKEND_TYPE_NORMAL);
+
+	/*
+	 * do promote after all normal backends exit, avoid older buffer being
+	 * pinned by backend
+	 */
+	if (CountChildren(BACKEND_TYPE_NORMAL) == 0)
+		polar_postmaster_online_promote();
+	else
+		polar_wait_promote = true;
+}
+
+static void
+polar_postmaster_online_promote(void)
+{
+	int			polar_worker;
+	int			flag;
+	vfs_mount_arg_t polar_remount_arg;
+	pfsd_mount_arg_t pfsd_remount_arg;
+
+	polar_wait_promote = false;
+
+	ereport(LOG, errmsg("checked all backend process exit, ready to do promote"));
+
+	flag = POLAR_VFS_RDWR | POLAR_VFS_PAXOS_BYFORCE;
+	PFSD_INIT_MOUNT_ARG(pfsd_remount_arg, polar_storage_cluster_name, polar_disk_name, polar_hostid, flag);
+	VFS_INIT_MOUNT_ARG(polar_remount_arg, polar_datadir, &pfsd_remount_arg);
+
+	ereport(LOG, errmsg("begin remount pfs name %s id %d pid %d flag=%x",
+						polar_disk_name, polar_hostid, MyProcPid, flag));
+
+	/* remount shared storage from replica to primary */
+	if (polar_remount(&polar_remount_arg) != 0)
+		ereport(FATAL, errmsg("can't remount PBD %s, id %d with flag 0x%x",
+							  polar_disk_name, polar_hostid, flag));
+
+	/* init polar vfs state */
+	polar_local_vfs_state = flag;
+	polar_set_vfs_state(polar_local_vfs_state);
+
+	/* Tell startup process to finish recovery */
+	if (StartupPID != 0)
+		signal_child(StartupPID, SIGUSR2);
+
+	/* Tell polar worker process that is doing online promote */
+	polar_worker = polar_postmaster_find_background_worker(POLAR_WORKER_PROCESS_NAME);
+	if (polar_worker != 0)
+		signal_child(polar_worker, SIGUSR2);
+
+	/* Tell logindex bgworker to do promote */
+	if (LogIndexBgPID != 0)
+		signal_child(LogIndexBgPID, SIGUSR2);
 }

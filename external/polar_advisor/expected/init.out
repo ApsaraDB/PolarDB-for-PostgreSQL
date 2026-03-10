@@ -1,0 +1,192 @@
+/*
+ * external/polar_advisor/sql/init.sql
+ * Initialize the objects needed by later test.
+ */
+DROP EXTENSION IF EXISTS polar_advisor;
+NOTICE:  extension "polar_advisor" does not exist, skipping
+DROP SCHEMA IF EXISTS polar_advisor;
+NOTICE:  schema "polar_advisor" does not exist, skipping
+CREATE EXTENSION IF NOT EXISTS polar_advisor;
+CREATE SCHEMA test_polar_advisor;
+SET search_path TO test_polar_advisor;
+--
+-- Init tables
+--
+-- init normal table
+CREATE TABLE IF NOT EXISTS normal (id INT, a TEXT) WITH (autovacuum_enabled=FALSE);
+CREATE INDEX normal_id_idx ON normal(id);
+INSERT INTO normal SELECT i, random() FROM generate_series(0, 10000) i;
+-- init partitioned table with global index
+CREATE TABLE IF NOT EXISTS prt_gi (id INT, a TEXT) PARTITION BY RANGE (id);
+DO $$
+BEGIN
+    FOR i IN 0..1 LOOP
+        EXECUTE 'CREATE TABLE IF NOT EXISTS prt_gi_p_' || i || 
+            ' PARTITION OF prt_gi FOR VALUES FROM (' || i * 10000 || ') TO (' || (i + 1) * 10000 || ')' || ' PARTITION BY RANGE (id);';
+        FOR j IN 0..1 LOOP
+            EXECUTE 'CREATE TABLE IF NOT EXISTS prt_gi_p_' || i || '_p_' || j || ' PARTITION OF prt_gi_p_' || i ||
+                ' FOR VALUES FROM (' || i * 10000 + j * 5000 || ') TO (' || i * 10000 + (j + 1) * 5000 || ') WITH (autovacuum_enabled=FALSE);';
+        END LOOP;
+    END LOOP;
+END $$;
+CREATE TABLE IF NOT EXISTS prt_gi_p_def PARTITION OF prt_gi DEFAULT WITH (autovacuum_enabled=FALSE);
+CREATE INDEX IF NOT EXISTS global_idx_a on prt_gi USING btree (a) GLOBAL; -- not supported now
+ERROR:  syntax error at or near "GLOBAL"
+LINE 1: ...IF NOT EXISTS global_idx_a on prt_gi USING btree (a) GLOBAL;
+                                                                ^
+CREATE INDEX prt_id_idx ON prt_gi(id);
+INSERT INTO prt_gi SELECT i, random() FROM generate_series(0, 10000) i;
+-- init partitioned table without global index
+CREATE TABLE IF NOT EXISTS prt_no_gi (id INT, a TEXT) PARTITION BY RANGE (id);
+DO $$
+BEGIN
+    FOR i IN 0..1 LOOP
+        EXECUTE 'CREATE TABLE IF NOT EXISTS prt_no_gi_p_' || i || 
+            ' PARTITION OF prt_no_gi FOR VALUES FROM (' || i * 10000 || ') TO (' || (i + 1) * 10000 || ')' || ' PARTITION BY RANGE (id);';
+        FOR j IN 0..1 LOOP
+            EXECUTE 'CREATE TABLE IF NOT EXISTS prt_no_gi_p_' || i || '_p_' || j || ' PARTITION OF prt_no_gi_p_' || i || 
+                ' FOR VALUES FROM (' || i * 10000 + j * 5000 || ') TO (' || i * 10000 + (j + 1) * 5000 || ') WITH (autovacuum_enabled=FALSE);';
+        END LOOP;
+    END LOOP;
+END $$;
+CREATE TABLE IF NOT EXISTS prt_no_gi_p_def PARTITION OF prt_no_gi DEFAULT WITH (autovacuum_enabled=FALSE);
+CREATE INDEX prt_no_gi_id_idx ON prt_no_gi(id);
+INSERT INTO prt_no_gi SELECT i, random() FROM generate_series(0, 10000) i;
+-- init view
+CREATE VIEW v_normal AS SELECT * FROM normal;
+-- init mat view
+CREATE MATERIALIZED VIEW mv_normal AS SELECT * FROM normal;
+\d+ normal
+                             Table "test_polar_advisor.normal"
+ Column |  Type   | Collation | Nullable | Default | Storage  | Stats target | Description 
+--------+---------+-----------+----------+---------+----------+--------------+-------------
+ id     | integer |           |          |         | plain    |              | 
+ a      | text    |           |          |         | extended |              | 
+Indexes:
+    "normal_id_idx" btree (id)
+Options: autovacuum_enabled=false
+
+\d+ prt_gi
+                       Partitioned table "test_polar_advisor.prt_gi"
+ Column |  Type   | Collation | Nullable | Default | Storage  | Stats target | Description 
+--------+---------+-----------+----------+---------+----------+--------------+-------------
+ id     | integer |           |          |         | plain    |              | 
+ a      | text    |           |          |         | extended |              | 
+Partition key: RANGE (id)
+Indexes:
+    "prt_id_idx" btree (id)
+Partitions: prt_gi_p_0 FOR VALUES FROM (0) TO (10000), PARTITIONED,
+            prt_gi_p_1 FOR VALUES FROM (10000) TO (20000), PARTITIONED,
+            prt_gi_p_def DEFAULT
+
+\d+ prt_gi_p_0
+                     Partitioned table "test_polar_advisor.prt_gi_p_0"
+ Column |  Type   | Collation | Nullable | Default | Storage  | Stats target | Description 
+--------+---------+-----------+----------+---------+----------+--------------+-------------
+ id     | integer |           |          |         | plain    |              | 
+ a      | text    |           |          |         | extended |              | 
+Partition of: prt_gi FOR VALUES FROM (0) TO (10000)
+Partition constraint: ((id IS NOT NULL) AND (id >= 0) AND (id < 10000))
+Partition key: RANGE (id)
+Indexes:
+    "prt_gi_p_0_id_idx" btree (id)
+Partitions: prt_gi_p_0_p_0 FOR VALUES FROM (0) TO (5000),
+            prt_gi_p_0_p_1 FOR VALUES FROM (5000) TO (10000)
+
+\d+ prt_gi_p_0_p_0
+                         Table "test_polar_advisor.prt_gi_p_0_p_0"
+ Column |  Type   | Collation | Nullable | Default | Storage  | Stats target | Description 
+--------+---------+-----------+----------+---------+----------+--------------+-------------
+ id     | integer |           |          |         | plain    |              | 
+ a      | text    |           |          |         | extended |              | 
+Partition of: prt_gi_p_0 FOR VALUES FROM (0) TO (5000)
+Partition constraint: ((id IS NOT NULL) AND (id >= 0) AND (id < 10000) AND (id IS NOT NULL) AND (id >= 0) AND (id < 5000))
+Indexes:
+    "prt_gi_p_0_p_0_id_idx" btree (id)
+Options: autovacuum_enabled=false
+
+\d+ prt_gi_p_def
+                          Table "test_polar_advisor.prt_gi_p_def"
+ Column |  Type   | Collation | Nullable | Default | Storage  | Stats target | Description 
+--------+---------+-----------+----------+---------+----------+--------------+-------------
+ id     | integer |           |          |         | plain    |              | 
+ a      | text    |           |          |         | extended |              | 
+Partition of: prt_gi DEFAULT
+Partition constraint: (NOT ((id IS NOT NULL) AND (((id >= 0) AND (id < 10000)) OR ((id >= 10000) AND (id < 20000)))))
+Indexes:
+    "prt_gi_p_def_id_idx" btree (id)
+Options: autovacuum_enabled=false
+
+\d+ prt_no_gi
+                     Partitioned table "test_polar_advisor.prt_no_gi"
+ Column |  Type   | Collation | Nullable | Default | Storage  | Stats target | Description 
+--------+---------+-----------+----------+---------+----------+--------------+-------------
+ id     | integer |           |          |         | plain    |              | 
+ a      | text    |           |          |         | extended |              | 
+Partition key: RANGE (id)
+Indexes:
+    "prt_no_gi_id_idx" btree (id)
+Partitions: prt_no_gi_p_0 FOR VALUES FROM (0) TO (10000), PARTITIONED,
+            prt_no_gi_p_1 FOR VALUES FROM (10000) TO (20000), PARTITIONED,
+            prt_no_gi_p_def DEFAULT
+
+\d+ prt_no_gi_p_0
+                   Partitioned table "test_polar_advisor.prt_no_gi_p_0"
+ Column |  Type   | Collation | Nullable | Default | Storage  | Stats target | Description 
+--------+---------+-----------+----------+---------+----------+--------------+-------------
+ id     | integer |           |          |         | plain    |              | 
+ a      | text    |           |          |         | extended |              | 
+Partition of: prt_no_gi FOR VALUES FROM (0) TO (10000)
+Partition constraint: ((id IS NOT NULL) AND (id >= 0) AND (id < 10000))
+Partition key: RANGE (id)
+Indexes:
+    "prt_no_gi_p_0_id_idx" btree (id)
+Partitions: prt_no_gi_p_0_p_0 FOR VALUES FROM (0) TO (5000),
+            prt_no_gi_p_0_p_1 FOR VALUES FROM (5000) TO (10000)
+
+\d+ prt_no_gi_p_0_p_1
+                       Table "test_polar_advisor.prt_no_gi_p_0_p_1"
+ Column |  Type   | Collation | Nullable | Default | Storage  | Stats target | Description 
+--------+---------+-----------+----------+---------+----------+--------------+-------------
+ id     | integer |           |          |         | plain    |              | 
+ a      | text    |           |          |         | extended |              | 
+Partition of: prt_no_gi_p_0 FOR VALUES FROM (5000) TO (10000)
+Partition constraint: ((id IS NOT NULL) AND (id >= 0) AND (id < 10000) AND (id IS NOT NULL) AND (id >= 5000) AND (id < 10000))
+Indexes:
+    "prt_no_gi_p_0_p_1_id_idx" btree (id)
+Options: autovacuum_enabled=false
+
+\d+ prt_no_gi_p_def
+                        Table "test_polar_advisor.prt_no_gi_p_def"
+ Column |  Type   | Collation | Nullable | Default | Storage  | Stats target | Description 
+--------+---------+-----------+----------+---------+----------+--------------+-------------
+ id     | integer |           |          |         | plain    |              | 
+ a      | text    |           |          |         | extended |              | 
+Partition of: prt_no_gi DEFAULT
+Partition constraint: (NOT ((id IS NOT NULL) AND (((id >= 0) AND (id < 10000)) OR ((id >= 10000) AND (id < 20000)))))
+Indexes:
+    "prt_no_gi_p_def_id_idx" btree (id)
+Options: autovacuum_enabled=false
+
+\d+ v_normal
+                     View "test_polar_advisor.v_normal"
+ Column |  Type   | Collation | Nullable | Default | Storage  | Description 
+--------+---------+-----------+----------+---------+----------+-------------
+ id     | integer |           |          |         | plain    | 
+ a      | text    |           |          |         | extended | 
+View definition:
+ SELECT id,
+    a
+   FROM normal;
+
+\d+ mv_normal
+                     Materialized view "test_polar_advisor.mv_normal"
+ Column |  Type   | Collation | Nullable | Default | Storage  | Stats target | Description 
+--------+---------+-----------+----------+---------+----------+--------------+-------------
+ id     | integer |           |          |         | plain    |              | 
+ a      | text    |           |          |         | extended |              | 
+View definition:
+ SELECT id,
+    a
+   FROM normal;
+

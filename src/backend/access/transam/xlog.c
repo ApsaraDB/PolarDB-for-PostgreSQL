@@ -28,6 +28,7 @@
  * the current system state, and for starting/stopping backups.
  *
  *
+ * Portions Copyright (c) 2024, Alibaba Group Holding Limited
  * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -84,8 +85,10 @@
 #include "replication/walreceiver.h"
 #include "replication/walsender.h"
 #include "storage/bufmgr.h"
+#include "storage/encryption.h"
 #include "storage/fd.h"
 #include "storage/ipc.h"
+#include "storage/kmgr.h"
 #include "storage/large_object.h"
 #include "storage/latch.h"
 #include "storage/predicate.h"
@@ -106,14 +109,31 @@
 #include "utils/timestamp.h"
 #include "utils/varlena.h"
 
+/* POLAR */
+#include "access/polar_logindex_redo.h"
+#include "funcapi.h"
+#include "postmaster/interrupt.h"
+#include "storage/pg_shmem.h"
+#include "storage/polar_bufmgr.h"
+#include "storage/polar_fd.h"
+#include "storage/polar_flush.h"
+#include "utils/builtins.h"
+#include "utils/injection_point.h"
+#include "utils/polar_local_cache.h"
+
+/* POLAR */
+#include "utils/faultinjector.h"
+/* POLAR end */
+
 extern uint32 bootstrap_data_checksum_version;
+extern uint32 bootstrap_data_encryption_cipher;
 
 /* timeline ID to be used when bootstrapping */
 #define BootstrapTimeLineID		1
 
 /* User-settable parameters */
-int			max_wal_size_mb = 1024; /* 1 GB */
-int			min_wal_size_mb = 80;	/* 80 MB */
+int			max_wal_size_mb;
+int			min_wal_size_mb;
 int			wal_keep_size_mb = 0;
 int			XLOGbuffers = -1;
 int			XLogArchiveTimeout = 0;
@@ -143,12 +163,19 @@ bool		XLOG_DEBUG = false;
 
 int			wal_segment_size = DEFAULT_XLOG_SEG_SIZE;
 
+/* POLAR */
+int			polar_wal_buffer_insert_locks = 8;
+
+/* POLAR end */
+
 /*
  * Number of WAL insertion locks to use. A higher value allows more insertions
  * to happen concurrently, but adds some CPU overhead to flushing the WAL,
  * which needs to iterate all the locks.
+ *
+ * POLAR: Use parameter polar_wal_buffer_insert_locks to set the number of locks.
  */
-#define NUM_XLOGINSERT_LOCKS  8
+#define NUM_XLOGINSERT_LOCKS  (polar_wal_buffer_insert_locks)
 
 /*
  * Max distance from last checkpoint, before triggering a new xlog-based
@@ -286,6 +313,32 @@ static XLogRecPtr RedoRecPtr;
  */
 static bool doPageWrites;
 
+/*
+ * POLAR: statistics of WAL buffer in shared memory.
+ */
+#define WAL_IOCONTEXT_INIT 0
+#define WAL_IOCONTEXT_NORMAL 1
+#define WAL_IOCONTEXT_NUM (WAL_IOCONTEXT_NORMAL + 1)
+
+#define WAL_IOOP_FSYNC 0
+#define WAL_IOOP_WRITE 1
+#define WAL_IOOP_NUM (WAL_IOOP_WRITE + 1)
+
+typedef struct polar_wal_buffer_stat_t
+{
+	pg_atomic_uint64 buf_init_async;
+	pg_atomic_uint64 buf_init_sync;
+	pg_atomic_uint64 buf_map_passed;
+	pg_atomic_uint64 buf_map_slept;
+	pg_atomic_uint64 buf_map_after_write_passed;
+	pg_atomic_uint64 buf_map_after_write_slept;
+
+	pg_atomic_uint64 bytes[BACKEND_NUM_TYPES][WAL_IOCONTEXT_NUM][WAL_IOOP_NUM];
+	pg_atomic_uint64 counts[BACKEND_NUM_TYPES][WAL_IOCONTEXT_NUM][WAL_IOOP_NUM];
+} polar_wal_buffer_stat_t;
+
+/* POLAR end */
+
 /*----------
  * Shared-memory data structures for XLOG control
  *
@@ -370,6 +423,7 @@ typedef struct
 	LWLock		lock;
 	pg_atomic_uint64 insertingAt;
 	XLogRecPtr	lastImportantAt;
+	pg_atomic_uint64 polar_valid_meta_at;
 } WALInsertLock;
 
 /*
@@ -552,6 +606,30 @@ typedef struct XLogCtlData
 	XLogRecPtr	lastFpwDisableRecPtr;
 
 	slock_t		info_lck;		/* locks shared variables shown above */
+
+	/* Record polar node type and polar vfs state */
+	pg_atomic_uint32 polar_node_state;
+
+	/* POLAR: Oldest data lsn applied by any slot */
+	pg_atomic_uint64 oldest_apply_lsn;
+
+	/* POLAR: Oldest lock lsn applied by any slot */
+	pg_atomic_uint64 oldest_lock_lsn;
+
+	/*
+	 * POLAR: All pages which latest_lsn <= consistent_lsn have been flushed
+	 * to storage.
+	 */
+	pg_atomic_uint64 consistent_lsn;
+
+	/*
+	 * Whether this node is available, it's used by external components. With
+	 * this, we can mark if this node is ready to shut down, so other
+	 * components will know this event.
+	 */
+	bool		polar_available_state;
+
+	polar_wal_buffer_stat_t wal_buffer_stat;	/* POLAR */
 } XLogCtlData;
 
 /*
@@ -656,6 +734,16 @@ static bool holdingAllLocks = false;
 static MemoryContext walDebugCxt = NULL;
 #endif
 
+/* POLAR */
+
+/* record current incremental checkpoint redoptr */
+static XLogRecPtr polar_inc_ckpt_redoptr = InvalidXLogRecPtr;
+
+/* record current position of checkpoint_redo record */
+static XLogRecPtr polar_ckpt_redo_location = InvalidXLogRecPtr;
+
+/* POLAR end */
+
 static void CleanupAfterArchiveRecovery(TimeLineID EndOfLogTLI,
 										XLogRecPtr EndOfLog,
 										TimeLineID newTLI);
@@ -671,8 +759,9 @@ static void KeepLogSeg(XLogRecPtr recptr, XLogRecPtr slotsMinLSN,
 					   XLogSegNo *logSegNo);
 
 static void AdvanceXLInsertBuffer(XLogRecPtr upto, TimeLineID tli,
-								  bool opportunistic);
-static void XLogWrite(XLogwrtRqst WriteRqst, TimeLineID tli, bool flexible);
+								  bool opportunistic, bool polar_is_padding_zero);
+static void XLogWrite(XLogwrtRqst WriteRqst, TimeLineID tli,
+					  bool flexible, bool polar_is_padding_zero);
 static bool InstallXLogFileSegment(XLogSegNo *segno, char *tmppath,
 								   bool find_free, XLogSegNo max_segno,
 								   TimeLineID tli);
@@ -688,25 +777,24 @@ static void UpdateLastRemovedPtr(char *filename);
 static void ValidateXLOGDirectoryStructure(void);
 static void CleanupBackupHistory(void);
 static void UpdateMinRecoveryPoint(XLogRecPtr lsn, bool force);
-static bool PerformRecoveryXLogAction(void);
+static bool PerformRecoveryXLogAction(bool polar_enable_inc_ckpt);
 static void InitControlFile(uint64 sysidentifier);
 static void WriteControlFile(void);
-static void ReadControlFile(void);
 static void UpdateControlFile(void);
 static char *str_time(pg_time_t tnow);
-
-static int	get_sync_bit(int method);
 
 static void CopyXLogRecordToWAL(int write_len, bool isLogSwitch,
 								XLogRecData *rdata,
 								XLogRecPtr StartPos, XLogRecPtr EndPos,
 								TimeLineID tli);
 static void ReserveXLogInsertLocation(int size, XLogRecPtr *StartPos,
-									  XLogRecPtr *EndPos, XLogRecPtr *PrevPtr);
+									  XLogRecPtr *EndPos, XLogRecPtr *PrevPtr,
+									  uint32 polar_rbuf_len, uint64 *polar_rbuf_pos);
 static bool ReserveXLogSwitch(XLogRecPtr *StartPos, XLogRecPtr *EndPos,
-							  XLogRecPtr *PrevPtr);
+							  XLogRecPtr *PrevPtr, uint32 polar_rbuf_len,
+							  uint64 *polar_rbuf_pos);
 static XLogRecPtr WaitXLogInsertionsToFinish(XLogRecPtr upto);
-static char *GetXLogBuffer(XLogRecPtr ptr, TimeLineID tli);
+static char *GetXLogBuffer(XLogRecPtr ptr, TimeLineID tli, bool polar_is_padding_zero);
 static XLogRecPtr XLogBytePosToRecPtr(uint64 bytepos);
 static XLogRecPtr XLogBytePosToEndRecPtr(uint64 bytepos);
 static uint64 XLogRecPtrToBytePos(XLogRecPtr ptr);
@@ -715,6 +803,22 @@ static void WALInsertLockAcquire(void);
 static void WALInsertLockAcquireExclusive(void);
 static void WALInsertLockRelease(void);
 static void WALInsertLockUpdateInsertingAt(XLogRecPtr insertingAt);
+
+/* POLAR */
+bool		polar_enable_wal_buffer_stat = true;
+bool		polar_skip_padding_zero_wal_pages;
+int			polar_startup_smgrdestroyall_multiplier;
+int			polar_wal_buffer_reserved_old_pages;
+double		polar_wal_buffer_reserved_old_pages_ratio;
+
+static bool polar_should_check_checkpoint(void);
+static bool polar_is_checkpoint_legal(XLogRecPtr check_point_lsn);
+static void polar_wait_consistent_lsn(XLogRecPtr redo, int flags);
+static void polar_flush_buffer_for_shutdown(XLogRecPtr redo, int flags);
+static void polar_accept_signal_for_checkpoint(int flags);
+static void polar_exit_archive_recovery(EndOfWalRecoveryInfo *endOfRecoveryInfo);
+
+/* POLAR end */
 
 /*
  * Insert an XLOG record represented by an already-constructed chain of data
@@ -763,6 +867,11 @@ XLogInsertRecord(XLogRecData *rdata,
 	bool		prevDoPageWrites = doPageWrites;
 	TimeLineID	insertTLI;
 
+	/* POLAR: The reserved start point and length of ring buffer */
+	uint64		polar_rbuf_pos = 0;
+	uint32		polar_rbuf_len = 0;
+	polar_ringbuf_t xlog_queue = NULL;
+
 	/* Does this record type require special handling? */
 	if (unlikely(rechdr->xl_rmid == RM_XLOG_ID))
 	{
@@ -778,6 +887,14 @@ XLogInsertRecord(XLogRecData *rdata,
 	/* cross-check on whether we should be here or not */
 	if (!XLogInsertAllowed())
 		elog(ERROR, "cannot make new WAL entries during recovery");
+
+	/* POLAR: Calc length to reserve from xlog queue */
+	if (polar_logindex_redo_instance)
+	{
+		polar_rbuf_len = polar_xlog_reserve_size(rdata);
+		xlog_queue = polar_logindex_redo_instance->xlog_queue;
+	}
+	/* POLAR end */
 
 	/*
 	 * Given that we're not in recovery, InsertTimeLineID is set and can't
@@ -864,7 +981,7 @@ XLogInsertRecord(XLogRecData *rdata,
 		 * pointer.
 		 */
 		ReserveXLogInsertLocation(rechdr->xl_tot_len, &StartPos, &EndPos,
-								  &rechdr->xl_prev);
+								  &rechdr->xl_prev, polar_rbuf_len, &polar_rbuf_pos);
 
 		/* Normal records are always inserted. */
 		inserted = true;
@@ -884,7 +1001,8 @@ XLogInsertRecord(XLogRecData *rdata,
 		 */
 		Assert(fpw_lsn == InvalidXLogRecPtr);
 		WALInsertLockAcquireExclusive();
-		inserted = ReserveXLogSwitch(&StartPos, &EndPos, &rechdr->xl_prev);
+		inserted = ReserveXLogSwitch(&StartPos, &EndPos, &rechdr->xl_prev,
+									 polar_rbuf_len, &polar_rbuf_pos);
 	}
 	else
 	{
@@ -900,8 +1018,18 @@ XLogInsertRecord(XLogRecData *rdata,
 		Assert(fpw_lsn == InvalidXLogRecPtr);
 		WALInsertLockAcquireExclusive();
 		ReserveXLogInsertLocation(rechdr->xl_tot_len, &StartPos, &EndPos,
-								  &rechdr->xl_prev);
-		RedoRecPtr = Insert->RedoRecPtr = StartPos;
+								  &rechdr->xl_prev, polar_rbuf_len, &polar_rbuf_pos);
+
+		/*
+		 * POLAR: update RedoRecPtr as polar_inc_ckpt_redoptr when current
+		 * checkpoint is an incremental checkpoint, and record current xlog
+		 * position. There is always only one process(startup process or
+		 * checkpointer) creating checkpoint, so the RedoRecPtr won't
+		 * fallback.
+		 */
+		RedoRecPtr = Insert->RedoRecPtr = XLogRecPtrIsInvalid(polar_inc_ckpt_redoptr) ? StartPos : polar_inc_ckpt_redoptr;
+		polar_ckpt_redo_location = StartPos;
+		/* POLAR end */
 		inserted = true;
 	}
 
@@ -935,6 +1063,16 @@ XLogInsertRecord(XLogRecData *rdata,
 
 			WALInsertLocks[lockno].l.lastImportantAt = StartPos;
 		}
+
+		if (xlog_queue)
+		{
+			int			lockno = holdingAllLocks ? 0 : MyLockNo;
+
+			if (!POLAR_XLOG_QUEUE_FREE_SIZE_AT_PWRITE(xlog_queue, polar_rbuf_pos, polar_rbuf_len))
+				POLAR_XLOG_QUEUE_FREE_UP_AT_PWRITE(xlog_queue, polar_rbuf_pos, polar_rbuf_len);
+			POLAR_XLOG_QUEUE_RESERVE_SPACE(xlog_queue, polar_rbuf_pos);
+			pg_atomic_write_u64(&WALInsertLocks[lockno].l.polar_valid_meta_at, PG_UINT64_MAX);
+		}
 	}
 	else
 	{
@@ -949,6 +1087,22 @@ XLogInsertRecord(XLogRecData *rdata,
 	 * Done! Let others know that we're finished.
 	 */
 	WALInsertLockRelease();
+
+	/*
+	 * POLAR: must be inside CRIT_SECTION. Hold off signal to avoid mess up
+	 * queue data.
+	 */
+	if (inserted && xlog_queue)
+	{
+		POLAR_XLOG_QUEUE_SET_PKT_LEN(xlog_queue, polar_rbuf_pos, polar_rbuf_len);
+		if (polar_xlog_send_queue_push(xlog_queue, polar_rbuf_pos, rdata, polar_rbuf_len,
+									   EndPos, EndPos - StartPos))
+		{
+			if (unlikely(polar_enable_debug))
+				ereport(LOG, (errmsg("%s push %X/%X to queue", __func__,
+									 LSN_FORMAT_ARGS(EndPos))));
+		}
+	}
 
 	END_CRIT_SECTION();
 
@@ -1107,12 +1261,22 @@ XLogInsertRecord(XLogRecData *rdata,
  */
 static pg_attribute_always_inline void
 ReserveXLogInsertLocation(int size, XLogRecPtr *StartPos, XLogRecPtr *EndPos,
-						  XLogRecPtr *PrevPtr)
+						  XLogRecPtr *PrevPtr, uint32 polar_rbuf_len, uint64 *polar_rbuf_pos)
 {
 	XLogCtlInsert *Insert = &XLogCtl->Insert;
 	uint64		startbytepos;
 	uint64		endbytepos;
 	uint64		prevbytepos;
+
+	int			lockno = holdingAllLocks ? 0 : MyLockNo;
+	pg_atomic_uint64 *valid_meta_at = &WALInsertLocks[lockno].l.polar_valid_meta_at;
+	polar_ringbuf_t xlog_queue = NULL;
+
+	if (likely(polar_logindex_redo_instance))
+	{
+		xlog_queue = polar_logindex_redo_instance->xlog_queue;
+		polar_rbuf_len = POLAR_XLOG_PKT_SIZE(polar_rbuf_len);
+	}
 
 	size = MAXALIGN(size);
 
@@ -1130,6 +1294,12 @@ ReserveXLogInsertLocation(int size, XLogRecPtr *StartPos, XLogRecPtr *EndPos,
 	 * X bytes from WAL is almost as simple as "CurrBytePos += X".
 	 */
 	SpinLockAcquire(&Insert->insertpos_lck);
+
+	if (likely(xlog_queue))
+	{
+		*polar_rbuf_pos = pg_atomic_fetch_add_u64(&xlog_queue->pwrite, polar_rbuf_len);
+		pg_atomic_write_u64(valid_meta_at, *polar_rbuf_pos);
+	}
 
 	startbytepos = Insert->CurrBytePos;
 	endbytepos = startbytepos + size;
@@ -1162,7 +1332,8 @@ ReserveXLogInsertLocation(int size, XLogRecPtr *StartPos, XLogRecPtr *EndPos,
  * reserving any space, and the function returns false.
 */
 static bool
-ReserveXLogSwitch(XLogRecPtr *StartPos, XLogRecPtr *EndPos, XLogRecPtr *PrevPtr)
+ReserveXLogSwitch(XLogRecPtr *StartPos, XLogRecPtr *EndPos, XLogRecPtr *PrevPtr,
+				  uint32 polar_rbuf_len, uint64 *polar_rbuf_pos)
 {
 	XLogCtlInsert *Insert = &XLogCtl->Insert;
 	uint64		startbytepos;
@@ -1171,6 +1342,16 @@ ReserveXLogSwitch(XLogRecPtr *StartPos, XLogRecPtr *EndPos, XLogRecPtr *PrevPtr)
 	uint32		size = MAXALIGN(SizeOfXLogRecord);
 	XLogRecPtr	ptr;
 	uint32		segleft;
+
+	int			lockno = holdingAllLocks ? 0 : MyLockNo;
+	pg_atomic_uint64 *valid_meta_at = &WALInsertLocks[lockno].l.polar_valid_meta_at;
+	polar_ringbuf_t xlog_queue = NULL;
+
+	if (likely(polar_logindex_redo_instance))
+	{
+		xlog_queue = polar_logindex_redo_instance->xlog_queue;
+		polar_rbuf_len = POLAR_XLOG_PKT_SIZE(polar_rbuf_len);
+	}
 
 	/*
 	 * These calculations are a bit heavy-weight to be done while holding a
@@ -1188,6 +1369,12 @@ ReserveXLogSwitch(XLogRecPtr *StartPos, XLogRecPtr *EndPos, XLogRecPtr *PrevPtr)
 		SpinLockRelease(&Insert->insertpos_lck);
 		*EndPos = *StartPos = ptr;
 		return false;
+	}
+
+	if (likely(xlog_queue))
+	{
+		*polar_rbuf_pos = pg_atomic_fetch_add_u64(&xlog_queue->pwrite, polar_rbuf_len);
+		pg_atomic_write_u64(valid_meta_at, *polar_rbuf_pos);
 	}
 
 	endbytepos = startbytepos + size;
@@ -1237,7 +1424,7 @@ CopyXLogRecordToWAL(int write_len, bool isLogSwitch, XLogRecData *rdata,
 	 * inserting to.
 	 */
 	CurrPos = StartPos;
-	currpos = GetXLogBuffer(CurrPos, tli);
+	currpos = GetXLogBuffer(CurrPos, tli, false);
 	freespace = INSERT_FREESPACE(CurrPos);
 
 	/*
@@ -1274,7 +1461,7 @@ CopyXLogRecordToWAL(int write_len, bool isLogSwitch, XLogRecData *rdata,
 			 * page was initialized, in AdvanceXLInsertBuffer, and we're the
 			 * only backend that needs to set the contrecord flag.
 			 */
-			currpos = GetXLogBuffer(CurrPos, tli);
+			currpos = GetXLogBuffer(CurrPos, tli, false);
 			pagehdr = (XLogPageHeader) currpos;
 			pagehdr->xlp_rem_len = write_len - written;
 			pagehdr->xlp_info |= XLP_FIRST_IS_CONTRECORD;
@@ -1347,7 +1534,7 @@ CopyXLogRecordToWAL(int write_len, bool isLogSwitch, XLogRecData *rdata,
 			 * (which itself calls the two methods we need) to get the pointer
 			 * and zero most of the page.  Then we just zero the page header.
 			 */
-			currpos = GetXLogBuffer(CurrPos, tli);
+			currpos = GetXLogBuffer(CurrPos, tli, true);
 			MemSet(currpos, 0, SizeOfXLogShortPHD);
 
 			CurrPos += XLOG_BLCKSZ;
@@ -1628,9 +1815,12 @@ WaitXLogInsertionsToFinish(XLogRecPtr upto)
  * GetXLogBuffer() with a given 'ptr', you must not access anything before
  * that point anymore, and must not call GetXLogBuffer() with an older 'ptr'
  * later, because older buffers might be recycled already)
+ *
+ * POLAR: polar_is_padding_zero only be ture during writing padding zero
+ * wal pages, such as pg_switch_wal().
  */
 static char *
-GetXLogBuffer(XLogRecPtr ptr, TimeLineID tli)
+GetXLogBuffer(XLogRecPtr ptr, TimeLineID tli, bool polar_is_padding_zero)
 {
 	int			idx;
 	XLogRecPtr	endptr;
@@ -1702,7 +1892,7 @@ GetXLogBuffer(XLogRecPtr ptr, TimeLineID tli)
 
 		WALInsertLockUpdateInsertingAt(initializedUpto);
 
-		AdvanceXLInsertBuffer(ptr, tli, false);
+		AdvanceXLInsertBuffer(ptr, tli, false, polar_is_padding_zero);
 		endptr = pg_atomic_read_u64(&XLogCtl->xlblocks[idx]);
 
 		if (expectedEndPtr != endptr)
@@ -1981,9 +2171,13 @@ XLogRecPtrToBytePos(XLogRecPtr ptr)
  * true, initialize as many pages as we can without having to write out
  * unwritten data. Any new pages are initialized to zeros, with pages headers
  * initialized properly.
+ *
+ * POLAR: polar_is_padding_zero only be ture during writing padding zero
+ * wal pages, such as pg_switch_wal().
  */
 static void
-AdvanceXLInsertBuffer(XLogRecPtr upto, TimeLineID tli, bool opportunistic)
+AdvanceXLInsertBuffer(XLogRecPtr upto, TimeLineID tli, bool opportunistic,
+					  bool polar_is_padding_zero)
 {
 	XLogCtlInsert *Insert = &XLogCtl->Insert;
 	int			nextidx;
@@ -1993,8 +2187,10 @@ AdvanceXLInsertBuffer(XLogRecPtr upto, TimeLineID tli, bool opportunistic)
 	XLogRecPtr	NewPageBeginPtr;
 	XLogPageHeader NewPage;
 	int			npages pg_attribute_unused() = 0;
+	bool		nosleep_initial;
+	bool		nosleep_after_write;
 
-	LWLockAcquire(WALBufMappingLock, LW_EXCLUSIVE);
+	nosleep_initial = LWLockAcquire(WALBufMappingLock, LW_EXCLUSIVE);
 
 	/*
 	 * Now that we have the lock, check if someone initialized the page
@@ -2056,16 +2252,76 @@ AdvanceXLInsertBuffer(XLogRecPtr upto, TimeLineID tli, bool opportunistic)
 					TRACE_POSTGRESQL_WAL_BUFFER_WRITE_DIRTY_START();
 					WriteRqst.Write = OldPageRqstPtr;
 					WriteRqst.Flush = 0;
-					XLogWrite(WriteRqst, tli, false);
+					XLogWrite(WriteRqst, tli, false, polar_is_padding_zero);
 					LWLockRelease(WALWriteLock);
 					PendingWalStats.wal_buffers_full++;
 					TRACE_POSTGRESQL_WAL_BUFFER_WRITE_DIRTY_DONE();
 				}
 				/* Re-acquire WALBufMappingLock and retry */
-				LWLockAcquire(WALBufMappingLock, LW_EXCLUSIVE);
+				nosleep_after_write = LWLockAcquire(WALBufMappingLock, LW_EXCLUSIVE);
+
+				/*
+				 * POLAR: record WAL buffer tracing counters. Must be recorded
+				 * here because this path will not always be called.
+				 */
+				if (polar_enable_wal_buffer_stat)
+				{
+					if (nosleep_after_write)
+						pg_atomic_add_fetch_u64(&XLogCtl->wal_buffer_stat.buf_map_after_write_passed, 1);
+					else
+						pg_atomic_add_fetch_u64(&XLogCtl->wal_buffer_stat.buf_map_after_write_slept, 1);
+				}
+				/* POLAR end */
+
 				continue;
 			}
 		}
+
+		/*
+		 * POLAR: calculate how many old pages we want to reserve for faster
+		 * WAL read of WAL senders, based on page count, or ratio. We will
+		 * avoid reserved old pages being wiped out on asynchronous path.
+		 */
+		if (opportunistic)
+		{
+			XLogRecPtr	target_fresh_bytes;
+
+			/*
+			 * Reserve old pages by page count.
+			 */
+			if (polar_wal_buffer_reserved_old_pages > 0)
+			{
+				int			old_pages;
+
+				/* reserve no more than WAL buffer size */
+				old_pages = Min(polar_wal_buffer_reserved_old_pages, XLOGbuffers);
+				target_fresh_bytes = (XLOGbuffers - old_pages) * XLOG_BLCKSZ;
+
+				/*
+				 * Old page count is under threshold, stop initializing more
+				 * pages.
+				 */
+				if (XLogCtl->InitializedUpTo > LogwrtResult.Write + target_fresh_bytes)
+					break;
+			}
+
+			/*
+			 * Reserve old pages by ratio of WAL buffer size.
+			 */
+			if (polar_wal_buffer_reserved_old_pages_ratio > 0.0)
+			{
+				target_fresh_bytes =
+					XLOGbuffers * (1.0 - polar_wal_buffer_reserved_old_pages_ratio) * XLOG_BLCKSZ;
+
+				/*
+				 * Old page ratio is under threshold, stop initializing more
+				 * pages.
+				 */
+				if (XLogCtl->InitializedUpTo > LogwrtResult.Write + target_fresh_bytes)
+					break;
+			}
+		}
+		/* POLAR end */
 
 		/*
 		 * Now the next buffer slot is free and we can set it up to be the
@@ -2145,6 +2401,26 @@ AdvanceXLInsertBuffer(XLogRecPtr upto, TimeLineID tli, bool opportunistic)
 		npages++;
 	}
 	LWLockRelease(WALBufMappingLock);
+
+	/*
+	 * POLAR: record WAL buffer tracing counters.
+	 */
+	if (polar_enable_wal_buffer_stat)
+	{
+		if (npages > 0)
+		{
+			if (opportunistic)
+				pg_atomic_add_fetch_u64(&XLogCtl->wal_buffer_stat.buf_init_async, npages);
+			else
+				pg_atomic_add_fetch_u64(&XLogCtl->wal_buffer_stat.buf_init_sync, npages);
+		}
+
+		if (nosleep_initial)
+			pg_atomic_add_fetch_u64(&XLogCtl->wal_buffer_stat.buf_map_passed, 1);
+		else
+			pg_atomic_add_fetch_u64(&XLogCtl->wal_buffer_stat.buf_map_slept, 1);
+	}
+	/* POLAR end */
 
 #ifdef WAL_DEBUG
 	if (XLOG_DEBUG && npages > 0)
@@ -2291,9 +2567,13 @@ XLogCheckpointNeeded(XLogSegNo new_segno)
  * Must be called with WALWriteLock held. WaitXLogInsertionsToFinish(WriteRqst)
  * must be called before grabbing the lock, to make sure the data is ready to
  * write.
+ *
+ * POLAR: polar_is_padding_zero only be ture during writing padding zero
+ * wal pages, such as pg_switch_wal().
  */
 static void
-XLogWrite(XLogwrtRqst WriteRqst, TimeLineID tli, bool flexible)
+XLogWrite(XLogwrtRqst WriteRqst, TimeLineID tli, bool flexible,
+		  bool polar_is_padding_zero)
 {
 	bool		ispartialpage;
 	bool		last_iteration;
@@ -2401,6 +2681,9 @@ XLogWrite(XLogwrtRqst WriteRqst, TimeLineID tli, bool flexible)
 
 		if (last_iteration ||
 			curridx == XLogCtl->XLogCacheBlck ||
+#ifdef USE_INJECTION_POINTS
+			polar_injection_point_find("fault_inject_for_first_contrecord") ||
+#endif
 			finishing_seg)
 		{
 			char	   *from;
@@ -2413,7 +2696,56 @@ XLogWrite(XLogwrtRqst WriteRqst, TimeLineID tli, bool flexible)
 			from = XLogCtl->pages + startidx * (Size) XLOG_BLCKSZ;
 			nbytes = npages * (Size) XLOG_BLCKSZ;
 			nleft = nbytes;
-			do
+
+#ifdef USE_INJECTION_POINTS
+			while (((XLogPageHeader) (from))->xlp_info & XLP_FIRST_IS_CONTRECORD &&
+				   ((XLogPageHeader) (from))->xlp_rem_len >= XLOG_BLCKSZ &&
+				   polar_injection_point_find("fault_inject_for_first_contrecord"))
+				pg_usleep(100000);
+#endif
+
+			/*
+			 * POLAR: We believe that it is unnecessary to append zero pages
+			 * to the wal file during pg_switch_wal.
+			 *
+			 * The above assumption is based on the following four rules:
+			 *
+			 * (1) After parsing the wal record of the XLOG_SWITCH type, all
+			 * processes will directly jump to the next wal file to continue
+			 * parsing the next wal record.
+			 *
+			 * (2) Because there is no valid lsn pointing to the area that is
+			 * not filled with zeros, there is no logic to directly read the
+			 * wal page in this area.
+			 *
+			 * (3) There are two ways to generate a new wal file: first, the
+			 * checkpointer process reuses the old wal file; second, the
+			 * polar_worker process or the backend process generates a new wal
+			 * file and initializes it to all zeros. Therefore, the
+			 * xlp_pageaddr of those wal pages that are not filled with zeros
+			 * won't be correct.
+			 *
+			 * (4) Compared with the compression rate of the wal file content
+			 * that is not filled with zero pages, we are more concerned about
+			 * the efficiency of the pg_switch_wal operation.
+			 */
+			if (unlikely(polar_is_padding_zero && polar_skip_padding_zero_wal_pages))
+			{
+				XLogPageHeader xlphr;
+				bool		all_zero = true;
+
+				for (int i = 0; i < npages; i++)
+				{
+					xlphr = (XLogPageHeader) (XLogCtl->pages + (startidx + i) * (Size) XLOG_BLCKSZ);
+					if (xlphr->xlp_magic == XLOG_PAGE_MAGIC)
+						all_zero = false;
+				}
+
+				if (all_zero)
+					nleft = 0;
+			}
+
+			while (nleft > 0)
 			{
 				errno = 0;
 
@@ -2461,7 +2793,20 @@ XLogWrite(XLogwrtRqst WriteRqst, TimeLineID tli, bool flexible)
 				nleft -= written;
 				from += written;
 				startoffset += written;
-			} while (nleft > 0);
+
+				/*
+				 * POLAR: record the WAL write I/O statistics in shared
+				 * memory.
+				 */
+				if (polar_enable_wal_buffer_stat)
+				{
+					pg_atomic_fetch_add_u64(&XLogCtl->wal_buffer_stat.bytes[MyBackendType][WAL_IOCONTEXT_NORMAL][WAL_IOOP_WRITE],
+											written);
+					pg_atomic_fetch_add_u64(&XLogCtl->wal_buffer_stat.counts[MyBackendType][WAL_IOCONTEXT_NORMAL][WAL_IOOP_WRITE],
+											1);
+				}
+				/* POLAR end */
+			}
 
 			npages = 0;
 
@@ -2482,8 +2827,12 @@ XLogWrite(XLogwrtRqst WriteRqst, TimeLineID tli, bool flexible)
 			{
 				issue_xlog_fsync(openLogFile, openLogSegNo, tli);
 
-				/* signal that we need to wakeup walsenders later */
+				/*
+				 * signal that we need to wakeup walsenders and logindex saver
+				 * later
+				 */
 				WalSndWakeupRequest();
+				polar_logindex_saver_wakeup_req();
 
 				LogwrtResult.Flush = LogwrtResult.Write;	/* end of page */
 
@@ -2554,10 +2903,21 @@ XLogWrite(XLogwrtRqst WriteRqst, TimeLineID tli, bool flexible)
 			issue_xlog_fsync(openLogFile, openLogSegNo, tli);
 		}
 
-		/* signal that we need to wakeup walsenders later */
+		/* signal that we need to wakeup walsenders and logindex saver later */
 		WalSndWakeupRequest();
+		polar_logindex_saver_wakeup_req();
 
 		LogwrtResult.Flush = LogwrtResult.Write;
+	}
+	else if (polar_vfs_is_dio_mode &&
+			 LogwrtResult.Flush < LogwrtResult.Write)
+	{
+		/*
+		 * POLAR: If the system is currently in direct IO mode, synchronize
+		 * the 'Flush' and 'Write' position.
+		 */
+		LogwrtResult.Flush = LogwrtResult.Write;
+		polar_logindex_saver_wakeup_req();
 	}
 
 	/*
@@ -2898,7 +3258,7 @@ XLogFlush(XLogRecPtr record)
 		WriteRqst.Write = insertpos;
 		WriteRqst.Flush = insertpos;
 
-		XLogWrite(WriteRqst, insertTLI, false);
+		XLogWrite(WriteRqst, insertTLI, false, false);
 
 		LWLockRelease(WALWriteLock);
 		/* done */
@@ -2907,8 +3267,12 @@ XLogFlush(XLogRecPtr record)
 
 	END_CRIT_SECTION();
 
-	/* wake up walsenders now that we've released heavily contended locks */
+	/*
+	 * wake up walsenders and logindex saver now that we've released heavily
+	 * contended locks
+	 */
 	WalSndWakeupProcessRequests(true, !RecoveryInProgress());
+	polar_logindex_saver_process_wakeup_reqs();
 
 	/*
 	 * If we still haven't flushed to the request point then we have a
@@ -3076,20 +3440,24 @@ XLogBackgroundFlush(void)
 	if (WriteRqst.Write > LogwrtResult.Write ||
 		WriteRqst.Flush > LogwrtResult.Flush)
 	{
-		XLogWrite(WriteRqst, insertTLI, flexible);
+		XLogWrite(WriteRqst, insertTLI, flexible, false);
 	}
 	LWLockRelease(WALWriteLock);
 
 	END_CRIT_SECTION();
 
-	/* wake up walsenders now that we've released heavily contended locks */
+	/*
+	 * wake up walsenders and logindex saver now that we've released heavily
+	 * contended locks
+	 */
 	WalSndWakeupProcessRequests(true, !RecoveryInProgress());
+	polar_logindex_saver_process_wakeup_reqs();
 
 	/*
 	 * Great, done. To take some work off the critical path, try to initialize
 	 * as many of the no-longer-needed WAL buffers for future use as we can.
 	 */
-	AdvanceXLInsertBuffer(InvalidXLogRecPtr, insertTLI, true);
+	AdvanceXLInsertBuffer(InvalidXLogRecPtr, insertTLI, true, false);
 
 	/*
 	 * If we determined that we need to write data, but somebody else
@@ -3182,7 +3550,7 @@ XLogNeedsFlush(XLogRecPtr record)
  * wanting an open segment should attempt to open "path", which usually will
  * succeed.  (This is weird, but it's efficient for the callers.)
  */
-static int
+int
 XLogFileInitInternal(XLogSegNo logsegno, TimeLineID logtli,
 					 bool *added, char *path)
 {
@@ -3192,13 +3560,18 @@ XLogFileInitInternal(XLogSegNo logsegno, TimeLineID logtli,
 	int			fd;
 	int			save_errno;
 	int			open_flags = O_RDWR | O_CREAT | O_EXCL | PG_BINARY;
+	char		polar_tmppath[MAXPGPATH];
 
 	Assert(logtli != 0);
 
 	XLogFilePath(path, logtli, logsegno, wal_segment_size);
 
 	/*
-	 * Try to use existent file (checkpoint maker may have created it already)
+	 * Try to use existent file (checkpoint maker may have created it
+	 * already).
+	 *
+	 * POLAR: If you change the xlog path from BIO to DIO, please consider
+	 * more abort polar_vfs_is_dio_mode.
 	 */
 	*added = false;
 	fd = BasicOpenFile(path, O_RDWR | PG_BINARY | O_CLOEXEC |
@@ -3221,9 +3594,10 @@ XLogFileInitInternal(XLogSegNo logsegno, TimeLineID logtli,
 	 */
 	elog(DEBUG2, "creating and filling new WAL file");
 
-	snprintf(tmppath, MAXPGPATH, XLOGDIR "/xlogtemp.%d", (int) getpid());
+	snprintf(polar_tmppath, MAXPGPATH, XLOGDIR "/xlogtemp.%d", (int) getpid());
+	polar_make_file_path_level2(tmppath, polar_tmppath);
 
-	unlink(tmppath);
+	polar_unlink(tmppath);
 
 	if (io_direct_flags & IO_DIRECT_WAL_INIT)
 		open_flags |= PG_O_DIRECT;
@@ -3236,6 +3610,26 @@ XLogFileInitInternal(XLogSegNo logsegno, TimeLineID logtli,
 				 errmsg("could not create file \"%s\": %m", tmppath)));
 
 	pgstat_report_wait_start(WAIT_EVENT_WAL_INIT_WRITE);
+
+#ifdef __linux__
+
+	/*
+	 * POLAR: use FALLOC_FL_NO_HIDE_STALE on PFS to optimize appending writes.
+	 */
+	if (polar_enable_fallocate_no_hide_stale &&
+		polar_vfs_type(fd) == POLAR_VFS_PFS &&
+		polar_fallocate(fd, FALLOC_FL_NO_HIDE_STALE, 0, (off_t) wal_segment_size) != 0)
+	{
+		save_errno = errno;
+		polar_unlink(tmppath);
+		polar_close(fd);
+		errno = save_errno;
+
+		elog(ERROR, "fallocate failed \"%s\": %m", tmppath);
+	}
+	/* POLAR end */
+#endif
+
 	save_errno = 0;
 	if (wal_init_zero)
 	{
@@ -3250,7 +3644,7 @@ XLogFileInitInternal(XLogSegNo logsegno, TimeLineID logtli,
 		 * indirect blocks are down on disk.  Therefore, fdatasync(2) or
 		 * O_DSYNC will be sufficient to sync future writes to the log file.
 		 */
-		rc = pg_pwrite_zeros(fd, wal_segment_size, 0);
+		rc = polar_pwrite_zeros(fd, wal_segment_size, 0);
 
 		if (rc < 0)
 			save_errno = errno;
@@ -3270,14 +3664,26 @@ XLogFileInitInternal(XLogSegNo logsegno, TimeLineID logtli,
 	}
 	pgstat_report_wait_end();
 
+	/*
+	 * POLAR: record the WAL write I/O statistics in shared memory.
+	 */
+	if (polar_enable_wal_buffer_stat)
+	{
+		pg_atomic_fetch_add_u64(&XLogCtl->wal_buffer_stat.bytes[MyBackendType][WAL_IOCONTEXT_INIT][WAL_IOOP_WRITE],
+								wal_init_zero ? wal_segment_size : 1);
+		pg_atomic_fetch_add_u64(&XLogCtl->wal_buffer_stat.counts[MyBackendType][WAL_IOCONTEXT_INIT][WAL_IOOP_WRITE],
+								1);
+	}
+	/* POLAR end */
+
 	if (save_errno)
 	{
 		/*
 		 * If we fail to make the file, delete it to release disk space
 		 */
-		unlink(tmppath);
+		polar_unlink(tmppath);
 
-		close(fd);
+		polar_close(fd);
 
 		errno = save_errno;
 
@@ -3287,10 +3693,10 @@ XLogFileInitInternal(XLogSegNo logsegno, TimeLineID logtli,
 	}
 
 	pgstat_report_wait_start(WAIT_EVENT_WAL_INIT_SYNC);
-	if (pg_fsync(fd) != 0)
+	if (polar_fsync(fd) != 0)
 	{
 		save_errno = errno;
-		close(fd);
+		polar_close(fd);
 		errno = save_errno;
 		ereport(ERROR,
 				(errcode_for_file_access(),
@@ -3298,7 +3704,17 @@ XLogFileInitInternal(XLogSegNo logsegno, TimeLineID logtli,
 	}
 	pgstat_report_wait_end();
 
-	if (close(fd) != 0)
+	/*
+	 * POLAR: record the WAL write I/O statistics in shared memory.
+	 */
+	if (polar_enable_wal_buffer_stat)
+	{
+		pg_atomic_fetch_add_u64(&XLogCtl->wal_buffer_stat
+								.counts[MyBackendType][WAL_IOCONTEXT_INIT][WAL_IOOP_FSYNC], 1);
+	}
+	/* POLAR end */
+
+	if (polar_close(fd) != 0)
 		ereport(ERROR,
 				(errcode_for_file_access(),
 				 errmsg("could not close file \"%s\": %m", tmppath)));
@@ -3333,7 +3749,7 @@ XLogFileInitInternal(XLogSegNo logsegno, TimeLineID logtli,
 		 * failed to rename the file into place. If the rename failed, a
 		 * caller opening the file may fail.
 		 */
-		unlink(tmppath);
+		polar_unlink(tmppath);
 		elog(DEBUG2, "abandoned new WAL file");
 	}
 
@@ -3366,6 +3782,11 @@ XLogFileInit(XLogSegNo logsegno, TimeLineID logtli)
 		return fd;
 
 	/* Now open original target segment (might not be file I just made) */
+
+	/*
+	 * POLAR: If you change the xlog path from BIO to DIO, please consider
+	 * more abort polar_vfs_is_dio_mode.
+	 */
 	fd = BasicOpenFile(path, O_RDWR | PG_BINARY | O_CLOEXEC |
 					   get_sync_bit(wal_sync_method));
 	if (fd < 0)
@@ -3395,12 +3816,16 @@ XLogFileCopy(TimeLineID destTLI, XLogSegNo destsegno,
 			 TimeLineID srcTLI, XLogSegNo srcsegno,
 			 int upto)
 {
+#define	POLAR_XLOG_SIZE_1MB (1024 * 1024)
+	char	   *polar_buffer;
+	char	   *polar_aligned_buffer;
+
 	char		path[MAXPGPATH];
 	char		tmppath[MAXPGPATH];
-	PGAlignedXLogBlock buffer;
 	int			srcfd;
 	int			fd;
 	int			nbytes;
+	char		polar_tmppath[MAXPGPATH];
 
 	/*
 	 * Open the source file
@@ -3415,9 +3840,9 @@ XLogFileCopy(TimeLineID destTLI, XLogSegNo destsegno,
 	/*
 	 * Copy into a temp file name.
 	 */
-	snprintf(tmppath, MAXPGPATH, XLOGDIR "/xlogtemp.%d", (int) getpid());
-
-	unlink(tmppath);
+	snprintf(polar_tmppath, MAXPGPATH, XLOGDIR "/xlogtemp.%d", (int) getpid());
+	polar_make_file_path_level2(tmppath, polar_tmppath);
+	polar_unlink(tmppath);
 
 	/* do not use get_sync_bit() here --- want to fsync only at end of fill */
 	fd = OpenTransientFile(tmppath, O_RDWR | O_CREAT | O_EXCL | PG_BINARY);
@@ -3426,10 +3851,14 @@ XLogFileCopy(TimeLineID destTLI, XLogSegNo destsegno,
 				(errcode_for_file_access(),
 				 errmsg("could not create file \"%s\": %m", tmppath)));
 
+	/* POLAR: doesn't need to pfree when ERROR */
+	polar_buffer = palloc0(POLAR_XLOG_SIZE_1MB + PG_IO_ALIGN_SIZE);
+	polar_aligned_buffer = (char *) TYPEALIGN(PG_IO_ALIGN_SIZE, polar_buffer);
+
 	/*
 	 * Do the data copying.
 	 */
-	for (nbytes = 0; nbytes < wal_segment_size; nbytes += sizeof(buffer))
+	for (nbytes = 0; nbytes < wal_segment_size; nbytes += POLAR_XLOG_SIZE_1MB)
 	{
 		int			nread;
 
@@ -3439,17 +3868,17 @@ XLogFileCopy(TimeLineID destTLI, XLogSegNo destsegno,
 		 * The part that is not read from the source file is filled with
 		 * zeros.
 		 */
-		if (nread < sizeof(buffer))
-			memset(buffer.data, 0, sizeof(buffer));
+		if (nread < POLAR_XLOG_SIZE_1MB)
+			memset(polar_aligned_buffer, 0, POLAR_XLOG_SIZE_1MB);
 
 		if (nread > 0)
 		{
 			int			r;
 
-			if (nread > sizeof(buffer))
-				nread = sizeof(buffer);
+			if (nread > POLAR_XLOG_SIZE_1MB)
+				nread = POLAR_XLOG_SIZE_1MB;
 			pgstat_report_wait_start(WAIT_EVENT_WAL_COPY_READ);
-			r = read(srcfd, buffer.data, nread);
+			r = polar_read(srcfd, polar_aligned_buffer, nread);
 			if (r != nread)
 			{
 				if (r < 0)
@@ -3467,14 +3896,14 @@ XLogFileCopy(TimeLineID destTLI, XLogSegNo destsegno,
 		}
 		errno = 0;
 		pgstat_report_wait_start(WAIT_EVENT_WAL_COPY_WRITE);
-		if ((int) write(fd, buffer.data, sizeof(buffer)) != (int) sizeof(buffer))
+		if ((int) polar_write(fd, polar_aligned_buffer, POLAR_XLOG_SIZE_1MB) != (int) POLAR_XLOG_SIZE_1MB)
 		{
 			int			save_errno = errno;
 
 			/*
 			 * If we fail to make the file, delete it to release disk space
 			 */
-			unlink(tmppath);
+			polar_unlink(tmppath);
 			/* if write didn't set errno, assume problem is no disk space */
 			errno = save_errno ? save_errno : ENOSPC;
 
@@ -3485,8 +3914,10 @@ XLogFileCopy(TimeLineID destTLI, XLogSegNo destsegno,
 		pgstat_report_wait_end();
 	}
 
+	pfree(polar_buffer);
+
 	pgstat_report_wait_start(WAIT_EVENT_WAL_COPY_SYNC);
-	if (pg_fsync(fd) != 0)
+	if (polar_fsync(fd) != 0)
 		ereport(data_sync_elevel(ERROR),
 				(errcode_for_file_access(),
 				 errmsg("could not fsync file \"%s\": %m", tmppath)));
@@ -3561,7 +3992,7 @@ InstallXLogFileSegment(XLogSegNo *segno, char *tmppath,
 	else
 	{
 		/* Find a free slot to put it in */
-		while (stat(path, &stat_buf) == 0)
+		while (polar_stat(path, &stat_buf) == 0)
 		{
 			if ((*segno) >= max_segno)
 			{
@@ -3598,6 +4029,10 @@ XLogFileOpen(XLogSegNo segno, TimeLineID tli)
 
 	XLogFilePath(path, tli, segno, wal_segment_size);
 
+	/*
+	 * POLAR: If you change the xlog path from BIO to DIO, please consider
+	 * more abort polar_vfs_is_dio_mode.
+	 */
 	fd = BasicOpenFile(path, O_RDWR | PG_BINARY | O_CLOEXEC |
 					   get_sync_bit(wal_sync_method));
 	if (fd < 0)
@@ -3624,10 +4059,10 @@ XLogFileClose(void)
 	 */
 #if defined(USE_POSIX_FADVISE) && defined(POSIX_FADV_DONTNEED)
 	if (!XLogIsNeeded() && (io_direct_flags & IO_DIRECT_WAL) == 0)
-		(void) posix_fadvise(openLogFile, 0, 0, POSIX_FADV_DONTNEED);
+		(void) polar_posix_fadvise(openLogFile, 0, 0, POSIX_FADV_DONTNEED);
 #endif
 
-	if (close(openLogFile) != 0)
+	if (polar_close(openLogFile) != 0)
 	{
 		char		xlogfname[MAXFNAMELEN];
 		int			save_errno = errno;
@@ -3671,6 +4106,9 @@ PreallocXlogFiles(XLogRecPtr endptr, TimeLineID tli)
 	char		path[MAXPGPATH];
 	uint64		offset;
 
+	if (polar_is_replica())
+		return;
+
 	if (!XLogCtl->InstallXLogFileSegmentActive)
 		return;					/* unlocked check says no */
 
@@ -3681,7 +4119,7 @@ PreallocXlogFiles(XLogRecPtr endptr, TimeLineID tli)
 		_logSegNo++;
 		lf = XLogFileInitInternal(_logSegNo, tli, &added, path);
 		if (lf >= 0)
-			close(lf);
+			polar_close(lf);
 		if (added)
 			CheckpointStats.ckpt_segs_added++;
 	}
@@ -3752,9 +4190,12 @@ XLogGetOldestSegno(TimeLineID tli)
 	DIR		   *xldir;
 	struct dirent *xlde;
 	XLogSegNo	oldest_segno = 0;
+	char		polar_path[MAXPGPATH];
 
-	xldir = AllocateDir(XLOGDIR);
-	while ((xlde = ReadDir(xldir, XLOGDIR)) != NULL)
+	polar_make_file_path_level2(polar_path, XLOGDIR);
+
+	xldir = AllocateDir(polar_path);
+	while ((xlde = ReadDir(xldir, polar_path)) != NULL)
 	{
 		TimeLineID	file_tli;
 		XLogSegNo	file_segno;
@@ -3809,19 +4250,28 @@ RemoveTempXlogFiles(void)
 {
 	DIR		   *xldir;
 	struct dirent *xlde;
+	char		polar_path[MAXPGPATH];
+	char		polar_tmppath[MAXPGPATH];
+
+	if (polar_is_replica())
+		return;
 
 	elog(DEBUG2, "removing all temporary WAL segments");
 
-	xldir = AllocateDir(XLOGDIR);
-	while ((xlde = ReadDir(xldir, XLOGDIR)) != NULL)
+	polar_make_file_path_level2(polar_path, XLOGDIR);
+	xldir = AllocateDir(polar_path);
+
+	while ((xlde = ReadDir(xldir, polar_path)) != NULL)
 	{
 		char		path[MAXPGPATH];
 
 		if (strncmp(xlde->d_name, "xlogtemp.", 9) != 0)
 			continue;
 
-		snprintf(path, MAXPGPATH, XLOGDIR "/%s", xlde->d_name);
-		unlink(path);
+		snprintf(polar_tmppath, MAXPGPATH, XLOGDIR "/%s", xlde->d_name);
+		polar_make_file_path_level2(path, polar_tmppath);
+
+		polar_unlink(path);
 		elog(DEBUG2, "removed temporary WAL segment \"%s\"", path);
 	}
 	FreeDir(xldir);
@@ -3844,8 +4294,12 @@ RemoveOldXlogFiles(XLogSegNo segno, XLogRecPtr lastredoptr, XLogRecPtr endptr,
 	DIR		   *xldir;
 	struct dirent *xlde;
 	char		lastoff[MAXFNAMELEN];
+	char		polar_path[MAXPGPATH];
 	XLogSegNo	endlogSegNo;
 	XLogSegNo	recycleSegNo;
+
+	if (polar_is_replica())
+		return;
 
 	/* Initialize info about where to try to recycle to */
 	XLByteToSeg(endptr, endlogSegNo, wal_segment_size);
@@ -3858,12 +4312,15 @@ RemoveOldXlogFiles(XLogSegNo segno, XLogRecPtr lastredoptr, XLogRecPtr endptr,
 	 */
 	XLogFileName(lastoff, 0, segno, wal_segment_size);
 
-	elog(DEBUG2, "attempting to remove WAL segments older than log file %s",
+	/* POLAR: log the information when log_checkpoints is on */
+	elog(log_checkpoints ? LOG : DEBUG2, "attempting to remove WAL segments older than log file %s",
 		 lastoff);
 
-	xldir = AllocateDir(XLOGDIR);
+	polar_make_file_path_level2(polar_path, XLOGDIR);
 
-	while ((xlde = ReadDir(xldir, XLOGDIR)) != NULL)
+	xldir = AllocateDir(polar_path);
+
+	while ((xlde = ReadDir(xldir, polar_path)) != NULL)
 	{
 		/* Ignore files that are not XLOG segments */
 		if (!IsXLogFileName(xlde->d_name) &&
@@ -3921,6 +4378,7 @@ RemoveNonParentXlogFiles(XLogRecPtr switchpoint, TimeLineID newTLI)
 	XLogSegNo	endLogSegNo;
 	XLogSegNo	switchLogSegNo;
 	XLogSegNo	recycleSegNo;
+	char		polar_path[MAXPGPATH];
 
 	/*
 	 * Initialize info about where to begin the work.  This will recycle,
@@ -3938,9 +4396,11 @@ RemoveNonParentXlogFiles(XLogRecPtr switchpoint, TimeLineID newTLI)
 	elog(DEBUG2, "attempting to remove WAL segments newer than log file %s",
 		 switchseg);
 
-	xldir = AllocateDir(XLOGDIR);
+	polar_make_file_path_level2(polar_path, XLOGDIR);
 
-	while ((xlde = ReadDir(xldir, XLOGDIR)) != NULL)
+	xldir = AllocateDir(polar_path);
+
+	while ((xlde = ReadDir(xldir, polar_path)) != NULL)
 	{
 		/* Ignore files that are not XLOG segments */
 		if (!IsXLogFileName(xlde->d_name))
@@ -3992,7 +4452,7 @@ RemoveXlogFile(const struct dirent *segment_de,
 #endif
 	const char *segname = segment_de->d_name;
 
-	snprintf(path, MAXPGPATH, XLOGDIR "/%s", segname);
+	polar_make_file_path_level3(path, XLOGDIR, (char *) segname);
 
 	/*
 	 * Before deleting the file, see if it can be recycled as a future log
@@ -4077,8 +4537,10 @@ ValidateXLOGDirectoryStructure(void)
 	char		path[MAXPGPATH];
 	struct stat stat_buf;
 
+	polar_make_file_path_level2(path, XLOGDIR);
+
 	/* Check for pg_wal; if it doesn't exist, error out */
-	if (stat(XLOGDIR, &stat_buf) != 0 ||
+	if (polar_stat(path, &stat_buf) != 0 ||
 		!S_ISDIR(stat_buf.st_mode))
 		ereport(FATAL,
 				(errcode_for_file_access(),
@@ -4086,8 +4548,8 @@ ValidateXLOGDirectoryStructure(void)
 						XLOGDIR)));
 
 	/* Check for archive_status */
-	snprintf(path, MAXPGPATH, XLOGDIR "/archive_status");
-	if (stat(path, &stat_buf) == 0)
+	polar_make_file_path_level3(path, XLOGDIR, "archive_status");
+	if (polar_stat(path, &stat_buf) == 0)
 	{
 		/* Check for weird cases where it exists but isn't a directory */
 		if (!S_ISDIR(stat_buf.st_mode))
@@ -4108,8 +4570,8 @@ ValidateXLOGDirectoryStructure(void)
 	}
 
 	/* Check for summaries */
-	snprintf(path, MAXPGPATH, XLOGDIR "/summaries");
-	if (stat(path, &stat_buf) == 0)
+	polar_make_file_path_level3(path, XLOGDIR, "summaries");
+	if (polar_stat(path, &stat_buf) == 0)
 	{
 		/* Check for weird cases where it exists but isn't a directory */
 		if (!S_ISDIR(stat_buf.st_mode))
@@ -4139,10 +4601,14 @@ CleanupBackupHistory(void)
 	DIR		   *xldir;
 	struct dirent *xlde;
 	char		path[MAXPGPATH + sizeof(XLOGDIR)];
+	char		polar_dir_path[MAXPGPATH] = "";
 
-	xldir = AllocateDir(XLOGDIR);
+	/* POLAR: this folder is under shared directory(polar_datadir) */
+	polar_make_file_path_level2(polar_dir_path, XLOGDIR);
 
-	while ((xlde = ReadDir(xldir, XLOGDIR)) != NULL)
+	xldir = AllocateDir(polar_dir_path);
+
+	while ((xlde = ReadDir(xldir, polar_dir_path)) != NULL)
 	{
 		if (IsBackupHistoryFileName(xlde->d_name))
 		{
@@ -4150,8 +4616,9 @@ CleanupBackupHistory(void)
 			{
 				elog(DEBUG2, "removing WAL backup history file \"%s\"",
 					 xlde->d_name);
-				snprintf(path, sizeof(path), XLOGDIR "/%s", xlde->d_name);
-				unlink(path);
+				/* POLAR: these files are under polar_datadir/pg_wal/ */
+				polar_make_file_path_level3(path, XLOGDIR, xlde->d_name);
+				polar_unlink(path);
 				XLogArchiveCleanup(xlde->d_name);
 			}
 		}
@@ -4216,6 +4683,7 @@ WriteControlFile(void)
 {
 	int			fd;
 	char		buffer[PG_CONTROL_FILE_SIZE];	/* need not be aligned */
+	char		polar_ctl_file[MAXPGPATH];
 
 	/*
 	 * Initialize version and compatibility-check fields
@@ -4256,7 +4724,9 @@ WriteControlFile(void)
 	memset(buffer, 0, PG_CONTROL_FILE_SIZE);
 	memcpy(buffer, ControlFile, sizeof(ControlFileData));
 
-	fd = BasicOpenFile(XLOG_CONTROL_FILE,
+	polar_make_file_path_level2(polar_ctl_file, XLOG_CONTROL_FILE);
+
+	fd = BasicOpenFile(polar_ctl_file,
 					   O_RDWR | O_CREAT | O_EXCL | PG_BINARY);
 	if (fd < 0)
 		ereport(PANIC,
@@ -4266,7 +4736,7 @@ WriteControlFile(void)
 
 	errno = 0;
 	pgstat_report_wait_start(WAIT_EVENT_CONTROL_FILE_WRITE);
-	if (write(fd, buffer, PG_CONTROL_FILE_SIZE) != PG_CONTROL_FILE_SIZE)
+	if (polar_write(fd, buffer, PG_CONTROL_FILE_SIZE) != PG_CONTROL_FILE_SIZE)
 	{
 		/* if write didn't set errno, assume problem is no disk space */
 		if (errno == 0)
@@ -4279,57 +4749,83 @@ WriteControlFile(void)
 	pgstat_report_wait_end();
 
 	pgstat_report_wait_start(WAIT_EVENT_CONTROL_FILE_SYNC);
-	if (pg_fsync(fd) != 0)
+	if (polar_fsync(fd) != 0)
 		ereport(PANIC,
 				(errcode_for_file_access(),
 				 errmsg("could not fsync file \"%s\": %m",
 						XLOG_CONTROL_FILE)));
 	pgstat_report_wait_end();
 
-	if (close(fd) != 0)
+	if (polar_close(fd) != 0)
 		ereport(PANIC,
 				(errcode_for_file_access(),
 				 errmsg("could not close file \"%s\": %m",
 						XLOG_CONTROL_FILE)));
 }
 
-static void
-ReadControlFile(void)
+/* POLAR: BasedOn ReadControlFile function */
+bool
+polar_read_control_file(char *polar_ctl_file_path, ControlFileData *polar_control_file_buffer,
+						int error_level, int *saved_errno)
 {
 	pg_crc32c	crc;
 	int			fd;
-	static char wal_segsz_str[20];
 	int			r;
+	int			readflag = PG_BINARY;
 
-	/*
-	 * Read data...
-	 */
-	fd = BasicOpenFile(XLOG_CONTROL_FILE,
-					   O_RDWR | PG_BINARY);
+	if (polar_ctl_file_path == NULL)
+		elog(FATAL, "pg_control file path is NULL");
+	if (polar_control_file_buffer == NULL)
+		elog(FATAL, "pg_control data buffer is NULL");
+	if (saved_errno == NULL)
+		elog(FATAL, "saved errno is NULL");
+
+	/* POLAR: read controlfile only need O_RDONLY */
+	readflag |= O_RDONLY;
+
+	/* POLAR: open control file based on given path */
+	fd = BasicOpenFile(polar_ctl_file_path, readflag);
 	if (fd < 0)
-		ereport(PANIC,
-				(errcode_for_file_access(),
-				 errmsg("could not open file \"%s\": %m",
-						XLOG_CONTROL_FILE)));
+	{
+		if (errno == ENOENT)
+		{
+			*saved_errno = errno;
+			/* POLAR: report error message based on given error_level */
+			ereport(error_level,
+					(errcode_for_file_access(),
+					 errmsg("control file \"%s\" not exist: %m",
+							polar_ctl_file_path)));
+			return false;
+		}
+		else
+		{
+			ereport(PANIC,
+					(errcode_for_file_access(),
+					 errmsg("could not open control file \"%s\": %m",
+							polar_ctl_file_path)));
+		}
+	}
 
 	pgstat_report_wait_start(WAIT_EVENT_CONTROL_FILE_READ);
-	r = read(fd, ControlFile, sizeof(ControlFileData));
+	r = polar_read(fd, polar_control_file_buffer, sizeof(ControlFileData));
 	if (r != sizeof(ControlFileData))
 	{
 		if (r < 0)
 			ereport(PANIC,
 					(errcode_for_file_access(),
-					 errmsg("could not read file \"%s\": %m",
-							XLOG_CONTROL_FILE)));
+					 errmsg("could not read from control file \"%s\": %m",
+							polar_ctl_file_path)));
 		else
 			ereport(PANIC,
-					(errcode(ERRCODE_DATA_CORRUPTED),
-					 errmsg("could not read file \"%s\": read %d of %zu",
-							XLOG_CONTROL_FILE, r, sizeof(ControlFileData))));
+					(errmsg("could not read from control file \"%s\": read %d bytes, expected %d",
+							polar_ctl_file_path, r, (int) sizeof(ControlFileData))));
 	}
 	pgstat_report_wait_end();
 
-	close(fd);
+	polar_close(fd);
+
+	elog(IsPostmasterEnvironment ? LOG : NOTICE,
+		 "polardb read control file \"%s\" success", polar_ctl_file_path);
 
 	/*
 	 * Check for expected pg_control format version.  If this is wrong, the
@@ -4337,34 +4833,33 @@ ReadControlFile(void)
 	 * of bytes.  Complaining about wrong version will probably be more
 	 * enlightening than complaining about wrong CRC.
 	 */
-
-	if (ControlFile->pg_control_version != PG_CONTROL_VERSION && ControlFile->pg_control_version % 65536 == 0 && ControlFile->pg_control_version / 65536 != 0)
+	if (polar_control_file_buffer->pg_control_version != PG_CONTROL_VERSION && polar_control_file_buffer->pg_control_version % 65536 == 0 && polar_control_file_buffer->pg_control_version / 65536 != 0)
 		ereport(FATAL,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 				 errmsg("database files are incompatible with server"),
 				 errdetail("The database cluster was initialized with PG_CONTROL_VERSION %d (0x%08x),"
 						   " but the server was compiled with PG_CONTROL_VERSION %d (0x%08x).",
-						   ControlFile->pg_control_version, ControlFile->pg_control_version,
+						   polar_control_file_buffer->pg_control_version, polar_control_file_buffer->pg_control_version,
 						   PG_CONTROL_VERSION, PG_CONTROL_VERSION),
 				 errhint("This could be a problem of mismatched byte ordering.  It looks like you need to initdb.")));
 
-	if (ControlFile->pg_control_version != PG_CONTROL_VERSION)
+	if (polar_control_file_buffer->pg_control_version != PG_CONTROL_VERSION)
 		ereport(FATAL,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 				 errmsg("database files are incompatible with server"),
 				 errdetail("The database cluster was initialized with PG_CONTROL_VERSION %d,"
 						   " but the server was compiled with PG_CONTROL_VERSION %d.",
-						   ControlFile->pg_control_version, PG_CONTROL_VERSION),
+						   polar_control_file_buffer->pg_control_version, PG_CONTROL_VERSION),
 				 errhint("It looks like you need to initdb.")));
 
 	/* Now check the CRC. */
 	INIT_CRC32C(crc);
 	COMP_CRC32C(crc,
-				(char *) ControlFile,
+				(char *) polar_control_file_buffer,
 				offsetof(ControlFileData, crc));
 	FIN_CRC32C(crc);
 
-	if (!EQ_CRC32C(crc, ControlFile->crc))
+	if (!EQ_CRC32C(crc, polar_control_file_buffer->crc))
 		ereport(FATAL,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 				 errmsg("incorrect checksum in control file")));
@@ -4374,87 +4869,87 @@ ReadControlFile(void)
 	 * compatible with the backend executable, we want to abort before we can
 	 * possibly do any damage.
 	 */
-	if (ControlFile->catalog_version_no != CATALOG_VERSION_NO)
+	if (polar_control_file_buffer->catalog_version_no != CATALOG_VERSION_NO)
 		ereport(FATAL,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 				 errmsg("database files are incompatible with server"),
 				 errdetail("The database cluster was initialized with CATALOG_VERSION_NO %d,"
 						   " but the server was compiled with CATALOG_VERSION_NO %d.",
-						   ControlFile->catalog_version_no, CATALOG_VERSION_NO),
+						   polar_control_file_buffer->catalog_version_no, CATALOG_VERSION_NO),
 				 errhint("It looks like you need to initdb.")));
-	if (ControlFile->maxAlign != MAXIMUM_ALIGNOF)
+	if (polar_control_file_buffer->maxAlign != MAXIMUM_ALIGNOF)
 		ereport(FATAL,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 				 errmsg("database files are incompatible with server"),
 				 errdetail("The database cluster was initialized with MAXALIGN %d,"
 						   " but the server was compiled with MAXALIGN %d.",
-						   ControlFile->maxAlign, MAXIMUM_ALIGNOF),
+						   polar_control_file_buffer->maxAlign, MAXIMUM_ALIGNOF),
 				 errhint("It looks like you need to initdb.")));
-	if (ControlFile->floatFormat != FLOATFORMAT_VALUE)
+	if (polar_control_file_buffer->floatFormat != FLOATFORMAT_VALUE)
 		ereport(FATAL,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 				 errmsg("database files are incompatible with server"),
 				 errdetail("The database cluster appears to use a different floating-point number format than the server executable."),
 				 errhint("It looks like you need to initdb.")));
-	if (ControlFile->blcksz != BLCKSZ)
+	if (polar_control_file_buffer->blcksz != BLCKSZ)
 		ereport(FATAL,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 				 errmsg("database files are incompatible with server"),
 				 errdetail("The database cluster was initialized with BLCKSZ %d,"
 						   " but the server was compiled with BLCKSZ %d.",
-						   ControlFile->blcksz, BLCKSZ),
+						   polar_control_file_buffer->blcksz, BLCKSZ),
 				 errhint("It looks like you need to recompile or initdb.")));
-	if (ControlFile->relseg_size != RELSEG_SIZE)
+	if (polar_control_file_buffer->relseg_size != RELSEG_SIZE)
 		ereport(FATAL,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 				 errmsg("database files are incompatible with server"),
 				 errdetail("The database cluster was initialized with RELSEG_SIZE %d,"
 						   " but the server was compiled with RELSEG_SIZE %d.",
-						   ControlFile->relseg_size, RELSEG_SIZE),
+						   polar_control_file_buffer->relseg_size, RELSEG_SIZE),
 				 errhint("It looks like you need to recompile or initdb.")));
-	if (ControlFile->xlog_blcksz != XLOG_BLCKSZ)
+	if (polar_control_file_buffer->xlog_blcksz != XLOG_BLCKSZ)
 		ereport(FATAL,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 				 errmsg("database files are incompatible with server"),
 				 errdetail("The database cluster was initialized with XLOG_BLCKSZ %d,"
 						   " but the server was compiled with XLOG_BLCKSZ %d.",
-						   ControlFile->xlog_blcksz, XLOG_BLCKSZ),
+						   polar_control_file_buffer->xlog_blcksz, XLOG_BLCKSZ),
 				 errhint("It looks like you need to recompile or initdb.")));
-	if (ControlFile->nameDataLen != NAMEDATALEN)
+	if (polar_control_file_buffer->nameDataLen != NAMEDATALEN)
 		ereport(FATAL,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 				 errmsg("database files are incompatible with server"),
 				 errdetail("The database cluster was initialized with NAMEDATALEN %d,"
 						   " but the server was compiled with NAMEDATALEN %d.",
-						   ControlFile->nameDataLen, NAMEDATALEN),
+						   polar_control_file_buffer->nameDataLen, NAMEDATALEN),
 				 errhint("It looks like you need to recompile or initdb.")));
-	if (ControlFile->indexMaxKeys != INDEX_MAX_KEYS)
+	if (polar_control_file_buffer->indexMaxKeys != INDEX_MAX_KEYS)
 		ereport(FATAL,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 				 errmsg("database files are incompatible with server"),
 				 errdetail("The database cluster was initialized with INDEX_MAX_KEYS %d,"
 						   " but the server was compiled with INDEX_MAX_KEYS %d.",
-						   ControlFile->indexMaxKeys, INDEX_MAX_KEYS),
+						   polar_control_file_buffer->indexMaxKeys, INDEX_MAX_KEYS),
 				 errhint("It looks like you need to recompile or initdb.")));
-	if (ControlFile->toast_max_chunk_size != TOAST_MAX_CHUNK_SIZE)
+	if (polar_control_file_buffer->toast_max_chunk_size != TOAST_MAX_CHUNK_SIZE)
 		ereport(FATAL,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 				 errmsg("database files are incompatible with server"),
 				 errdetail("The database cluster was initialized with TOAST_MAX_CHUNK_SIZE %d,"
 						   " but the server was compiled with TOAST_MAX_CHUNK_SIZE %d.",
-						   ControlFile->toast_max_chunk_size, (int) TOAST_MAX_CHUNK_SIZE),
+						   polar_control_file_buffer->toast_max_chunk_size, (int) TOAST_MAX_CHUNK_SIZE),
 				 errhint("It looks like you need to recompile or initdb.")));
-	if (ControlFile->loblksize != LOBLKSIZE)
+	if (polar_control_file_buffer->loblksize != LOBLKSIZE)
 		ereport(FATAL,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 				 errmsg("database files are incompatible with server"),
 				 errdetail("The database cluster was initialized with LOBLKSIZE %d,"
 						   " but the server was compiled with LOBLKSIZE %d.",
-						   ControlFile->loblksize, (int) LOBLKSIZE),
+						   polar_control_file_buffer->loblksize, (int) LOBLKSIZE),
 				 errhint("It looks like you need to recompile or initdb.")));
 
 #ifdef USE_FLOAT8_BYVAL
-	if (ControlFile->float8ByVal != true)
+	if (polar_control_file_buffer->float8ByVal != true)
 		ereport(FATAL,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 				 errmsg("database files are incompatible with server"),
@@ -4462,7 +4957,7 @@ ReadControlFile(void)
 						   " but the server was compiled with USE_FLOAT8_BYVAL."),
 				 errhint("It looks like you need to recompile or initdb.")));
 #else
-	if (ControlFile->float8ByVal != false)
+	if (polar_control_file_buffer->float8ByVal != false)
 		ereport(FATAL,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 				 errmsg("database files are incompatible with server"),
@@ -4471,7 +4966,7 @@ ReadControlFile(void)
 				 errhint("It looks like you need to recompile or initdb.")));
 #endif
 
-	wal_segment_size = ControlFile->xlog_seg_size;
+	wal_segment_size = polar_control_file_buffer->xlog_seg_size;
 
 	if (!IsValidWalSegSize(wal_segment_size))
 		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
@@ -4480,6 +4975,31 @@ ReadControlFile(void)
 									  wal_segment_size,
 									  wal_segment_size),
 						errdetail("The WAL segment size must be a power of two between 1 MB and 1 GB.")));
+
+	return true;
+}
+
+void
+ReadControlFile(void)
+{
+	int			saved_errno;
+	static char wal_segsz_str[20];
+	char		polar_ctl_file[MAXPGPATH];
+
+	/*
+	 * POLAR: read local pg_control file when in replica mode.
+	 */
+	if (!polar_enable_shared_storage_mode || polar_is_replica())
+		snprintf(polar_ctl_file, MAXPGPATH, "%s", XLOG_CONTROL_FILE);
+	else
+		polar_make_file_path_level2(polar_ctl_file, XLOG_CONTROL_FILE);
+
+	/*
+	 * Read data... POLAR: read and check control file
+	 */
+	(void) polar_read_control_file(polar_ctl_file, ControlFile, PANIC, &saved_errno);
+
+	wal_segment_size = ControlFile->xlog_seg_size;
 
 	snprintf(wal_segsz_str, sizeof(wal_segsz_str), "%d", wal_segment_size);
 	SetConfigOption("wal_segment_size", wal_segsz_str, PGC_INTERNAL,
@@ -4758,6 +5278,54 @@ InitializeWalConsistencyChecking(void)
 }
 
 /*
+ * POLAR: GUC hook for polar_check_rename_wal_ready_file
+ */
+bool
+polar_check_rename_wal_ready_file(char **newval, void **extra, GucSource source)
+{
+	if (*newval == NULL || strlen(*newval) == 0)
+		return true;
+
+	if (polar_is_replica())
+	{
+		GUC_check_errdetail("could only rename wal ready file under primary/standby mode");
+		return false;
+	}
+
+	if (strstr(*newval, "..") != 0 || strstr(*newval, "/") != 0)
+	{
+		GUC_check_errdetail("could only rename wal ready file under /<shared_storage>/pg_wal/archive_status");
+		return false;
+	}
+
+	return true;
+}
+
+/*
+ * POLAR: GUC hook for polar_assign_rename_wal_ready_file
+ */
+void
+polar_assign_rename_wal_ready_file(const char *newval, void *extra)
+{
+	char		old_filename[MAXPGPATH] = "";
+	char		new_filename[MAXPGPATH] = "";
+	char		archive_status_dir[] = "/pg_wal/archive_status/";
+	size_t		total_len = 0;
+
+	if (newval == NULL || strlen(newval) == 0)
+		return;
+
+	total_len = strlen(polar_datadir) + strlen(archive_status_dir) + strlen(newval) + strlen(".ready") + 1;
+	if (total_len > MAXPGPATH)
+		elog(ERROR, "wal ready file path too long");
+
+	snprintf(old_filename, MAXPGPATH, "%s%s%s%s", polar_datadir, archive_status_dir, newval, ".ready");
+	snprintf(new_filename, MAXPGPATH, "%s%s%s%s", polar_datadir, archive_status_dir, newval, ".done");
+
+	durable_rename(old_filename, new_filename, ERROR);
+}
+
+/*
  * GUC show_hook for archive_command
  */
 const char *
@@ -4951,6 +5519,7 @@ XLOGShmemInit(void)
 		LWLockInitialize(&WALInsertLocks[i].l.lock, LWTRANCHE_WAL_INSERT);
 		pg_atomic_init_u64(&WALInsertLocks[i].l.insertingAt, InvalidXLogRecPtr);
 		WALInsertLocks[i].l.lastImportantAt = InvalidXLogRecPtr;
+		pg_atomic_init_u64(&WALInsertLocks[i].l.polar_valid_meta_at, PG_UINT64_MAX);
 	}
 
 	/*
@@ -4971,12 +5540,41 @@ XLOGShmemInit(void)
 	XLogCtl->InstallXLogFileSegmentActive = false;
 	XLogCtl->WalWriterSleeping = false;
 
+	/* POLAR: Init node type and vfs state. */
+	polar_set_node_type(polar_local_node_type);
+	polar_set_vfs_state(polar_local_vfs_state);
+	/* POLAR: Init available state. */
+	XLogCtl->polar_available_state = true;
+
 	SpinLockInit(&XLogCtl->Insert.insertpos_lck);
 	SpinLockInit(&XLogCtl->info_lck);
 	pg_atomic_init_u64(&XLogCtl->logInsertResult, InvalidXLogRecPtr);
 	pg_atomic_init_u64(&XLogCtl->logWriteResult, InvalidXLogRecPtr);
 	pg_atomic_init_u64(&XLogCtl->logFlushResult, InvalidXLogRecPtr);
 	pg_atomic_init_u64(&XLogCtl->unloggedLSN, InvalidXLogRecPtr);
+
+	/*
+	 * POLAR: WAL buffer statistics counter initialization.
+	 */
+	pg_atomic_init_u64(&XLogCtl->wal_buffer_stat.buf_init_async, 0);
+	pg_atomic_init_u64(&XLogCtl->wal_buffer_stat.buf_init_sync, 0);
+	pg_atomic_init_u64(&XLogCtl->wal_buffer_stat.buf_map_passed, 0);
+	pg_atomic_init_u64(&XLogCtl->wal_buffer_stat.buf_map_slept, 0);
+	pg_atomic_init_u64(&XLogCtl->wal_buffer_stat.buf_map_after_write_passed, 0);
+	pg_atomic_init_u64(&XLogCtl->wal_buffer_stat.buf_map_after_write_slept, 0);
+
+	for (int bktype = 0; bktype < BACKEND_NUM_TYPES; bktype++)
+	{
+		for (int io_context = 0; io_context < WAL_IOCONTEXT_NUM; io_context++)
+		{
+			for (int io_op = 0; io_op < WAL_IOOP_NUM; io_op++)
+			{
+				pg_atomic_init_u64(&XLogCtl->wal_buffer_stat.counts[bktype][io_context][io_op], 0);
+				pg_atomic_init_u64(&XLogCtl->wal_buffer_stat.bytes[bktype][io_context][io_op], 0);
+			}
+		}
+	}
+	/* POLAR end */
 }
 
 /*
@@ -5100,7 +5698,7 @@ BootStrapXLOG(void)
 	/* Write the first page with the initial record */
 	errno = 0;
 	pgstat_report_wait_start(WAIT_EVENT_WAL_BOOTSTRAP_WRITE);
-	if (write(openLogFile, page, XLOG_BLCKSZ) != XLOG_BLCKSZ)
+	if (polar_write(openLogFile, page, XLOG_BLCKSZ) != XLOG_BLCKSZ)
 	{
 		/* if write didn't set errno, assume problem is no disk space */
 		if (errno == 0)
@@ -5112,13 +5710,13 @@ BootStrapXLOG(void)
 	pgstat_report_wait_end();
 
 	pgstat_report_wait_start(WAIT_EVENT_WAL_BOOTSTRAP_SYNC);
-	if (pg_fsync(openLogFile) != 0)
+	if (polar_fsync(openLogFile) != 0)
 		ereport(PANIC,
 				(errcode_for_file_access(),
 				 errmsg("could not fsync bootstrap write-ahead log file: %m")));
 	pgstat_report_wait_end();
 
-	if (close(openLogFile) != 0)
+	if (polar_close(openLogFile) != 0)
 		ereport(PANIC,
 				(errcode_for_file_access(),
 				 errmsg("could not close bootstrap write-ahead log file: %m")));
@@ -5139,6 +5737,7 @@ BootStrapXLOG(void)
 	BootStrapCommitTs();
 	BootStrapSUBTRANS();
 	BootStrapMultiXact();
+	BootStrapKmgr(bootstrap_data_encryption_cipher);
 
 	pfree(buffer);
 
@@ -5216,7 +5815,7 @@ XLogInitNewTimeline(TimeLineID endTLI, XLogRecPtr endOfLog, TimeLineID newTLI)
 
 		fd = XLogFileInit(startLogSegNo, newTLI);
 
-		if (close(fd) != 0)
+		if (polar_close(fd) != 0)
 		{
 			int			save_errno = errno;
 
@@ -5398,6 +5997,12 @@ StartupXLOG(void)
 	TransactionId oldestActiveXID;
 	bool		promoted = false;
 
+	/* POLAR */
+	bool		polar_inc_end_of_recovery_checkpoint = false;
+
+	if (polar_logindex_redo_instance)
+		POLAR_STARTUP_SET_STATUS(polar_logindex_redo_instance, POLAR_STARTUP_RUNNING);
+
 	/*
 	 * We should have an aux process resource owner to use, and we should not
 	 * be in a transaction that's installed some other resowner.
@@ -5533,6 +6138,11 @@ StartupXLOG(void)
 	SetCommitTsLimit(checkPoint.oldestCommitTsXid,
 					 checkPoint.newestCommitTsXid);
 	XLogCtl->ckptFullXid = checkPoint.nextXid;
+
+	/* POLAR */
+	pg_atomic_write_u64(&XLogCtl->oldest_apply_lsn, InvalidXLogRecPtr);
+	pg_atomic_write_u64(&XLogCtl->oldest_lock_lsn, InvalidXLogRecPtr);
+	pg_atomic_write_u64(&XLogCtl->consistent_lsn, InvalidXLogRecPtr);
 
 	/*
 	 * Clear out any old relcache cache files.  This is *necessary* if we do
@@ -5720,8 +6330,11 @@ StartupXLOG(void)
 		 * reset.  This should be done BEFORE allowing Hot Standby
 		 * connections, so that read-only backends don't try to read whatever
 		 * garbage is left over from before.
+		 *
+		 * POLAR_TODO: FIXME
 		 */
-		ResetUnloggedRelations(UNLOGGED_RELATION_CLEANUP);
+		if (!polar_is_replica())
+			ResetUnloggedRelations(UNLOGGED_RELATION_CLEANUP);
 
 		/*
 		 * Likewise, delete any saved transaction snapshot files that got left
@@ -5898,9 +6511,18 @@ StartupXLOG(void)
 	 * problem by making the new active segment have a new timeline ID.
 	 *
 	 * In a normal crash recovery, we can just extend the timeline we were in.
+	 *
+	 * POLAR: The data won't be lost when stored in shared disk, so we will
+	 * not change timeline when promote replica to primary.
 	 */
 	newTLI = endOfRecoveryInfo->lastRecTLI;
-	if (ArchiveRecoveryRequested)
+	if (ArchiveRecoveryRequested && endOfRecoveryInfo->polar_logindex_promote_ro)
+	{
+		ereport(LOG,
+				(errmsg("Before prommote RO, EndOfLog=%X/%X", LSN_FORMAT_ARGS(endOfRecoveryInfo->endOfLog))));
+		polar_exit_archive_recovery(endOfRecoveryInfo);
+	}
+	else if (ArchiveRecoveryRequested)
 	{
 		newTLI = findNewestTimeLine(recoveryTargetTLI) + 1;
 		ereport(LOG,
@@ -5922,6 +6544,9 @@ StartupXLOG(void)
 
 		if (endOfRecoveryInfo->recovery_signal_file_found)
 			durable_unlink(RECOVERY_SIGNAL_FILE, FATAL);
+
+		if (endOfRecoveryInfo->replica_signal_file_found)
+			durable_unlink(REPLICA_SIGNAL_FILE, FATAL);
 
 		/*
 		 * Write the timeline history file, and have it archived. After this
@@ -6019,6 +6644,24 @@ StartupXLOG(void)
 	XLogCtl->LogwrtRqst.Write = EndOfLog;
 	XLogCtl->LogwrtRqst.Flush = EndOfLog;
 
+	/* POLAR: make sure some important LSNs are expected. */
+	RefreshXLogWriteResult(LogwrtResult);
+	if (unlikely(Insert->PrevBytePos < XLogRecPtrToBytePos(endOfRecoveryInfo->lastRec) ||
+				 Insert->CurrBytePos <= XLogRecPtrToBytePos(endOfRecoveryInfo->lastRec) ||
+				 LogwrtResult.Flush <= endOfRecoveryInfo->lastRec ||
+				 LogwrtResult.Write <= endOfRecoveryInfo->lastRec ||
+				 XLogCtl->LogwrtRqst.Flush <= endOfRecoveryInfo->lastRec ||
+				 XLogCtl->LogwrtRqst.Write <= endOfRecoveryInfo->lastRec))
+		elog(PANIC, "Something wrong for these important LSNs: " \
+			 "PrevBytePos is 0x%lX, CurrBytePos is 0x%lX, " \
+			 "LogwrtResult.Flush is %X/%X, LogwrtResult.Write is %X/%X, " \
+			 "LogwrtRqst.Flush is %X/%X, LogwrtRqst.Write is %X/%X, " \
+			 "LastRec is %X/%X, last usable byte position is 0x%lX",
+			 Insert->PrevBytePos, Insert->CurrBytePos, LSN_FORMAT_ARGS(LogwrtResult.Flush),
+			 LSN_FORMAT_ARGS(LogwrtResult.Write), LSN_FORMAT_ARGS(XLogCtl->LogwrtRqst.Flush),
+			 LSN_FORMAT_ARGS(XLogCtl->LogwrtRqst.Write), LSN_FORMAT_ARGS(endOfRecoveryInfo->lastRec),
+			 XLogRecPtrToBytePos(endOfRecoveryInfo->lastRec));
+
 	/*
 	 * Invalidate all sinval-managed caches before READ WRITE transactions
 	 * begin.  The xl_heap_inplace WAL record doesn't store sufficient data
@@ -6086,6 +6729,16 @@ StartupXLOG(void)
 	/* Shut down xlogreader */
 	ShutdownWalRecovery();
 
+	if (endOfRecoveryInfo->polar_logindex_promote_ro)
+		polar_online_promote_data(polar_logindex_redo_instance);
+	else if (endOfRecoveryInfo->polar_logindex_promote_standby)
+		polar_standby_promote_data(polar_logindex_redo_instance);
+	/* POLAR: clean up xlog queue used by old standby node. */
+	else if (polar_is_standby() && polar_logindex_redo_instance)
+		polar_logindex_promote_xlog_queue(polar_logindex_redo_instance);
+	else if (POLAR_PARALLEL_REPLAY_IN_PRIMARY_ASYNC_INSTANT_RECOVERY())
+		polar_primary_promote_data(polar_logindex_redo_instance);
+
 	/* Enable WAL writes for this backend only. */
 	LocalSetXLogInsertAllowed();
 
@@ -6108,7 +6761,10 @@ StartupXLOG(void)
 	 * Emit checkpoint or end-of-recovery record in XLOG, if required.
 	 */
 	if (performedWalRecovery)
-		promoted = PerformRecoveryXLogAction();
+	{
+		polar_inc_end_of_recovery_checkpoint = polar_inc_end_of_recovery_checkpoint_enabled();
+		promoted = PerformRecoveryXLogAction(polar_inc_end_of_recovery_checkpoint);
+	}
 
 	/*
 	 * If any of the critical GUCs have changed, log them before we allow
@@ -6116,8 +6772,12 @@ StartupXLOG(void)
 	 */
 	XLogReportParameters();
 
-	/* If this is archive recovery, perform post-recovery cleanup actions. */
-	if (ArchiveRecoveryRequested)
+	/*
+	 * If this is archive recovery, perform post-recovery cleanup actions.
+	 *
+	 * POLAR: We don't change timeline when do logindex promote RO.
+	 */
+	if (ArchiveRecoveryRequested && !endOfRecoveryInfo->polar_logindex_promote_ro)
 		CleanupAfterArchiveRecovery(EndOfLogTLI, EndOfLog, newTLI);
 
 	/*
@@ -6143,6 +6803,53 @@ StartupXLOG(void)
 	 */
 	LWLockAcquire(ControlFileLock, LW_EXCLUSIVE);
 	ControlFile->state = DB_IN_PRODUCTION;
+
+	/*
+	 * POLAR:  When node type is replica, we will update control file in local
+	 * file system. We must set control file state to DB_IN_PRODUCTION before
+	 * set node type to be POLAR_PRIMARY, because pg_ctl will check promote
+	 * state from control file in local file system. But when do online
+	 * promote we have to set XLogCtl->SharedRecoveryState =
+	 * RECOVERY_STATE_DONE after set node type bo be POLAR_PRIMARY.Otherwise
+	 * the other processes like checkpointer will get false from function
+	 * RecoveryInProgress(), but see the node type as replica, which will
+	 * cause data corrupted.
+	 */
+	if (promoted)
+	{
+		/*
+		 * POLAR: New RW should always replay all the WAL records during crash
+		 * recovery. It protects new RO followers from reading valid min
+		 * recovery point from shared storage after promote.
+		 */
+		ControlFile->minRecoveryPoint = InvalidXLogRecPtr;
+
+		if (endOfRecoveryInfo->polar_logindex_promote_ro)
+		{
+			/* POLAR: We don't switch timeline when RO promote. */
+			ControlFile->minRecoveryPointTLI = 0;
+		}
+
+		/* POLAR: RO save control file to local file system */
+		UpdateControlFile();
+		/* POLAR: Set node type to be primary */
+		polar_set_node_type(POLAR_PRIMARY);
+		if (endOfRecoveryInfo->polar_logindex_promote_ro)
+		{
+			/*
+			 * POLAR: Wake up background process to start marking buffer dirty
+			 * from replayed lsn. We must reset bg_replayed_lsn before setting
+			 * SharedRecoveryState to RECOVERY_STATE_DONE, because some
+			 * background processes may MarkBufferDirty immediately after
+			 * SharedRecoveryState was changed to RECOVERY_STATE_DONE.
+			 */
+			polar_promote_reset_bg_replayed_lsn(polar_logindex_redo_instance, ControlFile->checkPointCopy.redo);
+		}
+		else if (endOfRecoveryInfo->polar_logindex_promote_standby)
+			polar_set_bg_redo_state(polar_logindex_redo_instance, POLAR_BG_ONLINE_PROMOTE);
+	}
+	else if (POLAR_PARALLEL_REPLAY_IN_PRIMARY_ASYNC_INSTANT_RECOVERY())
+		polar_set_bg_redo_state(polar_logindex_redo_instance, POLAR_BG_ONLINE_PROMOTE);
 
 	SpinLockAcquire(&XLogCtl->info_lck);
 	XLogCtl->SharedRecoveryState = RECOVERY_STATE_DONE;
@@ -6176,7 +6883,38 @@ StartupXLOG(void)
 	 * appropriate now that we're not in standby mode anymore.
 	 */
 	if (promoted)
-		RequestCheckpoint(CHECKPOINT_FORCE);
+	{
+		/*
+		 * POLAR: Delay the force checkpoint until online promote is finished.
+		 * The logindex bgwriter will request one force checkpoint after
+		 * parallel replay work is completed.
+		 */
+		if (!endOfRecoveryInfo->polar_logindex_promote_ro &&
+			!endOfRecoveryInfo->polar_logindex_promote_standby)
+			RequestCheckpoint(CHECKPOINT_FORCE);
+	}
+
+	/*
+	 * POLAR: create an incremental end-of-recovery checkpoint, but not for
+	 * async instant recovery in primary node, because one force checkpoint
+	 * will be requested immediately after online promote is finished.
+	 */
+	else if (polar_inc_end_of_recovery_checkpoint &&
+			 !POLAR_PARALLEL_REPLAY_IN_PRIMARY_ASYNC_INSTANT_RECOVERY())
+	{
+		elog(LOG, "Request to create an incremental online checkpoint for end-of-recovery.");
+		RequestCheckpoint(CHECKPOINT_IMMEDIATE | CHECKPOINT_INCREMENTAL | CHECKPOINT_WAIT);
+	}
+
+	/* POLAR: set max_fullpage_no after startup work */
+	if (polar_logindex_redo_instance)
+		polar_logindex_calc_max_fullpage_no(polar_logindex_redo_instance->fullpage_ctl);
+
+	/*
+	 * POLAR: remove POLAR_REPLICA_BOOTED_FILE when replica node is promoted
+	 */
+	if (!polar_is_replica())
+		polar_remove_replica_booted_file();
 }
 
 /*
@@ -6257,9 +6995,12 @@ ReachedEndOfBackup(XLogRecPtr EndRecPtr, TimeLineID tli)
  * but since we may be assigning a new TLI, using a shutdown checkpoint allows
  * us to have the rule that TLI only changes in shutdown checkpoints, which
  * allows some extra error checking in xlog_redo.
+ *
+ * POLAR: when polar_enable_inc_ckpt is true, we won't request normal checkpoint
+ * here, and an incremental checkpoint will be preformed at the end of recovery.
  */
 static bool
-PerformRecoveryXLogAction(void)
+PerformRecoveryXLogAction(bool polar_enable_inc_ckpt)
 {
 	bool		promoted = false;
 
@@ -6292,7 +7033,12 @@ PerformRecoveryXLogAction(void)
 		 */
 		CreateEndOfRecoveryRecord();
 	}
-	else
+
+	/*
+	 * POLAR: request to do a normal checkpoint when incremental
+	 * end-of-recovery checkpoint is not enabled
+	 */
+	else if (!polar_enable_inc_ckpt)
 	{
 		RequestCheckpoint(CHECKPOINT_END_OF_RECOVERY |
 						  CHECKPOINT_IMMEDIATE |
@@ -6629,7 +7375,7 @@ LogCheckpointStart(int flags, bool restartpoint)
 	if (restartpoint)
 		ereport(LOG,
 		/* translator: the placeholders show checkpoint options */
-				(errmsg("restartpoint starting:%s%s%s%s%s%s%s%s",
+				(errmsg("restartpoint starting:%s%s%s%s%s%s%s%s%s",
 						(flags & CHECKPOINT_IS_SHUTDOWN) ? " shutdown" : "",
 						(flags & CHECKPOINT_END_OF_RECOVERY) ? " end-of-recovery" : "",
 						(flags & CHECKPOINT_IMMEDIATE) ? " immediate" : "",
@@ -6637,11 +7383,12 @@ LogCheckpointStart(int flags, bool restartpoint)
 						(flags & CHECKPOINT_WAIT) ? " wait" : "",
 						(flags & CHECKPOINT_CAUSE_XLOG) ? " wal" : "",
 						(flags & CHECKPOINT_CAUSE_TIME) ? " time" : "",
-						(flags & CHECKPOINT_FLUSH_ALL) ? " flush-all" : "")));
+						(flags & CHECKPOINT_FLUSH_ALL) ? " flush-all" : "",
+						(flags & CHECKPOINT_INCREMENTAL) ? " incremental" : "")));
 	else
 		ereport(LOG,
 		/* translator: the placeholders show checkpoint options */
-				(errmsg("checkpoint starting:%s%s%s%s%s%s%s%s",
+				(errmsg("checkpoint starting:%s%s%s%s%s%s%s%s%s",
 						(flags & CHECKPOINT_IS_SHUTDOWN) ? " shutdown" : "",
 						(flags & CHECKPOINT_END_OF_RECOVERY) ? " end-of-recovery" : "",
 						(flags & CHECKPOINT_IMMEDIATE) ? " immediate" : "",
@@ -6649,7 +7396,8 @@ LogCheckpointStart(int flags, bool restartpoint)
 						(flags & CHECKPOINT_WAIT) ? " wait" : "",
 						(flags & CHECKPOINT_CAUSE_XLOG) ? " wal" : "",
 						(flags & CHECKPOINT_CAUSE_TIME) ? " time" : "",
-						(flags & CHECKPOINT_FLUSH_ALL) ? " flush-all" : "")));
+						(flags & CHECKPOINT_FLUSH_ALL) ? " flush-all" : "",
+						(flags & CHECKPOINT_INCREMENTAL) ? " incremental" : "")));
 }
 
 /*
@@ -6874,6 +7622,22 @@ CreateCheckPoint(int flags)
 	int			oldXLogAllowed = 0;
 	XLogRecPtr	slotsMinReqLSN;
 
+	/* POLAR */
+	XLogRecPtr	polar_last_lsn = InvalidXLogRecPtr;
+	bool		polar_is_inc = false;
+	XLogRecPtr	polar_inc_redo = InvalidXLogRecPtr;
+	XLogRecPtr	polar_slot_min_req_lsn;
+
+	/*
+	 * POLAR: Don't do checkpoint during online promote when background
+	 * process hasn't start to replay. Otherwise we may set
+	 * polar_max_valid_lsn() as consistent lsn, and later we set
+	 * polar_get_oldest_replayed_lsn() as consistent lsn, which is smaller
+	 * than previous set.
+	 */
+	if (polar_get_bg_redo_state(polar_logindex_redo_instance) == POLAR_BG_WAITING_RESET)
+		return;
+
 	/*
 	 * An end-of-recovery checkpoint is really a shutdown checkpoint, just
 	 * issued at a different time.
@@ -6882,6 +7646,11 @@ CreateCheckPoint(int flags)
 		shutdown = true;
 	else
 		shutdown = false;
+
+#ifdef FAULT_INJECTOR
+	if (SIMPLE_FAULT_INJECTOR("checkpoint") == FaultInjectorTypeSkip)
+		return;
+#endif
 
 	/* sanity check */
 	if (RecoveryInProgress() && (flags & CHECKPOINT_END_OF_RECOVERY) == 0)
@@ -6904,6 +7673,11 @@ CreateCheckPoint(int flags)
 	 * checkpoint is needed.
 	 */
 	SyncPreCheckpoint();
+
+	/* POLAR: check whether we can use incremental checkpoint. */
+	polar_is_inc = polar_check_incremental_checkpoint(shutdown, &flags,
+													  &polar_inc_redo);
+	polar_inc_ckpt_redoptr = polar_is_inc ? polar_inc_redo : InvalidXLogRecPtr;
 
 	/*
 	 * Use a critical section to force system panic if we have trouble.
@@ -6982,6 +7756,19 @@ CreateCheckPoint(int flags)
 		XLogRecPtr	curInsert = XLogBytePosToRecPtr(Insert->CurrBytePos);
 
 		/*
+		 * POLAR: we store the end of last record for shutdown checkpoint.
+		 * When call polar_flush_buffer_for_shutdown, we will flush wal that
+		 * is small than polar_last_lsn. We do not use XLogBytePosToRecPtr,
+		 * because it will contain the page header if the position is at a
+		 * page boundary. We do not use checkPoint.redo, because it may be
+		 * added some * extra ***PHD info, that will cause the XLogFlush raise
+		 * a FATAL, like 'xlog flush request ... is not satisfied --- flushed
+		 * only to ...'.
+		 */
+		polar_last_lsn = XLogBytePosToEndRecPtr(Insert->CurrBytePos);
+		Assert(!polar_is_inc);
+
+		/*
 		 * Compute new REDO record ptr = location of next XLOG record.
 		 *
 		 * Since this is a shutdown checkpoint, there can't be any concurrent
@@ -7043,6 +7830,13 @@ CreateCheckPoint(int flags)
 		checkPoint.redo = RedoRecPtr;
 	}
 
+	/* POLAR: redoptr shouldn't fall back */
+	if (checkPoint.redo < ControlFile->checkPointCopy.redo)
+		ereport(PANIC, errmsg("cur redo:%X/%X is smaller than last redo:%X/%X, is_inc:%d, redo_state:%d",
+							  LSN_FORMAT_ARGS(checkPoint.redo),
+							  LSN_FORMAT_ARGS(ControlFile->checkPointCopy.redo),
+							  polar_is_inc, polar_get_bg_redo_state(polar_logindex_redo_instance)));
+
 	/* Update the info_lck-protected copy of RedoRecPtr as well */
 	SpinLockAcquire(&XLogCtl->info_lck);
 	XLogCtl->RedoRecPtr = checkPoint.redo;
@@ -7059,6 +7853,17 @@ CreateCheckPoint(int flags)
 	update_checkpoint_display(flags, false, false);
 
 	TRACE_POSTGRESQL_CHECKPOINT_START(flags);
+
+	/* POLAR: inject fault */
+#ifdef USE_INJECTION_POINTS
+	if (polar_injection_point_find("polar_delay_checkpoint"))
+	{
+		elog(LOG, "inject delay for current checkpoint");
+		while (polar_injection_point_find("polar_delay_checkpoint"))
+			pg_usleep(1000000);
+	}
+#endif
+	/* POLAR: inject fault end */
 
 	/*
 	 * Get the other info we need for the checkpoint record.
@@ -7169,7 +7974,31 @@ CreateCheckPoint(int flags)
 	}
 	pfree(vxids);
 
+#ifdef USE_INJECTION_POINTS
+	while (polar_injection_point_find("polar_delay_checkpoint_guts"))
+		pg_usleep(1000000);
+#endif
+
 	CheckPointGuts(checkPoint.redo, flags);
+
+	/* POLAR: check whether we can create a checkpoint */
+	if (polar_should_check_checkpoint())
+	{
+		if (flags & CHECKPOINT_IS_SHUTDOWN)
+			polar_flush_buffer_for_shutdown(polar_last_lsn, flags);
+		else
+			polar_wait_consistent_lsn(checkPoint.redo, flags);
+	}
+
+	/* POLAR: inject fault */
+#ifdef USE_INJECTION_POINTS
+	if (polar_injection_point_find("polar_skip_checkpoint_record"))
+	{
+		elog(LOG, "skip insert checkpoint xlog record, current redo:%X/%X", LSN_FORMAT_ARGS(checkPoint.redo));
+		return;
+	}
+#endif
+	/* POLAR: inject fault end */
 
 	vxids = GetVirtualXIDsDelayingChkpt(&nvxids, DELAY_CHKPT_COMPLETE);
 	if (nvxids > 0)
@@ -7204,6 +8033,16 @@ CreateCheckPoint(int flags)
 	 */
 	XLogBeginInsert();
 	XLogRegisterData((char *) (&checkPoint), sizeof(checkPoint));
+
+	/*
+	 * POLAR: When current checkpoint is an online checkpoint, We record the
+	 * position of current checkpoint_redo record for cross-check during crash
+	 * recovery.
+	 */
+	if (!shutdown)
+		XLogRegisterData((char *) (&polar_ckpt_redo_location), sizeof(XLogRecPtr));
+	/* POLAR end */
+
 	recptr = XLogInsert(RM_XLOG_ID,
 						shutdown ? XLOG_CHECKPOINT_SHUTDOWN :
 						XLOG_CHECKPOINT_ONLINE);
@@ -7306,10 +8145,25 @@ CreateCheckPoint(int flags)
 	INJECTION_POINT("checkpoint-before-old-wal-removal");
 
 	/*
+	 * POLAR: Truncate logindex before removing wal files. Files may saved in
+	 * local file system, like relation size cache.
+	 */
+	polar_logindex_remove_old_files(polar_logindex_redo_instance);
+
+	/*
 	 * Delete old log files, those no longer needed for last checkpoint to
 	 * prevent the disk holding the xlog from growing full.
 	 */
 	XLByteToSeg(RedoRecPtr, _logSegNo, wal_segment_size);
+
+	/*
+	 * POLAR: recalculate the current minimum LSN to avoid invalidating and
+	 * cleaning the WAL segment used by the slot newly created.
+	 */
+	polar_slot_min_req_lsn = XLogGetReplicationSlotMinimumLSN();
+	slotsMinReqLSN = Min(slotsMinReqLSN, polar_slot_min_req_lsn);
+	/* POLAR end */
+
 	KeepLogSeg(recptr, slotsMinReqLSN, &_logSegNo);
 	if (InvalidateObsoleteReplicationSlots(RS_INVAL_WAL_REMOVED,
 										   _logSegNo, InvalidOid,
@@ -7343,6 +8197,10 @@ CreateCheckPoint(int flags)
 	 */
 	if (!shutdown)
 		PreallocXlogFiles(recptr, checkPoint.ThisTimeLineID);
+
+	/* POLAR: empty trash dir for local cache */
+	if (!polar_local_cache_empty_trash())
+		elog(WARNING, "Failed to empty trash dir for local cache");
 
 	/*
 	 * Truncate pg_subtrans if possible.  We can throw away all data before
@@ -7477,7 +8335,7 @@ CreateOverwriteContrecordRecord(XLogRecPtr aborted_lsn, XLogRecPtr pagePtr,
 	 * insertion lock is just pro forma.
 	 */
 	WALInsertLockAcquire();
-	pagehdr = (XLogPageHeader) GetXLogBuffer(pagePtr, newTLI);
+	pagehdr = (XLogPageHeader) GetXLogBuffer(pagePtr, newTLI, false);
 	pagehdr->xlp_info |= XLP_FIRST_IS_OVERWRITE_CONTRECORD;
 	WALInsertLockRelease();
 
@@ -7513,6 +8371,11 @@ CreateOverwriteContrecordRecord(XLogRecPtr aborted_lsn, XLogRecPtr pagePtr,
 static void
 CheckPointGuts(XLogRecPtr checkPointRedo, int flags)
 {
+	/*
+	 * POLAR: Flush logindex table which table's max lsn is smaller than
+	 * checkpoint
+	 */
+	polar_logindex_redo_flush_data(polar_logindex_redo_instance, checkPointRedo);
 	CheckPointRelationMap();
 	CheckPointReplicationSlots(flags & CHECKPOINT_IS_SHUTDOWN);
 	CheckPointSnapBuild();
@@ -7538,6 +8401,13 @@ CheckPointGuts(XLogRecPtr checkPointRedo, int flags)
 
 	/* We deliberately delay 2PC checkpointing as long as possible */
 	CheckPointTwoPhase(checkPointRedo);
+
+	/* POLAR: inject fault */
+#ifdef USE_INJECTION_POINTS
+	if (polar_injection_point_find("polar_inject_checkpoint_fatal"))
+		elog(FATAL, "inject fatal during checkpoint");
+#endif
+	/* POLAR: inject fault end */
 }
 
 /*
@@ -7606,6 +8476,9 @@ CreateRestartPoint(int flags)
 	TimestampTz xtime;
 	XLogRecPtr	slotsMinReqLSN;
 
+	/* POLAR */
+	XLogRecPtr	polar_slot_min_req_lsn;
+
 	/* Concurrent checkpoint/restartpoint cannot happen */
 	Assert(!IsUnderPostmaster || MyBackendType == B_CHECKPOINTER);
 
@@ -7626,6 +8499,16 @@ CreateRestartPoint(int flags)
 				(errmsg_internal("skipping restartpoint, recovery has already ended")));
 		return false;
 	}
+
+	/*
+	 * POLAR: The current CheckPoint may not be done due to lower
+	 * bg_replayed_lsn. So we must push current CheckPoint into checkpoint
+	 * ring buffer and pop one suitable CheckPoint from checkpoint ring
+	 * buffer. If there's no one suitable CheckPoint in checkpoint ring
+	 * buffer, then just return invalid CheckPoint.
+	 */
+	if (polar_get_bg_redo_state(polar_logindex_redo_instance) == POLAR_BG_PARALLEL_REPLAYING)
+		polar_checkpoint_ringbuf_check(&lastCheckPointRecPtr, &lastCheckPointEndPtr, &lastCheckPoint);
 
 	/*
 	 * If the last checkpoint record we've replayed is already our last
@@ -7712,6 +8595,10 @@ CreateRestartPoint(int flags)
 
 	CheckPointGuts(lastCheckPoint.redo, flags);
 
+	/* POLAR: wait consistent lsn for standby. */
+	if (polar_should_check_checkpoint())
+		polar_wait_consistent_lsn(lastCheckPoint.redo, flags);
+
 	/*
 	 * This location needs to be after CheckPointGuts() to ensure that some
 	 * work has already happened during this checkpoint.
@@ -7786,12 +8673,27 @@ CreateRestartPoint(int flags)
 	XLByteToSeg(RedoRecPtr, _logSegNo, wal_segment_size);
 
 	/*
+	 * POLAR: Truncate logindex before removing wal files. Files may saved in
+	 * local file system, like relation size cache.
+	 */
+	polar_logindex_remove_old_files(polar_logindex_redo_instance);
+
+	/*
 	 * Retreat _logSegNo using the current end of xlog replayed or received,
 	 * whichever is later.
 	 */
 	receivePtr = GetWalRcvFlushRecPtr(NULL, NULL);
 	replayPtr = GetXLogReplayRecPtr(&replayTLI);
 	endptr = (receivePtr < replayPtr) ? replayPtr : receivePtr;
+
+	/*
+	 * POLAR: recalculate the current minimum LSN to avoid invalidating and
+	 * cleaning the WAL segment used by the slot newly created.
+	 */
+	polar_slot_min_req_lsn = XLogGetReplicationSlotMinimumLSN();
+	slotsMinReqLSN = Min(slotsMinReqLSN, polar_slot_min_req_lsn);
+	/* POLAR end */
+
 	KeepLogSeg(endptr, slotsMinReqLSN, &_logSegNo);
 
 	INJECTION_POINT("restartpoint-before-slot-invalidation");
@@ -7842,6 +8744,10 @@ CreateRestartPoint(int flags)
 	 * segments, since that may supply some of the needed files.)
 	 */
 	PreallocXlogFiles(endptr, replayTLI);
+
+	/* POLAR: empty trash dir for local cache */
+	if (!polar_local_cache_empty_trash())
+		elog(WARNING, "Failed to empty trash dir for local cache");
 
 	/*
 	 * Truncate pg_subtrans if possible.  We can throw away all data before
@@ -8048,6 +8954,24 @@ KeepLogSeg(XLogRecPtr recptr, XLogRecPtr slotsMinReqLSN, XLogSegNo *logSegNo)
 				segno = 1;
 			else
 				segno = currSegNo - keep_segs;
+		}
+	}
+
+	/* POLAR: compute limit for logindex redo */
+	if (polar_logindex_redo_instance)
+	{
+		keep = polar_calc_min_used_lsn(false);
+
+		if (keep != InvalidXLogRecPtr)
+		{
+			XLogSegNo	slotSegNo;
+
+			XLByteToSeg(keep, slotSegNo, wal_segment_size);
+
+			if (slotSegNo <= 0)
+				segno = 1;
+			else if (slotSegNo < segno)
+				segno = slotSegNo;
 		}
 	}
 
@@ -8276,13 +9200,14 @@ xlog_redo(XLogReaderState *record)
 {
 	uint8		info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
 	XLogRecPtr	lsn = record->EndRecPtr;
+	static int	smgrdestroyall_skipped = 0;
 
 	/*
 	 * In XLOG rmgr, backup blocks are only used by XLOG_FPI and
 	 * XLOG_FPI_FOR_HINT records.
 	 */
 	Assert(info == XLOG_FPI || info == XLOG_FPI_FOR_HINT ||
-		   !XLogRecHasAnyBlockRefs(record));
+		   info == POLAR_WAL || !XLogRecHasAnyBlockRefs(record));
 
 	if (info == XLOG_NEXTOID)
 	{
@@ -8400,12 +9325,18 @@ xlog_redo(XLogReaderState *record)
 		RecoveryRestartPoint(&checkPoint, record);
 
 		/*
-		 * After replaying a checkpoint record, free all smgr objects.
-		 * Otherwise we would never do so for dropped relations, as the
-		 * startup does not process shared invalidation messages or call
-		 * AtEOXact_SMgr().
+		 * POLAR: after any checkpoint, free all smgr objects, otherwise we
+		 * would never do so. But we want to avoid too much open/lseek after
+		 * each smgrdestroyall, so only do it each
+		 * polar_startup_smgrdestroyall_multiplier checkpoint cycles.
 		 */
-		smgrdestroyall();
+		if (polar_startup_smgrdestroyall_multiplier > 0 &&
+			++smgrdestroyall_skipped >= polar_startup_smgrdestroyall_multiplier)
+		{
+			smgrdestroyall();
+			smgrdestroyall_skipped = 0;
+		}
+		/* POLAR end */
 	}
 	else if (info == XLOG_CHECKPOINT_ONLINE)
 	{
@@ -8466,12 +9397,18 @@ xlog_redo(XLogReaderState *record)
 		RecoveryRestartPoint(&checkPoint, record);
 
 		/*
-		 * After replaying a checkpoint record, free all smgr objects.
-		 * Otherwise we would never do so for dropped relations, as the
-		 * startup does not process shared invalidation messages or call
-		 * AtEOXact_SMgr().
+		 * POLAR: after any checkpoint, free all smgr objects, otherwise we
+		 * would never do so. But we want to avoid too much open/lseek after
+		 * each smgrdestroyall, so only do it each
+		 * polar_startup_smgrdestroyall_multiplier checkpoint cycles.
 		 */
-		smgrdestroyall();
+		if (polar_startup_smgrdestroyall_multiplier > 0 &&
+			++smgrdestroyall_skipped >= polar_startup_smgrdestroyall_multiplier)
+		{
+			smgrdestroyall();
+			smgrdestroyall_skipped = 0;
+		}
+		/* POLAR end */
 	}
 	else if (info == XLOG_OVERWRITE_CONTRECORD)
 	{
@@ -8639,13 +9576,48 @@ xlog_redo(XLogReaderState *record)
 	{
 		/* nothing to do here, just for informational purposes */
 	}
+	/* POLAR: for POLAR_WAL */
+	else if (info == POLAR_WAL)
+	{
+		/* POLAR WAL */
+		PolarWalType type;
+
+		/* Read header to get polar_wal type */
+		memcpy(&type, XLogRecGetData(record), sizeof(PolarWalType));
+
+		switch (type)
+		{
+				/* ALTER SYSTEM FOR CLUSTER */
+			case PWT_ALTERSYSTEMFORCLUSTER:
+			case PWT_ALTERSYSTEMFORCLUSTER_RELOAD:
+				polar_cluster_setting_wal_redo(record);
+				break;
+				/* POLAR: for fullpage snapshot */
+			case PWT_FPSI:
+				{
+					if (POLAR_LOGINDEX_ENABLE_FULLPAGE())
+					{
+						uint64		fullpage_no = 0;
+
+						/* get fullpage_no from record */
+						memcpy(&fullpage_no, XLogRecGetData(record) + sizeof(PolarWalType), sizeof(uint64));
+						/* Update max_fullpage_no */
+						polar_update_max_fullpage_no(polar_logindex_redo_instance->fullpage_ctl, fullpage_no);
+					}
+					break;
+				}
+			default:
+				elog(WARNING, "unexpected POLAR_WAL record type: %d, skip it", type);
+				break;
+		}
+	}
 }
 
 /*
  * Return the extra open flags used for opening a file, depending on the
  * value of the GUCs wal_sync_method, fsync and debug_io_direct.
  */
-static int
+int
 get_sync_bit(int method)
 {
 	int			o_direct_flag = 0;
@@ -8707,7 +9679,7 @@ assign_wal_sync_method(int new_wal_sync_method, void *extra)
 		if (openLogFile >= 0)
 		{
 			pgstat_report_wait_start(WAIT_EVENT_WAL_SYNC_METHOD_ASSIGN);
-			if (pg_fsync(openLogFile) != 0)
+			if (polar_fsync(openLogFile) != 0)
 			{
 				char		xlogfname[MAXFNAMELEN];
 				int			save_errno;
@@ -8759,6 +9731,14 @@ issue_xlog_fsync(int fd, XLogSegNo segno, TimeLineID tli)
 		INSTR_TIME_SET_ZERO(start);
 
 	pgstat_report_wait_start(WAIT_EVENT_WAL_SYNC);
+
+	/* POLAR: use fsync to make sure data flush to disk */
+	if (polar_enable_shared_storage_mode)
+	{
+		(void) polar_fsync(fd);
+		goto fsync_end;
+	}
+
 	switch (wal_sync_method)
 	{
 		case WAL_SYNC_METHOD_FSYNC:
@@ -8800,6 +9780,8 @@ issue_xlog_fsync(int fd, XLogSegNo segno, TimeLineID tli)
 				 errmsg(msg, xlogfname)));
 	}
 
+fsync_end:
+
 	pgstat_report_wait_end();
 
 	/*
@@ -8812,6 +9794,16 @@ issue_xlog_fsync(int fd, XLogSegNo segno, TimeLineID tli)
 		INSTR_TIME_SET_CURRENT(end);
 		INSTR_TIME_ACCUM_DIFF(PendingWalStats.wal_sync_time, end, start);
 	}
+
+	/*
+	 * POLAR: record the WAL write I/O statistics in shared memory.
+	 */
+	if (polar_enable_wal_buffer_stat)
+	{
+		pg_atomic_fetch_add_u64(&XLogCtl->wal_buffer_stat.counts[MyBackendType][WAL_IOCONTEXT_NORMAL][WAL_IOOP_FSYNC],
+								1);
+	}
+	/* POLAR end */
 
 	PendingWalStats.wal_sync++;
 }
@@ -8848,7 +9840,31 @@ void
 do_pg_backup_start(const char *backupidstr, bool fast, List **tablespaces,
 				   BackupState *state, StringInfo tblspcmapfile)
 {
-	bool		backup_started_in_recovery;
+	bool		backup_started_in_recovery = false;
+
+	struct stat stat_buf;
+
+	/* POLAR */
+	int			fd;
+	int			flags;
+	char		labelfile_path[MAXPGPATH] = "";
+	char		tblspcmapfile_path[MAXPGPATH] = "";
+	char	   *label_file;
+	int			labeldata_len;
+
+	elog(LOG, "POLAR: begin pg_start_backup: exclusive: false, switch wal: %s",
+		 polar_enable_switch_wal_in_backup ? "true" : "false");
+
+	if (!polar_enable_shared_storage_mode)
+	{
+		polar_make_file_path_level2(labelfile_path, BACKUP_LABEL_FILE);
+		polar_make_file_path_level2(tblspcmapfile_path, TABLESPACE_MAP);
+	}
+	else
+	{
+		polar_make_file_path_level2(labelfile_path, POLAR_NON_EXCLUSIVE_BACKUP_LABEL_FILE);
+		polar_make_file_path_level2(tblspcmapfile_path, POLAR_NON_EXCLUSIVE_TABLESPACE_MAP);
+	}
 
 	Assert(state != NULL);
 	backup_started_in_recovery = RecoveryInProgress();
@@ -8908,6 +9924,7 @@ do_pg_backup_start(const char *backupidstr, bool fast, List **tablespaces,
 		struct dirent *de;
 		tablespaceinfo *ti;
 		int			datadirpathlen;
+		char		polar_path[MAXPGPATH];
 
 		/*
 		 * Force an XLOG file switch before the checkpoint, to ensure that the
@@ -8930,7 +9947,8 @@ do_pg_backup_start(const char *backupidstr, bool fast, List **tablespaces,
 		 * the backup taken during recovery is not available for the special
 		 * recovery case described above.
 		 */
-		if (!backup_started_in_recovery)
+		/* POLAR: do switch xlog if polar_enable_switch_wal_in_backup */
+		if (!backup_started_in_recovery && polar_enable_switch_wal_in_backup)
 			RequestXLogSwitch(false);
 
 		do
@@ -8955,8 +9973,10 @@ do_pg_backup_start(const char *backupidstr, bool fast, List **tablespaces,
 			 * We use CHECKPOINT_IMMEDIATE only if requested by user (via
 			 * passing fast = true).  Otherwise this can take awhile.
 			 */
-			RequestCheckpoint(CHECKPOINT_FORCE | CHECKPOINT_WAIT |
-							  (fast ? CHECKPOINT_IMMEDIATE : 0));
+			/* POLAR: request incremental checkpoint if possible */
+			flags = CHECKPOINT_FORCE | CHECKPOINT_WAIT | (fast ? CHECKPOINT_IMMEDIATE : 0)
+				| (polar_incremental_checkpoint_enabled() ? CHECKPOINT_INCREMENTAL : 0);
+			RequestCheckpoint(flags);
 
 			/*
 			 * Now we need to fetch the checkpoint record location, and also
@@ -9030,8 +10050,9 @@ do_pg_backup_start(const char *backupidstr, bool fast, List **tablespaces,
 		datadirpathlen = strlen(DataDir);
 
 		/* Collect information about all tablespaces */
-		tblspcdir = AllocateDir("pg_tblspc");
-		while ((de = ReadDir(tblspcdir, "pg_tblspc")) != NULL)
+		polar_make_file_path_level2(polar_path, "pg_tblspc");
+		tblspcdir = AllocateDir(polar_path);
+		while ((de = ReadDir(tblspcdir, polar_path)) != NULL)
 		{
 			char		fullpath[MAXPGPATH + 10];
 			char		linkpath[MAXPGPATH];
@@ -9056,7 +10077,7 @@ do_pg_backup_start(const char *backupidstr, bool fast, List **tablespaces,
 			if (*badp != '\0' || errno == EINVAL || errno == ERANGE)
 				continue;
 
-			snprintf(fullpath, sizeof(fullpath), "pg_tblspc/%s", de->d_name);
+			snprintf(fullpath, sizeof(fullpath), "%s/%s", polar_path, de->d_name);
 
 			de_type = get_dirent_type(fullpath, de, false, ERROR);
 
@@ -9132,6 +10153,7 @@ do_pg_backup_start(const char *backupidstr, bool fast, List **tablespaces,
 			ti->path = pstrdup(linkpath);
 			ti->rpath = relpath;
 			ti->size = -1;
+			ti->polar_shared = polar_enable_shared_storage_mode;
 
 			if (tablespaces)
 				*tablespaces = lappend(*tablespaces, ti);
@@ -9139,6 +10161,80 @@ do_pg_backup_start(const char *backupidstr, bool fast, List **tablespaces,
 		FreeDir(tblspcdir);
 
 		state->starttime = (pg_time_t) time(NULL);
+
+		/*
+		 * Construct backup label file.
+		 */
+		label_file = build_backup_content(state, &labeldata_len, false);
+
+		/*
+		 * Okay, write the file, or return its contents to caller.
+		 */
+
+		/*
+		 * POLAR: write the lablefile in exclusive or (not-exclusive,
+		 * shared-storage, not-replica) mode
+		 */
+		if (polar_enable_shared_storage_mode && !polar_is_replica())
+		{
+			/*
+			 * Check for existing backup label --- implies a backup is already
+			 * running.  (XXX given that we checked exclusiveBackupState
+			 * above, maybe it would be OK to just unlink any such label
+			 * file?)
+			 */
+			if (polar_stat(labelfile_path, &stat_buf) != 0)
+			{
+				if (errno != ENOENT)
+					ereport(ERROR,
+							(errcode_for_file_access(),
+							 errmsg("could not stat file \"%s\": %m",
+									labelfile_path)));
+			}
+
+			fd = OpenTransientFile(labelfile_path, O_WRONLY | O_CREAT | O_TRUNC);
+
+			if (fd < 0)
+				ereport(ERROR,
+						(errcode_for_file_access(),
+						 errmsg("could not create file \"%s\": %m",
+								labelfile_path)));
+			if (polar_write(fd, label_file, labeldata_len) != labeldata_len ||
+				polar_fsync(fd) != 0 ||
+				CloseTransientFile(fd) != 0)
+				ereport(ERROR,
+						(errcode_for_file_access(),
+						 errmsg("could not write file \"%s\": %m",
+								labelfile_path)));
+
+			/* Write backup tablespace_map file. */
+			if (tblspcmapfile->len > 0)
+			{
+				if (polar_stat(tblspcmapfile_path, &stat_buf) != 0)
+				{
+					if (errno != ENOENT)
+						ereport(ERROR,
+								(errcode_for_file_access(),
+								 errmsg("could not stat file \"%s\": %m",
+										tblspcmapfile_path)));
+				}
+
+				fd = OpenTransientFile(tblspcmapfile_path, O_WRONLY | O_CREAT | O_TRUNC);
+
+				if (fd < 0)
+					ereport(ERROR,
+							(errcode_for_file_access(),
+							 errmsg("could not create file \"%s\": %m",
+									tblspcmapfile_path)));
+				if (polar_write(fd, tblspcmapfile->data, tblspcmapfile->len) != tblspcmapfile->len ||
+					polar_fsync(fd) != 0 ||
+					CloseTransientFile(fd) != 0)
+					ereport(ERROR,
+							(errcode_for_file_access(),
+							 errmsg("could not write file \"%s\": %m",
+									tblspcmapfile_path)));
+			}
+		}
 	}
 	PG_END_ENSURE_ERROR_CLEANUP(do_pg_abort_backup, DatumGetBool(true));
 
@@ -9148,6 +10244,10 @@ do_pg_backup_start(const char *backupidstr, bool fast, List **tablespaces,
 	 * Mark that the start phase has correctly finished for the backup.
 	 */
 	sessionBackupState = SESSION_BACKUP_RUNNING;
+
+	/* POLAR: log some infomation, and move pfree to the end */
+	elog(LOG, "POLAR: finish pg_start_backup, labelfile:\n%s", label_file);
+	pfree(label_file);
 }
 
 /*
@@ -9180,14 +10280,20 @@ do_pg_backup_stop(BackupState *state, bool waitforarchive)
 	char		lastxlogfilename[MAXFNAMELEN];
 	char		histfilename[MAXFNAMELEN];
 	XLogSegNo	_logSegNo;
-	FILE	   *fp;
 	int			seconds_before_warning;
 	int			waits = 0;
 	bool		reported_waiting = false;
 
+	/* POLAR */
+	int			fd;
+	char	   *history_file;
+
 	Assert(state != NULL);
 
 	backup_stopped_in_recovery = RecoveryInProgress();
+
+	elog(LOG, "POLAR: begin pg_stop_backup: exclusive: false, switch wal: %s",
+		 polar_enable_switch_wal_in_backup ? "true" : "false");
 
 	/*
 	 * During recovery, we don't need to check WAL level. Because, if WAL
@@ -9298,7 +10404,7 @@ do_pg_backup_stop(BackupState *state, bool waitforarchive)
 	}
 	else
 	{
-		char	   *history_file;
+		int			data_len;
 
 		/*
 		 * Write the backup-end xlog record
@@ -9318,7 +10424,9 @@ do_pg_backup_stop(BackupState *state, bool waitforarchive)
 		 * Force a switch to a new xlog segment file, so that the backup is
 		 * valid as soon as archiver moves out the current segment file.
 		 */
-		RequestXLogSwitch(false);
+		/* POLAR: do switch xlog if polar_enable_switch_wal_in_backup */
+		if (polar_enable_switch_wal_in_backup || waitforarchive)
+			RequestXLogSwitch(false);
 
 		state->stoptime = (pg_time_t) time(NULL);
 
@@ -9328,19 +10436,18 @@ do_pg_backup_stop(BackupState *state, bool waitforarchive)
 		XLByteToSeg(state->startpoint, _logSegNo, wal_segment_size);
 		BackupHistoryFilePath(histfilepath, state->stoptli, _logSegNo,
 							  state->startpoint, wal_segment_size);
-		fp = AllocateFile(histfilepath, "w");
-		if (!fp)
+		fd = OpenTransientFile(histfilepath, O_WRONLY | O_CREAT);
+		if (fd < 0)
 			ereport(ERROR,
 					(errcode_for_file_access(),
 					 errmsg("could not create file \"%s\": %m",
 							histfilepath)));
 
 		/* Build and save the contents of the backup history file */
-		history_file = build_backup_content(state, true);
-		fprintf(fp, "%s", history_file);
-		pfree(history_file);
-
-		if (fflush(fp) || ferror(fp) || FreeFile(fp))
+		history_file = build_backup_content(state, &data_len, true);
+		if (polar_write(fd, history_file, data_len) != data_len ||
+			polar_fsync(fd) != 0 ||
+			CloseTransientFile(fd) != 0)
 			ereport(ERROR,
 					(errcode_for_file_access(),
 					 errmsg("could not write file \"%s\": %m",
@@ -9427,6 +10534,12 @@ do_pg_backup_stop(BackupState *state, bool waitforarchive)
 	else if (waitforarchive)
 		ereport(NOTICE,
 				(errmsg("WAL archiving is not enabled; you must ensure that all required WAL segments are copied through other means to complete the backup")));
+
+	if (!backup_stopped_in_recovery)
+	{
+		elog(LOG, "POLAR: finish pg_stop_backup, historyfile:\n%s", history_file);
+		pfree(history_file);
+	}
 }
 
 
@@ -9496,6 +10609,16 @@ GetXLogInsertRecPtr(void)
 	SpinLockAcquire(&Insert->insertpos_lck);
 	current_bytepos = Insert->CurrBytePos;
 	SpinLockRelease(&Insert->insertpos_lck);
+
+	return XLogBytePosToRecPtr(current_bytepos);
+}
+
+/* POLAR: get xlog insert pointer without lock */
+XLogRecPtr
+polar_get_xlog_insert_ptr_nolock(void)
+{
+	XLogCtlInsert *Insert = &XLogCtl->Insert;
+	uint64		current_bytepos = Insert->CurrBytePos;
 
 	return XLogBytePosToRecPtr(current_bytepos);
 }
@@ -9572,3 +10695,585 @@ SetWalWriterSleeping(bool sleeping)
 	XLogCtl->WalWriterSleeping = sleeping;
 	SpinLockRelease(&XLogCtl->info_lck);
 }
+
+/* POLAR */
+void
+polar_set_node_type(PolarNodeType node_type)
+{
+	uint32		old_node_state = pg_atomic_read_u32(&XLogCtl->polar_node_state);
+	uint32		node_state;
+
+	for (;;)
+	{
+		node_state = POLAR_STATE_VFS(old_node_state) | POLAR_STATE_NODE_TYPE(node_type);
+
+		if (pg_atomic_compare_exchange_u32(&XLogCtl->polar_node_state,
+										   &old_node_state, node_state))
+			break;
+	}
+}
+
+
+PolarNodeType
+polar_get_node_type(void)
+{
+	PolarNodeType polar_node_type;
+
+	if (XLogCtl != NULL && !polar_shmem_is_detach())
+		polar_node_type = POLAR_STATE_NODE_TYPE(pg_atomic_read_u32(&XLogCtl->polar_node_state));
+	else
+		polar_node_type = polar_get_node_type_by_file();
+
+	if (!polar_enable_shared_storage_mode && polar_node_type == POLAR_REPLICA)
+		elog(FATAL, "replica mode is not possible because shared storage mode is disabled");
+
+	return polar_node_type;
+}
+
+void
+polar_set_vfs_state(uint32 vfs_state)
+{
+	uint32		old_node_state = pg_atomic_read_u32(&XLogCtl->polar_node_state);
+	uint32		node_state;
+
+	for (;;)
+	{
+		node_state = POLAR_STATE_VFS(vfs_state) | POLAR_STATE_NODE_TYPE(old_node_state);
+
+		if (pg_atomic_compare_exchange_u32(&XLogCtl->polar_node_state,
+										   &old_node_state, node_state))
+			break;
+	}
+}
+
+uint32
+polar_get_vfs_state(void)
+{
+	uint32		vfs_state = POLAR_VFS_UNKNOWN;
+
+	if (XLogCtl != NULL && !polar_shmem_is_detach())
+		vfs_state = POLAR_STATE_VFS(pg_atomic_read_u32(&XLogCtl->polar_node_state));
+
+	return vfs_state;
+}
+
+/*
+ * POLAR: ControlFile is a static variable, we use extern function to get it
+ */
+ControlFileData *
+polar_get_control_file(void)
+{
+	return ControlFile;
+}
+
+XLogRecPtr
+polar_get_oldest_apply_lsn(void)
+{
+	return pg_atomic_read_u64(&XLogCtl->oldest_apply_lsn);
+}
+
+XLogRecPtr
+polar_get_oldest_lock_lsn(void)
+{
+	return pg_atomic_read_u64(&XLogCtl->oldest_lock_lsn);
+}
+
+void
+polar_set_oldest_replica_lsn(XLogRecPtr oldest_apply_lsn, XLogRecPtr oldest_lock_lsn)
+{
+	if (!polar_enable_shared_storage_mode)
+		return;
+
+	if (unlikely(XLogRecPtrIsInvalid(oldest_apply_lsn)))
+		POLAR_LOG_BACKTRACE();
+
+	SpinLockAcquire(&XLogCtl->info_lck);
+
+	if (XLogRecPtrIsInvalid(oldest_apply_lsn) ||
+		oldest_apply_lsn > pg_atomic_read_u64(&XLogCtl->oldest_apply_lsn))
+		pg_atomic_write_u64(&XLogCtl->oldest_apply_lsn, oldest_apply_lsn);
+
+	if (XLogRecPtrIsInvalid(oldest_lock_lsn) ||
+		oldest_lock_lsn > pg_atomic_read_u64(&XLogCtl->oldest_lock_lsn))
+		pg_atomic_write_u64(&XLogCtl->oldest_lock_lsn, oldest_lock_lsn);
+
+	SpinLockRelease(&XLogCtl->info_lck);
+
+	elog(DEBUG1, "Set oldest apply lsn %X/%X, oldest lock lsn %X/%X",
+		 LSN_FORMAT_ARGS(oldest_apply_lsn), LSN_FORMAT_ARGS(oldest_lock_lsn));
+}
+
+XLogRecPtr
+polar_get_consistent_lsn(void)
+{
+	return pg_atomic_read_u64(&XLogCtl->consistent_lsn);
+}
+
+/*
+ * polar_set_consistent_lsn - Set the consistent lsn in XLogCtl.
+ */
+void
+polar_set_consistent_lsn(XLogRecPtr consistent_lsn)
+{
+	bool		updated = false;
+	XLogRecPtr	cur_consistent_lsn;
+
+	/* For replica or primary in recovery, we don't set the consistent lsn. */
+	if (polar_is_replica() || polar_is_primary_in_recovery())
+	{
+		elog(DEBUG1,
+			 "replica or primary in recovery do not set consistent lsn.");
+		return;
+	}
+
+	SpinLockAcquire(&XLogCtl->info_lck);
+	cur_consistent_lsn = pg_atomic_read_u64(&XLogCtl->consistent_lsn);
+
+	if (consistent_lsn > cur_consistent_lsn)
+	{
+		pg_atomic_write_u64(&XLogCtl->consistent_lsn, consistent_lsn);
+		updated = true;
+	}
+	SpinLockRelease(&XLogCtl->info_lck);
+
+	/*
+	 * The checkpointer and bgwriter may set the consistent_lsn at the same
+	 * time when it is invalid during startup, so it is possible that one
+	 * process calculates consistent_lsn first and sets it later. The
+	 * consistent_lsn can only be set by bgwriter after recovery is done, and
+	 * it is guaranteed that the consistent_lsn won't fallback in this case,
+	 * see update_consistent_lsn_delta() for detail.
+	 */
+	if (unlikely(consistent_lsn < cur_consistent_lsn))
+		elog(WARNING, "Setting a consistent lsn %X/%X less than current consistent lsn %X/%X",
+			 LSN_FORMAT_ARGS(consistent_lsn),
+			 LSN_FORMAT_ARGS(cur_consistent_lsn));
+
+
+	if (!updated)
+		elog(DEBUG1, "Consistent lsn %X/%X not updated, setting to %X/%X.",
+			 LSN_FORMAT_ARGS(cur_consistent_lsn),
+			 LSN_FORMAT_ARGS(consistent_lsn));
+	else
+		elog(DEBUG1, "Set consistent lsn %X/%X ", LSN_FORMAT_ARGS(consistent_lsn));
+}
+
+/*
+ * Whether to check the legality of the checkpoint. Only PolarDB primary
+ * that is not in recovery or standby should check it.
+ */
+static bool
+polar_should_check_checkpoint(void)
+{
+	return ((polar_enable_shared_storage_mode && !RecoveryInProgress() &&
+			 polar_is_primary()) || polar_is_standby()) &&
+		polar_flush_list_enabled() && IsUnderPostmaster;
+}
+
+/* Check whether current checkpoint is allowed. */
+static bool
+polar_is_checkpoint_legal(XLogRecPtr redo)
+{
+	XLogRecPtr	consistent_lsn = polar_get_consistent_lsn();
+	XLogRecPtr	oldest_apply_lsn = polar_get_oldest_apply_lsn();
+	uint32		freespace;
+
+	/*
+	 * like checkpoint.redo, we should add extra header for consistent lsn,
+	 * then to compare with checkpoint.redo.
+	 */
+	freespace = INSERT_FREESPACE(consistent_lsn);
+	if (freespace == 0)
+	{
+		if (XLogSegmentOffset(consistent_lsn, wal_segment_size) == 0)
+			consistent_lsn += SizeOfXLogLongPHD;
+		else
+			consistent_lsn += SizeOfXLogShortPHD;
+	}
+
+	if (redo <= consistent_lsn)
+	{
+		if (log_checkpoints)
+			elog(LOG,
+				 "Checkpoint approved. Checkpoint redo lsn %X/%X, consistent lsn %X/%X, oldest apply lsn %X/%X",
+				 LSN_FORMAT_ARGS(redo),
+				 LSN_FORMAT_ARGS(consistent_lsn),
+				 LSN_FORMAT_ARGS(oldest_apply_lsn));
+		return true;
+	}
+
+	if ((consistent_lsn > oldest_apply_lsn))
+		elog(WARNING,
+			 "Checkpoint blocked. Checkpoint redo lsn %X/%X, consistent lsn %X/%X, oldest apply lsn %X/%X",
+			 LSN_FORMAT_ARGS(redo),
+			 LSN_FORMAT_ARGS(consistent_lsn),
+			 LSN_FORMAT_ARGS(oldest_apply_lsn));
+
+	return false;
+}
+
+/*
+ * POLAR: Tell bgwriter to flush buffer, and wait the consistent lsn greater
+ * than the checkpoint.redo lsn. If we accept a force flush signal, we will
+ * do not check the oldest apply lsn when flush buffer.
+ */
+static void
+polar_wait_consistent_lsn(XLogRecPtr redo, int flags)
+{
+	bool		receive_shut_down = false;
+
+	while (!polar_is_checkpoint_legal(redo))
+	{
+		/*
+		 * POLAR: Calculate and update the consistent lsn by itself when
+		 * bgwriter is not started or exited.
+		 */
+		if (polar_get_bgwriter_pid() == 0)
+		{
+			XLogRecPtr	consistent_lsn = polar_cal_cur_consistent_lsn();
+
+			if (!XLogRecPtrIsInvalid(consistent_lsn))
+				polar_set_consistent_lsn(consistent_lsn);
+		}
+		polar_accept_signal_for_checkpoint(flags);
+
+		/*
+		 * When a shutdown is received, the bgwriter will be terminated, we
+		 * should do not wait bgwriter to update the consistent lsn.
+		 */
+		if (ShutdownRequestPending)
+		{
+			receive_shut_down = true;
+			break;
+		}
+		pg_usleep(polar_check_checkpoint_interval * 1000L);
+	}
+
+	if (receive_shut_down)
+		polar_flush_buffer_for_shutdown(redo, flags);
+}
+
+/*
+ * When server is shutting down, the bgwriter has already exited, checkpoint
+ * process will flush all dirty buffers in the flush list.
+ */
+static void
+polar_flush_buffer_for_shutdown(XLogRecPtr redo, int flags)
+{
+	WritebackContext wb_context;
+
+	WritebackContextInit(&wb_context, &backend_flush_after);
+
+	/*
+	 * The wal writer process has been terminated, we should flush wal records
+	 * before redo lsn that still in the wal buffer.
+	 *
+	 * Otherwise, there may be some buffers can not be flushed because their
+	 * latest lsn greater than oldest apply lsn. The replica can not get more
+	 * wal records to replay, so the oldest apply lsn will never be updated.
+	 * Server will wait forever.
+	 */
+	XLogFlush(redo);
+
+	while (!polar_is_checkpoint_legal(redo))
+	{
+		/* wake bgwriter */
+		polar_bg_buffer_sync(&wb_context, flags);
+		polar_accept_signal_for_checkpoint(flags);
+		pg_usleep(BgWriterDelay * 1000L);
+	}
+}
+
+/*
+ * Reload config info and check if we accept the force flush signal, if yes,
+ * we will set the oldest apply lsn to invalid, then flush all dirty buffers
+ * and do not check whether it can be flushed. So if there are replicas, they
+ * may read 'future' data that is not expected. polar_force_flush_buffer is
+ * only a development option and is not recommended for production environments.
+ */
+static void
+polar_accept_signal_for_checkpoint(int flags)
+{
+	polar_checkpointer_do_reload();
+	if (polar_force_flush_buffer)
+	{
+		polar_set_oldest_replica_lsn(InvalidXLogRecPtr, InvalidXLogRecPtr);
+		CheckPointBuffers(flags);
+	}
+}
+
+/*
+ * Faked latest lsn is used to set pd_lsn at PageHeader for visibility map buffer.
+ * Like XLogInsertRecord, return XLOG pointer to end of record, if the position
+ * is at a page boundary, returns a pointer to the beginning of the page.
+ */
+XLogRecPtr
+polar_get_fake_latest_lsn(void)
+{
+	uint64		bytepos;
+	XLogCtlInsert *insert = &XLogCtl->Insert;
+
+	/* Read the current insert position */
+	SpinLockAcquire(&insert->insertpos_lck);
+	bytepos = insert->CurrBytePos;
+	SpinLockRelease(&insert->insertpos_lck);
+
+	return XLogBytePosToEndRecPtr(bytepos);
+}
+
+
+XLogRecPtr
+polar_calc_min_used_lsn(bool is_contain_replication_slot)
+{
+	XLogRecPtr	min_lsn;
+	XLogRecPtr	used_lsn;
+
+	if (!XLogCtl || !polar_logindex_redo_instance)
+		return InvalidXLogRecPtr;
+
+	min_lsn = polar_logindex_redo_start_lsn(polar_logindex_redo_instance);
+
+	if (is_contain_replication_slot)
+	{
+		used_lsn = polar_compute_physical_slots_restart_lsn(POLAR_REPLICA);
+		if (XLogRecPtrIsInvalid(min_lsn) ||
+			(!XLogRecPtrIsInvalid(used_lsn) && used_lsn < min_lsn))
+			min_lsn = used_lsn;
+	}
+
+	used_lsn = GetRedoRecPtr();
+	if (XLogRecPtrIsInvalid(min_lsn) ||
+		(!XLogRecPtrIsInvalid(used_lsn) && used_lsn < min_lsn))
+		min_lsn = used_lsn;
+
+	if (polar_bg_redo_state_is_parallel(polar_logindex_redo_instance))
+	{
+		used_lsn = polar_get_bg_replayed_lsn(polar_logindex_redo_instance);
+		if (XLogRecPtrIsInvalid(min_lsn) ||
+			(!XLogRecPtrIsInvalid(used_lsn) && used_lsn < min_lsn))
+			min_lsn = used_lsn;
+	}
+
+	return min_lsn;
+}
+
+/*
+ * POLAR: Wait for checkpointer process to create the last restartpoint
+ */
+void
+polar_request_last_restartpoint(void)
+{
+	XLogRecPtr	oldest_redo_lsn;
+	TimeLineID	oldest_redo_tli;
+	XLogRecPtr	last_checkpoint_redo;
+
+	SpinLockAcquire(&XLogCtl->info_lck);
+	last_checkpoint_redo = XLogCtl->lastCheckPoint.redo;
+	SpinLockRelease(&XLogCtl->info_lck);
+
+	GetOldestRestartPoint(&oldest_redo_lsn, &oldest_redo_tli);
+
+	if (oldest_redo_lsn < last_checkpoint_redo)
+		RequestCheckpoint(CHECKPOINT_IMMEDIATE | CHECKPOINT_WAIT);
+}
+
+static void
+polar_exit_archive_recovery(EndOfWalRecoveryInfo *endOfRecoveryInfo)
+{
+	/*
+	 * Update min recovery point one last time.
+	 */
+	UpdateMinRecoveryPoint(InvalidXLogRecPtr, true);
+
+	/*
+	 * Remove the signal files out of the way, so that we don't accidentally
+	 * re-enter archive recovery mode in a subsequent crash.
+	 */
+	if (endOfRecoveryInfo->standby_signal_file_found)
+		durable_unlink(STANDBY_SIGNAL_FILE, FATAL);
+
+	if (endOfRecoveryInfo->replica_signal_file_found)
+		durable_unlink(REPLICA_SIGNAL_FILE, FATAL);
+
+	if (endOfRecoveryInfo->recovery_signal_file_found)
+		durable_unlink(RECOVERY_SIGNAL_FILE, FATAL);
+
+	ereport(LOG,
+			(errmsg("replica logindex archive recovery complete")));
+}
+
+/*
+ * POLAR: interface to set and get polar_available_state.
+ */
+void
+polar_set_available_state(bool state)
+{
+	if (!polar_shmem_is_detach() && XLogCtl != NULL)
+		XLogCtl->polar_available_state = state;
+	/* FIXME: cluster info is not ready yet */
+	/* polar_update_cluster_info(); */
+}
+
+bool
+polar_get_available_state(void)
+{
+	if (!polar_shmem_is_detach() && XLogCtl != NULL)
+		return XLogCtl->polar_available_state;
+	else
+		return true;
+}
+
+Datum
+polar_get_wal_buffer_stat(PG_FUNCTION_ARGS)
+{
+#define WAL_BUFFER_STAT_NUM_COLUMNS 6
+	Datum		values[WAL_BUFFER_STAT_NUM_COLUMNS] = {0};
+	bool		nulls[WAL_BUFFER_STAT_NUM_COLUMNS] = {0};
+	TupleDesc	tupdesc;
+	AttrNumber	attrnum = 0;
+
+	tupdesc = CreateTemplateTupleDesc(WAL_BUFFER_STAT_NUM_COLUMNS);
+	TupleDescInitEntry(tupdesc, ++attrnum, "buf_init_async", INT8OID, -1, 0);
+	TupleDescInitEntry(tupdesc, ++attrnum, "buf_init_sync", INT8OID, -1, 0);
+	TupleDescInitEntry(tupdesc, ++attrnum, "buf_map_passed", INT8OID, -1, 0);
+	TupleDescInitEntry(tupdesc, ++attrnum, "buf_map_slept", INT8OID, -1, 0);
+	TupleDescInitEntry(tupdesc, ++attrnum, "buf_map_after_write_passed", INT8OID, -1, 0);
+	TupleDescInitEntry(tupdesc, ++attrnum, "buf_map_after_write_slept", INT8OID, -1, 0);
+
+	Assert(attrnum == WAL_BUFFER_STAT_NUM_COLUMNS);
+
+	tupdesc = BlessTupleDesc(tupdesc);
+	MemSet(nulls, 0, sizeof(nulls));
+
+	values[0] = UInt64GetDatum(pg_atomic_read_u64(&XLogCtl->wal_buffer_stat.buf_init_async));
+	values[1] = UInt64GetDatum(pg_atomic_read_u64(&XLogCtl->wal_buffer_stat.buf_init_sync));
+	values[2] = UInt64GetDatum(pg_atomic_read_u64(&XLogCtl->wal_buffer_stat.buf_map_passed));
+	values[3] = UInt64GetDatum(pg_atomic_read_u64(&XLogCtl->wal_buffer_stat.buf_map_slept));
+	values[4] = UInt64GetDatum(pg_atomic_read_u64(&XLogCtl->wal_buffer_stat.buf_map_after_write_passed));
+	values[5] = UInt64GetDatum(pg_atomic_read_u64(&XLogCtl->wal_buffer_stat.buf_map_after_write_slept));
+
+#undef WAL_BUFFER_STAT_NUM_COLUMNS
+	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(tupdesc, values, nulls)));
+}
+
+Datum
+polar_get_wal_io_stat(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo *rsinfo;
+
+	InitMaterializedSRF(fcinfo, MAT_SRF_USE_EXPECTED_DESC);
+	rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
+
+	for (int bktype = 0; bktype < BACKEND_NUM_TYPES; bktype++)
+	{
+		Datum		bktype_desc = CStringGetTextDatum(GetBackendTypeDesc(bktype));
+
+		if (bktype == B_INVALID || bktype == B_ARCHIVER || bktype == B_LOGGER)
+			continue;
+
+		for (int io_context = 0; io_context < WAL_IOCONTEXT_NUM; io_context++)
+		{
+			const char *context_name = io_context == WAL_IOCONTEXT_INIT ? "init" : "normal";
+			char		buf[256];
+#define WAL_IO_STAT_NUM_COLUMNS 5
+			Datum		values[WAL_IO_STAT_NUM_COLUMNS] = {0};
+			bool		nulls[WAL_IO_STAT_NUM_COLUMNS] = {0};
+#undef WAL_IO_STAT_NUM_COLUMNS
+
+			/*
+			 * Backend type and I/O context.
+			 */
+			values[0] = bktype_desc;
+			values[1] = CStringGetTextDatum(context_name);
+
+			/*
+			 * WAL write count and bytes.
+			 */
+			values[2] = UInt64GetDatum(pg_atomic_read_u64(&XLogCtl->wal_buffer_stat.counts[bktype][io_context][WAL_IOOP_WRITE]));
+
+			snprintf(buf, sizeof buf, UINT64_FORMAT,
+					 pg_atomic_read_u64(&XLogCtl->wal_buffer_stat.bytes[bktype][io_context][WAL_IOOP_WRITE]));
+			values[3] = DirectFunctionCall3(numeric_in,
+											CStringGetDatum(buf),
+											ObjectIdGetDatum(0),
+											Int32GetDatum(-1));
+
+			/*
+			 * WAL fsync count.
+			 */
+			values[4] = UInt64GetDatum(pg_atomic_read_u64(&XLogCtl->wal_buffer_stat.counts[bktype][io_context][WAL_IOOP_FSYNC]));
+
+			tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc,
+								 values, nulls);
+		}
+	}
+
+	return (Datum) 0;
+}
+
+void
+polar_reset_wal_buffer_stat(void)
+{
+	pg_atomic_write_u64(&XLogCtl->wal_buffer_stat.buf_init_async, 0);
+	pg_atomic_write_u64(&XLogCtl->wal_buffer_stat.buf_init_sync, 0);
+	pg_atomic_write_u64(&XLogCtl->wal_buffer_stat.buf_map_passed, 0);
+	pg_atomic_write_u64(&XLogCtl->wal_buffer_stat.buf_map_slept, 0);
+	pg_atomic_write_u64(&XLogCtl->wal_buffer_stat.buf_map_after_write_passed, 0);
+	pg_atomic_write_u64(&XLogCtl->wal_buffer_stat.buf_map_after_write_slept, 0);
+
+	for (int bktype = 0; bktype < BACKEND_NUM_TYPES; bktype++)
+	{
+		for (int io_context = 0; io_context < WAL_IOCONTEXT_NUM; io_context++)
+		{
+			for (int io_op = 0; io_op < WAL_IOOP_NUM; io_op++)
+			{
+				pg_atomic_write_u64(&XLogCtl->wal_buffer_stat.counts[bktype][io_context][io_op], 0);
+				pg_atomic_write_u64(&XLogCtl->wal_buffer_stat.bytes[bktype][io_context][io_op], 0);
+			}
+		}
+	}
+}
+
+/*
+ * POLAR：Get the minimum valid meta position.
+ *
+ * Need to acquire spinlock to get the pwrite value here, because:
+ * this function first retrieves the pwrite value, then iterates through
+ * the polar_valid_meta_at values recorded on each WAL insert lock, and
+ * takes the minimum value among all as min_valid_meta_pos.
+ *
+ * Since both pwrite and polar_valid_meta_at on WAL insert locks are modified
+ * atomically under spinlock protection, we must hold the spinlock when acquiring
+ * the pwrite value. Otherwise, this could lead to an incorrectly large computed
+ * result, which may cause reading from uninitialized memory regions in the XLOG queue.
+ *
+ * The frequency of calling this function has been minimized. It is only executed
+ * when each XLOG queue ref finds no available space to read after checking its own
+ * pread position. Moreover, all XLOG queue refs store the min_valid_meta_pos value
+ * obtained by this function into a shared memory variable that can be accessed by
+ * all XLOG queue refs. Therefore, theoretically, there should not be frequent
+ * spinlock contention.
+ */
+uint64
+polar_get_min_valid_meta_pos(polar_ringbuf_t xlog_queue)
+{
+	int			i;
+	uint64		valid_meta_pos;
+	XLogCtlInsert *Insert = &XLogCtl->Insert;
+
+	SpinLockAcquire(&Insert->insertpos_lck);
+	valid_meta_pos = pg_atomic_read_u64(&xlog_queue->pwrite);
+	SpinLockRelease(&Insert->insertpos_lck);
+
+	for (i = 0; i < NUM_XLOGINSERT_LOCKS; i++)
+	{
+		uint64		cur_meta_pos = pg_atomic_read_u64(&WALInsertLocks[i].l.polar_valid_meta_at);
+
+		if (valid_meta_pos > cur_meta_pos)
+			valid_meta_pos = cur_meta_pos;
+	}
+
+	return valid_meta_pos;
+}
+
+/* POLAR end */

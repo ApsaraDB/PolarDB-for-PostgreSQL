@@ -79,6 +79,10 @@
 #include "utils/rel.h"
 #include "utils/varlena.h"
 
+/* POLAR */
+#include "access/xlogrecovery.h"
+#include "replication/syncrep.h"
+
 /* GUC variables */
 char	   *default_tablespace = NULL;
 char	   *temp_tablespaces = NULL;
@@ -479,6 +483,13 @@ DropTableSpace(DropTableSpaceStmt *stmt)
 	 * Remove dependency on owner.
 	 */
 	deleteSharedDependencyRecordsFor(TableSpaceRelationId, tablespaceoid, 0);
+
+	/*
+	 * POLAR RSC: clean up entries which belong to tablespace.
+	 */
+	if (POLAR_RSC_ENABLED())
+		polar_rsc_drop_entries(InvalidOid, tablespaceoid);
+	/* POLAR end */
 
 	/*
 	 * Acquire TablespaceCreateLock to ensure that no TablespaceCreateDbspace
@@ -1529,6 +1540,10 @@ tblspc_redo(XLogReaderState *record)
 		/* Close all smgr fds in all backends. */
 		WaitForProcSignalBarrier(EmitProcSignalBarrier(PROCSIGNAL_BARRIER_SMGRRELEASE));
 
+		/* POLAR: wait for replica to apply if needed */
+		if (POLAR_WAIT_DDL_IN_RECOVERY())
+			polar_wait_ddl_in_recovery(record->EndRecPtr);
+
 		/*
 		 * If we issued a WAL record for a drop tablespace it implies that
 		 * there were no files in it at all when the DROP was done. That means
@@ -1563,6 +1578,13 @@ tblspc_redo(XLogReaderState *record)
 								xlrec->ts_id),
 						 errhint("You can remove the directories manually if necessary.")));
 		}
+
+		/*
+		 * POLAR RSC: clean up entries which belong to tablespace.
+		 */
+		if (POLAR_RSC_PRIMARY_ENABLED() || POLAR_RSC_STANDBY_ENABLED())
+			polar_rsc_drop_entries(InvalidOid, xlrec->ts_id);
+		/* POLAR end */
 	}
 	else
 		elog(PANIC, "tblspc_redo: unknown op code %u", info);

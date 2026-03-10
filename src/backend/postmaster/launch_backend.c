@@ -74,6 +74,9 @@
 #include "storage/spin.h"
 #endif
 
+/* POLAR */
+#include "access/polar_logindex_redo.h"
+/* POLAR end */
 
 #ifdef EXEC_BACKEND
 
@@ -133,9 +136,11 @@ typedef struct
 	HANDLE		PostmasterHandle;
 	HANDLE		initial_signal_pipe;
 	HANDLE		syslogPipe[2];
+	HANDLE		syslogChannels[MAX_SYS_LOGGER_CHANNEL_NUM][2];
 #else
 	int			postmaster_alive_fds[2];
 	int			syslogPipe[2];
+	int			syslogChannels[MAX_SYS_LOGGER_CHANNEL_NUM][2];
 #endif
 	char		my_exec_path[MAXPGPATH];
 	char		pkglib_path[MAXPGPATH];
@@ -206,6 +211,7 @@ child_process_kind child_process_kinds[] = {
 	[B_WAL_RECEIVER] = {"wal_receiver", WalReceiverMain, true},
 	[B_WAL_SUMMARIZER] = {"wal_summarizer", WalSummarizerMain, true},
 	[B_WAL_WRITER] = {"wal_writer", WalWriterMain, true},
+	[B_BG_LOGINDEX] = {"logindex background worker", polar_logindex_bg_worker_main, true},
 
 	[B_LOGGER] = {"syslogger", SysLoggerMain, false},
 };

@@ -9,6 +9,7 @@
  * the single-user case works.
  *
  *
+ * Portions Copyright (c) 2026, Alibaba Group Holding Limited
  * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -25,6 +26,10 @@
 #include "miscadmin.h"
 #include "utils/inval.h"
 #include "utils/syscache.h"
+/* POLAR */
+#include "utils/guc.h"
+#include "utils/varlena.h"
+/* POLAR end */
 
 /*
  * In common cases the same roleid (ie, the session or current ID) will
@@ -105,3 +110,40 @@ RoleidCallback(Datum arg, int cacheid, uint32 hashvalue)
 	/* Invalidate our local cache in case role's superuserness changed */
 	last_roleid = InvalidOid;
 }
+
+/*
+ * POLAR: check if itemname is in a comma-separated stringlist.
+ * Returns false if either argument is NULL or empty.
+ */
+bool
+polar_find_in_string_list(const char *itemname, const char *stringlist)
+{
+	bool		ret = false;
+	char	   *rawstring;
+	List	   *elemlist;
+	ListCell   *l;
+
+	if (stringlist == NULL || stringlist[0] == '\0' ||
+		itemname == NULL || itemname[0] == '\0')
+		return false;
+	rawstring = pstrdup(stringlist);
+	if (!SplitIdentifierString(rawstring, ',', &elemlist))
+	{
+		list_free(elemlist);
+		pfree(rawstring);
+		return false;
+	}
+	foreach(l, elemlist)
+	{
+		if (strcmp((char *) lfirst(l), itemname) == 0)
+		{
+			ret = true;
+			break;
+		}
+	}
+	pfree(rawstring);
+	list_free(elemlist);
+	return ret;
+}
+
+/* POLAR end */

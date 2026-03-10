@@ -13,7 +13,7 @@
  *
  * See src/backend/utils/misc/README for more information.
  *
- *
+ * Portions Copyright (c) 2024, Alibaba Group Holding Limited
  * Copyright (c) 2000-2024, PostgreSQL Global Development Group
  * Written by Peter Eisentraut <peter_e@gmx.net>.
  *
@@ -50,6 +50,11 @@
 #include "utils/guc_tables.h"
 #include "utils/memutils.h"
 #include "utils/timestamp.h"
+
+/* POLAR */
+#include "commands/tablecmds.h"
+#include "common/username.h"
+#include "storage/polar_fd.h"
 
 
 #define CONFIG_FILENAME "postgresql.conf"
@@ -193,9 +198,32 @@ static const unit_conversion time_unit_conversion_table[] =
 static const char *const map_old_guc_names[] = {
 	"sort_mem", "work_mem",
 	"vacuum_mem", "maintenance_work_mem",
+
+	/* POLAR */
+	"smgr_shared_relations", "polar_rsc_shared_relations",	/* RSC old style GUC */
+	"smgr_pool_sweep_times", "polar_rsc_pool_sweep_times",	/* RSC old style GUC */
+	"polar_transaction_timeout", "transaction_timeout",
+	"polar_bulk_extend_size", "polar_heap_bulk_extend_size",	/* bulk extend old style
+																 * GUC */
+	"polar_parallel_bgwriter_enable_dynamic", "polar_enable_dynamic_parallel_bgwriter",
+	/* POLAR end */
+
 	NULL
 };
 
+/*
+ * POLAR: we cannot control what is written to the configuration file from
+ * outside, but we could still let the database starts up if we are sure these
+ * GUC variables are deprecated and have no use in current version.
+ */
+static const char *const ignore_old_guc_names[] = {
+	"force_parallel_mode",
+	"old_snapshot_threshold",
+	"vacuum_defer_cleanup_age",
+	NULL
+};
+
+/* POLAR end */
 
 /* Memory context holding all GUC-related data */
 static MemoryContext GUCMemoryContext;
@@ -292,9 +320,43 @@ ProcessConfigFileInternal(GucContext context, bool applySettings, int elevel)
 	HASH_SEQ_STATUS status;
 	GUCHashEntry *hentry;
 
+	/* POLAR: used for extra load polar_settings.conf */
+	bool		polar_only_load_polar_settings = false;
+
 	/* Parse the main config file into a list of option names and values */
 	ConfFileWithError = ConfigFileName;
 	head = tail = NULL;
+
+	/*
+	 * POLAR: ALTER SYSTEM FOR CLUSTER Additional load polar_settings.conf
+	 * Read first to ensure priority lower than others configfile.
+	 *
+	 * Note: if polar_settings.conf is in shared storage, Only after mount
+	 * shared storage can we load it using virtual context
+	 * PGC_POSTMASTER_ONLY_LOAD_POLAR_SETTINGS.
+	 */
+	if (DataDir && context != PGC_POSTMASTER)
+	{
+		/* Treat this virtual context as PGC_POSTMASTER */
+		if (context == PGC_POSTMASTER_ONLY_LOAD_POLAR_SETTINGS)
+		{
+			context = PGC_POSTMASTER;
+			/* Set flag to only load polar_settings */
+			polar_only_load_polar_settings = true;
+		}
+
+		if (!ParseConfigFile(POLAR_SETTING_FILENAME, false,
+							 NULL, 0, CONF_FILE_START_DEPTH, elevel,
+							 &head, &tail))
+		{
+			/* Syntax error(s) detected in the file, so bail out */
+			error = true;
+			ConfFileWithError = POLAR_SETTING_FILENAME;
+			goto bail_out;
+		}
+	}
+	/* POLAR end */
+
 
 	if (!ParseConfigFile(ConfigFileName, true,
 						 NULL, 0, CONF_FILE_START_DEPTH, elevel,
@@ -322,6 +384,25 @@ ProcessConfigFileInternal(GucContext context, bool applySettings, int elevel)
 			ConfFileWithError = PG_AUTOCONF_FILENAME;
 			goto bail_out;
 		}
+
+#ifdef POLAR_TODO
+
+		/*
+		 * POLAR: polar_settings will extra load all parameters so extra load
+		 * polar_node_static to ensure some parameters are not modified
+		 */
+		if (!ParseConfigFile(PLOAR_NODE_CONF_FILENAME, false,
+							 NULL, 0, CONF_FILE_START_DEPTH, elevel,
+							 &head, &tail))
+		{
+			/* Syntax error(s) detected in the file, so bail out */
+			error = true;
+			ConfFileWithError = PLOAR_NODE_CONF_FILENAME;
+			goto bail_out;
+		}
+		/* POLAR end */
+#endif
+
 	}
 	else
 	{
@@ -424,6 +505,43 @@ ProcessConfigFileInternal(GucContext context, bool applySettings, int elevel)
 		}
 		else if (!valid_custom_variable_name(item->name))
 		{
+			int			i;
+
+			/*
+			 * POLAR: if server cannot process option starts with "polar_",
+			 * ignore it.
+			 */
+			if (strncasecmp(item->name, "polar_", 6) == 0 && strlen(item->name) > 6)
+			{
+				item->ignore = true;
+				ereport(NOTICE,
+						(errcode(ERRCODE_UNDEFINED_OBJECT),
+						 errmsg("unrecognized configuration parameter \"%s\" in file \"%s\" line %u",
+								item->name, item->filename, item->sourceline)));
+				continue;
+			}
+			/* POLAR end */
+
+			/*
+			 * POLAR: if it is a deprecated parameter, ignore it.
+			 */
+			for (i = 0; ignore_old_guc_names[i] != NULL; i++)
+			{
+				if (guc_name_compare(item->name, ignore_old_guc_names[i]) == 0)
+				{
+					item->ignore = true;
+					ereport(NOTICE,
+							(errcode(ERRCODE_UNDEFINED_OBJECT),
+							 errmsg("deprecated configuration parameter \"%s\" in file \"%s\" line %u",
+									item->name, item->filename, item->sourceline)));
+					break;
+				}
+			}
+
+			if (ignore_old_guc_names[i] != NULL)
+				continue;
+			/* POLAR end */
+
 			/* Invalid non-custom variable, so complain */
 			ereport(elevel,
 					(errcode(ERRCODE_UNDEFINED_OBJECT),
@@ -541,6 +659,20 @@ ProcessConfigFileInternal(GucContext context, bool applySettings, int elevel)
 		/* Ignore anything marked as ignorable */
 		if (item->ignore)
 			continue;
+
+		/*
+		 * POLAR: The parameters of other files have been loaded in
+		 * PGC_POSTMASTER, so ignore other file's config
+		 */
+		if (polar_only_load_polar_settings && item->filename)
+		{
+			const char *p = strstr(item->filename, POLAR_SETTING_FILENAME);
+
+			/* only match at the end */
+			if (!p || strlen(p) != strlen(POLAR_SETTING_FILENAME))
+				continue;
+		}
+		/* POLAR end */
 
 		/* In SIGHUP cases in the postmaster, we want to report changes */
 		if (context == PGC_SIGHUP && applySettings && !IsUnderPostmaster)
@@ -988,6 +1120,10 @@ build_guc_variables(void)
 											  &found);
 		Assert(!found);
 		hentry->gucvar = gucvar;
+
+		/* POLAR: parameter manage check flag */
+		polar_parameter_manage_check_flag(gucvar);
+		/* POLAR end */
 	}
 
 	for (i = 0; ConfigureNamesInt[i].gen.name; i++)
@@ -1000,6 +1136,10 @@ build_guc_variables(void)
 											  &found);
 		Assert(!found);
 		hentry->gucvar = gucvar;
+
+		/* POLAR: parameter manage check flag */
+		polar_parameter_manage_check_flag(gucvar);
+		/* POLAR end */
 	}
 
 	for (i = 0; ConfigureNamesReal[i].gen.name; i++)
@@ -1012,6 +1152,10 @@ build_guc_variables(void)
 											  &found);
 		Assert(!found);
 		hentry->gucvar = gucvar;
+
+		/* POLAR: parameter manage check flag */
+		polar_parameter_manage_check_flag(gucvar);
+		/* POLAR end */
 	}
 
 	for (i = 0; ConfigureNamesString[i].gen.name; i++)
@@ -1024,6 +1168,10 @@ build_guc_variables(void)
 											  &found);
 		Assert(!found);
 		hentry->gucvar = gucvar;
+
+		/* POLAR: parameter manage check flag */
+		polar_parameter_manage_check_flag(gucvar);
+		/* POLAR end */
 	}
 
 	for (i = 0; ConfigureNamesEnum[i].gen.name; i++)
@@ -1036,6 +1184,10 @@ build_guc_variables(void)
 											  &found);
 		Assert(!found);
 		hentry->gucvar = gucvar;
+
+		/* POLAR: parameter manage check flag */
+		polar_parameter_manage_check_flag(gucvar);
+		/* POLAR end */
 	}
 
 	Assert(num_vars == hash_get_num_entries(guc_hashtab));
@@ -1064,6 +1216,11 @@ add_guc_variable(struct config_generic *var, int elevel)
 	}
 	Assert(!found);
 	hentry->gucvar = var;
+
+	/* POLAR: parameter manage check flag */
+	polar_parameter_manage_check_flag(var);
+	/* POLAR end */
+
 	return true;
 }
 
@@ -1282,6 +1439,12 @@ find_option(const char *name, bool create_placeholders, bool skip_errors,
 	return NULL;
 }
 
+struct config_generic *
+polar_parameter_check_name_internal(const char *guc_name)
+{
+	/* find the record of the guc parameter */
+	return find_option(guc_name, false, false, WARNING);
+}
 
 /*
  * comparator for qsorting an array of GUC pointers
@@ -1605,6 +1768,10 @@ InitializeGUCOptionsFromEnvironment(void)
 	if (env != NULL)
 		SetConfigOption("client_encoding", env, PGC_POSTMASTER, PGC_S_ENV_VAR);
 
+	env = getenv("PGHUGEPAGES");
+	if (env != NULL)
+		SetConfigOption("huge_pages", env, PGC_POSTMASTER, PGC_S_ENV_VAR);
+
 	/*
 	 * rlimit isn't exactly an "environment variable", but it behaves about
 	 * the same.  If we can identify the platform stack depth rlimit, increase
@@ -1781,9 +1948,11 @@ RemoveGUCFromLists(struct config_generic *gconf)
  *
  * Returns true on success; on failure, prints a suitable error message
  * to stderr and returns false.
+ *
+ * polar_is_show_guc_mode: Whether "-C guc" was specified when postgres starts
  */
 bool
-SelectConfigFiles(const char *userDoption, const char *progname)
+SelectConfigFiles(const char *userDoption, const char *progname, const bool polar_is_show_guc_mode)
 {
 	char	   *configdir;
 	char	   *fname;
@@ -1897,12 +2066,29 @@ SelectConfigFiles(const char *userDoption, const char *progname)
 	SetConfigOption("data_directory", DataDir, PGC_POSTMASTER, PGC_S_OVERRIDE);
 
 	/*
+	 * POLAR: Because the parameters will be reloaded again to including
+	 * polar_settings.conf. i.e. See in
+	 * polar_mount_and_extra_load_polar_settings.
+	 *
+	 * we need to ensure the config files have not been changed during two
+	 * loading. Caculate config file state here and check file state not
+	 * change in second load.
+	 */
+	polar_check_config_file_change(false);
+
+	/*
 	 * Now read the config file a second time, allowing any settings in the
 	 * PG_AUTOCONF_FILENAME file to take effect.  (This is pretty ugly, but
 	 * since we have to determine the DataDir before we can find the autoconf
 	 * file, the alternatives seem worse.)
 	 */
 	ProcessConfigFile(PGC_POSTMASTER);
+
+	/*
+	 * POLAR: loading polar_settings, mount shared stroage advance to copy
+	 * polar_settings
+	 */
+	polar_mount_and_extra_load_polar_settings(polar_is_show_guc_mode);
 
 	/*
 	 * If timezone_abbreviations wasn't set in the configuration file, install
@@ -4481,7 +4667,7 @@ write_auto_conf_file(int fd, const char *filename, ConfigVariable *head)
 	appendStringInfoString(&buf, "# It will be overwritten by the ALTER SYSTEM command.\n");
 
 	errno = 0;
-	if (write(fd, buf.data, buf.len) != buf.len)
+	if (polar_write(fd, buf.data, buf.len) != buf.len)
 	{
 		/* if write didn't set errno, assume problem is no disk space */
 		if (errno == 0)
@@ -4512,7 +4698,7 @@ write_auto_conf_file(int fd, const char *filename, ConfigVariable *head)
 		appendStringInfoString(&buf, "'\n");
 
 		errno = 0;
-		if (write(fd, buf.data, buf.len) != buf.len)
+		if (polar_write(fd, buf.data, buf.len) != buf.len)
 		{
 			/* if write didn't set errno, assume problem is no disk space */
 			if (errno == 0)
@@ -4524,7 +4710,7 @@ write_auto_conf_file(int fd, const char *filename, ConfigVariable *head)
 	}
 
 	/* fsync before considering the write to be successful */
-	if (pg_fsync(fd) != 0)
+	if (polar_fsync(fd) != 0)
 		ereport(ERROR,
 				(errcode_for_file_access(),
 				 errmsg("could not fsync file \"%s\": %m", filename)));
@@ -4612,11 +4798,6 @@ AlterSystemSetConfigFile(AlterSystemStmt *altersysstmt)
 	char	   *name;
 	char	   *value;
 	bool		resetall = false;
-	ConfigVariable *head = NULL;
-	ConfigVariable *tail = NULL;
-	volatile int Tmpfd;
-	char		AutoConfFileName[MAXPGPATH];
-	char		AutoConfTmpFileName[MAXPGPATH];
 
 	/*
 	 * Extract statement arguments
@@ -4717,6 +4898,10 @@ AlterSystemSetConfigFile(AlterSystemStmt *altersysstmt)
 				guc_free(newextra);
 			}
 		}
+		/* POLAR: ALTER FORCE */
+		else if (altersysstmt->polar_options & ALTOPT_FORCE)
+			polar_alter_force_check(name, value);
+		/* POLAR end */
 		else
 		{
 			/*
@@ -4746,14 +4931,93 @@ AlterSystemSetConfigFile(AlterSystemStmt *altersysstmt)
 	}
 
 	/*
-	 * PG_AUTOCONF_FILENAME and its corresponding temporary file are always in
-	 * the data directory, so we can reference them by simple relative paths.
+	 * Invoke the post-alter hook for setting this GUC variable.  GUCs
+	 * typically do not have corresponding entries in pg_parameter_acl, so we
+	 * call the hook using the name rather than a potentially-non-existent
+	 * OID.  Nonetheless, we pass ParameterAclRelationId so that this call
+	 * context can be distinguished from others.  (Note that "name" will be
+	 * NULL in the RESET ALL case.)
+	 *
+	 * We do this here rather than at the end, because ALTER SYSTEM is not
+	 * transactional.  If the hook aborts our transaction, it will be cleaner
+	 * to do so before we touch any files.
 	 */
-	snprintf(AutoConfFileName, sizeof(AutoConfFileName), "%s",
-			 PG_AUTOCONF_FILENAME);
-	snprintf(AutoConfTmpFileName, sizeof(AutoConfTmpFileName), "%s.%s",
-			 AutoConfFileName,
-			 "tmp");
+	InvokeObjectPostAlterHookArgStr(ParameterAclRelationId, name,
+									ACL_ALTER_SYSTEM,
+									altersysstmt->setstmt->kind,
+									false);
+
+	/* POLAR: ALTER SYSTEM FOR CLUSTER need some check */
+	if ((altersysstmt->polar_options & ALTOPT_CLUSTER) && RecoveryInProgress())
+		elog(ERROR, "ALTER SYSTEM FOR CLUSTER command only can run in primary node.");
+
+	/* POLAR: AlterSystemSetConfigFileInternal do the real work */
+	AlterSystemSetConfigFileInternal(name, value, resetall, false, altersysstmt->polar_options);
+}
+
+/*
+ * POLAR: split from original AlterSystemSetConfigFile
+ *
+ * name: Changed configuration name
+ * value: Changed configuration value
+ * resetall: Is it 'RESET ALL'?
+ * polar_redo: Whether to be applyed by the wal, used in ALTER SYSTEM FOR CLUSTER
+ * polar_options: Is it 'ALTER SYSTEM [FOR CLUSTER] [RELOAD] [FORCE] xxxx'?
+ */
+void
+AlterSystemSetConfigFileInternal(char *name, char *value, bool resetall,
+								 bool polar_redo, int polar_options)
+{
+	ConfigVariable *head = NULL;
+	ConfigVariable *tail = NULL;
+	volatile int Tmpfd;
+	char		AutoConfFileName[MAXPGPATH];
+	char		AutoConfTmpFileName[MAXPGPATH];
+
+	/* POLAR */
+	char		GlobalAllSettingFileName[MAXPGPATH * 2];
+	char		GlobalAllSettingTmpFileName[MAXPGPATH * 2];
+	bool		polar_alter_cluster = (polar_options & ALTOPT_CLUSTER);
+	bool		polar_reload = (polar_options & ALTOPT_RELOAD);
+
+	/* POLAR end */
+
+	/* POLAR */
+	if (polar_alter_cluster)
+	{
+		/*
+		 * local POLAR_SETTING_FILENAME and its corresponding temporary file
+		 * are always in the data directory, so we can reference them by
+		 * simple relative paths.
+		 */
+		snprintf(AutoConfFileName, sizeof(AutoConfFileName), "%s",
+				 POLAR_SETTING_FILENAME);
+		snprintf(AutoConfTmpFileName, sizeof(AutoConfTmpFileName), "%s.%s",
+				 AutoConfFileName,
+				 "tmp");
+
+		/*
+		 * global POLAR_SETTING_FILENAME and its corresponding temporary file
+		 * are in shared_storage, so we reference them by make absolute paths.
+		 */
+		polar_make_file_path_level3(GlobalAllSettingFileName, "global", POLAR_SETTING_FILENAME);
+		snprintf(GlobalAllSettingTmpFileName, sizeof(GlobalAllSettingTmpFileName), "%s.%s", GlobalAllSettingFileName, "tmp");
+	}
+	else
+	{
+		/* POLAR end */
+
+		/*
+		 * PG_AUTOCONF_FILENAME and its corresponding temporary file are
+		 * always in the data directory, so we can reference them by simple
+		 * relative paths.
+		 */
+		snprintf(AutoConfFileName, sizeof(AutoConfFileName), "%s",
+				 PG_AUTOCONF_FILENAME);
+		snprintf(AutoConfTmpFileName, sizeof(AutoConfTmpFileName), "%s.%s",
+				 AutoConfFileName,
+				 "tmp");
+	}
 
 	/*
 	 * Only one backend is allowed to operate on PG_AUTOCONF_FILENAME at a
@@ -4770,7 +5034,7 @@ AlterSystemSetConfigFile(AlterSystemStmt *altersysstmt)
 	{
 		struct stat st;
 
-		if (stat(AutoConfFileName, &st) == 0)
+		if (polar_stat(AutoConfFileName, &st) == 0)
 		{
 			/* open old file PG_AUTOCONF_FILENAME */
 			FILE	   *infile;
@@ -4801,23 +5065,6 @@ AlterSystemSetConfigFile(AlterSystemStmt *altersysstmt)
 	}
 
 	/*
-	 * Invoke the post-alter hook for setting this GUC variable.  GUCs
-	 * typically do not have corresponding entries in pg_parameter_acl, so we
-	 * call the hook using the name rather than a potentially-non-existent
-	 * OID.  Nonetheless, we pass ParameterAclRelationId so that this call
-	 * context can be distinguished from others.  (Note that "name" will be
-	 * NULL in the RESET ALL case.)
-	 *
-	 * We do this here rather than at the end, because ALTER SYSTEM is not
-	 * transactional.  If the hook aborts our transaction, it will be cleaner
-	 * to do so before we touch any files.
-	 */
-	InvokeObjectPostAlterHookArgStr(ParameterAclRelationId, name,
-									ACL_ALTER_SYSTEM,
-									altersysstmt->setstmt->kind,
-									false);
-
-	/*
 	 * To ensure crash safety, first write the new file data to a temp file,
 	 * then atomically rename it into place.
 	 *
@@ -4842,24 +5089,97 @@ AlterSystemSetConfigFile(AlterSystemStmt *altersysstmt)
 		write_auto_conf_file(Tmpfd, AutoConfTmpFileName, head);
 
 		/* Close before renaming; may be required on some platforms */
-		close(Tmpfd);
+		polar_close(Tmpfd);
 		Tmpfd = -1;
 
 		/*
-		 * As the rename is atomic operation, if any problem occurs after this
-		 * at worst it can lose the parameters set by last ALTER SYSTEM
-		 * command.
+		 * POLAR: ALTER SYSTEM FOR CLUSTER
+		 *
+		 * polar_settings is a configuration file placed in the shared storage
+		 * with the instance level. When starting, we copy a copy and put it
+		 * locally.(See in polar_mount_and_extra_load_polar_settings) When
+		 * change it, we first change the local file, and then copy the local
+		 * file into the shared storage to achieve the consistency of local
+		 * file and global file.
+		 *
+		 * But in RO node, just change local file is enough.
 		 */
-		durable_rename(AutoConfTmpFileName, AutoConfFileName, ERROR);
+		if (polar_alter_cluster && !polar_is_replica())
+		{
+			/*
+			 * In the shared storage mode, we need to modify the
+			 * polar_settings.conf on the shared storage at the same time.
+			 * Copy the tmp file here
+			 */
+			if (polar_enable_shared_storage_mode)
+			{
+				/*
+				 * If there is a temp file left over due to a previous crash,
+				 * it's okay to truncate and reuse it.
+				 */
+				(void) polar_unlink(GlobalAllSettingTmpFileName);
+
+				polar_copy_file(AutoConfTmpFileName, GlobalAllSettingTmpFileName, false);
+			}
+
+			/*
+			 * Write Wal to make RW/RO/STANDBY consistency START_CRIT_SECTION
+			 * in polar_cluster_setting_wal_write
+			 */
+			if (!polar_redo)
+				polar_cluster_setting_wal_write(name, value, resetall, polar_reload);
+
+			/*
+			 * We take the wal flush success as the sign of the successful
+			 * modification of the cluster settings. After that, the
+			 * modification of the file is not allowed to fail. If it fails,
+			 * it will enter the crash recovery mode to redo our wal to
+			 * modification file.
+			 *
+			 * XXX: In a very extreme case, after writing the wal but before
+			 * rename file, checkpoint advance redo lsn bigger than our wal
+			 * insert lsn, if rename file failed, crash recovery will skip our
+			 * wal and cluster setting files are inconsistent.
+			 */
+
+			/*
+			 * As the rename is atomic operation, we can make sure load conf
+			 * read consistency state without concurrency control First rename
+			 * global polar_settings.conf
+			 */
+			if (polar_enable_shared_storage_mode)
+				durable_rename(GlobalAllSettingTmpFileName, GlobalAllSettingFileName, ERROR);
+			/* Now rename local cache file */
+			durable_rename(AutoConfTmpFileName, AutoConfFileName, ERROR);
+
+			if (!polar_redo)
+				END_CRIT_SECTION();
+		}
+		else
+		{
+			/* POLAR end */
+
+			/*
+			 * As the rename is atomic operation, if any problem occurs after
+			 * this at worst it can lose the parameters set by last ALTER
+			 * SYSTEM command.
+			 */
+			durable_rename(AutoConfTmpFileName, AutoConfFileName, ERROR);
+		}
 	}
 	PG_CATCH();
 	{
 		/* Close file first, else unlink might fail on some platforms */
 		if (Tmpfd >= 0)
-			close(Tmpfd);
+			polar_close(Tmpfd);
 
 		/* Unlink, but ignore any error */
-		(void) unlink(AutoConfTmpFileName);
+		(void) polar_unlink(AutoConfTmpFileName);
+
+		/* POLAR: meet error clean global tmpfile, but ignore any error */
+		if (polar_alter_cluster && polar_enable_shared_storage_mode && !polar_is_replica())
+			(void) polar_unlink(GlobalAllSettingTmpFileName);
+		/* POLAR end */
 
 		PG_RE_THROW();
 	}
@@ -4868,6 +5188,14 @@ AlterSystemSetConfigFile(AlterSystemStmt *altersysstmt)
 	FreeConfigVariables(head);
 
 	LWLockRelease(AutoFileLock);
+
+	/* Make parameters take effect in a timely manner */
+	if (polar_reload)
+	{
+		if (kill(PostmasterPid, SIGHUP))
+			ereport(WARNING,
+					(errmsg("failed to send signal to postmaster: %m")));
+	}
 }
 
 

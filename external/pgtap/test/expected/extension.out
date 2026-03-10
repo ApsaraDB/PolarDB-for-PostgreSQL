@@ -1,0 +1,65 @@
+\unset ECHO
+1..63
+ok 1 - extensions_are(sch, exts, desc) should pass
+ok 2 - extensions_are(sch, exts, desc) should have the proper description
+ok 3 - extensions_are(sch, exts, desc) should have the proper diagnostics
+ok 4 - extensions_are(sch, exts) should pass
+ok 5 - extensions_are(sch, exts) should have the proper description
+ok 6 - extensions_are(sch, exts) should have the proper diagnostics
+ok 7 - extensions_are(ci_schema, exts, desc) should pass
+ok 8 - extensions_are(ci_schema, exts, desc) should have the proper description
+ok 9 - extensions_are(ci_schema, exts, desc) should have the proper diagnostics
+ok 10 - extensions_are(non-sch, exts) should pass
+ok 11 - extensions_are(non-sch, exts) should have the proper description
+ok 12 - extensions_are(non-sch, exts) should have the proper diagnostics
+ok 13 - extensions_are(sch, good/bad, desc) should fail
+ok 14 - extensions_are(sch, good/bad, desc) should have the proper description
+ok 15 - extensions_are(sch, good/bad, desc) should have the proper diagnostics
+ok 16 - has_extension( schema, name, desc ) should pass
+ok 17 - has_extension( schema, name, desc ) should have the proper description
+ok 18 - has_extension( schema, name, desc ) should have the proper diagnostics
+ok 19 - has_extension( schema, name ) should pass
+ok 20 - has_extension( schema, name ) should have the proper description
+ok 21 - has_extension( schema, name ) should have the proper diagnostics
+ok 22 - has_extension( name, desc ) should pass
+ok 23 - has_extension( name, desc ) should have the proper description
+ok 24 - has_extension( name, desc ) should have the proper diagnostics
+ok 25 - has_extension( name ) should pass
+ok 26 - has_extension( name ) should have the proper description
+ok 27 - has_extension( name ) should have the proper diagnostics
+ok 28 - has_extension( schema, name, desc ) fail should fail
+ok 29 - has_extension( schema, name, desc ) fail should have the proper description
+ok 30 - has_extension( schema, name, desc ) fail should have the proper diagnostics
+ok 31 - has_extension( schema, name ) fail should fail
+ok 32 - has_extension( schema, name ) fail should have the proper description
+ok 33 - has_extension( schema, name ) fail should have the proper diagnostics
+ok 34 - has_extension( name, desc ) fail should fail
+ok 35 - has_extension( name, desc ) fail should have the proper description
+ok 36 - has_extension( name, desc ) fail should have the proper diagnostics
+ok 37 - has_extension( name ) fail should fail
+ok 38 - has_extension( name ) fail should have the proper description
+ok 39 - has_extension( name ) fail should have the proper diagnostics
+ok 40 - hasnt_extension( schema, name, desc ) should pass
+ok 41 - hasnt_extension( schema, name, desc ) should have the proper description
+ok 42 - hasnt_extension( schema, name, desc ) should have the proper diagnostics
+ok 43 - hasnt_extension( schema, name ) should pass
+ok 44 - hasnt_extension( schema, name ) should have the proper description
+ok 45 - hasnt_extension( schema, name ) should have the proper diagnostics
+ok 46 - hasnt_extension( name, desc ) should pass
+ok 47 - hasnt_extension( name, desc ) should have the proper description
+ok 48 - hasnt_extension( name, desc ) should have the proper diagnostics
+ok 49 - hasnt_extension( name ) should pass
+ok 50 - hasnt_extension( name ) should have the proper description
+ok 51 - hasnt_extension( name ) should have the proper diagnostics
+ok 52 - hasnt_extension( schema, name, desc ) should fail
+ok 53 - hasnt_extension( schema, name, desc ) should have the proper description
+ok 54 - hasnt_extension( schema, name, desc ) should have the proper diagnostics
+ok 55 - hasnt_extension( schema, name ) should fail
+ok 56 - hasnt_extension( schema, name ) should have the proper description
+ok 57 - hasnt_extension( schema, name ) should have the proper diagnostics
+ok 58 - hasnt_extension( name, desc ) should fail
+ok 59 - hasnt_extension( name, desc ) should have the proper description
+ok 60 - hasnt_extension( name, desc ) should have the proper diagnostics
+ok 61 - hasnt_extension( name ) should fail
+ok 62 - hasnt_extension( name ) should have the proper description
+ok 63 - hasnt_extension( name ) should have the proper diagnostics

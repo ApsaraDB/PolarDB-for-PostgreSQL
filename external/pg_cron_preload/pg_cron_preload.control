@@ -1,0 +1,9 @@
+# pg_cron_preload extension
+
+comment = 'polardb pg extend catalog'
+default_version = '1.0'
+relocatable = false
+schema = pg_cron_preload
+superuser = true
+trusted = false
+module_pathname = '$libdir/pg_cron_preload'

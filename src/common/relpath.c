@@ -22,6 +22,9 @@
 #include "common/relpath.h"
 #include "storage/procnumber.h"
 
+/* POLAR */
+#include "storage/polar_fd.h"
+
 
 /*
  * Lookup table of fork name by fork number.
@@ -205,6 +208,26 @@ GetRelationPath(Oid dbOid, Oid spcOid, RelFileNumber relNumber,
 								spcOid, TABLESPACE_VERSION_DIRECTORY,
 								dbOid, procNumber, relNumber);
 		}
+
+		return path;
 	}
+
+#ifndef FRONTEND
+	/* POLAR: whether temp relation file put file in local storage */
+	if (procNumber != INVALID_PROC_NUMBER)
+	{
+		return path;
+	}
+
+	if (polar_enable_shared_storage_mode)
+	{
+		char	   *polar_path;
+
+		polar_path = psprintf("%s/%s", polar_datadir, path);
+		pfree(path);
+		return polar_path;
+	}
+#endif
+
 	return path;
 }

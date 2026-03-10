@@ -1,0 +1,25 @@
+# Generated subdirectories
+/log/
+/results/
+/tmp_check/
+
+# ignore generated sql
+/sql/pgtap.sql
+/sql/pgtap-core.sql
+/sql/pgtap-schema.sql
+/sql/uninstall_pgtap.sql
+/sql/pgtap--?.??.?.sql
+/sql/pgtap--?.?.?.sql
+/sql/pgtap-core--*
+/sql/pgtap-schema--*
+/sql/pgtap--0.95.0--0.96.0.sql
+/sql/pgtap--0.96.0--0.97.0.sql
+/sql/pgtap--0.97.0--0.98.0.sql
+/sql/pgtap--0.98.0--0.99.0.sql
+/sql/pgtap--0.99.0--1.0.0.sql
+/sql/pgtap-static.sql
+/sql/pgtap-static.sql.tmp*
+/test/build/
+/test/sql/build.sql
+/test/sql/create.sql
+/test/sql/update.sql

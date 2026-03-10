@@ -4,6 +4,7 @@
  *	  PostgreSQL logical replay/reorder buffer management
  *
  *
+ * Portions Copyright (c) 2026, Alibaba Group Holding Limited
  * Copyright (c) 2012-2024, PostgreSQL Global Development Group
  *
  *
@@ -112,6 +113,9 @@
 #include "utils/memutils.h"
 #include "utils/rel.h"
 #include "utils/relfilenumbermap.h"
+
+/* POLAR */
+#include "storage/polar_fd.h"
 
 /*
  * Each transaction has an 8MB limit for invalidation messages distributed from
@@ -4116,7 +4120,7 @@ ReorderBufferSerializeChange(ReorderBuffer *rb, ReorderBufferTXN *txn,
 
 	errno = 0;
 	pgstat_report_wait_start(WAIT_EVENT_REORDER_BUFFER_WRITE);
-	if (write(fd, rb->outbuf, ondisk->size) != ondisk->size)
+	if (polar_write(fd, rb->outbuf, ondisk->size) != ondisk->size)
 	{
 		int			save_errno = errno;
 
@@ -4713,7 +4717,7 @@ ReorderBufferRestoreCleanup(ReorderBuffer *rb, ReorderBufferTXN *txn)
 		char		path[MAXPGPATH];
 
 		ReorderBufferSerializedPath(path, MyReplicationSlot, txn->xid, cur);
-		if (unlink(path) != 0 && errno != ENOENT)
+		if (polar_unlink(path) != 0 && errno != ENOENT)
 			ereport(ERROR,
 					(errcode_for_file_access(),
 					 errmsg("could not remove file \"%s\": %m", path)));
@@ -4735,7 +4739,7 @@ ReorderBufferCleanupSerializedTXNs(const char *slotname)
 	sprintf(path, "pg_replslot/%s", slotname);
 
 	/* we're only handling directories here, skip if it's not ours */
-	if (lstat(path, &statbuf) == 0 && !S_ISDIR(statbuf.st_mode))
+	if (polar_lstat(path, &statbuf) == 0 && !S_ISDIR(statbuf.st_mode))
 		return;
 
 	spill_dir = AllocateDir(path);
@@ -4748,7 +4752,7 @@ ReorderBufferCleanupSerializedTXNs(const char *slotname)
 					 "pg_replslot/%s/%s", slotname,
 					 spill_de->d_name);
 
-			if (unlink(path) != 0)
+			if (polar_unlink(path) != 0)
 				ereport(ERROR,
 						(errcode_for_file_access(),
 						 errmsg("could not remove file \"%s\" during removal of pg_replslot/%s/xid*: %m",
@@ -5234,7 +5238,7 @@ ApplyLogicalMappingFile(HTAB *tuplecid_data, Oid relid, const char *fname)
 
 		/* read all mappings till the end of the file */
 		pgstat_report_wait_start(WAIT_EVENT_REORDER_LOGICAL_MAPPING_READ);
-		readBytes = read(fd, &map, sizeof(LogicalRewriteMappingData));
+		readBytes = polar_read(fd, &map, sizeof(LogicalRewriteMappingData));
 		pgstat_report_wait_end();
 
 		if (readBytes < 0)

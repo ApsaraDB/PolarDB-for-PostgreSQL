@@ -39,6 +39,10 @@
  * hard-wire conventions about the names of the local variables in a Read
  * routine.
  */
+#define MATCH(tokname, namelen) \
+	(length == namelen && memcmp(token, tokname, namelen) == 0)
+#define PROBE_NEXT_TOKEN(tokname, namelen) \
+	((token = pg_strtok_probe(&length)) && MATCH(tokname, namelen))
 
 /* Macros for declaring appropriate local variables */
 
@@ -110,6 +114,18 @@
 	token = pg_strtok(&length);		/* skip :fldname */ \
 	token = pg_strtok(&length);		/* get field value */ \
 	local_node->fldname = strtobool(token)
+/* POLAR */
+#define READ_BOOL_FIELD_OPTIONAL(fldname, defvalue) \
+	do { \
+		if (PROBE_NEXT_TOKEN(":"CppAsString(fldname), sizeof(CppAsString(fldname)))) \
+		{ \
+			READ_BOOL_FIELD(fldname); \
+		} \
+		else \
+		{ \
+			local_node->fldname = defvalue; \
+		} \
+	} while (0)
 
 /* Read a character-string field */
 #define READ_STRING_FIELD(fldname) \
@@ -567,9 +583,6 @@ parseNodeString(void)
 	check_stack_depth();
 
 	token = pg_strtok(&length);
-
-#define MATCH(tokname, namelen) \
-	(length == namelen && memcmp(token, tokname, namelen) == 0)
 
 #include "readfuncs.switch.c"
 

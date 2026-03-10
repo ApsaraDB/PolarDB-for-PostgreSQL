@@ -25,6 +25,13 @@ extern PGDLLIMPORT int max_standby_archive_delay;
 extern PGDLLIMPORT int max_standby_streaming_delay;
 extern PGDLLIMPORT bool log_recovery_conflict_waits;
 
+/* POLAR */
+extern int	polar_max_bufferpin_conflict_delay;
+extern int	polar_max_replica_archive_delay;
+extern int	polar_max_replica_streaming_delay;
+
+/* POLAR end */
+
 extern void InitRecoveryTransactionEnvironment(void);
 extern void ShutdownRecoveryTransactionEnvironment(void);
 
@@ -54,7 +61,7 @@ extern void LogRecoveryConflict(ProcSignalReason reason, TimestampTz wait_start,
  * to make hot standby work. That includes logging AccessExclusiveLocks taken
  * by transactions and running-xacts snapshots.
  */
-extern void StandbyAcquireAccessExclusiveLock(TransactionId xid, Oid dbOid, Oid relOid);
+extern void StandbyAcquireAccessExclusiveLock(TransactionId xid, Oid dbOid, Oid relOid, XLogRecPtr lsn);
 extern void StandbyReleaseLockTree(TransactionId xid,
 								   int nsubxids, TransactionId *subxids);
 extern void StandbyReleaseAllLocks(void);
@@ -105,5 +112,8 @@ extern void LogAccessExclusiveLockPrepare(void);
 extern XLogRecPtr LogStandbySnapshot(void);
 extern void LogStandbyInvalidations(int nmsgs, SharedInvalidationMessage *msgs,
 									bool relcacheInitFileInval);
+
+extern XLogRecPtr polar_calc_latest_end_lsn(TransactionId xid,
+											int nsubxids, TransactionId *subxids);
 
 #endif							/* STANDBY_H */

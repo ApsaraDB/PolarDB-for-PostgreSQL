@@ -22,6 +22,8 @@
 #include "reconstruct.h"
 #include "storage/block.h"
 
+#include "storage/polar_fd.h"
+
 /*
  * An rfile stores the data that we need in order to be able to use some file
  * on disk for reconstruction. For any given output file, we create one rfile

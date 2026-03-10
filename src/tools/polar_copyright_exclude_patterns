@@ -1,0 +1,34 @@
+# List of filename patterns to exclude from polar_copyright_check.pl runs
+#
+
+src/interfaces/ecpg/test/expected/
+
+# The license is different from the official one provided by PostgresSQL
+src/include/regex/regcustom.h
+src/include/regex/regex.h
+src/include/regex/regguts.h
+
+# Exclude third-party plugin to facilitate our tracking.
+external/hll/
+external/ip4r/
+external/log_fdw/
+external/pase/
+external/pg_bigm/
+external/pg_cron/
+external/pg_hint_plan/
+external/pg_jieba/
+external/pg_partman/
+external/pg_profile/
+external/pg_repack/
+external/pg_similarity/
+external/pg_squeeze/
+external/pg_stat_kcache/
+external/pgtap/
+external/pldebugger/
+external/prefix/
+external/roaringbitmap/
+external/sequential_uuids/
+
+# The following files of faultinjector plugin are ported from greenplum
+src/backend/utils/misc/faultinjector.c
+src/include/utils/faultinjector.h

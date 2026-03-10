@@ -128,7 +128,7 @@ if ($ENV{with_icu} eq 'yes')
 		],
 		'option --icu-locale');
 
-	command_like(
+	polar_command_like(
 		[
 			'initdb', '--no-sync',
 			'-A', 'trust',

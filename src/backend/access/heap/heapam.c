@@ -3,6 +3,7 @@
  * heapam.c
  *	  heap access method code
  *
+ * Portions Copyright (c) 2025, Alibaba Group Holding Limited
  * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -126,6 +127,7 @@ static int	bottomup_sort_and_shrink(TM_IndexDeleteOp *delstate);
 static XLogRecPtr log_heap_new_cid(Relation relation, HeapTuple tup);
 static HeapTuple ExtractReplicaIdentity(Relation relation, HeapTuple tp, bool key_required,
 										bool *copy);
+static void heap_modify_insert_end(TableModifyState *state);
 
 
 /*
@@ -2099,7 +2101,7 @@ heap_insert(Relation relation, HeapTuple tup, CommandId cid,
 		PageClearAllVisible(BufferGetPage(buffer));
 		visibilitymap_clear(relation,
 							ItemPointerGetBlockNumber(&(heaptup->t_self)),
-							vmbuffer, VISIBILITYMAP_VALID_BITS);
+							vmbuffer, VISIBILITYMAP_VALID_BITS, NULL);
 	}
 
 	/*
@@ -2467,7 +2469,7 @@ heap_multi_insert(Relation relation, TupleTableSlot **slots, int ntuples,
 			PageClearAllVisible(page);
 			visibilitymap_clear(relation,
 								BufferGetBlockNumber(buffer),
-								vmbuffer, VISIBILITYMAP_VALID_BITS);
+								vmbuffer, VISIBILITYMAP_VALID_BITS, NULL);
 		}
 		else if (all_frozen_set)
 			PageSetAllVisible(page);
@@ -2611,7 +2613,8 @@ heap_multi_insert(Relation relation, TupleTableSlot **slots, int ntuples,
 			visibilitymap_set(relation, BufferGetBlockNumber(buffer), buffer,
 							  InvalidXLogRecPtr, vmbuffer,
 							  InvalidTransactionId,
-							  VISIBILITYMAP_ALL_VISIBLE | VISIBILITYMAP_ALL_FROZEN);
+							  VISIBILITYMAP_ALL_VISIBLE | VISIBILITYMAP_ALL_FROZEN,
+							  InvalidXLogRecPtr);
 		}
 
 		UnlockReleaseBuffer(buffer);
@@ -2661,6 +2664,367 @@ heap_multi_insert(Relation relation, TupleTableSlot **slots, int ntuples,
 		slots[i]->tts_tid = heaptuples[i]->t_self;
 
 	pgstat_count_heap_insert(relation, ntuples);
+}
+
+/*
+ * Initialize heap modify state.
+ */
+TableModifyState *
+heap_modify_begin(Relation rel,
+				  CommandId cid,
+				  int options,
+				  TableModifyBufferFlushCb buffer_flush_cb,
+				  void *buffer_flush_ctx)
+{
+	TableModifyState *state;
+	MemoryContext context;
+	MemoryContext oldcontext;
+
+	context = AllocSetContextCreate(TopTransactionContext,
+									"heap_modify memory context",
+									ALLOCSET_DEFAULT_SIZES);
+
+	oldcontext = MemoryContextSwitchTo(context);
+	state = palloc0(sizeof(TableModifyState));
+	state->rel = rel;
+	state->mem_ctx = context;
+	state->cid = cid;
+	state->options = options;
+	state->buffer_flush_cb = buffer_flush_cb;
+	state->buffer_flush_ctx = buffer_flush_ctx;
+	MemoryContextSwitchTo(oldcontext);
+
+	return state;
+}
+
+/*
+ * heap_raw_insert_bulk_write
+ *
+ * Write tuples into new raw heap pages, bypassing the mechanism of buffer
+ * manager like locks. It should be more efficient than heap_multi_insert.
+ */
+static void
+heap_raw_insert_bulk_write(TableModifyState *state, TupleTableSlot *slot)
+{
+	HeapRawInsertBulkWriteState *ristate;
+	bool		shouldFree = true;
+	HeapTuple	tup;
+	HeapTuple	heaptup;
+	Size		len;
+	Page		page;
+	Size		pageFreeSpace;
+	OffsetNumber newoff;
+
+	/*
+	 * Double check how we get here.
+	 */
+	Assert(state->options & HEAP_INSERT_RAW_BULKWRITE);
+
+	/*
+	 * There should not be any buffer flushing callback for raw heap insert
+	 * because the buffered tuples are not in TupleTableSlot any more. We
+	 * control the buffer flushing completely by ourselves in this function.
+	 */
+	Assert(state->buffer_flush_cb == NULL);
+	Assert(state->buffer_flush_ctx == NULL);
+
+	/*
+	 * First time through, initialize state for bulk write.
+	 */
+	if (state->data == NULL)
+	{
+		ristate = (HeapRawInsertBulkWriteState *) palloc(sizeof(HeapRawInsertBulkWriteState));
+
+		state->data = ristate;
+		ristate->bulkstate = smgr_bulk_start_rel(state->rel, MAIN_FORKNUM);
+		ristate->buffer = NULL;
+		ristate->blockno = RelationGetNumberOfBlocks(state->rel);
+
+		/*
+		 * Avoid repeated calculation during insertion of each tuple.
+		 */
+		ristate->xid = GetCurrentTransactionId();
+		ristate->save_free_space = RelationGetTargetPageFreeSpace(state->rel,
+																  HEAP_DEFAULT_FILLFACTOR);
+	}
+	else
+		ristate = (HeapRawInsertBulkWriteState *) state->data;
+
+	/*
+	 * Fetch heap tuple from slot, and update the tuple with table oid.
+	 */
+	tup = ExecFetchSlotHeapTuple(slot, true, &shouldFree);
+	slot->tts_tableOid = RelationGetRelid(state->rel);
+	tup->t_tableOid = slot->tts_tableOid;
+
+	/*
+	 * Toast the tuple and check length.
+	 */
+	heaptup = heap_prepare_insert(state->rel, tup, ristate->xid, state->cid, state->options);
+	len = MAXALIGN(heaptup->t_len); /* be conservative */
+	if (len > MaxHeapTupleSize)
+		ereport(ERROR,
+				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+				 errmsg("row is too big: size %zu, maximum size %zu",
+						len, MaxHeapTupleSize)));
+
+	/*
+	 * Use previous page and make sure there is space available, or flush out
+	 * if not.
+	 */
+	page = (Page) ristate->buffer;
+	if (page)
+	{
+		pageFreeSpace = PageGetHeapFreeSpace(page);
+
+		if (len + ristate->save_free_space > pageFreeSpace)
+		{
+			smgr_bulk_write(ristate->bulkstate, ristate->blockno, ristate->buffer, true);
+
+			ristate->buffer = NULL;
+			page = NULL;
+			ristate->blockno++;
+		}
+	}
+
+	/*
+	 * Initialize a new empty page for future insertion.
+	 */
+	if (!page)
+	{
+		ristate->buffer = smgr_bulk_get_buf(ristate->bulkstate);
+		page = (Page) ristate->buffer;
+		PageInit(page, BLCKSZ, 0);
+	}
+
+	/*
+	 * Insert the tuple into the page, and get the in-page offset.
+	 */
+	newoff = PageAddItem(page, (Item) heaptup->t_data, heaptup->t_len,
+						 InvalidOffsetNumber, false, true);
+	if (newoff == InvalidOffsetNumber)
+		elog(ERROR, "failed to add tuple");
+
+	/*
+	 * Set the resulting ItemPointer for the tuple and slot after insertion.
+	 */
+	ItemPointerSet(&(tup->t_self), ristate->blockno, newoff);
+	ItemPointerCopy(&tup->t_self, &slot->tts_tid);
+
+	/*
+	 * Set valid CTID for the on-page tuple, too.
+	 */
+	if (!ItemPointerIsValid(&tup->t_data->t_ctid))
+	{
+		ItemId		itemId = PageGetItemId(page, newoff);
+		HeapTupleHeader item = (HeapTupleHeader) PageGetItem(page, itemId);
+
+		item->t_ctid = tup->t_self;
+	}
+
+	/*
+	 * Release the heap tuples since we're done.
+	 */
+	if (heaptup != tup)
+		heap_freetuple(heaptup);
+	if (shouldFree)
+		pfree(tup);
+}
+
+/*
+ * Store passed-in tuple into in-memory buffered slots. When full, insert
+ * multiple tuples from the buffers into heap.
+ */
+void
+heap_modify_buffer_insert(TableModifyState *state,
+						  TupleTableSlot *slot)
+{
+	TupleTableSlot *dstslot;
+	HeapInsertState *istate;
+	HeapMultiInsertState *mistate;
+	MemoryContext oldcontext;
+
+	oldcontext = MemoryContextSwitchTo(state->mem_ctx);
+
+	/*
+	 * POLAR: use faster raw bulk insert if specified.
+	 */
+	if (state->options & HEAP_INSERT_RAW_BULKWRITE)
+	{
+		heap_raw_insert_bulk_write(state, slot);
+		MemoryContextSwitchTo(oldcontext);
+		return;
+	}
+	/* POLAR end */
+
+	/* First time through, initialize heap insert state */
+	if (state->data == NULL)
+	{
+		istate = (HeapInsertState *) palloc0(sizeof(HeapInsertState));
+		state->data = istate;
+		mistate =
+			(HeapMultiInsertState *) palloc0(sizeof(HeapMultiInsertState));
+		mistate->slots =
+			(TupleTableSlot **) palloc0(sizeof(TupleTableSlot *) * HEAP_MAX_BUFFERED_SLOTS);
+		istate->mistate = mistate;
+
+		/*
+		 * heap_multi_insert() can leak memory. So switch to this memory
+		 * context before every heap_multi_insert() call and reset when
+		 * finished.
+		 */
+		mistate->mem_ctx = AllocSetContextCreate(CurrentMemoryContext,
+												 "heap_multi_insert memory context",
+												 ALLOCSET_DEFAULT_SIZES);
+
+		if ((state->options & HEAP_INSERT_BAS_BULKWRITE) != 0)
+			istate->bistate = GetBulkInsertState();
+	}
+
+	istate = (HeapInsertState *) state->data;
+	Assert(istate->mistate != NULL);
+	mistate = istate->mistate;
+	dstslot = mistate->slots[mistate->cur_slots];
+
+	if (dstslot == NULL)
+	{
+		dstslot = table_slot_create(state->rel, NULL);
+		mistate->slots[mistate->cur_slots] = dstslot;
+	}
+
+	/*
+	 * Note that the copy clears the previous destination slot contents, so no
+	 * need to explicitly ExecClearTuple() here.
+	 */
+	ExecCopySlot(dstslot, slot);
+
+	mistate->cur_slots++;
+
+	if (mistate->cur_slots >= HEAP_MAX_BUFFERED_SLOTS)
+		heap_modify_buffer_flush(state);
+
+	MemoryContextSwitchTo(oldcontext);
+}
+
+/*
+ * Insert multiple tuples from in-memory buffered slots into heap.
+ */
+void
+heap_modify_buffer_flush(TableModifyState *state)
+{
+	HeapInsertState *istate;
+	HeapMultiInsertState *mistate;
+	MemoryContext oldcontext;
+
+	/* Quick exit if we haven't inserted anything yet */
+	if (state->data == NULL)
+		return;
+
+	/*
+	 * POLAR: should never be called under raw insert mode, because raw mode
+	 * uses its own buffering and flushing mechanism.
+	 */
+	Assert(!(state->options & HEAP_INSERT_RAW_BULKWRITE));
+	/* POLAR end */
+
+	istate = (HeapInsertState *) state->data;
+	Assert(istate->mistate != NULL);
+	mistate = istate->mistate;
+
+	/* Quick exit if we have flushed already */
+	if (mistate->cur_slots == 0)
+		return;
+
+	/*
+	 * heap_multi_insert() can leak memory, so switch to short-lived memory
+	 * context before calling it.
+	 */
+	oldcontext = MemoryContextSwitchTo(mistate->mem_ctx);
+	heap_multi_insert(state->rel,
+					  mistate->slots,
+					  mistate->cur_slots,
+					  state->cid,
+					  state->options,
+					  istate->bistate);
+	MemoryContextSwitchTo(oldcontext);
+	MemoryContextReset(mistate->mem_ctx);
+
+	/*
+	 * Invoke caller-supplied buffer flush callback after inserting rows from
+	 * the buffers to heap.
+	 */
+	if (state->buffer_flush_cb != NULL)
+	{
+		for (int i = 0; i < mistate->cur_slots; i++)
+		{
+			state->buffer_flush_cb(state->buffer_flush_ctx,
+								   mistate->slots[i]);
+		}
+	}
+
+	mistate->cur_slots = 0;
+}
+
+/*
+ * Heap insert specific function used for performing work at the end like
+ * flushing remaining buffered tuples, cleaning up the insert state and tuple
+ * table slots used for buffered tuples etc.
+ */
+static void
+heap_modify_insert_end(TableModifyState *state)
+{
+	HeapInsertState *istate;
+
+	/* Quick exit if we haven't inserted anything yet */
+	if (state->data == NULL)
+		return;
+
+	/*
+	 * POLAR: final flush out and clean up for raw insert mode.
+	 */
+	if (state->options & HEAP_INSERT_RAW_BULKWRITE)
+	{
+		HeapRawInsertBulkWriteState *ristate = (HeapRawInsertBulkWriteState *) state->data;
+
+		if (ristate->buffer)
+		{
+			smgr_bulk_write(ristate->bulkstate, ristate->blockno, ristate->buffer, true);
+			ristate->buffer = NULL;
+		}
+
+		smgr_bulk_finish(ristate->bulkstate);
+		return;
+	}
+	/* POLAR end */
+
+	istate = (HeapInsertState *) state->data;
+
+	if (istate->mistate != NULL)
+	{
+		HeapMultiInsertState *mistate = istate->mistate;
+
+		heap_modify_buffer_flush(state);
+
+		Assert(mistate->cur_slots == 0);
+
+		for (int i = 0; i < HEAP_MAX_BUFFERED_SLOTS && mistate->slots[i] != NULL; i++)
+			ExecDropSingleTupleTableSlot(mistate->slots[i]);
+
+		MemoryContextDelete(mistate->mem_ctx);
+	}
+
+	if (istate->bistate != NULL)
+		FreeBulkInsertState(istate->bistate);
+}
+
+/*
+ * Clean heap modify state.
+ */
+void
+heap_modify_end(TableModifyState *state)
+{
+	heap_modify_insert_end(state);
+	MemoryContextDelete(state->mem_ctx);
 }
 
 /*
@@ -3013,7 +3377,7 @@ l1:
 		all_visible_cleared = true;
 		PageClearAllVisible(page);
 		visibilitymap_clear(relation, BufferGetBlockNumber(buffer),
-							vmbuffer, VISIBILITYMAP_VALID_BITS);
+							vmbuffer, VISIBILITYMAP_VALID_BITS, NULL);
 	}
 
 	/* store transaction information of xact deleting the tuple */
@@ -3833,7 +4197,7 @@ l2:
 		 */
 		if (PageIsAllVisible(page) &&
 			visibilitymap_clear(relation, block, vmbuffer,
-								VISIBILITYMAP_ALL_FROZEN))
+								VISIBILITYMAP_ALL_FROZEN, NULL))
 			cleared_all_frozen = true;
 
 		MarkBufferDirty(buffer);
@@ -4063,14 +4427,14 @@ l2:
 		all_visible_cleared = true;
 		PageClearAllVisible(BufferGetPage(buffer));
 		visibilitymap_clear(relation, BufferGetBlockNumber(buffer),
-							vmbuffer, VISIBILITYMAP_VALID_BITS);
+							vmbuffer, VISIBILITYMAP_VALID_BITS, NULL);
 	}
 	if (newbuf != buffer && PageIsAllVisible(BufferGetPage(newbuf)))
 	{
 		all_visible_cleared_new = true;
 		PageClearAllVisible(BufferGetPage(newbuf));
 		visibilitymap_clear(relation, BufferGetBlockNumber(newbuf),
-							vmbuffer_new, VISIBILITYMAP_VALID_BITS);
+							vmbuffer_new, VISIBILITYMAP_VALID_BITS, NULL);
 	}
 
 	if (newbuf != buffer)
@@ -5156,7 +5520,7 @@ failed:
 	/* Clear only the all-frozen bit on visibility map if needed */
 	if (PageIsAllVisible(page) &&
 		visibilitymap_clear(relation, block, vmbuffer,
-							VISIBILITYMAP_ALL_FROZEN))
+							VISIBILITYMAP_ALL_FROZEN, NULL))
 		cleared_all_frozen = true;
 
 
@@ -5910,7 +6274,7 @@ l4:
 
 		if (PageIsAllVisible(BufferGetPage(buf)) &&
 			visibilitymap_clear(rel, block, vmbuffer,
-								VISIBILITYMAP_ALL_FROZEN))
+								VISIBILITYMAP_ALL_FROZEN, NULL))
 			cleared_all_frozen = true;
 
 		START_CRIT_SECTION();
@@ -7358,30 +7722,6 @@ heap_prepare_freeze_tuple(HeapTupleHeader tuple,
 
 	/* Tell caller if this tuple has a usable freeze plan set in *frz */
 	return freeze_xmin || replace_xvac || replace_xmax || freeze_xmax;
-}
-
-/*
- * heap_execute_freeze_tuple
- *		Execute the prepared freezing of a tuple with caller's freeze plan.
- *
- * Caller is responsible for ensuring that no other backend can access the
- * storage underlying this tuple, either by holding an exclusive lock on the
- * buffer containing it (which is what lazy VACUUM does), or by having it be
- * in private storage (which is what CLUSTER and friends do).
- */
-static inline void
-heap_execute_freeze_tuple(HeapTupleHeader tuple, HeapTupleFreeze *frz)
-{
-	HeapTupleHeaderSetXmax(tuple, frz->xmax);
-
-	if (frz->frzflags & XLH_FREEZE_XVAC)
-		HeapTupleHeaderSetXvac(tuple, FrozenTransactionId);
-
-	if (frz->frzflags & XLH_INVALID_XVAC)
-		HeapTupleHeaderSetXvac(tuple, InvalidTransactionId);
-
-	tuple->t_infomask = frz->t_infomask;
-	tuple->t_infomask2 = frz->t_infomask2;
 }
 
 /*
@@ -9415,7 +9755,7 @@ heap_xlog_prune_freeze(XLogReaderState *record)
 		 */
 
 		PageSetLSN(page, lsn);
-		MarkBufferDirty(buffer);
+		PolarMarkBufferDirty(buffer, record->ReadRecPtr);
 	}
 
 	/*
@@ -9501,7 +9841,7 @@ heap_xlog_visible(XLogReaderState *record)
 		if (XLogHintBitIsNeeded())
 			PageSetLSN(page, lsn);
 
-		MarkBufferDirty(buffer);
+		PolarMarkBufferDirty(buffer, record->ReadRecPtr);
 	}
 	else if (action == BLK_RESTORED)
 	{
@@ -9569,7 +9909,8 @@ heap_xlog_visible(XLogReaderState *record)
 		visibilitymap_pin(reln, blkno, &vmbuffer);
 
 		visibilitymap_set(reln, blkno, InvalidBuffer, lsn, vmbuffer,
-						  xlrec->snapshotConflictHorizon, vmbits);
+						  xlrec->snapshotConflictHorizon, vmbits,
+						  record->ReadRecPtr);
 
 		ReleaseBuffer(vmbuffer);
 		FreeFakeRelcacheEntry(reln);
@@ -9584,7 +9925,7 @@ heap_xlog_visible(XLogReaderState *record)
  *
  * (This is the reverse of compute_infobits).
  */
-static void
+void
 fix_infomask_from_infobits(uint8 infobits, uint16 *infomask, uint16 *infomask2)
 {
 	*infomask &= ~(HEAP_XMAX_IS_MULTI | HEAP_XMAX_LOCK_ONLY |
@@ -9632,7 +9973,7 @@ heap_xlog_delete(XLogReaderState *record)
 		Buffer		vmbuffer = InvalidBuffer;
 
 		visibilitymap_pin(reln, blkno, &vmbuffer);
-		visibilitymap_clear(reln, blkno, vmbuffer, VISIBILITYMAP_VALID_BITS);
+		visibilitymap_clear(reln, blkno, vmbuffer, VISIBILITYMAP_VALID_BITS, record);
 		ReleaseBuffer(vmbuffer);
 		FreeFakeRelcacheEntry(reln);
 	}
@@ -9672,7 +10013,7 @@ heap_xlog_delete(XLogReaderState *record)
 		else
 			htup->t_ctid = target_tid;
 		PageSetLSN(page, lsn);
-		MarkBufferDirty(buffer);
+		PolarMarkBufferDirty(buffer, record->ReadRecPtr);
 	}
 	if (BufferIsValid(buffer))
 		UnlockReleaseBuffer(buffer);
@@ -9716,7 +10057,7 @@ heap_xlog_insert(XLogReaderState *record)
 		Buffer		vmbuffer = InvalidBuffer;
 
 		visibilitymap_pin(reln, blkno, &vmbuffer);
-		visibilitymap_clear(reln, blkno, vmbuffer, VISIBILITYMAP_VALID_BITS);
+		visibilitymap_clear(reln, blkno, vmbuffer, VISIBILITYMAP_VALID_BITS, record);
 		ReleaseBuffer(vmbuffer);
 		FreeFakeRelcacheEntry(reln);
 	}
@@ -9776,7 +10117,7 @@ heap_xlog_insert(XLogReaderState *record)
 		if (xlrec->flags & XLH_INSERT_ALL_VISIBLE_CLEARED)
 			PageClearAllVisible(page);
 
-		MarkBufferDirty(buffer);
+		PolarMarkBufferDirty(buffer, record->ReadRecPtr);
 	}
 	if (BufferIsValid(buffer))
 		UnlockReleaseBuffer(buffer);
@@ -9840,7 +10181,7 @@ heap_xlog_multi_insert(XLogReaderState *record)
 		Buffer		vmbuffer = InvalidBuffer;
 
 		visibilitymap_pin(reln, blkno, &vmbuffer);
-		visibilitymap_clear(reln, blkno, vmbuffer, VISIBILITYMAP_VALID_BITS);
+		visibilitymap_clear(reln, blkno, vmbuffer, VISIBILITYMAP_VALID_BITS, record);
 		ReleaseBuffer(vmbuffer);
 		FreeFakeRelcacheEntry(reln);
 	}
@@ -9923,7 +10264,7 @@ heap_xlog_multi_insert(XLogReaderState *record)
 		if (xlrec->flags & XLH_INSERT_ALL_FROZEN_SET)
 			PageSetAllVisible(page);
 
-		MarkBufferDirty(buffer);
+		PolarMarkBufferDirty(buffer, record->ReadRecPtr);
 	}
 	if (BufferIsValid(buffer))
 		UnlockReleaseBuffer(buffer);
@@ -9999,7 +10340,7 @@ heap_xlog_update(XLogReaderState *record, bool hot_update)
 		Buffer		vmbuffer = InvalidBuffer;
 
 		visibilitymap_pin(reln, oldblk, &vmbuffer);
-		visibilitymap_clear(reln, oldblk, vmbuffer, VISIBILITYMAP_VALID_BITS);
+		visibilitymap_clear(reln, oldblk, vmbuffer, VISIBILITYMAP_VALID_BITS, record);
 		ReleaseBuffer(vmbuffer);
 		FreeFakeRelcacheEntry(reln);
 	}
@@ -10052,7 +10393,7 @@ heap_xlog_update(XLogReaderState *record, bool hot_update)
 			PageClearAllVisible(page);
 
 		PageSetLSN(page, lsn);
-		MarkBufferDirty(obuffer);
+		PolarMarkBufferDirty(obuffer, record->ReadRecPtr);
 	}
 
 	/*
@@ -10083,7 +10424,7 @@ heap_xlog_update(XLogReaderState *record, bool hot_update)
 		Buffer		vmbuffer = InvalidBuffer;
 
 		visibilitymap_pin(reln, newblk, &vmbuffer);
-		visibilitymap_clear(reln, newblk, vmbuffer, VISIBILITYMAP_VALID_BITS);
+		visibilitymap_clear(reln, newblk, vmbuffer, VISIBILITYMAP_VALID_BITS, record);
 		ReleaseBuffer(vmbuffer);
 		FreeFakeRelcacheEntry(reln);
 	}
@@ -10189,7 +10530,7 @@ heap_xlog_update(XLogReaderState *record, bool hot_update)
 		freespace = PageGetHeapFreeSpace(page); /* needed to update FSM below */
 
 		PageSetLSN(page, lsn);
-		MarkBufferDirty(nbuffer);
+		PolarMarkBufferDirty(nbuffer, record->ReadRecPtr);
 	}
 
 	if (BufferIsValid(nbuffer) && nbuffer != obuffer)
@@ -10246,7 +10587,7 @@ heap_xlog_confirm(XLogReaderState *record)
 		ItemPointerSet(&htup->t_ctid, BufferGetBlockNumber(buffer), offnum);
 
 		PageSetLSN(page, lsn);
-		MarkBufferDirty(buffer);
+		PolarMarkBufferDirty(buffer, record->ReadRecPtr);
 	}
 	if (BufferIsValid(buffer))
 		UnlockReleaseBuffer(buffer);
@@ -10278,7 +10619,7 @@ heap_xlog_lock(XLogReaderState *record)
 		reln = CreateFakeRelcacheEntry(rlocator);
 
 		visibilitymap_pin(reln, block, &vmbuffer);
-		visibilitymap_clear(reln, block, vmbuffer, VISIBILITYMAP_ALL_FROZEN);
+		visibilitymap_clear(reln, block, vmbuffer, VISIBILITYMAP_ALL_FROZEN, record);
 
 		ReleaseBuffer(vmbuffer);
 		FreeFakeRelcacheEntry(reln);
@@ -10317,7 +10658,7 @@ heap_xlog_lock(XLogReaderState *record)
 		HeapTupleHeaderSetXmax(htup, xlrec->xmax);
 		HeapTupleHeaderSetCmax(htup, FirstCommandId, false);
 		PageSetLSN(page, lsn);
-		MarkBufferDirty(buffer);
+		PolarMarkBufferDirty(buffer, record->ReadRecPtr);
 	}
 	if (BufferIsValid(buffer))
 		UnlockReleaseBuffer(buffer);
@@ -10351,7 +10692,7 @@ heap_xlog_lock_updated(XLogReaderState *record)
 		reln = CreateFakeRelcacheEntry(rlocator);
 
 		visibilitymap_pin(reln, block, &vmbuffer);
-		visibilitymap_clear(reln, block, vmbuffer, VISIBILITYMAP_ALL_FROZEN);
+		visibilitymap_clear(reln, block, vmbuffer, VISIBILITYMAP_ALL_FROZEN, record);
 
 		ReleaseBuffer(vmbuffer);
 		FreeFakeRelcacheEntry(reln);
@@ -10377,7 +10718,7 @@ heap_xlog_lock_updated(XLogReaderState *record)
 		HeapTupleHeaderSetXmax(htup, xlrec->xmax);
 
 		PageSetLSN(page, lsn);
-		MarkBufferDirty(buffer);
+		PolarMarkBufferDirty(buffer, record->ReadRecPtr);
 	}
 	if (BufferIsValid(buffer))
 		UnlockReleaseBuffer(buffer);
@@ -10418,7 +10759,7 @@ heap_xlog_inplace(XLogReaderState *record)
 		memcpy((char *) htup + htup->t_hoff, newtup, newlen);
 
 		PageSetLSN(page, lsn);
-		MarkBufferDirty(buffer);
+		PolarMarkBufferDirty(buffer, record->ReadRecPtr);
 	}
 	if (BufferIsValid(buffer))
 		UnlockReleaseBuffer(buffer);

@@ -94,6 +94,8 @@ typedef enum TAPtype
 	NONE,
 } TAPtype;
 
+#define RR_RECORD_CMD (rr ? "\"rr\" record" : "")
+
 /* options settable from command line */
 _stringlist *dblist = NULL;
 bool		debug = false;
@@ -140,6 +142,10 @@ static bool postmaster_running = false;
 
 static int	success_count = 0;
 static int	fail_count = 0;
+static bool rr = false;
+bool		polar_prepare_sql = false;
+
+char	   *polar_extension_user = NULL;
 
 static bool directory_exists(const char *dir);
 static void make_directory(const char *dir);
@@ -914,6 +920,29 @@ initialize_environment(void)
 	}
 
 	load_resultmap();
+
+	if (polar_prepare_sql)
+	{
+		const char *env_list[] = {
+			"PG_ABS_SRCDIR",
+			"PG_ABS_BUILDDIR",
+			"PG_LIBDIR",
+			"PG_DLSUFFIX",
+			NULL
+		};
+		int			i;
+
+		fprintf(stdout, "%s: initial environment dump:\n", progname);
+		fprintf(stdout, "-----------------------------------------\n");
+		for (i = 0; env_list[i]; i++)
+		{
+			char	   *p = getenv(env_list[i]);
+
+			if (p)
+				fprintf(stdout, "prepare env %s=%s\n", env_list[i], p);
+		}
+		fprintf(stdout, "-----------------------------------------\n");
+	}
 }
 
 #ifdef ENABLE_SSPI
@@ -1411,6 +1440,9 @@ results_differ(const char *testname, const char *resultsfile, const char *defaul
 	int			l;
 	const char *platform_expectfile;
 
+	if (polar_prepare_sql)
+		return false;
+
 	/*
 	 * We can pass either the resultsfile or the expectfile, they should have
 	 * the same type (filename.type) anyway.
@@ -1651,6 +1683,12 @@ run_schedule(const char *schedule, test_start_function startfunc,
 	FILE	   *scf;
 	int			line_num = 0;
 
+	/* POLAR */
+	char	   *polar_current_dir = NULL;
+	char		polar_tmp_path[MAXPGPATH];
+
+	/* POLAR end */
+
 	memset(tests, 0, sizeof(tests));
 	memset(resultfiles, 0, sizeof(resultfiles));
 	memset(expectfiles, 0, sizeof(expectfiles));
@@ -1679,6 +1717,21 @@ run_schedule(const char *schedule, test_start_function startfunc,
 			continue;
 		if (strncmp(scbuf, "test: ", 6) == 0)
 			test = scbuf + 6;
+		/* POLAR */
+		else if (strncmp(scbuf, "polar_dir: ", 11) == 0)
+		{
+			c = scbuf + 11;
+			while (*c && isspace((unsigned char) *c))
+				c++;
+			if (polar_current_dir != NULL)
+			{
+				pg_free(polar_current_dir);
+				polar_current_dir = NULL;
+			}
+			polar_current_dir = pg_strdup(c);
+			continue;
+		}
+		/* POLAR end */
 		else
 		{
 			bail("syntax error in schedule file \"%s\" line %d: %s",
@@ -1703,7 +1756,17 @@ run_schedule(const char *schedule, test_start_function startfunc,
 					}
 					sav = *c;
 					*c = '\0';
-					tests[num_tests] = pg_strdup(test);
+
+					/* POLAR */
+					if (polar_current_dir)
+					{
+						sprintf(polar_tmp_path, "%s/%s", polar_current_dir, test);
+						tests[num_tests] = pg_strdup(polar_tmp_path);
+					}
+					else
+						tests[num_tests] = pg_strdup(test);
+					/* POLAR end */
+
 					num_tests++;
 					*c = sav;
 					inword = false;
@@ -2011,6 +2074,20 @@ create_role(const char *rolename, const _stringlist *granted_dbs)
 }
 
 static void
+polar_create_role(const char *rolename, const _stringlist *granted_dbs)
+{
+	StringInfo	buf = psql_start_command();
+
+	psql_add_command(buf, "CREATE ROLE \"%s\" WITH LOGIN SUPERUSER", rolename);
+	for (; granted_dbs != NULL; granted_dbs = granted_dbs->next)
+	{
+		psql_add_command(buf, "GRANT ALL ON DATABASE \"%s\" TO \"%s\"",
+						 granted_dbs->str, rolename);
+	}
+	psql_end_command(buf, "postgres");
+}
+
+static void
 help(void)
 {
 	printf(_("PostgreSQL regression test driver\n"));
@@ -2091,6 +2168,8 @@ regression_main(int argc, char *argv[],
 		{"config-auth", required_argument, NULL, 24},
 		{"max-concurrent-tests", required_argument, NULL, 25},
 		{"expecteddir", required_argument, NULL, 26},
+		{"polar_extension_user", required_argument, NULL, 27},
+		{"polar-prepare-sql", no_argument, NULL, 28},
 		{NULL, 0, NULL, 0}
 	};
 
@@ -2131,6 +2210,9 @@ regression_main(int argc, char *argv[],
 
 	if (getenv("PG_REGRESS_DIFF_OPTS"))
 		pretty_diff_opts = getenv("PG_REGRESS_DIFF_OPTS");
+
+	if (getenv("PGRR"))
+		rr = true;
 
 	while ((c = getopt_long(argc, argv, "hV", long_options, &option_index)) != -1)
 	{
@@ -2218,6 +2300,12 @@ regression_main(int argc, char *argv[],
 				break;
 			case 26:
 				expecteddir = pg_strdup(optarg);
+				break;
+			case 27:
+				polar_extension_user = pg_strdup(optarg);
+				break;
+			case 28:
+				polar_prepare_sql = true;
 				break;
 			default:
 				/* getopt_long already emitted a complaint */
@@ -2402,6 +2490,9 @@ regression_main(int argc, char *argv[],
 		fputs("log_temp_files = 128kB\n", pg_conf);
 		fputs("max_prepared_transactions = 2\n", pg_conf);
 
+		if (rr)
+			fputs("huge_pages = off\n", pg_conf);
+
 		for (sl = temp_configs; sl != NULL; sl = sl->next)
 		{
 			char	   *temp_config = sl->str;
@@ -2477,9 +2568,10 @@ regression_main(int argc, char *argv[],
 		 * Start the temp postmaster
 		 */
 		snprintf(buf, sizeof(buf),
-				 "\"%s%spostgres\" -D \"%s/data\" -F%s "
+				 "%s \"%s%spostgres\" -D \"%s/data\" -F%s "
 				 "-c \"listen_addresses=%s\" -k \"%s\" "
 				 "> \"%s/log/postmaster.log\" 2>&1",
+				 RR_RECORD_CMD,
 				 bindir ? bindir : "",
 				 bindir ? "/" : "",
 				 temp_instance, debug ? " -d 5" : "",
@@ -2583,6 +2675,11 @@ regression_main(int argc, char *argv[],
 			for (sl = extraroles; sl; sl = sl->next)
 				drop_role_if_exists(sl->str);
 		}
+
+		/* POLAR: drop extension default user */
+		if (polar_extension_user != NULL)
+			drop_role_if_exists(polar_extension_user);
+		/* POLAR end */
 	}
 
 	/*
@@ -2595,6 +2692,11 @@ regression_main(int argc, char *argv[],
 		for (sl = extraroles; sl; sl = sl->next)
 			create_role(sl->str, dblist);
 	}
+
+	/* POLAR: create extension default regression user. */
+	if (polar_extension_user != NULL)
+		polar_create_role(polar_extension_user, dblist);
+	/* POLAR end */
 
 	/*
 	 * Ready to run the tests

@@ -79,6 +79,23 @@
 #define BM_MAX_USAGE_COUNT	5
 
 /*
+ * POLAR: extended flags of community BM_* for buffer descriptors.
+ *
+ * The lock is separated with BM_LOCKED to avoid contention with modifying
+ * BM_* flags by LockBufHdr/UnlockBufHdr.
+ *
+ * Modifying flags below needs to be protected by PolarLockBufHdrExtend/
+ * PolarUnlockBufHdrExtend.
+ */
+#define POLAR_BUF_LOCKED	(1U << 0)	/* extended flag is locked */
+
+/*
+ * POLAR: polar_flags
+ */
+#define POLAR_BUF_OLDEST_LSN_IS_FAKE		1
+#define POLAR_BUF_FIRST_TOUCHED_AFTER_COPY	(1U << 1)
+
+/*
  * Buffer tag identifies which disk block the buffer contains.
  *
  * Note: the BufferTag data must be sufficient to determine where to write the
@@ -195,6 +212,9 @@ BufMappingPartitionLockByIndex(uint32 index)
 	return &MainLWLockArray[BUFFER_MAPPING_LWLOCK_OFFSET + index].lock;
 }
 
+/* POLAR */
+typedef struct CopyBufferDesc CopyBufferDesc;
+
 /*
  *	BufferDesc -- shared descriptor/state data for a single shared buffer.
  *
@@ -253,6 +273,32 @@ typedef struct BufferDesc
 	int			wait_backend_pgprocno;	/* backend of pin-count waiter */
 	int			freeNext;		/* link in freelist chain */
 	LWLock		content_lock;	/* to lock access to buffer contents */
+
+#ifdef LOCKBUFHDR_DEBUG
+	int			locker_pid;
+#endif
+
+	/* POLAR: extended flags of community state */
+	pg_atomic_uint32 state_ext;
+
+	/* POLAR */
+	int			flush_next;		/* link to next dirty buffer */
+	int			flush_prev;		/* link to prev dirty buffer */
+	XLogRecPtr	oldest_lsn;		/* the first lsn which marked this buffer
+								 * dirty */
+
+	/*
+	 * If a buffer can not be flushed on primary because its latest
+	 * modification lsn > oldest apply lsn, in order to advance the consistent
+	 * lsn, a copy is made. So copy_buffer is used to point to its copied
+	 * buffer of the buffer.
+	 */
+	CopyBufferDesc *copy_buffer;
+	uint8		polar_flags;
+	uint16		recently_modified_count;
+	/* POLAR: record buffer redo state */
+	pg_atomic_uint32 polar_redo_state;
+	/* POLAR end */
 } BufferDesc;
 
 /*
@@ -275,13 +321,16 @@ typedef struct BufferDesc
  * platform with either 32 or 128 byte line sizes, it's good to align to
  * boundaries and avoid false sharing.
  */
-#define BUFFERDESC_PAD_TO_SIZE	(SIZEOF_VOID_P == 8 ? 64 : 1)
+#define BUFFERDESC_PAD_TO_SIZE	(SIZEOF_VOID_P == 8 ? 128 : 1)
 
 typedef union BufferDescPadded
 {
 	BufferDesc	bufferdesc;
 	char		pad[BUFFERDESC_PAD_TO_SIZE];
 } BufferDescPadded;
+
+StaticAssertDecl(sizeof(BufferDesc) <= BUFFERDESC_PAD_TO_SIZE,
+				 "padding size is too small to fit BufferDesc");
 
 /*
  * The PendingWriteback & WritebackContext structure are used to keep
@@ -352,6 +401,11 @@ BufferDescriptorGetContentLock(const BufferDesc *bdesc)
 #define FREENEXT_END_OF_LIST	(-1)
 #define FREENEXT_NOT_IN_LIST	(-2)
 
+/* POLAR */
+extern void polar_bufhdr_unlock_check(BufferDesc *desc);
+
+/* POLAR end */
+
 /*
  * Functions for acquiring/releasing a shared buffer header's spinlock.  Do
  * not apply these to local buffers!
@@ -361,9 +415,31 @@ extern uint32 LockBufHdr(BufferDesc *desc);
 static inline void
 UnlockBufHdr(BufferDesc *desc, uint32 buf_state)
 {
+	polar_bufhdr_unlock_check(desc);
 	pg_write_barrier();
 	pg_atomic_write_u32(&desc->state, buf_state & (~BM_LOCKED));
+#ifdef LOCKBUFHDR_DEBUG
+	desc->locker_pid = 0;
+#endif
 }
+
+/*
+ * POLAR: APIs for modifying extended buffer descriptor flags.
+ */
+extern uint32 PolarLockBufHdrExtend(BufferDesc *desc);
+
+static inline void
+PolarUnlockBufHdrExtend(BufferDesc *desc, uint32 buf_state)
+{
+	polar_bufhdr_unlock_check(desc);
+	pg_write_barrier();
+	pg_atomic_write_u32(&desc->state_ext, buf_state & (~POLAR_BUF_LOCKED));
+#ifdef LOCKBUFHDR_DEBUG
+	desc->locker_pid = 0;
+#endif
+}
+
+/* POLAR end */
 
 /* in bufmgr.c */
 
@@ -433,6 +509,11 @@ extern void StrategyNotifyBgWriter(int bgwprocno);
 extern Size StrategyShmemSize(void);
 extern void StrategyInitialize(bool init);
 extern bool have_free_buffer(void);
+
+/* POLAR */
+extern void polar_backend_flush_stat(BufferAccessStrategy strategy, bool from_ring);
+
+/* POLAR end */
 
 /* buf_table.c */
 extern Size BufTableShmemSize(int size);

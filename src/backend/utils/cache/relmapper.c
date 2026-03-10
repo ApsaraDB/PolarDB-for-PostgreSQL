@@ -28,6 +28,7 @@
  * all these files commit in a single map file update rather than being tied
  * to transaction commit.
  *
+ * Portions Copyright (c) 2024, Alibaba Group Holding Limited
  * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -54,6 +55,9 @@
 #include "storage/lwlock.h"
 #include "utils/inval.h"
 #include "utils/relmapper.h"
+
+/* POLAR */
+#include "storage/polar_fd.h"
 
 
 /*
@@ -787,6 +791,7 @@ read_relmap_file(RelMapFile *map, char *dbpath, bool lock_held, int elevel)
 	pg_crc32c	crc;
 	int			fd;
 	int			r;
+	char		polar_mapfilename[MAXPGPATH];
 
 	Assert(elevel >= ERROR);
 
@@ -811,27 +816,28 @@ read_relmap_file(RelMapFile *map, char *dbpath, bool lock_held, int elevel)
 	 */
 	snprintf(mapfilename, sizeof(mapfilename), "%s/%s", dbpath,
 			 RELMAPPER_FILENAME);
-	fd = OpenTransientFile(mapfilename, O_RDONLY | PG_BINARY);
+	polar_make_file_path_level2(polar_mapfilename, mapfilename);
+	fd = OpenTransientFile(polar_mapfilename, O_RDONLY | PG_BINARY);
 	if (fd < 0)
 		ereport(elevel,
 				(errcode_for_file_access(),
 				 errmsg("could not open file \"%s\": %m",
-						mapfilename)));
+						polar_mapfilename)));
 
 	/* Now read the data. */
 	pgstat_report_wait_start(WAIT_EVENT_RELATION_MAP_READ);
-	r = read(fd, map, sizeof(RelMapFile));
+	r = polar_read(fd, map, sizeof(RelMapFile));
 	if (r != sizeof(RelMapFile))
 	{
 		if (r < 0)
 			ereport(elevel,
 					(errcode_for_file_access(),
-					 errmsg("could not read file \"%s\": %m", mapfilename)));
+					 errmsg("could not read file \"%s\": %m", polar_mapfilename)));
 		else
 			ereport(elevel,
 					(errcode(ERRCODE_DATA_CORRUPTED),
 					 errmsg("could not read file \"%s\": read %d of %zu",
-							mapfilename, r, sizeof(RelMapFile))));
+							polar_mapfilename, r, sizeof(RelMapFile))));
 	}
 	pgstat_report_wait_end();
 
@@ -839,7 +845,7 @@ read_relmap_file(RelMapFile *map, char *dbpath, bool lock_held, int elevel)
 		ereport(elevel,
 				(errcode_for_file_access(),
 				 errmsg("could not close file \"%s\": %m",
-						mapfilename)));
+						polar_mapfilename)));
 
 	if (!lock_held)
 		LWLockRelease(RelationMappingLock);
@@ -850,7 +856,7 @@ read_relmap_file(RelMapFile *map, char *dbpath, bool lock_held, int elevel)
 		map->num_mappings > MAX_MAPPINGS)
 		ereport(elevel,
 				(errmsg("relation mapping file \"%s\" contains invalid data",
-						mapfilename)));
+						polar_mapfilename)));
 
 	/* verify the CRC */
 	INIT_CRC32C(crc);
@@ -860,7 +866,7 @@ read_relmap_file(RelMapFile *map, char *dbpath, bool lock_held, int elevel)
 	if (!EQ_CRC32C(crc, map->crc))
 		ereport(elevel,
 				(errmsg("relation mapping file \"%s\" contains incorrect checksum",
-						mapfilename)));
+						polar_mapfilename)));
 }
 
 /*
@@ -891,7 +897,9 @@ write_relmap_file(RelMapFile *newmap, bool write_wal, bool send_sinval,
 {
 	int			fd;
 	char		mapfilename[MAXPGPATH];
+	char		polar_mapfilename[MAXPGPATH];
 	char		maptempfilename[MAXPGPATH];
+	char		polar_maptempfilename[MAXPGPATH];
 
 	/*
 	 * Even without concurrent use of this map, CheckPointRelationMap() relies
@@ -919,25 +927,27 @@ write_relmap_file(RelMapFile *newmap, bool write_wal, bool send_sinval,
 	 */
 	snprintf(mapfilename, sizeof(mapfilename), "%s/%s",
 			 dbpath, RELMAPPER_FILENAME);
+	polar_make_file_path_level2(polar_mapfilename, mapfilename);
 	snprintf(maptempfilename, sizeof(maptempfilename), "%s/%s",
 			 dbpath, RELMAPPER_TEMP_FILENAME);
+	polar_make_file_path_level2(polar_maptempfilename, maptempfilename);
 
 	/*
 	 * Open a temporary file. If a file already exists with this name, it must
 	 * be left over from a previous crash, so we can overwrite it. Concurrent
 	 * calls to this function are not allowed.
 	 */
-	fd = OpenTransientFile(maptempfilename,
+	fd = OpenTransientFile(polar_maptempfilename,
 						   O_WRONLY | O_CREAT | O_TRUNC | PG_BINARY);
 	if (fd < 0)
 		ereport(ERROR,
 				(errcode_for_file_access(),
 				 errmsg("could not open file \"%s\": %m",
-						maptempfilename)));
+						polar_maptempfilename)));
 
 	/* Write new data to the file. */
 	pgstat_report_wait_start(WAIT_EVENT_RELATION_MAP_WRITE);
-	if (write(fd, newmap, sizeof(RelMapFile)) != sizeof(RelMapFile))
+	if (polar_write(fd, newmap, sizeof(RelMapFile)) != sizeof(RelMapFile))
 	{
 		/* if write didn't set errno, assume problem is no disk space */
 		if (errno == 0)
@@ -945,7 +955,7 @@ write_relmap_file(RelMapFile *newmap, bool write_wal, bool send_sinval,
 		ereport(ERROR,
 				(errcode_for_file_access(),
 				 errmsg("could not write file \"%s\": %m",
-						maptempfilename)));
+						polar_maptempfilename)));
 	}
 	pgstat_report_wait_end();
 
@@ -954,7 +964,7 @@ write_relmap_file(RelMapFile *newmap, bool write_wal, bool send_sinval,
 		ereport(ERROR,
 				(errcode_for_file_access(),
 				 errmsg("could not close file \"%s\": %m",
-						maptempfilename)));
+						polar_maptempfilename)));
 
 	if (write_wal)
 	{
@@ -986,7 +996,7 @@ write_relmap_file(RelMapFile *newmap, bool write_wal, bool send_sinval,
 	 * be in a critical section at this point; if so, ERROR will become PANIC.
 	 */
 	pgstat_report_wait_start(WAIT_EVENT_RELATION_MAP_REPLACE);
-	durable_rename(maptempfilename, mapfilename, ERROR);
+	durable_rename(polar_maptempfilename, polar_mapfilename, ERROR);
 	pgstat_report_wait_end();
 
 	/*
@@ -1114,25 +1124,33 @@ relmap_redo(XLogReaderState *record)
 		/* We need to construct the pathname for this database */
 		dbpath = GetDatabasePath(xlrec->dbid, xlrec->tsid);
 
-		/*
-		 * Write out the new map and send sinval, but of course don't write a
-		 * new WAL entry.  There's no surrounding transaction to tell to
-		 * preserve files, either.
-		 *
-		 * There shouldn't be anyone else updating relmaps during WAL replay,
-		 * but grab the lock to interlock against load_relmap_file().
-		 *
-		 * Note that we use the same WAL record for updating the relmap of an
-		 * existing database as we do for creating a new database. In the
-		 * latter case, taking the relmap log and sending sinval messages is
-		 * unnecessary, but harmless. If we wanted to avoid it, we could add a
-		 * flag to the WAL record to indicate which operation is being
-		 * performed.
-		 */
-		LWLockAcquire(RelationMappingLock, LW_EXCLUSIVE);
-		write_relmap_file(&newmap, false, true, false,
-						  xlrec->dbid, xlrec->tsid, dbpath);
-		LWLockRelease(RelationMappingLock);
+		if (polar_is_replica())
+		{
+			CacheInvalidateRelmap(xlrec->dbid);
+		}
+		else
+		{
+			/*
+			 * Write out the new map and send sinval, but of course don't
+			 * write a new WAL entry.  There's no surrounding transaction to
+			 * tell to preserve files, either.
+			 *
+			 * There shouldn't be anyone else updating relmaps during WAL
+			 * replay, but grab the lock to interlock against
+			 * load_relmap_file().
+			 *
+			 * Note that we use the same WAL record for updating the relmap of
+			 * an existing database as we do for creating a new database. In
+			 * the latter case, taking the relmap log and sending sinval
+			 * messages is unnecessary, but harmless. If we wanted to avoid
+			 * it, we could add a flag to the WAL record to indicate which
+			 * operation is being performed.
+			 */
+			LWLockAcquire(RelationMappingLock, LW_EXCLUSIVE);
+			write_relmap_file(&newmap, false, true, false,
+							  xlrec->dbid, xlrec->tsid, dbpath);
+			LWLockRelease(RelationMappingLock);
+		}
 
 		pfree(dbpath);
 	}

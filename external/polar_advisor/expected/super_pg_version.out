@@ -1,0 +1,77 @@
+/*
+ * external/polar_advisor/sql/super_pg_version.sql
+ * Test the functions to set and get super_pg client version.
+ */
+CREATE EXTENSION IF NOT EXISTS polar_advisor;
+NOTICE:  extension "polar_advisor" already exists, skipping
+-- Empty by default
+SELECT others, others ->> 'super_pg_version' AS version, others ->> 'super_pg_release_date' AS release_date FROM polar_advisor.advisor_window;
+ others | version | release_date 
+--------+---------+--------------
+        |         | 
+(1 row)
+
+SELECT polar_advisor.get_super_pg_version();
+ get_super_pg_version 
+----------------------
+ 
+(1 row)
+
+SELECT polar_advisor.get_super_pg_release_date();
+ get_super_pg_release_date 
+---------------------------
+                          
+(1 row)
+
+-- Set it
+SELECT polar_advisor.set_super_pg_client_version_release_date(super_pg_version => '1.0', super_pg_release_date => '20240630');
+ set_super_pg_client_version_release_date 
+------------------------------------------
+ 
+(1 row)
+
+-- Get again
+SELECT others, others ->> 'super_pg_version' AS version, others ->> 'super_pg_release_date' AS release_date FROM polar_advisor.advisor_window;
+                             others                             | version | release_date 
+----------------------------------------------------------------+---------+--------------
+ {"super_pg_version": "1.0", "super_pg_release_date": 20240630} | 1.0     | 20240630
+(1 row)
+
+SELECT polar_advisor.get_super_pg_version();
+ get_super_pg_version 
+----------------------
+ 1.0
+(1 row)
+
+SELECT polar_advisor.get_super_pg_release_date();
+ get_super_pg_release_date 
+---------------------------
+                  20240630
+(1 row)
+
+-- Update it
+SELECT polar_advisor.set_super_pg_client_version_release_date(super_pg_version => '2.0', super_pg_release_date => '20240730');
+ set_super_pg_client_version_release_date 
+------------------------------------------
+ 
+(1 row)
+
+-- Get again
+SELECT others, others ->> 'super_pg_version' AS version, others ->> 'super_pg_release_date' AS release_date FROM polar_advisor.advisor_window;
+                             others                             | version | release_date 
+----------------------------------------------------------------+---------+--------------
+ {"super_pg_version": "2.0", "super_pg_release_date": 20240730} | 2.0     | 20240730
+(1 row)
+
+SELECT polar_advisor.get_super_pg_version();
+ get_super_pg_version 
+----------------------
+ 2.0
+(1 row)
+
+SELECT polar_advisor.get_super_pg_release_date();
+ get_super_pg_release_date 
+---------------------------
+                  20240730
+(1 row)
+

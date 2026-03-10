@@ -13,6 +13,8 @@ $node->start;
 
 $ENV{PGOPTIONS} = '--client-min-messages=WARNING';
 
+$node->safe_psql('polardb_admin',
+	'CREATE TABLE test1 (a int); CREATE INDEX test1x ON test1 (a);');
 $node->safe_psql('postgres',
 	'CREATE TABLE test1 (a int); CREATE INDEX test1x ON test1 (a);');
 $node->safe_psql('template1',

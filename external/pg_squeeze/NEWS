@@ -1,0 +1,346 @@
+Release 1.9.1
+=============
+
+Bug fixes
+---------
+
+* Fix version information.
+
+Version 1.9.0 was accidentally tagged without updating the version information
+in the source code.
+
+
+Release 1.9.0
+=============
+
+New features
+------------
+
+1. Make the code compatible with PostgreSQL server version 18.
+
+Bug fixes
+---------
+
+* Do not raise ERROR if table column is of composite type
+  (https://github.com/cybertec-postgresql/pg_squeeze/issues/83)
+
+
+Release 1.8.0
+=============
+
+This release fixes a bug in the squeeze.squeeze_table() function, which can
+cause data corruption. The problem can occur if other clients run DDL
+statements or squeeze other tables around the time the function starts its
+execution.
+
+Automatic launching by the scheduler worker (as described in the "Register
+table for regular processing" section of README) is not affected.
+
+
+Release 1.7.0
+=============
+
+New features
+------------
+
+1. Make the code compatible with PostgreSQL server version 17.
+
+2. Do not copy the values of dropped columns into the new table storage
+   (file).
+
+   So far, only the whole rows (the deleted ones) were considered to
+   contribute to the table bloat. Now we also reclaim the space occupied by
+   dropped columns.
+
+3. Let the squeeze.squeeze_table function raise ERROR.
+
+   So far, the function only inserted record into the squeeze.log table if the
+   processing was successful, and into squeeze.errors if it failed. Now, in
+   the case of failure, the function also prints out the error message into
+   the console.
+
+4. Do not let the squeeze workers run if there is currently no work for them.
+
+   For automatic processing, one scheduler worker per database needs to run,
+   but the actual squeeze worker is only started if particular table appears
+   to be bloated. Once done with the processing, the squeeze worker exits
+   instead of waiting for another task.
+
+5. Improved parallelism of the squeeze workers.
+
+   Multiple worker processes (one per table) can be used since the release
+   1.6, but so far it was still possible that the work gets serialized due to
+   the logical decoding setup. Those limitations have been relaxed in 1.7.
+
+Bug fixes
+---------
+
+1. Fixed broken setup of "shared memory hooks".
+
+   This could cause server crash if other extensions installed their hooks as
+   well. (https://github.com/cybertec-postgresql/pg_squeeze/issues/68)
+
+2. Fixed evaluation of the squeeze.max_xlock_time configuration variable.
+
+   Due to this bug, pg_squeeze behaved as if the timeout was set to much lower
+   value. (The bug had no effect if the variable was set to 0, which is the
+   default.)
+
+3. Fixed permissions checks for the squeeze.pgstattuple_approx() function.
+
+   Like with other functions of this extension, the SUPERUSER role attribute
+   is not needed for execution. The REPLICATION attribute is sufficient.
+
+4. Update BRIN indexes when appropriate.
+
+   If a row was updated during the table processing and only the attributes of
+   "summarizing" (BRIN) indexes changed, pg_squeeze could fail to update those
+   indexes.
+
+   This bug only affects pg_squeeze on PostgreSQL 16.
+
+
+Release 1.6.1
+=============
+
+Bug fixes
+---------
+
+1. Pass function argument as Datum rather than the "raw" timestamp.
+
+The bug can cause crash on platforms where timestamp is passed by reference
+(which usually means the 32-bit systems).
+
+
+Release 1.6.0
+=============
+
+New features
+------------
+
+1. Make the code compatible with PostgreSQL server version 16.
+
+2. Allow processing of multiple tables at a time, even if the are in the same
+   database.
+
+3. Enhanced monitoring - see the squeeze.get_active_workers() function as well
+   as the new columns of the squeeze.log table.
+
+Bug fixes
+---------
+
+1. Fixed the mechanism that checks the number of workers per database. This
+   also fixes the stop_worker() function so that it does not miss workers
+   anymore.
+
+Note
+----
+
+The behavior of the squeeze_table() function changes in this version, see
+README for more information.
+
+
+Release 1.5.0
+=============
+
+This release only updates the code so that it is compatible with PostgreSQL
+server version 15.
+
+
+Release 1.4.1
+=============
+
+Bug fixes
+---------
+
+1. Adapted the code to changed API of PostgreSQL core code.
+
+   Signature of NewHeapCreateToastTable() changed between PG 14beta3 and
+   14rc1.
+
+
+Release 1.4.0
+=============
+
+Bug fixes
+---------
+
+1. Fixed determination of WAL insert position before processing the concurrent
+   changes.
+
+   Without this fix, some data changes performed during the initial load by
+   sessions which have synchronous_commit=off can be lost.
+
+New features
+------------
+
+1. Decode WAL even during the initial load, although the changes decoded
+   cannot be applied during the load. This allows WAL segments to be recycled
+   during the load. Note that a huge amount of logical changes can be
+   generated by the initial load itself, but these do not have to be
+   decoded. Thus only changes done by other transactions need to be stored,
+   and applied as soon as the initial load has completed.
+
+2. Process even tables with FULL replica identity, as long as they do have a
+   primary key.
+
+
+Release 1.3.1
+=============
+
+Bug fixes
+---------
+
+1. Fixed failure to run the CREATE EXTENSION command on PostgreSQL server v10.
+
+   The problem is that PG10 does not support arrays of domain type.
+
+
+Release 1.3.0
+=============
+
+New features
+------------
+
+1. Support for PostgreSQL 13.
+
+2. Enhanced scheduling.
+
+   Instead of passing an array of timetz values, the DBA can now specify the
+   schedule in a way similar to crontab, i.e. days can be specified too. Note
+   that "ALTER EXTENSION pg_squeeze UPDATE" command does not handle conversion
+   of the schedule - instead it deletes the existing contents of the
+   "squeeze"."tables" configuration table.
+
+   Another enhancement is that two background workers are now used: one that
+   checks the schedule and another one that checks the amount of bloat and
+   possibly squeezes the tables. This makes the scheduling more accurate.
+
+
+Bug fixes
+---------
+
+1. Release the replication slot if ERROR is encountered by the background
+   worker during the call of the squeeze_table() function. For interactive
+   calls, pg_squeeze does not have to care because PG core does.
+
+2. Release lock on the pg_squeeze extension (which ensures that no more than
+   one instance of each background worker can be launched) when exiting due to
+   pg_cancel_backend().
+
+
+Release 1.2.0
+=============
+
+New features
+------------
+
+1. Support for PostgreSQL 12.
+
+2. Do not hide old row versions from VACUUM for longer than necessary.
+
+   The "initial load" phase of the squeeze process uses a "historic snapshot"
+   to retrieve the table data as it was when the squeeze_table() function
+   started. This data must be protected from VACUUM.
+
+   pg_squeeze uses replication slot for this purpose, so it's not possible to
+   protect only one particular table from VACUUM. Since this approach affects
+   the whole cluster, the protection needs to be released as soon as the
+   initial load has completed.
+
+3. Try harder to make WAL segments available for archiving.
+
+   Data changes performed during the squeeze process are retrieved from
+   WAL. Now we check more often if particular WAL segment is still needed by
+   pg_squeeze.
+
+
+Release 1.1.1
+=============
+
+Bug fixes
+---------
+
+1. Fixed failure to find equality operator for index scan. The failure was
+   observed when the column type (e.g. varchar) differed from the operator
+   class input type (e.g. text).
+
+2. Use index reloptions in the correct format when creating indexes on the new
+   table. The bug could cause crash, however it should not lead to corruption
+   of the original reloptions since the new catalog entries are eventually
+   dropped (only storage of the new index is used).
+
+
+Release 1.1.0
+=============
+
+New features
+------------
+
+1. Instead of configuring "first_check" and "task_interval", administrator now
+   passes a "schedule" array of timestamps at which table should be squeezed.
+
+2. Table no longer needs to have the user_catalog_table storage option set
+   before it can be passed to squeeze_table() function.
+
+   Now INSERT ... ON CONFLICT ... command no longer raises ERROR if trying to
+   access table that is just being squeezed. Another advantage is this change
+   is that calls of the squeeze_table() function are now easier.
+
+3. No longer disable autovacuum for the table being squeezed.
+
+   The additional code complexity is probably not worth and it does not stop
+   already running VACUUM. It's responsibility of the DBA not to allow VACUUM
+   to waste resources on a table which should be treated by pg_squeeze.
+
+
+Bug fixes
+---------
+
+1. Close pg_class relation and its scan if exiting early (i.e. catalog change
+   was detected).
+
+2. Defend against race conditions that allow for applying of the concurrent
+   changes which have already been captured by the initial load. In such a
+   case the squeeze_table() function can raise ERROR due to attempt to insert
+   duplicate value of identity key, or due to failure to update or delete row
+   that no longer exists.
+
+3. Use the correct snapshot for the initial load.
+
+   So far the squeeze_table() function could have used an obsolete snapshot if
+   some transaction(s) started after the snapshot builder reached
+   SNAPBUILD_FULL_SNAPSHOT state and committed before
+   SNAPBUILD_CONSISTENT. Both the initial load and the logical decoding used
+   to miss such transactions.
+
+   This problem could only happen after the bug fix #2 had been
+   implemented. Before that at least the logical decoding captured the
+   problematic transactions because it (the decoding) started earlier than
+   necessary.
+
+   No data loss was reported so far, but we still recommend you to upgrade
+   pg_squeeze to the version that includes this fix.
+
+4. Do not use "initial load memory context" to fetch tuples from table or
+   index.
+
+   If the load takes place in multiple "batches" (i.e. tuplesort is not used),
+   that memory context gets freed before the next batch starts and the call fo
+   squeeze_table() function results in SEGFAULT.
+
+5. Do not close relation cache entry for index if some field is yet to be
+   accessed.
+
+6. Include composite types in the checks of concurrent catalog changes. If
+   table has a column of a composite data type and the type is altered during
+   the squeeze, the squeeze_table() function raises ERROR.
+
+
+Release 1.0.1
+=============
+
+Bug fixes
+---------
+
+1. Try harder to avoid out-of-memory conditions during the initial table load.

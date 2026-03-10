@@ -149,8 +149,25 @@ stringToNodeWithLocations(const char *str)
  * code should add backslashes to a string constant to ensure it is treated
  * as a single token.
  */
+static const char *_pg_strtok(int *length, bool next_token);
+
 const char *
 pg_strtok(int *length)
+{
+	return _pg_strtok(length, true);
+}
+
+/*
+ * POLAR: probe next token from a string, don't move the state pointer.
+ */
+const char *
+pg_strtok_probe(int *length)
+{
+	return _pg_strtok(length, false);
+}
+
+static const char *
+_pg_strtok(int *length, bool next_token)
 {
 	const char *local_str;		/* working pointer to string */
 	const char *ret_str;		/* start of token to return */
@@ -163,7 +180,8 @@ pg_strtok(int *length)
 	if (*local_str == '\0')
 	{
 		*length = 0;
-		pg_strtok_ptr = local_str;
+		if (next_token)
+			pg_strtok_ptr = local_str;
 		return NULL;			/* no more tokens */
 	}
 
@@ -200,7 +218,8 @@ pg_strtok(int *length)
 	if (*length == 2 && ret_str[0] == '<' && ret_str[1] == '>')
 		*length = 0;
 
-	pg_strtok_ptr = local_str;
+	if (next_token)
+		pg_strtok_ptr = local_str;
 
 	return ret_str;
 }

@@ -3,6 +3,7 @@
  * pg_wchar.h
  *	  multibyte-character support
  *
+ * Portions Copyright (c) 2024, Alibaba Group Holding Limited
  * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -279,9 +280,9 @@ typedef enum pg_enc
 	/* followings are for client encoding only */
 	PG_SJIS,					/* Shift JIS (Windows-932) */
 	PG_BIG5,					/* Big5 (Windows-950) */
-	PG_GBK,						/* GBK (Windows-936) */
+	PG_GBK,						/* GBK (Windows-936) (POLAR) */
 	PG_UHC,						/* UHC (Windows-949) */
-	PG_GB18030,					/* GB18030 */
+	PG_GB18030,					/* GB18030 (POLAR) */
 	PG_JOHAB,					/* EUC for Korean JOHAB */
 	PG_SHIFT_JIS_2004,			/* Shift-JIS-2004 */
 	_PG_LAST_ENCODING_			/* mark only */
@@ -294,11 +295,15 @@ typedef enum pg_enc
  * Please use these tests before access to pg_enc2name_tbl[]
  * or to other places...
  */
+#define PG_VALID_BE_ORGIN_ENCODING(_enc) \
+		(((_enc) >= 0 &&  (_enc) <= PG_ENCODING_BE_LAST))
+
 #define PG_VALID_BE_ENCODING(_enc) \
-		((_enc) >= 0 && (_enc) <= PG_ENCODING_BE_LAST)
+		(((_enc) >= 0 &&  (_enc) <= PG_ENCODING_BE_LAST) || (_enc) == PG_GBK || (_enc) == PG_GB18030 )
 
 #define PG_ENCODING_IS_CLIENT_ONLY(_enc) \
-		((_enc) > PG_ENCODING_BE_LAST && (_enc) < _PG_LAST_ENCODING_)
+		((_enc) > PG_ENCODING_BE_LAST && (_enc) < _PG_LAST_ENCODING_ \
+			&& (_enc) != PG_GBK && (_enc) != PG_GB18030 )
 
 #define PG_VALID_ENCODING(_enc) \
 		((_enc) >= 0 && (_enc) < _PG_LAST_ENCODING_)
@@ -656,6 +661,7 @@ unicode_utf8len(pg_wchar c)
 extern int	pg_char_to_encoding(const char *name);
 extern const char *pg_encoding_to_char(int encoding);
 extern int	pg_valid_server_encoding_id(int encoding);
+extern int	pg_valid_server_origin_encoding_id(int encoding);
 
 /*
  * These functions are available to frontend code that links with libpgcommon
@@ -764,6 +770,8 @@ extern int	LocalToUtf(const unsigned char *iso, int len,
 					   const pg_local_to_utf_combined *cmap, int cmapsize,
 					   utf_local_conversion_func conv_func,
 					   int encoding, bool noError);
+
+extern bool polar_skip_null_char_in_string;
 
 extern bool pg_verifymbstr(const char *mbstr, int len, bool noError);
 extern bool pg_verify_mbstr(int encoding, const char *mbstr, int len,

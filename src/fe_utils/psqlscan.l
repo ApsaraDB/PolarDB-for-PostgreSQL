@@ -1075,7 +1075,7 @@ psql_scan_setup(PsqlScanState state,
 
 	/* Do we need to hack the character set encoding? */
 	state->encoding = encoding;
-	state->safe_encoding = pg_valid_server_encoding_id(encoding);
+	state->safe_encoding = pg_valid_server_origin_encoding_id(encoding);
 
 	/* Save standard-strings flag as well */
 	state->std_strings = std_strings;

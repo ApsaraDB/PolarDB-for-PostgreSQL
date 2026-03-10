@@ -242,7 +242,7 @@ test_slru_shmem_startup(void)
 	SimpleLruInit(TestSlruCtl, "TestSLRU",
 				  NUM_TEST_BUFFERS, 0, slru_dir_name,
 				  test_buffer_tranche_id, test_tranche_id, SYNC_HANDLER_NONE,
-				  long_segment_names);
+				  long_segment_names, false);
 }
 
 void

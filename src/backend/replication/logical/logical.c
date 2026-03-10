@@ -2,6 +2,7 @@
  * logical.c
  *	   PostgreSQL logical decoding coordination
  *
+ * Portions Copyright (c) 2026, Alibaba Group Holding Limited
  * Copyright (c) 2012-2024, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
