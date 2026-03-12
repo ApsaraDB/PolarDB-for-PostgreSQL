@@ -960,7 +960,7 @@ AC_SUBST(with_pfsd)
 
 if test "$with_pfsd" = "yes"; then
   AC_MSG_CHECKING([PFSD version])
-  pfsd_version=`rpm -q --queryformat '%{VERSION}-%{RELEASE}' t-polarstore-pfsd`
+  pfsd_version="unknown"
   if test -n "$pfsd_version"; then
     AC_DEFINE_UNQUOTED([PFSD_VERSION], ["$pfsd_version"], [PFSD version number])
     AC_MSG_RESULT([$pfsd_version])

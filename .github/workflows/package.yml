@@ -1,0 +1,134 @@
+name: build packages
+
+on:
+  push:
+    tags:
+      - "v*"
+    branches: [ POLARDB_17_STABLE ]
+  pull_request:
+    branches: [ POLARDB_17_STABLE ]
+    paths:
+      - '.github/workflows/package.yml'
+      - 'config/**'
+      - 'contrib/**'
+      - 'external/**'
+      - 'package/**'
+      - 'src/**'
+      - 'configure*'
+      - 'build.sh'
+  # trigger testing manually
+  workflow_dispatch:
+
+jobs:
+
+  build-and-publish-rpm:
+    strategy:
+      matrix:
+        arch: [ ubuntu-24.04, ubuntu-24.04-arm ]
+        base_image: [ anolis8, rocky8, rocky9, rocky10 ]
+    runs-on: ${{ matrix.arch }}
+    steps:
+      - name: fetch source code
+        uses: actions/checkout@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: create and start the container
+        run: |
+          docker create                                                    \
+            -t                                                             \
+            --name polardb_${{ matrix.base_image }}                        \
+            -v `pwd`:/home/postgres/PolarDB-for-PostgreSQL                 \
+            polardb/polardb_pg_devel:${{ matrix.base_image }}              \
+            bash &&                                                        \
+          docker start polardb_${{ matrix.base_image }}
+
+      - name: build RPM package
+        run: |
+          docker exec                                                      \
+            polardb_${{ matrix.base_image }}                               \
+            bash -c "cd /home/postgres/PolarDB-for-PostgreSQL &&           \
+                     sudo chown -R postgres:postgres ./ &&                 \
+                     cd ./package/rpm &&                                   \
+                     if [ -f /etc/bashrc ]; then source /etc/bashrc; fi && \
+                     ./build-rpm.sh"
+
+      - name: get package name
+        run: |
+          RPMPATH=./package/rpm/`uname -m` && \
+          cd $RPMPATH && \
+          RPMNAME=`ls` && \
+          echo "rpmname=$RPMNAME" >> $GITHUB_ENV
+          echo "rpmpath=$RPMPATH/$RPMNAME" >> $GITHUB_ENV
+      - name: upload artifact
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.rpmname }}
+          path: ${{ env.rpmpath }}
+          compression-level: 0
+      - name: change ownership of the source code
+        run: |
+          sudo chown -R runner:runner `pwd`
+
+  build-and-publish-deb:
+    strategy:
+      matrix:
+        arch: [ ubuntu-24.04, ubuntu-24.04-arm ]
+        base_image: [ ubuntu20.04, ubuntu22.04, ubuntu24.04, debian11, debian12, debian13 ]
+    runs-on: ${{ matrix.arch }}
+    steps:
+      - name: fetch source code
+        uses: actions/checkout@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: create and start the container
+        run: |
+          docker create                                                    \
+            -t                                                             \
+            --name polardb_${{ matrix.base_image }}                        \
+            -v `pwd`:/home/postgres/PolarDB-for-PostgreSQL                 \
+            polardb/polardb_pg_devel:${{ matrix.base_image }}              \
+            bash &&                                                        \
+          docker start polardb_${{ matrix.base_image }}
+
+      - name: build deb package
+        run: |
+          docker exec                                                       \
+            polardb_${{ matrix.base_image }}                                \
+            bash -c "cd /home/postgres/PolarDB-for-PostgreSQL &&            \
+                      sudo chown -R postgres:postgres ./ &&                 \
+                      cd ./package/debian &&                                \
+                      if [ -f /etc/bashrc ]; then source /etc/bashrc; fi && \
+                      ./build-deb.sh"
+
+      - name: get package name
+        run: |
+          cd ./package/debian && DEBNAME=`ls *.deb` && echo "debname=$DEBNAME" >> $GITHUB_ENV
+      - name: upload artifact
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.debname }}
+          path: ./package/debian/${{ env.debname }}
+          compression-level: 0
+      - name: change ownership of the source code
+        run: |
+          sudo chown -R runner:runner `pwd`
+
+  release-packages:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [ build-and-publish-rpm, build-and-publish-deb ]
+    runs-on: ubuntu-latest
+    steps:
+      - name: download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: |
+            *.{rpm,deb}
+          merge-multiple: true
+      - name: upload artifacts to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            *.rpm
+            *.deb

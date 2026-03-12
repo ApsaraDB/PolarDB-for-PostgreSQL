@@ -8784,7 +8784,7 @@ $as_echo "$with_pfsd" >&6; }
 if test "$with_pfsd" = "yes"; then
   { $as_echo "$as_me:${as_lineno-$LINENO}: checking PFSD version" >&5
 $as_echo_n "checking PFSD version... " >&6; }
-  pfsd_version=`rpm -q --queryformat '%{VERSION}-%{RELEASE}' t-polarstore-pfsd`
+  pfsd_version="unknown"
   if test -n "$pfsd_version"; then
 
 cat >>confdefs.h <<_ACEOF

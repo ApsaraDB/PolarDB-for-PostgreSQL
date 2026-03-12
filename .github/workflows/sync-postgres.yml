@@ -1,0 +1,30 @@
+name: sync with postgres upstream
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 0 * * *"
+
+jobs:
+  repo-sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: repo-sync-all
+        uses: repo-sync/github-sync@master
+        with:
+          source_repo: https://git.postgresql.org/git/postgresql.git
+          source_branch: "REL_*"
+          destination_branch: "REL_*"
+          sync_tags: "true"
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+      - name: repo-sync-master
+        uses: repo-sync/github-sync@master
+        with:
+          source_repo: https://git.postgresql.org/git/postgresql.git
+          source_branch: master
+          destination_branch: master
+          github_token: ${{ secrets.GITHUB_TOKEN }}
