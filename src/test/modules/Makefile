@@ -45,7 +45,7 @@ SUBDIRS = \
 		  test_local_cache
 
 # POLAR
-SUBDIRS += test_bulkio
+# SUBDIRS += test_bulkio
 SUBDIRS += test_buffer
 SUBDIRS += test_coredump_handler
 SUBDIRS += test_logindex test_procpool

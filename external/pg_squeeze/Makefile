@@ -12,7 +12,8 @@ REGRESS = squeeze
 # POLAR: add pg_squeeze into shared_preload_libraries and set wal_level to logical in conf file.
 REGRESS_OPTS = --temp-config $(top_srcdir)/external/pg_squeeze/pg_squeeze.conf
 
-TAP_TESTS = 1
+# POLAR: needs psycopg
+# TAP_TESTS = 1
 
 # POLAR: pg_squeeze must be loaded via shared_preload_libraries.
 # But parameter "shared_preload_libraries" cannot be changed without restarting the server.

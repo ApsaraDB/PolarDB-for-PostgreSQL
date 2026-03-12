@@ -160,7 +160,7 @@ DROP ROLE regress_dump_test_role;
 DROP EXTENSION test_pg_dump;
 
 -- shouldn't be anything left in pg_init_privs
-SELECT * FROM pg_init_privs WHERE privtype = 'e'
+SELECT classoid,objsubid,privtype,initprivs FROM pg_init_privs WHERE privtype = 'e'
    -- POLAR: polar_feature_utils is created by initdb and it
    -- grants the schema and view to public.
    -- It's safe and ignore the objects of it.

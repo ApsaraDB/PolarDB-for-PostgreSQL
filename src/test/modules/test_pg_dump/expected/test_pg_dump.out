@@ -348,18 +348,18 @@ SELECT pg_describe_object(classid,objid,objsubid) COLLATE "C" AS obj,
 DROP ROLE regress_dump_test_role;
 DROP EXTENSION test_pg_dump;
 -- shouldn't be anything left in pg_init_privs
-SELECT * FROM pg_init_privs WHERE privtype = 'e'
+SELECT classoid,objsubid,privtype,initprivs FROM pg_init_privs WHERE privtype = 'e'
    -- POLAR: polar_feature_utils is created by initdb and it
    -- grants the schema and view to public.
    -- It's safe and ignore the objects of it.
    AND objoid NOT IN ('polar_feature_utils'::regnamespace, 'polar_feature_utils.polar_unique_feature_usage'::regclass);
- objoid | classoid | objsubid | privtype |                 initprivs                 
---------+----------+----------+----------+-------------------------------------------
-  14307 |     1259 |        0 | e        | {postgres=arwdDxtm/postgres,=rd/postgres}
-  14289 |     1259 |        0 | e        | {postgres=rwU/postgres,=r/postgres}
-  14306 |     1259 |        0 | e        | {postgres=rwU/postgres,=r/postgres}
-  14288 |     2615 |        0 | e        | {postgres=UC/postgres,=U/postgres}
-  14290 |     1259 |        0 | e        | {postgres=arwdDxtm/postgres,=r/postgres}
+ classoid | objsubid | privtype |                 initprivs                 
+----------+----------+----------+-------------------------------------------
+     1259 |        0 | e        | {postgres=arwdDxtm/postgres,=rd/postgres}
+     1259 |        0 | e        | {postgres=rwU/postgres,=r/postgres}
+     1259 |        0 | e        | {postgres=rwU/postgres,=r/postgres}
+     2615 |        0 | e        | {postgres=UC/postgres,=U/postgres}
+     1259 |        0 | e        | {postgres=arwdDxtm/postgres,=r/postgres}
 (5 rows)
 
 CREATE ROLE regress_dump_test_role;

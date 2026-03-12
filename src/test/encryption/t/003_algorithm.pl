@@ -80,33 +80,41 @@ $node->safe_psql('postgres', 'CHECKPOINT');
 is_encrypted($node, $table_filepath, 1, 'table is encrypted');
 
 # Test sm4
-$node = PostgreSQL::Test::Cluster->new('test-sm4');
-$node->init(
-	extra => [
-		'--cluster-passphrase-command',
-		'echo "adfadsfadssssssssfa12312312312312312312312%p123"',
-		'-e', 'sm4',
-	]);
-$node->start;
+SKIP:
+{
+	system(
+		"openssl enc -sm4-ctr -e -nosalt -pass pass:test < /dev/null >/dev/null 2>&1"
+	);
+	skip 'OpenSSL does not support SM4', 2 if ($? != 0);
 
-$node->safe_psql(
-	'postgres',
-	qq(
-				 CREATE TABLE test (a text);
-				 INSERT INTO test VALUES ('$keyword');
-				 ));
-$table_filepath =
-  $node->safe_psql('postgres', qq(SELECT pg_relation_filepath('test')));
+	$node = PostgreSQL::Test::Cluster->new('test-sm4');
+	$node->init(
+		extra => [
+			'--cluster-passphrase-command',
+			'echo "adfadsfadssssssssfa12312312312312312312312%p123"',
+			'-e', 'sm4',
+		]);
+	$node->start;
 
-# Read encrypted table
-$ret = $node->safe_psql('postgres', 'SELECT a FROM test');
-is($ret, "$keyword", 'Read encrypted table');
+	$node->safe_psql(
+		'postgres',
+		qq(
+					 CREATE TABLE test (a text);
+					 INSERT INTO test VALUES ('$keyword');
+					 ));
+	$table_filepath =
+	  $node->safe_psql('postgres', qq(SELECT pg_relation_filepath('test')));
 
-# Sync to disk
-$node->safe_psql('postgres', 'CHECKPOINT');
+	# Read encrypted table
+	$ret = $node->safe_psql('postgres', 'SELECT a FROM test');
+	is($ret, "$keyword", 'Read encrypted table');
 
-# Encrypted table must be encrypted
-is_encrypted($node, $table_filepath, 1, 'table is encrypted');
+	# Sync to disk
+	$node->safe_psql('postgres', 'CHECKPOINT');
+
+	# Encrypted table must be encrypted
+	is_encrypted($node, $table_filepath, 1, 'table is encrypted');
+}
 
 # Test command
 $node = PostgreSQL::Test::Cluster->new('test-command-1');
