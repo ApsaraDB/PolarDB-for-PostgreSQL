@@ -1,6 +1,6 @@
 <div align="center">
 
-[![logo](./polar-doc/docs/.vuepress/public/images/polardb.png)](https://apsaradb.github.io/PolarDB-for-PostgreSQL/)
+[![logo](https://raw.githubusercontent.com/polardb/polardb-pg-docs/main/docs/.vuepress/public/images/polardb.png)](https://apsaradb.github.io/PolarDB-for-PostgreSQL/)
 
 # PolarDB for PostgreSQL
 
@@ -25,7 +25,7 @@
 
 ## Overview
 
-![arch.png](./polar-doc/docs/imgs/1_polardb_architecture.png)
+![arch.png](https://raw.githubusercontent.com/polardb/polardb-pg-docs/main/docs/imgs/1_polardb_architecture.png)
 
 PolarDB for PostgreSQL (hereafter simplified as PolarDB) is a cloud native database service independently developed by Alibaba Cloud. This service is 100% compatible with PostgreSQL and uses a shared-storage-based architecture in which computing is decoupled from storage. This service features flexible scalability, millisecond-level latency and hybrid transactional/analytical processing (HTAP) capabilities.
 

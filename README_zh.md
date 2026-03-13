@@ -1,6 +1,6 @@
 <div align="center">
 
-[![logo](./polar-doc/docs/.vuepress/public/images/polardb.png)](https://www.polardbpg.com/home)
+[![logo](https://raw.githubusercontent.com/polardb/polardb-pg-docs/main/docs/.vuepress/public/images/polardb.png)](https://apsaradb.github.io/PolarDB-for-PostgreSQL/)
 
 # PolarDB for PostgreSQL
 
@@ -25,7 +25,7 @@
 
 ## 什么是 PolarDB for PostgreSQL
 
-![arch.png](./polar-doc/docs/zh/imgs/1_polardb_architecture.png)
+![arch.png](https://raw.githubusercontent.com/polardb/polardb-pg-docs/main/docs/zh/imgs/1_polardb_architecture.png)
 
 PolarDB for PostgreSQL（下文简称为 PolarDB）是一款阿里云自主研发的云原生数据库，100% 兼容 PostgreSQL，采用基于 Shared-Storage 的存储计算分离架构，具有极致弹性、毫秒级延迟、HTAP 的能力。
 
