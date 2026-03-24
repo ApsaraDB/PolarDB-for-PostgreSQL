@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Redirecting...</title>
+    <link rel="canonical" href="https://polardb.github.io/polardb-pg-docs/">
+</head>
+<body>
+    <p>页面已迁移，正在跳转...</p>
+    <p>Page moved, redirecting...</p>
+    <script>
+        var newPath = window.location.pathname.replace('/PolarDB-for-PostgreSQL', '');
+        newPath = newPath.replace(/^\/+/, '');
+        window.location.replace("https://polardb.github.io/polardb-pg-docs/" + newPath + window.location.search + window.location.hash);
+    </script>
+</body>
+</html>
